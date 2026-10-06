@@ -8162,6 +8162,9 @@ static int emit_scalar_recv_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       buf_printf(b, "if (%s_t%d%s) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil())); ",
                  rt == TY_STRING ? "!" : "", g_tmpid,
                  rt == TY_STRING ? "" : " == SP_INT_NIL", name);
+      /* a nil arm that left the test to this guard (emit_nil_target_own)
+         learns it was written */
+      if (c->nil_tested && c->nil_tested[recv] == 3) c->nil_tested[recv] = 4;
       if (ib->p) buf_puts(b, ib->p);
       buf_puts(b, "; })");
     }

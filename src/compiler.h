@@ -115,6 +115,15 @@ typedef struct {
                        can run before any write, a call site binds nil. Read
                        through repr_of_slot's may_nil. Nonzero: where the
                        nil comes from (NFW_*, analyze.h). */
+  int obj_elem_may_nil; /* (Array slots whose elements are pointers: an
+                       object's, a String's, an Array's) the nil fact one
+                       level in (analyze_nil.c): an element read out of it,
+                       or a block parameter an iteration over it binds, may
+                       be nil -- a write stored one, or left a gap a write
+                       past the end fills with nil. Nonzero when so; its
+                       NF_EL_STORED bit says a nil was stored through this
+                       name, which reaches the slots the Array came from.
+                       Read through repr_of_slot's elem_nil_marked. */
   int box_nullable; /* an int parameter bound from an ivar that can be read
                        before anything assigned it: only BOXING it has to
                        yield nil. Kept apart from nullable_int, which also
@@ -467,6 +476,10 @@ typedef struct {
                                      (nil_fact_ivar); n_ivar_obj_may_nil
                                      entries */
   int n_ivar_obj_may_nil;
+  unsigned char *ivar_elem_may_nil; /* the same one level in, per ivar (an
+                                     Array whose elements may be nil,
+                                     LocalVar.obj_elem_may_nil), as many
+                                     entries, indexed the same way */
   char **rbs_pin_ivars; /* ivar names (incl '@') pinned by an --rbs seed: the
                            fixpoint must not widen their type */
   int n_rbs_pin_ivars, c_rbs_pin_ivars;
@@ -754,6 +767,10 @@ typedef struct {
   unsigned char *nil_fact; /* [nil_fact_n] the nil fact per node (analyze_nil.c,
                         #7444): NF_MAY_NIL when the node's value may be nil,
                         NF_NOT_NIL when it cannot; read through nil_fact_node */
+  unsigned char *nil_elem_fact; /* [nil_fact_n] per node: an Array value whose
+                        elements are pointers some of which may be nil
+                        (LocalVar.obj_elem_may_nil); read through repr_of's
+                        elem_nil_marked */
   int nil_fact_n;
   int *nscope;      /* [node_cap] node id -> owning scope index */
   int *node_cbody;  /* [node_cap] node id -> enclosing class/module-body class id, or -1 */

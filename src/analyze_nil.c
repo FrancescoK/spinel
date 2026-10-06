@@ -21,7 +21,8 @@
    binding, a class-level ivar. Three shapes are taken as not nil without
    proof, listed here so a later step can model them: an element a builtin
    iteration, or a Ruby-defined builtin's yield, binds to a block parameter
-   (`boxes.each { |b| }` over an Array that holds nil); a container call
+   (`boxes.each { |b| }`), unless the Array is one the program stores nil
+   into or leaves a gap in (one level in, below: NFW_ELEM_NIL); a container call
    other than the element reads and picks that can miss (an Array's or a
    Hash's own methods); and a builtin value a builtin call answers other
    than those picks and a String's slice (`gets` at the end of its input, a
@@ -48,9 +49,12 @@
 #include "analyze_internal.h"
 #include "call_plan.h"
 
+/* a memo entry whose value is being computed */
+#define NF_BUSY 0xff
+
 /* ---- (class, ivar) and per-name side tables ---- */
 
-typedef struct { int cls; const char *name; unsigned char wr, init, val; int val_round; } NFIvar;
+typedef struct { int cls; const char *name; unsigned char wr, init, val; int val_round, ewr; } NFIvar;
 /* a guarded region's writes of a name, memoized: a long branch read many
    times is scanned once per name */
 typedef struct { int region; const char *name; unsigned char w; } NFRegion;
@@ -61,6 +65,8 @@ typedef struct {
   int *par;               /* du_parent_map */
   DUPos dp;
   unsigned char *memo;    /* per node, this round: nf_code(), NF_BUSY while computed */
+  unsigned char *ememo;   /* per node, this round: nf_elem's answer + 1, NF_BUSY while
+                             computed */
   int *def_mi;            /* DefNode id -> its method scope, or -1 */
   NFIvar *iv; int iv_cap, iv_n;
   NFRegion *rg; int rg_cap, rg_n;
@@ -73,6 +79,7 @@ typedef struct {
   int *kid_head, *kid_next, *kid_to; /* per class: the classes right below it
                              (subclasses, and includers of a module) */
   int *dfs, *seen, stamp; /* nf_ivar's walk: its stack, and the classes it met */
+  unsigned char *mod;     /* per class: a module some class includes */
   int round;
   int changed;
   int all_ivars_nil;      /* an instance_variable_set the program makes */
@@ -81,7 +88,15 @@ typedef struct {
 
 /* the (class, name) keys of the slots the side table holds besides an
    instance's ivars: a class variable by name, a top-level ivar */
-enum { NF_CVAR = -2, NF_TOP_IVAR = -3 };
+/* an Array slot's element flag (LocalVar.obj_elem_may_nil, an ivar's ewr):
+   the Array may hold nil, and a nil was stored into it through this name,
+   which reaches the slots it was read out of (nf_elem_mark_back) */
+enum { NF_EL_HOLDS = 1, NF_EL_STORED = 2 };
+
+enum { NF_CVAR = -2, NF_TOP_IVAR = -3,
+       NF_ELEM_IVAR = -4, /* an ivar's Array element flag a write no class
+                             family carries marks, by name (nf_elem_ivar_op) */
+       NF_ELEM_ANY = -5   /* the same, any write of the name */ };
 
 static unsigned nf_ivar_hash(int cls, const char *name) {
   return sp_strhash(name) * 31u + (unsigned)(cls + 1);
@@ -111,7 +126,7 @@ static NFIvar *nf_ivar_slot(NF *f, int cls, const char *name) {
   char *own = strdup(name);
   if (!own) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   f->iv[j].cls = cls; f->iv[j].name = own; f->iv[j].wr = 0; f->iv[j].init = 0;
-  f->iv[j].val = 0; f->iv[j].val_round = -1;
+  f->iv[j].val = 0; f->iv[j].val_round = -1; f->iv[j].ewr = 0;
   f->iv_n++;
   return &f->iv[j];
 }
@@ -158,6 +173,8 @@ static int nf_class_reaches(Compiler *c, int y, int x) {
 }
 
 static int nf_expr(NF *f, int v);
+static int nf_elem_tracked(TyKind t);
+static int nf_elem(NF *f, int v, int depth);
 
 /* the statement list of a program, directly under its ProgramNode */
 static int nf_is_program_list(NF *f, int n) {
@@ -674,7 +691,11 @@ static int nf_call(NF *f, int v) {
     static const char *const picks[] = { "find", "detect", "first", "last", "min", "max", "min_by",
       "max_by", "sample", "shift", "pop", "[]", "at", "dig", "delete", "delete_at", "slice",
       "slice!", "inject", "reduce", "sum", "find_index", "key", "fetch", "assoc", "rassoc", "values_at", NULL };
-    for (int i = 0; picks[i]; i++) if (sp_streq(nm, picks[i])) return NFW_ELEM;
+    for (int i = 0; picks[i]; i++)
+      if (sp_streq(nm, picks[i]))
+        /* an element of an Array that can hold nil may be nil wherever it is */
+        return c->ntype[v] == ty_array_elem(rt) && nf_elem_tracked(rt) && nf_elem(f, r, 0) ? NFW_ELEM_NIL
+               : NFW_ELEM;
     return NFW_NONE;
   }
   /* a String's slice past its end */
@@ -687,6 +708,357 @@ static int nf_call(NF *f, int v) {
      (see the header) */
   (void)an; (void)av;
   return ty_is_object(c->ntype[v]) ? NFW_OPAQUE : NFW_NONE;
+}
+
+/* ---- one level in: an Array whose elements may be nil ----
+   The header's first unproven shape, modeled for the Arrays whose elements
+   are pointers (an object's, a String's, an Array's), where nil is NULL: a
+   slot's flag (obj_elem_may_nil, an ivar's by its class family) says an
+   element may be nil because the program stores a nil it writes into the
+   Array -- the nils cplan_nil arms a builtin call for, not one the
+   analysis cannot bound -- or leaves a gap a write past the end fills with
+   nil (array_mutation_stores, strict: a pointer Array has no run-time flag
+   to catch a gap the mark misses, as an Integer Array's may_nil does),
+   through any name of it. A block parameter an iteration over such an
+   Array binds, and an element a read or a pick takes out of it, may then
+   be nil (NFW_ELEM_NIL). An Array built by pushes or a map of values that
+   cannot be nil is unmarked, so a hot loop over it pays for no test. */
+
+static LocalVar *nf_local_of(NF *f, int node, const char *nm);
+static int nf_next_nil(NF *f, int n, int depth);
+
+/* an Array whose elements are pointers, NULL for nil (an Integer or Float
+   Array holds the sentinel instead: analyze.c's nullable_int_elem) */
+static int nf_elem_tracked(TyKind t) {
+  return (ty_is_array(t) || ty_is_obj_array(t)) && nil_fact_tracked(ty_array_elem(t));
+}
+
+/* a nil the program writes, as cplan_nil reads one */
+static int nf_written_nil(int why) {
+  return why == NFW_NIL || why == NFW_NO_ELSE || why == NFW_SAFE_NAV || why == NFW_UNSET ||
+         why == NFW_ELEM_NIL;
+}
+
+/* An ivar's element flag sits on the topmost class of the family that
+   carries the ivar (nullable_elem_ivar_in, where repr_of_ivar reads it), so
+   a store through one class's @items guards that family's reads, not an
+   unrelated class's @items. A write no family carries -- in a module, which
+   every includer's instances run, a class-level ivar, or an ivar the
+   method's own class does not hold -- marks the name (NF_ELEM_IVAR), which
+   every family's read of it takes too; a read no family carries takes any
+   write of the name (NF_ELEM_ANY). */
+static int nf_elem_ivar_root(NF *f, int cls, const char *ivn) {
+  ClassInfo *ci = NULL;
+  if (cls < 0 || cls >= f->c->nclasses || f->mod[cls] || nullable_elem_ivar_in(f->c, cls, ivn, &ci) < 0 || !ci)
+    return -1;
+  return (int)(ci - f->c->classes);
+}
+
+static void nf_elem_add(NF *f, int *fl, int bits) {
+  if ((*fl | bits) != *fl) { *fl |= bits; f->changed = 1; }
+}
+
+/* Ivar ivn's element flag (NF_EL_*) as a method of class cls (-1: none)
+   reads it, after adding `bits` to it through that method. */
+static int nf_elem_ivar_op(NF *f, int cls, const char *ivn, int bits) {
+  int root = nf_elem_ivar_root(f, cls, ivn);
+  if (bits) {
+    nf_elem_add(f, &nf_ivar_slot(f, root >= 0 ? root : NF_ELEM_IVAR, ivn)->ewr, bits);
+    nf_elem_add(f, &nf_ivar_slot(f, NF_ELEM_ANY, ivn)->ewr, bits);
+  }
+  if (root < 0) return nf_ivar_slot(f, NF_ELEM_ANY, ivn)->ewr;
+  return nf_ivar_slot(f, root, ivn)->ewr | nf_ivar_slot(f, NF_ELEM_IVAR, ivn)->ewr;
+}
+
+/* The element flag (NF_EL_*) of the slot node v reads or writes, after
+   adding `bits` to it: a local's, a global's, a constant's, a class
+   variable's (by name), an ivar's (nf_elem_ivar_op), or the ivar an attr
+   reader hands out. -1 when v names no slot. */
+static int nf_elem_slot_op(NF *f, int v, int bits) {
+  Compiler *c = f->c;
+  const NodeTable *nt = f->nt;
+  v = nf_unparen(nt, v);
+  if (v < 0) return -1;
+  const char *nm = nt_str(nt, v, "name");
+  if (!nm) return -1;
+  int *fl = NULL;
+  switch (nt_kind(nt, v)) {
+  case NK_LocalVariableReadNode: case NK_LocalVariableWriteNode: case NK_LocalVariableOrWriteNode:
+  case NK_LocalVariableAndWriteNode: {
+    LocalVar *lv = nf_local_of(f, v, nm);
+    fl = lv ? &lv->obj_elem_may_nil : NULL;
+    break;
+  }
+  case NK_GlobalVariableReadNode: case NK_GlobalVariableWriteNode: case NK_GlobalVariableOrWriteNode:
+  case NK_GlobalVariableAndWriteNode: {
+    LocalVar *g = nm[0] == '$' ? comp_gvar(c, comp_resolve_gvar(c, nm + 1)) : NULL;
+    fl = g ? &g->obj_elem_may_nil : NULL;
+    break;
+  }
+  case NK_ConstantReadNode: case NK_ConstantWriteNode: case NK_ConstantOrWriteNode:
+  case NK_ConstantAndWriteNode: {
+    LocalVar *k = comp_const(c, nm);
+    fl = k ? &k->obj_elem_may_nil : NULL;
+    break;
+  }
+  case NK_InstanceVariableReadNode: case NK_InstanceVariableWriteNode:
+  case NK_InstanceVariableOrWriteNode: case NK_InstanceVariableAndWriteNode: {
+    /* a class method's ivar is the class's own slot: no family's */
+    Scope *s = comp_scope_of(c, v);
+    int cls = !s || s->is_cmethod ? -1 : s->class_id >= 0 ? s->class_id : comp_class_index(c, "Toplevel");
+    return nf_elem_ivar_op(f, cls, nm, bits);
+  }
+  case NK_ClassVariableReadNode: case NK_ClassVariableWriteNode: case NK_ClassVariableOrWriteNode:
+  case NK_ClassVariableAndWriteNode:
+    fl = &nf_ivar_slot(f, NF_CVAR, nm)->ewr;
+    break;
+  case NK_CallNode: {
+    int r = nt_ref(nt, v, "receiver"), dc = -1;
+    TyKind rt = r >= 0 ? c->ntype[r] : TY_UNKNOWN;
+    char ivn[256];
+    if (r < 0 || !ty_is_object(rt) || nt_ref(nt, v, "arguments") >= 0 ||
+        !comp_reader_in_chain(c, ty_object_class(rt), nm, &dc) || dc < 0)
+      return -1;
+    snprintf(ivn, sizeof ivn, "@%s", comp_resolve_alias(c, ty_object_class(rt), nm));
+    return nf_elem_ivar_op(f, dc, ivn, bits);
+  }
+  default:
+    return -1;
+  }
+  if (!fl) return -1;
+  nf_elem_add(f, fl, bits);
+  return *fl;
+}
+
+static void nf_elem_mark(NF *f, int slot_node, int why) {
+  if (why) (void)nf_elem_slot_op(f, slot_node, NF_EL_HOLDS);
+}
+
+static void nf_elem_mark_back(NF *f, int v, int depth);
+static void nf_elem_back_list(NF *f, int st, int depth) {
+  if (st < 0 || nt_kind(f->nt, st) != NK_StatementsNode) { nf_elem_mark_back(f, st, depth); return; }
+  int n = 0; const int *b = nt_arr(f->nt, st, "body", &n);
+  if (n > 0) nf_elem_mark_back(f, b[n - 1], depth);
+}
+
+/* An Array is a reference: a nil stored through one name of it (`b = a;
+   b << nil`, a parameter, a reader's value) lands where every other name
+   reads it. Mark the slots the Array value v is read out of as stored
+   into: a slot, the ivar an attr reader or a method's last value hands
+   out, the receiver of a mutator that answers it (`a.push(x)`), either
+   branch of a choice. A copy (dup, a filter, `+`) is another Array and
+   stays unmarked. Only a store goes back: an Array that merely received
+   one that holds nil (a parameter bound from it) marks no other caller's. */
+static void nf_elem_mark_back(NF *f, int v, int depth) {
+  const NodeTable *nt = f->nt;
+  if (v < 0 || v >= nt->count || depth > 8) return;
+  switch (nt_kind(nt, v)) {
+  case NK_ParenthesesNode: nf_elem_back_list(f, nt_ref(nt, v, "body"), depth + 1); return;
+  case NK_StatementsNode: nf_elem_back_list(f, v, depth + 1); return;
+  case NK_ElseNode: nf_elem_back_list(f, nt_ref(nt, v, "statements"), depth + 1); return;
+  case NK_IfNode: case NK_UnlessNode:
+    nf_elem_back_list(f, nt_ref(nt, v, "statements"), depth + 1);
+    nf_elem_mark_back(f, nt_ref(nt, v, nt_kind(nt, v) == NK_IfNode ? "subsequent" : "else_clause"), depth + 1);
+    return;
+  case NK_AndNode: case NK_OrNode:
+    nf_elem_mark_back(f, nt_ref(nt, v, "left"), depth + 1);
+    nf_elem_mark_back(f, nt_ref(nt, v, "right"), depth + 1);
+    return;
+  case NK_LocalVariableWriteNode: case NK_InstanceVariableWriteNode: case NK_GlobalVariableWriteNode:
+  case NK_ClassVariableWriteNode: case NK_ConstantWriteNode:
+    (void)nf_elem_slot_op(f, v, NF_EL_HOLDS | NF_EL_STORED);
+    nf_elem_mark_back(f, nt_ref(nt, v, "value"), depth + 1);
+    return;
+  case NK_CallNode: {
+    if (nf_elem_slot_op(f, v, NF_EL_HOLDS | NF_EL_STORED) >= 0) return;
+    int pmi = nf_plan(f, v, NULL, NULL);
+    if (pmi >= 0) { nf_elem_back_list(f, f->c->scopes[pmi].body, depth + 1); return; }
+    if (mutated_array(f->c, v) != v) nf_elem_mark_back(f, nt_ref(nt, v, "receiver"), depth + 1);
+    return;
+  }
+  default:
+    (void)nf_elem_slot_op(f, v, NF_EL_HOLDS | NF_EL_STORED);
+  }
+}
+
+static int nf_elem(NF *f, int v, int depth);
+static int nf_elem_list(NF *f, int st, int depth) {
+  if (st < 0 || nt_kind(f->nt, st) != NK_StatementsNode) return nf_elem(f, st, depth);
+  int n = 0; const int *b = nt_arr(f->nt, st, "body", &n);
+  return n > 0 ? nf_elem(f, b[n - 1], depth) : 0;
+}
+
+/* Can an element of the Array node v's value be nil (NFW_ELEM_NIL, else
+   0)? A slot's flag, a literal's elements, what `Array.new` or a map
+   fills it with, and the receiver's or the operands' own elements for a
+   call that hands them on (a filter, a slice, a copy, a mutator, `+`). */
+static int nf_elem_uncached(NF *f, int v, int depth);
+static int nf_elem(NF *f, int v, int depth) {
+  if (v < 0 || v >= f->nt->count || depth > 32) return 0;
+  unsigned char m = f->ememo[v];
+  if (m == NF_BUSY) return 0;   /* met again while computed: its other sources decide */
+  if (m) return m == 2 ? NFW_ELEM_NIL : 0;
+  f->ememo[v] = NF_BUSY;
+  int r = nf_elem_uncached(f, v, depth);
+  f->ememo[v] = r ? 2 : 1;
+  return r;
+}
+static int nf_elem_uncached(NF *f, int v, int depth) {
+  const NodeTable *nt = f->nt;
+  switch (nt_kind(nt, v)) {
+  case NK_ParenthesesNode: return nf_elem_list(f, nt_ref(nt, v, "body"), depth + 1);
+  case NK_StatementsNode: return nf_elem_list(f, v, depth + 1);
+  case NK_ElseNode: return nf_elem_list(f, nt_ref(nt, v, "statements"), depth + 1);
+  case NK_IfNode: case NK_UnlessNode:
+    return nf_elem_list(f, nt_ref(nt, v, "statements"), depth + 1) ||
+           nf_elem(f, nt_ref(nt, v, nt_kind(nt, v) == NK_IfNode ? "subsequent" : "else_clause"), depth + 1)
+           ? NFW_ELEM_NIL : 0;
+  case NK_AndNode: case NK_OrNode:
+    return nf_elem(f, nt_ref(nt, v, "left"), depth + 1) || nf_elem(f, nt_ref(nt, v, "right"), depth + 1)
+           ? NFW_ELEM_NIL : 0;
+  case NK_LocalVariableWriteNode: case NK_InstanceVariableWriteNode: case NK_GlobalVariableWriteNode:
+  case NK_ClassVariableWriteNode: case NK_ConstantWriteNode:
+    return nf_elem(f, nt_ref(nt, v, "value"), depth + 1);
+  case NK_ArrayNode: {
+    int en = 0; const int *ev = nt_arr(nt, v, "elements", &en);
+    for (int i = 0; i < en; i++) {
+      int w = nt_kind(nt, ev[i]) == NK_SplatNode ? nf_elem(f, nt_ref(nt, ev[i], "expression"), depth + 1)
+              : nf_written_nil(nf_expr(f, ev[i]));
+      if (w) return NFW_ELEM_NIL;
+    }
+    return 0;
+  }
+  case NK_CallNode: {
+    int fl = nf_elem_slot_op(f, v, 0);
+    if (fl >= 0) return fl ? NFW_ELEM_NIL : 0;
+    const char *nm = nt_str(nt, v, "name");
+    int r = nt_ref(nt, v, "receiver"), blk = nt_ref(nt, v, "block");
+    int a = nt_ref(nt, v, "arguments"), an = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+    if (!nm) return 0;
+    if (blk >= 0 && nt_kind(nt, blk) != NK_BlockNode) blk = -1;
+    int body = blk >= 0 ? nt_ref(nt, blk, "body") : -1;
+    /* `Array.new(n)`'s nils, `Array.new(n, v)`'s v, a block's values */
+    if (r >= 0 && nt_kind(nt, r) == NK_ConstantReadNode && is_array_constructor(nt_str(nt, r, "name"), nm)) {
+      if (blk >= 0) return nf_written_nil(nf_or(nf_list(f, body), nf_next_nil(f, body, 0))) ? NFW_ELEM_NIL : 0;
+      if (an == 1 && !nf_elem_tracked(f->c->ntype[av[0]])) return NFW_ELEM_NIL;
+      return an == 2 && nf_written_nil(nf_expr(f, av[1])) ? NFW_ELEM_NIL : 0;
+    }
+    /* a user method's value: its body's last value */
+    int pmi = nf_plan(f, v, NULL, NULL);
+    if (pmi >= 0) {
+      int mb = f->c->scopes[pmi].body;
+      return mb >= 0 ? nf_elem(f, mb, depth + 1) : 0;
+    }
+    if (r < 0 || !nf_elem_tracked(f->c->ntype[r])) return 0;
+    /* the mapped element is the block's value */
+    if (is_map_alias(nm) && blk >= 0)
+      return nf_written_nil(nf_or(nf_list(f, body), nf_next_nil(f, body, 0))) ? NFW_ELEM_NIL : 0;
+    /* `a + b`, `a | b`, `a.union(b)` (a concat lands in its receiver's slot) */
+    if (is_plus_op(nm) || is_union_alias(nm)) {
+      for (int k = 0; k < an; k++) if (nf_elem(f, av[k], depth + 1)) return NFW_ELEM_NIL;
+      return nf_elem(f, r, depth + 1);
+    }
+    if ((is_slice_alias(nm) && slice_read_call(f->c, v)) || elem_preserving_call(nm) ||
+        mutated_array(f->c, v) != v)
+      return nf_elem(f, r, depth + 1);
+    return 0;
+  }
+  default: {
+    return nf_elem_slot_op(f, v, 0) > 0 ? NFW_ELEM_NIL : 0;
+  }
+  }
+}
+
+/* The marks the writes make: a slot written an Array that may hold nil,
+   and an Array a mutation stores nil into or leaves a gap in; either goes
+   back to the slots the written Array is read out of (nf_elem_mark_back). */
+static void nf_elem_writes(NF *f) {
+  Compiler *c = f->c;
+  const NodeTable *nt = f->nt;
+  static const NodeKind wk[] = { NK_LocalVariableWriteNode, NK_LocalVariableOrWriteNode,
+    NK_LocalVariableAndWriteNode, NK_InstanceVariableWriteNode, NK_InstanceVariableOrWriteNode,
+    NK_InstanceVariableAndWriteNode, NK_GlobalVariableWriteNode, NK_GlobalVariableOrWriteNode,
+    NK_GlobalVariableAndWriteNode, NK_ClassVariableWriteNode, NK_ClassVariableOrWriteNode,
+    NK_ClassVariableAndWriteNode, NK_ConstantWriteNode, NK_ConstantOrWriteNode, NK_ConstantAndWriteNode };
+  for (int q = 0; q < (int)(sizeof wk / sizeof *wk); q++)
+    NT_FOREACH_KIND(nt, wk[q], w) {
+      int val = nt_ref(nt, w, "value");
+      /* `Array.new(n) { ... }` whose block can answer nil is typed a
+         PolyArray where the slot it fills settles a pointer one */
+      if (val < 0 || !(nf_elem_tracked(c->ntype[val]) || c->ntype[val] == TY_POLY_ARRAY)) continue;
+      nf_elem_mark(f, w, nf_elem(f, val, 0));
+      int wf = nf_elem_slot_op(f, w, 0);
+      if (wf > 0 && (wf & NF_EL_STORED)) nf_elem_mark_back(f, val, 0);
+    }
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
+    int recv = mutated_array(c, nt_ref(nt, id, "receiver"));
+    if (recv < 0 || !nf_elem_tracked(c->ntype[recv])) continue;
+    int from, to, elems;
+    int g = array_mutation_stores(c, id, 1, &from, &to, &elems);
+    if (g < 0) continue;
+    int why = g;
+    int a = nt_ref(nt, id, "arguments"), an = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+    for (int k = from; k < to && !why && av; k++)
+      why = elems ? nf_elem(f, av[k], 0) : nf_written_nil(nf_expr(f, av[k]));
+    /* fill's block fills in its values */
+    int blk = nt_ref(nt, id, "block");
+    if (!why && blk >= 0 && nt_kind(nt, blk) == NK_BlockNode) {
+      int body = nt_ref(nt, blk, "body");
+      why = nf_written_nil(nf_or(nf_list(f, body), nf_next_nil(f, body, 0)));
+    }
+    if (why) nf_elem_mark_back(f, recv, 0);
+  }
+}
+
+/* block blk's parameter i, or NULL */
+static LocalVar *nf_block_param(NF *f, int blk, int i) {
+  const char *pn = block_param_name(f->c, blk, i);
+  int body = nt_ref(f->nt, blk, "body");
+  LocalVar *lv = pn ? nf_local_of(f, body >= 0 ? body : blk, pn) : NULL;
+  return lv || !pn ? lv : nf_local_of(f, blk, pn);
+}
+
+/* The block parameters a builtin iteration over such an Array binds to its
+   elements (elem_block_params): each may be nil. A parameter's slot can be
+   boxed while an inlined iteration binds it typed, so the flag goes on a
+   boxed slot too: the read is what the guard asks about. */
+static void nf_bind_elems(NF *f, int id, int blk) {
+  int recv = -1;
+  int np = elem_block_params(f->c, id, &recv);
+  if (!np || !nf_elem_tracked(f->c->ntype[recv]) || !nf_elem(f, recv, 0)) return;
+  for (int i = 0; i < np; i++) {
+    LocalVar *lv = nf_block_param(f, blk, i);
+    if (lv && (nil_fact_tracked(lv->type) || lv->type == TY_POLY)) nf_set(f, &lv->obj_may_nil, NFW_ELEM_NIL);
+  }
+}
+
+/* An Array a method's yield hands block blk (tap's receiver) and the
+   block's parameter are one Array: one that can hold nil makes the
+   parameter one, and a nil the block stores through the parameter lands in
+   the yielded Array. A yield a parameter list spreads is left alone. */
+static void nf_bind_yield_elems(NF *f, int id, int blk, int mi, int from_recv, int **yields, int *nyields) {
+  const NodeTable *nt = f->nt;
+  for (int i = 0; i < 9 && block_param_name(f->c, blk, i); i++) {
+    LocalVar *lv = nf_block_param(f, blk, i);
+    if (!lv || !nf_elem_tracked(lv->type)) continue;
+    int nsrc = from_recv ? i == 0 : nyields[mi];
+    for (int y = 0; y < nsrc; y++) {
+      int src = -1;
+      if (from_recv) src = nt_ref(nt, id, "receiver");
+      else {
+        int ya = nt_ref(nt, yields[mi][y], "arguments"), yn = 0;
+        const int *yv = ya >= 0 ? nt_arr(nt, ya, "arguments", &yn) : NULL;
+        int splat = 0;
+        for (int j = 0; j < yn; j++) if (nt_kind(nt, yv[j]) == NK_SplatNode) splat = 1;
+        if (!splat && !(yn == 1 && block_param_name(f->c, blk, 1)) && i < yn) src = yv[i];
+      }
+      if (src < 0) continue;
+      if (!(lv->obj_elem_may_nil & NF_EL_HOLDS) && nf_elem(f, src, 0)) nf_elem_add(f, &lv->obj_elem_may_nil, NF_EL_HOLDS);
+      if (lv->obj_elem_may_nil & NF_EL_STORED) nf_elem_mark_back(f, src, 0);
+    }
+  }
 }
 
 static int nf_owner_method(NF *f, int n);
@@ -810,7 +1182,6 @@ static int nf_expr_uncached(NF *f, int v) {
 
 /* A node's fact as stored (c->nil_fact): its status in the low two bits
    (NF_NOT_NIL, NF_MAY_NIL, NF_GUARDED), the source of a nil above them. */
-#define NF_BUSY 0xff
 static unsigned char nf_code(int why, int guarded) {
   return (unsigned char)(why ? NF_MAY_NIL | (why << 2) : guarded ? NF_GUARDED : NF_NOT_NIL);
 }
@@ -953,11 +1324,12 @@ static void nf_bind_params(NF *f, int id, int mi, const int *av, int an) {
   Compiler *c = f->c;
   const NodeTable *nt = f->nt;
   Scope *m = &c->scopes[mi];
-  /* only an object parameter not yet known to take nil can learn anything */
+  /* only an object parameter not yet known to take nil, or an Array one
+     not yet known to hold one, can learn anything */
   int open = 0;
   for (int k = 0; k < m->nparams && !open; k++) {
     LocalVar *p = m->pnames[k] ? scope_local(m, m->pnames[k]) : NULL;
-    open = p && nf_open(p->obj_may_nil) && nil_fact_tracked(p->type);
+    open = p && ((nf_open(p->obj_may_nil) && nil_fact_tracked(p->type)) || nf_elem_tracked(p->type));
   }
   if (!open) return;
   ArgLayout L;
@@ -965,10 +1337,20 @@ static void nf_bind_params(NF *f, int id, int mi, const int *av, int an) {
   int kwh = an > 0 && nt_kind(nt, av[an - 1]) == NK_KeywordHashNode ? av[an - 1] : -1;
   for (int k = 0; k < m->nparams; k++) {
     LocalVar *p = m->pnames[k] ? scope_local(m, m->pnames[k]) : NULL;
-    if (!p || !nf_open(p->obj_may_nil) || !nil_fact_tracked(p->type)) continue;
-    int why;
+    if (!p) continue;
     ArgFrom from = k < L.n ? L.from[k] : ARG_DEFAULT;
     int dflt = m->pdefault && m->pdefault[k] >= 0 ? m->pdefault[k] : -1;
+    /* an Array argument that can hold nil makes an Array parameter one,
+       and a nil the method stores through the parameter lands in the
+       argument's Array */
+    if (nf_elem_tracked(p->type)) {
+      int a = from == ARG_NODE ? layout_plain_arg(c, m, av, &L, k) : from == ARG_DEFAULT ? dflt
+              : from == ARG_BY_NAME ? ie_kwhash_value(c, kwh, m->pnames[k]) : -1;
+      if (a >= 0 && !(p->obj_elem_may_nil & NF_EL_HOLDS) && nf_elem(f, a, 0)) nf_elem_add(f, &p->obj_elem_may_nil, NF_EL_HOLDS);
+      if (a >= 0 && (p->obj_elem_may_nil & NF_EL_STORED)) nf_elem_mark_back(f, a, 0);
+    }
+    if (!nf_open(p->obj_may_nil) || !nil_fact_tracked(p->type)) continue;
+    int why;
     if (from == ARG_NODE) {
       int a = layout_plain_arg(c, m, av, &L, k);
       why = a < 0 ? NFW_OPAQUE : nf_expr(f, a);
@@ -1011,7 +1393,12 @@ static void nf_bind_block(NF *f, int id, int blk, int mi, int **yields, int *nyi
                   sp_streq(cn, "define_method") || sp_streq(cn, "define_singleton_method") ||
                   sp_streq(cn, "instance_exec") || sp_streq(cn, "class_exec") ||
                   sp_streq(cn, "module_exec") || sp_streq(cn, "to_proc"))) all = 1;
-  else return;   /* a builtin iteration: its elements (see the header) */
+  else {
+    /* a builtin iteration: its elements, where they can be nil */
+    nf_bind_elems(f, id, blk);
+    return;
+  }
+  if (!all && acc < 0) nf_bind_yield_elems(f, id, blk, mi, from_recv, yields, nyields);
   int bp = nt_ref(nt, blk, "parameters");
   if (bp >= 0 && nt_kind(nt, bp) == NK_BlockParametersNode) {
     int pn = nt_ref(nt, bp, "parameters");
@@ -1134,6 +1521,9 @@ static void nf_calls(NF *f, int **yields, int *nyields) {
       if (comp_writer_in_chain(c, ty_object_class(c->ntype[r]), base, &dc) && dc >= 0) {
         char ivn[260]; snprintf(ivn, sizeof ivn, "@%s", base);
         nf_ivar_write(f, dc, ivn, nf_expr(f, av[0]));
+        /* the ivar and the written Array are one Array */
+        if (nf_elem(f, av[0], 0)) (void)nf_elem_ivar_op(f, dc, ivn, NF_EL_HOLDS);
+        if (nf_elem_ivar_op(f, dc, ivn, 0) & NF_EL_STORED) nf_elem_mark_back(f, av[0], 0);
       }
     }
     if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode) nf_bind_block(f, id, blk, mi, yields, nyields);
@@ -1228,6 +1618,7 @@ void an_nil_facts(Compiler *c) {
   f.c = c; f.nt = nt;
   f.par = du_parent_map(nt);
   f.memo = calloc((size_t)nt->count + 1, 1);
+  f.ememo = calloc((size_t)nt->count + 1, 1);
   f.def_mi = malloc(sizeof(int) * ((size_t)nt->count + 1));
   f.yield_nil = calloc((size_t)c->nscopes + 1, sizeof *f.yield_nil);
   f.byname = malloc(sizeof(int) * ((size_t)c->nscopes + 1));
@@ -1243,12 +1634,19 @@ void an_nil_facts(Compiler *c) {
   f.kid_to = malloc(sizeof(int) * ((size_t)nedges + 1));
   f.dfs = malloc(sizeof(int) * ((size_t)c->nclasses + 1));
   f.seen = calloc((size_t)c->nclasses + 1, sizeof *f.seen);
-  if (!f.kid_head || !f.kid_next || !f.kid_to || !f.dfs || !f.seen) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  f.mod = calloc((size_t)c->nclasses + 1, 1);
+  if (!f.kid_head || !f.kid_next || !f.kid_to || !f.dfs || !f.seen || !f.mod) {
+    fprintf(stderr, "spinel: out of memory\n"); exit(1);
+  }
   for (int k = 0; k < c->nclasses; k++) f.kid_head[k] = -1;
   for (int k = 0, e = 0; k < c->nclasses; k++) {
     int ups[1 + 64], nup = 0;
     if (c->classes[k].parent >= 0) ups[nup++] = c->classes[k].parent;
-    for (int m = 0; m < c->classes[k].nincluded_mods && nup < 65; m++) ups[nup++] = c->classes[k].included_mods[m];
+    for (int m = 0; m < c->classes[k].nincluded_mods && nup < 65; m++) {
+      int im = c->classes[k].included_mods[m];
+      if (im >= 0 && im < c->nclasses) f.mod[im] = 1;
+      ups[nup++] = im;
+    }
     for (int u = 0; u < nup; u++) {
       if (ups[u] < 0 || ups[u] >= c->nclasses || ups[u] == k) continue;
       f.kid_to[e] = k; f.kid_next[e] = f.kid_head[ups[u]]; f.kid_head[ups[u]] = e; e++;
@@ -1257,7 +1655,7 @@ void an_nil_facts(Compiler *c) {
   f.pl_mi = malloc(sizeof(int) * ((size_t)nt->count + 1));
   f.pl_owner = calloc((size_t)nt->count + 1, sizeof *f.pl_owner);
   f.pl_disp = calloc((size_t)nt->count + 1, 1);
-  if (!f.par || !f.memo || !f.def_mi || !f.pl_mi || !f.pl_owner || !f.pl_disp || !f.yield_nil || !f.byname) {
+  if (!f.par || !f.memo || !f.ememo || !f.def_mi || !f.pl_mi || !f.pl_owner || !f.pl_disp || !f.yield_nil || !f.byname) {
     fprintf(stderr, "spinel: out of memory\n"); exit(1);
   }
   for (int k = 0; k < nt->count; k++) { f.def_mi[k] = -1; f.pl_mi[k] = -2; }
@@ -1295,7 +1693,7 @@ void an_nil_facts(Compiler *c) {
     int unseen = mi > 0 && m->def_node >= 0 && nf_unseen_callers(&f, m);
     /* a block from a caller not seen: a dynamic call, a proc-form clone's */
     if (unseen || m->is_proc_form || m->is_lowered_yield) nf_set(&f, &f.yield_nil[mi], NFW_CALLER);
-    for (int k = 0; k < m->nlocals; k++) m->locals[k].obj_may_nil = 0;
+    for (int k = 0; k < m->nlocals; k++) m->locals[k].obj_may_nil = m->locals[k].obj_elem_may_nil = 0;
     for (int k = 0; k < m->nlocals; k++) {
       LocalVar *lv = &m->locals[k];
       if (!nil_fact_tracked(lv->type)) continue;
@@ -1304,8 +1702,8 @@ void an_nil_facts(Compiler *c) {
       if (lv->or_written && !lv->is_param && !lv->is_block_param) nf_set(&f, &lv->obj_may_nil, NFW_UNSET);
     }
   }
-  for (int g = 0; g < c->ngvars; g++) c->gvars[g].obj_may_nil = 0;
-  for (int k = 0; k < c->nconsts; k++) c->consts[k].obj_may_nil = 0;
+  for (int g = 0; g < c->ngvars; g++) c->gvars[g].obj_may_nil = c->gvars[g].obj_elem_may_nil = 0;
+  for (int k = 0; k < c->nconsts; k++) c->consts[k].obj_may_nil = c->consts[k].obj_elem_may_nil = 0;
   /* a read the definite-assignment walk finds can run before any write */
   {
     static const NodeKind rk[] = { NK_LocalVariableReadNode, NK_LocalVariableAndWriteNode,
@@ -1342,15 +1740,24 @@ void an_nil_facts(Compiler *c) {
     f.changed = 0;
     f.round = (int)round;
     memset(f.memo, 0, (size_t)nt->count + 1);
+    memset(f.ememo, 0, (size_t)nt->count + 1);
     nf_writes(&f);
+    nf_elem_writes(&f);
     nf_calls(&f, yields, nyields);
     nf_returns(&f, rets, nrets);
     if (!f.changed) break;
   }
   /* the node facts, from the settled slots */
   memset(f.memo, 0, (size_t)nt->count + 1);
+  memset(f.ememo, 0, (size_t)nt->count + 1);
   f.round++;
   for (int id = 0; id < nt->count; id++) (void)nf_expr(&f, id);
+  /* the element facts, from the same settled slots */
+  free(c->nil_elem_fact);
+  c->nil_elem_fact = calloc((size_t)nt->count + 1, 1);
+  if (!c->nil_elem_fact) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int id = 0; id < nt->count; id++)
+    if (nf_elem_tracked(c->ntype[id])) c->nil_elem_fact[id] = (unsigned char)(nf_elem(&f, id, 0) != 0);
   free(c->nil_fact);
   c->nil_fact = f.memo;
   c->nil_fact_n = nt->count;
@@ -1358,17 +1765,25 @@ void an_nil_facts(Compiler *c) {
   for (int k = 0; k < c->nclasses; k++) {
     ClassInfo *ci = &c->classes[k];
     free(ci->ivar_obj_may_nil);
+    free(ci->ivar_elem_may_nil);
     ci->ivar_obj_may_nil = calloc((size_t)ci->nivars + 1, 1);
+    ci->ivar_elem_may_nil = calloc((size_t)ci->nivars + 1, 1);
+    if (!ci->ivar_obj_may_nil || !ci->ivar_elem_may_nil) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
     ci->n_ivar_obj_may_nil = ci->nivars;
     for (int i = 0; i < ci->nivars; i++)
       ci->ivar_obj_may_nil[i] = (unsigned char)(nil_fact_tracked(ci->ivar_types[i]) && nf_ivar(&f, k, ci->ivars[i]) != NFW_NONE);
+    /* the element flag a read in k's methods takes */
+    for (int i = 0; i < ci->nivars; i++)
+      ci->ivar_elem_may_nil[i] = (unsigned char)(nf_elem_tracked(ci->ivar_types[i]) &&
+                                                 nf_elem_ivar_op(&f, k, ci->ivars[i], 0));
   }
   nf_free_lists(c, yields, nyields);
   nf_free_lists(c, rets, nrets);
   for (int k = 0; k < f.iv_cap; k++) free((char *)f.iv[k].name);
+  free(f.ememo);
   free(f.par); free(f.dp.pos); free(f.dp.done); free(f.def_mi); free(f.iv); free(f.dyn); free(f.rg);
   free(f.pl_mi); free(f.pl_owner); free(f.pl_disp); free(f.yield_nil); free(f.byname);
-  free(f.kid_head); free(f.kid_next); free(f.kid_to); free(f.dfs); free(f.seen);
+  free(f.kid_head); free(f.kid_next); free(f.kid_to); free(f.dfs); free(f.seen); free(f.mod);
 }
 
 int nil_fact_tracked(TyKind t) {
@@ -1389,7 +1804,7 @@ int nil_fact_why(const Compiler *c, int node) {
 }
 
 const char *nil_fact_why_name(int why) {
-  static const char *const names[] = { "none", "nil", "no-else", "safe-nav", "unset", "elem",
+  static const char *const names[] = { "none", "nil", "no-else", "safe-nav", "unset", "elem-nil", "elem",
     "global", "ivar", "caller", "opaque", "guarded" };
   return why >= 0 && why < (int)(sizeof names / sizeof *names) ? names[why] : "?";
 }
@@ -1400,4 +1815,8 @@ int nil_fact_ivar(const Compiler *c, int cid, const char *ivn) {
   for (int i = 0; i < ci->n_ivar_obj_may_nil && i < ci->nivars; i++)
     if (sp_streq(ci->ivars[i], ivn)) return ci->ivar_obj_may_nil[i];
   return 1;
+}
+
+int nil_elem_fact_node(const Compiler *c, int node) {
+  return node >= 0 && c->nil_elem_fact && node < c->nil_fact_n && c->nil_elem_fact[node];
 }

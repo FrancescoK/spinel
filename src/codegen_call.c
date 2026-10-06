@@ -19046,6 +19046,14 @@ static void emit_nil_target_head(Compiler *c, int id, Buf *b, const char *lead, 
   int r = nt_ref(nt, id, "receiver");
   char rtext[32] = "";
   *mark = g_n_argov;
+  /* A temp is rooted when something that runs after it may allocate: an
+     argument, or a block the call runs. The test does not allocate, and a
+     runtime method roots the receiver it is handed (as the String arms'
+     own nil guard leaves an unrooted receiver alone). */
+  int later_alloc = nt_ref(nt, id, "block") >= 0;
+  int a = nt_ref(nt, id, "arguments"), an = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+  for (int i = 0; i < an && !later_alloc; i++) later_alloc = operand_may_allocate(c, av[i]);
   for (int i = 0; i < n; i++) {
     Buf ob, op;
     /* not fresh: ty[i] declares the temp, and a fresh String (#7580) renders as the String
@@ -19056,8 +19064,8 @@ static void emit_nil_target_head(Compiler *c, int id, Buf *b, const char *lead, 
     buf_puts(b, lead);
     emit_ctype(c, ty[i], b);
     buf_printf(b, " _t%d = %s;", t, ob.p ? ob.p : default_value_from_compiler(c, ty[i]));
-    if (ty[i] == TY_POLY) buf_printf(b, " SP_GC_ROOT_RBVAL(_t%d);", t);
-    else if (needs_root(ty[i])) buf_printf(b, " SP_GC_ROOT(_t%d);", t);
+    if (later_alloc && ty[i] == TY_POLY) buf_printf(b, " SP_GC_ROOT_RBVAL(_t%d);", t);
+    else if (later_alloc && needs_root(ty[i])) buf_printf(b, " SP_GC_ROOT(_t%d);", t);
     buf_puts(b, *lead ? "\n" : " ");
     free(ob.p); free(op.p);
     view_bind(node[i], "_t%d", t);
@@ -19148,11 +19156,40 @@ static int emit_nil_target_cold(Compiler *c, int id, Buf *b) {
   return ok;
 }
 
+/* A String element read that can miss is tested by the String arms
+   themselves (recv_may_be_sentinel, emit_scalar_recv_arms), with the same
+   NoMethodError, when the call goes through them. The call is emitted
+   with its receiver seen as one its own guard may test (VR_NIL_TESTED 3);
+   the guard marks it taken (4) as it writes the test, and that text
+   stands for the arm. A call that took another path (an enumerator,
+   another emitter) has none: its text is dropped and the head goes ahead
+   as for any call. `stmt` emits it as a statement at `indent`. */
+static int emit_nil_target_own(Compiler *c, int id, Buf *b, int stmt, int indent) {
+  int r = nt_ref(c->nt, id, "receiver");
+  if (!c->nil_tested || comp_ntype(c, r) != TY_STRING || !recv_may_be_sentinel(c, r)) return 0;
+  size_t pre0 = g_pre ? g_pre->len : 0;
+  int sv_tmp = g_tmp;
+  int vt = view_push_repr(c, r, VR_NIL_TESTED, 3);
+  Buf cb; memset(&cb, 0, sizeof cb);
+  if (stmt) emit_stmt_inner(c, id, &cb, indent);
+  else emit_call_held(c, id, &cb);
+  int ok = c->nil_tested[r] == 4;
+  view_pop(c, vt);
+  if (ok) buf_puts(b, cb.p ? cb.p : "");
+  else {
+    if (g_pre) { g_pre->len = pre0; if (g_pre->p) g_pre->p[pre0] = 0; }
+    g_tmp = sv_tmp;
+  }
+  free(cb.p);
+  return ok;
+}
+
 /* Call id in value position, behind its nil arm. 1 when it emitted. */
 static int emit_nil_target_call(Compiler *c, int id, Buf *b) {
   if (cplan_nil(c, id) != CN_RAISE) return 0;
   if (g_plan_check) cplan_served("nil-target");
   if (emit_nil_target_cold(c, id, b)) return 1;
+  if (emit_nil_target_own(c, id, b, 0, 0)) return 1;
   Buf hb; memset(&hb, 0, sizeof hb);
   int mark;
   emit_nil_target_head(c, id, &hb, "", &mark);
@@ -19197,6 +19234,7 @@ static int emit_nil_target_call(Compiler *c, int id, Buf *b) {
 int emit_nil_target_stmt(Compiler *c, int id, Buf *b, int indent) {
   if (cplan_nil(c, id) != CN_RAISE) return 0;
   if (g_plan_check) cplan_served("nil-target");
+  if (emit_nil_target_own(c, id, b, 1, indent)) return 1;
   Buf *db = g_pre ? g_pre : b;
   Buf lb; memset(&lb, 0, sizeof lb);
   emit_indent(&lb, g_pre ? g_indent : indent);
@@ -19360,6 +19398,15 @@ static int ret_nilable_value(Compiler *c, int mi, int v, int depth) {
   return 0;
 }
 
+/* An element of an Array the program stores nil into or leaves a gap in
+   (the nil fact's NFW_ELEM_NIL): a block parameter an iteration over it
+   binds, an element read out of it, a value either flows into. No write of
+   the receiver's own slot shows that nil, so the slot tests below miss it,
+   and an Array that cannot hold one leaves its hot loops untested. */
+static int elem_nil_recv(Compiler *c, int recv) {
+  return nil_fact_why(c, recv) == NFW_ELEM_NIL;
+}
+
 int nil_recv_guard(Compiler *c, int id, int *recv_out) {
   const NodeTable *nt = c->nt;
   int recv = nt_ref(nt, id, "receiver");
@@ -19398,8 +19445,10 @@ int nil_recv_guard(Compiler *c, int id, int *recv_out) {
     if (comp_method_in_chain(c, rcid, nm, NULL) < 0 && !comp_reader_in_chain(c, rcid, nm, NULL) &&
         !nil_guard_writer(c, rcid, nm))
       return 0;
-    const CallPlan *rp = cplan_user(c, unwrap_parens(c, recv));
-    if (!rp || rp->mi < 0 || !method_ret_nilable(c, rp->mi, 0)) return 0;
+    if (!elem_nil_recv(c, unwrap_parens(c, recv))) {
+      const CallPlan *rp = cplan_user(c, unwrap_parens(c, recv));
+      if (!rp || rp->mi < 0 || !method_ret_nilable(c, rp->mi, 0)) return 0;
+    }
     *recv_out = recv;
     return 1;
   }
@@ -19408,7 +19457,8 @@ int nil_recv_guard(Compiler *c, int id, int *recv_out) {
   const char *ln = nt_str(nt, recv, "name");
   LocalVar *lv = sc && ln ? scope_local(sc, ln) : NULL;
   if (!lv || !ty_is_object(rt) || rr.kind == RK_VOBJ) return 0;
-  if (lv->is_param ? !lv->obj_nilable : !local_obj_nil_written(c, sc, ln, lv)) return 0;
+  if (!elem_nil_recv(c, recv) && (lv->is_param ? !lv->obj_nilable : !local_obj_nil_written(c, sc, ln, lv)))
+    return 0;
   int cid = ty_object_class(rt);
   if (comp_method_in_chain(c, cid, nm, NULL) < 0 && !comp_reader_in_chain(c, cid, nm, NULL) &&
       !nil_guard_writer(c, cid, nm))

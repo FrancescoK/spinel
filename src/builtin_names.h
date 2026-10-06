@@ -232,5 +232,10 @@ enum { ARRAY_ADD_NONE, ARRAY_ADD_CONCAT, ARRAY_ADD_INSERT, ARRAY_ADD_PREPEND };
 int array_unseen_add_kind(const char *n);
 
 int is_scan_name(const char *n); /* scan: a String's match iterator */
+int is_enumerator_with(const char *n); /* with_index with_object: an enumerator link */
+int is_lazy_name(const char *n);       /* lazy */
+int is_index_assign(const char *n);    /* []= */
+int is_concat_name(const char *n);     /* concat */
+int is_array_constructor(const char *recv, const char *meth); /* Array.new */
 
 #endif
