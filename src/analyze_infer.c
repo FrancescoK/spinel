@@ -801,6 +801,27 @@ int block_has_top_break(Compiler *c, int node) {
    the wrapper's setjmp in exactly the right C scope). Receiverless
    NON-methods (loop / catch / proc / lambda literals) run their own scopes
    and stay excluded, as does instance_exec/eval (handled inline). */
+/* `poly.upto(lim [, exclusive])` whose receiver may be a String at run
+   time: a limit that is a String or boxed, or the exclusive flag only
+   String#upto takes. Its own emitter tests the receiver's tag
+   (emit_poly_str_upto); with an Integer limit the Integer face keeps it. */
+int an_poly_str_upto(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver");
+  int a = nt_ref(nt, id, "arguments"), an = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+  if (!name || !is_upto_name(name) || recv < 0 || an < 1 || an > 2) return 0;
+  for (int i = 0; i < an; i++) {
+    NodeKind k = nt_kind(nt, av[i]);
+    if (k == NK_SplatNode || k == NK_KeywordHashNode || k == NK_BlockArgumentNode) return 0;
+  }
+  if (nt_kind(nt, nt_ref(nt, id, "block")) == NK_BlockArgumentNode) return 0;
+  if (infer_type(c, recv) != TY_POLY || an_user_defines_or_reads(c, name)) return 0;
+  TyKind lt = infer_type(c, av[0]);
+  return an == 2 || lt == TY_STRING || lt == TY_STRBUF || lt == TY_POLY || lt == TY_BIGINT;
+}
+
 int call_breaks(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, id);
@@ -6319,6 +6340,10 @@ static int infer_block_iter_call(Compiler *c, int id, const NodeTable *nt, const
       (sp_streq(name, "uniq") || sp_streq(name, "uniq!")) &&
       infer_type(c, recv) == TY_POLY)
     { *out = TY_POLY; return 1; }
+  /* a boxed upto whose limit can be a String (an_poly_str_upto) answers the
+     receiver boxed with a block, and boxed without one (a String's
+     Enumerator or an Integer's Range) */
+  if (an_poly_str_upto(c, id)) { *out = TY_POLY; return 1; }
   /* `poly.times { }` / `upto(n) { }` / `downto(n) { }` answer the receiver,
      which codegen unboxes to an sp_int before handing the call to the typed
      emitters. step is left out: a Float owns it too. */

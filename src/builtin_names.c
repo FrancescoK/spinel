@@ -400,6 +400,10 @@ int is_bounded_int_step(const char *n) {
   return sp_streq(n, "upto") || sp_streq(n, "downto");
 }
 
+int is_upto_name(const char *n) {
+  return sp_streq(n, "upto");
+}
+
 int is_add_sub(const char *n) {
   return sp_streq(n, "+") || sp_streq(n, "-");
 }
