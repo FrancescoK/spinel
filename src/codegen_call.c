@@ -6106,7 +6106,107 @@ static int emit_poly_str_prearm(Compiler *c, int id, int recv, const char *name,
    which adds nothing over the default already there, and where the slot the
    switch assigns is typed for something the builtin answer is not. */
 void emit_poly_enum_for(Compiler *c, const char *val, Buf *b);   /* defined at emit_call */
+/* The methods every object has, which take no block: a forwarder
+   (`def respond_to?(*, **, &) = target.respond_to?(*, **, &)`) hands them
+   its arguments as one splatted list. */
+static int universal_object_method(const char *name) {
+  static const char *const U[] = { "respond_to?", "is_a?", "kind_of?", "instance_of?",
+    "inspect", "to_s", "==", "!=", "eql?", "equal?", "hash", "nil?", "frozen?",
+    "class", "object_id", "===", NULL };
+  for (int k = 0; U[k]; k++) if (sp_streq(name, U[k])) return 1;
+  return 0;
+}
+/* an anonymous `**` / `&` handed on: no operand, or the local the
+   parser's desugar gave the anonymous parameter (`__anon_kwrest`, ...) */
+static int anon_forward_ref(const NodeTable *nt, int v) {
+  if (v < 0) return 1;
+  const char *nm = nt_kind(nt, v) == NK_LocalVariableReadNode ? nt_str(nt, v, "name") : NULL;
+  return nm && strncmp(nm, "__anon_", 7) == 0;
+}
+static int emit_poly_builtin_default_at(Compiler *c, int id, int recv, const char *name,
+                                        int argc, const int *argv, const int *atmp,
+                                        const TyKind *atmp_ty, TyKind ret, int tv, int tr,
+                                        int label, Buf *b);
+/* A lone splat (`*`, `*args`, the `...`/`(*, **, &)` forward) into one of
+   those methods, whose list length only the run time knows: the builtin
+   answer for each count the method can take, chosen by the list's length.
+   The elements stand in as fresh nodes bound to the list's slots, the call
+   read with them as its arguments; a `**` beside the splat (an anonymous
+   forward, empty for a method that takes no keywords) and the `&` are left
+   out of that reading. Any other length is CRuby's ArgumentError. */
+static int emit_poly_builtin_default_spread(Compiler *c, int id, int recv, const char *name,
+                                            int argc, const int *argv, const int *atmp,
+                                            TyKind ret, int tv, int tr, int label, Buf *b) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  if (!universal_object_method(name) || argc < 1 || argc > 2) return 0;
+  if (nt_kind(nt, argv[0]) != NK_SplatNode) return 0;
+  if (argc == 2) {
+    if (nt_kind(nt, argv[1]) != NK_KeywordHashNode) return 0;
+    int ne = 0; const int *el = nt_arr(nt, argv[1], "elements", &ne);
+    if (ne != 1 || nt_kind(nt, el[0]) != NK_AssocSplatNode || !anon_forward_ref(nt, nt_ref(nt, el[0], "value"))) return 0;
+  }
+  int blk = nt_ref(nt, id, "block");
+  if (blk >= 0 && (nt_kind(nt, blk) != NK_BlockArgumentNode || !anon_forward_ref(nt, nt_ref(nt, blk, "expression")))) return 0;
+  int sargs = nt_ref(nt, id, "arguments");
+  int el[2];
+  for (int k = 0; k < 2; k++) {
+    el[k] = nt_new_node(nt, "LocalVariableReadNode");
+    nt_node_set_str(nt, el[k], "name", "__spinel_splat_elem");
+  }
+  int an[3];
+  for (int n = 0; n < 3; n++) an[n] = nt_new_node(nt, "ArgumentsNode");
+  comp_grow_node_arrays(c);
+  for (int k = 0; k < 2; k++) c->ntype[el[k]] = TY_POLY;
+  nt_node_set_arr(nt, an[0], "arguments", NULL, 0);
+  for (int n = 1; n < 3; n++) nt_node_set_arr(nt, an[n], "arguments", el, n);
+  Buf arms; memset(&arms, 0, sizeof arms);
+  int any = 0;
+  for (int n = 0; n < 3; n++) {
+    /* the text conversions with no argument: the runtime's own answer for
+       the value (re-entered, the emission folds the empty forward) */
+    if (n == 0 && (sp_streq(name, "inspect") || sp_streq(name, "to_s")) &&
+        (ret == TY_POLY || ret == TY_STRING)) {
+      buf_printf(&arms, " if (_t%d->len == 0) { _t%d = %ssp_poly_%s(_t%d)%s; break; }", atmp[0], tr,
+                 ret == TY_POLY ? "sp_box_str(" : "", name, tv, ret == TY_POLY ? ")" : "");
+      any = 1;
+      continue;
+    }
+    int slot = g_n_argov;
+    for (int k = 0; k < n; k++) view_bind(el[k], "sp_PolyArray_get(_t%d, %d)", atmp[0], k);
+    nt_node_set_ref(nt, id, "arguments", an[n]);
+    nt_node_set_ref(nt, id, "block", -1);
+    int eatmp[2] = { atmp[0], atmp[0] };
+    TyKind ety[2] = { TY_POLY, TY_POLY };
+    Buf one; memset(&one, 0, sizeof one);
+    int ok = emit_poly_builtin_default_at(c, id, recv, name, n, n ? el : NULL, n ? eatmp : NULL,
+                                          n ? ety : NULL, ret, tv, tr, 0, &one);
+    nt_node_set_ref(nt, id, "arguments", sargs);
+    nt_node_set_ref(nt, id, "block", blk);
+    view_unbind(slot);
+    if (ok && one.p) {
+      buf_printf(&arms, " if (_t%d->len == %d) {%s }", atmp[0], n, one.p);
+      any = 1;
+    }
+    free(one.p);
+  }
+  if (!any) { free(arms.p); return 0; }
+  if (label) buf_puts(b, " default:");
+  buf_puts(b, arms.p);
+  buf_printf(b, " sp_raise_cls(\"ArgumentError\", sp_sprintf(\"wrong number of arguments (given %%lld) for %s\","
+                " (long long)_t%d->len)); break;", name, atmp[0]);
+  free(arms.p);
+  return 1;
+}
 int emit_poly_builtin_default(Compiler *c, int id, int recv, const char *name,
+                                     int argc, const int *argv, const int *atmp,
+                                     const TyKind *atmp_ty, TyKind ret, int tv, int tr,
+                                     int label, Buf *b) {
+  if (recv >= 0 && name && argc > 0 && atmp && nt_kind(c->nt, argv[0]) == NK_SplatNode &&
+      emit_poly_builtin_default_spread(c, id, recv, name, argc, argv, atmp, ret, tv, tr, label, b))
+    return 1;
+  return emit_poly_builtin_default_at(c, id, recv, name, argc, argv, atmp, atmp_ty, ret, tv, tr, label, b);
+}
+static int emit_poly_builtin_default_at(Compiler *c, int id, int recv, const char *name,
                                      int argc, const int *argv, const int *atmp,
                                      const TyKind *atmp_ty, TyKind ret, int tv, int tr,
                                      int label, Buf *b) {
