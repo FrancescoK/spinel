@@ -30731,13 +30731,18 @@ static int sa_mutations_run_once(const NodeTable *nt, int n) {
    statements holding every mutation site, each of which runs there and not
    again later. A copy it makes then has no later mutation to miss: the
    refusals are flow-insensitive, and a String changed before it is
-   copied (`s << "b"; $g = (t = s)`) answers the same through both names. */
+   copied (`s << "b"; $g = (t = s)`) answers the same through both names,
+   unless the program asks either name's identity (is_identity_query). */
 static int sa_after_all_mutations(Compiler *c, SaOrder *o, int w) {
   const NodeTable *nt = c->nt;
   if (!o->built) {
     o->built = 1;
-    int total = 0;
-    NT_FOREACH_KIND(nt, NK_CallNode, u) total += sa_mutation_site(nt, u);
+    int total = 0, identity = 0;
+    NT_FOREACH_KIND(nt, NK_CallNode, u) {
+      const char *un = nt_str(nt, u, "name");
+      total += sa_mutation_site(nt, u);
+      identity |= un && is_identity_query(un);
+    }
     int root = -1;
     for (int id = 0; id < nt->count && root < 0; id++)
       if (nt_type(nt, id) && sp_streq(nt_type(nt, id), "ProgramNode")) root = id;
@@ -30745,7 +30750,10 @@ static int sa_after_all_mutations(Compiler *c, SaOrder *o, int w) {
     int bn = 0; const int *bb = ps >= 0 ? nt_arr(nt, ps, "body", &bn) : NULL;
     int seen = 0, i = 0;
     for (; i < bn && seen < total; i++) seen += sa_mutations_run_once(nt, bb[i]);
-    if (seen == total && i < bn) {
+    /* a later `equal?`, `object_id` or `frozen?` would still tell the copy
+       from the String, so a program that asks any of them anywhere keeps
+       the refusal */
+    if (!identity && seen == total && i < bn) {
       o->after_all = calloc((size_t)nt->count, 1);
       if (!o->after_all) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
       for (; i < bn; i++) {
