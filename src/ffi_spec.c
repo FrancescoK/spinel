@@ -59,6 +59,11 @@ static const struct { const char *kind; const char *c_type; int width; } FFI_SCA
   { "u64", "uint64_t", 8 }, { "i64", "int64_t", 8 },
 };
 
+int ffi_spec_is_str(const char *spec) {
+  const FfiSpecInfo *info = ffi_spec_lookup(spec);
+  return info && info->ty == TY_STRING;
+}
+
 const char *ffi_scalar_ctype(const char *kind) {
   if (!kind) return NULL;
   for (unsigned i = 0; i < sizeof(FFI_SCALAR_KINDS) / sizeof(FFI_SCALAR_KINDS[0]); i++)
