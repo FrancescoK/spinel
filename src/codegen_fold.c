@@ -9524,7 +9524,7 @@ int gather_lead_placed(Compiler *c, Scope *m, const int *argv, int argc, int i) 
     NodeKind ak = nt_kind(nt, argv[k]);
     if (ak == NK_SplatNode || ak == NK_BlockArgumentNode || !m->pnames[k] ||
         k == m->rest_idx || k == m->kwrest_idx || callee_param_is_declared_kwarg(c, m, m->pnames[k])) return 0;
-    if (nt_type(nt, argv[k]) && sp_streq(nt_type(nt, argv[k]), "ForwardingArgumentsNode")) return 0;
+    if (nt_kind(nt, argv[k]) == NK_ForwardingArgumentsNode) return 0;
     if (m->pdefault && m->pdefault[k] >= 0) nopt++;
   }
   if (!nopt) return 1;
@@ -9614,7 +9614,7 @@ int arg_layout_param_node(Compiler *c, Scope *m, int call, int i, int *spread) {
   if (argc > 0 && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode) { kwh = argv[argc - 1]; pos_argc--; }
   for (int k = 0; k < pos_argc; k++) {
     NodeKind ak = nt_kind(nt, argv[k]);
-    if (nt_type(nt, argv[k]) && sp_streq(nt_type(nt, argv[k]), "ForwardingArgumentsNode")) return -1;
+    if (ak == NK_ForwardingArgumentsNode) return -1;
     if (ak == NK_SplatNode) { nsplat++; splat = argv[k]; }
   }
   /* plain arguments into required positionals alone: the one layout there is */
@@ -9994,8 +9994,7 @@ void emit_args_filled_argv(Compiler *c, int callee_idx, const int *argv, int arg
      Forward the enclosing `def foo(...)` method's synthesized __fwd_* params
      directly to the callee, positionally (#1288). The compiler already knows
      foo's args; no rest array / splat is materialized. */
-  if (argc == 1 && argv && nt_type(nt, argv[0]) &&
-      sp_streq(nt_type(nt, argv[0]), "ForwardingArgumentsNode")) {
+  if (argc == 1 && argv && nt_kind(nt, argv[0]) == NK_ForwardingArgumentsNode) {
     Scope *encl = comp_scope_of(c, argv[0]);
     /* A leading concrete param before `...` (`def f(a, ...)`) is NOT forwarded:
        the forward carries only the __fwd_ slots (and synthesized keyword
@@ -10817,7 +10816,7 @@ void emit_dispatch(Compiler *c, int cid, const char *name,
   int judged_d = pm && (argv || argc == 0);
   for (int k = 0; k < argc && argv && judged_d; k++) {
     const char *at = nt_type(nt, argv[k]);
-    if (at && (sp_streq(at, "ForwardingArgumentsNode") || sp_streq(at, "BlockArgumentNode")))
+    if (at && (nt_kind(nt, argv[k]) == NK_ForwardingArgumentsNode || sp_streq(at, "BlockArgumentNode")))
       judged_d = 0;
   }
   for (int i = 0; judged_d && i < pm->nparams; i++)
@@ -10827,8 +10826,7 @@ void emit_dispatch(Compiler *c, int cid, const char *name,
      __fwd_* params positionally (#1288), same as the emit_args_filled path. */
   Scope *fwd_encl = NULL;
   int fwd_base_d = 0;
-  if (argc == 1 && argv && nt_type(nt, argv[0]) &&
-      sp_streq(nt_type(nt, argv[0]), "ForwardingArgumentsNode")) {
+  if (argc == 1 && argv && nt_kind(nt, argv[0]) == NK_ForwardingArgumentsNode) {
     fwd_encl = comp_scope_of(c, argv[0]);
     /* skip the enclosing method's leading concrete params (`def f(a, ...)`) --
        only the __fwd_ slots are forwarded. */
