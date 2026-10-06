@@ -10973,9 +10973,10 @@ void emit_exc_new_no_init(Compiler *c, int id, int ci, int argc, const int *argv
    when it is an Array, else x nils, as Array.new(n) builds. 0 for any other
    x, which the size arm takes. */
 static int emit_array_new_from_value(Compiler *c, int arg, Buf *b) {
-  TyKind at = comp_ntype(c, arg);
+  Repr ar = repr_of(c, arg);
+  TyKind at = ar.as_ty;
   if (array_new_copies(at)) {
-    buf_printf(b, "sp_%sArray_dup(", at == TY_POLY_ARRAY ? "Poly" : array_kind(at));
+    buf_printf(b, "sp_%sArray_dup(", ar.elem == TY_POLY ? "Poly" : array_kind(at));
     emit_expr(c, arg, b);
     buf_puts(b, ")");
     return 1;
@@ -11452,10 +11453,11 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
     }
     if (cn && sp_streq(cn, "Random")) {
       if (argc >= 1) {
-        TyKind a0t = comp_ntype(c, argv[0]);
+        Repr a0r = repr_of(c, argv[0]);
+        TyKind a0t = a0r.as_ty;
         /* A Bignum seed (Random.new(2**70)) folds to its low 64 bits --
            the PRNG state only holds 64 bits of seed anyway. */
-        int is_big = a0t == TY_BIGINT;
+        int is_big = a0r.big;
         /* A Float seed truncates to an integer (CRuby's Float#to_i); a plain
            (sp_int) cast is UB when out of range (Random.new(1e300)), giving
            a non-reproducible seed. sp_Random_new_float truncates in range and
@@ -11636,13 +11638,14 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
     if (cn && sp_streq(cn, "Array") && nt_ref(nt, id, "block") >= 0) {
       /* Array.new(n) { |i| body } / Array.new(0) { body } */
       int blk = nt_ref(nt, id, "block");
-      TyKind at = comp_ntype(c, id);
+      Repr ar = repr_of(c, id);
+      TyKind at = ar.as_ty;
       /* A narrowed pointer array (an int-array table, an object array) is an
          sp_PtrArray of unboxed element pointers. Without this arm the slot
          was declared sp_PtrArray * and handed an sp_PolyArray * -- so the
          narrowing that makes the nested int table cheap could not be used at
          all, and every read of it stayed boxed. */
-      const char *k = (at == TY_POLY_ARRAY) ? "Poly"
+      const char *k = (ar.elem == TY_POLY) ? "Poly"
                     : ty_is_ptr_array(at)   ? "Ptr" : array_kind(at);
       if (!k) k = "Poly";
       int tn = ++g_tmp, tr = ++g_tmp, ti = ++g_tmp;
@@ -11685,7 +11688,7 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       if (an_next) {
         anv = ++g_tmp;
         snprintf(anbuf, sizeof anbuf, "_t%d", anv);
-        TyKind et = sp_streq(k, "Poly") ? TY_POLY : ty_array_elem(at);
+        TyKind et = sp_streq(k, "Poly") ? TY_POLY : ar.elem;
         emit_indent(g_pre, g_indent);
         if (sp_streq(k, "Ptr")) { et = TY_UNKNOWN; buf_printf(g_pre, "void *_t%d = NULL;\n", anv); }
         else if (et == TY_POLY) buf_printf(g_pre, "sp_RbVal _t%d = sp_box_nil();\n", anv);
@@ -11754,8 +11757,9 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
     }
     if (cn && sp_streq(cn, "Array") && argc == 2) {
       /* Array.new(n, v) -> n copies of v */
-      TyKind at = comp_ntype(c, id);
-      const char *k = (at == TY_POLY_ARRAY) ? "Poly" : array_kind(at);
+      Repr ar = repr_of(c, id);
+      TyKind at = ar.as_ty;
+      const char *k = (ar.elem == TY_POLY) ? "Poly" : array_kind(at);
       if (k) {
         int tn = ++g_tmp, tv = ++g_tmp, tr = ++g_tmp, ti = ++g_tmp;
         /* The size goes into an `sp_int` temp; coerce a poly size expression
@@ -11768,7 +11772,7 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "if (_t%d < 0) sp_raise_cls(\"ArgumentError\", \"negative array size\");\n", tn);
         emit_indent(g_pre, g_indent);
-        if (at == TY_POLY_ARRAY) {
+        if (ar.elem == TY_POLY) {
           buf_printf(g_pre, "sp_RbVal _t%d = ", tv);
           TyKind fvt = repr_of(c, argv[1]).as_ty;
           const char *fvty = nt_type(nt, argv[1]);
@@ -11785,7 +11789,7 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
           else buf_puts(g_pre, vb.p ? vb.p : "sp_box_nil()");
         }
         else {
-          emit_ctype(c, ty_array_elem(at), g_pre);
+          emit_ctype(c, ar.elem, g_pre);
           buf_printf(g_pre, " _t%d = ", tv); buf_puts(g_pre, vb.p ? vb.p : "");
         }
         buf_puts(g_pre, ";\n");
@@ -13077,7 +13081,8 @@ TyKind emit_splice_to_ary_src(Compiler *c, int rhs_node, TyKind rhs_ty,
 void emit_array_splice(Compiler *c, int id, int recv, TyKind rt,
                        int start_node, int len_node, int range_node,
                        int rhs_node, Buf *b) {
-  TyKind rhs_ty = comp_ntype(c, rhs_node);
+  Repr rhsr = repr_of(c, rhs_node);
+  TyKind rhs_ty = rhsr.as_ty;
   int rhs_is_arr = ty_is_array(rhs_ty);
   /* An empty array literal `[]` infers TY_UNKNOWN; treat it as a zero-element
      source (the splice degenerates to a pure delete of the [start,len) span). */
@@ -13141,8 +13146,8 @@ void emit_array_splice(Compiler *c, int id, int recv, TyKind rt,
   else if (rhs_is_arr) {
     /* source array must share the receiver's element type; a poly/mismatched
        source would mix types into a flat typed array (reject loudly). */
-    TyKind rhs_elem = ty_array_elem(rhs_ty);
-    if (rhs_ty == TY_POLY_ARRAY) {
+    TyKind rhs_elem = rhsr.elem;
+    if (rhsr.elem == TY_POLY) {
       /* a poly array is re-laid element by element into _ca (a value of
          another kind is refused at run time); the array itself is the
          yielded value */
@@ -13578,7 +13583,8 @@ static int emit_array_arith_call(Compiler *c, int id, Buf *b) {
       return 1;
     }
     if (eff_res == TY_FLOAT && sp_streq(name, "**") && rt != TY_TIME) {
-      TyKind at0 = argc > 0 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
+      Repr a0r = repr_of(c, argc > 0 ? argv[0] : -1);
+      TyKind at0 = a0r.as_ty;
       /* sp_float_pow raises loudly where CRuby would promote to a Complex
          (negative base, fractional exponent) instead of returning NaN */
       buf_puts(b, "sp_float_pow(");
@@ -13587,13 +13593,14 @@ static int emit_array_arith_call(Compiler *c, int id, Buf *b) {
       else emit_coerce(c, recv, TY_FLOAT, CO_HOLD, "the receiver of a Float `**`", b);
       buf_puts(b, ", ");
       if (at0 == TY_INT) { buf_puts(b, "(double)("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-      else if (at0 == TY_BIGINT) { buf_puts(b, "sp_bigint_to_double("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      else if (a0r.big) { buf_puts(b, "sp_bigint_to_double("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
       else emit_coerce(c, argv[0], TY_FLOAT, CO_CONVERT, "a Float operand", b);
       buf_puts(b, ")");
       return 1;
     }
     if (eff_res == TY_FLOAT && sp_streq(name, "%") && rt != TY_TIME && argc == 1) {
-      TyKind at0 = comp_ntype(c, argv[0]);
+      Repr a0r = repr_of(c, argv[0]);
+      TyKind at0 = a0r.as_ty;
       /* an integer zero divisor raises (5.0 % 0), a float one is NaN (5.0 % 0.0):
          route the int-divisor form through the checking helper. */
       buf_puts(b, at0 == TY_INT ? "sp_fmod_intdiv(" : "sp_fmod(");
@@ -13601,7 +13608,7 @@ static int emit_array_arith_call(Compiler *c, int id, Buf *b) {
       else if (rt == TY_BIGINT) { buf_puts(b, "sp_bigint_to_double("); emit_expr(c, recv, b); buf_puts(b, ")"); }
       else emit_coerce(c, recv, TY_FLOAT, CO_HOLD, "the receiver of a Float `%`", b);
       buf_puts(b, ", ");
-      if (at0 == TY_BIGINT) { buf_puts(b, "sp_bigint_to_double("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      if (a0r.big) { buf_puts(b, "sp_bigint_to_double("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
       else emit_coerce(c, argv[0], TY_FLOAT, CO_CONVERT, "a Float operand", b);
       buf_puts(b, ")");
       return 1;
@@ -14414,7 +14421,7 @@ int rt_probe_answer(Compiler *c, int id, int *yes) {
   if (!probes || pn <= 0) return 0;
   *yes = 0;
   for (int p = 0; p < pn; p++)
-    if (comp_ntype(c, probes[p]) != TY_UNKNOWN) { *yes = 1; break; }
+    if (!repr_of(c, probes[p]).untyped) { *yes = 1; break; }
   return 1;
 }
 /* A receiver whose class defines respond_to? itself answers through it: the
@@ -14706,7 +14713,8 @@ int const_name_is_wrong(const char *s) {
    through sp_num_to_f, which raises TypeError for nil / String / non-numeric
    rather than the lenient sp_poly_to_f's 0.0 (or a String->double CC error). */
 void emit_math_arg(Compiler *c, int node, Buf *out) {
-  TyKind t = comp_ntype(c, node);
+  Repr tr = repr_of(c, node);
+  TyKind t = tr.as_ty;
   if (t == TY_INT || t == TY_FLOAT) {
     buf_puts(out, "(sp_float)("); emit_expr(c, node, out); buf_puts(out, ")");
     return;
@@ -14716,7 +14724,7 @@ void emit_math_arg(Compiler *c, int node, Buf *out) {
     return;
   }
   /* a Bignum converts to its exact double, not a truncated machine int (#2591) */
-  if (t == TY_BIGINT) {
+  if (tr.big) {
     buf_puts(out, "sp_bigint_to_double("); emit_expr(c, node, out); buf_puts(out, ")");
     return;
   }
@@ -16065,7 +16073,8 @@ int emit_arg_type_guards(Compiler *c, int id, Buf *b) {
   {
     int ir = nt_ref(nt, id, "receiver");
     const char *inm = nt_str(nt, id, "name");
-    TyKind irt = ir >= 0 ? comp_ntype(c, ir) : TY_UNKNOWN;
+    Repr irr = repr_of(c, ir);
+    TyKind irt = irr.as_ty;
     const char *badc = array_index_bad_class(c, id);
     {
       if (badc) {
@@ -16075,10 +16084,10 @@ int emit_arg_type_guards(Compiler *c, int id, Buf *b) {
            receiver raises FrozenError however ill-typed the index is
            (core/array/element_set_spec: `a[:foo] = 1` on a frozen array). */
         int mutates = sp_streq(inm, "[]=") || sp_streq(inm, "insert");
-        const char *bid = irt == TY_INT_ARRAY   ? "SP_BUILTIN_INT_ARRAY" :
-                          irt == TY_FLOAT_ARRAY ? "SP_BUILTIN_FLT_ARRAY" :
-                          irt == TY_STR_ARRAY   ? "SP_BUILTIN_STR_ARRAY" :
-                          irt == TY_POLY_ARRAY  ? "SP_BUILTIN_POLY_ARRAY" : NULL;
+        const char *bid = irr.elem == TY_INT   ? "SP_BUILTIN_INT_ARRAY" :
+                          irr.elem == TY_FLOAT ? "SP_BUILTIN_FLT_ARRAY" :
+                          irr.elem == TY_STRING   ? "SP_BUILTIN_STR_ARRAY" :
+                          irr.elem == TY_POLY  ? "SP_BUILTIN_POLY_ARRAY" : NULL;
         if (mutates && bid) {
           int tf5 = ++g_tmp;
           buf_printf(b, "({ "); emit_ctype(c, irt, b);
@@ -16119,13 +16128,13 @@ int emit_arg_type_guards(Compiler *c, int id, Buf *b) {
     const char *sn2 = nt_str(nt, id, "name");
     int sa2 = nt_ref(nt, id, "arguments"); int sc3 = 0;
     const int *sv2 = sa2 >= 0 ? nt_arr(nt, sa2, "arguments", &sc3) : NULL;
-    TyKind srt = sr >= 0 ? comp_ntype(c, sr) : TY_UNKNOWN;
+    Repr srr = repr_of(c, sr);
     if (sr >= 0 && sn2 && sp_streq(sn2, "step") && sc3 == 1 && sv2 && sv2[0] >= 0 &&
-        (srt == TY_FLOAT_RANGE || srt == TY_STR_RANGE) && !user_defines_or_reads(c, sn2)) {
+        (srr.range == TY_FLOAT || srr.range == TY_STRING) && !user_defines_or_reads(c, sn2)) {
       TyKind st = comp_ntype(c, sv2[0]);
-      const char *into = srt == TY_FLOAT_RANGE ? "Float" :
+      const char *into = srr.range == TY_FLOAT ? "Float" :
                          (st == TY_STRING || st == TY_STRBUF) ? "Integer" : "String";
-      int conv = srt == TY_STR_RANGE;
+      int conv = srr.range == TY_STRING;
       if (emit_range_step_bad_stride(c, id, sr, sv2[0], into, conv, b)) return 1;
     }
   }
@@ -16181,10 +16190,10 @@ int emit_arg_type_guards(Compiler *c, int id, Buf *b) {
       /* cover?(Range) is containment, not membership -- the one predicate that
          takes a Range operand (=== and include? answer false for one, which the
          boxed case-equality below already gives). */
-      { TyKind art3 = comp_ntype(c, rv2[0]);
-        if (sp_streq(rn2, "cover?") && (art3 == TY_FLOAT_RANGE || art3 == TY_RANGE)) {
+      { Repr ar3 = repr_of(c, rv2[0]);
+        if (sp_streq(rn2, "cover?") && (ar3.range == TY_FLOAT || ar3.range == TY_INT)) {
           int tA = ++g_tmp, tR = ++g_tmp;
-          const char *aty = art3 == TY_FLOAT_RANGE ? "sp_FloatRange" : "sp_Range";
+          const char *aty = ar3.range == TY_FLOAT ? "sp_FloatRange" : "sp_Range";
           buf_printf(b, "({ %s _t%d = ", aty, tA); emit_expr(c, rv2[0], b);
           buf_printf(b, "; sp_Range _t%d = ", tR); emit_expr(c, rr2, b);
           /* Compare the largest value each range actually includes: an
@@ -16192,7 +16201,7 @@ int emit_arg_type_guards(Compiler *c, int id, Buf *b) {
              only approaches its bound and so compares the same. */
           /* a receiver or operand whose end was written as a Float compares
              that end (sp_range_cover_frange / _rng) */
-          if (art3 == TY_FLOAT_RANGE)
+          if (ar3.range == TY_FLOAT)
             buf_printf(b, "; sp_range_cover_frange(_t%d, _t%d); })", tR, tA);
           else
             buf_printf(b, "; sp_range_cover_rng(_t%d, _t%d); })", tR, tA);
