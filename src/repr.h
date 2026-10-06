@@ -220,6 +220,12 @@ int repr_str_class_shares(unsigned flags, int holders);
    slot that holds the handle the rule assigned. The analysis's loops and
    an emitter that needs only this bit ask it. */
 int repr_static_share(const Compiler *c, int node);
+/* Does write node `node` -- a local's, an ivar's, a global's or a class
+   variable's `=`, `||=` or `&&=` -- store into a slot that holds the
+   handle the rule assigned (that slot's Repr's `share`)? In value position
+   its value is then the handle, as the slot's read is (repr_of:
+   RS_HANDLE). */
+int repr_write_share(const Compiler *c, int node);
 /* a read such a slot can be: a global's, a constant's (bare or `A::B`), a
    class variable's */
 int repr_static_read_kind(NodeKind k);

@@ -93,6 +93,30 @@ int repr_nil_scalar(const Compiler *c, int node, TyKind t) {
   return r;
 }
 
+/* repr.h: the write's slot holds the rule's handle */
+int repr_write_share(const Compiler *c, int node) {
+  if (node < 0 || !c->share_strings) return 0;
+  Compiler *mc = (Compiler *)c;
+  const NodeTable *nt = c->nt;
+  NodeKind k = nt_kind(nt, node);
+  if (k == NK_LocalVariableWriteNode || k == NK_LocalVariableOrWriteNode || k == NK_LocalVariableAndWriteNode) {
+    const char *ln = nt_str(nt, node, "name");
+    Scope *s = ln ? comp_scope_of(mc, node) : NULL;
+    return s && repr_of_slot(c, scope_local(s, ln)).share;
+  }
+  if (k == NK_InstanceVariableWriteNode || k == NK_InstanceVariableOrWriteNode ||
+      k == NK_InstanceVariableAndWriteNode) {
+    const char *nm = nt_str(nt, node, "name");
+    int cid = nm ? strbuf_ivar_owner(mc, node) : -1;
+    int iv = cid >= 0 ? comp_ivar_index(&c->classes[cid], nm) : -1;
+    return iv >= 0 && repr_of_ivar(c, cid, iv).share;
+  }
+  if (k == NK_GlobalVariableWriteNode || k == NK_GlobalVariableOrWriteNode || k == NK_GlobalVariableAndWriteNode ||
+      k == NK_ClassVariableWriteNode || k == NK_ClassVariableOrWriteNode || k == NK_ClassVariableAndWriteNode)
+    return repr_static_share(c, node);
+  return 0;
+}
+
 /* Where the boxed form of a shared-mutable String comes from, as emit_boxed
    decides it for a node stored as (or holding) the handle. */
 static int repr_strbuf_src(const Compiler *c, int node, TyKind t) {
@@ -102,6 +126,9 @@ static int repr_strbuf_src(const Compiler *c, int node, TyKind t) {
   if (t == TY_STRING) {
     /* a global holding the handle (--share-strings): its read boxes it */
     if (repr_static_read_kind(k)) return repr_static_share(c, node) ? RS_HANDLE : RS_NONE;
+    /* a write in value position whose slot holds the handle the rule
+       assigned: its value is that slot, as the slot's read is */
+    if (repr_write_share(c, node)) return RS_HANDLE;
     /* a local promoted to the handle after the node types were final */
     if (k != NK_LocalVariableReadNode) return RS_NONE;
     const char *ln = nt_str(nt, node, "name");
@@ -127,8 +154,18 @@ static int repr_strbuf_src(const Compiler *c, int node, TyKind t) {
   /* a global holding the handle (--share-strings) */
   if ((repr_static_read_kind(k) || k == NK_GlobalVariableWriteNode) && repr_static_share(c, node))
     return RS_HANDLE;
-  /* an ivar write's value is the slot */
-  if (k == NK_InstanceVariableWriteNode) return RS_HANDLE;
+  /* an ivar write's value is the slot when the slot is the handle; a
+     plain String slot's value is a String, wrapped fresh below (a raise
+     arm beside it boxed that `const char *` as the handle, and the C did
+     not build) */
+  if (k == NK_InstanceVariableWriteNode) {
+    const char *nm = nt_str(nt, node, "name");
+    int cid = nm ? strbuf_ivar_owner(mc, node) : -1;
+    int iv = cid >= 0 ? comp_ivar_index(&c->classes[cid], nm) : -1;
+    if (iv < 0 || c->classes[cid].ivar_types[iv] == TY_STRBUF) return RS_HANDLE;
+  }
+  /* so is any write's whose slot holds the rule's handle */
+  if (repr_write_share(c, node)) return RS_HANDLE;
   /* an element a boxed container hands out is a boxed handle already */
   if (strbuf_boxed_elem_read(mc, node)) return RS_ELEM;
   /* a reader call (or a call answering its receiver) that renders the
