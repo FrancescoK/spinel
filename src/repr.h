@@ -59,6 +59,17 @@ typedef struct {
   unsigned big:1;         /* an Integer held as an sp_Bigint * */
   unsigned elems_handle:1; /* a container slot whose String elements are
                               boxed shared handles (--share-strings) */
+  unsigned share:1;       /* the shared String handle the --share-strings rule
+                             assigned (#6765): a slot that is the handle
+                             (repr_of_slot, repr_of_ivar, repr_of_cvar), or a
+                             read or write of a global, a constant or a class
+                             variable that is one (repr_of). repr_of answers
+                             it for those nodes only: a local's read answers
+                             0, whatever its slot holds (ask repr_of_slot).
+                             Never set without the rule: a slot that is
+                             master's own shared-mutable handle (#3227) is
+                             `handle`, and any sp_String * slot is kind
+                             RK_STRBUF */
   unsigned char strbuf_src; /* ReprStrSrc: where a shared String's box comes
                                from */
 } Repr;
@@ -77,8 +88,18 @@ typedef enum {
 
 /* The representation of node `node`'s value. */
 Repr repr_of(const Compiler *c, int node);
-/* The representation of a local variable's slot. */
+/* The representation of a local variable's slot (a global's and a
+   constant's LocalVar too). */
 Repr repr_of_slot(const Compiler *c, const LocalVar *lv);
+/* The representation of class cid's ivar slot iv, and of its class
+   variable slot idx. */
+Repr repr_of_ivar(const Compiler *c, int cid, int iv);
+Repr repr_of_cvar(const Compiler *c, int cid, int idx);
+/* repr_of_slot(c, lv).kind and repr_of_cvar(c, cid, idx).kind alone,
+   without the rest (dyn_cls scans the classes): what inference asks of a
+   global's, a constant's or a class variable's slot on every read. */
+ReprKind repr_slot_kind(const Compiler *c, const LocalVar *lv);
+ReprKind repr_cvar_kind(const Compiler *c, int cid, int idx);
 /* Is r a Hash that holds its keys as `key` and its values as `val`? */
 int repr_hash_is(Repr r, TyKind key, TyKind val);
 /* Called once the analysis is final (the end of analyze_program): from here
@@ -194,14 +215,17 @@ int repr_str_shares(const Compiler *c, int holder);
 int repr_str_elems_share(const Compiler *c, int holder);
 /* the rule over a class's facts (SHF_*, the count of its holders) */
 int repr_str_class_shares(unsigned flags, int holders);
-/* Does a read or write node name a global, a constant or a class variable
-   holding the shared handle (TY_STRBUF + str_shared, under the flag)?
-   repr_handle_static_ref writes its C slot (gv_<name>, cst_<name>,
-   cvar_<owner>_<name>). */
-int repr_handle_static(const Compiler *c, int node);
+/* repr_of(c, node).share alone, without the rest of repr_of: whether a
+   read or write node of a global, a constant or a class variable names a
+   slot that holds the handle the rule assigned. The analysis's loops and
+   an emitter that needs only this bit ask it. */
+int repr_static_share(const Compiler *c, int node);
 /* a read such a slot can be: a global's, a constant's (bare or `A::B`), a
    class variable's */
 int repr_static_read_kind(NodeKind k);
+/* For a read or write node of a global, a constant or a class variable
+   that holds the shared handle (repr_static_share), write its C slot
+   (gv_<name>, cst_<name>, cvar_<owner>_<name>) to out: 1 when it did. */
 int repr_handle_static_ref(const Compiler *c, int node, char *out, size_t cap);
 
 #endif
