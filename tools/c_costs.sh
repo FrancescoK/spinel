@@ -80,7 +80,7 @@ function flush_word(   cat, rest, k) {
   }
   # a name read rather than called (a function pointer handed to the
   # runtime, a table entry) can run from anywhere: a root of the program
-  else if (word != fn) named[word] = 1
+  else if (word != fn) refs[fn, ++nref[fn]] = word
   if (word == "do" && nextc == "{") dobody = 1
   word = ""
 }
@@ -155,22 +155,30 @@ END {
   # does (sp_class_ancestors loops over a class chain, so its 8 boxings
   # counted as in a loop in nearly every program). C without a main (a
   # fragment) counts every function.
+  # A name read outside any function is a root; one read inside a function
+  # is a root only once that function is live (a name in dead code roots
+  # nothing).
   if ("main" in defined) {
-    nq = 0
-    for (f in defined) if (f == "main" || (f in named)) { live[f] = 1; q[++nq] = f }
-    for (h = 1; h <= nq; h++)
+    nq = 0; live["main"] = 1; q[++nq] = "main"
+    for (i = 1; i <= nref[""]; i++)
+      if ((refs["", i] in defined) && !(refs["", i] in live)) { live[refs["", i]] = 1; q[++nq] = refs["", i] }
+    for (h = 1; h <= nq; h++) {
       for (k = 1; k <= nadj[q[h]]; k++) if (!(adj[q[h], k] in live)) { live[adj[q[h], k]] = 1; q[++nq] = adj[q[h], k] }
+      for (i = 1; i <= nref[q[h]]; i++)
+        if ((refs[q[h], i] in defined) && !(refs[q[h], i] in live)) { live[refs[q[h], i]] = 1; q[++nq] = refs[q[h], i] }
+    }
   }
   else for (f in defined) live[f] = 1
   for (f in defined) if (!(f in tix)) scc(f)
-  for (f in rec) hot[f] = 1
+  for (f in rec) if (f in live) hot[f] = 1
   # a function called from inside a loop, or from such a function, runs
-  # per iteration: follow the call graph to a fixpoint
+  # per iteration: follow the call graph to a fixpoint, from live callers
+  # only (a loop in dead code runs nothing)
   changed = 1
   while (changed) {
     changed = 0
     for (k = 1; k <= ne; k++)
-      if ((eto[k] in defined) && !hot[eto[k]] && (eloop[k] || hot[efrom[k]])) { hot[eto[k]] = 1; changed = 1 }
+      if ((efrom[k] in live) && (eto[k] in defined) && !hot[eto[k]] && (eloop[k] || hot[efrom[k]])) { hot[eto[k]] = 1; changed = 1 }
   }
   nc = split(cats, cl, " ")
   for (key in all) {
