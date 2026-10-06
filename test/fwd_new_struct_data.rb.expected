@@ -1,0 +1,10 @@
+#<struct Pair a=1, b=2>
+#<struct Pair a=1, b=nil>
+#<struct Pair a=1, b=2>
+7
+#<data D a=1, b=2>
+#<data D a=1, b=2>
+ArgumentError: missing keyword: :b
+#<struct M::Rec v=7>
+#<struct Pair a=5, b=6>
+#<struct P2 a=1, b=2>
