@@ -8956,9 +8956,11 @@ static int emit_object_kind_nil(Compiler *c, int id, Buf *b, const NodeTable *nt
      else: the arm below answers for the class alone, so `v.is_a?(Shape)` on
      a `v` holding nil said true. The receiver is read once into a temp; the
      arm below answers for a live object, reading the temp, and nil answers
-     as nil does. */
-  static int isa_nil_open = 0;
-  if (!isa_nil_open && recv >= 0 && ty_is_object(rt) && argc == 1 &&
+     as nil does. The live arm re-enters the call with its receiver viewed
+     as tested (VR_NIL_TESTED), so the re-entry of this call is not armed
+     twice; a kind query nested in its class argument has a receiver of its
+     own and still gets its arm. */
+  if (recv >= 0 && !repr_of(c, recv).nil_tested && ty_is_object(rt) && argc == 1 &&
       !comp_ty_value_obj(c, rt) && nt_kind(nt, recv) != NK_SelfNode &&
       is_kind_query(name) &&
       comp_method_in_chain(c, ty_object_class(rt), name, NULL) < 0 &&
@@ -8972,14 +8974,26 @@ static int emit_object_kind_nil(Compiler *c, int id, Buf *b, const NodeTable *nt
       Buf rb = expr_buf(c, recv);
       emit_indent(g_pre, g_indent);
       emit_ctype(c, rt, g_pre); buf_printf(g_pre, " _t%d = %s;\n", tr, rb.p ? rb.p : "NULL");
-      if (dyn && subtree_has_side_effect(c, argv[0])) emit_gc_root_tmp(c, rt, tr, g_pre);
       free(rb.p);
+      /* both arms read the class argument: one that runs code is read once,
+         after the receiver, so a call in it -- a nested kind query's
+         receiver its arm hoists, too -- runs once */
+      int mark = g_n_argov;
+      if (dyn && subtree_has_side_effect(c, argv[0])) {
+        emit_gc_root_tmp(c, rt, tr, g_pre);
+        TyKind at = comp_ntype(c, argv[0]);
+        int ta = ++g_tmp;
+        Buf ab = expr_buf(c, argv[0]);
+        emit_indent(g_pre, g_indent);
+        emit_ctype(c, at, g_pre); buf_printf(g_pre, " _t%d = %s;\n", ta, ab.p ? ab.p : "");
+        free(ab.p);
+        view_bind(argv[0], "_t%d", ta);
+      }
       view_bind(recv, "_t%d", tr);
       Buf ib; memset(&ib, 0, sizeof ib);
-      isa_nil_open = 1;
+      int vt = view_push_repr(c, recv, VR_NIL_TESTED, 1);
       int ok = emit_object_call(c, id, &ib);
-      isa_nil_open = 0;
-      view_unbind(g_n_argov - 1);
+      view_pop(c, vt);
       if (ok) {
         buf_printf(b, "(_t%d ? (%s) : ", tr, ib.p ? ib.p : "0");
         if (dyn) {
@@ -8998,9 +9012,11 @@ static int emit_object_kind_nil(Compiler *c, int id, Buf *b, const NodeTable *nt
           buf_printf(b, "%d", yes);
         }
         buf_puts(b, ")");
+        view_unbind(mark);
         free(ib.p);
         return 1;
       }
+      view_unbind(mark);
       free(ib.p);
     }
   }
