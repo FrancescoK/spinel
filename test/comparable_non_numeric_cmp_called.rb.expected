@@ -1,0 +1,10 @@
+false
+true
+true
+[:cmp, :cmp]
+comparison of Never with Never failed
+[:cmp]
+comparison of Never with Never failed
+[:cmp]
+comparison of Never with Never failed
+[:cmp]
