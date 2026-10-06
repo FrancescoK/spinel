@@ -257,6 +257,7 @@ static inline const char *sp_PtrArray_val_class(sp_RbVal v) {
       switch (v.cls_id) {
         case SP_BUILTIN_INT_ARRAY: case SP_BUILTIN_FLT_ARRAY: case SP_BUILTIN_STR_ARRAY:
         case SP_BUILTIN_SYM_ARRAY: case SP_BUILTIN_POLY_ARRAY: case SP_BUILTIN_PTR_ARRAY: return "Array";
+        case SP_BUILTIN_STRBUF: return sp_obj_share_strings ? "String" : "Object";
         default: return "Object";
       }
     default: return "Object";

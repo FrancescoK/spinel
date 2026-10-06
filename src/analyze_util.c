@@ -671,6 +671,23 @@ int str_self_call(const NodeTable *nt, int id) {
     return 1;
   return ac == 2 && sp_streq(nm, "insert");
 }
+/* A prepend of more than one String (`s.prepend(a, b)`), which answers its
+   receiver as the one-argument form does (str_self_call keeps that one
+   only). */
+int str_prepend_many(const NodeTable *nt, int id) {
+  if (id < 0 || nt_kind(nt, id) != NK_CallNode) return 0;
+  if (nt_ref(nt, id, "receiver") < 0 || nt_ref(nt, id, "block") >= 0) return 0;
+  const char *nm = nt_str(nt, id, "name");
+  if (!nm || !is_string_prepend(nm)) return 0;
+  int a = nt_ref(nt, id, "arguments");
+  int ac = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+  for (int i = 0; i < ac; i++) {
+    NodeKind k = nt_kind(nt, av[i]);
+    if (k == NK_SplatNode || k == NK_BlockArgumentNode || k == NK_KeywordHashNode) return 0;
+  }
+  return ac > 1;
+}
 int fiber_storage_recv(const NodeTable *nt, int recv) {
   const char *rty = nt_type(nt, recv);
   const char *rn = nt_str(nt, recv, "name");

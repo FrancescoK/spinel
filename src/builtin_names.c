@@ -153,6 +153,10 @@ int is_hash_key_lookup(const char *n) {
   return sp_streq(n, "[]") || is_key_query(n) || sp_streq(n, "fetch") || sp_streq(n, "delete");
 }
 
+int is_string_prepend(const char *n) {
+  return sp_streq(n, "prepend");
+}
+
 int is_array_store_family(const char *n) {
   return is_push_unshift(n) || sp_streq(n, "insert") || sp_streq(n, "concat");
 }
@@ -700,6 +704,10 @@ int is_ivar_access(const char *n) {
 
 int is_ivar_set(const char *n) {
   return sp_streq(n, "instance_variable_set");
+}
+
+int is_unary_plus(const char *n) {
+  return sp_streq(n, "+@");
 }
 
 int is_plus_op(const char *n) {
