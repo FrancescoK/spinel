@@ -29842,6 +29842,85 @@ static int super_reach(Compiler *c, Scope *s) {
                        : comp_method_in_chain(c, p, s->name, NULL);
 }
 
+/* `super` from a method a module prepended into a builtin class put in front
+   of the builtin's own (`class Range; prepend RangeWithFormat; end`, whose
+   to_s calls super): with no program method above it, it is the builtin's
+   method on self. Spelled as that call -- self as the receiver, the
+   method's own name, marked builtin_only so the prepended copy does not
+   take it again -- the way rewrite_builtin_alias_self_calls spells an
+   alias of a builtin. A bare `super` passes the method's parameters on;
+   one with keyword parameters is left alone. Only a prepend's copy: a
+   reopening's own def replaces the builtin's, and its super goes past it. */
+static int rpbs_param_args(Compiler *c, Scope *s, int sup) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int *ids = (int *)malloc(sizeof(int) * (size_t)(s->nparams > 0 ? s->nparams : 1));
+  if (!ids) return -1;
+  int n = 0;
+  for (int j = 0; j < s->nparams; j++) {
+    if (j == s->kwrest_idx || !s->pnames || !s->pnames[j]) { free(ids); return -1; }
+    int rd = nt_new_node(nt, "LocalVariableReadNode");
+    if (rd < 0) { free(ids); return -1; }
+    nt_node_set_str(nt, rd, "name", s->pnames[j]);
+    int arg = rd;
+    if (j == s->rest_idx) {
+      arg = nt_new_node(nt, "SplatNode");
+      if (arg < 0) { free(ids); return -1; }
+      nt_node_set_ref(nt, arg, "expression", rd);
+    }
+    ids[n++] = arg;
+  }
+  int an = nt_new_node(nt, "ArgumentsNode");
+  if (an >= 0) nt_node_set_arr(nt, an, "arguments", ids, n);
+  free(ids);
+  comp_grow_node_arrays(c);
+  (void)sup;
+  return an;
+}
+static void rewrite_prepended_builtin_supers(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    NodeKind k = nt_kind(nt, id);
+    if (k != NK_SuperNode && k != NK_ForwardingSuperNode) continue;
+    int si = c->nscope[id];
+    if (si < 0 || si >= c->nscopes) continue;
+    Scope *s = &c->scopes[si];
+    if (!s->is_prepend_copy || s->is_cmethod || !s->name || s->class_id < 0) continue;
+    const char *cn = c->classes[s->class_id].name;
+    if (!cn || !is_builtin_reopen_name(cn) || sp_streq(cn, "Object") || sp_streq(cn, "Toplevel")) continue;
+    if (super_reach(c, s) >= 0) continue;
+    int args = k == NK_SuperNode ? nt_ref(nt, id, "arguments") : -1;
+    if (k == NK_ForwardingSuperNode) {
+      int kw = 0;
+      for (int j = 0; j < s->nparams && !kw; j++)
+        kw = s->pnames && s->pnames[j] && callee_param_is_declared_kwarg(c, s, s->pnames[j]);
+      if (kw) continue;
+      args = rpbs_param_args(c, s, id);
+      if (args < 0) continue;
+    }
+    char *mname = strdup(s->name);
+    int self = nt_new_node(nt, "SelfNode");
+    comp_grow_node_arrays(c);
+    c->nscope[self] = si;
+    if (args >= 0) {
+      /* the parameter reads are this scope's */
+      int an = 0; const int *av = nt_arr(nt, args, "arguments", &an);
+      for (int q = 0; q < an; q++) {
+        c->nscope[av[q]] = si;
+        int ex = nt_kind(nt, av[q]) == NK_SplatNode ? nt_ref(nt, av[q], "expression") : -1;
+        if (ex >= 0) c->nscope[ex] = si;
+      }
+      c->nscope[args] = si;
+    }
+    nt_node_set_type(nt, id, "CallNode");
+    nt_node_set_ref(nt, id, "receiver", self);
+    nt_node_set_ref(nt, id, "arguments", args);
+    nt_node_set_str(nt, id, "name", mname);
+    nt_node_set_int(nt, id, "builtin_only", 1);
+    free(mname);
+  }
+}
+
 /* A receiverless call, in a reopened primitive, of an alias that captured
    the builtin method (`def plus_with(o) = plus_without(o)` after
    `alias_method :plus_without, :+`): it is the builtin's call on self.
@@ -30618,6 +30697,7 @@ static void an_phase_class_structure(Compiler *c) {
   register_include_attrs(c);
   register_extends(c);
   register_prepends(c);
+  rewrite_prepended_builtin_supers(c);   /* super in a module prepended into Range -> Range's own */
   /* again, now that modules have put their methods in: an alias can take an
      inherited method an ancestor got from one */
   resolve_inherited_aliases(c);
