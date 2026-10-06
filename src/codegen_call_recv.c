@@ -13774,9 +13774,7 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
         return 1;
       }
       /* a splat beside other keys (`dig(*path, :k)`): the keys in order,
-         each splat's elements in its place, walked as plain keys are
-         (sp_poly_dig_n) on a Hash or an Array; any other receiver raises
-         the NoMethodError it raised before */
+         each splat's elements in its place, walked as plain keys are */
       {
         Buf rb; int ch = hold_recv_open(c, recv, 1, "sp_RbVal", "SP_GC_ROOT_RBVAL", b, &rb);
         int tk = ++g_tmp, tr = ++g_tmp;
@@ -13792,11 +13790,10 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
             buf_printf(b, "sp_PolyArray_push(_t%d, ", tk); emit_boxed(c, argv[a], b); buf_puts(b, "); ");
           }
         }
-        buf_printf(b, "sp_RbVal _t%d = %s; _t%d.tag == SP_TAG_OBJ &&"
-                      " (sp_poly_is_hash_kind(_t%d.cls_id) || sp_poly_is_array_kind(_t%d.cls_id))"
-                      " ? sp_poly_dig_n(_t%d, _t%d->len, _t%d->data)"
-                      " : (sp_raise_nomethod(sp_nomethod_msg(\"dig\", _t%d)), sp_box_nil()); })",
-                   tr, rb.p, tr, tr, tr, tr, tk, tk, tr);
+        /* sp_poly_dig_n walks every receiver #dig walks (a Struct and a
+           program object too) and raises the call's NoMethodError for the rest */
+        buf_printf(b, "sp_RbVal _t%d = %s; sp_poly_dig_n(_t%d, _t%d->len, _t%d->data); })",
+                   tr, rb.p, tr, tk, tk);
         free(rb.p);
         if (ch) buf_puts(b, "; })");
         return 1;
