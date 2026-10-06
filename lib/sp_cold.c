@@ -3740,6 +3740,10 @@ sp_FloatRange sp_frange_new_o(sp_float f, sp_float l, sp_int e, sp_int om) {
   sp_FloatRange r; r.first = f; r.last = l; r.excl = e; r.omitted = om; r.unfrozen = 0; return r;
 }
 sp_bool sp_frange_cover(sp_FloatRange r, sp_float x) {
+  /* a NaN compares with no bound (Float#<=> answers nil), so CRuby's
+     cover? finds it in no Range, an endless or beginless one included;
+     both tests below are false for it and let it through */
+  if (isnan(x)) return 0;
   if (r.first != -HUGE_VAL && x < r.first) return 0;
   if (r.last != HUGE_VAL && (r.excl ? x >= r.last : x > r.last)) return 0;
   return 1;
