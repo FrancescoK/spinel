@@ -485,15 +485,25 @@ int emit_op_hash_set_default(Compiler *c, const BopCtx *x, Buf *b) {
     if (is_nil) buf_puts(b, "sp_box_nil()"); else if (held) emit_boxed_text(c, at, av, b); else emit_boxed(c, argv[0], b);
     buf_puts(b, ";");
   }
+  /* The typed variants keep the default in the values' slot: a value that
+     does not fit goes through the store coercion an element store takes
+     (a boxed one unboxed, another class refused), where it was assigned as
+     it was -- a Float truncated, a Symbol read as its id. The inference
+     takes the default as value evidence (infer_write_container_usage), so
+     a Hash it can widen has boxed values by now. */
   else if (rt == TY_STR_INT_HASH || rt == TY_INT_INT_HASH) {
     /* nil is SP_INT_NIL in an Integer slot; nil emitted as an int is 0 */
     buf_printf(b, " if (_t%d) _t%d->default_v = ", t, t);
-    if (is_nil) buf_puts(b, "SP_INT_NIL"); else if (held) buf_puts(b, av); else emit_expr(c, argv[0], b);
+    if (is_nil) buf_puts(b, "SP_INT_NIL");
+    else if (held) emit_coerce_text(c, argv[0], at, TY_INT, CO_HOLD, av, "a Hash default", b);
+    else emit_coerce(c, argv[0], TY_INT, CO_HOLD, "a Hash default", b);
     buf_puts(b, ";");
   }
   else if (rt == TY_STR_STR_HASH || rt == TY_INT_STR_HASH) {
     buf_printf(b, " if (_t%d) _t%d->default_v = ", t, t);
-    if (is_nil) buf_puts(b, "NULL"); else if (held) buf_puts(b, av); else emit_expr(c, argv[0], b);
+    if (is_nil) buf_puts(b, "NULL");
+    else if (held) emit_coerce_text(c, argv[0], at, TY_STRING, CO_HOLD, av, "a Hash default", b);
+    else emit_coerce(c, argv[0], TY_STRING, CO_HOLD, "a Hash default", b);
     buf_puts(b, ";");
   }
   buf_puts(b, " ");

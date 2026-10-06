@@ -77,6 +77,7 @@ int is_then_alias(const char *n); /* then yield_self */
 int is_intersection_alias(const char *n); /* & intersection */
 int is_add_sub(const char *n); /* + - */
 int is_store_alias(const char *n); /* []= store */
+int is_hash_default_setter(const char *n); /* default= */
 int is_pop_shift(const char *n); /* pop shift */
 int is_prepend_alias(const char *n); /* prepend unshift */
 int is_text_print(const char *n); /* print puts */
