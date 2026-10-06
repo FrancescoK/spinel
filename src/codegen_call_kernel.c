@@ -4,6 +4,7 @@
    (codegen_call_arms.h). */
 
 #include "codegen_internal.h"
+#include "repr.h"
 #include "codegen_poly.h"
 #include "builtin_ops.h"
 #include "call_plan.h"
@@ -273,7 +274,7 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
     if (kconv_noraise && sp_streq(name, "Integer") && (ac == 1 || ac == 2)) {
       TyKind at0 = comp_ntype(c, av[0]);
       if (at0 == TY_STRING) {
-        int promo = comp_ntype(c, id) == TY_POLY;   /* promote mode: a Bignum past sp_int */
+        int promo = repr_of(c, id).kind == RK_BOXED;   /* promote mode: a Bignum past sp_int */
         buf_puts(b, promo ? "sp_str_to_i_promote(" : "sp_str_to_i_lenient_base("); emit_expr(c, av[0], b); buf_puts(b, ", ");
         if (ac == 2) emit_int_expr(c, av[1], b); else buf_puts(b, "0");
         buf_puts(b, promo ? ", 2)" : ")");
@@ -316,7 +317,7 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
          a number (or, as a Float, raised FloatDomainError on its NaN). */
       /* Under --int-overflow=promote the call answers a box (a Float past
          sp_int is a Bignum), and the guard boxes its answer the same way. */
-      TyKind rt9 = comp_ntype(c, id);
+      TyKind rt9 = repr_of(c, id).as_ty;
       if ((at == TY_INT || at == TY_FLOAT) && (rt9 == TY_INT || rt9 == TY_POLY) &&
           call_returns_nullable_int(c, av[0])) {
         char ref[24];
@@ -327,7 +328,7 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
         else buf_printf(b, rt9 == TY_POLY ? "sp_poly_flo_domain_ck(%s); sp_box_f_to_int(%s); })"
                                           : "sp_poly_flo_domain_ck(%s); sp_float_fit_i(%s); })", ref, ref);
       }
-      else if (at == TY_STRING && comp_ntype(c, id) == TY_POLY) {   /* promote mode: a Bignum past sp_int */
+      else if (at == TY_STRING && repr_of(c, id).kind == RK_BOXED) {   /* promote mode: a Bignum past sp_int */
         buf_puts(b, "sp_str_to_i_promote("); emit_expr(c, av[0], b); buf_puts(b, ", 0, 1)");
       }
       else if (at == TY_STRING) { buf_puts(b, "sp_str_to_i_strict("); emit_expr(c, av[0], b); buf_puts(b, ")"); }
@@ -336,7 +337,7 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
       else if (at == TY_FLOAT) {
         int tf = ++g_tmp;
         buf_printf(b, "({ sp_float _t%d = ", tf); emit_expr(c, av[0], b);
-        buf_printf(b, comp_ntype(c, id) == TY_POLY
+        buf_printf(b, repr_of(c, id).kind == RK_BOXED
                         ? "; sp_poly_flo_domain_ck(_t%d); sp_box_f_to_int(_t%d); })"
                         : "; sp_poly_flo_domain_ck(_t%d); sp_float_fit_i(_t%d); })", tf, tf);
       }
@@ -369,7 +370,7 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
     if (sp_streq(name, "Integer") && ac == 2) {
       TyKind at = comp_ntype(c, av[0]);
       if (at == TY_STRING) {
-        int promo = comp_ntype(c, id) == TY_POLY;   /* promote mode: a Bignum past sp_int */
+        int promo = repr_of(c, id).kind == RK_BOXED;   /* promote mode: a Bignum past sp_int */
         buf_puts(b, promo ? "sp_str_to_i_promote(" : "sp_str_to_i_strict_base("); emit_expr(c, av[0], b);
         /* Integer("5", nil) is CRuby's TypeError, not base 0 */
         buf_puts(b, ", "); emit_int_expr(c, av[1], b); buf_puts(b, promo ? ", 1)" : ")");
@@ -687,7 +688,7 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
       }
       /* a boxed argument draws by its run-time kind: a Range or Float Range
          held in a mixed slot was converted to an Integer bound and raised */
-      if (comp_ntype(c, av[0]) == TY_POLY) {
+      if (repr_of(c, av[0]).kind == RK_BOXED) {
         buf_puts(b, "sp_rand_poly(sp_random_default_get(), "); emit_boxed(c, av[0], b); buf_puts(b, ", 1)");
         return 1;
       }
@@ -782,8 +783,9 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
     if (argc == 0) { buf_printf(b, "({ %s(0); (sp_int)0; })", xfn); return 1; }
     /* a poly status (e.g. a widened attr read or poly-hash get) must be
        unboxed -- (int)(sp_RbVal) is a struct cast, a cc error. */
-    TyKind xt = comp_ntype(c, argv[0]);
-    if (xt == TY_POLY) { buf_printf(b, "({ %s((int)sp_poly_arg_i(", xfn); emit_expr(c, argv[0], b); buf_puts(b, ")); (sp_int)0; })"); }
+    Repr xr = repr_of(c, argv[0]);
+    TyKind xt = xr.as_ty;
+    if (xr.kind == RK_BOXED) { buf_printf(b, "({ %s((int)sp_poly_arg_i(", xfn); emit_expr(c, argv[0], b); buf_puts(b, ")); (sp_int)0; })"); }
     else if (xt == TY_BOOL) { buf_printf(b, "({ %s((", xfn); emit_expr(c, argv[0], b); buf_puts(b, ") ? 0 : 1); (sp_int)0; })"); }
     else { buf_printf(b, "({ %s((int)(", xfn); emit_int_expr(c, argv[0], b); buf_puts(b, ")); (sp_int)0; })"); }
     return 1;
@@ -841,7 +843,7 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
     return 1;
   }
   if (recv < 0 && !bare_call_class_owned(c, id) && (is_inspect_print(name)) && argc == 1 && nt_ref(nt, id, "block") < 0) {
-    TyKind at = comp_ntype(c, argv[0]);
+    TyKind at = repr_of(c, argv[0]).as_ty;
     int t = ++g_tmp;
     buf_printf(b, "({ sp_RbVal _t%d = ", t);
     emit_boxed(c, argv[0], b);
@@ -941,7 +943,7 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
   if (recv < 0 && sp_streq(name, "loop") && argc == 0 && !bare_call_class_owned(c, id)) {
     int blk = nt_ref(nt, id, "block");
     if (blk >= 0) {
-      TyKind bt = comp_ntype(c, id);
+      TyKind bt = repr_of(c, id).as_ty;
       /* a value-less `break` (or none at all) makes the loop's value nil:
          ride the poly slot so the nil default is the result */
       if (bt == TY_UNKNOWN || bt == TY_NIL) bt = TY_POLY;
@@ -1017,7 +1019,7 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
   if (recv < 0 && sp_streq(name, "catch") && argc <= 1 && !bare_call_class_owned(c, id)) {
     int blk = nt_ref(nt, id, "block");
     if (blk >= 0) {
-      TyKind bt = comp_ntype(c, id);
+      TyKind bt = repr_of(c, id).as_ty;
       /* NIL: a body whose tail is a break-less loop; ride the int slot (0). */
       if (bt == TY_UNKNOWN || bt == TY_VOID || bt == TY_NIL) bt = TY_INT;
       int ptr = proc_slot_is_ptr(bt);
@@ -1090,7 +1092,8 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         const char *lty = nt_type(nt, last);
         const char *lnm = (lty && sp_streq(lty, "CallNode")) ? nt_str(nt, last, "name") : NULL;
         int last_throw = (lnm && sp_streq(lnm, "throw") && nt_ref(nt, last, "receiver") < 0);
-        TyKind lt = comp_ntype(c, last);
+        Repr lr = repr_of(c, last);
+        TyKind lt = lr.as_ty;
         /* TY_NIL includes a tail `loop { throw ... }` (a break-less loop
            infers nil): it produces no value to store, only effects. */
         if (last_throw || lt == TY_VOID || lt == TY_UNKNOWN || lt == TY_NIL) {
@@ -1102,7 +1105,7 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
              statements in the middle of the assignment (#3706) */
           Buf cvb; memset(&cvb, 0, sizeof cvb);
           int sv_ind = g_indent; g_indent = g_indent + 1;
-          if (bt == TY_POLY && lt != TY_POLY) emit_boxed(c, last, &cvb);
+          if (bt == TY_POLY && lr.kind != RK_BOXED) emit_boxed(c, last, &cvb);
           else emit_expr(c, last, &cvb);
           g_indent = sv_ind;
           emit_indent(g_pre, g_indent + 1);
@@ -1225,7 +1228,7 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         if (kcn) {
           buf_printf(b, "(sp_raise_cls(\"TypeError\","
                         " (&(\"\\xff\" \"no implicit conversion of %s into String\")[1])), %s)",
-                     kcn, default_value_from_compiler(c, comp_ntype(c, id)));
+                     kcn, default_value_from_compiler(c, repr_of(c, id).as_ty));
           return 1;
         }
       }
@@ -1237,7 +1240,7 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         for (int q = 0; q < eac; q++) { buf_puts(b, "(void)("); emit_expr(c, eav[q], b); buf_puts(b, "), "); }
         buf_printf(b, "(sp_raise_cls(\"ArgumentError\","
                       " (&(\"\\xff\" \"wrong number of arguments (given %d, expected 1)\")[1])), %s)",
-                   eac, default_value_from_compiler(c, comp_ntype(c, id)));
+                   eac, default_value_from_compiler(c, repr_of(c, id).as_ty));
         buf_puts(b, ")");
         return 1;
       }
@@ -1247,7 +1250,7 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         for (int q = 0; q < eac; q++) { buf_puts(b, "(void)("); emit_expr(c, eav[q], b); buf_puts(b, "), "); }
         buf_printf(b, "(sp_raise_cls(\"ArgumentError\","
                       " (&(\"\\xff\" \"wrong number of arguments (given %d, expected 1..2)\")[1])), %s)",
-                   eac, default_value_from_compiler(c, comp_ntype(c, id)));
+                   eac, default_value_from_compiler(c, repr_of(c, id).as_ty));
         buf_puts(b, ")");
         return 1;
       }
@@ -1362,10 +1365,11 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
           }
           for (int k = 0; k < dbn - 1; k++) emit_stmt(c, dbb[k], b, 0);
           if (dval >= 0) {
-            TyKind dvt = comp_ntype(c, dval);
+            Repr dvr = repr_of(c, dval);
+            TyKind dvt = dvr.as_ty;
             buf_printf(b, "_t%d = ", t2);
             if (dvt == TY_STRING) emit_expr(c, dval, b);
-            else if (dvt == TY_POLY) {
+            else if (dvr.kind == RK_BOXED) {
               buf_puts(b, "({ sp_RbVal _dv = "); emit_expr(c, dval, b);
               buf_puts(b, "; _dv.tag == SP_TAG_NIL ? NULL : sp_poly_to_s(_dv); })");
             }
@@ -1460,7 +1464,7 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         /* The call's type is String joined with the default's: a String or
            nil default keeps the nullable string, any other default boxes both
            arms. (The block form is the ENV snapshot's Hash#fetch, #2742.) */
-        int fpoly = comp_ntype(c, id) == TY_POLY;
+        int fpoly = repr_of(c, id).kind == RK_BOXED;
         int tk = ++g_tmp, tky = ++g_tmp, tv = ++g_tmp, td = ++g_tmp;
         buf_printf(b, "({ const char *_t%d = ", tky); emit_str_expr(c, argv[0], b);
         /* the default is an argument: it evaluates whether or not the
