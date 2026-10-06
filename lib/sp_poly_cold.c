@@ -1045,6 +1045,11 @@ sp_RbVal sp_poly_hash_slice(sp_RbVal v, int n, sp_RbVal *keys)
   return sp_box_obj(h, SP_BUILTIN_POLY_POLY_HASH);
 }
 
+int sp_hash_dproc_is_dyn(sp_polypoly_dproc_t f)
+{
+  return f == sp_dyn_hash_dproc;
+}
+
 void sp_poly_hash_writeback_ex(sp_RbVal orig, sp_PolyPolyHash *work, int with_default)
 {
   if (orig.tag != SP_TAG_OBJ || !work || !orig.v.p) return;

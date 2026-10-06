@@ -11236,6 +11236,10 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       if (dp_self) buf_printf(pb, "  sp_%s *self = (sp_%s *)_dproc_self; (void)self;\n", dp_cls, dp_cls);
       else buf_puts(pb, "  (void)_dproc_self;\n");
       if (hp) buf_printf(pb, "  sp_PolyPolyHash *lv_%s = _self_h; (void)lv_%s;\n", rename_local(hp), rename_local(hp));
+      /* Hash#default_proc's Proc can be called with no Hash at all, which
+         comes in as no hash (sp_pp_hash_dproc_call): a block that ignores
+         its Hash answers as CRuby's does, one that reads it is refused. */
+      if (hp && subtree_reads_local(nt, hbody, hp)) buf_puts(pb, "  if (!_self_h) sp_hash_dproc_no_hash();\n");
       if (kp) buf_printf(pb, "  sp_RbVal lv_%s = _key; (void)lv_%s;\n", rename_local(kp), rename_local(kp));
       Buf *sv_pre = g_pre; int sv_ind = g_indent; const char *sv_self = g_self;
       g_pre = pb; g_indent = 1;
