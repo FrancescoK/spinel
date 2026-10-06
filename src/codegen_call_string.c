@@ -777,9 +777,16 @@ int emit_call_regexp_class_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
       else {
         Repr ar = repr_of(c, ops[i]);
         TyKind at = ar.as_ty;
-        if (at != TY_STRING && ar.kind != RK_BOXED)
+        /* (a String the rule shares, --share-strings, reads as its bytes) */
+        int strbuf = repr_share_rule(c) && (at == TY_STRBUF || ar.kind == RK_STRBUF);
+        if (at != TY_STRING && ar.kind != RK_BOXED && !strbuf)
           unsupported(c, id, "Regexp.union operand without a compile-time source (runtime Regexp or non-String value)");
         if (ar.kind == RK_BOXED) { buf_puts(&ab, "sp_re_union_operand("); emit_expr(c, ops[i], &ab); buf_puts(&ab, ")"); }
+        else if (strbuf) {
+          int sv = view_push(c, ops[i], TY_STRING);
+          buf_puts(&ab, "sp_re_escape("); emit_str_expr(c, ops[i], &ab); buf_puts(&ab, ")");
+          view_pop(c, sv);
+        }
         else { buf_puts(&ab, "sp_re_escape("); emit_expr(c, ops[i], &ab); buf_puts(&ab, ")"); }
       }
       emit_indent(g_pre, g_indent);

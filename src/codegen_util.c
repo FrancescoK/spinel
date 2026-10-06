@@ -3151,8 +3151,32 @@ void emit_coerce_text(Compiler *c, int node, TyKind from, TyKind slot, int how,
     return;
   }
   case CF_CONVERT:
+    if (slot == TY_STRBUF) {
+      /* a String into a shared-handle slot (--share-strings): a String of
+         its own takes a handle of its own; one the rule shares is that
+         String, so the slot takes its handle, read from the slot that
+         holds it (a plain read, so `text`, evaluated already, is the same
+         value). One whose handle this site cannot name is refused below. */
+      char ref[1024];
+      if (node >= 0 && share_node_shares(c, node) && strbuf_slot_ref(c, node, ref, sizeof ref))
+        buf_printf(b, "((void)(%s), %s)", text, ref);
+      else if (node >= 0 && strbuf_object_reader_handle(c, node)) {
+        buf_printf(b, "((void)(%s), ", text);
+        emit_strbuf_call_handle(c, node, b);
+        buf_puts(b, ")");
+      }
+      /* a call answering the handle its method publishes cannot be read
+         again without running it twice */
+      else if (node >= 0 && strbuf_call_answers_handle(c, node)) break;
+      else buf_printf(b, "sp_String_new_shared(%s)", text);
+    }
+    else if (slot == TY_STRING && from == TY_STRBUF) {
+      char hv[32]; snprintf(hv, sizeof hv, "_t%d", ++g_tmp);
+      buf_printf(b, "({ sp_String *%s = %s; %s ? sp_str_concat(sp_String_cstr(%s), (&(\"\\xff\")[1])) : NULL; })",
+                 hv, text, hv, hv);
+    }
     /* a Bignum or a Rational operand a Float slot converts, as Ruby does */
-    buf_printf(b, "%s(%s)", from == TY_BIGINT ? "sp_bigint_to_double" : "sp_rational_to_f", text);
+    else buf_printf(b, "%s(%s)", from == TY_BIGINT ? "sp_bigint_to_double" : "sp_rational_to_f", text);
     RCCT(CF_CONVERT);
     return;
   default:
