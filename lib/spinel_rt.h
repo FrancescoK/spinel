@@ -9678,6 +9678,22 @@ static sp_StrArray *sp_poly_as_str_array(sp_RbVal v) {
   }
   return a;
 }
+/* sp_poly_as_str_array for a program built --share-strings, whose boxed
+   Arrays may hold shared String handles: a handle's box is taken as its
+   current bytes (a typed String Array holds Strings of its own). */
+static sp_StrArray *sp_poly_as_str_array_h(sp_RbVal v) {
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_STR_ARRAY) return (sp_StrArray *)v.v.p;
+  if (v.tag == SP_TAG_NIL || !sp_poly_is_array_kind(v.cls_id)) return (sp_StrArray *)0;
+  SP_GC_ROOT_RBVAL(v);
+  sp_StrArray *a = sp_StrArray_new(); SP_GC_ROOT(a);
+  sp_int n = sp_poly_length(v);
+  for (sp_int i = 0; i < n; i++) {
+    sp_RbVal e = sp_poly_arr_get(v, i);
+    if (sp_poly_is_strbuf(e)) e = sp_poly_strbuf_deref(e);
+    sp_StrArray_push(a, e.tag == SP_TAG_NIL ? (const char *)0 : e.v.s);
+  }
+  return a;
+}
 
 /* poly_arr_get/set for PolyPolyHash with integer index key. */
 /* multi-assign element read: `a, b = v` destructures only when the boxed

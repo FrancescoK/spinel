@@ -1562,6 +1562,10 @@ void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
       emit_expr(c, v, b);
       buf_printf(b, "); %s; })", srefC9);
     }
+    /* --share-strings: a reader of a shared ivar on an object answers its
+       slot, the handle (a Struct member built from another's member) */
+    else if (shared && strbuf_object_reader_handle(c, v) && emit_strbuf_call_handle(c, v, b)) {
+    }
     else {
       /* otherwise a mutable-string local wraps the (const char*) RHS in a
          fresh sp_String so later `<<` appends are amortized O(1). An RHS

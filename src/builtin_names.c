@@ -74,7 +74,11 @@ int is_async_code_entry(const char *recv, const char *n) {
 int is_lib_class_name(const char *n) {
   return sp_streq(n, "File") || sp_streq(n, "Dir") || sp_streq(n, "FileTest") || sp_streq(n, "IO") ||
          sp_streq(n, "Process") || sp_streq(n, "GC") || sp_streq(n, "Etc") || sp_streq(n, "Math") ||
-         sp_streq(n, "Signal");
+         sp_streq(n, "Signal") || sp_streq(n, "Regexp");
+}
+
+int is_lib_receiver_name(const char *n) {
+  return is_lib_class_name(n) || sp_streq(n, "ENV");
 }
 
 int is_name_reader(const char *n) {
