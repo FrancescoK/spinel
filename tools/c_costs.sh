@@ -132,9 +132,10 @@ count() { awk -v cats="$CATS" "$COUNT_AWK" "$1"; }
 
 # One program: prints `P <label> <cat> <ref> <ref-in-loop> <new> <new-in-loop>`
 # per category and `L <label> <cat> <function> <ref-in-loop> <new-in-loop>`
-# for each function whose in-loop O(len) count rose.
+# for each function whose in-loop O(len) count rose; fails when a count
+# does. compared() is the same, but a failed count is a skipped program.
 compare() {
-  local label=$1 a b
+  local label=$1 a b st
   a=$(count "$2") || return 2
   b=$(count "$3") || return 2
   awk -v label="$label" -v cats="$CATS" '
@@ -151,6 +152,12 @@ compare() {
           print "L", label, kp[1], kp[2], f[1, kp[1], kp[2]] + 0, f[2, kp[1], kp[2]] + 0
       }
     }' <(printf '%s\n' "$a") <(printf '%s\n' "$b") | LC_ALL=C sort
+  st=("${PIPESTATUS[@]}")
+  [ "${st[0]}" -eq 0 ] && [ "${st[1]}" -eq 0 ] || return 2
+}
+compared() {
+  local out
+  if out=$(compare "$@"); then printf '%s\n' "$out"; else echo "S $1 the cost count failed"; fi
 }
 
 # The report over the P and L records of any number of programs.
@@ -200,7 +207,7 @@ if [ "$1" = --list ]; then
   [ $# -eq 2 ] || usage
   while read -r label a b; do
     [ -n "$label" ] || continue
-    if [ -f "$a" ] && [ -f "$b" ]; then compare "$label" "$a" "$b"
+    if [ -f "$a" ] && [ -f "$b" ]; then compared "$label" "$a" "$b"
     else echo "S $label no C on one side"; fi
   done < "$2" | summarize
 elif [ $# -eq 1 ]; then
@@ -208,21 +215,23 @@ elif [ $# -eq 1 ]; then
   count "$1" | awk '$1 == "T" { printf "%s %d (%d in loops)\n", $2, $3, $4 }'
 elif [ -f "$1" ] && [ -f "$2" ] && [ "${1%.c}" != "$1" ]; then
   [ $# -le 3 ] || usage
-  compare "${3:-$2}" "$1" "$2" | summarize
+  compared "${3:-$2}" "$1" "$2" | summarize
 else
   REF=$1 NEW=$2; shift 2
   [ -x "$REF" ] && [ -x "$NEW" ] || { echo "c_costs: $REF and $NEW must be spinel binaries" >&2; exit 2; }
   [ $# -ge 1 ] || usage
   T=$(mktemp -d "${TMPDIR:-/tmp}/spinel-c-costs.XXXXXX") || exit 2
   trap 'rm -rf "$T"' EXIT
-  export -f count compare
+  export -f count compare compared
   export CATS COUNT_AWK
-  printf '%s\n' "$@" | xargs -P "$JOBS" -I{} bash -c '
-    p=$1; k=$(printf %s "$p" | tr / _)
+  # each job is keyed by its input position, so no two paths share a file
+  i=0
+  for p in "$@"; do i=$((i + 1)); printf '%06d:%s\n' "$i" "$p"; done | xargs -P "$JOBS" -I{} bash -c '
+    k=${1%%:*}; p=${1#*:}
     "$2" -S --no-line-map "$p" > "$4/$k.ref.c" 2>/dev/null; ra=$?
     "$3" -S --no-line-map "$p" > "$4/$k.new.c" 2>/dev/null; rb=$?
     if [ $ra -ne 0 ] || [ $rb -ne 0 ]; then echo "S $p does not compile (ref $ra, new $rb)" > "$4/$k.rec"
-    else compare "$p" "$4/$k.ref.c" "$4/$k.new.c" > "$4/$k.rec"; fi
-    rm -f "$4/$k.ref.c" "$4/$k.new.c"' _ {} "$REF" "$NEW" "$T"
+    else compared "$p" "$4/$k.ref.c" "$4/$k.new.c" > "$4/$k.rec"; fi
+    rm -f "$4/$k.ref.c" "$4/$k.new.c"' _ {} "$REF" "$NEW" "$T" || { echo "c_costs: compiling the programs failed" >&2; exit 2; }
   cat "$T"/*.rec 2>/dev/null | summarize
 fi

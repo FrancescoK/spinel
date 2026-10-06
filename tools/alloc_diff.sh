@@ -15,9 +15,11 @@
 # A program runs as the test suite runs it: with the words of PROG.args as
 # its arguments and PROG.stdin (else nothing) as its input. A program is
 # skipped, and said to be, when it does not compile or run on a side, when
-# the two binaries print different output, or when its source can run
-# differently each time (threads, forks, random numbers, the clock, the
-# environment; ALLOC_DIFF_ALL=1 keeps those).
+# the two binaries print different output or exit with different statuses,
+# or when its source can run differently each time (threads, forks, random
+# numbers, the clock, the environment; ALLOC_DIFF_ALL=1 keeps those). A
+# program both binaries end the same way, an uncaught exception included,
+# is compared.
 #
 #   ALLOC_DIFF_PCT=20        flag a rise of more than this many percent
 #   ALLOC_DIFF_MIN_COUNT=1000  ... and more than this many allocations,
@@ -40,9 +42,11 @@ mkdir -p "$T/b" "$T/r"
 export ALLOC_DIFF_TIMEOUT=${ALLOC_DIFF_TIMEOUT:-60} ALLOC_DIFF_ALL=${ALLOC_DIFF_ALL:-}
 
 # One program: `R <prog> <ref count> <ref bytes> <new count> <new bytes>`,
-# or `S <prog> <why>`.
-printf '%s\n' "$@" | xargs -P "$JOBS" -I{} bash -c '
-  p=$1; k=$(printf %s "$p" | tr / _); d=$4/b/$k; rec=$4/r/$k
+# or `S <prog> <why>`. Each job is keyed by its input position, so no two
+# paths share a file.
+i=0
+for p in "$@"; do i=$((i + 1)); printf '%06d:%s\n' "$i" "$p"; done | xargs -P "$JOBS" -I{} bash -c '
+  k=${1%%:*}; p=${1#*:}; d=$4/b/$k; rec=$4/r/$k
   if [ -z "$ALLOC_DIFF_ALL" ]; then
     w=$(grep -o -E "\b(Thread|Ractor|fork|spawn|rand|srand|Random|Time\.now|clock_gettime|sleep|Socket|popen|system|ENV)\b" "$p" | head -1)
     [ -n "$w" ] && { printf "S\t%s\tits source can run differently each time (%s)\n" "$p" "$w" > "$rec"; exit 0; }
@@ -56,14 +60,19 @@ printf '%s\n' "$@" | xargs -P "$JOBS" -I{} bash -c '
     rc=$?
     [ $rc -eq 142 ] && { printf "S\t%s\ttimed out with the %s compiler\n" "$p" $side > "$rec"; rm -f "$d".*; exit 0; }
     [ -f "$d.$side.rep" ] || { printf "S\t%s\tno allocation report from the %s binary (exit %d)\n" "$p" $side $rc > "$rec"; rm -f "$d".*; exit 0; }
+    if [ $side = ref ]; then rref=$rc; else rnew=$rc; fi
   done
+  # a report is written at exit, a failing one too: the two runs compare
+  # when they end the same way
+  if [ $rref -ne $rnew ]; then printf "S\t%s\tthe two binaries exit differently (ref %d, new %d)\n" "$p" $rref $rnew > "$rec"; rm -f "$d".*; exit 0; fi
   if ! cmp -s "$d.ref.out" "$d.new.out"; then printf "S\t%s\tthe two binaries print different output\n" "$p" > "$rec"; rm -f "$d".*; exit 0; fi
+  # the side is the file, not its first line: a report can be empty
   awk -v p="$p" "
-    FNR == 1 { side++ }
+    { side = FILENAME == ARGV[1] ? 1 : 2 }
     /^alloc;/ { c[side] += \$NF }
     /^# bytes / { b[side] += \$NF }
     END { printf \"R\t%s\t%d\t%d\t%d\t%d\n\", p, c[1], b[1], c[2], b[2] }" "$d.ref.rep" "$d.new.rep" > "$rec"
-  rm -f "$d".*' _ {} "$REF" "$NEW" "$T"
+  rm -f "$d".*' _ {} "$REF" "$NEW" "$T" || { echo "alloc_diff: running the programs failed" >&2; exit 2; }
 
 cat "$T"/r/* 2>/dev/null | LC_ALL=C sort -t "$(printf '\t')" -k2,2 | awk -F'\t' \
   -v pct="${ALLOC_DIFF_PCT:-20}" -v minc="${ALLOC_DIFF_MIN_COUNT:-1000}" \

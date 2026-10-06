@@ -19,4 +19,4 @@ ret Buf#peek: sentinel ty=int may_nil
 ret Pt#__enum_to_a: ptr ty=int_array
 ret Pt#each: ptr ty=obj:Pt
 ret find: boxed ty=poly
-repr_diff (--dump-repr): 0 slots became shared handles (strbuf), 0 became boxed, 0 left a by-value layout, 0 other changes, in 0 of 1 programs
+repr_diff (--dump-repr): 0 slots became String buffers (strbuf), 0 became boxed, 0 left a by-value layout, 0 other changes, in 0 of 1 programs
