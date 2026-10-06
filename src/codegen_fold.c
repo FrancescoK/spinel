@@ -9852,11 +9852,12 @@ void emit_gathered_param(Compiler *c, Scope *m, int i, int ct, Buf *out) {
   snprintf(raw, sizeof raw, "sp_PolyArray_get(_t%d, %s)", ct, idx);
   if (pt != TY_POLY && pt != TY_UNKNOWN) emit_unbox_nilable_text(c, pt, raw, &eb);
   else buf_puts(&eb, raw);
-  /* --share-strings: a handle made around a plain String element is an
-     object nothing else holds until the callee roots it, and the call's
-     other arguments allocate first: it is made ahead of the call, in a
-     temp rooted for the statement */
-  int hoist = repr_of_slot(c, sp).share && g_pre;
+  /* a handle made around a plain String element (a parameter whose slot
+     is an sp_String *, the shared one --share-strings assigns or master's
+     own, #3227) is an object nothing else holds until the callee roots
+     it, and the call's other arguments allocate first: it is made ahead
+     of the call, in a temp rooted for the statement */
+  int hoist = repr_slot_kind(c, sp) == RK_STRBUF && g_pre;
   Buf *vo = out, hb;
   memset(&hb, 0, sizeof hb);
   if (hoist) vo = &hb;

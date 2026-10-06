@@ -90,7 +90,6 @@ int repr_nil_scalar(const Compiler *c, int node, TyKind t) {
   return r;
 }
 
-static int repr_static_share(const Compiler *c, int node);
 /* Where the boxed form of a shared-mutable String comes from, as emit_boxed
    decides it for a node stored as (or holding) the handle. */
 static int repr_strbuf_src(const Compiler *c, int node, TyKind t) {
@@ -421,6 +420,14 @@ void repr_check_ask(const Compiler *c, int node) {
   if (node >= 0 && node < c->nt->count) (void)repr_of(c, node);
 }
 
+ReprKind repr_slot_kind(const Compiler *c, const LocalVar *lv) {
+  if (!lv) return RK_NONE;
+  /* an Integer or Float slot some write leaves nil in: its sentinel */
+  if ((lv->type == TY_INT || lv->type == TY_FLOAT) &&
+      (lv->nullable_int || lv->box_nullable || lv->maybe_unset))
+    return RK_SENTINEL;
+  return repr_kind_of_type(c, lv->type);
+}
 Repr repr_of_slot(const Compiler *c, const LocalVar *lv) {
   Repr r;
   memset(&r, 0, sizeof r);
@@ -429,13 +436,8 @@ Repr repr_of_slot(const Compiler *c, const LocalVar *lv) {
   if (!lv) return r;
   r.ty = r.as_ty = lv->type;
   repr_layout(&r, lv->type);
-  ReprKind k = repr_kind_of_type(c, lv->type);
-  /* an Integer or Float slot some write leaves nil in: its sentinel */
-  if ((lv->type == TY_INT || lv->type == TY_FLOAT) &&
-      (lv->nullable_int || lv->box_nullable || lv->maybe_unset)) {
-    k = RK_SENTINEL;
-    r.may_nil = 1;
-  }
+  ReprKind k = repr_slot_kind(c, lv);
+  if (k == RK_SENTINEL) r.may_nil = 1;
   /* a `||=` can read the slot before any write: nil until then */
   if (lv->or_written) r.may_nil = 1;
   /* an object slot, or a builtin pointer's, the nil fact says may hold nil */
@@ -522,18 +524,22 @@ static LocalVar *repr_static_var(const Compiler *c, int node) {
   return NULL;
 }
 /* repr_of's `share` for a read or write node of a global, a constant or a
-   class variable: its slot's (only the rule makes one the handle) */
-static int repr_static_share(const Compiler *c, int node) {
+   class variable: its slot's (only the rule makes one the handle). The
+   handle is an sp_String * slot: its kind is asked first, as repr_of asks
+   this of every node and the slot's whole Repr scans the classes for an
+   object's dyn_cls. */
+int repr_static_share(const Compiler *c, int node) {
   if (node < 0 || !c->share_strings) return 0;
   if (repr_cvar_node(nt_kind(c->nt, node))) {
     int cid, idx;
-    return repr_cvar_slot(c, node, &cid, &idx) && repr_of_cvar(c, cid, idx).share;
+    return repr_cvar_slot(c, node, &cid, &idx) && repr_cvar_kind(c, cid, idx) == RK_STRBUF &&
+           repr_of_cvar(c, cid, idx).share;
   }
   LocalVar *lv = repr_static_var(c, node);
-  return lv && repr_of_slot(c, lv).share;
+  return lv && repr_slot_kind(c, lv) == RK_STRBUF && repr_of_slot(c, lv).share;
 }
 int repr_handle_static_ref(const Compiler *c, int node, char *out, size_t cap) {
-  if (!repr_of(c, node).share) return 0;
+  if (!repr_static_share(c, node)) return 0;
   NodeKind k = nt_kind(c->nt, node);
   if (repr_cvar_node(k)) {
     int cid, idx;
@@ -780,7 +786,18 @@ Repr repr_of_ivar(const Compiler *c, int cid, int iv) {
   return r;
 }
 
-/* a class variable's slot: only the rule makes one the shared handle */
+/* a class variable's slot, as an ivar's: an Integer or Float one some
+   write leaves nil in holds the sentinel */
+ReprKind repr_cvar_kind(const Compiler *c, int cid, int idx) {
+  const ClassInfo *ci = &c->classes[cid];
+  TyKind t = ci->cvar_types[idx];
+  if ((t == TY_INT || t == TY_FLOAT) && ci->cvar_nullable_int[idx]) return RK_SENTINEL;
+  return repr_kind_of_type(c, t);
+}
+/* Only the rule makes a class variable the shared handle
+   (cvar_str_shared). An object one has no nil fact (analyze_nil.c keeps
+   one per ivar): it may be nil, as nil_fact_ivar answers for an ivar it
+   has none for. */
 Repr repr_of_cvar(const Compiler *c, int cid, int idx) {
   const ClassInfo *ci = &c->classes[cid];
   Repr r;
@@ -788,9 +805,11 @@ Repr repr_of_cvar(const Compiler *c, int cid, int idx) {
   r.ty = r.as_ty = ci->cvar_types[idx];
   r.narrowed = r.elem = r.key = r.val = TY_UNKNOWN;
   repr_layout(&r, r.ty);
-  r.kind = (unsigned char)repr_kind_of_type(c, r.ty);
-  r.share = c->share_strings && r.ty == TY_STRBUF && ci->cvar_str_shared && ci->cvar_str_shared[idx];
-  r.handle = r.share;
+  r.kind = (unsigned char)repr_cvar_kind(c, cid, idx);
+  if (r.kind == RK_SENTINEL || ty_is_object(r.ty)) r.may_nil = 1;
+  if (r.ty == TY_STRBUF && ci->cvar_str_shared[idx]) r.handle = 1;
+  r.share = r.handle && c->share_strings;
+  r.dyn_cls = repr_dyn_cls(c, r.ty);
   return r;
 }
 
