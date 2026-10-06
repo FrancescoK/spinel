@@ -5445,14 +5445,16 @@ static void desugar_enum_chain_shapes(Compiler *c) {
       }
       if (finite) { nt_node_set_ref(nt, id, "receiver", lz_recv); continue; }
     }
-    if ((sp_streq(nm, "merge") || sp_streq(nm, "merge!")) && recv >= 0) {
-      /* h.merge(a, b, ...) folds left into h.merge(a).merge(b)...; merge!
-         chains the same way because it returns self. */
+    if (sp_streq(nm, "merge") && recv >= 0) {
+      /* h.merge(a, b, ...) folds left into h.merge(a).merge(b)... merge!
+         does not: CRuby evaluates every argument before the first merge, and
+         a chain ran a later one after it (or not at all, past a raise);
+         codegen takes several arguments (emit_hash_merge_misfit). */
       int argsn = nt_ref(nt, id, "arguments");
       int an = 0;
       const int *av0 = argsn >= 0 ? nt_arr(nt, argsn, "arguments", &an) : NULL;
       if (an >= 2 && an <= 64) {
-        const char *mname = sp_streq(nm, "merge!") ? "merge!" : "merge";
+        const char *mname = "merge";
         int av[64];
         memcpy(av, av0, (size_t)an * sizeof(int));
         int mblk = nt_ref(nt, id, "block");
