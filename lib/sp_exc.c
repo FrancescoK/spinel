@@ -144,10 +144,10 @@ void sp_exc_syserr_init(sp_Exception *e) {
 }
 /* Create an exception for a `rescue => e` binding: like sp_exc_new but
    also looks up the parent class via the user hierarchy callback. */
-/* The exception's own copy of its message, to the String's byte length: a
-   message with a NUL in it keeps the bytes after it, as CRuby's does (#7556). */
+/* The exception's own copy of its message. The length is strlen's: what arrives
+   is a bare C string as often as a String (see sp_msg_heapify). */
 static const char *sp_exc_msg_copy(const char *m) {
-  size_t n = sp_str_byte_len(m);
+  size_t n = strlen(m);
   char *r = sp_str_alloc(n);
   memcpy(r, m, n);
   return r;
