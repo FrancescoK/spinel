@@ -767,11 +767,11 @@ int emit_call_regexp_class_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
       int ua = argv[0];
       int splat = nt_kind(nt, ua) == NK_SplatNode && nt_ref(nt, ua, "expression") >= 0;
       if (splat) ua = nt_ref(nt, ua, "expression");
-      TyKind uat = comp_ntype(c, ua);
-      if (uat == TY_POLY_ARRAY || uat == TY_STR_ARRAY || (splat && uat != TY_UNKNOWN)) {
+      Repr uar = repr_of(c, ua);
+      if (uar.elem == TY_POLY || uar.elem == TY_STRING || (splat && !uar.untyped)) {
         buf_puts(b, "sp_re_union_array(");
-        if (uat == TY_STR_ARRAY) { buf_puts(b, "sp_StrArray_to_poly_fmt("); emit_expr(c, ua, b); buf_puts(b, ")"); }
-        else if (uat == TY_POLY_ARRAY) emit_expr(c, ua, b);
+        if (uar.elem == TY_STRING) { buf_puts(b, "sp_StrArray_to_poly_fmt("); emit_expr(c, ua, b); buf_puts(b, ")"); }
+        else if (uar.elem == TY_POLY) emit_expr(c, ua, b);
         /* any other splatted value -- boxed, a scalar, nil, a typed array --
            is the Array its splat makes, and each element is checked at run
            time (a non-String, non-Regexp one raises TypeError) */
