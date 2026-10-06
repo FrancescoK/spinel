@@ -10983,7 +10983,11 @@ static sp_int sp_poly_count_val(sp_RbVal v, sp_RbVal x) {
     return sp_str_count(s.v.s ? s.v.s : (&("\xff")[1]), ap ? ap : (&("\xff")[1]));
   }
   /* nil, a number, a boolean or a Symbol has no count: it answered 0 */
-  if (sp_poly_no_enum(v)) sp_raise_nomethod(sp_nomethod_msg_args("count", v, 1, &x));
+  if (sp_poly_no_enum(v)) {
+    /* held across the message's allocations, as the sum arm holds its seed */
+    SP_GC_ROOT_RBVAL(v); SP_GC_ROOT_RBVAL(x);
+    sp_raise_nomethod(sp_nomethod_msg_args("count", v, 1, &x));
+  }
   if (v.tag != SP_TAG_OBJ) return 0;
   /* A Hash counts its [key, value] pairs, a Range its members and an
      Enumerator its values (sp_enum_items_from), as the typed receivers do;
