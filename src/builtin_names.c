@@ -809,3 +809,13 @@ int array_unseen_add_kind(const char *n) {
 }
 
 int is_scan_name(const char *n) { return sp_streq(n, "scan"); }
+
+int is_kernel_string_call(const char *n) { return sp_streq(n, "String"); }
+int is_task_answer(const char *n) { return sp_streq(n, "value") || sp_streq(n, "resume"); }
+int is_catch_call(const char *n) { return sp_streq(n, "catch"); }
+int is_throw_call(const char *n) { return sp_streq(n, "throw"); }
+int is_raise_call(const char *n) { return sp_streq(n, "raise") || sp_streq(n, "fail"); }
+int is_message_reader(const char *n) { return sp_streq(n, "message"); }
+int is_hash_default_writer(const char *n) { return sp_streq(n, "default="); }
+int is_uplus_name(const char *n) { return sp_streq(n, "+@"); }
+int is_freeze_name(const char *n) { return sp_streq(n, "freeze"); }
