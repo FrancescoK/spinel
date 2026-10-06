@@ -1,7 +1,9 @@
 # An Array subclass instance held where a value of any class can be (#7449):
 # boxed, it is still its Array to the runtime -- flatten, a splat, a
 # destructuring, puts, ==, a Hash key -- and still its class to class,
-# is_a?, instance_of?, case/when and the dispatch of its own methods.
+# is_a?, instance_of?, case/when and the dispatch of its own methods. A
+# method its class leaves to Array (push, size, map, include?) reaches
+# Array's through the same dispatch.
 class Row < Array
   def initialize(cells, label)
     super(cells)
@@ -52,3 +54,15 @@ end
 puts r1
 p r1 == [1, 2], [1, 2] == items[0], items.include?([3]), items.index([1, 2])
 p Array(r1).equal?(r1), Array(r1).class
+
+class Nums < Array
+  def total = sum
+end
+class Tags < Array
+end
+x = [Nums[1, 2], "s"][ARGV.size]
+p x.total, x.push(4).total, x.size, x.first, x.map { |e| e * 2 }
+y = [Tags[1, "a"], 3][ARGV.size]
+p y.push(5).size, y.class, y.include?("a")
+z = [Nums[7], Tags[8]][ARGV.size]
+p z.size, z.push(1).class, z.total
