@@ -14644,7 +14644,49 @@ static int sp_range_empty_region(sp_range_end_t b, sp_range_end_t e, int excl) {
 /* Range#overlap? between two numeric Ranges, as CRuby's range_overlap
    decides it: some value lies in both, so neither may be empty. The receiver
    is no Range: NoMethodError; the argument is none: TypeError. */
+/* Range#overlap? for a String Range receiver, as CRuby's range_overlap. An
+   end is nil, a String or a number (sp_range_end_t); a String and a number
+   are incomparable, which CRuby reads as an empty region, and two
+   incomparable begins as no overlap. */
+typedef struct { int nil; const char *s; int num; sp_range_end_t n; } sp_srange_end_t;
+static int sp_srange_end_cmp(sp_srange_end_t a, sp_srange_end_t b) {
+  if (a.nil || b.nil) return a.nil && b.nil ? 0 : 2;
+  if (a.num != b.num) return 2;
+  if (a.num) return sp_range_end_cmp(a.n, b.n);
+  int c = strcmp(a.s, b.s);
+  return (c > 0) - (c < 0);
+}
+static int sp_srange_empty_region(sp_srange_end_t b, sp_srange_end_t e, int excl) {
+  if (b.nil || e.nil) return 0;
+  int c = sp_srange_end_cmp(b, e);
+  if (c == 2) return 1;
+  return excl ? c >= 0 : c > 0;
+}
+static SP_UNUSED sp_bool sp_srange_overlap_v(sp_StrRange a, sp_RbVal o) {
+  sp_srange_end_t ab = { !a.first, a.first, 0, {0} }, ae = { !a.last, a.last, 0, {0} };
+  sp_srange_end_t ob, oe; int ox = 0;
+  memset(&ob, 0, sizeof ob); memset(&oe, 0, sizeof oe);
+  if (o.tag == SP_TAG_OBJ && o.cls_id == SP_BUILTIN_STR_RANGE && o.v.p) {
+    sp_StrRange r = *(sp_StrRange *)o.v.p;
+    ob.nil = !r.first; ob.s = r.first; oe.nil = !r.last; oe.s = r.last; ox = r.excl;
+  }
+  else {
+    sp_range_end_t nb, ne;
+    if (!sp_range_ends(o, &nb, &ne, &ox))
+      sp_raise_cls("TypeError", sp_sprintf("wrong argument type %s (expected Range)", sp_poly_class_name(o)));
+    ob.nil = nb.nil; ob.num = 1; ob.n = nb; oe.nil = ne.nil; oe.num = 1; oe.n = ne;
+  }
+  if (sp_srange_empty_region(ab, oe, ox) || sp_srange_empty_region(ob, ae, a.excl)) return FALSE;
+  if (!ab.nil && !ob.nil) {
+    int c = sp_srange_end_cmp(ab, ob);
+    if (c == 2) return FALSE;
+    if (c == 0) return TRUE;
+  }
+  else if (ab.nil && !ae.nil && ob.nil) return sp_srange_end_cmp(ae, oe) != 2;
+  return !sp_srange_empty_region(ab, ae, a.excl) && !sp_srange_empty_region(ob, oe, ox);
+}
 static sp_bool sp_range_overlap_v(sp_RbVal a, sp_RbVal o) {
+  if (a.tag == SP_TAG_OBJ && a.cls_id == SP_BUILTIN_STR_RANGE && a.v.p) return sp_srange_overlap_v(*(sp_StrRange *)a.v.p, o);
   sp_range_end_t ab, ae, ob, oe; int ax = 0, ox = 0;
   if (!sp_range_ends(a, &ab, &ae, &ax)) sp_raise_nomethod(sp_nomethod_msg("overlap?", a));
   if (!sp_range_ends(o, &ob, &oe, &ox)) {
