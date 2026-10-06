@@ -13059,6 +13059,54 @@ int desugar_const_ivar_access(Compiler *c) {
   return changed;
 }
 
+/* `undef_method :a, "b"` as a statement of a class or module body, every
+   name a literal: the methods it undefines are known when the program is
+   compiled, as `undef a, b` names them -- and that form the analysis reads
+   (register_undefs). The call is rewritten into it. A computed name, or one
+   anywhere else (a method body, a block), stays the call it is. */
+int desugar_literal_undef_method(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, changed = 0;
+  for (int m = 0; m < n0; m++) {
+    NodeKind mk = nt_kind(nt, m);
+    if (mk != NK_ClassNode && mk != NK_ModuleNode) continue;
+    int body = nt_ref(nt, m, "body");
+    if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) continue;
+    int bn = 0; const int *bs = nt_arr(nt, body, "body", &bn);
+    for (int k = 0; k < bn; k++) {
+      int st = bs[k];
+      if (nt_kind(nt, st) != NK_CallNode || nt_ref(nt, st, "block") >= 0) continue;
+      const char *nm = nt_str(nt, st, "name");
+      if (!nm || !sp_streq(nm, "undef_method")) continue;
+      int r = nt_ref(nt, st, "receiver");
+      if (r >= 0 && nt_kind(nt, r) != NK_SelfNode) continue;
+      int args = nt_ref(nt, st, "arguments"), an = 0;
+      const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+      if (an < 1 || an > 64) continue;
+      int ok = 1;
+      for (int a = 0; a < an && ok; a++) ok = sym_or_str_literal(nt, av[a]) != NULL;
+      if (!ok) continue;
+      int names[64];
+      for (int a = 0; a < an; a++) {
+        if (nt_kind(nt, av[a]) == NK_SymbolNode) { names[a] = av[a]; continue; }
+        char v[256]; snprintf(v, sizeof v, "%s", sym_or_str_literal(nt, av[a]));
+        int sy = fwd_new_node_like(nt, av[a], "SymbolNode");
+        nt_node_set_str(nt, sy, "value", v);
+        names[a] = sy;
+      }
+      int line = (int)nt_int(nt, st, "node_line", 0), file = (int)nt_int(nt, st, "node_file", 0);
+      nt_node_reset(nt, st, "UndefNode");
+      nt_node_set_arr(nt, st, "names", names, an);
+      if (line) nt_node_set_int(nt, st, "node_line", line);
+      if (file) nt_node_set_int(nt, st, "node_file", file);
+      changed = 1;
+      bs = nt_arr(nt, body, "body", &bn);
+    }
+  }
+  if (changed) comp_grow_node_arrays(c);
+  return changed;
+}
+
 int desugar_body_ivars(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count, changed = 0;
