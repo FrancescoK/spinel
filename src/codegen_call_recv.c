@@ -13477,8 +13477,8 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
         buf_printf(b, "sp_RbVal _t%d = %s; _t%d.tag == SP_TAG_OBJ &&"
                       " (sp_poly_is_hash_kind(_t%d.cls_id) || sp_poly_is_array_kind(_t%d.cls_id))"
                       " ? sp_poly_dig_n(_t%d, _t%d->len, _t%d->data)"
-                      " : (sp_raise_nomethod(sp_nomethod_msg(\"dig\", _t%d)), sp_box_nil()); })",
-                   tr, rb.p, tr, tr, tr, tr, tk, tk, tr);
+                      " : (sp_raise_nomethod(sp_nomethod_msg_args(\"dig\", _t%d, _t%d->len, _t%d->data)), sp_box_nil()); })",
+                   tr, rb.p, tr, tr, tr, tr, tk, tk, tr, tk, tk);
         free(rb.p);
         if (ch) buf_puts(b, "; })");
         return 1;
