@@ -64,6 +64,17 @@ typedef struct ShareFacts {
   int closed;          /* unions with UNKNOWN are dropped (the stats' second build) */
   int union_stack_cap;
   int *union_stack;
+  /* `k.new(...)` with k a class held in a variable reaches any initialize:
+     its arguments join any_new_pos (by position; the 16th and later share
+     the last) and any_new_kw (its keywords), and its literal blocks
+     any_new_blk, which every initialize takes once after the walk
+     (sh_settle_any_new) */
+  int any_new_pos[16], any_new_kw, any_new_used;
+  int *any_new_blk, nany_blk, cany_blk;
+  /* the attr readers and writers of every class by name, and the method
+     scopes by name, sorted for a binary search (built on first use) */
+  struct ShNamed { const char *name; int k; } *attr_r, *attr_w, *scope_nm;
+  int nattr_r, nattr_w, nscope_nm, named_built;
 } ShareFacts;
 
 /* ---- the union-find ---- */
@@ -220,6 +231,19 @@ static int sh_holder(ShareFacts *F, int kind, int a, int b, const char *name, in
   F->hidx[e] = i;
   F->hnext[i] = F->bucket[hb];
   F->bucket[hb] = i;
+  /* the buckets grow with the holders, so a lookup stays a short chain */
+  if (F->nh > 2 * F->nbucket) {
+    F->nbucket *= 2;
+    F->bucket = realloc(F->bucket, sizeof(int) * (size_t)F->nbucket);
+    for (int k = 0; k < F->nbucket; k++) F->bucket[k] = -1;
+    for (int k = 0; k < F->nh; k++) {
+      ShareHolder *hk = &F->h[k];
+      unsigned b2 = sh_key_hash(hk->kind, hk->kind == SHK_IVAR ? hk->cid : hk->scope, hk->name) &
+                    (unsigned)(F->nbucket - 1);
+      F->hnext[k] = F->bucket[b2];
+      F->bucket[b2] = k;
+    }
+  }
   return e;
 }
 
@@ -268,7 +292,33 @@ static int sh_ivar(ShareFacts *F, Compiler *c, int cid, const char *name, int no
   if (cid < 0 || !name) return -1;
   int iv = comp_ivar_index(&c->classes[cid], name);
   if (iv >= 0 && !sh_may_hold(c->classes[cid].ivar_types[iv])) return -1;
-  return sh_holder(F, SHK_IVAR, cid, -1, name, node);
+  int nh0 = F->nh;
+  int e = sh_holder(F, SHK_IVAR, cid, -1, name, node);
+  /* a superclass's ivar of the name is the same slot of the same object:
+     one written in A#initialize and changed in B#bang (B < A) */
+  if (F->nh > nh0)
+    for (int k = c->classes[cid].parent; k >= 0; k = c->classes[k].parent)
+      if (comp_ivar_index(&c->classes[k], name) >= 0) {
+        sh_union(F, e, sh_ivar(F, c, k, name, node));
+        break;
+      }
+  return e;
+}
+
+/* A String written into ivar holder l from node vn, whose value is v. The
+   holder is one per class but a slot per object: a value the write does
+   not make itself -- a call's answer (`k2.v = k1.v`), a member read, a
+   yield -- may be the String another object's slot already holds, so the
+   class counts as several names (SHF_MULTI). A String of its own (no
+   value) and a read of a holder (itself a name the class counts) do not. */
+static void sh_ivar_store(ShareFacts *F, Compiler *c, int l, int vn, int v) {
+  if (l < 0 || v < 0) return;
+  sh_union(F, l, v);
+  NodeKind k = vn >= 0 ? nt_kind(c->nt, vn) : NK_NilNode;
+  if (k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode || k == NK_GlobalVariableReadNode ||
+      k == NK_ClassVariableReadNode || k == NK_ConstantReadNode || k == NK_ConstantPathNode)
+    return;
+  F->flags[sh_find(F, l)] |= SHF_MULTI;
 }
 
 static int sh_gvar(ShareFacts *F, Compiler *c, const char *name, int node) {
@@ -362,23 +412,29 @@ static int sh_arg_val(ShareFacts *F, Compiler *c, int a) {
 }
 
 /* every value a call's arguments hand over, keyword values included */
+/* (past cap - 1 values, the rest join the last slot: a value dropped there
+   would join no class) */
+static void sh_args_put(ShareFacts *F, int *out, int *n, int cap, int v) {
+  if (*n < cap) out[(*n)++] = v;
+  else out[cap - 1] = sh_join(F, out[cap - 1], v);
+}
 static int sh_args_vals(ShareFacts *F, Compiler *c, int call, int *out, int cap) {
   const NodeTable *nt = c->nt;
   int args = nt_ref(nt, call, "arguments");
   int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
   int n = 0;
-  for (int i = 0; i < argc && n < cap; i++) {
+  for (int i = 0; i < argc; i++) {
     NodeKind k = nt_kind(nt, argv[i]);
     if (k == NK_KeywordHashNode) {
       int en = 0; const int *el = nt_arr(nt, argv[i], "elements", &en);
-      for (int e = 0; e < en && n < cap; e++) {
-        if (nt_kind(nt, el[e]) == NK_AssocNode) out[n++] = sh_val(F, c, nt_ref(nt, el[e], "value"));
-        else out[n++] = sh_arg_val(F, c, el[e]);
+      for (int e = 0; e < en; e++) {
+        if (nt_kind(nt, el[e]) == NK_AssocNode) sh_args_put(F, out, &n, cap, sh_val(F, c, nt_ref(nt, el[e], "value")));
+        else sh_args_put(F, out, &n, cap, sh_arg_val(F, c, el[e]));
       }
       continue;
     }
     if (k == NK_BlockArgumentNode) continue;
-    out[n++] = sh_arg_val(F, c, argv[i]);
+    sh_args_put(F, out, &n, cap, sh_arg_val(F, c, argv[i]));
   }
   return n;
 }
@@ -564,9 +620,13 @@ static void sh_block_to_method(ShareFacts *F, Compiler *c, int blk, int mi) {
   }
 }
 
+static void sh_named_build(ShareFacts *F, Compiler *c);
+static int sh_named_first(const struct ShNamed *a, int n, const char *name);
 /* the user methods a call reaches: its plan's method and, for a switch,
-   every member */
-static int sh_targets(Compiler *c, int call, int *out, int cap) {
+   every member; -1 when they are more than cap (the caller then treats
+   the call as one the walk does not follow, never as fewer methods).
+   With F, the members are found through its index of methods by name. */
+static int sh_targets_in(ShareFacts *F, Compiler *c, int call, int *out, int cap) {
   const CallPlan *p = cplan_user_fresh(c, call);
   if (p->mi < 0 || p->dispatch == CP_REFUSE) return 0;
   CallPlan plan = *p;
@@ -574,12 +634,32 @@ static int sh_targets(Compiler *c, int call, int *out, int cap) {
   out[n++] = plan.mi;
   if (plan.dispatch >= CP_SWITCH) {
     const char *name = c->scopes[plan.mi].name;
-    for (int k = 0; k < c->nscopes && n < cap; k++)
-      if (k != plan.mi && c->scopes[k].name && name && sp_streq(c->scopes[k].name, name) &&
-          cplan_virtual_member(c, call, &plan, k))
+    if (!name) return n;
+    if (F) {
+      sh_named_build(F, c);
+      for (int i = sh_named_first(F->scope_nm, F->nscope_nm, name);
+           i < F->nscope_nm && sp_streq(F->scope_nm[i].name, name); i++) {
+        int k = F->scope_nm[i].k;
+        if (k == plan.mi || !cplan_virtual_member(c, call, &plan, k)) continue;
+        if (n == cap) return -1;
         out[n++] = k;
+      }
+      return n;
+    }
+    for (int k = 0; k < c->nscopes; k++)
+      if (k != plan.mi && c->scopes[k].name && sp_streq(c->scopes[k].name, name) &&
+          cplan_virtual_member(c, call, &plan, k)) {
+        if (n == cap) return -1;
+        out[n++] = k;
+      }
   }
   return n;
+}
+static int sh_targets(Compiler *c, int call, int *out, int cap) { return sh_targets_in(NULL, c, call, out, cap); }
+/* does a call reach a user method (sh_targets != 0), without listing them */
+static int sh_has_targets(Compiler *c, int call) {
+  const CallPlan *p = cplan_user_fresh(c, call);
+  return p->mi >= 0 && p->dispatch != CP_REFUSE;
 }
 
 /* the receiver family a builtin's share row is keyed by */
@@ -590,6 +670,43 @@ static TyKind sh_family(TyKind rt) {
   if (rt == TY_ARGF) return TY_IO;
   if (rt == TY_PROC || rt == TY_METHOD || rt == TY_CURRY) return BOP_CALLABLE;
   return rt;
+}
+
+static int sh_named_cmp(const void *a, const void *b) {
+  int d = strcmp(((const struct ShNamed *)a)->name, ((const struct ShNamed *)b)->name);
+  return d ? d : ((const struct ShNamed *)a)->k - ((const struct ShNamed *)b)->k;
+}
+/* the indexes by name the walk asks per call, so a call costs a search
+   rather than a pass over every class or method */
+static void sh_named_build(ShareFacts *F, Compiler *c) {
+  if (F->named_built) return;
+  F->named_built = 1;
+  int nr = 0, nw = 0;
+  for (int k = 0; k < c->nclasses; k++) { nr += c->classes[k].nreaders; nw += c->classes[k].nwriters; }
+  F->attr_r = malloc(sizeof *F->attr_r * (size_t)(nr + 1));
+  F->attr_w = malloc(sizeof *F->attr_w * (size_t)(nw + 1));
+  F->scope_nm = malloc(sizeof *F->scope_nm * (size_t)(c->nscopes + 1));
+  for (int k = 0; k < c->nclasses; k++) {
+    ClassInfo *ci = &c->classes[k];
+    for (int i = 0; i < ci->nreaders; i++)
+      if (ci->readers[i]) F->attr_r[F->nattr_r++] = (struct ShNamed){ ci->readers[i], k };
+    for (int i = 0; i < ci->nwriters; i++)
+      if (ci->writers[i]) F->attr_w[F->nattr_w++] = (struct ShNamed){ ci->writers[i], k };
+  }
+  for (int k = 0; k < c->nscopes; k++)
+    if (c->scopes[k].name) F->scope_nm[F->nscope_nm++] = (struct ShNamed){ c->scopes[k].name, k };
+  qsort(F->attr_r, (size_t)F->nattr_r, sizeof *F->attr_r, sh_named_cmp);
+  qsort(F->attr_w, (size_t)F->nattr_w, sizeof *F->attr_w, sh_named_cmp);
+  qsort(F->scope_nm, (size_t)F->nscope_nm, sizeof *F->scope_nm, sh_named_cmp);
+}
+/* the first entry of a sorted index whose name is `name` (n when none) */
+static int sh_named_first(const struct ShNamed *a, int n, const char *name) {
+  int lo = 0, hi = n;
+  while (lo < hi) {
+    int mid = (lo + hi) / 2;
+    if (strcmp(a[mid].name, name) < 0) lo = mid + 1; else hi = mid;
+  }
+  return lo;
 }
 
 /* The ivars the attr readers (or, for `x=`, the writers) of the name on any
@@ -604,13 +721,11 @@ static int sh_attr_ivars(ShareFacts *F, Compiler *c, const char *name, int node,
   memcpy(base + 1, name, ln - (size_t)*writer);
   base[1 + ln - (size_t)*writer] = 0;
   int r = -1;
-  for (int k = 0; k < c->nclasses; k++) {
-    ClassInfo *ci = &c->classes[k];
-    char **names = *writer ? ci->writers : ci->readers;
-    int nn = *writer ? ci->nwriters : ci->nreaders;
-    for (int i = 0; i < nn; i++)
-      if (names[i] && sp_streq(names[i], base + 1)) r = sh_join(F, r, sh_ivar(F, c, k, base, node));
-  }
+  sh_named_build(F, c);
+  const struct ShNamed *a = *writer ? F->attr_w : F->attr_r;
+  int na = *writer ? F->nattr_w : F->nattr_r;
+  for (int i = sh_named_first(a, na, base + 1); i < na && sp_streq(a[i].name, base + 1); i++)
+    r = sh_join(F, r, sh_ivar(F, c, a[i].k, base, node));
   return r;
 }
 
@@ -765,7 +880,7 @@ static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int 
     int cid = ty_is_object(rt) ? ty_object_class(rt) : rt == TY_VOID ? sh_ivar_owner(c, n) : -1;
     int iv = lit && cid >= 0 ? sh_ivar(F, c, cid, lit, n) : -1;
     if (!lit || cid < 0) { F->dyn_ivars = 1; iv = F->unknown; }
-    if (share == BSH_IVAR_SET && nv >= 2) sh_union(F, iv, vals[1]);
+    if (share == BSH_IVAR_SET && nv >= 2) sh_ivar_store(F, c, iv, argc >= 2 ? argv[1] : -1, vals[1]);
     return iv;
   }
   case BSH_EXEC:
@@ -825,9 +940,11 @@ static int sh_new_call(ShareFacts *F, Compiler *c, int n, int recv, int blk) {
   if (ci->is_struct) {
     int vals[64];
     int nv = sh_args_vals(F, c, n, vals, 64);
+    int args = nt_ref(nt, n, "arguments"), argc = 0;
+    const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
     for (int i = 0; i < ci->nivars; i++) {
       int iv = sh_ivar(F, c, cid, ci->ivars[i], n);
-      for (int k = 0; k < nv; k++) sh_union(F, iv, vals[k]);
+      for (int k = 0; k < nv; k++) sh_ivar_store(F, c, iv, argc == nv ? argv[k] : -1, vals[k]);
     }
     return -1;
   }
@@ -881,17 +998,46 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
 
   /* a user method */
   int tg[64];
-  int ntg = sh_targets(c, n, tg, 64);
+  int ntg = sh_targets_in(F, c, n, tg, 64);
+  if (ntg < 0) return sh_unknown_call(F, c, n, blk);
   if (ntg == 0 && recv >= 0 && bop_share_named(BOP_ANY_RECV, name) == BSH_NEW) {
     int r = sh_new_call(F, c, n, recv, blk);
     if (r != -2) return r;
     if (rt == TY_CLASS || rt == TY_POLY || rt == TY_UNKNOWN) {
-      /* a class held in a variable: any initialize */
-      for (int k = 0; k < c->nscopes; k++)
-        if (c->scopes[k].def_node >= 0 && comp_method_in_class(c, c->scopes[k].class_id, "initialize") == k) {
-          sh_bind(F, c, n, k);
-          if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode) sh_block_to_method(F, c, blk, k);
+      /* a class held in a variable: any initialize. Its arguments join
+         any_new_pos and any_new_kw, and its block the list every
+         initialize takes once after the walk (sh_settle_any_new): binding
+         each such call to every initialize was a pass over every method
+         per call. */
+      F->any_new_used = 1;
+      for (int i = 0, pos = 0; i < argc; i++) {
+        NodeKind ak = nt_kind(nt, argv[i]);
+        if (ak == NK_BlockArgumentNode) continue;
+        if (ak == NK_KeywordHashNode) {
+          int en = 0; const int *el = nt_arr(nt, argv[i], "elements", &en);
+          for (int e = 0; e < en; e++) {
+            int ev = nt_kind(nt, el[e]) == NK_AssocNode ? sh_val(F, c, nt_ref(nt, el[e], "value")) : sh_arg_val(F, c, el[e]);
+            if (F->any_new_kw < 0) F->any_new_kw = sh_new(F, SHK_VALUE);
+            sh_union(F, F->any_new_kw, ev);
+          }
+          continue;
         }
+        /* a splat may land in any position */
+        int v = sh_arg_val(F, c, argv[i]);
+        for (int j = ak == NK_SplatNode ? 0 : (pos < 16 ? pos : 15); j < 16; j++) {
+          if (F->any_new_pos[j] < 0) F->any_new_pos[j] = sh_new(F, SHK_VALUE);
+          sh_union(F, F->any_new_pos[j], ak == NK_SplatNode ? sh_elem(F, v) : v);
+          if (ak != NK_SplatNode) break;
+        }
+        pos++;
+      }
+      if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode) {
+        if (F->nany_blk >= F->cany_blk) {
+          F->cany_blk = F->cany_blk ? F->cany_blk * 2 : 8;
+          F->any_new_blk = realloc(F->any_new_blk, sizeof(int) * (size_t)F->cany_blk);
+        }
+        F->any_new_blk[F->nany_blk++] = blk;
+      }
       return sh_join(F, -1, rt == TY_CLASS ? -1 : sh_unknown_call(F, c, n, blk));
     }
   }
@@ -920,7 +1066,7 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
       if (writer) {
         int vals[1];
         int nv = sh_args_vals(F, c, n, vals, 1);
-        if (nv == 1) sh_union(F, iv, vals[0]);
+        if (nv == 1) sh_ivar_store(F, c, iv, argc == 1 ? argv[0] : -1, vals[0]);
         r = nv == 1 ? vals[0] : -1;
       }
       if (rt != TY_POLY && rt != TY_UNKNOWN) return r;
@@ -963,7 +1109,8 @@ static int sh_super(ShareFacts *F, Compiler *c, int n) {
   const NodeTable *nt = c->nt;
   int blk = nt_ref(nt, n, "block");
   int tg[64];
-  int ntg = sh_targets(c, n, tg, 64);
+  int ntg = sh_targets_in(F, c, n, tg, 64);
+  if (ntg < 0) return sh_unknown_call(F, c, n, blk);
   int cur = sh_method_index(c, n);
   int r = -1;
   for (int i = 0; i < ntg; i++) {
@@ -1015,7 +1162,7 @@ static int sh_val_compute(ShareFacts *F, Compiler *c, int n) {
   case NK_InstanceVariableAndWriteNode: case NK_InstanceVariableOperatorWriteNode: {
     int l = sh_ivar(F, c, sh_ivar_owner(c, n), nt_str(nt, n, "name"), n);
     int v = sh_val(F, c, nt_ref(nt, n, "value"));
-    if (nt_kind(nt, n) != NK_InstanceVariableOperatorWriteNode) sh_union(F, l, v);
+    if (nt_kind(nt, n) != NK_InstanceVariableOperatorWriteNode) sh_ivar_store(F, c, l, nt_ref(nt, n, "value"), v);
     return l;
   }
   case NK_GlobalVariableReadNode:
@@ -1148,7 +1295,7 @@ static int sh_val_compute(ShareFacts *F, Compiler *c, int n) {
     int writer = 0;
     int iv = rn ? sh_attr_ivars(F, c, rn, n, &writer) : -1;
     if (iv < 0) { sh_union(F, v, F->unknown); return F->unknown; }
-    sh_union(F, iv, v);
+    sh_ivar_store(F, c, iv, nt_ref(nt, n, "value"), v);
     return iv;
   }
   case NK_ForNode:
@@ -1358,6 +1505,59 @@ static int sh_const_read(ShareFacts *F, Compiler *c, int n) {
   return t == TY_STRING || t == TY_STRBUF ? -1 : sh_holder(F, SHK_CONST, 0, -1, nm, n);
 }
 
+/* Every class's initialize (the last def of the name in it) takes what a
+   `k.new(...)` on a class held in a variable hands it: the arguments joined
+   in any_new reach each of its parameters, and each block it is given. */
+static void sh_settle_any_new(ShareFacts *F, Compiler *c) {
+  if (!F->any_new_used && F->nany_blk == 0) return;
+  const NodeTable *nt = c->nt;
+  int *last = malloc(sizeof(int) * (size_t)(c->nclasses > 0 ? c->nclasses : 1));
+  for (int k = 0; k < c->nclasses; k++) last[k] = -1;
+  for (int k = 0; k < c->nclasses; k++) {
+    int s = comp_method_in_class(c, k, "initialize");
+    if (s >= 0 && c->scopes[s].def_node >= 0 && !c->scopes[s].is_cmethod) last[k] = s;
+  }
+  for (int k = 0; k < c->nclasses; k++) {
+    int mi = last[k];
+    if (mi < 0) continue;
+    Scope *m = &c->scopes[mi];
+    int pn = nt_ref(nt, m->def_node, "parameters");
+    if (F->any_new_used && pn >= 0) {
+      int nr = 0, no = 0, npo = 0, nk = 0;
+      const int *rq = nt_arr(nt, pn, "requireds", &nr), *op = nt_arr(nt, pn, "optionals", &no);
+      const int *po = nt_arr(nt, pn, "posts", &npo), *kw = nt_arr(nt, pn, "keywords", &nk);
+      int rest = nt_ref(nt, pn, "rest"), kwr = nt_ref(nt, pn, "keyword_rest");
+      /* a required after an optional or a rest takes a position only the
+         call's own count decides: each positional parameter then takes
+         every position */
+      int irregular = npo > 0;
+      for (int j = 0; j < nr + no + npo; j++) {
+        int pnode = j < nr ? rq[j] : j < nr + no ? op[j - nr] : po[j - nr - no];
+        const char *pnm = nt_str(nt, pnode, "name");
+        int p = pnm ? sh_local_of(F, c, m, pnm, m->def_node) : -1;
+        if (p < 0) continue;
+        if (irregular) { for (int b = 0; b < 16; b++) if (F->any_new_pos[b] >= 0) sh_union(F, p, F->any_new_pos[b]); }
+        else if (j < 15) { if (F->any_new_pos[j] >= 0) sh_union(F, p, F->any_new_pos[j]); }
+        else if (F->any_new_pos[15] >= 0) sh_union(F, p, F->any_new_pos[15]);
+      }
+      if (rest >= 0 && nt_str(nt, rest, "name")) {
+        int p = sh_local_of(F, c, m, nt_str(nt, rest, "name"), m->def_node);
+        for (int b = nr + no < 16 ? nr + no : 15; b < 16; b++)
+          if (F->any_new_pos[b] >= 0) sh_union(F, sh_elem(F, p), F->any_new_pos[b]);
+      }
+      for (int j = 0; j < nk; j++) {
+        const char *pnm = nt_str(nt, kw[j], "name");
+        int p = pnm ? sh_local_of(F, c, m, pnm, m->def_node) : -1;
+        if (F->any_new_kw >= 0) sh_union(F, p, F->any_new_kw);
+      }
+      if (kwr >= 0 && nt_str(nt, kwr, "name") && F->any_new_kw >= 0)
+        sh_union(F, sh_elem(F, sh_local_of(F, c, m, nt_str(nt, kwr, "name"), m->def_node)), F->any_new_kw);
+    }
+    for (int b = 0; b < F->nany_blk; b++) sh_block_to_method(F, c, F->any_new_blk[b], mi);
+  }
+  free(last);
+}
+
 static void sh_free(ShareFacts *F) {
   if (!F) return;
   for (int i = 0; i < F->nh; i++) free((char *)F->h[i].name);
@@ -1369,13 +1569,69 @@ static void sh_free(ShareFacts *F) {
   free(F->h); free(F->helem); free(F->bucket); free(F->hnext); free(F->nval);
   free(F->lend_arg); free(F->lend_par); free(F->lend_direct); free(F->lend_done);
   free(F->dyn); free(F->union_stack);
+  free(F->any_new_blk); free(F->attr_r); free(F->attr_w); free(F->scope_nm);
   free(F);
+}
+
+/* Node n's value is dropped, and so is that of each node whose value n
+   forwards as its own (sh_val's arms): a body's last statement, a
+   conditional's or a case's branches, a begin's, its rescues' and its
+   else's, parentheses, and the operands of `&&`, `||` and a rescue
+   modifier. `if c then p a, b end` as a statement keeps neither a nor b. */
+static void sh_mark_unused(ShareFacts *F, const NodeTable *nt, int n) {
+  if (n < 0 || n >= F->nnodes) return;
+  F->unused[n] = 1;
+  switch (nt_kind(nt, n)) {
+  case NK_StatementsNode: {
+    int bn = 0; const int *bv = nt_arr(nt, n, "body", &bn);
+    if (bn > 0) sh_mark_unused(F, nt, bv[bn - 1]);
+    return;
+  }
+  case NK_ParenthesesNode:
+    sh_mark_unused(F, nt, nt_ref(nt, n, "body"));
+    return;
+  case NK_BeginNode: {
+    sh_mark_unused(F, nt, nt_ref(nt, n, "statements"));
+    for (int rc = nt_ref(nt, n, "rescue_clause"); rc >= 0; rc = nt_ref(nt, rc, "subsequent"))
+      sh_mark_unused(F, nt, nt_ref(nt, rc, "statements"));
+    int el = nt_ref(nt, n, "else_clause");
+    if (el >= 0) sh_mark_unused(F, nt, el);
+    return;
+  }
+  case NK_IfNode:
+    sh_mark_unused(F, nt, nt_ref(nt, n, "statements"));
+    sh_mark_unused(F, nt, nt_ref(nt, n, "subsequent"));
+    return;
+  case NK_UnlessNode:
+    sh_mark_unused(F, nt, nt_ref(nt, n, "statements"));
+    sh_mark_unused(F, nt, nt_ref(nt, n, "else_clause"));
+    return;
+  case NK_ElseNode:
+    sh_mark_unused(F, nt, nt_ref(nt, n, "statements"));
+    return;
+  case NK_CaseNode: case NK_CaseMatchNode: {
+    int nw = 0; const int *ws = nt_arr(nt, n, "conditions", &nw);
+    for (int i = 0; i < nw; i++) sh_mark_unused(F, nt, nt_ref(nt, ws[i], "statements"));
+    sh_mark_unused(F, nt, nt_ref(nt, n, "else_clause"));
+    return;
+  }
+  case NK_AndNode: case NK_OrNode:
+    sh_mark_unused(F, nt, nt_ref(nt, n, "left"));
+    sh_mark_unused(F, nt, nt_ref(nt, n, "right"));
+    return;
+  case NK_RescueModifierNode:
+    sh_mark_unused(F, nt, nt_ref(nt, n, "expression"));
+    sh_mark_unused(F, nt, nt_ref(nt, n, "rescue_expression"));
+    return;
+  default:
+    return;
+  }
 }
 
 /* the last statement of statements node st drops its value */
 static void sh_mark_last_unused(ShareFacts *F, const NodeTable *nt, int st) {
   int bn = 0; const int *bv = st >= 0 && nt_kind(nt, st) == NK_StatementsNode ? nt_arr(nt, st, "body", &bn) : NULL;
-  if (bn > 0 && bv[bn - 1] >= 0 && bv[bn - 1] < F->nnodes) F->unused[bv[bn - 1]] = 1;
+  if (bn > 0) sh_mark_unused(F, nt, bv[bn - 1]);
 }
 
 static ShareFacts *sh_build(Compiler *c, int closed) {
@@ -1385,6 +1641,8 @@ static ShareFacts *sh_build(Compiler *c, int closed) {
   F->unknown = sh_new(F, SHK_UNKNOWN);
   F->flags[F->unknown] = SHF_UNKNOWN;
   F->elem[F->unknown] = F->unknown;
+  for (int j = 0; j < 16; j++) F->any_new_pos[j] = -1;
+  F->any_new_kw = -1;
   F->nnodes = nt->count;
   F->nval = malloc(sizeof(int) * (size_t)(F->nnodes > 0 ? F->nnodes : 1));
   for (int i = 0; i < F->nnodes; i++) F->nval[i] = -2;
@@ -1392,7 +1650,7 @@ static ShareFacts *sh_build(Compiler *c, int closed) {
   F->unused = calloc((size_t)(F->nnodes > 0 ? F->nnodes : 1), 1);
   NT_FOREACH_KIND(nt, NK_StatementsNode, st) {
     int bn = 0; const int *bv = nt_arr(nt, st, "body", &bn);
-    for (int i = 0; i + 1 < bn; i++) if (bv[i] >= 0 && bv[i] < F->nnodes) F->unused[bv[i]] = 1;
+    for (int i = 0; i + 1 < bn; i++) sh_mark_unused(F, nt, bv[i]);
   }
   /* the program's last statement, and a class body's, answer nothing */
   for (int k = 0; k < 3; k++) {
@@ -1405,6 +1663,7 @@ static ShareFacts *sh_build(Compiler *c, int closed) {
     NT_FOREACH_KIND(nt, k == 1 ? NK_ClassNode : NK_ModuleNode, pn) sh_mark_last_unused(F, nt, nt_ref(nt, pn, "body"));
   }
   for (int n = 0; n < F->nnodes; n++) sh_val(F, c, n);
+  sh_settle_any_new(F, c);
   /* each method's value is its body's last, and its defaults bind its
      parameters */
   for (int mi = 0; mi < c->nscopes; mi++) {
