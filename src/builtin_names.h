@@ -49,6 +49,7 @@ int is_call_or_yield(const char *n);  /* call () [] yield: is_call_alias's names
 int is_proc_invoke(const char *n);    /* call () [] yield ===: every name that invokes a Proc */
 int is_quantifier_or_count(const char *n);  /* all? any? none? one? count: is_quantifier's names and count */
 int is_push_unshift(const char *n);   /* << push append unshift: is_push_alias's names and unshift */
+int is_identity_query(const char *n); /* equal? object_id __id__ frozen?: tells an object from its copy */
 int is_len_alias(const char *n);      /* length size */
 int is_str_each_iter(const char *n);  /* each_char each_line each_byte each_codepoint: String's element iterators */
 int is_diverging_call(const char *n); /* raise fail throw exit exit! abort: a Kernel call that never returns */
@@ -214,5 +215,10 @@ int is_positional_io(const char *n); /* pread / pwrite: IO at an offset */
 /* Array subclasses (#7449) */
 int is_arysub_object_name(const char *n);        /* class is_a? dup ...: the object, not its elements */
 int is_arysub_kernel_name(const char *n);        /* to_enum frozen? != ...: answered as the Array */
+
+/* The Array adders the element store (strbuf_container_store_values) does
+   not take: concat (of a literal), insert and prepend. */
+enum { ARRAY_ADD_NONE, ARRAY_ADD_CONCAT, ARRAY_ADD_INSERT, ARRAY_ADD_PREPEND };
+int array_unseen_add_kind(const char *n);
 
 #endif

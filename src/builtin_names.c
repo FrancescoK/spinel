@@ -193,6 +193,12 @@ int is_push_unshift(const char *n) {
          sp_streq(n, "unshift");
 }
 
+/* A call whose answer tells an object from a copy of it: its identity, or
+   whether it is frozen (a copy of a String later frozen is not). */
+int is_identity_query(const char *n) {
+  return sp_streq(n, "equal?") || sp_streq(n, "object_id") || sp_streq(n, "__id__") || sp_streq(n, "frozen?");
+}
+
 int is_len_alias(const char *n) {
   return sp_streq(n, "length") || sp_streq(n, "size");
 }
@@ -869,4 +875,11 @@ int is_arysub_object_name(const char *n) {
    Array's frozen flag, != negates Array#==. */
 int is_arysub_kernel_name(const char *n) {
   return sp_streq(n, "to_enum") || sp_streq(n, "enum_for") || sp_streq(n, "frozen?") || sp_streq(n, "!=");
+}
+
+int array_unseen_add_kind(const char *n) {
+  if (sp_streq(n, "concat")) return ARRAY_ADD_CONCAT;
+  if (sp_streq(n, "insert")) return ARRAY_ADD_INSERT;
+  if (sp_streq(n, "prepend")) return ARRAY_ADD_PREPEND;
+  return ARRAY_ADD_NONE;
 }
