@@ -30924,6 +30924,52 @@ static void an_round_cap_step(Compiler *c, AnRoundCap *rc, int iter) {
 }
 
 /* The inference fixpoint: two rounds with the proc-form clones made between them, then the optimistic re-narrow of the slots a transient poly locked (analyze_program's steps, in their order) */
+/* Is every write of local `nm` in scope `s` a plain `x = []`: no multiple
+   assignment, `rescue =>` or `for` target, no `||=`, `&&=` or operator
+   write (local_all_writes_empty_array asks the plain writes only)? */
+static int local_only_empty_array_writes(Compiler *c, Scope *s, const char *nm) {
+  const NodeTable *nt = c->nt;
+  if (!local_all_writes_empty_array(c, s, nm)) return 0;
+  const NodeKind other[] = { NK_LocalVariableTargetNode, NK_LocalVariableOrWriteNode,
+                             NK_LocalVariableAndWriteNode, NK_LocalVariableOperatorWriteNode };
+  for (int k = 0; k < 4; k++)
+    NT_FOREACH_KIND(nt, other[k], w) {
+      const char *wn = nt_str(nt, w, "name");
+      if (wn && sp_streq(wn, nm) && comp_scope_of(c, w) == s) return 0;
+    }
+  return 1;
+}
+
+/* A local every write of which is an empty `[]` (or a bare `Array.new`)
+   holds an Array no element ever typed: the boxed one, which
+   an_phase_post_fixpoint's backstop gives it. Given only after the
+   fixpoint, the calls on it had been typed while the local had no type, or
+   the boxed scalar's a later index write gives it, and such a call reached
+   emit_call_body's NoMethodError gate -- `a = []; a.min_by { }`, `a.tally`,
+   `a.find_all { }`, `a[5] = 3; a.rfind { }` raised "undefined method ...
+   for an instance of Array". Given once the fixpoint converges, the rounds
+   after it type those calls as Array calls; the round's reset carries the
+   type on through the empty literal's write (its stashed type). Answers
+   whether it typed any. */
+static int type_empty_array_locals(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int changed = 0;
+  NT_FOREACH_KIND(nt, NK_LocalVariableWriteNode, id) {
+    int v = nt_ref(nt, id, "value");
+    NodeKind vk = nt_kind(nt, v);
+    if ((vk != NK_ArrayNode && vk != NK_CallNode) || an_empty_container_kind(c, v) != 1) continue;
+    const char *nm = nt_str(nt, id, "name");
+    Scope *s = nm ? comp_scope_of(c, id) : NULL;
+    LocalVar *lv = s ? scope_local(s, nm) : NULL;
+    if (!lv || lv->rbs_seeded || lv->is_param || lv->is_block_param ||
+        (lv->type != TY_UNKNOWN && lv->type != TY_POLY) || !local_only_empty_array_writes(c, s, nm))
+      continue;
+    lv->type = TY_POLY_ARRAY;
+    changed = 1;
+  }
+  return changed;
+}
+
 static void an_phase_infer_fixpoint(Compiler *c) {
   g_fixpoint_rounds = 0;
   g_fixpoint_capped = 0;
@@ -30934,6 +30980,7 @@ static void an_phase_infer_fixpoint(Compiler *c) {
   for (int pf_round = 0; pf_round < 2; pf_round++) {
   if (pf_round == 1 && !make_yield_proc_forms(c)) break;
   g_infer_optimistic = 1;
+  int empty_locals_typed = 0;
   AnRoundCap rc = { 128, 0, 0, NULL, 0 };
   for (int iter = 0; iter < rc.cap; iter++) {
     if (iter + 1 > g_fixpoint_rounds) g_fixpoint_rounds = iter + 1;
@@ -31118,6 +31165,13 @@ static void an_phase_infer_fixpoint(Compiler *c) {
         g_final_bind_pass = 1;
         ch = infer_param_types(c);
         g_final_bind_pass = 0;
+      }
+      /* ...and a local every write of which is an empty `[]` takes the
+         boxed Array here, once, so the rounds after it type the calls on
+         it as Array calls (type_empty_array_locals) */
+      if (!ch && !empty_locals_typed) {
+        empty_locals_typed = 1;
+        ch = type_empty_array_locals(c);
       }
       if (!ch && !desugar_mutator_recv_rebind(c)) break;
     }
