@@ -3823,6 +3823,12 @@ static SP_INLINE sp_RbVal sp_poly_coll_chk(sp_RbVal v, const char *m) {
     sp_raise_poly_nomethod(m, v);
   return v;
 }
+/* A boxed value with none of Enumerable's methods (count, sum): nil, a
+   number, a boolean or a Symbol. A String's count and sum are its own. */
+static SP_INLINE SP_UNUSED int sp_poly_no_enum(sp_RbVal v) {
+  return v.tag == SP_TAG_NIL || v.tag == SP_TAG_INT || v.tag == SP_TAG_FLT ||
+         v.tag == SP_TAG_BIGINT || v.tag == SP_TAG_BOOL || v.tag == SP_TAG_SYM;
+}
 /* An Array method Hash and String lack (last, rotate, sample, join, ...)
    reached through a boxed receiver. The span helpers read any collection as
    its elements, so a Hash answered its [k, v] pairs and a String or Range its
@@ -11159,6 +11165,12 @@ static sp_int sp_poly_count_val(sp_RbVal v, sp_RbVal x) {
     const char *ap = sp_poly_arg_str_chk(a);
     return sp_str_count(s.v.s ? s.v.s : (&("\xff")[1]), ap ? ap : (&("\xff")[1]));
   }
+  /* nil, a number, a boolean or a Symbol has no count: it answered 0 */
+  if (sp_poly_no_enum(v)) {
+    /* held across the message's allocations, as the sum arm holds its seed */
+    SP_GC_ROOT_RBVAL(v); SP_GC_ROOT_RBVAL(x);
+    sp_raise_nomethod(sp_nomethod_msg_args("count", v, 1, &x));
+  }
   if (v.tag != SP_TAG_OBJ) return 0;
   /* A Hash counts its [key, value] pairs, a Range its members and an
      Enumerator its values (sp_enum_items_from), as the typed receivers do;
@@ -11594,6 +11606,8 @@ static sp_RbVal sp_poly_sum_seed(sp_RbVal v, sp_RbVal seed) {
      express -- and with no arm at all it simply handed the seed back. */
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_RANGE && v.v.p)
     return sp_range_sum_seed(*(sp_Range *)v.v.p, seed);
+  /* nil, a number, a boolean or a Symbol has no sum: it answered the seed */
+  if (sp_poly_no_enum(v)) sp_raise_nomethod(sp_nomethod_msg_args("sum", v, 1, &seed));
   SP_GC_ROOT_RBVAL(v);
   SP_GC_ROOT_RBVAL(seed);
   /* The elements Enumerable#sum folds: an array's own, a Hash's [k, v] pairs,
