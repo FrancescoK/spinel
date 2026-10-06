@@ -50,9 +50,10 @@ static const PolyFace ty_poly_face_tbl[] = {
      takes the row above; blockless bsearch answers an Enumerator no typed
      emitter builds.
      An Array owns bsearch too: a row for the name decides every receiver
-     kind, so leaving it out made a boxed Array's bsearch a NoMethodError. */
+     kind, so leaving it out made a boxed Array's bsearch a NoMethodError.
+     A String Range's bsearch is its TypeError, raised by its own row. */
   {"step", PF_RANGE | PF_FRANGE | PF_SRANGE, 0, 1, 1},
-  {"bsearch", PF_ARRAY | PF_RANGE | PF_FRANGE, 0, 0, 1},
+  {"bsearch", PF_ARRAY | PF_RANGE | PF_FRANGE | PF_SRANGE, 0, 0, 1},
   /* minmax is Range's own, read off the endpoints (a Float Range cannot be
      walked), beside the Enumerable row below that walks a collection */
   {"minmax", PF_RANGE | PF_FRANGE | PF_SRANGE, 0, 0, -1},
