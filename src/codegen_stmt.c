@@ -13237,12 +13237,13 @@ static int str_append_chain_base(Compiler *c, int id) {
 /* The same walk for an aliasing write (`t = s << x`, `t = s.to_s`): it also
    steps through a String call whose value is its receiver (str_self_call), as
    the analysis's an_strbuf_alias_source does, so the local the write shares
-   with is the one the chain ran on. */
+   with is the one the chain ran on. Under --share-strings a prepend of
+   several Strings answers its receiver too (str_prepend_many). */
 static int str_alias_chain_base(Compiler *c, int id) {
   int cur = id;
   for (;;) {
     cur = str_append_chain_base(c, cur);
-    if (!str_self_call(c->nt, cur)) return cur;
+    if (!str_self_call(c->nt, cur) && !(repr_share_rule(c) && str_prepend_many(c->nt, cur))) return cur;
     cur = nt_ref(c->nt, cur, "receiver");
   }
 }
