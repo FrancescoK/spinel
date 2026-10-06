@@ -2640,6 +2640,46 @@ void emit_op_assign(Compiler *c, int id, Buf *b, int indent) {
 
 /* ---- control flow ---- */
 
+/* `a && b` / `a || b` as a condition asks only whether its value is truthy,
+   and that value is one of the operands: truthy(a) && truthy(b), and
+   truthy(a) || truthy(b), with C's short circuit evaluating b exactly when
+   Ruby does. Each operand is tested in its own representation. The value
+   itself, when the operands' kinds differ, is a box: `if @lc && @lc.count ==
+   0` built `p ? sp_box_bool(..) : sp_box_nullable_obj(p, 0)` to hand it to
+   sp_poly_truthy, a box per test. An operand without a type the test reads
+   keeps the value's own path. A boolean value is already tested that way. */
+static int cond_operand_testable(Compiler *c, int v) {
+  TyKind vt = comp_ntype(c, v);
+  return v >= 0 && vt != TY_UNKNOWN && vt != TY_VOID;
+}
+static int emit_cond_andor(Compiler *c, int id, TyKind t, Buf *b) {
+  const NodeTable *nt = c->nt;
+  NodeKind k = nt_kind(nt, id);
+  if ((k != NK_AndNode && k != NK_OrNode) || t == TY_BOOL) return 0;
+  int l = nt_ref(nt, id, "left"), r = nt_ref(nt, id, "right");
+  if (!cond_operand_testable(c, l) || !cond_operand_testable(c, r)) return 0;
+  /* the right operand's prelude (a rooted temp it hoists) runs inside the
+     short circuit, after the left and only when Ruby evaluates the right,
+     as the value form keeps it (#1773) */
+  Buf lc; memset(&lc, 0, sizeof lc);
+  emit_cond(c, l, &lc);
+  Buf rc; memset(&rc, 0, sizeof rc);
+  Buf rpre; memset(&rpre, 0, sizeof rpre);
+  { Buf *sv = g_pre; g_pre = &rpre; emit_cond(c, r, &rc); g_pre = sv; }
+  const char *lt = lc.p ? lc.p : "0", *rt = rc.p ? rc.p : "0";
+  if (!(rpre.p && rpre.p[0]))
+    buf_printf(b, "(%s %s %s)", lt, k == NK_AndNode ? "&&" : "||", rt);
+  else {
+    int tr = ++g_tmp;
+    if (k == NK_AndNode) buf_printf(b, "({ sp_bool _t%d; if (%s) {\n%s_t%d = %s;\n}\nelse { _t%d = 0; } _t%d; })",
+                                    tr, lt, rpre.p, tr, rt, tr, tr);
+    else buf_printf(b, "({ sp_bool _t%d; if (%s) { _t%d = 1; }\nelse {\n%s_t%d = %s;\n} _t%d; })",
+                    tr, lt, tr, rpre.p, tr, rt, tr);
+  }
+  free(lc.p); free(rc.p); free(rpre.p);
+  return 1;
+}
+
 void emit_cond(Compiler *c, int id, Buf *b) {
   /* A yield whose block, at the site being inlined, ends in a call no class
      answers: the resolution gate lowers that call to its NoMethodError raise
@@ -2693,6 +2733,7 @@ void emit_cond(Compiler *c, int id, Buf *b) {
     }
   }
   TyKind t = comp_ntype(c, id);
+  if (emit_cond_andor(c, id, t, b)) return;
   if (t == TY_POLY) { buf_puts(b, "sp_poly_truthy("); emit_expr(c, id, b); buf_puts(b, ")"); return; }
   if (t == TY_NIL)  { buf_puts(b, "(("); emit_expr(c, id, b); buf_puts(b, "), 0)"); return; }
   /* Ruby truthiness: only nil and false are falsy. A nullable scalar reads
