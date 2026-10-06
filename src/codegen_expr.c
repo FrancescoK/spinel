@@ -872,6 +872,22 @@ void emit_slot_nil_test(Compiler *c, TyKind t, int tmp, int want_nil, Buf *b) {
 /* The zero for a result slot of this type. default_value answers NULL for an
    object, which suits a pointer-backed class and not a by-value one, whose C
    representation is a bare struct -- `sp_Frame _t9 = NULL` is not valid C. */
+/* The test in front of a splat's walk of the Integer Range `r` (`[*r]`):
+   an endless one cannot convert, and a beginless one has nothing to start
+   from, as sp_range_to_ia raises. The walk read the INTPTR_MIN/MAX markers
+   as bounds and looped from INTPTR_MIN, or overflowed its end. A literal
+   with two Integer literal bounds has both, and needs none. */
+static const char *range_splat_guard(Compiler *c, int r) {
+  const NodeTable *nt = c->nt;
+  int u = unwrap_parens(c, r);
+  if (u >= 0 && nt_kind(nt, u) == NK_RangeNode) {
+    int lo = nt_ref(nt, u, "left"), hi = nt_ref(nt, u, "right");
+    if (lo >= 0 && hi >= 0 && nt_kind(nt, lo) == NK_IntegerNode && nt_kind(nt, hi) == NK_IntegerNode) return "";
+  }
+  return " if (_sr.last == INTPTR_MAX) sp_raise_cls(\"RangeError\", \"cannot convert endless range to an array\");"
+         " if (_sr.first == INTPTR_MIN) sp_range_nil_begin_raise();";
+}
+
 static const char *slot_zero(Compiler *c, TyKind t) {
   if (comp_ty_value_obj(c, t)) return raise_tail_value_c(c, t);
   return default_value_from_compiler(c, t);
@@ -2842,7 +2858,7 @@ static int emit_array_hash_literal_expr(Compiler *c, int id, Buf *b, const NodeT
               /* a String Range held in a variable: its bounds are in the value */
               buf_printf(g_pre, "{ sp_StrArray *_sa = sp_srange_to_a(%s); if (_sa) for (sp_int _si = 0; _si < _sa->len; _si++) sp_PolyArray_push(_t%d, sp_box_str(_sa->data[_si])); }\n", ep, t);
             else {
-              buf_printf(g_pre, "{ sp_Range _sr = %s; sp_int _e = _sr.last+(_sr.excl?0:1); for (sp_int _si = _sr.first; _si < _e; _si++) sp_PolyArray_push(_t%d, sp_box_int(_si)); }\n", ep, t);
+              buf_printf(g_pre, "{ sp_Range _sr = %s;%s sp_int _e = _sr.last+(_sr.excl?0:1); for (sp_int _si = _sr.first; _si < _e; _si++) sp_PolyArray_push(_t%d, sp_box_int(_si)); }\n", ep, range_splat_guard(c, inner), t);
             }
           }
           else if (it == TY_INT_ARRAY) {
@@ -2928,7 +2944,7 @@ else {
             free(lo2.p); free(hi2.p);
           }
           else {
-            buf_printf(g_pre, "{ sp_Range _sr = %s; sp_int _e = _sr.last+(_sr.excl?0:1); for (sp_int _si = _sr.first; _si < _e; _si++) sp_%sArray_push(_t%d, _si); }\n", ep, k, t);
+            buf_printf(g_pre, "{ sp_Range _sr = %s;%s sp_int _e = _sr.last+(_sr.excl?0:1); for (sp_int _si = _sr.first; _si < _e; _si++) sp_%sArray_push(_t%d, _si); }\n", ep, range_splat_guard(c, inner), k, t);
           }
         }
         else if (it == TY_INT_ARRAY && sp_streq(k, "Int"))

@@ -1,0 +1,18 @@
+[TypeError, "can't iterate from NilClass"]
+[TypeError, "can't iterate from NilClass"]
+[RangeError, "cannot convert endless range to an array"]
+[RangeError, "cannot convert endless range to an array"]
+[TypeError, "can't iterate from NilClass"]
+[RangeError, "cannot convert endless range to an array"]
+[TypeError, "can't iterate from NilClass"]
+[TypeError, "can't iterate from NilClass"]
+[RangeError, "cannot convert endless range to an array"]
+[TypeError, "can't iterate from NilClass"]
+[RangeError, "cannot convert endless range to an array"]
+[RangeError, "cannot convert endless range to an array"]
+[TypeError, "can't iterate from NilClass"]
+[1, 2, 3, 5, 6]
+[3, 4, 5]
+TypeError
+RangeError
+TypeError
