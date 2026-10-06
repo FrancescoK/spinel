@@ -351,8 +351,13 @@ static sp_int sp_io_write_raw(sp_File *f, const char *s, size_t n) {
      the descriptor past where stdio thinks it is, and a zero-length write
      is still a valid sync point. Without this, a subsequent ftello,
      buffered read, or buffered write on the same stream would use the
-     stale stdio offset. */
-  if (fseeko(f->fp, 0, SEEK_CUR) != 0) sp_file_raise_errno("write", "file");
+     stale stdio offset. The stream is set to the descriptor's own offset:
+     a relative seek (SEEK_CUR) counts from stdio's cached offset, which the
+     raw write did not move, and moved the descriptor back to it, so the
+     next syswrite overwrote this one. A descriptor with no offset (a pipe,
+     a terminal) has none to share, where the relative seek raised ESPIPE. */
+  off_t pos = lseek(fd, 0, SEEK_CUR);
+  if (pos >= 0 && fseeko(f->fp, pos, SEEK_SET) != 0) sp_file_raise_errno("write", "file");
   return (sp_int)n;
 }
 
