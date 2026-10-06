@@ -1,5 +1,6 @@
 #include "codegen_internal.h"
 #include "repr.h"
+#include "holder.h"
 #include "builtin_ops.h"
 #include "call_plan.h"
 
@@ -1438,7 +1439,7 @@ static int strbuf_gvar_write_handle(Compiler *c, int v, char *out, size_t cap) {
   NodeKind k = v >= 0 ? nt_kind(nt, v) : NK_NilNode;
   if (k != NK_GlobalVariableWriteNode && k != NK_GlobalVariableOrWriteNode && k != NK_GlobalVariableAndWriteNode &&
       k != NK_ConstantWriteNode && k != NK_ClassVariableWriteNode) return 0;
-  return repr_handle_static_ref(c, v, out, cap);
+  return holder_static_handle_text(c, v, out, cap);
 }
 
 /* The value a write hands a mutable-String slot `lv` (TY_STRBUF), as an
@@ -11574,19 +11575,16 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
   if (sp_streq(ty, "ClassVariableWriteNode")) {
     const char *nm = nt_str(nt, id, "name");  /* "@@x" */
     int v = nt_ref(nt, id, "value");
-    int sc = comp_scope_of(c, id)->class_id;
-    if (sc < 0) sc = g_class_body_id;
-    if (sc < 0) sc = comp_class_index(c, "Toplevel");
-    if (sc < 0) { unsupported(c, id, "class variable write (no class scope)"); return 1; }
-    sc = comp_cvar_owner(c, sc, nm);
-    TyKind ct = TY_INT;
-    int idx = comp_cvar_index(&c->classes[sc], nm);
-    if (idx >= 0) ct = c->classes[sc].cvar_types[idx];
+    HolderRef h;
+    if (!holder_of_node_in(c, id, g_class_body_id, &h)) { unsupported(c, id, "class variable write (no class scope)"); return 1; }
+    int sc = h.cid;
+    TyKind ct = h.idx >= 0 ? c->classes[sc].cvar_types[h.idx] : TY_INT;
+    char ref[300]; holder_slot_text(c, &h, ref, sizeof ref);
     emit_indent(b, indent);
-    buf_printf(b, "cvar_%s_%s = ", c->classes[sc].name, nm + 2);
+    buf_printf(b, "%s = ", ref);
     /* --share-strings: a class variable holding the shared handle takes an
        alias's handle or a fresh one, as a handle local's write does */
-    if (idx >= 0 && repr_of_cvar(c, sc, idx).share) {
+    if (h.r.share) {
       LocalVar slot;
       memset(&slot, 0, sizeof slot);
       slot.type = TY_STRBUF;
@@ -11614,18 +11612,13 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
     return 1;
   }
   if (sp_streq(ty, "ClassVariableOperatorWriteNode")) {
-    const char *nm = nt_str(nt, id, "name");
     const char *op = nt_str(nt, id, "binary_operator");
     int v = nt_ref(nt, id, "value");
-    int sc = comp_scope_of(c, id)->class_id;
-    if (sc < 0) sc = g_class_body_id;
-    if (sc < 0) sc = comp_class_index(c, "Toplevel");
-    if (sc < 0) { unsupported(c, id, "class variable op-write (no class scope)"); return 1; }
-    sc = comp_cvar_owner(c, sc, nm);
-    TyKind ct = TY_INT;
-    int idx = comp_cvar_index(&c->classes[sc], nm);
-    if (idx >= 0) ct = c->classes[sc].cvar_types[idx];
-    char ref[300]; snprintf(ref, sizeof ref, "cvar_%s_%s", c->classes[sc].name, nm + 2);
+    HolderRef h;
+    if (!holder_of_node_in(c, id, g_class_body_id, &h)) { unsupported(c, id, "class variable op-write (no class scope)"); return 1; }
+    int sc = h.cid, idx = h.idx;
+    TyKind ct = idx >= 0 ? c->classes[sc].cvar_types[idx] : TY_INT;
+    char ref[300]; holder_slot_text(c, &h, ref, sizeof ref);
     emit_indent(b, indent);
     if (ct == TY_STRING && op && sp_streq(op, "+")) {
       buf_printf(b, "%s = sp_str_concat(%s, ", ref, ref);
@@ -11645,18 +11638,15 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
     int is_or = sp_streq(ty, "ClassVariableOrWriteNode");
     const char *nm = nt_str(nt, id, "name");
     int v = nt_ref(nt, id, "value");
-    int sc = comp_scope_of(c, id)->class_id;
-    if (sc < 0) sc = g_class_body_id;
-    if (sc < 0) sc = comp_class_index(c, "Toplevel");
-    if (sc < 0) { unsupported(c, id, is_or ? "class variable or-write (no class scope)" : "class variable and-write (no class scope)"); return 1; }
-    sc = comp_cvar_owner(c, sc, nm);
-    char ref[300]; snprintf(ref, sizeof ref, "cvar_%s_%s", c->classes[sc].name, nm + 2);
-    int oidx = comp_cvar_index(&c->classes[sc], nm);
-    TyKind ot = oidx >= 0 ? c->classes[sc].cvar_types[oidx] : TY_UNKNOWN;
+    HolderRef h;
+    if (!holder_of_node_in(c, id, g_class_body_id, &h)) { unsupported(c, id, is_or ? "class variable or-write (no class scope)" : "class variable and-write (no class scope)"); return 1; }
+    int sc = h.cid;
+    char ref[300]; holder_slot_text(c, &h, ref, sizeof ref);
+    TyKind ot = h.idx >= 0 ? c->classes[sc].cvar_types[h.idx] : TY_UNKNOWN;
     emit_indent(b, indent);
     /* --share-strings: a class variable holding the shared handle, as a
        global's slot (#6765) */
-    if (oidx >= 0 && repr_of_cvar(c, sc, oidx).share) {
+    if (h.r.share) {
       emit_strbuf_orw_guard(c, ref, v, is_or, b);
       buf_puts(b, " ");
       emit_cvar_set_flag(c, sc, nm, 0, b);
@@ -13503,9 +13493,9 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
         emit_stmt(c, id, b, indent);
         emit_indent(b, indent); emit_tail_lead(b);
         char islot9[512];
-        if (cmeth9) snprintf(islot9, sizeof islot9, "civ_%s_%s", c->classes[ics9->class_id].name, iv_c(inm9 + 1));
-        else if (tl9 >= 0) snprintf(islot9, sizeof islot9, "civ_Toplevel_%s", iv_c(inm9 + 1));
-        else snprintf(islot9, sizeof islot9, "%s%siv_%s", g_self, g_self_deref, iv_c(inm9 + 1));
+        HolderRef h9;
+        holder_ivar(c, id, icls9, cmeth9 || tl9 >= 0, &h9);
+        holder_slot_text(c, &h9, islot9, sizeof islot9);
         if (want_poly8 && it9 != TY_POLY) {
           Buf bx8; memset(&bx8, 0, sizeof bx8);
           emit_boxed_text(c, it9, islot9, &bx8);
@@ -13528,45 +13518,45 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
   if (sp_streq(ty, "LocalVariableWriteNode") ||
       sp_streq(ty, "LocalVariableOrWriteNode") ||
       sp_streq(ty, "LocalVariableAndWriteNode")) {
-    const char *lnm = nt_str(nt, id, "name");
-    LocalVar *lv9 = lnm ? scope_local(comp_scope_of(c, id), lnm) : NULL;
+    HolderRef h9;
+    LocalVar *lv9 = holder_of_node(c, id, &h9) ? h9.lv : NULL;
     TyKind lt9 = lv9 ? lv9->type : TY_UNKNOWN;
     int want_poly9 = g_result_var ? g_result_poly : (g_ret_type == TY_POLY);
     int slot_ok = lv9 && lt9 != TY_UNKNOWN && lt9 != TY_VOID &&
                   (want_poly9 || lt9 == (g_result_var ? g_result_ty : g_ret_type));
     emit_stmt(c, id, b, indent);
     if (!slot_ok) return;
-    Buf rb9; memset(&rb9, 0, sizeof rb9); emit_local_ref(c, id, lnm, &rb9);
+    char lref9[1024];
+    holder_slot_text(c, &h9, lref9, sizeof lref9);
     emit_indent(b, indent); emit_tail_lead(b);
     if (want_poly9 && lt9 != TY_POLY) {
       Buf bx9; memset(&bx9, 0, sizeof bx9);
-      emit_boxed_text(c, lt9, rb9.p ? rb9.p : "0", &bx9);
+      emit_boxed_text(c, lt9, lref9, &bx9);
       buf_printf(b, "%s;\n", bx9.p ? bx9.p : "sp_box_nil()");
       free(bx9.p);
     }
-    else buf_printf(b, "%s;\n", rb9.p ? rb9.p : "0");
-    free(rb9.p);
+    else buf_printf(b, "%s;\n", lref9);
     return;
   }
   /* A tail GLOBAL write answers the stored value too (`def m; $g = v; end`),
      and the statement form returned nil. Same shape as the local write:
      emit the write, then hand back the slot. */
   if (sp_streq(ty, "GlobalVariableWriteNode")) {
-    const char *gnm = nt_str(nt, id, "name");
-    const char *grn = gnm ? comp_resolve_gvar(c, gnm + 1) : NULL;
-    LocalVar *gv9 = grn ? comp_gvar(c, grn) : NULL;
+    HolderRef h9;
+    LocalVar *gv9 = holder_of_node(c, id, &h9) ? h9.lv : NULL;
     TyKind gt9 = gv9 ? gv9->type : TY_UNKNOWN;
     /* a global holding the shared handle answers its String */
-    int sb9 = gv9 && repr_of_slot(c, gv9).kind == RK_STRBUF;
+    int sb9 = gv9 && h9.r.kind == RK_STRBUF;
     if (sb9) gt9 = TY_STRING;
     int want_poly9 = g_result_var ? g_result_poly : (g_ret_type == TY_POLY);
     int slot_ok = gv9 && gt9 != TY_UNKNOWN && gt9 != TY_VOID &&
                   (want_poly9 || gt9 == (g_result_var ? g_result_ty : g_ret_type));
     emit_stmt(c, id, b, indent);
     if (!slot_ok) return;
-    char gref9[256];
-    if (sb9) snprintf(gref9, sizeof gref9, "(gv_%s ? sp_str_concat(sp_String_cstr(gv_%s), (&(\"\\xff\")[1])) : NULL)", grn, grn);
-    else snprintf(gref9, sizeof gref9, "gv_%s", grn);
+    char gslot9[256], gref9[256];
+    holder_slot_text(c, &h9, gslot9, sizeof gslot9);
+    if (sb9) snprintf(gref9, sizeof gref9, "(%s ? sp_str_concat(sp_String_cstr(%s), (&(\"\\xff\")[1])) : NULL)", gslot9, gslot9);
+    else snprintf(gref9, sizeof gref9, "%s", gslot9);
     emit_indent(b, indent); emit_tail_lead(b);
     if (want_poly9 && gt9 != TY_POLY) {
       Buf bx9; memset(&bx9, 0, sizeof bx9);

@@ -1,6 +1,7 @@
 #include "codegen_internal.h"
 #include "call_plan.h"
 #include "repr.h"
+#include "holder.h"
 #include "builtin_ops.h"
 
 Buf expr_buf(Compiler *c, int node) {
@@ -2138,15 +2139,9 @@ int gvar_global_slot(Compiler *c, int node, char *out, size_t cap) {
    owns the class variable. Fills `out` and answers 1, or 0. */
 int cvar_global_slot(Compiler *c, int node, char *out, size_t cap) {
   const char *nm = nt_str(c->nt, node, "name");
-  Scope *s = comp_scope_of(c, node);
-  if (!nm || nm[0] != '@' || nm[1] != '@' || !s) return 0;
-  int cid = s->class_id;
-  if (cid < 0 && c->node_cbody && node < c->node_cap) cid = c->node_cbody[node];
-  if (cid < 0) cid = comp_class_index(c, "Toplevel");
-  if (cid < 0) return 0;
-  cid = comp_cvar_owner(c, cid, nm);
-  snprintf(out, cap, "cvar_%s_%s", c->classes[cid].name, nm + 2);
-  return 1;
+  HolderRef h;
+  if (!nm || nm[0] != '@' || nm[1] != '@' || !holder_of_node(c, node, &h) || h.kind != HK_CVAR) return 0;
+  return holder_slot_text(c, &h, out, cap);
 }
 /* The innermost block or lambda `node` is written in, within its method;
    -1 at the method's own level. */
@@ -2502,15 +2497,9 @@ int strbuf_bang_self_local(const Compiler *c, int v) {
   return r >= 0 && nt_kind(nt, r) == NK_LocalVariableReadNode && repr_of(c, r).kind == RK_STRBUF;
 }
 int strbuf_slot_ref(Compiler *c, int recv, char *out, size_t cap) {
-  const char *rn = strbuf_local_name(c, recv);
-  if (rn) {
-    /* via emit_local_ref: a celled/captured local derefs its cell */
-    Buf rb; memset(&rb, 0, sizeof rb);
-    emit_local_ref(c, recv, rn, &rb);
-    snprintf(out, cap, "%s", rb.p ? rb.p : "");
-    free(rb.p);
-    return 1;
-  }
+  HolderRef h;
+  /* via emit_local_ref: a celled/captured local derefs its cell */
+  if (strbuf_local_name(c, recv) && holder_of_node(c, recv, &h)) return holder_slot_text(c, &h, out, cap);
   /* a demand-marked reader call typed as the handle (external reader
      mutation, e.g. `subs[0].topic << x`): the emitted read IS the sp_String*
      expression. Declined when it does not fit the caller's buffer (the
@@ -2540,24 +2529,11 @@ int strbuf_slot_ref(Compiler *c, int recv, char *out, size_t cap) {
   if (repr_share_rule(c) && recv >= 0 && repr_static_read_kind(nt_kind(c->nt, recv))) {
     /* inside the shim over it, the read is its plain shadow */
     if (sb_shadowed_reader(recv)) return 0;
-    return repr_handle_static_ref(c, recv, out, cap);
+    return holder_static_handle_text(c, recv, out, cap);
   }
-  if (recv < 0 || nt_kind(c->nt, recv) != NK_InstanceVariableReadNode) return 0;
-  const char *nm = nt_str(c->nt, recv, "name");
-  if (!nm) return 0;
-  int cid = strbuf_ivar_owner(c, recv);
-  if (cid < 0) return 0;
-  int iv = comp_ivar_index(&c->classes[cid], nm);
-  if (iv < 0 || c->classes[cid].ivar_types[iv] != TY_STRBUF) return 0;
-  Scope *cs = comp_scope_of(c, recv);
-  if (cs && cs->class_id < 0)
-    snprintf(out, cap, "civ_Toplevel_%s", iv_c(nm + 1));
-  /* a class method's ivar is its class's C global */
-  else if (cs && cs->is_cmethod)
-    snprintf(out, cap, "civ_%s_%s", c->classes[cs->class_id].name, iv_c(nm + 1));
-  else
-    snprintf(out, cap, "%s%siv_%s", g_self, g_self_deref, iv_c(nm + 1));
-  return 1;
+  if (recv < 0 || nt_kind(c->nt, recv) != NK_InstanceVariableReadNode || !holder_of_node(c, recv, &h) ||
+      h.idx < 0 || c->classes[h.cid].ivar_types[h.idx] != TY_STRBUF) return 0;
+  return holder_slot_text(c, &h, out, cap);
 }
 const char *rename_local(const char *nm) {
   /* Innermost first. A nested inline pushes its own locals above the caller's,

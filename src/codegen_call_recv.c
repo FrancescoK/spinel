@@ -5,6 +5,7 @@
 #include "codegen_internal.h"
 #include "call_plan.h"
 #include "repr.h"
+#include "holder.h"
 #include "builtin_ops.h"
 
 /* The value of the block a `fetch` or `delete` runs when it finds nothing, as
@@ -3599,7 +3600,7 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
          lvalue, so the concat-and-write-back form below can't serve it) */
       /* a global or a constant holding the handle (--share-strings) too */
       char sref9[256];
-      int static9 = nchain > 0 && repr_handle_static_ref(c, cur, sref9, sizeof sref9);
+      int static9 = nchain > 0 && holder_static_handle_text(c, cur, sref9, sizeof sref9);
       if (nchain > 0 && (static9 || (repr_of_slot(c, blv).kind == RK_STRBUF &&
           bty && sp_streq(bty, "LocalVariableReadNode")))) {
         int tb9 = ++g_tmp;
