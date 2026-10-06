@@ -1,0 +1,4 @@
+gauge 7 notify=loud
+dial 7 step=10
+gauge 7 notify=quiet
+7

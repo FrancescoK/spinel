@@ -1444,6 +1444,31 @@ int dispatch_impl_count(Compiler *c, int cid, const char *name);
 /* do a dispatch switch's arms bind the call's arguments differently (each
    arm then lays them out itself)? the plan's CP_PER_ARM */
 int dispatch_arms_disagree(Compiler *c, int cid, const char *name);
+/* Do `given` positionals not fit method `m`? Answers 1 with CRuby's
+   ArgumentError message in `msg`; 0 when they fit, or when the method's
+   arity is not judged (arity_unjudged). The one count rule of the direct
+   call and the dispatch arm. (codegen_fold.c) */
+int arity_count_error(Compiler *c, Scope *m, int given, char *msg, size_t n);
+/* The parameter of user method `m` that its one positional argument binds
+   to (not always the first: an optional may come before a required one),
+   or -1 when none does. (codegen_fold.c) */
+int arm_arg_param(Compiler *c, Scope *m);
+/* The arguments after self of a dispatch arm's call of user method `mi`,
+   each led by ", ", when the C texts argv[0..argc) are its positionals.
+   The layout of the call (arg_layout) places them. A parameter it leaves
+   empty takes its default, run with `armself` (a pointer to the arm's
+   object) as self, and a block slot takes NULL. What a default runs first
+   goes to `pre`. `builds`, when not NULL, is 1 if the arm builds anything
+   before its call (a default, a rest's Array, a `pre` statement): an arm
+   of a function with unrooted operands roots them then. Answers 0, and
+   emits no arguments, when argc arguments do not bind: `raise` then holds
+   the statement that raises CRuby's ArgumentError in place of the call.
+   An arm that cannot place the arguments (a parameter with no name, or a
+   placement the layout does not give a positional call) is refused at
+   compile time. A rest takes its arguments boxed, as a PolyArray: each
+   text in argv must be a boxed value then. (codegen_fold.c) */
+int emit_arm_args_text(Compiler *c, int mi, const char *armself, const char *const *argv, int argc,
+                       Buf *pre, Buf *out, int *builds, char *raise, size_t rn);
 /* Can running the node `id` assign self's instance variable `iv`, self an
    instance of class `cls` (-1: none known) or of one below it? `depth`
    counts the self calls followed into their methods (0 at the call site);

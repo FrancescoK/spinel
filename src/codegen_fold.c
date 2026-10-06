@@ -1,6 +1,7 @@
 #include "codegen_internal.h"
 #include "repr.h"
 #include "call_plan.h"
+#include "codegen_call_arms.h"
 
 /* Defined lower in this file; declared here so the collecting emitters above
    its definition (the hash block-walk binder, flat_map) can route a block's
@@ -9199,6 +9200,31 @@ void emit_unreached_splat_count(Compiler *c, Scope *m, const int *argv, int argc
   free(gb.p);
 }
 
+/* See codegen_internal.h. */
+int arity_count_error(Compiler *c, Scope *m, int given, char *msg, size_t n) {
+  if (arity_unjudged(c, m)) return 0;
+  int nfixed = 0, nreq = 0;
+  for (int i = 0; i < m->nparams; i++) {
+    /* Keyword parameters share pnames[] with the positional ones but are
+       no positional slot: counting them let `def m(x, k: 1)` take `m(3, 4)`
+       and bind the 4 nowhere. The rest is no slot either. */
+    if (i == m->kwrest_idx || i == m->rest_idx || callee_param_is_declared_kwarg(c, m, m->pnames[i])) continue;
+    nfixed++;
+    if (!m->pdefault || m->pdefault[i] < 0) nreq++;
+  }
+  /* With a rest there is no upper bound: `def f(a, *r)` called bare ran the
+     body with a padded a. */
+  int over = m->rest_idx < 0 && given > nfixed && !bam_variadic_kernel(c->nt, m);
+  if (!over && given >= nreq) return 0;
+  /* CRuby names the callee's required keywords in every count error:
+     `def h(x, k:)` called `h(k: 3)` is "(given 0, expected 1; required
+     keyword: k)" */
+  char kwsuf[256];
+  scope_arity_kw_suffix(c, m, kwsuf, sizeof kwsuf);
+  arity_message(msg, n, given, nreq, m->rest_idx >= 0 ? -1 : nfixed, kwsuf);
+  return 1;
+}
+
 /* Arity / keyword validation, in CRuby's words, raised at RUNTIME just
    before the call would run (dead code stays silent, matching CRuby;
    the argument slots keep their compat pads), once every argument has run.
@@ -9243,35 +9269,16 @@ void emit_call_arity_check(Compiler *c, Scope *m, int argc, const int *argv) {
     }
     free(kb.p);
   }
-  if (arity_unjudged(c, m)) return;
-  int nfixed = 0, nreq = 0;
-  for (int i = 0; i < m->nparams; i++) {
-    /* Keyword parameters share pnames[] with the positional ones but are
-       no positional slot: counting them let `def m(x, k: 1)` take `m(3, 4)`
-       and bind the 4 nowhere. The rest is no slot either. */
-    if (i == m->kwrest_idx || i == m->rest_idx || callee_param_is_declared_kwarg(c, m, m->pnames[i])) continue;
-    nfixed++;
-    if (!m->pdefault || m->pdefault[i] < 0) nreq++;
-  }
-  /* CRuby names the callee's required keywords in every count error:
-     `def h(x, k:)` called `h(k: 3)` is "(given 0, expected 1; required
-     keyword: k)" */
-  char kwsuf[256], msg[512];
-  scope_arity_kw_suffix(c, m, kwsuf, sizeof kwsuf);
+  char msg[512];
   if (!has_splat && P.count != KWC_NONEMPTY) {
     /* A keyword hash that is keywords is no positional, `**` spreads among
-       them too: `def r(a, k:)` called `r(**{k: 5})` is given 0. With a rest
-       there is no upper bound: `def f(a, *r)` called bare ran the body with
-       a padded a. */
-    int given = pos_argc + P.count;
-    int over = m->rest_idx < 0 && given > nfixed && !bam_variadic_kernel(nt, m);
-    int under = given < nreq;
-    if (over || under) {
-      arity_message(msg, sizeof msg, given, nreq, m->rest_idx >= 0 ? -1 : nfixed, kwsuf);
+       them too: `def r(a, k:)` called `r(**{k: 5})` is given 0. */
+    if (arity_count_error(c, m, pos_argc + P.count, msg, sizeof msg)) {
       args_raise(c, argv, argc, "%s", msg);
       return;
     }
   }
+  if (arity_unjudged(c, m)) return;
   if (!kw_plan_error(&P, msg, sizeof msg)) return;
   if (has_splat) {
     /* the count first, as the run time measures it, once the arguments
@@ -10555,6 +10562,74 @@ static void emit_dispatch_arm_call(Compiler *c, int kd, int kmi, const char *sel
   else buf_printf(b, "_t%d = %s; ", rtmp, call.p);
   buf_puts(b, "break; }");
   free(apre.p); free(call.p);
+}
+
+/* See codegen_internal.h. */
+int arm_arg_param(Compiler *c, Scope *m) {
+  for (int i = 0; i < m->nparams; i++)
+    if (arg_layout_plain_arg(c, m, 1, i) == 0) return i;
+  return -1;
+}
+
+/* See codegen_internal.h. */
+int emit_arm_args_text(Compiler *c, int mi, const char *armself, const char *const *argv, int argc,
+                       Buf *pre, Buf *out, int *builds, char *raise, size_t rn) {
+  Scope *m = &c->scopes[mi];
+  char msg[512];
+  /* the count first, then a required keyword the call does not give (the
+     direct call's order); the arm's call has no keyword hash */
+  KwPlan P;
+  kw_plan(c, m, -1, &P);
+  if (arity_count_error(c, m, argc, msg, sizeof msg) ||
+      (!arity_unjudged(c, m) && kw_plan_error(&P, msg, sizeof msg))) {
+    snprintf(raise, rn, "sp_raise_cls(\"ArgumentError\", \"%s\");", msg);
+    return 0;
+  }
+  ArgLayout L;
+  arg_layout(c, m, NULL, argc, -1, 0, &L);
+  int fits = 1;
+  for (int i = 0; i < m->nparams; i++)
+    if (!m->pnames || !m->pnames[i] ||
+        (L.from[i] != ARG_NODE && L.from[i] != ARG_DEFAULT && L.from[i] != ARG_REST &&
+         L.from[i] != ARG_BY_NAME)) fits = 0;
+  if (!fits) {
+    arg_layout_free(&L);
+    char what[256];
+    snprintf(what, sizeof what, "a dispatch arm cannot bind its arguments to `%s`", m->name ? m->name : "?");
+    unsupported(c, m->def_node, what);
+  }
+  int pd_uid = default_refs_earlier_param(c, m) ? ++g_tmp : 0, pd_base = g_nren;
+  Buf *sv_pre = g_pre; int sv_ind = g_indent;
+  const char *sv_arm_self = g_arm_self; const Scope *sv_arm_scope = g_arm_scope;
+  int sv_arm_depth = g_arm_depth;
+  g_pre = pre; g_indent = 0;
+  g_arm_self = armself; g_arm_scope = m; g_arm_depth = g_expr_depth;
+  /* the arguments a rest takes are boxed in rooted temps, which
+     emit_ctor_arm_param packs into the rest's Array */
+  int *atmp = calloc(argc > 0 ? argc : 1, sizeof *atmp);
+  for (int a = m->rest_idx; m->rest_idx >= 0 && a < L.rest_argc - m->npost_rest; a++) {
+    atmp[a] = ++g_tmp;
+    buf_printf(pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d); ", atmp[a], argv[a], atmp[a]);
+  }
+  int built = 0;
+  for (int i = 0; i < m->nparams; i++) {
+    Buf vb; memset(&vb, 0, sizeof vb);
+    if (L.from[i] != ARG_NODE) built = 1;
+    if (L.from[i] == ARG_REST) emit_ctor_arm_param(c, m, i, &L, atmp, pre, &vb);
+    else if (L.from[i] == ARG_NODE) buf_puts(&vb, argv[L.arg[i]]);
+    else emit_arg_or_default(c, m, i, -1, &vb);
+    buf_puts(out, ", ");
+    ctor_arm_arg(c, m, i, vb.p ? vb.p : "", pd_uid, pre, out);
+    free(vb.p);
+  }
+  g_nren = pd_base;
+  g_pre = sv_pre; g_indent = sv_ind;
+  g_arm_self = sv_arm_self; g_arm_scope = sv_arm_scope; g_arm_depth = sv_arm_depth;
+  free(atmp);
+  arg_layout_free(&L);
+  if (builds) *builds = built || (pre->p && pre->p[0]);
+  if (arm_takes_blk(m)) buf_puts(out, ", NULL");
+  return 1;
 }
 
 /* The runtime class a virtual dispatch switches on. A user exception is an

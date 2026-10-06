@@ -11858,30 +11858,46 @@ static void emit_user_binop_dispatch(Compiler *c, Buf *b) {
          shadowed scope has no C function to call */
       if (!m->reachable || m->yields || scope_is_shadowed(c, mi) ||
           m->is_transplanted_source) continue;
-      if (m->nparams < 1 || m->rest_idx >= 0) continue;
-      if (sp_streq(uops[u], "[]") && m->nparams != 1) continue;
+      if (m->nparams < 1) continue;
       const char *dcn = c->classes[defcls].c_name;
       int self_vt = c->classes[defcls].is_value_type;
       char argbuf[160], gb[96];
-      if (!user_dispatch_arg(c, m, 0, "b", gb, sizeof gb, argbuf, sizeof argbuf)) continue;
+      int api = arm_arg_param(c, m);
+      /* no parameter takes the argument: the arm raises, whatever it holds */
+      if (api < 0) { gb[0] = 0; snprintf(argbuf, sizeof argbuf, "b"); }
+      else if (!user_dispatch_arg(c, m, api, "b", gb, sizeof gb, argbuf, sizeof argbuf)) continue;
+      char armself[160];
+      snprintf(armself, sizeof armself, "((sp_%s *)a.v.p)", bcase ? c->classes[k].name : dcn);
+      const char *arg = argbuf;
+      Buf pre; memset(&pre, 0, sizeof pre);
+      Buf args; memset(&args, 0, sizeof args);
+      char raise[640];
+      int builds = 0;
+      int calls = emit_arm_args_text(c, mi, armself, &arg, 1, &pre, &args, &builds, raise, sizeof raise);
       const char *guard = gb[0] ? gb : NULL;
       buf_printf(b, "      if (strcmp(op, \"%s\") == 0%s%s%s) {\n",
                  uops[u], guard ? " && (" : "", guard ? guard : "", guard ? ")" : "");
-      char callbuf[256];
+      if (!calls) {
+        buf_printf(b, "        *handled = TRUE; %s\n      }\n", raise);
+        free(pre.p); free(args.p);
+        continue;
+      }
+      Buf call; memset(&call, 0, sizeof call);
       /* an alias (`alias + |`) resolves to its target's scope: name the C
          function after the RESOLVED method, not the queried operator */
       if (bcase) {
-        Buf nb; memset(&nb, 0, sizeof nb);
-        emit_method_cname(c, m, &nb);
-        snprintf(callbuf, sizeof callbuf, "%s(%s, %s)", nb.p ? nb.p : "", bself, argbuf);
-        free(nb.p);
+        emit_method_cname(c, m, &call);
+        buf_printf(&call, "(%s%s)", bself, args.p);
       }
       else
-      snprintf(callbuf, sizeof callbuf, "sp_%s_%s(%s(sp_%s *)a.v.p, %s)",
-               dcn, mc(m->name ? m->name : uops[u]), self_vt ? "*" : "", dcn, argbuf);
-      buf_puts(b, "        *handled = TRUE; return ");
-      emit_boxed_text(c, m->ret, callbuf, b);
+        buf_printf(&call, "sp_%s_%s(%s(sp_%s *)a.v.p%s)",
+                   dcn, mc(m->name ? m->name : uops[u]), self_vt ? "*" : "", dcn, args.p);
+      /* the operands a and b are unrooted: an arm that builds before its call roots them */
+      buf_printf(b, "        %s%s*handled = TRUE; return ",
+                 builds ? "SP_GC_ROOT_RBVAL(a); SP_GC_ROOT_RBVAL(b); " : "", pre.p ? pre.p : "");
+      emit_boxed_text(c, m->ret, call.p, b);
       buf_puts(b, ";\n      }\n");
+      free(pre.p); free(args.p); free(call.p);
     }
     /* Comparable's `==` is derived from `<=>`: a class that defines the
        compare but not the equality still answers `a == b` as `(a <=> b) == 0`.
@@ -12213,19 +12229,31 @@ static void emit_obj_valeq_dispatch(Compiler *c, Buf *b) {
     int mi = comp_method_in_chain(c, k, "==", &defcls);
     if (mi < 0 || !c->scopes[mi].reachable || c->scopes[mi].ret != TY_BOOL) continue;
     Scope *m = &c->scopes[mi];
-    if (m->nparams < 1) continue;
-    LocalVar *p = scope_local(m, m->pnames[0]);
+    int api = arm_arg_param(c, m);
+    LocalVar *p = api >= 0 ? scope_local(m, m->pnames[api]) : NULL;
     TyKind pt = p ? p->type : TY_POLY;
     int poly_param = (pt == TY_POLY || pt == TY_UNKNOWN);
     int obj_param = ty_is_object(pt) && !comp_ty_value_obj(c, pt);
     if (!poly_param && !obj_param) continue;
     const char *dcn = c->classes[defcls].c_name;
     const char *slf = c->classes[defcls].is_value_type ? "*" : "";
-    buf_printf(b, "    case %d: return sp_%s_%s(%s(sp_%s *)a.v.p, ",
-               comp_class_index(c, ci->name), dcn, mc("=="), slf, dcn);
-    if (obj_param) buf_printf(b, "(sp_%s *)b.v.p", c->classes[ty_object_class(pt)].c_name);
-    else buf_puts(b, "b");
-    buf_puts(b, ");\n");
+    char argb[160], armself[160];
+    if (obj_param) snprintf(argb, sizeof argb, "(sp_%s *)b.v.p", c->classes[ty_object_class(pt)].c_name);
+    else snprintf(argb, sizeof argb, "b");
+    snprintf(armself, sizeof armself, "((sp_%s *)a.v.p)", dcn);
+    const char *arg = argb;
+    Buf pre; memset(&pre, 0, sizeof pre);
+    Buf args; memset(&args, 0, sizeof args);
+    char raise[640];
+    int builds = 0;
+    if (emit_arm_args_text(c, mi, armself, &arg, 1, &pre, &args, &builds, raise, sizeof raise))
+      buf_printf(b, "    case %d: { %s%sreturn sp_%s_%s(%s(sp_%s *)a.v.p%s); }\n",
+                 comp_class_index(c, ci->name),
+                 builds ? "SP_GC_ROOT_RBVAL(a); SP_GC_ROOT_RBVAL(b); " : "", pre.p ? pre.p : "",
+                 dcn, mc("=="), slf, dcn, args.p);
+    else
+      buf_printf(b, "    case %d: { %s return FALSE; }\n", comp_class_index(c, ci->name), raise);
+    free(pre.p); free(args.p);
   }
   buf_puts(b, "    default: break;\n  }\n  return FALSE;\n}\n");
 }
