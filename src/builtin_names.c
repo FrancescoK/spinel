@@ -800,3 +800,10 @@ int is_nil_method(const char *n) {
   for (int i = 0; names[i]; i++) if (sp_streq(n, names[i])) return 1;
   return 0;
 }
+
+int array_unseen_add_kind(const char *n) {
+  if (sp_streq(n, "concat")) return ARRAY_ADD_CONCAT;
+  if (sp_streq(n, "insert")) return ARRAY_ADD_INSERT;
+  if (sp_streq(n, "prepend")) return ARRAY_ADD_PREPEND;
+  return ARRAY_ADD_NONE;
+}
