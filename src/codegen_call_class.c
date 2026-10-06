@@ -533,6 +533,17 @@ int emit_call_reflection_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
   return 0;
 }
 
+/* Move the converted FFI argument at call->p + at out to the temp _b<tb>_<ai>
+   of C type ctype, declared in pre ahead of the call, rooting it for the
+   call when it is a String that Ruby code run by the call could collect. */
+static void ffi_arg_to_temp(Buf *call, size_t at, Buf *pre, const char *ctype, int tb, int ai, int root_str) {
+  buf_printf(pre, "%s _b%d_%d = %s; ", ctype, tb, ai, call->p + at);
+  if (root_str && sp_streq(ctype, "const char *"))
+    buf_printf(pre, "SP_GC_ROOT_STR(_b%d_%d); ", tb, ai);
+  buf_erase(call, at, call->len - at);
+  buf_printf(call, "_b%d_%d", tb, ai);
+}
+
 /* a call on a module or a class: native and FFI functions, singleton accessors, a writer in an instance_eval block, class methods */
 int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv) {
   /* native binding dispatch (Path B): Module.func(...) where Module declared
@@ -691,7 +702,18 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
           if (strbuf_slot_ref(c, argv[ai], sref, sizeof sref)) nstr_args++;
           view_pop(c, vsm);
         }
-        int use_temps = blocking || iob_temps || nstr_args >= 2;
+        /* A call that can run Ruby code -- it is handed an ffi_callback, the
+           program has one a C function may call back from an earlier call, or
+           it is a blocking call other threads run beside -- can collect a
+           String argument's copy while C reads it: nothing else holds the
+           copy. Such a call moves its String arguments out to temps rooted
+           for the call. */
+        int root_strs = 0;
+        if (takes_cb || blocking || c->n_ffi_callbacks > 0)
+          for (int ai = 0; ai < argc && !root_strs; ai++)
+            root_strs = ai < fixed_argc ? sp_streq(ffi_c_type(c->ffi_funcs[fi].args[ai]), "const char *")
+                                        : is_vararg && comp_ntype(c, argv[ai]) == TY_STRING;
+        int use_temps = blocking || iob_temps || nstr_args >= 2 || root_strs;
         Buf pre_buf; memset(&pre_buf, 0, sizeof pre_buf);
         Buf base_buf; memset(&base_buf, 0, sizeof base_buf);
         /* blocking: the buffers are locked across the call (hold after every
@@ -821,9 +843,7 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
           }
           if (use_temps) {
             /* move the converted argument out to a temp ahead of the call */
-            buf_printf(&pre_buf, "%s _b%d_%d = %s; ", ffi_c_type(spec), tb, ai, call_buf.p + arg_at);
-            buf_erase(&call_buf, arg_at, call_buf.len - arg_at);
-            buf_printf(&call_buf, "_b%d_%d", tb, ai);
+            ffi_arg_to_temp(&call_buf, arg_at, &pre_buf, ffi_c_type(spec), tb, ai, root_strs);
           }
         }
         /* Extra variadic args: promote by inferred type (int->sp_int,
@@ -837,6 +857,7 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
         if (is_vararg) {
           for (int ai = fixed_argc; ai < argc; ai++) {
             if (ai) buf_puts(&call_buf, ", ");
+            size_t arg_at = call_buf.len;
             TyKind at = comp_ntype(c, argv[ai]);
             if (at == TY_INT || at == TY_BOOL) {
               buf_puts(&call_buf, "((sp_int)("); emit_int_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, "))");
@@ -855,6 +876,12 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
               unsupported(c, argv[ai], "ffi variadic argument (needs a concrete int/float/str type)");
               return 1;
             }
+            /* behind the fixed arguments' temps, in order, when a String
+               among them is rooted */
+            if (root_strs)
+              ffi_arg_to_temp(&call_buf, arg_at, &pre_buf,
+                              at == TY_STRING ? "const char *" : at == TY_FLOAT ? "double" : "sp_int",
+                              tb, ai, 1);
           }
         }
         buf_puts(&call_buf, ")");
