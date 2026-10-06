@@ -7455,8 +7455,14 @@ void emit_rooted_conversion(Compiler *c, TyKind pt, const char *expr, Buf *out) 
    (the .new / super arg path) emitted args inline; normal method calls already
    hoist+root via emit_dispatch. Rooting in the caller's frame keeps the value
    alive across the whole call. A scalar (int/float/...) arg needs no root and is
-   emitted inline. */
-static void emit_arg_rooted(Compiler *c, Scope *m, int idx, int provided, Buf *out) {
+   emitted inline.
+
+   `held` is the temp the call's hoist (emit_args_filled_argv) already
+   evaluated the argument into and rooted, or 0. An argument that renders as
+   that temp unconverted is passed as it is: copying it into a second rooted
+   temp only rooted the same pointer twice, a frame slot and a store on every
+   call (`Node.new(make_tree(d), make_tree(d))` held each subtree in two). */
+static void emit_arg_rooted(Compiler *c, Scope *m, int idx, int provided, int held, Buf *out) {
   LocalVar *p = scope_local(m, m->pnames[idx]);
   TyKind pt = p ? p->type : TY_UNKNOWN;
   /* a byref out-param arg is a slot address, not a heap value: it hoists its
@@ -7472,7 +7478,13 @@ static void emit_arg_rooted(Compiler *c, Scope *m, int idx, int provided, Buf *o
   }
   Buf ab; memset(&ab, 0, sizeof ab);
   emit_arg_or_default(c, m, idx, provided, &ab);
-  emit_rooted_operand(c, pt, provided, ab.p ? ab.p : default_value_from_compiler(c, pt), out);
+  char ht[24] = "";
+  if (held > 0) snprintf(ht, sizeof ht, "_t%d", held);
+  if (held > 0 && provided >= 0 && ab.p && sp_streq(ab.p, ht)) {
+    emit_obj_upcast_prefix(c, pt, comp_ntype(c, provided), out);
+    buf_puts(out, ht);
+  }
+  else emit_rooted_operand(c, pt, provided, ab.p ? ab.p : default_value_from_compiler(c, pt), out);
   free(ab.p);
 }
 
@@ -10004,7 +10016,7 @@ void emit_args_filled_argv(Compiler *c, int callee_idx, const int *argv, int arg
         if (mt == TY_POLY && et != TY_POLY) emit_boxed_text(c, et, txt, out);
         else buf_puts(out, txt);
       }
-      else emit_arg_rooted(c, m, i, -1, out);
+      else emit_arg_rooted(c, m, i, -1, 0, out);
     }
     return;
   }
@@ -10181,6 +10193,9 @@ void emit_args_filled_argv(Compiler *c, int callee_idx, const int *argv, int arg
     return;
   }
 
+  /* the rooted temp each positional argument was hoisted into, or 0
+     (emit_arg_rooted passes such a temp as it is) */
+  int *held = splat_idx < 0 && kwh < 0 && argv && pos_argc > 0 ? calloc((size_t)pos_argc, sizeof *held) : NULL;
   if (splat_idx < 0 && kwh < 0 && argv) {
     /* Ruby evaluates arguments left to right; C leaves a call's operand order
        unspecified (gcc walks it right to left). Once two arguments can observe
@@ -10242,6 +10257,7 @@ void emit_args_filled_argv(Compiler *c, int callee_idx, const int *argv, int arg
         buf_printf(g_pre, "sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n", ht, hb.p, ht);
         free(hb.p);
         view_bind(argv[k], "_t%d", ht);
+        if (held) held[k] = ht;
         continue;
       }
       emit_expr(c, argv[k], &hb);
@@ -10259,6 +10275,7 @@ else {
       }
       free(hb.p);
       view_bind(argv[k], "_t%d", ht);
+      if (held && root) held[k] = ht;
     }
   }
   for (int i = 0; i < m->nparams; i++) {
@@ -10289,7 +10306,7 @@ else {
       int is_kwparam = m->pnames[i] && callee_has_kwarg(c, m, m->pnames[i]);
       int kv = (kwh >= 0 && is_kwparam && !kw_merged) ? kwh_lookup(nt, kwh, m->pnames[i]) : -1;
       if (kv >= 0) {
-        emit_arg_rooted(c, m, i, kv, out);
+        emit_arg_rooted(c, m, i, kv, 0, out);
       }
       else if (ds_hash_tmp >= 0 && is_kwparam && i != m->kwrest_idx) {
         /* Double-splat: extract param by name from the pre-eval'd hash. */
@@ -10316,7 +10333,7 @@ else {
            keywords, so they still bind here.) A post takes its argument from
            the end of the call's, and a positional after a mid-list splat the
            layout could not gather (`g(1, *m, 4)`) a tail parameter. */
-        emit_arg_rooted(c, m, i, argv[L.arg[i]], out);
+        emit_arg_rooted(c, m, i, argv[L.arg[i]], held ? held[L.arg[i]] : 0, out);
       }
       else {
         /* No positional arg and no keyword match. If the param is hash-typed
@@ -10340,11 +10357,12 @@ else {
         /* ...and only into the FIRST unfilled positional slot. Every later
            one hit this same fallback, so `def f(a = nil, b = nil); f(k: 1)`
            handed the hash to both (found while fixing #4030). */
-        emit_arg_rooted(c, m, i, L.from[i] == ARG_KWH ? kwh : -1, out);
+        emit_arg_rooted(c, m, i, L.from[i] == ARG_KWH ? kwh : -1, 0, out);
       }
     }
   }
   view_unbind(argov_saved);  /* drop this call's hoisted-arg overrides */
+  free(held);
   arg_layout_free(&L);
 }
 
