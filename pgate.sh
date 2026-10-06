@@ -34,7 +34,11 @@ mkvar() {
     printf 'include Makefile\npgate-print-%%:\n\t@echo $($*)\n' > "$tmp/print.mk"
     local a=()
     for w in "$@"; do case "$w" in *=*) a+=("$w") ;; *) a+=("pgate-print-$w") ;; esac; done
-    env -u TEST_SHARD make -s --no-print-directory -f "$tmp/print.mk" "${a[@]}"
+    # one target at a time and -j1: under an inherited -j, make runs the print targets in parallel and their
+    # output interleaves mid-word
+    for t in "${a[@]}"; do case "$t" in *=*) continue ;; esac
+        env -u TEST_SHARD -u MAKEFLAGS make -j1 -s --no-print-directory -f "$tmp/print.mk" $(printf '%s\n' "${a[@]}" | grep = ) "$t"
+    done
 }
 
 # gate.rb's own tree of the working directory (what start records and stamp
