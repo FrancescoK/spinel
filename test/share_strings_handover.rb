@@ -41,3 +41,13 @@ r3 = build3; r3 << "2"
 x = +"p"; r4 = build4(x); r4 << "?"
 r5 = build5; r5[0] << "!"
 p r1, r2, r3, @keep, x, r4, r5
+
+# A discarded conditional's last call, or one in parentheses, keeps nothing:
+# `p r1, r2` there joins neither, and a dropped build's String is its own.
+if r1.size > 0
+  p r1, r2
+end
+(build1(1)) if r1
+r6 = build1(2)
+r6 << "y"
+p r6, r1, r2
