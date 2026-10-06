@@ -102,14 +102,15 @@ static const PolyFace ty_poly_face_tbl[] = {
   {"delete_if", PF_ARRAY | PF_MUT | PF_VAL_SELF, 0, 0, 1}, {"delete_if", PF_HASH | PF_MUT | PF_VAL_SELF, 0, 0, 1},
   {"compact!", PF_ARRAY | PF_MUT | PF_VAL_SELF, 0, 0, 0}, {"compact!", PF_HASH | PF_MUT | PF_VAL_SELF, 0, 0, 0},
   /* The Hash mutators that were not rows and raised NoMethodError through
-     a box. The setters answer their argument the way the typed emitter
-     renders them, `default_proc=` the receiver. `shift` and `replace` are
+     a box. The setters answer their argument, as the typed emitters
+     render them; `default_proc=` answered the receiver, where CRuby
+     answers the Proc. `shift` and `replace` are
      names an Array (and a String) own too, and stay with the runtime
      helpers that dispatch on the box's kind (sp_poly_shift,
      sp_poly_replace_any); the bang transforms are `replace` calls by the
      time codegen sees them (analyze.c), so they reach it too. */
   {"rehash", PF_HASH | PF_MUT | PF_VAL_SELF, 0, 0, 0},
-  {"default=", PF_HASH | PF_MUT, 1, 1, 0}, {"default_proc=", PF_HASH | PF_MUT | PF_VAL_SELF, 1, 1, 0},
+  {"default=", PF_HASH | PF_MUT, 1, 1, 0}, {"default_proc=", PF_HASH | PF_MUT | PF_DPROC, 1, 1, 0},
   {"assoc", PF_ARRAY, 1, 1, 0}, {"assoc", PF_HASH, 1, 1, 0},
   {"rassoc", PF_ARRAY, 1, 1, 0}, {"rassoc", PF_HASH, 1, 1, 0},
   {"fetch_values", PF_ARRAY, 0, 0, -1}, {"fetch_values", PF_ARRAY, 1, -1, 0},

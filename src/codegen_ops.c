@@ -222,6 +222,7 @@ static int (*const bop_emitters[BOPE__COUNT])(Compiler *, const BopCtx *, Buf *)
   [BOPE_HASH_REHASH] = emit_op_hash_rehash,
   [BOPE_HASH_REPLACE] = emit_op_hash_replace,
   [BOPE_HASH_SET_DEFAULT] = emit_op_hash_set_default,
+  [BOPE_HASH_DEFAULT_PROC_NIL] = emit_op_hash_default_proc_nil,
   [BOPE_HASH_MERGE_BANG_MANY] = emit_op_hash_merge_bang_many,
   [BOPE_HASH_SHIFT] = emit_op_hash_shift,
   [BOPE_HASH_DELETE] = emit_op_hash_delete,

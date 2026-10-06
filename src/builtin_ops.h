@@ -87,6 +87,7 @@ typedef enum {
   BOPE_HASH_REHASH,       /* Hash#rehash */
   BOPE_HASH_REPLACE,      /* replace(hash) of the same variant, or into PolyPoly */
   BOPE_HASH_SET_DEFAULT,  /* Hash#default= */
+  BOPE_HASH_DEFAULT_PROC_NIL,  /* Hash#default_proc = nil */
   BOPE_HASH_MERGE_BANG_MANY, /* merge!/update(h1, h2, ...) of the same variant */
   BOPE_HASH_SHIFT,        /* Hash#shift, no block */
   BOPE_HASH_DELETE,       /* delete(key) without a block literal */

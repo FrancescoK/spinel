@@ -1266,6 +1266,31 @@ def foo
 end
 ```
 
+#### A default Proc on an Integer- or String-valued Hash reached through a boxed value
+
+A Hash whose every value is an Integer, or every value a String, is compiled
+as a typed Hash (`sp_StrIntHash`, `sp_StrStrHash`, `sp_IntIntHash`,
+`sp_IntStrHash`). A `default_proc =` the compiler can see on a local widens the
+Hash to a variant of boxed values, as a store of another kind does. Through a
+boxed value (a Hash read out of a general Array, a boxed parameter) the Hash
+has already been built typed, and the typed variant has no slot for a block:
+the block can answer a value of any class, which an Integer- or String-valued
+Hash cannot hold. The assignment raises `TypeError` instead of installing a
+block that answers wrong:
+
+```ruby
+h = Hash.new(4)
+h["a"] = 1
+box = [h, 1][0]
+box.default_proc = proc { |hash, key| key.size }
+# TypeError: can't store a default proc in a Hash through a boxed receiver
+```
+
+CRuby installs the block. A Hash of boxed values (String or Symbol keys with
+values of several classes, or keys of several classes) takes the block through
+a boxed value as it does directly. Assign the default Proc where the Hash is a
+local, or build it with `Hash.new { |hash, key| ... }`.
+
 #### `Hash#compare_by_identity`
 
 `compare_by_identity` is rejected at compile time (never silently ignored).

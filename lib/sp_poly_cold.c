@@ -1086,7 +1086,11 @@ void sp_poly_hash_writeback_ex(sp_RbVal orig, sp_PolyPolyHash *work, int with_de
      through the box (a PolyPolyHash body) has no slot of its signature in
      a typed variant: refused, like a key of the wrong kind, rather than
      dropped. The bridge is the original's own proc, installed on the copy
-     by sp_poly_hash_merge, and means no change. */
+     by sp_poly_hash_merge, and means no change; no block on the copy
+     (`default=` or `default_proc = nil` cleared it) clears the original's.
+     A Proc `default_proc=` set goes on through sp_poly_hash_writeback_dproc
+     (spinel_rt.h), which knows the program's trampoline. */
+  int clear_proc = with_default && !work->dproc;
   if (with_default) {
     if (work->dproc && work->dproc != sp_poly_hash_dproc_bridge)
       sp_raise_cls("TypeError", sp_sprintf("can't store a default proc in a %s through a boxed receiver",
@@ -1142,6 +1146,7 @@ void sp_poly_hash_writeback_ex(sp_RbVal orig, sp_PolyPolyHash *work, int with_de
       sp_StrPolyHash *h = (sp_StrPolyHash *)orig.v.p;
       sp_StrPolyHash_clear(h);
       if (with_default) h->default_v = work->default_v;
+      if (clear_proc) { h->dproc = NULL; h->dproc_self = NULL; }
       for (sp_int i = 0; i < work->len; i++) {
         sp_int j = work->order[i];
         sp_StrPolyHash_set(h, sp_poly_to_s(work->keys[j]), work->vals[j]);
@@ -1152,6 +1157,7 @@ void sp_poly_hash_writeback_ex(sp_RbVal orig, sp_PolyPolyHash *work, int with_de
       sp_SymPolyHash *h = (sp_SymPolyHash *)orig.v.p;
       sp_SymPolyHash_clear(h);
       if (with_default) h->default_v = work->default_v;
+      if (clear_proc) { h->dproc = NULL; h->dproc_self = NULL; }
       for (sp_int i = 0; i < work->len; i++) {
         sp_int j = work->order[i];
         sp_SymPolyHash_set(h, (sp_sym)work->keys[j].v.i, work->vals[j]);

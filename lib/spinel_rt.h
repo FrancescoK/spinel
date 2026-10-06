@@ -16858,6 +16858,35 @@ static SP_UNUSED sp_RbVal sp_dyn_strpoly_hash_dproc(sp_StrPolyHash *h, const cha
 static SP_UNUSED sp_RbVal sp_dyn_sympoly_hash_dproc(sp_SymPolyHash *h, sp_sym key, void *self) {
   return sp_penum_call2((sp_Proc *)self, sp_box_obj(h, SP_BUILTIN_SYM_POLY_HASH), sp_box_sym(key));
 }
+/* The write-back of `box.default_proc = pr` (its face row's PF_DPROC). The
+   general copy carries this unit's sp_dyn_hash_dproc, whose address the
+   write-back compiled once in sp_poly_cold.c cannot know (a static has one
+   per unit), so it would refuse the block as one it cannot carry. Here the
+   Proc goes on a String- or Symbol-keyed original behind that kind's twin,
+   after the entries and default are written back. Any other original takes
+   the plain write-back: a general one is the copy itself, and an Integer-
+   or String-valued one refuses, having no slot for a block's value of any
+   class (docs/limitations.md). */
+static SP_UNUSED void sp_poly_hash_writeback_dproc(sp_RbVal orig, sp_PolyPolyHash *work) {
+  if (work && orig.tag == SP_TAG_OBJ && orig.v.p && work->dproc == sp_dyn_hash_dproc &&
+      (orig.cls_id == SP_BUILTIN_STR_POLY_HASH || orig.cls_id == SP_BUILTIN_SYM_POLY_HASH)) {
+    void *pr = work->dproc_self;
+    SP_GC_ROOT_RBVAL(orig); SP_GC_ROOT(work); SP_GC_ROOT(pr);
+    work->dproc = NULL; work->dproc_self = NULL;
+    sp_poly_hash_writeback(orig, work);
+    sp_gc_wb(orig.v.p);
+    if (orig.cls_id == SP_BUILTIN_STR_POLY_HASH) {
+      ((sp_StrPolyHash *)orig.v.p)->dproc = sp_dyn_strpoly_hash_dproc;
+      ((sp_StrPolyHash *)orig.v.p)->dproc_self = pr;
+    }
+    else {
+      ((sp_SymPolyHash *)orig.v.p)->dproc = sp_dyn_sympoly_hash_dproc;
+      ((sp_SymPolyHash *)orig.v.p)->dproc_self = pr;
+    }
+    return;
+  }
+  sp_poly_hash_writeback(orig, work);
+}
 static void sp_dyn_new_arity(sp_int given, sp_int max) {
   sp_arity_check(given, 0, max, NULL);
 }

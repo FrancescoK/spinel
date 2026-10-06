@@ -1591,6 +1591,7 @@ int emit_op_hash_compact_bang(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_hash_rehash(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_hash_replace(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_hash_set_default(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_hash_default_proc_nil(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_hash_merge_bang_many(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_hash_shift(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_hash_delete(Compiler *c, const BopCtx *x, Buf *b);
