@@ -1554,6 +1554,37 @@ void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
     }
   }
 }
+/* The value a generated Struct or Data constructor or an attribute writer
+   stores into a String ivar slot (TY_STRBUF), which no `@iv = v` of the
+   program writes: what a write into a slot of that kind hands it
+   (emit_strbuf_value). Into the shared handle (`shared`), a variable that
+   is no handle would be stored as a copy of its String, which a mutation
+   through the member or the variable does not reach: refused
+   (promote_ivar_handle_stores pulls the variables it can). */
+void emit_strbuf_ivar_store(Compiler *c, int shared, int v, Buf *b) {
+  const NodeTable *nt = c->nt;
+  LocalVar slot;
+  memset(&slot, 0, sizeof slot);
+  slot.type = TY_STRBUF;
+  slot.str_shared = shared ? 1 : 0;
+  int u = v;
+  while (u >= 0 && nt_kind(nt, u) == NK_ParenthesesNode) {
+    int body = nt_ref(nt, u, "body");
+    int n = 0; const int *st = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &n) : NULL;
+    u = n == 1 ? st[0] : -1;
+  }
+  NodeKind k = u >= 0 ? nt_kind(nt, u) : NK_NilNode;
+  if (k == NK_NilNode) { buf_puts(b, "NULL"); return; }
+  char ref[1024];
+  if (shared && repr_of(c, u).kind != RK_BOXED && !c->strbuf_box[u] &&
+      (k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode || repr_static_read_kind(k)) &&
+      !strbuf_slot_ref(c, u, ref, sizeof ref))
+    unsupported_feature(c, u, "a String variable is stored into a Struct member or through an attribute "
+                        "writer into an instance variable that is mutated in place through another name "
+                        "(a String is not yet shared by reference through this variable). Store a String "
+                        "no variable keeps, or mutate it through the variable.");
+  emit_strbuf_value(c, &slot, v, b);
+}
 /* Does storing node v into an Integer slot that can also hold nil need the
    -2^63 check (sp_int_slot_ck)? The slot's nil is the word INT64_MIN, so a
    real -2^63 stored there reads back as nil. Only a value that cannot itself
@@ -11165,6 +11196,10 @@ static int emit_call_stmt(Compiler *c, int id, Buf *b, int indent, const NodeTab
                  the slot's kind, as `@x = []` builds it: a bare Array.new
                  went into a Float array field as the general Array */
               else if ((ty_is_array(ivt) || ty_is_hash(ivt)) && emit_empty_literal_as(c, argv[0], ivt, b)) { }
+              /* a String slot that is a handle: the handle the value is, or a
+                 fresh one */
+              else if (ivt == TY_STRBUF && repr_of(c, argv[0]).kind != RK_BOXED)
+                emit_strbuf_ivar_store(c, c->classes[defc < 0 ? rc : defc].ivar_str_shared[iv], argv[0], b);
               else if (ivt != TY_POLY && ivt != TY_UNKNOWN && comp_ntype(c, argv[0]) == TY_UNKNOWN)
                 emit_unresolved_coerced(c, argv[0], ivt, b);
               else if (ivt != TY_POLY && ivt != TY_UNKNOWN)

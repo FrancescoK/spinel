@@ -9981,6 +9981,9 @@ static void emit_struct_member_value(Compiler *c, ClassInfo *cls, int a, int vno
     else emit_expr(c, vnode, mv);
   }
   else if (cls->ivar_types[a] == TY_POLY && repr_of(c, vnode).kind != RK_BOXED) emit_boxed(c, vnode, mv);
+  /* a String member a mutation reaches through another name: the handle */
+  else if (cls->ivar_types[a] == TY_STRBUF && repr_of(c, vnode).kind != RK_BOXED)
+    emit_strbuf_ivar_store(c, cls->ivar_str_shared[a], vnode, mv);
   /* The reverse of that box: a POLY value into a CONCRETE member
      slot. A member name a second class also defines makes the read
      a poly dispatch, whose value is an sp_RbVal, while the

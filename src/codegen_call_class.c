@@ -1164,6 +1164,31 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
             else buf_printf(b, "; _t%d->iv_%s; })", _atmp, iv_c(_abase));
             return 1;
           }
+          /* a String slot that is a handle (TY_STRBUF) takes the handle the
+             value is or a fresh one (emit_strbuf_ivar_store), and the
+             assignment's value is that handle where the caller takes one; a
+             String read of it would be a copy of the one object */
+          if (argc >= 1 && _aivt == TY_STRBUF && repr_of(c, argv[0]).kind != RK_BOXED) {
+            ClassInfo *_aci = &c->classes[_adefc < 0 ? _arc : _adefc];
+            TyKind _avt = repr_of(c, id).as_ty;
+            if (_avt != TY_STRBUF && _aci->ivar_str_shared[_aiv])
+              unsupported_feature(c, id, "an attribute assignment in value position (kept, passed on, or a "
+                                  "method's last expression, which the method answers) stores into an instance "
+                                  "variable that is mutated in place through another name, and its value would "
+                                  "be a copy (a String is not yet shared by reference through an assignment's "
+                                  "value). Make the assignment a statement of its own, or read the String back "
+                                  "through the reader.");
+            buf_printf(b, "_t%d->iv_%s = ", _atmp, iv_c(_abase));
+            emit_strbuf_ivar_store(c, _aci->ivar_str_shared[_aiv], argv[0], b);
+            if (_avt == TY_STRBUF) buf_printf(b, "; _t%d->iv_%s; })", _atmp, iv_c(_abase));
+            else {
+              char _asr[300]; snprintf(_asr, sizeof _asr, "_t%d->iv_%s", _atmp, iv_c(_abase));
+              buf_puts(b, "; ");
+              emit_strbuf_node_read(c, id, _asr, b);
+              buf_puts(b, "; })");
+            }
+            return 1;
+          }
           /* a value of another C type than the slot (an Integer into a slot
              widened to Bignum) converts into it, through a temp: the
              assignment's value is still the right-hand side as it came */
