@@ -9134,6 +9134,11 @@ int desugar_builtin_enum_calls(Compiler *c) {
     /* ...and one the analysis already routed through a marked `to_a` hop
        (enum_each_wrap): codegen walks the Enumerator itself */
     if (nt_kind(nt, recv) == NK_CallNode && nt_str(nt, recv, "enum_each_wrap")) continue;
+    /* ...and a self-answering walk over a marked `to_a` hop (a String
+       range's members): the typed emitter answers the hop's receiver, the
+       range, where this definition's `self` is the member Array */
+    if (is_each_walk_or_with_index(name) && nt_kind(nt, recv) == NK_CallNode &&
+        nt_str(nt, recv, "enum_recv")) continue;
     /* find/detect reachable from an optional/keyword parameter's default
        value: see find_calls_in_param_defaults. */
     if (in_default && in_default[id] &&
@@ -12775,6 +12780,12 @@ int core_method_name(const char *n) {
 
 static int name_in_list(const char *const *list, const char *n) {
   return str_in(n, list);
+}
+
+/* Is `n` one of Object's public instance methods, the face every object
+   answers about itself (the generated RB_OBJECT_PUBLIC)? */
+int object_public_method_name(const char *n) {
+  return name_in_list(RB_OBJECT_PUBLIC, n);
 }
 
 static int rbself_builtin(const char *cn) {
