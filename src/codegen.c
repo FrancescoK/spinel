@@ -710,7 +710,7 @@ static void emit_int_expr_ex(Compiler *c, int node, int strict, Buf *b) {
   /* A value the analysis widened to Bignum (a doubling counter, a masked
      accumulator) used where an integer is wanted -- an array index, a repeat
      count -- is a pointer, not a number: convert it. */
-  if (comp_ntype(c, node) == TY_BIGINT) {
+  if (repr_of(c, node).big) {
     buf_puts(b, "sp_bigint_to_int("); emit_expr(c, node, b); buf_puts(b, ")");
     return;
   }
@@ -862,8 +862,9 @@ void emit_float_expr(Compiler *c, int node, Buf *b) {
     buf_puts(b, "sp_poly_to_f("); emit_expr(c, node, b); buf_puts(b, ")");
     return;
   }
-  TyKind t = comp_ntype(c, node);
-  if (t == TY_BIGINT) {
+  Repr tr = repr_of(c, node);
+  TyKind t = tr.as_ty;
+  if (tr.big) {
     buf_puts(b, "sp_bigint_to_double("); emit_expr(c, node, b); buf_puts(b, ")");
     return;
   }
@@ -1544,8 +1545,8 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
       if (pbn == 1) { emit_boxed(c, pbd[0], b); return; }
     }
   }
-  if (nt_kind(c->nt, node) == NK_LocalVariableReadNode && repr_of(c, node).as_ty == TY_STRING &&
-      repr_of(c, node).poly_lift)
+  Repr tr = repr_of(c, node);
+  if (nt_kind(c->nt, node) == NK_LocalVariableReadNode && tr.as_ty == TY_STRING && tr.poly_lift)
     unsupported_feature(c, node, "a String is not yet shared by reference through a narrowed boxed iterator element into an appending parameter");
   {
     const char *bty0 = nt_type(c->nt, node);
@@ -1560,7 +1561,7 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
       return;
     }
   }
-  TyKind t = comp_ntype(c, node);
+  TyKind t = tr.as_ty;
   /* Lowered self-recursive yield in a boxed value position (a `{ yield }` block
      whose value rides the universal proc slot): the enclosing method's block is
      the runtime __yblk__ proc, which publishes its boxed result into
@@ -1643,7 +1644,7 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
       /* The invoke emitter boxes an object tail into a poly slot, so for that
          shape the splice above already yielded an sp_RbVal -- re-boxing would
          cast a struct through (void *) (#3329). */
-      int pre_boxed = (t == TY_POLY && ty_is_object(bt));
+      int pre_boxed = (tr.kind == RK_BOXED && ty_is_object(bt));
       if (bt == TY_NIL || bt == TY_VOID) {
         buf_printf(b, "({ %s; sp_box_nil(); })", yt);
         RC(RF_NIL_EFFECT, RW_YIELD);
@@ -1666,7 +1667,7 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
      while the emitted field lives on the including class. Box the concrete
      field so the two agree -- `sp_poly_add(self->iv_x, ...)` fed sp_int to an
      sp_RbVal parameter and did not compile. */
-  if (t == TY_POLY && g_emitting_class_id >= 0 &&
+  if (tr.kind == RK_BOXED && g_emitting_class_id >= 0 &&
       nt_kind(c->nt, node) == NK_InstanceVariableReadNode) {
     Scope *sc0 = comp_scope_of(c, node);
     if (!sc0 || sc0->class_id != g_emitting_class_id) {
@@ -1687,7 +1688,7 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
   }
   /* an empty array literal [] has TY_UNKNOWN; box it as an empty PolyArray so
      it can hold any element type when stored into a poly slot */
-  if (t == TY_UNKNOWN && nt_type(c->nt, node) && sp_streq(nt_type(c->nt, node), "ArrayNode")) {
+  if (tr.untyped && nt_type(c->nt, node) && sp_streq(nt_type(c->nt, node), "ArrayNode")) {
     int _ne = 0; nt_arr(c->nt, node, "elements", &_ne);
     if (_ne == 0) { buf_puts(b, "sp_box_poly_array(sp_PolyArray_new())"); RC(RF_SPECIAL, RW_LITERAL); return; }
   }
@@ -1695,7 +1696,7 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
      narrow it), and its handler emits a sp_PolyArray *. When it is never pushed
      and lands in a poly slot, box that array -- otherwise the fallback below
      evaluates it for side effect and yields nil, dropping the array. */
-  if (t == TY_UNKNOWN && nt_type(c->nt, node) && sp_streq(nt_type(c->nt, node), "CallNode")) {
+  if (tr.untyped && nt_type(c->nt, node) && sp_streq(nt_type(c->nt, node), "CallNode")) {
     const char *nm = nt_str(c->nt, node, "name");
     int rc = nt_ref(c->nt, node, "receiver");
     const char *rcn = rc >= 0 ? nt_str(c->nt, rc, "name") : NULL;
@@ -1707,14 +1708,14 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
     }
   }
   /* an empty hash literal {} has TY_UNKNOWN; box it as an empty PolyPolyHash */
-  if (t == TY_UNKNOWN && nt_type(c->nt, node) && sp_streq(nt_type(c->nt, node), "HashNode")) {
+  if (tr.untyped && nt_type(c->nt, node) && sp_streq(nt_type(c->nt, node), "HashNode")) {
     int _ne = 0; nt_arr(c->nt, node, "elements", &_ne);
     if (_ne == 0) { buf_puts(b, "sp_box_obj(sp_PolyPolyHash_new(), SP_BUILTIN_POLY_POLY_HASH)"); RC(RF_SPECIAL, RW_LITERAL); return; }
   }
   /* Hash.new / Hash.new(default) whose variant no key usage ever narrowed:
      box an empty PolyPolyHash carrying the default (it used to fall to the
      constant path and raise "uninitialized constant Hash"). */
-  if (t == TY_UNKNOWN && nt_type(c->nt, node) && sp_streq(nt_type(c->nt, node), "CallNode") &&
+  if (tr.untyped && nt_type(c->nt, node) && sp_streq(nt_type(c->nt, node), "CallNode") &&
       nt_str(c->nt, node, "name") && sp_streq(nt_str(c->nt, node, "name"), "new") &&
       nt_ref(c->nt, node, "block") < 0) {
     int hrecv = nt_ref(c->nt, node, "receiver");
@@ -1741,13 +1742,12 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
      place the flags beside its type are read: whether a scalar can hold
      its nil sentinel, where a shared String's handle comes from, whether
      an object reads its class id from itself. */
-  Repr rp = repr_of(c, node);
-  switch ((ReprKind)rp.kind) {
+  switch ((ReprKind)tr.kind) {
   case RK_BOXED:
     /* a handle-marked read of a local that settled POLY already holds a
        boxed value -- wrapping it as a raw handle would reinterpret an
        sp_RbVal as sp_String* (#3325) */
-    if (rp.strbuf_src == RS_SLOT_POLY) {
+    if (tr.strbuf_src == RS_SLOT_POLY) {
       buf_printf(b, "lv_%s", rename_local(nt_str(c->nt, node, "name")));
       RC(RF_PASS, RW_NONE);
       return;
@@ -1785,7 +1785,7 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
     return;
   }
   case RK_STRUCT: {
-    const char *fn = ty_box_fn(t == TY_RANGE || t == TY_FLOAT_RANGE || t == TY_STR_RANGE ||
+    const char *fn = ty_box_fn(tr.range == TY_INT || tr.range == TY_FLOAT || tr.range == TY_STRING ||
                                t == TY_TMS || t == TY_TIME || t == TY_COMPLEX || t == TY_RATIONAL
                                ? t : TY_CLASS);
     buf_printf(b, "%s(", fn);
@@ -1802,7 +1802,7 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
     RC(RF_VOBJ, RW_NONE);
     return;
   case RK_STRBUF:
-    emit_boxed_strbuf(c, node, t, &rp, b);
+    emit_boxed_strbuf(c, node, t, &tr, b);
     return;
   case RK_PTR:
     break;
@@ -1833,12 +1833,12 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
        boxed value then dispatched as the parent (#3773), so the box reads the
        id the object carries (dyn_cls; an exception, whose object starts with
        its class name, keeps the static id: repr_dyn_cls). */
-    buf_puts(b, rp.dyn_cls ? "sp_box_nullable_obj_dyn((void *)(" : "sp_box_nullable_obj((void *)(");
+    buf_puts(b, tr.dyn_cls ? "sp_box_nullable_obj_dyn((void *)(" : "sp_box_nullable_obj((void *)(");
     emit_expr(c, node, b);
     buf_puts(b, "), ");
     arysub_box_id(c, t, b);
     buf_puts(b, ")");
-    RC(rp.dyn_cls ? RF_NULLABLE_DYN : RF_NULLABLE, RW_NONE);
+    RC(tr.dyn_cls ? RF_NULLABLE_DYN : RF_NULLABLE, RW_NONE);
     return;
   }
   if (ty_is_hash(t)) {
@@ -1860,7 +1860,7 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
      a truthy Integer that printed 0 (#4800). Unconditional: a live Bignum is
      never the NULL pointer, so the test costs one compare on a path that
      already allocates, and no analysis has to prove nilability. */
-  if (t == TY_BIGINT) {
+  if (tr.big) {
     buf_printf(b, "%s(", ty_box_nil_fn(TY_BIGINT)); emit_expr(c, node, b); buf_puts(b, ")");
     RC(RF_BIGINT, RW_NONE);
     return;
@@ -1876,8 +1876,8 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
      then segfaults on the first access (#3275). A non-nil array is never
      NULL, so the guard's untaken branch is free on the hot path. Matches
      emit_boxed_text's array cases. */
-  { const char *aid = t == TY_INT_ARRAY ? "SP_BUILTIN_INT_ARRAY" : t == TY_FLOAT_ARRAY ? "SP_BUILTIN_FLT_ARRAY"
-                    : t == TY_STR_ARRAY ? "SP_BUILTIN_STR_ARRAY" : t == TY_POLY_ARRAY ? "SP_BUILTIN_POLY_ARRAY"
+  { const char *aid = tr.elem == TY_INT ? "SP_BUILTIN_INT_ARRAY" : tr.elem == TY_FLOAT ? "SP_BUILTIN_FLT_ARRAY"
+                    : tr.elem == TY_STRING ? "SP_BUILTIN_STR_ARRAY" : tr.elem == TY_POLY ? "SP_BUILTIN_POLY_ARRAY"
                     : t == TY_OPENSTRUCT ? "SP_BUILTIN_OPENSTRUCT" : NULL;
     if (aid) {
       buf_puts(b, "sp_box_nullable_obj((void *)("); emit_expr(c, node, b);
@@ -5473,9 +5473,9 @@ int conv_reads_shared_storage(Compiler *c, int node) {
    `slot` holds, and returns 1; returns 0 (nothing emitted) where no
    conversion applies. */
 int emit_array_into_poly_slot(Compiler *c, TyKind slot, int v, Buf *b) {
-  TyKind vt = comp_ntype(c, v);
-  const char *k = vt == TY_INT_ARRAY ? "int" : vt == TY_STR_ARRAY ? "str"
-                : vt == TY_FLOAT_ARRAY ? "float" : NULL;
+  Repr vr = repr_of(c, v);
+  const char *k = vr.elem == TY_INT ? "int" : vr.elem == TY_STRING ? "str"
+                : vr.elem == TY_FLOAT ? "float" : NULL;
   if (slot != TY_POLY_ARRAY || !k) return 0;
   if (conv_reads_shared_storage(c, v))
     unsupported(c, v, "widening a typed array READ into a poly slot "
