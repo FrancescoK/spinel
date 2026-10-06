@@ -12,3 +12,11 @@ NoMethodError: undefined method 'pwrite' for nil
 2
 ArgumentError: wrong number of arguments (given 1, expected 2..3)
 ArgumentError: wrong number of arguments (given 1, expected 2)
+to_int len
+to_int off
+"sym"
+to_s txt
+to_int off
+3
+"YY12"
+"YY12"

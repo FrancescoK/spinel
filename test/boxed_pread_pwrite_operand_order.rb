@@ -36,5 +36,14 @@ p g.pread(6, 0)
 p g.pwrite(12, 4)
 t { g.pread(3) }
 t { g.pwrite("q") }
+# The first operand converts ahead of the offset (pread's length with
+# to_int, pwrite's operand with to_s), and a pread buffer is filled.
+class Num; def initialize(v, t) = (@v = v; @t = t); def to_int; puts "to_int #{@t}"; @v; end; end
+class Txt; def to_s; puts "to_s txt"; "HEY"; end; end
+p g.pread(Num.new(3, "len"), Num.new(0, "off"))
+p g.pwrite(Txt.new, Num.new(0, "off"))
+buf = +"xx"
+p g.pread(4, 2, buf)
+p buf
 f.close
 File.delete(path)

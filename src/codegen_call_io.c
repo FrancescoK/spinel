@@ -532,21 +532,23 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
 }
 
 /* the instance methods of an IO / File handle (TY_IO) */
-/* pread(len, off) and pwrite(str, off) on a boxed receiver: the receiver
-   and then every argument run before the handle is unboxed, so a receiver
-   that is no IO raises NoMethodError after them, as in CRuby. The held
-   arguments convert once the handle is known, the offset ahead of
-   pwrite's string as rb_io_pwrite does; without an offset the handle
-   raises CRuby's ArgumentError. Through the general arm, pwrite's
-   string ran ahead of the receiver (its to_s went in front of the
-   statement) and the offset never ran on a nil receiver. A pread with a
-   buffer keeps that arm, which rebinds the buffer. */
+/* pread(len, off[, buf]) and pwrite(str, off) on a boxed receiver: the
+   receiver and then every argument run before the handle is unboxed, so a
+   receiver that is no IO raises NoMethodError after them, as in CRuby.
+   The held arguments convert once the handle is known, the first operand
+   ahead of the offset as rb_io_pread and rb_io_pwrite do (pread's length
+   with to_int, pwrite's operand with to_s); without an offset the handle
+   raises CRuby's ArgumentError. A pread buffer that is a plain local is
+   checked mutable and rebound to the read result, as the typed arm does
+   (#3131, #3335). Through the general arm, pwrite's string ran ahead of
+   the receiver (its to_s went in front of the statement), the offset never
+   ran on a nil receiver, and a buffer never ran. */
 static int emit_boxed_positional_io(Compiler *c, int recv, const char *name, int argc,
                                     const int *argv, int tio, Buf *b) {
-  if (!is_positional_io(name) || argc < 1 || argc > 2 ||
-      call_has_splat_arg(c->nt, argv, argc)) return 0;
   int is_w = name[1] == 'w';   /* pwrite, beside pread */
-  int trv = ++g_tmp, th[2] = {0, 0}, toff = ++g_tmp;
+  if (!is_positional_io(name) || argc < 1 || argc > (is_w ? 2 : 3) ||
+      call_has_splat_arg(c->nt, argv, argc)) return 0;
+  int trv = ++g_tmp, th[3] = {0, 0, 0}, toff = ++g_tmp, tfirst = ++g_tmp;
   buf_printf(b, "({ sp_RbVal _t%d = ", trv); emit_boxed(c, recv, b);
   buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", trv);
   for (int i = 0; i < argc; i++) {
@@ -556,15 +558,37 @@ static int emit_boxed_positional_io(Compiler *c, int recv, const char *name, int
   }
   buf_printf(b, "sp_File *_t%d = sp_poly_as_io(_t%d, \"%s\"); ", tio, trv, name);
   /* both take the offset: one argument is the handle's ArgumentError */
-  if (argc >= 2) buf_printf(b, "sp_int _t%d = sp_poly_arg_int_chk(_t%d); ", toff, th[1]);
-  else buf_printf(b, "sp_raise_cls(\"ArgumentError\", \"wrong number of arguments (given 1, expected %s)\");"
-                     " sp_int _t%d = 0; ", is_w ? "2" : "2..3", toff);
+  if (argc < 2)
+    buf_printf(b, "sp_raise_cls(\"ArgumentError\", \"wrong number of arguments (given 1, expected %s)\"); ",
+               is_w ? "2" : "2..3");
+  /* the first operand converts ahead of the offset */
   if (is_w)
-    buf_printf(b, "_t%d.tag == SP_TAG_STR ? sp_File_pwrite_bin(_t%d, _t%d.v.s, _t%d)"
-                  " : sp_File_pwrite(_t%d, sp_poly_to_s(_t%d), _t%d); })",
-               th[0], tio, th[0], toff, tio, th[0], toff);
-  else
-    buf_printf(b, "sp_File_pread(_t%d, sp_poly_arg_int_chk(_t%d), _t%d); })", tio, th[0], toff);
+    buf_printf(b, "const char *_t%d = _t%d.tag == SP_TAG_STR ? _t%d.v.s : sp_poly_to_s(_t%d); SP_GC_ROOT_STR(_t%d); ",
+               tfirst, th[0], th[0], th[0], tfirst);
+  else buf_printf(b, "sp_int _t%d = sp_poly_arg_int_chk(_t%d); ", tfirst, th[0]);
+  if (argc >= 2) buf_printf(b, "sp_int _t%d = sp_poly_arg_int_chk(_t%d); ", toff, th[1]);
+  else buf_printf(b, "sp_int _t%d = 0; ", toff);
+  if (is_w) {
+    buf_printf(b, "_t%d.tag == SP_TAG_STR ? sp_File_pwrite_bin(_t%d, _t%d, _t%d)"
+                  " : sp_File_pwrite(_t%d, _t%d, _t%d); })", th[0], tio, tfirst, toff, tio, tfirst, toff);
+    return 1;
+  }
+  /* pread's buffer: a plain String or boxed local is checked mutable and
+     rebound to the read result, as the typed arm rebinds it */
+  const char *bufn = NULL;
+  TyKind bt = TY_UNKNOWN;
+  if (argc == 3 && nt_kind(c->nt, argv[2]) == NK_LocalVariableReadNode) {
+    bt = comp_ntype(c, argv[2]);
+    if (bt == TY_STRING || bt == TY_POLY) bufn = nt_str(c->nt, argv[2], "name");
+  }
+  if (bufn) buf_printf(b, "if (_t%d.tag == SP_TAG_STR) sp_str_check_mutable(_t%d.v.s); ", th[2], th[2]);
+  int tpr = ++g_tmp;
+  buf_printf(b, "const char *_t%d = sp_File_pread(_t%d, _t%d, _t%d); ", tpr, tio, tfirst, toff);
+  if (bufn) {
+    if (bt == TY_STRING) buf_printf(b, "lv_%s = _t%d; ", rename_local(bufn), tpr);
+    else buf_printf(b, "lv_%s = _t%d ? sp_box_str(_t%d) : sp_box_nil(); ", rename_local(bufn), tpr, tpr);
+  }
+  buf_printf(b, "_t%d; })", tpr);
   return 1;
 }
 
