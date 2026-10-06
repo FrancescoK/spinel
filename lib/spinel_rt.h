@@ -14708,8 +14708,18 @@ static sp_RbVal sp_poly_replace_any(sp_RbVal recv, sp_RbVal src) {
     sp_raise_nomethod(sp_nomethod_msg_args("replace", recv, 1, &src));
     return recv;
   }
-  if (r_str && src.tag != SP_TAG_STR && !sp_poly_is_strbuf(src))
-    sp_raise_cls("TypeError", sp_sprintf("no implicit conversion of %s into String", sp_convert_src_name(src)));
+  /* the receiver is checked before its source is converted, as CRuby's
+     replace checks it (str_modifiable, rb_ary_modify_check) before
+     StringValue / to_ary run */
+  if ((r_str || r_arr) && sp_poly_frozen(recv))
+    sp_raise_frozen_obj(recv, r_str ? "can't modify frozen String" : "can't modify frozen Array");
+  /* a String's source converts through #to_str (StringValue) */
+  if (r_str && src.tag != SP_TAG_STR && !sp_poly_is_strbuf(src)) {
+    const char *cs = sp_poly_check_str(src);
+    if (!cs)
+      sp_raise_cls("TypeError", sp_sprintf("no implicit conversion of %s into String", sp_convert_src_name(src)));
+    src = sp_box_str(cs);
+  }
   if (r_arr) {
     src = sp_poly_ary_operand(src);
     if (!(src.tag == SP_TAG_OBJ && src.v.p && sp_poly_is_array_kind(src.cls_id)))
@@ -14718,12 +14728,9 @@ static sp_RbVal sp_poly_replace_any(sp_RbVal recv, sp_RbVal src) {
   if (recv.tag == SP_TAG_OBJ && recv.v.p && sp_poly_is_hash_kind(recv.cls_id)) return sp_poly_hash_replace(recv, src, 0);
   /* String#replace on a plain string box: a fresh mutable copy of the
      source, which the receiver takes back (the typed replace builds the
-     same, sp_str_from_bytes). A frozen receiver raises first; a source that
-     is no String is CRuby's TypeError. It answered the box untouched. */
+     same, sp_str_from_bytes); the receiver and the source were checked
+     above. It answered the box untouched. */
   if (recv.tag == SP_TAG_STR) {
-    sp_str_check_mutable(recv.v.s);
-    if (src.tag != SP_TAG_STR && !sp_poly_is_strbuf(src))
-      sp_raise_cls("TypeError", sp_sprintf("no implicit conversion of %s into String", sp_poly_class_name(src)));
     const char *s2 = src.tag == SP_TAG_STR ? (src.v.s ? src.v.s : sp_str_empty) : sp_String_cstr((sp_String *)src.v.p);
     return sp_box_str(sp_str_from_bytes(s2, sp_str_byte_len(s2)));
   }
