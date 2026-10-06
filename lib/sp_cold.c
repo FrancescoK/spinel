@@ -4924,12 +4924,13 @@ const char *sp_str_encode(const char *s, sp_RbVal dst, sp_RbVal src,
   if (!s) sp_nil_recv("encode");
   int from = sp_enc_kind(src, sp_str_is_binary(s) ? 2 : 1);
   int to = sp_enc_kind(dst, 1);
-  if (!from || !to) return s;
+  /* encode answers a new String even where nothing changes, as CRuby's */
+  if (!from || !to) return sp_str_dup(s);
   const char *repl = (replace.tag == SP_TAG_STR && replace.v.s) ? replace.v.s : NULL;
   SP_GC_ROOT_STR(repl);
   if (from == to) {
     if (from == 1 && sp_enc_kw_replace(invalid)) return sp_str_scrub(s, repl);
-    return s;
+    return sp_str_dup(s);
   }
   /* binary <-> UTF-8: the ASCII bytes carry over, nothing else does */
   size_t bl = sp_str_byte_len(s);
