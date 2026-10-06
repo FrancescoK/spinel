@@ -234,6 +234,22 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
     /* the receiver's own settled type where the dispatch type is poly */
     TyKind lrt = (rt == TY_POLY || rt == TY_UNKNOWN) ? comp_ntype(c, recv) : rt;
     TyKind lat = comp_ntype(c, argv[0]);
+    /* NULL in a String slot is nil, including nil <=> nil == 0. */
+    if (lrt == TY_STRING && (lat == TY_STRING || lat == TY_NIL) &&
+        !(nt_kind(nt, recv) == NK_StringNode && nt_kind(nt, argv[0]) == NK_StringNode)) {
+      int tr = ++g_tmp, ta = ++g_tmp;
+      int boxed = repr_of(c, id).kind == RK_BOXED;
+      if (boxed) buf_puts(b, "sp_box_int_or_nil(");
+      buf_printf(b, "({ const char *_t%d = ", tr); emit_coerce(c, recv, TY_STRING, CO_HOLD, "a comparison operand", b);
+      buf_puts(b, "; ");
+      if (operand_may_allocate(c, argv[0])) buf_printf(b, "SP_GC_ROOT_STR(_t%d); ", tr);
+      buf_printf(b, "const char *_t%d = ", ta);
+      emit_coerce(c, argv[0], TY_STRING, CO_HOLD, "a comparison operand", b);
+      buf_printf(b, "; !_t%d || !_t%d ? (_t%d == _t%d ? (sp_int)0 : SP_INT_NIL)"
+                    " : (sp_int)sp_str_cmp_bytes(_t%d, _t%d); })", tr, ta, tr, ta, tr, ta);
+      if (boxed) buf_puts(b, ")");
+      return 1;
+    }
     /* nil <=> nil is 0; nil <=> anything-else is nil (#2383) */
     if (lrt == TY_NIL) {
       buf_puts(b, "((void)("); emit_expr(c, recv, b);
@@ -1139,7 +1155,13 @@ int emit_call_operator_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
     if (emit_array_mutate_stmt(c, id, &mb, 0)) {
       buf_puts(b, "({ ");
       buf_puts(b, mb.p ? mb.p : "");
-      emit_expr(c, argv[argc - 1], b);
+      /* a value of a class with no #to_str (an Integer, a Symbol, nil, an
+         Array): the store raised CRuby's TypeError converting it, so the
+         String the call answers is never read. Evaluated again as the
+         value, it went into the String slot and did not build. */
+      if (want == TY_STRING && vt != TY_STRBUF && vt != TY_UNKNOWN && !ty_is_object(vt))
+        buf_puts(b, raise_tail_value(want));
+      else emit_expr(c, argv[argc - 1], b);
       buf_puts(b, "; })");
       free(mb.p);
       return 1;

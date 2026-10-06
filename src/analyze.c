@@ -12767,21 +12767,31 @@ static int widen_mixed_key_hash_slots(Compiler *c) {
   for (size_t wk = 0; wk < sizeof(wkinds) / sizeof(wkinds[0]); wk++) {
     NT_FOREACH_KIND(nt, wkinds[wk], id) {
       int is_call = wkinds[wk] == NK_CallNode;
-      int is_upd = 0;
+      int is_upd = 0, is_dflt = 0;
       if (is_call) {
         const char *nm = nt_str(nt, id, "name");
         if (!nm) continue;
         is_upd = is_hash_merge_bang(nm);
-        if (!is_upd && !sp_streq(nm, "[]=") && !sp_streq(nm, "store")) continue;
+        is_dflt = is_hash_default_setter(nm);
+        if (!is_upd && !is_dflt && !is_store_alias(nm)) continue;
       }
       int recv = nt_ref(nt, id, "receiver");
       int anode = nt_ref(nt, id, "arguments");
       int an = 0; const int *av = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
-      if (recv < 0 || !av || (!is_upd && an != (is_call ? 2 : 1))) continue;
+      if (recv < 0 || !av || (!is_upd && an != (is_call && !is_dflt ? 2 : 1))) continue;
       HashKeySlot hs;
       if (hash_key_slot_of(c, recv, &hs) < 0) continue;
       unsigned kb = 0, vb = 0;
-      if (is_upd) {
+      if (is_dflt) {
+        /* `h.default = v`: a value the hash answers for a missing key, so
+           the value evidence a store is, under the key class it has. A nil
+           literal is none: a typed hash keeps it in its values' slot, as
+           the nil a missing key already answers. */
+        if (nt_kind(nt, av[0]) == NK_NilNode) continue;
+        kb = hash_key_class_bit(ty_hash_key(infer_type(c, recv)));
+        vb = hash_value_class_bit(infer_type(c, av[0]));
+      }
+      else if (is_upd) {
         /* `h.update("e" => 1.5)` stores each pair of the merged literals,
            as `h["e"] = 1.5` would */
         for (int q = 0; q < an; q++) {
@@ -31082,7 +31092,7 @@ static void an_phase_infer_fixpoint(Compiler *c) {
     ch |= promote_forwarded_rest_args(c);
     ch |= promote_append_accumulators(c);
     ch |= infer_ivar_types(c);
-    ch |= infer_cvar_types(c);
+    ch |= infer_cvar_types(c, 0);
     ch |= infer_inherited_ivars(c);
     ch |= infer_return_types(c);
     ch |= backprop_hash_return_types(c);
@@ -31310,7 +31320,7 @@ static void an_phase_infer_fixpoint(Compiler *c) {
         { int _w = promote_forwarded_rest_args(c); ch |= _w; ch_other |= _w; }
         { int _w = promote_append_accumulators(c); ch |= _w; ch_other |= _w; }
         { int _w = widen_shared_cmp_params(c); ch |= _w; ch_other |= _w; }
-        { int _w = infer_cvar_types(c); ch |= _w; ch_other |= _w; }
+        { int _w = infer_cvar_types(c, 0); ch |= _w; ch_other |= _w; }
         int ivsame = c->nclasses == ivncls;
         for (int ci = 0; ivsame && ci < ivncls; ci++)
           if (c->classes[ci].nivars != ivoff[ci + 1] - ivoff[ci]) ivsame = 0;
@@ -32486,10 +32496,10 @@ static void an_phase_method_backstops(Compiler *c) {
   reassert_rbs_param_seeds(c);   /* the post-fixpoint passes narrow too */
   /* The returns settled above may have widened past the locals that were
      derived from them (the write re-run ran first, and its `no new poly` gate
-     kept a return narrow until now). Reconcile the object slots, whose
-     assignment has no coercion to fall back on. */
+     kept a return narrow until now). Reconcile object slots and scalars that
+     have no nil representation. */
   for (int iter = 0; iter < 8; iter++) {
-    int ch = widen_object_locals_from_poly_writes(c);
+    int ch = widen_locals_from_poly_writes(c);
     ch |= widen_arrays_from_map_bang(c);
     ch |= infer_return_types(c);
     if (!ch) break;
@@ -32571,13 +32581,15 @@ static void an_phase_late_widen(Compiler *c) {
      the [parent ivars..., own ivars...] cast-compatible layout is preserved. */
   inherit_members(c);
 
-  /* Re-run ivar inference now that purely-nil params/locals became poly: an
-     ivar fed by such a param (`@x = idx` where every `set` call passed nil)
-     was skipped during the fixpoint (its value read as TY_NIL) and may have
-     stayed a narrower scalar; with the param now poly the write contributes
-     poly so the ivar widens to match. */
+  /* Re-run ivar and cvar inference after late parameter/return widening.
+     An ivar fed by a purely-nil param (`@x = idx` where every `set` call
+     passed nil) was skipped during the fixpoint. A cvar fed by an optional
+     Symbol param's return may still be Symbol; with the return now poly,
+     its write must widen too, or storing nil loses the tag. Limit this late
+     cvar widening to Bool and Symbol slots, which have no nil representation. */
   for (int it = 0; it < 8; it++) {
     int ch = infer_ivar_types(c);
+    ch |= infer_cvar_types(c, 1);
     ch |= infer_inherited_ivars(c);
     /* ... and back up: the re-run above can widen a subclass's copy of an
        inherited ivar (a poly-fallen param feeding it), and the up-propagation

@@ -1662,6 +1662,7 @@ const char *array_index_bad_class(Compiler *c, int id);
 int  poly_block_dispatch_cands(Compiler *c, int id, int *cand, int max);
 int  poly_redispatch_kind(Compiler *c, int id, const char *name, int argc);
 int  face_arg_misfit(Compiler *c, unsigned kind, int arg);
+int  face_args_misfit(Compiler *c, int id, unsigned kind);
 int poly_name_user_claimed(Compiler *c, const char *name, int argc);
 /* Does CRuby take argc arguments to cls#name, by the instance arity table
    (sp_builtin_arity_spec_tbl)? 1 for a name the table has no row for. */

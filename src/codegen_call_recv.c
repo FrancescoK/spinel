@@ -342,7 +342,7 @@ static int array_literal_plain(Compiler *c, int recv) {
 /* value_kind_misses for a needle searched for in the array `recv`: nil is no
    miss where the array can hold the sentinel. */
 static int needle_misses(Compiler *c, int recv, TyKind rt, int node) {
-  if (comp_ntype(c, node) == TY_NIL && elem_nil_sentinel(c, recv, rt)) return 0;
+  if (comp_ntype(c, node) == TY_NIL && (rt == TY_STR_ARRAY || elem_nil_sentinel(c, recv, rt))) return 0;
   return value_kind_misses(c, node, ty_array_elem(rt));
 }
 
@@ -551,10 +551,13 @@ static int emit_array_block_index(Compiler *c, int id, int recv, TyKind rt, cons
       buf_printf(g_pre, "for (sp_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) {\n",
                  ti, ti, k, trecv, ti);
     if (bp) { emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "lv_%s = sp_%sArray_get(_t%d, _t%d);\n", bp, k, trecv, ti); }
+    /* the block's value by Ruby's truthiness: an Integer 0 is a hit, and
+       a boxed value is no C scalar (read raw, 0 missed and a boxed value
+       did not build) */
     Buf cb; memset(&cb, 0, sizeof cb);
     { IterStep st; emit_iter_step_open(c, block, 1, g_indent + 1, &st);
       int sv = g_indent; g_indent++;
-      emit_iter_step_cond(c, &st, 1, &cb); g_indent = sv; }
+      emit_iter_step_cond(c, &st, 0, &cb); g_indent = sv; }
     emit_indent(g_pre, g_indent + 1);
     buf_printf(g_pre, "if (%s) { _t%d = _t%d; break; }\n", cb.p ? cb.p : "0", tres, ti);
     free(cb.p);
@@ -1563,7 +1566,7 @@ static int emit_kind_array_iter_call(Compiler *c, int id, Buf *b, const NodeTabl
                  ti, ti, k, ta, ti, ta, ti, tv, tv, tc);
     else if (rt == TY_STR_ARRAY)
       buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++)"
-                    " if (sp_str_cmp_bytes(sp_%sArray_get(_t%d, _t%d), _t%d) == 0) _t%d++;",
+                    " if (sp_str_eq(sp_%sArray_get(_t%d, _t%d), _t%d)) _t%d++;",
                  ti, ti, k, ta, ti, k, ta, ti, tv, tc);
     else
       buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++)"
@@ -2227,8 +2230,9 @@ else {
       /* a boxed needle, read as the block form above reads it */
       int tv = ++g_tmp;
       buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_boxed(c, argv[0], b);
-      buf_printf(b, "; _t%d.tag == SP_TAG_STR ? sp_StrArray_delete(%s, _t%d.v.s) : (const char *)0; })",
-                 tv, rdl.p, tv);
+      buf_printf(b, "; _t%d.tag == SP_TAG_STR ? sp_StrArray_delete(%s, _t%d.v.s)"
+                    " : _t%d.tag == SP_TAG_NIL ? sp_StrArray_delete(%s, NULL) : (const char *)0; })",
+                 tv, rdl.p, tv, tv, rdl.p);
     }
     else {
       buf_printf(b, "sp_%sArray_delete%s(%s, ", k, df_boxed ? "_key" : "", rdl.p);
@@ -2305,7 +2309,7 @@ else {
   int elem_mismatch = 0;
   /* ... except nil, in an array that can hold it as the sentinel */
   int nil_needle = argc == 1 && a0 == TY_NIL && elem_nil_sentinel(c, recv, rt);
-  if (argc == 1 && rt == TY_STR_ARRAY && a0 != TY_STRING && a0 != TY_UNKNOWN && a0 != TY_POLY) elem_mismatch = 1;
+  if (argc == 1 && rt == TY_STR_ARRAY && a0 != TY_STRING && a0 != TY_NIL && a0 != TY_UNKNOWN && a0 != TY_POLY) elem_mismatch = 1;
   if (argc == 1 && (rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY) && !nil_needle &&
       a0 != TY_INT && a0 != TY_FLOAT && a0 != TY_UNKNOWN && a0 != TY_POLY) elem_mismatch = 1;
   if (is_index_query(name) && argc == 1 &&
@@ -2354,7 +2358,8 @@ else {
       int ta = ++g_tmp, tv = ++g_tmp;
       buf_printf(b, "({ sp_StrArray *_t%d = ", ta); emit_recv_rooted(c, recv, ta, "SP_GC_ROOT", b);
       buf_printf(b, "sp_RbVal _t%d = ", tv); emit_boxed(c, argv[0], b);
-      buf_printf(b, "; _t%d.tag == SP_TAG_STR ? sp_StrArray_%s(_t%d, _t%d.v.s) : sp_box_nil(); })", tv, fn, ta, tv);
+      buf_printf(b, "; _t%d.tag == SP_TAG_STR ? sp_StrArray_%s(_t%d, _t%d.v.s)"
+                    " : _t%d.tag == SP_TAG_NIL ? sp_StrArray_%s(_t%d, NULL) : sp_box_nil(); })", tv, fn, ta, tv, tv, fn, ta);
       { *out = 1; return 1; }
     }
     if (nil_needle) {
@@ -2424,17 +2429,17 @@ else {
   }
   if ((sp_streq(name, "include?") || sp_streq(name, "member?") || sp_streq(name, "index") || sp_streq(name, "find_index")) && argc == 1 && rt != TY_FLOAT_ARRAY) {
     const char *fn = (is_membership_alias(name)) ? "include" : "index";
-    /* A boxed argument into a String array is an equality scan, so a value
-       that is not a String -- nil above all (`%w[..].include?(r.content_type)`
-       with a `String | nil` reader, #4458) -- answers "not there" rather
-       than being unboxed, which raised the conversion TypeError. */
-    TyKind sat = comp_ntype(c, argv[0]);
+    /* A boxed argument into a String array is an equality scan. A foreign
+       kind misses rather than raising in unboxing (#4458); nil searches
+       for a NULL element, which is distinct from the empty String. */
+    TyKind sat = repr_of(c, argv[0]).as_ty;
     if (rt == TY_STR_ARRAY && (sat == TY_POLY || sat == TY_NIL)) {
       int ta = ++g_tmp, tv = ++g_tmp;
       buf_printf(b, "({ sp_StrArray *_t%d = ", ta); emit_recv_rooted(c, recv, ta, "SP_GC_ROOT", b);
       buf_printf(b, "sp_RbVal _t%d = ", tv); emit_boxed(c, argv[0], b);
-      buf_printf(b, "; _t%d.tag == SP_TAG_STR ? sp_StrArray_%s(_t%d, _t%d.v.s) : FALSE; })",
-                 tv, fn, ta, tv);
+      buf_printf(b, "; _t%d.tag == SP_TAG_STR ? sp_StrArray_%s(_t%d, _t%d.v.s)"
+                    " : _t%d.tag == SP_TAG_NIL ? sp_StrArray_%s(_t%d, NULL) : FALSE; })",
+                 tv, fn, ta, tv, tv, fn, ta);
       { *out = 1; return 1; }
     }
     /* The same for an Integer array: a search for a value of another kind
@@ -2485,14 +2490,69 @@ else {
   return 0;
 }
 
+/* A nil / true / false OPERAND to the Array-expecting family (concat,
+   replace, product, union, difference, intersection), or one typed as a
+   kind no Array conversion takes, is CRuby's TypeError ("no implicit
+   conversion of nil into Array") -- concat fell to NoMethodError, product
+   answered [] -- with the receiver and every argument evaluated first, in
+   order, as a real call would. Each argument is a statement of its own after
+   its own prelude: as one expression, an argument built in place (an Array
+   literal) ran ahead of the ones before it. CRuby converts the arguments in
+   turn, so a boxed one ahead of the misfit that holds no Array raises
+   first, naming its own class. */
+static int emit_array_operand_misfit(Compiler *c, int id, const char *name, int recv, int argc,
+                                     const int *argv, Buf *b) {
+  if (!(sp_streq(name, "concat") || sp_streq(name, "replace") || sp_streq(name, "product") ||
+        sp_streq(name, "union") || sp_streq(name, "difference") || sp_streq(name, "intersection")) ||
+      argc < 1) return 0;
+  int bad = -1;
+  for (int ai = 0; ai < argc; ai++) {
+    TyKind at = comp_ntype(c, argv[ai]);
+    if (at == TY_NIL || at == TY_BOOL || conv_to_ary_impossible(at)) { bad = ai; break; }
+  }
+  if (bad < 0) return 0;
+  TyKind arty = repr_of(c, id).as_ty;
+  int tb = ++g_tmp, t0 = g_tmp + 1;
+  g_tmp += argc;
+  Buf *sv_pre = g_pre;
+  buf_puts(b, "({ (void)("); emit_expr(c, recv, b); buf_puts(b, "); ");
+  for (int ai = 0; ai < argc; ai++) {
+    Buf ap = {0, 0, 0}, av = {0, 0, 0};
+    TyKind at = comp_ntype(c, argv[ai]);
+    g_pre = &ap;
+    if (ai == bad && at == TY_BOOL) emit_expr(c, argv[ai], &av);
+    else if (ai < bad && at == TY_POLY) emit_boxed(c, argv[ai], &av);
+    else emit_expr(c, argv[ai], &av);
+    g_pre = sv_pre;
+    if (ap.p) buf_puts(b, ap.p);
+    if (ai == bad && at == TY_BOOL) buf_printf(b, "int _t%d = (%s); ", tb, av.p ? av.p : "0");
+    else if (ai < bad && at == TY_POLY)
+      buf_printf(b, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d); ", t0 + ai, av.p ? av.p : "sp_box_nil()", t0 + ai);
+    else buf_printf(b, "(void)(%s); ", av.p ? av.p : "0");
+    free(ap.p); free(av.p);
+  }
+  for (int ai = 0; ai < bad; ai++)
+    if (comp_ntype(c, argv[ai]) == TY_POLY)
+      buf_printf(b, "if (_t%d.tag != SP_TAG_OBJ || !sp_poly_is_array_kind(_t%d.cls_id))"
+                    " sp_raise_cls(\"TypeError\", sp_sprintf(\"no implicit conversion of %%s into Array\", sp_convert_src_name(_t%d))); ",
+                 t0 + ai, t0 + ai, t0 + ai);
+  if (comp_ntype(c, argv[bad]) == TY_NIL)
+    buf_puts(b, "sp_raise_cls(\"TypeError\", \"no implicit conversion of nil into Array\");");
+  else if (comp_ntype(c, argv[bad]) == TY_BOOL)
+    buf_printf(b, "sp_raise_cls(\"TypeError\", _t%d"
+                  " ? \"no implicit conversion of true into Array\""
+                  " : \"no implicit conversion of false into Array\");", tb);
+  else
+    buf_printf(b, "sp_raise_cls(\"TypeError\", \"no implicit conversion of %s into Array\");",
+               conv_builtin_class_name(comp_ntype(c, argv[bad])));
+  buf_printf(b, " %s; })", raise_tail_value(arty));
+  return 1;
+}
+
 /* A typed Array receiver (emit_array_call's arms, in their order) */
 static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, TyKind a0, TyKind res, int *out) {
   if (!(recv >= 0 && ty_is_array(rt))) return 0;
   if (emit_scalar_array_conversion(c, id, recv, rt, name, argc, b)) { *out = 1; return 1; }
-  /* a nil / true / false OPERAND to the Array-expecting family is CRuby's
-     TypeError ("no implicit conversion of nil into Array") -- concat fell
-     to NoMethodError, product answered [] -- with every argument still
-     evaluated in order first, as a real call would */
   /* `product(*xs)` spreads xs across the ARGUMENT LIST, one operand array
      per element. The arms below read a splat as a single operand instead,
      so `[1,2].product(*[])` answered [] where CRuby answers [[1],[2]], and
@@ -2538,40 +2598,7 @@ static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *n
       }
     }
   }
-  if ((sp_streq(name, "concat") || sp_streq(name, "replace") ||
-       sp_streq(name, "product") || sp_streq(name, "union") ||
-       sp_streq(name, "difference") || sp_streq(name, "intersection")) &&
-      argc >= 1) {
-    int bad = -1;
-    for (int ai = 0; ai < argc; ai++) {
-      TyKind at = comp_ntype(c, argv[ai]);
-      if (at == TY_NIL || at == TY_BOOL || conv_to_ary_impossible(at)) { bad = ai; break; }
-    }
-    if (bad >= 0) {
-      TyKind arty = repr_of(c, id).as_ty;
-      int tb = ++g_tmp;
-      buf_puts(b, "({ (void)("); emit_expr(c, recv, b); buf_puts(b, "); ");
-      for (int ai = 0; ai < argc; ai++) {
-        if (ai == bad && comp_ntype(c, argv[ai]) == TY_BOOL) {
-          buf_printf(b, "int _t%d = (", tb); emit_expr(c, argv[ai], b); buf_puts(b, "); ");
-        }
-        else {
-          buf_puts(b, "(void)("); emit_expr(c, argv[ai], b); buf_puts(b, "); ");
-        }
-      }
-      if (comp_ntype(c, argv[bad]) == TY_NIL)
-        buf_puts(b, "sp_raise_cls(\"TypeError\", \"no implicit conversion of nil into Array\");");
-      else if (comp_ntype(c, argv[bad]) == TY_BOOL)
-        buf_printf(b, "sp_raise_cls(\"TypeError\", _t%d"
-                      " ? \"no implicit conversion of true into Array\""
-                      " : \"no implicit conversion of false into Array\");", tb);
-      else
-        buf_printf(b, "sp_raise_cls(\"TypeError\", \"no implicit conversion of %s into Array\");",
-                   conv_builtin_class_name(comp_ntype(c, argv[bad])));
-      buf_printf(b, " %s; })", raise_tail_value(arty));
-      { *out = 1; return 1; }
-    }
-  }
+  if (emit_array_operand_misfit(c, id, name, recv, argc, argv, b)) { *out = 1; return 1; }
   /* product(b, c, ...) with two or more array arguments: the n-way Cartesian
      product. The single-argument form is specialized below (per element-type
      boxing); for 2+ arguments box the receiver and every argument into rooted
@@ -3375,6 +3402,42 @@ static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *n
   return 0;
 }
 
+/* The variable a chain of String value-form bangs starts from (`s` in
+   `s.upcase!.downcase!`), or -1 when `recv` is no bang or the chain starts
+   from no variable. Each link answers its receiver, or nil, which the next
+   link raises on; so what a mutator computes from the chain's value is the
+   variable's new value. */
+static int str_bang_chain_var(Compiler *c, int recv) {
+  const NodeTable *nt = c->nt;
+  int cur = unwrap_parens(c, recv), links = 0;
+  while (nt_kind(nt, cur) == NK_CallNode && nt_ref(nt, cur, "receiver") >= 0 &&
+         ty_str_typed_bang_flags(nt_str(nt, cur, "name"))) {
+    cur = unwrap_parens(c, nt_ref(nt, cur, "receiver"));
+    links++;
+  }
+  TyKind bt = links ? comp_ntype(c, cur) : TY_UNKNOWN;
+  /* a boxed variable takes the value back as emit_face_str_bang's links do */
+  if (bt == TY_POLY)
+    return nt_kind(nt, cur) == NK_LocalVariableReadNode || nt_kind(nt, cur) == NK_InstanceVariableReadNode ? cur : -1;
+  return (bt == TY_STRING || bt == TY_STRBUF) && str_mut_var_recv(c, cur) ? cur : -1;
+}
+/* A value-form mutator's write-back of its result _t<tn>: to the receiver
+   when it is a variable (lvw), else to the variable a bang chain receiver
+   starts from, whose links the mutation reaches in CRuby (one object) */
+static void emit_str_mut_writeback(Compiler *c, int recv, int lvw, int tn, Buf *b) {
+  if (lvw) { emit_expr(c, recv, b); buf_printf(b, " = _t%d; ", tn); return; }
+  int base = str_bang_chain_var(c, recv);
+  if (base < 0) return;
+  char sref[1024];
+  if (strbuf_slot_ref(c, base, sref, sizeof sref))
+    buf_printf(b, "sp_String_set_bin(%s, _t%d); ", sref, tn);
+  else if (comp_ntype(c, base) == TY_STRING) { emit_expr(c, base, b); buf_printf(b, " = _t%d; ", tn); }
+  else if (comp_ntype(c, base) == TY_POLY) {
+    emit_expr(c, base, b); buf_puts(b, " = sp_poly_str_become(");
+    emit_expr(c, base, b); buf_printf(b, ", _t%d); ", tn);
+  }
+}
+
 /* A String mutator: the value-form bangs, the in-place mutators, append_as_bytes, bytesplice (emit_array_call's arms, in their order) */
 static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, int *out) {
   /* String value-form mutators: the expression yields the post-mutation
@@ -3465,18 +3528,45 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
         }
       }
       int to = ++g_tmp, tn2 = ++g_tmp;
+      /* the plain form reads the receiver as well: a receiver that is a call
+         (`s.upcase!.downcase!`) ran a second time there, and the second
+         upcase! changed nothing and answered nil. It reads the receiver held
+         once, in _to, or for gsub!/sub!'s block form, whose loop goes ahead
+         of the statement (g_pre), in a temp held there. A receiver an
+         enclosing emitter already holds (arg_ran_first: the case-mapping
+         option check's computed receiver) reads its temp, which is declared
+         in the statement, not ahead of it. */
+      int held = arg_ran_first(recv, 0);
+      int hbind = -1;
+      if (!lvw && !held && sb_sub && g_pre && nt_ref(nt, id, "block") >= 0) {
+        int th = ++g_tmp;
+        Buf hb; memset(&hb, 0, sizeof hb); emit_expr(c, recv, &hb);
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "const char *_t%d = %s; SP_GC_ROOT_STR(_t%d);\n", th, hb.p ? hb.p : "NULL", th);
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "if (!_t%d) sp_nil_recv(\"%s\");\n", th, sb_bang);
+        free(hb.p);
+        hbind = view_bind(recv, "_t%d", th);
+      }
       buf_printf(b, "({ const char *_t%d = ", to); emit_expr(c, recv, b); buf_puts(b, "; (void)_t"); buf_printf(b, "%d; ", to);
+      /* a chained bang that changed nothing answers nil, on which this one
+         is NoMethodError for its own name, not the FrozenError the
+         mutability check reads a NULL as */
+      if (!lvw) buf_printf(b, "if (!_t%d) sp_nil_recv(\"%s\"); ", to, sb_bang);
       /* an in-place mutator on a frozen string raises FrozenError (#3003) */
       buf_printf(b, "if (sp_str_is_frozen_val(_t%d)) sp_raise_frozen_str(_t%d); ", to, to);
       int subm2 = sb_sub;   /* gsub!/sub!: nil means no substitution, see above */
       if (subm2) buf_puts(g_pre ? g_pre : b, "sp_re_sub_matched = 0; ");
       nt_node_set_str((NodeTable *)nt, id, "name", sb_plain);
       Buf nb; memset(&nb, 0, sizeof nb);
+      int nbind = lvw || held || hbind >= 0 ? -1 : view_bind(recv, "_t%d", to);
       emit_expr(c, id, &nb);
+      if (nbind >= 0) view_unbind(nbind);
+      if (hbind >= 0) view_unbind(hbind);
       nt_node_set_str((NodeTable *)nt, id, "name", sb_bang);
       buf_printf(b, "const char *_t%d = %s; ", tn2, nb.p ? nb.p : "");
       free(nb.p);
-      if (lvw) { emit_expr(c, recv, b); buf_printf(b, " = _t%d; ", tn2); }
+      emit_str_mut_writeback(c, recv, lvw, tn2, b);
       if (sb_nil_nc)
         buf_printf(b, "(sp_str_eq(_t%d, _t%d)%s) ? NULL : _t%d; })", to, tn2, subm2 ? " && !sp_re_sub_matched" : "", tn2);
       else
@@ -3561,7 +3651,7 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
          evaluates the args). sp_str_concat allocates a fresh string and never
          mutates the receiver, so a frozen receiver is still untouched here. */
       buf_printf(b, "sp_str_check_mutable(_t%d); ", trc);
-      if (lvw) { emit_expr(c, recv, b); buf_printf(b, " = _t%d; ", tn2); }
+      emit_str_mut_writeback(c, recv, lvw, tn2, b);
       buf_printf(b, "_t%d; })", tn2);
       { *out = 1; return 1; }
     }
@@ -3576,7 +3666,7 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
       buf_printf(b, " const char *_t%d = sp_str_splice_at(_t%d, _t%d, 0, ", tn2, to, ti2);
       emit_str_insert_text(c, argv[1], b);
       buf_puts(b, ", 0); ");
-      if (lvw) { emit_expr(c, recv, b); buf_printf(b, " = _t%d; ", tn2); }
+      emit_str_mut_writeback(c, recv, lvw, tn2, b);
       buf_printf(b, "_t%d; })", tn2);
       { *out = 1; return 1; }
     }
@@ -3600,7 +3690,7 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
       buf_printf(b, "({ sp_str_check_mutable(");   /* frozen -> FrozenError (#3003) */
       emit_expr(c, recv, b);
       buf_printf(b, "); const char *_t%d = ", tn2); emit_str_expr(c, argv[0], b); buf_puts(b, "; ");
-      if (lvw) { emit_expr(c, recv, b); buf_printf(b, " = _t%d; ", tn2); }
+      emit_str_mut_writeback(c, recv, lvw, tn2, b);
       buf_printf(b, "_t%d; })", tn2);
       { *out = 1; return 1; }
     }
@@ -4782,6 +4872,55 @@ static int emit_merge_any_block_boxed(Compiler *c, int id, int recv, int arg, Bu
   return nt_kind(nt, mblk) == NK_BlockNode && emit_merge_block_boxed(c, id, recv, arg, mblk, b);
 }
 
+/* merge!/update on a typed Hash given an argument typed as no Hash: the
+   receiver and every argument run, in order, then the nil and frozen
+   checks; then each argument in turn merges in, as CRuby's does, until the
+   first that converts to no Hash raises its TypeError -- a boxed one at run
+   time, the typed misfit there. The arms that merge took no such argument,
+   and the call fell to NoMethodError. A block form keeps those arms when a
+   Hash comes first: the block resolves its conflicts. Each argument is a
+   statement of its own after its own prelude, so one built in place does
+   not run ahead of the ones before it. */
+static int emit_hash_merge_misfit(Compiler *c, int id, TyKind rt, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  int argc;
+  const int *argv = call_args(nt, id, &argc);
+  if (!is_hash_merge_bang(name) || argc < 1 || !nt_call_args_plain(nt, id) ||
+      an_zero_arg_builtin_shadowed(c, name, argc) || user_defines_or_reads(c, name)) return 0;
+  int bad = -1;
+  for (int i = 0; i < argc && bad < 0; i++)
+    if (nt_kind(nt, argv[i]) != NK_HashNode && face_arg_misfit(c, PF_HASH, argv[i])) bad = i;
+  if (bad < 0 || (bad > 0 && nt_ref(nt, id, "block") >= 0)) return 0;
+  int tr = ++g_tmp, t0 = g_tmp + 1;
+  g_tmp += argc;
+  Buf *sv_pre = g_pre;
+  buf_puts(b, "({ ");
+  for (int i = -1; i < argc; i++) {
+    Buf ap = {0, 0, 0}, av = {0, 0, 0};
+    g_pre = &ap;
+    if (i < 0) emit_expr(c, nt_ref(nt, id, "receiver"), &av);
+    else emit_boxed(c, argv[i], &av);
+    g_pre = sv_pre;
+    if (ap.p) buf_puts(b, ap.p);
+    if (i < 0) buf_printf(b, "%s _t%d = %s; SP_GC_ROOT(_t%d); ", c_type_name(rt), tr, av.p ? av.p : "NULL", tr);
+    else buf_printf(b, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d); ", t0 + i, av.p ? av.p : "sp_box_nil()", t0 + i);
+    free(ap.p); free(av.p);
+  }
+  buf_printf(b, "if (!_t%d) sp_nil_recv(\"%s\"); ", tr, name);
+  buf_printf(b, "if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s); ", tr, tr, hash_box_cls(rt));
+  char rtxt[32];
+  snprintf(rtxt, sizeof rtxt, "_t%d", tr);
+  for (int i = 0; i <= bad; i++) {
+    buf_printf(b, "if (_t%d.tag != SP_TAG_OBJ || !sp_poly_is_hash_kind(_t%d.cls_id))"
+                  " sp_raise_cls(\"TypeError\", sp_sprintf(\"no implicit conversion of %%s into Hash\", sp_convert_src_name(_t%d))); ",
+               t0 + i, t0 + i, t0 + i);
+    if (i < bad) { buf_puts(b, "sp_poly_hash_merge_into("); emit_boxed_text(c, rt, rtxt, b); buf_printf(b, ", _t%d); ", t0 + i); }
+  }
+  buf_printf(b, "_t%d; })", tr);
+  return 1;
+}
+
 int emit_hash_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -4794,7 +4933,7 @@ int emit_hash_call(Compiler *c, int id, Buf *b) {
        arguments: builtin-op rows (builtin_ops.c, codegen_call_hash.c). The
        arms below that stay read the argument nodes, the block or the
        program's own methods, and none of them can take a call a row takes. */
-    if (emit_builtin_op(c, id, recv, rt, name, b)) return 1;
+    if (emit_hash_merge_misfit(c, id, rt, b) || emit_builtin_op(c, id, recv, rt, name, b)) return 1;
     /* merge(other, &pr): a block that is not a literal one -- a proc at run
        time, or a method's own block passed on -- has no body for the arms
        below to read, which stored nil for every conflict. The any-block
@@ -11306,7 +11445,25 @@ int face_arg_misfit(Compiler *c, unsigned kind, int arg) {
   if (at == TY_POLY || at == TY_UNKNOWN) return 0;
   if (kind == PF_STRING && (at == TY_STRING || at == TY_STRBUF || at == TY_INT)) return 0;  /* a codepoint concatenates too */
   if (kind == PF_ARRAY && (ty_is_array(at) || at == TY_POLY_ARRAY)) return 0;
+  /* a Hash, or an object whose to_hash may answer one */
+  if (kind == PF_HASH && (ty_is_hash(at) || ty_is_object(at))) return 0;
   return 1;
+}
+
+/* Does an argument rule the owner `kind` out of this call: the name takes
+   arguments of the owner's own kind (PF_ARGS_OWN) and one is typed as
+   another? The call is then the owner's TypeError, raised by
+   emit_face_switch's misfit arm, for one owner as for several. */
+int face_args_misfit(Compiler *c, int id, unsigned kind) {
+  const NodeTable *nt = c->nt;
+  int argc;
+  const int *argv = call_args(nt, id, &argc);
+  if (!nt_call_args_plain(nt, id)) return 0;
+  unsigned fl = ty_poly_face_owner_flags(nt_str(nt, id, "name"), argc, nt_ref(nt, id, "block") >= 0, 1, kind);
+  if (!(fl & PF_ARGS_OWN)) return 0;
+  for (int i = 0; i < argc; i++)
+    if (face_arg_misfit(c, kind, argv[i])) return 1;
+  return 0;
 }
 
 /* Several owners: bind the box once and dispatch on its run-time kind, one
@@ -11346,18 +11503,21 @@ static int emit_face_switch(Compiler *c, int id, unsigned own, Buf *b) {
          typed arm would, and under the arm's own prelude, so an argument
          that needs one runs it in this branch alone; the one that cannot
          convert is kept to name itself (nil, true and false spell themselves,
-         an object its class) */
+         an object its class). Each argument is a statement of its own,
+         after its own prelude: as one expression, an argument that needs a
+         prelude (a literal built in place) ran ahead of the ones before it */
       Buf *sv_pre = g_pre; g_pre = &pre;
       int tm = ++g_tmp;
-      buf_printf(&val, "sp_RbVal _t%d = sp_box_nil(); SP_GC_ROOT_RBVAL(_t%d); (void)(", tm, tm);
+      buf_printf(&pre, "sp_RbVal _t%d = sp_box_nil(); SP_GC_ROOT_RBVAL(_t%d); ", tm, tm);
       for (int i = 0; i < argc; i++) {
-        if (i) buf_puts(&val, ", ");
-        if (i == misfit) buf_printf(&val, "(_t%d = ", tm);
-        emit_boxed(c, argv[i], &val);
-        if (i == misfit) buf_puts(&val, ")");
+        Buf ab = {0, 0, 0};
+        emit_boxed(c, argv[i], &ab);
+        if (i == misfit) buf_printf(&pre, "_t%d = %s; ", tm, ab.p ? ab.p : "sp_box_nil()");
+        else buf_printf(&pre, "(void)(%s); ", ab.p ? ab.p : "0");
+        free(ab.p);
       }
-      buf_printf(&val, "); sp_raise_cls(\"TypeError\", sp_sprintf(\"no implicit conversion of %%s into %s\", sp_convert_src_name(_t%d)))",
-                 kind == PF_STRING ? "String" : "Array", tm);
+      buf_printf(&val, "sp_raise_cls(\"TypeError\", sp_sprintf(\"no implicit conversion of %%s into %s\", sp_convert_src_name(_t%d)))",
+                 kind == PF_STRING ? "String" : kind == PF_HASH ? "Hash" : "Array", tm);
       g_pre = sv_pre;
     }
     else ok = face_probe_arm(c, id, kind, fl, box, &pre, &val, &nat);
@@ -12877,7 +13037,11 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
                    : ty_poly_face_owners(name, argc, has_blk, nt_call_args_plain(nt, id), 0);
     unsigned kinds = own & PF_OWNERS;
     if (own & PF_STR_BANG) { emit_face_str_bang(c, id, own, b); return 1; }
-    if (kinds && !(kinds & (kinds - 1)) && emit_face_reentry(c, id, kinds, own, b)) return 1;
+    /* one owner an argument rules out takes the switch's misfit arm: the
+       re-entry's typed emitter declines the argument, and the call fell
+       to NoMethodError where CRuby raises the conversion's TypeError */
+    int one = kinds && !(kinds & (kinds - 1)), misfit = one && face_args_misfit(c, id, kinds);
+    if (one && !misfit && emit_face_reentry(c, id, kinds, own, b)) return 1;
     /* a blockless step(n) on a boxed ENDLESS Range walks as an Enumerator
        (sp_poly_range_endless_step), decided at run time ahead of the face,
        whose Range arm materializes and cannot fill an endless one; any other
@@ -12911,7 +13075,7 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
       }
       free(fb.p);
     }
-    if (kinds && (kinds & (kinds - 1)) && emit_face_switch(c, id, kinds, b)) return 1;
+    if (kinds && (!one || misfit) && emit_face_switch(c, id, kinds, b)) return 1;
     /* a declined re-entry may have renamed the node and restored it into
        fresh storage (see emit_face_arm): the name is read again */
     name = nt_str(nt, id, "name");
