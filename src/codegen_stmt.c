@@ -6639,6 +6639,15 @@ int hc_string(Compiler *c, int recv, char *d, char *l, size_t cap) {
 
 const char *hc_mark(void) { return g_hc ? g_hc->mark : ""; }
 
+/* Is recv a receiver the loop being emitted can cache? Its read runs no
+   code, the loop assigns nothing it reads, and the loop itself runs none
+   (hc_node_ok), so every read of it in one pass answers the same value. */
+int hc_recv_cached(Compiler *c, int recv) {
+  char t[200];
+  return g_hc && recv >= 0 &&
+         hc_recv_text(c, recv, comp_ntype(c, recv) == TY_STRING ? HC_STR : HC_INT, t, sizeof t);
+}
+
 /* The statement emit_stmts is emitting and the one before it in the same list,
    for a loop that needs to see what ran just ahead of it (hc_bounded_index). */
 int g_stmt_cur = -1, g_stmt_prev = -1;

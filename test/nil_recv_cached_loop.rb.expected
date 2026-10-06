@@ -1,0 +1,6 @@
+field nil NoMethodError: undefined method '[]' for nil
+field nil, no pass [0.0, 0.0]
+field [3.25, 2.5]
+field count 0
+field empty 4
+field nil count NoMethodError: undefined method '[]' for nil

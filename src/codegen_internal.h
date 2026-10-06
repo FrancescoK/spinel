@@ -230,6 +230,9 @@ int hc_string(Compiler *c, int recv, char *d, char *l, size_t cap);
    be no nil: *n names a length that is 0 while the array may hold one. */
 int hc_array_nilfree(Compiler *c, int recv, char *d, char *n, size_t cap);
 const char *hc_mark(void);
+/* recv is read in the loop being emitted the way hc_array caches it: no
+   code runs between two of its reads in one pass, so they agree */
+int hc_recv_cached(Compiler *c, int recv);
 int call_is_scalar_op(Compiler *c, int id);   /* a builtin operator over scalars */
 /* Whether the subtree at `id` assigns the local `nm`: a write, an op-write
    or a multiple-assignment target by that name. */
