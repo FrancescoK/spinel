@@ -4533,8 +4533,9 @@ static int emit_array_call_arms(Compiler *c, int id, Buf *b) {
       buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n",
                  torig, rb.p ? rb.p : "sp_box_nil()", torig);
       emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "sp_PolyArray *_t%d = sp_poly_arr_recv(_t%d, \"map!\"); SP_GC_ROOT(_t%d);\n",
-                 trecv, torig, trecv);
+      /* named as called: collect! raised as map! */
+      buf_printf(g_pre, "sp_PolyArray *_t%d = sp_poly_arr_recv(_t%d, \"%s\"); SP_GC_ROOT(_t%d);\n",
+                 trecv, torig, name, trecv);
       free(rb.p);
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti, ti, trecv, ti);
