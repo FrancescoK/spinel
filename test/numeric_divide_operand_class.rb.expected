@@ -1,0 +1,16 @@
+"String can't be coerced into Float"
+":q can't be coerced into Float"
+"Hash can't be coerced into Float"
+"true can't be coerced into Float"
+0.3
+0.3
+0.04999999999999999
+"Array can't be coerced into Float"
+"Array can't be coerced into Integer"
+"String can't be coerced into Integer"
+":q can't be coerced into Integer"
+"Hash can't be coerced into Integer"
+0.09999999999999998
+0.3
+3
+1
