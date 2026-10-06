@@ -1768,6 +1768,20 @@ static void refuse_alias_of_snapshot(Compiler *c, int v, const char *pn) {
     return;
   }
 }
+void block_alias_hold(BlockAliases *al, Scope *s, LocalVar *lv) {
+  al->s[al->n] = s;
+  al->nm[al->n++] = lv->name;
+  lv->inline_alias++;
+  lv->is_cell = 1;
+}
+
+void block_aliases_release(BlockAliases *al) {
+  for (int i = 0; i < al->n; i++) {
+    LocalVar *lv = scope_local(al->s[i], al->nm[i]);
+    if (--lv->inline_alias == 0) lv->is_cell = 0;
+  }
+}
+
 /* Bind block `blk`'s keyword parameters and **kwrest from a call's trailing
    keyword hash `ykw` (-1: the call passes none), for a yield or block.call
    and for instance_exec. `bsc` holds the parameters' slots. */
@@ -1929,16 +1943,14 @@ void emit_block_kw_binds(Compiler *c, int blk, int ykw, Scope *bsc, Buf *b, int 
       unsupported_feature(c, vn, msg);
     }
     if (kw_alias) refuse_alias_of_snapshot(c, vn, kn);
-    if (kw_alias && al->n < (int)(sizeof al->lv / sizeof al->lv[0])) {
+    if (kw_alias && al->n < (int)(sizeof al->nm / sizeof al->nm[0])) {
       if (!as_expr) emit_indent(b, indent);
       if (!as_expr && !al->open) { buf_puts(b, "{\n"); emit_indent(b, indent); al->open = 1; }
       buf_printf(b, "%s *_cell_%s = &(", borrowed_string_type(kl), kpr);
       emit_expr(c, vn, b);
       buf_puts(b, ")");
       buf_puts(b, as_expr ? "; " : ";\n");
-      al->lv[al->n++] = kl;
-      kl->inline_alias++;
-      kl->is_cell = 1;
+      block_alias_hold(al, bsc, kl);
       continue;
     }
     if (!as_expr) emit_indent(b, indent);
@@ -2088,7 +2100,7 @@ static int emit_block_post_alias(Compiler *c, int blk, const char *bp, const cha
     unsupported_feature(c, yarg, msg);
     return 0;
   }
-  if (comp_ntype(c, yarg) != TY_STRING || al->n >= (int)(sizeof al->lv / sizeof al->lv[0])) return 0;
+  if (comp_ntype(c, yarg) != TY_STRING || al->n >= (int)(sizeof al->nm / sizeof al->nm[0])) return 0;
   refuse_alias_of_snapshot(c, yarg, bp);
   if (!as_expr) emit_indent(b, indent);
   if (!as_expr && !al->open) { buf_puts(b, "{\n"); emit_indent(b, indent); al->open = 1; }
@@ -2096,9 +2108,7 @@ static int emit_block_post_alias(Compiler *c, int blk, const char *bp, const cha
   emit_expr(c, yarg, b);
   buf_puts(b, ")");
   buf_puts(b, as_expr ? "; " : ";\n");
-  al->lv[al->n++] = bl;
-  bl->inline_alias++;
-  bl->is_cell = 1;
+  block_alias_hold(al, comp_scope_of(c, blk), bl);
   return 1;
 }
 
@@ -2598,15 +2608,13 @@ void emit_block_binds(Compiler *c, int blk, const int *yargs, int yc,
       LocalVar *bl = bsc ? scope_local(bsc, bp) : NULL;
       if (bl && al && !gslot) refuse_alias_of_snapshot(c, yargs[k], bp);
       if (bl && al && gslot) refuse_lent_global_rebound(c, yargs[k], gref, "a block", bp);
-      if (bl && al && al->n < (int)(sizeof al->lv / sizeof al->lv[0])) {
+      if (bl && al && al->n < (int)(sizeof al->nm / sizeof al->nm[0])) {
         if (!as_expr && !al->open) { buf_puts(b, "{\n"); emit_indent(b, indent); al->open = 1; }
         buf_printf(b, "%s *_cell_%s = &(", borrowed_string_type(bl), bpr);
         emit_expr(c, yargs[k], b);
         buf_puts(b, ")");
         buf_puts(b, as_expr ? "; " : ";\n");
-        al->lv[al->n++] = bl;
-        bl->inline_alias++;
-        bl->is_cell = 1;
+        block_alias_hold(al, bsc, bl);
         continue;
       }
     }
@@ -2685,7 +2693,7 @@ void emit_block_binds(Compiler *c, int blk, const int *yargs, int yc,
       unsupported_feature(c, yargs[yi], msg);
     }
     if (opt_alias && comp_ntype(c, yargs[yi]) == TY_STRING && !local_is_handle(c, yargs[yi]) &&
-        al->n < (int)(sizeof al->lv / sizeof al->lv[0])) {
+        al->n < (int)(sizeof al->nm / sizeof al->nm[0])) {
       refuse_alias_of_snapshot(c, yargs[yi], op);
       if (!as_expr) emit_indent(b, indent);
       if (!as_expr && !al->open) { buf_puts(b, "{\n"); emit_indent(b, indent); al->open = 1; }
@@ -2693,9 +2701,7 @@ void emit_block_binds(Compiler *c, int blk, const int *yargs, int yc,
       emit_expr(c, yargs[yi], b);
       buf_puts(b, ")");
       buf_puts(b, as_expr ? "; " : ";\n");
-      al->lv[al->n++] = ol;
-      ol->inline_alias++;
-      ol->is_cell = 1;
+      block_alias_hold(al, bsc, ol);
       continue;
     }
     if (!as_expr) emit_indent(b, indent);
@@ -3194,9 +3200,7 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
     else { emit_indent(b, indent); buf_puts(b, "} while(0);\n"); }
     g_ie_next_var = sv_nx2; g_ie_res_poly = sv_poly2; g_ie_next_ty = sv_nty2;
   }
-  for (int ya = 0; ya < al.n; ya++) {
-    if (--al.lv[ya]->inline_alias == 0) al.lv[ya]->is_cell = 0;
-  }
+  block_aliases_release(&al);
   if (al.open) { emit_indent(b, indent); buf_puts(b, "}\n"); }
   g_self = sv_bself; g_self_deref = sv_bderef;
   g_yield_self_fallback = sv_ysf; g_yield_self_deref_fallback = sv_ysdf; g_yield_emitting_class_fallback = sv_yecf;
