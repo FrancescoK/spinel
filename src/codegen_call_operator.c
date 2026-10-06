@@ -34,7 +34,7 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
      bigint, but the int receiver would otherwise emit a UB C `1LL << 64LL`.
      Promote to a bigint shift. */
   if (recv >= 0 && argc == 1 && sp_streq(name, "<<") && rt == TY_INT &&
-      comp_ntype(c, id) == TY_BIGINT) {
+      repr_of(c, id).big) {
     buf_puts(b, "sp_bigint_shl(sp_bigint_new_int(");
     emit_expr(c, recv, b);
     buf_puts(b, "), ");
@@ -49,7 +49,7 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
      value can still exceed int64 (`bignum & MASK64`). */
   if (recv >= 0 && argc == 1 && rt == TY_BIGINT &&
       is_int_bit_op(name)) {
-    TyKind at0 = comp_ntype(c, argv[0]);
+    Repr a0r = repr_of(c, argv[0]);
     if (emit_int_operand_fail(c, id, recv, argv[0], is_shift_op(name), b)) return 1;
     /* Both operands are heap Bignums, and either side may allocate (and so
        collect) while the other is being evaluated -- the C operand order is
@@ -58,7 +58,7 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
     if (is_shift_op(name)) {
       buf_printf(b, "({ sp_Bigint *_t%d = ", tbl); emit_expr(c, recv, b);
       buf_printf(b, "; SP_GC_ROOT(_t%d); int64_t _t%d = ", tbl, tbr);
-      if (at0 == TY_BIGINT) { buf_puts(b, "sp_bigint_to_int("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      if (a0r.big) { buf_puts(b, "sp_bigint_to_int("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
       else emit_int_expr(c, argv[0], b);
       buf_printf(b, "; sp_bigint_%s(_t%d, _t%d); })", sp_streq(name, "<<") ? "shl" : "shr", tbl, tbr);
     }
@@ -66,8 +66,8 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
       const char *fn = sp_streq(name, "&") ? "and" : sp_streq(name, "|") ? "or" : "xor";
       buf_printf(b, "({ sp_Bigint *_t%d = ", tbl); emit_expr(c, recv, b);
       buf_printf(b, "; SP_GC_ROOT(_t%d); sp_Bigint *_t%d = ", tbl, tbr);
-      if (at0 == TY_BIGINT) emit_expr(c, argv[0], b);
-      else if (at0 == TY_POLY) { buf_puts(b, "sp_poly_as_bigint("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      if (a0r.big) emit_expr(c, argv[0], b);
+      else if (a0r.as_ty == TY_POLY) { buf_puts(b, "sp_poly_as_bigint("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
       else { buf_puts(b, "sp_bigint_new_int("); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
       buf_printf(b, "; SP_GC_ROOT(_t%d); sp_bigint_%s(_t%d, _t%d); })", tbr, fn, tbl, tbr);
     }
@@ -80,7 +80,8 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
   if (recv >= 0 && argc == 1 &&
       ((rt == TY_INT && is_int_bit_op(name)) ||
        (rt == TY_POLY && sp_streq(name, ">>")))) {
-    TyKind at0 = comp_ntype(c, argv[0]);
+    Repr a0r = repr_of(c, argv[0]);
+    TyKind at0 = a0r.as_ty;
     /* A `<<`/`>>` by a NEGATIVE (or >= word width) count is UB as a bare C shift
        -- Ruby shifts the other way for a negative count. Only a constant literal
        in that range takes the sp_int_shl/shr path; a non-constant count stays a
@@ -98,7 +99,7 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
     /* &, | and ^ with a Bignum operand promote (#2422). `&` too: a negative
        receiver is sign-extended forever, so `-1 & 0xFFFFFFFFFFFFFFFF` is that
        whole mask, not -1. */
-    if (is_bit_op(name) && at0 == TY_BIGINT) {
+    if (is_bit_op(name) && a0r.big) {
       /* the promoted receiver is a fresh Bignum: root it while the operand
          (which may run arbitrary code, and allocate) is evaluated */
       int tpl = ++g_tmp, tpr = ++g_tmp;
@@ -181,7 +182,7 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
     /* A literal wider than int64 (a 64-bit mask like 0xFFFFFFFFFFFFFFFF) is
        typed as a bigint; the result slot is int, so take its low-64 bit pattern
        (sp_bigint_to_int truncates) -- this is the xorshift/64-bit-mask idiom. */
-    else if (at0 == TY_BIGINT) {
+    else if (a0r.big) {
       buf_puts(b, "sp_bigint_to_int("); emit_expr(c, argv[0], b); buf_puts(b, ")");
     }
     else emit_expr(c, argv[0], b);
@@ -233,7 +234,8 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
   if (recv >= 0 && argc == 1 && sp_streq(name, "<=>")) {
     /* the receiver's own settled type where the dispatch type is poly */
     TyKind lrt = (rt == TY_POLY || rt == TY_UNKNOWN) ? comp_ntype(c, recv) : rt;
-    TyKind lat = comp_ntype(c, argv[0]);
+    Repr latr = repr_of(c, argv[0]);
+    TyKind lat = latr.as_ty;
     /* NULL in a String slot is nil, including nil <=> nil == 0. */
     if (lrt == TY_STRING && (lat == TY_STRING || lat == TY_NIL) &&
         !(nt_kind(nt, recv) == NK_StringNode && nt_kind(nt, argv[0]) == NK_StringNode)) {
@@ -271,7 +273,7 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
        (sp_bigint_cmp_f); a raw >/< on the sp_Bigint* pointer would be
        ill-typed C (#3009), and a double round-trip called a bignum equal to
        every Float within half an ulp of it. A NaN answers nil. */
-    if ((lrt == TY_FLOAT && lat == TY_BIGINT) || (lrt == TY_BIGINT && lat == TY_FLOAT)) {
+    if ((lrt == TY_FLOAT && latr.big) || (lrt == TY_BIGINT && lat == TY_FLOAT)) {
       int tc = ++g_tmp;
       buf_printf(b, "({ int _t%d = sp_bigint_cmp_f(", tc);
       emit_expr(c, lrt == TY_BIGINT ? recv : argv[0], b);
@@ -282,14 +284,14 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
     }
     /* Bignum <=> (either side): compare by value, not the pointer identity a
        raw `>`/`<` on the sp_Bigint* would give (always -1) (#2581) */
-    if ((lrt == TY_BIGINT || lat == TY_BIGINT) &&
-        (lrt == TY_INT || lrt == TY_BIGINT) && (lat == TY_INT || lat == TY_BIGINT)) {
+    if ((lrt == TY_BIGINT || latr.big) &&
+        (lrt == TY_INT || lrt == TY_BIGINT) && (lat == TY_INT || latr.big)) {
       int tc = ++g_tmp;
       buf_printf(b, "({ int _t%d = sp_bigint_cmp(", tc);
       if (lrt == TY_BIGINT) emit_expr(c, recv, b);
       else { buf_puts(b, "sp_bigint_new_int("); emit_expr(c, recv, b); buf_puts(b, ")"); }
       buf_puts(b, ", ");
-      if (lat == TY_BIGINT) emit_expr(c, argv[0], b);
+      if (latr.big) emit_expr(c, argv[0], b);
       else { buf_puts(b, "sp_bigint_new_int("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
       buf_printf(b, "); (sp_int)((_t%d > 0) - (_t%d < 0)); })", tc, tc);
       return 1;
@@ -323,7 +325,7 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
        receiver can reach here typed as a string (it prints as its name), so
        ask the receiver's own type rather than trusting lrt alone. */
     if ((lrt == TY_SYMBOL || comp_ntype(c, recv) == TY_SYMBOL) &&
-        lat != TY_SYMBOL && lat != TY_POLY && lat != TY_UNKNOWN) {
+        lat != TY_SYMBOL && lat != TY_POLY && !latr.untyped) {
       buf_puts(b, "((void)("); emit_expr(c, recv, b);
       buf_puts(b, "), (void)("); emit_expr(c, argv[0], b);
       buf_puts(b, "), SP_INT_NIL)");
@@ -442,7 +444,7 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
     int rlit0 = nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ArrayNode");
     int alit0 = nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "ArrayNode");
     if ((ty_is_array(lrt) || (rlit0 && lrt == TY_UNKNOWN)) &&
-        (ty_is_array(lat) || (alit0 && lat == TY_UNKNOWN))) {
+        (ty_is_array(lat) || (alit0 && latr.untyped))) {
       int ta = ++g_tmp, tb = ++g_tmp, tk = ++g_tmp, tr = ++g_tmp;
       buf_printf(b, "({ sp_RbVal _t%d = ", ta); emit_boxed(c, recv, b);
       buf_printf(b, "; sp_RbVal _t%d = ", tb); emit_boxed(c, argv[0], b);
@@ -499,7 +501,7 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
        Exception held as the builtin type may be an instance of a class of the
        program. The receiver is rooted while the operand is evaluated, which
        may allocate. */
-    if (obj_cmp_by_identity(lrt) && lat != TY_UNKNOWN && !object_defines_cmp(c) &&
+    if (obj_cmp_by_identity(lrt) && !latr.untyped && !object_defines_cmp(c) &&
         !(lrt == TY_EXCEPTION && exc_subclass_defines_cmp(c))) {
       int exc_inst = lrt == TY_EXCEPTION && ty_is_object(lat) && class_is_exc_subclass(c, ty_object_class(lat));
       if (lat != lrt && !exc_inst) {
@@ -519,7 +521,7 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
       buf_printf(b, "; (void *)_t%d == (void *)_t%d ? (sp_int)0 : SP_INT_NIL; })", ta, tb);
       return 1;
     }
-    if (lrt != TY_UNKNOWN && lat != TY_UNKNOWN &&
+    if (lrt != TY_UNKNOWN && !latr.untyped &&
         !ty_is_object(lrt) && !ty_is_object(lat)) {
       buf_puts(b, "((void)(");
       emit_expr(c, recv, b);
@@ -532,9 +534,9 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
 
   if (recv >= 0 && argc == 1 &&
       is_cmp_op(name)) {
-    if ((rt == TY_BIGINT || comp_ntype(c, argv[0]) == TY_BIGINT) &&
+    if ((rt == TY_BIGINT || repr_of(c, argv[0]).big) &&
         emit_float_bigint_cmp(c, recv, argv[0], name, b)) return 1;
-    if ((rt == TY_BIGINT || comp_ntype(c, argv[0]) == TY_BIGINT) &&
+    if ((rt == TY_BIGINT || repr_of(c, argv[0]).big) &&
         bigint_cmp_operand_ok(rt) && bigint_cmp_operand_ok(comp_ntype(c, argv[0]))) {
       buf_printf(b, "(sp_bigint_cmp(");
       emit_bigint_operand(c, recv, b);
@@ -1076,16 +1078,17 @@ int emit_call_operator_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
      Proc, so any callable works (#3563) -- a lambda literal included, which
      is a Proc of its own like any other and keeps its own body's typing,
      `return` and preludes. */
+  Repr hrr = repr_of(c, recv);
   if (recv >= 0 && sp_streq(name, "default_proc=") && argc == 1 &&
-      (comp_ntype(c, recv) == TY_STR_POLY_HASH || comp_ntype(c, recv) == TY_SYM_POLY_HASH ||
-       comp_ntype(c, recv) == TY_POLY_POLY_HASH) &&
+      (repr_hash_is(hrr, TY_STRING, TY_POLY) || repr_hash_is(hrr, TY_SYMBOL, TY_POLY) ||
+       repr_hash_is(hrr, TY_POLY, TY_POLY)) &&
       comp_ntype(c, argv[0]) == TY_PROC) {
-    TyKind hrt = comp_ntype(c, recv);
+    TyKind hrt = hrr.as_ty;
     const char *hn2 = ty_hash_cname(hrt);
-    const char *keyct = hrt == TY_SYM_POLY_HASH ? "sp_sym"
-                      : hrt == TY_STR_POLY_HASH ? "const char *" : "sp_RbVal";
-    const char *kbox = hrt == TY_SYM_POLY_HASH ? "sp_box_sym(_key)"
-                     : hrt == TY_STR_POLY_HASH ? "sp_box_str(_key)" : "_key";
+    const char *keyct = hrr.key == TY_SYMBOL ? "sp_sym"
+                      : hrr.key == TY_STRING ? "const char *" : "sp_RbVal";
+    const char *kbox = hrr.key == TY_SYMBOL ? "sp_box_sym(_key)"
+                     : hrr.key == TY_STRING ? "sp_box_str(_key)" : "_key";
     int dn2 = ++g_proc_counter;
     buf_printf(&g_procs,
       "static sp_RbVal _sp_hash_dproc_%d(sp_%sHash *_self_h, %s _key, void *_dproc_self) {\n"
