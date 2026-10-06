@@ -97,7 +97,11 @@ Compiler *comp_new(const NodeTable *nt) {
   c->bop_inf = calloc((size_t)n, sizeof *c->bop_inf);
   c->ucall_inf = calloc((size_t)n, sizeof *c->ucall_inf);
   c->node_cap = n;
-  c->share_strings = getenv("SPINEL_SHARE_STRINGS") != NULL;
+  /* On only when set to something: empty is off, as SPINEL_DEFER_REFUSALS
+     reads it, and so is "0", as SPINEL_GATE_RAISE=0 and SPINEL_INLINE_FORCE=0
+     are. An environment that exports the variable as "0" or "" means off. */
+  { const char *e = getenv("SPINEL_SHARE_STRINGS");
+    c->share_strings = e && *e && strcmp(e, "0") != 0; }
   comp_node_ord(c, 0, NULL);   /* number the parsed nodes before any rewrite */
   c->node_ord_parsed = nt->count;
   return c;
