@@ -1014,15 +1014,15 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       { *out = TY_ENUMERATOR; return 1; }
     if (sp_streq(name, "sample")) { *out = ty_array_elem(rt); return 1; }
     if ((is_map_bang_alias(name)) && block >= 0) {
-      /* Typed arrays (int/str/float): in-place mutation preserves element type.
-         The block param may be widened to TY_POLY when shared with other blocks,
-         but the array type is determined by the receiver, not the block body. */
-      if (ty_array_elem(rt) != TY_POLY)
-        { *out = rt; return 1; }
-      int body = nt_ref(nt, block, "body");
-      int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
-      TyKind bt = bn > 0 ? infer_type(c, bb[bn - 1]) : TY_UNKNOWN;
-      { *out = bt != TY_UNKNOWN ? ty_array_of(bt) : rt; return 1; }
+      /* map! answers its receiver, rewritten in place: the receiver's own
+         array type, whatever the block answers. The block param may be
+         widened to TY_POLY when shared with other blocks, but the array type
+         is determined by the receiver, not the block body. A general Array
+         was typed as an Array of the block's kind, so a typed one that
+         widened for a foreign tail (widen_arrays_from_map_bang) handed its
+         sp_PolyArray to the typed Array's readers, and the C did not
+         build. */
+      *out = rt; return 1;
     }
     if (sp_streq(name, "rindex")) { *out = TY_INT; return 1; }  /* int or nil */
     if ((is_array_push_family(name)) &&
