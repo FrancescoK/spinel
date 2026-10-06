@@ -39,6 +39,10 @@ typedef struct {
   TyKind key, val;        /* a Hash: the types its C table holds the keys
                              and the values as (a StrPolyHash's String and
                              box); else TY_UNKNOWN */
+  TyKind range;           /* a Range: the type its C struct holds its bounds
+                             as (an sp_Range's Integer, a Float end kept
+                             beside them; an sp_FloatRange's Float; an
+                             sp_StrRange's String); else TY_UNKNOWN */
   unsigned char kind;     /* ReprKind */
   unsigned may_nil:1;     /* the value can be nil in this representation:
                              a nil-sentinel scalar; a user object or a
@@ -60,6 +64,26 @@ typedef struct {
                              array read, which writes the test
                              (VR_NIL_TESTED 2) */
   unsigned big:1;         /* an Integer held as an sp_Bigint * */
+  unsigned untyped:1;     /* meaningful only with RK_NONE: no type was
+                             inferred (TY_UNKNOWN, or no node or slot at
+                             all), as against a value-less void. A flag
+                             beside the kind, not a kind of its own, so no
+                             switch on the kind changes */
+  unsigned elem_nil_marked:1; /* an Integer or Float Array the analysis saw
+                             a nil stored into (nullable_int_elem): its
+                             elements can be the sentinel, its stores set
+                             no run-time may_nil flag, and its whole-array
+                             reads scan for one. An unmarked one can still
+                             hold one its run-time flag answers for */
+  unsigned arr_or_nil:1;  /* a boxed local proven to hold only a PolyArray
+                             or nil (arr_or_nil), and a read of it: an index
+                             read takes the runtime's inline array arm,
+                             which neither allocates nor needs a root */
+  unsigned volatile_str:1; /* a String local live across a setjmp
+                             (borrowed_volatile): its C slot, and a slot
+                             that borrows it, is `const char * volatile` */
+  unsigned char cell;     /* ReprCell: where a local's value lives, for the
+                             slot and for a read of it */
   unsigned char strbuf_src; /* ReprStrSrc: where a shared String's box comes
                                from */
 } Repr;
@@ -76,10 +100,26 @@ typedef enum {
   RS_SLOT_POLY   /* a handle-marked read of a slot that settled poly */
 } ReprStrSrc;
 
+/* Where a local's value lives. */
+typedef enum {
+  RC_NONE,       /* its own C variable, lv_<name> */
+  RC_HEAP,       /* is_cell: a heap cell an escaping proc shares with the
+                    scope, read and written through *_cell_<name> */
+  RC_BYREF,      /* byref_out: a String parameter the method mutates in
+                    place, the caller's own slot passed as const char ** */
+  RC_ALIAS       /* inline_alias: a parameter an inline expansion binds to
+                    the caller's variable for its duration */
+} ReprCell;
+
 /* The representation of node `node`'s value. */
 Repr repr_of(const Compiler *c, int node);
 /* The representation of a local variable's slot. */
 Repr repr_of_slot(const Compiler *c, const LocalVar *lv);
+/* The representation of class cid's instance variable iv, of its class
+   variable cv, and of method scope sc's value. */
+Repr repr_of_ivar(const Compiler *c, int cid, int iv);
+Repr repr_of_cvar(const Compiler *c, int cid, int cv);
+Repr repr_of_ret(const Compiler *c, const Scope *sc);
 /* Is r a Hash that holds its keys as `key` and its values as `val`? */
 int repr_hash_is(Repr r, TyKind key, TyKind val);
 /* Called once the analysis is final (the end of analyze_program): from here
