@@ -12719,7 +12719,7 @@ static SP_UNUSED const char *sp_poly_bytes_arg(sp_RbVal v) {
                                        sp_poly_class_name(v)));
   return NULL;
 }
-/* A Hash-only name (keys, values, compare_by_identity?) on a boxed receiver:
+/* A Hash-only name (keys, compare_by_identity?) on a boxed receiver:
    the receiver when it is a Hash, else CRuby's NoMethodError naming the
    method and the receiver (`for nil`), where the helpers below name the
    method alone or the receiver as "poly". Answers the receiver so a call site
@@ -12871,6 +12871,15 @@ static sp_PolyArray *sp_poly_values(sp_RbVal v) {
   }
   sp_raise_cls("NoMethodError", "undefined method 'values'");
   return NULL;  /* unreachable: sp_raise_cls is noreturn */
+}
+/* values on a boxed receiver: a Struct's members or a Hash's values, else
+   CRuby's NoMethodError naming the receiver (sp_poly_hash_chk), where
+   sp_poly_values names the method alone. A Struct is checked first: it has
+   values but no keys, so the Hash check alone refused it. */
+static SP_UNUSED sp_PolyArray *sp_poly_values_chk(sp_RbVal v) {
+  sp_RbVal sv = sp_poly_struct_values(v);
+  if (sv.tag != SP_TAG_NIL) return sp_poly_to_poly_array(sv);
+  return sp_poly_values(sp_poly_hash_chk(v, "values"));
 }
 static sp_PolyPolyHash*sp_PolyPolyHash_replace(sp_PolyPolyHash*h,sp_PolyPolyHash*o){if(!h||h==o)return h;SP_GC_ROOT(h);SP_GC_ROOT(o);for(sp_int i=0;i<h->cap;i++)h->occ[i]=FALSE;h->len=0;if(o)for(sp_int i=0;i<o->len;i++)sp_PolyPolyHash_set(h,o->keys[o->order[i]],o->vals[o->order[i]]);return h;}
 static sp_PolyPolyHash*sp_PolyPolyHash_dup(sp_PolyPolyHash*h){SP_GC_ROOT(h);sp_PolyPolyHash*r=sp_PolyPolyHash_new();SP_GC_ROOT(r);r->default_v=h->default_v;r->dproc=h->dproc;r->dproc_self=h->dproc_self;for(sp_int i=0;i<h->len;i++)sp_PolyPolyHash_set(r,h->keys[h->order[i]],h->vals[h->order[i]]);return r;}
