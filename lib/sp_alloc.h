@@ -377,11 +377,23 @@ static inline char *sp_str_alloc_nogc(size_t len) {
    the byte before it for one, which for some neighbouring byte looks like a
    header's marker and answers a made-up length (#7556 did, and a copied
    message gained NUL bytes in some builds). */
+/* The one message whose byte length is known: sp_exc_msg_given records the
+   String a program raised with (sp_exc_msg_given, lib/sp_exc.h) and every copy
+   passes it on to its own result. A pointer that is not that one is a bare C
+   string -- a literal, a static buffer like Process.spawn's sp_err_buf -- and
+   is measured by strlen; its byte before the pointer is not a header to read
+   (#7556 did, and a copied message gained NUL bytes in some builds). */
+extern SP_TLS const char *sp_msg_hint_p;
+extern SP_TLS size_t sp_msg_hint_n;
+static inline size_t sp_msg_len(const char *m) {
+  return (m && m == sp_msg_hint_p) ? sp_msg_hint_n : strlen(m);
+}
 static inline const char *sp_msg_heapify(const char *m) {
   if (!m) return NULL;
-  size_t n = strlen(m);
+  size_t n = sp_msg_len(m);
   char *r = sp_str_alloc_nogc(n);
   memcpy(r, m, n);
+  sp_msg_hint_p = r; sp_msg_hint_n = n;   /* the next copy keeps these bytes too */
   return r;
 }
 

@@ -74,7 +74,12 @@ extern const char *const sp_exc_no_msg;
 /* An explicitly given raise message: an empty one stays empty rather than
    falling back to the class name the way a message-less raise does. */
 static inline const char *sp_exc_msg_given(const char *m) {
-  return (m && !m[0]) ? sp_exc_no_msg : m;
+  if (m && !m[0]) return sp_exc_no_msg;
+  /* m is a String the program built (a raise's message operand), so it has a
+     header and its byte length survives an embedded NUL; the copies below keep
+     the bytes (sp_msg_len, lib/sp_alloc.h) (#7556) */
+  if (m) { sp_msg_hint_p = m; sp_msg_hint_n = sp_str_byte_len(m); }
+  return m;
 }
 void *sp_exc_new_sub_sized(size_t sz, const char *cls_name, const char *msg);
 

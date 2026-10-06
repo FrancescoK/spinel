@@ -144,12 +144,16 @@ void sp_exc_syserr_init(sp_Exception *e) {
 }
 /* Create an exception for a `rescue => e` binding: like sp_exc_new but
    also looks up the parent class via the user hierarchy callback. */
-/* The exception's own copy of its message. The length is strlen's: what arrives
-   is a bare C string as often as a String (see sp_msg_heapify). */
+SP_TLS const char *sp_msg_hint_p = NULL;   /* see sp_msg_len (lib/sp_alloc.h) */
+SP_TLS size_t sp_msg_hint_n = 0;
+/* The exception's own copy of its message. What arrives is a bare C string as
+   often as a String, so the length is sp_msg_len's: the program's String keeps
+   its bytes past a NUL, anything else is strlen's (#7556). */
 static const char *sp_exc_msg_copy(const char *m) {
-  size_t n = strlen(m);
+  size_t n = sp_msg_len(m);
   char *r = sp_str_alloc(n);
   memcpy(r, m, n);
+  sp_msg_hint_p = r; sp_msg_hint_n = n;
   return r;
 }
 sp_Exception *sp_exc_new_for_catch(const char *cls, const char *msg) {if (msg != sp_exc_no_msg) msg = sp_msg_heapify(msg); SP_GC_ROOT_STR(msg);
