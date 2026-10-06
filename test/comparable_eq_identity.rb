@@ -2,7 +2,9 @@
 # as CRuby's cmp_equal does: a <=> with a side effect must not run for
 # `x == x`. Covers a typed receiver and argument (in place and through a
 # temp), `!=`, a boxed receiver, Array#include?, case/when and a parameter
-# that holds the receiver. Two different objects still call <=>.
+# that holds the receiver. Two different objects still call <=>. A
+# receiver its argument reassigns (`@a == (@a = @b)`) is compared as it was
+# before the argument ran, as CRuby evaluates the receiver first.
 
 class M
   include Comparable
@@ -51,3 +53,36 @@ end
 n = N.new
 r = n == n
 p [r, n.calls]
+
+# a receiver its argument reassigns
+class R
+  include Comparable
+  attr_reader :n
+  def initialize(n, log) = (@n = n; @log = log)
+  def <=>(o) = (@log << "#{n}#{o.n} "; n - o.n)
+end
+
+class H
+  def initialize(log)
+    @log = log
+    @a = R.new(3, log)
+    @b = R.new(3, log)
+  end
+
+  def swap = (@a = @b)
+
+  def go
+    r1 = @a == (@a = @b)
+    @a = R.new(4, @log)
+    r2 = @a != (@a = R.new(9, @log))
+    @a = R.new(5, @log)
+    r3 = @a == swap
+    [r1, r2, r3]
+  end
+end
+
+rl = +""
+p [H.new(rl).go, rl]
+k = R.new(1, rl)
+r = k == (k = R.new(1, rl))
+p [r, rl]
