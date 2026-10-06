@@ -4375,6 +4375,16 @@ static sp_RbVal sp_box_f_to_int(sp_float v) {
   if (v < -(sp_float)INTPTR_MIN && v >= (sp_float)INTPTR_MIN) return sp_box_int((sp_int)v);
   return sp_box_bigint(sp_bigint_new_double(v));
 }
+/* Numeric#div by a Float, and Integer#div(Float): the floor of the real
+   quotient, an Integer. A zero divisor is ZeroDivisionError and a NaN or
+   infinite quotient FloatDomainError; a quotient past sp_int is the Bignum
+   CRuby's dbl2ival makes, which a boxed slot holds -- the boxed path answered
+   it as a Float (1e20.div(3) printed 3.333333333333333e+19) and a NaN one as
+   NaN. The typed raise-mode paths keep sp_float_fit_i's RangeError. */
+static inline sp_RbVal sp_float_div_v(sp_float x, sp_float y) {
+  if (y == 0.0) sp_raise_cls("ZeroDivisionError", "divided by 0");
+  return sp_box_f_to_int(floor(x / y));
+}
 /* The same method into a BOXED slot, which promote mode gives it: an Integer
    too wide for sp_int is the answer rather than an error, and a Bignum
    receiver is already one (#4688). */
@@ -4394,6 +4404,16 @@ static inline sp_int sp_float_fit_i(sp_float v) {
   if (v >= -(sp_float)INTPTR_MIN || v < (sp_float)INTPTR_MIN)
     sp_raise_cls("RangeError", "float out of Integer range (Bignum promotion pending)");
   return (sp_int)v;
+}
+/* sp_float_div_v's quotient in an sp_int slot (a typed call in the raise and
+   wrap modes): one past the word is sp_float_fit_i's RangeError. The NaN a
+   NaN divisor makes was cast to sp_int, which is undefined: 2.5.div(NaN)
+   answered 0 and a Rational's crashed. */
+static inline sp_int sp_float_div_i(sp_float x, sp_float y) {
+  if (y == 0.0) sp_raise_cls("ZeroDivisionError", "divided by 0");
+  sp_float q = floor(x / y);
+  if (!isfinite(q)) sp_raise_cls("FloatDomainError", isnan(q) ? "NaN" : q > 0 ? "Infinity" : "-Infinity");
+  return sp_float_fit_i(q);
 }
 static sp_bool sp_poly_nan_p(sp_RbVal v) { if (v.tag == SP_TAG_FLT) return isnan(v.v.f) != 0; sp_raise_poly_nomethod("nan?", v); }
 /* Float#next_float / #prev_float: only a Float has them (nextafter, as the
@@ -4544,6 +4564,7 @@ static sp_int sp_poly_ord(sp_RbVal v) { v = sp_poly_strbuf_deref(v); if (v.tag =
    answered where the answer can itself be a Bignum; sp_box_bigint hands a
    result that fits back as a plain Integer. */
 static sp_RbVal sp_poly_div(sp_RbVal a, sp_RbVal b);   /* fwd: defined with the arithmetic below */
+static sp_RbVal sp_poly_div_m(sp_RbVal a, sp_RbVal b);   /* fwd: Integer#div, defined below */
 static sp_RbVal sp_poly_neg(sp_RbVal a);
 sp_Bigint *sp_bigint_powmod(sp_Bigint *base, sp_int exp, sp_Bigint *mod);
 sp_Bigint *sp_bigint_shr(sp_Bigint *a, int64_t n);
@@ -4572,10 +4593,12 @@ static sp_RbVal sp_poly_int_powmod(sp_RbVal v, sp_RbVal e, sp_RbVal m) {
 static sp_RbVal sp_poly_int_ceildiv(sp_RbVal v, sp_RbVal d) {
   if (v.tag != SP_TAG_INT && v.tag != SP_TAG_BIGINT) sp_raise_poly_nomethod("ceildiv", v);
   if (v.tag == SP_TAG_INT && d.tag == SP_TAG_INT) return sp_box_int(sp_ceildiv(v.v.i, d.v.i));
-  /* CRuby: -div(-other) */
+  /* CRuby: -div(-other). Integer#div, not `/`: over a Float divisor `/` is
+     the real quotient, so 7.ceildiv(2.5) answered 2.8 (CRuby: 3) and a NaN
+     divisor NaN (CRuby FloatDomainError) */
   SP_GC_ROOT_RBVAL(v); SP_GC_ROOT_RBVAL(d);
   sp_RbVal nd = sp_poly_neg(d); SP_GC_ROOT_RBVAL(nd);
-  sp_RbVal q = sp_poly_div(v, nd); SP_GC_ROOT_RBVAL(q);
+  sp_RbVal q = sp_poly_div_m(v, nd); SP_GC_ROOT_RBVAL(q);
   return sp_poly_neg(q);
 }
 /* allbits? / anybits? / nobits? on a boxed receiver: an Integer pair tests
@@ -5412,12 +5435,8 @@ static sp_RbVal sp_poly_div_m(sp_RbVal a, sp_RbVal b) {
   if (!sp_poly_numeric_p(a) && !sp_poly_is_rational(a) && !sp_poly_is_brat(a))
     sp_raise_poly_nomethod("div", a);
   if (a.tag == SP_TAG_FLT || b.tag == SP_TAG_FLT ||
-      sp_poly_is_rational(a) || sp_poly_is_rational(b)) {
-    sp_float fb = sp_poly_to_f_with_rational(b);
-    if (fb == 0) sp_raise_cls("ZeroDivisionError", "divided by 0");
-    sp_float q = floor(sp_poly_to_f_with_rational(a) / fb);
-    return (q >= -9.2e18 && q <= 9.2e18) ? sp_box_int((sp_int)q) : sp_box_float(q);
-  }
+      sp_poly_is_rational(a) || sp_poly_is_rational(b))
+    return sp_float_div_v(sp_poly_to_f_with_rational(a), sp_poly_to_f_with_rational(b));
   /* a Bignum operand: sp_poly_to_i truncates it to 64 bits, so this answered a
      number seven orders of magnitude out. sp_bigint_div floors toward -inf,
      which is what Integer#div does. */

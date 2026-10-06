@@ -3971,6 +3971,10 @@ static int infer_int_float_recv_call(Compiler *c, int id, const NodeTable *nt, c
       { *out = TY_BIGINT; return 1; }
     if (sp_streq(name, "lcm") && argc == 1 && infer_type(c, argv[0]) == TY_BIGINT)
       { *out = TY_BIGINT; return 1; }
+    /* div by a Float floors the real quotient into an Integer, which promote
+       lets be a Bignum (sp_float_div_v), as Float#div below (#4688) */
+    if (g_promote_mode && is_div_name(name) && argc == 1 && infer_type(c, argv[0]) == TY_FLOAT)
+      { *out = TY_POLY; return 1; }
     {
       const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
       if (op && op->result != TY_UNKNOWN) { *out = op->result; return 1; }
@@ -4031,6 +4035,8 @@ static int infer_int_float_recv_call(Compiler *c, int id, const NodeTable *nt, c
            (2.0**70).floor(-1) came out ...424 where CRuby says ...420.
            Widening that would trade a RangeError for a wrong answer, so it
            keeps raising until the rounding itself is done in Bignum. */
+        /* Float#div is (self / other).floor, the same Integer */
+        if (is_div_name(name) && pv_argc == 1) { *out = TY_POLY; return 1; }
         if (is_round_family(name)) {
           if (pv_argc == 0) { *out = TY_POLY; return 1; }
           if (pv_argc == 1) {
