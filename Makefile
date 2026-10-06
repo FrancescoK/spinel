@@ -3645,9 +3645,14 @@ arity-spec-check:
 # generated unit. Compiled once, its object must not depend on the integer
 # overflow mode and must not reach a writable static of its own (a private copy
 # of a hook the generated unit sets stays NULL, and the optimizer folds the test
-# away); tools/poly_cold_check.rb states both and checks them.
+# away); tools/poly_cold_check.rb states both and checks them. It reads the
+# object with objdump and readelf, which are ELF tools: on a host whose objects
+# are not ELF (macOS's Mach-O, Windows' PE) the leg is skipped rather than failed.
 poly-cold-test:
-	@ruby tools/poly_cold_check.rb $(CC)
+	@case "$$(uname -s)" in \
+	  Darwin|CYGWIN*|MINGW*|MSYS*) echo "poly-cold-test: skipped (needs an ELF host: objdump and readelf)" ;; \
+	  *) ruby tools/poly_cold_check.rb $(CC) ;; \
+	esac
 
 traits-check-test: $(SPINEL)
 	@$(SPINEL) --check-traits -c test/box_random_argf.rb -o /dev/null && \
