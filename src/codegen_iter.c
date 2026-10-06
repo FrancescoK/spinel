@@ -1322,7 +1322,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   if (as_expr) {
     /* Use a result var so the tail uses assignment, not `return`, in the
        GCC statement-expression ({ ... result_var; }) context. */
-    TyKind rt = comp_ntype(c, id);
+    TyKind rt = repr_of(c, id).as_ty;
     if (fwd_yield_proc) g_yield_slot_ty = rt;  /* value-position yield unboxes to this */
     int rtag = ++g_tmp;
     char rvbuf[32]; snprintf(rvbuf, sizeof rvbuf, "_t%d", rtag);
@@ -2389,7 +2389,7 @@ void emit_block_binds(Compiler *c, int blk, const int *yargs, int yc,
      [1, 5, nil]. Leading requireds alone keep the lighter per-index read
      below. */
   int boxed_spread = autosplat && yc == 1 && yargs && nt_kind(nt, yargs[0]) != NK_SplatNode &&
-                     comp_ntype(c, yargs[0]) == TY_POLY && (O > 0 || Q > 0 || block_rest_name(c, blk));
+                     repr_of(c, yargs[0]).kind == RK_BOXED && (O > 0 || Q > 0 || block_rest_name(c, blk));
   int poly_splat_tmp = -1;   /* a boxed yielded value splatted at run time */
   TyKind self_ty = TY_UNKNOWN;
   /* One step of a boxed or Enumerator receiver, which a builtins/ method
@@ -2930,7 +2930,7 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
     g_loop_ensure_base = g_ensure_depth;
     g_c_loop_depth++;
     if (as_expr) {
-      nx_bt = bn3 > 0 ? comp_ntype(c, bd3[bn3 - 1]) : TY_NIL;
+      nx_bt = bn3 > 0 ? repr_of(c, bd3[bn3 - 1]).as_ty : TY_NIL;
       /* A void tail (a call to a method that always raises) produces no
          value, and method_call_ret types it nil for the call. Joined raw,
          VOID and an Integer `next` made the carrier poly while the call was
@@ -3095,7 +3095,7 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
                expression is what makes the splice's value the block's value
                (#3781). */
             (nt_type(nt, bd3[bn3 - 1]) && sp_streq(nt_type(nt, bd3[bn3 - 1]), "CallNode") &&
-             comp_ntype(c, bd3[bn3 - 1]) == TY_POLY) ||
+             repr_of(c, bd3[bn3 - 1]).kind == RK_BOXED) ||
             /* a scalar tail into the poly slot the yield was typed for (a
                block answering an Integer where another site's answers a
                String): boxed, or the splice handed the raw sp_int to an
@@ -3219,7 +3219,7 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
       if ((ft == TY_UNKNOWN || ft == TY_VOID || ft == TY_NIL) && tail_ret) {
         int ra = nt_ref(nt, bd2[bn2 - 1], "arguments");
         int rn = 0; const int *rv = ra >= 0 ? nt_arr(nt, ra, "arguments", &rn) : NULL;
-        TyKind rt2 = rn > 0 ? comp_ntype(c, rv[0]) : TY_INT;
+        TyKind rt2 = rn > 0 ? repr_of(c, rv[0]).as_ty : TY_INT;
         ft = is_scalar_ret(rt2) ? rt2 : TY_INT;
       }
       if (ft == TY_UNKNOWN || ft == TY_VOID || ft == TY_NIL) ft = TY_INT;
@@ -3258,7 +3258,7 @@ int poly_block_dispatch_cands(Compiler *c, int id, int *cand, int max) {
   int block = nt_ref(nt, id, "block");
   if (!name || recv < 0 || block < 0) return 0;
   if (!nt_type(nt, block) || !sp_streq(nt_type(nt, block), "BlockNode")) return 0;
-  if (comp_ntype(c, recv) != TY_POLY) return 0;
+  if (repr_of(c, recv).kind != RK_BOXED) return 0;
   /* Only receivers whose poly value comes out of a BUILTIN container -- an
      index read (`arr[i]`) or an element accessor (first/last/fetch/...) -- or
      a plain local/ivar holding such. A constant (its own const-inline path),
@@ -3585,8 +3585,8 @@ int emit_poly_recv_block_value(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver");
-  if (!name || recv < 0 || nt_ref(nt, id, "block") < 0 || comp_ntype(c, id) != TY_POLY ||
-      comp_ntype(c, recv) != TY_POLY || g_n_argov + 1 > MAX_ARG_OVERRIDE) return 0;
+  if (!name || recv < 0 || nt_ref(nt, id, "block") < 0 || repr_of(c, id).kind != RK_BOXED ||
+      repr_of(c, recv).kind != RK_BOXED || g_n_argov + 1 > MAX_ARG_OVERRIDE) return 0;
   if (!sp_streq(name, "each_line") && !sp_streq(name, "each_char") && !sp_streq(name, "each_byte"))
     return 0;
   int native = 0;
@@ -3671,7 +3671,7 @@ static int call_targets_yielding_method(Compiler *c, int id) {
 
 int emit_inline_expr(Compiler *c, int id, Buf *b) {
   /* only when a value is actually produced (scalar return) */
-  TyKind rt = comp_ntype(c, id);
+  TyKind rt = repr_of(c, id).as_ty;
   if (!is_scalar_ret(rt)) {
     /* A block that always raises leaves the call with no value type at all,
        but the call itself still inlines: hold the (dead) result boxed so the
@@ -4023,7 +4023,7 @@ int emit_tap_then_expr(Compiler *c, int id, Buf *b) {
      block value escapes it. */
   int tres = 0; TyKind rett = TY_VOID;
   if (is_then) {
-    rett = comp_ntype(c, id);
+    rett = repr_of(c, id).as_ty;
     /* A body that always `break`s completes normally nowhere, so it publishes
        no result type and `void` cannot declare the slot the substrate writes
        (#3986). The break itself delivers its value through sp_brk_val, and the
@@ -4296,7 +4296,7 @@ int iter_value_answers_recv(Compiler *c, int id) {
    both reads take the binding; answers 1 when the caller must pop it. */
 int iter_recv_bind_once(Compiler *c, int node) {
   if (!g_pre || g_n_argov >= MAX_ARG_OVERRIDE || !subtree_has_side_effect(c, node)) return 0;
-  TyKind ot = comp_ntype(c, node);
+  TyKind ot = repr_of(c, node).as_ty;
   if (ot == TY_UNKNOWN) return 0;
   int t = ++g_tmp;
   Buf ob = expr_buf(c, node);
@@ -4327,7 +4327,7 @@ int emit_iter_value_expr(Compiler *c, int id, Buf *b) {
   { const char *sop = nt_str(nt, id, "call_operator");
     int sn_recv = nt_ref(nt, id, "receiver");
     if (sop && sp_streq(sop, "&.") && g_sn_skip != id &&
-        sn_recv >= 0 && comp_ntype(c, sn_recv) == TY_POLY) return 0; }
+        sn_recv >= 0 && repr_of(c, sn_recv).kind == RK_BOXED) return 0; }
   if (!iter_value_answers_recv(c, id)) return 0;
   int block = nt_ref(nt, id, "block");
   int recv = nt_ref(nt, id, "receiver");
@@ -4340,7 +4340,7 @@ int emit_iter_value_expr(Compiler *c, int id, Buf *b) {
       nt_kind(nt, recv) == NK_CallNode && nt_str(nt, recv, "enum_each_wrap") &&
       nt_ref(nt, recv, "receiver") >= 0 &&
       comp_ntype(c, nt_ref(nt, recv, "receiver")) == TY_ENUMERATOR &&
-      comp_ntype(c, id) == TY_POLY) {
+      repr_of(c, id).kind == RK_BOXED) {
     int tres = ++g_tmp;
     Buf wb; memset(&wb, 0, sizeof wb);
     g_enum_walk_res = tres;
@@ -4352,7 +4352,7 @@ int emit_iter_value_expr(Compiler *c, int id, Buf *b) {
     free(wb.p);
     return 1;
   }
-  TyKind rt = comp_ntype(c, recv);
+  TyKind rt = repr_of(c, recv).as_ty;
   /* A poly receiver is allowed: `each` answers the receiver whatever kind it
      turns out to hold, and the loop below walks it through the poly surface.
      Bails on its own below when the iteration cannot be emitted. */
@@ -4845,7 +4845,7 @@ static void emit_row_param_bind(Compiler *c, int block, int pj, const char *k, T
 static int iter_tap_slice_string_arms(Compiler *c, int id, Buf *b, int indent, const NodeTable *nt, int block, const char *name, int recv, int body, const char *p0_orig, const char *p0, TyKind rt) {
   /* recv.tap { |p| body } -- run block for side effects, preserve outer var */
   if (sp_streq(name, "tap") && recv >= 0) {
-    TyKind et = comp_ntype(c, recv);
+    TyKind et = repr_of(c, recv).as_ty;
     /* a receiver of no type -- a call proven to raise NoMethodError -- is
        the raise's sp_RbVal; `void _t` did not compile (#6213) */
     if (et == TY_UNKNOWN || et == TY_VOID) et = TY_POLY;
@@ -5237,7 +5237,7 @@ static int iter_range_upto_arms(Compiler *c, int id, Buf *b, int indent, const N
        not compile against it (#4665). A typed limit stays as it is: a Float
        one compares as a Float (`-5.upto(-1.3)` stops at -2). */
     Buf hi; memset(&hi, 0, sizeof hi);
-    if (comp_ntype(c, argv[0]) == TY_POLY) emit_int_expr(c, argv[0], &hi);
+    if (repr_of(c, argv[0]).kind == RK_BOXED) emit_int_expr(c, argv[0], &hi);
     else emit_expr(c, argv[0], &hi);
     int ti = ++g_tmp;
     /* the limit sits in the loop condition, so a side-effecting one would be
@@ -6384,7 +6384,7 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
      with g_sn_skip set, and that pass has to lower normally. */
   { const char *sop = nt_str(nt, id, "call_operator");
     if (sop && sp_streq(sop, "&.") && g_sn_skip != id &&
-        recv >= 0 && comp_ntype(c, recv) == TY_POLY) return 0; }
+        recv >= 0 && repr_of(c, recv).kind == RK_BOXED) return 0; }
   /* CRuby checks arity and argument classes at dispatch, before the
      iteration starts: a loop emitted here never reaches emit_call, so both
      guards run here too (3.step(4, 1, 2) { } ran the loop with the extra
@@ -6494,7 +6494,7 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
       const char *inm = nt_str(nt, id, "name");
       int irecv = nt_ref(nt, id, "receiver");
       const char *pen = inm ? poly_enum_op_for(inm) : NULL;
-      if (rfb >= 0 && pen && irecv >= 0 && comp_ntype(c, irecv) == TY_POLY) {
+      if (rfb >= 0 && pen && irecv >= 0 && repr_of(c, irecv).kind == RK_BOXED) {
         Buf pb0; memset(&pb0, 0, sizeof pb0);
         if (!emit_forwarded_proc_arg(c, rfb, &pb0)) { free(pb0.p); return 0; }
         int tp0 = ++g_tmp;
