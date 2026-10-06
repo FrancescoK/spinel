@@ -6996,12 +6996,14 @@ static int int_arms_clamp_pow(Compiler *c, Buf *b, const NodeTable *nt, const ch
   }
   else if (sp_streq(name, "pow") && argc == 2) { buf_printf(b, "sp_powmod(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")"); }
   /* pow with a literal negative exponent is the exact Rational
-     1 / base**|exp| (matching **'s CRuby behavior) */
+     1 / base**|exp|, computed as ** computes it (emit_complex_rational_call):
+     sp_rational_pow raises ZeroDivisionError for a zero base, where
+     sp_rational_new(1, 0) answered (1/0) */
   else if (sp_streq(name, "pow") && argc == 1 &&
            nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "IntegerNode") &&
            nt_int(nt, argv[0], "value", 0) < 0) {
-    long long pe9 = -(long long)nt_int(nt, argv[0], "value", 0);
-    buf_printf(b, "sp_rational_new(1, sp_int_pow(%s, %lldLL))", r, pe9);
+    buf_printf(b, "sp_rational_pow(sp_rational_new((sp_int)(%s), 1), %lldLL)",
+               r, (long long)nt_int(nt, argv[0], "value", 0));
   }
   /* pow with a Float exponent is real exponentiation -> Float (#2604) */
   else if (sp_streq(name, "pow") && argc == 1 && comp_ntype(c, argv[0]) == TY_FLOAT) {
