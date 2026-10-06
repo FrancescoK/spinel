@@ -4087,7 +4087,10 @@ int emit_sortby_expr(Compiler *c, int id, Buf *b) {
     char src[96]; snprintf(src, sizeof src, "sp_%sArray_get(_t%d, _t%d)", k, trv, ti);
     emit_indent(g_pre, g_indent + 1);
     if (rt == TY_POLY_ARRAY && pt != TY_POLY && pt != TY_UNKNOWN) emit_block_param_from_boxed(c, p0, pt, src, g_pre);
-    else buf_printf(g_pre, "lv_%s = %s;\n", p0, src);
+    else {
+      emit_elem_param_bind(c, block, 0, p0_orig, p0, k, TY_UNKNOWN, src, g_pre);
+      buf_puts(g_pre, ";\n");
+    }
   }
   IterStep st; emit_iter_step_open(c, block, 0, g_indent + 1, &st);
   int save = g_indent; g_indent += 1;

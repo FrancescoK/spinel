@@ -582,6 +582,9 @@ static int repr_share_carried(Compiler *c, const ShareHolder *h) {
   switch (h->kind) {
   case SHK_LOCAL: {
     LocalVar *lv = &c->scopes[h->scope].locals[h->local];
+    /* a Hash block's key is the frozen copy CRuby makes as the key is
+       stored: no name changes it in place, so no handle is needed */
+    if (lv->is_block_param && an_hash_key_block_param(c, lv->name, &c->scopes[h->scope])) return 1;
     t = lv->type;
     shared = lv->str_shared && !lv->byref_out;
     break;

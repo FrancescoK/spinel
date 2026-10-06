@@ -1083,7 +1083,8 @@ static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int 
       /* zip and product pair elements up: a tuple holds the elements */
       sh_union(F, sh_elem(F, rv), vals[i]);
     }
-    if (lit_blk) sh_block_params(F, c, blk, sh_elem(F, rv), 1);
+    /* a Hash's update block takes the key first, then both values */
+    if (lit_blk) sh_iter_params(F, c, blk, sh_elem(F, rv), container == 2);
     return rv;
   case BSH_ARGS: {
     /* one argument is the answer; several, an Array of them, which joins
