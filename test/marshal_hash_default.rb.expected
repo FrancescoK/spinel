@@ -1,0 +1,15 @@
+"\x04\b}\x06:\x06ki\x06i\n"
+{k: 1}
+5
+5
+0
+"\x04\b}\x06I\"\x06a\x06:\x06ETi\x06i\x00"
+"none"
+-1
+[0]
+"\x04\b{\x06:\x06ai\x06"
+nil
+5
+0
+5
+TypeError: can't dump hash with default proc

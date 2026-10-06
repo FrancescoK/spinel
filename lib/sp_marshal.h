@@ -43,6 +43,8 @@ typedef struct {
   int      (*obj_dump)(sp_mar_buf *b, int cls_id, void *p);   /* generated; writes `o` */
   sp_RbVal (*obj_load)(const char *clsname, sp_RbVal iv, int *ok); /* iv = boxed PolyArray */
   void     (*raise)(const char *cls, const char *msg);
+  sp_RbVal (*hash_default)(sp_RbVal h, int *has_proc);    /* nil for none */
+  void     (*hash_set_default)(sp_RbVal h, sp_RbVal d);   /* on a hash_new one */
 } sp_marshal_vt;
 extern sp_marshal_vt sp_marshal_v;
 
