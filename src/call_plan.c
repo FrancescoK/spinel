@@ -1630,7 +1630,7 @@ const PolyPlan *cplan_poly_face(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
   int argc = 0;
-  const int *argv = call_args(nt, id, &argc);
+  call_args(nt, id, &argc);
   int has_blk = nt_ref(nt, id, "block") >= 0, plain = nt_call_args_plain(nt, id);
   if (!name) return &fp;
   unsigned own = an_zero_arg_builtin_shadowed(c, name, argc) ? 0
@@ -1639,13 +1639,8 @@ const PolyPlan *cplan_poly_face(Compiler *c, int id) {
   if (own & PF_STR_BANG) { cpoly_family(&fp, &cap, PB_FACE_STR_BANG); return &fp; }
   for (unsigned kind = 1; kind & PF_OWNERS; kind <<= 1) {
     if (!(kinds & kind)) continue;
-    /* several owners: an argument of another kind is the owner's TypeError */
-    int misfit = 0;
-    if (kinds & (kinds - 1)) {
-      unsigned fl = ty_poly_face_owner_flags(name, argc, has_blk, plain, kind);
-      if ((fl & PF_ARGS_OWN) && plain)
-        for (int i = 0; i < argc && !misfit; i++) misfit = face_arg_misfit(c, kind, argv[i]);
-    }
+    /* an argument of another kind is the owner's TypeError */
+    int misfit = face_args_misfit(c, id, kind);
     cpoly_add(&fp, &cap, misfit ? PA_BUILTIN : PA_TRIAL, PA_KEY_FACE + face_kind_index(kind), -1, TY_UNKNOWN,
               PC_SAME);
   }
