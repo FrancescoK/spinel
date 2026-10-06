@@ -12675,6 +12675,18 @@ static int emit_poly_numeric_call(Compiler *c, int id, Buf *b, const NodeTable *
     if (!poly_name_user_claimed(c, name, argc)) {
       /* ceil / floor / truncate with a precision had no arm at all and
          raised NoMethodError on a Float (#4532) */
+      /* truncate's receiver may be an IO, whose argument is an offset:
+         CRuby words its nil by NUM2OFFT (`no implicit conversion from
+         nil`), the numbers' by NUM2LONG, so the receiver is held and the
+         argument converted by its kind at run time */
+      if (sp_streq(name, "truncate")) {
+        int tv = ++g_tmp;
+        buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b);
+        buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_poly_prec_n(_t%d, sp_poly_arg_int_chk_w(", tv, tv);
+        emit_boxed(c, argv[0], b);
+        buf_printf(b, ", _t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_IO ? 2 : 0), SP_PREC_TRUNC); })", tv, tv);
+        { *out = 1; return 1; }
+      }
       if (sp_streq(name, "round")) buf_puts(b, "sp_poly_round_n(");
       else buf_puts(b, "sp_poly_prec_n(");
       emit_expr(c, recv, b); buf_puts(b, ", ");
