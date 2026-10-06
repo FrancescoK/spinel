@@ -2526,6 +2526,244 @@ int emit_strbuf_call_handle(Compiler *c, int v, Buf *b) {
   view_pop(c, sv);
   return 1;
 }
+
+/* ---- methods that return the shared handle (--share-strings) ----
+
+   A method a path of which answers the shared handle returns it through
+   the read face, a full copy of the String, which a caller taking the
+   handle then throws away for the handle the side channel carries (the
+   deep-return pickup). A method that answers the handle on every path
+   (Scope.ret_kinds) returns the sp_String * itself instead: its body is
+   emitted as <cname>__h, and <cname> stays a wrapper answering the read
+   face, so a caller that keeps a plain String, a dispatch table, a Method
+   object or a super call sees no change. A caller that takes the handle,
+   or drops the value, calls <cname>__h and copies nothing. */
+
+/* The C name a statically bound call `id` names a method that returns the
+   handle: its scope, or -1. A block, a receiver whose class the emitter
+   dispatches on at run time, or an argument calling the same name (whose
+   C name would be emitted first) keeps the call on the wrapper. */
+static int hr_args_call_name(const NodeTable *nt, int n, const char *name, int depth) {
+  if (n < 0 || depth > 32) return depth > 32;
+  if (nt_kind(nt, n) == NK_CallNode && nt_str(nt, n, "name") && sp_streq(nt_str(nt, n, "name"), name)) return 1;
+  int nr = nt_num_refs(nt, n);
+  for (int k = 0; k < nr; k++) if (hr_args_call_name(nt, nt_ref_at(nt, n, k), name, depth + 1)) return 1;
+  int na = nt_num_arrs(nt, n);
+  for (int k = 0; k < na; k++) {
+    int an = 0; const int *av = nt_arr_at(nt, n, k, &an);
+    for (int e = 0; e < an; e++) if (hr_args_call_name(nt, av[e], name, depth + 1)) return 1;
+  }
+  return 0;
+}
+int method_hr_target(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  if (!repr_share_rule(c) || id < 0 || nt_kind(nt, id) != NK_CallNode || nt_ref(nt, id, "block") >= 0) return -1;
+  const char *name = nt_str(nt, id, "name");
+  int r = nt_ref(nt, id, "receiver");
+  if (!name || (r >= 0 && !ty_is_object(comp_ntype(c, r)) && comp_ntype(c, r) != TY_CLASS)) return -1;
+  int tg[2];
+  if (share_call_targets(c, id, tg, 2) != 1 || !method_returns_handle(c, tg[0])) return -1;
+  if (hr_args_call_name(nt, nt_ref(nt, id, "arguments"), name, 0)) return -1;
+  return tg[0];
+}
+
+/* The slot an append chain or a call answering its receiver (`buf << a <<
+   b`, `s.freeze`) runs on, when it is a slot holding the handle (a local,
+   an ivar, a global, a constant, a class variable): that slot, or -1. */
+static int hr_slot_kind(NodeKind k) {
+  return k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode || k == NK_GlobalVariableReadNode ||
+         k == NK_ClassVariableReadNode || k == NK_ConstantReadNode;
+}
+static int hr_chain_base(Compiler *c, int node) {
+  const NodeTable *nt = c->nt;
+  for (int d = 0; node >= 0 && d < 64; d++) {
+    NodeKind k = nt_kind(nt, node);
+    if (k == NK_ParenthesesNode) {
+      int body = nt_ref(nt, node, "body");
+      int n = 0; const int *st = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &n) : NULL;
+      if (n != 1) return -1;
+      node = st[0];
+      continue;
+    }
+    if (hr_slot_kind(k)) {
+      if (k == NK_LocalVariableReadNode && repr_of(c, node).kind != RK_STRBUF) return -1;
+      char ref[512];
+      return strbuf_slot_ref(c, node, ref, sizeof ref) ? node : -1;
+    }
+    const char *nm = k == NK_CallNode ? nt_str(nt, node, "name") : NULL;
+    if (!nm || nt_ref(nt, node, "block") >= 0 || !(is_append_concat(nm) || str_self_call(nt, node))) return -1;
+    node = nt_ref(nt, node, "receiver");
+  }
+  return -1;
+}
+
+/* Can return path `node` of method mi be emitted as the handle: nil, a read
+   of a slot holding it, an append chain on such a slot, or a call of another
+   method that returns it? */
+static int hr_tail_ok(Compiler *c, int node, int depth) {
+  const NodeTable *nt = c->nt;
+  if (node < 0) return 1;
+  if (depth > 16) return 0;
+  switch (nt_kind(nt, node)) {
+  case NK_NilNode:
+    return 1;
+  case NK_ParenthesesNode: case NK_StatementsNode: {
+    int body = nt_kind(nt, node) == NK_ParenthesesNode ? nt_ref(nt, node, "body") : node;
+    if (body < 0) return 1;
+    if (nt_kind(nt, body) != NK_StatementsNode) return hr_tail_ok(c, body, depth + 1);
+    int k = 0; const int *st = nt_arr(nt, body, "body", &k);
+    return k == 0 || hr_tail_ok(c, st[k - 1], depth + 1);
+  }
+  case NK_IfNode: case NK_UnlessNode: {
+    int alt = nt_ref(nt, node, nt_kind(nt, node) == NK_IfNode ? "subsequent" : "else_clause");
+    if (alt >= 0 && nt_kind(nt, alt) == NK_ElseNode) alt = nt_ref(nt, alt, "statements");
+    return hr_tail_ok(c, nt_ref(nt, node, "statements"), depth + 1) && hr_tail_ok(c, alt, depth + 1);
+  }
+  case NK_LocalVariableReadNode: case NK_InstanceVariableReadNode: case NK_GlobalVariableReadNode:
+  case NK_ClassVariableReadNode: case NK_ConstantReadNode: {
+    if (nt_kind(nt, node) == NK_LocalVariableReadNode && repr_of(c, node).kind != RK_STRBUF) return 0;
+    char ref[512];
+    return strbuf_slot_ref(c, node, ref, sizeof ref);
+  }
+  case NK_CallNode:
+    return method_hr_target(c, node) >= 0 || hr_chain_base(c, node) >= 0;
+  default:
+    return 0;
+  }
+}
+
+int method_returns_handle(Compiler *c, int mi) {
+  if (!repr_share_rule(c) || mi <= 0 || mi >= c->nscopes) return 0;
+  if (!c->hr_memo) {
+    c->hr_memo_n = c->nscopes;
+    c->hr_memo = calloc((size_t)c->hr_memo_n, 1);
+  }
+  if (mi >= c->hr_memo_n) return 0;
+  /* a call chain back to a method being asked: as far as that one goes */
+  if (c->hr_memo[mi] == 3) return 1;
+  if (c->hr_memo[mi]) return c->hr_memo[mi] == 2;
+  Scope *s = &c->scopes[mi];
+  int ok = s->def_node >= 0 && s->body >= 0 && !method_is_void(s) && s->ret == TY_STRING &&
+           s->ret_kinds == SCOPE_RET_HANDLE && !s->yields && !s->is_proc_form && !s->is_lowered_yield &&
+           !s->cs_synth && !s->is_ext_entry && !scope_creates_returning_proc(c, mi) && !scope_has_begin(c, mi) &&
+           !(s->class_id >= 0 && (c->classes[s->class_id].is_singleton_of || c->classes[s->class_id].is_value_type));
+  if (ok) {
+    c->hr_memo[mi] = 3;
+    ok = hr_tail_ok(c, scope_body_last(c, mi), 0);
+    for (int r = comp_sret_first(c, mi); ok && r >= 0; r = comp_sret_next(c, r)) {
+      int ra = nt_ref(c->nt, r, "arguments");
+      int rn = 0; const int *rv = ra >= 0 ? nt_arr(c->nt, ra, "arguments", &rn) : NULL;
+      ok = rn == 0 || (rn == 1 && hr_tail_ok(c, rv[0], 0));
+    }
+  }
+  c->hr_memo[mi] = ok ? 2 : 1;
+  return ok;
+}
+
+/* After a C name an emitter spells itself for method mi: the __h suffix
+   when the caller asked for the variant returning the handle (hr_want, one
+   name, as emit_method_cname takes it). */
+void emit_hr_suffix(Compiler *c, int mi, Buf *b) {
+  if (mi >= 0 && c->hr_want == mi + 1) { buf_puts(b, "__h"); c->hr_want = 0; c->hr_used = 1; }
+}
+
+/* Emit call `id` (method_hr_target) as the handle it answers: <cname>__h,
+   or, where the emitter bound the call some other way (the wrapper's name
+   came out), the handle the call publishes, as the deep-return pickup takes
+   it. */
+void emit_hr_call(Compiler *c, int id, Buf *b) {
+  int mi = method_hr_target(c, id);
+  Buf tb; memset(&tb, 0, sizeof tb);
+  int sv_want = c->hr_want, sv_used = c->hr_used;
+  c->hr_want = mi + 1; c->hr_used = 0;
+  int vs = view_push_repr(c, id, VR_STRBUF_BOX, 0);
+  emit_call(c, id, &tb);
+  view_pop(c, vs);
+  int used = c->hr_used;
+  c->hr_want = sv_want; c->hr_used = sv_used;
+  if (used) { buf_puts(b, tb.p ? tb.p : "NULL"); free(tb.p); return; }
+  int tv = ++g_tmp;
+  buf_printf(b, "({ _sp_ret_strbuf = NULL; const char *_v%d = %s; _v%d && _sp_ret_strbuf ? (sp_String *)_sp_ret_strbuf"
+                " : sp_String_new_shared(_v%d); })", tv, tb.p ? tb.p : "NULL", tv, tv);
+  free(tb.p);
+}
+
+/* Emit return path `node` of a method returning the handle (g_ret_type is
+   TY_STRBUF there): the slot's handle, nil, a call's handle, or (a path
+   the check above did not see this way) the handle its value publishes. */
+void emit_hr_tail(Compiler *c, int node, Buf *b) {
+  const NodeTable *nt = c->nt;
+  if (node < 0 || nt_kind(nt, node) == NK_NilNode) { buf_puts(b, "(sp_String *)NULL"); return; }
+  /* parentheses and a statement list: the leading statements run, the last
+     one answers */
+  if (nt_kind(nt, node) == NK_ParenthesesNode || nt_kind(nt, node) == NK_StatementsNode) {
+    int body = nt_kind(nt, node) == NK_ParenthesesNode ? nt_ref(nt, node, "body") : node;
+    if (body < 0) { buf_puts(b, "(sp_String *)NULL"); return; }
+    if (nt_kind(nt, body) != NK_StatementsNode) { emit_hr_tail(c, body, b); return; }
+    int k = 0; const int *st = nt_arr(nt, body, "body", &k);
+    if (k == 0) { buf_puts(b, "(sp_String *)NULL"); return; }
+    if (k == 1) { emit_hr_tail(c, st[0], b); return; }
+    Buf sb; memset(&sb, 0, sizeof sb);
+    for (int i = 0; i + 1 < k; i++) emit_stmt(c, st[i], &sb, 0);
+    buf_printf(b, "({ %s ", sb.p ? sb.p : "");
+    free(sb.p);
+    emit_hr_tail(c, st[k - 1], b);
+    buf_puts(b, "; })");
+    return;
+  }
+  /* a conditional in value position: each arm's handle */
+  if (nt_kind(nt, node) == NK_IfNode || nt_kind(nt, node) == NK_UnlessNode) {
+    int alt = nt_ref(nt, node, nt_kind(nt, node) == NK_IfNode ? "subsequent" : "else_clause");
+    if (alt >= 0 && nt_kind(nt, alt) == NK_ElseNode) alt = nt_ref(nt, alt, "statements");
+    int then = nt_ref(nt, node, "statements");
+    buf_puts(b, "(");
+    emit_cond(c, nt_ref(nt, node, "predicate"), b);
+    buf_puts(b, " ? ");
+    emit_hr_tail(c, nt_kind(nt, node) == NK_IfNode ? then : alt, b);
+    buf_puts(b, " : ");
+    emit_hr_tail(c, nt_kind(nt, node) == NK_IfNode ? alt : then, b);
+    buf_puts(b, ")");
+    return;
+  }
+  if (nt_kind(nt, node) == NK_CallNode && method_hr_target(c, node) >= 0) { emit_hr_call(c, node, b); return; }
+  char ref[1024];
+  NodeKind k = nt_kind(nt, node);
+  /* an append chain on a slot: run it as a statement, answer the slot */
+  int base = k == NK_CallNode ? hr_chain_base(c, node) : -1;
+  if (base >= 0 && strbuf_slot_ref(c, base, ref, sizeof ref)) {
+    Buf sb; memset(&sb, 0, sizeof sb);
+    emit_stmt(c, node, &sb, 0);
+    buf_printf(b, "({ %s %s; })", sb.p ? sb.p : "", ref);
+    free(sb.p);
+    return;
+  }
+  if ((k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode || k == NK_GlobalVariableReadNode ||
+       k == NK_ClassVariableReadNode || k == NK_ConstantReadNode) && strbuf_slot_ref(c, node, ref, sizeof ref)) {
+    buf_puts(b, ref);
+    return;
+  }
+  Buf tb; memset(&tb, 0, sizeof tb);
+  emit_expr(c, node, &tb);
+  int tv = ++g_tmp;
+  buf_printf(b, "({ _sp_ret_strbuf = NULL; const char *_v%d = %s; _v%d && _sp_ret_strbuf ? (sp_String *)_sp_ret_strbuf"
+                " : sp_String_new_shared(_v%d); })", tv, tb.p ? tb.p : "NULL", tv, tv);
+  free(tb.p);
+}
+
+/* The wrapper a method returning the handle keeps under its own C name: the
+   read face of what <cname>__h answers, rooted while the copy is made. */
+void emit_hr_wrapper(Compiler *c, Scope *s, Buf *b) {
+  emit_method_signature(c, s, b);
+  buf_puts(b, " {\n  sp_String *_h = ");
+  int si = (int)(s - c->scopes);
+  int sv_want = c->hr_want, sv_used = c->hr_used;
+  c->hr_want = si + 1;
+  emit_method_cname(c, s, b);
+  c->hr_want = sv_want; c->hr_used = sv_used;
+  buf_puts(b, "(");
+  emit_method_forward_args(c, s, b);
+  buf_puts(b, ");\n  SP_GC_ROOT(_h);\n  return sp_strbuf_read_pub(_h);\n}\n");
+}
 /* A boxed operand read for its String (a needle, a key): under
    --share-strings a shared handle's box reads as its live value, which the
    SP_TAG_STR tests that follow take; without the flag, emit_boxed. */

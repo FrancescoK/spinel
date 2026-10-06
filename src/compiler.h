@@ -947,6 +947,14 @@ typedef struct {
   struct ShareFacts *share;
   unsigned share_sig;   /* the types the facts were last applied over */
   int share_borrows;    /* arguments share_mark_borrows lets borrow the bytes */
+  /* --share-strings: a method answering the shared handle on every path
+     returns the sp_String * itself, as <cname>__h (method_returns_handle,
+     memoized per scope: 0 not asked, 1 no, 2 yes, 3 being asked). hr_want
+     and hr_sig name a scope (index + 1, 0 none): the next emission of its C
+     name takes the __h suffix (one call, then cleared; hr_used records it),
+     and its signature returns the handle. */
+  unsigned char *hr_memo;
+  int hr_memo_n, hr_want, hr_used, hr_sig;
   /* [share_ret_clear_n] a return tail answering a String of its own in a
      method another path of which answers the handle (share_ret_clears),
      marked once the return kinds are final */
