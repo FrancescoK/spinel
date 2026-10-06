@@ -1030,6 +1030,73 @@ static int an_elems_int_rows(Compiler *c, int arr, int *saw) {
   return 1;
 }
 
+/* A call that puts rows into an Array table: an index store, an insert, a
+   concat, a push. */
+static int an_row_store_call(const char *nm) {
+  return is_store_alias(nm) || sp_streq(nm, "insert") || sp_streq(nm, "concat") ||
+         is_array_push_family(nm);
+}
+
+/* Whether such a call's rows are all int arrays (an empty one or a nil
+   leaves the question open): 0 for any other row, a splat, or a row that
+   is an open empty literal. *saw is set by an int array row. */
+static int an_row_store_args_ok(Compiler *c, int call, int *saw) {
+  const NodeTable *nt = c->nt;
+  const char *nm = nt_str(nt, call, "name");
+  int is_store = is_store_alias(nm), is_insert = sp_streq(nm, "insert"), is_concat = sp_streq(nm, "concat");
+  int args = nt_ref(nt, call, "arguments");
+  int an = 0;
+  const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  if (is_store && an < 2) return 1;
+  for (int a = is_store || is_insert ? 1 : 0; a < an; a++) {
+    const char *aty = nt_type(nt, av[a]);
+    if (aty && sp_streq(aty, "SplatNode")) return 0;
+    if (is_concat) {
+      if (!aty || !sp_streq(aty, "ArrayNode") || !an_elems_int_rows(c, av[a], saw)) return 0;
+      continue;
+    }
+    TyKind vt = comp_ntype(c, av[a]);
+    if (vt == TY_INT_ARRAY) { *saw = 1; continue; }
+    if (an_row_open_empty(c, av[a])) return 0;
+    if (vt == TY_NIL || vt == TY_UNKNOWN) continue;
+    return 0;
+  }
+  return 1;
+}
+
+/* The stores the scans below vet are every row only when no other reference
+   to the table can be appended to: a read `id` of it must be the receiver
+   of a call that answers something other than the table, or of one of the
+   vetted stores / `each` whose answer (the table itself) is dropped. A read
+   handed on as a value (a reader, `t = TABLE`, an argument, `t.itself`,
+   `t.tap { }`, `t.push(r).push(r2)`) could be appended to where the scan
+   does not look. */
+static int an_table_read_vetted(const NodeTable *nt, const int *parent, int id) {
+  int call = parent[id];
+  if (call < 0 || nt_kind(nt, call) != NK_CallNode || nt_ref(nt, call, "receiver") != id) return 0;
+  const char *cn = nt_str(nt, call, "name");
+  if (!cn) return 0;
+  static const char *const answers_other[] = {
+    "[]", "at", "fetch", "dig", "first", "last", "size", "length", "count",
+    "empty?", "any?", "include?", "index", "map", "collect", "sum", "min", "max",
+    "each_slice", "==", "!=", "inspect", "to_s", "hash", "[]=", "store", NULL };
+  static const char *const answers_self[] = {
+    "<<", "push", "append", "unshift", "prepend", "insert", "concat",
+    "each", "each_with_index", "each_index", "reverse_each", NULL };
+  int other = 0, self_ans = 0;
+  for (int i = 0; answers_other[i]; i++) if (sp_streq(cn, answers_other[i])) { other = 1; break; }
+  for (int i = 0; !other && answers_self[i]; i++) if (sp_streq(cn, answers_self[i])) { self_ans = 1; break; }
+  if (other)
+    /* a block-less enumerator answer (`@t.map`) is a view of the table */
+    return !((sp_streq(cn, "map") || sp_streq(cn, "collect") || sp_streq(cn, "each_slice")) &&
+             nt_ref(nt, call, "block") < 0);
+  if (!self_ans) return 0;
+  if ((sp_streq(cn, "each") || sp_streq(cn, "each_with_index") || sp_streq(cn, "each_index") ||
+       sp_streq(cn, "reverse_each")) && nt_ref(nt, call, "block") < 0) return 0;
+  /* the answer is the table: it must be dropped */
+  return an_value_dropped(nt, parent, call);
+}
+
 /* Whether every element stored into poly-array ivar `@<ivname>` is an int
    array (a nested array of int arrays, e.g. @chr_banks / @nmt_mem). Element
    reads then yield an int array rather than a boxed poly. */
@@ -1045,34 +1112,14 @@ static int ivar_array_elems_all_int_array_impl(Compiler *c, int cid, const char 
     if (sp_streq(ty, "CallNode")) {
       const char *nm = nt_str(nt, id, "name");
       if (!nm) continue;
-      int is_store = is_store_alias(nm);
-      int is_insert = sp_streq(nm, "insert");
-      int is_concat = sp_streq(nm, "concat");
-      int is_append = is_array_push_family(nm);
-      if (!is_store && !is_insert && !is_concat && !is_append) continue;
+      if (!an_row_store_call(nm)) continue;
       int recv = nt_ref(nt, id, "receiver");
       if (recv < 0 || !sp_streq(nt_type(nt, recv) ? nt_type(nt, recv) : "", "InstanceVariableReadNode")) continue;
       const char *rn = nt_str(nt, recv, "name");
       if (!rn || !sp_streq(rn, ivname)) continue;
       Scope *s = comp_scope_of(c, id);
       if (!s || s->class_id != cid) continue;
-      int args = nt_ref(nt, id, "arguments");
-      int an = 0;
-      const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-      if (is_store && an < 2) continue;
-      for (int a = is_store || is_insert ? 1 : 0; a < an; a++) {
-        const char *aty = nt_type(nt, av[a]);
-        if (aty && sp_streq(aty, "SplatNode")) return 0;
-        if (is_concat) {
-          if (!aty || !sp_streq(aty, "ArrayNode") || !an_elems_int_rows(c, av[a], &saw)) return 0;
-          continue;
-        }
-        TyKind vt = comp_ntype(c, av[a]);
-        if (vt == TY_INT_ARRAY) { saw = 1; continue; }
-        if (an_row_open_empty(c, av[a])) return 0;
-        if (vt == TY_NIL || vt == TY_UNKNOWN) continue;
-        return 0;
-      }
+      if (!an_row_store_args_ok(c, id, &saw)) return 0;
       continue;
     }
     if (sp_streq(ty, "InstanceVariableWriteNode")) {
@@ -1108,13 +1155,7 @@ static int ivar_array_elems_all_int_array_impl(Compiler *c, int cid, const char 
     }
   }
   if (!saw) return 0;
-  /* The stores above are only every row when no other reference to the
-     table can be appended to: each read must be the receiver of a call
-     that answers something other than the table, or of one of the vetted
-     stores / `each` whose answer (the table itself) is dropped. A read
-     handed on as a value (a `def t = @t` reader, `t = @t`, an argument,
-     `@t.itself`, `@t.tap { }`, `@t.push(r).push(r2)`) could be appended to
-     where this scan does not look. */
+  /* ...and no read hands the table on (an_table_read_vetted) */
   int *parent = an_parent_map(nt);
   if (!parent) return 0;
   for (int id = 0; id < nt->count && saw; id++) {
@@ -1126,32 +1167,7 @@ static int ivar_array_elems_all_int_array_impl(Compiler *c, int cid, const char 
     if (!nm || !sp_streq(nm, ivname)) continue;
     Scope *s = comp_scope_of(c, id);
     if (!s || s->class_id != cid) continue;
-    if (!is_read) { saw = 0; break; }
-    int call = parent[id];
-    if (call < 0 || nt_kind(nt, call) != NK_CallNode || nt_ref(nt, call, "receiver") != id) { saw = 0; break; }
-    const char *cn = nt_str(nt, call, "name");
-    if (!cn) { saw = 0; break; }
-    static const char *const answers_other[] = {
-      "[]", "at", "fetch", "dig", "first", "last", "size", "length", "count",
-      "empty?", "any?", "include?", "index", "map", "collect", "sum", "min", "max",
-      "each_slice", "==", "!=", "inspect", "to_s", "hash", "[]=", "store", NULL };
-    static const char *const answers_self[] = {
-      "<<", "push", "append", "unshift", "prepend", "insert", "concat",
-      "each", "each_with_index", "each_index", "reverse_each", NULL };
-    int other = 0, self_ans = 0;
-    for (int i = 0; answers_other[i]; i++) if (sp_streq(cn, answers_other[i])) { other = 1; break; }
-    for (int i = 0; !other && answers_self[i]; i++) if (sp_streq(cn, answers_self[i])) { self_ans = 1; break; }
-    if (other) {
-      /* a block-less enumerator answer (`@t.map`) is a view of the table */
-      if ((sp_streq(cn, "map") || sp_streq(cn, "collect") || sp_streq(cn, "each_slice")) &&
-          nt_ref(nt, call, "block") < 0) saw = 0;
-      continue;
-    }
-    if (!self_ans) { saw = 0; break; }
-    if ((sp_streq(cn, "each") || sp_streq(cn, "each_with_index") || sp_streq(cn, "each_index") ||
-         sp_streq(cn, "reverse_each")) && nt_ref(nt, call, "block") < 0) { saw = 0; break; }
-    /* the answer is the table: it must be dropped */
-    if (!an_value_dropped(nt, parent, call)) saw = 0;
+    if (!is_read || !an_table_read_vetted(nt, parent, id)) { saw = 0; break; }
   }
   free(parent);
   return saw;
@@ -1180,21 +1196,19 @@ static int const_array_elems_all_int_array_impl(Compiler *c, const char *cname) 
     const char *ty = nt_type(nt, id);
     if (!ty) continue;
     if (sp_streq(ty, "CallNode")) {
+      /* every way a row is put in, as for an ivar table: a push or a concat
+         as much as `CNAME[i] = v`. Only the index store was asked, so
+         `CNAME << ["x"]` left the table read as Integer rows (its String
+         row printed as [0, 0, 0, 0]). */
       const char *nm = nt_str(nt, id, "name");
-      if (!nm || (!sp_streq(nm, "[]=") && !sp_streq(nm, "store"))) continue;
+      if (!nm || !an_row_store_call(nm)) continue;
       int recv = nt_ref(nt, id, "receiver");
-      if (recv < 0 || !sp_streq(nt_type(nt, recv) ? nt_type(nt, recv) : "", "ConstantReadNode")) continue;
+      NodeKind rk = recv >= 0 ? nt_kind(nt, recv) : NK_CallNode;
+      if (rk != NK_ConstantReadNode && rk != NK_ConstantPathNode) continue;
       const char *rn = nt_str(nt, recv, "name");
       if (!rn || !sp_streq(rn, cname)) continue;
-      int args = nt_ref(nt, id, "arguments");
-      int an = 0;
-      const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-      if (an < 2) continue;
-      TyKind vt = comp_ntype(c, av[1]);
-      if (vt == TY_INT_ARRAY) { saw = 1; continue; }
-      if (an_row_open_empty(c, av[1])) return 0;
-      if (vt == TY_NIL || vt == TY_UNKNOWN) continue;
-      return 0;
+      if (!an_row_store_args_ok(c, id, &saw)) return 0;
+      continue;
     }
     if (!sp_streq(ty, "ConstantWriteNode")) continue;
     const char *nm = nt_str(nt, id, "name");
@@ -1222,6 +1236,19 @@ static int const_array_elems_all_int_array_impl(Compiler *c, const char *cname) 
     }
     if (arr < 0 || !an_elems_int_rows(c, arr, &saw)) return 0;
   }
+  if (!saw) return 0;
+  /* ...and no read hands the table on (an_table_read_vetted): a constant
+     passed or assigned away could take a row the scan never sees */
+  int *parent = an_parent_map(nt);
+  if (!parent) return 0;
+  for (int id = 0; id < nt->count && saw; id++) {
+    NodeKind k = nt_kind(nt, id);
+    if (k != NK_ConstantReadNode && k != NK_ConstantPathNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, cname)) continue;
+    if (!an_table_read_vetted(nt, parent, id)) saw = 0;
+  }
+  free(parent);
   return saw;
 }
 

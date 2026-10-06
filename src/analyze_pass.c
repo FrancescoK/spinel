@@ -12681,6 +12681,27 @@ static int infer_zip_block_params(Compiler *c, int id, int block, const char *p0
    each_value / each_key, a Hash's each / each_pair, and an Array element
    type the call settled (answers changed in bit 0, and bit 1 for the loop's
    continue) */
+/* A receiver whose rows are all Integer Arrays: an Array literal of them
+   (`[[1, 2], [3, 4]].map { |a| }`), or a constant the program builds as one
+   and never gives another row (const_array_elems_all_int_array). The array
+   stays a poly array -- the typed table is a local's narrowing, which a
+   literal or a constant does not take -- but a one-parameter map or each
+   binds each row unboxed, so the parameter is the row's Integer Array. Read
+   as the box, the inner `a.map { |n| k * n }` of
+   `TABLE = [[..], [..]].map { |a| a.map { |n| k * n } }` was a boxed array,
+   and so was every read of the table (optcarrot's APU clocks). */
+static int bp_rows_all_int_array(Compiler *c, int recv) {
+  const NodeTable *nt = c->nt;
+  if (recv < 0) return 0;
+  if (nt_kind(nt, recv) == NK_ConstantReadNode)
+    return nt_str(nt, recv, "name") && const_array_elems_all_int_array(c, nt_str(nt, recv, "name"));
+  if (nt_kind(nt, recv) != NK_ArrayNode) return 0;
+  int n = 0; const int *el = nt_arr(nt, recv, "elements", &n);
+  if (n == 0) return 0;
+  for (int i = 0; i < n; i++) if (infer_type(c, el[i]) != TY_INT_ARRAY) return 0;
+  return 1;
+}
+
 static int infer_block_params_container_arms(Compiler *c, const NodeTable *nt, int id, int block, const char *name, int recv, TyKind rt, const char *p0, TyKind pt) {
   int changed = 0;
   /* array.zip(other) { |a, b| } binds element of recv + element of other */
@@ -14117,6 +14138,10 @@ int infer_block_params(Compiler *c) {
       }
     }
     if (!p0) continue;
+    if (pt == TY_POLY && rt == TY_POLY_ARRAY && !block_param_name(c, block, 1) &&
+        !block_param_is_multi(c, block, 0) &&
+        is_row_binding_iter(name) && bp_rows_all_int_array(c, an_unparen(nt, recv)))
+      pt = TY_INT_ARRAY;
     LocalVar *lv = scope_local_intern(s, p0); lv->is_block_param = 1;
     /* Don't widen an array-typed variable to a scalar via block-param
        inference.  When the variable already holds an array (set by a write

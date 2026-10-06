@@ -5129,6 +5129,17 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
   LocalVar *clv0 = (csc && p0) ? scope_local(csc, p0) : NULL;
   TyKind csaved0 = clv0 ? clv0->type : TY_UNKNOWN;
   int use_shadow = clv0 && clv0->type != et_elem && et_elem != TY_UNKNOWN;
+  /* A poly array whose rows are all Integer Arrays (a literal table, or a
+     constant one) types the parameter as the row (bp_rows_all_int_array):
+     each element is unboxed into it rather than the parameter shadowed as a
+     box, so the body works on the typed row */
+  /* the parameter's slot, by its own name: a default argument's inlined
+     block renames it (rename_local) */
+  const char *p0raw = autosplat ? NULL : block_param_name(c, block, 0);
+  LocalVar *rlv0 = (p0raw && csc) ? scope_local(csc, p0raw) : NULL;
+  int unbox_row = rt == TY_POLY_ARRAY && et_elem == TY_POLY && p0 &&
+                  (clv0 ? csaved0 : rlv0 ? rlv0->type : TY_UNKNOWN) == TY_INT_ARRAY;
+  if (unbox_row) use_shadow = 0;
   if (use_shadow) {
     clv0->type = et_elem;
     for (int j = 0; j < bn; j++) infer_subtree(c, bb[j]);
@@ -5147,6 +5158,11 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
     emit_indent(g_pre, bodyIndent); buf_puts(g_pre, "{\n");
     emit_indent(g_pre, innerIndent); emit_ctype(c, et_elem, g_pre);
     buf_printf(g_pre, " lv_%s = sp_%sArray_get(_t%d, _t%d);\n", p0, k, trecv, ti);
+  }
+  else if (unbox_row) {
+    char es_u[96]; snprintf(es_u, sizeof es_u, "sp_PolyArray_get(_t%d, _t%d)", trecv, ti);
+    emit_indent(g_pre, bodyIndent);
+    emit_block_param_from_boxed(c, p0, TY_INT_ARRAY, es_u, g_pre);
   }
   else if (p0) {
     emit_indent(g_pre, bodyIndent);
