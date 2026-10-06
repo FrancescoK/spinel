@@ -1294,7 +1294,7 @@ int emit_call_operator_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
     else if (sp_streq(name, "*")) pfn = "sp_poly_mul";
     else if (sp_streq(name, "/")) pfn = "sp_poly_div";
     else if (sp_streq(name, "%")) pfn = "sp_poly_mod";
-    else if (sp_streq(name, "**")) pfn = "sp_poly_pow";
+    else if (sp_streq(name, "**")) pfn = poly_pow_fn(rt);
     /* The named divisions belong here too -- but only for a receiver that has
        no arm of its own. A Rational answered NoMethodError for `quo` the
        moment the other operand was boxed, for a name its own `/` already

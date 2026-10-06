@@ -4559,6 +4559,14 @@ static sp_Bigint *sp_poly_int_operand(sp_RbVal v, const char *m) {
   sp_raise_cls("TypeError", sp_sprintf("%s can't be coerced into Integer", sp_convert_src_name(v)));
   (void)m; return NULL;
 }
+/* Integer#pow(e) on a boxed receiver: only an Integer has pow (a Float
+   has `**` alone), so any other value is CRuby's NoMethodError, with the
+   exponent as its args, where sp_poly_pow took it for a number to raise */
+static sp_RbVal sp_poly_pow(sp_RbVal a, sp_RbVal b);   /* defined below */
+static SP_UNUSED sp_RbVal sp_poly_int_pow(sp_RbVal v, sp_RbVal e) {
+  if (v.tag != SP_TAG_INT && v.tag != SP_TAG_BIGINT) sp_raise_nomethod(sp_nomethod_msg_args("pow", v, 1, &e));
+  return sp_poly_pow(v, e);
+}
 static sp_RbVal sp_poly_int_powmod(sp_RbVal v, sp_RbVal e, sp_RbVal m) {
   if (v.tag != SP_TAG_INT && v.tag != SP_TAG_BIGINT) sp_raise_poly_nomethod("pow", v);
   if (v.tag == SP_TAG_INT && e.tag == SP_TAG_INT && m.tag == SP_TAG_INT) return sp_box_int(sp_powmod(v.v.i, e.v.i, m.v.i));
@@ -4568,6 +4576,15 @@ static sp_RbVal sp_poly_int_powmod(sp_RbVal v, sp_RbVal e, sp_RbVal m) {
   sp_Bigint *mod = sp_poly_int_operand(m, "pow"); SP_GC_ROOT(mod);
   if (sp_bigint_sign(mod) == 0) sp_raise_cls("ZeroDivisionError", "divided by 0");
   return sp_box_bigint(sp_bigint_powmod(base, ei, mod));
+}
+/* Integer#pow(e, m) on a boxed receiver: any other value is CRuby's
+   NoMethodError with both arguments as its args */
+static SP_UNUSED sp_RbVal sp_poly_int_powmod_recv(sp_RbVal v, sp_RbVal e, sp_RbVal m) {
+  if (v.tag != SP_TAG_INT && v.tag != SP_TAG_BIGINT) {
+    sp_RbVal pa[2] = { e, m };   /* the call's arguments, as NoMethodError#args */
+    sp_raise_nomethod(sp_nomethod_msg_args("pow", v, 2, pa));
+  }
+  return sp_poly_int_powmod(v, e, m);
 }
 static sp_RbVal sp_poly_int_ceildiv(sp_RbVal v, sp_RbVal d) {
   if (v.tag != SP_TAG_INT && v.tag != SP_TAG_BIGINT) sp_raise_poly_nomethod("ceildiv", v);
@@ -5667,6 +5684,19 @@ static sp_RbVal sp_poly_pow(sp_RbVal a, sp_RbVal b) {
   }
   double r = pow((double)sp_poly_to_f(a), (double)sp_poly_to_f(b));
   return sp_box_float((sp_float)r);
+}
+/* `**` on a boxed receiver that may hold a value with no `**` (the emitter
+   calls sp_poly_pow itself for a receiver typed a number): nil, a String or
+   a Symbol is CRuby's NoMethodError, where sp_poly_pow converted it to a
+   Float and raised TypeError or ArgumentError. A number takes one tag
+   compare to reach sp_poly_pow; a user object and a shared-string handle
+   keep sp_poly_pow's own order. */
+static SP_UNUSED sp_RbVal sp_poly_pow_recv(sp_RbVal a, sp_RbVal b) {
+  if (SP_LIKELY(sp_poly_tower_p(a)) || sp_poly_is_user_obj(a) || sp_poly_is_user_obj(b))
+    return sp_poly_pow(a, b);
+  if (SP_UNLIKELY(sp_poly_is_strbuf(a) || sp_poly_is_strbuf(b)))
+    return sp_poly_pow_recv(sp_poly_strbuf_deref(a), sp_poly_strbuf_deref(b));
+  return sp_poly_binop_bad("**", a, b);
 }
 /* sp_poly_shl is defined after sp_PolyArray_push (below) so the
    push-dispatch path can call it directly. The Integer-bit-shift

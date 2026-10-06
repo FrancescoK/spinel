@@ -1,0 +1,40 @@
+undefined method 'pow' for nil [2]
+undefined method 'pow' for nil [2, 5]
+NoMethodError: undefined method '**' for nil
+undefined method 'pow' for an instance of Symbol [2]
+undefined method 'pow' for an instance of Symbol [2, 5]
+NoMethodError: undefined method '**' for an instance of Symbol
+undefined method 'pow' for an instance of String [2]
+undefined method 'pow' for an instance of String [2, 5]
+NoMethodError: undefined method '**' for an instance of String
+undefined method 'pow' for an instance of Array [2]
+undefined method 'pow' for an instance of Array [2, 5]
+NoMethodError: undefined method '**' for an instance of Array
+undefined method 'pow' for an instance of Hash [2]
+undefined method 'pow' for an instance of Hash [2, 5]
+NoMethodError: undefined method '**' for an instance of Hash
+undefined method 'pow' for an instance of Float [2]
+undefined method 'pow' for an instance of Float [2, 5]
+6.25
+undefined method 'pow' for an instance of Range [2]
+undefined method 'pow' for an instance of Range [2, 5]
+NoMethodError: undefined method '**' for an instance of Range
+9
+4
+9
+NoMethodError: undefined method '**' for nil
+NoMethodError: undefined method '**' for nil
+NoMethodError: undefined method '**' for nil
+NoMethodError: undefined method '**' for nil
+NoMethodError: undefined method '**' for an instance of String
+NoMethodError: undefined method '**' for an instance of String
+NoMethodError: undefined method '**' for an instance of String
+NoMethodError: undefined method '**' for an instance of String
+9
+9
+9
+9
+6.25
+6.25
+6.25
+6.25
