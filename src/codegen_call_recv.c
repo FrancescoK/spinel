@@ -3357,6 +3357,42 @@ static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *n
   return 0;
 }
 
+/* The variable a chain of String value-form bangs starts from (`s` in
+   `s.upcase!.downcase!`), or -1 when `recv` is no bang or the chain starts
+   from no variable. Each link answers its receiver, or nil, which the next
+   link raises on; so what a mutator computes from the chain's value is the
+   variable's new value. */
+static int str_bang_chain_var(Compiler *c, int recv) {
+  const NodeTable *nt = c->nt;
+  int cur = unwrap_parens(c, recv), links = 0;
+  while (nt_kind(nt, cur) == NK_CallNode && nt_ref(nt, cur, "receiver") >= 0 &&
+         ty_str_typed_bang_flags(nt_str(nt, cur, "name"))) {
+    cur = unwrap_parens(c, nt_ref(nt, cur, "receiver"));
+    links++;
+  }
+  TyKind bt = links ? comp_ntype(c, cur) : TY_UNKNOWN;
+  /* a boxed variable takes the value back as emit_face_str_bang's links do */
+  if (bt == TY_POLY)
+    return nt_kind(nt, cur) == NK_LocalVariableReadNode || nt_kind(nt, cur) == NK_InstanceVariableReadNode ? cur : -1;
+  return (bt == TY_STRING || bt == TY_STRBUF) && str_mut_var_recv(c, cur) ? cur : -1;
+}
+/* A value-form mutator's write-back of its result _t<tn>: to the receiver
+   when it is a variable (lvw), else to the variable a bang chain receiver
+   starts from, whose links the mutation reaches in CRuby (one object) */
+static void emit_str_mut_writeback(Compiler *c, int recv, int lvw, int tn, Buf *b) {
+  if (lvw) { emit_expr(c, recv, b); buf_printf(b, " = _t%d; ", tn); return; }
+  int base = str_bang_chain_var(c, recv);
+  if (base < 0) return;
+  char sref[1024];
+  if (strbuf_slot_ref(c, base, sref, sizeof sref))
+    buf_printf(b, "sp_String_set_bin(%s, _t%d); ", sref, tn);
+  else if (comp_ntype(c, base) == TY_STRING) { emit_expr(c, base, b); buf_printf(b, " = _t%d; ", tn); }
+  else if (comp_ntype(c, base) == TY_POLY) {
+    emit_expr(c, base, b); buf_puts(b, " = sp_poly_str_become(");
+    emit_expr(c, base, b); buf_printf(b, ", _t%d); ", tn);
+  }
+}
+
 /* A String mutator: the value-form bangs, the in-place mutators, append_as_bytes, bytesplice (emit_array_call's arms, in their order) */
 static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, int *out) {
   /* String value-form mutators: the expression yields the post-mutation
@@ -3442,18 +3478,45 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
         }
       }
       int to = ++g_tmp, tn2 = ++g_tmp;
+      /* the plain form reads the receiver as well: a receiver that is a call
+         (`s.upcase!.downcase!`) ran a second time there, and the second
+         upcase! changed nothing and answered nil. It reads the receiver held
+         once, in _to, or for gsub!/sub!'s block form, whose loop goes ahead
+         of the statement (g_pre), in a temp held there. A receiver an
+         enclosing emitter already holds (arg_ran_first: the case-mapping
+         option check's computed receiver) reads its temp, which is declared
+         in the statement, not ahead of it. */
+      int held = arg_ran_first(recv, 0);
+      int hbind = -1;
+      if (!lvw && !held && sb_sub && g_pre && nt_ref(nt, id, "block") >= 0) {
+        int th = ++g_tmp;
+        Buf hb; memset(&hb, 0, sizeof hb); emit_expr(c, recv, &hb);
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "const char *_t%d = %s; SP_GC_ROOT_STR(_t%d);\n", th, hb.p ? hb.p : "NULL", th);
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "if (!_t%d) sp_nil_recv(\"%s\");\n", th, sb_bang);
+        free(hb.p);
+        hbind = view_bind(recv, "_t%d", th);
+      }
       buf_printf(b, "({ const char *_t%d = ", to); emit_expr(c, recv, b); buf_puts(b, "; (void)_t"); buf_printf(b, "%d; ", to);
+      /* a chained bang that changed nothing answers nil, on which this one
+         is NoMethodError for its own name, not the FrozenError the
+         mutability check reads a NULL as */
+      if (!lvw) buf_printf(b, "if (!_t%d) sp_nil_recv(\"%s\"); ", to, sb_bang);
       /* an in-place mutator on a frozen string raises FrozenError (#3003) */
       buf_printf(b, "if (sp_str_is_frozen_val(_t%d)) sp_raise_frozen_str(_t%d); ", to, to);
       int subm2 = sb_sub;   /* gsub!/sub!: nil means no substitution, see above */
       if (subm2) buf_puts(g_pre ? g_pre : b, "sp_re_sub_matched = 0; ");
       nt_node_set_str((NodeTable *)nt, id, "name", sb_plain);
       Buf nb; memset(&nb, 0, sizeof nb);
+      int nbind = lvw || held || hbind >= 0 ? -1 : view_bind(recv, "_t%d", to);
       emit_expr(c, id, &nb);
+      if (nbind >= 0) view_unbind(nbind);
+      if (hbind >= 0) view_unbind(hbind);
       nt_node_set_str((NodeTable *)nt, id, "name", sb_bang);
       buf_printf(b, "const char *_t%d = %s; ", tn2, nb.p ? nb.p : "");
       free(nb.p);
-      if (lvw) { emit_expr(c, recv, b); buf_printf(b, " = _t%d; ", tn2); }
+      emit_str_mut_writeback(c, recv, lvw, tn2, b);
       if (sb_nil_nc)
         buf_printf(b, "(sp_str_eq(_t%d, _t%d)%s) ? NULL : _t%d; })", to, tn2, subm2 ? " && !sp_re_sub_matched" : "", tn2);
       else
@@ -3538,7 +3601,7 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
          evaluates the args). sp_str_concat allocates a fresh string and never
          mutates the receiver, so a frozen receiver is still untouched here. */
       buf_printf(b, "sp_str_check_mutable(_t%d); ", trc);
-      if (lvw) { emit_expr(c, recv, b); buf_printf(b, " = _t%d; ", tn2); }
+      emit_str_mut_writeback(c, recv, lvw, tn2, b);
       buf_printf(b, "_t%d; })", tn2);
       { *out = 1; return 1; }
     }
@@ -3553,7 +3616,7 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
       buf_printf(b, " const char *_t%d = sp_str_splice_at(_t%d, _t%d, 0, ", tn2, to, ti2);
       emit_str_insert_text(c, argv[1], b);
       buf_puts(b, ", 0); ");
-      if (lvw) { emit_expr(c, recv, b); buf_printf(b, " = _t%d; ", tn2); }
+      emit_str_mut_writeback(c, recv, lvw, tn2, b);
       buf_printf(b, "_t%d; })", tn2);
       { *out = 1; return 1; }
     }
@@ -3577,7 +3640,7 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
       buf_printf(b, "({ sp_str_check_mutable(");   /* frozen -> FrozenError (#3003) */
       emit_expr(c, recv, b);
       buf_printf(b, "); const char *_t%d = ", tn2); emit_str_expr(c, argv[0], b); buf_puts(b, "; ");
-      if (lvw) { emit_expr(c, recv, b); buf_printf(b, " = _t%d; ", tn2); }
+      emit_str_mut_writeback(c, recv, lvw, tn2, b);
       buf_printf(b, "_t%d; })", tn2);
       { *out = 1; return 1; }
     }
