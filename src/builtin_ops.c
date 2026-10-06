@@ -1852,7 +1852,10 @@ static const BuiltinOp bop_rows[] = {
   { BOP_ANY_HASH, "merge",            0,   0, BF_ANY,      BOPR_SELF,      BOPE_TEMPLATE, "sp_$HHash_dup($r)", 0, 0, BOPF_COPY_CLASS | BOPF_ARGS_BUILTIN },  /* a copy (#2340) */
   { BOP_ANY_HASH, "slice",            0,   0, BF_ANY,      BOPR_SELF,      BOPE_TEMPLATE, "({ (void)($r); sp_$HHash_new(); })" },  /* an empty hash (#2349) */
   /* the mutators */
-  { BOP_ANY_HASH, "delete",           1,   1, BF_ANY,      BOPR_HASH_VAL,  BOPE_HASH_DELETE },  /* the deleted value, or nil */
+  { BOP_ANY_HASH, "delete",           1,   1, BF_NONE,     BOPR_HASH_VAL,  BOPE_HASH_DELETE },  /* the deleted value, or nil */
+  /* with a block: the deleted value or the block's, either kind, boxed by
+     the arm after the lookup */
+  { BOP_ANY_HASH, "delete",           1,   1, BF_REQUIRED, TY_POLY,        BOPE_NONE },
   { BOP_ANY_HASH, "shift",            0,   0, BF_NONE,     TY_POLY,        BOPE_HASH_SHIFT },  /* the first pair, or nil */
   { BOP_ANY_HASH, "replace",          1,   1, BF_ANY,      TY_UNKNOWN,     BOPE_HASH_REPLACE, NULL, 0, 0, BOPF_SELF | BOPF_ARGS_BUILTIN },
   { BOP_ANY_HASH, "default=",         1,   1, BF_ANY,      TY_UNKNOWN,     BOPE_HASH_SET_DEFAULT },
