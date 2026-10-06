@@ -141,7 +141,8 @@ int sp_io_pick_class(sp_File *f, const char *const *names, const int *idx);
 sp_bool sp_io_instance_of(sp_File *f, const char *cls);
 sp_File *sp_sock_udp_new(sp_int family);
 const char *sp_sock_gethostname(void);
-sp_PolyArray *sp_sock_getaddrinfo(const char *host, sp_int port);
+sp_int sp_sock_addrinfo_hint(sp_RbVal v, sp_int is_family);
+sp_PolyArray *sp_sock_getaddrinfo(const char *host, sp_int port, sp_int family, sp_int socktype);
 sp_Addrinfo *sp_sock_address(sp_File *f, sp_int peer);
 /* Packed sockaddr strings: what Socket.sockaddr_in / Socket.pack_sockaddr_in,
    Socket.pack_sockaddr_un and Addrinfo#to_sockaddr answer, and what the 1-arg

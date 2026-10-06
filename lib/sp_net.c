@@ -414,12 +414,12 @@ int sp_net_socket(int domain, int type, int protocol) {
 /* getaddrinfo, one resolution at a time: `idx` selects the entry so the caller
    can walk them without owning the addrinfo list. Fills family/socktype/
    protocol/ip/port; returns 0 on success, -1 past the end or on failure. */
-int sp_net_getaddrinfo_at(const char *host, int port, int socktype, int idx,
+int sp_net_getaddrinfo_at(const char *host, int port, int want_family, int socktype, int idx,
                           int *family, int *stype, int *proto,
                           char *ipbuf, int ipcap, int *port_out) {
     struct addrinfo hints, *res = NULL, *ai;
     memset(&hints, 0, sizeof(hints));
-    hints.ai_family   = AF_UNSPEC;
+    hints.ai_family   = want_family > 0 ? want_family : AF_UNSPEC;
     hints.ai_socktype = socktype > 0 ? socktype : 0;
     char portbuf[16];
     snprintf(portbuf, sizeof(portbuf), "%d", port);
