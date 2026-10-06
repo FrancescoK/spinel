@@ -1145,6 +1145,8 @@ int sp_str_mutator(const char *nm, unsigned want);
 int str_self_call(const NodeTable *nt, int id);
 /* The RegularExpressionNode a Regexp local read at `read` always holds, or -1 (analyze_util.c). */
 int an_regex_local_lit(Compiler *c, int read);
+/* --share-strings: is (vn, vs) only ever a Hash block's key parameter, a frozen copy (analyze.c)? */
+int an_hash_key_block_param(Compiler *c, const char *vn, Scope *vs);
 int str_prepend_many(const NodeTable *nt, int id);
 int fiber_storage_recv(const NodeTable *nt, int recv);
 int array_mutator_name(const char *nm);

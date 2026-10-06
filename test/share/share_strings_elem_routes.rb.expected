@@ -1,0 +1,12 @@
+["e1~", "e1~", true]
+["e0~", "e0~", true]
+["e0~", "e0~"]
+["e2~", "e2~"]
+["e0~", "e1~", true]
+["v0~", "v0~", "v1!", true]
+FrozenError
+FrozenError
+FrozenError
+["v1~", true, true]
+[true, true]
+[true, true]
