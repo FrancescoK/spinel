@@ -1,0 +1,48 @@
+"c"
+"a"
+"a"
+true
+true
+["a", "b", "c"]
+"a"
+"a"
+"c"
+3
+true
+1
+true
+[1, 2, 3]
+1.5
+3.5
+true
+2.5
+nil
+2.5
+-3
+3
+3.5
+2
+1
+1
+true
+false
+true
+"c"
+"c"
+["a", "c"]
+nil
+"a..c"
+"\"a\"..\"c\""
+["a", "b", "c"]
+true
+["a", "b"]
+3
+["a", "b", "c"]
+6
+true
+true
+false
+"1.5..3.5"
+true
+[true, true, false]
+[3.5, 4.5]

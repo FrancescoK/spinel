@@ -6042,7 +6042,7 @@ static int desugar_builtin_method_obj(Compiler *c) {
     static const char *const BAM_BINOPS[] = { "+", "-", "*", "/", "%", "**",
                                               "&", "|", "^", "<<", ">>", "<=>",
                                               "==", "!=", "<", "<=", ">", ">=",
-                                              "=~", "[]", NULL };
+                                              "=~", "[]", "===", NULL };
     int binop = 0;
     if (!(sym[0] >= 'a' && sym[0] <= 'z')) {
       for (int k = 0; BAM_BINOPS[k]; k++) if (sp_streq(sym, BAM_BINOPS[k])) { binop = 1; break; }
@@ -6080,7 +6080,8 @@ static int desugar_builtin_method_obj(Compiler *c) {
        the wrapper takes it inside a one-element array instead,
        `def __bam_<id>(__bam_r, ...) = __bam_r[0].<sym>(...)`, and the call
        goes through the poly dispatch (codegen boxes the self, bam_poly). */
-    int poly_self = rt == TY_POLY;
+    const TyTraits *rtt = ty_traits_of(rt);
+    int poly_self = rt == TY_POLY || rt == TY_FLOAT || (rtt && rtt->struct_valued);
     /* the typed-array (kind, op) trampoline path owns these */
     if (ty_is_array(rt) && sp_streq(sym, "push")) continue;
     if (comp_method_index(c, sym) >= 0) continue;     /* a same-named top-level def wins */
@@ -6096,7 +6097,8 @@ static int desugar_builtin_method_obj(Compiler *c) {
       int bool_op = rt == TY_BOOL &&
                     is_bit_op(sym);
       if (bcls && !bool_op &&
-          !builtin_method_known(bcls, sym) && !builtin_object_method_known(sym))
+          !builtin_method_known(bcls, sym) && !builtin_method_accepts_known(bcls, sym) &&
+          !builtin_object_method_known(sym))
         continue;
     }
     char wname[48];
@@ -6327,6 +6329,8 @@ static int desugar_str_range_methods(Compiler *c) {
     "to_a", "entries",
     /* Range#size counts integer elements: nil for a string range */
     "size",
+    /* a Method binds the Range itself, whose own method answers the call */
+    "method",
     /* step / % walk the members by stride: their own arm answers, the block
        form's too when the stride is an Integer (see below, #3671). */
     "step", "%", NULL };
