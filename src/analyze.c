@@ -33903,7 +33903,9 @@ static void vt_nil_witness_check(Compiler *c, const unsigned char *cand) {
    made so that no `const char *` outlives the bytes a growth reallocates.
    A bound C function reads a :str argument for the length of the call and
    runs no Ruby code meanwhile, so nothing can grow the String under it, and
-   the copy is never observed: `LibC.strlen(s)` copied all of a 1 MB `s` at
+   the copy is never observed. It can run Ruby code only through an
+   ffi_callback, a signal handler or another thread, so a program with any
+   of them keeps the copy (an_ruby_runs_unseen): `LibC.strlen(s)` copied all of a 1 MB `s` at
    every call. The call's other operands have to be plain reads or literals,
    so nothing runs between the borrow and the call either. Nothing becomes
    shared that was not; only the read of a handle stops copying, as
@@ -33942,6 +33944,7 @@ static int native_str_handle_read(Compiler *c, int a) {
 
 static void mark_native_str_operands(Compiler *c) {
   const NodeTable *nt = c->nt;
+  if (an_ruby_runs_unseen(c)) return;
   NT_FOREACH_KIND(nt, NK_CallNode, n) {
     int recv = nt_ref(nt, n, "receiver");
     const char *name = nt_str(nt, n, "name");
