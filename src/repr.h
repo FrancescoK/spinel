@@ -95,6 +95,10 @@ int repr_box_nullable_arg(Compiler *c, int v);
 int repr_local_nullable_int(Compiler *c, int node);
 /* Whether repr_seal has run for the current compile. */
 int repr_sealed(void);
+/* Does the share rule decide which Strings are the shared handle
+   (--share-strings, #6765)? Codegen asks this, not the flag: where it is
+   0, every emitter takes master's form. */
+int repr_share_rule(const Compiler *c);
 
 /* R1 (--repr-check): the form a boxer gave a value, recorded at each of
    emit_boxed's and emit_boxed_text's returns, and the form repr_of predicts
