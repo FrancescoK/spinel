@@ -40,7 +40,7 @@ struct ShCallable { int v, node, mcid; const char *mname; unsigned char escaped;
    values, the answer av. unk: the receiver's class met UNKNOWN (or holds no
    callable the walk made), so the arguments and answer have. bound: per
    callable, already bound. */
-struct ShCallSite { int rv, av, nargs, *args; unsigned char unk, *bound; };
+struct ShCallSite { int rv, av, nargs, *args; unsigned char unk, *bound; int node; };
 
 typedef struct ShareFacts {
   int n, cap;
@@ -91,6 +91,7 @@ typedef struct ShareFacts {
   const char **mconst;
   int nmconst, cmconst;
   int unknown;
+  int cur_call;        /* the call node sh_call last entered (SPINEL_SHARE_STATS=5's site names) */
   int closed;          /* unions with UNKNOWN are dropped (the stats' second build) */
   unsigned skip; int tag;   /* SPINEL_SHARE_STATS=4: unions with UNKNOWN at the sites of a
                                tag set in skip are dropped; tag is the current site's */
@@ -679,6 +680,7 @@ static int sh_callsite_new(ShareFacts *F, int rv, const int *vals, int nv) {
   struct ShCallSite *q = &F->cs[F->ncs++];
   memset(q, 0, sizeof *q);
   q->rv = rv;
+  q->node = F->cur_call;
   q->av = sh_new(F, SHK_VALUE);
   q->nargs = nv;
   q->args = nv > 0 ? malloc(sizeof(int) * (size_t)nv) : NULL;
@@ -760,6 +762,11 @@ static void sh_settle_callables(ShareFacts *F, Compiler *c) {
          holds no callable the walk made */
       if (r == ru || (final && !any)) {
         q->unk = 1;
+        { const char *st = getenv("SPINEL_SHARE_STATS");
+          if (st && st[0] == '5' && !F->skip && !F->closed && q->node >= 0)
+            fprintf(stderr, "share-unknown-site: call_opaque %s %s line %d\n",
+                    nt_str(c->nt, q->node, "name") ? nt_str(c->nt, q->node, "name") : "?",
+                    r == ru ? "unknown" : "no-callable", (int)nt_int(c->nt, q->node, "node_line", 0)); }
         int o = sh_tagset(F, UT_CALL_OPAQUE);
         for (int t = 0; t < q->nargs; t++) sh_union(F, q->args[t], F->unknown);
         sh_union(F, q->av, F->unknown);
@@ -770,6 +777,21 @@ static void sh_settle_callables(ShareFacts *F, Compiler *c) {
       }
     }
   }
+}
+
+/* Is rt an Integer, a Float, a Symbol, true, false or nil, in a program
+   that reopens none of the classes and modules such a value answers
+   from? A send on it, whatever its name, reaches a builtin: one keeps none
+   of its arguments, and answers one of them (Kernel#p, #String and the
+   other private functions a send can reach), several in an Array, or a
+   value of its own. */
+static int sh_scalar_recv(Compiler *c, TyKind rt) {
+  if (rt != TY_INT && rt != TY_FLOAT && rt != TY_SYMBOL && rt != TY_BOOL && rt != TY_NIL) return 0;
+  for (int k = 0; k < c->nclasses; k++) {
+    const char *cn = c->classes[k].name;
+    if (cn && (is_builtin_reopen_name(cn) || is_object_root(cn) || is_comparable_module(cn))) return 0;
+  }
+  return 1;
 }
 
 /* the literal name a `send`, `method` or `instance_variable_*` names */
@@ -1329,6 +1351,7 @@ static int sh_new_call(ShareFacts *F, Compiler *c, int n, int recv, int blk) {
 
 static int sh_call(ShareFacts *F, Compiler *c, int n) {
   const NodeTable *nt = c->nt;
+  F->cur_call = n;
   const char *name = nt_str(nt, n, "name");
   if (!name) return sh_unk_val(F, UT_NONAME);
   int recv = nt_ref(nt, n, "receiver");
@@ -1389,6 +1412,8 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
     const Scope *sm = smi >= 0 ? &c->scopes[smi] : NULL;
     if (sm && !sm->reachable && !sm->is_proc_form && sm->name && !is_exception_message(sm->name))
       ;
+    else if (recv >= 0 && blk < 0 && sh_scalar_recv(c, rt))
+      return sh_builtin(F, c, n, BSH_ARGS, rv, -1, 0);
     else if (lit) sh_dyn_name(F, lit);
     else {
       /* a computed name reaches the receiver's class's methods: an object
@@ -1535,9 +1560,24 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
     }
   }
 
+  /* a reader, on an object of a class that has it, of an ivar that holds
+     no String (the arm above takes those): its answer is no String */
+  if (argc == 0 && blk < 0 && recv >= 0 && ty_is_object(rt) &&
+      comp_reader_in_chain(c, ty_object_class(rt), name, NULL))
+    return -1;
+
   /* a builtin */
   if (recv < 0 && blk >= 0 && nt_kind(nt, blk) == NK_BlockNode && is_proc_constructor(name))
     return sh_callable_new(F, c, blk, NULL, -1);
+  /* the desugared Hash enumeration (`__enum_pairs(h)`): an Enumerator of
+     [key, value] pairs, each holding one of h's values */
+  if (recv < 0 && argc == 1 && is_enum_pairs(name)) {
+    int vals[1];
+    int nv = sh_args_vals(F, c, n, vals, 1);
+    int r = sh_new(F, SHK_VALUE);
+    if (nv == 1 && vals[0] >= 0) sh_union(F, sh_elem(F, sh_elem(F, r)), sh_elem(F, vals[0]));
+    return r;
+  }
   if (recv < 0) {
     int s = bop_share_named(BOP_KERNEL, name);
     if (!s) s = bop_share_named(BOP_ANY_RECV, name);
@@ -2367,6 +2407,7 @@ static ShareFacts *sh_build_skip(Compiler *c, int closed, unsigned skip) {
   F->closed = closed;
   F->skip = skip;
   F->unknown = sh_new(F, SHK_UNKNOWN);
+  F->cur_call = -1;
   F->flags[F->unknown] = SHF_UNKNOWN;
   F->elem[F->unknown] = F->unknown;
   for (int j = 0; j < 16; j++) F->any_new_pos[j] = -1;
