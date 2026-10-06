@@ -5139,36 +5139,43 @@ static int widen_nested_literals(Compiler *c, int recv, int is_push, int is_spli
    through parentheses, the last statement, and each arm of an `if`,
    `unless` or `case`. Answers the new count, or -1 when a path has no
    such expression (an arm left out answers nil) or out[] is full. */
-static int value_leaves(Compiler *c, int n, int *out, int nout, int cap) {
+/* With `nil_ok`, a path that answers nil (an arm left out, an empty body, a
+   bare `return`) adds no expression instead of answering -1. */
+static int value_leaves_ex(Compiler *c, int n, int *out, int nout, int cap, int nil_ok) {
   const NodeTable *nt = c->nt;
+  if (nout < 0) return -1;
   n = unwrap_parens(c, n);
-  if (n < 0 || nout < 0) return -1;
+  if (n < 0) return nil_ok ? nout : -1;
   NodeKind k = nt_kind(nt, n);
   if (k == NK_StatementsNode) {
     int bn = 0; const int *bb = nt_arr(nt, n, "body", &bn);
-    return bn > 0 ? value_leaves(c, bb[bn - 1], out, nout, cap) : -1;
+    return bn > 0 ? value_leaves_ex(c, bb[bn - 1], out, nout, cap, nil_ok) : nil_ok ? nout : -1;
   }
-  if (k == NK_ParenthesesNode) return value_leaves(c, nt_ref(nt, n, "body"), out, nout, cap);
-  if (k == NK_ElseNode) return value_leaves(c, nt_ref(nt, n, "statements"), out, nout, cap);
+  if (k == NK_ParenthesesNode) return value_leaves_ex(c, nt_ref(nt, n, "body"), out, nout, cap, nil_ok);
+  if (k == NK_ElseNode) return value_leaves_ex(c, nt_ref(nt, n, "statements"), out, nout, cap, nil_ok);
   if (k == NK_IfNode || k == NK_UnlessNode) {
     int alt = nt_ref(nt, n, k == NK_IfNode ? "subsequent" : "else_clause");
-    nout = value_leaves(c, nt_ref(nt, n, "statements"), out, nout, cap);
-    return value_leaves(c, alt, out, nout, cap);
+    nout = value_leaves_ex(c, nt_ref(nt, n, "statements"), out, nout, cap, nil_ok);
+    return value_leaves_ex(c, alt, out, nout, cap, nil_ok);
   }
   if (k == NK_CaseNode) {
     int an = 0; const int *arms = nt_arr(nt, n, "conditions", &an);
-    for (int i = 0; i < an; i++) nout = value_leaves(c, nt_ref(nt, arms[i], "statements"), out, nout, cap);
-    return value_leaves(c, nt_ref(nt, n, "else_clause"), out, nout, cap);
+    for (int i = 0; i < an; i++) nout = value_leaves_ex(c, nt_ref(nt, arms[i], "statements"), out, nout, cap, nil_ok);
+    return value_leaves_ex(c, nt_ref(nt, n, "else_clause"), out, nout, cap, nil_ok);
   }
   if (k == NK_ReturnNode) {
     int a = nt_ref(nt, n, "arguments"), an = 0;
     const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+    if (an == 0 && nil_ok) return nout;
     if (an != 1 || nt_kind(nt, av[0]) == NK_SplatNode) return -1;
-    return value_leaves(c, av[0], out, nout, cap);
+    return value_leaves_ex(c, av[0], out, nout, cap, nil_ok);
   }
   if (nout >= cap) return -1;
   out[nout++] = n;
   return nout;
+}
+static int value_leaves(Compiler *c, int n, int *out, int nout, int cap) {
+  return value_leaves_ex(c, n, out, nout, cap, 0);
 }
 
 /* The values method scope `mi` answers: its body's, and each `return`'s.
@@ -5176,19 +5183,27 @@ static int value_leaves(Compiler *c, int n, int *out, int nout, int cap) {
    follow, so the returns come from the scope's own chain (comp_sret_first,
    in node order as the scan was) once scope shape is fixed, instead of a
    scan of every ReturnNode of the program per question. */
-static int method_value_leaves(Compiler *c, int mi, int *out, int cap) {
+static int method_value_leaves_ex(Compiler *c, int mi, int *out, int cap, int nil_ok) {
   Scope *m = &c->scopes[mi];
-  int n = m->body >= 0 ? value_leaves(c, m->body, out, 0, cap) : -1;
+  int n = m->body >= 0 ? value_leaves_ex(c, m->body, out, 0, cap, nil_ok) : nil_ok ? 0 : -1;
   if (comp_scope_index_is_frozen()) {
     for (int r = comp_sret_first(c, mi); r >= 0 && n >= 0; r = comp_sret_next(c, r))
-      n = value_leaves(c, r, out, n, cap);
+      n = value_leaves_ex(c, r, out, n, cap, nil_ok);
     return n;
   }
   NT_FOREACH_KIND(c->nt, NK_ReturnNode, r) {
     if (n < 0) break;
-    if (comp_scope_of(c, r) == m) n = value_leaves(c, r, out, n, cap);
+    if (comp_scope_of(c, r) == m) n = value_leaves_ex(c, r, out, n, cap, nil_ok);
   }
   return n;
+}
+int method_value_leaves(Compiler *c, int mi, int *out, int cap) {
+  return method_value_leaves_ex(c, mi, out, cap, 0);
+}
+/* The same, a path that answers nil adding nothing: the expressions whose
+   value the method may answer, beside a nil. */
+int method_value_leaves_or_nil(Compiler *c, int mi, int *out, int cap) {
+  return method_value_leaves_ex(c, mi, out, cap, 1);
 }
 
 /* 1 when a call bound to method scope `mi` can reach another definition: an
