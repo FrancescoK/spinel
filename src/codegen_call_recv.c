@@ -12383,9 +12383,17 @@ static int emit_poly_index_call(Compiler *c, int id, Buf *b, const NodeTable *nt
     buf_puts(b, "({ sp_RbVal _t"); buf_printf(b, "%d = ", tv); emit_boxed(c, argv[1], b);
     if (at != TY_INT || subtree_has_side_effect(c, argv[0])) buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", tv);
     else buf_puts(b, "; ");
-    if (at == TY_STRING) {
-      buf_printf(b, "sp_poly_set_str("); emit_expr(c, recv, b);
-      buf_puts(b, ", "); emit_expr(c, argv[0], b);
+    int skey_outer, skey_oidx;
+    if (at == TY_STRING || (at == TY_REGEX && !splice_recv_index_slot(c, recv, &skey_outer, &skey_oidx))) {
+      /* a String receiver replaces the key's first match into a fresh
+         buffer, stored back as the Integer index's widen_and_set is */
+      NodeKind rk = nt_kind(nt, recv);
+      if (rk == NK_LocalVariableReadNode || rk == NK_InstanceVariableReadNode) {
+        emit_expr(c, recv, b);
+        buf_puts(b, " = ");
+      }
+      buf_printf(b, "sp_poly_str_aset_key("); emit_expr(c, recv, b);
+      buf_puts(b, ", "); emit_boxed(c, argv[0], b);
     }
     else if (at == TY_SYMBOL) {
       buf_printf(b, "sp_poly_set_sym("); emit_expr(c, recv, b);
