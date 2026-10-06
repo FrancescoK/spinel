@@ -10324,17 +10324,23 @@ static void emit_marshal_dispatch(Compiler *c, Buf *b) {
     ClassInfo *ci = &c->classes[i];
     buf_printf(b, "    case %d: {\n", i);
     buf_printf(b, "      sp_%s *o = (sp_%s *)p; (void)o;\n", ci->c_name, ci->c_name);
-    buf_printf(b, "      sp_mar_b(b, 'o'); sp_mar_sym(b, \"%s\");\n", ci->name);
     int tracked = 0;
     for (int j = 0; j < ci->nivars; j++) tracked += ivar_set_kind(c, i, ci->ivars[j]) == 3;
-    if (tracked) {
-      buf_printf(b, "      sp_mar_long(b, %d", ci->nivars - tracked);
-      for (int j = 0; j < ci->nivars; j++)
-        if (ivar_set_kind(c, i, ci->ivars[j]) == 3)
-          buf_printf(b, " + !!o->_sp_set_%s", iv_c(ci->ivars[j] + 1));
-      buf_puts(b, ");\n");
+    buf_printf(b, "      sp_int _niv = %d", ci->nivars - tracked);
+    for (int j = 0; tracked && j < ci->nivars; j++)
+      if (ivar_set_kind(c, i, ci->ivars[j]) == 3)
+        buf_printf(b, " + !!o->_sp_set_%s", iv_c(ci->ivars[j] + 1));
+    buf_puts(b, ";\n");
+    /* an Array subclass instance (#7449) is written as CRuby writes it:
+       `C`, its class, its elements as an Array's, and its ivars after them
+       under `I` when it has any */
+    if (ci->ary_root > 0) {
+      buf_printf(b, "      if (_niv) sp_mar_b(b, 'I');\n      sp_mar_b(b, 'C'); sp_mar_sym(b, \"%s\");\n"
+                    "      sp_mar_w_body(b, ", ci->name);
+      emit_boxed_text(c, ty_object(i), "o", b);
+      buf_puts(b, ");\n      if (_niv) sp_mar_long(b, _niv);\n");
     }
-    else buf_printf(b, "      sp_mar_long(b, %d);\n", ci->nivars);
+    else buf_printf(b, "      sp_mar_b(b, 'o'); sp_mar_sym(b, \"%s\");\n      sp_mar_long(b, _niv);\n", ci->name);
     for (int j = 0; j < ci->nivars; j++) {
       char expr[160]; snprintf(expr, sizeof expr, "o->iv_%s", iv_c(ci->ivars[j] + 1));
       int present = ivar_set_kind(c, i, ci->ivars[j]) == 3;
@@ -10374,8 +10380,10 @@ static void emit_marshal_dispatch(Compiler *c, Buf *b) {
       }
       buf_puts(b, "    }\n");
     }
-    buf_printf(b, "    return sp_box_obj(o, %d);\n", i);
-    buf_puts(b, "  }\n");
+    /* boxed as the class boxes (an Array subclass instance as its Array) */
+    buf_puts(b, "    return ");
+    emit_boxed_text(c, ty_object(i), "o", b);
+    buf_puts(b, ";\n  }\n");
   }
   buf_puts(b, "  *ok = 0; return sp_box_nil();\n}\n");
 }
@@ -12505,6 +12513,7 @@ void emit_regex_section(Compiler *c, Buf *b) {
       "  sp_marshal_v.arr_push = sp_marv_arr_push;\n"
       "  sp_marshal_v.hash_new = sp_marv_hash_new;\n"
       "  sp_marshal_v.hash_set = sp_marv_hash_set;\n"
+      "  sp_marshal_v.any_push = sp_marv_any_push;\n"
       "  sp_marshal_v.box_complex = sp_marv_box_complex;\n"
       "  sp_marshal_v.box_rational = sp_marv_box_rational;\n"
       "  sp_marshal_v.obj_dump = sp_marshal_obj_dump;\n"
