@@ -15323,6 +15323,41 @@ static int strbuf_block_param_source_walk(Compiler *c, const char *vn, Scope *vs
    parameter, not on into a callee, so a String stored there stays a copy
    the caller's element mutation never reaches. Refused (#6765), unless the
    callee's own demand already made the stored value the handle. */
+/* Does `n` hold node `x`, short of nothing (a block or a def inside runs
+   no earlier than n does)? */
+static int an_subtree_has(const NodeTable *nt, int n, int x) {
+  if (n < 0) return 0;
+  if (n == x) return 1;
+  const SpNode *nd = &nt->nodes[n];
+  for (int i = 0; i < nd->nr; i++)
+    if (an_subtree_has(nt, nd->r[i].ref, x)) return 1;
+  for (int i = 0; i < nd->na; i++)
+    for (int j = 0; j < nd->a[i].n; j++)
+      if (an_subtree_has(nt, nd->a[i].ids[j], x)) return 1;
+  return 0;
+}
+/* Does store `st` of method scope m run after a statement of m's body that
+   binds parameter pn to a new Array or Hash (`pn = []`)? The store then
+   fills that container, not the caller's: the body's statements run in
+   order, once per call, so whatever a later statement holds runs after the
+   rebinding. A store before it, or with no such statement, still reaches
+   the caller's container. */
+static int store_after_param_rebind(Compiler *c, Scope *m, const char *pn, int st) {
+  const NodeTable *nt = c->nt;
+  int bn = 0; const int *bb = m->body >= 0 && nt_kind(nt, m->body) == NK_StatementsNode
+                              ? nt_arr(nt, m->body, "body", &bn) : NULL;
+  int i = 0;
+  for (; i < bn; i++) {
+    int w = an_unparen(nt, bb[i]), v = w >= 0 && nt_kind(nt, w) == NK_LocalVariableWriteNode
+                                       ? an_unparen(nt, nt_ref(nt, w, "value")) : -1;
+    if (v >= 0 && sp_streq(nt_str(nt, w, "name"), pn) && comp_scope_of(c, w) == m &&
+        (nt_kind(nt, v) == NK_ArrayNode || nt_kind(nt, v) == NK_HashNode))
+      break;
+  }
+  for (int j = i + 1; j < bn; j++)
+    if (an_subtree_has(nt, bb[j], st)) return 1;
+  return 0;
+}
 static void refuse_callee_container_stores(Compiler *c, const char *vn, Scope *vs) {
   const NodeTable *nt = c->nt;
   for (int u = comp_scall_first(c, (int)(vs - c->scopes)); u >= 0; u = comp_scall_next(c, u)) {
@@ -15337,6 +15372,8 @@ static void refuse_callee_container_stores(Compiler *c, const char *vn, Scope *v
       const int *sn = sb_store_nodes(c, pn, m, &ns);
       for (int i = 0; i < ns; i++) {
         int st[64];
+        /* `def keep(a) = (a = []; a << s)`: a store into the method's own Array */
+        if (store_after_param_rebind(c, m, pn, sn[i])) continue;
         int n = strbuf_container_store_values(c, sn[i], pn, m, 0, st);
         for (int e = 0; e < n; e++) {
           int l = an_unparen(nt, st[e]);
@@ -31033,10 +31070,12 @@ static void refuse_lent_ivar_copies(Compiler *c) {
 
 /* Does some class answer `mn` with a String instance variable as it is (an
    attr_reader, a Struct or Data member, `def mn = @iv`)? A boxed receiver
-   may be any of them. */
+   may be an instance of any instantiated one. */
 static int rd_string_reader_anywhere(Compiler *c, const char *mn) {
   const NodeTable *nt = c->nt;
   for (int cid = 0; cid < c->nclasses; cid++) {
+    /* a class no value is ever an instance of is no boxed receiver's */
+    if (!c->classes[cid].instantiated) continue;
     int defc = -1;
     const char *ivn = NULL;
     char buf[256];

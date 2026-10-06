@@ -14,3 +14,9 @@ def keep2(a, s) = (a << s; a[0] << "?")
 s19 = +"n"; a19 = []; keep2(a19, s19); a19[0] << "!"; p s19
 def keep1(a) = (a << 1)
 a20 = []; keep1(a20); a20 << 2; p a20
+# a method that rebinds its parameter to a new Array stores into that one
+def keep3(a)
+  a = []
+  a << +"n"
+end
+a21 = [+"y"]; keep3(a21); a21[0] << "?"; p a21
