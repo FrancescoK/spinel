@@ -930,6 +930,10 @@ typedef struct {
      and the share classes that rule reads (share.h), rebuilt as the
      analysis goes. Off, nothing builds them and the C is unchanged. */
   int share_borrows;    /* arguments share_mark_borrows lets borrow the bytes */
+  /* the route refusals the flag left to the rule (share_route_defer),
+     checked against the final facts at seal */
+  struct ShareRoute *share_route;
+  int nshare_route, cshare_route;
   int share_strings;
   struct ShareFacts *share;
   unsigned share_sig;   /* the types the facts were last applied over */
