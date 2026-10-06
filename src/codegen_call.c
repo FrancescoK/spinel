@@ -18595,6 +18595,22 @@ static void emit_nil_target_head(Compiler *c, int id, Buf *b, const char *lead, 
   buf_puts(b, *lead ? "\n" : " ");
 }
 
+/* Does the parenthesis at p close at the end of the text, so that the text
+   ending there is one call? String and character literals are skipped. */
+static int whole_call_text(const char *p) {
+  int depth = 0;
+  for (; *p; p++) {
+    if (*p == '"' || *p == '\'') {
+      char q = *p;
+      for (p++; *p && *p != q; p++) if (*p == '\\' && p[1]) p++;
+      if (!*p) return 0;
+    }
+    else if (*p == '(') depth++;
+    else if (*p == ')' && --depth == 0) return p[1] == 0;
+  }
+  return 0;
+}
+
 /* Call id in value position, behind its nil arm. 1 when it emitted. */
 static int emit_nil_target_call(Compiler *c, int id, Buf *b) {
   if (cplan_nil(c, id) != CN_RAISE) return 0;
@@ -18620,6 +18636,17 @@ static int emit_nil_target_call(Compiler *c, int id, Buf *b) {
     buf_puts(g_pre, rest.p);
     free(rest.p);
     buf_puts(b, cb.p ? cb.p : "");
+  }
+  else if (cb.p && strncmp(cb.p, "sp_raise_nomethod(", 18) == 0 &&
+           whole_call_text(cb.p + 17)) {
+    /* The call raises NoMethodError whatever the receiver holds (a method
+       its class lacks). The raise stays outermost, with the nil test ahead
+       of its message, so the text still diverges (text_diverges) and a
+       value-position arm or a chain on it is coerced as the bare raise is:
+       `({ test; raise; })` kept its sp_RbVal beside a String or a bool arm,
+       and the C ternary did not build. */
+    buf_printf(b, "sp_raise_nomethod(({ %s%.*s; }))", hb.p ? hb.p : "",
+               (int)(strlen(cb.p) - 19), cb.p + 18);
   }
   else buf_printf(b, "({ %s%s; })", hb.p ? hb.p : "", cb.p ? cb.p : "");
   free(hb.p); free(cb.p);

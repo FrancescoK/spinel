@@ -1,0 +1,8 @@
+undefined method 'empty?' for nil
+""
+"/n"
+undefined method 'owner' for an instance of Hash
+undefined method 'owner' for an instance of Hash
+undefined method 'lead' for an instance of Hash
+undefined method 'lead' for nil
+done
