@@ -10107,24 +10107,29 @@ static void emit_marshal_dispatch(Compiler *c, Buf *b) {
     buf_printf(b, "      sp_mar_b(b, 'o'); sp_mar_sym(b, \"%s\");\n", ci->name);
     /* an ivar nothing has set yet is not written, as CRuby leaves it out
        (ivar_set_test, the presence inspect and instance_variables read) */
-    char tests[64][256];
-    const char *set[64];
+    /* ivar_set_test only formats the test, so each pass asks it again:
+       no table bounded by the class's ivar count */
+    char tb[256];
     int fixed = 0;
     for (int j = 0; j < ci->nivars; j++) {
       char expr[160]; snprintf(expr, sizeof expr, "o->iv_%s", iv_c(ci->ivars[j] + 1));
-      set[j] = j < 64 ? ivar_set_test(c, i, ci->ivars[j], expr, tests[j], sizeof tests[j]) : NULL;
-      if (!set[j]) fixed++;
+      if (!ivar_set_test(c, i, ci->ivars[j], expr, tb, sizeof tb)) fixed++;
     }
     buf_printf(b, "      sp_mar_long(b, %d", fixed);
-    for (int j = 0; j < ci->nivars; j++) if (set[j]) buf_printf(b, " + !!%s", set[j]);
+    for (int j = 0; j < ci->nivars; j++) {
+      char expr[160]; snprintf(expr, sizeof expr, "o->iv_%s", iv_c(ci->ivars[j] + 1));
+      const char *set = ivar_set_test(c, i, ci->ivars[j], expr, tb, sizeof tb);
+      if (set) buf_printf(b, " + !!%s", set);
+    }
     buf_puts(b, ");\n");
     for (int j = 0; j < ci->nivars; j++) {
       char expr[160]; snprintf(expr, sizeof expr, "o->iv_%s", iv_c(ci->ivars[j] + 1));
-      if (set[j]) buf_printf(b, "      if %s {\n", set[j]);
+      const char *set = ivar_set_test(c, i, ci->ivars[j], expr, tb, sizeof tb);
+      if (set) buf_printf(b, "      if %s {\n", set);
       buf_printf(b, "      sp_mar_sym(b, \"%s\"); sp_mar_w(b, ", ci->ivars[j]);
       emit_marshal_box_ivar(c, ci->ivar_types[j], expr, b);
       buf_puts(b, ");\n");
-      if (set[j]) buf_puts(b, "      }\n");
+      if (set) buf_puts(b, "      }\n");
     }
     buf_puts(b, "      return 1;\n    }\n");
   }
