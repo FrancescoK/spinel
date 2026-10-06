@@ -15203,6 +15203,36 @@ static int strbuf_block_param_source_walk(Compiler *c, const char *vn, Scope *vs
   }
   return changed;
 }
+/* --share-strings: is (vn, vs) only ever the key parameter of a block
+   iterating a Hash (two or more plain parameters, the key first, as
+   sh_iter_params binds them)? A key is the frozen copy CRuby makes as it is
+   stored, and the facts give it no other name: it never holds the shared
+   handle. Blocks share their enclosing scope's locals, so every block of
+   the scope naming the parameter has to bind it as a key. */
+int an_hash_key_block_param(Compiler *c, const char *vn, Scope *vs) {
+  const NodeTable *nt = c->nt;
+  if (!c->share_strings || !vn || !vs) return 0;
+  int found = 0;
+  for (int w = comp_kind_first(c, NK_CallNode); w >= 0; w = comp_kind_next(c, w)) {
+    if (nt_kind(nt, w) != NK_CallNode) continue;
+    int blk = nt_ref(nt, w, "block");
+    if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode || comp_scope_of(c, blk) != vs) continue;
+    int k = 0;
+    for (const char *bp; k < 8 && (bp = block_param_name(c, blk, k)) && !sp_streq(bp, vn); k++) {}
+    if (k >= 8 || !block_param_name(c, blk, k)) continue;
+    int recv = nt_ref(nt, w, "receiver");
+    int bp = nt_ref(nt, blk, "parameters");
+    int pn = bp >= 0 && nt_kind(nt, bp) == NK_BlockParametersNode ? nt_ref(nt, bp, "parameters") : -1;
+    int nreq = 0; const int *reqs = pn >= 0 ? nt_arr(nt, pn, "requireds", &nreq) : NULL;
+    int nopt = 0; if (pn >= 0) nt_arr(nt, pn, "optionals", &nopt);
+    if (k != 0 || recv < 0 || !ty_is_hash(infer_type(c, recv)) || nreq < 2 || nopt ||
+        nt_ref(nt, pn, "rest") >= 0 || nt_kind(nt, reqs[0]) != NK_RequiredParameterNode)
+      return 0;
+    found = 1;
+  }
+  return found;
+}
+
 /* The stores into container local (vn, vs): its own, and for a parameter
    or a block parameter, those of what the caller or the iterator binds it
    to. */
@@ -15341,7 +15371,10 @@ static int strbuf_container_source_walk(Compiler *c, int node, int depth, int mo
       const char *vn = nt_str(nt, node, "name");
       Scope *vs = vn ? comp_scope_of(c, node) : NULL;
       LocalVar *lv = vs ? scope_local(vs, vn) : NULL;
-      if (!lv) return 0;
+      /* a String local holds no elements: an element read one level too
+         deep (`a.flatten`, `a.pop(2)`) reaches it, and its appends are no
+         stores */
+      if (!lv || (c->share_strings && (lv->type == TY_STRING || lv->type == TY_STRBUF))) return 0;
       if (SB_KIND(mode) != SB_DEMAND)
         return lv->is_param ? 0 : strbuf_container_stores_kind(c, vn, vs, depth + 1, mode);
       return strbuf_demand_local_container(c, vn, vs, depth + 1, mode);
@@ -16352,8 +16385,10 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
         changed = 1;
       }
       /* a block's parameter holds the handle as a local does: what binds it
-         (a yield, an iterator) hands over the handle */
+         (a yield, an iterator) hands over the handle; a Hash's key is a
+         frozen copy of its own, whatever class a tuple joins it to */
       else if (lv->is_block_param) {
+        if (an_hash_key_block_param(c, lv->name, s)) continue;
         lv->type = TY_STRBUF; lv->str_shared = 1;
         changed = 1;
       }
@@ -17244,7 +17279,7 @@ static int promote_shared_stored_strings(Compiler *c) {
       const char *vn3 = nt_str(nt, vnode, "name");
       Scope *vs3 = comp_scope_of(c, vnode);
       LocalVar *vlv = (vn3 && vs3) ? scope_local(vs3, vn3) : NULL;
-      if (!strbuf_slot_eligible(c, vn3, vs3, vlv)) continue;
+      if (!strbuf_slot_eligible(c, vn3, vs3, vlv) || an_hash_key_block_param(c, vn3, vs3)) continue;
       /* already-shared (e.g. demanded through a return edge) qualifies even
          without a direct mutator of its own, and so does one lent to a
          parameter that appends (an_local_lent): the container's element was
