@@ -181,6 +181,12 @@ int is_push_unshift(const char *n) {
          sp_streq(n, "unshift");
 }
 
+/* A call whose answer tells an object from a copy of it: its identity, or
+   whether it is frozen (a copy of a String later frozen is not). */
+int is_identity_query(const char *n) {
+  return sp_streq(n, "equal?") || sp_streq(n, "object_id") || sp_streq(n, "__id__") || sp_streq(n, "frozen?");
+}
+
 int is_len_alias(const char *n) {
   return sp_streq(n, "length") || sp_streq(n, "size");
 }
