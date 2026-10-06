@@ -3855,7 +3855,9 @@ static void gc_roots_take_back(Compiler *c, Scope *s, Buf *b, size_t fn_off) {
 int g_no_root_frame = 0;
 
 typedef struct { char name[24]; int rooted, decls, addr, bad, slot; } FrameTemp;
-typedef struct { FrameTemp *v; int n, cap; } FrameTemps;
+/* v in first-seen order; h maps a name to its index in v (open addressing,
+   -1 empty), so a lookup does not walk every temporary of the function */
+typedef struct { FrameTemp *v; int n, cap; int *h; int hcap; } FrameTemps;
 
 static int frame_idch(char c) { return isalnum((unsigned char)c) || c == '_'; }
 /* `_t<digits>`: the emitters' temporary names. */
@@ -3867,14 +3869,48 @@ static size_t frame_temp_len(const char *p, size_t end) {
   if (k < end && frame_idch(p[k])) return 0;
   return k;
 }
+static unsigned frame_temp_hash(const char *nm, size_t n) {
+  unsigned h = 2166136261u;
+  for (size_t i = 0; i < n; i++) h = (h ^ (unsigned char)nm[i]) * 16777619u;
+  return h;
+}
+/* The temporary named nm[0..n), created when asked. Every mention of a
+   temporary in a function's text is looked up here, twice over; walking the
+   list made a function with T temporaries cost (mentions x T), which a long
+   generated top level paid for at every statement. */
 static FrameTemp *frame_temp(FrameTemps *ts, const char *nm, size_t n, int create) {
-  for (int i = 0; i < ts->n; i++)
-    if (strlen(ts->v[i].name) == n && !strncmp(ts->v[i].name, nm, n)) return &ts->v[i];
-  if (!create || n >= sizeof ts->v[0].name) return NULL;
+  /* a stored name is shorter than the field, so a longer one is never there */
+  if (n >= sizeof ts->v[0].name) return NULL;
+  unsigned mask = (unsigned)ts->hcap - 1, b = ts->hcap ? frame_temp_hash(nm, n) & mask : 0;
+  if (ts->hcap)
+    for (; ts->h[b] >= 0; b = (b + 1) & mask) {
+      FrameTemp *e = &ts->v[ts->h[b]];
+      if (strlen(e->name) == n && !strncmp(e->name, nm, n)) return e;
+    }
+  if (!create) return NULL;
   if (ts->n == ts->cap) {
     ts->cap = ts->cap ? ts->cap * 2 : 64;
     ts->v = realloc(ts->v, sizeof *ts->v * (size_t)ts->cap);
+    if (!ts->v) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   }
+  if ((ts->n + 1) * 2 > ts->hcap) {   /* keep the table at most half full */
+    int ncap = ts->hcap ? ts->hcap * 2 : 128;
+    int *nh = malloc(sizeof *nh * (size_t)ncap);
+    if (!nh) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int i = 0; i < ncap; i++) nh[i] = -1;
+    unsigned nmask = (unsigned)ncap - 1;
+    for (int i = 0; i < ts->n; i++) {
+      unsigned c = frame_temp_hash(ts->v[i].name, strlen(ts->v[i].name)) & nmask;
+      while (nh[c] >= 0) c = (c + 1) & nmask;
+      nh[c] = i;
+    }
+    free(ts->h);
+    ts->h = nh; ts->hcap = ncap;
+    mask = nmask;
+    b = frame_temp_hash(nm, n) & mask;
+    while (ts->h[b] >= 0) b = (b + 1) & mask;
+  }
+  ts->h[b] = ts->n;
   FrameTemp *t = &ts->v[ts->n++];
   memset(t, 0, sizeof *t);
   memcpy(t->name, nm, n); t->name[n] = '\0'; t->slot = -1;
@@ -4017,7 +4053,7 @@ static int gc_frame_build(Buf *b, size_t ins, const char *site) {
   frame_collect(p, ins, end, &ts);
   int any = 0;
   for (int i = 0; i < ts.n; i++) if (frame_convertible(&ts.v[i])) { any = 1; break; }
-  if (!any && !strstr(p + ins, "SP_GC_ROOT")) { free(ts.v); return 0; }
+  if (!any && !strstr(p + ins, "SP_GC_ROOT")) { free(ts.v); free(ts.h); return 0; }
 
   Buf nb; memset(&nb, 0, sizeof nb);
   int depth = 1, wm = 0, peak = 0, np = 0;
@@ -4086,7 +4122,7 @@ static int gc_frame_build(Buf *b, size_t ins, const char *site) {
     }
     buf_putn(&nb, p + i, n); i = k;
   }
-  free(ts.v);
+  free(ts.v); free(ts.h);
   if (peak == 0 && np == 0) { free(nb.p); return 0; }
   if (!decide_fn("root-frame", site, NULL)) { free(nb.p); return 0; }
   Buf out; memset(&out, 0, sizeof out);
