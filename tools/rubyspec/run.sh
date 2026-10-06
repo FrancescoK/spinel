@@ -1,7 +1,7 @@
 #!/bin/bash
 # run.sh -- classify extracted ruby/spec examples against spinel.
 #
-# Usage: tools/rubyspec/run.sh EXTRACTED_DIR [RESULTS_TSV]
+# Usage: [REF_RUBY=~/.rbenv/versions/4.0.7/bin/ruby] tools/rubyspec/run.sh EXTRACTED_DIR [RESULTS_TSV]
 #
 # Per example: compile with spinel, run, and classify:
 #   PASS         compiled, ran, MSPEC-DONE fail=0
@@ -62,7 +62,9 @@ classify_one() {
   local bin="$TDIR/bin-$bn"
   if [ -z "$GATE" ]; then
     # CRuby oracle first: a skewed extraction must not count against spinel.
-    local cr; cr=$(timeout 10 ruby "$f" 2>/dev/null | tail -1)
+    # REF_RUBY names the reference Ruby (CRuby 4.0): under an older one an example 4.0 passes is
+    # called skewed and drops out of the manifest. Unset, the first `ruby` on PATH.
+    local cr; cr=$(timeout 10 ${REF_RUBY:-ruby} "$f" 2>/dev/null | tail -1)
     if ! grep -q "fail=0" <<<"$cr"; then
       echo -e "$bn\tHARNESS-SKEW\t${cr:-crash}" > "$row"; return
     fi

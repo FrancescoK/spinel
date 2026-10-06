@@ -3062,7 +3062,7 @@ rubyspec: $(SPINEL) $(RUBYSPEC_DIR)/.pinned
 	  nm=$$(echo $$d | tr / -); \
 	  echo "=== ruby/spec $$d ==="; \
 	  rm -rf build/rubyspec-ex-$$nm && ruby tools/rubyspec/extract.rb $(RUBYSPEC_DIR)/$$d build/rubyspec-ex-$$nm || exit 1; \
-	  bash tools/rubyspec/run.sh build/rubyspec-ex-$$nm build/rubyspec-results-$$nm.tsv; \
+	  REF_RUBY="$(REF_RUBY)" bash tools/rubyspec/run.sh build/rubyspec-ex-$$nm build/rubyspec-results-$$nm.tsv; \
 	  ruby tools/rubyspec/manifest_diff.rb tools/rubyspec/expectations/$$nm.tsv build/rubyspec-results-$$nm.tsv || true; \
 	done
 
@@ -3083,7 +3083,7 @@ rubyspec-gate: $(SPINEL) $(RUBYSPEC_DIR)/.pinned
 	  fi; \
 	  awk -F'\t' '$$2=="PASS"{print $$1}' tools/rubyspec/expectations/$$nm.tsv > build/rubyspec-gate-$$nm.list; \
 	  if ! RUBYSPEC_ONLY=build/rubyspec-gate-$$nm.list RUBYSPEC_GATE=1 \
-	    bash tools/rubyspec/run.sh build/rubyspec-ex-$$nm build/rubyspec-gate-$$nm.tsv >/dev/null; then \
+	    REF_RUBY="$(REF_RUBY)" bash tools/rubyspec/run.sh build/rubyspec-ex-$$nm build/rubyspec-gate-$$nm.tsv >/dev/null; then \
 	    echo "rubyspec-gate[$$d]: run.sh failed"; ok=0; continue; \
 	  fi; \
 	  want=$$(wc -l < build/rubyspec-gate-$$nm.list); \
