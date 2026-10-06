@@ -1,0 +1,7 @@
+undefined method 'merge' for nil [{b: 2}]
+undefined method 'merge' for an instance of Integer [{b: 2}]
+undefined method 'merge' for nil [{"b" => 2}]
+undefined method 'merge' for an instance of Symbol [{}]
+undefined method 'merge' for nil []
+{x: 1, y: 2}
+{"k" => 3, 4 => :v}
