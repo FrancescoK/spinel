@@ -1178,13 +1178,22 @@ int infer_object_call(Compiler *c, int id, TyKind rt, TyKind *out) {
          be boxed (the fold unboxes it), which is what every int local is
          under --int-overflow=promote. The conditions mirror the fold's
          exactly (a literal the fold declines keeps the generic binding's
-         boxed type). */
+         boxed type).
+
+         An offset not typed YET is no answer: it is a parameter no call
+         site has bound so far, and answering the generic binding's boxed
+         type for that round hands the poly to the callers, where a call
+         cycle holds it after the offset settles to Integer (the re-narrow
+         does not reset an ordinary return). While inference is optimistic,
+         wait for it; the pessimistic stage still falls through to the
+         generic binding. */
       if (cls->c_struct && sp_streq(cls->c_struct, "sp_IOBuffer") &&
           sp_streq(name, "get_value") && argc == 2 &&
-          nt_type(c->nt, argv[0]) && sp_streq(nt_type(c->nt, argv[0]), "SymbolNode") &&
-          (infer_type(c, argv[1]) == TY_INT || infer_type(c, argv[1]) == TY_POLY)) {
+          nt_type(c->nt, argv[0]) && sp_streq(nt_type(c->nt, argv[0]), "SymbolNode")) {
+        TyKind ot = infer_type(c, argv[1]);
         int it = comp_iob_sym_type(nt_str(c->nt, argv[0], "value"));
-        if (it >= 0) {
+        if (it >= 0 && ot == TY_UNKNOWN && g_infer_optimistic) { *out = TY_UNKNOWN; return 1; }
+        if (it >= 0 && (ot == TY_INT || ot == TY_POLY)) {
           *out = comp_iob_ty_is_float(it) ? TY_FLOAT
                : comp_iob_ty_is_64(it) ? TY_POLY : TY_INT;
           return 1;
