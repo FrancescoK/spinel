@@ -34,7 +34,11 @@ typedef enum {
 enum {
   SHF_MUT      = 1,   /* an in-place String mutation reaches the class */
   SHF_UNKNOWN  = 2,   /* the class meets UNKNOWN */
-  SHF_INDIRECT = 4    /* mutated through a receiver that is no holder */
+  SHF_INDIRECT = 4,   /* mutated through a receiver that is no holder */
+  SHF_MULTI    = 16   /* an ivar of the class is written a String it did not
+                         make (a call's answer, a member read): the holder is
+                         one per class but a slot per object, so it can be
+                         several names at once (sh_ivar_store) */
 };
 
 typedef struct {

@@ -2578,6 +2578,15 @@ static inline sp_String *sp_poly_as_strbuf(sp_RbVal v) {
   if (v.tag == SP_TAG_STR && v.v.s) return sp_String_new_fresh(v.v.s);
   return sp_String_new((&("\xff")[1]));
 }
+/* A shared String handle's read face (a copy of its bytes, NULL for nil)
+   with the handle published to the deep-return side channel, for a
+   program built --share-strings: the call sequences the write, where two
+   inline `(_sp_ret_strbuf = h, ...)` among one call's arguments were
+   unsequenced writes to the channel. */
+static inline const char *sp_strbuf_read_pub(sp_String *h) {
+  _sp_ret_strbuf = (void *)h;
+  return h ? sp_str_concat(sp_String_cstr(h), (&("\xff")[1])) : NULL;
+}
 static inline sp_bool sp_poly_is_strbuf(sp_RbVal v) {
   return v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_STRBUF;
 }
