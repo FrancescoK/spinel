@@ -141,6 +141,7 @@ void emit_hr_suffix(Compiler *c, int mi, Buf *b);
 void emit_hr_tail(Compiler *c, int node, Buf *b);
 void emit_hr_wrapper(Compiler *c, Scope *s, Buf *b);
 void emit_method_forward_args(Compiler *c, Scope *s, Buf *b);
+int strbuf_self_answer_ref(Compiler *c, int v, char *out, size_t cap);
 void emit_boxed_str_operand(Compiler *c, int node, Buf *b);
 int strbuf_fresh_renders_string(Compiler *c, int v);
 int strbuf_proc_call_answer(Compiler *c, int v);
