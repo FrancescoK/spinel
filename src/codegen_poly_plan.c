@@ -1920,6 +1920,11 @@ void emit_poly_cases0(Compiler *c, int id, int recv, const char *name, const Pol
                    ? c->poly_builtin_ty[id] : TY_UNKNOWN;
     int vw = bt9 != TY_UNKNOWN ? view_push(c, id, bt9) : -1;
     Buf ib9; memset(&ib9, 0, sizeof ib9);
+    /* what the re-entered emission hoists -- a temp of the receiver, an
+       argument check on it -- reads `_t<tv>`, which this case's dispatch
+       declares: it runs inside the case, not ahead of the dispatch */
+    Buf pre9; memset(&pre9, 0, sizeof pre9);
+    Buf *sv_pre9 = g_pre; g_pre = &pre9;
     if (bt9 != TY_UNKNOWN && bt9 != TY_POLY) {
       Buf nb9; memset(&nb9, 0, sizeof nb9);
       emit_expr(c, id, &nb9);
@@ -1927,6 +1932,7 @@ void emit_poly_cases0(Compiler *c, int id, int recv, const char *name, const Pol
       free(nb9.p);
     }
     else emit_boxed(c, id, &ib9);
+    g_pre = sv_pre9;
     if (vw >= 0) view_pop(c, vw);
     view_pop(c, va);
     view_unbind(g_n_argov - 1);
@@ -1942,9 +1948,10 @@ void emit_poly_cases0(Compiler *c, int id, int recv, const char *name, const Pol
                   " case SP_BUILTIN_INT_STR_HASH: case SP_BUILTIN_INT_INT_HASH:"
                   " case SP_BUILTIN_STR_POLY_HASH: case SP_BUILTIN_SYM_POLY_HASH:"
                   " case SP_BUILTIN_POLY_POLY_HASH:");
-      buf_printf(b, " _t%d = %s; break;", tr, ib9.p);
+      if (pre9.p && pre9.len) buf_printf(b, " { %s _t%d = %s; } break;", pre9.p, tr, ib9.p);
+      else buf_printf(b, " _t%d = %s; break;", tr, ib9.p);
     }
-    free(ib9.p);
+    free(ib9.p); free(pre9.p);
   }
   /* compare_by_identity? on a poly-carried hash: every spinel hash is
      value-keyed (the mutating variant is a compile error), so any hash
