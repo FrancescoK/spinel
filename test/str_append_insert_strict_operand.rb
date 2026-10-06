@@ -3,6 +3,14 @@
 # TypeError. A boxed operand of the statement form of <<, and of insert on
 # any receiver, was stringified instead: nil appended nothing, 65 appended
 # "65", and a typed receiver's insert of a boxed operand did not build.
+# The statement form of concat on a String local (cat) stringified a boxed
+# operand the same way.
+
+def cat(b)
+  s = +"He"
+  s.concat(b, "!")
+  s
+end
 
 def t(k)
   out = []
@@ -17,6 +25,9 @@ def t(k)
     rescue => e
       out << "#{i} #{e.class}: #{e.message}"
     end
+    out << "cat #{cat(b).inspect}"
+  rescue => e
+    out << "cat #{e.class}: #{e.message}"
   end
   puts out
 end
