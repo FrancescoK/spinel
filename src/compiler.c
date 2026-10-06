@@ -499,6 +499,12 @@ static int sp_name_collides_runtime(const char *n) {
        rational and socket-option carriers, IO::Buffer's and Process::Status's */
     "Tms", "StrRange", "FloatRange", "BigRational", "RbValue", "SockOpt",
     "ProcessStatus", "IOBuffer",
+    /* Classes the runtime builds in C. A reopening is refused, but a NEW class
+       of that name (`App::Mutex`, or OpenStruct without require "ostruct")
+       would clash with the runtime's C names. The builtin-name checks read
+       the Ruby name, not this stem, so mangling is safe here. */
+    "Monitor", "Mutex", "Queue", "SizedQueue", "ConditionVariable", "Encoding",
+    "OpenStruct",
     NULL };
   for (int i = 0; reserved[i]; i++) if (sp_streq(n, reserved[i])) return 1;
   return 0;

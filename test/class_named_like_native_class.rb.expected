@@ -1,0 +1,6 @@
+app mutex
+app queue a
+foo mutex
+foo__mutex
+my struct b
+builtin mutex
