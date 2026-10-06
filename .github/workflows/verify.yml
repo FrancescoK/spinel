@@ -296,6 +296,9 @@ jobs:
           BASE_KEY: ${{ steps.key.outputs.key }}
         run: |
           set -a; . ./verify.conf; set +a
+          # PROBE_ENV: NAME=value pairs for the legs' own runs only, not the build (a flag such as
+          # SPINEL_SHARE_STRINGS=1 must not reach the tools the build compiles with spinel)
+          [ -n "${PROBE_ENV:-}" ] && export ${PROBE_ENV}
           out="$GITHUB_WORKSPACE/out"; mkdir -p "$out"
           h="$RUNNER_TEMP/head"; [ "$NAME" = base ] && h="$RUNNER_TEMP/base"
           if [ "$BASE_HIT" = true ]; then
