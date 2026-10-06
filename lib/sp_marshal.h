@@ -44,7 +44,9 @@ typedef struct {
   sp_RbVal (*box_complex)(sp_float re, sp_float im);
   sp_RbVal (*box_rational)(sp_int num, sp_int den);
   int      (*obj_dump)(sp_mar_buf *b, int cls_id, void *p);   /* generated; writes `o` */
-  sp_RbVal (*obj_load)(const char *clsname, sp_RbVal iv, int *ok); /* iv = boxed PolyArray */
+  /* into nil: a new object of the class; into an object: its ivars set
+     from iv (a boxed PolyArray of name, value pairs) */
+  sp_RbVal (*obj_load)(const char *clsname, sp_RbVal into, sp_RbVal iv, int *ok);
   void     (*raise)(const char *cls, const char *msg);
   void     (*any_push)(sp_RbVal arr, sp_RbVal v);   /* push into a boxed Array of any kind */
 } sp_marshal_vt;
