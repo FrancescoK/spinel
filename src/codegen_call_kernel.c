@@ -611,14 +611,14 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
     }
     if (sp_streq(name, "rand")) {
       if (ac == 0) { buf_puts(b, "sp_krand_float()"); return 1; }
-      TyKind a0t = comp_ntype(c, av[0]);
-      if (a0t == TY_FLOAT_RANGE) {   /* rand(1.0..10.0) -> a Float in [first, last) */
+      Repr a0r = repr_of(c, av[0]);
+      if (a0r.range == TY_FLOAT) {   /* rand(1.0..10.0) -> a Float in [first, last) */
         int tr = ++g_tmp;
         buf_printf(b, "({ sp_FloatRange _t%d = ", tr); emit_expr(c, av[0], b);
         buf_printf(b, "; _t%d.first + sp_Random_rand_float(sp_random_default_get()) * (_t%d.last - _t%d.first); })", tr, tr, tr);
         return 1;
       }
-      if (a0t == TY_RANGE) {
+      if (a0r.range == TY_INT) {
         const char *atype = nt_type(nt, av[0]);
         int islit = atype && sp_streq(atype, "RangeNode");
         int lo = islit ? nt_ref(nt, av[0], "left") : -1;
@@ -663,7 +663,7 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
          Fall through to the Bignum arm below, which the 64-bit build already
          takes for a literal past int64. */
       if (nt_type(nt, av[0]) && sp_streq(nt_type(nt, av[0]), "IntegerNode") &&
-          comp_ntype(c, av[0]) != TY_BIGINT) {
+          !repr_of(c, av[0]).big) {
         long long v = nt_int(nt, av[0], "value", 0);
         if (v == 0) { buf_puts(b, "sp_krand_float()"); return 1; }
         long long m = v < 0 ? -v : v;
@@ -687,7 +687,7 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
       }
       /* rand(Bignum bound): a uniform Bigint in [0, bound) off the shared
          default stream (#3058) */
-      if (comp_ntype(c, av[0]) == TY_BIGINT) {
+      if (repr_of(c, av[0]).big) {
         buf_puts(b, "sp_bigint_rand(sp_random_default_get(), ");
         emit_expr(c, av[0], b); buf_puts(b, ")");
         return 1;
@@ -1287,9 +1287,9 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
          present in the environment (#2998) */
       if (enm && (is_hash_merge_bang(enm)) && eac == 1 &&
           nt_ref(nt, id, "block") >= 0) {
-        TyKind htb = comp_ntype(c, eav[0]);
+        Repr hbr = repr_of(c, eav[0]);
         const char *htyb = nt_type(nt, eav[0]);
-        if (htb == TY_STR_STR_HASH ||
+        if (repr_hash_is(hbr, TY_STRING, TY_STRING) ||
             (htyb && (sp_streq(htyb, "HashNode") || sp_streq(htyb, "KeywordHashNode")))) {
           /* a block passed as a proc (`&pr`, `&proc { }`) is that proc; a
              literal one is built here. Built as a literal, `&pr` gave a proc
@@ -1307,8 +1307,8 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
       if (enm && (sp_streq(enm, "update") || sp_streq(enm, "merge!") ||
                   sp_streq(enm, "replace")) && eac == 1 &&
           nt_ref(nt, id, "block") < 0) {
-        TyKind ht2 = comp_ntype(c, eav[0]);
-        if (ht2 == TY_STR_STR_HASH) {
+        Repr hr2 = repr_of(c, eav[0]);
+        if (repr_hash_is(hr2, TY_STRING, TY_STRING)) {
           buf_printf(b, "sp_env_update_h(");
           emit_expr(c, eav[0], b);
           buf_printf(b, ", %d)", sp_streq(enm, "replace") ? 1 : 0);
