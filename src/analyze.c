@@ -18740,6 +18740,9 @@ static int mark_reader_read_only_operands(Compiler *c) {
    - nothing changes the String while the callee runs: the callee is quiet
      (param_borrow_loud), and every other operand of the call is a plain
      read, so nothing between the borrow and the call runs either;
+   - no Ruby code runs inside the callee that it does not call
+     (an_ruby_runs_unseen): a program with a thread, a fiber, a signal
+     handler or an ffi_callback borrows nothing;
    - the parameter is a `const char *` slot, so the borrowed pointer is read
      exactly as the copy would have been.
 
@@ -18897,8 +18900,34 @@ static int param_borrow_handle_read(Compiler *c, int a) {
   return 0;
 }
 
+/* Can Ruby code run inside a method at a point where the method makes no
+   call? Another thread's body can, while the method sleeps or waits on IO;
+   so can the code that resumed a fiber the method yields, a Signal.trap
+   handler (run inside the C signal handler, at any instruction) and an
+   ffi_callback, which a C function may call back from one it was handed
+   earlier (finalizers run through one). Any of them can grow a String the
+   method holds the live buffer of, and the buffer is freed under it: a
+   quiet method then reads freed memory. The program-wide answer is
+   deliberately coarse: such programs keep the copy. */
+static int an_ruby_runs_unseen(Compiler *c) {
+  if (c->n_ffi_callbacks > 0) return 1;
+  const NodeTable *nt = c->nt;
+  NT_FOREACH_KIND(nt, NK_CallNode, n) {
+    int recv = nt_ref(nt, n, "receiver");
+    const char *rn = NULL;
+    if (recv >= 0) {
+      NodeKind rk = nt_kind(nt, recv);
+      if (rk != NK_ConstantReadNode && rk != NK_ConstantPathNode) continue;
+      if (!(rn = nt_str(nt, recv, "name"))) continue;
+    }
+    if (is_async_code_entry(rn, nt_str(nt, n, "name"))) return 1;
+  }
+  return 0;
+}
+
 static int mark_param_read_only_operands(Compiler *c) {
   const NodeTable *nt = c->nt;
+  if (an_ruby_runs_unseen(c)) return 0;
   int ns = c->nscopes;
   unsigned char *loud = calloc((size_t)(ns > 0 ? ns : 1), 1);
   int **other = calloc((size_t)(ns > 0 ? ns : 1), sizeof(int *));
