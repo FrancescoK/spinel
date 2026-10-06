@@ -6132,16 +6132,27 @@ static void emit_arg_or_default_at(Compiler *c, Scope *m, int idx, int provided,
 /* A write to a shared-mutable-string local, `buf = +"abc"`, where the value
    has to be the HANDLE (a shared-string parameter's argument). Its node type
    is String, so the value forms produce the const char * copy; run the write
-   as a statement instead and yield the local's sp_String *. A write already
-   hoisted into a temp (emit_args_filled) is that temp. Returns 0 for any
-   other node. */
+   as a statement instead and yield the local's sp_String *. So does any
+   other write whose slot holds the --share-strings handle (an ivar's, a
+   global's, a class variable's, a `||=` or `&&=`: repr_write_share), as
+   that slot's handle. A write already hoisted into a temp
+   (emit_args_filled) is that temp. Returns 0 for any other node. */
 static int emit_strbuf_local_write_handle(Compiler *c, int node, Buf *out) {
-  if (node < 0 || nt_kind(c->nt, node) != NK_LocalVariableWriteNode) return 0;
-  const char *nm = nt_str(c->nt, node, "name");
+  if (node < 0) return 0;
+  int local = nt_kind(c->nt, node) == NK_LocalVariableWriteNode;
+  const char *nm = local ? nt_str(c->nt, node, "name") : NULL;
   LocalVar *lv = nm ? scope_local(comp_scope_of(c, node), nm) : NULL;
-  if (repr_of_slot(c, lv).kind != RK_STRBUF) return 0;
+  if (local ? repr_of_slot(c, lv).kind != RK_STRBUF : !repr_write_share(c, unwrap_parens(c, node))) return 0;
+  /* a write that ran first is its temp, or the handle emit_arg_temp took
+     of a shared one */
   for (int i = g_n_argov - 1; i >= 0; i--)
-    if (g_argov_node[i] == node) { buf_puts(out, g_argov_text[i]); return 1; }
+    if (g_argov_node[i] == node) {
+      int th = ran_first_handle(node);
+      if (th >= 0) buf_printf(out, "_t%d", th);
+      else buf_puts(out, g_argov_text[i]);
+      return 1;
+    }
+  if (!local) return emit_strbuf_write_handle(c, node, out);
   buf_puts(out, "({ ");
   emit_assign(c, node, out, 0);
   buf_puts(out, " ");
@@ -6524,6 +6535,9 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
         buf_puts(out, srefD);
         return;
       } }
+    /* a default that writes a slot holding the --share-strings handle
+       (`v = (@s = +"s")`) binds that handle */
+    if (dvP >= 0 && emit_strbuf_write_handle(c, dvP, out)) return;
     buf_puts(out, "sp_String_new_shared(");
     if (dvP >= 0) emit_str_expr(c, dvP, out);
     else buf_puts(out, "(&(\"\\xff\")[1])");
@@ -7872,16 +7886,28 @@ static void emit_arg_temp(Compiler *c, int v) {
   char sref[192];
   NodeKind vk = nt_kind(c->nt, v);
   int th = -1;
-  if ((vk == NK_LocalVariableReadNode || vk == NK_InstanceVariableReadNode ||
-       repr_static_read_kind(vk)) &&
-      strbuf_slot_ref(c, v, sref, sizeof sref)) {
+  /* So does a write whose slot holds the --share-strings handle
+     (emit_strbuf_write_handle): it runs here, its handle taken, and the
+     value is the slot's read of that handle. */
+  int wshare = repr_write_share(c, unwrap_parens(c, v));
+  Buf hw; memset(&hw, 0, sizeof hw);
+  if (wshare) emit_strbuf_write_handle(c, v, &hw);
+  if (wshare || ((vk == NK_LocalVariableReadNode || vk == NK_InstanceVariableReadNode ||
+                  repr_static_read_kind(vk)) &&
+                 strbuf_slot_ref(c, v, sref, sizeof sref))) {
     th = ++g_tmp;
     emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n", th, sref, th);
+    buf_printf(g_pre, "sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n", th, wshare ? hw.p : sref, th);
   }
+  free(hw.p);
   int t = ++g_tmp;
   Buf hb; memset(&hb, 0, sizeof hb);
-  emit_expr(c, v, &hb);
+  if (wshare && at == TY_STRBUF) buf_printf(&hb, "_t%d", th);
+  else if (wshare) {
+    char thr[24]; snprintf(thr, sizeof thr, "_t%d", th);
+    emit_strbuf_node_read(c, v, thr, &hb);
+  }
+  else emit_expr(c, v, &hb);
   emit_indent(g_pre, g_indent);
   if (at == TY_POLY) buf_puts(g_pre, "sp_RbVal");
   else emit_ctype(c, at, g_pre);
@@ -10300,6 +10326,10 @@ void emit_args_filled_argv(Compiler *c, int callee_idx, const int *argv, int arg
         view_bind(argv[k], "_t%d", ht);
         continue;
       }
+      /* any other write whose slot holds the --share-strings handle runs
+         with its handle taken, which a box or a handle slot binds
+         (emit_arg_temp, ran_first_handle) */
+      if (repr_write_share(c, unwrap_parens(c, argv[k]))) { emit_arg_temp(c, argv[k]); continue; }
       emit_expr(c, argv[k], &hb);
       emit_indent(g_pre, g_indent);
       if (at == TY_POLY) {
