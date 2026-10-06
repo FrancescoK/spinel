@@ -139,9 +139,11 @@ int emit_call_identity_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
          an incomparable pair instead -- the Comparable ArgumentError, which
          belongs to the BOUND being incomparable, not to a missing method.
          Only this site knows the method's name. */
-      buf_printf(b, "(sp_poly_recv_ck(_t%d, \"%s\"), "
+      /* a receiver that is no Comparable has no between? (NoMethodError,
+         its bounds as args), where the comparison raised ArgumentError */
+      buf_printf(b, "(sp_poly_comparable_chk(_t%d, \"%s\", 2, (sp_RbVal[]){_t%d, _t%d}), sp_poly_recv_ck(_t%d, \"%s\"), "
                     "sp_poly_cmp_ck(_t%d, _t%d) >= 0 && sp_poly_cmp_ck(_t%d, _t%d) <= 0)",
-                 ts, name, ts, tlo, ts, thi);
+                 ts, name, tlo, thi, ts, name, ts, tlo, ts, thi);
       return 1;
     }
     /* Comparable: user type with <=> method */

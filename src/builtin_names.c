@@ -10,6 +10,17 @@ int is_zip_name(const char *n) {
   return sp_streq(n, "zip");
 }
 
+/* the parameter a builtins/ definition's per-site copy takes its receiver
+   as (analyze_desugar.c), not a method name */
+int is_builtin_self_param(const char *n) {
+  return n && sp_streq(n, "__self");
+}
+
+/* a builtins/ file's own helper, named outside the program's namespace */
+int is_builtin_helper_name(const char *n) {
+  return n && n[0] == '_' && n[1] == '_';
+}
+
 int is_call_alias(const char *n) {
   return sp_streq(n, "call") || sp_streq(n, "()") || sp_streq(n, "[]");
 }

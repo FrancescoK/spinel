@@ -5451,11 +5451,27 @@ static sp_RbVal sp_num_clamp(sp_RbVal v, sp_RbVal lo, sp_RbVal hi) {
 static sp_RbVal sp_num_clamp_open(sp_RbVal v, sp_RbVal lo, sp_RbVal hi) {
   return sp_num_clamp(v, lo, hi);   /* the nil sides are open there now (#4777) */
 }
+/* Comparable's receivers among the kinds a box holds: the numbers but
+   Complex, a String, a Symbol and a Time; a program object answers through
+   its own `<=>`. Anything else -- nil, true or false, an Array, a Hash, a
+   Range -- has no clamp or between?, which is CRuby's NoMethodError with
+   the call's n arguments at args, where the comparison's ArgumentError
+   (or nil's bare message) was raised. */
+static void sp_poly_comparable_chk(sp_RbVal v, const char *m, sp_int n, sp_RbVal *args) SP_UNUSED;
+static void sp_poly_comparable_chk(sp_RbVal v, const char *m, sp_int n, sp_RbVal *args) {
+  if (v.tag == SP_TAG_INT || v.tag == SP_TAG_BIGINT || v.tag == SP_TAG_FLT ||
+      v.tag == SP_TAG_STR || v.tag == SP_TAG_SYM) return;
+  if (v.tag == SP_TAG_OBJ && v.v.p &&
+      (v.cls_id >= 0 || v.cls_id == SP_BUILTIN_STRBUF || v.cls_id == SP_BUILTIN_TIME ||
+       v.cls_id == SP_BUILTIN_RATIONAL || v.cls_id == SP_BUILTIN_BIG_RATIONAL)) return;
+  sp_raise_nomethod(sp_nomethod_msg_args(m, v, n, args));
+}
 /* clamp on a boxed value: numerics route through sp_num_clamp so the returned
    operand keeps its own Integer/Float class; a user object anywhere in the
    triple routes through sp_obj_clamp (the user `<=>` via the cmp hook) instead
    of being reinterpreted as a float. */
 static sp_RbVal sp_poly_clamp(sp_RbVal v, sp_RbVal lo, sp_RbVal hi) {
+  { sp_RbVal ca[2] = { lo, hi }; sp_poly_comparable_chk(v, "clamp", 2, ca); }
   sp_poly_recv_ck(v, "clamp");   /* nil has no #clamp: it answered nil */
   if ((v.tag == SP_TAG_OBJ && !sp_poly_numeric_p(v)) ||
       (lo.tag == SP_TAG_OBJ && !sp_poly_numeric_p(lo)) ||
@@ -5468,6 +5484,10 @@ static sp_RbVal sp_poly_clamp(sp_RbVal v, sp_RbVal lo, sp_RbVal hi) {
    unbounded sides for numerics and nil bounds for user objects. */
 static sp_RbVal sp_poly_clamp_range(sp_RbVal v, sp_Range r) SP_UNUSED;
 static sp_RbVal sp_poly_clamp_range(sp_RbVal v, sp_Range r) {
+  if (SP_UNLIKELY(v.tag != SP_TAG_INT && v.tag != SP_TAG_FLT)) {
+    sp_RbVal ra = sp_box_range(r);   /* the call's argument, for args */
+    sp_poly_comparable_chk(v, "clamp", 1, &ra);
+  }
   sp_poly_recv_ck(v, "clamp");
   if (sp_range_excl_end(r) && (r.fe || r.last != INTPTR_MAX))
     sp_raise_cls("ArgumentError", "cannot clamp with an exclusive range");
