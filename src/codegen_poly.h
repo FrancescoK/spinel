@@ -80,7 +80,7 @@ void poly_specials0(Compiler *c, int id, const char *name, PolySpecials0 *s);
 /* what a poly dispatch with arguments answers beside its user arms, and its
    keyword split and user candidates (poly_specials_n) */
 typedef struct {
-  int index, fetch, pdelete, pdig, pvalues_at, pfirstn, include, intersect, arr_index, push, unshift, strdel, strpart, strsetop_n, pstore, strsplit, pred, strencode, strftime, pmerge, pjoin, ppack, cover, gcdlcm, ctryconv;
+  int index, fetch, pdelete, pdig, pvalues_at, pfirstn, include, intersect, arr_index, push, unshift, strdel, strpart, strsetop_n, pstore, straset, strsplit, pred, strencode, strftime, pmerge, pjoin, ppack, cover, gcdlcm, ctryconv;
   int has_splat_arg, kwh, pos_argc, kw_ds, kw_strkey, kw_pos, ncand;
 } PolySpecialsN;
 void poly_specials_n(Compiler *c, int id, const char *name, int argc, const int *argv, PolySpecialsN *s);
@@ -100,6 +100,8 @@ typedef struct {
   const char *idxref;   /* the index as a raw sp_int, for `[]` */
 } PolyTemps;
 void emit_poly_prearms_n(Compiler *c, const char *name, const PolySpecialsN *ps, const PolyTemps *T, Buf *b);
+void emit_poly_str_aset_prearm(Compiler *c, int recv, const PolySpecialsN *ps, const PolyTemps *T, Buf *b);
+void emit_poly_str_aset_writeback(Compiler *c, int recv, const PolySpecialsN *ps, const PolyTemps *T, Buf *b);
 int  emit_poly_prearms_n_blk(Compiler *c, int id, const char *name, const PolySpecialsN *ps, const PolyTemps *T,
                              int *atmp, TyKind *atmp_ty, const PolyKw *kw, const int *htmp, int is_setter_val,
                              int splat_a, int splat_last, int stk, Buf *b);
