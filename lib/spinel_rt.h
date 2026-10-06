@@ -16460,6 +16460,15 @@ static sp_RbVal sp_poly_sum_init_proc(sp_RbVal recv, sp_RbVal init, sp_Proc *blk
 static sp_RbVal sp_dyn_hash_dproc(sp_PolyPolyHash *h, sp_RbVal key, void *self) {
   return sp_penum_call2((sp_Proc *)self, sp_box_obj(h, SP_BUILTIN_POLY_POLY_HASH), key);
 }
+/* The same trampoline for a String- or Symbol-keyed Hash of boxed values:
+   the Proc a program assigns as default_proc rides in dproc_self, so
+   Hash#default_proc answers that Proc itself, as CRuby's does. */
+static SP_UNUSED sp_RbVal sp_dyn_strpoly_hash_dproc(sp_StrPolyHash *h, const char *key, void *self) {
+  return sp_penum_call2((sp_Proc *)self, sp_box_obj(h, SP_BUILTIN_STR_POLY_HASH), sp_box_str(key));
+}
+static SP_UNUSED sp_RbVal sp_dyn_sympoly_hash_dproc(sp_SymPolyHash *h, sp_sym key, void *self) {
+  return sp_penum_call2((sp_Proc *)self, sp_box_obj(h, SP_BUILTIN_SYM_POLY_HASH), sp_box_sym(key));
+}
 static void sp_dyn_new_arity(sp_int given, sp_int max) {
   sp_arity_check(given, 0, max, NULL);
 }
