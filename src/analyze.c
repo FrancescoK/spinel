@@ -30838,6 +30838,236 @@ static void refuse_string_read_copies(Compiler *c) {
   }
 }
 
+/* String bindings the analysis does not walk (#6765): a name a pattern,
+   `alias $b $a`, a constant write, an instance_eval block's instance
+   variable or an instance variable another class or object names comes to
+   hold a variable's String as a copy. Refused, naming the binding, when one
+   name is mutated in place and the other is read. */
+static __attribute__((noreturn)) void bw_refuse(Compiler *c, int id, const char *route) {
+  char msg[512];
+  snprintf(msg, sizeof msg, "a String is mutated in place through one of two names %s binds (a String is "
+           "not yet shared by reference through %s). Mutate the String through the variable it came from.",
+           route, route);
+  unsupported_feature(c, id, msg);
+}
+/* The first variable read `n` holds, through Array and Hash literals and
+   parentheses, or -1. */
+static int bw_subject_var(Compiler *c, int n, int depth) {
+  const NodeTable *nt = c->nt;
+  n = an_unparen(nt, n);
+  if (n < 0 || depth > 8) return -1;
+  SaName a;
+  if (sa_name(c, n, &a) && nt_kind(nt, n) != NK_LocalVariableWriteNode) return n;
+  int en = 0;
+  const int *el = nt_kind(nt, n) == NK_ArrayNode || nt_kind(nt, n) == NK_HashNode ||
+                  nt_kind(nt, n) == NK_KeywordHashNode ? nt_arr(nt, n, "elements", &en) : NULL;
+  for (int e = 0; e < en; e++) {
+    int x = bw_subject_var(c, nt_kind(nt, el[e]) == NK_AssocNode ? nt_ref(nt, el[e], "value") : el[e], depth + 1);
+    if (x >= 0) return x;
+  }
+  return -1;
+}
+/* A local a pattern under `n` binds that is mutated in place: its target
+   node, or -1. */
+static int bw_mutated_target(Compiler *c, int n, int depth) {
+  const NodeTable *nt = c->nt;
+  if (n < 0 || depth > 32) return -1;
+  if (nt_kind(nt, n) == NK_LocalVariableTargetNode) {
+    SaName t = { NK_LocalVariableReadNode, nt_str(nt, n, "name"), comp_scope_of(c, n), -1 };
+    if (!t.name || !t.scope) return -1;
+    if (sa_mutated(c, &t)) return n;
+    /* `in {name: t} then r = t`, r then mutated */
+    NT_FOREACH_KIND(nt, NK_LocalVariableWriteNode, w) {
+      SaName r;
+      if (sa_reads(c, nt_ref(nt, w, "value"), &t) && sa_name(c, w, &r) && sa_mutated(c, &r)) return n;
+    }
+    return -1;
+  }
+  const SpNode *nd = &nt->nodes[n];
+  for (int i = 0; i < nd->nr; i++) {
+    int r = bw_mutated_target(c, nd->r[i].ref, depth + 1);
+    if (r >= 0) return r;
+  }
+  for (int i = 0; i < nd->na; i++)
+    for (int j = 0; j < nd->a[i].n; j++) {
+      int r = bw_mutated_target(c, nd->a[i].ids[j], depth + 1);
+      if (r >= 0) return r;
+    }
+  return -1;
+}
+/* Is the variable `src` reads another name for the String: a parameter
+   (its caller's), a variable other than a local, or a local read
+   elsewhere? */
+static int bw_named_elsewhere(Compiler *c, int src) {
+  SaName a;
+  if (!sa_name(c, src, &a)) return 0;
+  if (a.kind != NK_LocalVariableReadNode) return 1;
+  LocalVar *lv = scope_local(a.scope, a.name);
+  return (lv && lv->is_param) || sa_read_elsewhere(c, &a, src);
+}
+/* The name a constant write, or a read, names (its last segment). */
+static const char *bw_const_name(const NodeTable *nt, int n) {
+  NodeKind k = nt_kind(nt, n);
+  if (k == NK_ConstantPathWriteNode || k == NK_ConstantPathOrWriteNode || k == NK_ConstantPathAndWriteNode ||
+      k == NK_ConstantPathOperatorWriteNode)
+    n = nt_ref(nt, n, "target");
+  return n >= 0 ? nt_str(nt, n, "name") : NULL;
+}
+/* Is a constant of that name mutated in place, or, with `read`, read? */
+static int bw_const_used(Compiler *c, const char *cn, int read) {
+  const NodeTable *nt = c->nt;
+  NT_FOREACH_KIND(nt, NK_CallNode, u) {
+    const char *un = nt_str(nt, u, "name");
+    int r = an_unparen(nt, nt_ref(nt, u, "receiver"));
+    if (!read && (!un || !sp_str_mutator(un, SP_MUT_LOCAL))) continue;
+    if (read) r = u;
+    for (int q = 0; q < 2 && r >= 0; q++) {
+      int x = q ? r : -1;
+      if (read) {
+        int a = nt_ref(nt, u, "arguments"), an = 0;
+        const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+        for (int i = 0; i < an; i++) {
+          int y = an_unparen(nt, av[i]);
+          if ((nt_kind(nt, y) == NK_ConstantReadNode || nt_kind(nt, y) == NK_ConstantPathNode) &&
+              bw_const_name(nt, y) && sp_streq(bw_const_name(nt, y), cn)) return 1;
+        }
+        x = an_unparen(nt, nt_ref(nt, u, "receiver"));
+      }
+      if (x >= 0 && (nt_kind(nt, x) == NK_ConstantReadNode || nt_kind(nt, x) == NK_ConstantPathNode) &&
+          bw_const_name(nt, x) && sp_streq(bw_const_name(nt, x), cn)) return 1;
+    }
+  }
+  return 0;
+}
+/* The instance variable writes under `n`, short of a nested def: up to
+   `cap` into out. */
+static int bw_ivar_writes(Compiler *c, int n, int *out, int cap, int depth) {
+  const NodeTable *nt = c->nt;
+  if (n < 0 || cap <= 0 || depth > 64 || nt_kind(nt, n) == NK_DefNode) return 0;
+  if (nt_kind(nt, n) == NK_InstanceVariableWriteNode) { out[0] = n; return 1; }
+  int got = 0;
+  const SpNode *nd = &nt->nodes[n];
+  for (int i = 0; i < nd->nr && got < cap; i++) got += bw_ivar_writes(c, nd->r[i].ref, out + got, cap - got, depth + 1);
+  for (int i = 0; i < nd->na && got < cap; i++)
+    for (int j = 0; j < nd->a[i].n && got < cap; j++)
+      got += bw_ivar_writes(c, nd->a[i].ids[j], out + got, cap - got, depth + 1);
+  return got;
+}
+/* Does class `cid` write its instance variable `ivn` itself? */
+static int bw_ivar_written_in(Compiler *c, int cid, const char *ivn) {
+  NT_FOREACH_KIND(c->nt, NK_InstanceVariableWriteNode, w)
+    if (an_ivar_owner(c, w) == cid && sp_streq(nt_str(c->nt, w, "name"), ivn)) return 1;
+  return 0;
+}
+static int bw_string_var(Compiler *c, int v) {
+  TyKind vt = v >= 0 ? comp_ntype(c, v) : TY_UNKNOWN;
+  SaName a;
+  return (vt == TY_STRING || vt == TY_STRBUF) && sa_name(c, v, &a) && nt_kind(c->nt, an_unparen(c->nt, v)) != NK_StringNode &&
+         !hv_may_be_frozen(c, v);
+}
+static void refuse_string_binding_copies(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  /* `case [s] in [t]`, `[s] => [t]`, `[s] in [t]`: t binds a copy */
+  for (int k = 0; k < 3; k++)
+    NT_FOREACH_KIND(nt, k == 0 ? NK_CaseMatchNode : k == 1 ? NK_MatchRequiredNode : NK_MatchPredicateNode, m) {
+      int subj = bw_subject_var(c, nt_ref(nt, m, k == 0 ? "predicate" : "value"), 0);
+      if (subj < 0 || !bw_named_elsewhere(c, subj) || hv_may_be_frozen(c, subj)) continue;
+      int tg = -1;
+      if (k == 0) {
+        int nw = 0; const int *ins = nt_arr(nt, m, "conditions", &nw);
+        for (int i = 0; i < nw && tg < 0; i++) tg = bw_mutated_target(c, nt_ref(nt, ins[i], "pattern"), 0);
+      }
+      else tg = bw_mutated_target(c, nt_ref(nt, m, "pattern"), 0);
+      if (tg >= 0) bw_refuse(c, tg, "a pattern binding");
+    }
+  /* `alias $b $a`: the two names are one global, held as two copies */
+  NT_FOREACH_KIND(nt, NK_AliasGlobalVariableNode, al) {
+    SaName g[2];
+    if (!sa_name(c, nt_ref(nt, al, "new_name"), &g[0]) || !sa_name(c, nt_ref(nt, al, "old_name"), &g[1])) continue;
+    NT_FOREACH_KIND(nt, NK_GlobalVariableWriteNode, w) {
+      int v = an_unparen(nt, nt_ref(nt, w, "value"));
+      SaName gw, s;
+      if (!sa_name(c, w, &gw) || !bw_string_var(c, v) || !sa_name(c, v, &s)) continue;
+      int hit = -1;
+      for (int i = 0; i < 2; i++) if (sp_streq(gw.name, g[i].name)) hit = i;
+      if (hit < 0) continue;
+      if (((sa_mutated(c, &g[0]) || sa_mutated(c, &g[1])) && sa_read_elsewhere(c, &s, v)) ||
+          (sa_mutated(c, &s) && (sa_read_elsewhere(c, &g[0], -1) || sa_read_elsewhere(c, &g[1], -1))))
+        bw_refuse(c, al, "`alias $b $a`");
+    }
+  }
+  /* `X = s`, `M::X = s`, `X ||= s`; and `X ||= v` mutated through X */
+  for (int k = 0; k < 6; k++)
+    NT_FOREACH_KIND(nt, k == 0 ? NK_ConstantWriteNode : k == 1 ? NK_ConstantPathWriteNode
+                       : k == 2 ? NK_ConstantOrWriteNode : k == 3 ? NK_ConstantPathOrWriteNode
+                       : k == 4 ? NK_ConstantAndWriteNode : NK_ConstantPathAndWriteNode, w) {
+      int v = an_unparen(nt, nt_ref(nt, w, "value"));
+      const char *cn = bw_const_name(nt, w);
+      TyKind vt = v >= 0 ? comp_ntype(c, v) : TY_UNKNOWN;
+      SaName s;
+      if (!cn || (vt != TY_STRING && vt != TY_STRBUF) || nt_kind(nt, v) == NK_StringNode) continue;
+      int orw = k >= 2;
+      if (bw_string_var(c, v) && sa_name(c, v, &s) &&
+          ((sa_mutated(c, &s) && bw_const_used(c, cn, 1)) || (bw_const_used(c, cn, 0) && sa_read_elsewhere(c, &s, v))))
+        bw_refuse(c, w, "a constant written from a String variable");
+      if (orw && bw_const_used(c, cn, 0)) bw_refuse(c, w, "a constant's `||=`");
+    }
+  /* `k.instance_eval { @k = s }`, `k.instance_exec(s) { |x| @k = x }` */
+  NT_FOREACH_KIND(nt, NK_CallNode, u) {
+    const char *un = nt_str(nt, u, "name");
+    int blk = nt_ref(nt, u, "block");
+    if (!un || !is_instance_eval_family(un) || nt_ref(nt, u, "receiver") < 0 || blk < 0 ||
+        nt_kind(nt, blk) != NK_BlockNode) continue;
+    int ws[16];
+    int nw = bw_ivar_writes(c, nt_ref(nt, blk, "body"), ws, 16, 0);
+    for (int i = 0; i < nw; i++) {
+      int w = ws[i];
+      int v = an_unparen(nt, nt_ref(nt, w, "value"));
+      if (!bw_string_var(c, v)) continue;
+      SaName s;
+      sa_name(c, v, &s);
+      /* a block parameter instance_exec binds to its argument */
+      const char *bp = block_param_name(c, blk, 0);
+      int a = nt_ref(nt, u, "arguments"), an = 0;
+      const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+      if (bp && sp_streq(bp, s.name) && an > 0 && bw_string_var(c, av[0])) sa_name(c, av[0], &s);
+      int ivr = 0;
+      NT_FOREACH_KIND(nt, NK_InstanceVariableReadNode, r)
+        if (sp_streq(nt_str(nt, r, "name"), nt_str(nt, w, "name"))) ivr = 1;
+      if (sa_mutated(c, &s) && ivr) bw_refuse(c, w, "an instance variable an `instance_eval` block writes");
+    }
+  }
+  /* `@k = x` in A, `@k << y` in a subclass B (or the other way round); and
+     `o.v = k1.v` or `@v = k1.v`, another object's instance variable */
+  NT_FOREACH_KIND(nt, NK_InstanceVariableWriteNode, w) {
+    int v = an_unparen(nt, nt_ref(nt, w, "value"));
+    const char *ivn = nt_str(nt, w, "name");
+    int wc = an_ivar_owner(c, w);
+    SaName s;
+    if (!ivn || wc < 0 || v < 0 || !sa_name(c, v, &s) || nt_kind(nt, v) != NK_LocalVariableReadNode ||
+        hv_may_be_frozen(c, v)) continue;
+    /* a class that writes the variable itself keeps a slot of its own */
+    for (int oc = 0; oc < c->nclasses; oc++)
+      if (oc != wc && (is_descendant(c, oc, wc) || is_descendant(c, wc, oc)) &&
+          strbuf_ivar_any_str_mut(c, oc, ivn) && !bw_ivar_written_in(c, oc, ivn) && bw_named_elsewhere(c, v))
+        bw_refuse(c, w, "an instance variable a superclass and a subclass both name");
+  }
+  NT_FOREACH_KIND(nt, NK_CallNode, u) {
+    const char *un = nt_str(nt, u, "name");
+    size_t ul = un ? strlen(un) : 0;
+    int a = nt_ref(nt, u, "arguments"), an = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+    if (ul < 2 || un[ul - 1] != '=' || an != 1 || nt_ref(nt, u, "receiver") < 0 ||
+        !(isalpha((unsigned char)un[0]) || un[0] == '_')) continue;
+    char rb[256]; int defc = -1;
+    int x = an_unparen(nt, av[0]);
+    const char *rivn = nt_kind(nt, x) == NK_CallNode && nt_ref(nt, x, "receiver") >= 0
+                       ? an_reader_ivar_of(c, x, &defc, rb, sizeof rb) : NULL;
+    if (rivn && defc >= 0 && strbuf_ivar_any_str_mut(c, defc, rivn))
+      bw_refuse(c, u, "an instance variable written from another object's reader");
+  }
+}
+
 /* Only an implicit block or the method's own block parameter forwards its
    caller's block. A literal block or an unrelated proc belongs to super. */
 int super_forwards_caller_block(Compiler *c, int id) {
@@ -35451,6 +35681,7 @@ static void an_phase_reconcile_check(Compiler *c) {
       nt_node_set_str((NodeTable *)c->nt, sid, "name", "[]=");
   }
   refuse_string_read_copies(c);
+  refuse_string_binding_copies(c);
 
   /* Refuse lent ivar copies through calls and super only after sharing
      analysis settles (#6998). */

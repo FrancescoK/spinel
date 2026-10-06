@@ -1,0 +1,13 @@
+# k2.v = k1.v makes k2's @v the String k1's @v holds, so k2.bang changes
+# k1.v. k2's @v held a copy and k1.v stayed "a": refused, not compiled
+# wrong.
+class K
+  attr_accessor :v
+  def bang = @v << "!"
+end
+k1 = K.new
+k1.v = +"a"
+k2 = K.new
+k2.v = k1.v
+k2.bang
+p k1.v
