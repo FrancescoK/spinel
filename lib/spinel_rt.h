@@ -4393,10 +4393,14 @@ static sp_RbVal sp_poly_conjugate(sp_RbVal v) {
 static sp_int sp_poly_range_begin(sp_RbVal v) { if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_RANGE) return ((sp_Range *)v.v.p)->first; sp_raise_poly_nomethod("begin", v); }
 static sp_int sp_poly_range_end(sp_RbVal v) { if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_RANGE) return sp_range_end_i(*(sp_Range *)v.v.p); sp_raise_poly_nomethod("end", v); }
 static SP_UNUSED sp_RbVal sp_poly_range_begin_v(sp_RbVal v) {
+  /* a String Range's endpoint, or nil where it has none (a Method bound to
+     one reads it out of the box) */
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_STR_RANGE && v.v.p) { const char *s = ((sp_StrRange *)v.v.p)->first; return s ? sp_box_str(s) : sp_box_nil(); }
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_FLOAT_RANGE && v.v.p) { sp_FloatRange r = (*(sp_FloatRange *)v.v.p); if (r.omitted & SP_FRANGE_NO_BEGIN) return sp_box_nil(); return sp_frange_box_bound(r, r.first, SP_FRANGE_INT_BEGIN | SP_FRANGE_RT_INT_BEGIN); }
   sp_int b = sp_poly_range_begin(v); return b == SP_INT_NIL ? sp_box_nil() : sp_box_int(b);
 }
 static SP_UNUSED sp_RbVal sp_poly_range_end_v(sp_RbVal v) {
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_STR_RANGE && v.v.p) { const char *s = ((sp_StrRange *)v.v.p)->last; return s ? sp_box_str(s) : sp_box_nil(); }
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_FLOAT_RANGE && v.v.p) { sp_FloatRange r = (*(sp_FloatRange *)v.v.p); if (r.omitted & SP_FRANGE_NO_END) return sp_box_nil(); return sp_frange_box_bound(r, r.last, SP_FRANGE_INT_END | SP_FRANGE_RT_INT_END); }
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_RANGE && v.v.p && ((sp_Range *)v.v.p)->fe)
     return sp_box_float(((sp_Range *)v.v.p)->fend);   /* (1..2.5): the end as written */

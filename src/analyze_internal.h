@@ -93,6 +93,7 @@ int is_builtin_exception_name(const char *n);
 const char *superclass_builtin_exc_name(const NodeTable *nt, int sc);   /* analyze_util.c */
 int is_syserr_family_name(const char *n);           /* analyze_util.c */
 int builtin_method_known(const char *cls, const char *m);
+int builtin_method_accepts_known(const char *cls, const char *m);
 int builtin_method_names(const char *cls, const char **out, int cap);
 int builtin_name_arity_span(const char *name, int with_block, int *lo, int *hi);
 int builtin_kernel_fn_span(const char *name, int with_block, int *lo, int *hi);

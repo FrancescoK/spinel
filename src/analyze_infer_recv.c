@@ -71,6 +71,9 @@ int infer_range_call(Compiler *c, int id, TyKind rt, TyKind *out) {
   if (args >= 0) argv = nt_arr(nt, args, "arguments", &argc);
   (void)argv; (void)recv;
   if (!name) return 0;
+  /* `r.method(:sym)` is a Method bound to the Range itself, which
+     infer_method_proc_call types: neither face below has an answer for it */
+  if ((rt == TY_STR_RANGE || rt == TY_FLOAT_RANGE) && sp_streq(name, "method")) return 0;
   /* A Float range (1.0..3.0) is a distinct type with float endpoints; it is
      not iterable, so its whole method face reduces to endpoint queries,
      membership tests, and the sole materializing method, step. */

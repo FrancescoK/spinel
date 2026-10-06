@@ -14538,6 +14538,14 @@ sp_builtin_arity_spec_tbl[] = {
 #undef BAM
 #undef BAS
 #undef BAC
+/* Does the accepted-count table have a row for cls#m? It also holds the
+   methods with optional or rest parameters (`Range#sum`), which have no
+   fixed Method#arity row and so are not builtin_method_known. */
+int builtin_method_accepts_known(const char *cls, const char *m) {
+  for (const SpAritySpec *r = sp_builtin_arity_spec_tbl; r->cls; r++)
+    if (sp_streq(r->cls, cls) && sp_streq(r->m, m)) return 1;
+  return 0;
+}
 /* Is `m` a method the builtin File (IO and its Enumerable included) has? */
 static int io_builtin_name(const char *m) {
   for (const SpAritySpec *r = sp_builtin_arity_spec_tbl; r->cls; r++)
