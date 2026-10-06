@@ -10714,6 +10714,10 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   char inl_lbl[32]; snprintf(inl_lbl, sizeof inl_lbl, "_sret%d", tag);
   if (as_expr) {
     TyKind rt = comp_ntype(c, id);
+    /* A nil or non-returning block has no C value type. As for an ordinary
+       yielding call, its result still needs a slot while the body runs. */
+    if (rt == TY_NIL || rt == TY_VOID || rt == TY_UNKNOWN) rt = TY_POLY;
+    if (fwd_yield_proc || explicit_block_arg) g_yield_slot_ty = rt;
     int rtag = ++g_tmp;
     char rvbuf[32]; snprintf(rvbuf, sizeof rvbuf, "_t%d", rtag);
     emit_indent(b, din); emit_ctype(c, rt, b);
