@@ -342,7 +342,7 @@ for n in names:
         d = jobs[("cident", n, 0)]
         lines = read(os.path.join(d, "cident.txt")).rstrip().splitlines()
         if not lines:
-            print(f"- cident: {read(os.path.join(d, 'cident-missing.txt')).strip() or 'no result (see cident-*.log)'}")
+            print(f"- {read(os.path.join(d, 'cident-missing.txt')).strip() or 'cident: no result (see cident-*.log)'}")
         else:
             print("- cident:\n  ```text\n" + "\n".join("  " + l for l in lines[:62]) +
                   ("\n  ..." if len(lines) > 62 else "") + "\n  ```")
