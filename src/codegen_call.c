@@ -15368,14 +15368,17 @@ static int g_poly_arity_node = -1;
    user class answers, as an instance or a class method, takes the poly
    dispatch, whose hoist runs the operands in order already
    (hoist_dispatch_args), a splat or `**` among them; so does a call with
-   one, here. */
-static int g_poly_args_first_node = -1;
+   one, here. A safe-navigation call runs no operand for a nil receiver:
+   its arms test the receiver first (emit_call_safe_nav_arms). An operand
+   that already ran (arg_ran_first) is not run again, so the re-entered
+   call goes on to the checks. */
 static int emit_poly_args_first(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
-  if (g_poly_args_first_node == id) return 0;
   const char *name = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver");
-  if (!name || recv < 0 || comp_ntype(c, recv) != TY_POLY || user_defines_or_reads(c, name)) return 0;
+  const char *op = nt_str(nt, id, "call_operator");
+  if (!name || recv < 0 || comp_ntype(c, recv) != TY_POLY || user_defines_or_reads(c, name) ||
+      (op && sp_streq(op, "&."))) return 0;
   for (int k = 0; k < c->nclasses; k++)
     if (comp_cmethod_in_chain(c, k, name, NULL) >= 0) return 0;
   int argc = 0;
@@ -15386,7 +15389,7 @@ static int emit_poly_args_first(Compiler *c, int id, Buf *b) {
     const char *aty = nt_type(nt, argv[i]);
     if (ak == NK_SplatNode || ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode ||
         (aty && sp_streq(aty, "ForwardingArgumentsNode"))) return 0;
-    if (!eff) eff = subtree_has_side_effect(c, argv[i]);
+    if (!eff) eff = subtree_has_side_effect(c, argv[i]) && !arg_ran_first(argv[i], 0);
   }
   if (!eff) return 0;
   int saved = g_n_argov;
@@ -15397,9 +15400,7 @@ static int emit_poly_args_first(Compiler *c, int id, Buf *b) {
     view_bind(recv, "_t%d", hoist_boxed_rooted(c, recv));
   }
   emit_args_before(c, argv, argc, NULL, 0, g_pre);
-  int sv = g_poly_args_first_node; g_poly_args_first_node = id;
   emit_call(c, id, b);
-  g_poly_args_first_node = sv;
   view_unbind(saved);
   return 1;
 }
