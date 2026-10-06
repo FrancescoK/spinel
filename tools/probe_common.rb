@@ -5,8 +5,8 @@
 #
 # A generator is a module answering FACTORS ([name, levels] pairs, the first
 # level of each its simplest), NAMES, SIMPLEST, GeneratorError, render(id, row) (a Case of the levels it realized, which render
-# back to the same program), covering_cases(t, seed, tries, only), cases(rows),
-# pinned_cases(rows, only), pins(spec),
+# back to the same program), covering_cases(t, seed, tries, only, also), cases(rows),
+# pinned_cases(rows, only), pins(spec), factor_list(spec),
 # random_rows(n, seed), program(cases) (each case's lines under a heading
 # `# case <id>:`), flags(cases) and shape(case), and
 # optionally diff_kind(want, got, case) and FIXED (factors a reduction never
@@ -144,11 +144,13 @@ module ProbeCommon
       rows.map { |r| self::NAMES.each_with_index.to_h { |f, i| [f, self::FACTORS[i][1][r[i]]] } }
     end
 
-    # Every `t`-way combination of levels, as the keys covering_array uses.
-    def all_tuples(t)
+    # Every `t`-way combination of levels, as the keys covering_array uses;
+    # with `sel`, only those of the factor tuples it numbers.
+    def all_tuples(t, sel = nil)
       sizes = self::FACTORS.map { |_, l| l.size }
       h = {}
       (0...self::FACTORS.size).to_a.combination(t).each_with_index do |tu, i|
+        next if sel && !sel.include?(i)
         tu.map { |f| (0...sizes[f]).to_a }.reduce([[]]) { |acc, ls| acc.product(ls).map { |a, l| a + [l] } }.each do |ls|
           h[key(i, ls)] = true
         end
@@ -156,14 +158,16 @@ module ProbeCommon
       h
     end
 
-    # The `t`-way combinations the realized levels of `cases` take.
-    def tuples_of(cases, t)
+    # The `t`-way combinations the realized levels of `cases` take; with
+    # `sel`, only those of the factor tuples it numbers.
+    def tuples_of(cases, t, sel = nil)
       idx = self::FACTORS.map { |_, l| l.each_with_index.to_h }
-      combos = (0...self::FACTORS.size).to_a.combination(t).to_a
+      combos = (0...self::FACTORS.size).to_a.combination(t).each_with_index.to_a
+      combos.select! { |_, i| sel.include?(i) } if sel
       h = {}
       cases.each do |c|
         lv = self::NAMES.each_with_index.map { |f, i| idx[i][c.realized[f]] }
-        combos.each_with_index { |tu, i| h[key(i, tu.map { |f| lv[f] })] = true }
+        combos.each { |tu, i| h[key(i, tu.map { |f| lv[f] })] = true }
       end
       h
     end
@@ -179,52 +183,95 @@ module ProbeCommon
     #
     # With `only`, every case takes its levels (see pinned_cases), and the
     # combinations are those that agree with them.
-    def covering_cases(t, seed, tries = 100, only = {})
+    #
+    # `also` names factors whose 3-way combinations some bugs need and pairs
+    # do not promise (a call that fails only on a receiver held one way and
+    # read back another): at a strength below 3, the combinations of every
+    # three of them are then added the same way, on top of the covering
+    # array, without asking every factor for them. The answer then also
+    # counts those: [cases, want, got, want3, got3].
+    def covering_cases(t, seed, tries = 100, only = {}, also = [])
       cases = pinned_cases(covering_array(t, seed), only)
       rng = Random.new(seed)
       want = got = nil
       (1..t).each do |s|
         combos = (0...self::FACTORS.size).to_a.combination(s).to_a
-        want = all_tuples(s)
-        unless only.empty?
-          want.reject! do |kk, _|
-            ti, ls = unkey(kk, s)
-            combos[ti].each_with_index.any? do |f, x|
-              only.key?(self::NAMES[f]) && self::FACTORS[f][1][ls[x]] != only[self::NAMES[f]]
-            end
-          end
-        end
-        got = tuples_of(cases, s)
-        parts = s > 1 ? tuples_of(cases, s - 1) : {}
-        part_index = (0...self::FACTORS.size).to_a.combination(s - 1).each_with_index.to_h
-        want.each_key do |kk|
-          next if got.key?(kk)
-          ti, ls = unkey(kk, s)
-          fs = combos[ti]
-          next if s > 1 && (0...s).any? do |x|
-            parts[key(part_index[fs[0...x] + fs[(x + 1)..]], ls[0...x] + ls[(x + 1)..])].nil?
-          end
-          fixed = fs.each_with_index.to_h { |f, x| [self::NAMES[f], self::FACTORS[f][1][ls[x]]] }
-          from = nil
-          tries.times do |n|
-            if n.odd?
-              from ||= begin
-                near = cases.group_by { |c| fixed.count { |f, l| c.realized[f] == l } }
-                near.delete(0)
-                near.empty? ? [] : near[near.keys.max]
-              end
-            end
-            base = n.odd? && !from.empty? ? from[rng.rand(from.size)].realized : random_row(rng)
-            c = render(cases.last.id + 1, base.merge(fixed).merge(only))
-            next unless fixed.merge(only).all? { |f, l| c.realized[f] == l }
-            cases << c
-            got.merge!(tuples_of([c], s))
-            parts.merge!(tuples_of([c], s - 1)) if s > 1
-            break
-          end
+        want = wanted(combos, s, only)
+        got = take(cases, combos, s, want, rng, tries, only)
+      end
+      return [cases, want.size, want.count { |kk, _| got.key?(kk) }] if also.size < 3 || t >= 3
+      idx = also.map { |f| self::NAMES.index(f) or raise ArgumentError, "no factor #{f.inspect}" }.sort
+      # a triple is tried only when its pairs are taken, so at strength 1 the
+      # pairs of the selected factors go first
+      if t < 2
+        all2 = (0...self::FACTORS.size).to_a.combination(2).to_a
+        sel2 = idx.combination(2).map { |tu| all2.index(tu) }
+        take(cases, all2, 2, wanted(all2, 2, only, sel2), rng, tries, only, sel2)
+      end
+      all = (0...self::FACTORS.size).to_a.combination(3).to_a
+      sel = idx.combination(3).map { |tu| all.index(tu) }
+      want3 = wanted(all, 3, only, sel)
+      got3 = take(cases, all, 3, want3, rng, tries, only, sel)
+      # the cases the triples added can take requested combinations too
+      got = tuples_of(cases, t)
+      [cases, want.size, want.count { |kk, _| got.key?(kk) }, want3.size, want3.count { |kk, _| got3.key?(kk) }]
+    end
+
+    # The `s`-way combinations of levels (of the factor tuples `combos`,
+    # those `sel` numbers when given) that agree with `only`.
+    def wanted(combos, s, only, sel = nil)
+      want = all_tuples(s, sel)
+      return want if only.empty?
+      want.reject do |kk, _|
+        ti, ls = unkey(kk, s)
+        combos[ti].each_with_index.any? do |f, x|
+          only.key?(self::NAMES[f]) && self::FACTORS[f][1][ls[x]] != only[self::NAMES[f]]
         end
       end
-      [cases, want.size, want.count { |kk, _| got.key?(kk) }]
+    end
+
+    # Adds to `cases` a case for each combination of `want` no case takes
+    # yet (covering_cases), and answers the combinations the cases take (of
+    # the factor tuples `sel` numbers, when given).
+    def take(cases, combos, s, want, rng, tries, only, sel = nil)
+      got = tuples_of(cases, s, sel)
+      parts = s > 1 ? tuples_of(cases, s - 1) : {}
+      part_index = (0...self::FACTORS.size).to_a.combination(s - 1).each_with_index.to_h
+      want.each_key do |kk|
+        next if got.key?(kk)
+        ti, ls = unkey(kk, s)
+        fs = combos[ti]
+        next if s > 1 && (0...s).any? do |x|
+          parts[key(part_index[fs[0...x] + fs[(x + 1)..]], ls[0...x] + ls[(x + 1)..])].nil?
+        end
+        fixed = fs.each_with_index.to_h { |f, x| [self::NAMES[f], self::FACTORS[f][1][ls[x]]] }
+        from = nil
+        tries.times do |n|
+          if n.odd?
+            from ||= begin
+              near = cases.group_by { |c| fixed.count { |f, l| c.realized[f] == l } }
+              near.delete(0)
+              near.empty? ? [] : near[near.keys.max]
+            end
+          end
+          base = n.odd? && !from.empty? ? from[rng.rand(from.size)].realized : random_row(rng)
+          c = render(cases.last.id + 1, base.merge(fixed).merge(only))
+          next unless fixed.merge(only).all? { |f, l| c.realized[f] == l }
+          cases << c
+          got.merge!(tuples_of([c], s, sel))
+          parts.merge!(tuples_of([c], s - 1)) if s > 1
+          break
+        end
+      end
+      got
+    end
+
+    # The factors a spec such as "alias_op,alias_way,recv" names (none for
+    # an empty one).
+    def factor_list(spec)
+      spec.split(",").map do |f|
+        self::NAMES.find { |n| n.to_s == f } or raise ArgumentError, "no factor #{f.inspect}"
+      end
     end
 
     # The levels a spec such as "name_clash=sibling,seed=poly" pins.
@@ -559,8 +606,10 @@ module ProbeCommon
       unless !timed_out && status.success?
         # C that does not build first: its diagnostics can quote generated C
         # that says "unsupported". A refusal is the compiler's own line naming
-        # the construct at a Ruby line, or its tally of them.
-        refusal = /^spinel: (?:\S+\.rb:\d+: )?unsupported /
+        # the construct at a Ruby line, or its tally of them. Two say "<the
+        # construct> is not supported" instead (a block's splat parameter
+        # where a lowering takes none, a Struct::Name constant path).
+        refusal = /^spinel: (?:(?:\S+\.rb:\d+: )?unsupported |\S+\.rb:\d+: .* is not supported)/
         tally = /\d+ refusals?, nothing written/
         label = if !timed_out && status.signaled? then "compiler-failure"
                 elsif build.include?("C compilation failed") then "link-error"
@@ -905,11 +954,13 @@ module ProbeCommon
   end
 
   # A probe's command line: `name` the tool's (tools/<name>.rb), `out` its
-  # default --out, `strength` its default --strength; `documented` and
-  # `undefined` as Probe takes them. Answers the exit status.
-  def main(gen, name, argv, out:, strength:, undefined:, documented: [])
-    usage = "usage: ruby tools/#{name}.rb [--strength T | --random N] [--seed S] [--only F=L,..] " \
-            "[--batch B] [--jobs J] [--out DIR] [--timeout SEC] [--keep] [--no-reduce] [--no-confirm]"
+  # default --out, `strength` its default --strength, `also` its default
+  # --strength3 (the factors whose 3-way combinations are added on top of a
+  # pairwise array; covering_cases); `documented` and `undefined` as Probe
+  # takes them. Answers the exit status.
+  def main(gen, name, argv, out:, strength:, undefined:, documented: [], also: [])
+    usage = "usage: ruby tools/#{name}.rb [--strength T | --random N] [--strength3 F,F,F..] [--seed S] " \
+            "[--only F=L,..] [--batch B] [--jobs J] [--out DIR] [--timeout SEC] [--keep] [--no-reduce] [--no-confirm]"
     random = nil
     seed = 1
     only = {}
@@ -924,6 +975,7 @@ module ProbeCommon
       until args.empty?
         case args.shift
         when "--strength" then strength = Integer(args.shift)
+        when "--strength3" then also = gen.factor_list(args.shift.to_s)
         when "--random" then random = Integer(args.shift)
         when "--seed" then seed = Integer(args.shift)
         when "--only" then only.merge!(gen.pins(args.shift.to_s))
@@ -937,7 +989,7 @@ module ProbeCommon
         else raise ArgumentError
         end
       end
-      raise ArgumentError unless (1..gen::FACTORS.size).cover?(strength) &&
+      raise ArgumentError unless (1..gen::FACTORS.size).cover?(strength) && (also.empty? || also.size >= 3) &&
                                  [batch, jobs, timeout].all?(&:positive?) && (random.nil? || random.positive?)
     rescue ArgumentError, TypeError => e
       warn "#{name}: #{e.message}" unless e.message == "ArgumentError"
@@ -980,9 +1032,14 @@ module ProbeCommon
         cases = gen.pinned_cases(gen.random_rows(random, seed), only)
         coverage = "#{random} random rows (seed #{seed})"
       else
-        cases, want, got = gen.covering_cases(strength, seed, 100, only)
+        # a generator with its own covering (builtin_row_gen) takes no 3-way factors
+        cases, want, got, want3, got3 = also.empty? ? gen.covering_cases(strength, seed, 100, only)
+                                                    : gen.covering_cases(strength, seed, 100, only, also)
         coverage = "#{strength}-way covering array (seed #{seed}): the cases take #{got} of the #{want} " \
                    "#{strength}-way combinations of levels; #{want - got} were not taken"
+        if want3
+          coverage += "; and #{got3} of the #{want3} 3-way combinations of #{also.join(", ")}"
+        end
       end
       coverage += "; pinned: #{only.map { |f, l| "#{f}=#{l}" }.join(" ")}" unless only.empty?
       (LABELS + %w[work summary.txt]).each { |p| FileUtils.rm_rf(File.join(out, p)) }
