@@ -80,10 +80,10 @@ int emit_call_identity_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
       int tv = ++g_tmp;
       buf_printf(b, "({ sp_Bigint *_t%d = ", tv); emit_expr(c, recv, b);
       buf_printf(b, "; (sp_bigint_cmp(_t%d, ", tv);
-      if (comp_ntype(c, argv[0]) == TY_BIGINT) emit_expr(c, argv[0], b);
+      if (repr_of(c, argv[0]).big) emit_expr(c, argv[0], b);
       else { buf_puts(b, "sp_bigint_new_int("); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
       buf_printf(b, ") >= 0 && sp_bigint_cmp(_t%d, ", tv);
-      if (comp_ntype(c, argv[1]) == TY_BIGINT) emit_expr(c, argv[1], b);
+      if (repr_of(c, argv[1]).big) emit_expr(c, argv[1], b);
       else { buf_puts(b, "sp_bigint_new_int("); emit_int_expr(c, argv[1], b); buf_puts(b, ")"); }
       buf_puts(b, ") <= 0); })");
       return 1;
@@ -93,14 +93,14 @@ int emit_call_identity_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
        Coerce the receiver and each bound to Bignum and route through
        sp_bigint_cmp. (#2893) */
     if (rt == TY_INT &&
-        (comp_ntype(c, argv[0]) == TY_BIGINT || comp_ntype(c, argv[1]) == TY_BIGINT)) {
+        (repr_of(c, argv[0]).big || repr_of(c, argv[1]).big)) {
       int tv = ++g_tmp;
       buf_printf(b, "({ sp_Bigint *_t%d = sp_bigint_new_int(", tv); emit_int_expr(c, recv, b);
       buf_printf(b, "); (sp_bigint_cmp(_t%d, ", tv);
-      if (comp_ntype(c, argv[0]) == TY_BIGINT) emit_expr(c, argv[0], b);
+      if (repr_of(c, argv[0]).big) emit_expr(c, argv[0], b);
       else { buf_puts(b, "sp_bigint_new_int("); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
       buf_printf(b, ") >= 0 && sp_bigint_cmp(_t%d, ", tv);
-      if (comp_ntype(c, argv[1]) == TY_BIGINT) emit_expr(c, argv[1], b);
+      if (repr_of(c, argv[1]).big) emit_expr(c, argv[1], b);
       else { buf_puts(b, "sp_bigint_new_int("); emit_int_expr(c, argv[1], b); buf_puts(b, ")"); }
       buf_puts(b, ") <= 0); })");
       return 1;
@@ -872,8 +872,9 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
   /* freeze / frozen? on an array set/read the struct's frozen flag: builtin-op
      rows of the same stage (builtin_ops.c) */
   if (recv >= 0 && repr_of(c, recv).kind != RK_BOXED) {
-    TyKind crt = comp_ntype(c, recv);
-    TyKind ak = (crt == TY_POLY_ARRAY || array_kind(crt)) ? crt : TY_UNKNOWN;
+    Repr cr = repr_of(c, recv);
+    TyKind crt = cr.as_ty;
+    TyKind ak = (cr.elem == TY_POLY || array_kind(crt)) ? crt : TY_UNKNOWN;
     /* An empty array literal infers TY_UNKNOWN and emits as sp_IntArray_new(),
        so it reads them as an Integer array; without this `[].freeze` dropped
        the call and `[].freeze.frozen?` answered false (#3828). */
