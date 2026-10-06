@@ -18468,12 +18468,59 @@ int emit_ivar_nil_guarded(Compiler *c, int id, Buf *b, int indent,
    call's own emission runs with its receiver viewed as tested
    (VR_NIL_TESTED), so a re-entry of the same call is not armed twice. */
 
+/* The operands nil_target_operand binds: a call, a value a branch or a
+   yield answers, and a local's, an ivar's or a global's write, each of
+   which answers its value */
+static int nil_target_bindable(NodeKind k) {
+  switch (k) {
+  case NK_CallNode: case NK_ParenthesesNode: case NK_IfNode: case NK_UnlessNode:
+  case NK_YieldNode: case NK_SuperNode: case NK_ForwardingSuperNode:
+  case NK_LocalVariableWriteNode: case NK_LocalVariableOperatorWriteNode:
+  case NK_LocalVariableOrWriteNode: case NK_LocalVariableAndWriteNode:
+  case NK_InstanceVariableWriteNode: case NK_InstanceVariableOperatorWriteNode:
+  case NK_InstanceVariableOrWriteNode: case NK_InstanceVariableAndWriteNode:
+  case NK_GlobalVariableWriteNode: case NK_GlobalVariableOperatorWriteNode:
+  case NK_GlobalVariableOrWriteNode: case NK_GlobalVariableAndWriteNode:
+    return 1;
+  default:
+    return 0;
+  }
+}
+
+/* One argument of nil_target_operands, or a part of one: bound when it
+   runs code, else walked into when it is a container literal, a splat or
+   a keyword pair, whose parts run in order and whose own construction runs
+   none. 0 when it meets a part that runs code and cannot be bound -- a
+   value with no C type, a block argument -- or the temps run out: the
+   parts after it run in the call as before. */
+static int nil_target_operand(Compiler *c, int v, int *node, TyKind *ty, int *n, int max) {
+  const NodeTable *nt = c->nt;
+  if (v < 0 || !subtree_has_side_effect(c, v)) return 1;
+  NodeKind k = nt_kind(nt, v);
+  if (k == NK_ArrayNode || k == NK_HashNode || k == NK_KeywordHashNode) {
+    int en = 0;
+    const int *ev = nt_arr(nt, v, "elements", &en);
+    for (int i = 0; i < en; i++)
+      if (!nil_target_operand(c, ev[i], node, ty, n, max)) return 0;
+    return 1;
+  }
+  if (k == NK_AssocNode)
+    return nil_target_operand(c, nt_ref(nt, v, "key"), node, ty, n, max) &&
+           nil_target_operand(c, nt_ref(nt, v, "value"), node, ty, n, max);
+  if (k == NK_AssocSplatNode) return nil_target_operand(c, nt_ref(nt, v, "value"), node, ty, n, max);
+  if (k == NK_SplatNode) return nil_target_operand(c, nt_ref(nt, v, "expression"), node, ty, n, max);
+  TyKind t = comp_ntype(c, v);
+  if (*n >= max ||
+      !nil_target_bindable(k) || t == TY_UNKNOWN || t == TY_VOID || t == TY_NIL || comp_ty_value_obj(c, t))
+    return 0;
+  node[*n] = v; ty[*n] = t; (*n)++;
+  return 1;
+}
+
 /* The operands the nil arm runs ahead of its test, into node[]/ty[]: the
    receiver unless it is a local's or a global's read, then each argument
-   that runs code. An argument that runs code but cannot be bound -- a
-   container literal, a splat, a block argument, a value with no C type --
-   stops the list there: the ones after it run in the call as before.
-   Answers the count. */
+   that runs code, in Ruby's order (nil_target_operand). Answers the
+   count. */
 static int nil_target_operands(Compiler *c, int id, int *node, TyKind *ty, int max) {
   const NodeTable *nt = c->nt;
   int n = 0;
@@ -18484,16 +18531,8 @@ static int nil_target_operands(Compiler *c, int id, int *node, TyKind *ty, int m
   }
   int a = nt_ref(nt, id, "arguments"), an = 0;
   const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
-  for (int i = 0; i < an && n < max; i++) {
-    if (!subtree_has_side_effect(c, av[i])) continue;
-    NodeKind k = nt_kind(nt, av[i]);
-    TyKind t = comp_ntype(c, av[i]);
-    if ((k != NK_CallNode && k != NK_ParenthesesNode && k != NK_IfNode && k != NK_UnlessNode &&
-         k != NK_YieldNode && k != NK_SuperNode && k != NK_ForwardingSuperNode) ||
-        t == TY_UNKNOWN || t == TY_VOID || t == TY_NIL || comp_ty_value_obj(c, t))
-      break;
-    node[n] = av[i]; ty[n] = t; n++;
-  }
+  for (int i = 0; i < an; i++)
+    if (!nil_target_operand(c, av[i], node, ty, &n, max)) break;
   return n;
 }
 

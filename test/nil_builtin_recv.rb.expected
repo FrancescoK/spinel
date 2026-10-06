@@ -26,6 +26,20 @@ safe-nav 1
 stmt "ax"
 each_char 2
 scan 2
+lines NoMethodError: undefined method 'lines' for nil
+split NoMethodError: undefined method 'split' for nil
+insert NoMethodError: undefined method 'insert' for nil
+push NoMethodError: undefined method 'push' for nil
+log [:l0, :s0, :s1, :i0, :i1, :i2, :b0, :b1, :b2]
+writes undefined method 'center' for nil
+written [6, "*"]
+lines ["a,b", "c"]
+split ["a", "b\nc"]
+insert [7, 8, 1, 2]
+push [[1], [2], [3], [4]]
+log [:l0, :s0, :s1, :i0, :i1, :i2, :b0, :b1, :b2]
+writes "a,b\nc*"
+written [6, "*"]
 shared NoMethodError: undefined method '<<' for nil
 shared "abyz"
 puts NoMethodError: private method 'puts' called for nil
