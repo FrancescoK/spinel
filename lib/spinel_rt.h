@@ -13399,6 +13399,11 @@ static const char sp_catch_nil_tag, sp_catch_true_tag, sp_catch_false_tag;
    A boxed tag's kind is not known until it is thrown or caught (#4523). */
 static const char *sp_catch_tag_of(sp_RbVal v, unsigned char *kind) {
   if (v.tag == SP_TAG_SYM) { *kind = 0; return sp_sym_name_fn ? sp_sym_name_fn((sp_sym)v.v.i) : ""; }
+  /* A String matches by identity, as equal? does: a plain one by its
+     pointer (kind 2), a shared one by its handle (kind 3). By content an
+     equal copy met the original, where CRuby raises UncaughtThrowError. */
+  if (v.tag == SP_TAG_STR) { *kind = 2; return v.v.p ? (const char *)v.v.p : ""; }
+  if (sp_poly_is_strbuf(v)) { *kind = 3; return (const char *)v.v.p; }
   if (v.tag == SP_TAG_STR) { *kind = 0; return v.v.p ? (const char *)v.v.p : ""; }
   if (v.tag == SP_TAG_INT) { *kind = 1; return (const char *)(intptr_t)v.v.i; }
   if (v.tag == SP_TAG_NIL) { *kind = 1; return (const char *)&sp_catch_nil_tag; }
@@ -13426,6 +13431,15 @@ static void sp_throw(const char *tag, int kind, sp_RbVal val) {
       longjmp(sp_catch_stack[i], 1);
     }
     i--;
+  }
+  /* a String tag (kind 2, 3) is UncaughtThrowError#tag as a String, and
+     the message inspects it as CRuby's does */
+  if (kind == 2 || kind == 3) {
+    sp_String *ts = kind == 3 ? (sp_String *)(void *)tag : sp_String_new_shared(tag);
+    SP_GC_ROOT(ts);
+    sp_exc_stage_val(val);
+    sp_exc_stage_key(sp_box_obj((void *)ts, SP_BUILTIN_STRBUF));
+    sp_raise_cls("UncaughtThrowError", sp_sprintf("uncaught throw %s", sp_str_inspect(sp_String_cstr(ts))));
   }
   sp_exc_stage_val(val);
   if (kind) sp_raise_cls("UncaughtThrowError", "uncaught throw");

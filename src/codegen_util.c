@@ -3693,14 +3693,30 @@ void emit_str_literal_src(Buf *b, const char *content, size_t len, int frozen) {
   if (content && len) emit_c_escaped_n(b, content, len);
   buf_printf(b, "\"; &_slit_%d[1]; })", lid);
 }
-/* Emit a catch/throw tag expression; returns the tag KIND (0 = name tag
-   matched by content, 1 = object tag matched by pointer identity). */
+/* Emit a catch/throw tag expression; returns the tag KIND (0 = a Symbol,
+   matched by name; 1 = an object, matched by pointer identity; 2 = a
+   String, matched by its pointer; 3 = a shared String, matched by its
+   handle). A String matches by identity, as equal? does: by content an
+   equal copy met the original, where CRuby raises UncaughtThrowError. A
+   literal is one object per content, as in CRuby. */
 int emit_catch_tag(Compiler *c, int id, Buf *b) {
   const char *ty = nt_type(c->nt, id);
   if (ty && sp_streq(ty, "SymbolNode")) { emit_str_literal(b, nt_str(c->nt, id, "value")); return 0; }
-  if (ty && sp_streq(ty, "StringNode")) { emit_str_literal(b, nt_str(c->nt, id, "unescaped")); return 0; }
   Repr tr = repr_of(c, id);
   TyKind t = tr.as_ty;
+  /* a variable holding the shared handle is that String, whichever face
+     its read is typed as: a read of the handle hands out a copy */
+  char href[256];
+  if ((t == TY_STRBUF || t == TY_STRING) && strbuf_slot_ref(c, id, href, sizeof href)) {
+    buf_printf(b, "((const char *)(void *)%s)", href);
+    return 3;
+  }
+  if (t == TY_STRBUF)
+    unsupported(c, id, "catch/throw with a shared String tag that no variable holds (bind it to a local first)");
+  if (t == TY_STRING) {
+    emit_expr(c, id, b);
+    return 2;
+  }
   if (t == TY_SYMBOL) {
     buf_puts(b, "sp_sym_to_s("); emit_expr(c, id, b); buf_puts(b, ")");
     return 0;
@@ -3723,12 +3739,6 @@ int emit_catch_tag(Compiler *c, int id, Buf *b) {
        pointer was the symbol's id, and it matched nothing (#4523). */
     emit_expr(c, id, b);
     return -1;
-  }
-  if (t == TY_STRING) {
-    /* a dynamic string tag: a valid pointer, matched by content (like the
-       StringNode-literal arm above) */
-    emit_expr(c, id, b);
-    return 0;
   }
   if (t == TY_INT) {
     /* an Integer tag: CRuby matches by identity, which for a Fixnum is value
