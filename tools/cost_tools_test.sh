@@ -12,10 +12,10 @@ cd "$T"
 
 # A stand-in compiler: `--dump-repr P` prints P.<side>.repr (and is
 # refused once a file no-dump-repr exists), `-S` prints
-# P.<side>.c, `P -o OUT` writes a program that prints P.<side>.out and
-# writes P.<side>.alloc as its allocation report; the new side's program
-# also reports one allocation per argument it was given. <side> is the
-# name the stand-in is invoked by.
+# P.<side>.c, `P -o OUT` writes a program that prints P.<side>.out,
+# writes P.<side>.alloc as its allocation report and exits with
+# P.<side>.rc (else 0); the new side's program also reports one allocation
+# per argument it was given. <side> is the name the stand-in is invoked by.
 mock() {
   cat > "$T/$1" <<'MOCK'
 #!/usr/bin/env bash
@@ -28,8 +28,9 @@ case "$mode" in
   repr) [ -f "$PWD/no-dump-repr" ] && { echo "spinel: unknown option '--dump-repr'" >&2; exit 1; }
         [ -f "$prog.$side.repr" ] && cat "$prog.$side.repr"; exit 0;;
   c) cat "$prog.$side.c";;
-  *) printf '#!/bin/sh\ncat "%s"\n[ -f "%s" ] && cp "%s" "$SPINEL_ALLOC_REPORT"\n[ %s = new ] && [ $# -gt 0 ] && echo "alloc;Args $#" >> "$SPINEL_ALLOC_REPORT"\nexit 0\n' \
-       "$PWD/$prog.$side.out" "$PWD/$prog.$side.alloc" "$PWD/$prog.$side.alloc" "$side" > "$out"
+  *) rc=0; [ -f "$prog.$side.rc" ] && rc=$(cat "$prog.$side.rc")
+     printf '#!/bin/sh\ncat "%s"\n[ -f "%s" ] && cp "%s" "$SPINEL_ALLOC_REPORT"\n[ %s = new ] && [ $# -gt 0 ] && echo "alloc;Args $#" >> "$SPINEL_ALLOC_REPORT"\nexit %s\n' \
+       "$PWD/$prog.$side.out" "$PWD/$prog.$side.alloc" "$PWD/$prog.$side.alloc" "$side" "$rc" > "$out"
      chmod +x "$out";;
 esac
 MOCK
@@ -72,8 +73,11 @@ RUBY
 repr)
   # a String ivar that becomes the shared handle, a local that becomes
   # boxed, a Range that leaves its by-value layout, a slot only the new
-  # compiler has, and one that does not change
-  printf 'x\n' > a.rb; printf 'y\n' > b.rb
+  # compiler has, and one that does not change; c.rb's slot only the new
+  # compiler has, beside an empty dump, and d/e.rb and d_e.rb, two paths
+  # that differ only in a slash
+  printf 'x\n' > a.rb; printf 'y\n' > b.rb; printf 'z\n' > c.rb
+  mkdir d; printf 'w\n' > d/e.rb; printf 'v\n' > d_e.rb
   cat > a.rb.ref.repr <<'EOF'
 ivar Holder @buf: ptr ty=string
 local <main> r: struct ty=range
@@ -88,7 +92,11 @@ local Holder#run v: boxed ty=poly
 param Holder.use s: ptr ty=string
 EOF
   cp a.rb.ref.repr b.rb.ref.repr; cp a.rb.ref.repr b.rb.new.repr
-  bash "$ROOT/tools/repr_diff.sh" ./ref ./new a.rb b.rb
+  printf 'local <main> z: scalar ty=int\n' > c.rb.new.repr
+  printf 'local <main> t: ptr ty=string\n' > d/e.rb.ref.repr
+  printf 'local <main> t: strbuf ty=strbuf\n' > d/e.rb.new.repr
+  cp a.rb.ref.repr d_e.rb.ref.repr; cp a.rb.ref.repr d_e.rb.new.repr
+  bash "$ROOT/tools/repr_diff.sh" ./ref ./new a.rb b.rb c.rb d/e.rb d_e.rb
   # a compiler without --dump-repr: both sides compare their C instead
   cat > a.rb.ref.c <<'EOF'
 struct sp_Holder_s {
@@ -155,9 +163,12 @@ EOF
   ;;
 alloc)
   # grew.rb allocates past the threshold, same.rb does not, args.rb gets
-  # the two words of its .args, quiet.rb prints differently, and clock.rb
-  # reads the clock
-  for p in grew same args quiet clock; do
+  # the two words of its .args, quiet.rb prints differently, clock.rb
+  # reads the clock, exits.rb exits 1 only on the new side, raises.rb exits
+  # 1 on both, empty.rb allocates only on the new side, and d/e.rb and
+  # d_e.rb differ only in a slash
+  mkdir d
+  for p in grew same args quiet clock exits raises empty d/e d_e; do
     printf 'p 1\n' > $p.rb
     for side in ref new; do printf 'out\n' > $p.rb.$side.out
       printf 'alloc;String 10\nalloc;Holder 2\n# bytes String 1000\n# bytes Holder 32\n' > $p.rb.$side.alloc; done
@@ -167,6 +178,11 @@ alloc)
   printf '1000000 200\n' > args.rb.args
   printf 'other\n' > quiet.rb.new.out
   printf 'p Time.now\n' > clock.rb
-  bash "$ROOT/tools/alloc_diff.sh" ./ref ./new grew.rb same.rb args.rb quiet.rb clock.rb
+  printf '1\n' > exits.rb.new.rc; printf '1\n' > raises.rb.ref.rc; printf '1\n' > raises.rb.new.rc
+  : > empty.rb.ref.alloc
+  printf 'alloc;String 5000\nalloc;Holder 2\n# bytes String 500000\n# bytes Holder 32\n' > d_e.rb.new.alloc
+  bash "$ROOT/tools/alloc_diff.sh" ./ref ./new grew.rb same.rb args.rb quiet.rb clock.rb exits.rb raises.rb empty.rb d/e.rb d_e.rb
+  # a job count xargs refuses is an infrastructure error
+  ALLOC_DIFF_JOBS=x bash "$ROOT/tools/alloc_diff.sh" ./ref ./new same.rb 2> /dev/null || echo "alloc_diff exit $?"
   ;;
 esac

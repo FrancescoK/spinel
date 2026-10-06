@@ -630,10 +630,12 @@ tools/alloc_diff.sh REF_SPINEL NEW_SPINEL PROGS...
 - **repr_diff** pairs the slots of `spinel --dump-repr` (one sorted line
   per local, parameter and method value, ivar, global and constant, with
   the kind repr_of_slot gives it: scalar, sentinel, struct, vobj, ptr,
-  strbuf, boxed) and reports "N slots became shared handles (strbuf), M
+  strbuf, boxed) and reports "N slots became String buffers (strbuf), M
   became boxed, K left a by-value layout, J other changes", then each
-  slot. A compiler older than the flag is compared through the slot
-  declarations of its C (`sp_String *` against `const char *`).
+  slot. A String buffer is an `sp_String *`, the shared handle or the
+  buffer a loop builds in; a read-only use of either copies its bytes. A
+  compiler older than the flag is compared through the slot declarations
+  of its C (`sp_String *` against `const char *`).
 - **c_costs** counts, per program, the snapshot copies of a handle
   (`sp_str_concat(sp_String_cstr(h), "")`), the other copy helpers
   (`sp_*_dup`, `sp_*_copy`), the boxings, the out-of-line dispatches
@@ -644,9 +646,9 @@ tools/alloc_diff.sh REF_SPINEL NEW_SPINEL PROGS...
 - **alloc_diff** builds each program with both compilers, runs each binary
   once under `SPINEL_ALLOC_REPORT` (with its `.args` and `.stdin`, as the
   suite does) and flags a program whose allocations or bytes grew by more
-  than 20% and 1000 allocations or 64 KiB. Programs that print differently
-  on the two sides, or whose source reads the clock, threads, randomness or
-  the environment, are skipped and listed.
+  than 20% and 1000 allocations or 64 KiB. Programs that print or exit
+  differently on the two sides, or whose source reads the clock, threads,
+  randomness or the environment, are skipped and listed.
 
 The first two locate a cost and are cheap (no C compiler); the third
 measures it. #5113 against its parent, over #7482's repro (1 MB, 200

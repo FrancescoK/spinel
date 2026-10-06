@@ -15328,7 +15328,8 @@ char *codegen_program(const NodeTable *nt) {
   Compiler *c = comp_new(nt);
   analyze_program(c);
   if (g_dump_traits) { ty_traits_dump(c); exit(0); }
-  if (g_dump_repr) { repr_dump(c); exit(0); }
+  /* --dump-repr: the analysis's answer, printed once the compile passes */
+  char *repr_text = g_dump_repr ? repr_dump(c) : NULL;
   if (g_check_traits) exit(ty_traits_check(c) ? 1 : 0);
   g_scopes_settled = 1;   /* scope_is_shadowed may answer from its table now */
   /* Only stack String slots selected by the existing setjmp policy seed
@@ -16252,6 +16253,7 @@ char *codegen_program(const NodeTable *nt) {
     if (types_out) fprintf(stderr, "Wrote %s\n", types_out);
     exit(1);
   }
+  if (repr_text) { fputs(repr_text, stdout); exit(0); }
   if (g_plan_check) ucall_report(c);
   if (g_nil_check) nil_check_report(c);
   comp_free(c);
