@@ -1769,9 +1769,12 @@ int desugar_array_op_to_ary(Compiler *c) {
      s.to_s.m(x)        ->  s.m(x)                      s a String
 
    The receiver still runs first and the arguments after it, once on each
-   path. Only a String-typed receiver is rewritten, so other programs keep
-   their tree; a conditional missing an arm (whose value is nil), a call
-   with a block and an argument holding one are left alone. */
+   path. Only a receiver that may be a String is rewritten, so other
+   programs keep their tree: a String-typed one, and for the moves onto a
+   path a boxed one, which a String mutator's boxed dispatch reassigns only
+   through a variable (it raised NoMethodError on the paren); a conditional
+   missing an arm (whose value is nil), a call with a block and an argument
+   holding one are left alone. */
 static int mrv_no_scope(const NodeTable *nt, int root, int depth) {
   if (root < 0 || root >= nt->count) return 1;
   if (depth > 200) return 0;
@@ -1785,6 +1788,7 @@ static int mrv_no_scope(const NodeTable *nt, int root, int depth) {
   return 1;
 }
 static int mrv_is_string(TyKind t) { return t == TY_STRING || t == TY_STRBUF; }
+static int mrv_may_be_string(TyKind t) { return mrv_is_string(t) || t == TY_POLY; }
 /* Does a value leave instead of answering one (`return`, `break`, `next`,
    `redo`, `retry`, also inside a paren)? The call moved onto it would be a
    call on no value, so such an arm keeps the call where it was. */
@@ -1986,7 +1990,7 @@ int desugar_mutator_receiver_value(Compiler *c) {
       continue;
     }
     /* `(@v ||= e) << x`: the write, then the call on the variable */
-    if (mrv_paren_value(nt, r) && strstr(nt_type(nt, r), "WriteNode") && mrv_is_string(infer_type(c, r))) {
+    if (mrv_paren_value(nt, r) && strstr(nt_type(nt, r), "WriteNode") && mrv_may_be_string(infer_type(c, r))) {
       int base = nt->count;
       int tr = mrv_target_read(nt, r), st = nt_new_node(nt, "StatementsNode"), pr = nt_new_node(nt, "ParenthesesNode");
       long long line = nt_int(nt, id, "node_line", 0), file = nt_int(nt, id, "node_file", 0);
@@ -2006,7 +2010,7 @@ int desugar_mutator_receiver_value(Compiler *c) {
     }
     if (rk != NK_ParenthesesNode && rk != NK_IfNode && rk != NK_UnlessNode && rk != NK_CaseNode &&
         rk != NK_OrNode) continue;
-    if (!mrv_is_string(infer_type(c, r)) || !mrv_no_scope(nt, args, 0)) continue;
+    if (!mrv_may_be_string(infer_type(c, r)) || !mrv_no_scope(nt, args, 0)) continue;
     int arms[64], na = 0;
     int orl = -1;
     if (rk == NK_OrNode) {
