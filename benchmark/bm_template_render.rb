@@ -1,7 +1,7 @@
 # A small template renderer: each partial appends to the page buffer it is
-# handed (an object's ivar), every hundredth page is kept, and the kept pages
-# get a footer appended in place afterwards. The buffer a method fills, the
-# ivar that owns it and the Array that keeps it are one String.
+# handed (an object's ivar), every three-hundredth page is kept, and the kept
+# pages get a footer appended to their buffer in place afterwards. The buffer
+# a method fills and the ivar that owns it are one String.
 class Page
   attr_reader :out
   def initialize = @out = +""
@@ -28,10 +28,10 @@ bytes = 0
   page = Page.new
   page.tag("h1", "Catalog #{n % 7}")
   render_list(page.out, items)
-  kept << page.out if n % 300 == 0
+  kept << page if n % 300 == 0
   bytes += page.out.bytesize
 end
-kept.each_with_index { |pg, i| pg << "<footer>" << i.to_s << "</footer>\n" }
+kept.each_with_index { |pg, i| pg.out << "<footer>" << i.to_s << "</footer>\n" }
 puts kept.size
 puts bytes
-puts kept.sum(&:bytesize)
+puts kept.sum { |pg| pg.out.bytesize }
