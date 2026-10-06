@@ -1977,18 +1977,48 @@ static int is_heavy_brk_call(Compiler *c, int id) {
   return call_breaks(c, id) && !brk_wrapper_surely_light(c, id);
 }
 
-/* Does scope index `si` contain a begin/rescue, a `loop {}`, or a heavy
-   (real-setjmp) break-carrying call (so its locals need volatile across the
+/* A node that emits a setjmp around its own subtree: a begin, an
+   `x rescue y` modifier, a `loop {}`, or a heavy break-carrying call. */
+static int is_setjmp_construct(Compiler *c, int id) {
+  NodeKind k = nt_kind(c->nt, id);
+  return k == NK_BeginNode || k == NK_RescueModifierNode ||
+         is_stopiter_loop(c, id) || is_heavy_brk_call(c, id);
+}
+
+/* Does scope `si` itself emit a setjmp: one of the constructs above, or a
+   bare (method-level) rescue? */
+static int scope_emits_setjmp(Compiler *c, int si) {
+  int nids = 0; const int *ids = cg_scope_nodes(c, si, &nids);
+  for (int k = 0; k < nids; k++)
+    if (nt_kind(c->nt, ids[k]) == NK_RescueNode || is_setjmp_construct(c, ids[k])) return 1;
+  return 0;
+}
+
+/* A block call to a yielding user method that is inlined here, and whose
+   body sets up a setjmp of its own (a rescue around the yield): the block is
+   spliced under that setjmp in this frame, so a local the block writes before
+   the raise is as indeterminate after the rescue as one a begin here writes.
+   The proc and lowered forms call the block as a proc, whose captures are
+   heap cells. */
+static int is_rescuing_yield_call(Compiler *c, int id) {
+  if (nt_kind(c->nt, id) != NK_CallNode) return 0;
+  int blk = nt_ref(c->nt, id, "block");
+  if (blk < 0 || nt_kind(c->nt, blk) != NK_BlockNode) return 0;
+  int mi = call_user_yield_mi(c, id);
+  if (mi < 0) return 0;
+  Scope *m = &c->scopes[mi];
+  return !m->is_proc_form && !m->is_lowered_yield && scope_emits_setjmp(c, mi);
+}
+
+/* Does scope index `si` contain a begin/rescue, a rescue modifier, a
+   `loop {}`, a heavy (real-setjmp) break-carrying call, or a block spliced
+   under an inlined method's rescue (so its locals need volatile across the
    setjmp it emits)? */
 int scope_has_begin(Compiler *c, int si) {
+  if (scope_emits_setjmp(c, si)) return 1;
   int nids = 0; const int *ids = cg_scope_nodes(c, si, &nids);
-  for (int k = 0; k < nids; k++) {
-    int id = ids[k];
-    const char *ty = nt_type(c->nt, id);
-    if (ty && (sp_streq(ty, "BeginNode") || sp_streq(ty, "RescueNode")))
-      return 1;
-    if (is_stopiter_loop(c, id) || is_heavy_brk_call(c, id)) return 1;
-  }
+  for (int k = 0; k < nids; k++)
+    if (is_rescuing_yield_call(c, ids[k])) return 1;
   return 0;
 }
 
@@ -2033,7 +2063,7 @@ static void begin_volatile_names(Compiler *c, int si, char ***out, int *nout, in
   int nids = 0; const int *ids = cg_scope_nodes(c, si, &nids);
   for (int k = 0; k < nids; k++) {
     int id = ids[k];
-    if ((nt_kind(nt, id) == NK_BeginNode) || is_stopiter_loop(c, id) || is_heavy_brk_call(c, id)) mark_subtree(nt, id, inb);
+    if (is_setjmp_construct(c, id) || is_rescuing_yield_call(c, id)) mark_subtree(nt, id, inb);
   }
   for (int k = 0; k < nids; k++)
     if (nt_kind(nt, ids[k]) == NK_RescueNode && !inb[ids[k]]) { *all = 1; break; }
