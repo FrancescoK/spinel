@@ -14549,9 +14549,16 @@ static void emit_class_machinery(const NodeTable *nt, Compiler *c, Buf *b, char 
       for (int ci = 0; ci < c->nclasses; ci++) { free(cls_incs[ci]); cls_incs[ci] = closed[ci]; cls_nincs[ci] = nclosed[ci]; }
       free(closed); free(nclosed);
     }
-    /* Emit sp_class_ancestors using the include info. */
-    buf_puts(b, "static sp_PolyArray *sp_class_ancestors(sp_Class c){\n");
-    buf_puts(b, "  sp_PolyArray *a=sp_PolyArray_new();\n");
+    /* The ancestors walk, emitted once with the include info. With an
+       array `a` it pushes each ancestor in order (sp_class_ancestors); with
+       none it answers whether `want` is among them, stopping at the first
+       match (sp_class_le_mod). The module-aware `<=` built the whole
+       ancestors array -- a PolyArray and a box per ancestor -- on every
+       dynamic is_a?, ===, kind_of? and Class comparison, to scan it once. */
+    buf_puts(b, "static int sp_class_anc_step(sp_PolyArray *a,sp_Class want,sp_RbVal v){\n"
+                "  if(a){sp_PolyArray_push(a,v);return 0;}\n"
+                "  return v.tag==SP_TAG_CLASS&&sp_class_eq(sp_unbox_class(v),want);\n}\n");
+    buf_puts(b, "static int sp_class_anc_walk(sp_Class c,sp_Class want,sp_PolyArray *a){\n");
     buf_puts(b, "  sp_Class cur=c;\n");
     int depth2 = c->nclasses + 20;
     buf_printf(b, "  for(int _i=0;_i<%d;_i++){\n", depth2);
@@ -14563,18 +14570,18 @@ static void emit_class_machinery(const NodeTable *nt, Compiler *c, Buf *b, char 
     /* a builtin Module (Comparable/Enumerable/Kernel/Math) has no superclass
        chain: its ancestors are just itself (#2285). */
     buf_puts(b, "      if(cur.cls_id==-114||cur.cls_id==-115||cur.cls_id==-119||cur.cls_id==-130){\n");
-    buf_puts(b, "        sp_PolyArray_push(a,sp_box_class(cur)); break;\n      }\n");
+    buf_puts(b, "        if(sp_class_anc_step(a,want,sp_box_class(cur)))return 1; break;\n      }\n");
     buf_puts(b, "      while(1){\n");
-    buf_puts(b, "        sp_PolyArray_push(a,sp_box_class(cur));\n");
+    buf_puts(b, "        if(sp_class_anc_step(a,want,sp_box_class(cur)))return 1;\n");
     /* Numeric includes Comparable; Array/Hash include Enumerable; String includes Comparable */
-    buf_puts(b, "        if(cur.cls_id==-113) sp_PolyArray_push(a,sp_box_class(((sp_Class){-114})));\n");  /* Numeric->Comparable */
-    buf_puts(b, "        if(cur.cls_id==-104||cur.cls_id==-105||cur.cls_id==-106||cur.cls_id==-144||cur.cls_id==-145) sp_PolyArray_push(a,sp_box_class(((sp_Class){-115})));\n");  /* Array/Hash/Range/Enumerator/Struct->Enumerable */
-    buf_puts(b, "        if(cur.cls_id==-102||cur.cls_id==-103) sp_PolyArray_push(a,sp_box_class(((sp_Class){-114})));\n");  /* String/Symbol->Comparable */
-    buf_puts(b, "        if(cur.cls_id==-116) sp_PolyArray_push(a,sp_box_class(((sp_Class){-119})));\n");  /* Object->Kernel */
+    buf_puts(b, "        if(cur.cls_id==-113) if(sp_class_anc_step(a,want,sp_box_class(((sp_Class){-114}))))return 1;\n");  /* Numeric->Comparable */
+    buf_puts(b, "        if(cur.cls_id==-104||cur.cls_id==-105||cur.cls_id==-106||cur.cls_id==-144||cur.cls_id==-145) if(sp_class_anc_step(a,want,sp_box_class(((sp_Class){-115}))))return 1;\n");  /* Array/Hash/Range/Enumerator/Struct->Enumerable */
+    buf_puts(b, "        if(cur.cls_id==-102||cur.cls_id==-103) if(sp_class_anc_step(a,want,sp_box_class(((sp_Class){-114}))))return 1;\n");  /* String/Symbol->Comparable */
+    buf_puts(b, "        if(cur.cls_id==-116) if(sp_class_anc_step(a,want,sp_box_class(((sp_Class){-119}))))return 1;\n");  /* Object->Kernel */
     /* a name-backed exception class's modules (IO::EAGAINWaitReadable
        includes IO::WaitReadable), as the rescue match reads them */
     buf_puts(b, "        if(cur.name){const char*const*_m=sp_exc_modules_of_name(cur.name);"
-                 "for(int _k=0;_m&&_m[_k];_k++)sp_PolyArray_push(a,sp_box_class_name(_m[_k]));}\n");
+                 "for(int _k=0;_m&&_m[_k];_k++)if(sp_class_anc_step(a,want,sp_box_class_name(_m[_k])))return 1;}\n");
     buf_puts(b, "        sp_Class bn=sp_builtin_superclass(cur);\n");
     /* the root (BasicObject) yields the nil class: that terminates the walk.
        Chain end used to be marked by a self-reference, so keep that check too. */
@@ -14593,13 +14600,13 @@ static void emit_class_machinery(const NodeTable *nt, Compiler *c, Buf *b, char 
           buf_printf(b, "    case %d:", ci);
           /* last prepend wins, so it lands closest to the front */
           for (int q = cls_npreps[ci] - 1; q >= 0; q--)
-            buf_printf(b, " sp_PolyArray_push(a,sp_box_class(((sp_Class){%d})));", cls_preps[ci][q]);
+            buf_printf(b, " if(sp_class_anc_step(a,want,sp_box_class(((sp_Class){%d}))))return 1;", cls_preps[ci][q]);
           buf_puts(b, " break;\n");
         }
         buf_puts(b, "    }\n");
       }
     }
-    buf_puts(b, "    sp_PolyArray_push(a,sp_box_class(cur));\n");
+    buf_puts(b, "    if(sp_class_anc_step(a,want,sp_box_class(cur)))return 1;\n");
     /* inline the includes switch for this class */
     buf_puts(b, "    switch(cur.cls_id){\n");
     for (int ci = 0; ci < c->nclasses; ci++) {
@@ -14608,7 +14615,7 @@ static void emit_class_machinery(const NodeTable *nt, Compiler *c, Buf *b, char 
       /* Ruby includes are prepended: last include is highest priority, so
          insert in reverse include order after the class itself. */
       for (int q = cls_nincs[ci] - 1; q >= 0; q--)
-        buf_printf(b, " sp_PolyArray_push(a,sp_box_class(((sp_Class){%d})));", cls_incs[ci][q]);
+        buf_printf(b, " if(sp_class_anc_step(a,want,sp_box_class(((sp_Class){%d}))))return 1;", cls_incs[ci][q]);
       buf_puts(b, " break;\n");
     }
     buf_puts(b, "    }\n");
@@ -14621,7 +14628,11 @@ static void emit_class_machinery(const NodeTable *nt, Compiler *c, Buf *b, char 
     buf_puts(b, "    if(sp_class_eq(next,cur))break;\n");
     buf_puts(b, "    cur=next;\n");
     buf_puts(b, "  }\n");
-    buf_puts(b, "  return a;\n}\n\n");
+    buf_puts(b, "  return 0;\n}\n\n");
+    buf_puts(b, "static sp_PolyArray *sp_class_ancestors(sp_Class c){\n"
+                "  sp_PolyArray *a=sp_PolyArray_new();\n"
+                "  sp_class_anc_walk(c,SP_CLASS_NIL,a);\n"
+                "  return a;\n}\n\n");
     /* Module#included_modules: the ancestors that are modules (#2674). The
        ancestors are id-backed boxes (sp_box_class of a name-less sp_Class), so
        the cls_id rides the int slot. */
@@ -14635,14 +14646,10 @@ static void emit_class_machinery(const NodeTable *nt, Compiler *c, Buf *b, char 
     buf_puts(b, "    if(m.cls_id==c.cls_id) continue;\n");
     buf_puts(b, "    if(sp_class_is_module_val(m)) sp_PolyArray_push(r,a->data[i]); }\n");
     buf_puts(b, "  return r;\n}\n\n");
-    /* Module-aware <= by walking sp_class_ancestors (replaces simpler versions). */
+    /* Module-aware <= by the ancestors walk (replaces simpler versions). */
     buf_puts(b, "static int sp_class_le_mod(sp_Class a,sp_Class b){\n");
     buf_puts(b, "  /* a<=b: b is an ancestor of a, so b must appear in a's ancestors */\n");
-    buf_puts(b, "  sp_PolyArray *ancs=sp_class_ancestors(a);\n");
-    buf_puts(b, "  for(sp_int _i=0;_i<sp_PolyArray_length(ancs);_i++){\n");
-    buf_puts(b, "    sp_RbVal v=sp_PolyArray_get(ancs,_i);\n");
-    buf_puts(b, "    if(v.tag==7&&sp_class_eq(sp_unbox_class(v),b))return 1;\n");
-    buf_puts(b, "  }\n");
+    buf_puts(b, "  if(sp_class_anc_walk(a,b,NULL))return 1;\n");
     /* User-class sp_class_ancestors stops before builtin parents.
        If the target is a builtin, fall back to the chain-walking check. */
     buf_puts(b, "  if(b.cls_id<0)return sp_class_is_ancestor(b,a);\n");
