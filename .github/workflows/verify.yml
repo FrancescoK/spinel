@@ -635,13 +635,18 @@ jobs:
         if: steps.build.outcome == 'success' && needs.plan.outputs.pgate_cache != '0'
         uses: actions/cache/restore@v6
         with:
-          path: ${{ runner.temp }}/pgate/build/result-cache
+          # the path the finish job saves from: a cache entry's version hashes
+          # its path, so a restore to any other path never matches
+          path: ${{ runner.temp }}/rc/result-cache
           key: pgate-results-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.name }}
           restore-keys: pgate-results-
       - name: Pack
         if: steps.build.outcome == 'success'
         run: |
           grep -q '^status=PREPARED$' prep/gate-meta.txt
+          if [ -d "$RUNNER_TEMP/rc/result-cache" ]; then
+            mkdir -p "$RUNNER_TEMP/pgate/build" && cp -R "$RUNNER_TEMP/rc/result-cache" "$RUNNER_TEMP/pgate/build/"
+          fi
           echo "[pgate] result cache restored: $(find "$RUNNER_TEMP/pgate/build/result-cache" -type f 2>/dev/null | wc -l) entries" >> prep/gate.log
           tar -C "$RUNNER_TEMP" -cf - pgate | zstd -q -T0 -3 -o prep/tree.tar.zst
       - uses: actions/upload-artifact@v7
