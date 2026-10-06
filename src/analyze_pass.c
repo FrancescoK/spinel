@@ -7846,13 +7846,200 @@ static int infer_conditional_writer_param(Compiler *c, int id) {
   return slot_take(c, pv, infer_type(c, val), val);
 }
 
-int infer_param_types(Compiler *c) {
+static int ipt_id_cmp(const void *a, const void *b) {
+  int x = *(const int *)a, y = *(const int *)b;
+  return (x > y) - (x < y);
+}
+/* A parameter takes its type from the arguments its call sites pass, and
+   the pass binds every call site once, in node order. A chain whose callers
+   come later in the file (`def m1(s) = m2(s)` defined after m2, ... `m0`
+   last) then bound one link per round of the fixpoint, and each round
+   re-walks the whole program: quadratic in the chain. Here the call sites
+   inside a method whose parameter types the pass changed are bound again
+   at once, from a per-scope node index, so the chain settles in the pass.
+   After the first pass only the scopes the calls just bound may name are
+   looked at again, so each link costs its own calls. Bounded so an
+   oscillation is left to the fixpoint. The pass's own state: freed with
+   it. */
+typedef struct {
+  TyKind *snap;            /* per scope, its parameters' types, flattened */
+  int *off;                /* per scope, its first entry in snap */
+  int *nhead, *nnext;      /* per scope, its nodes (built on first use) */
+  int *bhead, *bnext;      /* the scopes by name, hashed into ns buckets
+                              (built on first use) */
+  int *bseen;              /* per bucket, the pass that last listed it */
+  int *cand; int ncand;    /* the scopes the last pass's calls may have
+                              bound; -1 after the first pass: every scope */
+  int *dirty; int ndirty;  /* the scopes whose parameters moved */
+  int *list; int nlist;    /* the nodes of the next pass */
+  long budget;
+  int pass;
+  int ns;                  /* the scopes at the pass's start: a binding may add
+                              a scope (a specialized copy), which only the next
+                              round of the fixpoint sees */
+} IptWork;
+/* Whether scope s's parameter types moved since the last look; records
+   the new ones */
+static int ipt_moved(Compiler *c, IptWork *w, int s) {
+  Scope *sc = &c->scopes[s];
+  /* a parameter a binding adds (a forwarder's) waits for the next round */
+  int np = w->off[s + 1] - w->off[s], moved = 0;
+  for (int k = 0; k < sc->nparams && k < np; k++) {
+    LocalVar *lv = sc->pnames[k] ? scope_local(sc, sc->pnames[k]) : NULL;
+    TyKind t = lv ? lv->type : TY_UNKNOWN;
+    if (w->snap[w->off[s] + k] != t) moved = 1;
+    w->snap[w->off[s] + k] = t;
+  }
+  return moved;
+}
+/* A value made of scope sc's own parameters and literals alone: a read of
+   one, a literal, or a builtin operator over such values (`k + 1`) */
+static int ipt_param_value(Compiler *c, Scope *sc, int v, int depth) {
+  const NodeTable *nt = c->nt;
+  if (v < 0 || depth > 4) return 0;
+  switch (nt_kind(nt, v)) {
+  case NK_IntegerNode: case NK_FloatNode: case NK_StringNode: case NK_SymbolNode:
+  case NK_TrueNode: case NK_FalseNode: case NK_NilNode:
+    return 1;
+  case NK_LocalVariableReadNode: {
+    const char *nm = nt_str(nt, v, "name");
+    LocalVar *lv = nm && sc ? scope_local(sc, nm) : NULL;
+    return lv && lv->is_param && nt_int(nt, v, "depth", 0) == 0;
+  }
+  case NK_CallNode: {
+    const char *nm = nt_str(nt, v, "name");
+    int a = nt_ref(nt, v, "arguments"), an = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+    if (!nm || an != 1 || nt_ref(nt, v, "block") >= 0 || !is_basic_arith(nm)) return 0;
+    if (comp_method_index(c, nm) >= 0) return 0;   /* a user operator answers what it likes */
+    return ipt_param_value(c, sc, nt_ref(nt, v, "receiver"), depth + 1) &&
+           ipt_param_value(c, sc, av[0], depth + 1);
+  }
+  default:
+    return 0;
+  }
+}
+
+/* A call that hands its scope's parameters straight on to a method it names
+   on self: no receiver (or `self`), no block, and every argument made of the
+   scope's own parameters and literals (ipt_param_value). What it binds depends on those
+   parameters alone. Any other call reads a value the round derived before
+   this pass moved the parameters -- a local the write pass re-derives, a
+   receiver whose type follows them -- and bound again now it would hand a
+   callee a stale, wider type that a parameter never sheds (a computed
+   receiver still unknown binds every method of the name): it waits for the
+   next round, as before. */
+static int ipt_forwards_params(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  if (nt_kind(nt, id) != NK_CallNode || nt_ref(nt, id, "block") >= 0) return 0;
+  int r = nt_ref(nt, id, "receiver");
+  if (r >= 0 && nt_kind(nt, r) != NK_SelfNode) return 0;
+  int a = nt_ref(nt, id, "arguments"), an = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+  if (an == 0) return 0;
+  Scope *sc = comp_scope_of(c, id);
+  for (int k = 0; k < an; k++)
+    if (!ipt_param_value(c, sc, av[k], 0)) return 0;
+  return 1;
+}
+
+static void *ipt_alloc(size_t n, size_t sz, int zero) {
+  void *p = zero ? calloc(n ? n : 1, sz) : malloc((n ? n : 1) * sz);
+  if (!p) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  return p;
+}
+static void ipt_work_begin(Compiler *c, IptWork *w) {
+  memset(w, 0, sizeof *w);
+  int ns = c->nscopes, np = 0;
+  w->ns = ns;
+  w->off = ipt_alloc((size_t)ns + 1, sizeof(int), 0);
+  for (int s = 0; s < ns; s++) { w->off[s] = np; np += c->scopes[s].nparams; }
+  w->off[ns] = np;
+  w->snap = ipt_alloc((size_t)np, sizeof(TyKind), 0);
+  for (int s = 0; s < ns; s++) ipt_moved(c, w, s);
+  w->cand = ipt_alloc((size_t)ns, sizeof(int), 0);
+  w->dirty = ipt_alloc((size_t)ns, sizeof(int), 0);
+  w->ncand = -1;
+  w->budget = 4L * c->nt->count + 64;
+}
+static void ipt_work_index(Compiler *c, IptWork *w) {
+  const NodeTable *nt = c->nt;
+  int ns = w->ns;
+  w->nhead = ipt_alloc((size_t)ns, sizeof(int), 0);
+  w->nnext = ipt_alloc((size_t)nt->count, sizeof(int), 0);
+  w->list = ipt_alloc((size_t)nt->count, sizeof(int), 0);
+  w->bhead = ipt_alloc((size_t)ns, sizeof(int), 0);
+  w->bnext = ipt_alloc((size_t)ns, sizeof(int), 0);
+  w->bseen = ipt_alloc((size_t)ns, sizeof(int), 1);
+  for (int s = 0; s < ns; s++) w->nhead[s] = w->bhead[s] = -1;
+  for (int id = nt->count - 1; id >= 0; id--) {
+    int s = c->nscope[id];
+    if (s < 0 || s >= ns) continue;
+    w->nnext[id] = w->nhead[s]; w->nhead[s] = id;
+  }
+  for (int s = ns - 1; s >= 0; s--) {
+    const char *nm = c->scopes[s].name;
+    if (!nm) continue;
+    unsigned b = sp_strhash(nm) % (unsigned)ns;
+    w->bnext[s] = w->bhead[b]; w->bhead[b] = s;
+  }
+}
+static int ipt_work_next(Compiler *c, IptWork *w, const int **ids, int *nids) {
+  const NodeTable *nt = c->nt;
+  int ns = w->ns;
+  w->ndirty = 0;
+  if (w->ncand < 0) {
+    for (int s = 0; s < ns; s++)
+      if (ipt_moved(c, w, s)) w->dirty[w->ndirty++] = s;
+  }
+  else {
+    for (int i = 0; i < w->ncand; i++)
+      if (ipt_moved(c, w, w->cand[i])) w->dirty[w->ndirty++] = w->cand[i];
+  }
+  if (!w->ndirty || w->budget <= 0) return 0;
+  if (!w->nhead) ipt_work_index(c, w);
+  w->nlist = 0;
+  for (int i = 0; i < w->ndirty; i++)
+    for (int id = w->nhead[w->dirty[i]]; id >= 0; id = w->nnext[id])
+      if (ipt_forwards_params(c, id)) w->list[w->nlist++] = id;
+  qsort(w->list, (size_t)w->nlist, sizeof(int), ipt_id_cmp);
+  w->budget -= w->nlist;
+  /* the scopes these calls may bind: every method of their names, each
+     bucket once */
+  w->pass++;
+  w->ncand = 0;
+  for (int i = 0; i < w->nlist; i++) {
+    const char *nm = nt_str(nt, w->list[i], "name");
+    if (!nm) continue;
+    unsigned b = sp_strhash(nm) % (unsigned)ns;
+    if (w->bseen[b] == w->pass) continue;
+    w->bseen[b] = w->pass;
+    for (int s = w->bhead[b]; s >= 0; s = w->bnext[s]) w->cand[w->ncand++] = s;
+  }
+  *ids = w->list; *nids = w->nlist;
+  return w->nlist > 0;
+}
+static void ipt_work_end(IptWork *w) {
+  free(w->snap); free(w->off); free(w->nhead); free(w->nnext); free(w->list);
+  free(w->bhead); free(w->bnext); free(w->bseen); free(w->cand); free(w->dirty);
+}
+
+static int infer_param_types_ex(Compiler *c, int settle);
+int infer_param_types(Compiler *c) { return infer_param_types_ex(c, 0); }
+int infer_param_types_settle(Compiler *c) { return infer_param_types_ex(c, 1); }
+static int infer_param_types_ex(Compiler *c, int settle) {
   const NodeTable *nt = c->nt;
   int changed = 0, any = 0;
   /* the walks the bindings start share what they found unchanged, until a
      binding reports a change (widen_boxed_array_sources) */
   wbas_share_begin(&changed, &any);
-  for (int id = 0; id < nt->count; id++, wbas_share_step(&changed, &any)) {
+  IptWork w;
+  ipt_work_begin(c, &w);
+  const int *ids = NULL;
+  int nids = nt->count;
+  for (;;) {
+  for (int k = 0; k < nids; k++, wbas_share_step(&changed, &any)) {
+    int id = ids ? ids[k] : k;
     const char *ty = nt_type(nt, id);
     if (!ty) continue;
     if (sp_streq(ty, "SuperNode") || sp_streq(ty, "ForwardingSuperNode")) {
@@ -8517,6 +8704,9 @@ int infer_param_types(Compiler *c) {
       if (omb >= 0 && !c->scopes[omb].is_cmethod) changed |= bind_call_params(c, id, omb);
     }
   }
+  if (!settle || !ipt_work_next(c, &w, &ids, &nids)) break;
+  }
+  ipt_work_end(&w);
   wbas_share_end();
   return changed | any;
 }
