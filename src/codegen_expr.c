@@ -1060,7 +1060,7 @@ void emit_strbuf_orw_guard(Compiler *c, const char *ref, int v, int is_or, Buf *
    the local shows in the ivar. Answers 0 when `v` is no such write. */
 int emit_strbuf_ivar_write_handle(Compiler *c, int v, Buf *b) {
   const NodeTable *nt = c->nt;
-  int w = strbuf_ivar_alias_value(nt, v);
+  int w = strbuf_ivar_alias_value(nt, v, repr_share_rule(c));
   if (w < 0 || nt_kind(nt, w) == NK_InstanceVariableReadNode) return 0;
   const char *nm = nt_str(nt, w, "name");
   int cid = strbuf_ivar_owner(c, w);
