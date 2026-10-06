@@ -88,6 +88,8 @@ int is_bounded_int_step(const char *n); /* downto upto */
 
 int is_indexed_each(const char *n); /* each_index each_with_index */
 int is_to_array_alias(const char *n); /* entries to_a */
+int is_builtin_self_param(const char *n); /* __self: a builtin copy's receiver parameter */
+int is_builtin_helper_name(const char *n); /* __name: a builtins/ file's own helper */
 int is_string_index(const char *n); /* index rindex */
 int is_modulo_alias(const char *n); /* % modulo */
 int is_append_concat(const char *n); /* << concat */

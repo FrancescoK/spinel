@@ -9364,6 +9364,13 @@ int desugar_builtin_scalar_calls(Compiler *c) {
          not something one migration should paper over. */
       ok = (rt == TY_INT || rt == TY_BIGINT || rt == TY_FLOAT);
     }
+    /* A builtins/ file's own helper (`__cmp_repr`) called inside one of its
+       definitions on that definition's receiver (`__self`) reads only its
+       arguments, so the call takes the helper's copy whatever the
+       receiver's type: left on the dispatch, a boxed receiver that reached
+       the definition raised NoMethodError for the helper's name. */
+    if (!ok && is_builtin_helper_name(name) && nt_kind(nt, recv) == NK_LocalVariableReadNode &&
+        is_builtin_self_param(nt_str(nt, recv, "name"))) ok = 1;
     if (!ok) continue;
     /* Comparable's names are the one CROSS-container case: they are
        reopened on Integer/Float (`class Integer; def clamp`), never on

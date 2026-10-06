@@ -1,0 +1,41 @@
+undefined method 'clamp' for nil [1, 2]
+undefined method 'between?' for nil [1, 2]
+undefined method 'clamp' for nil [1..2]
+undefined method 'clamp' for nil ["a", "c"]
+ArgumentError: comparison of Symbol with 1 failed
+ArgumentError: comparison of Symbol with 1 failed
+ArgumentError: comparison of Symbol with 1 failed
+ArgumentError: comparison of Symbol with String failed
+ArgumentError: comparison of String with 1 failed
+ArgumentError: comparison of String with 1 failed
+ArgumentError: comparison of String with 1 failed
+"c"
+undefined method 'clamp' for an instance of Array [1, 2]
+undefined method 'between?' for an instance of Array [1, 2]
+undefined method 'clamp' for an instance of Array [1..2]
+undefined method 'clamp' for an instance of Array ["a", "c"]
+undefined method 'clamp' for an instance of Hash [1, 2]
+undefined method 'between?' for an instance of Hash [1, 2]
+undefined method 'clamp' for an instance of Hash [1..2]
+undefined method 'clamp' for an instance of Hash ["a", "c"]
+undefined method 'clamp' for an instance of Range [1, 2]
+undefined method 'between?' for an instance of Range [1, 2]
+undefined method 'clamp' for an instance of Range [1..2]
+undefined method 'clamp' for an instance of Range ["a", "c"]
+2
+false
+2
+ArgumentError: comparison of Float with String failed
+2
+false
+2
+ArgumentError: comparison of Integer with String failed
+ArgumentError: comparison of String with 1 failed
+ArgumentError: comparison of String with 1 failed
+ArgumentError: comparison of String with 1 failed
+"b"
+2
+true
+undefined method 'clamp' for nil [1, 2]
+undefined method 'between?' for nil [1, 2]
+undefined method 'clamp' for nil [1.0, 2.0]

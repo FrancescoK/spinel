@@ -81,7 +81,13 @@ module Comparable
     # (test/nil_recv_compare_nomethod.rb). `.nil?` on a concrete
     # Integer/Float already compiles to exactly this sentinel check.
     if self.nil?
-      raise NoMethodError, "undefined method 'between?' for nil"
+      __cmp_no_method(:between?, true, min, max)
+    end
+    # nor has any other value that is no Comparable, which a boxed receiver
+    # can hold (an Array, a Hash, a Range); a concrete Integer or Float
+    # answers this at compile time
+    unless self.is_a?(Comparable)
+      __cmp_no_method(:between?, false, min, max)
     end
     c1 = self <=> min
     if c1.nil?
@@ -98,7 +104,10 @@ module Comparable
     # see between?'s own comment: self can carry the nullable-scalar
     # sentinel even at a plain Integer/Float static type.
     if self.nil?
-      raise NoMethodError, "undefined method 'clamp' for nil"
+      __cmp_no_method(:clamp, true, lo, hi)
+    end
+    unless self.is_a?(Comparable)
+      __cmp_no_method(:clamp, false, lo, hi)
     end
     # a nil bound is an open (unbounded) side on that end, so it takes no
     # part in the ordering check or in either comparison against self.
@@ -141,6 +150,17 @@ module Comparable
   # (sp_poly_cmp_err_repr/sp_cmperr_desc, lib/spinel_rt.h) keeps the exact
   # distinction via the value's tag). The RECEIVER side of the message is
   # always the plain class name, never inspected.
+  # The NoMethodError of a receiver with no `name` (nil, or a value that is
+  # no Comparable), with the two bounds as its args. A helper of its own,
+  # so the list it builds is built here, on the raise path, not in the
+  # frame of the definition that calls it. The caller says whether its
+  # receiver is nil: a concrete Integer or Float carrying the nil
+  # sentinel arrives here boxed as a number.
+  def __cmp_no_method(name, is_nil, lo, hi)
+    what = is_nil ? "nil" : "an instance of #{self.class}"
+    raise NoMethodError.new("undefined method '#{name}' for #{what}", name, [lo, hi])
+  end
+
   def __cmp_repr(v)
     if v.is_a?(Integer) || v.is_a?(Float) || v.is_a?(Symbol) || v.nil? ||
        v.is_a?(TrueClass) || v.is_a?(FalseClass)
