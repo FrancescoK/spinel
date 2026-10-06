@@ -1879,12 +1879,14 @@ ShareRoute share_route(int site, int value, int elems) {
 }
 
 static int sh_ivar_owner(Compiler *c, int node);
-/* A String bang method (bop_share_bang_self) called on a slot that holds
+/* A String method answering its receiver or nil (bop_share_self_answer:
+   a bang method, an iterator given a block) called on a slot that holds
    the shared handle -- a local, a global, a constant, a class variable or
    an ivar: its value is that slot's String, or nil. */
 static int sh_bang_self_slot(const Compiler *c, int v) {
   const NodeTable *nt = c->nt;
-  if (v < 0 || nt_kind(nt, v) != NK_CallNode || !bop_share_bang_self(nt_str(nt, v, "name"))) return 0;
+  if (v < 0 || nt_kind(nt, v) != NK_CallNode ||
+      !bop_share_self_answer(nt_str(nt, v, "name"), nt_ref(nt, v, "block") >= 0)) return 0;
   int r = nt_ref(nt, v, "receiver");
   if (r < 0) return 0;
   if (nt_kind(nt, r) == NK_LocalVariableReadNode) return repr_of(c, r).kind == RK_STRBUF;
