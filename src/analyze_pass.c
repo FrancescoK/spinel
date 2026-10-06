@@ -13955,8 +13955,9 @@ int infer_block_params(Compiler *c) {
     else if (rt == TY_POLY && sp_streq(name, "each_byte"))
       pt = TY_INT;
     else if (rt == TY_STRING && (sp_streq(name, "each_char") || sp_streq(name, "each_line") || sp_streq(name, "upto") ||
-                                 sp_streq(name, "chars") || sp_streq(name, "lines") || sp_streq(name, "split")))
-      pt = TY_STRING;  /* split { |piece| } yields each substring */
+                                 sp_streq(name, "chars") || sp_streq(name, "lines") || sp_streq(name, "split") ||
+                                 sp_streq(name, "scrub")))
+      pt = TY_STRING;  /* split { |piece| } yields each substring, scrub each invalid sequence */
     else if ((rt == TY_STRING || rt == TY_POLY) &&
              (sp_streq(name, "gsub") || sp_streq(name, "sub") ||
               sp_streq(name, "gsub!") || sp_streq(name, "sub!")))   /* the bang forms are rewritten to these */
