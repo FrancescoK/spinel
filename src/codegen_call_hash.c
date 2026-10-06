@@ -8,6 +8,7 @@
 
 #include "codegen_internal.h"
 #include "builtin_ops.h"
+#include "repr.h"
 #include "codegen_call_arms.h"
 
 /* any?(pattern) / none? / one? / count with one argument and no block:
@@ -482,9 +483,11 @@ int emit_op_hash_set_default(Compiler *c, const BopCtx *x, Buf *b) {
   buf_printf(b, " if (_t%d && sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s);",
              t, t, t, hash_box_cls(rt));
   if (rt == TY_SYM_POLY_HASH || rt == TY_STR_POLY_HASH || rt == TY_POLY_POLY_HASH) {
-    buf_printf(b, " if (_t%d) _t%d->default_v = ", t, t);
+    /* a default value replaces a default block, as in CRuby: the block
+       answered every miss after `h.default = v` and default_proc kept it */
+    buf_printf(b, " if (_t%d) { _t%d->dproc = NULL; _t%d->dproc_self = NULL; _t%d->default_v = ", t, t, t, t);
     if (is_nil) buf_puts(b, "sp_box_nil()"); else if (held) emit_boxed_text(c, at, av, b); else emit_boxed(c, argv[0], b);
-    buf_puts(b, ";");
+    buf_puts(b, "; }");
   }
   else if (rt == TY_STR_INT_HASH || rt == TY_INT_INT_HASH) {
     /* nil is SP_INT_NIL in an Integer slot; nil emitted as an int is 0 */
@@ -500,6 +503,32 @@ int emit_op_hash_set_default(Compiler *c, const BopCtx *x, Buf *b) {
   buf_puts(b, " ");
   if (held || is_nil) buf_puts(b, av); else emit_expr(c, argv[0], b);
   buf_puts(b, "; })"); return 1;
+}
+
+/* h.default_proc = nil: CRuby's default_proc= with nil removes the default
+   block and the default value, and answers nil. It had no emitter, so the
+   call answered NoMethodError. Assigning a Proc is emit_call_operator_arms'. */
+int emit_op_hash_default_proc_nil(Compiler *c, const BopCtx *x, Buf *b) {
+  int recv = x->recv;
+  TyKind rt = x->rt, vt = ty_hash_val(rt);
+  int argc;
+  const int *argv = call_args(c->nt, x->id, &argc);
+  TyKind ans = repr_of(c, x->id).as_ty;
+  const char *nv = nil_value(ans);
+  if (!nv) nv = default_value(ans);
+  int t = ++g_tmp;
+  buf_printf(b, "({ %s _t%d = ", c_type_name(rt), t); emit_expr(c, recv, b);
+  buf_printf(b, "; SP_GC_ROOT(_t%d); (void)(", t); emit_expr(c, argv[0], b); buf_puts(b, ");");
+  buf_printf(b, " if (_t%d && sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s);",
+             t, t, t, hash_box_cls(rt));
+  /* only the poly-valued variants carry a default block */
+  if (vt == TY_POLY)
+    buf_printf(b, " if (_t%d) { _t%d->dproc = NULL; _t%d->dproc_self = NULL; _t%d->default_v = sp_box_nil(); }",
+               t, t, t, t);
+  else
+    buf_printf(b, " if (_t%d) _t%d->default_v = %s;", t, t, vt == TY_INT ? "SP_INT_NIL" : "NULL");
+  buf_printf(b, " %s; })", nv ? nv : "0");
+  return 1;
 }
 
 /* merge!/update with several hash arguments: fold each one in, in

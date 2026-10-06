@@ -1,0 +1,69 @@
+[1, 0]
+[0, 0, 1]
+[1, 0]
+0
+0
+0
+[0, 1]
+"key not found: \"b\""
+["x", "d"]
+["d", "d"]
+["x", "d"]
+[2, 5]
+[5, 5, 2]
+[5, 2]
+[1, :dd, :dd]
+[1, 3, 3]
+["x", 4]
+[1, 5, 5]
+["t"]
+[6]
+["blk", "blk", [1]]
+[9, 9]
+[1, 0, 0]
+3
+nil
+3
+[3]
+0
+3
+nil
+"y"
+nil
+3
+nil
+nil
+nil
+3
+nil
+8
+nil
+8
+nil
+false
+8
+nil
+2
+nil
+Proc
+"qq"
+{a: "s", q: "qq"}
+nil
+3
+nil
+false
+9
+nil
+[:zz]
+nil
+true
+nil
+nil
+nil
+nil
+nil
+nil
+nil
+nil
+[4, 4, "x", "x"]
+[nil, nil, nil, nil]

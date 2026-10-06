@@ -1079,9 +1079,11 @@ int emit_call_operator_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
        whatever slot the expression feeds -- a Proc * one here (#3833). */
     TyKind vt2 = comp_ntype(c, id);
     int ans = (vt2 == TY_PROC || vt2 == TY_POLY || vt2 == TY_UNKNOWN) ? tp2 : th2;
+    /* a default block replaces a default value, as in CRuby: default
+       answered the old value after `h.default_proc = pr` */
     buf_printf(b, " _t%d->dproc = %s; _t%d->dproc_self = (void *)_t%d;"
-                  " sp_gc_wb((void *)_t%d); _t%d; })",
-               th2, tramp, th2, tp2, th2, ans);
+                  " _t%d->default_v = sp_box_nil(); sp_gc_wb((void *)_t%d); _t%d; })",
+               th2, tramp, th2, tp2, th2, th2, ans);
     return 1;
   }
   /* value-position String#[]= (s[i] = v / s[i, n] = v / s[range] = v / s["sub"]

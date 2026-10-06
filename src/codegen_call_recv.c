@@ -4932,25 +4932,36 @@ int emit_hash_call(Compiler *c, int id, Buf *b) {
               return 0;
             }
             buf_printf(b, " sp_RbVal _t%d = ", tk); emit_boxed(c, argv[a], b); buf_puts(b, ";");
+            char htmp[32]; snprintf(htmp, sizeof htmp, "_t%d", th);
             if (is_fetch) {
-              char htmp[32]; snprintf(htmp, sizeof htmp, "_t%d", th);
               buf_puts(b, " sp_exc_stage_recv(");
               emit_boxed_text(c, rt, htmp, b);
               buf_printf(b, "); sp_raise_key_not_found(_t%d);", tk);
             }
-            else buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_nil());", tr);
+            else {
+              /* the miss answers the Hash's default value or block, as h[key]
+                 does for that key */
+              buf_printf(b, " sp_PolyArray_push(_t%d, sp_poly_hash_foreign_miss(", tr);
+              emit_boxed_text(c, rt, htmp, b);
+              buf_printf(b, ", _t%d));", tk);
+            }
             continue;
           }
           else {
             buf_printf(b, " %s _t%d = ", c_type_name(kt), tk); emit_hash_key(c, argv[a], kt, b); buf_puts(b, ";");
           }
-          /* A boxed-value hash answers its default on a miss, and values_at
-             wants that default; only a typed-value hash needs the has_key
-             guard, whose zero would otherwise read as a real value. */
-          int use_default = !is_fetch && vt == TY_POLY;
+          /* Every getter answers the Hash's default on a miss (default_v, the
+             nil sentinel when there is none, or the default block), and
+             values_at wants that default: a typed-value Hash.new(0) answered
+             nil for a missing key. Only fetch_values needs the has_key guard.
+             An Integer value is read through get_opt, which answers the nil
+             sentinel, not 0, for a nil receiver, as the guard did. */
+          int use_default = !is_fetch;
           if (!use_default) buf_printf(b, " if (sp_%sHash_has_key(_t%d, _t%d))", hn, th, tk);
           buf_printf(b, " sp_PolyArray_push(_t%d, ", tr);
-          char getexpr[128]; snprintf(getexpr, sizeof getexpr, "sp_%sHash_get(_t%d, _t%d)", hn, th, tk);
+          char getexpr[128];
+          snprintf(getexpr, sizeof getexpr, "sp_%sHash_%s(_t%d, _t%d)", hn,
+                   use_default && vt == TY_INT ? "get_opt" : "get", th, tk);
           if (vt == TY_POLY) buf_puts(b, getexpr);
           else emit_boxed_text(c, vt, getexpr, b);
           buf_puts(b, ");");
@@ -11091,7 +11102,8 @@ static TyKind emit_face_arm(Compiler *c, int id, unsigned kind, unsigned flags, 
     int tr = ++g_tmp;
     int has_val = nat != TY_VOID && nat != TY_UNKNOWN;
     if (kind == PF_ARRAY) buf_printf(&wb, "sp_poly_arr_writeback(_t%d, _t%d)", box, t);
-    else if (kind == PF_HASH) buf_printf(&wb, "sp_poly_hash_writeback(_t%d, _t%d)", box, t);
+    else if (kind == PF_HASH)
+      buf_printf(&wb, "%s(_t%d, _t%d)", (flags & PF_DPROC) ? "sp_poly_hash_writeback_dproc" : "sp_poly_hash_writeback", box, t);
     else {
       /* The new contents -- the value itself when the mutator answers self,
          else the temp the typed emitter took the receiver's variable from and

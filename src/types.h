@@ -75,6 +75,7 @@ enum {
   PF_ARGS_OWN = 1 << 13, /* the arguments must be of the owner's own kind (concat) */
   PF_VAL_SELF = 1 << 14, /* a mutator whose value is the receiver: the box itself, or for a String the box its variable holds after the write */
   PF_SAME_OK  = 1 << 16, /* ... and contents that are the receiver's own mean no write, so no frozen check (scrub!) */
+  PF_DPROC    = 1 << 17, /* a Hash mutator that may install a default Proc: written back through sp_poly_hash_writeback_dproc */
   PF_LAST     = 1 << 15  /* answers only once no poly-receiver emitter of its own has claimed the name */
 };
 typedef struct {

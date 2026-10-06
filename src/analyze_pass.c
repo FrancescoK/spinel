@@ -2749,7 +2749,10 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
           TyKind kt2 = ty_hash_key(dplv->type);
           TyKind want2 = kt2 == TY_SYMBOL ? TY_SYM_POLY_HASH
                        : kt2 == TY_STRING ? TY_STR_POLY_HASH : TY_POLY_POLY_HASH;
-          if (dplv->type != want2) { dplv->type = want2; changed = 1; }
+          /* no `changed`: the local is reset to its writes' type every
+             round, so widening it again looked like a change every round
+             and the fixpoint never settled; the sweep reports (#4116) */
+          if (dplv->type != want2) dplv->type = want2;
         }
         continue;
       }
