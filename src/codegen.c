@@ -10305,6 +10305,8 @@ static void emit_marshal_dispatch(Compiler *c, Buf *b) {
   for (int i = 0; i < c->nclasses; i++) {
     if (!class_marshalable(c, i)) continue;
     ClassInfo *ci = &c->classes[i];
+    /* the class's Ruby name, qualified as CRuby writes it (`M::Page`) */
+    const char *mname = class_ruby_name(c, i) ? class_ruby_name(c, i) : ci->name;
     buf_printf(b, "    case %d: {\n", i);
     buf_printf(b, "      sp_%s *o = (sp_%s *)p; (void)o;\n", ci->c_name, ci->c_name);
     int tracked = 0;
@@ -10319,11 +10321,11 @@ static void emit_marshal_dispatch(Compiler *c, Buf *b) {
        under `I` when it has any */
     if (ci->ary_root > 0) {
       buf_printf(b, "      if (_niv) sp_mar_b(b, 'I');\n      sp_mar_b(b, 'C'); sp_mar_sym(b, \"%s\");\n"
-                    "      sp_mar_w_body(b, ", ci->name);
+                    "      sp_mar_w_body(b, ", mname);
       emit_boxed_text(c, ty_object(i), "o", b);
       buf_puts(b, ");\n      if (_niv) sp_mar_long(b, _niv);\n");
     }
-    else buf_printf(b, "      sp_mar_b(b, 'o'); sp_mar_sym(b, \"%s\");\n      sp_mar_long(b, _niv);\n", ci->name);
+    else buf_printf(b, "      sp_mar_b(b, 'o'); sp_mar_sym(b, \"%s\");\n      sp_mar_long(b, _niv);\n", mname);
     for (int j = 0; j < ci->nivars; j++) {
       char expr[160]; snprintf(expr, sizeof expr, "o->iv_%s", iv_c(ci->ivars[j] + 1));
       int present = ivar_set_kind(c, i, ci->ivars[j]) == 3;
@@ -10337,14 +10339,16 @@ static void emit_marshal_dispatch(Compiler *c, Buf *b) {
   }
   buf_puts(b, "    default: return 0;\n  }\n}\n");
 
-  buf_puts(b, "static sp_RbVal sp_marshal_obj_load(const char *name, sp_RbVal iv_boxed, int *ok) {\n");
+  /* `into` nil allocates the object (the reader registers it before it
+     reads what can link back to it); an object sets its ivars from iv */
+  buf_puts(b, "static sp_RbVal sp_marshal_obj_load(const char *name, sp_RbVal into, sp_RbVal iv_boxed, int *ok) {\n");
   buf_puts(b, "  sp_PolyArray *iv = (sp_PolyArray *)iv_boxed.v.p;\n");
   buf_puts(b, "  *ok = 1; (void)iv;\n");
   for (int i = 0; i < c->nclasses; i++) {
     if (!class_marshalable(c, i)) continue;
     ClassInfo *ci = &c->classes[i];
-    buf_printf(b, "  if (!strcmp(name, \"%s\")) {\n", ci->name);
-    buf_printf(b, "    sp_%s *o = ", ci->c_name);
+    buf_printf(b, "  if (!strcmp(name, \"%s\")) {\n", class_ruby_name(c, i) ? class_ruby_name(c, i) : ci->name);
+    buf_printf(b, "    sp_%s *o = into.tag == SP_TAG_OBJ ? (sp_%s *)into.v.p : ", ci->c_name, ci->c_name);
     emit_obj_alloc_expr(c, i, b);
     buf_puts(b, ";\n");
     buf_puts(b, "    SP_GC_ROOT(o);\n");
@@ -12361,7 +12365,7 @@ void emit_regex_section(Compiler *c, Buf *b) {
     buf_puts(b,
       "static sp_sym sp_sym_intern(const char *s);\n"
       "static int sp_marshal_obj_dump(sp_mar_buf *b, int cls_id, void *p);\n"
-      "static sp_RbVal sp_marshal_obj_load(const char *name, sp_RbVal iv, int *ok);\n");
+      "static sp_RbVal sp_marshal_obj_load(const char *name, sp_RbVal into, sp_RbVal iv, int *ok);\n");
   }
   if (g_has_user_cmp)
     buf_puts(b, "static sp_int sp_obj_cmp_dispatch(sp_RbVal a, sp_RbVal b, sp_bool *comparable);\n");
