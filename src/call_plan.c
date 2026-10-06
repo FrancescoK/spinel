@@ -576,7 +576,10 @@ const char *cplan_feature_why(Compiler *c, int id, int *stop) {
   const char *rcn = (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode")))
                     ? nt_str(nt, recv, "name") : NULL;
   const char *why = hit >= 0 ? tbl[hit].why : NULL;
-  if (!why && cplan_str_method_mutator(c, id))
+  /* resolved to String#method's own wrapper, so a user `method` elsewhere
+     (`def method` in some Foo) is not what the call reaches */
+  int str_mutator = !why && cplan_str_method_mutator(c, id);
+  if (str_mutator)
     why = "String#method is not supported for a method that changes the String in place "
           "(`<<`, `concat`, `upcase!`, ...): the Method object is bound to the String's "
           "value, not to the String, so calling it could not change the String it came "
@@ -633,7 +636,7 @@ const char *cplan_feature_why(Compiler *c, int id, int *stop) {
   }
 
   if (!why) { *stop = 0; return NULL; }
-  if (!restructure && diag_user_defines(c, name)) return NULL;
+  if (!restructure && !str_mutator && diag_user_defines(c, name)) return NULL;
   return why;
 }
 
