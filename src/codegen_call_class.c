@@ -2252,7 +2252,14 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
       int oci = class_recv_static_ci(c, recv);
       own_op = oci >= 0 && comp_cmethod_in_chain(c, oci, name, NULL) >= 0;
     }
-    if (!own_op && ((crt == TY_CLASS && cat != TY_CLASS) || (crr.kind == RK_BOXED && cat == TY_CLASS))) {
+    /* a boxed receiver against any operand: the comparison types poly when
+       one of them can hold a class (infer_class_flow). Where a user class
+       defines the operator, the user-operator dispatch answers instead
+       (sp_poly_relop_v), the class graph included. */
+    int user_op = crr.kind == RK_BOXED && is_cmp_op(name) && an_user_recv_defines_method(c, name);
+    int both_boxed = crr.kind == RK_BOXED && is_cmp_op(name) && !user_op;
+    if (!own_op && !user_op && ((crt == TY_CLASS && cat != TY_CLASS) || (crr.kind == RK_BOXED && cat == TY_CLASS) ||
+                                both_boxed)) {
       int op = sp_streq(name, "<") ? 0 : sp_streq(name, "<=") ? 1 :
                sp_streq(name, ">") ? 2 : sp_streq(name, ">=") ? 3 : 4;
       buf_puts(b, "sp_class_op_rv("); emit_boxed(c, recv, b);

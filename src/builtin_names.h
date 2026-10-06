@@ -206,4 +206,12 @@ int is_builtin_reopen_name(const char *name);
 
 int is_nil_method(const char *n); /* NilClass's public methods, its own and Object's: what nil answers */
 
+int is_runtime_called_name(const char *n); /* eql?, equal?, coerce, method_missing, respond_to_missing? */
+int is_method_rebind(const char *n);       /* curry, to_proc, bind, unbind, bind_call */
+int is_class_maker(const char *n);         /* Class, Module: their new answers a class */
+int is_new_name(const char *n);            /* new */
+int is_method_object_maker(const char *n); /* method, instance_method, ... (not define_method) */
+int is_initialize_name(const char *n);     /* initialize */
+int is_ivar_setter_name(const char *n);    /* instance_variable_set */
+
 #endif

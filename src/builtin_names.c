@@ -822,3 +822,36 @@ int is_nil_method(const char *n) {
   for (int i = 0; names[i]; i++) if (sp_streq(n, names[i])) return 1;
   return 0;
 }
+
+/* What the runtime calls with arguments of its own beside the operators:
+   eql? and equal? (Hash keys), coerce (numeric operators), method_missing
+   and respond_to_missing? (an undefined call). */
+int is_runtime_called_name(const char *n) {
+  return is_eql_or_equal(n) || sp_streq(n, "coerce") || sp_streq(n, "method_missing") ||
+         sp_streq(n, "respond_to_missing?");
+}
+
+/* A Method turned into a Proc, curried or rebound: called where its
+   arguments' positions are not a call's. */
+int is_method_rebind(const char *n) {
+  return sp_streq(n, "curry") || sp_streq(n, "to_proc") || sp_streq(n, "bind") ||
+         sp_streq(n, "unbind") || sp_streq(n, "bind_call");
+}
+
+/* The classes whose `new` answers a class rather than an instance. */
+int is_class_maker(const char *n) {
+  return sp_streq(n, "Class") || sp_streq(n, "Module");
+}
+
+int is_new_name(const char *n) { return sp_streq(n, "new"); }
+
+/* A call that makes a Method object of a method it names (method,
+   instance_method, public_method, singleton_method, ...): define_method
+   defines one instead. */
+int is_method_object_maker(const char *n) {
+  return strstr(n, "method") != NULL && !sp_streq(n, "define_method") && !is_send_family(n);
+}
+
+int is_initialize_name(const char *n) { return sp_streq(n, "initialize"); }
+
+int is_ivar_setter_name(const char *n) { return sp_streq(n, "instance_variable_set"); }

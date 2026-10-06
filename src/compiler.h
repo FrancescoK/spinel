@@ -253,6 +253,12 @@ typedef struct {
                        String-passing call site reinterpret the pointer, and
                        the program segfaulted with no diagnostic (#3977).
                        TY_UNKNOWN = no seed. */
+  unsigned char cls_flow; /* CLS_FLOW_VALUE: a Class or Module value is among
+                       the values that flow into this (poly) slot;
+                       CLS_FLOW_ELEMS: among its elements' (a container
+                       slot). Class ordering on a value that can be one
+                       answers nil for unrelated classes, which a Boolean
+                       cannot carry (infer_class_flow, analyze_pass.c). */
   int poly_ctr;     /* (TY_POLY) a builtin Array or Hash is among the values
                        that flow into this slot. TY_POLY is a top type with no
                        member list, so a call on it cannot otherwise tell
@@ -263,6 +269,7 @@ typedef struct {
                        and widening unconditionally instead poisoned classes
                        whose poly slots never hold a container (Set's @data). */
 } LocalVar;
+enum { CLS_FLOW_VALUE = 1, CLS_FLOW_ELEMS = 2 };
 #define POLY_LIFT_APPENDED 1
 #define POLY_LIFT_ZSUPER   2
 
@@ -342,6 +349,9 @@ typedef struct {
 
   TyKind ret;       /* inferred return type */
   SlotWhy ret_why;  /* how `ret` came to be untyped, if it is */
+  unsigned char ret_cls_flow; /* LocalVar.cls_flow's bits for the method's value */
+  unsigned char blk_cls_flow; /* the same for what the blocks it yields to answer:
+                       a yield's value */
   int ret_poly_ctr; /* the return value can be a builtin Array/Hash even
                        though `ret` collapsed to poly (see LocalVar.poly_ctr) */
   int ret_specialized; /* ret was set by specialization (inherited-cls-new copy);
@@ -838,6 +848,12 @@ typedef struct {
   int ngvars, cgvars;
   LocalVar *consts;   /* top-level constants (FOO) */
   int nconsts, cconsts;
+  /* the ivar and global names whose values (CLS_FLOW_VALUE) or elements
+     (CLS_FLOW_ELEMS) can be a Class value, by name across classes
+     (infer_class_flow) */
+  const char **cls_flow_ivar;
+  unsigned char *cls_flow_ivar_bits;
+  int n_cls_flow_ivar, c_cls_flow_ivar;
 
   /* alias $copy $orig → gvar_alias_from[i]="copy", gvar_alias_to[i]="orig" */
   char **gvar_alias_from;

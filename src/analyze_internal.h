@@ -294,6 +294,10 @@ TyKind an_builtin_answer(Compiler *c, int id);
 int an_yield_site_builtin_answer(Compiler *c, int id, TyKind kind, TyKind *out);
 extern int g_scopes_settled;   /* analysis done (codegen_util.c) */
 int poly_expr_flows_container(Compiler *c, int node);
+/* The class-value flow (analyze_pass.c): settle the cls_flow bits once
+   after the fixpoint, and ask whether a poly operand may hold a Class. */
+int infer_class_flow(Compiler *c);
+int poly_expr_may_be_class(Compiler *c, int node);
 int reconcile_locals_reading_ivars(Compiler *c);
 int widen_locals_from_poly_writes(Compiler *c);
 int widen_arrays_from_map_bang(Compiler *c);

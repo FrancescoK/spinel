@@ -1,4 +1,6 @@
 #include "analyze_internal.h"
+#include "builtin_ops.h"
+#include "builtin_names.h"
 int callee_has_kwarg(Compiler *c, Scope *m, const char *name);
 int callee_declares_kwargs(Compiler *c, Scope *m);
 int callee_param_is_declared_kwarg(Compiler *c, Scope *m, const char *name);
@@ -1615,6 +1617,734 @@ int infer_container_flow(Compiler *c) {
     if (sc->ret_poly_ctr) continue;
     if (flows_container(c, stmts_tail(nt, sc->body), 1)) { sc->ret_poly_ctr = 1; changed = 1; }
   }
+  return changed;
+}
+
+/* ---- Class values in poly slots ----
+   Module#< / <= / > / >= answer nil for two unrelated classes. A comparison
+   whose operand is statically a class types poly and answers that nil
+   (sp_class_op_rv); one whose operands are both boxed typed Boolean and
+   answered false. These bits say which poly values can be a Class or
+   Module, the way poly_ctr says which can be a container: a slot's
+   CLS_FLOW_VALUE when a class-typed value (or a value carrying the bit)
+   flows into it, CLS_FLOW_ELEMS when one is stored among its elements. They
+   follow writes to locals, constants, ivars and globals (the ivar table
+   keeps both, by their sigiled names), multiple assignment from a
+   literal, a user method's arguments and value, container literals, the
+   builtin stores and element reads the share rows describe (bop_share), and
+   the block parameters of a builtin iteration over such a container. A
+   program with no class value in a poly slot sets none of them. */
+static unsigned cf_bits(Compiler *c, int node, int depth);
+
+static LocalVar *cf_local(Compiler *c, int node) {
+  const char *nm = nt_str(c->nt, node, "name");
+  Scope *s = nm ? comp_scope_of(c, node) : NULL;
+  return s ? scope_local(s, nm) : NULL;
+}
+static LocalVar *cf_const(Compiler *c, int node) {
+  const char *nm = nt_str(c->nt, node, "name");
+  return nm ? comp_const(c, nm) : NULL;
+}
+static unsigned cf_ivar_bits(Compiler *c, const char *nm) {
+  unsigned b = 0;
+  /* "@*": an ivar a run-time name wrote (instance_variable_set) */
+  for (int i = 0; nm && i < c->n_cls_flow_ivar; i++)
+    if (sp_streq(c->cls_flow_ivar[i], nm) || (nm[0] == '@' && sp_streq(c->cls_flow_ivar[i], "@*")))
+      b |= c->cls_flow_ivar_bits[i];
+  return b;
+}
+/* a stable copy of an ivar name built on the stack: the class's own ivar
+   entry when a class has it, else NULL (no class reads it) */
+static const char *cf_ivar_name(Compiler *c, const char *iv) {
+  for (int k = 0; k < c->nclasses; k++)
+    for (int i = 0; i < c->classes[k].nivars; i++)
+      if (c->classes[k].ivars[i] && sp_streq(c->classes[k].ivars[i], iv)) return c->classes[k].ivars[i];
+  return NULL;
+}
+static int cf_ivar_add(Compiler *c, const char *nm, unsigned bits) {
+  if (!nm || !bits) return 0;
+  for (int i = 0; i < c->n_cls_flow_ivar; i++)
+    if (sp_streq(c->cls_flow_ivar[i], nm)) {
+      if ((c->cls_flow_ivar_bits[i] | bits) == c->cls_flow_ivar_bits[i]) return 0;
+      c->cls_flow_ivar_bits[i] |= (unsigned char)bits;
+      return 1;
+    }
+  if (c->n_cls_flow_ivar == c->c_cls_flow_ivar) {
+    c->c_cls_flow_ivar = c->c_cls_flow_ivar ? 2 * c->c_cls_flow_ivar : 8;
+    c->cls_flow_ivar = realloc(c->cls_flow_ivar, sizeof *c->cls_flow_ivar * (size_t)c->c_cls_flow_ivar);
+    c->cls_flow_ivar_bits = realloc(c->cls_flow_ivar_bits, (size_t)c->c_cls_flow_ivar);
+    if (!c->cls_flow_ivar || !c->cls_flow_ivar_bits) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  c->cls_flow_ivar[c->n_cls_flow_ivar] = nm;
+  c->cls_flow_ivar_bits[c->n_cls_flow_ivar++] = (unsigned char)bits;
+  return 1;
+}
+static int cf_lv_add(LocalVar *lv, unsigned bits) {
+  if (!lv || (lv->cls_flow | bits) == lv->cls_flow) return 0;
+  lv->cls_flow |= (unsigned char)bits;
+  return 1;
+}
+/* The slot a store's receiver names: a local, a constant or an ivar. */
+static int cf_slot_add(Compiler *c, int node, unsigned bits) {
+  if (node < 0 || !bits) return 0;
+  switch (nt_kind(c->nt, node)) {
+  case NK_LocalVariableReadNode: return cf_lv_add(cf_local(c, node), bits);
+  case NK_ConstantReadNode: return cf_lv_add(cf_const(c, node), bits);
+  case NK_InstanceVariableReadNode: case NK_GlobalVariableReadNode:
+    return cf_ivar_add(c, nt_str(c->nt, node, "name"), bits);
+  default: return 0;
+  }
+}
+/* the share row of a builtin call on a receiver of type rt */
+static int cf_share(TyKind rt, const char *nm) {
+  if (ty_is_hash(rt)) return bop_share(BOP_ANY_HASH, nm);
+  if (ty_is_array(rt) || rt == TY_POLY || rt == TY_UNKNOWN) {
+    int sh = bop_share(BOP_ANY_ARRAY, nm);
+    return sh ? sh : rt == TY_POLY ? bop_share(BOP_ANY_HASH, nm) : 0;
+  }
+  return 0;
+}
+static int cf_call_args(Compiler *c, int call, const int **argv) {
+  int a = nt_ref(c->nt, call, "arguments");
+  int n = 0;
+  *argv = a >= 0 ? nt_arr(c->nt, a, "arguments", &n) : NULL;
+  return *argv ? n : 0;
+}
+
+#define CF_ANY (CLS_FLOW_VALUE | CLS_FLOW_ELEMS)
+/* A receiver whose builtins answer, and hand their blocks, nothing but
+   numbers, Strings, Symbols and the like: proven to produce no class. Every
+   other receiver (an Enumerator, a Struct, a Proc, an IO, a Class ...) is
+   not, and what its builtins answer may be a class. */
+static int cf_classless_recv(TyKind t) {
+  switch (t) {
+  case TY_INT: case TY_BIGINT: case TY_FLOAT: case TY_STRING: case TY_STRBUF: case TY_SYMBOL:
+  case TY_BOOL: case TY_RANGE: case TY_FLOAT_RANGE: case TY_STR_RANGE:
+    return 1;
+  default:
+    return 0;
+  }
+}
+/* the value of each method or attribute reader named `nm` some class
+   defines; *any says whether there is one */
+static unsigned cf_rets_named(Compiler *c, const char *nm, int *any) {
+  unsigned b = 0;
+  char iv[256];
+  snprintf(iv, sizeof iv, "@%s", nm);
+  for (int k = 0; k < c->nclasses; k++) {
+    int mi = comp_method_in_class(c, k, nm);
+    if (mi >= 0) { b |= c->scopes[mi].ret_cls_flow; *any = 1; }
+    else if (comp_reader_in_chain(c, k, nm, NULL) >= 0) { b |= cf_ivar_bits(c, iv); *any = 1; }
+  }
+  return b;
+}
+static unsigned cf_call_bits(Compiler *c, int node, int depth) {
+  const NodeTable *nt = c->nt;
+  const char *nm = nt_str(nt, node, "name");
+  if (!nm) return CF_ANY;
+  /* a Proc's or Method's answer, or a call by a name decided at run time:
+     not followed */
+  if (is_send_family(nm) || (is_call_or_yield(nm) && !is_element_at_alias(nm))) return CF_ANY;
+  int mi = call_target_scope(c, node);
+  if (mi >= 0) return c->scopes[mi].ret_cls_flow;
+  int recv = nt_ref(nt, node, "receiver");
+  int user = 0;
+  if (recv < 0) {
+    unsigned rb0 = cf_rets_named(c, nm, &user);
+    if (user) return rb0;
+    /* a Kernel builtin: rand, Integer(), format ... answer no class */
+    int ksh = bop_share(BOP_KERNEL, nm);
+    if (ksh == BSH_PURE || ksh == BSH_FROZEN) return 0;
+    if (ksh == BSH_ARGS) {
+      const int *av = NULL;
+      int ac = cf_call_args(c, node, &av);
+      unsigned r = 0;
+      for (int i = 0; i < ac; i++) {
+        unsigned ab = cf_bits(c, av[i], depth + 1);
+        r |= ac == 1 ? ab : (ab ? CLS_FLOW_ELEMS : 0);
+      }
+      return r;
+    }
+    return CF_ANY;
+  }
+  TyKind rt = infer_type(c, recv);
+  /* a boxed receiver can be a user object: any method or reader of the
+     name answers */
+  unsigned b = rt == TY_POLY || rt == TY_UNKNOWN || ty_is_object(rt) ? cf_rets_named(c, nm, &user) : 0;
+  if (ty_is_object(rt)) return user ? b : CF_ANY;
+  /* a builtin class's `new` answers an instance of it; Class.new and
+     Module.new answer a class */
+  if (rt == TY_CLASS && is_new_name(nm) &&
+      (nt_kind(nt, recv) == NK_ConstantReadNode || nt_kind(nt, recv) == NK_ConstantPathNode)) {
+    const char *cn = nt_str(nt, recv, "name");
+    if (cn && !is_class_maker(cn)) return b;
+  }
+  /* a String's, a number's, a Symbol's or a Range's builtin answers no
+     class (`.class` is typed one, and caught before this); any other
+     receiver's answer is proven nothing */
+  if (cf_classless_recv(rt)) return b;
+  unsigned rb = cf_bits(c, recv, depth + 1);
+  const int *argv = NULL;
+  int argc = cf_call_args(c, node, &argv);
+  switch (cf_share(rt, nm)) {
+  case BSH_ELEM: case BSH_ITER_FIND:   /* an element can be a container of classes too */
+    return b | (rb & CLS_FLOW_ELEMS ? CF_ANY : 0);
+  case BSH_ELEM_N:
+    return b | (rb & CLS_FLOW_ELEMS ? CF_ANY : 0);
+  case BSH_FETCH:
+    b |= rb & CLS_FLOW_ELEMS ? CF_ANY : 0;
+    if (argc > 0) b |= cf_bits(c, argv[argc - 1], depth + 1);
+    return b;
+  case BSH_RECV: case BSH_SUB: case BSH_ITER_SEL: case BSH_ITER: case BSH_FROZEN:
+    return b | (rb & CLS_FLOW_ELEMS);
+  case BSH_MERGE:
+    b |= rb & CLS_FLOW_ELEMS;
+    for (int i = 0; i < argc; i++) b |= cf_bits(c, argv[i], depth + 1) & CLS_FLOW_ELEMS;
+    return b;
+  case BSH_ITER_MAP: {
+    int blk = nt_ref(nt, node, "block");
+    int body = blk >= 0 ? nt_ref(nt, blk, "body") : -1;
+    return b | (cf_bits(c, body, depth + 1) ? CLS_FLOW_ELEMS : 0);
+  }
+  case BSH_PURE:
+    return b;
+  case BSH_STORE_LAST:   /* `h[k] = v` answers v */
+    return b | (argc > 0 ? cf_bits(c, argv[argc - 1], depth + 1) : 0);
+  case BSH_STORE_ALL: case BSH_STORE_TAIL:   /* push and friends answer the receiver */
+    b |= rb & CLS_FLOW_ELEMS;
+    for (int i = 0; i < argc; i++) if (cf_bits(c, argv[i], depth + 1)) b |= CLS_FLOW_ELEMS;
+    return b;
+  case BSH_ARGS:   /* `p x` answers x, `p x, y` an Array of them */
+    for (int i = 0; i < argc; i++) {
+      unsigned ab = cf_bits(c, argv[i], depth + 1);
+      b |= argc == 1 ? ab : (ab ? CLS_FLOW_ELEMS : 0);
+    }
+    return b;
+  default:
+    /* an operator or reader of the numeric surface answers a number, and a
+       name only user classes define answers what they do */
+    if (is_arith_op(nm) || is_bit_op(nm) || is_int_bit_op(nm) || is_unary_sign(nm) || user) return b;
+    return CF_ANY;   /* a builtin answer the rows do not describe */
+  }
+}
+
+static unsigned cf_bits(Compiler *c, int node, int depth) {
+  const NodeTable *nt = c->nt;
+  if (node < 0 || depth > 8) return 0;
+  TyKind t = infer_type(c, node);
+  if (t == TY_CLASS) return CLS_FLOW_VALUE;
+  /* a number, a String, a Symbol and the like hold no class; anything else
+     that is not itself boxed may hold one among what it holds */
+  unsigned mask = t == TY_POLY || t == TY_UNKNOWN || t == TY_NIL ? CLS_FLOW_VALUE | CLS_FLOW_ELEMS
+                : cf_classless_recv(t) || t == TY_VOID ? 0 : CLS_FLOW_ELEMS;
+  if (!mask) return 0;
+  unsigned b = 0;
+  switch (nt_kind(nt, node)) {
+  case NK_ArrayNode: {
+    int n = 0; const int *el = nt_arr(nt, node, "elements", &n);
+    for (int i = 0; i < n; i++)
+      b |= nt_kind(nt, el[i]) == NK_SplatNode
+           ? cf_bits(c, nt_ref(nt, el[i], "expression"), depth + 1) & CLS_FLOW_ELEMS
+           : (cf_bits(c, el[i], depth + 1) ? CLS_FLOW_ELEMS : 0);
+    break;
+  }
+  case NK_HashNode: case NK_KeywordHashNode: {
+    int n = 0; const int *el = nt_arr(nt, node, "elements", &n);
+    for (int i = 0; i < n; i++) {
+      if (nt_kind(nt, el[i]) != NK_AssocNode) continue;
+      if (cf_bits(c, nt_ref(nt, el[i], "key"), depth + 1) |
+          cf_bits(c, nt_ref(nt, el[i], "value"), depth + 1)) b |= CLS_FLOW_ELEMS;
+    }
+    break;
+  }
+  case NK_ParenthesesNode:
+    b = cf_bits(c, stmts_tail(nt, nt_ref(nt, node, "body")), depth + 1); break;
+  case NK_StatementsNode:
+    b = cf_bits(c, stmts_tail(nt, node), depth + 1); break;
+  case NK_ElseNode:
+    b = cf_bits(c, stmts_tail(nt, nt_ref(nt, node, "statements")), depth + 1); break;
+  case NK_IfNode: case NK_UnlessNode: {
+    b = cf_bits(c, stmts_tail(nt, nt_ref(nt, node, "statements")), depth + 1);
+    int sub = nt_ref(nt, node, "subsequent");
+    if (sub < 0) sub = nt_ref(nt, node, "else_clause");
+    b |= cf_bits(c, sub, depth + 1);
+    break;
+  }
+  case NK_AndNode: case NK_OrNode:
+    b = cf_bits(c, nt_ref(nt, node, "left"), depth + 1) | cf_bits(c, nt_ref(nt, node, "right"), depth + 1);
+    break;
+  case NK_CaseNode: {
+    int n = 0; const int *ws = nt_arr(nt, node, "conditions", &n);
+    for (int i = 0; ws && i < n; i++) b |= cf_bits(c, stmts_tail(nt, nt_ref(nt, ws[i], "statements")), depth + 1);
+    b |= cf_bits(c, nt_ref(nt, node, "else_clause"), depth + 1);
+    break;
+  }
+  case NK_LocalVariableReadNode: {
+    /* a numbered or `it` parameter is bound where the walk does not look */
+    const char *ln = nt_str(nt, node, "name");
+    LocalVar *lv = cf_local(c, node);
+    b = !lv || (ln && ln[0] == '_' && ln[1] >= '1' && ln[1] <= '9' && !ln[2]) ? CF_ANY : lv->cls_flow;
+    break;
+  }
+  case NK_ConstantReadNode: { LocalVar *lv = cf_const(c, node); b = lv ? lv->cls_flow : CF_ANY; break; }
+  case NK_InstanceVariableReadNode: case NK_GlobalVariableReadNode:
+    b = cf_ivar_bits(c, nt_str(nt, node, "name")); break;
+  case NK_CallNode: b = cf_call_bits(c, node, depth); break;
+  case NK_LocalVariableWriteNode: case NK_LocalVariableOrWriteNode: case NK_LocalVariableAndWriteNode:
+  case NK_InstanceVariableWriteNode: case NK_GlobalVariableWriteNode: case NK_ConstantWriteNode:
+    b = cf_bits(c, nt_ref(nt, node, "value"), depth + 1); break;
+  case NK_YieldNode: {
+    int s2 = c->nscope[node];
+    b = s2 >= 0 && s2 < c->nscopes ? c->scopes[s2].blk_cls_flow : CF_ANY;
+    break;
+  }
+  case NK_ConstantPathNode: { LocalVar *lv = cf_const(c, node); b = lv ? lv->cls_flow : CF_ANY; break; }
+  case NK_IndexOrWriteNode: case NK_IndexAndWriteNode: {
+    /* `h[k] ||= v`: an element of h, or v */
+    unsigned rb = cf_bits(c, nt_ref(nt, node, "receiver"), depth + 1);
+    b = (rb & CLS_FLOW_ELEMS ? CF_ANY : 0) | cf_bits(c, nt_ref(nt, node, "value"), depth + 1);
+    break;
+  }
+  case NK_IndexOperatorWriteNode: case NK_LocalVariableOperatorWriteNode:
+  case NK_InstanceVariableOperatorWriteNode:
+    /* an operator's answer: a class has none of them; a container's merge */
+    b = cf_bits(c, nt_ref(nt, node, "value"), depth + 1) & CLS_FLOW_ELEMS;
+    break;
+  case NK_RescueModifierNode:
+    b = cf_bits(c, nt_ref(nt, node, "expression"), depth + 1) |
+        cf_bits(c, nt_ref(nt, node, "rescue_expression"), depth + 1);
+    break;
+  case NK_BeginNode:
+    b = cf_bits(c, stmts_tail(nt, nt_ref(nt, node, "statements")), depth + 1);
+    for (int rc = nt_ref(nt, node, "rescue_clause"); rc >= 0; rc = nt_ref(nt, rc, "subsequent"))
+      b |= cf_bits(c, stmts_tail(nt, nt_ref(nt, rc, "statements")), depth + 1);
+    b |= cf_bits(c, nt_ref(nt, node, "else_clause"), depth + 1);
+    break;
+  case NK_NilNode: case NK_TrueNode: case NK_FalseNode: case NK_SelfNode: case NK_IntegerNode:
+  case NK_FloatNode: case NK_StringNode: case NK_InterpolatedStringNode: case NK_SymbolNode:
+  case NK_RangeNode: case NK_LambdaNode:
+    break;
+  default:
+    /* a value the walk does not follow (a yield's, a super's, a pattern's,
+       anything new) may be a class */
+    b = CF_ANY;
+    break;
+  }
+  return b & mask;
+}
+
+int poly_expr_may_be_class(Compiler *c, int node) {
+  return (cf_bits(c, node, 1) & CLS_FLOW_VALUE) != 0;
+}
+
+/* each parameter of a block (its required ones, the destructured ones'
+   names included; with all_params, its optional, rest, keyword and block
+   ones too) takes `bits`, or bits_i(i) when given per position */
+static int cf_block_params_add(Compiler *c, int blk, unsigned bits, const unsigned char *per, int nper) {
+  const NodeTable *nt = c->nt;
+  int bp = blk >= 0 ? nt_ref(nt, blk, "parameters") : -1;
+  if (bp >= 0 && nt_kind(nt, bp) == NK_NumberedParametersNode) return 0;   /* `_1`: reads are untracked */
+  int pn = bp >= 0 ? nt_ref(nt, bp, "parameters") : -1;
+  if (pn < 0) return 0;
+  int changed = 0, n = 0;
+  const int *rq = nt_arr(nt, pn, "requireds", &n);
+  for (int i = 0; i < n; i++) {
+    unsigned bi = per ? (i < nper ? per[i] : CF_ANY) : bits;
+    if (nt_kind(nt, rq[i]) == NK_RequiredParameterNode) changed |= cf_lv_add(cf_local(c, rq[i]), bi);
+    else {
+      int m = 0; const int *ls = nt_arr(nt, rq[i], "lefts", &m);
+      for (int j = 0; j < m; j++)
+        if (nt_kind(nt, ls[j]) == NK_RequiredParameterNode)
+          changed |= cf_lv_add(cf_local(c, ls[j]), bi & CLS_FLOW_ELEMS ? CF_ANY : bi);
+    }
+  }
+  /* optional and post parameters take what a required one would; a rest
+     one the Array of them; keywords and a block parameter are not followed */
+  unsigned any_pos = bits;
+  for (int i = 0; per && i < nper; i++) any_pos |= per[i];
+  if (per) any_pos |= CF_ANY * (n >= nper);
+  const char *more[] = { "optionals", "posts", NULL };
+  for (int k = 0; more[k]; k++) {
+    int m = 0; const int *ps = nt_arr(nt, pn, more[k], &m);
+    for (int j = 0; j < m; j++) changed |= cf_lv_add(cf_local(c, ps[j]), any_pos);
+  }
+  int rs = nt_ref(nt, pn, "rest");
+  if (rs >= 0 && nt_str(nt, rs, "name"))
+    changed |= cf_lv_add(cf_local(c, rs), any_pos ? CLS_FLOW_ELEMS : 0);
+  int kn = 0; const int *kws = nt_arr(nt, pn, "keywords", &kn);
+  for (int j = 0; j < kn; j++) changed |= cf_lv_add(cf_local(c, kws[j]), CF_ANY);
+  const char *one[] = { "keyword_rest", "block", NULL };
+  for (int k = 0; one[k]; k++) {
+    int r = nt_ref(nt, pn, one[k]);
+    if (r >= 0 && nt_str(nt, r, "name")) changed |= cf_lv_add(cf_local(c, r), CF_ANY);
+  }
+  return changed;
+}
+
+/* the user method a call lands in, `C.new` landing in C#initialize */
+static int cf_target(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  const char *nm = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver");
+  if (nm && is_new_name(nm) && recv >= 0 &&
+      (nt_kind(nt, recv) == NK_ConstantReadNode || nt_kind(nt, recv) == NK_ConstantPathNode)) {
+    int ci = comp_class_index(c, nt_str(nt, recv, "name"));
+    int init = ci >= 0 ? comp_method_in_chain(c, ci, "initialize", NULL) : -1;
+    if (init >= 0) return init;
+  }
+  return call_target_scope(c, id);
+}
+
+/* A method the runtime calls with arguments of its own -- an operator
+   (sort's <=>, ==, ===, the coercions), eql? (Hash keys), coerce,
+   method_missing: its parameters are bound where no call is seen. */
+static int cf_runtime_called(const char *nm) {
+  if (!nm || !nm[0]) return 1;
+  if (!(nm[0] == '_' || (nm[0] >= 'a' && nm[0] <= 'z'))) return 1;
+  return is_runtime_called_name(nm);
+}
+
+/* the parent method a super in a class's method lands in, or -1 */
+static int cf_super_target(Compiler *c, int id) {
+  int s2 = c->nscope[id];
+  if (s2 < 0 || s2 >= c->nscopes) return -1;
+  Scope *sc = &c->scopes[s2];
+  if (!sc->name || sc->class_id < 0 || sc->class_id >= c->nclasses) return -1;
+  int parent = c->classes[sc->class_id].parent;
+  return parent >= 0 ? comp_method_in_chain(c, parent, sc->name, NULL) : -1;
+}
+
+#define CF_YMAX 16
+static int cf_block_params_add(Compiler *c, int blk, unsigned bits, const unsigned char *per, int nper);
+/* A call landing in method mi: its positional arguments bind the
+   parameters, up to a splat, a keyword hash or a block argument, from which
+   on the binding is not followed; its block's parameters take what mi's
+   yields hand them (any value, when mi takes the block as a Proc). */
+static int cf_bind_call(Compiler *c, int id, int mi, const int *argv, int argc, int blk,
+                        unsigned char (*yb)[CF_YMAX]) {
+  const NodeTable *nt = c->nt;
+  Scope *m = &c->scopes[mi];
+  int changed = 0, i = 0;
+  (void)id;
+  for (; i < argc && i < m->nparams; i++) {
+    NodeKind ak = nt_kind(nt, argv[i]);
+    if (ak == NK_SplatNode || ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode) break;
+    if (i == m->rest_idx || i == m->kwrest_idx) break;
+    if (m->pnames[i]) changed |= cf_lv_add(scope_local(m, m->pnames[i]), cf_bits(c, argv[i], 1));
+  }
+  if (i < argc)
+    for (int j = i; j < m->nparams; j++)
+      if (m->pnames[j]) changed |= cf_lv_add(scope_local(m, m->pnames[j]), CF_ANY);
+  if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode) {
+    changed |= m->blk_param || !m->yields ? cf_block_params_add(c, blk, CF_ANY, NULL, 0)
+                                          : cf_block_params_add(c, blk, 0, yb[mi], CF_YMAX);
+    /* what the block answers is the value of mi's yields */
+    unsigned bb = cf_bits(c, nt_ref(nt, blk, "body"), 1);
+    if ((m->blk_cls_flow | bb) != m->blk_cls_flow) { m->blk_cls_flow |= (unsigned char)bb; changed = 1; }
+  }
+  else if (blk >= 0 || (m->yields && blk < 0)) {
+    /* a block argument (`&blk`), or none: the yields answer what the walk
+       does not see */
+    if (blk >= 0 && (m->blk_cls_flow | CF_ANY) != m->blk_cls_flow) { m->blk_cls_flow |= CF_ANY; changed = 1; }
+  }
+  return changed;
+}
+int infer_class_flow(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int changed = 0, ns = c->nscopes;
+  /* per method: whether a run-time name, a super or the runtime itself may
+     call it; what its yields hand each block parameter */
+  unsigned char *dyn = calloc((size_t)ns + 1, 1), *dynm = calloc((size_t)ns + 1, 1);
+  int dynm_all = 0, blkarg_any = 0;
+  unsigned char (*yb)[CF_YMAX] = calloc((size_t)ns + 1, sizeof *yb);
+  unsigned char *handled = calloc((size_t)nt->count + 1, 1);
+  if (!dyn || !dynm || !yb || !handled) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int id = 0; id < nt->count; id++) {
+    NodeKind k = nt_kind(nt, id);
+    if (k == NK_CallNode) {
+      const char *nm = nt_str(nt, id, "name");
+      /* a Method turned into a Proc, curried or rebound is called where
+         its positions are not the call's */
+      if (nm && is_method_rebind(nm)) blkarg_any = 1;
+      /* a Method object: its calls (`m.call(...)`, `m.(...)`, `m[...]`)
+         bind its parameters below; one handed on as a block (`&m`) is
+         called where the walk does not see */
+      if (nm && is_method_object_maker(nm)) {
+        const int *argv = NULL;
+        int argc = cf_call_args(c, id, &argv);
+        const char *dn = argc > 0 && nt_kind(nt, argv[0]) == NK_SymbolNode ? nt_str(nt, argv[0], "value") : NULL;
+        if (!dn) { if (argc > 0) dynm_all = 1; }
+        else for (int s2 = 0; s2 < ns; s2++)
+          if (c->scopes[s2].name && sp_streq(c->scopes[s2].name, dn)) dynm[s2] = 1;
+      }
+    }
+    else if (k == NK_BlockArgumentNode) {
+      int ex = nt_ref(nt, id, "expression");
+      if (ex >= 0 && nt_kind(nt, ex) != NK_SymbolNode) blkarg_any = 1;
+    }
+    else if ((k == NK_SuperNode || k == NK_ForwardingSuperNode) && cf_super_target(c, id) < 0) {
+      /* a super whose parent method is not found (a module's, a reopened
+         builtin's): the methods of the name bind where the walk does not see */
+      int s2 = c->nscope[id];
+      const char *sn = s2 >= 0 && s2 < ns ? c->scopes[s2].name : NULL;
+      for (int s3 = 0; s3 < ns; s3++)
+        if (!sn || (c->scopes[s3].name && sp_streq(c->scopes[s3].name, sn))) dyn[s3] = 1;
+    }
+    else if (k == NK_YieldNode) {
+      int s2 = c->nscope[id];
+      if (s2 < 0 || s2 >= ns) continue;
+      const int *argv = NULL;
+      int argc = cf_call_args(c, id, &argv);
+      for (int i = 0; i < argc && i < CF_YMAX; i++) {
+        if (nt_kind(nt, argv[i]) == NK_SplatNode) { for (int j = i; j < CF_YMAX; j++) yb[s2][j] = CF_ANY; break; }
+        yb[s2][i] |= (unsigned char)cf_bits(c, argv[i], 1);
+      }
+    }
+    else if (k == NK_MultiWriteNode) {
+      int nl = 0; const int *ls = nt_arr(nt, id, "lefts", &nl);
+      for (int i = 0; i < nl; i++) if (ls[i] >= 0) handled[ls[i]] = 1;
+    }
+    else if (k == NK_ForNode) {
+      int ix = nt_ref(nt, id, "index");
+      if (ix >= 0) handled[ix] = 1;
+    }
+    else if (k == NK_RescueNode) {
+      int rf = nt_ref(nt, id, "reference");
+      if (rf >= 0) handled[rf] = 1;   /* an exception object, never a class */
+    }
+  }
+  for (int id = 0; id < nt->count; id++) {
+    switch (nt_kind(nt, id)) {
+    case NK_LocalVariableWriteNode: case NK_LocalVariableOrWriteNode: case NK_LocalVariableAndWriteNode:
+      changed |= cf_lv_add(cf_local(c, id), cf_bits(c, nt_ref(nt, id, "value"), 1));
+      break;
+    case NK_LocalVariableOperatorWriteNode:
+      /* `x += y`: the operator's answer; a class has none of them */
+      changed |= cf_lv_add(cf_local(c, id), cf_bits(c, nt_ref(nt, id, "value"), 1) & CLS_FLOW_ELEMS);
+      break;
+    case NK_LocalVariableTargetNode:
+      if (!handled[id]) changed |= cf_lv_add(cf_local(c, id), CF_ANY);   /* a pattern's, a nested target's */
+      break;
+    case NK_ForNode: {
+      int ix = nt_ref(nt, id, "index");
+      unsigned cb = cf_bits(c, nt_ref(nt, id, "collection"), 1);
+      if (ix >= 0 && nt_kind(nt, ix) == NK_LocalVariableTargetNode)
+        changed |= cf_lv_add(cf_local(c, ix), cb & CLS_FLOW_ELEMS ? CF_ANY : 0);
+      else if (ix >= 0) changed |= cf_slot_add(c, ix, CF_ANY);
+      break;
+    }
+    case NK_ConstantWriteNode: case NK_ConstantOrWriteNode: case NK_ConstantAndWriteNode:
+      changed |= cf_lv_add(cf_const(c, id), cf_bits(c, nt_ref(nt, id, "value"), 1));
+      break;
+    case NK_InstanceVariableWriteNode: case NK_InstanceVariableOrWriteNode: case NK_InstanceVariableAndWriteNode:
+    case NK_GlobalVariableWriteNode: case NK_GlobalVariableOrWriteNode: case NK_GlobalVariableAndWriteNode:
+      changed |= cf_ivar_add(c, nt_str(nt, id, "name"), cf_bits(c, nt_ref(nt, id, "value"), 1));
+      break;
+    case NK_InstanceVariableTargetNode: case NK_GlobalVariableTargetNode:
+      if (!handled[id]) changed |= cf_ivar_add(c, nt_str(nt, id, "name"), CF_ANY);
+      break;
+    case NK_MultiWriteNode: {
+      int v = nt_ref(nt, id, "value");
+      int en = 0;
+      const int *el = v >= 0 && nt_kind(nt, v) == NK_ArrayNode ? nt_arr(nt, v, "elements", &en) : NULL;
+      unsigned vb = cf_bits(c, v, 1);
+      int nl = 0; const int *ls = nt_arr(nt, id, "lefts", &nl);
+      for (int i = 0; i < nl; i++) {
+        unsigned b = el && i < en && nt_kind(nt, el[i]) != NK_SplatNode
+                     ? cf_bits(c, el[i], 1) : (vb & CLS_FLOW_ELEMS ? CF_ANY : 0);
+        NodeKind lk = nt_kind(nt, ls[i]);
+        if (lk == NK_LocalVariableTargetNode) changed |= cf_lv_add(cf_local(c, ls[i]), b);
+        else if (lk == NK_InstanceVariableTargetNode || lk == NK_GlobalVariableTargetNode)
+          changed |= cf_ivar_add(c, nt_str(nt, ls[i], "name"), b);
+      }
+      int rest = nt_ref(nt, id, "rest");
+      int rx = rest >= 0 ? nt_ref(nt, rest, "expression") : -1;
+      if (rx >= 0) changed |= nt_kind(nt, rx) == NK_LocalVariableTargetNode ? cf_lv_add(cf_local(c, rx), CF_ANY)
+                                                                            : cf_ivar_add(c, nt_str(nt, rx, "name"), CF_ANY);
+      break;
+    }
+    case NK_ReturnNode: {
+      int s2 = c->nscope[id];
+      if (s2 < 0 || s2 >= ns) break;
+      int a = nt_ref(nt, id, "arguments");
+      int n = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &n) : NULL;
+      /* `return a, b` answers an Array of them */
+      unsigned b = av && n == 1 ? cf_bits(c, av[0], 1) : 0;
+      for (int i = 0; av && n > 1 && i < n; i++)
+        if (cf_bits(c, av[i], 1)) b |= CLS_FLOW_ELEMS;
+      if ((c->scopes[s2].ret_cls_flow | b) != c->scopes[s2].ret_cls_flow) { c->scopes[s2].ret_cls_flow |= (unsigned char)b; changed = 1; }
+      break;
+    }
+    case NK_LambdaNode:
+      changed |= cf_block_params_add(c, id, CF_ANY, NULL, 0);
+      break;
+    case NK_SuperNode: case NK_ForwardingSuperNode: {
+      int pm = cf_super_target(c, id);
+      if (pm < 0) break;
+      int blk = nt_ref(nt, id, "block");
+      if (nt_kind(nt, id) == NK_SuperNode) {
+        const int *argv = NULL;
+        int argc = cf_call_args(c, id, &argv);
+        changed |= cf_bind_call(c, id, pm, argv, argc, blk, yb);
+      }
+      else {
+        /* a bare super hands on the method's own parameters */
+        Scope *sc = &c->scopes[c->nscope[id]], *m = &c->scopes[pm];
+        for (int i = 0; i < m->nparams; i++) {
+          if (!m->pnames[i]) continue;
+          LocalVar *src = i < sc->nparams && sc->pnames[i] ? scope_local(sc, sc->pnames[i]) : NULL;
+          changed |= cf_lv_add(scope_local(m, m->pnames[i]), src ? src->cls_flow : CF_ANY);
+        }
+        if (blk >= 0) changed |= cf_bind_call(c, id, pm, NULL, 0, blk, yb);
+      }
+      break;
+    }
+    case NK_CallNode: {
+      const int *argv = NULL;
+      int argc = cf_call_args(c, id, &argv);
+      int blk = nt_ref(nt, id, "block");
+      /* `send(name, args...)`: the arguments after the name bind the
+         parameters of the method of that name, or of every method when the
+         name is decided at run time */
+      if (nt_str(nt, id, "name") && is_send_family(nt_str(nt, id, "name")) && argc > 0) {
+        const char *dn = nt_kind(nt, argv[0]) == NK_SymbolNode ? nt_str(nt, argv[0], "value") : NULL;
+        for (int s2 = 0; s2 < ns; s2++)
+          if (c->scopes[s2].def_node >= 0 && c->scopes[s2].name && (!dn || sp_streq(c->scopes[s2].name, dn)))
+            changed |= cf_bind_call(c, id, s2, argv + 1, argc - 1, blk, yb);
+        break;
+      }
+      /* `x.call(args)`, `x.(args)`, `x.yield(args)` on a Proc or Method
+         value: the arguments bind every method a Method object is made
+         of (lambdas' and procs' parameters are not followed at all) */
+      {
+        const char *n1 = nt_str(nt, id, "name");
+        int r1 = nt_ref(nt, id, "receiver");
+        TyKind r1t = r1 >= 0 ? infer_type(c, r1) : TY_UNKNOWN;
+        if (n1 && r1 >= 0 && is_call_or_yield(n1) &&
+            (!is_element_at_alias(n1) || r1t == TY_METHOD || r1t == TY_PROC) &&
+            (r1t == TY_METHOD || r1t == TY_PROC || r1t == TY_POLY || r1t == TY_UNKNOWN) &&
+            call_target_scope(c, id) < 0) {
+          for (int s2 = 0; s2 < ns; s2++)
+            if (dynm_all || dynm[s2]) changed |= cf_bind_call(c, id, s2, argv, argc, blk, yb);
+        }
+      }
+      /* an attribute writer (`x.k = v`) stores into @k, whichever class
+         answers it; instance_variable_set into the ivar it names, or any */
+      {
+        const char *n3 = nt_str(nt, id, "name");
+        size_t l3 = n3 ? strlen(n3) : 0;
+        if (n3 && l3 > 1 && l3 < 250 && n3[l3 - 1] == '=' && argc >= 1 &&
+            ((n3[0] >= 'a' && n3[0] <= 'z') || n3[0] == '_')) {
+          char iv[256];
+          snprintf(iv, sizeof iv, "@%.*s", (int)(l3 - 1), n3);
+          changed |= cf_ivar_add(c, cf_ivar_name(c, iv), cf_bits(c, argv[argc - 1], 1));
+        }
+        if (n3 && is_ivar_setter_name(n3) && argc >= 2) {
+          const char *ivn = nt_kind(nt, argv[0]) == NK_SymbolNode ? nt_str(nt, argv[0], "value") : NULL;
+          changed |= cf_ivar_add(c, ivn ? ivn : "@*", cf_bits(c, argv[1], 1));
+        }
+      }
+      int mi = cf_target(c, id);
+      if (mi >= 0) { changed |= cf_bind_call(c, id, mi, argv, argc, blk, yb); break; }
+      /* `klass.new(...)` on a class held in a variable binds whichever
+         initialize it reaches */
+      {
+        const char *n2 = nt_str(nt, id, "name");
+        int r2 = nt_ref(nt, id, "receiver");
+        if (n2 && is_new_name(n2) && r2 >= 0 && nt_kind(nt, r2) != NK_ConstantReadNode &&
+            nt_kind(nt, r2) != NK_ConstantPathNode)
+          for (int s2 = 0; s2 < ns; s2++)
+            if (c->scopes[s2].def_node >= 0 && c->scopes[s2].name && is_initialize_name(c->scopes[s2].name))
+              changed |= cf_bind_call(c, id, s2, argv, argc, blk, yb);
+      }
+      /* a boxed receiver dispatches at run time: each method of the name
+         some class defines binds the arguments */
+      {
+        int r0 = nt_ref(nt, id, "receiver");
+        const char *n0 = nt_str(nt, id, "name");
+        TyKind r0t = r0 >= 0 ? infer_type(c, r0) : TY_UNKNOWN;
+        if (r0 >= 0 && n0 && (r0t == TY_POLY || r0t == TY_UNKNOWN || ty_is_object(r0t)))
+          for (int k = 0; k < c->nclasses; k++) {
+            int km = comp_method_in_class(c, k, n0);
+            if (km >= 0) changed |= cf_bind_call(c, id, km, argv, argc, blk, yb);
+          }
+      }
+      int recv = nt_ref(nt, id, "receiver");
+      const char *nm = nt_str(nt, id, "name");
+      int sh = recv >= 0 && nm ? cf_share(infer_type(c, recv), nm) : 0;
+      if (recv >= 0 && nm) {
+        unsigned st = 0;
+        if (sh == BSH_STORE_ALL || sh == BSH_STORE_TAIL || sh == BSH_STORE_LAST) {
+          for (int i = sh == BSH_STORE_TAIL ? 1 : sh == BSH_STORE_LAST ? argc - 1 : 0; i >= 0 && i < argc; i++)
+            if (cf_bits(c, argv[i], 1)) st = CLS_FLOW_ELEMS;
+          if (sh == BSH_STORE_LAST && argc > 1 && ty_is_hash(infer_type(c, recv)) &&
+              cf_bits(c, argv[0], 1)) st = CLS_FLOW_ELEMS;   /* a key */
+        }
+        else if (sh == BSH_MERGE) {
+          for (int i = 0; i < argc; i++) st |= cf_bits(c, argv[i], 1) & CLS_FLOW_ELEMS;
+        }
+        changed |= cf_slot_add(c, recv, st);
+      }
+      if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode) {
+        unsigned rb = recv >= 0 ? cf_bits(c, recv, 1) : 0;
+        TyKind brt = recv >= 0 ? infer_type(c, recv) : TY_UNKNOWN;
+        unsigned elem = rb & CLS_FLOW_ELEMS ? CF_ANY : 0;
+        unsigned char per[CF_YMAX];
+        int use_per = 0;
+        unsigned pb;
+        switch (sh) {
+        case BSH_ITER: case BSH_ITER_SEL: case BSH_ITER_MAP: case BSH_ITER_MAP_BANG: case BSH_ITER_FIND:
+          pb = elem; break;
+        case BSH_ITER_SUB:
+          pb = rb & CLS_FLOW_ELEMS; break;
+        case BSH_ITER_FRESH:
+          pb = 0; break;
+        case BSH_ITER_SELF: case BSH_ITER_THEN:
+          pb = rb; break;
+        case BSH_ITER_MEMO0: case BSH_ITER_MEMO1: {
+          /* inject: parameter 0 the memo (argument 0, or the block's
+             value); each_with_object: parameter 1 the memo */
+          int body = nt_ref(nt, blk, "body");
+          unsigned memo = (argc > 0 ? cf_bits(c, argv[0], 1) : elem) | cf_bits(c, body, 1);
+          for (int i = 0; i < CF_YMAX; i++) per[i] = (unsigned char)elem;
+          per[sh == BSH_ITER_MEMO0 ? 0 : 1] = (unsigned char)memo;
+          use_per = 1; pb = 0;
+          break;
+        }
+        default:
+          /* a builtin of a String, a number or a Range hands its block
+             values of its own; a block a class method, a receiverless
+             call or a Proc runs is not followed */
+          pb = recv >= 0 && cf_classless_recv(brt) ? elem : CF_ANY;
+          break;
+        }
+        changed |= use_per ? cf_block_params_add(c, blk, 0, per, CF_YMAX) : cf_block_params_add(c, blk, pb, NULL, 0);
+      }
+      break;
+    }
+    default:
+      break;
+    }
+  }
+  for (int s2 = 0; s2 < ns; s2++) {
+    Scope *sc = &c->scopes[s2];
+    if (sc->def_node < 0) continue;
+    /* a method's value: its body's tail */
+    unsigned b = cf_bits(c, stmts_tail(nt, sc->body), 1);
+    if ((sc->ret_cls_flow | b) != sc->ret_cls_flow) { sc->ret_cls_flow |= (unsigned char)b; changed = 1; }
+    /* parameters bound where no call is seen */
+    int unseen = dyn[s2] || cf_runtime_called(sc->name) ||
+                 ((dynm_all || dynm[s2]) && blkarg_any);
+    if (unseen && sc->yields && (sc->blk_cls_flow | CF_ANY) != sc->blk_cls_flow) { sc->blk_cls_flow |= CF_ANY; changed = 1; }
+    for (int i = 0; i < sc->nparams; i++) {
+      if (!sc->pnames[i]) continue;
+      LocalVar *p = scope_local(sc, sc->pnames[i]);
+      unsigned pb = unseen || i == sc->rest_idx || i == sc->kwrest_idx ? CF_ANY : 0;
+      if (sc->pdefault && sc->pdefault[i] >= 0) pb |= cf_bits(c, sc->pdefault[i], 1);
+      changed |= cf_lv_add(p, pb);
+    }
+  }
+  free(dyn); free(dynm); free(yb); free(handled);
   return changed;
 }
 
