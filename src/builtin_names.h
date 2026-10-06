@@ -199,6 +199,8 @@ int is_integer_class_name(const char *n); /* Fixnum Integer */
 int is_ivar_access(const char *n);   /* instance_variable_get instance_variable_set */
 int is_unary_plus(const char *n);    /* +@ */
 int is_member_key_read(const char *n); /* [] dig: a Struct member by its key */
+int is_comparable_module(const char *n); /* Comparable */
+int is_enum_pairs(const char *n);      /* __enum_pairs: a Hash's [key, value] pairs (desugar) */
 int is_value_transform(const char *n); /* transform_values: a Hash of the block's values */
 int is_plus_op(const char *n);       /* +: the operator `+=` writes through */
 int is_ivar_set(const char *n);      /* instance_variable_set */

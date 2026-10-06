@@ -2859,12 +2859,34 @@ static const BopShareRow bop_share_rows[] = {
   { BOP_KERNEL, "method",   BSH_METHOD_REF },
   { BOP_KERNEL, "instance_variable_get", BSH_IVAR_GET },
   { BOP_KERNEL, "instance_variable_set", BSH_IVAR_SET },
+  /* a class body's own declarations: a module or a name list in, the
+     class (or the name list) back; private and the rest hand back what
+     they are given */
+  { BOP_KERNEL, "include",       BSH_PURE },
+  { BOP_KERNEL, "extend",        BSH_PURE },
+  { BOP_KERNEL, "prepend",       BSH_PURE },
+  { BOP_KERNEL, "attr_reader",   BSH_PURE },
+  { BOP_KERNEL, "attr_writer",   BSH_PURE },
+  { BOP_KERNEL, "attr_accessor", BSH_PURE },
+  { BOP_KERNEL, "alias_method",  BSH_PURE },
+  { BOP_KERNEL, "private_constant", BSH_PURE },
+  { BOP_KERNEL, "name",          BSH_PURE },
+  { BOP_KERNEL, "superclass",    BSH_PURE },
+  { BOP_KERNEL, "subclasses",    BSH_PURE },
+  { BOP_KERNEL, "private",       BSH_ARGS },
+  { BOP_KERNEL, "public",        BSH_ARGS },
+  { BOP_KERNEL, "protected",     BSH_ARGS },
+  { BOP_KERNEL, "module_function", BSH_ARGS },
+  { BOP_KERNEL, "private_class_method", BSH_ARGS },
+  { BOP_KERNEL, "public_class_method",  BSH_ARGS },
   { BOP_KERNEL, "instance_exec", BSH_EXEC },
   { BOP_KERNEL, "instance_eval", BSH_EXEC },
   { BOP_KERNEL, "class_exec",  BSH_EXEC },
   { BOP_KERNEL, "class_eval",  BSH_EXEC },
 
   /* Object's own methods, on any receiver */
+  /* Mutex#synchronize and Monitor's: the block's value */
+  { BOP_ANY_RECV, "synchronize", BSH_ITER_THEN },
   { BOP_ANY_RECV, "==",          BSH_PURE },
   { BOP_ANY_RECV, "!=",          BSH_PURE },
   { BOP_ANY_RECV, "!",           BSH_PURE },
