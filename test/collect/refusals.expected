@@ -634,6 +634,10 @@ spinel: a String is not yet shared by reference through a retained scrub! result
 spinel: singleton method that needs a self, on a receiver that is not one user-class instance
 == test/reject/singleton_on_untraceable_recv.rb [promote] rc=1
 spinel: singleton method that needs a self, on a receiver that is not one user-class instance
+== test/reject/string_alias_gvar.rb [default] rc=1
+spinel: a String is mutated in place through one of two names `alias $b $a` binds (a String is not yet shared by reference through `alias $b $a`). Mutate the String through the variable it came from.
+== test/reject/string_alias_gvar.rb [promote] rc=1
+spinel: a String is mutated in place through one of two names `alias $b $a` binds (a String is not yet shared by reference through `alias $b $a`). Mutate the String through the variable it came from.
 == test/reject/string_append_through_kept_block_index.rb [default] rc=1
 spinel: a String is passed through `b[]`, and a proc or Method it can reach appends to the String it is handed: this call hands it a copy, so the append would not reach the caller's String (a String is not yet shared by reference from a block's parameter). Return the String from the proc or Method and assign it, or append to it in the caller.
 spinel: 1 refusal, nothing written
@@ -692,6 +696,14 @@ spinel: a String handed on by `break`, `throw` or `catch` is mutated in place, o
 spinel: a String is not yet shared by reference through an Array's chained index into an appending block
 == test/reject/string_chained_index_append.rb [promote] rc=1
 spinel: a String is not yet shared by reference through an Array's chained index into an appending block
+== test/reject/string_const_from_variable.rb [default] rc=1
+spinel: a String is mutated in place through one of two names a constant written from a String variable binds (a String is not yet shared by reference through a constant written from a String variable). Mutate the String through the variable it came from.
+== test/reject/string_const_from_variable.rb [promote] rc=1
+spinel: a String is mutated in place through one of two names a constant written from a String variable binds (a String is not yet shared by reference through a constant written from a String variable). Mutate the String through the variable it came from.
+== test/reject/string_const_or_write.rb [default] rc=1
+spinel: a String is mutated in place through one of two names a constant's `||=` binds (a String is not yet shared by reference through a constant's `||=`). Mutate the String through the variable it came from.
+== test/reject/string_const_or_write.rb [promote] rc=1
+spinel: a String is mutated in place through one of two names a constant's `||=` binds (a String is not yet shared by reference through a constant's `||=`). Mutate the String through the variable it came from.
 == test/reject/string_cvar_boxed_param.rb [default] rc=1
 spinel: a String is passed to `poly`'s parameter `io` through the call, which the method appends to: this call hands the method a copy, so the append would not reach the caller's String (a String is not yet shared by reference from a class variable into a parameter that boxes it). Return the String from the method and assign it, or append to it in the caller.
 spinel: 1 refusal, nothing written
@@ -838,6 +850,14 @@ spinel: a String stored in a Hash is passed to an appending value block: a Strin
 spinel: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
 == test/reject/string_identity_return_mutation.rb [promote] rc=1
 spinel: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
+== test/reject/string_inherited_ivar.rb [default] rc=1
+spinel: a String is mutated in place through one of two names an instance variable a superclass and a subclass both name binds (a String is not yet shared by reference through an instance variable a superclass and a subclass both name). Mutate the String through the variable it came from.
+== test/reject/string_inherited_ivar.rb [promote] rc=1
+spinel: a String is mutated in place through one of two names an instance variable a superclass and a subclass both name binds (a String is not yet shared by reference through an instance variable a superclass and a subclass both name). Mutate the String through the variable it came from.
+== test/reject/string_instance_eval_ivar.rb [default] rc=1
+spinel: a String is mutated in place through one of two names an instance variable an `instance_eval` block writes binds (a String is not yet shared by reference through an instance variable an `instance_eval` block writes). Mutate the String through the variable it came from.
+== test/reject/string_instance_eval_ivar.rb [promote] rc=1
+spinel: a String is mutated in place through one of two names an instance variable an `instance_eval` block writes binds (a String is not yet shared by reference through an instance variable an `instance_eval` block writes). Mutate the String through the variable it came from.
 == test/reject/string_iter_block_argument.rb [default] rc=1
 spinel: unsupported a String iterator given its block as a block argument (&blk): write the block out, or use each_char / each_byte / each_line: node 12 (CallNode `bytes`) recv=StringNode/ty6 argc=0
 spinel: 1 refusal, nothing written
@@ -856,6 +876,10 @@ spinel: a String instance variable written from a local is passed to an appendin
 spinel: a String is not yet shared by reference through an ivar's or a call's Array into an appending iterator block
 == test/reject/string_ivar_array_append.rb [promote] rc=1
 spinel: a String is not yet shared by reference through an ivar's or a call's Array into an appending iterator block
+== test/reject/string_ivar_from_other_reader.rb [default] rc=1
+spinel: a String is mutated in place through one of two names an instance variable written from another object's reader binds (a String is not yet shared by reference through an instance variable written from another object's reader). Mutate the String through the variable it came from.
+== test/reject/string_ivar_from_other_reader.rb [promote] rc=1
+spinel: a String is mutated in place through one of two names an instance variable written from another object's reader binds (a String is not yet shared by reference through an instance variable written from another object's reader). Mutate the String through the variable it came from.
 == test/reject/string_kernel_string_handover.rb [default] rc=1
 spinel: a String handed on by `String()` is mutated in place, or the variable it came from is (a String is not yet shared by reference through `String()`). Mutate the String through the variable itself.
 == test/reject/string_kernel_string_handover.rb [promote] rc=1
@@ -926,6 +950,10 @@ spinel: a nested multiple-assignment target appends to a String variable from an
 spinel: a nested multiple-assignment target appends to a String variable from an Array literal (a String is not yet shared by reference through a nested multiple-assignment target). Append to the source String instead.
 == test/reject/string_nested_masgn_target.rb [promote] rc=1
 spinel: a nested multiple-assignment target appends to a String variable from an Array literal (a String is not yet shared by reference through a nested multiple-assignment target). Append to the source String instead.
+== test/reject/string_pattern_binding.rb [default] rc=1
+spinel: a String is mutated in place through one of two names a pattern binding binds (a String is not yet shared by reference through a pattern binding). Mutate the String through the variable it came from.
+== test/reject/string_pattern_binding.rb [promote] rc=1
+spinel: a String is mutated in place through one of two names a pattern binding binds (a String is not yet shared by reference through a pattern binding). Mutate the String through the variable it came from.
 == test/reject/string_proc_answer_handover.rb [default] rc=1
 spinel: a String handed on by a proc's answer is mutated in place, or the variable it came from is (a String is not yet shared by reference through a proc's answer). Mutate the String through the variable itself.
 == test/reject/string_proc_answer_handover.rb [promote] rc=1
