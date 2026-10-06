@@ -204,7 +204,7 @@ typedef struct BuiltinOp {
 /* The call combines, compares or copies its arguments of the receiver's
    builtin class as that builtin: a subclass instance among them is read
    for its elements, pairs or bytes, and none of its own methods (each,
-   to_ary, to_hash, to_str, ==, <=>, ...) runs. Array#+ - & | <=> == eql?
+   to_ary, to_hash, to_str, ==, !=, <=>, ...) runs. Array#+ - & | <=> == != eql?
    concat replace union difference intersection intersect? product zip;
    Hash#merge merge! update replace == eql? < <= > >=; String#+ concat <<
    prepend insert replace == === eql? <=> < <= > >= between?. A method that
