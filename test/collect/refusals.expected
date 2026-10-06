@@ -652,10 +652,38 @@ spinel: 1 refusal, nothing written
 == test/reject/string_append_through_proc_keyword.rb [promote] rc=1
 spinel: a String is passed to a proc's parameter `k` through `f.call`, which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference from a block's parameter). Return the String from the proc and assign it, or append to it in the caller.
 spinel: 1 refusal, nothing written
+== test/reject/string_array_append_value.rb [default] rc=1
+spinel: a String variable added to an Array by `insert`, `prepend`, `concat`, a chained push, a push into a global, or as the value of `<<`, unary `+` or a reader method is mutated in place through the Array or the variable (a String is not yet shared by reference through such an Array element). Push the variable itself into a local Array with `<<` or `push`.
+== test/reject/string_array_append_value.rb [promote] rc=1
+spinel: a String variable added to an Array by `insert`, `prepend`, `concat`, a chained push, a push into a global, or as the value of `<<`, unary `+` or a reader method is mutated in place through the Array or the variable (a String is not yet shared by reference through such an Array element). Push the variable itself into a local Array with `<<` or `push`.
+== test/reject/string_array_chained_push.rb [default] rc=1
+spinel: a String variable added to an Array by `insert`, `prepend`, `concat`, a chained push, a push into a global, or as the value of `<<`, unary `+` or a reader method is mutated in place through the Array or the variable (a String is not yet shared by reference through such an Array element). Push the variable itself into a local Array with `<<` or `push`.
+== test/reject/string_array_chained_push.rb [promote] rc=1
+spinel: a String variable added to an Array by `insert`, `prepend`, `concat`, a chained push, a push into a global, or as the value of `<<`, unary `+` or a reader method is mutated in place through the Array or the variable (a String is not yet shared by reference through such an Array element). Push the variable itself into a local Array with `<<` or `push`.
+== test/reject/string_array_global_push.rb [default] rc=1
+spinel: a String variable added to an Array by `insert`, `prepend`, `concat`, a chained push, a push into a global, or as the value of `<<`, unary `+` or a reader method is mutated in place through the Array or the variable (a String is not yet shared by reference through such an Array element). Push the variable itself into a local Array with `<<` or `push`.
+== test/reject/string_array_global_push.rb [promote] rc=1
+spinel: a String variable added to an Array by `insert`, `prepend`, `concat`, a chained push, a push into a global, or as the value of `<<`, unary `+` or a reader method is mutated in place through the Array or the variable (a String is not yet shared by reference through such an Array element). Push the variable itself into a local Array with `<<` or `push`.
+== test/reject/string_array_insert_element.rb [default] rc=1
+spinel: a String variable added to an Array by `insert`, `prepend`, `concat`, a chained push, a push into a global, or as the value of `<<`, unary `+` or a reader method is mutated in place through the Array or the variable (a String is not yet shared by reference through such an Array element). Push the variable itself into a local Array with `<<` or `push`.
+== test/reject/string_array_insert_element.rb [promote] rc=1
+spinel: a String variable added to an Array by `insert`, `prepend`, `concat`, a chained push, a push into a global, or as the value of `<<`, unary `+` or a reader method is mutated in place through the Array or the variable (a String is not yet shared by reference through such an Array element). Push the variable itself into a local Array with `<<` or `push`.
+== test/reject/string_array_reader_value.rb [default] rc=1
+spinel: a String variable added to an Array by `insert`, `prepend`, `concat`, a chained push, a push into a global, or as the value of `<<`, unary `+` or a reader method is mutated in place through the Array or the variable (a String is not yet shared by reference through such an Array element). Push the variable itself into a local Array with `<<` or `push`.
+== test/reject/string_array_reader_value.rb [promote] rc=1
+spinel: a String variable added to an Array by `insert`, `prepend`, `concat`, a chained push, a push into a global, or as the value of `<<`, unary `+` or a reader method is mutated in place through the Array or the variable (a String is not yet shared by reference through such an Array element). Push the variable itself into a local Array with `<<` or `push`.
 == test/reject/string_array_rebound_iterator_alias.rb [default] rc=1
 spinel: a String appended to through a rebound iterator alias is not yet shared by reference with its Array
 == test/reject/string_array_rebound_iterator_alias.rb [promote] rc=1
 spinel: a String appended to through a rebound iterator alias is not yet shared by reference with its Array
+== test/reject/string_array_uplus_param.rb [default] rc=1
+spinel: a String variable added to an Array by `insert`, `prepend`, `concat`, a chained push, a push into a global, or as the value of `<<`, unary `+` or a reader method is mutated in place through the Array or the variable (a String is not yet shared by reference through such an Array element). Push the variable itself into a local Array with `<<` or `push`.
+== test/reject/string_array_uplus_param.rb [promote] rc=1
+spinel: a String variable added to an Array by `insert`, `prepend`, `concat`, a chained push, a push into a global, or as the value of `<<`, unary `+` or a reader method is mutated in place through the Array or the variable (a String is not yet shared by reference through such an Array element). Push the variable itself into a local Array with `<<` or `push`.
+== test/reject/string_bang_result_mutation.rb [default] rc=1
+spinel: the result of a String bang method, which is its receiver, is mutated in place (a String is not yet shared by reference through a bang method's result). Mutate the receiver instead.
+== test/reject/string_bang_result_mutation.rb [promote] rc=1
+spinel: the result of a String bang method, which is its receiver, is mutated in place (a String is not yet shared by reference through a bang method's result). Mutate the receiver instead.
 == test/reject/string_chained_index_append.rb [default] rc=1
 spinel: a String is not yet shared by reference through an Array's chained index into an appending block
 == test/reject/string_chained_index_append.rb [promote] rc=1
@@ -708,6 +736,10 @@ spinel: 1 refusal, nothing written
 == test/reject/string_gather_short_splat_lead.rb [promote] rc=1
 spinel: a String is passed to `g`'s parameter `a` through a call that gathers its arguments, which the method appends to: this call hands the method a copy, so the append would not reach the caller's String (a String is not yet shared by reference from a local variable ahead of a splat whose length decides which parameter takes it). Return the String from the method and assign it, or append to it in the caller.
 spinel: 1 refusal, nothing written
+== test/reject/string_global_alias_mutation.rb [default] rc=1
+spinel: a String variable assigned from or to a global variable is mutated in place (a String is not yet shared by reference through a global variable). Mutate the String through the global, or assign the global again after the mutation.
+== test/reject/string_global_alias_mutation.rb [promote] rc=1
+spinel: a String variable assigned from or to a global variable is mutated in place (a String is not yet shared by reference through a global variable). Mutate the String through the global, or assign the global again after the mutation.
 == test/reject/string_global_handle_param.rb [default] rc=1
 spinel: a String is passed to `h`'s parameter `io` through the call, which the method appends to: this call hands the method a copy, so the append would not reach the caller's String (a String is not yet shared by reference from a global variable into a parameter that takes its handle). Return the String from the method and assign it, or append to it in the caller.
 spinel: 1 refusal, nothing written
@@ -794,6 +826,14 @@ spinel: a String stored in a Hash is passed to an appending value block: a Strin
 spinel: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
 == test/reject/string_hash_values_variable.rb [promote] rc=1
 spinel: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
+== test/reject/string_identity_return_appended.rb [default] rc=1
+spinel: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
+== test/reject/string_identity_return_appended.rb [promote] rc=1
+spinel: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
+== test/reject/string_identity_return_mutation.rb [default] rc=1
+spinel: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
+== test/reject/string_identity_return_mutation.rb [promote] rc=1
+spinel: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
 == test/reject/string_iter_block_argument.rb [default] rc=1
 spinel: unsupported a String iterator given its block as a block argument (&blk): write the block out, or use each_char / each_byte / each_line: node 12 (CallNode `bytes`) recv=StringNode/ty6 argc=0
 spinel: 1 refusal, nothing written
@@ -938,6 +978,10 @@ spinel: 1 refusal, nothing written
 == test/reject/string_thread_method_param_arg.rb [promote] rc=1
 spinel: a String is passed to a block's parameter `t` through `Thread.new`, which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference through `Thread.new`). Return the String from the proc and assign it, or append to it in the caller.
 spinel: 1 refusal, nothing written
+== test/reject/string_to_s_receiver_rebind.rb [default] rc=1
+spinel: `to_s` (or another call answering its String receiver) is mutated in place while an argument reassigns the variable it was read from (a String is not yet shared by reference through `to_s` on a String). Mutate the variable itself, or read it into another local first.
+== test/reject/string_to_s_receiver_rebind.rb [promote] rc=1
+spinel: `to_s` (or another call answering its String receiver) is mutated in place while an argument reassigns the variable it was read from (a String is not yet shared by reference through `to_s` on a String). Mutate the variable itself, or read it into another local first.
 == test/reject/string_yield_captured_param.rb [default] rc=1
 spinel: a String is passed to a block's parameter `q` through `yield` into a capture-wrapper block, which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference through `yield` into a capture-wrapper block). Return the String from the proc and assign it, or append to it in the caller.
 spinel: 1 refusal, nothing written
