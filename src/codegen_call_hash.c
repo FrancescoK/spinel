@@ -129,14 +129,21 @@ int emit_op_hash_to_proc(Compiler *c, const BopCtx *x, Buf *b) {
   const char *hn = ty_hash_cname(rt);
   TyKind kt = ty_hash_key(rt), vt = ty_hash_val(rt);
   int pn = ++g_proc_counter;
-  /* a PolyPolyHash key is an sp_RbVal, delivered on the proc's poly
-     side-channel (args[] carries only scalar bits); the get() takes it
-     directly. Scalar-keyed variants read the sp_int slot. */
-  const char *keyexpr = (kt == TY_SYMBOL) ? "(sp_sym)args[0]"
-                      : (kt == TY_STRING) ? "(const char *)(uintptr_t)args[0]"
-                      : (rt == TY_POLY_POLY_HASH) ? "_sp_proc_poly_args[0]"
-                      : "args[0]";
-  if (rt == TY_POLY_POLY_HASH) g_needs_proc_poly_argslot = 1;
+  /* The key is read from the proc's boxed side-channel, which every caller
+     publishes, not from the sp_int slot: the proc can be called with a key
+     of any class, and the slot's bits read as a `const char *` for a
+     String-keyed Hash called with an Integer crashed. A key of a class the
+     storage cannot hold (an Integer or a Symbol on a String-keyed Hash, a
+     Float 1.0 on an Integer-keyed one, which is not eql? to 1) is a miss
+     answering the Hash's default, as `h[key]` answers it. */
+  const char *keyexpr = (kt == TY_SYMBOL) ? "(sp_sym)_k.v.i"
+                      : (kt == TY_STRING) ? "_k.v.s"
+                      : (kt == TY_INT) ? "_k.v.i"
+                      : "_k";
+  const char *keytag = (kt == TY_SYMBOL) ? "SP_TAG_SYM"
+                     : (kt == TY_STRING) ? "SP_TAG_STR"
+                     : (kt == TY_INT) ? "SP_TAG_INT" : NULL;
+  g_needs_proc_poly_argslot = 1;
   buf_printf(&g_proc_protos, "static sp_int _hashproc_%d(void *cap, sp_int argc, sp_int *args);\n", pn);
   buf_printf(&g_procs, "static sp_int _hashproc_%d(void *cap, sp_int argc, sp_int *args) {\n", pn);
   /* the hash proc is a lambda: exactly one key, as CRuby's raises --
@@ -144,7 +151,16 @@ int emit_op_hash_to_proc(Compiler *c, const BopCtx *x, Buf *b) {
      previous call's value */
   buf_printf(&g_procs, "  if (argc != 1) sp_raise_cls(\"ArgumentError\","
              " sp_sprintf(\"wrong number of arguments (given %%lld, expected 1)\", (long long)argc));\n");
-  buf_printf(&g_procs, "  sp_%sHash *_h = (sp_%sHash *)cap;\n", hn, hn);
+  buf_printf(&g_procs, "  sp_%sHash *_h = (sp_%sHash *)cap; (void)args;\n", hn, hn);
+  buf_puts(&g_procs, "  sp_RbVal _k = _sp_proc_poly_args[0];\n");
+  /* a mutable String key looks its contents up */
+  if (kt == TY_STRING)
+    buf_puts(&g_procs, "  if (sp_poly_is_strbuf(_k)) _k = sp_poly_strbuf_deref(_k);\n");
+  if (keytag) {
+    buf_printf(&g_procs, "  if (_k.tag != %s) { _sp_proc_poly_ret = sp_poly_hash_foreign_miss(", keytag);
+    emit_boxed_text(c, rt, "_h", &g_procs);
+    buf_puts(&g_procs, ", _k); return 0; }\n");
+  }
   /* Universal return ABI: publish the boxed value into _sp_proc_poly_ret
      for every value type; the .call site reads the slot back. */
   buf_puts(&g_procs, "  _sp_proc_poly_ret = ");
