@@ -28,6 +28,7 @@ sp_obj_eq_fn sp_obj_eq_hook_lib;
 sp_obj_hash_fn sp_obj_hash_hook_lib;
 sp_obj_eql_fn sp_obj_eql_hook_lib;
 void (*sp_user_init_copy_hook_lib)(sp_RbVal, sp_RbVal);
+sp_RbVal (*sp_bsub_dup_hook_lib)(sp_RbVal, int, sp_bool *);
 /* the symbol interner is generated per program too; a keyword name that is not
    a known symbol reaches it through the hook the generated unit installs */
 sp_sym sp_poly_cold_sym_intern(const char *s) { return sp_json_sym_intern_fn ? sp_json_sym_intern_fn(s) : (sp_sym)0; }
@@ -648,6 +649,11 @@ sp_RbVal sp_poly_slice_or_call(sp_RbVal v, sp_RbVal a, sp_RbVal b)
 
 sp_RbVal sp_poly_dup(sp_RbVal v, int keep_frozen)
 {
+  if (sp_bsub_dup_hook && v.tag == SP_TAG_OBJ && v.v.p) {
+    sp_bool handled = FALSE;
+    sp_RbVal r = sp_bsub_dup_hook(v, keep_frozen, &handled);
+    if (handled) return r;
+  }
   if (v.tag == SP_TAG_OBJ && v.v.p &&
       (v.cls_id == SP_BUILTIN_RANGE || v.cls_id == SP_BUILTIN_FLOAT_RANGE || v.cls_id == SP_BUILTIN_STR_RANGE))
     return sp_range_dup(v, keep_frozen);
