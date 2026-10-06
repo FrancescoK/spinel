@@ -13055,7 +13055,7 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
      typed-array slice above (#3445, #3449). */
   if (recv >= 0 && rt == TY_POLY && argc >= 1 && sp_streq(name, "slice") &&
       nt_ref(nt, id, "block") < 0 && !user_defines_or_reads(c, "slice") &&
-      g_n_argov < MAX_ARG_OVERRIDE) {
+      g_n_argov + 3 < MAX_ARG_OVERRIDE) {
     int tsv = ++g_tmp;
     int has_splat = 0;
     for (int i = 0; i < argc; i++)
@@ -13066,6 +13066,20 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
        receiver that is a temporary (`poly(1).slice(*keys)`) was collected in
        between and the slice answered from freed memory. */
     buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", tsv);
+    /* the arguments next, held and bound for every side below: CRuby runs
+       them before the call, and the raise for a receiver with no slice
+       names them as NoMethodError#args */
+    int vmark = g_n_argov, held = !has_splat && argc <= 2;
+    int tav[2] = {0, 0};
+    for (int i = 0; held && i < argc; i++) {
+      TyKind at = comp_ntype(c, argv[i]);
+      tav[i] = ++g_tmp;
+      emit_ctype(c, at, b); buf_printf(b, " _t%d = ", tav[i]); emit_expr(c, argv[i], b);
+      if (at == TY_POLY) buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", tav[i]);
+      else if (needs_root(at)) buf_printf(b, "; SP_GC_ROOT(_t%d); ", tav[i]);
+      else buf_puts(b, "; ");
+    }
+    for (int i = 0; held && i < argc; i++) view_bind(argv[i], "_t%d", tav[i]);
     int tkeys = -1;
     if (has_splat) {
       /* A splat contributes all of its elements, so the key list has a length
@@ -13124,15 +13138,29 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
       }
     }
     else if (argc == 1 || argc == 2) {
+      /* only a String, a Symbol and an Array have slice: through `[]` nil
+         raised naming `[]` and an Integer answered a bit */
+      buf_printf(b, "(_t%d.tag == SP_TAG_STR || _t%d.tag == SP_TAG_SYM || sp_poly_is_strbuf(_t%d) ||"
+                    " (_t%d.tag == SP_TAG_OBJ && sp_poly_is_array_kind(_t%d.cls_id))) ? ",
+                 tsv, tsv, tsv, tsv, tsv);
+      int rmark = g_n_argov;
       view_bind(recv, "_t%d", tsv);
       nt_node_set_str((NodeTable *)nt, id, "name", "[]");
       Buf ib; memset(&ib, 0, sizeof ib); emit_call(c, id, &ib);
       nt_node_set_str((NodeTable *)nt, id, "name", "slice");
-      view_unbind(g_n_argov - 1);
+      view_unbind(rmark);
       buf_puts(b, ib.p ? ib.p : "sp_box_nil()");
       free(ib.p);
+      buf_printf(b, " : (sp_raise_nomethod(sp_nomethod_msg_args(\"slice\", _t%d, %d, (sp_RbVal[]){", tsv, argc);
+      for (int i = 0; i < argc; i++) {
+        char tn[24]; snprintf(tn, sizeof tn, "_t%d", tav[i]);
+        if (i) buf_puts(b, ", ");
+        emit_boxed_text(c, comp_ntype(c, argv[i]), tn, b);
+      }
+      buf_puts(b, "})), sp_box_nil())");
     }
     else buf_printf(b, "sp_raise_nomethod(sp_nomethod_msg(\"slice\", _t%d))", tsv);
+    view_unbind(vmark);
     buf_puts(b, "; })");
     return 1;
   }
