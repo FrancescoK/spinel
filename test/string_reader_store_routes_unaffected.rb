@@ -27,3 +27,7 @@ a13 = []
 # a reader's String changed on a boxed receiver whose members are not read again
 class K14; def initialize(t) = (@text = t); attr_reader :text; end
 o14 = [K14.new(+"t"), 0][0]; t14 = o14.text; t14 << "x"; p t14; p o14.class, o14.nil?
+# a String reader of a class with no instance is no boxed receiver's
+class Text15; attr_reader :value; def initialize = (@value = +"x"); end
+class Values15; attr_reader :value; def initialize = (@value = [1]); end
+o15 = [Values15.new, 0][0]; x15 = o15.value; x15 << 2; p o15.value
