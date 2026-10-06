@@ -2156,6 +2156,14 @@ int emit_poly_defaults0(Compiler *c, int id, int recv, const char *name, const P
     buf_printf(b, " default: _t%d = sp_poly_to_h_val(_t%d); break;", tr, tv);
     obj_default_done = 1;
   }
+  /* display, the same shape: a class that defines it has its own case, and
+     every other receiver is Kernel#display's, to_s with no newline and nil */
+  if (!obj_default_done && argc == 0 && sp_streq(name, "display") && nt_ref(nt, id, "block") < 0) {
+    buf_printf(b, " default: fputs(sp_poly_to_s(_t%d), stdout);", tv);
+    if (ret == TY_POLY) buf_printf(b, " _t%d = sp_box_nil();", tr);
+    buf_puts(b, " break;");
+    obj_default_done = 1;
+  }
   /* The blockless index enumerators, same shape: an Array reaching this
      dispatch still answers them with an Enumerator. */
   if (argc == 0 && (is_indexed_each(name))) {

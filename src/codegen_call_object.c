@@ -970,7 +970,8 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
          does a method the class defines itself: Nokogiri's Node#dup is a deep
          copy, and the built-in shallow copy took its place (#5450) */
       !(ty_is_object(comp_ntype(c, recv)) &&
-        comp_resolve_member(c, ty_object_class(comp_ntype(c, recv)), name, 0, NULL, NULL) != SP_MEMBER_NONE)) {
+        comp_resolve_member(c, ty_object_class(comp_ntype(c, recv)), name, 0, NULL, NULL) != SP_MEMBER_NONE) &&
+      !(comp_ntype(c, recv) == TY_POLY && an_user_defines_method(c, name))) {
     int dargs = nt_ref(nt, id, "arguments");
     int dargc = 0; const int *dargv = dargs >= 0 ? nt_arr(nt, dargs, "arguments", &dargc) : NULL;
     Repr drr = repr_of(c, recv);
@@ -2126,9 +2127,11 @@ int emit_op_ivar_reflection(Compiler *c, const BopCtx *x, Buf *b) {
 int emit_call_display_ivar_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt) {
   /* Kernel#display prints to_s with no newline, returns nil */
   if (recv >= 0 && sp_streq(name, "display") && argc == 0 &&
-      /* a generated READER of the name owns it, as in CRuby (#4190) */
+      /* the class's own `display`, a generated reader (#4190) or a def,
+         owns the name, as in CRuby */
       !(ty_is_object(comp_ntype(c, recv)) &&
-        comp_resolve_member(c, ty_object_class(comp_ntype(c, recv)), name, 0, NULL, NULL) == SP_MEMBER_ATTR)) {
+        comp_resolve_member(c, ty_object_class(comp_ntype(c, recv)), name, 0, NULL, NULL) != SP_MEMBER_NONE) &&
+      !(comp_ntype(c, recv) == TY_POLY && an_user_defines_method(c, name))) {
     /* Struct#to_s IS inspect in CRuby ("#<struct Point x=1, y=2>"); the
        boxed sp_poly_to_s default would print the bare-object form */
     TyKind drt2 = comp_ntype(c, recv);
