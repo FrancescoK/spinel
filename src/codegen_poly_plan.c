@@ -76,7 +76,8 @@ static void pa_arm_text(Compiler *c, const PolyArm *a, char *out, size_t n) {
                                      "io-flush", "io-close", "enum-to_a",
                                      "cover?", "try_convert", "gcdlcm", "unpack1", "include?", "str-delete",
                                      "str-partition", "str-setop", "store", "str-encode", "str-split",
-                                     "int-bitref", "index-cases", "io-read_nonblock", "io-readpartial", "io-write",
+                                     "int-bitref", "index-cases", "io-read_nonblock", "io-readpartial", "io-readpartial(buf)",
+                                     "io-setsockopt", "io-write",
                                      "io-syswrite", "io-print", "io-putc", "io-seek/read", "unshift", "push",
                                      "pack", "join(sep)", "include?-cases", "array-index", "intersect?",
                                      "strftime", "aref-str", "aref-sym", "aref-poly", "predicate(arg)",
@@ -3056,6 +3057,41 @@ void emit_poly_cases_n(Compiler *c, int id, const char *name, const PolySpecials
     buf_printf(b, "); _t%d = ", tr);
     if (ret == TY_POLY) buf_printf(b, "sp_box_str(_t%d)", trp);
     else buf_printf(b, "_t%d", trp);
+    buf_puts(b, "; break; }");
+  }
+  /* readpartial / sysread(len, buf) on the builtin IO tag: the bytes read go
+     into the caller's buffer as the typed arm puts them (a String handle has
+     its contents replaced, a plain local is rebound), and are the answer */
+  if ((sp_streq(name, "readpartial") || sp_streq(name, "sysread")) && argc == 2 && kwh < 0 && splat_a < 0) {
+    if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_IO_READPARTIAL_BUF, -1, TY_UNKNOWN, PC_SAME);
+    int trp = ++g_tmp;
+    buf_printf(b, " case SP_BUILTIN_IO: { const char *_t%d = sp_File_readpartial((sp_File *)_t%d.v.p, ", trp, tv);
+    if (atmp_ty[0] == TY_POLY) buf_printf(b, "sp_poly_arg_i(_t%d)", atmp[0]);
+    else buf_printf(b, "(sp_int)_t%d", atmp[0]);
+    buf_puts(b, "); ");
+    char hr[1024];
+    if (strbuf_slot_ref(c, argv[1], hr, sizeof hr)) buf_printf(b, "sp_String_set_bin(%s, _t%d); ", hr, trp);
+    else if (nt_kind(nt, argv[1]) == NK_LocalVariableReadNode)
+      buf_printf(b, "lv_%s = _t%d; ", rename_local(nt_str(nt, argv[1], "name")), trp);
+    buf_printf(b, "_t%d = ", tr);
+    if (ret == TY_POLY) buf_printf(b, "sp_box_str(_t%d)", trp);
+    else buf_printf(b, "_t%d", trp);
+    buf_puts(b, "; break; }");
+  }
+  /* setsockopt(level, opt, value) on the builtin IO tag, beside a class that
+     owns the name (SSLSocket): the Socket raised NoMethodError */
+  if (sp_streq(name, "setsockopt") && argc == 3 && kwh < 0 && splat_a < 0) {
+    if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_IO_SETSOCKOPT, -1, TY_UNKNOWN, PC_SAME);
+    buf_printf(b, " case SP_BUILTIN_IO: { sp_sock_setsockopt((sp_File *)_t%d.v.p", tv);
+    for (int k = 0; k < 3; k++) {
+      if (atmp_ty[k] == TY_POLY) buf_printf(b, ", sp_poly_arg_i(_t%d)", atmp[k]);
+      else if (atmp_ty[k] == TY_BOOL) buf_printf(b, ", (sp_int)(_t%d ? 1 : 0)", atmp[k]);
+      else buf_printf(b, ", (sp_int)_t%d", atmp[k]);
+    }
+    buf_printf(b, "); _t%d = ", tr);
+    if (ret == TY_POLY) buf_puts(b, "sp_box_int(0)");
+    else if (ret == TY_INT) buf_puts(b, "0");
+    else buf_printf(b, "_t%d", tr);
     buf_puts(b, "; break; }");
   }
   if (sp_streq(name, "write") && argc == 1 && kwh < 0 && splat_a < 0) {

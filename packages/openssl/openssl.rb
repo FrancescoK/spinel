@@ -158,6 +158,13 @@ module OpenSSL
         @io
       end
 
+      # CRuby forwards the socket options to the underlying socket
+      # (OpenSSL::SSL::SocketForwarder)
+      def setsockopt(level, optname, optval)
+        @io.setsockopt(level, optname, optval)
+        0
+      end
+
       def connect
         h = Native.connect(@io.fileno, @hostname,
                            @context.verify_mode == VERIFY_NONE ? 0 : 1,
