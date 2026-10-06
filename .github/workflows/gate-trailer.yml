@@ -68,10 +68,11 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
           LABEL: ${{ steps.verify.outputs.label }}
         run: |
+          present=$(gh api "repos/$GH_REPO/issues/$PR/labels" --jq '.[].name')
           while IFS='|' read -r name color desc; do
             gh label create "$name" --color "$color" --description "$desc" --force
-            if [ "$name" != "$LABEL" ]; then
-              gh api -X DELETE "repos/$GH_REPO/issues/$PR/labels/$(jq -rn --arg l "$name" '$l|@uri')" >/dev/null 2>&1 || true
+            if [ "$name" != "$LABEL" ] && grep -qxF "$name" <<<"$present"; then
+              gh api -X DELETE "repos/$GH_REPO/issues/$PR/labels/$(jq -rn --arg l "$name" '$l|@uri')" >/dev/null
             fi
           done <<'EOF'
           gate: verified|0e8a16|The head commit's Gate trailer names the tree its merge with master gives
