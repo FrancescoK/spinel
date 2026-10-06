@@ -1951,14 +1951,30 @@ int emit_call_print_arms(Compiler *c, Buf *b, const NodeTable *nt, const char *n
   return 0;
 }
 
-/* The name an ivar access names, as an sp_sym: a Symbol literal is one, and a
-   name computed at run time is checked there (sp_bivar_name) */
+/* A literal name that is an ivar's as written: `@`, then a letter, `_` or
+   a multibyte character, then those or digits. Any other name is checked
+   when it runs. */
+static int bivar_plain_name(const char *n) {
+  if (!n || n[0] != '@') return 0;
+  const unsigned char *p = (const unsigned char *)n + 1;
+  if (!(isalpha(*p) || *p == '_' || *p >= 0x80)) return 0;
+  for (; *p; p++) if (!(isalnum(*p) || *p == '_' || *p >= 0x80)) return 0;
+  return 1;
+}
+
+/* The name an ivar access names, as an sp_sym: a plain Symbol literal is
+   one; anything else is held and checked as #7522's reflection checks it
+   (sp_ivar_name_check: NameError for no ivar's name, TypeError for neither
+   a Symbol nor a String), then interned. */
 static void emit_bivar_name(Compiler *c, int arg, Buf *b) {
-  TyKind at = comp_ntype(c, arg);
-  if (nt_kind(c->nt, arg) == NK_SymbolNode) { emit_expr(c, arg, b); return; }
-  if (at == TY_SYMBOL) { buf_puts(b, "sp_bivar_name("); emit_expr(c, arg, b); buf_puts(b, ")"); return; }
-  if (at == TY_STRING) { buf_puts(b, "sp_bivar_name(sp_sym_intern("); emit_str_expr(c, arg, b); buf_puts(b, "))"); return; }
-  unsupported_feature(c, arg, "an instance variable name that is neither a Symbol nor a String");
+  if (nt_kind(c->nt, arg) == NK_SymbolNode && bivar_plain_name(nt_str(c->nt, arg, "value"))) {
+    emit_expr(c, arg, b);
+    return;
+  }
+  int tn = ++g_tmp;
+  buf_printf(b, "({ sp_RbVal _t%d = ", tn); emit_boxed(c, arg, b);
+  buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_ivar_name_check(_t%d); sp_sym_intern(sp_poly_to_name(_t%d)); })",
+             tn, tn, tn);
 }
 
 /* An ivar access the runtime's map answers (sp_bivar_*): the receiver, the
@@ -1972,9 +1988,6 @@ static int emit_bivar_table_op(Compiler *c, const BopCtx *x, char op, Buf *b) {
   buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_boxed(c, x->recv, b);
   buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", tv);
   if (op == 'l') { buf_printf(b, "sp_bivar_list(_t%d); })", tv); return 1; }
-  const char *sym = nt_kind(nt, argv[0]) == NK_SymbolNode ? nt_str(nt, argv[0], "value") : NULL;
-  if (sym && (sym[0] != '@' || sym[1] == '@'))
-    buf_printf(b, "sp_raise_cls(\"NameError\", \"'%s' is not allowed as an instance variable name\"); ", sym);
   buf_printf(b, "sp_sym _k%d = ", tv); emit_bivar_name(c, argv[0], b); buf_puts(b, "; ");
   if (op == 'd') { buf_printf(b, "sp_bivar_defined(_t%d, _k%d); })", tv, tv); return 1; }
   char res[48];
