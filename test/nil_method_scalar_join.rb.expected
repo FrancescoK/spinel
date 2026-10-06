@@ -1,0 +1,36 @@
+[]
+{}
+nil
+true
+true
+[]
+false
+:raised
+[]
+false
+true
+false
+:raised
+{nil => 1}
+[nil, 1]
+1
+[]
+{}
+7
+:raised
+[]
+{}
+2
+7
+[]
+2
+[]
+false
+2.5
+25
+[]
+true
+NilClass
+:raised
+false
+Integer

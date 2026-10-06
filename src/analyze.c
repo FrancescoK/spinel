@@ -24720,16 +24720,26 @@ static int nn_call_unboxes_nil(Compiler *c, int v) {
   return 0;
 }
 
+/* A method's own answer can be the sentinel in an Integer or Float slot: its
+   value is nil (`def m = nil`), or its scalar return can be the sentinel. */
+static int method_answers_nil(const Scope *m) {
+  return m->ret == TY_NIL || m->ret_nullable_int;
+}
+
 /* A scalar slot on a class the fixpoint could not pin to a receiver still
    dispatches at runtime: codegen emits a cls_id switch over every class that
    defines the name. Ask whether ANY of those targets can answer the sentinel.
    Over-marking here only costs the boxing branch; missing one is the
    silent-wrong hash key of #3505, so the conservative direction is `yes`. */
-static int poly_dispatch_nullable(Compiler *c, const char *cn) {
+static int poly_dispatch_nullable(Compiler *c, int v, const char *cn) {
   if (!cn) return 0;
+  /* a target whose value is nil rides in the call's scalar slot as the
+     sentinel too, when the call is typed Integer or Float (or nil) */
+  TyKind vt = infer_type(c, v);
+  int nil_rides = vt == TY_INT || vt == TY_FLOAT || vt == TY_NIL;
   for (int si = 1; si < c->nscopes; si++)
     if (c->scopes[si].name && sp_streq(c->scopes[si].name, cn) &&
-        c->scopes[si].ret_nullable_int) return 1;
+        (nil_rides ? method_answers_nil(&c->scopes[si]) : c->scopes[si].ret_nullable_int)) return 1;
   /* an attr_reader over a scalar ivar: those slots are sentinel-defaulted
      (ivar_scalar_nil_init), so the read carries the sentinel like a `return
      nil` would -- the resolved-receiver twin of this lives in codegen's
@@ -24741,6 +24751,27 @@ static int poly_dispatch_nullable(Compiler *c, const char *cn) {
     int iv = comp_ivar_index(&c->classes[ci], ivb);
     if (iv >= 0 && (c->classes[ci].ivar_types[iv] == TY_INT ||
                     c->classes[ci].ivar_types[iv] == TY_FLOAT)) return 1;
+  }
+  return 0;
+}
+
+/* A call on class `cid` dispatches over the method `name` resolves to there
+   and every descendant's override, which is how inference typed it
+   (dispatch_ret_over): a nil-answering target among them rides in the call's
+   scalar slot as the sentinel. Only the method the name resolved to was
+   asked, and only for a scalar return, so a nil method beside an Integer one
+   (`def nop = nil` in C, `def nop = 7` in D, or `c ? z : 1` over `def z =
+   nil`) left the value unmarked, and nil's own methods (`to_a`, `to_h`,
+   `=~`) raised Integer's NoMethodError. */
+static int dispatch_answers_nil(Compiler *c, int cid, const char *name, int cmeth) {
+  if (cid < 0 || !name) return 0;
+  int mi = cmeth ? comp_cmethod_in_chain(c, cid, name, NULL) : comp_method_in_chain(c, cid, name, NULL);
+  if (mi >= 0 && method_answers_nil(&c->scopes[mi])) return 1;
+  int nd = 0;
+  const int *ds = comp_descendants(c, cid, &nd);
+  for (int i = 0; i < nd; i++) {
+    int kmi = cmeth ? comp_cmethod_in_chain(c, ds[i], name, NULL) : comp_method_in_chain(c, ds[i], name, NULL);
+    if (kmi >= 0 && kmi != mi && method_answers_nil(&c->scopes[kmi])) return 1;
   }
   return 0;
 }
@@ -26891,10 +26922,26 @@ int nullable_int_value(Compiler *c, int v) {
         }
         /* the receiver stayed poly, so no single callee resolves -- fall back
            to the runtime dispatch set */
-        else if (rt == TY_POLY) return poly_dispatch_nullable(c, cn);
+        else if (rt == TY_POLY) return poly_dispatch_nullable(c, v, cn);
       }
     }
-    return mi >= 0 && c->scopes[mi].ret_nullable_int;
+    if (mi >= 0 && c->scopes[mi].ret_nullable_int) return 1;
+    /* the methods the call dispatches over, by the receiver's class: self's
+       for a receiverless call, an object's, or a class constant's class
+       methods */
+    TyKind vt = infer_type(c, v);
+    if (vt != TY_INT && vt != TY_FLOAT && vt != TY_NIL) return 0;
+    if (rcv < 0) {
+      if (mi >= 0 && method_answers_nil(&c->scopes[mi])) return 1;
+      Scope *ss = comp_scope_of(c, v);
+      return ss && ss->class_id >= 0 &&
+             dispatch_answers_nil(c, ss->class_id, cn, ss->is_cmethod && mi >= 0 && c->scopes[mi].is_cmethod);
+    }
+    TyKind rt = infer_type(c, rcv);
+    if (ty_is_object(rt)) return dispatch_answers_nil(c, ty_object_class(rt), cn, 0);
+    if (nt_kind(nt, rcv) == NK_ConstantReadNode)
+      return dispatch_answers_nil(c, comp_class_index(c, nt_str(nt, rcv, "name")), cn, 1);
+    return 0;
   }
   if (nt_kind(nt, v) == NK_LocalVariableReadNode) {
     const char *rn = nt_str(nt, v, "name");
