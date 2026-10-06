@@ -1438,6 +1438,11 @@ int poly_key_cls0(Compiler *c, const char *name, int argc, int kwh, int pos_argc
     cls0_cand2 = poly_arm_count(c, &c->scopes[cls0_mi2], kwh, pos_argc, splat_a,
                                 exp0, sizeof exp0) != 0;
   }
+  /* A Struct's builtin `[]=` has no method scope but takes a `case 0:` all
+     the same (cplan_struct_aset). A boxed String, whose cls_id is 0 too,
+     entered it and had the member written into its bytes. */
+  if (!cls0_cand2 && c->nclasses > 0 && kwh < 0 && splat_a < 0)
+    cls0_cand2 = cplan_struct_aset(c, 0, name, argc);
   return cls0_cand2;
 }
 
@@ -2402,6 +2407,14 @@ void poly_specials_n(Compiler *c, int id, const char *name, int argc, const int 
      the runtime store, anything else its own arm or the default (#4195). */
   int is_pstore = sp_streq(name, "store") && argc == 2 && !has_splat_arg &&
                   nt_ref(nt, id, "block") < 0;
+  /* `s[i] = v` on a boxed String when a user class owns `[]=` (any Struct
+     does): the switch has no String arm, so the store was dropped -- see
+     emit_poly_str_aset_prearm. An Integer index, or a String or Regexp
+     key, the forms the builtin path writes back. */
+  TyKind straset_k = argc == 2 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
+  int is_straset = is_element_access(name) && is_store_alias(name) && argc == 2 && !has_splat_arg &&
+                   nt_ref(nt, id, "block") < 0 &&
+                   (straset_k == TY_INT || straset_k == TY_STRING || straset_k == TY_REGEX);
   /* split(sep) on a TAG_STR receiver, when a user class also owns `split`
      (the bundled Pathname does) and the dispatch therefore lost the String
      arm. Same hole #3394 closed for the zero-arg form (#3401). */
@@ -2564,6 +2577,7 @@ void poly_specials_n(Compiler *c, int id, const char *name, int argc, const int 
   s->strpart = is_strpart;
   s->strsetop_n = is_strsetop_n;
   s->pstore = is_pstore;
+  s->straset = is_straset;
   s->strsplit = is_strsplit;
   s->pred = is_pred;
   s->strencode = is_strencode;
@@ -2606,6 +2620,79 @@ void poly_specials_n_splat(Compiler *c, const int *argv, PolySpecialsN *s, int *
     s->strdel = s->strpart = s->strsplit = s->pred = 0;
     s->strftime = s->cover = s->gcdlcm = s->pfirstn = 0;
   }
+}
+
+/* `s[i] = v` on a String that reaches a poly dispatch because a user class
+   owns `[]=`, as every Struct does. The switch has an arm per class and none
+   for a String: a shared String fell to the default, whose sp_poly_set_poly
+   has no String arm, and the store was lost. The String takes the builtin
+   store (sp_poly_arr_widen_and_set for an Integer index, sp_poly_str_aset_key
+   for a String or Regexp key). A shared String changes in place, in an arm
+   ahead of the switch. A plain one splices into a fresh buffer, which a
+   receiver that is a local or an instance variable gets written back after
+   the dispatch (emit_poly_str_aset_writeback), as the builtin path writes it
+   back when no user class owns the name (#3172); the arm itself reads only
+   the dispatch's temps, so pd_hoist can still move the switch out of line.
+   Another receiver keeps what the builtin path does for it. */
+static int str_aset_writes_back(Compiler *c, int recv) {
+  NodeKind rk = nt_kind(c->nt, recv);
+  return rk == NK_LocalVariableReadNode || rk == NK_InstanceVariableReadNode;
+}
+/* The store call on the receiver temp, into out. */
+static void str_aset_store_text(Compiler *c, const PolyTemps *T, Buf *out) {
+  TyKind vty = T->atmp_ty[1], kty = T->atmp_ty[0];
+  char k0[48], v0[24];
+  snprintf(k0, sizeof k0, "_t%d", T->atmp[0]);
+  snprintf(v0, sizeof v0, "_t%d", T->atmp[1]);
+  /* an Integer index rides raw (unboxed from a poly temp in promote mode),
+     a String or Regexp key boxed */
+  int int_key = comp_ntype(c, T->argv[0]) == TY_INT;
+  buf_printf(out, "%s(_t%d, ", int_key ? "sp_poly_arr_widen_and_set" : "sp_poly_str_aset_key", T->tv);
+  if (int_key && kty == TY_POLY) buf_printf(out, "sp_poly_arg_i(%s)", k0);
+  else if (int_key || kty == TY_POLY) buf_puts(out, k0);
+  else emit_boxed_text(c, kty, k0, out);
+  buf_puts(out, ", ");
+  if (vty == TY_POLY) buf_puts(out, v0);
+  else emit_boxed_text(c, vty, v0, out);
+  buf_puts(out, ")");
+}
+void emit_poly_str_aset_prearm(Compiler *c, int recv, const PolySpecialsN *ps, const PolyTemps *T, Buf *b) {
+  if (!ps->straset || recv < 0) return;
+  if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_STR_ASET, -1, TY_UNKNOWN, PC_SAME);
+  int tv = T->tv, tr = T->tr;
+  TyKind ret = T->ret, vty = T->atmp_ty[1];
+  Buf st; memset(&st, 0, sizeof st);
+  str_aset_store_text(c, T, &st);
+  buf_printf(b, "if (_t%d.tag == SP_TAG_STR || sp_poly_is_strbuf(_t%d)) { ", tv, tv);
+  /* a plain String that is written back is stored after the dispatch */
+  if (str_aset_writes_back(c, recv)) buf_printf(b, "if (_t%d.tag != SP_TAG_STR) ", tv);
+  buf_printf(b, "%s;", st.p);
+  if (tr >= 0) {
+    char v0[24]; snprintf(v0, sizeof v0, "_t%d", T->atmp[1]);
+    buf_printf(b, " _t%d = ", tr);
+    if (ret == vty) buf_puts(b, v0);
+    else {
+      Buf vb; memset(&vb, 0, sizeof vb);
+      if (vty == TY_POLY) buf_puts(&vb, v0); else emit_boxed_text(c, vty, v0, &vb);
+      if (ret == TY_POLY) buf_puts(b, vb.p);
+      else emit_unbox_text(c, is_scalar_ret(ret) ? ret : TY_INT, vb.p, b);
+      free(vb.p);
+    }
+    buf_puts(b, ";");
+  }
+  buf_puts(b, " }\nelse ");
+  free(st.p);
+}
+/* After the dispatch: a plain String receiver that is a local or an
+   instance variable takes the spliced String (see the pre-arm above). */
+void emit_poly_str_aset_writeback(Compiler *c, int recv, const PolySpecialsN *ps, const PolyTemps *T, Buf *b) {
+  if (!ps->straset || recv < 0 || !str_aset_writes_back(c, recv)) return;
+  Buf st; memset(&st, 0, sizeof st);
+  str_aset_store_text(c, T, &st);
+  buf_printf(b, " if (_t%d.tag == SP_TAG_STR) ", T->tv);
+  emit_expr(c, recv, b);
+  buf_printf(b, " = %s;", st.p);
+  free(st.p);
 }
 
 /* The tag pre-arms of a poly dispatch with arguments, ahead of its cls_id

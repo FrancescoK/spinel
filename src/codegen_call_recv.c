@@ -12383,9 +12383,29 @@ static int emit_poly_index_call(Compiler *c, int id, Buf *b, const NodeTable *nt
     buf_puts(b, "({ sp_RbVal _t"); buf_printf(b, "%d = ", tv); emit_boxed(c, argv[1], b);
     if (at != TY_INT || subtree_has_side_effect(c, argv[0])) buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", tv);
     else buf_puts(b, "; ");
-    if (at == TY_STRING) {
-      buf_printf(b, "sp_poly_set_str("); emit_expr(c, recv, b);
-      buf_puts(b, ", "); emit_expr(c, argv[0], b);
+    int skey_outer, skey_oidx;
+    NodeKind srk = nt_kind(nt, recv);
+    if ((at == TY_STRING || (at == TY_REGEX && !splice_recv_index_slot(c, recv, &skey_outer, &skey_oidx))) &&
+        (srk == NK_LocalVariableReadNode || srk == NK_InstanceVariableReadNode)) {
+      /* a String receiver replaces the key's first match: a plain one into
+         a fresh buffer, stored back as the Integer index's widen_and_set
+         is, a shared one in place; any other receiver stores as before.
+         The key runs once, into a temp both stores read. */
+      int tk = ++g_tmp;
+      if (at == TY_STRING) { buf_printf(b, "const char *_t%d = ", tk); emit_expr(c, argv[0], b); }
+      else { buf_printf(b, "sp_RbVal _t%d = ", tk); emit_boxed(c, argv[0], b); }
+      buf_puts(b, "; if ("); emit_expr(c, recv, b); buf_puts(b, ".tag == SP_TAG_STR || sp_poly_is_strbuf(");
+      emit_expr(c, recv, b); buf_puts(b, ")) ");
+      emit_expr(c, recv, b);
+      buf_puts(b, " = sp_poly_str_aset_key("); emit_expr(c, recv, b);
+      buf_printf(b, at == TY_STRING ? ", sp_box_str(_t%d), _t%d);\nelse " : ", _t%d, _t%d);\nelse ", tk, tv);
+      buf_printf(b, at == TY_STRING ? "sp_poly_set_str(" : "sp_poly_set_poly("); emit_expr(c, recv, b);
+      buf_printf(b, ", _t%d", tk);
+    }
+    else if (at == TY_STRING || (at == TY_REGEX && !splice_recv_index_slot(c, recv, &skey_outer, &skey_oidx))) {
+      /* a shared String changes in place; anything else stores as before */
+      buf_printf(b, "sp_poly_str_aset_key("); emit_expr(c, recv, b);
+      buf_puts(b, ", "); emit_boxed(c, argv[0], b);
     }
     else if (at == TY_SYMBOL) {
       buf_printf(b, "sp_poly_set_sym("); emit_expr(c, recv, b);
