@@ -4474,7 +4474,10 @@ int ty_matches_class(TyKind t, const char *cn, int exact) {
                                      t == TY_COMPLEX || t == TY_RATIONAL)) return 1;
   if (sp_streq(cn, "Numeric") && (t == TY_INT || t == TY_BIGINT || t == TY_FLOAT ||
                                   t == TY_COMPLEX || t == TY_RATIONAL)) return 1;
+  /* a Range of any endpoints is Enumerable, though only an Integer or a
+     String one can iterate */
   if (sp_streq(cn, "Enumerable") && (ty_is_array(t) || ty_is_hash(t) || t == TY_RANGE ||
+                                     t == TY_FLOAT_RANGE || t == TY_STR_RANGE ||
                                      t == TY_ENUMERATOR)) return 1;
   return 0;
 }
