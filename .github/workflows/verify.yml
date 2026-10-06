@@ -269,12 +269,14 @@ jobs:
         with:
           path: ${{ runner.temp }}/cbase
           key: ${{ steps.key.outputs.key }}
-      - uses: actions/download-artifact@v8
+      - name: Download the head's build (head legs only)
+        uses: actions/download-artifact@v8
         if: matrix.name != 'base'
         with:
           name: tree-${{ matrix.name }}
           path: ${{ runner.temp }}/dl-head
-      - uses: actions/download-artifact@v8
+      - name: Download the base's build (cdiff, scale, or a base result not cached)
+        uses: actions/download-artifact@v8
         if: matrix.leg == 'cdiff' || matrix.leg == 'scale' || (matrix.name == 'base' && steps.based.outputs.cache-hit != 'true')
         with:
           name: tree-base
@@ -626,7 +628,7 @@ jobs:
       - name: PCH
         if: steps.build.outcome == 'success'
         run: ./pgate.sh pch "$RUNNER_TEMP/pgate" "$GITHUB_WORKSPACE/prep" "${{ steps.pch.outputs.cache-hit }}"
-      - name: Save the corpus PCH
+      - name: Save the corpus PCH (when it was not restored)
         if: steps.build.outcome == 'success' && steps.pch.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
         with:
@@ -684,16 +686,18 @@ jobs:
       # the legs part builds build/spinel-work and the C-side legs' helpers;
       # the corpus and ruby/spec parts compile without sccache, so their
       # compile line (in the result cache's key) is the same in every run
-      - uses: mozilla-actions/sccache-action@v0.0.10
+      - name: Set up sccache (legs part only)
+        uses: mozilla-actions/sccache-action@v0.0.10
         if: matrix.part == 'legs'
-      - name: Restore the sccache store
+      - name: Restore the sccache store (legs part only)
         if: matrix.part == 'legs'
         uses: actions/cache/restore@v6
         with:
           path: .sccache
           key: sccache-verify-build-${{ github.run_id }}-pgate-legs-${{ matrix.name }}
           restore-keys: sccache-verify-build-
-      - if: matrix.part == 'legs'
+      - name: Start sccache (legs part only)
+        if: matrix.part == 'legs'
         run: sccache --start-server
       - uses: ruby/setup-ruby@v1
         with:
@@ -752,7 +756,7 @@ jobs:
           python3 pgate.py finish --prep "$RUNNER_TEMP/prep" --parts "$RUNNER_TEMP/parts" --out out \
             --name "$NAME" --expect "$EXPECT" --checkout "$RUNNER_TEMP/pgate"
         id: finish
-      - name: Save the result cache
+      - name: Save the result cache (when it has entries)
         if: always() && steps.finish.outputs.entries > 0
         uses: actions/cache/save@v6
         with:
