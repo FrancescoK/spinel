@@ -1,0 +1,20 @@
+[:add, true, false, true, false]
+[:add, true, false, true, false]
+[:shovel, true, false, true, false]
+[:add?, true, false, true, false]
+[:merge, true, false, true, false]
+[:new, true, false, true, false]
+[:new_block, true, false, true, false]
+[:brackets, true, false, true, false]
+[:union, true, false, true, false]
+[:replace, true, false, true, false]
+[:to_set, true, false, true, false]
+[:map!, true, false, true, false]
+[true, false, ["m"]]
+FrozenError
+"n"
+true
+true
+true
+true
+[1, :x, 2.5, nil]
