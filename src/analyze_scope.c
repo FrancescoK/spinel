@@ -36,7 +36,7 @@ static int forwarding_call_arity(Compiler *c, const char *mname) {
     int an = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
     if (an == 0) continue;
     /* a `foo(...)` forwarding call is not a concrete arg count */
-    if (an == 1 && nt_type(nt, av[0]) && sp_streq(nt_type(nt, av[0]), "ForwardingArgumentsNode")) continue;
+    if (an == 1 && nt_kind(nt, av[0]) == NK_ForwardingArgumentsNode) continue;
     int pos = an;
     if (an > 0 && nt_type(nt, av[an - 1]) && sp_streq(nt_type(nt, av[an - 1]), "KeywordHashNode")) pos = an - 1;
     if (pos > maxarg) maxarg = pos;
@@ -213,8 +213,7 @@ static int forwarding_target_scan(Compiler *c, Scope *s, int *sole) {
       if (!sp_streq(ty, "CallNode") && !sp_streq(ty, "SuperNode")) continue;
       int a = nt_ref(nt, id, "arguments");
       int an = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
-      if (an != 1 || !nt_type(nt, av[0]) ||
-          !sp_streq(nt_type(nt, av[0]), "ForwardingArgumentsNode")) continue;
+      if (an != 1 || nt_kind(nt, av[0]) != NK_ForwardingArgumentsNode) continue;
       is_super = sp_streq(ty, "SuperNode");
     }
     int mi = -1;
@@ -280,7 +279,7 @@ static void initialize_forwarding_params(Compiler *c, int init) {
     if (!ty || !sp_streq(ty, "CallNode") || !new_site_reaches(c, id, init)) continue;
     int a = nt_ref(nt, id, "arguments");
     int an = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
-    if (an == 1 && nt_type(nt, av[0]) && sp_streq(nt_type(nt, av[0]), "ForwardingArgumentsNode")) continue;
+    if (an == 1 && nt_kind(nt, av[0]) == NK_ForwardingArgumentsNode) continue;
     int kwh = an > 0 && nt_type(nt, av[an - 1]) &&
               sp_streq(nt_type(nt, av[an - 1]), "KeywordHashNode") ? av[an - 1] : -1;
     int pos = kwh >= 0 ? an - 1 : an;
@@ -458,8 +457,7 @@ void expand_struct_forwarding_super(Compiler *c) {
     int args = nt_ref(nt, id, "arguments");
     int an = 0;
     const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-    if (an == 0 || !nt_type(nt, av[an - 1]) ||
-        !sp_streq(nt_type(nt, av[an - 1]), "ForwardingArgumentsNode")) continue;
+    if (an == 0 || nt_kind(nt, av[an - 1]) != NK_ForwardingArgumentsNode) continue;
     int si = id < c->node_cap ? c->nscope[id] : -1;
     if (si <= 0 || si >= c->nscopes) continue;
     Scope *s = &c->scopes[si];
@@ -5595,9 +5593,8 @@ void rewrite_attr_supers(Compiler *c) {
       if (an != (is_write ? 1 : 0)) continue;
       if (is_write) {
         NodeKind ak = nt_kind(nt, av[0]);
-        const char *aty = nt_type(nt, av[0]);
         if (ak == NK_SplatNode || ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode ||
-            (aty && sp_streq(aty, "ForwardingArgumentsNode")))
+            ak == NK_ForwardingArgumentsNode)
           continue;
         val = av[0];
       }

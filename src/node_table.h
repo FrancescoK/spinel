@@ -111,6 +111,7 @@ typedef struct {
   X(FalseNode) \
   X(FloatNode) \
   X(ForNode) \
+  X(ForwardingArgumentsNode) \
   X(ForwardingSuperNode) \
   X(GlobalVariableAndWriteNode) \
   X(GlobalVariableOperatorWriteNode) \

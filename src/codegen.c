@@ -10992,7 +10992,7 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
      arity, which cannot say that a caller left an argument out: an optional
      or rest parameter would bind a zero where its default or an empty Array
      belongs. */
-  if (argc == 1 && nt_type(c->nt, argv[0]) && sp_streq(nt_type(c->nt, argv[0]), "ForwardingArgumentsNode")) {
+  if (argc == 1 && nt_kind(c->nt, argv[0]) == NK_ForwardingArgumentsNode) {
     for (int i = 0; i < m->nparams; i++) {
       if (i == m->kwrest_idx || callee_param_is_declared_kwarg(c, m, m->pnames[i])) continue;
       if (i == m->rest_idx || i >= m->nrequired || (m->pdefault && m->pdefault[i] >= 0)) {

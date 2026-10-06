@@ -1271,8 +1271,7 @@ static int *yvt_ids = NULL, *yvt_sup_ids = NULL;
 static int yvt_call_forwards_block(const NodeTable *nt, int cid) {
   int a = nt_ref(nt, cid, "arguments");
   int an = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
-  return an == 1 && av && nt_type(nt, av[0]) &&
-         sp_streq(nt_type(nt, av[0]), "ForwardingArgumentsNode");
+  return an == 1 && av && nt_kind(nt, av[0]) == NK_ForwardingArgumentsNode;
 }
 /* Could block-passing call site `cid` reach method `mi` at all? A callee is
    found by name: the call's own name, that name through an `alias`, or `new`
