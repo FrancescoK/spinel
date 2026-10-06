@@ -725,7 +725,9 @@ typedef struct {
   unsigned char *nil_tested; /* [node_cap] a builtin call's receiver whose nil
                           its nil arm has already tested (cplan_nil, #7444):
                           set only as a view (VR_NIL_TESTED) around the
-                          call's own emission, so the call is armed once */
+                          call's own emission, so the call is armed once;
+                          2 when a cached array read tests it in its
+                          out-of-range branch (emit_nil_target_cold) */
   TyKind *nilnarrow; /* [node_cap] param-read narrowed by a `return .. if p.nil?`
                         guard: the read's non-nil type (codegen unboxes the poly
                         slot at the read site); TY_UNKNOWN = not narrowed */

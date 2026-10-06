@@ -18623,10 +18623,57 @@ static int whole_call_text(const char *p) {
   return 0;
 }
 
+/* The nil test of call id's receiver r that a cached array read writes in
+   its out-of-range branch (emit_nil_target_cold): CRuby's NoMethodError,
+   under the name the call is reported by (enum_walk_name). */
+void emit_nil_cold_test(Compiler *c, int id, int r, Buf *b) {
+  buf_puts(b, "if (SP_UNLIKELY((");
+  emit_expr(c, r, b);
+  buf_printf(b, ") == NULL)) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil()));",
+             enum_walk_name(c, id, r, nt_str(c->nt, id, "name")));
+}
+
+/* A read of an array the loop being emitted caches (hc_array) takes its
+   nil test in the read's out-of-range branch: a nil array's cached length
+   is 0, so it always gets there, and an in-range read pays nothing. The
+   receiver is seen as tested there (VR_NIL_TESTED 2, Repr.nil_cold) for
+   the read's emission, and emit_kind_array_call writes the test. A read
+   that took another form has none: its text is dropped and the head goes
+   ahead as for any call. */
+static int emit_nil_target_cold(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int r = nt_ref(nt, id, "receiver");
+  const char *nm = nt_str(nt, id, "name");
+  int a = nt_ref(nt, id, "arguments"), an = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+  TyKind rt = comp_ntype(c, r);
+  if (!nm || !is_element_at_alias(nm) || an != 1 || nt_ref(nt, id, "block") >= 0 ||
+      (rt != TY_INT_ARRAY && rt != TY_FLOAT_ARRAY) || comp_ntype(c, av[0]) != TY_INT ||
+      !hc_recv_cached(c, r))
+    return 0;
+  size_t pre0 = g_pre ? g_pre->len : 0;
+  int sv_tmp = g_tmp;
+  int vt = view_push_repr(c, r, VR_NIL_TESTED, 2);
+  Buf tb; memset(&tb, 0, sizeof tb);
+  emit_nil_cold_test(c, id, r, &tb);
+  Buf cb; memset(&cb, 0, sizeof cb);
+  emit_call_held(c, id, &cb);
+  view_pop(c, vt);
+  int ok = cb.p && tb.p && strstr(cb.p, tb.p) && !(g_pre && g_pre->len != pre0);
+  if (ok) buf_puts(b, cb.p);
+  else {
+    if (g_pre) { g_pre->len = pre0; if (g_pre->p) g_pre->p[pre0] = 0; }
+    g_tmp = sv_tmp;
+  }
+  free(tb.p); free(cb.p);
+  return ok;
+}
+
 /* Call id in value position, behind its nil arm. 1 when it emitted. */
 static int emit_nil_target_call(Compiler *c, int id, Buf *b) {
   if (cplan_nil(c, id) != CN_RAISE) return 0;
   if (g_plan_check) cplan_served("nil-target");
+  if (emit_nil_target_cold(c, id, b)) return 1;
   Buf hb; memset(&hb, 0, sizeof hb);
   int mark;
   emit_nil_target_head(c, id, &hb, "", &mark);

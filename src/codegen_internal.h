@@ -233,6 +233,9 @@ const char *hc_mark(void);
 /* recv is read in the loop being emitted the way hc_array caches it: no
    code runs between two of its reads in one pass, so they agree */
 int hc_recv_cached(Compiler *c, int recv);
+/* the nil test a cached array read writes in its out-of-range branch for
+   a receiver seen as Repr.nil_cold (emit_nil_target_cold, codegen_call.c) */
+void emit_nil_cold_test(Compiler *c, int id, int r, Buf *b);
 int call_is_scalar_op(Compiler *c, int id);   /* a builtin operator over scalars */
 /* Whether the subtree at `id` assigns the local `nm`: a write, an op-write
    or a multiple-assignment target by that name. */
