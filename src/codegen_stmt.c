@@ -1230,6 +1230,29 @@ static void emit_poly_array_from(Compiler *c, int v, Buf *b) {
 
 static int str_append_chain_base(Compiler *c, int id);
 static int str_alias_chain_base(Compiler *c, int id);
+/* --share-strings: a call on a String that the type rows say answers its
+   receiver itself (`s.concat(a, b)`, `s.each_char { }`, `s.bytesplice(..)`;
+   bop_answers_self's BOPF_SELF), whose value is therefore the receiver. */
+static int str_answers_receiver(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  if (id < 0 || nt_kind(nt, id) != NK_CallNode) return 0;
+  int r = nt_ref(nt, id, "receiver");
+  const char *nm = nt_str(nt, id, "name");
+  if (r < 0 || !nm) return 0;
+  TyKind rt = comp_ntype(c, r);
+  if (rt != TY_STRING && rt != TY_STRBUF) return 0;
+  int a = nt_ref(nt, id, "arguments"), ac = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+  for (int i = 0; i < ac; i++) {
+    NodeKind k = nt_kind(nt, av[i]);
+    if (k == NK_SplatNode || k == NK_BlockArgumentNode || k == NK_KeywordHashNode) return 0;
+  }
+  int blk = nt_ref(nt, id, "block");
+  if (blk >= 0 && nt_kind(nt, blk) != NK_BlockNode) return 0;
+  if (bop_answers_self(rt, nm, ac, blk >= 0) & BOPF_SELF) return 1;
+  /* `tap` with a literal block: the receiver (its share row) */
+  return blk >= 0 && ac == 0 && bop_share_named(BOP_ANY_RECV, nm) == BSH_ITER_SELF;
+}
 static int strbuf_cond_has_handle_leaf(Compiler *c, int v, int depth);
 static int strbuf_gvar_write_handle(Compiler *c, int v, char *out, size_t cap);
 static int emit_strbuf_chain_in_place(Compiler *c, int v, int base, const char *bref, Buf *b);
@@ -13273,11 +13296,21 @@ static int str_append_chain_base(Compiler *c, int id) {
    the analysis's an_strbuf_alias_source does, so the local the write shares
    with is the one the chain ran on. Under --share-strings a prepend of
    several Strings answers its receiver too (str_prepend_many). */
+/* --share-strings: is call `v` an append chain or a call answering its
+   receiver whose base is a slot holding the shared handle? That slot's C
+   text to out: the value of v is that handle. */
+int strbuf_self_answer_ref(Compiler *c, int v, char *out, size_t cap) {
+  if (!repr_share_rule(c) || v < 0 || nt_kind(c->nt, v) != NK_CallNode) return 0;
+  int base = str_alias_chain_base(c, v);
+  return base != v && base >= 0 && strbuf_slot_ref(c, base, out, cap);
+}
 static int str_alias_chain_base(Compiler *c, int id) {
   int cur = id;
   for (;;) {
     cur = str_append_chain_base(c, cur);
-    if (!str_self_call(c->nt, cur) && !(repr_share_rule(c) && str_prepend_many(c->nt, cur))) return cur;
+    if (!str_self_call(c->nt, cur) && !(repr_share_rule(c) && str_prepend_many(c->nt, cur)) &&
+        !(repr_share_rule(c) && str_answers_receiver(c, cur)))
+      return cur;
     cur = nt_ref(c->nt, cur, "receiver");
   }
 }

@@ -1564,7 +1564,14 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
   /* a family's "*" row is its default; a container's "*" is Array#*, and
      its default is sh_container_default (a block binds what it holds) */
   if (!s && fam != BOP_ANY_ARRAY && fam != BOP_ANY_HASH) s = bop_share(fam, name);
-  if (s) return sh_builtin(F, c, n, s, rv, blk, fam == BOP_ANY_HASH ? 2 : fam == BOP_ANY_ARRAY);
+  if (s) {
+    int r = sh_builtin(F, c, n, s, rv, blk, fam == BOP_ANY_HASH ? 2 : fam == BOP_ANY_ARRAY);
+    /* a call the type rows say answers its receiver (`s.each_char { }`,
+       `s.concat(a, b)`, `a.clear`) answers what the receiver is, whatever
+       its share row says the block binds */
+    if (rv >= 0 && (bop_answers_self(rt, name, argc, blk >= 0) & (BOPF_SELF | BOPF_SELF_OR_NIL))) r = sh_join(F, r, rv);
+    return r;
+  }
   if (fam == BOP_ANY_ARRAY || fam == BOP_ANY_HASH) return sh_container_default(F, c, n, rv, blk);
   return sh_unknown_call(F, c, n, blk, UT_NOROW);
 }

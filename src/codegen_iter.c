@@ -4891,7 +4891,12 @@ static int iter_tap_slice_string_arms(Compiler *c, int id, Buf *b, int indent, c
     TyKind tsaved0 = tlv0 ? tlv0->type : TY_UNKNOWN;
     int use_shadow_t = tlv0 && tlv0->type != et && et != TY_UNKNOWN;
     int tr = ++g_tmp;
-    Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+    Buf rb; memset(&rb, 0, sizeof rb);
+    /* --share-strings: a receiver slot holding the shared handle is handed
+       to the block as that handle (tap answers it too) */
+    char tref[1024];
+    if (repr_share_rule(c) && et == TY_STRBUF && strbuf_slot_ref(c, recv, tref, sizeof tref)) buf_puts(&rb, tref);
+    else emit_expr(c, recv, &rb);
     emit_indent(b, indent); emit_ctype(c, et, b);
     buf_printf(b, " _t%d = %s;\n", tr, rb.p ? rb.p : ""); free(rb.p);
     /* An OBJECT-receiver tap whose param widened to poly (it escaped through

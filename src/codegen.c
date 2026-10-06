@@ -1889,6 +1889,15 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
      ivar that also holds nil) is boxed as its handle, which a later `<<`
      on the slot's box appends to in place (share_lift_poly_ivar_stores) */
   int lift = repr_share_rule(c) && node >= 0 && c->poly_strbuf_lift[node] && comp_ntype(c, node) == TY_STRING;
+  /* --share-strings: a call answering its receiver over a slot holding the
+     handle (`s.concat("!")`, `s.tap { }`) is boxed as that handle */
+  char sref[1024];
+  if (comp_ntype(c, node) == TY_STRING && strbuf_self_answer_ref(c, node, sref, sizeof sref)) {
+    buf_puts(b, "({ (void)(");
+    emit_expr(c, node, b);
+    buf_printf(b, "); sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF); })", sref);
+    return;
+  }
   if (lift) buf_puts(b, "sp_poly_strbuf_lift(");
   rc_depth++;
   emit_boxed_impl(c, node, b);
