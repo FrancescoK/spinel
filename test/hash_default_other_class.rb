@@ -7,7 +7,9 @@
 # it, in a local, an instance, class or global variable, or a Hash a method
 # answers. A default of the values' class keeps the typed Hash, and so does
 # a nil literal, which a missing key answers anyway; a local that holds nil
-# is boxed, so it widens the Hash as another class does.
+# is boxed, so it widens the Hash as another class does. A boxed default
+# given to a parameter's typed Hash, which is not widened, is unboxed as a
+# boxed element store is: one of the values' class, or nil, is kept.
 
 class C
   @@c = {"a" => 1}
@@ -26,6 +28,16 @@ class C
 end
 
 def mk = {"a" => 1}
+
+def seti(h, v)
+  h.default = v
+  h
+end
+
+def sets(h, v)
+  h.default = v
+  h
+end
 
 def t(k)
   h = {"a" => 1}
@@ -59,6 +71,14 @@ def t(k)
   w.default = 3
   w.default = x
   p w["q"], w.default
+  e = seti({"a" => 1}, [7, "x"][k])
+  p e["z"], e.default
+  f = seti({"b" => 2}, [nil, "x"][k])
+  p f["y"], f.default
+  g = sets({1 => "b"}, ["d", 1][k])
+  p g[9], g.default
+  j = sets({2 => "c"}, [nil, 1][k])
+  p j[8], j.default
 end
 
 t(ARGV.size)

@@ -490,11 +490,15 @@ int emit_op_hash_set_default(Compiler *c, const BopCtx *x, Buf *b) {
      (a boxed one unboxed, another class refused), where it was assigned as
      it was -- a Float truncated, a Symbol read as its id. The inference
      takes the default as value evidence (infer_write_container_usage), so
-     a Hash it can widen has boxed values by now. */
+     a Hash it can widen has boxed values by now. A boxed default (one a
+     parameter's Hash, which the inference does not widen, is given) is
+     unboxed as a boxed element store's value is (emit_hash_store_val):
+     nil and the values' class are kept, another class raises. */
   else if (rt == TY_STR_INT_HASH || rt == TY_INT_INT_HASH) {
     /* nil is SP_INT_NIL in an Integer slot; nil emitted as an int is 0 */
     buf_printf(b, " if (_t%d) _t%d->default_v = ", t, t);
     if (is_nil) buf_puts(b, "SP_INT_NIL");
+    else if (held && at == TY_POLY) buf_printf(b, "sp_poly_hval_i(%s)", av);
     else if (held) emit_coerce_text(c, argv[0], at, TY_INT, CO_HOLD, av, "a Hash default", b);
     else emit_coerce(c, argv[0], TY_INT, CO_HOLD, "a Hash default", b);
     buf_puts(b, ";");
@@ -502,6 +506,7 @@ int emit_op_hash_set_default(Compiler *c, const BopCtx *x, Buf *b) {
   else if (rt == TY_STR_STR_HASH || rt == TY_INT_STR_HASH) {
     buf_printf(b, " if (_t%d) _t%d->default_v = ", t, t);
     if (is_nil) buf_puts(b, "NULL");
+    else if (held && at == TY_POLY) buf_printf(b, "sp_poly_hval_s(%s)", av);
     else if (held) emit_coerce_text(c, argv[0], at, TY_STRING, CO_HOLD, av, "a Hash default", b);
     else emit_coerce(c, argv[0], TY_STRING, CO_HOLD, "a Hash default", b);
     buf_puts(b, ";");
