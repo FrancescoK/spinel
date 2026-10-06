@@ -254,6 +254,7 @@ void emit_bm_legacy_ok(Buf *b, int tmp, int argc, const char *arg_sig);
 void emit_int_recv_named(Compiler *c, int recv, const char *name, Buf *b);
 int emit_implicit_self_member(Compiler *c, int id, Buf *b);
 int emit_reopen_own_call(Compiler *c, int id, int dispatch_cid, Buf *b);
+void emit_reopen_recv_args(Compiler *c, int id, int mi, int recv, int boxed, const char *box_fn, Buf *b);
 int implicit_self_plan_mi(Compiler *c, int id, int dispatch_cid);
 
 int emit_send_blind(Compiler *c, int id, Buf *b);
