@@ -1464,6 +1464,50 @@ static int strbuf_gvar_write_handle(Compiler *c, int v, char *out, size_t cap) {
   return repr_handle_static_ref(c, v, out, cap);
 }
 
+/* --share-strings: the argument a setter written as an assignment (`o.a =
+   v`, `o[k] = v`) answers, whatever the writer returns, when it is a slot
+   holding the handle; -1 for any other value. */
+static int strbuf_setter_handle_arg(Compiler *c, int v, char *ref, size_t cap) {
+  const NodeTable *nt = c->nt;
+  if (!repr_share_rule(c) || v < 0 || nt_kind(nt, v) != NK_CallNode || nt_ref(nt, v, "block") >= 0) return -1;
+  const char *nm = nt_str(nt, v, "name");
+  const char *sb = nt_str(nt, v, "send_blind"), *ve = nt_str(nt, v, "vis_enforce");
+  int idx_set = nm && is_element_access(nm) && !is_element_at_alias(nm) &&
+                !(sb && sb[0] == '1') && !(ve && ve[0] == '1');
+  if (!call_is_setter_assign(nt, v) && !idx_set) return -1;
+  int a = nt_ref(nt, v, "arguments"), ac = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+  if (ac < 1) return -1;
+  NodeKind k = nt_kind(nt, av[ac - 1]);
+  if (k == NK_SplatNode || k == NK_KeywordHashNode || k == NK_BlockArgumentNode) return -1;
+  return strbuf_slot_ref(c, av[ac - 1], ref, cap) ? av[ac - 1] : -1;
+}
+
+/* The statements of parentheses `v` (its body's list, or its one
+   expression): their count, *st pointing at them (at *one for a lone expression); 0
+   for an empty body. */
+static int strbuf_paren_stmts(Compiler *c, int v, int *one, const int **st) {
+  int body = nt_ref(c->nt, v, "body");
+  if (body < 0) return 0;
+  if (nt_kind(c->nt, body) != NK_StatementsNode) { *one = body; *st = one; return 1; }
+  int k = 0;
+  *st = nt_arr(c->nt, body, "body", &k);
+  return k;
+}
+/* The last statement of parentheses `v` when it is one a handle local can
+   take as the handle (a slot, a setter, nested parentheses, a member read
+   answering the handle): it, or -1. */
+static int strbuf_paren_last(Compiler *c, int v) {
+  const int *st; int one, k = strbuf_paren_stmts(c, v, &one, &st);
+  if (k < 1) return -1;
+  int last = st[k - 1];
+  char ref[1024];
+  if (strbuf_slot_ref(c, last, ref, sizeof ref) || strbuf_setter_handle_arg(c, last, ref, sizeof ref) >= 0 ||
+      strbuf_object_reader_handle(c, last) || strbuf_struct_member_handle(c, last))
+    return last;
+  return nt_kind(c->nt, last) == NK_ParenthesesNode && strbuf_paren_last(c, last) >= 0 ? last : -1;
+}
+
 /* The value a write hands a mutable-String slot `lv` (TY_STRBUF), as an
    sp_String *. */
 void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
@@ -1501,6 +1545,24 @@ void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
     emit_expr(c, v, b);
     buf_printf(b, "); %s; })", srefV);
   }
+  /* --share-strings: a setter's value is its argument (`t = (o.a = s)`):
+     run the write, then name the argument's String */
+  else if (shared && strbuf_setter_handle_arg(c, v, srefV, sizeof srefV) >= 0) {
+    buf_puts(b, "({ (void)(");
+    emit_expr(c, v, b);
+    buf_printf(b, "); %s; })", srefV);
+  }
+  /* --share-strings: parentheses run their leading statements, and the last
+     one hands over its String as a value written here would
+     (`t = (o.a = s; o.a)`) */
+  else if (shared && repr_share_rule(c) && nt_kind(c->nt, v) == NK_ParenthesesNode &&
+           strbuf_paren_last(c, v) >= 0) {
+    const int *st; int one, k = strbuf_paren_stmts(c, v, &one, &st);
+    buf_puts(b, "({ ");
+    for (int i = 0; i + 1 < k; i++) emit_stmt(c, st[i], b, 0);
+    emit_strbuf_value(c, lv, st[k - 1], b);
+    buf_puts(b, "; })");
+  }
   /* A conditional whose arms include a local that is the handle (`h = c ? x
      : g`, paired by an_strbuf_alias_leaves): each arm hands over its own
      object, the handle for such a local and a fresh String for any other
@@ -1520,6 +1582,11 @@ void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
   else if (rpv.as_ty == TY_STRBUF &&
            (nt_kind(c->nt, v) != NK_CallNode || strbuf_marked_yields_handle(c, v))) {
     emit_expr(c, v, b);
+  }
+  /* --share-strings: a marked call that answers the handle itself (a
+     reader of a shared member, a method a path of which answers it):
+     the handle, not a fresh one around its copy */
+  else if (rpv.as_ty == TY_STRBUF && shared && emit_strbuf_call_handle(c, v, b)) {
   }
   else if (rpv.as_ty == TY_STRBUF) {
     int sv = view_push_repr(c, v, VR_STRBUF_BOX, 0);
@@ -1585,9 +1652,11 @@ void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
       emit_expr(c, v, b);
       buf_printf(b, "); %s; })", srefC9);
     }
-    /* --share-strings: a reader of a shared ivar on an object answers its
-       slot, the handle (a Struct member built from another's member) */
-    else if (shared && strbuf_object_reader_handle(c, v) && emit_strbuf_call_handle(c, v, b)) {
+    /* --share-strings: a reader of a shared ivar on an object, or a
+       Struct's member read by a literal key, answers its slot, the handle
+       (a Struct member built from another's member) */
+    else if (shared && (strbuf_object_reader_handle(c, v) || strbuf_struct_member_handle(c, v)) &&
+             emit_strbuf_call_handle(c, v, b)) {
     }
     else {
       /* otherwise a mutable-string local wraps the (const char*) RHS in a

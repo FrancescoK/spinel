@@ -1898,6 +1898,19 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
     buf_printf(b, "); sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF); })", sref);
     return;
   }
+  /* --share-strings: a reader of a member that holds the handle (an attr
+     reader, a Struct's member read by a literal key) is boxed as that
+     handle: the box and the member are one String */
+  if (repr_share_rule(c) && comp_ntype(c, node) == TY_STRING &&
+      (strbuf_object_reader_handle(c, node) || strbuf_struct_member_handle(c, node))) {
+    Buf hb; memset(&hb, 0, sizeof hb);
+    if (emit_strbuf_call_handle(c, node, &hb)) {
+      buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", hb.p ? hb.p : "NULL");
+      free(hb.p);
+      return;
+    }
+    free(hb.p);
+  }
   if (lift) buf_puts(b, "sp_poly_strbuf_lift(");
   rc_depth++;
   emit_boxed_impl(c, node, b);

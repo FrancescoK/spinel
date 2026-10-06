@@ -1483,6 +1483,19 @@ const char *blockless_block_param_call_name(Compiler *c, int id) {
   return (nm && sp_streq(nm, "[]")) ? "[]" : wn ? wn : "call";
 }
 
+/* --share-strings: is yielded argument `a` an ivar, a global, a constant or
+   a class variable holding the shared handle? It goes over as the handle,
+   as a handle local does: a Struct's each yields its members so. */
+static int yield_arg_static_handle(Compiler *c, int a) {
+  char ref[512];
+  if (!repr_share_rule(c) || a < 0) return 0;
+  NodeKind k = nt_kind(c->nt, a);
+  if (k != NK_InstanceVariableReadNode && k != NK_GlobalVariableReadNode && k != NK_ConstantReadNode &&
+      k != NK_ClassVariableReadNode)
+    return 0;
+  return strbuf_slot_ref(c, a, ref, sizeof ref);
+}
+
 /* The call of a block proc `ref` with the yielded args. A splat, or a
    trailing `**h` that passes nothing when empty, makes the count dynamic:
    the args are collected into an array and spread at run time. */
@@ -1517,7 +1530,7 @@ void emit_proc_yield(Compiler *c, const char *ref, int yargc, const int *yargv, 
   int lmi = ys && ys->is_lowered_yield ? (int)(ys - c->scopes) : -1;
   unsigned live = 0;
   for (int k = 0; k < nm; k++) {
-    if (!c->strbuf_box[yargv[k]] && local_is_handle(c, yargv[k])) {
+    if (!c->strbuf_box[yargv[k]] && (local_is_handle(c, yargv[k]) || yield_arg_static_handle(c, yargv[k]))) {
       vt[nv++] = view_push_repr(c, yargv[k], VR_STRBUF_BOX, 1);
       vt[nv++] = view_push(c, yargv[k], TY_STRBUF);
     }
@@ -2736,7 +2749,12 @@ void emit_block_binds(Compiler *c, int blk, const int *yargs, int yc,
     for (int j = P + ot_static; j < yc - Q; j++) {
       if (!as_expr) emit_indent(b, indent);
       buf_printf(b, "sp_PolyArray_push(_t%d, ", trest);
-      emit_boxed(c, yargs[j], b);
+      /* --share-strings: a static slot holding the handle (a Struct's
+         member its each yields) goes in as the handle, as a local does */
+      char sref[512];
+      if (yield_arg_static_handle(c, yargs[j]) && strbuf_slot_ref(c, yargs[j], sref, sizeof sref))
+        buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", sref);
+      else emit_boxed(c, yargs[j], b);
       buf_puts(b, as_expr ? "); " : ");\n");
     }
     rest_tmp = trest;
