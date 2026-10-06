@@ -41,3 +41,83 @@ p(20.times.all? do |i|
 end)
 # NOTE: TOPLEVEL_NOTE deliberately absent -- the kernel's toplevel runs on
 # the SPINEL side at init; nothing but the entry methods exists on the host.
+
+# The subprocess bounds a native deadlock: a Ruby Timeout cannot run if
+# a caller waits for the extension gate while holding the GVL.
+require "rbconfig"
+pid = Process.spawn(RbConfig.ruby, "-I", File.dirname(__FILE__), "-e", <<~'RUBY')
+  require "extk"
+  GC.start
+  GC.compact if GC.respond_to?(:compact)
+  def native(thread)
+    Thread.pass until thread.status == "sleep" || !thread.alive?
+    raise "call did not overlap" unless thread.alive?
+  end
+
+  owner = Thread.new { ExtKernel.pause_total([1, 2, 3], 0.5) }
+  native(owner)
+  raise "wrong concurrent result" unless ExtKernel.triple(7) == 21
+  raise "lost array roots" unless owner.value == 6
+
+  threads = 4.times.map do
+    Thread.new do
+      20.times do
+        raise "wrong array result" unless ExtKernel.pair_sum(["ab", "c"], ["def"]) == 6
+      end
+    end
+  end
+  threads.each(&:value)
+
+  owner = Thread.new { ExtKernel.pause_total([1, 2, 3], 0.5) }
+  native(owner)
+  waiter = Thread.new { ExtKernel.triple(2) }
+  native(waiter)
+  waiter.kill.join
+  raise "owner failed after waiter kill" unless owner.value == 6
+
+  owner = Thread.new do
+    begin
+      ExtKernel.pause_total([1, 2, 3], 0.5)
+    rescue RuntimeError => error
+      error.message
+    end
+  end
+  native(owner)
+  owner.raise(RuntimeError, "interrupted")
+  raise "owner interrupt lost" unless owner.value == "interrupted"
+  raise "gate or roots leaked" unless ExtKernel.pair_sum(["ab"], ["c"]) == 3
+
+  invalid = Object.new
+  def invalid.to_f = raise(TypeError, "conversion failed")
+  begin
+    ExtKernel.pause_total([1, 2, 3], invalid)
+    raise "conversion did not raise"
+  rescue TypeError => error
+    raise "wrong conversion error" unless error.message == "conversion failed"
+  end
+  recursive = Object.new
+  def recursive.to_f
+    ExtKernel.triple(2)
+    0.001
+  end
+  begin
+    ExtKernel.pause_total([1, 2, 3], recursive)
+    raise "recursive entry did not raise"
+  rescue ThreadError
+  end
+  raise "conversion roots or gate leaked" unless ExtKernel.pair_sum(["ab"], ["c"]) == 3
+RUBY
+deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 20
+status = nil
+until status || Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+  result = Process.waitpid2(pid, Process::WNOHANG)
+  status = result.last if result
+  sleep 0.01 unless status
+end
+unless status
+  Process.kill(:KILL, pid)
+  Process.waitpid(pid)
+  abort "concurrent extension calls timed out"
+end
+abort "concurrent extension calls failed" unless status.success?
+p true
