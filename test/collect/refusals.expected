@@ -674,6 +674,14 @@ spinel: a String appended to through a rebound iterator alias is not yet shared 
 spinel: the result of a String bang method, which is its receiver, is mutated in place (a String is not yet shared by reference through a bang method's result). Mutate the receiver instead.
 == test/reject/string_bang_result_mutation.rb [promote] rc=1
 spinel: the result of a String bang method, which is its receiver, is mutated in place (a String is not yet shared by reference through a bang method's result). Mutate the receiver instead.
+== test/reject/string_begin_value_handover.rb [default] rc=1
+spinel: a String handed on by a `begin`/`rescue` value is mutated in place, or the variable it came from is (a String is not yet shared by reference through a `begin`/`rescue` value). Mutate the String through the variable itself.
+== test/reject/string_begin_value_handover.rb [promote] rc=1
+spinel: a String handed on by a `begin`/`rescue` value is mutated in place, or the variable it came from is (a String is not yet shared by reference through a `begin`/`rescue` value). Mutate the String through the variable itself.
+== test/reject/string_break_value_handover.rb [default] rc=1
+spinel: a String handed on by `break`, `throw` or `catch` is mutated in place, or the variable it came from is (a String is not yet shared by reference through `break`, `throw` or `catch`). Mutate the String through the variable itself.
+== test/reject/string_break_value_handover.rb [promote] rc=1
+spinel: a String handed on by `break`, `throw` or `catch` is mutated in place, or the variable it came from is (a String is not yet shared by reference through `break`, `throw` or `catch`). Mutate the String through the variable itself.
 == test/reject/string_chained_index_append.rb [default] rc=1
 spinel: a String is not yet shared by reference through an Array's chained index into an appending block
 == test/reject/string_chained_index_append.rb [promote] rc=1
@@ -748,6 +756,10 @@ spinel: a String is not yet shared by reference through a Hash's chained index i
 spinel: a String is not yet shared by reference through a Hash's chained index into an appending block
 == test/reject/string_hash_chained_index_observed.rb [promote] rc=1
 spinel: a String is not yet shared by reference through a Hash's chained index into an appending block
+== test/reject/string_hash_default_set.rb [default] rc=1
+spinel: a Hash's default String is mutated in place through a missing key's read, or the variable it was set from is (a String is not yet shared by reference through `Hash#default=`). Store the String under its key instead.
+== test/reject/string_hash_default_set.rb [promote] rc=1
+spinel: a Hash's default String is mutated in place through a missing key's read, or the variable it was set from is (a String is not yet shared by reference through `Hash#default=`). Store the String under its key instead.
 == test/reject/string_hash_fresh.rb [default] rc=1
 spinel: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
 == test/reject/string_hash_fresh.rb [promote] rc=1
@@ -838,6 +850,10 @@ spinel: a String instance variable written from a local is passed to an appendin
 spinel: a String is not yet shared by reference through an ivar's or a call's Array into an appending iterator block
 == test/reject/string_ivar_array_append.rb [promote] rc=1
 spinel: a String is not yet shared by reference through an ivar's or a call's Array into an appending iterator block
+== test/reject/string_kernel_string_handover.rb [default] rc=1
+spinel: a String handed on by `String()` is mutated in place, or the variable it came from is (a String is not yet shared by reference through `String()`). Mutate the String through the variable itself.
+== test/reject/string_kernel_string_handover.rb [promote] rc=1
+spinel: a String handed on by `String()` is mutated in place, or the variable it came from is (a String is not yet shared by reference through `String()`). Mutate the String through the variable itself.
 == test/reject/string_kwsplat_last_dynamic.rb [default] rc=1
 spinel: a String is passed to a proc's parameter `k` through a splatted Hash literal (`**{ k: v }`), which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference through a splatted Hash literal (`**{ k: v }`)). Return the String from the proc and assign it, or append to it in the caller.
 spinel: 1 refusal, nothing written
@@ -886,6 +902,10 @@ spinel: 1 refusal, nothing written
 == test/reject/string_lent_ivar_rebound.rb [promote] rc=1
 spinel: `@x` is passed to gri's parameter `v`, which appends to it, and `@x` is assigned at line 0, where the assignment can run during the call: the append would then reach the newly assigned String instead of the one passed (a String held by a global, a class variable, or a top-level or class-level instance variable is not yet shared by reference). Pass a local and assign it back after the call.
 spinel: 1 refusal, nothing written
+== test/reject/string_method_answer_handover.rb [default] rc=1
+spinel: a String handed on by a method's answer (a class variable, a memoized instance variable, `super`, or a local the method keeps elsewhere) is mutated in place, or the variable it came from is (a String is not yet shared by reference through a method's answer (a class variable, a memoized instance variable, `super`, or a local the method keeps elsewhere)). Mutate the String through the variable itself.
+== test/reject/string_method_answer_handover.rb [promote] rc=1
+spinel: a String handed on by a method's answer (a class variable, a memoized instance variable, `super`, or a local the method keeps elsewhere) is mutated in place, or the variable it came from is (a String is not yet shared by reference through a method's answer (a class variable, a memoized instance variable, `super`, or a local the method keeps elsewhere)). Mutate the String through the variable itself.
 == test/reject/string_mutator_jump_arm.rb [default] rc=1
 spinel: unsupported expression: node N (ReturnNode)
 spinel: 1 refusal, nothing written
@@ -900,6 +920,14 @@ spinel: a nested multiple-assignment target appends to a String variable from an
 spinel: a nested multiple-assignment target appends to a String variable from an Array literal (a String is not yet shared by reference through a nested multiple-assignment target). Append to the source String instead.
 == test/reject/string_nested_masgn_target.rb [promote] rc=1
 spinel: a nested multiple-assignment target appends to a String variable from an Array literal (a String is not yet shared by reference through a nested multiple-assignment target). Append to the source String instead.
+== test/reject/string_proc_answer_handover.rb [default] rc=1
+spinel: a String handed on by a proc's answer is mutated in place, or the variable it came from is (a String is not yet shared by reference through a proc's answer). Mutate the String through the variable itself.
+== test/reject/string_proc_answer_handover.rb [promote] rc=1
+spinel: a String handed on by a proc's answer is mutated in place, or the variable it came from is (a String is not yet shared by reference through a proc's answer). Mutate the String through the variable itself.
+== test/reject/string_raise_message.rb [default] rc=1
+spinel: a String variable raised as an exception's message is mutated in place, or the message is (a String is not yet shared by reference through an exception's message). Mutate the String before raising it.
+== test/reject/string_raise_message.rb [promote] rc=1
+spinel: a String variable raised as an exception's message is mutated in place, or the message is (a String is not yet shared by reference through an exception's message). Mutate the String before raising it.
 == test/reject/string_rest_splat_yield.rb [default] rc=1
 spinel: a String is passed to a block's parameter `b` through a splat into a yield, which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference through a splat into a yield). Return the String from the proc and assign it, or append to it in the caller.
 spinel: 1 refusal, nothing written
@@ -928,6 +956,10 @@ spinel: 1 refusal, nothing written
 == test/reject/string_tap_fresh_append.rb [promote] rc=1
 spinel: a String is not yet shared by reference through tap on a fresh String
 spinel: 1 refusal, nothing written
+== test/reject/string_then_tap_handover.rb [default] rc=1
+spinel: a String handed on by `then` or `tap` is mutated in place, or the variable it came from is (a String is not yet shared by reference through `then` or `tap`). Mutate the String through the variable itself.
+== test/reject/string_then_tap_handover.rb [promote] rc=1
+spinel: a String handed on by `then` or `tap` is mutated in place, or the variable it came from is (a String is not yet shared by reference through `then` or `tap`). Mutate the String through the variable itself.
 == test/reject/string_thread_arg.rb [default] rc=1
 spinel: a String is passed to a block's parameter `t` through `Thread.new`, which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference through `Thread.new`). Return the String from the proc and assign it, or append to it in the caller.
 spinel: 1 refusal, nothing written
@@ -964,10 +996,18 @@ spinel: 1 refusal, nothing written
 == test/reject/string_thread_method_param_arg.rb [promote] rc=1
 spinel: a String is passed to a block's parameter `t` through `Thread.new`, which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference through `Thread.new`). Return the String from the proc and assign it, or append to it in the caller.
 spinel: 1 refusal, nothing written
+== test/reject/string_thread_value_handover.rb [default] rc=1
+spinel: a String handed on by a Thread's `value` or a Fiber's `resume` is mutated in place, or the variable it came from is (a String is not yet shared by reference through a Thread's `value` or a Fiber's `resume`). Mutate the String through the variable itself.
+== test/reject/string_thread_value_handover.rb [promote] rc=1
+spinel: a String handed on by a Thread's `value` or a Fiber's `resume` is mutated in place, or the variable it came from is (a String is not yet shared by reference through a Thread's `value` or a Fiber's `resume`). Mutate the String through the variable itself.
 == test/reject/string_to_s_receiver_rebind.rb [default] rc=1
 spinel: `to_s` (or another call answering its String receiver) is mutated in place while an argument reassigns the variable it was read from (a String is not yet shared by reference through `to_s` on a String). Mutate the variable itself, or read it into another local first.
 == test/reject/string_to_s_receiver_rebind.rb [promote] rc=1
 spinel: `to_s` (or another call answering its String receiver) is mutated in place while an argument reassigns the variable it was read from (a String is not yet shared by reference through `to_s` on a String). Mutate the variable itself, or read it into another local first.
+== test/reject/string_uplus_handover.rb [default] rc=1
+spinel: a String handed on by unary `+` on an unfrozen String is mutated in place, or the variable it came from is (a String is not yet shared by reference through unary `+` on an unfrozen String). Mutate the String through the variable itself.
+== test/reject/string_uplus_handover.rb [promote] rc=1
+spinel: a String handed on by unary `+` on an unfrozen String is mutated in place, or the variable it came from is (a String is not yet shared by reference through unary `+` on an unfrozen String). Mutate the String through the variable itself.
 == test/reject/string_yield_captured_param.rb [default] rc=1
 spinel: a String is passed to a block's parameter `q` through `yield` into a capture-wrapper block, which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference through `yield` into a capture-wrapper block). Return the String from the proc and assign it, or append to it in the caller.
 spinel: 1 refusal, nothing written
@@ -986,6 +1026,10 @@ spinel: 1 refusal, nothing written
 == test/reject/string_yield_splat_captured.rb [promote] rc=1
 spinel: a String is passed to a block's parameter `q` through a splat into a yield, which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference through a splat into a yield). Return the String from the proc and assign it, or append to it in the caller.
 spinel: 1 refusal, nothing written
+== test/reject/string_yield_value_handover.rb [default] rc=1
+spinel: a String handed on by `yield`'s block value is mutated in place, or the variable it came from is (a String is not yet shared by reference through `yield`'s block value). Mutate the String through the variable itself.
+== test/reject/string_yield_value_handover.rb [promote] rc=1
+spinel: a String handed on by `yield`'s block value is mutated in place, or the variable it came from is (a String is not yet shared by reference through `yield`'s block value). Mutate the String through the variable itself.
 == test/reject/subclass_array.rb [default] rc=1
 spinel: class Stack < Array: subclassing Array is not supported yet (a subclass would answer differently from CRuby); wrap an Array in an instance variable instead
 == test/reject/subclass_array.rb [promote] rc=1
