@@ -16048,3 +16048,331 @@ int desugar_builtin_reopen_named_superclass(Compiler *c) {
   }
   return changed;
 }
+
+/* ---- truth-only ivars ----
+   An ivar every read of which asks only whether it is truthy -- a
+   condition, `!`, an operand of `&&`/`||` whose value is itself asked only
+   that, or a value stored into another such ivar -- holds a value whose
+   identity nothing observes. optcarrot's `@sp_visible ||= @sp_map.clear`
+   holds false or an Array, and `@sp_active = @sp_enabled && @sp_visible`
+   carries it on: both slots were boxed, and every pixel's
+   `if @sp_active && (sprite = @sp_map[@hclk])` read a box. Such an ivar
+   stores its value's truthiness: each write's value `v` becomes
+   `v ? true : false`, so the slot is a boolean. A write keeps its value
+   only where that value is itself dropped or asked only its truthiness.
+
+   What can see the value is checked first: an attr reader or writer, an
+   ivar reflection (instance_variable_get and kin, instance_eval and kin,
+   binding, Marshal), a write other than `=`, `||=` and `&&=`, an ivar
+   outside a class's own instance methods (a class body, a class method, a
+   module), and a generated inspect, which prints every ivar: a class that
+   can hold it must define its own inspect.
+
+   A method's value is a use like any other: a value that reaches a method
+   body's tail is read where the method's calls are (tov_method_use), by
+   name over every call and with any symbol, alias or runtime protocol of
+   the name counting as a full use. Groups and method uses settle together:
+   every candidate starts truth-only, and one whose node is used for more
+   than its truthiness drops out until nothing changes. */
+
+enum { TOV_DROPPED, TOV_TRUTH, TOV_USED };
+
+typedef struct {
+  Compiler *c;
+  const NodeTable *nt;
+  int *par;
+  int ngroups, cgroups;
+  struct { int cls; const char *name; int ok; int needs; } *g;   /* cls: the hierarchy's root */
+  int *node_group;            /* per ivar node: its group, or -1 */
+  unsigned char *muse;        /* per method scope: TOV_* of its value */
+  unsigned char *mfixed;      /* per scope: a full use by name (symbol, alias, protocol) */
+  int *dsend; int ndsend, cdsend;   /* the sends whose name is computed */
+} TOV;
+
+static int tov_root(Compiler *c, int ci) {
+  while (ci >= 0 && c->classes[ci].parent >= 0) ci = c->classes[ci].parent;
+  return ci;
+}
+
+static int tov_group_of(TOV *t, int cls, const char *name) {
+  for (int i = 0; i < t->ngroups; i++)
+    if (t->g[i].cls == cls && sp_streq(t->g[i].name, name)) return i;
+  if (t->ngroups == t->cgroups) {
+    t->cgroups = t->cgroups ? t->cgroups * 2 : 16;
+    t->g = realloc(t->g, sizeof *t->g * (size_t)t->cgroups);
+    if (!t->g) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  t->g[t->ngroups].cls = cls; t->g[t->ngroups].name = name;
+  t->g[t->ngroups].ok = 1; t->g[t->ngroups].needs = 0;
+  return t->ngroups++;
+}
+
+static int tov_is_ivar_write(NodeKind k) {
+  return k == NK_InstanceVariableWriteNode || k == NK_InstanceVariableOrWriteNode ||
+         k == NK_InstanceVariableAndWriteNode;
+}
+
+/* A value whose truthiness is all it has: a literal boolean or nil, `!`,
+   a comparison, or an `&&`/`||` of such. Its write needs no rewrite. */
+static int tov_boolish(TOV *t, int v) {
+  const NodeTable *nt = t->nt;
+  if (v < 0) return 0;
+  switch (nt_kind(nt, v)) {
+  case NK_TrueNode: case NK_FalseNode: case NK_NilNode: return 1;
+  case NK_AndNode: case NK_OrNode:
+    return tov_boolish(t, nt_ref(nt, v, "left")) && tov_boolish(t, nt_ref(nt, v, "right"));
+  case NK_ParenthesesNode: {
+    int b = nt_ref(nt, v, "body"), n = 0;
+    const int *bb = b >= 0 && nt_kind(nt, b) == NK_StatementsNode ? nt_arr(nt, b, "body", &n) : NULL;
+    return bb && n == 1 && tov_boolish(t, bb[0]);
+  }
+  case NK_CallNode: {
+    const char *nm = nt_str(nt, v, "name");
+    int a = nt_ref(nt, v, "arguments"), an = 0;
+    if (a >= 0) nt_arr(nt, a, "arguments", &an);
+    if (!nm || nt_ref(nt, v, "receiver") < 0) return 0;
+    if (an == 0 && is_not_op(nm)) return 1;
+    return an == 1 && is_bool_comparison(nm);
+  }
+  case NK_InstanceVariableReadNode: {
+    int gi = t->node_group[v];
+    return gi >= 0 && t->g[gi].ok;
+  }
+  default: return 0;
+  }
+}
+
+/* How node v's value is used, walking up from it: dropped, asked only its
+   truthiness, or used. */
+static int tov_use(TOV *t, int v) {
+  const NodeTable *nt = t->nt;
+  int truth = 0;
+  for (int p; (p = t->par[v]) >= 0; v = p) {
+    NodeKind k = nt_kind(nt, p);
+    switch (k) {
+    case NK_StatementsNode: {
+      int n = 0;
+      const int *st = nt_arr(nt, p, "body", &n);
+      if (n == 0 || st[n - 1] != v) return TOV_DROPPED;
+      break;
+    }
+    case NK_ParenthesesNode: case NK_ElseNode: case NK_BeginNode:
+      break;
+    case NK_IfNode: case NK_UnlessNode:
+      if (nt_ref(nt, p, "predicate") == v) return TOV_TRUTH;
+      break;
+    case NK_CaseNode: case NK_CaseMatchNode:
+      if (nt_ref(nt, p, "predicate") == v) return TOV_USED;   /* compared by === */
+      break;
+    case NK_InNode: case NK_RescueNode:
+      if (nt_ref(nt, p, "statements") != v) return TOV_USED;
+      break;
+    case NK_WhileNode: case NK_UntilNode:
+      return nt_ref(nt, p, "predicate") == v ? TOV_TRUTH : TOV_DROPPED;
+    case NK_AndNode: case NK_OrNode:
+      truth = 1;   /* the chain's value is this operand only when its truthiness decides */
+      break;
+    case NK_CallNode: {
+      const char *nm = nt_str(nt, p, "name");
+      int a = nt_ref(nt, p, "arguments"), an = 0;
+      if (a >= 0) nt_arr(nt, a, "arguments", &an);
+      if (nm && an == 0 && is_not_op(nm) && nt_ref(nt, p, "receiver") == v) return TOV_TRUTH;
+      return TOV_USED;
+    }
+    case NK_InstanceVariableWriteNode: case NK_InstanceVariableOrWriteNode:
+    case NK_InstanceVariableAndWriteNode: {
+      int gi = t->node_group[p];
+      if (nt_ref(nt, p, "value") != v || gi < 0 || !t->g[gi].ok) return TOV_USED;
+      truth = 1;   /* stored as its truthiness; the write's own value goes on */
+      break;
+    }
+    case NK_DefNode: {
+      Scope *s = comp_scope_of(t->c, v);
+      int mi = s ? (int)(s - t->c->scopes) : -1;
+      int u = mi > 0 ? t->muse[mi] : TOV_USED;
+      return u == TOV_DROPPED ? TOV_DROPPED : (u == TOV_TRUTH || truth) && u != TOV_USED ? TOV_TRUTH : TOV_USED;
+    }
+    case NK_BlockNode: {
+      int call = t->par[p];
+      const char *cn = call >= 0 && nt_kind(nt, call) == NK_CallNode ? nt_str(nt, call, "name") : NULL;
+      return cn && is_block_loop_method(cn) ? TOV_DROPPED : TOV_USED;
+    }
+    default: {
+      /* a `when` arm's statements are the case's value; its conditions
+         are compared */
+      const char *ty = nt_type(nt, p);
+      if (ty && sp_streq(ty, "WhenNode") && nt_ref(nt, p, "statements") == v) break;
+      if (ty && sp_streq(ty, "EnsureNode")) return TOV_DROPPED;
+      return TOV_USED;
+    }
+    }
+  }
+  return TOV_USED;
+}
+
+/* The use of method scope mi's value over its calls by name */
+static int tov_method_use(TOV *t, int mi) {
+  const NodeTable *nt = t->nt;
+  const char *nm = t->c->scopes[mi].name;
+  if (!nm || t->mfixed[mi]) return TOV_USED;
+  int u = TOV_DROPPED;
+  for (int i = 0; i < t->ndsend; i++) {
+    int w = tov_use(t, t->dsend[i]);
+    if (w > u) u = w;
+    if (u == TOV_USED) return u;
+  }
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
+    const char *cn = nt_str(nt, id, "name");
+    if (!cn || !sp_streq(cn, nm)) continue;
+    int w = tov_use(t, id);
+    if (w > u) u = w;
+    if (u == TOV_USED) return u;
+  }
+  /* an override's `super` hands this method's value on as its own */
+  for (int q = 0; q < 2; q++) {
+    int cnt = 0;
+    const int *ids = nt_nodes_of_kind(nt, q ? NK_ForwardingSuperNode : NK_SuperNode, &cnt);
+    for (int i = 0; i < cnt; i++) {
+      Scope *ss = comp_scope_of(t->c, ids[i]);
+      if (!ss || !ss->name || !sp_streq(ss->name, nm)) continue;
+      int w = tov_use(t, ids[i]);
+      if (w > u) u = w;
+      if (u == TOV_USED) return u;
+    }
+  }
+  return u;
+}
+
+int desugar_truth_only_ivars(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  /* reflection reaches any ivar by name */
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
+    const char *nm = nt_str(nt, id, "name");
+    if (nm && is_ivar_reflection(nm)) return 0;
+  }
+  NT_FOREACH_KIND(nt, NK_ConstantReadNode, id) {
+    const char *nm = nt_str(nt, id, "name");
+    if (nm && is_ivar_serializer(nm)) return 0;
+  }
+  TOV t = { c, nt, NULL, 0, 0, NULL, NULL, NULL, NULL, NULL, 0, 0 };
+  int n0 = nt->count;
+  t.node_group = malloc(sizeof(int) * (size_t)(n0 ? n0 : 1));
+  t.muse = calloc((size_t)(c->nscopes ? c->nscopes : 1), 1);
+  t.mfixed = calloc((size_t)(c->nscopes ? c->nscopes : 1), 1);
+  if (!t.node_group || !t.muse || !t.mfixed) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int id = 0; id < n0; id++) t.node_group[id] = -1;
+  /* the groups: one per (hierarchy root, ivar name) over every ivar node */
+  for (int id = 0; id < n0; id++) {
+    NodeKind k = nt_kind(nt, id);
+    int is_ref = k == NK_InstanceVariableReadNode || tov_is_ivar_write(k) ||
+                 k == NK_InstanceVariableOperatorWriteNode || k == NK_InstanceVariableTargetNode;
+    if (!is_ref) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm) continue;
+    Scope *s = comp_scope_of(c, id);
+    int ci = s && !s->is_cmethod && s->def_node >= 0 ? s->class_id : -1;
+    int root = ci >= 0 ? tov_root(c, ci) : -1;
+    int gi = tov_group_of(&t, root, nm);
+    t.node_group[id] = gi;
+    if (root < 0 || !tov_is_ivar_write(k) && k != NK_InstanceVariableReadNode) t.g[gi].ok = 0;
+    if (tov_is_ivar_write(k) && !tov_boolish(&t, nt_ref(nt, id, "value"))) t.g[gi].needs = 1;
+  }
+  /* what can see a group's value: a module, an attr, a struct, a
+     generated inspect, in any class of the hierarchy */
+  for (int gi = 0; gi < t.ngroups; gi++) {
+    if (!t.g[gi].ok) continue;
+    int root = t.g[gi].cls;
+    const char *bare = t.g[gi].name + 1;
+    for (int k = 0; k < c->nclasses && t.g[gi].ok; k++) {
+      if (tov_root(c, k) != root) continue;
+      ClassInfo *ci = &c->classes[k];
+      if (ci->def_node < 0 || nt_kind(nt, ci->def_node) == NK_ModuleNode || ci->is_struct ||
+          ci->is_data || ci->is_native_class || ci->nincluded_mods > 0 || ci->nincluded_mod_names > 0 ||
+          comp_reader_in_chain(c, k, bare, NULL) || comp_writer_in_chain(c, k, bare, NULL) ||
+          comp_method_in_chain(c, k, "inspect", NULL) < 0)
+        t.g[gi].ok = 0;
+    }
+  }
+  /* method values used by name: a symbol (send, method, define_method), an
+     alias, a runtime protocol */
+  for (int s = 1; s < c->nscopes; s++) {
+    const char *nm = c->scopes[s].name;
+    if (!nm) continue;
+    if (method_name_implicitly_invoked(nm) || c->scopes[s].is_cmethod) t.mfixed[s] = 1;
+  }
+  for (int q = 0; q < 2; q++) {
+    int cnt = 0;
+    const int *ids = nt_nodes_of_kind(nt, q ? NK_StringNode : NK_SymbolNode, &cnt);
+    for (int i = 0; i < cnt; i++) {
+      const char *v = nt_str(nt, ids[i], q == 0 ? "value" : "content");
+      for (int s = 1; v && s < c->nscopes; s++)
+        if (c->scopes[s].name && sp_streq(c->scopes[s].name, v)) t.mfixed[s] = 1;
+    }
+  }
+  /* a call whose name is computed can reach any method: its own use is a
+     use of every method's value (tov_method_use); a Method object it makes
+     is called from anywhere */
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !is_named_method_reach(nm)) continue;
+    int a = nt_ref(nt, id, "arguments"), an = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+    NodeKind ak = an > 0 ? nt_kind(nt, av[0]) : NK_NilNode;
+    if (ak == NK_SymbolNode || ak == NK_StringNode) continue;
+    if (!is_send_family(nm)) { for (int s = 1; s < c->nscopes; s++) t.mfixed[s] = 1; continue; }
+    if (t.ndsend == t.cdsend) {
+      t.cdsend = t.cdsend ? t.cdsend * 2 : 8;
+      t.dsend = realloc(t.dsend, sizeof(int) * (size_t)t.cdsend);
+      if (!t.dsend) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    }
+    t.dsend[t.ndsend++] = id;
+  }
+  int any = 0;
+  for (int gi = 0; gi < t.ngroups; gi++) if (t.g[gi].ok && t.g[gi].needs) any = 1;
+  if (!any) goto done;
+  t.par = an_parent_map(nt);
+  if (!t.par) goto done;
+  /* settle the groups and the method uses together, from the optimistic
+     start: every change only drops a group or raises a use */
+  for (int round = 0; round < 64; round++) {
+    int changed = 0;
+    for (int s = 1; s < c->nscopes; s++) {
+      if (!c->scopes[s].name || c->scopes[s].def_node < 0) continue;
+      int u = tov_method_use(&t, s);
+      if (u > t.muse[s]) { t.muse[s] = (unsigned char)u; changed = 1; }
+    }
+    for (int id = 0; id < n0; id++) {
+      int gi = t.node_group[id];
+      if (gi < 0 || !t.g[gi].ok) continue;
+      if (tov_use(&t, id) == TOV_USED) { t.g[gi].ok = 0; changed = 1; }
+    }
+    if (!changed) break;
+    if (round == 63) for (int gi = 0; gi < t.ngroups; gi++) t.g[gi].ok = 0;   /* no fixpoint: leave all */
+  }
+  /* each write of a truth-only group that needs one stores `v ? true : false` */
+  for (int id = 0; id < n0; id++) {
+    int gi = t.node_group[id];
+    if (gi < 0 || !t.g[gi].ok || !t.g[gi].needs || !tov_is_ivar_write(nt_kind(nt, id))) continue;
+    int v = nt_ref(nt, id, "value");
+    if (v < 0 || tov_boolish(&t, v)) continue;
+    int iff = nt_new_node(nt, "IfNode"), s1 = nt_new_node(nt, "StatementsNode");
+    int el = nt_new_node(nt, "ElseNode"), s2 = nt_new_node(nt, "StatementsNode");
+    int tn = nt_new_node(nt, "TrueNode"), fn = nt_new_node(nt, "FalseNode");
+    if (iff < 0 || s1 < 0 || el < 0 || s2 < 0 || tn < 0 || fn < 0) break;
+    comp_grow_node_arrays(c);
+    int made[] = { iff, s1, el, s2, tn, fn };
+    for (int k = 0; k < 6; k++) { c->nscope[made[k]] = c->nscope[id]; c->node_cbody[made[k]] = c->node_cbody[id]; }
+    long line = nt_int(nt, v, "node_line", 0);
+    nt_node_set_ref(nt, iff, "predicate", v);
+    nt_node_set_arr(nt, s1, "body", &tn, 1);
+    nt_node_set_ref(nt, iff, "statements", s1);
+    nt_node_set_arr(nt, s2, "body", &fn, 1);
+    nt_node_set_ref(nt, el, "statements", s2);
+    nt_node_set_ref(nt, iff, "subsequent", el);
+    for (int k = 0; k < 6; k++) nt_node_set_int(nt, made[k], "node_line", line);
+    nt_node_set_ref(nt, id, "value", iff);
+  }
+done:
+  free(t.par); free(t.node_group); free(t.muse); free(t.mfixed); free(t.g); free(t.dsend);
+  return 0;
+}

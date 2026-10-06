@@ -133,7 +133,7 @@ static int bare_rescue_spec_cid(Compiler *c, int rescue_id) {
    loop calls each. Reachability keeps such a method alive; a pass reasoning
    about how a method is entered or what its C signature may be must likewise
    treat it as having a caller it cannot see. */
-static int method_name_implicitly_invoked(const char *nm) {
+int method_name_implicitly_invoked(const char *nm) {
   static const char *const implicit[] = {
     "to_s", "inspect", "==", "<=>", "eql?", "hash", "each", "coerce",
     "to_str", "to_ary", "to_a", "to_i", "to_int", "to_h", "to_hash", "to_proc", "call",
@@ -32276,6 +32276,9 @@ static void an_phase_class_structure(Compiler *c) {
     }
   }
 
+  /* after the class chains and attrs are known, before inference: a slot
+     read only for its truthiness stores it (truth_only_ivars) */
+  desugar_truth_only_ivars(c);
   synth_struct_each(c);
   synth_enum_to_a(c);
   synth_to_enum_generators(c);
