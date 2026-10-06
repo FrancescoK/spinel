@@ -80,5 +80,9 @@ rfsum=$(grep ': plan-check: refuse: ' "$OUT" | sed 's/.*refuse: //' | tr -d '(),
 grep ': plan-check: refuse-wrong:' "$OUT" | head -20
 echo "plan-check: refusals: $rfsum"
 rfw=$(grep -c ': plan-check: refuse-wrong:' "$OUT")
+# the iterator rows: well formed, no overlapping keys, no stale hand row (builtin_ops.c iter_rows_check)
+irc=$(grep -c ': plan-check: iter-row-error:' "$OUT")
+grep ': plan-check: iter-row-error:' "$OUT" | head -20
+echo "plan-check: iterator rows: $irc errors"
 rm -f "$OUT"
-[ "$nc" -eq 0 ] && [ "$uc" -eq 0 ] && [ "$pc" -eq 0 ] && [ "$ppc" -eq 0 ] && [ "$rfw" -eq 0 ]
+[ "$nc" -eq 0 ] && [ "$uc" -eq 0 ] && [ "$pc" -eq 0 ] && [ "$ppc" -eq 0 ] && [ "$rfw" -eq 0 ] && [ "$irc" -eq 0 ]

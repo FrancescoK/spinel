@@ -352,6 +352,7 @@ void ucall_report(Compiler *c) {
   refuse_report(c);
   ucall_resolver_report(c);
   cplan_served_report();
+  iter_rows_check();
   pa_report();
   static const char *const via_name[] = { "none", "top", "inst", "cmeth", "super",
                                           "send_blind", "ie", "included", "reopen", "poly" };
