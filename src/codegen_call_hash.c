@@ -9,6 +9,7 @@
 #include "codegen_internal.h"
 #include "builtin_ops.h"
 #include "codegen_call_arms.h"
+#include "repr.h"
 
 /* any?(pattern) / none? / one? / count with one argument and no block:
    compare each [key, value] pair by == (sp_poly_eq covers array-vs-array
@@ -431,7 +432,7 @@ int emit_op_hash_replace(Compiler *c, const BopCtx *x, Buf *b) {
   int keep_default = nt_str(c->nt, x->id, "bang_splice") != NULL;
   int argc;
   const int *argv = call_args(c->nt, x->id, &argc);
-  if (comp_ntype(c, argv[0]) == rt) {
+  if (repr_hash_is(repr_of(c, argv[0]), ty_hash_key(rt), ty_hash_val(rt))) {
     int trp = ++g_tmp, to = ++g_tmp;
     buf_printf(b, "({ %s _t%d = ", c_type_name(rt), trp); emit_expr(c, recv, b);
     buf_printf(b, "; if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s);", trp, trp, hash_box_cls(rt));   /* (#3001) */
@@ -529,7 +530,7 @@ int emit_op_hash_merge_bang_many(Compiler *c, const BopCtx *x, Buf *b) {
   if (rt == TY_POLY_POLY_HASH) return 0;
   TyKind kt = ty_hash_key(rt);
   for (int ai = 0; ai < argc; ai++)
-    if (comp_ntype(c, argv[ai]) != rt) return 0;
+    if (!repr_hash_is(repr_of(c, argv[ai]), ty_hash_key(rt), ty_hash_val(rt))) return 0;
   int tr = ++g_tmp;
   buf_printf(b, "({ %s _t%d = ", c_type_name(rt), tr); emit_expr(c, recv, b); buf_puts(b, ";");
   buf_printf(b, " if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s);", tr, tr, hash_box_cls(rt));   /* (#3001) */
@@ -991,7 +992,7 @@ int emit_call_hash_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
        (sp_streq(name, "[]") && argc == 1))) {
     int dn = hash_new_default_arg(c, recv);
     if (dn >= 0) {
-      TyKind dt = comp_ntype(c, dn);
+      TyKind dt = repr_of(c, dn).as_ty;
       int t = ++g_tmp;
       buf_puts(b, "({ ");
       emit_ctype(c, dt, b);
@@ -1021,7 +1022,7 @@ int emit_call_hash_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
   if (recv >= 0 && sp_streq(name, "default=") && argc == 1 && !ty_is_hash(rt) &&
       nt_type(nt, recv) &&
       (sp_streq(nt_type(nt, recv), "HashNode") || sp_streq(nt_type(nt, recv), "KeywordHashNode"))) {
-    TyKind vt = comp_ntype(c, argv[0]);
+    TyKind vt = repr_of(c, argv[0]).as_ty;
     int t = ++g_tmp;
     buf_puts(b, "({ ");
     emit_ctype(c, vt, b);
