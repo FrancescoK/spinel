@@ -147,6 +147,13 @@ void sp_mar_w(sp_mar_buf *b, sp_RbVal v) {
       else {
         int kind = sp_json_kind_fn ? sp_json_kind_fn(v) : 0;
         if (kind == 1) {  /* array */
+          /* an Array subclass instance is boxed as its Array (#7449): written
+             as one, it would load back as a plain Array without its class
+             and ivars, so it is refused, as the compile-time check refuses
+             one typed as the class */
+          if (sp_bsub_cls_fn && sp_bsub_cls_fn(v) >= 0)
+            mar_raise("TypeError", "Marshal.dump of an Array subclass instance is not supported yet "
+                                   "(it would load back as a plain Array)");
           if (sp_mar_seen(b, v.v.p)) break;
           sp_mar_b(b, '['); sp_int n = sp_json_len_fn(v); sp_mar_long(b, n);
           for (sp_int i = 0; i < n; i++) sp_mar_w(b, sp_json_aref_fn(v, i));
