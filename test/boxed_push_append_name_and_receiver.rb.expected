@@ -1,0 +1,13 @@
+NoMethodError: undefined method 'push' for nil
+NoMethodError: undefined method 'append' for nil
+NoMethodError: undefined method 'push' for nil
+NoMethodError: undefined method '<<' for nil
+NoMethodError: undefined method 'push' for an instance of String
+NoMethodError: undefined method 'append' for an instance of String
+"str"
+NoMethodError: undefined method 'push' for an instance of Integer
+2
+[1, "x", 9, 8, 7, 6]
+1
+NoMethodError: undefined method 'push' for nil
+NoMethodError: undefined method 'append' for an instance of String

@@ -15177,16 +15177,24 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
        concatenate onto a String) */
     int splat = 0;
     for (int a = 0; a < argc; a++) if (nt_kind(nt, argv[a]) == NK_SplatNode) splat = 1;
-    if (!has_user && sp_streq(name, "push") && argc != 1 && !splat) {
+    /* push or append with one argument too: sp_poly_shl is `<<`, which a
+       String concatenates and an Integer shifts, and whose NoMethodError
+       names `<<`; only an Array (or a queue's push) has push and append */
+    /* name is one of is_push_alias's three: `<<`, push or append */
+    int is_shl = name[0] == '<', is_push = name[0] == 'p';
+    if (!has_user && !is_shl && !splat) {
       int tr = ++g_tmp, ta = ++g_tmp;
       emit_indent(b, indent);
       buf_printf(b, "{ sp_RbVal _t%d = ", tr); emit_expr(c, recv, b);
       buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_RbVal _t%d[%d] = {", tr, ta, argc > 0 ? argc : 1);
       for (int a = 0; a < argc; a++) { buf_puts(b, a ? ", " : " "); emit_boxed(c, argv[a], b); }
       if (argc == 0) buf_puts(b, " sp_box_nil()");
-      buf_printf(b, " }; if (!sp_poly_queue_push_n(_t%d, %d, _t%d)) {", tr, argc, ta);
+      buf_puts(b, " };");
+      if (is_push) buf_printf(b, " if (!sp_poly_queue_push_n(_t%d, %d, _t%d)) {", tr, argc, ta);
+      else buf_puts(b, " {");
       buf_printf(b, " if (!(_t%d.tag == SP_TAG_OBJ && sp_poly_is_array_kind(_t%d.cls_id)))"
-                    " sp_raise_nomethod(sp_nomethod_msg(\"push\", _t%d));", tr, tr, tr);
+                    " sp_raise_nomethod(sp_nomethod_msg_args(\"%s\", _t%d, %d, _t%d));",
+                 tr, tr, name, tr, argc, ta);
       for (int a = 0; a < argc; a++) buf_printf(b, " sp_poly_shl(_t%d, _t%d[%d]);", tr, ta, a);
       buf_puts(b, " } }\n");
       return 1;
