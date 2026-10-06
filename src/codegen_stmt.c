@@ -14486,25 +14486,22 @@ static int str_mutate_reassign_arms(Compiler *c, Buf *b, int indent, const NodeT
       return 1;
     }
     /* concat(a, b, ...): append each argument in order (multi-arg `<<`). An
-       Integer argument appends its codepoint, like `<<`. */
+       Integer argument appends its codepoint, like `<<`, a boxed one too, and
+       anything else takes the strict String slot: a boxed nil is CRuby's
+       TypeError, where sp_poly_to_s appended its rendering. */
     if (assignable && sp_streq(name, "concat") && argc >= 1) {
       emit_indent(b, indent); buf_puts(b, "sp_str_check_mutable("); emit_expr(c, recv, b); buf_puts(b, ");\n");
       /* every argument is taken before anything is appended, as CRuby
          does: `s.concat(s, s)` appended the grown s the second time */
       int base = g_tmp + 1; g_tmp += argc;
+      Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
       emit_indent(b, indent); buf_puts(b, "{");
       for (int a = 0; a < argc; a++) {
-        TyKind at = comp_ntype(c, argv[a]);
-        if (at == TY_INT) {
-          buf_printf(b, " const char *_t%d = sp_int_codepoint_to_str_in(", base + a); emit_expr(c, recv, b);
-          buf_puts(b, ", "); emit_expr(c, argv[a], b); buf_puts(b, ");");
-        }
-        else {
-          buf_printf(b, " const char *_t%d = ", base + a);
-          emit_poly_unboxed(c, argv[a], at, "sp_poly_to_s(", b); buf_puts(b, ";");
-        }
-        buf_printf(b, " SP_GC_ROOT_STR(_t%d);", base + a);
+        buf_printf(b, " const char *_t%d = ", base + a);
+        emit_str_append_arg(c, argv[a], rb.p ? rb.p : "", b);
+        buf_printf(b, "; SP_GC_ROOT_STR(_t%d);", base + a);
       }
+      free(rb.p);
       buf_puts(b, "\n");
       for (int a = 0; a < argc; a++) {
         emit_indent(b, indent + 1);

@@ -9,6 +9,7 @@
 8 TypeError: no implicit conversion of nil into String
 9 TypeError: no implicit conversion of nil into String
 10 TypeError: no implicit conversion of nil into String
+cat TypeError: no implicit conversion of nil into String
 0 "HeA"
 1 "HeaA"
 2 "HeA"
@@ -20,6 +21,7 @@
 8 TypeError: no implicit conversion of Integer into String
 9 TypeError: no implicit conversion of Integer into String
 10 3
+cat "HeA!"
 0 TypeError: no implicit conversion of Float into String
 1 TypeError: no implicit conversion of Float into String
 2 TypeError: no implicit conversion of Float into String
@@ -31,6 +33,7 @@
 8 TypeError: no implicit conversion of Float into String
 9 TypeError: no implicit conversion of Float into String
 10 TypeError: no implicit conversion of Float into String
+cat TypeError: no implicit conversion of Float into String
 0 TypeError: no implicit conversion of Symbol into String
 1 TypeError: no implicit conversion of Symbol into String
 2 TypeError: no implicit conversion of Symbol into String
@@ -42,6 +45,7 @@
 8 TypeError: no implicit conversion of Symbol into String
 9 TypeError: no implicit conversion of Symbol into String
 10 TypeError: no implicit conversion of Symbol into String
+cat TypeError: no implicit conversion of Symbol into String
 0 TypeError: no implicit conversion of Array into String
 1 TypeError: no implicit conversion of Array into String
 2 TypeError: no implicit conversion of Array into String
@@ -53,6 +57,7 @@
 8 TypeError: no implicit conversion of Array into String
 9 TypeError: no implicit conversion of Array into String
 10 TypeError: no implicit conversion of Array into String
+cat TypeError: no implicit conversion of Array into String
 0 "Hez"
 1 "Heaz"
 2 "Hez"
@@ -64,3 +69,4 @@
 8 "Hze"
 9 "Hez"
 10 3
+cat "Hez!"
