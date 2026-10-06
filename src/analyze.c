@@ -14305,8 +14305,10 @@ static int ivar_written_from_local(Compiler *c, int rd) {
    through the calls whose value is their receiver -- `+@s` (the slot's own
    String unless it is frozen), an append chain `@s << x`, and the String
    methods str_self_call names (`@s.to_s`, `@s.insert(i, x)`) -- since the
-   local then names the slot's object as `l = @s` does. -1 for anything else. */
-int strbuf_ivar_alias_value(const NodeTable *nt, int v) {
+   local then names the slot's object as `l = @s` does; with `share`
+   (--share-strings) a prepend of several too (str_prepend_many). -1 for
+   anything else. */
+int strbuf_ivar_alias_value(const NodeTable *nt, int v, int share) {
   int stepped = 0;
   for (;;) {
     while (v >= 0 && nt_kind(nt, v) == NK_ParenthesesNode) {
@@ -14324,7 +14326,8 @@ int strbuf_ivar_alias_value(const NodeTable *nt, int v) {
     if (ca >= 0) nt_arr(nt, ca, "arguments", &cac);
     if (!cn || cr < 0 || nt_ref(nt, v, "block") >= 0) return -1;
     if (!((cac == 1 && (is_append_concat(cn))) ||
-          (cac == 0 && sp_streq(cn, "+@")) || str_self_call(nt, v))) return -1;
+          (cac == 0 && is_unary_plus(cn)) || str_self_call(nt, v) ||
+          (share && str_prepend_many(nt, v)))) return -1;
     v = cr; stepped = 1;
   }
   if (v < 0) return -1;
@@ -14466,8 +14469,11 @@ static int an_strbuf_alias_source(Compiler *c, int v) {
           cr >= 0 && cac == 1) { v = cr; continue; }
       /* +s is s itself unless s is frozen (sp_String_uplus decides) */
       if (cn && sp_streq(cn, "+@") && cr >= 0 && cac == 0) { v = cr; continue; }
-      /* the String methods whose value is their receiver (str_self_call) */
-      if (str_self_call(nt, v)) { v = cr; via_self = 1; continue; }
+      /* the String methods whose value is their receiver (str_self_call;
+         under --share-strings a prepend of several, str_prepend_many) */
+      if (str_self_call(nt, v) || (c->share_strings && str_prepend_many(nt, v))) {
+        v = cr; via_self = 1; continue;
+      }
       return -1;
     }
     return -1;
@@ -17593,7 +17599,7 @@ static int promote_shared_stored_strings(Compiler *c) {
     int lval = -1, ivnode = -1;
     const char *lname = NULL, *ivname = NULL;
     if (wk2 == NK_LocalVariableWriteNode) {
-      int wv2 = strbuf_ivar_alias_value(nt, nt_ref(nt, w, "value"));
+      int wv2 = strbuf_ivar_alias_value(nt, nt_ref(nt, w, "value"), c->share_strings);
       if (wv2 < 0) continue;
       /* a write stores a String here only when its own value is one */
       if (nt_kind(nt, wv2) != NK_InstanceVariableReadNode) {

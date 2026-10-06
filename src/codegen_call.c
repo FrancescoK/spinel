@@ -8348,6 +8348,10 @@ int ctor_arm_incompat(Compiler *c, Scope *is, const ArgLayout *L, const int *arg
     LocalVar *cp = is->pnames && is->pnames[j] ? scope_local(is, is->pnames[j]) : NULL;
     TyKind ptc = cp ? cp->type : TY_POLY;
     TyKind atc = comp_ntype(c, argv[L->arg[j]]);
+    /* --share-strings: a String and a shared handle each unbox into the
+       other's slot (sp_poly_as_strbuf answers a handle for either box) */
+    if (repr_share_rule(c) && (ptc == TY_STRBUF || ptc == TY_STRING) &&
+        (atc == TY_STRBUF || atc == TY_STRING)) continue;
     if (ptc != TY_POLY && ptc != TY_UNKNOWN && atc != TY_POLY && atc != TY_UNKNOWN && ptc != atc)
       return 1;
   }
