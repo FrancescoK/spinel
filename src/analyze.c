@@ -4528,6 +4528,10 @@ static void desugar_enumerator_produce(Compiler *c) {
      ("a"..).take(3)     -> Enumerator.produce("a") { |__sv| __sv.succ }.take(3)
      ("a"..).step(2) { } -> Enumerator.produce("a") { |__sv| 2.times { __sv = __sv.succ }; __sv }.each { }
      for s in ("a"..)    -> __esr = "a"; while true; s = __esr; __esr = __esr.succ; ...; end
+   each_entry is each here. The blockless any? / none? / one? look at no more
+   members than decide them (Strings are all truthy), so they read the
+   generator's first one or two: ("a"..).one? -> Enumerator.produce(...).first(2).one?;
+   and a bare count is Infinity, as Range#count answers for an endless range.
    The range is a literal at the call, or a local that its scope only ever
    assigns such a literal (then the walk starts at `r.begin`). A step is a
    positive Integer literal, or a local or constant read; one that is not
@@ -4613,7 +4617,8 @@ static void desugar_endless_str_range_iter(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   static const char *const iters[] = {
     "each", "first", "take", "lazy", "each_slice", "each_cons", "each_with_index",
-    "find", "detect", "find_index", "take_while", "step", "%", NULL };
+    "find", "detect", "find_index", "take_while", "step", "%", "each_entry",
+    "any?", "none?", "one?", "count", NULL };
   int n0 = nt->count;
   /* the locals written an endless String range literal, each dropped when
      its scope binds the name any other way (a parameter, another value) */
@@ -4691,6 +4696,19 @@ static void desugar_endless_str_range_iter(Compiler *c) {
     int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
     /* `first` bare is the begin endpoint, which the range answers itself */
     if (sp_streq(nm, "first") && an == 0) continue;
+    /* the quantifiers and count with a block or an argument walk the members
+       until they decide, as CRuby's do: left to their own route */
+    int decided = is_prefix_quantifier(nm) || is_size_or_count(nm);
+    if (decided && (an > 0 || nt_ref(nt, id, "block") >= 0)) continue;
+    if (is_size_or_count(nm)) {
+      nt_node_set_type(nt, id, "ConstantPathNode");
+      nt_node_set_ref(nt, id, "receiver", -1);
+      nt_node_set_ref(nt, id, "parent", te_const(nt, "Float"));
+      nt_node_set_str(nt, id, "name", "INFINITY");
+      comp_grow_node_arrays(c);
+      continue;
+    }
+    if (sp_streq(nm, "each_entry")) nt_node_set_str(nt, id, "name", nm = "each");
     long long step = 1;
     int is_step = sp_streq(nm, "step") || sp_streq(nm, "%");
     int skind = -1;
@@ -4736,6 +4754,8 @@ static void desugar_endless_str_range_iter(Compiler *c) {
       continue;
     }
     int prod = te_call(nt, te_const(nt, "Enumerator"), "produce", te_args1(nt, seed), pblk);
+    if (decided)
+      prod = te_call(nt, prod, "first", te_args1(nt, nt_new_int(nt, sp_streq(nm, "one?") ? 2 : 1)), -1);
     nt_node_set_ref(nt, id, "receiver", prod);
     /* the stride lives in the generator: what is left is the walk */
     if (is_step) {
@@ -7576,7 +7596,9 @@ static int desugar_enum_named_call(Compiler *c, int id, NodeTable *nt, const cha
      (1..3).cycle.first(7)). Blockless `each` (and each_slice/each_cons,
      whose runtime ctors take any boxed source) keep their first-class
      Enumerator arms. A beginless/endless literal has no array to build and
-     falls through to the loud reject. */
+     falls through to the loud reject; so does a local holding only an
+     endless literal, whose each_with_index walks the range as it is read
+     (emit_endless_range_walk) where the hop raised RangeError. */
   if (nm && nt_ref(nt, id, "block") < 0) {
     static const char *const RENUM0[] = { "each_with_index", "each_index",
                                           "map", "collect", "cycle", NULL };
@@ -7591,7 +7613,7 @@ static int desugar_enum_named_call(Compiler *c, int id, NodeTable *nt, const cha
         int rlit = an_unparen(nt, rrecv);
         int open_ended = rlit >= 0 && nt_type(nt, rlit) && sp_streq(nt_type(nt, rlit), "RangeNode") &&
                          (nt_ref(nt, rlit, "left") < 0 || nt_ref(nt, rlit, "right") < 0);
-        if (!open_ended) {
+        if (!open_ended && !range_lit_endless(c, rrecv)) {
           int toa = nt_new_node(nt, "CallNode");
           nt_node_set_str(nt, toa, "name", "to_a");
           nt_node_set_ref(nt, toa, "receiver", rrecv);

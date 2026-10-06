@@ -92,6 +92,18 @@ int is_each_walk(const char *n) {
   return sp_streq(n, "each") || sp_streq(n, "each_entry") || sp_streq(n, "reverse_each");
 }
 
+/* The walks that start at the begin and pull one member at a time: each,
+   each_entry, each_with_index (reverse_each starts at the end). */
+int is_forward_each_walk(const char *n) {
+  return sp_streq(n, "each") || sp_streq(n, "each_entry") || sp_streq(n, "each_with_index");
+}
+
+/* The quantifiers a run of truthy members decides from its first two:
+   any?, none?, one? (all? needs every member). */
+int is_prefix_quantifier(const char *n) {
+  return sp_streq(n, "any?") || sp_streq(n, "none?") || sp_streq(n, "one?");
+}
+
 int is_index_query(const char *n) {
   return sp_streq(n, "find_index") || sp_streq(n, "index") || sp_streq(n, "rindex");
 }

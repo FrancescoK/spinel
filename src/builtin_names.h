@@ -42,6 +42,8 @@ int is_eval_exec_family(const char *n);   /* class/module/instance eval and exec
 int is_key_query(const char *n);      /* key? has_key? include? member?: Hash/ENV membership aliases */
 int is_range_membership(const char *n); /* cover? include? member? ===: Range membership predicates */
 int is_each_walk_or_with_index(const char *n); /* each each_entry reverse_each each_with_index */
+int is_forward_each_walk(const char *n); /* each each_entry each_with_index */
+int is_prefix_quantifier(const char *n); /* any? none? one? */
 int is_call_or_yield(const char *n);  /* call () [] yield: is_call_alias's names and yield */
 int is_proc_invoke(const char *n);    /* call () [] yield ===: every name that invokes a Proc */
 int is_quantifier_or_count(const char *n);  /* all? any? none? one? count: is_quantifier's names and count */
