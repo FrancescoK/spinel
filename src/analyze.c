@@ -5,6 +5,7 @@
 #include "decide.h"
 #include "call_plan.h"
 #include "share.h"
+#include "timing.h"
 
 
 static int narrow_int_table_ivars(Compiler *c, int in_round);  /* declared early: the fixpoint calls it */
@@ -34443,11 +34444,14 @@ static void an_phase_reconcile_check(Compiler *c) {
 }
 
 void analyze_program(Compiler *c) {
+  double tm_an = sp_timing_now();
   an_phase_desugar_register(c);
   an_phase_class_structure(c);
   an_phase_block_inline(c);
   an_phase_pre_fixpoint(c);
+  double tm_fp = sp_timing_now();
   an_phase_infer_fixpoint(c);
+  { char ex[64]; snprintf(ex, sizeof ex, " rounds=%d%s", g_fixpoint_rounds, g_fixpoint_capped ? " capped=1" : ""); sp_timing_end(tm_fp, "analysis_fixpoint", ex); }
   an_phase_post_fixpoint(c);
   an_phase_procs(c);
   an_phase_method_backstops(c);
@@ -34462,4 +34466,5 @@ void analyze_program(Compiler *c) {
             g_fixpoint_capped ? " (CAP -- did not converge)" : "");
   /* the representation flags are final from here (repr.h) */
   repr_seal(c);
+  sp_timing_end(tm_an, "analysis", "");
 }
