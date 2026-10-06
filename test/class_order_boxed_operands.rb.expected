@@ -1,0 +1,18 @@
+[false, true, nil, nil, nil, nil, true]
+[nil, nil, nil]
+[nil, nil, true]
+[nil, nil, nil, nil]
+[true, true, false, false]
+[true, true, false, false]
+[nil, nil, true]
+[nil, true, true]
+[nil, true]
+[nil, nil]
+[false, true, nil]
+[C]
+[nil, true]
+[nil, nil]
+[true, true]
+[true]
+unrelated or not below
+B below A

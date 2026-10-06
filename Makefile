@@ -3244,6 +3244,8 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	grep -qE 'sp_FloatArray \* _t[0-9]+ = lv_zsum; .*(->frozen|_hcw[0-9_]+) && \(unsigned long long\)' "$$tmp/iof.c" || { echo "infer-test: FAIL (a Float slot's op-assign with a typed-array RHS is not folded in place)"; ok=0; }; \
 	grep -E 'sp_IntArray \* _t[0-9]+ = lv_g;' "$$tmp/iof.c" | grep -q -- '->frozen &&' && { echo "infer-test: FAIL (an op-assign whose RHS runs code was folded through an element pointer)"; ok=0; }; \
 	grep -qE 'sp_IntArray \* _t([0-9]+) = self->iv_a; SP_GC_ROOT\(_t\1\)' "$$tmp/iof.c" || { echo "infer-test: FAIL (an op-assign's receiver is unrooted while a key that can reassign it runs)"; ok=0; }; \
+	$(SPINEL) test/class_order_boxed_operands.rb -c --no-line-map -o "$$tmp/cob.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (class_order_boxed_operands: -c)"; ok=0; }; \
+	grep -q 'sp_class_op_rv(_gcf.v\[[0-9]*\], _gcf.v\[[0-9]*\], 0)' "$$tmp/cob.c" && grep -q 'sp_box_bool(sp_poly_gt(sp_PolyArray_get(lv_nums, 1LL), sp_box_int(2LL)))' "$$tmp/cob.c" || { echo "infer-test: FAIL (an ordering of boxed values that can be classes answers a Boolean, or one of numbers stopped doing so)"; ok=0; }; \
 	$(SPINEL) test/loop_array_header_cache.rb -c --no-line-map -o "$$tmp/lahc.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (loop_array_header_cache: -c)"; ok=0; }; \
 	grep -qE '^#define _SP_HCR[0-9]+\(\) .*lv_bins.*lv_counts.*lv_vals.*lv_sums' "$$tmp/lahc.c" || { echo "infer-test: FAIL (a loop that only indexes typed arrays still reads their headers at every access)"; ok=0; }; \
 	grep -E '^#define _SP_HCR' "$$tmp/lahc.c" | grep -q 'lv_cur\b' && { echo "infer-test: FAIL (an array local the loop reassigns was read through a cached header)"; ok=0; }; \

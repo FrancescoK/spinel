@@ -4990,6 +4990,9 @@ static sp_bool sp_poly_ge(sp_RbVal a, sp_RbVal b) { SP_POLY_NIL_RECV(">="); SP_P
 static sp_RbVal sp_poly_relop_v(const char *op, sp_RbVal a, sp_RbVal b) {
   sp_RbVal u;
   if (sp_poly_user_cmp(op, a, b, &u)) return u;
+  /* two unrelated classes: Module#< and friends answer nil, which the
+     Boolean comparisons below cannot */
+  { sp_int r = 0; if (sp_poly_class_ord(a, b, &r) < 0) return sp_box_nil(); }
   if (op[0] == '<') return sp_box_bool(op[1] == '=' ? sp_poly_le(a, b) : sp_poly_lt(a, b));
   return sp_box_bool(op[1] == '=' ? sp_poly_ge(a, b) : sp_poly_gt(a, b));
 }

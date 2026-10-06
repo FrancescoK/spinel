@@ -32465,6 +32465,10 @@ static void an_phase_method_backstops(Compiler *c) {
      the evidence is a container-typed producer, which the fixpoint is what
      establishes. (#3459) */
   for (int iter = 0; iter < 8; iter++) if (!infer_container_flow(c)) break;
+  /* The class-value bits, settled the same way and for the same reason:
+     a comparison of a poly value that can hold a Class types poly (it can
+     answer nil), and the re-runs below carry that to its readers. */
+  for (int iter = 0; iter < 8; iter++) if (!infer_class_flow(c)) break;
 
   g_ret_no_new_poly = 1;
   for (int iter = 0; iter < 8; iter++) {

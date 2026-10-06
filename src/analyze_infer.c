@@ -1819,6 +1819,16 @@ int an_bare_call_class_owned(Compiler *c, int id) {
          comp_reader_in_chain(c, cid, name, NULL);
 }
 
+/* A boxed receiver's ordering that can answer nil: Module#< and friends do
+   for unrelated classes, so the result stays boxed, as it does for a
+   class-typed receiver -- against an operand typed Class, or (<, <=, >, >=)
+   when either operand can hold a class at run time (infer_class_flow:
+   `k = [A, B]; k[0] < k[1]`). */
+static int poly_class_order(Compiler *c, const char *name, int recv, int arg) {
+  if (infer_type(c, arg) == TY_CLASS && (is_cmp_op(name) || sp_streq(name, "<=>"))) return 1;
+  return is_cmp_op(name) && (poly_expr_may_be_class(c, recv) || poly_expr_may_be_class(c, arg));
+}
+
 static TyKind infer_call_inner(Compiler *c, int id);
 
 /* A builtin call whose count the arity guard refuses raises before it
@@ -7050,11 +7060,8 @@ static TyKind infer_call_inner(Compiler *c, int id) {
      (Base.subclasses / #ancestors hand back boxed classes, #2656). Only when no
      user class defines the method -- then it dispatches to that instead. */
   /* Boxed (poly) receivers: the run of poly-face arms of infer_call (analyze_infer_recv.c). */
-  /* A boxed receiver ordered against a class: Module#< and friends answer
-     nil for unrelated classes, so the result stays boxed as it does for a
-     class-typed receiver. */
-  if (recv >= 0 && argc == 1 && rt == TY_POLY && infer_type(c, argv[0]) == TY_CLASS &&
-      (is_cmp_op(name) || sp_streq(name, "<=>"))) return TY_POLY;
+  /* A boxed receiver ordered against a class answers nil when unrelated */
+  if (recv >= 0 && argc == 1 && rt == TY_POLY && poly_class_order(c, name, recv, argv[0])) return TY_POLY;
   { TyKind rr; if (infer_poly_call(c, id, rt, &rr)) return rr; }
   /* bool/nil <=> : 0 for an equal immediate pair, nil otherwise (#2733) */
   if (recv >= 0 && argc == 1 && sp_streq(name, "<=>") &&
