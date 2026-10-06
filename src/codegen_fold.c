@@ -534,6 +534,18 @@ int emit_hash_reduce_search_expr(Compiler *c, int id, Buf *b) {
   return 1;
 }
 
+/* Can two sort_by keys of kind `kt` (the block's tail `tail`) fail to
+   compare? Keys of one kind that always do -- Strings, Symbols, Rationals,
+   Bignums, Integers that are never nil -- sort unchecked; any other kind
+   can meet a key its `<=>` answers nil for (a mixed or boxed key, nil, a
+   Float NaN, true against false, an Array holding such), and takes the
+   checked sort, which raises CRuby's ArgumentError for the pair. */
+static int sort_key_may_fail(Compiler *c, TyKind kt, int tail) {
+  if (kt == TY_STRING || kt == TY_SYMBOL || kt == TY_RATIONAL || kt == TY_BIGINT) return 0;
+  if (kt == TY_INT) return tail >= 0 && repr_nil_scalar(c, tail, TY_INT);
+  return 1;
+}
+
 /* hash.sort_by { |k, v| ... } -> the [k, v] pairs ordered by the block's value.
    Builds [sort_key, pair] tuples in the prelude, then sorts and projects them. */
 int emit_hash_sort_by_expr(Compiler *c, int id, Buf *b) {
@@ -575,7 +587,8 @@ int emit_hash_sort_by_expr(Compiler *c, int id, Buf *b) {
   emit_indent(g_pre, g_indent + 1);
   buf_printf(g_pre, "sp_PolyArray_push(_t%d, sp_box_poly_array(_t%d));\n", ttmp, tup);
   emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
-  buf_printf(b, "sp_PolyArray_sort_by_first(_t%d)", ttmp);
+  int bl = 0; const int *bbody = nt_arr(nt, body, "body", &bl);
+  buf_printf(b, "sp_PolyArray_sort_by_first%s(_t%d)", sort_key_may_fail(c, bret, bbody[bl - 1]) ? "_ck" : "", ttmp);
   return 1;
 }
 
@@ -4101,7 +4114,8 @@ int emit_sortby_expr(Compiler *c, int id, Buf *b) {
   emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_IntArray_push(_t%d, _t%d);\n", tidx, ti);
   emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
   emit_indent(g_pre, g_indent);
-  buf_printf(g_pre, "sp_sort_idx_by_poly(_t%d->data + _t%d->start, _t%d->data, _t%d);\n", tidx, tidx, tkeys, tn);
+  buf_printf(g_pre, "sp_sort_idx_by_poly%s(_t%d->data + _t%d->start, _t%d->data, _t%d);\n",
+             sort_key_may_fail(c, kt, bb[bn - 1]) ? "_ck" : "", tidx, tidx, tkeys, tn);
   emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
   buf_printf(g_pre, " _t%d = sp_%sArray_new(); SP_GC_ROOT(_t%d);\n", tres, k, tres);
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "for (sp_int _t%d = 0; _t%d < _t%d; _t%d++)\n", tg, tg, tn, tg);
