@@ -256,9 +256,11 @@ int emit_call_bigint_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
       buf_printf(b, "((void)(%s), (sp_int)1)", r); free(rs.p); return 1;
     }
     if (sp_streq(name, "size") && argc == 0) {
-      /* Integer#size is ceil(bit_length / 8); sp_bigint_byte_len rounds up to
-         whole limbs, which overcounts (2**100 -> 16 not 13). */
-      buf_printf(b, "((sp_bigint_bit_length(%s) + 7) / 8)", r); free(rs.p); return 1;
+      /* Integer#size is the magnitude's byte count, at least an sp_int's
+         (sp_bigint_int_size); sp_bigint_byte_len rounds up to whole limbs,
+         which overcounts (2**100 -> 16 not 13), and ceil(bit_length / 8)
+         answered 1 for a small value in a Bignum slot and 8 for -(2**64) */
+      buf_printf(b, "sp_bigint_int_size(%s)", r); free(rs.p); return 1;
     }
     if (sp_streq(name, "nonzero?") && argc == 0) {
       int t = ++g_tmp;
