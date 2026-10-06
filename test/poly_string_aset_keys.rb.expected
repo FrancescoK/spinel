@@ -1,0 +1,22 @@
+"hippo"
+"heLo"
+"hEllo"
+"string not matched"
+"regexp not matched"
+["hELLo", "hELLo"]
+{"k" => 1}
+[NoMethodError, 5]
+[NoMethodError, 5]
+[NoMethodError, 5]
+[NoMethodError, :sym]
+[NoMethodError, :sym]
+[NoMethodError, :sym]
+[NoMethodError, nil]
+[NoMethodError, nil]
+[NoMethodError, nil]
+[NoMethodError, 2.5]
+[NoMethodError, 2.5]
+[NoMethodError, 2.5]
+[NoMethodError, true]
+[NoMethodError, true]
+[NoMethodError, true]
