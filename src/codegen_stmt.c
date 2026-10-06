@@ -13521,6 +13521,12 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
       int icls9 = tl9 >= 0 ? tl9 : ics9->class_id;
       int iidx9 = comp_ivar_index(&c->classes[icls9], inm9);
       TyKind it9 = iidx9 >= 0 ? c->classes[icls9].ivar_types[iidx9] : TY_UNKNOWN;
+      /* a slot that holds the --share-strings handle answers its String,
+         read out with the handle published, as the value form's is: the
+         caller's deep-return pickup takes it (an_returns_shared_handles).
+         Without the rule nothing picks it up, and the tail is as before. */
+      int sb8 = it9 == TY_STRBUF && repr_write_share(c, id);
+      if (sb8) it9 = TY_STRING;
       int want_poly8 = g_result_var ? g_result_poly : (g_ret_type == TY_POLY);
       int slot_ok8 = iidx9 >= 0 && it9 != TY_UNKNOWN && it9 != TY_VOID &&
                      (want_poly8 || it9 == (g_result_var ? g_result_ty : g_ret_type));
@@ -13531,6 +13537,13 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
         HolderRef h9;
         holder_ivar(c, id, icls9, cmeth9 || tl9 >= 0, &h9);
         holder_slot_text(c, &h9, islot9, sizeof islot9);
+        if (sb8) {
+          char h8[512];
+          snprintf(h8, sizeof h8, "%s", islot9);
+          snprintf(islot9, sizeof islot9,
+                   "(_sp_ret_strbuf = (void *)%s, %s ? sp_str_concat(sp_String_cstr(%s), (&(\"\\xff\")[1])) : NULL)",
+                   h8, h8, h8);
+        }
         if (want_poly8 && it9 != TY_POLY) {
           Buf bx8; memset(&bx8, 0, sizeof bx8);
           emit_boxed_text(c, it9, islot9, &bx8);
@@ -13588,9 +13601,15 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
                   (want_poly9 || gt9 == (g_result_var ? g_result_ty : g_ret_type));
     emit_stmt(c, id, b, indent);
     if (!slot_ok) return;
-    char gslot9[256], gref9[256];
+    char gslot9[256], gref9[512];
     holder_slot_text(c, &h9, gslot9, sizeof gslot9);
-    if (sb9) snprintf(gref9, sizeof gref9, "(%s ? sp_str_concat(sp_String_cstr(%s), (&(\"\\xff\")[1])) : NULL)", gslot9, gslot9);
+    /* read out with the handle published, as the value form's is, where
+       the --share-strings rule's pickup takes it */
+    if (sb9 && h9.r.share)
+      snprintf(gref9, sizeof gref9,
+               "(_sp_ret_strbuf = (void *)%s, %s ? sp_str_concat(sp_String_cstr(%s), (&(\"\\xff\")[1])) : NULL)",
+               gslot9, gslot9, gslot9);
+    else if (sb9) snprintf(gref9, sizeof gref9, "(%s ? sp_str_concat(sp_String_cstr(%s), (&(\"\\xff\")[1])) : NULL)", gslot9, gslot9);
     else snprintf(gref9, sizeof gref9, "%s", gslot9);
     emit_indent(b, indent); emit_tail_lead(b);
     if (want_poly9 && gt9 != TY_POLY) {
