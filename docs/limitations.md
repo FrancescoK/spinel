@@ -720,6 +720,8 @@ Not yet shared:
 - through `scan`'s block parameter, a match the block keeps and mutates in place (it did not build);
 - through a global variable's Array, a String element mutated in place through the Array (`$b.each { |y| y << x }`, `$b[0] << x`);
 - into an Array or Hash a caller passes a method, a String the method stores (`def keep(a) = (a << n)`), when the caller mutates the element in place;
+- through a value that hands a variable's String on: `then` and `tap` (`r = s.then { |x| x }`), `String(s)`, unary `+` on an unfrozen String (`(+s) << x`), a `begin`/`rescue` value, `yield`'s block value (`@a = yield`), a proc's answer, `Thread#value` and `Fiber#resume`, `break`, `throw` and `catch`, and a method's answer that is a class variable, a memoized instance variable, what `super` answers or a local the method keeps elsewhere; when the value is mutated in place, or its variable is while the value is read;
+- through an exception's message (`raise C, s`) and a Hash's default (`h.default = s`), when one name is mutated in place and the other read; a default mutated through a missing key's read is refused whatever it was set from;
 
 - through an ivar's or a call's Array, a fresh Array literal, a narrowed boxed String element, or a fresh String's `tap`, into an appending block or parameter;
 

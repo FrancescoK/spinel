@@ -30370,12 +30370,17 @@ static int sa_name(Compiler *c, int n, SaName *o) {
     case NK_LocalVariableReadNode: case NK_LocalVariableWriteNode:
       o->kind = NK_LocalVariableReadNode;
       return o->scope != NULL;
-    case NK_InstanceVariableReadNode: case NK_InstanceVariableWriteNode:
+    case NK_InstanceVariableReadNode: case NK_InstanceVariableWriteNode: case NK_InstanceVariableOrWriteNode:
       o->kind = NK_InstanceVariableReadNode; o->cid = an_ivar_owner(c, n);
       return o->cid >= 0;
     case NK_GlobalVariableReadNode: case NK_GlobalVariableWriteNode:
       o->kind = NK_GlobalVariableReadNode; o->name = comp_resolve_gvar(c, nm + 1);
       return o->name != NULL;
+    /* a class variable by its name: the classes that share one are not
+       told apart, which can only refuse more */
+    case NK_ClassVariableReadNode: case NK_ClassVariableWriteNode:
+      o->kind = NK_ClassVariableReadNode;
+      return 1;
     default:
       return 0;
   }
@@ -30634,6 +30639,409 @@ static void refuse_string_alias_copies(Compiler *c) {
                           "while an argument reassigns the variable it was read from (a String is not yet "
                           "shared by reference through `to_s` on a String). Mutate the variable itself, or "
                           "read it into another local first.");
+  }
+}
+
+/* String hand-over routes (#6765): a value that is, in CRuby, the String
+   a variable holds, which the analysis hands on as a copy. The routes, by
+   the first one a value takes (HV_*), name the refusal. */
+enum { HV_NONE, HV_BLOCK, HV_STRING, HV_UPLUS, HV_BEGIN, HV_YIELD, HV_PROC, HV_TASK, HV_EXIT, HV_METHOD };
+static int hv_source(Compiler *c, int v, int *route, int *callee, int depth);
+/* The value of a block: its body's last statement, or -1. */
+static int hv_block_value(Compiler *c, int blk) {
+  const NodeTable *nt = c->nt;
+  int body = blk >= 0 ? nt_ref(nt, blk, "body") : -1;
+  int n = 0; const int *b = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &n) : NULL;
+  return n > 0 ? b[n - 1] : body;
+}
+/* The receiver a `then` or `tap` block parameter (read at `rd`) binds, or -1. */
+static int hv_block_param_source(Compiler *c, int rd) {
+  const NodeTable *nt = c->nt;
+  const char *pn = nt_str(nt, rd, "name");
+  Scope *ps = pn ? comp_scope_of(c, rd) : NULL;
+  LocalVar *pv = ps ? scope_local(ps, pn) : NULL;
+  if (!pv || !pv->is_block_param) return -1;
+  for (int u = comp_scall_first(c, (int)(ps - c->scopes)); u >= 0; u = comp_scall_next(c, u)) {
+    int blk = nt_ref(nt, u, "block");
+    const char *un = nt_str(nt, u, "name");
+    const char *bp = blk >= 0 && nt_kind(nt, blk) == NK_BlockNode ? block_param_name(c, blk, 0) : NULL;
+    if (bp && sp_streq(bp, pn) && un && is_tap_alias(un) && nt_ref(nt, u, "receiver") >= 0) return nt_ref(nt, u, "receiver");
+  }
+  return -1;
+}
+/* The block a Proc, Thread or Fiber value `r` (the literal or creating
+   call itself, or a local some write of which is one) runs: a BlockNode or
+   a LambdaNode, or -1. */
+static int hv_created_block(Compiler *c, int r, int proc) {
+  const NodeTable *nt = c->nt;
+  r = an_unparen(nt, r);
+  if (r < 0) return -1;
+  if (nt_kind(nt, r) == NK_LocalVariableReadNode) {
+    Scope *rs = comp_scope_of(c, r);
+    const char *rn = nt_str(nt, r, "name");
+    for (int w = rs && rn ? comp_lvw_first_sc(c, (int)(rs - c->scopes), rn) : -1; w >= 0; w = comp_lvw_next_sc(c, w))
+      if (nt_kind(nt, w) == NK_LocalVariableWriteNode && comp_scope_of(c, w) == rs && sp_streq(nt_str(nt, w, "name"), rn)) {
+        int b = hv_created_block(c, nt_ref(nt, w, "value"), proc);
+        if (b >= 0) return b;
+      }
+    return -1;
+  }
+  if (proc && nt_kind(nt, r) == NK_LambdaNode) return r;
+  if (proc && !is_proc_create(c, r)) return -1;
+  int blk = nt_kind(nt, r) == NK_CallNode ? nt_ref(nt, r, "block") : -1;
+  return blk >= 0 && nt_kind(nt, blk) == NK_BlockNode ? blk : -1;
+}
+/* The values a `break` (or, with `thr`, a `throw tag, v`) under `n` hands
+   its loop or `catch`, short of a nested block, lambda or def: up to `cap`
+   into out. */
+static int hv_exit_values(Compiler *c, int n, int thr, int *out, int cap, int depth) {
+  const NodeTable *nt = c->nt;
+  if (n < 0 || cap <= 0 || depth > 64) return 0;
+  NodeKind k = nt_kind(nt, n);
+  if (k == NK_BlockNode || k == NK_LambdaNode || k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode)
+    return 0;
+  int a = nt_ref(nt, n, "arguments"), an = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+  if (k == NK_BreakNode && an == 1) { out[0] = av[0]; return 1; }
+  if (thr && k == NK_CallNode && nt_str(nt, n, "name") && is_throw_call(nt_str(nt, n, "name")) && an == 2) {
+    out[0] = av[1]; return 1;
+  }
+  int got = 0;
+  const SpNode *nd = &nt->nodes[n];
+  for (int i = 0; i < nd->nr && got < cap; i++)
+    got += hv_exit_values(c, nd->r[i].ref, thr, out + got, cap - got, depth + 1);
+  for (int i = 0; i < nd->na && got < cap; i++)
+    for (int j = 0; j < nd->a[i].n && got < cap; j++)
+      got += hv_exit_values(c, nd->a[i].ids[j], thr, out + got, cap - got, depth + 1);
+  return got;
+}
+/* The values method scope `mi` answers that are a variable's String the
+   call cannot see: a class variable, a memoized instance variable, a
+   local of the method, or what `super` answers. */
+static int hv_method_values(Compiler *c, int mi, int *out, int cap, int depth) {
+  const NodeTable *nt = c->nt;
+  int lv[16];
+  int n = mi > 0 && depth < 4 ? method_value_leaves(c, mi, lv, 16) : -1, got = 0;
+  for (int i = 0; i < n && got < cap; i++) {
+    int l = an_unparen(nt, lv[i]);
+    NodeKind k = nt_kind(nt, l);
+    if (k == NK_SuperNode || k == NK_ForwardingSuperNode) {
+      int smi = a_super_target(c, &c->scopes[mi]);
+      if (smi > 0 && smi != mi) got += hv_method_values(c, smi, out + got, cap - got, depth + 1);
+      continue;
+    }
+    if (k == NK_LocalVariableReadNode) {
+      LocalVar *lv2 = scope_local(&c->scopes[mi], nt_str(nt, l, "name"));
+      if (!lv2 || lv2->is_param) continue;
+    }
+    else if (k != NK_ClassVariableReadNode && k != NK_InstanceVariableOrWriteNode && k != NK_BeginNode) continue;
+    out[got++] = l;
+  }
+  return got;
+}
+/* The method scope a call reaches: an_call_target_mi's, or a class
+   method on a class value (`K.g`). */
+static int hv_call_target(Compiler *c, int call) {
+  int mi = an_call_target_mi(c, call);
+  int r = nt_ref(c->nt, call, "receiver");
+  if (mi > 0 || r < 0 || comp_ntype(c, r) != TY_CLASS) return mi;
+  int ci = class_recv_static_ci(c, r), owner = ci;
+  return ci >= 0 ? comp_cmethod_in_chain(c, ci, nt_str(c->nt, call, "name"), &owner) : -1;
+}
+static int hv_source_of(Compiler *c, const int *cand, int n, int k, int *route, int *callee, int depth) {
+  for (int i = 0; i < n; i++) {
+    int sub = HV_NONE, src = hv_source(c, cand[i], &sub, callee, depth + 1);
+    if (src >= 0) { *route = k; return src; }
+  }
+  return -1;
+}
+static int hv_source(Compiler *c, int v, int *route, int *callee, int depth) {
+  const NodeTable *nt = c->nt;
+  v = an_unparen(nt, v);
+  if (v < 0 || depth > 12) return -1;
+  int cand[16], n = 0, k = HV_NONE;
+  switch (nt_kind(nt, v)) {
+    case NK_LocalVariableReadNode: {
+      int b = hv_block_param_source(c, v);
+      if (b < 0) return v;
+      cand[n++] = b; k = HV_BLOCK;
+      break;
+    }
+    case NK_InstanceVariableReadNode: case NK_GlobalVariableReadNode: case NK_ClassVariableReadNode:
+    case NK_InstanceVariableOrWriteNode:
+      return v;
+    case NK_StatementsNode: {
+      int m = 0; const int *b = nt_arr(nt, v, "body", &m);
+      return m > 0 ? hv_source(c, b[m - 1], route, callee, depth + 1) : -1;
+    }
+    case NK_BeginNode:
+      k = HV_BEGIN;
+      cand[n++] = nt_ref(nt, v, "statements");
+      for (int rs = nt_ref(nt, v, "rescue_clause"); rs >= 0 && n < 15; rs = nt_ref(nt, rs, "subsequent"))
+        cand[n++] = nt_ref(nt, rs, "statements");
+      break;
+    case NK_YieldNode: {
+      Scope *ys = comp_scope_of(c, v);
+      k = HV_YIELD;
+      n = ys ? yield_block_tails(c, (int)(ys - c->scopes), cand, 16) : 0;
+      break;
+    }
+    case NK_WhileNode: case NK_UntilNode:
+      k = HV_EXIT;
+      n = hv_exit_values(c, nt_ref(nt, v, "statements"), 0, cand, 16, 0);
+      break;
+    case NK_CallNode: {
+      const char *nm = nt_str(nt, v, "name");
+      int recv = an_unparen(nt, nt_ref(nt, v, "receiver"));
+      int blk = nt_ref(nt, v, "block");
+      int a = nt_ref(nt, v, "arguments"), an = 0;
+      const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+      int isblk = blk >= 0 && nt_kind(nt, blk) == NK_BlockNode;
+      if (!nm) return -1;
+      /* a then/tap block that mutates its parameter makes the receiver the
+         shared handle already (string_handle_nil_local_tap) */
+      const char *bp0 = isblk ? block_param_name(c, blk, 0) : NULL;
+      if (isblk && bp0 && strbuf_any_str_mut(c, bp0, comp_scope_of(c, blk))) return -1;
+      if (isblk && recv >= 0 && is_then_alias(nm)) { cand[n++] = hv_block_value(c, blk); k = HV_BLOCK; }
+      else if (isblk && recv >= 0 && is_tap_alias(nm)) { cand[n++] = recv; k = HV_BLOCK; }
+      else if (recv < 0 && an == 1 && is_kernel_string_call(nm) &&
+               (comp_ntype(c, av[0]) == TY_STRING || comp_ntype(c, av[0]) == TY_STRBUF)) {
+        cand[n++] = av[0]; k = HV_STRING;
+      }
+      else if (recv >= 0 && an == 0 && is_uplus_name(nm)) { cand[n++] = recv; k = HV_UPLUS; }
+      else if (recv >= 0 && is_call_or_yield(nm) && hv_created_block(c, recv, 1) >= 0) {
+        cand[n++] = hv_block_value(c, hv_created_block(c, recv, 1)); k = HV_PROC;
+      }
+      else if (recv >= 0 && an == 0 && is_task_answer(nm) &&
+               (comp_ntype(c, recv) == TY_THREAD || comp_ntype(c, recv) == TY_FIBER) &&
+               hv_created_block(c, recv, 0) >= 0) {
+        cand[n++] = hv_block_value(c, hv_created_block(c, recv, 0)); k = HV_TASK;
+      }
+      else if (recv < 0 && isblk && is_catch_call(nm)) {
+        cand[n++] = hv_block_value(c, blk); k = HV_EXIT;
+        n += hv_exit_values(c, nt_ref(nt, blk, "body"), 1, cand + n, 15, 0);
+      }
+      else if (!c->strbuf_box[v] && hv_call_target(c, v) > 0) {
+        n = hv_method_values(c, hv_call_target(c, v), cand, 16, 0);
+        if (n > 0) { k = HV_METHOD; *callee = 1; }
+      }
+      /* a loop's or an iterator's `break v` is its answer */
+      if (n == 0 && isblk) { k = HV_EXIT; n = hv_exit_values(c, nt_ref(nt, blk, "body"), 0, cand, 16, 0); }
+      break;
+    }
+    default:
+      return -1;
+  }
+  return hv_source_of(c, cand, n, k, route, callee, depth);
+}
+/* May the variable `src` reads hold a frozen String (a literal or a
+   `.freeze` written to it, or `freeze` called on it)? A mutation through any
+   name then raises FrozenError, as in CRuby, and `+` answers a copy. */
+static int hv_freeze_call(const NodeTable *nt, int id) {
+  return id >= 0 && nt_kind(nt, id) == NK_CallNode && nt_str(nt, id, "name") &&
+         is_freeze_name(nt_str(nt, id, "name")) && nt_ref(nt, id, "receiver") >= 0;
+}
+static int hv_may_be_frozen(Compiler *c, int src) {
+  const NodeTable *nt = c->nt;
+  SaName a;
+  if (!sa_name(c, src, &a)) return 1;
+  NT_FOREACH_KIND(nt, NK_CallNode, u)
+    if (hv_freeze_call(nt, u) && sa_reads(c, nt_ref(nt, u, "receiver"), &a)) return 1;
+  for (int k = 0; k < 4; k++)
+    NT_FOREACH_KIND(nt, k == 0 ? NK_LocalVariableWriteNode : k == 1 ? NK_InstanceVariableWriteNode
+                       : k == 2 ? NK_GlobalVariableWriteNode : NK_ClassVariableWriteNode, w) {
+      SaName b;
+      int v = an_unparen(nt, nt_ref(nt, w, "value"));
+      if (!sa_name(c, w, &b) || b.kind != a.kind || !sp_streq(b.name, a.name) ||
+          (a.kind == NK_LocalVariableReadNode && b.scope != a.scope)) continue;
+      if (v >= 0 && (nt_kind(nt, v) == NK_StringNode || hv_freeze_call(nt, v))) return 1;
+    }
+  return 0;
+}
+/* Does a block some call of method scope `mi` passes keep its k-th
+   parameter: write it to a variable? */
+static int hv_block_keeps_param(Compiler *c, int mi, int k) {
+  const NodeTable *nt = c->nt;
+  NT_FOREACH_KIND(nt, NK_CallNode, u) {
+    int blk = nt_ref(nt, u, "block");
+    const char *bp = blk >= 0 && nt_kind(nt, blk) == NK_BlockNode && hv_call_target(c, u) == mi
+                     ? block_param_name(c, blk, k) : NULL;
+    if (!bp) continue;
+    SaName p = { NK_LocalVariableReadNode, bp, comp_scope_of(c, blk), -1 };
+    for (int q = 0; q < 4; q++)
+      NT_FOREACH_KIND(nt, q == 0 ? NK_LocalVariableWriteNode : q == 1 ? NK_InstanceVariableWriteNode
+                         : q == 2 ? NK_GlobalVariableWriteNode : NK_ClassVariableWriteNode, w)
+        if (sa_reads(c, nt_ref(nt, w, "value"), &p)) return 1;
+  }
+  return 0;
+}
+/* Is the String the variable `src` reads seen through another name? A
+   local read elsewhere; one of the method a call reached kept in an
+   instance, global or class variable, or yielded to a block that keeps
+   it; any other variable of such a method (it outlives the call); else
+   read elsewhere. */
+static int hv_observed(Compiler *c, int src, int callee) {
+  const NodeTable *nt = c->nt;
+  SaName a;
+  if (!sa_name(c, src, &a)) return 0;
+  if (callee && a.kind != NK_LocalVariableReadNode) return 1;
+  if (!callee) return sa_read_elsewhere(c, &a, src);
+  for (int k = 0; k < 4; k++)
+    NT_FOREACH_KIND(nt, k == 0 ? NK_InstanceVariableWriteNode : k == 1 ? NK_GlobalVariableWriteNode
+                       : k == 2 ? NK_ClassVariableWriteNode : NK_YieldNode, w) {
+      int ar = k == 3 ? nt_ref(nt, w, "arguments") : -1, an = 0;
+      const int *av = ar >= 0 ? nt_arr(nt, ar, "arguments", &an) : NULL;
+      if (k < 3 && sa_reads(c, nt_ref(nt, w, "value"), &a)) return 1;
+      for (int i = 0; i < an; i++)
+        if (sa_reads(c, av[i], &a) && hv_block_keeps_param(c, (int)(a.scope - c->scopes), i)) return 1;
+    }
+  return 0;
+}
+static const char *hv_route_name(int route) {
+  switch (route) {
+    case HV_BLOCK: return "`then` or `tap`";
+    case HV_STRING: return "`String()`";
+    case HV_UPLUS: return "unary `+` on an unfrozen String";
+    case HV_BEGIN: return "a `begin`/`rescue` value";
+    case HV_YIELD: return "`yield`'s block value";
+    case HV_PROC: return "a proc's answer";
+    case HV_TASK: return "a Thread's `value` or a Fiber's `resume`";
+    case HV_EXIT: return "`break`, `throw` or `catch`";
+    default: return "a method's answer (a class variable, a memoized instance variable, `super`, or a "
+                    "local the method keeps elsewhere)";
+  }
+}
+static __attribute__((noreturn)) void hv_refuse(Compiler *c, int id, int route) {
+  char msg[512];
+  snprintf(msg, sizeof msg, "a String handed on by %s is mutated in place, or the variable it came from "
+           "is (a String is not yet shared by reference through %s). Mutate the String through the "
+           "variable itself.", hv_route_name(route), hv_route_name(route));
+  unsupported_feature(c, id, msg);
+}
+/* Refuses each hand-over route a program mutates through: a write of such
+   a value whose target or source is then mutated while the other is read,
+   a mutation of the value itself, and the value lent to a parameter the
+   callee mutates. */
+/* Is an exception's message String mutated in place (`e.message << x`, or
+   through a local bound from it), or, with `read`, read at all? */
+static int hv_message_used(Compiler *c, int read) {
+  const NodeTable *nt = c->nt;
+  NT_FOREACH_KIND(nt, NK_CallNode, u) {
+    const char *un = nt_str(nt, u, "name");
+    int r = an_unparen(nt, nt_ref(nt, u, "receiver"));
+    if (read && un && is_message_reader(un)) return 1;
+    if (un && r >= 0 && sp_str_mutator(un, SP_MUT_LOCAL) && nt_kind(nt, r) == NK_CallNode &&
+        nt_str(nt, r, "name") && is_message_reader(nt_str(nt, r, "name")))
+      return 1;
+  }
+  NT_FOREACH_KIND(nt, NK_LocalVariableWriteNode, w) {
+    int v = an_unparen(nt, nt_ref(nt, w, "value"));
+    if (v >= 0 && nt_kind(nt, v) == NK_CallNode && nt_str(nt, v, "name") && is_message_reader(nt_str(nt, v, "name")) &&
+        nt_str(nt, w, "name") && strbuf_any_str_mut(c, nt_str(nt, w, "name"), comp_scope_of(c, w)))
+      return 1;
+  }
+  return 0;
+}
+/* Is an element of the Hash variable `h` names read (`h[k]`), or, with
+   `mut`, mutated in place through the read? */
+static int hv_elem_used(Compiler *c, const SaName *h, int mut) {
+  const NodeTable *nt = c->nt;
+  NT_FOREACH_KIND(nt, NK_CallNode, u) {
+    const char *un = nt_str(nt, u, "name");
+    int r = an_unparen(nt, nt_ref(nt, u, "receiver"));
+    int e = mut ? r : u;
+    if (mut && (!un || !sp_str_mutator(un, SP_MUT_LOCAL))) continue;
+    if (e >= 0 && nt_kind(nt, e) == NK_CallNode && container_elem_read_p(nt, e) &&
+        sa_reads(c, nt_ref(nt, e, "receiver"), h))
+      return 1;
+  }
+  return 0;
+}
+/* `raise C, s` makes s itself the exception's message, and `h.default = s`
+   makes s what every missing key reads: each copies. Refused when one name
+   is mutated in place and the other read; a default mutated through a read
+   is refused whatever it was set from. */
+static void refuse_string_held_copies(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  NT_FOREACH_KIND(nt, NK_CallNode, u) {
+    const char *un = nt_str(nt, u, "name");
+    int a = nt_ref(nt, u, "arguments"), an = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+    int r = nt_ref(nt, u, "receiver");
+    SaName s, h;
+    if (!un || an < 1) continue;
+    int sv = an_unparen(nt, av[an - 1]);
+    /* the frozen check scans the program: asked last, of a route that
+       would be refused, so a call that is no such route costs nothing */
+    int str = (comp_ntype(c, sv) == TY_STRING || comp_ntype(c, sv) == TY_STRBUF) && sa_name(c, sv, &s);
+    /* a shared handle `raise` hands an exception's initialize (#6179) */
+    if (is_raise_call(un) && r < 0 && str && !sa_handle(c, &s, 0) &&
+        ((hv_message_used(c, 0) && sa_read_elsewhere(c, &s, sv)) || (sa_mutated(c, &s) && hv_message_used(c, 1))) &&
+        !hv_may_be_frozen(c, sv))
+      unsupported_feature(c, u, "a String variable raised as an exception's message is mutated in place, or the "
+                          "message is (a String is not yet shared by reference through an exception's "
+                          "message). Mutate the String before raising it.");
+    if (is_hash_default_writer(un) && r >= 0 && an == 1 && sa_name(c, r, &h) &&
+        (comp_ntype(c, sv) == TY_STRING || comp_ntype(c, sv) == TY_STRBUF) && nt_kind(nt, sv) != NK_StringNode &&
+        !hv_freeze_call(nt, sv) &&
+        (hv_elem_used(c, &h, 1) || (str && sa_mutated(c, &s) && hv_elem_used(c, &h, 0))) &&
+        (!sa_name(c, sv, &s) || !hv_may_be_frozen(c, sv)))
+      unsupported_feature(c, u, "a Hash's default String is mutated in place through a missing key's read, or "
+                          "the variable it was set from is (a String is not yet shared by reference through "
+                          "`Hash#default=`). Store the String under its key instead.");
+  }
+}
+static void refuse_string_handover_copies(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  refuse_string_held_copies(c);
+  for (int k = 0; k < 4; k++)
+    NT_FOREACH_KIND(nt, k == 0 ? NK_LocalVariableWriteNode : k == 1 ? NK_InstanceVariableWriteNode
+                       : k == 2 ? NK_GlobalVariableWriteNode : NK_ClassVariableWriteNode, w) {
+      int route = HV_NONE, callee = 0;
+      int src = hv_source(c, nt_ref(nt, w, "value"), &route, &callee, 0);
+      SaName to, from;
+      if (src < 0 || route == HV_NONE || !sa_name(c, w, &to) || !sa_name(c, src, &from)) continue;
+      if (comp_ntype(c, src) != TY_STRING && comp_ntype(c, src) != TY_STRBUF) continue;
+      /* `t = +s`: a local the alias walk pairs with s already shares it (a
+         plain read here is a then/tap parameter, which it does not pair) */
+      if (to.kind == NK_LocalVariableReadNode &&
+          nt_kind(nt, an_unparen(nt, nt_ref(nt, w, "value"))) != NK_LocalVariableReadNode &&
+          an_strbuf_alias_source(c, nt_ref(nt, w, "value")) >= 0) continue;
+      /* `v = yield` into a local of the yielding method: the local lives
+         only through the call, so the caller's variable changing later is
+         not seen through it, only a change through v itself (the bundled
+         Set's map! keeps its block's value in a local before it dups and
+         freezes it) */
+      int call_local = route == HV_YIELD && to.kind == NK_LocalVariableReadNode && to.scope != from.scope;
+      if (((sa_mutated(c, &to) && hv_observed(c, src, callee)) ||
+           (!callee && !call_local && sa_mutated(c, &from) && sa_read_elsewhere(c, &to, -1))) &&
+          !hv_may_be_frozen(c, src))
+        hv_refuse(c, w, route);
+    }
+  NT_FOREACH_KIND(nt, NK_CallNode, u) {
+    const char *un = nt_str(nt, u, "name");
+    int r = an_unparen(nt, nt_ref(nt, u, "receiver"));
+    int route = HV_NONE, callee = 0, src = -1;
+    /* `(+s) << x`, `K.g << x`; a `tap` parameter mutated in place already
+       reaches its receiver */
+    if (un && r >= 0 && sp_str_mutator(un, SP_MUT_LOCAL) && nt_kind(nt, r) != NK_LocalVariableReadNode)
+      src = hv_source(c, r, &route, &callee, 0);
+    /* a mutator straight on a then/tap call reaches the receiver already */
+    if (src >= 0 && route != HV_NONE && route != HV_BLOCK &&
+        (comp_ntype(c, src) == TY_STRING || comp_ntype(c, src) == TY_STRBUF) &&
+        hv_observed(c, src, callee) && !hv_may_be_frozen(c, src))
+      hv_refuse(c, u, route);
+    /* `grow(mk)` with `def grow(b) = b << x` */
+    int mi = hv_call_target(c, u);
+    for (int j = 0; mi > 0 && j < c->scopes[mi].nparams; j++) {
+      int ar = an_param_mutated_in_place(c, mi, j) ? arg_layout_param_node(c, &c->scopes[mi], u, j, NULL) : -1;
+      if (ar < 0 || nt_kind(nt, an_unparen(nt, ar)) != NK_CallNode) continue;
+      route = HV_NONE; callee = 0;
+      src = hv_source(c, ar, &route, &callee, 0);
+      if (src >= 0 && route != HV_NONE && (comp_ntype(c, src) == TY_STRING || comp_ntype(c, src) == TY_STRBUF) &&
+          hv_observed(c, src, callee) && !hv_may_be_frozen(c, src))
+        hv_refuse(c, ar, route);
+    }
   }
 }
 
@@ -35400,6 +35808,7 @@ static void an_phase_reconcile_check(Compiler *c) {
   refuse_hash_pair_string_mutations(c);
   refuse_literal_element_aliases(c);
   refuse_string_alias_copies(c);
+  refuse_string_handover_copies(c);
 
   /* Last: the capture pass again, on the settled types. a_block_is_lifted asks
      whether the receiver is poly, and a receiver that widened after the
