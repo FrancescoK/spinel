@@ -1,0 +1,29 @@
+TypeError: wrong argument type Complex (must respond to :each)
+TypeError: wrong argument type Rational (must respond to :each)
+TypeError: wrong argument type Rational (must respond to :each)
+TypeError: wrong argument type Time (must respond to :each)
+[[1, "a"], [2, "b"]]
+TypeError: no implicit conversion of Complex into Array
+TypeError: no implicit conversion of Rational into Array
+TypeError: no implicit conversion of Complex into Array
+TypeError: no implicit conversion of Rational into Array
+0
+KeyError: key not found: (1/2)
+[nil, 1]
+KeyError: key not found: (1/2)
+{"a" => 1}
+{"a" => 1}
+false
+nil
+nil
+{a: 1}
+{1 => 2}
+false
+TypeError: no implicit conversion of Complex into Hash
+TypeError: no implicit conversion of Rational into Hash
+(-3+4i)
+(-3+4i)
+TypeError: :s can't be coerced into Complex
+TypeError: no implicit conversion of Integer into String
+TypeError: no implicit conversion of Symbol into String
+"AB"
