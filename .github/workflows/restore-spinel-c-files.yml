@@ -18,7 +18,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 << 'PY'
-          import base64, gzip, hashlib, pathlib, glob
+          import base64, gzip, hashlib, pathlib
           root = pathlib.Path('.cursor-restore')
           mapping = {
             'builtin_ops.c.gz.b64': ('src/builtin_ops.c', 'aa77fe279f41759bd71f48aaecfb6d6ed626476397f14001a9f93cf01877d019'),
@@ -41,6 +41,10 @@ jobs:
             pathlib.Path(dst).write_bytes(raw)
             print('restored', dst, len(raw), got)
           PY
+          if [ -f .cursor-restore/codegen_expr.c.patch ]; then
+            patch -p1 --forward --batch < .cursor-restore/codegen_expr.c.patch
+            python3 -c "import hashlib,pathlib; p=pathlib.Path('src/codegen_expr.c'); g=hashlib.sha256(p.read_bytes()).hexdigest(); e='6bc1579b1be111efaaffb3e7825181fe85533c37ed230bce7194c3166e73671c'; assert g==e,(g,e,p.stat().st_size); print('patched', p.stat().st_size, g)"
+          fi
       - name: Commit and push
         run: |
           git config user.name "cursor-restore"
@@ -50,12 +54,12 @@ jobs:
             echo 'nothing to commit'
             exit 0
           fi
-          git commit -m "$(cat <<'EOF'
+          git commit -m "$(cat <<'EOFMSG'
           Array subclass typed poly empty? and != match CRuby
 
           Restored via inflate of .cursor-restore payloads.
 
           Co-Authored-By: Cursor Agent <cursoragent@cursor.com>
-          EOF
+          EOFMSG
           )"
           git push origin HEAD:cursor/arysub-typed-gaps-0320
