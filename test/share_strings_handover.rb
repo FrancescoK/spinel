@@ -1,7 +1,9 @@
 # A String built in a method's own locals and returned is the caller's own
 # (`out = +""; out << x; out`): under --share-strings the return hands it
 # over rather than sharing it, unless the method also gave it another name
-# (an alias, an ivar, a parameter, a container) before returning it.
+# (an alias, an ivar, a container) before returning it. A method returning
+# its parameter is test/reject/string_identity_return_appended.rb: without
+# --share-strings that route is refused.
 
 def build1(n)
   out = +""
@@ -23,11 +25,6 @@ def build3
   s
 end
 
-def build4(x)
-  x << "!"
-  x
-end
-
 def build5
   a = []
   s = +"e"
@@ -38,9 +35,8 @@ end
 r1 = build1(5); r1 << "z"
 r2 = build2; r2 << "c"
 r3 = build3; r3 << "2"
-x = +"p"; r4 = build4(x); r4 << "?"
 r5 = build5; r5[0] << "!"
-p r1, r2, r3, @keep, x, r4, r5
+p r1, r2, r3, @keep, r5
 
 # A discarded conditional's last call, or one in parentheses, keeps nothing:
 # `p r1, r2` there joins neither, and a dropped build's String is its own.
