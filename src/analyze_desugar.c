@@ -6884,6 +6884,24 @@ static int fwd_class_new_shape_of(const NodeTable *nt, const char *cname) {
   }
   return -1;
 }
+/* Is the constant `name` a Struct or Data class -- assigned one
+   (`Pair = Struct.new(:a, :b)`) or a class built on one (`class Pair <
+   Struct.new(:a)`)? Its `new` takes positional and keyword arguments. */
+static int fwd_record_class_named(const NodeTable *nt, const char *name) {
+  if (!name) return 0;
+  for (int id = 0; id < nt->count; id++) {
+    int v = -1;
+    if (fwd_node_is(nt, id, "ConstantWriteNode") && nt_str(nt, id, "name") && sp_streq(nt_str(nt, id, "name"), name))
+      v = nt_ref(nt, id, "value");
+    else if (fwd_node_is(nt, id, "ClassNode")) {
+      const char *cn = nt_str(nt, nt_ref(nt, id, "constant_path"), "name");
+      if (cn && sp_streq(cn, name)) v = nt_ref(nt, id, "superclass");
+    }
+    if (v < 0 || !fwd_node_is(nt, v, "CallNode")) continue;
+    if (is_record_class_builder(nt_str(nt, nt_ref(nt, v, "receiver"), "name"), nt_str(nt, v, "name"))) return 1;
+  }
+  return 0;
+}
 static int fwd_target_shape(const NodeTable *nt, int def, int call, int is_super) {
   const char *name = is_super ? nt_str(nt, def, "name") : nt_str(nt, call, "name");
   if (!name) return -1;
@@ -6919,7 +6937,11 @@ static int fwd_target_shape(const NodeTable *nt, int def, int call, int is_super
   }
   if (fwd_node_is(nt, recv, "ConstantReadNode") || fwd_node_is(nt, recv, "ConstantPathNode")) {
     fwd_lex_ctx(nt, def, ctx, sizeof ctx);
-    return fwd_class_method_shape(nt, ctx, recv, NULL, "initialize");
+    int sh = fwd_class_method_shape(nt, ctx, recv, NULL, "initialize");
+    /* a Struct or Data class with no initialize of its own takes both
+       channels; left to the __fwd_N model, `Pair.new(...)` was refused */
+    if (sh == -1 && fwd_record_class_named(nt, nt_str(nt, recv, "name"))) return 3;
+    return sh;
   }
   return fwd_class_value_new_shape(nt);
 }

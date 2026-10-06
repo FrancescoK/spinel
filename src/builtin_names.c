@@ -10,6 +10,13 @@ int is_zip_name(const char *n) {
   return sp_streq(n, "zip");
 }
 
+/* `Struct.new(...)` / `Data.define(...)`: the call that builds a record
+   class, by its receiver's constant name and the method */
+int is_record_class_builder(const char *recv, const char *meth) {
+  return recv && meth && ((sp_streq(recv, "Struct") && sp_streq(meth, "new")) ||
+                          (sp_streq(recv, "Data") && sp_streq(meth, "define")));
+}
+
 int is_call_alias(const char *n) {
   return sp_streq(n, "call") || sp_streq(n, "()") || sp_streq(n, "[]");
 }
