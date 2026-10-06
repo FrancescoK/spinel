@@ -2112,6 +2112,21 @@ TyKind an_user_call(Compiler *c, int id, int mi, int via, int owner_ci) {
   return method_call_ret(c, mi, id);
 }
 
+/* A reopened builtin's method `mi` (of class `owner_ci`) called on a
+   receiver of that kind. A yielding one is not spliced there: the reopen
+   arms call its proc form (emit_reopen_block_call), so the call answers
+   what that clone returns. Typed from the method's own body, which reads
+   the yield as one call site's block value and its parameters as the
+   callers' arguments, `def ys(a) = [a, yield(size)]` on an Array was an
+   Array of Integer at the call and an Array of boxed values in the clone,
+   and the C passed one for the other. */
+static TyKind an_reopen_call(Compiler *c, int id, int mi, int owner_ci) {
+  int pf = c->scopes[mi].yields ? scope_proc_form_of(c, mi) : -1;
+  if (pf < 0) return an_user_call(c, id, mi, UC_REOPEN, owner_ci);
+  an_user_call_record(c, id, mi, UC_REOPEN, owner_ci);
+  return (TyKind)c->scopes[pf].ret;
+}
+
 const BuiltinOp *an_bop_find(Compiler *c, int id, TyKind rt, const char *name,
                              int argc, int has_block) {
   const BuiltinOp *op = bop_find(rt, name, argc, has_block);
@@ -5068,7 +5083,7 @@ static int infer_user_method_call(Compiler *c, int id, const NodeTable *nt, cons
         int aci = comp_class_index(c, anc);
         int ami = aci >= 0 ? comp_method_in_chain(c, aci, name, NULL) : -1;
         if (ami >= 0 && c->scopes[ami].class_id == aci)
-          { *out = an_user_call(c, id, ami, UC_REOPEN, aci); return 1; }
+          { *out = an_reopen_call(c, id, ami, aci); return 1; }
       }
     }
   }
@@ -7009,7 +7024,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     /* the reopen's own method under this very name: an alias taken before the
        reopen (`alias orig_first first`) still names the builtin */
     if (ami >= 0 && adc == aci && c->scopes[ami].name && sp_streq(c->scopes[ami].name, name))
-      return an_user_call(c, id, ami, UC_REOPEN, aci);
+      return an_reopen_call(c, id, ami, aci);
   }
   /* A boxed-value hash whose values are all one class: its value reads are
      that class (nil included, as a NULL pointer), and `values` an array of it
