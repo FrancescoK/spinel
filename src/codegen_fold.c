@@ -1601,13 +1601,28 @@ int emit_sum_block_poly_expr(Compiler *c, int id, Buf *b) {
   if (blv) blv->type = TY_POLY;
   for (int j = 0; j < bn; j++) infer_type(c, bb[j]);
 
-  int ta = ++g_tmp, tacc = ++g_tmp, ti = ++g_tmp, tn = ++g_tmp;
-  buf_printf(b, "({ sp_PolyArray *_t%d = sp_poly_to_a_arr(", ta);
+  int ta = ++g_tmp, tacc = ++g_tmp, ti = ++g_tmp, tn = ++g_tmp, tr = ++g_tmp;
+  /* the receiver, then the initial value, then the receiver's check: nil, a
+     number, a boolean or a Symbol has no sum (it answered the initial
+     value), raised as CRuby does once the operands ran */
+  buf_printf(b, "({ sp_RbVal _t%d = ", tr);
   emit_expr(c, recv, b);
-  buf_printf(b, "); SP_GC_ROOT(_t%d); sp_int _t%d = _t%d->len; sp_RbVal _t%d = ",
-             ta, tn, ta, tacc);
+  buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_RbVal _t%d = ", tr, tacc);
   if (argc == 1) emit_boxed(c, argv[0], b);
   else buf_puts(b, "sp_box_int(0)");
+  /* a String's sum is its checksum, the argument its bit width, and the
+     block is not called: no elements, the checksum as the starting value */
+  char bits[40];
+  if (argc == 1) snprintf(bits, sizeof bits, "sp_poly_to_i(_t%d)", tacc);
+  else snprintf(bits, sizeof bits, "16");
+  buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); if (sp_poly_no_enum(_t%d))"
+                " sp_raise_nomethod(sp_nomethod_msg_args(\"sum\", _t%d, %d, &_t%d));"
+                " int _s%d = _t%d.tag == SP_TAG_STR || sp_poly_is_strbuf(_t%d);"
+                " if (_s%d) _t%d = sp_box_int(sp_str_sum_bits(sp_poly_strbuf_deref(_t%d).v.s, %s));"
+                " sp_PolyArray *_t%d = _s%d ? sp_PolyArray_new() : sp_poly_to_a_arr(_t%d);"
+                " SP_GC_ROOT(_t%d); sp_int _t%d = _t%d->len",
+             tacc, tr, tr, argc, tacc, tr, tr, tr, tr, tacc, tr,
+             bits, ta, tr, tr, ta, tn, ta);
   /* folded a value at a time (sp_sum_step) */
   buf_printf(b, "; sp_SumState _t%dS; sp_sum_init(&_t%dS, _t%d); SP_GC_ROOT_RBVAL(_t%dS.acc); "
                 "for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) { ",
