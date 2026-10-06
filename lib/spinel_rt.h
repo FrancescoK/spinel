@@ -17308,6 +17308,13 @@ static inline const char *sp_poly_pack(sp_RbVal recv, const char *fmt) {
     return sp_PolyArray_pack((sp_PolyArray *)recv.v.p, fmt);
   if (recv.tag == SP_TAG_OBJ && recv.cls_id == SP_BUILTIN_STR_ARRAY)
     return sp_StrArray_pack((sp_StrArray *)recv.v.p, fmt);
+  /* any other Array kind packs its elements boxed */
+  if (recv.tag == SP_TAG_OBJ && sp_poly_is_array_kind(recv.cls_id) && recv.v.p)
+    return sp_PolyArray_pack(sp_poly_to_poly_array(recv), fmt);
+  /* a value that is no Array has no pack: CRuby's NoMethodError, with
+     the format as its args, where it answered "" */
+  { sp_RbVal fa = sp_box_str(fmt);
+    sp_raise_nomethod(sp_nomethod_msg_args("pack", recv, 1, &fa)); }
   /* Marked, like every other string this can return: a bare "" literal
      has no 0xff marker byte, and a caller that roots the result would
      have the collector mark a rodata pointer. */
