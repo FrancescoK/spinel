@@ -1,0 +1,29 @@
+AE: comparison of _ with _ failed
+AE: comparison of _ with _ failed
+AE: comparison of String with 1 failed
+AE: comparison of String with 1 failed
+AE: comparison of _ with _ failed
+AE: comparison of _ with _ failed
+AE: comparison of Integer with 3 failed
+AE: comparison of Integer with 3 failed
+AE: comparison of _ with _ failed
+AE: comparison of _ with _ failed
+AE: comparison of Float with 2.0 failed
+AE: comparison of _ with _ failed
+AE: comparison of _ with _ failed
+AE: comparison of _ with _ failed
+AE: comparison of _ with _ failed
+AE: comparison of _ with _ failed
+AE: comparison of Integer with 3 failed
+AE: comparison of String with 3 failed
+AE: comparison of _ with _ failed
+AE: comparison of Symbol with :b failed
+AE: comparison of _ with _ failed
+AE: comparison of Array with Array failed
+AE: comparison of Integer with 1 failed
+[3, 2, 1]
+3
+[1]
+1
+nil
+[1, "b"]
