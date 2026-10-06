@@ -285,11 +285,44 @@ int an_re_has_captures(const char *src) {
   }
   return 0;
 }
+/* The literal a Regexp local holds where it is read at `read`: the one
+   pattern every write to the local in the read's scope assigns, or -1. A
+   local is its scope's, so two methods' `r` are two locals (they were
+   resolved by name, and the second method matched with the first's
+   pattern), and a local written twice (`r = /a/ ... r = /b/`, or again in
+   a block) holds whichever write ran last, which no one literal names. A
+   parameter holds its caller's. Only looks: inference (an_regex_lit_src)
+   and codegen (re_lit_node) both ask it, so a type rule and the emit arm
+   agree on which patterns are static. */
+int an_regex_local_lit(Compiler *c, int read) {
+  const NodeTable *nt = c->nt;
+  const char *nm = read >= 0 ? nt_str(nt, read, "name") : NULL;
+  Scope *sc = nm ? comp_scope_of(c, read) : NULL;
+  LocalVar *lv = sc ? scope_local(sc, nm) : NULL;
+  if (!lv || lv->is_param || lv->is_block_param) return -1;
+  int found = -1;
+  for (int k = 0; k < nt->count; k++) {
+    NodeKind kk = nt_kind(nt, k);
+    if (kk != NK_LocalVariableWriteNode && kk != NK_LocalVariableOrWriteNode &&
+        kk != NK_LocalVariableAndWriteNode && kk != NK_LocalVariableOperatorWriteNode &&
+        kk != NK_LocalVariableTargetNode) continue;
+    const char *kn = nt_str(nt, k, "name");
+    if (!kn || !sp_streq(kn, nm) || comp_scope_of(c, k) != sc) continue;
+    int v = kk == NK_LocalVariableWriteNode ? nt_ref(nt, k, "value") : -1;
+    if (v < 0 || nt_kind(nt, v) != NK_RegularExpressionNode) return -1;
+    if (found >= 0 &&
+        (nt_int(nt, v, "flags", 0) != nt_int(nt, found, "flags", 0) ||
+         !sp_streq(nt_str(nt, v, "unescaped"), nt_str(nt, found, "unescaped"))))
+      return -1;
+    if (found < 0) found = v;
+  }
+  return found;
+}
 /* The source text of the regex literal behind `nid`, or NULL when the pattern
    is only known at run time (an interpolated literal, a `Regexp.new(s)` call,
    a method's return). Deliberately mirrors codegen's re_lit_index resolution
    -- a bare literal, a constant bound to one (`PAT = /re/[.freeze]`), or a
-   regex-typed local bound to one -- so a type rule here and the emit arm there
+   regex-typed local bound to one (an_regex_local_lit, which both share) -- so a type rule here and the emit arm there
    agree on which patterns are statically visible. Unlike re_lit_index this
    only looks, never registers a pattern slot, so it is safe to call during
    inference. */
@@ -304,16 +337,18 @@ const char *an_regex_lit_src(Compiler *c, int nid) {
   if (!want_const && !want_local) return NULL;
   const char *nm = nt_str(nt, nid, "name");
   if (!nm) return NULL;
+  if (want_local) {
+    int lit = an_regex_local_lit(c, nid);
+    return lit >= 0 ? nt_str(nt, lit, "unescaped") : NULL;
+  }
   for (int k = 0; k < nt->count; k++) {
     const char *kt = nt_type(nt, k);
     if (!kt) continue;
-    if (want_const ? (!sp_streq(kt, "ConstantWriteNode") && !sp_streq(kt, "ConstantPathWriteNode"))
-                   : !sp_streq(kt, "LocalVariableWriteNode"))
-      continue;
+    if (!sp_streq(kt, "ConstantWriteNode") && !sp_streq(kt, "ConstantPathWriteNode")) continue;
     const char *kn = nt_str(nt, k, "name");
     if (!kn || !sp_streq(kn, nm)) continue;
     int v = nt_ref(nt, k, "value");
-    if (want_const && v >= 0 && nt_type(nt, v) && sp_streq(nt_type(nt, v), "CallNode") &&
+    if (v >= 0 && nt_type(nt, v) && sp_streq(nt_type(nt, v), "CallNode") &&
         nt_str(nt, v, "name") && sp_streq(nt_str(nt, v, "name"), "freeze"))
       v = nt_ref(nt, v, "receiver");
     if (v >= 0 && nt_type(nt, v) && sp_streq(nt_type(nt, v), "RegularExpressionNode"))
