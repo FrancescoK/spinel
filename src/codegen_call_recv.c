@@ -11828,11 +11828,17 @@ static int emit_poly_call0_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
     }
   }
   /* Hash#keys / #values on a poly value (e.g. an evidence-free empty `{}` that
-     stayed poly). Skip when a user class defines keys/values so its method wins. */
+     stayed poly). Skip when a user class defines keys/values so its method wins.
+     A Struct answers values too, so values checks its receiver in
+     sp_poly_values_chk, after the Struct arm. */
   if (sp_streq(name, "keys") || sp_streq(name, "values")) {
     if (!poly_name_user_claimed(c, name, argc)) {
-      buf_printf(b, "sp_poly_%s(sp_poly_hash_chk(", name); emit_expr(c, recv, b);
-      buf_printf(b, ", \"%s\"))", name); { *out = 1; return 1; }
+      if (sp_streq(name, "values")) {
+        buf_puts(b, "sp_poly_values_chk("); emit_expr(c, recv, b); buf_puts(b, ")");
+        { *out = 1; return 1; }
+      }
+      buf_puts(b, "sp_poly_keys(sp_poly_hash_chk("); emit_expr(c, recv, b);
+      buf_puts(b, ", \"keys\"))"); { *out = 1; return 1; }
     }
   }
   if (sp_streq(name, "count")) {
