@@ -1029,12 +1029,13 @@ int comp_ivarg_call(const Compiler *c, int e);
 int comp_ivarg_arg(const Compiler *c, int e);
 /* The owning class of an ivar read or write node, or -1. */
 int comp_ivar_owner(Compiler *c, int node);
-typedef enum { VS_READ, VS_WRITE, VS_MUT, VS_RECV, VS_NKINDS } VsKind;
+typedef enum { VS_READ, VS_WRITE, VS_MUT, VS_RECV, VS_STORE, VS_NKINDS } VsKind;
 /* Variable-site chains (compiler.c, see vsite_build): the entries of one
    site kind of the variable named by read kind `kind`
    (NK_LocalVariableReadNode, NK_InstanceVariableReadNode,
-   NK_GlobalVariableReadNode), `name` (a global's resolved) and `key` (a
-   local's scope index, an ivar's owning class, -1 for a global), in node
+   NK_GlobalVariableReadNode, NK_ClassVariableReadNode, NK_ConstantReadNode),
+   `name` (a global's resolved) and `key` (a local's scope index, an ivar's
+   owning class, -1 for a global, a class variable or a constant), in node
    order: for (e = comp_vsite_first(c, VS_READ, kind, name, key); e >= 0;
    e = comp_vsite_next(c, e)). An entry's site is comp_vsite_node; chains
    carry hash collisions, so check comp_vsite_var, the read or write naming
