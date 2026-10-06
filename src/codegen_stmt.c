@@ -1565,6 +1565,14 @@ void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
   else if (shared && strbuf_conv_of_handle_call(c, v) &&
            emit_strbuf_call_handle(c, nt_ref(c->nt, v, "receiver"), b)) {
   }
+  /* --share-strings: a block's value a method answers through its yield
+     (`t = id(s) { |q| q }`): the handle the block's last read publishes */
+  else if (shared && strbuf_yield_value_call(c, v)) {
+    int tv = ++g_tmp;
+    buf_printf(b, "({ _sp_ret_strbuf = NULL; const char *_v%d = ", tv);
+    emit_str_expr(c, v, b);
+    buf_printf(b, "; _v%d && _sp_ret_strbuf ? (sp_String *)_sp_ret_strbuf : sp_String_new_shared(_v%d); })", tv, tv);
+  }
   /* --share-strings: a setter's value is its argument (`t = (o.a = s)`):
      run the write, then name the argument's String */
   else if (shared && strbuf_setter_handle_arg(c, v, srefV, sizeof srefV) >= 0) {

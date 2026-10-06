@@ -2632,6 +2632,61 @@ static int hr_tail_ok(Compiler *c, int node, int depth) {
   }
 }
 
+/* The node a body answers: through parentheses and a statement list, its
+   last statement. */
+static int strbuf_tail_of(const NodeTable *nt, int n) {
+  for (int d = 0; n >= 0 && d < 32; d++) {
+    NodeKind k = nt_kind(nt, n);
+    if (k == NK_ParenthesesNode) { n = nt_ref(nt, n, "body"); continue; }
+    if (k != NK_StatementsNode) return n;
+    int m = 0; const int *st = nt_arr(nt, n, "body", &m);
+    n = m > 0 ? st[m - 1] : -1;
+  }
+  return -1;
+}
+/* Does the tree under n hold a jump that leaves a block with another value
+   (next, break, return, redo, retry)? */
+static int strbuf_has_jump(const NodeTable *nt, int n, int depth) {
+  if (n < 0) return 0;
+  if (depth > 64) return 1;
+  NodeKind k = nt_kind(nt, n);
+  if (k == NK_ReturnNode || k == NK_NextNode || k == NK_BreakNode || k == NK_RedoNode || k == NK_RetryNode) return 1;
+  int nr = nt_num_refs(nt, n);
+  for (int i = 0; i < nr; i++) if (strbuf_has_jump(nt, nt_ref_at(nt, n, i), depth + 1)) return 1;
+  int na = nt_num_arrs(nt, n);
+  for (int i = 0; i < na; i++) {
+    int an = 0; const int *av = nt_arr_at(nt, n, i, &an);
+    for (int e = 0; e < an; e++) if (strbuf_has_jump(nt, av[e], depth + 1)) return 1;
+  }
+  return 0;
+}
+/* --share-strings: is `v` a call with a literal block of a method that
+   answers its yield's value (its body ends in the yield; no return, begin
+   or proc form), whose block answers a slot holding the handle with no
+   jump out of it? The block's last read publishes that handle to the
+   deep-return side channel (sp_strbuf_read_pub), so the call's answer is
+   the handle the channel holds. */
+int strbuf_yield_value_call(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  if (!repr_share_rule(c) || v < 0 || nt_kind(nt, v) != NK_CallNode) return 0;
+  int blk = nt_ref(nt, v, "block");
+  if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode) return 0;
+  int tg[2];
+  if (share_call_targets(c, v, tg, 2) != 1) return 0;
+  int mi = tg[0];
+  Scope *m = &c->scopes[mi];
+  if (m->def_node < 0 || !m->yields || m->is_proc_form || comp_sret_first(c, mi) >= 0 || scope_has_begin(c, mi))
+    return 0;
+  int mt = strbuf_tail_of(nt, scope_body_last(c, mi));
+  if (mt < 0 || nt_kind(nt, mt) != NK_YieldNode) return 0;
+  int body = nt_ref(nt, blk, "body");
+  int bt = strbuf_tail_of(nt, body);
+  char ref[512];
+  if (bt < 0 || !hr_slot_kind(nt_kind(nt, bt)) || strbuf_has_jump(nt, body, 0)) return 0;
+  if (nt_kind(nt, bt) == NK_LocalVariableReadNode && repr_of(c, bt).kind != RK_STRBUF) return 0;
+  return strbuf_slot_ref(c, bt, ref, sizeof ref);
+}
+
 int method_returns_handle(Compiler *c, int mi) {
   if (!repr_share_rule(c) || mi <= 0 || mi >= c->nscopes) return 0;
   if (!c->hr_memo) {
