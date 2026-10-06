@@ -57,6 +57,20 @@ int is_opaque_reaching_call(const char *n) {
          strstr(n, "method") != NULL;
 }
 
+/* A builtin call that hands Ruby code to the runtime to run later, at a
+   point where no call in the running method names it: a thread's or a
+   fiber's body, and a signal handler (run inside the C handler, at any
+   instruction). `recv` is the receiver's constant name, NULL for a bare
+   call. */
+int is_async_code_entry(const char *recv, const char *n) {
+  if (!n) return 0;
+  if (sp_streq(n, "trap")) return !recv || sp_streq(recv, "Signal");
+  if (!recv) return 0;
+  if (sp_streq(recv, "Thread"))
+    return sp_streq(n, "new") || sp_streq(n, "start") || sp_streq(n, "fork");
+  return sp_streq(recv, "Fiber") && sp_streq(n, "new");
+}
+
 int is_name_reader(const char *n) {
   return sp_streq(n, "name") || sp_streq(n, "to_s") || sp_streq(n, "inspect");
 }
