@@ -6211,6 +6211,13 @@ static int infer_last_resort_call(Compiler *c, int id, const NodeTable *nt, cons
            its emitter worked on (see emit_face_arm) */
         if (ty_poly_face_owner_flags(name, argc, blk, nt_call_args_plain(nt, id), bit) & PF_VAL_SELF) ht = TY_POLY;
         r = r == TY_UNKNOWN ? ht : ty_unify(r, ht);
+        /* a blockless step(n) on a Range that is endless at run time answers
+           an Enumerator (sp_poly_range_endless_step), which no array slot
+           holds: with a Float step every owner's answer is a Float Array,
+           and the call was typed one and materialized the endless Range */
+        if (sp_streq(name, "step") && argc == 1 && !blk &&
+            (ty_poly_face_kind(bit) == TY_RANGE || ty_poly_face_kind(bit) == TY_FLOAT_RANGE))
+          r = TY_POLY;
       }
       if (r != TY_UNKNOWN) { *out = r; return 1; }
     }
