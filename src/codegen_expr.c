@@ -1547,6 +1547,14 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
       /* publish the handle to the deep-return side channel as the copy is
          read out: a marked caller of a shared-returning method picks it up
          right after the call (#3227 P6) */
+      /* --share-strings: through sp_strbuf_read_pub, which sequences the
+         channel's write (two reads among one call's arguments) */
+      if (repr_share_rule(c)) {
+        buf_puts(b, "sp_strbuf_read_pub(");
+        emit_local_ref(c, id, lrn, b);
+        buf_puts(b, ")");
+        return 1;
+      }
       buf_puts(b, "(_sp_ret_strbuf = (void *)");
       emit_local_ref(c, id, lrn, b);
       /* A parameter that is the handle can be nil, `def initialize(s, o: nil)`
