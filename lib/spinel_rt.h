@@ -2161,6 +2161,10 @@ static sp_bool sp_poly_responds_builtin(sp_RbVal v, const char *m) {
   if (sp_str_in_list(m, uni)) return 1;
   cn = sp_poly_class_name(v);
   if (!cn) return 0;
+  /* an Array subclass instance boxed as its Array answers Array's names
+     (#7449); its class's own are the caller's */
+  if (sp_bsub_cls_fn && v.tag == SP_TAG_OBJ && sp_poly_is_array_kind(v.cls_id) && sp_bsub_cls_fn(v) >= 0)
+    cn = "Array";
   if (strcmp(cn, "Array") == 0)
     return sp_str_in_list(m, enumm) || sp_str_in_list(m, arrm);
   if (strcmp(cn, "Hash") == 0)
@@ -10272,6 +10276,18 @@ extern void (*sp_user_init_copy_hook_lib)(sp_RbVal, sp_RbVal);
 #else
 static void (*sp_user_init_copy_hook)(sp_RbVal, sp_RbVal) = NULL;
 extern void (*sp_user_init_copy_hook_lib)(sp_RbVal, sp_RbVal);
+#endif
+/* dup / clone (keep_frozen) of a builtin subclass instance boxed as its
+   builtin (#7449): the program's own copy of its class, with the class's
+   initialize_copy; *handled stays FALSE for anything else. NULL in a
+   program with no such class. sp_poly_dup (lib/sp_poly_cold.c) reads
+   sp_bsub_dup_hook_lib, which SP_INSTALL_HOOK sets beside the static. */
+#ifdef SPINEL_EXT_HOST
+extern sp_RbVal (*sp_bsub_dup_hook_lib)(sp_RbVal, int, sp_bool *);
+#define sp_bsub_dup_hook sp_bsub_dup_hook_lib
+#else
+static sp_RbVal (*sp_bsub_dup_hook)(sp_RbVal, int, sp_bool *) = NULL;
+extern sp_RbVal (*sp_bsub_dup_hook_lib)(sp_RbVal, int, sp_bool *);
 #endif
 sp_RbVal sp_poly_dup(sp_RbVal v, int keep_frozen);
 /* clone(freeze: ...) on a boxed value. An immutable immediate (nil/bool/int/
