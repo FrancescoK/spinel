@@ -1,1 +1,1 @@
-PLACEHOLDER_REPLACE_WITH_FILE
+FILE_CONTENT_FROM_/home/ubuntu/git/spinel/src/builtin_ops.c
