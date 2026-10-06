@@ -1533,6 +1533,44 @@ int emit_call_safe_nav_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
   }
   return 0;
 }
+/* A read that can be rendered twice: a local, an ivar or self. */
+static int plain_read_node(const NodeTable *nt, int node) {
+  NodeKind k = nt_kind(nt, node);
+  return k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode || k == NK_SelfNode;
+}
+
+/* Kernel#=== is rb_equal: the same heap object is === to itself before
+   its class's own #== runs, so `k === k` answers true even when that #==
+   answers false. Only for operands read from a slot, which render twice
+   with no effect; 0 otherwise, or when the class keeps no identity (a value
+   type), has no #== of its own answering a boolean or a boxed value, or the
+   argument cannot hold the receiver. */
+static int emit_case_eq_identity(Compiler *c, int id, int recv, Buf *b) {
+  const NodeTable *nt = c->nt;
+  TyKind rt = comp_ntype(c, recv);
+  int argc = 0; const int *argv = call_args(nt, id, &argc);
+  TyKind at = comp_ntype(c, argv[0]);
+  int mi = comp_method_in_chain(c, ty_object_class(rt), "==", NULL);
+  if (mi < 0 || (c->scopes[mi].ret != TY_BOOL && c->scopes[mi].ret != TY_POLY) || comp_ty_value_obj(c, rt) ||
+      !(ty_is_object(at) || at == TY_POLY) || comp_ty_value_obj(c, at) ||
+      !plain_read_node(nt, recv) || !plain_read_node(nt, argv[0])) return 0;
+  Buf rb = expr_buf(c, recv), ab = expr_buf(c, argv[0]);
+  if (at == TY_POLY)
+    buf_printf(b, "((%s).tag == SP_TAG_OBJ && (%s).v.p == (void *)(%s) || ",
+               ab.p ? ab.p : "", ab.p ? ab.p : "", rb.p ? rb.p : "");
+  else buf_printf(b, "((void *)(%s) == (void *)(%s) || ", ab.p ? ab.p : "", rb.p ? rb.p : "");
+  free(rb.p); free(ab.p);
+  /* a #== answering a boxed value is read for its truth, as rb_equal does */
+  int boxed = c->scopes[mi].ret == TY_POLY;
+  if (boxed) buf_puts(b, "sp_poly_truthy(");
+  nt_node_set_str((NodeTable *)nt, id, "name", "==");
+  emit_call(c, id, b);
+  nt_node_set_str((NodeTable *)nt, id, "name", "===");
+  buf_puts(b, boxed ? "))" : ")");
+  return 1;
+}
+
+
 
 /* the Object protocol ahead of the builtin arms: Proc#===, initialize_copy, a class's own ! and !=, Float#equal?, each_slice / each_cons over a user Enumerable, Kernel#===, define_singleton_method on a local, the documented limits, a BasicObject instance, itself, and the immediate receivers' CRuby-exact arms */
 int emit_call_object_override_arms(Compiler *c, int id, Buf *b, const NodeTable *nt) {
@@ -1677,6 +1715,7 @@ int emit_call_object_override_arms(Compiler *c, int id, Buf *b, const NodeTable 
       TyKind ert = comp_ntype(c, erecv);
       if (eac == 1 && ty_is_object(ert) &&
           comp_method_in_chain(c, ty_object_class(ert), "===", NULL) < 0) {
+        if (emit_case_eq_identity(c, id, erecv, b)) return 1;
         nt_node_set_str((NodeTable *)nt, id, "name", "==");
         emit_call(c, id, b);
         nt_node_set_str((NodeTable *)nt, id, "name", "===");
