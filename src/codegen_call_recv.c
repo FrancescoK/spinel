@@ -13321,7 +13321,10 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
       return 1;
     }
   }
-  if (recv >= 0 && argc == 1 && nt_ref(nt, id, "block") < 0 &&
+  /* match?(pattern, pos) takes the same route, from the position */
+  int match_at = argc == 2 && is_match_p_name(name) && nt_kind(nt, argv[0]) != NK_SplatNode &&
+                 nt_kind(nt, argv[1]) != NK_SplatNode && nt_kind(nt, argv[1]) != NK_KeywordHashNode;
+  if (recv >= 0 && (argc == 1 || match_at) && nt_ref(nt, id, "block") < 0 &&
       !user_defines_or_reads(c, name) &&
       (sp_streq(name, "match?") || sp_streq(name, "match") || sp_streq(name, "=~")) &&
       (rt == TY_POLY || ((rt == TY_STRING || rt == TY_STRBUF) &&
@@ -13335,10 +13338,22 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
       buf_printf(b, "); _t%d == SP_INT_NIL ? sp_box_nil() : sp_box_int(_t%d); })", tmi, tmi);
       return 1;
     }
+    /* the operands are held and checked first (sp_poly_match_check): the
+       helpers answered no match for a receiver without the method and for
+       a pattern of the wrong kind */
     const char *fn = sp_streq(name, "match?") ? "sp_poly_match_p" : "sp_poly_match_data";
+    int ta = ++g_tmp, tb = ++g_tmp;
     Buf mb; memset(&mb, 0, sizeof mb);
-    buf_printf(&mb, "%s(", fn); emit_boxed(c, recv, &mb);
-    buf_puts(&mb, ", "); emit_boxed(c, argv[0], &mb); buf_puts(&mb, ")");
+    buf_printf(&mb, "({ sp_RbVal _t%d = ", ta); emit_boxed(c, recv, &mb);
+    buf_printf(&mb, "; SP_GC_ROOT_RBVAL(_t%d); sp_RbVal _t%d[2]; _t%d[0] = ", ta, tb, tb); emit_boxed(c, argv[0], &mb);
+    buf_printf(&mb, "; SP_GC_ROOT_RBVAL(_t%d[0]); ", tb);
+    if (argc == 2) {
+      buf_printf(&mb, "_t%d[1] = ", tb); emit_boxed(c, argv[1], &mb);
+      buf_printf(&mb, "; SP_GC_ROOT_RBVAL(_t%d[1]); ", tb);
+    }
+    buf_printf(&mb, "sp_poly_match_check(_t%d, \"%s\", %d, _t%d); ", ta, name, argc, tb);
+    if (argc == 2) buf_printf(&mb, "sp_poly_match_p_at(_t%d, _t%d[0], sp_poly_arg_int_chk(_t%d[1])); })", ta, tb, tb);
+    else buf_printf(&mb, "%s(_t%d, _t%d[0]); })", fn, ta, tb);
     /* This arm takes the builtin only when no REACHABLE class defines the
        name. The analyzer's twin counts every class that defines it, so a
        user `match` on a class the program never builds leaves the call typed
