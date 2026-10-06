@@ -1675,6 +1675,7 @@ static int name_is_comparable_module_method(const char *m) {
 #define BAM(c,m,a) {c,m,a},
 #define BAS(...)
 #define BAC(...)
+#define BAB(...)
 static const struct { const char *cls; const char *m; int a; } sp_builtin_arity_tbl[] = {
 #include "builtin_arity.inc"
   {NULL, NULL, 0}
@@ -1683,6 +1684,7 @@ static const struct { const char *cls; const char *m; int a; } sp_builtin_arity_
 #undef BAM
 #undef BAS
 #undef BAC
+#undef BAB
 /* Exported probes for the analyze-side method() desugar (#2752): whether the
    builtin table knows (cls, m), and whether m is universal Object surface. */
 int builtin_method_known(const char *cls, const char *m);
@@ -14522,6 +14524,7 @@ typedef struct { const char *cls; const char *m; int min; int max;
 #define BAM(...)
 #define BAS(...) {__VA_ARGS__},
 #define BAC(...)
+#define BAB(...)
 static const SpAritySpec
 sp_builtin_arity_spec_tbl[] = {
 #include "builtin_arity.inc"
@@ -14531,6 +14534,7 @@ sp_builtin_arity_spec_tbl[] = {
 #undef BAM
 #undef BAS
 #undef BAC
+#undef BAB
 /* Is `m` a method the builtin File (IO and its Enumerable included) has? */
 static int io_builtin_name(const char *m) {
   for (const SpAritySpec *r = sp_builtin_arity_spec_tbl; r->cls; r++)
@@ -14592,6 +14596,7 @@ int builtin_method_names(const char *cls, const char **out, int cap) {
 #define BAM(...)
 #define BAS(...)
 #define BAC(...) {__VA_ARGS__},
+#define BAB(...)
 static const SpAritySpec
 sp_builtin_cmeth_arity_spec_tbl[] = {
 #include "builtin_arity.inc"
@@ -14601,6 +14606,7 @@ sp_builtin_cmeth_arity_spec_tbl[] = {
 #undef BAM
 #undef BAS
 #undef BAC
+#undef BAB
 /* The row of one spec table for (cls, name), read for the bare or the
    block-carrying call. Answers whether the table has the row; exp receives
    CRuby's wording when argc falls outside the accepted counts. */
