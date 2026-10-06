@@ -35,8 +35,18 @@ jobs:
         env:
           PR: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.clone_url }}
         run: |
-          git fetch --no-tags --quiet origin "refs/pull/$PR/head"
+          # GitHub creates refs/pull/N/head shortly after the pull request opens, and
+          # this job can start before it exists. Retry it, then fetch the head commit
+          # from the pull request's own repository.
+          for wait in 0 5 10 20; do
+            sleep "$wait"
+            git fetch --no-tags --quiet origin "refs/pull/$PR/head" && break
+          done
+          if ! git cat-file -e "$HEAD_SHA^{commit}" 2>/dev/null; then
+            git fetch --no-tags --quiet "$HEAD_REPO" "$HEAD_SHA"
+          fi
           set +e
           out=$(ruby tools/gate.rb verify "$HEAD_SHA" 2>&1)
           rc=$?
