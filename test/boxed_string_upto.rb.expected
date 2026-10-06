@@ -1,0 +1,53 @@
+["a", "b", "c"]
+["a", "b", "c"]
+["a", "b", "c"]
+["a", "b"]
+["a", "b"]
+["aa", "bb", "cc"]
+2
+["9", "10", "11"]
+["9", ":", ";", "<", "=", ">", "?", "@", "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z", "[", "\\", "]", "^", "_", "`", "a", "b", "c"]
+["9", "10", "11"]
+["9", "10"]
+["9", "10"]
+["99", "1010", "1111"]
+2
+[1, 2, 3]
+ArgumentError: comparison of Integer with String failed
+[1, 2, 3]
+ArgumentError: wrong number of arguments (given 2, expected 1)
+ArgumentError: wrong number of arguments (given 2, expected 1)
+[2, 4, 6]
+2
+ArgumentError: comparison of Integer with String failed
+ArgumentError: comparison of Integer with String failed
+ArgumentError: comparison of Integer with String failed
+ArgumentError: wrong number of arguments (given 2, expected 1)
+ArgumentError: wrong number of arguments (given 2, expected 1)
+ArgumentError: comparison of Integer with String failed
+ArgumentError: comparison of Integer with String failed
+undefined method 'upto' for nil ["c"]
+undefined method 'upto' for nil ["c"]
+undefined method 'upto' for nil ["c"]
+undefined method 'upto' for nil ["c", true]
+undefined method 'upto' for nil ["c", true]
+undefined method 'upto' for nil ["c"]
+undefined method 'upto' for nil ["c"]
+undefined method 'upto' for an instance of Symbol ["u"]
+undefined method 'upto' for an instance of Symbol ["c"]
+undefined method 'upto' for an instance of Symbol ["u"]
+undefined method 'upto' for an instance of Symbol ["u", true]
+undefined method 'upto' for an instance of Symbol ["u", true]
+undefined method 'upto' for an instance of Symbol ["u"]
+undefined method 'upto' for an instance of Symbol ["u"]
+[5, 6, 7]
+TypeError: no implicit conversion of Integer into String
+TypeError: no implicit conversion of Integer into String
+TypeError: no implicit conversion of Float into String
+[5, 6, 7]
+[5, 6, 7]
+[5, 6, 7]
+"cc"
+nil
+4
+30

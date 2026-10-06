@@ -238,6 +238,7 @@ int block_has_top_break(Compiler *c, int node);
    receiver, not instance_exec/eval). When true, the call returns the break
    value on break, so its result type widens to poly. */
 int call_breaks(Compiler *c, int id);
+int an_poly_str_upto(Compiler *c, int id);   /* a boxed upto a String receiver may take */
 /* Scope of an inline-able yielding user method a block-bearing CallNode
    resolves to (its literal block is spliced at yield sites), else -1. */
 int call_user_yield_mi(Compiler *c, int id);
