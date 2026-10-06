@@ -543,9 +543,21 @@ int emit_interp_append(Compiler *c, int id, const char *open, const char *open_n
         buf_printf(b, "%s(&(\"\\xff\" \"%.*s\")[1]), %ldUL);\n", open_n,
                    w->lit_esc_len, (pl.lits.p ? pl.lits.p : "") + w->lit_off, w->lit_len);
         break;
-      case WK_INT:
-        buf_printf(b, "%s_t%d == SP_INT_NIL ? sp_str_empty : sp_int_to_s(_t%d));\n", open, w->tmp, w->tmp);
+      case WK_INT: {
+        /* the digits go through a stack buffer into the length-taking
+           append: sp_int_to_s allocated a String per part only for the
+           append to copy it. The byte in front of the digits is a 0, the
+           marker no heap String has, so a root the append puts on them
+           (SP_GC_ROOT_STR) reads them as foreign memory. A nil part
+           appends the empty String, as before. */
+        int dg = ++g_tmp;
+        buf_printf(b, "{ char _d%d[24]; _d%d[0] = 0; if (_t%d == SP_INT_NIL) %ssp_str_empty);\n",
+                   dg, dg, w->tmp, open);
+        emit_indent(b, indent + 1);
+        buf_printf(b, "else %s_d%d + 1, (size_t)(sp_w_int(_d%d + 1, _t%d) - (_d%d + 1))); }\n",
+                   open_n, dg, dg, w->tmp, dg);
         break;
+      }
       case WK_BOOL:
         buf_printf(b, "%s_t%d ? SPL(\"true\") : SPL(\"false\"));\n", open, w->tmp);
         break;
