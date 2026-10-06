@@ -11895,6 +11895,35 @@ static void emit_user_init_copy_dispatch(Compiler *c, Buf *b) {
   buf_puts(b, "    default: break;\n  }\n}\n");
 }
 
+/* sp_arysub_dup_dispatch (sp_bsub_dup_hook): dup / clone of an Array
+   subclass instance held in a boxed value (#7449). The box is its Array's,
+   which the runtime's dup would copy as a plain Array; the class its scan
+   names (sp_bsub_cls_of) makes its own copy (sp_X__dup), then runs that
+   class's initialize_copy, as a typed dup does. */
+static void emit_arysub_dup_dispatch(Compiler *c, Buf *b) {
+  buf_puts(b, "static sp_RbVal sp_arysub_dup_dispatch(sp_RbVal v, int keep_frozen, sp_bool *handled) {\n"
+              "  switch (sp_bsub_cls_of(v)) {\n");
+  for (int k = 0; k < c->nclasses; k++) {
+    if (c->classes[k].ary_root <= 0) continue;
+    const char *cn = c->classes[k].c_name;
+    buf_printf(b, "    case %d: {\n      sp_%s *o = (sp_%s *)v.v.p; SP_GC_ROOT(o);\n"
+                  "      sp_%s *d = (sp_%s *)sp_%s__dup(o, keep_frozen ? 1 : 0); SP_GC_ROOT(d);\n",
+               k, cn, cn, cn, cn, cn);
+    int defcls = -1, mi = user_init_copy_scope(c, k, &defcls);
+    if (mi >= 0) {
+      TyKind pt = scope_local(&c->scopes[mi], c->scopes[mi].pnames[0])->type;
+      buf_puts(b, "      ");
+      emit_method_cname(c, &c->scopes[mi], b);
+      buf_printf(b, "((sp_%s *)d, ", c->classes[defcls].c_name);
+      if (pt == TY_POLY) buf_puts(b, "v");
+      else buf_printf(b, "(sp_%s *)o", c->classes[ty_object_class(pt)].c_name);
+      buf_puts(b, c->scopes[mi].blk_param && c->scopes[mi].blk_param[0] ? ", NULL);\n" : ");\n");
+    }
+    buf_puts(b, "      sp_RbVal r = v; r.v.p = d; *handled = TRUE; return r;\n    }\n");
+  }
+  buf_puts(b, "    default: return v;\n  }\n}\n");
+}
+
 /* Generate sp_user_binop_dispatch: a cls_id switch resolving user-defined
    binary operators on a BOXED receiver. Installed as sp_user_binop_hook, the
    last stop before sp_poly_binop_bad raises -- so `acc + x` inside a fold
@@ -12346,6 +12375,8 @@ void emit_regex_section(Compiler *c, Buf *b) {
     buf_puts(b, "static sp_File *sp_user_to_io_dispatch(sp_RbVal v);\n");
   if (g_has_user_init_copy)
     buf_puts(b, "static void sp_user_init_copy_dispatch(sp_RbVal copy, sp_RbVal orig);\n");
+  if (program_has_arysub(c))
+    buf_puts(b, "static sp_RbVal sp_arysub_dup_dispatch(sp_RbVal v, int keep_frozen, sp_bool *handled);\n");
   if (g_needs_class_machinery)
     buf_puts(b, "static int sp_poly_is_a(sp_RbVal obj, sp_Class klass);\n");
   buf_puts(b, "static void *sp_poly_unbox_cls(sp_RbVal v, int cls, const char *want);\n");
@@ -12443,6 +12474,7 @@ void emit_regex_section(Compiler *c, Buf *b) {
     buf_puts(b, "  sp_user_to_io_hook = sp_user_to_io_dispatch;\n");
   if (g_has_user_init_copy)
     buf_puts(b, "  SP_INSTALL_HOOK(sp_user_init_copy_hook, sp_user_init_copy_dispatch);\n");
+  if (program_has_arysub(c)) buf_puts(b, "  SP_INSTALL_HOOK(sp_bsub_dup_hook, sp_arysub_dup_dispatch);\n");   /* #7449 */
   if (g_gen_obj_hashkey)
     buf_puts(b, "  SP_INSTALL_HOOK(sp_obj_hash_hook, sp_gen_obj_hash);\n  SP_INSTALL_HOOK(sp_obj_eql_hook, sp_gen_obj_eql);\n");
   if (g_gen_obj_valeq)
@@ -16248,6 +16280,7 @@ char *codegen_program(const NodeTable *nt) {
   if (g_has_user_coerce) emit_user_coerce_dispatch(c, body);
   if (g_has_user_to_io) emit_user_to_io_dispatch(c, body);
   if (g_has_user_init_copy) emit_user_init_copy_dispatch(c, body);
+  if (program_has_arysub(c)) emit_arysub_dup_dispatch(c, body);
   /* Struct/Data value-== hook (after the class struct definitions); emitted
      before the hash-key dispatch, which references sp_obj_eq_dispatch. */
   if (g_gen_obj_valeq) emit_obj_valeq_dispatch(c, body);
