@@ -37,3 +37,30 @@ end
   t { r.match?("a", 2) }
   t { r.match?(/a/, 1) }
 end
+
+# the position counts the subject's own bytes: past an embedded NUL, and
+# one unit per byte in a binary String
+["ab\0cd", "\xC3\xA9x".b].each do |v|
+  s = [v, 0][k]
+  t { s.match?(/cd/, 1) }
+  t { s.match?(/.x/, 1) }
+  t { s.match?(/^.x/, 1) }
+end
+
+# an object with a #to_str is converted, as a Regexp's subject and as a
+# String's or a Symbol's pattern
+class StrLike
+  def to_str = "needle"
+end
+o = [StrLike.new, 0][k]
+[/needle/, "needle", :needle].each do |v|
+  r = [v, 0][k]
+  t { r.match?(o) }
+  t { r.match(o).to_s }
+end
+
+# a third argument is the arity error, whatever the receiver holds
+["abc", nil].each do |v|
+  s = [v, 0][k]
+  t { s.match?(/b/, 0, 1) }
+end
