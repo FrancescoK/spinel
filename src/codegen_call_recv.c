@@ -3368,6 +3368,11 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
     }
     int sb_nil_nc = !(sb_fl & PF_STR_SELF);
     int sb_sub = sbi >= 0 && (sp_streq(sb_bang, "gsub!") || sp_streq(sb_bang, "sub!"));
+    /* gsub!(pattern) with no replacement and no block answers an
+       Enumerator, which its own arm builds: the value form below answers
+       the String, and with a pattern the plain form refuses it went into
+       the Enumerator slot */
+    if (sbi >= 0 && comp_ntype(c, id) == TY_ENUMERATOR) sbi = -1;
     if (sbi >= 0) {
       int lvw = str_mut_var_recv(c, recv) || sb_shadowed_reader(recv);
       /* A shared-mutable (STRBUF) local mutates its buffer IN PLACE so every
