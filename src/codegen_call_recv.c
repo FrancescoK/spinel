@@ -3689,7 +3689,10 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
       int tn2 = ++g_tmp;
       buf_printf(b, "({ sp_str_check_mutable(");   /* frozen -> FrozenError (#3003) */
       emit_expr(c, recv, b);
-      buf_printf(b, "); const char *_t%d = ", tn2); emit_str_expr(c, argv[0], b); buf_puts(b, "; ");
+      /* the receiver takes a copy of the argument's bytes: handed the
+         argument's own pointer it became that object (`t.replace(s)` then
+         `t.equal?(s)`, and `s.freeze` froze t) */
+      buf_printf(b, "); const char *_t%d = sp_str_dup(", tn2); emit_str_expr(c, argv[0], b); buf_puts(b, "); ");
       emit_str_mut_writeback(c, recv, lvw, tn2, b);
       buf_printf(b, "_t%d; })", tn2);
       { *out = 1; return 1; }
@@ -6756,7 +6759,8 @@ static int str_arms_case_search(Compiler *c, Buf *b, const NodeTable *nt, const 
                   " if (sp_re_match(sp_re_pat_%d, %s) >= 0) {"
                   " sp_StrArray_push(_t%d, sp_re_pre_match()); sp_StrArray_push(_t%d, sp_re_match_str);"
                   " sp_StrArray_push(_t%d, sp_re_post_match()); }\nelse {"
-                  " sp_StrArray_push(_t%d, %s); sp_StrArray_push(_t%d, SPL(\"\")); sp_StrArray_push(_t%d, SPL(\"\")); }"
+                  " sp_StrArray_push(_t%d, sp_str_dup(%s)); sp_StrArray_push(_t%d, sp_str_dup(sp_str_empty));"
+                  " sp_StrArray_push(_t%d, sp_str_dup(sp_str_empty)); }"
                   " _t%d; })",
                tr, re_lit_index(c, argv[0]), r, tr, tr, tr, tr, r, tr, tr, tr);
   }
