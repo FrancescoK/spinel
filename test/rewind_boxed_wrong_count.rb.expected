@@ -1,0 +1,9 @@
+ArgumentError: wrong number of arguments (given 1, expected 0)
+ArgumentError: wrong number of arguments (given 1, expected 0)
+NoMethodError: undefined method 'rewind' for nil
+NoMethodError: undefined method 'rewind' for an instance of Integer
+Enumerator
+1
+0
+"ab"
+[:a, :a, :a, :a]
