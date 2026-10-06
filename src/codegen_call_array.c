@@ -1848,6 +1848,25 @@ int emit_call_store_value_arms(Compiler *c, Buf *b, const NodeTable *nt, const c
   }
   return 0;
 }
+/* Is the untyped receiver `recv` an empty Array: the `[]` literal, or a
+   local every write of which is one? Only then does an untyped `sum` have
+   the empty answer; an untyped call's value (`big.times` under
+   --int-overflow=promote) is no empty literal. */
+static int untyped_empty_array(Compiler *c, int recv) {
+  const NodeTable *nt = c->nt;
+  recv = unwrap_parens(c, recv);
+  if (recv < 0) return 0;
+  if (nt_kind(nt, recv) == NK_ArrayNode) {
+    int en = 0;
+    nt_arr(nt, recv, "elements", &en);
+    return en == 0;
+  }
+  if (nt_kind(nt, recv) != NK_LocalVariableReadNode) return 0;
+  const char *ln = nt_str(nt, recv, "name");
+  Scope *sc = ln ? comp_scope_of(c, recv) : NULL;
+  return sc && local_all_writes_empty_array(c, sc, ln);
+}
+
 
 /* an Array receiver: a store in expression position (a[i] = v, a[i, n] = src, a[range] = src),
    sum and the other methods of an empty literal, then the Array emitters (emit_array_call) */
@@ -1927,22 +1946,20 @@ int emit_call_array_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const
   /* array value methods */
   /* empty array literal [] has TY_UNKNOWN; sum returns init or 0. A local bound
      to [] that no push narrowed also stays TY_UNKNOWN, so `a = []; a.sum(0.0)`
-     reaches here with a non-literal receiver -- still an empty array. */
-  if (recv >= 0 && rt == TY_UNKNOWN && sp_streq(name, "sum")) {
-    int is_lit = nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ArrayNode");
-    int en = 0; if (is_lit) nt_arr(nt, recv, "elements", &en);
-    if (!is_lit || en == 0) {
-      int call_boxed = repr_of(c, id).kind == RK_BOXED;
-      if (argc == 1) {
-        if (call_boxed) emit_boxed(c, argv[0], b);
-        else emit_expr(c, argv[0], b);
-      }
-      else {
-        if (call_boxed) buf_puts(b, "sp_box_int(0)");
-        else buf_puts(b, "0");
-      }
-      return 1;
+     reaches here with a non-literal receiver -- still an empty array. Any
+     other untyped receiver is not one: `big.times.sum` under
+     --int-overflow=promote answered 0 here (untyped_empty_array). */
+  if (recv >= 0 && rt == TY_UNKNOWN && sp_streq(name, "sum") && untyped_empty_array(c, recv)) {
+    int call_boxed = repr_of(c, id).kind == RK_BOXED;
+    if (argc == 1) {
+      if (call_boxed) emit_boxed(c, argv[0], b);
+      else emit_expr(c, argv[0], b);
     }
+    else {
+      if (call_boxed) buf_puts(b, "sp_box_int(0)");
+      else buf_puts(b, "0");
+    }
+    return 1;
   }
   /* take_while/drop_while/each_index/set-ops on empty array literal [] (TY_UNKNOWN receiver) */
   if (recv >= 0 && rt == TY_UNKNOWN &&
