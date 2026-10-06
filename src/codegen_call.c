@@ -15081,6 +15081,15 @@ int builtin_ops_arity_check(void) {
   fprintf(stderr, "check-bop-arity: %d rows checked, %d outside CRuby's counts\n", checked, bad);
   return bad;
 }
+/* The count CRuby expects of cls#name for a call of argc arguments (with a
+   block when with_block), into exp, when the instance arity table refuses
+   the count; NULL when it admits it or has no row. */
+const char *builtin_arity_expected(const char *cls, const char *name, int with_block, int argc,
+                                   char *exp, size_t n) {
+  exp[0] = 0;
+  if (!arity_spec_row(sp_builtin_arity_spec_tbl, cls, name, with_block, argc, exp, n)) return NULL;
+  return exp[0] ? exp : NULL;
+}
 int builtin_arity_admits(const char *cls, const char *name, int argc) {
   char exp[64];
   exp[0] = 0;
