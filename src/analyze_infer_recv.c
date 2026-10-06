@@ -1014,6 +1014,8 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
                     nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "KeywordHashNode");
     if (sp_streq(name, "sample") && argc == 1 && !sample_kw)
       { *out = rt; return 1; }  /* n-arg form -> subarray */
+    if (sp_streq(name, "sample") && argc == 2)
+      { *out = rt; return 1; }  /* sample(n, random: g) -> subarray */
     /* a countless blockless cycle is an Enumerator too (#3758) */
     if (sp_streq(name, "cycle") && argc == 0 && nt_ref(nt, id, "block") < 0 &&
         !call_is_chain_receiver_with_block(c, id))
