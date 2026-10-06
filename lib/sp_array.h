@@ -121,8 +121,10 @@ static sp_FloatArray*sp_FloatArray_new_fill(sp_int n,sp_float v){sp_FloatArray*a
 static inline sp_float sp_FloatArray_pop(sp_FloatArray*a){if(!a||a->len<=0)return sp_float_nil();if(a->frozen){sp_raise_frozen_array_at(a, SP_BUILTIN_FLT_ARRAY);return sp_float_nil();}return a->data[--a->len];}
 static inline sp_float sp_FloatArray_shift(sp_FloatArray*a){if(!a||a->len==0)return sp_float_nil();if(a->frozen){sp_raise_frozen_array_at(a, SP_BUILTIN_FLT_ARRAY);return sp_float_nil();}sp_float v=a->data[0];for(sp_int i=0;i+1<a->len;i++)a->data[i]=a->data[i+1];a->len--;return v;}
 /* FloatArray is 0-based (no `start` offset, unlike IntArray). delete_at
-   returns 0.0 on out-of-range (delete_at's nil there). */
-static inline sp_float sp_FloatArray_delete_at(sp_FloatArray*a,sp_int i){if(!a)return 0.0;if(a->frozen){sp_raise_frozen_array_at(a, SP_BUILTIN_FLT_ARRAY);return 0.0;}if(i<0)i+=a->len;if(i<0||i>=a->len)return 0.0;sp_float v=a->data[i];for(sp_int j=i;j+1<a->len;j++)a->data[j]=a->data[j+1];a->len--;return v;}
+   (and slice!(i), which shares it) answers nil out of range, as pop and
+   shift do: the float slot's sentinel, not a 0.0 nothing could tell from a
+   real zero (#4288). */
+static inline sp_float sp_FloatArray_delete_at(sp_FloatArray*a,sp_int i){if(!a)return sp_float_nil();if(a->frozen){sp_raise_frozen_array_at(a, SP_BUILTIN_FLT_ARRAY);return sp_float_nil();}if(i<0)i+=a->len;if(i<0||i>=a->len)return sp_float_nil();sp_float v=a->data[i];for(sp_int j=i;j+1<a->len;j++)a->data[j]=a->data[j+1];a->len--;return v;}
 static inline sp_int sp_FloatArray_length(sp_FloatArray*a){return a->len;}
 static inline sp_bool sp_FloatArray_empty(sp_FloatArray*a){return a->len==0;}
 static inline sp_float sp_FloatArray_get(sp_FloatArray*a,sp_int i){if(!a)return sp_float_nil();if(i<0)i+=a->len;if(i<0||i>=a->len)return sp_float_nil();return a->data[i];}

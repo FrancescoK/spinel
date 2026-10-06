@@ -344,10 +344,12 @@ void sp_IntArray_uniq_bang(sp_IntArray*a){SP_GC_ROOT(a);if(!a||a->frozen){if(a&&
 else i++;}}
 void sp_IntArray_shuffle_bang(sp_IntArray*a){SP_GC_ROOT(a);if(!a)return;if(a->frozen){sp_raise_frozen_array_at(a, SP_BUILTIN_INT_ARRAY);return;}for(sp_int i=a->len-1;i>0;i--){sp_int j=sp_krand_below(i+1);sp_int t=a->data[a->start+i];a->data[a->start+i]=a->data[a->start+j];a->data[a->start+j]=t;}}
 sp_IntArray*sp_IntArray_shuffle(sp_IntArray*a){SP_GC_ROOT(a);sp_IntArray*b=sp_IntArray_dup(a);sp_IntArray_shuffle_bang(b);return b;}
-/* Array#sample. CRuby returns nil for `[].sample`; in spinel's typed-array
-   slot nil collapses to 0. sp_krand_below guards the len==0 draw itself.
-   Issue #536. */
-sp_int sp_IntArray_sample(sp_IntArray*a){SP_GC_ROOT(a);if(a->len<=0)return 0;return a->data[a->start+sp_krand_below(a->len)];}
+/* Array#sample. CRuby returns nil for `[].sample`: the typed slot's nil
+   sentinel, as pop and shift answer (#4288), so the empty draw reads back
+   nil and not a 0 nothing could tell from a real element. The Float and
+   String twins answer sp_float_nil() and NULL the same way. sp_krand_below
+   guards the len==0 draw itself. Issue #536. */
+sp_int sp_IntArray_sample(sp_IntArray*a){SP_GC_ROOT(a);if(a->len<=0)return SP_INT_NIL;return a->data[a->start+sp_krand_below(a->len)];}
 /* Issue #745/#832: empty min/max return SP_INT_NIL (caller treats as
    int?); without the guard, the first read is uninitialized memory. */
 sp_int sp_IntArray_min(sp_IntArray*a){if(!a||a->len<=0)return SP_INT_NIL;sp_int m=a->data[a->start];for(sp_int i=1;i<a->len;i++)if(a->data[a->start+i]<m)m=a->data[a->start+i];return m;}
@@ -466,7 +468,7 @@ void sp_FloatArray_shuffle_bang(sp_FloatArray*a){SP_GC_ROOT(a);if(!a)return;if(a
 sp_FloatArray*sp_FloatArray_dup(sp_FloatArray*a){SP_GC_ROOT(a);sp_FloatArray*b=sp_FloatArray_new();sp_FloatArray_replace(b,a);return b;}
 sp_FloatArray*sp_FloatArray_sort(sp_FloatArray*a){SP_GC_ROOT(a);sp_FloatArray*b=sp_FloatArray_dup(a);sp_FloatArray_sort_bang(b);return b;}
 sp_FloatArray*sp_FloatArray_shuffle(sp_FloatArray*a){SP_GC_ROOT(a);sp_FloatArray*r=sp_FloatArray_new();sp_FloatArray_replace(r,a);sp_FloatArray_shuffle_bang(r);return r;}
-sp_float sp_FloatArray_sample(sp_FloatArray*a){SP_GC_ROOT(a);if(a->len<=0)return 0.0;return a->data[sp_krand_below(a->len)];}
+sp_float sp_FloatArray_sample(sp_FloatArray*a){SP_GC_ROOT(a);if(a->len<=0)return sp_float_nil();return a->data[sp_krand_below(a->len)];}
 /* IEEE 754 == on sp_float: NaN never matches; +0.0 == -0.0 (diverges from Float#eql?). */
 /* a NaN is not == to itself, but CRuby's identity fallback still finds the
    very same NaN in a container (#3650) */
@@ -645,7 +647,7 @@ void sp_StrArray_shuffle_bang(sp_StrArray*a){SP_GC_ROOT(a); sp_gc_wb((void*)a);i
 sp_StrArray*sp_StrArray_dup(sp_StrArray*a){SP_GC_ROOT(a);sp_StrArray*r=sp_StrArray_new();sp_StrArray_replace(r,a);return r;}
 sp_StrArray*sp_StrArray_sort(sp_StrArray*a){SP_GC_ROOT(a);sp_StrArray*b=sp_StrArray_dup(a);sp_StrArray_sort_bang(b);return b;}
 sp_StrArray*sp_StrArray_shuffle(sp_StrArray*a){SP_GC_ROOT(a);sp_StrArray*r=sp_StrArray_new();sp_StrArray_replace(r,a);sp_StrArray_shuffle_bang(r);return r;}
-const char *sp_StrArray_sample(sp_StrArray*a){SP_GC_ROOT(a);if(a->len<=0)return sp_str_empty;return a->data[sp_krand_below(a->len)];}
+const char *sp_StrArray_sample(sp_StrArray*a){SP_GC_ROOT(a);if(a->len<=0)return NULL;return a->data[sp_krand_below(a->len)];}
 
 /* ============ poly/inspect-dependent array ops (display, concat, to_poly) ============ */
 /* The members String#upto yields, in CRuby's rb_str_upto_each order of
