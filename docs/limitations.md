@@ -1277,6 +1277,30 @@ two distinct ones, so even a dedicated identity mode would diverge from CRuby
 on the exact programs that need it. Restructure identity-keyed lookups to use
 an explicit unique key (an Integer id, a Symbol) instead.
 
+#### A Hash's default block called through `default_proc` with another Hash or no Hash
+
+A `Hash.new { |hash, key| ... }` block is compiled for the Hash it belongs to,
+whose keys and values can be of any class. The Proc `default_proc` answers
+for it can be called with any first argument. A Hash of another kind goes
+in as a general copy that is written back after the block ran, so the block
+reads and writes it as CRuby's would, except that a write the Hash has no
+representation for -- a Symbol key into a Hash Spinel typed String-keyed,
+a String value into an Integer-valued one -- raises `TypeError` at the
+write-back, as a store through a boxed Hash does:
+
+```ruby
+m = Hash.new { |hash, key| hash[key] = 1 }
+y = {"a" => 1}
+m.default_proc.call(y, "b")   # 1, and y is {"a" => 1, "b" => 1}
+m.default_proc.call(y, :c)    # TypeError: can't store Symbol as a key in a Hash of String keys ...
+m.default_proc.call(nil, :c)  # TypeError: a Hash's default block that reads its Hash was called with no Hash ...
+```
+
+Anything that is not a Hash goes in as no Hash: a block that ignores its
+Hash answers as CRuby's does, and one that reads it raises `TypeError`, where
+CRuby calls the method on the object given (and raises `NoMethodError` for
+`nil`).
+
 #### `String#equal?` and literal identity
 
 `equal?` on strings is pointer identity. Equal frozen literals are one

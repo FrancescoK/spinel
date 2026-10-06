@@ -16861,6 +16861,50 @@ static SP_UNUSED sp_RbVal sp_dyn_sympoly_hash_dproc(sp_SymPolyHash *h, sp_sym ke
 static void sp_dyn_new_arity(sp_int given, sp_int max) {
   sp_arity_check(given, 0, max, NULL);
 }
+/* sp_dyn_hash_dproc as sp_poly_cold.c installs it (Hash.new with a block
+   through a Class value): a static has an address per unit, so this unit's
+   comparison cannot see that one, and the compiled unit answers instead. */
+int sp_hash_dproc_is_dyn(sp_polypoly_dproc_t f);
+/* A call of the Proc Hash#default_proc wraps around a general Hash's
+   compiled default block (or the bridge a merge leaves), with the proc
+   calling convention's arguments: as CRuby's, a missing argument is nil
+   and one Array argument spreads over the hash and the key. The block was
+   compiled for a general Hash, so a general Hash goes in as it is, a Hash
+   of another kind as a general copy that is written back after the block
+   ran (a frozen one as a frozen copy, so a write raises as it would), and
+   anything else as no Hash at all, which a block that reads its Hash
+   refuses (sp_hash_dproc_no_hash). Reading the side channel's object as
+   the hash's own kind crashed on a Hash of another kind. */
+static SP_UNUSED sp_RbVal sp_pp_hash_dproc_call(sp_PolyPolyHash *src, sp_int argc) {
+  if (!src || !src->dproc) return sp_box_nil();
+  sp_RbVal hv = argc >= 1 ? _sp_proc_poly_args[0] : sp_box_nil();
+  sp_RbVal kv = argc >= 2 ? _sp_proc_poly_args[1] : sp_box_nil();
+  SP_GC_ROOT(src); SP_GC_ROOT_RBVAL(hv); SP_GC_ROOT_RBVAL(kv);
+  if (argc == 1 && hv.tag == SP_TAG_OBJ && hv.v.p && sp_poly_is_array_kind(hv.cls_id)) {
+    kv = sp_poly_arr_get(hv, 1);
+    hv = sp_poly_arr_get(hv, 0);
+  }
+  if (hv.tag != SP_TAG_OBJ || !hv.v.p || !sp_poly_is_hash_kind(hv.cls_id))
+    return src->dproc(NULL, kv, src->dproc_self);
+  if (hv.cls_id == SP_BUILTIN_POLY_POLY_HASH)
+    return src->dproc((sp_PolyPolyHash *)hv.v.p, kv, src->dproc_self);
+  sp_PolyPolyHash *work = sp_poly_as_pp_hash(hv, "default_proc");
+  SP_GC_ROOT(work);
+  int frozen = sp_gc_is_frozen(hv.v.p);
+  if (frozen) sp_gc_freeze(work);
+  sp_RbVal r = src->dproc(work, kv, src->dproc_self);
+  SP_GC_ROOT_RBVAL(r);
+  if (!frozen) sp_poly_hash_writeback(hv, work);
+  return r;
+}
+/* A compiled default block that reads its Hash, called through
+   Hash#default_proc with something other than a Hash: the block's hash
+   parameter is a general Hash, with no representation for another object
+   (docs/limitations.md). */
+SP_NORETURN SP_COLD static SP_UNUSED void sp_hash_dproc_no_hash(void) {
+  sp_raise_cls("TypeError", "a Hash's default block that reads its Hash was called with no Hash: "
+                            "the block was compiled for a Hash");
+}
 sp_RbVal sp_builtin_class_new(int kind, sp_int argc, const sp_RbVal *av, sp_Proc *blk);
 /* The default arm of those dispatches: `cls` (named `cn`) is a builtin
    exception class, constructed as `RuntimeError.new(msg)` is, or a class

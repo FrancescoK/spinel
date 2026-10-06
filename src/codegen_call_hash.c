@@ -100,22 +100,37 @@ int emit_op_hash_default_proc(Compiler *c, const BopCtx *x, Buf *b) {
       g_needs_proc_poly_argslot = 1;
       buf_puts(&g_proc_protos, "extern SP_TLS sp_RbVal _sp_proc_poly_args[SP_PROC_ARG_SLOTS];\n");
     }
-    const char *kexpr = hdp_v == 0 ? "(sp_sym)sp_poly_to_i(_sp_proc_poly_args[1])"
-                      : hdp_v == 1 ? "_sp_proc_poly_args[1].v.s"
-                      : "_sp_proc_poly_args[1]";
+    const char *tramp = hash_proc_dproc_fn(hdp_v == 0 ? TY_SYM_POLY_HASH : hdp_v == 1 ? TY_STR_POLY_HASH : TY_POLY_POLY_HASH);
     buf_printf(&g_procs,
       "static sp_int _hdp_tramp_%s(void *cap, sp_int argc, sp_int *args) {\n"
-      "  sp_%sHash *src = (sp_%sHash *)cap; (void)args;\n"
-      "  sp_%sHash *h = (argc >= 1 && _sp_proc_poly_args[0].tag == SP_TAG_OBJ)"
-      " ? (sp_%sHash *)_sp_proc_poly_args[0].v.p : src;\n"
-      "  _sp_proc_poly_ret = (src && src->dproc && argc >= 2)"
-      " ? src->dproc(h, %s, src->dproc_self) : sp_box_nil();\n"
+      "  sp_%sHash *src = (sp_%sHash *)cap; (void)args;\n", hnn, hnn, hnn);
+    if (hdp_v == 2)
+      /* the arguments as a proc takes them, a Hash of another kind as a
+         general copy (sp_pp_hash_dproc_call) */
+      buf_puts(&g_procs, "  _sp_proc_poly_ret = sp_pp_hash_dproc_call(src, argc);\n");
+    else {
+      /* A String- or Symbol-keyed Hash's default is always the Proc
+         default_proc= installed, which _hdp_ answers itself; another block
+         would take only a Hash of this kind and a key of its kind, and is
+         refused anything else rather than handed it misread. */
+      const char *ktag = hdp_v == 0 ? "SP_TAG_SYM" : "SP_TAG_STR";
+      const char *kval = hdp_v == 0 ? "(sp_sym)_k.v.i" : "_k.v.s";
+      buf_printf(&g_procs,
+        "  sp_RbVal _h = argc >= 1 ? _sp_proc_poly_args[0] : sp_box_nil(), _k = argc >= 2 ? _sp_proc_poly_args[1] : sp_box_nil();\n"
+        "  if (!src || !src->dproc) _sp_proc_poly_ret = sp_box_nil();\n"
+        "  else if (_h.tag == SP_TAG_OBJ && _h.cls_id == %s && _h.v.p && _k.tag == %s)"
+        " _sp_proc_poly_ret = src->dproc((sp_%sHash *)_h.v.p, %s, src->dproc_self);\n"
+        "  else\n"
+        "    sp_raise_cls(\"TypeError\", \"this Hash's default block takes a Hash of its own kind and a key of its kind\");\n",
+        hash_box_cls(hdp_v == 0 ? TY_SYM_POLY_HASH : TY_STR_POLY_HASH), ktag, hnn, kval);
+    }
+    buf_printf(&g_procs,
       "  return 0;\n}\n"
       "static sp_Proc *_hdp_%s(sp_%sHash *h) {\n"
       "  if (!h || !h->dproc) return NULL;\n"
-      "  if (h->dproc == %s) return (sp_Proc *)h->dproc_self;\n"
+      "  if (h->dproc == %s%s) return (sp_Proc *)h->dproc_self;\n"
       "  return sp_proc_new_meta((void *)_hdp_tramp_%s, h, sp_bm_cap_scan, 2, FALSE, 0, NULL, NULL);\n}\n",
-      hnn, hnn, hnn, hnn, hnn, kexpr, hnn, hnn, hash_proc_dproc_fn(hdp_v == 0 ? TY_SYM_POLY_HASH : hdp_v == 1 ? TY_STR_POLY_HASH : TY_POLY_POLY_HASH), hnn);
+      hnn, hnn, tramp, hdp_v == 2 ? " || sp_hash_dproc_is_dyn(h->dproc)" : "", hnn);
   }
   buf_printf(b, "_hdp_%s(", hnn);
   emit_expr(c, recv, b);
