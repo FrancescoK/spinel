@@ -939,6 +939,22 @@ sp_int sp_sock_shutdown(sp_File *f, sp_int how) {SP_GC_ROOT(f);
   if (sp_net_shutdown(fileno(f->fp), (int)how) != 0) sp_file_raise_errno("shutdown", "");
   return 0;
 }
+/* A setsockopt value as the int the option takes: an Integer, true/false as
+   1/0, or the option's packed bytes ([1].pack("i")), as CRuby accepts it. */
+sp_int sp_sock_optval(sp_RbVal v) {
+  if (v.tag == SP_TAG_INT) return v.v.i;
+  if (v.tag == SP_TAG_BOOL) return v.v.i != 0;
+  if (v.tag == SP_TAG_STR && v.v.s) {
+    int n = 0;
+    if (sp_str_byte_len(v.v.s) != sizeof n)
+      sp_raise_cls("ArgumentError", "only an int-sized packed option value is supported");
+    memcpy(&n, v.v.s, sizeof n);
+    return n;
+  }
+  sp_raise_cls("TypeError", "no implicit conversion into Integer");
+  return 0;
+}
+
 sp_int sp_sock_setsockopt(sp_File *f, sp_int level, sp_int opt, sp_int value) {SP_GC_ROOT(f);
   extern int sp_net_setsockopt_int(int fd, int level, int optname, int value);
   sp_sock_require(f, "setsockopt");

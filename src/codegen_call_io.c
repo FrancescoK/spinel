@@ -858,7 +858,16 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
         buf_printf(b, "sp_sock_setsockopt(%s, ", r);
         emit_int_expr(c, argv[0], b); buf_puts(b, ", ");
         emit_int_expr(c, argv[1], b); buf_puts(b, ", ");
-        emit_int_expr(c, argv[2], b); buf_puts(b, ")");
+        /* the value is an Integer, true/false (1/0) or the option's packed
+           bytes, as CRuby takes it; only an Integer converts directly */
+        TyKind vty = comp_ntype(c, argv[2]);
+        if (vty == TY_INT) emit_int_expr(c, argv[2], b);
+        else {
+          buf_puts(b, "sp_sock_optval(");
+          emit_boxed(c, argv[2], b);
+          buf_puts(b, ")");
+        }
+        buf_puts(b, ")");
         free(rb.p); return 1;
       }
       if (sp_streq(name, "getsockopt") && argc == 2) {
