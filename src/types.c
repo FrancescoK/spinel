@@ -659,8 +659,15 @@ const TyTraits ty_traits[TY_TRAITS_N] = {
 };
 
 /* A builtin value's type, which lays out no instance variables: a String,
-   a number, true, false, nil, a Symbol, a Range, an Array or a Hash. */
+   a number, true, false, nil, a Symbol, a Range, a Random, an Array or a
+   Hash. */
 int ty_builtin_ivar_less(TyKind t) {
   return t == TY_STRING || t == TY_STRBUF || t == TY_INT || t == TY_FLOAT || t == TY_BOOL || t == TY_NIL ||
-         t == TY_SYMBOL || t == TY_BIGINT || t == TY_RANGE || ty_is_array(t) || ty_is_hash(t);
+         t == TY_SYMBOL || t == TY_BIGINT || t == TY_RANGE || t == TY_RANDOM || ty_is_array(t) || ty_is_hash(t);
+}
+
+/* Of those, the values whose identity Spinel keeps, so the runtime's map can
+   hold their ivars (sp_bivar_*): an Array, a Hash, a Random. */
+int ty_bivar_keyed(TyKind t) {
+  return t == TY_RANDOM || ty_is_array(t) || ty_is_hash(t);
 }

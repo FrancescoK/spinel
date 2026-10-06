@@ -238,6 +238,9 @@ const char *sp_Random_urandom(sp_int n) {
 /* Random#inspect / #to_s: CRuby's default object rendering (the seed is not
    part of it; the address matches CRuby's zero-padded 16-digit form). */
 const char *sp_Random_inspect(sp_Random *r) {SP_GC_ROOT(r);
+  /* and its instance variables, as CRuby lists an object's */
+  void *t = sp_ivtbl_inspect_fn ? sp_ivtbl_get(r) : NULL;
+  if (t) return sp_sprintf("#<Random:0x%016llx%s>", (unsigned long long)(uintptr_t)r, sp_ivtbl_inspect_fn(t));
   return sp_sprintf("#<Random:0x%016llx>", (unsigned long long)(uintptr_t)r);
 }
 /* Kernel#srand: seed the shared Kernel stream and remember the previous

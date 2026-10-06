@@ -8130,6 +8130,56 @@ int ctor_needs_self_defaults(Compiler *c, int initm, int argc) {
   return 0;
 }
 
+/* A builtin reopen's method called with its receiver as self (a Random, an
+   Array's or a Hash's boxed self, a reopened scalar), then its arguments. A
+   default the call leaves out that reads self -- an ivar, which
+   desugar_builtin_ivars made a call on self -- runs on that receiver, as a
+   user class's default does: the receiver is held in a rooted temp ahead
+   of the defaults the arguments hoist, and the defaults read it as self
+   (g_arm_self, emit_arg_or_default). Without such a default the receiver
+   is emitted in place, as it always was. `boxed`: the method takes its
+   self boxed, through `box_fn` when given (an Array's kind), else by its
+   type. */
+static void emit_reopen_recv(Compiler *c, int recv, int boxed, const char *box_fn, Buf *b) {
+  if (box_fn) { buf_printf(b, "%s(", box_fn); emit_expr(c, recv, b); buf_puts(b, ")"); }
+  else if (boxed) emit_boxed(c, recv, b);
+  else emit_expr(c, recv, b);
+}
+void emit_reopen_recv_args(Compiler *c, int id, int mi, int recv, int boxed, const char *box_fn, Buf *b) {
+  const NodeTable *nt = c->nt;
+  Scope *m = &c->scopes[mi];
+  int args = nt_ref(nt, id, "arguments"), argc = 0;
+  const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+  /* a keyword hash may bind no positional: counted out, a default it might
+     leave is held for (only a temp too many if it does bind one) */
+  int n = call_has_splat_arg(nt, argv, argc) ? 0
+        : argc - (argc > 0 && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode), hold = 0;
+  for (int i = 0; i < m->nparams && !hold; i++)
+    hold = m->pdefault && m->pdefault[i] >= 0 &&
+           (callee_param_is_declared_kwarg(c, m, m->pnames[i]) || arg_slot_for_param(c, m, i, n) < 0) &&
+           ctor_default_reads_self(c, m, m->pdefault[i], 0);
+  if (!hold) {
+    emit_reopen_recv(c, recv, boxed, box_fn, b);
+    emit_args_filled(c, mi, args, ", ", b);
+    return;
+  }
+  TyKind rt = boxed ? TY_POLY : comp_ntype(c, recv);
+  int t = ++g_tmp;
+  char self[32]; snprintf(self, sizeof self, "_t%d", t);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "%s _t%d = ", boxed ? "sp_RbVal" : c_type_name(rt), t);
+  emit_reopen_recv(c, recv, boxed, box_fn, g_pre);
+  buf_puts(g_pre, ";\n");
+  if (boxed || rt == TY_POLY) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_t%d);\n", t); }
+  else if (needs_root(rt)) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", t); }
+  buf_puts(b, self);
+  const char *sv_arm_self = g_arm_self; const Scope *sv_arm_scope = g_arm_scope;
+  int sv_arm_depth = g_arm_depth;
+  g_arm_self = self; g_arm_scope = m; g_arm_depth = g_expr_depth;
+  emit_args_filled(c, mi, args, ", ", b);
+  g_arm_self = sv_arm_self; g_arm_scope = sv_arm_scope; g_arm_depth = sv_arm_depth;
+}
+
 /* One constructor argument of a `k.new(...)` dispatch arm, `val` its text.
    The arm spells each argument inline, so a default reading an earlier
    parameter (`initialize(t, k: t.size)`) emitted the callee's `lv_t` at the
@@ -15526,6 +15576,39 @@ int bam_binop_wrapper(const Scope *tm) {
          tm->pnames[1] && sp_streq(tm->pnames[1], "__bam_a");
 }
 
+static void emit_call_unwrapped(Compiler *c, int id, Buf *b);
+/* A copy of the receiver carries its instance variables (BOPF_COPY_CLASS:
+   dup, clone, Hash#merge and #compact; Kernel's dup and clone on any other
+   value, is_object_copy). An Array's, a Hash's, a Random's or an
+   exception's live in the runtime's map (sp_bivar_*), which the copy the
+   arms make knows nothing of: once the program can write one
+   (Compiler.bivar_table), the receiver is held, the call made on it as
+   always (emit_call_unwrapped, past this wrap), and the original's ivars
+   copied onto the result (sp_bivar_copy, which leaves a value without any
+   alone). clone's frozen state is the arms' own. */
+static int emit_bivar_copy_wrap(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *nm = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver"), argc = 0;
+  if (!c->bivar_table || recv < 0 || !nm || nt_ref(nt, id, "block") >= 0) return 0;
+  call_args(nt, id, &argc);
+  TyKind rt = comp_ntype(c, recv), ret = repr_of(c, id).as_ty;
+  if (!(ty_bivar_keyed(rt) || rt == TY_POLY) || !(ty_bivar_keyed(ret) || ret == TY_POLY)) return 0;
+  if (!(bop_answers_self(rt, nm, argc, 0) & BOPF_COPY_CLASS) && !is_object_copy(nm)) return 0;
+  int t = ++g_tmp;
+  char rn[24], dn[24];
+  snprintf(rn, sizeof rn, "_t%d", t); snprintf(dn, sizeof dn, "_d%d", t);
+  buf_puts(b, "({ "); emit_ctype(c, rt, b); buf_printf(b, " %s = ", rn); emit_expr(c, recv, b);
+  buf_printf(b, rt == TY_POLY ? "; SP_GC_ROOT_RBVAL(%s); " : "; SP_GC_ROOT(%s); ", rn);
+  int slot = view_bind(recv, "%s", rn);
+  emit_ctype(c, ret, b); buf_printf(b, " %s = ", dn); emit_call_unwrapped(c, id, b);
+  view_unbind(slot);
+  buf_printf(b, ret == TY_POLY ? "; SP_GC_ROOT_RBVAL(%s); sp_bivar_copy(" : "; SP_GC_ROOT(%s); sp_bivar_copy(", dn);
+  emit_boxed_text(c, rt, rn, b); buf_puts(b, ", "); emit_boxed_text(c, ret, dn, b);
+  buf_printf(b, "); %s; })", dn);
+  return 1;
+}
+
 /* `Hash.new(capacity: e)` whose `e` has something to run: desugar_hash_new_capacity
    took the keyword off the call and left `e` as its `hash_capacity`. The call
    is emitted as without it, then `e` runs (after the default, as in CRuby)
@@ -20460,6 +20543,13 @@ void emit_call(Compiler *c, int id, Buf *b) {
   /* Hash.new's `capacity:` value runs after the Hash is built (defined in
      the guards below), whichever arm builds it */
   if (emit_hash_new_capacity_wrap(c, id, b, 0)) return;
+  /* a copy of a value whose ivars live in the runtime's map */
+  if (emit_bivar_copy_wrap(c, id, b)) return;
+  emit_call_unwrapped(c, id, b);
+}
+
+/* emit_call past its wraps: the copy wrap emits its own call through here */
+static void emit_call_unwrapped(Compiler *c, int id, Buf *b) {
   { const char *pn = nt_str(c->nt, id, "name");
     int pr = nt_ref(c->nt, id, "receiver");
     if (pn && pr >= 0 && sp_streq(pn, "__poly_enum_for")) {
@@ -23535,8 +23625,8 @@ static int emit_array_hash_reopen_call(Compiler *c, int id, int recv, TyKind rt,
   if (c->scopes[ami].yields && emit_reopen_block_call(c, id, recv, ami, NULL, b)) return 1;
   if (g_plan_check) ucall_observe(c, id, ami, aci, 0);
   buf_printf(b, "sp_%s_%s(", acn, mc(c->scopes[ami].name));
-  emit_boxed(c, recv, b);
-  emit_args_filled(c, ami, nt_ref(c->nt, id, "arguments"), ", ", b);
+  emit_reopen_recv_args(c, id, ami, recv, 1, NULL, b);
+  emit_trailing_blk_arg(c, &c->scopes[ami], id, -1, b);
   buf_puts(b, ")");
   return 1;
 }
