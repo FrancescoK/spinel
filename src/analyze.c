@@ -17042,6 +17042,12 @@ static int an_tail_kinds(Compiler *c, int node) {
   }
   case NK_CallNode: {
     if (an_arg_is_shared_handle(c, node) || an_call_reads_shared_ivar(c, node)) return SCOPE_RET_HANDLE;
+    /* a call answering its receiver (`buf << x << y`, `s.freeze`): what the
+       receiver is */
+    { const char *nm = nt_str(nt, node, "name");
+      int rr = nt_ref(nt, node, "receiver");
+      if (rr >= 0 && nm && nt_ref(nt, node, "block") < 0 && (is_append_concat(nm) || str_self_call(nt, node)))
+        return an_tail_kinds(c, rr); }
     if (bop_share_bang_self(nt_str(nt, node, "name"))) return 0;
     int mi = cplan_user_fresh(c, node)->mi;
     return mi >= 0 ? c->scopes[mi].ret_kinds : SCOPE_RET_FRESH;

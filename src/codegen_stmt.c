@@ -7566,6 +7566,8 @@ static int call_names_only_void_methods(Compiler *c, int node) {
   return any;
 }
 static void emit_tail_value(Compiler *c, int node, Buf *b) {
+  /* a method returning the shared handle (method_returns_handle) */
+  if (g_ret_type == TY_STRBUF && !g_result_var) { emit_hr_tail(c, node, b); return; }
   /* A poly tail slot (a poly return, or a poly result var -- e.g. an inlined
      method's result temp) takes the value as-is: do not rewrite a poly
      `sp_box_nil()` into the scalar emit_ret_nil(g_ret_type) form below. */
@@ -8955,7 +8957,13 @@ void emit_stmt(Compiler *c, int id, Buf *b, int indent) {
   int saved_setter = g_setter_stmt_id;
   if (nt_kind(c->nt, id) == NK_CallNode && name_is_plain_setter(nt_str(c->nt, id, "name")))
     g_setter_stmt_id = id;
+  /* a dropped call of a method returning the shared handle: its __h form
+     answers the handle, where the wrapper copies it (emit_hr_wrapper) */
+  int sv_want = c->hr_want, sv_used = c->hr_used;
+  int hrt = method_hr_target(c, id);
+  if (hrt >= 0) c->hr_want = hrt + 1;
   emit_with_prelude(c, id, b, indent, emit_stmt_inner);
+  c->hr_want = sv_want; c->hr_used = sv_used;
   g_setter_stmt_id = saved_setter;
   /* a call the statement emitters placed themselves (puts, an iterator with
      its block) never reached emit_call's stamp: the same default (#4522) */
@@ -8965,8 +8973,20 @@ void emit_stmt(Compiler *c, int id, Buf *b, int indent) {
     nd_stamp(id, (rt == TY_POLY || rt == TY_UNKNOWN) ? ND_BOXED : ND_DIRECT);
   }
 }
+/* The tail of a method returning the shared handle (method_returns_handle;
+   g_ret_type is TY_STRBUF in its body): `return` its handle. */
+static void emit_hr_return_inner(Compiler *c, int id, Buf *b, int indent) {
+  emit_indent(b, indent);
+  buf_puts(b, "return ");
+  emit_hr_tail(c, id, b);
+  buf_puts(b, ";\n");
+}
 void emit_stmt_tail(Compiler *c, int id, Buf *b, int indent) {
   emit_line_directive(c, id, b);
+  if (g_ret_type == TY_STRBUF && !g_result_var && nt_kind(c->nt, id) != NK_ReturnNode) {
+    emit_with_prelude(c, id, b, indent, emit_hr_return_inner);
+    return;
+  }
   emit_with_prelude(c, id, b, indent, emit_stmt_tail_inner);
 }
 
