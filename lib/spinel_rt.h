@@ -8954,6 +8954,30 @@ static void sp_PolyPolyHash_update(sp_PolyPolyHash *a, sp_PolyPolyHash *b) {
   }
 }
 static void sp_marv_hash_set(sp_RbVal h, sp_RbVal k, sp_RbVal v) { sp_PolyPolyHash_set((sp_PolyPolyHash *)h.v.p, k, v); }
+/* Marshal's read of a boxed Hash's default value, nil for none, with
+   *has_proc set where a default proc stands in for it (CRuby refuses to
+   dump one), and the loader's write of the one a `}` record carries. */
+static SP_UNUSED sp_RbVal sp_marv_hash_default(sp_RbVal h, int *has_proc) {
+  *has_proc = 0;
+  if (h.tag != SP_TAG_OBJ || !h.v.p) return sp_box_nil();
+  switch (h.cls_id) {
+    case SP_BUILTIN_STR_INT_HASH: return sp_box_int_or_nil(((sp_StrIntHash *)h.v.p)->default_v);
+    case SP_BUILTIN_STR_STR_HASH: return sp_box_nullable_str(((sp_StrStrHash *)h.v.p)->default_v);
+    case SP_BUILTIN_INT_STR_HASH: return sp_box_nullable_str(((sp_IntStrHash *)h.v.p)->default_v);
+    case SP_BUILTIN_INT_INT_HASH: return sp_box_int_or_nil(((sp_IntIntHash *)h.v.p)->default_v);
+    case SP_BUILTIN_STR_POLY_HASH:
+      *has_proc = ((sp_StrPolyHash *)h.v.p)->dproc != NULL; return ((sp_StrPolyHash *)h.v.p)->default_v;
+    case SP_BUILTIN_SYM_POLY_HASH:
+      *has_proc = ((sp_SymPolyHash *)h.v.p)->dproc != NULL; return ((sp_SymPolyHash *)h.v.p)->default_v;
+    case SP_BUILTIN_POLY_POLY_HASH:
+      *has_proc = ((sp_PolyPolyHash *)h.v.p)->dproc != NULL; return ((sp_PolyPolyHash *)h.v.p)->default_v;
+    default: return sp_box_nil();
+  }
+}
+static SP_UNUSED void sp_marv_hash_set_default(sp_RbVal h, sp_RbVal d) {
+  sp_gc_wb(h.v.p);
+  ((sp_PolyPolyHash *)h.v.p)->default_v = d;
+}
 /* order[] holds slot indices (not keys), so iterate keys/vals by the stored
    index; merge inherits the LEFT receiver's default per CRuby. */
 sp_PolyPolyHash*sp_PolyPolyHash_merge(sp_PolyPolyHash*a,sp_PolyPolyHash*b);
