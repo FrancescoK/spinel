@@ -8094,8 +8094,20 @@ static sp_RbVal sp_FloatArray_uniq_bangq(sp_FloatArray *a) {
 }
 /* uniq dedups with eql? (class-strict: 1 and 1.0 both survive), as CRuby. */
 static sp_bool sp_poly_eql(sp_RbVal a, sp_RbVal b);
-static void sp_PolyArray_uniq_bang(sp_PolyArray*a){sp_gc_wb((void*)a); if(!a||a->frozen){if(a&&a->frozen)sp_raise_frozen_array_at(a, SP_BUILTIN_POLY_ARRAY);return;}for(sp_int i=0;i<a->len;){int dup=0;for(sp_int j=0;j<i;j++){if(sp_poly_eql(a->data[j],a->data[i])){dup=1;break;}}if(dup){for(sp_int k2=i;k2<a->len-1;k2++)a->data[k2]=a->data[k2+1];a->len--;}
-else i++;}}
+/* Each element is compared, in order, with the ones kept before it -- the
+   same eql? calls in the same order as before -- and a kept one moves down
+   to the end of the kept prefix. Shifting the whole tail down over every
+   duplicate made a run of duplicates cost a pass of the array each. */
+static void sp_PolyArray_uniq_bang(sp_PolyArray*a){sp_gc_wb((void*)a); if(!a||a->frozen){if(a&&a->frozen)sp_raise_frozen_array_at(a, SP_BUILTIN_POLY_ARRAY);return;}
+  sp_int w=0;
+  for(sp_int i=0;i<a->len;i++){
+    sp_RbVal v=a->data[i];
+    int dup=0;
+    for(sp_int j=0;j<w&&!dup;j++)dup=sp_poly_eql(a->data[j],v);
+    if(!dup)a->data[w++]=v;
+  }
+  a->len=w;
+}
 static sp_RbVal sp_PolyArray_sample(sp_PolyArray *a) { if (a->len <= 0) return sp_box_nil(); return a->data[sp_krand_below(a->len)]; }
 
 /* An array of one user class narrowed to a pointer array (#4444): each
