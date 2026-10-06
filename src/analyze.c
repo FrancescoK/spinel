@@ -13316,13 +13316,12 @@ static int an_local_lent(Compiler *c, const char *vn, Scope *vs) {
    methods. The calls that hand an ivar on come from the by-name index, not
    a walk of every call in the program: this is asked once per local/ivar
    alias, and a machine-generated program has one in nearly every method. */
-static int an_ivar_owner(Compiler *c, int node);
 static int an_ivar_lent(Compiler *c, int cid, const char *ivn) {
   const NodeTable *nt = c->nt;
   if (!ivn || cid < 0) return 0;
   for (int e = comp_ivarg_first(c, ivn); e >= 0; e = comp_ivarg_next(c, e)) {
     int u = comp_ivarg_call(c, e), av = comp_ivarg_arg(c, e);
-    if (!sp_streq(nt_str(nt, av, "name"), ivn) || an_ivar_owner(c, av) != cid) continue;
+    if (!sp_streq(nt_str(nt, av, "name"), ivn) || comp_ivar_owner(c, av) != cid) continue;
     int mi = an_call_target_mi(c, u);
     if (mi < 0) mi = an_any_scope_by_name(c, nt_str(nt, u, "name"));
     if (mi < 0) continue;
@@ -13330,7 +13329,7 @@ static int an_ivar_lent(Compiler *c, int cid, const char *ivn) {
       if (!comp_byref_param(c, &c->scopes[mi], j) && !an_param_mutated_in_place(c, mi, j)) continue;
       int x = arg_layout_param_node(c, &c->scopes[mi], u, j, NULL);
       if (x >= 0 && nt_kind(nt, x) == NK_InstanceVariableReadNode && sp_streq(nt_str(nt, x, "name"), ivn) &&
-          an_ivar_owner(c, x) == cid) return 1;
+          comp_ivar_owner(c, x) == cid) return 1;
     }
   }
   return 0;
@@ -14328,30 +14327,18 @@ static int strbuf_ivar_mut_kind(Compiler *c, int cid, const char *nm) {
   signed char *v = sb_mut_tab_slot(&sb_ivar_mut_tab, nm, cid, 0);
   return v ? *v : 0;
 }
-/* The owning class of an ivar READ/WRITE node under the same storage rules
-   the emitters use (instance method -> class, top-level -> Toplevel; class
-   methods / instance_eval contexts return -1). */
-static int an_ivar_owner(Compiler *c, int node) {
-  Scope *cs = comp_scope_of(c, node);
-  if (!cs) return -1;
-  /* a class method's ivar is its class's civ_ slot, typed with the class's
-     ivars (strbuf_ivar_owner): the same rules make it the handle */
-  if (cs->is_cmethod) return cs->class_id;
-  if (cs->class_id >= 0) return cs->class_id;
-  return comp_class_index(c, "Toplevel");
-}
 /* Is the ivar read at `rd` ever written straight from a local (`@v = x`)?
    It then names that local's String, which may be the caller's, rather than
    a String of its own. */
 static int ivar_written_from_local(Compiler *c, int rd) {
   const NodeTable *nt = c->nt;
   const char *nm = nt_str(nt, rd, "name");
-  int cid = an_ivar_owner(c, rd);
+  int cid = comp_ivar_owner(c, rd);
   if (!nm || cid < 0) return 0;
   for (int w = comp_kind_first(c, NK_InstanceVariableWriteNode); w >= 0; w = comp_kind_next(c, w)) {
     if (nt_kind(nt, w) != NK_InstanceVariableWriteNode) continue;
     const char *wn = nt_str(nt, w, "name");
-    if (!wn || !sp_streq(wn, nm) || an_ivar_owner(c, w) != cid) continue;
+    if (!wn || !sp_streq(wn, nm) || comp_ivar_owner(c, w) != cid) continue;
     int v = nt_ref(nt, w, "value");
     if (v >= 0 && nt_kind(nt, v) == NK_LocalVariableReadNode) return 1;
   }
@@ -14774,7 +14761,7 @@ static int an_arg_is_shared_handle(Compiler *c, int node) {
   }
   if (nt_kind(nt, node) == NK_InstanceVariableReadNode) {
     const char *vn = nt_str(nt, node, "name");
-    int cid = vn ? an_ivar_owner(c, node) : -1;
+    int cid = vn ? comp_ivar_owner(c, node) : -1;
     if (cid < 0) return 0;
     int iv = comp_ivar_index(&c->classes[cid], vn);
     return iv >= 0 && c->classes[cid].ivar_types[iv] == TY_STRBUF &&
@@ -15196,7 +15183,7 @@ static int strbuf_demand_store_leaf(Compiler *c, int sn, int depth) {
      ivar (#6179). */
   if (nt_kind(nt, sn) == NK_InstanceVariableReadNode) {
     const char *ivn = nt_str(nt, sn, "name");
-    int icid = an_ivar_owner(c, sn);
+    int icid = comp_ivar_owner(c, sn);
     if (ivn && icid >= 0 && strbuf_ivar_mut_kind(c, icid, ivn) >= 0) {
       int ch = strbuf_promote_ivar(c, icid, ivn);
       int iv = comp_ivar_index(&c->classes[icid], ivn);
@@ -15455,7 +15442,7 @@ static int strbuf_ivar_source_walk(Compiler *c, int cid, const char *ivn, int de
   for (int w = comp_kind_first(c, NK_InstanceVariableWriteNode); w >= 0; w = comp_kind_next(c, w)) {
     if (nt_kind(nt, w) != NK_InstanceVariableWriteNode) continue;
     const char *wn = nt_str(nt, w, "name");
-    if (!wn || !sp_streq(wn, ivn) || an_ivar_owner(c, w) != cid) continue;
+    if (!wn || !sp_streq(wn, ivn) || comp_ivar_owner(c, w) != cid) continue;
     changed |= strbuf_container_source_walk(c, nt_ref(nt, w, "value"), depth + 1, mode);
   }
   for (int w = comp_kind_first(c, NK_CallNode); w >= 0; w = comp_kind_next(c, w)) {
@@ -15463,7 +15450,7 @@ static int strbuf_ivar_source_walk(Compiler *c, int cid, const char *ivn, int de
     int r = nt_ref(nt, w, "receiver");
     if (r < 0 || nt_kind(nt, r) != NK_InstanceVariableReadNode) continue;
     const char *rn = nt_str(nt, r, "name");
-    if (!rn || !sp_streq(rn, ivn) || an_ivar_owner(c, r) != cid) continue;
+    if (!rn || !sp_streq(rn, ivn) || comp_ivar_owner(c, r) != cid) continue;
     const char *wcn = nt_str(nt, w, "name");
     if (!wcn) continue;
     int a = nt_ref(nt, w, "arguments");
@@ -15537,15 +15524,24 @@ static int strbuf_elem_sharing_call(Compiler *c, int node, int depth, int mode, 
    Strings: the walk below demands only what its writes store, and a String
    Array cannot hold a handle at all. A frozen literal raises FrozenError
    on mutation either way. */
+/* Is variable-site entry e (comp_vsite_first) one of global grn's? The
+   chains carry hash collisions. */
+static int gvar_site_is(Compiler *c, int e, const char *grn) {
+  int v = comp_vsite_var(c, e);
+  const char *vn = v >= 0 ? nt_str(c->nt, v, "name") : NULL;
+  NodeKind vk = v >= 0 ? nt_kind(c->nt, v) : NK_NONE;
+  const char *vrn = vn && (vk == NK_GlobalVariableReadNode || vk == NK_GlobalVariableWriteNode)
+                    ? comp_resolve_gvar(c, vn + 1) : NULL;
+  return vrn && sp_streq(vrn, grn);
+}
 static int gvar_array_holds_plain_string(Compiler *c, const char *grn) {
   const NodeTable *nt = c->nt;
   LocalVar *g = comp_gvar(c, grn);
   if (!g || (g->type != TY_STR_ARRAY && g->type != TY_POLY_ARRAY)) return 0;
-  NT_FOREACH_KIND(nt, NK_GlobalVariableWriteNode, w) {
-    const char *wn = nt_str(nt, w, "name");
-    const char *wrn = wn ? comp_resolve_gvar(c, wn + 1) : NULL;
-    int v = an_unparen(nt, nt_ref(nt, w, "value"));
-    if (!wrn || !sp_streq(wrn, grn) || v < 0) continue;
+  for (int e = comp_vsite_first(c, VS_WRITE, NK_GlobalVariableReadNode, grn, -1); e >= 0;
+       e = comp_vsite_next(c, e)) {
+    int v = an_unparen(nt, nt_ref(nt, comp_vsite_node(c, e), "value"));
+    if (!gvar_site_is(c, e, grn) || v < 0) continue;
     if (nt_kind(nt, v) != NK_ArrayNode) {
       if (g->type == TY_STR_ARRAY) return 1;
       continue;
@@ -15557,12 +15553,11 @@ static int gvar_array_holds_plain_string(Compiler *c, const char *grn) {
       if ((lt == TY_STRING || lt == TY_STRBUF) && nt_kind(nt, l) != NK_StringNode && !c->strbuf_box[l]) return 1;
     }
   }
-  NT_FOREACH_KIND(nt, NK_CallNode, u) {
-    int r = an_unparen(nt, nt_ref(nt, u, "receiver"));
+  for (int e = comp_vsite_first(c, VS_RECV, NK_GlobalVariableReadNode, grn, -1); e >= 0;
+       e = comp_vsite_next(c, e)) {
+    int u = comp_vsite_node(c, e);
     const char *un = nt_str(nt, u, "name");
-    const char *rgn = r >= 0 && nt_kind(nt, r) == NK_GlobalVariableReadNode && nt_str(nt, r, "name")
-                      ? comp_resolve_gvar(c, nt_str(nt, r, "name") + 1) : NULL;
-    if (!un || !rgn || !sp_streq(rgn, grn) || !array_mutator_name(un)) continue;
+    if (!un || !gvar_site_is(c, e, grn) || !array_mutator_name(un)) continue;
     int a = nt_ref(nt, u, "arguments"), an = 0;
     const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
     for (int k = 0; k < an; k++) {
@@ -15623,7 +15618,7 @@ static int strbuf_container_source_walk(Compiler *c, int node, int depth, int mo
     }
     case NK_InstanceVariableReadNode: {
       const char *ivn = nt_str(nt, node, "name");
-      int cid = ivn ? an_ivar_owner(c, node) : -1;
+      int cid = ivn ? comp_ivar_owner(c, node) : -1;
       return cid < 0 ? 0 : strbuf_ivar_source_walk(c, cid, ivn, depth + 1, mode);
     }
     case NK_GlobalVariableReadNode: {
@@ -15639,11 +15634,10 @@ static int strbuf_container_source_walk(Compiler *c, int node, int depth, int mo
       }
       /* `$a << s`: a store this walk does not take (sa_refuse) */
       if (mode == SB_DEMAND)
-        NT_FOREACH_KIND(nt, NK_CallNode, u) {
-          int r = an_unparen(nt, nt_ref(nt, u, "receiver"));
-          const char *rgn = r >= 0 && nt_kind(nt, r) == NK_GlobalVariableReadNode && nt_str(nt, r, "name")
-                            ? comp_resolve_gvar(c, nt_str(nt, r, "name") + 1) : NULL;
-          if (!rgn || !sp_streq(rgn, grn)) continue;
+        for (int e = comp_vsite_first(c, VS_RECV, NK_GlobalVariableReadNode, grn, -1); e >= 0;
+             e = comp_vsite_next(c, e)) {
+          int u = comp_vsite_node(c, e);
+          if (!gvar_site_is(c, e, grn)) continue;
           for (int k = 0, e; (e = sa_unseen_element(c, u, k)) != -2; k++)
             if (e >= 0) sa_refuse_element(c, e, u);
         }
@@ -15937,7 +15931,7 @@ static int promote_append_accumulators(Compiler *c) {
          rebuilt the whole string per append (the slot stores a value, so the
          append is a concat), which is the same quadratic (#3781) */
       if (nt_kind(nt, app[i]) == NK_InstanceVariableReadNode) {
-        int icid = an_ivar_owner(c, app[i]);
+        int icid = comp_ivar_owner(c, app[i]);
         if (icid < 0) continue;
         int ivx = comp_ivar_index(&c->classes[icid], vn);
         if (ivx < 0 || c->classes[icid].ivar_types[ivx] != TY_STRING) continue;
@@ -15945,7 +15939,7 @@ static int promote_append_accumulators(Compiler *c) {
         for (int j = 0; j < n_rd && !iv_read; j++)
           if (nt_kind(nt, rd[j]) == NK_InstanceVariableReadNode &&
               nt_str(nt, rd[j], "name") && sp_streq(nt_str(nt, rd[j], "name"), vn) &&
-              an_ivar_owner(c, rd[j]) == icid) iv_read = 1;
+              comp_ivar_owner(c, rd[j]) == icid) iv_read = 1;
         if (iv_read) continue;
         if (strbuf_ivar_mut_kind(c, icid, vn) != 1) continue;
         if (strbuf_promote_ivar(c, icid, vn)) changed = 1;
@@ -16188,7 +16182,7 @@ static int strbuf_demand_ivar_writes(Compiler *c, int cid, const char *ivn, int 
   for (int w = comp_kind_first(c, NK_InstanceVariableWriteNode); w >= 0; w = comp_kind_next(c, w)) {
     if (nt_kind(nt, w) != NK_InstanceVariableWriteNode) continue;
     const char *wn = nt_str(nt, w, "name");
-    if (!wn || !sp_streq(wn, ivn) || an_ivar_owner(c, w) != cid) continue;
+    if (!wn || !sp_streq(wn, ivn) || comp_ivar_owner(c, w) != cid) continue;
     changed |= strbuf_demand_value_leaves(c, nt_ref(nt, w, "value"), depth);
   }
   sbd_memo_done(1, cid, ivn, depth, gen0);
@@ -16211,7 +16205,7 @@ static int strbuf_demand_gvar_writes(Compiler *c, const char *grn, int depth) {
 }
 static int strbuf_poly_ivar_read(Compiler *c, int node, int *cid) {
   const char *ivn = nt_str(c->nt, node, "name");
-  *cid = ivn ? an_ivar_owner(c, node) : -1;
+  *cid = ivn ? comp_ivar_owner(c, node) : -1;
   if (*cid < 0) return 0;
   int iv = comp_ivar_index(&c->classes[*cid], ivn);
   return iv >= 0 && c->classes[*cid].ivar_types[iv] == TY_POLY;
@@ -16547,7 +16541,7 @@ static int share_lift_poly_ivar_stores(Compiler *c, int cid, const char *name) {
   NT_FOREACH_KIND(nt, NK_InstanceVariableWriteNode, w) {
     const char *wn = nt_str(nt, w, "name");
     int v = nt_ref(nt, w, "value");
-    if (!wn || !sp_streq(wn, name) || v < 0 || an_ivar_owner(c, w) != cid) continue;
+    if (!wn || !sp_streq(wn, name) || v < 0 || comp_ivar_owner(c, w) != cid) continue;
     changed |= share_lift_value(c, v);
   }
   size_t ln = strlen(name);
@@ -17330,7 +17324,7 @@ static int promote_shared_stored_strings(Compiler *c) {
       /* a container-stored IVAR read: the slot itself promotes (#3227 P4) */
       if (nt_kind(nt, vnode) == NK_InstanceVariableReadNode) {
         const char *ivn3 = nt_str(nt, vnode, "name");
-        int icid3 = ivn3 ? an_ivar_owner(c, vnode) : -1;
+        int icid3 = ivn3 ? comp_ivar_owner(c, vnode) : -1;
         if (icid3 >= 0 && strbuf_ivar_mut_kind(c, icid3, ivn3) == 1) {
           if (strbuf_promote_ivar(c, icid3, ivn3)) changed = 1;
           if (c->classes[icid3].ivar_str_shared[comp_ivar_index(&c->classes[icid3], ivn3)]) {
@@ -17658,7 +17652,7 @@ static int promote_shared_stored_strings(Compiler *c) {
     if (!lname || !ivname) continue;
     Scope *ls = comp_scope_of(c, lval);
     LocalVar *llv = ls ? scope_local(ls, lname) : NULL;
-    int icid = an_ivar_owner(c, ivnode);
+    int icid = comp_ivar_owner(c, ivnode);
     if (icid < 0 || !llv) continue;
     if (!strbuf_slot_eligible_shape(c, lname, ls, llv)) continue;
     if (llv->type != TY_UNKNOWN && llv->type != TY_STRING &&
@@ -18143,7 +18137,7 @@ static int promote_shared_stored_strings(Compiler *c) {
     for (int w = comp_kind_first(c, NK_InstanceVariableWriteNode); w >= 0; w = comp_kind_next(c, w)) {
       if (nt_kind(nt, w) != NK_InstanceVariableWriteNode) continue;
       const char *ivn = nt_str(nt, w, "name");
-      int icid = ivn ? an_ivar_owner(c, w) : -1;
+      int icid = ivn ? comp_ivar_owner(c, w) : -1;
       if (icid < 0) continue;
       int iv = comp_ivar_index(&c->classes[icid], ivn);
       if (iv < 0 || c->classes[icid].ivar_types[iv] != TY_POLY) continue;
@@ -18667,7 +18661,7 @@ static int promote_params_stored_in_shared_ivars(Compiler *c,
        above, and a block parameter binds per iteration rather than per call */
     if (!pp || !pp->is_param || pp->is_block_param) continue;
     if (an_param_idx(ms, lname) < 0) continue;
-    int icid = an_ivar_owner(c, w);
+    int icid = comp_ivar_owner(c, w);
     if (icid < 0) continue;
     /* The slot has to be one that is mutated in place; without that there is
        no aliasing to preserve and the value representation stays cheaper.
@@ -19864,7 +19858,7 @@ static int convert_byref_handle_params(Compiler *c,
         }
         else if (nt_kind(nt, an2) == NK_InstanceVariableReadNode) {
           const char *vn2 = nt_str(nt, an2, "name");
-          int cid2 = vn2 ? an_ivar_owner(c, an2) : -1;
+          int cid2 = vn2 ? comp_ivar_owner(c, an2) : -1;
           if (cid2 >= 0 && strbuf_ivar_mut_kind(c, cid2, vn2) >= 0)
             if (strbuf_promote_ivar(c, cid2, vn2)) changed = 1;
           /* into a boxed parameter, or a handle one a gathering call binds
@@ -22151,7 +22145,7 @@ static int ctor_pull_args(Compiler *c) {
           if (ak == NK_LocalVariableReadNode) changed |= dyn_pull_arg(c, a, 0);
           else if (ak == NK_InstanceVariableReadNode) {
             const char *vn = nt_str(nt, a, "name");
-            int cid = vn ? an_ivar_owner(c, a) : -1;
+            int cid = vn ? comp_ivar_owner(c, a) : -1;
             if (cid >= 0 && strbuf_ivar_mut_kind(c, cid, vn) >= 0 && strbuf_promote_ivar(c, cid, vn)) changed = 1;
           }
           continue;
@@ -22991,7 +22985,7 @@ static int promote_dyncall_string_args(Compiler *c) {
         int handle = repr_static_share(c, av[k]);
         if (!handle && nt_kind(nt, av[k]) == NK_InstanceVariableReadNode) {
           const char *ivn = nt_str(nt, av[k], "name");
-          int cid = ivn ? an_ivar_owner(c, av[k]) : -1;
+          int cid = ivn ? comp_ivar_owner(c, av[k]) : -1;
           int iv = cid >= 0 ? comp_ivar_index(&c->classes[cid], ivn) : -1;
           handle = iv >= 0 && repr_of_ivar(c, cid, iv).share;
         }
@@ -30002,7 +29996,7 @@ static char *an_ivar_nonscalar_table(Compiler *c, int *off) {
     }
     else continue;
     if (!ivn || val < 0) continue;
-    int cid = an_ivar_owner(c, owner_node);
+    int cid = comp_ivar_owner(c, owner_node);
     if (cid < 0 || cid >= c->nclasses) continue;
     int iv = comp_ivar_index(&c->classes[cid], ivn);
     if (iv < 0 || bad[off[cid] + iv]) continue;
@@ -30947,7 +30941,7 @@ static int sa_name(Compiler *c, int n, SaName *o) {
       o->kind = NK_LocalVariableReadNode;
       return o->scope != NULL;
     case NK_InstanceVariableReadNode: case NK_InstanceVariableWriteNode:
-      o->kind = NK_InstanceVariableReadNode; o->cid = an_ivar_owner(c, n);
+      o->kind = NK_InstanceVariableReadNode; o->cid = comp_ivar_owner(c, n);
       return o->cid >= 0;
     case NK_GlobalVariableReadNode: case NK_GlobalVariableWriteNode:
       o->kind = NK_GlobalVariableReadNode; o->name = comp_resolve_gvar(c, nm + 1);
@@ -30974,28 +30968,52 @@ static int sa_handle(Compiler *c, const SaName *a, int any) {
   int iv = comp_ivar_index(ci, a->name);
   return iv >= 0 && (ci->ivar_str_shared[iv] || (any && ci->ivar_types[iv] == TY_STRBUF));
 }
+/* The name's entries of site kind k, in node order (the variable-site
+   chains, comp_vsite_first; the site is comp_vsite_node): the first, and
+   the next after e. The chains carry hash collisions, so each entry's
+   variable is checked against the name. */
+static int sa_site_is(Compiler *c, int e, const SaName *a) {
+  int v = comp_vsite_var(c, e);
+  NodeKind vk = nt_kind(c->nt, v);
+  SaName b;
+  /* a read of the variable, or a write to it (VS_WRITE) */
+  if (vk != NK_LocalVariableWriteNode && vk != NK_InstanceVariableWriteNode && vk != NK_GlobalVariableWriteNode)
+    return sa_reads(c, v, a);
+  return sa_name(c, v, &b) && b.kind == a->kind && sp_streq(b.name, a->name) &&
+         (a->kind != NK_LocalVariableReadNode || b.scope == a->scope) &&
+         (a->kind != NK_InstanceVariableReadNode || b.cid == a->cid);
+}
+static int sa_site_next(Compiler *c, const SaName *a, int e) {
+  for (e = comp_vsite_next(c, e); e >= 0 && !sa_site_is(c, e, a); e = comp_vsite_next(c, e)) {}
+  return e;
+}
+static int sa_site_first(Compiler *c, const SaName *a, VsKind k) {
+  int key = a->kind == NK_LocalVariableReadNode ? (int)(a->scope - c->scopes)
+          : a->kind == NK_InstanceVariableReadNode ? a->cid : -1;
+  int e = comp_vsite_first(c, k, a->kind, a->name, key);
+  return e >= 0 && !sa_site_is(c, e, a) ? sa_site_next(c, a, e) : e;
+}
 /* Is the String the name holds mutated in place? A local that shares a
    handle is, through its other name. A global's mutation is looked for
-   through the calls that answer their receiver (`$g.to_s << x`), since no
-   global is a shared handle. */
+   through the calls that answer their receiver (`$g.to_s << x`, VS_MUT),
+   since no global is a shared handle. */
 static int sa_mutated(Compiler *c, const SaName *a) {
-  const NodeTable *nt = c->nt;
   if (a->kind == NK_LocalVariableReadNode) return strbuf_any_str_mut(c, a->name, a->scope) || sa_handle(c, a, 0);
   if (a->kind == NK_InstanceVariableReadNode) return strbuf_ivar_any_str_mut(c, a->cid, a->name);
-  NT_FOREACH_KIND(nt, NK_CallNode, u) {
-    int r = nt_ref(nt, u, "receiver");
-    const char *un = nt_str(nt, u, "name");
-    if (r < 0 || !un || !sp_str_mutator(un, SP_MUT_LOCAL)) continue;
-    while (str_self_call(nt, an_unparen(nt, r))) r = nt_ref(nt, an_unparen(nt, r), "receiver");
-    if (sa_reads(c, r, a)) return 1;
-  }
-  return 0;
+  return sa_site_first(c, a, VS_MUT) >= 0;
 }
 /* Is the name read anywhere but at node `except`? */
 static int sa_read_elsewhere(Compiler *c, const SaName *a, int except) {
-  NT_FOREACH_KIND(c->nt, a->kind, r)
-    if (r != except && sa_reads(c, r, a)) return 1;
+  for (int e = sa_site_first(c, a, VS_READ); e >= 0; e = sa_site_next(c, a, e))
+    if (comp_vsite_node(c, e) != except) return 1;
   return 0;
+}
+/* Can a copy between `to` and `from` (read at `from_read`) be seen: `to`
+   mutated while `from` is read elsewhere, or `from` mutated while `to` is
+   read? */
+static int sa_copy_observable(Compiler *c, const SaName *to, const SaName *from, int from_read) {
+  return (sa_mutated(c, to) && sa_read_elsewhere(c, from, from_read)) ||
+         (sa_mutated(c, from) && sa_read_elsewhere(c, to, -1));
 }
 /* A String bang method that answers its receiver (`strip!`, `sub!`): the
    receiver, or -1. */
@@ -31136,36 +31154,39 @@ static int sa_adder_call(const NodeTable *nt, int u) {
   const char *nm = u >= 0 && nt_kind(nt, u) == NK_CallNode ? nt_str(nt, u, "name") : NULL;
   return nm && nt_ref(nt, u, "receiver") >= 0 && (is_push_unshift(nm) || array_unseen_add_kind(nm) != ARRAY_ADD_NONE);
 }
-/* refuse_string_alias_copies' index of the variable reads that are the
-   receiver of an Array adder whose value is dropped (a statement, or the
-   next push of such a chain), built on the first question. */
-typedef struct { unsigned char *dropped; } SaArrayReads;
+/* refuse_string_alias_copies' answers of sa_array_observed, by the Array
+   variable's first read (0: not asked yet, 1 no, 2 yes), so the reads of an
+   Array many adders fill are climbed once. */
+typedef struct { unsigned char *observed; } SaArrayReads;
 /* Can the Array that call `u` adds to show its elements: is its variable
-   read anywhere in the program but as such a receiver? An Array that is
-   no variable is taken to show them. */
+   read anywhere in the program but as the receiver of an adder chain that
+   is a statement the next statement follows, so its value is dropped
+   (comp_value_dropped)? An Array that is no variable is taken to show
+   them. */
 static int sa_array_observed(Compiler *c, SaArrayReads *ix, int u) {
   const NodeTable *nt = c->nt;
   int base = u;
   for (int r; sa_adder_call(nt, r = an_unparen(nt, nt_ref(nt, base, "receiver"))); ) base = r;
   SaName arr;
   if (!sa_name(c, nt_ref(nt, base, "receiver"), &arr)) return 1;
-  if (!ix->dropped) {
-    ix->dropped = calloc((size_t)nt->count + 1, 1);
-    if (!ix->dropped) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-    NT_FOREACH_KIND(nt, NK_StatementsNode, st) {
-      int n = 0; const int *b = nt_arr(nt, st, "body", &n);
-      for (int i = 0; i + 1 < n; i++) {
-        int x = an_unparen(nt, b[i]);
-        if (!sa_adder_call(nt, x)) continue;
-        for (int r; sa_adder_call(nt, r = an_unparen(nt, nt_ref(nt, x, "receiver"))); ) x = r;
-        int r = an_unparen(nt, nt_ref(nt, x, "receiver"));
-        if (r >= 0) ix->dropped[r] = 1;
-      }
+  int e0 = sa_site_first(c, &arr, VS_READ), first = comp_vsite_node(c, e0);
+  if (e0 < 0) return 0;
+  if (!ix->observed) {
+    ix->observed = calloc((size_t)nt->count, 1);
+    if (!ix->observed) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  if (first < nt->count && ix->observed[first]) return ix->observed[first] == 2;
+  int obs = 0;
+  for (int e = e0; e >= 0 && !obs; e = sa_site_next(c, &arr, e)) {
+    int top = comp_recv_parent(c, comp_vsite_node(c, e));
+    if (!sa_adder_call(nt, top)) obs = 1;
+    else {
+      for (int p; sa_adder_call(nt, p = comp_recv_parent(c, top)); ) top = p;
+      obs = !comp_value_dropped(c, top);
     }
   }
-  NT_FOREACH_KIND(nt, arr.kind, x)
-    if (!ix->dropped[x] && sa_reads(c, x, &arr)) return 1;
-  return 0;
+  if (first < nt->count) ix->observed[first] = obs ? 2 : 1;
+  return obs;
 }
 /* A String in-place mutation the refusals count (sa_mutated: a mutator
    called on a receiver). */
@@ -31267,8 +31288,7 @@ static void refuse_string_alias_copies(Compiler *c) {
           (to.kind == NK_GlobalVariableReadNode || from.kind == NK_GlobalVariableReadNode) &&
           !(to.kind == from.kind && sp_streq(to.name, from.name)) &&
           !sa_after_all_mutations(c, &order, w) &&
-          ((sa_mutated(c, &to) && sa_read_elsewhere(c, &from, g)) ||
-           (sa_mutated(c, &from) && sa_read_elsewhere(c, &to, -1)))) {
+          sa_copy_observable(c, &to, &from, g)) {
         /* --share-strings: a global the rule shares holds the handle */
         ShareRoute q = share_route(w, v, 0);
         q.to = w;
@@ -31281,9 +31301,7 @@ static void refuse_string_alias_copies(Compiler *c) {
       /* `t = id(s)`, `t = choose(+"x", s, flag)`: each argument it may answer */
       int ra[16], nra = sa_returned_args(c, v, ra, 16);
       for (int i = 0; i < nra; i++)
-        if (sa_name(c, ra[i], &from) &&
-            ((sa_mutated(c, &to) && sa_read_elsewhere(c, &from, ra[i])) ||
-             (sa_mutated(c, &from) && sa_read_elsewhere(c, &to, -1))))
+        if (sa_name(c, ra[i], &from) && sa_copy_observable(c, &to, &from, ra[i]))
           sa_refuse(c, w, 1);
       /* `r = s.strip!; r << x`, `r = s.strip! || s`; of the bangs the alias
          walk follows (str_self_call), one whose two names it made the one
@@ -31346,7 +31364,7 @@ static void refuse_string_alias_copies(Compiler *c) {
                           "shared by reference through `to_s` on a String). Mutate the variable itself, or "
                           "read it into another local first.");
   }
-  free(arr_ix.dropped);
+  free(arr_ix.observed);
   free(order.after_all);
 }
 
@@ -31426,17 +31444,17 @@ static int rd_string_reader_anywhere(Compiler *c, const char *mn) {
 static int rd_receiver_observed(Compiler *c, int r, const char *rn) {
   const NodeTable *nt = c->nt;
   Scope *rs = comp_scope_of(c, r);
-  int si = (int)(rs - c->scopes);
+  SaName ra = { NK_LocalVariableReadNode, rn, rs, -1 };
+  /* the calls on it, in node order, that read no member (the first 64) */
   int blind[64], nb = 0;
-  for (int u = comp_scall_first(c, si); u >= 0 && nb < 64; u = comp_scall_next(c, u)) {
-    int q = nt_kind(nt, u) == NK_CallNode ? an_unparen(nt, nt_ref(nt, u, "receiver")) : -1;
+  for (int e = sa_site_first(c, &ra, VS_RECV); e >= 0 && nb < 64; e = sa_site_next(c, &ra, e)) {
+    int u = comp_vsite_node(c, e), q = comp_vsite_var(c, e);
     const char *un = nt_str(nt, u, "name");
-    if (q >= 0 && q != r && un && is_member_blind_query(un) && nt_kind(nt, q) == NK_LocalVariableReadNode &&
-        sp_streq(nt_str(nt, q, "name"), rn))
-      blind[nb++] = q;
+    if (q != r && un && is_member_blind_query(un)) blind[nb++] = q;
   }
-  NT_FOREACH_KIND(nt, NK_LocalVariableReadNode, o) {
-    if (o == r || comp_scope_of(c, o) != rs || !sp_streq(nt_str(nt, o, "name"), rn)) continue;
+  for (int e = sa_site_first(c, &ra, VS_READ); e >= 0; e = sa_site_next(c, &ra, e)) {
+    int o = comp_vsite_node(c, e);
+    if (o == r) continue;
     int b = 0;
     for (int i = 0; i < nb && !b; i++) b = blind[i] == o;
     if (!b) return 1;
@@ -32933,7 +32951,7 @@ static void an_phase_infer_fixpoint(Compiler *c) {
       int wv = nt_ref(rnt, w, "value");
       if (wv < 0 || nt_kind(rnt, wv) != NK_CallNode) continue;
       const char *ivn = nt_str(rnt, w, "name");
-      int icid = an_ivar_owner(c, w);
+      int icid = comp_ivar_owner(c, w);
       if (!ivn || icid < 0) continue;
       /* the call has to READ the same slot it is assigned to */
       int aN = nt_ref(rnt, wv, "arguments"); int aC = 0;
@@ -32942,7 +32960,7 @@ static void an_phase_infer_fixpoint(Compiler *c) {
       for (int k = 0; k < aC && aV && !selfref; k++) {
         if (nt_kind(rnt, aV[k]) != NK_InstanceVariableReadNode) continue;
         const char *an2 = nt_str(rnt, aV[k], "name");
-        if (an2 && sp_streq(an2, ivn) && an_ivar_owner(c, aV[k]) == icid) selfref = 1;
+        if (an2 && sp_streq(an2, ivn) && comp_ivar_owner(c, aV[k]) == icid) selfref = 1;
       }
       if (!selfref) continue;
       an_call_targets_of(c, wv, &rtg);
@@ -34740,7 +34758,7 @@ static void an_phase_proc_returns(Compiler *c) {
           TyKind vt = infer_type(c, vnode);
           if (vt != TY_POLY_ARRAY && vt != TY_POLY) continue;
           if (iv_write) {
-            int cid = an_ivar_owner(c, id);
+            int cid = comp_ivar_owner(c, id);
             int iv = cid >= 0 ? comp_ivar_index(&c->classes[cid], nm) : -1;
             if (iv < 0) continue;
             TyKind cur = c->classes[cid].ivar_types[iv], nw = PW_JOIN(cur, vt);
@@ -35022,7 +35040,7 @@ static void an_phase_proc_returns(Compiler *c) {
           }
           else if (rk == NK_InstanceVariableReadNode) {
             const char *rn = nt_str(nt, recv, "name");
-            int cid = rn ? an_ivar_owner(c, recv) : -1;
+            int cid = rn ? comp_ivar_owner(c, recv) : -1;
             int iv = cid >= 0 ? comp_ivar_index(&c->classes[cid], rn) : -1;
             if (iv >= 0) {
               TyKind cur = c->classes[cid].ivar_types[iv];
