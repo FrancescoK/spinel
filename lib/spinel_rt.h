@@ -940,7 +940,7 @@ static inline sp_int sp_int_clamp_range_ck(sp_int v, sp_Range r) {
 }
 /* `:name`, or `:"name"` when the name needs quoting -- shares the
    name-string predicates in lib/sp_str.c with the hash-key short form. */
-static const char *sp_sym_inspect(sp_sym id) { if (id == (sp_sym)-1) return SPL("nil"); /* nilable-symbol sentinel */ return sp_sym_inspect_name(sp_sym_to_s(id)); }
+const char *sp_sym_inspect(sp_sym id);
 static const char*sp_gets(void){char buf[4096];if(!fgets(buf,sizeof(buf),stdin))return NULL;size_t l=strlen(buf);char*r=sp_str_alloc_raw(l+1);memcpy(r,buf,l+1);return r;}
 static sp_StrArray*sp_readlines(void){sp_StrArray*a=sp_StrArray_new();SP_GC_ROOT(a);char buf[4096];while(fgets(buf,sizeof(buf),stdin)){size_t l=strlen(buf);char*r=sp_str_alloc_raw(l+1);memcpy(r,buf,l+1);sp_StrArray_push(a,r);}return a;}
 /* sp_sprintf lives in libspinel_rt.a (lib/sp_cold.c); declared above. */
@@ -1786,6 +1786,9 @@ const char *sp_class_to_s(sp_Class c);
 #else
 static const char *sp_class_to_s(sp_Class c); /* fwd decl: sp_poly_puts' SP_TAG_CLASS arm */
 #endif
+/* The class-name table is generated per program; lib/sp_poly_cold.c reaches it
+   through this hook, which the generated unit sets (as it does sp_sym_name_fn). */
+extern const char *(*sp_class_name_fn)(sp_Class);
 /* Name of a boxed SP_TAG_CLASS value: a name-backed box carries it in v.s,
    otherwise resolve the cls_id through the generated id->name table. */
 static inline const char *sp_class_val_name(sp_RbVal v) {
@@ -1800,101 +1803,11 @@ static inline sp_bool sp_class_eq(sp_Class a, sp_Class b) {
   const char *an = sp_class_to_s(a), *bn = sp_class_to_s(b);
   return (an && bn) ? strcmp(an, bn) == 0 : an == bn;
 }
-static inline const char *sp_poly_to_s(sp_RbVal v);   /* defined below; used by the user-object arm */
+const char *sp_poly_to_s(sp_RbVal v);   /* defined below; used by the user-object arm */
 struct sp_OpenStruct_s;
-static const char *sp_OpenStruct_inspect(struct sp_OpenStruct_s *o);   /* defined below */
+const char *sp_OpenStruct_inspect(struct sp_OpenStruct_s *o);   /* defined below */
 static inline sp_File *sp_poly_to_file(sp_RbVal v); /* defined below; IO.select's user-#to_io unwrap */
-static inline void sp_poly_puts(sp_RbVal v) {
-  switch (v.tag) {
-    case SP_TAG_INT: printf("%lld\n", (long long)v.v.i); break;
-    case SP_TAG_STR: if (v.v.s) {
-        size_t _n = sp_str_byte_len(v.v.s);
-        fwrite(v.v.s, 1, _n, stdout);
-        if (!_n || v.v.s[_n - 1] != '\n') putchar('\n');
-      }
-      else putchar('\n'); break;
-    case SP_TAG_FLT: { fputs(sp_float_to_s(v.v.f), stdout); putchar('\n'); break; }
-    case SP_TAG_BOOL: puts(v.v.b ? "true" : "false"); break;
-    case SP_TAG_NIL: putchar('\n'); break;
-    case SP_TAG_SYM: { const char *_ss = sp_sym_to_s((sp_sym)v.v.i); fputs(_ss, stdout); putchar('\n'); break; }
-    case SP_TAG_ENCODING: { const char *_es = v.v.s ? v.v.s : sp_str_empty; fputs(_es, stdout); putchar('\n'); break; }
-    case SP_TAG_CLASS: { fputs(sp_class_val_name(v), stdout); putchar('\n'); break; }
-    case SP_TAG_BIGINT: { const char *_bs = sp_bigint_to_s((sp_Bigint *)v.v.p); if (_bs) fputs(_bs, stdout); putchar('\n'); break; }
-    case SP_TAG_OBJ: {
-      /* MRI's `puts arr` iterates an Array, printing one element per
-         line (using to_s on each); a non-Array OBJ falls back to
-         inspect / class-name. */
-      switch (v.cls_id) {
-        case SP_BUILTIN_INT_ARRAY: {
-          sp_IntArray *_a = (sp_IntArray *)v.v.p;
-          for (sp_int _i = 0; _i < _a->len; _i++)
-            printf("%lld\n", (long long)_a->data[_a->start + _i]);
-          break;
-        }
-        case SP_BUILTIN_FLT_ARRAY: {
-          sp_FloatArray *_a = (sp_FloatArray *)v.v.p;
-          for (sp_int _i = 0; _i < _a->len; _i++) {
-            fputs(sp_float_to_s(_a->data[_i]), stdout); putchar('\n');
-          }
-          break;
-        }
-        case SP_BUILTIN_STR_ARRAY: {
-          sp_StrArray *_a = (sp_StrArray *)v.v.p;
-          for (sp_int _i = 0; _i < _a->len; _i++) {
-            const char *_s = _a->data[_i];
-            if (_s) {
-              size_t _n = sp_str_byte_len(_s);
-              fwrite(_s, 1, _n, stdout);
-              if (!_n || _s[_n - 1] != '\n') putchar('\n');
-            }
-            else putchar('\n');
-          }
-          break;
-        }
-        case SP_BUILTIN_SYM_ARRAY: {
-          sp_IntArray *_a = (sp_IntArray *)v.v.p;
-          for (sp_int _i = 0; _i < _a->len; _i++) {
-            const char *_s = sp_sym_to_s((sp_sym)_a->data[_a->start + _i]);
-            fputs(_s, stdout); putchar('\n');
-          }
-          break;
-        }
-        case SP_BUILTIN_RANGE: puts(sp_range_str(*(sp_Range *)v.v.p)); break;
-        case SP_BUILTIN_FLOAT_RANGE: puts(sp_frange_inspect(*(sp_FloatRange *)v.v.p)); break;
-        case SP_BUILTIN_STR_RANGE: puts(sp_srange_to_s(*(sp_StrRange *)v.v.p)); break;
-        case SP_BUILTIN_TIME: puts(sp_Time_to_s((sp_Time *)v.v.p)); break;
-        case SP_BUILTIN_STRBUF: puts(sp_String_cstr((sp_String *)v.v.p)); break;
-        case SP_BUILTIN_COMPLEX: puts(sp_complex_to_s(*(sp_Complex *)v.v.p)); break;
-        case SP_BUILTIN_RATIONAL: puts(sp_rational_to_s(*(sp_Rational *)v.v.p)); break;
-        case SP_BUILTIN_BIG_RATIONAL: puts(sp_brat_to_s((sp_BigRational *)v.v.p)); break;
-        case SP_BUILTIN_REGEX: puts(sp_re_to_s_str(v.v.p)); break;
-        case SP_BUILTIN_PTR_ARRAY: {   /* rows or objects, one per line like any array (#4486) */
-          sp_PtrArray *_pa = (sp_PtrArray *)v.v.p;
-          if (_pa) for (sp_int _i = 0; _i < _pa->len; _i++) sp_poly_puts(sp_PtrArray_elem_box(_pa, _pa->data[_i]));
-          break;
-        }
-        case SP_BUILTIN_POLY_ARRAY: {
-          /* puts flattens arrays recursively, one element per line -- and one
-             that holds itself gets CRuby's single `[...]` line instead of an
-             endless flattening. */
-          sp_PolyArray *_a = (sp_PolyArray *)v.v.p;
-          if (sp_poly_recur_seen(SP_POLY_RECUR_PUTS, _a, NULL)) { puts("[...]"); break; }
-          int _pm = sp_poly_recur_push(SP_POLY_RECUR_PUTS, _a, NULL);
-          for (sp_int _i = 0; _i < _a->len; _i++) sp_poly_puts(_a->data[_i]);
-          sp_poly_recur_pop(_pm);
-          break;
-        }
-        /* A user object (or any non-array OBJ) prints via to_s: delegate to
-           sp_poly_to_s, which dispatches the class's user #to_s (falling back to
-           the default #<Name:0x..>). The bare #<Object> print skipped the user
-           to_s for an object read from a collection (#3189). */
-        default: { fputs(sp_poly_to_s(v), stdout); putchar('\n'); break; }
-      }
-      break;
-    }
-    default: printf("%lld\n", (long long)v.v.i); break;
-  }
-}
+void sp_poly_puts(sp_RbVal v);
 static sp_bool sp_poly_nil_p(sp_RbVal v) { return v.tag == SP_TAG_NIL; }
 static sp_bool sp_poly_truthy(sp_RbVal v) { return !(v.tag == SP_TAG_NIL || (v.tag == SP_TAG_BOOL && !v.v.b)); }
 /* Regexp.new's option argument where its type is not known until run time: an
@@ -2009,12 +1922,12 @@ static sp_RbVal sp_poly_bitop(sp_RbVal a, sp_RbVal b, int op) {  /* 0:& 1:| 2:^ 
 #if !defined(SPINEL_EXT_HOST) && !defined(SPINEL_EXT_KERNEL)
 static const char *sp_class_to_s(sp_Class c);
 #endif
-static const char *sp_poly_class_name(sp_RbVal v);  /* fwd: user-object to_s default */
+const char *sp_poly_class_name(sp_RbVal v);  /* fwd: user-object to_s default */
 static const char *sp_convert_src_name(sp_RbVal v);  /* fwd: nil/true/false spell themselves */
 static sp_int sp_poly_Integer_ex(sp_RbVal v, sp_int base, int raise);  /* fwd: Kernel#Integer / #Float on a user object */
 static sp_float sp_poly_Float_ex(sp_RbVal v, int raise);
 static inline int sp_poly_is_hash_kind(int cls_id);
-static inline const char *sp_poly_inspect(sp_RbVal v);
+const char *sp_poly_inspect(sp_RbVal v);
 const char *sp_PolyArray_inspect(sp_PolyArray *a);  /* Array#to_s == inspect (lib/sp_inspect.c) */
 const char *sp_PtrArray_inspect_k(sp_PtrArray *a);   /* a pointer array by what it holds (#4486; lib/sp_inspect.c) */
 /* Runtime class table: set of cls_ids that are user exception subclasses.
@@ -2031,77 +1944,7 @@ static inline int sp_is_exc_subclass_cls(sp_int cls_id) {
     if (sp_exc_subclass_ids[i] == cls_id) return 1;
   return 0;
 }
-static inline const char *sp_poly_to_s(sp_RbVal v) {
-  switch (v.tag) {
-    /* int-typed nil (SP_INT_NIL) is Ruby nil; nil.to_s is "" -- match it. */
-    case SP_TAG_INT: return v.v.i == SP_INT_NIL ? sp_str_frozen_empty : sp_int_to_s(v.v.i);
-    case SP_TAG_STR: return v.v.s ? v.v.s : sp_str_frozen_empty;
-    case SP_TAG_FLT: return sp_float_to_s(v.v.f);
-    case SP_TAG_BOOL: return v.v.b ? sp_str_frozen_true : sp_str_frozen_false;
-    case SP_TAG_NIL: return sp_str_frozen_empty;
-    case SP_TAG_SYM: return sp_sym_to_s_chilled((sp_sym)v.v.i);
-    case SP_TAG_CLASS: return sp_class_val_name(v);
-    case SP_TAG_ENCODING: return v.v.s ? v.v.s : sp_str_empty;
-    case SP_TAG_BIGINT: return sp_bigint_to_s((sp_Bigint *)v.v.p);
-    case SP_TAG_OBJ:
-      switch (v.cls_id) {
-        case SP_BUILTIN_INT_ARRAY: return sp_IntArray_inspect((sp_IntArray *)v.v.p);
-        case SP_BUILTIN_FLT_ARRAY: return sp_FloatArray_inspect((sp_FloatArray *)v.v.p);
-        case SP_BUILTIN_STR_ARRAY: return sp_StrArray_inspect((sp_StrArray *)v.v.p);
-        case SP_BUILTIN_SYM_ARRAY: return sp_SymArray_inspect((sp_IntArray *)v.v.p);
-        case SP_BUILTIN_PTR_ARRAY: return sp_PtrArray_inspect_k((sp_PtrArray *)v.v.p);
-        /* Array#to_s is Array#inspect; a boxed PolyArray element had no arm
-           and fell through to "" (#3007) */
-        case SP_BUILTIN_POLY_ARRAY: return sp_PolyArray_inspect((sp_PolyArray *)v.v.p);
-        case SP_BUILTIN_RANGE: return sp_range_str(*(sp_Range *)v.v.p);
-        case SP_BUILTIN_FLOAT_RANGE: return sp_frange_inspect(*(sp_FloatRange *)v.v.p);
-        case SP_BUILTIN_STR_RANGE: return sp_srange_to_s(*(sp_StrRange *)v.v.p);
-        case SP_BUILTIN_TIME: return sp_Time_to_s((sp_Time *)v.v.p);
-        case SP_BUILTIN_STRBUF: return sp_String_cstr((sp_String *)v.v.p);   /* live buffer (#3227) */
-        case SP_BUILTIN_METHOD: return sp_method_desc_cstr((sp_BoundMethod *)v.v.p);
-        case SP_BUILTIN_COMPLEX: return sp_complex_to_s(*(sp_Complex *)v.v.p);
-        case SP_BUILTIN_RATIONAL: return sp_rational_to_s(*(sp_Rational *)v.v.p);
-        case SP_BUILTIN_BIG_RATIONAL: return sp_brat_to_s((sp_BigRational *)v.v.p);
-        case SP_BUILTIN_REGEX: return sp_re_to_s_str(v.v.p);
-        /* MatchData#to_s is the whole match (#3641) */
-        case SP_BUILTIN_MATCHDATA: { const char *_m0 = sp_MatchData_aref((sp_MatchData *)v.v.p, 0); return _m0 ? _m0 : sp_str_empty; }
-        case SP_BUILTIN_EXCEPTION: return sp_exc_message((volatile struct sp_Exception_s *)v.v.p);
-        /* Object#to_s on a boxed handle of the IO family, as the typed arm
-           renders it: a boxed one fell through to "" (`puts [f, d]`) */
-        case SP_BUILTIN_IO: return sp_io_to_s((sp_File *)v.v.p);
-        case SP_BUILTIN_DIR: return sp_Dir_to_s((sp_Dir *)v.v.p);
-        case SP_BUILTIN_FIBER: return sp_Fiber_inspect((sp_Fiber *)v.v.p);
-        case SP_BUILTIN_THREAD: return sp_Thread_inspect((sp_thread *)v.v.p);
-        /* OpenStruct#to_s is its inspect, as sp_poly_inspect renders it */
-        case SP_BUILTIN_OPENSTRUCT: return sp_OpenStruct_inspect((struct sp_OpenStruct_s *)v.v.p);
-        default:
-          if ((v.cls_id >= 0 || v.cls_id == SP_BUILTIN_OBJECT) && v.v.p) {
-            /* a class with a user #to_s renders through the generated
-               dispatcher; the rest (bare Object.new included) get CRuby's
-               default #<Name:0xADDR> */
-            if (v.cls_id >= 0 && sp_obj_to_s_fn) {
-              /* rooted across the user #to_s, which allocates: the boxed
-                 copy may be a fresh object's only reference (`puts(k ?
-                 C.new : 1)`), as in sp_poly_check_str_obj */
-              SP_GC_ROOT_RBVAL(v);
-              const char *us = sp_obj_to_s_fn(v.cls_id, v.v.p);
-              if (us) return us;
-            }
-            /* a user exception subclass boxes under its own class id */
-            if (sp_is_exc_subclass_cls(v.cls_id))
-              return sp_exc_message((volatile struct sp_Exception_s *)v.v.p);
-            if (v.v.p == sp_main_obj) return SPL("main");
-            return sp_sprintf("#<%s:0x%016llx>", sp_poly_class_name(v),
-                              (unsigned long long)(uintptr_t)v.v.p);
-          }
-          /* a builtin container kind with no explicit arm above (the hash
-             variants): to_s is its inspect */
-          if (sp_poly_is_hash_kind(v.cls_id)) return sp_poly_inspect(v);
-          return sp_str_empty;
-      }
-    default: return sp_str_empty;
-  }
-}
+const char *sp_poly_to_s(sp_RbVal v);
 /* Unwrap a boxed IO value to its sp_File *. The user-#to_io dispatch
    asks this for a poly return type, because the generated arm is forced
    to box the answer through sp_RbVal (the codegen of a poly body has
@@ -2130,88 +1973,7 @@ static inline sp_File *sp_poly_to_file(sp_RbVal v) {
 static const char *sp_enum_class_name(void *e);   /* fwd: a boxed enumerator's #class (below) */
 /* Class name of a boxed value, for `x.class` where x is poly. Returns a
    .rodata or names-table string (never GC-managed). */
-static const char *sp_poly_class_name(sp_RbVal v) {
-  switch (v.tag) {
-    case SP_TAG_INT: return SPL("Integer");
-    case SP_TAG_STR: return SPL("String");
-    case SP_TAG_FLT: return SPL("Float");
-    case SP_TAG_BOOL: return v.v.b ? SPL("TrueClass") : SPL("FalseClass");
-    case SP_TAG_NIL: return SPL("NilClass");
-    case SP_TAG_SYM: return SPL("Symbol");
-    case SP_TAG_ENCODING: return SPL("Encoding");
-    case SP_TAG_CLASS: {
-      sp_Class c = sp_unbox_class(v);
-      int m = sp_class_is_module_fn ? sp_class_is_module_fn(c)
-            : (c.cls_id == -114 || c.cls_id == -115 || c.cls_id == -119 || c.cls_id == -162);
-      return m ? SPL("Module") : SPL("Class");
-    }
-    case SP_TAG_BIGINT: return SPL("Integer");
-    case SP_TAG_OBJ:
-      switch (v.cls_id) {
-        case SP_BUILTIN_INT_ARRAY: case SP_BUILTIN_FLT_ARRAY:
-        case SP_BUILTIN_STR_ARRAY: case SP_BUILTIN_SYM_ARRAY:
-        case SP_BUILTIN_PTR_ARRAY: case SP_BUILTIN_POLY_ARRAY: return SPL("Array");
-        case SP_BUILTIN_STR_INT_HASH: case SP_BUILTIN_STR_STR_HASH:
-        case SP_BUILTIN_INT_STR_HASH: case SP_BUILTIN_SYM_INT_HASH:
-         case SP_BUILTIN_INT_INT_HASH:
-        case SP_BUILTIN_SYM_STR_HASH: case SP_BUILTIN_STR_POLY_HASH:
-        case SP_BUILTIN_SYM_POLY_HASH: case SP_BUILTIN_POLY_POLY_HASH: return SPL("Hash");
-        case SP_BUILTIN_RANGE: return SPL("Range");
-        case SP_BUILTIN_FLOAT_RANGE: case SP_BUILTIN_STR_RANGE: return SPL("Range");
-        case SP_BUILTIN_TIME: return SPL("Time");
-    case SP_BUILTIN_STRBUF: return SPL("String");   /* (#3227) */
-        case SP_BUILTIN_COMPLEX: return SPL("Complex");
-        case SP_BUILTIN_RATIONAL: return SPL("Rational");
-        case SP_BUILTIN_BIG_RATIONAL: return SPL("Rational");
-        case SP_BUILTIN_REGEX: return SPL("Regexp");
-        case SP_BUILTIN_MATCHDATA: return SPL("MatchData");   /* (#3641) */
-        case SP_BUILTIN_OBJECT: return SPL("Object");   /* a bare Object.new instance */
-        case SP_BUILTIN_BASIC_OBJECT: return SPL("BasicObject");
-        case SP_BUILTIN_PROC: return SPL("Proc");
-        /* a curried proc IS a Proc to Ruby (#3885) */
-        case SP_BUILTIN_CURRY: return SPL("Proc");
-        case SP_BUILTIN_METHOD:
-          return ((sp_BoundMethod *)v.v.p)->unbound ? SPL("UnboundMethod") : SPL("Method");   /* (#3692) */
-        /* a chain and a product report their own class, as the typed
-           #class does */
-        case SP_BUILTIN_ENUMERATOR: return sp_enum_class_name(v.v.p);
-        case SP_BUILTIN_IO: {
-          /* the handle kind names the class, through the same authority the
-             typed .class emit uses -- a boxed socket must not report plain IO */
-          sp_File *_iof = (sp_File *)v.v.p;
-          if (_iof && _iof->mode &&
-              (strcmp(_iof->mode, "stat") == 0 || strcmp(_iof->mode, "lstat") == 0))
-            return SPL("File::Stat");
-          return sp_io_kind_name(_iof);
-        }
-        /* The concurrency handles: a boxed one reached the default arm and
-           answered an empty name, so `(:ok && queue).class` printed nothing
-           and a method on it raised NoMethodError with a blank class (#3484).
-           Mutex and Queue name themselves through the same helpers the typed
-           `.class` emit uses, so a Monitor and a SizedQueue stay distinct. */
-        case SP_BUILTIN_MUTEX: return sp_Mutex_class_name((sp_mutex *)v.v.p);
-        case SP_BUILTIN_QUEUE: return sp_Queue_class_name((sp_queue *)v.v.p);
-        case SP_BUILTIN_CONDVAR: return SPL("Thread::ConditionVariable");
-        case SP_BUILTIN_FIBER: return SPL("Fiber");
-        case SP_BUILTIN_THREAD: return SPL("Thread");
-        case SP_BUILTIN_DIR: return SPL("Dir");
-        case SP_BUILTIN_TMS: return SPL("Process::Tms");
-        case SP_BUILTIN_OPENSTRUCT: return SPL("OpenStruct");
-        /* These two had no arm of their own. They went unnoticed because their
-           cls_ids collided with STRBUF and OPENSTRUCT, so a boxed one answered
-           String / OpenStruct rather than nothing (#4158). */
-        case SP_BUILTIN_ADDRINFO: return SPL("Addrinfo");
-        case SP_BUILTIN_SOCKOPT: return SPL("Socket::Option");
-        case SP_BUILTIN_PROCESS_STATUS: return SPL("Process::Status");
-        case SP_BUILTIN_YIELDER: return SPL("Enumerator::Yielder");
-        case SP_BUILTIN_RANDOM: return SPL("Random");
-        case SP_BUILTIN_ARGF: return SPL("ARGF.class");
-        case SP_BUILTIN_EXCEPTION: return sp_exc_class_name((volatile struct sp_Exception_s *)v.v.p);
-        default: { sp_Class c = {v.cls_id}; return sp_class_to_s(c); }
-      }
-    default: return SPL("Object");
-  }
-}
+const char *sp_poly_class_name(sp_RbVal v);
 /* A zone given as a value whose type is known only at run time (`in:`,
    Time.new's 7th positional, localtime / getlocal's argument): a String as
    sp_time_zone_arg_off spells it; an Integer, or a Float or Rational holding
@@ -2848,8 +2610,19 @@ static inline const char *sp_poly_unbox_s(sp_RbVal v) {
 static inline void *sp_poly_obj_ptr(sp_RbVal v) {
   return v.tag == SP_TAG_OBJ ? v.v.p : NULL;
 }
+/* Install a hook the generated unit owns: its own static, and the copy
+   lib/sp_poly_cold.c reads (<hook>_lib, defined there). */
+#define SP_INSTALL_HOOK(h, fn) do { h = (fn); h##_lib = (fn); } while (0)
 typedef sp_RbVal (*sp_user_binop_fn)(const char *op, sp_RbVal a, sp_RbVal b, sp_bool *handled);
+/* The generated unit keeps this hook static, so a hook no code sets folds away; lib/sp_poly_cold.c
+   reads sp_user_binop_hook_lib, which SP_INSTALL_HOOK sets beside it. */
+#ifdef SPINEL_EXT_HOST
+extern sp_user_binop_fn sp_user_binop_hook_lib;
+#define sp_user_binop_hook sp_user_binop_hook_lib
+#else
 static sp_user_binop_fn sp_user_binop_hook = NULL;
+extern sp_user_binop_fn sp_user_binop_hook_lib;
+#endif
 /* A reopened Time's or Range's own operator reaches its boxed values through
    the hooks; the builtin it captured (`compare_without_coercion`, an alias of
    the builtin `<=>`) runs inside that method and must not come back through
@@ -4934,7 +4707,15 @@ static sp_bool sp_poly_hash_eq_cross(sp_RbVal a, sp_RbVal b, sp_bool eql);
    sp_obj_eq_hook to dispatch a field-wise == by cls_id; sp_poly_eq consults it
    for two same-class user objects that no builtin arm handles. */
 typedef sp_bool (*sp_obj_eq_fn)(sp_RbVal a, sp_RbVal b);
+/* The generated unit keeps this hook static, so a hook no code sets folds away; lib/sp_poly_cold.c
+   reads sp_obj_eq_hook_lib, which SP_INSTALL_HOOK sets beside it. */
+#ifdef SPINEL_EXT_HOST
+extern sp_obj_eq_fn sp_obj_eq_hook_lib;
+#define sp_obj_eq_hook sp_obj_eq_hook_lib
+#else
 static sp_obj_eq_fn sp_obj_eq_hook = NULL;
+extern sp_obj_eq_fn sp_obj_eq_hook_lib;
+#endif
 /* The == arms that can walk back into the pair they started from (below). */
 static sp_bool sp_poly_eq_deep(sp_RbVal a, sp_RbVal b);
 /* An Integer Range and a Float Range are == when their ends are equal as
@@ -5077,7 +4858,7 @@ sp_int sp_poly_cmp_int_arrays(sp_RbVal a, sp_RbVal b, sp_bool *comparable);
 /* CRuby's Comparable operators raise on incomparable operands ("comparison
    of Float with nil failed"), they do not answer false. */
 static const char *sp_cmperr_desc(sp_RbVal v);
-static const char *sp_poly_class_name(sp_RbVal v);
+const char *sp_poly_class_name(sp_RbVal v);
 static void sp_poly_cmp_fail(sp_RbVal a, sp_RbVal b) {
   sp_raise_cls("ArgumentError", sp_sprintf("comparison of %s with %s failed",
                                            sp_poly_class_name(a), sp_cmperr_desc(b)));
@@ -6672,125 +6453,7 @@ static sp_RbVal sp_bm_call_boxed(void *m, sp_int n) {
   return _sp_proc_poly_ret;
 }
 static sp_RbVal sp_poly_callable_spread(sp_RbVal v, sp_RbVal arr, int kwpos);
-static sp_RbVal sp_poly_slice(sp_RbVal a, sp_int start, sp_int len) {
-  if (a.tag == SP_TAG_STR) return sp_box_nullable_str(sp_str_sub_range(a.v.s ? a.v.s : "", start, len));
-  /* A shared-string handle is a String: slicing is non-mutating, so it answers
-     as its live value rather than falling through to the array kinds and out
-     the nil default, which is what `s = +""; s << "abc"; s[0, 2]` did (#4279). */
-  if (sp_poly_is_strbuf(a)) return sp_poly_slice(sp_poly_strbuf_deref(a), start, len);
-  /* An Integer answers `n[start, len]`, the len-bit field starting at bit
-     `start` -- the two-argument form of the bit read, which the typed arms
-     have had all along. A boxed receiver fell past this to the nil default
-     below, so `[255, nil][0][0, 4]` was nil where CRuby says 15, and the
-     value went on being used as a number (#4742). The int-typed nil keeps
-     the default: `nil[0, 4]` is a missing method, not a bit field. */
-  if (a.tag == SP_TAG_INT) {
-    /* the sentinel IS nil, and nil has no `[]` */
-    if (a.v.i == SP_INT_NIL) sp_raise_poly_nomethod("[]", sp_box_nil());
-    return sp_box_int(sp_int_bit_range(a.v.i, start, len));
-  }
-  if (a.tag == SP_TAG_BIGINT) {
-    sp_Bigint *n = (sp_Bigint *)a.v.p;
-    if (!n) return sp_box_nil();
-    if (start < 0 || len < 0) return sp_box_int(0);
-    { sp_Bigint *sh = sp_bigint_shr(n, (int64_t)start);
-      sp_Bigint *m = sp_bigint_sub(sp_bigint_shl(sp_bigint_new_int(1), (int64_t)len),
-                                   sp_bigint_new_int(1));
-      return sp_box_int(sp_bigint_to_int(sp_bigint_and(sh, m))); }
-  }
-  /* A Symbol has `[]`: it answers its NAME sliced, as a String. Falling to
-     the default below made `[:sym, nil][0][0, 4]` nil, which then went on
-     being used as one. */
-  if (a.tag == SP_TAG_SYM)
-    return sp_box_nullable_str(sp_str_sub_range(sp_sym_to_s((sp_sym)a.v.i), start, len));
-  /* Everything else here -- nil, a Float, true, false -- simply has no `[]`,
-     and CRuby says so. The default used to answer nil for all of them, so a
-     receiver that was never sliceable produced a value indistinguishable
-     from an in-range miss, and the program carried it forward. (The Integer
-     arm above notes the same thing about nil: a missing method, not a bit
-     field.) */
-  if (a.tag != SP_TAG_OBJ) sp_raise_poly_nomethod("[]", a);
-  /* arr[start, negative] is nil in CRuby (the slice helpers would return []) */
-  if (len < 0 && sp_poly_is_array_kind(a.cls_id)) return sp_box_nil();
-  /* bm[a, b]: a boxed bound Method called with two int arguments (optcarrot's
-     store dispatch table: `@store[addr][addr, value]`). The raw fn cast is
-     only valid for a target whose stamped per-position ABI accepts a scalar
-     at every fixed position (sp_bm_legacy_abi_ok); anything else (a
-     rest/optional/keyword signature, a float/poly/struct parameter, or a
-     pointer parameter the integer operands cannot fill) would read the wrong
-     C types, so route it through the callable helper, which raises CRuby's
-     NoMethodError instead of crashing (#4395). */
-  if (a.cls_id == SP_BUILTIN_METHOD) {
-    sp_BoundMethod *m = (sp_BoundMethod *)a.v.p;
-    /* A poly-ABI target (stamped at bind time; the promote signature) takes
-       the two operands boxed and answers boxed. Checked ahead of the legacy
-       gate: under promote the legacy stamp is 0, and elsewhere the two are
-       mutually exclusive by construction. */
-    if (m->fn && sp_bm_poly_abi_ok(m, 2)) {
-      sp_RbVal _a = sp_box_int(start), _b = sp_box_int(len);
-      if (m->legacy_ret == SP_BM_RET_POLY) {
-        if (m->recv_bound)
-          return ((sp_RbVal (*)(void *, sp_RbVal, sp_RbVal))(uintptr_t)m->fn)((void *)m->self, _a, _b);
-        return ((sp_RbVal (*)(sp_RbVal, sp_RbVal))(uintptr_t)m->fn)(_a, _b);
-      }
-      if (m->legacy_ret == SP_BM_RET_NIL) {   /* a C void function: wasm checks the signature */
-        if (m->recv_bound) ((void (*)(void *, sp_RbVal, sp_RbVal))(uintptr_t)m->fn)((void *)m->self, _a, _b);
-        else ((void (*)(sp_RbVal, sp_RbVal))(uintptr_t)m->fn)(_a, _b);
-        return sp_box_nil();
-      }
-      if (m->recv_bound)
-        return sp_bm_box_ret(m, sp_bm_norm_ret(m, ((sp_int (*)(void *, sp_RbVal, sp_RbVal))(uintptr_t)m->fn)((void *)m->self, _a, _b)));
-      return sp_bm_box_ret(m, sp_bm_norm_ret(m, ((sp_int (*)(sp_RbVal, sp_RbVal))(uintptr_t)m->fn)(_a, _b)));
-    }
-    /* The two operands are sp_int, so the target's fixed positions must be the
-       int token (or the TY_UNKNOWN wildcard), not some other scalar kind. */
-    if (sp_bm_legacy_abi_ok(m, 2, "0000000100000001")) {
-      /* A top-level method has no self; its C signature leads with the first
-         parameter, so the self-ful cast would shift both operands (#4395). A
-         poly return is an sp_RbVal in two registers, so it takes its own cast. */
-      if (m->legacy_ret == SP_BM_RET_POLY) {
-        if (m->recv_bound)
-          return ((sp_RbVal (*)(void *, sp_int, sp_int))(uintptr_t)m->fn)((void *)m->self, start, len);
-        return ((sp_RbVal (*)(sp_int, sp_int))(uintptr_t)m->fn)(start, len);
-      }
-      /* a nil-returning target is a C void function, and wasm checks the
-         callee's signature at the call (sp_method_proc_tramp has the same arm) */
-      if (m->legacy_ret == SP_BM_RET_NIL) {
-        if (m->recv_bound) ((void (*)(void *, sp_int, sp_int))(uintptr_t)m->fn)((void *)m->self, start, len);
-        else ((void (*)(sp_int, sp_int))(uintptr_t)m->fn)(start, len);
-        return sp_box_nil();
-      }
-      if (m->recv_bound)
-        return sp_bm_box_ret(m, ((sp_int (*)(void *, sp_int, sp_int))(uintptr_t)m->fn)((void *)m->self, start, len));
-      return sp_bm_box_ret(m, ((sp_int (*)(sp_int, sp_int))(uintptr_t)m->fn)(start, len));
-    }
-    _sp_proc_poly_args[0] = sp_box_int(start);
-    _sp_proc_poly_args[1] = sp_box_int(len);
-    sp_int slots[2]; slots[0] = start; slots[1] = len;
-    return sp_poly_callable_call(a, 2, slots);
-  }
-  /* Proc#[] is #call: a two-int slice on a callable is a two-argument call.
-     The emitter sends only statically-Integer operands here, so a boxed Proc
-     previously fell into the array switch and answered nil (#4395). */
-  if (a.v.p && (a.cls_id == SP_BUILTIN_PROC || a.cls_id == SP_BUILTIN_CURRY)) {
-    _sp_proc_poly_args[0] = sp_box_int(start);
-    _sp_proc_poly_args[1] = sp_box_int(len);
-    sp_int slots[16];
-    slots[0] = start;
-    slots[1] = len;
-    return sp_poly_callable_call(a, 2, slots);
-  }
-  switch (a.cls_id) {
-    case SP_BUILTIN_INT_ARRAY:  return sp_box_int_array(sp_IntArray_slice((sp_IntArray*)a.v.p, start, len));
-    case SP_BUILTIN_FLT_ARRAY:  return sp_box_float_array(sp_FloatArray_slice((sp_FloatArray*)a.v.p, start, len));
-    case SP_BUILTIN_STR_ARRAY:  return sp_box_str_array(sp_StrArray_slice((sp_StrArray*)a.v.p, start, len));
-    case SP_BUILTIN_POLY_ARRAY: return sp_box_poly_array(sp_PolyArray_slice((sp_PolyArray*)a.v.p, start, len));
-    /* a slice of a pointer array is a fresh general Array of the same rows or
-       objects, by reference (#4486) */
-    case SP_BUILTIN_PTR_ARRAY:  return sp_box_poly_array(sp_PolyArray_slice(sp_PtrArray_to_poly((sp_PtrArray*)a.v.p), start, len));
-    default: return sp_box_nil();
-  }
-}
+sp_RbVal sp_poly_slice(sp_RbVal a, sp_int start, sp_int len);
 /* True when a boxed value is one of the builtin array kinds. */
 static int sp_rbval_is_array(sp_RbVal v) {
   return v.tag == SP_TAG_OBJ &&
@@ -7376,7 +7039,7 @@ static const char *sp_str_format_splat(sp_RbVal a) {
   for (sp_int i = 1; i < n; i++) sp_PolyArray_push(rest, sp_poly_arr_get(a, i));
   return sp_str_format_polyarr(fmt ? fmt : "", rest);
 }
-static inline const char *sp_poly_inspect(sp_RbVal v);            /* %p; defined after the container types */
+const char *sp_poly_inspect(sp_RbVal v);            /* %p; defined after the container types */
 static const char *sp_str_format_polyarr(const char *fmt, sp_PolyArray *a) {
   size_t cap = strlen(fmt) + 64;
   char *buf = (char *)malloc(cap);
@@ -8286,100 +7949,18 @@ static const char*sp_PolyArrayPtrArray_inspect(sp_PtrArray*a){SP_GC_ROOT(a);sp_S
 typedef struct sp_StrPolyHash sp_StrPolyHash;
 typedef struct sp_SymPolyHash sp_SymPolyHash;
 typedef struct sp_PolyPolyHash sp_PolyPolyHash;
-static const char *sp_StrPolyHash_inspect(sp_StrPolyHash *h);
-static const char *sp_SymPolyHash_inspect(sp_SymPolyHash *h);
-static const char *sp_PolyPolyHash_inspect(sp_PolyPolyHash *h);
+const char *sp_StrPolyHash_inspect(sp_StrPolyHash *h);
+const char *sp_SymPolyHash_inspect(sp_SymPolyHash *h);
+const char *sp_PolyPolyHash_inspect(sp_PolyPolyHash *h);
 
 /* Object#inspect for a tagged sp_RbVal. Dispatches on the runtime tag;
    each branch reuses the matching primitive inspect helper. Falls back
    to "#<Object>" for SP_TAG_OBJ because the runtime has no class-name
    table yet (follow-up PR). Returns a GC-managed C string. */
 struct sp_OpenStruct_s;
-static const char *sp_OpenStruct_inspect(struct sp_OpenStruct_s *o);
+const char *sp_OpenStruct_inspect(struct sp_OpenStruct_s *o);
 static const char *sp_enum_inspect_boxed(sp_RbVal v);  /* defined below, after sp_enum.h */
-static inline const char *sp_poly_inspect(sp_RbVal v) {
-  switch (v.tag) {
-    /* An int-typed nil (unfilled int block param, nullable-int miss) carries
-       the SP_INT_NIL sentinel; render it as nil, not the raw INT64_MIN. */
-    case SP_TAG_INT:  return v.v.i == SP_INT_NIL ? SPL("nil") : sp_int_to_s(v.v.i);
-    case SP_TAG_STR:  return sp_str_inspect(v.v.s);
-    case SP_TAG_FLT:  return sp_float_to_s(v.v.f);
-    /* true.inspect is true.to_s, the frozen one; nil.inspect is a new "nil" */
-    case SP_TAG_BOOL: return v.v.b ? sp_str_frozen_true : sp_str_frozen_false;
-    case SP_TAG_NIL:  return SPL("nil");
-    case SP_TAG_SYM:  return sp_sym_inspect((sp_sym)v.v.i);
-    case SP_TAG_ENCODING: return sp_encoding_inspect_name(v.v.s ? v.v.s : "");
-    case SP_TAG_CLASS: return sp_class_val_name(v);
-    case SP_TAG_BIGINT: return sp_bigint_to_s((sp_Bigint *)v.v.p);
-    case SP_TAG_OBJ:
- /* Built-in container / value-type tags get their typed inspect
-    helper. Matches the dispatch shape in sp_poly_to_s above and the
-    `puts` poly arm earlier in this file; without it, a Range / Time
-    / typed Array stored as an sp_RbVal value (e.g. a sym_poly_hash
-    that mixes `200..299` and `404`) reported "#<Object>" from
-    `.inspect`, which was both wrong for CRuby parity and useless
-    for debugging. */
-      switch (v.cls_id) {
-        case SP_BUILTIN_INT_ARRAY: return sp_IntArray_inspect((sp_IntArray *)v.v.p);
-        case SP_BUILTIN_FLT_ARRAY: return sp_FloatArray_inspect((sp_FloatArray *)v.v.p);
-        case SP_BUILTIN_STR_ARRAY: return sp_StrArray_inspect((sp_StrArray *)v.v.p);
-        case SP_BUILTIN_SYM_ARRAY: return sp_SymArray_inspect((sp_IntArray *)v.v.p);
-        case SP_BUILTIN_PTR_ARRAY: return sp_PtrArray_inspect_k((sp_PtrArray *)v.v.p);
-        case SP_BUILTIN_POLY_ARRAY: return sp_PolyArray_inspect((sp_PolyArray *)v.v.p);
-        case SP_BUILTIN_RANGE:     return sp_Range_inspect((sp_Range *)v.v.p);
-        case SP_BUILTIN_FLOAT_RANGE: return sp_frange_inspect(*(sp_FloatRange *)v.v.p);
-        case SP_BUILTIN_STR_RANGE: return sp_srange_inspect(*(sp_StrRange *)v.v.p);
-        case SP_BUILTIN_TIME:      return sp_Time_inspect((sp_Time *)v.v.p);
-      case SP_BUILTIN_STRBUF: return sp_str_inspect(sp_String_cstr((sp_String *)v.v.p));   /* (#3227) */
-      case SP_BUILTIN_METHOD: return sp_method_desc_cstr((sp_BoundMethod *)v.v.p);
-        case SP_BUILTIN_COMPLEX:   return sp_complex_inspect(*(sp_Complex *)v.v.p);
-        case SP_BUILTIN_RATIONAL:  return sp_rational_inspect(*(sp_Rational *)v.v.p);
-        case SP_BUILTIN_BIG_RATIONAL:  return sp_brat_inspect((sp_BigRational *)v.v.p);
-        case SP_BUILTIN_REGEX:     return sp_re_inspect_str(v.v.p);
-        case SP_BUILTIN_MATCHDATA: return sp_MatchData_inspect((sp_MatchData *)v.v.p);
-        case SP_BUILTIN_EXCEPTION: return sp_exc_inspect(v.v.p);
-        case SP_BUILTIN_STR_INT_HASH:  return sp_StrIntHash_inspect((sp_StrIntHash *)v.v.p);
-        case SP_BUILTIN_STR_STR_HASH:  return sp_StrStrHash_inspect((sp_StrStrHash *)v.v.p);
-        case SP_BUILTIN_INT_STR_HASH:  return sp_IntStrHash_inspect((sp_IntStrHash *)v.v.p);
-        case SP_BUILTIN_INT_INT_HASH:  return sp_IntIntHash_inspect((sp_IntIntHash *)v.v.p);
-        case SP_BUILTIN_STR_POLY_HASH: return sp_StrPolyHash_inspect((sp_StrPolyHash *)v.v.p);
-        case SP_BUILTIN_SYM_POLY_HASH: return sp_SymPolyHash_inspect((sp_SymPolyHash *)v.v.p);
-        case SP_BUILTIN_POLY_POLY_HASH: return sp_PolyPolyHash_inspect((sp_PolyPolyHash *)v.v.p);
-        case SP_BUILTIN_OPENSTRUCT: return sp_OpenStruct_inspect((struct sp_OpenStruct_s *)v.v.p);
-        case SP_BUILTIN_ENUMERATOR: return sp_enum_inspect_boxed(v);
-        /* #<Dir:PATH>, as the typed Dir's inspect renders it (#3250) */
-        case SP_BUILTIN_DIR: {
-          const char *_dp = v.v.p ? ((sp_Dir *)v.v.p)->path : NULL;
-          return sp_sprintf("#<Dir:%s>", _dp ? _dp : "");
-        }
-        case SP_BUILTIN_FIBER:  return sp_Fiber_inspect((sp_Fiber *)v.v.p);
-        case SP_BUILTIN_THREAD: return sp_Thread_inspect((sp_thread *)v.v.p);
-        case SP_BUILTIN_ARGF:   return SPL("ARGF");
-        default:
-          /* a user object: the generated per-class ivar walk renders
-             #<Name:0x... @a=..., ...> like CRuby's default inspect */
-          if (v.cls_id >= 0 && sp_obj_inspect_fn && v.v.p) {
-            SP_GC_ROOT_RBVAL(v);   /* across the user #inspect or the ivar walk, as for #to_s */
-            return sp_obj_inspect_fn(v.cls_id, v.v.p);
-          }
-          if (v.cls_id == SP_BUILTIN_OBJECT && v.v.p && v.v.p == sp_main_obj) return SPL("main");
-          if ((v.cls_id >= 0 || v.cls_id == SP_BUILTIN_OBJECT) && v.v.p)
-            return sp_sprintf("#<%s:0x%016llx>", sp_poly_class_name(v),
-                              (unsigned long long)(uintptr_t)v.v.p);
-          /* a builtin handle with no inspect of its own (a Fiber, a Queue, a
-             Mutex): name it rather than answering the useless "#<Object>" --
-             the tag knows what it is, and CRuby's default inspect is this
-             shape too */
-          if (v.v.p) {
-            const char *bn = sp_poly_class_name(v);
-            if (bn && bn[0])
-              return sp_sprintf("#<%s:0x%016llx>", bn, (unsigned long long)(uintptr_t)v.v.p);
-          }
-          return SPL("#<Object>");
-      }
-    default:          return sp_str_empty;
-  }
-}
+const char *sp_poly_inspect(sp_RbVal v);
 /* FrozenError for a frozen user instance: "can't modify frozen <Name>: <inspect>".
    `what` carries the class-bearing prefix ("can't modify frozen C"), rodata
    marker-prefixed at the emit site; the receiver renders through the full
@@ -8558,14 +8139,14 @@ static void sp_StrPolyHash_delete(sp_StrPolyHash*h,const char*k){ sp_gc_wb((void
 /* Hash#merge for str_poly_hash. Same shape as the
    StrIntHash / SymPolyHash siblings -- copy recv's entries into a
    fresh hash, then overlay other's. */
-static sp_StrPolyHash*sp_StrPolyHash_merge(sp_StrPolyHash*a,sp_StrPolyHash*b){SP_GC_ROOT(a);SP_GC_ROOT(b);sp_StrPolyHash*r=sp_StrPolyHash_new();r->default_v=a->default_v;r->dproc=a->dproc;r->dproc_self=a->dproc_self;for(sp_int i=0;i<a->len;i++)sp_StrPolyHash_set(r,a->order[i],sp_StrPolyHash_get(a,a->order[i]));for(sp_int i=0;i<b->len;i++)sp_StrPolyHash_set(r,b->order[i],sp_StrPolyHash_get(b,b->order[i]));return r;}
+sp_StrPolyHash*sp_StrPolyHash_merge(sp_StrPolyHash*a,sp_StrPolyHash*b);
 static void sp_StrPolyHash_update(sp_StrPolyHash*a,sp_StrPolyHash*b){if(!a||!b||a==b)return;SP_GC_ROOT(a);SP_GC_ROOT(b);for(sp_int i=0;i<b->len;i++)sp_StrPolyHash_set(a,b->order[i],sp_StrPolyHash_get(b,b->order[i]));}
-static sp_StrPolyHash*sp_StrPolyHash_dup(sp_StrPolyHash*h){sp_StrPolyHash*r=sp_StrPolyHash_new();r->default_v=h->default_v;r->dproc=h->dproc;r->dproc_self=h->dproc_self;for(sp_int i=0;i<h->len;i++)sp_StrPolyHash_set(r,h->order[i],sp_StrPolyHash_get(h,h->order[i]));return r;}
+sp_StrPolyHash*sp_StrPolyHash_dup(sp_StrPolyHash*h);
 static sp_StrPolyHash*sp_StrPolyHash_replace(sp_StrPolyHash*h,sp_StrPolyHash*o){ sp_gc_wb((void*)h);if(!h)return h;for(sp_int i=0;i<h->cap;i++)h->keys[i]=NULL;h->len=0;if(o)for(sp_int i=0;i<o->len;i++)sp_StrPolyHash_set(h,o->order[i],sp_StrPolyHash_get(o,o->order[i]));return h;}
-static void sp_StrPolyHash_clear(sp_StrPolyHash*h){ sp_gc_wb((void*)h);if(!h)return;for(sp_int i=0;i<h->cap;i++)h->keys[i]=NULL;h->len=0;}
+void sp_StrPolyHash_clear(sp_StrPolyHash*h);
 static sp_bool sp_StrPolyHash_eq(sp_StrPolyHash*a,sp_StrPolyHash*b){if(!a||!b)return a==b;if(a->len!=b->len)return FALSE;for(sp_int i=0;i<a->len;i++){const char*k=a->order[i];if(!sp_StrPolyHash_has_key(b,k))return FALSE;if(!sp_poly_eq(sp_StrPolyHash_get(a,k),sp_StrPolyHash_get(b,k)))return FALSE;}return TRUE;}
 /* Issue #851: inspect for str_poly_hash. */
-static const char*sp_StrPolyHash_inspect(sp_StrPolyHash*h){return h?sp_inspect_container(sp_box_obj(h,SP_BUILTIN_STR_POLY_HASH)):SPL("nil");}
+const char*sp_StrPolyHash_inspect(sp_StrPolyHash*h);
 /* Convert a narrower StrStrHash to a StrPolyHash. Needed when the
    analyzer widens an LV slot to sp_StrPolyHash* (e.g. later poly-value
    writes) but the initial RHS is a sibling narrower hash variant --
@@ -8576,17 +8157,7 @@ static const char*sp_StrPolyHash_inspect(sp_StrPolyHash*h){return h?sp_inspect_c
    each value read as its to_s (nil as ""), the String-to-String Hash the
    substitution helpers take, as CRuby converts hash[match] with to_s; its
    default value is converted too. */
-static sp_StrStrHash *sp_StrPolyHash_to_s_values(sp_StrPolyHash *h) {
-  SP_GC_ROOT(h);
-  sp_StrStrHash *r = sp_StrStrHash_new(); SP_GC_ROOT(r);
-  /* a missing match reads the default, as its to_s (nil's "" is no default) */
-  if (h && h->default_v.tag != SP_TAG_NIL) r->default_v = sp_poly_to_s(h->default_v);
-  if (h) for (sp_int i = 0; i < h->len; i++) {
-    const char *k = h->order[i];
-    sp_StrStrHash_set(r, k, sp_poly_to_s(sp_StrPolyHash_get(h, k)));
-  }
-  return r;
-}
+sp_StrStrHash *sp_StrPolyHash_to_s_values(sp_StrPolyHash *h);
 /* ...and an Integer-valued one, the same way (a nil value is the sentinel) */
 static sp_StrStrHash *sp_StrIntHash_to_s_values(sp_StrIntHash *h) {
   SP_GC_ROOT(h);
@@ -8668,7 +8239,7 @@ static sp_IntArray*sp_SymPolyHash_keys(sp_SymPolyHash*h){SP_GC_ROOT(h);sp_IntArr
 static sp_PolyArray*sp_SymPolyHash_values(sp_SymPolyHash*h){SP_GC_ROOT(h);sp_PolyArray*a=sp_PolyArray_new();SP_GC_ROOT(a);for(sp_int i=0;i<h->len;i++)sp_PolyArray_push(a,sp_SymPolyHash_get(h,h->order[i]));return a;}
 static sp_bool sp_SymPolyHash_has_value(sp_SymPolyHash*h,sp_RbVal v){if(!h)return FALSE;for(sp_int i=0;i<h->len;i++)if(sp_poly_eq(sp_SymPolyHash_get(h,h->order[i]),v))return TRUE;return FALSE;}
 static sp_sym sp_SymPolyHash_key(sp_SymPolyHash*h,sp_RbVal v){if(!h)return (sp_sym)-1;for(sp_int i=0;i<h->len;i++)if(sp_poly_eq(sp_SymPolyHash_get(h,h->order[i]),v))return h->order[i];return (sp_sym)-1;}
-static sp_SymPolyHash*sp_SymPolyHash_merge(sp_SymPolyHash*a,sp_SymPolyHash*b){SP_GC_ROOT(a);SP_GC_ROOT(b);sp_SymPolyHash*r=sp_SymPolyHash_new();r->default_v=a->default_v;r->dproc=a->dproc;r->dproc_self=a->dproc_self;for(sp_int i=0;i<a->len;i++)sp_SymPolyHash_set(r,a->order[i],sp_SymPolyHash_get(a,a->order[i]));for(sp_int i=0;i<b->len;i++)sp_SymPolyHash_set(r,b->order[i],sp_SymPolyHash_get(b,b->order[i]));return r;}
+sp_SymPolyHash*sp_SymPolyHash_merge(sp_SymPolyHash*a,sp_SymPolyHash*b);
 static void sp_SymPolyHash_update(sp_SymPolyHash*a,sp_SymPolyHash*b){if(!a||!b||a==b)return;SP_GC_ROOT(a);SP_GC_ROOT(b);for(sp_int i=0;i<b->len;i++)sp_SymPolyHash_set(a,b->order[i],sp_SymPolyHash_get(b,b->order[i]));}
 /* OpenStruct: a dynamic-member object (#3135). Members are named at run time
    (JSON keys, CLI args, ...) so they cannot be static C fields; the backing is
@@ -8722,14 +8293,7 @@ static sp_SymPolyHash *sp_OpenStruct_to_h(sp_OpenStruct *o){
    the copy a table of its own too, except that a frozen clone shares the
    frozen table, which nothing can write. clone keeps the frozen bit, dup does
    not. */
-static sp_OpenStruct *sp_OpenStruct_dup(sp_OpenStruct *o, int keep_frozen){
-  if(!o) return NULL;
-  SP_GC_ROOT(o);
-  sp_SymPolyHash *t=sp_OpenStruct_to_h(o); SP_GC_ROOT(t);
-  sp_OpenStruct *r=sp_OpenStruct_new_from(t);
-  if(keep_frozen&&sp_gc_is_frozen(o)) sp_gc_freeze(r);
-  return r;
-}
+sp_OpenStruct *sp_OpenStruct_dup(sp_OpenStruct *o, int keep_frozen);
 static sp_bool sp_OpenStruct_eq(sp_OpenStruct *a, sp_OpenStruct *b){
   SP_GC_ROOT(a); SP_GC_ROOT(b);   /* either may be the caller's bare temporary; a member's == can allocate */
   if(a==b) return 1;
@@ -8753,27 +8317,7 @@ static sp_bool sp_OpenStruct_eql(sp_OpenStruct *a, sp_OpenStruct *b){
   return 1;
 }
 /* #inspect: #<OpenStruct a=1, b="hi"> */
-static const char *sp_OpenStruct_inspect(sp_OpenStruct *o){
-  SP_GC_ROOT(o);      /* o may be the caller's bare temporary; the rendering allocates */
-  /* an OpenStruct reached from inside itself renders as the ellipsis and stops,
-     as CRuby's does: `#<OpenStruct a=1, me=#<OpenStruct ...>>` */
-  if(o&&sp_poly_recur_seen(SP_POLY_RECUR_INSPECT,o,NULL)) return (&("\xff" "#<OpenStruct ...>")[1]);
-  int rmark=o?sp_poly_recur_push(SP_POLY_RECUR_INSPECT,o,NULL):-1;
-  sp_String *s=sp_String_new(""); SP_GC_ROOT(s);
-  sp_String_append(s,"#<OpenStruct");
-  if(o&&o->tbl) for(sp_int i=0;i<o->tbl->len;i++){
-    sp_sym k=o->tbl->order[i];
-    sp_String_append(s, i==0?" ":", ");
-    sp_String_append(s, sp_sym_to_s(k));
-    sp_String_append(s, "=");
-    sp_String_append(s, sp_poly_inspect(sp_SymPolyHash_get(o->tbl,k)));
-  }
-  sp_String_append(s,">");
-  if(rmark>=0) sp_poly_recur_pop(rmark);
-  /* an independent GC heap string, not the sp_String's own buffer: the wrapper
-     is unrooted on return and its data would dangle if the result is stored. */
-  return sp_str_concat(sp_String_cstr(s), (&("\xff")[1]));
-}
+const char *sp_OpenStruct_inspect(sp_OpenStruct *o);
 /* MatchData#named_captures(symbolize_names: true) and #deconstruct_keys: the
    named captures as a symbol-keyed hash (#2503, #2530). */
 #if defined(SPINEL_EXT_HOST) || defined(SPINEL_EXT_KERNEL)
@@ -8857,7 +8401,7 @@ static void sp_kwargs_check(sp_SymPolyHash *h, const char *const *allowed) {
    slot, shifting probe-chain successors backward and dropping the
    key from the insertion-order list. Issue #510. */
 static void sp_SymPolyHash_delete(sp_SymPolyHash*h,sp_sym k){ sp_gc_wb((void*)h);sp_int idx=(sp_int)(((sp_int)k)&h->mask);while(h->keys[idx]>=0){if(h->keys[idx]==k){h->keys[idx]=-1;h->vals[idx]=sp_box_nil();h->len--;sp_int j=(idx+1)&h->mask;while(h->keys[j]>=0){sp_int nj=(sp_int)(((sp_int)h->keys[j])&h->mask);if((j>idx&&(nj<=idx||nj>j))||(j<idx&&nj<=idx&&nj>j)){h->keys[idx]=h->keys[j];h->vals[idx]=h->vals[j];h->keys[j]=-1;h->vals[j]=sp_box_nil();idx=j;}j=(j+1)&h->mask;}{sp_int oi=0;while(oi<=h->len){if(h->order[oi]==k){while(oi<h->len){h->order[oi]=h->order[oi+1];oi++;}break;}oi++;}}return;}idx=(idx+1)&h->mask;}}
-static sp_SymPolyHash*sp_SymPolyHash_dup(sp_SymPolyHash*h){sp_SymPolyHash*r=sp_SymPolyHash_new();r->default_v=h->default_v;r->dproc=h->dproc;r->dproc_self=h->dproc_self;for(sp_int i=0;i<h->len;i++)sp_SymPolyHash_set(r,h->order[i],sp_SymPolyHash_get(h,h->order[i]));return r;}
+sp_SymPolyHash*sp_SymPolyHash_dup(sp_SymPolyHash*h);
 /* An Object.new instance's instance variables (sp_Object): get answers nil
    for one never set, set raises FrozenError on a frozen object, as CRuby. */
 static sp_RbVal sp_Object_ivar_get(sp_Object *o, sp_sym k){
@@ -8881,11 +8425,11 @@ static sp_PolyArray *sp_Object_ivars(sp_Object *o){
   return a;
 }
 static sp_SymPolyHash*sp_SymPolyHash_replace(sp_SymPolyHash*h,sp_SymPolyHash*o){if(!h)return h;for(sp_int i=0;i<h->cap;i++)h->keys[i]=-1;h->len=0;if(o)for(sp_int i=0;i<o->len;i++)sp_SymPolyHash_set(h,o->order[i],sp_SymPolyHash_get(o,o->order[i]));return h;}
-static void sp_SymPolyHash_clear(sp_SymPolyHash*h){if(!h)return;for(sp_int i=0;i<h->cap;i++)h->keys[i]=-1;h->len=0;}
+void sp_SymPolyHash_clear(sp_SymPolyHash*h);
 static sp_bool sp_SymPolyHash_eq(sp_SymPolyHash*a,sp_SymPolyHash*b){if(!a||!b)return a==b;if(a->len!=b->len)return FALSE;for(sp_int i=0;i<a->len;i++){sp_sym k=a->order[i];if(!sp_SymPolyHash_has_key(b,k))return FALSE;if(!sp_poly_eq(sp_SymPolyHash_get(a,k),sp_SymPolyHash_get(b,k)))return FALSE;}return TRUE;}
 /* Hash#inspect for sym_poly_hash. CRuby 4.0 renders symbol keys
    in shorthand: `{a: 1, b: "x"}` rather than `{:a => 1, :b => "x"}`. */
-static const char*sp_SymPolyHash_inspect(sp_SymPolyHash*h){return h?sp_inspect_container(sp_box_obj(h,SP_BUILTIN_SYM_POLY_HASH)):SPL("nil");}
+const char*sp_SymPolyHash_inspect(sp_SymPolyHash*h);
 
 /* poly_val[sym_key]: runtime dispatch for poly receiver `[]` with symbol arg. */
 /* sp_poly_get_sym moved below PolyPolyHash so it can dispatch to it. */
@@ -8925,8 +8469,24 @@ static sp_int sp_bytes_hash(const void *p, size_t n) {
 }
 typedef sp_int  (*sp_obj_hash_fn)(int cls_id, void *p);
 typedef sp_bool (*sp_obj_eql_fn)(int cls_id, void *a, void *b);
+/* The generated unit keeps this hook static, so a hook no code sets folds away; lib/sp_poly_cold.c
+   reads sp_obj_hash_hook_lib, which SP_INSTALL_HOOK sets beside it. */
+#ifdef SPINEL_EXT_HOST
+extern sp_obj_hash_fn sp_obj_hash_hook_lib;
+#define sp_obj_hash_hook sp_obj_hash_hook_lib
+#else
 static sp_obj_hash_fn sp_obj_hash_hook = NULL;
+extern sp_obj_hash_fn sp_obj_hash_hook_lib;
+#endif
+/* The generated unit keeps this hook static, so a hook no code sets folds away; lib/sp_poly_cold.c
+   reads sp_obj_eql_hook_lib, which SP_INSTALL_HOOK sets beside it. */
+#ifdef SPINEL_EXT_HOST
+extern sp_obj_eql_fn sp_obj_eql_hook_lib;
+#define sp_obj_eql_hook sp_obj_eql_hook_lib
+#else
 static sp_obj_eql_fn  sp_obj_eql_hook  = NULL;
+extern sp_obj_eql_fn sp_obj_eql_hook_lib;
+#endif
 /* The bucket index takes the LOW bits of a key's hash, and several key kinds
    leave their information out of those: a Float's mantissa bits are zero for
    every whole number, an array of small coordinates folds to h*31+x, a Struct
@@ -9347,7 +8907,7 @@ static void sp_PolyPolyHash_update(sp_PolyPolyHash *a, sp_PolyPolyHash *b) {
 static void sp_marv_hash_set(sp_RbVal h, sp_RbVal k, sp_RbVal v) { sp_PolyPolyHash_set((sp_PolyPolyHash *)h.v.p, k, v); }
 /* order[] holds slot indices (not keys), so iterate keys/vals by the stored
    index; merge inherits the LEFT receiver's default per CRuby. */
-static sp_PolyPolyHash*sp_PolyPolyHash_merge(sp_PolyPolyHash*a,sp_PolyPolyHash*b){SP_GC_ROOT(a);SP_GC_ROOT(b);sp_PolyPolyHash*r=sp_PolyPolyHash_new();SP_GC_ROOT(r);if(a){r->default_v=a->default_v;r->dproc=a->dproc;r->dproc_self=a->dproc_self;for(sp_int i=0;i<a->len;i++){sp_int idx=a->order[i];sp_PolyPolyHash_set(r,a->keys[idx],a->vals[idx]);}}if(b){for(sp_int i=0;i<b->len;i++){sp_int idx=b->order[i];sp_PolyPolyHash_set(r,b->keys[idx],b->vals[idx]);}}return r;}
+sp_PolyPolyHash*sp_PolyPolyHash_merge(sp_PolyPolyHash*a,sp_PolyPolyHash*b);
 static sp_bool sp_PolyPolyHash_has_key(sp_PolyPolyHash*h,sp_RbVal k){if(!h)return FALSE;SP_GC_ROOT(h);SP_GC_ROOT_RBVAL(k);sp_int hs=sp_hash_slot(sp_rbval_hash_key(k));sp_int idx=(sp_int)(hs&h->mask);while(h->occ[idx]){if(h->hs[idx]==hs&&sp_rbval_eql_key(h->keys[idx],k))return TRUE;idx=(idx+1)&h->mask;}return FALSE;}
 /* Hash#rehash: a key changed since it was stored is under the hash it was
    stored with. Every entry is stored anew into a fresh table, in order,
@@ -9426,41 +8986,11 @@ static sp_RbVal sp_fmt_named_ref(sp_PolyArray *a, const char *nm, char nclose, c
     sp_raise_cls("KeyError", m); }
 }
 static sp_int sp_PolyPolyHash_length(sp_PolyPolyHash*h){return h->len;}
-static void sp_PolyPolyHash_clear(sp_PolyPolyHash*h){if(!h)return;for(sp_int i=0;i<h->cap;i++)h->occ[i]=0;h->len=0;}
+void sp_PolyPolyHash_clear(sp_PolyPolyHash*h);
 /* `#clear` on a poly value (a mixed Array/Hash collection element reached via
    `&:clear`): empty the container in place, dispatching on its runtime kind and
    returning the receiver (#3199). */
-static sp_RbVal sp_poly_clear(sp_RbVal v) {
-  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_QUEUE && v.v.p) { sp_Queue_clear((sp_queue *)v.v.p); return v; }
-  /* String#clear on a plain string box: a fresh empty string the receiver
-     takes back, as the typed clear builds; a frozen one raises. It answered
-     the box untouched. */
-  if (v.tag == SP_TAG_STR) { sp_str_check_mutable(v.v.s); return sp_box_str(sp_str_from_bytes("", 0)); }
-  sp_poly_coll_chk(v, "clear");
-  if (v.tag != SP_TAG_OBJ || !v.v.p) return v;
-  switch (v.cls_id) {
-    case SP_BUILTIN_INT_ARRAY:      ((sp_IntArray *)v.v.p)->len = 0; break;
-    case SP_BUILTIN_FLT_ARRAY:      ((sp_FloatArray *)v.v.p)->len = 0; break;
-    case SP_BUILTIN_STR_ARRAY:      ((sp_StrArray *)v.v.p)->len = 0; break;
-    case SP_BUILTIN_POLY_ARRAY:     ((sp_PolyArray *)v.v.p)->len = 0; break;
-    case SP_BUILTIN_PTR_ARRAY:      ((sp_PtrArray *)v.v.p)->len = 0; break;
-    case SP_BUILTIN_STRBUF: {
-      sp_String *_m = (sp_String *)v.v.p;
-      if (sp_String_is_frozen(_m)) { sp_raise_frozen_str(_m->data); break; }
-      _m->len = 0; _m->data[0] = 0; sp_fd_publish(_m);
-      break;
-    }
-    case SP_BUILTIN_STR_INT_HASH:   sp_StrIntHash_clear((sp_StrIntHash *)v.v.p); break;
-    case SP_BUILTIN_STR_STR_HASH:   sp_StrStrHash_clear((sp_StrStrHash *)v.v.p); break;
-    case SP_BUILTIN_INT_STR_HASH:   sp_IntStrHash_clear((sp_IntStrHash *)v.v.p); break;
-    case SP_BUILTIN_INT_INT_HASH:   sp_IntIntHash_clear((sp_IntIntHash *)v.v.p); break;
-    case SP_BUILTIN_STR_POLY_HASH:  sp_StrPolyHash_clear((sp_StrPolyHash *)v.v.p); break;
-    case SP_BUILTIN_SYM_POLY_HASH:  sp_SymPolyHash_clear((sp_SymPolyHash *)v.v.p); break;
-    case SP_BUILTIN_POLY_POLY_HASH: sp_PolyPolyHash_clear((sp_PolyPolyHash *)v.v.p); break;
-    default: sp_raise_nomethod(sp_nomethod_msg("clear", v)); break;
-  }
-  return v;
-}
+sp_RbVal sp_poly_clear(sp_RbVal v);
 /* Array#pop / #shift on a poly value (an array-kind box reaching a poly
    parameter, e.g. one call site passes a StrArray and another a PolyArray):
    mutate the underlying container in place, dispatching on its runtime kind,
@@ -9896,40 +9426,7 @@ static sp_PolyArray *sp_poly_zip_none(sp_RbVal a) {
    that is not a callable delegates to sp_poly_slice, which keeps the bound
    Method arm it already had. */
 static sp_RbVal sp_poly_callable_call(sp_RbVal v, sp_int n, const sp_int *args);
-static sp_RbVal sp_poly_slice_or_call(sp_RbVal v, sp_RbVal a, sp_RbVal b) {
-  /* `s[/re/, n]` on a boxed String: capture n of the first match, nil when
-     there is none -- the form the typed emitter answers inline. Read as a
-     two-integer slice, the Regexp operand raised TypeError (campfire's
-     `response.headers["Link"][/<(.*)>/, 1]` off a Hash[String, String]). */
-  if (v.tag == SP_TAG_STR && a.tag == SP_TAG_OBJ && a.v.p && a.cls_id == SP_BUILTIN_REGEX &&
-      b.tag == SP_TAG_INT) {
-    sp_int n = b.v.i;
-    if (sp_re_match((mrb_regexp_pattern *)a.v.p, v.v.s ? v.v.s : "") < 0) return sp_box_nil();
-    if (n == 0) return sp_box_nullable_str(sp_re_match_str);
-    if (n >= 1 && n <= 9) return sp_box_nullable_str(sp_re_captures[n]);
-    return sp_box_nil();
-  }
-  /* `s[/(?<x>..)/, "x"]` or `, :x`: the named capture of the first match,
-     nil when there is none, as the typed emitter answers it */
-  if (v.tag == SP_TAG_STR && a.tag == SP_TAG_OBJ && a.v.p && a.cls_id == SP_BUILTIN_REGEX &&
-      (b.tag == SP_TAG_STR || b.tag == SP_TAG_SYM)) {
-    const char *nm = b.tag == SP_TAG_SYM ? sp_sym_to_s((sp_sym)b.v.i) : (b.v.s ? b.v.s : "");
-    if (sp_re_match((mrb_regexp_pattern *)a.v.p, v.v.s ? v.v.s : "") < 0) return sp_box_nil();
-    return sp_box_nullable_str(sp_re_named_capture((mrb_regexp_pattern *)a.v.p, nm));
-  }
-  /* a Method's [] too: its arguments of any kind are the call's, where
-     sp_poly_slice took a String for an index and raised TypeError (#6179) */
-  if (v.tag == SP_TAG_OBJ && v.v.p &&
-      (v.cls_id == SP_BUILTIN_PROC || v.cls_id == SP_BUILTIN_CURRY || v.cls_id == SP_BUILTIN_METHOD)) {
-    _sp_proc_poly_args[0] = a;
-    _sp_proc_poly_args[1] = b;
-    sp_int slots[16];
-    slots[0] = sp_poly_slot_i(a);
-    slots[1] = sp_poly_slot_i(b);
-    return sp_poly_callable_call(v, 2, slots);
-  }
-  return sp_poly_slice(v, sp_poly_arg_int_chk(a), sp_poly_arg_int_chk(b));
-}
+sp_RbVal sp_poly_slice_or_call(sp_RbVal v, sp_RbVal a, sp_RbVal b);
 /* `a.zip(*xs)` and `a.product(*xs)`: the splat spreads across the ARGUMENT
    LIST, one operand per element, and its length is only known at run time --
    which is why the emitters, whose arms read a splat as a single operand,
@@ -10743,124 +10240,17 @@ static sp_RbVal sp_poly_fetch(sp_RbVal recv, sp_RbVal key, int has_dflt, sp_RbVa
    typed dup arm). Containers and value tags return as-is -- their memcpy
    would alias the backing store (and double-free through the finalizer);
    they keep their dedicated copy paths. clone preserves the frozen bit. */
-static sp_PolyPolyHash*sp_PolyPolyHash_dup(sp_PolyPolyHash*h);  /* fwd */
+sp_PolyPolyHash*sp_PolyPolyHash_dup(sp_PolyPolyHash*h);  /* fwd */
+/* The generated unit keeps this hook static, so a hook no code sets folds away; lib/sp_poly_cold.c
+   reads sp_user_init_copy_hook_lib, which SP_INSTALL_HOOK sets beside it. */
+#ifdef SPINEL_EXT_HOST
+extern void (*sp_user_init_copy_hook_lib)(sp_RbVal, sp_RbVal);
+#define sp_user_init_copy_hook sp_user_init_copy_hook_lib
+#else
 static void (*sp_user_init_copy_hook)(sp_RbVal, sp_RbVal) = NULL;
-static sp_RbVal sp_poly_dup(sp_RbVal v, int keep_frozen) {
-  if (v.tag == SP_TAG_OBJ && v.v.p &&
-      (v.cls_id == SP_BUILTIN_RANGE || v.cls_id == SP_BUILTIN_FLOAT_RANGE || v.cls_id == SP_BUILTIN_STR_RANGE))
-    return sp_range_dup(v, keep_frozen);
-
-  /* Hash#dup/#clone on a boxed hash: a shallow copy of the same variant. The
-     hash went out as-is, so a `dup` taken to keep the caller's hash intact
-     aliased it and every write through the copy landed in the original
-     (#4646: a parameter typed poly by a recursive call cycle). */
-  if (v.tag == SP_TAG_OBJ && v.v.p && sp_poly_is_hash_kind(v.cls_id)) {
-    void *p = v.v.p; SP_GC_ROOT(p);
-    switch (v.cls_id) {
-      case SP_BUILTIN_STR_INT_HASH:  v.v.p = sp_StrIntHash_dup((sp_StrIntHash *)p); break;
-      case SP_BUILTIN_STR_STR_HASH:  v.v.p = sp_StrStrHash_dup((sp_StrStrHash *)p); break;
-      case SP_BUILTIN_INT_STR_HASH:  v.v.p = sp_IntStrHash_dup((sp_IntStrHash *)p); break;
-      case SP_BUILTIN_INT_INT_HASH:  v.v.p = sp_IntIntHash_dup((sp_IntIntHash *)p); break;
-      case SP_BUILTIN_STR_POLY_HASH: v.v.p = sp_StrPolyHash_dup((sp_StrPolyHash *)p); break;
-      case SP_BUILTIN_SYM_POLY_HASH: v.v.p = sp_SymPolyHash_dup((sp_SymPolyHash *)p); break;
-      case SP_BUILTIN_POLY_POLY_HASH: v.v.p = sp_PolyPolyHash_dup((sp_PolyPolyHash *)p); break;
-    }
-    if (keep_frozen && sp_gc_is_frozen(p)) sp_gc_freeze(v.v.p);
-    return v;
-  }
-  /* Array#dup/#clone on a boxed array (read out of a poly container): a shallow
-     copy of the same kind. A raw struct memcpy (the user-object path below)
-     would share the element buffer, so the copy would alias -- mutating it
-     would corrupt the original. */
-  if (v.tag == SP_TAG_OBJ && v.v.p && sp_poly_is_array_kind(v.cls_id)) {
-    switch (v.cls_id) {
-      case SP_BUILTIN_POLY_ARRAY: v.v.p = sp_PolyArray_dup((sp_PolyArray *)v.v.p); break;
-      case SP_BUILTIN_INT_ARRAY: {
-        sp_IntArray *a = (sp_IntArray *)v.v.p; SP_GC_ROOT(a);
-        sp_IntArray *r = sp_IntArray_new();
-        for (sp_int i = 0; i < a->len; i++) sp_IntArray_push(r, a->data[a->start + i]);
-        SP_MAY_NIL(r) = SP_MAY_NIL(a);
-        if (keep_frozen && a->frozen) r->frozen = 1;
-        v.v.p = r; break;
-      }
-      case SP_BUILTIN_STR_ARRAY: {
-        sp_StrArray *a = (sp_StrArray *)v.v.p; SP_GC_ROOT(a);
-        sp_StrArray *r = sp_StrArray_new();
-        for (sp_int i = 0; i < a->len; i++) sp_StrArray_push(r, a->data[i]);
-        if (keep_frozen && a->frozen) r->frozen = 1;
-        v.v.p = r; break;
-      }
-      case SP_BUILTIN_FLT_ARRAY: {
-        sp_FloatArray *a = (sp_FloatArray *)v.v.p; SP_GC_ROOT(a);
-        sp_FloatArray *r = sp_FloatArray_new();
-        for (sp_int i = 0; i < a->len; i++) sp_FloatArray_push(r, a->data[i]);
-        SP_MAY_NIL(r) = SP_MAY_NIL(a);
-        if (keep_frozen && a->frozen) r->frozen = 1;
-        v.v.p = r; break;
-      }
-      case SP_BUILTIN_PTR_ARRAY: {
-        /* a shallow copy of the same kind, its stamp carried over (#4486) */
-        sp_PtrArray *a = (sp_PtrArray *)v.v.p; SP_GC_ROOT(a);
-        sp_PtrArray *r = sp_PtrArray_new_scan(a->scan_elem);
-        r->elem_kind = a->elem_kind; r->elem_cls = a->elem_cls;
-        for (sp_int i = 0; i < a->len; i++) sp_PtrArray_push(r, a->data[i]);
-        if (keep_frozen && a->frozen) r->frozen = 1;
-        v.v.p = r; break;
-      }
-    }
-    return v;
-  }
-  /* OpenStruct#dup/#clone on a boxed OpenStruct: a copy over its own member
-     table. Its cls_id is a builtin's, so the user-object copy below skips it
-     and the original came back. */
-  if (v.tag == SP_TAG_OBJ && v.v.p && v.cls_id == SP_BUILTIN_OPENSTRUCT) {
-    v.v.p = sp_OpenStruct_dup((sp_OpenStruct *)v.v.p, keep_frozen);
-    return v;
-  }
-  /* String#dup on a boxed string: a copy, unfrozen unless kept. Handed back
-     as-is, a `(fmt || FORMAT).dup` aliased the frozen constant and the next
-     gsub! on the "copy" raised FrozenError (Benchmark::Tms#format). */
-  if (v.tag == SP_TAG_STR && v.v.s) {
-    const char *src = v.v.s;
-    const char *d = sp_str_dup(src);
-    if (keep_frozen && sp_str_is_frozen_val(src)) d = sp_str_freeze_val(d);
-    v.v.s = d;
-    return v;
-  }
-  /* String#dup/#clone on a boxed shared handle (#6179): a new handle over a
-     copy of the bytes, its ASCII-8BIT tag kept and its frozen flag only for
-     clone. Its cls_id is a builtin's, so the user-object copy below skipped
-     it and the handle itself came back: an append to the "copy" landed in
-     the original, and `clone(freeze: false)` of a frozen String stayed
-     frozen. */
-  if (v.tag == SP_TAG_OBJ && v.v.p && v.cls_id == SP_BUILTIN_STRBUF) {
-    sp_String *h = (sp_String *)v.v.p; SP_GC_ROOT(h);
-    sp_String *n = sp_String_new_unfrozen(sp_String_cstr(h));
-    if (keep_frozen && sp_String_is_frozen(h)) sp_String_freeze(n);
-    v.v.p = n;
-    return v;
-  }
-  if (v.tag == SP_TAG_OBJ && v.v.p &&
-      (v.cls_id >= 0 || v.cls_id == SP_BUILTIN_OBJECT)) {
-    sp_gc_hdr *h = (sp_gc_hdr *)((char *)v.v.p - sizeof(sp_gc_hdr));
-    size_t payload = h->size - sizeof(sp_gc_hdr);
-    void *src = v.v.p;
-    SP_GC_ROOT(src);
-    void *n = sp_gc_alloc(payload, h->finalize, h->scan);
-    memcpy(n, src, payload);
-    /* a bare Object's ivars are its own table: the copy takes a copy */
-    if (v.cls_id == SP_BUILTIN_OBJECT && ((sp_Object *)n)->ivars) {
-      SP_GC_ROOT(n);
-      sp_SymPolyHash *t = sp_SymPolyHash_dup(((sp_Object *)n)->ivars);
-      ((sp_Object *)n)->ivars = t;
-    }
-    if (sp_user_init_copy_hook) { SP_GC_ROOT(n); sp_RbVal r = v; r.v.p = n; sp_user_init_copy_hook(r, v); }
-    if (keep_frozen && h->frozen)
-      ((sp_gc_hdr *)((char *)n - sizeof(sp_gc_hdr)))->frozen = 1;
-    v.v.p = n;
-  }
-  return v;
-}
+extern void (*sp_user_init_copy_hook_lib)(sp_RbVal, sp_RbVal);
+#endif
+sp_RbVal sp_poly_dup(sp_RbVal v, int keep_frozen);
 /* clone(freeze: ...) on a boxed value. An immutable immediate (nil/bool/int/
    float/sym/bigint) can't be unfrozen, so `freeze: false` raises ArgumentError
    like CRuby; `freeze: true`/nil returns it (already frozen). A mutable value
@@ -11208,41 +10598,7 @@ static sp_RbVal sp_poly_set_str(sp_RbVal v, const char *key, sp_RbVal val) {
    hold: the destination's variant decides how each key is stored, and a key
    it cannot represent is skipped rather than mistyped. Backs the splatted
    `h.merge!(*hs)`, where the sources are only known at run time (#3848). */
-static void sp_poly_hash_merge_into(sp_RbVal dst, sp_RbVal src) {
-  if (dst.tag != SP_TAG_OBJ || !sp_poly_is_hash_kind(dst.cls_id)) return;
-  if (src.tag != SP_TAG_OBJ || !sp_poly_is_hash_kind(src.cls_id)) return;
-  sp_int n = sp_poly_length(src);
-  for (sp_int i = 0; i < n; i++) {
-    sp_RbVal k, v;
-    sp_poly_hash_pair(src, i, &k, &v);
-    switch (dst.cls_id) {
-      case SP_BUILTIN_POLY_POLY_HASH: sp_PolyPolyHash_set((sp_PolyPolyHash *)dst.v.p, k, v); break;
-      case SP_BUILTIN_SYM_POLY_HASH:
-        if (k.tag == SP_TAG_SYM) sp_SymPolyHash_set((sp_SymPolyHash *)dst.v.p, (sp_sym)k.v.i, v);
-        break;
-      case SP_BUILTIN_STR_POLY_HASH:
-        if (k.tag == SP_TAG_STR) sp_StrPolyHash_set((sp_StrPolyHash *)dst.v.p, k.v.s, v);
-        break;
-      case SP_BUILTIN_STR_STR_HASH:
-        if (k.tag == SP_TAG_STR && v.tag == SP_TAG_STR)
-          sp_StrStrHash_set((sp_StrStrHash *)dst.v.p, k.v.s, v.v.s);
-        break;
-      case SP_BUILTIN_STR_INT_HASH:
-        if (k.tag == SP_TAG_STR && v.tag == SP_TAG_INT)
-          sp_StrIntHash_set((sp_StrIntHash *)dst.v.p, k.v.s, v.v.i);
-        break;
-      case SP_BUILTIN_INT_INT_HASH:
-        if (k.tag == SP_TAG_INT && v.tag == SP_TAG_INT)
-          sp_IntIntHash_set((sp_IntIntHash *)dst.v.p, k.v.i, v.v.i);
-        break;
-      case SP_BUILTIN_INT_STR_HASH:
-        if (k.tag == SP_TAG_INT && v.tag == SP_TAG_STR)
-          sp_IntStrHash_set((sp_IntStrHash *)dst.v.p, k.v.i, v.v.s);
-        break;
-      default: break;
-    }
-  }
-}
+void sp_poly_hash_merge_into(sp_RbVal dst, sp_RbVal src);
 /* poly_val[sym_key] = val: runtime dispatch for poly recv `[]=` with symbol key. */
 static sp_RbVal sp_poly_set_sym(sp_RbVal v, sp_sym key, sp_RbVal val) {
   sp_poly_coll_chk(v, "[]=");
@@ -11706,61 +11062,7 @@ static sp_RbVal sp_kw_member_val(sp_RbVal h, const char *name) {
    indexes a member, a copy of it keyed by the members' names, in which
    sp_kw_member_val finds them: each key converts once, here, as in CRuby,
    where a #to_int can answer anew. */
-static sp_RbVal sp_kw_splat_check(sp_RbVal h, const char *const *mem, int n,
-                                  const unsigned char *lit, int is_data) {
-  SP_GC_ROOT_RBVAL(h);
-  char buf[1024]; size_t len = 0; int cnt = 0;
-  buf[0] = 0;
-  sp_int nk = sp_poly_length(h);
-  if (is_data) {
-    for (sp_int j = 0; j < nk; j++) {
-      sp_RbVal k, v;
-      sp_poly_hash_pair(h, j, &k, &v);
-      sp_poly_to_name(k);
-    }
-    for (int i = 0; i < n; i++) {
-      if (lit && lit[i]) continue;
-      int f = 0;
-      for (sp_int j = 0; j < nk && !f; j++) {
-        sp_RbVal k, v;
-        sp_poly_hash_pair(h, j, &k, &v);
-        f = strcmp(sp_kw_key_name(k), mem[i]) == 0;
-      }
-      if (f) continue;
-      if (len < sizeof buf) len += (size_t)snprintf(buf + len, sizeof buf - len, "%s:%s", cnt ? ", " : "", mem[i]);
-      cnt++;
-    }
-    if (cnt) sp_raise_kw_error("missing", cnt, buf);
-  }
-  sp_PolyPolyHash *named = NULL;
-  SP_GC_ROOT(named);
-  for (sp_int j = 0; j < nk && !is_data && !named; j++) {
-    sp_RbVal k, v;
-    sp_poly_hash_pair(h, j, &k, &v);
-    if (!sp_kw_key_name(k)) named = sp_PolyPolyHash_new();
-  }
-  for (sp_int j = 0; j < nk; j++) {
-    sp_RbVal k, v;
-    sp_poly_hash_pair(h, j, &k, &v);
-    const char *kn = sp_kw_key_name(k);
-    int at = -1;
-    sp_int idx = 0;
-    for (int i = 0; kn && i < n && at < 0; i++) if (strcmp(kn, mem[i]) == 0) at = i;
-    if (!kn) at = sp_kw_key_pos(k, n, &idx);
-    if (at >= 0) {
-      if (named) sp_PolyPolyHash_set(named, sp_box_sym(sp_sym_intern(mem[at])), v);
-      continue;
-    }
-    if (len < sizeof buf) len += (size_t)snprintf(buf + len, sizeof buf - len, "%s%s", cnt ? ", " : "",
-                                                  is_data ? sp_poly_inspect(k) : kn ? kn : sp_int_to_s(idx));
-    cnt++;
-  }
-  /* a Struct's own wording names its keys bare and always plural
-     (rb_struct_initialize_m) */
-  if (cnt && is_data) sp_raise_kw_error("unknown", cnt, buf);
-  if (cnt) sp_raise_cls("ArgumentError", sp_sprintf("unknown keywords: %s", buf));
-  return named ? sp_box_obj(named, SP_BUILTIN_POLY_POLY_HASH) : h;
-}
+sp_RbVal sp_kw_splat_check(sp_RbVal h, const char *const *mem, int n, const unsigned char *lit, int is_data);
 /* Data.new's refusal of `npos` positional arguments beside the keyword hash
    `kw` (nil or empty for none), in CRuby's words, for a count only the run
    time knows (a `*` among the arguments): keywords beside positionals are
@@ -11854,58 +11156,7 @@ static sp_Time sp_time_at_args(sp_RbVal args) {
   if (sub.tag == SP_TAG_INT) return sp_time_add_nsec(t, (int64_t)sub.v.i * mult);
   return sp_time_add_nsec(t, (int64_t)(sp_poly_to_f_with_rational(sub) * (double)mult));
 }
-static sp_RbVal sp_poly_to_h_m(sp_RbVal v) {
-  if (v.tag == SP_TAG_NIL) return sp_box_obj(sp_SymPolyHash_new(), SP_BUILTIN_SYM_POLY_HASH);
-  if (v.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(v.cls_id)) return v;
-  /* an OpenStruct (an OpenStruct|nil union reaches here boxed): its member
-     table is already a symbol-keyed hash (#3282) */
-  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_OPENSTRUCT)
-    return sp_box_obj(sp_OpenStruct_to_h((sp_OpenStruct *)v.v.p), SP_BUILTIN_SYM_POLY_HASH);
-  /* a Struct/Data read out of a container: dispatch its symbol-keyed to_h by
-     cls_id through the generated hook (#2906). */
-  if (v.tag == SP_TAG_OBJ && sp_obj_to_h_fn) {
-    sp_RbVal h = sp_obj_to_h_fn(v);
-    if (h.tag == SP_TAG_OBJ) return h;
-  }
-  /* an array of [k, v] pairs -> a hash keyed by whatever the pairs hold: a
-     Symbol-keyed one where every key is a Symbol (the Hash#partition
-     sub-array and Enumerable pair lists this was written for), the general
-     boxed hash otherwise -- reading an Integer key as a symbol id built a
-     hash whose keys were other programs' symbols (#3972) */
-  if (v.tag == SP_TAG_OBJ && sp_poly_is_array_kind(v.cls_id)) {
-    sp_int n = sp_poly_length(v);
-    int all_sym = 1;
-    for (sp_int i = 0; i < n && all_sym; i++) {
-      sp_RbVal pair = sp_poly_arr_get(v, i);
-      /* CRuby's messages, as sp_poly_to_h_val raises them */
-      if (!(pair.tag == SP_TAG_OBJ && sp_poly_is_array_kind(pair.cls_id)))
-        sp_raise_cls("TypeError", sp_sprintf("wrong element type %s at %lld (expected array)",
-                                          sp_poly_class_name(pair), (long long)i));
-      if (sp_poly_length(pair) != 2)
-        sp_raise_cls("ArgumentError", sp_sprintf("wrong array length at %lld (expected 2, was %lld)",
-                                              (long long)i, (long long)sp_poly_length(pair)));
-      if (sp_poly_arr_get(pair, 0).tag != SP_TAG_SYM) all_sym = 0;
-    }
-    if (!all_sym) {
-      sp_PolyPolyHash *ph = sp_PolyPolyHash_new();
-      SP_GC_ROOT(ph);
-      for (sp_int i = 0; i < n; i++) {
-        sp_RbVal pair = sp_poly_arr_get(v, i);
-        sp_PolyPolyHash_set(ph, sp_poly_arr_get(pair, 0), sp_poly_arr_get(pair, 1));
-      }
-      return sp_box_obj(ph, SP_BUILTIN_POLY_POLY_HASH);
-    }
-    sp_SymPolyHash *h = sp_SymPolyHash_new();
-    SP_GC_ROOT(h);
-    for (sp_int i = 0; i < n; i++) {
-      sp_RbVal pair = sp_poly_arr_get(v, i);
-      sp_RbVal k = sp_poly_arr_get(pair, 0);
-      sp_SymPolyHash_set(h, (sp_sym)k.v.i, sp_poly_arr_get(pair, 1));
-    }
-    return sp_box_obj(h, SP_BUILTIN_SYM_POLY_HASH);
-  }
-  sp_raise_cls("NoMethodError", sp_sprintf("undefined method 'to_h' for %s", sp_poly_class_name(v)));
-}
+sp_RbVal sp_poly_to_h_m(sp_RbVal v);
 /* Hash[*args]: the splatted list is Hash[]'s argument list. One argument is
    a Hash (copied) or a list of pairs; an even count alternates keys and
    values, which pair up into the list sp_poly_to_h_m reads. */
@@ -12803,46 +12054,7 @@ static void sp_kwargs_list_add(char *list, int *n, int *cnt, const char *item) {
    it is negative), written ahead of the `**`, then the `**`'s own keys,
    then those written after it, save a key the `**` holds, which keeps the
    `**`'s place. */
-static void sp_kwargs_verify_at(sp_RbVal h, const char *const *allowed, const char *const *required,
-                                const char *const *lit, const char *const *unk, int nbefore,
-                                int check_unknown) {
-  sp_PolyArray *k = sp_poly_length(h) > 0 ? sp_poly_keys(h) : sp_PolyArray_new(); SP_GC_ROOT(k);
-  char list[256]; int n = 0, cnt = 0;
-  list[0] = 0;
-  for (const char *const *r = required; *r; r++) {
-    int found = sp_kwargs_name_in(*r, lit);
-    for (sp_int i = 0; i < k->len && !found; i++)
-      if (k->data[i].tag == SP_TAG_SYM && !strcmp(sp_sym_to_s((sp_sym)k->data[i].v.i), *r)) found = 1;
-    if (!found) sp_kwargs_list_add(list, &n, &cnt, sp_sprintf(":%s", *r));
-  }
-  if (cnt) sp_raise_kw_error("missing", cnt, list);
-  if (!check_unknown) return;
-  int nunk = 0;
-  for (const char *const *u = unk; u && *u; u++) nunk++;
-  int nb = nbefore < 0 || nbefore > nunk ? nunk : nbefore;
-  for (int u = 0; u < nb; u++) sp_kwargs_list_add(list, &n, &cnt, unk[u]);
-  for (const char *const *l = lit; !unk && *l; l++)
-    if (!sp_kwargs_name_in(*l, allowed)) sp_kwargs_list_add(list, &n, &cnt, sp_sprintf(":%s", *l));
-  for (sp_int i = 0; i < k->len; i++) {
-    const char *iv = sp_poly_inspect(k->data[i]);
-    int later = 0;   /* a key written after the `**` too: named here, where the `**` holds it */
-    for (int u = nb; u < nunk && !later; u++) later = !strcmp(iv, unk[u]);
-    if (k->data[i].tag == SP_TAG_SYM) {
-      const char *nm = sp_sym_to_s((sp_sym)k->data[i].v.i);
-      if (sp_kwargs_name_in(nm, allowed) || (!later && sp_kwargs_name_in(nm, lit))) continue;
-    }
-    int ahead = 0;   /* a literal key's ahead of the `**`, named already */
-    for (int u = 0; u < nb && !ahead; u++) ahead = !strcmp(iv, unk[u]);
-    if (ahead) continue;
-    sp_kwargs_list_add(list, &n, &cnt, iv);
-  }
-  for (int u = nb; u < nunk; u++) {
-    int in_hash = 0;
-    for (sp_int i = 0; i < k->len && !in_hash; i++) in_hash = !strcmp(sp_poly_inspect(k->data[i]), unk[u]);
-    if (!in_hash) sp_kwargs_list_add(list, &n, &cnt, unk[u]);
-  }
-  if (cnt) sp_raise_kw_error("unknown", cnt, list);
-}
+void sp_kwargs_verify_at(sp_RbVal h, const char *const *allowed, const char *const *required, const char *const *lit, const char *const *unk, int nbefore, int check_unknown);
 static void sp_kwargs_verify_lit(sp_RbVal h, const char *const *allowed, const char *const *required,
                                  const char *const *lit, const char *const *unk, int check_unknown) {
   sp_kwargs_verify_at(h, allowed, required, lit, unk, -1, check_unknown);
@@ -12857,35 +12069,12 @@ static void sp_kwargs_verify(sp_RbVal h, const char *const *allowed, const char 
    (sp_kw_splat_conv) or is CRuby's TypeError. The keyword-rest is
    Symbol-keyed, so a key of another kind is refused loudly rather than
    dropped. */
-static void sp_kwrest_merge_poly(sp_SymPolyHash *dst, sp_RbVal h) {
-  SP_GC_ROOT(dst);
-  h = sp_kw_splat_conv(h, 0);
-  if (h.tag == SP_TAG_NIL) return;
-  SP_GC_ROOT_RBVAL(h);
-  sp_int n = sp_poly_length(h);
-  for (sp_int i = 0; i < n; i++) {
-    sp_RbVal k, v;
-    sp_poly_hash_pair(h, i, &k, &v);
-    if (k.tag != SP_TAG_SYM) sp_poly_typed_hash_store_miss(k, v, "Symbol", NULL);
-    sp_SymPolyHash_set(dst, (sp_sym)k.v.i, v);
-  }
-}
+void sp_kwrest_merge_poly(sp_SymPolyHash *dst, sp_RbVal h);
 /* sp_kwrest_merge_poly into a hash of any key: the keywords of a Data or
    Struct construction, merged in source order, keep a String key, which
    the member reads and sp_kw_splat_check take by name and a keyword_init:
    false Struct keeps in its Hash. */
-static void sp_kw_merge_any(sp_PolyPolyHash *dst, sp_RbVal h) {
-  SP_GC_ROOT(dst);
-  h = sp_kw_splat_conv(h, 0);
-  if (h.tag == SP_TAG_NIL) return;
-  SP_GC_ROOT_RBVAL(h);
-  sp_int n = sp_poly_length(h);
-  for (sp_int i = 0; i < n; i++) {
-    sp_RbVal k, v;
-    sp_poly_hash_pair(h, i, &k, &v);
-    sp_PolyPolyHash_set(dst, k, v);
-  }
-}
+void sp_kw_merge_any(sp_PolyPolyHash *dst, sp_RbVal h);
 static sp_PolyArray *sp_poly_values(sp_RbVal v) {
   /* a Struct read out of a container answers its member values, as the typed
      Struct does; it fell to the raise below */
@@ -12906,12 +12095,12 @@ static sp_PolyArray *sp_poly_values(sp_RbVal v) {
   return NULL;  /* unreachable: sp_raise_cls is noreturn */
 }
 static sp_PolyPolyHash*sp_PolyPolyHash_replace(sp_PolyPolyHash*h,sp_PolyPolyHash*o){if(!h||h==o)return h;SP_GC_ROOT(h);SP_GC_ROOT(o);for(sp_int i=0;i<h->cap;i++)h->occ[i]=FALSE;h->len=0;if(o)for(sp_int i=0;i<o->len;i++)sp_PolyPolyHash_set(h,o->keys[o->order[i]],o->vals[o->order[i]]);return h;}
-static sp_PolyPolyHash*sp_PolyPolyHash_dup(sp_PolyPolyHash*h){SP_GC_ROOT(h);sp_PolyPolyHash*r=sp_PolyPolyHash_new();SP_GC_ROOT(r);r->default_v=h->default_v;r->dproc=h->dproc;r->dproc_self=h->dproc_self;for(sp_int i=0;i<h->len;i++)sp_PolyPolyHash_set(r,h->keys[h->order[i]],h->vals[h->order[i]]);return r;}
+sp_PolyPolyHash*sp_PolyPolyHash_dup(sp_PolyPolyHash*h);
 /* Issue #738: poly_poly_hash inspect using sp_poly_inspect on each
    k,v. Output mirrors Ruby's `{k => v, ...}` for non-symbol keys and
    `{k: v, ...}` shorthand for symbol keys. */
-static const char *sp_poly_inspect(sp_RbVal v);
-static const char*sp_PolyPolyHash_inspect(sp_PolyPolyHash*h){return h?sp_inspect_container(sp_box_obj(h,SP_BUILTIN_POLY_POLY_HASH)):SPL("nil");}
+const char *sp_poly_inspect(sp_RbVal v);
+const char*sp_PolyPolyHash_inspect(sp_PolyPolyHash*h);
 /* Issue #738: Hash#invert -- swap keys and values. Returns a
    poly_poly_hash so any (key, value) pair shape is uniformly
    representable. str_str_hash_invert lives above (line ~1132)
@@ -15129,53 +14318,7 @@ static sp_RbVal sp_poly_hash_dproc_bridge(sp_PolyPolyHash *h, sp_RbVal key, void
   }
   return sp_box_nil();
 }
-static sp_PolyPolyHash *sp_poly_hash_merge(sp_RbVal a, sp_RbVal b) {
-  /* Before the allocation, not after: the operands are read for the whole
-     loop below and the new hash is the first thing that can collect them.
-     Copying them into hs[] does not root them -- the collector walks the
-     registered root slots, not the stack. */
-  SP_GC_ROOT_RBVAL(a); SP_GC_ROOT_RBVAL(b);
-  sp_PolyPolyHash *r = sp_PolyPolyHash_new();
-  SP_GC_ROOT(r);
-  /* merge inherits the receiver's default; cross-layout receivers arrive boxed */
-  if (a.tag == SP_TAG_OBJ && a.v.p) {
-    switch (a.cls_id) {
-      case SP_BUILTIN_STR_INT_HASH: r->default_v = sp_box_int_or_nil(((sp_StrIntHash *)a.v.p)->default_v); break;
-      case SP_BUILTIN_STR_STR_HASH: r->default_v = sp_box_nullable_str(((sp_StrStrHash *)a.v.p)->default_v); break;
-      case SP_BUILTIN_INT_STR_HASH: r->default_v = sp_box_nullable_str(((sp_IntStrHash *)a.v.p)->default_v); break;
-      case SP_BUILTIN_INT_INT_HASH: r->default_v = sp_box_int_or_nil(((sp_IntIntHash *)a.v.p)->default_v); break;
-      case SP_BUILTIN_STR_POLY_HASH: r->default_v = ((sp_StrPolyHash *)a.v.p)->default_v; break;
-      case SP_BUILTIN_SYM_POLY_HASH: r->default_v = ((sp_SymPolyHash *)a.v.p)->default_v; break;
-      case SP_BUILTIN_POLY_POLY_HASH: r->default_v = ((sp_PolyPolyHash *)a.v.p)->default_v; break;
-      default: break;
-    }
-    int has_dproc = 0;
-    switch (a.cls_id) {
-      case SP_BUILTIN_STR_POLY_HASH: has_dproc = ((sp_StrPolyHash *)a.v.p)->dproc != NULL; break;
-      case SP_BUILTIN_SYM_POLY_HASH: has_dproc = ((sp_SymPolyHash *)a.v.p)->dproc != NULL; break;
-      case SP_BUILTIN_POLY_POLY_HASH: has_dproc = ((sp_PolyPolyHash *)a.v.p)->dproc != NULL; break;
-      default: break;
-    }
-    if (has_dproc) {
-      sp_poly_hash_dproc_ctx *ctx = (sp_poly_hash_dproc_ctx *)sp_gc_alloc(
-          sizeof(*ctx), NULL, sp_poly_hash_dproc_ctx_scan);
-      ctx->source = a;
-      r->dproc = sp_poly_hash_dproc_bridge;
-      r->dproc_self = ctx;
-    }
-  }
-  sp_RbVal hs[2]; hs[0] = a; hs[1] = b;
-  for (int h = 0; h < 2; h++) {
-    if (hs[h].tag != SP_TAG_OBJ || !sp_poly_is_hash_kind(hs[h].cls_id)) continue;
-    sp_PolyArray *pairs = sp_poly_to_a_arr(hs[h]);
-    SP_GC_ROOT(pairs);
-    for (sp_int i = 0; pairs && i < pairs->len; i++) {
-      sp_RbVal pair = pairs->data[i];
-      sp_PolyPolyHash_set(r, sp_poly_arr_get(pair, 0), sp_poly_arr_get(pair, 1));
-    }
-  }
-  return r;
-}
+sp_PolyPolyHash *sp_poly_hash_merge(sp_RbVal a, sp_RbVal b);
 /* A boxed hash as the concrete symbol-keyed variant: itself when it already is
    one, rebuilt when every key is a Symbol (a hash folded through the general
    merge path is a PolyPolyHash regardless of its keys), and a TypeError only
@@ -15221,19 +14364,7 @@ static sp_SymPolyHash *sp_poly_as_sym_hash(sp_RbVal v) {
 }
 /* Hash#slice(*keys) on a boxed receiver: the sub-hash of the keys that are
    present, in the order given (#3449). */
-static sp_RbVal sp_poly_hash_slice(sp_RbVal v, int n, sp_RbVal *keys) {
-  /* The receiver is read once per key while the loop below allocates the
-     result and grows it, and it is a temporary whenever the call chains off
-     one (`poly(1).slice(*keys)`). Unrooted, it was collected part way through
-     and the remaining keys missed. */
-  SP_GC_ROOT_RBVAL(v);
-  sp_PolyPolyHash *h = sp_PolyPolyHash_new();
-  SP_GC_ROOT(h);
-  for (int i = 0; i < n; i++)
-    if (sp_poly_has_key(v, keys[i]))
-      sp_PolyPolyHash_set(h, keys[i], sp_poly_index_poly(v, keys[i]));
-  return sp_box_obj(h, SP_BUILTIN_POLY_POLY_HASH);
-}
+sp_RbVal sp_poly_hash_slice(sp_RbVal v, int n, sp_RbVal *keys);
 /* The result of filtering a boxed receiver: a Hash receiver answers a Hash
    rebuilt from the surviving [key, value] pairs, anything else the poly array
    the loop collected. Only the runtime value can decide, so select/reject/
@@ -15345,111 +14476,8 @@ static void sp_hash_wb_want(sp_RbVal v, int tag, int nil_ok, const char *what, c
    rather than coerced into a key or value it was not. Frozenness was refused
    at the coercion, before the mutator ran, and is refused again here for an
    original frozen since -- by its own argument, say. */
-static void sp_poly_hash_writeback_ex(sp_RbVal orig, sp_PolyPolyHash *work, int with_default) {
-  if (orig.tag != SP_TAG_OBJ || !work || !orig.v.p) return;
-  if (orig.cls_id == SP_BUILTIN_POLY_POLY_HASH) return;
-  if (!sp_poly_is_hash_kind(orig.cls_id)) return;
-  if (sp_gc_is_frozen(orig.v.p)) sp_raise_frozen_hash_at(orig.v.p, orig.cls_id);
-  SP_GC_ROOT_RBVAL(orig); SP_GC_ROOT(work);
-  for (sp_int i = 0; i < work->len; i++) {
-    sp_int j = work->order[i];
-    sp_RbVal k = work->keys[j], v = work->vals[j];
-    switch (orig.cls_id) {
-      case SP_BUILTIN_STR_INT_HASH: sp_hash_wb_want(k, SP_TAG_STR, 0, "key", "String keys"); sp_hash_wb_want(v, SP_TAG_INT, 1, "value", "Integer values"); break;
-      case SP_BUILTIN_STR_STR_HASH: sp_hash_wb_want(k, SP_TAG_STR, 0, "key", "String keys"); sp_hash_wb_want(v, SP_TAG_STR, 1, "value", "String values"); break;
-      case SP_BUILTIN_INT_STR_HASH: sp_hash_wb_want(k, SP_TAG_INT, 0, "key", "Integer keys"); sp_hash_wb_want(v, SP_TAG_STR, 1, "value", "String values"); break;
-      case SP_BUILTIN_INT_INT_HASH: sp_hash_wb_want(k, SP_TAG_INT, 0, "key", "Integer keys"); sp_hash_wb_want(v, SP_TAG_INT, 1, "value", "Integer values"); break;
-      case SP_BUILTIN_STR_POLY_HASH: sp_hash_wb_want(k, SP_TAG_STR, 0, "key", "String keys"); break;
-      case SP_BUILTIN_SYM_POLY_HASH: sp_hash_wb_want(k, SP_TAG_SYM, 0, "key", "Symbol keys"); break;
-      default: return;
-    }
-  }
-  /* The default too, when the mutator may have set one (`with_default`: a
-     boxed `h.default = v` set it on the copy; a `replace` keeps the
-     receiver's own, as the typed emitter does). An Integer- or
-     String-valued variant holds one of its own kind (or nil); the Symbol-
-     and String-keyed poly variants hold any value. A default PROC set
-     through the box (a PolyPolyHash body) has no slot of its signature in
-     a typed variant: refused, like a key of the wrong kind, rather than
-     dropped. The bridge is the original's own proc, installed on the copy
-     by sp_poly_hash_merge, and means no change. */
-  if (with_default) {
-    if (work->dproc && work->dproc != sp_poly_hash_dproc_bridge)
-      sp_raise_cls("TypeError", sp_sprintf("can't store a default proc in a %s through a boxed receiver",
-                                           sp_poly_class_name(orig)));
-    switch (orig.cls_id) {
-      case SP_BUILTIN_STR_INT_HASH: case SP_BUILTIN_INT_INT_HASH: sp_hash_wb_want(work->default_v, SP_TAG_INT, 1, "default", "Integer values"); break;
-      case SP_BUILTIN_STR_STR_HASH: case SP_BUILTIN_INT_STR_HASH: sp_hash_wb_want(work->default_v, SP_TAG_STR, 1, "default", "String values"); break;
-      default: break;
-    }
-  }
-  switch (orig.cls_id) {
-    case SP_BUILTIN_STR_INT_HASH: {
-      sp_StrIntHash *h = (sp_StrIntHash *)orig.v.p;
-      sp_StrIntHash_clear(h);
-      if (with_default) h->default_v = sp_poly_to_i_or_nil(work->default_v);
-      for (sp_int i = 0; i < work->len; i++) {
-        sp_int j = work->order[i];
-        sp_StrIntHash_set(h, sp_poly_to_s(work->keys[j]), sp_poly_to_i_or_nil(work->vals[j]));
-      }
-      return;
-    }
-    case SP_BUILTIN_STR_STR_HASH: {
-      sp_StrStrHash *h = (sp_StrStrHash *)orig.v.p;
-      sp_StrStrHash_clear(h);
-      if (with_default) h->default_v = sp_poly_to_s_or_nil(work->default_v);
-      for (sp_int i = 0; i < work->len; i++) {
-        sp_int j = work->order[i];
-        sp_StrStrHash_set(h, sp_poly_to_s(work->keys[j]), sp_poly_to_s_or_nil(work->vals[j]));
-      }
-      return;
-    }
-    case SP_BUILTIN_INT_STR_HASH: {
-      sp_IntStrHash *h = (sp_IntStrHash *)orig.v.p;
-      sp_IntStrHash_clear(h);
-      if (with_default) h->default_v = sp_poly_to_s_or_nil(work->default_v);
-      for (sp_int i = 0; i < work->len; i++) {
-        sp_int j = work->order[i];
-        sp_IntStrHash_set(h, sp_poly_to_i(work->keys[j]), sp_poly_to_s_or_nil(work->vals[j]));
-      }
-      return;
-    }
-    case SP_BUILTIN_INT_INT_HASH: {
-      sp_IntIntHash *h = (sp_IntIntHash *)orig.v.p;
-      sp_IntIntHash_clear(h);
-      if (with_default) h->default_v = sp_poly_to_i_or_nil(work->default_v);
-      for (sp_int i = 0; i < work->len; i++) {
-        sp_int j = work->order[i];
-        sp_IntIntHash_set(h, sp_poly_to_i(work->keys[j]), sp_poly_to_i_or_nil(work->vals[j]));
-      }
-      return;
-    }
-    case SP_BUILTIN_STR_POLY_HASH: {
-      sp_StrPolyHash *h = (sp_StrPolyHash *)orig.v.p;
-      sp_StrPolyHash_clear(h);
-      if (with_default) h->default_v = work->default_v;
-      for (sp_int i = 0; i < work->len; i++) {
-        sp_int j = work->order[i];
-        sp_StrPolyHash_set(h, sp_poly_to_s(work->keys[j]), work->vals[j]);
-      }
-      return;
-    }
-    case SP_BUILTIN_SYM_POLY_HASH: {
-      sp_SymPolyHash *h = (sp_SymPolyHash *)orig.v.p;
-      sp_SymPolyHash_clear(h);
-      if (with_default) h->default_v = work->default_v;
-      for (sp_int i = 0; i < work->len; i++) {
-        sp_int j = work->order[i];
-        sp_SymPolyHash_set(h, (sp_sym)work->keys[j].v.i, work->vals[j]);
-      }
-      return;
-    }
-    default: return;
-  }
-}
-static void sp_poly_hash_writeback(sp_RbVal orig, sp_PolyPolyHash *work) {
-  sp_poly_hash_writeback_ex(orig, work, 1);
-}
+void sp_poly_hash_writeback_ex(sp_RbVal orig, sp_PolyPolyHash *work, int with_default);
+void sp_poly_hash_writeback(sp_RbVal orig, sp_PolyPolyHash *work);
 /* Hash#shift through a boxed receiver: the first-inserted pair, removed
    from the original in place (no general copy to write back), nil when
    empty. Every variant keeps its insertion order compacted, so order[0] is
@@ -16615,7 +15643,11 @@ static SP_TLS void *_sp_ie_self;
    The boxed channel carries both the same way, and since Ruby 3 a proc
    binds keywords only from a keyword argument. Every proc prologue
    consumes (and clears) it, the same discipline as _sp_proc_blk. */
-static SP_TLS int _sp_proc_kwpos;
+/* shared with lib/sp_poly_cold.c: this unit owns the storage (written on every proc call) */
+extern SP_TLS int _sp_proc_kwpos;
+#ifndef SPINEL_EXT_HOST
+SP_TLS int _sp_proc_kwpos;
+#endif
 /* CRuby's proc distribution of n positional values into P leading
    requireds, O optionals, Q posts and a rest marker R, at run time (the
    compiler's block_fill decides it when n is static): *ot is how many
@@ -16801,7 +15833,13 @@ enum { SP_CONV_TO_INT, SP_CONV_TO_I, SP_CONV_TO_F, SP_CONV_TO_STR };
    the next ensure epilogue would resume it into a frame that has returned.
    Kernel#Integer probes #to_int this way, and the `exception: false` forms
    probe every conversion this way. */
-static int sp_exc_protect(void (*fn)(void *), void *ctx) {
+/* Not static: the exception stack it arms is this unit's, and lib/sp_poly_cold.c
+   (which reaches it through sp_obj_conv) must run it in the unit that owns that
+   stack rather than in a private copy. */
+#ifdef SPINEL_EXT_HOST
+int sp_exc_protect(void (*fn)(void *), void *ctx);
+#else
+int sp_exc_protect(void (*fn)(void *), void *ctx) {
   int catch_top = sp_catch_top, brk_top = sp_brk_top;
   sp_proc_home *ret_head = sp_proc_ret_head;
   sp_exc_check_depth();
@@ -16818,6 +15856,7 @@ static int sp_exc_protect(void (*fn)(void *), void *ctx) {
   sp_explicit_cause = NULL; sp_explicit_cause_set = 0;
   return 1;
 }
+#endif
 /* ---- Mutex#synchronize on a boxed receiver ----
    The receiver of `LOCKS[i].synchronize { ... }` is a poly value: the static
    arm in codegen (a TY_MUTEX receiver) cannot see it, and the generated
@@ -17269,44 +16308,7 @@ static sp_RbVal sp_dyn_hash_dproc(sp_PolyPolyHash *h, sp_RbVal key, void *self) 
 static void sp_dyn_new_arity(sp_int given, sp_int max) {
   sp_arity_check(given, 0, max, NULL);
 }
-static sp_RbVal sp_builtin_class_new(int kind, sp_int argc, const sp_RbVal *av, sp_Proc *blk) {
-  SP_GC_ROOT(blk);
-  switch (kind) {
-  case 'S': {
-    sp_dyn_new_arity(argc, 1);
-    if (argc == 0) return sp_box_str(sp_str_dup_external((&("\xff")[1])));
-    sp_RbVal s = sp_poly_is_strbuf(av[0]) ? sp_poly_strbuf_deref(av[0]) : av[0];
-    if (s.tag != SP_TAG_STR)
-      sp_raise_cls("TypeError", sp_sprintf("no implicit conversion of %s into String", sp_poly_class_name(s)));
-    return sp_box_str(sp_str_dup(s.v.s));
-  }
-  case 'A': {
-    sp_dyn_new_arity(argc, 2);
-    sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r);
-    if (argc == 0) return sp_box_poly_array(r);
-    if (argc == 1 && av[0].tag == SP_TAG_OBJ && sp_poly_is_array_kind(av[0].cls_id)) {
-      sp_int n = sp_poly_length(av[0]);
-      for (sp_int i = 0; i < n; i++) sp_PolyArray_push(r, sp_poly_arr_get(av[0], i));
-      return sp_box_poly_array(r);
-    }
-    if (av[0].tag != SP_TAG_INT)
-      sp_raise_cls("TypeError", sp_sprintf("no implicit conversion of %s into Integer", sp_poly_class_name(av[0])));
-    if (av[0].v.i < 0) sp_raise_cls("ArgumentError", "negative array size");
-    for (sp_int i = 0; i < av[0].v.i; i++)
-      sp_PolyArray_push(r, blk ? sp_penum_call1(blk, sp_box_int(i)) : argc == 2 ? av[1] : sp_box_nil());
-    return sp_box_poly_array(r);
-  }
-  case 'H': {
-    sp_dyn_new_arity(argc, blk ? 0 : 1);
-    sp_PolyPolyHash *h = blk ? sp_PolyPolyHash_new_dproc(sp_dyn_hash_dproc, blk)
-                       : argc ? sp_PolyPolyHash_new_with_default(av[0]) : sp_PolyPolyHash_new();
-    return sp_box_obj(h, SP_BUILTIN_POLY_POLY_HASH);
-  }
-  default:
-    sp_dyn_new_arity(argc, 0);
-    return sp_box_obj(sp_Object_new(), SP_BUILTIN_OBJECT);
-  }
-}
+sp_RbVal sp_builtin_class_new(int kind, sp_int argc, const sp_RbVal *av, sp_Proc *blk);
 /* The default arm of those dispatches: `cls` (named `cn`) is a builtin
    exception class, constructed as `RuntimeError.new(msg)` is, or a class
    the program cannot construct through a class value. */

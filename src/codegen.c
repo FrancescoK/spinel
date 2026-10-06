@@ -12157,6 +12157,11 @@ void emit_regex_section(Compiler *c, Buf *b) {
      hook `o.to_h` printed {"": 1}. */
   if (g_emit_sym_rt)
     buf_puts(b, "  sp_sym_name_fn = sp_sym_to_s;\n");
+  /* ... and the class-name table through sp_class_name_fn: lib/sp_poly_cold.c
+     renders boxed classes, and a program with no poly rendering has no
+     sp_class_to_s to hand over (SP_TU_NO_POLY_RENDER). */
+  if (g_emit_sym_rt)
+    buf_puts(b, "  sp_class_name_fn = sp_class_to_s;\n");
   /* A C stack that ran out becomes a catchable SystemStackError: the fault
      handler in the runtime archive cannot reach this TU's exception stack,
      so hand it the raise (see sp_raise_stack_overflow). */
@@ -12165,7 +12170,7 @@ void emit_regex_section(Compiler *c, Buf *b) {
   if (g_has_user_cmp)
     buf_puts(b, "  sp_obj_cmp_hook = sp_obj_cmp_dispatch;\n");
   if (g_has_user_binop)
-    buf_puts(b, "  sp_user_binop_hook = sp_user_binop_dispatch;\n");
+    buf_puts(b, "  SP_INSTALL_HOOK(sp_user_binop_hook, sp_user_binop_dispatch);\n");
   if (g_has_user_aset)
     buf_puts(b, "  sp_user_aset_hook = sp_user_aset_dispatch;\n");
   if (g_has_user_coerce)
@@ -12173,11 +12178,11 @@ void emit_regex_section(Compiler *c, Buf *b) {
   if (g_has_user_to_io)
     buf_puts(b, "  sp_user_to_io_hook = sp_user_to_io_dispatch;\n");
   if (g_has_user_init_copy)
-    buf_puts(b, "  sp_user_init_copy_hook = sp_user_init_copy_dispatch;\n");
+    buf_puts(b, "  SP_INSTALL_HOOK(sp_user_init_copy_hook, sp_user_init_copy_dispatch);\n");
   if (g_gen_obj_hashkey)
-    buf_puts(b, "  sp_obj_hash_hook = sp_gen_obj_hash;\n  sp_obj_eql_hook = sp_gen_obj_eql;\n");
+    buf_puts(b, "  SP_INSTALL_HOOK(sp_obj_hash_hook, sp_gen_obj_hash);\n  SP_INSTALL_HOOK(sp_obj_eql_hook, sp_gen_obj_eql);\n");
   if (g_gen_obj_valeq)
-    buf_puts(b, "  sp_obj_eq_hook = sp_obj_eq_dispatch;\n");
+    buf_puts(b, "  SP_INSTALL_HOOK(sp_obj_eq_hook, sp_obj_eq_dispatch);\n");
   if (exc_has_user_msg_override(c))
     buf_puts(b, "  sp_user_exc_to_s_fn = sp_user_exc_to_s;\n");
   if (g_needs_class_machinery)
