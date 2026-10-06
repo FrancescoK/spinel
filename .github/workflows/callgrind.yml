@@ -2,6 +2,14 @@ name: callgrind
 # Instruction counts (callgrind Ir) for optcarrot and selected benchmarks,
 # BASE vs HEAD, as matz asked for on #6179. Edit callgrind.conf and push,
 # or dispatch by hand.
+#
+# BASE_ENV / HEAD_ENV (optional): space-separated NAME=value pairs that the
+# spinel compiles of that side run with (not spinel's own build), so one sha
+# can be compared with itself under a compile-time switch, e.g.
+# BASE=HEAD=<sha>, HEAD_ENV=SPINEL_SHARE_STRINGS=1 (#6765).
+# FPS_PAIRS (optional, default 0): after both sides are measured, run the two
+# optcarrot binaries alternately, N pairs (ABBA order: base first in odd
+# pairs, head first in even ones), and report fps per side.
 on:
   push:
     branches: [callgrind]
@@ -13,7 +21,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Read callgrind.conf
-        run: grep -E '^[A-Z]+=' callgrind.conf >> "$GITHUB_ENV"
+        run: grep -E '^[A-Z_]+=' callgrind.conf >> "$GITHUB_ENV"
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: "4.0"
@@ -26,19 +34,20 @@ jobs:
           set -e
           measure () {
             side=$1; sha=$2; d="$RUNNER_TEMP/s-$side"
+            senv=$BASE_ENV; [ "$side" = head ] && senv=$HEAD_ENV
             git clone -q --filter=blob:none https://github.com/matz/spinel.git "$d"
             cd "$d"
             git remote add fork https://github.com/FrancescoK/spinel.git
             git fetch -q origin "$sha" 2>/dev/null || git fetch -q fork "$sha" 2>/dev/null || git fetch -q fork
             git checkout -q "$sha"
-            echo "$side $(git rev-parse --short HEAD) $(git log -1 --format=%s)" >> "$RUNNER_TEMP/revs.txt"
+            echo "$side $(git rev-parse --short HEAD) $(git log -1 --format=%s)${senv:+ [env: $senv]}" >> "$RUNNER_TEMP/revs.txt"
             make deps >/dev/null && make -j"$(nproc)" all >/dev/null
             mkdir -p build && cp -a "$RUNNER_TEMP/oc" build/optcarrot
-            make optcarrot OPTCARROT_RUNS=1 | tail -2
+            env $senv make optcarrot OPTCARROT_RUNS=1 | tail -2
             # why gcc left a call out of line in optcarrot: the same compile
             # as `make optcarrot`'s, with gcc's inlining report
             mkdir -p "$RUNNER_TEMP/inline"
-            cmd=$(make -n optcarrot OPTCARROT_RUNS=1 | grep -m1 'build/optcarrot-single.c .* -o build/optcarrot-single$' | sed 's/^@//')
+            cmd=$(env $senv make -n optcarrot OPTCARROT_RUNS=1 | grep -m1 'build/optcarrot-single.c .* -o build/optcarrot-single$' | sed 's/^@//')
             eval "${cmd% -o build/optcarrot-single} -c -o /dev/null -fopt-info-inline-missed=$RUNNER_TEMP/inline/optcarrot-$side.txt" 2>/dev/null || true
             valgrind --tool=callgrind --callgrind-out-file="$RUNNER_TEMP/cg/optcarrot-$side.cg" ./build/optcarrot-single > "$RUNNER_TEMP/oc-$side.out" 2> "$RUNNER_TEMP/oc-$side.vg"
             grep -q '^checksum: 59662$' "$RUNNER_TEMP/oc-$side.out" || { echo "optcarrot checksum wrong on $side"; exit 1; }
@@ -47,7 +56,7 @@ jobs:
             list="$BENCHES"; [ "$list" = all ] && list=$(ls benchmark/*.rb | xargs -n1 basename | sed 's/\.rb$//')
             for b in $list; do
               [ -f "benchmark/$b.rb" ] || continue
-              ./spinel "benchmark/$b.rb" -o "$RUNNER_TEMP/$b-$side" >/dev/null 2>&1 || { echo "$b $side build-failed" >> "$RUNNER_TEMP/ir.txt"; continue; }
+              env $senv ./spinel "benchmark/$b.rb" -o "$RUNNER_TEMP/$b-$side" >/dev/null 2>&1 || { echo "$b $side build-failed" >> "$RUNNER_TEMP/ir.txt"; continue; }
               # REPEAT > 1 measures a benchmark several times (a threaded
               # one's interleaving, and so its Ir, varies run to run)
               for k in $(seq 1 "${REPEAT:-1}"); do
@@ -60,9 +69,19 @@ jobs:
             done
             cd - >/dev/null
           }
+          BASE_ENV=${BASE_ENV:-}; HEAD_ENV=${HEAD_ENV:-}
           mkdir -p "$RUNNER_TEMP/cg"
           measure base "$BASE"
           measure head "$HEAD"
+          # fps, alternating: layout-sensitive, so the two binaries take turns
+          : > "$RUNNER_TEMP/fps.txt"
+          for i in $(seq 1 "${FPS_PAIRS:-0}"); do
+            order="base head"; [ $((i % 2)) -eq 0 ] && order="head base"
+            for side in $order; do
+              f=$(cd "$RUNNER_TEMP/s-$side" && ./build/optcarrot-single 2>&1 | sed -n 's/^fps: \([0-9.]*\)$/\1/p')
+              echo "$i $side ${f:-none}" >> "$RUNNER_TEMP/fps.txt"
+            done
+          done
       - name: Summary
         run: |
           {
@@ -74,8 +93,27 @@ jobs:
                  END { for (i=1;i<=n;i++) { p=order[i]; b=ir[p" base"]; h=ir[p" head"];
                    r=(b+0>0 && h+0>0) ? sprintf("%.4f", h/b) : "-";
                    printf "| %s | %s | %s | %s |\n", p, b, h, r } }' "$RUNNER_TEMP/ir.txt"
+            if [ -s "$RUNNER_TEMP/fps.txt" ]; then
+              echo
+              echo "optcarrot fps, $(awk 'END { print $1 }' "$RUNNER_TEMP/fps.txt") alternating pairs (ABBA):"
+              echo
+              echo "| side | median | mean | min | max | head/base per pair, median |"
+              echo "|---|---:|---:|---:|---:|---:|"
+              awk '$3 != "none" { v[$2, ++n[$2]] = $3; p[$1, $2] = $3 }
+                   function med(a, k,   i, j, t) { for (i = 2; i <= k; i++) { t = a[i]; for (j = i - 1; j >= 1 && a[j] > t; j--) a[j + 1] = a[j]; a[j + 1] = t }
+                                                   return k % 2 ? a[(k + 1) / 2] : (a[k / 2] + a[k / 2 + 1]) / 2 }
+                   END {
+                     for (i = 1; ("" i, "base") in p || ("" i, "head") in p; i++)
+                       if (("" i, "base") in p && ("" i, "head") in p) r[++nr] = p[i, "head"] / p[i, "base"]
+                     rm = nr ? sprintf("%.4f", med(r, nr)) : "-"
+                     split("base head", sides, " ")
+                     for (s = 1; s <= 2; s++) { sd = sides[s]; k = n[sd]; sum = 0; lo = ""; hi = ""
+                       for (i = 1; i <= k; i++) { x = v[sd, i]; a[i] = x; sum += x; if (lo == "" || x < lo) lo = x; if (hi == "" || x > hi) hi = x }
+                       if (k) printf "| %s | %.1f | %.1f | %.1f | %.1f | %s |\n", sd, med(a, k), sum / k, lo, hi, (sd == "head" ? rm : "") }
+                   }' "$RUNNER_TEMP/fps.txt"
+            fi
           } | tee -a "$GITHUB_STEP_SUMMARY" > "$RUNNER_TEMP/summary.md"
-          cp "$RUNNER_TEMP/ir.txt" "$RUNNER_TEMP/revs.txt" .
+          cp "$RUNNER_TEMP/ir.txt" "$RUNNER_TEMP/revs.txt" "$RUNNER_TEMP/fps.txt" .
           mkdir -p annotate inline
           cp "$RUNNER_TEMP"/inline/*.txt inline/ 2>/dev/null || true
           for f in "$RUNNER_TEMP"/cg/*.cg; do
@@ -88,5 +126,6 @@ jobs:
           path: |
             ir.txt
             revs.txt
+            fps.txt
             annotate/
             inline/
