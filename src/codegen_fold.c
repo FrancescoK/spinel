@@ -370,23 +370,24 @@ int emit_hash_collect_expr(Compiler *c, int id, Buf *b) {
     emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", tres);
     emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti, ti, trecv, ti);
-    char *vb = emit_hash_block_eval(c, block, rt, hn, trecv, ti, 0, NULL);
+    /* the type of the temp the block's value is collected into: the tail's,
+       or boxed when a `next` or `break` in the block widens it */
+    TyKind bvt2 = TY_UNKNOWN;
+    char *vb = emit_hash_block_eval(c, block, rt, hn, trecv, ti, 0, &bvt2);
     emit_indent(g_pre, g_indent + 1);
     TyKind vtt = ty_hash_val(rt);
     /* Ruby truthiness on the block's value. A boxed one -- the block calls a
        Proc held as the hash value, so its result is only known at run time --
-       is a struct, and `!(struct)` does not compile at all (#3426). */
-    { int bn2 = 0; int bbody = nt_ref(nt, block, "body");
-      const int *bb2 = bbody >= 0 ? nt_arr(nt, bbody, "body", &bn2) : NULL;
-      Repr bvr2 = repr_of(c, bn2 > 0 ? bb2[bn2 - 1] : -1);
-      TyKind bvt2 = bvr2.as_ty;
+       is a struct, and `!(struct)` does not compile at all (#3426). Read from
+       the tail alone, a breaking block's boxed temp was tested raw. */
+    {
       /* A body whose value IS nil types VOID/NIL, which is neither a boxed
          value to ask sp_poly_truthy about nor a scalar to test -- `select
          { nil }` did not compile. It is statically FALSY, so the pair is
          dropped (kept, for reject); the body still runs, for its effects. */
       if (bvt2 == TY_VOID || bvt2 == TY_NIL)
         buf_printf(g_pre, "if (((void)(%s), %d)) { ", vb ? vb : "0", is_rej ? 1 : 0);
-      else if (bvr2.kind == RK_BOXED || bvt2 == TY_UNKNOWN)
+      else if (bvt2 == TY_POLY || bvt2 == TY_UNKNOWN)
         buf_printf(g_pre, "if (%ssp_poly_truthy(%s)) { ", is_rej ? "!" : "", vb ? vb : "sp_box_nil()");
       else
         buf_printf(g_pre, "if (%s(%s)) { ", is_rej ? "!" : "", vb ? vb : "0");
