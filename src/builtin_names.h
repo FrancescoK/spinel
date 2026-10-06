@@ -208,5 +208,6 @@ int is_symbol_exception_accessor(const char *n); /* exception accessors that can
 int is_builtin_reopen_name(const char *name);
 
 int is_nil_method(const char *n); /* NilClass's public methods, its own and Object's: what nil answers */
+int is_positional_io(const char *n); /* pread / pwrite: IO at an offset */
 
 #endif
