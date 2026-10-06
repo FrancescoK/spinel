@@ -6,6 +6,7 @@
 #include "codegen_internal.h"
 #include "codegen_poly.h"
 #include "builtin_ops.h"
+#include "repr.h"
 #include "call_plan.h"
 #include "codegen_call_arms.h"
 
@@ -425,8 +426,13 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
       return 1;
     }
     if (sp_streq(name, "String") && ac == 1) {
-      TyKind at = comp_ntype(c, av[0]);
-      if (at == TY_STRING) { emit_expr(c, av[0], b); }
+      TyKind at = repr_of(c, av[0]).as_ty;
+      if (at == TY_STRING && nt_kind(nt, av[0]) == NK_StringNode) emit_expr(c, av[0], b);
+      else if (at == TY_STRING) {
+        int ts = ++g_tmp;
+        buf_printf(b, "({ const char *_t%d = ", ts); emit_expr(c, av[0], b);
+        buf_printf(b, "; _t%d ? _t%d : sp_str_frozen_empty; })", ts, ts);
+      }
       /* a nullable Integer or Float holding its sentinel is nil, whose
          String is "": box it, as nil where it is one */
       else if ((at == TY_INT || at == TY_FLOAT) && call_returns_nullable_int(c, av[0])) {
