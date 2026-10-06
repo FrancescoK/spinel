@@ -9,6 +9,8 @@
 #include "call_plan.h"
 #include "codegen_call_arms.h"
 #include "repr.h"
+static int emit_boxed_positional_io(Compiler *c, int recv, const char *name, int argc,
+                                    const int *argv, int tio, Buf *b);
 
 /* readlines(sep, limit) and readlines(arg) with anything but a String
    separator: the arm passed any argument as the separator, and a limit, a
@@ -195,6 +197,7 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
          argument the compiler cannot type Integer or Float is held and
          converted once the handle is known, with the typed arms'
          sp_poly_arg_int_chk. */
+      if (emit_boxed_positional_io(c, recv, name, argc, argv, tio2, b)) return 1;
       if (boxed_desc_control_arity(name, argc)) {
         int trv = ++g_tmp, first_int = sp_streq(name, "advise") ? 1 : 0, tadv = 0;
         int targ[3] = {0, 0, 0}, theld[3] = {0, 0, 0};
@@ -529,6 +532,42 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
 }
 
 /* the instance methods of an IO / File handle (TY_IO) */
+/* pread(len, off) and pwrite(str, off) on a boxed receiver: the receiver
+   and then every argument run before the handle is unboxed, so a receiver
+   that is no IO raises NoMethodError after them, as in CRuby. The held
+   arguments convert once the handle is known, the offset ahead of
+   pwrite's string as rb_io_pwrite does; without an offset the handle
+   raises CRuby's ArgumentError. Through the general arm, pwrite's
+   string ran ahead of the receiver (its to_s went in front of the
+   statement) and the offset never ran on a nil receiver. A pread with a
+   buffer keeps that arm, which rebinds the buffer. */
+static int emit_boxed_positional_io(Compiler *c, int recv, const char *name, int argc,
+                                    const int *argv, int tio, Buf *b) {
+  if (!is_positional_io(name) || argc < 1 || argc > 2 ||
+      call_has_splat_arg(c->nt, argv, argc)) return 0;
+  int is_w = name[1] == 'w';   /* pwrite, beside pread */
+  int trv = ++g_tmp, th[2] = {0, 0}, toff = ++g_tmp;
+  buf_printf(b, "({ sp_RbVal _t%d = ", trv); emit_boxed(c, recv, b);
+  buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", trv);
+  for (int i = 0; i < argc; i++) {
+    th[i] = ++g_tmp;
+    buf_printf(b, "sp_RbVal _t%d = ", th[i]); emit_boxed(c, argv[i], b);
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", th[i]);
+  }
+  buf_printf(b, "sp_File *_t%d = sp_poly_as_io(_t%d, \"%s\"); ", tio, trv, name);
+  /* both take the offset: one argument is the handle's ArgumentError */
+  if (argc >= 2) buf_printf(b, "sp_int _t%d = sp_poly_arg_int_chk(_t%d); ", toff, th[1]);
+  else buf_printf(b, "sp_raise_cls(\"ArgumentError\", \"wrong number of arguments (given 1, expected %s)\");"
+                     " sp_int _t%d = 0; ", is_w ? "2" : "2..3", toff);
+  if (is_w)
+    buf_printf(b, "_t%d.tag == SP_TAG_STR ? sp_File_pwrite_bin(_t%d, _t%d.v.s, _t%d)"
+                  " : sp_File_pwrite(_t%d, sp_poly_to_s(_t%d), _t%d); })",
+               th[0], tio, th[0], toff, tio, th[0], toff);
+  else
+    buf_printf(b, "sp_File_pread(_t%d, sp_poly_arg_int_chk(_t%d), _t%d); })", tio, th[0], toff);
+  return 1;
+}
+
 int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv) {
   if (recv >= 0 && comp_ntype(c, recv) == TY_IO) {
     const char *r = NULL;
