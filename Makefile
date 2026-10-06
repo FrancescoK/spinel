@@ -1408,6 +1408,13 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (a next in a class body block compiled)"; ok=0; \
 	else grep -q "next in a block that is a class body" "$$tmp/cbn.out" || \
 	  { echo "reject-test: FAIL (a next in a class body block rejected without saying why)"; sed -n 1,5p "$$tmp/cbn.out"; ok=0; }; fi; \
+	for t in test/reject/yield_method_only_in_subclass.rb test/reject/yield_method_only_in_subclass_statement.rb \
+	         test/reject/yield_method_only_in_subclass_when.rb; do \
+	  if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/yms.c" >"$$tmp/yms.out" 2>&1; then \
+	    echo "reject-test: FAIL ($$t compiled)"; ok=0; \
+	  else grep -q "defined only in subclasses" "$$tmp/yms.out" || \
+	    { echo "reject-test: FAIL ($$t refused without saying why)"; sed -n 1,5p "$$tmp/yms.out"; ok=0; }; fi; \
+	done; \
 	t=test/reject/instance_exec_default_ivar_write.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/idw.c" >"$$tmp/idw.out" 2>&1; then \
 	  echo "reject-test: FAIL (an ivar written in a block default on a value with no ivars compiled)"; ok=0; \
