@@ -11749,7 +11749,10 @@ static void emit_user_binop_dispatch(Compiler *c, Buf *b) {
             else snprintf(cargs, sizeof cargs, "b");
             buf_printf(b, "      if (strcmp(op, \"==\") == 0%s%s%s) {\n",
                        cguard ? " && (" : "", cguard ? cguard : "", cguard ? ")" : "");
-            buf_printf(b, "        *handled = TRUE; return sp_box_bool(sp_%s_%s(%s(sp_%s *)a.v.p, %s) == 0);\n      }\n",
+            /* the receiver itself is equal without calling `<=>`, as CRuby's
+               cmp_equal answers first */
+            buf_printf(b, "        *handled = TRUE; return sp_box_bool((b.tag == SP_TAG_OBJ && b.v.p == a.v.p) || "
+                          "sp_%s_%s(%s(sp_%s *)a.v.p, %s) == 0);\n      }\n",
                        ccn, mc(cm2->name ? cm2->name : "<=>"), cvt ? "*" : "", ccn, cargs);
           }
         }
