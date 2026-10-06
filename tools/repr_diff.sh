@@ -5,15 +5,16 @@
 #   tools/repr_diff.sh REF_SPINEL NEW_SPINEL PROGS...
 #
 # A slot's representation decides what every use of it costs: a String
-# slot that becomes a shared handle (sp_String *) is copied at each call
-# that only reads it (#7482), a slot that becomes boxed dispatches out of
-# line, a slot that leaves a by-value layout goes through the heap. None of
-# it changes a program's output, so no test sees it. This dumps each
-# program's slots with both compilers (`spinel --dump-repr`: locals,
-# parameters and the value of each method, ivars per class, globals,
-# constants), pairs them by name and summarises what moved:
+# slot that becomes a String buffer (strbuf, sp_String *: the shared handle
+# or the buffer a loop builds in) is copied at each call that only reads it
+# (#7482), a slot that becomes boxed dispatches out of line, a slot that
+# leaves a by-value layout goes through the heap. None of it changes a
+# program's output, so no test sees it. This dumps each program's slots
+# with both compilers (`spinel --dump-repr`: locals, parameters and the
+# value of each method, ivars per class, globals, constants), pairs them by
+# name and summarises what moved:
 #
-#   N slots became shared handles (strbuf), M became boxed, K left a
+#   N slots became String buffers (strbuf), M became boxed, K left a
 #   by-value layout, J other changes
 #
 # then lists the programs and slots. A compiler older than --dump-repr is
@@ -82,10 +83,12 @@ infn != "" && /^    [A-Za-z_][^=(;]* lv_[A-Za-z0-9_]+( = [^;]*)?;$/ {
 }'
 export MODE DECLS_AWK
 
-# one dump per program and side; a block parameter's numbered suffix
+# one dump per program and side, each job keyed by its input position so
+# no two paths share a file; a block parameter's numbered suffix
 # (`i__bp49`) follows node ids, so it is dropped
-printf '%s\n' "$@" | xargs -P "$JOBS" -I{} bash -c '
-  p=$1; k=$(printf %s "$p" | tr / _)
+i=0
+for p in "$@"; do i=$((i + 1)); printf '%06d:%s\n' "$i" "$p"; done | xargs -P "$JOBS" -I{} bash -c '
+  k=${1%%:*}; p=${1#*:}
   for side in ref new; do
     sp=$2; [ $side = new ] && sp=$3
     if [ "$MODE" = repr ]; then "$sp" --dump-repr "$p" > "$4/$k.$side.raw" 2>/dev/null
@@ -95,25 +98,27 @@ printf '%s\n' "$@" | xargs -P "$JOBS" -I{} bash -c '
     [ $rc -eq 0 ] || { echo "$p" > "$4/$k.fail"; continue; }
     sed -E "s/__bp[0-9]+/__bp/g" "$4/$k.$side.raw" | LC_ALL=C sort > "$4/$k.$side"
   done
-  printf "%s\n" "$p" > "$4/$k.name"' _ {} "$REF" "$NEW" "$T"
+  printf "%s\n" "$p" > "$4/$k.name"' _ {} "$REF" "$NEW" "$T" || { echo "repr_diff: dumping the programs failed" >&2; exit 2; }
 
 # Pair the slots by name (a repeated name pairs in order) and classify each
-# change: a slot that became a shared handle, became boxed, or left a
+# change: a slot that became a String buffer, became boxed, or left a
 # by-value layout, else another change. A slot only one side has is another
-# change too.
+# change too. A String buffer is the strbuf kind, shared handle or not:
+# both are an sp_String * whose read-only uses copy, as the C mode sees.
 for f in "$T"/*.name; do
   [ -f "$f" ] || continue
   b=${f%.name}; p=$(cat "$f")
   if [ -f "$b.fail" ]; then printf 'S\t%s\n' "$p"; continue; fi
-  awk -v prog="$p" -v mode="$MODE" '
+  awk -v prog="$p" -v mode="$MODE" -v OFS='\t' '
     function key(l) { return substr(l, 1, index(l, ": ") - 1) }
     function val(l) { return substr(l, index(l, ": ") + 2) }
     function kind(v) { split(v, w, " "); return w[1] }
-    function handle(v) { return mode == "repr" ? (kind(v) == "strbuf" || v ~ / handle/) : v ~ /sp_String \*/ }
+    function strbuf(v) { return mode == "repr" ? kind(v) == "strbuf" : v ~ /sp_String \*/ }
     function boxed(v) { return mode == "repr" ? kind(v) == "boxed" : v == "c=sp_RbVal" }
     function byval(v) { return mode == "repr" ? kind(v) ~ /^(scalar|sentinel|struct|vobj)$/ : (v !~ /\*/ && v != "c=sp_RbVal") }
-    FNR == 1 { side++ }
     {
+      # the side is the file, not its first line: a dump can be empty
+      side = FILENAME == ARGV[1] ? 1 : 2
       k = key($0); n = ++cnt[side, k]
       if (side == 1) { old[k, n] = val($0) } else { new[k, n] = val($0) }
       keys[k] = 1
@@ -126,14 +131,14 @@ for f in "$T"/*.name; do
           if (o == v) continue
           c = "other"
           if (o != "-" && v != "-") {
-            if (handle(v) && !handle(o)) c = "strbuf"
+            if (strbuf(v) && !strbuf(o)) c = "strbuf"
             else if (boxed(v) && !boxed(o)) c = "boxed"
             else if (byval(o) && !byval(v)) c = "unvalue"
           }
           print "D", c, prog, k, o, v
         }
       }
-    }' OFS='\t' "$b.ref" "$b.new"
+    }' "$b.ref" "$b.new"
 done | LC_ALL=C sort -t "$(printf '\t')" -k3,3 -k4,4 | awk -F'\t' -v mode="$MODE" -v total=$# '
   $1 == "S" { s[++ns] = $2; next }
   {
@@ -141,11 +146,11 @@ done | LC_ALL=C sort -t "$(printf '\t')" -k3,3 -k4,4 | awk -F'\t' -v mode="$MODE
     line[$2] = line[$2] sprintf("  %s: %s: %s -> %s\n", $3, $4, $5, $6)
   }
   END {
-    printf "repr_diff (%s): %d slots became shared handles (strbuf), %d became boxed, %d left a by-value layout, %d other changes, in %d of %d programs%s\n",
+    printf "repr_diff (%s): %d slots became String buffers (strbuf), %d became boxed, %d left a by-value layout, %d other changes, in %d of %d programs%s\n",
       (mode == "repr" ? "--dump-repr" : "C slot declarations"), n["strbuf"], n["boxed"], n["unvalue"], n["other"], np, total,
       (ns ? sprintf(" (%d did not compile on a side)", ns) : "")
     split("strbuf boxed unvalue other", order, " ")
-    title["strbuf"] = "became shared handles (strbuf):"; title["boxed"] = "became boxed:"
+    title["strbuf"] = "became String buffers (strbuf):"; title["boxed"] = "became boxed:"
     title["unvalue"] = "left a by-value layout:"; title["other"] = "other changes:"
     for (i = 1; i <= 4; i++) if (n[order[i]]) { print title[order[i]]; printf "%s", line[order[i]] }
     for (i = 1; i <= ns; i++) print "  did not compile: " s[i]
