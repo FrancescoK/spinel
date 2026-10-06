@@ -98,7 +98,7 @@ jobs:
           # alone is some 7 minutes), the corpus slices, the other legs
           pg = "pgate" in legs
           nc = int(os.environ.get("PGATE_CORPUS_SHARDS", "8"))
-          nr = int(os.environ.get("PGATE_RUBYSPEC_SHARDS", "1"))
+          nr = int(os.environ.get("PGATE_RUBYSPEC_SHARDS", "4"))
           parts = ([("rubyspec", k, nr) for k in range(1, nr + 1)] +
                    [("corpus", k, nc) for k in range(1, nc + 1)] + [("legs", 0, 0)])
           print("pgates=" + json.dumps({"include": [{"name": name, "sha": sha} for name, sha in heads] if pg else []}))
