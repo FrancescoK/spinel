@@ -1585,6 +1585,7 @@ sp_PolyArray *sp_str_chars_poly(const char *s) {SP_GC_ROOT_STR(s);
 #endif
 int sp_bt_enabled = 0;          /* set to 1 by debug-build main() */
 const char *sp_bt_srcfile = ""; /* toplevel .rb path, set by debug main() */
+const char *const *sp_bt_files = 0;
 static int sp_bt_is_runtime(const char *n) {
   static const char *pfx[] = {
     "int_", "str_", "float_", "sym_", "gc_", "bigint", "sprintf", "raise",
@@ -1612,7 +1613,7 @@ static int sp_bt_is_runtime(const char *n) {
      - macOS:       "<idx> <image> <addr> <symbol> + <off>".
    Returns NULL if it isn't a keepable user frame. Detect Linux by the '('
    that delimits the symbol (the macOS format has none). */
-static const char *sp_bt_symbol(const char *line) {
+static const char *sp_bt_symbol(const char *line, char *raw, size_t rawcap) {
   char sym[256];
   const char *lp = strchr(line, '(');
   if (lp) {                                       /* glibc/Linux paren form */
@@ -1637,6 +1638,7 @@ else {                                        /* macOS: "<idx> <image> <addr> <s
     if (len == 0 || len > 250) return 0;
     memcpy(sym, p, len); sym[len] = 0;
   }
+  if (raw && rawcap) snprintf(raw, rawcap, "%s", sym);
   /* The top level runs in the emitted body function, which the compiler
      hands to sp_main_stack_run (see lib/sp_fiber.c). That frame IS `<main>`;
      the C `main` beside it is the trampoline, on the other stack, and an
@@ -1692,9 +1694,15 @@ sp_StrArray *sp_bt_format(void **buf, int n) {
   if (!syms) return a;
   const char *src = (sp_bt_srcfile && sp_bt_srcfile[0]) ? sp_bt_srcfile : "(spinel)";
   for (int i = 0; i < n; i++) {
-    char *name = (char *)sp_bt_symbol(syms[i]);  /* always strdup'd; free after use */
+    char raw[256]; raw[0] = 0;
+    char *name = (char *)sp_bt_symbol(syms[i], raw, sizeof raw);  /* always strdup'd; free after use */
     if (!name) continue;
-    sp_StrArray_push(a, sp_sprintf("%s:in `%s'", src, name));
+    /* a method of a required file names that file, not the entry script */
+    const char *file = src;
+    if (sp_bt_files)
+      for (const char *const *f = sp_bt_files; f[0]; f += 2)
+        if (strcmp(f[0], raw) == 0) { file = f[1]; break; }
+    sp_StrArray_push(a, sp_sprintf("%s:in `%s'", file, name));
     free(name);
   }
   free(syms);

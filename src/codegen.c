@@ -3464,7 +3464,31 @@ static int sg_delegate_scope(Compiler *c, Scope *s) {
   return pm;
 }
 
+/* --debug: the file each user method was written in, by its C symbol, for the
+   frames of Exception#backtrace. Only a method of a required file is listed;
+   the entry script is every other frame's default (sp_bt_srcfile). */
+static char **g_bt_files = NULL;
+static int g_bt_files_n = 0, g_bt_files_cap = 0;
+static void note_method_file(Compiler *c, Scope *s) {
+  if (!g_debug || s->def_node < 0) return;
+  int fid = (int)nt_int(c->nt, s->def_node, "node_file", 0);
+  const char *path = fid > 0 ? nt_file_path(c->nt, fid) : NULL;
+  if (!path || !*path) return;
+  Buf sym; memset(&sym, 0, sizeof sym);
+  emit_method_cname(c, s, &sym);
+  if (!sym.p) return;
+  for (int i = 0; i < g_bt_files_n; i += 2)
+    if (sp_streq(g_bt_files[i], sym.p)) { free(sym.p); return; }
+  if (g_bt_files_n + 2 > g_bt_files_cap) {
+    g_bt_files_cap = g_bt_files_cap ? g_bt_files_cap * 2 : 16;
+    g_bt_files = (char **)realloc(g_bt_files, sizeof(char *) * (size_t)g_bt_files_cap);
+  }
+  g_bt_files[g_bt_files_n++] = sym.p;
+  g_bt_files[g_bt_files_n++] = strdup(path);
+}
+
 void emit_method_signature(Compiler *c, Scope *s, Buf *b) {
+  note_method_file(c, s);
   /* In a debug build, give instance/class methods external linkage so
      -rdynamic exposes sp_<Class>_<method> to backtrace_symbols and the
      frames demangle (Exception#backtrace / Kernel#caller). Toplevel methods
@@ -16163,6 +16187,15 @@ char *codegen_program(const NodeTable *nt) {
     buf_puts(body, "    sp_bt_srcfile = ");
     emit_str_literal(body, c->nt->source_file ? c->nt->source_file : "source.rb");
     buf_puts(body, ";\n");
+    if (g_bt_files_n) {
+      /* symbol, file pairs of the methods written in a required file */
+      buf_puts(body, "    { static const char *const _bt_files[] = {");
+      for (int i = 0; i < g_bt_files_n; i++) {
+        if (i) buf_puts(body, ", ");
+        emit_str_literal(body, g_bt_files[i]);
+      }
+      buf_puts(body, ", 0}; sp_bt_files = _bt_files; }\n");
+    }
   }
   }
   /* No PRNG seeding here: the shared Kernel stream (lib/sp_random.c)

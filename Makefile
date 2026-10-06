@@ -1255,12 +1255,17 @@ cli-opts-test: $(SPINEL)
 	  echo "cli-opts-test: FAIL (a program without String#crypt links libcrypt)"; ok=0; fi; \
 	if [ "$$(uname)" = Linux ] && ! $(SPINEL) "$$tmp/crypt.rb" --print-build 2>&1 | grep -q -- "-lcrypt"; then \
 	  echo "cli-opts-test: FAIL (String#crypt does not link libcrypt)"; ok=0; fi; \
-	for v in 0 ""; do \
-	  if SPINEL_SHARE_STRINGS="$$v" SPINEL_SHARE_STATS=1 $(SPINEL) "$$tmp/hello.rb" -c -o "$$tmp/sh.c" 2>&1 | grep -q '^share-stats:'; then \
+	for v in 0 "" 1; do \
+	  if ! SPINEL_SHARE_STRINGS="$$v" SPINEL_SHARE_STATS=1 $(SPINEL) "$$tmp/hello.rb" -c -o "$$tmp/sh.c" >"$$tmp/sh.out" 2>&1; then \
+	    echo "cli-opts-test: FAIL (SPINEL_SHARE_STRINGS='$$v' did not compile)"; sed -n 1,3p "$$tmp/sh.out"; ok=0; continue; fi; \
+	  grep -q '^share-stats:' "$$tmp/sh.out"; st=$$?; \
+	  if [ $$st -gt 1 ]; then \
+	    echo "cli-opts-test: FAIL (could not read the SPINEL_SHARE_STRINGS='$$v' output)"; ok=0; \
+	  elif [ "$$v" = 1 ] && [ $$st -ne 0 ]; then \
+	    echo "cli-opts-test: FAIL (SPINEL_SHARE_STRINGS=1 left --share-strings off)"; ok=0; \
+	  elif [ "$$v" != 1 ] && [ $$st -eq 0 ]; then \
 	    echo "cli-opts-test: FAIL (SPINEL_SHARE_STRINGS='$$v' turned --share-strings on)"; ok=0; fi; \
 	done; \
-	SPINEL_SHARE_STRINGS=1 SPINEL_SHARE_STATS=1 $(SPINEL) "$$tmp/hello.rb" -c -o "$$tmp/sh.c" 2>&1 | grep -q '^share-stats:' || \
-	  { echo "cli-opts-test: FAIL (SPINEL_SHARE_STRINGS=1 left --share-strings off)"; ok=0; }; \
 	rm -rf "$$tmp"; \
 	[ $$ok = 1 ] && echo "cli-opts-test: pass" || exit 1
 
@@ -2265,6 +2270,13 @@ backtrace-test: $(SPINEL) $(SP_RT_LIB)
 	for f in "Chain#inner" "Chain#mid" "Chain#outer" "Chain#top"; do \
 	  grep -q "$$f" "$$tmp/pt.out" || { echo "backtrace-test: FAIL (#5084: frame $$f cut by a rescue that did not match)"; cat "$$tmp/pt.out"; ok=0; }; \
 	done; \
+	$(SPINEL) --debug --no-inline-hot test/backtrace/required_main.rb -o "$$tmp/rq" >/dev/null 2>&1 || \
+	  { echo "backtrace-test: FAIL (compile required_main)"; ok=0; }; \
+	"$$tmp/rq" > "$$tmp/rq.out" 2>&1; \
+	for f in "required_lib.rb:in .Lib#inner'" "required_lib.rb:in .Lib#boom'" "required_lib.rb:in .Lib.go'" "required_main.rb:in .Top#run'"; do \
+	  grep -q "$$f" "$$tmp/rq.out" || { echo "backtrace-test: FAIL (#7658: no frame $$f)"; cat "$$tmp/rq.out"; ok=0; }; \
+	done; \
+	grep -q "required_main.rb:in .Lib" "$$tmp/rq.out" && { echo "backtrace-test: FAIL (#7658: a Lib frame names the entry script)"; cat "$$tmp/rq.out"; ok=0; }; \
 	rm -rf "$$tmp"; \
 	if [ $$ok -eq 1 ]; then echo "backtrace-test: pass"; else exit 1; fi
 

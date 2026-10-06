@@ -1,0 +1,16 @@
+past the end TypeError: nil can't be coerced into Float
+in a gap TypeError: nil can't be coerced into Float
+float local nil TypeError: nil can't be coerced into Float
+int local nil TypeError: nil can't be coerced into Float
+element nil first NoMethodError: undefined method '+' for nil
+loop past the end TypeError: nil can't be coerced into Float
+loop in a gap TypeError: nil can't be coerced into Float
+loop, both nil NoMethodError: undefined method '-' for nil
+loop, element nil NoMethodError: undefined method '-' for nil
+loop past the end, element not nil TypeError: nil can't be coerced into Float
+loop, local nil TypeError: nil can't be coerced into Float
+loop, local nil, element nil TypeError: nil can't be coerced into Float
+loop, local [3.5, 3.5]
+loop, local nil, not added 2.0
+loop, local, added 7.0
+ok [[2.5], [3.5], [1.5], [4.0], [0.5, 0.5]]
