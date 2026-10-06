@@ -5,7 +5,7 @@ import os, re, sys
 res = sys.argv[1]
 jobs = {}
 for d in sorted(os.listdir(res)):
-    m = re.match(r"r-(suite|cb|vf|nn|brow|dc|lit|op|ord|cdiff|extra|scale|rubyspec|gate)-(.+)-(\d+)$", d)
+    m = re.match(r"r-(suite|cb|vf|nn|brow|dc|lit|op|ord|cdiff|extra|scale|rubyspec|gate|pgate)-(.+)-(\d+)$", d)
     if m:
         jobs[(m.group(1), m.group(2), int(m.group(3)))] = os.path.join(res, d)
 
@@ -350,8 +350,12 @@ for n in names:
         print(f"- new tests (plain, promote, GC stress): {'none' if not lines else ''}")
         for l in lines:
             print(f"  - {l}")
-    if ("gate", n, 0) in jobs:
-        d = jobs[("gate", n, 0)]
+    # the gate leg, and pgate's finish in the same files (gate_apply.py and
+    # file1.py read either under "### gate:")
+    for leg in ("gate", "pgate"):
+        if (leg, n, 0) not in jobs:
+            continue
+        d = jobs[(leg, n, 0)]
         meta = dict(line.split("=", 1) for line in read(os.path.join(d, "gate-meta.txt")).splitlines() if "=" in line)
         status = meta.get("status", "FAIL")
         if status not in ("PASS", "FAIL", "CONFLICT"):
@@ -359,6 +363,10 @@ for n in names:
         print(f"\n### gate: {status}\n")
         print(f"Master: `{meta.get('master', 'unknown')}`; merged: `{meta.get('merged', 'unknown')}`; "
               f"exit status: {meta.get('exit_status', 'unknown')}.\n")
+        if meta.get("mode") == "pgate":
+            times = [l for l in read(os.path.join(d, "gate.log")).splitlines() if l.startswith("[pgate] part times: ")]
+            print(f"Parallel gate (pgate): `make gate`'s legs as parts {meta.get('parts', '?')} on the merged tree." +
+                  (f" {times[-1][8:]}." if times else "") + "\n")
         if meta.get("target", "gate") != "gate":
             print(f"Smoke target: `{meta['target']}` (not a full gate run).\n")
         lines = read(os.path.join(d, "gate-summary.txt"))
