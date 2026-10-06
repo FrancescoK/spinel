@@ -859,28 +859,31 @@ int builtin_instance_method_known(const char *cls, const char *m);
 int comp_array_method_name(const char *n) {
   return builtin_instance_method_known("Array", n) || is_arysub_kernel_name(n);
 }
+/* Whether a call named n on an instance of Array subclass cid is Array's:
+   no method, reader or writer of the class chain takes the name, it asks
+   nothing about the object itself, and Array (or Enumerable, which Array
+   includes) has it. */
+int comp_arysub_name_is_array(Compiler *c, int cid, const char *n) {
+  if (comp_ary_root(c, cid) < 0 || !n) return 0;
+  if (comp_method_in_chain(c, cid, n, NULL) >= 0 || comp_reader_in_chain(c, cid, n, NULL)) return 0;
+  size_t l = strlen(n);
+  if (l > 1 && n[l - 1] == '=' && n[l - 2] != '=' && n[l - 2] != '!' && n[l - 2] != '<' &&
+      n[l - 2] != '>' && n[l - 2] != '[') {
+    char base[256];
+    snprintf(base, sizeof base, "%.*s", (int)(l - 1), n);
+    if (comp_writer_in_chain(c, cid, base, NULL)) return 0;
+  }
+  return !is_arysub_object_name(n) && comp_array_method_name(n);
+}
 /* Whether call `id` on a receiver of type rt, an Array subclass instance, is
-   Array's: no method, reader or writer of the class chain takes the name, it
-   asks nothing about the object itself, and Array (or Enumerable, which Array
-   includes) has it -- or a `super` into Array was rewritten into it
-   (builtin_only). *kind is the embedded Array's kind to answer it as. */
+   Array's (comp_arysub_name_is_array), or a `super` into Array was rewritten
+   into it (builtin_only). *kind is the embedded Array's kind to answer it as. */
 int comp_arysub_call(Compiler *c, int id, TyKind rt, TyKind *kind) {
   int cid = ty_is_object(rt) ? ty_object_class(rt) : -1;
   if (comp_ary_root(c, cid) < 0 || nt_kind(c->nt, id) != NK_CallNode) return 0;
   const char *n = nt_str(c->nt, id, "name");
   if (!n) return 0;
-  if (!nt_int(c->nt, id, "builtin_only", 0)) {
-    if (comp_method_in_chain(c, cid, n, NULL) >= 0 || comp_reader_in_chain(c, cid, n, NULL)) return 0;
-    size_t l = strlen(n);
-    if (l > 1 && n[l - 1] == '=' && n[l - 2] != '=' && n[l - 2] != '!' && n[l - 2] != '<' &&
-        n[l - 2] != '>' && n[l - 2] != '[') {
-      char base[256];
-      snprintf(base, sizeof base, "%.*s", (int)(l - 1), n);
-      if (comp_writer_in_chain(c, cid, base, NULL)) return 0;
-    }
-    if (is_arysub_object_name(n)) return 0;
-    if (!comp_array_method_name(n)) return 0;
-  }
+  if (!nt_int(c->nt, id, "builtin_only", 0) && !comp_arysub_name_is_array(c, cid, n)) return 0;
   *kind = comp_ary_kind(c, cid);
   return 1;
 }
