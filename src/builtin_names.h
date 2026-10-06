@@ -23,6 +23,11 @@ int is_add_sub_mul(const char *n);    /* + - * */
 int is_int_bit_op(const char *n);     /* & | ^ << >>: Integer's bitwise operators */
 int is_object_root(const char *n);    /* Object Kernel BasicObject: the classes every object has */
 int is_send_family(const char *n);    /* send __send__ public_send */
+int is_bool_comparison(const char *n); /* == != < > <= >= */
+int is_not_op(const char *n); /* ! */
+int is_ivar_serializer(const char *n); /* Marshal */
+int is_ivar_reflection(const char *n); /* instance_variable* remove_instance_variable eval/exec binding */
+int is_named_method_reach(const char *n); /* send family, method, public_method, instance_method */
 int is_opaque_reaching_call(const char *n); /* send family, call, new, lambda/proc, freeze, eval, instance_/class_/module_*, *method* */
 int is_async_code_entry(const char *recv, const char *n); /* Thread.new/start/fork, Fiber.new, trap, Signal.trap */
 int is_name_reader(const char *n);    /* name to_s inspect: a Class's or Module's name */

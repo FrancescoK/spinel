@@ -935,3 +935,36 @@ int array_unseen_add_kind(const char *n) {
 }
 
 int is_scan_name(const char *n) { return sp_streq(n, "scan"); }
+
+/* The comparisons whose answer is true or false for every builtin: == !=
+   < > <= >= (a user method of the name answers what it likes, and the
+   caller asks about that). */
+int is_bool_comparison(const char *n) {
+  return sp_streq(n, "==") || sp_streq(n, "!=") || sp_streq(n, "<") ||
+         sp_streq(n, ">") || sp_streq(n, "<=") || sp_streq(n, ">=");
+}
+
+/* Reflection that reads or writes an object's ivars by name, or runs code
+   with another object's ivars in reach: instance_variable_get and kin,
+   remove_instance_variable, the eval/exec family, binding. */
+int is_ivar_reflection(const char *n) {
+  return strncmp(n, "instance_variable", 17) == 0 || sp_streq(n, "remove_instance_variable") ||
+         is_eval_exec_family(n) || sp_streq(n, "binding");
+}
+
+/* A call naming the method it reaches by an argument: the send family and
+   method, public_method, instance_method. */
+int is_named_method_reach(const char *n) {
+  return is_send_family(n) || sp_streq(n, "method") || sp_streq(n, "public_method") ||
+         sp_streq(n, "instance_method");
+}
+
+/* `!`, BasicObject's negation: true or false whatever the receiver */
+int is_not_op(const char *n) {
+  return sp_streq(n, "!");
+}
+
+/* The constants whose methods read an object's ivars as data: Marshal */
+int is_ivar_serializer(const char *n) {
+  return sp_streq(n, "Marshal");
+}
