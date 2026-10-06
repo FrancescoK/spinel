@@ -1069,6 +1069,9 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         buf_printf(g_pre, "const char *_ctag%d = sp_sprintf(\"#<catch:%%lld>\", (long long)++sp_catch_seq);\n", t);
         emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT_STR(_ctag%d);\n", t);
         emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_catch_tag[sp_catch_top] = _ctag%d;\n", t);
+        /* matched by identity, as the block parameter holding this very tag
+           is: a copy of it (`tag.dup`) is another object */
+        tag_kind = 2;
         const char *bp0 = block_param_name(c, blk, 0);
         if (bp0) {
           emit_indent(g_pre, g_indent);
