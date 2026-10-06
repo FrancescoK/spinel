@@ -2431,6 +2431,10 @@ void emit_method_cname(Compiler *c, Scope *s, Buf *b) {
     buf_printf(b, "sp_%s_%s", mc_reopen_cls(c, s->class_id, s->name), mc(s->name));
   else
     buf_printf(b, "sp_%s", mc_top(c, s->name));
+  /* --share-strings: the variant returning the handle (method_returns_handle) */
+  int si = (int)(s - c->scopes);
+  if (c->hr_sig == si + 1) buf_puts(b, "__h");
+  else if (c->hr_want == si + 1) { buf_puts(b, "__h"); c->hr_want = 0; c->hr_used = 1; }
 }
 
 /* A poly each-receiver can be a user object at runtime (e.g. a Set operand
@@ -3546,6 +3550,7 @@ void emit_method_signature(Compiler *c, Scope *s, Buf *b) {
                     : method_inline_force(c, s) ? "inline SP_ALWAYS_INLINE "
                     : (method_inline_hint(c, s) ? "inline " : "");
   if (method_is_void(s)) { buf_puts(b, stor); buf_puts(b, ihint); buf_puts(b, unused); buf_puts(b, "void "); }
+  else if (c->hr_sig == (int)(s - c->scopes) + 1) { buf_puts(b, stor); buf_puts(b, ihint); buf_puts(b, unused); buf_puts(b, "sp_String * "); }
   else { buf_puts(b, stor); buf_puts(b, ihint); buf_puts(b, unused); emit_ctype(c, s->ret, b); buf_puts(b, " "); }
   emit_method_cname(c, s, b);
   buf_puts(b, "(");
@@ -3621,6 +3626,26 @@ void emit_method_signature(Compiler *c, Scope *s, Buf *b) {
   }
   if (!wrote) buf_puts(b, "void");
   buf_puts(b, ")");
+}
+/* The arguments a wrapper forwards to the method it wraps: the names
+   emit_method_signature gives its parameters, in its order. */
+void emit_method_forward_args(Compiler *c, Scope *s, Buf *b) {
+  int wrote = 0;
+  if (cmethod_takes_self_cls(c, (int)(s - c->scopes))) { buf_puts(b, "_sp_cls"); wrote = 1; }
+  if (s->class_id >= 0 && !s->is_cmethod) { if (wrote++) buf_puts(b, ", "); buf_puts(b, "self"); }
+  char **pvol = NULL; int npvol = 0, pall = 0;
+  int psi = (int)(s - c->scopes);
+  int pbegin = psi >= 0 && psi < c->nscopes && s->nparams > 0 && scope_has_begin(c, psi);
+  if (pbegin) begin_volatile_names(c, psi, &pvol, &npvol, &pall);
+  for (int i = 0; i < s->nparams; i++) {
+    if (wrote++) buf_puts(b, ", ");
+    LocalVar *p = scope_local(s, s->pnames[i]);
+    int pv = pbegin && (pall || name_list_has(pvol, npvol, s->pnames[i])) && p && !p->is_cell;
+    if (p && p->byref_out) buf_printf(b, "_cell_%s", s->pnames[i]);
+    else buf_printf(b, pv ? "lv_%s__in" : "lv_%s", s->pnames[i]);
+  }
+  free(pvol);
+  if (s->blk_param && s->blk_param[0] && !s->yields) { if (wrote++) buf_puts(b, ", "); buf_printf(b, "lv_%s", s->blk_param); }
 }
 
 /* CS_SYNTH_* markers (mirror of analyze_scope.c). */
@@ -4993,7 +5018,13 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
      compile, so gdb couldn't find it. With this, --line-map / -g is enough to
      debug against the Ruby source; no need to keep the generated C (#1261). */
   emit_line_directive(c, s->def_node, b);
+  /* --share-strings: a method answering the handle on every path is emitted
+     as <cname>__h returning it, and <cname> as a wrapper (emit_hr_wrapper) */
+  int hr = method_returns_handle(c, (int)(s - c->scopes));
+  int sv_hr_sig = c->hr_sig;
+  if (hr) c->hr_sig = (int)(s - c->scopes) + 1;
   emit_method_signature(c, s, b);
+  c->hr_sig = sv_hr_sig;
   buf_puts(b, " {\n");
   /* The singleton override does not exist until the statement that created it
      has run (#4084). The object carries its parent's cls_id until then, so a
@@ -5087,7 +5118,7 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
       snprintf(cm_self9, sizeof cm_self9, "((sp_Class){%d})", s->class_id);
     g_self = cm_self9;
   }
-  g_ret_type = method_is_void(s) ? TY_VOID : s->ret;
+  g_ret_type = method_is_void(s) ? TY_VOID : hr ? TY_STRBUF : s->ret;
   g_exc_frame_depth = 0; g_method_pr_exc_depth = 0; g_rescue_save_depth = 0;
   /* real-function funnel mirror: no proc-return frame yet (set below when
      one exists); block bodies spliced by yield-inlines restore from these. */
@@ -5158,7 +5189,8 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
   else {
     emit_stmts_tail(c, s->body, b, 1);
     buf_puts(b, "  return ");
-    if (ty_is_object(s->ret)) {
+    if (hr) buf_puts(b, "NULL;\n");
+    else if (ty_is_object(s->ret)) {
       if (comp_ty_value_obj(c, s->ret)) buf_printf(b, "(sp_%s){0};\n", c->classes[ty_object_class(s->ret)].c_name);
       else buf_puts(b, "NULL;\n"); /* unreachable default (object pointer) */
     }
@@ -5193,6 +5225,7 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
   const char *site = decide_method_site(c, s);
   if (!g_no_root_frame) gc_frame_build(b, gc_save_off + gc_save_len, site);
   gc_save_take_back(b, gc_save_off, gc_save_len, site);
+  if (hr) emit_hr_wrapper(c, s, b);
 }
 
 /* ---- first-class Proc ---- */
@@ -15708,7 +15741,7 @@ char *codegen_program(const NodeTable *nt) {
   /* A proc form is named only by a poly dispatch, which is emitted later, so
      the reachability pass cannot see it. Emit it and let the C compiler drop
      it if no arm ends up calling it (#3399). */
-  for (int s = 1; s < c->nscopes; s++) { if (c->scopes[s].yields || (!c->scopes[s].reachable && (!c->scopes[s].is_proc_form || !proc_form_live(c, s))) || scope_is_shadowed(c, s) || (c->scopes[s].is_transplanted_source && !scope_toplevel_included(c, s))) continue; emit_method_signature(c, &c->scopes[s], &b); buf_puts(&b, ";\n"); }
+  for (int s = 1; s < c->nscopes; s++) { if (c->scopes[s].yields || (!c->scopes[s].reachable && (!c->scopes[s].is_proc_form || !proc_form_live(c, s))) || scope_is_shadowed(c, s) || (c->scopes[s].is_transplanted_source && !scope_toplevel_included(c, s))) continue; emit_method_signature(c, &c->scopes[s], &b); buf_puts(&b, ";\n"); if (method_returns_handle(c, s)) { int sv = c->hr_sig; c->hr_sig = s + 1; emit_method_signature(c, &c->scopes[s], &b); buf_puts(&b, ";\n"); c->hr_sig = sv; } }
 
   emit_user_exc_dispatch(c, &b);
   /* constructor prototypes + definitions (after method protos: new calls initialize) */
