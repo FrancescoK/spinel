@@ -4399,7 +4399,13 @@ int desugar_respond_to_probe(Compiler *c) {
     if (!nm || !sp_streq(nm, "respond_to?")) continue;
     int recv = nt_ref(nt, id, "receiver");
     if (recv < 0) continue;                         /* implicit self handled in the fold */
-    if (user_rto) {
+    /* a literal receiver is a builtin value whatever its elements are --
+       an empty `[]` has no element type yet here, and went unprobed */
+    NodeKind rk = nt_kind(nt, recv);
+    int lit_recv = rk == NK_ArrayNode || rk == NK_HashNode || rk == NK_StringNode ||
+                   rk == NK_InterpolatedStringNode || rk == NK_SymbolNode || rk == NK_IntegerNode ||
+                   rk == NK_FloatNode || rk == NK_RangeNode || rk == NK_RegularExpressionNode;
+    if (user_rto && !lit_recv) {
       TyKind rt = infer_type(c, recv);
       if (rt == TY_POLY || rt == TY_UNKNOWN) continue;
       if (ty_is_object(rt) && comp_method_in_chain(c, ty_object_class(rt), "respond_to?", NULL) >= 0) continue;
