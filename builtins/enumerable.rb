@@ -182,32 +182,80 @@ module Enumerable
 
   def minmax_by
     if block_given?
+      # CRuby's pairwise walk (enum.c minmax_by_i): the elements are taken two
+      # at a time, the pair ordered by one comparison of its keys, then the
+      # smaller one compared with the minimum and the larger with the
+      # maximum. Which keys meet first decides the "comparison of A with b
+      # failed" message when two do not compare, and which of equal keys
+      # wins. An odd last element is its own pair.
       min = nil
       max = nil
       min_key = nil
       max_key = nil
       found = false
+      last = nil
+      last_key = nil
+      pending = false
       each do |x|
         key = yield x
-        if found
-          c = key <=> min_key
-          raise ArgumentError, "comparison of #{key.class} with #{(min_key.nil? || min_key == true || min_key == false || min_key.is_a?(Numeric) || min_key.is_a?(Symbol)) ? min_key.inspect : min_key.class} failed" if c.nil?
-          if c < 0
-            min = x
-            min_key = key
-          end
-          c = key <=> max_key
-          raise ArgumentError, "comparison of #{key.class} with #{(max_key.nil? || max_key == true || max_key == false || max_key.is_a?(Numeric) || max_key.is_a?(Symbol)) ? max_key.inspect : max_key.class} failed" if c.nil?
+        if pending
+          pending = false
+          c = last_key <=> key
+          raise ArgumentError, "comparison of #{last_key.class} with #{(key.nil? || key == true || key == false || key.is_a?(Numeric) || key.is_a?(Symbol)) ? key.inspect : key.class} failed" if c.nil?
           if c > 0
-            max = x
-            max_key = key
+            lo = x
+            lo_key = key
+            hi = last
+            hi_key = last_key
+          else
+            lo = last
+            lo_key = last_key
+            hi = c < 0 ? x : last
+            hi_key = c < 0 ? key : last_key
+          end
+          if found
+            c = lo_key <=> min_key
+            raise ArgumentError, "comparison of #{lo_key.class} with #{(min_key.nil? || min_key == true || min_key == false || min_key.is_a?(Numeric) || min_key.is_a?(Symbol)) ? min_key.inspect : min_key.class} failed" if c.nil?
+            if c < 0
+              min = lo
+              min_key = lo_key
+            end
+            c = hi_key <=> max_key
+            raise ArgumentError, "comparison of #{hi_key.class} with #{(max_key.nil? || max_key == true || max_key == false || max_key.is_a?(Numeric) || max_key.is_a?(Symbol)) ? max_key.inspect : max_key.class} failed" if c.nil?
+            if c > 0
+              max = hi
+              max_key = hi_key
+            end
+          else
+            min = lo
+            min_key = lo_key
+            max = hi
+            max_key = hi_key
+            found = true
           end
         else
-          min = x
-          max = x
-          min_key = key
-          max_key = key
-          found = true
+          last = x
+          last_key = key
+          pending = true
+        end
+      end
+      if pending
+        if found
+          c = last_key <=> min_key
+          raise ArgumentError, "comparison of #{last_key.class} with #{(min_key.nil? || min_key == true || min_key == false || min_key.is_a?(Numeric) || min_key.is_a?(Symbol)) ? min_key.inspect : min_key.class} failed" if c.nil?
+          if c < 0
+            min = last
+            min_key = last_key
+          end
+          c = last_key <=> max_key
+          raise ArgumentError, "comparison of #{last_key.class} with #{(max_key.nil? || max_key == true || max_key == false || max_key.is_a?(Numeric) || max_key.is_a?(Symbol)) ? max_key.inspect : max_key.class} failed" if c.nil?
+          if c > 0
+            max = last
+            max_key = last_key
+          end
+        else
+          min = last
+          max = last
         end
       end
       [min, max]
@@ -225,22 +273,54 @@ module Enumerable
     # One walk with a flag, as min_by and max_by take theirs: a leading nil is
     # an element like any other (`[nil, 3].minmax` raises), and only an empty
     # receiver answers [nil, nil].
+    #
+    # The block form is CRuby's pairwise walk (enum.c minmax_ii), as
+    # minmax_by's: two elements at a time, ordered by one call of the block,
+    # then the smaller one against the minimum and the larger against the
+    # maximum. The block's nil answer names the pair it was handed
+    # ("comparison of A with b failed"), so which pairs it sees is part of
+    # the answer.
     min = nil
     max = nil
     found = false
     if block_given?
+      last = nil
+      pending = false
       each do |x|
-        if found
-          c = yield(x, min)
-          raise ArgumentError, "comparison of #{min.class} with #{(x.nil? || x == true || x == false || x.is_a?(Numeric) || x.is_a?(Symbol)) ? x.inspect : x.class} failed" if c.nil?
-          min = x if c < 0
-          c = yield(x, max)
-          raise ArgumentError, "comparison of #{max.class} with #{(x.nil? || x == true || x == false || x.is_a?(Numeric) || x.is_a?(Symbol)) ? x.inspect : x.class} failed" if c.nil?
-          max = x if c > 0
+        if pending
+          pending = false
+          c = yield(last, x)
+          raise ArgumentError, "comparison of #{last.class} with #{(x.nil? || x == true || x == false || x.is_a?(Numeric) || x.is_a?(Symbol)) ? x.inspect : x.class} failed" if c.nil?
+          lo = c > 0 ? x : last
+          hi = c < 0 ? x : last
+          if found
+            c = yield(lo, min)
+            raise ArgumentError, "comparison of #{lo.class} with #{(min.nil? || min == true || min == false || min.is_a?(Numeric) || min.is_a?(Symbol)) ? min.inspect : min.class} failed" if c.nil?
+            min = lo if c < 0
+            c = yield(hi, max)
+            raise ArgumentError, "comparison of #{hi.class} with #{(max.nil? || max == true || max == false || max.is_a?(Numeric) || max.is_a?(Symbol)) ? max.inspect : max.class} failed" if c.nil?
+            max = hi if c > 0
+          else
+            min = lo
+            max = hi
+            found = true
+          end
         else
-          min = x
-          max = x
-          found = true
+          last = x
+          pending = true
+        end
+      end
+      if pending
+        if found
+          c = yield(last, min)
+          raise ArgumentError, "comparison of #{last.class} with #{(min.nil? || min == true || min == false || min.is_a?(Numeric) || min.is_a?(Symbol)) ? min.inspect : min.class} failed" if c.nil?
+          min = last if c < 0
+          c = yield(last, max)
+          raise ArgumentError, "comparison of #{last.class} with #{(max.nil? || max == true || max == false || max.is_a?(Numeric) || max.is_a?(Symbol)) ? max.inspect : max.class} failed" if c.nil?
+          max = last if c > 0
+        else
+          min = last
+          max = last
         end
       end
       [min, max]
