@@ -335,6 +335,8 @@ void an_user_call_record(Compiler *c, int id, int mi, int via, int owner_ci);
 int infer_numeric_call(Compiler *c, int id, TyKind rt, TyKind *out);
 /* The array a map-shaped call answers from its block's tail (analyze_infer_recv.c). */
 TyKind infer_map_block_ty(Compiler *c, int id, int block);
+/* A call written `recv&.name` (analyze_infer_recv.c). */
+int call_is_safe_nav(const NodeTable *nt, int id);
 /* A range endpoint that is the infinite Float constant (analyze_infer.c). */
 int infer_end_is_float_inf(Compiler *c, int right);
 int propagate_prep_params(Compiler *c);
@@ -484,6 +486,7 @@ int desugar_defined_method_call(Compiler *c);
 int desugar_respond_to_probe(Compiler *c);
 int desugar_symbol_to_proc_call(Compiler *c);
 int desugar_call_op_write(Compiler *c);
+int desugar_reopened_op_write(Compiler *c);
 int desugar_array_at(Compiler *c);
 int desugar_array_first_last(Compiler *c);
 int desugar_enum_iter_splat_args(Compiler *c);
