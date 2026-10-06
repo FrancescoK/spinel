@@ -12,3 +12,12 @@ class Lib
     new.boom(x)
   end
 end
+
+def lib_inner(x)
+  raise ArgumentError, "bad #{x}" if x > 1
+  x
+end
+
+def lib_outer(x)
+  lib_inner(x) + 1
+end

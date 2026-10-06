@@ -9,3 +9,11 @@ begin
 rescue => e
   puts e.backtrace
 end
+
+def entry_run = lib_outer(7)
+
+begin
+  entry_run
+rescue => e
+  puts e.backtrace
+end

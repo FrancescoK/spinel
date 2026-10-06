@@ -3505,9 +3505,12 @@ void emit_method_signature(Compiler *c, Scope *s, Buf *b) {
   note_method_file(c, s);
   /* In a debug build, give instance/class methods external linkage so
      -rdynamic exposes sp_<Class>_<method> to backtrace_symbols and the
-     frames demangle (Exception#backtrace / Kernel#caller). Toplevel methods
-     keep `static` -- a bare sp_<name> could collide with a runtime helper. */
-  const char *stor = ((g_debug && s->class_id >= 0) || s->is_ext_entry) ? "" : "static ";
+     frames demangle (Exception#backtrace / Kernel#caller). A toplevel method
+     too: left static it is no symbol at all on Linux and its frame is dropped
+     (#7658). The C name sp_<name> is already one the runtime's headers may not
+     declare, so only a runtime function defined without a declaration could
+     clash, and only in this build. */
+  const char *stor = (g_debug || s->is_ext_entry) ? "" : "static ";
   /* An instance method of a never-instantiated class has had its poly-dispatch
      arm dropped (compute_instantiated) and -- no instance ever existing -- has
      no direct call site either, so it is emitted but unreferenced. Mark it
