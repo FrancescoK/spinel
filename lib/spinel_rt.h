@@ -14320,6 +14320,17 @@ static sp_RbVal sp_poly_hash_dproc_bridge(sp_PolyPolyHash *h, sp_RbVal key, void
   return sp_box_nil();
 }
 sp_PolyPolyHash *sp_poly_hash_merge(sp_RbVal a, sp_RbVal b);
+/* `recv.merge(other)` on a boxed receiver: only a Hash has merge, so nil or
+   any other value is CRuby's NoMethodError, with the argument staged as its
+   args. sp_poly_hash_merge itself takes nil as an empty start (the keyword
+   folds call it so). */
+static SP_UNUSED sp_PolyPolyHash *sp_poly_hash_merge_m(sp_RbVal a, sp_RbVal b) {
+  if (!(a.tag == SP_TAG_OBJ && a.v.p && sp_poly_is_hash_kind(a.cls_id))) {
+    sp_raise_nomethod(sp_nomethod_msg_args("merge", a, 1, &b));
+    return NULL;
+  }
+  return sp_poly_hash_merge(a, b);
+}
 /* A boxed hash as the concrete symbol-keyed variant: itself when it already is
    one, rebuilt when every key is a Symbol (a hash folded through the general
    merge path is a PolyPolyHash regardless of its keys), and a TypeError only
