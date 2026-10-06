@@ -1126,7 +1126,10 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
       emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "sp_catch_top--;\n");
       emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "sp_gc_nroots = sp_catch_rootmark[sp_catch_top];\n");
       emit_indent(g_pre, g_indent + 1);
-      if (ptr) {
+      /* a kind with an unbox of its own reads through it (emit_unbox_text): a
+         String thrown as a mutable String's box carries the handle, not the
+         bytes, and an Array box may hold another kind */
+      if (ptr && !ty_traits_of(bt)) {
         buf_printf(g_pre, "_t%d = (", t); emit_ctype(c, bt, g_pre);
         buf_printf(g_pre, ")sp_catch_val[sp_catch_top].v.p;\n");
       }
