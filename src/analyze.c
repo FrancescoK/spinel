@@ -30298,6 +30298,7 @@ static void an_phase_desugar_register(Compiler *c) {
   desugar_static_class_eval(c);
   /* `m(&nil)` is the blockless call */
   desugar_nil_block_arg(c);
+  desugar_literal_undef_method(c);       /* undef_method :a in a body -> undef a */
   /* a bare constant CRuby's lookup cannot reach, bound by its leaf name to a
      nested definition: refused while the source still says where each
      reference is written */
