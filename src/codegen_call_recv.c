@@ -7376,14 +7376,14 @@ static int int_arms_round_divide(Compiler *c, int id, Buf *b, const NodeTable *n
   }
   else if (sp_streq(name, "div") && argc == 1 && comp_ntype(c, argv[0]) == TY_FLOAT) {
     /* Integer#div(Float) floors the real quotient (7.div(2.5) == 2) (#2425);
-       a zero divisor is ZeroDivisionError, a NaN one FloatDomainError and a
-       quotient past the Integer range sp_float_fit_i's RangeError */
+       a zero divisor is ZeroDivisionError, a NaN one FloatDomainError, and
+       a quotient past the Integer range sp_float_fit_i's RangeError -- or,
+       in the boxed slot promote mode gives the call, its Bignum */
     int tx = ++g_tmp, tn = ++g_tmp;
     buf_printf(b, "({ sp_int _t%d = (%s); sp_float _t%d = ", tx, r, tn);
     emit_expr(c, argv[0], b);
-    buf_printf(b, "; if (_t%d == 0.0) sp_raise_cls(\"ZeroDivisionError\", \"divided by 0\");"
-                  " if (isnan(_t%d)) sp_raise_cls(\"FloatDomainError\", \"NaN\");"
-                  " sp_float_fit_i(floor((double)_t%d / _t%d)); })", tn, tn, tx, tn);
+    buf_printf(b, "; sp_float_div_%s((double)_t%d, _t%d); })",
+               repr_of(c, id).kind == RK_BOXED ? "v" : "i", tx, tn);
   }
   /* int receiver, Bignum divisor: the receiver always fits an sp_int, but
      the quotient has to be computed in bigint since the divisor cannot
@@ -7741,9 +7741,17 @@ static int emit_scalar_recv_arms(Compiler *c, int id, Buf *b, const NodeTable *n
     if (half_fn) cfn = half_fn;
     if (half_fn && sp_streq(half_fn, "sp_round_half_even")) precop = "SP_PREC_HALF_EVEN";
     else if (half_fn && sp_streq(half_fn, "sp_round_half_down")) precop = "SP_PREC_HALF_DOWN";
+    /* Float#div into the boxed slot promote mode gives it: the Integer
+       floor, a Bignum past the word, where the row's sp_float_div_i raises */
+    if (sp_streq(name, "div") && argc == 1 && repr_of(c, id).kind == RK_BOXED) {
+      int tx = ++g_tmp, ty = ++g_tmp;
+      buf_printf(b, "({ sp_float _t%d = (%s); sp_float _t%d = ", tx, r, ty);
+      emit_float_expr(c, argv[0], b);
+      buf_printf(b, "; sp_float_div_v(_t%d, _t%d); })", tx, ty);
+    }
     /* the arms that read only the receiver and the arguments: builtin-op
        rows (builtin_ops.c) */
-    if (emit_builtin_op_text(c, id, recv, rt, name, r, b)) ;
+    else if (emit_builtin_op_text(c, id, recv, rt, name, r, b)) ;
     else if (is_round_family(name)) {
       if (nonlit) {
         /* The class depends on the runtime ndigits: Float when n > 0, Integer
