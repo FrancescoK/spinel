@@ -2645,6 +2645,23 @@ void emit_poly_prearms_n(Compiler *c, const char *name, const PolySpecialsN *ps,
                  tv, tv, tr, ret == TY_POLY ? "sp_box_bool(" : "",
                  atmp[0], atmp[0], atmp[0], tv, atmp[0], tv, atmp[0],
                  ret == TY_POLY ? ")" : "");
+    /* an argument of another class (a String, an Array, nil) compares
+       boxed, as a boxed one does: it went into sp_range_include's sp_int
+       slot raw, and did not build */
+    else if (atmp_ty[0] != TY_INT && atmp_ty[0] != TY_FLOAT) {
+      char tn7[24]; snprintf(tn7, sizeof tn7, "_t%d", atmp[0]);
+      Buf ab7; memset(&ab7, 0, sizeof ab7); emit_boxed_text(c, atmp_ty[0], tn7, &ab7);
+      buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_RANGE)"
+                    " { _t%d = %ssp_range_cover_poly((sp_Range *)_t%d.v.p, %s)%s; }\nelse ",
+                 tv, tv, tr, ret == TY_POLY ? "sp_box_bool(" : "", tv, ab7.p ? ab7.p : "sp_box_nil()",
+                 ret == TY_POLY ? ")" : "");
+      /* a String Range covers by string comparison, as its === does */
+      buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_STR_RANGE)"
+                    " { _t%d = %ssp_poly_case_eq(_t%d, %s)%s; }\nelse ",
+                 tv, tv, tr, ret == TY_POLY ? "sp_box_bool(" : "", tv, ab7.p ? ab7.p : "sp_box_nil()",
+                 ret == TY_POLY ? ")" : "");
+      free(ab7.p);
+    }
     else
     buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_RANGE)"
                   " { _t%d = %ssp_range_%s((sp_Range *)_t%d.v.p, _t%d)%s; }\nelse ",
