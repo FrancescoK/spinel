@@ -2358,8 +2358,13 @@ void register_singleton_defs(Compiler *c) {
         nt_node_set_str(nt, id, "sg_basic_to_a", scope_id);
         char symbol[64]; snprintf(symbol, sizeof symbol, "sg_basic_to_a_%d_body", si);
         c->scopes[si].c_name = strdup(symbol);
+        continue;
       }
-      continue;
+      /* Object.new and BasicObject.new have no synthesized subclass to
+         receive arbitrary singleton methods. Let the usual untraceable
+         receiver path reject methods that need a real self. */
+      parent_ci = -1;
+      wnode = -1;
     }
     if (wnode < 0) {
       /* Not traceable to one `new` of a user class, so there is no subclass to
