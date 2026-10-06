@@ -14343,9 +14343,13 @@ int class_value_responds(Compiler *c, int tv, const char *qm, Buf *b) {
    otherwise the call's literal block (if any) is lowered here. */
 void emit_cmethod_block_arg(Compiler *c, int id, Scope *cm, int blk_tmp, Buf *b) {
   if (!cm->blk_param || !cm->blk_param[0] || cm->yields) return;
-  int blk_node = resolve_forwarded_block(c, nt_ref(c->nt, id, "block"));
+  int blk0 = nt_ref(c->nt, id, "block");
+  int blk_node = resolve_forwarded_block(c, blk0);
   if (cm->nparams > 0 || cmethod_takes_self_cls(c, (int)(cm - c->scopes))) buf_puts(b, ", ");
-  if (blk_node < 0) { buf_puts(b, "NULL"); return; }
+  /* a forwarded block inside a body inlined for a caller that handed it a
+     real proc (`fw(&pr)`) is that proc (forwarded_real_proc) */
+  const char *fwd = forwarded_real_proc(blk0, blk_node);
+  if (blk_node < 0) { buf_puts(b, fwd ? fwd : "NULL"); return; }
   /* `inner(child, &block)` from a REAL function (not a yield-inline splice):
      the caller's &blk is a live sp_Proc* local -- pass it through instead of
      lowering (a BlockArgumentNode is not a proc literal). An anonymous `&`
