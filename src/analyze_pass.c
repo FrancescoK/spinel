@@ -2296,7 +2296,7 @@ static int ppl_ready(Compiler *c) {
 /* The proc or lambda literal written in scope `sc` (`proc { |a| }`,
    `lambda { |a| }`, `Proc.new { |a| }`, `->(a) { }`) that has a parameter
    `nm`, held as a local of that scope; -1 if none. */
-static int local_proc_literal_param_of(Compiler *c, Scope *sc, const char *nm) {
+int local_proc_literal_param_of(Compiler *c, Scope *sc, const char *nm) {
   PplEnt *e = ppl_ready(c) && nm ? ppl_slot_at(sc, nm, 0) : NULL;
   return e ? e->lit : -1;
 }
@@ -2308,7 +2308,7 @@ static int local_proc_literal_param_of(Compiler *c, Scope *sc, const char *nm) {
    stored, read into another local, curried -- is called where the binders
    cannot look. A call on the literal that does not run it (`.curry`,
    `.itself`) answers a Proc its caller calls out of sight. */
-static int proc_literal_calls_in_sight(Compiler *c, int lit) {
+int proc_literal_calls_in_sight(Compiler *c, int lit) {
   return ppl_ready(c) && lit >= 0 && lit < ppl_ntc && ppl_sight[lit];
 }
 
@@ -5970,7 +5970,7 @@ static int leaves_widen_to_poly_array(Compiler *c, const int *lv, int n, int app
    literal in (`def fw(f, x) = f.call(x)` with `fw(l, a)`), where the
    argument is the method's own parameter in turn, whose callers the
    binding checks (boxed_push_elem). */
-static int proc_lit_carrier(Compiler *c, int v, int lit) {
+int proc_lit_carrier(Compiler *c, int v, int lit) {
   const NodeTable *nt = c->nt;
   v = unwrap_parens(c, v);
   if (v == lit) return 1;
@@ -5989,7 +5989,7 @@ static int proc_lit_carrier(Compiler *c, int v, int lit) {
    stored through it. A typed Hash that cannot widens to the poly-keyed
    one; a method's parameter records the store for its own callers'
    binding (boxed_store_key/val), or widens as a typed one does. */
-static int widen_hash_arg_for_store(Compiler *c, int arg, TyKind hk, TyKind hv) {
+int widen_hash_arg_for_store(Compiler *c, int arg, TyKind hk, TyKind hv) {
   const NodeTable *nt = c->nt;
   arg = unwrap_parens(c, arg);
   TyKind at = infer_type(c, arg);
