@@ -615,6 +615,10 @@ int is_element_access(const char *n) {
   return sp_streq(n, "[]") || sp_streq(n, "[]=");
 }
 
+int is_index_assign(const char *n) {
+  return sp_streq(n, "[]=");
+}
+
 int is_first_or_take(const char *n) {
   return sp_streq(n, "first") || sp_streq(n, "take");
 }
