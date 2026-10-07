@@ -1385,22 +1385,21 @@ int reconcile_locals_reading_ivars(Compiler *c) {
     const char *cnm = nt_str(nt, cid, "name");
     int rcv = nt_ref(nt, cid, "receiver");
     if (!cnm || (rcv >= 0 && nt_kind(nt, rcv) != NK_SelfNode)) continue;
-    int ca = nt_ref(nt, cid, "arguments"); int can = 0;
-    const int *cav = ca >= 0 ? nt_arr(nt, ca, "arguments", &can) : NULL;
-    if (!cav) continue;
+    if (nt_ref(nt, cid, "arguments") < 0) continue;
     int mi = comp_self_call_mi(c, cid, cnm);
     if (mi < 0) continue;
     Scope *m = &c->scopes[mi];
     Scope *cs = comp_scope_of(c, cid);
-    for (int k = 0; k < can && k < m->nparams; k++) {
-      int a = cav[k];
-      if (nt_kind(nt, a) != NK_LocalVariableReadNode) continue;
+    for (int k = 0; k < m->nparams; k++) {
+      int spread = -1;
+      int a = arg_layout_param_node(c, m, cid, k, &spread);
+      if (a < 0 || spread >= 0 || nt_kind(nt, a) != NK_LocalVariableReadNode) continue;
       const char *anm = nt_str(nt, a, "name");
       LocalVar *alv = anm && cs ? scope_local(comp_scope_of(c, a), anm) : NULL;
       int was_widened = 0;
       for (int w = 0; w < nwidened && !was_widened; w++) was_widened = widened[w] == alv;
       if (!alv || !was_widened || alv->type != TY_POLY) continue;
-      if (m->rest_idx >= 0 && k >= m->rest_idx) break;
+      if (m->rest_idx >= 0 && k == m->rest_idx) continue;
       LocalVar *plv = m->pnames[k] ? scope_local(m, m->pnames[k]) : NULL;
       if (!plv || plv->rbs_seeded || plv->is_block_param) continue;
       if (!(plv->type == TY_INT || plv->type == TY_FLOAT || plv->type == TY_BOOL || plv->type == TY_SYMBOL)) continue;
