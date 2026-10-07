@@ -1,0 +1,23 @@
+4
+Integer
+4.5
+Float
+:sym
+Symbol
+true
+TrueClass
+[1]
+Array
+{a: 1}
+Hash
+nil
+NilClass
+"z"
+String
+#<struct S x=4>
+#<struct T x="s", y=2.5>
+#<struct S x="z">
+#<struct T x=3, y=1>
+#<struct T x=4, y=4.5>
+5
+#<struct T x=nil, y=4.5>

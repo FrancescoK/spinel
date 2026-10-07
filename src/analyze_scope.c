@@ -7613,7 +7613,8 @@ static int pivs_elems_uncached(Compiler *c, int arr, char *set, int depth) {
   return br > 0;
 }
 /* Can the boxed receiver of instance_variable_set call `call` be an
-   instance of class k (one poly_ivar_set_class takes)? Memoized per call,
+   instance of class k (one poly_ivar_set_class takes)? A Struct `[]=` on a
+   boxed receiver asks it too (infer_struct_aset_call). Memoized per call,
    until the tree or the class table changes. */
 int poly_ivar_set_reaches(Compiler *c, int call, int k) {
   PivsFacts *f = pivs_facts(c);
@@ -7868,6 +7869,51 @@ static int infer_ivar_set_call(Compiler *c, int id, NilWrites *writes) {
   return changed;
 }
 
+/* `o[k] = v` on a Struct: the member k names takes v, as `o.x = v` types it.
+   A literal member name or offset on a receiver typed as the Struct was
+   rewritten to the member's writer, which the attribute-writer merge below
+   types; the other shapes came here untyped, and the store unboxed v as the
+   member's construction type (an Integer read as a String pointer, a String's
+   address printed as the Integer): a key no literal names, which may be any
+   member, and a boxed receiver. A boxed one reaches the `[]=` of a Struct
+   the program gives none of its own (cplan_struct_aset's), when the box can
+   hold one of that class (poly_ivar_set_reaches): a store into a box of
+   Hashes types no member, as a member typed for nothing it holds loses what
+   its own type keeps (a String's in-place changes). A literal key that names
+   no member of a class raises there and types none. */
+static int infer_struct_aset_call(Compiler *c, int id, NilWrites *writes) {
+  const NodeTable *nt = c->nt;
+  int recv = nt_ref(nt, id, "receiver"), args = nt_ref(nt, id, "arguments");
+  int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  if (recv < 0 || an != 2 || nt_ref(nt, id, "block") >= 0) return 0;
+  TyKind rt = infer_type(c, recv);
+  int one = ty_is_object(rt) ? ty_object_class(rt) : -1;
+  if (rt != TY_POLY && one < 0) return 0;
+  NodeKind kk = nt_kind(nt, av[0]);
+  int lit = kk == NK_SymbolNode || kk == NK_StringNode || kk == NK_IntegerNode;
+  TyKind vt = infer_type(c, av[1]);
+  int changed = 0;
+  for (int k = one >= 0 ? one : 0; k < (one >= 0 ? one + 1 : c->nclasses); k++) {
+    ClassInfo *ci = &c->classes[k];
+    if (!ci->is_struct || ci->is_data || ci->is_native_class ||
+        comp_resolve_member(c, k, "[]=", 0, NULL, NULL) != SP_MEMBER_NONE) continue;
+    int lo = lit ? struct_member_idx(c, ci, av[0]) : 0;
+    int hi = lit ? lo + 1 : ci->nmembers;
+    int reach = one >= 0 ? 1 : -1;   /* asked once, and only for a store that types something */
+    for (int m = lo; m >= 0 && m < hi; m++) {
+      if (class_ivar_pinned(ci, ci->ivars[m])) continue;
+      TyKind merged = vt == TY_NIL ? ci->ivar_types[m]
+                    : ty_unify(ci->ivar_types[m], empty_container_write(c, av[1], vt, ci->ivar_types[m]));
+      if (vt != TY_NIL && merged == ci->ivar_types[m]) continue;
+      if (reach < 0) reach = poly_ivar_set_reaches(c, id, k);
+      if (!reach) break;
+      if (vt == TY_NIL) nil_write_note(writes, k, ci->ivars[m]);
+      else { ci->ivar_types[m] = merged; changed = 1; }
+    }
+  }
+  return changed;
+}
+
 int infer_ivar_types(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -8052,6 +8098,10 @@ int infer_ivar_types(Compiler *c) {
     else if (sp_streq(ty, "CallNode")) {
       if (sp_streq(nt_str(nt, id, "name"), "instance_variable_set")) {
         if (infer_ivar_set_call(c, id, &nilw)) changed = 1;
+        continue;
+      }
+      if (sp_streq(nt_str(nt, id, "name"), "[]=")) {
+        if (infer_struct_aset_call(c, id, &nilw)) changed = 1;
         continue;
       }
       /* attr-writer assignment: obj.x = v  (CallNode "x=") */
