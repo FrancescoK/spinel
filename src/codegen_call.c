@@ -23084,6 +23084,10 @@ void gets_sep_arg_texts(Compiler *c, const int *argv, int argc, int strict, Buf 
     }
     TyKind at = comp_ntype(c, argv[k]);
     if (at == TY_INT) glim = argv[k];
+    /* a second positional argument is the limit, whatever its static type:
+       `gets(sep, limit)` forwarded through a splat reads both boxed, and
+       taking the second for the separator read to the end */
+    else if (!strict && pos == 1) glim = argv[k];
     else if (!strict) gsep = argv[k];
     else if (pos == 0 && (at == TY_STRING || at == TY_NIL)) gsep = argv[k];   /* a nil after it is no limit */
     pos++;
