@@ -2840,7 +2840,9 @@ int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
      each element, and the String the source holds is not the shared
      handle. Refused, naming the line, rather than compiled with the change
      lost. The stages from the source up to the first one that replaces the
-     element (map, filter_map, flat_map, a window or an index) see it. */
+     element (map, filter_map, flat_map or a window) see it. with_index does
+     not replace it: its pair holds the same String, which a later stage's
+     `|x, i|` changes as the source's (`lazy.with_index.map { |x, i| x << "!" }`). */
   if (!src_is_range && !src_is_intarr && st != TY_FLOAT_ARRAY && lazy_src_may_hold_string(c, lazy_src))
     for (int oi = nops - 1; oi >= 0; oi--) {
       int k = ops[oi].kind;
@@ -2852,7 +2854,7 @@ int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
             "element, so the String the source holds would not change. Use the eager form "
             "(drop `.lazy`), or return a new String (`x + \"!\"`) (see docs/limitations.md)");
       if (k == OP_MAP || k == OP_FILTERMAP || k == OP_FLATMAP || k == OP_EACHSLICE ||
-          k == OP_EACHCONS || k == OP_WITHINDEX) break;
+          k == OP_EACHCONS) break;
     }
 
   int excl = 0, endless = 0, right = -1, left_n = -1;
