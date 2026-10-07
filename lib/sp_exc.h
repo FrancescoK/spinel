@@ -80,6 +80,8 @@ extern const char *const sp_exc_no_msg;
 /* An explicitly given raise message: an empty one stays empty rather than
    falling back to the class name the way a message-less raise does. */
 const char *sp_exc_msg_counted(const char *m, size_t n);   /* lib/sp_exc.c */
+const char *sp_exc_msg_counted_frozen(const char *m, size_t n);   /* the same, for a frozen String */
+const char *sp_exc_msg_plain(const char *m);   /* a frozen counted message as frozen text */
 const char *sp_exc_cat(int n, ...);   /* parts joined by byte length, NULs kept */
 const char *sp_exc_full_text(volatile sp_Exception *e, const char *msg);       /* "Class: msg" */
 const char *sp_exc_detailed_text(volatile sp_Exception *e, const char *msg);   /* "msg (Class)" */
@@ -88,6 +90,8 @@ const char *sp_exc_detailed_text(volatile sp_Exception *e, const char *msg);   /
 static inline const char *sp_exc_msg_given(const char *m) {
   if (!m) return m;
   size_t n = sp_str_byte_len(m);
+  /* a frozen String (a literal, "" too) travels counted with its frozen mark */
+  if (sp_str_is_frozen_val(m)) return sp_exc_msg_counted_frozen(m, n);
   if (n == 0) return sp_exc_no_msg;
   return memchr(m, 0, n) ? sp_exc_msg_counted(m, n) : m;
 }
