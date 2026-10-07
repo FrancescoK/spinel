@@ -248,6 +248,8 @@ int local_proc_literal_param_of(Compiler *c, Scope *sc, const char *nm);
 int proc_literal_calls_in_sight(Compiler *c, int lit);
 int proc_lit_carrier(Compiler *c, int v, int lit);
 int widen_hash_arg_for_store(Compiler *c, int arg, TyKind hk, TyKind hv);
+int pivs_settle_hash_stores(Compiler *c);
+int pivs_hash_stores_widened(Compiler *c);
 int subtree_has_side_effect(Compiler *c, int id);   /* codegen_util.c */
 
 /* Shared cached local-write index (analyze_pass.c): bucket walk over

@@ -7238,6 +7238,7 @@ typedef struct PivsFacts {
   int nmemo, cmemo, memo_n, memo_count;
   unsigned memo_ver;
   int query, sweep, hash_mode, active;
+  int stores_settled, stores_held, stores_widened;
   const NodeTable *ix_nt;
   unsigned ix_ver;
   int ix_count;
@@ -8190,18 +8191,35 @@ static int infer_struct_aset_call(Compiler *c, int id, NilWrites *writes, Struct
 }
 
 /* A store through a bounded box types the original Hashes, so every alias
-   observes the store. An unbounded answer changes no Hash. */
+   observes the store. An unbounded answer changes no Hash. The store
+   decides from settled types: until the re-narrow it is only noted as held
+   (pivs_settle_hash_stores). */
 static int infer_hash_aset_call(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   int recv = nt_ref(nt, id, "receiver"), a = nt_ref(nt, id, "arguments"), ac = 0;
   const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
   if (recv < 0 || ac != 2 || infer_type(c, recv) != TY_POLY) return 0;
   TyKind hk = infer_type(c, av[0]), hv = infer_type(c, av[1]);
-  if (hk == TY_UNKNOWN || hv == TY_UNKNOWN || !pivs_call_set(c, id, NULL, NULL, 1)) return 0;
-  PivsFacts *f = c->pivs;
+  if (hk == TY_UNKNOWN || hv == TY_UNKNOWN) return 0;
+  PivsFacts *f = pivs_facts(c);
+  if (!f->stores_settled) { f->stores_held = 1; return 0; }
+  if (!pivs_call_set(c, id, NULL, NULL, 1)) return 0;
   int m = f->memo_at[(size_t)id * 2 + 1] - 1, changed = 0;
   for (int i = 0; i < f->memo[m].nhash; i++) changed |= widen_hash_arg_for_store(c, f->memo[m].hash[i], hk, hv);
+  f->stores_widened |= changed;
   return changed;
+}
+
+/* From the re-narrow on, Hash stores through a box decide (above). 1 when
+   one was held back until then. */
+int pivs_settle_hash_stores(Compiler *c) {
+  PivsFacts *f = pivs_facts(c);
+  f->stores_settled = 1;
+  return f->stores_held;
+}
+/* 1 once such a store has widened a Hash. */
+int pivs_hash_stores_widened(Compiler *c) {
+  return c->pivs && c->pivs->stores_widened;
 }
 
 int infer_ivar_types(Compiler *c) {
