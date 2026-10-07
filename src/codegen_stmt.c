@@ -9939,20 +9939,23 @@ static int masgn_struct_store(Compiler *c, int tgt, const char *val, TyKind vt,
   if (!nt_int(nt, tgt, "struct_aset", 0) || call < 0) return 0;
   int recv = nt_ref(nt, call, "receiver"), args = nt_ref(nt, call, "arguments"), an = 0;
   const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-  if (recv < 0 || an != 2) return 0;
+  /* `[]=` with its key, or the member's writer a literal key on a receiver
+     typed as the Struct was rewritten to (`t[:x]` -> `t.x =`) */
+  if (recv < 0 || an < 1 || an > 2) return 0;
+  int vn = av[an - 1];
   int boxed = !val || vt == TY_NIL || vt == TY_VOID || vt == TY_UNKNOWN;
   int vr = view_push(c, recv, comp_ntype(c, recv) == TY_UNKNOWN ? TY_POLY : comp_ntype(c, recv));
   int rb = recv_tmp >= 0 ? view_bind(recv, "_t%d", recv_tmp) : -1;
-  int kv = view_push(c, av[0], repr_of(c, av[0]).as_ty);
-  int kb = key_tmp >= 0 ? view_bind(av[0], "_t%d", key_tmp) : -1;
-  int vv = view_push(c, av[1], boxed ? TY_POLY : vt);
-  int vb = view_bind(av[1], "%s", boxed ? "sp_box_nil()" : val);
+  int kv = an == 2 ? view_push(c, av[0], repr_of(c, av[0]).as_ty) : -1;
+  int kb = an == 2 && key_tmp >= 0 ? view_bind(av[0], "_t%d", key_tmp) : -1;
+  int vv = view_push(c, vn, boxed ? TY_POLY : vt);
+  int vb = view_bind(vn, "%s", boxed ? "sp_box_nil()" : val);
   emit_indent(b, indent);
   emit_expr(c, call, b);
   buf_puts(b, ";\n");
   view_unbind(vb); view_pop(c, vv);
   if (kb >= 0) view_unbind(kb);
-  view_pop(c, kv);
+  if (kv >= 0) view_pop(c, kv);
   if (rb >= 0) view_unbind(rb);
   view_pop(c, vr);
   return 1;
