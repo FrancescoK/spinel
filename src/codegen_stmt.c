@@ -1522,10 +1522,15 @@ int strbuf_var_handle(Compiler *c, int n, char *out, size_t cap) {
 int strbuf_value_carries(Compiler *c, int v) {
   char ref[1024];
   NodeKind k = v >= 0 ? nt_kind(c->nt, v) : NK_NONE;
-  return repr_share_rule(c) &&
-         (((k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode || repr_static_read_kind(k)) &&
-           strbuf_slot_ref(c, v, ref, sizeof ref)) ||
-          strbuf_route_carries(c, v, 0) || strbuf_cond_has_handle_leaf(c, v, 0));
+  if (!repr_share_rule(c)) return 0;
+  if ((k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode || repr_static_read_kind(k)) &&
+      strbuf_slot_ref(c, v, ref, sizeof ref))
+    return 1;
+  /* an append chain over a variable's handle (`s << x`) answers that
+     String, appended in place (emit_strbuf_chain_in_place) */
+  int cb = str_alias_chain_base(c, v);
+  if (cb != v && cb >= 0 && strbuf_var_handle(c, cb, ref, sizeof ref)) return 1;
+  return strbuf_route_carries(c, v, 0) || strbuf_cond_has_handle_leaf(c, v, 0);
 }
 /* Does route v (emit_strbuf_route) answer a String, never nil: `+s` (which
    raises for a nil s) and `String(s)`? Every other one can answer nil. */
