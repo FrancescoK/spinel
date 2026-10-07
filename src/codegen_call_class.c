@@ -1942,6 +1942,11 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
              An ivar-bearing subclass needs its dedicated struct size (#2772). */
           const char *cn2 = class_ruby_name(c, ci); if (!cn2) cn2 = c->classes[ci].name;
           const char *par = exc_builtin_parent(c, ci);
+          /* a shared String message is held as its handle (exc_msg_handle) */
+          char mh[256];
+          int hm = !class_is_syserr(c, ci) && argc >= 1 && comp_ntype(c, argv[0]) == TY_STRING &&
+                   exc_msg_handle(c, argv[0], mh, sizeof mh);
+          if (hm) buf_printf(b, "((sp_%s *)sp_exc_attach_msg(", c->classes[ci].nivars > 0 ? c->classes[ci].c_name : "Exception");
           if (c->classes[ci].nivars > 0)
             buf_printf(b, "((sp_%s *)sp_exc_new_sub_sized(sizeof(sp_%s), \"%s\", ",
                        c->classes[ci].c_name, c->classes[ci].c_name, cn2);
@@ -1954,6 +1959,7 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
           }
           else emit_exc_msg_arg(c, argc >= 1 ? argv[0] : -1, b);
           buf_puts(b, c->classes[ci].nivars > 0 ? "))" : ")");
+          if (hm) buf_printf(b, ", %s))", mh);
         }
         return 1;
       }
@@ -1993,9 +1999,13 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
     }
     if (cn && is_exc_name(cn)) {
       if (emit_syserr_family_new(c, id, cn, argc, argv, b)) return 1;
+      char mh[256];
+      int hm = argc >= 1 && comp_ntype(c, argv[0]) == TY_STRING && exc_msg_handle(c, argv[0], mh, sizeof mh);
+      if (hm) buf_puts(b, "((sp_Exception *)sp_exc_attach_msg(");
       buf_printf(b, "sp_exc_new(\"%s\", ", cn);
       emit_exc_msg_arg(c, argc >= 1 ? argv[0] : -1, b);
       buf_puts(b, ")");
+      if (hm) buf_printf(b, ", %s))", mh);
       return 1;
     }
   }
