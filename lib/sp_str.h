@@ -68,6 +68,7 @@ int sp_utf8_set_has(const uint32_t*cps,size_t n,uint32_t cp);
 uint32_t sp_uc_toupper(uint32_t cp);
 uint32_t sp_uc_tolower(uint32_t cp);
 sp_int sp_str_casecmp(const char*a,const char*b);
+sp_bool sp_str_casecmp_p(const char*a,const char*b);
 sp_bool sp_str_valid_encoding(const char*s);
 const char*sp_str_field(const char*s,const char*sep,sp_int n);
 sp_int sp_str_field_count(const char*s,const char*sep);

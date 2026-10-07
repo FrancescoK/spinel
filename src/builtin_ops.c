@@ -1379,7 +1379,7 @@ static const BuiltinOp bop_rows[] = {
   { TY_SYMBOL, "match?",      1,   1, BF_ANY, TY_BOOL,    BOPE_NONE },
   { TY_SYMBOL, "casecmp",         1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_TEMPLATE, "sp_str_casecmp(sp_sym_to_s($r), sp_sym_to_s($e0))", BOP_K(TY_SYMBOL) },
   { TY_SYMBOL, "casecmp",         1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_TEMPLATE, "((void)($r), (void)($e0), 0)", 0 },
-  { TY_SYMBOL, "casecmp?",        1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_TEMPLATE, "(sp_str_casecmp(sp_sym_to_s($r), sp_sym_to_s($e0)) == 0)", BOP_K(TY_SYMBOL) },
+  { TY_SYMBOL, "casecmp?",        1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_TEMPLATE, "sp_str_casecmp_p(sp_sym_to_s($r), sp_sym_to_s($e0))", BOP_K(TY_SYMBOL) },
   { TY_SYMBOL, "casecmp?",        1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_TEMPLATE, "((void)($r), (void)($e0), 0)", 0 },
 
   /* Method and Proc: the result kinds read off the name and arity.
@@ -1744,9 +1744,9 @@ static const BuiltinOp bop_rows[] = {
   { TY_STRING, "!~",              1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_TEMPLATE, "((void)($r), sp_raise_cls(\"TypeError\", \"type mismatch: String given\"), (sp_bool)0)", BOP_K(TY_STRING) },
   { TY_STRING, "!~",              1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_TEMPLATE, "((void)($r), sp_raise_cls(\"NoMethodError\", ($e0) ? \"undefined method '=~' for true\" : \"undefined method '=~' for false\"), (sp_bool)0)", BOP_K(TY_BOOL) },
   { TY_STRING, "casecmp",         1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_TEMPLATE, "({ const char *_t$t = $r; SP_GC_ROOT_STR(_t$t); sp_RbVal _t$u = $e0; const char *_t$v = sp_poly_check_str(_t$u); (_t$v || _t$u.tag == SP_TAG_STR) ? sp_box_int(sp_str_casecmp(_t$t, _t$v ? _t$v : \"\")) : sp_box_nil(); })", BOP_K(TY_POLY) },
-  { TY_STRING, "casecmp?",        1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_TEMPLATE, "({ const char *_t$t = $r; SP_GC_ROOT_STR(_t$t); sp_RbVal _t$u = $e0; const char *_t$v = sp_poly_check_str(_t$u); (_t$v || _t$u.tag == SP_TAG_STR) ? sp_box_bool(sp_str_casecmp(_t$t, _t$v ? _t$v : \"\") == 0) : sp_box_nil(); })", BOP_K(TY_POLY) },
+  { TY_STRING, "casecmp?",        1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_TEMPLATE, "({ const char *_t$t = $r; SP_GC_ROOT_STR(_t$t); sp_RbVal _t$u = $e0; const char *_t$v = sp_poly_check_str(_t$u); (_t$v || _t$u.tag == SP_TAG_STR) ? sp_box_bool(sp_str_casecmp_p(_t$t, _t$v ? _t$v : \"\")) : sp_box_nil(); })", BOP_K(TY_POLY) },
   { TY_STRING, "casecmp",         1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_TEMPLATE, "sp_str_casecmp($r, $e0)", BOP_K(TY_STRING) | BOP_K(TY_UNKNOWN) },
-  { TY_STRING, "casecmp?",        1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_TEMPLATE, "(sp_str_casecmp($r, $e0) == 0)", BOP_K(TY_STRING) | BOP_K(TY_UNKNOWN) },
+  { TY_STRING, "casecmp?",        1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_TEMPLATE, "sp_str_casecmp_p($r, $e0)", BOP_K(TY_STRING) | BOP_K(TY_UNKNOWN) },
   { TY_STRING, "lines",           0,   0, BF_NONE,     TY_STR_ARRAY,  BOPE_TEMPLATE, "sp_str_lines($r)", 0 },
   { TY_STRING, "lines",           0,   0, BF_REQUIRED, TY_STRING,     BOPE_TEMPLATE, "sp_str_lines($r)", 0, 0, BOPF_SELF },  /* the block form iterates and answers the receiver */
   { TY_STRING, "lines",           1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_TEMPLATE, "sp_str_lines_sep($r, $e0)", BOP_K(TY_STRING) },

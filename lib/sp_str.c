@@ -379,6 +379,32 @@ static const char*sp_str_case_map(const char*s,uint32_t(*fn)(uint32_t),int up){S
     oi+=(size_t)sp_utf8_encode(fn(cp),r+oi);}
   r[oi]=0;sp_str_set_len(r,oi);return r;
 }
+/* casecmp? compares the Unicode case FOLDING of both sides, not bytes under
+   ASCII tolower: "\u00c9".casecmp?("\u00e9") is true. Folding here is the
+   lowercase mapping above over the same ranges, plus the few sources in them
+   whose folding is not their lowercase: sharp s (and capital sharp s) fold to
+   "ss", long s to "s", micro sign to Greek mu, and dotted capital I to "i"
+   and a combining dot. */
+static size_t sp_uc_fold_into(uint32_t cp,char*o){
+  if(cp==0xDF||cp==0x1E9E){o[0]='s';o[1]='s';return 2;}
+  if(cp==0x17F){o[0]='s';return 1;}
+  if(cp==0xB5)return (size_t)sp_utf8_encode(0x3BC,o);
+  if(cp==0x130){o[0]='i';return 1+(size_t)sp_utf8_encode(0x307,o+1);}
+  return (size_t)sp_utf8_encode(sp_uc_tolower(cp),o);
+}
+static char*sp_str_fold_buf(const char*s,size_t*out){
+  size_t l=sp_str_byte_len(s);char*r=(char*)malloc(l*3+1);if(!r){perror("malloc");exit(1);}size_t oi=0;
+  for(size_t i=0;i<l;){uint32_t cp;int n=sp_utf8_decode(s+i,&cp);i+=(size_t)n;oi+=sp_uc_fold_into(cp,r+oi);}
+  *out=oi;return r;
+}
+sp_bool sp_str_casecmp_p(const char*a,const char*b){if(!a)sp_nil_recv("casecmp?");if(!b)return FALSE;
+  size_t la=sp_str_byte_len(a),lb=sp_str_byte_len(b);int ascii=1;
+  for(size_t i=0;i<la&&ascii;i++)if((unsigned char)a[i]>=0x80)ascii=0;
+  for(size_t i=0;i<lb&&ascii;i++)if((unsigned char)b[i]>=0x80)ascii=0;
+  if(ascii)return sp_str_casecmp(a,b)==0;
+  size_t fa,fb;char*x=sp_str_fold_buf(a,&fa);char*y=sp_str_fold_buf(b,&fb);
+  sp_bool eq=fa==fb&&memcmp(x,y,fa)==0;free(x);free(y);return eq;
+}
 const char*sp_str_upcase(const char*s){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("upcase");return sp_str_case_map(s,sp_uc_toupper,1);}
 const char*sp_str_downcase(const char*s){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("downcase");return sp_str_case_map(s,sp_uc_tolower,0);}
 const char*sp_str_swapcase(const char*s){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("swapcase");size_t l=sp_str_byte_len(s);char*r=sp_str_alloc_raw(l*3+1);size_t oi=0;for(size_t i=0;i<l;){uint32_t cp;int n=sp_utf8_decode(s+i,&cp);i+=(size_t)n;uint32_t up=sp_uc_toupper(cp),lo=sp_uc_tolower(cp);if(up!=cp){/* cp is lowercase -> uppercase */if(cp==0xDF){r[oi++]='S';r[oi++]='S';}

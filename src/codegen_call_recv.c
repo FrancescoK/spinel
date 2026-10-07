@@ -6649,7 +6649,7 @@ static int str_arms_slice_encode(Compiler *c, int id, Buf *b, const char *name, 
     if (sp_streq(name, "casecmp"))
       buf_printf(b, "sp_box_int(sp_str_casecmp(_t%d, _t%d))", tr, ts);
     else
-      buf_printf(b, "sp_box_bool(sp_str_casecmp(_t%d, _t%d) == 0)", tr, ts);
+      buf_printf(b, "sp_box_bool(sp_str_casecmp_p(_t%d, _t%d))", tr, ts);
     buf_puts(b, " : sp_box_nil(); })");
   }
   else if ((is_casecmp_family(name)) && argc == 1 &&
