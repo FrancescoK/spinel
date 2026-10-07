@@ -46,13 +46,19 @@ emit() {
   list | xargs -P "$JOBS" -I{} sh -c '
     f="$1"; sp="$2"; tree="$3"; out="$4"
     key=$(printf "%s" "$f" | tr "/" "_")
-    if (cd "$tree" && "$sp" -c --no-line-map $CIDENT_FLAGS "$f" -o "$out/$key.c" >/dev/null 2>&1); then :
+    if (cd "$tree" && ulimit -v 16000000 2>/dev/null; $CIDENT_TO "$sp" -c --no-line-map $CIDENT_FLAGS "$f" -o "$out/$key.c" >/dev/null 2>&1); then :
     else rm -f "$out/$key.c"; : > "$out/$key.refused"; fi
   ' _ {} "$sp" "$tree" "$out"
 }
 
 CIDENT_FLAGS=${CIDENT_FLAGS-}
 export CIDENT_FLAGS
+# A compiler that never finishes a program (the reference compiler on a test
+# written for a fix it lacks: #7882) held a lane for an hour and 20 GB. Each
+# compile gets a time and a memory limit; one that hits it counts as refused.
+CIDENT_TO=
+for t in timeout gtimeout; do command -v $t >/dev/null 2>&1 && { CIDENT_TO="$t ${CIDENT_TIMEOUT:-300}"; break; }; done
+export CIDENT_TO
 FLAGKEY=$(printf "%s" "$CIDENT_FLAGS" | tr -c 'A-Za-z0-9=' '_')
 # Include supporting files as well as entry points: require_relative and
 # compile-time reads can change a program without changing its own bytes.
