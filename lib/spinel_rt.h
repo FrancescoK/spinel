@@ -2704,6 +2704,19 @@ static inline sp_RbVal sp_poly_strbuf_lift(sp_RbVal v) {
   if (v.tag == SP_TAG_STR && v.v.s) return sp_box_obj(sp_poly_as_strbuf(v), SP_BUILTIN_STRBUF);
   return v;
 }
+/* --share-strings: a box's to_s as a box. A String's to_s is the String
+   itself: its own box (the shared handle's, where it has one); anything
+   else answers its to_s String (sp_poly_to_s), boxed. */
+static inline sp_RbVal sp_poly_to_s_box(sp_RbVal v);
+/* --share-strings: to_s of a shared String handle that may be nil (NULL)
+   as a box: the handle's own box, or nil's "" */
+static inline sp_RbVal sp_strbuf_to_s_box(sp_String *h) {
+  return h ? sp_box_nullable_obj(h, SP_BUILTIN_STRBUF) : sp_box_str(sp_str_frozen_empty);
+}
+static inline sp_RbVal sp_poly_to_s_box(sp_RbVal v) {
+  if ((v.tag == SP_TAG_STR && v.v.s) || (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_STRBUF && v.v.p)) return v;
+  return sp_box_str(sp_poly_to_s(v));
+}
 /* A boxed value unboxed into a String slot. A mutable String's box carries
    its sp_String handle in the union, so reading `.v.s` there hands the slot
    the handle, not the bytes; the bytes are the handle's data, the same live

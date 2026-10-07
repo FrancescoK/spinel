@@ -1913,6 +1913,20 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
       RC(RF_PASS, RW_NONE);
       return;
     }
+    /* --share-strings: a box's to_s is the box's own String
+       (sp_poly_to_s_box) */
+    if (t == TY_STRING && strbuf_poly_to_s(c, node)) {
+      int r = nt_ref(c->nt, node, "receiver");
+      char hr[1024];
+      if (strbuf_var_handle(c, r, hr, sizeof hr)) buf_printf(b, "sp_strbuf_to_s_box(%s)", hr);
+      else {
+        buf_puts(b, "sp_poly_to_s_box(");
+        emit_boxed(c, r, b);
+        buf_puts(b, ")");
+      }
+      RC(RF_PASS, RW_NONE);
+      return;
+    }
     /* --share-strings: a String value that hands on a variable's handle (an
        append chain over it, `a << x`): that handle, boxed as it */
     if (t == TY_STRING && repr_share_rule(c) && nt_kind(c->nt, node) == NK_CallNode &&
