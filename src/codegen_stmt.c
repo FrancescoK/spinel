@@ -15651,7 +15651,8 @@ static int str_mutate_shared_arms(Compiler *c, int id, Buf *b, int indent, const
       if (handled) {
         emit_indent(b, indent);
         buf_printf(b, "{ sp_String *_t%d = %s;\n", tH, hb);
-        emit_sb_shim_swap(b, indent, tH, armb.p);
+        Buf nopre; memset(&nopre, 0, sizeof nopre);   /* what the route put ahead is in g_pre */
+        emit_sb_shim_swap(b, indent, tH, &nopre, armb.p);
         return 1;
       }
       free(armb.p);
