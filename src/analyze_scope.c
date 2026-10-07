@@ -7165,6 +7165,119 @@ int poly_ivar_set_class(Compiler *c, int k) {
    builtin value (a literal, `Object.new`) adds no class. Only the classes
    marked can receive the ivar, so only they lay its slot out; for an
    unbounded receiver every class that can take it does. */
+/* poly_ivar_set_reaches' facts (c->pivs): its answers per call (found
+   through a node-indexed slot), kept until the tree or the class table
+   grows, and the name indexes its walk
+   reads, rebuilt when the tree changes. The walk asked each question by
+   scanning every node of a kind (every call with a block for a block
+   parameter, every Symbol and String for a method's name, every write at
+   block depth for a local), once per boxed receiver it traced. Each index
+   lists, by name, in node order, the nodes of one question:
+   PX_BLOCK_PARAM a literal block's required parameter (aux: the call it
+   is the block of), PX_SYMBOL a Symbol or String literal by its text,
+   PX_BLOCK_WRITE a local write inside a block, PX_SUPER a `super` by its
+   method's name. A node is in one list at most, once, so one `next`
+   serves. */
+enum { PX_BLOCK_PARAM, PX_SYMBOL, PX_BLOCK_WRITE, PX_SUPER, PX_N };
+typedef struct PivsFacts {
+  struct { int ok; char *set; } *memo;
+  int *memo_at;             /* per node: its call's memo entry + 1, or 0 */
+  int nmemo, cmemo, memo_n, memo_count;
+  const NodeTable *ix_nt;
+  unsigned ix_ver;
+  int ix_count;
+  ANameHash names[PX_N];
+  int *first[PX_N], *last[PX_N], cap[PX_N];
+  int *next, *aux;
+} PivsFacts;
+static void pivs_ix_clear(PivsFacts *f) {
+  for (int q = 0; q < PX_N; q++) {
+    anh_free(&f->names[q]); memset(&f->names[q], 0, sizeof f->names[q]);
+    free(f->first[q]); free(f->last[q]);
+    f->first[q] = f->last[q] = NULL; f->cap[q] = 0;
+  }
+  free(f->next); free(f->aux);
+  f->next = f->aux = NULL;
+}
+void pivs_facts_free(Compiler *c) {
+  PivsFacts *f = c->pivs;
+  if (!f) return;
+  for (int i = 0; i < f->nmemo; i++) free(f->memo[i].set);
+  free(f->memo); free(f->memo_at);
+  pivs_ix_clear(f);
+  free(f);
+  c->pivs = NULL;
+}
+static PivsFacts *pivs_facts(Compiler *c) {
+  if (!c->pivs) {
+    c->pivs = calloc(1, sizeof *c->pivs);
+    if (!c->pivs) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    c->pivs->memo_n = c->pivs->memo_count = c->pivs->ix_count = -1;
+  }
+  return c->pivs;
+}
+static void pivs_ix_add(PivsFacts *f, int q, const char *nm, int node, int aux) {
+  /* a node is listed once, with the first call that lists it: one block
+     can be several calls' (a computed `send`'s arms share the send's), and
+     the scan met the first of them in node order */
+  if (!nm || f->next[node] != -2) return;
+  int k = anh_find(&f->names[q], nm);
+  if (k < 0) {
+    anh_add(&f->names[q], nm); k = f->names[q].n - 1;
+    if (k >= f->cap[q]) {
+      f->cap[q] = f->cap[q] ? f->cap[q] * 2 : 64;
+      f->first[q] = realloc(f->first[q], sizeof(int) * (size_t)f->cap[q]);
+      f->last[q] = realloc(f->last[q], sizeof(int) * (size_t)f->cap[q]);
+      if (!f->first[q] || !f->last[q]) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    }
+    f->first[q][k] = -1;
+  }
+  f->next[node] = -1; f->aux[node] = aux;
+  if (f->first[q][k] < 0) f->first[q][k] = node;
+  else f->next[f->last[q][k]] = node;
+  f->last[q][k] = node;
+}
+/* The first node of list q named nm (then f->next), in node order */
+static int pivs_ix_first(Compiler *c, int q, const char *nm) {
+  const NodeTable *nt = c->nt;
+  PivsFacts *f = pivs_facts(c);
+  if (f->ix_nt != nt || f->ix_ver != nt->version || f->ix_count != nt->count) {
+    pivs_ix_clear(f);
+    f->ix_nt = nt; f->ix_ver = nt->version; f->ix_count = nt->count;
+    f->next = malloc(sizeof(int) * (size_t)(nt->count > 0 ? nt->count : 1));
+    f->aux = malloc(sizeof(int) * (size_t)(nt->count > 0 ? nt->count : 1));
+    if (!f->next || !f->aux) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int n = 0; n < nt->count; n++) f->next[n] = -2;   /* not listed */
+    for (int n = 0; n < nt->count; n++) {
+      switch (nt_kind(nt, n)) {
+        case NK_CallNode: {
+          int b = nt_ref(nt, n, "block");
+          int bp = b >= 0 && nt_kind(nt, b) == NK_BlockNode ? nt_ref(nt, b, "parameters") : -1;
+          int pn = bp >= 0 ? nt_ref(nt, bp, "parameters") : -1;
+          int rn = 0; const int *rq = pn >= 0 ? nt_arr(nt, pn, "requireds", &rn) : NULL;
+          for (int i = 0; i < rn; i++)
+            if (nt_kind(nt, rq[i]) == NK_RequiredParameterNode)
+              pivs_ix_add(f, PX_BLOCK_PARAM, nt_str(nt, rq[i], "name"), rq[i], n);
+          break;
+        }
+        case NK_SymbolNode: pivs_ix_add(f, PX_SYMBOL, nt_str(nt, n, "value"), n, -1); break;
+        case NK_StringNode: pivs_ix_add(f, PX_SYMBOL, nt_str(nt, n, "content"), n, -1); break;
+        case NK_LocalVariableWriteNode: case NK_LocalVariableTargetNode: case NK_LocalVariableOrWriteNode:
+        case NK_LocalVariableAndWriteNode: case NK_LocalVariableOperatorWriteNode:
+          if (nt_int(nt, n, "depth", 0) > 0) pivs_ix_add(f, PX_BLOCK_WRITE, nt_str(nt, n, "name"), n, -1);
+          break;
+        case NK_SuperNode: case NK_ForwardingSuperNode: {
+          Scope *us = comp_scope_of(c, n);
+          if (us) pivs_ix_add(f, PX_SUPER, us->name, n, -1);
+          break;
+        }
+        default: break;
+      }
+    }
+  }
+  int k = nm ? anh_find(&f->names[q], nm) : -1;
+  return k >= 0 ? f->first[q][k] : -1;
+}
 static int pivs_value(Compiler *c, int v, char *set, int depth);
 static int pivs_elems(Compiler *c, int arr, char *set, int depth);
 /* Does `n` read local `vn`, or call one of the methods answering their
@@ -7197,12 +7310,8 @@ static int pivs_local_writes_ok(Compiler *c, int si, const char *vn) {
   }
   if (nw == 0) return 0;
   /* a block's write of it sits in the block's scope */
-  for (int k = 0; k < 5; k++) {
-    static const NodeKind K[] = { NK_LocalVariableWriteNode, NK_LocalVariableTargetNode, NK_LocalVariableOrWriteNode,
-                                  NK_LocalVariableAndWriteNode, NK_LocalVariableOperatorWriteNode };
-    NT_FOREACH_KIND(nt, K[k], w)
-      if (nt_int(nt, w, "depth", 0) > 0 && sp_streq(nt_str(nt, w, "name"), vn)) return 0;
-  }
+  for (int w = pivs_ix_first(c, PX_BLOCK_WRITE, vn); w >= 0; w = c->pivs->next[w])
+    if (nt_int(nt, w, "depth", 0) > 0 && sp_streq(nt_str(nt, w, "name"), vn)) return 0;
   return 1;
 }
 /* Positional parameter `pn` of method scope `s` (a required one or an
@@ -7228,11 +7337,10 @@ static int pivs_param(Compiler *c, Scope *s, const char *pn, char *set, int dept
   for (const char *q = mn; *q; q++)
     if (!(isalnum((unsigned char)*q) || *q == '_' || ((*q == '?' || *q == '!') && !q[1]))) return 0;
   /* `super` in a method of this name passes its own arguments on */
-  for (int k = 0; k < 2; k++)
-    NT_FOREACH_KIND(nt, k ? NK_ForwardingSuperNode : NK_SuperNode, u) {
-      Scope *us = comp_scope_of(c, u);
-      if (us && us->name && sp_streq(us->name, mn)) return 0;
-    }
+  for (int u = pivs_ix_first(c, PX_SUPER, mn); u >= 0; u = c->pivs->next[u]) {
+    Scope *us = comp_scope_of(c, u);
+    if (us && us->name && sp_streq(us->name, mn)) return 0;
+  }
   int ps = nt_ref(nt, s->def_node, "parameters");
   int rn = 0, on = 0;
   const int *rq = ps >= 0 ? nt_arr(nt, ps, "requireds", &rn) : NULL;
@@ -7250,13 +7358,11 @@ static int pivs_param(Compiler *c, Scope *s, const char *pn, char *set, int dept
   int si = (int)(s - c->scopes);
   for (int w = comp_lvw_first_sc(c, si, pn); w >= 0; w = comp_lvw_next_sc(c, w))
     if (c->nscope[w] == si && sp_streq(nt_str(nt, w, "name"), pn)) return 0;
-  NT_FOREACH_KIND(nt, NK_SymbolNode, y)
-    if (sp_streq(nt_str(nt, y, "value"), mn)) return 0;
-  NT_FOREACH_KIND(nt, NK_StringNode, y)
-    if (sp_streq(nt_str(nt, y, "content"), mn)) return 0;
+  for (int y = pivs_ix_first(c, PX_SYMBOL, mn); y >= 0; y = c->pivs->next[y])
+    if (sp_streq(nt_str(nt, y, nt_kind(nt, y) == NK_SymbolNode ? "value" : "content"), mn)) return 0;
   int ncalls = 0;
-  NT_FOREACH_KIND(nt, NK_CallNode, u) {
-    if (!sp_streq(nt_str(nt, u, "name"), mn)) continue;
+  for (int u = an_calls_named_first(c, mn); u >= 0; u = an_calls_named_next(u)) {
+    if (nt_kind(nt, u) != NK_CallNode || !sp_streq(nt_str(nt, u, "name"), mn)) continue;
     int a = nt_ref(nt, u, "arguments"), ac = 0;
     const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
     for (int k = 0; k < ac && k <= i; k++) {
@@ -7283,7 +7389,11 @@ static int pivs_local(Compiler *c, int v, char *set, int depth, int elems) {
                                     "each_with_object", "find", "detect", "flat_map", "filter_map", "any?",
                                     "all?", "none?", "sort_by", "min_by", "max_by", "group_by", "count",
                                     "sum", "find_index", NULL };
-  NT_FOREACH_KIND(nt, NK_CallNode, u) {
+  int lastu = -1;
+  for (int q = pivs_ix_first(c, PX_BLOCK_PARAM, vn); q >= 0; q = c->pivs->next[q]) {
+    int u = c->pivs->aux[q];
+    if (u == lastu) continue;   /* the call's first parameter of the name decides */
+    lastu = u;
     int b = nt_ref(nt, u, "block");
     if (b < 0 || nt_kind(nt, b) != NK_BlockNode) continue;
     int bp = nt_ref(nt, b, "parameters");
@@ -7467,29 +7577,31 @@ static int pivs_elems(Compiler *c, int arr, char *set, int depth) {
    instance of class k (one poly_ivar_set_class takes)? Memoized per call,
    until the tree or the class table grows. */
 int poly_ivar_set_reaches(Compiler *c, int call, int k) {
-  static struct { int call; int ok; char *set; } *memo = NULL;
-  static int nmemo = 0, cmemo = 0, memo_n = -1, memo_count = -1;
-  if (memo_n != c->nclasses || memo_count != c->nt->count) {
-    for (int i = 0; i < nmemo; i++) free(memo[i].set);
-    nmemo = 0; memo_n = c->nclasses; memo_count = c->nt->count;
+  PivsFacts *f = pivs_facts(c);
+  if (f->memo_n != c->nclasses || f->memo_count != c->nt->count) {
+    for (int i = 0; i < f->nmemo; i++) free(f->memo[i].set);
+    free(f->memo_at);
+    f->nmemo = 0; f->memo_n = c->nclasses; f->memo_count = c->nt->count;
+    f->memo_at = calloc((size_t)(f->memo_count > 0 ? f->memo_count : 1), sizeof *f->memo_at);
+    if (!f->memo_at) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   }
-  int m = -1;
-  for (int i = 0; i < nmemo && m < 0; i++) if (memo[i].call == call) m = i;
+  if (call < 0 || call >= f->memo_count) return 0;   /* no receiver: no class */
+  int m = f->memo_at[call] - 1;
   if (m < 0) {
-    if (nmemo == cmemo) {
-      cmemo = cmemo ? cmemo * 2 : 16;
-      void *nm = realloc(memo, sizeof *memo * (size_t)cmemo);
+    if (f->nmemo == f->cmemo) {
+      f->cmemo = f->cmemo ? f->cmemo * 2 : 16;
+      void *nm = realloc(f->memo, sizeof *f->memo * (size_t)f->cmemo);
       if (!nm) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-      memo = nm;
+      f->memo = nm;
     }
-    m = nmemo++;
-    memo[m].call = call;
-    memo[m].set = (char *)calloc((size_t)(c->nclasses > 0 ? c->nclasses : 1), 1);
-    if (!memo[m].set) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-    memo[m].ok = pivs_value(c, nt_ref(c->nt, call, "receiver"), memo[m].set, 0);
+    m = f->nmemo++;
+    f->memo_at[call] = m + 1;
+    f->memo[m].set = (char *)calloc((size_t)(c->nclasses > 0 ? c->nclasses : 1), 1);
+    if (!f->memo[m].set) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    f->memo[m].ok = pivs_value(c, nt_ref(c->nt, call, "receiver"), f->memo[m].set, 0);
   }
   if (k < 0 || k >= c->nclasses) return 0;
-  return memo[m].ok ? memo[m].set[k] : 1;
+  return f->memo[m].ok ? f->memo[m].set[k] : 1;
 }
 static void nil_write_note(NilWrites *w, int cls, const char *nm) {
   if (cls < 0 || !nm) return;
