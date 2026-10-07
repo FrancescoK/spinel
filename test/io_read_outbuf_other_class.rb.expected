@@ -18,3 +18,22 @@
 [TypeError, "no implicit conversion of Rational into String"]
 [TypeError, "no implicit conversion of Array into String"]
 [1, 2, 3, 4]
+[ArgumentError, "negative length -1 given"]
+[ArgumentError, "negative length -1 given"]
+[ArgumentError, "negative length -1 given"]
+[TypeError, "no implicit conversion of Integer into String"]
+[TypeError, "no implicit conversion of Array into String"]
+[ArgumentError, "negative length -1 given"]
+"ab"
+["ab", "ab", true]
+"cd"
+"cd"
+[FrozenError, "can't modify frozen String: \"y\""]
+"y"
+[ArgumentError, "wrong number of arguments (given 3, expected 0..2)"]
+[ArgumentError, "wrong number of arguments (given 3, expected 0..2)"]
+[ArgumentError, "wrong number of arguments (given 3, expected 0..2)"]
+[1, 2, 3, 4, 5, 6, 7]
+[ArgumentError, "wrong number of arguments (given 3, expected 0..2)"]
+nil
+""
