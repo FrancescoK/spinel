@@ -2885,6 +2885,14 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
          `size[0]` that follows reads it as an untyped value. */
       if (sp_streq(name, "winsize") && sp_feature_enabled("io/console"))
         { *out = an_poly_concrete(c, name, TY_INT_ARRAY); return 1; }
+      /* a boxed socket's non-blocking connect and options, as the TY_IO arms
+         type them */
+      if (sp_feature_required("socket")) {
+        if (sp_streq(name, "connect_nonblock") && argc >= 1)
+          { *out = an_poly_concrete(c, name, an_nonblock_no_exception(c, id) ? TY_POLY : TY_INT); return 1; }
+        if (sp_streq(name, "getsockopt") && argc == 2) { *out = an_poly_concrete(c, name, TY_SOCKOPT); return 1; }
+        if (sp_streq(name, "setsockopt") && argc == 3) { *out = an_poly_concrete(c, name, TY_INT); return 1; }
+      }
       /* a boxed socket's addresses, as the TY_IO arm types them */
       if ((is_socket_address(name)) && argc == 0 &&
           sp_feature_required("socket"))
