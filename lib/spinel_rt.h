@@ -6019,6 +6019,16 @@ static sp_RbVal sp_poly_uplus(sp_RbVal v) {
   }
   return v;
 }
+/* +v on a boxed value whose class has no +@ of the program's own (the
+   compiler dispatches a class that defines one): a number and a String
+   answer as sp_poly_uplus does, and everything else (nil, true, false, a
+   Symbol, a container, an object) has no +@ and raises NoMethodError, as
+   CRuby does, where sp_poly_uplus answered the value itself. */
+static sp_RbVal sp_poly_uplus_chk(sp_RbVal v) {
+  if (SP_UNLIKELY(v.tag != SP_TAG_STR && !sp_poly_tower_p(v) && !sp_poly_is_strbuf(v)))
+    sp_raise_poly_nomethod("+@", v);
+  return sp_poly_uplus(v);
+}
 static sp_RbVal sp_poly_neg(sp_RbVal a) {
   if (a.tag == SP_TAG_FLT) return sp_box_float(-a.v.f);
   if (a.tag == SP_TAG_INT) return sp_box_int(-a.v.i);
@@ -6033,6 +6043,14 @@ static sp_RbVal sp_poly_neg(sp_RbVal a) {
   if (a.tag == SP_TAG_STR) return sp_box_str(sp_str_uminus_val(a.v.s));
   if (sp_poly_is_strbuf(a)) return sp_box_str(sp_str_uminus_val(sp_poly_strbuf_deref(a).v.s));
   return sp_box_int(-sp_poly_to_i(a));
+}
+/* -v on a boxed value, the same way: a number and a String answer as
+   sp_poly_neg does, and anything else raises NoMethodError, where
+   sp_poly_neg negated it as an Integer (nil and false read as 0) */
+static sp_RbVal sp_poly_neg_chk(sp_RbVal v) {
+  if (SP_UNLIKELY(v.tag != SP_TAG_STR && !sp_poly_tower_p(v) && !sp_poly_is_strbuf(v)))
+    sp_raise_poly_nomethod("-@", v);
+  return sp_poly_neg(v);
 }
 
 /* sp_mark_rbval: inline helper in sp_gc.h. */
