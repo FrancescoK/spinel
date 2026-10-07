@@ -1,0 +1,11 @@
+true
+true
+FrozenError
+true
+["aabc", "aabc"]
+true
+["a\u0000bc", "a\u0000bc"]
+true
+true
+FrozenError
+["c\u0000d", "c\u0000d"]
