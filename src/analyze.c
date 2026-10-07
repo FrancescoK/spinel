@@ -15252,12 +15252,39 @@ static void sa_refuse_element(Compiler *c, int e, int u);
    stored into a container whose elements are then mutated, the element
    stays a copy of it. Refused (#6765) rather than compiled with the change
    lost. */
+static const char stored_block_param_msg[] =
+  "a String held by a block parameter no element iterator binds (a proc's, a lambda's, a yielding method's "
+  "block, `each_char`'s) is stored into a container and mutated in place through it (a String is not yet "
+  "shared by reference through a stored block parameter). Mutate the String before storing it, or store it "
+  "where the caller holds it.";
 static __attribute__((noreturn)) void refuse_stored_block_param(Compiler *c, int id) {
-  unsupported_feature(c, id, "a String held by a block parameter no element iterator binds (a proc's, a "
-                      "lambda's, a yielding method's block, `each_char`'s) is stored into a container and "
-                      "mutated in place through it (a String is not yet shared by reference through a "
-                      "stored block parameter). Mutate the String before storing it, or store it where "
-                      "the caller holds it.");
+  unsupported_feature(c, id, stored_block_param_msg);
+}
+/* Is block parameter (vn, vs) bound only by the yields of user methods
+   (`each { |e| acc << e }` over a yielding each, inlined or taking its
+   block as a proc), which hand over what they yield? A Struct's each is
+   the compiler's own, over members the share facts do not follow. */
+static int block_param_user_yield_only(Compiler *c, const char *vn, Scope *vs) {
+  const NodeTable *nt = c->nt;
+  int any = 0;
+  /* the calls whose literal block's parameters live in vs (comp_bcall_first) */
+  for (int w = comp_bcall_first(c, (int)(vs - c->scopes)); w >= 0; w = comp_bcall_next(c, w)) {
+    int blk = nt_ref(nt, w, "block");
+    if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode || comp_scope_of(c, blk) != vs) continue;
+    int named = 0;
+    for (int k = 0; k < 4 && !named; k++) {
+      const char *bp = block_param_name(c, blk, k);
+      if (!bp) break;
+      named = sp_streq(bp, vn);
+    }
+    if (!named) continue;
+    int mi = an_call_target_mi(c, w);
+    Scope *m = mi >= 0 ? &c->scopes[mi] : NULL;
+    if (!m || !(m->yields || m->is_lowered_yield) || (m->class_id >= 0 && c->classes[m->class_id].is_struct))
+      return 0;
+    any = 1;
+  }
+  return any;
 }
 static int strbuf_demand_store_leaf(Compiler *c, int sn, int depth) {
   const NodeTable *nt = c->nt;
@@ -15285,8 +15312,20 @@ static int strbuf_demand_store_leaf(Compiler *c, int sn, int depth) {
     if (snv->is_block_param) {
       int bound = 0;
       int ch = strbuf_block_param_source_walk(c, snm, sns, depth, SB_DEMAND, 1, &bound);
-      if (!bound && (snv->type == TY_STRING || snv->type == TY_STRBUF))
-        refuse_stored_block_param(c, sn);
+      if (!bound && (snv->type == TY_STRING || snv->type == TY_STRBUF)) {
+        /* --share-strings: the route is the rule's (share_route_defer). A
+           parameter the rule shares holds the handle what binds it hands
+           over (share_default_apply), or the seal refuses it by name, and
+           the element is that handle (`each { |e| acc << e }` over a
+           yielding each) */
+        ShareRoute q = share_route(sn, sn, 0);
+        if (!block_param_user_yield_only(c, snm, sns) || !share_route_defer(c, &q, stored_block_param_msg))
+          refuse_stored_block_param(c, sn);
+        if (c->share && repr_str_shares(c, share_local_holder(c, (int)(sns - c->scopes), (int)(snv - sns->locals)))) {
+          if (snv->type != TY_STRBUF || !snv->str_shared) { snv->type = TY_STRBUF; snv->str_shared = 1; ch = 1; }
+          if (!c->strbuf_box[sn]) { c->strbuf_box[sn] = 1; ch = 1; }
+        }
+      }
       return ch;
     }
     /* a method parameter stores the caller's string: the parameter becomes
@@ -15761,6 +15800,14 @@ static __attribute__((noreturn)) void refuse_global_array_element(Compiler *c, i
                       "(a String is not yet shared by reference through a global variable's Array). Keep "
                       "the Array in a local or an instance variable.");
 }
+/* May a method defined in class k answer a call on a receiver of class
+   rcid: k is rcid or a subclass of it, a module, or no class? */
+static int strbuf_class_may_answer(Compiler *c, int k, int rcid) {
+  if (k < 0 || k >= c->nclasses || comp_class_is_module(c, &c->classes[k])) return 1;
+  for (int d = 0; k >= 0 && k < c->nclasses && d < 64; k = c->classes[k].parent, d++)
+    if (k == rcid) return 1;
+  return 0;
+}
 /* The containers method mi answers: its body's last value and each
    `return v`; for `def mk = yield`, the block blk of the call. */
 static int strbuf_method_ret_source_walk(Compiler *c, int mi, int blk, int depth, int mode) {
@@ -15899,10 +15946,17 @@ static int strbuf_container_source_walk(Compiler *c, int node, int depth, int mo
       }
       if (recv >= 0 && nt_kind(nt, recv) != NK_SelfNode &&
           !ty_is_object(infer_type(c, recv))) return 0;
-      /* every user method of the name: a call resolves by name */
+      /* every user method of the name a call resolves to: by name, but on
+         a receiver of a known class only that class's own (resolved
+         through its chain), its subclasses' and a module's. Walking every
+         class's method of a common name (each class's to_a) from each call
+         was quadratic in the classes. */
+      int rcid = recv >= 0 && nt_kind(nt, recv) != NK_SelfNode ? ty_object_class(infer_type(c, recv)) : -1;
+      int rdef = rcid >= 0 ? comp_method_in_chain(c, rcid, mn, NULL) : -1;
       for (int mi = 1; mi < c->nscopes; mi++) {
         Scope *m = &c->scopes[mi];
         if (!m->name || !sp_streq(m->name, mn)) continue;
+        if (rcid >= 0 && mi != rdef && !strbuf_class_may_answer(c, m->class_id, rcid)) continue;
         changed |= strbuf_method_ret_source_walk(c, mi, blk, depth, mode);
       }
       return changed;

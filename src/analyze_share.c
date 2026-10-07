@@ -89,6 +89,9 @@ typedef struct ShareFacts {
      them reached */
   int *jump;
   unsigned char *jseen;
+  /* per node, a `Fiber.yield` in an Enumerator.new block (the yielder a
+     desugared `y << v` is): that Enumerator.new call, or -1 (sh_jumps) */
+  int *fgen;
   /* the Hash lookups' containers and keys (sh_lookup_key) */
   int *lk_c, *lk_k, nlk, clk;
   unsigned char *lk_done;
@@ -115,6 +118,8 @@ typedef struct ShareFacts {
      pattern over a value that may be any object reads its parts off
      (sh_deconstructed; -2 not made yet, -1 none) */
   int any_dec[2];
+  /* does the program make a Lazy (a `lazy` call): -1 not asked yet */
+  int any_lazy;
   int *any_new_blk, nany_blk, cany_blk;
   /* the attr readers and writers of every class by name, and the method
      scopes by name, sorted for a binary search (built on first use) */
@@ -881,7 +886,8 @@ static void sh_bind(ShareFacts *F, Compiler *c, int call, int mi) {
    may be called from anywhere. */
 static void sh_block_to_method(ShareFacts *F, Compiler *c, int blk, int mi) {
   Scope *m = &c->scopes[mi];
-  if (m->yields) {
+  /* a method lowered to take its block as a proc still yields to it */
+  if (m->yields || m->is_lowered_yield) {
     sh_block_params(F, c, blk, sh_scope_holder(F, SHK_YIELD, mi), 1);
     sh_union(F, sh_block_val(F, c, blk), sh_scope_holder(F, SHK_BLKRET, mi));
   }
@@ -1342,6 +1348,20 @@ static int sh_self_chain_base(ShareFacts *F, Compiler *c, int n) {
   return n;
 }
 
+/* is node n a Lazy: a chain ending in a lazy stage, or a local holding
+   one? Asked only of a program that makes one, found once per build */
+static int sh_lazy_valued(ShareFacts *F, Compiler *c, int n) {
+  if (F->any_lazy < 0) {
+    F->any_lazy = 0;
+    NT_FOREACH_KIND(c->nt, NK_CallNode, k) {
+      const char *kn = nt_str(c->nt, k, "name");
+      if (kn && sp_streq(kn, "lazy")) F->any_lazy = 1;
+    }
+  }
+  if (!F->any_lazy) return 0;
+  if (n >= 0 && nt_kind(c->nt, n) == NK_LocalVariableReadNode) n = lazy_alias_chain(c, n);
+  return n >= 0 && chain_is_lazy_valued(c, n);
+}
 static int sh_call(ShareFacts *F, Compiler *c, int n) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, n, "name");
@@ -1370,6 +1390,20 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
     else sh_union(F, sh_elem(F, rv), F->unknown);
   }
 
+  /* `Fiber.yield(v)` in an Enumerator.new block hands v to the Enumerator,
+     as its yielder does (sh_builtin_new); several values, as an Array */
+  if (F->fgen && F->fgen[n] >= 0) {
+    int vals[64];
+    int nv = sh_args_vals(F, c, n, vals, 64);
+    int e = sh_elem(F, sh_val(F, c, F->fgen[n]));
+    if (nv == 1) sh_union(F, e, vals[0]);
+    else if (nv > 1) {
+      int r = sh_new(F, SHK_VALUE);
+      for (int i = 0; i < nv; i++) sh_union(F, sh_elem(F, r), vals[i]);
+      sh_union(F, e, r);
+    }
+    return -1;
+  }
   /* the reflective names */
   if (is_send_family(name)) {
     const char *lit = argc >= 1 ? sh_lit_name(nt, argv[0]) : NULL;
@@ -1404,6 +1438,14 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
       sh_union(F, sh_block_val(F, c, tb), F->unknown);
       return -1;
     }
+  }
+
+  /* a Lazy (`a.lazy.map { }`, held in a variable or not) has no type of
+     its own: its stages and its terminal hand out its source's elements as
+     an Enumerator's do, by the container rows */
+  if (rt == TY_UNKNOWN && sh_lazy_valued(F, c, recv)) {
+    int s = bop_share_named(BOP_ANY_ARRAY, name);
+    return s ? sh_builtin(F, c, n, s, rv, blk, 1) : sh_container_default(F, c, n, rv, blk);
   }
 
   /* a user method */
@@ -2167,7 +2209,7 @@ static void sh_free(ShareFacts *F) {
   free(F->lend_arg); free(F->lend_par); free(F->lend_direct); free(F->lend_done);
   free(F->dyn); free(F->union_stack);
   free(F->any_new_blk); free(F->attr_r); free(F->attr_w);
-  free(F->jump); free(F->jseen);
+  free(F->jump); free(F->jseen); free(F->fgen);
   free(F->key); free(F->lk_c); free(F->lk_k); free(F->lk_done);
   free(F);
 }
@@ -2243,9 +2285,28 @@ static void sh_mark_last_unused(ShareFacts *F, const NodeTable *nt, int st, unsi
    so a call valued before the walk reaches its block's break still joins
    it. A break with no target (outside any block or loop) joins UNKNOWN, as
    does one the walk does not reach (sh_val_compute). */
-typedef struct { int *t, *n, np, cp; } ShJumps;
+typedef struct {
+  int *t, *n, np, cp;
+  Compiler *c;
+  int gen;   /* the Enumerator.new call whose block the walk is in, or -1 */
+} ShJumps;
 
 static void sh_jump_walk(ShareFacts *F, const NodeTable *nt, ShJumps *J, int n, int brk, int nxt);
+
+/* `Fiber.yield(...)` */
+static int sh_fiber_yield(const NodeTable *nt, int n) {
+  int r = nt_kind(nt, n) == NK_CallNode ? nt_ref(nt, n, "receiver") : -1;
+  return r >= 0 && sp_streq(nt_str(nt, n, "name"), "yield") && nt_kind(nt, r) == NK_ConstantReadNode &&
+         sp_streq(nt_str(nt, r, "name"), "Fiber");
+}
+
+/* Is node n in a method of a Struct's class? A Struct's own each, over
+   members the facts do not follow (they join UNKNOWN), is left to that:
+   its generator's Fiber.yield is not followed either. */
+static int sh_struct_scope(Compiler *c, int n) {
+  Scope *s = comp_scope_of(c, n);
+  return s && s->class_id >= 0 && s->class_id < c->nclasses && c->classes[s->class_id].is_struct;
+}
 
 static void sh_jump_kids(ShareFacts *F, const NodeTable *nt, ShJumps *J, int n, int brk, int nxt) {
   int nr = nt_num_refs(nt, n);
@@ -2263,6 +2324,7 @@ static void sh_jump_walk(ShareFacts *F, const NodeTable *nt, ShJumps *J, int n, 
   if (n < 0 || n >= F->nnodes || F->jseen[n]) return;
   F->jseen[n] = 1;
   NodeKind k = nt_kind(nt, n);
+  int gen = J->gen;
   switch (k) {
   case NK_BreakNode: case NK_NextNode: {
     int t = k == NK_BreakNode ? brk : nxt;
@@ -2287,18 +2349,36 @@ static void sh_jump_walk(ShareFacts *F, const NodeTable *nt, ShJumps *J, int n, 
     break;
   case NK_LambdaNode:
     brk = nxt = n;
+    J->gen = -1;
     break;
   case NK_BlockNode:   /* a block no call is walked with */
     brk = -2; nxt = n;
+    J->gen = -1;
     break;
   case NK_DefNode: case NK_ClassNode: case NK_ModuleNode: case NK_SingletonClassNode:
     brk = nxt = -2;
+    J->gen = -1;
     break;
   case NK_CallNode: case NK_SuperNode: case NK_ForwardingSuperNode: {
+    if (gen >= 0 && sh_fiber_yield(nt, n) && !sh_struct_scope(J->c, n)) {
+      if (!F->fgen) {
+        F->fgen = malloc(sizeof(int) * (size_t)F->nnodes);
+        if (!F->fgen) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+        for (int i = 0; i < F->nnodes; i++) F->fgen[i] = -1;
+      }
+      F->fgen[n] = gen;
+    }
     int blk = nt_ref(nt, n, "block");
     if (blk >= 0 && blk < F->nnodes && !F->jseen[blk] && nt_kind(nt, blk) == NK_BlockNode) {
       F->jseen[blk] = 1;
+      /* the block of Enumerator.new, or of a Fiber's own */
+      int recv = k == NK_CallNode ? nt_ref(nt, n, "receiver") : -1;
+      const char *rn = recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode ? nt_str(nt, recv, "name") : NULL;
+      if (rn && sp_streq(nt_str(nt, n, "name"), "new") && bop_share_named(BOP_CLASS_NEW, rn) == BSH_NEW_YIELDER)
+        J->gen = n;
+      else if (an_fiber_new_block(J->c, n) >= 0) J->gen = -1;
       sh_jump_kids(F, nt, J, blk, n, blk);
+      J->gen = gen;
     }
     break;
   }
@@ -2306,6 +2386,7 @@ static void sh_jump_walk(ShareFacts *F, const NodeTable *nt, ShJumps *J, int n, 
     break;
   }
   sh_jump_kids(F, nt, J, n, brk, nxt);
+  J->gen = gen;
 }
 
 /* the value a break or a next hands over: its one value, or an Array of
@@ -2323,11 +2404,15 @@ static int sh_jump_val(ShareFacts *F, Compiler *c, int n) {
 
 static void sh_jumps(ShareFacts *F, Compiler *c) {
   const NodeTable *nt = c->nt;
-  ShJumps J = { NULL, NULL, 0, 0 };
+  ShJumps J = { NULL, NULL, 0, 0, c, -1 };
   F->jseen = calloc((size_t)(F->nnodes > 0 ? F->nnodes : 1), 1);
   if (!F->jseen) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   sh_jump_walk(F, nt, &J, nt->root_id, -2, -2);
-  for (int mi = 0; mi < c->nscopes; mi++) sh_jump_walk(F, nt, &J, c->scopes[mi].def_node, -2, -2);
+  /* and a method the desugar made, whose body hangs from no def */
+  for (int mi = 0; mi < c->nscopes; mi++) {
+    sh_jump_walk(F, nt, &J, c->scopes[mi].def_node, -2, -2);
+    sh_jump_walk(F, nt, &J, c->scopes[mi].body, -2, -2);
+  }
   if (J.np == 0) return;
   F->jump = malloc(sizeof(int) * (size_t)F->nnodes);
   if (!F->jump) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
@@ -2351,6 +2436,7 @@ static ShareFacts *sh_build(Compiler *c, int closed) {
   for (int j = 0; j < 16; j++) F->any_new_pos[j] = -1;
   F->any_new_kw = -1;
   F->any_dec[0] = F->any_dec[1] = -2;
+  F->any_lazy = -1;
   F->nnodes = nt->count;
   F->nval = malloc(sizeof(int) * (size_t)(F->nnodes > 0 ? F->nnodes : 1));
   for (int i = 0; i < F->nnodes; i++) F->nval[i] = -2;
