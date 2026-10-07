@@ -3458,11 +3458,19 @@ static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *n
    from no variable. Each link answers its receiver, or nil, which the next
    link raises on; so what a mutator computes from the chain's value is the
    variable's new value. */
+static int str_self_mutator_name(const char *n) {
+  return n && (sp_streq(n, "insert") || sp_streq(n, "prepend") || sp_streq(n, "concat") ||
+               sp_streq(n, "replace") || sp_streq(n, "<<"));
+}
 static int str_bang_chain_var(Compiler *c, int recv) {
   const NodeTable *nt = c->nt;
   int cur = unwrap_parens(c, recv), links = 0;
+  /* insert / prepend / concat / replace / << answer their receiver always,
+     so a bang on their result (`s.insert(1, "-").sub!("-", "+")`) mutates
+     the variable too; the chain passes through them as through a bang */
   while (nt_kind(nt, cur) == NK_CallNode && nt_ref(nt, cur, "receiver") >= 0 &&
-         ty_str_typed_bang_flags(nt_str(nt, cur, "name"))) {
+         (ty_str_typed_bang_flags(nt_str(nt, cur, "name")) ||
+          str_self_mutator_name(nt_str(nt, cur, "name")))) {
     cur = unwrap_parens(c, nt_ref(nt, cur, "receiver"));
     links++;
   }
