@@ -242,8 +242,13 @@ int emit_call_reflection_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
             if (class_implicit_responds(c, k, imp[l][i])) emit_responds_name(c, k, imp[l][i], tv, b);
         buf_puts(b, "0)) || ");
       }
-      buf_printf(b, "0)) || (_a%d && (!strcmp(_n%d, \"initialize\") || !strcmp(_n%d, \"initialize_copy\"))) || "
-                 "sp_poly_responds_builtin(_t%d, _n%d)", tv, tv, tv, tv, tv);
+      buf_printf(b, "0)) || (_a%d && (!strcmp(_n%d, \"initialize\") || !strcmp(_n%d, \"initialize_copy\")", tv, tv, tv);
+      for (int s = 0; s < c->nscopes; s++) {
+        const Scope *ts = &c->scopes[s];
+        if (ts->name && ts->def_node >= 0 && ts->class_id < 0 && !ts->is_cmethod && !ts->is_proc_form)
+          buf_printf(b, " || !strcmp(_n%d, \"%s\")", tv, ts->name);
+      }
+      buf_printf(b, ")) || sp_poly_responds_builtin(_t%d, _n%d)", tv, tv);
       /* a boxed IO: the methods IO reopenings add, by the handle's kind */
       for (int s2 = 0; s2 < c->nscopes; s2++) {
         Scope *ms = &c->scopes[s2];

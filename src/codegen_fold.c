@@ -125,6 +125,7 @@ void emit_callee_block_arg(Compiler *c, int id, const Scope *m, Buf *b) {
 void emit_method_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
+  if (nt_str(nt, id, "vis_enforce") && emit_vis_refusal(c, id, b)) return;
   /* the target is the call's plan (call_plan.c): a top-level def, reached
      bare or through a retargeted send. A plan of another kind does not
      serve this site, which then takes the top-level def by name as it

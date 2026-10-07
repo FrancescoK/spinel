@@ -4193,6 +4193,7 @@ int desugar_dynamic_send(Compiler *c) {
       if (computed && nt_ref(nt, id, "block") >= 0) nt_node_set_ref(nt, call, "block", nt_ref(nt, id, "block"));
       /* public_send arms enforce visibility at the dispatch site */
       if (sp_streq(nm, "public_send")) nt_node_set_str(nt, call, "vis_enforce", "1");
+      else nt_node_set_str(nt, call, "send_blind", "1");
       arms[narm++] = call;
     }
     nt_node_set_arr(nt, id, "dyn_send_arms", arms, narm);
@@ -4312,6 +4313,18 @@ int desugar_dynamic_respond_to(Compiler *c) {
   /* a user-defined respond_to? resolves normally; don't intercept */
   for (int s = 0; s < c->nscopes; s++) { const char *sn = c->scopes[s].name;
     if (sn && sp_streq(sn, "respond_to?")) return 0; }
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode || nt_ref(nt, id, "receiver") >= 0) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, "respond_to?") || nt_int(nt, id, "dyn_arm", 0)) continue;
+    if (!self_is_main(c, id)) continue;
+    int sn = nt_new_node(nt, "SelfNode");
+    if (sn < 0) continue;
+    comp_grow_node_arrays(c);
+    c->nscope[sn] = c->nscope[id];
+    nt_node_set_ref(nt, id, "receiver", sn);
+    changed = 1;
+  }
   int any = 0;
   for (int id = 0; id < n0 && !any; id++) {
     if (nt_kind(nt, id) != NK_CallNode) continue;
@@ -4327,10 +4340,10 @@ int desugar_dynamic_respond_to(Compiler *c) {
     if (k0 == NK_SymbolNode || k0 == NK_StringNode) continue;
     any = 1;
   }
-  if (!any) return 0;
+  if (!any) return changed;
   int ncand = 0;
   char **cand = dsend_candidates(c, &ncand);
-  if (ncand == 0) { free(cand); return 0; }
+  if (ncand == 0) { free(cand); return changed; }
   for (int id = 0; id < n0; id++) {
     if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *nm = nt_str(nt, id, "name");
