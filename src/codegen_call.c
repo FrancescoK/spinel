@@ -2100,6 +2100,10 @@ unsigned g_yield_live_mask = 0;
    inference left without an element type emits as the empty Integer Array
    it starts as, so it is published as that, not as a nil in an sp_int. */
 static TyKind proc_arg_ty(Compiler *c, int a) {
+  /* a write (through parentheses) whose slot holds the --share-strings
+     handle hands over that handle (emit_strbuf_write_handle), as a handle
+     variable's read does */
+  if (repr_write_share(c, unwrap_parens(c, a))) return TY_STRBUF;
   TyKind t = repr_of(c, a).as_ty;
   if (t == TY_UNKNOWN && nt_kind(c->nt, a) == NK_ArrayNode && node_is_empty_container(c->nt, a))
     return TY_INT_ARRAY;
@@ -2138,7 +2142,8 @@ void emit_proc_call_args(Compiler *c, int call, int argc, const int *argv, Buf *
       /* render the value into a side buffer first: emit_expr drains the arg's
          own prelude (e.g. a nested proc call) into g_pre, which must land
          before -- not inside -- this temp's declaration line. */
-      Buf vb = expr_buf(c, argv[k]);
+      Buf vb; memset(&vb, 0, sizeof vb);
+      if (!emit_strbuf_write_handle(c, argv[k], &vb)) emit_expr(c, argv[k], &vb);
       emit_indent(g_pre, g_indent);
       if (storable) emit_ctype(c, at, g_pre); else buf_puts(g_pre, "sp_int");
       buf_printf(g_pre, " _t%d = ", atmp[k]);
