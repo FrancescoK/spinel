@@ -1,0 +1,98 @@
+index 1: 2
+rindex 1: nil
+slice 1: [2]
+first 1: [1]
+last 1: [4]
+round 1: 1.6
+digits 1: [4, 3, 2, 1]
+at 1: 2
+fetch 1: 2
+take 1: [1]
+drop 1: [2, 3, 4]
+rotate 1: [2, 3, 4, 1]
+center 1: "  hello  "
+ljust 1: "hello    "
+index 1.9: 2
+rindex 1.9: nil
+slice 1.9: [2]
+first 1.9: [1]
+last 1.9: [4]
+round 1.9: 1.6
+digits 1.9: ArgumentError: invalid radix 1
+at 1.9: 2
+fetch 1.9: 2
+take 1.9: [1]
+drop 1.9: [2, 3, 4]
+rotate 1.9: [2, 3, 4, 1]
+center 1.9: "hello"
+ljust 1.9: "hello"
+index nil: TypeError: no implicit conversion from nil to integer
+rindex nil: TypeError: no implicit conversion from nil to integer
+slice nil: TypeError: no implicit conversion from nil to integer
+first nil: TypeError: no implicit conversion from nil to integer
+last nil: TypeError: no implicit conversion from nil to integer
+round nil: TypeError: no implicit conversion from nil to integer
+digits nil: TypeError: no implicit conversion of nil into Integer
+at nil: TypeError: no implicit conversion from nil to integer
+fetch nil: TypeError: no implicit conversion from nil to integer
+take nil: TypeError: no implicit conversion from nil to integer
+drop nil: TypeError: no implicit conversion from nil to integer
+rotate nil: TypeError: no implicit conversion from nil to integer
+center nil: TypeError: no implicit conversion from nil to integer
+ljust nil: TypeError: no implicit conversion from nil to integer
+index "1": TypeError: no implicit conversion of String into Integer
+rindex "1": TypeError: no implicit conversion of String into Integer
+slice "1": TypeError: no implicit conversion of String into Integer
+first "1": TypeError: no implicit conversion of String into Integer
+last "1": TypeError: no implicit conversion of String into Integer
+round "1": TypeError: no implicit conversion of String into Integer
+digits "1": TypeError: no implicit conversion of String into Integer
+at "1": TypeError: no implicit conversion of String into Integer
+fetch "1": TypeError: no implicit conversion of String into Integer
+take "1": TypeError: no implicit conversion of String into Integer
+drop "1": TypeError: no implicit conversion of String into Integer
+rotate "1": TypeError: no implicit conversion of String into Integer
+center "1": TypeError: no implicit conversion of String into Integer
+ljust "1": TypeError: no implicit conversion of String into Integer
+index {a: 1}: TypeError: no implicit conversion of Hash into Integer
+rindex {a: 1}: TypeError: no implicit conversion of Hash into Integer
+slice {a: 1}: TypeError: no implicit conversion of Hash into Integer
+first {a: 1}: TypeError: no implicit conversion of Hash into Integer
+last {a: 1}: TypeError: no implicit conversion of Hash into Integer
+round {a: 1}: TypeError: no implicit conversion of Hash into Integer
+digits {a: 1}: TypeError: no implicit conversion of Hash into Integer
+at {a: 1}: TypeError: no implicit conversion of Hash into Integer
+fetch {a: 1}: TypeError: no implicit conversion of Hash into Integer
+take {a: 1}: TypeError: no implicit conversion of Hash into Integer
+drop {a: 1}: TypeError: no implicit conversion of Hash into Integer
+rotate {a: 1}: TypeError: no implicit conversion of Hash into Integer
+center {a: 1}: TypeError: no implicit conversion of Hash into Integer
+ljust {a: 1}: TypeError: no implicit conversion of Hash into Integer
+index :s: TypeError: no implicit conversion of Symbol into Integer
+rindex :s: TypeError: no implicit conversion of Symbol into Integer
+slice :s: TypeError: no implicit conversion of Symbol into Integer
+first :s: TypeError: no implicit conversion of Symbol into Integer
+last :s: TypeError: no implicit conversion of Symbol into Integer
+round :s: TypeError: no implicit conversion of Symbol into Integer
+digits :s: TypeError: no implicit conversion of Symbol into Integer
+at :s: TypeError: no implicit conversion of Symbol into Integer
+fetch :s: TypeError: no implicit conversion of Symbol into Integer
+take :s: TypeError: no implicit conversion of Symbol into Integer
+drop :s: TypeError: no implicit conversion of Symbol into Integer
+rotate :s: TypeError: no implicit conversion of Symbol into Integer
+center :s: TypeError: no implicit conversion of Symbol into Integer
+ljust :s: TypeError: no implicit conversion of Symbol into Integer
+index [1]: TypeError: no implicit conversion of Array into Integer
+rindex [1]: TypeError: no implicit conversion of Array into Integer
+slice [1]: TypeError: no implicit conversion of Array into Integer
+first [1]: TypeError: no implicit conversion of Array into Integer
+last [1]: TypeError: no implicit conversion of Array into Integer
+round [1]: TypeError: no implicit conversion of Array into Integer
+digits [1]: TypeError: no implicit conversion of Array into Integer
+at [1]: TypeError: no implicit conversion of Array into Integer
+fetch [1]: TypeError: no implicit conversion of Array into Integer
+take [1]: TypeError: no implicit conversion of Array into Integer
+drop [1]: TypeError: no implicit conversion of Array into Integer
+rotate [1]: TypeError: no implicit conversion of Array into Integer
+center [1]: TypeError: no implicit conversion of Array into Integer
+ljust [1]: TypeError: no implicit conversion of Array into Integer
