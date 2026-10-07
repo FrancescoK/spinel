@@ -1472,6 +1472,15 @@ static int yvt_poly_recv_may_reach(Compiler *c, int cid, int mi) {
 }
 
 static int yvt_reaches(Compiler *c, int cid, int mi) {
+  /* A `new` on a cycle of constructors hands its block to the initialize's
+     proc-form clone as a proc (ctor_site_on_cycle), so it is no site of the
+     initialize's own yield, which only the sites outside the cycle splice.
+     A ring of N such classes otherwise answered each initialize's yield
+     from all of them, the clone's copies too. */
+  Scope *m = &c->scopes[mi];
+  if (m->ctor_cycle && m->class_id >= 0 && !c->classes[m->class_id].is_struct &&
+      sp_streq(comp_prep_user_name(m->name), "initialize") && ctor_site_on_cycle(c, cid, mi))
+    return 0;
   if (yvt_callee_index(c, cid) == mi) return 1;
   const NodeTable *nt = c->nt;
   const char *cn = nt_str(nt, cid, "name");
