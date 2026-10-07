@@ -1073,9 +1073,9 @@ sp_PolyArray *sp_str_unpack_off(const char *str, const char *fmt, sp_int byteoff
       case 'f': case 'F': case 'e': case 'g': fsize = 4; break;
       case 'q': case 'Q': fsize = 8; break;
       case 'd': case 'D': case 'E': case 'G': fsize = 8; break;
-      /* the native int, intptr and pointer sizes (LP64) */
+      /* the native int, intptr and pointer sizes */
       case 'i': case 'I': fsize = 4; break;
-      case 'j': case 'J': case 'p': case 'P': fsize = 8; break;
+      case 'j': case 'J': case 'p': case 'P': fsize = (int)sizeof(intptr_t); break;
       default: fsize = 0; break;
     }
     if (spec == 'a' || spec == 'A' || spec == 'Z') {
@@ -1259,18 +1259,18 @@ else if (spec == 'Z') {
         case 'q': v = (int64_t)pk_get_int(u, 8, big); break;
         case 'i': v = (int32_t)pk_get_int(u, 4, big); break;
         case 'I': v = (uint32_t)pk_get_int(u, 4, big); break;
-        case 'j': v = (int64_t)pk_get_int(u, 8, big); break;
+        case 'j': v = (int64_t)(intptr_t)pk_get_int(u, (int)sizeof(intptr_t), big); break;
         /* a pointer CRuby's own pack did not make: nil for NULL, else it has
            no object to answer */
         case 'p': case 'P':
-          if (pk_get_int(u, 8, 0)) sp_raise_cls("ArgumentError", "no associated pointer");
+          if (pk_get_int(u, (int)sizeof(intptr_t), 0)) sp_raise_cls("ArgumentError", "no associated pointer");
           off += fsize;
           sp_PolyArray_push(out, sp_box_nil());
           continue;
         /* unsigned, so it does not share the signed boxing below */
         case 'J':
         case 'Q': {
-          uint64_t uv = pk_get_int(u, 8, big);
+          uint64_t uv = pk_get_int(u, spec == 'J' ? (int)sizeof(intptr_t) : 8, big);
           off += fsize;
           sp_PolyArray_push(out, pk_box_u64(uv));
           continue;
