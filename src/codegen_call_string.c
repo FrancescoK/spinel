@@ -535,6 +535,22 @@ no_gsub_enum:
             buf_printf(b, "(sp_re_match(%s, ", rp.p); emit_expr(c, argv[0], b); buf_puts(b, ") < 0)");
             free(rp.p); return 1;
           }
+          /* `re !~ x` is !(re =~ x): nil does not match, and a poly operand
+             is checked as =~ checks it -- a String is matched, nil answers
+             true, anything else raises =~'s TypeError */
+          if (sp_streq(name, "!~") && argc == 1 && a0 == TY_NIL) {
+            buf_puts(b, "((void)("); emit_expr(c, argv[0], b); buf_puts(b, "), (sp_bool)1)");
+            free(rp.p); return 1;
+          }
+          if (sp_streq(name, "!~") && argc == 1 && a0 == TY_POLY) {
+            int tv = ++g_tmp;
+            /* a shared-string handle is a String (#4279) */
+            buf_printf(b, "({ sp_RbVal _t%d = sp_poly_strbuf_deref(", tv); emit_expr(c, argv[0], b);
+            buf_printf(b, "); if (_t%d.tag != SP_TAG_STR && _t%d.tag != SP_TAG_NIL) sp_raise_no_str_conversion(_t%d);"
+                          " (sp_bool)(_t%d.tag == SP_TAG_NIL || sp_re_match(%s, _t%d.v.s) < 0); })",
+                       tv, tv, tv, tv, rp.p, tv);
+            free(rp.p); return 1;
+          }
           if (sp_streq(name, "match") && argc == 1 && nt_ref(nt, id, "block") >= 0) {
             /* the block form: yield the MatchData on a hit, evaluate to the
                block's value, nil on a miss (#3642) */

@@ -1,0 +1,9 @@
+"a\n"
+"b\n"
+false
+true
+true
+TypeError: no implicit conversion of Integer into String
+true
+false
+true
