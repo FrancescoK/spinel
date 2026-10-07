@@ -116,6 +116,10 @@ typedef struct ShareFacts {
      scopes by name, sorted for a binary search (built on first use) */
   struct ShNamed { const char *name; int k; } *attr_r, *attr_w;
   int nattr_r, nattr_w, named_built;
+  /* the variables a literal block binds (its parameters and block-locals),
+     by name, k the scope they live in; built on first use (sh_blk_bound) */
+  struct ShNamed *blkp;
+  int nblkp, cblkp, blkp_built;
 } ShareFacts;
 
 /* ---- the union-find ---- */
@@ -1288,6 +1292,92 @@ static int sh_self_chain_base(ShareFacts *F, Compiler *c, int n) {
   return n;
 }
 
+/* The names parameter node p binds (a block's ParametersNode, or one of
+   its parameters, destructured or not), into F->blkp under scope si. */
+static void sh_blkp_add(ShareFacts *F, const NodeTable *nt, int p, int si) {
+  if (p < 0) return;
+  const char *pn = nt_str(nt, p, "name");
+  if (pn) {
+    if (F->nblkp >= F->cblkp) {
+      F->cblkp = F->cblkp ? F->cblkp * 2 : 64;
+      F->blkp = realloc(F->blkp, sizeof *F->blkp * (size_t)F->cblkp);
+      if (!F->blkp) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    }
+    F->blkp[F->nblkp++] = (struct ShNamed){ pn, si };
+  }
+  static const char *const lists[] = { "requireds", "optionals", "posts", "keywords", "lefts", "rights" };
+  for (int l = 0; l < 6; l++) {
+    int n = 0; const int *ps = nt_arr(nt, p, lists[l], &n);
+    for (int i = 0; i < n; i++) sh_blkp_add(F, nt, ps[i], si);
+  }
+  static const char *const refs[] = { "rest", "keyword_rest", "block" };
+  for (int r = 0; r < 3; r++) sh_blkp_add(F, nt, nt_ref(nt, p, refs[r]), si);
+}
+
+/* PolyLits.bound for an_recv_may_be_string: does a literal block of scope
+   `scope` bind variable `name`, whether or not its binder marked it a
+   block's parameter (a Thread's block does not)? The index is built once
+   per build of the facts. */
+static int sh_blk_bound(void *ctx, Compiler *c, int scope, const char *name) {
+  ShareFacts *F = ctx;
+  const NodeTable *nt = c->nt;
+  if (!F->blkp_built) {
+    F->blkp_built = 1;
+    for (int si = 0; si < c->nscopes; si++)
+      for (int u = comp_bcall_first(c, si); u >= 0; u = comp_bcall_next(c, u)) {
+        int bp = nt_ref(nt, nt_ref(nt, u, "block"), "parameters");
+        if (bp < 0) continue;
+        sh_blkp_add(F, nt, nt_ref(nt, bp, "parameters"), si);
+        int ln = 0; const int *ls = nt_arr(nt, bp, "locals", &ln);
+        for (int i = 0; i < ln; i++) sh_blkp_add(F, nt, ls[i], si);
+      }
+    if (F->nblkp) qsort(F->blkp, (size_t)F->nblkp, sizeof *F->blkp, sh_named_cmp);
+  }
+  for (int i = sh_named_first(F->blkp, F->nblkp, name); i < F->nblkp && sp_streq(F->blkp[i].name, name); i++)
+    if (F->blkp[i].k == scope) return 1;
+  return 0;
+}
+
+/* An argument of kind t that a String's method could take as a String:
+   a String, a value whose class is not known, or a user object (which may
+   define to_str); an Integer too where `int_ok` (`<<` and concat append a
+   codepoint). */
+static int sh_str_arg_kind(TyKind t, int int_ok) {
+  return t == TY_STRING || t == TY_STRBUF || t == TY_POLY || t == TY_UNKNOWN || t == TY_VOID ||
+         t == TY_CLASS || ty_is_object(t) || (int_ok && (t == TY_INT || t == TY_BIGINT));
+}
+
+/* Call n of String mutator `name` that no String can make: an argument a
+   String's method takes as a String is of another class, so on a String
+   it raises TypeError before it changes anything (`acc.concat(["x"])`,
+   `t.insert(0, 5)`, `h[k] = nil`, `o[:k] = v`). Through a receiver that
+   may be anything it is another class's method: an Array's or a Hash's. */
+static int sh_args_refuse_string(Compiler *c, int n, const char *name) {
+  const NodeTable *nt = c->nt;
+  int args = nt_ref(nt, n, "arguments");
+  int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+  for (int i = 0; i < argc; i++) {
+    NodeKind k = nt_kind(nt, argv[i]);
+    if (k == NK_SplatNode || k == NK_BlockArgumentNode || k == NK_KeywordHashNode) return 0;
+  }
+  /* the arguments taken as Strings, from first to last */
+  int from = argc, int_ok = 0;
+  if (sp_streq(name, "<<") || sp_streq(name, "concat") || sp_streq(name, "append_as_bytes")) {
+    from = 0; int_ok = 1;
+  }
+  else if (sp_streq(name, "prepend") || (sp_streq(name, "replace") && argc == 1)) from = 0;
+  else if (sp_streq(name, "insert") && argc == 2) from = 1;
+  else if (sp_streq(name, "[]=") && (argc == 2 || argc == 3)) {
+    /* the value; an index is an Integer, a Range, a String or a Regexp */
+    from = argc - 1;
+    TyKind it = c->ntype[argv[0]];
+    if (it == TY_SYMBOL || it == TY_NIL || it == TY_BOOL || ty_is_array(it) || ty_is_hash(it)) return 1;
+  }
+  for (int i = from; i < argc; i++)
+    if (!sh_str_arg_kind(c->ntype[argv[i]], int_ok)) return 1;
+  return 0;
+}
+
 static int sh_call(ShareFacts *F, Compiler *c, int n) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, n, "name");
@@ -1300,8 +1390,12 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
   TyKind rt = recv >= 0 ? c->ntype[recv] : TY_VOID;
   int maybe_str = recv >= 0 && (rt == TY_STRING || rt == TY_STRBUF || rt == TY_POLY || rt == TY_UNKNOWN);
 
-  /* an in-place String mutation of the receiver */
-  if (maybe_str && sp_str_mutator(name, 0))
+  /* an in-place String mutation of the receiver: through a boxed or an
+     untyped receiver, only one a String can make, on a receiver that can
+     be a String */
+  if (maybe_str && sp_str_mutator(name, 0) &&
+      (rt == TY_STRING || rt == TY_STRBUF ||
+       (!sh_args_refuse_string(c, n, name) && an_recv_may_be_string(c, recv, &(PolyLits){ sh_blk_bound, F }))))
     sh_mark_at(F, rv, SHF_MUT | (sh_holder_read(nt, sh_self_chain_base(F, c, recv)) ? 0 : SHF_INDIRECT), n);
 
   /* a block passed as a value: a proc or a Method, called from wherever */
@@ -2109,7 +2203,7 @@ static void sh_free(ShareFacts *F) {
   free(F->h); free(F->helem); free(F->bucket); free(F->hnext); free(F->nval);
   free(F->lend_arg); free(F->lend_par); free(F->lend_direct); free(F->lend_done);
   free(F->dyn); free(F->union_stack);
-  free(F->any_new_blk); free(F->attr_r); free(F->attr_w);
+  free(F->any_new_blk); free(F->attr_r); free(F->attr_w); free(F->blkp);
   free(F->jump); free(F->jseen);
   free(F->key); free(F->lk_c); free(F->lk_k); free(F->lk_done);
   free(F);
