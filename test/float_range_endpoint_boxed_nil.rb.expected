@@ -1,0 +1,10 @@
+[nil, 1.0..]
+[nil, ..2.5]
+[1.0, nil, nil, 2.5]
+{b: nil, e: nil}
+[true, true]
+[1, nil]
+nil
+[nil, nil]
+[1.5, 2.5]
+{b: 1.5, e: 2.5}

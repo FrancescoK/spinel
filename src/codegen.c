@@ -1343,10 +1343,10 @@ int call_returns_nullable_int(Compiler *c, int node) {
        local -- boxing the raw SP_INT_NIL sentinel as sp_box_int gave a
        value that answered `.nil?` false and `<=>` a huge fake number
        instead of the open bound CRuby's clamp/between? treat it as. A
-       Float-bounded Range's #end/#begin instead reads back HUGE_VAL, a
-       genuine Float value that already boxes correctly, so
-       TY_FLOAT_RANGE is not part of this. */
-    if (rrt == TY_MATCHDATA || rrt == TY_RANGE) return 1;
+       Float Range's omitted #begin/#end reads back the Float nil sentinel
+       (sp_frange_begin_v / sp_frange_end_v), which boxed plainly printed
+       NaN where CRuby answers nil: `[(1.0..).end]`, `{e: (..2.5).begin}`. */
+    if (rrt == TY_MATCHDATA || rrt == TY_RANGE || rrt == TY_FLOAT_RANGE) return 1;
   }
   /* an attr-reader over an int ivar: int ivars are SP_INT_NIL-defaulted
      (ivar_scalar_nil_init), so the read can carry the sentinel -- boxing it
