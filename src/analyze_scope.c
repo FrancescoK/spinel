@@ -7180,7 +7180,7 @@ int poly_ivar_set_class(Compiler *c, int k) {
    serves. */
 enum { PX_BLOCK_PARAM, PX_SYMBOL, PX_BLOCK_WRITE, PX_SUPER, PX_N };
 typedef struct PivsFacts {
-  struct { int ok; char *set; } *memo;
+  struct { int ok; char *set; int *cls, ncls; } *memo;
   int *memo_at;             /* per node: its call's memo entry + 1, or 0 */
   int nmemo, cmemo, memo_n, memo_count;
   unsigned memo_ver;
@@ -7203,7 +7203,7 @@ static void pivs_ix_clear(PivsFacts *f) {
 void pivs_facts_free(Compiler *c) {
   PivsFacts *f = c->pivs;
   if (!f) return;
-  for (int i = 0; i < f->nmemo; i++) free(f->memo[i].set);
+  for (int i = 0; i < f->nmemo; i++) { free(f->memo[i].set); free(f->memo[i].cls); }
   free(f->memo); free(f->memo_at);
   pivs_ix_clear(f);
   free(f);
@@ -7564,6 +7564,13 @@ static int pivs_value(Compiler *c, int v, char *set, int depth) {
 static int pivs_elems(Compiler *c, int arr, char *set, int depth) {
   const NodeTable *nt = c->nt;
   if (arr < 0 || depth > 32) return 0;
+  /* a Hash literal's `[]` answers one of its values (or nil) */
+  if (nt_kind(nt, arr) == NK_HashNode) {
+    int n = 0; const int *el = nt_arr(nt, arr, "elements", &n);
+    for (int i = 0; i < n; i++)
+      if (nt_kind(nt, el[i]) != NK_AssocNode || !pivs_value(c, nt_ref(nt, el[i], "value"), set, depth + 1)) return 0;
+    return 1;
+  }
   if (nt_kind(nt, arr) == NK_ArrayNode) {
     int n = 0; const int *el = nt_arr(nt, arr, "elements", &n);
     for (int i = 0; i < n; i++)
@@ -7574,22 +7581,23 @@ static int pivs_elems(Compiler *c, int arr, char *set, int depth) {
   int br = pivs_branches(c, arr, set, depth, 1);
   return br > 0;
 }
-/* Can the boxed receiver of instance_variable_set call `call` be an
-   instance of class k (one poly_ivar_set_class takes)? A Struct `[]=` on a
-   boxed receiver asks it too (infer_struct_aset_call). Memoized per call,
-   until the tree or the class table changes. */
-int poly_ivar_set_reaches(Compiler *c, int call, int k) {
+/* The classes the boxed receiver of call `call` can be an instance of
+   (pivs_value): marked in a set, and listed (*cls, *n). NULL when the
+   analysis cannot bound them. Memoized per call, found through a
+   node-indexed slot, until the tree or the class table changes. */
+static const char *pivs_call_set(Compiler *c, int call, const int **cls, int *n) {
   PivsFacts *f = pivs_facts(c);
   if (f->memo_n != c->nclasses || f->memo_count != c->nt->count ||
       f->memo_ver != c->nt->version) {
-    for (int i = 0; i < f->nmemo; i++) free(f->memo[i].set);
+    for (int i = 0; i < f->nmemo; i++) { free(f->memo[i].set); free(f->memo[i].cls); }
     free(f->memo_at);
     f->nmemo = 0; f->memo_n = c->nclasses; f->memo_count = c->nt->count;
     f->memo_ver = c->nt->version;
     f->memo_at = calloc((size_t)(f->memo_count > 0 ? f->memo_count : 1), sizeof *f->memo_at);
     if (!f->memo_at) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   }
-  if (call < 0 || call >= f->memo_count) return 0;   /* no receiver: no class */
+  if (cls) { *cls = NULL; *n = 0; }
+  if (call < 0 || call >= f->memo_count) return NULL;
   int m = f->memo_at[call] - 1;
   if (m < 0) {
     if (f->nmemo == f->cmemo) {
@@ -7603,9 +7611,32 @@ int poly_ivar_set_reaches(Compiler *c, int call, int k) {
     f->memo[m].set = (char *)calloc((size_t)(c->nclasses > 0 ? c->nclasses : 1), 1);
     if (!f->memo[m].set) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
     f->memo[m].ok = pivs_value(c, nt_ref(c->nt, call, "receiver"), f->memo[m].set, 0);
+    f->memo[m].cls = NULL; f->memo[m].ncls = 0;
+    if (f->memo[m].ok) {
+      int nk = 0;
+      for (int k = 0; k < c->nclasses; k++) nk += f->memo[m].set[k] != 0;
+      f->memo[m].cls = malloc(sizeof(int) * (size_t)(nk > 0 ? nk : 1));
+      if (!f->memo[m].cls) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      for (int k = 0; k < c->nclasses; k++) if (f->memo[m].set[k]) f->memo[m].cls[f->memo[m].ncls++] = k;
+    }
   }
+  if (!f->memo[m].ok) return NULL;
+  if (cls) { *cls = f->memo[m].cls; *n = f->memo[m].ncls; }
+  return f->memo[m].set;
+}
+/* Can the boxed receiver of instance_variable_set call `call` be an
+   instance of class k (one poly_ivar_set_class takes)? Every class can
+   when the analysis cannot bound them. */
+int poly_ivar_set_reaches(Compiler *c, int call, int k) {
+  if (call < 0 || call >= c->nt->count) return 0;   /* no receiver: no class */
+  const char *set = pivs_call_set(c, call, NULL, NULL);
   if (k < 0 || k >= c->nclasses) return 0;
-  return f->memo[m].ok ? f->memo[m].set[k] : 1;
+  return set ? set[k] : 1;
+}
+/* See analyze_internal.h. */
+const int *poly_recv_classes(Compiler *c, int call, int *n) {
+  const int *cls;
+  return pivs_call_set(c, call, &cls, n) ? cls : NULL;
 }
 static void nil_write_note(NilWrites *w, int cls, const char *nm) {
   if (cls < 0 || !nm) return;
@@ -7831,17 +7862,15 @@ static int infer_ivar_set_call(Compiler *c, int id, NilWrites *writes) {
 }
 
 /* See analyze_internal.h. */
-int struct_aset_classes(Compiler *c, int id, int *first, int *last) {
+int struct_aset_receiver(Compiler *c, int id, int *cls) {
   const NodeTable *nt = c->nt;
   int recv = nt_ref(nt, id, "receiver"), args = nt_ref(nt, id, "arguments"), an = 0;
-  *first = 0; *last = -1;
+  *cls = -1;
   if (args >= 0) nt_arr(nt, args, "arguments", &an);
   if (recv < 0 || an != 2 || nt_ref(nt, id, "block") >= 0 || !sp_streq(nt_str(nt, id, "name"), "[]=")) return 0;
   TyKind rt = infer_type(c, recv);
-  if (ty_is_object(rt)) { *first = *last = ty_object_class(rt); return 1; }
-  if (rt != TY_POLY) return 0;
-  *first = 0; *last = c->nclasses - 1;
-  return 2;
+  if (ty_is_object(rt)) { *cls = ty_object_class(rt); return 1; }
+  return rt == TY_POLY ? 2 : 0;
 }
 int struct_aset_members(Compiler *c, int id, int k, int *lo, int *hi) {
   const NodeTable *nt = c->nt;
@@ -7860,38 +7889,83 @@ int struct_aset_members(Compiler *c, int id, int k, int *lo, int *hi) {
   return ci->nmembers > 0;
 }
 
+/* infer_ivar_types' facts for the Struct `[]=` stores of one sweep, built on
+   the first: the Structs, and the member types they have, so a store that
+   types none of them is passed over without asking which classes its box
+   can hold. */
+typedef struct { int built; TyKind *mty; int nmty, cmty; int *structs, ns; } StructAsetIx;
+static void struct_aset_ix_build(Compiler *c, StructAsetIx *x) {
+  x->built = 1;
+  x->structs = malloc(sizeof(int) * (size_t)(c->nclasses > 0 ? c->nclasses : 1));
+  if (!x->structs) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int k = 0; k < c->nclasses; k++) {
+    ClassInfo *ci = &c->classes[k];
+    if (!ci->is_struct || ci->is_data) continue;
+    x->structs[x->ns++] = k;
+    for (int m = 0; m < ci->nmembers; m++) {
+      int seen = 0;
+      for (int i = 0; i < x->nmty && !seen; i++) seen = x->mty[i] == ci->ivar_types[m];
+      if (seen) continue;
+      if (x->nmty == x->cmty) {
+        x->cmty = x->cmty ? x->cmty * 2 : 16;
+        TyKind *g = realloc(x->mty, sizeof *g * (size_t)x->cmty);
+        if (!g) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+        x->mty = g;
+      }
+      x->mty[x->nmty++] = ci->ivar_types[m];
+    }
+  }
+}
+
 /* `o[k] = v` on a Struct: the member k names takes v, as `o.x = v` types it.
    A literal member name or offset on a receiver typed as the Struct was
    rewritten to the member's writer, which the attribute-writer merge below
    types; the other shapes came here untyped, and the store unboxed v as the
    member's construction type (an Integer read as a String pointer, a String's
    address printed as the Integer): a key no literal names, which may be any
-   member, and a boxed receiver (struct_aset_classes). A boxed one reaches a
-   Struct's `[]=` when the box can hold one of that class
-   (poly_ivar_set_reaches): a store into a box of Hashes types no member, as
-   a member typed for nothing it holds loses what its own type keeps (a
-   String's in-place changes). */
-static int infer_struct_aset_call(Compiler *c, int id, NilWrites *writes) {
+   member, and a boxed receiver. A boxed one types the Structs the box can
+   hold (poly_recv_classes), and none when the analysis cannot tell which:
+   a member typed for a value that never reaches it loses what its own type
+   keeps (a String's in-place changes), so there the store checks the value
+   at run time instead (emit_struct_member_value). Under --share-strings a
+   String the rule holds as a handle is stored as the handle
+   (share_struct_aset_handles), which only a boxed member can hold: it boxes
+   each member it may reach, every Struct's when the box's are unknown. */
+static int infer_struct_aset_call(Compiler *c, int id, NilWrites *writes, StructAsetIx *x) {
   const NodeTable *nt = c->nt;
-  int first, last, boxed = struct_aset_classes(c, id, &first, &last) == 2;
-  if (first > last) return 0;
+  int one, how = struct_aset_receiver(c, id, &one);
+  if (!how) return 0;
   int v = nt_arr(nt, nt_ref(nt, id, "arguments"), "arguments", NULL)[1];
   TyKind vt = infer_type(c, v);
+  int handle = c->share_strings && an_arg_is_shared_handle(c, an_unparen(nt, v));
+  if (handle) vt = TY_POLY;
+  if (vt == TY_UNKNOWN) return 0;
+  const int *ks = &one;
+  int nk = 1;
+  if (how == 2) {
+    /* a store that would type no member asks nothing more */
+    if (!x->built) struct_aset_ix_build(c, x);
+    int any = 0;
+    for (int i = 0; i < x->nmty && !any; i++)
+      any = vt == TY_NIL || ty_unify(x->mty[i], empty_container_write(c, v, vt, x->mty[i])) != x->mty[i];
+    if (!any) return 0;
+    /* a handle may reach any Struct when the box's classes are unknown:
+       every member it can is boxed, so none holds a copy of it */
+    if (!(ks = poly_recv_classes(c, id, &nk))) {
+      if (!handle) return 0;
+      ks = x->structs; nk = x->ns;
+    }
+  }
   int changed = 0;
-  for (int k = first; k <= last; k++) {
-    int lo, hi;
+  for (int i = 0; i < nk; i++) {
+    int k = ks[i], lo, hi;
     if (!struct_aset_members(c, id, k, &lo, &hi)) continue;
     ClassInfo *ci = &c->classes[k];
-    int reach = boxed ? -1 : 1;   /* asked once, and only for a store that types something */
     for (int m = lo; m < hi; m++) {
       if (class_ivar_pinned(ci, ci->ivars[m])) continue;
-      TyKind merged = vt == TY_NIL ? ci->ivar_types[m]
-                    : ty_unify(ci->ivar_types[m], empty_container_write(c, v, vt, ci->ivar_types[m]));
-      if (vt != TY_NIL && merged == ci->ivar_types[m]) continue;
-      if (reach < 0) reach = poly_ivar_set_reaches(c, id, k);
-      if (!reach) break;
-      if (vt == TY_NIL) nil_write_note(writes, k, ci->ivars[m]);
-      else { ci->ivar_types[m] = merged; changed = 1; }
+      if (vt == TY_NIL) { nil_write_note(writes, k, ci->ivars[m]); continue; }
+      TyKind merged = ty_unify(ci->ivar_types[m], empty_container_write(c, v, vt, ci->ivar_types[m]));
+      if (merged != ci->ivar_types[m]) { ci->ivar_types[m] = merged; changed = 1; }
     }
   }
   return changed;
@@ -7901,6 +7975,7 @@ int infer_ivar_types(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
   NilWrites nilw = {0};
+  StructAsetIx aset = {0};
   if (dn_nscopes != c->nscopes || dn_count != nt->count) dn_build(c);
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
@@ -8084,7 +8159,7 @@ int infer_ivar_types(Compiler *c) {
         continue;
       }
       if (sp_streq(nt_str(nt, id, "name"), "[]=")) {
-        if (infer_struct_aset_call(c, id, &nilw)) changed = 1;
+        if (infer_struct_aset_call(c, id, &nilw, &aset)) changed = 1;
         continue;
       }
       /* attr-writer assignment: obj.x = v  (CallNode "x=") */
@@ -8159,6 +8234,7 @@ int infer_ivar_types(Compiler *c) {
       }
     }
   }
+  free(aset.mty); free(aset.structs);
   implicit_nil_writes_note(c, &nilw);
   changed |= nil_writes_apply(c, &nilw);
   return changed;

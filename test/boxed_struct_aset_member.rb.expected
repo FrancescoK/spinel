@@ -21,3 +21,8 @@ String
 #<struct T x=4, y=4.5>
 5
 #<struct T x=nil, y=4.5>
+nil
+nil
+#<struct T x=nil, y=nil>
+nil
+#<struct T x=nil, y=2>

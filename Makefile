@@ -978,8 +978,7 @@ re-lit-test: $(SPINEL)
 # test/share_strings_*.rb and the test/reject programs test/share/reject.list
 # names (the String routes the default build refuses, #6179's), plain and
 # with GC stress, against its CRuby .expected (a test/reject program's in
-# test/share/reject/). test/share/refuse/*.rb are the programs the flag
-# itself refuses, a String route it would copy. gate-props runs it.
+# test/share/reject/). gate-props runs it.
 share-strings-test: $(SPINEL)
 	@tmp=$$(mktemp -d "$${TMPDIR:-/tmp}/spinel-share.XXXXXX"); ok=1; \
 	for t in test/share/*.rb test/share_strings_*.rb $$(cat test/share/reject.list); do \
@@ -988,12 +987,6 @@ share-strings-test: $(SPINEL)
 	    "$$tmp/b" 2>&1 | cmp -s - "$$e" || { echo "share-strings-test: FAIL $$t"; ok=0; }; \
 	    SPINEL_GC_STRESS=1 "$$tmp/b" 2>&1 | cmp -s - "$$e" || { echo "share-strings-test: FAIL $$t (GC stress)"; ok=0; }; \
 	  else echo "share-strings-test: FAIL $$t (refused)"; cat "$$tmp/out"; ok=0; fi; \
-	done; \
-	for t in test/share/refuse/*.rb; do \
-	  if $(SPINEL) --share-strings "$$t" -c --no-line-map -o "$$tmp/r.c" >"$$tmp/out" 2>&1; then \
-	    echo "share-strings-test: FAIL $$t (compiled; the flag refuses it)"; ok=0; \
-	  else grep -q "is not yet shared by reference" "$$tmp/out" || \
-	    { echo "share-strings-test: FAIL $$t (refused without saying why)"; sed -n 1,5p "$$tmp/out"; ok=0; }; fi; \
 	done; \
 	rm -rf "$$tmp"; \
 	if [ $$ok = 1 ]; then echo "share-strings-test: pass"; else exit 1; fi

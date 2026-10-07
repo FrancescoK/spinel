@@ -46,4 +46,10 @@ t[k.succ] = 4.5
 p t, t.x + 1
 t[k] = nil
 p t
+p(t[k] = nil)
+v = (t[k + 1] = nil)
+p v, t
+n = T.new(1, 2)
+p(n[k] = nil)
+p n
 

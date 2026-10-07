@@ -5045,7 +5045,15 @@ static int infer_user_method_call(Compiler *c, int id, const NodeTable *nt, cons
       }
       { *out = TY_POLY; return 1; }
     }
-    if (sp_streq(name, "[]=") && argc == 2) { *out = sc->nmembers > 0 ? sc->ivar_types[0] : TY_POLY; return 1; }
+    /* `s[k] = v` answers v (a literal member name was rewritten to the
+       member's writer); a nil, which has no C value of its own, boxed. The
+       first member's type answered it, and a nil or a value of another
+       type did not fit the C the call's value was read into. */
+    if (sp_streq(name, "[]=") && argc == 2) {
+      TyKind vt = infer_type(c, argv[1]);
+      *out = vt == TY_NIL || vt == TY_UNKNOWN || vt == TY_VOID ? TY_POLY : vt;
+      return 1;
+    }
   }
 
   /* built-in class reopening: look up user-defined methods on scalar built-in

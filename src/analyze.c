@@ -14867,14 +14867,13 @@ static int an_local_aliases_reach(const ALocalAliases *t, int si, const char *fr
    shared ivar)? */
 static int strbuf_container_stores_string(Compiler *c, const char *contn, Scope *conts);
 static int strbuf_container_stores_nonstring(Compiler *c, const char *contn, Scope *conts);
-static int an_arg_is_shared_handle(Compiler *c, int node);
 /* Is the last statement of statement list `st` a shared handle's slot
    (an_arg_is_shared_handle)? */
 static int an_stmts_last_shared(Compiler *c, int st) {
   int n = 0; const int *b = st >= 0 && nt_kind(c->nt, st) == NK_StatementsNode ? nt_arr(c->nt, st, "body", &n) : NULL;
   return n > 0 && an_arg_is_shared_handle(c, b[n - 1]);
 }
-static int an_arg_is_shared_handle(Compiler *c, int node) {
+int an_arg_is_shared_handle(Compiler *c, int node) {
   const NodeTable *nt = c->nt;
   if (node < 0) return 0;
   if (nt_kind(nt, node) == NK_LocalVariableReadNode) {
@@ -31935,30 +31934,38 @@ static void refuse_string_read_copies(Compiler *c) {
   }
 }
 
-/* --share-strings: a Struct `[]=` through a boxed receiver, or by a key no
-   literal names (struct_aset_classes), stores the String's bytes: the poly
-   dispatch hands its arm the String read out, and the Struct's own `[]=`
-   boxes that read, never the handle. A String the share rule holds as a
-   handle is then a copy in the member, and a change through either side is
-   lost on the other. Refused (#6765) rather than compiled with it lost; a
-   value of another class, or a String held plainly, stores as it does
-   without the flag. */
-static void refuse_struct_aset_copies(Compiler *c) {
+/* --share-strings: a String the rule holds as a handle, stored into a
+   Struct member by `[]=` through a boxed receiver or by a key no literal
+   names, is stored as the handle: the read hands it over (strbuf_box and
+   strbuf_handle_demand), and the member, which infer_struct_aset_call boxed
+   for it, holds it, so a change through the variable or the member reaches
+   the other, as CRuby's one object does. The poly dispatch passes the
+   handle to the Struct's arm. A member that is not boxed (one an RBS
+   signature pins) cannot hold the handle, and a copy there would lose the
+   change: refused (#6765). */
+static void share_struct_aset_handles(Compiler *c) {
   const NodeTable *nt = c->nt;
   if (!c->share_strings) return;
   NT_FOREACH_KIND(nt, NK_CallNode, u) {
-    int first, last, boxed = struct_aset_classes(c, u, &first, &last) == 2;
-    if (first > last) continue;
+    int one, how = struct_aset_receiver(c, u, &one);
+    if (!how) continue;
     int v = an_unparen(nt, nt_arr(nt, nt_ref(nt, u, "arguments"), "arguments", NULL)[1]);
     if (!an_arg_is_shared_handle(c, v)) continue;
-    for (int k = first; k <= last; k++) {
-      int lo, hi;
-      if (!struct_aset_members(c, u, k, &lo, &hi) || (boxed && !poly_ivar_set_reaches(c, u, k))) continue;
-      unsupported_feature(c, u, "a String stored into a Struct member by `[]=` through a boxed receiver, or "
-                          "by a key that is no literal, is mutated in place, or the variable it came from is "
-                          "(a String is not yet shared by reference through a Struct's `[]=`). Store it "
-                          "with the member's writer (`o.x = s`) on a receiver typed as the Struct.");
+    int nk = 1;
+    const int *ks = how == 1 ? &one : poly_recv_classes(c, u, &nk);
+    for (int i = 0; i < (ks ? nk : c->nclasses); i++) {
+      int k = ks ? ks[i] : i, lo, hi;
+      if (!struct_aset_members(c, u, k, &lo, &hi)) continue;
+      for (int m = lo; m < hi; m++)
+        if (c->classes[k].ivar_types[m] != TY_POLY)
+          unsupported_feature(c, u, "a String stored into a Struct member by `[]=` through a boxed receiver, "
+                              "or by a key that is no literal, is mutated in place, and the member cannot hold "
+                              "it boxed (a String is not yet shared by reference through a Struct's `[]=` into "
+                              "a member of a fixed type, such as one an RBS signature declares). Store it with "
+                              "the member's writer on a receiver typed as the Struct.");
     }
+    c->strbuf_box[v] = 1;
+    c->strbuf_handle_demand[v] = 1;
   }
 }
 
@@ -36625,7 +36632,7 @@ static void an_phase_reconcile_check(Compiler *c) {
       nt_node_set_str((NodeTable *)c->nt, sid, "name", "[]=");
   }
   refuse_string_read_copies(c);
-  refuse_struct_aset_copies(c);
+  share_struct_aset_handles(c);
 
   /* Refuse lent ivar copies through calls and super only after sharing
      analysis settles (#6998). */
