@@ -2767,9 +2767,10 @@ const char *comp_super_shadow(Compiler *c, const Scope *s) {
      of its own: its super reaches the shadow the method's does -- the
      shadow's own clone when it has one, as the clone of a class's
      initialize does that calls super into an included module's on a cycle
-     of constructors, or the shadow itself when it does not yield. Sent up
-     the parent chain instead, it raised "no superclass method". A yielding
-     shadow with no clone has no function to call and is left so. */
+     of constructors, or the shadow itself. A yielding shadow without a
+     clone is kept so make_yield_proc_forms can give it one. Sent up the
+     parent chain instead, it skipped that method or raised "no superclass
+     method". */
   size_t n = strlen(key);
   if (t || n <= 3 || n >= sizeof key || strcmp(key + n - 3, "#pf") != 0) return t;
   key[n - 3] = '\0';
@@ -2781,7 +2782,7 @@ const char *comp_super_shadow(Compiler *c, const Scope *s) {
   int k = in_class(c, s->class_id, pf);
   if (k >= 0) return c->scopes[k].name;
   k = in_class(c, s->class_id, t);
-  return k >= 0 && !c->scopes[k].yields ? t : NULL;
+  return k >= 0 ? t : NULL;
 }
 
 void comp_cprep_chain_add(ClassInfo *ci, const char *from, const char *to) {

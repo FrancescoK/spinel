@@ -25232,11 +25232,23 @@ static int pf_scope_named(Compiler *c, const Scope *src, const char *name) {
 
 int make_yield_proc_forms(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
-  int n0 = c->nscopes;
   int made = 0;
   mark_ctor_cycles(c);
-  for (int s = 1; s < n0; s++) {
+  for (int next = 1; next < c->nscopes; next++) {
+    int s = next;
     Scope *src = &c->scopes[s];
+    /* Visit the appended clones too: a clone's super needs a callable
+       yielding shadow even when that shadow is outside the constructor
+       cycle. Following it here also handles a chain of module shadows,
+       in either definition order, without rescanning the scope table. */
+    int shadow_clone = src->is_proc_form;
+    if (shadow_clone) {
+      const char *shadow = comp_super_shadow(c, src);
+      if (!shadow || !cr_scope_has_super(c, s)) continue;
+      s = pf_scope_named(c, src, shadow);
+      if (s < 0) continue;
+      src = &c->scopes[s];
+    }
     /* reachability is decided after this pass, so do not consult it: an
        unused clone is a static function the C compiler drops. */
     if (!src->yields) continue;
@@ -25254,7 +25266,7 @@ int make_yield_proc_forms(Compiler *c) {
        re-raise and its own `new` sites alike, none of which splice the body */
     int exc_init = src->class_id >= 0 && sp_streq(src->name, "initialize") && !src->is_cmethod &&
                    class_is_exc_subclass(c, src->class_id);
-    if (src->class_id >= 0 && !exc_init && !pf_wanted(c, src->name) && !pf_in_class_dispatch(c, src) &&
+    if (src->class_id >= 0 && !shadow_clone && !exc_init && !pf_wanted(c, src->name) && !pf_in_class_dispatch(c, src) &&
         !(src->ctor_cycle && ctor_graph_init(c, s)))
       continue;
     /* A method the program reopens has two definitions in the scope table
@@ -31202,11 +31214,27 @@ static int ctor_graph_target(Compiler *c, int id) {
   return ctor_graph_node(c, t) ? t : -1;
 }
 
-/* One edge per call and `super` in a yielding method's body that splices
+/* Edges for calls and supers in a yielding method's body that splice
    another: counted into cnt[s + 1], or appended to adj at fill[s]. */
 static void ctor_graph_edge(Compiler *c, int id, int *cnt, int *adj, int *fill) {
   int s = c->nscope[id];
   if (!ctor_graph_node(c, s)) return;
+  /* A super reaching Class#new splices initialize on the receiving class,
+     including a descendant that inherits this class method. It has no
+     user superclass method for super_reach to find. */
+  if (comp_super_is_class_new(c, id)) {
+    int ci = c->scopes[s].class_id, nd = 0;
+    const int *ds = comp_descendants(c, ci, &nd);
+    for (int d = -1; d < nd; d++) {
+      int k = d < 0 ? ci : ds[d];
+      if (comp_cmethod_in_chain(c, k, "new", NULL) != s) continue;
+      int t = comp_method_in_chain(c, k, "initialize", NULL);
+      if (!ctor_graph_node(c, t)) continue;
+      if (cnt) cnt[s + 1]++;
+      else adj[fill[s]++] = t;
+    }
+    return;
+  }
   int t = ctor_graph_target(c, id);
   if (t < 0) return;
   if (cnt) cnt[s + 1]++;

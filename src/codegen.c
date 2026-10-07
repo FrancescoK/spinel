@@ -8337,7 +8337,7 @@ else if (orecv >= 0 && onm) {
         if (g_cap_struct)
           buf_printf(g_pre, "_capv_%d->__self_cls = ((%s *)_cap)->__self_cls;\n", pid, g_cap_struct);
         else
-          buf_printf(g_pre, "_capv_%d->__self_cls = _sp_cls;\n", pid);
+          buf_printf(g_pre, "_capv_%d->__self_cls = %s;\n", pid, bs->yields && sv_self ? sv_self : "_sp_cls");
       }
       if (ret_proc) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "_capv_%d->_home = _h.id;\n", pid); }
       if (brk_blk) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "_capv_%d->_brkhome = %s;\n", pid, sv_bser); }

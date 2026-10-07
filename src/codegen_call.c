@@ -157,6 +157,7 @@ static int ctor_new_on_cycle(Compiler *c, int id, int ci, int initm) {
    constructors goes the same way, as a proc. 0 when the class has no such
    clone. */
 int emit_ctor_new_with_proc(Compiler *c, int id, int ci, Buf *b) {
+  if (nt_kind(c->nt, id) == NK_CallNode && comp_cmethod_in_chain(c, ci, "new", NULL) >= 0) return 0;
   int blk = nt_ref(c->nt, id, "block");
   int initm = comp_method_in_chain(c, ci, "initialize", NULL);
   if (blk < 0) return 0;
@@ -185,6 +186,9 @@ int emit_ctor_new_with_proc(Compiler *c, int id, int ci, Buf *b) {
 
 int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
   const NodeTable *nt = c->nt;
+  /* An ordinary new runs the class method first. Only its Class#new super
+     bypasses that method and splices initialize here. */
+  if (nt_kind(nt, id) == NK_CallNode && comp_cmethod_in_chain(c, ci, "new", NULL) >= 0) return 0;
   int block = nt_ref(nt, id, "block");
   /* A literal BlockNode is spliced directly. A forwarded `&b` / `&`
      (BlockArgumentNode) inside an inlined enclosing method resolves to that
@@ -10264,6 +10268,7 @@ static void emit_super_new_ctor(Compiler *c, int id, int ci, Buf *b) {
     emit_ctor_alloc_init(c, ci, initm, argsn, id, b);
     return;
   }
+  if (emit_ctor_yield_inline(c, id, ci, b) || emit_ctor_new_with_proc(c, id, ci, b)) return;
   buf_printf(b, "sp_%s_new(", k->c_name);
   Buf ab; memset(&ab, 0, sizeof ab);
   if (initm >= 0) emit_args_filled(c, initm, argsn, "", &ab);
@@ -10280,6 +10285,12 @@ static void emit_super_new_ctor(Compiler *c, int id, int ci, Buf *b) {
    be gets an arm, the result boxed. */
 void emit_super_class_new(Compiler *c, int id, Buf *b) {
   Scope *s = comp_scope_of(c, id);
+  /* A spliced class method already has the receiving class at its site;
+     there is no function parameter _sp_cls in the enclosing body. */
+  if (s->yields && g_self && g_emitting_class_id >= 0) {
+    emit_super_new_ctor(c, id, g_emitting_class_id, b);
+    return;
+  }
   int own = s->class_id, has_desc = 0;
   for (int k = 0; k < c->nclasses; k++)
     if (k != own && is_descendant(c, k, own)) has_desc = 1;
