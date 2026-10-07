@@ -31934,6 +31934,19 @@ static void refuse_string_read_copies(Compiler *c) {
   }
 }
 
+/* A multiple assignment's index target that a Struct's own `[]=` can take
+   (struct_aset_may_reach) stores through its evidence call
+   (desugar_masgn_store_evidence), as the single `[]=` stores
+   (masgn_struct_store): the target's own store set an Array's element only,
+   which dropped a member's store through a box, and refused one on a
+   receiver typed as the Struct. */
+static void mark_struct_aset_targets(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  NT_FOREACH_KIND(nt, NK_IndexTargetNode, t)
+    if (nt_int(nt, t, "aset_ev", 0) > 0 && struct_aset_may_reach(c, t))
+      nt_node_set_int((NodeTable *)nt, t, "struct_aset", 1);
+}
+
 /* --share-strings: a String the rule holds as a handle, stored into a
    Struct member by `[]=` through a boxed receiver or by a key no literal
    names, is stored as the handle: the read hands it over (strbuf_box and
@@ -36632,6 +36645,7 @@ static void an_phase_reconcile_check(Compiler *c) {
       nt_node_set_str((NodeTable *)c->nt, sid, "name", "[]=");
   }
   refuse_string_read_copies(c);
+  mark_struct_aset_targets(c);
   share_struct_aset_handles(c);
 
   /* Refuse lent ivar copies through calls and super only after sharing

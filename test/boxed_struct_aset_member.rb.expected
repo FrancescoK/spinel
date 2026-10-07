@@ -26,3 +26,14 @@ nil
 #<struct T x=nil, y=nil>
 nil
 #<struct T x=nil, y=2>
+v0
+v4
+v5.5
+#<struct U x=4, y=5.5>
+5
+#<struct U x=7, y=nil>
+#<struct U x="s", y=2.5>
+#<struct U x="values", y=5>
+#<struct U x="s!", y=5.0>
+"undefined method '[]=' for an instance of D"
+#<data D x="s">
