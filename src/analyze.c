@@ -36318,6 +36318,17 @@ static void an_phase_proc_returns(Compiler *c) {
   }
 }
 
+/* --share-strings: how many locals of scope s share_default_apply has
+   converted to the poly Array (elems_shared); the storage loop compares the
+   counts around itself to tell the scopes with a conversion made after
+   inference. */
+static int share_converted_locals(const Compiler *c, int s) {
+  int n = 0;
+  for (int i = 0; i < c->scopes[s].nlocals; i++)
+    n += c->scopes[s].locals[i].elems_shared && c->scopes[s].locals[i].type == TY_POLY_ARRAY;
+  return n;
+}
+
 /* The instance_eval re-infer and the storage refinements: byref string out-params, handle params, the reader operand marks, the STRBUF promotion, the shared and aliased strings (analyze_program's steps, in their order) */
 static void an_phase_storage(Compiler *c) {
   /* Re-infer nodes inside instance_eval block bodies with the receiver's class
@@ -36364,6 +36375,12 @@ static void an_phase_storage(Compiler *c) {
      same reason and feeds the same propagation, so the two run to a joint
      fixpoint rather than one after the other (#4363). */
   int late_widened = 0;
+  int *conv0 = NULL;
+  if (c->share_strings) {
+    conv0 = malloc(sizeof(int) * (size_t)(c->nscopes > 0 ? c->nscopes : 1));
+    if (!conv0) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int s = 0; s < c->nscopes; s++) conv0[s] = share_converted_locals(c, s);
+  }
   for (;;) {
     HandleArgTab hat; handle_arg_tab_init(c, &hat);
     int ch = promote_params_stored_in_shared_ivars(c, &hat);
@@ -36389,9 +36406,26 @@ static void an_phase_storage(Compiler *c) {
     if (!ch) break;
   }
   /* ... and the reads of what widened take its type, as the proc-return
-     re-derivation's refresh does (an_phase_proc_returns) */
+     re-derivation's refresh does (an_phase_proc_returns): everywhere when a
+     return or a re-joined local moved, else the scopes of the locals
+     converted here alone (a local is its scope's; their reads' types,
+     and the types of the expressions over them, are that scope's nodes) */
   if (late_widened)
     for (int id = 0; id < c->nt->count; id++) infer_type(c, id);
+  else if (conv0) {
+    int any = 0;
+    for (int s = 0; s < c->nscopes; s++) {
+      int moved = share_converted_locals(c, s) != conv0[s];
+      conv0[s] = moved;
+      any |= moved;
+    }
+    if (any)
+      for (int id = 0; id < c->nt->count; id++) {
+        Scope *sc = comp_scope_of(c, id);
+        if (sc && conv0[sc - c->scopes]) infer_type(c, id);
+      }
+  }
+  free(conv0);
   /* A read an is_a? or nil guard narrowed to String (`m(x) if
      x.is_a?(String)`) unboxed a copy of the String its POLY variable holds:
      one lifted into the handle for a parameter appended to keeps the box,
