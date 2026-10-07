@@ -309,6 +309,7 @@ int bop_args_as_builtin(TyKind rt, const char *name, int argc, int has_block);
 #define BOP_ANY_RECV ((TyKind)-6)   /* Object's methods, on any receiver */
 #define BOP_CALLABLE ((TyKind)-7)   /* a proc, a lambda or a Method */
 #define BOP_CLASS_NEW ((TyKind)-8)  /* a builtin class's `new`, by the class's name */
+#define BOP_FILE_CLASS ((TyKind)-9) /* a class method of File (`File.join`) */
 
 typedef enum {
   BSH_PURE = 1,   /* keeps none of its arguments; answers no value it was handed

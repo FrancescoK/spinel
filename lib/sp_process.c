@@ -60,6 +60,19 @@
 #include "sp_alloc.h"   /* sp_PolyArray, sp_RbVal, sp_box_*, sp_raise_cls */
 #include "sp_process_status.h"   /* sp_ProcessStatus, sp_box_process_status */
 #include "sp_system.h"   /* sp_last_status: $? */
+#include "sp_string.h"   /* sp_String: a shared String's handle */
+
+/* A String the program holds as the shared handle (--share-strings) arrives
+   boxed as that handle: the spawn reads its bytes as it reads a String's. */
+static sp_RbVal sp_spawn_str(sp_RbVal v) {
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_STRBUF && v.v.p) {
+    sp_RbVal s = v;
+    s.tag = SP_TAG_STR;
+    s.v.s = ((sp_String *)v.v.p)->data;
+    return s;
+  }
+  return v;
+}
 
 /* Local error-message builder. Returns a static buffer; copy the
    result before another call. Avoids sp_sprintf which would pull
@@ -224,7 +237,8 @@ sp_int sp_process_spawn(sp_RbVal cmd, sp_RbVal args_box,
     sp_process_spawn_fail(owned, "TypeError", "rlimit_as must be Integer");
 
   const char *chdir_to = NULL;
-  if (opts->data[6].tag == SP_TAG_STR) chdir_to = opts->data[6].v.s;
+  sp_RbVal chdir_v = sp_spawn_str(opts->data[6]);
+  if (chdir_v.tag == SP_TAG_STR) chdir_to = chdir_v.v.s;
   else if (opts->data[6].tag != SP_TAG_NIL)
     sp_process_spawn_fail(owned, "TypeError", "chdir must be a String");
 
@@ -237,6 +251,7 @@ sp_int sp_process_spawn(sp_RbVal cmd, sp_RbVal args_box,
   int extra_from_args = 0;
 
   int via_shell = 0;
+  cmd = sp_spawn_str(cmd);
   if (cmd.tag == SP_TAG_STR) {
     prog = cmd.v.s;
     if (args_box.tag == SP_TAG_OBJ &&
@@ -260,9 +275,9 @@ sp_int sp_process_spawn(sp_RbVal cmd, sp_RbVal args_box,
     cmd_arr = (sp_PolyArray *)cmd.v.p;
     if (cmd_arr->len != 2) sp_process_spawn_fail(owned, "ArgumentError", "wrong first argument");
     for (int i = 0; i < 2; i++)
-      if (cmd_arr->data[i].tag != SP_TAG_STR)
+      if (sp_spawn_str(cmd_arr->data[i]).tag != SP_TAG_STR)
         sp_process_spawn_fail(owned, "TypeError", sp_errf_conv(cmd_arr->data[i]));
-    prog = cmd_arr->data[0].v.s;
+    prog = sp_spawn_str(cmd_arr->data[0]).v.s;
     if (args_box.tag == SP_TAG_OBJ &&
         args_box.cls_id == SP_BUILTIN_POLY_ARRAY) {
       args_arr = (sp_PolyArray *)args_box.v.p;
@@ -279,13 +294,13 @@ sp_int sp_process_spawn(sp_RbVal cmd, sp_RbVal args_box,
   if (!argv) sp_process_spawn_fail(owned, "NoMemoryError", "out of memory");
   int ai = 0;
   if (via_shell) { argv[ai++] = (char *)"/bin/sh"; argv[ai++] = (char *)"-c"; }
-  argv[ai++] = cmd_arr ? (char *)cmd_arr->data[1].v.s : (char *)prog;
+  argv[ai++] = cmd_arr ? (char *)sp_spawn_str(cmd_arr->data[1]).v.s : (char *)prog;
   if (via_shell) prog = "/bin/sh";
   if (args_arr) {
     for (int i = 0; i < args_arr->len; i++) {
-      if (args_arr->data[i].tag != SP_TAG_STR)
+      if (sp_spawn_str(args_arr->data[i]).tag != SP_TAG_STR)
         sp_process_spawn_fail(owned, "ArgumentError", "spawn args must be Strings");
-      argv[ai++] = (char *)args_arr->data[i].v.s;
+      argv[ai++] = (char *)sp_spawn_str(args_arr->data[i]).v.s;
     }
   }
   argv[ai] = NULL;
@@ -394,17 +409,18 @@ void sp_process_exec(sp_RbVal cmd, sp_RbVal args_box) {
                        ? (sp_PolyArray *)args_box.v.p : NULL;
   int na = args ? (int)args->len : 0;
   const char *prog = NULL, *argv0 = NULL;
+  cmd = sp_spawn_str(cmd);
   if (cmd.tag == SP_TAG_STR) prog = argv0 = cmd.v.s;
   else if (cmd.tag == SP_TAG_OBJ && cmd.cls_id == SP_BUILTIN_POLY_ARRAY) {
     sp_PolyArray *pa = (sp_PolyArray *)cmd.v.p;
     if (pa->len != 2) sp_raise_cls("ArgumentError", "wrong first argument");
     for (int i = 0; i < 2; i++)
-      if (pa->data[i].tag != SP_TAG_STR) sp_raise_cls("TypeError", sp_errf_conv(pa->data[i]));
-    prog = pa->data[0].v.s; argv0 = pa->data[1].v.s;
+      if (sp_spawn_str(pa->data[i]).tag != SP_TAG_STR) sp_raise_cls("TypeError", sp_errf_conv(pa->data[i]));
+    prog = sp_spawn_str(pa->data[0]).v.s; argv0 = sp_spawn_str(pa->data[1]).v.s;
   }
   else sp_raise_cls("TypeError", "wrong first argument type (expected String or Array)");
   for (int i = 0; i < na; i++)
-    if (args->data[i].tag != SP_TAG_STR) sp_raise_cls("TypeError", sp_errf_conv(args->data[i]));
+    if (sp_spawn_str(args->data[i]).tag != SP_TAG_STR) sp_raise_cls("TypeError", sp_errf_conv(args->data[i]));
   int via_shell = cmd.tag == SP_TAG_STR && na == 0 &&
                   strpbrk(prog, " \t\n*?{}[]<>()~&|\\$;'`\"#=%") != NULL;
   char **argv = (char **)malloc(sizeof(char *) * (size_t)(na + 4));
@@ -412,7 +428,7 @@ void sp_process_exec(sp_RbVal cmd, sp_RbVal args_box) {
   int ai = 0;
   if (via_shell) { argv[ai++] = (char *)"/bin/sh"; argv[ai++] = (char *)"-c"; }
   argv[ai++] = (char *)argv0;
-  for (int i = 0; i < na; i++) argv[ai++] = (char *)args->data[i].v.s;
+  for (int i = 0; i < na; i++) argv[ai++] = (char *)sp_spawn_str(args->data[i]).v.s;
   argv[ai] = NULL;
   execvp(via_shell ? "/bin/sh" : prog, argv);
   int e = errno;

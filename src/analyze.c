@@ -15415,6 +15415,7 @@ static int block_param_user_yield_only(Compiler *c, const char *vn, Scope *vs) {
   }
   return any;
 }
+static int lift_poly_read_store(Compiler *c, int a);
 static int strbuf_demand_store_leaf(Compiler *c, int sn, int depth) {
   const NodeTable *nt = c->nt;
   if (sn < 0 || c->strbuf_box[sn]) return 0;
@@ -15499,9 +15500,23 @@ static int strbuf_demand_store_leaf(Compiler *c, int sn, int depth) {
       "a String a boxed local holds is stored into a container and mutated in place through it (a "
       "String is not yet shared by reference through a boxed local's container element). Mutate the "
       "String through the local itself.";
-    if (snv->type == TY_POLY && !snv->is_param && !snv->poly_ctr && poly_local_shows_string(c, snm, sns) &&
-        !sa_copy_defer(c, sn, sn, boxed_msg))
-      unsupported_feature(c, sn, boxed_msg);
+    if (snv->type == TY_POLY && !snv->is_param && !snv->poly_ctr && poly_local_shows_string(c, snm, sns)) {
+      /* Under --share-strings the stored read is lifted into the handle
+         (lift_poly_read: it boxes the local's String as the handle and
+         writes that back into the local, and lift_poly_alias_reads carries
+         it to the names the local was copied from or to): the element is
+         the local's own String, which the route then carries where the
+         rule shares it (sh_carries_handle), and a copy no other name sees
+         where it does not */
+      int ch = 0;
+      if (c->share_strings) {
+        ch = lift_poly_read_store(c, sn);
+        ShareRoute q = share_route(sn, sn, 0);
+        q.carry = sn;
+        if (share_route_defer(c, &q, boxed_msg)) return ch;
+      }
+      if (!sa_copy_defer(c, sn, sn, boxed_msg)) unsupported_feature(c, sn, boxed_msg);
+    }
     if (!strbuf_slot_eligible(c, snm, sns, snv)) return 0;
     if (strbuf_mut_kind(c, snm, sns) < 0) return 0;
     snv->type = TY_STRBUF; snv->str_shared = 1;
@@ -15983,14 +15998,24 @@ static void refuse_global_array_element(Compiler *c, int id, int g, int l) {
    (a fresh String wrapped as a new one), as a local's or an ivar's stores
    are. Without them a global's Array or Hash kept the plain String, and a
    change through an element was lost. */
-static int strbuf_gvar_store_walk(Compiler *c, const char *grn, int depth) {
+/* Is variable-site entry e of a global (kind NK_GlobalVariableReadNode,
+   grn its resolved name), or of a constant or a class variable
+   (NK_ConstantReadNode, NK_ClassVariableReadNode) named name? (A chain
+   carries hash collisions.) */
+static int static_site_is(Compiler *c, NodeKind kind, int e, const char *name) {
+  if (kind == NK_GlobalVariableReadNode) return gvar_site_is(c, e, name);
+  int v = comp_vsite_var(c, e);
+  const char *vn = v >= 0 ? nt_str(c->nt, v, "name") : NULL;
+  return vn && sp_streq(vn, name);
+}
+static int strbuf_static_store_walk(Compiler *c, NodeKind kind, const char *grn, int depth) {
   const NodeTable *nt = c->nt;
   int changed = 0;
-  for (int e = comp_vsite_first(c, VS_RECV, NK_GlobalVariableReadNode, grn, -1); e >= 0;
+  for (int e = comp_vsite_first(c, VS_RECV, kind, grn, -1); e >= 0;
        e = comp_vsite_next(c, e)) {
     int u = comp_vsite_node(c, e);
     const char *un = nt_str(nt, u, "name");
-    if (!un || !gvar_site_is(c, e, grn)) continue;
+    if (!un || !static_site_is(c, kind, e, grn)) continue;
     int a = nt_ref(nt, u, "arguments"), an = 0;
     const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
     if (is_push_unshift(un))
@@ -15999,6 +16024,9 @@ static int strbuf_gvar_store_walk(Compiler *c, const char *grn, int depth) {
       changed |= strbuf_store_leaf(c, av[an - 1], depth, SB_DEMAND);
   }
   return changed;
+}
+static int strbuf_gvar_store_walk(Compiler *c, const char *grn, int depth) {
+  return strbuf_static_store_walk(c, NK_GlobalVariableReadNode, grn, depth);
 }
 /* May a method defined in class k answer a call on a receiver of class
    rcid: k is rcid or a subclass of it, a module, or no class? */
@@ -17163,25 +17191,52 @@ static int share_lift_poly_ivar_stores(Compiler *c, int cid, const char *name) {
   return changed;
 }
 
-/* share_default_apply's global container (holder name `name`): answers
-   whether anything changed. */
-static int share_gvar_container(Compiler *c, const char *name) {
+/* share_default_apply's global, constant or class variable container
+   (holder kind `kind`, SHK_GVAR, SHK_CONST or SHK_CVAR, and name `name`):
+   answers whether anything changed. */
+static int share_static_container(Compiler *c, int kind, const char *name) {
   const NodeTable *nt = c->nt;
-  const char *grn = comp_resolve_gvar(c, name[0] == '$' ? name + 1 : name);
-  LocalVar *gv = grn ? comp_gvar(c, grn) : NULL;
-  if (!gv || (!ty_is_array(gv->type) && !ty_is_hash(gv->type))) return 0;
+  NodeKind rk = kind == SHK_GVAR ? NK_GlobalVariableReadNode
+              : kind == SHK_CVAR ? NK_ClassVariableReadNode : NK_ConstantReadNode;
+  const char *grn = kind != SHK_GVAR ? name : comp_resolve_gvar(c, name[0] == '$' ? name + 1 : name);
+  if (!grn) return 0;
   int changed = 0;
-  if ((gv->type == TY_STR_ARRAY || gv->type == TY_POLY_ARRAY) && !gv->rbs_seeded &&
-      (gv->type != TY_POLY_ARRAY || !gv->elems_shared)) {
-    gv->type = TY_POLY_ARRAY;
-    gv->elems_shared = 1;
-    changed = 1;
+  if (kind == SHK_CVAR) {
+    /* a class variable is every class's of the name, as the facts key it;
+       a top-level one (CRuby raises RuntimeError on its access) is left to
+       the seal's refusal */
+    int any = 0, tl = comp_class_index(c, "Toplevel");
+    if (tl >= 0 && comp_cvar_index(&c->classes[tl], grn) >= 0) return 0;
+    for (int k = 0; k < c->nclasses; k++) {
+      ClassInfo *ci = &c->classes[k];
+      int i = comp_cvar_index(ci, grn);
+      if (i < 0 || (!ty_is_array(ci->cvar_types[i]) && !ty_is_hash(ci->cvar_types[i]))) continue;
+      any = 1;
+      if ((ci->cvar_types[i] == TY_STR_ARRAY || ci->cvar_types[i] == TY_POLY_ARRAY) && !ci->cvar_elems_shared[i]) {
+        ci->cvar_types[i] = TY_POLY_ARRAY;
+        ci->cvar_elems_shared[i] = 1;
+        changed = 1;
+      }
+    }
+    if (!any) return 0;
   }
-  for (int e = comp_vsite_first(c, VS_WRITE, NK_GlobalVariableReadNode, grn, -1); e >= 0;
+  else {
+    LocalVar *gv = kind == SHK_GVAR ? comp_gvar(c, grn) : comp_const(c, grn);
+    if (!gv || (!ty_is_array(gv->type) && !ty_is_hash(gv->type))) return 0;
+    if ((gv->type == TY_STR_ARRAY || gv->type == TY_POLY_ARRAY) && !gv->rbs_seeded &&
+        (gv->type != TY_POLY_ARRAY || !gv->elems_shared)) {
+      gv->type = TY_POLY_ARRAY;
+      gv->elems_shared = 1;
+      changed = 1;
+    }
+  }
+  /* a global's `=` (VS_WRITE), a constant's and a class variable's `=`,
+     `||=` and `&&=` (VS_STORE: the index keeps no VS_WRITE for them) */
+  for (int e = comp_vsite_first(c, kind == SHK_GVAR ? VS_WRITE : VS_STORE, rk, grn, -1); e >= 0;
        e = comp_vsite_next(c, e))
-    if (gvar_site_is(c, e, grn))
+    if (static_site_is(c, rk, e, grn))
       changed |= strbuf_container_source_walk(c, nt_ref(nt, comp_vsite_node(c, e), "value"), 1, SB_DEMAND);
-  return changed | strbuf_gvar_store_walk(c, grn, 1);
+  return changed | strbuf_static_store_walk(c, rk, grn, 1);
 }
 /* Does method mi answer an Array or Hash literal of typed Strings (`const
    char *` elements, which cannot hold the shared handle), as its last
@@ -17290,11 +17345,17 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
         ci->cvar_str_shared[i] = 1;
         changed = 1;
       }
+      /* the facts key a class variable by name: a String one class holds
+         and a container another holds of the same name are one holder, so
+         the container's elements are converted here too */
+      if (repr_str_elems_share(c, h)) changed |= share_static_container(c, SHK_CVAR, sh->name);
     }
-    /* a global's Array or Hash whose elements the rule shares holds them as
-       handles, as a local's does: a String Array settles in its poly form,
-       and what its writes and stores give it is demanded into the handle */
-    else if (sh->kind == SHK_GVAR && repr_str_elems_share(c, h) && share_gvar_container(c, sh->name)) {
+    /* a global's or a constant's Array or Hash whose elements the rule
+       shares holds them as handles, as a local's does: a String Array
+       settles in its poly form, and what its writes and stores give it is
+       demanded into the handle */
+    else if ((sh->kind == SHK_GVAR || sh->kind == SHK_CONST || sh->kind == SHK_CVAR) &&
+             repr_str_elems_share(c, h) && share_static_container(c, sh->kind, sh->name)) {
       changed = 1;
     }
     /* a method's value whose elements the rule shares, when they would be
@@ -17909,7 +17970,9 @@ static void an_returns_by_scope(Compiler *c, int **start, int **list) {
    an_tail_is_shared_handle accepts? */
 /* What a return tail answers, counted by an_tail_is_shared_handle: shared
    slot reads and nils. */
-typedef struct { int reads, nils; } TailCount;
+/* fresh_ok (--share-strings, the pickup's own ask): a tail answering a
+   fresh String (share_node_fresh) is admitted too, counted in fresh */
+typedef struct { int reads, nils, fresh_ok, fresh; } TailCount;
 static int an_tail_is_shared_handle(Compiler *c, int node, int nil_ok, TailCount *n);
 static int an_stmts_tail_shared(Compiler *c, int st, int nil_ok, TailCount *tc) {
   int n = 0; const int *b = st >= 0 && nt_kind(c->nt, st) == NK_StatementsNode ? nt_arr(c->nt, st, "body", &n) : NULL;
@@ -17933,6 +17996,7 @@ static int an_tail_is_shared_handle(Compiler *c, int node, int nil_ok, TailCount
   if (!c->share_strings || (k != NK_IfNode && k != NK_UnlessNode)) {
     int ok = an_arg_is_shared_handle(c, node);
     tc->reads += ok;
+    if (!ok && tc->fresh_ok && share_node_fresh(c, node)) { tc->fresh++; ok = 1; }
     return ok;
   }
   int el = nt_ref(nt, node, k == NK_IfNode ? "subsequent" : "else_clause");
@@ -17952,10 +18016,11 @@ int an_tail_answers_nil(Compiler *c, int mi) {
 /* Does every return tail of method mi3 (the implicit one and each `return`)
    read a shared handle? *saw: it has one. Under --share-strings the last
    statement may answer nil, but some tail must read a handle. */
-static int an_returns_shared_handles(Compiler *c, int mi3, const int *ret_start, const int *ret_list, int *saw) {
+static int an_returns_shared_handles(Compiler *c, int mi3, const int *ret_start, const int *ret_list, int *saw,
+                                     int *fresh) {
   const NodeTable *nt = c->nt;
   int ok = 1;
-  TailCount tc = { 0, 0 };
+  TailCount tc = { 0, 0, c->share_strings, 0 };
   int lastT = scope_body_last(c, mi3);
   if (lastT >= 0) {
     *saw = 1;
@@ -17969,24 +18034,35 @@ static int an_returns_shared_handles(Compiler *c, int mi3, const int *ret_start,
     if (rn2 != 1 || !an_tail_is_shared_handle(c, rv2[0], 0, &tc)) ok = 0;
   }
   if (c->share_strings && *saw && !tc.reads) ok = 0;
+  /* a fresh tail beside the handle reads: the method clears the side
+     channel there (ret_pub_fresh) once a pickup takes its value, which
+     it answers as a String (emit_tail_value's const char *) */
+  if (ok && tc.fresh && c->scopes[mi3].ret != TY_STRING) ok = 0;
+  if (fresh) *fresh = ok && tc.fresh;
   return ok;
 }
 /* The method a deep-return pickup call reaches: a receiverless call's
-   uniquely named method, or under --share-strings a class method of that
-   name called on its own class (`K.get`), which the pickup takes alike
-   (emit_call_body); else -1. */
+   uniquely named method, or under --share-strings a class method its own
+   class defines, called on that class (`K.get`; another class may have a
+   method of the name), which the pickup takes alike (emit_call_body);
+   else -1. */
 static int an_pickup_target(Compiler *c, int wv) {
   const NodeTable *nt = c->nt;
   int wr = nt_ref(nt, wv, "receiver");
   if (nt_ref(nt, wv, "block") >= 0 || (wr >= 0 && !c->share_strings)) return -1;
   const char *mn = nt_str(nt, wv, "name");
-  int mi3 = mn ? an_unique_scope_by_name(c, mn) : -1;
+  if (!mn) return -1;
+  int mi3;
+  if (wr < 0) mi3 = an_unique_scope_by_name(c, mn);
+  else {
+    int ci = infer_type(c, wr) == TY_CLASS ? class_recv_static_ci(c, wr) : -1;
+    int defc = -1, m2 = ci >= 0 ? comp_cmethod_in_chain(c, ci, mn, &defc) : -1;
+    mi3 = m2 > 0 && defc == ci && c->scopes[m2].is_cmethod && c->scopes[m2].class_id == ci ? m2 : -1;
+  }
   /* (--share-strings: a method answering a box hands no String to pick up;
      its box holds the handle itself) */
   if (mi3 > 0 && c->share_strings && c->scopes[mi3].ret == TY_POLY) return -1;
-  if (mi3 <= 0 || wr < 0) return mi3;
-  return infer_type(c, wr) == TY_CLASS && c->scopes[mi3].is_cmethod &&
-         c->scopes[mi3].class_id == class_recv_static_ci(c, wr) ? mi3 : -1;
+  return mi3;
 }
 /* --share-strings: a String mutator whose receiver is a receiverless call
    (or a class method's call on its class) of a uniquely named method
@@ -18005,8 +18081,10 @@ static int an_mutated_handle_returns(Compiler *c, int **ret_start, int **ret_lis
     if (mi3 <= 0) continue;
     if (!*ret_start) an_returns_by_scope(c, ret_start, ret_list);
     int saw = 0;
-    if (!an_returns_shared_handles(c, mi3, *ret_start, *ret_list, &saw) || !saw) continue;
+    int fresh = 0;
+    if (!an_returns_shared_handles(c, mi3, *ret_start, *ret_list, &saw, &fresh) || !saw) continue;
     c->strbuf_box[wv] = 1;
+    if (fresh) c->scopes[mi3].ret_pub_fresh = 1;
     changed = 1;
   }
   return changed;
@@ -18767,6 +18845,9 @@ static int promote_shared_stored_strings(Compiler *c) {
       ShareRoute q = share_route(w, recv4, 1);
       q.to = blk4;
       q.to_name = bp4;
+      /* an element iterator answering its receiver (its share row, BSH_ITER)
+         whose value is dropped hands each element to the block alone */
+      q.fresh_elems = bop_share_named(BOP_ANY_ARRAY, itn) == BSH_ITER && comp_value_dropped(c, w);
       if (!share_route_defer(c, &q, ia_msg)) unsupported_feature(c, w, ia_msg);
     }
     int gpl = (bpv4->type == TY_STRING || bpv4->type == TY_STRBUF || bpv4->type == TY_POLY) &&
@@ -18857,7 +18938,8 @@ static int promote_shared_stored_strings(Compiler *c) {
     if (!ret_start) an_returns_by_scope(c, &ret_start, &ret_list);
     /* every return tail (implicit + explicit) must be a shared slot read */
     int saw_tail = 0;
-    int shared_ok = an_returns_shared_handles(c, mi3, ret_start, ret_list, &saw_tail);
+    int fresh3 = 0;
+    int shared_ok = an_returns_shared_handles(c, mi3, ret_start, ret_list, &saw_tail, &fresh3);
     const char *lname3 = nt_str(nt, w, "name");
     Scope *ls3 = comp_scope_of(c, w);
     /* strbuf_mut_kind is keyed on name + scope only, so `rr << x` reports a
@@ -18905,6 +18987,7 @@ static int promote_shared_stored_strings(Compiler *c) {
     if (!clv3 || !strbuf_slot_eligible_shape(c, lname3, ls3, clv3)) continue;
     if (!caller_may_be_str) continue;
     c->strbuf_box[wv] = 1; changed = 1;
+    if (fresh3) c->scopes[mi3].ret_pub_fresh = 1;
     if (clv3->type != TY_POLY && (clv3->type != TY_STRBUF || !clv3->str_shared))
       {  clv3->type = TY_STRBUF; clv3->str_shared = 1; changed = 1;  }
   }
@@ -20478,6 +20561,9 @@ static int lift_poly_read(Compiler *c, const HandleArgTab *hat, SbMutTab *lifted
     lv->poly_lift |= POLY_LIFT_APPENDED;
   return 1;
 }
+/* lift_poly_read for a container store (strbuf_demand_store_leaf), which
+   runs ahead of the call-site tables */
+static int lift_poly_read_store(Compiler *c, int a) { return lift_poly_read(c, NULL, NULL, a); }
 /* Is call `n` in yielding method `m` a call of the method's own `&b`
    (`b.call(v)`, `b.(v)`, `b[v]`, `b.yield(v)`), which is spliced as a
    yield? */

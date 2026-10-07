@@ -3961,6 +3961,27 @@ int hash_nil_key_stored(Compiler *c, int key, TyKind kt) {
   return kt == TY_INT && comp_ntype(c, key) == TY_NIL;
 }
 
+/* --share-strings: String Array value v as a PolyArray holding each
+   element boxed as a handle of its own, for a slot whose elements the rule
+   shares (elems_handle) */
+void emit_str_array_handles(Compiler *c, int v, Buf *b) {
+  int ta = ++g_tmp, tp = ++g_tmp, ti = ++g_tmp;
+  buf_printf(b, "({ sp_StrArray *_t%d = ", ta);
+  emit_expr(c, v, b);
+  buf_printf(b, "; SP_GC_ROOT(_t%d); sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
+                " for (sp_int _t%d = 0; _t%d < sp_StrArray_length(_t%d); _t%d++)"
+                " sp_PolyArray_push(_t%d, sp_box_nullable_obj(sp_String_new_shared(sp_StrArray_get(_t%d, _t%d)),"
+                " SP_BUILTIN_STRBUF)); _t%d; })",
+             ta, tp, tp, ti, ti, ta, ti, tp, ta, ti, tp);
+}
+/* --share-strings: is block parameter lv, bound to an element of kind et, a
+   slot the scope holds as the shared handle (TY_STRBUF) over a String
+   element? Then each element is a fresh String the handle wraps, bound
+   into the slot, and no et-typed shadow declaration replaces it: the body's
+   reads were settled against the handle. */
+int elem_param_is_handle(const LocalVar *lv, TyKind et) {
+  return lv && lv->type == TY_STRBUF && et == TY_STRING;
+}
 void emit_hash_key(Compiler *c, int key, TyKind kt, Buf *b) {
   int kboxed = repr_of(c, key).kind == RK_BOXED;
   if (hash_key_misses(c, key, kt)) {
@@ -3995,6 +4016,16 @@ void emit_hash_key(Compiler *c, int key, TyKind kt, Buf *b) {
   if (kt == TY_POLY && !kboxed) {
     /* PolyPolyHash key: box the typed value into sp_RbVal */
     emit_boxed(c, key, b);
+    return;
+  }
+  /* a read marked to hand out a shared String's handle (a dynamic call's
+     argument the read also is, at another round) keys a String-keyed hash by
+     a copy of its bytes, which publishes nothing on the side channel */
+  if (kt == TY_STRING && comp_ntype(c, key) == TY_STRBUF && repr_of(c, key).handle) {
+    int t = ++g_tmp;
+    buf_printf(b, "({ sp_String *_t%d = ", t);
+    emit_expr(c, key, b);
+    buf_printf(b, "; _t%d ? sp_str_concat(sp_String_cstr(_t%d), (&(\"\\xff\")[1])) : NULL; })", t, t);
     return;
   }
   emit_expr(c, key, b);

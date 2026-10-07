@@ -92,10 +92,18 @@ typedef struct ShareRoute {
   int carry;           /* the node that hands the String along, or -1
                           (SHARE_CARRY_NONE); SHARE_CARRY_COPY when the
                           route hands over a copy whatever it reads */
+  int fresh_elems;     /* (with elems) the container's elements reach only the
+                          route's holder: an element iterator answering its
+                          receiver whose value is dropped, so a container
+                          whose elements no name holds hands on Strings no
+                          other name holds */
   char *msg;           /* (a kept route's message) */
 } ShareRoute;
 enum { SHARE_CARRY_NONE = -1, SHARE_CARRY_COPY = -2 };
 ShareRoute share_route(int site, int value, int elems);
+/* Is node n's value a String the walk reached and found no identity in (a
+   fresh one no other name holds)? */
+int share_node_fresh(const Compiler *c, int n);
 /* Does the rule share the elements of node n's value (a container)? */
 int share_node_elems_share(const Compiler *c, int n);
 /* Can node n's value (a container) be reached again once its expression

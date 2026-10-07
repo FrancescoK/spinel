@@ -1756,6 +1756,12 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
     return sh_container_default(F, c, n, rv, blk);
   }
   if (rt == TY_OPENSTRUCT) return sh_ostruct_call(F, c, n, name, rv, blk);
+  /* File's class methods, when no user class is named File (a reopen's own
+     methods were taken as user methods above) */
+  if (rt == TY_CLASS && nt_kind(nt, recv) == NK_ConstantReadNode && is_file_class_name(nt_str(nt, recv, "name"))) {
+    int fs = bop_share_named(BOP_FILE_CLASS, name);
+    if (fs) return sh_builtin(F, c, n, fs, rv, blk, 0);
+  }
   TyKind fam = sh_family(rt);
   /* an iterator that keeps none of its block's values drops the block's
      own: a call there hands its method's value to no caller. (An
@@ -2857,6 +2863,12 @@ int share_elem_holder(const Compiler *c, int h) { return share_elem_holder_root(
 
 
 static int sh_node_root(const ShareFacts *F, int n, int elems);
+int share_node_fresh(const Compiler *c, int n) {
+  const ShareFacts *F = c->share;
+  if (!F || n < 0 || n >= F->nnodes || F->nval[n] != -1) return 0;
+  TyKind t = c->ntype[n];
+  return t == TY_STRING || t == TY_STRBUF;
+}
 int share_node_anchored(const Compiler *c, int n) {
   const ShareFacts *F = c->share;
   int r = sh_node_root(F, n, 0);
@@ -2908,7 +2920,9 @@ static int sh_carries_handle(const Compiler *c, int n) {
   Repr r = repr_of(c, n);
   /* a bang method on a handle local: a write hands over the local's handle
      (emit_strbuf_value) */
-  return r.kind == RK_STRBUF || r.strbuf_src != RS_NONE || sh_bang_self_slot(c, n);
+  return r.kind == RK_STRBUF || r.strbuf_src != RS_NONE || sh_bang_self_slot(c, n) ||
+         /* a boxed variable's read lifted into the handle (poly_strbuf_lift) */
+         r.poly_lift;
 }
 
 /* The class of node n's value (with elems, of its elements), or -1. */
@@ -2947,6 +2961,14 @@ static int sh_route_why(const Compiler *c, const ShareRoute *q) {
   if (v < 0 && F && !q->elems && q->to >= 0 && q->value >= 0 && q->value < F->nnodes &&
       F->nval[q->value] == -1)
     v = sh_route_to_root(c, q);
+  /* the same for the elements of a container the walk reached and found
+     none in -- a fresh one (`s.split("\n")`) or one whose elements no name
+     holds -- where the route's site vouches that they reach only its holder
+     (fresh_elems: `each` over it, its value dropped); an iterator that keeps
+     the elements it yields (partition, select) names them again */
+  if (v < 0 && F && q->elems && q->fresh_elems && q->to >= 0 && q->value >= 0 && q->value < F->nnodes &&
+      (F->nval[q->value] == -1 || (F->nval[q->value] >= 0 && F->elem[sh_root(F, F->nval[q->value])] < 0)))
+    v = sh_route_to_root(c, q);
   if (v < 0) return SH_ROUTE_UNSEEN;
   if (q->to >= 0 && sh_route_to_root(c, q) != v) return SH_ROUTE_UNSEEN;
   if (!repr_str_class_shares(F->flags[v], sh_class_holders(F, v))) return SH_ROUTE_OK;
@@ -2963,7 +2985,7 @@ int share_route_defer(Compiler *c, const ShareRoute *q, const char *msg) {
   for (int i = 0; i < c->nshare_route; i++) {
     const ShareRoute *r = &c->share_route[i];
     if (r->site == q->site && r->value == q->value && r->elems == q->elems && r->to == q->to &&
-        r->to_elems == q->to_elems && r->carry == q->carry &&
+        r->to_elems == q->to_elems && r->carry == q->carry && r->fresh_elems == q->fresh_elems &&
         (r->to_name == q->to_name || (r->to_name && q->to_name && sp_streq(r->to_name, q->to_name))))
       return 1;
   }

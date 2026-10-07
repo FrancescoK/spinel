@@ -24692,7 +24692,9 @@ void emit_handle_inspect(Compiler *c, int recv, TyKind rt, Buf *b) {
    from; its implicit-self read hands out the slot itself
    (emit_implicit_self_member). Answers 1 when it emitted the call. */
 static int emit_deep_return_pickup(Compiler *c, int id, Buf *b) {
-  if (!c->strbuf_box[id] || nt_ref(c->nt, id, "block") >= 0 ||
+  /* (the call answers its String as a const char *: a method whose value
+     widened past a String after the pickup was marked answers a box) */
+  if (!c->strbuf_box[id] || nt_ref(c->nt, id, "block") >= 0 || comp_ntype(c, id) == TY_POLY ||
       !(nt_ref(c->nt, id, "receiver") < 0 ? implicit_self_reader_cid(c, id) < 0
                                           : comp_ntype(c, nt_ref(c->nt, id, "receiver")) == TY_CLASS))
     return 0;

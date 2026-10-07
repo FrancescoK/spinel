@@ -5263,7 +5263,10 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
   Scope *csc = (p0 && !autosplat) ? comp_scope_of(c, block) : NULL;
   LocalVar *clv0 = (csc && p0) ? scope_local(csc, p0) : NULL;
   TyKind csaved0 = clv0 ? clv0->type : TY_UNKNOWN;
-  int use_shadow = clv0 && clv0->type != et_elem && et_elem != TY_UNKNOWN;
+  /* a parameter the scope holds as the shared handle binds each String
+     element through it (elem_param_is_handle) rather than shadowing it */
+  int as_handle = !autosplat && elem_param_is_handle(clv0, et_elem);
+  int use_shadow = !as_handle && clv0 && clv0->type != et_elem && et_elem != TY_UNKNOWN;
   if (use_shadow) {
     clv0->type = et_elem;
     for (int j = 0; j < bn; j++) infer_subtree(c, bb[j]);
@@ -5282,6 +5285,10 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
     emit_indent(g_pre, bodyIndent); buf_puts(g_pre, "{\n");
     emit_indent(g_pre, innerIndent); emit_ctype(c, et_elem, g_pre);
     buf_printf(g_pre, " lv_%s = sp_%sArray_get(_t%d, _t%d);\n", p0, k, trecv, ti);
+  }
+  else if (as_handle) {
+    emit_indent(g_pre, bodyIndent);
+    buf_printf(g_pre, "lv_%s = sp_String_new_shared(sp_%sArray_get(_t%d, _t%d));\n", p0, k, trecv, ti);
   }
   else if (p0) {
     emit_indent(g_pre, bodyIndent);

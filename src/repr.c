@@ -662,7 +662,9 @@ static Repr repr_of_share_holder(Compiler *c, const ShareHolder *h) {
 
 /* A container holder whose elements share: are they boxed (a box holds the
    handle), or typed Strings (`const char *` elements)? 1, 0, or -1 for a
-   holder that is no container. */
+   holder that is no container. A global, a constant and a class variable
+   count too: a String Array constant whose elements a block parameter
+   changes as the handle holds copies of them */
 static int repr_share_elems_carried(Compiler *c, const ShareHolder *h) {
   TyKind t = TY_UNKNOWN;
   if (h->kind == SHK_LOCAL) t = c->scopes[h->scope].locals[h->local].type;
@@ -670,6 +672,20 @@ static int repr_share_elems_carried(Compiler *c, const ShareHolder *h) {
     int iv = comp_ivar_index(&c->classes[h->cid], h->name);
     if (iv < 0) return -1;
     t = c->classes[h->cid].ivar_types[iv];
+  }
+  else if (h->kind == SHK_GVAR || h->kind == SHK_CONST) t = repr_of_share_holder(c, h).ty;
+  else if (h->kind == SHK_CVAR) {
+    /* every class's of the name, which the facts key as one: a typed
+       container of any of them holds copies */
+    int any = -1;
+    for (int k = 0; k < c->nclasses; k++) {
+      int i = h->name ? comp_cvar_index(&c->classes[k], h->name) : -1;
+      TyKind ct = i >= 0 ? c->classes[k].cvar_types[i] : TY_UNKNOWN;
+      if (!ty_is_array(ct) && !ty_is_hash(ct)) continue;
+      if (ct == TY_STR_ARRAY || ct == TY_STR_STR_HASH || ct == TY_INT_STR_HASH) return 0;
+      any = 1;
+    }
+    return any;
   }
   if (!ty_is_array(t) && !ty_is_hash(t)) return -1;
   return t == TY_STR_ARRAY || t == TY_STR_STR_HASH || t == TY_INT_STR_HASH ? 0 : 1;
@@ -875,6 +891,7 @@ Repr repr_of_cvar(const Compiler *c, int cid, int idx) {
   if (repr_may_nil(r.ty, 1)) r.may_nil = 1;
   if (r.ty == TY_STRBUF && ci->cvar_str_shared[idx]) r.handle = 1;
   r.share = r.handle && c->share_strings;
+  r.elems_handle = ci->cvar_elems_shared[idx] && r.ty == TY_POLY_ARRAY;
   r.dyn_cls = repr_dyn_cls(c, r.ty);
   return r;
 }
