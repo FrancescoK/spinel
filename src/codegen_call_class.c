@@ -2649,6 +2649,20 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
            the arg's runtime class, so a non-literal boolean matches (#2966).
            (Only these builtins emit as a usable class value here.) */
         int o = ++g_tmp;
+        /* a builtin the program reopens (`class Numeric; def kb`) has a
+           program class entry, but its values carry the builtin's tag, not
+           that entry: test them as is_a? does */
+        if (is_builtin_reopen(rcn2)) {
+          char tv[24]; snprintf(tv, sizeof tv, "_t%d", o);
+          Buf tb = {0, 0, 0};
+          if (emit_poly_isa_test(c, rcn2, tv, 0, &tb) && tb.p) {
+            buf_printf(b, "({ sp_RbVal _t%d = ", o); emit_boxed(c, argv[0], b);
+            buf_printf(b, "; (sp_bool)(%s); })", tb.p);
+            free(tb.p);
+            return 1;
+          }
+          free(tb.p);
+        }
         buf_printf(b, "({ sp_Class _cl%d = ", _clt); emit_expr(c, recv, b);
         buf_printf(b, "; sp_RbVal _t%d = ", o); emit_boxed(c, argv[0], b);
         buf_printf(b, "; sp_poly_is_a(_t%d, _cl%d); })", o, _clt);
