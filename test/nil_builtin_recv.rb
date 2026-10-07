@@ -72,7 +72,7 @@ def operands(k)
   show("insert") { a.insert((log << :i0; 0), *[(log << :i1; 7), (log << :i2; 8)]) }
   show("push") { b.push([(log << :b0; 2)], (log << :b1; [3]), [[(log << :b2; 4)].first]) }
   show("nilarg") { s.split((log << :n0; nil), (log << :n1; 2)) }
-  show("interp") { s.split("#{log << :d0}", (log << :d1; 2)) }
+  show("interp") { s.split("#{log << :d0}", 2) }
   show("or") { s.ljust((log << :e0; 9), (log << :e1; "*") || (log << :no; "-")) }
   show("log") { log }
   w = 0

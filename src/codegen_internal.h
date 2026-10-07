@@ -688,6 +688,16 @@ int arg_ran_first(int node, int from);
 /* The handle temp a shared String slot's argument took when it ran first
    (emit_arg_temp), -1 when there is none. */
 int ran_first_handle(int node);
+/* An operand an arm holds in a temp of its own ahead of what it runs next
+   (its other operands, a box, the dispatch): `<ctype> _t<t> = <operand>;`
+   and its root (sp_RbVal when `boxed` or ty is TY_POLY, else ty's C type),
+   then `sep`, into b, and t is the temp. An operand that ran first
+   (arg_ran_first: the nil arm's head, an argument hoist) and reads as its
+   temp unconverted is held by that temp already, declared and rooted in
+   front of the call as hold_recv_open takes it: nothing is written and
+   that temp is the answer, so the arm reads it instead of copying it into
+   a second rooted slot. */
+int hold_operand(Compiler *c, int node, TyKind ty, int boxed, int t, const char *sep, Buf *b);
 int emit_splat_gather(Compiler *c, Scope *m, const int *argv, const ArgLayout *L);
 /* Does parameter i take the argument written at index i ahead of the first
    splat, however long the splats run? */

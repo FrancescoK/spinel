@@ -13449,25 +13449,19 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
     int has_splat = 0;
     for (int i = 0; i < argc; i++)
       if (nt_type(nt, argv[i]) && sp_streq(nt_type(nt, argv[i]), "SplatNode")) has_splat = 1;
-    buf_printf(b, "({ sp_RbVal _t%d = ", tsv); emit_boxed(c, recv, b);
     /* The key list below allocates -- a PolyArray per splat, plus the copies
        into it -- and the receiver is not read until after all of that. A
        receiver that is a temporary (`poly(1).slice(*keys)`) was collected in
        between and the slice answered from freed memory. */
-    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", tsv);
+    buf_puts(b, "({ ");
+    tsv = hold_operand(c, recv, TY_POLY, 1, tsv, " ", b);
     /* the arguments next, held and bound for every side below: CRuby runs
        them before the call, and the raise for a receiver with no slice
        names them as NoMethodError#args */
     int vmark = g_n_argov, held = !has_splat && argc <= 2;
     int tav[2] = {0, 0};
-    for (int i = 0; held && i < argc; i++) {
-      TyKind at = comp_ntype(c, argv[i]);
-      tav[i] = ++g_tmp;
-      emit_ctype(c, at, b); buf_printf(b, " _t%d = ", tav[i]); emit_expr(c, argv[i], b);
-      if (at == TY_POLY) buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", tav[i]);
-      else if (needs_root(at)) buf_printf(b, "; SP_GC_ROOT(_t%d); ", tav[i]);
-      else buf_puts(b, "; ");
-    }
+    for (int i = 0; held && i < argc; i++)
+      tav[i] = hold_operand(c, argv[i], comp_ntype(c, argv[i]), 0, ++g_tmp, " ", b);
     for (int i = 0; held && i < argc; i++) view_bind(argv[i], "_t%d", tav[i]);
     int tkeys = -1;
     if (has_splat) {
