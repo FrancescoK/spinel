@@ -8001,6 +8001,18 @@ static int infer_methods_listed(Compiler *c, int recv, TyKind rt, const char *na
   return an_value_methods_class(c, recv, rt, name, argc, argv) != NULL;
 }
 
+/* Complex(x, exception: false) or Rational(x, exception: false) can answer
+   nil: a String x, or a nil, boxed or nullable numeric x beside a keyword
+   argument (#3893); a Boolean x answers nil under Complex too. */
+static int conv_arg_can_answer_nil(Compiler *c, const NodeTable *nt, const char *name, const int *argv) {
+  TyKind a0 = infer_type(c, argv[0]);
+  if (a0 == TY_STRING) return 1;
+  if (nt_kind(nt, argv[1]) != NK_KeywordHashNode) return 0;
+  if (a0 == TY_NIL || a0 == TY_POLY) return 1;
+  if (a0 == TY_BOOL && sp_streq(name, "Complex")) return 1;
+  return (a0 == TY_INT || a0 == TY_FLOAT) && nullable_int_value(c, argv[0]);
+}
+
 static TyKind infer_call_inner(Compiler *c, int id) {
   TyKind prelude = infer_call_prelude(c, id);
   if (prelude != TY_UNKNOWN) return prelude;
@@ -8587,11 +8599,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   /* Exception-suppressed String or nullable conversion can answer nil, so it
      cannot use the unboxed numeric value type (#3893). */
   if (recv < 0 && (sp_streq(name, "Complex") || sp_streq(name, "Rational")) &&
-      argc == 2 && (infer_type(c, argv[0]) == TY_STRING ||
-                    ((infer_type(c, argv[0]) == TY_NIL || infer_type(c, argv[0]) == TY_POLY ||
-                      ((infer_type(c, argv[0]) == TY_INT || infer_type(c, argv[0]) == TY_FLOAT) &&
-                       nullable_int_value(c, argv[0]))) &&
-                     nt_kind(nt, argv[1]) == NK_KeywordHashNode)) &&
+      argc == 2 && conv_arg_can_answer_nil(c, nt, name, argv) &&
       nt_type(nt, argv[1]) &&
       (sp_streq(nt_type(nt, argv[1]), "KeywordHashNode") ||
        sp_streq(nt_type(nt, argv[1]), "HashNode"))) {
