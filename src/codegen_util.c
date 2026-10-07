@@ -1548,7 +1548,25 @@ void emit_poly_lift_ref(const char *ref, Buf *b) {
 void emit_local_ref(Compiler *c, int scope_node, const char *name, Buf *b) {
   emit_scope_local_ref(c, scope_node >= 0 ? comp_scope_of(c, scope_node) : NULL, name, b);
 }
+/* Is `rn`, what rename_local answers for local `name`, the shadow a
+   shared-handle shim reads and writes that local through (`_sbN`, the
+   shim's `lv__sbN`)? Only as a rename: a local the program itself names
+   `_sb1` is its own. */
+static int sb_shim_shadow(const char *name, const char *rn) {
+  return rn != name && !strncmp(rn, "_sb", 3) && isdigit((unsigned char)rn[3]);
+}
 void emit_scope_local_ref(Compiler *c, Scope *s, const char *name, Buf *b) {
+  /* Inside a shared-handle shim the local reads as the shim's shadow, a
+     plain C local the shim declares, even when the local itself lives in a
+     cell or a capture field: that slot holds the handle, which the shim
+     reads before and writes back after. The cell form spelled the shadow
+     `(*_cell__sbN)`, and the capture form handed the arm the handle slot,
+     neither of which compiles. */
+  const char *rn = rename_local(name);
+  if (sb_shim_shadow(name, rn)) {
+    buf_printf(b, "lv_%s", rn);
+    return;
+  }
   if (g_cap_struct && g_cap_names && nameset_has(g_cap_names, name)) {
     /* A TY_PROC capture is stored as (sp_int)(uintptr_t)sp_Proc* in the cell.
        Cast it back to sp_Proc* so call sites work. A heap-object cell is a real
@@ -1567,12 +1585,11 @@ void emit_scope_local_ref(Compiler *c, Scope *s, const char *name, Buf *b) {
        follow -- the prologue declared `lv__y1_n` while the body read
        `(*_cell_n)`, which nothing declared (#4088). Outside an inline the map
        is empty and this is the name itself. */
-    const char *crn = rename_local(name);
-    if (lv->type == TY_PROC) buf_printf(b, "(sp_Proc *)(uintptr_t)(*_cell_%s)", crn);
-    else buf_printf(b, "(*_cell_%s)", crn);
+    if (lv->type == TY_PROC) buf_printf(b, "(sp_Proc *)(uintptr_t)(*_cell_%s)", rn);
+    else buf_printf(b, "(*_cell_%s)", rn);
     return;
   }
-  buf_printf(b, "lv_%s", rename_local(name));
+  buf_printf(b, "lv_%s", rn);
 }
 void emit_yblk_ref(Buf *b) {
   /* The lowered method's block param: the declared &block name when the def

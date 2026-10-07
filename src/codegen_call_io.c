@@ -622,7 +622,7 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
                replace its contents, where assigning the bytes to the handle
                did not compile (#7314) */
             if (sbp && strbuf_slot_ref(c, argv[1], hr, sizeof hr)) buf_printf(b, "; sp_String_set_read_bytes(%s, _t%d)", hr, tsp);
-            else if (sbp) buf_printf(b, "; lv_%s = _t%d", rename_local(sbp), tsp); }
+            else if (sbp) { buf_puts(b, "; "); emit_local_ref(c, argv[1], sbp, b); buf_printf(b, " = _t%d", tsp); } }
             buf_printf(b, "; _t%d", tsp);
           }
           buf_puts(b, "; })");
@@ -762,8 +762,9 @@ static int emit_boxed_positional_io(Compiler *c, int recv, const char *name, int
   int tpr = ++g_tmp;
   buf_printf(b, "const char *_t%d = sp_File_pread(_t%d, _t%d, _t%d); ", tpr, tio, tfirst, toff);
   if (bufn) {
-    if (bt == TY_STRING) buf_printf(b, "lv_%s = _t%d; ", rename_local(bufn), tpr);
-    else buf_printf(b, "lv_%s = _t%d ? sp_box_str(_t%d) : sp_box_nil(); ", rename_local(bufn), tpr, tpr);
+    emit_local_ref(c, argv[2], bufn, b);
+    if (bt == TY_STRING) buf_printf(b, " = _t%d; ", tpr);
+    else buf_printf(b, " = _t%d ? sp_box_str(_t%d) : sp_box_nil(); ", tpr, tpr);
   }
   buf_printf(b, "_t%d; })", tpr);
   return 1;
@@ -989,7 +990,9 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
         buf_puts(b, "({ sp_str_check_mutable("); emit_expr(c, argv[1], b); buf_puts(b, "); ");
         buf_printf(b, "const char *_t%d = sp_File_read_n(%s, ", trd, r);
         emit_int_expr(c, argv[0], b);
-        buf_printf(b, "); lv_%s = _t%d; _t%d; })", bnm ? rename_local(bnm) : "?", trd, trd);
+        buf_puts(b, "); ");
+        emit_local_ref(c, argv[1], bnm, b);
+        buf_printf(b, " = _t%d; _t%d; })", trd, trd);
       }
       else {
         /* read(nil) is read with no length: the rest of the stream */
@@ -1050,7 +1053,11 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
       buf_printf(b, "sp_File_pread(%s, ", r); emit_int_expr_conv(c, argv[0], b); buf_puts(b, ", ");
       if (argc >= 2) emit_int_expr_offt(c, argv[1], b); else buf_puts(b, "0");
       buf_puts(b, ")");
-      if (bufn) buf_printf(b, "; lv_%s = _t%d; _t%d; })", rename_local(bufn), tpr, tpr);
+      if (bufn) {
+        buf_puts(b, "; ");
+        emit_local_ref(c, argv[2], bufn, b);
+        buf_printf(b, " = _t%d; _t%d; })", tpr, tpr);
+      }
       free(rb.p); return 1;
     }
     if (sp_streq(name, "pwrite") && argc >= 1) {
@@ -1083,7 +1090,12 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
         if (ob >= 0) {
           char hr[1024];
           if (strbuf_slot_ref(c, ob, hr, sizeof hr)) snprintf(obset, sizeof obset, "sp_String_set_read_bytes(%s, _t%d); ", hr, tob);
-          else snprintf(obset, sizeof obset, "lv_%s = _t%d; ", rename_local(nt_str(nt, ob, "name")), tob);
+          else {
+            Buf lb; memset(&lb, 0, sizeof lb);
+            emit_local_ref(c, ob, nt_str(nt, ob, "name"), &lb);
+            snprintf(obset, sizeof obset, "%s = _t%d; ", lb.p ? lb.p : "", tob);
+            free(lb.p);
+          }
         }
         if (no_exc8) {
           int te = ++g_tmp;
@@ -1151,7 +1163,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
              replace its contents, where assigning the bytes to the handle
              did not compile (#7314) */
           if (sbn && strbuf_slot_ref(c, argv[1], hr, sizeof hr)) buf_printf(b, "; sp_String_set_read_bytes(%s, _t%d)", hr, tsr);
-          else if (sbn) buf_printf(b, "; lv_%s = _t%d", rename_local(sbn), tsr); }
+          else if (sbn) { buf_puts(b, "; "); emit_local_ref(c, argv[1], sbn, b); buf_printf(b, " = _t%d", tsr); } }
         buf_printf(b, "; _t%d; })", tsr);
       }
       free(rb.p); return 1;
