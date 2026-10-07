@@ -143,7 +143,7 @@ SPINEL_OPENSSL_LIBDIR := $(OPENSSL_PREFIX)/lib
 endif
 endif
 endif
-BUNDLED_NATIVE_OBJS = packages/json/sp_json.o packages/stringio/sp_stringio.o packages/strscan/sp_strscan.o packages/base64/sp_base64.o packages/tmpdir/sp_tmpdir.o packages/zlib/sp_zlib.o
+BUNDLED_NATIVE_OBJS = packages/json/sp_json.o packages/stringio/sp_stringio.o packages/strscan/sp_strscan.o packages/base64/sp_base64.o packages/tmpdir/sp_tmpdir.o packages/zlib/sp_zlib.o packages/pty/sp_pty.o
 ifeq ($(OPENSSL_AVAILABLE),yes)
 BUNDLED_NATIVE_OBJS += packages/openssl/sp_openssl.o
 endif
@@ -550,6 +550,15 @@ packages/tmpdir/sp_tmpdir_mt.o: packages/tmpdir/sp_tmpdir.c \
                                 lib/spinel/runtime.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h lib/sp_compat.h
 	$(CC) -c $(COPT) -Wno-all $(SEC_FLAGS) $(PKG_MT_FLAGS) -Ilib packages/tmpdir/sp_tmpdir.c -o $@
 
+# pty: PTY.spawn, a child on a new pseudo-terminal (posix_openpt + fork).
+# Pure C over libc; no wasm32-wasi object, since WASI has no fork.
+packages/pty/sp_pty.o: packages/pty/sp_pty.c \
+                       lib/spinel/runtime.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h lib/sp_compat.h
+	$(CC) -c $(COPT) -Wno-all $(SEC_FLAGS) -Ilib packages/pty/sp_pty.c -o $@
+packages/pty/sp_pty_mt.o: packages/pty/sp_pty.c \
+                          lib/spinel/runtime.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h lib/sp_compat.h
+	$(CC) -c $(COPT) -Wno-all $(SEC_FLAGS) $(PKG_MT_FLAGS) -Ilib packages/pty/sp_pty.c -o $@
+
 # zlib: DEFLATE, zlib and gzip in the package's own C. No system libz and so
 # no availability probe: a host with libz.so.1 and no zlib.h -- an ordinary
 # box without the -dev package -- would drop the package and give a green
@@ -663,7 +672,7 @@ $(SP_RT_WASI_LIB): $(RE_WASI_OBJ) $(WASI_SHIM_OBJ) $(addprefix build/wasm32-wasi
 	@mkdir -p $(@D)
 	rm -f $@ && $(WASI_AR) rcs $@ $^
 
-BUNDLED_NATIVE_WASI_OBJS = $(patsubst %.o,%_wasi.o,$(filter-out packages/openssl/% packages/ffi/%,$(BUNDLED_NATIVE_OBJS)))
+BUNDLED_NATIVE_WASI_OBJS = $(patsubst %.o,%_wasi.o,$(filter-out packages/openssl/% packages/ffi/% packages/pty/%,$(BUNDLED_NATIVE_OBJS)))
 packages/%_wasi.o: packages/%.c lib/spinel/runtime.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h $(WASI_SHIM_HDRS)
 	$(WASI_CC) -c $(COPT) -Wno-all $(SEC_FLAGS) $(WASI_CFLAGS) -Ilib -I$(@D) $< -o $@
 
