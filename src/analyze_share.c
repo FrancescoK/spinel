@@ -95,6 +95,11 @@ typedef struct ShareFacts {
   /* the calls sh_peek_args recorded: n for one that only reads its
      arguments, -n-1 for one that answers them */
   int *pk, npk, cpk;
+  /* per node, a lambda a local holds and only calls (sh_mark_local_lambdas):
+     the lambda node itself, and each `f.call(...)` of that local; -1 for
+     any other node, or NULL when the program has none (read by
+     share_value_fresh) */
+  int *lam;
   int *hcount;         /* per root, once built: holders storing a String */
   unsigned char *anchored;   /* per root, once built: a container of the class
                                 can be reached again (sh_finalize) */
@@ -2725,7 +2730,7 @@ static void sh_free(ShareFacts *F) {
   free(F->parent); free(F->elem); free(F->nhold); free(F->nmem); free(F->nelem); free(F->hidx);
   free(F->owner); free(F->hcount); free(F->anchored); free(F->mconst);
   free(F->mut_n); free(F->mut_v);
-  free(F->fl_site); free(F->fl_val); free(F->fl_kind); free(F->pk);
+  free(F->fl_site); free(F->fl_val); free(F->fl_kind); free(F->pk); free(F->lam);
   free(F->lsc); free(F->ret_m); free(F->ret_v); free(F->ret_done); free(F->unused); free(F->fresh_cont);
   if (F->own_elig) free(F->byref_elig);
   free(F->byval); free(F->byval_done);
@@ -3051,6 +3056,93 @@ static void sh_mark_printed(ShareFacts *F, Compiler *c) {
   }
 }
 
+/* The index of local node nd's variable among every scope's locals (off:
+   each scope's first), -1 for none. */
+static int sh_local_idx(Compiler *c, const int *off, int nd) {
+  Scope *s = comp_scope_of(c, nd);
+  const char *nm = nt_str(c->nt, nd, "name");
+  LocalVar *lv = s && nm ? scope_local(s, nm) : NULL;
+  return lv ? off[s - c->scopes] + (int)(lv - s->locals) : -1;
+}
+static int sh_name_cmp(const void *a, const void *b) {
+  return strcmp(*(const char *const *)a, *(const char *const *)b);
+}
+/* A local written once, with a lambda literal, read only as the receiver of
+   its calls (`f = -> { ... }; f.call(x)`): not a parameter, not captured
+   (no read or write of the name at depth > 0 anywhere), never handed on.
+   Each call answers that lambda's value: F->lam names the lambda for itself
+   and for each call (share_value_fresh reads it). One pass over each node
+   kind. */
+static void sh_mark_local_lambdas(ShareFacts *F, Compiler *c) {
+  const NodeTable *nt = c->nt;
+  if (comp_kind_first(c, NK_LambdaNode) < 0) return;
+  int *off = malloc(sizeof(int) * (size_t)(c->nscopes + 1));
+  if (!off) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  off[0] = 0;
+  for (int k = 0; k < c->nscopes; k++) off[k + 1] = off[k] + c->scopes[k].nlocals;
+  int nl = off[c->nscopes] > 0 ? off[c->nscopes] : 1;
+  int *cand = malloc(sizeof(int) * (size_t)nl), *cnt = calloc((size_t)nl, sizeof(int));
+  const char **outer = NULL;
+  int nouter = 0, couter = 0;
+  if (!cand || !cnt) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int i = 0; i < nl; i++) cand[i] = -1;
+  static const NodeKind writes[] = { NK_LocalVariableWriteNode, NK_LocalVariableOrWriteNode, NK_LocalVariableAndWriteNode,
+                                     NK_LocalVariableOperatorWriteNode, NK_LocalVariableTargetNode, NK_LocalVariableReadNode };
+  for (unsigned w = 0; w < sizeof writes / sizeof writes[0]; w++)
+    NT_FOREACH_KIND(nt, writes[w], n) {
+      const char *nm = nt_str(nt, n, "name");
+      if (nm && nt_int(nt, n, "depth", 0) > 0) {
+        if (nouter >= couter) {
+          couter = couter ? couter * 2 : 16;
+          outer = realloc(outer, sizeof(char *) * (size_t)couter);
+          if (!outer) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+        }
+        outer[nouter++] = nm;
+        continue;
+      }
+      int idx = sh_local_idx(c, off, n);
+      if (idx < 0) continue;
+      if (writes[w] == NK_LocalVariableReadNode) { cnt[idx]++; continue; }
+      int v = writes[w] == NK_LocalVariableWriteNode ? an_unparen(nt, nt_ref(nt, n, "value")) : -1;
+      cand[idx] = cand[idx] == -1 && v >= 0 && nt_kind(nt, v) == NK_LambdaNode ? v : -2;
+    }
+  /* each read must be the receiver of a call of the lambda */
+  NT_FOREACH_KIND(nt, NK_CallNode, n) {
+    int r = nt_ref(nt, n, "receiver"), b = nt_ref(nt, n, "block");
+    if (r < 0 || nt_kind(nt, r) != NK_LocalVariableReadNode || nt_int(nt, r, "depth", 0) > 0 || b >= 0 ||
+        bop_share_named(BOP_CALLABLE, nt_str(nt, n, "name")) != BSH_CALL)
+      continue;
+    int idx = sh_local_idx(c, off, r);
+    if (idx >= 0 && cand[idx] >= 0) cnt[idx]--;
+  }
+  if (nouter > 1) qsort(outer, (size_t)nouter, sizeof *outer, sh_name_cmp);
+  int any = 0;
+  for (int k = 0; k < c->nscopes; k++)
+    for (int i = 0; i < c->scopes[k].nlocals; i++) {
+      int idx = off[k] + i;
+      LocalVar *lv = &c->scopes[k].locals[i];
+      if (cand[idx] < 0 || cnt[idx] != 0 || lv->is_param || lv->is_block_param || lv->is_cell || lv->cell_outlives ||
+          (nouter > 0 && bsearch(&lv->name, outer, (size_t)nouter, sizeof *outer, sh_name_cmp)))
+        cand[idx] = -1;
+      else any = 1;
+    }
+  if (any) {
+    F->lam = malloc(sizeof(int) * (size_t)(F->nnodes > 0 ? F->nnodes : 1));
+    if (!F->lam) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int i = 0; i < F->nnodes; i++) F->lam[i] = -1;
+    for (int i = 0; i < nl; i++) if (cand[i] >= 0) F->lam[cand[i]] = cand[i];
+    NT_FOREACH_KIND(nt, NK_CallNode, n) {
+      int r = nt_ref(nt, n, "receiver");
+      if (r < 0 || nt_kind(nt, r) != NK_LocalVariableReadNode || nt_int(nt, r, "depth", 0) > 0 ||
+          nt_ref(nt, n, "block") >= 0 || bop_share_named(BOP_CALLABLE, nt_str(nt, n, "name")) != BSH_CALL)
+        continue;
+      int idx = sh_local_idx(c, off, r);
+      if (idx >= 0 && cand[idx] >= 0) F->lam[n] = cand[idx];
+    }
+  }
+  free(off); free(cand); free(cnt); free(outer);
+}
+
 static ShareFacts *sh_build(Compiler *c, int closed) {
   const NodeTable *nt = c->nt;
   cplan_targets_drop();
@@ -3105,6 +3197,7 @@ static ShareFacts *sh_build(Compiler *c, int closed) {
   NT_FOREACH_KIND(nt, NK_MultiWriteNode, mw)
     if (sh_masgn_plain(nt, mw)) F->unused[nt_ref(nt, mw, "value")] |= SHU_SPLIT;
   sh_mark_printed(F, c);
+  sh_mark_local_lambdas(F, c);
   sh_jumps(F, c);
   /* a loop body's last statement drops its value too */
   static const NodeKind loops[] = { NK_WhileNode, NK_UntilNode, NK_ForNode };
@@ -3296,21 +3389,23 @@ int share_call_fresh(Compiler *c, int call) {
   return 1;
 }
 /* Does the subtree at n hold a `next` that leaves it (not one in a nested
-   block, lambda, method or loop)? */
-static int sh_has_next(const NodeTable *nt, int n) {
+   block, lambda, method or loop)? With any, also a break or a return. */
+static int sh_has_jump_k(const NodeTable *nt, int n, int any) {
   if (n < 0) return 0;
   NodeKind k = nt_kind(nt, n);
-  if (k == NK_NextNode) return 1;
+  if (k == NK_NextNode || (any && (k == NK_BreakNode || k == NK_ReturnNode))) return 1;
   if (k == NK_BlockNode || k == NK_LambdaNode || k == NK_DefNode || k == NK_WhileNode || k == NK_UntilNode ||
       k == NK_ForNode)
     return 0;
-  for (int i = 0; i < nt_num_refs(nt, n); i++) if (sh_has_next(nt, nt_ref_at(nt, n, i))) return 1;
+  for (int i = 0; i < nt_num_refs(nt, n); i++) if (sh_has_jump_k(nt, nt_ref_at(nt, n, i), any)) return 1;
   for (int i = 0; i < nt_num_arrs(nt, n); i++) {
     int m = 0; const int *ids = nt_arr_at(nt, n, i, &m);
-    for (int j = 0; j < m; j++) if (sh_has_next(nt, ids[j])) return 1;
+    for (int j = 0; j < m; j++) if (sh_has_jump_k(nt, ids[j], any)) return 1;
   }
   return 0;
 }
+static int sh_has_next(const NodeTable *nt, int n) { return sh_has_jump_k(nt, n, 0); }
+static int sh_has_jump(const NodeTable *nt, int n) { return sh_has_jump_k(nt, n, 1); }
 
 /* Is node r a temporary container (its own expression, held by no name)
    whose elements are new Strings: an Array literal of them, or `map(&:sym)`
@@ -3352,6 +3447,15 @@ int share_value_fresh(Compiler *c, int n, int depth) {
   if (k == NK_CallNode && c->share && n < c->share->nnodes && c->share->nval[n] == -1) return 1;
   if (k != NK_CallNode) return 0;
   if (share_call_fresh(c, n)) return 1;
+  /* a call of a lambda a local holds and only calls, whose value (with no
+     next, break or return) is a new String */
+  const ShareFacts *F = c->share;
+  int lam = F && F->lam && n < F->nnodes ? F->lam[n] : -1;
+  if (lam >= 0 && lam != n) {
+    int body = nt_ref(nt, lam, "body");
+    int bn = 0; const int *bb = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &bn) : NULL;
+    return bn > 0 && !sh_has_jump(nt, body) && share_value_fresh(c, bb[bn - 1], depth + 1);
+  }
   /* an element read of a temporary container of new Strings */
   int recv = nt_ref(nt, n, "receiver");
   const char *nm = nt_str(nt, n, "name");
