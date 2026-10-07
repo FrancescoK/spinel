@@ -122,7 +122,8 @@ int repr_write_share(const Compiler *c, int node) {
   Compiler *mc = (Compiler *)c;
   const NodeTable *nt = c->nt;
   NodeKind k = nt_kind(nt, node);
-  if (k == NK_LocalVariableWriteNode || k == NK_LocalVariableOrWriteNode || k == NK_LocalVariableAndWriteNode) {
+  if (k == NK_LocalVariableWriteNode || k == NK_LocalVariableOrWriteNode || k == NK_LocalVariableAndWriteNode ||
+      k == NK_LocalVariableOperatorWriteNode) {
     const char *ln = nt_str(nt, node, "name");
     Scope *s = ln ? comp_scope_of(mc, node) : NULL;
     return s && repr_of_slot(c, scope_local(s, ln)).share;
