@@ -748,6 +748,13 @@ typedef struct {
                           so the call is armed once; 2 when a cached array
                           read tests it in its out-of-range branch
                           (emit_nil_target_cold) */
+  int args_in_call;     /* the receiver of the call an arm last emitted with
+                          every operand a C argument of the one runtime call
+                          that raises (sp_poly_add, sp_poly_shl, ...), for
+                          the nil arm's trial (nil_target_runs_in_call) */
+  int args_in_call_trial; /* nonzero while that trial emits: a call nested
+                          in it takes its head without a trial of its own,
+                          so nested operators are not emitted 2^depth times */
   unsigned char *head_held; /* [node_cap] an operand the nil arm's head
                           (emit_nil_target_head) ran into a temp of its own
                           ahead of the call: set only as a view
