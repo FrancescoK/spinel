@@ -84,6 +84,9 @@ int an_value_dropped(const NodeTable *nt, const int *parent, int node);
    analyze.c */
 void an_byref_eligible_scopes(Compiler *c, char *elig);
 int an_byref_param_by_value(Compiler *c, const char *elig, int mi, int pi);
+/* A runtime protocol name: the emitted program can call the method with
+   no CallNode of its own (`puts obj` calls to_s). analyze.c */
+int method_name_implicitly_invoked(const char *nm);
 int local_all_writes_empty_hash(Compiler *c, Scope *sc, const char *name);
 int local_all_writes_empty_hash_or_new(Compiler *c, Scope *sc, const char *name);
 int method_call_param_shift(Compiler *c, int mn, int mi);

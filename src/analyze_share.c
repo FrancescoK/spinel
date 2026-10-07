@@ -35,6 +35,12 @@ enum { SHE_WRITTEN = 1 };
    to be read after it (`p(lit.each { |x| x << y })`, `lit.map { }.first`),
    so a container of the class can be reached again (sh_finalize) */
 enum { SHF_OUT = 8 };
+/* per-node marks: a statement whose value is dropped (SHU_STMT), and a value
+   its construct drops that the walk itself still follows -- a loop body's
+   last statement, the tail of a block whose iterator keeps none of its
+   values (SHU_TAIL). Only the method reads (sh_settle_reads) take the
+   second. */
+enum { SHU_STMT = 1, SHU_TAIL = 2 };
 
 typedef struct ShareFacts {
   int n, cap;
@@ -51,7 +57,12 @@ typedef struct ShareFacts {
      String nobody else names, and joins no class (sh_settle_rets) */
   int *ret_m, *ret_v, nret, cret;
   unsigned char *ret_done;
-  unsigned char *unused;   /* per node: a statement whose value is dropped */
+  unsigned char *unused;   /* per node: SHU_* */
+  /* the call and super nodes that reach a user method, whose value is the
+     method's then, and per method scope, once settled, whether a caller
+     may read its value (sh_settle_reads) */
+  int *rsite, nrsite, crsite;
+  unsigned char *mread;
   /* the methods the default build may lend a parameter's slot
      (an_byref_eligible_scopes), and per method scope, the parameters it
      passes by value (byval), once asked (byval_done) */
@@ -485,10 +496,21 @@ static void sh_ret(ShareFacts *F, int mi, int v) {
   F->nret++;
 }
 
+/* call or super node n reaches a user method (see ShareFacts.rsite) */
+static void sh_read_site(ShareFacts *F, int n) {
+  if (F->nrsite >= F->crsite) {
+    F->crsite = F->crsite ? F->crsite * 2 : 64;
+    F->rsite = realloc(F->rsite, sizeof(int) * (size_t)F->crsite);
+    if (!F->rsite) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  F->rsite[F->nrsite++] = n;
+}
+
 /* ---- node values ---- */
 
 static int sh_val(ShareFacts *F, Compiler *c, int n);
 static int sh_const_read(ShareFacts *F, Compiler *c, int n);
+static void sh_mark_unused(ShareFacts *F, const NodeTable *nt, int n, unsigned char bit);
 
 static int sh_join(ShareFacts *F, int a, int b) {
   if (a < 0) return b;
@@ -717,16 +739,44 @@ static const char *sh_lit_name(const NodeTable *nt, int a) {
   return NULL;
 }
 
+static int sh_plain_operand(Compiler *c, int n);
+/* Does lending a parameter argument node a of `call` keep CRuby's answer
+   by itself? A value no variable holds is lent a temporary nothing else
+   names. A variable's C slot is lent by address, so it must be a local (or
+   parameter) nothing can rebind while the callee runs: no proc that
+   captures it assigns it, the call passes no block (the method's yield
+   runs the block, which may assign it), and every argument is a read, a
+   literal or scalar arithmetic over those (*plain, asked once per call). A
+   global's or an ivar's slot is refused where the call can rebind it
+   (#6179), which only the shared class avoids. */
+static int sh_lend_holds(Compiler *c, int call, int a, int *plain) {
+  const NodeTable *nt = c->nt;
+  if (!sh_holder_read(nt, a)) return 1;
+  if (nt_kind(nt, a) != NK_LocalVariableReadNode || nt_ref(nt, call, "block") >= 0) return 0;
+  const char *ln = nt_str(nt, a, "name");
+  LocalVar *lv = ln ? scope_local(comp_scope_of(c, a), ln) : NULL;
+  if (!lv || lv->cell_outlives || lv->proc_rebinds) return 0;
+  if (*plain < 0) {
+    int args = nt_ref(nt, call, "arguments");
+    int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+    *plain = 1;
+    for (int i = 0; i < argc && *plain; i++) *plain = sh_plain_operand(c, argv[i]);
+  }
+  return *plain;
+}
+
 /* Bind the arguments of `call` to method mi's parameters. A parameter the
    method may lend (only read and mutated) is bound by sh_lend, the rest by
-   a union. An argument the layout places nowhere joins every parameter. */
+   a union. An argument the layout places nowhere joins every parameter.
+   A lend that does not hold by itself keeps mi's returns joining its value
+   (F->mread), as a caller that reads it does. */
 static void sh_bind(ShareFacts *F, Compiler *c, int call, int mi) {
   const NodeTable *nt = c->nt;
   Scope *m = &c->scopes[mi];
   int args = nt_ref(nt, call, "arguments");
   int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
   int claimed[64];
-  int nclaimed = 0;
+  int nclaimed = 0, plain = -1;
   for (int j = 0; j < m->nparams; j++) {
     int p = m->pnames[j] ? sh_local_of(F, c, m, m->pnames[j], m->def_node) : -1;
     int spread = -1;
@@ -736,7 +786,10 @@ static void sh_bind(ShareFacts *F, Compiler *c, int call, int mi) {
     if (a >= 0) {
       int v = sh_val(F, c, a);
       if (j == m->rest_idx || j == m->kwrest_idx) sh_union(F, sh_elem(F, p), v);
-      else sh_lend(F, v, p, sh_holder_read(nt, a));
+      else {
+        sh_lend(F, v, p, sh_holder_read(nt, a));
+        if (!F->mread[mi] && !sh_lend_holds(c, call, a, &plain)) F->mread[mi] = 1;
+      }
     }
     else if (spread >= 0) sh_union(F, p, sh_elem(F, sh_val(F, c, spread)));
   }
@@ -955,7 +1008,7 @@ static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int 
        them only where something takes it (`p a, b` as a statement keeps
        neither) */
     if (nv == 1) return vals[0];
-    if (F->unused[n]) return -1;
+    if (F->unused[n] & SHU_STMT) return -1;
     int r = sh_new(F, SHK_VALUE);
     for (int i = 0; i < nv; i++) sh_union(F, sh_elem(F, r), vals[i]);
     return r;
@@ -1031,7 +1084,7 @@ static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int 
     /* a fresh receiver (`(+"a").tap { |x| x << y }`) is one String the
        block's parameter and the answer both name, the answer a second name
        when it is used */
-    if (rv < 0 && lit_blk && !F->unused[n]) {
+    if (rv < 0 && lit_blk && !(F->unused[n] & SHU_STMT)) {
       rv = sh_new(F, SHK_VALUE);
       F->nhold[rv] = 1;
     }
@@ -1211,6 +1264,30 @@ static int sh_ostruct_call(ShareFacts *F, Compiler *c, int n, const char *name, 
   return s ? sh_builtin(F, c, n, s, rv, blk, 2) : sh_container_default(F, c, n, rv, blk);
 }
 
+/* The receiver a mutation through node n reaches: n itself, or, past a
+   chain of builtin String calls whose row answers their receiver itself
+   (`line << a << b`, `s.strip!.upcase!`: BOPF_SELF, BOPF_SELF_OR_NIL), the
+   chain's first receiver. The chain's value is that receiver's String, so
+   a mutation of it is one of that receiver's, direct when it is a holder's
+   read; the walk gave each link its receiver's class (BSH_RECV), which the
+   class test confirms. */
+static int sh_self_chain_base(ShareFacts *F, Compiler *c, int n) {
+  const NodeTable *nt = c->nt;
+  for (n = an_unparen(nt, n); n >= 0 && nt_kind(nt, n) == NK_CallNode; ) {
+    int r = an_unparen(nt, nt_ref(nt, n, "receiver"));
+    TyKind rt = r >= 0 ? c->ntype[r] : TY_VOID;
+    const char *nm = nt_str(nt, n, "name");
+    if ((rt != TY_STRING && rt != TY_STRBUF) || !nm ||
+        !(bop_answers_self(TY_STRING, nm, call_plain_argc(c, n), nt_ref(nt, n, "block") >= 0) &
+          (BOPF_SELF | BOPF_SELF_OR_NIL)) ||
+        F->nval[n] < 0 || F->nval[r] < 0 || sh_find(F, F->nval[n]) != sh_find(F, F->nval[r]) ||
+        sh_has_targets(c, n))
+      break;
+    n = r;
+  }
+  return n;
+}
+
 static int sh_call(ShareFacts *F, Compiler *c, int n) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, n, "name");
@@ -1225,7 +1302,7 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
 
   /* an in-place String mutation of the receiver */
   if (maybe_str && sp_str_mutator(name, 0))
-    sh_mark_at(F, rv, SHF_MUT | (sh_holder_read(nt, recv) ? 0 : SHF_INDIRECT), n);
+    sh_mark_at(F, rv, SHF_MUT | (sh_holder_read(nt, sh_self_chain_base(F, c, recv)) ? 0 : SHF_INDIRECT), n);
 
   /* a block passed as a value: a proc or a Method, called from wherever */
   if (blk >= 0 && nt_kind(nt, blk) == NK_BlockArgumentNode) {
@@ -1278,6 +1355,7 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
   /* a user method */
   int tg[64];
   int ntg = sh_targets_in(F, c, n, tg, 64);
+  if (ntg != 0) sh_read_site(F, n);
   if (ntg < 0) return sh_unknown_call(F, c, n, blk);
   if (ntg == 0 && recv >= 0 && bop_share_named(BOP_ANY_RECV, name) == BSH_NEW) {
     int r = sh_new_call(F, c, n, recv, blk);
@@ -1381,6 +1459,12 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
   }
   if (rt == TY_OPENSTRUCT) return sh_ostruct_call(F, c, n, name, rv, blk);
   TyKind fam = sh_family(rt);
+  /* an iterator that keeps none of its block's values drops the block's
+     own: a call there hands its method's value to no caller. (An
+     Enumerator's each runs the iterator it was made by, map's included.) */
+  if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode && rt != TY_ENUMERATOR &&
+      iter_keeps_no_block_value(fam, name, call_plain_argc(c, n)))
+    sh_mark_unused(F, nt, nt_ref(nt, blk, "body"), SHU_TAIL);
   int s = bop_share_named(fam, name);
   /* the Strings' answers-self names the face table lists */
   if (!s && fam == TY_STRING && str_self_call(nt, n)) s = BSH_RECV;
@@ -1398,6 +1482,7 @@ static int sh_super(ShareFacts *F, Compiler *c, int n) {
   int blk = nt_ref(nt, n, "block");
   int tg[64];
   int ntg = sh_targets_in(F, c, n, tg, 64);
+  if (ntg != 0) sh_read_site(F, n);
   if (ntg < 0) return sh_unknown_call(F, c, n, blk);
   int cur = sh_method_index(c, n);
   int r = -1;
@@ -1654,7 +1739,7 @@ static int sh_val(ShareFacts *F, Compiler *c, int n) {
   if (v >= 0 && c->ntype[n] != TY_UNKNOWN && !sh_may_hold(c->ntype[n]) &&
       nt_kind(c->nt, n) != NK_StatementsNode && nt_kind(c->nt, n) != NK_ParenthesesNode)
     v = -1;
-  if (v >= 0 && nt_kind(c->nt, n) == NK_CallNode && !F->unused[n]) F->flags[sh_find(F, v)] |= SHF_OUT;
+  if (v >= 0 && nt_kind(c->nt, n) == NK_CallNode && !(F->unused[n] & SHU_STMT)) F->flags[sh_find(F, v)] |= SHF_OUT;
   F->nval[n] = v;
   return v;
 }
@@ -1701,13 +1786,15 @@ static int sh_lendable(ShareFacts *F, Compiler *c, int p) {
    accumulator a builder returns). The return joins the method's value only
    once its class reaches anything else: a parameter, a captured local,
    another method's local or value, an ivar, a container (whose elements
-   could be named elsewhere), or what the walk does not follow. */
+   could be named elsewhere), or what the walk does not follow. A method no
+   caller reads (sh_settle_reads) hands its value to nobody: its returns
+   join nothing. */
 static int sh_settle_rets(ShareFacts *F) {
   int any = 0;
   for (int changed = 1; changed; ) {
     changed = 0;
     for (int i = 0; i < F->nret; i++) {
-      if (F->ret_done[i]) continue;
+      if (F->ret_done[i] || (F->mread && !F->mread[F->ret_m[i]])) continue;
       int r = sh_find(F, F->ret_v[i]);
       if (F->lsc[r] == F->ret_m[i] && F->elem[r] < 0 && !(F->flags[r] & SHF_UNKNOWN)) continue;
       sh_union(F, sh_scope_holder(F, SHK_RET, F->ret_m[i]), F->ret_v[i]);
@@ -1731,30 +1818,145 @@ static int sh_settle_keys(ShareFacts *F) {
   return any;
 }
 
-static void sh_settle_lends(ShareFacts *F, Compiler *c) {
-  for (int changed = 1; changed; ) {
-    changed = 0;
-    for (int i = 0; i < F->nlend; i++) {
-      if (F->lend_done[i] || sh_lendable(F, c, F->lend_par[i])) continue;
-      sh_union(F, F->lend_arg[i], F->lend_par[i]);
-      F->lend_done[i] = 1;
-      changed = 1;
-    }
-    if (sh_settle_rets(F)) changed = 1;
-    if (sh_settle_keys(F)) changed = 1;
+static int sh_str_cmp(const void *a, const void *b) {
+  return strcmp(*(const char *const *)a, *(const char *const *)b);
+}
+
+/* A name the runtime may call with no call of its own besides the
+   protocols: an operator, an index or a setter (sum's `+`, case's `===`). */
+static int sh_operator_name(const char *nm) {
+  if (!(nm[0] == '_' || (nm[0] >= 'a' && nm[0] <= 'z') || (nm[0] >= 'A' && nm[0] <= 'Z'))) return 1;
+  size_t ln = strlen(nm);
+  return nm[ln - 1] == '=';
+}
+
+/* A block given to user methods none of whose yields is read drops its
+   value: its tail is a value nobody reads (SHU_TAIL). A method that keeps
+   its block as a value, or hands it on to a super, reads it; so does a
+   builtin a poly receiver may be, and any method when a read yield sits
+   in no method the walk names. */
+static void sh_settle_block_tails(ShareFacts *F, Compiler *c) {
+  const NodeTable *nt = c->nt;
+  unsigned char *yread = calloc((size_t)(c->nscopes > 0 ? c->nscopes : 1), 1);
+  if (!yread) {
+    fprintf(stderr, "spinel: out of memory\n");
+    exit(1);
   }
-  /* a lent parameter's mutation is its argument's */
-  for (int changed = 1; changed; ) {
-    changed = 0;
-    for (int i = 0; i < F->nlend; i++) {
-      if (F->lend_done[i]) continue;
-      int rp = sh_find(F, F->lend_par[i]);
-      if (!(F->flags[rp] & SHF_MUT)) continue;
-      int ra = sh_find(F, F->lend_arg[i]);
-      unsigned want = SHF_MUT | (F->lend_direct[i] ? 0 : SHF_INDIRECT);
-      if ((F->flags[ra] & want) == want) continue;
-      F->flags[ra] |= (unsigned char)want;
-      changed = 1;
+  static const NodeKind kinds[] = { NK_YieldNode, NK_SuperNode, NK_ForwardingSuperNode };
+  int all = 0;
+  for (int k = 0; k < 3; k++)
+    NT_FOREACH_KIND(nt, kinds[k], y) {
+      if (k == 0 && F->unused[y]) continue;
+      int mi = sh_method_index(c, y);
+      if (mi >= 0) yread[mi] = 1;
+      else all = 1;
+    }
+  for (int i = 0; i < F->nrsite && !all; i++) {
+    int n = F->rsite[i];
+    int blk = nt_ref(nt, n, "block");
+    if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode) continue;
+    int recv = nt_kind(nt, n) == NK_CallNode ? nt_ref(nt, n, "receiver") : -1;
+    if (recv >= 0 && (c->ntype[recv] == TY_POLY || c->ntype[recv] == TY_UNKNOWN)) continue;
+    int tg[64];
+    int k = sh_targets(c, n, tg, 64), drop = k > 0;
+    for (int j = 0; j < k && drop; j++) {
+      Scope *m = &c->scopes[tg[j]];
+      drop = !yread[tg[j]] && !m->blk_param && !m->is_lowered_yield && !m->is_proc_form;
+    }
+    if (drop) sh_mark_unused(F, nt, nt_ref(nt, blk, "body"), SHU_TAIL);
+  }
+  free(yread);
+}
+
+/* Which methods' values a caller may read (F->mread; the dynamic reach in
+   sh_build sets its own): each one a call or super site the walk follows
+   may reach (cplan_targets) unless the site drops its value (SHU_*); every
+   method of a site's name when the plan cannot list them; and every one
+   the program can enter with no call node of its own -- a runtime
+   protocol or an operator, an extension entry, a proc form. The returns
+   of a method no caller reads join no class (sh_settle_rets): a parameter
+   it mutates and returns (`def add(line, v) line << v; line end`, called as
+   a statement) stays lent. */
+static void sh_settle_reads(ShareFacts *F, Compiler *c) {
+  const NodeTable *nt = c->nt;
+  const char **names = NULL;
+  int nn = 0, all = 0;
+  sh_settle_block_tails(F, c);
+  for (int i = 0; i < F->nrsite; i++) {
+    int n = F->rsite[i];
+    if (F->unused[n]) continue;
+    int tg[64];
+    int k = sh_targets(c, n, tg, 64);
+    for (int j = 0; j < k; j++) F->mread[tg[j]] = 1;
+    if (k >= 0) continue;
+    int cur = sh_method_index(c, n);
+    const char *nm = nt_kind(nt, n) == NK_CallNode ? nt_str(nt, n, "name")
+                   : cur >= 0 ? c->scopes[cur].name : NULL;
+    if (!nm) { all = 1; break; }
+    if (!names && !(names = malloc(sizeof *names * (size_t)F->nrsite))) {
+      fprintf(stderr, "spinel: out of memory\n");
+      exit(1);
+    }
+    names[nn++] = nm;
+  }
+  if (nn > 1) qsort(names, (size_t)nn, sizeof *names, sh_str_cmp);
+  for (int mi = 0; mi < c->nscopes; mi++) {
+    Scope *m = &c->scopes[mi];
+    if (m->def_node < 0 || F->mread[mi]) continue;
+    F->mread[mi] = all || !m->name || method_name_implicitly_invoked(m->name) || sh_operator_name(m->name) ||
+                   m->is_ext_entry || m->is_proc_form || m->is_lowered_yield ||
+                   (nn > 0 && bsearch(&m->name, names, (size_t)nn, sizeof *names, sh_str_cmp));
+  }
+  free(names);
+}
+
+/* Does lend i hand the callee a String something else holds, through a
+   value that is no variable's read? The default build passes such a value
+   (a memoizing reader's `@s ||= +""`, an element) as a temporary copy, so
+   a callee's appends would stop there: a parameter that changes it shares
+   with it instead. A value whose class has no slot and meets nothing the
+   walk does not follow (a builtin's fresh String, a method's own new local)
+   is a temporary nothing else names, and stays lent. */
+static int sh_lend_arg_held(ShareFacts *F, int i) {
+  if (F->lend_direct[i]) return 0;
+  int r = sh_find(F, F->lend_arg[i]);
+  return F->nhold[r] > 0 || (F->flags[r] & SHF_UNKNOWN);
+}
+
+static void sh_settle_lends(ShareFacts *F, Compiler *c) {
+  for (int again = 1; again; ) {
+    again = 0;
+    for (int changed = 1; changed; ) {
+      changed = 0;
+      for (int i = 0; i < F->nlend; i++) {
+        if (F->lend_done[i] || sh_lendable(F, c, F->lend_par[i])) continue;
+        sh_union(F, F->lend_arg[i], F->lend_par[i]);
+        F->lend_done[i] = 1;
+        changed = 1;
+      }
+      if (sh_settle_rets(F)) changed = 1;
+      if (sh_settle_keys(F)) changed = 1;
+    }
+    /* a lent parameter's mutation is its argument's; one a held String
+       reaches as a temporary joins it, and the classes settle again */
+    for (int changed = 1; changed; ) {
+      changed = 0;
+      for (int i = 0; i < F->nlend; i++) {
+        if (F->lend_done[i]) continue;
+        int rp = sh_find(F, F->lend_par[i]);
+        if (!(F->flags[rp] & SHF_MUT)) continue;
+        if (sh_lend_arg_held(F, i)) {
+          sh_union(F, F->lend_arg[i], F->lend_par[i]);
+          F->lend_done[i] = 1;
+          changed = again = 1;
+          continue;
+        }
+        int ra = sh_find(F, F->lend_arg[i]);
+        unsigned want = SHF_MUT | (F->lend_direct[i] ? 0 : SHF_INDIRECT);
+        if ((F->flags[ra] & want) == want) continue;
+        F->flags[ra] |= (unsigned char)want;
+        changed = 1;
+      }
     }
   }
 }
@@ -1902,6 +2104,7 @@ static void sh_free(ShareFacts *F) {
   free(F->lsc); free(F->ret_m); free(F->ret_v); free(F->ret_done); free(F->unused);
   if (F->own_elig) free(F->byref_elig);
   free(F->byval); free(F->byval_done);
+  free(F->rsite); free(F->mread);
   free(F->kind); free(F->flags); free(F->own);
   free(F->h); free(F->helem); free(F->bucket); free(F->hnext); free(F->nval);
   free(F->lend_arg); free(F->lend_par); free(F->lend_direct); free(F->lend_done);
@@ -1917,50 +2120,50 @@ static void sh_free(ShareFacts *F) {
    conditional's or a case's branches, a begin's, its rescues' and its
    else's, parentheses, and the operands of `&&`, `||` and a rescue
    modifier. `if c then p a, b end` as a statement keeps neither a nor b. */
-static void sh_mark_unused(ShareFacts *F, const NodeTable *nt, int n) {
+static void sh_mark_unused(ShareFacts *F, const NodeTable *nt, int n, unsigned char bit) {
   if (n < 0 || n >= F->nnodes) return;
-  F->unused[n] = 1;
+  F->unused[n] |= bit;
   switch (nt_kind(nt, n)) {
   case NK_StatementsNode: {
     int bn = 0; const int *bv = nt_arr(nt, n, "body", &bn);
-    if (bn > 0) sh_mark_unused(F, nt, bv[bn - 1]);
+    if (bn > 0) sh_mark_unused(F, nt, bv[bn - 1], bit);
     return;
   }
   case NK_ParenthesesNode:
-    sh_mark_unused(F, nt, nt_ref(nt, n, "body"));
+    sh_mark_unused(F, nt, nt_ref(nt, n, "body"), bit);
     return;
   case NK_BeginNode: {
-    sh_mark_unused(F, nt, nt_ref(nt, n, "statements"));
+    sh_mark_unused(F, nt, nt_ref(nt, n, "statements"), bit);
     for (int rc = nt_ref(nt, n, "rescue_clause"); rc >= 0; rc = nt_ref(nt, rc, "subsequent"))
-      sh_mark_unused(F, nt, nt_ref(nt, rc, "statements"));
+      sh_mark_unused(F, nt, nt_ref(nt, rc, "statements"), bit);
     int el = nt_ref(nt, n, "else_clause");
-    if (el >= 0) sh_mark_unused(F, nt, el);
+    if (el >= 0) sh_mark_unused(F, nt, el, bit);
     return;
   }
   case NK_IfNode:
-    sh_mark_unused(F, nt, nt_ref(nt, n, "statements"));
-    sh_mark_unused(F, nt, nt_ref(nt, n, "subsequent"));
+    sh_mark_unused(F, nt, nt_ref(nt, n, "statements"), bit);
+    sh_mark_unused(F, nt, nt_ref(nt, n, "subsequent"), bit);
     return;
   case NK_UnlessNode:
-    sh_mark_unused(F, nt, nt_ref(nt, n, "statements"));
-    sh_mark_unused(F, nt, nt_ref(nt, n, "else_clause"));
+    sh_mark_unused(F, nt, nt_ref(nt, n, "statements"), bit);
+    sh_mark_unused(F, nt, nt_ref(nt, n, "else_clause"), bit);
     return;
   case NK_ElseNode:
-    sh_mark_unused(F, nt, nt_ref(nt, n, "statements"));
+    sh_mark_unused(F, nt, nt_ref(nt, n, "statements"), bit);
     return;
   case NK_CaseNode: case NK_CaseMatchNode: {
     int nw = 0; const int *ws = nt_arr(nt, n, "conditions", &nw);
-    for (int i = 0; i < nw; i++) sh_mark_unused(F, nt, nt_ref(nt, ws[i], "statements"));
-    sh_mark_unused(F, nt, nt_ref(nt, n, "else_clause"));
+    for (int i = 0; i < nw; i++) sh_mark_unused(F, nt, nt_ref(nt, ws[i], "statements"), bit);
+    sh_mark_unused(F, nt, nt_ref(nt, n, "else_clause"), bit);
     return;
   }
   case NK_AndNode: case NK_OrNode:
-    sh_mark_unused(F, nt, nt_ref(nt, n, "left"));
-    sh_mark_unused(F, nt, nt_ref(nt, n, "right"));
+    sh_mark_unused(F, nt, nt_ref(nt, n, "left"), bit);
+    sh_mark_unused(F, nt, nt_ref(nt, n, "right"), bit);
     return;
   case NK_RescueModifierNode:
-    sh_mark_unused(F, nt, nt_ref(nt, n, "expression"));
-    sh_mark_unused(F, nt, nt_ref(nt, n, "rescue_expression"));
+    sh_mark_unused(F, nt, nt_ref(nt, n, "expression"), bit);
+    sh_mark_unused(F, nt, nt_ref(nt, n, "rescue_expression"), bit);
     return;
   default:
     return;
@@ -1968,9 +2171,9 @@ static void sh_mark_unused(ShareFacts *F, const NodeTable *nt, int n) {
 }
 
 /* the last statement of statements node st drops its value */
-static void sh_mark_last_unused(ShareFacts *F, const NodeTable *nt, int st) {
+static void sh_mark_last_unused(ShareFacts *F, const NodeTable *nt, int st, unsigned char bit) {
   int bn = 0; const int *bv = st >= 0 && nt_kind(nt, st) == NK_StatementsNode ? nt_arr(nt, st, "body", &bn) : NULL;
-  if (bn > 0) sh_mark_unused(F, nt, bv[bn - 1]);
+  if (bn > 0) sh_mark_unused(F, nt, bv[bn - 1], bit);
 }
 
 /* ---- break and next ----
@@ -2103,26 +2306,31 @@ static ShareFacts *sh_build(Compiler *c, int closed) {
   F->own_elig = !kept;
   F->byval = calloc(ns, sizeof(unsigned));
   F->byval_done = calloc(ns, sizeof(unsigned));
-  if (!F->unused || !F->byref_elig || !F->byval || !F->byval_done) {
+  F->mread = calloc(ns, 1);
+  if (!F->unused || !F->byref_elig || !F->byval || !F->byval_done || !F->mread) {
     fprintf(stderr, "spinel: out of memory\n");
     exit(1);
   }
   if (!kept) an_byref_eligible_scopes(c, F->byref_elig);
   NT_FOREACH_KIND(nt, NK_StatementsNode, st) {
     int bn = 0; const int *bv = nt_arr(nt, st, "body", &bn);
-    for (int i = 0; i + 1 < bn; i++) sh_mark_unused(F, nt, bv[i]);
+    for (int i = 0; i + 1 < bn; i++) sh_mark_unused(F, nt, bv[i], SHU_STMT);
   }
   /* the program's last statement, and a class body's, answer nothing */
   for (int k = 0; k < 3; k++) {
     if (k == 0) {
       int root = nt->root_id;
       int st = root >= 0 ? nt_ref(nt, root, "statements") : -1;
-      sh_mark_last_unused(F, nt, st);
+      sh_mark_last_unused(F, nt, st, SHU_STMT);
       continue;
     }
-    NT_FOREACH_KIND(nt, k == 1 ? NK_ClassNode : NK_ModuleNode, pn) sh_mark_last_unused(F, nt, nt_ref(nt, pn, "body"));
+    NT_FOREACH_KIND(nt, k == 1 ? NK_ClassNode : NK_ModuleNode, pn) sh_mark_last_unused(F, nt, nt_ref(nt, pn, "body"), SHU_STMT);
   }
   sh_jumps(F, c);
+  /* a loop body's last statement drops its value too */
+  static const NodeKind loops[] = { NK_WhileNode, NK_UntilNode, NK_ForNode };
+  for (int k = 0; k < 3; k++)
+    NT_FOREACH_KIND(nt, loops[k], ln) sh_mark_last_unused(F, nt, nt_ref(nt, ln, "statements"), SHU_TAIL);
   for (int n = 0; n < F->nnodes; n++) sh_val(F, c, n);
   sh_settle_any_new(F, c);
   /* each method's value is its body's last, and its defaults bind its
@@ -2146,6 +2354,7 @@ static ShareFacts *sh_build(Compiler *c, int closed) {
     int reach = F->dyn_all || sp_streq(m->name, "method_missing");
     for (int k = 0; k < F->ndyn && !reach; k++) reach = sp_streq(F->dyn[k], m->name);
     if (!reach) continue;
+    F->mread[mi] = 1;
     for (int j = 0; j < m->nparams; j++)
       sh_union(F, m->pnames[j] ? sh_local_of(F, c, m, m->pnames[j], m->def_node) : -1, F->unknown);
     sh_union(F, sh_scope_holder(F, SHK_RET, mi), F->unknown);
@@ -2162,6 +2371,7 @@ static ShareFacts *sh_build(Compiler *c, int closed) {
     if (!ci->is_struct && !F->dyn_ivars) continue;
     for (int i = 0; i < ci->nivars; i++) sh_union(F, sh_ivar(F, c, k, ci->ivars[i], -1), F->unknown);
   }
+  sh_settle_reads(F, c);
   sh_settle_lends(F, c);
   sh_finalize(F);
   return F;
