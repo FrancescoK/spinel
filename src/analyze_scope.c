@@ -7183,6 +7183,7 @@ typedef struct PivsFacts {
   struct { int ok; char *set; } *memo;
   int *memo_at;             /* per node: its call's memo entry + 1, or 0 */
   int nmemo, cmemo, memo_n, memo_count;
+  unsigned memo_ver;
   const NodeTable *ix_nt;
   unsigned ix_ver;
   int ix_count;
@@ -7575,13 +7576,15 @@ static int pivs_elems(Compiler *c, int arr, char *set, int depth) {
 }
 /* Can the boxed receiver of instance_variable_set call `call` be an
    instance of class k (one poly_ivar_set_class takes)? Memoized per call,
-   until the tree or the class table grows. */
+   until the tree or the class table changes. */
 int poly_ivar_set_reaches(Compiler *c, int call, int k) {
   PivsFacts *f = pivs_facts(c);
-  if (f->memo_n != c->nclasses || f->memo_count != c->nt->count) {
+  if (f->memo_n != c->nclasses || f->memo_count != c->nt->count ||
+      f->memo_ver != c->nt->version) {
     for (int i = 0; i < f->nmemo; i++) free(f->memo[i].set);
     free(f->memo_at);
     f->nmemo = 0; f->memo_n = c->nclasses; f->memo_count = c->nt->count;
+    f->memo_ver = c->nt->version;
     f->memo_at = calloc((size_t)(f->memo_count > 0 ? f->memo_count : 1), sizeof *f->memo_at);
     if (!f->memo_at) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   }
