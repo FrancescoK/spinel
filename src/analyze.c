@@ -34615,6 +34615,22 @@ static int prci_scopes_for(Compiler *c, PRCallIdx *x, const char *un) {
   return prci_merge(t, n1, x->scopes + at3, n3, x->sbuf);
 }
 
+/* Whether call u's receiver is a builtin value -- an Array, an Enumerator, a
+   String, a number -- that cannot be an instance of scope s's class: a class
+   of the program's own, not a reopened builtin (nor Object) and not a module
+   a builtin may include. an_call_targets_scope answers by the name alone
+   when one method defines it, so `arr.each_slice(1).map(&:first)` targeted
+   a user class's yielding #map, and the block's slice parameter took that
+   method's boxed yield and stopped matching the slice the builtin binds. */
+static int an_builtin_recv_misses_scope(Compiler *c, int u, const Scope *s) {
+  int rc = nt_ref(c->nt, u, "receiver");
+  if (rc < 0 || s->class_id < 0) return 0;
+  TyKind rt = infer_type(c, rc);
+  if (rt == TY_POLY || rt == TY_UNKNOWN || rt == TY_CLASS || rt == TY_EXCEPTION || ty_is_object(rt)) return 0;
+  ClassInfo *k = &c->classes[s->class_id];
+  return !comp_class_is_module(c, k) && !is_builtin_reopen_name(k->name) && !builtin_class_id(k->name);
+}
+
 /* The proc-return re-derivation: ret_proc_ret and proc_ret from the now-widened bodies, as a focused fixpoint, then the node-type cache refresh (analyze_program's steps, in their order) */
 static void an_phase_proc_returns(Compiler *c) {
   /* --int-overflow=promote: the widen above can change a proc body's return
@@ -34948,7 +34964,8 @@ static void an_phase_proc_returns(Compiler *c) {
           }
           else for (int q = 0, nq = prci_scopes_for(c, &ix, un); nq < 0 ? q < c->nscopes - 1 : q < nq; q++) {
             int s = nq < 0 ? q + 1 : ix.sbuf[q];
-            if (!c->scopes[s].yields || !an_call_targets_scope(c, u, s, &c->scopes[s])) continue;
+            if (!c->scopes[s].yields || !an_call_targets_scope(c, u, s, &c->scopes[s]) ||
+                an_builtin_recv_misses_scope(c, u, &c->scopes[s])) continue;
             const int *sites = NULL;
             int ns = block_sites(c, s, &sites);
             for (int k = 0; k < ns; k++) {
