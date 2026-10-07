@@ -28,7 +28,7 @@ static void emit_file_join_args(Compiler *c, const int *argv, int argc, int boxe
   int first = emit_rooted_arg_list(c, argv, argc,
                                  boxed ? "sp_RbVal" : "const char *",
                                  boxed ? "SP_GC_ROOT_RBVAL" : "SP_GC_ROOT_STR",
-                                 boxed ? emit_boxed : emit_path_expr, b);
+                                 boxed ? emit_boxed : emit_path_expr, NULL, b);
   buf_printf(b, "%s((%s[]){", boxed ? "sp_file_join_vals" : "sp_file_join",
              boxed ? "sp_RbVal" : "const char *");
   for (int i = 0; i < argc; i++) buf_printf(b, "%s_t%d", i ? ", " : "", first + i);
@@ -40,7 +40,7 @@ static void emit_file_join_args(Compiler *c, const int *argv, int argc, int boxe
    Hold the values in Ruby's order before reversing the slots. */
 static void emit_file_realdirpath2(Compiler *c, const int *argv, Buf *b) {
   buf_puts(b, "({ ");
-  int first = emit_rooted_arg_list(c, argv, 2, "const char *", "SP_GC_ROOT_STR", emit_path_expr, b);
+  int first = emit_rooted_arg_list(c, argv, 2, "const char *", "SP_GC_ROOT_STR", emit_path_expr, NULL, b);
   buf_printf(b, "sp_file_realdirpath(sp_file_join((const char *[]){_t%d, _t%d}, 2)); })",
              first + 1, first);
 }
@@ -1357,9 +1357,9 @@ int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable 
           buf_printf(b, "({ const char *_t%d = ", td);
           if (a0_poly) {
             int ts = ++g_tmp;
-            buf_printf(b, "({ sp_RbVal _t%d = ", ts); emit_expr(c, argv[0], b);
-            buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); (_t%d.tag == SP_TAG_STR || sp_poly_is_strbuf(_t%d))"
-                          " ? sp_file_read(sp_poly_unbox_s(_t%d)) : ", ts, ts, ts, ts);
+            buf_puts(b, "({ "); ts = hold_operand(c, argv[0], TY_POLY, 0, ts, 1, " ", b);
+            buf_printf(b, "(_t%d.tag == SP_TAG_STR || sp_poly_is_strbuf(_t%d))"
+                          " ? sp_file_read(sp_poly_unbox_s(_t%d)) : ", ts, ts, ts);
             if (sio_cid >= 0)
               buf_printf(b, "_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == %d"
                             " ? sp_StringIO_read((sp_StringIO *)_t%d.v.p) : ", ts, ts, sio_cid, ts);
@@ -1373,9 +1373,9 @@ int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable 
           buf_printf(b, "; SP_GC_ROOT(_t%d); ", td);
           if (a1_poly) {
             int tdd = ++g_tmp;
-            buf_printf(b, "sp_RbVal _t%d = ", tdd); emit_expr(c, argv[1], b);
-            buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); (_t%d.tag == SP_TAG_STR || sp_poly_is_strbuf(_t%d))"
-                          " ? sp_file_write(sp_poly_unbox_s(_t%d), _t%d) : ", tdd, tdd, tdd, tdd, td);
+            tdd = hold_operand(c, argv[1], TY_POLY, 0, tdd, 1, " ", b);
+            buf_printf(b, "(_t%d.tag == SP_TAG_STR || sp_poly_is_strbuf(_t%d))"
+                          " ? sp_file_write(sp_poly_unbox_s(_t%d), _t%d) : ", tdd, tdd, tdd, td);
             if (sio_cid >= 0)
               buf_printf(b, "_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == %d"
                             " ? sp_StringIO_write((sp_StringIO *)_t%d.v.p, _t%d) : ", tdd, tdd, sio_cid, tdd, td);

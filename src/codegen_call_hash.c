@@ -20,9 +20,8 @@ int emit_op_hash_pattern(Compiler *c, const BopCtx *x, Buf *b) {
   int argc;
   const int *argv = call_args(c->nt, x->id, &argc);
   int th = ++g_tmp, tv = ++g_tmp, tn = ++g_tmp, tc2 = ++g_tmp, ti = ++g_tmp, tp = ++g_tmp;
-  buf_printf(b, "({ sp_RbVal _t%d = ", th);
-  emit_boxed(c, recv, b);
-  buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_RbVal _t%d = ", th, tv);
+  buf_puts(b, "({ "); th = hold_operand(c, recv, TY_POLY, 1, th, 1, " ", b);
+  buf_printf(b, "sp_RbVal _t%d = ", tv);
   emit_boxed(c, argv[0], b);
   buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_int _t%d = sp_poly_length(_t%d); sp_int _t%d = 0;",
              tv, tn, th, tc2);
