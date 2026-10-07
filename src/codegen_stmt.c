@@ -13300,7 +13300,10 @@ int tail_iter_receiver(Compiler *c, int id) {
     "each", "each_pair", "each_key", "each_value", "each_with_index",
     "each_index", "each_byte", "each_entry", "reverse_each", "each_slice",
     "each_cons", "combination", "permutation", "repeated_combination",
-    "repeated_permutation", "upto", "downto", "step", "times", NULL
+    "repeated_permutation", "upto", "downto", "step", "times",
+    /* String#scan with a block answers its receiver too; at a method's tail
+       the method answered nil */
+    "scan", NULL
   };
   int hit = 0;
   for (int i = 0; iter_ret_recv[i]; i++)
