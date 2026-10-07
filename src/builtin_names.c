@@ -812,6 +812,21 @@ int is_replace_name(const char *n) {
   return sp_streq(n, "replace");
 }
 
+/* The arguments String mutator `n`, called with `argc` of them, takes as
+   Strings: the first one's position (argc when none), the rest following
+   it, and in *int_ok whether an Integer is taken there too. `<<`, concat
+   and append_as_bytes take each one (an Integer as a codepoint), prepend
+   each one, replace its one, insert its second and `[]=` its last (the
+   value; the index is an Integer, a Range, a String or a Regexp). */
+int str_mutator_str_args(const char *n, int argc, int *int_ok) {
+  *int_ok = 0;
+  if (is_string_append(n) || sp_streq(n, "append_as_bytes")) { *int_ok = 1; return 0; }
+  if (sp_streq(n, "prepend") || (is_replace_name(n) && argc == 1)) return 0;
+  if (sp_streq(n, "insert") && argc == 2) return 1;
+  if (sp_streq(n, "[]=") && (argc == 2 || argc == 3)) return argc - 1;
+  return argc;
+}
+
 int is_string_rebind_mutator(const char *n) {
   static const char *const MUT[] = {
     "<<", "concat", "prepend", "insert", "replace", "[]=", "slice!", "setbyte", "bytesplice",
