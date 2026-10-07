@@ -2589,13 +2589,14 @@ int strbuf_bang_self_local(const Compiler *c, int v) {
   const NodeTable *nt = c->nt;
   if (v < 0 || nt_kind(nt, v) != NK_CallNode) return 0;
   int self_ans = bop_share_self_answer(nt_str(nt, v, "name"), nt_ref(nt, v, "block") >= 0);
+  if (!self_ans && !repr_share_rule(c)) return 0;
   int r = nt_ref(nt, v, "receiver");
   if (self_ans && r >= 0 && nt_kind(nt, r) == NK_LocalVariableReadNode && repr_of(c, r).kind == RK_STRBUF) return 1;
-  char ref[1024];
-  NodeKind rk = r >= 0 ? nt_kind(nt, r) : NK_NONE;
   /* (--share-strings: a String method that answers its receiver always,
      `insert`, too) */
   if (!repr_share_rule(c) || r < 0) return 0;
+  char ref[1024];
+  NodeKind rk = nt_kind(nt, r);
   if (!self_ans && !(nt_str(nt, v, "name") && (comp_ntype((Compiler *)c, r) == TY_STRING || comp_ntype((Compiler *)c, r) == TY_STRBUF) &&
                      bop_share_named(TY_STRING, nt_str(nt, v, "name")) == BSH_RECV))
     return 0;
