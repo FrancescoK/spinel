@@ -148,6 +148,9 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b);
    a route (read once, nil raising NoMethodError for id), 0 neither
    (codegen_stmt.c) */
 int strbuf_recv_handle(Compiler *c, int id, int recv, char *out, size_t cap);
+/* Root receiver handle _t<t> when strbuf_recv_handle answered a route (hr
+   2); a slot's needs none (codegen_stmt.c) */
+void emit_route_recv_root(int hr, int t, Buf *b);
 /* --share-strings: the handle slot a variable's read names, 0 for any
    other node (codegen_stmt.c) */
 int strbuf_var_handle(Compiler *c, int n, char *out, size_t cap);
