@@ -1337,13 +1337,10 @@ int emit_call_operator_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
         }
       Buf pcall; memset(&pcall, 0, sizeof pcall);
       if (subtree_may_allocate(nt, argv[0])) {
-        int th = ++g_tmp;
-        Buf rb; memset(&rb, 0, sizeof rb);
-        emit_boxed(c, recv, &rb);
-        emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n",
-                   th, rb.p ? rb.p : "sp_box_nil()", th);
-        free(rb.p);
+        Buf hb; memset(&hb, 0, sizeof hb);
+        int th = hold_operand(c, recv, TY_POLY, 1, ++g_tmp, "\n", &hb);
+        if (hb.p) { emit_indent(g_pre, g_indent); buf_puts(g_pre, hb.p); }
+        free(hb.p);
         buf_printf(&pcall, "%s(_t%d, ", pfn, th); emit_boxed(c, argv[0], &pcall); buf_puts(&pcall, ")");
       }
       else {
