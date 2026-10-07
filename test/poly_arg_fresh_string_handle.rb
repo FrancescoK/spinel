@@ -2,6 +2,11 @@
 # an argument of a poly dispatch whose callee appends to it, so the parameter is
 # the shared handle, and an expression that builds a plain String (`+""`, a dup,
 # an interpolation, a builtin's result) is wrapped in one (#7833).
+class Rec
+  def []=(name, value)
+  end
+end
+
 def store(params, name, kind)
   params[name] = store(params[name], name, kind) if name == "x"
   case kind
