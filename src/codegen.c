@@ -14986,6 +14986,19 @@ static void emit_class_machinery(const NodeTable *nt, Compiler *c, Buf *b, char 
     buf_puts(b, "        if(sp_class_anc_step(a,want,sp_box_class(cur)))return 1; break;\n      }\n");
     buf_puts(b, "      while(1){\n");
     buf_puts(b, "        if(sp_class_anc_step(a,want,sp_box_class(cur)))return 1;\n");
+    /* the modules a program's reopening of this builtin includes (`class
+       Hash; include DeepMergeable; end`) come right after it: a Hash value
+       carries the builtin's id, never the reopening's, so the includes
+       recorded on the reopening were not reached by is_a? / === */
+    for (int ci = 0; ci < c->nclasses; ci++) {
+      if (cls_nincs[ci] == 0 || !c->classes[ci].name) continue;
+      int bid = builtin_class_id(c->classes[ci].name);
+      if (bid >= 0) continue;
+      buf_printf(b, "        if(cur.cls_id==%d){", bid);
+      for (int q = cls_nincs[ci] - 1; q >= 0; q--)
+        buf_printf(b, "if(sp_class_anc_step(a,want,sp_box_class(((sp_Class){%d}))))return 1;", cls_incs[ci][q]);
+      buf_puts(b, "}\n");
+    }
     /* Numeric includes Comparable; Array/Hash include Enumerable; String includes Comparable */
     buf_puts(b, "        if(cur.cls_id==-113) if(sp_class_anc_step(a,want,sp_box_class(((sp_Class){-114}))))return 1;\n");  /* Numeric->Comparable */
     buf_puts(b, "        if(cur.cls_id==-104||cur.cls_id==-105||cur.cls_id==-106||cur.cls_id==-144||cur.cls_id==-145) if(sp_class_anc_step(a,want,sp_box_class(((sp_Class){-115}))))return 1;\n");  /* Array/Hash/Range/Enumerator/Struct->Enumerable */
@@ -15788,10 +15801,12 @@ static void emit_user_exc_dispatch(Compiler *c, Buf *b) {
   }
 }
 
+extern const Compiler *g_tmc_c;
 char *codegen_program(const NodeTable *nt) {
   char *isa_ext = NULL;  /* sp_poly_is_a's class-value arms, and where they go */
   size_t isa_ext_at = 0;
   Compiler *c = comp_new(nt);
+  g_tmc_c = c;
   analyze_program(c);
   if (g_dump_traits) { ty_traits_dump(c); exit(0); }
   /* --dump-repr: the analysis's answer, printed once the compile passes */
