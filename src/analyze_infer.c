@@ -1053,6 +1053,19 @@ static int an_elems_int_rows(Compiler *c, int arr, int *saw) {
   return 1;
 }
 
+/* Whether array literal `arr` is a table of Integer rows: built as the
+   general Array of boxed rows, each row it holds is an Integer array. A nil
+   or not yet typed row does not count, unlike an_elems_int_rows: a
+   parameter bound from the row reads it, rather than an index that already
+   answers nil for it. */
+int an_literal_int_rows(Compiler *c, int arr) {
+  int en = 0;
+  const int *els = nt_arr(c->nt, arr, "elements", &en);
+  for (int e = 0; e < en; e++)
+    if (comp_ntype(c, els[e]) != TY_INT_ARRAY) return 0;
+  return en > 0;
+}
+
 /* Whether every element stored into poly-array ivar `@<ivname>` is an int
    array (a nested array of int arrays, e.g. @chr_banks / @nmt_mem). Element
    reads then yield an int array rather than a boxed poly. */
@@ -8896,8 +8909,8 @@ TyKind infer_uncached(Compiler *c, int id) {
     }
     /* A callee stores elements of another kind into the literal it is
        passed (widen_arg_array). */
-    if (c->arr_want && id < c->node_cap && c->arr_want[id] == TY_POLY_ARRAY)
-      return TY_POLY_ARRAY;
+    if (c->arr_want && id < c->node_cap && (c->arr_want[id] == TY_POLY_ARRAY || c->arr_want[id] == TY_INT_ARRAY_ARRAY))
+      return c->arr_want[id];
     TyKind e = TY_UNKNOWN;
     for (int k = 0; k < n; k++) {
       TyKind et = infer_type(c, els[k]);
