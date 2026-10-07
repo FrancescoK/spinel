@@ -917,7 +917,18 @@ sp_RbVal sp_poly_to_h_m(sp_RbVal v)
     }
     return sp_box_obj(h, SP_BUILTIN_SYM_POLY_HASH);
   }
-  sp_raise_cls("NoMethodError", sp_sprintf("undefined method 'to_h' for %s", sp_poly_class_name(v)));
+  /* an Integer Range has Enumerable#to_h: its elements are no pairs, so a
+     non-empty one is CRuby's TypeError, and an empty one is {} */
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_RANGE && v.v.p) {
+    if (sp_range_count(*(sp_Range *)v.v.p) <= 0) return sp_box_obj(sp_SymPolyHash_new(), SP_BUILTIN_SYM_POLY_HASH);
+    sp_raise_cls("TypeError", "wrong element type Integer (expected array)");
+  }
+  /* a String Range likewise, its elements Strings */
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_STR_RANGE && v.v.p) {
+    if (!sp_srange_min_v(*(sp_StrRange *)v.v.p)) return sp_box_obj(sp_SymPolyHash_new(), SP_BUILTIN_SYM_POLY_HASH);
+    sp_raise_cls("TypeError", "wrong element type String (expected array)");
+  }
+  sp_raise_nomethod(sp_nomethod_msg("to_h", v));  /* "for true", "for an instance of String", as CRuby words it */
 }
 
 void sp_kwargs_verify_at(sp_RbVal h, const char *const *allowed, const char *const *required, const char *const *lit, const char *const *unk, int nbefore, int check_unknown)

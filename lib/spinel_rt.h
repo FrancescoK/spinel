@@ -11517,7 +11517,7 @@ static sp_RbVal sp_poly_to_a_m(sp_RbVal v) {
     return sp_box_poly_array(sp_poly_to_poly_array(v));
   { sp_PolyArray *ue = sp_poly_user_elems(v);
     if (ue) return sp_box_poly_array(ue); }
-  sp_raise_cls("NoMethodError", sp_sprintf("undefined method 'to_a' for %s", sp_poly_class_name(v)));
+  sp_raise_nomethod(sp_nomethod_msg("to_a", v));  /* CRuby's wording, as for to_r */
 }
 /* Time.at(*args): the splatted list is Time.at's argument list -- the
    seconds (a Time, Integer, Float or Rational), then a subsecond part in
@@ -11609,7 +11609,7 @@ static sp_RbVal sp_poly_with_m(sp_RbVal v, sp_RbVal ov) {
     sp_RbVal r = sp_obj_with_fn(v, ov);
     if (r.tag == SP_TAG_OBJ) return r;
   }
-  sp_raise_cls("NoMethodError", sp_sprintf("undefined method 'with' for %s", sp_poly_class_name(v)));
+  sp_raise_nomethod(sp_nomethod_msg("with", v));  /* CRuby's wording, as for to_r */
 }
 static sp_RbVal sp_poly_to_r_m(sp_RbVal v) {
   v = sp_poly_strbuf_deref(v);   /* a shared String handle reads as its String (#7263) */
@@ -11630,7 +11630,7 @@ static sp_RbVal sp_poly_to_r_m(sp_RbVal v) {
      poly, and `v&.to_r` is exactly that shape. */
   if (v.tag == SP_TAG_STR) return sp_box_rational(sp_str_to_r(v.v.s ? v.v.s : sp_str_empty));
   if (sp_poly_is_strbuf(v)) return sp_poly_to_r_m(sp_poly_strbuf_deref(v));
-  sp_raise_cls("NoMethodError", sp_sprintf("undefined method 'to_r' for %s", sp_poly_class_name(v)));
+  sp_raise_nomethod(sp_nomethod_msg("to_r", v));  /* "for true", "for an instance of Array", as CRuby words it */
 }
 /* #rationalize on a boxed value, with `argc` epsilons (0 or 1): nil and an
    Integer ignore it and answer (0/1) and (n/1); a Float answers the simplest
@@ -11647,7 +11647,7 @@ static sp_RbVal sp_poly_rationalize_m(sp_RbVal v, int argc, sp_RbVal eps) {
     if (!argc) return v;
     return sp_box_rational(sp_float_rationalize(sp_rational_to_f(*(sp_Rational *)v.v.p), sp_poly_to_f(eps)));
   }
-  sp_raise_cls("NoMethodError", sp_sprintf("undefined method 'rationalize' for %s", sp_poly_class_name(v)));
+  sp_raise_nomethod(sp_nomethod_msg("rationalize", v));  /* CRuby's wording, as for to_r */
 }
 static sp_RbVal sp_poly_to_c_m(sp_RbVal v) {
   v = sp_poly_strbuf_deref(v);   /* a shared String handle reads as its String (#7263) */
@@ -11663,7 +11663,7 @@ static sp_RbVal sp_poly_to_c_m(sp_RbVal v) {
   if (v.tag == SP_TAG_STR) return sp_box_complex(sp_str_to_c(v.v.s ? v.v.s : sp_str_empty));
   if (sp_poly_is_strbuf(v)) return sp_poly_to_c_m(sp_poly_strbuf_deref(v));
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_COMPLEX) return v;
-  sp_raise_cls("NoMethodError", sp_sprintf("undefined method 'to_c' for %s", sp_poly_class_name(v)));
+  sp_raise_nomethod(sp_nomethod_msg("to_c", v));  /* "for true", "for an instance of Array", as CRuby words it */
 }
 /* Array-reduction methods on a boxed array value -- an element of a poly array,
    e.g. a run produced by chunk_while / slice_when. Each switches on the boxed
