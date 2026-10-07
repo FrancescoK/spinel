@@ -941,6 +941,10 @@ void emit_yblk_ref(Buf *b);
 /* Emit the lead of a tail value: `return ` or `<result> = `. */
 void emit_tail_lead(Buf *b);
 const char *rename_local(const char *nm);
+const char *rename_local_cell(const char *nm);
+int sb_shim_shadow(const char *name, const char *rn);
+LocalVar **sb_shim_lift(Compiler *c, int node, int *n);
+void sb_shim_drop(LocalVar **lifted, int n);
 /* `unsupported` never returns: it longjmps to the codegen driver's per-unit
    recovery (see g_unsup_recover) when one is armed, else exits. Marked noreturn so every caller's
    "this construct is unsupported" guard correctly treats the code after it as
