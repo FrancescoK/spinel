@@ -890,8 +890,7 @@ int poly_block_call_needs_dispatch(Compiler *c, int id) {
   return 0;
 }
 
-/* Whether a `&.` call on a poly receiver has yet to pass through its nil
-   guard. The guard re-enters the emission with g_sn_skip set on the node, so
+/* Whether a `&.` call has yet to pass through its nil guard. The guard re-enters the emission with g_sn_skip set on the node, so
    this answers false on that second pass. */
 int sn_guard_pending(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
@@ -899,7 +898,29 @@ int sn_guard_pending(Compiler *c, int id) {
   const char *op = nt_str(nt, id, "call_operator");
   if (!op || !sp_streq(op, "&.")) return 0;
   int recv = nt_ref(nt, id, "receiver");
-  return recv >= 0 && repr_of(c, recv).kind == RK_BOXED;
+  if (recv < 0) return 0;
+  Repr rr = repr_of(c, recv);
+  if (rr.kind == RK_BOXED) return 1;
+  /* every receiver holding a nil of its own C kind -- an Integer's or a
+     Float's sentinel, a NULL String, container or object -- which
+     emit_call_safe_nav_arms guards too (its sn_obj, sn_scalar and String
+     cases, and the Array and Hash among its sn_cont; a Lazy or another
+     handle is left to the chain emitters that fuse it). Taken first, the element-loop emitters ran
+     `v&.times { }`, `v&.gsub(re) { }` or `v&.then { }` on the nil. */
+  TyKind rt = rr.as_ty;
+  /* `v&.lazy&.map { }&.first(2)` is a pipeline the lazy emitters fuse from
+     its terminal; standing a link of it down here left `lazy` with no
+     emitter of its own */
+  for (int k = id; k >= 0 && nt_kind(nt, k) == NK_CallNode; k = nt_ref(nt, k, "receiver")) {
+    const char *kn = nt_str(nt, k, "name");
+    if (kn && sp_streq(kn, "lazy")) return 0;
+  }
+  if ((ty_is_object(rt) && rr.kind != RK_VOBJ) || rt == TY_STRING ||
+      rt == TY_INT || rt == TY_FLOAT || ty_is_array(rt) || ty_is_hash(rt))
+    return 1;
+  /* a link after a pending one (`v&.each_with_index&.to_a`): a chain
+     emitter fusing from this terminal would read past the inner guard */
+  return nt_kind(nt, recv) == NK_CallNode && sn_guard_pending(c, recv);
 }
 
 
