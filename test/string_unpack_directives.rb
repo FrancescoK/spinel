@@ -24,7 +24,7 @@ t { "abc".unpack("X") }
 b = "\x01\x00\x00\x00\xfe\xff\xff\xff\x02\x00\x00\x00\x00\x00\x00\x00\xff\xff\xff\xff\xff\xff\xff\xff".b
 t { b.unpack("iI") }
 t { b.unpack("i!I_") }
-t { b.unpack("x8jJ") }
+t { b.unpack("x8" + (["x"].pack("p").bytesize == 8 ? "jJ" : "qQ")) }   # j/J are the pointer size: q/Q where it is 4 bytes
 t { b.unpack("i>") }
 t { b.unpack("C # a comment\nC") }
 t { b.unpack("C\vC\fC\rC") }
