@@ -7738,7 +7738,8 @@ static int stmts_diverge(Compiler *c, int st) {
   int last = b[n - 1];
   if (nt_kind(nt, last) != NK_CallNode || nt_ref(nt, last, "receiver") >= 0) return 0;
   const char *nm = nt_str(nt, last, "name");
-  return nm && is_diverging_call(nm);
+  return nm && is_diverging_call(nm) && !an_bare_call_class_owned(c, last) &&
+         comp_method_index(c, nm) < 0;
 }
 /* Whether call `w`, named `wn`, can run a method the program defines: a
    receiverless call (or one on self) when some user method has the name; a

@@ -6,6 +6,7 @@
    elements, each argument with the parameter it binds, each yield with the
    blocks the method is called with, each return with the method's value,
    each break or next with the call, loop or block it leaves (sh_jumps),
+   each throw with its lexical catch or UNKNOWN,
    each pattern variable with the part it matches (sh_pattern).
    A builtin call is read off its builtin-op share row (bop_share); a user
    call off its call plan (cplan_user_fresh). What the walk does not follow
@@ -88,6 +89,7 @@ typedef struct ShareFacts {
      a block hand the block (-1 none); and the nodes the walk that finds
      them reached */
   int *jump;
+  int catch_unknown;   /* a throw whose dynamic target the walk cannot name */
   unsigned char *jseen;
   /* per node, a `Fiber.yield` in an Enumerator.new block (the yielder a
      desugared `y << v` is): that Enumerator.new call, or -1 (sh_jumps) */
@@ -1723,6 +1725,16 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
     }
   }
 
+  if (recv < 0 && is_catch_name(name) && argc <= 1 && blk >= 0 && nt_kind(nt, blk) == NK_BlockNode) {
+    if (argc == 1) sh_block_params(F, c, blk, sh_val(F, c, argv[0]), 0);
+    int v = sh_block_val(F, c, blk);
+    return F->catch_unknown || !F->jseen[n] ? sh_join(F, v, F->unknown) : v;
+  }
+  if (recv < 0 && is_throw_name(name) && !F->jseen[n]) {
+    sh_unknown_call(F, c, n, blk);
+    return -1;
+  }
+
   /* a builtin */
   if (recv < 0) {
     int s = bop_share_named(BOP_KERNEL, name);
@@ -2475,11 +2487,41 @@ static void sh_mark_last_unused(ShareFacts *F, const NodeTable *nt, int st, unsi
    so a call valued before the walk reaches its block's break still joins
    it. A break with no target (outside any block or loop) joins UNKNOWN, as
    does one the walk does not reach (sh_val_compute). */
+/* Catch context is lexical only. A method or deferred block starts a new
+   context; an unmatched throw meets every catch through UNKNOWN. Symbol
+   tags can be compared by value; other tags fall back rather than infer
+   object identity. The bounded lookup adds constant work per throw. */
+typedef struct ShCatch { int node, tag; struct ShCatch *outer; } ShCatch;
 typedef struct {
   int *t, *n, np, cp;
   Compiler *c;
   int gen;   /* the Enumerator.new call whose block the walk is in, or -1 */
+  ShCatch *caught;
 } ShJumps;
+
+static void sh_jump_add(ShJumps *J, int n, int t) {
+  if (J->np >= J->cp) {
+    J->cp = J->cp ? J->cp * 2 : 16;
+    J->t = realloc(J->t, sizeof(int) * (size_t)J->cp);
+    J->n = realloc(J->n, sizeof(int) * (size_t)J->cp);
+    if (!J->t || !J->n) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  J->t[J->np] = t;
+  J->n[J->np++] = n;
+}
+
+static int sh_throw_target(const NodeTable *nt, ShJumps *J, int n) {
+  int args = nt_ref(nt, n, "arguments");
+  int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+  if (argc < 1 || nt_kind(nt, argv[0]) != NK_SymbolNode) return -2;
+  const char *tag = sh_lit_name(nt, argv[0]);
+  int depth = 0;
+  for (ShCatch *ct = J->caught; ct && depth < 32; ct = ct->outer, depth++) {
+    if (ct->tag < 0 || nt_kind(nt, ct->tag) != NK_SymbolNode) return -2;
+    if (sp_streq(tag, sh_lit_name(nt, ct->tag))) return ct->node;
+  }
+  return -2;
+}
 
 static void sh_jump_walk(ShareFacts *F, const NodeTable *nt, ShJumps *J, int n, int brk, int nxt);
 
@@ -2513,20 +2555,14 @@ static void sh_jump_kids(ShareFacts *F, const NodeTable *nt, ShJumps *J, int n, 
 static void sh_jump_walk(ShareFacts *F, const NodeTable *nt, ShJumps *J, int n, int brk, int nxt) {
   if (n < 0 || n >= F->nnodes || F->jseen[n]) return;
   F->jseen[n] = 1;
+  ShCatch *saved = J->caught;
   NodeKind k = nt_kind(nt, n);
   int gen = J->gen;
   switch (k) {
   case NK_BreakNode: case NK_NextNode: {
     int t = k == NK_BreakNode ? brk : nxt;
     if (t == -1 || nt_ref(nt, n, "arguments") < 0) break;
-    if (J->np >= J->cp) {
-      J->cp = J->cp ? J->cp * 2 : 16;
-      J->t = realloc(J->t, sizeof(int) * (size_t)J->cp);
-      J->n = realloc(J->n, sizeof(int) * (size_t)J->cp);
-      if (!J->t || !J->n) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-    }
-    J->t[J->np] = t;
-    J->n[J->np++] = n;
+    sh_jump_add(J, n, t);
     break;
   }
   case NK_WhileNode: case NK_UntilNode:
@@ -2538,14 +2574,17 @@ static void sh_jump_walk(ShareFacts *F, const NodeTable *nt, ShJumps *J, int n, 
     brk = n; nxt = -1;
     break;
   case NK_LambdaNode:
+    J->caught = NULL;
     brk = nxt = n;
     J->gen = -1;
     break;
   case NK_BlockNode:   /* a block no call is walked with */
+    J->caught = NULL;
     brk = -2; nxt = n;
     J->gen = -1;
     break;
   case NK_DefNode: case NK_ClassNode: case NK_ModuleNode: case NK_SingletonClassNode:
+    J->caught = NULL;
     brk = nxt = -2;
     J->gen = -1;
     break;
@@ -2558,8 +2597,25 @@ static void sh_jump_walk(ShareFacts *F, const NodeTable *nt, ShJumps *J, int n, 
       }
       F->fgen[n] = gen;
     }
+    const char *name = k == NK_CallNode ? nt_str(nt, n, "name") : NULL;
+    int tagged = name && (is_catch_name(name) || is_throw_name(name)) &&
+                 nt_ref(nt, n, "receiver") < 0 && !sh_has_targets(J->c, n);
+    if (tagged && is_throw_name(name)) {
+      int t = sh_throw_target(nt, J, n);
+      sh_jump_add(J, n, t);
+      if (t < 0) F->catch_unknown = 1;
+    }
+    int rcv = nt_ref(nt, n, "receiver");
+    TyKind rt = rcv >= 0 ? J->c->ntype[rcv] : TY_VOID;
+    if (name && (is_send_family(name) || (is_proc_invoke(name) &&
+        (rt == TY_PROC || rt == TY_METHOD || rt == TY_POLY || rt == TY_UNKNOWN))))
+      F->catch_unknown = 1;
     int blk = nt_ref(nt, n, "block");
     if (blk >= 0 && blk < F->nnodes && !F->jseen[blk] && nt_kind(nt, blk) == NK_BlockNode) {
+      int args = nt_ref(nt, n, "arguments");
+      int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+      ShCatch ct = { n, argc == 1 ? argv[0] : -1, saved };
+      J->caught = tagged && is_catch_name(name) && argc <= 1 ? &ct : NULL;
       F->jseen[blk] = 1;
       /* the block of Enumerator.new, or of a Fiber's own */
       int recv = k == NK_CallNode ? nt_ref(nt, n, "receiver") : -1;
@@ -2569,6 +2625,7 @@ static void sh_jump_walk(ShareFacts *F, const NodeTable *nt, ShJumps *J, int n, 
       else if (an_fiber_new_block(J->c, n) >= 0) J->gen = -1;
       sh_jump_kids(F, nt, J, blk, n, blk);
       J->gen = gen;
+      J->caught = saved;
     }
     break;
   }
@@ -2577,15 +2634,24 @@ static void sh_jump_walk(ShareFacts *F, const NodeTable *nt, ShJumps *J, int n, 
   }
   sh_jump_kids(F, nt, J, n, brk, nxt);
   J->gen = gen;
+  J->caught = saved;
 }
 
 /* the value a break or a next hands over: its one value, or an Array of
-   several (`break a, b`, `next *xs`) */
+   several (`break a, b`, `next *xs`). A throw hands over its second
+   argument, including a Hash passed as keywords; no value means nil. */
 static int sh_jump_val(ShareFacts *F, Compiler *c, int n) {
-  int vals[64];
-  int nv = sh_args_vals(F, c, n, vals, 64);
   int args = nt_ref(c->nt, n, "arguments");
   int argc = 0; const int *argv = args >= 0 ? nt_arr(c->nt, args, "arguments", &argc) : NULL;
+  if (nt_kind(c->nt, n) == NK_CallNode) {
+    if (argc == 2 && nt_kind(c->nt, argv[0]) != NK_SplatNode &&
+        nt_kind(c->nt, argv[1]) != NK_SplatNode) return sh_val(F, c, argv[1]);
+    if (argc <= 1 && (argc == 0 || nt_kind(c->nt, argv[0]) != NK_SplatNode)) return -1;
+    sh_unknown_call(F, c, n, -1);
+    return F->unknown;
+  }
+  int vals[64];
+  int nv = sh_args_vals(F, c, n, vals, 64);
   if (nv == 1 && argc == 1 && nt_kind(c->nt, argv[0]) != NK_SplatNode) return vals[0];
   int r = sh_new(F, SHK_VALUE);
   for (int i = 0; i < nv; i++) sh_union(F, sh_elem(F, r), vals[i]);
@@ -2594,7 +2660,7 @@ static int sh_jump_val(ShareFacts *F, Compiler *c, int n) {
 
 static void sh_jumps(ShareFacts *F, Compiler *c) {
   const NodeTable *nt = c->nt;
-  ShJumps J = { NULL, NULL, 0, 0, c, -1 };
+  ShJumps J = { NULL, NULL, 0, 0, c, -1, NULL };
   F->jseen = calloc((size_t)(F->nnodes > 0 ? F->nnodes : 1), 1);
   if (!F->jseen) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   sh_jump_walk(F, nt, &J, nt->root_id, -2, -2);
