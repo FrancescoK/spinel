@@ -15991,14 +15991,24 @@ static void refuse_global_array_element(Compiler *c, int id, int g, int l) {
    (a fresh String wrapped as a new one), as a local's or an ivar's stores
    are. Without them a global's Array or Hash kept the plain String, and a
    change through an element was lost. */
-static int strbuf_gvar_store_walk(Compiler *c, const char *grn, int depth) {
+/* Is variable-site entry e of a global (kind NK_GlobalVariableReadNode,
+   grn its resolved name), or of a constant or a class variable
+   (NK_ConstantReadNode, NK_ClassVariableReadNode) named name? (A chain
+   carries hash collisions.) */
+static int static_site_is(Compiler *c, NodeKind kind, int e, const char *name) {
+  if (kind == NK_GlobalVariableReadNode) return gvar_site_is(c, e, name);
+  int v = comp_vsite_var(c, e);
+  const char *vn = v >= 0 ? nt_str(c->nt, v, "name") : NULL;
+  return vn && sp_streq(vn, name);
+}
+static int strbuf_static_store_walk(Compiler *c, NodeKind kind, const char *grn, int depth) {
   const NodeTable *nt = c->nt;
   int changed = 0;
-  for (int e = comp_vsite_first(c, VS_RECV, NK_GlobalVariableReadNode, grn, -1); e >= 0;
+  for (int e = comp_vsite_first(c, VS_RECV, kind, grn, -1); e >= 0;
        e = comp_vsite_next(c, e)) {
     int u = comp_vsite_node(c, e);
     const char *un = nt_str(nt, u, "name");
-    if (!un || !gvar_site_is(c, e, grn)) continue;
+    if (!un || !static_site_is(c, kind, e, grn)) continue;
     int a = nt_ref(nt, u, "arguments"), an = 0;
     const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
     if (is_push_unshift(un))
@@ -16007,6 +16017,9 @@ static int strbuf_gvar_store_walk(Compiler *c, const char *grn, int depth) {
       changed |= strbuf_store_leaf(c, av[an - 1], depth, SB_DEMAND);
   }
   return changed;
+}
+static int strbuf_gvar_store_walk(Compiler *c, const char *grn, int depth) {
+  return strbuf_static_store_walk(c, NK_GlobalVariableReadNode, grn, depth);
 }
 /* May a method defined in class k answer a call on a receiver of class
    rcid: k is rcid or a subclass of it, a module, or no class? */
@@ -17171,25 +17184,48 @@ static int share_lift_poly_ivar_stores(Compiler *c, int cid, const char *name) {
   return changed;
 }
 
-/* share_default_apply's global container (holder name `name`): answers
-   whether anything changed. */
-static int share_gvar_container(Compiler *c, const char *name) {
+/* share_default_apply's global, constant or class variable container
+   (holder kind `kind`, SHK_GVAR, SHK_CONST or SHK_CVAR, and name `name`):
+   answers whether anything changed. */
+static int share_static_container(Compiler *c, int kind, const char *name) {
   const NodeTable *nt = c->nt;
-  const char *grn = comp_resolve_gvar(c, name[0] == '$' ? name + 1 : name);
-  LocalVar *gv = grn ? comp_gvar(c, grn) : NULL;
-  if (!gv || (!ty_is_array(gv->type) && !ty_is_hash(gv->type))) return 0;
+  NodeKind rk = kind == SHK_GVAR ? NK_GlobalVariableReadNode
+              : kind == SHK_CVAR ? NK_ClassVariableReadNode : NK_ConstantReadNode;
+  const char *grn = kind != SHK_GVAR ? name : comp_resolve_gvar(c, name[0] == '$' ? name + 1 : name);
+  if (!grn) return 0;
   int changed = 0;
-  if ((gv->type == TY_STR_ARRAY || gv->type == TY_POLY_ARRAY) && !gv->rbs_seeded &&
-      (gv->type != TY_POLY_ARRAY || !gv->elems_shared)) {
-    gv->type = TY_POLY_ARRAY;
-    gv->elems_shared = 1;
-    changed = 1;
+  if (kind == SHK_CVAR) {
+    /* a class variable is every class's of the name, as the facts key it;
+       a top-level one (CRuby raises RuntimeError on its access) is left to
+       the seal's refusal */
+    int any = 0, tl = comp_class_index(c, "Toplevel");
+    if (tl >= 0 && comp_cvar_index(&c->classes[tl], grn) >= 0) return 0;
+    for (int k = 0; k < c->nclasses; k++) {
+      ClassInfo *ci = &c->classes[k];
+      int i = comp_cvar_index(ci, grn);
+      if (i < 0 || (!ty_is_array(ci->cvar_types[i]) && !ty_is_hash(ci->cvar_types[i]))) continue;
+      any = 1;
+      if (ci->cvar_types[i] == TY_STR_ARRAY) { ci->cvar_types[i] = TY_POLY_ARRAY; changed = 1; }
+    }
+    if (!any) return 0;
   }
-  for (int e = comp_vsite_first(c, VS_WRITE, NK_GlobalVariableReadNode, grn, -1); e >= 0;
+  else {
+    LocalVar *gv = kind == SHK_GVAR ? comp_gvar(c, grn) : comp_const(c, grn);
+    if (!gv || (!ty_is_array(gv->type) && !ty_is_hash(gv->type))) return 0;
+    if ((gv->type == TY_STR_ARRAY || gv->type == TY_POLY_ARRAY) && !gv->rbs_seeded &&
+        (gv->type != TY_POLY_ARRAY || !gv->elems_shared)) {
+      gv->type = TY_POLY_ARRAY;
+      gv->elems_shared = 1;
+      changed = 1;
+    }
+  }
+  /* a global's `=` (VS_WRITE), a constant's and a class variable's `=`,
+     `||=` and `&&=` (VS_STORE: the index keeps no VS_WRITE for them) */
+  for (int e = comp_vsite_first(c, kind == SHK_GVAR ? VS_WRITE : VS_STORE, rk, grn, -1); e >= 0;
        e = comp_vsite_next(c, e))
-    if (gvar_site_is(c, e, grn))
+    if (static_site_is(c, rk, e, grn))
       changed |= strbuf_container_source_walk(c, nt_ref(nt, comp_vsite_node(c, e), "value"), 1, SB_DEMAND);
-  return changed | strbuf_gvar_store_walk(c, grn, 1);
+  return changed | strbuf_static_store_walk(c, rk, grn, 1);
 }
 /* Does method mi answer an Array or Hash literal of typed Strings (`const
    char *` elements, which cannot hold the shared handle), as its last
@@ -17299,10 +17335,12 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
         changed = 1;
       }
     }
-    /* a global's Array or Hash whose elements the rule shares holds them as
-       handles, as a local's does: a String Array settles in its poly form,
-       and what its writes and stores give it is demanded into the handle */
-    else if (sh->kind == SHK_GVAR && repr_str_elems_share(c, h) && share_gvar_container(c, sh->name)) {
+    /* a global's or a constant's Array or Hash whose elements the rule
+       shares holds them as handles, as a local's does: a String Array
+       settles in its poly form, and what its writes and stores give it is
+       demanded into the handle */
+    else if ((sh->kind == SHK_GVAR || sh->kind == SHK_CONST || sh->kind == SHK_CVAR) &&
+             repr_str_elems_share(c, h) && share_static_container(c, sh->kind, sh->name)) {
       changed = 1;
     }
     /* a method's value whose elements the rule shares, when they would be
