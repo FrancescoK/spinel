@@ -34139,8 +34139,11 @@ static void an_phase_infer_fixpoint(Compiler *c) {
      its key or value can still read poly (a parameter not yet re-narrowed),
      and a widened Hash never narrows back. Its first decision forces the
      re-run. A slot that joined the Hash's old type cannot follow its
-     widening, so a widening sends the re-narrow round once more. */
-  for (int pass = 0; pass < 2; pass++) {
+     widening, so a widening sends the re-narrow round once more. A round
+     can widen a further Hash (a store whose value read the one widened
+     before), so the rounds repeat until one widens none; widening is
+     monotone, so they end. */
+  for (int pass = 0;; pass++) {
     int any = !pass && pivs_settle_hash_stores(c);
     /* Record the reset poly ivars so the re-run can re-clear them FRESH each
        iteration (a narrowing recompute), not just once. infer_ivar_types is
@@ -34389,7 +34392,7 @@ static void an_phase_infer_fixpoint(Compiler *c) {
       free(prev); free(lprev); free(prevd); free(lprevd); free(ivoff); free(ivrec); free(ivsnap);
     }
     free(recCi); free(recIv); free(recLs); free(recLi); free(recRs); free(nsoff); free(nsbad);
-    if (pass || !pivs_hash_stores_widened(c)) break;
+    if (!pivs_hash_stores_widened(c)) break;
   }
 }
 

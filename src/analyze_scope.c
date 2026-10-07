@@ -8217,9 +8217,11 @@ int pivs_settle_hash_stores(Compiler *c) {
   f->stores_settled = 1;
   return f->stores_held;
 }
-/* 1 once such a store has widened a Hash. */
+/* 1 when such a store has widened a Hash since the last call. */
 int pivs_hash_stores_widened(Compiler *c) {
-  return c->pivs && c->pivs->stores_widened;
+  if (!c->pivs || !c->pivs->stores_widened) return 0;
+  c->pivs->stores_widened = 0;
+  return 1;
 }
 
 int infer_ivar_types(Compiler *c) {

@@ -2169,6 +2169,7 @@ threaded-render-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SPINEL_TIMEOUT)
 GC_MINOR_TESTS := test/reopened_builtin_kwrest_keys.rb \
                   test/string_unary_plus_nested.rb \
                   test/hash_store_boxed_origins.rb \
+                  test/hash_store_boxed_chain.rb \
                   test/reflect_ivar_nil_presence.rb \
                   test/ctor_ivar_default_keywords.rb \
                   test/random_reopen_block_parameter.rb \
