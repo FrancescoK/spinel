@@ -6511,8 +6511,7 @@ static int bind_args_params(Compiler *c, int call_id, int mi, const int *argv, i
      callee's first param took `a`'s type -- a splat param the method name's
      in `method_missing(name, ...)`, typing it apart from the Array its
      callers pass. */
-  if (argc == 1 && argv && nt_type(nt, argv[0]) &&
-      sp_streq(nt_type(nt, argv[0]), "ForwardingArgumentsNode")) {
+  if (argc == 1 && argv && nt_kind(nt, argv[0]) == NK_ForwardingArgumentsNode) {
     Scope *encl = comp_scope_of(c, argv[0]);
     if (!encl) return 0;
     int lead = 0;
@@ -6979,8 +6978,7 @@ static int param_supplied_anywhere(Compiler *c, Scope *sc, int pi) {
     int n = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &n) : NULL;
     for (int k = 0; k < n; k++) {
       NodeKind ak = nt_kind(nt, av[k]);
-      const char *aty = nt_type(nt, av[k]);
-      if (ak == NK_SplatNode || (aty && sp_streq(aty, "ForwardingArgumentsNode"))) return 1;
+      if (ak == NK_SplatNode || ak == NK_ForwardingArgumentsNode) return 1;
       /* a keyword parameter is supplied by a `name:` pair (or by a `**`
          spread, which may carry anything) */
       if (ak == NK_KeywordHashNode && is_kw) {
@@ -9657,8 +9655,7 @@ static int forwarding_yield_target(Compiler *c, int mi, int depth) {
   if (nt_kind(c->nt, call) != NK_CallNode || nt_ref(c->nt, call, "receiver") >= 0) return -1;
   int args = nt_ref(c->nt, call, "arguments");
   int ac = 0; const int *av = args >= 0 ? nt_arr(c->nt, args, "arguments", &ac) : NULL;
-  if (ac != 1 || !av || !nt_type(c->nt, av[0]) ||
-      !sp_streq(nt_type(c->nt, av[0]), "ForwardingArgumentsNode")) return -1;
+  if (ac != 1 || !av || nt_kind(c->nt, av[0]) != NK_ForwardingArgumentsNode) return -1;
   const char *tn = nt_str(c->nt, call, "name");
   if (!tn) return -1;
   int t = comp_method_index(c, tn);

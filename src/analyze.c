@@ -4874,7 +4874,7 @@ static void desugar_data_positional_new(Compiler *c) {
     for (int a = 0; a < an && plain; a++) {
       NodeKind k = nt_kind(nt, av[a]);
       plain = k != NK_SplatNode && k != NK_KeywordHashNode && k != NK_BlockArgumentNode &&
-              !(nt_type(nt, av[a]) && sp_streq(nt_type(nt, av[a]), "ForwardingArgumentsNode"));
+              k != NK_ForwardingArgumentsNode;
     }
     if (!plain) continue;
     int *els = malloc(sizeof(int) * (size_t)an);
@@ -5918,7 +5918,7 @@ static int bam_call_argc(Compiler *c, int mnode) {
     for (int k = 0; k < an; k++) {
       const char *aty = av[k] >= 0 ? nt_type(nt, av[k]) : NULL;
       if (!aty || sp_streq(aty, "KeywordHashNode") ||
-          sp_streq(aty, "BlockArgumentNode") || sp_streq(aty, "ForwardingArgumentsNode")) return -1;
+          sp_streq(aty, "BlockArgumentNode") || nt_kind(nt, av[k]) == NK_ForwardingArgumentsNode) return -1;
       if (sp_streq(aty, "SplatNode")) vary = 1;
     }
     if (n >= 0 && n != an) vary = 1;
@@ -6203,7 +6203,7 @@ static int pad_unsupplied_params(Compiler *c) {
     int fuzzy = 0, kwh = -1;
     for (int j = 0; j < an; j++) {
       const char *aty = av[j] >= 0 ? nt_type(nt, av[j]) : NULL;
-      if (aty && (sp_streq(aty, "SplatNode") || sp_streq(aty, "ForwardingArgumentsNode")))
+      if (aty && (sp_streq(aty, "SplatNode") || nt_kind(nt, av[j]) == NK_ForwardingArgumentsNode))
         fuzzy = 1;
       else if (aty && sp_streq(aty, "KeywordHashNode") && j == an - 1)
         kwh = av[j];
@@ -21404,9 +21404,7 @@ static int dyn_param_walk(Compiler *c, Scope *m, int j, int depth) {
     for (int k = 0; k < ac; k++) {
       NodeKind ak = nt_kind(nt, av[k]);
       /* `...` has no NK_ kind of its own; its type name is the check */
-      const char *aty = nt_type(nt, av[k]);
-      if (ak == NK_SplatNode || ak == NK_KeywordHashNode ||
-          (aty && sp_streq(aty, "ForwardingArgumentsNode"))) return 1;
+      if (ak == NK_SplatNode || ak == NK_KeywordHashNode || ak == NK_ForwardingArgumentsNode) return 1;
     }
     if (ac != m->nparams) continue;   /* it raises ArgumentError instead */
     if (dyn_may_callable(c, av[j], depth + 1)) return 1;
@@ -23177,7 +23175,7 @@ int spread_string_reads(Compiler *c, Scope *m, int call, int pj, int *out, int *
   int pos = ac, fs = -1;
   if (pos > 0 && nt_kind(nt, av[pos - 1]) == NK_KeywordHashNode) pos--;
   for (int k = 0; k < pos; k++) {
-    if (nt_type(nt, av[k]) && sp_streq(nt_type(nt, av[k]), "ForwardingArgumentsNode")) return 0;
+    if (nt_kind(nt, av[k]) == NK_ForwardingArgumentsNode) return 0;
     if (nt_kind(nt, av[k]) == NK_SplatNode && fs < 0) fs = k;
   }
   int lo, hi;
@@ -29409,7 +29407,7 @@ static void desugar_block_arg_order(Compiler *c) {
     int ahead = bo_may_act(nt, recv), plain = 1;
     for (int k = 0; k < an; k++) {
       NodeKind ak = nt_kind(nt, av0[k]);
-      if (ak == NK_BlockArgumentNode || (nt_type(nt, av0[k]) && sp_streq(nt_type(nt, av0[k]), "ForwardingArgumentsNode"))) plain = 0;
+      if (ak == NK_BlockArgumentNode || ak == NK_ForwardingArgumentsNode) plain = 0;
       else if (ak == NK_SplatNode) ahead |= bo_may_act(nt, nt_ref(nt, av0[k], "expression"));
       else if (ak == NK_KeywordHashNode) {
         int en = 0; const int *el = nt_arr(nt, av0[k], "elements", &en);
@@ -33992,7 +33990,7 @@ static void an_phase_method_backstops(Compiler *c) {
       for (int k = 0; k < an; k++) {
         const char *aty = nt_type(c->nt, av[k]);
         if (aty && (sp_streq(aty, "SplatNode") || sp_streq(aty, "BlockArgumentNode") ||
-                    sp_streq(aty, "KeywordHashNode") || sp_streq(aty, "ForwardingArgumentsNode"))) splat = 1;
+                    sp_streq(aty, "KeywordHashNode") || nt_kind(c->nt, av[k]) == NK_ForwardingArgumentsNode)) splat = 1;
       }
       if (splat) {
         for (int k = 0; k < 16; k++) { dyn_arg[k] = TY_POLY; dyn_seen[k] = 1; }

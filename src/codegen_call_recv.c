@@ -9747,7 +9747,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
         for (int ra = 0; ra < argc; ra++) {
           const char *rat = nt_type(nt, argv[ra]);
           if (rat && (sp_streq(rat, "SplatNode") || sp_streq(rat, "KeywordHashNode") ||
-                      sp_streq(rat, "ForwardingArgumentsNode") ||
+                      nt_kind(nt, argv[ra]) == NK_ForwardingArgumentsNode ||
                       sp_streq(rat, "BlockArgumentNode")))
             { rdr_dynamic = 1; break; }
         }
