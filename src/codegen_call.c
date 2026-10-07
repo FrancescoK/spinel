@@ -4396,10 +4396,18 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
       buf_puts(b, ") / sp_rational_to_f("); emit_expr(c, argv[0], b); buf_puts(b, "))");
       return 1;
     }
+    /* in the boxed slot promote gives the call, the exact floor, which can
+       pass the word (sp_poly_div_m) */
+    if (crt == TY_INT && argc == 1 && sp_streq(name, "div") &&
+        comp_ntype(c, argv[0]) == TY_RATIONAL && repr_of(c, id).kind == RK_BOXED) {
+      buf_puts(b, "sp_poly_div_m(sp_box_int("); emit_expr(c, recv, b);
+      buf_puts(b, "), sp_box_rational("); emit_expr(c, argv[0], b); buf_puts(b, "))");
+      return 1;
+    }
     if (crt == TY_INT && argc == 1 && sp_streq(name, "div") &&
         comp_ntype(c, argv[0]) == TY_RATIONAL) {
-      buf_puts(b, "sp_rational_floor_i(sp_rational_div(sp_rational_new((sp_int)(");
-      emit_expr(c, recv, b); buf_puts(b, "), 1), "); emit_expr(c, argv[0], b); buf_puts(b, "))");
+      buf_puts(b, "sp_int_rat_div(");
+      emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
       return 1;
     }
     /* An Integer viewed as a Rational: numerator is self, denominator is 1.
@@ -4518,8 +4526,8 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
     /* Integer <op> Rational: lift the Integer to n/1 (covers `2/3r`, `1 + r`). */
     if (crt == TY_INT && argc == 1 && comp_ntype(c, argv[0]) == TY_RATIONAL) {
       if (is_modulo_alias(name)) {
-        buf_puts(b, "sp_rational_mod(sp_rational_new((sp_int)("); emit_expr(c, recv, b);
-        buf_puts(b, "), 1), "); emit_expr(c, argv[0], b); buf_puts(b, ")");
+        buf_puts(b, "sp_int_rat_mod("); emit_expr(c, recv, b);
+        buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
         return 1;
       }
       if (is_basic_arith(name)) {

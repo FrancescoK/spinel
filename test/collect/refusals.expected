@@ -42,12 +42,6 @@ spinel: 1 refusal, nothing written
 == test/reject/basicobject_toplevel_include_call.rb [promote] rc=1
 spinel: test/reject/basicobject_toplevel_include_call.rb:18: unsupported call: node N (CallNode `hello`) recv=-/ty-1 argc=0
 spinel: 1 refusal, nothing written
-== test/reject/bignum_div_rational.rb [default] rc=1
-spinel: test/reject/bignum_div_rational.rb:6: an Integer operand of a Bignum operation given a Rational, which no conversion keeps in its sp_int slot
-spinel: 1 refusal, nothing written
-== test/reject/bignum_div_rational.rb [promote] rc=1
-spinel: test/reject/bignum_div_rational.rb:6: an Integer operand of a Bignum operation given a Rational, which no conversion keeps in its sp_int slot
-spinel: 1 refusal, nothing written
 == test/reject/bind_call_class_value_block_target.rb [default] rc=1
 spinel: test/reject/bind_call_class_value_block_target.rb:12: unsupported call: node N (CallNode `bind_call`) recv=CallNode/ty0 argc=1 arg0ty1001
 spinel: 1 refusal, nothing written

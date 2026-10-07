@@ -5385,7 +5385,42 @@ static sp_RbVal sp_poly_range_pct(sp_RbVal a, sp_RbVal b) {
     return sp_range_endless_step_v(sp_box_float(f.first), b);
   return sp_box_nullable_obj((void *)sp_FloatArray_from_step(f.first, f.last, sp_poly_to_f(b), f.excl), SP_BUILTIN_FLT_ARRAY);
 }
-static sp_RbVal sp_poly_mod(sp_RbVal a, sp_RbVal b) { if (a.tag == SP_TAG_OBJ && a.v.p && (a.cls_id == SP_BUILTIN_RANGE || a.cls_id == SP_BUILTIN_FLOAT_RANGE)) return sp_poly_range_pct(a, b); /* Two plain numbers first, as add/sub/mul already do (#3984). */ if (a.tag == SP_TAG_INT && b.tag == SP_TAG_INT) return sp_box_int(sp_imod(a.v.i, b.v.i)); if (a.tag == SP_TAG_FLT && b.tag == SP_TAG_FLT) return sp_box_float(sp_fmod(a.v.f, b.v.f)); if (a.tag == SP_TAG_STR || sp_poly_is_strbuf(a)) return sp_poly_str_mod(sp_poly_strbuf_deref(a), b); /* the user-object arm has to come before the float one: a Float on either side otherwise converted the object to a number (0.0) and answered a division by zero where CRuby coerces. */ if (sp_poly_is_user_obj(a) || sp_poly_is_user_obj(b)) return sp_poly_binop_bad("%", a, b); /* a strbuf RECEIVER already returned through sp_poly_str_mod above */ if (SP_UNLIKELY(sp_poly_is_strbuf(b))) return sp_poly_mod(a, sp_poly_strbuf_deref(b)); if (SP_UNLIKELY(sp_poly_tower_mismatch(a, b))) return sp_poly_binop_bad("%", a, b); if (a.tag == SP_TAG_FLT || b.tag == SP_TAG_FLT) return sp_box_float(sp_fmod(sp_poly_to_f(a), sp_poly_to_f(b))); if (sp_poly_is_rational(a) || sp_poly_is_rational(b)) return sp_box_rational(sp_rational_mod(sp_poly_as_rational(a), sp_poly_as_rational(b))); if ((a.tag == SP_TAG_BIGINT || b.tag == SP_TAG_BIGINT)) return sp_box_bigint(sp_bigint_mod(sp_poly_as_bigint(a), sp_poly_as_bigint(b))); /* the sibling helpers (div_m, remainder, fdiv, divmod) all refuse a non-numeric RECEIVER; `%` did not, so nil/Array/Hash/Symbol/true/false reaching here (a poly-dispatch collision default, or plain `nil % 1`) fell through to sp_poly_to_i below and answered 0 instead of raising the method they lack (#4816). */ if (!sp_poly_numeric_p(a) && !sp_poly_is_rational(a) && !sp_poly_is_brat(a)) sp_raise_poly_nomethod("%", a); return sp_box_int(sp_imod(sp_poly_to_i(a), sp_poly_to_i(b))); }  /* sp_fmod: CRuby divisor-sign result + zero-divisor raise */
+static inline int sp_poly_is_exact_num(sp_RbVal v) {
+  return v.tag == SP_TAG_INT || v.tag == SP_TAG_BIGINT || sp_poly_is_rat_kind(v);
+}
+/* An exact n/d (d > 0) reduced, as a Rational: the small one when both
+   parts fit a word, else the big one. */
+static sp_RbVal sp_box_rat_exact(sp_Bigint *n, sp_Bigint *d) {
+  SP_GC_ROOT(n); SP_GC_ROOT(d);
+  sp_Bigint *g = sp_bigint_gcd(n, d); SP_GC_ROOT(g);
+  if (sp_bigint_sign(g) != 0) { n = sp_bigint_div(n, g); d = sp_bigint_div(d, g); }
+  if (sp_bigint_fits_int(n) && sp_bigint_fits_int(d))
+    return sp_box_rational(sp_rational_new((sp_int)sp_bigint_to_int(n), (sp_int)sp_bigint_to_int(d)));
+  return sp_box_brat(n, d);
+}
+/* Numeric#% / #divmod / #remainder of two exact numbers, one of them a
+   Rational of either size, in Bignums: over the common denominator D,
+   a = x/D and b = y/D, so the floor quotient is x div y and the modulo
+   (x mod y)/D; the remainder takes the receiver's sign instead (trunc).
+   The quotient, when asked for, goes to *qout. The paths read a Rational
+   through sp_Rational, so a Bignum operand was 0 and a big Rational raised,
+   or through sp_poly_to_i, which read the Rational as an Integer
+   (7.divmod(Rational(-3, 2)) answered [-7, 0]; CRuby: [-5, (-1/2)]). */
+static sp_RbVal sp_rat_mod_v(sp_RbVal a, sp_RbVal b, int trunc, sp_RbVal *qout) {
+  SP_GC_ROOT_RBVAL(a); SP_GC_ROOT_RBVAL(b);
+  sp_Bigint *an, *ad, *bn, *bd;
+  sp_poly_to_brat(a, &an, &ad); SP_GC_ROOT(an); SP_GC_ROOT(ad);
+  sp_poly_to_brat(b, &bn, &bd); SP_GC_ROOT(bn); SP_GC_ROOT(bd);
+  if (sp_bigint_sign(bn) == 0) sp_raise_cls("ZeroDivisionError", "divided by 0");
+  sp_Bigint *x = sp_bigint_mul(an, bd); SP_GC_ROOT(x);
+  sp_Bigint *y = sp_bigint_mul(bn, ad); SP_GC_ROOT(y);
+  sp_Bigint *m = sp_bigint_mod(x, y); SP_GC_ROOT(m);
+  if (trunc && sp_bigint_sign(m) != 0 && sp_bigint_sign(m) != sp_bigint_sign(x)) m = sp_bigint_sub(m, y);
+  sp_RbVal r = sp_box_rat_exact(m, sp_bigint_mul(ad, bd)); SP_GC_ROOT_RBVAL(r);
+  if (qout) *qout = sp_box_bigint(sp_bigint_div(x, y));
+  return r;
+}
+static sp_RbVal sp_poly_mod(sp_RbVal a, sp_RbVal b) { if (a.tag == SP_TAG_OBJ && a.v.p && (a.cls_id == SP_BUILTIN_RANGE || a.cls_id == SP_BUILTIN_FLOAT_RANGE)) return sp_poly_range_pct(a, b); /* Two plain numbers first, as add/sub/mul already do (#3984). */ if (a.tag == SP_TAG_INT && b.tag == SP_TAG_INT) return sp_box_int(sp_imod(a.v.i, b.v.i)); if (a.tag == SP_TAG_FLT && b.tag == SP_TAG_FLT) return sp_box_float(sp_fmod(a.v.f, b.v.f)); if (a.tag == SP_TAG_STR || sp_poly_is_strbuf(a)) return sp_poly_str_mod(sp_poly_strbuf_deref(a), b); /* the user-object arm has to come before the float one: a Float on either side otherwise converted the object to a number (0.0) and answered a division by zero where CRuby coerces. */ if (sp_poly_is_user_obj(a) || sp_poly_is_user_obj(b)) return sp_poly_binop_bad("%", a, b); /* a strbuf RECEIVER already returned through sp_poly_str_mod above */ if (SP_UNLIKELY(sp_poly_is_strbuf(b))) return sp_poly_mod(a, sp_poly_strbuf_deref(b)); if (SP_UNLIKELY(sp_poly_tower_mismatch(a, b))) return sp_poly_binop_bad("%", a, b); if (a.tag == SP_TAG_FLT || b.tag == SP_TAG_FLT) return sp_box_float(sp_fmod(sp_poly_to_f(a), sp_poly_to_f(b))); /* two exact numbers with a Rational: sp_rat_mod_v */ if ((sp_poly_is_rat_kind(a) || sp_poly_is_rat_kind(b)) && sp_poly_is_exact_num(a) && sp_poly_is_exact_num(b)) return sp_rat_mod_v(a, b, 0, NULL); if (sp_poly_is_rational(a) || sp_poly_is_rational(b)) return sp_box_rational(sp_rational_mod(sp_poly_as_rational(a), sp_poly_as_rational(b))); if ((a.tag == SP_TAG_BIGINT || b.tag == SP_TAG_BIGINT)) return sp_box_bigint(sp_bigint_mod(sp_poly_as_bigint(a), sp_poly_as_bigint(b))); /* the sibling helpers (div_m, remainder, fdiv, divmod) all refuse a non-numeric RECEIVER; `%` did not, so nil/Array/Hash/Symbol/true/false reaching here (a poly-dispatch collision default, or plain `nil % 1`) fell through to sp_poly_to_i below and answered 0 instead of raising the method they lack (#4816). */ if (!sp_poly_numeric_p(a) && !sp_poly_is_rational(a) && !sp_poly_is_brat(a)) sp_raise_poly_nomethod("%", a); return sp_box_int(sp_imod(sp_poly_to_i(a), sp_poly_to_i(b))); }  /* sp_fmod: CRuby divisor-sign result + zero-divisor raise */
 /* Numeric#modulo: same computation as `%`, but a receiver with no such
    method spells the message with "modulo" (CRuby distinguishes the two
    call syntaxes) and, unlike `%`, a String has no modulo method at all
@@ -5421,6 +5456,9 @@ static sp_RbVal sp_poly_divmod(sp_RbVal a, sp_RbVal b) {
      below instead of raising the method it lacks. */
   if (!sp_poly_numeric_p(a) && !sp_poly_is_rational(a) && !sp_poly_is_brat(a))
     sp_raise_poly_nomethod("divmod", a);
+  /* the operands are read after the pair's allocation, which can collect a
+     fresh one (a Bignum or a big Rational built for this call) */
+  SP_GC_ROOT_RBVAL(a); SP_GC_ROOT_RBVAL(b);
   sp_PolyArray *out = sp_PolyArray_new();
   SP_GC_ROOT(out);
   /* A Float operand is answered by the Float arm below, not read as a
@@ -5428,6 +5466,15 @@ static sp_RbVal sp_poly_divmod(sp_RbVal a, sp_RbVal b) {
      and `Rational(3,4).divmod(0.5)` raised ZeroDivisionError on a divisor
      that is not zero. The sibling helpers (mod, div_m, remainder) all test
      for a Float ahead of their Rational arm; this one did not. */
+  /* two exact numbers with a Rational divide exactly (sp_rat_mod_v) */
+  if ((sp_poly_is_rat_kind(a) || sp_poly_is_rat_kind(b)) &&
+      sp_poly_is_exact_num(a) && sp_poly_is_exact_num(b)) {
+    sp_RbVal q;
+    sp_RbVal m = sp_rat_mod_v(a, b, 0, &q); SP_GC_ROOT_RBVAL(m); SP_GC_ROOT_RBVAL(q);
+    sp_PolyArray_push(out, q);
+    sp_PolyArray_push(out, m);
+    return sp_box_poly_array(out);
+  }
   if (!(a.tag == SP_TAG_FLT || b.tag == SP_TAG_FLT) &&
       (sp_poly_is_rational(a) || sp_poly_is_rational(b))) {
     sp_Rational ra = sp_poly_as_rational(a), rb = sp_poly_as_rational(b);
@@ -5442,9 +5489,10 @@ static sp_RbVal sp_poly_divmod(sp_RbVal a, sp_RbVal b) {
     if (fb == 0) sp_raise_cls("ZeroDivisionError", "divided by 0");
     sp_float q, m;
     sp_flo_divmod(fa, fb, &q, &m);
-    /* CRuby answers the quotient as an Integer (7.0.divmod(3) => [2, 1.0]);
-       only one that no Integer can hold stays a Float. */
-    sp_PolyArray_push(out, (q >= -9.2e18 && q <= 9.2e18) ? sp_box_int((sp_int)q) : sp_box_float(q));
+    /* CRuby answers the quotient as an Integer (7.0.divmod(3) => [2, 1.0]),
+       a Bignum past the word ((2**70).divmod(2.5) answered a Float), and a
+       NaN one is FloatDomainError (sp_box_f_to_int) */
+    { sp_RbVal qi = sp_box_f_to_int(q); SP_GC_ROOT_RBVAL(qi); sp_PolyArray_push(out, qi); }
     sp_PolyArray_push(out, sp_box_float(m));
     return sp_box_poly_array(out);
   }
@@ -5463,6 +5511,31 @@ static sp_RbVal sp_poly_divmod(sp_RbVal a, sp_RbVal b) {
     return sp_box_poly_array(out);
   }
 }
+/* Numeric#div of two exact numbers, one of them a Rational of either size:
+   the floor of the exact quotient, a/b = (an*bd)/(ad*bn), in Bignums.
+   sp_bigint_div floors toward -inf whatever the signs. Read through a
+   double, Rational(2**60 - 1, 2**60) is 1.0, so 1.ceildiv of it answered 1
+   (CRuby: 2), and a Bignum operand lost its low digits. */
+static sp_RbVal sp_rat_floor_div_v(sp_RbVal a, sp_RbVal b) {
+  SP_GC_ROOT_RBVAL(a); SP_GC_ROOT_RBVAL(b);   /* a's conversion allocates before b is read */
+  sp_Bigint *an, *ad, *bn, *bd;
+  sp_poly_to_brat(a, &an, &ad); SP_GC_ROOT(an); SP_GC_ROOT(ad);
+  sp_poly_to_brat(b, &bn, &bd); SP_GC_ROOT(bn); SP_GC_ROOT(bd);
+  if (sp_bigint_sign(bn) == 0) sp_raise_cls("ZeroDivisionError", "divided by 0");
+  sp_Bigint *num = sp_bigint_mul(an, bd); SP_GC_ROOT(num);
+  sp_Bigint *den = sp_bigint_mul(ad, bn); SP_GC_ROOT(den);
+  return sp_box_bigint(sp_bigint_div(num, den));
+}
+/* The same for a typed Bignum receiver and a typed Rational divisor, which
+   the Bignum#div arm had no operand form for (a compile-time refusal):
+   floor(a * den / num), with den > 0. */
+static sp_Bigint *sp_bigint_div_rat(sp_Bigint *a, sp_Rational b) {
+  if (b.num == 0) sp_raise_cls("ZeroDivisionError", "divided by 0");
+  SP_GC_ROOT(a);
+  sp_Bigint *d = sp_bigint_new_int(b.den); SP_GC_ROOT(d);
+  sp_Bigint *n = sp_bigint_mul(a, d); SP_GC_ROOT(n);
+  return sp_bigint_div(n, sp_bigint_new_int(b.num));
+}
 /* Numeric#div: the floor of the quotient, always an Integer, whatever the
    operands are (7.0.div(3) => 2). Distinct from `/`, which keeps the operand
    kind, and from #fdiv, which is always a Float (#3800). */
@@ -5470,6 +5543,12 @@ static sp_RbVal sp_poly_div_m(sp_RbVal a, sp_RbVal b) {
   SP_POLY_COERCE_NUM("div");
   if (!sp_poly_numeric_p(a) && !sp_poly_is_rational(a) && !sp_poly_is_brat(a))
     sp_raise_poly_nomethod("div", a);
+  /* a Rational with no Float beside it divides exactly (sp_rat_floor_div_v);
+     a big Rational fell to the Integer arms below, which raised RangeError,
+     or ZeroDivisionError beside a Bignum */
+  if ((sp_poly_is_rat_kind(a) || sp_poly_is_rat_kind(b)) &&
+      sp_poly_is_exact_num(a) && sp_poly_is_exact_num(b))
+    return sp_rat_floor_div_v(a, b);
   if (a.tag == SP_TAG_FLT || b.tag == SP_TAG_FLT ||
       sp_poly_is_rational(a) || sp_poly_is_rational(b))
     return sp_float_div_v(sp_poly_to_f_with_rational(a), sp_poly_to_f_with_rational(b));
@@ -5479,12 +5558,84 @@ static sp_RbVal sp_poly_div_m(sp_RbVal a, sp_RbVal b) {
   if ((a.tag == SP_TAG_BIGINT || b.tag == SP_TAG_BIGINT)) return sp_box_bigint(sp_bigint_div(sp_poly_as_bigint(a), sp_poly_as_bigint(b)));
   return sp_box_int(sp_idiv(sp_poly_to_i(a), sp_poly_to_i(b)));
 }
+/* Integer#div with a divisor known only at run time, in a call typed
+   Integer. sp_int_div_boxed read a Bignum or a Rational divisor as an
+   Integer argument, so 7.div(2**65) raised ZeroDivisionError (CRuby: 0) and
+   7.div(Rational(3, 2)) answered 7 (CRuby: 4); those divide as Numeric#div
+   does, and a quotient past the word is the RangeError an Integer overflow
+   raises (promote types the call boxed instead). A Float divides as the
+   typed Integer#div(Float) arm does; an Integer as before. */
+static sp_int sp_int_div_poly(sp_int a, sp_RbVal v) {
+  if (v.tag == SP_TAG_INT) return sp_int_div_boxed(a, v);
+  if (v.tag == SP_TAG_FLT) return sp_float_div_i((sp_float)a, v.v.f);
+  if (v.tag == SP_TAG_BIGINT || sp_poly_is_rat_kind(v)) {
+    sp_RbVal q = sp_poly_div_m(sp_box_int(a), v);
+    if (q.tag != SP_TAG_INT) sp_raise_cls("RangeError", "integer overflow in div");
+    return q.v.i;
+  }
+  return sp_int_div_boxed(a, v);
+}
+/* Bignum#div with a divisor known only at run time: sp_poly_as_bigint read
+   a Float divisor truncated and a Rational one as 0, so (2**70).div(2.5)
+   answered 2**69 (CRuby: 472236648286964547584) and
+   (2**70).div(Rational(3, 2)) raised ZeroDivisionError. Those divide as
+   Numeric#div does. */
+static sp_Bigint *sp_bigint_div_poly(sp_Bigint *a, sp_RbVal v) {
+  SP_GC_ROOT(a); SP_GC_ROOT_RBVAL(v);
+  if (v.tag == SP_TAG_FLT || sp_poly_is_rat_kind(v))
+    return sp_poly_as_bigint(sp_poly_div_m(sp_box_bigint(a), v));
+  return sp_bigint_div(a, sp_poly_as_bigint(v));
+}
+/* An Integer's div, divmod, % and remainder by a typed Rational. The
+   word-sized forms (sp_rational_div and its siblings) hold a/b's numerator
+   a * b.den in an sp_Rational, which raised "Rational out of sp_int range"
+   where the answer fits: 7 % Rational(1, 2**62) is (0/1), and
+   (2**62).div(Rational(2**62 - 1, 3)) is 3. While a * b.den stays within
+   half a word every step of theirs fits, and they answer; past it the exact
+   Bignum forms do (sp_rat_floor_div_v, sp_rat_mod_v). */
+static inline sp_bool sp_int_rat_word_p(sp_int a, sp_Rational b) {
+  sp_int x;
+  return !sp_int_mul_overflow_p(a, b.den, &x) && x < INTPTR_MAX / 2 && x > -(INTPTR_MAX / 2);
+}
+/* the floor, which the Integer slot holds or raises for as an overflow */
+static sp_int sp_int_rat_div(sp_int a, sp_Rational b) {
+  if (sp_int_rat_word_p(a, b)) return sp_rational_floor_i(sp_rational_div(sp_rational_new(a, 1), b));
+  sp_RbVal q = sp_rat_floor_div_v(sp_box_int(a), sp_box_rational(b));
+  if (q.tag != SP_TAG_INT) sp_raise_cls("RangeError", "integer overflow in div");
+  return q.v.i;
+}
+/* the modulo and the remainder are smaller than b, so an sp_Rational holds them */
+static sp_Rational sp_int_rat_mod(sp_int a, sp_Rational b) {
+  if (sp_int_rat_word_p(a, b)) return sp_rational_mod(sp_rational_new(a, 1), b);
+  return sp_poly_as_rational(sp_rat_mod_v(sp_box_int(a), sp_box_rational(b), 0, NULL));
+}
+static sp_Rational sp_int_rat_rem(sp_int a, sp_Rational b) {
+  if (sp_int_rat_word_p(a, b)) return sp_rational_rem(sp_rational_new(a, 1), b);
+  return sp_poly_as_rational(sp_rat_mod_v(sp_box_int(a), sp_box_rational(b), 1, NULL));
+}
+/* [floor quotient, modulo]: the quotient may be a Bignum */
+static sp_PolyArray *sp_int_rat_divmod(sp_int a, sp_Rational b) {
+  if (!sp_int_rat_word_p(a, b))
+    return sp_poly_to_poly_array(sp_poly_divmod(sp_box_int(a), sp_box_rational(b)));
+  sp_Rational ra = sp_rational_new(a, 1);
+  sp_int q = sp_rational_floor_i(sp_rational_div(ra, b));
+  sp_Rational m = sp_rational_sub(ra, sp_rational_mul(sp_rational_new(q, 1), b));
+  sp_PolyArray *out = sp_PolyArray_new(); SP_GC_ROOT(out);
+  sp_PolyArray_push(out, sp_box_int(q));
+  sp_PolyArray_push(out, sp_box_rational(m));
+  return out;
+}
 /* Numeric#remainder: the remainder with the sign of the RECEIVER, which is
    what distinguishes it from #modulo ((-7).remainder(3) is -1, not 2). */
 static sp_RbVal sp_poly_remainder(sp_RbVal a, sp_RbVal b) {
   SP_POLY_COERCE_NUM("remainder");
   if (!sp_poly_numeric_p(a) && !sp_poly_is_rational(a) && !sp_poly_is_brat(a))
     sp_raise_poly_nomethod("remainder", a);
+  /* two exact numbers with a Rational, a Bignum or a big Rational among
+     them, in Bignums (sp_rat_mod_v) */
+  if ((sp_poly_is_rat_kind(a) || sp_poly_is_rat_kind(b)) &&
+      sp_poly_is_exact_num(a) && sp_poly_is_exact_num(b))
+    return sp_rat_mod_v(a, b, 1, NULL);
   /* Two exact operands answer exactly, as the typed path does: reading a
      Rational through a double turned `Rational(3,4).remainder(2)` into 0.75
      where CRuby (and spinel's own typed arm) answer (3/4). */
@@ -5498,7 +5649,9 @@ static sp_RbVal sp_poly_remainder(sp_RbVal a, sp_RbVal b) {
       sp_poly_is_rational(a) || sp_poly_is_rational(b)) {
     sp_float fa = sp_poly_to_f_with_rational(a), fb = sp_poly_to_f_with_rational(b);
     if (fb == 0) sp_raise_cls("ZeroDivisionError", "divided by 0");
-    return sp_box_float(fa - fb * trunc(fa / fb));
+    /* fmod is exact: a - b * trunc(a / b) rounded the quotient, so a
+       Bignum's (2**70).remainder(2.5) answered 0.0 (CRuby: 1.5) */
+    return sp_box_float(fmod(fa, fb));
   }
   if ((a.tag == SP_TAG_BIGINT || b.tag == SP_TAG_BIGINT)) return sp_box_bigint(sp_bigint_remainder(sp_poly_as_bigint(a), sp_poly_as_bigint(b)));
   { sp_int ia = sp_poly_to_i(a), ib = sp_poly_to_i(b);

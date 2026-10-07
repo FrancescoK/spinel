@@ -7511,6 +7511,14 @@ static int int_arms_round_divide(Compiler *c, int id, Buf *b, const NodeTable *n
                   " sp_PolyArray_push(_t%d, sp_box_float(_t%d)); _t%d; })",
                tq, tm, r, tb, tq, tm, o, o, o, tq, o, tm, o);
   }
+  /* a divisor known only at run time: the pair Numeric#divmod makes for its
+     kind (a Rational's is exact, sp_rat_mod_v). It was read as an Integer,
+     and 7.divmod(Rational(-3, 2)) answered [-7, 0] */
+  else if (sp_streq(name, "divmod") && argc == 1 &&
+           repr_of(c, argv[0]).kind == RK_BOXED && comp_ntype(c, id) == TY_POLY_ARRAY) {
+    buf_printf(b, "sp_poly_to_poly_array(sp_poly_divmod(sp_box_int(%s), ", r);
+    emit_expr(c, argv[0], b); buf_puts(b, "))");
+  }
   else if (sp_streq(name, "divmod") && argc == 1 &&
            comp_ntype(c, argv[0]) != TY_RATIONAL) {
     int tb = ++g_tmp, o = ++g_tmp;
@@ -7543,9 +7551,13 @@ static int int_arms_round_divide(Compiler *c, int id, Buf *b, const NodeTable *n
   }
   /* a boxed divisor answers by its run-time kind: a Float floors the real
      quotient as the typed arm above does. It was converted to an Integer
-     first, and 17.div(2.5) answered 8 where CRuby answers 6. */
+     first, and 17.div(2.5) answered 8 where CRuby answers 6. A Bignum or a
+     Rational divides as Numeric#div does (sp_int_div_poly). */
   else if (sp_streq(name, "div") && argc == 1 && repr_of(c, argv[0]).kind == RK_BOXED) {
-    buf_printf(b, "sp_int_div_boxed(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
+    /* the boxed slot promote gives the call holds a quotient past the word */
+    if (repr_of(c, id).kind == RK_BOXED) buf_printf(b, "sp_poly_div_m(sp_box_int(%s), ", r);
+    else buf_printf(b, "sp_int_div_poly(%s, ", r);
+    emit_expr(c, argv[0], b); buf_puts(b, ")");
   }
   else if (is_div_or_modulo(name) && argc == 1 &&
            int_divisor_coerce_fail(c, r, argv[0], b)) {}
@@ -7587,14 +7599,17 @@ static int int_arms_round_divide(Compiler *c, int id, Buf *b, const NodeTable *n
   else if ((sp_streq(name, "modulo") || sp_streq(name, "%%")) && argc == 1 &&
            comp_ntype(c, argv[0]) == TY_RATIONAL) {
     /* Integer % Rational lifts the receiver to n/1 (floor modulo) */
-    buf_printf(b, "sp_rational_mod(sp_rational_new((sp_int)(%s), 1), ", r);
+    buf_printf(b, "sp_int_rat_mod(%s, ", r);
     emit_expr(c, argv[0], b); buf_puts(b, ")");
   }
   /* a boxed Float divisor answers a Float CRuby's way (17.modulo(2.5) is
      2.0), which the Integer-typed call cannot hold: raise rather than answer
      the modulo of a divisor cut to an Integer (it answered 1) */
   else if (sp_streq(name, "modulo") && argc == 1 && repr_of(c, argv[0]).kind == RK_BOXED) {
-    buf_printf(b, "sp_int_modulo_boxed(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
+    /* typed boxed, as `%` is: the modulo of the divisor's run-time kind */
+    if (repr_of(c, id).kind == RK_BOXED) buf_printf(b, "sp_poly_modulo(sp_box_int(%s), ", r);
+    else buf_printf(b, "sp_int_modulo_boxed(%s, ", r);
+    emit_expr(c, argv[0], b); buf_puts(b, ")");
   }
   else if (sp_streq(name, "modulo") && argc == 1) { buf_printf(b, "sp_imod(%s, ", r); emit_int_divisor(c, argv[0], b); buf_puts(b, ")"); }
   else if (sp_streq(name, "remainder") && argc == 1 && comp_ntype(c, argv[0]) == TY_FLOAT) {
@@ -7608,21 +7623,16 @@ static int int_arms_round_divide(Compiler *c, int id, Buf *b, const NodeTable *n
   }
   else if (sp_streq(name, "remainder") && argc == 1 &&
            comp_ntype(c, argv[0]) == TY_RATIONAL) {
-    buf_printf(b, "sp_rational_rem(sp_rational_new((sp_int)(%s), 1), ", r);
+    buf_printf(b, "sp_int_rat_rem(%s, ", r);
     emit_expr(c, argv[0], b); buf_puts(b, ")");
   }
   else if (sp_streq(name, "remainder") && argc == 1) { buf_printf(b, "sp_iremainder(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
   else if (sp_streq(name, "divmod") && argc == 1 && comp_ntype(c, argv[0]) == TY_RATIONAL) {
-    /* [floor quotient (Integer), self - q*b (Rational)] */
-    int ta = ++g_tmp, tb2 = ++g_tmp, tq2 = ++g_tmp, to2 = ++g_tmp;
-    buf_printf(b, "({ sp_Rational _t%d = sp_rational_new((sp_int)(%s), 1); sp_Rational _t%d = ", ta, r, tb2);
-    emit_expr(c, argv[0], b);
-    buf_printf(b, "; sp_int _t%d = sp_rational_floor_i(sp_rational_div(_t%d, _t%d));"
-                  " sp_Rational _r = sp_rational_sub(_t%d, sp_rational_mul(sp_rational_new(_t%d, 1), _t%d));"
-                  " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
-                  " sp_PolyArray_push(_t%d, sp_box_int(_t%d));"
-                  " sp_PolyArray_push(_t%d, sp_box_rational(_r)); _t%d; })",
-               tq2, ta, tb2, ta, tq2, tb2, to2, to2, to2, tq2, to2, to2);
+    /* [floor quotient (Integer), self - q*b (Rational)]; the quotient
+       past the word a Bignum (sp_int_rat_divmod) */
+    int ta = ++g_tmp;
+    buf_printf(b, "({ sp_int _t%d = (%s); sp_int_rat_divmod(_t%d, ", ta, r, ta);
+    emit_expr(c, argv[0], b); buf_puts(b, "); })");
   }
   else if (sp_streq(name, "gcdlcm") && argc == 1 &&
            comp_ntype(c, argv[0]) == TY_FLOAT) {
