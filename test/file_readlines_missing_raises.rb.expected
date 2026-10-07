@@ -1,0 +1,6 @@
+Errno::ENOENT
+true
+Errno::ENOENT
+true
+["a\n", "b\n"]
+["a", "b"]

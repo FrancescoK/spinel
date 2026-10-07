@@ -657,7 +657,8 @@ sp_StrArray *sp_file_readlines(const char *path) {SP_GC_ROOT_STR(path);
   sp_StrArray *a = sp_StrArray_new();
   SP_GC_ROOT(a);
   FILE *_fp = fopen(path ? path : "", "r");
-  if (!_fp) return a;
+  /* a file that can't be opened raises, as CRuby's (Errno::ENOENT, ...) */
+  if (!_fp) sp_file_raise_errno("rb_sysopen", path);
   /* getline answers each line whole, however long, as ARGF's gets reads it */
   char *_buf = NULL;
   size_t _cap = 0;
@@ -678,7 +679,8 @@ sp_StrArray *sp_file_readlines_chomp(const char *path) {SP_GC_ROOT_STR(path);
   sp_StrArray *a = sp_StrArray_new();
   SP_GC_ROOT(a);
   FILE *_fp = fopen(path ? path : "", "r");
-  if (!_fp) return a;
+  /* a file that can't be opened raises, as CRuby's (Errno::ENOENT, ...) */
+  if (!_fp) sp_file_raise_errno("rb_sysopen", path);
   char *_buf = NULL;
   size_t _cap = 0;
   ssize_t _n;
