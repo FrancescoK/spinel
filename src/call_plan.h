@@ -192,7 +192,7 @@ typedef enum {
   /* a String's element store, ahead of the switch (emit_poly_str_aset_prearm) */
   PB_STR_ASET,
   /* its builtin cases after the class arms (emit_poly_cases_n) */
-  PB_INDEX_CASES, PB_IO_READ_NB, PB_IO_READPARTIAL, PB_IO_WRITE, PB_IO_SYSWRITE, PB_IO_PRINT, PB_IO_PUTC, PB_IO_SEEK_READ,
+  PB_INDEX_CASES, PB_IO_READ_NB, PB_IO_READPARTIAL, PB_IO_READPARTIAL_BUF, PB_IO_SETSOCKOPT, PB_IO_WRITE, PB_IO_SYSWRITE, PB_IO_PRINT, PB_IO_PUTC, PB_IO_SEEK_READ,
   PB_UNSHIFT, PB_PUSH, PB_PACK, PB_JOIN_N, PB_INCLUDE_CASES, PB_ARR_INDEX, PB_INTERSECT, PB_STRFTIME,
   PB_AREF_STR, PB_AREF_SYM, PB_AREF_POLY, PB_PRED_N,
   /* its `default:` arm (emit_poly_defaults_n): the generic one and what it
