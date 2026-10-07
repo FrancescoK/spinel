@@ -15355,8 +15355,8 @@ static int strbuf_block_param_source_walk(Compiler *c, const char *vn, Scope *vs
   const NodeTable *nt = c->nt;
   int changed = 0;
   if (depth > 8) return 0;
-  for (int w = comp_kind_first(c, NK_CallNode); w >= 0; w = comp_kind_next(c, w)) {
-    if (nt_kind(nt, w) != NK_CallNode) continue;
+  /* the calls whose literal block's parameters live in vs (comp_bcall_first) */
+  for (int w = comp_bcall_first(c, (int)(vs - c->scopes)); w >= 0; w = comp_bcall_next(c, w)) {
     int blk = nt_ref(nt, w, "block");
     if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode || comp_scope_of(c, blk) != vs) continue;
     int k = 0;
