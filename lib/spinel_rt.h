@@ -1076,6 +1076,14 @@ static const char *sp_str_frozen_name(const char *s) {
   static SP_TLS const char **src = NULL, **frz = NULL;
   static SP_TLS int n = 0, cap = 0;
   if (!s || sp_str_is_frozen_val(s)) return s;
+  /* A heap copy (an exception's class, named by sp_exc_class_name) is no
+     key: once it is swept another name can take its address, and the cache
+     answered the old name for it. Only a static name is kept. Nothing else
+     holds the copy, so it is rooted across the interning copy's allocation. */
+  if (((const unsigned char *)s)[-1] == 0xfe || ((const unsigned char *)s)[-1] == 0xfc) {
+    SP_GC_ROOT_STR(s);
+    return sp_str_uminus_val(s);
+  }
   for (int i = 0; i < n; i++) if (src[i] == s) return frz[i];
   if (n == cap) {
     int nc = cap ? cap * 2 : 16;
