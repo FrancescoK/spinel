@@ -259,7 +259,9 @@ jobs:
           env_id=$({ ruby -v; cc --version | head -1; nproc; echo "$ImageOS $ImageVersion $RUNNER_TEMP"
                      sha256sum .github/workflows/verify.yml cdiff1.sh cbase1.sh cbase.py; } | sha256sum | cut -c1-16)
           of=$BASE; [ "$NAME" != base ] && [ "$LEG" != cdiff ] && of=$SHA
-          echo "key=verify-base-$LEG-$SHARD${OF:+of$OF}-$of-$env_id" >> "$GITHUB_OUTPUT"
+          # a head run with PROBE_ENV on the base's own sha must not share the base's key
+          pe=""; [ "$NAME" != base ] && [ -n "${PROBE_ENV:-}" ] && pe="-pe$(printf %s "$PROBE_ENV" | sha256sum | cut -c1-8)"
+          echo "key=verify-base-$LEG-$SHARD${OF:+of$OF}-$of$pe-$env_id" >> "$GITHUB_OUTPUT"
       - name: Restore the base result (base side of a probe or rubyspec only)
         id: based
         if: matrix.name == 'base'
@@ -303,7 +305,8 @@ jobs:
           set -a; . ./verify.conf; set +a
           # PROBE_ENV: NAME=value pairs for the legs' own runs only, not the build (a flag such as
           # SPINEL_SHARE_STRINGS=1 must not reach the tools the build compiles with spinel)
-          [ -n "${PROBE_ENV:-}" ] && export ${PROBE_ENV}
+          # the head side only: base is the comparison WITHOUT the flag (PROBESHARE2 exported it in both)
+          [ -n "${PROBE_ENV:-}" ] && [ "$NAME" != base ] && export ${PROBE_ENV}
           out="$GITHUB_WORKSPACE/out"; mkdir -p "$out"
           h="$RUNNER_TEMP/head"; [ "$NAME" = base ] && h="$RUNNER_TEMP/base"
           if [ "$BASE_HIT" = true ]; then
