@@ -7461,15 +7461,15 @@ static int int_arms_round_divide(Compiler *c, int id, Buf *b, const NodeTable *n
     buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")");
   }
   else if (sp_streq(name, "divmod") && argc == 1 && comp_ntype(c, argv[0]) == TY_FLOAT) {
-    /* a Float divisor divides as floats: [floor-quotient Integer, Float mod] */
-    int tb = ++g_tmp, tq = ++g_tmp, o = ++g_tmp;
+    /* a Float divisor divides as floats, CRuby's flodivmod (sp_flo_divmod):
+       [Integer quotient, Float mod] */
+    int tb = ++g_tmp, tq = ++g_tmp, tm = ++g_tmp, o = ++g_tmp;
     buf_printf(b, "({ double _t%d = ", tb); emit_expr(c, argv[0], b);
-    buf_printf(b, "; if (_t%d == 0.0) sp_raise_cls(\"ZeroDivisionError\", \"divided by 0\");"
-                  " sp_int _t%d = (sp_int)floor((double)(%s) / _t%d);"
+    buf_printf(b, "; double _t%d, _t%d; sp_flo_divmod((double)(%s), _t%d, &_t%d, &_t%d);"
                   " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
-                  " sp_PolyArray_push(_t%d, sp_box_int(_t%d));"
-                  " sp_PolyArray_push(_t%d, sp_box_float((double)(%s) - (double)_t%d * _t%d)); _t%d; })",
-               tb, tq, r, tb, o, o, o, tq, o, r, tq, tb, o);
+                  " sp_PolyArray_push(_t%d, sp_box_int(sp_float_fit_i(_t%d)));"
+                  " sp_PolyArray_push(_t%d, sp_box_float(_t%d)); _t%d; })",
+               tq, tm, r, tb, tq, tm, o, o, o, tq, o, tm, o);
   }
   else if (sp_streq(name, "divmod") && argc == 1 &&
            comp_ntype(c, argv[0]) != TY_RATIONAL) {
@@ -7961,8 +7961,8 @@ static int emit_scalar_recv_arms(Compiler *c, int id, Buf *b, const NodeTable *n
     }
     else if (sp_streq(name, "to_i"))  buf_printf(b, repr_of(c, id).kind == RK_BOXED ? "sp_box_f_to_int(%s)" : "sp_float_to_i_checked(%s)", r);
     else if (sp_streq(name, "divmod") && argc == 1) {
-      /* Float#divmod(n) -> [floor(x/n) (Integer), x - q*n (Float)] */
-      int tx = ++g_tmp, tn = ++g_tmp, tq = ++g_tmp, o = ++g_tmp;
+      /* Float#divmod(n) -> [Integer quotient, Float mod], CRuby's flodivmod */
+      int tx = ++g_tmp, tn = ++g_tmp, tq = ++g_tmp, tm = ++g_tmp, o = ++g_tmp;
       buf_printf(b, "({ sp_float _t%d = (%s); sp_float _t%d = ", tx, r, tn);
       emit_coerce(c, argv[0], TY_FLOAT, CO_CONVERT, "a Float operand", b);
       buf_printf(b, "; if (isnan(_t%d) || isnan(_t%d)) sp_raise_cls(\"FloatDomainError\", \"NaN\");"
@@ -7976,18 +7976,19 @@ static int emit_scalar_recv_arms(Compiler *c, int id, Buf *b, const NodeTable *n
                     " sp_PolyArray_push(_t%d, sp_box_int(0)); sp_PolyArray_push(_t%d, sp_box_float(_t%d)); }"
                     "\nelse { sp_PolyArray_push(_t%d, sp_box_int(-1)); sp_PolyArray_push(_t%d, sp_box_float(_t%d)); } }"
                     "\nelse {"
-                    " sp_int _t%d = sp_float_fit_i(floor(_t%d / _t%d));"
-                    " sp_PolyArray_push(_t%d, sp_box_int(_t%d));"
-                    " sp_PolyArray_push(_t%d, sp_box_float(_t%d - (sp_float)_t%d * _t%d)); } _t%d; })",
+                    /* CRuby's flodivmod: the quotient follows the remainder */
+                    " double _t%d, _t%d; sp_flo_divmod(_t%d, _t%d, &_t%d, &_t%d);"
+                    " sp_PolyArray_push(_t%d, sp_box_int(sp_float_fit_i(_t%d)));"
+                    " sp_PolyArray_push(_t%d, sp_box_float(_t%d)); } _t%d; })",
                  tx, tn, tx, tx, tn,
                  o, o,
                  tn,
                  tx, tx, tn,
                  o, o, tx,
                  o, o, tn,
-                 tq, tx, tn,
+                 tq, tm, tx, tn, tq, tm,
                  o, tq,
-                 o, tx, tq, tn, o);
+                 o, tm, o);
     }
     else if (sp_streq(name, "to_int")) buf_printf(b, repr_of(c, id).kind == RK_BOXED ? "sp_box_f_to_int(%s)" : "sp_float_to_i_checked(%s)", r);  /* alias of to_i (#2317); raises on Inf/NaN */
     /* a nil bound is an open side: clamp one-sided (or return the receiver),
