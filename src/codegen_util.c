@@ -1,4 +1,5 @@
 #include "codegen_internal.h"
+#include "share.h"
 #include "call_plan.h"
 #include "repr.h"
 #include "holder.h"
@@ -2574,8 +2575,30 @@ int strbuf_bang_self_local(const Compiler *c, int v) {
   int r = nt_ref(nt, v, "receiver");
   return r >= 0 && nt_kind(nt, r) == NK_LocalVariableReadNode && repr_of(c, r).kind == RK_STRBUF;
 }
+/* --share-strings: a native method answering the String its object keeps
+   (`native_share ... "answers"`), on an object whose String the rule
+   shares: its handle form's call, as the handle text */
+static int native_share_answer_ref(Compiler *c, int n, char *out, size_t cap) {
+  const NodeTable *nt = c->nt;
+  if (!repr_share_rule(c) || n < 0 || nt_kind(nt, n) != NK_CallNode || nt_ref(nt, n, "block") >= 0) return 0;
+  int r = nt_ref(nt, n, "receiver");
+  TyKind rt = r >= 0 ? comp_ntype(c, r) : TY_UNKNOWN;
+  if (!ty_is_object(rt) || !c->classes[ty_object_class(rt)].is_native_class) return 0;
+  int a = nt_ref(nt, n, "arguments"), argc = 0;
+  if (a >= 0) nt_arr(nt, a, "arguments", &argc);
+  int nm = comp_native_method_find(c, ty_object_class(rt), nt_str(nt, n, "name"), argc, 0);
+  const NativeMethod *m = nm >= 0 ? &c->native_methods[nm] : NULL;
+  if (!m || !(m->share & NSH_ANSWERS) || !m->share_csym || argc != 0 || !share_node_elems_share(c, r)) return 0;
+  Buf rb; memset(&rb, 0, sizeof rb);
+  emit_expr(c, r, &rb);
+  int fit = rb.p && strlen(rb.p) + strlen(m->share_csym) + 3 <= cap;
+  if (fit) snprintf(out, cap, "%s(%s)", m->share_csym, rb.p);
+  free(rb.p);
+  return fit;
+}
 int strbuf_slot_ref(Compiler *c, int recv, char *out, size_t cap) {
   HolderRef h;
+  if (native_share_answer_ref(c, recv, out, cap)) return 1;
   /* via emit_local_ref: a celled/captured local derefs its cell */
   if (strbuf_local_name(c, recv) && holder_of_node(c, recv, &h)) return holder_slot_text(c, &h, out, cap);
   /* a demand-marked reader call typed as the handle (external reader

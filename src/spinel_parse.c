@@ -2153,6 +2153,13 @@ static int source_references_io_buffer(const char *src) {
    sp_feature_enabled(). Definitions here (spinel_parse.c includes no project
    headers); declared extern in compiler.h. */
 int g_require_gate = 0;
+/* --share-strings, as main.c exports it: on only when SPINEL_SHARE_STRINGS
+   is set to something, empty and "0" being off. The compiler's flag and the
+   parser's read of a package's share declarations ask this one test. */
+int sp_share_strings_env(void) {
+  const char *e = getenv("SPINEL_SHARE_STRINGS");
+  return e && *e && strcmp(e, "0") != 0;
+}
 int g_require_gate_cli = 0;   /* --require-gate */
 static char **sp_req_feats = NULL;
 static int sp_req_feats_n = 0;
@@ -4120,6 +4127,24 @@ else {
           else { free(content); content = NULL; }
         }
         if (content) snprintf(lib_path, sizeof(lib_path), "%s", gp);
+        /* --share-strings: a package's share declarations for it
+           (`native_share`), in <name>.share.rb beside the file, follow it.
+           Kept apart so a build without the flag parses no node of them. */
+        if (content && sp_share_strings_env() && strlen(gp) > 3) {
+          char sp[1100];
+          snprintf(sp, sizeof sp, "%.*s.share.rb", (int)(strlen(gp) - 3), gp);
+          char *side = read_file(sp);
+          if (side) {
+            size_t cl = strlen(content), sl = strlen(side);
+            char *both = malloc(cl + sl + 2);
+            if (!both) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+            memcpy(both, content, cl);
+            both[cl] = '\n';
+            memcpy(both + cl + 1, side, sl + 1);
+            free(content); free(side);
+            content = both;
+          }
+        }
       }
       if (!content) {
         if (sp_lib_is_native(lib_name)) {
