@@ -4542,6 +4542,88 @@ void emit_gc_root_var(Compiler *c, TyKind t, const char *name, Buf *b) {
   else if (t == TY_STRING) buf_printf(b, "SP_GC_ROOT_STR(%s);", name);
   else buf_printf(b, "SP_GC_ROOT(%s);", name);
 }
+/* stmt_may_rebind_local's walk over one statement: each local name the
+   subtree at `id` writes, targets or takes as a block or method parameter
+   goes into names[], each node reached is marked as the statement's, and the
+   answer is 1 when it binds a local it cannot name: a numbered parameter, or
+   a parameter-like node of a kind the node table does not list (an `it`
+   parameter) with no name. A listed node is named by its kind; an unlisted
+   one that carries a name counts as binding it. */
+static int stmt_wr_walk(Compiler *c, int stmt, int id, const char ***names, int *n, int *cap) {
+  const NodeTable *nt = c->nt;
+  if (id < 0) return 0;
+  if (id < c->stmt_wr_cap) c->stmt_wr_mark[id] = stmt;
+  NodeKind k = nt_kind(nt, id);
+  if (k == NK_NumberedParametersNode) return 1;
+  int lv_bind = k == NK_LocalVariableWriteNode || k == NK_LocalVariableOperatorWriteNode ||
+                k == NK_LocalVariableOrWriteNode || k == NK_LocalVariableAndWriteNode ||
+                k == NK_LocalVariableTargetNode;
+  int param = k == NK_RequiredParameterNode || k == NK_OptionalParameterNode ||
+              k == NK_RestParameterNode || k == NK_KeywordRestParameterNode ||
+              k == NK_OptionalKeywordParameterNode || k == NK_BlockParameterNode;
+  if (k == NK_NONE) {
+    const char *ty = nt_type(nt, id);
+    if (!ty) return 0;
+    if (nt_str(nt, id, "name")) param = 1;
+    else if (strstr(ty, "Parameter")) return 1;
+  }
+  if (lv_bind || param) {
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm && lv_bind) return 1;
+    if (nm) {
+      if (*n + 1 >= *cap) {
+        *cap = *cap ? *cap * 2 : 8;
+        *names = realloc(*names, sizeof **names * (size_t)*cap);
+        if (!*names) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      }
+      (*names)[(*n)++] = nm;
+    }
+  }
+  int opaque = 0;
+  int nr = nt_num_refs(nt, id);
+  for (int i = 0; i < nr; i++) opaque |= stmt_wr_walk(c, stmt, nt_ref_at(nt, id, i), names, n, cap);
+  int na = nt_num_arrs(nt, id);
+  for (int i = 0; i < na; i++) {
+    int k = 0;
+    const int *ids = nt_arr_at(nt, id, i, &k);
+    for (int j = 0; j < k; j++) opaque |= stmt_wr_walk(c, stmt, ids[j], names, n, cap);
+  }
+  return opaque;
+}
+
+/* See codegen_internal.h. The statement's names are collected on its first
+   question and kept, so each statement is walked once however many temps
+   ask about it. */
+int stmt_may_rebind_local(Compiler *c, int stmt, int read, const char *name) {
+  if (stmt < 0 || read < 0 || !name) return 1;
+  int need = c->nt->count;
+  if (stmt >= need || read >= need) return 1;
+  if (need > c->stmt_wr_cap) {
+    int cap = need + need / 2 + 64;
+    c->stmt_wr_state = realloc(c->stmt_wr_state, (size_t)cap);
+    c->stmt_wr_names = realloc(c->stmt_wr_names, sizeof *c->stmt_wr_names * (size_t)cap);
+    c->stmt_wr_mark = realloc(c->stmt_wr_mark, sizeof *c->stmt_wr_mark * (size_t)cap);
+    if (!c->stmt_wr_state || !c->stmt_wr_names || !c->stmt_wr_mark) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int i = c->stmt_wr_cap; i < cap; i++) { c->stmt_wr_state[i] = 0; c->stmt_wr_names[i] = NULL; c->stmt_wr_mark[i] = -1; }
+    c->stmt_wr_cap = cap;
+  }
+  if (!c->stmt_wr_state[stmt]) {
+    const char **names = NULL; int n = 0, ncap = 0;
+    int opaque = stmt_wr_walk(c, stmt, stmt, &names, &n, &ncap);
+    if (!names) names = calloc(1, sizeof *names);
+    else names[n] = NULL;
+    c->stmt_wr_names[stmt] = names;
+    c->stmt_wr_state[stmt] = opaque ? 2 : 1;
+  }
+  if (c->stmt_wr_state[stmt] == 2) return 1;
+  /* a read outside the statement (an inlined body spliced into it) is
+     bound by code the walk did not see */
+  if (c->stmt_wr_mark[read] != stmt) return 1;
+  for (const char **q = c->stmt_wr_names[stmt]; q && *q; q++)
+    if (sp_streq(*q, name)) return 1;
+  return 0;
+}
+
 void emit_gc_root_tmp(Compiler *c, TyKind t, int tmp, Buf *b) {
   char name[24]; snprintf(name, sizeof name, "_t%d", tmp);
   emit_gc_root_var(c, t, name, b);

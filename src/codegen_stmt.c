@@ -9382,7 +9382,9 @@ void emit_with_prelude(Compiler *c, int id, Buf *b, int indent,
   Buf line; memset(&line, 0, sizeof line);
   g_pre = &pre;
   g_indent = indent;
+  int vs = view_push_stmt(id, &pre);
   inner(c, id, &line, indent);
+  if (vs >= 0) view_pop(c, vs);
   g_pre = savePre;
   g_indent = saveIndent;
   if (pre.p)  buf_puts(b, pre.p);

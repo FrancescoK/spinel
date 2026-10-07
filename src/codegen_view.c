@@ -28,6 +28,11 @@
    innermost pin, here or inference's own. Like the arm context it is no
    view of a node's cached type.
 
+   view_push_stmt marks the statement whose prelude (g_pre) is open, with
+   that prelude's buffer, for the emission of the statement
+   (emit_with_prelude); view_stmt_top reads the innermost one. Like a face it
+   is no view of a node's cached type.
+
    view_push_arm does the same for the arm context a poly dispatch's
    builtin arm re-enters the call under (g_arm: the node whose dispatch
    declines its own re-entry, g_pd_skip and g_prbd_skip, and
@@ -41,9 +46,10 @@
 
 /* what an entry overrides: the node's type, one representation flag, or
    the arm context */
-enum { VK_TYPE = -1, VK_ARM = -2, VK_FACE = -3 };
-static struct { Compiler *c; int id; int kind; int saved; ArmCtx arm_saved; } view_stack[VIEW_MAX];
+enum { VK_TYPE = -1, VK_ARM = -2, VK_FACE = -3, VK_STMT = -4 };
+static struct { Compiler *c; int id; int kind; int saved; ArmCtx arm_saved; const void *pre; } view_stack[VIEW_MAX];
 static int view_face = -1;   /* the innermost face entry, or -1 */
+static int view_stmt = -1;   /* the innermost statement entry, or -1 */
 static int view_sp;
 static int view_nodes;   /* the entries that view a node (all but VK_ARM) */
 static unsigned view_epoch_n;
@@ -168,10 +174,33 @@ int view_face_top(int *node, TyKind *kind) {
   return 1;
 }
 
+/* A statement's entry. Past the stack's last few slots the statement goes
+   unmarked (-1, no entry): view_stmt_top then names an enclosing statement
+   whose prelude is not the open one, which its caller reads as "unknown". */
+int view_push_stmt(int node, const void *pre) {
+  if (view_sp >= VIEW_MAX - 8) return -1;
+  int tok = view_sp++;
+  view_stack[tok].c = NULL;
+  view_stack[tok].id = node;
+  view_stack[tok].kind = VK_STMT;
+  view_stack[tok].saved = view_stmt;   /* the statement it hides */
+  view_stack[tok].pre = pre;
+  view_stmt = tok;
+  return tok;
+}
+
+int view_stmt_top(int *node, const void **pre) {
+  if (view_stmt < 0) return 0;
+  *node = view_stack[view_stmt].id;
+  *pre = view_stack[view_stmt].pre;
+  return 1;
+}
+
 /* the entry on top, put back */
 static void view_close(int tok) {
   if (view_stack[tok].kind == VK_ARM) { g_arm = view_stack[tok].arm_saved; return; }
   if (view_stack[tok].kind == VK_FACE) { view_face = view_stack[tok].arm_saved.pd_skip; return; }
+  if (view_stack[tok].kind == VK_STMT) { view_stmt = view_stack[tok].saved; return; }
   view_write(view_stack[tok].c, view_stack[tok].kind, view_stack[tok].id, view_stack[tok].saved);
   view_nodes--;
   view_epoch_n++;
