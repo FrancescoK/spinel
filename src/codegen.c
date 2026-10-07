@@ -12298,15 +12298,19 @@ static void emit_obj_hashkey_dispatch(Compiler *c, Buf *b) {
        A member that holds the struct itself now contributes a large fixed
        constant, so a two-member struct whose self-reference is not last
        overflows on the very next multiply (UBSan caught it). */
-    buf_printf(b, "    case %d: { sp_%s *o = (sp_%s *)p; uint64_t _h = %d;\n",
-               comp_class_index(c, ci->name), ci->c_name, ci->c_name, ci->nmembers + 1);
+    /* The same fold as the inline Struct#hash at a typed call site
+       (codegen_call_recv.c), so a Struct read out of a container answers
+       #hash with the value a typed one does; with h*31+x here the two
+       disagreed for equal structs. */
+    buf_printf(b, "    case %d: { sp_%s *o = (sp_%s *)p; uint64_t _h = 1469598103934665603ULL;\n",
+               comp_class_index(c, ci->name), ci->c_name, ci->c_name);
     for (int i = 0; i < ci->nmembers; i++) {
       char fe[128]; snprintf(fe, sizeof fe, "o->iv_%s", iv_c(ci->ivars[i] + 1));
       Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, ci->ivar_types[i], fe, &bx);
-      buf_printf(b, "      _h = _h * 31 + (uint64_t)sp_rbval_hash_key(%s);\n", bx.p ? bx.p : fe);
+      buf_printf(b, "      _h = (_h ^ (uint64_t)sp_rbval_hash_key(%s)) * 1099511628211ULL;\n", bx.p ? bx.p : fe);
       free(bx.p);
     }
-    buf_puts(b, "      return (sp_int)_h; }\n");
+    buf_puts(b, "      return (sp_int)(_h >> 1); }\n");
   }
   buf_puts(b, "    default: break;\n  }\n  return (sp_int)(uintptr_t)p;\n}\n");
 
