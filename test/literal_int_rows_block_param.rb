@@ -88,8 +88,10 @@ w = W[0].map { |n| n }
 w << "s"
 p w
 
-# a table built in place runs its rows in source order: a row a call
-# answers runs before a row literal whose element reads what that call did
+# a table built in place (a local narrowed to one, a method's answer) runs
+# its rows in source order: a row a call answers runs before a row literal
+# whose element reads what that call did; a constant's map over such a
+# table builds it as before
 BUILT = []
 def make_row = (BUILT << 1; [10, 20])
 ORDERED = [make_row, [BUILT.size, 5]].map { |r| r.map { |n| n + 1 } }
@@ -99,3 +101,24 @@ p held[0][1], held[1][0]
 def table_of_rows = [make_row, [BUILT.size, 5]]
 tr = table_of_rows
 p tr[0][1], tr[1][0]
+
+# a constant's rows bind as Integer arrays only when each is a literal of
+# Integers no later inference can widen: literals, unary minus, Integer
+# constants and arithmetic over them
+ROW_BASE = 7
+ROW_NEG = -ROW_BASE
+SETTLED = [[ROW_BASE, -ROW_BASE, (ROW_BASE + 1) * 2], [ROW_NEG % 5, 10 / 3 - 1]].map { |r| r.map { |n| n * 3 } }
+p SETTLED[0][2], SETTLED[1][0], SETTLED[1][1]
+# a global that later holds a String, a method's Integer answer: the row is
+# built as the general Array it is
+$row_v = 3
+$row_v = "s" if ARGV.size > 5
+def row_v = $row_v
+GLOBAL_ROW = [[1, 2], [row_v, 5]].map { |r| r.map { |n| n * 2 } }
+p GLOBAL_ROW[1][0], GLOBAL_ROW[1][1]
+def row_id(x) = x
+CALL_ROW = [[1, 2], [row_id(4), 5]].map { |r| r.map { |n| n + 1 } }
+p CALL_ROW[1][0], CALL_ROW[1][1]
+def row_four = 4
+METHOD_ROW = [[1, 2], [row_four, 5]].map { |r| r.map { |n| n + 1 } }
+p METHOD_ROW[1][0]

@@ -1053,16 +1053,87 @@ static int an_elems_int_rows(Compiler *c, int arr, int *saw) {
   return 1;
 }
 
+static int an_settled_int(Compiler *c, int n, int depth);
+
+/* Whether every write of constant `name` is a plain `NAME = v` whose value
+   is a settled Integer (an_settled_int). */
+static int an_settled_int_const(Compiler *c, const char *name, int depth) {
+  const NodeTable *nt = c->nt;
+  int seen = 0;
+  NT_FOREACH_KIND(nt, NK_ConstantWriteNode, w) {
+    const char *wn = nt_str(nt, w, "name");
+    if (!wn || !sp_streq(wn, name)) continue;
+    if (!an_settled_int(c, nt_ref(nt, w, "value"), depth + 1)) return 0;
+    seen = 1;
+  }
+  /* any other form of write may assign a value of another kind */
+  const NodeKind other[] = { NK_ConstantTargetNode, NK_ConstantOperatorWriteNode,
+                             NK_ConstantOrWriteNode, NK_ConstantAndWriteNode };
+  for (size_t k = 0; k < sizeof other / sizeof other[0]; k++)
+    NT_FOREACH_KIND(nt, other[k], w) {
+      const char *wn = nt_str(nt, w, "name");
+      if (wn && sp_streq(wn, name)) return 0;
+    }
+  NT_FOREACH_KIND(nt, NK_ConstantPathWriteNode, w) {
+    int tg = nt_ref(nt, w, "target");
+    const char *wn = tg >= 0 ? nt_str(nt, tg, "name") : NULL;
+    if (wn && sp_streq(wn, name)) return 0;
+  }
+  return seen;
+}
+
+/* Whether `n` is an Integer no later inference can widen: an Integer
+   literal, unary minus on one, an Integer constant whose value is one, or
+   arithmetic (+ - * / %) over those, parenthesized or not. */
+static int an_settled_int(Compiler *c, int n, int depth) {
+  const NodeTable *nt = c->nt;
+  if (n < 0 || depth > 8) return 0;
+  switch (nt_kind(nt, n)) {
+    case NK_IntegerNode: return 1;
+    case NK_ParenthesesNode: {
+      int body = nt_ref(nt, n, "body");
+      int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+      return bn == 1 && an_settled_int(c, bb[0], depth + 1);
+    }
+    case NK_ConstantReadNode: {
+      const char *cn = nt_str(nt, n, "name");
+      return cn && an_settled_int_const(c, cn, depth);
+    }
+    case NK_CallNode: {
+      const char *op = nt_str(nt, n, "name");
+      int rcv = nt_ref(nt, n, "receiver");
+      if (!op || rcv < 0 || nt_ref(nt, n, "block") >= 0) return 0;
+      int a = nt_ref(nt, n, "arguments"); int an = 0;
+      const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+      if (sp_streq(op, "-@")) return an == 0 && an_settled_int(c, rcv, depth + 1);
+      if (!sp_streq(op, "+") && !sp_streq(op, "-") && !sp_streq(op, "*") &&
+          !sp_streq(op, "/") && !sp_streq(op, "%")) return 0;
+      return an == 1 && an_settled_int(c, rcv, depth + 1) && an_settled_int(c, av[0], depth + 1);
+    }
+    default: return 0;
+  }
+}
+
 /* Whether array literal `arr` is a table of Integer rows: built as the
-   general Array of boxed rows, each row it holds is an Integer array. A nil
-   or not yet typed row does not count, unlike an_elems_int_rows: a
-   parameter bound from the row reads it, rather than an index that already
-   answers nil for it. */
+   general Array of boxed rows, each row it holds is an Integer array. Each
+   row is a literal of settled Integers (an_settled_int): a row whose type
+   is decided before the late widening (a call's answer, a global, a
+   method's Integer answer) can still turn into an Array of boxed values
+   after the table was bound as rows of Integers. A nil or not yet typed
+   row does not count, unlike an_elems_int_rows: a parameter bound from the
+   row reads it, rather than an index that already answers nil for it. */
 int an_literal_int_rows(Compiler *c, int arr) {
+  const NodeTable *nt = c->nt;
   int en = 0;
-  const int *els = nt_arr(c->nt, arr, "elements", &en);
-  for (int e = 0; e < en; e++)
-    if (comp_ntype(c, els[e]) != TY_INT_ARRAY) return 0;
+  const int *els = nt_arr(nt, arr, "elements", &en);
+  for (int e = 0; e < en; e++) {
+    if (nt_kind(nt, els[e]) != NK_ArrayNode || comp_ntype(c, els[e]) != TY_INT_ARRAY) return 0;
+    int rn = 0;
+    const int *rv = nt_arr(nt, els[e], "elements", &rn);
+    if (rn == 0) return 0;
+    for (int r = 0; r < rn; r++)
+      if (!an_settled_int(c, rv[r], 0)) return 0;
+  }
   return en > 0;
 }
 
