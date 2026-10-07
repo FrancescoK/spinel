@@ -129,6 +129,7 @@ int is_first_or_take(const char *n); /* first take */
 int is_lazy_force(const char *n); /* force to_a */
 int is_local_time(const char *n); /* getlocal localtime */
 int is_line_read(const char *n); /* gets readline */
+int is_read_name(const char *n); /* read: IO#read, not readpartial or read_nonblock */
 int is_open_constructor(const char *n); /* new open */
 
 int is_succ_alias(const char *n); /* next succ */

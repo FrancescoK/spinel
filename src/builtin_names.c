@@ -724,6 +724,10 @@ int is_line_read(const char *n) {
   return sp_streq(n, "gets") || sp_streq(n, "readline");
 }
 
+int is_read_name(const char *n) {
+  return sp_streq(n, "read");
+}
+
 int is_string_position_mutator(const char *n) {
   return sp_streq(n, "slice!") || sp_streq(n, "setbyte") || sp_streq(n, "insert") || sp_streq(n, "clear") || sp_streq(n, "[]=");
 }

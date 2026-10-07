@@ -617,7 +617,7 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
       }
       /* read(n) reads UP TO n bytes; dropping the count read to EOF, which on
          a socket with a live peer never comes -- `r.read(5)` hung forever. */
-      else if (sp_streq(name, "read") && argc >= 2 && nt_kind(nt, argv[1]) == NK_LocalVariableReadNode) {
+      else if (is_read_name(name) && argc >= 2 && nt_kind(nt, argv[1]) == NK_LocalVariableReadNode) {
         /* (len, outbuf), as the typed arm: emptied, and nil, at the end;
            a nil length reads the rest */
         int tr9 = ++g_tmp;
