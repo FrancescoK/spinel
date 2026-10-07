@@ -24307,9 +24307,11 @@ static int emit_deep_return_pickup(Compiler *c, int id, Buf *b) {
   buf_puts(b, "; ");
   /* --share-strings: a tail answering nil publishes nothing, and an
      earlier read may have published (an_tail_is_shared_handle): the
-     call's nil is nil. A target the plan does not name may be one. */
+     call's nil is nil. A target the plan cannot list may be such a
+     method; a call that reaches none (a builtin's, `String.new`) has no
+     tail to answer nil through. */
   if (repr_share_rule(c)) {
-    int t[8], n = cplan_targets(c, id, t, 8), nil = n <= 0;
+    int t[8], n = cplan_targets(c, id, t, 8), nil = n < 0;
     for (int i = 0; i < n && !nil; i++) nil = an_tail_answers_nil(c, t[i]);
     if (nil) buf_printf(b, "!_v%d ? NULL : ", tvD);
   }
