@@ -28,11 +28,13 @@ def value_position(n)
   z = t.slice!(0)
   w = t.setbyte(0, 69)
   p x, y, z, w, t, u
+  e = t.clear
+  p e, t, u
   p g
 end
 value_position(ARGV.size)
 
-# the lambda is made, and called after the mutation
+# the lambda is made before the mutation, and called after it
 def called_later
   t = +"abc"
   u = t
@@ -63,6 +65,39 @@ def nested_in_argument
   p s, v, g.call
 end
 nested_in_argument
+
+# a proc, a thread or a fiber made inside the mutator's own argument
+# shares the local's cell while the shim works on its shadow
+def proc_in_argument
+  s = +"abcdef"
+  u = s
+  s[0] = -> { s.size.to_s }.call
+  p s, u
+  s.insert(0, proc { s[1] }.call)
+  x = s.slice!(-> { s.size - 1 }.call)
+  p s, u, x
+  g = nil
+  s[1] = (g = -> { s }; "Z")
+  s.setbyte(0, 60 + -> { s.size }.call)
+  p s, u, g.call
+  s[0] = Thread.new { s.size.to_s }.value
+  f = nil
+  s[1] = (f = Fiber.new { Fiber.yield s.size.to_s; "q" }; f.resume)
+  p s, u, f.resume
+end
+proc_in_argument
+
+# the same through a method parameter, and a lambda that outlives the change
+def param_proc_in_argument(s)
+  u = s
+  g = -> { s }
+  s[0] = -> { s.size.to_s }.call
+  s[1] = (h = -> { s.upcase }; h.call)
+  p s, u
+  e = s.clear
+  p e, s, u, g.call
+end
+param_proc_in_argument(+"abcdef")
 
 # at top level
 t = +"abcde"
