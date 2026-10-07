@@ -3,12 +3,15 @@
 # StringValue, a TypeError raised after the length converts; a boxed String
 # is filled. A longer argument list is ArgumentError. Each of these did not
 # build: the arms took every buffer for a String local.
-# The length runs, and converts, before the buffer.
+# The length runs, and converts, before the buffer; read and readpartial
+# refuse a negative one there, sysread and pread only after it. A boxed
+# String that is shared with another name is filled in place, a frozen one
+# raises before the read, and read's at the end of the stream is emptied.
 require "tmpdir"
 
 def t
   p yield
-rescue TypeError, ArgumentError => e
+rescue TypeError, ArgumentError, FrozenError => e
   p [e.class, e.message]
 end
 
@@ -46,5 +49,36 @@ log = []
 t { f.readpartial((log << 1; 2), (log << 2; rat)) }
 t { f.sysread((log << 3; 2), (log << 4; arr)) }
 p log
+neg = -1
+t { f.read(neg, i) }
+t { f.read(neg, nb) }
+t { f.readpartial(neg, sym) }
+t { f.sysread(neg, i) }
+t { f.pread(neg, 0, arr) }
+t { f.read(neg, bi) }
+f.rewind
+hb = [+"", 1][k]
+al = hb
+al << "x"
+t { f.read(2, hb) }
+p [hb, al, hb.equal?(al)]
+t { f.readpartial(2, hb) }
+p al
+fz = [+"", 1][k]
+alf = fz
+alf << "y"
+alf.freeze
+t { f.read(2, fz) }
+p fz
+t { f.read(2, i, i) }
+t { STDIN.read(1, i, i) }
+t { STDIN.read((log << 5; 1), (log << 6; bs), (log << 7; bs)) }
+p log
+pf = [f, 1][k]
+t { pf.read(1, bs, bs) }
+f.read
+eb = [+"zz", 1][k]
+t { f.read(2, eb) }
+p eb
 f.close
 File.delete(path)
