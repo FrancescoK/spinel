@@ -1345,8 +1345,7 @@ int emit_poly_uniq_block(Compiler *c, int id, Buf *b) {
 
   if (rr.kind != RK_BOXED) return 0;
   int trecv = ++g_tmp, tarr = ++g_tmp, tseen = ++g_tmp, tres = ++g_tmp, ti = ++g_tmp;
-  Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
-  emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n", trecv, rb.p ? rb.p : "sp_box_nil()", trecv); free(rb.p);
+  trecv = hold_operand_pre(c, recv, TY_POLY, 0, trecv, 1);
   /* uniq hands its block every value one step of an Enumerator yielded,
      which the walk below reads packed as one item: a lone `|x|` takes the
      first of them, any other shape but plain requireds all of them */
@@ -1626,9 +1625,8 @@ int emit_sum_block_poly_expr(Compiler *c, int id, Buf *b) {
   /* the receiver, then the initial value, then the receiver's check: nil, a
      number, a boolean or a Symbol has no sum (it answered the initial
      value), raised as CRuby does once the operands ran */
-  buf_printf(b, "({ sp_RbVal _t%d = ", tr);
-  emit_expr(c, recv, b);
-  buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_RbVal _t%d = ", tr, tacc);
+  buf_puts(b, "({ "); tr = hold_operand(c, recv, TY_POLY, 0, tr, 1, " ", b);
+  buf_printf(b, "sp_RbVal _t%d = ", tacc);
   if (argc == 1) emit_boxed(c, argv[0], b);
   else buf_puts(b, "sp_box_int(0)");
   /* a String's sum is its checksum, the argument its bit width, and the
@@ -5526,11 +5524,7 @@ int emit_enum_find_expr(Compiler *c, int id, Buf *b) {
   int tneedle = 0;
   if (inc) {
     tneedle = ++g_tmp;
-    Buf nb; memset(&nb, 0, sizeof nb); emit_boxed(c, iargv[0], &nb);
-    emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n",
-               tneedle, nb.p ? nb.p : "sp_box_nil()", tneedle);
-    free(nb.p);
+    tneedle = hold_operand_pre(c, iargv[0], TY_POLY, 1, tneedle, 1);
   }
 
   int te = ++g_tmp, tres = ++g_tmp, tv = ++g_tmp, tg = ++g_tmp;
@@ -6567,9 +6561,8 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
          nil (`n = nil` beside a String, `def go(v) = run(v) { |t| ... }`) */
       if (repr_of(c, provided).kind == RK_BOXED) {
         int tpv = ++g_tmp;
-        buf_printf(out, "({ sp_RbVal _t%d = ", tpv);
-        emit_expr(c, provided, out);
-        buf_printf(out, "; SP_GC_ROOT_RBVAL(_t%d); sp_poly_nil_p(_t%d) ? NULL : %s(sp_poly_arg_str_chk(_t%d)); })", tpv, tpv,
+        buf_puts(out, "({ "); tpv = hold_operand(c, provided, TY_POLY, 0, tpv, 1, " ", out);
+        buf_printf(out, "sp_poly_nil_p(_t%d) ? NULL : %s(sp_poly_arg_str_chk(_t%d)); })", tpv,
                    p->dyn_handle && pk != NK_LocalVariableReadNode && pk != NK_InstanceVariableReadNode
                      ? "sp_String_new_fresh" : "sp_String_new_shared", tpv);
         return;
@@ -8026,22 +8019,76 @@ static int ran_first_temp(int node, int from, const char *text) {
 }
 
 /* See codegen_internal.h. */
-int hold_operand(Compiler *c, int node, TyKind ty, int boxed, int t, const char *sep, Buf *b) {
+int head_held_temp(Compiler *c, int node) {
+  if (node < 0 || !repr_of(c, node).head_held) return -1;
+  /* the head roots a boxed temp and a heap pointer (needs_root), not the
+     Strings a by-value kind carries: such a temp holds nothing for an arm */
+  TyKind t = comp_ntype(c, node);
+  if (t != TY_POLY && !needs_root(t) && ty_gc_holds_refs(c, t)) return -1;
+  for (int i = g_n_argov - 1; i >= 0; i--) {
+    if (g_argov_node[i] != node) continue;
+    int h, n = 0;
+    return sscanf(g_argov_text[i], "_t%d%n", &h, &n) == 1 && g_argov_text[i][n] == '\0' ? h : -1;
+  }
+  return -1;
+}
+
+/* See codegen_internal.h. */
+int head_held_read(Compiler *c, int node, const char *text) {
+  int h = head_held_temp(c, node);
+  char ht[24];
+  if (h < 0 || !text) return -1;
+  snprintf(ht, sizeof ht, "_t%d", h);
+  return sp_streq(text, ht) ? h : -1;
+}
+
+/* A box that only wraps what its operand holds (an immediate, or a pointer
+   the operand's own temp roots): built from the head's temp, it needs no
+   root of its own. A struct, a value object or a fresh handle is a new
+   heap object. */
+static int box_wraps(ReprForm f) {
+  switch (f) {
+  case RF_PASS: case RF_INT: case RF_INT_NIL: case RF_FLT: case RF_FLT_NIL: case RF_BIGINT:
+  case RF_STR: case RF_BOOL: case RF_SYM: case RF_NULLABLE: case RF_NULLABLE_DYN:
+  case RF_STRBUF_HANDLE: case RF_PTR_ARRAY:
+    return 1;
+  default:
+    return 0;
+  }
+}
+
+/* See codegen_internal.h. */
+int head_held_box(Compiler *c, int node) {
+  return head_held_temp(c, node) >= 0 && box_wraps(repr_box_form(c, repr_of(c, node)));
+}
+
+/* See codegen_internal.h. */
+int hold_operand(Compiler *c, int node, TyKind ty, int boxed, int t, int root, const char *sep, Buf *b) {
   Buf vb; memset(&vb, 0, sizeof vb);
   if (boxed) emit_boxed(c, node, &vb); else emit_expr(c, node, &vb);
-  /* the temp it ran into, read unconverted: no second copy, no second root */
-  int ran = ran_first_temp(node, 0, vb.p);
-  char rt[24];
-  if (ran >= 0 && snprintf(rt, sizeof rt, "_t%d", ran) > 0 && sp_streq(rt, vb.p)) {
+  /* the head's temp, read unconverted: no copy, no second root */
+  int h = head_held_read(c, node, vb.p);
+  if (h >= 0) {
     free(vb.p);
-    return ran;
+    return h;
   }
+  /* boxed from the head's temp, which roots what the box wraps */
+  int wrap = !root || (boxed && head_held_box(c, node));
   if (boxed || ty == TY_POLY) buf_puts(b, "sp_RbVal"); else emit_ctype(c, ty, b);
   buf_printf(b, " _t%d = %s;", t, vb.p ? vb.p : boxed ? "sp_box_nil()" : default_value_from_compiler(c, ty));
-  if (boxed || ty == TY_POLY) buf_printf(b, " SP_GC_ROOT_RBVAL(_t%d);", t);
-  else if (needs_root(ty)) buf_printf(b, " SP_GC_ROOT(_t%d);", t);
+  if (!wrap && (boxed || ty == TY_POLY)) buf_printf(b, " SP_GC_ROOT_RBVAL(_t%d);", t);
+  else if (!wrap && needs_root(ty)) buf_printf(b, " SP_GC_ROOT(_t%d);", t);
   buf_puts(b, sep);
   free(vb.p);
+  return t;
+}
+
+/* See codegen_internal.h. */
+int hold_operand_pre(Compiler *c, int node, TyKind ty, int boxed, int t, int root) {
+  Buf hb; memset(&hb, 0, sizeof hb);
+  t = hold_operand(c, node, ty, boxed, t, root, "\n", &hb);
+  if (hb.p) { emit_indent(g_pre, g_indent); buf_puts(g_pre, hb.p); }
+  free(hb.p);
   return t;
 }
 
@@ -8292,11 +8339,7 @@ int emit_ds_hash_merge(Compiler *c, int kwh, int any_key, TyKind *out_type) {
       /* a key of another class, into the hash that takes any: a computed
          one runs ahead of its value, into a rooted temp */
       int kt = ++g_tmp;
-      Buf kb; memset(&kb, 0, sizeof kb);
-      emit_boxed(c, key, &kb);
-      emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n", kt, kb.p ? kb.p : "sp_box_nil()", kt);
-      free(kb.p);
+      kt = hold_operand_pre(c, key, TY_POLY, 1, kt, 1);
       emit_boxed(c, v, &vb);
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "sp_PolyPolyHash_set(_t%d, _t%d, %s);\n", mh, kt, vb.p ? vb.p : "sp_box_nil()");
@@ -8305,11 +8348,7 @@ int emit_ds_hash_merge(Compiler *c, int kwh, int any_key, TyKind *out_type) {
       /* a computed key into the Symbol-keyed hash a `**kwrest` collects:
          it has to answer a Symbol, as every key there does */
       int kt = ++g_tmp;
-      Buf kb; memset(&kb, 0, sizeof kb);
-      emit_boxed(c, key, &kb);
-      emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n", kt, kb.p ? kb.p : "sp_box_nil()", kt);
-      free(kb.p);
+      kt = hold_operand_pre(c, key, TY_POLY, 1, kt, 1);
       emit_boxed(c, v, &vb);
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "sp_SymPolyHash_set(_t%d, sp_poly_hkey_sym(_t%d), %s);\n", mh, kt, vb.p ? vb.p : "sp_box_nil()");

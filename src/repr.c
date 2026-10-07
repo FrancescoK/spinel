@@ -294,6 +294,7 @@ Repr repr_of(const Compiler *c, int node) {
   r.poly_lift = c->poly_strbuf_lift ? c->poly_strbuf_lift[node] != 0 : 0;
   r.nil_tested = c->nil_tested ? c->nil_tested[node] != 0 : 0;
   r.nil_cold = c->nil_tested ? c->nil_tested[node] == 2 : 0;
+  r.head_held = c->head_held ? c->head_held[node] != 0 : 0;
   /* a node is boxed as the type it is stored as; a nil-guard narrowing is
      read where the value is used, not where it is boxed */
   TyKind kt = r.as_ty;

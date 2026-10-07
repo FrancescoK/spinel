@@ -748,6 +748,12 @@ typedef struct {
                           so the call is armed once; 2 when a cached array
                           read tests it in its out-of-range branch
                           (emit_nil_target_cold) */
+  unsigned char *head_held; /* [node_cap] an operand the nil arm's head
+                          (emit_nil_target_head) ran into a temp of its own
+                          ahead of the call: set only as a view
+                          (VR_HEAD_HELD) around the call's own emission,
+                          where an arm that holds the operand reads that
+                          temp (hold_operand) */
   TyKind *nilnarrow; /* [node_cap] param-read narrowed by a `return .. if p.nil?`
                         guard: the read's non-nil type (codegen unboxes the poly
                         slot at the read site); TY_UNKNOWN = not narrowed */
