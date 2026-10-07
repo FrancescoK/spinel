@@ -3127,7 +3127,12 @@ int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
     /* The running value is boxed (poly); the block param may infer a narrower
        type, so unbox to match its C type. A |k, v| header destructures a
        pair element (hash.lazy rides the pair array, #2845). */
-    if (!emit_iter_autosplat(c, blk, TY_POLY_ARRAY, vbuf, g_indent + 1)) {
+    /* a block of any other shape than plain requireds (a rest, an optional,
+       a post, a keyword) binds the value by the proc distribution: `|*r|`
+       was never bound and read nil */
+    char gvals[256]; snprintf(gvals, sizeof gvals, "sp_yielded_args(0, %s)", vbuf);
+    if (emit_boxed_step_binds(c, blk, gvals, g_pre, g_indent + 1, 0)) {}
+    else if (!emit_iter_autosplat(c, blk, TY_POLY_ARRAY, vbuf, g_indent + 1)) {
       Scope *bs = comp_scope_of(c, blk);
       LocalVar *plv = (bs && bp0) ? scope_local(bs, bp0) : NULL;
       TyKind pt = (plv && plv->type != TY_UNKNOWN) ? plv->type : TY_POLY;
