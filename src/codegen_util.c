@@ -3473,8 +3473,8 @@ TyKind fold_seed_ntype(Compiler *c, int node) {
 void emit_poly_sum_seed(Compiler *c, int recv, int seed, Buf *b) {
   int tr = ++g_tmp, ts = ++g_tmp;
   buf_puts(b, "({ ");
-  tr = hold_operand(c, recv, TY_POLY, 1, tr, " ", b);
-  ts = hold_operand(c, seed, TY_POLY, 1, ts, " ", b);
+  tr = hold_operand(c, recv, TY_POLY, 1, tr, 1, " ", b);
+  ts = hold_operand(c, seed, TY_POLY, 1, ts, 1, " ", b);
   buf_printf(b, "sp_poly_sum_seed(_t%d, _t%d); })", tr, ts);
 }
 /* A call that never hands back a value: a receiverless raise or fail, or a
@@ -3726,14 +3726,14 @@ void emit_round_kw_effects(Compiler *c, const RoundKw *kw, Buf *b) {
    been read. Emits into an already-open statement expression; answers the
    temp holding the mode, or -1 when the hash names none. */
 int emit_round_kw_binds(Compiler *c, const RoundKw *kw, Buf *b) {
-  int thalf = -1, has_splat = 0, tfirst = g_tmp + 1;
+  int thalf = -1, has_splat = 0;
+  int *kt = calloc((size_t)kw->nelem + 1, sizeof *kt);
+  if (!kt) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   for (int e = 0; e < kw->nelem; e++) {
     int is_splat, opaque; int v = round_kw_elem(c, kw, e, &is_splat, &opaque);
-    int t = ++g_tmp;
+    int t = kt[e] = ++g_tmp;
     if (v < 0) { buf_printf(b, "sp_RbVal _t%d = sp_box_nil(); (void)_t%d; ", t, t); continue; }
-    buf_printf(b, "sp_RbVal _t%d = ", t);
-    emit_boxed(c, v, b);
-    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", t);
+    t = kt[e] = hold_operand(c, v, TY_POLY, 1, t, 1, " ", b);
     if (is_splat) has_splat = 1;
     else if (!opaque && v == kw->half) thalf = t;
   }
@@ -3742,14 +3742,14 @@ int emit_round_kw_binds(Compiler *c, const RoundKw *kw, Buf *b) {
     emit_str_literal(b, kw->unknown);
     buf_puts(b, "); ");
   }
-  if (!has_splat) return thalf;
+  if (!has_splat) { free(kt); return thalf; }
   /* a `**` source is read in its place, so a `half:` on either side of it
      wins by being later, as it does in the hash the call really builds */
   int tm = ++g_tmp;
   buf_printf(b, "sp_RbVal _t%d = sp_box_nil(); SP_GC_ROOT_RBVAL(_t%d); ", tm, tm);
   for (int e = 0; e < kw->nelem; e++) {
     int is_splat, opaque; int v = round_kw_elem(c, kw, e, &is_splat, &opaque);
-    int t = tfirst + e;                 /* the temps were numbered in this order */
+    int t = kt[e];
     if (v < 0) continue;
     if (is_splat)
       buf_printf(b, "{ sp_RbVal _s%d = sp_round_half_kwsplat(_t%d);"
@@ -3758,6 +3758,7 @@ int emit_round_kw_binds(Compiler *c, const RoundKw *kw, Buf *b) {
     else if (!opaque && v == kw->half)
       buf_printf(b, "_t%d = _t%d; ", tm, t);
   }
+  free(kt);
   return tm;
 }
 
@@ -4845,17 +4846,25 @@ void emit_recv_rooted(Compiler *c, int recv, int t, const char *rootm, Buf *b) {
 
 /* A compound literal is not a GC root. Evaluate and root each operand
    before the next one's setup or value can allocate; only the held values
-   go into the array passed to the builtin. The caller owns the scope. */
+   go into the array passed to the builtin. The caller owns the scope. With
+   `tmps`, each operand's temp goes there, and one the nil arm's head ran is
+   read from the head's temp (head_held_read), or boxed from it with no root
+   of its own (head_held_box); without, the temps are first + i. */
 int emit_rooted_arg_list(Compiler *c, const int *argv, int argc,
                          const char *ctype, const char *root,
-                         void (*emit)(Compiler *, int, Buf *), Buf *b) {
+                         void (*emit)(Compiler *, int, Buf *), int *tmps, Buf *b) {
   int first = g_tmp + 1;
   g_tmp += argc;
   for (int i = 0; i < argc; i++) {
     Buf pre = {0}, val = {0};
     emit_split_pre(c, argv[i], emit, &pre, &val);
     if (pre.len) buf_puts(b, pre.p);
-    buf_printf(b, "%s _t%d = %s; %s(_t%d); ", ctype, first + i, val.p, root, first + i);
+    int held = tmps ? head_held_read(c, argv[i], val.p) : -1;
+    if (tmps) tmps[i] = held >= 0 ? held : first + i;
+    if (held < 0 && tmps && emit == emit_boxed && head_held_box(c, argv[i]))
+      buf_printf(b, "%s _t%d = %s; ", ctype, first + i, val.p);
+    else if (held < 0)
+      buf_printf(b, "%s _t%d = %s; %s(_t%d); ", ctype, first + i, val.p, root, first + i);
     free(pre.p); free(val.p);
   }
   return first;
@@ -4866,11 +4875,14 @@ void emit_rooted_key_call(Compiler *c, const char *fn, const char *recv,
                           const int *argv, int argc, Buf *b) {
   int tr = ++g_tmp;
   buf_printf(b, "({ sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d); ", tr, recv, tr);
-  int first = emit_rooted_arg_list(c, argv, argc, "sp_RbVal", "SP_GC_ROOT_RBVAL", emit_boxed, b);
+  int *ta = calloc((size_t)argc + 1, sizeof *ta);
+  if (!ta) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  emit_rooted_arg_list(c, argv, argc, "sp_RbVal", "SP_GC_ROOT_RBVAL", emit_boxed, ta, b);
   buf_printf(b, "%s(_t%d, %d, (sp_RbVal[]){", fn, tr, argc);
-  for (int i = 0; i < argc; i++) buf_printf(b, "%s_t%d", i ? ", " : "", first + i);
+  for (int i = 0; i < argc; i++) buf_printf(b, "%s_t%d", i ? ", " : "", ta[i]);
   if (!argc) buf_puts(b, "sp_box_nil()");
   buf_puts(b, "}); })");
+  free(ta);
 }
 
 void emit_main_exit(Buf *b) {

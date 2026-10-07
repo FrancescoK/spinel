@@ -637,8 +637,7 @@ int emit_op_array_replace(Compiler *c, const BopCtx *x, Buf *b) {
       (a0 == TY_POLY || a0r.elem == TY_POLY || (ty_is_array(a0) && a0r.elem != ty_array_elem(rt)))) {
     int t = ++g_tmp, ts = ++g_tmp, tc = ++g_tmp;
     buf_printf(b, "({ sp_%sArray *_t%d = ", k, t); emit_recv_rooted(c, recv, t, "SP_GC_ROOT", b);
-    buf_printf(b, "sp_RbVal _t%d = ", ts); emit_boxed(c, argv[0], b);
-    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", ts);
+    ts = hold_operand(c, argv[0], TY_POLY, 1, ts, 1, " ", b);
     buf_printf(b, "if (_t%d.tag != SP_TAG_OBJ || !sp_poly_is_array_kind(_t%d.cls_id))"
                   " sp_raise_cls(\"TypeError\", sp_sprintf(\"no implicit conversion of %%s into Array\","
                   " sp_poly_class_name(_t%d))); ", ts, ts, ts);
@@ -1140,9 +1139,8 @@ int emit_op_array_combination(Compiler *c, const BopCtx *x, Buf *b) {
                        : sp_streq(name, "repeated_permutation") ? "sp_PolyArray_repeated_permutation"
                        : "sp_PolyArray_repeated_combination";
     int ta = ++g_tmp, ts = ++g_tmp, tn = ++g_tmp, te = ++g_tmp;
-    buf_printf(b, "({ sp_RbVal _t%d = ", ts);
-    emit_boxed(c, recv, b);
-    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_PolyArray *_t%d = sp_poly_to_poly_array(_t%d); SP_GC_ROOT(_t%d); sp_int _t%d = ", ts, ta, ts, ta, tn);
+    buf_puts(b, "({ "); ts = hold_operand(c, recv, TY_POLY, 1, ts, 1, " ", b);
+    buf_printf(b, "sp_PolyArray *_t%d = sp_poly_to_poly_array(_t%d); SP_GC_ROOT(_t%d); sp_int _t%d = ", ta, ts, ta, tn);
     if (argc == 1) emit_int_expr(c, argv[0], b);
     else buf_printf(b, "_t%d ? _t%d->len : 0", ta, ta);
     buf_printf(b, "; sp_Enumerator *_t%d = ", te);
@@ -1536,8 +1534,8 @@ int emit_op_array_pred_class(Compiler *c, const BopCtx *x, Buf *b) {
   int argc;
   const int *argv = call_args(c->nt, x->id, &argc);
   int ta = ++g_tmp, tc2 = ++g_tmp, tn = ++g_tmp, tcnt = ++g_tmp, ti = ++g_tmp;
-  buf_printf(b, "({ sp_RbVal _t%d = ", ta); emit_boxed(c, x->recv, b);
-  buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_Class _t%d = ", ta, tc2); emit_expr(c, argv[0], b);
+  buf_puts(b, "({ "); ta = hold_operand(c, x->recv, TY_POLY, 1, ta, 1, " ", b);
+  buf_printf(b, "sp_Class _t%d = ", tc2); emit_expr(c, argv[0], b);
   buf_puts(b, "; "); emit_poly_iter_obj_normalize(c, ta, b);
   emit_poly_iter_obj_reject(c, ta, name, b);
   buf_printf(b, "sp_poly_iter_check(_t%d, \"%s\"); ", ta, name);
@@ -1931,8 +1929,7 @@ int emit_array_random_kw(Compiler *c, int id, Buf *b, const NodeTable *nt, const
   /* a boxed receiver answers in the slot the call was given */
   TyKind et = rt == TY_POLY ? repr_of(c, id).as_ty : rt;
   int ta = ++g_tmp, tg = ++g_tmp;
-  buf_printf(b, "({ sp_RbVal _t%d = ", ta); emit_boxed(c, recv, b);
-  buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", ta);
+  buf_puts(b, "({ "); ta = hold_operand(c, recv, TY_POLY, 1, ta, 1, " ", b);
   if (rt == TY_POLY) buf_printf(b, "sp_poly_ary_chk(_t%d, \"%s\", 0); ", ta, name);
   int tn = -1;
   if (argc == 2) { tn = ++g_tmp; buf_printf(b, "sp_int _t%d = ", tn); emit_int_expr(c, argv[0], b); buf_puts(b, "; "); }
