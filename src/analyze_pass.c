@@ -7108,7 +7108,25 @@ int infer_default_param_types(Compiler *c) {
     Scope *sc = &c->scopes[s];
     for (int i = 0; i < sc->nparams; i++) {
       if (sc->pdefault[i] < 0) continue;
-      TyKind dt = infer_type(c, sc->pdefault[i]);
+      /* The callers already typed the parameter as one kind of array: an
+         empty `[]` default is built as that kind. Widened to the poly array,
+         `def initialize(initial = [])` given Array[Integer] by every caller
+         boxed the ivar it went into, and each element read. When the
+         parameter later widens past that kind (a String pushed in the body),
+         the literal widens with it. */
+      int dv = sc->pdefault[i];
+      int edn = -1;
+      if (nt_kind(c->nt, dv) == NK_ArrayNode) nt_arr(c->nt, dv, "elements", &edn);
+      LocalVar *ep = edn == 0 && c->arr_want && dv < c->node_cap ? scope_local(sc, sc->pnames[i]) : NULL;
+      if (ep && !ep->rbs_seeded) {
+        TyKind w = c->arr_want[dv];
+        if (ty_is_array(ep->type) && ep->type != TY_POLY_ARRAY && (w == TY_UNKNOWN || w == ep->type)) {
+          if (w != ep->type) { c->arr_want[dv] = ep->type; changed = 1; }
+          continue;
+        }
+        if (ty_is_array(w) && w != TY_POLY_ARRAY) { c->arr_want[dv] = TY_POLY_ARRAY; changed = 1; }
+      }
+      TyKind dt = infer_type(c, dv);
       /* An empty hash `{}` default returns TY_UNKNOWN from infer_type; treat
          it as TY_SYM_POLY_HASH since it is used as a kwargs receiver. An empty
          `[]` default is likewise a poly-array accumulator (`def f(n, acc = [])`,
