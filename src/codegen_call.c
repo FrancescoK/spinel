@@ -17347,6 +17347,9 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
         g_n_argov < MAX_ARG_OVERRIDE) {
       const char *knm = nt_str(nt, id, "name");
       TyKind kt = ty_poly_handle_face_args(knm, argc);
+      /* the slot the call answers into, before the face retypes the
+         receiver: a poly dispatch's builtin arm keeps the node poly */
+      TyKind want = repr_of(c, id).as_ty;
       int tkv = ++g_tmp;
       Buf krb; memset(&krb, 0, sizeof krb); emit_boxed(c, recv, &krb);
       emit_indent(g_pre, g_indent);
@@ -17360,7 +17363,17 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
       int vw = view_push(c, recv, kt);
       int fv = view_push_face(recv, kt);
       int svkn = g_handle_face_node; g_handle_face_node = id;
-      emit_call(c, id, b);
+      /* the handle's own emitter answers its own type (MatchData#string a
+         `const char *`); a poly slot gets it boxed, or the arm assigned the
+         raw pointer into an sp_RbVal */
+      TyKind got = infer_type(c, id);
+      if (want == TY_POLY && got != TY_POLY && got != TY_UNKNOWN && got != TY_VOID) {
+        Buf fb; memset(&fb, 0, sizeof fb);
+        emit_call(c, id, &fb);
+        emit_boxed_text(c, got, fb.p ? fb.p : "0", b);
+        free(fb.p);
+      }
+      else emit_call(c, id, b);
       g_handle_face_node = svkn;
       view_pop(c, fv);
       view_pop(c, vw);
