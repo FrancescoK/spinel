@@ -14933,7 +14933,14 @@ static int strbuf_container_stores_nonstring(Compiler *c, const char *contn, Sco
    (an_arg_is_shared_handle)? */
 static int an_stmts_last_shared(Compiler *c, int st) {
   int n = 0; const int *b = st >= 0 && nt_kind(c->nt, st) == NK_StatementsNode ? nt_arr(c->nt, st, "body", &n) : NULL;
-  return n > 0 && an_arg_is_shared_handle(c, b[n - 1]);
+  if (n == 0) return 0;
+  /* an arm that raises leaves no value (a method's body ahead of its
+     rescue, `def r(x); raise "e"; rescue; x; end`) */
+  int l = b[n - 1];
+  if (nt_kind(c->nt, l) == NK_CallNode && nt_ref(c->nt, l, "receiver") < 0 && nt_str(c->nt, l, "name") &&
+      is_raise_alias(nt_str(c->nt, l, "name")) && comp_method_index(c, nt_str(c->nt, l, "name")) < 0)
+    return 1;
+  return an_arg_is_shared_handle(c, l);
 }
 int an_arg_is_shared_handle(Compiler *c, int node) {
   const NodeTable *nt = c->nt;
@@ -17806,6 +17813,9 @@ static int an_pickup_target(Compiler *c, int wv) {
   if (nt_ref(nt, wv, "block") >= 0 || (wr >= 0 && !c->share_strings)) return -1;
   const char *mn = nt_str(nt, wv, "name");
   int mi3 = mn ? an_unique_scope_by_name(c, mn) : -1;
+  /* (--share-strings: a method answering a box hands no String to pick up;
+     its box holds the handle itself) */
+  if (mi3 > 0 && c->share_strings && c->scopes[mi3].ret == TY_POLY) return -1;
   if (mi3 <= 0 || wr < 0) return mi3;
   return infer_type(c, wr) == TY_CLASS && c->scopes[mi3].is_cmethod &&
          c->scopes[mi3].class_id == class_recv_static_ci(c, wr) ? mi3 : -1;
@@ -17832,6 +17842,79 @@ static int an_mutated_handle_returns(Compiler *c, int **ret_start, int **ret_lis
     changed = 1;
   }
   return changed;
+}
+/* --share-strings, once the analysis settles: a method whose every return
+   path reads a String the rule shares (an_returns_shared_handles), or calls
+   (or `super`s into) methods that each answer one, answers that String, and
+   the read that answers it publishes the handle last (sp_strbuf_read_pub):
+   any call of the method can take the handle as the deep-return pickup does
+   (Scope.ret_handle). A method spliced at its calls (one that yields, a proc
+   form) has no call to pick up from; one typed other than String answers
+   no handle to pick up. Each method is decided once, its tail calls'
+   targets first (a cycle answers no). */
+enum { RH_UNSEEN, RH_BUSY, RH_YES, RH_NO };
+typedef struct { unsigned char *st; int *ret_start, *ret_list; } RetHandles;
+static int an_ret_handle(Compiler *c, RetHandles *R, int mi);
+/* Does tail node n answer a shared handle it publishes last: a handle's
+   read, or a call or `super` whose every target method does? */
+static int an_tail_handle(Compiler *c, RetHandles *R, int n) {
+  const NodeTable *nt = c->nt;
+  if (an_arg_is_shared_handle(c, n)) return 1;
+  NodeKind k = n >= 0 ? nt_kind(nt, n) : NK_NONE;
+  if (k == NK_SuperNode || k == NK_ForwardingSuperNode) {
+    const CallPlan *p = cplan_user_fresh(c, n);
+    return p->dispatch == CP_DIRECT && p->mi > 0 && an_ret_handle(c, R, p->mi);
+  }
+  if (k != NK_CallNode || c->ntype[n] != TY_STRING) return 0;
+  int mis[CPT_MAX];
+  int cnt = cplan_targets(c, n, mis, CPT_MAX);
+  if (cnt <= 0) return 0;
+  for (int i = 0; i < cnt; i++) if (!an_ret_handle(c, R, mis[i])) return 0;
+  return 1;
+}
+static int an_ret_handle(Compiler *c, RetHandles *R, int mi) {
+  if (R->st[mi] != RH_UNSEEN) return R->st[mi] == RH_YES;
+  Scope *m = &c->scopes[mi];
+  if (m->def_node < 0 || m->yields || m->is_proc_form || m->is_lowered_yield || m->ret != TY_STRING) {
+    R->st[mi] = RH_NO;
+    return 0;
+  }
+  R->st[mi] = RH_BUSY;
+  const NodeTable *nt = c->nt;
+  int ok = 1, saw = 0;
+  int last = scope_body_last(c, mi);
+  /* a body with its own rescue is a begin, whose arms answer */
+  if (last < 0 && m->body >= 0 && nt_kind(nt, m->body) == NK_BeginNode) last = m->body;
+  if (last >= 0) { saw = 1; ok = an_tail_handle(c, R, last); }
+  for (int r = R->ret_start[mi]; ok && r < R->ret_start[mi + 1]; r++) {
+    int ra = nt_ref(nt, R->ret_list[r], "arguments");
+    int rn = 0; const int *rv = ra >= 0 ? nt_arr(nt, ra, "arguments", &rn) : NULL;
+    saw = 1;
+    ok = rn == 1 && an_tail_handle(c, R, rv[0]);
+  }
+  R->st[mi] = ok && saw ? RH_YES : RH_NO;
+  return R->st[mi] == RH_YES;
+}
+static void an_mark_handle_returns(Compiler *c) {
+  if (!c->share_strings) return;
+  RetHandles R;
+  R.st = calloc((size_t)c->nscopes + 1, 1);
+  if (!R.st) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  an_returns_by_scope(c, &R.ret_start, &R.ret_list);
+  for (int mi = 1; mi < c->nscopes; mi++) c->scopes[mi].ret_handle = (unsigned char)an_ret_handle(c, &R, mi);
+  free(R.st); free(R.ret_start); free(R.ret_list);
+  /* A deep-return pickup marked while the types settled, on a call whose
+     method answers a box after all (a parameter that settled poly): the
+     box holds the String itself, and the pickup's String read of it would
+     not build. Unmarked, the call hands its box on. */
+  const NodeTable *nt = c->nt;
+  NT_FOREACH_KIND(nt, NK_CallNode, n) {
+    if (!c->strbuf_box[n] || c->ntype[n] != TY_POLY) continue;
+    int mis[CPT_MAX];
+    int cnt = cplan_targets(c, n, mis, CPT_MAX), poly = cnt > 0;
+    for (int i = 0; i < cnt && poly; i++) poly = c->scopes[mis[i]].ret == TY_POLY;
+    if (poly) c->strbuf_box[n] = 0;
+  }
 }
 static int promote_shared_stored_strings(Compiler *c) {
   int changed = 0;
@@ -37169,6 +37252,8 @@ void analyze_program(Compiler *c) {
   /* --share-strings: a String-keyed Hash's key borrows a handle's bytes,
      read off the final types and flags */
   share_mark_borrows(c);
+  /* --share-strings: the methods whose value is a shared String's handle */
+  an_mark_handle_returns(c);
   /* the representation flags are final from here (repr.h) */
   repr_seal(c);
   sp_timing_end(tm_an, "analysis", "");

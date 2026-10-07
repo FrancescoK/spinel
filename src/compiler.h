@@ -390,6 +390,11 @@ typedef struct {
                            methods (`def pass(x) = x.p_`) and methods whose value
                            is their block's (`def key_of(x) = yield x`), which no
                            RBS signature covers (#3505). */
+  unsigned char ret_handle; /* --share-strings: every return path reads a String
+                               the rule shares, so a call's value is that
+                               String's handle, which the callee's tail read
+                               publishes (_sp_ret_strbuf); set once the
+                               analysis settles (an_mark_handle_returns) */
   int ret_obj_may_nil; /* the nil fact for the method's value (analyze_nil.c,
                           #7444): its body's value or a `return` may be nil;
                           nonzero, where the nil comes from (NFW_*) */
