@@ -196,6 +196,12 @@ static inline sp_String*sp_String_new_shared(const char*s){
   if(SP_UNLIKELY(mk==0xfb))sp_String_chill(r,s);   /* a static: still there after the allocation */
   return r;
 }
+/* An expression of either String face as the shared handle: a handle is
+   itself, a plain String is wrapped in a fresh one. The emitter writes it where
+   a typed handle parameter is filled from an expression whose own emitter
+   answers either (`+""`, a fresh String's builtin), and does not know which. */
+static inline sp_String*sp_string_handle_id(sp_String*h){return h;}
+#define SP_AS_STRING_HANDLE(x) _Generic((x), sp_String *: sp_string_handle_id, default: sp_String_new_shared)(x)
 /* sp_String_new_shared for a String no one else holds (a literal's copy, a
    temporary, a plain String a handle parameter reads off the boxed channel):
    the same length and marks, over a payload inside the object. */

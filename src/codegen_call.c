@@ -6681,7 +6681,16 @@ static void emit_poly_arg_temp(Compiler *c, int node, TyKind ty, int boxed, int 
   Buf val; memset(&val, 0, sizeof val);
   Buf *sv_pre = g_pre;
   if (ran && subtree_has_side_effect(c, node)) g_pre = &pre;
+  /* a handle parameter filled by a node marked to hand out the handle whose
+     own emitter may answer the plain String (`+""`, `"".dup`, an interpolation:
+     the mark only asks for it, #7833): the value is taken as the handle, or
+     wrapped in a fresh one */
+  int as_handle = !boxed && ty == TY_STRBUF && c->strbuf_box[node] &&
+                  nt_kind(c->nt, node) != NK_LocalVariableReadNode &&
+                  nt_kind(c->nt, node) != NK_InstanceVariableReadNode;
+  if (as_handle) buf_puts(&val, "SP_AS_STRING_HANDLE(");
   if (boxed) emit_boxed(c, node, &val); else emit_expr(c, node, &val);
+  if (as_handle) buf_puts(&val, ")");
   g_pre = sv_pre;
   if (pre.p) buf_puts(b, pre.p);
   if (boxed) buf_puts(b, "sp_RbVal"); else emit_ctype(c, ty, b);
