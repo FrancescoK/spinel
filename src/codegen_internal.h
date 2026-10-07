@@ -1377,6 +1377,19 @@ int emit_args_before_binding(Compiler *c, Scope *m, const int *argv, int argc, B
    instance, global or class variable by any effect. A value built of reads
    (`[x, 2]`) asks it of each; a block reads when it runs. */
 int read_rebound_by(Compiler *c, int x, int after);
+/* Whether the key or value of `x[key] = val` may give the local or instance
+   variable `x` reads another value (read_rebound_by) and cannot mutate it,
+   so a store reads the receiver first and leaves the new binding; 0 for
+   any other receiver (codegen_call_recv.c). */
+int aset_recv_rebinds_only(Compiler *c, int recv, int key, int val);
+/* Whether the key or value of `x[key] = val` may mutate the local or
+   instance variable `x` reads, or move its String into a shared handle: it
+   reads the variable, an instance variable's makes a call, or a proc that
+   captures the local may run. */
+int aset_recv_may_mutate(Compiler *c, int recv, int key, int val);
+/* The receiver of such a store, read into a rooted temp in g_pre, ahead of
+   any prelude its key or value moves there (1); inline without g_pre (0). */
+int emit_aset_recv_read(Compiler *c, int recv, Buf *b);
 int emit_ds_hash_materialize(Compiler *c, Scope *m, int kwh, TyKind *out_type);
 /* The TypeError CRuby raises for a `**` operand that is neither a Hash, nil
    nor convertible with #to_hash, emitted into g_pre ahead of any keyword

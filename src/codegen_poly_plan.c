@@ -2655,8 +2655,8 @@ static int str_aset_writes_back(Compiler *c, int recv) {
   NodeKind rk = nt_kind(c->nt, recv);
   return rk == NK_LocalVariableReadNode || rk == NK_InstanceVariableReadNode;
 }
-/* The store call on the receiver temp, into out. */
-static void str_aset_store_text(Compiler *c, const PolyTemps *T, Buf *out) {
+/* The store call on the receiver `rv`, into out. */
+static void str_aset_store_text(Compiler *c, const PolyTemps *T, const char *rv, Buf *out) {
   TyKind vty = T->atmp_ty[1], kty = T->atmp_ty[0];
   char k0[48], v0[24];
   snprintf(k0, sizeof k0, "_t%d", T->atmp[0]);
@@ -2664,7 +2664,7 @@ static void str_aset_store_text(Compiler *c, const PolyTemps *T, Buf *out) {
   /* an Integer index rides raw (unboxed from a poly temp in promote mode),
      a String or Regexp key boxed */
   int int_key = comp_ntype(c, T->argv[0]) == TY_INT;
-  buf_printf(out, "%s(_t%d, ", int_key ? "sp_poly_arr_widen_and_set" : "sp_poly_str_aset_key", T->tv);
+  buf_printf(out, "%s(%s, ", int_key ? "sp_poly_arr_widen_and_set" : "sp_poly_str_aset_key", rv);
   if (int_key && kty == TY_POLY) buf_printf(out, "sp_poly_arg_i(%s)", k0);
   else if (int_key || kty == TY_POLY) buf_puts(out, k0);
   else emit_boxed_text(c, kty, k0, out);
@@ -2679,7 +2679,8 @@ void emit_poly_str_aset_prearm(Compiler *c, int recv, const PolySpecialsN *ps, c
   int tv = T->tv, tr = T->tr;
   TyKind ret = T->ret, vty = T->atmp_ty[1];
   Buf st; memset(&st, 0, sizeof st);
-  str_aset_store_text(c, T, &st);
+  char rv[24]; snprintf(rv, sizeof rv, "_t%d", tv);
+  str_aset_store_text(c, T, rv, &st);
   buf_printf(b, "if (_t%d.tag == SP_TAG_STR || sp_poly_is_strbuf(_t%d)) { ", tv, tv);
   /* a plain String that is written back is stored after the dispatch */
   if (str_aset_writes_back(c, recv)) buf_printf(b, "if (_t%d.tag != SP_TAG_STR) ", tv);
@@ -2700,16 +2701,39 @@ void emit_poly_str_aset_prearm(Compiler *c, int recv, const PolySpecialsN *ps, c
   buf_puts(b, " }\nelse ");
   free(st.p);
 }
+/* The dispatch's receiver: a String store whose key or value rebinds a
+   local or instance variable receiver (aset_recv_rebinds_only) reads it
+   ahead of them, and of a prelude they move ahead of the statement, as
+   CRuby reads it; any other call reads it in place. */
+void emit_poly_str_aset_recv(Compiler *c, int recv, const PolySpecialsN *ps, const int *argv, Buf *b) {
+  if (ps->straset && ps->kw_pos && aset_recv_rebinds_only(c, recv, argv[0], argv[1])) emit_aset_recv_read(c, recv, b);
+  else emit_expr(c, recv, b);
+}
 /* After the dispatch: a plain String receiver that is a local or an
-   instance variable takes the spliced String (see the pre-arm above). */
+   instance variable takes the spliced String (see the pre-arm above). The
+   receiver was read ahead of the key and value. When one of them may give
+   the variable another value and cannot mutate it (`s[(s = t; 0)] = v`,
+   aset_recv_rebinds_only), CRuby changes the String read first and keeps
+   the new binding: the splice goes back only to a variable that still
+   holds it. When one may mutate it (`s[(s[0] = x; 1)] = v`,
+   aset_recv_may_mutate), the String read first is stale: the store reads
+   the variable after them, as the store without a user class's `[]=`
+   does, while it still holds a String. */
 void emit_poly_str_aset_writeback(Compiler *c, int recv, const PolySpecialsN *ps, const PolyTemps *T, Buf *b) {
   if (!ps->straset || recv < 0 || !str_aset_writes_back(c, recv)) return;
   Buf st; memset(&st, 0, sizeof st);
-  str_aset_store_text(c, T, &st);
-  buf_printf(b, " if (_t%d.tag == SP_TAG_STR) ", T->tv);
-  emit_expr(c, recv, b);
-  buf_printf(b, " = %s;", st.p);
+  Buf var = expr_buf(c, recv);
+  const char *vp = var.p ? var.p : "";
+  int mut = aset_recv_may_mutate(c, recv, T->argv[0], T->argv[1]);
+  char rv[24]; snprintf(rv, sizeof rv, "_t%d", T->tv);
+  str_aset_store_text(c, T, mut ? vp : rv, &st);
+  buf_printf(b, " if (_t%d.tag == SP_TAG_STR", T->tv);
+  if (mut) buf_printf(b, " && (%s.tag == SP_TAG_STR || sp_poly_is_strbuf(%s))", vp, vp);
+  else if (aset_recv_rebinds_only(c, recv, T->argv[0], T->argv[1]))
+    buf_printf(b, " && %s.tag == SP_TAG_STR && %s.v.s == _t%d.v.s", vp, vp, T->tv);
+  buf_printf(b, ") %s = %s;", vp, st.p);
   free(st.p);
+  free(var.p);
 }
 
 /* The tag pre-arms of a poly dispatch with arguments, ahead of its cls_id
