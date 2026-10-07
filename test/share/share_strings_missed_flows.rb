@@ -8,7 +8,7 @@
 # own copy and a change through one did not show through the other. Each
 # case runs in a method of its own, so no other case's names join its own.
 
-# a pattern binds a part of the value it matches
+# a pattern binds a part of the value it matches, or the whole of it
 def pattern_array
   s = +"ab"
   case [s]
@@ -54,12 +54,55 @@ def pattern_find
   end
   p s
 end
+def pattern_whole_capture
+  s = +"ab"
+  case s
+  in String => t
+    t << "1"
+  end
+  p s
+end
+def pattern_whole_bare
+  s = +"ab"
+  case s
+  in Integer then p 0
+  in t if t.size > 1 then t << "2"
+  end
+  p s
+end
+def pattern_whole_predicate
+  s = +"ab"
+  if s in String => t
+    t << "3"
+  end
+  p s
+end
+def pattern_whole_param(x)
+  case x
+  in String => t
+    t << "4"
+  end
+end
+def pattern_whole_fresh
+  s = +"ab"
+  case s.dup
+  in t then t << "5"
+  end
+  p s, t
+end
 pattern_array
 pattern_later_element
 pattern_hash
 pattern_rightward
 pattern_predicate
 pattern_find
+pattern_whole_capture
+pattern_whole_bare
+pattern_whole_predicate
+ps = +"ab"
+pattern_whole_param(ps)
+p ps
+pattern_whole_fresh
 
 # `alias $b $a` makes $b the global $a
 alias $b $a
@@ -97,6 +140,15 @@ def hash_values_at_key
   h.values_at(s)
   p s
 end
+# Array.new(a) copies a's elements, which keep their own identities: a
+# fresh String in it stays apart from s
+def array_new_copy
+  s = +"ab"
+  a = Array.new([s, s.dup])
+  a[1] << "z"
+  p a
+end
+array_new_copy
 hash_default
 hash_block_value
 hash_block_key

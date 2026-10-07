@@ -157,6 +157,7 @@ static void sh_union(ShareFacts *F, int a, int b) {
   if (F->union_stack_cap < 64) {
     F->union_stack_cap = 64;
     F->union_stack = realloc(F->union_stack, sizeof(int) * 2 * 64);
+    if (!F->union_stack) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   }
   F->union_stack[sp++] = a; F->union_stack[sp++] = b;
   while (sp > 0) {
@@ -183,6 +184,7 @@ static void sh_union(ShareFacts *F, int a, int b) {
       if (sp + 2 > F->union_stack_cap * 2) {
         F->union_stack_cap *= 2;
         F->union_stack = realloc(F->union_stack, sizeof(int) * 2 * (size_t)F->union_stack_cap);
+        if (!F->union_stack) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
       }
       F->union_stack[sp++] = ex; F->union_stack[sp++] = ey;
     }
@@ -1105,8 +1107,8 @@ static int sh_block_param(const NodeTable *nt, int blk, int i) {
 /* `Array.new(n, s)`, `Hash.new { }`, `Enumerator.new { |y| }`,
    `OpenStruct.new(name: s)`, `ArgumentError.new(s)`: a builtin class's
    constructor, read off its BOP_CLASS_NEW row. The container it answers
-   holds what it is handed: Array.new's fill value, a copied Array's
-   elements and its block's values; Hash.new's default and its block's
+   holds what it is handed: Array.new(n, s)'s fill value and its block's
+   values; Hash.new's default and its block's
    values (the block is handed the Hash, and the key each lookup asks for:
    sh_key); what Enumerator.new's block hands its yielder, which next
    answers; an OpenStruct's fields. An exception's arguments join UNKNOWN,
@@ -1138,7 +1140,8 @@ static int sh_builtin_new(ShareFacts *F, Compiler *c, int n, int recv, int blk) 
     if (share == BSH_NEW_FIELDS) sh_union(F, er, sh_elem(F, v));
     else if (ak == NK_KeywordHashNode) continue;
     else if ((share == BSH_NEW_FILL && i == 1) || (share == BSH_NEW_DEFAULT && i == 0)) sh_union(F, er, v);
-    else if (share == BSH_NEW_FILL && argc == 1) sh_union(F, er, sh_elem(F, v));
+    /* Array.new(a), a copy of a's elements, is not followed: its answer
+       holds a's Strings, which a literal handed to it does not make handles */
   }
   if (!lit_blk) return r;
   if (share == BSH_NEW_DEFAULT) {
