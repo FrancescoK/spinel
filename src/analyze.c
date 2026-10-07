@@ -15400,8 +15400,19 @@ static int strbuf_demand_store_leaf(Compiler *c, int sn, int depth) {
            A parameter the rule shares holds the handle what binds it hands over
            (share_default_apply), or the seal refuses it by name, and the element is
            that handle (`each { |e| acc << e }` over a yielding each) */
-        refuse_stored_block_param(c, sn, -1);
-        if (block_param_user_yield_only(c, snm, sns) && c->share &&
+        int yo = block_param_user_yield_only(c, snm, sns);
+        if (!yo) refuse_stored_block_param(c, sn, -1);
+        else {
+          /* what binds it hands over its handle: the route carries it */
+          static const char ymsg[] =
+            "a String held by a block parameter no element iterator binds (a proc's, a lambda's, a yielding "
+            "method's block, `each_char`'s) is stored into a container and mutated in place through it (a "
+            "String is not yet shared by reference through a stored block parameter). Mutate the String "
+            "before storing it, or store it where the caller holds it.";
+          ShareRoute yq = share_route(sn, sn, 0);
+          if (!share_route_defer(c, &yq, ymsg)) unsupported_feature(c, sn, ymsg);
+        }
+        if (yo && c->share &&
             repr_str_shares(c, share_local_holder(c, (int)(sns - c->scopes), (int)(snv - sns->locals)))) {
           if (snv->type != TY_STRBUF || !snv->str_shared) { snv->type = TY_STRBUF; snv->str_shared = 1; ch = 1; }
           if (!c->strbuf_box[sn]) { c->strbuf_box[sn] = 1; ch = 1; }
