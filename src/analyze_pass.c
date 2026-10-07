@@ -4036,6 +4036,12 @@ static TyKind local_write_ty(Compiler *c, int id, int stashed) {
     /* `x = y = nil` writes nil to every target; flow TY_NIL instead of the
        inner slot's unified type. */
     if (comp_nil_chain_bottom(nt, val_id) >= 0) newt = TY_NIL;
+    else {
+      /* likewise `a = b = 0`: each target takes the literal's type, not the
+         inner slot's, which a later write to b may widen (#4686) */
+      int lcb = comp_scalar_literal_chain_bottom(nt, val_id);
+      if (lcb >= 0) newt = infer_type(c, lcb);
+    }
     /* Empty-collection literal `x = []` / `x = {}` returns TY_UNKNOWN from
        infer_type. If the container-fold from a prior iteration already gave
        this local a meaningful type (its prior type, lv_prior), preserve it so
