@@ -2899,7 +2899,8 @@ static const BopShareRow bop_share_rows[] = {
      than one. ty_block_yield reads none of the in-place filters and
      maps, uniq, uniq!, sort_by!, inject, each_with_object, each_index,
      fill, the comparators, cycle, or the run and tuple iterators but
-     each_slice and each_cons.
+     each_slice and each_cons. Neither reads slice_before or slice_after:
+     only the share analysis does.
    - Hash. The share analysis does not read each_entry, reverse_each,
      collect_concat, find_all, filter!, find_index, one?, take_while,
      drop_while, each_slice or each_cons. The shape desugar reads none with
@@ -3007,6 +3008,8 @@ static const IterRow iter_rows[] = {
   { BOP_ANY_ARRAY, "sort!",           0, 0, 2, { YS_ELEM, YS_ELEM }, IA_RECV, IRF_GAP_SHAPE | IRF_GAP_FWD },
   { BOP_ANY_ARRAY, "slice_when",      0, 0, 2, { YS_ELEM, YS_ELEM }, IA_PARTS, IRF_GAP_SHAPE | IRF_GAP_FWD },
   { BOP_ANY_ARRAY, "chunk_while",     0, 0, 2, { YS_ELEM, YS_ELEM }, IA_PARTS, IRF_GAP_SHAPE | IRF_GAP_FWD },
+  { BOP_ANY_ARRAY, "slice_before",    0, 0, 1, { YS_ELEM }, IA_PARTS, IRF_GAP_SHAPE | IRF_GAP_FWD },
+  { BOP_ANY_ARRAY, "slice_after",     0, 0, 1, { YS_ELEM }, IA_PARTS, IRF_GAP_SHAPE | IRF_GAP_FWD },
 
   { BOP_ANY_HASH, "each",             0, 0, 1, { YS_PAIR }, IA_RECV, 0 },
   { BOP_ANY_HASH, "each_pair",        0, 0, 1, { YS_PAIR }, IA_RECV, 0 },
