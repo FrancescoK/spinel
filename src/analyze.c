@@ -17148,7 +17148,7 @@ static int strbuf_demand_elem_arg(Compiler *c, int an) {
    `@values[i]` itself would, so the element read it answers is demanded as
    an element read handed to an appender is. Answers whether anything
    changed. A result that is another such call is followed (bounded). */
-static int *uec_seen, uec_cap, uec_gen;
+static int *uec_seen, *uec_depth, uec_cap, uec_gen;
 static int strbuf_demand_user_elem_call(Compiler *c, int call, int depth) {
   const NodeTable *nt = c->nt;
   if (call < 0 || depth > 4 || nt_kind(nt, call) != NK_CallNode) return 0;
@@ -17156,14 +17156,20 @@ static int strbuf_demand_user_elem_call(Compiler *c, int call, int depth) {
      class's method of the name, and each of their results again, so a name
      many classes define (`[]`) fanned out to the power of the depth and a
      program of a few hundred classes compiled for hours. A method's results
-     are the same however it was reached, and a demand only adds. */
+     are the same however it was reached, and a demand only adds; a visit
+     from nearer the top still goes on, since it may follow results a deeper
+     one was cut off from. */
   if (depth == 0) {
     if (uec_cap < c->nscopes) {
       int nc = c->nscopes + 64;
       int *ns = (int *)realloc(uec_seen, sizeof(int) * (size_t)nc);
       if (!ns) return 0;
-      memset(ns + uec_cap, 0, sizeof(int) * (size_t)(nc - uec_cap));
-      uec_seen = ns; uec_cap = nc;
+      uec_seen = ns;
+      int *nd = (int *)realloc(uec_depth, sizeof(int) * (size_t)nc);
+      if (!nd) return 0;
+      uec_depth = nd;
+      memset(uec_seen + uec_cap, 0, sizeof(int) * (size_t)(nc - uec_cap));
+      uec_cap = nc;
     }
     uec_gen++;
   }
@@ -17189,8 +17195,9 @@ static int strbuf_demand_user_elem_call(Compiler *c, int call, int depth) {
     if (cls >= 0) { if (mi != comp_method_in_chain(c, cls, mn, NULL)) continue; }
     else if (!m->name || !sp_streq(m->name, mn) || m->class_id < 0 || m->is_cmethod) continue;
     if (mi < uec_cap) {
-      if (uec_seen[mi] == uec_gen) { if (cls >= 0) break; continue; }
+      if (uec_seen[mi] == uec_gen && uec_depth[mi] <= depth) { if (cls >= 0) break; continue; }
       uec_seen[mi] = uec_gen;
+      uec_depth[mi] = depth;
     }
     int vals[64], nv = 0;
     int last = scope_body_last(c, mi);
