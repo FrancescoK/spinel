@@ -6193,7 +6193,7 @@ static int infer_last_resort_call(Compiler *c, int id, const NodeTable *nt, cons
      any other kind still raises NoMethodError (#4158 follow-up). */
   if (recv >= 0 && rt == TY_POLY && !face_active() && argc == 0 &&
       ty_poly_handle_face(name) != TY_UNKNOWN &&
-      !an_user_defines_or_reads(c, name)) {
+      !an_user_defines_or_reads(c, name) && !an_native_defines_method(c, name)) {
     an_face_push(recv, ty_poly_handle_face(name));
     TyKind kt = infer_call(c, id);
     an_face_pop();

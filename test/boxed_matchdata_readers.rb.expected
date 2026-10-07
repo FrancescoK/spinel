@@ -1,0 +1,21 @@
+"x"
+"!"
+["B", nil]
+3
+3
+["AB", "B", nil]
+"AB"
+"B"
+nil
+"B"
+"B"
+nil
+["AB", "B"]
+["B", nil]
+""
+1
+[1]
+[2]
+9
+6
+"undefined method 'pre_match' for an instance of Integer"
