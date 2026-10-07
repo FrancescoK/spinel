@@ -1591,6 +1591,14 @@ int strbuf_value_carries(Compiler *c, int v) {
   if (cb != v && cb >= 0 && strbuf_var_handle(c, cb, ref, sizeof ref)) return 1;
   return strbuf_route_carries(c, v, 0) || strbuf_cond_has_handle_leaf(c, v, 0);
 }
+/* A mutator's receiver handle _t<t>, which strbuf_recv_handle answered
+   (hr): a route's (2) can be a String of its own (`(+f)` of a frozen f),
+   which nothing else holds while the mutator's arguments allocate, so it
+   is rooted for the rest of the mutator's expression. A slot's (1) is held
+   by its slot. */
+void emit_route_recv_root(int hr, int t, Buf *b) {
+  if (hr == 2) buf_printf(b, " SP_GC_ROOT(_t%d);", t);
+}
 /* Does route v (emit_strbuf_route) answer a String, never nil: `+s` (which
    raises for a nil s) and `String(s)`? Every other one can answer nil. */
 static int strbuf_route_nonnil(Compiler *c, int v) {
@@ -15834,7 +15842,9 @@ static int str_mutate_shared_arms(Compiler *c, int id, Buf *b, int indent, const
       view_unbind(g_n_argov - 1);
       if (handled) {
         emit_indent(b, indent);
-        buf_printf(b, "{ sp_String *_t%d = %s;\n", tH, hb);
+        buf_printf(b, "{ sp_String *_t%d = %s;", tH, hb);
+        emit_route_recv_root(2, tH, b);
+        buf_puts(b, "\n");
         Buf nopre; memset(&nopre, 0, sizeof nopre);   /* what the route put ahead is in g_pre */
         emit_sb_shim_swap(b, indent, tH, &nopre, armb.p);
         return 1;

@@ -7,7 +7,9 @@
 # dispatch over two classes. A route whose block makes a new String still
 # hands over a String of its own. A nil one (a nil variable, or a route
 # that answers nil, its tail or a `next` of its block) binds the parameter
-# nil, and the append raises NoMethodError, as on any nil.
+# nil, and the append raises NoMethodError, as on any nil. A route that
+# answers a String of its own (`+` of a frozen String, a `then` that makes
+# one) stays rooted while a mutator's arguments allocate.
 def grow(u) = u << "!"
 def grow2(u, n)
   n.times { u << "+" }
@@ -46,3 +48,11 @@ rescue NoMethodError => e
 end
 c = s.size > 0
 begin; grow(s.then { |v| next n if c; v }); p :no_error; rescue NoMethodError => e; p e.class; end
+def ix = ([1, 2, 3].map(&:to_s).join.size - 3)
+def vx = ([4, 5].map { |x| x.to_s * 400 }.join.size - 730)
+fz = "frozen-literal-text"
+tot = 0
+50.times { tot += (+fz).setbyte(ix, vx) }
+50.times { tot += String(s.then { |v| v + "zz" * 50 }).setbyte(ix, vx) }
+50.times { (+fz) << ix.to_s * 300 }
+p tot, fz
