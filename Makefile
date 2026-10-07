@@ -3253,18 +3253,27 @@ rubyspec-gate: $(SPINEL) $(RUBYSPEC_DIR)/.pinned
 # before-and-after can measure the plain build, which is what an inference
 # change wants when the question is whether the emitted code changed rather
 # than how the inliner reacted: `make optcarrot OPTCARROT_FLAGS=--no-inline-hot`.
+# The Integer overflow mode is wrap unless OPTCARROT_INT_OVERFLOW names another
+# (raise, wrap or promote): `make optcarrot OPTCARROT_INT_OVERFLOW=raise`.
+# spinel emits the C for it and the separate cc step gets the matching define
+# (docs/int-overflow.md).
 OPTCARROT_FLAGS ?=
+OPTCARROT_INT_OVERFLOW ?= wrap
+OPTCARROT_INT_OVERFLOW_DEFINE = $(if $(filter raise,$(OPTCARROT_INT_OVERFLOW)),RAISE,$(if $(filter wrap,$(OPTCARROT_INT_OVERFLOW)),WRAP,$(if $(filter promote,$(OPTCARROT_INT_OVERFLOW)),PROMOTE)))
 OPTCARROT_DIR  := build/optcarrot
 OPTCARROT_REPO := https://github.com/mame/optcarrot.git
 OPTCARROT_BRANCH := experiment/spinel
 
 optcarrot: $(SPINEL) $(SP_RT_LIB) $(SPINEL_TIMEOUT)
+	@if [ -z "$(OPTCARROT_INT_OVERFLOW_DEFINE)" ]; then \
+	  echo "optcarrot: OPTCARROT_INT_OVERFLOW must be raise, wrap or promote, not '$(OPTCARROT_INT_OVERFLOW)'" >&2; exit 1; \
+	fi
 	@if [ ! -d $(OPTCARROT_DIR) ]; then \
 	  git clone --depth=1 --branch=$(OPTCARROT_BRANCH) $(OPTCARROT_REPO) $(OPTCARROT_DIR); \
 	fi
 	@ruby $(OPTCARROT_DIR)/tools/pack-for-spinel.rb > build/optcarrot-single.rb
-	@$(SPINEL) $(OPTCARROT_FLAGS) build/optcarrot-single.rb -c --no-line-map -o build/optcarrot-single.c
-	@$(CC) $(CFLAGS) -DSP_INT_OVERFLOW_MODE_WRAP -Ilib build/optcarrot-single.c $(SP_RT_LIB) $(LDFLAGS) -lm $(GC_FLAGS) -o build/optcarrot-single
+	@$(SPINEL) $(OPTCARROT_FLAGS) --int-overflow=$(OPTCARROT_INT_OVERFLOW) build/optcarrot-single.rb -c --no-line-map -o build/optcarrot-single.c
+	@$(CC) $(CFLAGS) -DSP_INT_OVERFLOW_MODE_$(OPTCARROT_INT_OVERFLOW_DEFINE) -Ilib build/optcarrot-single.c $(SP_RT_LIB) $(LDFLAGS) -lm $(GC_FLAGS) -o build/optcarrot-single
 	@n=$${OPTCARROT_RUNS:-5}; fps=""; out=""; \
 	for i in $$(seq 1 $$n); do \
 	  out=$$($(TIMEOUT60) ./build/optcarrot-single 2>&1); \
