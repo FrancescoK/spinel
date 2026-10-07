@@ -51,3 +51,6 @@ p collect(2, [9])
 def avg(xs = []) = xs.empty? ? 0.0 : xs.sum / xs.size
 p avg([1.5, 2.5])
 p avg
+
+def untouched(xs = []) = xs.size
+p untouched
