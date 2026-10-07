@@ -27,6 +27,11 @@ const char *ffi_arg_str(const NodeTable *nt, int nid);
 int ffi_arg_int(const NodeTable *nt, int nid);
 TyKind ffi_spec_to_ty(const char *spec);
 int ffi_find_func(Compiler *c, const char *mod, const char *name);
+/* --share-strings: can POLY receiver r of a String mutator's name be a
+   String (analyze.c)? */
+int an_poly_recv_may_be_string(Compiler *c, int r);
+/* An index assignment (`x[i] = v`) that cannot be a String's (analyze.c) */
+int dyn_index_write_not_string(Compiler *c, int node);
 /* `Fiber.new { }`'s block, or -1 */
 int an_fiber_new_block(Compiler *c, int v);
 int ffi_find_buf(Compiler *c, const char *mod, const char *name);
