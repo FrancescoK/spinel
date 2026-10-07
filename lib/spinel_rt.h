@@ -2092,7 +2092,7 @@ static sp_bool sp_io_responds(sp_File *f, const char *m, int typed) {
   static const char *const filem_t[] = { "atime", "birthtime", "chmod", "chown",
     "ctime", "lstat", "mtime", NULL };
   static const char *const filem_b[] = { NULL };
-  static const char *const basicm[] = { NULL };
+  static const char *const basicm[] = { "do_not_reverse_lookup", "do_not_reverse_lookup=", NULL };
   static const char *const basicm_t[] = { "getsockopt", "local_address", "recv",
     "recv_nonblock", "remote_address", "setsockopt", "shutdown", NULL };
   static const char *const basicm_b[] = { NULL };
@@ -2255,27 +2255,53 @@ int sp_net_listen_host(const char *host, int port, int backlog);
 int sp_net_connect(const char *host, int port);
 int sp_net_accept(int sfd);
 int sp_net_sock_ip(int fd, int peer, char *ipbuf, int cap);
-/* TCPSocket#addr / #peeraddr: ["AF_INET", port, ip, ip], CRuby's numeric form.
+int sp_net_sock_host(int fd, int peer, char *hostbuf, int cap);
+/* TCPSocket#addr / #peeraddr: ["AF_INET", port, host, ip]. The host is the
+   numeric address unless the lookup is asked for -- `rl` 1, or -1 (the call
+   gave no flag) on a socket whose do_not_reverse_lookup is false -- and the
+   address has a name; CRuby reports the numeric address when it has none.
    These belong to the socket classes, not to IO: a plain File answers
    NoMethodError, as CRuby does, rather than an empty address. */
-static sp_PolyArray *sp_sock_addr(sp_File *f, int peer) SP_UNUSED;
-static sp_PolyArray *sp_sock_addr(sp_File *f, int peer) {
+static sp_PolyArray *sp_sock_addr_rl(sp_File *f, int peer, int rl) SP_UNUSED;
+static sp_PolyArray *sp_sock_addr_rl(sp_File *f, int peer, int rl) {
   if (!f || !f->is_sock)
     sp_raise_cls("NoMethodError", sp_sprintf("undefined method '%s' for an instance of %s",
                                              peer ? "peeraddr" : "addr", sp_io_kind_name(f)));
   SP_IO_OPEN(f);
   sp_PolyArray *a = sp_PolyArray_new();
   SP_GC_ROOT(a);
-  char ip[64];
+  char ip[64], host[1025];
   int port = sp_net_sock_ip(fileno(f->fp), peer, ip, (int)sizeof ip);
   if (port < 0) { ip[0] = '\0'; port = 0; }
   const char *fam = strchr(ip, ':') ? "AF_INET6" : "AF_INET";
   sp_PolyArray_push(a, sp_box_str(sp_sprintf("%s", fam)));
   sp_PolyArray_push(a, sp_box_int((sp_int)port));
   const char *ips = sp_sprintf("%s", ip);
-  sp_PolyArray_push(a, sp_box_str(ips));
+  SP_GC_ROOT_STR(ips);
+  if (rl < 0) rl = f->rev_lookup;
+  if (rl && port > 0 && sp_net_sock_host(fileno(f->fp), peer, host, (int)sizeof host) == 0)
+    sp_PolyArray_push(a, sp_box_str(sp_sprintf("%s", host)));
+  else sp_PolyArray_push(a, sp_box_str(ips));
   sp_PolyArray_push(a, sp_box_str(ips));
   return a;
+}
+static sp_PolyArray *sp_sock_addr(sp_File *f, int peer) SP_UNUSED;
+static sp_PolyArray *sp_sock_addr(sp_File *f, int peer) { return sp_sock_addr_rl(f, peer, -1); }
+/* addr / peeraddr's flag as CRuby reads it: true or :hostname looks the
+   name up (1), false or :numeric does not (0), nil follows the socket (-1).
+   Another Symbol is ArgumentError, anything else TypeError. */
+static int sp_sock_rl_flag(sp_RbVal v) SP_UNUSED;
+static int sp_sock_rl_flag(sp_RbVal v) {
+  if (v.tag == SP_TAG_NIL) return -1;
+  if (v.tag == SP_TAG_BOOL) return v.v.i ? 1 : 0;
+  if (v.tag == SP_TAG_SYM) {
+    const char *n = sp_sym_to_s((sp_sym)v.v.i);
+    if (strcmp(n, "hostname") == 0) return 1;
+    if (strcmp(n, "numeric") == 0) return 0;
+    sp_raise_cls("ArgumentError", sp_sprintf("invalid reverse_lookup flag: :%s", n));
+  }
+  sp_raise_cls("TypeError", sp_sprintf("wrong argument type %s (expected Symbol)", sp_poly_class_name(v)));
+  return -1;
 }
 /* Process.times -> Process::Tms: four cumulative CPU times in seconds.
    An unboxed value like sp_Range/sp_Class -- there is nothing to mutate. */

@@ -1227,6 +1227,24 @@ int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable 
         return 1;
       }
     }
+    /* BasicSocket.do_not_reverse_lookup and its writer, on any socket class:
+       one setting they share, which each new socket takes. The writer
+       answers its argument; only its truth sets the default. */
+    if (tcn && sp_feature_required("socket") && io_family_name(tcn) && !is_io_class_name(tcn) &&
+        ((sp_streq(name, "do_not_reverse_lookup") && argc == 0) ||
+         (sp_streq(name, "do_not_reverse_lookup=") && argc == 1))) {
+      int skc = comp_class_index(c, tcn);
+      if (skc < 0 || comp_cmethod_in_chain(c, skc, name, NULL) < 0) {
+        if (argc == 0) { buf_puts(b, "sp_sock_dnrl_default"); return 1; }
+        int tv = ++g_tmp;
+        buf_printf(b, "({ sp_RbVal _t%d = ", tv);
+        emit_boxed(c, argv[0], b);
+        buf_printf(b, "; sp_sock_dnrl_default = sp_poly_truthy(_t%d); ", tv);
+        emit_unbox_or_keep(c, repr_of(c, id).as_ty, tv, b);
+        buf_puts(b, "; })");
+        return 1;
+      }
+    }
     /* Socket class methods (#2922) */
     if (tcn && sp_streq(tcn, "Socket") && sp_feature_required("socket")) {
       if (sp_streq(name, "gethostname") && argc == 0) {

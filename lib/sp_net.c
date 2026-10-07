@@ -171,6 +171,23 @@ int sp_net_sock_ip(int fd, int peer, char *ipbuf, int cap) {
     return -1;
 }
 
+/* The host name the local/peer address of a socket fd reverse-resolves to,
+   into hostbuf: 0, or -1 when it has none (the caller then reports the
+   numeric address, as CRuby does). A lookup may take seconds, so it runs
+   outside the world, as getaddrinfo does. */
+int sp_net_sock_host(int fd, int peer, char *hostbuf, int cap) {
+    struct sockaddr_storage ss;
+    socklen_t len = sizeof(ss);
+    int r = peer ? getpeername(fd, (struct sockaddr *)&ss, &len)
+                 : getsockname(fd, (struct sockaddr *)&ss, &len);
+    if (r != 0) return -1;
+    if (ss.ss_family != AF_INET && ss.ss_family != AF_INET6) return -1;
+    sp_native_enter();
+    int rc = getnameinfo((struct sockaddr *)&ss, len, hostbuf, (socklen_t)cap, NULL, 0, NI_NAMEREQD);
+    sp_native_leave();
+    return rc == 0 ? 0 : -1;
+}
+
 int sp_net_listen(int port, int reuseport) {
     if (port < 0 || port > 65535) return -1;
     int fd = socket(AF_INET, SOCK_STREAM, 0);

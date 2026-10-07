@@ -153,8 +153,12 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
        sp_streq(name, "readpartial") ||
        /* a socket's addresses: a connection passed into a Thread arrives
           boxed, and a server reads REMOTE_ADDR from it */
-       ((is_socket_address(name)) && argc == 0 &&
+       ((is_socket_address(name)) && argc <= 1 && !call_has_splat_arg(nt, argv, argc) &&
         sp_feature_required("socket")) ||
+       /* and its reverse-lookup flag, set on every connection WEBrick accepts */
+       (sp_feature_required("socket") &&
+        ((sp_streq(name, "do_not_reverse_lookup") && argc == 0) ||
+         (sp_streq(name, "do_not_reverse_lookup=") && argc == 1))) ||
        /* the descriptor controls, at CRuby's arities, unless a splat carries
           the arguments, the advice is not a Symbol, or a class method or an
           attribute writer of that name may be the receiver's */
@@ -441,8 +445,24 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
       else if (sp_streq(name, "tty?") || sp_streq(name, "isatty"))
         buf_printf(b, "sp_File_tty_p(_t%d); })", tio2);
       else if (sp_streq(name, "winsize")) buf_printf(b, "sp_File_winsize(_t%d); })", tio2);
+      else if (is_socket_address(name) && argc == 1) {
+        buf_printf(b, "SP_GC_ROOT(_t%d); sp_sock_addr_rl(_t%d, %d, sp_sock_rl_flag(", tio2, tio2,
+                   sp_streq(name, "peeraddr") ? 1 : 0);
+        emit_boxed(c, argv[0], b);
+        buf_puts(b, ")); })");
+      }
       else if (is_socket_address(name))
         buf_printf(b, "sp_sock_addr(_t%d, %d); })", tio2, sp_streq(name, "peeraddr") ? 1 : 0);
+      else if (sp_streq(name, "do_not_reverse_lookup")) buf_printf(b, "sp_sock_dnrl(_t%d); })", tio2);
+      else if (sp_streq(name, "do_not_reverse_lookup=")) {
+        /* answers its argument; only its truth sets the flag */
+        int ts3 = ++g_tmp;
+        buf_printf(b, "SP_GC_ROOT(_t%d); sp_RbVal _t%d = ", tio2, ts3);
+        emit_boxed(c, argv[0], b);
+        buf_printf(b, "; sp_sock_set_dnrl(_t%d, sp_poly_truthy(_t%d)); ", tio2, ts3);
+        emit_unbox_or_keep(c, repr_of(c, id).as_ty, ts3, b);
+        buf_puts(b, "; })");
+      }
       /* a stat's mode and fields, answered as the TY_IO arms answer them,
          for a stat's handle only */
       else if (sp_streq(name, "mode")) {
@@ -818,6 +838,32 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
     if (sp_feature_required("socket") && argc == 0 &&
         (is_socket_address(name))) {
       buf_printf(b, "sp_sock_addr(%s, %d)", r, sp_streq(name, "peeraddr") ? 1 : 0);
+      free(rb.p); return 1;
+    }
+    /* addr(flag) / peeraddr(flag): true or :hostname looks the host name
+       up, false or :numeric does not, nil follows the socket's flag */
+    if (sp_feature_required("socket") && argc == 1 && is_socket_address(name) &&
+        !call_has_splat_arg(nt, argv, argc)) {
+      int tf = ++g_tmp;
+      buf_printf(b, "({ sp_File *_t%d = %s; SP_GC_ROOT(_t%d); sp_sock_addr_rl(_t%d, %d, sp_sock_rl_flag(",
+                 tf, r, tf, tf, sp_streq(name, "peeraddr") ? 1 : 0);
+      emit_boxed(c, argv[0], b);
+      buf_puts(b, ")); })");
+      free(rb.p); return 1;
+    }
+    /* BasicSocket#do_not_reverse_lookup and its writer, which answers its
+       argument; only its truth sets the flag */
+    if (sp_feature_required("socket") && argc == 0 && sp_streq(name, "do_not_reverse_lookup")) {
+      buf_printf(b, "sp_sock_dnrl(%s)", r);
+      free(rb.p); return 1;
+    }
+    if (sp_feature_required("socket") && argc == 1 && sp_streq(name, "do_not_reverse_lookup=")) {
+      int tf = ++g_tmp, ts2 = ++g_tmp;
+      buf_printf(b, "({ sp_File *_t%d = %s; SP_GC_ROOT(_t%d); sp_RbVal _t%d = ", tf, r, tf, ts2);
+      emit_boxed(c, argv[0], b);
+      buf_printf(b, "; sp_sock_set_dnrl(_t%d, sp_poly_truthy(_t%d)); ", tf, ts2);
+      emit_unbox_or_keep(c, repr_of(c, id).as_ty, ts2, b);
+      buf_puts(b, "; })");
       free(rb.p); return 1;
     }
     /* The non-blocking family. `exception: false` swaps the IO::*Wait*
