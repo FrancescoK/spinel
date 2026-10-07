@@ -5142,7 +5142,10 @@ int desugar_unpack_block(Compiler *c) {
     int base = nt->count;
     int call = nt_new_node(nt, "CallNode"), each = nt_new_node(nt, "CallNode");
     int nil = nt_new_node(nt, "NilNode"), body = nt_new_node(nt, "StatementsNode");
-    if (call < 0 || each < 0 || nil < 0 || body < 0) continue;   /* node-table OOM: leave as-is */
+    /* node-table OOM: leave the call as-is, and drop the nodes made before
+       the failure -- unreferenced, but every later all-node walk would
+       visit them, past the per-node arrays comp_grow_node_arrays sizes */
+    if (call < 0 || each < 0 || nil < 0 || body < 0) { nt->count = base; continue; }
     nt_node_set_ref(nt, call, "receiver", recv);
     nt_node_set_str(nt, call, "name", "unpack");
     nt_node_set_ref(nt, call, "arguments", nt_ref(nt, id, "arguments"));
