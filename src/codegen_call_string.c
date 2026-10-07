@@ -615,9 +615,9 @@ no_gsub_enum:
       int nref = fmt ? parse_named_format(fmt, &rew, names, name_len, 64) : -1;
       if (nref >= 0) {
         int th = ++g_tmp, ta = ++g_tmp;
-        buf_printf(b, "({ sp_RbVal _t%d = ", th); emit_boxed(c, argv[0], b);
-        buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_PolyArray *_t%d = sp_PolyArray_new();"
-                      " SP_GC_ROOT(_t%d); ", th, ta, ta);
+        buf_puts(b, "({ "); th = hold_operand(c, argv[0], TY_POLY, 1, th, 1, " ", b);
+        buf_printf(b, "sp_PolyArray *_t%d = sp_PolyArray_new();"
+                      " SP_GC_ROOT(_t%d); ", ta, ta);
         for (int k = 0; k < nref; k++) {
           char disp[132];  /* "{name}" / "<name>"; the name itself is < 128 */
           memcpy(disp, names[k], (size_t)name_len[k]); disp[name_len[k]] = 0;
@@ -1288,7 +1288,7 @@ int emit_op_poly_case_options(Compiler *c, const BopCtx *x, Buf *b) {
       const char *sfx = argc == 1 ? case_map_suffix(c, argc, argv) : "";
       int tv = ++g_tmp;
       buf_puts(b, "({ ");
-      tv = hold_operand(c, recv, TY_POLY, 0, tv, " ", b);
+      tv = hold_operand(c, recv, TY_POLY, 0, tv, 1, " ", b);
       if (!*sfx) {
         int literals = 1;
         for (int i = 0; i < argc; i++)
@@ -1298,7 +1298,7 @@ int emit_op_poly_case_options(Compiler *c, const BopCtx *x, Buf *b) {
         if (!literals) {
           int first = g_tmp + 1;
           g_tmp += argc;
-          for (int i = 0; i < argc; i++) ta[i] = hold_operand(c, argv[i], TY_POLY, 1, first + i, " ", b);
+          for (int i = 0; i < argc; i++) ta[i] = hold_operand(c, argv[i], TY_POLY, 1, first + i, 1, " ", b);
         }
         buf_printf(b, "if (_t%d.tag == SP_TAG_STR || _t%d.tag == SP_TAG_SYM || sp_poly_is_strbuf(_t%d)) "
                       "sp_case_opts_check(%d, (sp_RbVal[]){", tv, tv, tv, argc);
