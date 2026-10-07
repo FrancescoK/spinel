@@ -112,6 +112,7 @@ module Enumerable
     if block_given?
       __no_false(n, "Integer")
       if n
+        n = __enum_count_int(n)
         raise ArgumentError, "negative size (#{n})" if n < 0
         sort_by { |x| yield x }.first(n)
       else
@@ -147,6 +148,7 @@ module Enumerable
     if block_given?
       __no_false(n, "Integer")
       if n
+        n = __enum_count_int(n)
         raise ArgumentError, "negative size (#{n})" if n < 0
         # descending by key, ties in encounter order: a stable ascending sort
         # of the reversed elements, read backwards

@@ -1,0 +1,12 @@
+[TypeError, "no implicit conversion of String into Integer"]
+[TypeError, "no implicit conversion of String into Integer"]
+"no implicit conversion of String into Integer"
+"no implicit conversion of String into Integer"
+[1, 2]
+[3, 2]
+to_int
+[1, 2]
+to_int
+[3, 2]
+"negative size (-1)"
+"negative size (-1)"

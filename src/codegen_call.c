@@ -4850,6 +4850,14 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
     buf_puts(b, "sp_enum_pairs_new("); emit_boxed(c, argv[0], b); buf_puts(b, ")");
     return 1;
   }
+  /* Enumerable count arguments use the same strict conversion as native counts. */
+  if (recv < 0 && sp_streq(name, "__enum_count_int") && argc == 1) {
+    int t = ++g_tmp;
+    buf_printf(b, "({ sp_RbVal _t%d = ", t);
+    emit_boxed(c, argv[0], b);
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_poly_arg_int_chk(_t%d); })", t, t);
+    return 1;
+  }
   /* ---- Complex / Rational value types ---- */
   /* Kernel#Complex(re[, im]): a Float argument marks its component
      Float-classed so rendering and abs/abs2 keep CRuby's classes. */

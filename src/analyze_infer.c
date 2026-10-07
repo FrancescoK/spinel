@@ -7987,6 +7987,16 @@ int an_push_widens_fresh(Compiler *c, int id) {
   return 0;
 }
 
+/* The receiverless calls the Enumerator desugaring emits, each with one
+   argument: __enum_chain_of([*sources]) is Enumerator::Chain.new,
+   __enum_pairs an Enumerator, __enum_count_int the Integer a count converts to. */
+static int infer_enum_desugar_call(const char *name, int argc, TyKind *out) {
+  if (argc != 1) return 0;
+  if (sp_streq(name, "__enum_chain_of") || sp_streq(name, "__enum_pairs")) { *out = TY_ENUMERATOR; return 1; }
+  if (sp_streq(name, "__enum_count_int")) { *out = TY_INT; return 1; }
+  return 0;
+}
+
 /* obj.methods / public_methods / singleton_methods the compiler lists: on
    a typed user object (an_object_methods_listable) or a builtin value
    (an_value_methods_class) */
@@ -8570,9 +8580,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
       (rt == TY_BOOL || rt == TY_NIL)) return TY_POLY;
   /* __enum_chain(arr): the desugared Enumerable#chain / Enumerator#+ (#2545) */
   if (recv < 0 && sp_streq(name, "__enum_chain") && argc == 1) return TY_ENUMERATOR;
-  /* __enum_chain_of([*sources]): the desugared Enumerator::Chain.new */
-  if (recv < 0 && sp_streq(name, "__enum_chain_of") && argc == 1) return TY_ENUMERATOR;
-  if (recv < 0 && sp_streq(name, "__enum_pairs") && argc == 1) return TY_ENUMERATOR;
+  { TyKind ed; if (recv < 0 && infer_enum_desugar_call(name, argc, &ed)) return ed; }
   /* Dir surface (#2823, #2828, #2830) */
   if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Dir") && (an_builtin_only || !cplan_const_user(c, id, nt_str(nt, recv, "name"), 1))) {
