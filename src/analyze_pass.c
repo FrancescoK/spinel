@@ -4025,6 +4025,85 @@ static int infer_write_multi_assign(Compiler *c, const NodeTable *nt) {
   return changed;
 }
 
+/* A write the pass below may type again: `dst = src` or `dst = src.m(...)`. */
+typedef struct {
+  int val;        /* the write's value node */
+  LocalVar *dst;  /* the local it writes */
+  int dst_ix;     /* dst's index among every scope's locals */
+  int next;       /* the next such write reading the same local, or -1 */
+} ReadWrite;
+
+/* A local's write is typed by its value as the pass reaches it, in node
+   order, and a read of another local answers what that local holds so far
+   this round. A read ahead of the write that widens it -- a later
+   statement of a loop body (`u = b[0]; b = "xy"`), or a multiple
+   assignment's target, which infer_write_multi_assign types after the
+   plain writes (`a, *b = t`) -- saw the narrower type, and the slot it
+   fills kept it: an Integer slot read a String's box as 0, a String
+   Array slot read a String's (a crash). Once every write of the round is
+   in, a write whose value is, or calls on, a local now held boxed is
+   typed again, and its slot widens when the value now is. Only those
+   writes: re-inferring every value would double the pass. The slot is
+   one the round resets, so no change is reported (the stash comparison
+   at the end of the pass is the detector).
+   A slot this widens is read in turn: in `d = c; c = b; b = "xy"` inside
+   a loop, `c = b` widens c only here, after `d = c` was passed, and the
+   round's reset repeats that order, so one scan in node order never
+   reached d. So a widened slot's own readers are queued: each write is
+   listed under the local it reads, and typed when that local widens (or
+   at once if it already has). A slot widens once (a boxed one is not
+   typed again), so a list is drained once and each write is typed at most
+   once: the work stays linear in the writes, whatever their order. */
+static void infer_write_reads_widened(Compiler *c, const NodeTable *nt) {
+  int nw = 0;
+  const int *ws = nt_nodes_of_kind(nt, NK_LocalVariableWriteNode, &nw);
+  if (nw == 0) return;
+  int *base = malloc(sizeof(int) * ((size_t)c->nscopes + 1));
+  if (!base) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  base[0] = 0;
+  for (int s = 0; s < c->nscopes; s++) base[s + 1] = base[s] + c->scopes[s].nlocals;
+  int nl = base[c->nscopes];
+  int *head = malloc(sizeof(int) * (size_t)(nl > 0 ? nl : 1));
+  int *queue = malloc(sizeof(int) * (size_t)nw);
+  ReadWrite *rw = malloc(sizeof *rw * (size_t)nw);
+  if (!head || !queue || !rw) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int i = 0; i < nl; i++) head[i] = -1;
+  int nrw = 0, nq = 0;
+  for (int j = 0; j < nw; j++) {
+    int id = ws[j];
+    int v = nt_ref(nt, id, "value");
+    int r = v;
+    if (r >= 0 && nt_kind(nt, r) == NK_CallNode) r = nt_ref(nt, r, "receiver");
+    if (r < 0 || nt_kind(nt, r) != NK_LocalVariableReadNode) continue;
+    const char *rn = nt_str(nt, r, "name"), *wn = nt_str(nt, id, "name");
+    Scope *rs = comp_scope_of(c, r), *wsc = comp_scope_of(c, id);
+    LocalVar *rl = rn ? scope_local(rs, rn) : NULL;
+    LocalVar *lv = rl && wn ? scope_local(wsc, wn) : NULL;
+    if (!lv || lv == rl || lv->is_param || lv->is_block_param || lv->rbs_seeded || ty_degraded(lv->type))
+      continue;
+    ReadWrite *w = &rw[nrw];
+    w->val = v; w->dst = lv; w->dst_ix = base[wsc - c->scopes] + (int)(lv - wsc->locals);
+    w->next = -1;
+    if (ty_degraded(rl->type)) queue[nq++] = nrw;
+    else {
+      int ri = base[rs - c->scopes] + (int)(rl - rs->locals);
+      w->next = head[ri]; head[ri] = nrw;
+    }
+    nrw++;
+  }
+  for (int q = 0; q < nq; q++) {
+    ReadWrite *w = &rw[queue[q]];
+    if (ty_degraded(w->dst->type)) continue;
+    TyKind t = infer_type(c, w->val);
+    if (!ty_degraded(t)) continue;
+    slot_take(c, w->dst, t, w->val);
+    if (!ty_degraded(w->dst->type)) continue;
+    for (int k = head[w->dst_ix]; k >= 0; k = rw[k].next) queue[nq++] = k;
+    head[w->dst_ix] = -1;
+  }
+  free(base); free(head); free(queue); free(rw);
+}
+
 int infer_write_types(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -4233,6 +4312,7 @@ int infer_write_types(Compiler *c) {
   }
 
   changed |= infer_write_multi_assign(c, nt);
+  infer_write_reads_widened(c, nt);
 
   changed |= infer_case_pattern_locals(c);
 
