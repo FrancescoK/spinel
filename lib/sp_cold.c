@@ -1686,6 +1686,42 @@ else {                                        /* macOS: "<idx> <image> <addr> <s
   return strdup(out);
 }
 
+#if defined(__linux__) && defined(HAVE_EXECINFO_H)
+#include <dlfcn.h>
+#include <elf.h>
+#include <link.h>
+/* The source line of each return address, from the DWARF the debug build
+   carries: addr2line reads the program's own file, and the generated C's #line
+   directives make the line one of the .rb source. Run once per backtrace, for
+   every frame, only under --debug; a build without addr2line, or an address
+   without a line, leaves the frame without one (lines[i] stays 0). A return
+   address is one past the call, so the call's own line is asked at addr - 1. */
+static void sp_bt_lines(void **buf, int n, int *lines) {
+  char exe[1024];
+  ssize_t el = readlink("/proc/self/exe", exe, sizeof exe - 1);
+  if (el <= 0 || strchr(exe, '\'')) return;
+  exe[el] = 0;
+  Dl_info di;
+  if (!dladdr(buf[0], &di) || !di.dli_fbase) return;
+  const ElfW(Ehdr) *eh = (const ElfW(Ehdr) *)di.dli_fbase;
+  uintptr_t bias = eh->e_type == ET_DYN ? (uintptr_t)di.dli_fbase : 0;
+  char cmd[4096];
+  int o = snprintf(cmd, sizeof cmd, "addr2line -e '%s'", exe);
+  for (int i = 0; i < n && o < (int)sizeof cmd - 32; i++)
+    o += snprintf(cmd + o, sizeof cmd - (size_t)o, " 0x%lx", (unsigned long)((uintptr_t)buf[i] - 1 - bias));
+  FILE *p = popen(cmd, "r");
+  if (!p) return;
+  char line[2048];
+  for (int i = 0; i < n && fgets(line, sizeof line, p); i++) {
+    char *c = strrchr(line, ':');
+    if (c && c[1] >= '1' && c[1] <= '9') lines[i] = atoi(c + 1);
+  }
+  pclose(p);
+}
+#else
+static void sp_bt_lines(void **buf, int n, int *lines) { (void)buf; (void)n; (void)lines; }
+#endif
+
 sp_StrArray *sp_bt_format(void **buf, int n) {
   sp_StrArray *a = sp_StrArray_new();
   SP_GC_ROOT(a);
@@ -1693,6 +1729,8 @@ sp_StrArray *sp_bt_format(void **buf, int n) {
   char **syms = backtrace_symbols(buf, n);
   if (!syms) return a;
   const char *src = (sp_bt_srcfile && sp_bt_srcfile[0]) ? sp_bt_srcfile : "(spinel)";
+  int *lines = (int *)calloc((size_t)n, sizeof *lines);
+  if (lines) sp_bt_lines(buf, n, lines);
   for (int i = 0; i < n; i++) {
     char raw[256]; raw[0] = 0;
     char *name = (char *)sp_bt_symbol(syms[i], raw, sizeof raw);  /* always strdup'd; free after use */
@@ -1702,9 +1740,11 @@ sp_StrArray *sp_bt_format(void **buf, int n) {
     if (sp_bt_files)
       for (const char *const *f = sp_bt_files; f[0]; f += 2)
         if (strcmp(f[0], raw) == 0) { file = f[1]; break; }
-    sp_StrArray_push(a, sp_sprintf("%s:in `%s'", file, name));
+    if (lines && lines[i] > 0) sp_StrArray_push(a, sp_sprintf("%s:%d:in `%s'", file, lines[i], name));
+    else sp_StrArray_push(a, sp_sprintf("%s:in `%s'", file, name));
     free(name);
   }
+  free(lines);
   free(syms);
   return a;
 }
