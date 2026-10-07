@@ -92,9 +92,10 @@ void analyze_program(Compiler *c);
    isn't the start of a non-capturing/extension group '(?...'. scan returns
    nested arrays for capturing patterns, which the str_array path can't model. */
 int an_re_has_captures(const char *src);
-/* --share-strings: can method mi's last statement answer nil (a nil, or a
-   conditional with an arm that does)? The deep-return pickup of a call to
-   it then answers the call's nil as nil (an_tail_is_shared_handle). */
+/* --share-strings: can method mi's last statement answer nil (a nil, or
+   a conditional with an arm that is nil or missing)? The deep-return
+   pickup of a call to it then answers the call's nil as nil
+   (an_tail_is_shared_handle). */
 int an_tail_answers_nil(Compiler *c, int mi);
 int an_send_name_is_computed(Compiler *c, int arg);
 /* Is scope si an iterator synth_struct_each generated, not a def? */

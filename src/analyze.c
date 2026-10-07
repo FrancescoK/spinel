@@ -17497,72 +17497,68 @@ static void an_returns_by_scope(Compiler *c, int **start, int **list) {
 }
 /* --share-strings: does statement list `st` end in nil, or in a tail
    an_tail_is_shared_handle accepts? */
-static int an_tail_is_shared_handle(Compiler *c, int node, int nil_ok, int *reads);
-static int an_stmts_tail_shared(Compiler *c, int st, int nil_ok, int *reads) {
+/* What a return tail answers, counted by an_tail_is_shared_handle: shared
+   slot reads and nils. */
+typedef struct { int reads, nils; } TailCount;
+static int an_tail_is_shared_handle(Compiler *c, int node, int nil_ok, TailCount *n);
+static int an_stmts_tail_shared(Compiler *c, int st, int nil_ok, TailCount *tc) {
   int n = 0; const int *b = st >= 0 && nt_kind(c->nt, st) == NK_StatementsNode ? nt_arr(c->nt, st, "body", &n) : NULL;
-  if (st < 0) return nil_ok;
-  return n > 0 && an_tail_is_shared_handle(c, b[n - 1], nil_ok, reads);
+  if (st < 0) { tc->nils += nil_ok; return nil_ok; }
+  return n > 0 && an_tail_is_shared_handle(c, b[n - 1], nil_ok, tc);
 }
 /* A method tail that publishes the shared handle it answers, for the
    deep-return pickup (an_returns_shared_handles): a shared slot's read
-   (an_arg_is_shared_handle, counted in *reads), and under --share-strings
-   a conditional each of whose arms ends in one (`f ? x : y`, an elsif
-   chain). With nil_ok (the method's last statement), nil too, and an arm
-   that answers it (`x if f`): nil publishes nothing, and the pickup reads
-   the call's nil as nil whatever an earlier read published
+   (an_arg_is_shared_handle, counted in tc->reads), and under
+   --share-strings a conditional each of whose arms ends in one (`f ? x :
+   y`, an elsif chain). With nil_ok (the method's last statement), nil too,
+   and an arm that answers it, written or missing (`x if f`, `if f; else;
+   x; end`), counted in tc->nils: nil publishes nothing, and the pickup
+   reads the call's nil as nil whatever an earlier read published
    (an_tail_answers_nil). */
-static int an_tail_is_shared_handle(Compiler *c, int node, int nil_ok, int *reads) {
+static int an_tail_is_shared_handle(Compiler *c, int node, int nil_ok, TailCount *tc) {
   const NodeTable *nt = c->nt;
   NodeKind k = node >= 0 ? nt_kind(nt, node) : NK_NONE;
-  if (c->share_strings && k == NK_NilNode) return nil_ok;
-  if (c->share_strings && k == NK_ParenthesesNode) return an_stmts_tail_shared(c, nt_ref(nt, node, "body"), nil_ok, reads);
+  if (c->share_strings && k == NK_NilNode) { tc->nils += nil_ok; return nil_ok; }
+  if (c->share_strings && k == NK_ParenthesesNode) return an_stmts_tail_shared(c, nt_ref(nt, node, "body"), nil_ok, tc);
   if (!c->share_strings || (k != NK_IfNode && k != NK_UnlessNode)) {
     int ok = an_arg_is_shared_handle(c, node);
-    *reads += ok;
+    tc->reads += ok;
     return ok;
   }
   int el = nt_ref(nt, node, k == NK_IfNode ? "subsequent" : "else_clause");
-  if (!an_stmts_tail_shared(c, nt_ref(nt, node, "statements"), nil_ok, reads)) return 0;
-  if (el < 0) return nil_ok;
-  return nt_kind(nt, el) == NK_ElseNode ? an_stmts_tail_shared(c, nt_ref(nt, el, "statements"), nil_ok, reads)
-                                        : an_tail_is_shared_handle(c, el, nil_ok, reads);
+  if (!an_stmts_tail_shared(c, nt_ref(nt, node, "statements"), nil_ok, tc)) return 0;
+  if (el < 0) { tc->nils += nil_ok; return nil_ok; }
+  return nt_kind(nt, el) == NK_ElseNode ? an_stmts_tail_shared(c, nt_ref(nt, el, "statements"), nil_ok, tc)
+                                        : an_tail_is_shared_handle(c, el, nil_ok, tc);
 }
-/* Can tail `node` answer nil: is it nil, or a conditional with an arm that
-   does, or with no else? */
-static int an_tail_nil(const NodeTable *nt, int node) {
-  NodeKind k = node >= 0 ? nt_kind(nt, node) : NK_NONE;
-  if (k == NK_NilNode) return 1;
-  if (k == NK_ParenthesesNode || k == NK_StatementsNode || k == NK_ElseNode) {
-    int st = k == NK_ParenthesesNode ? nt_ref(nt, node, "body") : k == NK_ElseNode ? nt_ref(nt, node, "statements") : node;
-    int n = 0; const int *b = st >= 0 && nt_kind(nt, st) == NK_StatementsNode ? nt_arr(nt, st, "body", &n) : NULL;
-    return st < 0 || (n > 0 && an_tail_nil(nt, b[n - 1]));
-  }
-  if (k != NK_IfNode && k != NK_UnlessNode) return 0;
-  int el = nt_ref(nt, node, k == NK_IfNode ? "subsequent" : "else_clause");
-  return el < 0 || an_tail_nil(nt, nt_ref(nt, node, "statements")) || an_tail_nil(nt, el);
-}
+/* Can method mi answer nil through its last statement? The same walk that
+   admitted the tail for the pickup counts its nils, so the two cannot
+   disagree (asking a conditional's arms apart missed an empty one); a tail
+   it does not admit answers yes. */
 int an_tail_answers_nil(Compiler *c, int mi) {
-  return an_tail_nil(c->nt, scope_body_last(c, mi));
+  TailCount tc = { 0, 0 };
+  return !an_tail_is_shared_handle(c, scope_body_last(c, mi), 1, &tc) || tc.nils > 0;
 }
 /* Does every return tail of method mi3 (the implicit one and each `return`)
    read a shared handle? *saw: it has one. Under --share-strings the last
    statement may answer nil, but some tail must read a handle. */
 static int an_returns_shared_handles(Compiler *c, int mi3, const int *ret_start, const int *ret_list, int *saw) {
   const NodeTable *nt = c->nt;
-  int ok = 1, reads = 0;
+  int ok = 1;
+  TailCount tc = { 0, 0 };
   int lastT = scope_body_last(c, mi3);
   if (lastT >= 0) {
     *saw = 1;
-    if (!an_tail_is_shared_handle(c, lastT, 1, &reads)) ok = 0;
+    if (!an_tail_is_shared_handle(c, lastT, 1, &tc)) ok = 0;
   }
   for (int r = ret_start[mi3]; ok && r < ret_start[mi3 + 1]; r++) {
     int u = ret_list[r];
     int ra = nt_ref(nt, u, "arguments");
     int rn2 = 0; const int *rv2 = ra >= 0 ? nt_arr(nt, ra, "arguments", &rn2) : NULL;
     *saw = 1;
-    if (rn2 != 1 || !an_tail_is_shared_handle(c, rv2[0], 0, &reads)) ok = 0;
+    if (rn2 != 1 || !an_tail_is_shared_handle(c, rv2[0], 0, &tc)) ok = 0;
   }
-  if (c->share_strings && *saw && !reads) ok = 0;
+  if (c->share_strings && *saw && !tc.reads) ok = 0;
   return ok;
 }
 /* --share-strings: a String mutator whose receiver is a receiverless call

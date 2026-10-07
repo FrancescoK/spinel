@@ -111,3 +111,55 @@ def nested_ternary
   p nested(e, e, false, true)
 end
 nested_ternary
+
+# an empty arm answers nil, even after the method published the handle
+def empty_then(s, flag)
+  print s, "\n"
+  if flag
+  else
+    s
+  end
+end
+def empty_then_arm
+  m = +"t"
+  r = empty_then(m, false)
+  r << "!"
+  p m
+  z = empty_then(m, true)
+  p z
+end
+empty_then_arm
+
+def empty_else(s, flag)
+  print s, "\n"
+  if flag
+    s
+  else
+  end
+end
+def empty_else_arm
+  m = +"l"
+  r = empty_else(m, true)
+  r << "!"
+  p m
+  z = empty_else(m, false)
+  p z
+end
+empty_else_arm
+
+def unless_empty(s, flag)
+  print s, "\n"
+  unless flag
+  else
+    s
+  end
+end
+def unless_empty_arm
+  m = +"n"
+  r = unless_empty(m, true)
+  r << "!"
+  p m
+  z = unless_empty(m, false)
+  p z
+end
+unless_empty_arm
