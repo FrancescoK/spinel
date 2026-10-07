@@ -9580,7 +9580,10 @@ static int slot_takes_subclass(Compiler *c, TyKind slot, TyKind val) {
 }
 
 void emit_boxed_writer_arms(Compiler *c, const char *base, const char *nm,
-                            const char *objp, const char *src, TyKind at, Buf *b) {
+                            const char *objp, const char *src, TyKind at, int vnode, Buf *b) {
+  /* --share-strings: a String a shared boxed slot takes is its handle, as
+     the typed store boxes it (emit_boxed's lift, share_lift_poly_ivar_stores) */
+  int lift = vnode >= 0 && repr_share_rule(c) && c->poly_strbuf_lift[vnode] && at == TY_STRING;
   for (int k = 0; k < c->nclasses; k++) {
     int wmdc = -1, kmi = -1;
     int kind = comp_resolve_member(c, k, base, 1, &wmdc, &kmi);
@@ -9642,7 +9645,11 @@ void emit_boxed_writer_arms(Compiler *c, const char *base, const char *nm,
       emit_frozen_obj_guard(c, k, opn, b);
       free(opn); }
     buf_printf(b, "((sp_%s *)%s)->iv_%s = ", c->classes[k].c_name, objp, iv_c(base));
-    if (ivt == TY_POLY && at != TY_POLY) emit_boxed_text(c, at, src, b);
+    if (ivt == TY_POLY && at != TY_POLY) {
+      if (lift) buf_puts(b, "sp_poly_strbuf_lift(");
+      emit_boxed_text(c, at, src, b);
+      if (lift) buf_puts(b, ")");
+    }
     else if (at == TY_POLY && ivt != TY_POLY) emit_unbox_text(c, ivt, src, b);
     else { emit_obj_upcast_prefix(c, ivt, at, b); buf_puts(b, src); }
     buf_puts(b, "; break;");
@@ -10101,7 +10108,7 @@ static int masgn_store(Compiler *c, int id, int tgt, const char *val, TyKind vt,
       buf_printf(b, "; switch (_t%d.tag == SP_TAG_OBJ ? _t%d.cls_id : 0x7fffffff) {", tv, tv);
       char src[32]; snprintf(src, sizeof src, "_t%d", tval);
       char objp[32]; snprintf(objp, sizeof objp, "_t%d.v.p", tv);
-      emit_boxed_writer_arms(c, base, nm, objp, src, at, b);
+      emit_boxed_writer_arms(c, base, nm, objp, src, at, -1, b);
       buf_printf(b, " default: sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d)); break;", nm, tv);
       buf_puts(b, " } }\n");
       return 1;
@@ -11786,7 +11793,7 @@ static int emit_call_stmt(Compiler *c, int id, Buf *b, int indent, const NodeTab
               buf_printf(b, " switch (_t%d->cls_id) {", tp);
               char src[32]; snprintf(src, sizeof src, "_t%d", tval);
               char objp[32]; snprintf(objp, sizeof objp, "_t%d", tp);
-              emit_boxed_writer_arms(c, base, nm, objp, src, at, b);
+              emit_boxed_writer_arms(c, base, nm, objp, src, at, argv[0], b);
               buf_printf(b, " default: sp_raise_nomethod(sp_nomethod_msg(\"%s\", "
                             "sp_box_obj((void *)_t%d, _t%d->cls_id))); break;", nm, tp, tp);
               buf_puts(b, " } }\n");
@@ -11834,7 +11841,7 @@ else {
             buf_printf(b, " switch (_t%d.tag == SP_TAG_OBJ ? _t%d.cls_id : 0x7fffffff) {", tv, tv);
             char src[32]; snprintf(src, sizeof src, "_t%d", tval);
             char objp[32]; snprintf(objp, sizeof objp, "_t%d.v.p", tv);
-            emit_boxed_writer_arms(c, base, nm, objp, src, at_eff, b);
+            emit_boxed_writer_arms(c, base, nm, objp, src, at_eff, argv[0], b);
             buf_printf(b, " default: sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d)); break;", nm, tv);
             buf_puts(b, " } }\n");
             return 1;
