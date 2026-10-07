@@ -1,0 +1,7 @@
+"HELLO"
+undefined method 'upcase!' for nil
+["ab", "ab", true]
+["ab!c", "ab!c", true]
+["vab!c", "ab!cd", "ab!cd"]
+"AB!CD"
+nil
