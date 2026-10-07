@@ -3597,6 +3597,7 @@ static int infer_handle_call(Compiler *c, int id, const NodeTable *nt, const cha
     if (sp_streq(name, "write_nonblock")) { *out = TY_INT; return 1; }
     if (sp_streq(name, "read_nonblock")) { *out = TY_STRING; return 1; }
     if (sp_streq(name, "winsize") && sp_feature_enabled("io/console")) { *out = TY_INT_ARRAY; return 1; }
+    if (sp_streq(name, "winsize=") && argc == 1 && sp_feature_enabled("io/console")) { *out = TY_INT_ARRAY; return 1; }
     if (sp_streq(name, "each_line") || sp_streq(name, "each") ||
         sp_streq(name, "each_char") || sp_streq(name, "each_byte") ||
         sp_streq(name, "each_codepoint")) {

@@ -1448,6 +1448,16 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
     if (sp_streq(name, "winsize") && sp_feature_enabled("io/console")) {
       buf_printf(b, "sp_File_winsize(%s)", r); free(rb.p); return 1;
     }
+    /* IO#winsize= [rows, cols(, xpixel, ypixel)]: an Integer Array, the shape
+       every caller writes. Any other operand is left to the refusal below,
+       rather than guessed into a size. */
+    if (sp_streq(name, "winsize=") && argc == 1 && sp_feature_enabled("io/console") &&
+        comp_ntype(c, argv[0]) == TY_INT_ARRAY) {
+      Buf ab = {0};
+      emit_expr(c, argv[0], &ab);
+      buf_printf(b, "sp_File_set_winsize(%s, %s)", r, ab.p ? ab.p : "NULL");
+      free(ab.p); free(rb.p); return 1;
+    }
     if (is_text_print(name)) {
       /* emit as a statement-like expression: print each arg, return nil.
          Non-string args are stringified via sp_poly_to_s (sp_File_write wants
