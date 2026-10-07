@@ -8491,6 +8491,23 @@ const char *obj_str_cname(Compiler *c, int cid, int want_inspect) {
   return NULL;
 }
 
+/* The method part of that C function's name: the resolved method's own name,
+   which for an alias (`alias inspect readable_inspect`) is the target's, or
+   the generated struct/data method's. Callers spell the function
+   sp_<obj_str_cname>_<obj_str_mname>. */
+const char *obj_str_mname(Compiler *c, int cid, int want_inspect) {
+  const char *nm = want_inspect ? "inspect" : "to_s";
+  if (cid < 0 || cid >= c->nclasses) return nm;
+  int mi = comp_method_in_chain(c, cid, nm, NULL);
+  if (mi < 0 || !c->scopes[mi].name) return nm;
+  /* mc answers in one static buffer: keep a few results apart, a caller can
+     hold two at once */
+  static char ring[4][256]; static int ri;
+  char *r = ring[ri++ & 3];
+  snprintf(r, sizeof ring[0], "%s", mc(c->scopes[mi].name));
+  return r;
+}
+
 /* True when the resolved user to_s/inspect returns a boxed sp_RbVal (its
    value flows through more than one branch type, e.g. a String on one arm
    and nil on another). Callers that consume the result as a `const char *`
@@ -9037,8 +9054,9 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
         const char *mcn = ty_is_object(mt) ? obj_str_cname(c, ty_object_class(mt), 1) : NULL;
         if (mcn) {
           /* a struct/data (or user-#inspect) member recurses into its own inspect */
-          buf_printf(b, "  sp_String_append(s, self->iv_%s ? sp_%s_inspect((sp_%s *)self->iv_%s) : \"nil\");\n",
-                     iv_c(ci->ivars[i] + 1), mcn, mcn, iv_c(ci->ivars[i] + 1));
+          char ivn[128]; snprintf(ivn, sizeof ivn, "%s", iv_c(ci->ivars[i] + 1));
+          buf_printf(b, "  sp_String_append(s, self->iv_%s ? sp_%s_%s((sp_%s *)self->iv_%s) : \"nil\");\n",
+                     ivn, mcn, obj_str_mname(c, ty_object_class(mt), 1), mcn, ivn);
         }
         else {
           Buf ivb; memset(&ivb, 0, sizeof ivb); buf_printf(&ivb, "self->iv_%s", iv_c(ci->ivars[i] + 1));
