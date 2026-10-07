@@ -601,6 +601,7 @@ int is_descendant(Compiler *c, int k, int anc);
 int dispatch_impl_count(Compiler *c, int cid, const char *name);
 /* Defined in codegen_util.c; the proc-form clone of scope `s`, or -1. */
 int scope_proc_form_of(Compiler *c, int s);
+int ctor_site_on_cycle(Compiler *c, int id, int initm);
 /* Defined in codegen_fold.c; the parameter a keyword hash binds as one more
    positional argument after `pos_argc` others, or -1. */
 int kwh_arg_param(Compiler *c, Scope *m, int pos_argc);

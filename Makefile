@@ -1853,7 +1853,8 @@ GC_STRESS_TESTS := test/gc_root_frame_slots.rb \
                    test/gc_root_gathered_handle_param.rb \
                    test/dispatch_arm_roots_operands.rb \
                    test/exception_message_nul.rb \
-                   test/string_aset_value_runs_first.rb
+                   test/string_aset_value_runs_first.rb \
+                   test/yielding_initialize_new_own_class.rb
 gc-stress-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SPINEL_TIMEOUT)
 	@tmp=$$(mktemp -d /tmp/spinel-gcstress.XXXXXX); ok=1; \
 	if $(CC) -O1 -w -Ilib test/gc-stress/lost.c $(SP_RT_LIB) $(LDFLAGS) -lm -o "$$tmp/lost" 2>"$$tmp/cc.err"; then \
