@@ -748,7 +748,8 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
         for (int ai = 0; ai < fixed_argc && ai < argc; ai++) {
           if (ai) buf_puts(&call_buf, ", ");
           const char *spec = c->ffi_funcs[fi].args[ai];
-          TyKind at = comp_ntype(c, argv[ai]);
+          Repr ar = repr_of(c, argv[ai]);
+          TyKind at = ar.as_ty;
           int cbidx = ffi_find_callback(c, rcmod, spec);
           if (cbidx >= 0) { emit_ffi_callback_arg(c, cbidx, argv[ai], &call_buf); continue; }
           size_t arg_at = call_buf.len;   /* the converted argument, for the temp form */
@@ -827,21 +828,21 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
           else if (sp_streq(spec, "int_array")) {
             /* Hand off element data, never the array struct pointer (which
                would pun the header / read boxed sp_RbVal tags as ints). */
-            if (at == TY_INT_ARRAY)        { buf_puts(&call_buf, "sp_IntArray_ffi_data(");   emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, ")"); }
-            else if (at == TY_POLY_ARRAY)  { buf_puts(&call_buf, "sp_PolyArray_ffi_int_data("); emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, ")"); }
+            if (ar.elem == TY_INT)        { buf_puts(&call_buf, "sp_IntArray_ffi_data(");   emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, ")"); }
+            else if (ar.elem == TY_POLY)  { buf_puts(&call_buf, "sp_PolyArray_ffi_int_data("); emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, ")"); }
             else if (at == TY_POLY)        { buf_puts(&call_buf, "sp_ffi_int_array_data("); emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, ")"); }
             else                           { buf_puts(&call_buf, "((const int64_t *)("); emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, "))"); }
           }
           else if (sp_streq(spec, "float_array")) {
-            if (at == TY_FLOAT_ARRAY)      { buf_puts(&call_buf, "sp_FloatArray_ffi_data(");  emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, ")"); }
-            else if (at == TY_POLY_ARRAY)  { buf_puts(&call_buf, "sp_PolyArray_ffi_float_data("); emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, ")"); }
+            if (ar.elem == TY_FLOAT)      { buf_puts(&call_buf, "sp_FloatArray_ffi_data(");  emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, ")"); }
+            else if (ar.elem == TY_POLY)  { buf_puts(&call_buf, "sp_PolyArray_ffi_float_data("); emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, ")"); }
             else if (at == TY_POLY)        { buf_puts(&call_buf, "sp_ffi_float_array_data("); emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, ")"); }
             else                           { buf_puts(&call_buf, "((const double *)("); emit_expr(c, argv[ai], &call_buf); buf_puts(&call_buf, "))"); }
           }
           else {
             /* integer-like: int, uint32, size_t, long, etc. A nil raises
                TypeError, as the ffi gem's NUM2INT does. */
-            if (at != TY_BIGINT) {
+            if (!ar.big) {
               emit_ffi_num_arg(c, argv[ai], at, spec, 0, &call_buf);
             }
             else {
@@ -1193,7 +1194,7 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
              widened to Bignum) converts into it, through a temp: the
              assignment's value is still the right-hand side as it came */
           if (argc >= 1 && _aivt != TY_POLY && _aivt != TY_UNKNOWN &&
-              comp_ntype(c, argv[0]) != TY_UNKNOWN &&
+              !repr_of(c, argv[0]).untyped &&
               !store_fits(c, store_value_kind(c, argv[0]), _aivt)) {
             emit_attr_writer_converted(c, argv[0], _aivt, _atmp, _abase, b);
             return 1;
