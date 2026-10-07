@@ -3519,12 +3519,32 @@ static int sh_blocks_fresh(Compiler *c, int mi, int depth) {
   return ok;
 }
 
+/* Is arm a of a conditional (its statements, an else or an elsif) a new
+   String or nil, or does it leave no value (none, or empty)? */
+static int sh_arm_fresh(Compiler *c, int a, int depth) {
+  const NodeTable *nt = c->nt;
+  a = an_unparen(nt, a);
+  if (a < 0) return 1;
+  switch (nt_kind(nt, a)) {
+  case NK_NilNode: return 1;
+  case NK_ElseNode: return sh_arm_fresh(c, nt_ref(nt, a, "statements"), depth);
+  case NK_StatementsNode: {
+    int n = 0; const int *bb = nt_arr(nt, a, "body", &n);
+    return n == 0 || sh_arm_fresh(c, bb[n - 1], depth);
+  }
+  default: return share_value_fresh(c, a, depth);
+  }
+}
 int share_value_fresh(Compiler *c, int n, int depth) {
   const NodeTable *nt = c->nt;
   n = an_unparen(nt, n);
   if (n < 0 || depth > 8) return 0;
   NodeKind k = nt_kind(nt, n);
   if (k == NK_StringNode || k == NK_InterpolatedStringNode) return 1;
+  /* a conditional each of whose arms is one, or nil */
+  if (k == NK_IfNode || k == NK_UnlessNode)
+    return sh_arm_fresh(c, nt_ref(nt, n, "statements"), depth + 1) &&
+           sh_arm_fresh(c, nt_ref(nt, n, k == NK_IfNode ? "subsequent" : "else_clause"), depth + 1);
   /* a call the walk found answers no String any name holds (a share row's
      new or frozen String) */
   if (k == NK_CallNode && c->share && n < c->share->nnodes && c->share->nval[n] == -1) return 1;
@@ -3534,6 +3554,16 @@ int share_value_fresh(Compiler *c, int n, int depth) {
   }
   if (k != NK_CallNode) return 0;
   if (share_call_fresh(c, n)) return 1;
+  /* ENV's [] answers a new String each read; to_s, to_str and itself
+     answer a new String receiver itself */
+  int rcv = nt_ref(nt, n, "receiver");
+  const char *cn = nt_str(nt, n, "name");
+  if (cn && rcv >= 0 && nt_ref(nt, n, "block") < 0 && !sh_has_targets(c, n)) {
+    if (nt_kind(nt, rcv) == NK_ConstantReadNode && is_env_const(nt_str(nt, rcv, "name")) && is_aref_name(cn))
+      return 1;
+    if (is_receiver_conversion(cn) && call_plain_argc(c, n) == 0)
+      return share_value_fresh(c, rcv, depth + 1);
+  }
   /* a call of a lambda a local holds and only calls, whose value (with no
      next, break or return) is a new String */
   const ShareFacts *F = c->share;
