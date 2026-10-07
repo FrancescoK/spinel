@@ -8882,15 +8882,16 @@ static int emit_struct_recv_call(Compiler *c, int id, Buf *b, const NodeTable *n
     { *out = 1; return 1; }
   }
   /* CRuby's Data defines no #[] either: a member is read by name only,
-     and indexing is a NoMethodError -- not Struct's member access */
-  if (sp_streq(name, "[]") && sc->is_data) {
+     and indexing is a NoMethodError -- not Struct's member access. Nor
+     #[]= (a Data is frozen): the Struct's store wrote the member. */
+  if ((sp_streq(name, "[]") || (sp_streq(name, "[]=") && argc == 2)) && sc->is_data) {
     TyKind dar = repr_of(c, id).as_ty;
     buf_puts(b, "({ (void)("); emit_expr(c, recv, b); buf_puts(b, "); ");
     for (int da = 0; da < argc; da++) {
       buf_puts(b, "(void)("); emit_boxed(c, argv[da], b); buf_puts(b, "); ");
     }
-    buf_printf(b, "sp_raise_nomethod(sp_nomethod_msg(\"[]\", sp_box_obj((void *)0, %d))); %s; })",
-               ty_object_class(rt), raise_tail_value_c(c, dar));
+    buf_printf(b, "sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_obj((void *)0, %d))); %s; })",
+               name, ty_object_class(rt), raise_tail_value_c(c, dar));
     { *out = 1; return 1; }
   }
   /* a Struct's [] / dig / deconstruct_keys validate like CRuby: a missing
