@@ -8029,24 +8029,27 @@ static int infer_struct_aset_call(Compiler *c, int id, NilWrites *writes, Struct
     ClassInfo *ci = &c->classes[k];
     for (int m = lo; m < hi; m++) {
       if (class_ivar_pinned(ci, ci->ivars[m])) continue;
-      /* A boxed String member holds a copy of what its construction and
-         writers store, which loses the changes the String's other names
-         make (`S.new(s)` beside `s << x`, `m.x << y`), with or without
-         --share-strings, and none of these stores is proven to reach it: a
-         box may hold another value, a key no literal names another member,
-         and either may never run. So a String member keeps its type: a
-         value that does not fit it is refused where the store runs, a
-         TypeError (emit_struct_member_value), and a shared String's handle
-         is stored as the handle a shared member holds
-         (share_struct_aset_handles). Any other member carries no identity a
-         box loses, so it takes what the store may put there. */
+      /* Without --share-strings a boxed String member holds a copy of what
+         its construction and writers store, which loses the changes the
+         String's other names make (`S.new(s)` beside `s << x`, `m.x << y`),
+         and none of these stores is proven to reach it: a box may hold
+         another value, a key no literal names another member, and either
+         may never run. So a String member keeps its type there: a value
+         that does not fit it is refused where the store runs, a TypeError
+         (emit_struct_member_value). Under the flag a boxed member the rule
+         shares holds each String stored into it as its handle
+         (share_lift_poly_ivar_stores), so it boxes. Any other member
+         carries no identity a box loses, so it takes what the store may
+         put there. */
       TyKind mt = ci->ivar_types[m];
-      if (mt == TY_STRING || mt == TY_STRBUF) continue;
+      if ((mt == TY_STRING || mt == TY_STRBUF) && !c->share_strings) continue;
       /* Through a box the analysis cannot bound, the store may be no
          Struct's at all (an Array's, a Hash's): it types only a member of
-         an immediate kind, which a box holds as it is, so the reads of a
-         member holding a container keep their type. */
-      if (unknown && mt != TY_INT && mt != TY_FLOAT && mt != TY_BOOL && mt != TY_SYMBOL && mt != TY_NIL) continue;
+         an immediate kind, which a box holds as it is, or under the flag a
+         String one, whose box holds the handle; the reads of a member
+         holding a container keep their type. */
+      if (unknown && mt != TY_INT && mt != TY_FLOAT && mt != TY_BOOL && mt != TY_SYMBOL && mt != TY_NIL &&
+          !(c->share_strings && (mt == TY_STRING || mt == TY_STRBUF))) continue;
       if (vt == TY_NIL) { nil_write_note(writes, k, ci->ivars[m]); continue; }
       TyKind merged = ty_unify(ci->ivar_types[m], empty_container_write(c, v, vt, ci->ivar_types[m]));
       if (merged != ci->ivar_types[m]) { ci->ivar_types[m] = merged; changed = 1; }
