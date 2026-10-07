@@ -1187,4 +1187,27 @@ grep -q "SP_PTHREAD" build/pack/plainpack/Makefile && fail "pack: an unthreaded 
   fail "pack: an unthreaded pack did not build on a target without pthread"
 expect "an unthreaded pack runs on a target without pthread" "plain 6" "$( cd build/pack/plainpack && ./plainpack 2>&1 )"
 
+# --- `spin build` (which always passes --require-gate) does not refuse a
+# `Kernel.require` written in the RUBY_ENGINE branch spinel never takes. The
+# textual require resolver has treated `Kernel.require`/`::Kernel.require` as
+# the bare require since 0c0f61fff, but the dead-branch require skip only
+# matched the literal bare form, so under the gate a require that never runs
+# was fetched and refused as missing (spinel-sqlite v0.1.0's CRuby backend
+# writes exactly this, following docs/require.md's own advice). ----------------
+cd "$WORK"
+"$SPIN" new reqgate >/dev/null || fail "reqgate: new reqgate"
+cd reqgate
+cat > bin/reqgate.rb <<'REQGATEEOF'
+if RUBY_ENGINE == "spinel"
+  puts "spinel"
+else
+  gem "sqlite3"
+  Kernel.require "sqlite3"
+  puts "cruby"
+end
+REQGATEEOF
+"$SPIN" build >/dev/null 2>&1 ||
+  fail "reqgate: spin build refused a Kernel.require in a dead RUBY_ENGINE branch"
+expect "reqgate: the dead Kernel.require's branch never runs" "spinel" "$("$SPIN" run 2>&1 | tail -1)"
+
 echo "spin-e2e: ALL GREEN"
