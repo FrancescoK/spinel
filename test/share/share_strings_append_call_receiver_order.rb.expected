@@ -1,0 +1,21 @@
+recv
+arg a
+recv
+arg b
+recv
+arg c
+arg d
+recv
+arg e
+arg f
+recv
+num 33
+recv
+arg g
+"sabcdef!gh"
+grecv
+arg x
+grecv
+arg y
+arg z
+"gxyz"
