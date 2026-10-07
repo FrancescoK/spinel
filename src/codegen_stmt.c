@@ -1292,7 +1292,7 @@ static void emit_poly_array_from(Compiler *c, int v, Buf *b) {
 
 static int str_append_chain_base(Compiler *c, int id);
 static int str_alias_chain_base(Compiler *c, int id);
-static int strbuf_cond_has_handle_leaf(Compiler *c, int v, int depth);
+int strbuf_cond_has_handle_leaf(Compiler *c, int v, int depth);
 static int strbuf_gvar_write_handle(Compiler *c, int v, char *out, size_t cap);
 static int emit_strbuf_chain_in_place(Compiler *c, int v, int base, const char *bref, Buf *b);
 static int emit_strbuf_route_chain(Compiler *c, int v, int base, Buf *b);
@@ -1813,7 +1813,7 @@ static int g_strbuf_case_node = -1;
 static LocalVar *g_strbuf_case_lv;
 /* Is a String local that is the shared handle one of the values conditional
    `v` can hand over (an_strbuf_alias_leaves' arms)? */
-static int strbuf_cond_has_handle_leaf(Compiler *c, int v, int depth) {
+int strbuf_cond_has_handle_leaf(Compiler *c, int v, int depth) {
   const NodeTable *nt = c->nt;
   /* depth counts the conditionals the walk is inside (a wrapper adds none);
      emit_strbuf_cond_value reaches any depth (its arms past its own limit
@@ -1850,7 +1850,8 @@ static int strbuf_cond_has_handle_leaf(Compiler *c, int v, int depth) {
     /* (--share-strings: any route over a handle, emit_strbuf_route) */
     case NK_CallNode:
       return (strbuf_uplus_operand(c, v) >= 0 && strbuf_cond_has_handle_leaf(c, strbuf_uplus_operand(c, v), depth + 1)) ||
-             (depth > 0 && repr_share_rule(c) && strbuf_route_carries(c, v, 0));
+             (depth > 0 && repr_share_rule(c) && (strbuf_route_carries(c, v, 0) || repr_of(c, v).kind == RK_BOXED ||
+                                                   strbuf_chain_over_handle(c, v) || strbuf_narrowed_box_mutator(c, v)));
     /* a read, or an arm's chained write (`c ? (t = g) : x`), whose value is
        its target's */
     case NK_LocalVariableReadNode: case NK_LocalVariableWriteNode: {
@@ -1870,9 +1871,11 @@ static int strbuf_cond_has_handle_leaf(Compiler *c, int v, int depth) {
       return depth > 0 && strbuf_gvar_write_handle(c, v, gr, sizeof gr);
     }
     /* any other write whose slot holds the rule's handle (an ivar's, a
-       class variable's, an `||=`): emit_strbuf_value hands it over */
+       class variable's, an `||=`): emit_strbuf_value hands it over; and a
+       box (--share-strings), whose handle emit_strbuf_value takes out */
     default:
-      return depth > 0 && (repr_write_share(c, v) || (repr_share_rule(c) && strbuf_route_carries(c, v, 0)));
+      return depth > 0 && (repr_write_share(c, v) || (repr_share_rule(c) && strbuf_route_carries(c, v, 0)) ||
+                           (repr_share_rule(c) && repr_of(c, v).kind == RK_BOXED));
   }
 }
 /* Assign conditional `v`'s value to the handle temp `dst` as statements,
@@ -2017,6 +2020,17 @@ static int emit_strbuf_chain_in_place(Compiler *c, int v, int base, const char *
   }
   buf_printf(b, "_t%d; })", th);
   return 1;
+}
+
+/* --share-strings: is v an append chain over a variable that holds the
+   shared handle (`a << x`), which emit_strbuf_value runs in place on that
+   handle (emit_strbuf_chain_in_place)? */
+int strbuf_chain_over_handle(Compiler *c, int v) {
+  char ref[1024];
+  int args[32];
+  int base = str_alias_chain_base(c, v);
+  return repr_share_rule(c) && base != v && strbuf_var_handle(c, unwrap_parens(c, base), ref, sizeof ref) &&
+         strbuf_chain_links(c, v, base, args) >= 0;
 }
 
 /* --share-strings: chain v's links over route base (`s.then { |z| z } <<
@@ -2174,6 +2188,13 @@ void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
      changed it, and nil when not; the call changes s's handle in place, so
      r takes that handle. Wrapped fresh, r forked off s. */
   else if (shared && emit_bang_self_handle(c, v, b)) { }
+  /* --share-strings: a mutator on a narrowed box answers that box: its
+     handle (strbuf_narrowed_box_mutator) */
+  else if (shared && strbuf_narrowed_box_mutator(c, v)) {
+    buf_puts(b, "sp_poly_as_strbuf(");
+    emit_narrowed_box_mutator(c, v, b);
+    buf_puts(b, ")");
+  }
   else if (rpv.kind == RK_BOXED || strbuf_boxed_elem_read(c, v)) {
     /* a container element read hands out the element's BOXED handle: take the
        handle out of the box, so the local and the element are one object and
@@ -17210,8 +17231,10 @@ void emit_index_and_or_write(Compiler *c, int id, Buf *b, int indent, int is_or)
    SFC_BOX    a yield's value: a box or the handle itself only;
    SFC_SPLICE an Enumerator's map's block value, which the library's loop
               takes as a write takes its value (as SFC_ALIAS, and its `l ||
-              r` takes any l). */
-enum { SFC_ALIAS, SFC_SLOT, SFC_ELEM, SFC_TAIL, SFC_BOX, SFC_SPLICE, SFC_ARG };
+              r` takes any l);
+   SFC_ELEM_ARMS an arm of a String `if` a box takes arm by arm
+              (emit_boxed_cond_arms): each arm as SFC_ELEM takes it. */
+enum { SFC_ALIAS, SFC_SLOT, SFC_ELEM, SFC_TAIL, SFC_BOX, SFC_SPLICE, SFC_ARG, SFC_ELEM_ARMS };
 
 static int strbuf_flow_value(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, int depth);
 static int strbuf_flow_unseen(Compiler *c, int v);
@@ -17328,6 +17351,7 @@ static int strbuf_flow_cond(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, int
     return strbuf_flow_cond(c, fm, ctx, nt_ref(nt, v, "else_clause"), depth + 1);
   }
   default:
+    if (ctx == SFC_ELEM_ARMS) return strbuf_flow_value(c, fm, SFC_ELEM, v, depth + 1);
     return ctx == SFC_ALIAS || ctx == SFC_SPLICE || ctx == SFC_TAIL || ctx == SFC_ARG
            ? strbuf_flow_value(c, fm, ctx, v, depth + 1) : nt_kind(nt, v) == NK_NilNode || strbuf_flow_unseen(c, v);
   }
@@ -17365,7 +17389,8 @@ static int strbuf_flow_has_leaf(Compiler *c, StrbufFlowMemo *fm, int v, int dept
   }
   case NK_CallNode:
     return (strbuf_uplus_operand(c, v) >= 0 && strbuf_flow_has_leaf(c, fm, strbuf_uplus_operand(c, v), depth + 1)) ||
-           (depth > 0 && strbuf_flow_route(c, fm, SFC_ALIAS, v, 0));
+           (depth > 0 && (strbuf_flow_route(c, fm, SFC_ALIAS, v, 0) || repr_of(c, v).kind == RK_BOXED ||
+                          strbuf_chain_over_handle(c, v) || strbuf_narrowed_box_mutator(c, v)));
   case NK_LocalVariableReadNode: case NK_LocalVariableWriteNode: {
     const char *vn = nt_str(nt, v, "name");
     LocalVar *vl = vn ? scope_local(comp_scope_of(c, v), vn) : NULL;
@@ -17377,7 +17402,8 @@ static int strbuf_flow_has_leaf(Compiler *c, StrbufFlowMemo *fm, int v, int dept
   case NK_ConstantWriteNode:
     return depth > 0 && strbuf_gvar_write_handle(c, v, ref, sizeof ref);
   default:
-    return depth > 0 && (repr_write_share(c, v) || strbuf_flow_route(c, fm, SFC_ALIAS, v, 0));
+    return depth > 0 && (repr_write_share(c, v) || strbuf_flow_route(c, fm, SFC_ALIAS, v, 0) ||
+                         repr_of(c, v).kind == RK_BOXED);
   }
 }
 
@@ -17423,6 +17449,10 @@ static int strbuf_flow_value(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, in
     /* emit_strbuf_value takes a conditional arm by arm only when one of its
        arms is a handle (strbuf_cond_has_handle_leaf); else whole, a copy */
     if ((ctx == SFC_ALIAS || ctx == SFC_ARG || ctx == SFC_SPLICE) && !strbuf_flow_has_leaf(c, fm, v, 0)) ctx = SFC_SLOT;
+    /* a box takes a String `if` or `unless` with a handle arm arm by arm
+       (emit_boxed_cond_arms) */
+    if (ctx == SFC_ELEM && (k == NK_IfNode || k == NK_UnlessNode) && strbuf_flow_has_leaf(c, fm, v, 0))
+      ctx = SFC_ELEM_ARMS;
     return strbuf_flow_cond(c, fm, ctx, v, depth);
   }
   if (ctx == SFC_BOX) return 0;
@@ -17435,6 +17465,11 @@ static int strbuf_flow_value(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, in
     return (k == NK_BeginNode && strbuf_flow_begin(c, fm, v, depth)) || repr_call_returns_handle(c, v) ||
            strbuf_route_exc_message(c, v) ||
            (is_unary_plus(nt_str(nt, v, "name")) && strbuf_flow_route(c, fm, ctx, v, depth));
+  /* an append chain over a variable's handle, boxed as that handle; a
+     mutator on a narrowed box, which answers the box */
+  if (ctx == SFC_ELEM && k == NK_CallNode && comp_ntype(c, v) == TY_STRING &&
+      (strbuf_chain_over_handle(c, v) || strbuf_narrowed_box_mutator(c, v)))
+    return 1;
   /* a marked call that answers its receiver, a variable's handle (`s.tap
      { }`, `s.to_s`), and a bang method off one (emit_boxed_bang_self) */
   if (ctx == SFC_ELEM && k == NK_CallNode && ((c->strbuf_box[v] && str_self_call(nt, v)) || strbuf_bang_self_local(c, v)))
@@ -17461,6 +17496,7 @@ static int strbuf_flow_value(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, in
   /* a bang method or an iterator with a block on a local's handle answers
      that handle or nil */
   if (ctx != SFC_ARG && strbuf_bang_self_local(c, v)) return 1;
+  if (ctx != SFC_ARG && strbuf_narrowed_box_mutator(c, v)) return 1;
   /* a chain that answers its receiver, over a variable holding the handle
      or a reader call read as one (`t = s << x`, `t = w.s.insert(1, "-")`):
      the base's handle (emit_strbuf_value's chain arms, strbuf_slot_ref) */

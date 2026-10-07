@@ -158,6 +158,12 @@ int strbuf_call_picks_up(Compiler *c, int id);
 int strbuf_self_reader_handle(Compiler *c, int id);
 int strbuf_call_reads_handle(Compiler *c, int recv);
 int emit_bang_self_handle(Compiler *c, int v, Buf *b);
+int strbuf_chain_over_handle(Compiler *c, int v);
+int strbuf_narrowed_box_mutator(Compiler *c, int id);
+void emit_narrowed_box_mutator(Compiler *c, int id, Buf *b);
+/* Is a variable holding the shared handle (or, --share-strings, a route or
+   a box) one of the values conditional v can hand over (codegen_stmt.c)? */
+int strbuf_cond_has_handle_leaf(Compiler *c, int v, int depth);
 /* String mutator id's receiver recv as the handle it changes: 1 a slot, 2
    a route (read once, nil raising NoMethodError for id), 0 neither
    (codegen_stmt.c) */
