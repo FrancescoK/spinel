@@ -11352,7 +11352,9 @@ else {
            parameter nothing reassigns is held by the parameter's own root:
            Interp#visit passed its env on through a pushed and popped root at
            every recursive call. */
-        int held = provided >= 0 && repr_of(c, provided).as_ty == att && read_of_fixed_param(c, provided);
+        int held = (att == TY_POLY || needs_root(att)) &&
+                   provided >= 0 && repr_of(c, provided).as_ty == att &&
+                   read_of_fixed_param(c, provided);
         if (held) {}
         else if (att == TY_POLY) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_t%d);\n", atmp[k]); }
         else if (needs_root(att)) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", atmp[k]); }
