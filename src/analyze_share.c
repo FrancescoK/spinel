@@ -2896,9 +2896,11 @@ static int sh_route_why(const Compiler *c, const ShareRoute *q) {
       F->nval[q->value] == -1)
     v = sh_route_to_root(c, q);
   /* the same for the elements of a container the walk reached and found
-     none in: a fresh one (`s.split("\n")`) or one whose elements no name
-     holds; each String it hands on is one no other name holds */
-  if (v < 0 && F && q->elems && q->to >= 0 && q->value >= 0 && q->value < F->nnodes &&
+     none in -- a fresh one (`s.split("\n")`) or one whose elements no name
+     holds -- where the route's site vouches that they reach only its holder
+     (fresh_elems: `each` over it, its value dropped); an iterator that keeps
+     the elements it yields (partition, select) names them again */
+  if (v < 0 && F && q->elems && q->fresh_elems && q->to >= 0 && q->value >= 0 && q->value < F->nnodes &&
       (F->nval[q->value] == -1 || (F->nval[q->value] >= 0 && F->elem[sh_root(F, F->nval[q->value])] < 0)))
     v = sh_route_to_root(c, q);
   if (v < 0) return SH_ROUTE_UNSEEN;
@@ -2917,7 +2919,7 @@ int share_route_defer(Compiler *c, const ShareRoute *q, const char *msg) {
   for (int i = 0; i < c->nshare_route; i++) {
     const ShareRoute *r = &c->share_route[i];
     if (r->site == q->site && r->value == q->value && r->elems == q->elems && r->to == q->to &&
-        r->to_elems == q->to_elems && r->carry == q->carry &&
+        r->to_elems == q->to_elems && r->carry == q->carry && r->fresh_elems == q->fresh_elems &&
         (r->to_name == q->to_name || (r->to_name && q->to_name && sp_streq(r->to_name, q->to_name))))
       return 1;
   }
