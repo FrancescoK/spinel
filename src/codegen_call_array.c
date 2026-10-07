@@ -1600,6 +1600,7 @@ int emit_call_append_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
       buf_printf(b, "sp_poly_shl(_t%d, ", t);
       emit_boxed(c, argv[0], b);
       buf_puts(b, se ? "); })" : ")");
+      c->args_in_call = recv;
       return 1;
     }
     int got = ++g_tmp, cur = ++g_tmp;
@@ -1626,6 +1627,7 @@ int emit_call_append_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
     buf_printf(b, "sp_poly_bitop(_t%d, ", t);
     emit_boxed(c, argv[0], b);
     buf_printf(b, ", %d)%s", bop, se ? "; })" : "");
+    c->args_in_call = recv;
     return 1;
   }
   /* poly.difference / union / intersection: the named forms of - | & over
@@ -1664,6 +1666,7 @@ int emit_call_append_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
     buf_printf(b, "sp_poly_shr(_t%d, ", t);
     emit_boxed(c, argv[0], b);
     buf_puts(b, se ? "); })" : ")");
+    c->args_in_call = recv;
     return 1;
   }
 

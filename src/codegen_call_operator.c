@@ -1365,6 +1365,7 @@ int emit_call_operator_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
       }
       else buf_puts(b, pcall.p ? pcall.p : "sp_box_nil()");
       free(pcall.p);
+      c->args_in_call = recv;
       return 1;
     }
     const char *cfn = NULL;
@@ -1380,6 +1381,7 @@ int emit_call_operator_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
     }
     if (cfn) {
       buf_printf(b, "%s(", cfn); emit_boxed(c, recv, b); buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, ")");
+      c->args_in_call = recv;
       return 1;
     }
   }
