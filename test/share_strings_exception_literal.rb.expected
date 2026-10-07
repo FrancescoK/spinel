@@ -28,3 +28,29 @@ true
 true
 "inner"
 true
+[ArgumentError, "", true]
+FrozenError
+[RuntimeError, "", true]
+FrozenError
+[RuntimeError, "", true]
+FrozenError
+[ArgumentError, "", true]
+FrozenError
+[E, "", true]
+FrozenError
+[E, "", true]
+FrozenError
+[F, "", true]
+FrozenError
+[G, "", true]
+FrozenError
+[ArgumentError, "", true]
+FrozenError
+[RuntimeError, "", true]
+FrozenError
+[RuntimeError, "", true]
+FrozenError
+[RuntimeError, "", false]
+[ArgumentError, "", false]
+true
+""

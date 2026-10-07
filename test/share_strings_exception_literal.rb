@@ -55,3 +55,28 @@ begin
 rescue => e2
   p e2.message, e2.message.frozen?
 end
+# an empty literal message is the frozen literal too, in every form; a bare
+# raise's and an unfrozen "" are not frozen
+[-> { raise ArgumentError, "" }, -> { raise "" }, -> { fail "" }, -> { raise ArgumentError.new("") },
+ -> { raise E, "" }, -> { raise E.new("") }, -> { raise F.new("") }, -> { raise G.new("") },
+ -> { Thread.new { raise ArgumentError, "" }.join }, -> { Fiber.new { raise "" }.resume },
+ -> { begin; raise ""; rescue; raise; end }].each do |f|
+  begin
+    f.call
+  rescue => e
+    p [e.class, e.message, e.message.frozen?]
+    begin
+      e.message << "!"
+    rescue FrozenError => fe
+      p fe.class
+    end
+  end
+end
+[-> { raise }, -> { raise ArgumentError, "".dup }].each do |f|
+  begin
+    f.call
+  rescue => e
+    p [e.class, e.message, e.message.frozen?]
+  end
+end
+p ArgumentError.new("").message.frozen?, E.new("").message
