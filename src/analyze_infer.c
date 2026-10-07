@@ -1105,9 +1105,8 @@ static int an_settled_int(Compiler *c, int n, int depth) {
       if (!op || rcv < 0 || nt_ref(nt, n, "block") >= 0) return 0;
       int a = nt_ref(nt, n, "arguments"); int an = 0;
       const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
-      if (sp_streq(op, "-@")) return an == 0 && an_settled_int(c, rcv, depth + 1);
-      if (!sp_streq(op, "+") && !sp_streq(op, "-") && !sp_streq(op, "*") &&
-          !sp_streq(op, "/") && !sp_streq(op, "%")) return 0;
+      if (is_unary_minus(op)) return an == 0 && an_settled_int(c, rcv, depth + 1);
+      if (!is_int_arith_op(op)) return 0;
       return an == 1 && an_settled_int(c, rcv, depth + 1) && an_settled_int(c, av[0], depth + 1);
     }
     default: return 0;
