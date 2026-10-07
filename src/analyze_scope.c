@@ -3777,6 +3777,45 @@ void register_ffi_decls(Compiler *c) {
         c->native_methods[mi].args = arg_specs;
         c->native_methods[mi].rest = en > 0 && sp_streq(arg_specs[en - 1], "rest");
         c->native_methods[mi].nargs = c->native_methods[mi].rest ? en - 1 : en;
+        c->native_methods[mi].share = 0;
+        c->native_methods[mi].share_csym = NULL;
+        continue;
+      }
+      /* native_share "name", [arg_specs], "kind"[, "csym"]  (or "name",
+         "kind" for every binding of the name): what the bindings declared
+         above do with the String their object keeps, for --share-strings.
+         "new" names the constructors; kind is "keeps", "answers" or
+         "changes", and csym the form taking or answering that String as the
+         shared handle. Strings, not Symbols: a Symbol in a binding joins
+         the program's own. A package keeps them in <name>.share.rb, which
+         the parser reads only under the flag. */
+      if (sp_streq(dname, "native_share") && native_cid >= 0 && an >= 2) {
+        const char *sname = ffi_arg_str(nt, args[0]);
+        int has_specs = nt_type(nt, args[1]) && sp_streq(nt_type(nt, args[1]), "ArrayNode");
+        int ki = has_specs ? 2 : 1;
+        const char *kind = ki < an ? ffi_arg_str(nt, args[ki]) : NULL;
+        const char *hsym = ki + 1 < an ? ffi_arg_str(nt, args[ki + 1]) : NULL;
+        unsigned bit = !kind ? 0 : sp_streq(kind, "keeps") ? NSH_KEEPS : sp_streq(kind, "answers") ? NSH_ANSWERS
+                     : sp_streq(kind, "changes") ? NSH_CHANGES : 0;
+        if (!sname || !bit) continue;
+        int sn = 0;
+        const int *se = has_specs ? nt_arr(nt, args[1], "elements", &sn) : NULL;
+        for (int k = 0; k < c->n_native_methods; k++) {
+          NativeMethod *m = &c->native_methods[k];
+          if (m->class_id != native_cid || m->kind != sp_streq(sname, "new") || !sp_streq(m->name, sname)) continue;
+          int same = !has_specs || (m->nargs == sn && !m->rest);
+          for (int ei = 0; same && has_specs && ei < sn; ei++) {
+            const char *spec = ffi_arg_str(nt, se[ei]);
+            same = spec && sp_streq(spec, m->args[ei]);
+          }
+          if (!same) continue;
+          m->share |= bit;
+          if (bit == NSH_KEEPS) c->classes[native_cid].native_share_keeps = 1;
+          if (hsym && !m->share_csym) {
+            m->share_csym = strdup(hsym);
+            if (!m->share_csym) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+          }
+        }
         continue;
       }
       /* The classes themselves are registered in the pre-scan above; what this

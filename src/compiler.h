@@ -20,6 +20,8 @@
    require-gated stdlib (stringio, io/console, ...) so they match CRuby's
    uninitialized-constant / NoMethodError when the require is absent. */
 extern int g_require_gate;
+/* SPINEL_SHARE_STRINGS is on: set, not empty and not "0" (spinel_parse.c) */
+int sp_share_strings_env(void);
 void sp_feature_mark(const char *name);
 int sp_feature_enabled(const char *name);
 int        sp_feature_required(const char *name); /* require was actually written (gate-independent) */
@@ -557,6 +559,9 @@ typedef struct {
      struct name; free_sym its optional finalizer. Method bindings live in the
      compiler's native_methods registry, keyed by this class's index. */
   int is_native_class;
+  /* --share-strings: a native class whose binding declares that its object
+     keeps a String (`native_share ... "keeps"`): its objects are holders */
+  int native_share_keeps;
   /* An Array subclass (#7449): its instances ARE Arrays -- the struct starts
      with the Array by value, so a pointer to one is a pointer to its Array --
      and Array's methods dispatch on them. ary_root is the class right below
@@ -690,7 +695,19 @@ typedef struct {
   int nargs;       /* fixed arguments, not counting a trailing :rest */
   int rest;        /* a trailing :rest takes every further argument, boxed,
                       as a count and an array after the fixed ones */
+  /* --share-strings: what the binding does with the String its object
+     keeps, as the package declares it (`native_share`): NSH_* bits, and
+     the C symbol of the form that takes or answers it as the shared
+     handle (sp_String *), or NULL */
+  unsigned share;
+  char *share_csym;
 } NativeMethod;
+enum {
+  NSH_KEEPS   = 1,   /* a constructor: the object keeps its first String
+                        argument, or with none a String of its own */
+  NSH_ANSWERS = 2,   /* answers the String the object keeps */
+  NSH_CHANGES = 4    /* changes the String the object keeps */
+};
 /* Whether a binding accepts a call of argc positional arguments. */
 static inline int native_takes(const NativeMethod *m, int argc) {
   return m->nargs == argc || (m->rest && argc > m->nargs);
@@ -850,14 +867,14 @@ typedef struct {
   int bcall_nscopes, bcall_count;
   unsigned bcall_version;
   int bcall_built;
-
-  /* (CallNode, ivar-read argument)-by-ivar-name index; see comp_ivarg_first */
   /* ReturnNode chain, by the scope the return is in; see comp_ret_first */
   int *ret_head;        /* [ret_nscopes] first ReturnNode id per scope */
   int *ret_next;        /* [ret_count] next one in the same scope */
   int ret_nscopes, ret_count;
   unsigned ret_version;
   int ret_built;
+
+  /* (CallNode, ivar-read argument)-by-ivar-name index; see comp_ivarg_first */
   int *ivarg_head;      /* [ivarg_nbuckets] first entry in each name bucket */
   int *ivarg_next;      /* [ivarg_count] next entry sharing the bucket */
   int *ivarg_call;      /* [ivarg_count] an entry's CallNode */
@@ -1055,12 +1072,12 @@ int comp_scall_first(Compiler *c, int scope_idx);
 int comp_scall_next(const Compiler *c, int u);
 int comp_bcall_first(Compiler *c, int scope_idx);
 int comp_bcall_next(const Compiler *c, int u);
-int comp_ivarg_first(Compiler *c, const char *name);
-void comp_ivarg_invalidate(Compiler *c);
 /* the ReturnNodes of a scope, in node order (one index per node-table
    version) */
 int comp_ret_first(Compiler *c, int scope_idx);
 int comp_ret_next(const Compiler *c, int u);
+int comp_ivarg_first(Compiler *c, const char *name);
+void comp_ivarg_invalidate(Compiler *c);
 int comp_ivarg_next(const Compiler *c, int e);
 int comp_ivarg_call(const Compiler *c, int e);
 int comp_ivarg_arg(const Compiler *c, int e);
