@@ -682,6 +682,13 @@ static int nf_call(NF *f, int v) {
       return nf_ivar(f, cls, ivn);
     }
   }
+  /* --share-strings: `then` with a literal block answers its block's value,
+     which can be the receiver's nil (a route of the shared String, which a
+     parameter it is handed may then bind) */
+  if (c->share_strings && r >= 0 && is_then_alias(nm)) {
+    int blk = nt_ref(nt, v, "block");
+    if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode) return nf_list(f, nt_ref(nt, blk, "body"));
+  }
   /* the receiver itself */
   if (r >= 0 && (sp_streq(nm, "itself") || sp_streq(nm, "tap") || sp_streq(nm, "dup") ||
                  sp_streq(nm, "clone") || sp_streq(nm, "freeze")))
@@ -1317,6 +1324,15 @@ static int nf_unseen_callers(NF *f, const Scope *m) {
   return 0;
 }
 
+/* Does parameter p's slot take the nil fact: a slot nil_fact_tracked
+   holds, or under --share-strings a String parameter the rule shares,
+   held as the sp_String * handle whose NULL is nil (an argument a route
+   answers nil for binds it) */
+static int nf_param_tracked(const Compiler *c, const LocalVar *p) {
+  return nil_fact_tracked(p->type) ||
+         (c->share_strings && (p->is_param || p->is_block_param) && p->type == TY_STRBUF);
+}
+
 /* The parameters of method mi that call `id` (its arguments av[0..an))
    binds: each takes its argument's fact, a default its default's, a value
    the layout spreads or gathers may be nil. */
@@ -1329,7 +1345,7 @@ static void nf_bind_params(NF *f, int id, int mi, const int *av, int an) {
   int open = 0;
   for (int k = 0; k < m->nparams && !open; k++) {
     LocalVar *p = m->pnames[k] ? scope_local(m, m->pnames[k]) : NULL;
-    open = p && ((nf_open(p->obj_may_nil) && nil_fact_tracked(p->type)) || nf_elem_tracked(p->type));
+    open = p && ((nf_open(p->obj_may_nil) && nf_param_tracked(c, p)) || nf_elem_tracked(p->type));
   }
   if (!open) return;
   ArgLayout L;
@@ -1349,7 +1365,7 @@ static void nf_bind_params(NF *f, int id, int mi, const int *av, int an) {
       if (a >= 0 && !(p->obj_elem_may_nil & NF_EL_HOLDS) && nf_elem(f, a, 0)) nf_elem_add(f, &p->obj_elem_may_nil, NF_EL_HOLDS);
       if (a >= 0 && (p->obj_elem_may_nil & NF_EL_STORED)) nf_elem_mark_back(f, a, 0);
     }
-    if (!nf_open(p->obj_may_nil) || !nil_fact_tracked(p->type)) continue;
+    if (!nf_open(p->obj_may_nil) || !nf_param_tracked(c, p)) continue;
     int why;
     if (from == ARG_NODE) {
       int a = layout_plain_arg(c, m, av, &L, k);
@@ -1420,7 +1436,7 @@ static void nf_bind_block(NF *f, int id, int blk, int mi, int **yields, int *nyi
     int body = nt_ref(nt, blk, "body");
     LocalVar *lv = nf_local_of(f, body >= 0 ? body : blk, pn);
     if (!lv) lv = nf_local_of(f, blk, pn);
-    if (!lv || !nf_open(lv->obj_may_nil) || !nil_fact_tracked(lv->type)) continue;
+    if (!lv || !nf_open(lv->obj_may_nil) || !nf_param_tracked(c, lv)) continue;
     int why = NFW_NONE;
     if (all) why = NFW_CALLER;
     else if (from_recv) why = i > 0 ? NFW_NIL : nf_expr(f, nt_ref(nt, id, "receiver"));
@@ -1474,7 +1490,7 @@ static void nf_calls(NF *f, int **yields, int *nyields) {
     for (int k = 0; m->pdefault && k < m->nparams; k++) {
       if (m->pdefault[k] < 0 || !m->pnames[k]) continue;
       LocalVar *p = scope_local(m, m->pnames[k]);
-      if (p && nf_open(p->obj_may_nil) && nil_fact_tracked(p->type)) nf_set(f, &p->obj_may_nil, nf_expr(f, m->pdefault[k]));
+      if (p && nf_open(p->obj_may_nil) && nf_param_tracked(c, p)) nf_set(f, &p->obj_may_nil, nf_expr(f, m->pdefault[k]));
     }
   }
   NT_FOREACH_KIND(nt, NK_CallNode, id) {
@@ -1551,7 +1567,7 @@ static void nf_calls(NF *f, int **yields, int *nyields) {
     for (int k = 0; k < m->nparams; k++) {
       LocalVar *pp = m->pnames[k] ? scope_local(m, m->pnames[k]) : NULL;
       LocalVar *own = k < s->nparams && s->pnames[k] ? scope_local(s, s->pnames[k]) : NULL;
-      if (pp && nf_open(pp->obj_may_nil) && nil_fact_tracked(pp->type))
+      if (pp && nf_open(pp->obj_may_nil) && nf_param_tracked(c, pp))
         nf_set(f, &pp->obj_may_nil, own ? nf_slot_why(f, &own->obj_may_nil) : NFW_OPAQUE);
     }
   }
@@ -1696,7 +1712,7 @@ void an_nil_facts(Compiler *c) {
     for (int k = 0; k < m->nlocals; k++) m->locals[k].obj_may_nil = m->locals[k].obj_elem_may_nil = 0;
     for (int k = 0; k < m->nlocals; k++) {
       LocalVar *lv = &m->locals[k];
-      if (!nil_fact_tracked(lv->type)) continue;
+      if (!nf_param_tracked(c, lv)) continue;
       if (lv->is_param && lv->obj_nilable) nf_set(&f, &lv->obj_may_nil, NFW_NIL);
       if (lv->is_param && unseen) nf_set(&f, &lv->obj_may_nil, NFW_CALLER);
       if (lv->or_written && !lv->is_param && !lv->is_block_param) nf_set(&f, &lv->obj_may_nil, NFW_UNSET);
