@@ -13150,6 +13150,68 @@ static int infer_zip_block_params(Compiler *c, int id, int block, const char *p0
   return changed;
 }
 
+/* Is node `n` a read of the local `nm` of scope `s`? */
+static int local_read_of(Compiler *c, Scope *s, const char *nm, int n) {
+  const char *rn = nt_kind(c->nt, n) == NK_LocalVariableReadNode ? nt_str(c->nt, n, "name") : NULL;
+  return rn && sp_streq(rn, nm) && comp_scope_of(c, n) == s;
+}
+
+/* How often node `n` is used up as a value: as the receiver of a call
+   without a block, or alone in an interpolation. Counted for every node in
+   one walk of the table, which is kept until the table changes. */
+static int node_used_up(Compiler *c, int n) {
+  static const NodeTable *knt;
+  static unsigned kver;
+  static int kcnt, *cnt;
+  const NodeTable *nt = c->nt;
+  if (knt != nt || kver != nt->version || kcnt != nt->count) {
+    int *nv = realloc(cnt, sizeof(int) * (size_t)(nt->count > 0 ? nt->count : 1));
+    /* a lost count would unbox a key into a slot something else reads */
+    if (!nv) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    cnt = nv;
+    memset(cnt, 0, sizeof(int) * (size_t)nt->count);
+    for (int u = 0; u < nt->count; u++) {
+      NodeKind k = nt_kind(nt, u);
+      int v = -1;
+      if (k == NK_CallNode) v = nt_ref(nt, u, "block") < 0 ? nt_ref(nt, u, "receiver") : -1;
+      else if (k == NK_EmbeddedStatementsNode) {
+        int en = 0; const int *eb = nt_arr(nt, nt_ref(nt, u, "statements"), "body", &en);
+        if (en == 1) v = eb[0];
+      }
+      if (v >= 0 && v < nt->count) cnt[v]++;
+    }
+    knt = nt; kver = nt->version; kcnt = nt->count;
+  }
+  return n >= 0 && n < kcnt ? cnt[n] : 0;
+}
+
+/* Is the parameter `nm` of the block `blk` used up wherever it is read: as
+   the receiver of a call without a block, in an interpolation, or as the
+   node `value`? It is not where something assigns it, a proc captures it,
+   or the block numbers its parameters. The slot is the scope's, so every
+   read in the scope counts; the variable's writes and reads come off the
+   chains that index them (comp_lvw_first_sc, comp_vsite_first), since a
+   walk of the program for each block is quadratic in the blocks. */
+int block_param_used_up(Compiler *c, int blk, const char *nm, int value) {
+  const NodeTable *nt = c->nt;
+  Scope *s = comp_scope_of(c, blk);
+  int si = (int)(s - c->scopes);
+  if (nt_kind(nt, nt_ref(nt, blk, "parameters")) != NK_BlockParametersNode ||
+      subtree_proc_captures_name(c, blk, nm, 0, 0)) return 0;
+  for (int w = comp_lvw_first_sc(c, si, nm); w >= 0; w = comp_lvw_next_sc(c, w)) {
+    const char *wn = nt_str(nt, w, "name");
+    if (wn && sp_streq(wn, nm) && comp_scope_of(c, w) == s) return 0;
+  }
+  int reads = 0, used = value >= 0 && local_read_of(c, s, nm, value);
+  for (int e = comp_vsite_first(c, VS_READ, NK_LocalVariableReadNode, nm, si); e >= 0; e = comp_vsite_next(c, e)) {
+    int r = comp_vsite_node(c, e);
+    if (!local_read_of(c, s, nm, r)) continue;
+    reads++;
+    used += node_used_up(c, r);
+  }
+  return reads == used;
+}
+
 /* A fetch key of type `kt` whose block's parameter may be boxed: the type
    is known and can hold neither a String nor a Symbol. A nil counts only
    as the literal; a local that is nil so far may yet be typed a String. */

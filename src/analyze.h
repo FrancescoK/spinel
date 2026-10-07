@@ -292,6 +292,7 @@ void an_face_pop(void);
 int view_face_top(int *node, TyKind *kind);   /* codegen_view.c */
 /* Name of a block's idx-th required parameter, or NULL. */
 const char *block_param_name(Compiler *c, int block, int idx);
+int block_param_used_up(Compiler *c, int blk, const char *nm, int value);
 /* The name of a numbered block parameter (`_1`..`_9`) on this parameters node.
    Per BLOCK where a scope holds more than one such block; see
    scope_numbered_block_params. Every site that needs the name goes here. */
