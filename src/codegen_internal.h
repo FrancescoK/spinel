@@ -921,8 +921,11 @@ void emit_tail_lead(Buf *b);
 const char *rename_local(const char *nm);
 const char *rename_local_cell(const char *nm);
 int sb_shim_shadow(const char *name, const char *rn);
-LocalVar **sb_shim_lift(Compiler *c, int node, int *n);
-void sb_shim_drop(LocalVar **lifted, int n);
+typedef struct { TyKind type, shim_ty; int shim_lift; } SbShimSave;
+SbShimSave sb_shim_enter(LocalVar *lv);
+void sb_shim_leave(LocalVar *lv, SbShimSave sv);
+void sb_shim_lift(Compiler *c, int node);
+void sb_shim_drop(Compiler *c, int node);
 /* `unsupported` never returns: it longjmps to the codegen driver's per-unit
    recovery (see g_unsup_recover) when one is armed, else exits. Marked noreturn so every caller's
    "this construct is unsupported" guard correctly treats the code after it as

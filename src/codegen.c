@@ -6031,9 +6031,9 @@ static int g_in_fiber_body = 0;
 static void emit_fiber_new_here(Compiler *c, int id, Buf *b, int as_gen, int size_node);
 void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen, int size_node) {
   /* the capture struct and the body type a shim's receiver local as the handle */
-  int nl; LocalVar **lifted = sb_shim_lift(c, id, &nl);
+  sb_shim_lift(c, id);
   emit_fiber_new_here(c, id, b, as_gen, size_node);
-  sb_shim_drop(lifted, nl);
+  sb_shim_drop(c, id);
 }
 static void emit_fiber_new_here(Compiler *c, int id, Buf *b, int as_gen, int size_node) {
   nd_stamp(nt_ref(c->nt, id, "block"), ND_BLOCK_PROC);   /* the body is a function of its own */
@@ -6159,6 +6159,7 @@ static void emit_fiber_new_here(Compiler *c, int id, Buf *b, int as_gen, int siz
   char (*cap_rn)[112] = ncap > 0 ? (char (*)[112])malloc(sizeof(char[112]) * (size_t)ncap) : NULL;
   /* and the name of the cell: the shim's shadow rename names no cell */
   char (*cap_cn)[112] = ncap > 0 ? (char (*)[112])malloc(sizeof(char[112]) * (size_t)ncap) : NULL;
+  if (ncap > 0 && !cap_cn) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   for (int i = 0; i < ncap; i++) {
     snprintf(cap_rn[i], sizeof cap_rn[0], "%s", rename_local(caps.v[i]));
     snprintf(cap_cn[i], sizeof cap_cn[0], "%s", rename_local_cell(caps.v[i]));
@@ -6934,10 +6935,10 @@ static void emit_proc_literal_here(Compiler *c, int create, Buf *b);
    captured the inlined callee's receiver as its self, and the block's ivar
    writes landed in that object instead of the one that wrote the block. */
 void emit_proc_literal(Compiler *c, int create, Buf *b) {
-  int nl; LocalVar **lifted = sb_shim_lift(c, create, &nl);
+  sb_shim_lift(c, create);
   if (create < 0 || create != g_block_id || !g_yield_self_fallback) {
     emit_proc_literal_here(c, create, b);
-    sb_shim_drop(lifted, nl);
+    sb_shim_drop(c, create);
     return;
   }
   const char *sv_self = g_self, *sv_deref = g_self_deref;
@@ -6949,7 +6950,7 @@ void emit_proc_literal(Compiler *c, int create, Buf *b) {
   emit_proc_literal_here(c, create, b);
   g_self = sv_self; g_self_deref = sv_deref;
   g_emitting_class_id = sv_emcls; g_nren = sv_nren;
-  sb_shim_drop(lifted, nl);
+  sb_shim_drop(c, create);
 }
 
 /* Bind a proc parameter slot: `cond` true reads the argument `arg`, else the
