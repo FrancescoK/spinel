@@ -15252,13 +15252,14 @@ static void sa_refuse_element(Compiler *c, int e, int u);
    stored into a container whose elements are then mutated, the element
    stays a copy of it. Refused (#6765) rather than compiled with the change
    lost. */
-static const char stored_block_param_msg[] =
-  "a String held by a block parameter no element iterator binds (a proc's, a lambda's, a yielding method's "
-  "block, `each_char`'s) is stored into a container and mutated in place through it (a String is not yet "
-  "shared by reference through a stored block parameter). Mutate the String before storing it, or store it "
-  "where the caller holds it.";
+static const char *stored_block_param_msg(void) {
+  return "a String held by a block parameter no element iterator binds (a proc's, a lambda's, a yielding "
+         "method's block, `each_char`'s) is stored into a container and mutated in place through it (a String "
+         "is not yet shared by reference through a stored block parameter). Mutate the String before storing "
+         "it, or store it where the caller holds it.";
+}
 static __attribute__((noreturn)) void refuse_stored_block_param(Compiler *c, int id) {
-  unsupported_feature(c, id, stored_block_param_msg);
+  unsupported_feature(c, id, stored_block_param_msg());
 }
 /* Is block parameter (vn, vs) bound only by the yields of user methods
    (`each { |e| acc << e }` over a yielding each, inlined or taking its
@@ -15319,7 +15320,7 @@ static int strbuf_demand_store_leaf(Compiler *c, int sn, int depth) {
            the element is that handle (`each { |e| acc << e }` over a
            yielding each) */
         ShareRoute q = share_route(sn, sn, 0);
-        if (!block_param_user_yield_only(c, snm, sns) || !share_route_defer(c, &q, stored_block_param_msg))
+        if (!block_param_user_yield_only(c, snm, sns) || !share_route_defer(c, &q, stored_block_param_msg()))
           refuse_stored_block_param(c, sn);
         if (c->share && repr_str_shares(c, share_local_holder(c, (int)(sns - c->scopes), (int)(snv - sns->locals)))) {
           if (snv->type != TY_STRBUF || !snv->str_shared) { snv->type = TY_STRBUF; snv->str_shared = 1; ch = 1; }

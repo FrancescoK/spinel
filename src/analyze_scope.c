@@ -1,4 +1,5 @@
 #include "analyze_internal.h"
+#include "builtin_names.h"
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -3581,6 +3582,16 @@ static void bare_native_func_calls(Compiler *c) {
   }
 }
 
+/* A `native_share` kind word ("keeps", "answers", "changes", as a
+   package's <name>.share.rb spells it): its NSH_* bit, or 0 */
+static unsigned native_share_kind(const char *kind) {
+  static const char *const words[] = { "keeps", "answers", "changes" };
+  static const unsigned bits[] = { NSH_KEEPS, NSH_ANSWERS, NSH_CHANGES };
+  for (int i = 0; kind && i < 3; i++)
+    if (strcmp(kind, words[i]) == 0) return bits[i];
+  return 0;
+}
+
 void register_ffi_decls(Compiler *c) {
   const NodeTable *nt = c->nt;
   NT_FOREACH_KIND(nt, NK_ModuleNode, id) {
@@ -3789,20 +3800,19 @@ void register_ffi_decls(Compiler *c) {
          shared handle. Strings, not Symbols: a Symbol in a binding joins
          the program's own. A package keeps them in <name>.share.rb, which
          the parser reads only under the flag. */
-      if (sp_streq(dname, "native_share") && native_cid >= 0 && an >= 2) {
+      if (is_native_share_decl(dname) && native_cid >= 0 && an >= 2) {
         const char *sname = ffi_arg_str(nt, args[0]);
         int has_specs = nt_type(nt, args[1]) && sp_streq(nt_type(nt, args[1]), "ArrayNode");
         int ki = has_specs ? 2 : 1;
         const char *kind = ki < an ? ffi_arg_str(nt, args[ki]) : NULL;
         const char *hsym = ki + 1 < an ? ffi_arg_str(nt, args[ki + 1]) : NULL;
-        unsigned bit = !kind ? 0 : sp_streq(kind, "keeps") ? NSH_KEEPS : sp_streq(kind, "answers") ? NSH_ANSWERS
-                     : sp_streq(kind, "changes") ? NSH_CHANGES : 0;
+        unsigned bit = native_share_kind(kind);
         if (!sname || !bit) continue;
         int sn = 0;
         const int *se = has_specs ? nt_arr(nt, args[1], "elements", &sn) : NULL;
         for (int k = 0; k < c->n_native_methods; k++) {
           NativeMethod *m = &c->native_methods[k];
-          if (m->class_id != native_cid || m->kind != sp_streq(sname, "new") || !sp_streq(m->name, sname)) continue;
+          if (m->class_id != native_cid || m->kind != is_new_name(sname) || !sp_streq(m->name, sname)) continue;
           int same = !has_specs || (m->nargs == sn && !m->rest);
           for (int ei = 0; same && has_specs && ei < sn; ei++) {
             const char *spec = ffi_arg_str(nt, se[ei]);

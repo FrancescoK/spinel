@@ -1395,7 +1395,7 @@ static int sh_lazy_valued(ShareFacts *F, Compiler *c, int n) {
     F->any_lazy = 0;
     NT_FOREACH_KIND(c->nt, NK_CallNode, k) {
       const char *kn = nt_str(c->nt, k, "name");
-      if (kn && sp_streq(kn, "lazy")) F->any_lazy = 1;
+      if (is_lazy_name(kn)) F->any_lazy = 1;
     }
   }
   if (!F->any_lazy) return 0;
