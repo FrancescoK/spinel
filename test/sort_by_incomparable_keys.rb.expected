@@ -1,0 +1,20 @@
+AE: comparison of String with 1 failed
+AE: comparison of String with 1 failed
+AE: comparison of Integer with String failed
+AE: comparison of Integer with nil failed
+AE: comparison of Integer with String failed
+AE: comparison of NilClass with 2 failed
+AE: comparison of Float with NaN failed
+AE: comparison of Float with NaN failed
+AE: comparison of Array with Array failed
+AE: comparison of TrueClass with false failed
+AE: comparison of String with 1 failed
+AE: comparison of String with 2 failed
+AE: comparison of Integer with String failed
+[nil, nil]
+[1, 2]
+[3, 2, 1]
+["a", "bb"]
+[[1, "a"], [2, "b"]]
+[1.5, 2.5]
+[["b", 2], ["a", 1]]
