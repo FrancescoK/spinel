@@ -944,3 +944,12 @@ int array_unseen_add_kind(const char *n) {
 }
 
 int is_scan_name(const char *n) { return sp_streq(n, "scan"); }
+
+/* `lazy`: makes a Lazy of its receiver (the share facts ask whether a
+   program makes one) */
+int is_lazy_name(const char *n) { return n && sp_streq(n, "lazy"); }
+/* `new`: a class's constructor (a native binding's "new" names them) */
+int is_new_name(const char *n) { return n && sp_streq(n, "new"); }
+/* `native_share`: a package's declaration of what a native binding does
+   with the String its object keeps (--share-strings) */
+int is_native_share_decl(const char *n) { return n && sp_streq(n, "native_share"); }

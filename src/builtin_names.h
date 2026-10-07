@@ -235,4 +235,8 @@ int array_unseen_add_kind(const char *n);
 
 int is_scan_name(const char *n); /* scan: a String's match iterator */
 
+int is_lazy_name(const char *n);         /* lazy: makes a Lazy of its receiver */
+int is_new_name(const char *n);          /* new: a class's constructor */
+int is_native_share_decl(const char *n); /* native_share: a package's share declaration */
+
 #endif
