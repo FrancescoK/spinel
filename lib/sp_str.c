@@ -1413,9 +1413,12 @@ const char *sp_str_scrub_repl(const char *r) {
   return r;
 }
 /* String#scrub: each invalid sequence (sp_str_scrub_bad) is replaced; a
-   NULL replacement is U+FFFD (3 UTF-8 bytes: EF BF BD), as in CRuby. */
+   NULL replacement is U+FFFD (3 UTF-8 bytes: EF BF BD), as in CRuby. An
+   ASCII-8BIT receiver has no invalid sequence: CRuby answers a copy of it,
+   still ASCII-8BIT, without looking at the replacement. */
 const char *sp_str_scrub(const char *s, const char *repl) {SP_GC_ROOT_STR(s);SP_GC_ROOT_STR(repl);
   if(!s)sp_nil_recv("scrub");
+  if (sp_str_is_binary(s)) return sp_str_dup(s);
   static const char fffd[] = "\xEF\xBF\xBD";
   const char *r = repl ? repl : fffd;
   size_t rlen = strlen(r);
