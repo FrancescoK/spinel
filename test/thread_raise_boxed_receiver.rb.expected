@@ -1,0 +1,5 @@
+[:rescued, "execution timeout"]
+nil
+[RuntimeError, "stop"]
+[:fiber, "boom"]
+private method 'raise' called for an instance of Integer
