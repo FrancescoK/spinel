@@ -124,6 +124,7 @@ int an_user_ret_disagrees(Compiler *c, const char *name, TyKind want);
 int an_ty_holds_nil(TyKind t);
 int gvar_seeded_before_read(Compiler *c, const char *gname);
 int an_empty_container_kind(Compiler *c, int b);
+int an_literal_int_rows(Compiler *c, int arr);
 int an_empty_container_disagrees(int kind, TyKind other);
 int an_or_empty_hash_fallback(Compiler *c, int node);
 int an_chunk_family_to_a(Compiler *c, int id);

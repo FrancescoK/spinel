@@ -1966,4 +1966,5 @@ extern const char *g_iow_recv_ref;
 extern const char *g_iow_key_ref;
 
 void refuse_yield_capwrap(Compiler *c, int blk, int yc, const int *yv);
+int emit_ptr_array_build(Compiler *c, int v, TyKind want, Buf *b);
 #endif

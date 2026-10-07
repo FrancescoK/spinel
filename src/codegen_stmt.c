@@ -1196,7 +1196,7 @@ static int is_array_new_block(Compiler *c, int v) {
    return) and never reached the node this value is emitted from. Answers 0
    when the value is not one of those shapes and the caller should emit it its
    usual way. */
-static int emit_ptr_array_build(Compiler *c, int v, TyKind want, Buf *b) {
+int emit_ptr_array_build(Compiler *c, int v, TyKind want, Buf *b) {
   const char *vty = v >= 0 ? nt_type(c->nt, v) : NULL;
   if (!vty) return 0;
   if (sp_streq(vty, "ArrayNode")) {
