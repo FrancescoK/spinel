@@ -1,0 +1,13 @@
+undefined method 'to_i' for true
+undefined method 'to_i' for false
+undefined method 'to_i' for an instance of Symbol
+undefined method 'to_i' for an instance of Array
+undefined method 'to_i' for an instance of Hash
+undefined method 'to_i' for an instance of Range
+12
+2
+0
+5
+3
+3
+NoMethodError
