@@ -20187,7 +20187,10 @@ void refuse_yield_string_copies(Compiler *c, int yargc, const int *yargv) {
        follow it bind by name all the same, so the scan goes on to them */
     if (nt_kind(c->nt, yargv[k]) == NK_SplatNode) spread = 1;
     if (spread) continue;
-    if (!strvar_arg(c, yargv[k], &shared) || shared || local_is_handle(c, yargv[k])) continue;
+    /* a handle goes over as itself (emit_proc_yield) */
+    if (!strvar_arg(c, yargv[k], &shared) || shared || local_is_handle(c, yargv[k]) ||
+        ivar_read_is_handle(c, yargv[k]))
+      continue;
     DynReach r;
     if (g_yield_proc_expr < 0 && g_yield_proc_method >= 0) dyn_blk_reach(c, g_yield_proc_method, k, &r);
     else dyn_value_reach(c, g_yield_proc_expr, k, &r);
