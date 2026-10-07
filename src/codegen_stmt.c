@@ -2674,12 +2674,21 @@ static int cond_operand_testable(Compiler *c, int v) {
   TyKind vt = comp_ntype(c, v);
   return v >= 0 && vt != TY_UNKNOWN && vt != TY_VOID;
 }
+static int cond_is_andor(const NodeTable *nt, int n) {
+  NodeKind k = nt_kind(nt, an_unparen(nt, n));
+  return k == NK_AndNode || k == NK_OrNode;
+}
 static int emit_cond_andor(Compiler *c, int id, TyKind t, Buf *b) {
   const NodeTable *nt = c->nt;
   NodeKind k = nt_kind(nt, id);
   if ((k != NK_AndNode && k != NK_OrNode) || t == TY_BOOL) return 0;
   int l = nt_ref(nt, id, "left"), r = nt_ref(nt, id, "right");
   if (!cond_operand_testable(c, l) || !cond_operand_testable(c, r)) return 0;
+  /* two boxed operands, neither itself a chain: the value form builds no box,
+     and it stays the C the chain had */
+  if (t == TY_POLY && comp_ntype(c, l) == TY_POLY && comp_ntype(c, r) == TY_POLY &&
+      !cond_is_andor(nt, l) && !cond_is_andor(nt, r))
+    return 0;
   /* the right operand's prelude (a rooted temp it hoists) runs inside the
      short circuit, after the left and only when Ruby evaluates the right,
      as the value form keeps it (#1773) */
