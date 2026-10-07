@@ -996,3 +996,4 @@ int is_concat_name(const char *n) { return sp_streq(n, "concat"); }
 int is_array_constructor(const char *recv, const char *meth) {
   return recv && meth && sp_streq(meth, "new") && sp_streq(recv, "Array");
 }
+int is_pow_name(const char *n) { return sp_streq(n, "pow"); }

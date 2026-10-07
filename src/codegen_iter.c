@@ -1855,11 +1855,7 @@ void emit_block_kw_binds(Compiler *c, int blk, int ykw, Scope *bsc, Buf *b, int 
   int kwh_tmp = -1;
   if (ykw_splat) {
     kwh_tmp = ++g_tmp;
-    Buf hb; memset(&hb, 0, sizeof hb); emit_boxed(c, ykw, &hb);
-    emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n",
-               kwh_tmp, hb.p ? hb.p : "sp_box_nil()", kwh_tmp);
-    free(hb.p);
+    kwh_tmp = hold_operand_pre(c, ykw, TY_POLY, 1, kwh_tmp, 1);
   }
   if (nkw > 0) {
     int kw_bad = ykw_splat;

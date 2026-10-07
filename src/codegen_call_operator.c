@@ -1177,6 +1177,7 @@ int emit_call_operator_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
   if (recv >= 0 && rt == TY_POLY && sp_streq(name, "<<") && argc == 1) {
     buf_puts(b, "sp_poly_shl("); emit_expr(c, recv, b); buf_puts(b, ", ");
     emit_boxed(c, argv[0], b); buf_puts(b, ")");
+    c->args_in_call = recv;
     return 1;
   }
   /* poly `push` with no argument in expression position: an array answers
@@ -1340,13 +1341,7 @@ int emit_call_operator_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
         }
       Buf pcall; memset(&pcall, 0, sizeof pcall);
       if (subtree_may_allocate(nt, argv[0])) {
-        int th = ++g_tmp;
-        Buf rb; memset(&rb, 0, sizeof rb);
-        emit_boxed(c, recv, &rb);
-        emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n",
-                   th, rb.p ? rb.p : "sp_box_nil()", th);
-        free(rb.p);
+        int th = hold_operand_pre(c, recv, TY_POLY, 1, ++g_tmp, 1);
         buf_printf(&pcall, "%s(_t%d, ", pfn, th); emit_boxed(c, argv[0], &pcall); buf_puts(&pcall, ")");
       }
       else {
@@ -1374,6 +1369,7 @@ int emit_call_operator_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
       }
       else buf_puts(b, pcall.p ? pcall.p : "sp_box_nil()");
       free(pcall.p);
+      c->args_in_call = recv;
       return 1;
     }
     const char *cfn = NULL;
@@ -1389,6 +1385,7 @@ int emit_call_operator_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
     }
     if (cfn) {
       buf_printf(b, "%s(", cfn); emit_boxed(c, recv, b); buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, ")");
+      c->args_in_call = recv;
       return 1;
     }
   }

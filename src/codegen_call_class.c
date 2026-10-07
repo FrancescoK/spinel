@@ -1637,6 +1637,7 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
     buf_printf(b, "} _t%d; })", rt2);
     g_ctor_blk_tmp = sv_cbt;
     free(atmp);
+    c->args_in_call = recv;
     return 1;
   }
 
@@ -1873,6 +1874,7 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
     buf_printf(b, "} _t%d; })", rt2);
     g_ctor_blk_tmp = sv_cbt;
     free(atmp);
+    c->args_in_call = recv;
     return 1;
   }
 
@@ -2759,11 +2761,7 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
           }
           if (any_pf9) {
             int tsd = ++g_tmp;
-            Buf rb9; memset(&rb9, 0, sizeof rb9); emit_boxed(c, recv, &rb9);
-            emit_indent(g_pre, g_indent);
-            buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n",
-                       tsd, rb9.p ? rb9.p : "sp_box_nil()", tsd);
-            free(rb9.p);
+            tsd = hold_operand_pre(c, recv, TY_POLY, 1, tsd, 1);
             view_bind(recv, "_t%d", tsd);
             int vw = view_push(c, recv, TY_POLY);
             int svcv = g_cls_value_recv; g_cls_value_recv = recv;

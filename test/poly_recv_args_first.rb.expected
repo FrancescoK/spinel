@@ -1,0 +1,48 @@
+nil center NoMethodError
+nil center [:a0]
+int center NoMethodError
+int center [:a0, :a1]
+paren center NoMethodError
+paren center [:r, :a0]
+int squeeze! NoMethodError
+int squeeze! [:a0]
+abs2 count ArgumentError
+abs2 count [:a0]
+nil compact NoMethodError
+nil compact [:r, :a0]
+first count ArgumentError
+first count [:r, :a0, :a1]
+int zip NoMethodError
+int zip [:a0, :a1]
+"acb"
+prepend [:a0, :a1]
+false
+start_with? [:r, :a0]
+readpartial nil NoMethodError
+readpartial nil [:r, :a0, :a1]
+readpartial1 nil NoMethodError
+readpartial1 nil [:a0]
+readpartial 7 NoMethodError
+readpartial 7 [:r, :a0, :a1]
+readpartial1 7 NoMethodError
+readpartial1 7 [:a0]
+{}
+slice nil Hash []
+nil
+[] nil Hash []
+slice nil String TypeError
+slice nil String []
+[] nil String TypeError
+[] nil String []
+slice nil Array TypeError
+slice nil Array []
+[] nil Array TypeError
+[] nil Array []
+slice nil Symbol TypeError
+slice nil Symbol []
+[] nil Symbol TypeError
+[] nil Symbol []
+nil
+safe-nav nil [:r]
+" ab  "
+safe-nav "ab" [:r, :a0]

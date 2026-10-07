@@ -144,6 +144,7 @@ int emit_call_identity_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
       buf_printf(b, "(sp_poly_recv_ck(_t%d, \"%s\"), "
                     "sp_poly_cmp_ck(_t%d, _t%d) >= 0 && sp_poly_cmp_ck(_t%d, _t%d) <= 0)",
                  ts, name, ts, tlo, ts, thi);
+      c->args_in_call = recv;
       return 1;
     }
     /* Comparable: user type with <=> method */
@@ -2095,9 +2096,8 @@ static void emit_bivar_name(Compiler *c, int arg, Buf *b) {
     return;
   }
   int tn = ++g_tmp;
-  buf_printf(b, "({ sp_RbVal _t%d = ", tn); emit_boxed(c, arg, b);
-  buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_ivar_name_check(_t%d); sp_sym_intern(sp_poly_to_name(_t%d)); })",
-             tn, tn, tn);
+  buf_puts(b, "({ "); tn = hold_operand(c, arg, TY_POLY, 1, tn, 1, " ", b);
+  buf_printf(b, "sp_ivar_name_check(_t%d); sp_sym_intern(sp_poly_to_name(_t%d)); })", tn, tn);
 }
 
 /* An ivar access the runtime's map answers (sp_bivar_*): the receiver, the
@@ -2108,8 +2108,7 @@ static int emit_bivar_table_op(Compiler *c, const BopCtx *x, char op, Buf *b) {
   int id = x->id, argc;
   const int *argv = call_args(nt, id, &argc);
   int tv = ++g_tmp;
-  buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_boxed(c, x->recv, b);
-  buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", tv);
+  buf_puts(b, "({ "); tv = hold_operand(c, x->recv, TY_POLY, 1, tv, 1, " ", b);
   if (op == 'l') { buf_printf(b, "sp_bivar_list(_t%d); })", tv); return 1; }
   buf_printf(b, "sp_sym _k%d = ", tv); emit_bivar_name(c, argv[0], b); buf_puts(b, "; ");
   if (op == 'd') { buf_printf(b, "sp_bivar_defined(_t%d, _k%d); })", tv, tv); return 1; }
@@ -2152,14 +2151,12 @@ int emit_op_ivar_reflection(Compiler *c, const BopCtx *x, Buf *b) {
   const char *sym = a0ty && sp_streq(a0ty, "SymbolNode") ? nt_str(nt, argv[0], "value")
                   : a0ty && sp_streq(a0ty, "StringNode") ? nt_str(nt, argv[0], "content") : NULL;
   int tv = ++g_tmp;
-  buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_boxed(c, recv, b);
-  buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", tv);
+  buf_puts(b, "({ "); tv = hold_operand(c, recv, TY_POLY, 1, tv, 1, " ", b);
   int tn = -1;
   for (int k = 0; k < argc; k++) {
     if (k == 0 && !sym) {
       tn = ++g_tmp;
-      buf_printf(b, "sp_RbVal _t%d = ", tn); emit_boxed(c, argv[k], b);
-      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", tn);
+      tn = hold_operand(c, argv[k], TY_POLY, 1, tn, 1, " ", b);
     }
     else { buf_puts(b, "(void)("); emit_expr(c, argv[k], b); buf_puts(b, "); "); }
   }
@@ -2269,9 +2266,8 @@ int emit_object_ivar_list(Compiler *c, int recv, int ivcid, Buf *b) {
 static int emit_data_ivar_set(Compiler *c, int id, int recv, int value, int cid, Buf *b) {
   const char *dn = class_ruby_name(c, cid) ? class_ruby_name(c, cid) : c->classes[cid].name;
   int td = ++g_tmp;
-  buf_printf(b, "({ sp_RbVal _t%d = ", td);
-  emit_boxed(c, recv, b);
-  buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); (void)(", td);
+  buf_puts(b, "({ "); td = hold_operand(c, recv, TY_POLY, 1, td, 1, " ", b);
+  buf_puts(b, "(void)(");
   emit_boxed(c, value, b);
   buf_printf(b, "); sp_raise_frozen_obj(_t%d, (&(\"\\xff\" \"can't modify frozen %s\")[1])); ", td, dn);
   Repr rp = repr_of(c, id);
