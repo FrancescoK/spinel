@@ -17386,21 +17386,28 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
   }
   /* a container literal no holder names, iterated in place by a block
      (`[+"a"].each { |x| x << y }`), whose elements the rule shares: its
-     stores are the handles the block's parameters bind.
+     stores are the handles the block's parameters bind. An indexed
+     literal hands on those same elements without a block: only the share
+     row's element-reading answers extend this to calls without blocks.
      A pattern's subject carries the same handles into its bound locals. */
   static const NodeKind kinds[] = { NK_CallNode, NK_CaseMatchNode, NK_MatchRequiredNode, NK_MatchPredicateNode };
   for (size_t k = 0; k < sizeof kinds / sizeof *kinds; k++)
   NT_FOREACH_KIND(c->nt, kinds[k], n) {
-    int r;
+    int r, blk = -1;
     if (kinds[k] == NK_CallNode) {
-      int blk = nt_ref(c->nt, n, "block");
-      if (blk < 0 || nt_kind(c->nt, blk) != NK_BlockNode) continue;
+      blk = nt_ref(c->nt, n, "block");
       r = nt_ref(c->nt, n, "receiver");
     }
     else r = nt_ref(c->nt, n, kinds[k] == NK_CaseMatchNode ? "predicate" : "value");
+    if (r < 0) continue;
     r = unwrap_parens(c, r);
-    if (r >= 0 && (nt_kind(c->nt, r) == NK_ArrayNode || nt_kind(c->nt, r) == NK_HashNode) &&
-        share_node_elems_share(c, r))
+    if (r < 0 || (nt_kind(c->nt, r) != NK_ArrayNode && nt_kind(c->nt, r) != NK_HashNode)) continue;
+    if (kinds[k] == NK_CallNode && (blk < 0 || nt_kind(c->nt, blk) != NK_BlockNode)) {
+      int s = bop_share_named(nt_kind(c->nt, r) == NK_ArrayNode ? BOP_ANY_ARRAY : BOP_ANY_HASH,
+                             nt_str(c->nt, n, "name"));
+      if (s != BSH_ELEM && s != BSH_FETCH && s != BSH_ELEM_N) continue;
+    }
+    if (share_node_elems_share(c, r))
       changed |= strbuf_container_source_walk(c, r, 0, SB_DEMAND);
   }
   return changed;
@@ -36638,9 +36645,19 @@ static void an_phase_storage(Compiler *c) {
      so the callee appends to the variable's own String. The narrowing ran
      before the lifts were decided. */
   NT_FOREACH_KIND(c->nt, NK_LocalVariableReadNode, r) {
-    if (!c->poly_strbuf_lift[r] || c->nilnarrow[r] != TY_STRING) continue;
-    c->nilnarrow[r] = TY_UNKNOWN;
-    c->ntype[r] = TY_POLY;
+    if (c->nilnarrow[r] != TY_STRING) continue;
+    if (c->poly_strbuf_lift[r]) {
+      c->nilnarrow[r] = TY_UNKNOWN;
+      c->ntype[r] = TY_POLY;
+    }
+    /* Other narrowed boxes keep the handle under the sharing rule too.
+       Its ordinary String read still uses the byte face, as a handle
+       local's does; identity and mutation take the handle itself. */
+    else if (c->share_strings) {
+      Scope *s = comp_scope_of(c, r);
+      LocalVar *lv = s ? scope_local(s, nt_str(c->nt, r, "name")) : NULL;
+      if (lv && lv->type == TY_POLY) c->nilnarrow[r] = c->ntype[r] = TY_STRBUF;
+    }
   }
   mark_reader_identity_operands(c);
   mark_reader_read_only_operands(c);
