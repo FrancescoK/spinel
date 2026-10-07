@@ -11683,7 +11683,10 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
     if (h.r.share) {
       emit_strbuf_orw_guard(c, ref, v, is_or, b);
       buf_puts(b, " ");
-      emit_cvar_set_flag(c, sc, nm, 0, b);
+      /* `||=` leaves the class variable defined whether or not it stored;
+         `&&=` stores only into one that holds a String, so already set --
+         flagging it after the guard called an unset one defined */
+      if (is_or) emit_cvar_set_flag(c, sc, nm, 0, b);
       buf_puts(b, "\n");
       return 1;
     }

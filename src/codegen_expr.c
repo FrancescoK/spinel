@@ -1107,15 +1107,17 @@ static void emit_strbuf_slot_read(Compiler *c, int id, Repr rp, const char *sref
 
 /* `REF ||= v` / `REF &&= v` in value position (write node id) on a slot
    that holds the rule's handle: the guarded store takes the RHS as a
-   handle, then a class variable's set flag (fcid/fnm, or -1/NULL), and
-   the value is the slot's read: the handle itself under the handle mark,
-   else its read face. */
+   handle, then, for `||=`, a class variable's set flag (fcid/fnm, or
+   -1/NULL), and the value is the slot's read: the handle itself under the
+   handle mark, else its read face. An `&&=` stores only into a slot that
+   holds a String, whose flag is already set; flagging it after the guard
+   called an unset class variable defined. */
 static void emit_strbuf_orw_share_value(Compiler *c, int id, const char *ref, int v, int is_or,
                                         int fcid, const char *fnm, Buf *b) {
   buf_puts(b, "({ ");
   emit_strbuf_orw_guard(c, ref, v, is_or, b);
   buf_puts(b, " ");
-  emit_cvar_set_flag(c, fcid, fnm, 0, b);
+  if (is_or) emit_cvar_set_flag(c, fcid, fnm, 0, b);
   emit_strbuf_slot_read(c, id, repr_of(c, id), ref, b);
   buf_puts(b, "; })");
 }

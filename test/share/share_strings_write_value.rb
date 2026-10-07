@@ -83,3 +83,24 @@ class K
   end
 end
 K.run
+
+# an `&&=` that stores nothing leaves an unset class variable undefined
+# (CRuby raises NameError reading it); an `||=` defines it either way
+class K2
+  def self.run
+    begin
+      x = (@@u &&= +"t")
+    rescue NameError
+    end
+    p defined?(@@u)
+    begin
+      @@w &&= +"t"
+      nil
+    rescue NameError
+    end
+    p defined?(@@w)
+    x = (@@u ||= +"u"); @@u << "!"; p x, defined?(@@u)
+    @@w ||= +"w"; @@w ||= +"z"; y = @@w; y << "!"; p @@w, defined?(@@w)
+  end
+end
+K2.run
