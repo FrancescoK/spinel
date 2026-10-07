@@ -681,10 +681,15 @@ const char *sp_time_strftime(sp_Time t, const char *fmt) {SP_GC_ROOT_STR(fmt);
     }
     size_t vl = strlen(val), v0 = 0;
     if (width > 0 && !nopad && vl < (size_t)width) {
-      char pc = padsp ? ' ' : '0';
-      /* zeros go after a sign, as CRuby pads "%10s" of -5 to "-000000005";
-         spaces go before it */
-      if (pc == '0' && val[0] == '-' && oi < sizeof(out) - 2) { out[oi++] = '-'; v0 = 1; }
+      /* CRuby pads a width with zeros for a number and with spaces for
+         text (%A %a %B %b %h %p %P %Z), for the composites (%c %x %X %D %F
+         %T %R %r %v), for the blank-padded numbers (%e %k %l) and for %n
+         %t %%; a `0` or `_` flag picks the character either way. Every
+         directive took zeros, so "%10A" was "000Tuesday". */
+      char pc = padsp ? ' ' : pad0 ? '0' : (strchr("AaBbhpPZcxXDFTRrvektlnt%", d) ? ' ' : '0');
+      /* zeros go after a sign, as CRuby pads "%10s" of -5 to "-000000005"
+         and "%10z" to "+000000000"; spaces go before it */
+      if (pc == '0' && (val[0] == '-' || val[0] == '+') && oi < sizeof(out) - 2) { out[oi++] = val[0]; v0 = 1; }
       for (size_t k = vl; k < (size_t)width && oi < sizeof(out) - 2; k++) out[oi++] = pc;
     }
     (void)tok;
