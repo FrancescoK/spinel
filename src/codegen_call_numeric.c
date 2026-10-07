@@ -348,15 +348,15 @@ int emit_call_bigint_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
     /* a divisor known only at run time: divmod and modulo answer what its
        kind makes them (a Rational's exactly, sp_rat_mod_v); the Bignum
        operand form read a Rational as 0 */
-    if ((sp_streq(name, "divmod") || is_modulo_alias(name)) && argc == 1 &&
+    if ((is_divmod_name(name) || is_modulo_alias(name)) && argc == 1 &&
         repr_of(c, argv[0]).kind == RK_BOXED &&
-        (sp_streq(name, "divmod") ? comp_ntype(c, id) == TY_POLY_ARRAY : repr_of(c, id).kind == RK_BOXED)) {
+        (is_divmod_name(name) ? comp_ntype(c, id) == TY_POLY_ARRAY : repr_of(c, id).kind == RK_BOXED)) {
       int tr = ++g_tmp;
       buf_printf(b, "({ sp_Bigint *_t%d = %s; SP_GC_ROOT(_t%d); %s(sp_box_bigint(_t%d), ", tr, r, tr,
-                 sp_streq(name, "divmod") ? "sp_poly_to_poly_array(sp_poly_divmod"
-                 : sp_streq(name, "%") ? "sp_poly_mod" : "sp_poly_modulo", tr);
+                 is_divmod_name(name) ? "sp_poly_to_poly_array(sp_poly_divmod"
+                 : is_mod_operator(name) ? "sp_poly_mod" : "sp_poly_modulo", tr);
       emit_expr(c, argv[0], b);
-      buf_puts(b, sp_streq(name, "divmod") ? ")); })" : "); })");
+      buf_puts(b, is_divmod_name(name) ? ")); })" : "); })");
       free(rs.p); return 1;
     }
     /* Bignum modulo/%/remainder/divmod/#[]/modular-pow (#2594) */
@@ -437,7 +437,7 @@ int emit_call_bigint_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
     /* Bignum#div(Rational): the floor of the exact quotient. The Bignum
        operand form below has no conversion for a Rational and refused it,
        and Integer#ceildiv(Rational) divides with it (builtins/integer.rb). */
-    if (sp_streq(name, "div") && argc == 1 && comp_ntype(c, argv[0]) == TY_RATIONAL) {
+    if (is_div_name(name) && argc == 1 && comp_ntype(c, argv[0]) == TY_RATIONAL) {
       int tr = ++g_tmp, ta = ++g_tmp;
       buf_printf(b, "({ sp_Bigint *_t%d = %s; SP_GC_ROOT(_t%d); sp_Rational _t%d = ", tr, r, tr, ta);
       emit_expr(c, argv[0], b);
@@ -447,7 +447,7 @@ int emit_call_bigint_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
     /* a divisor known only at run time: a Float or a Rational divides as
        Numeric#div does; the Bignum operand form read one truncated, the
        other as 0 (sp_bigint_div_poly) */
-    if (sp_streq(name, "div") && argc == 1 && repr_of(c, argv[0]).kind == RK_BOXED) {
+    if (is_div_name(name) && argc == 1 && repr_of(c, argv[0]).kind == RK_BOXED) {
       /* the receiver is held across the divisor's evaluation, which can
          allocate */
       int tr = ++g_tmp;

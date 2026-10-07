@@ -708,6 +708,18 @@ int is_div_name(const char *n) {
   return sp_streq(n, "div");
 }
 
+int is_divmod_name(const char *n) {
+  return sp_streq(n, "divmod");
+}
+
+int is_modulo_name(const char *n) {
+  return sp_streq(n, "modulo");
+}
+
+int is_mod_operator(const char *n) {
+  return sp_streq(n, "%");
+}
+
 int is_initialize_family(const char *n) {
   return sp_streq(n, "initialize_copy") || sp_streq(n, "initialize");
 }

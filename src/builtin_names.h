@@ -146,6 +146,9 @@ int is_object_receiver_handoff(const char *n); /* to_enum enum_for instance_eval
 int is_div_or_mod(const char *n); /* % / */
 int is_div_or_modulo(const char *n); /* div modulo: the named floored quotient and remainder */
 int is_div_name(const char *n); /* div: the named floored quotient */
+int is_divmod_name(const char *n); /* divmod: the [quotient, modulo] pair */
+int is_modulo_name(const char *n); /* modulo: the named method, not the % operator */
+int is_mod_operator(const char *n); /* %: the operator */
 int is_add_or_mul(const char *n); /* * + */
 int is_push_operator(const char *n); /* << push */
 int is_eq_or_eql(const char *n); /* == eql? */
