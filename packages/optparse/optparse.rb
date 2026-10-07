@@ -8,11 +8,13 @@
 #   - separator, banner=, summary_width, summary_indent, to_s (help text)
 #   - parse! with --long=VALUE, --long VALUE, -s VALUE, -sVALUE, clustered
 #     short switches (-vq, -vuNAME) and "--"
+#   - --[no-]name switches: --name passes true, --no-name passes false;
+#     with a required value, only the positive form reads that value
 #   - OptionParser::InvalidOption, OptionParser::MissingArgument and
 #     OptionParser::NeedlessArgument, all subclasses of
 #     OptionParser::ParseError
 #
-# Not supported: abbreviated long switches, optional values, --[no-] forms,
+# Not supported: abbreviated long switches, optional values,
 # other value types than String and Array.
 
 class OptionParser
@@ -50,7 +52,27 @@ class OptionParser
     end
 
     def matches?(name)
-      @shorts.include?(name) || @longs.include?(name)
+      enabled?(name) || negated?(name)
+    end
+
+    def enabled?(name)
+      return true if @shorts.include?(name)
+      return false if negated?(name)
+
+      @longs.any? do |long|
+        if long.start_with?("--[no-]")
+          "--" + long.delete_prefix("--[no-]") == name
+        else
+          long == name
+        end
+      end
+    end
+
+    def negated?(name)
+      @longs.any? do |long|
+        long.start_with?("--[no-]") &&
+          "--no-" + long.delete_prefix("--[no-]") == name
+      end
     end
   end
 
@@ -172,9 +194,9 @@ class OptionParser
     end
   end
 
-  def invoke_flag(sw)
+  def invoke_flag(sw, value)
     handler = sw.handler
-    handler.call(true) if handler
+    handler.call(value) if handler
   end
 
   # Returns the attached value if there is one, otherwise the next word.
@@ -192,13 +214,14 @@ class OptionParser
     name = eq ? arg[0, eq] : arg
     sw = find_switch(name)
     raise InvalidOption.new("invalid option: " + name) if sw.nil?
-    if sw.takes_value
+    is_enabled = sw.enabled?(name)
+    if sw.takes_value && is_enabled
       attached = eq ? arg[(eq + 1)..] : nil
       invoke(sw, read_value(argv, index, attached, name))
       index += 1 if attached.nil?
     else
       raise NeedlessArgument.new("needless argument: " + arg) if eq
-      invoke_flag(sw)
+      invoke_flag(sw, is_enabled)
     end
     index
   end
@@ -222,7 +245,8 @@ class OptionParser
         break
       end
       raise NeedlessArgument.new("needless argument: " + from_here) if arg[pos + 1] == "="
-      invoke_flag(sw)
+      is_enabled = true
+      invoke_flag(sw, is_enabled)
       pos += 1
     end
     index

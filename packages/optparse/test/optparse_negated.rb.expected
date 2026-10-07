@@ -1,0 +1,32 @@
+Usage: demo
+    -v, --[no-]verbose               Verbose output
+    -q, --quiet
+        --[no-]color                 Color output
+true
+false
+true
+true
+true
+false
+["first", "last"]
+true
+false
+true
+false
+true
+[]
+["--cache", "--no-cache", "--cached", "--no-cached", "-c"]
+"alice"
+false
+"bob"
+["keep"]
+["--no-feature"]
+OptionParser::NeedlessArgument
+needless argument: --verbose=yes
+["keep"]
+OptionParser::NeedlessArgument
+needless argument: --no-verbose=yes
+["keep"]
+OptionParser::NeedlessArgument
+needless argument: --no-name=alice
+OptionParser::InvalidOption
