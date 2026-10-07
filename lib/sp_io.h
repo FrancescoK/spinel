@@ -18,6 +18,9 @@ typedef struct {
   unsigned char bin_flag;      /* #binmode was called (#3131) */
   unsigned char no_autoclose;  /* #autoclose = false (#3131) */
   unsigned char is_sock;       /* a socket handle: writes bypass stdio (#2922) */
+  unsigned char rev_lookup;    /* a socket's #do_not_reverse_lookup is false:
+                                  addr / peeraddr report the host name. Taken
+                                  from the class setting when it is made */
   unsigned char sync_on;       /* #sync is true for this handle: a write reaches
                                   the descriptor at once. A socket is always
                                   sync (its writes bypass stdio); IO.pipe's
@@ -144,6 +147,11 @@ const char *sp_sock_gethostname(void);
 sp_int sp_sock_addrinfo_hint(sp_RbVal v, sp_int is_family);
 sp_PolyArray *sp_sock_getaddrinfo(const char *host, sp_int port, sp_int family, sp_int socktype);
 sp_Addrinfo *sp_sock_address(sp_File *f, sp_int peer);
+/* BasicSocket.do_not_reverse_lookup (shared by every socket class) and the
+   per-socket flag a new socket takes from it */
+extern sp_bool sp_sock_dnrl_default;
+sp_bool sp_sock_dnrl(sp_File *f);
+void sp_sock_set_dnrl(sp_File *f, sp_bool on);
 /* Packed sockaddr strings: what Socket.sockaddr_in / Socket.pack_sockaddr_in,
    Socket.pack_sockaddr_un and Addrinfo#to_sockaddr answer, and what the 1-arg
    connect_nonblock takes. Byte strings -- they carry NUL. */

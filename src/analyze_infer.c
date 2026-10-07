@@ -2894,7 +2894,7 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
         if (sp_streq(name, "setsockopt") && argc == 3) { *out = an_poly_concrete(c, name, TY_INT); return 1; }
       }
       /* a boxed socket's addresses, as the TY_IO arm types them */
-      if ((is_socket_address(name)) && argc == 0 &&
+      if ((is_socket_address(name)) && argc <= 1 &&
           sp_feature_required("socket"))
         { *out = an_poly_concrete(c, name, TY_POLY_ARRAY); return 1; }
       /* a boxed server's accept family, as the TY_IO arm types it: the
@@ -2906,6 +2906,11 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
         { *out = an_poly_concrete(c, name, an_nonblock_no_exception(c, id) ? TY_POLY : TY_IO); return 1; }
       if (sp_streq(name, "to_io") && argc == 0)
         { *out = an_poly_concrete(c, name, TY_IO); return 1; }
+      /* and its reverse-lookup flag, as the TY_IO arm types it */
+      if (sp_streq(name, "do_not_reverse_lookup") && argc == 0 && sp_feature_required("socket"))
+        { *out = an_poly_concrete(c, name, TY_BOOL); return 1; }
+      if (sp_streq(name, "do_not_reverse_lookup=") && argc == 1 && sp_feature_required("socket"))
+        { *out = an_poly_concrete(c, name, infer_type(c, argv[0])); return 1; }
       /* the non-blocking pair on a poly-carried handle, typed as the TY_IO arm
          types it: `exception: false` answers a wait symbol (read) or nil
          (write) as well as the ordinary result, so that shape is poly and a
@@ -3405,6 +3410,16 @@ static int infer_builtin_cmethod_call(Compiler *c, int id, const NodeTable *nt, 
           ((sp_streq(name, "ip") || sp_streq(name, "unix")) && argc == 1))
         { *out = TY_ADDRINFO; return 1; }
     }
+    /* BasicSocket.do_not_reverse_lookup, on any socket class; the writer
+       answers its argument */
+    if (rty && sp_streq(rty, "ConstantReadNode") && sp_feature_required("socket") &&
+        io_family_name(nt_str(nt, recv, "name")) && !is_io_class_name(nt_str(nt, recv, "name"))) {
+      int skc = comp_class_index(c, nt_str(nt, recv, "name"));
+      if (skc < 0 || comp_cmethod_in_chain(c, skc, name, NULL) < 0) {
+        if (sp_streq(name, "do_not_reverse_lookup") && argc == 0) { *out = TY_BOOL; return 1; }
+        if (sp_streq(name, "do_not_reverse_lookup=") && argc == 1) { *out = infer_type(c, argv[0]); return 1; }
+      }
+    }
     if (rty && sp_streq(rty, "ConstantReadNode") && nt_str(nt, recv, "name") &&
         sp_streq(nt_str(nt, recv, "name"), "Socket") && sp_feature_required("socket")) {
       if (sp_streq(name, "gethostname") && argc == 0) { *out = TY_STRING; return 1; }
@@ -3577,8 +3592,11 @@ static int infer_handle_call(Compiler *c, int id, const NodeTable *nt, const cha
     /* socket methods on the IO handle (#2922) */
     if (sp_feature_required("socket")) {
       if (sp_streq(name, "accept") && argc == 0) { *out = TY_IO; return 1; }
-      if ((is_socket_address(name)) && argc == 0)
+      if ((is_socket_address(name)) && argc <= 1)
         { *out = TY_POLY_ARRAY; return 1; }
+      /* the reverse-lookup flag; its writer answers its argument */
+      if (sp_streq(name, "do_not_reverse_lookup") && argc == 0) { *out = TY_BOOL; return 1; }
+      if (sp_streq(name, "do_not_reverse_lookup=") && argc == 1) { *out = infer_type(c, argv[0]); return 1; }
       if ((sp_streq(name, "local_address") || sp_streq(name, "remote_address")) && argc == 0)
         { *out = TY_ADDRINFO; return 1; }
       /* the non-blocking family: the handle / the bytes / the byte count, each
