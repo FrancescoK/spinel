@@ -1362,6 +1362,7 @@ static int strbuf_route_operand(Compiler *c, int v) {
   TyKind xt = x >= 0 ? comp_ntype(c, x) : TY_UNKNOWN;
   return xt == TY_STRING || xt == TY_STRBUF ? x : -1;
 }
+static int strbuf_route_handle_call(Compiler *c, int v);
 /* Is the last statement of statement list st a holder's read, nil, a
    conditional with a handle arm, or a `raise` (which leaves no value)? */
 static int strbuf_stmts_tail_plain(Compiler *c, int st) {
@@ -1374,7 +1375,8 @@ static int strbuf_stmts_tail_plain(Compiler *c, int st) {
       !bare_call_class_owned(c, b[n - 1]) && comp_method_index(c, nm) < 0)
     return 1;
   return k == NK_NilNode || k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode ||
-         repr_static_read_kind(k) || strbuf_cond_has_handle_leaf(c, b[n - 1], 0);
+         repr_static_read_kind(k) || strbuf_cond_has_handle_leaf(c, b[n - 1], 0) ||
+         strbuf_route_handle_call(c, b[n - 1]);
 }
 /* --share-strings: a begin whose value is a variable's String or nil in
    each of its arms (its body's, each rescue's, its else's; an ensure's is
@@ -1448,6 +1450,31 @@ static int strbuf_route_inline_call(Compiler *c, int v) {
           repr_static_read_kind(k)) &&
          !strbuf_has_return(nt, c->scopes[mi].body);
 }
+/* --share-strings: a call whose every target method answers a shared
+   String's handle (Scope.ret_handle): the value is that handle, which the
+   callee's tail read publishes. (A call marked to be stored as the handle
+   is read with its mark lifted, as a String, and picked up here.) */
+static int strbuf_route_handle_call(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  v = unwrap_parens(c, v);
+  if (!repr_share_rule(c) || v < 0 || nt_kind(nt, v) != NK_CallNode) return 0;
+  /* a String's value, or one the pickup marks to be stored as the handle */
+  Repr rv = repr_of(c, v);
+  if (rv.ty != TY_STRING && !(rv.ty == TY_STRBUF && rv.handle)) return 0;
+  /* a Method's call: the method `method(:m)` names */
+  int recv = nt_ref(nt, v, "receiver");
+  const char *nm = nt_str(nt, v, "name");
+  if (recv >= 0 && nm && comp_ntype(c, recv) == TY_METHOD && is_call_alias(nm)) {
+    int mn = method_recv_node(c, recv);
+    int mi = mn >= 0 ? method_obj_target_mi(c, mn) : -1;
+    return mi > 0 && c->scopes[mi].ret_handle;
+  }
+  int mis[CPT_MAX];
+  int n = cplan_targets(c, v, mis, CPT_MAX);
+  if (n <= 0) return 0;
+  for (int i = 0; i < n; i++) if (!c->scopes[mis[i]].ret_handle) return 0;
+  return 1;
+}
 /* --share-strings: a proc's answer read as a String (`pr.call`, the
    BSH_CALL row's names). The proc hands it back boxed, a String the rule
    shares as its handle's box. */
@@ -1465,7 +1492,7 @@ static int strbuf_route_proc_call(Compiler *c, int v) {
 static int strbuf_route_carries(Compiler *c, int v, int depth) {
   char ref[1024];
   if (strbuf_route_proc_call(c, v) || strbuf_route_begin(c, v) || strbuf_route_yield(c, v) ||
-      strbuf_route_inline_call(c, v) || strbuf_route_loop(c, v)) return 1;
+      strbuf_route_inline_call(c, v) || strbuf_route_loop(c, v) || strbuf_route_handle_call(c, v)) return 1;
   int x = strbuf_route_operand(c, v);
   if (x == unwrap_parens(c, v)) return 1;
   if (x >= 0) return depth < 8 && strbuf_route_carries(c, x, depth + 1);
@@ -1486,6 +1513,19 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
     emit_expr(c, v, b);
     buf_printf(b, "; _t%d.tag == SP_TAG_NIL ? (sp_String *)NULL : sp_poly_as_strbuf(_t%d); })", t, t);
     view_pop(c, sv);
+    return 1;
+  }
+  if (strbuf_route_handle_call(c, v)) {
+    /* the deep-return pickup (emit_call_body's): the channel cleared, the
+       call run, its published handle taken, or a String of its own if none
+       was published */
+    v = unwrap_parens(c, v);
+    int t = ++g_tmp;
+    buf_printf(b, "({ _sp_ret_strbuf = NULL; const char *_v%d = ", t);
+    int sv = view_push_repr(c, v, VR_STRBUF_BOX, 0), sd = view_push_repr(c, v, VR_HANDLE_DEMAND, 0);
+    emit_expr(c, v, b);
+    view_pop(c, sd); view_pop(c, sv);
+    buf_printf(b, "; _sp_ret_strbuf ? (sp_String *)_sp_ret_strbuf : sp_String_new_shared(_v%d); })", t);
     return 1;
   }
   if (strbuf_route_inline_call(c, v)) {
