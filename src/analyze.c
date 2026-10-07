@@ -20140,7 +20140,10 @@ static int poly_var_may_hold_string(Compiler *c, const HandleArgTab *hat,
                                     const char *vn, Scope *vs, int depth, const PolyLits *lits) {
   const NodeTable *nt = c->nt;
   LocalVar *lv = vn && vs ? scope_local(vs, vn) : NULL;
-  if (!lv || depth > 4 || lv->is_cell || lv->is_block_param) return 1;
+  /* with `lits`, how a block or a lambda binds it (PolyLits.bound): one
+     bound only as Enumerator.new's yielder is no String */
+  int bound = lv && lits && !lv->is_param ? lits->bound(lits->ctx, c, (int)(vs - c->scopes), vn) : 0;
+  if (!lv || depth > 4 || lv->is_cell || (lv->is_block_param && bound != 1) || bound == 2) return 1;
   /* a variable already being asked about further up the chain (a method
      handing its parameter to itself) adds no value of its own */
   static LocalVar *asking[6];
@@ -20158,10 +20161,6 @@ static int poly_var_may_hold_string(Compiler *c, const HandleArgTab *hat,
       if (a < 0 || sp >= 0 || poly_value_may_be_string(c, hat, a, depth, lits)) return 1;
     }
   }
-  /* with `lits`, a variable a block binds, whether or not its binder marked
-     it a block's parameter (a Thread's block), may hold what the binder
-     hands it */
-  if (lits && !lv->is_param && lits->bound(lits->ctx, c, si, vn)) return 1;
   int seen = 0;
   for (int w = comp_lvw_first_sc(c, si, vn); w >= 0; w = comp_lvw_next_sc(c, w)) {
     if (comp_scope_of(c, w) != vs) continue;
@@ -20173,8 +20172,9 @@ static int poly_var_may_hold_string(Compiler *c, const HandleArgTab *hat,
     if (poly_value_may_be_string(c, hat, nt_ref(nt, w, "value"), depth, lits)) return 1;
     seen = 1;
   }
-  /* with `lits`, a variable no write binds is bound some other way */
-  return lits && !lv->is_param && !seen;
+  /* with `lits`, a variable no write or yielder binds is bound some other
+     way */
+  return lits && !lv->is_param && !seen && bound != 1;
 }
 
 /* --share-strings (#6765): can receiver r, a boxed or untyped value, be a
