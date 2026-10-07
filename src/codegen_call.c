@@ -15112,9 +15112,12 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
     /* A scalar-comparable receiver against a poly argument (e.g. a boolean or
        integer param `=== y` where y unified to poly across call sites): case
        equality is value equality, so box the receiver and compare by the poly
-       runtime rule (int/float cross-compare numerically, other tags by tag). */
+       runtime rule (int/float cross-compare numerically, other tags by tag).
+       A String range (family 7) is Range#=== instead, the runtime coverage
+       rule (sp_poly_case_eq), which also reads a shared mutable String. */
     if (fr && fr != 5 && fr != 6 && a0 == TY_POLY) {
-      buf_puts(b, "sp_poly_eq("); emit_boxed(c, recv, b); buf_puts(b, ", ");
+      buf_puts(b, fr == 7 ? "sp_poly_case_eq(" : "sp_poly_eq(");
+      emit_boxed(c, recv, b); buf_puts(b, ", ");
       emit_boxed(c, argv[0], b); buf_puts(b, ")");
       return 1;
     }
