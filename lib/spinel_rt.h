@@ -5195,14 +5195,28 @@ static int sp_sort_key_number_p(sp_RbVal v) {
   return sp_poly_numeric_p(v) || sp_poly_is_rational(v) || sp_poly_is_brat(v);
 }
 static sp_int sp_sort_key_cmp(sp_RbVal a, sp_RbVal b) SP_UNUSED;
+/* a `<=>` answer as rb_cmpint reads it: nil is no order; any other value
+   orders by its sign, so a Float or Rational answer (0.5, 1/3) is not cut
+   to 0 as sp_poly_to_i would */
+static sp_int sp_sort_cmpint(sp_RbVal u) SP_UNUSED;
+static sp_int sp_sort_cmpint(sp_RbVal u) {
+  if (u.tag == SP_TAG_NIL) return SP_INT_NIL;
+  sp_bool ok; sp_int c = sp_poly_cmp(u, sp_box_int(0), &ok);
+  if (ok) return c < 0 ? -1 : (c > 0 ? 1 : 0);
+  return sp_poly_to_i(u);
+}
 static sp_int sp_sort_key_cmp(sp_RbVal a, sp_RbVal b) {
+  sp_RbVal u;
   if ((a.tag == SP_TAG_BIGINT && !sp_sort_key_number_p(b)) ||
       (b.tag == SP_TAG_BIGINT && !sp_sort_key_number_p(a))) {
-    sp_RbVal u;
     if (sp_poly_user_cmp("<=>", a, b, &u) || sp_poly_coerce_binop("<=>", a, b, &u))
-      return u.tag == SP_TAG_NIL ? SP_INT_NIL : sp_poly_to_i(u);
+      return sp_sort_cmpint(u);
     return SP_INT_NIL;
   }
+  /* a class's own <=> (or a coerce) first, as sp_poly_spaceship asks it,
+     but read by its sign */
+  if (sp_poly_user_cmp("<=>", a, b, &u) || sp_poly_coerce_binop("<=>", a, b, &u))
+    return sp_sort_cmpint(u);
   return sp_poly_spaceship(a, b);
 }
 /* sp_sort_idx_by_poly for keys that need not compare (sort_by over keys of
