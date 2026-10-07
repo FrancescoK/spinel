@@ -5183,6 +5183,28 @@ static void sp_sort_idx_by_poly(sp_int *idx, const sp_RbVal *keys, sp_int n) {
   if (src != idx) for (sp_int x = 0; x < n; x++) idx[x] = src[x];   /* odd #levels: result is in tmp */
   free(tmp);
 }
+/* sort_by's `<=>` for a pair of keys, as CRuby asks it: sp_poly_spaceship
+   (a class's own `<=>` first, so a nil answer raises even for one object
+   against itself; Object#<=>'s 0 for equal values only where none answers),
+   but Integer#<=> for a Bignum against a non-number -- the operand's coerce,
+   or the class's own `<=>` when the Bignum is the operand, else nil.
+   sp_poly_cmp's Bignum arm reads such an operand as 0 and orders the pair;
+   that arm is master's, and this header's changes are additive only. */
+static int sp_sort_key_number_p(sp_RbVal v) SP_UNUSED;
+static int sp_sort_key_number_p(sp_RbVal v) {
+  return sp_poly_numeric_p(v) || sp_poly_is_rational(v) || sp_poly_is_brat(v);
+}
+static sp_int sp_sort_key_cmp(sp_RbVal a, sp_RbVal b) SP_UNUSED;
+static sp_int sp_sort_key_cmp(sp_RbVal a, sp_RbVal b) {
+  if ((a.tag == SP_TAG_BIGINT && !sp_sort_key_number_p(b)) ||
+      (b.tag == SP_TAG_BIGINT && !sp_sort_key_number_p(a))) {
+    sp_RbVal u;
+    if (sp_poly_user_cmp("<=>", a, b, &u) || sp_poly_coerce_binop("<=>", a, b, &u))
+      return u.tag == SP_TAG_NIL ? SP_INT_NIL : sp_poly_to_i(u);
+    return SP_INT_NIL;
+  }
+  return sp_poly_spaceship(a, b);
+}
 /* sp_sort_idx_by_poly for keys that need not compare (sort_by over keys of
    more than one kind, a nil, a Float): a pair whose `<=>` is nil raises
    CRuby's ArgumentError, where the unchecked sort keeps the pair in place.
@@ -5200,10 +5222,8 @@ static void sp_sort_idx_by_poly_ck(sp_int *idx, const sp_RbVal *keys, sp_int n) 
       sp_int hi = lo + 2 * width < n ? lo + 2 * width : n;
       sp_int i = lo, j = mid, k = lo;
       while (i < mid && j < hi) {
-        sp_bool ok; sp_int c = sp_poly_cmp(keys[src[i]], keys[src[j]], &ok);
-        /* Object#<=>: equal values compare 0 (nil with nil, true with true) */
-        if (!ok && sp_poly_eq(keys[src[i]], keys[src[j]])) { ok = TRUE; c = 0; }
-        if (!ok) {
+        sp_int c = sp_sort_key_cmp(keys[src[i]], keys[src[j]]);
+        if (c == SP_INT_NIL) {
           sp_RbVal ka = keys[src[i]], kb = keys[src[j]];
           free(tmp);
           sp_raise_cls("ArgumentError", sp_sprintf("comparison of %s with %s failed", sp_poly_class_name(ka), sp_cmperr_desc(kb)));
