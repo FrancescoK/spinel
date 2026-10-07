@@ -53,3 +53,34 @@ n = T.new(1, 2)
 p(n[k] = nil)
 p n
 
+
+# a multiple assignment and an operator assignment through a box, or by a
+# key no literal names, store as `[]=` does
+U = Struct.new(:x, :y)
+def lit(v) = (puts "v#{v}"; v)
+m = [U.new(+"value", +"w"), 0][0]
+m[lit(0)], m[:y] = lit(4), lit(5.5)
+p m, m.x + 1
+m[0], m[1] = 7
+p m
+w = U.new(+"a", 1)
+w[k], w[k + 1] = "s", 2.5
+p w
+e = [U.new(+"value", nil), 0][0]
+e[:y] ||= 4
+e[1] += 1
+e[:x] += "s"
+p e
+w[k] += "!"
+w[k + 1] *= 2
+p w
+
+# a Data has no `[]=`
+D = Data.define(:x)
+d = D.new(x: "s")
+begin
+  d[k] = 4
+rescue NoMethodError => ex
+  p ex.message
+end
+p d

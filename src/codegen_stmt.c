@@ -9927,6 +9927,36 @@ static TyKind masgn_slot_type(Compiler *c, int id, int tgt) {
    instance, global or class variable, an index or an attribute. `recv_tmp`
    and `key_tmp` are the temps a hoisted receiver and index live in, or -1.
    Answers 0 for a kind of target it does not store. */
+/* An index target a Struct's own `[]=` can take (struct_aset, marked by
+   the analysis): the store is its evidence call `recv[key] = value`
+   (desugar_masgn_store_evidence), emitted as the single `[]=` is, with the
+   receiver and key read from their hoisted temps and the value from its
+   element. A nil element is the boxed nil. */
+static int masgn_struct_store(Compiler *c, int tgt, const char *val, TyKind vt,
+                              int recv_tmp, int key_tmp, int indent, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int call = (int)nt_int(nt, tgt, "aset_ev", 0) - 1;
+  if (!nt_int(nt, tgt, "struct_aset", 0) || call < 0) return 0;
+  int recv = nt_ref(nt, call, "receiver"), args = nt_ref(nt, call, "arguments"), an = 0;
+  const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  if (recv < 0 || an != 2) return 0;
+  int boxed = !val || vt == TY_NIL || vt == TY_VOID || vt == TY_UNKNOWN;
+  int vr = view_push(c, recv, comp_ntype(c, recv) == TY_UNKNOWN ? TY_POLY : comp_ntype(c, recv));
+  int rb = recv_tmp >= 0 ? view_bind(recv, "_t%d", recv_tmp) : -1;
+  int kv = view_push(c, av[0], repr_of(c, av[0]).as_ty);
+  int kb = key_tmp >= 0 ? view_bind(av[0], "_t%d", key_tmp) : -1;
+  int vv = view_push(c, av[1], boxed ? TY_POLY : vt);
+  int vb = view_bind(av[1], "%s", boxed ? "sp_box_nil()" : val);
+  emit_indent(b, indent);
+  emit_expr(c, call, b);
+  buf_puts(b, ";\n");
+  view_unbind(vb); view_pop(c, vv);
+  if (kb >= 0) view_unbind(kb);
+  view_pop(c, kv);
+  if (rb >= 0) view_unbind(rb);
+  view_pop(c, vr);
+  return 1;
+}
 static int masgn_store(Compiler *c, int id, int tgt, const char *val, TyKind vt,
                        int recv_tmp, int key_tmp, int indent, Buf *b) {
   const NodeTable *nt = c->nt;
@@ -9975,6 +10005,7 @@ static int masgn_store(Compiler *c, int id, int tgt, const char *val, TyKind vt,
     return 1;
   }
   if (sp_streq(ty, "IndexTargetNode")) {
+    if (masgn_struct_store(c, tgt, val, vt, recv_tmp, key_tmp, indent, b)) return 1;
     int recv = nt_ref(nt, tgt, "receiver");
     int args = nt_ref(nt, tgt, "arguments"), argc = 0;
     const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
@@ -10954,6 +10985,8 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
       int poly_r = index && (rt == TY_POLY || rt == TY_UNKNOWN);
       TyKind okt = TY_UNKNOWN;
       int obj_ix = index && ty_is_object(rt) && masgn_index_writer(c, rt, NULL, &okt) >= 0;
+      /* a Struct's `[]=` (masgn_struct_store) takes the key as it is */
+      if (index && nt_int(nt, lefts[i], "struct_aset", 0)) { obj_ix = 1; okt = TY_UNKNOWN; }
       if (index && (k < 0 || !(poly_r || obj_ix || ty_is_array(rt) || (ty_is_hash(rt) && ty_hash_cname(rt))))) continue;
       if (!index && !ty_is_object(rt)) continue;
       ttr[i] = masgn_hoist_part(c, r, poly_r ? TY_POLY : rt, hb);
@@ -11296,7 +11329,7 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
       const int *idx_argv = idx_args >= 0 ? nt_arr(nt, idx_args, "arguments", &idx_argc) : NULL;
       if (recv_id < 0 || idx_argc < 1) { unsupported(c, id, "multiple assignment index target"); continue; }
       TyKind recv_t = comp_ntype(c, recv_id);
-      if (ty_is_object(recv_t)) {
+      if (ty_is_object(recv_t) || nt_int(nt, lefts[i], "struct_aset", 0)) {
         char rv[32]; snprintf(rv, sizeof rv, "_t%d", tmps[i]);
         masgn_store(c, id, lefts[i], masgn_nil_el(c, els[i]) ? NULL : rv, tmpts[i], ttr[i], ttk[i], indent, b);
         continue;
