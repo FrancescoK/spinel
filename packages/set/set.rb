@@ -144,6 +144,13 @@ class Set
     @data.dup
   end
 
+  # CRuby's Set#join: the members' to_a joined. Enumerable has no #join, so a
+  # Set read out of a mixed Array fell to Array#join's boxed helper, which
+  # rendered it as its inspect text.
+  def join(separator = nil)
+    to_a.join(separator)
+  end
+
   def map
     r = []
     _i = 0
