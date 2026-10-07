@@ -1281,7 +1281,7 @@ void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b);
 /* The operand of a `+s` value (`+@` with no argument), -1 for any other. */
 static int strbuf_uplus_operand(Compiler *c, int v) {
   return v >= 0 && nt_kind(c->nt, v) == NK_CallNode && nt_str(c->nt, v, "name") &&
-         sp_streq(nt_str(c->nt, v, "name"), "+@") && nt_ref(c->nt, v, "arguments") < 0 ?
+         is_unary_plus(nt_str(c->nt, v, "name")) && nt_ref(c->nt, v, "arguments") < 0 ?
          nt_ref(c->nt, v, "receiver") : -1;
 }
 /* The handle a slot the rule shares takes from value v (emit_strbuf_value
@@ -1879,7 +1879,13 @@ void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
     char dst[32];
     snprintf(dst, sizeof dst, "_t%d", ++g_tmp);
     buf_printf(b, "({ sp_String *%s = NULL; ", dst);
-    emit_strbuf_cond_value(c, lv, v, dst, b, 0);
+    /* The leaf walk follows unary + too: consume it before descending,
+       or the call's leaf returns here with the same node forever. */
+    emit_strbuf_cond_value(c, lv, vplus >= 0 ? vplus : v, dst, b, 0);
+    if (vplus >= 0) {
+      buf_printf(b, " if (SP_UNLIKELY(!%s)) sp_raise_nomethod(sp_nomethod_msg(\"+@\", sp_box_nil()));", dst);
+      buf_printf(b, " %s = sp_String_uplus(%s);", dst, dst);
+    }
     buf_printf(b, " %s; })", dst);
   }
   /* any other write whose slot holds the rule's handle (a local's `||=`,
