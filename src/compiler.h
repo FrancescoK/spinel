@@ -882,6 +882,12 @@ typedef struct {
   int bcall_built;
 
   /* (CallNode, ivar-read argument)-by-ivar-name index; see comp_ivarg_first */
+  /* ReturnNode chain, by the scope the return is in; see comp_ret_first */
+  int *ret_head;        /* [ret_nscopes] first ReturnNode id per scope */
+  int *ret_next;        /* [ret_count] next one in the same scope */
+  int ret_nscopes, ret_count;
+  unsigned ret_version;
+  int ret_built;
   int *ivarg_head;      /* [ivarg_nbuckets] first entry in each name bucket */
   int *ivarg_next;      /* [ivarg_count] next entry sharing the bucket */
   int *ivarg_call;      /* [ivarg_count] an entry's CallNode */
@@ -1091,6 +1097,10 @@ int comp_bcall_first(Compiler *c, int scope_idx);
 int comp_bcall_next(const Compiler *c, int u);
 int comp_ivarg_first(Compiler *c, const char *name);
 void comp_ivarg_invalidate(Compiler *c);
+/* the ReturnNodes of a scope, in node order (one index per node-table
+   version) */
+int comp_ret_first(Compiler *c, int scope_idx);
+int comp_ret_next(const Compiler *c, int u);
 int comp_ivarg_next(const Compiler *c, int e);
 int comp_ivarg_call(const Compiler *c, int e);
 int comp_ivarg_arg(const Compiler *c, int e);

@@ -15905,6 +15905,26 @@ static int strbuf_gvar_store_walk(Compiler *c, const char *grn, int depth) {
   }
   return changed;
 }
+/* The containers method mi answers: its body's last value and each
+   `return v`; for `def mk = yield`, the block blk of the call. */
+static int strbuf_method_ret_source_walk(Compiler *c, int mi, int blk, int depth, int mode) {
+  const NodeTable *nt = c->nt;
+  Scope *m = &c->scopes[mi];
+  int changed = 0;
+  int last = scope_body_last(c, mi);
+  if (last >= 0 && nt_kind(nt, last) == NK_YieldNode) {
+    if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode)
+      changed |= strbuf_container_source_walk(c, nt_ref(nt, blk, "body"), depth + 1, mode);
+  }
+  else changed |= strbuf_container_source_walk(c, last, depth + 1, mode);
+  for (int u = comp_ret_first(c, mi); u >= 0; u = comp_ret_next(c, u)) {
+    if (nt_kind(nt, u) != NK_ReturnNode || comp_scope_of(c, u) != m) continue;
+    int ra = nt_ref(nt, u, "arguments");
+    int rn2 = 0; const int *rv2 = ra >= 0 ? nt_arr(nt, ra, "arguments", &rn2) : NULL;
+    if (rn2 == 1) changed |= strbuf_container_source_walk(c, rv2[0], depth + 1, mode);
+  }
+  return changed;
+}
 static int strbuf_container_source_walk(Compiler *c, int node, int depth, int mode) {
   const NodeTable *nt = c->nt;
   if (node < 0 || depth > 8) return 0;
@@ -16028,19 +16048,7 @@ static int strbuf_container_source_walk(Compiler *c, int node, int depth, int mo
       for (int mi = 1; mi < c->nscopes; mi++) {
         Scope *m = &c->scopes[mi];
         if (!m->name || !sp_streq(m->name, mn)) continue;
-        int last = scope_body_last(c, mi);
-        /* `def mk = yield`: this call's own block builds the container */
-        if (last >= 0 && nt_kind(nt, last) == NK_YieldNode) {
-          if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode)
-            changed |= strbuf_container_source_walk(c, nt_ref(nt, blk, "body"), depth + 1, mode);
-        }
-        else changed |= strbuf_container_source_walk(c, last, depth + 1, mode);
-        for (int u = comp_kind_first(c, NK_ReturnNode); u >= 0; u = comp_kind_next(c, u)) {
-          if (nt_kind(nt, u) != NK_ReturnNode || comp_scope_of(c, u) != m) continue;
-          int ra = nt_ref(nt, u, "arguments");
-          int rn2 = 0; const int *rv2 = ra >= 0 ? nt_arr(nt, ra, "arguments", &rn2) : NULL;
-          if (rn2 == 1) changed |= strbuf_container_source_walk(c, rv2[0], depth + 1, mode);
-        }
+        changed |= strbuf_method_ret_source_walk(c, mi, blk, depth, mode);
       }
       return changed;
     }
@@ -17046,6 +17054,18 @@ static int share_gvar_container(Compiler *c, const char *name) {
       changed |= strbuf_container_source_walk(c, nt_ref(nt, comp_vsite_node(c, e), "value"), 1, SB_DEMAND);
   return changed | strbuf_gvar_store_walk(c, grn, 1);
 }
+/* Does method mi answer an Array or Hash literal of typed Strings (`const
+   char *` elements, which cannot hold the shared handle)? */
+static int share_ret_typed_str_literal(Compiler *c, int mi) {
+  TyKind t = c->scopes[mi].ret;
+  if (!(ty_is_array(t) && ty_array_elem(t) == TY_STRING) && !(ty_is_hash(t) && ty_hash_val(t) == TY_STRING)) return 0;
+  int last = an_unparen(c->nt, scope_body_last(c, mi));
+  return last >= 0 && (nt_kind(c->nt, last) == NK_ArrayNode || nt_kind(c->nt, last) == NK_HashNode);
+}
+/* an instance method a pattern calls to read an object's parts */
+static int share_pattern_method(const Scope *m) {
+  return m->class_id >= 0 && m->name && (sp_streq(m->name, "deconstruct") || sp_streq(m->name, "deconstruct_keys"));
+}
 static int share_default_apply(Compiler *c, int in_fixpoint) {
   if (!c->share_strings) return 0;
   if (in_fixpoint) {
@@ -17131,6 +17151,15 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
     else if (sh->kind == SHK_GVAR && repr_str_elems_share(c, h) && share_gvar_container(c, sh->name)) {
       changed = 1;
     }
+    /* a method's value whose elements the rule shares, when they would be
+       copies otherwise: a typed String Array or Hash literal it answers
+       (`def pair = [@a, @b]`, `t = o.pair[0]`), which the seal refuses
+       (repr_share_seal), and a deconstruct's, whose parts a pattern binds
+       (its boxes hold what each element boxes as). The containers it
+       answers hold the handles, as a local's do. */
+    else if (sh->kind == SHK_RET && repr_str_elems_share(c, h) &&
+             (share_ret_typed_str_literal(c, sh->scope) || share_pattern_method(&c->scopes[sh->scope])))
+      changed |= strbuf_method_ret_source_walk(c, sh->scope, -1, 0, SB_DEMAND);
     /* a global or a constant holds the handle the way a top-level ivar's C
        global does */
     else if ((sh->kind == SHK_GVAR || sh->kind == SHK_CONST) && repr_str_shares(c, h)) {
