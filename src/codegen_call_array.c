@@ -1597,6 +1597,7 @@ int emit_call_append_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
     buf_printf(b, "; if (_t%d.tag == SP_TAG_STR && _t%d.v.s == _t%d.v.s) ", cur, cur, t);
     emit_expr(c, slot, b);
     buf_printf(b, " = _t%d; } _t%d; })", got, got);
+    c->args_in_call = recv;
     return 1;
   }
   /* poly_val >> int: unbox recv to int, apply op. & | ^ dispatch on the
