@@ -2017,7 +2017,6 @@ static int comp_subtree_writes_var(Compiler *c, int n, int arg, const char *name
   }
   return 0;
 }
-int subtree_may_write_ivar(Compiler *c, int id, const char *iv, int cls, int depth);   /* MEASURE */
 int comp_block_rebinds_arg(Compiler *c, int blk, int arg) {
   const NodeTable *nt = c->nt;
   NodeKind ak = arg >= 0 ? nt_kind(nt, arg) : NK__COUNT;
@@ -2028,6 +2027,10 @@ int comp_block_rebinds_arg(Compiler *c, int blk, int arg) {
     if (lv && lv->proc_rebinds) return 1;
     return nt_kind(nt, blk) == NK_BlockNode && comp_subtree_writes_var(c, blk, arg, name, 0);
   }
+  /* an instance variable: a write in the block, or one a method the block
+     calls on self makes, or anything else that runs code the walk cannot
+     name (subtree_may_write_ivar); a block passed as a value (`&pr`) is a
+     proc whose body is not known here */
   if (nt_kind(nt, blk) != NK_BlockNode) return 1;
   return subtree_may_write_ivar(c, nt_ref(nt, blk, "body"), name, comp_ivar_owner(c, arg), 0);
 }
