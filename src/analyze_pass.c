@@ -15229,6 +15229,10 @@ static int irt_scope(Compiler *c, int s, IrtCtx *x) {
      build, #4451), and an Integer to a Bignum (`def get = @v` returned a
      promoted loop local's Bignum through an sp_int). Everything else is
      left where the earlier, gated re-runs settled it. */
+  /* At 3 (--share-strings' late conversion, an_phase_storage) a return
+     follows its body only from a typed String Array to the poly Array the
+     rule made of the local it answers. */
+  if (g_ret_no_new_poly == 3 && !(r == TY_POLY_ARRAY && sc->ret == TY_STR_ARRAY)) return ch;
   if (g_ret_no_new_poly == 2 &&
       !(r == TY_POLY && sc->ret != TY_POLY && sc->ret != TY_UNKNOWN && sc->ret != TY_VOID && sc->ret != TY_NIL) &&
       !(r == TY_BIGINT && sc->ret == TY_INT)) return ch;

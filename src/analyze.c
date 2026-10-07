@@ -36150,6 +36150,7 @@ static void an_phase_storage(Compiler *c) {
      parameter RETAINED in a shared-handle ivar demands the handle for the
      same reason and feeds the same propagation, so the two run to a joint
      fixpoint rather than one after the other (#4363). */
+  int late_widened = 0;
   for (;;) {
     HandleArgTab hat; handle_arg_tab_init(c, &hat);
     int ch = promote_params_stored_in_shared_ivars(c, &hat);
@@ -36162,8 +36163,22 @@ static void an_phase_storage(Compiler *c) {
     if (promote_default_alias_params(c)) ch = 1;
     if (promote_forwarded_rest_args(c)) ch = 1;
     if (promote_ivar_handle_stores(c)) ch = 1;
+    /* --share-strings: a typed String Array the rule converts to the poly
+       Array this late (share_default_apply) is a late widening: a method
+       answering it, and the locals written from that method, follow it as
+       they follow the late ivar and return widenings (rejoin_local_writes) */
+    if (c->share_strings && ch) {
+      g_ret_no_new_poly = 3;
+      if (infer_return_types(c)) ch = late_widened = 1;
+      g_ret_no_new_poly = 0;
+      if (rejoin_local_writes(c)) ch = late_widened = 1;
+    }
     if (!ch) break;
   }
+  /* ... and the reads of what widened take its type, as the proc-return
+     re-derivation's refresh does (an_phase_proc_returns) */
+  if (late_widened)
+    for (int id = 0; id < c->nt->count; id++) infer_type(c, id);
   /* A read an is_a? or nil guard narrowed to String (`m(x) if
      x.is_a?(String)`) unboxed a copy of the String its POLY variable holds:
      one lifted into the handle for a parameter appended to keeps the box,
