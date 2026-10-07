@@ -1543,6 +1543,17 @@ static int sh_lazy_valued(ShareFacts *F, Compiler *c, int n) {
   if (n >= 0 && nt_kind(c->nt, n) == NK_LocalVariableReadNode) n = lazy_alias_chain(c, n);
   return n >= 0 && chain_is_lazy_valued(c, n);
 }
+/* is node n a container's builtin call that answers runs of its elements
+   (each_slice, slice_when: a BSH_ITER_SUB row)? A chained materializer
+   (`a.slice_when { }.to_a`) can leave that answer untyped. */
+static int sh_answers_runs(Compiler *c, int n) {
+  const NodeTable *nt = c->nt;
+  if (n < 0 || nt_kind(nt, n) != NK_CallNode || sh_has_targets(c, n)) return 0;
+  int r = nt_ref(nt, n, "receiver");
+  TyKind fam = r < 0 ? TY_VOID : c->ntype[r] == TY_POLY ? BOP_ANY_ARRAY : sh_family(c->ntype[r]);
+  if (fam != BOP_ANY_ARRAY && fam != BOP_ANY_HASH) return 0;
+  return bop_share_named(fam, nt_str(nt, n, "name")) == BSH_ITER_SUB;
+}
 static int sh_call(ShareFacts *F, Compiler *c, int n) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, n, "name");
@@ -1632,8 +1643,9 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
   }
   /* a Lazy (`a.lazy.map { }`, held in a variable or not) has no type of
      its own: its stages and its terminal hand out its source's elements as
-     an Enumerator's do, by the container rows */
-  if (rt == TY_UNKNOWN && sh_lazy_valued(F, c, recv)) {
+     an Enumerator's do, by the container rows. So do grouped runs a
+     chained materializer leaves untyped (`a.slice_when { }.to_a`). */
+  if (rt == TY_UNKNOWN && (sh_lazy_valued(F, c, recv) || sh_answers_runs(c, recv))) {
     int s = bop_share_named(BOP_ANY_ARRAY, name);
     return s ? sh_builtin(F, c, n, s, rv, blk, 1) : sh_container_default(F, c, n, rv, blk);
   }
