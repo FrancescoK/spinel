@@ -1937,7 +1937,7 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       (is_indexed_each(name)))
     { *out = TY_ENUMERATOR; return 1; }
   /* Hash#merge on a poly value: a general PolyPoly hash. */
-  if (recv >= 0 && rt == TY_POLY && argc == 1 && nt_ref(nt, id, "block") < 0 &&
+  if (recv >= 0 && rt == TY_POLY && argc >= 1 && nt_ref(nt, id, "block") < 0 &&
       !an_user_recv_defines_method(c, name) && sp_streq(name, "merge"))
     { *out = TY_POLY_POLY_HASH; return 1; }
   /* When ostruct is in the program, a bare reader on a poly value may be an
