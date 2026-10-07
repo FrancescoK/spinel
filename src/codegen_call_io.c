@@ -593,6 +593,21 @@ static int emit_io_syswrite_count(Compiler *c, const char *r, const int *argv, i
   return 1;
 }
 
+/* A write lowered to one call per operand (write, print and puts with
+   several, printf, which formats its operands first) names the handle in
+   each call: a receiver with an effect ran once per operand, and printf's
+   ran after its operands. Such a receiver is held in a rooted temp first,
+   ahead of the operands, as CRuby evaluates it; `rb` then names the temp. */
+static void io_hold_effectful_recv(Compiler *c, const char *name, int recv, int argc, Buf *rb) {
+  if (!((argc >= 2 && (is_io_write(name) || is_text_print(name))) || (argc >= 1 && is_printf_name(name))) ||
+      !subtree_has_side_effect(c, recv)) return;
+  int th = ++g_tmp;
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_File *_t%d = %s; SP_GC_ROOT(_t%d);\n", th, rb->p ? rb->p : "NULL", th);
+  rb->len = 0;
+  buf_printf(rb, "_t%d", th);
+}
+
 /* the instance methods of an IO / File handle (TY_IO) */
 /* pread(len, off[, buf]) and pwrite(str, off) on a boxed receiver: the
    receiver and then every argument run before the handle is unboxed, so a
@@ -659,6 +674,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
     const char *r = NULL;
     Buf rb = {0};
     emit_expr(c, recv, &rb);
+    io_hold_effectful_recv(c, name, recv, argc, &rb);
     r = rb.p ? rb.p : "NULL";
     /* metadata via the handle's path (#2790) */
     /* f.chown(uid, gid) on the handle's path; a nil id leaves it unchanged and
