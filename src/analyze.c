@@ -15750,6 +15750,29 @@ static void refuse_global_array_element(Compiler *c, int id, int g, int l) {
   q.carry = l;
   if (!share_route_defer(c, &q, msg)) unsupported_feature(c, id, msg);
 }
+/* --share-strings: the values stored into global grn's container where
+   the rule shares its elements: its pushes' and `<<`'s, and the last
+   argument of its `[]=` and `store`, each demanded into a shared handle
+   (a fresh String wrapped as a new one), as a local's or an ivar's stores
+   are. Without them a global's Array or Hash kept the plain String, and a
+   change through an element was lost. */
+static int strbuf_gvar_store_walk(Compiler *c, const char *grn, int depth) {
+  const NodeTable *nt = c->nt;
+  int changed = 0;
+  for (int e = comp_vsite_first(c, VS_RECV, NK_GlobalVariableReadNode, grn, -1); e >= 0;
+       e = comp_vsite_next(c, e)) {
+    int u = comp_vsite_node(c, e);
+    const char *un = nt_str(nt, u, "name");
+    if (!un || !gvar_site_is(c, e, grn)) continue;
+    int a = nt_ref(nt, u, "arguments"), an = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+    if (is_push_unshift(un))
+      for (int k = 0; k < an; k++) changed |= strbuf_store_leaf(c, av[k], depth, SB_DEMAND);
+    else if (is_store_alias(un) && an >= 2)
+      changed |= strbuf_store_leaf(c, av[an - 1], depth, SB_DEMAND);
+  }
+  return changed;
+}
 static int strbuf_container_source_walk(Compiler *c, int node, int depth, int mode) {
   const NodeTable *nt = c->nt;
   if (node < 0 || depth > 8) return 0;
@@ -15818,6 +15841,7 @@ static int strbuf_container_source_walk(Compiler *c, int node, int depth, int mo
           for (int k = 0, e; (e = sa_unseen_element(c, u, k)) != -2; k++)
             if (e >= 0) sa_refuse_element(c, e, u);
         }
+      if (mode == SB_DEMAND && c->share_strings) changed |= strbuf_gvar_store_walk(c, grn, depth + 1);
       int pl = mode == SB_DEMAND ? gvar_array_plain_string(c, grn) : -1;
       if (pl >= 0) refuse_global_array_element(c, node, node, pl);
       int hl = mode == SB_DEMAND ? gvar_hash_plain_string(c, grn) : -1;
@@ -16837,6 +16861,26 @@ static int share_lift_poly_ivar_stores(Compiler *c, int cid, const char *name) {
   return changed;
 }
 
+/* share_default_apply's global container (holder name `name`): answers
+   whether anything changed. */
+static int share_gvar_container(Compiler *c, const char *name) {
+  const NodeTable *nt = c->nt;
+  const char *grn = comp_resolve_gvar(c, name[0] == '$' ? name + 1 : name);
+  LocalVar *gv = grn ? comp_gvar(c, grn) : NULL;
+  if (!gv || (!ty_is_array(gv->type) && !ty_is_hash(gv->type))) return 0;
+  int changed = 0;
+  if ((gv->type == TY_STR_ARRAY || gv->type == TY_POLY_ARRAY) && !gv->rbs_seeded &&
+      (gv->type != TY_POLY_ARRAY || !gv->elems_shared)) {
+    gv->type = TY_POLY_ARRAY;
+    gv->elems_shared = 1;
+    changed = 1;
+  }
+  for (int e = comp_vsite_first(c, VS_WRITE, NK_GlobalVariableReadNode, grn, -1); e >= 0;
+       e = comp_vsite_next(c, e))
+    if (gvar_site_is(c, e, grn))
+      changed |= strbuf_container_source_walk(c, nt_ref(nt, comp_vsite_node(c, e), "value"), 1, SB_DEMAND);
+  return changed | strbuf_gvar_store_walk(c, grn, 1);
+}
 static int share_default_apply(Compiler *c, int in_fixpoint) {
   if (!c->share_strings) return 0;
   if (in_fixpoint) {
@@ -16915,6 +16959,12 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
         ci->cvar_str_shared[i] = 1;
         changed = 1;
       }
+    }
+    /* a global's Array or Hash whose elements the rule shares holds them as
+       handles, as a local's does: a String Array settles in its poly form,
+       and what its writes and stores give it is demanded into the handle */
+    else if (sh->kind == SHK_GVAR && repr_str_elems_share(c, h) && share_gvar_container(c, sh->name)) {
+      changed = 1;
     }
     /* a global or a constant holds the handle the way a top-level ivar's C
        global does */
