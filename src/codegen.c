@@ -13489,7 +13489,8 @@ static void scan_prologue_features(Compiler *c) {
   g_gen_obj_to_h = 0;
   /* and any instantiated Struct (not a Data) the member-array dispatch, so a
      Struct read out of a poly container answers values, values_at and a
-     blockless each from its members, not from a #to_a the program wrote */
+     blockless each from its members, not from a #to_a the program wrote,
+     and dig tells a Struct receiver from another program object */
   g_gen_obj_struct_values = 0;
   for (int i = 0; i < c->nclasses; i++)
     if (c->classes[i].instantiated && c->classes[i].is_struct && !c->classes[i].is_data) { g_gen_obj_struct_values = 1; break; }
@@ -13506,6 +13507,9 @@ static void scan_prologue_features(Compiler *c) {
           (sp_streq(nm, "each") || sp_streq(nm, "each_pair") ||
            sp_streq(nm, "values") || sp_streq(nm, "values_at") ||
            sp_streq(nm, "entries") || sp_streq(nm, "size") || sp_streq(nm, "length"))) reached = 1;
+      /* any dig: a Struct's, typed or not, can reach the runtime walk, whose
+         receiver check asks this dispatch (sp_poly_dig_recv_ok) */
+      if (nm && rv >= 0 && sp_streq(nm, "dig")) reached = 1;
     }
     g_gen_obj_struct_values = reached;
   }
