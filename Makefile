@@ -782,6 +782,13 @@ endif
 ifeq ($(SPINEL_INT_BITS),32)
 TESTS := $(filter-out $(shell grep -l '^\# spinel: int64' test/*.rb),$(TESTS))
 endif
+# Host-incompatible: io_winsize_set sets a size on a /dev/ptmx master, which
+# Linux accepts; macOS takes a size on the pty's slave only, so TIOCSWINSZ on
+# the master fails with ENOTTY there -- under CRuby too -- and the test cannot
+# reach the slave without IO#ioctl or the pty library.
+ifeq ($(shell uname -s),Darwin)
+TESTS := $(filter-out test/io_winsize_set.rb,$(TESTS))
+endif
 # TEST_SHARD=k/n runs the k-th of n slices of the corpus (1-based), the
 # slice taken by position in the sorted list so every test lands in exactly
 # one: CI runs the slices as parallel jobs, since the corpus is what the
