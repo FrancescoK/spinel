@@ -6,8 +6,8 @@
 # count beside it, as a keyword, with a block, on an object, and through a
 # dispatch over two classes. A route whose block makes a new String still
 # hands over a String of its own. A nil one (a nil variable, or a route
-# that answers nil) binds the parameter nil, and the append raises
-# NoMethodError, as on any nil.
+# that answers nil, its tail or a `next` of its block) binds the parameter
+# nil, and the append raises NoMethodError, as on any nil.
 def grow(u) = u << "!"
 def grow2(u, n)
   n.times { u << "+" }
@@ -44,3 +44,5 @@ end
 rescue NoMethodError => e
   p e.class
 end
+c = s.size > 0
+begin; grow(s.then { |v| next n if c; v }); p :no_error; rescue NoMethodError => e; p e.class; end
