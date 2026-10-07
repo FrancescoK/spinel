@@ -4459,6 +4459,93 @@ int eq_family(TyKind t) {
   if (t == TY_STR_RANGE) return 7;
   return 0;
 }
+/* The program the class tests below read its reopenings from (set by
+   codegen_program): ty_matches_class takes no Compiler, and is asked in
+   emitters all through the code generator. */
+const Compiler *g_tmc_c = NULL;
+/* Does class index k include program module `mod`, directly or through a
+   module it includes? */
+/* The modules class index k includes, by the `include` statements of its
+   bodies as written (a module with no methods transplants nothing, so the
+   analysis's included_mods misses it) and by what the analysis recorded. */
+static int tmc_body_includes(const Compiler *c, int k, int mod) {
+  const NodeTable *nt = c->nt;
+  const char *kn = c->classes[k].name, *mn = c->classes[mod].name;
+  if (!kn || !mn) return 0;
+  static const NodeKind HK[] = { NK_ClassNode, NK_ModuleNode };
+  for (int h = 0; h < 2; h++)
+    for (int m = comp_kind_first((Compiler *)c, HK[h]); m >= 0; m = comp_kind_next((Compiler *)c, m)) {
+      if (nt_kind(nt, m) != HK[h]) continue;
+      int cp = nt_ref(nt, m, "constant_path");
+      const char *cn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+      if (!cn || !sp_streq(cn, kn)) continue;
+      int body = nt_ref(nt, m, "body"), bn = 0;
+      const int *bb = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &bn) : NULL;
+      for (int i = 0; i < bn; i++) {
+        if (nt_kind(nt, bb[i]) != NK_CallNode || nt_ref(nt, bb[i], "receiver") >= 0) continue;
+        const char *cl = nt_str(nt, bb[i], "name");
+        if (!cl || !sp_streq(cl, "include")) continue;
+        int args = nt_ref(nt, bb[i], "arguments"), an = 0;
+        const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+        for (int a = 0; a < an; a++) {
+          NodeKind ak = nt_kind(nt, av[a]);
+          const char *an2 = ak == NK_ConstantReadNode || ak == NK_ConstantPathNode ? nt_str(nt, av[a], "name") : NULL;
+          if (an2 && sp_streq(an2, mn)) return 1;
+        }
+      }
+    }
+  return 0;
+}
+static int tmc_includes(const Compiler *c, int k, int mod, int depth) {
+  if (k < 0 || k >= c->nclasses || depth > 16) return 0;
+  if (tmc_body_includes(c, k, mod)) return 1;
+  const ClassInfo *ci = &c->classes[k];
+  for (int m = 0; m < ci->nincluded_mods; m++) {
+    int x = ci->included_mods[m];
+    if (x == mod || tmc_includes(c, x, mod, depth + 1)) return 1;
+  }
+  /* through a module this class includes by statement */
+  for (int x = 0; x < c->nclasses; x++)
+    if (x != k && x != mod && comp_class_is_module((Compiler *)c, (ClassInfo *)&c->classes[x]) &&
+        tmc_body_includes(c, k, x) && tmc_includes(c, x, mod, depth + 1)) return 1;
+  return 0;
+}
+/* Is program module `cn` among the ancestors of the builtin class `self_cls`
+   by way of a program reopening of it or of a builtin ancestor (`class Hash;
+   include DeepMergeable; end`, `class Numeric; include M; end`, `module
+   Enumerable; include M; end`)? */
+static int tmc_prog_module_in_builtin(const char *self_cls, const char *cn) {
+  const Compiler *c = g_tmc_c;
+  if (!c || !cn) return 0;
+  int mod = comp_class_index((Compiler *)c, cn);
+  if (mod < 0 || !comp_class_is_module((Compiler *)c, &c->classes[mod])) return 0;
+  const char *chain[8]; int n = 0;
+  chain[n++] = self_cls;
+  if (sp_streq(self_cls, "Integer") || sp_streq(self_cls, "Float") ||
+      sp_streq(self_cls, "Complex") || sp_streq(self_cls, "Rational")) chain[n++] = "Numeric";
+  if (sp_streq(self_cls, "Array") || sp_streq(self_cls, "Hash") || sp_streq(self_cls, "Range") ||
+      sp_streq(self_cls, "Enumerator")) chain[n++] = "Enumerable";
+  if (sp_streq(self_cls, "String") || sp_streq(self_cls, "Symbol") || sp_streq(self_cls, "Time") ||
+      n > 1 && sp_streq(chain[1], "Numeric")) chain[n++] = "Comparable";
+  chain[n++] = "Object";
+  chain[n++] = "Kernel";
+  for (int i = 0; i < n; i++) {
+    int k = comp_class_index((Compiler *)c, chain[i]);
+    if (k >= 0 && tmc_includes(c, k, mod, 0)) return 1;
+  }
+  return 0;
+}
+/* Is program module `mod` mixed into some builtin class (or builtin
+   module) by a reopening of it, directly or through another module? */
+int builtin_reopen_includes_module(Compiler *c, int mod) {
+  if (mod < 0 || mod >= c->nclasses || !comp_class_is_module(c, &c->classes[mod])) return 0;
+  for (int k = 0; k < c->nclasses; k++) {
+    const char *n = c->classes[k].name;
+    if (!n || builtin_class_id(n) == 0) continue;
+    if (tmc_includes(c, k, mod, 0)) return 1;
+  }
+  return 0;
+}
 int ty_matches_class(TyKind t, const char *cn, int exact) {
   const char *self_cls = NULL;
   switch (t) {
@@ -4498,6 +4585,8 @@ int ty_matches_class(TyKind t, const char *cn, int exact) {
                                   t == TY_COMPLEX || t == TY_RATIONAL)) return 1;
   if (sp_streq(cn, "Enumerable") && (ty_is_array(t) || ty_is_hash(t) || t == TY_RANGE ||
                                      t == TY_ENUMERATOR)) return 1;
+  /* a program module the program mixed into this builtin by reopening it */
+  if (tmc_prog_module_in_builtin(self_cls, cn)) return 1;
   return 0;
 }
 

@@ -4711,6 +4711,12 @@ int emit_poly_pred_value(Compiler *c, int id, const char *tvref,
         return 1;
       }
       int target = comp_class_index(c, cn);   /* a user class in this program? */
+      /* a program module may be mixed into a builtin by reopening it, so a
+         builtin value answers it too: the ancestor walk, which reads those */
+      if (target >= 0 && comp_class_is_module(c, &c->classes[target])) {
+        buf_printf(b, "sp_poly_is_a(%s, (sp_Class){%d})", tvref, target);
+        return 1;
+      }
       if (target >= 0) {   /* user-class target: chain check on the object cls_id */
         buf_printf(b, "(%s.tag == SP_TAG_OBJ && %s.cls_id >= 0 && "
                       "sp_class_le((sp_Class){%s.cls_id}, (sp_Class){%d}))",
@@ -18087,6 +18093,11 @@ int emit_poly_isa_test(Compiler *c, const char *cn, const char *v, int exact, Bu
           }
         buf_puts(b, ")))");
       }
+      /* a module a builtin's reopening includes (`class Hash; include M;
+         end`): a builtin value carries no program class id, so ask the
+         ancestor walk, which reads those reopenings */
+      if (!exact && builtin_reopen_includes_module(c, cid))
+        buf_printf(b, " || sp_poly_is_a(%s, (sp_Class){%d})", v, cid);
     }
     /* a builtin ancestor not covered above (Object/BasicObject/Kernel hold
        for every value but a BasicObject.new, which is only a BasicObject;

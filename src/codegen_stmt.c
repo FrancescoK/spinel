@@ -3652,6 +3652,11 @@ int emit_poly_class_when(Compiler *c, int cond_id, const char *tmp, Buf *b) {
       }
       if (first) buf_puts(b, "0");
       buf_puts(b, "))");
+      /* a module a builtin's reopening includes (`class Hash; include M;
+         end`): a builtin value carries no program class id, so ask the
+         ancestor walk, which reads those reopenings */
+      if (builtin_reopen_includes_module(c, cid))
+        buf_printf(b, " || sp_poly_is_a(%s, (sp_Class){%d})", tmp, cid);
     }
     /* A known builtin class with no arm above -- an exception class most of
        all: a boxed exception walks its hierarchy at run time, so `when
