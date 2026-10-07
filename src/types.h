@@ -331,9 +331,32 @@ static inline TyKind ty_poly_handle_face(const char *nm) {
     /* MatchData's own readers. strscan's StringScanner has these names too,
        as native methods: the use sites stand down when a native class
        defines the name (native_class_defines / an_native_defines_method). */
-    static const char *const MATCHDATA[] = { "pre_match", "post_match", "captures", 0 };
+    static const char *const MATCHDATA[] = { "pre_match", "post_match", "captures", "regexp", 0 };
     for (int i = 0; MATCHDATA[i]; i++) if (sp_streq(nm, MATCHDATA[i])) return TY_MATCHDATA;
   }
+  {
+    /* an Enumerator's own: the external-iteration reads and the chain
+       steps no other class answers */
+    static const char *const ENUMERATOR[] = { "next_values", "peek_values", "with_index", 0 };
+    for (int i = 0; ENUMERATOR[i]; i++) if (sp_streq(nm, ENUMERATOR[i])) return TY_ENUMERATOR;
+  }
+  return TY_UNKNOWN;
+}
+/* The same, for a call passing `argc` arguments: the zero-argument names
+   above, and the handle names that take arguments, each with the counts it
+   takes. A name is exclusive at that count: Range#begin and #end take none,
+   so MatchData#begin(n) and #end(n) are MatchData's alone. */
+static inline TyKind ty_poly_handle_face_args(const char *nm, int argc) {
+  if (!nm || argc < 0) return TY_UNKNOWN;
+  if (argc == 0) return ty_poly_handle_face(nm);
+  static const struct { const char *nm; TyKind k; int lo, hi; } ARGS[] = {
+    { "begin", TY_MATCHDATA, 1, 1 }, { "end", TY_MATCHDATA, 1, 1 },
+    { "offset", TY_MATCHDATA, 1, 1 }, { "byteoffset", TY_MATCHDATA, 1, 1 },
+    { "match_length", TY_MATCHDATA, 1, 1 },
+    { "with_index", TY_ENUMERATOR, 1, 1 },
+    { 0, TY_UNKNOWN, 0, 0 } };
+  for (int i = 0; ARGS[i].nm; i++)
+    if (sp_streq(nm, ARGS[i].nm) && argc >= ARGS[i].lo && argc <= ARGS[i].hi) return ARGS[i].k;
   return TY_UNKNOWN;
 }
 
