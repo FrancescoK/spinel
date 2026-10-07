@@ -3975,6 +3975,17 @@ static int infer_int_float_recv_call(Compiler *c, int id, const NodeTable *nt, c
        lets be a Bignum (sp_float_div_v), as Float#div below (#4688) */
     if (g_promote_mode && is_div_name(name) && argc == 1 && infer_type(c, argv[0]) == TY_FLOAT)
       { *out = TY_POLY; return 1; }
+    /* and by a divisor known only at run time, whose exact floor (a
+       Rational's) can pass the word too */
+    if (g_promote_mode && is_div_name(name) && argc == 1 && infer_type(c, argv[0]) == TY_POLY)
+      { *out = TY_POLY; return 1; }
+    /* divmod and modulo by a divisor known only at run time answer what its
+       kind makes them, as `%` does: a Rational's modulo is a Rational and a
+       Float's a Float, which an Integer slot cannot hold */
+    if (argc == 1 && infer_type(c, argv[0]) == TY_POLY) {
+      if (sp_streq(name, "divmod")) { *out = TY_POLY_ARRAY; return 1; }
+      if (sp_streq(name, "modulo")) { *out = TY_POLY; return 1; }
+    }
     {
       const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
       if (op && op->result != TY_UNKNOWN) { *out = op->result; return 1; }
@@ -4263,6 +4274,10 @@ static int infer_operator_call(Compiler *c, int id, const NodeTable *nt, const c
     if ((is_remainder_family(name)) &&
         argc == 1 && infer_type(c, argv[0]) == TY_FLOAT) { *out = TY_FLOAT; return 1; }
     if (sp_streq(name, "div") && argc == 1 && infer_type(c, argv[0]) == TY_FLOAT) { *out = TY_POLY; return 1; }
+    /* modulo by a divisor known only at run time answers what its kind
+       makes it, as `%` does (a Rational's is a Rational) */
+    if (sp_streq(name, "modulo") && argc == 1 && infer_type(c, argv[0]) == TY_POLY)
+      { *out = TY_POLY; return 1; }
     /* modulo/%/remainder/modular-pow stay Bignum; divmod is a [q, r] pair;
        #[] is a single bit (0/1) (#2594) */
     if ((is_remainder_family(name)) &&
@@ -7113,6 +7128,8 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     if (sp_streq(name, "**") && a0 == TY_COMPLEX) return TY_COMPLEX;
     if (sp_streq(name, "**") && a0 == TY_RATIONAL) return TY_FLOAT;
     if (sp_streq(name, "fdiv") && (a0 == TY_RATIONAL || a0 == TY_COMPLEX)) return TY_FLOAT;
+    /* promote lets the exact floor of a Rational quotient pass the word */
+    if (sp_streq(name, "div") && a0 == TY_RATIONAL && g_promote_mode) return TY_POLY;
     if (sp_streq(name, "div") && (a0 == TY_RATIONAL || a0 == TY_COMPLEX)) return TY_INT;
   }
   /* A literal left shift whose result exceeds int64 (`1 << 64`, the 2**64 mask)
