@@ -1165,6 +1165,19 @@ else {
 }
 
 /* the class methods of the builtin classes named by a constant (Thread, an exception class, ...), ahead of the Class.new dispatch */
+/* A family (or socktype) argument of Socket.getaddrinfo: nil or absent is 0
+   (unrestricted), anything else goes to sp_sock_addrinfo_hint, which reads an
+   Integer, or a String or Symbol name, as CRuby does. */
+static void emit_getaddrinfo_hint(Compiler *c, int arg, int is_family, Buf *b) {
+  if (arg < 0 || nt_kind(c->nt, arg) == NK_NilNode) {
+    buf_puts(b, "0");
+    return;
+  }
+  buf_puts(b, "sp_sock_addrinfo_hint(");
+  emit_boxed(c, arg, b);
+  buf_printf(b, ", %d)", is_family);
+}
+
 int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv) {
   /* Thread class methods: Thread.current / Thread.pass (recv is the Thread
      constant). Handled before the Class.new dispatch since they are not `new`. */
@@ -1269,6 +1282,11 @@ int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable 
         buf_puts(b, ", ");
         if (nt_type(nt, argv[1]) && sp_streq(nt_type(nt, argv[1]), "NilNode")) buf_puts(b, "0");
         else emit_int_expr(c, argv[1], b);
+        /* the family and socktype restrict the answer, as in CRuby */
+        buf_puts(b, ", ");
+        emit_getaddrinfo_hint(c, argc > 2 ? argv[2] : -1, 1, b);
+        buf_puts(b, ", ");
+        emit_getaddrinfo_hint(c, argc > 3 ? argv[3] : -1, 0, b);
         buf_puts(b, ")");
         return 1;
       }

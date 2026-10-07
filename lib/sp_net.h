@@ -79,7 +79,7 @@ int sp_net_unix_path(int fd, int peer, char *buf, int cap);
 int sp_net_gethostname(char *buf, int cap);
 int sp_net_socketpair(int domain, int type, int protocol, int fds[2]);
 int sp_net_socket(int domain, int type, int protocol);
-int sp_net_getaddrinfo_at(const char *host, int port, int socktype, int idx,
+int sp_net_getaddrinfo_at(const char *host, int port, int want_family, int socktype, int idx,
                           int *family, int *stype, int *proto,
                           char *ipbuf, int ipcap, int *port_out);
 
