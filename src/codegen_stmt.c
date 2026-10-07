@@ -17494,6 +17494,9 @@ static int strbuf_flow_value(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, in
      handle (strbuf_slot_ref's call arm, which a write and a mutator take
      first) */
   if ((ctx == SFC_ALIAS || ctx == SFC_SPLICE || ctx == SFC_ARG) && strbuf_call_reads_handle(c, v)) return 1;
+  /* a native binding answering the String its object keeps: its handle
+     form (strbuf_slot_ref's first arm) */
+  if ((ctx == SFC_ALIAS || ctx == SFC_SPLICE || ctx == SFC_ARG) && strbuf_native_answer(c, v)) return 1;
   if (k == NK_IfNode || k == NK_UnlessNode || k == NK_OrNode || k == NK_AndNode || k == NK_CaseNode ||
       k == NK_StatementsNode || k == NK_ElseNode || k == NK_ParenthesesNode) {
     /* emit_strbuf_value takes a conditional arm by arm only when one of its
