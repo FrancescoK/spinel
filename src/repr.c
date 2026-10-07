@@ -729,11 +729,13 @@ static void repr_share_seal(Compiler *c) {
   }
   /* a container literal no holder names, whose elements the rule shares
      only once the facts settle after the fixpoint, kept a typed String
-     form: its elements would be copies */
+     form: its elements would be copies. A literal in an unreachable
+     scope is never emitted, so no call can observe its copies. */
   int bad_lit = -1;
   for (int n = 0; n < c->nt->count && bad_lit < 0; n++) {
     NodeKind k = nt_kind(c->nt, n);
     if (k != NK_ArrayNode && k != NK_HashNode) continue;
+    if (!comp_scope_of(c, n)->reachable) continue;
     TyKind t = c->ntype[n];
     int ne = 0;
     nt_arr(c->nt, n, "elements", &ne);
