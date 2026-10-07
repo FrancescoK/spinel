@@ -21,9 +21,22 @@ xs.each do |n|
 end
 v = V.new
 p(+v, -v)
-try { +true }
-try { -false }
-try { +:s }
+# a statically typed true, false or Symbol, as a statement's value
+begin
+  p(+true)
+rescue NoMethodError => e
+  p e.message
+end
+begin
+  p(-false)
+rescue NoMethodError => e
+  p e.message
+end
+begin
+  p(+:s)
+rescue NoMethodError => e
+  p e.message
+end
 try { +nil }
 try { -nil }
 a = [1]
