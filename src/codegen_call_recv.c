@@ -13949,6 +13949,7 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
         Buf rb; int ch = hold_recv_open(c, recv, 1, "sp_RbVal", "SP_GC_ROOT_RBVAL", b, &rb);
         emit_rooted_key_call(c, "sp_poly_dig_n", rb.p, argv, argc, b); free(rb.p);
         if (ch) buf_puts(b, "; })");
+        c->args_in_call = recv;
         return 1;
       }
       /* a splat beside other keys (`dig(*path, :k)`): the keys in order,
@@ -14409,6 +14410,7 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
     if (fmt_t != TY_STRING) emit_str_expr(c, argv[0], b);
     else emit_expr(c, argv[0], b);
     buf_puts(b, ")");
+    c->args_in_call = recv;
     return 1;
   }
   /* poly receiver: delete(chars) -> String#delete on the unboxed payload.

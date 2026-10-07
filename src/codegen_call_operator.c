@@ -1177,6 +1177,7 @@ int emit_call_operator_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
   if (recv >= 0 && rt == TY_POLY && sp_streq(name, "<<") && argc == 1) {
     buf_puts(b, "sp_poly_shl("); emit_expr(c, recv, b); buf_puts(b, ", ");
     emit_boxed(c, argv[0], b); buf_puts(b, ")");
+    c->args_in_call = recv;
     return 1;
   }
   /* poly `push` with no argument in expression position: an array answers
