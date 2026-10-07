@@ -7981,14 +7981,12 @@ static void struct_aset_ix_build(Compiler *c, StructAsetIx *x) {
    types; the other shapes came here untyped, and the store unboxed v as the
    member's construction type (an Integer read as a String pointer, a String's
    address printed as the Integer): a key no literal names, which may be any
-   member, and a boxed receiver. A boxed one types the Structs the box can
-   hold (poly_recv_classes), and none when the analysis cannot tell which:
-   a member typed for a value that never reaches it loses what its own type
-   keeps (a String's in-place changes), so there the store checks the value
-   at run time instead (emit_struct_member_value). Under --share-strings a
-   String the rule holds as a handle is stored as the handle
-   (share_struct_aset_handles), which only a boxed member can hold: it boxes
-   each member it may reach, every Struct's when the box's are unknown. */
+   member, and a boxed receiver, which may be any Struct its box can hold
+   (poly_recv_classes), or any Struct at all when the analysis cannot tell.
+   A String member is not typed by these stores (see below). Under
+   --share-strings a String the rule holds as a handle is stored as the
+   handle (share_struct_aset_handles): a member of another type is boxed to
+   hold it. */
 static int infer_struct_aset_call(Compiler *c, int id, NilWrites *writes, StructAsetIx *x) {
   const NodeTable *nt = c->nt;
   int one, how = struct_aset_receiver(c, id, &one);
@@ -7998,8 +7996,21 @@ static int infer_struct_aset_call(Compiler *c, int id, NilWrites *writes, Struct
   int handle = c->share_strings && an_arg_is_shared_handle(c, an_unparen(nt, v));
   if (handle) vt = TY_POLY;
   if (vt == TY_UNKNOWN) return 0;
+  /* Without --share-strings a boxed member holds a copy of the String
+     stored, and a String another name holds (anything but a fresh literal)
+     would then lose the changes either name makes: such a store types no
+     member, and a member it does not fit refuses it where it runs (a
+     TypeError, emit_struct_member_value). A fresh String has no other name. */
+  if (!c->share_strings && (vt == TY_STRING || vt == TY_STRBUF)) {
+    int u = an_unparen(nt, v);
+    NodeKind uk = nt_kind(nt, u);
+    int fresh = uk == NK_StringNode || uk == NK_InterpolatedStringNode || uk == NK_XStringNode ||
+                (uk == NK_CallNode && sp_streq(nt_str(nt, u, "name"), "+@") &&
+                 nt_kind(nt, nt_ref(nt, u, "receiver")) == NK_StringNode);
+    if (!fresh) return 0;
+  }
   const int *ks = &one;
-  int nk = 1;
+  int nk = 1, unknown = 0;
   if (how == 2) {
     /* a store that would type no member asks nothing more */
     if (!x->built) struct_aset_ix_build(c, x);
@@ -8007,12 +8018,8 @@ static int infer_struct_aset_call(Compiler *c, int id, NilWrites *writes, Struct
     for (int i = 0; i < x->nmty && !any; i++)
       any = vt == TY_NIL || ty_unify(x->mty[i], empty_container_write(c, v, vt, x->mty[i])) != x->mty[i];
     if (!any) return 0;
-    /* a handle may reach any Struct when the box's classes are unknown:
-       every member it can is boxed, so none holds a copy of it */
-    if (!(ks = poly_recv_classes(c, id, &nk))) {
-      if (!handle) return 0;
-      ks = x->structs; nk = x->ns;
-    }
+    /* a box whose classes are unknown may be any Struct */
+    if (!(ks = poly_recv_classes(c, id, &nk))) { ks = x->structs; nk = x->ns; unknown = 1; }
   }
   int changed = 0;
   for (int i = 0; i < nk; i++) {
@@ -8021,6 +8028,24 @@ static int infer_struct_aset_call(Compiler *c, int id, NilWrites *writes, Struct
     ClassInfo *ci = &c->classes[k];
     for (int m = lo; m < hi; m++) {
       if (class_ivar_pinned(ci, ci->ivars[m])) continue;
+      /* A boxed String member holds a copy of what its construction and
+         writers store, which loses the changes the String's other names
+         make (`S.new(s)` beside `s << x`, `m.x << y`), with or without
+         --share-strings, and none of these stores is proven to reach it: a
+         box may hold another value, a key no literal names another member,
+         and either may never run. So a String member keeps its type: a
+         value that does not fit it is refused where the store runs, a
+         TypeError (emit_struct_member_value), and a shared String's handle
+         is stored as the handle a shared member holds
+         (share_struct_aset_handles). Any other member carries no identity a
+         box loses, so it takes what the store may put there. */
+      TyKind mt = ci->ivar_types[m];
+      if (mt == TY_STRING || mt == TY_STRBUF) continue;
+      /* Through a box the analysis cannot bound, the store may be no
+         Struct's at all (an Array's, a Hash's): it types only a member of
+         an immediate kind, which a box holds as it is, so the reads of a
+         member holding a container keep their type. */
+      if (unknown && mt != TY_INT && mt != TY_FLOAT && mt != TY_BOOL && mt != TY_SYMBOL && mt != TY_NIL) continue;
       if (vt == TY_NIL) { nil_write_note(writes, k, ci->ivars[m]); continue; }
       TyKind merged = ty_unify(ci->ivar_types[m], empty_container_write(c, v, vt, ci->ivar_types[m]));
       if (merged != ci->ivar_types[m]) { ci->ivar_types[m] = merged; changed = 1; }

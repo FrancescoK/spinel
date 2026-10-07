@@ -1,9 +1,9 @@
-# A store into a box that can hold no Struct reaches no Struct's `[]=`, so
-# it types no member: the member keeps the String it was built with, and
-# the String's in-place change reads back through it (a member typed for
-# a value that never reaches it holds a copy). So does a box whose classes
-# the analysis cannot tell (a method's answer, an ivar): its store checks
-# the value where it runs instead.
+# A String member keeps the String it was built with, so the String's
+# in-place changes read back through it and through its other names (a
+# boxed member would hold a copy). A store into a box that can hold no
+# Struct, or one whose classes the analysis cannot tell (a method's
+# answer, an ivar), types no member, and no `[]=` retypes a String member:
+# a computed key, or a box, may reach another member or never run.
 S = Struct.new(:x)
 s = +"abc"
 o = S.new(s)
@@ -30,3 +30,22 @@ end
 p Box.new({a: 1}).set(:a, 2).v
 p Box.new([1]).set(0, 2).v
 p o.x
+
+# a computed key on a receiver typed as the Struct, storing into another
+# member
+T = Struct.new(:a, :b)
+w = +"w"
+t = T.new(w, 2)
+k = ARGV.size
+t[k + 1] = 3
+t.a << "!"
+p w, t
+
+# the same through a box
+U = Struct.new(:x, :n)
+s2 = +"abc"
+m = U.new(s2, 1)
+b = [U.new(+"q", 2), 0][ARGV.size]
+b[k + 1] = 4
+m.x << "e"
+p s2, b
