@@ -3089,7 +3089,14 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
       emit_stmt(c, bd3[k3], b, 0);
     }
     if (rd_lbl && rd_head >= bn3 - 1) buf_printf(b, "_redo_%d: ; ", rd_lbl);
-    emit_strbuf_handle_of(c, bd3[bn3 - 1], b);
+    /* the tail's own setup stays inside the splice, after the parameter
+       bindings (as the arms below keep it) */
+    { Buf tb; memset(&tb, 0, sizeof tb);
+      Buf *svp3 = g_pre; int svi3 = g_indent; g_pre = b; g_indent = 0;
+      emit_strbuf_handle_of(c, bd3[bn3 - 1], &tb);
+      g_pre = svp3; g_indent = svi3;
+      if (tb.p) buf_puts(b, tb.p);
+      free(tb.p); }
     buf_puts(b, "; ");
   }
   else if (as_expr && !nx_own && bn3 > 0 &&
