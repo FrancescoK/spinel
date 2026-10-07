@@ -175,3 +175,106 @@ p $n
 $n = []
 TP.new(0, 80) { |a| p [:tp, a] }
 p $n.size, $n.first, $n.last
+
+# The same through an included module's initialize, reached by `new` from
+# a class without its own and by `super` from a class with one: dead
+# sites, then 80 deep with a bare super and with a super block.
+module MI
+  def initialize(a, b)
+    MB.new(:dead, b) if ARGV.length == 9123
+    MB.new(a, :dead) if ARGV.length == 9123
+    yield a, b
+  end
+end
+class MA
+  include MI
+end
+class MB
+  include MI
+  def initialize(a, b)
+    super
+  end
+end
+MA.new(1, 2) { |x, y| p [x, y] }
+MB.new(3, 4) { |x, y| p [x, y] }
+module MJ
+  def initialize(a)
+    MC.new(a + 1) { |q| $n << q if q % 20 == 0 } if a < 80
+    MD.new(a + 1) { |q| $n << -q } if a == 40
+    yield a
+  end
+end
+class MC
+  include MJ
+  def initialize(a)
+    super
+  end
+end
+class MD
+  include MJ
+  def initialize(a)
+    super(a) { |q| yield q }
+  end
+end
+$n = []
+MC.new(0) { |a| p [:mc, a] }
+p $n
+
+# The `new` in a yielding method that the initialize calls: an instance
+# method (dead sites, and 80 deep), a top-level method, a class method
+# with a bare `new`, and another object's method.
+class YH
+  def mk(a, b) = YH.new(a, b) { |q| yield q }
+  def initialize(a, b)
+    mk(:dead, b) { |q| q } if ARGV.length == 9123
+    mk(a, :dead) { |q| q } if ARGV.length == 9123
+    yield [a, b]
+  end
+end
+YH.new(1, 2) { |y| p y }
+class YI
+  def mk(a)
+    YI.new(a) { |q| yield q }
+  end
+  def initialize(a)
+    mk(a + 1) { |q| $n << q if q % 20 == 0 } if a < 80
+    yield a
+  end
+end
+$n = []
+YI.new(0) { |a| p [:yi, a] }
+p $n
+def build_yt(a, b)
+  yield
+  YT.new(a, b) { |q| q }
+end
+class YT
+  def initialize(a, b)
+    build_yt(:dead, b) { 1 } if ARGV.length == 9123
+    build_yt(a, :dead) { 2 } if ARGV.length == 9123
+    yield [a, b]
+  end
+end
+YT.new(1, 2) { |y| p y }
+class YC
+  def self.make(a) = new(a) { |q| yield q }
+  def initialize(a)
+    YC.make(a + 1) { |q| $n << q if q % 20 == 0 } if a < 80
+    yield a
+  end
+end
+$n = []
+YC.new(0) { |a| p [:yc, a] }
+p $n
+class YO
+  def mk(a) = YP.new(a) { |q| yield q }
+end
+class YP
+  def initialize(a)
+    YO.new.mk(a + 1) { |q| $n << q if q % 20 == 0 } if a < 80
+    yield a
+  end
+end
+$n = []
+YP.new(0) { |a| p [:yp, a] }
+p $n
