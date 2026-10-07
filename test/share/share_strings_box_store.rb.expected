@@ -1,0 +1,10 @@
+["value", "value"]
+["other", "other"]
+["third", "third", "third", "third"]
+"b"
+{x: "c"}
+[{z: "zero", k: "kept"}, "kept"]
+["after", "after"]
+[["three", "two"], "two", "three"]
+[{k: "v", k2: "w"}, "w"]
+["each"]

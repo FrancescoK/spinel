@@ -1001,10 +1001,14 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
   int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
   int rv = recv >= 0 ? sh_val(F, c, recv) : -1;
   TyKind rt = recv >= 0 ? c->ntype[recv] : TY_VOID;
-  int maybe_str = recv >= 0 && (rt == TY_STRING || rt == TY_STRBUF || rt == TY_POLY || rt == TY_UNKNOWN);
-
-  /* an in-place String mutation of the receiver */
-  if (maybe_str && sp_str_mutator(name, 0))
+  /* an in-place String mutation of the receiver: never an index write no
+     String takes (`o[:x] = v`, `o[0] = 1`: dyn_index_write_not_string), and
+     a box's only when the box can hold a String (`o[0] = v` on a box of
+     Structs and Integers stores a member) */
+  if (recv >= 0 && sp_str_mutator(name, 0) &&
+      !(sp_streq(name, "[]=") && dyn_index_write_not_string(c, n)) &&
+      (rt == TY_STRING || rt == TY_STRBUF || rt == TY_UNKNOWN ||
+       (rt == TY_POLY && an_poly_recv_may_be_string(c, recv))))
     sh_mark_at(F, rv, SHF_MUT | (sh_holder_read(nt, recv) ? 0 : SHF_INDIRECT), n);
 
   /* a block passed as a value: a proc or a Method, called from wherever */
