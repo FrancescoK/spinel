@@ -2680,6 +2680,9 @@ static int emit_cond_andor(Compiler *c, int id, TyKind t, Buf *b) {
   if ((k != NK_AndNode && k != NK_OrNode) || t == TY_BOOL) return 0;
   int l = nt_ref(nt, id, "left"), r = nt_ref(nt, id, "right");
   if (!cond_operand_testable(c, l) || !cond_operand_testable(c, r)) return 0;
+  /* both operands already in the value's own representation: the value form
+     builds no box, and it stays the C the chain had */
+  if (comp_ntype(c, l) == t && comp_ntype(c, r) == t) return 0;
   /* the right operand's prelude (a rooted temp it hoists) runs inside the
      short circuit, after the left and only when Ruby evaluates the right,
      as the value form keeps it (#1773) */
