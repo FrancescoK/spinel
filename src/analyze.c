@@ -18710,6 +18710,9 @@ static int promote_shared_stored_strings(Compiler *c) {
       ShareRoute q = share_route(w, recv4, 1);
       q.to = blk4;
       q.to_name = bp4;
+      /* an element iterator answering its receiver (its share row, BSH_ITER)
+         whose value is dropped hands each element to the block alone */
+      q.fresh_elems = bop_share_named(BOP_ANY_ARRAY, itn) == BSH_ITER && comp_value_dropped(c, w);
       if (!share_route_defer(c, &q, ia_msg)) unsupported_feature(c, w, ia_msg);
     }
     int gpl = (bpv4->type == TY_STRING || bpv4->type == TY_STRBUF || bpv4->type == TY_POLY) &&
