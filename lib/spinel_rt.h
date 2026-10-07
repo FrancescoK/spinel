@@ -1271,6 +1271,9 @@ sp_int sp_File_getbyte(sp_File *f);
 sp_RbVal sp_File_ungetc(sp_File *f, sp_RbVal v);
 /* IO#readpartial / #sysread: up to n bytes, EOFError at EOF (#2812) */
 const char *sp_File_readpartial(sp_File *f, sp_int n);
+/* The same read answering NULL at EOF instead of raising: a boxed output
+   buffer is emptied before the EOFError (the codegen's output-buffer path). */
+const char *sp_File_readpartial_or_nil(sp_File *f, sp_int n);
 /* IO#pread(len, offset): read without moving the file position. Inline
    because it allocates from this TU's string heap (#3038). */
 static inline const char *sp_File_pread(sp_File *f, sp_int len, sp_int off) {
@@ -1283,6 +1286,20 @@ static inline const char *sp_File_pread(sp_File *f, sp_int len, sp_int off) {
   buf[got] = '\0';
   sp_str_set_len(buf, (size_t)got);
   sp_str_mark_binary(buf);   /* pread answers ASCII-8BIT, as CRuby */
+  return buf;
+}
+/* IO#pread answering NULL at EOF instead of raising, for the same reason as
+   sp_File_readpartial_or_nil. */
+static inline const char *sp_File_pread_or_nil(sp_File *f, sp_int len, sp_int off) {
+  SP_IO_OPEN(f);
+  if (len < 0) len = 0;
+  char *buf = (char *)sp_str_alloc((size_t)len);
+  ssize_t got = pread(fileno(f->fp), buf, (size_t)len, (off_t)off);
+  if (got < 0) sp_raise_cls("IOError", "pread failed");
+  if (got == 0 && len > 0) return NULL;
+  buf[got] = '\0';
+  sp_str_set_len(buf, (size_t)got);
+  sp_str_mark_binary(buf);
   return buf;
 }
 sp_int sp_File_sysseek(sp_File *f, sp_int off, sp_int whence);
