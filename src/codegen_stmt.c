@@ -726,6 +726,42 @@ static int tail_output_has_value(const char *nm) {
                 sp_streq(nm, "rand") || sp_streq(nm, "srand") || sp_streq(nm, "putc"));
 }
 
+/* system(a, *rest) / system(*args): the command and its arguments are spread
+   at run time, as Process.spawn's are (#7192), and each converts to a String as
+   the literal list's do. Writes the expression (a bool) and answers 1 when a
+   splat is among the arguments; 0 otherwise, with nothing written (#7868). */
+int emit_system_splat(Compiler *c, const int *argv, int argc, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int has_splat = 0;
+  for (int k = 0; k < argc; k++) has_splat |= nt_kind(nt, argv[k]) == NK_SplatNode;
+  if (!has_splat) return 0;
+  int ta = ++g_tmp, tv = ++g_tmp, tr = ++g_tmp;
+  buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", ta, ta);
+  for (int k = 0; k < argc; k++) {
+    if (nt_kind(nt, argv[k]) == NK_SplatNode) {
+      int se = nt_ref(nt, argv[k], "expression");
+      int ts = ++g_tmp;
+      buf_printf(b, " { sp_PolyArray *_t%d = sp_poly_to_poly_array(", ts);
+      if (se >= 0) emit_boxed(c, se, b); else buf_puts(b, "sp_box_nil()");
+      buf_printf(b, "); for (sp_int _i = 0; _i < _t%d->len; _i++) sp_PolyArray_push(_t%d, _t%d->data[_i]); }", ts, ta, ts);
+    }
+    else {
+      buf_printf(b, " sp_PolyArray_push(_t%d, ", ta);
+      emit_boxed(c, argv[k], b);
+      buf_puts(b, ");");
+    }
+  }
+  buf_printf(b, " if (_t%d->len == 0) sp_raise_cls(\"ArgumentError\", \"wrong number of arguments (given 0, expected 1+)\");", ta);
+  /* every element converts once before anything is allocated, so a TypeError
+     from one does not leak the argv */
+  buf_printf(b, " for (sp_int _i = 0; _i < _t%d->len; _i++) (void)sp_poly_arg_str_chk(_t%d->data[_i]);", ta, ta);
+  buf_printf(b, " const char **_t%d = (const char **)malloc(sizeof(char *) * (size_t)(_t%d->len + 1));", tv, ta);
+  buf_printf(b, " for (sp_int _i = 0; _i < _t%d->len; _i++) _t%d[_i] = sp_poly_arg_str_chk(_t%d->data[_i]);", ta, tv, ta);
+  buf_printf(b, " _t%d[_t%d->len] = NULL; sp_bool _t%d = (sp_bool)sp_system_args((int)_t%d->len, _t%d); free(_t%d); _t%d; })",
+             tv, ta, tr, ta, tv, tv, tr);
+  return 1;
+}
+
 void system_refuse_unsupported(Compiler *c, int id, const int *argv, int argc) {
   if (ty_is_hash(comp_ntype(c, argv[0]))) unsupported_feature(c, id, "system with an environment Hash");
   if (ty_is_array(comp_ntype(c, argv[0]))) unsupported_feature(c, id, "system with a [command, argv0] pair");
@@ -796,6 +832,12 @@ else {
     return 1;
   }
   if (sp_streq(name, "system") && argc >= 1) {
+    { Buf sb; memset(&sb, 0, sizeof sb);
+      if (emit_system_splat(c, argv, argc, &sb)) {
+        emit_indent(b, indent); buf_puts(b, "(void)"); buf_puts(b, sb.p ? sb.p : ""); buf_puts(b, ";\n");
+        free(sb.p);
+        return 1;
+      } }
     system_refuse_unsupported(c, id, argv, argc);
     int ts = ++g_tmp;
     emit_indent(b, indent);

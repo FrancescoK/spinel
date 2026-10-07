@@ -1167,6 +1167,7 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
 
   /* system(cmd, ...) expr: run and return bool */
   if (recv < 0 && sp_streq(name, "system") && argc >= 1 && !bare_call_class_owned(c, id)) {
+    if (emit_system_splat(c, argv, argc, b)) return 1;
     system_refuse_unsupported(c, id, argv, argc);
     /* each argument converts and is rooted before the next converts: a
        #to_str's answer is a heap String the following conversion may collect */

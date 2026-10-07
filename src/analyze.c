@@ -7084,7 +7084,7 @@ static int kernel_module_function(const char *m) {
     "raise", "fail", "exit", "exit!", "abort", "at_exit",
     "rand", "srand", "sleep", "gets", "loop", "lambda", "proc",
     "block_given?", "catch", "throw", "caller", "binding", "__method__",
-    "require", "require_relative", "load", "warn", "system",
+    "require", "require_relative", "load", "warn", "system", "exec", "spawn",
     "Integer", "Float", "String", "Array", "Hash", "Rational", "Complex",
     NULL
   };
