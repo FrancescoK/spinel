@@ -14747,6 +14747,13 @@ static int an_local_aliases_reach(const ALocalAliases *t, int si, const char *fr
    shared ivar)? */
 static int strbuf_container_stores_string(Compiler *c, const char *contn, Scope *conts);
 static int strbuf_container_stores_nonstring(Compiler *c, const char *contn, Scope *conts);
+static int an_arg_is_shared_handle(Compiler *c, int node);
+/* Is the last statement of statement list `st` a shared handle's slot
+   (an_arg_is_shared_handle)? */
+static int an_stmts_last_shared(Compiler *c, int st) {
+  int n = 0; const int *b = st >= 0 && nt_kind(c->nt, st) == NK_StatementsNode ? nt_arr(c->nt, st, "body", &n) : NULL;
+  return n > 0 && an_arg_is_shared_handle(c, b[n - 1]);
+}
 static int an_arg_is_shared_handle(Compiler *c, int node) {
   const NodeTable *nt = c->nt;
   if (node < 0) return 0;
@@ -14775,7 +14782,20 @@ static int an_arg_is_shared_handle(Compiler *c, int node) {
       int k = 0; const int *st = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &k) : NULL;
       g = k > 0 ? st[k - 1] : -1;
     }
-    if (g >= 0 && repr_static_share(c, g)) return 1; }
+    if (g >= 0 && repr_static_share(c, g)) return 1;
+    /* any write whose slot holds the rule's handle (an ivar's `=`, `||=`,
+       `&&=`): its value is that slot, and the write publishes it */
+    if (g >= 0 && repr_write_share(c, g)) return 1;
+    /* a begin's value is its body's last value, or a rescue's or its
+       else's: each must be one (an ensure's is dropped) */
+    if (g >= 0 && nt_kind(nt, g) == NK_BeginNode) {
+      int ok = an_stmts_last_shared(c, nt_ref(nt, g, "statements"));
+      for (int rc = nt_ref(nt, g, "rescue_clause"); ok && rc >= 0; rc = nt_ref(nt, rc, "subsequent"))
+        ok = an_stmts_last_shared(c, nt_ref(nt, rc, "statements"));
+      int el = nt_ref(nt, g, "else_clause");
+      if (ok && el >= 0) ok = an_stmts_last_shared(c, nt_ref(nt, el, "statements"));
+      return ok;
+    } }
   /* `h[:k]` / `a[0]` -- an element of a container that holds strings. The
      container-store rules make those elements shared handles as soon as one
      is mutated through, so the element read hands a handle over the same way
