@@ -2870,10 +2870,19 @@ static const char *lv_op_assign_src(Compiler *c, const char *lval, TyKind t,
 /* The RHS of a String `+=`: a poly RHS (a destructured `[Int, String]`
    element bound poly) is an sp_RbVal, coerced to const char* for
    sp_str_concat (#2875). CRuby's String#+ raises TypeError on a non-string,
-   so this only reaches a value that is a String at run time. */
-static void emit_op_assign_str_rhs(Compiler *c, int v, Buf *b) {
-  if (repr_of(c, v).kind == RK_BOXED) { buf_puts(b, "sp_poly_to_s("); emit_expr(c, v, b); buf_puts(b, ")"); }
-  else if (comp_ntype(c, v) == TY_UNKNOWN) emit_unresolved_coerced(c, v, TY_STRING, b);   /* the raise token */
+   so this only reaches a value that is a String at run time. `strict`: the
+   value goes to sp_str_plus, which raises CRuby's TypeError for a nil, so
+   a boxed one is checked as a String argument (sp_poly_arg_str_chk) and a
+   nil-typed one is run for its effects and taken as nil. */
+static void emit_op_assign_str_rhs(Compiler *c, int v, int strict, Buf *b) {
+  TyKind vt = comp_ntype(c, v);
+  if (repr_of(c, v).kind == RK_BOXED) {
+    buf_puts(b, strict ? "sp_poly_arg_str_chk(" : "sp_poly_to_s("); emit_expr(c, v, b); buf_puts(b, ")");
+  }
+  else if (vt == TY_UNKNOWN) emit_unresolved_coerced(c, v, TY_STRING, b);   /* the raise token */
+  else if (strict && (vt == TY_NIL || vt == TY_VOID)) {
+    buf_puts(b, "({ (void)("); emit_expr(c, v, b); buf_puts(b, "); (const char *)NULL; })");
+  }
   else emit_expr(c, v, b);
 }
 static void emit_op_assign_lv(Compiler *c, int id, Buf *b, int indent,
@@ -2907,12 +2916,12 @@ static void emit_op_assign_lv(Compiler *c, int id, Buf *b, int indent,
     if (!cap && subtree_reads_local(nt, v, nm)) {
       int tr = ++g_tmp;
       buf_printf(b, "%s = ({ const char *_t%d = ", lval, tr);
-      emit_op_assign_str_rhs(c, v, b);
+      emit_op_assign_str_rhs(c, v, 0, b);
       buf_printf(b, "; SP_GC_ROOT_STR(_t%d); sp_str_concat(%s, _t%d); });\n", tr, lval, tr);
       return;
     }
     buf_printf(b, "%s = sp_str_concat(%s, ", lval, lv_op_assign_src(c, lval, t, cap, rtn, sizeof rtn));
-    emit_op_assign_str_rhs(c, v, b);
+    emit_op_assign_str_rhs(c, v, 0, b);
     buf_puts(b, ");\n");
     return;
   }
@@ -2923,17 +2932,20 @@ static void emit_op_assign_lv(Compiler *c, int id, Buf *b, int indent,
      String through another name (`t << ...`) or rebind s: the handle is
      taken first and its bytes read after the RHS ran. */
   if (t == TY_STRBUF && is_plus_op(op) && repr_of_slot(c, lv).handle) {
+    /* String#+ through sp_str_plus: a nil local (a NULL handle) raises
+       its NoMethodError and a nil operand String's TypeError, once the
+       operand has run, as CRuby raises them */
     if (!subtree_has_side_effect(c, v)) {
-      buf_printf(b, "%s = sp_String_new_fresh(sp_str_concat(sp_String_cstr(%s), ", lval, lval);
-      emit_op_assign_str_rhs(c, v, b);
+      buf_printf(b, "%s = sp_String_new_fresh(sp_str_plus(%s ? sp_String_cstr(%s) : NULL, ", lval, lval, lval);
+      emit_op_assign_str_rhs(c, v, 1, b);
       buf_puts(b, "));\n");
       return;
     }
     int th = ++g_tmp, tr = ++g_tmp;
     buf_printf(b, "%s = ({ sp_String *_t%d = %s; SP_GC_ROOT(_t%d); const char *_t%d = ", lval, th, lval, th, tr);
-    emit_op_assign_str_rhs(c, v, b);
-    buf_printf(b, "; SP_GC_ROOT_STR(_t%d); sp_String_new_fresh(sp_str_concat(sp_String_cstr(_t%d), _t%d)); });\n",
-               tr, th, tr);
+    emit_op_assign_str_rhs(c, v, 1, b);
+    buf_printf(b, "; SP_GC_ROOT_STR(_t%d); sp_String_new_fresh(sp_str_plus(_t%d ? sp_String_cstr(_t%d) : NULL, _t%d)); });\n",
+               tr, th, th, tr);
     return;
   }
   /* a loop-bounded counter's `+= k` is a plain C add (see above) */
