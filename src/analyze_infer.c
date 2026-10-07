@@ -1953,7 +1953,9 @@ TyKind infer_call(Compiler *c, int id) {
     const char *on = nt_str(c->nt, id, "name");
     TyKind r = TY_UNKNOWN; int pending = 0;
     for (int k = 0; on && k < c->nclasses; k++) {
-      if (c->classes[k].is_native_class) continue;
+      /* not Enumerable's own method: the arm never dispatches to it
+         (desugar_builtin_enum_calls), its includers' copies answer */
+      if (c->classes[k].is_native_class || sp_streq(c->classes[k].name, "Enumerable")) continue;
       int mi = comp_method_in_class(c, k, on);
       if (mi < 0) continue;
       if (c->scopes[mi].ret == TY_UNKNOWN) { pending = 1; continue; }
