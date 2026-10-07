@@ -1109,7 +1109,10 @@ const char *sp_File_readpartial(sp_File *f, sp_int n) {
   return r;
 }
 
-const char *sp_sock_read_nb(sp_File *f, sp_int len, sp_bool exc, sp_bool is_recv, sp_bool *eof) {SP_GC_ROOT(f);
+/* read_nonblock / recv_nonblock; `eof_raises` says whether the end of file
+   raises EOFError (read_nonblock without `exception: false`) or answers
+   NULL (with *eof set) */
+static const char *sp_sock_read_nb_at(sp_File *f, sp_int len, sp_bool exc, sp_bool is_recv, sp_bool *eof, sp_bool eof_raises) {SP_GC_ROOT(f);
   if (eof) *eof = 0;
   if (is_recv) sp_sock_nb_prepare(f, "recv_nonblock");
   else SP_IO_OPEN(f);
@@ -1139,7 +1142,7 @@ const char *sp_sock_read_nb(sp_File *f, sp_int len, sp_bool exc, sp_bool is_recv
        one that tells them apart: nil for `exception: false`, EOFError
        otherwise. */
     if (is_recv) return NULL;
-    if (!exc) return NULL;                     /* CRuby: nil at EOF */
+    if (!eof_raises) return NULL;              /* CRuby: nil at EOF */
     sp_raise_cls("EOFError", "end of file reached");
   }
   free(buf);
@@ -1148,6 +1151,15 @@ const char *sp_sock_read_nb(sp_File *f, sp_int len, sp_bool exc, sp_bool is_recv
     sp_sock_raise_wait(0, "read");
   }
   sp_file_raise_errno("read", "");
+}
+const char *sp_sock_read_nb(sp_File *f, sp_int len, sp_bool exc, sp_bool is_recv, sp_bool *eof) {
+  return sp_sock_read_nb_at(f, len, exc, is_recv, eof, exc);
+}
+/* read_nonblock answering NULL at EOF instead of raising, as
+   sp_File_readpartial_or_nil: an output buffer is emptied before the
+   EOFError. Would-block still raises. */
+const char *sp_sock_read_nb_or_nil(sp_File *f, sp_int len) {
+  return sp_sock_read_nb_at(f, len, 1, 0, NULL, 0);
 }
 /* write_nonblock -> the byte count, or SP_INT_NIL when it would block.
    Paired like sp_File_write: the _bin entry sizes with the header length and
