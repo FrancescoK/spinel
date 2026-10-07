@@ -5123,6 +5123,15 @@ int desugar_index_op_write_user(Compiler *c) {
     /* a literal key stays one, so the member it names is the one typed and
        stored (a receiver typed as the Struct then takes the member's writer) */
     int lit = !user && (ak == NK_SymbolNode || ak == NK_StringNode || ak == NK_IntegerNode);
+    /* A String member keeps its type, so a key no literal names on a
+       receiver typed as a Struct with one could store a value that does
+       not fit it, a TypeError where it runs: master's refusal stays. */
+    if (!user && !lit && ci >= 0) {
+      int str = 0;
+      for (int m = 0; m < c->classes[ci].nmembers; m++)
+        str |= c->classes[ci].ivar_types[m] == TY_STRING || c->classes[ci].ivar_types[m] == TY_STRBUF;
+      if (str) continue;
+    }
     const char *op = k == NK_IndexOperatorWriteNode ? nt_str(nt, id, "binary_operator") : NULL;
     if (k == NK_IndexOperatorWriteNode && !op) continue;
     char opname[64]; if (op) snprintf(opname, sizeof opname, "%s", op);
