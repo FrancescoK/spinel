@@ -2169,7 +2169,10 @@ static TyKind proc_arg_ty(Compiler *c, int a) {
      handle hands over that handle (emit_strbuf_write_handle), as a handle
      variable's read does */
   if (repr_write_share(c, unwrap_parens(c, a))) return TY_STRBUF;
-  TyKind t = repr_of(c, a).as_ty;
+  Repr r = repr_of(c, a);
+  /* A static slot's read face is a String, but its box carries the handle. */
+  if (repr_share_rule(c) && r.strbuf_src == RS_HANDLE) return TY_STRBUF;
+  TyKind t = r.as_ty;
   if (t == TY_UNKNOWN && nt_kind(c->nt, a) == NK_ArrayNode && node_is_empty_container(c->nt, a))
     return TY_INT_ARRAY;
   return t;
@@ -2208,7 +2211,9 @@ void emit_proc_call_args(Compiler *c, int call, int argc, const int *argv, Buf *
          own prelude (e.g. a nested proc call) into g_pre, which must land
          before -- not inside -- this temp's declaration line. */
       Buf vb; memset(&vb, 0, sizeof vb);
-      if (!emit_strbuf_write_handle(c, argv[k], &vb)) emit_expr(c, argv[k], &vb);
+      if (repr_share_rule(c) && at == TY_STRBUF && repr_of(c, argv[k]).as_ty != TY_STRBUF)
+        emit_strbuf_handle_of(c, argv[k], &vb);
+      else if (!emit_strbuf_write_handle(c, argv[k], &vb)) emit_expr(c, argv[k], &vb);
       /* one the nil arm's head ran is its temp already, rooted ahead of the call */
       int held = storable && at != TY_STRBUF ? head_held_read(c, argv[k], vb.p) : -1;
       if (held >= 0) { atmp[k] = held; free(vb.p); }

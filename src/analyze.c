@@ -15359,10 +15359,11 @@ static void sa_refuse_element(Compiler *c, int e, int u);
 /* A master route refusal at node `site` for String node `v` that the
    route hands along as a copy: under --share-strings the copy is right
    when the rule does not share v's class, since no other name can see it
-   (share_route_defer). Answers 1 when the site leaves it to the rule. */
-static int sa_copy_defer(Compiler *c, int site, int v, const char *msg) {
+   (share_route_defer). Answers 1 when the site leaves it to the rule.
+   A demanded reader carries its backing slot's handle, checked at the seal. */
+static int sa_copy_defer(Compiler *c, int site, int v, int reader, const char *msg) {
   ShareRoute q = share_route(site, v, 0);
-  q.carry = SHARE_CARRY_COPY;
+  q.carry = reader ? v : SHARE_CARRY_COPY;
   return share_route_defer(c, &q, msg);
 }
 static const char *sa_msg(int route);
@@ -15427,8 +15428,10 @@ static int strbuf_demand_store_leaf(Compiler *c, int sn, int depth) {
   if (snt == TY_STRING || snt == TY_STRBUF) {
     char rb[256]; int rdefc = -1;
     int as = an_strbuf_alias_source(c, snu);
-    if (((as >= 0 && as != snu) || an_reader_ivar_of(c, snu, &rdefc, rb, sizeof rb)) &&
-        !sa_copy_defer(c, snu, snu, sa_msg(3)))
+    int reader = (!(as >= 0 && as != snu) || c->share_strings) &&
+                 an_reader_ivar_of(c, snu, &rdefc, rb, sizeof rb) != NULL;
+    if (((as >= 0 && as != snu) || reader) &&
+        !sa_copy_defer(c, snu, snu, reader, sa_msg(3)))
       sa_refuse(c, snu, 3);
   }
   if (nt_kind(nt, sn) == NK_LocalVariableReadNode) {
@@ -15500,6 +15503,7 @@ static int strbuf_demand_store_leaf(Compiler *c, int sn, int depth) {
       "a String a boxed local holds is stored into a container and mutated in place through it (a "
       "String is not yet shared by reference through a boxed local's container element). Mutate the "
       "String through the local itself.";
+<<<<<<< HEAD
     if (snv->type == TY_POLY && !snv->is_param && !snv->poly_ctr && poly_local_shows_string(c, snm, sns)) {
       /* Under --share-strings the stored read is lifted into the handle
          (lift_poly_read: it boxes the local's String as the handle and
@@ -15517,6 +15521,15 @@ static int strbuf_demand_store_leaf(Compiler *c, int sn, int depth) {
       }
       if (!sa_copy_defer(c, sn, sn, boxed_msg)) unsupported_feature(c, sn, boxed_msg);
     }
+||||||| 42557a3c0
+    if (snv->type == TY_POLY && !snv->is_param && !snv->poly_ctr && poly_local_shows_string(c, snm, sns) &&
+        !sa_copy_defer(c, sn, sn, boxed_msg))
+      unsupported_feature(c, sn, boxed_msg);
+=======
+    if (snv->type == TY_POLY && !snv->is_param && !snv->poly_ctr && poly_local_shows_string(c, snm, sns) &&
+        !sa_copy_defer(c, sn, sn, 0, boxed_msg))
+      unsupported_feature(c, sn, boxed_msg);
+>>>>>>> pr7955
     if (!strbuf_slot_eligible(c, snm, sns, snv)) return 0;
     if (strbuf_mut_kind(c, snm, sns) < 0) return 0;
     snv->type = TY_STRBUF; snv->str_shared = 1;
@@ -17383,10 +17396,18 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
   }
   /* a container literal no holder names, iterated in place by a block
      (`[+"a"].each { |x| x << y }`), whose elements the rule shares: its
-     stores are the handles the block's parameters bind */
-  NT_FOREACH_KIND(c->nt, NK_CallNode, n) {
-    int r = nt_ref(c->nt, n, "receiver"), blk = nt_ref(c->nt, n, "block");
-    if (r < 0 || blk < 0 || nt_kind(c->nt, blk) != NK_BlockNode) continue;
+     stores are the handles the block's parameters bind.
+     A pattern's subject carries the same handles into its bound locals. */
+  static const NodeKind kinds[] = { NK_CallNode, NK_CaseMatchNode, NK_MatchRequiredNode, NK_MatchPredicateNode };
+  for (size_t k = 0; k < sizeof kinds / sizeof *kinds; k++)
+  NT_FOREACH_KIND(c->nt, kinds[k], n) {
+    int r;
+    if (kinds[k] == NK_CallNode) {
+      int blk = nt_ref(c->nt, n, "block");
+      if (blk < 0 || nt_kind(c->nt, blk) != NK_BlockNode) continue;
+      r = nt_ref(c->nt, n, "receiver");
+    }
+    else r = nt_ref(c->nt, n, kinds[k] == NK_CaseMatchNode ? "predicate" : "value");
     r = unwrap_parens(c, r);
     if (r >= 0 && (nt_kind(c->nt, r) == NK_ArrayNode || nt_kind(c->nt, r) == NK_HashNode) &&
         share_node_elems_share(c, r))
@@ -20370,12 +20391,15 @@ static int mark_reader_identity_operands(Compiler *c) {
   for (int w = 0; w < nt->count; w++) {
     if (nt_kind(nt, w) != NK_CallNode) continue;
     const char *nm = nt_str(nt, w, "name");
-    if (!nm || !sp_streq(nm, "equal?")) continue;
+    if (!nm || !is_identity_query(nm)) continue;
+    int pair = is_equality_name(nm);
+    /* The frozen mark and object id belong to the handle too. */
+    if (!pair && !c->share_strings) continue;
     int recv = nt_ref(nt, w, "receiver");
     int a = nt_ref(nt, w, "arguments");
     int ac = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
-    if (recv < 0 || ac != 1) continue;
-    for (int side = 0; side < 2; side++) {
+    if (recv < 0 || ac != pair) continue;
+    for (int side = pair ? 0 : 1; side < 2; side++) {
       int opnd = side == 0 ? av[0] : recv;
       if (opnd < 0 || c->strbuf_box[opnd] || c->strbuf_handle_demand[opnd]) continue;
       /* a local the handle pass above made shared: its read is marked the
