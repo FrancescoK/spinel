@@ -1158,6 +1158,12 @@ spinel: 1 refusal, nothing written
 == test/reject/string_yield_splat_captured.rb [promote] rc=1
 spinel: test/reject/string_yield_splat_captured.rb:9: a String is passed to a block's parameter `q` through a splat into a yield, which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference through a splat into a yield). Return the String from the proc and assign it, or append to it in the caller.
 spinel: 1 refusal, nothing written
+== test/reject/struct_masgn_string_member.rb [default] rc=1
+spinel: test/reject/struct_masgn_string_member.rb:11: unsupported multiple assignment index target non-array/hash: node N (MultiWriteNode)
+spinel: 1 refusal, nothing written
+== test/reject/struct_masgn_string_member.rb [promote] rc=1
+spinel: test/reject/struct_masgn_string_member.rb:11: unsupported multiple assignment index target non-array/hash: node N (MultiWriteNode)
+spinel: 1 refusal, nothing written
 == test/reject/struct_member_block_param_store.rb [default] rc=1
 spinel: test/reject/struct_member_block_param_store.rb:6: a String variable is stored into a Struct member or through an attribute writer into an instance variable that is mutated in place through another name (a String is not yet shared by reference through this variable). Store a String no variable keeps, or mutate it through the variable.
 spinel: 1 refusal, nothing written

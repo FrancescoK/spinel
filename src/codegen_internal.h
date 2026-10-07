@@ -670,7 +670,7 @@ void emit_poly_vis_precheck(Compiler *c, int id, int tv, Buf *b);
 /* The per-class `case` arms that store `src` into each candidate class's
    `base` writer slot through the object pointer text `objp` (codegen_stmt.c). */
 void emit_boxed_writer_arms(Compiler *c, const char *base, const char *nm,
-                            const char *objp, const char *src, TyKind at, Buf *b);
+                            const char *objp, const char *src, TyKind at, int vnode, Buf *b);
 int  method_is_void(Scope *s);
 void emit_index_op_write(Compiler *c, int id, Buf *b, int indent);
 void emit_index_and_or_write(Compiler *c, int id, Buf *b, int indent, int is_or);

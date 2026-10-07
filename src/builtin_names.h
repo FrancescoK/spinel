@@ -155,6 +155,7 @@ int is_add_or_mul(const char *n); /* * + */
 int is_push_operator(const char *n); /* << push */
 int is_eq_or_eql(const char *n); /* == eql? */
 int is_element_access(const char *n); /* [] []= */
+int is_index_assign(const char *n); /* []= */
 
 int is_current_method(const char *n); /* __callee__ __method__ */
 int is_hash_constructor(const char *n); /* __hash_new_default new */

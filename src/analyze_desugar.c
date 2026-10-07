@@ -415,6 +415,8 @@ static int masgn_ev_store(Compiler *c, int id, int tgt, int val) {
   nt_node_set_ref(nt, call, "block", -1);
   int line = (int)nt_int(nt, id, "node_line", 0);
   if (line) nt_node_set_int(nt, call, "node_line", line);
+  /* the store a Struct's `[]=` makes is this call (masgn_struct_store) */
+  if (k == NK_IndexTargetNode) nt_node_set_int(nt, tgt, "aset_ev", call + 1);
   return 1;
 }
 int desugar_masgn_store_evidence(Compiler *c) {
@@ -5111,7 +5113,25 @@ int desugar_index_op_write_user(Compiler *c) {
     if (ak == NK_SplatNode || ak == NK_BlockArgumentNode || ak == NK_KeywordHashNode) continue;
     TyKind rt = infer_type(c, recv);
     int ci = ty_is_object(rt) ? ty_object_class(rt) : -1;
-    if (rt != TY_THREAD && (ci < 0 || comp_method_in_chain(c, ci, "[]", NULL) < 0 || comp_method_in_chain(c, ci, "[]=", NULL) < 0)) continue;
+    /* so does one a Struct's own `[]=` can take (a key no literal names on a
+       receiver typed as the Struct, or a box that can hold one): written as
+       the calls, it stores what the single `[]=` stores, where the op-write
+       on a box set an Array's element only and dropped a member's store */
+    int user = rt == TY_THREAD || (ci >= 0 && comp_method_in_chain(c, ci, "[]", NULL) >= 0 &&
+                                   comp_method_in_chain(c, ci, "[]=", NULL) >= 0);
+    if (!user && !struct_aset_may_reach(c, id)) continue;
+    /* a literal key stays one, so the member it names is the one typed and
+       stored (a receiver typed as the Struct then takes the member's writer) */
+    int lit = !user && (ak == NK_SymbolNode || ak == NK_StringNode || ak == NK_IntegerNode);
+    /* A String member keeps its type, so a key no literal names on a
+       receiver typed as a Struct with one could store a value that does
+       not fit it, a TypeError where it runs: master's refusal stays. */
+    if (!user && !lit && ci >= 0) {
+      int str = 0;
+      for (int m = 0; m < c->classes[ci].nmembers; m++)
+        str |= c->classes[ci].ivar_types[m] == TY_STRING || c->classes[ci].ivar_types[m] == TY_STRBUF;
+      if (str) continue;
+    }
     const char *op = k == NK_IndexOperatorWriteNode ? nt_str(nt, id, "binary_operator") : NULL;
     if (k == NK_IndexOperatorWriteNode && !op) continue;
     char opname[64]; if (op) snprintf(opname, sizeof opname, "%s", op);
@@ -5121,20 +5141,22 @@ int desugar_index_op_write_user(Compiler *c) {
     snprintf(kname, sizeof kname, "__ixk_%s", comp_node_tag(c, id));
     int first = nt->count;
     int rw = nt_new_node(nt, "LocalVariableWriteNode");
-    int kw = nt_new_node(nt, "LocalVariableWriteNode");
-    if (rw < 0 || kw < 0) continue;
+    int kw = lit ? -1 : nt_new_node(nt, "LocalVariableWriteNode");
+    if (rw < 0 || (!lit && kw < 0)) continue;
     nt_node_set_str(nt, rw, "name", rname); nt_node_set_int(nt, rw, "depth", 0);
     nt_node_set_ref(nt, rw, "value", recv);
-    nt_node_set_str(nt, kw, "name", kname); nt_node_set_int(nt, kw, "depth", 0);
-    nt_node_set_ref(nt, kw, "value", key);
-    int k1 = ixw_read(nt, kname);
+    if (!lit) {
+      nt_node_set_str(nt, kw, "name", kname); nt_node_set_int(nt, kw, "depth", 0);
+      nt_node_set_ref(nt, kw, "value", key);
+    }
+    int k1 = lit ? nt_clone_subtree(nt, key) : ixw_read(nt, kname);
     int get = k1 >= 0 ? ixw_call(nt, -1, rname, "[]", &k1, 1) : -1;
     if (get < 0) continue;
     int last = -1;
     if (k == NK_IndexOperatorWriteNode) {
       int bin = nt_new_node(nt, "CallNode");
       int ba = nt_new_node(nt, "ArgumentsNode");
-      int k2 = ixw_read(nt, kname);
+      int k2 = lit ? nt_clone_subtree(nt, key) : ixw_read(nt, kname);
       if (bin < 0 || ba < 0 || k2 < 0) continue;
       nt_node_set_arr(nt, ba, "arguments", &val, 1);
       nt_node_set_ref(nt, bin, "receiver", get);
@@ -5144,7 +5166,7 @@ int desugar_index_op_write_user(Compiler *c) {
       last = ixw_call(nt, -1, rname, "[]=", wa, 2);
     }
     else {
-      int k2 = ixw_read(nt, kname);
+      int k2 = lit ? nt_clone_subtree(nt, key) : ixw_read(nt, kname);
       if (k2 < 0) continue;
       int wa[2] = { k2, val };
       int set = ixw_call(nt, -1, rname, "[]=", wa, 2);
@@ -5156,8 +5178,8 @@ int desugar_index_op_write_user(Compiler *c) {
     }
     int stmts = nt_new_node(nt, "StatementsNode");
     if (last < 0 || stmts < 0) continue;
-    int body[3] = { rw, kw, last };
-    nt_node_set_arr(nt, stmts, "body", body, 3);
+    int body[3] = { rw, lit ? last : kw, last };
+    nt_node_set_arr(nt, stmts, "body", body, lit ? 2 : 3);
     nt_node_set_type(nt, id, "ParenthesesNode");
     nt_node_set_ref(nt, id, "body", stmts);
     nt_node_set_ref(nt, id, "receiver", -1);
@@ -5169,7 +5191,7 @@ int desugar_index_op_write_user(Compiler *c) {
     /* locals were collected before the fixpoint; these are new */
     Scope *sc = comp_scope_of(c, rw);
     scope_local_intern(sc, rname);
-    scope_local_intern(sc, kname);
+    if (!lit) scope_local_intern(sc, kname);
     changed = 1;
   }
   return changed;

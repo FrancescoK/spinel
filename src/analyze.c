@@ -14930,14 +14930,13 @@ static int an_local_aliases_reach(const ALocalAliases *t, int si, const char *fr
    shared ivar)? */
 static int strbuf_container_stores_string(Compiler *c, const char *contn, Scope *conts);
 static int strbuf_container_stores_nonstring(Compiler *c, const char *contn, Scope *conts);
-static int an_arg_is_shared_handle(Compiler *c, int node);
 /* Is the last statement of statement list `st` a shared handle's slot
    (an_arg_is_shared_handle)? */
 static int an_stmts_last_shared(Compiler *c, int st) {
   int n = 0; const int *b = st >= 0 && nt_kind(c->nt, st) == NK_StatementsNode ? nt_arr(c->nt, st, "body", &n) : NULL;
   return n > 0 && an_arg_is_shared_handle(c, b[n - 1]);
 }
-static int an_arg_is_shared_handle(Compiler *c, int node) {
+int an_arg_is_shared_handle(Compiler *c, int node) {
   const NodeTable *nt = c->nt;
   if (node < 0) return 0;
   if (nt_kind(nt, node) == NK_LocalVariableReadNode) {
@@ -16991,6 +16990,39 @@ static int share_lift_poly_ivar_stores(Compiler *c, int cid, const char *name) {
              nt_str(nt, av[0], "value") && sp_streq(nt_str(nt, av[0], "value"), name))
       v = av[1];
     if (v >= 0) changed |= share_lift_value(c, v);
+  }
+  /* a Struct member's: its constructor's argument, and a `[]=` that can
+     reach it (struct_aset_receiver), as its writer's above */
+  ClassInfo *ci = &c->classes[cid];
+  int m = ci->is_struct && !ci->is_data ? comp_member_index(ci, name) : -1;
+  if (m < 0) return changed;
+  NT_FOREACH_KIND(nt, NK_CallNode, w) {
+    const char *cn = nt_str(nt, w, "name");
+    int r = nt_ref(nt, w, "receiver"), a = nt_ref(nt, w, "arguments"), an = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+    if (!cn || r < 0) continue;
+    if (is_struct_constructor(cn) && (nt_kind(nt, r) == NK_ConstantReadNode || nt_kind(nt, r) == NK_ConstantPathNode) &&
+        comp_class_index(c, nt_str(nt, r, "name")) == cid) {
+      if (an == 1 && nt_kind(nt, av[0]) == NK_KeywordHashNode) {
+        int kn = 0; const int *ke = nt_arr(nt, av[0], "elements", &kn);
+        for (int e = 0; e < kn; e++) {
+          int key = nt_kind(nt, ke[e]) == NK_AssocNode ? nt_ref(nt, ke[e], "key") : -1;
+          if (key >= 0 && nt_kind(nt, key) == NK_SymbolNode && sp_streq(nt_str(nt, key, "value"), name + 1))
+            changed |= share_lift_value(c, an_unparen(nt, nt_ref(nt, ke[e], "value")));
+        }
+      }
+      else if (m < an && nt_kind(nt, av[m]) != NK_SplatNode) changed |= share_lift_value(c, an_unparen(nt, av[m]));
+      continue;
+    }
+    int one, how = struct_aset_receiver(c, w, &one), lo, hi, reach = how == 1 && one == cid;
+    if (how == 2) {
+      int nk = 0;
+      const int *ks = poly_recv_classes(c, w, &nk);
+      reach = !ks;
+      for (int i = 0; ks && i < nk && !reach; i++) reach = ks[i] == cid;
+    }
+    if (reach && struct_aset_members(c, w, cid, &lo, &hi) && m >= lo && m < hi)
+      changed |= share_lift_value(c, an_unparen(nt, av[1]));
   }
   return changed;
 }
@@ -32372,6 +32404,114 @@ static void refuse_string_read_copies(Compiler *c) {
   }
 }
 
+/* A multiple assignment's index target that a Struct's own `[]=` can take
+   (struct_aset_may_reach) stores through its evidence call
+   (desugar_masgn_store_evidence), as the single `[]=` stores
+   (masgn_struct_store): the target's own store set an Array's element only,
+   which dropped a member's store through a box, and refused one on a
+   receiver typed as the Struct. */
+static void mark_struct_aset_targets(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  NT_FOREACH_KIND(nt, NK_IndexTargetNode, t) {
+    int ev = (int)nt_int(nt, t, "aset_ev", 0) - 1;
+    if (ev < 0 || !struct_aset_may_reach(c, t)) continue;
+    /* Without --share-strings a String in a member is a copy of the one the
+       value's other name holds, and a later change through either name
+       would show it: on a receiver typed as the Struct, where master
+       refused every such target, a value that can be such a String (not a
+       fresh literal) keeps that refusal (masgn_store's). */
+    if (!c->share_strings && ty_is_object(comp_ntype(c, nt_ref(nt, t, "receiver")))) {
+      int evn = 0;
+      const int *eva = nt_arr(nt, nt_ref(nt, ev, "arguments"), "arguments", &evn);
+      int v = evn > 0 ? an_unparen(nt, eva[evn - 1]) : -1;   /* `[]=`'s value, or the writer's */
+      TyKind vt = v >= 0 ? comp_ntype(c, v) : TY_NIL;
+      NodeKind vk = v >= 0 ? nt_kind(nt, v) : NK_NilNode;
+      int fresh = vk == NK_StringNode || vk == NK_InterpolatedStringNode || vk == NK_XStringNode ||
+                  (vk == NK_CallNode && sp_streq(nt_str(nt, v, "name"), "+@") &&
+                   nt_kind(nt, nt_ref(nt, v, "receiver")) == NK_StringNode);
+      if (!fresh && (vt == TY_STRING || vt == TY_STRBUF || vt == TY_POLY || vt == TY_UNKNOWN)) continue;
+    }
+    /* A String member keeps its type (infer_struct_aset_call), so a value
+       that may not fit one the key can name would raise TypeError where it
+       runs: on a receiver typed as the Struct, by a key no literal names,
+       master's refusal stays. */
+    TyKind rt = comp_ntype(c, nt_ref(nt, t, "receiver"));
+    if (ty_is_object(rt) && sp_streq(nt_str(nt, ev, "name"), "[]=")) {
+      int evn = 0, lo, hi, str = 0;
+      const int *eva = nt_arr(nt, nt_ref(nt, ev, "arguments"), "arguments", &evn);
+      TyKind vt = evn == 2 ? comp_ntype(c, an_unparen(nt, eva[1])) : TY_UNKNOWN;
+      if (struct_aset_members(c, ev, ty_object_class(rt), &lo, &hi))
+        for (int m = lo; m < hi; m++) {
+          TyKind mt = c->classes[ty_object_class(rt)].ivar_types[m];
+          str |= mt == TY_STRING || mt == TY_STRBUF;
+        }
+      if (str && vt != TY_STRING && vt != TY_STRBUF && vt != TY_NIL) continue;
+    }
+    nt_node_set_int((NodeTable *)nt, t, "struct_aset", 1);
+  }
+}
+
+/* --share-strings: a String the rule holds as a handle, stored into a
+   Struct member by `[]=` through a boxed receiver or by a key no literal
+   names, is stored as the handle: the read hands it over (strbuf_box and
+   strbuf_handle_demand), and the member, which infer_struct_aset_call boxed
+   for it, holds it, so a change through the variable or the member reaches
+   the other, as CRuby's one object does. The poly dispatch passes the
+   handle to the Struct's arm. A member that is neither boxed nor a shared
+   String (one an RBS signature pins, a String member nothing shares) would
+   hold a copy and lose the change: refused (#6765). */
+static void share_struct_aset_handles(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  if (!c->share_strings) return;
+  NT_FOREACH_KIND(nt, NK_CallNode, u) {
+    /* a member's writer through a box (emit_boxed_writer_arms): a shared
+       String is handed over as its handle, as `[]=` hands it below */
+    const char *un = nt_str(nt, u, "name");
+    size_t ul = un ? strlen(un) : 0;
+    int ua = nt_ref(nt, u, "arguments"), uan = 0;
+    const int *uav = ua >= 0 ? nt_arr(nt, ua, "arguments", &uan) : NULL;
+    int boxed_member = ul > 1 && ul < 250 && un[ul - 1] == '=' && uan == 1 && call_is_setter_assign(nt, u) &&
+                       comp_ntype(c, nt_ref(nt, u, "receiver")) == TY_POLY && an_arg_is_shared_handle(c, an_unparen(nt, uav[0]));
+    /* only where every attribute the name writes is a boxed Struct member,
+       whose arm boxes the handle (a String slot's arm takes the bytes) */
+    char ub[256] = "", uiv[258] = "";
+    if (boxed_member) { memcpy(ub, un, ul - 1); ub[ul - 1] = 0; snprintf(uiv, sizeof uiv, "@%s", ub); }
+    for (int k = 0; k < c->nclasses && boxed_member; k++) {
+      if (comp_resolve_member(c, k, ub, 1, NULL, NULL) != SP_MEMBER_ATTR) continue;
+      int m = c->classes[k].is_struct ? comp_member_index(&c->classes[k], uiv) : -1;
+      boxed_member = m >= 0 && c->classes[k].ivar_types[m] == TY_POLY;
+    }
+    if (boxed_member) {
+      int v = an_unparen(nt, uav[0]);
+      c->strbuf_box[v] = 1;
+      c->strbuf_handle_demand[v] = 1;
+      continue;
+    }
+    int one, how = struct_aset_receiver(c, u, &one);
+    if (!how) continue;
+    int v = an_unparen(nt, nt_arr(nt, nt_ref(nt, u, "arguments"), "arguments", NULL)[1]);
+    if (!an_arg_is_shared_handle(c, v)) continue;
+    int nk = 1;
+    const int *ks = how == 1 ? &one : poly_recv_classes(c, u, &nk);
+    for (int i = 0; i < (ks ? nk : c->nclasses); i++) {
+      int k = ks ? ks[i] : i, lo, hi;
+      if (!struct_aset_members(c, u, k, &lo, &hi)) continue;
+      for (int m = lo; m < hi; m++) {
+        ClassInfo *ci = &c->classes[k];
+        /* a boxed member holds the handle, and so does a shared String one */
+        if (ci->ivar_types[m] == TY_POLY || (ci->ivar_types[m] == TY_STRBUF && ci->ivar_str_shared[m])) continue;
+        unsupported_feature(c, u, "a String stored into a Struct member by `[]=` through a boxed receiver, "
+                            "or by a key that is no literal, is mutated in place, and the member holds a copy "
+                            "(a String is not yet shared by reference through a Struct's `[]=` into a member "
+                            "of another fixed type, or a String member nothing shares). Store it with the "
+                            "member's writer on a receiver typed as the Struct.");
+      }
+    }
+    c->strbuf_box[v] = 1;
+    c->strbuf_handle_demand[v] = 1;
+  }
+}
+
 /* Only an implicit block or the method's own block parameter forwards its
    caller's block. A literal block or an unrelated proc belongs to super. */
 int super_forwards_caller_block(Compiler *c, int id) {
@@ -36973,6 +37113,8 @@ static void an_phase_reconcile_check(Compiler *c) {
       nt_node_set_str((NodeTable *)c->nt, sid, "name", "[]=");
   }
   refuse_string_read_copies(c);
+  mark_struct_aset_targets(c);
+  share_struct_aset_handles(c);
 
   /* Refuse lent ivar copies through calls and super only after sharing
      analysis settles (#6998). */

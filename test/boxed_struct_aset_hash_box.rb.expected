@@ -1,0 +1,11 @@
+"abcd"
+"abcde"
+{x: 4.5}
+[5, 2]
+{a: 2}
+[2]
+"abcde"
+"w!"
+#<struct T a="w!", b=3>
+"abce"
+#<struct U x="q", n=4>
