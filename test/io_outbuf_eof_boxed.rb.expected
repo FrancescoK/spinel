@@ -1,0 +1,47 @@
+[:ret, "abc"]
+"abc"
+[:ret, "de"]
+"de"
+[:raise, EOFError]
+""
+[:raise, EOFError]
+""
+[:ret, "bc"]
+"bc"
+[:raise, EOFError]
+""
+[:raise, EOFError]
+""
+[:ret, nil]
+""
+[:ret, ""]
+""
+[:ret, "ab"]
+"ab"
+[:ret, "cde"]
+"cde"
+[:ret, nil]
+""
+[:ret, ""]
+""
+[:raise, EOFError]
+"+"
+[:raise, EOFError]
+[:raise, EOFError]
+[:raise, EOFError]
+[:ret, nil]
+[:ret, "ab"]
+[:ret, "de"]
+[:raise, ArgumentError]
+"old"
+[:raise, ArgumentError]
+"old"
+[:raise, IOError]
+[:raise, IOError]
+[:raise, IOError]
+[:raise, IOError]
+"old"
+[:ret, "abcde"]
+"abcde"
+[:raise, EOFError]
+""

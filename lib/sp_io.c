@@ -1079,7 +1079,7 @@ sp_File *sp_sock_accept_nb(sp_File *f, sp_bool exc) {SP_GC_ROOT(f);
    the OS worker, which never reaches a safepoint, so the next stop-the-world
    collection waited on it forever and one green thread idle in readpartial
    on a quiet socket froze every other thread's allocation (#4528). */
-const char *sp_File_readpartial(sp_File *f, sp_int n) {SP_GC_ROOT(f);
+const char *sp_File_readpartial_or_nil(sp_File *f, sp_int n) {SP_GC_ROOT(f);
   SP_IO_OPEN(f);
   if (n < 0) sp_raise_cls("EOFError", "end of file reached");
   if (n == 0) return sp_str_empty_binary();
@@ -1095,10 +1095,17 @@ const char *sp_File_readpartial(sp_File *f, sp_int n) {SP_GC_ROOT(f);
     do { got = read(fileno(f->fp), r, (size_t)n); } while (got < 0 && errno == EINTR);
     if (got < 0) sp_file_raise_errno("read", "");
   }
-  if (got == 0) sp_raise_cls("EOFError", "end of file reached");
+  if (got == 0) return NULL;
   r[got] = 0;
   sp_str_set_len(r, (size_t)got);
   sp_str_mark_binary(r);   /* readpartial / sysread answer ASCII-8BIT, as CRuby */
+  return r;
+}
+
+/* readpartial / sysread: EOFError at the end of the stream. */
+const char *sp_File_readpartial(sp_File *f, sp_int n) {
+  const char *r = sp_File_readpartial_or_nil(f, n);
+  if (!r) sp_raise_cls("EOFError", "end of file reached");
   return r;
 }
 
