@@ -9,10 +9,12 @@
 # pinned_cases(rows, only), pins(spec), factor_list(spec),
 # random_rows(n, seed), program(cases) (each case's lines under a heading
 # `# case <id>:`), flags(cases) and shape(case), and
-# optionally diff_kind(want, got, case), FIXED (factors a reduction never
-# steps), SPLIT (a factor the summary counts the cases and findings of
-# each level of) and REFUSAL (the lines of the refusals its programs meet
-# that say neither "unsupported" nor "is not supported"). A probe names,
+# optionally diff_kind(want, got, case), random_cases(n, seed, only) (its
+# cases for --random, in place of pinned_cases of random_rows), FIXED
+# (factors a reduction never steps), SPLIT (a factor the summary counts the
+# cases and findings of each level of) and REFUSAL (the lines of the
+# refusals its programs meet that say neither "unsupported" nor "is not
+# supported"). A probe names,
 # beside it, the lines CRuby prints when a generated program reads a name
 # it does not define. Covering gives a generator all but render, program,
 # flags and shape from its FACTORS.
@@ -1056,7 +1058,11 @@ module ProbeCommon
     Thread.report_on_exception = false # a worker's failure is reported once, below
     begin
       if random
-        cases = gen.pinned_cases(gen.random_rows(random, seed), only)
+        # a generator that numbers its own cases (the share probe's two
+        # modes a row) gives its random ones itself
+        cases = if gen.respond_to?(:random_cases) then gen.random_cases(random, seed, only)
+                else gen.pinned_cases(gen.random_rows(random, seed), only)
+                end
         coverage = "#{random} random rows (seed #{seed})"
       else
         # a generator with its own covering (builtin_row_gen) takes no 3-way factors

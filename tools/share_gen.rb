@@ -119,22 +119,28 @@ module ShareGen
 
   # Every row in both modes, the share mode first and the plain one next
   # to it, numbered again in that order (row k's cases are 2k+1 and 2k+2):
-  # the covering array's rows, and those its pairs added. With mode pinned,
-  # only that mode. A shard keeps every N-th row from the I-th on, under
-  # the numbers of the whole run, so a case file names the same case in
-  # every shard and run of one seed.
+  # the covering array's rows, and those its pairs added, or N random rows
+  # (random_cases, which probe_common.rb asks for --random in place of
+  # pinned_cases, whose numbering from 1 would undo this). With mode
+  # pinned, only that mode, row k's case k+1. A row that takes the pinned
+  # levels of a row before it is that row again and is left out. A shard
+  # keeps every N-th row from the I-th on, under the numbers of the whole
+  # run, so a case file names the same case in every shard and run of one
+  # seed.
   def self.covering_cases(t, seed, tries = 100, only = {}, also = [])
     cases, *counts = super
     [both_modes(cases.map(&:realized), only), *counts]
   end
 
-  def self.random_rows(n, seed)
-    both_modes(super, {}).map(&:realized)
+  def self.random_cases(n, seed, only)
+    cases = both_modes(random_rows(n, seed), only)
+    raise ArgumentError, "no case takes #{only.map { |f, l| "#{f}=#{l}" }.join(",")}" if cases.empty?
+    cases
   end
 
   def self.both_modes(rows, only)
     modes = only[:mode] ? [only[:mode]] : FACTORS.to_h[:mode]
-    rows = rows.map { |r| r.except(:mode) }.uniq
+    rows = rows.map { |r| r.merge(only).except(:mode) }.uniq
     keep = shard ? (0...rows.size).select { |k| k % shard[1] == shard[0] } : (0...rows.size).to_a
     keep.flat_map do |k|
       modes.each_with_index.map { |m, j| render(k * modes.size + j + 1, rows[k].merge(mode: m)) }
@@ -363,7 +369,7 @@ if $PROGRAM_NAME == __FILE__
     abort "usage: ruby tools/share_gen.rb [--strength T | --random N] [--seed S] [--only F=L,..] [--id ID]"
   end
   if random
-    cs = ShareGen.pinned_cases(ShareGen.random_rows(random, seed), only)
+    cs = ShareGen.random_cases(random, seed, only)
     warn "#{cs.size} cases"
   else
     cs, want, got = ShareGen.covering_cases(strength, seed, 100, only)
