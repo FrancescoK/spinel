@@ -1079,7 +1079,11 @@ sp_File *sp_sock_accept_nb(sp_File *f, sp_bool exc) {SP_GC_ROOT(f);
    the OS worker, which never reaches a safepoint, so the next stop-the-world
    collection waited on it forever and one green thread idle in readpartial
    on a quiet socket froze every other thread's allocation (#4528). */
-const char *sp_File_readpartial(sp_File *f, sp_int n) {SP_GC_ROOT(f);
+/* readpartial's read; at end of file it raises EOFError, or with `eof`
+   sets *eof and answers NULL, so a caller with an output buffer can empty
+   the buffer first, as CRuby does before it raises */
+static const char *sp_file_readpartial_at(sp_File *f, sp_int n, sp_bool *eof) {SP_GC_ROOT(f);
+  if (eof) *eof = 0;
   SP_IO_OPEN(f);
   if (n < 0) sp_raise_cls("EOFError", "end of file reached");
   if (n == 0) return sp_str_empty_binary();
@@ -1095,14 +1099,22 @@ const char *sp_File_readpartial(sp_File *f, sp_int n) {SP_GC_ROOT(f);
     do { got = read(fileno(f->fp), r, (size_t)n); } while (got < 0 && errno == EINTR);
     if (got < 0) sp_file_raise_errno("read", "");
   }
-  if (got == 0) sp_raise_cls("EOFError", "end of file reached");
+  if (got == 0) {
+    if (eof) { *eof = 1; return NULL; }
+    sp_raise_cls("EOFError", "end of file reached");
+  }
   r[got] = 0;
   sp_str_set_len(r, (size_t)got);
   sp_str_mark_binary(r);   /* readpartial / sysread answer ASCII-8BIT, as CRuby */
   return r;
 }
+const char *sp_File_readpartial(sp_File *f, sp_int n) { return sp_file_readpartial_at(f, n, NULL); }
+const char *sp_File_readpartial_buf(sp_File *f, sp_int n, sp_bool *eof) { return sp_file_readpartial_at(f, n, eof); }
 
-const char *sp_sock_read_nb(sp_File *f, sp_int len, sp_bool exc, sp_bool is_recv, sp_bool *eof) {SP_GC_ROOT(f);
+/* read_nonblock / recv_nonblock; `eof_raises` says whether the end of file
+   raises EOFError (read_nonblock without `exception: false`) or answers
+   NULL with *eof set */
+static const char *sp_sock_read_nb_at(sp_File *f, sp_int len, sp_bool exc, sp_bool is_recv, sp_bool *eof, sp_bool eof_raises) {SP_GC_ROOT(f);
   if (eof) *eof = 0;
   if (is_recv) sp_sock_nb_prepare(f, "recv_nonblock");
   else SP_IO_OPEN(f);
@@ -1132,7 +1144,7 @@ const char *sp_sock_read_nb(sp_File *f, sp_int len, sp_bool exc, sp_bool is_recv
        one that tells them apart: nil for `exception: false`, EOFError
        otherwise. */
     if (is_recv) return NULL;
-    if (!exc) return NULL;                     /* CRuby: nil at EOF */
+    if (!eof_raises) return NULL;              /* CRuby: nil at EOF */
     sp_raise_cls("EOFError", "end of file reached");
   }
   free(buf);
@@ -1141,6 +1153,12 @@ const char *sp_sock_read_nb(sp_File *f, sp_int len, sp_bool exc, sp_bool is_recv
     sp_sock_raise_wait(0, "read");
   }
   sp_file_raise_errno("read", "");
+}
+const char *sp_sock_read_nb(sp_File *f, sp_int len, sp_bool exc, sp_bool is_recv, sp_bool *eof) {
+  return sp_sock_read_nb_at(f, len, exc, is_recv, eof, exc);
+}
+const char *sp_sock_read_nb_buf(sp_File *f, sp_int len, sp_bool exc, sp_bool *eof) {
+  return sp_sock_read_nb_at(f, len, exc, 0, eof, 0);
 }
 /* write_nonblock -> the byte count, or SP_INT_NIL when it would block.
    Paired like sp_File_write: the _bin entry sizes with the header length and

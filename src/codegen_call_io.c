@@ -12,6 +12,60 @@
 static int emit_boxed_positional_io(Compiler *c, int recv, const char *name, int argc,
                                     const int *argv, int tio, Buf *b);
 
+/* An IO read's output buffer `ob` (a local) takes the String the C
+   expression `txt` answers: a shared handle's contents are replaced
+   (#7314), as the bytes read with `bytes` -- binary-safe, and the buffer
+   ASCII-8BIT, as a read with a length leaves it in CRuby (#7871) -- a boxed
+   local holds it boxed, any other is rebound. */
+static void emit_io_outbuf_set(Compiler *c, int ob, const char *txt, int bytes, Buf *b) {
+  char hr[1024];
+  if (strbuf_slot_ref(c, ob, hr, sizeof hr)) {
+    buf_printf(b, "%s(%s, %s); ", bytes ? "sp_String_set_read_bytes" : "sp_String_replace", hr, txt);
+    return;
+  }
+  emit_local_ref(c, ob, nt_str(c->nt, ob, "name"), b);
+  if (comp_ntype(c, ob) == TY_POLY) buf_printf(b, " = sp_box_str(%s); ", txt);
+  else buf_printf(b, " = %s; ", txt);
+}
+
+/* Does read's length `len` read bytes (an Integer), where a nil one reads
+   the rest of the stream as text? */
+static int io_read_len_bytes(Compiler *c, int len) {
+  TyKind lt = comp_ntype(c, len);
+  return lt != TY_NIL && lt != TY_POLY;
+}
+
+/* read's answer for the length `len` on the handle `r`: the rest of the
+   stream for a nil one, up to that many bytes (NULL at the end) otherwise */
+static void emit_io_read_len(Compiler *c, int len, const char *r, Buf *b) {
+  TyKind lt = comp_ntype(c, len);
+  if (lt == TY_NIL) { buf_puts(b, "((void)("); emit_expr(c, len, b); buf_printf(b, "), sp_File_read(%s))", r); }
+  else if (lt == TY_POLY) {
+    int tl = ++g_tmp;
+    buf_printf(b, "({ sp_RbVal _t%d = ", tl); emit_boxed(c, len, b);
+    buf_printf(b, "; _t%d.tag == SP_TAG_NIL ? sp_File_read(%s) : sp_File_read_n(%s, sp_poly_arg_int_chk(_t%d)); })",
+               tl, r, r, tl);
+  }
+  else { buf_printf(b, "sp_File_read_n(%s, ", r); emit_int_expr(c, len, b); buf_puts(b, ")"); }
+}
+
+/* At the end of the file CRuby empties the output buffer, and then answers
+   nil (read, `exception: false`) or raises EOFError (readpartial, pread,
+   read_nonblock). `tr` is the read's answer, NULL there, and `te` its eof
+   flag, or -1 when NULL means the end of file; `bytes` as for
+   emit_io_outbuf_set. */
+static void emit_io_outbuf_eof(Compiler *c, int ob, int tr, int te, int raise, int bytes, Buf *b) {
+  if (te >= 0) buf_printf(b, "if (!_t%d && _e%d) { ", tr, te);
+  else buf_printf(b, "if (!_t%d) { ", tr);
+  emit_io_outbuf_set(c, ob, "sp_str_from_bytes(\"\", 0)", bytes, b);
+  if (raise) buf_puts(b, "sp_raise_cls(\"EOFError\", \"end of file reached\"); ");
+  buf_puts(b, "} ");
+  buf_printf(b, "if (_t%d) { ", tr);
+  char t[24]; snprintf(t, sizeof t, "_t%d", tr);
+  emit_io_outbuf_set(c, ob, t, bytes, b);
+  buf_puts(b, "} ");
+}
+
 /* readlines(sep, limit) and readlines(arg) with anything but a String
    separator: the arm passed any argument as the separator, and a limit, a
    nil or a boxed one did not build. CRuby takes a lone argument as the
@@ -508,13 +562,27 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
         int no_exc9 = exc9 >= 0 && nt_type(nt, exc9) &&
                       sp_streq(nt_type(nt, exc9), "FalseNode");
         if (sp_streq(name, "read_nonblock")) {
+          /* (len, outbuf): the buffer takes the bytes read, emptied at the
+             end of the file, as the typed arm's */
+          int ob9 = (argc >= 2 && argv[1] != kwh9 && nt_kind(nt, argv[1]) == NK_LocalVariableReadNode) ? argv[1] : -1;
+          if (ob9 >= 0) { buf_puts(b, "sp_str_check_mutable("); emit_expr(c, ob9, b); buf_puts(b, "); "); }
           if (no_exc9) {
             int tw9 = ++g_tmp, te9 = ++g_tmp;
             buf_printf(b, "sp_bool _e%d; const char *_t%d = sp_sock_read_nb(_t%d, ", te9, tw9, tio2);
             emit_int_expr(c, argv[0], b);
-            buf_printf(b, ", 0, 0, &_e%d); _t%d ? sp_box_str(_t%d)"
+            buf_printf(b, ", 0, 0, &_e%d); ", te9);
+            if (ob9 >= 0) emit_io_outbuf_eof(c, ob9, tw9, te9, 0, 1, b);
+            buf_printf(b, "_t%d ? sp_box_str(_t%d)"
                           " : (_e%d ? sp_box_nil() : sp_box_sym(sp_sym_intern(\"wait_readable\"))); })",
-                         te9, tw9, tw9, te9);
+                         tw9, tw9, te9);
+          }
+          else if (ob9 >= 0) {
+            int tw9 = ++g_tmp, te9 = ++g_tmp;
+            buf_printf(b, "sp_bool _e%d; const char *_t%d = sp_sock_read_nb_buf(_t%d, ", te9, tw9, tio2);
+            emit_int_expr(c, argv[0], b);
+            buf_printf(b, ", 1, &_e%d); ", te9);
+            emit_io_outbuf_eof(c, ob9, tw9, -1, 1, 1, b);
+            buf_printf(b, "_t%d; })", tw9);
           }
           else {
             buf_printf(b, "sp_sock_read_nb(_t%d, ", tio2);
@@ -544,6 +612,18 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
       }
       /* read(n) reads UP TO n bytes; dropping the count read to EOF, which on
          a socket with a live peer never comes -- `r.read(5)` hung forever. */
+      else if (sp_streq(name, "read") && argc >= 2 && nt_kind(nt, argv[1]) == NK_LocalVariableReadNode) {
+        /* (len, outbuf), as the typed arm: emptied, and nil, at the end;
+           a nil length reads the rest */
+        int tr9 = ++g_tmp;
+        char r9[24]; snprintf(r9, sizeof r9, "_t%d", tio2);
+        buf_puts(b, "sp_str_check_mutable("); emit_expr(c, argv[1], b);
+        buf_printf(b, "); const char *_t%d = ", tr9);
+        emit_io_read_len(c, argv[0], r9, b);
+        buf_puts(b, "; ");
+        emit_io_outbuf_eof(c, argv[1], tr9, -1, 0, io_read_len_bytes(c, argv[0]), b);
+        buf_printf(b, "_t%d; })", tr9);
+      }
       else if (sp_streq(name, "read") && argc >= 1) {
         buf_printf(b, "sp_File_read_n(_t%d, ", tio2);
         emit_int_expr(c, argv[0], b);
@@ -603,22 +683,20 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
           if (argc >= 2 && nt_type(nt, argv[1]) &&
               sp_streq(nt_type(nt, argv[1]), "LocalVariableReadNode"))
             sbp = nt_str(nt, argv[1], "name");
-          int tsp = ++g_tmp;
+          int tsp = ++g_tmp, tse = ++g_tmp;
           if (argc >= 2) {
             buf_puts(b, "sp_str_check_mutable("); emit_expr(c, argv[1], b); buf_puts(b, "); ");
+            if (sbp) buf_printf(b, "sp_bool _e%d; ", tse);
             buf_printf(b, "const char *_t%d = ", tsp);
           }
-          buf_printf(b, "sp_File_readpartial(_t%d, ", tio2);
+          buf_printf(b, "sp_File_readpartial%s(_t%d, ", sbp ? "_buf" : "", tio2);
           emit_int_expr(c, argv[0], b);
+          if (sbp) buf_printf(b, ", &_e%d", tse);
           buf_puts(b, ")");
           if (argc >= 2) {
-            { char hr[1024];
-            /* a buffer that is also appended to is a mutable String handle:
-               replace its contents, where assigning the bytes to the handle
-               did not compile (#7314) */
-            if (sbp && strbuf_slot_ref(c, argv[1], hr, sizeof hr)) buf_printf(b, "; sp_String_set_read_bytes(%s, _t%d)", hr, tsp);
-            else if (sbp) { buf_puts(b, "; "); emit_local_ref(c, argv[1], sbp, b); buf_printf(b, " = _t%d", tsp); } }
-            buf_printf(b, "; _t%d", tsp);
+            buf_puts(b, "; ");
+            if (sbp) emit_io_outbuf_eof(c, argv[1], tsp, -1, 1, 1, b);
+            buf_printf(b, "_t%d", tsp);
           }
           buf_puts(b, "; })");
         }
@@ -754,13 +832,13 @@ static int emit_boxed_positional_io(Compiler *c, int recv, const char *name, int
     if (bt == TY_STRING || bt == TY_POLY) bufn = nt_str(c->nt, argv[2], "name");
   }
   if (bufn) buf_printf(b, "if (_t%d.tag == SP_TAG_STR) sp_str_check_mutable(_t%d.v.s); ", th[2], th[2]);
-  int tpr = ++g_tmp;
-  buf_printf(b, "const char *_t%d = sp_File_pread(_t%d, _t%d, _t%d); ", tpr, tio, tfirst, toff);
+  int tpr = ++g_tmp, tpe = ++g_tmp;
   if (bufn) {
-    emit_local_ref(c, argv[2], bufn, b);
-    if (bt == TY_STRING) buf_printf(b, " = _t%d; ", tpr);
-    else buf_printf(b, " = _t%d ? sp_box_str(_t%d) : sp_box_nil(); ", tpr, tpr);
+    /* emptied at the end of the file, before the EOFError, as CRuby */
+    buf_printf(b, "sp_bool _e%d; const char *_t%d = sp_File_pread_buf(_t%d, _t%d, _t%d, &_e%d); ", tpe, tpr, tio, tfirst, toff, tpe);
+    emit_io_outbuf_eof(c, argv[2], tpr, -1, 1, 1, b);
   }
+  else buf_printf(b, "const char *_t%d = sp_File_pread(_t%d, _t%d, _t%d); ", tpr, tio, tfirst, toff);
   buf_printf(b, "_t%d; })", tpr);
   return 1;
 }
@@ -978,16 +1056,17 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
       else if (argc == 2 && emit_io_read_outbuf(c, name, "sp_File_read_n", r, argv, 1, argv[1], 1, b)) {}
       else if (argc >= 2 && nt_type(nt, argv[1]) &&
                sp_streq(nt_type(nt, argv[1]), "LocalVariableReadNode")) {
-        /* read(len, buffer): rebind the buffer local to the bytes read (#2811) */
-        const char *bnm = nt_str(nt, argv[1], "name");
+        /* read(len, buffer): rebind the buffer local to the bytes read
+           (#2811); at the end of the file it is emptied and the read answers
+           nil. read(nil, buffer) reads the rest, "" at the end. */
         int trd = ++g_tmp;
         /* CRuby raises FrozenError on the output buffer BEFORE reading (#3335) */
         buf_puts(b, "({ sp_str_check_mutable("); emit_expr(c, argv[1], b); buf_puts(b, "); ");
-        buf_printf(b, "const char *_t%d = sp_File_read_n(%s, ", trd, r);
-        emit_int_expr(c, argv[0], b);
-        buf_puts(b, "); ");
-        emit_local_ref(c, argv[1], bnm, b);
-        buf_printf(b, " = _t%d; _t%d; })", trd, trd);
+        buf_printf(b, "const char *_t%d = ", trd);
+        emit_io_read_len(c, argv[0], r, b);
+        buf_puts(b, "; ");
+        emit_io_outbuf_eof(c, argv[1], trd, -1, 0, io_read_len_bytes(c, argv[0]), b);
+        buf_printf(b, "_t%d; })", trd);
       }
       else {
         /* read(nil) is read with no length: the rest of the stream */
@@ -1037,22 +1116,23 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
       if (argc >= 3 && nt_type(nt, argv[2]) &&
           sp_streq(nt_type(nt, argv[2]), "LocalVariableReadNode"))
         bufn = nt_str(nt, argv[2], "name");
-      int tpr = ++g_tmp;
+      int tpr = ++g_tmp, tpe = ++g_tmp;
       if (bufn) {
         /* the output buffer must be mutable, checked before the read (#3335) */
         buf_puts(b, "({ sp_str_check_mutable("); emit_expr(c, argv[2], b); buf_puts(b, "); ");
-        buf_printf(b, "const char *_t%d = ", tpr);
+        buf_printf(b, "sp_bool _e%d; const char *_t%d = sp_File_pread_buf(%s, ", tpe, tpr, r);
       }
+      else buf_printf(b, "sp_File_pread(%s, ", r);
       /* the length is NUM2SIZET's, the offset NUM2OFFT's: each words its
          nil its own way */
-      buf_printf(b, "sp_File_pread(%s, ", r); emit_int_expr_conv(c, argv[0], b); buf_puts(b, ", ");
+      emit_int_expr_conv(c, argv[0], b); buf_puts(b, ", ");
       if (argc >= 2) emit_int_expr_offt(c, argv[1], b); else buf_puts(b, "0");
-      buf_puts(b, ")");
       if (bufn) {
-        buf_puts(b, "; ");
-        emit_local_ref(c, argv[2], bufn, b);
-        buf_printf(b, " = _t%d; _t%d; })", tpr, tpr);
+        buf_printf(b, ", &_e%d); ", tpe);
+        emit_io_outbuf_eof(c, argv[2], tpr, -1, 1, 1, b);
+        buf_printf(b, "_t%d; })", tpr);
       }
+      else buf_puts(b, ")");
       free(rb.p); return 1;
     }
     if (sp_streq(name, "pwrite") && argc >= 1) {
@@ -1080,18 +1160,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
         /* (len, outbuf): the buffer takes the bytes read, as readpartial's
            does; the argument was read past and the buffer left as it was */
         int ob = (argc >= 2 && argv[1] != kwh8 && nt_kind(nt, argv[1]) == NK_LocalVariableReadNode) ? argv[1] : -1;
-        char obset[1200]; obset[0] = 0;
         int tob = ++g_tmp;
-        if (ob >= 0) {
-          char hr[1024];
-          if (strbuf_slot_ref(c, ob, hr, sizeof hr)) snprintf(obset, sizeof obset, "sp_String_set_read_bytes(%s, _t%d); ", hr, tob);
-          else {
-            Buf lb; memset(&lb, 0, sizeof lb);
-            emit_local_ref(c, ob, nt_str(nt, ob, "name"), &lb);
-            snprintf(obset, sizeof obset, "%s = _t%d; ", lb.p ? lb.p : "", tob);
-            free(lb.p);
-          }
-        }
         if (no_exc8) {
           int te = ++g_tmp;
           buf_puts(b, "({ ");
@@ -1099,15 +1168,18 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
           buf_printf(b, "sp_bool _e%d; const char *_t%d = sp_sock_read_nb(%s, ", te, tob, r);
           emit_int_expr(c, argv[0], b);
           buf_printf(b, ", 0, 0, &_e%d); ", te);
-          if (ob >= 0) buf_printf(b, "if (_t%d) { %s} ", tob, obset);
+          if (ob >= 0) emit_io_outbuf_eof(c, ob, tob, te, 0, 1, b);
           buf_printf(b, "_t%d ? sp_box_str(_t%d)"
                         " : (_e%d ? sp_box_nil() : sp_box_sym(sp_sym_intern(\"wait_readable\"))); })",
                      tob, tob, te);
         }
         else if (ob >= 0) {
+          int te = ++g_tmp;
           buf_puts(b, "({ sp_str_check_mutable("); emit_expr(c, ob, b);
-          buf_printf(b, "); const char *_t%d = sp_sock_read_nb(%s, ", tob, r); emit_int_expr(c, argv[0], b);
-          buf_printf(b, ", 1, 0, NULL); %s_t%d; })", obset, tob);
+          buf_printf(b, "); sp_bool _e%d; const char *_t%d = sp_sock_read_nb_buf(%s, ", te, tob, r); emit_int_expr(c, argv[0], b);
+          buf_printf(b, ", 1, &_e%d); ", te);
+          emit_io_outbuf_eof(c, ob, tob, -1, 1, 1, b);
+          buf_printf(b, "_t%d; })", tob);
         }
         else {
           buf_printf(b, "sp_sock_read_nb(%s, ", r); emit_int_expr(c, argv[0], b);
@@ -1146,20 +1218,19 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
       if (argc >= 2 && nt_type(nt, argv[1]) &&
           sp_streq(nt_type(nt, argv[1]), "LocalVariableReadNode"))
         sbn = nt_str(nt, argv[1], "name");
-      int tsr = ++g_tmp;
+      int tsr = ++g_tmp, tse = ++g_tmp;
       if (argc >= 2) {
         buf_puts(b, "({ sp_str_check_mutable("); emit_expr(c, argv[1], b); buf_puts(b, "); ");
+        if (sbn) buf_printf(b, "sp_bool _e%d; ", tse);
         buf_printf(b, "const char *_t%d = ", tsr);
       }
-      buf_printf(b, "sp_File_readpartial(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")");
+      buf_printf(b, "sp_File_readpartial%s(%s, ", sbn ? "_buf" : "", r); emit_int_expr(c, argv[0], b);
+      if (sbn) buf_printf(b, ", &_e%d", tse);
+      buf_puts(b, ")");
       if (argc >= 2) {
-        { char hr[1024];
-          /* a buffer that is also appended to is a mutable String handle:
-             replace its contents, where assigning the bytes to the handle
-             did not compile (#7314) */
-          if (sbn && strbuf_slot_ref(c, argv[1], hr, sizeof hr)) buf_printf(b, "; sp_String_set_read_bytes(%s, _t%d)", hr, tsr);
-          else if (sbn) { buf_puts(b, "; "); emit_local_ref(c, argv[1], sbn, b); buf_printf(b, " = _t%d", tsr); } }
-        buf_printf(b, "; _t%d; })", tsr);
+        buf_puts(b, "; ");
+        if (sbn) emit_io_outbuf_eof(c, argv[1], tsr, -1, 1, 1, b);
+        buf_printf(b, "_t%d; })", tsr);
       }
       free(rb.p); return 1;
     }

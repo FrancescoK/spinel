@@ -128,6 +128,10 @@ const char *sp_io_kind_name(sp_File *f);
 sp_File *sp_sock_accept(sp_File *f);
 sp_File *sp_sock_accept_nb(sp_File *f, sp_bool exc);
 const char *sp_sock_read_nb(sp_File *f, sp_int len, sp_bool exc, sp_bool is_recv, sp_bool *eof);
+/* read_nonblock into an output buffer: as sp_sock_read_nb, but the end of
+   file answers NULL with *eof set in both forms, so the caller empties the
+   buffer before it raises EOFError (CRuby empties it) */
+const char *sp_sock_read_nb_buf(sp_File *f, sp_int len, sp_bool exc, sp_bool *eof);
 sp_int sp_sock_write_nb(sp_File *f, const char *data, sp_bool exc);
 sp_int sp_sock_write_nb_bin(sp_File *f, const char *data, sp_bool exc);
 sp_int sp_sock_connect_nb(sp_File *f, const char *host, sp_int port, sp_bool exc);
