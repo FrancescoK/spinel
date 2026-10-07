@@ -3990,8 +3990,8 @@ static sp_RbVal sp_poly_casecmp(sp_RbVal v, sp_RbVal o, int q) {
     bs = sp_poly_check_str(sp_poly_strbuf_deref(o));
     if (!bs) return sp_box_nil();
   }
-  int r = sp_str_casecmp(a, bs);
-  return q ? sp_box_bool(r == 0) : sp_box_int(r);
+  if (q) return sp_box_bool(sp_str_casecmp_p(a, bs));
+  return sp_box_int(sp_str_casecmp(a, bs));
 }
 /* ...as the receiver of a String mutator. A shared handle hands out its own
    bytes, which a mutator such as setbyte writes in place, and its frozen flag
