@@ -17365,10 +17365,11 @@ static int strbuf_flow_value(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, in
      that handle or nil */
   if (ctx != SFC_ARG && strbuf_bang_self_local(c, v)) return 1;
   /* a chain that answers its receiver, over a variable holding the handle
-     (`t = s << x`, `t = s.to_s`): the base's handle */
-  int base = str_alias_chain_base(c, v);
+     or a reader call read as one (`t = s << x`, `t = w.s.insert(1, "-")`):
+     the base's handle (emit_strbuf_value's chain arms, strbuf_slot_ref) */
+  int base = unwrap_parens(c, str_alias_chain_base(c, v));
   char ref[1024];
-  return base != v && strbuf_var_handle(c, unwrap_parens(c, base), ref, sizeof ref);
+  return base != unwrap_parens(c, v) && (strbuf_var_handle(c, base, ref, sizeof ref) || strbuf_call_reads_handle(c, base));
 }
 
 /* repr.c's flow check asks this (codegen_internal.h). */
