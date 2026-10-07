@@ -163,16 +163,20 @@ int an_bare_call_class_owned(Compiler *c, int id);
    (0-based, matching ivar order) or -1. */
 int struct_member_idx(Compiler *c, ClassInfo *sc, int keynode);
 int struct_member_idx_float(Compiler *c, ClassInfo *sc, int keynode);
-/* A Struct `[]=` (analyze_scope.c): the classes call id may store into,
-   [*first, *last]: 1 for a receiver typed as a Struct, its own class (only
-   a key no literal names is left a `[]=`), 2 for a boxed one, every class,
-   or 0 (and first > last) when it is no such call. struct_aset_members: 1
-   when class k's `[]=` is the Struct's own (no `[]=` of the program's;
-   cplan_struct_aset's), with the members [*lo, *hi) the key can name (none
-   for a literal that names no member: it raises). A boxed receiver holds
-   one only if poly_ivar_set_reaches says it can. */
-int struct_aset_classes(Compiler *c, int id, int *first, int *last);
+/* A Struct `[]=` (analyze_scope.c): 1 for call id on a receiver typed as
+   a class (*cls; only a key no literal names is left a `[]=` there), 2 on
+   a boxed one, which reaches the classes poly_recv_classes lists, 0 for no
+   such call. struct_aset_members: 1 when class k's `[]=` is the Struct's
+   own (no `[]=` of the program's; cplan_struct_aset's), with the members
+   [*lo, *hi) the key can name (none for a literal naming no member: it
+   raises). */
+int struct_aset_receiver(Compiler *c, int id, int *cls);
 int struct_aset_members(Compiler *c, int id, int k, int *lo, int *hi);
+/* The classes the boxed receiver of call `call` can be an instance of, *n
+   of them, or NULL when the analysis cannot bound them (analyze_scope.c) */
+const int *poly_recv_classes(Compiler *c, int call, int *n);
+/* A read of a String slot the share rule holds as the handle (analyze.c) */
+int an_arg_is_shared_handle(Compiler *c, int node);
 /* Last statement of a scope's body, or -1. */
 int scope_body_last(Compiler *c, int mi);
 /* The expressions whose value method scope mi answers (its body's and each
