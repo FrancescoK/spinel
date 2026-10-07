@@ -1295,6 +1295,8 @@ static int str_alias_chain_base(Compiler *c, int id);
 static int strbuf_cond_has_handle_leaf(Compiler *c, int v, int depth);
 static int strbuf_gvar_write_handle(Compiler *c, int v, char *out, size_t cap);
 static int emit_strbuf_chain_in_place(Compiler *c, int v, int base, const char *bref, Buf *b);
+static int emit_strbuf_route_chain(Compiler *c, int v, int base, Buf *b);
+static int strbuf_chain_links(Compiler *c, int v, int base, int *args);
 void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b);
 /* The operand of a `+s` value (`+@` with no argument), -1 for any other. */
 static int strbuf_uplus_operand(Compiler *c, int v) {
@@ -1978,25 +1980,34 @@ static void emit_strbuf_cond_value(Compiler *c, LocalVar *lv, int v, const char 
    place, innermost first; the value is that handle. Only `to_s`, `to_str`,
    `itself` and one-argument `<<` / `concat` of a String; 0 for anything
    else, which keeps the value form. */
-static int emit_strbuf_chain_in_place(Compiler *c, int v, int base, const char *bref, Buf *b) {
+/* The links of chain v over base that emit_strbuf_chain_in_place takes,
+   outermost first, into args (at most 32): their count, or -1 for a chain
+   it does not take. */
+static int strbuf_chain_links(Compiler *c, int v, int base, int *args) {
   const NodeTable *nt = c->nt;
-  int args[32], na = 0;
+  int na = 0;
   for (int cur = unwrap_parens(c, v); cur != base; cur = unwrap_parens(c, nt_ref(nt, cur, "receiver"))) {
-    if (cur < 0 || nt_kind(nt, cur) != NK_CallNode || na >= 32) return 0;
+    if (cur < 0 || nt_kind(nt, cur) != NK_CallNode || na >= 32) return -1;
     const char *nm = nt_str(nt, cur, "name");
     /* a self-call that changes nothing; any other (clear, replace, freeze)
        keeps the value form */
     if (str_self_call(nt, cur)) {
       if (nm && is_receiver_conversion(nm)) continue;
-      return 0;
+      return -1;
     }
     int a = nt_ref(nt, cur, "arguments"), ac = 0;
     const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
-    if (!nm || !is_append_concat(nm) || ac != 1) return 0;
+    if (!nm || !is_append_concat(nm) || ac != 1) return -1;
     TyKind at = comp_ntype(c, av[0]);
-    if (at != TY_STRING && at != TY_STRBUF) return 0;
+    if (at != TY_STRING && at != TY_STRBUF) return -1;
     args[na++] = av[0];
   }
+  return na;
+}
+static int emit_strbuf_chain_in_place(Compiler *c, int v, int base, const char *bref, Buf *b) {
+  int args[32];
+  int na = strbuf_chain_links(c, v, base, args);
+  if (na < 0) return 0;
   int th = ++g_tmp;
   buf_printf(b, "({ sp_String *_t%d = %s; ", th, bref);
   for (int i = na - 1; i >= 0; i--) {
@@ -2006,6 +2017,35 @@ static int emit_strbuf_chain_in_place(Compiler *c, int v, int base, const char *
   }
   buf_printf(b, "_t%d; })", th);
   return 1;
+}
+
+/* --share-strings: chain v's links over route base (`s.then { |z| z } <<
+   x`), appended in place to the handle the route hands on
+   (emit_strbuf_route), which is the value; 0 with nothing emitted when a
+   link is no plain append or base is no route. */
+static int strbuf_route_nonnil(Compiler *c, int v);
+static int emit_strbuf_route_chain(Compiler *c, int v, int base, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int args[32];
+  if (strbuf_chain_links(c, v, base, args) < 0) return 0;
+  Buf hb; memset(&hb, 0, sizeof hb);
+  if (!emit_strbuf_route(c, base, &hb)) { free(hb.p); return 0; }
+  /* a route that can answer nil raises NoMethodError for the first link,
+     as the value form's nil check did; the handle is rooted while the
+     links' arguments run */
+  int first = unwrap_parens(c, v);
+  while (first >= 0 && unwrap_parens(c, nt_ref(nt, first, "receiver")) != unwrap_parens(c, base))
+    first = unwrap_parens(c, nt_ref(nt, first, "receiver"));
+  int t = ++g_tmp;
+  Buf rb; memset(&rb, 0, sizeof rb);
+  buf_printf(&rb, "({ sp_String *_t%d = %s; SP_GC_ROOT(_t%d); ", t, hb.p, t);
+  if (!strbuf_route_nonnil(c, base))
+    buf_printf(&rb, "if (SP_UNLIKELY(!_t%d)) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil())); ", t,
+               first >= 0 && nt_str(nt, first, "name") ? nt_str(nt, first, "name") : "<<");
+  buf_printf(&rb, "_t%d; })", t);
+  int ok = emit_strbuf_chain_in_place(c, v, base, rb.p, b);
+  free(hb.p); free(rb.p);
+  return ok;
 }
 
 /* Is v (through single-statement parentheses) a write (`=`, `||=`, `&&=`)
@@ -2150,6 +2190,9 @@ void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
         strbuf_slot_ref(c, cb9, srefC9, sizeof srefC9) && emit_strbuf_chain_in_place(c, v, cb9, srefC9, b)) {
       /* --share-strings: the chain ran on the base's own handle */
     }
+    /* --share-strings: an append chain over a route's handle (`r = s.then {
+       |z| z } << x`): the route's handle, appended in place */
+    else if (cb9 != v && shared && repr_share_rule(c) && emit_strbuf_route_chain(c, v, cb9, b)) { }
     else if (cb9 != v && shared &&
         strbuf_slot_ref(c, cb9, srefC9, sizeof srefC9)) {
       buf_puts(b, "({ (void)(");
@@ -17172,6 +17215,8 @@ enum { SFC_ALIAS, SFC_SLOT, SFC_ELEM, SFC_TAIL, SFC_BOX, SFC_SPLICE, SFC_ARG };
 
 static int strbuf_flow_value(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, int depth);
 static int strbuf_flow_unseen(Compiler *c, int v);
+static int strbuf_flow_route(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, int depth);
+static int strbuf_flow_has_leaf(Compiler *c, StrbufFlowMemo *fm, int v, int depth);
 
 /* Each value block or body n answers as a route's tail: its last
    statement's, and each jump of kind k (NK_NextNode, NK_BreakNode) that
@@ -17288,6 +17333,54 @@ static int strbuf_flow_cond(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, int
   }
 }
 
+/* strbuf_cond_has_handle_leaf, without the reads it emits: is a variable
+   that holds the handle, a write into one or a route over one among the
+   values conditional v hands over? depth counts the conditionals around. */
+static int strbuf_flow_has_leaf(Compiler *c, StrbufFlowMemo *fm, int v, int depth) {
+  const NodeTable *nt = c->nt;
+  char ref[1024];
+  if (v < 0 || depth > 64) return 0;
+  switch (nt_kind(nt, v)) {
+  case NK_ParenthesesNode:
+    return strbuf_flow_has_leaf(c, fm, nt_ref(nt, v, "body"), depth ? depth : 1);
+  case NK_StatementsNode: {
+    int n = 0; const int *bb = nt_arr(nt, v, "body", &n);
+    return n > 0 && strbuf_flow_has_leaf(c, fm, bb[n - 1], depth ? depth : 1);
+  }
+  case NK_ElseNode:
+    return strbuf_flow_has_leaf(c, fm, nt_ref(nt, v, "statements"), depth ? depth : 1);
+  case NK_IfNode: case NK_UnlessNode:
+    return strbuf_flow_has_leaf(c, fm, nt_ref(nt, v, "statements"), depth + 1) ||
+           strbuf_flow_has_leaf(c, fm, nt_ref(nt, v, nt_kind(nt, v) == NK_IfNode ? "subsequent" : "else_clause"), depth + 1);
+  case NK_OrNode:
+    return strbuf_flow_has_leaf(c, fm, nt_ref(nt, v, "left"), depth + 1) ||
+           strbuf_flow_has_leaf(c, fm, nt_ref(nt, v, "right"), depth + 1);
+  case NK_AndNode:
+    return strbuf_flow_has_leaf(c, fm, nt_ref(nt, v, "right"), depth + 1);
+  case NK_CaseNode: {
+    int nw = 0; const int *whens = nt_arr(nt, v, "conditions", &nw);
+    for (int w = 0; w < nw; w++)
+      if (strbuf_flow_has_leaf(c, fm, nt_ref(nt, whens[w], "statements"), depth + 1)) return 1;
+    return strbuf_flow_has_leaf(c, fm, nt_ref(nt, v, "else_clause"), depth + 1);
+  }
+  case NK_CallNode:
+    return (strbuf_uplus_operand(c, v) >= 0 && strbuf_flow_has_leaf(c, fm, strbuf_uplus_operand(c, v), depth + 1)) ||
+           (depth > 0 && strbuf_flow_route(c, fm, SFC_ALIAS, v, 0));
+  case NK_LocalVariableReadNode: case NK_LocalVariableWriteNode: {
+    const char *vn = nt_str(nt, v, "name");
+    LocalVar *vl = vn ? scope_local(comp_scope_of(c, v), vn) : NULL;
+    return depth > 0 && repr_of_slot(c, vl).handle;
+  }
+  case NK_GlobalVariableReadNode: case NK_ConstantReadNode: case NK_ConstantPathNode:
+    return depth > 0 && strbuf_var_handle(c, v, ref, sizeof ref);
+  case NK_GlobalVariableWriteNode: case NK_GlobalVariableOrWriteNode: case NK_GlobalVariableAndWriteNode:
+  case NK_ConstantWriteNode:
+    return depth > 0 && strbuf_gvar_write_handle(c, v, ref, sizeof ref);
+  default:
+    return depth > 0 && (repr_write_share(c, v) || strbuf_flow_route(c, fm, SFC_ALIAS, v, 0));
+  }
+}
+
 /* Is value v's String one no other name can see a copy of: a new String,
    one of a class the rule does not share or that one holder alone names
    (the rule shares it for a change through a transient), one a method built in its own
@@ -17326,8 +17419,12 @@ static int strbuf_flow_value(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, in
      first) */
   if ((ctx == SFC_ALIAS || ctx == SFC_SPLICE || ctx == SFC_ARG) && strbuf_call_reads_handle(c, v)) return 1;
   if (k == NK_IfNode || k == NK_UnlessNode || k == NK_OrNode || k == NK_AndNode || k == NK_CaseNode ||
-      k == NK_StatementsNode || k == NK_ElseNode || k == NK_ParenthesesNode)
+      k == NK_StatementsNode || k == NK_ElseNode || k == NK_ParenthesesNode) {
+    /* emit_strbuf_value takes a conditional arm by arm only when one of its
+       arms is a handle (strbuf_cond_has_handle_leaf); else whole, a copy */
+    if ((ctx == SFC_ALIAS || ctx == SFC_ARG || ctx == SFC_SPLICE) && !strbuf_flow_has_leaf(c, fm, v, 0)) ctx = SFC_SLOT;
     return strbuf_flow_cond(c, fm, ctx, v, depth);
+  }
   if (ctx == SFC_BOX) return 0;
   /* a raise leaves no value */
   if (ctx == SFC_TAIL && k == NK_CallNode && nt_ref(nt, v, "receiver") < 0 && nt_str(nt, v, "name") &&
@@ -17369,7 +17466,11 @@ static int strbuf_flow_value(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, in
      the base's handle (emit_strbuf_value's chain arms, strbuf_slot_ref) */
   int base = unwrap_parens(c, str_alias_chain_base(c, v));
   char ref[1024];
-  return base != unwrap_parens(c, v) && (strbuf_var_handle(c, base, ref, sizeof ref) || strbuf_call_reads_handle(c, base));
+  if (base == unwrap_parens(c, v)) return 0;
+  if (strbuf_var_handle(c, base, ref, sizeof ref) || strbuf_call_reads_handle(c, base)) return 1;
+  /* an append chain over a route (emit_strbuf_route_chain) */
+  int args[32];
+  return ctx == SFC_ALIAS && strbuf_chain_links(c, v, base, args) >= 0 && strbuf_flow_route(c, fm, ctx, base, depth + 1);
 }
 
 /* repr.c's flow check asks this (codegen_internal.h). */
