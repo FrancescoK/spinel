@@ -1267,6 +1267,7 @@ int lazy_alias_chain(Compiler *c, int var_read);
 int lazy_method_chain(Compiler *c, int call);      /* parameterless method whose body is a lazy chain -> chain node, else -1 */
 int lazy_resolve_chain(Compiler *c, int n);
 int local_is_handle(Compiler *c, int a);
+int ivar_read_is_handle(Compiler *c, int a);
 int        hash_new_default_arg(Compiler *c, int recv); /* Hash.new(d) literal: d node or -1 */
 int        recv_hash_new_default_arg(Compiler *c, int recv); /* the same through a local or ivar READ node */
 TyKind     hash_default_value_ty(Compiler *c, int dn);      /* the value type a Hash.new(d) default contributes */
