@@ -1000,6 +1000,10 @@ share-strings-test: $(SPINEL)
 	   grep -q 'sp_strbuf_read_pub(lv_path)' "$$tmp/open.c"; then \
 	  echo "share-strings-test: FAIL (File.open's path shares StringIO.open's init)"; ok=0; \
 	fi; \
+	if ! $(SPINEL) --share-strings test/share/share_strings_literal_queries.rb -c --no-line-map -o "$$tmp/queries.c" >"$$tmp/out" 2>&1 || \
+	   grep -q 'sp_String_new_shared' "$$tmp/queries.c"; then \
+	  echo "share-strings-test: FAIL (a literal query unnecessarily shares its Strings)"; ok=0; \
+	fi; \
 	rm -rf "$$tmp"; \
 	if [ $$ok = 1 ]; then echo "share-strings-test: pass"; else exit 1; fi
 

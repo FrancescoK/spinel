@@ -2603,6 +2603,15 @@ static int native_share_answer_ref(Compiler *c, int n, char *out, size_t cap) {
 int strbuf_slot_ref(Compiler *c, int recv, char *out, size_t cap) {
   HolderRef h;
   if (native_share_answer_ref(c, recv, out, cap)) return 1;
+  if (repr_share_rule(c) && recv >= 0 && repr_of(c, recv).narrowed == TY_STRBUF &&
+      holder_of_node(c, recv, &h) && h.r.kind == RK_BOXED) {
+    Buf rb; memset(&rb, 0, sizeof rb);
+    emit_local_ref(c, recv, h.name, &rb);
+    int fit = rb.p && strlen(rb.p) + 24 <= cap;
+    if (fit) snprintf(out, cap, "sp_poly_as_strbuf(%s)", rb.p);
+    free(rb.p);
+    return fit;
+  }
   /* via emit_local_ref: a celled/captured local derefs its cell */
   if (strbuf_local_name(c, recv) && holder_of_node(c, recv, &h)) return holder_slot_text(c, &h, out, cap);
   /* a demand-marked reader call typed as the handle (external reader
