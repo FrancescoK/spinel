@@ -28,6 +28,7 @@ int is_opaque_reaching_call(const char *n); /* send family, call, new, lambda/pr
 int is_async_code_entry(const char *recv, const char *n); /* Thread.new/start/fork, Fiber.new, trap, Signal.trap */
 int is_name_reader(const char *n);    /* name to_s inspect: a Class's or Module's name */
 int is_tap_alias(const char *n);      /* tap then yield_self */
+int is_tap_name(const char *n);       /* tap */
 int is_quantifier(const char *n);     /* all? any? none? one? */
 int is_set_op(const char *n);         /* & intersection | union - difference */
 int is_combination_family(const char *n);  /* combination permutation repeated_combination repeated_permutation */
@@ -100,6 +101,8 @@ int is_indexed_each(const char *n); /* each_index each_with_index */
 int is_to_array_alias(const char *n); /* entries to_a */
 int is_match_p_name(const char *n);   /* match? */
 int is_record_class_builder(const char *recv, const char *meth); /* Struct.new, Data.define */
+int is_array_new(const char *recv, const char *meth); /* Array.new */
+int is_array_class_name(const char *n); /* Array */
 int is_string_index(const char *n); /* index rindex */
 int is_modulo_alias(const char *n); /* % modulo */
 int is_append_concat(const char *n); /* << concat */

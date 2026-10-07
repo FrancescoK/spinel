@@ -1,0 +1,37 @@
+1
+-1
+"a"
+"undefined method '+@' for nil"
+"undefined method '-@' for nil"
+"plus"
+"minus"
+2.5
+-2.5
+"undefined method '+@' for an instance of Symbol"
+"undefined method '-@' for an instance of Symbol"
+"undefined method '+@' for true"
+"undefined method '-@' for true"
+"undefined method '+@' for false"
+"undefined method '-@' for false"
+1180591620717411303424
+-1180591620717411303424
+(1/1)
+(-1/1)
+"plus"
+"minus"
+"undefined method '+@' for true"
+"undefined method '-@' for false"
+"undefined method '+@' for an instance of Symbol"
+"undefined method '+@' for nil"
+"undefined method '-@' for nil"
+"undefined method '+@' for an instance of Array"
+"undefined method '+@' for an instance of Range"
+"undefined method '+@' for an instance of Hash"
+"undefined method '+@' for an instance of Time"
+-5
+5
+-1.5
+-1180591620717411303424
+(1/1)
+(-1-2i)
+"undefined method '+@' for nil"

@@ -2241,8 +2241,8 @@ void emit_proc_call_args(Compiler *c, int call, int argc, const int *argv, Buf *
           /* a parameter that took the handle is NULL for a nil argument,
              whether a yield or a proc call hands it on (`def ri(x, &b) =
              b[x]` called with nil) */
-          buf_printf(g_pre, "const char *_t%d = _t%d ? sp_str_concat(sp_String_cstr(_t%d), (&(\"\\xff\")[1])) : NULL; SP_GC_ROOT(_t%d);\n",
-                     slot[k], atmp[k], atmp[k], slot[k]);
+          buf_printf(g_pre, "const char *_t%d = sp_strbuf_read(_t%d); SP_GC_ROOT(_t%d);\n",
+                     slot[k], atmp[k], slot[k]);
         }
       }
     }
@@ -11020,6 +11020,10 @@ void emit_exc_new_no_init(Compiler *c, int id, int ci, int argc, const int *argv
      sp_exc_new_sub would only allocate the base (#2772). */
   const char *cn2 = class_ruby_name(c, ci); if (!cn2) cn2 = c->classes[ci].name;
   const char *par = exc_builtin_parent(c, ci);
+  char mh[256];
+  int hm = !class_is_syserr(c, ci) && argc >= 1 && comp_ntype(c, argv[0]) == TY_STRING &&
+           exc_msg_handle(c, argv[0], mh, sizeof mh);
+  if (hm) buf_printf(b, "((sp_%s *)sp_exc_attach_msg(", c->classes[ci].nivars > 0 ? c->classes[ci].c_name : "Exception");
   if (c->classes[ci].nivars > 0)
     buf_printf(b, "((sp_%s *)sp_exc_new_sub_sized(sizeof(sp_%s), \"%s\", ",
                c->classes[ci].c_name, c->classes[ci].c_name, cn2);
@@ -11044,6 +11048,7 @@ void emit_exc_new_no_init(Compiler *c, int id, int ci, int argc, const int *argv
   }
   else buf_puts(b, "(&(\"\\xff\")[1])");
   buf_puts(b, c->classes[ci].nivars > 0 ? "))" : ")");
+  if (hm) buf_printf(b, ", %s))", mh);
 }
 
 /* Array.new(x) of an Array x is a copy of it (#7449): of a typed one by its
@@ -11353,6 +11358,9 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       int clr_key = sp_streq(cn, "KeyError");
       int tex = clr_recv || clr_key ? ++g_tmp : 0;
       if (tex) buf_printf(b, "({ sp_Exception *_t%d = ", tex);
+      char mh[256];
+      int hm = argc >= 1 && comp_ntype(c, argv[0]) == TY_STRING && exc_msg_handle(c, argv[0], mh, sizeof mh);
+      if (hm) buf_puts(b, "((sp_Exception *)sp_exc_attach_msg(");
       buf_printf(b, "sp_exc_new(\"%s\", ", cn);
       if (argc >= 1) {
         /* an explicitly given message stays, even empty; only a message-less
@@ -11371,6 +11379,7 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       }
       else buf_puts(b, "(&(\"\\xff\")[1])");
       buf_puts(b, ")");
+      if (hm) buf_printf(b, ", %s))", mh);
       if (tex) {
         buf_puts(b, ";");
         if (clr_recv) buf_printf(b, " _t%d->has_recv = 0;", tex);
@@ -11881,7 +11890,12 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
            (e.g. `nrows * ncols` where a factor widened to poly -> sp_poly_mul,
            which returns sp_RbVal) through sp_poly_to_i. spinel-dev#24. */
         Buf nb; memset(&nb, 0, sizeof nb); emit_int_expr(c, argv[0], &nb);
-        Buf vb = expr_buf(c, argv[1]);
+        /* --share-strings: a fill stored as the shared handle is boxed as
+           its handle, one object in every slot, as a literal's element is */
+        int fh = at == TY_POLY_ARRAY && repr_share_rule(c) && repr_of(c, argv[1]).as_ty == TY_STRBUF;
+        Buf vb; memset(&vb, 0, sizeof vb);
+        if (fh) emit_boxed(c, argv[1], &vb);
+        else vb = expr_buf(c, argv[1]);
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "sp_int _t%d = ", tn); buf_puts(g_pre, nb.p ? nb.p : ""); buf_puts(g_pre, ";\n");
         emit_indent(g_pre, g_indent);
@@ -11900,7 +11914,7 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
             buf_puts(g_pre, "sp_box_poly_array(sp_PolyArray_new())");
           else if (fvt == TY_UNKNOWN && fvty && sp_streq(fvty, "HashNode") && fv_en == 0)
             buf_puts(g_pre, "sp_box_obj(sp_PolyPolyHash_new(), SP_BUILTIN_POLY_POLY_HASH)");
-          else if (fvt != TY_POLY) emit_boxed_text(c, fvt, vb.p ? vb.p : "sp_box_nil()", g_pre);
+          else if (fvt != TY_POLY && !fh) emit_boxed_text(c, fvt, vb.p ? vb.p : "sp_box_nil()", g_pre);
           else buf_puts(g_pre, vb.p ? vb.p : "sp_box_nil()");
         }
         else {
@@ -11909,6 +11923,10 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
         }
         buf_puts(g_pre, ";\n");
         emit_indent(g_pre, g_indent);
+        /* a fresh handle box lives only here across the array's allocation
+           (a variable's is held by the variable) */
+        NodeKind fk = nt_kind(nt, argv[1]);
+        if (fh && fk != NK_LocalVariableReadNode && fk != NK_InstanceVariableReadNode && !repr_static_read_kind(fk)) { emit_gc_root_tmp(c, TY_POLY, tv, g_pre); buf_puts(g_pre, "\n"); emit_indent(g_pre, g_indent); }
         if (is_numeric_literal_tag(k)) {
           buf_printf(g_pre, "sp_%sArray *_t%d = sp_%sArray_new_fill(_t%d, _t%d);\n", k, tr, k, tn, tv);
           emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", tr);
@@ -21748,8 +21766,8 @@ int emit_implicit_self_member(Compiler *c, int id, Buf *b) {
     Repr rp = repr_of(c, id);
     if (rty == TY_STRBUF && !rp.handle && !rp.demand) {
       int tv = ++g_tmp;
-      buf_printf(&rb, "({ sp_String *_t%d = %s%siv_%s; _t%d ? sp_str_concat(sp_String_cstr(_t%d), (&(\"\\xff\")[1])) : NULL; })",
-                 tv, g_self, g_self_deref, iv_c(rn), tv, tv);
+      buf_printf(&rb, "({ sp_String *_t%d = %s%siv_%s; sp_strbuf_read(_t%d); })",
+                 tv, g_self, g_self_deref, iv_c(rn), tv);
       rty = TY_STRING;
     }
     else buf_printf(&rb, "%s%siv_%s", g_self, g_self_deref, iv_c(rn));
@@ -24439,6 +24457,16 @@ void emit_handle_inspect(Compiler *c, int recv, TyKind rt, Buf *b) {
   buf_printf(b, "sp_sprintf(\"#<%s:0x%%016llx>\", (unsigned long long)(uintptr_t)(", hn);
   emit_expr(c, recv, b); buf_puts(b, "))");
 }
+/* --share-strings: can the deep-return pickup `id` answer nil? A target
+   the plan cannot list may be such a method; a call that reaches none (a
+   builtin's, `String.new`) has no tail to answer nil through
+   (an_tail_answers_nil). */
+int strbuf_pickup_answers_nil(Compiler *c, int id) {
+  if (!repr_share_rule(c)) return 0;
+  int t[8], n = cplan_targets(c, id, t, 8), nil = n < 0;
+  for (int i = 0; i < n && !nil; i++) nil = an_tail_answers_nil(c, t[i]);
+  return nil;
+}
 /* deep-return pickup (#3227 P6): a marked receiverless call to a method
    whose every return path yields a shared handle -- reset the side
    channel, run the ordinary call (its shared-slot tail read publishes),
@@ -24462,11 +24490,7 @@ static int emit_deep_return_pickup(Compiler *c, int id, Buf *b) {
      call's nil is nil. A target the plan cannot list may be such a
      method; a call that reaches none (a builtin's, `String.new`) has no
      tail to answer nil through. */
-  if (repr_share_rule(c)) {
-    int t[8], n = cplan_targets(c, id, t, 8), nil = n < 0;
-    for (int i = 0; i < n && !nil; i++) nil = an_tail_answers_nil(c, t[i]);
-    if (nil) buf_printf(b, "!_v%d ? NULL : ", tvD);
-  }
+  if (strbuf_pickup_answers_nil(c, id)) buf_printf(b, "!_v%d ? NULL : ", tvD);
   buf_printf(b, "_sp_ret_strbuf ? (sp_String *)_sp_ret_strbuf"
                 " : sp_String_new_shared(_v%d); })", tvD);
   return 1;

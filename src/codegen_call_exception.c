@@ -844,7 +844,16 @@ int emit_call_raise_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const
         else {
           /* an explicitly given message is kept even when empty, unlike the
              class-only form, which falls back to the class name (#3711) */
-          if (comp_ntype(c, av[1]) == TY_STRING) {
+          char mh[256];
+          if (comp_ntype(c, av[1]) == TY_STRING && exc_msg_handle(c, av[1], mh, sizeof mh)) {
+            /* the exception is built here, holding the handle, as the
+               rescue would build it (sp_exc_new_for_catch) */
+            buf_printf(b, "sp_raise_exc((sp_Exception *)sp_exc_attach_msg(sp_exc_new_for_catch(\"%s\", "
+                          "sp_exc_msg_given(", effn);
+            emit_expr(c, av[1], b);
+            buf_printf(b, ")), %s))", mh);
+          }
+          else if (comp_ntype(c, av[1]) == TY_STRING) {
             buf_printf(b, "sp_raise_cls(\"%s\", sp_exc_msg_given(", effn);
             emit_expr(c, av[1], b);
             buf_puts(b, "))");
@@ -893,8 +902,16 @@ int emit_call_raise_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const
         buf_puts(b, "), sp_raise_cls(\"TypeError\", \"exception class/object expected\"))");
       }
       else if (at == TY_STRING) {
-        /* `raise "msg"` raises RuntimeError with the message */
-        buf_puts(b, "sp_raise(sp_exc_msg_given("); emit_expr(c, av[0], b); buf_puts(b, "))");
+        /* `raise "msg"` raises RuntimeError with the message, holding a
+           shared String's handle (exc_msg_handle) */
+        char mh[256];
+        if (exc_msg_handle(c, av[0], mh, sizeof mh)) {
+          buf_puts(b, "sp_raise_exc((sp_Exception *)sp_exc_attach_msg(sp_exc_new_for_catch(\"RuntimeError\", "
+                      "sp_exc_msg_given(");
+          emit_expr(c, av[0], b);
+          buf_printf(b, ")), %s))", mh);
+        }
+        else { buf_puts(b, "sp_raise(sp_exc_msg_given("); emit_expr(c, av[0], b); buf_puts(b, "))"); }
       }
       else if (at == TY_POLY || at == TY_CLASS) {
         /* the runtime value may be a string, an exception object, an exception
@@ -919,4 +936,13 @@ int emit_call_raise_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const
     return 1;
   }
   return 0;
+}
+
+/* --share-strings: an exception built with message `arg` that reads a
+   variable whose slot holds the shared handle (strbuf_var_handle) holds
+   that handle as its message (sp_Exception.msg_h, through
+   sp_exc_attach_msg around its construction), so #message answers the
+   String itself, as CRuby's does. 1 with the handle's text in href. */
+int exc_msg_handle(Compiler *c, int arg, char *href, size_t cap) {
+  return arg >= 0 && strbuf_var_handle(c, arg, href, cap);
 }

@@ -6,6 +6,7 @@
 #include "call_plan.h"
 #include "share.h"
 #include "timing.h"
+#include "builtin_names.h"
 
 
 static int narrow_int_table_ivars(Compiler *c, int in_round);  /* declared early: the fixpoint calls it */
@@ -16016,6 +16017,12 @@ static int strbuf_container_source_walk(Compiler *c, int node, int depth, int mo
       /* `Array.new(n) { ... }` fills the array with its block's tail */
       if (sp_streq(mn, "new") && recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode &&
           nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Array")) {
+        /* --share-strings: `Array.new(n, s)` fills every slot with s
+           itself, so s is what it stores (and a poly form holds its
+           handle, infer_call's Array.new arm) */
+        int fa = nt_ref(nt, node, "arguments"), fn = 0;
+        const int *fv = fa >= 0 ? nt_arr(nt, fa, "arguments", &fn) : NULL;
+        if (c->share_strings && fn == 2 && blk < 0) return strbuf_store_leaf(c, fv[1], depth, mode);
         if (SB_KIND(mode) == SB_HAS_NONSTRING || blk < 0 || nt_kind(nt, blk) != NK_BlockNode) return 0;
         int body = nt_ref(nt, blk, "body");
         if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) return 0;
@@ -17745,16 +17752,24 @@ static int an_stmts_tail_shared(Compiler *c, int st, int nil_ok, TailCount *tc) 
    deep-return pickup (an_returns_shared_handles): a shared slot's read
    (an_arg_is_shared_handle, counted in tc->reads), and under
    --share-strings a conditional each of whose arms ends in one (`f ? x :
-   y`, an elsif chain). With nil_ok (the method's last statement), nil too,
-   and an arm that answers it, written or missing (`x if f`, `if f; else;
-   x; end`), counted in tc->nils: nil publishes nothing, and the pickup
-   reads the call's nil as nil whatever an earlier read published
-   (an_tail_answers_nil). */
+   y`, an elsif chain) and a begin each of whose arms does (its body's, each
+   rescue's, its else's; an ensure's value is dropped). With nil_ok, nil
+   too, and an arm that answers it, written or missing (`x if f`, `if f;
+   else; x; end`, `begin; x; rescue; nil; end`), counted in tc->nils: nil
+   publishes nothing, and the pickup reads the call's nil as nil whatever
+   an earlier read published (an_tail_answers_nil). */
 static int an_tail_is_shared_handle(Compiler *c, int node, int nil_ok, TailCount *tc) {
   const NodeTable *nt = c->nt;
   NodeKind k = node >= 0 ? nt_kind(nt, node) : NK_NONE;
   if (c->share_strings && k == NK_NilNode) { tc->nils += nil_ok; return nil_ok; }
   if (c->share_strings && k == NK_ParenthesesNode) return an_stmts_tail_shared(c, nt_ref(nt, node, "body"), nil_ok, tc);
+  if (c->share_strings && k == NK_BeginNode) {
+    if (!an_stmts_tail_shared(c, nt_ref(nt, node, "statements"), nil_ok, tc)) return 0;
+    for (int rc = nt_ref(nt, node, "rescue_clause"); rc >= 0; rc = nt_ref(nt, rc, "subsequent"))
+      if (!an_stmts_tail_shared(c, nt_ref(nt, rc, "statements"), nil_ok, tc)) return 0;
+    int be = nt_ref(nt, node, "else_clause");
+    return be < 0 || an_stmts_tail_shared(c, nt_ref(nt, be, "statements"), nil_ok, tc);
+  }
   if (!c->share_strings || (k != NK_IfNode && k != NK_UnlessNode)) {
     int ok = an_arg_is_shared_handle(c, node);
     tc->reads += ok;
@@ -17766,17 +17781,21 @@ static int an_tail_is_shared_handle(Compiler *c, int node, int nil_ok, TailCount
   return nt_kind(nt, el) == NK_ElseNode ? an_stmts_tail_shared(c, nt_ref(nt, el, "statements"), nil_ok, tc)
                                         : an_tail_is_shared_handle(c, el, nil_ok, tc);
 }
-/* Can method mi answer nil through its last statement? The same walk that
-   admitted the tail for the pickup counts its nils, so the two cannot
-   disagree (asking a conditional's arms apart missed an empty one); a tail
-   it does not admit answers yes. */
+/* Can method mi answer nil, through its last statement or a `return`? The
+   same walk that admitted the tail for the pickup counts its nils, so the
+   two cannot disagree (asking a conditional's arms apart missed an empty
+   one); a last statement it does not admit answers yes, and the returns'
+   nils are the ones an_returns_shared_handles counted. */
 int an_tail_answers_nil(Compiler *c, int mi) {
   TailCount tc = { 0, 0 };
-  return !an_tail_is_shared_handle(c, scope_body_last(c, mi), 1, &tc) || tc.nils > 0;
+  return !an_tail_is_shared_handle(c, scope_body_last(c, mi), 1, &tc) || tc.nils > 0 ||
+         c->scopes[mi].ret_nil_pickup;
 }
 /* Does every return tail of method mi3 (the implicit one and each `return`)
-   read a shared handle? *saw: it has one. Under --share-strings the last
-   statement may answer nil, but some tail must read a handle. */
+   read a shared handle? *saw: it has one. Under --share-strings any tail
+   may answer nil (a bare `return` does), but some tail must read a handle;
+   the nils of the returns are kept for the pickup's nil test
+   (ret_nil_pickup). */
 static int an_returns_shared_handles(Compiler *c, int mi3, const int *ret_start, const int *ret_list, int *saw) {
   const NodeTable *nt = c->nt;
   int ok = 1;
@@ -17786,14 +17805,19 @@ static int an_returns_shared_handles(Compiler *c, int mi3, const int *ret_start,
     *saw = 1;
     if (!an_tail_is_shared_handle(c, lastT, 1, &tc)) ok = 0;
   }
+  int lnils = tc.nils, rnils = 0;
   for (int r = ret_start[mi3]; ok && r < ret_start[mi3 + 1]; r++) {
     int u = ret_list[r];
     int ra = nt_ref(nt, u, "arguments");
     int rn2 = 0; const int *rv2 = ra >= 0 ? nt_arr(nt, ra, "arguments", &rn2) : NULL;
     *saw = 1;
-    if (rn2 != 1 || !an_tail_is_shared_handle(c, rv2[0], 0, &tc)) ok = 0;
+    if (rn2 > 1 || (rn2 == 0 && !c->share_strings)) ok = 0;
+    else if (rn2 == 0) rnils++;
+    else if (!an_tail_is_shared_handle(c, rv2[0], c->share_strings, &tc)) ok = 0;
   }
+  rnils += tc.nils - lnils;
   if (c->share_strings && *saw && !tc.reads) ok = 0;
+  if (c->share_strings && rnils > 0) c->scopes[mi3].ret_nil_pickup = 1;
   return ok;
 }
 /* The method a deep-return pickup call reaches: a receiverless call's
@@ -17897,6 +17921,14 @@ static int promote_shared_stored_strings(Compiler *c) {
         int a3 = nt_ref(nt, w, "arguments");
         int an3 = 0; const int *av3 = a3 >= 0 ? nt_arr(nt, a3, "arguments", &an3) : NULL;
         if (an3 >= 2) cand3[nc3++] = av3[an3 - 1];
+      }
+      /* --share-strings: `Array.new(n, s)` stores s in every slot, as a
+         literal stores its elements */
+      else if (c->share_strings && recv3 >= 0 && nt_kind(nt, recv3) == NK_ConstantReadNode &&
+               is_array_new(nt_str(nt, recv3, "name"), cn3) && nt_ref(nt, w, "block") < 0) {
+        int a3 = nt_ref(nt, w, "arguments");
+        int an3 = 0; const int *av3 = a3 >= 0 ? nt_arr(nt, a3, "arguments", &an3) : NULL;
+        if (an3 == 2) cand3[nc3++] = av3[1];
       }
       else if (cn3 && recv3 >= 0 && sp_streq(cn3, "equal?")) {
         /* identity test against the shared handle */

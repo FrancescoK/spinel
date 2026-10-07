@@ -3278,6 +3278,17 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
     if (pl0) pl0->type = s0;
     if (pl1) pl1->type = s1;
   }
+  /* --share-strings: read as the handle (emit_strbuf_route,
+     strbuf_route_inject), the accumulator is the handle its seed hands on,
+     the block's first parameter binds it, and each turn takes the block's
+     value as a handle, so a block answering its accumulator answers the
+     seed itself */
+  int hacc = 0;
+  if (acc_ty == TY_STRING && init >= 0 && p0_orig && repr_share_rule(c) && repr_of(c, id).demand) {
+    Scope *hsc = comp_scope_of(c, block);
+    hacc = repr_of_slot(c, hsc ? scope_local(hsc, p0_orig) : NULL).handle;
+    if (hacc) acc_ty = TY_STRBUF;
+  }
   int ta = ++g_tmp, tacc = ++g_tmp, ti = ++g_tmp;
   buf_puts(b, "({ ");
   emit_ctype(c, rt, b); buf_printf(b, " _t%d = ", ta); emit_expr(c, recv, b); buf_puts(b, "; ");
@@ -3331,7 +3342,8 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
   }
   else if (init >= 0) {
     /* a boxed accumulator wants a boxed seed */
-    if (acc_ty == TY_POLY && repr_of(c, init).kind != RK_BOXED) emit_boxed(c, init, b);
+    if (hacc) emit_strbuf_handle_of(c, init, b);
+    else if (acc_ty == TY_POLY && repr_of(c, init).kind != RK_BOXED) emit_boxed(c, init, b);
     /* a seed of a narrower array kind than the widened accumulator converts */
     else if (acc_ty == TY_POLY_ARRAY && repr_of(c, init).elem != TY_POLY) {
       buf_puts(b, "sp_poly_to_poly_array("); emit_boxed(c, init, b); buf_puts(b, ")");
@@ -3420,7 +3432,8 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
     Repr rbr = repr_of(c, bb[bn - 1]);
     TyKind rbt = rbr.as_ty;
     int rb_boxed = rbr.kind == RK_BOXED;
-    if (rb_boxed && acc_ty == TY_INT) { buf_puts(&tail, "sp_poly_to_i_or_nil("); emit_expr(c, bb[bn - 1], &tail); buf_puts(&tail, ")"); }
+    if (hacc) emit_strbuf_handle_of(c, bb[bn - 1], &tail);
+    else if (rb_boxed && acc_ty == TY_INT) { buf_puts(&tail, "sp_poly_to_i_or_nil("); emit_expr(c, bb[bn - 1], &tail); buf_puts(&tail, ")"); }
     else if (rb_boxed && acc_ty == TY_FLOAT) { buf_puts(&tail, "sp_poly_to_f_or_nil("); emit_expr(c, bb[bn - 1], &tail); buf_puts(&tail, ")"); }
     else if (rb_boxed && acc_ty == TY_STRING) { buf_puts(&tail, "sp_poly_to_s("); emit_expr(c, bb[bn - 1], &tail); buf_puts(&tail, ")"); }
     else if (rb_boxed && acc_ty == TY_SYMBOL) { buf_puts(&tail, "(sp_sym)("); emit_expr(c, bb[bn - 1], &tail); buf_puts(&tail, ").v.i"); }
