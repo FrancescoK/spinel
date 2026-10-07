@@ -1516,6 +1516,27 @@ static void emit_boxed_strbuf(Compiler *c, int node, TyKind t, const Repr *rp, B
       return;
     }
   }
+  /* --share-strings: a variable that holds a handle the rule shares (a
+     `next s` an Array.new block answers), or a route that hands on one
+     (emit_strbuf_route): that handle's box */
+  { char vref[1024];
+    /* a `next s` tail is its value's */
+    int vn = node, na = 0;
+    if (nt_kind(c->nt, node) == NK_NextNode && nt_ref(c->nt, node, "arguments") >= 0 &&
+        nt_arr(c->nt, nt_ref(c->nt, node, "arguments"), "arguments", &na) && na == 1)
+      vn = nt_arr(c->nt, nt_ref(c->nt, node, "arguments"), "arguments", &na)[0];
+    if (strbuf_var_handle(c, vn, vref, sizeof vref)) {
+      buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", vref);
+      RC(RF_STRBUF_HANDLE, RW_NONE);
+      return;
+    } }
+  { Buf hb; memset(&hb, 0, sizeof hb);
+    if (emit_strbuf_route(c, node, &hb)) {
+      buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", hb.p);
+      free(hb.p);
+      RC(RF_STRBUF_HANDLE, RW_NONE);
+      return;
+    } }
   /* a demanded literal / expression store: wrap a FRESH handle so the
      container element is mutable in place (#3227 P3) */
   buf_puts(b, "sp_box_obj(sp_String_new_shared(");
@@ -1903,7 +1924,28 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
   /* --share-strings: a String stored into a boxed slot the rule shares (an
      ivar that also holds nil) is boxed as its handle, which a later `<<`
      on the slot's box appends to in place (share_lift_poly_ivar_stores) */
+  /* --share-strings: a `next v` that is a block's boxed answer (a proc's
+     tail) boxes v as a next does (emit_boxed_next_value) */
+  if (repr_share_rule(c) && node >= 0 && nt_kind(c->nt, node) == NK_NextNode && nt_ref(c->nt, node, "arguments") >= 0) {
+    int na = 0;
+    const int *av = nt_arr(c->nt, nt_ref(c->nt, node, "arguments"), "arguments", &na);
+    TyKind at = na == 1 ? comp_ntype(c, av[0]) : TY_UNKNOWN;
+    if ((at == TY_STRING || at == TY_STRBUF) && strbuf_value_carries(c, av[0])) {
+      emit_boxed_next_value(c, av[0], b);
+      return;
+    }
+  }
   int lift = repr_share_rule(c) && node >= 0 && c->poly_strbuf_lift[node] && comp_ntype(c, node) == TY_STRING;
+  /* a route that hands on a handle (`q ||= s.then { |v| v }`,
+     emit_strbuf_route): that handle's box, not a new handle around a copy */
+  if (lift) {
+    Buf hb; memset(&hb, 0, sizeof hb);
+    if (emit_strbuf_route(c, node, &hb)) {
+      buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", hb.p);
+      free(hb.p);
+      return;
+    }
+  }
   if (lift) buf_puts(b, "sp_poly_strbuf_lift(");
   rc_depth++;
   emit_boxed_impl(c, node, b);
@@ -6428,6 +6470,7 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen, int size_node) {
       int last = bb[bn - 1];
       Repr lr = repr_of(c, last);
       TyKind lty = lr.as_ty;
+      char sref_fb[1024];
       if (as_gen && stmt_is_yielder_push(c, last, bp0)) {
         /* A generator ending in a bare `y << v` yields v, then terminates with
            the yielder as its result, which `<<` answers. */
@@ -6441,6 +6484,22 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen, int size_node) {
       else if (lty == TY_NIL) {
         emit_stmt(c, last, pb, 1);
         buf_puts(pb, "    _fb->yielded_value = sp_box_nil();\n");
+      }
+      /* --share-strings: a String the rule shares is the thread's value
+         itself (`Thread.new { s }.value << x` changes s): its handle, boxed */
+      else if ((lty == TY_STRING || lty == TY_STRBUF) && strbuf_var_handle(c, last, sref_fb, sizeof sref_fb)) {
+        buf_printf(pb, "    _fb->yielded_value = sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF);\n", sref_fb);
+      }
+      /* a route over one, or a conditional with such an arm (`c ? s : nil`) */
+      else if ((lty == TY_STRING || lty == TY_STRBUF) && strbuf_value_carries(c, last)) {
+        Buf pre2 = {0}, vb = {0};
+        Buf *sv2 = g_pre; int sv2i = g_indent;
+        g_pre = &pre2; g_indent = 1;
+        emit_strbuf_handle_of(c, last, &vb);
+        g_pre = sv2; g_indent = sv2i;
+        if (pre2.p) buf_puts(pb, pre2.p);
+        buf_printf(pb, "    _fb->yielded_value = sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF);\n", vb.p ? vb.p : "NULL");
+        free(pre2.p); free(vb.p);
       }
       else {
         Buf pre2 = {0}, vb = {0};
