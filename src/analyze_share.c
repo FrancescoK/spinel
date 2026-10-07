@@ -111,6 +111,10 @@ typedef struct ShareFacts {
      any_new_blk, which every initialize takes once after the walk
      (sh_settle_any_new) */
   int any_new_pos[16], any_new_kw, any_new_used;
+  /* the values of every user deconstruct (0) and deconstruct_keys (1), a
+     pattern over a value that may be any object reads its parts off
+     (sh_deconstructed; -2 not made yet, -1 none) */
+  int any_dec[2];
   int *any_new_blk, nany_blk, cany_blk;
   /* the attr readers and writers of every class by name, and the method
      scopes by name, sorted for a binary search (built on first use) */
@@ -625,12 +629,48 @@ static void sh_target(ShareFacts *F, Compiler *c, int t, int v) {
   }
 }
 
+/* The value a pattern reads an object's parts off: what its deconstruct
+   (keys 0) or deconstruct_keys (keys 1) answers, the user method's value
+   as a call's is. vt is the matched value's type and cls the class the
+   pattern names (`in Box[t]`), or -1. A value that may be any object reads
+   them off every user method of the name, joined once per build. -1 for a
+   value no user method deconstructs. */
+static int sh_deconstructed(ShareFacts *F, Compiler *c, TyKind vt, int cls, int keys) {
+  const char *name = keys ? "deconstruct_keys" : "deconstruct";
+  if (cls < 0 && ty_is_object(vt)) cls = ty_object_class(vt);
+  if (cls >= 0 && cls < c->nclasses) {
+    int defc = -1, mi = comp_method_in_chain(c, cls, name, &defc);
+    return mi >= 0 ? sh_scope_holder(F, SHK_RET, mi) : -1;
+  }
+  if (vt != TY_POLY && vt != TY_UNKNOWN) return -1;
+  if (F->any_dec[keys] == -2) {
+    F->any_dec[keys] = -1;
+    for (int mi = 0; mi < c->nscopes; mi++) {
+      Scope *m = &c->scopes[mi];
+      if (m->def_node >= 0 && m->class_id >= 0 && m->name && sp_streq(m->name, name))
+        F->any_dec[keys] = sh_join(F, F->any_dec[keys], sh_scope_holder(F, SHK_RET, mi));
+    }
+  }
+  return F->any_dec[keys];
+}
+
+/* the type of the parts a pattern reads off a value of type vt (an
+   object's: its deconstruct's elements), TY_UNKNOWN when not known */
+static TyKind sh_part_type(Compiler *c, TyKind vt, int keys) {
+  if (ty_is_object(vt) && !keys) {
+    int defc = -1, mi = comp_method_in_chain(c, ty_object_class(vt), "deconstruct", &defc);
+    vt = mi >= 0 ? c->scopes[mi].ret : TY_UNKNOWN;
+  }
+  if (ty_is_array(vt)) return ty_array_elem(vt);
+  if (ty_is_hash(vt)) return ty_hash_val(vt);
+  return TY_UNKNOWN;
+}
+
 /* Bind the variables pattern p names to the parts of v, the value it
-   matches (`case [s] in [t]` binds t to s itself; `in {name: t}` to the
-   Hash's value). An object's parts are what its deconstruct answers, which
-   is not followed: a typed String Array it answers cannot hold the handle
-   yet, as for a call of it. */
-static void sh_pattern(ShareFacts *F, Compiler *c, int p, int v) {
+   matches, of type vt (`case [s] in [t]` binds t to s itself; `in {name:
+   t}` to the Hash's value). An object's parts are those of what its
+   deconstruct answers (sh_deconstructed). */
+static void sh_pattern(ShareFacts *F, Compiler *c, int p, int v, TyKind vt) {
   const NodeTable *nt = c->nt;
   if (p < 0) return;
   switch (nt_kind(nt, p)) {
@@ -638,39 +678,53 @@ static void sh_pattern(ShareFacts *F, Compiler *c, int p, int v) {
     sh_target(F, c, p, v);
     return;
   case NK_CapturePatternNode:
-    sh_pattern(F, c, nt_ref(nt, p, "value"), v);
+    sh_pattern(F, c, nt_ref(nt, p, "value"), v, vt);
     sh_target(F, c, nt_ref(nt, p, "target"), v);
     return;
   case NK_AlternationPatternNode:
-    sh_pattern(F, c, nt_ref(nt, p, "left"), v);
-    sh_pattern(F, c, nt_ref(nt, p, "right"), v);
+    sh_pattern(F, c, nt_ref(nt, p, "left"), v, vt);
+    sh_pattern(F, c, nt_ref(nt, p, "right"), v, vt);
     return;
   case NK_IfNode: case NK_UnlessNode: {   /* a guard: `in [t] if t` */
     int st = nt_ref(nt, p, "statements");
     int bn = 0; const int *bv = st >= 0 ? nt_arr(nt, st, "body", &bn) : NULL;
-    if (bn > 0) sh_pattern(F, c, bv[0], v);
+    if (bn > 0) sh_pattern(F, c, bv[0], v, vt);
     return;
   }
   case NK_SplatNode:   /* `*rest`: a container of the parts */
-    sh_pattern(F, c, nt_ref(nt, p, "expression"), v);
+    sh_pattern(F, c, nt_ref(nt, p, "expression"), v, vt);
     return;
   case NK_AssocSplatNode:   /* `**rest` */
-    sh_pattern(F, c, nt_ref(nt, p, "value"), v);
+    sh_pattern(F, c, nt_ref(nt, p, "value"), v, vt);
     return;
   case NK_ArrayPatternNode: case NK_HashPatternNode:
   sh_parts: {
-    int ev = sh_elem(F, v);
+    int keys = nt_kind(nt, p) == NK_HashPatternNode;
+    int kn = nt_ref(nt, p, "constant");
+    const char *cn = kn >= 0 && (nt_kind(nt, kn) == NK_ConstantReadNode || nt_kind(nt, kn) == NK_ConstantPathNode)
+                     ? nt_str(nt, kn, "name") : NULL;
+    int cls = cn ? comp_class_index(c, cn) : -1;
+    int dv = sh_deconstructed(F, c, vt, cls, keys);
+    TyKind pt = sh_part_type(c, cls >= 0 ? ty_object(cls) : vt, keys);
+    /* an object's parts are its deconstruct's; a value that may be any
+       object's, either */
+    int obj = ty_is_object(vt) || cls >= 0;
+    int srcs[2] = { obj && dv >= 0 ? dv : v, obj ? -1 : dv };
     static const char *const lists[] = { "requireds", "posts", "elements" };
-    for (int f = 0; f < 3; f++) {
-      int m = 0; const int *ps = nt_arr(nt, p, lists[f], &m);
-      for (int i = 0; i < m; i++) {
-        int q = ps[i];
-        if (nt_kind(nt, q) == NK_AssocNode) q = nt_ref(nt, q, "value");
-        sh_pattern(F, c, q, ev);
-      }
-    }
     static const char *const rests[] = { "rest", "left", "right" };
-    for (int f = 0; f < 3; f++) sh_pattern(F, c, nt_ref(nt, p, rests[f]), v);
+    for (int si = 0; si < 2; si++) {
+      if (srcs[si] < 0) continue;
+      int ev = sh_elem(F, srcs[si]);
+      for (int f = 0; f < 3; f++) {
+        int m = 0; const int *ps = nt_arr(nt, p, lists[f], &m);
+        for (int i = 0; i < m; i++) {
+          int q = ps[i];
+          if (nt_kind(nt, q) == NK_AssocNode) q = nt_ref(nt, q, "value");
+          sh_pattern(F, c, q, ev, pt);
+        }
+      }
+      for (int f = 0; f < 3; f++) sh_pattern(F, c, nt_ref(nt, p, rests[f]), srcs[si], TY_UNKNOWN);
+    }
     return;
   }
   default:
@@ -1595,15 +1649,18 @@ static int sh_val_compute(ShareFacts *F, Compiler *c, int n) {
   case NK_CaseNode: case NK_CaseMatchNode: {
     int r = -1;
     int nw = 0; const int *ws = nt_arr(nt, n, "conditions", &nw);
-    int sv = nt_kind(nt, n) == NK_CaseMatchNode ? sh_val(F, c, nt_ref(nt, n, "predicate")) : -1;
+    int pr = nt_kind(nt, n) == NK_CaseMatchNode ? nt_ref(nt, n, "predicate") : -1;
+    int sv = pr >= 0 ? sh_val(F, c, pr) : -1;
+    TyKind svt = pr >= 0 ? c->ntype[pr] : TY_UNKNOWN;
     for (int i = 0; i < nw; i++) {
-      if (nt_kind(nt, n) == NK_CaseMatchNode) sh_pattern(F, c, nt_ref(nt, ws[i], "pattern"), sv);
+      if (nt_kind(nt, n) == NK_CaseMatchNode) sh_pattern(F, c, nt_ref(nt, ws[i], "pattern"), sv, svt);
       r = sh_join(F, r, sh_stmts_val(F, c, nt_ref(nt, ws[i], "statements")));
     }
     return sh_join(F, r, sh_val(F, c, nt_ref(nt, n, "else_clause")));
   }
   case NK_MatchRequiredNode: case NK_MatchPredicateNode: {
-    sh_pattern(F, c, nt_ref(nt, n, "pattern"), sh_val(F, c, nt_ref(nt, n, "value")));
+    int mv = nt_ref(nt, n, "value");
+    sh_pattern(F, c, nt_ref(nt, n, "pattern"), sh_val(F, c, mv), mv >= 0 ? c->ntype[mv] : TY_UNKNOWN);
     return -1;
   }
   case NK_AndNode:
@@ -2293,6 +2350,7 @@ static ShareFacts *sh_build(Compiler *c, int closed) {
   F->elem[F->unknown] = F->unknown;
   for (int j = 0; j < 16; j++) F->any_new_pos[j] = -1;
   F->any_new_kw = -1;
+  F->any_dec[0] = F->any_dec[1] = -2;
   F->nnodes = nt->count;
   F->nval = malloc(sizeof(int) * (size_t)(F->nnodes > 0 ? F->nnodes : 1));
   for (int i = 0; i < F->nnodes; i++) F->nval[i] = -2;
