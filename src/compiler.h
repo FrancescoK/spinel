@@ -838,6 +838,18 @@ typedef struct {
   unsigned ivarg_version;
   int ivarg_built;
 
+  /* variable-site chains by (kind, variable); see comp_vsite_first */
+  int *vs_head;         /* [vs_nbuckets] first entry of each (kind, variable) bucket */
+  int *vs_site;         /* [vs_count] an entry's site node */
+  int *vs_var;          /* [vs_count] the read or write naming its variable */
+  int *vs_next;         /* [vs_count] the next entry sharing the bucket */
+  unsigned char *vs_kind; /* [vs_count] an entry's site kind (VsKind) */
+  int *vs_rparent;      /* [vs_nodes] the call whose receiver a node is, or -1 */
+  unsigned char *vs_dropped; /* [vs_nodes] a statement the next statement follows */
+  int vs_nbuckets, vs_count, vs_cap, vs_nodes, vs_toplevel;
+  unsigned vs_version, vs_gen;
+  int vs_built;
+
   char **symbols;   /* interned symbol names; index = sp_sym id */
   size_t *symbol_lens;  /* each name's BYTE length: a name may hold a NUL, and
                            strlen would end it there (#nul symbols) */
@@ -1013,6 +1025,27 @@ void comp_ivarg_invalidate(Compiler *c);
 int comp_ivarg_next(const Compiler *c, int e);
 int comp_ivarg_call(const Compiler *c, int e);
 int comp_ivarg_arg(const Compiler *c, int e);
+/* The owning class of an ivar read or write node, or -1. */
+int comp_ivar_owner(Compiler *c, int node);
+typedef enum { VS_READ, VS_WRITE, VS_MUT, VS_RECV, VS_NKINDS } VsKind;
+/* Variable-site chains (compiler.c, see vsite_build): the entries of one
+   site kind of the variable named by read kind `kind`
+   (NK_LocalVariableReadNode, NK_InstanceVariableReadNode,
+   NK_GlobalVariableReadNode), `name` (a global's resolved) and `key` (a
+   local's scope index, an ivar's owning class, -1 for a global), in node
+   order: for (e = comp_vsite_first(c, VS_READ, kind, name, key); e >= 0;
+   e = comp_vsite_next(c, e)). An entry's site is comp_vsite_node; chains
+   carry hash collisions, so check comp_vsite_var, the read or write naming
+   the variable. */
+int comp_vsite_first(Compiler *c, VsKind k, NodeKind kind, const char *name, int key);
+int comp_vsite_next(const Compiler *c, int e);
+int comp_vsite_node(const Compiler *c, int e);
+int comp_vsite_var(const Compiler *c, int e);
+/* The call whose receiver node `n` is (through parentheses), or -1; and
+   whether it is a statement the next statement follows, so its value is
+   dropped. */
+int comp_recv_parent(Compiler *c, int n);
+int comp_value_dropped(Compiler *c, int n);
 int comp_kind_first(Compiler *c, int kind);
 int comp_kind_next(const Compiler *c, int id);
 int comp_sret_first(Compiler *c, int scope_idx);
@@ -1135,6 +1168,8 @@ const char *sym_static_value(Compiler *c, int node);  /* SymbolNode or sole-symb
 int sp_str_mutator(const char *nm, unsigned want);
 /* 1 iff call node `id` is a String method whose value is its receiver. */
 int str_self_call(const NodeTable *nt, int id);
+/* `n` through single-expression parentheses (analyze_util.c). */
+int an_unparen(const NodeTable *nt, int n);
 /* The RegularExpressionNode a Regexp local read at `read` always holds, or -1 (analyze_util.c). */
 int an_regex_local_lit(Compiler *c, int read);
 int fiber_storage_recv(const NodeTable *nt, int recv);
