@@ -8295,8 +8295,11 @@ static void emit_tail_value(Compiler *c, int node, Buf *b) {
   /* a case whose value is nil -- each arm returns or answers nil -- is held
      boxed by emit_case_expr (a nil has no C slot of its own); the method's
      slot takes it unboxed */
-  if (nt_kind(c->nt, node) == NK_CaseNode && g_ret_type != TY_UNKNOWN && g_ret_type != TY_VOID) {
-    TyKind ct = repr_of(c, node).as_ty;
+  int un = unwrap_parens(c, node);
+  int uif = nt_kind(c->nt, un) == NK_IfNode || nt_kind(c->nt, un) == NK_UnlessNode;
+  if ((nt_kind(c->nt, node) == NK_CaseNode || (uif && repr_of(c, un).as_ty == TY_UNKNOWN)) &&
+      g_ret_type != TY_UNKNOWN && g_ret_type != TY_VOID) {
+    TyKind ct = repr_of(c, un).as_ty;
     if (ct == TY_NIL || ct == TY_VOID || ct == TY_UNKNOWN) {
       Buf cb; memset(&cb, 0, sizeof cb);
       emit_expr(c, node, &cb);
