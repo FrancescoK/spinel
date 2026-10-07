@@ -1416,6 +1416,7 @@ int int_slot_store_needs_ck(Compiler *c, int v, TyKind slot_ty, int slot_nullabl
 const char *int_shift_fn(Compiler *c, const char *op, int v);
 int class_def_body(Compiler *c, int def_node);
 int class_body_list(Compiler *c, int **out_ci, int **out_body);
+int local_all_writes_empty_array(Compiler *c, Scope *sc, const char *name);
 TyKind an_builtin_answer(Compiler *c, int id);
 int an_yield_site_builtin_answer(Compiler *c, int id, TyKind kind, TyKind *out);
 int node_is_empty_container(const NodeTable *nt, int node);
