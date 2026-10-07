@@ -1135,8 +1135,7 @@ void emit_slot_orw_value(Compiler *c, TyKind t, const char *ref, int v, int is_o
   if (t == TY_STRBUF) {
     buf_puts(b, "({ ");
     emit_strbuf_orw_guard(c, ref, v, is_or, b);
-    buf_printf(b, " (_sp_ret_strbuf = (void *)%s, %s ? sp_str_concat(sp_String_cstr(%s), (&(\"\\xff\")[1])) : NULL); })",
-               ref, ref, ref);
+    buf_printf(b, " sp_strbuf_read_pub(%s); })", ref);
     return;
   }
   if (t == TY_POLY) {
@@ -1601,31 +1600,14 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
       /* publish the handle to the deep-return side channel as the copy is
          read out: a marked caller of a shared-returning method picks it up
          right after the call (#3227 P6) */
-      /* --share-strings: through sp_strbuf_read_pub, which sequences the
-         channel's write (two reads among one call's arguments) */
-      if (repr_share_rule(c)) {
-        buf_puts(b, "sp_strbuf_read_pub(");
-        emit_local_ref(c, id, lrn, b);
-        buf_puts(b, ")");
-        return 1;
-      }
-      buf_puts(b, "(_sp_ret_strbuf = (void *)");
+      /* Through sp_strbuf_read_pub, which sequences the channel's write
+         (two reads among one call's arguments), reads a nil handle as nil
+         (a parameter or a local can be one: `def run(cmd, text: nil)`,
+         `q = nil; q = +"x" if c`), and keeps a frozen handle's mark on the
+         copy it answers. */
+      buf_puts(b, "sp_strbuf_read_pub(");
       emit_local_ref(c, id, lrn, b);
-      /* A parameter that is the handle can be nil, `def initialize(s, o: nil)`
-         or `def run(cmd, text: nil)` whose block appends to it: nil is a NULL
-         handle, and reads as nil. So is a local's (`q = nil; q = +"x" if c`
-         with `q.tap { |w| w << "!" if w }` making q the handle). */
-      if (slv->dyn_handle || slv->is_param || slv->str_shared) {
-        buf_puts(b, ", ");
-        emit_local_ref(c, id, lrn, b);
-        buf_puts(b, " ? sp_str_concat(sp_String_cstr(");
-        emit_local_ref(c, id, lrn, b);
-        buf_puts(b, "), (&(\"\\xff\")[1])) : NULL)");
-        return 1;
-      }
-      buf_puts(b, ", sp_str_concat(sp_String_cstr(");
-      emit_local_ref(c, id, lrn, b);
-      buf_puts(b, "), (&(\"\\xff\")[1])))");
+      buf_puts(b, ")");
       return 1;
     }
     /* A POLY variable handed to a parameter the callee appends to in place:
@@ -1679,11 +1661,9 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
       }
       /* a nil write leaves the handle NULL: the value is nil, not a read
          through it (CodeRabbit on #4990) */
-      buf_puts(b, " (_sp_ret_strbuf = (void *)");
+      buf_puts(b, " sp_strbuf_read_pub(");
       emit_local_ref(c, id, nm, b);
-      buf_puts(b, ", _sp_ret_strbuf ? sp_str_concat(sp_String_cstr(");
-      emit_local_ref(c, id, nm, b);
-      buf_puts(b, "), (&(\"\\xff\")[1])) : NULL); })");
+      buf_puts(b, "); })");
       return 1;
     }
     buf_puts(b, "({ ");
@@ -1873,8 +1853,7 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
       if ((repr_of(c, id).handle && repr_write_share(c, id)) || repr_of(c, id).ty == TY_STRBUF)
         buf_printf(b, "; %s; })", ref2e);
       else
-        buf_printf(b, "; (_sp_ret_strbuf = (void *)%s, %s ? sp_str_concat(sp_String_cstr(%s), (&(\"\\xff\")[1])) : NULL); })",
-                   ref2e, ref2e, ref2e);
+        buf_printf(b, "; sp_strbuf_read_pub(%s); })", ref2e);
       return 1;
     }
     else if (ivt2 == TY_POLY && rp.kind != RK_BOXED) emit_boxed(c, v, b);
@@ -2041,9 +2020,7 @@ static void emit_strbuf_slot_read(Compiler *c, int id, Repr rp, const char *sref
      takes the live buffer (#7482) */
   else if (rp.read_raw && decide_node(c->nt, id, "strbuf-raw", NULL))
     buf_printf(b, "(%s ? sp_String_cstr(%s) : NULL)", sref, sref);
-  else if (repr_share_rule(c)) buf_printf(b, "sp_strbuf_read_pub(%s)", sref);
-  else buf_printf(b, "(_sp_ret_strbuf = (void *)%s, %s ? sp_str_concat(sp_String_cstr(%s), (&(\"\\xff\")[1])) : NULL)",
-                  sref, sref, sref);
+  else buf_printf(b, "sp_strbuf_read_pub(%s)", sref);
 }
 
 /* The same for a slot read at node `id` that is not a variable's (a Struct
