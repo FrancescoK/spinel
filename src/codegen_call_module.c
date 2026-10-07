@@ -590,6 +590,21 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
     if ((is_directory_entries(name)) && argc == 1) {
       buf_printf(b, "sp_dir_%s(", name); emit_path_expr(c, argv[0], b); buf_puts(b, ")"); return 1;
     }
+    /* Dir.entries / Dir.children(path, encoding: e), and the foreach /
+       each_child forms desugared onto them: Find.find lists a directory so.
+       The keyword was counted as a second argument, and the call fell through
+       to the run-time NoMethodError. Only a lone encoding: is taken; another
+       keyword keeps the old path. */
+    if (is_directory_entries(name) && argc == 2 && nt_kind(nt, argv[1]) == NK_KeywordHashNode) {
+      int en = 0; (void)nt_arr(nt, argv[1], "elements", &en);
+      int ev = kwh_lookup(nt, argv[1], "encoding");
+      if (en == 1 && ev >= 0) {
+        buf_puts(b, "sp_dir_entries_enc("); emit_path_expr(c, argv[0], b);
+        buf_printf(b, ", %d, ", sp_streq(name, "children") ? 1 : 0);
+        emit_boxed(c, ev, b); buf_puts(b, ")");
+        return 1;
+      }
+    }
     if ((sp_streq(name, "mkdir") || sp_streq(name, "rmdir") || sp_streq(name, "chdir")) && argc >= 1) {
       if (sp_streq(name, "mkdir") && argc == 2) {
         /* the permission mode is unused on this backend but still validated:

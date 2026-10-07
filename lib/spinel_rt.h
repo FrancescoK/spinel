@@ -14674,6 +14674,8 @@ sp_StrArray *sp_dir_glob_dot(const char *pattern);
    CRuby, not the glob-style empty result. */
 /* sp_dir_entries_impl: moved to lib/sp_cold.c */
 sp_StrArray *sp_dir_entries_impl(const char *path, int children);
+/* The same with an encoding: keyword (nil, an Encoding or a name). */
+sp_StrArray *sp_dir_entries_enc(const char *path, int children, sp_RbVal enc);
 /* ---- Dir handles (#2821): an open directory stream with its path ---- */
 /* sp_Dir moved to sp_io.h (used by the Dir ops in lib/sp_cold.c). */
 void sp_Dir_fin(void *p);

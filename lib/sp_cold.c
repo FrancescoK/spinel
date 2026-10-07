@@ -2706,6 +2706,22 @@ const char *sp_dir_home_user(const char *user) {SP_GC_ROOT_STR(user);
   return sp_str_dup_external(pw->pw_dir);
 }
 sp_StrArray *sp_dir_children(const char *path) {SP_GC_ROOT_STR(path); return sp_dir_entries_impl(path, 1); }
+/* Dir.entries / Dir.children with an encoding: keyword, the form Find.find
+   lists a directory with. The name is checked first, as Encoding.find checks
+   it (CRuby raises before it opens the directory), and nil keeps the
+   default. A String tells only binary from text, so ASCII-8BIT marks the
+   names binary and any other encoding leaves them as they are. */
+sp_StrArray *sp_dir_entries_enc(const char *path, int children, sp_RbVal enc) {SP_GC_ROOT_STR(path);
+  int binary = 0;
+  if (enc.tag != SP_TAG_NIL) {
+    sp_RbVal e = sp_encoding_find(enc);
+    binary = e.tag == SP_TAG_ENCODING && e.v.s && strcmp(e.v.s, "ASCII-8BIT") == 0;
+  }
+  sp_StrArray *a = sp_dir_entries_impl(path, children);
+  if (binary)
+    for (sp_int i = 0; i < a->len; i++) sp_str_as_binary(a->data[i]);
+  return a;
+}
 
 /* ---- Signal trap machinery + Enumerator cursor/generator ops moved from
    spinel_rt.h ----
