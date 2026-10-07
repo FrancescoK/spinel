@@ -7783,7 +7783,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       /* Root the receiver temp across the arms, as the zero-arg dispatch does:
          an arm's callee may allocate and collect the otherwise-unreferenced
          receiver out from under itself (#3476). */
-      buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b);
+      buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_poly_str_aset_recv(c, recv, &ps, argv, b);
       buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", tv);
       emit_poly_vis_precheck(c, id, tv, b);
       /* something with an effect has run: a later argument's prelude is held

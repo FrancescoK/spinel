@@ -11274,6 +11274,117 @@ static int splice_recv_index_slot(Compiler *c, int recv, int *outer, int *oidx) 
   return 1;
 }
 
+/* `x[k] = v` on a boxed local or instance variable whose key or value
+   rebinds it (`s[(s = t; 0)] = v`; aset_recv_rebinds_only). The arms below
+   read the receiver after the key and value, so the store went to the new
+   value, and a String splice or a widened Array came back over the new
+   binding. CRuby stores into the receiver it read first and keeps the new
+   binding. A value with to_ary for a Range key keeps its arm. */
+static int poly_aset_rebound(Compiler *c, int recv, const int *argv) {
+  if (comp_ntype(c, argv[0]) == TY_RANGE && splice_to_ary_mi(c, comp_ntype(c, argv[1])) >= 0) return 0;
+  return aset_recv_rebinds_only(c, recv, argv[0], argv[1]);
+}
+/* Whether `id` reads the variable `nm` (a read of kind `rk`) or, for an
+   instance variable, runs any call: something that may mutate it or move
+   its String into a shared handle (`s << x`, `t = s`, `s = s`, a method
+   that writes @s). */
+static int aset_touches_recv(Compiler *c, int id, NodeKind rk, const char *nm) {
+  const NodeTable *nt = c->nt;
+  if (id < 0) return 0;
+  NodeKind k = nt_kind(nt, id);
+  if (k == rk) {
+    const char *rn = nt_str(nt, id, "name");
+    if (!rn || sp_streq(rn, nm)) return 1;
+  }
+  if (rk == NK_InstanceVariableReadNode &&
+      ((k == NK_CallNode && !call_is_scalar_op(c, id)) || k == NK_YieldNode ||
+       k == NK_SuperNode || k == NK_ForwardingSuperNode))
+    return 1;
+  int nr = nt_num_refs(nt, id);
+  for (int i = 0; i < nr; i++)
+    if (aset_touches_recv(c, nt_ref_at(nt, id, i), rk, nm)) return 1;
+  int na = nt_num_arrs(nt, id);
+  for (int i = 0; i < na; i++) {
+    int n = 0;
+    const int *ids = nt_arr_at(nt, id, i, &n);
+    for (int j = 0; j < n; j++)
+      if (aset_touches_recv(c, ids[j], rk, nm)) return 1;
+  }
+  return 0;
+}
+/* See codegen_internal.h. A plain String is a `const char *` that a mutator
+   replaces with a new buffer, so the variable no longer holding the String
+   read first does not tell a rebinding from a mutation: the store reads the
+   receiver first only when nothing in the key or value can mutate it, and
+   otherwise reads it after them, as before. */
+int aset_recv_rebinds_only(Compiler *c, int recv, int key, int val) {
+  NodeKind rk = nt_kind(c->nt, recv);
+  if (rk != NK_LocalVariableReadNode && rk != NK_InstanceVariableReadNode) return 0;
+  if (!read_rebound_by(c, recv, key) && !read_rebound_by(c, recv, val)) return 0;
+  return !aset_recv_may_mutate(c, recv, key, val);
+}
+/* See codegen_internal.h. */
+int aset_recv_may_mutate(Compiler *c, int recv, int key, int val) {
+  const NodeTable *nt = c->nt;
+  NodeKind rk = nt_kind(nt, recv);
+  if (rk != NK_LocalVariableReadNode && rk != NK_InstanceVariableReadNode) return 0;
+  const char *nm = nt_str(nt, recv, "name");
+  if (!nm || aset_touches_recv(c, key, rk, nm) || aset_touches_recv(c, val, rk, nm)) return 1;
+  /* a proc that captures the local may mutate it as well as rebind it */
+  if (rk == NK_LocalVariableReadNode) {
+    LocalVar *lv = scope_local(comp_scope_of(c, recv), nm);
+    if (lv && lv->is_cell && (subtree_may_run_proc(c, key) || subtree_may_run_proc(c, val))) return 1;
+  }
+  return 0;
+}
+/* See codegen_internal.h. */
+int emit_aset_recv_read(Compiler *c, int recv, Buf *b) {
+  if (!g_pre) { emit_expr(c, recv, b); return 0; }
+  int tn = ++g_tmp;
+  Buf rb = expr_buf(c, recv);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_RbVal _t%d = %s; ", tn, rb.p ? rb.p : "sp_box_nil()");
+  emit_gc_root_tmp(c, TY_POLY, tn, g_pre);
+  buf_puts(g_pre, "\n");
+  free(rb.p);
+  buf_printf(b, "_t%d", tn);
+  return 1;
+}
+/* The store for poly_aset_rebound: the receiver into a temp ahead of the
+   key and the value, even of a prelude the key moves ahead of the statement
+   (emit_aset_recv_read), then the key and the value, the store on the temp,
+   and the answer (a spliced String, a widened Array) back only to a
+   variable that still holds the receiver read. A Symbol or other key
+   stores in place. */
+static void emit_poly_aset_rebound(Compiler *c, int recv, const int *argv, Buf *b) {
+  TyKind at = comp_ntype(c, argv[0]);
+  int tr = ++g_tmp, tk = ++g_tmp, tv = ++g_tmp, to = ++g_tmp;
+  buf_printf(b, "({ sp_RbVal _t%d = ", tr);
+  if (emit_aset_recv_read(c, recv, b)) buf_puts(b, "; ");
+  else buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", tr);
+  if (at == TY_INT) { buf_printf(b, "sp_int _t%d = ", tk); emit_int_expr(c, argv[0], b); buf_puts(b, "; "); }
+  else if (at == TY_RANGE) { buf_printf(b, "sp_Range _t%d = ", tk); emit_expr(c, argv[0], b); buf_puts(b, "; "); }
+  else if (at == TY_SYMBOL) { buf_printf(b, "sp_sym _t%d = ", tk); emit_expr(c, argv[0], b); buf_puts(b, "; "); }
+  else {
+    buf_printf(b, "sp_RbVal _t%d = ", tk); emit_boxed(c, argv[0], b);
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", tk);
+  }
+  buf_printf(b, "sp_RbVal _t%d = ", tv); emit_boxed(c, argv[1], b);
+  buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", tv);
+  const char *store = at == TY_INT ? "sp_poly_arr_widen_and_set"
+                    : at == TY_RANGE ? "sp_poly_splice_range"
+                    : at == TY_STRING || at == TY_REGEX || at == TY_POLY ? "sp_poly_str_aset_key" : NULL;
+  if (!store) {
+    buf_printf(b, at == TY_SYMBOL ? "sp_poly_set_sym(_t%d, _t%d, _t%d); _t%d; })"
+                                  : "sp_poly_set_poly(_t%d, _t%d, _t%d); _t%d; })", tr, tk, tv, tv);
+    return;
+  }
+  buf_printf(b, "sp_RbVal _t%d = %s(_t%d, _t%d, _t%d); if (", to, store, tr, tk, tv);
+  emit_expr(c, recv, b); buf_printf(b, ".tag == _t%d.tag && ", tr);
+  emit_expr(c, recv, b); buf_printf(b, ".v.p == _t%d.v.p) ", tr);
+  emit_expr(c, recv, b); buf_printf(b, " = _t%d; _t%d; })", to, tv);
+}
+
 /* Is the receiver a variable? A String mutator's new contents go back into
    one; a receiver that is no variable -- an element read, a Hash value -- can
    take them only through a shared handle, and only from a mutator whose value
@@ -12623,6 +12734,10 @@ static int emit_poly_index_call(Compiler *c, int id, Buf *b, const NodeTable *nt
       if (comp_poly_arm_defines_n(c, kk, "[]=", 2) || cplan_struct_aset(c, kk, name, argc)) user_aset = 1;
   if (recv >= 0 && rt == TY_POLY && sp_streq(name, "[]=") && argc == 2 && !user_aset &&
       !sp_is_fiber_storage_recv(nt, recv)) {
+    if (poly_aset_rebound(c, recv, argv)) {
+      emit_poly_aset_rebound(c, recv, argv, b);
+      { *out = 1; return 1; }
+    }
     /* arr[range] = rhs on a poly receiver: a splice over the range's span. */
     if (comp_ntype(c, argv[0]) == TY_RANGE) {
       int tv = ++g_tmp;
