@@ -486,6 +486,22 @@ static SP_NORETURN void pk_nil_elem(int flt) {
   sp_raise_cls("TypeError", flt ? "can't convert nil into Float" : "no implicit conversion of nil into Integer");
 }
 
+/* CRuby's pack result encoding: a template of U directives (m, M and u
+   alongside them too) answers UTF-8 text, and any other directive makes the
+   bytes ASCII-8BIT -- so [233].pack("U") is "\u00e9", one character, where it
+   was marked binary and read as two bytes. */
+static int pk_fmt_utf8(const char *fmt) {
+  int u = 0;
+  for (const char *q = fmt; q && *q; q++) {
+    char d = *q;
+    if (d == ' ' || d == '\t' || d == '\n' || d == '*' || d == '_' || d == '!' ||
+        d == '<' || d == '>' || (d >= '0' && d <= '9')) continue;
+    if (d == 'U') u = 1;
+    else if (d != 'm' && d != 'M' && d != 'u') return 0;
+  }
+  return u;
+}
+
 const char *sp_IntArray_pack(sp_IntArray *arr, const char *fmt) {SP_GC_ROOT(arr);
   if (!arr || !fmt) return sp_str_empty;
   size_t cap = 64;
@@ -551,7 +567,7 @@ const char *sp_IntArray_pack(sp_IntArray *arr, const char *fmt) {SP_GC_ROOT(arr)
   char *r = sp_str_alloc(len);
   memcpy(r, buf, len);
   sp_str_set_len(r, len);
-  sp_str_mark_binary(r);   /* pack answers ASCII-8BIT bytes: inspect them \xNN */
+  if (!pk_fmt_utf8(fmt)) sp_str_mark_binary(r);   /* pack answers ASCII-8BIT bytes: inspect them \xNN */
   free(buf);
   return r;
 }
@@ -610,7 +626,7 @@ const char *sp_FloatArray_pack(sp_FloatArray *arr, const char *fmt) {
   char *r = sp_str_alloc(len);
   memcpy(r, buf, len);
   sp_str_set_len(r, len);
-  sp_str_mark_binary(r);   /* pack answers ASCII-8BIT bytes: inspect them \xNN */
+  if (!pk_fmt_utf8(fmt)) sp_str_mark_binary(r);   /* pack answers ASCII-8BIT bytes: inspect them \xNN */
   free(buf);
   return r;
 }
@@ -712,7 +728,7 @@ const char *sp_PolyArray_pack(sp_PolyArray *arr, const char *fmt) {SP_GC_ROOT(ar
   char *r = sp_str_alloc(len);
   memcpy(r, buf, len);
   sp_str_set_len(r, len);
-  sp_str_mark_binary(r);   /* pack answers ASCII-8BIT bytes: inspect them \xNN */
+  if (!pk_fmt_utf8(fmt)) sp_str_mark_binary(r);   /* pack answers ASCII-8BIT bytes: inspect them \xNN */
   free(buf);
   return r;
 }
@@ -777,7 +793,7 @@ const char *sp_StrArray_pack(sp_StrArray *arr, const char *fmt) {
   char *r = sp_str_alloc(len);
   memcpy(r, buf, len);
   sp_str_set_len(r, len);
-  sp_str_mark_binary(r);   /* pack answers ASCII-8BIT bytes: inspect them \xNN */
+  if (!pk_fmt_utf8(fmt)) sp_str_mark_binary(r);   /* pack answers ASCII-8BIT bytes: inspect them \xNN */
   free(buf);
   return r;
 }
