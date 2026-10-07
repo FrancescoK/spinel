@@ -17994,16 +17994,24 @@ static int an_stmts_tail_shared(Compiler *c, int st, int nil_ok, TailCount *tc) 
    deep-return pickup (an_returns_shared_handles): a shared slot's read
    (an_arg_is_shared_handle, counted in tc->reads), and under
    --share-strings a conditional each of whose arms ends in one (`f ? x :
-   y`, an elsif chain). With nil_ok (the method's last statement), nil too,
-   and an arm that answers it, written or missing (`x if f`, `if f; else;
-   x; end`), counted in tc->nils: nil publishes nothing, and the pickup
-   reads the call's nil as nil whatever an earlier read published
-   (an_tail_answers_nil). */
+   y`, an elsif chain) and a begin each of whose arms does (its body's, each
+   rescue's, its else's; an ensure's value is dropped). With nil_ok, nil
+   too, and an arm that answers it, written or missing (`x if f`, `if f;
+   else; x; end`, `begin; x; rescue; nil; end`), counted in tc->nils: nil
+   publishes nothing, and the pickup reads the call's nil as nil whatever
+   an earlier read published (an_tail_answers_nil). */
 static int an_tail_is_shared_handle(Compiler *c, int node, int nil_ok, TailCount *tc) {
   const NodeTable *nt = c->nt;
   NodeKind k = node >= 0 ? nt_kind(nt, node) : NK_NONE;
   if (c->share_strings && k == NK_NilNode) { tc->nils += nil_ok; return nil_ok; }
   if (c->share_strings && k == NK_ParenthesesNode) return an_stmts_tail_shared(c, nt_ref(nt, node, "body"), nil_ok, tc);
+  if (c->share_strings && k == NK_BeginNode) {
+    if (!an_stmts_tail_shared(c, nt_ref(nt, node, "statements"), nil_ok, tc)) return 0;
+    for (int rc = nt_ref(nt, node, "rescue_clause"); rc >= 0; rc = nt_ref(nt, rc, "subsequent"))
+      if (!an_stmts_tail_shared(c, nt_ref(nt, rc, "statements"), nil_ok, tc)) return 0;
+    int be = nt_ref(nt, node, "else_clause");
+    return be < 0 || an_stmts_tail_shared(c, nt_ref(nt, be, "statements"), nil_ok, tc);
+  }
   if (!c->share_strings || (k != NK_IfNode && k != NK_UnlessNode)) {
     int ok = an_arg_is_shared_handle(c, node);
     tc->reads += ok;
@@ -18016,17 +18024,21 @@ static int an_tail_is_shared_handle(Compiler *c, int node, int nil_ok, TailCount
   return nt_kind(nt, el) == NK_ElseNode ? an_stmts_tail_shared(c, nt_ref(nt, el, "statements"), nil_ok, tc)
                                         : an_tail_is_shared_handle(c, el, nil_ok, tc);
 }
-/* Can method mi answer nil through its last statement? The same walk that
-   admitted the tail for the pickup counts its nils, so the two cannot
-   disagree (asking a conditional's arms apart missed an empty one); a tail
-   it does not admit answers yes. */
+/* Can method mi answer nil, through its last statement or a `return`? The
+   same walk that admitted the tail for the pickup counts its nils, so the
+   two cannot disagree (asking a conditional's arms apart missed an empty
+   one); a last statement it does not admit answers yes, and the returns'
+   nils are the ones an_returns_shared_handles counted. */
 int an_tail_answers_nil(Compiler *c, int mi) {
   TailCount tc = { 0, 0 };
-  return !an_tail_is_shared_handle(c, scope_body_last(c, mi), 1, &tc) || tc.nils > 0;
+  return !an_tail_is_shared_handle(c, scope_body_last(c, mi), 1, &tc) || tc.nils > 0 ||
+         c->scopes[mi].ret_nil_pickup;
 }
 /* Does every return tail of method mi3 (the implicit one and each `return`)
-   read a shared handle? *saw: it has one. Under --share-strings the last
-   statement may answer nil, but some tail must read a handle. */
+   read a shared handle? *saw: it has one. Under --share-strings any tail
+   may answer nil (a bare `return` does), but some tail must read a handle;
+   the nils of the returns are kept for the pickup's nil test
+   (ret_nil_pickup). */
 static int an_returns_shared_handles(Compiler *c, int mi3, const int *ret_start, const int *ret_list, int *saw,
                                      int *fresh) {
   const NodeTable *nt = c->nt;
@@ -18037,14 +18049,19 @@ static int an_returns_shared_handles(Compiler *c, int mi3, const int *ret_start,
     *saw = 1;
     if (!an_tail_is_shared_handle(c, lastT, 1, &tc)) ok = 0;
   }
+  int lnils = tc.nils, rnils = 0;
   for (int r = ret_start[mi3]; ok && r < ret_start[mi3 + 1]; r++) {
     int u = ret_list[r];
     int ra = nt_ref(nt, u, "arguments");
     int rn2 = 0; const int *rv2 = ra >= 0 ? nt_arr(nt, ra, "arguments", &rn2) : NULL;
     *saw = 1;
-    if (rn2 != 1 || !an_tail_is_shared_handle(c, rv2[0], 0, &tc)) ok = 0;
+    if (rn2 > 1 || (rn2 == 0 && !c->share_strings)) ok = 0;
+    else if (rn2 == 0) rnils++;
+    else if (!an_tail_is_shared_handle(c, rv2[0], c->share_strings, &tc)) ok = 0;
   }
+  rnils += tc.nils - lnils;
   if (c->share_strings && *saw && !tc.reads) ok = 0;
+  if (c->share_strings && rnils > 0) c->scopes[mi3].ret_nil_pickup = 1;
   /* a fresh tail beside the handle reads: the method clears the side
      channel there (ret_pub_fresh) once a pickup takes its value, which
      it answers as a String (emit_tail_value's const char *) */
