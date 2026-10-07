@@ -10,11 +10,14 @@
 #     short switches (-vq, -vuNAME) and "--"
 #   - --[no-]name switches: --name passes true, --no-name passes false;
 #     with a required value, only the positive form reads that value
+#   - optional values: "--name[=VALUE]" and "-n[VALUE]" take only an attached
+#     value; "--name [VALUE]" also takes the next word unless it looks like a
+#     switch. Without a value the block gets nil
 #   - OptionParser::InvalidOption, OptionParser::MissingArgument and
 #     OptionParser::NeedlessArgument, all subclasses of
 #     OptionParser::ParseError
 #
-# Not supported: abbreviated long switches, optional values,
+# Not supported: abbreviated long switches,
 # other value types than String and Array.
 
 class OptionParser
@@ -45,6 +48,16 @@ class OptionParser
 
     def takes_value
       @arg != ""
+    end
+
+    # "[=VALUE]", "=[VALUE]" or "[VALUE]": only an attached value.
+    def optional_value?
+      @arg.start_with?("[") || @arg.start_with?("=[")
+    end
+
+    # " [VALUE]": an attached value, or else the next word.
+    def placed_value?
+      @arg.start_with?(" ") && @arg.lstrip.start_with?("[")
     end
 
     def separator?
@@ -149,7 +162,7 @@ class OptionParser
     is_array = false
     args.each do |a|
       if a.is_a?(String) && a.length > 1 && a[0] == "-"
-        cut = a.index(/[= ]/) || (a[1] == "-" ? a.length : 2)
+        cut = a.index(/[=\[ ]/) || (a[1] == "-" ? a.length : 2)
         text = a[cut..]
         arg_text = text unless text.empty?
         (a[1] == "-" ? longs : shorts).push(a[0, cut])
@@ -184,7 +197,7 @@ class OptionParser
     handler = sw.handler
     return if handler.nil?
     if sw.is_array
-      handler.call(value.split(","))
+      handler.call(value.nil? ? nil : value.split(","))
     else
       handler.call(value)
     end
@@ -195,12 +208,19 @@ class OptionParser
     handler.call(value) if handler
   end
 
-  # Returns the attached value if there is one, otherwise the next word.
-  # Raises MissingArgument when neither exists.
-  def read_value(argv, index, attached, name)
-    return attached if attached
-    raise MissingArgument.new("missing argument: " + name) if index + 1 >= argv.length
-    argv[index + 1]
+  # Returns the next word as the value of a switch with no attached value.
+  # An optional value is nil instead: "[=VALUE]" never takes the next word,
+  # and " [VALUE]" leaves it when it looks like a switch, as in CRuby.
+  # Raises MissingArgument when a required value has no next word.
+  def next_value(sw, argv, index, name)
+    return nil if sw.optional_value?
+    word = index + 1 < argv.length ? argv[index + 1] : nil
+    if sw.placed_value?
+      return nil if word.nil? || word.match?(/\A-./)
+      return word
+    end
+    raise MissingArgument.new("missing argument: " + name) if word.nil?
+    word
   end
 
   # Returns the index of the last word used, so parse! skips a value word.
@@ -213,8 +233,9 @@ class OptionParser
     is_enabled = !sw.negated?(name)
     if sw.takes_value && is_enabled
       attached = eq ? arg[(eq + 1)..] : nil
-      invoke(sw, read_value(argv, index, attached, name))
-      index += 1 if attached.nil?
+      value = attached || next_value(sw, argv, index, name)
+      invoke(sw, value)
+      index += 1 if attached.nil? && value
     else
       raise NeedlessArgument.new("needless argument: " + arg) if eq
       invoke_flag(sw, is_enabled)
@@ -236,8 +257,9 @@ class OptionParser
       raise InvalidOption.new("invalid option: " + from_here) if sw.nil?
       if sw.takes_value
         attached = pos + 1 < arg.length ? arg[(pos + 1)..] : nil
-        invoke(sw, read_value(argv, index, attached, name))
-        index += 1 if attached.nil?
+        value = attached || next_value(sw, argv, index, name)
+        invoke(sw, value)
+        index += 1 if attached.nil? && value
         break
       end
       raise NeedlessArgument.new("needless argument: " + from_here) if arg[pos + 1] == "="

@@ -1,0 +1,23 @@
+Usage: tool [OPTIONS]
+    -v, --verbose                    Verbose output
+    -c, --color [WHEN]               Colorize output
+[:color, nil]
+[:color, "always"]
+[:color, "never"]
+["word"]
+[:color, "always"]
+[:color, "auto"]
+[:verbose, true]
+[:color, nil]
+[:color, "v"]
+[]
+[:color, nil]
+[:verbose, true]
+[:color, "-"]
+[:color, nil]
+[]
+[:color, nil]
+["-v"]
+[:color, nil]
+OptionParser::InvalidOption
+"invalid option: -z"
