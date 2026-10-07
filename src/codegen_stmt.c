@@ -1492,12 +1492,23 @@ static int strbuf_route_proc_call(Compiler *c, int v) {
   return recv >= 0 && comp_ntype(c, recv) == TY_PROC &&
          bop_share_named(BOP_CALLABLE, nt_str(nt, v, "name")) == BSH_CALL;
 }
+/* A reflective ivar read is a value route too. Its emitter knows the
+   backing slot's representation and answers a handle under the demand. */
+static int strbuf_route_ivar_get(Compiler *c, int v) {
+  v = unwrap_parens(c, v);
+  if (!repr_share_rule(c) || v < 0 || nt_kind(c->nt, v) != NK_CallNode ||
+      nt_ref(c->nt, v, "block") >= 0 ||
+      bop_share_named(BOP_ANY_RECV, nt_str(c->nt, v, "name")) != BSH_IVAR_GET) return 0;
+  Repr r = repr_of(c, v);
+  return (r.ty == TY_STRING || r.ty == TY_STRBUF) && cplan_user(c, v)->dispatch == CP_NONE;
+}
 /* Does value v hand over a String the rule shares as the handle itself: a
    slot holding it, or a route over one? */
 static int strbuf_route_carries(Compiler *c, int v, int depth) {
   char ref[1024];
-  if (strbuf_route_proc_call(c, v) || strbuf_route_begin(c, v) || strbuf_route_yield(c, v) ||
-      strbuf_route_inline_call(c, v) || strbuf_route_loop(c, v) || strbuf_route_handle_call(c, v)) return 1;
+  if (strbuf_route_proc_call(c, v) || strbuf_route_ivar_get(c, v) || strbuf_route_begin(c, v) ||
+      strbuf_route_yield(c, v) || strbuf_route_inline_call(c, v) || strbuf_route_loop(c, v) ||
+      strbuf_route_handle_call(c, v)) return 1;
   int x = strbuf_route_operand(c, v);
   if (x == unwrap_parens(c, v)) return 1;
   if (x >= 0) return depth < 8 && strbuf_route_carries(c, x, depth + 1);
@@ -1563,7 +1574,7 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
     strbuf_jump_views_pop(c, tok, ntok);
     return 1;
   }
-  if (strbuf_route_begin(c, v)) {
+  if (strbuf_route_begin(c, v) || strbuf_route_ivar_get(c, v)) {
     /* its result slot is the handle under the demand */
     v = unwrap_parens(c, v);
     int sv = view_push_repr(c, v, VR_HANDLE_DEMAND, 1);
