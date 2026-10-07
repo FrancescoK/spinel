@@ -221,6 +221,11 @@ static void emit_hash_p0_rhs(Compiler *c, Repr hr, const char *hn,
   }
 }
 
+/* --share-strings: does a hash block's parameter slot lv hold a String
+   handle where the Hash hands it a String (`actual`)? */
+static int hash_param_handle(Compiler *c, LocalVar *lv, TyKind actual) {
+  return repr_share_rule(c) && lv && actual == TY_STRING && repr_of_slot(c, lv).kind == RK_STRBUF;
+}
 /* Bind a hash-iteration block's parameters to C locals for entry `ti` of the
    materialized hash temp `_t<trecv>` (held as hr, runtime cname hn), emit the
    block's leading statements into g_pre at g_indent+1, evaluate its final
@@ -253,8 +258,14 @@ static char *emit_hash_block_eval(Compiler *c, int block, Repr hr, const char *h
   LocalVar *p1_lv = p1_orig ? scope_local(pscope, p1_orig) : NULL;
   TyKind p0_decl = p0_lv ? p0_lv->type : TY_UNKNOWN;
   TyKind p1_decl = p1_lv ? p1_lv->type : TY_UNKNOWN;
-  int ns0 = p0_orig && p0_actual != TY_UNKNOWN && p0_decl != TY_UNKNOWN && p0_decl != p0_actual;
-  int ns1 = p1_orig && p1_actual != TY_UNKNOWN && p1_decl != TY_UNKNOWN && p1_decl != p1_actual;
+  /* --share-strings: a parameter whose slot is a String handle binds a
+     fresh handle over the key or value it is handed (each key is the
+     Hash's own frozen copy), not a String shadow the handle's reads cannot
+     take */
+  int hb0 = hash_param_handle(c, p0_lv, p0_actual) && !(!p1_orig && p0_solo_is_value == 2);
+  int hb1 = hash_param_handle(c, p1_lv, p1_actual);
+  int ns0 = !hb0 && p0_orig && p0_actual != TY_UNKNOWN && p0_decl != TY_UNKNOWN && p0_decl != p0_actual;
+  int ns1 = !hb1 && p1_orig && p1_actual != TY_UNKNOWN && p1_decl != TY_UNKNOWN && p1_decl != p1_actual;
   int st0 = -1, sri0 = -1, srn0 = 0; char sro0[112]; sro0[0] = '\0';
   int st1 = -1, sri1 = -1, srn1 = 0; char sro1[112]; sro1[0] = '\0';
   /* p0 reads the key for a 2-param block, or for select-style solo binding. */
@@ -276,6 +287,14 @@ static char *emit_hash_block_eval(Compiler *c, int block, Repr hr, const char *h
         snprintf(g_ren_from[g_nren], sizeof g_ren_from[0], "%s", p0_orig);
         snprintf(g_ren_to[g_nren++], sizeof g_ren_to[0], "_bp%d", st0);
       }
+    }
+    else if (hb0) {
+      char src[160];
+      if (p0_is_key) snprintf(src, sizeof src, "_t%d->order[_t%d]", trecv, ti);
+      else snprintf(src, sizeof src, "sp_%sHash_get(_t%d, _t%d->order[_t%d])", hn, trecv, trecv, ti);
+      buf_printf(g_pre, "lv_%s = ", p0);
+      emit_strbuf_param_bind(c, p0_lv, TY_STRING, src, g_pre);
+      buf_puts(g_pre, ";\n");
     }
     else {
       buf_printf(g_pre, "lv_%s = ", p0);
@@ -300,6 +319,13 @@ static char *emit_hash_block_eval(Compiler *c, int block, Repr hr, const char *h
         snprintf(g_ren_from[g_nren], sizeof g_ren_from[0], "%s", p1_orig);
         snprintf(g_ren_to[g_nren++], sizeof g_ren_to[0], "_bp%d", st1);
       }
+    }
+    else if (hb1) {
+      char src[160];
+      snprintf(src, sizeof src, "sp_%sHash_get(_t%d, _t%d->order[_t%d])", hn, trecv, trecv, ti);
+      buf_printf(g_pre, "lv_%s = ", p1);
+      emit_strbuf_param_bind(c, p1_lv, TY_STRING, src, g_pre);
+      buf_puts(g_pre, ";\n");
     }
     else {
       if (repr_hash_is(hr, TY_POLY, TY_POLY))

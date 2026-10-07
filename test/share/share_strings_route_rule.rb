@@ -83,3 +83,13 @@ def global_push_call
   p s, $gb
 end
 global_push_call
+
+# a Hash iterator's parameter that holds a String handle (a lambda the key
+# is forwarded to answers it) binds a handle of its own over each key
+def hash_key_param
+  h = { "a" => 1, "b" => 2 }
+  lam = lambda { |k, v| k }
+  p h.map(&lam)
+  p h.filter_map(&proc { |k, v| v > 1 ? k : nil })
+end
+hash_key_param
