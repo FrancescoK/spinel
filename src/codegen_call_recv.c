@@ -7515,9 +7515,10 @@ static int int_arms_round_divide(Compiler *c, int id, Buf *b, const NodeTable *n
   }
   /* a boxed divisor answers by its run-time kind: a Float floors the real
      quotient as the typed arm above does. It was converted to an Integer
-     first, and 17.div(2.5) answered 8 where CRuby answers 6. */
+     first, and 17.div(2.5) answered 8 where CRuby answers 6. A Bignum or a
+     Rational divides as Numeric#div does (sp_int_div_poly). */
   else if (sp_streq(name, "div") && argc == 1 && repr_of(c, argv[0]).kind == RK_BOXED) {
-    buf_printf(b, "sp_int_div_boxed(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
+    buf_printf(b, "sp_int_div_poly(%s, ", r); emit_expr(c, argv[0], b); buf_puts(b, ")");
   }
   else if (is_div_or_modulo(name) && argc == 1 &&
            int_divisor_coerce_fail(c, r, argv[0], b)) {}

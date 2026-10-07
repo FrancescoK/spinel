@@ -181,6 +181,15 @@ class Integer
       -(self.div(-other))
     elsif other.is_a?(Float)
       -(self.div(-other))
+    elsif other.is_a?(Rational)
+      # exactly, as CRuby does: Integer#div of a Rational floors the exact
+      # quotient (a typed Rational, a boxed one and a big one alike), where
+      # this arm's absence raised TypeError for every Rational divisor. The
+      # quotient is held in a local before it is negated: a Bignum's `-@` is
+      # 0 - q, and the 0 it allocates first was collected while `-other`
+      # allocated a Rational (a garbage answer under SPINEL_GC_STRESS=1).
+      q = self.div(-other)
+      -q
     else
       raise TypeError, "not an integer"
     end

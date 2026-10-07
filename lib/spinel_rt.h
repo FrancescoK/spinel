@@ -5463,6 +5463,34 @@ static sp_RbVal sp_poly_divmod(sp_RbVal a, sp_RbVal b) {
     return sp_box_poly_array(out);
   }
 }
+/* Numeric#div of two exact numbers, one of them a Rational of either size:
+   the floor of the exact quotient, a/b = (an*bd)/(ad*bn), in Bignums.
+   sp_bigint_div floors toward -inf whatever the signs. Read through a
+   double, Rational(2**60 - 1, 2**60) is 1.0, so 1.ceildiv of it answered 1
+   (CRuby: 2), and a Bignum operand lost its low digits. */
+static sp_RbVal sp_rat_floor_div_v(sp_RbVal a, sp_RbVal b) {
+  SP_GC_ROOT_RBVAL(a); SP_GC_ROOT_RBVAL(b);   /* a's conversion allocates before b is read */
+  sp_Bigint *an, *ad, *bn, *bd;
+  sp_poly_to_brat(a, &an, &ad); SP_GC_ROOT(an); SP_GC_ROOT(ad);
+  sp_poly_to_brat(b, &bn, &bd); SP_GC_ROOT(bn); SP_GC_ROOT(bd);
+  if (sp_bigint_sign(bn) == 0) sp_raise_cls("ZeroDivisionError", "divided by 0");
+  sp_Bigint *num = sp_bigint_mul(an, bd); SP_GC_ROOT(num);
+  sp_Bigint *den = sp_bigint_mul(ad, bn); SP_GC_ROOT(den);
+  return sp_box_bigint(sp_bigint_div(num, den));
+}
+/* The same for a typed Bignum receiver and a typed Rational divisor, which
+   the Bignum#div arm had no operand form for (a compile-time refusal):
+   floor(a * den / num), with den > 0. */
+static sp_Bigint *sp_bigint_div_rat(sp_Bigint *a, sp_Rational b) {
+  if (b.num == 0) sp_raise_cls("ZeroDivisionError", "divided by 0");
+  SP_GC_ROOT(a);
+  sp_Bigint *d = sp_bigint_new_int(b.den); SP_GC_ROOT(d);
+  sp_Bigint *n = sp_bigint_mul(a, d); SP_GC_ROOT(n);
+  return sp_bigint_div(n, sp_bigint_new_int(b.num));
+}
+static inline int sp_poly_is_exact_num(sp_RbVal v) {
+  return v.tag == SP_TAG_INT || v.tag == SP_TAG_BIGINT || sp_poly_is_rat_kind(v);
+}
 /* Numeric#div: the floor of the quotient, always an Integer, whatever the
    operands are (7.0.div(3) => 2). Distinct from `/`, which keeps the operand
    kind, and from #fdiv, which is always a Float (#3800). */
@@ -5470,6 +5498,12 @@ static sp_RbVal sp_poly_div_m(sp_RbVal a, sp_RbVal b) {
   SP_POLY_COERCE_NUM("div");
   if (!sp_poly_numeric_p(a) && !sp_poly_is_rational(a) && !sp_poly_is_brat(a))
     sp_raise_poly_nomethod("div", a);
+  /* a Rational with no Float beside it divides exactly (sp_rat_floor_div_v);
+     a big Rational fell to the Integer arms below, which raised RangeError,
+     or ZeroDivisionError beside a Bignum */
+  if ((sp_poly_is_rat_kind(a) || sp_poly_is_rat_kind(b)) &&
+      sp_poly_is_exact_num(a) && sp_poly_is_exact_num(b))
+    return sp_rat_floor_div_v(a, b);
   if (a.tag == SP_TAG_FLT || b.tag == SP_TAG_FLT ||
       sp_poly_is_rational(a) || sp_poly_is_rational(b))
     return sp_float_div_v(sp_poly_to_f_with_rational(a), sp_poly_to_f_with_rational(b));
@@ -5478,6 +5512,29 @@ static sp_RbVal sp_poly_div_m(sp_RbVal a, sp_RbVal b) {
      which is what Integer#div does. */
   if ((a.tag == SP_TAG_BIGINT || b.tag == SP_TAG_BIGINT)) return sp_box_bigint(sp_bigint_div(sp_poly_as_bigint(a), sp_poly_as_bigint(b)));
   return sp_box_int(sp_idiv(sp_poly_to_i(a), sp_poly_to_i(b)));
+}
+/* Integer#div with a divisor known only at run time, in a call typed
+   Integer. sp_int_div_boxed read a Bignum or a Rational divisor as an
+   Integer argument, so 7.div(2**65) raised ZeroDivisionError (CRuby: 0) and
+   7.div(Rational(3, 2)) answered 7 (CRuby: 4); those divide as Numeric#div
+   does, and a quotient past the word is the RangeError the slot owes. A
+   Float divides as the typed Integer#div(Float) arm does. */
+static sp_int sp_int_div_poly(sp_int a, sp_RbVal v) {
+  if (v.tag == SP_TAG_FLT) return sp_float_div_i((sp_float)a, v.v.f);
+  if (v.tag == SP_TAG_BIGINT || sp_poly_is_rat_kind(v))
+    return sp_poly_arg_int_chk(sp_poly_div_m(sp_box_int(a), v));
+  return sp_int_div_boxed(a, v);
+}
+/* Bignum#div with a divisor known only at run time: sp_poly_as_bigint read
+   a Float divisor truncated and a Rational one as 0, so (2**70).div(2.5)
+   answered 2**69 (CRuby: 472236648286964547584) and
+   (2**70).div(Rational(3, 2)) raised ZeroDivisionError. Those divide as
+   Numeric#div does. */
+static sp_Bigint *sp_bigint_div_poly(sp_Bigint *a, sp_RbVal v) {
+  SP_GC_ROOT(a); SP_GC_ROOT_RBVAL(v);
+  if (v.tag == SP_TAG_FLT || sp_poly_is_rat_kind(v))
+    return sp_poly_as_bigint(sp_poly_div_m(sp_box_bigint(a), v));
+  return sp_bigint_div(a, sp_poly_as_bigint(v));
 }
 /* Numeric#remainder: the remainder with the sign of the RECEIVER, which is
    what distinguishes it from #modulo ((-7).remainder(3) is -1, not 2). */
