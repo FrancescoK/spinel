@@ -30351,7 +30351,12 @@ static int ctor_graph_target(Compiler *c, int id) {
     /* a bare `new` in a class method builds that class */
     Scope *sc = &c->scopes[c->nscope[id]];
     if ((recv < 0 || rk == NK_SelfNode) && sc->is_cmethod) ci = sc->class_id;
-    if (sp_streq(name, "new")) t = ci >= 0 ? comp_method_in_chain(c, ci, "initialize", NULL) : -1;
+    /* a `new` runs the class's own `def self.new` when it has one, else
+       its initialize */
+    if (sp_streq(name, "new")) {
+      t = ci >= 0 ? comp_cmethod_in_chain(c, ci, "new", NULL) : -1;
+      if (t < 0 && ci >= 0) t = comp_method_in_chain(c, ci, "initialize", NULL);
+    }
     else if (recv < 0 || rk == NK_SelfNode) t = comp_self_call_mi(c, id, name);
     else if (ci >= 0) t = comp_cmethod_in_chain(c, ci, name, NULL);
     else {
