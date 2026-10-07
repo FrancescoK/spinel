@@ -9082,7 +9082,11 @@ static int emit_struct_recv_call(Compiler *c, int id, Buf *b, const NodeTable *n
       buf_printf(b, " "); emit_ctype(c, vt, b);
       buf_printf(b, " _t%d = ", tvraw); emit_expr(c, argv[1], b); buf_puts(b, ";");
       char rawtxt[32]; snprintf(rawtxt, sizeof rawtxt, "_t%d", tvraw);
-      buf_printf(b, " sp_RbVal _t%d = ", tv); emit_boxed_text(c, vt, rawtxt, b); buf_puts(b, ";");
+      /* a String a shared boxed member takes is its handle (emit_boxed's lift) */
+      int lift = repr_share_rule(c) && c->poly_strbuf_lift[argv[1]] && vt == TY_STRING;
+      buf_printf(b, " sp_RbVal _t%d = %s", tv, lift ? "sp_poly_strbuf_lift(" : "");
+      emit_boxed_text(c, vt, rawtxt, b);
+      buf_puts(b, lift ? ");" : ";");
     }
     else {
       buf_printf(b, " sp_RbVal _t%d = ", tv); emit_boxed(c, argv[1], b); buf_puts(b, ";");
@@ -12806,7 +12810,7 @@ static int emit_poly_index_call(Compiler *c, int id, Buf *b, const NodeTable *nt
       buf_printf(b, " switch (_t%d.tag == SP_TAG_OBJ ? _t%d.cls_id : 0x7fffffff) {", tv, tv);
       char src[32]; snprintf(src, sizeof src, "_t%d", tval);
       char objp[32]; snprintf(objp, sizeof objp, "_t%d.v.p", tv);
-      emit_boxed_writer_arms(c, base, name, objp, src, at_eff, b);
+      emit_boxed_writer_arms(c, base, name, objp, src, at_eff, argv[0], b);
       buf_printf(b, " default: sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d)); break;", name, tv);
       buf_printf(b, " } _t%d; })", tval);
       { *out = 1; return 1; }

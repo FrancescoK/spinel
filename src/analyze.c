@@ -16844,6 +16844,39 @@ static int share_lift_poly_ivar_stores(Compiler *c, int cid, const char *name) {
       v = av[1];
     if (v >= 0) changed |= share_lift_value(c, v);
   }
+  /* a Struct member's: its constructor's argument, and a `[]=` that can
+     reach it (struct_aset_receiver), as its writer's above */
+  ClassInfo *ci = &c->classes[cid];
+  int m = ci->is_struct && !ci->is_data ? comp_member_index(ci, name) : -1;
+  if (m < 0) return changed;
+  NT_FOREACH_KIND(nt, NK_CallNode, w) {
+    const char *cn = nt_str(nt, w, "name");
+    int r = nt_ref(nt, w, "receiver"), a = nt_ref(nt, w, "arguments"), an = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+    if (!cn || r < 0) continue;
+    if (sp_streq(cn, "new") && (nt_kind(nt, r) == NK_ConstantReadNode || nt_kind(nt, r) == NK_ConstantPathNode) &&
+        comp_class_index(c, nt_str(nt, r, "name")) == cid) {
+      if (an == 1 && nt_kind(nt, av[0]) == NK_KeywordHashNode) {
+        int kn = 0; const int *ke = nt_arr(nt, av[0], "elements", &kn);
+        for (int e = 0; e < kn; e++) {
+          int key = nt_kind(nt, ke[e]) == NK_AssocNode ? nt_ref(nt, ke[e], "key") : -1;
+          if (key >= 0 && nt_kind(nt, key) == NK_SymbolNode && sp_streq(nt_str(nt, key, "value"), name + 1))
+            changed |= share_lift_value(c, an_unparen(nt, nt_ref(nt, ke[e], "value")));
+        }
+      }
+      else if (m < an && nt_kind(nt, av[m]) != NK_SplatNode) changed |= share_lift_value(c, an_unparen(nt, av[m]));
+      continue;
+    }
+    int one, how = struct_aset_receiver(c, w, &one), lo, hi, reach = how == 1 && one == cid;
+    if (how == 2) {
+      int nk = 0;
+      const int *ks = poly_recv_classes(c, w, &nk);
+      reach = !ks;
+      for (int i = 0; ks && i < nk && !reach; i++) reach = ks[i] == cid;
+    }
+    if (reach && struct_aset_members(c, w, cid, &lo, &hi) && m >= lo && m < hi)
+      changed |= share_lift_value(c, an_unparen(nt, av[1]));
+  }
   return changed;
 }
 
@@ -31994,6 +32027,29 @@ static void share_struct_aset_handles(Compiler *c) {
   const NodeTable *nt = c->nt;
   if (!c->share_strings) return;
   NT_FOREACH_KIND(nt, NK_CallNode, u) {
+    /* a member's writer through a box (emit_boxed_writer_arms): a shared
+       String is handed over as its handle, as `[]=` hands it below */
+    const char *un = nt_str(nt, u, "name");
+    size_t ul = un ? strlen(un) : 0;
+    int ua = nt_ref(nt, u, "arguments"), uan = 0;
+    const int *uav = ua >= 0 ? nt_arr(nt, ua, "arguments", &uan) : NULL;
+    int boxed_member = ul > 1 && ul < 250 && un[ul - 1] == '=' && uan == 1 && call_is_setter_assign(nt, u) &&
+                       comp_ntype(c, nt_ref(nt, u, "receiver")) == TY_POLY && an_arg_is_shared_handle(c, an_unparen(nt, uav[0]));
+    /* only where every attribute the name writes is a boxed Struct member,
+       whose arm boxes the handle (a String slot's arm takes the bytes) */
+    char ub[256] = "", uiv[258] = "";
+    if (boxed_member) { memcpy(ub, un, ul - 1); ub[ul - 1] = 0; snprintf(uiv, sizeof uiv, "@%s", ub); }
+    for (int k = 0; k < c->nclasses && boxed_member; k++) {
+      if (comp_resolve_member(c, k, ub, 1, NULL, NULL) != SP_MEMBER_ATTR) continue;
+      int m = c->classes[k].is_struct ? comp_member_index(&c->classes[k], uiv) : -1;
+      boxed_member = m >= 0 && c->classes[k].ivar_types[m] == TY_POLY;
+    }
+    if (boxed_member) {
+      int v = an_unparen(nt, uav[0]);
+      c->strbuf_box[v] = 1;
+      c->strbuf_handle_demand[v] = 1;
+      continue;
+    }
     int one, how = struct_aset_receiver(c, u, &one);
     if (!how) continue;
     int v = an_unparen(nt, nt_arr(nt, nt_ref(nt, u, "arguments"), "arguments", NULL)[1]);
