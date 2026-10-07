@@ -1,4 +1,5 @@
 #include "analyze_internal.h"
+#include "call_plan.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -7181,11 +7182,13 @@ int poly_ivar_set_class(Compiler *c, int k) {
    serves. */
 enum { PX_BLOCK_PARAM, PX_SYMBOL, PX_BLOCK_WRITE, PX_SUPER, PX_N };
 typedef struct PivsFacts {
-  struct { int ok; char *set; int *cls, ncls; } *memo;
+  struct { int ok; char *set; int *cls, ncls; int *hash, nhash, typed, sweep; } *memo;
   int *memo_at;             /* per node: its call's memo entry + 1, or 0 */
+                           /* two slots: classes, then Hash origins */
   struct { int call; uint64_t done[4]; } *seen;
   int nmemo, cmemo, memo_n, memo_count;
   unsigned memo_ver;
+  int query, sweep, hash_mode, active;
   const NodeTable *ix_nt;
   unsigned ix_ver;
   int ix_count;
@@ -7205,7 +7208,7 @@ static void pivs_ix_clear(PivsFacts *f) {
 void pivs_facts_free(Compiler *c) {
   PivsFacts *f = c->pivs;
   if (!f) return;
-  for (int i = 0; i < f->nmemo; i++) { free(f->memo[i].set); free(f->memo[i].cls); }
+  for (int i = 0; i < f->nmemo; i++) { free(f->memo[i].set); free(f->memo[i].cls); free(f->memo[i].hash); }
   free(f->memo); free(f->memo_at); free(f->seen);
   pivs_ix_clear(f);
   free(f);
@@ -7379,12 +7382,36 @@ static int pivs_param(Compiler *c, Scope *s, const char *pn, char *set, int dept
   }
   return ncalls > 0;
 }
+/* A proc parameter follows arguments only while all its calls are in sight. */
+static int pivs_proc_param(Compiler *c, int lit, const char *pn, char *set, int depth, int elems) {
+  const NodeTable *nt = c->nt;
+  if (!proc_literal_calls_in_sight(c, lit)) return 0;
+  int ps = a_proc_params_node(c, lit), rn = 0, at = -1, calls = 0;
+  const int *rq = ps >= 0 ? nt_arr(nt, ps, "requireds", &rn) : NULL;
+  for (int i = 0; i < rn; i++) if (sp_streq(nt_str(nt, rq[i], "name"), pn)) at = i;
+  if (at < 0) return 0;
+  Scope *s = comp_scope_of(c, lit);
+  for (int w = comp_lvw_first_sc(c, (int)(s - c->scopes), pn); w >= 0; w = comp_lvw_next_sc(c, w))
+    if (comp_scope_of(c, w) == s && sp_streq(nt_str(nt, w, "name"), pn)) return 0;
+  for (int u = comp_kind_first(c, NK_CallNode); u >= 0; u = comp_kind_next(c, u)) {
+    if (!is_call_or_yield(nt_str(nt, u, "name")) || !proc_lit_carrier(c, nt_ref(nt, u, "receiver"), lit)) continue;
+    int a = nt_ref(nt, u, "arguments"), ac = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+    for (int i = 0; i < ac; i++) if (nt_kind(nt, av[i]) == NK_SplatNode || nt_kind(nt, av[i]) == NK_KeywordHashNode) return 0;
+    if (at >= ac) return 0;
+    if (elems ? !pivs_elems(c, av[at], set, depth + 1) : !pivs_value(c, av[at], set, depth + 1)) return 0;
+    calls++;
+  }
+  return calls > 0;
+}
 static int pivs_local(Compiler *c, int v, char *set, int depth, int elems) {
   const NodeTable *nt = c->nt;
   const char *vn = nt_str(nt, v, "name");
   Scope *s = vn ? comp_scope_of(c, v) : NULL;
   if (!s) return 0;
   int si = (int)(s - c->scopes);
+  int lit = c->pivs->hash_mode ? local_proc_literal_param_of(c, s, vn) : -1;
+  if (lit >= 0) return pivs_proc_param(c, lit, vn, set, depth, elems);
   /* a parameter of an iterator's literal block (one spliced into its
      method keeps the parameter there, renamed): the first is an element
      of the receiver */
@@ -7513,6 +7540,37 @@ static int pivs_branches(Compiler *c, int v, char *set, int depth, int elems) {
       return f(c, nt_ref(nt, v, "else_clause"), set, depth + 1);
     }
     case NK_LocalVariableReadNode: return pivs_local(c, v, set, depth, elems);
+    case NK_InstanceVariableReadNode: {
+      if (!c->pivs->hash_mode || elems) return 0;
+      const char *vn = nt_str(nt, v, "name");
+      int ci = comp_ivar_owner(c, v), saw = 0;
+      if (ci < 0 || !vn || pivs_ix_first(c, PX_SYMBOL, vn) >= 0) return 0;
+      if (comp_is_writer(&c->classes[ci], vn + 1) || comp_is_sg_writer(&c->classes[ci], vn + 1)) return 0;
+      /* The variable-site index omits operator writes and multiple-assignment targets. */
+      const NodeKind ks[] = { NK_InstanceVariableOperatorWriteNode, NK_InstanceVariableTargetNode };
+      for (int k = 0; k < 2; k++)
+        for (int w = comp_kind_first(c, ks[k]); w >= 0; w = comp_kind_next(c, w))
+          if (comp_ivar_owner(c, w) == ci && sp_streq(nt_str(nt, w, "name"), vn)) return 0;
+      for (int e = comp_vsite_first(c, VS_STORE, NK_InstanceVariableReadNode, vn, ci); e >= 0; e = comp_vsite_next(c, e)) {
+        int w = comp_vsite_var(c, e);
+        if (comp_ivar_owner(c, w) != ci || !sp_streq(nt_str(nt, w, "name"), vn)) continue;
+        if (nt_kind(nt, w) != NK_InstanceVariableWriteNode || !f(c, nt_ref(nt, w, "value"), set, depth + 1)) return 0;
+        saw = 1;
+      }
+      return saw;
+    }
+    case NK_CallNode: {
+      if (!c->pivs->hash_mode) return -1;
+      int ms[CPT_MAX], vals[64], nm = cplan_targets(c, v, ms, CPT_MAX);
+      c->pivs->memo[c->pivs->active].typed = 1;
+      if (nm <= 0) return nm < 0 ? 0 : -1;
+      for (int i = 0; i < nm; i++) {
+        int n = method_value_leaves_or_nil(c, ms[i], vals, 64);
+        if (n < 0) return 0;
+        for (int j = 0; j < n; j++) if (!f(c, vals[j], set, depth + 1)) return 0;
+      }
+      return 1;
+    }
     default: return -1;
   }
 }
@@ -7523,7 +7581,9 @@ static int pivs_elems_uncached(Compiler *c, int v, char *set, int depth);
    deeper visit must not turn the depth limit's unbounded answer into a set.
    Reads of one local share its first indexed write as their key, in separate
    slots from visits to that write node itself. The call's memo number avoids
-   clearing the table per query; failed or unfinished visits are never reused. */
+   clearing the table per query; failed or unfinished visits are never reused.
+   A Hash query that follows inferred method targets advances that number
+   when its answer is recomputed for a new inference sweep. */
 static int pivs_visit(Compiler *c, int v, char *set, int depth, int elems) {
   if (v < 0) return !elems;
   if (depth > 32) return 0;
@@ -7540,8 +7600,8 @@ static int pivs_visit(Compiler *c, int v, char *set, int depth, int elems) {
       }
     }
   }
-  if (f->seen[key].call != f->nmemo) {
-    f->seen[key].call = f->nmemo;
+  if (f->seen[key].call != f->query) {
+    f->seen[key].call = f->query;
     memset(f->seen[key].done, 0, sizeof f->seen[key].done);
   }
   uint64_t bit = UINT64_C(1) << depth;
@@ -7561,10 +7621,17 @@ static int pivs_value_uncached(Compiler *c, int v, char *set, int depth) {
   int br = pivs_branches(c, v, set, depth, 0);
   if (br >= 0) return br;
   switch (nt_kind(nt, v)) {
+    case NK_HashNode:
+      if (c->pivs->hash_mode && !c->pivs->seen[v].done[0]) {
+        int m = c->pivs->active, n = c->pivs->memo[m].nhash;
+        if (n == 64) return 0;
+        c->pivs->memo[m].hash[n] = v; c->pivs->memo[m].nhash++;
+      }
+      return 1;
     case NK_NilNode: case NK_TrueNode: case NK_FalseNode: case NK_IntegerNode: case NK_FloatNode:
     case NK_RationalNode: case NK_ImaginaryNode: case NK_StringNode: case NK_InterpolatedStringNode:
     case NK_XStringNode: case NK_SymbolNode: case NK_InterpolatedSymbolNode: case NK_ArrayNode:
-    case NK_HashNode: case NK_RangeNode: case NK_RegularExpressionNode:
+    case NK_RangeNode: case NK_RegularExpressionNode:
     case NK_InterpolatedRegularExpressionNode:
       return 1;
     case NK_SelfNode: {
@@ -7581,6 +7648,7 @@ static int pivs_value_uncached(Compiler *c, int v, char *set, int depth) {
       if (a >= 0) nt_arr(nt, a, "arguments", &ac);
       if (!un || r < 0) return 0;
       if (sp_streq(un, "new") && (nt_kind(nt, r) == NK_ConstantReadNode || nt_kind(nt, r) == NK_ConstantPathNode)) {
+        if (c->pivs->hash_mode && sp_streq(nt_str(nt, r, "name"), "Hash")) return 0;
         int ci = comp_class_index(c, nt_str(nt, r, "name"));
         if (ci < 0) return builtin_class_id(nt_str(nt, r, "name")) != 0;
         /* a class method `new` of its own may answer anything */
@@ -7623,22 +7691,26 @@ static int pivs_elems_uncached(Compiler *c, int arr, char *set, int depth) {
 /* The classes the boxed receiver of call `call` can be an instance of
    (pivs_value): marked in a set, and listed (*cls, *n). NULL when the
    analysis cannot bound them. Memoized per call, found through a
-   node-indexed slot, until the tree or the class table changes. */
-static const char *pivs_call_set(Compiler *c, int call, const int **cls, int *n) {
+   node-indexed slot, until the tree or the class table changes.
+   Hash stores ask separately, retaining up to 64 literal origins and using
+   the return, ivar and proc arms without changing the class-only answer.
+   Only answers that read inferred call targets expire each inference sweep;
+   their targets can change as the receiver types converge. */
+static const char *pivs_call_set(Compiler *c, int call, const int **cls, int *n, int hashes) {
   PivsFacts *f = pivs_facts(c);
   if (f->memo_n != c->nclasses || f->memo_count != c->nt->count ||
       f->memo_ver != c->nt->version) {
-    for (int i = 0; i < f->nmemo; i++) { free(f->memo[i].set); free(f->memo[i].cls); }
+    for (int i = 0; i < f->nmemo; i++) { free(f->memo[i].set); free(f->memo[i].cls); free(f->memo[i].hash); }
     free(f->memo_at); free(f->seen);
-    f->nmemo = 0; f->memo_n = c->nclasses; f->memo_count = c->nt->count;
+    f->nmemo = f->query = 0; f->memo_n = c->nclasses; f->memo_count = c->nt->count;
     f->memo_ver = c->nt->version;
-    f->memo_at = calloc((size_t)(f->memo_count > 0 ? f->memo_count : 1), sizeof *f->memo_at);
+    f->memo_at = calloc((size_t)(f->memo_count > 0 ? f->memo_count : 1) * 2, sizeof *f->memo_at);
     f->seen = calloc((size_t)(f->memo_count > 0 ? f->memo_count : 1), sizeof *f->seen);
     if (!f->memo_at || !f->seen) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   }
   if (cls) { *cls = NULL; *n = 0; }
   if (call < 0 || call >= f->memo_count) return NULL;
-  int m = f->memo_at[call] - 1;
+  int m = f->memo_at[(size_t)call * 2 + hashes] - 1;
   if (m < 0) {
     if (f->nmemo == f->cmemo) {
       f->cmemo = f->cmemo ? f->cmemo * 2 : 16;
@@ -7647,9 +7719,19 @@ static const char *pivs_call_set(Compiler *c, int call, const int **cls, int *n)
       f->memo = nm;
     }
     m = f->nmemo++;
-    f->memo_at[call] = m + 1;
+    f->memo_at[(size_t)call * 2 + hashes] = m + 1;
+    memset(&f->memo[m], 0, sizeof f->memo[m]);
+    f->memo[m].sweep = -1;
     f->memo[m].set = (char *)calloc((size_t)(c->nclasses > 0 ? c->nclasses : 1), 1);
     if (!f->memo[m].set) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    if (hashes) f->memo[m].hash = malloc(64 * sizeof *f->memo[m].hash);
+    if (hashes && !f->memo[m].hash) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  if (f->memo[m].sweep < 0 || (hashes && f->memo[m].typed && f->memo[m].sweep != f->sweep)) {
+    f->memo[m].sweep = f->sweep; f->memo[m].nhash = 0; f->memo[m].typed = 0;
+    f->hash_mode = hashes; f->active = m; f->query++;
+    memset(f->memo[m].set, 0, (size_t)(c->nclasses > 0 ? c->nclasses : 1));
+    free(f->memo[m].cls);
     f->memo[m].ok = pivs_value(c, nt_ref(c->nt, call, "receiver"), f->memo[m].set, 0);
     f->memo[m].cls = NULL; f->memo[m].ncls = 0;
     if (f->memo[m].ok) {
@@ -7669,14 +7751,14 @@ static const char *pivs_call_set(Compiler *c, int call, const int **cls, int *n)
    when the analysis cannot bound them. */
 int poly_ivar_set_reaches(Compiler *c, int call, int k) {
   if (call < 0 || call >= c->nt->count) return 0;   /* no receiver: no class */
-  const char *set = pivs_call_set(c, call, NULL, NULL);
+  const char *set = pivs_call_set(c, call, NULL, NULL, 0);
   if (k < 0 || k >= c->nclasses) return 0;
   return set ? set[k] : 1;
 }
 /* See analyze_internal.h. */
 const int *poly_recv_classes(Compiler *c, int call, int *n) {
   const int *cls;
-  return pivs_call_set(c, call, &cls, n) ? cls : NULL;
+  return pivs_call_set(c, call, &cls, n, 0) ? cls : NULL;
 }
 static void nil_write_note(NilWrites *w, int cls, const char *nm) {
   if (cls < 0 || !nm) return;
@@ -8058,11 +8140,27 @@ static int infer_struct_aset_call(Compiler *c, int id, NilWrites *writes, Struct
   return changed;
 }
 
+/* A store through a bounded box types the original Hashes, so every alias
+   observes the store. An unbounded answer changes no Hash. */
+static int infer_hash_aset_call(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  int recv = nt_ref(nt, id, "receiver"), a = nt_ref(nt, id, "arguments"), ac = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+  if (recv < 0 || ac != 2 || infer_type(c, recv) != TY_POLY) return 0;
+  TyKind hk = infer_type(c, av[0]), hv = infer_type(c, av[1]);
+  if (hk == TY_UNKNOWN || hv == TY_UNKNOWN || !pivs_call_set(c, id, NULL, NULL, 1)) return 0;
+  PivsFacts *f = c->pivs;
+  int m = f->memo_at[(size_t)id * 2 + 1] - 1, changed = 0;
+  for (int i = 0; i < f->memo[m].nhash; i++) changed |= widen_hash_arg_for_store(c, f->memo[m].hash[i], hk, hv);
+  return changed;
+}
+
 int infer_ivar_types(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
   NilWrites nilw = {0};
   StructAsetIx aset = {0};
+  if (c->pivs) c->pivs->sweep++;
   if (dn_nscopes != c->nscopes || dn_count != nt->count) dn_build(c);
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
@@ -8245,7 +8343,8 @@ int infer_ivar_types(Compiler *c) {
         if (infer_ivar_set_call(c, id, &nilw)) changed = 1;
         continue;
       }
-      if (sp_streq(nt_str(nt, id, "name"), "[]=")) {
+      if (is_store_alias(nt_str(nt, id, "name"))) {
+        if (infer_hash_aset_call(c, id)) changed = 1;
         if (infer_struct_aset_call(c, id, &nilw, &aset)) changed = 1;
         continue;
       }
