@@ -1869,7 +1869,8 @@ int strbuf_cond_has_handle_leaf(Compiler *c, int v, int depth) {
       if (depth == 0) return 0;
       const char *vn = nt_str(nt, v, "name");
       LocalVar *vl = vn ? scope_local(comp_scope_of(c, v), vn) : NULL;
-      return repr_of_slot(c, vl).handle;
+      /* (--share-strings: or a boxed local, lifted to its handle's box) */
+      return repr_of_slot(c, vl).handle || (repr_share_rule(c) && strbuf_boxed_local(c, v));
     }
     /* a global holding the handle (--share-strings), read or written */
     case NK_GlobalVariableReadNode: case NK_ConstantReadNode: case NK_ConstantPathNode: {
@@ -2060,6 +2061,17 @@ int strbuf_poly_to_s(Compiler *c, int v) {
          (repr_of(c, r).kind == RK_BOXED || strbuf_var_handle(c, r, ref, sizeof ref));
 }
 
+/* --share-strings: is v a read of a local whose slot is a box (one an is_a?
+   guard narrows too), whose String emit_strbuf_value takes as the handle
+   after lifting the box (sp_poly_strbuf_lift)? */
+int strbuf_boxed_local(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  if (!repr_share_rule(c) || v < 0 || nt_kind(nt, v) != NK_LocalVariableReadNode) return 0;
+  const char *vn = nt_str(nt, v, "name");
+  LocalVar *vl = vn ? scope_local(comp_scope_of(c, v), vn) : NULL;
+  return vl && vl->type == TY_POLY;
+}
+
 /* --share-strings: chain v's links over route base (`s.then { |z| z } <<
    x`), appended in place to the handle the route hands on
    (emit_strbuf_route), which is the value; 0 with nothing emitted when a
@@ -2234,6 +2246,15 @@ void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
        handle out of the box, so the local and the element are one object and
        a mutation through either shows in the other (#3941) */
     buf_puts(b, "sp_poly_as_strbuf("); emit_expr(c, v, b); buf_puts(b, ")");
+  }
+  /* --share-strings: a boxed local's read (one an is_a? guard narrows, too):
+     the local's box lifted to its handle's first (sp_poly_strbuf_lift), so
+     the slot and the local hold one handle */
+  else if (repr_share_rule(c) && shared && strbuf_boxed_local(c, v)) {
+    Buf lvb; memset(&lvb, 0, sizeof lvb);
+    emit_local_ref(c, v, nt_str(c->nt, v, "name"), &lvb);
+    buf_printf(b, "sp_poly_as_strbuf((%s = sp_poly_strbuf_lift(%s)))", lvb.p, lvb.p);
+    free(lvb.p);
   }
   else {
     /* a value-position append chain over a shared base: run the chain (it
@@ -17428,7 +17449,7 @@ static int strbuf_flow_has_leaf(Compiler *c, StrbufFlowMemo *fm, int v, int dept
   case NK_LocalVariableReadNode: case NK_LocalVariableWriteNode: {
     const char *vn = nt_str(nt, v, "name");
     LocalVar *vl = vn ? scope_local(comp_scope_of(c, v), vn) : NULL;
-    return depth > 0 && repr_of_slot(c, vl).handle;
+    return depth > 0 && (repr_of_slot(c, vl).handle || strbuf_boxed_local(c, v));
   }
   case NK_GlobalVariableReadNode: case NK_ConstantReadNode: case NK_ConstantPathNode:
     return depth > 0 && strbuf_var_handle(c, v, ref, sizeof ref);
