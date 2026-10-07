@@ -14405,8 +14405,10 @@ void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
        an iterator whose emitter places none has no way to re-run its body
        (a `continue` there left the block as `next` does, or re-ran an
        enclosing loop instead) */
-    if (g_redo_depth > 0 && subtree_owns_redo(nt, g_redo_owner[g_redo_depth - 1], id))
+    if (g_redo_depth > 0 && subtree_owns_redo(nt, g_redo_owner[g_redo_depth - 1], id)) {
+      emit_redo_unwind(b);
       buf_printf(b, "goto _redo_%d;\n", g_redo_stack[g_redo_depth - 1]);
+    }
     else unsupported_feature(c, id, "redo in this block (its iterator cannot re-run the body)");
     return;
   }

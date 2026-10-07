@@ -997,11 +997,28 @@ int g_redo_stack[64];
 int g_redo_depth = 0;
 int g_redo_pending = 0;
 int g_redo_owner[64];
+/* What stands open where each label is placed: frames, ensure regions, rescue clauses. */
+static int g_redo_exc_base[64], g_redo_ensure_base[64], g_redo_rescue_base[64];
 /* Opens a redo label for the body `owner` and answers it; 0 when the stack is full. */
 int redo_label_push(int owner) {
   if (g_redo_depth >= (int)(sizeof g_redo_stack / sizeof g_redo_stack[0])) return 0;
   g_redo_owner[g_redo_depth] = owner;
+  g_redo_exc_base[g_redo_depth] = g_exc_frame_depth;
+  g_redo_ensure_base[g_redo_depth] = g_ensure_depth;
+  g_redo_rescue_base[g_redo_depth] = g_rescue_save_depth;
   return g_redo_stack[g_redo_depth++] = ++g_tmp;
+}
+/* A redo goes back to the innermost label: it pops the frames of the begins it
+   is written in, as a `next` does for its loop, and the exceptions of the
+   rescue clauses entered since the label. With an ensure between, it is the
+   bare goto it was; so it is where the regions are no longer counted, since
+   an ensure there could not be seen. */
+void emit_redo_unwind(Buf *b) {
+  int top = g_redo_depth - 1;
+  if (g_ensure_depth != g_redo_ensure_base[top] || g_ensure_depth >= MAX_ENSURE_DEPTH) return;
+  int pops = g_exc_frame_depth - g_redo_exc_base[top], k = g_rescue_save_depth - g_redo_rescue_base[top];
+  if (pops > 0) buf_printf(b, "sp_exc_top -= %d; ", pops);
+  if (k > 0) buf_printf(b, "sp_rescue_sp -= %d; ", k);
 }
 const char *g_loop_break_var = NULL;
 /* When a direct instance_exec/eval splice is wrapped in a do{}while(0), this
