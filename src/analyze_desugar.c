@@ -5217,10 +5217,11 @@ int desugar_to_h_block(Compiler *c) {
    unless e is sure to be a block (`&:sym`, a proc or lambda literal) the
    rewrite tests it: `e ? (str.unpack(fmt).each(&e); nil) : str.unpack(fmt)`.
    A variable is read again for the block, an anonymous `&` asks
-   block_given?, and any other e runs once into a local. The order stays
-   CRuby's: an e that can act behind a receiver or argument that can is
-   already a local here, desugar_block_arg_order having run those three
-   into locals in turn (#4992). */
+   block_given?, and any other e runs once into a local. CRuby runs the
+   receiver and arguments before e, and the test runs ahead of them: where
+   they could change what it sees (unpack_needs_hoist), they run into locals
+   first. desugar_block_arg_order (#4992) leaves those cases, since it takes
+   a variable read for inert. */
 static int unpack_block_sure(const NodeTable *nt, Compiler *c, int blk) {
   if (nt_kind(nt, blk) == NK_BlockNode) return 1;
   int ex = nt_ref(nt, blk, "expression");
@@ -5256,6 +5257,109 @@ static int unpack_block_test(Compiler *c, int id, int blk, int *pred) {
   nt_node_set_ref(nt, blk, "expression", re);
   return 1;
 }
+/* Is `v` a literal, with nothing to run (inert also allows a variable read)? */
+static int unpack_literal(const NodeTable *nt, int v, int inert) {
+  NodeKind k = nt_kind(nt, v);
+  if (k == NK_StringNode || k == NK_SymbolNode || k == NK_IntegerNode || k == NK_NilNode) return 1;
+  return inert && (k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode ||
+                   k == NK_GlobalVariableReadNode);
+}
+/* Is every operand of the receiver and arguments (a splat's operand, a
+   keyword's key and value) a literal, or with `inert` a variable read? */
+static int unpack_operands_literal(const NodeTable *nt, int recv, int args, int inert) {
+  if (!unpack_literal(nt, recv, inert)) return 0;
+  int argc = 0;
+  const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+  for (int i = 0; i < argc; i++) {
+    NodeKind ak = nt_kind(nt, av[i]);
+    if (ak == NK_SplatNode) { if (!unpack_literal(nt, nt_ref(nt, av[i], "expression"), inert)) return 0; }
+    else if (ak == NK_KeywordHashNode) {
+      int ne = 0;
+      const int *ev = nt_arr(nt, av[i], "elements", &ne);
+      for (int j = 0; j < ne; j++)
+        if (nt_kind(nt, ev[j]) != NK_AssocNode || !unpack_literal(nt, nt_ref(nt, ev[j], "key"), inert) ||
+            !unpack_literal(nt, nt_ref(nt, ev[j], "value"), inert)) return 0;
+    }
+    else if (!unpack_literal(nt, av[i], inert)) return 0;
+  }
+  return 1;
+}
+/* Must the receiver and arguments run into locals ahead of the test of a
+   `&e` that may be nil? When e is a local, where they write it; an ivar or
+   global, also where they run anything (a method may write it); any other
+   e, where they read or run anything (e may write what they read). */
+static int unpack_needs_hoist(const NodeTable *nt, int recv, int args, int blk) {
+  int ex = nt_ref(nt, blk, "expression");
+  if (ex < 0) return 0;
+  NodeKind k = nt_kind(nt, ex);
+  if (k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode || k == NK_GlobalVariableReadNode) {
+    const char *vn = nt_str(nt, ex, "name");
+    if (mrv_writes(nt, recv, vn, 0) || mrv_writes(nt, args, vn, 0)) return 1;
+    return k != NK_LocalVariableReadNode && !unpack_operands_literal(nt, recv, args, 1);
+  }
+  return !unpack_operands_literal(nt, recv, args, 0);
+}
+/* Run `v` once into the local `__unpack_<id>_<k>`: the write goes in pre[]
+   and the read is answered. A literal answers itself. -1 on node-table OOM
+   or past 64 runs. */
+static int unpack_hoist(Compiler *c, int id, int v, int k, int *pre, int *npre) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  if (v < 0 || unpack_literal(nt, v, 0)) return v;
+  if (*npre >= 64) return -1;
+  char tname[48]; snprintf(tname, sizeof tname, "__unpack_%d_%d", id, k);
+  int w = nt_new_node(nt, "LocalVariableWriteNode"), re = nt_new_node(nt, "LocalVariableReadNode");
+  if (w < 0 || re < 0) return -1;
+  nt_node_set_str(nt, w, "name", tname); nt_node_set_int(nt, w, "depth", 0);
+  nt_node_set_ref(nt, w, "value", v);
+  nt_node_set_str(nt, re, "name", tname); nt_node_set_int(nt, re, "depth", 0);
+  scope_local_intern(comp_scope_of(c, id), tname);
+  pre[(*npre)++] = w;
+  return re;
+}
+/* The receiver and each argument (a splat's operand, a keyword's key and
+   value) run into locals in CRuby's order; *recv and the arguments node
+   `args` (the caller's copy) become their reads. Nothing is relinked unless
+   every run is made: 0 on node-table OOM or past 30 arguments or keywords. */
+static int unpack_hoist_operands(Compiler *c, int id, int *recv, int args, int *pre, int *npre) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  static const char *const FIELD[] = { "expression", "key", "value" };
+  int k = 0, ne = 0, ed_node[64], ed_field[64], ed_ref[64];
+  int r0 = unpack_hoist(c, id, *recv, k++, pre, npre);
+  if (r0 < 0) return 0;
+  int argc = 0;
+  const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+  if (argc > 30) return 0;
+  int a[32];
+  for (int i = 0; i < argc; i++) a[i] = av[i];   /* copy before the node table grows */
+  for (int i = 0; i < argc; i++) {
+    NodeKind ak = nt_kind(nt, a[i]);
+    if (ak == NK_SplatNode) {
+      int r = unpack_hoist(c, id, nt_ref(nt, a[i], "expression"), k++, pre, npre);
+      if (r < 0 || ne >= 64) return 0;
+      ed_node[ne] = a[i]; ed_field[ne] = 0; ed_ref[ne++] = r;
+    }
+    else if (ak == NK_KeywordHashNode) {
+      int en = 0;
+      const int *ev = nt_arr(nt, a[i], "elements", &en);
+      if (en > 30) return 0;
+      int e[32];
+      for (int j = 0; j < en; j++) e[j] = ev[j];
+      for (int j = 0; j < en; j++) {
+        if (nt_kind(nt, e[j]) != NK_AssocNode) return 0;
+        for (int f = 1; f <= 2; f++) {
+          int r = unpack_hoist(c, id, nt_ref(nt, e[j], FIELD[f]), k++, pre, npre);
+          if (r < 0 || ne >= 64) return 0;
+          ed_node[ne] = e[j]; ed_field[ne] = f; ed_ref[ne++] = r;
+        }
+      }
+    }
+    else if ((a[i] = unpack_hoist(c, id, a[i], k++, pre, npre)) < 0) return 0;
+  }
+  *recv = r0;
+  for (int i = 0; i < ne; i++) nt_node_set_ref(nt, ed_node[i], FIELD[ed_field[i]], ed_ref[i]);
+  if (argc) nt_node_set_arr(nt, args, "arguments", a, argc);
+  return 1;
+}
 int desugar_unpack_block(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int user_any = 0, user_str = 0;
@@ -5280,14 +5384,25 @@ int desugar_unpack_block(Compiler *c) {
     int base = nt->count;
     int call = nt_new_node(nt, "CallNode"), each = nt_new_node(nt, "CallNode");
     int nil = nt_new_node(nt, "NilNode"), body = nt_new_node(nt, "StatementsNode");
-    /* the blockless call of a block that may be nil, and its test */
+    /* the blockless call of a block that may be nil, its test, and the
+       receiver's and arguments' runs ahead of it */
     int pred = -1, call2 = -1, s2 = -1, el = -1, sure = unpack_block_sure(nt, c, blk);
+    int iff = -1, outer = -1, npre = 0, pre[65];
     int ok = call >= 0 && each >= 0 && nil >= 0 && body >= 0;
     if (ok && !sure) {
-      int r2 = nt_clone_subtree(nt, recv), a2 = args >= 0 ? nt_clone_subtree(nt, args) : -1;
+      /* the runs relink a copy of the arguments, so the call stays whole
+         when a later allocation fails */
+      if (unpack_needs_hoist(nt, recv, args, blk)) {
+        int a1 = args >= 0 ? nt_clone_subtree(nt, args) : -1;
+        ok = (args < 0 || a1 >= 0) && unpack_hoist_operands(c, id, &recv, a1, pre, &npre);
+        args = a1;
+        iff = nt_new_node(nt, "IfNode"); outer = nt_new_node(nt, "StatementsNode");
+        ok = ok && iff >= 0 && outer >= 0;
+      }
+      int r2 = ok ? nt_clone_subtree(nt, recv) : -1, a2 = ok && args >= 0 ? nt_clone_subtree(nt, args) : -1;
       call2 = nt_new_node(nt, "CallNode"); s2 = nt_new_node(nt, "StatementsNode");
       el = nt_new_node(nt, "ElseNode");
-      ok = r2 >= 0 && (args < 0 || a2 >= 0) && call2 >= 0 && s2 >= 0 && el >= 0 &&
+      ok = ok && r2 >= 0 && (args < 0 || a2 >= 0) && call2 >= 0 && s2 >= 0 && el >= 0 &&
            unpack_block_test(c, id, blk, &pred);
       if (ok) {
         nt_node_set_ref(nt, call2, "receiver", r2);
@@ -5315,11 +5430,18 @@ int desugar_unpack_block(Compiler *c) {
       nt_node_set_arr(nt, s2, "body", &call2, 1);
       nt_node_set_ref(nt, el, "statements", s2);
       long long line = nt_int(nt, id, "node_line", 0);
-      nt_node_reset(nt, id, "IfNode");
-      nt_node_set_ref(nt, id, "predicate", pred);
-      nt_node_set_ref(nt, id, "statements", body);
-      nt_node_set_ref(nt, id, "subsequent", el);
-      if (line) nt_node_set_int(nt, id, "node_line", line);
+      int test = iff >= 0 ? iff : id;
+      if (iff < 0) nt_node_reset(nt, id, "IfNode");
+      nt_node_set_ref(nt, test, "predicate", pred);
+      nt_node_set_ref(nt, test, "statements", body);
+      nt_node_set_ref(nt, test, "subsequent", el);
+      if (line) nt_node_set_int(nt, test, "node_line", line);
+      if (iff >= 0) {   /* (the receiver's and arguments' runs; the test) */
+        pre[npre++] = iff;
+        nt_node_set_arr(nt, outer, "body", pre, npre);
+        nt_node_reset(nt, id, "ParenthesesNode");
+        nt_node_set_ref(nt, id, "body", outer);
+      }
     }
     comp_grow_node_arrays(c);
     int encl = c->nscope[id];
