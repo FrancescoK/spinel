@@ -106,6 +106,10 @@ ShareRoute share_route(int site, int value, int elems);
 int share_node_fresh(const Compiler *c, int n);
 /* Does the rule share the elements of node n's value (a container)? */
 int share_node_elems_share(const Compiler *c, int n);
+/* Is node n a blockless builtin's new Array of new Strings whose elements
+   the rule shares? Its one evaluation is the only source of those Strings,
+   so where it is consumed each can be wrapped as a handle of its own. */
+int share_node_fresh_elems(const Compiler *c, int n);
 /* Can node n's value (a container) be reached again once its expression
    is done: a holder keeps it, it leaves a call to be read after, or it
    meets what the walk does not follow? */
