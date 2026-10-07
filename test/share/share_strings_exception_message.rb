@@ -69,3 +69,22 @@ rescue => e
   e.message << "?"
   p w
 end
+# The message is the String itself: equal? to it, and to itself.
+v = +"v"
+begin
+  raise ArgumentError, v
+rescue => e
+  p e.message.equal?(e.message), e.message.equal?(v), v.equal?(e.message)
+end
+begin
+  raise ArgumentError, "x#{1}"
+rescue => e
+  e.message << "!"
+  p e.message, e.message.equal?(e.message)
+end
+begin
+  raise ArgumentError
+rescue => e
+  e.message << "!"
+  p e.message, e.message.equal?(e.message)
+end

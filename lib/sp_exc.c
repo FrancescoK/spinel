@@ -157,11 +157,19 @@ const char *sp_exc_msg_counted(const char *m, size_t n) {
   memcpy(r + SP_CMSG_HDR, m, n);
   return r;
 }
+const char *sp_exc_msg_counted_frozen(const char *m, size_t n) {
+  char *r = (char *)sp_exc_msg_counted(m, n);
+  r[5] = 0x02;
+  return r;
+}
 static const char *sp_exc_msg_copy(const char *m) {
   if (sp_cmsg_p(m)) {   /* the counted message decodes to its payload, a NUL kept */
     size_t cn = sp_cmsg_len(m);
     char *r = sp_str_alloc(cn);
     memcpy(r, m + SP_CMSG_HDR, cn);
+    /* a frozen String's message is frozen (0xfa: a frozen heap String that
+       is collected) */
+    if (sp_cmsg_frozen(m)) ((unsigned char *)r)[-1] = 0xfa;
     return r;
   }
   size_t n = strlen(m);
@@ -169,8 +177,32 @@ static const char *sp_exc_msg_copy(const char *m) {
   memcpy(r, m, n);
   return r;
 }
-sp_Exception *sp_exc_new_for_catch(const char *cls, const char *msg) {if (msg != sp_exc_no_msg) msg = sp_msg_heapify(msg); SP_GC_ROOT_STR(msg);
+/* A raise's frozen message, counted (sp_exc_msg_given) and with no NUL in
+   it, as plain text that is frozen (0xfa): what sp_raise_cls carries in
+   the handler stack, so every reader of the raw message (the uncaught
+   report, a thread's or fiber's re-raise, the name recovery) reads its
+   text, and the rescue's exception keeps the mark (sp_exc_new_for_catch).
+   Allocated without a collection's turn, as sp_msg_heapify's copy is. */
+const char *sp_exc_msg_plain(const char *m) {
+  if (!sp_cmsg_p(m) || !sp_cmsg_frozen(m)) return m;
+  size_t n = sp_cmsg_len(m);
+  /* an empty message is the explicit-empty sentinel, as sp_exc_msg_given
+     makes it for an unfrozen "" */
+  if (n == 0) return sp_exc_no_msg;
+  if (memchr(m + SP_CMSG_HDR, 0, n)) return m;
+  char *r = sp_str_alloc_nogc(n);
+  memcpy(r, m + SP_CMSG_HDR, n);
+  ((unsigned char *)r)[-1] = 0xfa;
+  return r;
+}
+sp_Exception *sp_exc_new_for_catch(const char *cls, const char *msg) {
+  /* every caller hands a message with a marker byte (a raise's, from the
+     handler stack, or sp_exc_msg_given's): a frozen one stays frozen */
+  int fz = msg && msg != sp_exc_no_msg && !sp_cmsg_p(msg) &&
+           (((const unsigned char *)msg)[-1] == 0xfa || ((const unsigned char *)msg)[-1] == 0xf8);
+  if (msg != sp_exc_no_msg) msg = sp_msg_heapify(msg); SP_GC_ROOT_STR(msg);
   sp_Exception *e = sp_exc_new(cls, msg);
+  if (fz && e->msg) ((unsigned char *)e->msg)[-1] = 0xfa;
   if (sp_user_exc_parent_fn) {
     const char *par = sp_user_exc_parent_fn(cls);
     if (par) {

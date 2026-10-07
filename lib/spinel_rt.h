@@ -13715,6 +13715,8 @@ SP_NORETURN SP_COLD void sp_raise_cls(const char *cls, const char *msg) {
      Kernel#loop and enumerator landings), which discards this entry, and a
      fiber's trampoline hands the whole root stack back to its resumer. */
   if (msg != sp_exc_no_msg) msg = sp_msg_heapify(msg);
+  /* a frozen message (a literal's) as frozen text (sp_exc_msg_plain) */
+  if (msg != sp_exc_no_msg) msg = sp_exc_msg_plain(msg);
   SP_GC_ROOT_STR(msg);
 #if SP_BT_AVAILABLE
   /* a pass-through, or a bare `raise` re-raising the handled exception, keeps
@@ -14206,11 +14208,22 @@ static void sp_raise_exc(volatile sp_Exception *ve) {
   sp_raise_cls(e->cls_name, e->msg_h ? sp_exc_message(e) : e->msg);
 }
 /* e.message as the String handle it holds (sp_Exception.msg_h), for a
-   change through it (--share-strings); a message held as bytes is handed
-   over as a new handle, whose changes it does not see, as before */
+   change through it (--share-strings). A message held as bytes becomes the
+   exception's handle here, frozen when the message is (a literal's), so a
+   change through it shows in the next #message, as CRuby's message is one
+   object. The class name a message-less exception answers is a new String
+   each time in CRuby, so it is not kept (a message given equal to the
+   class name is taken for it, and keeps the old answer). */
 static inline sp_String *sp_exc_message_handle(sp_Exception *e) {
-  if (e && e->msg_h) return (sp_String *)e->msg_h;
-  return sp_String_new_fresh(e ? sp_exc_message(e) : sp_str_empty);
+  if (!e) return sp_String_new_fresh(sp_str_empty);
+  if (e->msg_h) return (sp_String *)e->msg_h;
+  SP_GC_ROOT(e);
+  const char *m = sp_exc_message(e);
+  int fz = sp_str_is_frozen_val(m);
+  sp_String *h = sp_String_new_fresh(m);
+  if (fz) sp_String_freeze(h);
+  if (!e->cls_name || strcmp(sp_String_cstr(h), e->cls_name) != 0) sp_exc_attach_msg((void *)e, (void *)h);
+  return h;
 }
 
 /* SystemCallError#initialize, as CRuby's syserr_initialize runs it for an
@@ -14918,6 +14931,13 @@ void sp_fiber_reraise(const char *cls, const char *msg, void *obj);
 #else
 void sp_fiber_reraise(const char *cls, const char *msg, void *obj) {
   if (obj) sp_pending_exc_obj = obj;
+  /* the message a raise left in the handler stack, or one the program
+     handed Fiber#raise / Thread#raise: a String with a marker byte. A
+     frozen one (a literal's, sp_exc_msg_plain) is handed on counted, so
+     the re-raise keeps its mark */
+  if (msg && msg != sp_exc_no_msg && !sp_cmsg_p(msg) &&
+      (((const unsigned char *)msg)[-1] == 0xfa || ((const unsigned char *)msg)[-1] == 0xf8))
+    msg = sp_exc_msg_counted_frozen(msg, sp_str_byte_len(msg));
   sp_raise_cls(cls, msg);
 }
 #endif
