@@ -420,6 +420,27 @@ int emit_call_bigint_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
       emit_bigint_operand(c, argv[1], b); buf_puts(b, ")");
       free(rs.p); return 1;
     }
+    /* Bignum#div(Rational): the floor of the exact quotient. The Bignum
+       operand form below has no conversion for a Rational and refused it,
+       and Integer#ceildiv(Rational) divides with it (builtins/integer.rb). */
+    if (sp_streq(name, "div") && argc == 1 && comp_ntype(c, argv[0]) == TY_RATIONAL) {
+      int tr = ++g_tmp, ta = ++g_tmp;
+      buf_printf(b, "({ sp_Bigint *_t%d = %s; SP_GC_ROOT(_t%d); sp_Rational _t%d = ", tr, r, tr, ta);
+      emit_expr(c, argv[0], b);
+      buf_printf(b, "; sp_bigint_div_rat(_t%d, _t%d); })", tr, ta);
+      free(rs.p); return 1;
+    }
+    /* a divisor known only at run time: a Float or a Rational divides as
+       Numeric#div does; the Bignum operand form read one truncated, the
+       other as 0 (sp_bigint_div_poly) */
+    if (sp_streq(name, "div") && argc == 1 && repr_of(c, argv[0]).kind == RK_BOXED) {
+      /* the receiver is held across the divisor's evaluation, which can
+         allocate */
+      int tr = ++g_tmp;
+      buf_printf(b, "({ sp_Bigint *_t%d = %s; SP_GC_ROOT(_t%d); sp_bigint_div_poly(_t%d, ", tr, r, tr, tr);
+      emit_expr(c, argv[0], b); buf_puts(b, "); })");
+      free(rs.p); return 1;
+    }
     if ((sp_streq(name, "div") || sp_streq(name, "gcd") || sp_streq(name, "lcm")) && argc == 1) {
       const char *fn = sp_streq(name, "div") ? "div" : name;
       buf_printf(b, "sp_bigint_%s(%s, ", fn, r);

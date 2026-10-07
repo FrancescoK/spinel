@@ -6,6 +6,14 @@
 # cast a NaN quotient to an integer (2.5.div(Float::NAN) answered 0, a
 # Rational's crashed); the boxed form answered a NaN or wide quotient as a
 # Float; a boxed ceildiv divided with `/` (7.ceildiv(2.5) answered 2.8).
+#
+# A Rational divisor divides exactly, the floor of the exact quotient. Read
+# through a double, Rational(2**60 - 1, 2**60) is 1.0, so a boxed
+# 1.ceildiv of it answered 1 (CRuby: 2), and a big Rational raised; a typed
+# receiver's ceildiv raised TypeError for every Rational. A typed receiver
+# read a boxed Bignum, Rational or Float divisor as an Integer
+# (7.div(2**65) raised ZeroDivisionError, (2**70).div(2.5) answered 2**69),
+# and a typed Bignum's div by a typed Rational was refused at compile time.
 f = 2.5 + ARGV.size
 x = [f, "a"][0]            # a boxed Float
 n = [7, "a"][0]            # a boxed Integer
@@ -19,3 +27,20 @@ p [r.div(0.1), (r.div(Float::NAN) rescue $!.class), (r.div(0.0) rescue $!.class)
 p [n.ceildiv(2.5), 7.ceildiv(2.5), n.ceildiv(-2.5), n.ceildiv(3)]
 p [(n.ceildiv(Float::NAN) rescue $!.class), (7.ceildiv(Float::NAN) rescue $!.class)]
 p x.div(1e-300)
+def big
+  2**64
+end
+d = Rational(2**60 - 1, 2**60)
+bd = [d, "a"][0]                        # a boxed Rational
+br = [Rational(2**70 + 1, 3), "a"][0]   # a boxed big Rational
+b = 2**70 + ARGV.size                   # a typed Bignum
+bb = [b, "a"][0]                        # a boxed Bignum
+p [1.ceildiv(d), (-1).ceildiv(d), 1.ceildiv(bd), n.ceildiv(d), n.ceildiv(bd),
+   7.ceildiv(Rational(3, 2)), 7.ceildiv(Rational(-3, 2)), (-n).ceildiv(Rational(3, 2))]
+p [1.div(bd), (-1).div(bd), (-1).div(d), n.div(d), (-n).div(bd), 7.div(Rational(-3, 2))]
+p [b.ceildiv(d), b.ceildiv(bd), bb.ceildiv(d), (-bb).ceildiv(bd)]
+p [b.div(Rational(3, 2)), b.div(bd), bb.div(d), (-b).div(bd), big.div(Rational(4, 1))]
+p [7.div(br), n.div(br), b.div(br), bb.ceildiv(br), 7.ceildiv(br), n.ceildiv(br)]
+p [7.div([2**65, "a"][0]), (-7).div([2**65, "a"][0]), b.div(x), b.div(-x)]
+p [(7.ceildiv(Rational(0, 1)) rescue $!.class), (n.ceildiv([Rational(0, 1), "a"][0]) rescue $!.class),
+   (b.div([Rational(0, 1), "a"][0]) rescue $!.class)]
