@@ -1477,14 +1477,19 @@ static int strbuf_route_handle_call(Compiler *c, int v) {
 }
 /* --share-strings: a proc's answer read as a String (`pr.call`, the
    BSH_CALL row's names). The proc hands it back boxed, a String the rule
-   shares as its handle's box. */
+   shares as its handle's box. A catch likewise keeps the thrown box and
+   boxes its normal tail, preserving either path's shared handle. */
 static int strbuf_route_proc_call(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
   v = unwrap_parens(c, v);
   if (!repr_share_rule(c) || v < 0 || nt_kind(nt, v) != NK_CallNode) return 0;
   int recv = nt_ref(nt, v, "receiver");
   TyKind vt = comp_ntype(c, v);
-  return recv >= 0 && comp_ntype(c, recv) == TY_PROC && (vt == TY_STRING || vt == TY_STRBUF) &&
+  if (vt != TY_STRING && vt != TY_STRBUF) return 0;
+  if (recv < 0 && is_catch_name(nt_str(nt, v, "name")) && call_plain_argc(c, v) <= 1 &&
+      nt_ref(nt, v, "block") >= 0 && !bare_call_class_owned(c, v) &&
+      cplan_user_fresh(c, v)->mi < 0) return 1;
+  return recv >= 0 && comp_ntype(c, recv) == TY_PROC &&
          bop_share_named(BOP_CALLABLE, nt_str(nt, v, "name")) == BSH_CALL;
 }
 /* Does value v hand over a String the rule shares as the handle itself: a
@@ -14079,7 +14084,7 @@ int stmts_diverge(Compiler *c, int stmts) {
   if (sp_streq(lt, "CallNode") && nt_ref(nt, last, "receiver") < 0 &&
       !bare_call_class_owned(c, last)) {
     const char *nm = nt_str(nt, last, "name");
-    if (nm && (sp_streq(nm, "raise") || sp_streq(nm, "fail") || sp_streq(nm, "throw"))) return 1;
+    if (nm && (is_raise_alias(nm) || is_throw_name(nm)) && cplan_user_fresh(c, last)->mi < 0) return 1;
   }
   return 0;
 }
@@ -14130,11 +14135,12 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
     return;
   }
   /* `raise` / `fail` / `throw` diverge -- no value to return; emit as a plain statement
-     (throw unwinds to its catch, so it never falls through with a value; #3087). */
+     (throw unwinds to its catch, so it never falls through with a value; #3087).
+     A resolved user method with that name can return normally. */
   if (sp_streq(ty, "CallNode") && nt_ref(nt, id, "receiver") < 0 &&
       nt_str(nt, id, "name") && !bare_call_class_owned(c, id) &&
       (sp_streq(nt_str(nt, id, "name"), "raise") || sp_streq(nt_str(nt, id, "name"), "fail") ||
-       sp_streq(nt_str(nt, id, "name"), "throw"))) {
+       sp_streq(nt_str(nt, id, "name"), "throw")) && cplan_user_fresh(c, id)->mi < 0) {
     emit_indent(b, indent); emit_expr(c, id, b); buf_puts(b, ";\n");
     return;
   }
