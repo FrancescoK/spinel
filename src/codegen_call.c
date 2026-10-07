@@ -15021,6 +15021,11 @@ int builtin_name_arity_span(const char *name, int with_block, int *lo, int *hi) 
         if (rl < 0) continue;
       } else {
         if (!sp_builtin_arity_tbl[i].m || !sp_streq(sp_builtin_arity_tbl[i].m, name)) continue;
+        int proved = 0;
+        for (const SpAritySpec *r = sp_builtin_arity_spec_tbl; r->cls && !proved; r++)
+          proved = sp_streq(r->cls, sp_builtin_arity_tbl[i].cls) && sp_streq(r->m, name) &&
+                   (with_block ? r->blk_min : r->min) >= 0;
+        if (proved) continue;
         int a = sp_builtin_arity_tbl[i].a;
         rl = a >= 0 ? a : -a - 1; rh = a >= 0 ? a : -1;
       }
