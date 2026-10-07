@@ -4860,7 +4860,53 @@ static int emit_shadow_save(Compiler *c, TyKind t, const char *name, Buf *b, int
 }
 
 static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent);
+/* A `&.` iterator in statement or tail position (`v&.upto(3) { }`,
+   `v&.times { }`) whose nil guard is pending (sn_guard_pending): the loop
+   emitters never look at the operator, so they walked the nil -- upto and
+   step counted up from the Integer sentinel, times raised TypeError. Read the
+   receiver once into a temp, and emit the loop over it inside an `if` that
+   skips a nil, re-entering with g_sn_skip set so the guard is not asked
+   again. Answers what the inner emission answers; when it declines, nothing
+   is written. */
+static int emit_iteration_stmt_sn(Compiler *c, int id, Buf *b, int indent) {
+  const NodeTable *nt = c->nt;
+  int recv = nt_ref(nt, id, "receiver");
+  if (recv < 0 || g_n_argov >= MAX_ARG_OVERRIDE) return -1;
+  Repr rr = repr_of(c, recv);
+  TyKind rt = rr.as_ty;
+  int boxed = rr.kind == RK_BOXED;
+  int t = ++g_tmp;
+  Buf gb; memset(&gb, 0, sizeof gb);
+  Buf rb; memset(&rb, 0, sizeof rb);
+  if (boxed) emit_boxed(c, recv, &rb); else emit_expr(c, recv, &rb);
+  emit_indent(&gb, indent);
+  buf_puts(&gb, "{ ");
+  if (boxed) buf_puts(&gb, "sp_RbVal"); else emit_ctype(c, rt, &gb);
+  buf_printf(&gb, " _sn%d = %s;", t, rb.p ? rb.p : "0");
+  free(rb.p);
+  if (boxed) buf_printf(&gb, " SP_GC_ROOT_RBVAL(_sn%d);", t);
+  else if (needs_root(rt)) buf_printf(&gb, " SP_GC_ROOT(_sn%d);", t);
+  if (boxed) buf_printf(&gb, " if (_sn%d.tag != SP_TAG_NIL) {\n", t);
+  else if (rt == TY_INT) buf_printf(&gb, " if (_sn%d != SP_INT_NIL) {\n", t);
+  else if (rt == TY_FLOAT) buf_printf(&gb, " if (!sp_float_is_nil(_sn%d)) {\n", t);
+  else buf_printf(&gb, " if (_sn%d != NULL) {\n", t);
+  int slot = view_bind(recv, "_sn%d", t);
+  int sv = g_sn_skip; g_sn_skip = id;
+  int ok = emit_ivar_nil_guarded(c, id, &gb, indent + 1, emit_iteration_stmt_body);
+  g_sn_skip = sv;
+  view_unbind(slot);
+  emit_indent(&gb, indent);
+  buf_puts(&gb, "} }\n");
+  if (ok) buf_puts(b, gb.p ? gb.p : "");
+  free(gb.p);
+  return ok;
+}
+
 int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent) {
+  if (sn_guard_pending(c, id)) {
+    int r = emit_iteration_stmt_sn(c, id, b, indent);
+    if (r >= 0) return r;
+  }
   return emit_ivar_nil_guarded(c, id, b, indent, emit_iteration_stmt_body);
 }
 /* Block parameter pj of an each_slice / each_cons row: element pj of the
