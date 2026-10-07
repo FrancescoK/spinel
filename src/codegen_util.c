@@ -997,6 +997,12 @@ int g_redo_stack[64];
 int g_redo_depth = 0;
 int g_redo_pending = 0;
 int g_redo_owner[64];
+/* Opens a redo label for the body `owner` and answers it; 0 when the stack is full. */
+int redo_label_push(int owner) {
+  if (g_redo_depth >= (int)(sizeof g_redo_stack / sizeof g_redo_stack[0])) return 0;
+  g_redo_owner[g_redo_depth] = owner;
+  return g_redo_stack[g_redo_depth++] = ++g_tmp;
+}
 const char *g_loop_break_var = NULL;
 /* When a direct instance_exec/eval splice is wrapped in a do{}while(0), this
    holds the C result temp so a top-level `next <v>` captures its value before

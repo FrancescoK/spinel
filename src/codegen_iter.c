@@ -3143,13 +3143,7 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
      parameters are bound. The loop's own label re-ran the callee's loop body
      (a builtin's `buf << x` pushed the element again), and a yield outside
      any loop had none at all (`continue` outside a loop). */
-  int rd_lbl = 0;
-  if (bbody >= 0 && subtree_has_own_redo_ex(nt, bbody, -1) &&
-      g_redo_depth < (int)(sizeof g_redo_stack / sizeof g_redo_stack[0])) {
-    rd_lbl = ++g_tmp;
-    g_redo_owner[g_redo_depth] = bbody;
-    g_redo_stack[g_redo_depth++] = rd_lbl;
-  }
+  int rd_lbl = (bbody >= 0 && subtree_has_own_redo_ex(nt, bbody, -1)) ? redo_label_push(bbody) : 0;
   /* ...and after the body's setup, its locals' reset and the parameter
      rebindings (block_param_rebind_len), which a redo does not re-run. The
      arms below that emit the statements one by one place it after the
@@ -4106,16 +4100,8 @@ void emit_loop_body(Compiler *c, int body, Buf *b, int indent) {
      the break emitter reads inside this body. */
   const char *sv_nxv = g_ie_next_var; TyKind sv_nxt = g_ie_next_ty;
   g_ie_next_var = NULL; g_ie_next_ty = TY_UNKNOWN;
-  int has_redo = subtree_has_own_redo(c->nt, body);
-  int lbl = 0;
-  if (has_redo) {
-    lbl = ++g_tmp;
-    if (g_redo_depth < (int)(sizeof g_redo_stack / sizeof g_redo_stack[0])) {
-      g_redo_owner[g_redo_depth] = body;
-      g_redo_stack[g_redo_depth++] = lbl;
-    }
-    else has_redo = 0;
-  }
+  int lbl = subtree_has_own_redo(c->nt, body) ? redo_label_push(body) : 0;
+  int has_redo = lbl != 0;
   /* a block body's label goes after its setup, where emit_stmts puts it */
   if (has_redo && block_of_body(c, body) >= 0) g_redo_pending = lbl;
   else if (has_redo) { emit_indent(b, indent); buf_printf(b, "_redo_%d: ;\n", lbl); }

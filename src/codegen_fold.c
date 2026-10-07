@@ -3570,13 +3570,7 @@ int emit_block_cond_next(Compiler *c, int block, int indent, Buf *out) {
 int emit_iter_step_stmts(Compiler *c, int body, Buf *b, int indent, const char *sep) {
   const NodeTable *nt = c->nt;
   int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
-  int rd_lbl = 0;
-  if (body >= 0 && subtree_has_own_redo(nt, body) &&
-      g_redo_depth < (int)(sizeof g_redo_stack / sizeof g_redo_stack[0])) {
-    rd_lbl = ++g_tmp;
-    g_redo_owner[g_redo_depth] = body;
-    g_redo_stack[g_redo_depth++] = rd_lbl;
-  }
+  int rd_lbl = (body >= 0 && subtree_has_own_redo(nt, body)) ? redo_label_push(body) : 0;
   int rd_head = rd_lbl ? block_param_rebind_len(nt, body) : 0;
   for (int j = 0; j <= bn - 1; j++) {
     if (rd_lbl && j == (rd_head < bn - 1 ? rd_head : bn - 1)) {
@@ -3607,14 +3601,8 @@ void emit_iter_step_body(Compiler *c, int block, Buf *b, int indent) {
    locals' reset, the statements), with the body's own redo label after
    that setup (g_redo_pending), where it had none. */
 void emit_iter_loop_stmts(Compiler *c, int body, Buf *b, int indent) {
-  int lbl = 0;
-  if (body >= 0 && subtree_has_own_redo(c->nt, body) &&
-      g_redo_depth < (int)(sizeof g_redo_stack / sizeof g_redo_stack[0])) {
-    lbl = ++g_tmp;
-    g_redo_owner[g_redo_depth] = body;
-    g_redo_stack[g_redo_depth++] = lbl;
-    g_redo_pending = lbl;
-  }
+  int lbl = (body >= 0 && subtree_has_own_redo(c->nt, body)) ? redo_label_push(body) : 0;
+  if (lbl) g_redo_pending = lbl;
   emit_stmts(c, body, b, indent);
   if (lbl) g_redo_depth--;
 }
