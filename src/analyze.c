@@ -15503,7 +15503,6 @@ static int strbuf_demand_store_leaf(Compiler *c, int sn, int depth) {
       "a String a boxed local holds is stored into a container and mutated in place through it (a "
       "String is not yet shared by reference through a boxed local's container element). Mutate the "
       "String through the local itself.";
-<<<<<<< HEAD
     if (snv->type == TY_POLY && !snv->is_param && !snv->poly_ctr && poly_local_shows_string(c, snm, sns)) {
       /* Under --share-strings the stored read is lifted into the handle
          (lift_poly_read: it boxes the local's String as the handle and
@@ -15519,17 +15518,8 @@ static int strbuf_demand_store_leaf(Compiler *c, int sn, int depth) {
         q.carry = sn;
         if (share_route_defer(c, &q, boxed_msg)) return ch;
       }
-      if (!sa_copy_defer(c, sn, sn, boxed_msg)) unsupported_feature(c, sn, boxed_msg);
+      if (!sa_copy_defer(c, sn, sn, 0, boxed_msg)) unsupported_feature(c, sn, boxed_msg);
     }
-||||||| 42557a3c0
-    if (snv->type == TY_POLY && !snv->is_param && !snv->poly_ctr && poly_local_shows_string(c, snm, sns) &&
-        !sa_copy_defer(c, sn, sn, boxed_msg))
-      unsupported_feature(c, sn, boxed_msg);
-=======
-    if (snv->type == TY_POLY && !snv->is_param && !snv->poly_ctr && poly_local_shows_string(c, snm, sns) &&
-        !sa_copy_defer(c, sn, sn, 0, boxed_msg))
-      unsupported_feature(c, sn, boxed_msg);
->>>>>>> pr7955
     if (!strbuf_slot_eligible(c, snm, sns, snv)) return 0;
     if (strbuf_mut_kind(c, snm, sns) < 0) return 0;
     snv->type = TY_STRBUF; snv->str_shared = 1;
