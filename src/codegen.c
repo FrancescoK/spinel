@@ -12047,7 +12047,10 @@ static void emit_user_binop_dispatch(Compiler *c, Buf *b) {
     "<", ">", "<=", ">=", "<=>", "==",
     /* and the element read, which a boxed `r[k] ||= v` / `r[k] += v` reads
        through sp_poly_index_poly */
-    "[]", NULL };
+    "[]",
+    /* and eql?, which uniq and the set operations ask of any argument
+       (sp_poly_eql_strict), where sp_obj_eql_hook only pairs one class */
+    "eql?", NULL };
   buf_puts(b, "static sp_RbVal sp_user_binop_dispatch(const char *op, sp_RbVal a, sp_RbVal b, sp_bool *handled) {\n");
   buf_puts(b, "  *handled = FALSE;\n  switch (a.cls_id) {\n");
   for (int k = 0; k < c->nclasses; k++) {
@@ -12309,7 +12312,7 @@ static int class_is_hashkey(Compiler *c, int k) {
 
 /* 1 if instantiated class k is a pure Struct/Data (no user ==/eql?/hash), so
    it is a value hash key: hash combines the member hashes and eql? is the
-   field-wise value == (via sp_obj_eq_dispatch). #2660 */
+   field-wise eql? (sp_poly_eql_strict). #2660 */
 static int class_is_valuekey(Compiler *c, int k) {
   ClassInfo *ci = &c->classes[k];
   return ci->instantiated && (ci->is_struct || ci->is_data) &&
@@ -12394,12 +12397,27 @@ static void emit_obj_hashkey_dispatch(Compiler *c, Buf *b) {
     else
       buf_printf(b, "return sp_poly_truthy(sp_%s_%s(%s(sp_%s *)a, %s));\n", dcn, mc(m->name), slf, dcn, argbuf);
   }
-  /* Struct/Data value keys: eql? is the field-wise value == (sp_obj_eq_dispatch). */
+  /* Struct/Data value keys: eql? is the field-wise eql? (Struct#eql?), as
+     their hash folds each member's: Struct.new(:x).new(1) is == to one
+     holding 1.0 but not eql? to it. */
   for (int k = 0; k < c->nclasses; k++) {
     if (!class_is_valuekey(c, k)) continue;
-    int cid = comp_class_index(c, c->classes[k].name);
-    buf_printf(b, "    case %d: return sp_obj_eq_dispatch(sp_box_obj(a, %d), sp_box_obj(b_, %d));\n",
-               cid, cid, cid);
+    ClassInfo *ci = &c->classes[k];
+    buf_printf(b, "    case %d: { sp_%s *_a = (sp_%s *)a, *_b = (sp_%s *)b_; if (!_a || !_b) return _a == _b; return ",
+               comp_class_index(c, ci->name), ci->c_name, ci->c_name, ci->c_name);
+    if (ci->nmembers == 0) buf_puts(b, "1");
+    for (int i = 0; i < ci->nmembers; i++) {
+      const char *iv = iv_c(ci->ivars[i] + 1);
+      Buf ea; memset(&ea, 0, sizeof ea); Buf eb; memset(&eb, 0, sizeof eb);
+      char fa[128], fb[128];
+      snprintf(fa, sizeof fa, "_a->iv_%s", iv);
+      snprintf(fb, sizeof fb, "_b->iv_%s", iv);
+      emit_boxed_text(c, ci->ivar_types[i], fa, &ea);
+      emit_boxed_text(c, ci->ivar_types[i], fb, &eb);
+      buf_printf(b, "%ssp_poly_eql_strict(%s, %s)", i ? " && " : "", ea.p ? ea.p : fa, eb.p ? eb.p : fb);
+      free(ea.p); free(eb.p);
+    }
+    buf_puts(b, "; }\n");
   }
   buf_puts(b, "    default: break;\n  }\n  return a == b_;\n}\n");
 }
@@ -16290,7 +16308,7 @@ char *codegen_program(const NodeTable *nt) {
   g_has_user_binop = 0;
   {
     static const char *const uops[] = {
-      "+", "-", "*", "/", "%", "**", "<<", ">>", "&", "|", "^", "==", "[]", NULL };
+      "+", "-", "*", "/", "%", "**", "<<", ">>", "&", "|", "^", "==", "[]", "eql?", NULL };
     /* A class that defines a #coerce needs the table for its COMPARISONS too:
        the protocol routes `5 < obj` to the boxed entry, which reaches the
        class through this hook. Only for such a class, though -- an ordinary
@@ -16446,8 +16464,7 @@ char *codegen_program(const NodeTable *nt) {
   if (g_has_user_to_io) emit_user_to_io_dispatch(c, body);
   if (g_has_user_init_copy) emit_user_init_copy_dispatch(c, body);
   if (program_has_arysub(c)) emit_arysub_dup_dispatch(c, body);
-  /* Struct/Data value-== hook (after the class struct definitions); emitted
-     before the hash-key dispatch, which references sp_obj_eq_dispatch. */
+  /* Struct/Data value-== hook (after the class struct definitions). */
   if (g_gen_obj_valeq) emit_obj_valeq_dispatch(c, body);
   /* Hash-key hooks (after the user #hash/#eql? definitions they call). */
   if (g_gen_obj_hashkey) emit_obj_hashkey_dispatch(c, body);
