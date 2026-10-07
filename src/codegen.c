@@ -636,7 +636,7 @@ static const char *unsettled_container_cls(Compiler *c, int node) {
 }
 
 static int emit_nilbool_conv_raise_w(Compiler *c, int node, TyKind want, int nil_ok,
-                                     int of_wording, Buf *b) {
+                                     int wording, Buf *b) {
   TyKind t = comp_ntype(c, node);
   if (t != TY_NIL && t != TY_BOOL) {
     /* any other statically-known wrong kind: CRuby's class-naming TypeError
@@ -662,10 +662,13 @@ static int emit_nilbool_conv_raise_w(Compiler *c, int node, TyKind want, int nil
     emit_expr(c, node, b);
     /* CRuby's rb_num2long-style slots say "from nil to integer"; the
        rb_convert_type ones (Random.srand, Dir.mkdir's mode) say
-       "of nil into Integer". String slots have only the one form. */
+       "of nil into Integer", and an IO offset (NUM2OFFT) "from nil"
+       (sp_raise_nil_to_int's wordings). String slots have only the one
+       form. */
     buf_printf(b, "); sp_raise_cls(\"TypeError\", \"%s\"); %s; })",
                want == TY_STRING ? "no implicit conversion of nil into String"
-               : of_wording      ? "no implicit conversion of nil into Integer"
+               : wording == 2    ? "no implicit conversion from nil"
+               : wording         ? "no implicit conversion of nil into Integer"
                                  : "no implicit conversion from nil to integer",
                dv);
   }
@@ -703,8 +706,10 @@ static void emit_int_expr_ex(Compiler *c, int node, int strict, Buf *b) {
     /* a boxed value may carry a user object whose #to_int runs here; only a
        program defining one makes this a conversion the order gate counts */
     if (strict && prog_has_conv_method(c, "to_int", TY_INT)) g_conv_emitted++;
-    buf_puts(b, strict ? "sp_poly_arg_int_chk(" : "sp_poly_to_i(");
-    emit_expr(c, node, b); buf_puts(b, ")");
+    buf_puts(b, strict > 1 ? "sp_poly_arg_int_chk_w(" : strict ? "sp_poly_arg_int_chk(" : "sp_poly_to_i(");
+    emit_expr(c, node, b);
+    if (strict > 1) buf_printf(b, ", %d", strict - 1);
+    buf_puts(b, ")");
     return;
   }
   /* A value the analysis widened to Bignum (a doubling counter, a masked
@@ -735,7 +740,7 @@ static void emit_int_expr_ex(Compiler *c, int node, int strict, Buf *b) {
     buf_puts(b, "sp_complex_to_int("); emit_expr(c, node, b); buf_puts(b, ")");
     return;
   }
-  if (emit_nilbool_conv_raise_w(c, node, TY_INT, strict == 0, strict == 2, b)) return;
+  if (emit_nilbool_conv_raise_w(c, node, TY_INT, strict == 0, strict > 1 ? strict - 1 : 0, b)) return;
   if (emit_obj_conv(c, node, "to_int", TY_INT, "Integer", b)) return;
   /* A strict Integer slot fed from a nullable int (a `String#index` miss, an
      ivar written nil, an `Integer?` seed) receives SP_INT_NIL as a plain
@@ -751,7 +756,7 @@ static void emit_int_expr_ex(Compiler *c, int node, int strict, Buf *b) {
     buf_printf(b, "({ sp_int _t%d = ", tn);
     emit_scalar_operand(c, node, "0", b);
     buf_printf(b, "; SP_INT_NIL_ARG_CK%s(_t%d); _t%d; })",
-               strict == 2 ? "_OF" : "", tn, tn);
+               strict == 3 ? "_OFFT" : strict == 2 ? "_OF" : "", tn, tn);
     return;
   }
   Buf tmp; memset(&tmp, 0, sizeof tmp);
@@ -831,6 +836,12 @@ void emit_range_endpoint(Compiler *c, int node, const char *none, Buf *b) {
    Random.srand's seed, Dir.mkdir's mode, Random#bytes' size. */
 void emit_int_expr_conv(Compiler *c, int node, Buf *b) {
   emit_int_expr_ex(c, node, 2, b);
+}
+
+/* Strict, with NUM2OFFT's wording ("from nil"): an IO offset -- seek,
+   sysseek, pos=, truncate, and pread's and pwrite's offset. */
+void emit_int_expr_offt(Compiler *c, int node, Buf *b) {
+  emit_int_expr_ex(c, node, 3, b);
 }
 
 /* Emit a node as an sp_float. A poly value is unboxed via sp_poly_to_f; a
