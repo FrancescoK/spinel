@@ -1029,6 +1029,10 @@ typedef struct {
      (nbyref_elig scopes; NULL before it runs) */
   char *byref_elig;
   int nbyref_elig;
+  /* the classes a boxed receiver can be an instance of, per call, and the
+     name indexes the walk that answers it reads (analyze_scope.c's
+     poly_ivar_set_reaches), built on first use and freed with the compiler */
+  struct PivsFacts *pivs;
   /* an ivar of a builtin value can be written (desugar_builtin_ivars): a
      reflective read, list or copy of an Array, a Hash or a Random asks the
      runtime's map (sp_bivar_*), and the boxed set gains its builtin arm */
