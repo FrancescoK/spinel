@@ -1525,6 +1525,7 @@ static void cpoly_defaults0(Compiler *c, int id, const char *name, const PolySpe
   else if (is_numeric_conversion(name)) fam = PB_D_TO_IF;
   else if (blockless && (sp_streq(name, "any?") || sp_streq(name, "none?"))) fam = PB_D_ANY_NONE;
   else if (sp_streq(name, "to_h") && blockless && ret == TY_POLY) fam = PB_D_TO_H;
+  else if (sp_streq(name, "display") && blockless) fam = PB_D_DISPLAY;
   if (fam >= 0) cpoly_family(p, cap, fam);
   if (is_indexed_each(name)) cpoly_family(p, cap, PB_N_EACH_INDEX);
   if (sp_streq(name, "join")) cpoly_family(p, cap, PB_N_JOIN);
@@ -1586,7 +1587,7 @@ static void cpoly_resolve(Compiler *c, int id, PolyPlan *p, int full) {
     /* a default written by now (the Object reopening's, a builtin one), or
        the builtin surface's, and the raise when it declines */
     int done = n1 > n0;
-    for (int f = PB_D_ENUM_EACH; f <= PB_D_TO_H; f++) done |= cpoly_has_family(p, f);
+    for (int f = PB_D_ENUM_EACH; f <= PB_D_DISPLAY; f++) done |= cpoly_has_family(p, f);
     if (cpoly_has_family(p, PB_D_ARRAY_TRANSFORM)) cpoly_trial(p, &cap, PT_ARRAY_FALLBACK);
     if (!done) cpoly_trial(p, &cap, PT_DEFAULT0);
   }

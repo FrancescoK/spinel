@@ -183,7 +183,7 @@ typedef enum {
   /* its builtin `default:` arms, the first that applies, and the named
      cases after them (emit_poly_defaults0) */
   PB_D_ENUM_EACH, PB_D_TO_S, PB_D_CASE_CONV, PB_D_NUM, PB_D_DIGITS, PB_D_ARRAY_TRANSFORM, PB_D_PRED,
-  PB_D_TO_IF, PB_D_ANY_NONE, PB_D_TO_H,
+  PB_D_TO_IF, PB_D_ANY_NONE, PB_D_TO_H, PB_D_DISPLAY,
   PB_N_EACH_INDEX, PB_N_JOIN, PB_N_ALIVE, PB_N_KILL, PB_N_STATUS, PB_N_QUEUE, PB_N_IO_READ,
   PB_N_IO_FLUSH, PB_N_IO_CLOSE, PB_N_ENUM_TO_A,
   /* the tag pre-arms of a dispatch with arguments (emit_poly_prearms_n) */

@@ -71,7 +71,7 @@ static void pa_arm_text(Compiler *c, const PolyArm *a, char *out, size_t n) {
                                      "len-cases", "clear", "empty-cases", "compare_by_identity?",
                                      "default enum-each", "default to_s", "default case-conv", "default numeric",
                                      "default digits", "default array-transform", "default predicate",
-                                     "default to_i/to_f", "default any?/none?", "default to_h",
+                                     "default to_i/to_f", "default any?/none?", "default to_h", "default display",
                                      "each_index", "join", "alive?", "kill", "status", "queue", "io-read",
                                      "io-flush", "io-close", "enum-to_a",
                                      "cover?", "try_convert", "gcdlcm", "unpack1", "include?", "str-delete",
@@ -2166,6 +2166,7 @@ int emit_poly_defaults0(Compiler *c, int id, int recv, const char *name, const P
   /* display, the same shape: a class that defines it has its own case, and
      every other receiver is Kernel#display's, to_s with no newline and nil */
   if (!obj_default_done && argc == 0 && sp_streq(name, "display") && nt_ref(nt, id, "block") < 0) {
+    if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_D_DISPLAY, -1, TY_UNKNOWN, PC_SAME);
     buf_printf(b, " default: fputs(sp_poly_to_s(_t%d), stdout);", tv);
     if (ret == TY_POLY) buf_printf(b, " _t%d = sp_box_nil();", tr);
     buf_puts(b, " break;");
