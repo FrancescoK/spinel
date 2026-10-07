@@ -2971,6 +2971,9 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
          Integer next is the nullable Integer, not nil */
       { TyKind nxv = block_next_value_ntype(c, bbody);
         if (nxv != TY_UNKNOWN && nxv != TY_VOID) nx_bt = ty_unify(nx_bt, nxv); }
+      /* a yield read as the shared handle (emit_strbuf_route): the carrier
+         is the handle, which each `next` and the tail hand on */
+      if (want_ty == TY_STRBUF && repr_share_rule(c)) nx_bt = TY_STRBUF;
       if (bn3 > 0) {
         const char *tty3 = nt_type(nt, bd3[bn3 - 1]);
         nx_tail_stmt = tty3 && (sp_streq(tty3, "IfNode") || sp_streq(tty3, "CaseNode") ||
@@ -2981,7 +2984,7 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
       nx_tmp = ++g_tmp;
       snprintf(nxbuf, sizeof nxbuf, "_t%d", nx_tmp);
       g_ie_next_var = nxbuf;
-      g_ie_res_poly = (nx_bt == TY_POLY || (want_poly && ty_is_object(nx_bt)));
+      g_ie_res_poly = nx_bt != TY_STRBUF && (nx_bt == TY_POLY || (want_poly && ty_is_object(nx_bt)));
       /* a `next nil` into an Integer or Float slot is the sentinel */
       g_ie_next_ty = (nx_bt == TY_INT || nx_bt == TY_FLOAT) ? nx_bt : TY_UNKNOWN;
       if (g_ie_res_poly) buf_printf(b, "sp_RbVal _t%d = sp_box_nil(); ", nx_tmp);
@@ -3048,6 +3051,7 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
       Buf *svp3 = g_pre; int svi3 = g_indent; g_pre = b; g_indent = 0;
       if (void_tail) emit_expr(c, tl3, &tb);
       else if (g_ie_res_poly) emit_boxed(c, tl3, &tb);
+      else if (nx_bt == TY_STRBUF && repr_share_rule(c)) emit_strbuf_handle_of(c, tl3, &tb);
       else emit_expr_slot(c, tl3, nx_bt, &tb);
       g_pre = svp3; g_indent = svi3;
       if (void_tail) buf_puts(b, "(void)(");
@@ -3075,6 +3079,18 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
     g_result_var = nxbuf; g_result_poly = g_ie_res_poly; g_result_ty = g_ie_res_poly ? TY_POLY : nx_bt;
     emit_stmt_tail(c, bd3[bn3 - 1], b, 0);
     g_result_var = sv_rv; g_result_poly = sv_rp; g_result_ty = sv_rty;
+  }
+  else if (as_expr && !nx_own && want_ty == TY_STRBUF && bn3 > 0) {
+    /* --share-strings: a yield read as the shared handle (emit_strbuf_route)
+       answers its block's String as one */
+    if (block_of_body(c, bbody) >= 0) emit_block_locals_reset(c, block_of_body(c, bbody), b, 0);
+    for (int k3 = 0; k3 < bn3 - 1; k3++) {
+      if (rd_lbl && k3 == rd_head) buf_printf(b, "_redo_%d: ; ", rd_lbl);
+      emit_stmt(c, bd3[k3], b, 0);
+    }
+    if (rd_lbl && rd_head >= bn3 - 1) buf_printf(b, "_redo_%d: ; ", rd_lbl);
+    emit_strbuf_handle_of(c, bd3[bn3 - 1], b);
+    buf_puts(b, "; ");
   }
   else if (as_expr && !nx_own && bn3 > 0 &&
            nt_type(nt, bd3[bn3 - 1]) &&
@@ -4034,6 +4050,16 @@ int emit_tap_then_expr(Compiler *c, int id, Buf *b) {
 
   int tr = ++g_tmp;
   Buf rb; memset(&rb, 0, sizeof rb);
+  /* --share-strings: a block parameter that is the shared handle is bound
+     to the receiver's own String: a handle receiver's handle, a fresh
+     String as a handle of its own (emit_strbuf_handle_of), and tap answers
+     it. A copy wrapped as a new handle forked the parameter off the
+     receiver. */
+  int hparam = 0;
+  if (et == TY_STRING && repr_share_rule(c) && p0) {
+    Scope *hsc = comp_scope_of(c, block);
+    hparam = repr_of_slot(c, hsc ? scope_local(hsc, p0) : NULL).handle;
+  }
   /* the adopted empty-literal receiver materializes as a FRESH mutable container
      of the block-param type -- emit_expr would render `[]` as its own untyped
      default (sp_IntArray_new()), mismatching et (#3200). */
@@ -4041,20 +4067,8 @@ int emit_tap_then_expr(Compiler *c, int id, Buf *b) {
     if (et == TY_POLY_ARRAY) buf_puts(&rb, "sp_PolyArray_new()");
     else buf_printf(&rb, "sp_%sArray_new()", array_kind(et) ? array_kind(et) : "Int");
   }
+  else if (hparam) { emit_strbuf_handle_of(c, recv, &rb); et = TY_STRBUF; }
   else if (et_nil) emit_boxed(c, recv, &rb); else emit_expr(c, recv, &rb);
-  /* --share-strings: a block parameter that is the shared handle takes a
-     fresh String receiver as a handle of its own, and tap answers it */
-  if (is_tap && et == TY_STRING && repr_share_rule(c) && p0) {
-    Scope *hsc = comp_scope_of(c, block);
-    LocalVar *hlv = hsc ? scope_local(hsc, p0) : NULL;
-    if (repr_of_slot(c, hlv).handle) {
-      Buf wb; memset(&wb, 0, sizeof wb);
-      buf_printf(&wb, "sp_String_new_shared(%s)", rb.p ? rb.p : "NULL");
-      free(rb.p);
-      rb = wb;
-      et = TY_STRBUF;
-    }
-  }
   emit_indent(g_pre, g_indent); emit_ctype(c, et, g_pre);
   buf_printf(g_pre, " _t%d = %s;\n", tr, rb.p ? rb.p : ""); free(rb.p);
   if (needs_root(et)) { emit_indent(g_pre, g_indent); emit_gc_root_tmp(c, et, tr, g_pre); buf_puts(g_pre, "\n"); }
@@ -4062,8 +4076,12 @@ int emit_tap_then_expr(Compiler *c, int id, Buf *b) {
   /* a then result temp is declared outside the (optional) shadow block so the
      block value escapes it. */
   int tres = 0; TyKind rett = TY_VOID;
+  /* --share-strings: `then` read as the handle (emit_strbuf_route), or
+     stored as one (a call marked to hand out the handle), answers its
+     block's value as one */
+  int hres = is_then && repr_share_rule(c) && (repr_of(c, id).demand || repr_of(c, id).as_ty == TY_STRBUF);
   if (is_then) {
-    rett = repr_of(c, id).as_ty;
+    rett = hres ? TY_STRBUF : repr_of(c, id).as_ty;
     /* A body that always `break`s completes normally nowhere, so it publishes
        no result type and `void` cannot declare the slot the substrate writes
        (#3986). The break itself delivers its value through sp_brk_val, and the
@@ -4141,7 +4159,8 @@ int emit_tap_then_expr(Compiler *c, int id, Buf *b) {
        the arms and the tail on the tail's kind (#4747). */
     Repr tailr = repr_of(c, bb[bn - 1]);
     TyKind tailt = tailr.as_ty;
-    g_bv_dest_ty = (rett == TY_POLY_ARRAY && tailr.elem != TY_POLY && array_to_poly_fn(tailt)) ? rett : TY_UNKNOWN;
+    g_bv_dest_ty = hres ? TY_STRBUF
+                 : (rett == TY_POLY_ARRAY && tailr.elem != TY_POLY && array_to_poly_fn(tailt)) ? rett : TY_UNKNOWN;
     emit_block_value_into(c, block, destbuf, rett == TY_POLY, din);
   }
   else {
@@ -4168,7 +4187,12 @@ int emit_tap_then_expr(Compiler *c, int id, Buf *b) {
   /* a receiver read as the shared handle (a block parameter that appends to
      it is the handle, promote_shared_stored_strings): tap's value is that
      String, read as one */
-  if (is_tap && et == TY_STRBUF && repr_of(c, id).as_ty == TY_STRING)
+  /* one bound above (hparam) to a variable's handle: its read face, a
+     copy, as that variable's own read (a fresh one's String is read as
+     below) */
+  if (is_tap && hparam && repr_of(c, id).as_ty == TY_STRING && strbuf_value_carries(c, recv))
+    buf_printf(b, "sp_strbuf_read_pub(_t%d)", tr);
+  else if (is_tap && et == TY_STRBUF && repr_of(c, id).as_ty == TY_STRING)
     buf_printf(b, "(_t%d ? sp_String_cstr(_t%d) : NULL)", tr, tr);
   else buf_printf(b, "_t%d", is_tap ? tr : tres);
   return 1;

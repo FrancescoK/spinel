@@ -4535,6 +4535,8 @@ void emit_block_value_into(Compiler *c, int block, const char *dest,
       /* a typed-array tail into the poly-array slot a `next` arm widened */
       const char *apf = (g_ie_next_ty == TY_POLY_ARRAY && tr.elem != TY_POLY) ? array_to_poly_fn(tt) : NULL;
       if (want_poly && tr.kind != RK_BOXED) emit_boxed(c, tail, &vb);
+      /* a `then` read as the shared handle (emit_tap_then_expr): the tail's */
+      else if (dest_ty == TY_STRBUF && repr_share_rule(c)) emit_strbuf_handle_of(c, tail, &vb);
       else if (apf) { buf_printf(&vb, "%s(", apf); emit_expr(c, tail, &vb); buf_puts(&vb, ")"); }
       else emit_expr(c, tail, &vb);
       emit_indent(g_pre, bi);
@@ -7957,6 +7959,30 @@ int kwh_out_of_order(Compiler *c, Scope *m, int kwh) {
   return 0;
 }
 
+/* Bind node v to its value temp _t<t> (its uses read the temp), with th
+   the temp holding its shared handle, or -1 (ran_first_handle answers it).
+   A handle that is itself the value is t == th. */
+void ran_first_bind(int v, int t, int th) {
+  /* every argument, however many: past the table's first MAX_ARG_OVERRIDE
+     entries the rest never ran where a static check refuses the call, or ran
+     at their slots, after the ones that follow them */
+  argov_reserve();
+  int k = 0;
+  for (int j = 0; j < g_n_ran_hnd; j++)
+    if (g_ran_hnd[j].idx < g_n_argov) g_ran_hnd[k++] = g_ran_hnd[j];
+  g_n_ran_hnd = k;
+  if (th >= 0) {
+    if (g_n_ran_hnd == g_cap_ran_hnd) {
+      g_cap_ran_hnd = g_cap_ran_hnd ? g_cap_ran_hnd * 2 : 16;
+      RanHandle *nr = realloc(g_ran_hnd, sizeof *g_ran_hnd * (size_t)g_cap_ran_hnd);
+      if (!nr) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      g_ran_hnd = nr;
+    }
+    g_ran_hnd[g_n_ran_hnd++] = (RanHandle){ g_n_argov, v, t, th };
+  }
+  view_bind(v, "_t%d", t);
+}
+
 /* The value `v` evaluated into a rooted temp in g_pre, pushed onto the
    g_argov overrides so its uses read the temp. */
 static void emit_arg_temp(Compiler *c, int v) {
@@ -7998,24 +8024,7 @@ static void emit_arg_temp(Compiler *c, int v) {
   else if (needs_root(at)) buf_printf(g_pre, " SP_GC_ROOT(_t%d);", t);
   buf_puts(g_pre, "\n");
   free(hb.p);
-  /* every argument, however many: past the table's first MAX_ARG_OVERRIDE
-     entries the rest never ran where a static check refuses the call, or ran
-     at their slots, after the ones that follow them */
-  argov_reserve();
-  int k = 0;
-  for (int j = 0; j < g_n_ran_hnd; j++)
-    if (g_ran_hnd[j].idx < g_n_argov) g_ran_hnd[k++] = g_ran_hnd[j];
-  g_n_ran_hnd = k;
-  if (th >= 0) {
-    if (g_n_ran_hnd == g_cap_ran_hnd) {
-      g_cap_ran_hnd = g_cap_ran_hnd ? g_cap_ran_hnd * 2 : 16;
-      RanHandle *nr = realloc(g_ran_hnd, sizeof *g_ran_hnd * (size_t)g_cap_ran_hnd);
-      if (!nr) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-      g_ran_hnd = nr;
-    }
-    g_ran_hnd[g_n_ran_hnd++] = (RanHandle){ g_n_argov, v, t, th };
-  }
-  view_bind(v, "_t%d", t);
+  ran_first_bind(v, t, th);
 }
 
 /* See codegen_internal.h. */
