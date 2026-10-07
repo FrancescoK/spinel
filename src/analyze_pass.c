@@ -1313,6 +1313,7 @@ static int lv_widen(LocalVar *lv, TyKind t) {
 int reconcile_locals_reading_ivars(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
+  LocalVar **widened = NULL; int nwidened = 0, cwidened = 0;
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
     if (!ty || !sp_streq(ty, "LocalVariableWriteNode")) continue;
@@ -1338,12 +1339,33 @@ int reconcile_locals_reading_ivars(Compiler *c) {
       const char *rnm = nt_str(nt, val_id, "name");
       int ra = nt_ref(nt, val_id, "arguments"); int rac = 0;
       if (ra >= 0) nt_arr(nt, ra, "arguments", &rac);
-      if (!rnm || rac != 0 || nt_ref(nt, val_id, "block") >= 0) continue;
+      if (!rnm || nt_ref(nt, val_id, "block") >= 0) continue;
       if (rcv >= 0 && !(nt_type(nt, rcv) && sp_streq(nt_type(nt, rcv), "SelfNode"))) continue;
       Scope *sc = comp_scope_of(c, val_id);
       int cls = sc ? sc->class_id : -1;
       int rdcls = -1;
-      if (cls < 0 || !comp_reader_in_chain(c, cls, rnm, &rdcls)) continue;
+      /* ... and so does a method of the program called on self: the late
+         ivar widening re-derives the returns of the methods that answer the
+         ivar (`def current_row = (@bits if @row_ready)`), and a local
+         assigned one (`bits = current_row`) kept the Integer it was typed
+         with, nil reaching it as the sentinel that then read as a number */
+      if (cls >= 0 && !comp_reader_in_chain(c, cls, rnm, NULL)) {
+        int mi = comp_self_call_mi(c, val_id, rnm);
+        TyKind rt = mi >= 0 ? c->scopes[mi].ret : TY_UNKNOWN;
+        if (rt == TY_UNKNOWN || rt == TY_VOID) continue;
+        if (lv_widen(lv, rt)) {
+          changed = 1;
+          if (nwidened == cwidened) {
+            cwidened = cwidened ? cwidened * 2 : 8;
+            LocalVar **nw = (LocalVar **)realloc(widened, sizeof *nw * (size_t)cwidened);
+            if (!nw) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+            widened = nw;
+          }
+          widened[nwidened++] = lv;
+        }
+        continue;
+      }
+      if (rac != 0 || cls < 0 || !comp_reader_in_chain(c, cls, rnm, &rdcls)) continue;
       if (rdcls < 0 || rdcls >= c->nclasses) continue;
       const char *rn2 = comp_resolve_alias(c, cls, rnm);
       char ivn2[300]; snprintf(ivn2, sizeof ivn2, "@%s", rn2 ? rn2 : rnm);
@@ -1354,6 +1376,38 @@ int reconcile_locals_reading_ivars(Compiler *c) {
     if (ivt == TY_UNKNOWN) continue;
     if (lv_widen(lv, ivt)) changed = 1;
   }
+  /* A parameter typed from a local the rule above has just widened keeps
+     the scalar it was typed with: `hit(x, bits)` with `bits` now boxed read
+     the box through the Integer slot, nil as the sentinel, which the callee
+     then handed on as a number. Widen it to the local's type, as a call site
+     passing a boxed value would have. */
+  if (nwidened) NT_FOREACH_KIND(nt, NK_CallNode, cid) {
+    const char *cnm = nt_str(nt, cid, "name");
+    int rcv = nt_ref(nt, cid, "receiver");
+    if (!cnm || (rcv >= 0 && nt_kind(nt, rcv) != NK_SelfNode)) continue;
+    int ca = nt_ref(nt, cid, "arguments"); int can = 0;
+    const int *cav = ca >= 0 ? nt_arr(nt, ca, "arguments", &can) : NULL;
+    if (!cav) continue;
+    int mi = comp_self_call_mi(c, cid, cnm);
+    if (mi < 0) continue;
+    Scope *m = &c->scopes[mi];
+    Scope *cs = comp_scope_of(c, cid);
+    for (int k = 0; k < can && k < m->nparams; k++) {
+      int a = cav[k];
+      if (nt_kind(nt, a) != NK_LocalVariableReadNode) continue;
+      const char *anm = nt_str(nt, a, "name");
+      LocalVar *alv = anm && cs ? scope_local(comp_scope_of(c, a), anm) : NULL;
+      int was_widened = 0;
+      for (int w = 0; w < nwidened && !was_widened; w++) was_widened = widened[w] == alv;
+      if (!alv || !was_widened || alv->type != TY_POLY) continue;
+      if (m->rest_idx >= 0 && k >= m->rest_idx) break;
+      LocalVar *plv = m->pnames[k] ? scope_local(m, m->pnames[k]) : NULL;
+      if (!plv || plv->rbs_seeded || plv->is_block_param) continue;
+      if (!(plv->type == TY_INT || plv->type == TY_FLOAT || plv->type == TY_BOOL || plv->type == TY_SYMBOL)) continue;
+      if (lv_widen(plv, TY_POLY)) changed = 1;
+    }
+  }
+  free(widened);
   return changed;
 }
 
