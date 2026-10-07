@@ -4059,9 +4059,9 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
         snprintf(g_ren_from[g_nren], sizeof g_ren_from[0], "%s", sbn);
         snprintf(g_ren_to[g_nren], sizeof g_ren_to[0], "_sb%d", tH);
         g_nren++;
-        TyKind sv_ty = shlv->type; shlv->type = TY_STRING;
+        SbShimSave sv_sh = sb_shim_enter(shlv);
         int handled = emit_array_call(c, id, &armb);
-        shlv->type = sv_ty;
+        sb_shim_leave(shlv, sv_sh);
         g_nren--;
         view_unbind(mark);
         if (!handled) { free(armb.p); free(pre.p); }
@@ -8276,9 +8276,9 @@ static int emit_scalar_call_arms(Compiler *c, int id, Buf *b) {
         snprintf(g_ren_from[g_nren], sizeof g_ren_from[0], "%s", sbn);
         snprintf(g_ren_to[g_nren], sizeof g_ren_to[0], "_sb%d", tH);
         g_nren++;
-        TyKind sv_ty = shlv->type; shlv->type = TY_STRING;
+        SbShimSave sv_sh = sb_shim_enter(shlv);
         int handled = emit_scalar_call(c, id, &armb);
-        shlv->type = sv_ty;
+        sb_shim_leave(shlv, sv_sh);
         g_nren--;
         if (!handled) { free(armb.p); }
         else {

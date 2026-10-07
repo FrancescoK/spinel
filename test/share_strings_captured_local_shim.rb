@@ -99,6 +99,63 @@ def param_proc_in_argument(s)
 end
 param_proc_in_argument(+"abcdef")
 
+# an inlined method inside the argument, with a local of the receiver's own
+# name that its own lambda or fiber captures: not the receiver's slot
+def yield_lambda(n)
+  s = "h#{n}"
+  f = -> { s + "!" }
+  yield f.call
+end
+
+def yield_fiber(n)
+  s = "k#{n}"
+  f = Fiber.new { Fiber.yield s + "?" }
+  yield f.resume.to_s
+end
+
+def inlined_same_name
+  s = +"abcdef"
+  u = s
+  g = -> { s }
+  s[0] = (r = +""; yield_lambda(1) { |v| r << v }; r)
+  s[1] = (r = +""; yield_fiber(2) { |v| r << v }; r)
+  p s, u, g.call
+end
+inlined_same_name
+
+# the argument changes the String through the captured cell, with a shim of
+# its own inside a lambda: the shim reads the String after the argument ran,
+# so the change is kept, and the later shims see the local as before
+def cell_change_in_argument
+  s = +"abcdef"
+  u = s
+  f = -> { s[2] = "Z"; "6" }
+  s[0] = s[4]
+  s[1] = f.call
+  p s, u
+  s[0] = (g = -> { s[3] = "W"; s.size.to_s }; g.call)
+  p s, u
+  s.insert(0, (h = -> { s[2] = "Y"; "I" }; h.call))
+  s[1] = (k = -> { s.size.to_s }; k.call)
+  p s, u
+  s[0, 2] = (m = -> { s[3] = "V"; "T" }; m.call)
+  s.slice!((q = -> { s.insert(1, "Q"); 0 }; q.call))
+  s[1] = (r = -> { s[0] }; r.call)
+  p s, u
+end
+cell_change_in_argument
+
+# a lambda in the argument that runs nothing there is made while the shim
+# works on its shadow, and still captures the local's cell
+def lambda_left_in_argument
+  s = +"abcdef"
+  u = s
+  s[0] = (-> { s }; "Z")
+  s.insert(1, (proc { s }; "W"))
+  p s, u
+end
+lambda_left_in_argument
+
 # at top level
 t = +"abcde"
 u = t

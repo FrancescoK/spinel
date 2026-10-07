@@ -15712,9 +15712,9 @@ static int str_mutate_shared_arms(Compiler *c, int id, Buf *b, int indent, const
       snprintf(g_ren_from[g_nren], sizeof g_ren_from[0], "%s", sbn);
       snprintf(g_ren_to[g_nren], sizeof g_ren_to[0], "_sb%d", tH);
       g_nren++;
-      TyKind sv_ty = shlv->type; shlv->type = TY_STRING;
+      SbShimSave sv_sh = sb_shim_enter(shlv);
       int handled = emit_array_mutate_stmt(c, id, &armb, indent + 1);
-      shlv->type = sv_ty;
+      sb_shim_leave(shlv, sv_sh);
       g_nren--;
       view_unbind(mark);
       if (!handled) { free(armb.p); free(pre.p); }
