@@ -3887,14 +3887,20 @@ scale-test: $(SPINEL_WORK)
 	sh test/scale/call_shapes.sh 25 > "$$tmp/s1.rb"; sh test/scale/call_shapes.sh 100 > "$$tmp/s4.rb"; \
 	sa=$$(sw -c -o "$$tmp/s1.c" "$$tmp/s1.rb") || { rm -rf "$$tmp"; exit 1; }; \
 	sb=$$(sw -c -o "$$tmp/s4.c" "$$tmp/s4.rb") || { rm -rf "$$tmp"; exit 1; }; \
+	sh test/scale/pivs_aliases.sh 64 > "$$tmp/p64.rb"; sh test/scale/pivs_aliases.sh 128 > "$$tmp/p128.rb"; \
+	pa=$$(sw -c -o "$$tmp/p64.c" "$$tmp/p64.rb") || { rm -rf "$$tmp"; exit 1; }; \
+	pb=$$(sw -c -o "$$tmp/p128.c" "$$tmp/p128.rb") || { rm -rf "$$tmp"; exit 1; }; \
 	( ulimit -t 20; $(SPINEL_WORK) -c -o "$$tmp/hls.c" test/scale/hash_literal_sources_fanout.rb ) >/dev/null 2>&1 || \
 	  { rm -rf "$$tmp"; echo "scale-test: FAIL (the hash-literal source walk revisited call sites along every path)"; exit 1; }; \
 	sh test/scale/ie_forward_chain.sh 2 > "$$tmp/f2.rb"; sh test/scale/ie_forward_chain.sh 4 > "$$tmp/f4.rb"; \
 	fa=$$(sw -c -o "$$tmp/f2.c" "$$tmp/f2.rb") || { rm -rf "$$tmp"; exit 1; }; \
 	fb=$$(sw -c -o "$$tmp/f4.c" "$$tmp/f4.rb") || { rm -rf "$$tmp"; exit 1; }; \
 	rm -rf "$$tmp"; \
-	if [ -z "$$wa" ] || [ -z "$$wb" ] || [ -z "$$fa" ] || [ -z "$$fb" ] || \
+	if [ -z "$$wa" ] || [ -z "$$wb" ] || [ -z "$$fa" ] || [ -z "$$fb" ] || [ -z "$$pa" ] || [ -z "$$pb" ] || \
 	   [ -z "$$ca" ] || [ -z "$$cb" ] || [ -z "$$sa" ] || [ -z "$$sb" ]; then echo "scale-test: FAIL (the counting compiler reported no work count)"; exit 1; fi; \
+	awk -v a="$$pa" -v b="$$pb" 'BEGIN { r = b / a; \
+	  printf "scale-test: boxed-receiver alias work at 2x the writes is %.2fx (limit 2.20)\n", r; exit (r > 2.20) }' || \
+	  { echo "scale-test: FAIL (the boxed-receiver walk revisited local writes along every alias path)"; exit 1; }; \
 	awk -v a="$$fa" -v b="$$fb" -v lim="$(IE_FORWARD_LIMIT)" 'BEGIN { r = b / a; \
 	  printf "scale-test: instance_eval forwarding work at 2x the wrappers is %.2fx (limit %.2f)\n", r, lim; exit (r > lim) }' || \
 	  { echo "scale-test: FAIL (the instance_eval forwarding walk grew superlinearly in the wrapper classes, see build_ie_map)"; exit 1; }; \
