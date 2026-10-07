@@ -20207,6 +20207,13 @@ static int lift_poly_alias_reads(Compiler *c, const HandleArgTab *hat) {
           v = bn == 1 ? bb[0] : -1;
           continue;
         }
+        /* With the sharing rule, +x aliases a mutable String. The emitted
+           sp_poly_uplus still copies a frozen receiver after it is lifted. */
+        if (c->share_strings && vk == NK_CallNode && nt_str(nt, v, "name") &&
+            is_unary_plus(nt_str(nt, v, "name")) && nt_ref(nt, v, "arguments") < 0) {
+          v = nt_ref(nt, v, "receiver");
+          continue;
+        }
         if (vk == NK_InstanceVariableReadNode && v != w) {
           poly = comp_ntype(c, v) == TY_POLY;
           break;
