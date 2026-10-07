@@ -1417,6 +1417,7 @@ int strbuf_self_route_slot(Compiler *c, int v, int *uplus, char *out, size_t cap
   return (xk == NK_LocalVariableReadNode || xk == NK_InstanceVariableReadNode || repr_static_read_kind(xk)) &&
          strbuf_slot_ref(c, unwrap_parens(c, x), out, cap);
 }
+static int strbuf_route_exc_message(Compiler *c, int v);
 /* Is the last statement of statement list st a holder's read, nil, a
    conditional with a handle arm, or a `raise` (which leaves no value)? */
 static int strbuf_stmts_tail_plain(Compiler *c, int st) {
@@ -1428,9 +1429,11 @@ static int strbuf_stmts_tail_plain(Compiler *c, int st) {
   if (nm && is_raise_alias(nm) && nt_ref(c->nt, b[n - 1], "receiver") < 0 &&
       !bare_call_class_owned(c, b[n - 1]) && comp_method_index(c, nm) < 0)
     return 1;
+  /* an exception's #message hands on the handle it holds too
+     (strbuf_route_exc_message): `begin; raise s; rescue => e; e.message; end` */
   return k == NK_NilNode || k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode ||
          repr_static_read_kind(k) || strbuf_cond_has_handle_leaf(c, b[n - 1], 0) ||
-         strbuf_route_handle_call(c, b[n - 1]);
+         strbuf_route_handle_call(c, b[n - 1]) || strbuf_route_exc_message(c, b[n - 1]);
 }
 /* --share-strings: a begin whose value is a variable's String or nil in
    each of its arms (its body's, each rescue's, its else's; an ensure's is
