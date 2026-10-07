@@ -52,6 +52,12 @@ typedef struct ShareFacts {
   int *ret_m, *ret_v, nret, cret;
   unsigned char *ret_done;
   unsigned char *unused;   /* per node: a statement whose value is dropped */
+  /* the methods the default build may lend a parameter's slot
+     (an_byref_eligible_scopes), and per method scope, the parameters it
+     passes by value (byval), once asked (byval_done) */
+  char *byref_elig;
+  int own_elig;        /* byref_elig is this build's own, not c->byref_elig */
+  unsigned *byval, *byval_done;
   /* the mutation sites, for SPINEL_SHARE_STATS=3: node, value */
   int *mut_n, *mut_v, nmut, cmut;
   int *hcount;         /* per root, once built: holders storing a String */
@@ -1655,8 +1661,27 @@ static int sh_val(ShareFacts *F, Compiler *c, int n) {
 
 /* ---- lending ---- */
 
+/* Does the default build pass String parameter lv of method scope mi by
+   value (an_byref_param_by_value): an aliased method's, a Struct's, or one
+   whose name another method keeps on the value ABI? Asked once per method. */
+static int sh_param_by_value(ShareFacts *F, Compiler *c, int mi, const LocalVar *lv) {
+  Scope *m = &c->scopes[mi];
+  int pi = -1;
+  for (int j = 0; j < m->nparams && pi < 0; j++)
+    if (m->pnames[j] && sp_streq(m->pnames[j], lv->name)) pi = j;
+  if (pi < 0) return 0;
+  if (pi >= 32) return an_byref_param_by_value(c, F->byref_elig, mi, pi);
+  if (!(F->byval_done[mi] & (1u << pi))) {
+    F->byval_done[mi] |= 1u << pi;
+    if (an_byref_param_by_value(c, F->byref_elig, mi, pi)) F->byval[mi] |= 1u << pi;
+  }
+  return (F->byval[mi] >> pi) & 1;
+}
+
 /* A parameter its method only reads and mutates: no write, nothing else in
-   its class, not captured by a proc that can outlive the call. */
+   its class, not captured by a proc that can outlive the call. A String
+   parameter the default build passes by value has no slot to lend: a change
+   through it reaches the caller only as the shared handle. */
 static int sh_lendable(ShareFacts *F, Compiler *c, int p) {
   int hi = F->hidx[p];
   if (hi < 0 || F->h[hi].kind != SHK_LOCAL) return 0;
@@ -1665,6 +1690,7 @@ static int sh_lendable(ShareFacts *F, Compiler *c, int p) {
   if (!lv->is_param || lv->is_block_param || lv->cell_outlives) return 0;
   if (lv->type != TY_STRING && lv->type != TY_STRBUF) return 0;
   if (F->own[p] & SHE_WRITTEN) return 0;
+  if (lv->type == TY_STRING && sh_param_by_value(F, c, F->h[hi].scope, lv)) return 0;
   int r = sh_find(F, p);
   return F->nmem[r] == 1 && !(F->flags[r] & SHF_UNKNOWN);
 }
@@ -1874,6 +1900,8 @@ static void sh_free(ShareFacts *F) {
   free(F->owner); free(F->hcount); free(F->anchored); free(F->mconst);
   free(F->mut_n); free(F->mut_v);
   free(F->lsc); free(F->ret_m); free(F->ret_v); free(F->ret_done); free(F->unused);
+  if (F->own_elig) free(F->byref_elig);
+  free(F->byval); free(F->byval_done);
   free(F->kind); free(F->flags); free(F->own);
   free(F->h); free(F->helem); free(F->bucket); free(F->hnext); free(F->nval);
   free(F->lend_arg); free(F->lend_par); free(F->lend_direct); free(F->lend_done);
@@ -2067,6 +2095,19 @@ static ShareFacts *sh_build(Compiler *c, int closed) {
   for (int i = 0; i < F->nnodes; i++) F->nval[i] = -2;
   sh_mutable_consts(F, c);
   F->unused = calloc((size_t)(F->nnodes > 0 ? F->nnodes : 1), 1);
+  size_t ns = (size_t)(c->nscopes > 0 ? c->nscopes : 1);
+  /* the default build's answer once compute_byref_out_params has given it,
+     else this build's own: the types still move until then */
+  int kept = c->byref_elig && c->nbyref_elig == c->nscopes;
+  F->byref_elig = kept ? c->byref_elig : malloc(ns);
+  F->own_elig = !kept;
+  F->byval = calloc(ns, sizeof(unsigned));
+  F->byval_done = calloc(ns, sizeof(unsigned));
+  if (!F->unused || !F->byref_elig || !F->byval || !F->byval_done) {
+    fprintf(stderr, "spinel: out of memory\n");
+    exit(1);
+  }
+  if (!kept) an_byref_eligible_scopes(c, F->byref_elig);
   NT_FOREACH_KIND(nt, NK_StatementsNode, st) {
     int bn = 0; const int *bv = nt_arr(nt, st, "body", &bn);
     for (int i = 0; i + 1 < bn; i++) sh_mark_unused(F, nt, bv[i]);
