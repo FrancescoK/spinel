@@ -56,3 +56,15 @@ tot = 0
 50.times { tot += String(s.then { |v| v + "zz" * 50 }).setbyte(ix, vx) }
 50.times { (+fz) << ix.to_s * 300 }
 p tot, fz
+def al(x)
+  t = +x
+  t << "!"
+  t
+end
+p al(+"k")
+[-> { al(ENV["SPINEL_NO_SUCH_VARIABLE_X"]) }, -> { al("abc"[10, 2]) }].each do |l|
+  l.call
+  p :no_error
+rescue NoMethodError => e
+  p e.class
+end
