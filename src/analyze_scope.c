@@ -7569,6 +7569,35 @@ static int pivs_local(Compiler *c, int v, char *set, int depth, int elems) {
   }
   return 1;
 }
+/* Does write or target `w` name the ivar `vn` of class `key`, or, rk a
+   global read, the global `vn` (its alias resolved)? */
+static int pivs_names_var(Compiler *c, int w, NodeKind rk, const char *vn, int key) {
+  const char *wn = nt_str(c->nt, w, "name");
+  if (!wn) return 0;
+  if (rk == NK_GlobalVariableReadNode) return wn[0] == '$' && sp_streq(comp_resolve_gvar(c, wn + 1), vn);
+  return comp_ivar_owner(c, w) == key && sp_streq(wn, vn);
+}
+/* What the variable an ivar or global read `rk` names can hold: the values
+   of its writes, each a plain `=`. 0 when another store reaches it or none
+   is in sight. */
+static int pivs_var_stores(Compiler *c, NodeKind rk, const char *vn, int key, char *set, int depth) {
+  const NodeTable *nt = c->nt;
+  int glob = rk == NK_GlobalVariableReadNode, saw = 0;
+  /* The variable-site index omits operator writes and multiple-assignment targets. */
+  const NodeKind ks[] = { glob ? NK_GlobalVariableOperatorWriteNode : NK_InstanceVariableOperatorWriteNode,
+                          glob ? NK_GlobalVariableTargetNode : NK_InstanceVariableTargetNode };
+  for (int k = 0; k < 2; k++)
+    for (int w = comp_kind_first(c, ks[k]); w >= 0; w = comp_kind_next(c, w))
+      if (pivs_names_var(c, w, rk, vn, key)) return 0;
+  for (int e = comp_vsite_first(c, VS_STORE, rk, vn, key); e >= 0; e = comp_vsite_next(c, e)) {
+    int w = comp_vsite_var(c, e);
+    if (!pivs_names_var(c, w, rk, vn, key)) continue;
+    if (nt_kind(nt, w) != (glob ? NK_GlobalVariableWriteNode : NK_InstanceVariableWriteNode) ||
+        !pivs_value(c, nt_ref(nt, w, "value"), set, depth + 1)) return 0;
+    saw = 1;
+  }
+  return saw;
+}
 static int pivs_branches(Compiler *c, int v, char *set, int depth, int elems) {
   const NodeTable *nt = c->nt;
   int (*f)(Compiler *, int, char *, int) = elems ? pivs_elems : pivs_value;
@@ -7593,21 +7622,16 @@ static int pivs_branches(Compiler *c, int v, char *set, int depth, int elems) {
     case NK_InstanceVariableReadNode: {
       if (!c->pivs->hash_mode || elems) return 0;
       const char *vn = nt_str(nt, v, "name");
-      int ci = comp_ivar_owner(c, v), saw = 0;
+      int ci = comp_ivar_owner(c, v);
       if (ci < 0 || !vn || pivs_ix_first(c, PX_SYMBOL, vn) >= 0) return 0;
       if (comp_is_writer(&c->classes[ci], vn + 1) || comp_is_sg_writer(&c->classes[ci], vn + 1)) return 0;
-      /* The variable-site index omits operator writes and multiple-assignment targets. */
-      const NodeKind ks[] = { NK_InstanceVariableOperatorWriteNode, NK_InstanceVariableTargetNode };
-      for (int k = 0; k < 2; k++)
-        for (int w = comp_kind_first(c, ks[k]); w >= 0; w = comp_kind_next(c, w))
-          if (comp_ivar_owner(c, w) == ci && sp_streq(nt_str(nt, w, "name"), vn)) return 0;
-      for (int e = comp_vsite_first(c, VS_STORE, NK_InstanceVariableReadNode, vn, ci); e >= 0; e = comp_vsite_next(c, e)) {
-        int w = comp_vsite_var(c, e);
-        if (comp_ivar_owner(c, w) != ci || !sp_streq(nt_str(nt, w, "name"), vn)) continue;
-        if (nt_kind(nt, w) != NK_InstanceVariableWriteNode || !f(c, nt_ref(nt, w, "value"), set, depth + 1)) return 0;
-        saw = 1;
-      }
-      return saw;
+      return pivs_var_stores(c, NK_InstanceVariableReadNode, vn, ci, set, depth);
+    }
+    /* a global, its alias resolved, as an ivar */
+    case NK_GlobalVariableReadNode: {
+      if (!c->pivs->hash_mode || elems) return 0;
+      const char *vn = nt_str(nt, v, "name");
+      return vn && pivs_var_stores(c, NK_GlobalVariableReadNode, comp_resolve_gvar(c, vn + 1), -1, set, depth);
     }
     case NK_CallNode: {
       if (!c->pivs->hash_mode) return -1;
