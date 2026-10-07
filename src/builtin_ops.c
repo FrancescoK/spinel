@@ -2851,6 +2851,15 @@ static const BopShareRow bop_share_rows[] = {
   { BOP_CLASS_NEW, "Enumerator", BSH_NEW_YIELDER },
   { BOP_CLASS_NEW, "OpenStruct", BSH_NEW_FIELDS },
 
+  /* File's path methods answer a new String and keep none of their
+     arguments */
+  { BOP_FILE_CLASS, "join",        BSH_PURE },
+  { BOP_FILE_CLASS, "basename",    BSH_PURE },
+  { BOP_FILE_CLASS, "dirname",     BSH_PURE },
+  { BOP_FILE_CLASS, "extname",     BSH_PURE },
+  { BOP_FILE_CLASS, "expand_path", BSH_PURE },
+  { BOP_FILE_CLASS, "absolute_path", BSH_PURE },
+
   /* a proc's, a lambda's or a Method's invocations */
   { BOP_CALLABLE, "call",        BSH_CALL },
   { BOP_CALLABLE, "()",          BSH_CALL },

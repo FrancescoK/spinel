@@ -8167,7 +8167,24 @@ static int call_names_only_void_methods(Compiler *c, int node) {
   }
   return any;
 }
+static void emit_tail_value_1(Compiler *c, int node, Buf *b);
+/* --share-strings: a method a deep-return pickup takes the value of, one of
+   whose tails answers a fresh String (ret_pub_fresh): that tail clears the
+   side channel after its value, which a read of a handle inside it may have
+   published, so the caller wraps the fresh String rather than take that
+   handle */
 static void emit_tail_value(Compiler *c, int node, Buf *b) {
+  Scope *ts = g_ret_type == TY_STRING && !g_result_var ? comp_scope_of(c, node) : NULL;
+  if (!ts || !ts->ret_pub_fresh || !share_node_fresh(c, an_unparen(c->nt, node))) {
+    emit_tail_value_1(c, node, b);
+    return;
+  }
+  int t = ++g_tmp;
+  buf_printf(b, "({ const char *_t%d = ", t);
+  emit_tail_value_1(c, node, b);
+  buf_printf(b, "; _sp_ret_strbuf = NULL; _t%d; })", t);
+}
+static void emit_tail_value_1(Compiler *c, int node, Buf *b) {
   /* A poly tail slot (a poly return, or a poly result var -- e.g. an inlined
      method's result temp) takes the value as-is: do not rewrite a poly
      `sp_box_nil()` into the scalar emit_ret_nil(g_ret_type) form below. */

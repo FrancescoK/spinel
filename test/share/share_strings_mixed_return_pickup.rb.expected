@@ -1,0 +1,10 @@
+"pre!"
+"pre!"
+true
+["pre!"]
+"home/.local/bin?"
+["pre!"]
+"quoted#"
+["pre!", "\"quoted\""]
+"bare$"
+["pre!", "\"quoted\"", "bare$"]
