@@ -10933,11 +10933,24 @@ int desugar_enum_pair_lone_param(Compiler *c) {
    desugar_enum_method_recv puts in front of call `id` answers what the
    block binds, by the flag the Enumerator carries
    (sp_Enumerator_to_a_yielded), and the block is shaped to take that. */
+/* An Enumerator that yields one value per step, a chunk, whatever its
+   block takes: chunk_while, slice_when, chunk, slice_before, slice_after.
+   Its to_a is the chunks themselves, so a block over it binds each chunk
+   as the one value it is (`runs.map { |*r| r }` is [[chunk]], `&:sum`
+   sums the chunk). */
+static int one_value_enum_source(const NodeTable *nt, int hop) {
+  int src = hop >= 0 && nt_kind(nt, hop) == NK_CallNode ? nt_ref(nt, hop, "receiver") : -1;
+  const char *sn = src >= 0 && nt_kind(nt, src) == NK_CallNode ? nt_str(nt, src, "name") : NULL;
+  return sn && (sp_streq(sn, "chunk_while") || sp_streq(sn, "slice_when") || sp_streq(sn, "chunk") ||
+                sp_streq(sn, "slice_before") || sp_streq(sn, "slice_after"));
+}
+
 void enum_hop_yield_view(Compiler *c, int id, int hop) {
   NodeTable *nt = (NodeTable *)c->nt;
   int blk = nt_ref(nt, id, "block");
   const char *nm = nt_str(nt, id, "name");
   if (blk < 0 || !nm || !enum_pair_spread_iter(nm) || enum_pair_source_call(nt, hop)) return;
+  if (one_value_enum_source(nt, hop)) return;
   /* the builtins' own walks (builtins/, `each { |x| yield x }`) hand the
      packed item on as the one value their block takes */
   const char *sn = comp_scope_of(c, id)->name;
