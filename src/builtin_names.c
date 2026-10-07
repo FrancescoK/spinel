@@ -960,3 +960,8 @@ int is_not_op(const char *n) {
 int is_ivar_serializer(const char *n) {
   return sp_streq(n, "Marshal");
 }
+
+/* The call that runs code when an object is collected: define_finalizer */
+int is_finalizer_hook(const char *n) {
+  return sp_streq(n, "define_finalizer");
+}

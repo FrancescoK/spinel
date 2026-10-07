@@ -7476,12 +7476,13 @@ static int nil_writes_apply(Compiler *c, NilWrites *w) {
   return changed;
 }
 
-/* The ivar writes a fresh instance runs before any other method: those in an
-   `initialize` and in the methods it calls on self, as (class, name) pairs. A
-   write of a bare nil leaves the slot nil, so it does not count. */
-static int ctor_scopes_write(Compiler *c, NilWrites *out) {
+/* The scopes a fresh instance runs before any other method: each
+   `initialize` and the methods it calls on self, as a per-scope flag the
+   caller frees. */
+unsigned char *ctor_scope_set(Compiler *c) {
   const NodeTable *nt = c->nt;
   unsigned char *ctor = calloc((size_t)(c->nscopes ? c->nscopes : 1), 1);
+  if (!ctor) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   for (int si = 0; si < c->nscopes; si++) {
     Scope *s = &c->scopes[si];
     if (s->class_id >= 0 && !s->is_cmethod && s->name && sp_streq(s->name, "initialize")) ctor[si] = 1;
@@ -7499,6 +7500,15 @@ static int ctor_scopes_write(Compiler *c, NilWrites *out) {
       ctor[mi] = 1; grew = 1;
     }
   }
+  return ctor;
+}
+
+/* The ivar writes a fresh instance runs before any other method: those in
+   the constructor scopes (ctor_scope_set), as (class, name) pairs. A write of
+   a bare nil leaves the slot nil, so it does not count. */
+static int ctor_scopes_write(Compiler *c, NilWrites *out) {
+  const NodeTable *nt = c->nt;
+  unsigned char *ctor = ctor_scope_set(c);
   static const NodeKind kinds[] = {
     NK_InstanceVariableWriteNode, NK_InstanceVariableOperatorWriteNode,
     NK_InstanceVariableOrWriteNode, NK_InstanceVariableAndWriteNode,

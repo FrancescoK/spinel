@@ -26,6 +26,7 @@ int is_send_family(const char *n);    /* send __send__ public_send */
 int is_bool_comparison(const char *n); /* == != < > <= >= */
 int is_not_op(const char *n); /* ! */
 int is_ivar_serializer(const char *n); /* Marshal */
+int is_finalizer_hook(const char *n); /* define_finalizer */
 int is_ivar_reflection(const char *n); /* instance_variable* remove_instance_variable eval/exec binding */
 int is_named_method_reach(const char *n); /* send family, method, public_method, instance_method */
 int is_opaque_reaching_call(const char *n); /* send family, call, new, lambda/proc, freeze, eval, instance_/class_/module_*, *method* */
