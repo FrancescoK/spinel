@@ -45,3 +45,19 @@ t { p({ a: 2**70, b: :s }.sort_by { |k, v| v }) }
 t { p [Object.new, 2**70].sort_by { |x| x } }
 t { a = [2**70, "a"]; a.sort_by! { |x| x }; p a }
 p [2**70, 1].sort_by { |x| x }, [2**70, 1.5].sort_by { |x| x }, [2**70, 1r / 3].sort_by { |x| x }
+
+# a user <=> answering a Float or a Rational orders by its sign (rb_cmpint)
+class FCmp
+  attr_reader :x
+  def initialize(x) = (@x = x)
+  def <=>(o) = (x - o.x) * 0.5
+  def inspect = "F#{x}"
+end
+p [FCmp.new(3), FCmp.new(1), FCmp.new(2)].sort_by { |v| v }
+class RCmp
+  attr_reader :x
+  def initialize(x) = (@x = x)
+  def <=>(o) = Rational(x - o.x, 3)
+  def inspect = "R#{x}"
+end
+p [RCmp.new(2), RCmp.new(1)].sort_by { |v| v }
