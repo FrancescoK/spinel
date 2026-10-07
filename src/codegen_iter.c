@@ -4312,7 +4312,11 @@ int emit_tap_then_expr(Compiler *c, int id, Buf *b) {
   /* one bound above (hparam) to a variable's handle: its read face, a
      copy, as that variable's own read (a fresh one's String is read as
      below) */
-  if (is_tap && hparam && repr_of(c, id).as_ty == TY_STRING && strbuf_value_carries(c, recv))
+  /* read as the handle (emit_strbuf_route, strbuf_route_tap): the handle
+     itself, which keeps the receiver's frozen mark */
+  if (is_tap && (hparam || et == TY_STRBUF) && repr_share_rule(c) && repr_of(c, id).demand)
+    buf_printf(b, "_t%d", tr);
+  else if (is_tap && hparam && repr_of(c, id).as_ty == TY_STRING && strbuf_value_carries(c, recv))
     buf_printf(b, "sp_strbuf_read_pub(_t%d)", tr);
   else if (is_tap && et == TY_STRBUF && repr_of(c, id).as_ty == TY_STRING)
     buf_printf(b, "(_t%d ? sp_String_cstr(_t%d) : NULL)", tr, tr);

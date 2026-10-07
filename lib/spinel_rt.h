@@ -2650,6 +2650,17 @@ static inline sp_String *sp_poly_as_strbuf(sp_RbVal v) {
   if (sp_poly_nil_p(v)) return NULL;
   return sp_String_new((&("\xff")[1]));
 }
+/* The read face of a frozen handle: a copy that is frozen too (0xfa, a
+   frozen heap String that is collected), so the String read through it,
+   and a handle a consumer wraps around it, keep the frozen mark the
+   handle carries (`inject(s)` over a frozen s answered a String `<<`
+   changed). */
+SP_COLD static const char *sp_strbuf_read_frozen(sp_String *h) {
+  char *r = (char *)sp_str_from_bytes(sp_String_cstr(h), (size_t)sp_String_length(h));
+  if (h->binary) sp_str_mark_binary(r);
+  ((unsigned char *)r)[-1] = 0xfa;
+  return r;
+}
 /* A shared String handle's read face (a copy of its bytes, NULL for nil)
    with the handle published to the deep-return side channel, for a
    program built --share-strings: the call sequences the write, where two
@@ -2657,6 +2668,7 @@ static inline sp_String *sp_poly_as_strbuf(sp_RbVal v) {
    unsequenced writes to the channel. */
 static inline const char *sp_strbuf_read_pub(sp_String *h) {
   _sp_ret_strbuf = (void *)h;
+  if (h && SP_UNLIKELY(sp_String_is_frozen(h))) return sp_strbuf_read_frozen(h);
   return h ? sp_str_concat(sp_String_cstr(h), (&("\xff")[1])) : NULL;
 }
 static inline sp_bool sp_poly_is_strbuf(sp_RbVal v) {
