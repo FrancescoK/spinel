@@ -102,6 +102,7 @@ typedef struct {
 void emit_poly_prearms_n(Compiler *c, const char *name, const PolySpecialsN *ps, const PolyTemps *T, Buf *b);
 void emit_poly_str_aset_prearm(Compiler *c, int recv, const PolySpecialsN *ps, const PolyTemps *T, Buf *b);
 void emit_poly_str_aset_writeback(Compiler *c, int recv, const PolySpecialsN *ps, const PolyTemps *T, Buf *b);
+void emit_poly_str_aset_recv(Compiler *c, int recv, const PolySpecialsN *ps, const int *argv, Buf *b);
 int  emit_poly_prearms_n_blk(Compiler *c, int id, const char *name, const PolySpecialsN *ps, const PolyTemps *T,
                              int *atmp, TyKind *atmp_ty, const PolyKw *kw, const int *htmp, int is_setter_val,
                              int splat_a, int splat_last, int stk, Buf *b);

@@ -80,3 +80,45 @@ bk = ["k", 0][1]
 bq = [+"abc", 1][0]
 bq[bk] = "0"
 p bq
+
+# a key or value that rebinds the receiver changes the String read before
+# it, and the new binding stays; the spliced String goes back only to a
+# variable that still holds the one read
+def dupv(x) = [1, x.dup].last
+r = dupv("abc"); r[(r = dupv("xyz"); 0)] = "Q"; p r
+r = dupv("abc"); r[0] = (r = dupv("xyz"); "Q"); p r
+r = dupv("abc"); r["b"] = (r = dupv("xyz"); "Q"); p r
+r = dupv("abc"); r[(r = dupv("xyz"); "b")] = "Q"; p r
+r = dupv("abc"); r[[1, /c/].last] = (r = dupv("xyz"); "Q"); p r
+r = dupv("abc"); r[(r = dupv("xyz"); [1, 0..1].last)] = "Q"; p r
+r = dupv("abc"); r[(r = [1, :sym].last; 0)] = "Q"; p r
+r = dupv("abc"); r[1] = (r = r; "Q"); p r
+r = dupv("abc"); r["b"] = (r = r; "Q"); p r
+
+# a key or value that mutates the receiver changes it before the store,
+# which lands on the change
+r = dupv("abc"); r[(r[0] = "X"; 1)] = "Y"; p r
+r = dupv("abc"); r[1] = (r[0] = "X"; "Y"); p r
+r = dupv("abc"); r[(r << "d"; 0)] = "Q"; p r
+r = dupv("abc"); r[(r.upcase!; "B")] = "Q"; p r
+g = [1, false].last
+r = dupv("abc"); r[(r = dupv("q") if g; r[0] = "X"; 1)] = "Y"; p r
+def mutate_through_proc
+  r = dupv("abc"); pr = -> { r << "d"; 0 }; r[pr.call] = "Q"; p r
+end
+mutate_through_proc
+class Holder
+  def initialize = (@s = [1, "abc".dup].last; @t = [1, "xyz".dup].last)
+  def bump = (@s[0] = "X"; 1)
+  def run
+    @s[(@s = @t; 0)] = "Q"; p @s
+    @s = [1, "abc".dup].last; @t = [1, "xyz".dup].last
+    @s[1] = (@s = @t; "Q"); p @s
+    @s = [1, "abc".dup].last; @t = [1, "xyz".dup].last
+    @s["c"] = (@s = @t; "Q"); p @s
+    @s = [1, "abc".dup].last; @s[bump] = "Y"; p @s
+    @s = [1, "abc".dup].last; @s[1] = (@s << "d"; "Q"); p @s
+    @s = [1, "abc".dup].last; @s[2] = "Q"; p @s
+  end
+end
+Holder.new.run
