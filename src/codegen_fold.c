@@ -10881,6 +10881,24 @@ int emit_reader_override_dispatch(Compiler *c, int id, int cid, const char *name
 /* An Object, Array, Hash or Numeric reopening: its instance methods take
    `sp_RbVal self` (emit_method_signature), any value, with no struct of the
    class's own to cast it to. */
+/* A read of a parameter its method never assigns. The parameter's own slot
+   holds that value for the whole call and is rooted on entry
+   (emit_scope_decls), so an argument temp copied from it is reachable without
+   a root of its own however much the later arguments allocate. Not a captured
+   one (its cell is the slot), a lent String (a slot's address), a poly
+   array-or-nil one (gc_roots_take_back may drop its root) or a block
+   parameter (a yielding method's is not rooted). */
+static int read_of_fixed_param(Compiler *c, int node) {
+  if (node < 0 || nt_kind(c->nt, node) != NK_LocalVariableReadNode) return 0;
+  const char *nm = nt_str(c->nt, node, "name");
+  Scope *s = nm ? comp_scope_of(c, node) : NULL;
+  LocalVar *lv = s ? scope_local(s, nm) : NULL;
+  if (!lv || !lv->is_param || lv->is_cell || lv->byref_out || lv->arr_or_nil ||
+      lv->type == TY_PROC || (s->blk_param && sp_streq(s->blk_param, nm)))
+    return 0;
+  return s->def_node >= 0 && !subtree_writes_local(c, s->def_node, nm);
+}
+
 static int reopen_takes_boxed_self(Compiler *c, int cid) {
   const char *cn = cid >= 0 ? c->classes[cid].c_name : NULL;
   return cn && (sp_streq(cn, "Object") || sp_streq(cn, "Array") ||
@@ -11330,8 +11348,13 @@ else {
         buf_printf(g_pre, " _t%d = ", atmp[k]);
         buf_puts(g_pre, ab.p ? ab.p : ""); buf_puts(g_pre, ";\n");
         /* Root heap-typed arg temps: evaluating a later argument may allocate
-           and collect an earlier one still sitting in its temp. */
-        if (att == TY_POLY) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_t%d);\n", atmp[k]); }
+           and collect an earlier one still sitting in its temp. A copy of a
+           parameter nothing reassigns is held by the parameter's own root:
+           Interp#visit passed its env on through a pushed and popped root at
+           every recursive call. */
+        int held = provided >= 0 && repr_of(c, provided).as_ty == att && read_of_fixed_param(c, provided);
+        if (held) {}
+        else if (att == TY_POLY) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_t%d);\n", atmp[k]); }
         else if (needs_root(att)) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", atmp[k]); }
       }
       if (pd_active && pm->pnames[k] && g_nren < MAX_RENAME) {
