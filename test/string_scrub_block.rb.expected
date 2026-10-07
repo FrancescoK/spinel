@@ -1,0 +1,22 @@
+"ab<ff>cd<fe><fd>e"
+"ab?cd??e"
+"ab1cd11e"
+"abc"
+""
+"\"\\xFF\""
+"a<2>b"
+"a<f09f98>b<c0><af>c<ed><a0><80>"
+"636166c3a92021"
+"ab_cd__e"
+"ab1cd23e"
+3
+"a?b"
+"61efbfbd"
+"a**c"
+"a?b??c???"
+ArgumentError: both of block and replacement given
+TypeError: no implicit conversion of Integer into String
+TypeError: no implicit conversion of nil into String
+ArgumentError: replacement must be valid byte sequence '"\xFF"'
+ArgumentError: replacement must be valid byte sequence '"\xFE"'
+"abc"

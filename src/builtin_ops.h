@@ -137,6 +137,7 @@ typedef enum {
   BOPE_FLOAT_RATIONALIZE,
   BOPE_STRING_SCAN_CHECKED,
   BOPE_STRING_SLICE,     /* String#slice!: lvalue and pattern-dependent */
+  BOPE_STRING_SCRUB_BLOCK, /* String#scrub with a block */
   BOPE__COUNT
 } BopEmit;
 
