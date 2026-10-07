@@ -1591,14 +1591,19 @@ static int sh_native_new(ShareFacts *F, Compiler *c, int n, int cid) {
    that changes the String the object keeps marks it, one that answers it
    answers it. The change is made through the object, which need not be
    named again (`StringIO.new(s).write(x)`), so no other holder of the
-   String's class is needed for it to be seen (SHF_INDIRECT). What the
-   method is handed joins UNKNOWN, as for any call the walk does not
-   follow. -2 for a method that declares nothing. */
-static int sh_native_call(ShareFacts *F, Compiler *c, int n, int cid, const char *name, int argc, int rv, int blk) {
+   String's class is needed for it to be seen (SHF_INDIRECT). One that
+   answers a new String answers no value a holder shares (-1, as a pure
+   builtin does). What the method
+   is handed joins UNKNOWN, as for any call the walk does not follow. A
+   call on self (`on_self`, in the package's own Ruby methods) takes only
+   the new String. -2 for a method that declares nothing. */
+static int sh_native_call(ShareFacts *F, Compiler *c, int n, int cid, const char *name, int argc, int rv, int blk,
+                          int on_self) {
   int nm = comp_native_method_find(c, cid, name, argc, 0);
   unsigned sh = nm >= 0 ? c->native_methods[nm].share : 0;
-  if (!sh) return -2;
+  if (!sh || (on_self && !(sh & NSH_FRESH))) return -2;
   int u = sh_unknown_call(F, c, n, blk);
+  if (sh & NSH_FRESH) return -1;
   if (sh & NSH_CHANGES) sh_mark_at(F, sh_elem(F, rv), SHF_MUT | SHF_INDIRECT, n);
   return sh & NSH_ANSWERS ? sh_elem(F, rv) : u;
 }
@@ -1922,9 +1927,11 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
     }
   }
 
-  /* a native class's method (its binding's `native_share`) */
-  if (ty_is_object(rt) && c->classes[ty_object_class(rt)].is_native_class) {
-    int r = sh_native_call(F, c, n, ty_object_class(rt), name, argc, rv, blk);
+  /* a native class's method (its binding's `native_share`), on an object
+     or, in the package's own Ruby methods, on self */
+  int ncid = ty_is_object(rt) ? ty_object_class(rt) : recv < 0 ? sh_ivar_owner(c, n) : -1;
+  if (ncid >= 0 && ncid < c->nclasses && c->classes[ncid].is_native_class) {
+    int r = sh_native_call(F, c, n, ncid, name, argc, rv, blk, !ty_is_object(rt));
     if (r != -2) return r;
   }
   /* a Lazy (`a.lazy.map { }`, held in a variable or not) has no type of

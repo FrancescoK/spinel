@@ -749,7 +749,8 @@ enum {
   NSH_KEEPS   = 1,   /* a constructor: the object keeps its first String
                         argument, or with none a String of its own */
   NSH_ANSWERS = 2,   /* answers the String the object keeps */
-  NSH_CHANGES = 4    /* changes the String the object keeps */
+  NSH_CHANGES = 4,   /* changes the String the object keeps */
+  NSH_FRESH   = 8    /* answers a new String, one no other name holds */
 };
 /* Whether a binding accepts a call of argc positional arguments. */
 static inline int native_takes(const NativeMethod *m, int argc) {

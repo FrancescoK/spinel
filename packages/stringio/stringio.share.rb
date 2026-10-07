@@ -8,8 +8,9 @@ module StringIOPackage
   #   native_share "name", [arg_specs], "kind"[, "csym"]   (or "name",
   #   "kind" for every binding of the name; "new" names the constructors):
   #   kind "keeps" (a constructor's object keeps its first String argument,
-  #   or a String of its own), "answers" (answers the String kept) or
-  #   "changes" (changes it); csym is the form taking or answering that
+  #   or a String of its own), "answers" (answers the String kept),
+  #   "changes" (changes it) or "fresh" (answers a new String, one no other
+  #   name holds); csym is the form taking or answering that
   #   String as its shared handle (sp_String *). The handle forms are used
   #   only where the analysis shares the String. Strings, not Symbols: a
   #   binding's Symbols join the program's own.
@@ -24,4 +25,8 @@ module StringIOPackage
   native_share "print",    "changes"
   native_share "putc",     "changes"
   native_share "truncate", "changes"
+  # read and read(length) answer a new String (read(length, buffer) answers
+  # the buffer)
+  native_share "read",     [],                 "fresh"
+  native_share "read",     [:int],             "fresh"
 end

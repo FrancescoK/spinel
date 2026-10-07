@@ -3584,12 +3584,12 @@ static void bare_native_func_calls(Compiler *c) {
   }
 }
 
-/* A `native_share` kind word ("keeps", "answers", "changes", as a
-   package's <name>.share.rb spells it): its NSH_* bit, or 0 */
+/* A `native_share` kind word ("keeps", "answers", "changes", "fresh", as
+   a package's <name>.share.rb spells it): its NSH_* bit, or 0 */
 static unsigned native_share_kind(const char *kind) {
-  static const char *const words[] = { "keeps", "answers", "changes" };
-  static const unsigned bits[] = { NSH_KEEPS, NSH_ANSWERS, NSH_CHANGES };
-  for (int i = 0; kind && i < 3; i++)
+  static const char *const words[] = { "keeps", "answers", "changes", "fresh" };
+  static const unsigned bits[] = { NSH_KEEPS, NSH_ANSWERS, NSH_CHANGES, NSH_FRESH };
+  for (int i = 0; kind && i < 4; i++)
     if (strcmp(kind, words[i]) == 0) return bits[i];
   return 0;
 }
