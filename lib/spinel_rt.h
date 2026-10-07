@@ -2620,6 +2620,8 @@ static inline sp_RbVal sp_poly_strbuf_deref(sp_RbVal v) {
 static inline sp_String *sp_poly_as_strbuf(sp_RbVal v) {
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_STRBUF) return (sp_String *)v.v.p;
   if (v.tag == SP_TAG_STR && v.v.s) return sp_String_new_fresh(v.v.s);
+  /* A boxed nil stays the slot's NULL, as an omitted String argument does. */
+  if (sp_poly_nil_p(v)) return NULL;
   return sp_String_new((&("\xff")[1]));
 }
 /* A shared String handle's read face (a copy of its bytes, NULL for nil)
