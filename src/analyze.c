@@ -20077,9 +20077,15 @@ static int mark_reader_identity_operands(Compiler *c) {
    multiple assignment or an operator write, and a chain deeper than a few
    variables. */
 static int poly_var_may_hold_string(Compiler *c, const HandleArgTab *hat,
-                                    const char *vn, Scope *vs, int depth);
-static int poly_value_may_be_string(Compiler *c, const HandleArgTab *hat, int v, int depth) {
+                                    const char *vn, Scope *vs, int depth, const PolyLits *lits);
+static int poly_lit_may_be_string(Compiler *c, const HandleArgTab *hat, int v, int depth, const PolyLits *lits);
+static int poly_value_may_be_string(Compiler *c, const HandleArgTab *hat, int v, int depth, const PolyLits *lits) {
   const NodeTable *nt = c->nt;
+  if (lits) {
+    v = an_unparen(nt, v);
+    int got = v >= 0 ? poly_lit_may_be_string(c, hat, v, depth, lits) : -1;
+    if (got >= 0) return got;
+  }
   if (v < 0) return 1;
   TyKind t = comp_ntype(c, v);
   if (t == TY_UNKNOWN) t = infer_type(c, v);
@@ -20088,13 +20094,56 @@ static int poly_value_may_be_string(Compiler *c, const HandleArgTab *hat, int v,
   if (nt_kind(nt, v) != NK_LocalVariableReadNode) return 1;
   const char *rn = nt_str(nt, v, "name");
   Scope *rs = rn ? comp_scope_of(c, v) : NULL;
-  return !rs || poly_var_may_hold_string(c, hat, rn, rs, depth + 1);
+  return !rs || poly_var_may_hold_string(c, hat, rn, rs, depth + 1, lits);
+}
+/* With `lits` (the share facts' question, an_recv_may_be_string, and
+   their index of the variables literal blocks bind), a value is also read
+   by its form (poly_lit_may_be_string): a literal of another
+   class is no String whatever its type settled as (an untyped method's
+   `acc = []`), and a conditional is one of its arms (`c ? [0] : 1`). The
+   lifts ask without it, and their answers and C stay as they were. An
+   arm: its last statement, through an `else`. */
+static int poly_arm_may_be_string(Compiler *c, const HandleArgTab *hat, int n, int depth, const PolyLits *lits) {
+  const NodeTable *nt = c->nt;
+  for (int d = 0; n >= 0 && d < 16; d++) {
+    NodeKind k = nt_kind(nt, n);
+    if (k == NK_ElseNode) { n = nt_ref(nt, n, "statements"); continue; }
+    if (k != NK_StatementsNode) return poly_value_may_be_string(c, hat, n, depth, lits);
+    int bn = 0; const int *bv = nt_arr(nt, n, "body", &bn);
+    n = bn > 0 ? bv[bn - 1] : -1;
+  }
+  return n >= 0;   /* an empty one answers nil */
+}
+/* 0 or 1 for a literal or a conditional, -1 for any other form */
+static int poly_lit_may_be_string(Compiler *c, const HandleArgTab *hat, int v, int depth, const PolyLits *lits) {
+  const NodeTable *nt = c->nt;
+  switch (nt_kind(nt, v)) {
+  case NK_ArrayNode: case NK_HashNode: case NK_IntegerNode: case NK_FloatNode: case NK_SymbolNode:
+  case NK_NilNode: case NK_TrueNode: case NK_FalseNode: case NK_RangeNode: case NK_LambdaNode:
+  case NK_RegularExpressionNode:
+    return 0;
+  case NK_IfNode: case NK_UnlessNode: {
+    int el = nt_ref(nt, v, nt_kind(nt, v) == NK_IfNode ? "subsequent" : "else_clause");
+    int st = nt_ref(nt, v, "statements");
+    /* a missing arm answers nil */
+    return (st >= 0 && poly_arm_may_be_string(c, hat, st, depth, lits)) ||
+           (el >= 0 && poly_arm_may_be_string(c, hat, el, depth, lits));
+  }
+  case NK_OrNode: case NK_AndNode:
+    return poly_value_may_be_string(c, hat, nt_ref(nt, v, "left"), depth, lits) ||
+           poly_value_may_be_string(c, hat, nt_ref(nt, v, "right"), depth, lits);
+  default:
+    return -1;
+  }
 }
 static int poly_var_may_hold_string(Compiler *c, const HandleArgTab *hat,
-                                    const char *vn, Scope *vs, int depth) {
+                                    const char *vn, Scope *vs, int depth, const PolyLits *lits) {
   const NodeTable *nt = c->nt;
   LocalVar *lv = vn && vs ? scope_local(vs, vn) : NULL;
-  if (!lv || depth > 4 || lv->is_cell || lv->is_block_param) return 1;
+  /* with `lits`, how a block or a lambda binds it (PolyLits.bound): one
+     bound only as Enumerator.new's yielder is no String */
+  int bound = lv && lits && !lv->is_param ? lits->bound(lits->ctx, c, (int)(vs - c->scopes), vn) : 0;
+  if (!lv || depth > 4 || lv->is_cell || (lv->is_block_param && bound != 1) || bound == 2) return 1;
   /* a variable already being asked about further up the chain (a method
      handing its parameter to itself) adds no value of its own */
   static LocalVar *asking[6];
@@ -20105,13 +20154,14 @@ static int poly_var_may_hold_string(Compiler *c, const HandleArgTab *hat,
     int pj = an_param_idx(vs, vn);
     if (pj < 0 || !hat || !hat->ok || !vs->name) return 1;
     if (vs->pdefault && vs->pdefault[pj] >= 0 &&
-        poly_value_may_be_string(c, hat, vs->pdefault[pj], depth)) return 1;
+        poly_value_may_be_string(c, hat, vs->pdefault[pj], depth, lits)) return 1;
     for (int e = hat->head[si]; e >= 0; e = hat->enext[e]) {
       int sp = -1;
       int a = arg_layout_param_node(c, vs, hat->enode[e], pj, &sp);
-      if (a < 0 || sp >= 0 || poly_value_may_be_string(c, hat, a, depth)) return 1;
+      if (a < 0 || sp >= 0 || poly_value_may_be_string(c, hat, a, depth, lits)) return 1;
     }
   }
+  int seen = 0;
   for (int w = comp_lvw_first_sc(c, si, vn); w >= 0; w = comp_lvw_next_sc(c, w)) {
     if (comp_scope_of(c, w) != vs) continue;
     const char *wn = nt_str(nt, w, "name");
@@ -20119,9 +20169,26 @@ static int poly_var_may_hold_string(Compiler *c, const HandleArgTab *hat,
     NodeKind wk = nt_kind(nt, w);
     if (wk != NK_LocalVariableWriteNode && wk != NK_LocalVariableOrWriteNode &&
         wk != NK_LocalVariableAndWriteNode) return 1;
-    if (poly_value_may_be_string(c, hat, nt_ref(nt, w, "value"), depth)) return 1;
+    if (poly_value_may_be_string(c, hat, nt_ref(nt, w, "value"), depth, lits)) return 1;
+    seen = 1;
   }
-  return 0;
+  /* with `lits`, a variable no write or yielder binds is bound some other
+     way */
+  return lits && !lv->is_param && !seen && bound != 1;
+}
+
+/* --share-strings (#6765): can receiver r, a boxed or untyped value, be a
+   String? A variable answers by its values (poly_var_may_hold_string), a
+   literal or a conditional by its form; a parameter, a block's parameter,
+   a captured local and any other value may be one. */
+int an_recv_may_be_string(Compiler *c, int r, const PolyLits *lits) {
+  const NodeTable *nt = c->nt;
+  r = an_unparen(nt, r);
+  if (r < 0) return 1;
+  if (nt_kind(nt, r) != NK_LocalVariableReadNode) return poly_lit_may_be_string(c, NULL, r, 0, lits) != 0;
+  const char *vn = nt_str(nt, r, "name");
+  Scope *vs = vn ? comp_scope_of(c, r) : NULL;
+  return !vs || poly_var_may_hold_string(c, NULL, vn, vs, 0, lits);
 }
 
 /* Is POLY variable `vn` of scope `vs` appended to in place: the receiver of
@@ -20152,7 +20219,7 @@ static int lift_poly_read(Compiler *c, const HandleArgTab *hat, SbMutTab *lifted
   const char *vn = nt_str(nt, a, "name");
   Scope *vs = vn ? comp_scope_of(c, a) : NULL;
   LocalVar *lv = vs ? scope_local(vs, vn) : NULL;
-  if (!lv || lv->type != TY_POLY || !poly_var_may_hold_string(c, hat, vn, vs, 0)) return 0;
+  if (!lv || lv->type != TY_POLY || !poly_var_may_hold_string(c, hat, vn, vs, 0,NULL)) return 0;
   c->poly_strbuf_lift[a] = 1;
   if (lifted) sb_mut_tab_note(lifted, vn, (int)(vs - c->scopes), 1);
   if (lv->is_param && !lv->is_block_param && an_param_idx(vs, vn) >= 0)
@@ -20409,7 +20476,7 @@ static int convert_byref_handle_params(Compiler *c,
              much as one it appends to itself, so its callers are pulled in
              on the next round (poly_lift). */
           if (alv && alv->type == TY_POLY) {
-            if (c->poly_strbuf_lift[an2] || !poly_var_may_hold_string(c, hat, vn2, vs2, 0)) continue;
+            if (c->poly_strbuf_lift[an2] || !poly_var_may_hold_string(c, hat, vn2, vs2, 0,NULL)) continue;
             c->poly_strbuf_lift[an2] = 1; changed = 1;
             if (alv->is_param && !alv->is_block_param && an_param_idx(vs2, vn2) >= 0 &&
                 !(alv->poly_lift & POLY_LIFT_APPENDED)) {
@@ -20540,7 +20607,7 @@ static int convert_byref_handle_params(Compiler *c,
           const char *vn3 = pass ? (pi >= 0 ? s->pnames[pi] : NULL) : (an >= 0 ? nt_str(nt, an, "name") : NULL);
           Scope *vs3 = pass ? s : (an >= 0 ? comp_scope_of(c, an) : NULL);
           LocalVar *v3 = vn3 && vs3 ? scope_local(vs3, vn3) : NULL;
-          if (v3 && v3->type == TY_POLY && poly_var_may_hold_string(c, hat, vn3, vs3, 0)) {
+          if (v3 && v3->type == TY_POLY && poly_var_may_hold_string(c, hat, vn3, vs3, 0,NULL)) {
             if (!pass && !c->poly_strbuf_lift[an]) { c->poly_strbuf_lift[an] = 1; changed = 1; }
             if (pass && v3->is_param && !(v3->poly_lift & POLY_LIFT_ZSUPER)) {
               v3->poly_lift |= POLY_LIFT_ZSUPER; changed = 1;
@@ -22823,7 +22890,7 @@ static int dyn_lift_poly_arg(Compiler *c, int n, int k, int a) {
   Scope *vs = vn ? comp_scope_of(c, a) : NULL;
   LocalVar *lv = vs ? scope_local(vs, vn) : NULL;
   if (!lv || lv->type != TY_POLY || c->poly_strbuf_lift[a]) return 0;
-  if (!poly_var_may_hold_string(c, NULL, vn, vs, 0)) return 0;
+  if (!poly_var_may_hold_string(c, NULL, vn, vs, 0,NULL)) return 0;
   DynReach r; memset(&r, 0, sizeof r);
   dyn_reach_value(c, nt_ref(nt, n, "receiver"), k, 0, &r);
   if (r.unlifted) return 0;
@@ -24099,7 +24166,7 @@ static int spread_lift_poly_elems(Compiler *c, const int *av, int ac, int past) 
       const char *vn = nt_str(nt, a, "name");
       Scope *vs = vn ? comp_scope_of(c, a) : NULL;
       LocalVar *lv = vs ? scope_local(vs, vn) : NULL;
-      if (!lv || lv->type != TY_POLY || lv->is_block_param || !poly_var_may_hold_string(c, NULL, vn, vs, 0)) continue;
+      if (!lv || lv->type != TY_POLY || lv->is_block_param || !poly_var_may_hold_string(c, NULL, vn, vs, 0,NULL)) continue;
       if (!c->poly_strbuf_lift[a]) { c->poly_strbuf_lift[a] = 1; changed = 1; }
       /* the method's own POLY parameter, or one a local is written from
          (`v = x`): its box is the caller's, so it pulls its callers in */
@@ -36083,6 +36150,7 @@ static void an_phase_storage(Compiler *c) {
      parameter RETAINED in a shared-handle ivar demands the handle for the
      same reason and feeds the same propagation, so the two run to a joint
      fixpoint rather than one after the other (#4363). */
+  int late_widened = 0;
   for (;;) {
     HandleArgTab hat; handle_arg_tab_init(c, &hat);
     int ch = promote_params_stored_in_shared_ivars(c, &hat);
@@ -36095,8 +36163,22 @@ static void an_phase_storage(Compiler *c) {
     if (promote_default_alias_params(c)) ch = 1;
     if (promote_forwarded_rest_args(c)) ch = 1;
     if (promote_ivar_handle_stores(c)) ch = 1;
+    /* --share-strings: a typed String Array the rule converts to the poly
+       Array this late (share_default_apply) is a late widening: a method
+       answering it, and the locals written from that method, follow it as
+       they follow the late ivar and return widenings (rejoin_local_writes) */
+    if (c->share_strings && ch) {
+      g_ret_no_new_poly = 3;
+      if (infer_return_types(c)) ch = late_widened = 1;
+      g_ret_no_new_poly = 0;
+      if (rejoin_local_writes(c)) ch = late_widened = 1;
+    }
     if (!ch) break;
   }
+  /* ... and the reads of what widened take its type, as the proc-return
+     re-derivation's refresh does (an_phase_proc_returns) */
+  if (late_widened)
+    for (int id = 0; id < c->nt->count; id++) infer_type(c, id);
   /* A read an is_a? or nil guard narrowed to String (`m(x) if
      x.is_a?(String)`) unboxed a copy of the String its POLY variable holds:
      one lifted into the handle for a parameter appended to keeps the box,
