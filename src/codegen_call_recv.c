@@ -9978,8 +9978,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
           else if (repr_of(c, id).read_raw && decide_node(c->nt, id, "strbuf-raw", NULL))
             buf_printf(b, "_t%d ? sp_String_cstr(_t%d) : NULL; })", tvR, tvR);
           else
-            buf_printf(b, "_t%d ? sp_str_concat(sp_String_cstr(_t%d), (&(\"\\xff\")[1])) : NULL; })",
-                       tvR, tvR);
+            buf_printf(b, "sp_strbuf_read(_t%d); })", tvR);
           return 1;
         }
         buf_puts(b, "("); emit_expr(c, recv, b);
