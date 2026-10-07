@@ -52,20 +52,16 @@ class OptionParser
     end
 
     def matches?(name)
-      enabled?(name) || negated?(name)
+      @shorts.include?(name) || @longs.any? { |long| accepts?(long, name) }
     end
 
-    def enabled?(name)
-      return true if @shorts.include?(name)
-      return false if negated?(name)
+    # A --[no-]name declaration accepts --name and --no-name; any other long
+    # declaration accepts only itself.
+    def accepts?(long, name)
+      return long == name unless long.start_with?("--[no-]")
 
-      @longs.any? do |long|
-        if long.start_with?("--[no-]")
-          "--" + long.delete_prefix("--[no-]") == name
-        else
-          long == name
-        end
-      end
+      base = long.delete_prefix("--[no-]")
+      name == "--" + base || name == "--no-" + base
     end
 
     def negated?(name)
@@ -214,7 +210,7 @@ class OptionParser
     name = eq ? arg[0, eq] : arg
     sw = find_switch(name)
     raise InvalidOption.new("invalid option: " + name) if sw.nil?
-    is_enabled = sw.enabled?(name)
+    is_enabled = !sw.negated?(name)
     if sw.takes_value && is_enabled
       attached = eq ? arg[(eq + 1)..] : nil
       invoke(sw, read_value(argv, index, attached, name))
@@ -245,8 +241,7 @@ class OptionParser
         break
       end
       raise NeedlessArgument.new("needless argument: " + from_here) if arg[pos + 1] == "="
-      is_enabled = true
-      invoke_flag(sw, is_enabled)
+      invoke_flag(sw, true)
       pos += 1
     end
     index
