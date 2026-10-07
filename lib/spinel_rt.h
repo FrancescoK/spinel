@@ -322,6 +322,20 @@ static inline double sp_fmod(double a, double b) {
   if (r != 0.0 && ((r < 0.0) != (b < 0.0))) r += b;
   return r;
 }
+/* Float#divmod's pair as CRuby's flodivmod computes it: the remainder from
+   fmod, and the quotient from the remainder -- round((x - mod) / y) -- not
+   floor(x / y), which disagreed with the remainder wherever x / y rounded
+   up to a whole number (1.0.divmod(0.1) answered [10, 0.0] where CRuby has
+   [9, 0.09999999999999995]); then both are moved to the divisor's sign. A
+   zero divisor raises; a NaN one answers NaN for both. */
+static inline void sp_flo_divmod(double x, double y, double *divp, double *modp) {
+  if (isnan(y)) { *divp = *modp = y; return; }
+  if (y == 0.0) sp_raise_cls("ZeroDivisionError", "divided by 0");
+  double mod = (x == 0.0 || (isinf(y) && !isinf(x))) ? x : fmod(x, y);
+  double div = (isinf(x) && !isinf(y)) ? x : round((x - mod) / y);
+  if (y * mod < 0) { mod += y; div -= 1.0; }
+  *divp = div; *modp = mod;
+}
 /* Float#remainder: plain C fmod, but a zero divisor raises the way every other
    Float division-derived operation does (#3649). */
 static inline double sp_fremainder(double a, double b) {
@@ -5312,11 +5326,12 @@ static sp_RbVal sp_poly_divmod(sp_RbVal a, sp_RbVal b) {
   if (a.tag == SP_TAG_FLT || b.tag == SP_TAG_FLT) {
     sp_float fa = sp_poly_to_f(a), fb = sp_poly_to_f(b);
     if (fb == 0) sp_raise_cls("ZeroDivisionError", "divided by 0");
-    sp_float q = floor(fa / fb);
+    sp_float q, m;
+    sp_flo_divmod(fa, fb, &q, &m);
     /* CRuby answers the quotient as an Integer (7.0.divmod(3) => [2, 1.0]);
        only one that no Integer can hold stays a Float. */
     sp_PolyArray_push(out, (q >= -9.2e18 && q <= 9.2e18) ? sp_box_int((sp_int)q) : sp_box_float(q));
-    sp_PolyArray_push(out, sp_box_float(sp_fmod(fa, fb)));
+    sp_PolyArray_push(out, sp_box_float(m));
     return sp_box_poly_array(out);
   }
   /* a Bignum pair: sp_poly_to_i below truncates it to 64 bits and answered a
