@@ -17293,6 +17293,53 @@ static int share_ret_typed_str_literal(Compiler *c, int mi) {
 static int share_pattern_method(const Scope *m) {
   return m->class_id >= 0 && m->name && (sp_streq(m->name, "deconstruct") || sp_streq(m->name, "deconstruct_keys"));
 }
+/* A literal argument a user method's parameters name the elements of: the
+   argument itself, the operand of `*`, or that of a `**` among keyword
+   arguments. Its stores carry the handles where the rule shares them. */
+static int share_demand_literal_arg(Compiler *c, int a) {
+  const NodeTable *nt = c->nt;
+  NodeKind k = nt_kind(nt, a);
+  if (k == NK_KeywordHashNode) {
+    int changed = 0, en = 0;
+    const int *el = nt_arr(nt, a, "elements", &en);
+    for (int e = 0; e < en; e++)
+      if (nt_kind(nt, el[e]) == NK_AssocSplatNode)
+        changed |= share_demand_literal_arg(c, nt_ref(nt, el[e], "value"));
+    return changed;
+  }
+  if (k == NK_SplatNode) a = nt_ref(nt, a, "expression");
+  a = unwrap_parens(c, a);
+  if (a < 0 || (nt_kind(nt, a) != NK_ArrayNode && nt_kind(nt, a) != NK_HashNode) ||
+      !share_node_elems_share(c, a))
+    return 0;
+  return strbuf_container_source_walk(c, a, 0, SB_DEMAND);
+}
+/* A user method's rest parameter holds its callers' arguments as its
+   elements: where the rule shares them, each argument the call's layout
+   leaves to the rest (`def first(*items)`, `first(self.text)`) is stored as
+   its handle, as a literal's element is. A splat's elements are the
+   literal's (share_demand_literal_arg) or the run time's. */
+static int share_demand_rest_args(Compiler *c, int mi, const int *argv, int argc) {
+  const NodeTable *nt = c->nt;
+  Scope *m = &c->scopes[mi];
+  if (m->rest_idx < 0 || !m->pnames[m->rest_idx]) return 0;
+  LocalVar *rv = scope_local(m, m->pnames[m->rest_idx]);
+  if (!rv || !repr_str_elems_share(c, share_local_holder(c, mi, (int)(rv - m->locals)))) return 0;
+  int kwh = nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode ? argv[argc - 1] : -1;
+  int pos_argc = kwh >= 0 ? argc - 1 : argc;
+  for (int k = 0; k < pos_argc; k++)
+    if (nt_kind(nt, argv[k]) == NK_SplatNode || nt_kind(nt, argv[k]) == NK_ForwardingArgumentsNode) return 0;
+  ArgLayout L;
+  arg_layout(c, m, argv, pos_argc, kwh, 0, &L);
+  int changed = 0;
+  for (int k = 0; k < pos_argc; k++) {
+    int bound = 0;
+    for (int j = 0; j < L.n && !bound; j++) bound = L.from[j] == ARG_NODE && L.arg[j] == k;
+    if (!bound) changed |= strbuf_store_leaf(c, argv[k], 0, SB_DEMAND);
+  }
+  arg_layout_free(&L);
+  return changed;
+}
 static int share_default_apply(Compiler *c, int in_fixpoint) {
   if (!c->share_strings) return 0;
   if (in_fixpoint) {
@@ -17445,6 +17492,20 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
     }
     if (share_node_elems_share(c, r))
       changed |= strbuf_container_source_walk(c, r, 0, mode);
+  }
+  /* The same holds when a literal is passed to a user method, whole or
+     spread with `*` or `**`, and for each argument a rest parameter
+     gathers: the callee's parameters name those elements again. A literal
+     handed to a builtin (`p [a, b]`), a proc or a block's value is left as
+     before. The call's targets are the plan's, as the facts read them. */
+  NT_FOREACH_KIND(c->nt, NK_CallNode, n) {
+    int args = nt_ref(c->nt, n, "arguments"), an = 0;
+    const int *av = args >= 0 ? nt_arr(c->nt, args, "arguments", &an) : NULL;
+    if (an == 0) continue;
+    int mis[CPT_MAX], cnt = cplan_targets(c, n, mis, CPT_MAX);
+    if (cnt <= 0) continue;
+    for (int i = 0; i < an; i++) changed |= share_demand_literal_arg(c, av[i]);
+    for (int t = 0; t < cnt; t++) changed |= share_demand_rest_args(c, mis[t], av, an);
   }
   return changed;
 }
