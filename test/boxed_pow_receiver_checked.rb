@@ -1,3 +1,4 @@
+# spinel: int64
 # pow on a boxed receiver: Integer alone has it, so nil, a Symbol, a
 # String, an Array, a Hash, a Range and a Float raise NoMethodError (with
 # the exponent as its args), where the receiver was converted for `**`:
@@ -47,3 +48,15 @@ end
   t2 { a[0] **= 2; a[0] }
   t2 { Box.new([v, 0][k]).sq }
 end
+
+# heap-backed arguments stay alive while NoMethodError#args is built
+def args_of
+  yield
+rescue NoMethodError => e
+  p e.args.map { |x| x.is_a?(String) ? x.size : x }
+end
+hv = ["abc" * 50, 1][ARGV.size]
+args_of { hv.pow("x" * 300) }
+args_of { hv.pow("y" * 400, "z" * 500) }
+nv = [nil, 1][ARGV.size]
+args_of { nv.pow(10**30, 10**40) }
