@@ -89,6 +89,9 @@ typedef struct ShareFacts {
   int *fw_from, *fw_to, nfw, cfw;
   unsigned char *blk_unk;
   signed char *fresh_blk;
+  /* per node, once asked: a `call` on a callable whose every value is a
+     new String or no String (1), not (0), not asked (-1); NULL until then */
+  signed char *fresh_call;
   /* the methods the default build may lend a parameter's slot
      (an_byref_eligible_scopes), and per method scope, the parameters it
      passes by value (byval), once asked (byval_done) */
@@ -2790,7 +2793,7 @@ static void sh_free(ShareFacts *F) {
   free(F->byval); free(F->byval_done);
   free(F->rsite); free(F->mread); free(F->ret_joined);
   free(F->mb_m); free(F->mb_b); free(F->mb_start); free(F->mb_blk); free(F->blk_dyn);
-  free(F->fw_from); free(F->fw_to); free(F->blk_unk); free(F->fresh_blk);
+  free(F->fw_from); free(F->fw_to); free(F->blk_unk); free(F->fresh_blk); free(F->fresh_call);
   free(F->kind); free(F->flags); free(F->own);
   free(F->h); free(F->helem); free(F->bucket); free(F->hnext); free(F->nval);
   free(F->lend_arg); free(F->lend_par); free(F->lend_node); free(F->lend_direct); free(F->lend_done);
@@ -3519,6 +3522,46 @@ static int sh_blocks_fresh(Compiler *c, int mi, int depth) {
   return ok;
 }
 
+/* Is callable literal k's value (pivs_callable_lit: a lambda's, a proc's
+   or a method's tail, with no jump) a new String, or a value no String
+   is? */
+static int sh_callable_fresh(Compiler *c, int k, int depth) {
+  const NodeTable *nt = c->nt;
+  const char *un = nt_kind(nt, k) == NK_CallNode ? nt_str(nt, k, "name") : NULL;
+  int body;
+  if (is_method_ref_name(un)) {
+    int a = nt_ref(nt, k, "arguments"), ac = 0;
+    const int *av = nt_arr(nt, a, "arguments", &ac);
+    int mi = comp_method_index(c, nt_str(nt, av[0], "value"));
+    body = mi >= 0 && c->scopes[mi].def_node >= 0 ? nt_ref(nt, c->scopes[mi].def_node, "body") : -1;
+  }
+  else body = nt_ref(nt, un ? nt_ref(nt, k, "block") : k, "body");
+  int bn = 0; const int *bb = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &bn) : NULL;
+  if (bn == 0 || sh_has_jump(nt, body)) return 0;
+  TyKind t = c->ntype[bb[bn - 1]];
+  return (t != TY_STRING && t != TY_STRBUF && t != TY_POLY && t != TY_UNKNOWN) ||
+         share_value_fresh(c, bb[bn - 1], depth + 1);
+}
+/* Is `call` n, on a callable the boxed-receiver walk bounds to literals
+   (pivs_callables), a new String or no String whichever it runs? */
+static int sh_call_fresh(Compiler *c, int n, int depth) {
+  ShareFacts *F = c->share;
+  if (!F->fresh_call) {
+    F->fresh_call = malloc((size_t)(F->nnodes > 0 ? F->nnodes : 1));
+    if (!F->fresh_call) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    memset(F->fresh_call, -1, (size_t)(F->nnodes > 0 ? F->nnodes : 1));
+  }
+  if (n >= F->nnodes) return 0;
+  if (F->fresh_call[n] >= 0) return F->fresh_call[n];
+  F->fresh_call[n] = 0;
+  int ks[16];
+  int nk = pivs_callables(c, n, ks, 16);
+  int ok = nk > 0;
+  for (int i = 0; ok && i < nk; i++) ok = sh_callable_fresh(c, ks[i], depth + 1);
+  F->fresh_call[n] = (signed char)ok;
+  return ok;
+}
+
 /* Is arm a of a conditional (its statements, an else or an elsif) a new
    String or nil, or does it leave no value (none, or empty)? */
 static int sh_arm_fresh(Compiler *c, int a, int depth) {
@@ -3563,6 +3606,8 @@ int share_value_fresh(Compiler *c, int n, int depth) {
       return 1;
     if (is_receiver_conversion(cn) && call_plain_argc(c, n) == 0)
       return share_value_fresh(c, rcv, depth + 1);
+    /* a proc, a lambda or a Method the walk bounds to literals */
+    if (is_call_alias(cn) && sh_call_fresh(c, n, depth)) return 1;
   }
   /* a call of a lambda a local holds and only calls, whose value (with no
      next, break or return) is a new String */
