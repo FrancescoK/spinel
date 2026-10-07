@@ -19,6 +19,7 @@
 SP_TLS sp_poly_recur_frame *sp_poly_recur_stack = NULL;
 SP_TLS int sp_poly_recur_top = 0;
 SP_TLS int sp_poly_recur_cap = 0;
+SP_TLS unsigned sp_poly_recur_hash_cycles = 0;
 /* Make room for at least `want` frames, doubling from 64. Off the hot path:
    a walk deep enough to reach the end of the buffer has already paid far more
    in its own recursion than this call costs. */

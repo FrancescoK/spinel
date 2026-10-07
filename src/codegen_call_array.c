@@ -575,15 +575,19 @@ int emit_op_array_intersect_p(Compiler *c, const BopCtx *x, Buf *b) {
       buf_printf(b, "sp_%sArray_intersect_p(", k); emit_expr(c, recv, b); buf_puts(b, ", NULL)");
       return 1;
     }
-    buf_puts(b, "sp_PolyArray_intersect_p(sp_poly_to_poly_array(");
+    /* sp_poly_intersect_p coerces only the argument and reads the receiver
+       in place: two coercions as sibling arguments left the first one
+       unrooted while the second allocated, and the set it builds allocates
+       again. */
+    buf_puts(b, "sp_poly_intersect_p(");
     { Buf rb2; memset(&rb2, 0, sizeof rb2); emit_expr(c, recv, &rb2);
       emit_boxed_text(c, rt, rb2.p ? rb2.p : "NULL", b); free(rb2.p); }
-    buf_puts(b, "), sp_poly_to_poly_array(");
+    buf_puts(b, ", ");
     { Buf ab2; memset(&ab2, 0, sizeof ab2); emit_expr(c, argv[0], &ab2);
       if (a0 == TY_POLY) buf_puts(b, ab2.p ? ab2.p : "sp_box_nil()");
       else emit_boxed_text(c, a0, ab2.p ? ab2.p : "NULL", b);
       free(ab2.p); }
-    buf_puts(b, "))");
+    buf_puts(b, ")");
     return 1;
   }
   return 0;
@@ -737,11 +741,9 @@ int emit_op_array_uniq(Compiler *c, const BopCtx *x, Buf *b) {
   int block = nt_ref(nt, id, "block");
   (void)name; (void)a0; (void)k; (void)block; (void)argv;
   if (rt == TY_POLY_ARRAY) {
-    if (rt == TY_POLY_ARRAY && sp_streq(name, "uniq") && argc == 0 &&
-        nt_ref(nt, id, "block") < 0) {
-      int t = ++g_tmp;
-      buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_dup(", t); emit_expr(c, recv, b);
-      buf_printf(b, "); sp_PolyArray_uniq_bang(_t%d); _t%d; })", t, t);
+    if (sp_streq(name, "uniq") && argc == 0 && nt_ref(nt, id, "block") < 0) {
+      /* builds the answer in one pass, rather than uniq! on a copy */
+      buf_puts(b, "sp_PolyArray_uniq("); emit_expr(c, recv, b); buf_puts(b, ")");
       return 1;
     }
     return 0;

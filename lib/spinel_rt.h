@@ -2670,6 +2670,9 @@ static SP_THREAD_LOCAL int sp_builtin_hook_depth = 0;
    above. handled stays FALSE when no arm takes the receiver and key. */
 typedef void (*sp_user_aset_fn)(sp_RbVal recv, sp_RbVal key, sp_RbVal val, sp_bool *handled);
 static sp_user_aset_fn sp_user_aset_hook = NULL;
+/* eql? alone, through the same kind of table (sp_user_eql_dispatch): uniq
+   and the set operations ask a program object's own eql? of any argument */
+static sp_user_binop_fn sp_user_eql_hook = NULL;
 /* The numeric coerce protocol from the other side: `5 + obj` asks obj for
    `coerce(5)` and applies the operator to the pair it answers. The generated
    TU installs a cls_id switch over the classes that define #coerce. The static
@@ -6985,22 +6988,219 @@ static sp_int sp_poly_arr_index_val(sp_RbVal a, sp_RbVal v, int rev) {
    elements by hash/eql?, not ==, so 2 and 2.0 are different elements. */
 static sp_bool sp_poly_eql(sp_RbVal a, sp_RbVal b);
 static sp_bool sp_PolyArray_include_eql(sp_PolyArray *a, sp_RbVal v) { if (!a) return FALSE; for (sp_int i = 0; i < a->len; i++) if (sp_poly_eql(a->data[i], v)) return TRUE; return FALSE; }
-static sp_PolyArray *sp_PolyArray_intersect(sp_PolyArray *a, sp_PolyArray *b) { SP_GC_ROOT(a); SP_GC_ROOT(b); sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r); if (!a || !b) return r; for (sp_int i = 0; i < a->len; i++) { sp_RbVal v = a->data[i]; if (sp_PolyArray_include_eql(b, v) && !sp_PolyArray_include_eql(r, v)) sp_PolyArray_push(r, v); } return r; }
-/* intersect? predicate: early-exit, no allocation (matches CRuby's non-building Array#intersect?). */
-static sp_bool sp_PolyArray_intersect_p(sp_PolyArray *a, sp_PolyArray *b) { if (!a || !b) return 0; for (sp_int i = 0; i < a->len; i++) if (sp_PolyArray_include_eql(b, a->data[i])) return 1; return 0; }
+/* The set behind uniq and the set operations of a boxed Array (uniq,
+   uniq!, |, &, -, union, intersection, difference, intersect?); the entry
+   points above and below hand over to the functions here. They compared
+   each element with every element kept so far, O(n*d) for d distinct
+   values, through sp_poly_eql, which merges values CRuby keeps apart.
+
+   These follow CRuby's array.c. Arrays as small as its SMALL_ARRAY_LEN take
+   its scans, which ask eql? alone and never #hash: `-` when either side has
+   at most 16 elements, `&` and intersect? when both do, `|` when the two
+   have 16 together, and uniq of at most one element. Larger ones build a
+   set, as CRuby builds a Hash: each element is hashed once, and eql? runs
+   only between values whose hashes are equal. Both ask CRuby's eql?
+   (sp_poly_eql_strict) the way CRuby does, the new or probing value the
+   receiver, so `Rational(1, 1)` and `1` stay apart on either path.
+
+   The hash is the one a boxed Hash key takes (sp_rbval_hash_key, which
+   calls a class's own #hash), so a Hash and these agree on which values
+   can match. `vals` keeps the values in insertion order. The table is
+   open-addressed, `slots` (index into vals + 1, hash) pairs at most half
+   full, where 0 marks an empty slot and a negated index one that `&` has
+   matched. It starts in `inl`, on the caller's stack, so a set of up to
+   eight values allocates no table; past that it moves to `tbl`. vals and
+   tbl are collected objects the caller roots, so a #hash or #eql? that
+   allocates finds them rooted, and one that raises leaves nothing to
+   free. */
+#define SP_EQLSET_INL_SLOTS 16
+#define SP_ARRAY_SMALL_LEN 16   /* CRuby's SMALL_ARRAY_LEN */
+typedef struct { sp_PolyArray *vals; sp_IntArray *tbl; sp_int slots; sp_int inl[2 * SP_EQLSET_INL_SLOTS]; } sp_EqlSet;
+static sp_int sp_rbval_hash_key(sp_RbVal v);   /* with the Hash key machinery below */
+static sp_int sp_hash_slot(sp_int hk);
+/* with sp_poly_eql below; two Integers, the commonest pair a Struct key's
+   members and a uniq's values hold, answer here, as sp_poly_eq's do */
+static SP_NOINLINE sp_bool sp_poly_eql_strict_slow(sp_RbVal a, sp_RbVal b);
+static SP_INLINE sp_bool sp_poly_eql_strict(sp_RbVal a, sp_RbVal b) {
+  if (a.tag == SP_TAG_INT && b.tag == SP_TAG_INT) return a.v.i == b.v.i;
+  return sp_poly_eql_strict_slow(a, b);
+}
+static void sp_eqlset_init(sp_EqlSet *s) {
+  s->tbl = NULL;
+  s->slots = SP_EQLSET_INL_SLOTS;
+  memset(s->inl, 0, sizeof s->inl);
+  s->vals = sp_PolyArray_new();
+}
+static sp_int *sp_eqlset_data(sp_EqlSet *s) { return s->tbl ? s->tbl->data : s->inl; }   /* tbl never shifts: start 0 */
+/* The slot of the kept value v.eql?, v's hash being h; or the empty slot v
+   would take. */
+static sp_int sp_eqlset_slot(sp_EqlSet *s, sp_RbVal v, sp_int h) {
+  sp_int mask = s->slots - 1, *d = sp_eqlset_data(s);   /* an eql? runs Ruby, but nothing it runs reaches s */
+  for (sp_int i = sp_hash_slot(h) & mask;; i = (i + 1) & mask) {
+    sp_int k = d[2 * i];
+    if (!k) return i;
+    if (d[2 * i + 1] == h && sp_poly_eql_strict(v, s->vals->data[(k < 0 ? -k : k) - 1])) return i;
+  }
+}
+/* Doubles the table, laying the kept values out again by the hashes it
+   holds: no #hash runs again. */
+static void sp_eqlset_grow(sp_EqlSet *s) {
+  sp_int slots = 2 * s->slots;
+  sp_IntArray *nt = sp_IntArray_new_fill(2 * slots, 0);
+  sp_int *od = sp_eqlset_data(s), *nd = nt->data;
+  for (sp_int j = 0; j < s->slots; j++) {
+    if (!od[2 * j]) continue;
+    sp_int i = sp_hash_slot(od[2 * j + 1]) & (slots - 1);
+    while (nd[2 * i]) i = (i + 1) & (slots - 1);
+    nd[2 * i] = od[2 * j];
+    nd[2 * i + 1] = od[2 * j + 1];
+  }
+  s->tbl = nt;
+  s->slots = slots;
+}
+/* Keeps v, whose hash is h, in the empty slot `at` sp_eqlset_slot gave. */
+static void sp_eqlset_put(sp_EqlSet *s, sp_int at, sp_RbVal v, sp_int h) {
+  sp_PolyArray_push(s->vals, v);
+  sp_int *d = sp_eqlset_data(s);
+  d[2 * at] = s->vals->len;
+  d[2 * at + 1] = h;
+  if (s->vals->len * 2 > s->slots) sp_eqlset_grow(s);
+}
+/* Keeps v unless a value it is eql? to is kept already. */
+static void sp_eqlset_add(sp_EqlSet *s, sp_RbVal v) {
+  SP_GC_ROOT_RBVAL(v);   /* a #hash may drop it from the array it came from */
+  sp_int h = sp_rbval_hash_key(v);
+  sp_int at = sp_eqlset_slot(s, v, h);
+  if (!sp_eqlset_data(s)[2 * at]) sp_eqlset_put(s, at, v, h);
+}
+static sp_bool sp_eqlset_has(sp_EqlSet *s, sp_RbVal v) {
+  SP_GC_ROOT_RBVAL(v);
+  sp_int h = sp_rbval_hash_key(v);
+  sp_int at = sp_eqlset_slot(s, v, h);
+  return sp_eqlset_data(s)[2 * at] != 0;
+}
+static void sp_eqlset_of(sp_EqlSet *s, sp_RbVal ary) {
+  SP_GC_ROOT_RBVAL(ary);
+  sp_eqlset_init(s);
+  for (sp_int i = 0; i < sp_poly_arr_len(ary); i++) sp_eqlset_add(s, sp_poly_arr_get(ary, i));
+}
+/* CRuby's rb_ary_includes_by_eql: v.eql? each element in turn. */
+static sp_bool sp_poly_arr_includes_eql(sp_RbVal ary, sp_RbVal v) {
+  SP_GC_ROOT_RBVAL(ary); SP_GC_ROOT_RBVAL(v);
+  for (sp_int i = 0; i < sp_poly_arr_len(ary); i++) if (sp_poly_eql_strict(v, sp_poly_arr_get(ary, i))) return TRUE;
+  return FALSE;
+}
+/* The values of a, each one eql? to an earlier one dropped. */
+static sp_PolyArray *sp_PolyArray_uniq(sp_PolyArray *a) {
+  SP_GC_ROOT(a);
+  if (!a || a->len <= 1) return a ? sp_PolyArray_dup(a) : sp_PolyArray_new();
+  sp_EqlSet s = { NULL }; SP_GC_ROOT(s.vals); SP_GC_ROOT(s.tbl);
+  sp_eqlset_init(&s);
+  for (sp_int i = 0; i < a->len; i++) sp_eqlset_add(&s, a->data[i]);
+  return s.vals;
+}
+/* uniq! on a receiver checked not frozen: the kept values are copied back.
+   It is checked for frozen again first: a #hash or #eql? may have frozen
+   it, and CRuby raises then too. */
+static void sp_PolyArray_uniq_eql_bang(sp_PolyArray *a) {
+  if (a->len <= 1) return;
+  SP_GC_ROOT(a);
+  sp_PolyArray *u = sp_PolyArray_uniq(a); SP_GC_ROOT(u);
+  if (u->len == a->len) return;
+  if (a->frozen) sp_raise_frozen_array_at(a, SP_BUILTIN_POLY_ARRAY);
+  a->len = 0;
+  for (sp_int i = 0; i < u->len; i++) sp_PolyArray_push(a, u->data[i]);
+}
+static sp_PolyArray *sp_PolyArray_union_eql(sp_PolyArray *a, sp_PolyArray *b) {
+  SP_GC_ROOT(a); SP_GC_ROOT(b);
+  if ((a ? a->len : 0) + (b ? b->len : 0) <= SP_ARRAY_SMALL_LEN) {
+    sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r);
+    sp_RbVal rb = sp_box_poly_array(r);
+    for (int side = 0; side < 2; side++) {
+      sp_PolyArray *x = side ? b : a;
+      for (sp_int i = 0; x && i < x->len; i++) { sp_RbVal v = x->data[i]; SP_GC_ROOT_RBVAL(v); if (!sp_poly_arr_includes_eql(rb, v)) sp_PolyArray_push(r, v); }
+    }
+    return r;
+  }
+  sp_EqlSet r = { NULL }; SP_GC_ROOT(r.vals); SP_GC_ROOT(r.tbl);
+  sp_eqlset_init(&r);
+  for (sp_int i = 0; a && i < a->len; i++) sp_eqlset_add(&r, a->data[i]);
+  for (sp_int i = 0; b && i < b->len; i++) sp_eqlset_add(&r, b->data[i]);
+  return r.vals;
+}
+static sp_PolyArray *sp_PolyArray_intersect_eql(sp_PolyArray *a, sp_PolyArray *b) {
+  SP_GC_ROOT(a); SP_GC_ROOT(b);
+  sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r);
+  if (!a || !b || !a->len || !b->len) return r;
+  if (a->len <= SP_ARRAY_SMALL_LEN && b->len <= SP_ARRAY_SMALL_LEN) {
+    sp_RbVal bb = sp_box_poly_array(b), rb = sp_box_poly_array(r);
+    for (sp_int i = 0; i < a->len; i++) {
+      sp_RbVal v = a->data[i]; SP_GC_ROOT_RBVAL(v);
+      if (sp_poly_arr_includes_eql(bb, v) && !sp_poly_arr_includes_eql(rb, v)) sp_PolyArray_push(r, v);
+    }
+    return r;
+  }
+  /* b's set; a value of a that matches an entry takes it, as CRuby's
+     delete from its Hash, so a later equal one finds it taken */
+  sp_EqlSet in = { NULL }; SP_GC_ROOT(in.vals); SP_GC_ROOT(in.tbl);
+  sp_eqlset_of(&in, sp_box_poly_array(b));
+  for (sp_int i = 0; i < a->len; i++) {
+    sp_RbVal v = a->data[i]; SP_GC_ROOT_RBVAL(v);
+    sp_int at = sp_eqlset_slot(&in, v, sp_rbval_hash_key(v));
+    sp_int *d = sp_eqlset_data(&in);
+    if (d[2 * at] > 0) { d[2 * at] = -d[2 * at]; sp_PolyArray_push(r, v); }
+  }
+  return r;
+}
+static sp_PolyArray *sp_PolyArray_difference_eql(sp_PolyArray *a, sp_PolyArray *b) {
+  SP_GC_ROOT(a); SP_GC_ROOT(b);
+  sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r);
+  if (!a) return r;
+  if (!b || a->len <= SP_ARRAY_SMALL_LEN || b->len <= SP_ARRAY_SMALL_LEN) {
+    sp_RbVal bb = b ? sp_box_poly_array(b) : sp_box_nil();
+    for (sp_int i = 0; i < a->len; i++) {
+      sp_RbVal v = a->data[i]; SP_GC_ROOT_RBVAL(v);
+      if (!b || !sp_poly_arr_includes_eql(bb, v)) sp_PolyArray_push(r, v);
+    }
+    return r;
+  }
+  sp_EqlSet out = { NULL }; SP_GC_ROOT(out.vals); SP_GC_ROOT(out.tbl);
+  sp_eqlset_of(&out, sp_box_poly_array(b));
+  for (sp_int i = 0; i < a->len; i++) { sp_RbVal v = a->data[i]; SP_GC_ROOT_RBVAL(v); if (!sp_eqlset_has(&out, v)) sp_PolyArray_push(r, v); }
+  return r;
+}
+/* intersect? over a receiver of any storage kind and an Array argument:
+   CRuby's scan when both are small, otherwise a set of the shorter one
+   probed by the longer's values, stopping at the first match. */
+static sp_bool sp_poly_intersect_p_eql(sp_RbVal a, sp_RbVal b) {
+  SP_GC_ROOT_RBVAL(a);
+  sp_PolyArray *pb = sp_poly_to_poly_array(b); SP_GC_ROOT(pb);
+  sp_RbVal bb = sp_box_poly_array(pb);
+  sp_int na = sp_poly_arr_len(a), nb = pb ? pb->len : 0;
+  if (!na || !nb) return 0;
+  if (na <= SP_ARRAY_SMALL_LEN && nb <= SP_ARRAY_SMALL_LEN) {
+    for (sp_int i = 0; i < sp_poly_arr_len(a); i++) if (sp_poly_arr_includes_eql(bb, sp_poly_arr_get(a, i))) return 1;
+    return 0;
+  }
+  sp_RbVal shorter = na <= nb ? a : bb, longer = na <= nb ? bb : a;
+  sp_EqlSet in = { NULL }; SP_GC_ROOT(in.vals); SP_GC_ROOT(in.tbl);
+  sp_eqlset_of(&in, shorter);
+  for (sp_int i = 0; i < sp_poly_arr_len(longer); i++) if (sp_eqlset_has(&in, sp_poly_arr_get(longer, i))) return 1;
+  return 0;
+}
+static sp_PolyArray *sp_PolyArray_intersect(sp_PolyArray *a, sp_PolyArray *b) { return sp_PolyArray_intersect_eql(a, b); }
+/* intersect? predicate: early-exit (sp_poly_intersect_p_eql). */
+static sp_bool sp_PolyArray_intersect_p(sp_PolyArray *a, sp_PolyArray *b) { if (!a || !b) return 0; return sp_poly_intersect_p_eql(sp_box_poly_array(a), sp_box_poly_array(b)); }
 /* Array#intersect? on two boxed arrays of any storage kind. Coercing both to
    poly arrays built two fresh copies a call, and as sibling arguments the
    second one's allocation collected the first. Only the argument, which the
    walk scans once per receiver element, is coerced (a poly array is taken
    as-is) and rooted; the receiver is read in place. */
 static sp_bool sp_poly_intersect_p(sp_RbVal a, sp_RbVal b) {
-  sp_PolyArray *pb = sp_poly_to_poly_array(b); SP_GC_ROOT(pb);
-  sp_int na = sp_poly_arr_len(a);
-  for (sp_int i = 0; i < na; i++) if (sp_PolyArray_include_eql(pb, sp_poly_arr_get(a, i))) return 1;
-  return 0;
+  return sp_poly_intersect_p_eql(a, b);
 }
-static sp_PolyArray *sp_PolyArray_union(sp_PolyArray *a, sp_PolyArray *b) { SP_GC_ROOT(a); SP_GC_ROOT(b); sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r); if (a) for (sp_int i = 0; i < a->len; i++) { sp_RbVal v = a->data[i]; if (!sp_PolyArray_include_eql(r, v)) sp_PolyArray_push(r, v); } if (b) for (sp_int i = 0; i < b->len; i++) { sp_RbVal v = b->data[i]; if (!sp_PolyArray_include_eql(r, v)) sp_PolyArray_push(r, v); } return r; }
-static sp_PolyArray *sp_PolyArray_difference(sp_PolyArray *a, sp_PolyArray *b) { SP_GC_ROOT(a); SP_GC_ROOT(b); sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r); if (!a) return r; for (sp_int i = 0; i < a->len; i++) { sp_RbVal v = a->data[i]; if (!sp_PolyArray_include_eql(b, v)) sp_PolyArray_push(r, v); } return r; }
+static sp_PolyArray *sp_PolyArray_union(sp_PolyArray *a, sp_PolyArray *b) { return sp_PolyArray_union_eql(a, b); }
+static sp_PolyArray *sp_PolyArray_difference(sp_PolyArray *a, sp_PolyArray *b) { return sp_PolyArray_difference_eql(a, b); }
 /* Array#compact for poly_array: keep elements whose tag is not SP_TAG_NIL. */
 static sp_PolyArray *sp_PolyArray_compact(sp_PolyArray *a) { SP_GC_ROOT(a); sp_PolyArray *b = sp_PolyArray_new(); SP_GC_ROOT(b); if (!a) return b; for (sp_int i = 0; i < a->len; i++) { if (a->data[i].tag != SP_TAG_NIL) sp_PolyArray_push(b, a->data[i]); } return b; }
 static sp_PolyArray *sp_PolyArray_compact_bang(sp_PolyArray *a) {sp_gc_wb((void*)a);  if (!a) return a; sp_int w = 0; for (sp_int i = 0; i < a->len; i++) { if (a->data[i].tag != SP_TAG_NIL) a->data[w++] = a->data[i]; } a->len = w; return a; }
@@ -8158,19 +8358,9 @@ static sp_RbVal sp_FloatArray_uniq_bangq(sp_FloatArray *a) {
 }
 /* uniq dedups with eql? (class-strict: 1 and 1.0 both survive), as CRuby. */
 static sp_bool sp_poly_eql(sp_RbVal a, sp_RbVal b);
-/* Each element is compared, in order, with the ones kept before it -- the
-   same eql? calls in the same order as before -- and a kept one moves down
-   to the end of the kept prefix. Shifting the whole tail down over every
-   duplicate made a run of duplicates cost a pass of the array each. */
+/* The set's uniq (sp_PolyArray_uniq_eql_bang), copied back. */
 static void sp_PolyArray_uniq_bang(sp_PolyArray*a){sp_gc_wb((void*)a); if(!a||a->frozen){if(a&&a->frozen)sp_raise_frozen_array_at(a, SP_BUILTIN_POLY_ARRAY);return;}
-  sp_int w=0;
-  for(sp_int i=0;i<a->len;i++){
-    sp_RbVal v=a->data[i];
-    int dup=0;
-    for(sp_int j=0;j<w&&!dup;j++)dup=sp_poly_eql(a->data[j],v);
-    if(!dup)a->data[w++]=v;
-  }
-  a->len=w;
+  sp_PolyArray_uniq_eql_bang(a);
 }
 static sp_RbVal sp_PolyArray_sample(sp_PolyArray *a) { if (a->len <= 0) return sp_box_nil(); return a->data[sp_krand_below(a->len)]; }
 
@@ -8746,6 +8936,30 @@ static sp_int sp_hash_slot(sp_int hk) {
   h ^= h >> 33;
   return (sp_int)h;
 }
+/* A Float part of a value hash: -0.0 and 0.0 are eql?, so they hash alike,
+   as the Float key below does. */
+static uint64_t sp_float_hash_bits(sp_float f) {
+  uint64_t b;
+  if (f == 0.0) f = 0.0;
+  memcpy(&b, &f, sizeof b);
+  return b;
+}
+/* A member's hash: a fixed value when its walk met a container it was
+   already inside, whatever its shape, as CRuby's rb_hash answers through
+   rb_exec_recursive_outer. `a = [1]; a << a` and [1, [1, a]] are eql?, and
+   only a cut at the member keeps their hashes equal too -- cut where the
+   repeat was met, their depths differ. uniq and the set operations match by
+   hash before eql?, so there the difference would split them. The repeat is
+   counted in sp_poly_recur_hash_cycles rather than handed back, so it is seen
+   through a Struct's hash hook and a class's own #hash, which reach this
+   function again from generated code. An acyclic value hashes as it always
+   has. */
+static SP_INLINE sp_int sp_rbval_hash_member(sp_RbVal m) {
+  if (m.tag != SP_TAG_OBJ) return sp_rbval_hash_key(m);   /* holds nothing, so meets no cycle */
+  unsigned before = sp_poly_recur_hash_cycles;
+  sp_int h = sp_rbval_hash_key(m);
+  return sp_poly_recur_hash_cycles == before ? h : SP_POLY_RECUR_HASH_VALUE;
+}
 static sp_int sp_rbval_hash_key(sp_RbVal v) {
   switch (v.tag) {
     case SP_TAG_INT: case SP_TAG_BOOL: case SP_TAG_NIL: case SP_TAG_SYM:
@@ -8789,7 +9003,7 @@ static sp_int sp_rbval_hash_key(sp_RbVal v) {
            stops, the way CRuby's rb_exec_recursive_outer answers. It replaces a
            depth counter that gave up on the WHOLE walk once it was 24 deep, so
            `a << a` hashed like [] at every level. */
-        if (sp_poly_recur_seen(SP_POLY_RECUR_HASH, v.v.p, NULL)) return SP_POLY_RECUR_HASH_VALUE;
+        if (sp_poly_recur_seen(SP_POLY_RECUR_HASH, v.v.p, NULL)) { sp_poly_recur_hash_cycles++; return SP_POLY_RECUR_HASH_VALUE; }
         /* Seeded with the length (CRuby's rb_hash_start(len)) rather than 0:
            from 0 the rolling h*31+x gave [], [0] and [nil] one hash, and it is
            the length that keeps `a << a` apart from []. The salt is CRuby's
@@ -8799,8 +9013,13 @@ static sp_int sp_rbval_hash_key(sp_RbVal v) {
            same numbers were rebuilt as. */
         uint64_t h = (uint64_t)n ^ SP_HASH_SEED_ARRAY;
         int mark = sp_poly_recur_push(SP_POLY_RECUR_HASH, v.v.p, NULL);
-        for (sp_int i = 0; i < n; i++)
-          h = (h * 31) + (uint64_t)sp_rbval_hash_key(sp_poly_arr_get(v, i));
+        /* a typed array's elements hold nothing, so they hash as plain keys */
+        int flat = v.cls_id == SP_BUILTIN_INT_ARRAY || v.cls_id == SP_BUILTIN_FLT_ARRAY ||
+                   v.cls_id == SP_BUILTIN_STR_ARRAY || v.cls_id == SP_BUILTIN_SYM_ARRAY;
+        if (flat)
+          for (sp_int i = 0; i < n; i++) h = (h * 31) + (uint64_t)sp_rbval_hash_key(sp_poly_arr_get(v, i));
+        else
+          for (sp_int i = 0; i < n; i++) h = (h * 31) + (uint64_t)sp_rbval_hash_member(sp_poly_arr_get(v, i));
         sp_poly_recur_pop(mark);
         return (sp_int)h;
       }
@@ -8810,7 +9029,7 @@ static sp_int sp_rbval_hash_key(sp_RbVal v) {
            operation: two `==` hashes must agree, whatever order they were
            built in. Unsigned for the same reason the array accumulator is. */
         sp_int n = sp_poly_length(v);
-        if (sp_poly_recur_seen(SP_POLY_RECUR_HASH, v.v.p, NULL)) return SP_POLY_RECUR_HASH_VALUE;
+        if (sp_poly_recur_seen(SP_POLY_RECUR_HASH, v.v.p, NULL)) { sp_poly_recur_hash_cycles++; return SP_POLY_RECUR_HASH_VALUE; }
         uint64_t h = (uint64_t)n ^ SP_HASH_SEED_HASH;  /* length + salt, as the array above */
         int mark = sp_poly_recur_push(SP_POLY_RECUR_HASH, v.v.p, NULL);
         for (sp_int i = 0; i < n; i++) {
@@ -8819,8 +9038,8 @@ static sp_int sp_rbval_hash_key(sp_RbVal v) {
           /* Mix each pair before combining: the combination has to be
              commutative (Hash#hash ignores insertion order), and a plain
              xor-then-sum let {a: 2, b: 2} and {a: 7, b: 7} collide. */
-          uint64_t t = ((uint64_t)sp_rbval_hash_key(k) * 0x9E3779B97F4A7C15ULL) +
-                       (uint64_t)sp_rbval_hash_key(val);
+          uint64_t t = ((uint64_t)sp_rbval_hash_member(k) * 0x9E3779B97F4A7C15ULL) +
+                       (uint64_t)sp_rbval_hash_member(val);
           t ^= t >> 33; t *= 0xff51afd7ed558ccdULL; t ^= t >> 33;
           h += t;
         }
@@ -8861,6 +9080,7 @@ static sp_int sp_rbval_hash_key(sp_RbVal v) {
         /* an end written as a Float hashes by that end (eql? tells them apart) */
         if (rg && rg->fe) {
           union { sp_float f; uint64_t u; } fu; fu.f = rg->fend;
+          if (rg->fend == 0.0) fu.f = 0.0;   /* (0..0.0) is eql? to (0..-0.0) */
           return (sp_int)((((uintptr_t)rg->first * 31u) + (uintptr_t)fu.u) * 4u + (uintptr_t)rg->fe);
         }
         return rg ? (sp_int)((((uintptr_t)rg->first * 31u) + (uintptr_t)rg->last) * 2u
@@ -8891,12 +9111,48 @@ static sp_int sp_rbval_hash_key(sp_RbVal v) {
         uint64_t br, bi;
         memcpy(&br, &cx->re, sizeof br);
         memcpy(&bi, &cx->im, sizeof bi);
+        /* a -0.0 part hashes as 0.0: Complex(-0.0, 1) is eql? to Complex(0.0, 1) */
+        if (cx->re == 0.0) br = 0;
+        if (cx->im == 0.0) bi = 0;
         return (sp_int)((uintptr_t)(br * 31u) ^ (uintptr_t)bi);
+      }
+      /* The other values eql? compares by content hash by it, so that equal
+         ones meet in uniq and the set operations, which match by hash first:
+         a Process::Tms (a Struct of four Floats), an OpenStruct (by its
+         members, in any order, as its table compares) and a Rational too
+         large for the word-sized one. */
+      if (v.cls_id == SP_BUILTIN_TMS) {
+        sp_Tms *t = (sp_Tms *)v.v.p;
+        if (!t) return 0;
+        uint64_t h = sp_float_hash_bits(t->utime);
+        h = h * 31u + sp_float_hash_bits(t->stime);
+        h = h * 31u + sp_float_hash_bits(t->cutime);
+        return (sp_int)(h * 31u + sp_float_hash_bits(t->cstime));
+      }
+      if (v.cls_id == SP_BUILTIN_OPENSTRUCT) {
+        sp_OpenStruct *o = (sp_OpenStruct *)v.v.p;
+        if (!o || !o->tbl) return 0;
+        if (sp_poly_recur_seen(SP_POLY_RECUR_HASH, v.v.p, NULL)) { sp_poly_recur_hash_cycles++; return SP_POLY_RECUR_HASH_VALUE; }
+        uint64_t h = (uint64_t)o->tbl->len;
+        int mark = sp_poly_recur_push(SP_POLY_RECUR_HASH, v.v.p, NULL);
+        for (sp_int i = 0; i < o->tbl->len; i++) {
+          sp_sym k = o->tbl->order[i];
+          uint64_t t = ((uint64_t)k * 0x9E3779B97F4A7C15ULL) + (uint64_t)sp_rbval_hash_member(sp_SymPolyHash_get(o->tbl, k));
+          t ^= t >> 33; t *= 0xff51afd7ed558ccdULL; t ^= t >> 33;
+          h += t;
+        }
+        sp_poly_recur_pop(mark);
+        return (sp_int)h;
+      }
+      if (v.cls_id == SP_BUILTIN_BIG_RATIONAL) {
+        sp_BigRational *r = (sp_BigRational *)v.v.p;
+        if (!r) return 0;
+        return (sp_int)((uint64_t)sp_bigint_to_int(r->num) * 31u + (uint64_t)sp_bigint_to_int(r->den));
       }
       if (sp_obj_hash_hook) {
         /* A Struct that holds itself hashes its own members through here; the
            generated hook has no path of its own, so this is where it stops. */
-        if (sp_poly_recur_seen(SP_POLY_RECUR_HASH, v.v.p, NULL)) return SP_POLY_RECUR_HASH_VALUE;
+        if (sp_poly_recur_seen(SP_POLY_RECUR_HASH, v.v.p, NULL)) { sp_poly_recur_hash_cycles++; return SP_POLY_RECUR_HASH_VALUE; }
         int mark = sp_poly_recur_push(SP_POLY_RECUR_HASH, v.v.p, NULL);
         sp_int oh = sp_obj_hash_hook(v.cls_id, v.v.p);
         sp_poly_recur_pop(mark);
@@ -10781,6 +11037,123 @@ static sp_bool sp_poly_eql(sp_RbVal a, sp_RbVal b) {
     return a.v.p && b.v.p && sp_range_eql(*(sp_Range *)a.v.p, *(sp_Range *)b.v.p);
   }
   return sp_poly_eq(a, b);
+}
+/* CRuby's rb_eql(a, b), which its uniq and set operations ask: a is b, or
+   a.eql?(b), the receiver deciding. It is stricter than sp_poly_eql, which
+   the other eql? callers keep: an Integer, a Rational, a Float and a Complex
+   are eql? only to their own class with equal parts (Rational(1, 1) is not
+   eql? to 1, nor Complex(1, 0) to Complex(1.0, 0)); a program object answers
+   its own eql? for any argument, through the operator table, and is
+   otherwise eql? only to itself, never through ==; an Exception, an IO or a
+   Process::Status is eql? only to itself. Containers compare their members
+   the same way, and a pair they are already inside answers true, as
+   sp_poly_eql's does. */
+static sp_RbVal sp_poly_hash_probe(sp_RbVal h, sp_RbVal k, sp_bool *found);
+static sp_bool sp_poly_eql_strict_obj(sp_RbVal a, sp_RbVal b) {
+  if (b.tag == SP_TAG_OBJ && a.v.p == b.v.p && a.cls_id == b.cls_id) return TRUE;
+  /* a program object's own eql? takes any argument */
+  if (sp_poly_is_user_obj(a)) {
+    if (b.tag == SP_TAG_OBJ && sp_poly_recur_seen(SP_POLY_RECUR_EQ, a.v.p, b.v.p)) return TRUE;
+    int mark = sp_poly_recur_push(SP_POLY_RECUR_EQ, a.v.p, b.tag == SP_TAG_OBJ ? b.v.p : NULL);
+    sp_RbVal u = sp_box_nil();
+    sp_bool r = FALSE;
+    sp_bool h = FALSE;
+    if (sp_user_eql_hook) u = sp_user_eql_hook("eql?", a, b, &h);
+    if (h) r = sp_poly_truthy(u);
+    /* a Struct or Data value: its members, eql? (the generated hook) */
+    else if (b.tag == SP_TAG_OBJ && a.cls_id == b.cls_id && sp_obj_eql_hook) r = sp_obj_eql_hook(a.cls_id, a.v.p, b.v.p);
+    sp_poly_recur_pop(mark);
+    return r;
+  }
+  if (b.tag != SP_TAG_OBJ) return FALSE;
+  /* Rational#eql?: a Rational of the same value, either representation */
+  if ((sp_poly_is_rational(a) || sp_poly_is_brat(a)) && (sp_poly_is_rational(b) || sp_poly_is_brat(b)))
+    return sp_poly_is_brat(a) || sp_poly_is_brat(b) ? sp_brat_cmp_poly(a, b) == 0
+                                                    : sp_rational_eq(*(sp_Rational *)a.v.p, *(sp_Rational *)b.v.p);
+  int ary = sp_poly_is_array_kind(a.cls_id), hsh = sp_poly_is_hash_kind(a.cls_id);
+  if (ary || hsh) {
+    if (ary ? !sp_poly_is_array_kind(b.cls_id) : !sp_poly_is_hash_kind(b.cls_id)) return FALSE;
+    sp_int n = sp_poly_length(a);
+    if (n != sp_poly_length(b)) return FALSE;
+    if (sp_poly_recur_seen(SP_POLY_RECUR_EQ, a.v.p, b.v.p)) return TRUE;
+    int mark = sp_poly_recur_push(SP_POLY_RECUR_EQ, a.v.p, b.v.p);
+    sp_bool r = TRUE;
+    for (sp_int i = 0; r && i < n; i++) {
+      if (ary) { r = sp_poly_eql_strict(sp_poly_arr_get(a, i), sp_poly_arr_get(b, i)); continue; }
+      sp_RbVal k, va, vb; sp_bool found;
+      sp_poly_hash_pair(a, i, &k, &va);
+      vb = sp_poly_hash_probe(b, k, &found);
+      r = found && sp_poly_eql_strict(va, vb);
+    }
+    sp_poly_recur_pop(mark);
+    return r;
+  }
+  if (a.cls_id != b.cls_id || !a.v.p || !b.v.p) return FALSE;
+  switch (a.cls_id) {
+    case SP_BUILTIN_COMPLEX: {   /* each part's class too: Complex(1, 0) is not eql? to Complex(1.0, 0) */
+      sp_Complex *x = (sp_Complex *)a.v.p, *y = (sp_Complex *)b.v.p;
+      return x->re == y->re && x->im == y->im &&
+             (x->fl & (SP_CPLX_RE_F | SP_CPLX_IM_F)) == (y->fl & (SP_CPLX_RE_F | SP_CPLX_IM_F));
+    }
+    case SP_BUILTIN_TIME: {
+      sp_Time *x = (sp_Time *)a.v.p, *y = (sp_Time *)b.v.p;
+      return x->tv_sec == y->tv_sec && x->tv_nsec == y->tv_nsec;
+    }
+    case SP_BUILTIN_TMS: {
+      sp_Tms *x = (sp_Tms *)a.v.p, *y = (sp_Tms *)b.v.p;
+      return x->utime == y->utime && x->stime == y->stime && x->cutime == y->cutime && x->cstime == y->cstime;
+    }
+    case SP_BUILTIN_RANGE: return sp_range_eql(*(sp_Range *)a.v.p, *(sp_Range *)b.v.p);
+    case SP_BUILTIN_FLOAT_RANGE: {
+      sp_FloatRange *x = (sp_FloatRange *)a.v.p, *y = (sp_FloatRange *)b.v.p;
+      return x->first == y->first && x->last == y->last && x->excl == y->excl;
+    }
+    case SP_BUILTIN_STR_RANGE: {
+      sp_StrRange *x = (sp_StrRange *)a.v.p, *y = (sp_StrRange *)b.v.p;
+      return x->excl == y->excl && sp_str_eq(x->first, y->first) && sp_str_eq(x->last, y->last);
+    }
+    case SP_BUILTIN_OPENSTRUCT: {   /* its member table's eql? */
+      sp_SymPolyHash *x = ((sp_OpenStruct *)a.v.p)->tbl, *y = ((sp_OpenStruct *)b.v.p)->tbl;
+      if (!x || !y) return x == y;
+      if (x->len != y->len) return FALSE;
+      if (sp_poly_recur_seen(SP_POLY_RECUR_EQ, a.v.p, b.v.p)) return TRUE;
+      int mark = sp_poly_recur_push(SP_POLY_RECUR_EQ, a.v.p, b.v.p);
+      sp_bool r = TRUE;
+      for (sp_int i = 0; r && i < x->len; i++) {
+        sp_sym k = x->order[i];
+        r = sp_SymPolyHash_has_key(y, k) && sp_poly_eql_strict(sp_SymPolyHash_get(x, k), sp_SymPolyHash_get(y, k));
+      }
+      sp_poly_recur_pop(mark);
+      return r;
+    }
+    case SP_BUILTIN_REGEX: return sp_re_eq(a.v.p, b.v.p);
+    case SP_BUILTIN_METHOD: {   /* the same receiver's same method, as a Hash key compares them */
+      sp_BoundMethod *x = (sp_BoundMethod *)a.v.p, *y = (sp_BoundMethod *)b.v.p;
+      if (x->self != y->self || x->fn != y->fn) return FALSE;
+      return x->name == y->name || (x->name && y->name && strcmp(x->name, y->name) == 0);
+    }
+    default: return FALSE;   /* identity, checked above */
+  }
+}
+static SP_NOINLINE sp_bool sp_poly_eql_strict_slow(sp_RbVal a, sp_RbVal b) {
+  /* a mutable String's handle is the String it holds */
+  a = sp_poly_strbuf_deref(a); b = sp_poly_strbuf_deref(b);
+  switch (a.tag) {
+    case SP_TAG_INT: case SP_TAG_BIGINT:
+      if (b.tag != SP_TAG_INT && b.tag != SP_TAG_BIGINT) return FALSE;
+      return a.tag == SP_TAG_INT && b.tag == SP_TAG_INT ? a.v.i == b.v.i : sp_poly_eq(a, b);
+    case SP_TAG_FLT: return b.tag == SP_TAG_FLT && a.v.f == b.v.f;
+    case SP_TAG_STR:
+      if (b.tag != SP_TAG_STR) return FALSE;
+      if (a.v.s == b.v.s) return TRUE;
+      return a.v.s && b.v.s && sp_str_cmp_bytes(a.v.s, b.v.s) == 0;
+    case SP_TAG_SYM: return b.tag == SP_TAG_SYM && a.v.i == b.v.i;
+    case SP_TAG_BOOL: return b.tag == SP_TAG_BOOL && !a.v.b == !b.v.b;
+    case SP_TAG_NIL: return b.tag == SP_TAG_NIL;
+    case SP_TAG_ENCODING: case SP_TAG_CLASS: return a.tag == b.tag && sp_poly_eq(a, b);
+    case SP_TAG_OBJ: return sp_poly_eql_strict_obj(a, b);
+    default: return FALSE;
+  }
 }
 /* equal? for a poly value: object identity. Immediates (int, symbol, nil,
    bool, flonum) are their own identity by value; everything heap-backed
