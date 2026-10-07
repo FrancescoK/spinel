@@ -8439,6 +8439,58 @@ static void emit_struct_recv_root(Compiler *c, int recv, int t, Buf *b) {
   if (!expr_is_held_ref(c, recv)) buf_printf(b, " SP_GC_ROOT(_t%d);", t);
 }
 /* A Struct instance receiver (emit_object_call's arms, in their order) */
+/* The value a Struct `[]=` stores into member slot type mt, from the box
+   `vtxt` of a value of static type vt. A boxed member takes the box. A
+   member of another type was typed by every store the analysis sees reach
+   it (infer_struct_aset_call); a box whose classes it cannot tell types
+   none, so there a value that does not fit is refused at run time, a
+   TypeError, rather than unboxed as the member's type (an Integer read as a
+   String pointer): known by its type where the store is written, tested by
+   its tag where it is boxed. A member kind with no such test (a container,
+   a Range) is unboxed as before. */
+static void emit_struct_member_value(Compiler *c, TyKind mt, TyKind vt, const char *vtxt, Buf *b) {
+  if (mt == TY_POLY) { buf_puts(b, vtxt); return; }
+  /* a member the share rule holds as the handle: nil is no handle, NULL */
+  if (mt == TY_STRBUF) {
+    buf_printf(b, "(%s.tag == SP_TAG_NIL ? NULL : ", vtxt);
+    emit_unbox_text(c, mt, vtxt, b);
+    buf_puts(b, ")");
+    return;
+  }
+  int obj = ty_is_object(mt) && !c->classes[ty_object_class(mt)].is_value_type;
+  const char *kind = mt == TY_INT ? "Integer" : mt == TY_FLOAT ? "Float" : mt == TY_STRING ? "String"
+                   : mt == TY_SYMBOL ? "Symbol" : mt == TY_BOOL ? "true or false"
+                   : obj ? c->classes[ty_object_class(mt)].name : NULL;
+  int fits = vt == mt || (vt == TY_NIL && (mt == TY_INT || mt == TY_FLOAT || mt == TY_STRING || obj)) ||
+             (vt == TY_INT && mt == TY_FLOAT) || (vt == TY_STRBUF && mt == TY_STRING) ||
+             (obj && ty_is_object(vt) && is_descendant(c, ty_object_class(vt), ty_object_class(mt)));
+  if (fits || !kind) {
+    emit_unbox_text(c, mt, vtxt, b);
+    return;
+  }
+  Buf u; memset(&u, 0, sizeof u);
+  emit_unbox_text(c, mt, vtxt, &u);
+  if (vt == TY_POLY || vt == TY_UNKNOWN) {
+    buf_puts(b, "((");
+    if (mt == TY_INT) buf_printf(b, "%s.tag == SP_TAG_INT || %s.tag == SP_TAG_NIL", vtxt, vtxt);
+    else if (mt == TY_FLOAT) buf_printf(b, "%s.tag == SP_TAG_FLT || %s.tag == SP_TAG_INT || %s.tag == SP_TAG_NIL", vtxt, vtxt, vtxt);
+    else if (mt == TY_STRING) buf_printf(b, "%s.tag == SP_TAG_STR || %s.tag == SP_TAG_NIL || sp_poly_is_strbuf(%s)", vtxt, vtxt, vtxt);
+    else if (mt == TY_SYMBOL) buf_printf(b, "%s.tag == SP_TAG_SYM", vtxt);
+    else if (mt == TY_BOOL) buf_printf(b, "%s.tag == SP_TAG_BOOL", vtxt);
+    else {
+      buf_printf(b, "%s.tag == SP_TAG_NIL || (%s.tag == SP_TAG_OBJ && (0", vtxt, vtxt);
+      for (int k = 0; k < c->nclasses; k++)
+        if (k == ty_object_class(mt) || is_descendant(c, k, ty_object_class(mt))) buf_printf(b, " || %s.cls_id == %d", vtxt, k);
+      buf_puts(b, "))");
+    }
+    buf_printf(b, ") ? %s : ", u.p);
+  }
+  else buf_puts(b, "(");
+  buf_printf(b, "(sp_raise_cls(\"TypeError\", sp_sprintf(\"cannot store %%s into a Struct member Spinel typed as %s"
+                " (the member was not widened for this store)\", sp_poly_class_name(%s))), %s))", kind, vtxt, u.p);
+  free(u.p);
+}
+
 static int emit_struct_recv_call(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, TyKind res, int *out) {
   /* Struct instance methods (to_h / to_a / values / members / dig). */
   if (!(recv >= 0 && ty_is_object(rt) && c->classes[ty_object_class(rt)].is_struct &&
@@ -9045,8 +9097,7 @@ static int emit_struct_recv_call(Compiler *c, int id, Buf *b, const NodeTable *n
                  tk, comp_sym_intern(c, sc->ivars[i] + 1), tk, (long long)i,
                  tk, sc->ivars[i] + 1, tw, iv_c(sc->ivars[i] + 1));
       char vtxt[32]; snprintf(vtxt, sizeof vtxt, "_t%d", tv);
-      if (sc->ivar_types[i] == TY_POLY) buf_puts(b, vtxt);
-      else emit_unbox_text(c, sc->ivar_types[i], vtxt, b);
+      emit_struct_member_value(c, sc->ivar_types[i], vt, vtxt, b);
       buf_puts(b, ";}\nelse");
     }
     /* The value is the right-hand side in its own type -- except where the
