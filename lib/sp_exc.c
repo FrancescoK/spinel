@@ -1,5 +1,6 @@
 /* sp_exc.c -- cold sp_Exception ops (see sp_exc.h). 0 optcarrot uses. */
 #include "sp_exc.h"
+#include <stdarg.h>
 #include "sp_exc_ctx.h"
 #include <errno.h>
 
@@ -146,7 +147,22 @@ void sp_exc_syserr_init(sp_Exception *e) {
    also looks up the parent class via the user hierarchy callback. */
 /* The exception's own copy of its message. The length is strlen's: what arrives
    is a bare C string as often as a String (see sp_msg_heapify). */
+const char *sp_exc_msg_counted(const char *m, size_t n) {
+  SP_GC_ROOT_STR(m);
+  char *r = sp_str_alloc(SP_CMSG_HDR + n);
+  memcpy(r, "\xff\xfe" "CM" "\xfd\x01", 6);
+  uint32_t n32 = (uint32_t)n;
+  memcpy(r + 6, &n32, sizeof n32);
+  memcpy(r + SP_CMSG_HDR, m, n);
+  return r;
+}
 static const char *sp_exc_msg_copy(const char *m) {
+  if (sp_cmsg_p(m)) {   /* the counted message decodes to its payload, a NUL kept */
+    size_t cn = sp_cmsg_len(m);
+    char *r = sp_str_alloc(cn);
+    memcpy(r, m + SP_CMSG_HDR, cn);
+    return r;
+  }
   size_t n = strlen(m);
   char *r = sp_str_alloc(n);
   memcpy(r, m, n);
@@ -287,7 +303,9 @@ sp_bool sp_exc_eq(sp_Exception *a, sp_Exception *b) {
      the tag. We keep the rendered text in ->msg, so skip it for that class
      (#3098). Backtraces are empty here by design, see docs/limitations.md. */
   if (a->cls_name && strcmp(a->cls_name, "UncaughtThrowError") == 0) return 1;
-  return strcmp(a->msg ? a->msg : "", b->msg ? b->msg : "") == 0;
+  { const char *am = a->msg ? a->msg : "", *bm = b->msg ? b->msg : "";
+    size_t al = a->msg ? sp_str_byte_len(am) : 0, bl = b->msg ? sp_str_byte_len(bm) : 0;
+    return al == bl && memcmp(am, bm, al) == 0; }
 }
 sp_Exception *sp_exc_new_sub(const char *cls_name, const char *parent_cls, const char *msg) {if (msg != sp_exc_no_msg) msg = sp_msg_heapify(msg); SP_GC_ROOT_STR(msg);
   sp_Exception *e = sp_exc_new(cls_name, msg);   /* empty msg already fell back to cls_name */
@@ -332,7 +350,7 @@ int sp_exc_exit_status(void *obj) {
 sp_Exception *sp_exc_exception(sp_Exception *e, const char *msg) {SP_GC_ROOT(e);if (msg != sp_exc_no_msg) msg = sp_msg_heapify(msg); SP_GC_ROOT_STR(msg);
   sp_Exception *n = sp_exc_dup(e);
   SP_GC_ROOT(n);
-  n->msg = sp_sprintf("%s", (msg && msg[0]) ? msg : (n->cls_name ? n->cls_name : "RuntimeError"));
+  n->msg = sp_exc_msg_copy((msg && msg[0]) ? msg : (n->cls_name ? n->cls_name : "RuntimeError"));
   sp_gc_wb((void *)n);   /* same reason as sp_exc_new_sub_sized */
   return n;
 }
@@ -900,6 +918,18 @@ const char *sp_exc_signm_acc(sp_Exception *e) {SP_GC_ROOT(e);
 
 /* `p e` on an exception instance: the same string #inspect answers, for the
    dispatch a container read or a `p` of a user subclass goes through (#3813). */
+/* The parts joined by their byte lengths, a NUL in one kept: the message of an exception
+   can hold one (#7556), which a %s would cut. Each part is a Spinel String. The copy is
+   made with no collection, so the parts need no root (as sp_msg_heapify). */
+const char *sp_exc_cat(int n, ...) {
+  const char *parts[8]; size_t lens[8]; size_t total = 0;
+  va_list ap; va_start(ap, n);
+  for (int i = 0; i < n && i < 8; i++) { parts[i] = va_arg(ap, const char *); lens[i] = sp_str_byte_len(parts[i]); total += lens[i]; }
+  va_end(ap);
+  char *r = sp_str_alloc_nogc(total), *w = r;
+  for (int i = 0; i < n && i < 8; i++) { memcpy(w, parts[i], lens[i]); w += lens[i]; }
+  return r;
+}
 const char *sp_exc_inspect(void *p) {
   sp_Exception *e = (sp_Exception *)p;
   if (!e) return SPL("nil");
@@ -908,7 +938,7 @@ const char *sp_exc_inspect(void *p) {
   SP_GC_ROOT(msg);
   const char *cn = sp_exc_class_name(e);
   SP_GC_ROOT(cn);
-  return (!msg || !*msg) ? cn : sp_sprintf("#<%s: %s>", cn, msg);
+  return (!msg || !sp_str_byte_len(msg)) ? cn : sp_exc_cat(5, SPL("#<"), cn, SPL(": "), msg, SPL(">"));
 }
 
 const char *(*sp_user_exc_to_s_fn)(sp_Exception *) = NULL;

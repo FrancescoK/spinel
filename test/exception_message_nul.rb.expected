@@ -1,0 +1,20 @@
+[ArgumentError, 12, 1, 12]
+[ArgumentError, 12, 1, 12]
+[RuntimeError, 9, 1, 9]
+[StandardError, 8, 1, 8]
+[StandardError, 9, 1, 9]
+[StandardError, 1, 1, 1]
+[ArgumentError, 49, 1, 49]
+[ArgumentError, 3, 1, 3]
+[E2, 3, 1, 3]
+[E2, 3, 1, 3]
+[E3, 3, 1, 3]
+true
+false
+20
+18
+""
+"ArgumentError"
+"plain"
+[ArgumentError, 8, 1, 8]
+[ArgumentError, 7, 1, 7]

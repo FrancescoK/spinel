@@ -73,8 +73,15 @@ sp_Exception *sp_exc_new_for_catch(const char *cls, const char *msg);
 extern const char *const sp_exc_no_msg;
 /* An explicitly given raise message: an empty one stays empty rather than
    falling back to the class name the way a message-less raise does. */
+const char *sp_exc_msg_counted(const char *m, size_t n);   /* lib/sp_exc.c */
+const char *sp_exc_cat(int n, ...);   /* parts joined by byte length, NULs kept */
+/* m is a Spinel String here (the generated code gives only those), so its header's
+   length is safe to read; a NUL inside it travels as a counted message (#7556). */
 static inline const char *sp_exc_msg_given(const char *m) {
-  return (m && !m[0]) ? sp_exc_no_msg : m;
+  if (!m) return m;
+  size_t n = sp_str_byte_len(m);
+  if (n == 0) return sp_exc_no_msg;
+  return memchr(m, 0, n) ? sp_exc_msg_counted(m, n) : m;
 }
 void *sp_exc_new_sub_sized(size_t sz, const char *cls_name, const char *msg);
 
