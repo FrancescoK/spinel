@@ -2986,7 +2986,7 @@ static const IterRow iter_rows[] = {
   { BOP_ANY_ARRAY, "reduce",          0, 0, 2, { YS_MEMO, YS_ELEM }, IA_MEMO, IRF_GAP_SHAPE | IRF_GAP_FWD },
   { BOP_ANY_ARRAY, "each_with_object", 1, 1, 2, { YS_ELEM, YS_MEMO }, IA_MEMO, IRF_GAP_FWD },
   { BOP_ANY_ARRAY, "each_index",      0, 0, 1, { YS_INDEX }, IA_RECV, IRF_GAP_FWD | IRF_SHAPE_BOXED },
-  { BOP_ANY_ARRAY, "fill",            0, 2, 1, { YS_INDEX }, IA_RECV, IRF_GAP_FWD | IRF_SHAPE_BOXED },
+  { BOP_ANY_ARRAY, "fill",            0, 2, 1, { YS_INDEX }, IA_BLOCKVALS_INPLACE, IRF_GAP_FWD | IRF_SHAPE_BOXED },
   { BOP_ANY_ARRAY, "cycle",           0, 1, 1, { YS_ELEM }, IA_OTHER, IRF_GAP_SHAPE | IRF_GAP_FWD },
   { BOP_ANY_ARRAY, "min",             0, 0, 2, { YS_ELEM, YS_ELEM }, IA_ONE, IRF_GAP_SHAPE | IRF_GAP_FWD },
   { BOP_ANY_ARRAY, "min",             1, 1, 2, { YS_ELEM, YS_ELEM }, IA_SOME, IRF_GAP_SHAPE | IRF_GAP_FWD },
@@ -3187,6 +3187,20 @@ static int iter_row_share(const IterRow *r) {
   case IA_ONE:   return BSH_ITER_FIND;
   case IA_OTHER: return BSH_PURE;
   default:       return 0;
+  }
+}
+
+int iter_keeps_no_block_value(TyKind fam, const char *name, int argc) {
+  const IterRow *r = name ? iter_row(fam, name, argc, 0) : NULL;
+  if (!r) return 0;
+  switch (r->answer) {
+  case IA_RECV: case IA_SOME: case IA_ONE: case IA_PARTS:
+    return 1;
+  case IA_MEMO:
+    /* each_with_object's memo is its argument; inject's is the block's value */
+    return r->nyield >= 1 && r->yield[0] != YS_MEMO;
+  default:
+    return 0;
   }
 }
 

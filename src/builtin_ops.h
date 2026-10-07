@@ -445,6 +445,12 @@ typedef struct IterRow {
 /* The first row of family fam for `name` that takes argc arguments (any
    count when argc < 0) and carries none of the flags in `skip`, or NULL. */
 const IterRow *iter_row(TyKind fam, const char *name, int argc, unsigned skip);
+/* Does the iterator `name` of family fam, given argc arguments, keep none of
+   the values its block answers? It answers its receiver, some of its
+   elements or the memo it was handed (each_with_object), and at most tests
+   or compares a block's value (select, sort_by), so the block's value is
+   dropped once the step has read it. 0 for a name with no row. */
+int iter_keeps_no_block_value(TyKind fam, const char *name, int argc);
 /* The kind the value at position k of a step has, on a receiver of kind rt
    (TY_POLY: a boxed receiver, whose elements are boxed). */
 TyKind iter_yield_kind(const IterRow *r, int k, TyKind rt);
