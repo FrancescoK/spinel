@@ -15330,11 +15330,10 @@ static const char *sa_msg(int route);
    the refusal stays. `to`, when the caller names it, is the container whose
    elements the String reaches. */
 static const char *stored_block_param_msg(void) {
-  return
-    "a String held by a block parameter no element iterator binds (a proc's, a lambda's, a yielding "
-    "method's block, `each_char`'s) is stored into a container and mutated in place through it (a "
-    "String is not yet shared by reference through a stored block parameter). Mutate the String "
-    "before storing it, or store it where the caller holds it.";
+  return "a String held by a block parameter no element iterator binds (a proc's, a lambda's, a yielding "
+         "method's block, `each_char`'s) is stored into a container and mutated in place through it (a "
+         "String is not yet shared by reference through a stored block parameter). Mutate the String "
+         "before storing it, or store it where the caller holds it.";
 }
 static void refuse_stored_block_param(Compiler *c, int sn, int to) {
   const char *msg = stored_block_param_msg();
