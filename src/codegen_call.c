@@ -18595,7 +18595,7 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
      `v.divmod(la.call)` for `la = -> { v = 0; 5 }`. */
   int effects = 0;
   for (int i = 0; i < nop; i++)
-    if (subtree_may_reassign_state(c, operand[i])) effects++;
+    if (!arg_ran_first(operand[i], 0) && subtree_may_reassign_state(c, operand[i])) effects++;
   int observable = 0, converts = 0;
   for (int i = 0; i < nop; i++) {
     /* an operand that may convert -- a user object, a boxed value -- is
@@ -18609,6 +18609,10 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
                           ty_object_class(ot) < c->nclasses &&
                           !c->classes[ty_object_class(ot)].is_native_class))
       converts = 1;
+    /* an operand that ran first (arg_ran_first: the nil arm's head, an
+       argument hoist) reads as its rooted temp: it runs nothing here, and
+       bound again it was copied into a second rooted slot */
+    if (arg_ran_first(operand[i], 0)) continue;
     NodeKind k = nt_kind(nt, operand[i]);
     int state_read = (k == NK_InstanceVariableReadNode || k == NK_ClassVariableReadNode ||
                       k == NK_GlobalVariableReadNode);
@@ -22836,12 +22840,10 @@ int push_recv_in_slot(Compiler *c, int recv, int argc, const int *argv, TyKind a
 int poly_binop_recv_temp(Compiler *c, int recv, int arg, Buf *b, int *stmt_expr) {
   int t = ++g_tmp;
   if (subtree_may_allocate(c->nt, arg)) {
-    Buf rb; memset(&rb, 0, sizeof rb);
-    emit_boxed(c, recv, &rb);
-    emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n",
-               t, rb.p ? rb.p : "sp_box_nil()", t);
-    free(rb.p);
+    Buf hb; memset(&hb, 0, sizeof hb);
+    t = hold_operand(c, recv, TY_POLY, 1, t, "\n", &hb);
+    if (hb.p) { emit_indent(g_pre, g_indent); buf_puts(g_pre, hb.p); }
+    free(hb.p);
     *stmt_expr = 0;
     return t;
   }
