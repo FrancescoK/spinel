@@ -7668,41 +7668,63 @@ static int infer_ivar_set_call(Compiler *c, int id, NilWrites *writes) {
   return changed;
 }
 
+/* See analyze_internal.h. */
+int struct_aset_classes(Compiler *c, int id, int *first, int *last) {
+  const NodeTable *nt = c->nt;
+  int recv = nt_ref(nt, id, "receiver"), args = nt_ref(nt, id, "arguments"), an = 0;
+  *first = 0; *last = -1;
+  if (args >= 0) nt_arr(nt, args, "arguments", &an);
+  if (recv < 0 || an != 2 || nt_ref(nt, id, "block") >= 0 || !sp_streq(nt_str(nt, id, "name"), "[]=")) return 0;
+  TyKind rt = infer_type(c, recv);
+  if (ty_is_object(rt)) { *first = *last = ty_object_class(rt); return 1; }
+  if (rt != TY_POLY) return 0;
+  *first = 0; *last = c->nclasses - 1;
+  return 2;
+}
+int struct_aset_members(Compiler *c, int id, int k, int *lo, int *hi) {
+  const NodeTable *nt = c->nt;
+  ClassInfo *ci = &c->classes[k];
+  if (!ci->is_struct || ci->is_data || ci->is_native_class ||
+      comp_resolve_member(c, k, "[]=", 0, NULL, NULL) != SP_MEMBER_NONE) return 0;
+  int args = nt_ref(nt, id, "arguments"), an = 0;
+  const int *av = nt_arr(nt, args, "arguments", &an);
+  NodeKind kk = nt_kind(nt, av[0]);
+  if (kk == NK_SymbolNode || kk == NK_StringNode || kk == NK_IntegerNode) {
+    *lo = struct_member_idx(c, ci, av[0]);
+    *hi = *lo + 1;
+    return *lo >= 0;
+  }
+  *lo = 0; *hi = ci->nmembers;
+  return ci->nmembers > 0;
+}
+
 /* `o[k] = v` on a Struct: the member k names takes v, as `o.x = v` types it.
    A literal member name or offset on a receiver typed as the Struct was
    rewritten to the member's writer, which the attribute-writer merge below
    types; the other shapes came here untyped, and the store unboxed v as the
    member's construction type (an Integer read as a String pointer, a String's
    address printed as the Integer): a key no literal names, which may be any
-   member, and a boxed receiver. A boxed one reaches the `[]=` of a Struct
-   the program gives none of its own (cplan_struct_aset's), when the box can
-   hold one of that class (poly_ivar_set_reaches): a store into a box of
-   Hashes types no member, as a member typed for nothing it holds loses what
-   its own type keeps (a String's in-place changes). A literal key that names
-   no member of a class raises there and types none. */
+   member, and a boxed receiver (struct_aset_classes). A boxed one reaches a
+   Struct's `[]=` when the box can hold one of that class
+   (poly_ivar_set_reaches): a store into a box of Hashes types no member, as
+   a member typed for nothing it holds loses what its own type keeps (a
+   String's in-place changes). */
 static int infer_struct_aset_call(Compiler *c, int id, NilWrites *writes) {
   const NodeTable *nt = c->nt;
-  int recv = nt_ref(nt, id, "receiver"), args = nt_ref(nt, id, "arguments");
-  int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-  if (recv < 0 || an != 2 || nt_ref(nt, id, "block") >= 0) return 0;
-  TyKind rt = infer_type(c, recv);
-  int one = ty_is_object(rt) ? ty_object_class(rt) : -1;
-  if (rt != TY_POLY && one < 0) return 0;
-  NodeKind kk = nt_kind(nt, av[0]);
-  int lit = kk == NK_SymbolNode || kk == NK_StringNode || kk == NK_IntegerNode;
-  TyKind vt = infer_type(c, av[1]);
+  int first, last, boxed = struct_aset_classes(c, id, &first, &last) == 2;
+  if (first > last) return 0;
+  int v = nt_arr(nt, nt_ref(nt, id, "arguments"), "arguments", NULL)[1];
+  TyKind vt = infer_type(c, v);
   int changed = 0;
-  for (int k = one >= 0 ? one : 0; k < (one >= 0 ? one + 1 : c->nclasses); k++) {
+  for (int k = first; k <= last; k++) {
+    int lo, hi;
+    if (!struct_aset_members(c, id, k, &lo, &hi)) continue;
     ClassInfo *ci = &c->classes[k];
-    if (!ci->is_struct || ci->is_data || ci->is_native_class ||
-        comp_resolve_member(c, k, "[]=", 0, NULL, NULL) != SP_MEMBER_NONE) continue;
-    int lo = lit ? struct_member_idx(c, ci, av[0]) : 0;
-    int hi = lit ? lo + 1 : ci->nmembers;
-    int reach = one >= 0 ? 1 : -1;   /* asked once, and only for a store that types something */
-    for (int m = lo; m >= 0 && m < hi; m++) {
+    int reach = boxed ? -1 : 1;   /* asked once, and only for a store that types something */
+    for (int m = lo; m < hi; m++) {
       if (class_ivar_pinned(ci, ci->ivars[m])) continue;
       TyKind merged = vt == TY_NIL ? ci->ivar_types[m]
-                    : ty_unify(ci->ivar_types[m], empty_container_write(c, av[1], vt, ci->ivar_types[m]));
+                    : ty_unify(ci->ivar_types[m], empty_container_write(c, v, vt, ci->ivar_types[m]));
       if (vt != TY_NIL && merged == ci->ivar_types[m]) continue;
       if (reach < 0) reach = poly_ivar_set_reaches(c, id, k);
       if (!reach) break;

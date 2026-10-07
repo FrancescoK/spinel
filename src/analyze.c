@@ -31720,6 +31720,33 @@ static void refuse_string_read_copies(Compiler *c) {
   }
 }
 
+/* --share-strings: a Struct `[]=` through a boxed receiver, or by a key no
+   literal names (struct_aset_classes), stores the String's bytes: the poly
+   dispatch hands its arm the String read out, and the Struct's own `[]=`
+   boxes that read, never the handle. A String the share rule holds as a
+   handle is then a copy in the member, and a change through either side is
+   lost on the other. Refused (#6765) rather than compiled with it lost; a
+   value of another class, or a String held plainly, stores as it does
+   without the flag. */
+static void refuse_struct_aset_copies(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  if (!c->share_strings) return;
+  NT_FOREACH_KIND(nt, NK_CallNode, u) {
+    int first, last, boxed = struct_aset_classes(c, u, &first, &last) == 2;
+    if (first > last) continue;
+    int v = an_unparen(nt, nt_arr(nt, nt_ref(nt, u, "arguments"), "arguments", NULL)[1]);
+    if (!an_arg_is_shared_handle(c, v)) continue;
+    for (int k = first; k <= last; k++) {
+      int lo, hi;
+      if (!struct_aset_members(c, u, k, &lo, &hi) || (boxed && !poly_ivar_set_reaches(c, u, k))) continue;
+      unsupported_feature(c, u, "a String stored into a Struct member by `[]=` through a boxed receiver, or "
+                          "by a key that is no literal, is mutated in place, or the variable it came from is "
+                          "(a String is not yet shared by reference through a Struct's `[]=`). Store it "
+                          "with the member's writer (`o.x = s`) on a receiver typed as the Struct.");
+    }
+  }
+}
+
 /* Only an implicit block or the method's own block parameter forwards its
    caller's block. A literal block or an unrelated proc belongs to super. */
 int super_forwards_caller_block(Compiler *c, int id) {
@@ -36378,6 +36405,7 @@ static void an_phase_reconcile_check(Compiler *c) {
       nt_node_set_str((NodeTable *)c->nt, sid, "name", "[]=");
   }
   refuse_string_read_copies(c);
+  refuse_struct_aset_copies(c);
 
   /* Refuse lent ivar copies through calls and super only after sharing
      analysis settles (#6998). */
