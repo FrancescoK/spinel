@@ -17301,6 +17301,7 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
     if (grt == TY_POLY && g_handle_face_node != id && argc == 0 &&
         ty_poly_handle_face(nt_str(nt, id, "name")) != TY_UNKNOWN &&
         !user_defines_or_reads(c, nt_str(nt, id, "name")) &&
+        !native_class_defines(c, nt_str(nt, id, "name")) &&
         g_n_argov < MAX_ARG_OVERRIDE) {
       const char *knm = nt_str(nt, id, "name");
       TyKind kt = ty_poly_handle_face(knm);

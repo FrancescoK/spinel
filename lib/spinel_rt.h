@@ -3878,6 +3878,7 @@ static sp_int sp_poly_struct_size(sp_RbVal v) {
   return (sv.tag == SP_TAG_OBJ && sv.v.p && sp_poly_is_array_kind(sv.cls_id)) ? sp_poly_arr_len(sv) : -1;
 }
 static sp_int sp_poly_length_m(sp_RbVal v) {
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_MATCHDATA && v.v.p) return sp_MatchData_length((sp_MatchData *)v.v.p);
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_QUEUE && v.v.p) return sp_Queue_size((sp_queue *)v.v.p);
   { sp_int n = sp_poly_struct_size(v); if (n >= 0) return n; }
   if (v.tag == SP_TAG_NIL || v.tag == SP_TAG_INT || v.tag == SP_TAG_FLT ||
@@ -3923,7 +3924,18 @@ static sp_RbVal sp_poly_io_truncate(sp_RbVal v, sp_int n) {
 }
 sp_RbVal sp_Enumerator_size_p(void *e);   /* lib/sp_cold.c; sp_Enumerator is declared further down */
 void sp_enum_index_search_each_raise(void *e);   /* lib/sp_cold.c: raise for a boxed index search's each */
+/* A boxed MatchData's group, by index or by name, boxed: a group that did
+   not take part in the match is nil. */
+static sp_RbVal sp_poly_md_group(sp_MatchData *m, sp_RbVal k) {
+  const char *g = NULL;
+  if (k.tag == SP_TAG_SYM && sp_sym_name_fn) g = sp_MatchData_aref_name(m, sp_sym_name_fn((sp_sym)k.v.i));
+  else if (k.tag == SP_TAG_STR) g = sp_MatchData_aref_name(m, k.v.s ? k.v.s : "");
+  else g = sp_MatchData_aref(m, sp_poly_to_i(k));
+  return g ? sp_box_str(g) : sp_box_nil();
+}
 static sp_int sp_poly_size(sp_RbVal v) {
+  /* MatchData#size is its group count, 0 never: it had no arm */
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_MATCHDATA && v.v.p) return sp_MatchData_length((sp_MatchData *)v.v.p);
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_FLOAT_RANGE && v.v.p) { sp_frange_iter_raise((*(sp_FloatRange *)v.v.p), 0); return 0; }  /* a Float range has no size (TypeError) */
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_QUEUE && v.v.p) return sp_Queue_size((sp_queue *)v.v.p);
   { sp_int n = sp_poly_struct_size(v); if (n >= 0) return n; }
@@ -9048,6 +9060,7 @@ static sp_RbVal sp_poly_get_sym(sp_RbVal v, sp_sym key) {
     case SP_BUILTIN_CURRY: return sp_curry_call_poly((sp_Curry *)v.v.p, 1, (sp_RbVal[]){sp_box_sym(key)});
     case SP_BUILTIN_SYM_POLY_HASH: return sp_SymPolyHash_get((sp_SymPolyHash*)v.v.p, key);
     case SP_BUILTIN_POLY_POLY_HASH: return sp_PolyPolyHash_get((sp_PolyPolyHash*)v.v.p, sp_box_sym(key));
+    case SP_BUILTIN_MATCHDATA: return v.v.p ? sp_poly_md_group((sp_MatchData *)v.v.p, sp_box_sym(key)) : sp_box_nil();
     /* a Symbol is no key of a String- or Integer-keyed Hash: a miss */
     case SP_BUILTIN_STR_POLY_HASH: case SP_BUILTIN_STR_STR_HASH: case SP_BUILTIN_STR_INT_HASH:
     case SP_BUILTIN_INT_INT_HASH: case SP_BUILTIN_INT_STR_HASH:
@@ -9440,6 +9453,11 @@ static sp_RbVal sp_poly_shift(sp_RbVal v) {
   return sp_box_nil();
 }
 static sp_RbVal sp_poly_get_str(sp_RbVal v, const char *key) {
+  /* MatchData#["name"]: the named group */
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_MATCHDATA && v.v.p) {
+    const char *g = sp_MatchData_aref_name((sp_MatchData *)v.v.p, key ? key : "");
+    return g ? sp_box_str(g) : sp_box_nil();
+  }
   /* `s["sub"]` is String#[str]: the substring itself when present, else nil.
      Both string representations answer it, and neither did here -- an
      immediate string was rejected by the tag test on the next line and a
@@ -9964,6 +9982,11 @@ static SP_INLINE sp_RbVal sp_poly_arr_get_hash(sp_RbVal a, sp_int i) {
 }
 
 static SP_NOINLINE sp_RbVal sp_poly_arr_get_hash_cold(sp_RbVal a, sp_int i) {
+  /* MatchData#[i]: the group, nil where it did not match */
+  if (a.tag == SP_TAG_OBJ && a.v.p && a.cls_id == SP_BUILTIN_MATCHDATA) {
+    const char *g = sp_MatchData_aref((sp_MatchData *)a.v.p, i);
+    return g ? sp_box_str(g) : sp_box_nil();
+  }
   /* Proc#[] is #call: an Integer index on a callable is a one-argument call.
      The emitter's int-key read reaches this cold arm (a Proc is not an array
      kind), so a boxed Proc used to answer nil (#4395). */
@@ -11980,6 +12003,14 @@ static sp_RbVal sp_poly_struct_values(sp_RbVal v) {
 }
 /* Array#values_at indexes; Hash#values_at looks the keys up. */
 static sp_RbVal sp_poly_arr_values_at(sp_RbVal v, sp_PolyArray *idx) {
+  /* MatchData#values_at: each group by index or name (it took the Array
+     path, which reads no MatchData, and answered nils) */
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_MATCHDATA && v.v.p) {
+    SP_GC_ROOT_RBVAL(v); SP_GC_ROOT(idx);
+    sp_PolyArray *out = sp_PolyArray_new(); SP_GC_ROOT(out);
+    for (sp_int i = 0; idx && i < idx->len; i++) sp_PolyArray_push(out, sp_poly_md_group((sp_MatchData *)v.v.p, idx->data[i]));
+    return sp_box_poly_array(out);
+  }
   sp_poly_coll_chk(v, "values_at");
   if (!(v.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(v.cls_id))) sp_poly_ary_chk(v, "values_at", 0);
   SP_GC_ROOT_RBVAL(v); SP_GC_ROOT(idx);
@@ -15554,6 +15585,7 @@ static sp_Enumerator *sp_Enumerator_new_indices(sp_RbVal arr) {
    the other callers of sp_poly_to_a_arr (a `for` loop, `deconstruct`, the
    Enumerable names) keep a Time's NoMethodError, as CRuby raises. */
 static sp_PolyArray *sp_poly_to_a_call(sp_RbVal v) {
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_MATCHDATA && v.v.p) return sp_MatchData_to_a((sp_MatchData *)v.v.p);
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_FLOAT_RANGE && v.v.p) { sp_frange_iter_raise((*(sp_FloatRange *)v.v.p), 1); return NULL; }
   if (!(v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_TIME && v.v.p)) return sp_poly_to_a_arr(v);
   sp_Time t = *(sp_Time *)v.v.p;
