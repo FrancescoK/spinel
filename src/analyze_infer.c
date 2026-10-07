@@ -2740,6 +2740,16 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
                         sp_streq(name, "quo") || sp_streq(name, "div") ||
                         sp_streq(name, "remainder") || sp_streq(name, "coerce")))
         { *out = an_poly_concrete(c, name, TY_POLY); return 1; }
+      /* shuffle / shuffle! / sample given `random:` (emit_array_random_kw):
+         the keyword is not a count, so sample answers one element and shuffle
+         an Array; shuffle! answers the receiver, and sample(n, random:) n
+         elements */
+      if ((argc == 1 || argc == 2) && nt_ref(nt, id, "block") < 0 &&
+          (sp_streq(name, "sample") || (argc == 1 && (sp_streq(name, "shuffle") || sp_streq(name, "shuffle!"))))) {
+        int nkv = 0; int ka = nt_ref(nt, id, "arguments"); const int *kv = ka >= 0 ? nt_arr(nt, ka, "arguments", &nkv) : NULL;
+        if (kv && nkv == argc && nt_kind(nt, kv[argc - 1]) == NK_KeywordHashNode)
+          { *out = an_poly_concrete(c, name, (argc == 2 || sp_streq(name, "shuffle")) ? TY_POLY_ARRAY : TY_POLY); return 1; }
+      }
       /* String#getbyte on a boxed value: int byte or nil on out-of-range. */
       if (argc == 1 && sp_streq(name, "getbyte")) { *out = an_poly_concrete(c, name, TY_POLY); return 1; }
       /* The count-taking Array reads on a boxed array. Their value is a new

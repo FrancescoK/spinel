@@ -1,0 +1,18 @@
+true
+2
+[1, 2, 3, 4, 5]
+[]
+true
+3
+true
+true
+true
+2
+true
+[1, 2, 3, 4, 5]
+true
+[1, 2, 3, 4, 5]
+nil
+[]
+"negative sample number"
+"undefined method 'sample' for an instance of Integer"

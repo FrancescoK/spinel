@@ -38,6 +38,9 @@ int emit_call_poly_builtin_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
       return 1;
     }
   }
+  /* shuffle / sample given `random:` on a boxed Array (emit_array_random_kw):
+     the count arm below read the keyword hash as the count */
+  if (emit_array_random_kw(c, id, b, nt, name, recv, argc, argv, rt)) return 1;
   /* The count-taking Array reads on a poly receiver. An array read out of a
      nested Array or Hash answers Array to #class but had no arm for these, so
      they raised NoMethodError (#3464). rotate's count is optional. */

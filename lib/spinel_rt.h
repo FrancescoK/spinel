@@ -10888,6 +10888,23 @@ static sp_RbVal sp_poly_sample_r(sp_RbVal a, sp_Random *g) {
   sp_int n = sp_poly_length(a);
   return n > 0 ? sp_poly_arr_get(a, sp_Random_rand_int(g, n)) : sp_box_nil();
 }
+/* sample(n, random: g): n distinct elements in drawn order, each draw from g
+   (the first n steps of a Fisher-Yates over a copy) */
+static sp_RbVal sp_poly_sample_n_r(sp_RbVal a, sp_int n, sp_Random *g) {
+  if (n < 0) sp_raise_cls("ArgumentError", "negative sample number");
+  sp_RbVal cp = sp_poly_dup(a, 0); SP_GC_ROOT_RBVAL(cp);
+  sp_int len = sp_poly_length(cp);
+  if (n > len) n = len;
+  for (sp_int i = 0; i < n; i++) {
+    sp_int j = i + sp_Random_rand_int(g, len - i);
+    sp_RbVal x = sp_poly_arr_get(cp, i); SP_GC_ROOT_RBVAL(x);
+    sp_RbVal y = sp_poly_arr_get(cp, j); SP_GC_ROOT_RBVAL(y);
+    sp_poly_arr_set(cp, i, y);
+    sp_poly_arr_set(cp, j, x);
+  }
+  sp_PolyArray *r = sp_poly_to_a_arr(cp); SP_GC_ROOT(r);
+  return sp_box_poly_array(sp_PolyArray_slice(r, 0, n));
+}
 /* A key or value of a kind a typed hash cannot hold: the compiler settled
    the hash's variant from what it saw and did not widen it for this store.
    Loud, not a dropped entry (#4540). */
