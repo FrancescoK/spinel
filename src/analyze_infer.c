@@ -8736,6 +8736,7 @@ TyKind infer_uncached(Compiler *c, int id) {
     /* the Process::Status of the last child waited for, NULL (nil) before
        any; it was an Integer, and `$?.exitstatus` raised NoMethodError */
     if (nm && sp_streq(nm, "$?")) return TY_PROCESS_STATUS;
+    if (nm && sp_streq(nm, "$$")) return TY_INT;   /* the process id, Process.pid */
     if (nm && (is_program_name_global(nm))) return TY_STRING;
     if (nm && sp_streq(nm, "$!")) return TY_EXCEPTION;  /* the exception being handled, or nil (NULL) outside a rescue */
     if (nm && (sp_streq(nm, "$;") || sp_streq(nm, "$,"))) return TY_NIL;
