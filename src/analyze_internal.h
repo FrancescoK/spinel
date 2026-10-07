@@ -523,6 +523,7 @@ int desugar_encoding_queries(Compiler *c);
 int desugar_alias_method_string_names(Compiler *c);
 int desugar_truth_only_ivars(Compiler *c);
 int method_name_implicitly_invoked(const char *nm);
+unsigned char *ctor_scope_set(Compiler *c);
 int desugar_alias_method_values(Compiler *c);
 int desugar_inherited_aliases(Compiler *c);
 int desugar_reader_aliases_before_redef(Compiler *c);

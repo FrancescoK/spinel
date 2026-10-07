@@ -16072,6 +16072,21 @@ int desugar_builtin_reopen_named_superclass(Compiler *c) {
    module), and a generated inspect, which prints every ivar: a class that
    can hold it must define its own inspect.
 
+   Storing the truthiness drops the reference the slot held, so the pass
+   leaves alone what may want the reference: an ivar nothing reads (written
+   only to keep its object alive, as Fiddle's Pointer#__hold keeps the String
+   whose bytes the pointer addresses), and every ivar of a program that links
+   native code (a native class, a carried C object such as FFI's) or registers
+   a finalizer, where an object's lifetime is what frees memory or runs code.
+   The pass runs before inference, when no value has a class yet, so the
+   last is asked of the program and not of each value.
+
+   The rewrite is for the slot's C type, so it is made only where the slot
+   ends up a boolean: every write then stores a boolean (a `nil` stores its
+   truthiness like any other value), and a constructor of the hierarchy's
+   root writes the slot, which otherwise starts nil on a fresh instance
+   (implicit_nil_writes_note) and is boxed with it.
+
    A method's value is a use like any other: a value that reaches a method
    body's tail is read where the method's calls are (tov_method_use), by
    name over every call and with any symbol, alias or runtime protocol of
@@ -16086,11 +16101,14 @@ typedef struct {
   const NodeTable *nt;
   int *par;
   int ngroups, cgroups;
-  struct { int cls; const char *name; int ok; int needs; } *g;   /* cls: the hierarchy's root */
+  /* cls: the hierarchy's root; reads: its read nodes; seeded: a write in a
+     constructor of cls (ctor_scope_set); isbool: its slot is a boolean */
+  struct { int cls; const char *name; int ok; int needs; int reads; int seeded; int isbool; } *g;
   int *node_group;            /* per ivar node: its group, or -1 */
   unsigned char *muse;        /* per method scope: TOV_* of its value */
   unsigned char *mfixed;      /* per scope: a full use by name (symbol, alias, protocol) */
   int *dsend; int ndsend, cdsend;   /* the sends whose name is computed */
+  int user_bool_ops;          /* a method of the program is named a comparison or `!` */
 } TOV;
 
 static int tov_root(Compiler *c, int ci) {
@@ -16107,7 +16125,8 @@ static int tov_group_of(TOV *t, int cls, const char *name) {
     if (!t->g) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   }
   t->g[t->ngroups].cls = cls; t->g[t->ngroups].name = name;
-  t->g[t->ngroups].ok = 1; t->g[t->ngroups].needs = 0;
+  t->g[t->ngroups].ok = 1; t->g[t->ngroups].needs = 0; t->g[t->ngroups].reads = 0;
+  t->g[t->ngroups].seeded = 0; t->g[t->ngroups].isbool = 0;
   return t->ngroups++;
 }
 
@@ -16141,6 +16160,31 @@ static int tov_boolish(TOV *t, int v) {
   case NK_InstanceVariableReadNode: {
     int gi = t->node_group[v];
     return gi >= 0 && t->g[gi].ok;
+  }
+  default: return 0;
+  }
+}
+
+/* A value the slot holds as a boolean after the rewrite, so its write is
+   left as it is: true, false, a builtin `!` or comparison, an `&&`/`||` of
+   such, or an ivar whose own slot is a boolean. Unlike tov_boolish, nil is
+   not one: it would box the slot. */
+static int tov_bool(TOV *t, int v) {
+  const NodeTable *nt = t->nt;
+  if (v < 0) return 0;
+  switch (nt_kind(nt, v)) {
+  case NK_TrueNode: case NK_FalseNode: return 1;
+  case NK_AndNode: case NK_OrNode:
+    return tov_bool(t, nt_ref(nt, v, "left")) && tov_bool(t, nt_ref(nt, v, "right"));
+  case NK_ParenthesesNode: {
+    int b = nt_ref(nt, v, "body"), n = 0;
+    const int *bb = b >= 0 && nt_kind(nt, b) == NK_StatementsNode ? nt_arr(nt, b, "body", &n) : NULL;
+    return bb && n == 1 && tov_bool(t, bb[0]);
+  }
+  case NK_CallNode: return !t->user_bool_ops && tov_boolish(t, v);
+  case NK_InstanceVariableReadNode: {
+    int gi = t->node_group[v];
+    return gi >= 0 && t->g[gi].isbool;
   }
   default: return 0;
   }
@@ -16252,13 +16296,18 @@ int desugar_truth_only_ivars(Compiler *c) {
   /* reflection reaches any ivar by name */
   NT_FOREACH_KIND(nt, NK_CallNode, id) {
     const char *nm = nt_str(nt, id, "name");
-    if (nm && is_ivar_reflection(nm)) return 0;
+    if (nm && (is_ivar_reflection(nm) || is_finalizer_hook(nm))) return 0;
   }
+  /* native code can address an object the collector sees only through its
+     holder: keep every reference (see above) */
+  if (c->n_native_objs > 0) return 0;
+  for (int k = 0; k < c->nclasses; k++)
+    if (c->classes[k].is_native_class) return 0;
   NT_FOREACH_KIND(nt, NK_ConstantReadNode, id) {
     const char *nm = nt_str(nt, id, "name");
     if (nm && is_ivar_serializer(nm)) return 0;
   }
-  TOV t = { c, nt, NULL, 0, 0, NULL, NULL, NULL, NULL, NULL, 0, 0 };
+  TOV t = { c, nt, NULL, 0, 0, NULL, NULL, NULL, NULL, NULL, 0, 0, 0 };
   int n0 = nt->count;
   t.node_group = malloc(sizeof(int) * (size_t)(n0 ? n0 : 1));
   t.muse = calloc((size_t)(c->nscopes ? c->nscopes : 1), 1);
@@ -16280,7 +16329,11 @@ int desugar_truth_only_ivars(Compiler *c) {
     t.node_group[id] = gi;
     if (root < 0 || !tov_is_ivar_write(k) && k != NK_InstanceVariableReadNode) t.g[gi].ok = 0;
     if (tov_is_ivar_write(k) && !tov_boolish(&t, nt_ref(nt, id, "value"))) t.g[gi].needs = 1;
+    if (k == NK_InstanceVariableReadNode) t.g[gi].reads++;
   }
+  /* an ivar nothing reads holds its value for its own sake */
+  for (int gi = 0; gi < t.ngroups; gi++)
+    if (!t.g[gi].reads) t.g[gi].ok = 0;
   /* what can see a group's value: a module, an attr, a struct, a
      generated inspect, in any class of the hierarchy */
   for (int gi = 0; gi < t.ngroups; gi++) {
@@ -16303,6 +16356,7 @@ int desugar_truth_only_ivars(Compiler *c) {
     const char *nm = c->scopes[s].name;
     if (!nm) continue;
     if (method_name_implicitly_invoked(nm) || c->scopes[s].is_cmethod) t.mfixed[s] = 1;
+    if (is_bool_comparison(nm) || is_not_op(nm)) t.user_bool_ops = 1;
   }
   for (int q = 0; q < 2; q++) {
     int cnt = 0;
@@ -16353,12 +16407,35 @@ int desugar_truth_only_ivars(Compiler *c) {
     if (!changed) break;
     if (round == 63) for (int gi = 0; gi < t.ngroups; gi++) t.g[gi].ok = 0;   /* no fixpoint: leave all */
   }
-  /* each write of a truth-only group that needs one stores `v ? true : false` */
+  /* which slots end up booleans: seeded by a constructor of the root, and
+     either rewritten or written only booleans; a group left as it is drops
+     out when one of its writes is not a boolean, until nothing changes */
+  unsigned char *ctor = ctor_scope_set(c);
   for (int id = 0; id < n0; id++) {
     int gi = t.node_group[id];
-    if (gi < 0 || !t.g[gi].ok || !t.g[gi].needs || !tov_is_ivar_write(nt_kind(nt, id))) continue;
+    if (gi < 0 || !t.g[gi].ok || !tov_is_ivar_write(nt_kind(nt, id))) continue;
+    Scope *s = comp_scope_of(c, id);
+    if (s && ctor[s - c->scopes] && s->class_id == t.g[gi].cls) t.g[gi].seeded = 1;
+  }
+  free(ctor);
+  for (int gi = 0; gi < t.ngroups; gi++) t.g[gi].isbool = t.g[gi].ok && t.g[gi].seeded;
+  for (int changed = 1; changed; ) {
+    changed = 0;
+    for (int id = 0; id < n0; id++) {
+      int gi = t.node_group[id];
+      if (gi < 0 || !t.g[gi].isbool || t.g[gi].needs || !tov_is_ivar_write(nt_kind(nt, id))) continue;
+      if (!tov_bool(&t, nt_ref(nt, id, "value"))) { t.g[gi].isbool = 0; changed = 1; }
+    }
+  }
+  /* each write of a truth-only group that needs one, and whose slot then is a
+     boolean, stores `v ? true : false` */
+  for (int id = 0; id < n0; id++) {
+    int gi = t.node_group[id];
+    if (gi < 0 || !t.g[gi].isbool || !t.g[gi].needs || !tov_is_ivar_write(nt_kind(nt, id))) continue;
     int v = nt_ref(nt, id, "value");
-    if (v < 0 || tov_boolish(&t, v)) continue;
+    if (v < 0 || tov_bool(&t, v)) continue;
+    /* a nil's truthiness is false */
+    if (nt_kind(nt, v) == NK_NilNode) { nt_node_set_type(nt, v, "FalseNode"); continue; }
     int iff = nt_new_node(nt, "IfNode"), s1 = nt_new_node(nt, "StatementsNode");
     int el = nt_new_node(nt, "ElseNode"), s2 = nt_new_node(nt, "StatementsNode");
     int tn = nt_new_node(nt, "TrueNode"), fn = nt_new_node(nt, "FalseNode");

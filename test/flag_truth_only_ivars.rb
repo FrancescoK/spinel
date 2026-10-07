@@ -121,3 +121,45 @@ end
 f = F.new
 f.set([5])
 p f.on
+
+# An ivar nothing reads keeps the object written into it: holding it may be
+# its purpose (a keep-alive). One no constructor writes starts nil, so its
+# slot would stay boxed: it keeps its value too. A `nil` written into an
+# ivar that stores its truthiness stores false.
+class G
+  def initialize = (@hold = nil; @on = false)
+  def inspect = "G"
+  def take(x)
+    @hold = x
+    @on ||= x
+    nil
+  end
+  def on? = @on ? 1 : 0
+end
+g = G.new
+g.take([6])
+p g.on?
+
+class H
+  def inspect = "H"
+  def take(x) = (@f = x; nil)
+  def on? = @f ? 1 : 0
+end
+h = H.new
+p h.on?
+h.take([7])
+p h.on?
+
+class I
+  def initialize = (@f = nil; @n = 0)
+  def inspect = "I"
+  def take(x) = (@f = x; nil)
+  def drop = (@f = nil; nil)
+  def on? = @f ? 1 : 0
+end
+i = I.new
+p i.on?
+i.take([8])
+p i.on?
+i.drop
+p i.on?
