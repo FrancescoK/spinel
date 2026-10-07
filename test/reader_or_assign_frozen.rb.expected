@@ -1,0 +1,21 @@
+[true, true, true, true, true]
+[[97, 97, 98, 99], [97, 97, 98, 99], [97, 97, 98, 99], [97, 97, 98, 99]]
+FrozenError
+FrozenError
+[true, true]
+["aabc", "aabc"]
+[true, true, true, true, true]
+[[97, 0, 97, 98], [97, 0, 97, 98], [97, 0, 97, 98], [97, 0, 97, 98]]
+FrozenError
+FrozenError
+[true, true]
+["a\x00ab", "a\x00ab"]
+[false, false, false, false, false]
+[[97, 98, 99, 100], [97, 98, 99, 100], [97, 98, 99, 100], [97, 98, 99, 100]]
+mutable snapshot
+mutable
+[false, false]
+["abcd", "abcd"]
+nil
+true
+true
