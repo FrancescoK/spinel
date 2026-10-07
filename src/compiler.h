@@ -1085,6 +1085,10 @@ int comp_block_rebinds_arg(Compiler *c, int blk, int arg);
    it, a self call whose method may, or anything else that runs code
    (codegen_util.c) */
 int subtree_may_write_ivar(Compiler *c, int id, const char *iv, int cls, int depth);
+/* Does the subtree under node n assign the variable argument node `arg`
+   reads (a local of the same scope, or an instance variable), by any write
+   kind, at any depth? 0 when `arg` is no variable read. */
+int comp_node_writes_var(Compiler *c, int n, int arg);
 int comp_lvw_first(Compiler *c, const char *name);
 int comp_class_singleton_has_module(Compiler *c, int ci, int mod);
 int comp_class_extends_any(Compiler *c, int ci);

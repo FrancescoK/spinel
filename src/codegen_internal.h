@@ -109,7 +109,7 @@ extern int  g_tmp;
 #define MAX_RENAME 128
 extern char g_ren_from[MAX_RENAME][96];
 extern char g_ren_to[MAX_RENAME][112];
-typedef struct { int sv, from, n; char (*f)[96]; char (*t)[112]; } RenPark;
+typedef struct { int sv, from, n; char (*f)[96]; char (*t)[112]; int fence; } RenPark;
 RenPark ren_park(int from);
 void ren_unpark(RenPark *p);
 const char *strbuf_local_name(Compiler *c, int recv);
@@ -728,8 +728,12 @@ int gathered_param_index(Compiler *c, Scope *m, int i, const char *len, char *id
 extern unsigned g_yield_live_mask;   /* emit_proc_yield: positions whose targets take live bytes */
 void refuse_yield_handle_args(Compiler *c, int id);
 int emit_handle_var_ref(Compiler *c, int a, Buf *b);
-unsigned inline_alias_params(Compiler *c, int mi, const int *argv, int pargc, const ArgLayout *L, int blk);
-void inline_alias_release(Scope *m, unsigned alias_mask);
+unsigned inline_alias_params(Compiler *c, int mi, const int *argv, int pargc, const ArgLayout *L, int blk,
+                             int tag, int *splice_tok);
+void inline_alias_release(Compiler *c, Scope *m, unsigned alias_mask, int splice_tok);
+int splice_store_open(Compiler *c, int w, Buf *b);
+void splice_store_close(Compiler *c, int w, int n, Buf *b);
+void emit_splice_store_text(Compiler *c, int w, const char *lhs, const char *val, int str, Buf *b);
 void emit_inline_locals_aliased(Compiler *c, int mi, int tag, unsigned alias_mask, Buf *b, int din);
 void emit_inline_alias_arg(Compiler *c, int av, Buf *b);
 void emit_inline_bind_params(Compiler *c, Scope *m, int args, const int *argv, int argc,
@@ -1610,6 +1614,15 @@ void view_unbind(int n);
    restored by view_pop (or view_unwind on a refusal) like a type view. */
 enum { VR_STRBUF_BOX, VR_HANDLE_DEMAND, VR_POLY_LIFT, VR_NILNARROW, VR_NIL_TESTED };
 int view_push_repr(Compiler *c, int id, int flag, int v);
+/* A splice's alias of a caller's variable that the call's block assigns
+   (argument node arg, splice tag, parameter name), and a fence for a C
+   function emitted inside it (ren_park(0) pushes it, ren_unpark pops it);
+   both popped by view_pop. view_splice_next
+   answers the next open entry below position `from` (-1: from the top)
+   and above the innermost fence, or -1. */
+int view_push_splice(int arg, int tag, const char *pname);
+int view_push_fn(void);
+int view_splice_next(int from, int *arg, int *tag, const char **pname);
 /* bumped by every view push, pop and unwind: a per-node memo of a decision
    that reads the flags or the type keys on it */
 unsigned view_epoch(void);

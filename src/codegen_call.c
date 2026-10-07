@@ -313,12 +313,13 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
      an alias of the caller's variable, as an inlined method's does
      (inline_alias_params): a copy took the block's appends (#6179) */
   unsigned alias_mask = 0;
+  int splice_tok = -1;
   { int aa = nt_ref(nt, id, "arguments"), ac = 0;
     const int *av = aa >= 0 ? nt_arr(nt, aa, "arguments", &ac) : NULL;
     int pac = ac > 0 && nt_kind(nt, av[ac - 1]) == NK_KeywordHashNode ? ac - 1 : ac;
     ArgLayout LA;
     arg_layout(c, m, av, pac, pac < ac ? av[pac] : -1, 1, &LA);
-    alias_mask = inline_alias_params(c, mi, av, pac, &LA, block);
+    alias_mask = inline_alias_params(c, mi, av, pac, &LA, block, tag, &splice_tok);
     arg_layout_free(&LA); }
 
   /* declare the initialize body's locals under renamed names */
@@ -465,7 +466,7 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
   int save_ind = g_indent; g_indent = din;
   emit_stmts(c, m->body, b, din);
   g_indent = save_ind;
-  inline_alias_release(m, alias_mask);
+  inline_alias_release(c, m, alias_mask, splice_tok);
   emit_indent(b, g_indent + 1);
   buf_printf(b, "_t%d;\n", st);
   emit_indent(b, g_indent); buf_puts(b, "})");

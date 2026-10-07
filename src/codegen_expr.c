@@ -1686,6 +1686,7 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
     }
     buf_puts(b, "({ ");
     emit_local_ref(c, id, nm, b); buf_puts(b, " = ");
+    int sk = splice_store_open(c, id, b);   /* an open splice alias of the variable */
     int ven = 0;
     int v_empty_array = nt_kind(nt, v) == NK_ArrayNode && (nt_arr(nt, v, "elements", &ven), ven == 0);
     if (lv && lv->type == TY_POLY && repr_of(c, v).kind != RK_BOXED) emit_boxed(c, v, b);
@@ -1734,6 +1735,7 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
     }
     else if (lv) emit_coerce(c, v, lv->type, CO_HOLD, "a local variable write", b);
     else emit_expr(c, v, b);
+    splice_store_close(c, id, sk, b);
     buf_puts(b, "; "); emit_local_ref(c, id, nm, b); buf_puts(b, "; })");
     return 1;
   }
@@ -1836,6 +1838,8 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
     buf_puts(b, "({ ");
     if (fz_cid >= 0) emit_frozen_obj_guard(c, fz_cid, g_self ? g_self : "self", b);
     buf_printf(b, "%s = ", ref2e);
+    /* an open splice alias of the ivar (a plain String slot's) */
+    int sk = ivt2 == TY_STRING ? splice_store_open(c, id, b) : -1;
     Repr rp = repr_of(c, v);
     if (v_empty_array2 && ty_is_ptr_array(ivt2)) buf_puts(b, "sp_PtrArray_new()");
     else if (v_empty_array2 && ivt2 == TY_POLY_ARRAY) buf_puts(b, "sp_PolyArray_new()");
@@ -1904,6 +1908,7 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
       emit_obj_upcast_prefix(c, ivt2, comp_ntype(c, v), b);
       emit_coerce(c, v, ivt2, CO_HOLD, "an instance variable write", b);
     }
+    splice_store_close(c, id, sk, b);
     emit_ivar_write_result(c, id, v, ivt2, ref2e, b);
     return 1;
   }

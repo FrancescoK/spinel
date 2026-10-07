@@ -2017,6 +2017,13 @@ static int comp_subtree_writes_var(Compiler *c, int n, int arg, const char *name
   }
   return 0;
 }
+int comp_node_writes_var(Compiler *c, int n, int arg) {
+  const NodeTable *nt = c->nt;
+  NodeKind ak = arg >= 0 ? nt_kind(nt, arg) : NK__COUNT;
+  const char *name = arg >= 0 ? nt_str(nt, arg, "name") : NULL;
+  if (n < 0 || !name || (ak != NK_LocalVariableReadNode && ak != NK_InstanceVariableReadNode)) return 0;
+  return comp_subtree_writes_var(c, n, arg, name, 0);
+}
 int comp_block_rebinds_arg(Compiler *c, int blk, int arg) {
   const NodeTable *nt = c->nt;
   NodeKind ak = arg >= 0 ? nt_kind(nt, arg) : NK__COUNT;
