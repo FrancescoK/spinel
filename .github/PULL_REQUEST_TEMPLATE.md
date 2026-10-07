@@ -1,4 +1,4 @@
-<!-- See CONTRIBUTING.md. A pull request whose gate fails here goes back to its author. -->
+<!-- See CONTRIBUTING.md. A pull request needs no issue. If its gate fails here on a mechanical point, or it conflicts, we fix it and say so; a failure that needs a design decision goes back to its author. -->
 
 ## What this changes
 
