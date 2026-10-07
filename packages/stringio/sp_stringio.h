@@ -9,6 +9,7 @@
    poly values, arrays, and cls_id dispatch like any object. Instances are
    GC-allocated; the finalizer frees the malloc'd buffer. */
 #include "spinel/runtime.h"   /* sp_int, sp_bool, sp_gc_alloc, sp_str_* */
+#include "sp_string.h"        /* sp_String, the shared handle a StringIO may hold */
 
 typedef struct sp_StringIO_s {
   sp_int cls_id;      /* object header: runtime class id, compiler-stamped */
@@ -19,6 +20,11 @@ typedef struct sp_StringIO_s {
   int64_t len, cap, pos, lineno;
   int closed;
   int borrowed;
+  /* --share-strings: the String the StringIO is opened on, as its shared
+     handle (sp_StringIO_new_h): the handle holds the bytes, and buf, len
+     and cap mirror it, read again on each entry since a change to the
+     String through another name moves them. NULL otherwise. */
+  sp_String *str;
 } sp_StringIO;
 
 sp_StringIO *sp_StringIO_new(sp_int cls_id);
@@ -77,4 +83,11 @@ void sp_StringIO_puts_va(sp_StringIO *s, sp_int n, sp_RbVal *v);
 sp_int sp_StringIO_write_va(sp_StringIO *s, sp_int n, sp_RbVal *v);
 const char *sp_StringIO_read_va(sp_StringIO *s, sp_int n, sp_RbVal *v);
 void sp_StringIO_free(void *p);             /* GC finalizer: frees buf */
+/* --share-strings: the forms over the String as its shared handle (the
+   binding's `native_share`): opened on it, with a mode, or on a String of
+   its own; and #string answering that handle itself */
+sp_StringIO *sp_StringIO_new_h(sp_int cls_id, sp_String *str);
+sp_StringIO *sp_StringIO_new_hm(sp_int cls_id, sp_String *str, const char *mode);
+sp_StringIO *sp_StringIO_new_hn(sp_int cls_id);
+sp_String *sp_StringIO_string_h(sp_StringIO *s);
 #endif /* SP_STRINGIO_H */
