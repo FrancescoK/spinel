@@ -21831,7 +21831,8 @@ static unsigned dyn_blk_bits(Compiler *c, int mi) {
     bits |= lb & 0x3fffffffu;
     if (dyn_lit_post_app(c, b)) g_dyn.blkpost[mi] = 2;
   }
-  if (!any) bits |= DYN_OPEN;
+  /* a method nothing calls is passed no block */
+  if (!any && c->scopes[mi].reachable) bits |= DYN_OPEN;
   g_dyn.blk[mi] = DYN_DONE | bits;
   return g_dyn.blk[mi];
 }
