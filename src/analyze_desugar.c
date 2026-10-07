@@ -9609,6 +9609,11 @@ int desugar_builtin_scalar_calls(Compiler *c) {
        arms this migration removes for the COMMON case stay present in a
        narrower form specifically for that face-table fallback to call:
        see the comment where they are re-added. */
+    /* `v&.fdiv(2)`: the rewrite onto the generic's copy is a plain call,
+       which loses the safe navigation, so a nil `v` reached the method;
+       the call keeps its `&.` and its typed emitter */
+    { const char *cop = nt_str(nt, id, "call_operator");
+      if (cop && sp_streq(cop, "&.")) continue; }
     int ok = 0;
     if (bx == SP_BX_INTEGER) ok = (rt == TY_INT || rt == TY_BIGINT);
     else if (bx == SP_BX_FLOAT) ok = (rt == TY_FLOAT);
