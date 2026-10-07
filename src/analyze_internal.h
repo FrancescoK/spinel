@@ -172,6 +172,11 @@ int struct_member_idx_float(Compiler *c, ClassInfo *sc, int keynode);
    raises). */
 int struct_aset_receiver(Compiler *c, int id, int *cls);
 int struct_aset_members(Compiler *c, int id, int k, int *lo, int *hi);
+/* Can the `[]=` that node id makes on its receiver (a call, an index
+   op-write, an index target) store into a Struct's member: a receiver typed
+   as such a Struct, or a box that can hold one (every box whose classes the
+   analysis cannot bound, when the program has one)? */
+int struct_aset_may_reach(Compiler *c, int id);
 /* The classes the boxed receiver of call `call` can be an instance of, *n
    of them, or NULL when the analysis cannot bound them (analyze_scope.c) */
 const int *poly_recv_classes(Compiler *c, int call, int *n);

@@ -7911,11 +7911,30 @@ int struct_aset_receiver(Compiler *c, int id, int *cls) {
   if (ty_is_object(rt)) { *cls = ty_object_class(rt); return 1; }
   return rt == TY_POLY ? 2 : 0;
 }
+/* Is class k's `[]=` the Struct's own: a Struct, not a Data, with no `[]=`
+   of the program's (cplan_struct_aset's)? */
+static int struct_aset_class(Compiler *c, int k) {
+  ClassInfo *ci = &c->classes[k];
+  return ci->is_struct && !ci->is_data && !ci->is_native_class && ci->nmembers > 0 &&
+         comp_resolve_member(c, k, "[]=", 0, NULL, NULL) == SP_MEMBER_NONE;
+}
+/* See analyze_internal.h. */
+int struct_aset_may_reach(Compiler *c, int id) {
+  int recv = nt_ref(c->nt, id, "receiver");
+  if (recv < 0) return 0;
+  TyKind rt = infer_type(c, recv);
+  if (ty_is_object(rt)) return struct_aset_class(c, ty_object_class(rt));
+  if (rt != TY_POLY) return 0;
+  int n = 0;
+  const int *ks = poly_recv_classes(c, id, &n);
+  for (int i = 0; i < (ks ? n : c->nclasses); i++)
+    if (struct_aset_class(c, ks ? ks[i] : i)) return 1;
+  return 0;
+}
 int struct_aset_members(Compiler *c, int id, int k, int *lo, int *hi) {
   const NodeTable *nt = c->nt;
   ClassInfo *ci = &c->classes[k];
-  if (!ci->is_struct || ci->is_data || ci->is_native_class ||
-      comp_resolve_member(c, k, "[]=", 0, NULL, NULL) != SP_MEMBER_NONE) return 0;
+  if (!struct_aset_class(c, k)) return 0;
   int args = nt_ref(nt, id, "arguments"), an = 0;
   const int *av = nt_arr(nt, args, "arguments", &an);
   NodeKind kk = nt_kind(nt, av[0]);
