@@ -84,6 +84,10 @@ typedef struct ShareFacts {
   int nbucket;
   /* each node's value: -2 not yet computed, -1 none */
   int *nval, nnodes;
+  /* per node: a blockless builtin call answering a new String Array of
+     new Strings (`s.scan(re)`, `s.split`), whose value is a class of its
+     own (sh_builtin) */
+  unsigned char *fresh_cont;
   /* `break v` and `next v` (sh_jumps): per node, the value the breaks out
      of a call's block or a loop hand the call or the loop, or the nexts of
      a block hand the block (-1 none); and the nodes the walk that finds
@@ -1038,6 +1042,14 @@ static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int 
   int nv = sh_args_vals(F, c, n, vals, 64);
   int lit_blk = blk >= 0 && nt_kind(nt, blk) == NK_BlockNode;
   int bv = lit_blk ? sh_block_val(F, c, blk) : -1;
+  /* a String's (or Kernel's) builtin answering a new String Array without
+     a block (`s.split`, `s.scan(re)`): its elements are new Strings, held
+     as a local's Array holds them, in a class of its own */
+  if ((share == BSH_PURE || share == BSH_ITER_FRESH_RECV) && !container && blk < 0 &&
+      c->ntype[n] == TY_STR_ARRAY) {
+    F->fresh_cont[n] = 1;
+    return sh_new(F, SHK_VALUE);
+  }
   switch (share) {
   case BSH_PURE:
     /* a container's block is handed its elements, whatever it answers */
@@ -2408,7 +2420,7 @@ static void sh_free(ShareFacts *F) {
   free(F->parent); free(F->elem); free(F->nhold); free(F->nmem); free(F->nelem); free(F->hidx);
   free(F->owner); free(F->hcount); free(F->anchored); free(F->mconst);
   free(F->mut_n); free(F->mut_v);
-  free(F->lsc); free(F->ret_m); free(F->ret_v); free(F->ret_done); free(F->unused);
+  free(F->lsc); free(F->ret_m); free(F->ret_v); free(F->ret_done); free(F->unused); free(F->fresh_cont);
   if (F->own_elig) free(F->byref_elig);
   free(F->byval); free(F->byval_done);
   free(F->rsite); free(F->mread);
@@ -2704,6 +2716,7 @@ static ShareFacts *sh_build(Compiler *c, int closed) {
   for (int i = 0; i < F->nnodes; i++) F->nval[i] = -2;
   sh_mutable_consts(F, c);
   F->unused = calloc((size_t)(F->nnodes > 0 ? F->nnodes : 1), 1);
+  F->fresh_cont = calloc((size_t)(F->nnodes > 0 ? F->nnodes : 1), 1);
   size_t ns = (size_t)(c->nscopes > 0 ? c->nscopes : 1);
   /* the default build's answer once compute_byref_out_params has given it,
      else this build's own: the types still move until then */
@@ -2879,6 +2892,10 @@ int share_node_elems_share(const Compiler *c, int n) {
   int r = sh_node_root(F, n, 1);
   return r >= 0 && repr_str_class_shares(F->flags[r], sh_class_holders(F, r));
 }
+int share_node_fresh_elems(const Compiler *c, int n) {
+  const ShareFacts *F = c->share;
+  return F && n >= 0 && n < F->nnodes && F->fresh_cont[n] && share_node_elems_share(c, n);
+}
 
 /* ---- master's route refusals under the flag (share.h) ---- */
 
@@ -2972,6 +2989,10 @@ static int sh_route_why(const Compiler *c, const ShareRoute *q) {
   if (v < 0) return SH_ROUTE_UNSEEN;
   if (q->to >= 0 && sh_route_to_root(c, q) != v) return SH_ROUTE_UNSEEN;
   if (!repr_str_class_shares(F->flags[v], sh_class_holders(F, v))) return SH_ROUTE_OK;
+  /* a fresh Array's elements bound by an iterator that keeps them: the
+     iterator's typed answer holds copies (only a dropped `each` hands each
+     one to its block alone) */
+  if (q->elems && !q->fresh_elems && share_node_fresh_elems(c, q->value)) return SH_ROUTE_COPIES;
   if (q->carry == SHARE_CARRY_COPY) return SH_ROUTE_COPIES;
   return q->carry < 0 || sh_carries_handle(c, q->carry) ? SH_ROUTE_OK : SH_ROUTE_COPIES;
 }

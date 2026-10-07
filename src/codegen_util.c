@@ -3962,8 +3962,8 @@ int hash_nil_key_stored(Compiler *c, int key, TyKind kt) {
 }
 
 /* --share-strings: String Array value v as a PolyArray holding each
-   element boxed as a handle of its own, for a slot whose elements the rule
-   shares (elems_handle) */
+   element boxed as a handle of its own (a slot whose elements the rule
+   shares, or a fresh Array an iterator consumes: share_node_fresh_elems) */
 void emit_str_array_handles(Compiler *c, int v, Buf *b) {
   int ta = ++g_tmp, tp = ++g_tmp, ti = ++g_tmp;
   buf_printf(b, "({ sp_StrArray *_t%d = ", ta);
@@ -3973,6 +3973,19 @@ void emit_str_array_handles(Compiler *c, int v, Buf *b) {
                 " sp_PolyArray_push(_t%d, sp_box_nullable_obj(sp_String_new_shared(sp_StrArray_get(_t%d, _t%d)),"
                 " SP_BUILTIN_STRBUF)); _t%d; })",
              ta, tp, tp, ti, ti, ta, ti, tp, ta, ti, tp);
+}
+/* An iterator's receiver n: a fresh String Array whose elements the rule
+   shares (share_node_fresh_elems)? Then it is consumed as the PolyArray of
+   handles a local's Array would be. */
+int iter_src_as_handles(Compiler *c, int n) {
+  return c->share_strings && comp_ntype(c, n) == TY_STR_ARRAY && share_node_fresh_elems(c, n);
+}
+/* emit_boxed for an Enumerator's source, as iter_src_as_handles has it */
+void emit_boxed_iter_src(Compiler *c, int n, Buf *b) {
+  if (!iter_src_as_handles(c, n)) { emit_boxed(c, n, b); return; }
+  buf_puts(b, "sp_box_nullable_obj((void *)(");
+  emit_str_array_handles(c, n, b);
+  buf_puts(b, "), SP_BUILTIN_POLY_ARRAY)");
 }
 /* --share-strings: is block parameter lv, bound to an element of kind et, a
    slot the scope holds as the shared handle (TY_STRBUF) over a String

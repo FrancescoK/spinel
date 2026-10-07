@@ -16727,7 +16727,7 @@ int emit_blockless_enumerator(Compiler *c, int id, Buf *b) {
     }
     else if (sp_streq(name, "each_with_index")) {
       buf_puts(b, "sp_Enumerator_new_ewi(");
-      emit_boxed(c, recv, b);
+      emit_boxed_iter_src(c, recv, b);
       buf_puts(b, ", 0)");
     }
     else {

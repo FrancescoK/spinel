@@ -3876,6 +3876,10 @@ int emit_each_with_index_terminal(Compiler *c, int id, Buf *b) {
      Enumerator there gives its items (sp_poly_ewi_items). */
   int poly_src = rr.kind == RK_BOXED;
   if (poly_src) { rt = TY_POLY_ARRAY; rr.elem = TY_POLY; }
+  /* a fresh String Array whose elements the rule shares is walked as the
+     PolyArray of handles a local's would be */
+  int as_handles = !poly_src && iter_src_as_handles(c, arr);
+  if (as_handles) { rt = TY_POLY_ARRAY; rr.elem = TY_POLY; }
   if (!ty_is_array(rt)) return 0;
   const char *k = rr.elem == TY_POLY ? "Poly" : array_kind(rt);
   if (!k) return 0;
@@ -3915,6 +3919,7 @@ int emit_each_with_index_terminal(Compiler *c, int id, Buf *b) {
     Buf bx; memset(&bx, 0, sizeof bx); emit_boxed(c, arr, &bx);
     buf_printf(&rb, "sp_poly_ewi_items(%s)", bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
   }
+  else if (as_handles) emit_str_array_handles(c, arr, &rb);
   else emit_expr(c, arr, &rb);
   emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre); buf_printf(g_pre, " _t%d = %s;\n", ta, rb.p ? rb.p : ""); free(rb.p);
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", ta);

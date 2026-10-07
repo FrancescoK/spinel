@@ -1217,6 +1217,8 @@ int emit_string_handle_append(Compiler *c, int id, Buf *b, const char *name, int
 int emit_str_append_chain_handle(Compiler *c, int id, Buf *b);
 int kwh_only_spreads(const NodeTable *nt, int kwh);
 void emit_str_array_handles(Compiler *c, int v, Buf *b);
+int iter_src_as_handles(Compiler *c, int n);
+void emit_boxed_iter_src(Compiler *c, int n, Buf *b);
 int elem_param_is_handle(const LocalVar *lv, TyKind et);
 const char *int_arith_fn(const char *op);
 const char *bigint_arith_fn(const char *op);
