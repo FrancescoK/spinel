@@ -1,0 +1,24 @@
+Module
+Module
+Module
+Module
+Module
+Module
+Module
+false
+true
+true
+false
+Class
+Class
+undefined method 'foo' for module Math
+undefined method 'foo' for module Kernel
+undefined method 'foo' for module Comparable
+undefined method 'new' for module Enumerable
+undefined method 'new' for module Math
+undefined method 'new' for module Process
+undefined method 'foo' for class Dir
+undefined method 'foo' for class String
+undefined method 'new' for module M
+undefined method 'foo' for module Math
+Module

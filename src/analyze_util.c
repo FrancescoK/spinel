@@ -160,6 +160,18 @@ int is_builtin_module_name(const char *n) {
   const BuiltinClass *r = builtin_row(n);
   return r && (r->flags & BC_MODULE);
 }
+/* The i-th builtin MODULE (Comparable, Enumerable, Kernel, Math, Signal,
+   GC, ObjectSpace, Process): its name and runtime class id, 0 for one that
+   is a class value by name only. Answers 0 past the last. */
+int builtin_module_at(int i, const char **name, int *id) {
+  for (int k = 0; k < BUILTIN_CLASS_N; k++) {
+    if (!(BUILTIN_CLASSES[k].flags & BC_MODULE)) continue;
+    if (i-- > 0) continue;
+    *name = BUILTIN_CLASSES[k].name; *id = BUILTIN_CLASSES[k].id;
+    return 1;
+  }
+  return 0;
+}
 int is_builtin_exception_name(const char *n) {
   const BuiltinClass *r = builtin_row(n);
   if (r && (r->flags & BC_EXCEPTION)) return 1;

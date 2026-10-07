@@ -14634,8 +14634,19 @@ static void emit_class_machinery(const NodeTable *nt, Compiler *c, Buf *b, char 
   buf_puts(b, "static int sp_class_is_module_val(sp_Class c){\n");
   if (c->nclasses > 0)
     buf_printf(b, "  if(c.cls_id>=0&&c.cls_id<%d)return sp_cls_is_module[c.cls_id];\n", c->nclasses);
-  /* builtin modules: Comparable(-114), Enumerable(-115), Kernel(-119) */
-  buf_puts(b, "  return(c.cls_id==-114||c.cls_id==-115||c.cls_id==-119||c.cls_id==-162);\n}\n");
+  /* the builtin modules, from the builtin table (builtin_module_at): by
+     runtime class id, or by name for one that has none (GC, Process,
+     ObjectSpace). Math had no place in a hand-kept list, so Math.class was
+     Class and Math.is_a?(Class) true. */
+  {
+    const char *mn; int mid;
+    buf_puts(b, "  return(0");
+    for (int i = 0; builtin_module_at(i, &mn, &mid); i++)
+      if (mid) buf_printf(b, "||c.cls_id==%d", mid);
+    for (int i = 0; builtin_module_at(i, &mn, &mid); i++)
+      if (!mid) buf_printf(b, "||(c.cls_id<0&&c.name&&strcmp(c.name,\"%s\")==0)", mn);
+    buf_puts(b, ");\n}\n");
+  }
 
   /* sp_class_superclass: parent class for user classes (negative ids map to
      Object builtin). Returns ((sp_Class){-116}) for unknown/root. */

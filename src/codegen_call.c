@@ -11917,9 +11917,9 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
          recognizes but whose constructor it has not implemented) exists --
          the METHOD is what is missing, so say so. Only a genuinely undefined
          constant keeps the NameError. */
-      if (builtin_class_id(cn) != 0)
-        buf_printf(b, "(sp_raise_cls(\"NoMethodError\", \"undefined method 'new' for class %s\"), %s)",
-                   cn, ndflt);
+      if (builtin_class_id(cn) != 0 || is_builtin_module_name(cn))
+        buf_printf(b, "(sp_raise_cls(\"NoMethodError\", \"undefined method 'new' for %s %s\"), %s)",
+                   is_builtin_module_name(cn) ? "module" : "class", cn, ndflt);
       else
         buf_printf(b, "(sp_raise_cls(\"NameError\", \"uninitialized constant %s\"), %s)",
                    cn, ndflt);
@@ -17710,8 +17710,12 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
            constant is UNKNOWN, which otherwise leaks "for unknown" */
         if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode")) {
           const char *rcn = nt_str(nt, recv, "name");
-          if (rcn && (comp_class_index(c, rcn) >= 0 || builtin_class_id(rcn) != 0))
-            snprintf(rdesc, sizeof rdesc, "class %s", rcn);
+          /* and a module as a module ("for module Math") */
+          int rci = rcn ? comp_class_index(c, rcn) : -1;
+          if (rcn && (rci >= 0 || builtin_class_id(rcn) != 0))
+            snprintf(rdesc, sizeof rdesc, "%s %s",
+                     (rci >= 0 ? comp_class_is_module(c, &c->classes[rci]) : is_builtin_module_name(rcn))
+                       ? "module" : "class", rcn);
         }
         if (grt == TY_POLY || grt == TY_BOOL) {
           /* The RESULT slot is sized by the call's own type (ret), not the
