@@ -18854,10 +18854,13 @@ static void an_call_targets_of(Compiler *c, int u, ACallTargets *t) {
      K#initialize as a constructor. Resolving to a single scope dropped one of
      them -- whichever arm ran second -- and the call site vanished from that
      scope's chain, which is how `Holder.new(s)` stopped being evidence and the
-     copy came back. */
+     copy came back. Under --share-strings a unique name still has to be this
+     call's own target: StringIO.open must not pull File.open's path into its
+     shared init. */
   int byname = an_unique_scope_by_name(c, un);
   if (byname >= 0 && c->scopes[byname].name &&
-      sp_streq(c->scopes[byname].name, un)) act_add(t, byname);
+      sp_streq(c->scopes[byname].name, un) &&
+      (!c->share_strings || cplan_user_fresh(c, u)->mi == byname)) act_add(t, byname);
   /* A name more than one method defines resolves by the call itself, and
      so does an alias, which names no scope of its own. By unique name alone
      such a call had no target, so its site was missing from every chain: a
@@ -19306,7 +19309,8 @@ static int an_call_targets_scope(Compiler *c, int u, int mi2, Scope *m2) {
   /* only an alias reaches a scope under another name */
   int aliased = !is_new && an_alias_name(c, un);
   int byname = named ? an_unique_scope_by_name(c, un) : -1;
-  if (named && byname == mi2) return 1;
+  if (named && byname == mi2 &&
+      (!c->share_strings || cplan_user_fresh(c, u)->mi == mi2)) return 1;
   /* a name more than one method defines, or an alias: the targets the call
      itself resolves to, as an_call_targets_of lists them */
   if (!is_new && ((named && byname < 0) || aliased)) {
