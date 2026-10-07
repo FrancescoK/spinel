@@ -1037,7 +1037,7 @@ static void nf_bind_elems(NF *f, int id, int blk) {
   if (!np || !nf_elem_tracked(f->c->ntype[recv]) || !nf_elem(f, recv, 0)) return;
   for (int i = 0; i < np; i++) {
     LocalVar *lv = nf_block_param(f, blk, i);
-    if (lv && (nil_fact_tracked(lv->type) || lv->type == TY_POLY)) nf_set(f, &lv->obj_may_nil, NFW_ELEM_NIL);
+    if (lv && (nf_tracked(f->c, lv->type) || lv->type == TY_POLY)) nf_set(f, &lv->obj_may_nil, NFW_ELEM_NIL);
   }
 }
 
