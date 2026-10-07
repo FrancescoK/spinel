@@ -1529,15 +1529,24 @@ int emit_call_safe_nav_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
           buf_printf(g_pre, "const char *_sn%d = %s; SP_GC_ROOT_STR(_sn%d);\n",
                      tsn2, rsn.p ? rsn.p : "NULL", tsn2);
         free(rsn.p);
-        if (rrt == TY_INT)        buf_printf(b, "(_sn%d == SP_INT_NIL ? ", tsn2);
-        else if (rrt == TY_FLOAT) buf_printf(b, "(sp_float_is_nil(_sn%d) ? ", tsn2);
-        else                      buf_printf(b, "(_sn%d == NULL ? ", tsn2);
-        if (ret2 == TY_POLY) buf_puts(b, "sp_box_nil()");
-        else if (ret2 == TY_INT) buf_puts(b, "SP_INT_NIL");
-        else if (ret2 == TY_FLOAT) buf_puts(b, "sp_float_nil()");
-        else if (ret2 == TY_STRING) buf_puts(b, "((const char *)NULL)");  /* string nil, not "" */
-        else buf_puts(b, default_value_from_compiler(c, ret2) ? default_value_from_compiler(c, ret2) : "0");
-        buf_puts(b, " : (");
+        char nilt[64];
+        if (rrt == TY_INT)        snprintf(nilt, sizeof nilt, "_sn%d == SP_INT_NIL", tsn2);
+        else if (rrt == TY_FLOAT) snprintf(nilt, sizeof nilt, "sp_float_is_nil(_sn%d)", tsn2);
+        else                      snprintf(nilt, sizeof nilt, "_sn%d == NULL", tsn2);
+        const char *nilv;
+        if (ret2 == TY_POLY) nilv = "sp_box_nil()";
+        else if (ret2 == TY_INT) nilv = "SP_INT_NIL";
+        else if (ret2 == TY_FLOAT) nilv = "sp_float_nil()";
+        else if (ret2 == TY_STRING) nilv = "((const char *)NULL)";  /* string nil, not "" */
+        else nilv = default_value_from_compiler(c, ret2) ? default_value_from_compiler(c, ret2) : "0";
+        /* The value arm is emitted with g_pre redirected, as the boxed arm
+           above does: a lowering that hoists statements (`v&.then { }`
+           inlines its block) would otherwise run them ahead of the guard, on
+           the very nil it stops. When it hoists, the guard becomes an `if`. */
+        Buf vbs; memset(&vbs, 0, sizeof vbs);
+        Buf preb2; memset(&preb2, 0, sizeof preb2);
+        Buf *sv_pre2 = g_pre;
+        g_pre = &preb2;
         if (g_n_argov < MAX_ARG_OVERRIDE) {
           int slot2 = view_bind(recv, "_sn%d", tsn2);
           int sv_skip = g_sn_skip; g_sn_skip = id;
@@ -1553,12 +1562,33 @@ int emit_call_safe_nav_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
           if (vw >= 0) view_pop(c, vw);
           g_sn_skip = sv_skip;
           view_unbind(g_n_argov - 1);
-          if (sn_box) emit_boxed_text(c, nat2, vb.p ? vb.p : "", b);
-          else buf_puts(b, vb.p ? vb.p : "");
+          if (sn_box) emit_boxed_text(c, nat2, vb.p ? vb.p : "", &vbs);
+          else buf_puts(&vbs, vb.p ? vb.p : "");
           free(vb.p);
         }
-        else emit_expr(c, recv, b);  /* override table full: degrade to unguarded */
-        buf_puts(b, "))");
+        else emit_expr(c, recv, &vbs);  /* override table full: degrade to unguarded */
+        g_pre = sv_pre2;
+        if (!preb2.p || !preb2.p[0])
+          buf_printf(b, "(%s ? %s : (%s))", nilt, nilv, vbs.p ? vbs.p : "");
+        else {
+          int rsv = ++g_tmp;
+          emit_indent(g_pre, g_indent);
+          emit_ctype(c, ret2, g_pre);
+          buf_printf(g_pre, " _snr%d = %s;\n", rsv, nilv);
+          emit_indent(g_pre, g_indent);
+          if (ret2 == TY_POLY) buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_snr%d);\n", rsv);
+          else if (needs_root(ret2)) buf_printf(g_pre, "SP_GC_ROOT(_snr%d);\n", rsv);
+          else buf_printf(g_pre, "(void)_snr%d;\n", rsv);
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "if (!(%s)) {\n", nilt);
+          buf_puts(g_pre, preb2.p);
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "  _snr%d = (%s);\n", rsv, vbs.p ? vbs.p : "");
+          emit_indent(g_pre, g_indent);
+          buf_puts(g_pre, "}\n");
+          buf_printf(b, "_snr%d", rsv);
+        }
+        free(vbs.p); free(preb2.p);
         return 1;
       }
       /* Other concrete receivers -- a by-value struct, a Symbol, an array --
