@@ -163,3 +163,52 @@ i.take([8])
 p i.on?
 i.drop
 p i.on?
+
+# A reader an op-write on a call or an index runs uses its value, as does a
+# method of the program named like a builtin iterator, which may use its
+# block's value. An endless initialize may end in the write.
+class J
+  def initialize = (@v = false; @m = [1])
+  def inspect = "J"
+  def load = (@v ||= @m.dup; nil)
+  def t = (@v ? 1 : 0)
+  def foo = @v
+  def foo=(x)
+    nil
+  end
+  def [](i) = @v
+  def []=(i, x)
+    nil
+  end
+end
+j = J.new
+j.load
+p j.t, (j.foo ||= 5), (j[0] ||= 6)
+
+class Box
+  def each
+    r = yield 1
+    p r
+  end
+end
+class K
+  def initialize = (@v = false; @m = [2])
+  def inspect = "K"
+  def load = (@v ||= @m.dup; nil)
+  def go(b) = b.each { @v }
+end
+k = K.new
+k.load
+k.go(Box.new)
+
+class Panel
+  def initialize = (@map = [1]; @visible = false; @enabled = true; @active = false)
+  def inspect = "#<Panel>"
+  def load = (@visible ||= @map.clear; nil)
+  def flags = (@active = @enabled && @visible; nil)
+  def draw = @active ? 1 : 0
+end
+pn = Panel.new
+pn.load
+pn.flags
+p pn.draw
