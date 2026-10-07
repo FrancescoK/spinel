@@ -4976,7 +4976,7 @@ const char *sp_str_encode(const char *s, sp_RbVal dst, sp_RbVal src,
   const char *repl = (replace.tag == SP_TAG_STR && replace.v.s) ? replace.v.s : NULL;
   SP_GC_ROOT_STR(repl);
   if (from == to) {
-    if (from == 1 && sp_enc_kw_replace(invalid)) return sp_str_scrub(s, repl);
+    if (from == 1 && sp_enc_kw_replace(invalid)) return sp_str_scrub_utf8(s, repl);
     return sp_str_dup(s);
   }
   /* binary <-> UTF-8: the ASCII bytes carry over, nothing else does */

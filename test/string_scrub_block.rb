@@ -3,7 +3,9 @@
 # a lead byte and the continuation bytes that fit it, as CRuby cuts them, so
 # a truncated character is one and an overlong or surrogate byte run is one
 # per byte, with or without a block. The answer must be a String of valid
-# bytes, and a replacement argument besides the block must be nil.
+# bytes, and a replacement argument besides the block must be nil. An
+# ASCII-8BIT receiver has no invalid sequence: every form answers its bytes,
+# still ASCII-8BIT, and the block never runs.
 def t
   yield
 rescue ArgumentError, TypeError => e
@@ -30,3 +32,12 @@ t { p s.scrub { nil } }
 t { p s.scrub { |b| b } }
 t { p "a\xFF".scrub("\xFE") }
 p "abc".scrub("\xFE")
+bin = "a\xFFb".b
+p bin.scrub { |b| "<#{b.unpack1('H*')}>" }, bin.scrub("?"), bin.scrub, bin.scrub { "?" }.encoding
+n = 0
+bin.scrub { n += 1; "?" }
+p n
+t { p bin.scrub("*") { "?" } }
+v = +"x\xFE"
+v.force_encoding("ASCII-8BIT")
+p v.scrub { "?" }, v.scrub("?").encoding, v.scrub!("?"), v

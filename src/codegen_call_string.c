@@ -1086,14 +1086,16 @@ int emit_op_string_scan_checked(Compiler *c, const BopCtx *x, Buf *b) {
    and each invalid sequence (sp_str_scrub_bad) handed to the block, whose
    answer replaces it: a String, converted as CRuby's implicit conversion
    does, and valid UTF-8 (sp_str_scrub_repl). A replacement argument besides
-   the block is CRuby's ArgumentError unless it is nil. */
+   the block is CRuby's ArgumentError unless it is nil. An ASCII-8BIT
+   receiver has no invalid sequence: the walk is skipped, the block never
+   runs, and the answer is sp_str_scrub's ASCII-8BIT copy, as in CRuby. */
 int emit_op_string_scrub_block(Compiler *c, const BopCtx *x, Buf *b) {
   const NodeTable *nt = c->nt;
   int block = nt_ref(nt, x->id, "block");
   if (block < 0 || nt_kind(nt, block) != NK_BlockNode) return 0;
   int argc;
   const int *argv = call_args(nt, x->id, &argc);
-  int ts = ++g_tmp, tl = ++g_tmp, tp = ++g_tmp, tout = ++g_tmp, tb = ++g_tmp, tn = ++g_tmp;
+  int ts = ++g_tmp, tl = ++g_tmp, tp = ++g_tmp, tout = ++g_tmp, tb = ++g_tmp, tn = ++g_tmp, tbin = ++g_tmp;
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "const char *_t%d = %s; SP_GC_ROOT_STR(_t%d);\n", ts, x->rtext, ts);
   if (argc == 1 && nt_kind(nt, argv[0]) != NK_NilNode) {
     Buf ab; memset(&ab, 0, sizeof ab); emit_boxed(c, argv[0], &ab);
@@ -1102,7 +1104,9 @@ int emit_op_string_scrub_block(Compiler *c, const BopCtx *x, Buf *b) {
                ab.p ? ab.p : "sp_box_nil()");
     free(ab.p);
   }
-  emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_int _t%d = (sp_int)sp_str_byte_len(_t%d), _t%d = 0;\n", tl, ts, tp);
+  emit_indent(g_pre, g_indent); buf_printf(g_pre, "int _t%d = sp_str_is_binary(_t%d);\n", tbin, ts);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_int _t%d = _t%d ? 0 : (sp_int)sp_str_byte_len(_t%d), _t%d = 0;\n", tl, tbin, ts, tp);
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "sp_String *_t%d = sp_String_new(\"\"); SP_GC_ROOT(_t%d);\n", tout, tout);
   emit_indent(g_pre, g_indent); buf_printf(g_pre, "while (_t%d < _t%d) {\n", tp, tl);
   emit_indent(g_pre, g_indent + 1);
@@ -1128,7 +1132,7 @@ int emit_op_string_scrub_block(Compiler *c, const BopCtx *x, Buf *b) {
   free(vb.p);
   emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "_t%d = _t%d + _t%d;\n", tp, tb, tn);
   emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
-  buf_printf(b, "_t%d->data", tout);
+  buf_printf(b, "(_t%d ? sp_str_scrub(_t%d, 0) : _t%d->data)", tbin, ts, tout);
   return 1;
 }
 
