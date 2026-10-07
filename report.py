@@ -5,7 +5,7 @@ import os, re, sys
 res = sys.argv[1]
 jobs = {}
 for d in sorted(os.listdir(res)):
-    m = re.match(r"r-(suite|cb|vf|nn|brow|dc|lit|op|ord|cdiff|cident|extra|scale|rubyspec|gate|pgate)-(.+)-(\d+)$", d)
+    m = re.match(r"r-(suite|cb|vf|nn|brow|sh|dc|lit|op|ord|cdiff|cident|extra|scale|rubyspec|gate|pgate)-(.+)-(\d+)$", d)
     if m:
         jobs[(m.group(1), m.group(2), int(m.group(3)))] = os.path.join(res, d)
 
@@ -51,12 +51,13 @@ def summary(d):
     return m.group(0) if m else "no summary (see probe.log)"
 
 # The sharded probes: brow (the builtin-row probe, in --shard slices of its
-# ops) and Matz's corpus probes dc, lit, op and ord (each shard a slice of
-# the tool's FILE set). Each shard's summary.txt is read in the tool's own
+# ops), sh (the String-sharing probe, in --shard slices of its rows) and
+# Matz's corpus probes dc, lit, op and ord (each shard a slice of the tool's
+# FILE set). Each shard's summary.txt is read in the tool's own
 # terms; the shards of a tree are added up, and the findings compared with
 # the base's over the shards both sides completed.
-SHARDED = ("brow", "dc", "lit", "op", "ord")
-DONE = {"brow": r"^\d+ cases: ", "dc": r"^findings: \d+ in ", "lit": r"^findings: \d+ programs, ",
+SHARDED = ("brow", "sh", "dc", "lit", "op", "ord")
+DONE = {"brow": r"^\d+ cases: ", "sh": r"^\d+ cases: ", "dc": r"^findings: \d+ in ", "lit": r"^findings: \d+ programs, ",
         "op": r"^findings: \d+ programs, ", "ord": r"^findings: \d+ programs, "}
 
 def shard_dirs(leg, name):
@@ -87,13 +88,19 @@ def probe_shard(leg, d):
     if not re.search(DONE[leg], s, re.M):
         return None
     c, ids = {}, set()
-    if leg == "brow":
+    if leg in ("brow", "sh"):
         c["cases"], c["wrong"], c["refused"], c["documented"] = \
             num(r"^(\d+) cases: (\d+) wrong, (\d+) refused, (\d+) documented", s, 4)
         for l in lines_after(s, r"^\d+ cases: "):
             m = re.match(r"^  (.+): (\d+)$", l)
             if m:
                 c["label " + m.group(1)] = int(m.group(2))
+        # sh: each mode's cases, matches, wrong and refused (`by mode:`)
+        for l in lines_after(s, r"^by mode:$"):
+            m = re.match(r"^  (\w+): (\d+) cases, (\d+) match, (\d+) wrong, (\d+) refused", l)
+            if m:
+                for i, k in enumerate(("cases", "match", "wrong", "refused")):
+                    c[f"mode {m.group(1)} {k}"] = int(m.group(i + 2))
         ids = cases(d)
     elif leg == "dc":
         c["given"], c["probed"], c["builds"] = num(r"^programs: (\d+) given, (\d+) probed, (\d+) builds", s, 3)
@@ -161,9 +168,12 @@ def probe_line(leg, c):
     def part(prefix, fmt="{k} {v}"):
         xs = sorted(((k[len(prefix):], v) for k, v in c.items() if k.startswith(prefix)), key=lambda kv: -kv[1])
         return ", ".join(fmt.format(k=k, v=v) for k, v in xs)
-    if leg == "brow":
+    if leg in ("brow", "sh"):
         line = f"{c['cases']} cases: {c['wrong']} wrong, {c['refused']} refused, {c['documented']} documented"
-        return line + (f" ({part('label ')})" if part("label ") else "")
+        line += f" ({part('label ')})" if part("label ") else ""
+        modes = sorted({k.split(" ")[1] for k in c if k.startswith("mode ")}, key=lambda m: m != "share")
+        return line + "".join(f"; {m}: {c[f'mode {m} cases']} cases, {c[f'mode {m} match']} match, "
+                              f"{c[f'mode {m} wrong']} wrong, {c[f'mode {m} refused']} refused" for m in modes)
     if leg == "dc":
         line = (f"programs: {c['given']} given, {c['probed']} probed, {c['builds']} builds and runs; "
                 f"findings: {c['findings']} in {c['in']} programs: {c['wrong']} wrong, {c['refused']} refused (not counted)")
@@ -295,7 +305,8 @@ for n in names:
             both = sorted(set(b) & set(h))
             hs = {(k, i) for k in both for i in h[k]}
             bs = {(k, i) for k in both for i in b[k]}
-            # a brow case's id is its shard's own; a corpus finding is named by its file
+            # a brow case's id is its shard's own; a corpus finding is named by
+            # its file, an sh case by its number in the whole run
             show = (lambda k, i: f"shard {k}: {i}") if leg == "brow" else (lambda k, i: i)
             if not both:
                 out += "; vs base: no shard finished on both sides"

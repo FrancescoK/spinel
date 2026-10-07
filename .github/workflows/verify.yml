@@ -7,9 +7,10 @@ name: verify
 #
 # The probes, each on the base and every head: cb, vf and nn (call binding,
 # value flow, nil narrowing) in one job each; brow (builtin rows) in shards
-# of its ops; dc, lit, op and ord (dead code, literals, operand order,
-# inference order) in shards of the corpus. A probe watch on master is all
-# eight: LEGS="cb vf nn brow dc lit op ord".
+# of its ops; sh (String sharing, every case with and without
+# --share-strings) in shards of its rows; dc, lit, op and ord (dead code,
+# literals, operand order, inference order) in shards of the corpus. A
+# probe watch on master is all nine: LEGS="cb vf nn brow sh dc lit op ord".
 #
 # cident is `make cident` (matz/spinel#7721): the head's own tools/cident.sh
 # against BASE, plain and with CIDENT_FLAGS=--share-strings; its cident.txt
@@ -69,11 +70,12 @@ jobs:
           rs = [{"leg": "rubyspec", "shard": k} for k in (1, 2, 3, 4, 5)] if "rubyspec" in legs else []
           # the sharded probes (the Run step's case), each on the base and
           # every head: brow the builtin-row probe in --shard slices of its
-          # ops; dc, lit, op and ord Matz's corpus probes, each shard every
+          # ops; sh the String-sharing probe in --shard slices of its rows;
+          # dc, lit, op and ord Matz's corpus probes, each shard every
           # n-th program of the tool's default FILE set. <LEG>_SHARDS in
           # verify.conf overrides a count. The counts aim at an hour or less
           # a shard on a 4-core runner (dc: some 25 builds a program).
-          sharded = {"brow": 4, "dc": 12, "lit": 1, "op": 2, "ord": 1}
+          sharded = {"brow": 4, "sh": 2, "dc": 12, "lit": 1, "op": 2, "ord": 1}
           sp = []
           for leg, d in sharded.items():
               if leg in legs:
@@ -208,7 +210,7 @@ jobs:
     runs-on: ubuntu-latest
     # a corpus or builtin-row shard is given longer: its time is a guess;
     # cident compiles the corpus four times and builds the base twice
-    timeout-minutes: ${{ contains(fromJSON('["brow", "dc", "lit", "op", "ord", "cident"]'), matrix.leg) && 240 || 120 }}
+    timeout-minutes: ${{ contains(fromJSON('["brow", "sh", "dc", "lit", "op", "ord", "cident"]'), matrix.leg) && 240 || 120 }}
     strategy:
       fail-fast: false
       # The account runs 20 jobs at once. A run keeps 8 of them free, so a
@@ -253,11 +255,13 @@ jobs:
       # sha, spelled alike (a probe watch's last head), takes it as its base.
       - name: Base cache key
         id: key
-        if: matrix.name == 'base' || contains(fromJSON('["cdiff", "cb", "vf", "nn", "brow", "dc", "lit", "op", "ord"]'), matrix.leg)
+        if: matrix.name == 'base' || contains(fromJSON('["cdiff", "cb", "vf", "nn", "brow", "sh", "dc", "lit", "op", "ord"]'), matrix.leg)
         run: |
           set -a; . ./verify.conf; set +a
+          # sh: the copy of the probe a tree without one runs (shareprobe/)
+          mine=""; [ "$LEG" = sh ] && mine=$(ls shareprobe/*)
           env_id=$({ ruby -v; cc --version | head -1; nproc; echo "$ImageOS $ImageVersion $RUNNER_TEMP"
-                     sha256sum .github/workflows/verify.yml cdiff1.sh cbase1.sh cbase.py; } | sha256sum | cut -c1-16)
+                     sha256sum .github/workflows/verify.yml cdiff1.sh cbase1.sh cbase.py $mine; } | sha256sum | cut -c1-16)
           of=$BASE; [ "$NAME" != base ] && [ "$LEG" != cdiff ] && of=$SHA
           # a head run with PROBE_ENV on the base's own sha must not share the base's key
           pe=""; [ "$NAME" != base ] && [ -n "${PROBE_ENV:-}" ] && pe="-pe$(printf %s "$PROBE_ENV" | sha256sum | cut -c1-8)"
@@ -341,6 +345,22 @@ jobs:
             [ "$LEG" = brow ] && tool=tools/builtin_row_probe.rb more="--shard $((SHARD - 1))/$OF"
             ruby $tool --strength 2 --seed 1 $more --jobs "$(nproc)" --no-reduce --out "$out/probe" > "$out/probe.log" 2>&1 || true
             # a timeout depends on the machine's load: such a result is not kept
+            if grep -q -E '^[0-9]+ cases: ' "$out/probe/summary.txt" 2>/dev/null &&
+               ! grep -q -E '^ +timeout ' "$out/probe/summary.txt"; then echo save=true >> "$GITHUB_OUTPUT"; fi
+            ;;
+          sh)
+            # The String-sharing probe (tools/share_probe.rb), the SHARD-th
+            # of OF slices of its rows (--shard counts from 0), under the case
+            # numbers of the whole run. Each case is compiled with and without
+            # --share-strings, by the probe itself: it drops
+            # SPINEL_SHARE_STRINGS from its environment (PROBE_ENV's would
+            # turn the flag on for the plain cases too), and its summary
+            # counts each label per mode. A tree without the tool runs this
+            # branch's copy (shareprobe/, as of share-probe 307e4125f)
+            # against its own spinel.
+            tool=tools/share_probe.rb; [ -f "$tool" ] || tool="$GITHUB_WORKSPACE/shareprobe/share_probe.rb"
+            SPINEL="$h/spinel" ruby "$tool" --strength 2 --seed 1 --shard "$((SHARD - 1))/$OF" --jobs "$(nproc)" \
+              --no-reduce --out "$out/probe" > "$out/probe.log" 2>&1 || true
             if grep -q -E '^[0-9]+ cases: ' "$out/probe/summary.txt" 2>/dev/null &&
                ! grep -q -E '^ +timeout ' "$out/probe/summary.txt"; then echo save=true >> "$GITHUB_OUTPUT"; fi
             ;;
