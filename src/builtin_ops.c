@@ -2740,6 +2740,9 @@ static const BopShareRow bop_share_rows[] = {
   { TY_FLOAT,       "*", BSH_PURE },
   { TY_SYMBOL,      "*", BSH_PURE },
   { TY_CLASS,       "name", BSH_FROZEN },   /* Module#name: a frozen String */
+  /* File.open and Dir.open with a block hand it the handle they open and
+     answer its value */
+  { TY_CLASS,       "open", BSH_ITER_THEN },
   { TY_BOOL,        "*", BSH_PURE },
   { TY_NIL,         "*", BSH_PURE },
   { TY_RANGE,       "*", BSH_PURE },
@@ -2862,6 +2865,10 @@ static const BopShareRow bop_share_rows[] = {
   { BOP_FILE_CLASS, "extname",     BSH_PURE },
   { BOP_FILE_CLASS, "expand_path", BSH_PURE },
   { BOP_FILE_CLASS, "absolute_path", BSH_PURE },
+  { BOP_FILE_CLASS, "realpath",    BSH_PURE },
+  { BOP_FILE_CLASS, "realdirpath", BSH_PURE },
+  { BOP_FILE_CLASS, "readlink",    BSH_PURE },
+  { BOP_FILE_CLASS, "path",        BSH_FROZEN },   /* a new frozen String */
 
   /* a proc's, a lambda's or a Method's invocations */
   { BOP_CALLABLE, "call",        BSH_CALL },
