@@ -14634,24 +14634,35 @@ static int str_mutate_reassign_arms(Compiler *c, Buf *b, int indent, const NodeT
   return -1;
 }
 
-/* A shared-handle receiver that strbuf_slot_ref renders from a call
-   (`pick(s).topic`, a method answering the handle) is no slot: its text runs
-   the call wherever it stands. Beside an argument in one C call it ran in
-   C's order, and gcc takes the argument first; each further place that names
-   it (the frozen check, a codepoint conversion, the next link of a chain) ran
-   the call again. Ruby runs the receiver once, before its arguments. So when
-   the receiver runs code and its text is read `many` times, or beside an
-   argument that has an effect, it is bound to a rooted temp in a block of its
-   own, and sref becomes that temp. Answers 1 when the block was opened (the
-   caller closes it). A slot, a pure read, or a call beside arguments without
-   effects keeps its C. */
-static int strbuf_call_recv_hold(Compiler *c, int recv, int argc, const int *argv, int many,
-                                 char *sref, size_t cap, Buf *b, int indent) {
+/* The receiver of a String append on a handle is rendered by
+   strbuf_slot_ref and written into the C call beside each argument, and C
+   leaves the order of a call's operands open: gcc runs the argument first.
+   Ruby runs the receiver once, before its arguments. So the receiver is bound
+   to a rooted temp in a block of its own, and sref becomes that temp, when
+   that order shows, by the rules operand ordering uses:
+   - a receiver call that runs code (not subtree_is_pure_read: a reader on a
+     call, `pick(s).topic`) whose text is read `many` times would run again
+     at each read (the frozen check, a codepoint conversion, the next link of
+     a chain), and beside an argument with an effect, or one reading what the
+     call can change (read_rebound_by: `pick(b).buf << $x` with pick
+     assigning $x), it ran after it;
+   - a variable, or a plain field read (`c.buf`), beside an argument that can
+     give it another String (read_rebound_by, subtree_may_reassign_state:
+     `@s << reset_s`, `c.buf << c.swap!(t)`) appended to the new String.
+   The root keeps the String alive when the argument drops the slot's
+   reference to it. Answers 1 when the block was opened (the caller closes
+   it); otherwise the C stays as it was. */
+static int strbuf_recv_hold(Compiler *c, int recv, int argc, const int *argv, int many,
+                            char *sref, size_t cap, Buf *b, int indent) {
   recv = unwrap_parens(c, recv);
-  if (nt_kind(c->nt, recv) != NK_CallNode || subtree_is_pure_read(c, recv)) return 0;
-  int effect = 0;
-  for (int a = 0; a < argc && !effect; a++) effect = subtree_has_side_effect(c, argv[a]);
-  if (!many && !effect) return 0;
+  int call = nt_kind(c->nt, recv) == NK_CallNode;
+  int runs = call && !subtree_is_pure_read(c, recv);
+  int hold = runs && many;
+  for (int a = 0; a < argc && !hold; a++) {
+    if (runs) hold = subtree_has_side_effect(c, argv[a]) || read_rebound_by(c, argv[a], recv);
+    else hold = read_rebound_by(c, recv, argv[a]) || (call && subtree_may_reassign_state(c, argv[a]));
+  }
+  if (!hold) return 0;
   int t = ++g_tmp;
   emit_indent(b, indent);
   buf_printf(b, "{ sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n", t, sref, t);
@@ -14712,13 +14723,15 @@ static int str_mutate_append_bang_arms(Compiler *c, int id, Buf *b, int indent, 
     if (nchain > 0 && strbuf_slot_ref(c, cur, srefC, sizeof srefC)) {
       /* the receiver's text is read again by a second link, by an Integer's
          or a boxed value's codepoint conversion, and by each part of an
-         interpolation (emit_str_append_arg, emit_interp_append) */
+         interpolation of several (emit_str_append_arg, emit_interp_append) */
       int many = nchain > 1;
       for (int j = 0; j < nchain && !many; j++) {
         TyKind at = comp_ntype(c, chain[j]);
-        many = at == TY_INT || at == TY_POLY || nt_kind(nt, chain[j]) == NK_InterpolatedStringNode;
+        int np = 0;
+        if (nt_kind(nt, chain[j]) == NK_InterpolatedStringNode) nt_arr(nt, chain[j], "parts", &np);
+        many = at == TY_INT || at == TY_POLY || np > 1;
       }
-      int held = strbuf_call_recv_hold(c, cur, nchain, chain, many, srefC, sizeof srefC, b, indent);
+      int held = strbuf_recv_hold(c, cur, nchain, chain, many, srefC, sizeof srefC, b, indent);
       for (int j = nchain - 1; j >= 0; j--) {
         int arg = chain[j];
         TyKind at = comp_ntype(c, arg);
@@ -14758,7 +14771,7 @@ static int str_mutate_append_bang_arms(Compiler *c, int id, Buf *b, int indent, 
     char srefM[1024];
     if (strbuf_slot_ref(c, recv, srefM, sizeof srefM)) {
       /* the handle is read by the frozen check and by every append */
-      int held = strbuf_call_recv_hold(c, recv, argc, argv, 1, srefM, sizeof srefM, b, indent);
+      int held = strbuf_recv_hold(c, recv, argc, argv, 1, srefM, sizeof srefM, b, indent);
       emit_str_concat_handle(c, srefM, argc, argv, b, indent + held);
       if (held) { emit_indent(b, indent); buf_puts(b, "}\n"); }
       return 1;
