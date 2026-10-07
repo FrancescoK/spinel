@@ -3430,6 +3430,12 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
     else if (rb_boxed && acc_ty == TY_POLY_ARRAY) {
       buf_puts(&tail, "sp_poly_to_poly_array("); emit_expr(c, bb[bn - 1], &tail); buf_puts(&tail, ")");
     }
+    /* --share-strings: a String the rule shares goes into a boxed
+       accumulator as its handle's box (emit_boxed_next_value), so the fold's
+       answer is that String */
+    else if (acc_ty == TY_POLY && !rb_boxed && (rbt == TY_STRING || rbt == TY_STRBUF) &&
+             strbuf_value_carries(c, bb[bn - 1]))
+      emit_boxed_next_value(c, bb[bn - 1], &tail);
     /* The mirror: a concretely typed block value going back into a boxed
        accumulator has to be boxed. Without this a fold with no init over
        Hashes assigned a hash pointer into the sp_RbVal seed slot. */
@@ -6599,6 +6605,18 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
       if (late) {
         int th = ran_first_handle(provided);
         if (th >= 0) { buf_printf(out, "_t%d", th); return; }
+      }
+      /* --share-strings: a value that ran first as the handle it hands on
+         (a route, `s << x`), or one that runs here as it */
+      if (repr_share_rule(c) && !late && arg_ran_first(provided, 0) && ran_first_handle(provided) >= 0) {
+        buf_printf(out, "_t%d", ran_first_handle(provided));
+        return;
+      }
+      if (!late && !arg_ran_first(provided, 0) && pk != NK_LocalVariableReadNode &&
+          pk != NK_InstanceVariableReadNode && !repr_static_read_kind(pk) &&
+          repr_of(c, provided).as_ty == TY_STRING && strbuf_value_carries(c, provided)) {
+        emit_strbuf_handle_of(c, provided, out);
+        return;
       }
       if (!late && strbuf_slot_ref(c, provided, srefP, sizeof srefP)) {
         buf_puts(out, srefP);
@@ -10473,6 +10491,17 @@ void emit_args_filled_argv(Compiler *c, int callee_idx, const int *argv, int arg
          with its handle taken, which a box or a handle slot binds
          (emit_arg_temp, ran_first_handle) */
       if (repr_write_share(c, unwrap_parens(c, argv[k]))) { emit_arg_temp(c, argv[k]); continue; }
+      /* --share-strings: a value that hands on a shared String's handle (a
+         route, `s << x`) into a parameter that is the handle runs as that
+         handle, which the binding takes (ran_first_handle) */
+      if (repr_of_slot(c, hp).kind == RK_STRBUF && at == TY_STRING && strbuf_value_carries(c, argv[k])) {
+        emit_strbuf_handle_of(c, argv[k], &hb);
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n", ht, hb.p, ht);
+        free(hb.p);
+        ran_first_bind(argv[k], ht, ht);
+        continue;
+      }
       emit_expr(c, argv[k], &hb);
       emit_indent(g_pre, g_indent);
       if (at == TY_POLY) {

@@ -237,6 +237,9 @@ int is_unpack_name(const char *n) {
   return sp_streq(n, "unpack");
 }
 
+int is_catch_name(const char *n) { return sp_streq(n, "catch"); }
+int is_throw_name(const char *n) { return sp_streq(n, "throw"); }
+
 int is_diverging_call(const char *n) {
   return sp_streq(n, "raise") || sp_streq(n, "fail") || sp_streq(n, "throw") ||
          sp_streq(n, "exit") || sp_streq(n, "exit!") || sp_streq(n, "abort");

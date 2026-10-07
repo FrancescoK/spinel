@@ -175,3 +175,15 @@ hq = Hash.new { |hh, k| next q if k == :a; q }
 hq[:a] << "2"
 Array.new(2) { |i| next q }[1] << "3"
 p q
+$log = []
+def li = ($log << :i; 0)
+def lb = ($log << :v; 90)
+sb = +"ob"
+(+sb).setbyte(li, lb)
+String(sb).setbyte(li + 1, lb - 1)
+p sb, $log
+def yo(a) = yield(a)
+o2 = +"o2"
+y = yo(o2) { |x| x.then { |v| v }.size > 0 ? x : nil }
+y << "!"
+p o2

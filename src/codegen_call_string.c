@@ -1244,12 +1244,14 @@ int emit_string_handle_append(Compiler *c, int id, Buf *b, const char *name, int
       int chain_handle = sn && is_append_concat(sn) && rp.handle && rp.kind == RK_STRBUF;
       /* or a route over a handle (`(+s) << x`, --share-strings), which
          appends to the String it hands on */
-      if (chain_handle || strbuf_recv_handle(c, id, sr, sref0, sizeof sref0)) {
+      int hr0 = chain_handle ? 0 : strbuf_recv_handle(c, id, sr, sref0, sizeof sref0);
+      if (chain_handle || hr0) {
         int tb2 = ++g_tmp;
         buf_printf(b, "({ sp_String *_t%d = ", tb2);
         if (chain_handle) emit_expr(c, sr, b);
         else buf_puts(b, sref0);
         buf_puts(b, ";");
+        emit_route_recv_root(hr0, tb2, b);
         if (!is_append_concat(name)) {
           int ordered = 0;
           for (int j = 0; j < argc && argc > 1; j++)
