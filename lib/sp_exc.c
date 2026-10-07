@@ -1,5 +1,6 @@
 /* sp_exc.c -- cold sp_Exception ops (see sp_exc.h). 0 optcarrot uses. */
 #include "sp_exc.h"
+#include "sp_string.h"
 #include <stdarg.h>
 #include "sp_exc_ctx.h"
 #include <errno.h>
@@ -212,6 +213,7 @@ void *sp_exc_new_sub_sized(size_t sz, const char *cls_name, const char *msg) {if
 void sp_exc_gc_scan(void *p) {
   sp_Exception *e = (sp_Exception *)p;
   if (e->msg) sp_mark_string(e->msg);
+  if (e->msg_h) sp_gc_mark(e->msg_h);
   if (e->cause) sp_gc_mark(e->cause);
   sp_mark_rbval(e->result);
   sp_mark_rbval(e->xname);
@@ -303,8 +305,10 @@ sp_bool sp_exc_eq(sp_Exception *a, sp_Exception *b) {
      the tag. We keep the rendered text in ->msg, so skip it for that class
      (#3098). Backtraces are empty here by design, see docs/limitations.md. */
   if (a->cls_name && strcmp(a->cls_name, "UncaughtThrowError") == 0) return 1;
-  { const char *am = a->msg ? a->msg : "", *bm = b->msg ? b->msg : "";
-    size_t al = a->msg ? sp_str_byte_len(am) : 0, bl = b->msg ? sp_str_byte_len(bm) : 0;
+  { const char *am = sp_exc_msg_text(a), *bm = sp_exc_msg_text(b);
+    size_t al = am ? sp_str_byte_len(am) : 0, bl = bm ? sp_str_byte_len(bm) : 0;
+    if (!am) am = "";
+    if (!bm) bm = "";
     return al == bl && memcmp(am, bm, al) == 0; }
 }
 sp_Exception *sp_exc_new_sub(const char *cls_name, const char *parent_cls, const char *msg) {if (msg != sp_exc_no_msg) msg = sp_msg_heapify(msg); SP_GC_ROOT_STR(msg);
@@ -351,6 +355,7 @@ sp_Exception *sp_exc_exception(sp_Exception *e, const char *msg) {SP_GC_ROOT(e);
   sp_Exception *n = sp_exc_dup(e);
   SP_GC_ROOT(n);
   n->msg = sp_exc_msg_copy((msg && msg[0]) ? msg : (n->cls_name ? n->cls_name : "RuntimeError"));
+  n->msg_h = NULL;   /* the new message, not the receiver's handle */
   sp_gc_wb((void *)n);   /* same reason as sp_exc_new_sub_sized */
   return n;
 }
@@ -369,11 +374,31 @@ const char *sp_exc_class_name(volatile sp_Exception *ve) {
      matters. */
   return e && e->cls_name ? sp_str_dup_external(e->cls_name) : SPL("RuntimeError");
 }
+/* A copy of a message handle's String as it is now: #message answers a
+   String a caller keeps, and the handle's buffer moves as it grows. Sized
+   by the handle's length, so a NUL inside stays. */
+static const char *sp_exc_msg_handle_copy(sp_String *h) {
+  int64_t n = sp_String_length(h);
+  char *r = sp_str_alloc((size_t)n);
+  memcpy(r, sp_String_cstr(h), (size_t)n);
+  return r;
+}
+const char *sp_exc_msg_text(volatile sp_Exception *ve) {
+  sp_Exception *e = (sp_Exception *)ve;
+  if (!e) return NULL;
+  return e->msg_h ? sp_String_cstr((sp_String *)e->msg_h) : e->msg;
+}
+void *sp_exc_attach_msg(void *p, void *h) {
+  sp_Exception *e = (sp_Exception *)p;
+  if (e && h) { e->msg_h = h; sp_gc_wb((void *)e); }
+  return p;
+}
 const char *sp_exc_message(volatile sp_Exception *ve) {
   sp_Exception *e = (sp_Exception *)ve;
   /* a message never set (super(nil), Exception.new) defaults to the class
      name, as CRuby's Exception#message does */
   if (!e) return sp_str_empty;
+  if (e->msg_h) return sp_exc_msg_handle_copy((sp_String *)e->msg_h);
   if (e->msg) return e->msg;
   return e->cls_name ? sp_str_dup_external(e->cls_name) : sp_str_empty;
 }

@@ -1539,12 +1539,30 @@ static int strbuf_route_ivar_get(Compiler *c, int v) {
   Repr r = repr_of(c, v);
   return (r.ty == TY_STRING || r.ty == TY_STRBUF) && cplan_user(c, v)->dispatch == CP_NONE;
 }
+/* --share-strings: an exception's #message or #to_s with no override of
+   the program's own: the String the exception was raised with, which it
+   holds as a handle when the String is shared (sp_exc_message_handle) */
+static int strbuf_route_exc_message(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  v = unwrap_parens(c, v);
+  if (!repr_share_rule(c) || v < 0 || nt_kind(nt, v) != NK_CallNode) return 0;
+  const char *nm = nt_str(nt, v, "name");
+  int recv = nt_ref(nt, v, "receiver");
+  if (!nm || recv < 0 || !is_exception_message(nm) ||
+      nt_ref(nt, v, "arguments") >= 0 || nt_ref(nt, v, "block") >= 0 || exc_has_user_msg_override(c)) return 0;
+  TyKind rt = comp_ntype(c, recv);
+  if (rt == TY_EXCEPTION) return 1;
+  return ty_is_object(rt) && class_is_exc_subclass(c, ty_object_class(rt)) &&
+         comp_method_in_chain(c, ty_object_class(rt), "to_s", NULL) < 0 &&
+         comp_method_in_chain(c, ty_object_class(rt), "message", NULL) < 0;
+}
 /* Does value v hand over a String the rule shares as the handle itself: a
    slot holding it, or a route over one? */
 static int strbuf_route_carries(Compiler *c, int v, int depth) {
   char ref[1024];
   if (strbuf_route_proc_call(c, v) || strbuf_route_ivar_get(c, v) || strbuf_route_begin(c, v) || strbuf_route_yield(c, v) ||
-      strbuf_route_inline_call(c, v) || strbuf_route_loop(c, v) || strbuf_route_handle_call(c, v)) return 1;
+      strbuf_route_inline_call(c, v) || strbuf_route_loop(c, v) || strbuf_route_handle_call(c, v) ||
+      strbuf_route_exc_message(c, v)) return 1;
   int x = strbuf_route_operand(c, v);
   if (x == unwrap_parens(c, v)) return 1;
   if (x >= 0) return depth < 8 && strbuf_route_carries(c, x, depth + 1);
@@ -1556,6 +1574,13 @@ static int strbuf_route_carries(Compiler *c, int v, int depth) {
    the String every other name of its class holds. */
 int emit_strbuf_route(Compiler *c, int v, Buf *b) {
   const NodeTable *nt = c->nt;
+  if (strbuf_route_exc_message(c, v)) {
+    v = unwrap_parens(c, v);
+    buf_puts(b, "sp_exc_message_handle((sp_Exception *)(");
+    emit_expr(c, nt_ref(nt, v, "receiver"), b);
+    buf_puts(b, "))");
+    return 1;
+  }
   if (strbuf_route_proc_call(c, v)) {
     /* the box as the proc handed it back: its handle, a plain String's
        new one, or nil */
@@ -1708,6 +1733,7 @@ void emit_route_recv_root(Compiler *c, int hr, int t, int argc, const int *argv,
 /* Does route v (emit_strbuf_route) answer a String, never nil: `+s` (which
    raises for a nil s) and `String(s)`? Every other one can answer nil. */
 static int strbuf_route_nonnil(Compiler *c, int v) {
+  if (strbuf_route_exc_message(c, v)) return 1;
   int x = strbuf_route_operand(c, v);
   return x >= 0 && x != unwrap_parens(c, v);
 }

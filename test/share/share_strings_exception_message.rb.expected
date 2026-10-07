@@ -1,0 +1,23 @@
+["ab0.", "ab0.", ArgumentError]
+["ab0.1.", "ab0.1.", ArgumentError]
+["ab0.1.2.", "ab0.1.2.", E]
+["ab0.1.2.3.", "ab0.1.2.3.", E]
+["ab0.1.2.3.4.", "ab0.1.2.3.4.", F]
+["ab0.1.2.3.4.5.", "ab0.1.2.3.4.5.", G]
+["ab0.1.2.3.4.5.6.", "ab0.1.2.3.4.5.6.", RuntimeError]
+["ab0.1.2.3.4.5.6.7.", "ab0.1.2.3.4.5.6.7.", RuntimeError]
+"t1"
+"#<ArgumentError: t1>"
+true
+"t12"
+true
+"t12"
+true
+"other"
+"t12"
+"other"
+"t123"
+"u!"
+"u!"
+"lit"
+"w"
