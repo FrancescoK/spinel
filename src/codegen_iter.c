@@ -254,6 +254,34 @@ static void yield_target_enter(int fe) {
   g_yield_emitting_class_fallback2 = t->emcls;
   g_yield_proc_ref_fallback2 = t->ypr; g_yield_slot_ty_fallback2 = t->yslot;
 }
+/* Record a literal block passed to an inline, which yields to the block
+   current at the call site (saved_block): its context is that call site's,
+   as the inliner hands it to g_block_id -- caller code at the depth before
+   the inline's renames. Answers whether an entry was pushed; the caller
+   keeps g_ytgt_cur to hand back to yield_target_pop. */
+int yield_target_push(int block, int saved_block, const char *owner, int nren,
+                      const char *brk, int brk_ebase) {
+  if (block >= 0 && block != saved_block && g_nytgt <= SP_INLINE_DEPTH_MAX) {
+    YieldTarget *yt = &g_ytgt[g_nytgt];
+    yt->blk = block; yt->target = saved_block;
+    yt->up = (g_ytgt_cur >= 0 && g_ytgt[g_ytgt_cur].blk == saved_block) ? g_ytgt_cur : -1;
+    yt->owner = owner;
+    yt->nren = nren;
+    yt->brk = brk; yt->brk_ebase = brk_ebase;
+    yt->self = g_self; yt->self_deref = g_self_deref; yt->emcls = g_emitting_class_id;
+    yt->ypr = g_yield_proc_ref; yt->yslot = g_yield_slot_ty;
+    yt->lowered = g_current_scope_is_lowered; yt->lowered_blk = g_lowered_blk_name;
+    g_ytgt_cur = g_nytgt++;
+    return 1;
+  }
+  if (block != saved_block) g_ytgt_cur = -1;
+  return 0;
+}
+int yield_target_cur(void) { return g_ytgt_cur; }
+void yield_target_pop(int pushed, int saved_cur) {
+  if (pushed) g_nytgt--;
+  g_ytgt_cur = saved_cur;
+}
 static int yield_target_of(int blk, const char **owner) {
   for (int i = g_nytgt - 1; i >= 0; i--)
     if (g_ytgt[i].blk == blk) { *owner = g_ytgt[i].owner; return g_ytgt[i].target; }
@@ -1223,22 +1251,8 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   }
   /* a literal block yields to the block current here (a forwarded one keeps
      the target it was given where it was written) */
-  int pushed_ytgt = 0, saved_ytgt_cur = g_ytgt_cur;
-  if (block >= 0 && block != saved_block && g_nytgt <= SP_INLINE_DEPTH_MAX) {
-    /* its context is this call site's, as the assignments below hand it to
-       g_block_id: caller code at the depth before this inline's renames */
-    YieldTarget *yt = &g_ytgt[g_nytgt];
-    yt->blk = block; yt->target = saved_block;
-    yt->up = (g_ytgt_cur >= 0 && g_ytgt[g_ytgt_cur].blk == saved_block) ? g_ytgt_cur : -1;
-    yt->owner = saved_bpn;
-    yt->nren = saved_nren;
-    yt->brk = saved_ser; yt->brk_ebase = saved_ebase;
-    yt->self = g_self; yt->self_deref = g_self_deref; yt->emcls = g_emitting_class_id;
-    yt->ypr = g_yield_proc_ref; yt->yslot = g_yield_slot_ty;
-    yt->lowered = g_current_scope_is_lowered; yt->lowered_blk = g_lowered_blk_name;
-    g_ytgt_cur = g_nytgt++; pushed_ytgt = 1;
-  }
-  else if (block != saved_block) g_ytgt_cur = -1;
+  int saved_ytgt_cur = g_ytgt_cur;
+  int pushed_ytgt = yield_target_push(block, saved_block, saved_bpn, saved_nren, saved_ser, saved_ebase);
   if (!fwd_kept) {
     g_yield_blk_brk_fallback = saved_bbv;
     g_yield_blk_brk_efallback = saved_bbe;
@@ -1540,8 +1554,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   g_emitting_class_id = saved_emcls;
   g_block_param_name = saved_bpn;
   g_yield_block_fallback = saved_yfb;
-  if (pushed_ytgt) g_nytgt--;
-  g_ytgt_cur = saved_ytgt_cur;
+  yield_target_pop(pushed_ytgt, saved_ytgt_cur);
   g_block_nren = saved_bnren;
   g_yield_block_fallback_nren = saved_yfbn;
   g_block_owner_param_name = saved_bown;
