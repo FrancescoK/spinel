@@ -763,6 +763,7 @@ static void emit_ternary_arm(Compiler *c, int nd, TyKind res, Buf *b) {
   {
     Buf ab; memset(&ab, 0, sizeof ab);
     emit_expr(c, nd, &ab);
+    int un = unwrap_parens(c, nd);
     /* An arm that compiles to a NoMethodError raise (e.g. `u.details` where u is
        unresolvable) evaluates to sp_RbVal but never returns; the sibling arm has
        the concrete result type, so coerce the raise to it -- `(raise, default)`
@@ -773,6 +774,9 @@ static void emit_ternary_arm(Compiler *c, int nd, TyKind res, Buf *b) {
         res != TY_POLY && res != TY_UNKNOWN && res != TY_VOID) {
       buf_printf(b, "(%s, %s)", ab.p, default_value_from_compiler(c, res));
     }
+    else if (ab.p && repr_of(c, un).as_ty == TY_UNKNOWN && res != TY_POLY && res != TY_UNKNOWN &&
+             res != TY_VOID && (nt_kind(nt, un) == NK_IfNode || nt_kind(nt, un) == NK_UnlessNode))
+      emit_unbox_text(c, res, ab.p, b);
     else buf_puts(b, ab.p ? ab.p : "");
     free(ab.p);
   }

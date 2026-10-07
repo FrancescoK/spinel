@@ -1,0 +1,12 @@
+[2, 4, [2, 4]]
+7
+42
+[:a, :b]
+10
+15
+2
+40
+7
+6
+NoMethodError
+ArgumentError
