@@ -944,3 +944,4 @@ int array_unseen_add_kind(const char *n) {
 }
 
 int is_scan_name(const char *n) { return sp_streq(n, "scan"); }
+int is_pow_name(const char *n) { return sp_streq(n, "pow"); }
