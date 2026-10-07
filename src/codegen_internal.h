@@ -149,8 +149,9 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b);
    (codegen_stmt.c) */
 int strbuf_recv_handle(Compiler *c, int id, int recv, char *out, size_t cap);
 /* Root receiver handle _t<t> when strbuf_recv_handle answered a route (hr
-   2); a slot's needs none (codegen_stmt.c) */
-void emit_route_recv_root(int hr, int t, Buf *b);
+   2) and something can allocate while it is live: the mutator (argv NULL)
+   or one of its argc ty operands argv; a slot's needs none (codegen_stmt.c) */
+void emit_route_recv_root(Compiler *c, int hr, int t, int argc, const int *argv, TyKind ty, Buf *b);
 /* --share-strings: the handle slot a variable's read names, 0 for any
    other node (codegen_stmt.c) */
 int strbuf_var_handle(Compiler *c, int n, char *out, size_t cap);
