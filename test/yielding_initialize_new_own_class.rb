@@ -357,3 +357,69 @@ p $n
 $n = []
 NSC.new(0) { |a| p [:nsc, a] }
 p $n
+
+# The cycle's clone supers into a yielding module that is outside the
+# cycle and has no clone. Keep that shadow, including when a parent also
+# has initialize; the caller's block must reach the module's yield.
+module OutsideCycle
+  def initialize(a)
+    pair = [a, a + 100]
+    yield pair
+  end
+end
+module OutsideMiddle
+  def initialize(a)
+    super(a) { |q| yield [q[0], q[1] + 1000] }
+  end
+end
+class OutsideParent
+  def initialize(a)
+    p [:wrong_parent, a]
+  end
+end
+class IncludedCycle < OutsideParent
+  include OutsideCycle
+  include OutsideMiddle
+  def initialize(a)
+    IncludedCycle.new(a) if ARGV.length == 9123
+    IncludedCycle.new(a) if ARGV.length == 9123
+    IncludedCycle.new(a + 1) { |q| $n << q if q[0] % 20 == 0 } if a < 80
+    super
+  end
+end
+$n = []
+IncludedCycle.new(0) { |q| p [:included, q] }
+p $n
+class ExplicitCycle
+  include OutsideCycle
+  def initialize(a, &blk)
+    ExplicitCycle.new(a + 1, &blk) if a < 3
+    super(a) { |q| yield [q[0], q[1] + 100] }
+  end
+end
+total = 0
+ExplicitCycle.new(0) { |q| total += q[1] }
+p total
+
+# The same shadow path through a prepend, forwarding both an explicit
+# block argument and no block (which raises at the shadow's yield).
+module PrependedCycle
+  def initialize(a, &blk)
+    PrependTarget.new(a + 1, &blk) if a < 80
+    super(a, &blk)
+  end
+end
+class PrependTarget
+  prepend PrependedCycle
+  def initialize(a)
+    yield a
+  end
+end
+$n = []
+PrependTarget.new(0) { |q| $n << q if q % 20 == 0 }
+p $n
+begin
+  PrependTarget.new(80)
+rescue LocalJumpError => e
+  p [e.class, e.message]
+end
