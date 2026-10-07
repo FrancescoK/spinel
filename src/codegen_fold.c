@@ -5446,8 +5446,11 @@ int emit_with_index_expr(Compiler *c, int id, Buf *b) {
     int saveInd = g_indent; g_indent = innerIndent;
     Buf vb; memset(&vb, 0, sizeof vb);
     TyKind body_ty = TY_UNKNOWN;
+    /* select/reject test the block's value by Ruby's truthiness: an Integer
+       0 keeps its element, and a boxed value is no C scalar (read raw, 0 was
+       dropped and a boxed value did not build) */
     if (is_map) body_ty = emit_iter_step_tail(c, &st, &vb);
-    else emit_iter_step_cond(c, &st, 1, &vb);
+    else emit_iter_step_cond(c, &st, 0, &vb);
     g_indent = saveInd;
     if (is_map) {
       emit_indent(g_pre, innerIndent); buf_printf(g_pre, "sp_%sArray_push%s(_t%d, ", rk, nil_store_sfx(c, rk, bb[bn - 1]), tres);
