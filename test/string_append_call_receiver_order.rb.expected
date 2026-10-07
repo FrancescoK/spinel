@@ -1,0 +1,30 @@
+recv
+arg a
+recv
+arg b
+recv
+arg c
+arg d
+recv
+arg e
+arg f
+recv
+recv
+num 64
+recv
+arg g
+recv
+"sabcdef!@ghi"
+recv
+arg x
+arg y
+FrozenError
+recv
+arg z
+FrozenError
+"frozen"
+"snew"
+"t"
+"H"
+"H"
+"H"
