@@ -1,0 +1,24 @@
+true
+FrozenError
+"lit"
+true
+FrozenError
+"abcd"
+true
+"abcde"
+true
+false
+true
+true
+false
+false
+false
+true
+false
+true
+FrozenError
+["aabc", "aabc"]
+true
+true
+false
+false
