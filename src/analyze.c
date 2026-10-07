@@ -16587,8 +16587,37 @@ static unsigned share_types_digest(Compiler *c) {
    String every name holds rather than replacing the slot's own copy. */
 /* (a read of a holder is not lifted: the rule makes that holder the
    handle, whose box is the handle already) */
+static int share_lift_value(Compiler *c, int v);
+/* An arm of a conditional value: its last statement, through parentheses
+   and an `else`. */
+static int share_lift_arms(Compiler *c, int n) {
+  const NodeTable *nt = c->nt;
+  for (int d = 0; n >= 0 && d < 16; d++) {
+    NodeKind k = nt_kind(nt, n);
+    if (k == NK_ElseNode) { n = nt_ref(nt, n, "statements"); continue; }
+    if (k == NK_ParenthesesNode) { n = nt_ref(nt, n, "body"); continue; }
+    if (k == NK_StatementsNode) {
+      int bn = 0; const int *bv = nt_arr(nt, n, "body", &bn);
+      n = bn > 0 ? bv[bn - 1] : -1;
+      continue;
+    }
+    return share_lift_value(c, n);
+  }
+  return 0;
+}
 static int share_lift_value(Compiler *c, int v) {
-  NodeKind k = nt_kind(c->nt, v);
+  const NodeTable *nt = c->nt;
+  NodeKind k = nt_kind(nt, v);
+  /* a conditional value: each arm that can be a String (a boxed slot's
+     value boxes each arm on its own) */
+  switch (k) {
+    case NK_IfNode: case NK_UnlessNode:
+      return share_lift_arms(c, nt_ref(nt, v, "statements")) |
+             share_lift_arms(c, nt_ref(nt, v, k == NK_IfNode ? "subsequent" : "else_clause"));
+    case NK_OrNode: case NK_AndNode:
+      return share_lift_arms(c, nt_ref(nt, v, "left")) | share_lift_arms(c, nt_ref(nt, v, "right"));
+    default: break;
+  }
   if (k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode || k == NK_GlobalVariableReadNode ||
       k == NK_ClassVariableReadNode || k == NK_ConstantReadNode || k == NK_ConstantPathNode)
     return 0;
@@ -16596,13 +16625,60 @@ static int share_lift_value(Compiler *c, int v) {
   c->poly_strbuf_lift[v] = 1;
   return 1;
 }
+/* The same for local `name` of scope `scope`: its `=`, `||=` and `&&=`
+   (comp_lvw_first_sc, the local write index). */
+static int share_lift_poly_local_stores(Compiler *c, int scope, const char *name) {
+  const NodeTable *nt = c->nt;
+  int changed = 0;
+  for (int w = comp_lvw_first_sc(c, scope, name); w >= 0; w = comp_lvw_next_sc(c, w)) {
+    NodeKind k = nt_kind(nt, w);
+    if ((k != NK_LocalVariableWriteNode && k != NK_LocalVariableOrWriteNode && k != NK_LocalVariableAndWriteNode) ||
+        !sp_streq(nt_str(nt, w, "name"), name) || comp_scope_of(c, w) != &c->scopes[scope]) continue;
+    int v = an_unparen(nt, nt_ref(nt, w, "value"));
+    if (v >= 0) changed |= share_lift_value(c, v);
+  }
+  return changed;
+}
+/* The same for a global's, a class variable's or a constant's writes
+   (holder kind `kind`, the share facts' name): `=`, `||=` and `&&=`. A
+   class variable is every class's of the name, as the facts key it. */
+static int share_lift_poly_static_stores(Compiler *c, int kind, const char *name) {
+  const NodeTable *nt = c->nt;
+  int changed = 0;
+  NodeKind rk = kind == SHK_GVAR ? NK_GlobalVariableReadNode : kind == SHK_CVAR ? NK_ClassVariableReadNode
+                                                                                 : NK_ConstantReadNode;
+  const char *want = kind == SHK_GVAR && name && name[0] == '$' ? comp_resolve_gvar(c, name + 1) : name;
+  if (!want) return 0;
+  for (int e = comp_vsite_first(c, VS_STORE, rk, want, -1); e >= 0; e = comp_vsite_next(c, e)) {
+    int w = comp_vsite_node(c, e);
+    const char *wn = nt_str(nt, w, "name");
+    const char *rn = kind == SHK_GVAR && wn && wn[0] == '$' ? comp_resolve_gvar(c, wn + 1) : wn;
+    NodeKind wk = nt_kind(nt, w);
+    int wkind = wk == NK_GlobalVariableWriteNode || wk == NK_GlobalVariableOrWriteNode ||
+                wk == NK_GlobalVariableAndWriteNode ? SHK_GVAR
+              : wk == NK_ClassVariableWriteNode || wk == NK_ClassVariableOrWriteNode ||
+                wk == NK_ClassVariableAndWriteNode ? SHK_CVAR
+              : wk == NK_ConstantWriteNode || wk == NK_ConstantOrWriteNode || wk == NK_ConstantAndWriteNode ? SHK_CONST
+              : -1;
+    if (!rn || !sp_streq(rn, want) || wkind != kind) continue;   /* a chain's collisions */
+    int v = an_unparen(nt, nt_ref(nt, w, "value"));
+    if (v >= 0) changed |= share_lift_value(c, v);
+  }
+  return changed;
+}
 static int share_lift_poly_ivar_stores(Compiler *c, int cid, const char *name) {
   const NodeTable *nt = c->nt;
   int changed = 0;
-  NT_FOREACH_KIND(nt, NK_InstanceVariableWriteNode, w) {
+  /* its `=`, `||=` and `&&=` (the variable-site chains) */
+  for (int e = comp_vsite_first(c, VS_STORE, NK_InstanceVariableReadNode, name, cid); e >= 0;
+       e = comp_vsite_next(c, e)) {
+    int w = comp_vsite_node(c, e);
+    NodeKind wk = nt_kind(nt, w);
     const char *wn = nt_str(nt, w, "name");
-    int v = nt_ref(nt, w, "value");
-    if (!wn || !sp_streq(wn, name) || v < 0 || comp_ivar_owner(c, w) != cid) continue;
+    int v = an_unparen(nt, nt_ref(nt, w, "value"));
+    if ((wk != NK_InstanceVariableWriteNode && wk != NK_InstanceVariableOrWriteNode &&
+         wk != NK_InstanceVariableAndWriteNode) || !wn || !sp_streq(wn, name) || v < 0 || comp_ivar_owner(c, w) != cid)
+      continue;
     changed |= share_lift_value(c, v);
   }
   size_t ln = strlen(name);
@@ -16652,7 +16728,13 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
         continue;
       }
       if (!repr_str_shares(c, h)) continue;
-      if (lv->type != TY_STRING && lv->type != TY_STRBUF) continue;   /* a box holds the handle */
+      /* a box holds the handle: each String written into it is boxed as
+         its handle, as an ivar's are (share_lift_poly_ivar_stores) */
+      if (lv->type == TY_POLY) {
+        changed |= share_lift_poly_local_stores(c, sh->scope, lv->name);
+        continue;
+      }
+      if (lv->type != TY_STRING && lv->type != TY_STRBUF) continue;
       if (repr_of_slot(c, lv).share && !lv->byref_out) continue;
       if (lv->is_param && !lv->is_block_param) {
         if (lv->rbs_seeded) continue;
@@ -16687,6 +16769,8 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
       for (int k = 0; k < c->nclasses; k++) {
         ClassInfo *ci = &c->classes[k];
         int i = sh->name ? comp_cvar_index(ci, sh->name) : -1;
+        /* a box holds the handle: its Strings are stored as the handle */
+        if (i >= 0 && ci->cvar_types[i] == TY_POLY) { changed |= share_lift_poly_static_stores(c, SHK_CVAR, sh->name); continue; }
         if (i < 0 || (ci->cvar_types[i] != TY_STRING && ci->cvar_types[i] != TY_STRBUF)) continue;
         if (repr_of_cvar(c, k, i).share) continue;
         ci->cvar_types[i] = TY_STRBUF;
@@ -16699,7 +16783,9 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
     else if ((sh->kind == SHK_GVAR || sh->kind == SHK_CONST) && repr_str_shares(c, h)) {
       LocalVar *gv = sh->kind == SHK_CONST ? comp_const(c, sh->name)
                                            : comp_gvar(c, sh->name[0] == '$' ? sh->name + 1 : sh->name);
-      if (!gv || (gv->type != TY_STRING && gv->type != TY_STRBUF)) continue;   /* a box holds the handle */
+      /* a box holds the handle: its Strings are stored as the handle */
+      if (gv && gv->type == TY_POLY) { changed |= share_lift_poly_static_stores(c, sh->kind, sh->name); continue; }
+      if (!gv || (gv->type != TY_STRING && gv->type != TY_STRBUF)) continue;
       if (repr_of_slot(c, gv).share) continue;
       gv->type = TY_STRBUF;
       gv->str_shared = 1;

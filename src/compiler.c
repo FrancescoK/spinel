@@ -2180,15 +2180,27 @@ static int vsite_key(Compiler *c, int v, NodeKind *kind, const char **name, int 
   Scope *s;
   switch (nt_kind(nt, v)) {
     case NK_LocalVariableReadNode: case NK_LocalVariableWriteNode:
+    case NK_LocalVariableOrWriteNode: case NK_LocalVariableAndWriteNode:
       s = comp_scope_of(c, v);
       *kind = NK_LocalVariableReadNode; *name = nm; *key = s ? (int)(s - c->scopes) : -1;
       return s != NULL;
     case NK_InstanceVariableReadNode: case NK_InstanceVariableWriteNode:
+    case NK_InstanceVariableOrWriteNode: case NK_InstanceVariableAndWriteNode:
       *kind = NK_InstanceVariableReadNode; *name = nm; *key = comp_ivar_owner(c, v);
       return *key >= 0;
     case NK_GlobalVariableReadNode: case NK_GlobalVariableWriteNode:
+    case NK_GlobalVariableOrWriteNode: case NK_GlobalVariableAndWriteNode:
       *kind = NK_GlobalVariableReadNode; *name = comp_resolve_gvar(c, nm + 1); *key = -1;
       return *name != NULL;
+    /* a constant by its name alone, as comp_const keys it */
+    case NK_ConstantReadNode: case NK_ConstantWriteNode: case NK_ConstantOrWriteNode: case NK_ConstantAndWriteNode:
+      *kind = NK_ConstantReadNode; *name = nm; *key = -1;
+      return 1;
+    /* a class variable by its name alone, as the share facts key it */
+    case NK_ClassVariableReadNode: case NK_ClassVariableWriteNode:
+    case NK_ClassVariableOrWriteNode: case NK_ClassVariableAndWriteNode:
+      *kind = NK_ClassVariableReadNode; *name = nm; *key = -1;
+      return 1;
     default:
       return 0;
   }
@@ -2197,13 +2209,22 @@ static unsigned vsite_hash(VsKind k, NodeKind kind, const char *name, int key) {
   return sp_strhash(name) ^ ((unsigned)kind * 0x9e3779b1u) ^ ((unsigned)(key + 1) * 2654435761u) ^
          ((unsigned)(k + 1) * 0x85ebca6bu);
 }
+static int vsite_is_store(NodeKind k) {
+  return k == NK_LocalVariableWriteNode || k == NK_LocalVariableOrWriteNode || k == NK_LocalVariableAndWriteNode ||
+         k == NK_InstanceVariableWriteNode || k == NK_InstanceVariableOrWriteNode ||
+         k == NK_InstanceVariableAndWriteNode || k == NK_GlobalVariableWriteNode ||
+         k == NK_GlobalVariableOrWriteNode || k == NK_GlobalVariableAndWriteNode ||
+         k == NK_ClassVariableWriteNode || k == NK_ClassVariableOrWriteNode || k == NK_ClassVariableAndWriteNode ||
+         k == NK_ConstantWriteNode || k == NK_ConstantOrWriteNode || k == NK_ConstantAndWriteNode;
+}
 static int vsite_is_read(const NodeTable *nt, int n) {
   NodeKind k = n >= 0 ? nt_kind(nt, n) : NK_NONE;
   return k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode || k == NK_GlobalVariableReadNode;
 }
 
 /* Variable-site chains: for each variable the String refusals name, the
-   nodes that read it (VS_READ), write it (VS_WRITE, `x = v`), call a String
+   nodes that read it (VS_READ), write it (VS_WRITE, `x = v`; VS_STORE, any
+   `=`, `||=` or `&&=`, a class variable's and a constant's too), call a String
    mutator on it (VS_MUT: the call, also through the calls that answer their
    receiver, `x.to_s << y`) or call any method on it (VS_RECV: the call whose
    receiver it is), one entry per (kind, site), chained by (kind, variable)
@@ -2257,6 +2278,9 @@ static void vsite_build(Compiler *c, int toplevel) {
   for (int i = 0; i < n; i++) c->vs_rparent[i] = -1;
   for (int u = n - 1; u >= 0; u--) {   /* reverse: chains run in node order */
     NodeKind k = nt_kind(nt, u);
+    /* every store into a variable, its `||=` and `&&=` and a class
+       variable's included (VS_STORE) */
+    if (vsite_is_store(k)) vsite_add(c, VS_STORE, u, u);
     if (vsite_is_read(nt, u)) vsite_add(c, VS_READ, u, u);
     else if (k == NK_LocalVariableWriteNode || k == NK_InstanceVariableWriteNode || k == NK_GlobalVariableWriteNode)
       vsite_add(c, VS_WRITE, u, u);
