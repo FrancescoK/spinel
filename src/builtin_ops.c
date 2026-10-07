@@ -2752,13 +2752,12 @@ static const BopShareRow bop_share_rows[] = {
 
   /* An OpenStruct's fields are its elements; a field's reader and writer
      (`os.name`, `os.name = s`) are read as `[]` and `[]=` (analyze_share.c
-     sh_ostruct_call). */
+     sh_ostruct_call). each_pair has no row: codegen refuses it. */
   { TY_OPENSTRUCT, "[]",          BSH_ELEM },
   { TY_OPENSTRUCT, "dig",         BSH_ELEM },
   { TY_OPENSTRUCT, "delete_field", BSH_ELEM },
   { TY_OPENSTRUCT, "[]=",         BSH_STORE_LAST },
   { TY_OPENSTRUCT, "to_h",        BSH_SUB },
-  { TY_OPENSTRUCT, "each_pair",   BSH_ITER },
 
   /* Kernel's functions. A name with no row (raise, throw, define_method,
      lambda, ...) is not followed. */
