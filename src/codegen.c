@@ -662,14 +662,17 @@ static int emit_nilbool_conv_raise_w(Compiler *c, int node, TyKind want, int nil
     emit_expr(c, node, b);
     /* CRuby's rb_num2long-style slots say "from nil to integer"; the
        rb_convert_type ones (Random.srand, Dir.mkdir's mode) say
-       "of nil into Integer", and an IO offset (NUM2OFFT) "from nil"
-       (sp_raise_nil_to_int's wordings). String slots have only the one
+       "of nil into Integer", and an IO offset (NUM2OFFT) either, by the
+       platform's off_t (sp_raise_nil_to_int's wordings). String slots have only the one
        form. */
-    buf_printf(b, "); sp_raise_cls(\"TypeError\", \"%s\"); %s; })",
-               want == TY_STRING ? "no implicit conversion of nil into String"
-               : wording == 2    ? "no implicit conversion from nil"
-               : wording         ? "no implicit conversion of nil into Integer"
-                                 : "no implicit conversion from nil to integer",
+    buf_printf(b, "); sp_raise_cls(\"TypeError\", %s); %s; })",
+               want == TY_STRING ? "\"no implicit conversion of nil into String\""
+               /* NUM2OFFT is rb_num2long's wording where off_t is a long and
+                  rb_num2ll's where it is wider (macOS, a 32-bit build) */
+               : wording == 2    ? "(sizeof(off_t) == sizeof(long) ? \"no implicit conversion from nil to integer\""
+                                   " : \"no implicit conversion from nil\")"
+               : wording         ? "\"no implicit conversion of nil into Integer\""
+                                 : "\"no implicit conversion from nil to integer\"",
                dv);
   }
   else {

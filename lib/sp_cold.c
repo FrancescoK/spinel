@@ -4972,9 +4972,11 @@ SP_NORETURN void sp_raise_nil_cmp(int left_nil, const char *op, const char *cls)
    variable. The literal `s[nil]` already raised this from the emitter; the
    slot's nil is the same nil, so it gets the same message (#4896). CRuby
    words it by the conversion the slot makes: 0 rb_num2long's, 1
-   rb_convert_type's (and NUM2SIZET's), 2 NUM2OFFT's, an IO offset. */
+   rb_convert_type's (and NUM2SIZET's), 2 NUM2OFFT's, an IO offset (rb_num2long's wording where off_t is a long, rb_num2ll's
+   where it is wider: a 32-bit build, macOS). */
 SP_NORETURN void sp_raise_nil_to_int(int of_wording) {
-  sp_raise_cls("TypeError", of_wording == 2 ? "no implicit conversion from nil"
+  sp_raise_cls("TypeError", of_wording == 2 ? (sizeof(off_t) == sizeof(long) ? "no implicit conversion from nil to integer"
+                                                                              : "no implicit conversion from nil")
                             : of_wording ? "no implicit conversion of nil into Integer"
                                          : "no implicit conversion from nil to integer");
 }

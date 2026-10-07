@@ -1,6 +1,8 @@
 # A nil where an Integer is wanted raises TypeError worded by the
 # conversion CRuby makes there: an IO offset (NUM2OFFT: seek, sysseek,
-# pos=, truncate, the offset of pread and pwrite) says "from nil",
+# pos=, truncate, the offset of pread and pwrite) says "from nil" where off_t
+# is wider than a long (macOS, a 32-bit build) and "from nil to integer" where
+# it is a long (Linux x86-64), so the offset lines drop a trailing " to integer";
 # pread's length (NUM2SIZET) and Random#bytes' size "of nil into Integer",
 # and readpartial's length (NUM2LONG) "from nil to integer". The nil may be
 # written, held in a mixed Array, an Integer slot's nil (a String#index
@@ -11,7 +13,9 @@ require "tmpdir"
 def show(tag)
   p yield
 rescue => e
-  puts "#{tag} #{e.class}: #{e.message}"
+  msg = e.message
+  msg = msg.sub(/ to integer\z/, "") if tag =~ /off|seek|pos=|truncate|miss/
+  puts "#{tag} #{e.class}: #{msg}"
 end
 
 def t(k)
