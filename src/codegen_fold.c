@@ -8126,6 +8126,8 @@ int head_held_box(Compiler *c, int node) {
 
 /* See codegen_internal.h. */
 int hold_operand(Compiler *c, int node, TyKind ty, int boxed, int t, int root, const char *sep, Buf *b) {
+  /* a value with no C slot of its own (nil) is held boxed */
+  if (!boxed && (ty == TY_NIL || ty == TY_VOID || ty == TY_UNKNOWN)) { boxed = 1; ty = TY_POLY; }
   Buf vb; memset(&vb, 0, sizeof vb);
   if (boxed) emit_boxed(c, node, &vb); else emit_expr(c, node, &vb);
   /* the head's temp, read unconverted: no copy, no second root */
