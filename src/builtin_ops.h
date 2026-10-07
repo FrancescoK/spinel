@@ -308,6 +308,7 @@ int bop_args_as_builtin(TyKind rt, const char *name, int argc, int has_block);
 #define BOP_KERNEL   ((TyKind)-5)   /* a receiverless builtin (Kernel) */
 #define BOP_ANY_RECV ((TyKind)-6)   /* Object's methods, on any receiver */
 #define BOP_CALLABLE ((TyKind)-7)   /* a proc, a lambda or a Method */
+#define BOP_CLASS_NEW ((TyKind)-8)  /* a builtin class's `new`, by the class's name */
 
 typedef enum {
   BSH_PURE = 1,   /* keeps none of its arguments; answers no value it was handed
@@ -353,7 +354,18 @@ typedef enum {
   BSH_IVAR_SET,   /* stores its second argument in the ivar its first names */
   BSH_EXEC,       /* runs its block with its arguments (instance_exec) and
                      answers the block's value */
-  BSH_NEW         /* constructs: its arguments go to initialize */
+  BSH_NEW,        /* constructs: its arguments go to initialize */
+  BSH_FLATTEN,    /* answers a container of the receiver's elements and of
+                     its nested containers' elements, at any depth (flatten) */
+  /* the constructors (BOP_CLASS_NEW): */
+  BSH_NEW_FILL,   /* a container of its second argument, of its one Array
+                     argument's elements and of its block's values (Array.new) */
+  BSH_NEW_DEFAULT, /* a container of its default argument and of its block's
+                     values; the block is handed the container and each key a
+                     lookup asks for (Hash.new) */
+  BSH_NEW_YIELDER, /* a container of what its block hands its first parameter
+                     (Enumerator.new's yielder) */
+  BSH_NEW_FIELDS  /* a container of its Hash argument's values (OpenStruct.new) */
 } BopShare;
 
 /* The BSH_* of `name` on receiver family fam (TY_STRING, BOP_ANY_ARRAY,

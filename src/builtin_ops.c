@@ -2631,8 +2631,8 @@ static const BopShareRow bop_share_rows[] = {
   { BOP_ANY_ARRAY, "*",         BSH_SUB },
   { BOP_ANY_ARRAY, "compact",   BSH_SUB },
   { BOP_ANY_ARRAY, "compact!",  BSH_SUB },
-  { BOP_ANY_ARRAY, "flatten",   BSH_SUB },
-  { BOP_ANY_ARRAY, "flatten!",  BSH_SUB },
+  { BOP_ANY_ARRAY, "flatten",   BSH_FLATTEN },
+  { BOP_ANY_ARRAY, "flatten!",  BSH_FLATTEN },
   { BOP_ANY_ARRAY, "reverse",   BSH_SUB },
   { BOP_ANY_ARRAY, "reverse!",  BSH_SUB },
   { BOP_ANY_ARRAY, "rotate",    BSH_SUB },
@@ -2677,6 +2677,8 @@ static const BopShareRow bop_share_rows[] = {
      values are elements; keys and key queries answer fresh Strings. */
   { BOP_ANY_HASH, "[]",         BSH_ELEM },
   { BOP_ANY_HASH, "dig",        BSH_ELEM },
+  /* the default value, or what the default proc answers for the key */
+  { BOP_ANY_HASH, "default",    BSH_ELEM },
   { BOP_ANY_HASH, "fetch",      BSH_FETCH },
   { BOP_ANY_HASH, "delete",     BSH_ELEM },
   { BOP_ANY_HASH, "shift",      BSH_SUB },
@@ -2747,6 +2749,16 @@ static const BopShareRow bop_share_rows[] = {
   { TY_REGEX,       "*", BSH_PURE },
   { TY_MATCHDATA,   "*", BSH_PURE },
   { TY_RANDOM,      "*", BSH_PURE },
+
+  /* An OpenStruct's fields are its elements; a field's reader and writer
+     (`os.name`, `os.name = s`) are read as `[]` and `[]=` (analyze_share.c
+     sh_ostruct_call). */
+  { TY_OPENSTRUCT, "[]",          BSH_ELEM },
+  { TY_OPENSTRUCT, "dig",         BSH_ELEM },
+  { TY_OPENSTRUCT, "delete_field", BSH_ELEM },
+  { TY_OPENSTRUCT, "[]=",         BSH_STORE_LAST },
+  { TY_OPENSTRUCT, "to_h",        BSH_SUB },
+  { TY_OPENSTRUCT, "each_pair",   BSH_ITER },
 
   /* Kernel's functions. A name with no row (raise, throw, define_method,
      lambda, ...) is not followed. */
@@ -2831,6 +2843,14 @@ static const BopShareRow bop_share_rows[] = {
   { BOP_ANY_RECV, "module_exec", BSH_EXEC },
   { BOP_ANY_RECV, "module_eval", BSH_EXEC },
   { BOP_ANY_RECV, "new",         BSH_NEW },
+
+  /* A builtin class's constructor keeps what it is handed in the container
+     it answers. (An exception keeps its message, which #message hands back
+     as what the analysis does not follow, as for a user exception class.) */
+  { BOP_CLASS_NEW, "Array",      BSH_NEW_FILL },
+  { BOP_CLASS_NEW, "Hash",       BSH_NEW_DEFAULT },
+  { BOP_CLASS_NEW, "Enumerator", BSH_NEW_YIELDER },
+  { BOP_CLASS_NEW, "OpenStruct", BSH_NEW_FIELDS },
 
   /* a proc's, a lambda's or a Method's invocations */
   { BOP_CALLABLE, "call",        BSH_CALL },
