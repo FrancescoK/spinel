@@ -5137,6 +5137,7 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
                   " : (sp_Curry *)(sp_raise_nomethod(sp_nomethod_msg(\"curry\", _t%d)), (void *)0); })", tv, tv, tv, tn, tv, comp_sym_intern(c, "req"), comp_sym_intern(c, "opt"),
                comp_sym_intern(c, "rest"), comp_sym_intern(c, "key"), comp_sym_intern(c, "keyreq"),
                comp_sym_intern(c, "keyrest"), tv);
+    c->args_in_call = recv;
     return 1;
   }
   /* Integer#to_s(base): base-N string of a poly integer. A Bignum answers in
@@ -8058,6 +8059,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       free(htmp);
       free(kwtmp);
       free(kwty);
+      c->args_in_call = recv;
       return 1;
     }
   }
@@ -12731,6 +12733,7 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
       buf_puts(b, ", ");
       emit_bigint_operand(c, argv[0], b);
       buf_printf(b, ") %s 0)", eq ? "==" : "!=");
+      c->args_in_call = recv;
       return 1;
     }
     /* a poly operand compares dynamically (covers string-vs-poly etc.) --
@@ -19238,12 +19241,22 @@ static void emit_nil_target_head(Compiler *c, int id, Buf *b, const char *lead, 
       if (node[i] == r) snprintf(rtext, sizeof rtext, "0");
       continue;
     }
-    int t = ++g_tmp;
-    emit_ctype(c, ty[i], b);
-    buf_printf(b, " _t%d = %s;", t, ob.p ? ob.p : default_value_from_compiler(c, ty[i]));
-    if (ty[i] == TY_POLY) buf_printf(b, " SP_GC_ROOT_RBVAL(_t%d);", t);
-    else if (needs_root(ty[i])) buf_printf(b, " SP_GC_ROOT(_t%d);", t);
-    buf_puts(b, *lead ? "\n" : " ");
+    /* an operand its own prelude ran into a rooted temp already (an
+       Array.new's fill) is that temp: no copy into a second rooted slot */
+    int t = -1, n2 = 0;
+    char rk[48];
+    if (ob.p && sscanf(ob.p, "_t%d%n", &t, &n2) == 1 && !ob.p[n2] && op.p &&
+        snprintf(rk, sizeof rk, ty[i] == TY_POLY ? "SP_GC_ROOT_RBVAL(_t%d)" : "SP_GC_ROOT(_t%d)", t) > 0 &&
+        strstr(op.p, rk))
+      buf_puts(b, *lead ? "" : " ");
+    else {
+      t = ++g_tmp;
+      emit_ctype(c, ty[i], b);
+      buf_printf(b, " _t%d = %s;", t, ob.p ? ob.p : default_value_from_compiler(c, ty[i]));
+      if (ty[i] == TY_POLY) buf_printf(b, " SP_GC_ROOT_RBVAL(_t%d);", t);
+      else if (needs_root(ty[i])) buf_printf(b, " SP_GC_ROOT(_t%d);", t);
+      buf_puts(b, *lead ? "\n" : " ");
+    }
     free(ob.p); free(op.p);
     view_bind(node[i], "_t%d", t);
     int tok = view_push_repr(c, node[i], VR_HEAD_HELD, 1);
@@ -19355,7 +19368,11 @@ static int emit_nil_target_cold(Compiler *c, int id, Buf *b) {
 static int nil_target_runs_in_call(Compiler *c, int id) {
   int node[8]; TyKind ty[8];
   int n = nil_target_operands(c, id, 1, node, ty, 8);
-  for (int i = 0; i < n; i++) if (subtree_is_pure_read(c, node[i])) return 0;
+  for (int i = 0; i < n; i++) {
+    NodeKind k = nt_kind(c->nt, node[i]);
+    if (k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode ||
+        k == NK_GlobalVariableReadNode || k == NK_ClassVariableReadNode) return 0;
+  }
   if (n < 1 || c->args_in_call_trial) return 0;
   size_t pre0 = g_pre ? g_pre->len : 0;
   int tmp0 = g_tmp, ov0 = g_n_argov;

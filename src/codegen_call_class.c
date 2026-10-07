@@ -1631,6 +1631,7 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
     buf_printf(b, "} _t%d; })", rt2);
     g_ctor_blk_tmp = sv_cbt;
     free(atmp);
+    c->args_in_call = recv;
     return 1;
   }
 
@@ -1867,6 +1868,7 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
     buf_printf(b, "} _t%d; })", rt2);
     g_ctor_blk_tmp = sv_cbt;
     free(atmp);
+    c->args_in_call = recv;
     return 1;
   }
 

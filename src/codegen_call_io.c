@@ -226,6 +226,7 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
       buf_printf(b, "const char *_t%d = sp_poly_arg_str_chk(_t%d); SP_GC_ROOT_STR(_t%d); ", tfs, tfv, tfs);
       buf_printf(b, "sp_File_write_bin(_t%d, sp_str_format_polyarr(_t%d, _t%d)); sp_box_nil(); })",
                  tio3, tfs, tpa);
+      c->args_in_call = recv;
       return 1;
     }
     /* rewind takes no argument, an Enumerator's or a stream's: given one,
@@ -273,6 +274,7 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
                    tio3, trv, tio3, tn);
         buf_printf(b, "for (sp_int _i = 0; _i < _t%d->len; _i++) _t%d += sp_File_write_poly(_t%d, _t%d->data[_i]); _t%d; })",
                    tpa, tn, tio3, tpa, tn);
+        c->args_in_call = recv;
         return 1;
       }
       int tio2 = ++g_tmp;
@@ -286,7 +288,7 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
          argument the compiler cannot type Integer or Float is held and
          converted once the handle is known, with the typed arms'
          sp_poly_arg_int_chk. */
-      if (emit_boxed_positional_io(c, recv, name, argc, argv, tio2, b)) return 1;
+      if (emit_boxed_positional_io(c, recv, name, argc, argv, tio2, b)) { c->args_in_call = recv; return 1; }
       if (boxed_desc_control_arity(name, argc)) {
         int trv = ++g_tmp, first_int = sp_streq(name, "advise") ? 1 : 0, tadv = 0;
         /* an offset's nil is worded by NUM2OFFT (emit_int_expr_offt) */
