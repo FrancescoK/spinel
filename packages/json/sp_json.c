@@ -12,6 +12,7 @@
 #include <stdlib.h>           /* strtoll, strtod */
 #include <errno.h>            /* ERANGE past int64 */
 #include <math.h>             /* isinf, isnan */
+#include <stdio.h>            /* snprintf (sp_json_float) */
 sp_Bigint *sp_bigint_new_str(const char *s, int base);   /* the runtime archive (sp_bigint.c) */
 
 /* A 0xff-marked rodata literal, so sp_str_byte_len reads its length correctly
@@ -160,6 +161,62 @@ SP_COLD static SP_NOINLINE SP_NORETURN void sp_json_too_deep(jbuf *b) {
   sp_raise_cls("JSON::NestingError",
                "nesting of 100 is too deep. Did you try to serialize objects with circular references?");
 }
+/* A Float as the json generator writes it (its vendored fpconv): the
+   shortest digits that read back as the value, then a whole number with a
+   ".0" while the exponent is under 15, a plain decimal for a fraction down
+   to 1e-7 (or one whose exponent is under 10), and scientific notation
+   otherwise, the exponent unpadded -- "1e+20", "0.00000015", "1e-10".
+   Float#to_s writes some of these differently ("1.0e+20", "1.5e-07"). */
+static const char *sp_json_float(double d) {
+  char tmp[40];
+  int p = 1;
+  for (; p <= 17; p++) {
+    snprintf(tmp, sizeof tmp, "%.*e", p - 1, d);
+    if (strtod(tmp, NULL) == d) break;
+  }
+  if (p > 17) p = 17;
+  snprintf(tmp, sizeof tmp, "%.*e", p - 1, d);
+  /* tmp is [-]D[.DDD]e[+-]XX: take the digits and the decimal exponent */
+  int neg = tmp[0] == '-';
+  const char *q = tmp + neg;
+  char digits[24]; int nd = 0;
+  for (; *q && *q != 'e'; q++) if (*q >= '0' && *q <= '9') digits[nd++] = *q;
+  int e10 = atoi(q + 1);
+  while (nd > 1 && digits[nd - 1] == '0') nd--;   /* "1.000e+20" -> "1" */
+  if (d == 0.0) { nd = 1; digits[0] = '0'; e10 = 0; }
+  int K = e10 - (nd - 1);              /* value = digits * 10^K */
+  int ex = K + nd - 1; if (ex < 0) ex = -ex;
+  char out[64]; int o = 0;
+  if (neg) out[o++] = '-';
+  if (K >= 0 && ex < 15) {
+    memcpy(out + o, digits, nd); o += nd;
+    for (int i = 0; i < K; i++) out[o++] = '0';
+    out[o++] = '.'; out[o++] = '0';
+  }
+  else if (K < 0 && (K > -7 || ex < 10)) {
+    int off = nd + K;
+    if (off <= 0) {
+      out[o++] = '0'; out[o++] = '.';
+      for (int i = 0; i < -off; i++) out[o++] = '0';
+      memcpy(out + o, digits, nd); o += nd;
+    }
+    else {
+      memcpy(out + o, digits, off); o += off;
+      out[o++] = '.';
+      memcpy(out + o, digits + off, nd - off); o += nd - off;
+    }
+  }
+  else {
+    out[o++] = digits[0];
+    if (nd > 1) { out[o++] = '.'; memcpy(out + o, digits + 1, nd - 1); o += nd - 1; }
+    o += snprintf(out + o, sizeof out - o, "e%c%d", K + nd - 1 < 0 ? '-' : '+', ex);
+  }
+  char *r = sp_str_alloc((size_t)o);
+  memcpy(r, out, (size_t)o);
+  sp_str_set_len(r, (size_t)o);
+  return r;
+}
+
 /* Everything but a container: the leaf arms, answering one GC string. */
 static const char *sp_json_scalar(sp_RbVal v) {
   switch (v.tag) {
@@ -171,7 +228,7 @@ static const char *sp_json_scalar(sp_RbVal v) {
       if (isinf(v.v.f))
         sp_raise_cls("JSON::GeneratorError", v.v.f > 0 ? "Infinity not allowed in JSON" : "-Infinity not allowed in JSON");
       if (isnan(v.v.f)) sp_raise_cls("JSON::GeneratorError", "NaN not allowed in JSON");
-      return sp_float_to_s(v.v.f);
+      return sp_json_float(v.v.f);
     case SP_TAG_BOOL: return v.v.b ? JSPL("true") : JSPL("false");
     case SP_TAG_NIL:  return JSPL("null");
     case SP_TAG_STR:  return sp_json_str(v.v.s);
