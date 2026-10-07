@@ -489,6 +489,18 @@ literal `s[h[k]..]` does. A genuine `-9223372036854775808` stored in such a
 slot is indistinguishable from nil, which is the price of the
 representation.
 
+That holds in every `--int-overflow` mode (#7612): an Integer that is exactly
+-2**63 -- `-9223372036854775807 - 1` computed without overflowing, a wrapping
+`+ - *`, `~0x7fffffffffffffff` -- is the sentinel's word, so it reads as `nil`
+where it is printed, tested for nil or truthiness, or computed on, and no mode
+raises for it. This is deliberate: checking the result of every `+ - *` costs
+10 to 37% of the run time on integer-heavy programs (measured on `bm_tarai`,
+`bm_tak`, `bm_sudoku`, `bm_structaref` and `bm_throw`), and an error where the
+word was a real nil (a nil the analysis did not mark) would be wrong the other
+way. The literal `-9223372036854775808` is not affected, and neither is a
+value that travels as a Bignum (promote mode). A program that really uses
+-2**63 as a number (a sentinel of its own, a hash seed) differs from CRuby.
+
 #### `Integer#**` with a negative exponent
 
 CRuby evaluates a negative integer exponent to a `Rational`. Spinel matches
