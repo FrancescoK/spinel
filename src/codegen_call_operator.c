@@ -1340,10 +1340,7 @@ int emit_call_operator_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
         }
       Buf pcall; memset(&pcall, 0, sizeof pcall);
       if (subtree_may_allocate(nt, argv[0])) {
-        Buf hb; memset(&hb, 0, sizeof hb);
-        int th = hold_operand(c, recv, TY_POLY, 1, ++g_tmp, "\n", &hb);
-        if (hb.p) { emit_indent(g_pre, g_indent); buf_puts(g_pre, hb.p); }
-        free(hb.p);
+        int th = hold_operand_pre(c, recv, TY_POLY, 1, ++g_tmp, 1);
         buf_printf(&pcall, "%s(_t%d, ", pfn, th); emit_boxed(c, argv[0], &pcall); buf_puts(&pcall, ")");
       }
       else {

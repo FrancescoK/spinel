@@ -3205,10 +3205,7 @@ else {
              (sp_kw_merge_any): the walk alone took a user object or an
              Integer for no pairs at all. */
           int st = ++g_tmp;
-          Buf sb; memset(&sb, 0, sizeof sb); emit_boxed(c, src, &sb);
-          emit_indent(g_pre, g_indent);
-          buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n", st, sb.p ? sb.p : "sp_box_nil()", st);
-          free(sb.p);
+          st = hold_operand_pre(c, src, TY_POLY, 1, st, 1);
           emit_indent(g_pre, g_indent);
           buf_printf(g_pre, "sp_kw_merge_any(_t%d, _t%d);\n", t, st);
         }
