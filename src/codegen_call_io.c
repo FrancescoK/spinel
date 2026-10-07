@@ -187,7 +187,12 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
           same boxed handle. Not where a class method may own the name. */
        (argc == 0 && boxed_stat_pred(name) >= 0 && !class_method_named(c, name)))) {
     int iocand = 0;
-    for (int k = 0; k < c->nclasses && !iocand; k++) {
+    /* Inside the builtin default arm of a class-id switch (the call
+       re-entered by emit_poly_builtin_default) the value is none of the
+       classes that own the name, so none is a candidate: counting them
+       declined the arm, and a socket beside an SSLSocket that owns the
+       same name (write_nonblock, addr) raised NoMethodError. */
+    for (int k = 0; k < c->nclasses && !iocand && !g_poly_builtin_arm; k++) {
       /* a native class's methods are its declared bindings, which is the
          rule the poly dispatch counts candidates by: a Ruby-side def on it
          (IO::Buffer#write over an IO, #4474) is not a candidate there, so
