@@ -13150,6 +13150,100 @@ static int infer_zip_block_params(Compiler *c, int id, int block, const char *p0
   return changed;
 }
 
+/* A fetch key of type `kt` whose block's parameter may be boxed: the type
+   is known and can hold neither a String nor a Symbol. A nil counts only
+   as the literal; a local that is nil so far may yet be typed a String. */
+static int fetch_key_boxes(const NodeTable *nt, int key, TyKind kt) {
+  return kt != TY_UNKNOWN && kt != TY_POLY && kt != TY_STRING && kt != TY_SYMBOL &&
+         (kt != TY_NIL || nt_kind(nt, key) == NK_NilNode);
+}
+
+/* The local of the fetch block `blk`'s parameter `p0`, or NULL, as
+   scope_local finds it (a scope holds a name once). A scope with a
+   thousand fetch blocks has a thousand such locals and each block is asked
+   about in every round, so the local is looked for where it was found
+   last, and a first search starts after the one found before it: the
+   blocks are asked about in the order their parameters were made. */
+static LocalVar *fetch_param_local(Compiler *c, int blk, const char *p0) {
+  static int *at, cap, last;
+  Scope *s = comp_scope_of(c, blk);
+  if (blk >= cap) {
+    int ncap = c->nt->count > blk ? c->nt->count : blk + 1;
+    int *nv = realloc(at, sizeof(int) * (size_t)ncap);
+    if (!nv) return scope_local(s, p0);
+    memset(nv + cap, 0xff, sizeof(int) * (size_t)(ncap - cap));   /* -1: not found yet */
+    at = nv; cap = ncap;
+  }
+  int i = at[blk];
+  if (i >= 0 && i < s->nlocals && sp_streq(s->locals[i].name, p0)) return &s->locals[i];
+  for (int k = 1; k <= s->nlocals; k++) {
+    i = (last + k) % s->nlocals;
+    if (sp_streq(s->locals[i].name, p0)) { at[blk] = last = i; return &s->locals[i]; }
+  }
+  return NULL;
+}
+
+/* The fetch blocks one of which may be left behind (fetch_params_may_box):
+   its key, its block and the name of the block's parameter. The question
+   is asked for every parameter about to be boxed, and looking every fetch
+   call's block, key and parameter up again each time is cubic in the
+   fetch blocks of a program. So they are listed once a round of
+   infer_block_params, and again if the node table changes under it. A
+   block whose key is a literal that boxes is never the one left behind and
+   is not listed; another literal's type is read once (kt; TY_UNKNOWN: a
+   key to ask about each time). */
+typedef struct { int key, blk; TyKind kt; const char *p0; } FetchBlk;
+static FetchBlk *fblk_v;
+static int fblk_n = -1, fblk_cap, fblk_cnt;
+static unsigned fblk_ver;
+static void fetch_blocks_list(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  fblk_n = 0; fblk_ver = nt->version; fblk_cnt = nt->count;
+  for (int id = an_calls_named_first(c, "fetch"); id >= 0; id = an_calls_named_next(id)) {
+    int blk = nt_ref(nt, id, "block");
+    const char *p0 = nt_kind(nt, blk) == NK_BlockNode ? block_param_name(c, blk, 0) : NULL;
+    int fa = nt_ref(nt, id, "arguments");
+    int fac = 0; const int *fav = fa >= 0 ? nt_arr(nt, fa, "arguments", &fac) : NULL;
+    if (!p0 || fac < 1) continue;
+    NodeKind kk = nt_kind(nt, fav[0]);
+    int lit = kk == NK_IntegerNode || kk == NK_FloatNode || kk == NK_StringNode || kk == NK_SymbolNode ||
+              kk == NK_NilNode || kk == NK_TrueNode || kk == NK_FalseNode;
+    TyKind kt = lit ? infer_type(c, fav[0]) : TY_UNKNOWN;
+    if (lit && fetch_key_boxes(nt, fav[0], kt)) continue;
+    if (fblk_n >= fblk_cap) {
+      fblk_cap = fblk_cap ? fblk_cap * 2 : 16;
+      FetchBlk *nv = realloc(fblk_v, sizeof(FetchBlk) * (size_t)fblk_cap);
+      /* a lost row would box a parameter beside a block left behind */
+      if (!nv) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      fblk_v = nv;
+    }
+    FetchBlk *f = &fblk_v[fblk_n++];
+    f->key = fav[0]; f->blk = blk; f->kt = kt; f->p0 = p0;
+  }
+}
+
+/* May the fetch blocks' parameters that kept a stale type be boxed? Not
+   while another fetch block of the program would be left behind: one whose
+   key is or may be a String or a Symbol, and whose parameter is neither
+   boxed nor of the key's own type. Boxed, a String is a copy under a
+   change in place, and nothing shows the block's calls are right on a
+   boxed Symbol; so that parameter stays as it is, and its fetch keeps a
+   failure that a program which now builds would reach. The two types are
+   read as they are at each ask: a round changes them as it goes. */
+static int fetch_params_may_box(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  if (fblk_n < 0 || fblk_ver != nt->version || fblk_cnt != nt->count) fetch_blocks_list(c);
+  for (int i = 0; i < fblk_n; i++) {
+    FetchBlk *f = &fblk_v[i];
+    TyKind kt = f->kt != TY_UNKNOWN ? f->kt : infer_type(c, f->key);
+    LocalVar *lv = fetch_param_local(c, f->blk, f->p0);
+    TyKind st = lv ? lv->type : TY_UNKNOWN;
+    if (!fetch_key_boxes(nt, f->key, kt) && st != TY_POLY &&
+        !(st == kt && (kt == TY_STRING || kt == TY_SYMBOL))) return 0;
+  }
+  return 1;
+}
+
 /* infer_block_params's per-call arms for a container receiver's block:
    match, zip, merge, product, fetch, transform_keys / transform_values,
    each_value / each_key, a Hash's each / each_pair, and an Array element
@@ -13210,6 +13304,24 @@ static int infer_block_params_container_arms(Compiler *c, const NodeTable *nt, i
     Scope *fs = comp_scope_of(c, block);
     if (bp_widen(fs, p0, ty_hash_key(rt))) changed = 1;
     return changed | 2;
+  }
+  /* A boxed receiver's fetch(key) { |k| } binds that key too. A read such
+     as `x[:s]` types a still untyped local as a Hash of Symbol keys for a
+     round, and the arm above then gave k that key type, which k kept when
+     the local was boxed: `x.fetch(9) { |k| k * 2 }` multiplied a "Symbol"
+     and lost its Hash arm, or did not build. Where the key is of another
+     type than k has, and is no String and no Symbol, k is boxed, as it is
+     where nothing typed it. */
+  if (sp_streq(name, "fetch") && rt == TY_POLY && p0) {
+    LocalVar *fp = fetch_param_local(c, block, p0);
+    /* an untyped or boxed k has nothing to cure: the key is not looked at */
+    if (fp && fp->type != TY_UNKNOWN && fp->type != TY_POLY) {
+      int fa = nt_ref(nt, id, "arguments");
+      int fac = 0; const int *fav = fa >= 0 ? nt_arr(nt, fa, "arguments", &fac) : NULL;
+      TyKind fkt = fac > 0 ? infer_type(c, fav[0]) : TY_UNKNOWN;
+      if (fac > 0 && fetch_key_boxes(nt, fav[0], fkt) &&
+          fkt != fp->type && fetch_params_may_box(c) && lv_widen(fp, TY_POLY)) changed = 1;
+    }
   }
 
   /* hash.transform_keys { |k| } binds key; transform_values { |v| } value */
@@ -14257,6 +14369,7 @@ int infer_block_params(Compiler *c) {
   int changed = 0;
   block_sites_index(c);
   bsn_n = 0;
+  fblk_n = -1;   /* the fetch blocks are listed again when first asked for */
 
   /* Splat-rest / trailing-post params of proc literals: register them on the
      proc's scope so they are locals, not "uncaptured outer variables". The
