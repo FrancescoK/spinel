@@ -16608,22 +16608,42 @@ static int share_lift_arms(Compiler *c, int n) {
 static int share_lift_value(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
   NodeKind k = nt_kind(nt, v);
-  /* a conditional value: each arm that can be a String (a boxed slot's
-     value boxes each arm on its own) */
+  if (k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode || k == NK_GlobalVariableReadNode ||
+      k == NK_ClassVariableReadNode || k == NK_ConstantReadNode || k == NK_ConstantPathNode)
+    return 0;
+  /* a String-typed value, a conditional's included, is boxed whole */
+  if (infer_type(c, v) == TY_STRING) {
+    if (c->poly_strbuf_lift[v]) return 0;
+    c->poly_strbuf_lift[v] = 1;
+    return 1;
+  }
+  /* a conditional value of mixed types: each arm that can be a String (the
+     boxed slot's value boxes each arm on its own). A `case`, `case`/`in`
+     and `begin` value is its arms' and handlers' values, as the typing
+     unifies them: an `else` replaces a `begin`'s body, `ensure` adds none. */
   switch (k) {
     case NK_IfNode: case NK_UnlessNode:
       return share_lift_arms(c, nt_ref(nt, v, "statements")) |
              share_lift_arms(c, nt_ref(nt, v, k == NK_IfNode ? "subsequent" : "else_clause"));
     case NK_OrNode: case NK_AndNode:
       return share_lift_arms(c, nt_ref(nt, v, "left")) | share_lift_arms(c, nt_ref(nt, v, "right"));
-    default: break;
+    case NK_CaseNode: case NK_CaseMatchNode: {
+      int nw = 0, changed = 0;
+      const int *arms = nt_arr(nt, v, "conditions", &nw);
+      for (int i = 0; i < nw; i++) changed |= share_lift_arms(c, nt_ref(nt, arms[i], "statements"));
+      return changed | share_lift_arms(c, nt_ref(nt, v, "else_clause"));
+    }
+    case NK_BeginNode: {
+      int els = nt_ref(nt, v, "else_clause");
+      int changed = share_lift_arms(c, els >= 0 ? els : nt_ref(nt, v, "statements"));
+      for (int r = nt_ref(nt, v, "rescue_clause"); r >= 0; r = nt_ref(nt, r, "subsequent"))
+        changed |= share_lift_arms(c, nt_ref(nt, r, "statements"));
+      return changed;
+    }
+    case NK_RescueModifierNode:
+      return share_lift_arms(c, nt_ref(nt, v, "expression")) | share_lift_arms(c, nt_ref(nt, v, "rescue_expression"));
+    default: return 0;
   }
-  if (k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode || k == NK_GlobalVariableReadNode ||
-      k == NK_ClassVariableReadNode || k == NK_ConstantReadNode || k == NK_ConstantPathNode)
-    return 0;
-  if (infer_type(c, v) != TY_STRING || c->poly_strbuf_lift[v]) return 0;
-  c->poly_strbuf_lift[v] = 1;
-  return 1;
 }
 /* The same for local `name` of scope `scope`: its `=`, `||=` and `&&=`
    (comp_lvw_first_sc, the local write index). */
