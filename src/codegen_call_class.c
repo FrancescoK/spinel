@@ -9,6 +9,7 @@
 #include "builtin_ops.h"
 #include "call_plan.h"
 #include "codegen_call_arms.h"
+#include "share.h"
 
 static void emit_attr_writer_converted(Compiler *c, int arg, TyKind ivt, int tmp,
                                        const char *name, Buf *b) {
@@ -1172,13 +1173,18 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
           if (argc >= 1 && _aivt == TY_STRBUF && repr_of(c, argv[0]).kind != RK_BOXED) {
             ClassInfo *_aci = &c->classes[_adefc < 0 ? _arc : _adefc];
             TyKind _avt = repr_of(c, id).as_ty;
-            if (_avt != TY_STRBUF && _aci->ivar_str_shared[_aiv])
-              unsupported_feature(c, id, "an attribute assignment in value position (kept, passed on, or a "
-                                  "method's last expression, which the method answers) stores into an instance "
-                                  "variable that is mutated in place through another name, and its value would "
-                                  "be a copy (a String is not yet shared by reference through an assignment's "
-                                  "value). Make the assignment a statement of its own, or read the String back "
-                                  "through the reader.");
+            static const char _amsg[] =
+              "an attribute assignment in value position (kept, passed on, or a method's last expression, "
+              "which the method answers) stores into an instance variable that is mutated in place through "
+              "another name, and its value would be a copy (a String is not yet shared by reference through "
+              "an assignment's value). Make the assignment a statement of its own, or read the String back "
+              "through the reader.";
+            /* --share-strings: the copy is right where the rule does not
+               share the String (share_route_defer) */
+            ShareRoute _aq = share_route(id, argv[0], 0);
+            _aq.carry = SHARE_CARRY_COPY;
+            if (_avt != TY_STRBUF && _aci->ivar_str_shared[_aiv] && !share_route_defer(c, &_aq, _amsg))
+              unsupported_feature(c, id, _amsg);
             buf_printf(b, "_t%d->iv_%s = ", _atmp, iv_c(_abase));
             emit_strbuf_ivar_store(c, _aci->ivar_str_shared[_aiv], argv[0], b);
             if (_avt == TY_STRBUF) buf_printf(b, "; _t%d->iv_%s; })", _atmp, iv_c(_abase));
