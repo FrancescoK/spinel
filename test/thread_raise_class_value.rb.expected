@@ -1,0 +1,6 @@
+[ArgumentError, "too slow"]
+[Slow, "mine"]
+[Slow, "maybe"]
+[ArgumentError, "maybe"]
+"expired"
+"custom"

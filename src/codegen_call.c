@@ -3719,6 +3719,18 @@ void emit_concurrency_raise(Compiler *c, const char *rtext, int argc, const int 
                fn, pfx, t, pfx, t, pfx, t, pfx, t);
     return;
   }
+  /* a boxed first argument names the class when it holds one (`klass ||
+     Default`), else it is the message, as CRuby reads it at run time */
+  if (argc >= 1 && !arg0_const && a0t == TY_POLY) {
+    int t = ++g_tmp;
+    buf_printf(b, "({ sp_RbVal _ca%d = ", t); emit_boxed(c, argv[0], b);
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_ca%d); int _cc%d = _ca%d.tag == SP_TAG_CLASS; ", t, t, t);
+    buf_printf(b, "%s(%s, _cc%d ? sp_class_to_s(sp_unbox_class(_ca%d)) : \"RuntimeError\", _cc%d ? ",
+               fn, rtext, t, t, t);
+    if (argc >= 2) emit_exc_msg_arg(c, argv[1], b); else buf_puts(b, "(&(\"\\xff\")[1])");
+    buf_printf(b, " : sp_poly_to_s(_ca%d), NULL); })", t);
+    return;
+  }
   buf_printf(b, "%s(%s, ", fn, rtext);
   if (arg0_const) {
     /* a builtin exception by its whole path (Errno::ENOENT), a class of the
@@ -3737,6 +3749,13 @@ void emit_concurrency_raise(Compiler *c, const char *rtext, int argc, const int 
       }
     }
     else if (argc >= 2) emit_expr(c, argv[1], b); else buf_puts(b, "(&(\"\\xff\")[1])");
+    buf_puts(b, ", NULL");
+  }
+  else if (argc >= 1 && a0t == TY_CLASS) {
+    /* the class as a value (a parameter, a local): its name, read when
+       the call runs, as the constant's is written above */
+    buf_puts(b, "sp_class_to_s("); emit_expr(c, argv[0], b); buf_puts(b, "), ");
+    if (argc >= 2) emit_exc_msg_arg(c, argv[1], b); else buf_puts(b, "(&(\"\\xff\")[1])");
     buf_puts(b, ", NULL");
   }
   else if (argc >= 1) {
