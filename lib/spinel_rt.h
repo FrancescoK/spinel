@@ -10982,6 +10982,7 @@ static sp_RbVal sp_poly_arr_set_hash(sp_RbVal v, sp_int idx, sp_RbVal val) {
 /* poly_val[str_key] = val: runtime dispatch for poly recv `[]=` with string key. */
 static sp_RbVal sp_poly_set_str(sp_RbVal v, const char *key, sp_RbVal val) {
   sp_poly_coll_chk(v, "[]=");
+  if (v.tag == SP_TAG_SYM) sp_raise_poly_nomethod("[]=", v);   /* as sp_poly_arr_set */
   if (v.tag != SP_TAG_OBJ) return val;
   /* An Array indexed by a String is a TypeError, not a write to be dropped:
      the static path raises it, and a boxed receiver reaching the same call
@@ -11009,6 +11010,7 @@ void sp_poly_hash_merge_into(sp_RbVal dst, sp_RbVal src);
 /* poly_val[sym_key] = val: runtime dispatch for poly recv `[]=` with symbol key. */
 static sp_RbVal sp_poly_set_sym(sp_RbVal v, sp_sym key, sp_RbVal val) {
   sp_poly_coll_chk(v, "[]=");
+  if (v.tag == SP_TAG_SYM) sp_raise_poly_nomethod("[]=", v);   /* as sp_poly_arr_set */
   if (v.tag != SP_TAG_OBJ) return val;
   if (sp_poly_is_array_kind(v.cls_id))
     sp_raise_cls("TypeError", SPL("no implicit conversion of Symbol into Integer"));
@@ -11030,6 +11032,8 @@ static sp_RbVal sp_poly_set_sym(sp_RbVal v, sp_sym key, sp_RbVal val) {
 /* poly_val[int_idx] = val: runtime dispatch for poly recv `[]=` with int index. */
 static sp_RbVal sp_poly_arr_set(sp_RbVal v, sp_int idx, sp_RbVal val) {
   sp_poly_coll_chk(v, "[]=");
+  /* a Symbol has `[]` but no `[]=`: the store was a silent no-op */
+  if (v.tag == SP_TAG_SYM) sp_raise_poly_nomethod("[]=", v);
   if (v.tag != SP_TAG_OBJ) return val;
   switch (v.cls_id) {
     case SP_BUILTIN_INT_ARRAY:  sp_IntArray_set((sp_IntArray*)v.v.p, idx,
@@ -11149,9 +11153,54 @@ static sp_RbVal sp_poly_arr_widen_and_set(sp_RbVal v, sp_int idx, sp_RbVal val) 
   sp_poly_arr_set(v, idx, val);
   return v;
 }
+/* `s[key] = v` on a boxed receiver, as String#[]= takes its key: an
+   Integer index (one character), a Range, a String (its first match;
+   IndexError when there is none) or a Regexp. sp_poly_set_str and
+   sp_poly_set_poly have no String arm, so the store was dropped. A plain
+   String splices to a fresh buffer, which is answered for the caller to
+   store back; a shared one absorbs the splice and is answered itself. Any
+   other receiver, or key, stores as before and is answered unchanged. */
+static sp_RbVal sp_poly_str_aset_key(sp_RbVal v, sp_RbVal key, sp_RbVal val) {
+  int re = key.tag == SP_TAG_OBJ && key.cls_id == SP_BUILTIN_REGEX && key.v.p;
+  int rng = key.tag == SP_TAG_OBJ && key.cls_id == SP_BUILTIN_RANGE && key.v.p;
+  if (!(v.tag == SP_TAG_STR || sp_poly_is_strbuf(v)) || !(key.tag == SP_TAG_STR || key.tag == SP_TAG_INT || re || rng)) {
+    if (key.tag == SP_TAG_STR) sp_poly_set_str(v, key.v.s ? key.v.s : sp_str_empty, val);
+    else sp_poly_set_poly(v, key, val);
+    return v;
+  }
+  if (v.tag == SP_TAG_STR && v.v.s && sp_str_is_frozen_val(v.v.s)) sp_raise_frozen_str(v.v.s);
+  SP_GC_ROOT_RBVAL(v); SP_GC_ROOT_RBVAL(key); SP_GC_ROOT_RBVAL(val);
+  const char *cur = v.tag == SP_TAG_STR ? (v.v.s ? v.v.s : sp_str_empty) : sp_String_cstr((sp_String *)v.v.p);
+  const char *rep = val.tag == SP_TAG_STR ? (val.v.s ? val.v.s : sp_str_empty) : sp_poly_to_s(val);
+  SP_GC_ROOT(cur); SP_GC_ROOT(rep);
+  const char *out;
+  if (re) out = sp_str_splice_re((mrb_regexp_pattern *)key.v.p, cur, rep);
+  else if (key.tag == SP_TAG_INT) out = sp_str_splice_at(cur, key.v.i, 1, rep, 0);
+  else if (rng) {
+    /* the bounds as the typed `s[r] = v` reads them: a beginless one 0, an
+       endless one the last index */
+    sp_Range r = *(sp_Range *)key.v.p;
+    sp_int len = (sp_int)sp_str_length(cur);
+    sp_int a = r.first == SP_INT_NIL ? 0 : (r.first < 0 ? r.first + len : r.first);
+    int oe = r.last == SP_INT_NIL;
+    sp_int e = oe ? len - 1 : (r.last < 0 ? r.last + len : r.last);
+    sp_int n = e - a + ((r.excl && !oe) ? 0 : 1);
+    out = sp_str_splice_at(cur, a, n < 0 ? 0 : n, rep, 1);
+  }
+  else {
+    const char *k = key.v.s ? key.v.s : sp_str_empty;
+    sp_int at = sp_str_index_opt(cur, k);
+    if (at == SP_INT_NIL) sp_raise_cls("IndexError", "string not matched");
+    out = sp_str_splice_at(cur, at, (sp_int)sp_str_length(k), rep, 0);
+  }
+  if (v.tag == SP_TAG_STR) return sp_box_str(out);
+  sp_String_set_bin((sp_String *)v.v.p, out);
+  return v;
+}
 /* poly_val[poly_key] = val: fully dynamic dispatch for poly recv + poly key. */
 static sp_RbVal sp_poly_set_poly(sp_RbVal v, sp_RbVal key, sp_RbVal val) {
   sp_poly_coll_chk(v, "[]=");
+  if (v.tag == SP_TAG_SYM) sp_raise_poly_nomethod("[]=", v);   /* as sp_poly_arr_set */
   if (v.tag != SP_TAG_OBJ) return val;
   /* a user object's own []= */
   if (SP_UNLIKELY(sp_poly_is_user_obj(v) && sp_user_aset_hook)) {
