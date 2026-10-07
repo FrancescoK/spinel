@@ -15686,14 +15686,14 @@ static int gvar_array_plain_string(Compiler *c, const char *grn) {
   }
   return -1;
 }
-/* Does global Hash `grn` hold a String that is no handle? Its values are
+/* A String global Hash `grn` holds that is no handle, or -1. Its values are
    plain Strings when a `$g[k] = s` stores one that is not a literal (a
    literal is frozen) and no handle, or a literal Hash is written with one:
    the walk demands only what the stores of a local or ivar container give. */
-static int gvar_hash_holds_plain_string(Compiler *c, const char *grn) {
+static int gvar_hash_plain_string(Compiler *c, const char *grn) {
   const NodeTable *nt = c->nt;
   LocalVar *g = comp_gvar(c, grn);
-  if (!g || !ty_is_hash(g->type) || ty_hash_val(g->type) != TY_STRING) return 0;
+  if (!g || !ty_is_hash(g->type) || ty_hash_val(g->type) != TY_STRING) return -1;
   for (int e = comp_vsite_first(c, VS_WRITE, NK_GlobalVariableReadNode, grn, -1); e >= 0;
        e = comp_vsite_next(c, e)) {
     int v = an_unparen(nt, nt_ref(nt, comp_vsite_node(c, e), "value"));
@@ -15703,7 +15703,7 @@ static int gvar_hash_holds_plain_string(Compiler *c, const char *grn) {
       if (nt_kind(nt, el[k]) != NK_AssocNode) continue;
       int l = an_unparen(nt, nt_ref(nt, el[k], "value"));
       TyKind lt = infer_type(c, l);
-      if ((lt == TY_STRING || lt == TY_STRBUF) && nt_kind(nt, l) != NK_StringNode && !c->strbuf_box[l]) return 1;
+      if ((lt == TY_STRING || lt == TY_STRBUF) && nt_kind(nt, l) != NK_StringNode && !c->strbuf_box[l]) return l;
     }
   }
   for (int e = comp_vsite_first(c, VS_RECV, NK_GlobalVariableReadNode, grn, -1); e >= 0;
@@ -15716,14 +15716,24 @@ static int gvar_hash_holds_plain_string(Compiler *c, const char *grn) {
     if (an != 2) continue;
     int l = an_unparen(nt, av[1]);
     TyKind lt = infer_type(c, l);
-    if ((lt == TY_STRING || lt == TY_STRBUF) && nt_kind(nt, l) != NK_StringNode && !c->strbuf_box[l]) return 1;
+    if ((lt == TY_STRING || lt == TY_STRBUF) && nt_kind(nt, l) != NK_StringNode && !c->strbuf_box[l]) return l;
   }
-  return 0;
+  return -1;
 }
-static __attribute__((noreturn)) void refuse_global_hash_element(Compiler *c, int id) {
-  unsupported_feature(c, id, "an element of a global Hash is a String mutated in place through the Hash "
-                      "(a String is not yet shared by reference through a global variable's Hash). Keep "
-                      "the Hash in a local or an instance variable.");
+/* Refused at node id, for String `l` that global read g's Hash holds as a
+   value (gvar_hash_plain_string). Under --share-strings the copy is right
+   when the rule does not share g's values, and where it does, l must hand
+   its handle into the Hash (share_route_defer), as for a global's Array. */
+static void refuse_global_hash_element(Compiler *c, int id, int g, int l) {
+  static const char msg[] =
+    "an element of a global Hash is a String mutated in place through the Hash (a String is not yet "
+    "shared by reference through a global variable's Hash). Keep the Hash in a local or an instance "
+    "variable.";
+  ShareRoute q = share_route(id, l, 0);
+  q.to = g;
+  q.to_elems = 1;
+  q.carry = l;
+  if (!share_route_defer(c, &q, msg)) unsupported_feature(c, id, msg);
 }
 /* Refused at node id, for String `l` that global read g's Array holds
    (gvar_array_plain_string). Under --share-strings the copy is right when
@@ -15810,8 +15820,8 @@ static int strbuf_container_source_walk(Compiler *c, int node, int depth, int mo
         }
       int pl = mode == SB_DEMAND ? gvar_array_plain_string(c, grn) : -1;
       if (pl >= 0) refuse_global_array_element(c, node, node, pl);
-      if (mode == SB_DEMAND && gvar_hash_holds_plain_string(c, grn))
-        refuse_global_hash_element(c, node);
+      int hl = mode == SB_DEMAND ? gvar_hash_plain_string(c, grn) : -1;
+      if (hl >= 0) refuse_global_hash_element(c, node, node, hl);
       return changed;
     }
     case NK_CallNode: {
