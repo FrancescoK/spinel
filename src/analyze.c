@@ -16854,7 +16854,7 @@ static int share_lift_poly_ivar_stores(Compiler *c, int cid, const char *name) {
     int r = nt_ref(nt, w, "receiver"), a = nt_ref(nt, w, "arguments"), an = 0;
     const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
     if (!cn || r < 0) continue;
-    if (sp_streq(cn, "new") && (nt_kind(nt, r) == NK_ConstantReadNode || nt_kind(nt, r) == NK_ConstantPathNode) &&
+    if (is_struct_constructor(cn) && (nt_kind(nt, r) == NK_ConstantReadNode || nt_kind(nt, r) == NK_ConstantPathNode) &&
         comp_class_index(c, nt_str(nt, r, "name")) == cid) {
       if (an == 1 && nt_kind(nt, av[0]) == NK_KeywordHashNode) {
         int kn = 0; const int *ke = nt_arr(nt, av[0], "elements", &kn);
