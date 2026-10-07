@@ -34704,10 +34704,10 @@ static void an_phase_method_backstops(Compiler *c) {
   reassert_rbs_param_seeds(c);   /* the post-fixpoint passes narrow too */
   /* The returns settled above may have widened past the locals that were
      derived from them (the write re-run ran first, and its `no new poly` gate
-     kept a return narrow until now). Reconcile object slots and scalars that
-     have no nil representation. */
+     kept a return narrow until now): the locals re-join the writes whose
+     values widened (rejoin_local_writes). */
   for (int iter = 0; iter < 8; iter++) {
-    int ch = widen_locals_from_poly_writes(c);
+    int ch = rejoin_local_writes(c);
     ch |= widen_arrays_from_map_bang(c);
     ch |= infer_return_types(c);
     if (!ch) break;
@@ -34805,15 +34805,14 @@ static void an_phase_late_widen(Compiler *c) {
        its struct stops being a prefix of the subclass's, and every inherited
        method writes through the `(sp_Base *)self` cast at the wrong offsets. */
     ch |= propagate_ivars_up(c);
-    /* An ivar that widens here (e.g. `@query_log`, whose heterogeneous `= []` /
-       `.push(str)` / `= prev` writes merge to poly) must carry its new type into
-       any local that merely READS it (`prev = @query_log`). Widen such a local
-       to the ivar's type -- monotonically, without the full local re-derivation
+    /* An ivar or a return that widens here (e.g. `@query_log`, whose
+       heterogeneous `= []` / `.push(str)` / `= prev` writes merge to poly)
+       must carry its new type into the locals written from it: `prev =
+       @query_log` (#1793), `parent = Base.defs` (#7602). The locals re-join
+       those writes, monotonically and without the full re-derivation
        infer_write_types does (which would reset pattern/massign/block-bound
-       locals this late and mistype them). Otherwise the local is stranded at its
-       pre-widen scalar type: an unsound `sp_StrArray *` <- `sp_RbVal` at
-       `local = @ivar` (#1793). */
-    ch |= reconcile_locals_reading_ivars(c);
+       locals this late and mistype them). */
+    ch |= rejoin_local_writes(c);
     /* A method whose value IS such an ivar (`def peek(a) = @latch`) still
        carries the return derived before the ivar widened, and its callers
        read a poly through a String (the C did not build, #4451). Re-derive
@@ -34822,10 +34821,6 @@ static void an_phase_late_widen(Compiler *c) {
     g_ret_no_new_poly = 2;
     ch |= infer_return_types(c);
     g_ret_no_new_poly = 0;
-    /* ... and an Array local written the value of a call the widening above
-       now makes poly (`parent = Base.defs`): it kept the array the call had
-       answered (#7602). */
-    ch |= widen_container_locals_from_poly_writes(c);
     if (!ch) break;
   }
 
@@ -35164,50 +35159,8 @@ static void an_phase_proc_returns(Compiler *c) {
         }
         if (br == TY_POLY_ARRAY) { sc->ret = TY_POLY_ARRAY; changed = 1; }
       }
-      /* (4) a local whose assigned value widened to a poly array must follow:
-         its declared IntArray/StrArray/FloatArray slot would otherwise mismatch
-         the PolyArray now produced -- whether by a map method whose return
-         widened (step 3), or by an array literal whose elements widened
-         (`arr = [x, y, x + y]` with poly x,y builds a PolyArray). */
-      for (int id = 0; id < nt->count; id++) {
-        const char *ty = nt_type(nt, id);
-        if (!ty || !sp_streq(ty, "LocalVariableWriteNode")) continue;
-        const char *nm = nt_str(nt, id, "name");
-        if (!nm) continue;
-        LocalVar *lv = scope_local(comp_scope_of(c, id), nm);
-        if (!lv) continue;
-        if (lv->type != TY_INT_ARRAY && lv->type != TY_STR_ARRAY &&
-            lv->type != TY_FLOAT_ARRAY) continue;
-        int vnode = nt_ref(nt, id, "value");
-        if (vnode < 0) continue;
-        if (infer_type(c, vnode) == TY_POLY_ARRAY) { lv->type = TY_POLY_ARRAY; changed = 1; }
-      }
-      /* (4b) ...and a local written from a `<proc>.call(...)`, whose slot was
-         typed from proc_ret as it read BEFORE the re-derivation in (2) above.
-         A return that widened there left the slot behind: `r = g.call(e)` kept
-         its sp_IntArray * while the call answers the boxed poly now, and the C
-         compiler refused the assignment (#4330). Unify rather than assign, so
-         this only ever widens -- the discipline the whole block keeps. */
-      for (int id = 0; id < nt->count; id++) {
-        if (nt_kind(nt, id) != NK_LocalVariableWriteNode) continue;
-        int vnode = nt_ref(nt, id, "value");
-        if (vnode < 0 || nt_kind(nt, vnode) != NK_CallNode) continue;
-        const char *cn = nt_str(nt, vnode, "name");
-        if (!cn || !is_call_alias(cn)) continue;
-        int crecv = nt_ref(nt, vnode, "receiver");
-        if (crecv < 0 || infer_type(c, crecv) != TY_PROC) continue;
-        const char *nm = nt_str(nt, id, "name");
-        LocalVar *lv = nm ? scope_local(comp_scope_of(c, id), nm) : NULL;
-        if (!lv || lv->type == TY_UNKNOWN) continue;
-        /* the CALL NODE's own type, not proc_call_ret: that answers poly for
-           an unknowable return (a `&blk` param's), which would widen a slot
-           the call-site block types concretely. The node is what the emitter
-           produces, so it is what the slot has to hold. */
-        TyKind pr = infer_type(c, vnode);
-        if (pr == TY_UNKNOWN || pr == lv->type) continue;
-        TyKind u = ty_unify(lv->type, pr);
-        if (u != lv->type) { lv->type = u; changed = 1; }
-      }
+      /* (4) a local whose writes' values widened above follows them */
+      changed |= rejoin_local_writes(c);
       /* (5) a constant assigned from a value that widened to poly (a method
          return widened in step 3, an int constant assigned an arithmetic
          result, ...) must follow: a `COUNT = obj.m` whose method now returns
@@ -35427,21 +35380,6 @@ static void an_phase_proc_returns(Compiler *c) {
           free(pos); free(absent);
         }
         prci_free(&ix);
-        /* (10) a local pinned to a container's element kind whose container
-           has widened: the read hands it a box now, so the pin no longer
-           holds and the slot takes the box (int_array_array's `row = t[3]`) */
-        for (int id = 0; id < nt->count; id++) {
-          NodeKind k = nt_kind(nt, id);
-          if (k != NK_LocalVariableWriteNode && k != NK_LocalVariableOrWriteNode) continue;
-          const char *nm = nt_str(nt, id, "name");
-          LocalVar *lv = nm ? scope_local(comp_scope_of(c, id), nm) : NULL;
-          if (!lv || !PW_TYPED_ARR(lv->type)) continue;
-          int vnode = nt_ref(nt, id, "value");
-          if (vnode < 0) continue;
-          TyKind vt = infer_type(c, vnode);
-          if (vt == TY_POLY_ARRAY) { lv->type = TY_POLY_ARRAY; changed = 1; }   /* step 4's rule, for `||=` */
-          else if (vt == TY_POLY) { lv->type = TY_POLY; lv->oa_pin = TY_UNKNOWN; changed = 1; }
-        }
         /* (11) a block over a receiver that is a poly array now: the params
            the fixpoint typed from the receiver's Integer elements are bound
            from boxed elements (the widening skips block params on purpose,
