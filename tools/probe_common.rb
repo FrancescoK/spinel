@@ -9,10 +9,15 @@
 # pinned_cases(rows, only), pins(spec), factor_list(spec),
 # random_rows(n, seed), program(cases) (each case's lines under a heading
 # `# case <id>:`), flags(cases) and shape(case), and
-# optionally diff_kind(want, got, case) and FIXED (factors a reduction never
-# steps). A probe names, beside it, the lines CRuby
-# prints when a generated program reads a name it does not define. Covering gives a generator all but render,
-# program, flags and shape from its FACTORS.
+# optionally diff_kind(want, got, case), random_cases(n, seed, only) (its
+# cases for --random, in place of pinned_cases of random_rows), FIXED
+# (factors a reduction never steps), SPLIT (a factor the summary counts the
+# cases and findings of each level of) and REFUSAL (the lines of the
+# refusals its programs meet that say neither "unsupported" nor "is not
+# supported"). A probe names,
+# beside it, the lines CRuby prints when a generated program reads a name
+# it does not define. Covering gives a generator all but render, program,
+# flags and shape from its FACTORS.
 #
 # A program spinel refuses, whose C does not build, that crashes, stops part
 # way or runs out of time is split until one case carries the failure. The
@@ -608,8 +613,11 @@ module ProbeCommon
         # that says "unsupported". A refusal is the compiler's own line naming
         # the construct at a Ruby line, or its tally of them. Two say "<the
         # construct> is not supported" instead (a block's splat parameter
-        # where a lowering takes none, a Struct::Name constant path).
+        # where a lowering takes none, a Struct::Name constant path). A
+        # generator's REFUSAL adds the words of the refusals its programs
+        # meet (the share probe's "is not yet shared by reference").
         refusal = /^spinel: (?:(?:\S+\.rb:\d+: )?unsupported |\S+\.rb:\d+: .* is not supported)/
+        refusal = Regexp.union(refusal, @gen::REFUSAL) if @gen.const_defined?(:REFUSAL, false)
         tally = /\d+ refusals?, nothing written/
         label = if !timed_out && status.signaled? then "compiler-failure"
                 elsif build.include?("C compilation failed") then "link-error"
@@ -912,6 +920,7 @@ module ProbeCommon
         s << "  #{l}: #{weight(fs)}"
       end
       s << ""
+      s.concat(split_counts(cases)) if @gen.const_defined?(:SPLIT, false)
       s << "wrong answers by factor level (cases with one / cases with the level):"
       @gen::FACTORS.each do |f, levels|
         cells = levels.filter_map do |l|
@@ -922,6 +931,26 @@ module ProbeCommon
         s << "  #{f}: #{cells.join(", ")}"
       end
       s.join("\n") + "\n"
+    end
+
+    # A generator's SPLIT factor (the share probe's mode, each row of which
+    # runs in every level): the cases of each level, how many of them agree
+    # with CRuby, and the findings of each tier and label among them.
+    def split_counts(cases)
+      f = @gen::SPLIT
+      s = ["by #{f}:"]
+      @gen::FACTORS.to_h.fetch(f).each do |l|
+        mine = cases.count { |c| c.realized[f] == l }
+        next if mine.zero?
+        fs = @findings.select { |x| x.c.realized[f] == l }
+        by = fs.group_by { |x| tier(x) }
+        labels = fs.group_by(&:label).sort_by { |_, xs| -weight(xs) }.map { |x, xs| "#{x} #{weight(xs)}" }
+        s << format("  %s: %d cases, %d match, %d wrong, %d refused, %d documented%s", l, mine,
+                    mine - fs.map { |x| x.c.id }.uniq.size, weight(by.fetch("wrong", [])),
+                    weight(by.fetch("refused", [])), weight(by.fetch("documented", [])),
+                    labels.empty? ? "" : " (#{labels.join(", ")})")
+      end
+      s + [""]
     end
 
     # The findings by tier, then by the difference they make (a family), then
@@ -1029,7 +1058,11 @@ module ProbeCommon
     Thread.report_on_exception = false # a worker's failure is reported once, below
     begin
       if random
-        cases = gen.pinned_cases(gen.random_rows(random, seed), only)
+        # a generator that numbers its own cases (the share probe's two
+        # modes a row) gives its random ones itself
+        cases = if gen.respond_to?(:random_cases) then gen.random_cases(random, seed, only)
+                else gen.pinned_cases(gen.random_rows(random, seed), only)
+                end
         coverage = "#{random} random rows (seed #{seed})"
       else
         # a generator with its own covering (builtin_row_gen) takes no 3-way factors
