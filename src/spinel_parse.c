@@ -3187,6 +3187,21 @@ static int sp_source_writes_engine(const char *source) {
   return 0;
 }
 
+/* `Kernel.require "x"` (`::Kernel.` too) is the bare require: the textual
+   resolver has treated it so since 0c0f61fff, so a dead branch must drop it
+   exactly as it drops a receiver-less `require`, or --require-gate refuses
+   a call that never runs. */
+static int sp_call_receiver_is_kernel(const pm_parser_t *parser, const pm_node_t *receiver) {
+  if (!receiver) return 0;
+  if (PM_NODE_TYPE(receiver) == PM_CONSTANT_READ_NODE)
+    return sp_pm_name_is(parser, ((const pm_constant_read_node_t *)receiver)->name, "Kernel");
+  if (PM_NODE_TYPE(receiver) == PM_CONSTANT_PATH_NODE) {
+    const pm_constant_path_node_t *cp = (const pm_constant_path_node_t *)receiver;
+    return !cp->parent && sp_pm_name_is(parser, cp->name, "Kernel");
+  }
+  return 0;
+}
+
 /* Blank a statement in a dead branch to `(nil)`, keeping every newline so
    later line numbers hold (and a multiline call stays grouped, including
    before a modifier). */
@@ -3226,7 +3241,8 @@ static bool sp_skip_dead_require(const pm_node_t *node, void *data) {
   if (ctx->dead && PM_NODE_TYPE(node) == PM_CALL_NODE) {
     const pm_call_node_t *call = (const pm_call_node_t *)node;
     const pm_constant_t *name = pm_constant_pool_id_to_constant(&ctx->parser->constant_pool, call->name);
-    if (!call->receiver && !call->block && call->arguments && call->arguments->arguments.size == 1 &&
+    if ((!call->receiver || sp_call_receiver_is_kernel(ctx->parser, call->receiver)) &&
+        !call->block && call->arguments && call->arguments->arguments.size == 1 &&
         ((name->length == 7 && memcmp(name->start, "require", 7) == 0) ||
          (name->length == 16 && memcmp(name->start, "require_relative", 16) == 0))) {
       const pm_node_t *arg = call->arguments->arguments.nodes[0];
