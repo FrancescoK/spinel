@@ -1718,7 +1718,18 @@ int strbuf_value_carries(Compiler *c, int v) {
      String, appended in place (emit_strbuf_chain_in_place) */
   int cb = str_alias_chain_base(c, v);
   if (cb != v && cb >= 0 && strbuf_var_handle(c, cb, ref, sizeof ref)) return 1;
-  return strbuf_route_carries(c, v, 0) || strbuf_cond_has_handle_leaf(c, v, 0);
+  return strbuf_route_carries(c, v, 0) || strbuf_cond_has_handle_leaf(c, v, 0) || strbuf_opwrite_handle(c, v, ref, sizeof ref);
+}
+/* --share-strings: an operator write (`$g += x`) whose slot holds the
+   rule's handle: that slot's text to out. The write stores a new handle
+   in the slot, which is the write's value (emit_strbuf_value). */
+int strbuf_opwrite_handle(Compiler *c, int v, char *out, size_t cap) {
+  NodeKind k = v >= 0 ? nt_kind(c->nt, v) : NK_NONE;
+  HolderRef h;
+  if (!repr_share_rule(c) || (k != NK_LocalVariableOperatorWriteNode && k != NK_InstanceVariableOperatorWriteNode &&
+                              k != NK_GlobalVariableOperatorWriteNode && k != NK_ClassVariableOperatorWriteNode))
+    return 0;
+  return holder_of_node(c, v, &h) && h.r.share && holder_slot_text(c, &h, out, cap);
 }
 /* A mutator's receiver handle _t<t>, which strbuf_recv_handle answered
    (hr): a route's (2) can be a String of its own (`(+f)` of a frozen f),
@@ -2188,6 +2199,13 @@ void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
      changed it, and nil when not; the call changes s's handle in place, so
      r takes that handle. Wrapped fresh, r forked off s. */
   else if (shared && emit_bang_self_handle(c, v, b)) { }
+  /* --share-strings: an operator write into a handle slot: run it, then
+     that slot's (new) handle */
+  else if (shared && strbuf_opwrite_handle(c, v, srefV, sizeof srefV)) {
+    buf_puts(b, "({ (void)(");
+    emit_expr(c, v, b);
+    buf_printf(b, "); %s; })", srefV);
+  }
   /* --share-strings: a mutator on a narrowed box answers that box: its
      handle (strbuf_narrowed_box_mutator) */
   else if (shared && strbuf_narrowed_box_mutator(c, v)) {
@@ -17490,6 +17508,9 @@ static int strbuf_flow_value(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, in
      that handle or nil */
   if (ctx != SFC_ARG && strbuf_bang_self_local(c, v)) return 1;
   if (ctx != SFC_ARG && strbuf_narrowed_box_mutator(c, v)) return 1;
+  /* an operator write into a handle slot hands on the slot's new handle */
+  char oref[1024];
+  if (strbuf_opwrite_handle(c, v, oref, sizeof oref)) return 1;
   /* a chain that answers its receiver, over a variable holding the handle
      or a reader call read as one (`t = s << x`, `t = w.s.insert(1, "-")`):
      the base's handle (emit_strbuf_value's chain arms, strbuf_slot_ref) */
