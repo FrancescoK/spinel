@@ -985,9 +985,12 @@ re-lit-test: $(SPINEL)
 # test/share_strings_*.rb and the test/reject programs test/share/reject.list
 # names (the String routes the default build refuses, #6179's), plain and
 # with GC stress, against its CRuby .expected (a test/reject program's in
-# test/share/reject/). gate-props runs it. A compile whose inference ran to
-# its round cap fails too: the answer can be right all the same, and where
-# the rounds stopped decided what was emitted.
+# test/share/reject/). Each test/share/refuse/*.rb is a program the flag
+# would answer with a copy of a shared String (a route codegen does not
+# carry the handle along yet): it has to be refused under the flag, with
+# the first `spinel:` line its .expected holds. gate-props runs it. A
+# compile whose inference ran to its round cap fails too: the answer can be
+# right all the same, and where the rounds stopped decided what was emitted.
 share-strings-test: $(SPINEL)
 	@tmp=$$(mktemp -d "$${TMPDIR:-/tmp}/spinel-share.XXXXXX"); ok=1; \
 	for t in test/share/*.rb test/share_strings_*.rb test/nullable_string_identity.rb test/widened_param_reaches_its_callee.rb $$(cat test/share/reject.list); do \
@@ -1011,6 +1014,12 @@ share-strings-test: $(SPINEL)
 	   grep -q 'sp_poly_as_strbuf' "$$tmp/reads.c"; then \
 	  echo "share-strings-test: FAIL (a narrowed byte read allocates a handle)"; ok=0; \
 	fi; \
+	for t in test/share/refuse/*.rb; do \
+	  if $(SPINEL) --share-strings "$$t" -c -o "$$tmp/r.c" >"$$tmp/out" 2>&1; then \
+	    echo "share-strings-test: FAIL $$t (compiled)"; ok=0; \
+	  else grep -m1 '^spinel:' "$$tmp/out" | cmp -s - "$$t.expected" || \
+	    { echo "share-strings-test: FAIL $$t (refused otherwise)"; sed -n 1,3p "$$tmp/out"; ok=0; }; fi; \
+	done; \
 	rm -rf "$$tmp"; \
 	if [ $$ok = 1 ]; then echo "share-strings-test: pass"; else exit 1; fi
 

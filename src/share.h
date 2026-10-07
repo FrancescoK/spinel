@@ -50,6 +50,40 @@ typedef struct {
   int node;             /* a node that names the holder, for a message */
 } ShareHolder;
 
+/* The flows the walk follows from a value into the place that takes it:
+   the node that takes it (the site) and the node whose value it is. Where
+   the rule shares the value's class, codegen has to hand the shared handle
+   along the flow; a copy there is a second String the other names never
+   see. Only flows into a slot (a variable, a parameter, an element) or an
+   in-place change are kept: a method's, a block's or a jump's value is a
+   value until it reaches one, and that flow is the call's, the yield's or
+   the loop's. The seal checks each against the routes codegen carries the
+   handle along (strbuf_flow_carries); a holder's read hands on its slot,
+   which the seal checks as a holder, wherever codegen reads it as one. */
+typedef enum {
+  SHFL_WRITE,    /* a variable's write, an optional parameter's default:
+                    site the write (the parameter) */
+  SHFL_MEMBER,   /* an attribute writer's, a Struct member's or
+                    instance_variable_set's store: site the call */
+  SHFL_ARG,      /* an argument bound to a user method's parameter: site
+                    the call */
+  SHFL_ELEM,     /* a container's element: site the container (a literal,
+                    the receiver a call stores into, Array.new's value) */
+  SHFL_BLOCK,    /* a block's value a call stores (map, map!, Array.new and
+                    Hash.new blocks): site the call, or the `next` that
+                    answers it */
+  SHFL_YIELD,    /* what a yield hands its block's parameters: site the
+                    yield */
+  SHFL_PARAM,    /* an iterator's receiver bound to its block's parameter
+                    (then, tap): site the call */
+  SHFL_LEND,     /* an argument whose slot a parameter is lent (sh_lend):
+                    site the parameter's holder (share_holder), not a node */
+  SHFL_MULTI,    /* a multiple write's value taken by one target: site the
+                    write */
+  SHFL_MUTATE    /* the receiver an in-place String change goes through:
+                    site the call */
+} ShareFlowKind;
+
 /* (Re)build c->share from the current types and tables. */
 void share_facts_build(Compiler *c);
 void share_facts_free(Compiler *c);
@@ -128,6 +162,30 @@ int share_node_anchored(const Compiler *c, int n);
 int share_route_defer(Compiler *c, const ShareRoute *q, const char *msg);
 void share_routes_check(Compiler *c);
 void share_routes_free(Compiler *c);
+
+/* The flows the walk recorded (ShareFlowKind), by index
+   0..share_flow_count-1: the kind, the site and the value node. */
+int share_flow_count(const Compiler *c);
+int share_flow_at(const Compiler *c, int i, int *site, int *value);
+/* The literal blocks method scope mi yields to, as a list in *blocks:
+   their count, or -1 when a block the walk does not list reaches its
+   yields (a block passed as a value, a zsuper's, a dynamic call's). */
+int share_method_blocks(const Compiler *c, int mi, const int **blocks);
+/* Is call node `call`'s String one no other name holds: each user method
+   it reaches answers only Strings its returns did not join to its value
+   (sh_settle_rets: built in its own locals, which die with the call)? */
+int share_call_fresh(Compiler *c, int call);
+/* Is node n a container literal a builtin only reads and keeps none of
+   (`puts [a, b]`)? */
+int share_node_peeked(const Compiler *c, int n);
+/* The facts (SHF_*) of the class of node n's value. */
+unsigned share_node_flags(const Compiler *c, int n);
+/* Does the class of node n's value hold one name at most: no more than one
+   holder stores its String, and nothing the walk does not follow meets it
+   (its other values are transients a call or a mutator made)? */
+int share_node_one_name(const Compiler *c, int n);
+/* Does the rule share the class of node n's value? */
+int share_node_shares(const Compiler *c, int n);
 
 /* SPINEL_SHARE_STATS=3: name the mutations that reach UNKNOWN's class */
 void share_dump_unknown_mutations(Compiler *c);

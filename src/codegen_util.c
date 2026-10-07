@@ -2581,13 +2581,40 @@ int strbuf_marked_yields_handle(Compiler *c, int v) {
 }
 /* A String method answering its receiver or nil (bop_share_self_answer:
    a bang method, an iterator given a block) called on a local that holds
-   the shared handle: its value is that local's String, or nil. */
+   the shared handle (--share-strings: or an ivar, a global, a class
+   variable or a constant that holds the handle the rule assigned, or a
+   reader call read as the handle on a variable or self): its value is that
+   String, or nil. */
 int strbuf_bang_self_local(const Compiler *c, int v) {
   const NodeTable *nt = c->nt;
-  if (v < 0 || nt_kind(nt, v) != NK_CallNode ||
-      !bop_share_self_answer(nt_str(nt, v, "name"), nt_ref(nt, v, "block") >= 0)) return 0;
+  if (v < 0 || nt_kind(nt, v) != NK_CallNode) return 0;
+  int self_ans = bop_share_self_answer(nt_str(nt, v, "name"), nt_ref(nt, v, "block") >= 0);
   int r = nt_ref(nt, v, "receiver");
-  return r >= 0 && nt_kind(nt, r) == NK_LocalVariableReadNode && repr_of(c, r).kind == RK_STRBUF;
+  if (self_ans && r >= 0 && nt_kind(nt, r) == NK_LocalVariableReadNode && repr_of(c, r).kind == RK_STRBUF) return 1;
+  char ref[1024];
+  NodeKind rk = r >= 0 ? nt_kind(nt, r) : NK_NONE;
+  /* (--share-strings: a String method that answers its receiver always,
+     `insert`, too) */
+  if (!repr_share_rule(c) || r < 0) return 0;
+  if (!self_ans && !(nt_str(nt, v, "name") && (comp_ntype((Compiler *)c, r) == TY_STRING || comp_ntype((Compiler *)c, r) == TY_STRBUF) &&
+                     bop_share_named(TY_STRING, nt_str(nt, v, "name")) == BSH_RECV))
+    return 0;
+  if (rk == NK_InstanceVariableReadNode || repr_static_read_kind(rk))
+    return strbuf_var_handle((Compiler *)c, r, ref, sizeof ref);
+  /* a reader call read as the handle on a variable or self (`o.s.strip!`),
+     which emit_bang_self_handle reads once */
+  int rr = rk == NK_CallNode ? nt_ref(nt, r, "receiver") : -1;
+  NodeKind rrk = rr >= 0 ? nt_kind(nt, rr) : NK_NONE;
+  return rk == NK_CallNode && nt_ref(nt, r, "arguments") < 0 && nt_ref(nt, r, "block") < 0 &&
+         (rr < 0 || rrk == NK_SelfNode || rrk == NK_LocalVariableReadNode || rrk == NK_InstanceVariableReadNode) &&
+         strbuf_call_reads_handle((Compiler *)c, r);
+}
+/* Is recv a demand-marked reader call typed as the handle, whose emitted
+   read is the sp_String * itself (strbuf_slot_ref's call arm)? */
+int strbuf_call_reads_handle(Compiler *c, int recv) {
+  return recv >= 0 && nt_kind(c->nt, recv) == NK_CallNode &&
+         ((repr_of(c, recv).handle && repr_of(c, recv).as_ty == TY_STRBUF && strbuf_marked_yields_handle(c, recv)) ||
+          repr_of(c, recv).demand);
 }
 /* --share-strings: a native method answering the String its object keeps
    (`native_share ... "answers"`), on an object whose String the rule
@@ -2622,9 +2649,7 @@ int strbuf_slot_ref(Compiler *c, int recv, char *out, size_t cap) {
   /* strbuf_handle_demand is the same demand carried without the type: a mark
      made after the node-type cache is finalized cannot move the type without
      moving the call off the surface that dispatches it (see compiler.h). */
-  if (recv >= 0 && nt_kind(c->nt, recv) == NK_CallNode &&
-      ((repr_of(c, recv).handle && repr_of(c, recv).as_ty == TY_STRBUF && strbuf_marked_yields_handle(c, recv)) ||
-       repr_of(c, recv).demand)) {
+  if (strbuf_call_reads_handle(c, recv)) {
     Buf rb2; memset(&rb2, 0, sizeof rb2);
     emit_expr(c, recv, &rb2);
     /* A container ELEMENT read comes back BOXED (a poly array element, a hash

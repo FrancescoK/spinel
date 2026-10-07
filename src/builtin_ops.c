@@ -2739,6 +2739,7 @@ static const BopShareRow bop_share_rows[] = {
   { TY_BIGINT,      "*", BSH_PURE },
   { TY_FLOAT,       "*", BSH_PURE },
   { TY_SYMBOL,      "*", BSH_PURE },
+  { TY_CLASS,       "name", BSH_FROZEN },   /* Module#name: a frozen String */
   { TY_BOOL,        "*", BSH_PURE },
   { TY_NIL,         "*", BSH_PURE },
   { TY_RANGE,       "*", BSH_PURE },
@@ -2816,6 +2817,8 @@ static const BopShareRow bop_share_rows[] = {
   { BOP_ANY_RECV, "class",       BSH_PURE },
   { BOP_ANY_RECV, "object_id",   BSH_PURE },
   { BOP_ANY_RECV, "inspect",     BSH_PURE },
+  /* only a Symbol answers id2name, with a new String */
+  { BOP_ANY_RECV, "id2name",     BSH_PURE },
   { BOP_ANY_RECV, "to_s",        BSH_PURE },
   { BOP_ANY_RECV, "display",     BSH_PURE },
   { BOP_ANY_RECV, "instance_variables", BSH_PURE },

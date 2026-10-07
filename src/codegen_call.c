@@ -22008,6 +22008,20 @@ int implicit_self_plan_mi(Compiler *c, int id, int dispatch_cid) {
   return spl->chain && spl->via == UC_INST && spl->owner_ci == dispatch_cid ? spl->mi : -1;
 }
 
+/* Does receiverless call id read an attr reader's slot that holds a String
+   handle and hand that handle out (emit_implicit_self_member's slot read,
+   a call marked to keep it), not a copy? (The seal asks it too:
+   strbuf_flow_carries.) */
+int strbuf_self_reader_handle(Compiler *c, int id) {
+  int cid = implicit_self_reader_cid(c, id);
+  if (cid < 0) return 0;
+  char ivn[300];
+  snprintf(ivn, sizeof ivn, "@%s", comp_resolve_alias(c, cid, nt_str(c->nt, id, "name")));
+  int ivi = comp_ivar_index(&c->classes[cid], ivn);
+  Repr rp = repr_of(c, id);
+  return ivi >= 0 && c->classes[cid].ivar_types[ivi] == TY_STRBUF && (rp.handle || rp.demand);
+}
+
 int emit_implicit_self_member(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -24738,6 +24752,17 @@ int strbuf_pickup_answers_nil(Compiler *c, int id) {
   for (int i = 0; i < n && !nil; i++) nil = an_tail_answers_nil(c, t[i]);
   return nil;
 }
+/* Does call id take the deep-return pickup (#3227 P6, emit_deep_return_pickup):
+   a marked receiverless call to a method (no attr reader's implicit-self
+   read), or one on a class, with no block? It hands on the handle its
+   method's tail read publishes. (The seal asks it too: strbuf_flow_carries.) */
+int strbuf_call_picks_up(Compiler *c, int id) {
+  /* (the call answers its String as a const char *: a method whose value
+     widened past a String after the pickup was marked answers a box) */
+  return c->strbuf_box[id] && nt_ref(c->nt, id, "block") < 0 && comp_ntype(c, id) != TY_POLY &&
+         (nt_ref(c->nt, id, "receiver") < 0 ? implicit_self_reader_cid(c, id) < 0
+                                            : comp_ntype(c, nt_ref(c->nt, id, "receiver")) == TY_CLASS);
+}
 /* deep-return pickup (#3227 P6): a marked receiverless call to a method
    whose every return path yields a shared handle -- reset the side
    channel, run the ordinary call (its shared-slot tail read publishes),
@@ -24750,12 +24775,7 @@ static int emit_deep_return_pickup(Compiler *c, int id, Buf *b) {
      The return route lifts that demand while it runs the ordinary call. */
   if (repr_share_rule(c) && repr_of(c, id).demand && repr_call_returns_handle(c, id))
     return emit_strbuf_route(c, id, b);
-  /* (the call answers its String as a const char *: a method whose value
-     widened past a String after the pickup was marked answers a box) */
-  if (!c->strbuf_box[id] || nt_ref(c->nt, id, "block") >= 0 || comp_ntype(c, id) == TY_POLY ||
-      !(nt_ref(c->nt, id, "receiver") < 0 ? implicit_self_reader_cid(c, id) < 0
-                                          : comp_ntype(c, nt_ref(c->nt, id, "receiver")) == TY_CLASS))
-    return 0;
+  if (!strbuf_call_picks_up(c, id)) return 0;
   int tvD = ++g_tmp;
   buf_printf(b, "({ _sp_ret_strbuf = NULL; const char *_v%d = ", tvD);
   int vs = view_push_repr(c, id, VR_STRBUF_BOX, 0);
