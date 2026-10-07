@@ -6344,6 +6344,10 @@ static int desugar_str_range_methods(Compiler *c) {
     "begin", "end", "min", "max", "include?", "member?", "cover?", "===",
     "exclude_end?", "==", "!=", "eql?", "inspect", "to_s", "class",
     "frozen?", "freeze", "itself", "dup", "clone", "hash",
+    /* Range's own overlap? and bsearch answer about the RANGE: the member
+       Array has no overlap?, and its bsearch searched where CRuby raises
+       TypeError for a String range */
+    "overlap?", "bsearch",
     /* the identity predicates answer about the RANGE, not its members: routing
        them through to_a made `("a".."e").is_a?(Range)` false (#3619) */
     "is_a?", "kind_of?", "instance_of?", "nil?", "equal?", "respond_to?",
