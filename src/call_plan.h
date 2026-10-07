@@ -74,6 +74,22 @@ const CallPlan *cplan_user(Compiler *c, int id);
    analyze_nil.c): it answers from the types as they stand. The answer
    lasts until the next call. */
 const CallPlan *cplan_user_fresh(Compiler *c, int id);
+/* Every user method the call node id may reach, into out (at most cap):
+   its plan's method and, for a switch, each member. Answered from the types
+   as they stand, never kept past cplan_targets_drop.
+     n >= 0      the methods, 0 for none (a builtin, a CP_REFUSE plan, a
+                 node that is no call): follow nothing
+     CPT_UNKNOWN too many members (more than cap or CPT_MAX), or a call
+                 whose receiver type is not settled: the caller must treat
+                 the call as reaching code it cannot see, never as a
+                 shorter list
+   The answers are held until cplan_targets_drop, which the caller calls
+   when a type may have changed (once per round of a fixpoint); a held
+   answer is not carried across a drop, because a later round may widen a
+   receiver and add members, and nothing here promises a set only grows. */
+enum { CPT_UNKNOWN = -1, CPT_MAX = 64 };
+int cplan_targets(Compiler *c, int id, int *out, int cap);
+void cplan_targets_drop(void);
 /* Object fallback behind a class-gated exception accessor, or -1. */
 int cplan_exc_object_method(Compiler *c, const char *name);
 
