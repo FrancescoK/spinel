@@ -2168,6 +2168,7 @@ threaded-render-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SPINEL_TIMEOUT)
 
 GC_MINOR_TESTS := test/reopened_builtin_kwrest_keys.rb \
                   test/string_unary_plus_nested.rb \
+                  test/hash_store_boxed_origins.rb \
                   test/reflect_ivar_nil_presence.rb \
                   test/ctor_ivar_default_keywords.rb \
                   test/random_reopen_block_parameter.rb \
@@ -3310,6 +3311,10 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	  $(SPINEL) "$$f" -o "$$tmp/ibin" >/dev/null 2>&1 || { echo "infer-test: FAIL ($$f: the emitted C does not compile)"; ok=0; continue; }; \
 	  "$$tmp/ibin" >/dev/null 2>&1 || { echo "infer-test: FAIL ($$f: the program does not run)"; ok=0; }; \
 	done; \
+	for flags in '' --share-strings; do \
+	  $(SPINEL) $$flags test/hash_store_boxed_unbounded.rb -c --no-line-map -o "$$tmp/hbu.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (hash_store_boxed_unbounded: -c)"; ok=0; }; \
+	  ! grep -q 'sp_PolyPolyHash_new' "$$tmp/hbu.c" || { echo "infer-test: FAIL (an unbounded boxed store widened a known Hash)"; ok=0; }; \
+	done; \
 	$(SPINEL) test/byref_string_selective_volatile.rb -c --no-line-map -o "$$tmp/bsv.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (byref_string_selective_volatile: -c)"; ok=0; }; \
 	for m in rb_plain_append unrelated_begin; do \
 	  grep -q "sp_$$m(const char \* \*_cell_s) {" "$$tmp/bsv.c" || { echo "infer-test: FAIL (an ordinary borrowed String gained volatile: $$m)"; ok=0; }; \
@@ -3907,6 +3912,9 @@ scale-test: $(SPINEL_WORK)
 	sh test/scale/pivs_aliases.sh 64 > "$$tmp/p64.rb"; sh test/scale/pivs_aliases.sh 128 > "$$tmp/p128.rb"; \
 	pa=$$(sw -c -o "$$tmp/p64.c" "$$tmp/p64.rb") || { rm -rf "$$tmp"; exit 1; }; \
 	pb=$$(sw -c -o "$$tmp/p128.c" "$$tmp/p128.rb") || { rm -rf "$$tmp"; exit 1; }; \
+	sh test/scale/hash_store_boxed.sh 64 > "$$tmp/h64.rb"; sh test/scale/hash_store_boxed.sh 128 > "$$tmp/h128.rb"; \
+	ha=$$(sw -c -o "$$tmp/h64.c" "$$tmp/h64.rb") || { rm -rf "$$tmp"; exit 1; }; \
+	hb=$$(sw -c -o "$$tmp/h128.c" "$$tmp/h128.rb") || { rm -rf "$$tmp"; exit 1; }; \
 	( ulimit -t 20; $(SPINEL_WORK) -c -o "$$tmp/hls.c" test/scale/hash_literal_sources_fanout.rb ) >/dev/null 2>&1 || \
 	  { rm -rf "$$tmp"; echo "scale-test: FAIL (the hash-literal source walk revisited call sites along every path)"; exit 1; }; \
 	sh test/scale/ie_forward_chain.sh 2 > "$$tmp/f2.rb"; sh test/scale/ie_forward_chain.sh 4 > "$$tmp/f4.rb"; \
@@ -3914,7 +3922,10 @@ scale-test: $(SPINEL_WORK)
 	fb=$$(sw -c -o "$$tmp/f4.c" "$$tmp/f4.rb") || { rm -rf "$$tmp"; exit 1; }; \
 	rm -rf "$$tmp"; \
 	if [ -z "$$wa" ] || [ -z "$$wb" ] || [ -z "$$fa" ] || [ -z "$$fb" ] || [ -z "$$pa" ] || [ -z "$$pb" ] || \
-	   [ -z "$$ca" ] || [ -z "$$cb" ] || [ -z "$$sa" ] || [ -z "$$sb" ]; then echo "scale-test: FAIL (the counting compiler reported no work count)"; exit 1; fi; \
+	   [ -z "$$ha" ] || [ -z "$$hb" ] || [ -z "$$ca" ] || [ -z "$$cb" ] || [ -z "$$sa" ] || [ -z "$$sb" ]; then echo "scale-test: FAIL (the counting compiler reported no work count)"; exit 1; fi; \
+	awk -v a="$$ha" -v b="$$hb" 'BEGIN { r = b / a; \
+	  printf "scale-test: boxed Hash store work at 2x the methods is %.2fx (limit 2.20)\n", r; exit (r > 2.20) }' || \
+	  { echo "scale-test: FAIL (a boxed Hash store rescanned unrelated method bodies)"; exit 1; }; \
 	awk -v a="$$pa" -v b="$$pb" 'BEGIN { r = b / a; \
 	  printf "scale-test: boxed-receiver alias work at 2x the writes is %.2fx (limit 2.20)\n", r; exit (r > 2.20) }' || \
 	  { echo "scale-test: FAIL (the boxed-receiver walk revisited local writes along every alias path)"; exit 1; }; \
