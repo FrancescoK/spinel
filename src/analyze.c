@@ -16912,12 +16912,26 @@ static int share_lift_poly_ivar_stores(Compiler *c, int cid, const char *name) {
 }
 
 /* Does method mi answer an Array or Hash literal of typed Strings (`const
-   char *` elements, which cannot hold the shared handle)? */
+   char *` elements, which cannot hold the shared handle), as its last
+   value or through a `return`? */
+static int share_ret_literal(const NodeTable *nt, int v) {
+  v = an_unparen(nt, v);
+  if (v >= 0 && nt_kind(nt, v) == NK_ReturnNode) {
+    int ra = nt_ref(nt, v, "arguments"), rn = 0;
+    const int *rv = ra >= 0 ? nt_arr(nt, ra, "arguments", &rn) : NULL;
+    v = rn == 1 ? an_unparen(nt, rv[0]) : -1;
+  }
+  return v >= 0 && (nt_kind(nt, v) == NK_ArrayNode || nt_kind(nt, v) == NK_HashNode);
+}
 static int share_ret_typed_str_literal(Compiler *c, int mi) {
   TyKind t = c->scopes[mi].ret;
   if (!(ty_is_array(t) && ty_array_elem(t) == TY_STRING) && !(ty_is_hash(t) && ty_hash_val(t) == TY_STRING)) return 0;
-  int last = an_unparen(c->nt, scope_body_last(c, mi));
-  return last >= 0 && (nt_kind(c->nt, last) == NK_ArrayNode || nt_kind(c->nt, last) == NK_HashNode);
+  /* its last value, or any `return` (`return [@s] if ...`) */
+  if (share_ret_literal(c->nt, scope_body_last(c, mi))) return 1;
+  for (int u = comp_ret_first(c, mi); u >= 0; u = comp_ret_next(c, u))
+    if (nt_kind(c->nt, u) == NK_ReturnNode && comp_scope_of(c, u) == &c->scopes[mi] && share_ret_literal(c->nt, u))
+      return 1;
+  return 0;
 }
 /* an instance method a pattern calls to read an object's parts */
 static int share_pattern_method(const Scope *m) {
