@@ -3554,8 +3554,9 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
              route over a handle (`(+s).upcase!`, --share-strings) */
           int rd_call = (nt_kind(nt, recv) == NK_CallNode || hrB == 2) && g_n_argov < MAX_ARG_OVERRIDE;
           int tsb = ++g_tmp, tob = ++g_tmp, tnb = ++g_tmp;
-          buf_printf(b, "({ sp_String *_t%d = %s; const char *_t%d = sp_String_cstr(_t%d); (void)_t%d; ",
-                     tsb, srefB, tob, tsb, tob);
+          buf_printf(b, "({ sp_String *_t%d = %s;", tsb, srefB);
+          emit_route_recv_root(hrB, tsb, b);
+          buf_printf(b, " const char *_t%d = sp_String_cstr(_t%d); (void)_t%d; ", tob, tsb, tob);
           /* gsub!/sub! answer nil when no SUBSTITUTION was made, which the
              text comparison below cannot tell from a match that wrote the same
              bytes (`"cats".sub!(/s$/, "s")`): the runtime's matched flag says.
@@ -3757,10 +3758,12 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
     if (sp_streq(name, "replace") && argc == 1) {
       /* shared-mutable local: swap the buffer contents in place (#3227) */
       { char srefR[1024];
-        if (strbuf_recv_handle(c, id, recv, srefR, sizeof srefR)) {
+        int hrR = strbuf_recv_handle(c, id, recv, srefR, sizeof srefR);
+        if (hrR) {
           int tbR = ++g_tmp;
-          buf_printf(b, "({ sp_String *_t%d = %s; sp_String_set_bin(_t%d, ",
-                     tbR, srefR, tbR);
+          buf_printf(b, "({ sp_String *_t%d = %s;", tbR, srefR);
+          emit_route_recv_root(hrR, tbR, b);
+          buf_printf(b, " sp_String_set_bin(_t%d, ", tbR);
           emit_str_expr(c, argv[0], b);
           /* marked to hand out the handle (`r = obj.buf.replace(x)`): the
              receiver itself, as for the appends */
@@ -3790,9 +3793,12 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
   if (rt == TY_STRING && sp_streq(name, "bytesplice") && argc == 2 && recv >= 0 &&
       comp_ntype(c, argv[0]) == TY_RANGE) {
     { char srefBR[1024];
-      if (strbuf_recv_handle(c, id, recv, srefBR, sizeof srefBR)) {
+      int hrBR = strbuf_recv_handle(c, id, recv, srefBR, sizeof srefBR);
+      if (hrBR) {
         int tm2 = ++g_tmp, tr3 = ++g_tmp, tn3 = ++g_tmp;
-        buf_printf(b, "({ sp_String *_t%d = %s; sp_Range _t%d = sp_range_ix(", tm2, srefBR, tr3);
+        buf_printf(b, "({ sp_String *_t%d = %s;", tm2, srefBR);
+        emit_route_recv_root(hrBR, tm2, b);
+        buf_printf(b, " sp_Range _t%d = sp_range_ix(", tr3);
         emit_expr(c, argv[0], b); buf_puts(b, ")");
         buf_printf(b, "; const char *_t%d = sp_str_bytesplice(sp_String_cstr(_t%d),"
                       " _t%d.first, _t%d.last - _t%d.first + (_t%d.excl ? 0 : 1), ",
@@ -3816,9 +3822,11 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
   /* append_as_bytes copies bytes without negotiating the receiver's encoding. */
   if (rt == TY_STRING && sp_streq(name, "append_as_bytes") && argc >= 1 && recv >= 0) {
     { char srefAB[1024];
-      if (strbuf_recv_handle(c, id, recv, srefAB, sizeof srefAB)) {
+      int hrAB = strbuf_recv_handle(c, id, recv, srefAB, sizeof srefAB);
+      if (hrAB) {
         int tm2 = ++g_tmp;
         buf_printf(b, "({ sp_String *_t%d = %s;", tm2, srefAB);
+        emit_route_recv_root(hrAB, tm2, b);
         for (int a9 = 0; a9 < argc; a9++) {
           buf_printf(b, " sp_String_append_bytes(_t%d, ", tm2);
           if (comp_ntype(c, argv[a9]) == TY_INT) { buf_puts(b, "sp_int_chr("); emit_int_expr(c, argv[a9], b); buf_puts(b, ")"); }
@@ -3852,11 +3860,12 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
   if (rt == TY_STRING && sp_streq(name, "bytesplice") && argc == 3 && recv >= 0) {
     /* shared handle receiver: swap the buffer in place (#3227) */
     { char srefBS[1024];
-      if (strbuf_recv_handle(c, id, recv, srefBS, sizeof srefBS)) {
+      int hrBS = strbuf_recv_handle(c, id, recv, srefBS, sizeof srefBS);
+      if (hrBS) {
         int tm2 = ++g_tmp, tn3 = ++g_tmp;
-        buf_printf(b, "({ sp_String *_t%d = %s;"
-                      " const char *_t%d = sp_str_bytesplice(sp_String_cstr(_t%d), ",
-                   tm2, srefBS, tn3, tm2);
+        buf_printf(b, "({ sp_String *_t%d = %s;", tm2, srefBS);
+        emit_route_recv_root(hrBS, tm2, b);
+        buf_printf(b, " const char *_t%d = sp_str_bytesplice(sp_String_cstr(_t%d), ", tn3, tm2);
         emit_int_expr(c, argv[0], b);
         buf_puts(b, ", "); emit_int_expr(c, argv[1], b);
         buf_puts(b, ", "); emit_str_expr(c, argv[2], b);
@@ -8246,7 +8255,11 @@ static int emit_scalar_call_arms(Compiler *c, int id, Buf *b) {
          value -- before the frozen check, as in the call */
       if (haveB == 2) {
         int tH = ++g_tmp;
-        buf_printf(b, "({ sp_String *_t%d = %s; sp_int _i%d = ", tH, srefB, tH);
+        /* rooted: a route can answer a String of its own (`(+f)` of a frozen
+           f), which nothing else holds while the arguments allocate */
+        buf_printf(b, "({ sp_String *_t%d = %s;", tH, srefB);
+        emit_route_recv_root(haveB, tH, b);
+        buf_printf(b, " sp_int _i%d = ", tH);
         emit_int_expr(c, avS[0], b);
         buf_printf(b, "; sp_int _v%d = ", tH);
         emit_int_expr(c, avS[1], b);
