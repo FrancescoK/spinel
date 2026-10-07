@@ -815,8 +815,10 @@ static void repr_share_flows_check(Compiler *c, const char *stats) {
     if (stats && stats[0] == '2') {
       char rn[160];
       repr_flow_route_name(c, u, rn, sizeof rn);
-      fprintf(stderr, "share-flow: line %d %s (%s) into %s carried=%d flags=%u\n", (int)nt_int(c->nt, u, "node_line", 0),
-              rn, ty_name(c->ntype[u]), repr_flow_kind_name(kind), ok, share_node_flags(c, u));
+      const char *fp = nt_file_path(c->nt, (int)nt_int(c->nt, u, "node_file", -1));
+      fprintf(stderr, "share-flow: %s:%d node %d %s (%s) into %s carried=%d flags=%u\n", fp ? fp : "?",
+              (int)nt_int(c->nt, u, "node_line", 0), u, rn, ty_name(c->ntype[u]), repr_flow_kind_name(kind), ok,
+              share_node_flags(c, u));
     }
     if (!ok && bad < 0) { bad = u; bad_kind = kind; }
   }
