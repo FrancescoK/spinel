@@ -2490,14 +2490,18 @@ int desugar_reduce_proc_arg(Compiler *c) {
     int ex = nt_ref(nt, blk, "expression");
     if (ex < 0) continue;
     const char *exty = nt_type(nt, ex);
-    /* an inline `&proc { }` is rebuilt per call, as a lambda literal is */
     NodeKind exk = nt_kind(nt, ex);
+    /* a read of the name the proc is held in, which the block re-reads
+       per comparison: a constant's and a global's as well as a local's or
+       an ivar's, which left out ran `sort(&CMP)` as a plain sort. An inline
+       `&proc { }` is rebuilt per call, as a lambda literal is */
     int simple = exk == NK_LocalVariableReadNode || exk == NK_InstanceVariableReadNode ||
-                 exk == NK_LambdaNode || is_proc_create(c, ex);
+                 exk == NK_ConstantReadNode || exk == NK_ConstantPathNode ||
+                 exk == NK_GlobalVariableReadNode || exk == NK_LambdaNode || is_proc_create(c, ex);
     /* `&method(:m)` / `&Mod.method(:m)` written in place: building the
        Method has no effect, so calling it per element answers as the one
        CRuby builds once */
-    if (!simple && xform && nt_kind(nt, ex) == NK_CallNode && exty &&
+    if (!simple && xform && exk == NK_CallNode && exty &&
         sp_streq(nt_str(nt, ex, "name") ? nt_str(nt, ex, "name") : "", "method")) {
       int ea = nt_ref(nt, ex, "arguments"), en = 0;
       const int *eav = ea >= 0 ? nt_arr(nt, ea, "arguments", &en) : NULL;
