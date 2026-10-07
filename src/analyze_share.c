@@ -80,6 +80,15 @@ typedef struct ShareFacts {
   int *mb_m, *mb_b, nmb, cmb;
   int *mb_start, *mb_blk;
   unsigned char *blk_dyn;
+  /* the blocks a method can run as share_value_fresh asks: a method's
+     `&blk` handed on (`m2(&blk)`, an anonymous `&`, a zsuper) as an edge
+     from the method to each it reaches (fw_from, fw_to), and blk_unk per
+     method scope: a block that is neither a literal nor such a forward
+     reaches it; fresh_blk per method scope, once asked: every block it can
+     run answers a new String (1), not (0), not asked (-1) */
+  int *fw_from, *fw_to, nfw, cfw;
+  unsigned char *blk_unk;
+  signed char *fresh_blk;
   /* the methods the default build may lend a parameter's slot
      (an_byref_eligible_scopes), and per method scope, the parameters it
      passes by value (byval), once asked (byval_done) */
@@ -1028,18 +1037,51 @@ static void sh_bind(ShareFacts *F, Compiler *c, int call, int mi) {
 /* A block literal handed to user method mi: its parameters take what mi
    yields, its value is what mi's yields answer; a block mi keeps as &blk
    may be called from anywhere. */
+/* Method from hands the block it was given on to method to (share_value_fresh) */
+static void sh_fwd_edge(ShareFacts *F, int from, int to) {
+  if (from < 0 || to < 0) return;
+  if (F->nfw >= F->cfw) {
+    F->cfw = F->cfw ? F->cfw * 2 : 16;
+    F->fw_from = realloc(F->fw_from, sizeof(int) * (size_t)F->cfw);
+    F->fw_to = realloc(F->fw_to, sizeof(int) * (size_t)F->cfw);
+    if (!F->fw_from || !F->fw_to) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  F->fw_from[F->nfw] = from;
+  F->fw_to[F->nfw++] = to;
+}
+/* Call n hands method mi a block as a value (blk, a BlockArgumentNode): the
+   enclosing method's own &blk (or an anonymous `&`) is a forward edge; any
+   other block (`&proc`, `&:sym`, `&method(:m)`) is one the facts do not
+   list (blk_unk). */
+static void sh_block_value_to(ShareFacts *F, Compiler *c, int n, int blk, int mi) {
+  const NodeTable *nt = c->nt;
+  int x = nt_ref(nt, blk, "expression");
+  int cur = sh_method_index(c, n);
+  const char *bp = cur >= 0 ? c->scopes[cur].blk_param : NULL;
+  if (cur >= 0 && bp &&
+      (x < 0 ? !bp[0] : nt_kind(nt, x) == NK_LocalVariableReadNode && nt_int(nt, x, "depth", 0) == 0 &&
+                        nt_str(nt, x, "name") && bp[0] && sp_streq(nt_str(nt, x, "name"), bp)))
+    sh_fwd_edge(F, cur, mi);
+  else F->blk_unk[mi] = 1;
+}
+
 static void sh_block_to_method(ShareFacts *F, Compiler *c, int blk, int mi) {
   Scope *m = &c->scopes[mi];
-  /* a method lowered to take its block as a proc still yields to it */
-  if (m->yields || m->is_lowered_yield) {
-    if (F->nmb >= F->cmb) {
-      F->cmb = F->cmb ? F->cmb * 2 : 64;
-      F->mb_m = realloc(F->mb_m, sizeof(int) * (size_t)F->cmb);
-      F->mb_b = realloc(F->mb_b, sizeof(int) * (size_t)F->cmb);
-      if (!F->mb_m || !F->mb_b) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-    }
+  /* (a method that keeps its block as &blk records it too: it may hand it
+     on, share_value_fresh) */
+  int yields = m->yields || m->is_lowered_yield;
+  if ((yields || m->blk_param) && F->nmb >= F->cmb) {
+    F->cmb = F->cmb ? F->cmb * 2 : 64;
+    F->mb_m = realloc(F->mb_m, sizeof(int) * (size_t)F->cmb);
+    F->mb_b = realloc(F->mb_b, sizeof(int) * (size_t)F->cmb);
+    if (!F->mb_m || !F->mb_b) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  if (yields || m->blk_param) {
     F->mb_m[F->nmb] = mi;
     F->mb_b[F->nmb++] = blk;
+  }
+  /* a method lowered to take its block as a proc still yields to it */
+  if (yields) {
     sh_block_params(F, c, blk, sh_scope_holder(F, SHK_YIELD, mi), 1);
     sh_union(F, sh_block_val(F, c, blk), sh_scope_holder(F, SHK_BLKRET, mi));
   }
@@ -1947,9 +1989,10 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
       sh_bind(F, c, n, tg[i]);
       r = sh_join(F, r, sh_scope_holder(F, SHK_RET, tg[i]));
       if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode) sh_block_to_method(F, c, blk, tg[i]);
+      else if (blk >= 0) sh_block_value_to(F, c, n, blk, tg[i]);
       /* a block passed as a value (`&proc`, `&method(:m)`): what the method
          yields goes where the walk does not follow */
-      else if (blk >= 0 && c->scopes[tg[i]].yields) {
+      if (blk >= 0 && nt_kind(nt, blk) != NK_BlockNode && c->scopes[tg[i]].yields) {
         F->blk_dyn[tg[i]] = 1;
         sh_union(F, sh_scope_holder(F, SHK_YIELD, tg[i]), F->unknown);
         sh_union(F, sh_scope_holder(F, SHK_BLKRET, tg[i]), F->unknown);
@@ -2077,6 +2120,7 @@ static int sh_super(ShareFacts *F, Compiler *c, int n) {
       }
       sh_union(F, sh_scope_holder(F, SHK_YIELD, cur), sh_scope_holder(F, SHK_YIELD, tg[i]));
       F->blk_dyn[tg[i]] = 1;
+      sh_fwd_edge(F, cur, tg[i]);
       sh_union(F, sh_scope_holder(F, SHK_BLKRET, cur), sh_scope_holder(F, SHK_BLKRET, tg[i]));
     }
     else {
@@ -2090,6 +2134,9 @@ static int sh_super(ShareFacts *F, Compiler *c, int n) {
         }
     }
     if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode) sh_block_to_method(F, c, blk, tg[i]);
+    /* a block value, or none: super hands on this method's own block */
+    else if (blk >= 0) sh_block_value_to(F, c, n, blk, tg[i]);
+    else if (nt_kind(nt, n) == NK_SuperNode) sh_fwd_edge(F, cur, tg[i]);
     r = sh_join(F, r, sh_scope_holder(F, SHK_RET, tg[i]));
   }
   if (ntg == 0) {
@@ -2736,6 +2783,7 @@ static void sh_free(ShareFacts *F) {
   free(F->byval); free(F->byval_done);
   free(F->rsite); free(F->mread); free(F->ret_joined);
   free(F->mb_m); free(F->mb_b); free(F->mb_start); free(F->mb_blk); free(F->blk_dyn);
+  free(F->fw_from); free(F->fw_to); free(F->blk_unk); free(F->fresh_blk);
   free(F->kind); free(F->flags); free(F->own);
   free(F->h); free(F->helem); free(F->bucket); free(F->hnext); free(F->nval);
   free(F->lend_arg); free(F->lend_par); free(F->lend_node); free(F->lend_direct); free(F->lend_done);
@@ -3175,10 +3223,14 @@ static ShareFacts *sh_build(Compiler *c, int closed) {
   F->mread = calloc(ns, 1);
   F->ret_joined = calloc(ns, 1);
   F->blk_dyn = calloc(ns, 1);
-  if (!F->unused || !F->byref_elig || !F->byval || !F->byval_done || !F->mread || !F->ret_joined || !F->blk_dyn) {
+  F->blk_unk = calloc(ns, 1);
+  F->fresh_blk = malloc(ns);
+  if (!F->unused || !F->byref_elig || !F->byval || !F->byval_done || !F->mread || !F->ret_joined || !F->blk_dyn ||
+      !F->blk_unk || !F->fresh_blk) {
     fprintf(stderr, "spinel: out of memory\n");
     exit(1);
   }
+  memset(F->fresh_blk, -1, ns);
   if (!kept) an_byref_eligible_scopes(c, F->byref_elig);
   NT_FOREACH_KIND(nt, NK_StatementsNode, st) {
     int bn = 0; const int *bv = nt_arr(nt, st, "body", &bn);
@@ -3232,6 +3284,7 @@ static ShareFacts *sh_build(Compiler *c, int closed) {
       sh_union(F, m->pnames[j] ? sh_local_of(F, c, m, m->pnames[j], m->def_node) : -1, F->unknown);
     sh_union(F, sh_scope_holder(F, SHK_RET, mi), F->unknown);
     F->ret_joined[mi] = 1;
+    F->blk_unk[mi] = 1;
     if (m->yields) {
       F->blk_dyn[mi] = 1;
       sh_union(F, sh_scope_holder(F, SHK_YIELD, mi), F->unknown);
@@ -3436,6 +3489,29 @@ static int sh_fresh_elems(Compiler *c, int r, int depth) {
   return et != TY_UNKNOWN && !sh_may_hold(c, et);
 }
 
+/* Does every block method mi can run answer a new String: its literal
+   blocks' values (with no next, break or return), and those of the methods
+   that hand mi their own block, with no block the facts do not list? Asked
+   once per method (fresh_blk); a cycle answers no. */
+static int sh_blocks_fresh(Compiler *c, int mi, int depth) {
+  ShareFacts *F = c->share;
+  const NodeTable *nt = c->nt;
+  Scope *m = &c->scopes[mi];
+  if (F->fresh_blk[mi] >= 0) return F->fresh_blk[mi];
+  if (depth > 8 || F->blk_unk[mi] || m->is_lowered_yield || m->is_proc_form || !F->mb_start) return 0;
+  F->fresh_blk[mi] = 0;
+  int ok = 1;
+  for (int i = F->mb_start[mi]; ok && i < F->mb_start[mi + 1]; i++) {
+    int body = nt_ref(nt, F->mb_blk[i], "body");
+    int bn = 0; const int *bb = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &bn) : NULL;
+    ok = bn > 0 && !sh_has_jump(nt, body) && share_value_fresh(c, bb[bn - 1], depth + 1);
+  }
+  for (int e = 0; ok && e < F->nfw; e++)
+    if (F->fw_to[e] == mi) ok = sh_blocks_fresh(c, F->fw_from[e], depth + 1);
+  F->fresh_blk[mi] = (signed char)ok;
+  return ok;
+}
+
 int share_value_fresh(Compiler *c, int n, int depth) {
   const NodeTable *nt = c->nt;
   n = an_unparen(nt, n);
@@ -3445,6 +3521,10 @@ int share_value_fresh(Compiler *c, int n, int depth) {
   /* a call the walk found answers no String any name holds (a share row's
      new or frozen String) */
   if (k == NK_CallNode && c->share && n < c->share->nnodes && c->share->nval[n] == -1) return 1;
+  if (k == NK_YieldNode) {
+    int mi = sh_method_index(c, n);
+    return mi >= 0 && sh_blocks_fresh(c, mi, depth + 1);
+  }
   if (k != NK_CallNode) return 0;
   if (share_call_fresh(c, n)) return 1;
   /* a call of a lambda a local holds and only calls, whose value (with no
