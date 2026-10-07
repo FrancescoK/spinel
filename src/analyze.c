@@ -15955,21 +15955,40 @@ static int strbuf_class_may_answer(Compiler *c, int k, int rcid) {
 }
 /* The containers method mi answers: its body's last value and each
    `return v`; for `def mk = yield`, the block blk of the call. */
+static int strbuf_method_ret_source_walk(Compiler *c, int mi, int blk, int depth, int mode);
+/* --share-strings: a value of method mi that is a `super` (`def parts =
+   super`): the containers the method it calls answers, handed the
+   super's own block or, with none, mi's (blk) */
+static int strbuf_super_ret_walk(Compiler *c, int mi, int v, int blk, int depth, int mode) {
+  const NodeTable *nt = c->nt;
+  v = an_unparen(nt, v);
+  if (!c->share_strings || v < 0 || (nt_kind(nt, v) != NK_SuperNode && nt_kind(nt, v) != NK_ForwardingSuperNode))
+    return -1;
+  Scope *m = &c->scopes[mi];
+  int t = m->class_id >= 0 ? a_super_target(c, m) : -1;
+  if (t < 0 || t == mi) return 0;
+  int sb = nt_ref(nt, v, "block");
+  return strbuf_method_ret_source_walk(c, t, sb >= 0 && nt_kind(nt, sb) == NK_BlockNode ? sb : blk, depth + 1, mode);
+}
 static int strbuf_method_ret_source_walk(Compiler *c, int mi, int blk, int depth, int mode) {
   const NodeTable *nt = c->nt;
   Scope *m = &c->scopes[mi];
-  int changed = 0;
+  int changed = 0, sw;
+  if (depth > 8) return 0;
   int last = scope_body_last(c, mi);
   if (last >= 0 && nt_kind(nt, last) == NK_YieldNode) {
     if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode)
       changed |= strbuf_container_source_walk(c, nt_ref(nt, blk, "body"), depth + 1, mode);
   }
+  else if ((sw = strbuf_super_ret_walk(c, mi, last, blk, depth, mode)) >= 0) changed |= sw;
   else changed |= strbuf_container_source_walk(c, last, depth + 1, mode);
   for (int u = comp_ret_first(c, mi); u >= 0; u = comp_ret_next(c, u)) {
     if (nt_kind(nt, u) != NK_ReturnNode || comp_scope_of(c, u) != m) continue;
     int ra = nt_ref(nt, u, "arguments");
     int rn2 = 0; const int *rv2 = ra >= 0 ? nt_arr(nt, ra, "arguments", &rn2) : NULL;
-    if (rn2 == 1) changed |= strbuf_container_source_walk(c, rv2[0], depth + 1, mode);
+    if (rn2 != 1) continue;
+    if ((sw = strbuf_super_ret_walk(c, mi, rv2[0], blk, depth, mode)) >= 0) changed |= sw;
+    else changed |= strbuf_container_source_walk(c, rv2[0], depth + 1, mode);
   }
   return changed;
 }

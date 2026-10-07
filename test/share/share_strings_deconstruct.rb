@@ -1,7 +1,8 @@
 # Flag-only. A pattern over an object binds its variables to the parts its
 # own deconstruct or deconstruct_keys answers: the String an ivar holds, not
 # a copy of it. Also through a named class (`in Box[t]`), a value that may
-# be any object, a rest, `=>`, two parts, and an explicit deconstruct call.
+# be any object, a rest, `=>`, two parts, an explicit deconstruct call, a
+# deconstruct that calls `super`, and a literal a method answers by `return`.
 
 class Box
   def initialize(s); @s = s; end
@@ -16,6 +17,34 @@ class Pair
     parts = [@a, @b]
     parts
   end
+end
+
+class Inner
+  def initialize(s); @s = s; end
+  def deconstruct; [@s]; end
+  def pair
+    return [@s]
+  end
+end
+
+class Outer < Inner
+  def deconstruct; super; end
+end
+
+def through_super
+  s = +"ab"
+  case Outer.new(s)
+  in [t]
+    t << "m"
+  end
+  p s
+end
+
+def explicit_return
+  s = +"ab"
+  t = Inner.new(s).pair[0]
+  t << "n"
+  p s
 end
 
 def array_pattern
@@ -102,3 +131,5 @@ rest_pattern
 rightward
 two_parts
 explicit_call
+through_super
+explicit_return
