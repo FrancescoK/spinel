@@ -155,6 +155,8 @@ feature search root, then a `require` resolves against it:
 spinel -I mylibs main.rb
 ```
 
+The `-I` roots are searched before the packages bundled with the compiler (`packages/`), so a project's own package of the same name as a bundled one (an `openssl` of its own, say) is the one a `require` reaches. The compiler's `lib/` comes first and is not shadowed.
+
 A feature name is a path, looked up in each `-I` root in two forms:
 
 - **single file** -- `require "thing"` → `mylibs/thing.rb` (the CRuby form);

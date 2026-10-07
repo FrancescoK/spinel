@@ -412,6 +412,11 @@ resolves against any `-I` root as `<root>/curses.rb` or
 at `spin/packages/curses/`, and `--link` takes its compiled object. `spin
 flags` is the part that works out which roots and which objects.
 
+A dependency whose name is also a package bundled with the compiler shadows it: the
+`-I` roots are searched before the bundled `packages/`, so `openssl = { path =
+"packages/openssl" }` makes `require "openssl"` reach the project's own
+package.
+
 ## Shipping a build that does not need spinel
 
 `spin pack` writes a directory that builds the program from C alone: a C

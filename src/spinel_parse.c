@@ -4016,6 +4016,29 @@ else {
         if (content) snprintf(lib_path, sizeof(lib_path), "%s", alt_path);
       }
       if (!content) {
+        /* `-I <dir>` feature roots: <root>/X.rb, else <root>/X/<last>.rb. They
+           come before the pre-installed packages, so a project's package of the
+           same name as a bundled one is the one a require reaches (#7207); lib/
+           stays first. */
+        char rp[1024];
+        const char *last = strrchr(lib_name, '/');
+        last = last ? last + 1 : lib_name;
+        for (int ri = 0; ri < sp_feature_roots_n && !content; ri++) {
+          snprintf(rp, sizeof(rp), "%s/%s.rb", sp_feature_roots[ri], lib_name);
+          content = read_file(rp);
+          if (!content) {
+            snprintf(rp, sizeof(rp), "%s/%s/%s.rb", sp_feature_roots[ri], lib_name, last);
+            content = read_file(rp);
+          }
+          if (content) snprintf(lib_path, sizeof(lib_path), "%s", rp);
+        }
+        char *rc = content ? sp_canonical_path(lib_path) : NULL;
+        for (int i = sp_rr_included; rc && i < sp_included_count && !root_dup; i++) root_dup = sp_included_paths[i] && strcmp(sp_included_paths[i], rc) == 0;
+        if (root_dup) { free(content); content = strdup("# require skipped (already included)"); }
+        else if (rc) sp_mark_path_included(rc);
+        free(rc);
+      }
+      if (!content) {
         /* pre-installed packages (the carved-out stdlib): packages/ sits
            beside lib/ in both the repo and the installed tree. The package
            root is the require root, so `require "erb"` is
@@ -4073,26 +4096,6 @@ else {
           else { free(content); content = NULL; }
         }
         if (content) snprintf(lib_path, sizeof(lib_path), "%s", gp);
-      }
-      if (!content) {
-        /* `-I <dir>` feature roots: <root>/X.rb, else <root>/X/<last>.rb. */
-        char rp[1024];
-        const char *last = strrchr(lib_name, '/');
-        last = last ? last + 1 : lib_name;
-        for (int ri = 0; ri < sp_feature_roots_n && !content; ri++) {
-          snprintf(rp, sizeof(rp), "%s/%s.rb", sp_feature_roots[ri], lib_name);
-          content = read_file(rp);
-          if (!content) {
-            snprintf(rp, sizeof(rp), "%s/%s/%s.rb", sp_feature_roots[ri], lib_name, last);
-            content = read_file(rp);
-          }
-          if (content) snprintf(lib_path, sizeof(lib_path), "%s", rp);
-        }
-        char *rc = content ? sp_canonical_path(lib_path) : NULL;
-        for (int i = sp_rr_included; rc && i < sp_included_count && !root_dup; i++) root_dup = sp_included_paths[i] && strcmp(sp_included_paths[i], rc) == 0;
-        if (root_dup) { free(content); content = strdup("# require skipped (already included)"); }
-        else if (rc) sp_mark_path_included(rc);
-        free(rc);
       }
       if (!content) {
         if (sp_lib_is_native(lib_name)) {
