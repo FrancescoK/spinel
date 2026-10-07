@@ -63,15 +63,20 @@ static void emit_line_param_decl(Compiler *c, int id, const char *pn, int lt, Bu
 /* The output buffer `ob` of read(len, buf), readpartial and sysread(len,
    buf) and pread(len, off, buf), when it is not a String. CRuby evaluates
    the arguments, dispatches (a nil handle is NoMethodError), converts the
-   length (read's may be nil: the rest of the stream) and the offset, then
-   takes the buffer through StringValue: nil is no buffer, a boxed String
-   is filled -- rebound here, as the String arms rebind a String local --
-   and any other class is TypeError. The arms took every buffer for a
-   String, and an Integer, a nil or a boxed one did not build. Emits the
-   read `fn` over the rendered handle `r` with the `nint` Integer arguments
-   before the buffer, and answers 1; a String buffer answers 0 and keeps its
-   arm. `rest` is read's: a nil length reads the rest of the stream. Every
-   argument is held boxed, so each converts at run time in CRuby's order. */
+   length (read's may be nil: the rest of the stream) and the offset --
+   read and readpartial refuse a negative length there, before the buffer
+   -- then takes the buffer through StringValue: nil is no buffer, a boxed
+   String is filled, and any other class is TypeError. A boxed String that
+   is a shared handle is filled in place, so every alias sees the bytes
+   (sp_poly_str_become); a plain one is a value, and a local holding it is
+   rebound, as the String arms rebind a String local. At the end of the
+   stream read answers nil and empties the buffer. The arms took every
+   buffer for a String, and an Integer, a nil or a boxed one did not build.
+   Emits the read `fn` over the rendered handle `r` with the `nint` Integer
+   arguments before the buffer, and answers 1; a String buffer answers 0
+   and keeps its arm. `rest` is read's: a nil length reads the rest of the
+   stream. Every argument is held boxed, so each converts at run time in
+   CRuby's order. */
 static int emit_io_read_outbuf(Compiler *c, const char *name, const char *fn, const char *r, const int *argv,
                                int nint, int ob, int rest, Buf *b) {
   TyKind bt = comp_ntype(c, ob);
@@ -91,19 +96,33 @@ static int emit_io_read_outbuf(Compiler *c, const char *name, const char *fn, co
     if (k == 0 && rest) buf_printf(b, "sp_poly_nil_p(_t%d) ? 0 : ", ta);
     buf_printf(b, "sp_poly_arg_int_chk(_t%d); ", ta + k);
   }
-  buf_printf(b, "const char *_t%d = sp_poly_nil_p(_t%d) ? NULL : sp_poly_arg_str_chk(_t%d);"
-                " if (_t%d) sp_str_check_mutable(_t%d); const char *_t%d = ",
-             ts, ta + nint, ta + nint, ts, ts, tr);
+  if (sp_streq(name, "read") || sp_streq(name, "readpartial"))
+    buf_printf(b, "if (_t%d < 0) sp_raise_cls(\"ArgumentError\", sp_sprintf(\"negative length %%lld given\", (long long)_t%d)); ",
+               ti, ti);
+  buf_printf(b, "const char *_t%d = sp_poly_nil_p(_t%d) ? NULL : sp_poly_arg_str_chk(_t%d); ",
+             ts, ta + nint, ta + nint);
+  /* a shared handle's frozen flag is on the handle, not in its bytes */
+  if (boxed)
+    buf_printf(b, "if (_t%d && sp_poly_is_strbuf(_t%d) && sp_String_is_frozen((sp_String *)_t%d.v.p))"
+                  " sp_raise_frozen_str(_t%d); ", ts, ta + nint, ta + nint, ts);
+  buf_printf(b, "if (_t%d) sp_str_check_mutable(_t%d); const char *_t%d = ", ts, ts, tr);
   if (rest) buf_printf(b, "sp_poly_nil_p(_t%d) ? sp_File_read(_t%d) : ", ta, tf);
   buf_printf(b, "%s(_t%d", fn, tf);
   for (int k = 0; k < nint; k++) buf_printf(b, ", _t%d", ti + k);
   buf_puts(b, "); ");
-  if (boxed && nt_kind(c->nt, ob) == NK_LocalVariableReadNode) {
-    buf_printf(b, "if (_t%d) ", ts); emit_expr(c, ob, b); buf_printf(b, " = sp_box_str(_t%d); ", tr);
+  if (boxed) {
+    int tn = ++g_tmp;
+    buf_printf(b, "if (_t%d) { sp_RbVal _t%d = sp_poly_str_become(_t%d, _t%d ? _t%d : sp_str_empty); ",
+               ts, tn, ta + nint, tr, tr);
+    if (nt_kind(c->nt, ob) == NK_LocalVariableReadNode) { emit_expr(c, ob, b); buf_printf(b, " = _t%d; } ", tn); }
+    else buf_printf(b, "(void)_t%d; } ", tn);
   }
   buf_printf(b, "_t%d; })", tr);
   return 1;
 }
+
+static void emit_io_read_overcount(Compiler *c, const char *name, const char *r, const int *argv, int argc,
+                                   const char *expected, Buf *b);
 
 /* the IO methods on a poly receiver that may hold a stream (write, read, gets, puts, print, ...) */
 int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv) {
@@ -512,6 +531,12 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
             buf_printf(b, ", 1); _t%d; })", tw9);
         }
       }
+      /* read takes (len, buf): a third argument was dropped and the read
+         went ahead, where CRuby raises ArgumentError */
+      else if (sp_streq(name, "read") && argc > 2) {
+        emit_io_read_overcount(c, name, tio, argv, argc, "0..2", b);
+        buf_puts(b, "; })");
+      }
       /* read(n) reads UP TO n bytes; dropping the count read to EOF, which on
          a socket with a live peer never comes -- `r.read(5)` hung forever. */
       else if (sp_streq(name, "read") && argc >= 1) {
@@ -657,9 +682,9 @@ static void io_hold_effectful_recv(Compiler *c, const char *name, int recv, int 
   buf_printf(rb, "_t%d", th);
 }
 
-/* readpartial and sysread take (len, buf) and pread (len, off, buf); a
-   longer list was read as though its last arguments were a buffer, and an
-   Integer there did not build. CRuby evaluates the arguments and raises
+/* read, readpartial and sysread take (len, buf) and pread (len, off, buf);
+   a longer list was read as though its last arguments were a buffer, and
+   an Integer there did not build. CRuby evaluates the arguments and raises
    ArgumentError before it reads, NoMethodError for a nil handle. `expected`
    is the counts the method takes. */
 static void emit_io_read_overcount(Compiler *c, const char *name, const char *r, const int *argv, int argc,
@@ -933,7 +958,8 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
       }
     }
     if (sp_streq(name, "read")) {
-      if (argc == 2 && emit_io_read_outbuf(c, name, "sp_File_read_n", r, argv, 1, argv[1], 1, b)) {}
+      if (argc > 2) emit_io_read_overcount(c, name, r, argv, argc, "0..2", b);
+      else if (argc == 2 && emit_io_read_outbuf(c, name, "sp_File_read_n", r, argv, 1, argv[1], 1, b)) {}
       else if (argc >= 2 && nt_type(nt, argv[1]) &&
                sp_streq(nt_type(nt, argv[1]), "LocalVariableReadNode")) {
         /* read(len, buffer): rebind the buffer local to the bytes read (#2811) */
