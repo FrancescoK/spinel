@@ -3961,6 +3961,14 @@ int hash_nil_key_stored(Compiler *c, int key, TyKind kt) {
   return kt == TY_INT && comp_ntype(c, key) == TY_NIL;
 }
 
+/* --share-strings: is block parameter lv, bound to an element of kind et, a
+   slot the scope holds as the shared handle (TY_STRBUF) over a String
+   element? Then each element is a fresh String the handle wraps, bound
+   into the slot, and no et-typed shadow declaration replaces it: the body's
+   reads were settled against the handle. */
+int elem_param_is_handle(const LocalVar *lv, TyKind et) {
+  return lv && lv->type == TY_STRBUF && et == TY_STRING;
+}
 void emit_hash_key(Compiler *c, int key, TyKind kt, Buf *b) {
   int kboxed = repr_of(c, key).kind == RK_BOXED;
   if (hash_key_misses(c, key, kt)) {
@@ -3995,6 +4003,16 @@ void emit_hash_key(Compiler *c, int key, TyKind kt, Buf *b) {
   if (kt == TY_POLY && !kboxed) {
     /* PolyPolyHash key: box the typed value into sp_RbVal */
     emit_boxed(c, key, b);
+    return;
+  }
+  /* a read marked to hand out a shared String's handle (a dynamic call's
+     argument the read also is, at another round) keys a String-keyed hash by
+     a copy of its bytes, which publishes nothing on the side channel */
+  if (kt == TY_STRING && comp_ntype(c, key) == TY_STRBUF && repr_of(c, key).handle) {
+    int t = ++g_tmp;
+    buf_printf(b, "({ sp_String *_t%d = ", t);
+    emit_expr(c, key, b);
+    buf_printf(b, "; _t%d ? sp_str_concat(sp_String_cstr(_t%d), (&(\"\\xff\")[1])) : NULL; })", t, t);
     return;
   }
   emit_expr(c, key, b);

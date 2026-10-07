@@ -267,8 +267,14 @@ static int value_obj_compares(Compiler *c, int node) {
    line is stored into that boxed local rather than shadowing it. */
 static void emit_str_elem_param(Compiler *c, int blk, const char *bp, const char *bpn,
                                 int ta, int ti, Buf *b) {
+  Scope *bs = bp ? comp_scope_of(c, blk) : NULL;
+  LocalVar *blv = bs ? scope_local(bs, bp) : NULL;
   if (bp && file_block_param_poly(c, blk, bp))
     buf_printf(b, " lv_%s = sp_box_str(sp_StrArray_get(_t%d, _t%d));", bpn, ta, ti);
+  /* a parameter the scope holds as the shared handle: each element is a
+     fresh String, which the handle wraps (as the typed each_char binds it) */
+  else if (elem_param_is_handle(blv, TY_STRING))
+    buf_printf(b, " lv_%s = sp_String_new_shared(sp_StrArray_get(_t%d, _t%d));", bpn, ta, ti);
   else
     buf_printf(b, " const char *lv_%s = sp_StrArray_get(_t%d, _t%d);", bpn, ta, ti);
 }
