@@ -60,6 +60,15 @@ def t(k)
   end
   f.close
   File.delete(path)
+  # a nil key: a Hash slices nothing out, a String, an Array or a Symbol
+  # raises TypeError, as `[]` with nil does
+  [{ a: 1 }, "abc", [1, 2], :abc].each do |v|
+    sv = [v, 1][k]
+    log = []
+    show("slice nil #{v.class}", log) { p sv.slice(nil) }
+    log = []
+    show("[] nil #{v.class}", log) { p sv[nil] }
+  end
   # a safe-navigation call on a nil receiver runs no operand
   [nil, +"ab"].each do |v|
     sn = [v, 1][k]

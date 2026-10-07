@@ -13666,10 +13666,10 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
         buf_puts(b, ")");
       }
       else if (argc == 0) { buf_printf(b, "sp_poly_int_%s(", name); emit_boxed(c, recv, b); buf_puts(b, ")"); }
-      else {
-        buf_printf(b, "sp_poly_int_%s(", name); emit_boxed(c, recv, b);
-        buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, ")");
-      }
+      else { buf_printf(b, "sp_poly_int_%s(", name); emit_boxed(c, recv, b);
+             buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, ")"); }
+      /* each of these but a lone pow's takes its operands as C arguments */
+      if (!(is_pow_name(name) && argc == 1)) c->args_in_call = recv;
       return 1;
     }
   }

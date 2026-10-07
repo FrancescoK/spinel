@@ -26,6 +26,22 @@ readpartial 7 NoMethodError
 readpartial 7 [:r, :a0, :a1]
 readpartial1 7 NoMethodError
 readpartial1 7 [:a0]
+{}
+slice nil Hash []
+nil
+[] nil Hash []
+slice nil String TypeError
+slice nil String []
+[] nil String TypeError
+[] nil String []
+slice nil Array TypeError
+slice nil Array []
+[] nil Array TypeError
+[] nil Array []
+slice nil Symbol TypeError
+slice nil Symbol []
+[] nil Symbol TypeError
+[] nil Symbol []
 nil
 safe-nav nil [:r]
 " ab  "
