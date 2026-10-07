@@ -11966,7 +11966,12 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
            (e.g. `nrows * ncols` where a factor widened to poly -> sp_poly_mul,
            which returns sp_RbVal) through sp_poly_to_i. spinel-dev#24. */
         Buf nb; memset(&nb, 0, sizeof nb); emit_int_expr(c, argv[0], &nb);
-        Buf vb = expr_buf(c, argv[1]);
+        /* --share-strings: a fill stored as the shared handle is boxed as
+           its handle, one object in every slot, as a literal's element is */
+        int fh = at == TY_POLY_ARRAY && repr_share_rule(c) && repr_of(c, argv[1]).as_ty == TY_STRBUF;
+        Buf vb; memset(&vb, 0, sizeof vb);
+        if (fh) emit_boxed(c, argv[1], &vb);
+        else vb = expr_buf(c, argv[1]);
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "sp_int _t%d = ", tn); buf_puts(g_pre, nb.p ? nb.p : ""); buf_puts(g_pre, ";\n");
         emit_indent(g_pre, g_indent);
@@ -11985,7 +11990,7 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
             buf_puts(g_pre, "sp_box_poly_array(sp_PolyArray_new())");
           else if (fvt == TY_UNKNOWN && fvty && sp_streq(fvty, "HashNode") && fv_en == 0)
             buf_puts(g_pre, "sp_box_obj(sp_PolyPolyHash_new(), SP_BUILTIN_POLY_POLY_HASH)");
-          else if (fvt != TY_POLY) emit_boxed_text(c, fvt, vb.p ? vb.p : "sp_box_nil()", g_pre);
+          else if (fvt != TY_POLY && !fh) emit_boxed_text(c, fvt, vb.p ? vb.p : "sp_box_nil()", g_pre);
           else buf_puts(g_pre, vb.p ? vb.p : "sp_box_nil()");
         }
         else {
@@ -11994,6 +11999,10 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
         }
         buf_puts(g_pre, ";\n");
         emit_indent(g_pre, g_indent);
+        /* a fresh handle box lives only here across the array's allocation
+           (a variable's is held by the variable) */
+        NodeKind fk = nt_kind(nt, argv[1]);
+        if (fh && fk != NK_LocalVariableReadNode && fk != NK_InstanceVariableReadNode && !repr_static_read_kind(fk)) { emit_gc_root_tmp(c, TY_POLY, tv, g_pre); buf_puts(g_pre, "\n"); emit_indent(g_pre, g_indent); }
         if (is_numeric_literal_tag(k)) {
           buf_printf(g_pre, "sp_%sArray *_t%d = sp_%sArray_new_fill(_t%d, _t%d);\n", k, tr, k, tn, tv);
           emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", tr);

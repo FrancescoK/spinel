@@ -16189,6 +16189,12 @@ static int strbuf_container_source_walk(Compiler *c, int node, int depth, int mo
       /* `Array.new(n) { ... }` fills the array with its block's tail */
       if (sp_streq(mn, "new") && recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode &&
           nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Array")) {
+        /* --share-strings: `Array.new(n, s)` fills every slot with s
+           itself, so s is what it stores (and a poly form holds its
+           handle, infer_call's Array.new arm) */
+        int fa = nt_ref(nt, node, "arguments"), fn = 0;
+        const int *fv = fa >= 0 ? nt_arr(nt, fa, "arguments", &fn) : NULL;
+        if (c->share_strings && fn == 2 && blk < 0) return strbuf_store_leaf(c, fv[1], depth, mode);
         if (SB_KIND(mode) == SB_HAS_NONSTRING || blk < 0 || nt_kind(nt, blk) != NK_BlockNode) return 0;
         int body = nt_ref(nt, blk, "body");
         if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) return 0;
@@ -18254,6 +18260,15 @@ static int promote_shared_stored_strings(Compiler *c) {
         int a3 = nt_ref(nt, w, "arguments");
         int an3 = 0; const int *av3 = a3 >= 0 ? nt_arr(nt, a3, "arguments", &an3) : NULL;
         if (an3 >= 2) cand3[nc3++] = av3[an3 - 1];
+      }
+      /* --share-strings: `Array.new(n, s)` stores s in every slot, as a
+         literal stores its elements */
+      else if (c->share_strings && cn3 && sp_streq(cn3, "new") && recv3 >= 0 &&
+               nt_kind(nt, recv3) == NK_ConstantReadNode && nt_str(nt, recv3, "name") &&
+               sp_streq(nt_str(nt, recv3, "name"), "Array") && nt_ref(nt, w, "block") < 0) {
+        int a3 = nt_ref(nt, w, "arguments");
+        int an3 = 0; const int *av3 = a3 >= 0 ? nt_arr(nt, a3, "arguments", &an3) : NULL;
+        if (an3 == 2) cand3[nc3++] = av3[1];
       }
       else if (cn3 && recv3 >= 0 && sp_streq(cn3, "equal?")) {
         /* identity test against the shared handle */
