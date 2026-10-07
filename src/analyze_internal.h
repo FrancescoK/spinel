@@ -151,6 +151,16 @@ int an_bare_call_class_owned(Compiler *c, int id);
    (0-based, matching ivar order) or -1. */
 int struct_member_idx(Compiler *c, ClassInfo *sc, int keynode);
 int struct_member_idx_float(Compiler *c, ClassInfo *sc, int keynode);
+/* A Struct `[]=` (analyze_scope.c): the classes call id may store into,
+   [*first, *last]: 1 for a receiver typed as a Struct, its own class (only
+   a key no literal names is left a `[]=`), 2 for a boxed one, every class,
+   or 0 (and first > last) when it is no such call. struct_aset_members: 1
+   when class k's `[]=` is the Struct's own (no `[]=` of the program's;
+   cplan_struct_aset's), with the members [*lo, *hi) the key can name (none
+   for a literal that names no member: it raises). A boxed receiver holds
+   one only if poly_ivar_set_reaches says it can. */
+int struct_aset_classes(Compiler *c, int id, int *first, int *last);
+int struct_aset_members(Compiler *c, int id, int k, int *lo, int *hi);
 /* Last statement of a scope's body, or -1. */
 int scope_body_last(Compiler *c, int mi);
 /* The expressions whose value method scope mi answers (its body's and each
