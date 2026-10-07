@@ -96,6 +96,9 @@ typedef struct ShareRoute {
 } ShareRoute;
 enum { SHARE_CARRY_NONE = -1, SHARE_CARRY_COPY = -2 };
 ShareRoute share_route(int site, int value, int elems);
+/* Is node n's value a String the walk reached and found no identity in (a
+   fresh one no other name holds)? */
+int share_node_fresh(const Compiler *c, int n);
 /* Does the rule share the elements of node n's value (a container)? */
 int share_node_elems_share(const Compiler *c, int n);
 /* Can node n's value (a container) be reached again once its expression

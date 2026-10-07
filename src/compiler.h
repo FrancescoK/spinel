@@ -381,6 +381,11 @@ typedef struct {
                           of docs/internals/ext-design.md) */
   int ret_rbs_seeded;  /* ret pinned from an --rbs advisory seed: the fixpoint
                           must not recompute it from the body */
+  int ret_pub_fresh;   /* --share-strings: a deep-return pickup takes this
+                          method's value, and a tail of it answers a fresh
+                          String (share_node_fresh) beside the handle reads
+                          the others publish: that tail clears the side
+                          channel (emit_tail_value), so the caller wraps it */
   int ret_rbs_nilable; /* that seed was RBS's nilable form (`Integer?`), and the
                           pinned kind is an unboxed scalar: the return can be
                           the reserved sentinel, so a caller boxing it has to

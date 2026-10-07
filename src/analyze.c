@@ -17917,7 +17917,9 @@ static void an_returns_by_scope(Compiler *c, int **start, int **list) {
    an_tail_is_shared_handle accepts? */
 /* What a return tail answers, counted by an_tail_is_shared_handle: shared
    slot reads and nils. */
-typedef struct { int reads, nils; } TailCount;
+/* fresh_ok (--share-strings, the pickup's own ask): a tail answering a
+   fresh String (share_node_fresh) is admitted too, counted in fresh */
+typedef struct { int reads, nils, fresh_ok, fresh; } TailCount;
 static int an_tail_is_shared_handle(Compiler *c, int node, int nil_ok, TailCount *n);
 static int an_stmts_tail_shared(Compiler *c, int st, int nil_ok, TailCount *tc) {
   int n = 0; const int *b = st >= 0 && nt_kind(c->nt, st) == NK_StatementsNode ? nt_arr(c->nt, st, "body", &n) : NULL;
@@ -17941,6 +17943,7 @@ static int an_tail_is_shared_handle(Compiler *c, int node, int nil_ok, TailCount
   if (!c->share_strings || (k != NK_IfNode && k != NK_UnlessNode)) {
     int ok = an_arg_is_shared_handle(c, node);
     tc->reads += ok;
+    if (!ok && tc->fresh_ok && share_node_fresh(c, node)) { tc->fresh++; ok = 1; }
     return ok;
   }
   int el = nt_ref(nt, node, k == NK_IfNode ? "subsequent" : "else_clause");
@@ -17960,10 +17963,11 @@ int an_tail_answers_nil(Compiler *c, int mi) {
 /* Does every return tail of method mi3 (the implicit one and each `return`)
    read a shared handle? *saw: it has one. Under --share-strings the last
    statement may answer nil, but some tail must read a handle. */
-static int an_returns_shared_handles(Compiler *c, int mi3, const int *ret_start, const int *ret_list, int *saw) {
+static int an_returns_shared_handles(Compiler *c, int mi3, const int *ret_start, const int *ret_list, int *saw,
+                                     int *fresh) {
   const NodeTable *nt = c->nt;
   int ok = 1;
-  TailCount tc = { 0, 0 };
+  TailCount tc = { 0, 0, c->share_strings, 0 };
   int lastT = scope_body_last(c, mi3);
   if (lastT >= 0) {
     *saw = 1;
@@ -17977,6 +17981,11 @@ static int an_returns_shared_handles(Compiler *c, int mi3, const int *ret_start,
     if (rn2 != 1 || !an_tail_is_shared_handle(c, rv2[0], 0, &tc)) ok = 0;
   }
   if (c->share_strings && *saw && !tc.reads) ok = 0;
+  /* a fresh tail beside the handle reads: the method clears the side
+     channel there (ret_pub_fresh) once a pickup takes its value, which
+     it answers as a String (emit_tail_value's const char *) */
+  if (ok && tc.fresh && c->scopes[mi3].ret != TY_STRING) ok = 0;
+  if (fresh) *fresh = ok && tc.fresh;
   return ok;
 }
 /* The method a deep-return pickup call reaches: a receiverless call's
@@ -18010,8 +18019,10 @@ static int an_mutated_handle_returns(Compiler *c, int **ret_start, int **ret_lis
     if (mi3 <= 0) continue;
     if (!*ret_start) an_returns_by_scope(c, ret_start, ret_list);
     int saw = 0;
-    if (!an_returns_shared_handles(c, mi3, *ret_start, *ret_list, &saw) || !saw) continue;
+    int fresh = 0;
+    if (!an_returns_shared_handles(c, mi3, *ret_start, *ret_list, &saw, &fresh) || !saw) continue;
     c->strbuf_box[wv] = 1;
+    if (fresh) c->scopes[mi3].ret_pub_fresh = 1;
     changed = 1;
   }
   return changed;
@@ -18789,7 +18800,8 @@ static int promote_shared_stored_strings(Compiler *c) {
     if (!ret_start) an_returns_by_scope(c, &ret_start, &ret_list);
     /* every return tail (implicit + explicit) must be a shared slot read */
     int saw_tail = 0;
-    int shared_ok = an_returns_shared_handles(c, mi3, ret_start, ret_list, &saw_tail);
+    int fresh3 = 0;
+    int shared_ok = an_returns_shared_handles(c, mi3, ret_start, ret_list, &saw_tail, &fresh3);
     const char *lname3 = nt_str(nt, w, "name");
     Scope *ls3 = comp_scope_of(c, w);
     /* strbuf_mut_kind is keyed on name + scope only, so `rr << x` reports a
@@ -18837,6 +18849,7 @@ static int promote_shared_stored_strings(Compiler *c) {
     if (!clv3 || !strbuf_slot_eligible_shape(c, lname3, ls3, clv3)) continue;
     if (!caller_may_be_str) continue;
     c->strbuf_box[wv] = 1; changed = 1;
+    if (fresh3) c->scopes[mi3].ret_pub_fresh = 1;
     if (clv3->type != TY_POLY && (clv3->type != TY_STRBUF || !clv3->str_shared))
       {  clv3->type = TY_STRBUF; clv3->str_shared = 1; changed = 1;  }
   }

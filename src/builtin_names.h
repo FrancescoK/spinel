@@ -195,6 +195,7 @@ int is_string_position_mutator(const char *n); /* []= clear insert setbyte slice
 int is_array_push_family(const char *n); /* << append prepend push unshift */
 
 int is_io_class_name(const char *n); /* File IO */
+int is_file_class_name(const char *n); /* File */
 int is_immediate_class_name(const char *n); /* FalseClass NilClass TrueClass */
 int is_object_base_name(const char *n); /* BasicObject Object */
 int is_boolean_class_name(const char *n); /* FalseClass TrueClass */

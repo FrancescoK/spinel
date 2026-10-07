@@ -784,6 +784,10 @@ int is_standard_output_global(const char *n) {
   return sp_streq(n, "$stdout") || sp_streq(n, "$stderr");
 }
 
+int is_file_class_name(const char *n) {
+  return n && sp_streq(n, "File");
+}
+
 int is_io_class_name(const char *n) {
   return sp_streq(n, "IO") || sp_streq(n, "File");
 }

@@ -1744,6 +1744,12 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
     return sh_container_default(F, c, n, rv, blk);
   }
   if (rt == TY_OPENSTRUCT) return sh_ostruct_call(F, c, n, name, rv, blk);
+  /* File's class methods, when no user class is named File (a reopen's own
+     methods were taken as user methods above) */
+  if (rt == TY_CLASS && nt_kind(nt, recv) == NK_ConstantReadNode && is_file_class_name(nt_str(nt, recv, "name"))) {
+    int fs = bop_share_named(BOP_FILE_CLASS, name);
+    if (fs) return sh_builtin(F, c, n, fs, rv, blk, 0);
+  }
   TyKind fam = sh_family(rt);
   /* an iterator that keeps none of its block's values drops the block's
      own: a call there hands its method's value to no caller. (An
@@ -2791,6 +2797,12 @@ int share_elem_holder(const Compiler *c, int h) { return share_elem_holder_root(
 
 
 static int sh_node_root(const ShareFacts *F, int n, int elems);
+int share_node_fresh(const Compiler *c, int n) {
+  const ShareFacts *F = c->share;
+  if (!F || n < 0 || n >= F->nnodes || F->nval[n] != -1) return 0;
+  TyKind t = c->ntype[n];
+  return t == TY_STRING || t == TY_STRBUF;
+}
 int share_node_anchored(const Compiler *c, int n) {
   const ShareFacts *F = c->share;
   int r = sh_node_root(F, n, 0);
