@@ -15417,6 +15417,9 @@ static int block_param_user_yield_only(Compiler *c, const char *vn, Scope *vs) {
 }
 static int strbuf_demand_store_leaf(Compiler *c, int sn, int depth) {
   const NodeTable *nt = c->nt;
+  /* The rule demands the value inside transparent parentheses, whose
+     ordinary emitter already reads that value's representation. */
+  if (c->share_strings) sn = an_unparen(nt, sn);
   if (sn < 0 || c->strbuf_box[sn]) return 0;
   /* `a << (s << "y")`, `a << +s`, `a << sb` with `def sb = @s`: the
      element would be a fresh handle over a copy of s's or @s's String
@@ -15426,9 +15429,14 @@ static int strbuf_demand_store_leaf(Compiler *c, int sn, int depth) {
   if (snt == TY_STRING || snt == TY_STRBUF) {
     char rb[256]; int rdefc = -1;
     int as = an_strbuf_alias_source(c, snu);
-    if (((as >= 0 && as != snu) || an_reader_ivar_of(c, snu, &rdefc, rb, sizeof rb)) &&
-        !sa_copy_defer(c, snu, snu, sa_msg(3)))
-      sa_refuse(c, snu, 3);
+    const char *iv = as >= 0 && as != snu ? NULL : an_reader_ivar_of(c, snu, &rdefc, rb, sizeof rb);
+    if ((as >= 0 && as != snu) || iv) {
+      /* A reader's demanded form carries the slot's handle. The seal
+         checks that route after the rule has assigned every slot. */
+      ShareRoute q = share_route(snu, snu, 0);
+      q.carry = iv ? snu : SHARE_CARRY_COPY;
+      if (!share_route_defer(c, &q, sa_msg(3))) sa_refuse(c, snu, 3);
+    }
   }
   if (nt_kind(nt, sn) == NK_LocalVariableReadNode) {
     const char *snm = nt_str(nt, sn, "name");
@@ -17322,13 +17330,12 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
   }
   /* a container literal no holder names, iterated in place by a block
      (`[+"a"].each { |x| x << y }`), whose elements the rule shares: its
-     stores are the handles the block's parameters bind */
-  NT_FOREACH_KIND(c->nt, NK_CallNode, n) {
-    int r = nt_ref(c->nt, n, "receiver"), blk = nt_ref(c->nt, n, "block");
-    if (r < 0 || blk < 0 || nt_kind(c->nt, blk) != NK_BlockNode) continue;
-    r = unwrap_parens(c, r);
-    if (r >= 0 && (nt_kind(c->nt, r) == NK_ArrayNode || nt_kind(c->nt, r) == NK_HashNode) &&
-        share_node_elems_share(c, r))
+     stores are the handles the block's parameters bind. The same holds
+     when a literal is splatted or passed to a method: the element's share
+     class decides, independently of the literal's consumer. */
+  for (int k = 0; k < 2; k++)
+  for (int r = comp_kind_first(c, k ? NK_HashNode : NK_ArrayNode); r >= 0; r = comp_kind_next(c, r)) {
+    if (share_node_elems_share(c, r))
       changed |= strbuf_container_source_walk(c, r, 0, SB_DEMAND);
   }
   return changed;
