@@ -31942,9 +31942,25 @@ static void refuse_string_read_copies(Compiler *c) {
    receiver typed as the Struct. */
 static void mark_struct_aset_targets(Compiler *c) {
   const NodeTable *nt = c->nt;
-  NT_FOREACH_KIND(nt, NK_IndexTargetNode, t)
-    if (nt_int(nt, t, "aset_ev", 0) > 0 && struct_aset_may_reach(c, t))
-      nt_node_set_int((NodeTable *)nt, t, "struct_aset", 1);
+  NT_FOREACH_KIND(nt, NK_IndexTargetNode, t) {
+    int ev = (int)nt_int(nt, t, "aset_ev", 0) - 1;
+    if (ev < 0 || !struct_aset_may_reach(c, t)) continue;
+    /* Without --share-strings a String in a member is a copy of the one the
+       value's other name holds, and a later change through either name
+       would show it: on a receiver typed as the Struct, where master
+       refused every such target, a value that can be such a String (not a
+       fresh literal) keeps that refusal (masgn_store's). */
+    if (!c->share_strings && ty_is_object(comp_ntype(c, nt_ref(nt, t, "receiver")))) {
+      int v = an_unparen(nt, nt_arr(nt, nt_ref(nt, ev, "arguments"), "arguments", NULL)[1]);
+      TyKind vt = v >= 0 ? comp_ntype(c, v) : TY_NIL;
+      NodeKind vk = v >= 0 ? nt_kind(nt, v) : NK_NilNode;
+      int fresh = vk == NK_StringNode || vk == NK_InterpolatedStringNode || vk == NK_XStringNode ||
+                  (vk == NK_CallNode && sp_streq(nt_str(nt, v, "name"), "+@") &&
+                   nt_kind(nt, nt_ref(nt, v, "receiver")) == NK_StringNode);
+      if (!fresh && (vt == TY_STRING || vt == TY_STRBUF || vt == TY_POLY || vt == TY_UNKNOWN)) continue;
+    }
+    nt_node_set_int((NodeTable *)nt, t, "struct_aset", 1);
+  }
 }
 
 /* --share-strings: a String the rule holds as a handle, stored into a
