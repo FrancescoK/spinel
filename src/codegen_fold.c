@@ -427,8 +427,13 @@ int emit_hash_collect_expr(Compiler *c, int id, Buf *b) {
         buf_printf(g_pre, "if (((void)(%s), %d)) { ", vb ? vb : "0", is_rej ? 1 : 0);
       else if (bvt2 == TY_POLY || bvt2 == TY_UNKNOWN)
         buf_printf(g_pre, "if (%ssp_poly_truthy(%s)) { ", is_rej ? "!" : "", vb ? vb : "sp_box_nil()");
-      else
-        buf_printf(g_pre, "if (%s(%s)) { ", is_rej ? "!" : "", vb ? vb : "0");
+      else {
+        /* a scalar holds nil as its sentinel and 0 is truthy: Ruby's
+           truthiness, not C's */
+        buf_printf(g_pre, "if (%s", is_rej ? "!" : "");
+        emit_slot_truthy(bvt2, vb ? vb : "0", g_pre);
+        buf_puts(g_pre, ") { ");
+      }
     }
     free(vb);
     if (repr_hash_is(rr, TY_POLY, TY_POLY)) {
