@@ -7236,11 +7236,12 @@ enum { PX_BLOCK_PARAM, PX_SYMBOL, PX_BLOCK_WRITE, PX_SUPER, PX_N };
 typedef struct PivsFacts {
   struct { int ok; char *set; int *cls, ncls; int *hash, nhash, typed, sweep; } *memo;
   int *memo_at;             /* per node: its call's memo entry + 1, or 0 */
-                           /* two slots: classes, then Hash origins */
+                           /* three slots: classes, Hash origins, callables */
   struct { int call; uint64_t done[4]; } *seen;
   int nmemo, cmemo, memo_n, memo_count;
   unsigned memo_ver;
-  int query, sweep, hash_mode, active;
+  int query, sweep, active;
+  int hash_mode;            /* the query's: 0 classes, 1 Hash origins, 2 callables */
   int stores_settled, stores_held, stores_widened;
   const NodeTable *ix_nt;
   unsigned ix_ver;
@@ -7693,13 +7694,39 @@ static int pivs_value(Compiler *c, int v, char *set, int depth) {
 static int pivs_elems(Compiler *c, int arr, char *set, int depth) {
   return pivs_visit(c, arr, set, depth, 1);
 }
+/* Is v a callable literal: a lambda, `proc`, `lambda` or `Proc.new` with
+   a literal block, or a top-level method's `method(:name)`? */
+static int pivs_callable_lit(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  if (nt_kind(nt, v) == NK_LambdaNode) return 1;
+  const char *un = nt_kind(nt, v) == NK_CallNode ? nt_str(nt, v, "name") : NULL;
+  int r = un ? nt_ref(nt, v, "receiver") : -1, b = un ? nt_ref(nt, v, "block") : -1;
+  int a = un ? nt_ref(nt, v, "arguments") : -1, ac = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+  const char *rn = r >= 0 && nt_kind(nt, r) == NK_ConstantReadNode ? nt_str(nt, r, "name") : NULL;
+  if (b >= 0 && nt_kind(nt, b) == NK_BlockNode && ac == 0)
+    return r < 0 ? is_proc_constructor(un) : is_proc_new(rn, un);
+  Scope *s = un && r < 0 && b < 0 && ac == 1 && nt_kind(nt, av[0]) == NK_SymbolNode && is_method_ref_name(un)
+             ? comp_scope_of(c, v) : NULL;
+  return s && s->class_id < 0 && comp_method_index(c, nt_str(nt, av[0], "value")) >= 0;
+}
 static int pivs_value_uncached(Compiler *c, int v, char *set, int depth) {
   const NodeTable *nt = c->nt;
   int br = pivs_branches(c, v, set, depth, 0);
   if (br >= 0) return br;
+  /* a callables query keeps the callable literals it reaches (in the
+     origins' slots) */
+  if (c->pivs->hash_mode == 2 && pivs_callable_lit(c, v)) {
+    if (!c->pivs->seen[v].done[0]) {
+      int m = c->pivs->active, n = c->pivs->memo[m].nhash;
+      if (n == 64) return 0;
+      c->pivs->memo[m].hash[n] = v; c->pivs->memo[m].nhash++;
+    }
+    return 1;
+  }
   switch (nt_kind(nt, v)) {
     case NK_HashNode:
-      if (c->pivs->hash_mode && !c->pivs->seen[v].done[0]) {
+      if (c->pivs->hash_mode == 1 && !c->pivs->seen[v].done[0]) {
         int m = c->pivs->active, n = c->pivs->memo[m].nhash;
         if (n == 64) return 0;
         c->pivs->memo[m].hash[n] = v; c->pivs->memo[m].nhash++;
@@ -7770,10 +7797,13 @@ static int pivs_elems_uncached(Compiler *c, int arr, char *set, int depth) {
    analysis cannot bound them. Memoized per call, found through a
    node-indexed slot, until the tree or the class table changes.
    Hash stores ask separately, retaining up to 64 literal origins and using
-   the return, ivar and proc arms without changing the class-only answer.
+   the return, ivar and proc arms without changing the class-only answer;
+   under --share-strings the seal asks for the callable literals alike
+   (mode 2, pivs_callables).
    Only answers that read inferred call targets expire each inference sweep;
    their targets can change as the receiver types converge. */
 static const char *pivs_call_set(Compiler *c, int call, const int **cls, int *n, int hashes) {
+  /* hashes: the query's mode (hash_mode) */
   PivsFacts *f = pivs_facts(c);
   if (f->memo_n != c->nclasses || f->memo_count != c->nt->count ||
       f->memo_ver != c->nt->version) {
@@ -7781,13 +7811,13 @@ static const char *pivs_call_set(Compiler *c, int call, const int **cls, int *n,
     free(f->memo_at); free(f->seen);
     f->nmemo = f->query = 0; f->memo_n = c->nclasses; f->memo_count = c->nt->count;
     f->memo_ver = c->nt->version;
-    f->memo_at = calloc((size_t)(f->memo_count > 0 ? f->memo_count : 1) * 2, sizeof *f->memo_at);
+    f->memo_at = calloc((size_t)(f->memo_count > 0 ? f->memo_count : 1) * 3, sizeof *f->memo_at);
     f->seen = calloc((size_t)(f->memo_count > 0 ? f->memo_count : 1), sizeof *f->seen);
     if (!f->memo_at || !f->seen) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   }
   if (cls) { *cls = NULL; *n = 0; }
   if (call < 0 || call >= f->memo_count) return NULL;
-  int m = f->memo_at[(size_t)call * 2 + hashes] - 1;
+  int m = f->memo_at[(size_t)call * 3 + hashes] - 1;
   if (m < 0) {
     if (f->nmemo == f->cmemo) {
       f->cmemo = f->cmemo ? f->cmemo * 2 : 16;
@@ -7796,7 +7826,7 @@ static const char *pivs_call_set(Compiler *c, int call, const int **cls, int *n,
       f->memo = nm;
     }
     m = f->nmemo++;
-    f->memo_at[(size_t)call * 2 + hashes] = m + 1;
+    f->memo_at[(size_t)call * 3 + hashes] = m + 1;
     memset(&f->memo[m], 0, sizeof f->memo[m]);
     f->memo[m].sweep = -1;
     f->memo[m].set = (char *)calloc((size_t)(c->nclasses > 0 ? c->nclasses : 1), 1);
@@ -7804,7 +7834,7 @@ static const char *pivs_call_set(Compiler *c, int call, const int **cls, int *n,
     if (hashes) f->memo[m].hash = malloc(64 * sizeof *f->memo[m].hash);
     if (hashes && !f->memo[m].hash) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   }
-  if (f->memo[m].sweep < 0 || (hashes && f->memo[m].typed && f->memo[m].sweep != f->sweep)) {
+  if (f->memo[m].sweep < 0 || (hashes == 1 && f->memo[m].typed && f->memo[m].sweep != f->sweep)) {
     f->memo[m].sweep = f->sweep; f->memo[m].nhash = 0; f->memo[m].typed = 0;
     f->hash_mode = hashes; f->active = m; f->query++;
     memset(f->memo[m].set, 0, (size_t)(c->nclasses > 0 ? c->nclasses : 1));
@@ -7822,6 +7852,20 @@ static const char *pivs_call_set(Compiler *c, int call, const int **cls, int *n,
   if (!f->memo[m].ok) return NULL;
   if (cls) { *cls = f->memo[m].cls; *n = f->memo[m].ncls; }
   return f->memo[m].set;
+}
+/* --share-strings: the callable literals (pivs_callable_lit) the
+   receiver of call `call` can be, by the walk above (memoized per call):
+   into out (at most cap), their count, or -1 when the walk cannot bound
+   them or the receiver can be an instance of a class. */
+int pivs_callables(Compiler *c, int call, int *out, int cap) {
+  const char *set = pivs_call_set(c, call, NULL, NULL, 2);
+  if (!set) return -1;
+  for (int k = 0; k < c->nclasses; k++) if (set[k]) return -1;
+  PivsFacts *f = c->pivs;
+  int m = f->memo_at[(size_t)call * 3 + 2] - 1;
+  if (f->memo[m].nhash > cap) return -1;
+  memcpy(out, f->memo[m].hash, sizeof(int) * (size_t)f->memo[m].nhash);
+  return f->memo[m].nhash;
 }
 /* Can the boxed receiver of instance_variable_set call `call` be an
    instance of class k (one poly_ivar_set_class takes)? Every class can
@@ -8231,7 +8275,7 @@ static int infer_hash_aset_call(Compiler *c, int id) {
   PivsFacts *f = pivs_facts(c);
   if (!f->stores_settled) { f->stores_held = 1; return 0; }
   if (!pivs_call_set(c, id, NULL, NULL, 1)) return 0;
-  int m = f->memo_at[(size_t)id * 2 + 1] - 1, changed = 0;
+  int m = f->memo_at[(size_t)id * 3 + 1] - 1, changed = 0;
   for (int i = 0; i < f->memo[m].nhash; i++) changed |= widen_hash_arg_for_store(c, f->memo[m].hash[i], hk, hv);
   f->stores_widened += changed;
   return changed;
