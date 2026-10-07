@@ -823,12 +823,10 @@ static int emit_boxed_positional_io(Compiler *c, int recv, const char *name, int
   if (!is_positional_io(name) || argc < 1 || argc > (is_w ? 2 : 3) ||
       call_has_splat_arg(c->nt, argv, argc)) return 0;
   int trv = ++g_tmp, th[3] = {0, 0, 0}, toff = ++g_tmp, tfirst = ++g_tmp;
-  buf_printf(b, "({ sp_RbVal _t%d = ", trv); emit_boxed(c, recv, b);
-  buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", trv);
+  buf_puts(b, "({ ");
+  trv = hold_operand(c, recv, TY_POLY, 1, trv, " ", b);
   for (int i = 0; i < argc; i++) {
-    th[i] = ++g_tmp;
-    buf_printf(b, "sp_RbVal _t%d = ", th[i]); emit_boxed(c, argv[i], b);
-    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", th[i]);
+    th[i] = hold_operand(c, argv[i], TY_POLY, 1, ++g_tmp, " ", b);
   }
   buf_printf(b, "sp_File *_t%d = sp_poly_as_io(_t%d, \"%s\"); ", tio, trv, name);
   /* both take the offset: one argument is the handle's ArgumentError */
