@@ -358,8 +358,8 @@ typedef enum {
   BSH_FLATTEN,    /* answers a container of the receiver's elements and of
                      its nested containers' elements, at any depth (flatten) */
   /* the constructors (BOP_CLASS_NEW): */
-  BSH_NEW_FILL,   /* a container of its second argument, of its one Array
-                     argument's elements and of its block's values (Array.new) */
+  BSH_NEW_FILL,   /* a container of its second argument and of its block's
+                     values (Array.new(n, s), Array.new(n) { }) */
   BSH_NEW_DEFAULT, /* a container of its default argument and of its block's
                      values; the block is handed the container and each key a
                      lookup asks for (Hash.new) */
