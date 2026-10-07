@@ -8891,6 +8891,20 @@ static void emit_ctor_params(Compiler *c, int init, int init_has_blk, Buf *b) {
   else buf_puts(b, "void");
 }
 
+/* --share-strings: an exception class's constructor allocates the
+   exception before its initialize roots the parameters, and an argument
+   can be a fresh String handle no one else holds (`raise E, "lit"` into a
+   parameter the rule shares): the heap parameters are rooted first. */
+static void emit_ctor_param_roots(Compiler *c, int init, Buf *b) {
+  if (!repr_share_rule(c) || init < 0) return;
+  Scope *s = &c->scopes[init];
+  for (int i = 0; i < s->nparams; i++) {
+    TyKind pt = scope_param_type(s, i);
+    if (pt == TY_POLY) buf_printf(b, "  SP_GC_ROOT_RBVAL(lv_%s);\n", s->pnames[i]);
+    else if (needs_root(pt) && !comp_ty_value_obj(c, pt)) buf_printf(b, "  SP_GC_ROOT(lv_%s);\n", s->pnames[i]);
+  }
+}
+
 void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
   /* Native (C-backed) class: constructor + methods live in the package; nothing
      is generated here (see the native_method externs + .new emission). */
@@ -9155,8 +9169,10 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
   if (class_is_exc_subclass(c, cid)) {
     const char *cn2 = class_ruby_name(c, cid); if (!cn2) cn2 = ci->name;
     const char *par = exc_builtin_parent(c, cid);
+    buf_puts(b, ") {\n");
+    emit_ctor_param_roots(c, init, b);
     if (ci->nivars == 0) {
-      buf_printf(b, ") {\n  sp_%s *self = sp_exc_new_sub(\"%s\", \"%s\", (&(\"\\xff\")[1]));\n",
+      buf_printf(b, "  sp_%s *self = sp_exc_new_sub(\"%s\", \"%s\", (&(\"\\xff\")[1]));\n",
                  ci->c_name, cn2, par);
       buf_printf(b, "  SP_GC_ROOT(self);\n");
     }
@@ -9165,7 +9181,7 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
          (sp_exc_new_sub would only size the 3-field base). The leading
          members mirror sp_Exception so the raise/message machinery's casts
          work; the ivars live after and are set by initialize. */
-      buf_printf(b, ") {\n  sp_%s *self = (sp_%s *)sp_gc_alloc(sizeof(sp_%s), NULL, sp_%s__gc_scan);\n",
+      buf_printf(b, "  sp_%s *self = (sp_%s *)sp_gc_alloc(sizeof(sp_%s), NULL, sp_%s__gc_scan);\n",
                  ci->c_name, ci->c_name, ci->c_name, ci->c_name);
       buf_printf(b, "  self->cls_name = \"%s\";\n", cn2);
       buf_printf(b, "  self->parent_cls_name = \"%s\";\n", par);
@@ -11553,11 +11569,15 @@ void emit_super(Compiler *c, int id, Buf *b) {
         /* nilable: Exception#initialize STRINGIFIES its message (super(nil)
            keeps the class-name default in CRuby), it never type-checks it */
         emit_str_expr_nilable(c, argv2[0], b);
+        /* The message is made after self, and a collection inside its
+           making can promote self: the store is recorded (sp_gc_wb), or a
+           minor collection frees the young message self still names. */
+        buf_printf(b, ", sp_gc_wb((void *)%s)", g_self);
         /* a shared String message is held as its handle too (exc_msg_handle) */
         char mh[256];
         if (comp_ntype(c, argv2[0]) == TY_STRING && exc_msg_handle(c, argv2[0], mh, sizeof mh))
-          buf_printf(b, ", (void)sp_exc_attach_msg((void *)%s, %s), %s->msg", g_self, mh, g_self);
-        buf_puts(b, ")");
+          buf_printf(b, ", (void)sp_exc_attach_msg((void *)%s, %s)", g_self, mh);
+        buf_printf(b, ", %s->msg)", g_self);
       }
       else if (ty && sp_streq(ty, "ForwardingSuperNode") && s->nparams > 0) {
         LocalVar *p0 = scope_local(s, s->pnames[0]);
@@ -11565,10 +11585,11 @@ void emit_super(Compiler *c, int id, Buf *b) {
         /* Effective type mirrors emit_method_signature: a NULL/TY_UNKNOWN
            param is declared TY_POLY (sp_RbVal), so it too must be coerced. */
         TyKind pt = (p0 && p0->type != TY_UNKNOWN) ? p0->type : TY_POLY;
+        /* recorded, as the explicit super(msg) store above */
         if (pt == TY_POLY)
-          buf_printf(b, "(%s->msg = sp_poly_to_s(%s))", g_self, rn.p);
+          buf_printf(b, "(%s->msg = sp_poly_to_s(%s), sp_gc_wb((void *)%s), %s->msg)", g_self, rn.p, g_self, g_self);
         else
-          buf_printf(b, "(%s->msg = %s)", g_self, rn.p);
+          buf_printf(b, "(%s->msg = %s, sp_gc_wb((void *)%s), %s->msg)", g_self, rn.p, g_self, g_self);
         free(rn.p);
       }
       else
