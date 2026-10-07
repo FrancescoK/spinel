@@ -1,0 +1,9 @@
+"abcd"
+"abcde"
+#<struct S x="abcd", y=5>
+#<struct S x="abcd", y=5>
+"abcd"
+5
+#<struct S x="abcd", y=1>
+#<struct T x="abcd", n=2>
+"abcd"
