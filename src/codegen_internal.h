@@ -171,6 +171,8 @@ int strbuf_self_route_slot(Compiler *c, int v, int *uplus, char *out, size_t cap
    holding the handle, which the exception then holds
    (codegen_call_exception.c) */
 int exc_msg_handle(Compiler *c, int arg, char *href, size_t cap);
+/* --share-strings: `e.message` over a variable's exception (codegen_stmt.c) */
+int strbuf_exc_message_of_var(Compiler *c, int v);
 /* A `next` value a block's boxed answer slot takes: a shared String as its
    handle's box under --share-strings (codegen_stmt.c) */
 void emit_boxed_next_value(Compiler *c, int v, Buf *b);

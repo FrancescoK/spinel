@@ -1,0 +1,30 @@
+[ArgumentError, true]
+FrozenError
+[RuntimeError, true]
+FrozenError
+[RuntimeError, true]
+FrozenError
+[ArgumentError, true]
+FrozenError
+[E, true]
+FrozenError
+[E, true]
+FrozenError
+[F, true]
+FrozenError
+[G, true]
+FrozenError
+[ArgumentError, true]
+FrozenError
+[ArgumentError, false]
+[ArgumentError, false]
+true
+true
+true
+"#<RuntimeError: lit>"
+"lit"
+true
+"fib"
+true
+"inner"
+true

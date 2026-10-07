@@ -1573,6 +1573,14 @@ static int strbuf_route_exc_message(Compiler *c, int v) {
          comp_method_in_chain(c, ty_object_class(rt), "to_s", NULL) < 0 &&
          comp_method_in_chain(c, ty_object_class(rt), "message", NULL) < 0;
 }
+/* --share-strings: `e.message` (strbuf_route_exc_message) on a variable's
+   exception: its handle reads that variable and runs nothing else, so it
+   may be emitted beside a text that already read it */
+int strbuf_exc_message_of_var(Compiler *c, int v) {
+  if (!strbuf_route_exc_message(c, v)) return 0;
+  NodeKind rk = nt_kind(c->nt, nt_ref(c->nt, unwrap_parens(c, v), "receiver"));
+  return rk == NK_LocalVariableReadNode || rk == NK_InstanceVariableReadNode;
+}
 /* Does value v hand over a String the rule shares as the handle itself: a
    slot holding it, or a route over one? */
 static int strbuf_route_carries(Compiler *c, int v, int depth) {
