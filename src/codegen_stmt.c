@@ -1543,11 +1543,12 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
   }
   if (is_unary_plus(nt_str(nt, v, "name"))) {
     /* nil has no +@: NoMethodError, as the copy's read raised */
-    /* (a variable tested only for a nil the program writes, as a call's
-       receiver is: cplan_nil) */
+    /* (a variable the nil fact says is never nil needs no test; any other
+       nil, one a builtin answers too, would make sp_String_uplus answer
+       NULL where CRuby raises) */
     NodeKind xk = nt_kind(nt, unwrap_parens(c, x));
     if ((xk == NK_LocalVariableReadNode || xk == NK_InstanceVariableReadNode || repr_static_read_kind(xk)) &&
-        (!repr_of(c, x).may_nil || !cplan_nil_written(nil_fact_why(c, unwrap_parens(c, x))))) {
+        !repr_of(c, x).may_nil) {
       buf_puts(b, "sp_String_uplus(");
       emit_strbuf_handle_of(c, x, b);
       buf_puts(b, ")");
