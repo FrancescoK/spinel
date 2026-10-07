@@ -75,6 +75,8 @@ extern const char *const sp_exc_no_msg;
    falling back to the class name the way a message-less raise does. */
 const char *sp_exc_msg_counted(const char *m, size_t n);   /* lib/sp_exc.c */
 const char *sp_exc_cat(int n, ...);   /* parts joined by byte length, NULs kept */
+const char *sp_exc_full_text(volatile sp_Exception *e, const char *msg);       /* "Class: msg" */
+const char *sp_exc_detailed_text(volatile sp_Exception *e, const char *msg);   /* "msg (Class)" */
 /* m is a Spinel String here (the generated code gives only those), so its header's
    length is safe to read; a NUL inside it travels as a counted message (#7556). */
 static inline const char *sp_exc_msg_given(const char *m) {

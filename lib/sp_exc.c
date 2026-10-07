@@ -930,6 +930,25 @@ const char *sp_exc_cat(int n, ...) {
   for (int i = 0; i < n && i < 8; i++) { memcpy(w, parts[i], lens[i]); w += lens[i]; }
   return r;
 }
+/* "<Class>: <msg>" and "<msg> (<Class>)": the class name is read from the exception
+   itself (no allocation), msg is the Spinel String the caller computed first, and the
+   copy runs with no collection, so no argument needs a root. */
+const char *sp_exc_full_text(volatile sp_Exception *ve, const char *msg) {
+  sp_Exception *e = (sp_Exception *)ve;
+  const char *cn = e && e->cls_name ? e->cls_name : "RuntimeError";
+  size_t lc = strlen(cn), lm = sp_str_byte_len(msg);
+  char *r = sp_str_alloc_nogc(lc + 2 + lm);
+  memcpy(r, cn, lc); memcpy(r + lc, ": ", 2); memcpy(r + lc + 2, msg, lm);
+  return r;
+}
+const char *sp_exc_detailed_text(volatile sp_Exception *ve, const char *msg) {
+  sp_Exception *e = (sp_Exception *)ve;
+  const char *cn = e && e->cls_name ? e->cls_name : "RuntimeError";
+  size_t lc = strlen(cn), lm = sp_str_byte_len(msg);
+  char *r = sp_str_alloc_nogc(lm + 2 + lc + 1);
+  memcpy(r, msg, lm); memcpy(r + lm, " (", 2); memcpy(r + lm + 2, cn, lc); r[lm + 2 + lc] = ')';
+  return r;
+}
 const char *sp_exc_inspect(void *p) {
   sp_Exception *e = (sp_Exception *)p;
   if (!e) return SPL("nil");

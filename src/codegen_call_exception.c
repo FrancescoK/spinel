@@ -156,9 +156,9 @@ int emit_call_exception_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
         free(rbm.p);
         const char *mfn = exc_has_user_msg_override(c) ? "sp_user_exc_message" : "sp_exc_message";
         if (sp_streq(name, "full_message"))
-          buf_printf(b, "sp_exc_cat(3, sp_exc_class_name(_t%d), SPL(\": \"), %s(_t%d))", tfm, mfn, tfm);
+          buf_printf(b, "sp_exc_full_text(_t%d, %s(_t%d))", tfm, mfn, tfm);
         else
-          buf_printf(b, "sp_exc_cat(4, %s(_t%d), SPL(\" (\"), sp_exc_class_name(_t%d), SPL(\")\"))", mfn, tfm, tfm);
+          buf_printf(b, "sp_exc_detailed_text(_t%d, %s(_t%d))", tfm, mfn, tfm);
       }
       return 1;
     }
@@ -319,10 +319,10 @@ int emit_call_exception_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
                       "(_t%d.cls_id == SP_BUILTIN_EXCEPTION || sp_is_exc_subclass_cls(_t%d.cls_id)))"
                       " ? (sp_Exception *)_t%d.v.p : NULL; ", t, t, t, t, t, t);
         if (sp_streq(name, "full_message"))
-          buf_printf(b, "_e%d ? sp_exc_cat(3, sp_exc_class_name(_e%d), SPL(\": \"), sp_user_exc_message(_e%d))",
+          buf_printf(b, "_e%d ? sp_exc_full_text(_e%d, sp_user_exc_message(_e%d))",
                      t, t, t);
         else
-          buf_printf(b, "_e%d ? sp_exc_cat(4, sp_user_exc_message(_e%d), SPL(\" (\"), sp_exc_class_name(_e%d), SPL(\")\"))",
+          buf_printf(b, "_e%d ? sp_exc_detailed_text(_e%d, sp_user_exc_message(_e%d))",
                      t, t, t);
         buf_printf(b, " : sp_poly_to_s(sp_poly_exc_acc(_t%d, \"%s\")); })", t, name);
         return 1;
@@ -489,13 +489,13 @@ int emit_call_exception_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
     }
     if (sp_streq(name, "full_message")) {
       int t = hoist_exc_recv(c, recv);
-      buf_printf(b, "sp_exc_cat(3, sp_exc_class_name(_t%d), SPL(\": \"), sp_exc_message(_t%d))", t, t);
+      buf_printf(b, "sp_exc_full_text(_t%d, sp_exc_message(_t%d))", t, t);
       return 1;
     }
     /* detailed_message -> "message (ClassName)" (kwargs like highlight: ignored) */
     if (sp_streq(name, "detailed_message")) {
       int t = hoist_exc_recv(c, recv);
-      buf_printf(b, "sp_exc_cat(4, sp_exc_message(_t%d), SPL(\" (\"), sp_exc_class_name(_t%d), SPL(\")\"))", t, t);
+      buf_printf(b, "sp_exc_detailed_text(_t%d, sp_exc_message(_t%d))", t, t);
       return 1;
     }
     if (sp_streq(name, "inspect")) {

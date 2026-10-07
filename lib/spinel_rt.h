@@ -13639,9 +13639,9 @@ static sp_RbVal sp_poly_exc_acc(sp_RbVal v, const char *which) {
   if (!strcmp(which, "cause"))
     return e->cause ? sp_box_obj(e->cause, SP_BUILTIN_EXCEPTION) : sp_box_nil();
   if (!strcmp(which, "full_message"))
-    return sp_box_str(sp_exc_cat(3, sp_exc_class_name(e), SPL(": "), sp_exc_message(e)));
+    return sp_box_str(sp_exc_full_text(e, sp_exc_message(e)));
   if (!strcmp(which, "detailed_message"))
-    return sp_box_str(sp_exc_cat(4, sp_exc_message(e), SPL(" ("), sp_exc_class_name(e), SPL(")")));
+    return sp_box_str(sp_exc_detailed_text(e, sp_exc_message(e)));
   /* nil for an exception never raised, the frames once it was -- the
      logger gem's Formatter asks `if msg.backtrace` of a poly message */
   if (!strcmp(which, "backtrace")) return e->backtrace ? sp_box_str_array(e->backtrace) : sp_box_nil();
