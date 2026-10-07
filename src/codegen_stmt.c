@@ -1724,9 +1724,10 @@ int strbuf_value_carries(Compiler *c, int v) {
    rule's handle: that slot's text to out. The write stores a new handle
    in the slot, which is the write's value (emit_strbuf_value). */
 int strbuf_opwrite_handle(Compiler *c, int v, char *out, size_t cap) {
+  if (!repr_share_rule(c)) return 0;
   NodeKind k = v >= 0 ? nt_kind(c->nt, v) : NK_NONE;
   HolderRef h;
-  if (!repr_share_rule(c) || (k != NK_LocalVariableOperatorWriteNode && k != NK_InstanceVariableOperatorWriteNode &&
+  if ((k != NK_LocalVariableOperatorWriteNode && k != NK_InstanceVariableOperatorWriteNode &&
                               k != NK_GlobalVariableOperatorWriteNode && k != NK_ClassVariableOperatorWriteNode))
     return 0;
   return holder_of_node(c, v, &h) && h.r.share && holder_slot_text(c, &h, out, cap);
@@ -2041,8 +2042,9 @@ static int emit_strbuf_chain_in_place(Compiler *c, int v, int base, const char *
 int strbuf_chain_over_handle(Compiler *c, int v) {
   char ref[1024];
   int args[32];
+  if (!repr_share_rule(c)) return 0;
   int base = str_alias_chain_base(c, v);
-  return repr_share_rule(c) && base != v && strbuf_var_handle(c, unwrap_parens(c, base), ref, sizeof ref) &&
+  return base != v && strbuf_var_handle(c, unwrap_parens(c, base), ref, sizeof ref) &&
          strbuf_chain_links(c, v, base, args) > 0;
 }
 
