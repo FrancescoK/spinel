@@ -2237,16 +2237,7 @@ void emit_assign(Compiler *c, int id, Buf *b, int indent) {
                         "(the conversion copies, so writes would not be shared)");
     /* --share-strings: a String Array the rule shares the elements of has
        each element boxed as a handle of its own */
-    if (repr_of_slot(c, lv).elems_handle && comp_ntype(c, v) == TY_STR_ARRAY) {
-      int ta = ++g_tmp, tp = ++g_tmp, ti = ++g_tmp;
-      buf_printf(b, "({ sp_StrArray *_t%d = ", ta);
-      emit_expr(c, v, b);
-      buf_printf(b, "; SP_GC_ROOT(_t%d); sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
-                    " for (sp_int _t%d = 0; _t%d < sp_StrArray_length(_t%d); _t%d++)"
-                    " sp_PolyArray_push(_t%d, sp_box_nullable_obj(sp_String_new_shared(sp_StrArray_get(_t%d, _t%d)),"
-                    " SP_BUILTIN_STRBUF)); _t%d; })",
-                 ta, tp, tp, ti, ti, ta, ti, tp, ta, ti, tp);
-    }
+    if (repr_of_slot(c, lv).elems_handle && comp_ntype(c, v) == TY_STR_ARRAY) emit_str_array_handles(c, v, b);
     else emit_poly_array_from(c, v, b);
   }
   else if (lv && lv->type == TY_BIGINT) {
@@ -12303,6 +12294,9 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
     }
     else if (emit_empty_container_for_slot(c, v, ct, b)) { /* emitted at the slot's type */ }
     else if (ct == TY_POLY) emit_boxed(c, v, b);
+    /* --share-strings: a String Array into one whose elements the rule
+       shares, each String as a handle of its own */
+    else if (h.r.elems_handle && comp_ntype(c, v) == TY_STR_ARRAY) emit_str_array_handles(c, v, b);
     else if (emit_array_into_poly_slot(c, ct, v, b)) { }
     /* `@@x = nil` into a slot typed by its later writes is the slot's nil,
        not the numeric 0 a bare NilNode renders as: `@@quiet = nil` then
@@ -13025,7 +13019,10 @@ static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int in
          every array built from widened Integers, #4738) */
       if (conv_reads_shared_storage(c, v))
         unsupported(c, v, "widening a typed array READ into a poly global (the conversion copies, so writes would not be shared)");
-      emit_poly_array_from(c, v, b);
+      /* --share-strings: one whose elements the rule shares holds each
+         String as a handle of its own, as a local's does */
+      if (repr_of_slot(c, lv).elems_handle && comp_ntype(c, v) == TY_STR_ARRAY) emit_str_array_handles(c, v, b);
+      else emit_poly_array_from(c, v, b);
     }
     else emit_coerce(c, v, lv->type, CO_HOLD, isg ? "a global variable write" : "a constant write", b);
     buf_puts(b, ";\n");

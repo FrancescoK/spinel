@@ -674,11 +674,19 @@ static int repr_share_elems_carried(Compiler *c, const ShareHolder *h) {
     t = c->classes[h->cid].ivar_types[iv];
   }
   else if (h->kind == SHK_GVAR || h->kind == SHK_CONST) t = repr_of_share_holder(c, h).ty;
-  else if (h->kind == SHK_CVAR)
-    for (int k = 0; k < c->nclasses && t == TY_UNKNOWN; k++) {
+  else if (h->kind == SHK_CVAR) {
+    /* every class's of the name, which the facts key as one: a typed
+       container of any of them holds copies */
+    int any = -1;
+    for (int k = 0; k < c->nclasses; k++) {
       int i = h->name ? comp_cvar_index(&c->classes[k], h->name) : -1;
-      if (i >= 0) t = c->classes[k].cvar_types[i];
+      TyKind ct = i >= 0 ? c->classes[k].cvar_types[i] : TY_UNKNOWN;
+      if (!ty_is_array(ct) && !ty_is_hash(ct)) continue;
+      if (ct == TY_STR_ARRAY || ct == TY_STR_STR_HASH || ct == TY_INT_STR_HASH) return 0;
+      any = 1;
     }
+    return any;
+  }
   if (!ty_is_array(t) && !ty_is_hash(t)) return -1;
   return t == TY_STR_ARRAY || t == TY_STR_STR_HASH || t == TY_INT_STR_HASH ? 0 : 1;
 }
@@ -881,6 +889,7 @@ Repr repr_of_cvar(const Compiler *c, int cid, int idx) {
   if (repr_may_nil(r.ty, 1)) r.may_nil = 1;
   if (r.ty == TY_STRBUF && ci->cvar_str_shared[idx]) r.handle = 1;
   r.share = r.handle && c->share_strings;
+  r.elems_handle = ci->cvar_elems_shared[idx] && r.ty == TY_POLY_ARRAY;
   r.dyn_cls = repr_dyn_cls(c, r.ty);
   return r;
 }

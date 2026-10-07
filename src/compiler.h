@@ -506,6 +506,9 @@ typedef struct {
                                        ivar_nullable_int for an ivar */
   unsigned char *cvar_str_shared;   /* --share-strings: the TY_STRBUF slot is
                                        the shared handle, as ivar_str_shared */
+  unsigned char *cvar_elems_shared; /* --share-strings: the TY_POLY_ARRAY slot
+                                       holds its Strings as handles, as a
+                                       LocalVar's elems_shared */
   int ncvars, ccvars;
   char **readers;      /* attr reader method names (no '@') */
   int nreaders, creaders;
