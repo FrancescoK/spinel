@@ -16084,9 +16084,14 @@ int desugar_builtin_reopen_named_superclass(Compiler *c) {
    (implicit_nil_writes_note) and is boxed with it.
 
    A method's value is a use like any other: a value that reaches a method
-   body's tail is read where the method's calls are (tov_method_use), by
-   name over every call and with any symbol, alias or runtime protocol of
-   the name counting as a full use. Groups and method uses settle together:
+   body's tail is read where the method's calls are (tov_name_use), by name
+   over every call and `super`, with any symbol, string, alias, runtime
+   protocol of the name, or op-write on a call or index that runs it
+   (`o.foo ||= v`, `o[i] ||= v`) counting as a full use. The names, calls
+   and supers are indexed once, so a round costs one pass over them, not one
+   per method. A block's value is dropped only by a builtin iterator the
+   program does not define a method of the same name for. Groups and method
+   uses settle together:
    every candidate starts truth-only, and one whose node is used for more
    than its truthiness drops out until nothing changes. */
 
@@ -16099,11 +16104,20 @@ typedef struct {
   int ngroups, cgroups;
   /* cls: the hierarchy's root; reads: its read nodes; seeded: a write in a
      constructor of cls (ctor_scope_set); isbool: its slot is a boolean */
-  struct { int cls; const char *name; int ok; int needs; int reads; int seeded; int isbool; } *g;
+  struct { int cls; const char *name; int ok; int needs; int reads; int seeded; int isbool; int next; } *g;
+  ANameHash gnames; int *gfirst;   /* the groups of each ivar name, chained by next */
   int *node_group;            /* per ivar node: its group, or -1 */
   unsigned char *muse;        /* per method scope: TOV_* of its value */
   unsigned char *mfixed;      /* per scope: a full use by name (symbol, alias, protocol) */
-  int *dsend; int ndsend, cdsend;   /* the sends whose name is computed */
+  /* the program's method names, indexed once: per name, the use of its
+     methods' value (nuse), a full use of it (nfixed), and the `super`s of
+     the methods of that name (sups, sfirst/snext) */
+  ANameHash mnames; int *skey; unsigned char *nuse, *nfixed;
+  int *sups, nsups, *sfirst, *snext;
+  /* the sends whose name is computed: their use is a use of every method's
+     value (dsend_use, per round); all_fixed: a Method object made from a
+     computed name, called from anywhere */
+  int *dsend, ndsend, dsend_use, all_fixed;
   int user_bool_ops;          /* a method of the program is named a comparison or `!` */
 } TOV;
 
@@ -16113,16 +16127,20 @@ static int tov_root(Compiler *c, int ci) {
 }
 
 static int tov_group_of(TOV *t, int cls, const char *name) {
-  for (int i = 0; i < t->ngroups; i++)
-    if (t->g[i].cls == cls && sp_streq(t->g[i].name, name)) return i;
+  int k = anh_find(&t->gnames, name);
+  for (int i = k >= 0 ? t->gfirst[k] : -1; i >= 0; i = t->g[i].next)
+    if (t->g[i].cls == cls) return i;
   if (t->ngroups == t->cgroups) {
     t->cgroups = t->cgroups ? t->cgroups * 2 : 16;
     t->g = realloc(t->g, sizeof *t->g * (size_t)t->cgroups);
-    if (!t->g) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    t->gfirst = realloc(t->gfirst, sizeof(int) * (size_t)t->cgroups);
+    if (!t->g || !t->gfirst) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   }
+  if (k < 0) { anh_add(&t->gnames, name); k = t->gnames.n - 1; t->gfirst[k] = -1; }
   t->g[t->ngroups].cls = cls; t->g[t->ngroups].name = name;
   t->g[t->ngroups].ok = 1; t->g[t->ngroups].needs = 0; t->g[t->ngroups].reads = 0;
   t->g[t->ngroups].seeded = 0; t->g[t->ngroups].isbool = 0;
+  t->g[t->ngroups].next = t->gfirst[k]; t->gfirst[k] = t->ngroups;
   return t->ngroups++;
 }
 
@@ -16239,7 +16257,9 @@ static int tov_use(TOV *t, int v) {
     case NK_BlockNode: {
       int call = t->par[p];
       const char *cn = call >= 0 && nt_kind(nt, call) == NK_CallNode ? nt_str(nt, call, "name") : NULL;
-      return cn && is_block_loop_method(cn) ? TOV_DROPPED : TOV_USED;
+      /* the builtin iterator drops the block's value; a method of the
+         program by that name may use it */
+      return cn && is_block_loop_method(cn) && !anh_has(&t->mnames, cn) ? TOV_DROPPED : TOV_USED;
     }
     default: {
       /* a `when` arm's statements are the case's value; its conditions
@@ -16254,45 +16274,61 @@ static int tov_use(TOV *t, int v) {
   return TOV_USED;
 }
 
-/* The use of method scope mi's value over its calls by name */
-static int tov_method_use(TOV *t, int mi) {
-  const NodeTable *nt = t->nt;
-  const char *nm = t->c->scopes[mi].name;
-  if (!nm || t->mfixed[mi]) return TOV_USED;
-  int u = TOV_DROPPED;
-  for (int i = 0; i < t->ndsend; i++) {
-    int w = tov_use(t, t->dsend[i]);
-    if (w > u) u = w;
-    if (u == TOV_USED) return u;
-  }
-  NT_FOREACH_KIND(nt, NK_CallNode, id) {
-    const char *cn = nt_str(nt, id, "name");
-    if (!cn || !sp_streq(cn, nm)) continue;
+/* The use of the value of the methods named by key k (t->mnames): over
+   every call of the name, and every `super` in a method of the name, which
+   hands that value on as its own */
+static int tov_name_use(TOV *t, int k) {
+  if (t->nfixed[k] || t->all_fixed) return TOV_USED;
+  int u = t->dsend_use;
+  for (int id = an_calls_named_first(t->c, t->mnames.key[k]); id >= 0; id = an_calls_named_next(id)) {
     int w = tov_use(t, id);
     if (w > u) u = w;
     if (u == TOV_USED) return u;
   }
-  /* an override's `super` hands this method's value on as its own */
-  for (int q = 0; q < 2; q++) {
-    int cnt = 0;
-    const int *ids = nt_nodes_of_kind(nt, q ? NK_ForwardingSuperNode : NK_SuperNode, &cnt);
-    for (int i = 0; i < cnt; i++) {
-      Scope *ss = comp_scope_of(t->c, ids[i]);
-      if (!ss || !ss->name || !sp_streq(ss->name, nm)) continue;
-      int w = tov_use(t, ids[i]);
-      if (w > u) u = w;
-      if (u == TOV_USED) return u;
-    }
+  for (int i = t->sfirst[k]; i >= 0; i = t->snext[i]) {
+    int w = tov_use(t, t->sups[i]);
+    if (w > u) u = w;
+    if (u == TOV_USED) return u;
   }
   return u;
 }
 
+/* Is node v a Symbol or String literal? Its text, or NULL. */
+static const char *tov_lit_name(const NodeTable *nt, int v) {
+  NodeKind k = v >= 0 ? nt_kind(nt, v) : NK_NilNode;
+  return k == NK_SymbolNode ? nt_str(nt, v, "value") : k == NK_StringNode ? nt_str(nt, v, "content") : NULL;
+}
+
+/* The reader an op-write on a call or an index runs without a CallNode:
+   `o.foo ||= v` calls foo, `o[i] ||= v` calls []. */
+static const char *tov_op_write_reader(const NodeTable *nt, int id) {
+  switch (nt_kind(nt, id)) {
+  case NK_IndexAndWriteNode: case NK_IndexOperatorWriteNode: case NK_IndexOrWriteNode: return "[]";
+  case NK_CallAndWriteNode: case NK_CallOrWriteNode: return nt_str(nt, id, "name");
+  default: {
+    const char *ty = nt_type(nt, id);
+    return ty && sp_streq(ty, "CallOperatorWriteNode") ? nt_str(nt, id, "name") : NULL;
+  }
+  }
+}
+
 int desugar_truth_only_ivars(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
-  /* reflection reaches any ivar by name */
+  /* reflection reaches any ivar by name, called or named by a Symbol or
+     String (send, public_send, method). A send with a computed name
+     dispatches over the program's literals and methods (dsend_candidates),
+     so it reaches reflection only through such a literal. */
   NT_FOREACH_KIND(nt, NK_CallNode, id) {
     const char *nm = nt_str(nt, id, "name");
     if (nm && (is_ivar_reflection(nm) || is_finalizer_hook(nm))) return 0;
+  }
+  for (int q = 0; q < 2; q++) {
+    int cnt = 0;
+    const int *ids = nt_nodes_of_kind(nt, q ? NK_StringNode : NK_SymbolNode, &cnt);
+    for (int i = 0; i < cnt; i++) {
+      const char *v = tov_lit_name(nt, ids[i]);
+      if (v && (is_ivar_reflection(v) || is_finalizer_hook(v))) return 0;
+    }
   }
   /* native code can address an object the collector sees only through its
      holder: keep every reference (see above) */
@@ -16303,19 +16339,44 @@ int desugar_truth_only_ivars(Compiler *c) {
     const char *nm = nt_str(nt, id, "name");
     if (nm && is_ivar_serializer(nm)) return 0;
   }
-  TOV t = { c, nt, NULL, 0, 0, NULL, NULL, NULL, NULL, NULL, 0, 0, 0 };
-  int n0 = nt->count;
+  TOV t;
+  memset(&t, 0, sizeof t);
+  t.c = c; t.nt = nt;
+  int n0 = nt->count, ns = c->nscopes ? c->nscopes : 1;
   t.node_group = malloc(sizeof(int) * (size_t)(n0 ? n0 : 1));
-  t.muse = calloc((size_t)(c->nscopes ? c->nscopes : 1), 1);
-  t.mfixed = calloc((size_t)(c->nscopes ? c->nscopes : 1), 1);
-  if (!t.node_group || !t.muse || !t.mfixed) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  t.muse = calloc((size_t)ns, 1);
+  t.mfixed = calloc((size_t)ns, 1);
+  t.skey = malloc(sizeof(int) * (size_t)ns);
+  if (!t.node_group || !t.muse || !t.mfixed || !t.skey) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   for (int id = 0; id < n0; id++) t.node_group[id] = -1;
+  /* the method names, once: a key per name */
+  for (int s = 0; s < c->nscopes; s++) {
+    const char *nm = c->scopes[s].name;
+    t.skey[s] = -1;
+    if (s == 0 || !nm) continue;
+    int k = anh_find(&t.mnames, nm);
+    if (k < 0) { anh_add(&t.mnames, nm); k = t.mnames.n - 1; }
+    t.skey[s] = k;
+    if (is_bool_comparison(nm) || is_not_op(nm)) t.user_bool_ops = 1;
+  }
+  int nk = t.mnames.n ? t.mnames.n : 1;
+  t.nuse = calloc((size_t)nk, 1);
+  t.nfixed = calloc((size_t)nk, 1);
+  t.sfirst = malloc(sizeof(int) * (size_t)nk);
+  if (!t.nuse || !t.nfixed || !t.sfirst) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int k = 0; k < nk; k++) t.sfirst[k] = -1;
   /* the groups: one per (hierarchy root, ivar name) over every ivar node */
   for (int id = 0; id < n0; id++) {
     NodeKind k = nt_kind(nt, id);
     int is_ref = k == NK_InstanceVariableReadNode || tov_is_ivar_write(k) ||
                  k == NK_InstanceVariableOperatorWriteNode || k == NK_InstanceVariableTargetNode;
-    if (!is_ref) continue;
+    if (!is_ref) {
+      /* a reader an op-write runs uses the value fully */
+      const char *rn = tov_op_write_reader(nt, id);
+      int rk = rn ? anh_find(&t.mnames, rn) : -1;
+      if (rk >= 0) t.nfixed[rk] = 1;
+      continue;
+    }
     const char *nm = nt_str(nt, id, "name");
     if (!nm) continue;
     Scope *s = comp_scope_of(c, id);
@@ -16330,69 +16391,105 @@ int desugar_truth_only_ivars(Compiler *c) {
   /* an ivar nothing reads holds its value for its own sake */
   for (int gi = 0; gi < t.ngroups; gi++)
     if (!t.g[gi].reads) t.g[gi].ok = 0;
-  /* what can see a group's value: a module, an attr, a struct, a
-     generated inspect, in any class of the hierarchy */
-  for (int gi = 0; gi < t.ngroups; gi++) {
-    if (!t.g[gi].ok) continue;
-    int root = t.g[gi].cls;
-    const char *bare = t.g[gi].name + 1;
-    for (int k = 0; k < c->nclasses && t.g[gi].ok; k++) {
-      if (tov_root(c, k) != root) continue;
-      ClassInfo *ci = &c->classes[k];
-      if (ci->def_node < 0 || nt_kind(nt, ci->def_node) == NK_ModuleNode || ci->is_struct ||
-          ci->is_data || ci->is_native_class || ci->nincluded_mods > 0 || ci->nincluded_mod_names > 0 ||
-          comp_reader_in_chain(c, k, bare, NULL) || comp_writer_in_chain(c, k, bare, NULL) ||
-          comp_method_in_chain(c, k, "inspect", NULL) < 0)
-        t.g[gi].ok = 0;
+  /* what can see a group's value: a module, a struct, an attr, a generated
+     inspect, in any class of the hierarchy */
+  unsigned char *rootbad = calloc((size_t)(c->nclasses ? c->nclasses : 1), 1);
+  if (!rootbad) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int k = 0; k < c->nclasses; k++) {
+    ClassInfo *ci = &c->classes[k];
+    int root = tov_root(c, k);
+    if (ci->def_node < 0 || nt_kind(nt, ci->def_node) == NK_ModuleNode || ci->is_struct ||
+        ci->is_data || ci->is_native_class || ci->nincluded_mods > 0 || ci->nincluded_mod_names > 0 ||
+        comp_method_in_chain(c, k, "inspect", NULL) < 0)
+      rootbad[root] = 1;
+    for (int q = 0; q < 2; q++) {
+      char **names = q ? ci->writers : ci->readers;
+      int nn = q ? ci->nwriters : ci->nreaders;
+      for (int r = 0; r < nn; r++) {
+        char ivn[256];
+        if (strlen(names[r]) + 2 > sizeof ivn) { rootbad[root] = 1; continue; }
+        snprintf(ivn, sizeof ivn, "@%s", names[r]);
+        int key = anh_find(&t.gnames, ivn);
+        for (int gi = key >= 0 ? t.gfirst[key] : -1; gi >= 0; gi = t.g[gi].next)
+          if (t.g[gi].cls == root) t.g[gi].ok = 0;
+      }
     }
   }
-  /* method values used by name: a symbol (send, method, define_method), an
-     alias, a runtime protocol */
+  for (int gi = 0; gi < t.ngroups; gi++)
+    if (t.g[gi].cls >= 0 && rootbad[t.g[gi].cls]) t.g[gi].ok = 0;
+  free(rootbad);
+  /* method values used by name: a symbol or string (send, method,
+     define_method, alias), a runtime protocol, a class method */
   for (int s = 1; s < c->nscopes; s++) {
     const char *nm = c->scopes[s].name;
-    if (!nm) continue;
-    if (method_name_implicitly_invoked(nm) || c->scopes[s].is_cmethod) t.mfixed[s] = 1;
-    if (is_bool_comparison(nm) || is_not_op(nm)) t.user_bool_ops = 1;
+    if (nm && (method_name_implicitly_invoked(nm) || c->scopes[s].is_cmethod)) t.mfixed[s] = 1;
   }
   for (int q = 0; q < 2; q++) {
     int cnt = 0;
     const int *ids = nt_nodes_of_kind(nt, q ? NK_StringNode : NK_SymbolNode, &cnt);
     for (int i = 0; i < cnt; i++) {
-      const char *v = nt_str(nt, ids[i], q == 0 ? "value" : "content");
-      for (int s = 1; v && s < c->nscopes; s++)
-        if (c->scopes[s].name && sp_streq(c->scopes[s].name, v)) t.mfixed[s] = 1;
+      const char *v = tov_lit_name(nt, ids[i]);
+      int k = v ? anh_find(&t.mnames, v) : -1;
+      if (k >= 0) t.nfixed[k] = 1;
     }
   }
-  /* a call whose name is computed can reach any method: its own use is a
-     use of every method's value (tov_method_use); a Method object it makes
-     is called from anywhere */
+  /* a call whose name is computed can reach any method: a send's own use
+     is a use of every method's value; a Method object it makes is called
+     from anywhere */
+  int dcap = 0;
   NT_FOREACH_KIND(nt, NK_CallNode, id) {
     const char *nm = nt_str(nt, id, "name");
     if (!nm || !is_named_method_reach(nm)) continue;
     int a = nt_ref(nt, id, "arguments"), an = 0;
     const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
-    NodeKind ak = an > 0 ? nt_kind(nt, av[0]) : NK_NilNode;
-    if (ak == NK_SymbolNode || ak == NK_StringNode) continue;
-    if (!is_send_family(nm)) { for (int s = 1; s < c->nscopes; s++) t.mfixed[s] = 1; continue; }
-    if (t.ndsend == t.cdsend) {
-      t.cdsend = t.cdsend ? t.cdsend * 2 : 8;
-      t.dsend = realloc(t.dsend, sizeof(int) * (size_t)t.cdsend);
+    if (an == 0 || tov_lit_name(nt, av[0])) continue;
+    if (!is_send_family(nm)) { t.all_fixed = 1; continue; }
+    if (t.ndsend == dcap) {
+      dcap = dcap ? dcap * 2 : 8;
+      t.dsend = realloc(t.dsend, sizeof(int) * (size_t)dcap);
       if (!t.dsend) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
     }
     t.dsend[t.ndsend++] = id;
   }
+  /* each `super`, under the name of the method it is in */
+  for (int q = 0, cap = 0; q < 2; q++) {
+    int cnt = 0;
+    const int *ids = nt_nodes_of_kind(nt, q ? NK_ForwardingSuperNode : NK_SuperNode, &cnt);
+    for (int i = 0; i < cnt; i++) {
+      Scope *ss = comp_scope_of(c, ids[i]);
+      int k = ss ? t.skey[ss - c->scopes] : -1;
+      if (k < 0) continue;
+      if (t.nsups == cap) {
+        cap = cap ? cap * 2 : 16;
+        t.sups = realloc(t.sups, sizeof(int) * (size_t)cap);
+        t.snext = realloc(t.snext, sizeof(int) * (size_t)cap);
+        if (!t.sups || !t.snext) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      }
+      t.sups[t.nsups] = ids[i]; t.snext[t.nsups] = t.sfirst[k]; t.sfirst[k] = t.nsups++;
+    }
+  }
   int any = 0;
   for (int gi = 0; gi < t.ngroups; gi++) if (t.g[gi].ok && t.g[gi].needs) any = 1;
   if (!any) goto done;
-  t.par = an_parent_map(nt);
+  /* the tree as the program reaches it: a desugar can leave a detached copy
+     (the parentheses of an endless def) that still names a live child */
+  t.par = du_parent_map(nt);
   if (!t.par) goto done;
   /* settle the groups and the method uses together, from the optimistic
      start: every change only drops a group or raises a use */
   for (int round = 0; round < 64; round++) {
     int changed = 0;
+    for (int i = 0; i < t.ndsend && t.dsend_use < TOV_USED; i++) {
+      int w = tov_use(&t, t.dsend[i]);
+      if (w > t.dsend_use) { t.dsend_use = w; changed = 1; }
+    }
+    for (int k = 0; k < t.mnames.n; k++) {
+      int u = tov_name_use(&t, k);
+      if (u > t.nuse[k]) { t.nuse[k] = (unsigned char)u; changed = 1; }
+    }
     for (int s = 1; s < c->nscopes; s++) {
-      if (!c->scopes[s].name || c->scopes[s].def_node < 0) continue;
-      int u = tov_method_use(&t, s);
+      if (t.skey[s] < 0) continue;
+      int u = t.mfixed[s] ? TOV_USED : t.nuse[t.skey[s]];
       if (u > t.muse[s]) { t.muse[s] = (unsigned char)u; changed = 1; }
     }
     for (int id = 0; id < n0; id++) {
@@ -16415,12 +16512,16 @@ int desugar_truth_only_ivars(Compiler *c) {
   }
   free(ctor);
   for (int gi = 0; gi < t.ngroups; gi++) t.g[gi].isbool = t.g[gi].ok && t.g[gi].seeded;
-  for (int changed = 1; changed; ) {
+  for (int round = 0, changed = 1; changed; round++) {
     changed = 0;
     for (int id = 0; id < n0; id++) {
       int gi = t.node_group[id];
       if (gi < 0 || !t.g[gi].isbool || t.g[gi].needs || !tov_is_ivar_write(nt_kind(nt, id))) continue;
       if (!tov_bool(&t, nt_ref(nt, id, "value"))) { t.g[gi].isbool = 0; changed = 1; }
+    }
+    if (changed && round == 63) {   /* no fixpoint: no slot is known a boolean */
+      for (int gi = 0; gi < t.ngroups; gi++) t.g[gi].isbool = 0;
+      break;
     }
   }
   /* each write of a truth-only group that needs one, and whose slot then is a
@@ -16450,6 +16551,8 @@ int desugar_truth_only_ivars(Compiler *c) {
     nt_node_set_ref(nt, id, "value", iff);
   }
 done:
-  free(t.par); free(t.node_group); free(t.muse); free(t.mfixed); free(t.g); free(t.dsend);
+  free(t.par); free(t.node_group); free(t.muse); free(t.mfixed); free(t.g); free(t.gfirst);
+  free(t.skey); free(t.dsend); free(t.nuse); free(t.nfixed); free(t.sups); free(t.snext); free(t.sfirst);
+  anh_free(&t.mnames); anh_free(&t.gnames);
   return 0;
 }
