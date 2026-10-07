@@ -1543,6 +1543,9 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
   }
   if (is_unary_plus(nt_str(nt, v, "name"))) {
     /* nil has no +@: NoMethodError, as the copy's read raised */
+    /* (a variable the nil fact says is never nil needs no test; any other
+       nil, one a builtin answers too, would make sp_String_uplus answer
+       NULL where CRuby raises) */
     NodeKind xk = nt_kind(nt, unwrap_parens(c, x));
     if ((xk == NK_LocalVariableReadNode || xk == NK_InstanceVariableReadNode || repr_static_read_kind(xk)) &&
         !repr_of(c, x).may_nil) {
@@ -1588,6 +1591,14 @@ int strbuf_value_carries(Compiler *c, int v) {
   int cb = str_alias_chain_base(c, v);
   if (cb != v && cb >= 0 && strbuf_var_handle(c, cb, ref, sizeof ref)) return 1;
   return strbuf_route_carries(c, v, 0) || strbuf_cond_has_handle_leaf(c, v, 0);
+}
+/* A mutator's receiver handle _t<t>, which strbuf_recv_handle answered
+   (hr): a route's (2) can be a String of its own (`(+f)` of a frozen f),
+   which nothing else holds while the mutator's arguments allocate, so it
+   is rooted for the rest of the mutator's expression. A slot's (1) is held
+   by its slot. */
+void emit_route_recv_root(int hr, int t, Buf *b) {
+  if (hr == 2) buf_printf(b, " SP_GC_ROOT(_t%d);", t);
 }
 /* Does route v (emit_strbuf_route) answer a String, never nil: `+s` (which
    raises for a nil s) and `String(s)`? Every other one can answer nil. */
@@ -14452,9 +14463,13 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
   if (sp_streq(ty, "CallNode")) {
     int _srecv = nt_ref(nt, id, "receiver");
     const char *_snm = nt_str(nt, id, "name");
+    /* (--share-strings: a receiver that may be nil, a shared parameter an
+       argument binds nil, runs behind its nil test, as the statement form
+       does) */
     if (_srecv >= 0 && _snm && sp_streq(_snm, "<<") &&
         comp_ntype(c, _srecv) == TY_STRING &&
-        emit_array_mutate_stmt(c, id, b, indent)) {
+        ((repr_share_rule(c) && emit_nil_target_stmt(c, id, b, indent)) ||
+         emit_array_mutate_stmt(c, id, b, indent))) {
       /* return the chain's BASE receiver: for `buf << a << b` the immediate
          receiver is the inner `<<` call, and re-emitting it would run the
          inner links a second time (doubling the appended text -- and writing
@@ -15828,7 +15843,9 @@ static int str_mutate_shared_arms(Compiler *c, int id, Buf *b, int indent, const
       view_unbind(g_n_argov - 1);
       if (handled) {
         emit_indent(b, indent);
-        buf_printf(b, "{ sp_String *_t%d = %s;\n", tH, hb);
+        buf_printf(b, "{ sp_String *_t%d = %s;", tH, hb);
+        emit_route_recv_root(2, tH, b);
+        buf_puts(b, "\n");
         Buf nopre; memset(&nopre, 0, sizeof nopre);   /* what the route put ahead is in g_pre */
         emit_sb_shim_swap(b, indent, tH, &nopre, armb.p);
         return 1;
