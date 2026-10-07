@@ -1393,7 +1393,7 @@ int strbuf_self_route_slot(Compiler *c, int v, int *uplus, char *out, size_t cap
   const int *argv = call_args(nt, v, &argc);
   int x = strbuf_uplus_operand(c, v);
   *uplus = x >= 0;
-  if (x < 0 && nm && sp_streq(nm, "String") && nt_ref(nt, v, "receiver") < 0 && argc == 1 &&
+  if (x < 0 && nm && is_string_class_name(nm) && nt_ref(nt, v, "receiver") < 0 && argc == 1 &&
       nt_ref(nt, v, "block") < 0 && comp_method_index(c, nm) < 0 && !bare_call_class_owned(c, v))
     x = argv[0];
   NodeKind xk = x >= 0 ? nt_kind(nt, unwrap_parens(c, x)) : NK_NONE;

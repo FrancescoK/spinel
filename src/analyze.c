@@ -6,6 +6,7 @@
 #include "call_plan.h"
 #include "share.h"
 #include "timing.h"
+#include "builtin_names.h"
 
 
 static int narrow_int_table_ivars(Compiler *c, int in_round);  /* declared early: the fixpoint calls it */
@@ -18174,9 +18175,8 @@ static int promote_shared_stored_strings(Compiler *c) {
       }
       /* --share-strings: `Array.new(n, s)` stores s in every slot, as a
          literal stores its elements */
-      else if (c->share_strings && cn3 && sp_streq(cn3, "new") && recv3 >= 0 &&
-               nt_kind(nt, recv3) == NK_ConstantReadNode && nt_str(nt, recv3, "name") &&
-               sp_streq(nt_str(nt, recv3, "name"), "Array") && nt_ref(nt, w, "block") < 0) {
+      else if (c->share_strings && recv3 >= 0 && nt_kind(nt, recv3) == NK_ConstantReadNode &&
+               is_array_new(nt_str(nt, recv3, "name"), cn3) && nt_ref(nt, w, "block") < 0) {
         int a3 = nt_ref(nt, w, "arguments");
         int an3 = 0; const int *av3 = a3 >= 0 ? nt_arr(nt, a3, "arguments", &an3) : NULL;
         if (an3 == 2) cand3[nc3++] = av3[1];
