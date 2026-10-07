@@ -2488,10 +2488,12 @@ void emit_poly_cmp_ordered(Compiler *c, const char *fn, int recv, int arg, Buf *
     buf_printf(b, "%s(_t%d, ", fn, t);
     emit_boxed(c, arg, b);
     buf_puts(b, se ? "); })" : ")");
+    c->args_in_call = recv;
     return;
   }
   buf_printf(b, "%s(", fn); emit_boxed(c, recv, b); buf_puts(b, ", ");
   emit_boxed(c, arg, b); buf_puts(b, ")");
+  c->args_in_call = recv;
 }
 static void emit_poly_eq_ordered(Compiler *c, int recv, int arg, int eq, Buf *b) {
   buf_puts(b, eq ? "" : "(!");
@@ -19286,6 +19288,35 @@ static int emit_nil_target_cold(Compiler *c, int id, Buf *b) {
   return ok;
 }
 
+/* A boxed receiver's call whose arm hands every operand to one runtime call
+   as a C argument (an operator's sp_poly_add, sp_poly_shl, a comparison:
+   args_in_call) runs them all before that call raises, so the head is not
+   needed: master's C, whose arm already holds a receiver ahead of an
+   argument that runs code (poly_binop_recv_temp). A variable read the head
+   binds because an argument reassigns it keeps the head. The arm is known
+   only once it has emitted, so the call is emitted once on trial and that
+   emission taken back (a call nested in the trial skips its own). 1 when
+   the head can stay out. */
+static int nil_target_runs_in_call(Compiler *c, int id) {
+  int node[8]; TyKind ty[8];
+  int n = nil_target_operands(c, id, 1, node, ty, 8);
+  for (int i = 0; i < n; i++) if (subtree_is_pure_read(c, node[i])) return 0;
+  if (n < 1 || c->args_in_call_trial) return 0;
+  size_t pre0 = g_pre ? g_pre->len : 0;
+  int tmp0 = g_tmp, ov0 = g_n_argov;
+  Buf tb; memset(&tb, 0, sizeof tb);
+  c->args_in_call = -1;
+  c->args_in_call_trial++;
+  emit_call_held(c, id, &tb);
+  c->args_in_call_trial--;
+  int in_call = c->args_in_call == nt_ref(c->nt, id, "receiver");
+  free(tb.p);
+  if (g_pre && g_pre->len > pre0) { g_pre->len = pre0; g_pre->p[pre0] = '\0'; }
+  g_tmp = tmp0;
+  view_unbind(ov0);
+  return in_call;
+}
+
 /* The head's bindings from *mark and its held views from `held` (-1 for
    none), the views popped innermost first. */
 static void nil_target_release(Compiler *c, int mark, int held) {
@@ -19297,7 +19328,7 @@ static void nil_target_release(Compiler *c, int mark, int held) {
 /* Call id in value position, behind its nil arm. 1 when it emitted. */
 static int emit_nil_target_call(Compiler *c, int id, Buf *b) {
   int test = cplan_nil(c, id) == CN_RAISE;
-  if (!test && !poly_target_call(c, id)) return 0;
+  if (!test && (!poly_target_call(c, id) || nil_target_runs_in_call(c, id))) return 0;
   if (test && g_plan_check) cplan_served("nil-target");
   if (test && emit_nil_target_cold(c, id, b)) return 1;
   Buf hb; memset(&hb, 0, sizeof hb);
@@ -19343,7 +19374,7 @@ static int emit_nil_target_call(Compiler *c, int id, Buf *b) {
    emitted. */
 int emit_nil_target_stmt(Compiler *c, int id, Buf *b, int indent) {
   int test = cplan_nil(c, id) == CN_RAISE;
-  if (!test && !poly_target_call(c, id)) return 0;
+  if (!test && (!poly_target_call(c, id) || nil_target_runs_in_call(c, id))) return 0;
   if (test && g_plan_check) cplan_served("nil-target");
   Buf *db = g_pre ? g_pre : b;
   Buf lb; memset(&lb, 0, sizeof lb);
