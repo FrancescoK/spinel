@@ -2446,6 +2446,25 @@ int sb_shadowed_reader(int node) {
     if (g_argov_node[i] == node && strncmp(g_argov_text[i], "lv__sb", 6) == 0) return 1;
   return 0;
 }
+/* The arguments of the String mutator `id` that a shim re-runs on its
+   shadow copy, run ahead of the copy into rooted temps the arm reads
+   (emit_args_run): CRuby evaluates them before the method reads the String,
+   and one that changes the String through another name (an alias, a
+   captured cell, a method) changed the handle after the shim had copied it,
+   so the shadow's write-back undid the change. The temps go to `pre`, for
+   the caller to emit between its read of the handle and the copy; answers
+   the override mark to unbind at once the arm is emitted. */
+int sb_shim_args_first(Compiler *c, int id, Buf *pre, int indent) {
+  int mark = g_n_argov;
+  int a = nt_ref(c->nt, id, "arguments"), argc = 0;
+  const int *argv = a >= 0 ? nt_arr(c->nt, a, "arguments", &argc) : NULL;
+  if (argc == 0) return mark;
+  Buf *sv_pre = g_pre; int sv_ind = g_indent;
+  g_pre = pre; g_indent = indent;
+  emit_args_run(c, argv, argc);
+  g_pre = sv_pre; g_indent = sv_ind;
+  return mark;
+}
 /* Open the shim over a reader call `recv` that hands out the shared handle:
    the handle's text goes to sref, and until sb_reader_shim_close the call node
    reads as the shadow `lv__sbT`, with the handle marks lifted. Answers T, or 0

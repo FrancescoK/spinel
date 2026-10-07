@@ -479,19 +479,23 @@ static int sb_iv_expr_shim(Compiler *c, int id, int recvS, Buf *b,
   int icid = strbuf_ivar_owner(c, recvS);
   const char *ivn = nt_str(nt, recvS, "name");
   if (!ivn || icid < 0 || !strbuf_slot_ref(c, recvS, srefI, sizeof srefI)) return 0;
+  Buf pre; memset(&pre, 0, sizeof pre);
+  int mark = sb_shim_args_first(c, id, &pre, g_indent);
   int tH = ++g_tmp;
   Buf armb; memset(&armb, 0, sizeof armb);
   snprintf(g_sb_iv_repl, sizeof g_sb_iv_repl, "lv__sb%d", tH);
   g_sb_iv_name = ivn; g_sb_iv_cid = icid;
   int handled = rerun(c, id, &armb);
   g_sb_iv_name = NULL; g_sb_iv_cid = -1;
-  if (!handled) { free(armb.p); return 0; }
+  view_unbind(mark);
+  if (!handled) { free(armb.p); free(pre.p); return 0; }
   TyKind resty = repr_of(c, id).as_ty;
-  buf_printf(b, "({ sp_String *_t%d = %s;"
+  buf_printf(b, "({ sp_String *_t%d = %s;%s"
                 " if (sp_String_is_frozen(_t%d)) sp_raise_frozen_str(_t%d->data);"
                 " const char *lv__sb%d = sp_str_concat(sp_String_cstr(_t%d), (&(\"\\xff\")[1]));"
                 " SP_GC_ROOT(lv__sb%d); ",
-             tH, srefI, tH, tH, tH, tH, tH);
+             tH, srefI, pre.p ? pre.p : "", tH, tH, tH, tH, tH);
+  free(pre.p);
   emit_ctype(c, resty == TY_UNKNOWN || resty == TY_VOID ? TY_STRING : resty, b);
   buf_printf(b, " _res%d = %s;", tH, armb.p ? armb.p : "0");
   free(armb.p);
@@ -507,16 +511,20 @@ static int sb_reader_expr_shim(Compiler *c, int id, int recvS, Buf *b,
   SbReaderSave svR;
   int tH = sb_reader_shim_open(c, recvS, srefR, sizeof srefR, &svR);
   if (!tH) return 0;
+  Buf pre; memset(&pre, 0, sizeof pre);
+  int mark = sb_shim_args_first(c, id, &pre, g_indent);
   Buf armb; memset(&armb, 0, sizeof armb);
   int handled = rerun(c, id, &armb);
+  view_unbind(mark);
   sb_reader_shim_close(c, recvS, &svR);
-  if (!handled) { free(armb.p); return 0; }
+  if (!handled) { free(armb.p); free(pre.p); return 0; }
   TyKind resty = repr_of(c, id).as_ty;
-  buf_printf(b, "({ sp_String *_t%d = %s;"
+  buf_printf(b, "({ sp_String *_t%d = %s;%s"
                 " if (sp_String_is_frozen(_t%d)) sp_raise_frozen_str(_t%d->data);"
                 " const char *lv__sb%d = sp_str_concat(sp_String_cstr(_t%d), (&(\"\\xff\")[1]));"
                 " SP_GC_ROOT(lv__sb%d); ",
-             tH, srefR, tH, tH, tH, tH, tH);
+             tH, srefR, pre.p ? pre.p : "", tH, tH, tH, tH, tH);
+  free(pre.p);
   emit_ctype(c, resty == TY_UNKNOWN || resty == TY_VOID ? TY_STRING : resty, b);
   buf_printf(b, " _res%d = %s;", tH, armb.p ? armb.p : "0");
   free(armb.p);
@@ -3722,14 +3730,22 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
     if (sp_streq(name, "insert") && argc == 2) {
       int lvw = str_mut_var_recv(c, recv) || sb_shadowed_reader(recv);
       int to = ++g_tmp, ti2 = ++g_tmp, tn2 = ++g_tmp;
-      /* rooted across the index and the text, which may allocate */
-      buf_printf(b, "({ const char *_t%d = ", to); emit_recv_rooted(c, recv, to, "SP_GC_ROOT_STR", b);
+      /* CRuby evaluates the receiver, the index and the text, and only then
+         reads the String: a variable receiver is read after them, so a text
+         that changes it (`s.insert(1, (s << "x"; "y"))`) is seen; any other
+         receiver is taken first and rooted across them, which may allocate.
+         The text is converted, and rooted, before the frozen check, where
+         CRuby raises its TypeError. */
+      buf_puts(b, "({ ");
+      if (!lvw) { buf_printf(b, "const char *_t%d = ", to); emit_recv_rooted(c, recv, to, "SP_GC_ROOT_STR", b); }
+      buf_printf(b, "sp_int _t%d = ", ti2); emit_int_expr(c, argv[0], b);
+      buf_printf(b, "; const char *_v%d = ", tn2); emit_str_insert_text(c, argv[1], b);
+      buf_printf(b, "; SP_GC_ROOT_STR(_v%d); ", tn2);
+      if (lvw) { buf_printf(b, "const char *_t%d = ", to); emit_recv_rooted(c, recv, to, "SP_GC_ROOT_STR", b); }
       buf_printf(b, "sp_str_check_mutable(_t%d);", to);   /* frozen -> FrozenError (#3003) */
-      buf_printf(b, " sp_int _t%d = ", ti2); emit_int_expr(c, argv[0], b);
-      buf_printf(b, "; if (_t%d < 0) _t%d += (sp_int)sp_str_length(_t%d) + 1;", ti2, ti2, to);
-      buf_printf(b, " const char *_t%d = sp_str_splice_at(_t%d, _t%d, 0, ", tn2, to, ti2);
-      emit_str_insert_text(c, argv[1], b);
-      buf_puts(b, ", 0); ");
+      /* -1 appends; an index past the ends raises IndexError, as CRuby */
+      buf_printf(b, " const char *_t%d = sp_str_splice_at(_t%d, _t%d == -1 ? (sp_int)sp_str_length(_t%d) : _t%d < 0 ? _t%d + 1 : _t%d, 0, _v%d, 0); ",
+                 tn2, to, ti2, to, ti2, ti2, ti2, tn2);
       emit_str_mut_writeback(c, recv, lvw, tn2, b);
       buf_printf(b, "_t%d; })", tn2);
       { *out = 1; return 1; }
@@ -4026,6 +4042,8 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       if (sbn && g_nren < MAX_RENAME) {
         Scope *shs = comp_scope_of(c, recvS);
         LocalVar *shlv = scope_local(shs, sbn);
+        Buf pre; memset(&pre, 0, sizeof pre);
+        int mark = sb_shim_args_first(c, id, &pre, g_indent);
         int tH = ++g_tmp;
         Buf armb; memset(&armb, 0, sizeof armb);
         snprintf(g_ren_from[g_nren], sizeof g_ren_from[0], "%s", sbn);
@@ -4035,14 +4053,16 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
         int handled = emit_array_call(c, id, &armb);
         shlv->type = sv_ty;
         g_nren--;
-        if (!handled) { free(armb.p); }
+        view_unbind(mark);
+        if (!handled) { free(armb.p); free(pre.p); }
         else {
           TyKind resty = repr_of(c, id).as_ty;
-          buf_printf(b, "({ sp_String *_t%d = lv_%s;"
+          buf_printf(b, "({ sp_String *_t%d = lv_%s;%s"
                         " if (sp_String_is_frozen(_t%d)) sp_raise_frozen_str(_t%d->data);"
                         " const char *lv__sb%d = sp_str_concat(sp_String_cstr(_t%d), (&(\"\\xff\")[1]));"
                         " SP_GC_ROOT(lv__sb%d); ",
-                     tH, rename_local(sbn), tH, tH, tH, tH, tH);
+                     tH, rename_local(sbn), pre.p ? pre.p : "", tH, tH, tH, tH, tH);
+          free(pre.p);
           emit_ctype(c, resty == TY_UNKNOWN || resty == TY_VOID ? TY_STRING : resty, b);
           buf_printf(b, " _res%d = %s;", tH, armb.p ? armb.p : "0");
           free(armb.p);
