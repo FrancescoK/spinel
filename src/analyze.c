@@ -8797,6 +8797,47 @@ static int desugar_module_function_call(Compiler *c) {
   return changed;
 }
 
+/* Thread.start / Thread.fork -> Thread.new: the same constructor by other
+   names (the arguments go to the block; neither runs the subclass's
+   initialize, which a program's Thread subclass is refused for anyway).
+   Done first, so every pass that recognizes a thread's block reads one
+   spelling. A program defining a class method of either name on a class of
+   its own named Thread keeps its call. */
+static int desugar_thread_start(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, own = 0, changed = 0;
+  for (int id = 0; id < n0 && !own; id++) {
+    if (nt_kind(nt, id) != NK_DefNode) continue;
+    const char *dn = nt_str(nt, id, "name");
+    int dr = nt_ref(nt, id, "receiver");
+    if (dn && dr >= 0 && (sp_streq(dn, "start") || sp_streq(dn, "fork"))) own = 1;
+  }
+  if (own) {
+    own = 0;
+    for (int id = 0; id < n0 && !own; id++) {
+      if (nt_kind(nt, id) != NK_ClassNode) continue;
+      int cp = nt_ref(nt, id, "constant_path");
+      const char *cn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+      if (cn && sp_streq(cn, "Thread")) own = 1;
+    }
+    if (own) return 0;
+  }
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || (!sp_streq(nm, "start") && !sp_streq(nm, "fork"))) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    if (recv < 0) continue;
+    int rk = nt_kind(nt, recv);
+    const char *rn = (rk == NK_ConstantReadNode || (rk == NK_ConstantPathNode && nt_ref(nt, recv, "parent") < 0))
+                     ? nt_str(nt, recv, "name") : NULL;
+    if (!rn || !sp_streq(rn, "Thread")) continue;
+    nt_node_set_str(nt, id, "name", "new");
+    changed = 1;
+  }
+  return changed;
+}
+
 static int desugar_file_stat_new(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
@@ -32753,6 +32794,7 @@ static void an_phase_desugar_register(Compiler *c) {
   desugar_static_class_eval(c);
   /* `m(&nil)` is the blockless call */
   desugar_nil_block_arg(c);
+  desugar_thread_start(c);               /* Thread.start / .fork -> Thread.new */
   desugar_literal_undef_method(c);       /* undef_method :a in a body -> undef a */
   /* a bare constant CRuby's lookup cannot reach, bound by its leaf name to a
      nested definition: refused while the source still says where each
