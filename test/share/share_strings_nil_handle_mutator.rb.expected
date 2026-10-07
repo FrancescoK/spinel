@@ -1,0 +1,39 @@
+["HELLO", "HELLO"]
+undefined method 'upcase!' for nil
+[nil, nil]
+["Hellox", "Hellox"]
+undefined method '<<' for nil
+[nil, nil]
+["Hellox", "Hellox"]
+undefined method 'concat' for nil
+[nil, nil]
+["Jello", "Jello"]
+undefined method 'sub!' for nil
+[nil, nil]
+["x", "x"]
+undefined method 'replace' for nil
+[nil, nil]
+["", ""]
+undefined method 'clear' for nil
+[nil, nil]
+["xello", "xello"]
+undefined method '[]=' for nil
+[nil, nil]
+["xHello", "xHello"]
+undefined method 'insert' for nil
+[nil, nil]
+["xHello", "xHello"]
+undefined method 'prepend' for nil
+[nil, nil]
+["Hello", "Hello"]
+undefined method 'strip!' for nil
+[nil, nil]
+["ello", "ello"]
+undefined method 'slice!' for nil
+[nil, nil]
+["Helo", "Helo"]
+undefined method 'squeeze!' for nil
+[nil, nil]
+["Hellp", "Hellp"]
+undefined method 'succ!' for nil
+[nil, nil]
