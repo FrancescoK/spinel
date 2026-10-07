@@ -144,6 +144,7 @@ int emit_call_identity_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
       buf_printf(b, "(sp_poly_recv_ck(_t%d, \"%s\"), "
                     "sp_poly_cmp_ck(_t%d, _t%d) >= 0 && sp_poly_cmp_ck(_t%d, _t%d) <= 0)",
                  ts, name, ts, tlo, ts, thi);
+      c->args_in_call = recv;
       return 1;
     }
     /* Comparable: user type with <=> method */
