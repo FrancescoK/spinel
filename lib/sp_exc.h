@@ -46,6 +46,12 @@ typedef struct sp_Exception_s {
                                  means "no caller ever set one" (CRuby answers
                                  nil for the unset case). The GC mark visits it
                                  alongside the boxed fields. */
+  void *msg_h;                /* the message as a shared String handle (an
+                                 sp_String *), or NULL: a program built
+                                 --share-strings raises with the String it
+                                 was given, which #message answers itself
+                                 (sp_exc_attach_msg). Read the message
+                                 through sp_exc_message / sp_exc_msg_text. */
 } sp_Exception;
 
 extern const char *(*sp_user_exc_parent_fn)(const char *);   /* set by the generated main() */
@@ -102,6 +108,10 @@ int sp_exc_exit_status(void *obj);
 sp_Exception *sp_exc_exception(sp_Exception *e, const char *msg);
 const char *sp_exc_class_name(volatile sp_Exception *ve);
 const char *sp_exc_message(volatile sp_Exception *ve);
+/* the message's text now, not to be kept (a handle's live buffer) */
+const char *sp_exc_msg_text(volatile sp_Exception *ve);
+/* e with the String handle h as its message (sp_Exception.msg_h); answers e */
+void *sp_exc_attach_msg(void *e, void *h);
 /* #to_s as #inspect renders it: a user override (the generated program's
    sp_user_exc_to_s, installed in the hook) else the stored message */
 extern const char *(*sp_user_exc_to_s_fn)(sp_Exception *);

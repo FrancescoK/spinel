@@ -11103,6 +11103,10 @@ void emit_exc_new_no_init(Compiler *c, int id, int ci, int argc, const int *argv
      sp_exc_new_sub would only allocate the base (#2772). */
   const char *cn2 = class_ruby_name(c, ci); if (!cn2) cn2 = c->classes[ci].name;
   const char *par = exc_builtin_parent(c, ci);
+  char mh[256];
+  int hm = !class_is_syserr(c, ci) && argc >= 1 && comp_ntype(c, argv[0]) == TY_STRING &&
+           exc_msg_handle(c, argv[0], mh, sizeof mh);
+  if (hm) buf_printf(b, "((sp_%s *)sp_exc_attach_msg(", c->classes[ci].nivars > 0 ? c->classes[ci].c_name : "Exception");
   if (c->classes[ci].nivars > 0)
     buf_printf(b, "((sp_%s *)sp_exc_new_sub_sized(sizeof(sp_%s), \"%s\", ",
                c->classes[ci].c_name, c->classes[ci].c_name, cn2);
@@ -11127,6 +11131,7 @@ void emit_exc_new_no_init(Compiler *c, int id, int ci, int argc, const int *argv
   }
   else buf_puts(b, "(&(\"\\xff\")[1])");
   buf_puts(b, c->classes[ci].nivars > 0 ? "))" : ")");
+  if (hm) buf_printf(b, ", %s))", mh);
 }
 
 /* Array.new(x) of an Array x is a copy of it (#7449): of a typed one by its
@@ -11433,6 +11438,9 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       int clr_key = sp_streq(cn, "KeyError");
       int tex = clr_recv || clr_key ? ++g_tmp : 0;
       if (tex) buf_printf(b, "({ sp_Exception *_t%d = ", tex);
+      char mh[256];
+      int hm = argc >= 1 && comp_ntype(c, argv[0]) == TY_STRING && exc_msg_handle(c, argv[0], mh, sizeof mh);
+      if (hm) buf_puts(b, "((sp_Exception *)sp_exc_attach_msg(");
       buf_printf(b, "sp_exc_new(\"%s\", ", cn);
       if (argc >= 1) {
         /* an explicitly given message stays, even empty; only a message-less
@@ -11451,6 +11459,7 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       }
       else buf_puts(b, "(&(\"\\xff\")[1])");
       buf_puts(b, ")");
+      if (hm) buf_printf(b, ", %s))", mh);
       if (tex) {
         buf_puts(b, ";");
         if (clr_recv) buf_printf(b, " _t%d->has_recv = 0;", tex);

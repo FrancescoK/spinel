@@ -8709,6 +8709,7 @@ void emit_class_struct(Compiler *c, ClassInfo *ci, Buf *b) {
     buf_puts(b, "  sp_bool has_key;\n");
     buf_puts(b, "  sp_bool priv_call;\n");
     buf_puts(b, "  sp_StrArray *backtrace;\n");
+    buf_puts(b, "  void *msg_h;\n");
     for (int i = 0; i < ci->nivars; i++) {
       buf_puts(b, "  ");
       emit_ivar_field_ctype(c, ci->ivar_types[i], b);
@@ -8778,6 +8779,7 @@ void emit_class_scan(Compiler *c, ClassInfo *ci, Buf *b) {
     buf_puts(b, "  sp_mark_rbval(o->xkey);\n");
     buf_puts(b, "  sp_mark_rbval(o->xrecv);\n");
     buf_puts(b, "  if (o->backtrace) sp_gc_mark(o->backtrace);\n");
+    buf_puts(b, "  if (o->msg_h) sp_gc_mark(o->msg_h);\n");
   }
   for (int i = 0; i < ci->nivars; i++) {
     TyKind t = ci->ivar_types[i];
@@ -11551,6 +11553,10 @@ void emit_super(Compiler *c, int id, Buf *b) {
         /* nilable: Exception#initialize STRINGIFIES its message (super(nil)
            keeps the class-name default in CRuby), it never type-checks it */
         emit_str_expr_nilable(c, argv2[0], b);
+        /* a shared String message is held as its handle too (exc_msg_handle) */
+        char mh[256];
+        if (comp_ntype(c, argv2[0]) == TY_STRING && exc_msg_handle(c, argv2[0], mh, sizeof mh))
+          buf_printf(b, ", (void)sp_exc_attach_msg((void *)%s, %s), %s->msg", g_self, mh, g_self);
         buf_puts(b, ")");
       }
       else if (ty && sp_streq(ty, "ForwardingSuperNode") && s->nparams > 0) {
