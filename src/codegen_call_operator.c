@@ -1063,8 +1063,18 @@ int emit_call_operator_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
       TyKind ret = repr_of(c, id).as_ty;
       buf_printf(b, "(sp_raise_poly_nomethod(\"%s\", ", name);
       emit_boxed(c, recv, b);
-      buf_printf(b, "), %s)", ret == TY_VOID || ret == TY_NIL || ret == TY_UNKNOWN ? "sp_box_nil()"
-                                : default_value_from_compiler(c, ret));
+      /* the value after the raise is never reached; it only types the
+         expression: true/false and a Symbol keep the C `-x` their slot took
+         before (a narrowed arm that never runs reads it as an Integer),
+         anything else the call's own type */
+      int unset = ret == TY_VOID || ret == TY_NIL || ret == TY_UNKNOWN;
+      if (rt == TY_BOOL || rt == TY_SYMBOL) {
+        buf_printf(b, "), (%c", name[0]);
+        emit_expr(c, recv, b);
+        buf_puts(b, "))");
+      }
+      else
+        buf_printf(b, "), %s)", unset ? "sp_box_nil()" : default_value_from_compiler(c, ret));
     }
     else if (rt == TY_BIGINT) {
       /* -@ negates via 0 - b (no unary neg on a bigint pointer); +@ is self (#2304) */
