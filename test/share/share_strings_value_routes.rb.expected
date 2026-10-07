@@ -39,3 +39,6 @@ NoMethodError
 nil
 "ab1"
 "q123"
+"ZY"
+[:i, :v, :i, :v]
+"o2!"

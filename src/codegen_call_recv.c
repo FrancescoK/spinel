@@ -8236,9 +8236,25 @@ static int emit_scalar_call_arms(Compiler *c, int id, Buf *b) {
       const int *avS = aS >= 0 ? nt_arr(ntS, aS, "arguments", &acS) : NULL;
       char srefB[1024];
       const char *sbnB = strbuf_local_name(c, recvS);
-      int haveB = avS && acS == 2 &&
-                  (sbnB ? (snprintf(srefB, sizeof srefB, "lv_%s", sbnB), 1)
-                        : strbuf_recv_handle(c, id, recvS, srefB, sizeof srefB));
+      int haveB = !avS || acS != 2 ? 0
+                : sbnB ? (snprintf(srefB, sizeof srefB, "lv_%s", sbnB), 1)
+                : strbuf_recv_handle(c, id, recvS, srefB, sizeof srefB);
+      /* a route's receiver (strbuf_recv_handle's 2) runs here, ahead of the
+         arguments, which then run in their order -- the index, then the
+         value -- before the frozen check, as in the call */
+      if (haveB == 2) {
+        int tH = ++g_tmp;
+        buf_printf(b, "({ sp_String *_t%d = %s; sp_int _i%d = ", tH, srefB, tH);
+        emit_int_expr(c, avS[0], b);
+        buf_printf(b, "; sp_int _v%d = ", tH);
+        emit_int_expr(c, avS[1], b);
+        buf_printf(b, "; if (sp_String_is_frozen(_t%d)) sp_raise_frozen_str(_t%d->data);"
+                      " const char *_p%d = sp_String_cstr(_t%d);"
+                      " const char *_q%d = sp_str_setbyte_cow(_p%d, _i%d, _v%d);"
+                      " if (_q%d != _p%d) sp_String_set_bin(_t%d, _q%d); _v%d; })",
+                   tH, tH, tH, tH, tH, tH, tH, tH, tH, tH, tH, tH, tH);
+        return 1;
+      }
       if (haveB) {
         int tH = ++g_tmp;
         buf_printf(b, "({ sp_String *_t%d = %s;"
