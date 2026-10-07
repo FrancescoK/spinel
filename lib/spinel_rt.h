@@ -4305,6 +4305,8 @@ static sp_int sp_poly_to_i_meth(sp_RbVal v) {
   /* a shared String handle converts as the String it holds (#7263) */
   if (SP_UNLIKELY(sp_poly_is_strbuf(v))) v = sp_poly_strbuf_deref(v);
   if (v.tag == SP_TAG_OBJ && v.cls_id >= 0) sp_raise_nomethod(sp_nomethod_msg("to_i", v));
+  /* IO#to_i is its file descriptor, as the typed call answers */
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_IO && v.v.p) return sp_File_fileno((sp_File *)v.v.p);
   /* true, false, a Symbol, an Array, a Hash and a Range have no #to_i: the
      conversion below answered 1, 0 or the Symbol's id where CRuby raises */
   if (v.tag == SP_TAG_BOOL || v.tag == SP_TAG_SYM ||
