@@ -21,7 +21,10 @@ class Sprite
     p hit(1, other)
     s = scale
     p hit(1, s)
+    p late(bits)
   end
+
+  def late(a = 0, bits) = reloaded(bits)
 
   def hit(x, bits)
     return if x < 0
