@@ -614,6 +614,7 @@ int comp_ivar_intern(ClassInfo *ci, const char *name) {
     ci->ivars = realloc(ci->ivars, sizeof(char *) * (size_t)ci->civars);
     ci->ivar_types = realloc(ci->ivar_types, sizeof(TyKind) * (size_t)ci->civars);
     ci->ivar_str_shared = realloc(ci->ivar_str_shared, (size_t)ci->civars);
+    ci->ivar_elems_shared = realloc(ci->ivar_elems_shared, (size_t)ci->civars);
     ci->ivar_int_table = realloc(ci->ivar_int_table, (size_t)ci->civars);
     ci->ivar_oa_type = realloc(ci->ivar_oa_type, sizeof(TyKind) * (size_t)ci->civars);
     ci->ivar_oa_seed = realloc(ci->ivar_oa_seed, sizeof(int) * (size_t)ci->civars);
@@ -625,6 +626,7 @@ int comp_ivar_intern(ClassInfo *ci, const char *name) {
   ci->ivars[ci->nivars] = strdup(name);
   ci->ivar_types[ci->nivars] = TY_UNKNOWN;
   ci->ivar_str_shared[ci->nivars] = 0;
+  ci->ivar_elems_shared[ci->nivars] = 0;
   ci->ivar_int_table[ci->nivars] = 0;
   ci->ivar_oa_type[ci->nivars] = TY_UNKNOWN;
   ci->ivar_oa_seed[ci->nivars] = 0;
@@ -647,6 +649,7 @@ int comp_member_intern(ClassInfo *ci, const char *name) {
     IV_SWAP(ivars, char *);
     IV_SWAP(ivar_types, TyKind);
     IV_SWAP(ivar_str_shared, unsigned char);
+    IV_SWAP(ivar_elems_shared, unsigned char);
     IV_SWAP(ivar_int_table, unsigned char);
     IV_SWAP(ivar_oa_type, TyKind);
     IV_SWAP(ivar_oa_seed, int);
@@ -2434,7 +2437,11 @@ static void vsite_build(Compiler *c, int toplevel) {
       int r = nt_ref(nt, u, "receiver"), ru = an_unparen(nt, r);
       const char *un = nt_str(nt, u, "name");
       if (ru >= 0 && ru < n) c->vs_rparent[ru] = u;
-      if (vsite_is_read(nt, ru)) vsite_add(c, VS_RECV, u, ru);
+      /* a constant or a class variable is a receiver here too: the share
+         rule's stores into its container (strbuf_static_store_walk) */
+      if (vsite_is_read(nt, ru) || nt_kind(nt, ru) == NK_ConstantReadNode ||
+          nt_kind(nt, ru) == NK_ClassVariableReadNode)
+        vsite_add(c, VS_RECV, u, ru);
       if (un && sp_str_mutator(un, SP_MUT_LOCAL)) {
         while (str_self_call(nt, an_unparen(nt, r))) r = nt_ref(nt, an_unparen(nt, r), "receiver");
         int base = an_unparen(nt, r);
