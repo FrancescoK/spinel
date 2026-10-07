@@ -1552,8 +1552,32 @@ void emit_local_ref(Compiler *c, int scope_node, const char *name, Buf *b) {
    shared-handle shim reads and writes that local through (`_sbN`, the
    shim's `lv__sbN`)? Only as a rename: a local the program itself names
    `_sb1` is its own. */
-static int sb_shim_shadow(const char *name, const char *rn) {
+int sb_shim_shadow(const char *name, const char *rn) {
   return rn != name && !strncmp(rn, "_sb", 3) && isdigit((unsigned char)rn[3]);
+}
+/* While a shim emits its arm, the receiver local's type reads TY_STRING (the
+   arm works on a plain String shadow), though the slot is the handle. A proc
+   or a fiber made inside the arm shares the real slot, and types its capture
+   struct and its body from the local: put the handle type back for it.
+   `n` is how many locals were lifted; sb_shim_drop sets them back. */
+LocalVar **sb_shim_lift(Compiler *c, int node, int *n) {
+  LocalVar **lifted = NULL;
+  Scope *sc = node >= 0 ? comp_scope_of(c, node) : NULL;
+  *n = 0;
+  if (!sc) return NULL;
+  for (int i = 0; i < g_nren; i++) {
+    if (!sb_shim_shadow(g_ren_from[i], g_ren_to[i])) continue;
+    LocalVar *lv = scope_local(sc, g_ren_from[i]);
+    if (!lv || lv->type != TY_STRING) continue;
+    if (!lifted) lifted = (LocalVar **)malloc(sizeof(LocalVar *) * (size_t)g_nren);
+    lv->type = TY_STRBUF;
+    lifted[(*n)++] = lv;
+  }
+  return lifted;
+}
+void sb_shim_drop(LocalVar **lifted, int n) {
+  for (int i = 0; i < n; i++) lifted[i]->type = TY_STRING;
+  free(lifted);
 }
 void emit_scope_local_ref(Compiler *c, Scope *s, const char *name, Buf *b) {
   /* Inside a shared-handle shim the local reads as the shim's shadow, a
@@ -2573,6 +2597,14 @@ int strbuf_slot_ref(Compiler *c, int recv, char *out, size_t cap) {
   if (recv < 0 || nt_kind(c->nt, recv) != NK_InstanceVariableReadNode || !holder_of_node(c, recv, &h) ||
       h.idx < 0 || c->classes[h.cid].ivar_types[h.idx] != TY_STRBUF) return 0;
   return holder_slot_text(c, &h, out, cap);
+}
+/* rename_local for a name whose CELL is wanted: the shim's shadow rename is
+   skipped, since the shadow is a plain C local and the cell the local lives
+   in keeps the name an enclosing inline gave it (or the source name). */
+const char *rename_local_cell(const char *nm) {
+  for (int i = g_nren - 1; i >= 0; i--)
+    if (sp_streq(g_ren_from[i], nm) && !sb_shim_shadow(nm, g_ren_to[i])) return g_ren_to[i];
+  return nm;
 }
 const char *rename_local(const char *nm) {
   /* Innermost first. A nested inline pushes its own locals above the caller's,

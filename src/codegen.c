@@ -6028,7 +6028,14 @@ static int gen_yields_multi(const NodeTable *nt, int id, const char *yname) {
 /* emitting a fiber body, which lands in g_procs ahead of the constructors */
 static int g_in_fiber_body = 0;
 
+static void emit_fiber_new_here(Compiler *c, int id, Buf *b, int as_gen, int size_node);
 void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen, int size_node) {
+  /* the capture struct and the body type a shim's receiver local as the handle */
+  int nl; LocalVar **lifted = sb_shim_lift(c, id, &nl);
+  emit_fiber_new_here(c, id, b, as_gen, size_node);
+  sb_shim_drop(lifted, nl);
+}
+static void emit_fiber_new_here(Compiler *c, int id, Buf *b, int as_gen, int size_node) {
   nd_stamp(nt_ref(c->nt, id, "block"), ND_BLOCK_PROC);   /* the body is a function of its own */
   const NodeTable *nt = c->nt;
   int blk = nt_ref(nt, id, "block");
@@ -6150,8 +6157,12 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen, int size_node) {
      source name once the body pushed fewer entries (`_cell_recv` instead of
      `_cell__y6_recv`, an undeclared identifier at the C level). */
   char (*cap_rn)[112] = ncap > 0 ? (char (*)[112])malloc(sizeof(char[112]) * (size_t)ncap) : NULL;
-  for (int i = 0; i < ncap; i++)
+  /* and the name of the cell: the shim's shadow rename names no cell */
+  char (*cap_cn)[112] = ncap > 0 ? (char (*)[112])malloc(sizeof(char[112]) * (size_t)ncap) : NULL;
+  for (int i = 0; i < ncap; i++) {
     snprintf(cap_rn[i], sizeof cap_rn[0], "%s", rename_local(caps.v[i]));
+    snprintf(cap_cn[i], sizeof cap_cn[0], "%s", rename_local_cell(caps.v[i]));
+  }
 
   /* Capture self if the body accesses ivars or dispatches to self implicitly */
   int cap_self = 0;
@@ -6569,11 +6580,12 @@ void emit_fiber_new(Compiler *c, int id, Buf *b, int as_gen, int size_node) {
            (`only` -> `_y1234_only`) and the cell is DECLARED under the
            renamed name by emit_scope_decls, so capturing under the source
            name emits a reference to an identifier that does not exist. */
-        buf_printf(g_pre, "_t%d->c_%s = _cell_%s;\n", tc, caps.v[i], cap_rn[i]);   /* the shared cell pointer */
+        buf_printf(g_pre, "_t%d->c_%s = _cell_%s;\n", tc, caps.v[i], cap_cn[i]);   /* the shared cell pointer */
       else
         buf_printf(g_pre, "_t%d->c_%s = lv_%s;\n", tc, caps.v[i], cap_rn[i]);
     }
     free(cap_rn);
+    free(cap_cn);
     if (as_gen) {
       buf_printf(b, "%ssp_Enumerator_new_gen(%s, _t%d, ", gen_multi ? "sp_enum_mark_pair(" : "", fname, tc);
       emit_enum_size_arg(c, size_node, b);
@@ -6922,8 +6934,10 @@ static void emit_proc_literal_here(Compiler *c, int create, Buf *b);
    captured the inlined callee's receiver as its self, and the block's ivar
    writes landed in that object instead of the one that wrote the block. */
 void emit_proc_literal(Compiler *c, int create, Buf *b) {
+  int nl; LocalVar **lifted = sb_shim_lift(c, create, &nl);
   if (create < 0 || create != g_block_id || !g_yield_self_fallback) {
     emit_proc_literal_here(c, create, b);
+    sb_shim_drop(lifted, nl);
     return;
   }
   const char *sv_self = g_self, *sv_deref = g_self_deref;
@@ -6935,6 +6949,7 @@ void emit_proc_literal(Compiler *c, int create, Buf *b) {
   emit_proc_literal_here(c, create, b);
   g_self = sv_self; g_self_deref = sv_deref;
   g_emitting_class_id = sv_emcls; g_nren = sv_nren;
+  sb_shim_drop(lifted, nl);
 }
 
 /* Bind a proc parameter slot: `cond` true reads the argument `arg`, else the
@@ -8240,8 +8255,8 @@ else if (orecv >= 0 && onm) {
         if (g_cap_struct && g_cap_names && nameset_has(g_cap_names, caps.v[i]))
           buf_printf(g_pre, "_capv_%d->c_%s = ((%s *)_cap)->c_%s;\n", pid, caps.v[i], g_cap_struct, caps.v[i]);
         else
-          /* rename_local for the same reason as the sibling site above. */
-          buf_printf(g_pre, "_capv_%d->c_%s = _cell_%s;\n", pid, caps.v[i], rename_local(caps.v[i]));
+          /* as the sibling site above, minus a shim's shadow rename: it names no cell */
+          buf_printf(g_pre, "_capv_%d->c_%s = _cell_%s;\n", pid, caps.v[i], rename_local_cell(caps.v[i]));
       }
       /* Capture the enclosing instance self: by value for a value-type class
          (deref if the enclosing method holds self as a pointer, e.g. an

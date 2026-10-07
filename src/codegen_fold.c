@@ -6382,6 +6382,15 @@ int emit_lent_local(LocalVar *lv, const char *vn, Buf *out) {
      sp_gc_pin_remembered, which reads a header off it -- the fault
      #4391's first half was. */
   int fwd = lv && (lv->byref_out || lv->inline_alias);   /* an inline alias is a forward too: it points at whatever the caller lent */
+  /* Inside a shared-handle shim the local is the shim's shadow, a plain C
+     local the shim declares: its address is the slot, whether the local
+     itself lives in a cell or a capture field, and nothing is pinned (the
+     cell form spelled `_cell__sbN`, which nothing declares). */
+  const char *srn = rename_local(vn);
+  if (sb_shim_shadow(vn, srn) && (!lv || lv->type == TY_STRING)) {
+    buf_printf(out, "&lv_%s", srn);
+    return 1;
+  }
   if (g_cap_struct && g_cap_names && nameset_has(g_cap_names, vn)) {
     /* a capture of another type has a cell of that type, no String slot */
     if (lv && lv->type != TY_STRING) return 0;
