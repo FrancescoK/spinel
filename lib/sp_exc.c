@@ -130,8 +130,11 @@ int sp_exc_is_standard_error(const char *raised) {
 }
 /* the 0xff byte is the frozen-literal marker sp_exc_gc_scan reads at msg[-1];
    the string itself is the empty one that follows it */
-static const char sp_exc_no_msg_storage[] = "\xff";
+static const char sp_exc_no_msg_storage[] = "\xff" "\0" "\xff";
 const char *const sp_exc_no_msg = sp_exc_no_msg_storage + 1;
+/* the frozen empty sentinel: the second "" of the same storage, behind a
+   marker byte of its own (sp_exc_no_msg's NUL, then 0xff) */
+const char *const sp_exc_no_msg_frozen = sp_exc_no_msg_storage + 3;
 
 /* SystemCallError#errno reads what SystemCallError#initialize stored: the
    number of the Errno class the exception descends from. An exception built
@@ -188,7 +191,7 @@ const char *sp_exc_msg_plain(const char *m) {
   size_t n = sp_cmsg_len(m);
   /* an empty message is the explicit-empty sentinel, as sp_exc_msg_given
      makes it for an unfrozen "" */
-  if (n == 0) return sp_exc_no_msg;
+  if (n == 0) return sp_exc_no_msg_frozen;
   if (memchr(m + SP_CMSG_HDR, 0, n)) return m;
   char *r = sp_str_alloc_nogc(n);
   memcpy(r, m + SP_CMSG_HDR, n);
@@ -200,7 +203,7 @@ sp_Exception *sp_exc_new_for_catch(const char *cls, const char *msg) {
      handler stack, or sp_exc_msg_given's): a frozen one stays frozen */
   int fz = msg && msg != sp_exc_no_msg && !sp_cmsg_p(msg) &&
            (((const unsigned char *)msg)[-1] == 0xfa || ((const unsigned char *)msg)[-1] == 0xf8);
-  if (msg != sp_exc_no_msg) msg = sp_msg_heapify(msg); SP_GC_ROOT_STR(msg);
+  if (!sp_exc_msg_empty_given(msg)) msg = sp_msg_heapify(msg); SP_GC_ROOT_STR(msg);
   sp_Exception *e = sp_exc_new(cls, msg);
   if (fz && e->msg) ((unsigned char *)e->msg)[-1] = 0xfa;
   if (sp_user_exc_parent_fn) {
@@ -220,7 +223,7 @@ sp_Exception *sp_exc_new_for_catch(const char *cls, const char *msg) {
    where a user subclass with ivars was raised without a carried object
    (#1415). Its ivar fields stay zero (nil/0). msg is the only heap field, so
    the base scan suffices. */
-void *sp_exc_new_sub_sized(size_t sz, const char *cls_name, const char *msg) {if (msg != sp_exc_no_msg) msg = sp_msg_heapify(msg); SP_GC_ROOT_STR(msg);
+void *sp_exc_new_sub_sized(size_t sz, const char *cls_name, const char *msg) {if (!sp_exc_msg_empty_given(msg)) msg = sp_msg_heapify(msg); SP_GC_ROOT_STR(msg);
   sp_Exception *e = (sp_Exception *)sp_gc_alloc(sz, NULL, sp_exc_gc_scan);
   memset(e, 0, sz);
   e->cls_name = cls_name ? cls_name : "RuntimeError";
@@ -235,7 +238,8 @@ void *sp_exc_new_sub_sized(size_t sz, const char *cls_name, const char *msg) {if
   SP_GC_ROOT(e);
   /* an explicitly given message stays, even empty (#3713) */
   e->msg = sp_exc_msg_copy((msg && msg[0]) ? msg
-                            : (msg == sp_exc_no_msg ? "" : e->cls_name));
+                            : (sp_exc_msg_empty_given(msg) ? "" : e->cls_name));
+  if (msg == sp_exc_no_msg_frozen) ((unsigned char *)e->msg)[-1] = 0xfa;   /* `raise C, ""` */
   /* The copy can collect, and a collection promotes the rooted object it
      is filling: an old holder then receives a young string. Recorded after
      the store, since the allocation would clear a record made before it. */
@@ -296,7 +300,7 @@ sp_RbVal sp_Exception_set_backtrace(sp_Exception *e, sp_StrArray *bt) {
    collection in between (sp_msg_heapify), so an unrooted heap message cannot
    be swept out from under it either. The no-message sentinel keeps its
    identity: it is what tells an empty message apart from none at all. */
-sp_Exception *sp_exc_new(const char *cls_name, const char *msg) {if (msg != sp_exc_no_msg) msg = sp_msg_heapify(msg); SP_GC_ROOT_STR(msg);
+sp_Exception *sp_exc_new(const char *cls_name, const char *msg) {if (!sp_exc_msg_empty_given(msg)) msg = sp_msg_heapify(msg); SP_GC_ROOT_STR(msg);
   sp_Exception *e = (sp_Exception *)sp_gc_alloc(sizeof(sp_Exception), NULL, sp_exc_gc_scan);
   e->cls_name = cls_name ? cls_name : "RuntimeError";
   e->parent_cls_name = NULL;
@@ -320,8 +324,9 @@ sp_Exception *sp_exc_new(const char *cls_name, const char *msg) {if (msg != sp_e
      raise site's rodata literal would under-read one byte before it. */
   SP_GC_ROOT(e);
   e->msg = sp_exc_msg_copy((msg && msg[0]) ? msg
-                            : (msg == sp_exc_no_msg ? ""
+                            : (sp_exc_msg_empty_given(msg) ? ""
                                                     : (cls_name ? cls_name : "RuntimeError")));
+  if (msg == sp_exc_no_msg_frozen) ((unsigned char *)e->msg)[-1] = 0xfa;   /* `raise C, ""` */
   sp_gc_wb((void *)e);   /* same reason as sp_exc_new_sub_sized */
   return e;
 }
@@ -343,7 +348,7 @@ sp_bool sp_exc_eq(sp_Exception *a, sp_Exception *b) {
     if (!bm) bm = "";
     return al == bl && memcmp(am, bm, al) == 0; }
 }
-sp_Exception *sp_exc_new_sub(const char *cls_name, const char *parent_cls, const char *msg) {if (msg != sp_exc_no_msg) msg = sp_msg_heapify(msg); SP_GC_ROOT_STR(msg);
+sp_Exception *sp_exc_new_sub(const char *cls_name, const char *parent_cls, const char *msg) {if (!sp_exc_msg_empty_given(msg)) msg = sp_msg_heapify(msg); SP_GC_ROOT_STR(msg);
   sp_Exception *e = sp_exc_new(cls_name, msg);   /* empty msg already fell back to cls_name */
   e->parent_cls_name = parent_cls;
   sp_exc_syserr_init(e);
@@ -365,7 +370,7 @@ sp_Exception *sp_exc_dup(sp_Exception *e) {
 }
 /* Write the staged introspection values (receiver/key/value) into the carried
    exception, creating one when the raise had none (see sp_raise_cls). */
-void *sp_exc_apply_staged(const char *cls, const char *msg, void *obj) {if (msg != sp_exc_no_msg) msg = sp_msg_heapify(msg); SP_GC_ROOT_STR(msg);
+void *sp_exc_apply_staged(const char *cls, const char *msg, void *obj) {if (!sp_exc_msg_empty_given(msg)) msg = sp_msg_heapify(msg); SP_GC_ROOT_STR(msg);
   sp_Exception *e = (sp_Exception *)obj;
   if (!e) e = sp_exc_new(cls, msg);
   /* `obj` is a caller-supplied exception that may have been promoted long ago
@@ -383,7 +388,7 @@ int sp_exc_exit_status(void *obj) {
   return (e && e->result.tag == SP_TAG_INT) ? (int)e->result.v.i : 0;
 }
 /* Exception#exception(msg): a copy of the receiver carrying the new message. */
-sp_Exception *sp_exc_exception(sp_Exception *e, const char *msg) {SP_GC_ROOT(e);if (msg != sp_exc_no_msg) msg = sp_msg_heapify(msg); SP_GC_ROOT_STR(msg);
+sp_Exception *sp_exc_exception(sp_Exception *e, const char *msg) {SP_GC_ROOT(e);if (!sp_exc_msg_empty_given(msg)) msg = sp_msg_heapify(msg); SP_GC_ROOT_STR(msg);
   sp_Exception *n = sp_exc_dup(e);
   SP_GC_ROOT(n);
   n->msg = sp_exc_msg_copy((msg && msg[0]) ? msg : (n->cls_name ? n->cls_name : "RuntimeError"));

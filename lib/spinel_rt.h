@@ -13714,9 +13714,9 @@ SP_NORETURN SP_COLD void sp_raise_cls(const char *cls, const char *msg) {
      recorded before its own setjmp (sp_exc_rootmark, or a C local in the
      Kernel#loop and enumerator landings), which discards this entry, and a
      fiber's trampoline hands the whole root stack back to its resumer. */
-  if (msg != sp_exc_no_msg) msg = sp_msg_heapify(msg);
+  if (!sp_exc_msg_empty_given(msg)) msg = sp_msg_heapify(msg);
   /* a frozen message (a literal's) as frozen text (sp_exc_msg_plain) */
-  if (msg != sp_exc_no_msg) msg = sp_exc_msg_plain(msg);
+  if (!sp_exc_msg_empty_given(msg)) msg = sp_exc_msg_plain(msg);
   SP_GC_ROOT_STR(msg);
 #if SP_BT_AVAILABLE
   /* a pass-through, or a bare `raise` re-raising the handled exception, keeps
@@ -14935,7 +14935,7 @@ void sp_fiber_reraise(const char *cls, const char *msg, void *obj) {
      handed Fiber#raise / Thread#raise: a String with a marker byte. A
      frozen one (a literal's, sp_exc_msg_plain) is handed on counted, so
      the re-raise keeps its mark */
-  if (msg && msg != sp_exc_no_msg && !sp_cmsg_p(msg) &&
+  if (msg && !sp_exc_msg_empty_given(msg) && !sp_cmsg_p(msg) &&
       (((const unsigned char *)msg)[-1] == 0xfa || ((const unsigned char *)msg)[-1] == 0xf8))
     msg = sp_exc_msg_counted_frozen(msg, sp_str_byte_len(msg));
   sp_raise_cls(cls, msg);
