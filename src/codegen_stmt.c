@@ -1445,12 +1445,31 @@ static int strbuf_route_proc_call(Compiler *c, int v) {
   return recv >= 0 && comp_ntype(c, recv) == TY_PROC && (vt == TY_STRING || vt == TY_STRBUF) &&
          bop_share_named(BOP_CALLABLE, nt_str(nt, v, "name")) == BSH_CALL;
 }
+/* --share-strings: an IO read into an output buffer that is a local
+   holding the shared handle (`io.read(n, buf)`, readpartial, sysread,
+   read_nonblock, `io.pread(n, off, buf)`; the BSH_FILL1 rows): CRuby
+   answers the buffer itself, which the read filled, or nil at the end of
+   the file. The buffer's node, or -1. */
+static int strbuf_route_io_fill(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  char ref[1024];
+  v = unwrap_parens(c, v);
+  if (!repr_share_rule(c) || v < 0 || nt_kind(nt, v) != NK_CallNode || nt_ref(nt, v, "block") >= 0) return -1;
+  const char *nm = nt_str(nt, v, "name");
+  int recv = nt_ref(nt, v, "receiver"), argc = 0;
+  const int *argv = call_args(nt, v, &argc);
+  if (!nm || recv < 0 || comp_ntype(c, recv) != TY_IO || comp_ntype(c, v) != TY_STRING ||
+      bop_share_named(TY_IO, nm) != BSH_FILL1) return -1;
+  int bi = is_positional_io(nm) ? 2 : 1;
+  if (argc != bi + 1 || nt_kind(nt, argv[bi]) != NK_LocalVariableReadNode) return -1;
+  return strbuf_slot_ref(c, argv[bi], ref, sizeof ref) ? argv[bi] : -1;
+}
 /* Does value v hand over a String the rule shares as the handle itself: a
    slot holding it, or a route over one? */
 static int strbuf_route_carries(Compiler *c, int v, int depth) {
   char ref[1024];
   if (strbuf_route_proc_call(c, v) || strbuf_route_begin(c, v) || strbuf_route_yield(c, v) ||
-      strbuf_route_inline_call(c, v) || strbuf_route_loop(c, v)) return 1;
+      strbuf_route_inline_call(c, v) || strbuf_route_loop(c, v) || strbuf_route_io_fill(c, v) >= 0) return 1;
   int x = strbuf_route_operand(c, v);
   if (x == unwrap_parens(c, v)) return 1;
   if (x >= 0) return depth < 8 && strbuf_route_carries(c, x, depth + 1);
@@ -1462,6 +1481,18 @@ static int strbuf_route_carries(Compiler *c, int v, int depth) {
    the String every other name of its class holds. */
 int emit_strbuf_route(Compiler *c, int v, Buf *b) {
   const NodeTable *nt = c->nt;
+  int iob = strbuf_route_io_fill(c, v);
+  if (iob >= 0) {
+    /* the read fills the buffer's handle (emit_io_outbuf_set) and answers
+       it, or nil (NULL) at the end of the file */
+    char href[1024];
+    strbuf_slot_ref(c, iob, href, sizeof href);
+    int t = ++g_tmp;
+    buf_printf(b, "({ const char *_t%d = ", t);
+    emit_expr(c, unwrap_parens(c, v), b);
+    buf_printf(b, "; _t%d ? %s : (sp_String *)NULL; })", t, href);
+    return 1;
+  }
   if (strbuf_route_proc_call(c, v)) {
     /* the box as the proc handed it back: its handle, a plain String's
        new one, or nil */

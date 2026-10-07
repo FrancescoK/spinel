@@ -1022,13 +1022,18 @@ static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int 
     sh_union(F, sh_elem(F, r), vals[0]);
     return r;
   }
-  case BSH_FILL1:
-    if (argc >= 2) {
-      int b = sh_val(F, c, argv[1]);
-      sh_mark_at(F, b, SHF_MUT | (sh_holder_read(nt, argv[1]) ? 0 : SHF_INDIRECT), n);
+  case BSH_FILL1: {
+    /* the buffer is the second argument, pread's the third (after the
+       offset) */
+    const char *fnm = nt_str(nt, n, "name");
+    int bi = fnm && is_positional_io(fnm) ? 2 : 1;
+    if (argc > bi) {
+      int b = sh_val(F, c, argv[bi]);
+      sh_mark_at(F, b, SHF_MUT | (sh_holder_read(nt, argv[bi]) ? 0 : SHF_INDIRECT), n);
       return b;
     }
     return -1;
+  }
   case BSH_ITER: case BSH_ITER_SEL: case BSH_ITER_FIND:
     if (lit_blk) sh_iter_params(F, c, blk, sh_elem(F, rv), container == 2);
     return share == BSH_ITER_FIND ? (argc >= 1 ? rv : sh_elem(F, rv)) : rv;
