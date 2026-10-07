@@ -182,10 +182,16 @@ int sp_net_sock_host(int fd, int peer, char *hostbuf, int cap) {
                  : getsockname(fd, (struct sockaddr *)&ss, &len);
     if (r != 0) return -1;
     if (ss.ss_family != AF_INET && ss.ss_family != AF_INET6) return -1;
+#ifdef NI_NAMEREQD
     sp_native_enter();
     int rc = getnameinfo((struct sockaddr *)&ss, len, hostbuf, (socklen_t)cap, NULL, 0, NI_NAMEREQD);
     sp_native_leave();
     return rc == 0 ? 0 : -1;
+#else
+    /* no reverse lookup on this platform (wasm32-wasi): the numeric address */
+    (void)len; (void)hostbuf; (void)cap;
+    return -1;
+#endif
 }
 
 int sp_net_listen(int port, int reuseport) {
