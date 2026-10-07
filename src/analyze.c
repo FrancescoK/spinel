@@ -18027,18 +18027,20 @@ static int an_returns_shared_handles(Compiler *c, int mi3, const int *ret_start,
   return ok;
 }
 /* The method a deep-return pickup call reaches: a receiverless call's
-   uniquely named method, or under --share-strings a class method of that
-   name called on its own class (`K.get`), which the pickup takes alike
-   (emit_call_body); else -1. */
+   uniquely named method, or under --share-strings a class method its own
+   class defines, called on that class (`K.get`; another class may have a
+   method of the name), which the pickup takes alike (emit_call_body);
+   else -1. */
 static int an_pickup_target(Compiler *c, int wv) {
   const NodeTable *nt = c->nt;
   int wr = nt_ref(nt, wv, "receiver");
   if (nt_ref(nt, wv, "block") >= 0 || (wr >= 0 && !c->share_strings)) return -1;
   const char *mn = nt_str(nt, wv, "name");
-  int mi3 = mn ? an_unique_scope_by_name(c, mn) : -1;
-  if (mi3 <= 0 || wr < 0) return mi3;
-  return infer_type(c, wr) == TY_CLASS && c->scopes[mi3].is_cmethod &&
-         c->scopes[mi3].class_id == class_recv_static_ci(c, wr) ? mi3 : -1;
+  if (!mn) return -1;
+  if (wr < 0) return an_unique_scope_by_name(c, mn);
+  int ci = infer_type(c, wr) == TY_CLASS ? class_recv_static_ci(c, wr) : -1;
+  int defc = -1, mi3 = ci >= 0 ? comp_cmethod_in_chain(c, ci, mn, &defc) : -1;
+  return mi3 > 0 && defc == ci && c->scopes[mi3].is_cmethod && c->scopes[mi3].class_id == ci ? mi3 : -1;
 }
 /* --share-strings: a String mutator whose receiver is a receiverless call
    (or a class method's call on its class) of a uniquely named method
