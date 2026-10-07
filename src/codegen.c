@@ -8337,7 +8337,7 @@ else if (orecv >= 0 && onm) {
         if (g_cap_struct)
           buf_printf(g_pre, "_capv_%d->__self_cls = ((%s *)_cap)->__self_cls;\n", pid, g_cap_struct);
         else
-          buf_printf(g_pre, "_capv_%d->__self_cls = _sp_cls;\n", pid);
+          buf_printf(g_pre, "_capv_%d->__self_cls = %s;\n", pid, bs->yields && sv_self ? sv_self : "_sp_cls");
       }
       if (ret_proc) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "_capv_%d->_home = _h.id;\n", pid); }
       if (brk_blk) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "_capv_%d->_brkhome = %s;\n", pid, sv_bser); }
@@ -12114,6 +12114,7 @@ static void emit_arysub_dup_dispatch(Compiler *c, Buf *b) {
    whose accumulator widened to poly still reaches Money#+ (#2886). Each arm
    unboxes the operand per the method's bound parameter type; a mismatched
    operand leaves handled FALSE and the caller's TypeError stands. */
+static void emit_user_op_dispatch(Compiler *c, Buf *b, const char *fname, const char *const *uops, int derive_eq);
 static void emit_user_binop_dispatch(Compiler *c, Buf *b) {
   static const char *const uops[] = {
     "+", "-", "*", "/", "%", "**", "<<", ">>", "&", "|", "^",
@@ -12123,7 +12124,26 @@ static void emit_user_binop_dispatch(Compiler *c, Buf *b) {
     /* and the element read, which a boxed `r[k] ||= v` / `r[k] += v` reads
        through sp_poly_index_poly */
     "[]", NULL };
-  buf_puts(b, "static sp_RbVal sp_user_binop_dispatch(const char *op, sp_RbVal a, sp_RbVal b, sp_bool *handled) {\n");
+  emit_user_op_dispatch(c, b, "sp_user_binop_dispatch", uops, 1);
+}
+/* Generate sp_user_eql_dispatch, the same table for eql? alone: uniq and the
+   set operations ask it of any argument (sp_poly_eql_strict), where
+   sp_obj_eql_hook only pairs one class. A table of its own, so no other
+   operator's lookup passes an eql? arm. Installed as sp_user_eql_hook. */
+static void emit_user_eql_dispatch(Compiler *c, Buf *b) {
+  static const char *const eops[] = { "eql?", NULL };
+  emit_user_op_dispatch(c, b, "sp_user_eql_dispatch", eops, 0);
+}
+/* 1 if a class the eql? table dispatches defines eql? */
+static int program_has_user_eql(Compiler *c) {
+  for (int k = 0; k < c->nclasses; k++)
+    if (c->classes[k].instantiated && comp_method_in_chain(c, k, "eql?", NULL) >= 0) return 1;
+  return 0;
+}
+/* The operator table behind both: a cls_id switch, then each operator in
+   `uops` the class defines; `derive_eq` adds Comparable's `==` from `<=>`. */
+static void emit_user_op_dispatch(Compiler *c, Buf *b, const char *fname, const char *const *uops, int derive_eq) {
+  buf_printf(b, "static sp_RbVal %s(const char *op, sp_RbVal a, sp_RbVal b, sp_bool *handled) {\n", fname);
   buf_puts(b, "  *handled = FALSE;\n  switch (a.cls_id) {\n");
   for (int k = 0; k < c->nclasses; k++) {
     /* A reopened builtin's boxed values carry the builtin's own id, and its
@@ -12199,7 +12219,7 @@ static void emit_user_binop_dispatch(Compiler *c, Buf *b) {
        compare but not the equality still answers `a == b` as `(a <=> b) == 0`.
        Without an arm the boxed path fell through to identity and said false
        for two equal values (#3501). */
-    if (!bcase && comp_method_in_chain(c, k, "==", NULL) < 0) {
+    if (derive_eq && !bcase && comp_method_in_chain(c, k, "==", NULL) < 0) {
       int cmp_defcls = -1;
       int cmp_mi = comp_method_in_chain(c, k, "<=>", &cmp_defcls);
       if (cmp_mi >= 0) {
@@ -12384,7 +12404,7 @@ static int class_is_hashkey(Compiler *c, int k) {
 
 /* 1 if instantiated class k is a pure Struct/Data (no user ==/eql?/hash), so
    it is a value hash key: hash combines the member hashes and eql? is the
-   field-wise value == (via sp_obj_eq_dispatch). #2660 */
+   field-wise eql? (sp_poly_eql_strict). #2660 */
 static int class_is_valuekey(Compiler *c, int k) {
   ClassInfo *ci = &c->classes[k];
   return ci->instantiated && (ci->is_struct || ci->is_data) &&
@@ -12469,12 +12489,27 @@ static void emit_obj_hashkey_dispatch(Compiler *c, Buf *b) {
     else
       buf_printf(b, "return sp_poly_truthy(sp_%s_%s(%s(sp_%s *)a, %s));\n", dcn, mc(m->name), slf, dcn, argbuf);
   }
-  /* Struct/Data value keys: eql? is the field-wise value == (sp_obj_eq_dispatch). */
+  /* Struct/Data value keys: eql? is the field-wise eql? (Struct#eql?), as
+     their hash folds each member's: Struct.new(:x).new(1) is == to one
+     holding 1.0 but not eql? to it. */
   for (int k = 0; k < c->nclasses; k++) {
     if (!class_is_valuekey(c, k)) continue;
-    int cid = comp_class_index(c, c->classes[k].name);
-    buf_printf(b, "    case %d: return sp_obj_eq_dispatch(sp_box_obj(a, %d), sp_box_obj(b_, %d));\n",
-               cid, cid, cid);
+    ClassInfo *ci = &c->classes[k];
+    buf_printf(b, "    case %d: { sp_%s *_a = (sp_%s *)a, *_b = (sp_%s *)b_; if (!_a || !_b) return _a == _b; return ",
+               comp_class_index(c, ci->name), ci->c_name, ci->c_name, ci->c_name);
+    if (ci->nmembers == 0) buf_puts(b, "1");
+    for (int i = 0; i < ci->nmembers; i++) {
+      const char *iv = iv_c(ci->ivars[i] + 1);
+      Buf ea; memset(&ea, 0, sizeof ea); Buf eb; memset(&eb, 0, sizeof eb);
+      char fa[128], fb[128];
+      snprintf(fa, sizeof fa, "_a->iv_%s", iv);
+      snprintf(fb, sizeof fb, "_b->iv_%s", iv);
+      emit_boxed_text(c, ci->ivar_types[i], fa, &ea);
+      emit_boxed_text(c, ci->ivar_types[i], fb, &eb);
+      buf_printf(b, "%ssp_poly_eql_strict(%s, %s)", i ? " && " : "", ea.p ? ea.p : fa, eb.p ? eb.p : fb);
+      free(ea.p); free(eb.p);
+    }
+    buf_puts(b, "; }\n");
   }
   buf_puts(b, "    default: break;\n  }\n  return a == b_;\n}\n");
 }
@@ -12583,6 +12618,8 @@ void emit_regex_section(Compiler *c, Buf *b) {
     buf_puts(b, "static sp_int sp_obj_cmp_dispatch(sp_RbVal a, sp_RbVal b, sp_bool *comparable);\n");
   if (g_has_user_binop)
     buf_puts(b, "static sp_RbVal sp_user_binop_dispatch(const char *op, sp_RbVal a, sp_RbVal b, sp_bool *handled);\n");
+  if (program_has_user_eql(c))
+    buf_puts(b, "static sp_RbVal sp_user_eql_dispatch(const char *op, sp_RbVal a, sp_RbVal b, sp_bool *handled);\n");
   if (g_has_user_aset)
     buf_puts(b, "static void sp_user_aset_dispatch(sp_RbVal a, sp_RbVal k, sp_RbVal v, sp_bool *handled);\n");
   if (g_has_user_coerce)
@@ -12682,6 +12719,8 @@ void emit_regex_section(Compiler *c, Buf *b) {
     buf_puts(b, "  sp_obj_cmp_hook = sp_obj_cmp_dispatch;\n");
   if (g_has_user_binop)
     buf_puts(b, "  SP_INSTALL_HOOK(sp_user_binop_hook, sp_user_binop_dispatch);\n");
+  if (program_has_user_eql(c))
+    buf_puts(b, "  sp_user_eql_hook = sp_user_eql_dispatch;\n");
   if (g_has_user_aset)
     buf_puts(b, "  sp_user_aset_hook = sp_user_aset_dispatch;\n");
   if (g_has_user_coerce)
@@ -13825,7 +13864,7 @@ static void scan_prologue_features(Compiler *c) {
           {"StringScanner","strscan"}, {"Base64","base64"}, {"Digest","digest"},
           {"ERB","erb"}, {"OptionParser","optparse"}, {"Pathname","pathname"},
           {"SecureRandom","securerandom"}, {"Tempfile","tempfile"},
-          {"CGI","cgi"}, {"Benchmark","benchmark"},
+          {"CGI","cgi"}, {"Benchmark","benchmark"}, {"Shellwords","shellwords"},
           {NULL,NULL} };
         for (int pk = 0; PKG[pk].cls; pk++) {
           if (!sp_streq(nm, PKG[pk].cls)) continue;
@@ -15490,6 +15529,22 @@ static void emit_ffi_decls(Compiler *c, Buf *b) {
       if (m->rest) buf_puts(b, ", sp_int, sp_RbVal *");
       buf_puts(b, ");\n");
     }
+    /* --share-strings: the handle forms `native_share` names, which take
+       (a constructor's first argument) or answer the shared String as its
+       sp_String * handle */
+    for (int mi = 0; cf->share_strings && mi < cf->n_native_methods; mi++) {
+      NativeMethod *m = &cf->native_methods[mi];
+      int seen = !m->share_csym || m->rest;
+      for (int pj = 0; pj < mi && !seen; pj++)
+        seen = cf->native_methods[pj].share_csym && sp_streq(cf->native_methods[pj].share_csym, m->share_csym);
+      if (seen) continue;
+      const char *cstruct = cf->classes[m->class_id].c_struct;
+      if (m->kind == 1) buf_printf(b, "extern %s *%s(sp_int", cstruct, m->share_csym);
+      else buf_printf(b, "extern sp_String *%s(%s *", m->share_csym, cstruct);
+      for (int ai = 0; ai < m->nargs; ai++)
+        buf_printf(b, ", %s", m->kind == 1 && ai == 0 ? "sp_String *" : native_c_type(m->args[ai]));
+      buf_puts(b, ");\n");
+    }
     /* IO::Buffer as an ffi_func pointer argument (codegen_call.c) */
     if (cf->n_ffi_funcs > 0 && ffi_iobuffer_class(cf) >= 0) {
       buf_puts(b, "extern void *sp_IOBuffer_ffi_base(sp_IOBuffer *, sp_int);\n"
@@ -16531,13 +16586,13 @@ char *codegen_program(const NodeTable *nt) {
   emit_synth_line_marker(body);
   if (g_has_user_cmp) emit_obj_cmp_dispatch(c, body);
   if (g_has_user_binop) emit_user_binop_dispatch(c, body);
+  if (program_has_user_eql(c)) emit_user_eql_dispatch(c, body);
   if (g_has_user_aset) emit_user_aset_dispatch(c, body);
   if (g_has_user_coerce) emit_user_coerce_dispatch(c, body);
   if (g_has_user_to_io) emit_user_to_io_dispatch(c, body);
   if (g_has_user_init_copy) emit_user_init_copy_dispatch(c, body);
   if (program_has_arysub(c)) emit_arysub_dup_dispatch(c, body);
-  /* Struct/Data value-== hook (after the class struct definitions); emitted
-     before the hash-key dispatch, which references sp_obj_eq_dispatch. */
+  /* Struct/Data value-== hook (after the class struct definitions). */
   if (g_gen_obj_valeq) emit_obj_valeq_dispatch(c, body);
   /* Hash-key hooks (after the user #hash/#eql? definitions they call). */
   if (g_gen_obj_hashkey) emit_obj_hashkey_dispatch(c, body);

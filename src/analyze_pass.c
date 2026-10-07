@@ -1007,6 +1007,16 @@ static int infer_case_pattern_locals(Compiler *c) {
       int pat = nt_ref(nt, conds[ci], "pattern");
       if (pat < 0) continue;
       Scope *ms = comp_scope_of(c, conds[ci]);
+      if (nt_kind(nt, pat) == NK_IfNode || nt_kind(nt, pat) == NK_UnlessNode) {
+        /* in x if guard -- binding is in IfNode.statements body.
+           UnlessNode wraps the pattern the same way. Unwrap either guard so
+           every pattern uses the same binding types as its unguarded form. */
+        int stmts = nt_ref(nt, pat, "statements");
+        int bn = 0;
+        const int *body = stmts >= 0 ? nt_arr(nt, stmts, "body", &bn) : NULL;
+        if (bn <= 0) continue;
+        pat = body[0];
+      }
       const char *pty = nt_type(nt, pat);
       if (!pty) continue;
       int bind_lv_node = -1;
@@ -1015,21 +1025,6 @@ static int infer_case_pattern_locals(Compiler *c) {
       if (sp_streq(pty, "LocalVariableTargetNode")) {
         /* in x */
         bind_lv_node = pat;
-      }
-      else if (sp_streq(pty, "IfNode")) {
-        /* in x if guard -- binding is in IfNode.statements body */
-        int stmts = nt_ref(nt, pat, "statements");
-        if (stmts >= 0 && nt_type(nt, stmts) &&
-            sp_streq(nt_type(nt, stmts), "StatementsNode")) {
-          int bn = 0;
-          const int *body = nt_arr(nt, stmts, "body", &bn);
-          for (int k = 0; k < bn; k++) {
-            const char *bty = nt_type(nt, body[k]);
-            if (bty && sp_streq(bty, "LocalVariableTargetNode")) {
-              bind_lv_node = body[k]; break;
-            }
-          }
-        }
       }
       else if (sp_streq(pty, "CapturePatternNode")) {
         /* in PATTERN => var */
@@ -15229,6 +15224,10 @@ static int irt_scope(Compiler *c, int s, IrtCtx *x) {
      build, #4451), and an Integer to a Bignum (`def get = @v` returned a
      promoted loop local's Bignum through an sp_int). Everything else is
      left where the earlier, gated re-runs settled it. */
+  /* At 3 (--share-strings' late conversion, an_phase_storage) a return
+     follows its body only from a typed String Array to the poly Array the
+     rule made of the local it answers. */
+  if (g_ret_no_new_poly == 3 && !(r == TY_POLY_ARRAY && sc->ret == TY_STR_ARRAY)) return ch;
   if (g_ret_no_new_poly == 2 &&
       !(r == TY_POLY && sc->ret != TY_POLY && sc->ret != TY_UNKNOWN && sc->ret != TY_VOID && sc->ret != TY_NIL) &&
       !(r == TY_BIGINT && sc->ret == TY_INT)) return ch;

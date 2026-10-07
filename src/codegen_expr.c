@@ -1505,10 +1505,12 @@ static void emit_ivar_write_result(Compiler *c, int id, int value, TyKind slot,
 /* The value of a local's `||=` / `&&=`: its slot. A slot that holds the
    --share-strings handle is an sp_String *: where the write is typed
    String and no handle mark asks for the handle, the slot's read face, as
-   `=`'s value is (an sp_String * where a String is read did not build). */
-static void emit_local_orw_result(Compiler *c, int id, const char *ref, Buf *b) {
+   `=`'s value is (an sp_String * where a String is read did not build).
+   The default build's mutable handle needs the same read face. */
+static void emit_local_orw_result(Compiler *c, int id, LocalVar *lv, const char *ref, Buf *b) {
   Repr r = repr_of(c, id);
-  if (repr_write_share(c, id) && !r.handle && r.as_ty == TY_STRING) emit_strbuf_slot_read(c, id, r, ref, b);
+  if (!r.handle && r.as_ty == TY_STRING && repr_slot_kind(c, lv) == RK_STRBUF)
+    emit_strbuf_slot_read(c, id, r, ref, b);
   else buf_puts(b, ref);
 }
 
@@ -1686,6 +1688,7 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
     }
     buf_puts(b, "({ ");
     emit_local_ref(c, id, nm, b); buf_puts(b, " = ");
+    int sk = splice_store_open(c, id, b);   /* an open splice alias of the variable */
     int ven = 0;
     int v_empty_array = nt_kind(nt, v) == NK_ArrayNode && (nt_arr(nt, v, "elements", &ven), ven == 0);
     if (lv && lv->type == TY_POLY && repr_of(c, v).kind != RK_BOXED) emit_boxed(c, v, b);
@@ -1734,6 +1737,7 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
     }
     else if (lv) emit_coerce(c, v, lv->type, CO_HOLD, "a local variable write", b);
     else emit_expr(c, v, b);
+    splice_store_close(c, id, sk, b);
     buf_puts(b, "; "); emit_local_ref(c, id, nm, b); buf_puts(b, "; })");
     return 1;
   }
@@ -1836,6 +1840,8 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
     buf_puts(b, "({ ");
     if (fz_cid >= 0) emit_frozen_obj_guard(c, fz_cid, g_self ? g_self : "self", b);
     buf_printf(b, "%s = ", ref2e);
+    /* an open splice alias of the ivar (a plain String slot's) */
+    int sk = ivt2 == TY_STRING ? splice_store_open(c, id, b) : -1;
     Repr rp = repr_of(c, v);
     if (v_empty_array2 && ty_is_ptr_array(ivt2)) buf_puts(b, "sp_PtrArray_new()");
     else if (v_empty_array2 && ivt2 == TY_POLY_ARRAY) buf_puts(b, "sp_PolyArray_new()");
@@ -1904,6 +1910,7 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
       emit_obj_upcast_prefix(c, ivt2, comp_ntype(c, v), b);
       emit_coerce(c, v, ivt2, CO_HOLD, "an instance variable write", b);
     }
+    splice_store_close(c, id, sk, b);
     emit_ivar_write_result(c, id, v, ivt2, ref2e, b);
     return 1;
   }
@@ -1988,7 +1995,7 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
         if (apre.p) buf_puts(b, apre.p);
         if (abody.p) buf_puts(b, abody.p);
         buf_puts(b, " } ");
-        emit_local_orw_result(c, id, lhs, b);
+        emit_local_orw_result(c, id, lv, lhs, b);
         buf_puts(b, "; })");
         free(apre.p); free(abody.p);
       }
@@ -2012,7 +2019,7 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
         if (apre.p) buf_puts(b, apre.p);
         if (abody.p) buf_puts(b, abody.p);
         buf_puts(b, " } ");
-        emit_local_orw_result(c, id, rb.p, b);
+        emit_local_orw_result(c, id, lv, rb.p, b);
         buf_puts(b, "; })");
         free(apre.p); free(abody.p);
       }
@@ -3205,10 +3212,7 @@ else {
              (sp_kw_merge_any): the walk alone took a user object or an
              Integer for no pairs at all. */
           int st = ++g_tmp;
-          Buf sb; memset(&sb, 0, sizeof sb); emit_boxed(c, src, &sb);
-          emit_indent(g_pre, g_indent);
-          buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n", st, sb.p ? sb.p : "sp_box_nil()", st);
-          free(sb.p);
+          st = hold_operand_pre(c, src, TY_POLY, 1, st, 1);
           emit_indent(g_pre, g_indent);
           buf_printf(g_pre, "sp_kw_merge_any(_t%d, _t%d);\n", t, st);
         }

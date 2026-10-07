@@ -1,0 +1,5 @@
+["convert", "photo 01.jpg", "-resize", "50%", "out final.jpg"]
+["a", "b c", "d \"e\" f", "g h"]
+["single", "keeps \\ and \"", "double", "$HOME \\ \\x"]
+["onetwothreefour"]
+["empty", "", "and", "", "stay"]

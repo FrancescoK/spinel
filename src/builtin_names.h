@@ -219,6 +219,7 @@ int is_string_append(const char *n); /* << concat: appends answering the receive
 int is_replace_name(const char *n); /* replace: a String's, Array's or Hash's contents swapped for another's, which ignores a block */
 
 int is_string_rebind_mutator(const char *n); /* mutators needing argument-rebind snapshots */
+int str_mutator_str_args(const char *n, int argc, int *int_ok); /* the arguments a String mutator takes as Strings */
 
 int builtin_module_owns(const char *cls, const char *name); /* included ahead of Object */
 
@@ -244,5 +245,10 @@ int is_enumerator_with(const char *n); /* with_index with_object: an enumerator 
 int is_lazy_name(const char *n);       /* lazy */
 int is_concat_name(const char *n);     /* concat */
 int is_array_constructor(const char *recv, const char *meth); /* Array.new */
+int is_pow_name(const char *n); /* pow: Integer power, with an optional modulus */
+
+int is_lazy_name(const char *n);         /* lazy: makes a Lazy of its receiver */
+int is_new_name(const char *n);          /* new: a class's constructor */
+int is_native_share_decl(const char *n); /* native_share: a package's share declaration */
 
 #endif

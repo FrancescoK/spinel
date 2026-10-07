@@ -29,6 +29,15 @@ TyKind ffi_spec_to_ty(const char *spec);
 int ffi_find_func(Compiler *c, const char *mod, const char *name);
 /* `Fiber.new { }`'s block, or -1 */
 int an_fiber_new_block(Compiler *c, int v);
+/* --share-strings: can boxed or untyped receiver r be a String
+   (analyze.c)? `lits` is the asker's: bound() says how a literal block or
+   a lambda of scope `scope` binds variable `name`: 0 not at all, 1 only as
+   Enumerator.new's yielder, 2 another way (analyze_share.c keeps it). */
+typedef struct PolyLits {
+  int (*bound)(void *ctx, Compiler *c, int scope, const char *name);
+  void *ctx;
+} PolyLits;
+int an_recv_may_be_string(Compiler *c, int r, const PolyLits *lits);
 int ffi_find_buf(Compiler *c, const char *mod, const char *name);
 int ffi_find_reader(Compiler *c, const char *mod, const char *name);
 int ffi_find_writer(Compiler *c, const char *mod, const char *name);

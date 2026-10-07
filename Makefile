@@ -988,6 +988,11 @@ share-strings-test: $(SPINEL)
 	    SPINEL_GC_STRESS=1 "$$tmp/b" 2>&1 | cmp -s - "$$e" || { echo "share-strings-test: FAIL $$t (GC stress)"; ok=0; }; \
 	  else echo "share-strings-test: FAIL $$t (refused)"; cat "$$tmp/out"; ok=0; fi; \
 	done; \
+	if ! $(SPINEL) --share-strings test/share/share_strings_open_targets.rb -c --no-line-map -o "$$tmp/open.c" >"$$tmp/out" 2>&1 || \
+	   ! grep -q 'const char \* lv_path = NULL;' "$$tmp/open.c" || \
+	   grep -q 'sp_strbuf_read_pub(lv_path)' "$$tmp/open.c"; then \
+	  echo "share-strings-test: FAIL (File.open's path shares StringIO.open's init)"; ok=0; \
+	fi; \
 	rm -rf "$$tmp"; \
 	if [ $$ok = 1 ]; then echo "share-strings-test: pass"; else exit 1; fi
 
@@ -2162,11 +2167,13 @@ threaded-render-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SPINEL_TIMEOUT)
 	if [ $$ok -eq 1 ]; then echo "threaded-render-test: pass"; else exit 1; fi
 
 GC_MINOR_TESTS := test/reopened_builtin_kwrest_keys.rb \
+                  test/string_unary_plus_nested.rb \
                   test/reflect_ivar_nil_presence.rb \
                   test/ctor_ivar_default_keywords.rb \
                   test/random_reopen_block_parameter.rb \
                   test/kind_query_computed_nil.rb \
                   test/nil_string_slot_reads.rb test/nil_scalar_slot_widen.rb \
+                  test/string_nil_conditional_assignment.rb \
                   test/yield_proc_arg_in_blocked_method.rb \
                   test/kind_query_nested_nil.rb \
                   test/poly_struct_member_write.rb \
@@ -2269,7 +2276,8 @@ GC_MINOR_TESTS := test/reopened_builtin_kwrest_keys.rb \
                   test/builtin_ivar_frozen_copy.rb \
                   test/builtin_ivar_boxed_reflection.rb \
                   test/array_subclass_boxed.rb \
-                  test/array_subclass_methods.rb
+                  test/array_subclass_methods.rb \
+                  test/poly_array_uniq_hash.rb
 
 # Each program runs with the minor mark off and on and must answer the same;
 # then once more under the generational verifier with stress on (every
@@ -3337,6 +3345,9 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	$(SPINEL) test/infer/hash_or_write_index_setter.rb -c --no-line-map -o "$$tmp/hos.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (hash_or_write_index_setter: -c)"; ok=0; }; \
 	grep -q 'sp_PolyPolyHash \* iv_traps;' "$$tmp/hos.c" && grep -q 'sp_PolyPolyHash \* iv_hooks;' "$$tmp/hos.c" || { echo "infer-test: FAIL (#4889 an index write into (@h ||= {}) left @h boxed)"; ok=0; }; \
 	grep -q 'sp_OrwMem_poke(sp_OrwMem \*self, sp_int lv_addr, sp_int lv_value)' "$$tmp/hos.c" || { echo "infer-test: FAIL (#4889 a Hash index write widened an unrelated user []=)"; ok=0; }; \
+	$(SPINEL) test/empty_array_default_takes_caller_kind.rb -c --no-line-map -o "$$tmp/ead.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (empty_array_default_takes_caller_kind: -c)"; ok=0; }; \
+	grep -q 'sp_IntArray \* iv_storage;' "$$tmp/ead.c" && grep -q 'sp_StrArray \* iv_list;' "$$tmp/ead.c" || { echo "infer-test: FAIL (an empty [] default left the ivar its callers type boxed)"; ok=0; }; \
+	grep -q 'sp_push_other(sp_PolyArray \* lv_a)' "$$tmp/ead.c" && grep -q 'sp_untouched(sp_PolyArray \* lv_xs)' "$$tmp/ead.c" || { echo "infer-test: FAIL (an empty [] default no longer widens, or lost its poly-array default)"; ok=0; }; \
 	$(SPINEL) test/frozen_literal_warning_op_write.rb -c --no-line-map -o "$$tmp/flw.c" 2> "$$tmp/flw.err" >/dev/null || { echo "infer-test: FAIL (frozen_literal_warning_op_write: -c)"; ok=0; }; \
 	grep -q '`text` only ever holds frozen string literals' "$$tmp/flw.err" && ! grep -Eq '`(s|m)` only ever holds frozen string literals' "$$tmp/flw.err" || { echo "infer-test: FAIL (the frozen-literal << warning is wrong about a local an op-write or and-write assigns)"; ok=0; }; \
 	$(SPINEL) test/infer/define_method_runtime_name_next.rb -c --no-line-map -o "$$tmp/dmr.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (define_method_runtime_name_next: -c)"; ok=0; }; \
