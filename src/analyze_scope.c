@@ -8206,7 +8206,7 @@ static int infer_hash_aset_call(Compiler *c, int id) {
   if (!pivs_call_set(c, id, NULL, NULL, 1)) return 0;
   int m = f->memo_at[(size_t)id * 2 + 1] - 1, changed = 0;
   for (int i = 0; i < f->memo[m].nhash; i++) changed |= widen_hash_arg_for_store(c, f->memo[m].hash[i], hk, hv);
-  f->stores_widened |= changed;
+  f->stores_widened += changed;
   return changed;
 }
 
@@ -8217,11 +8217,10 @@ int pivs_settle_hash_stores(Compiler *c) {
   f->stores_settled = 1;
   return f->stores_held;
 }
-/* 1 when such a store has widened a Hash since the last call. */
+/* How many times such a store has widened a Hash: two counts differ when
+   the stores between them widened one. */
 int pivs_hash_stores_widened(Compiler *c) {
-  if (!c->pivs || !c->pivs->stores_widened) return 0;
-  c->pivs->stores_widened = 0;
-  return 1;
+  return c->pivs ? c->pivs->stores_widened : 0;
 }
 
 int infer_ivar_types(Compiler *c) {

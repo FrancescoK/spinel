@@ -34225,9 +34225,15 @@ static void an_phase_infer_fixpoint(Compiler *c) {
      widening, so a widening sends the re-narrow round once more. A round
      can widen a further Hash (a store whose value read the one widened
      before), so the rounds repeat until one widens none; widening is
-     monotone, so they end. */
+     monotone, so they end. Within a round a widening holds off the exits
+     below until what reads the Hash (a parameter bound from it, a return
+     reading that) has stopped moving, so a store that depends on it decides
+     in the same round. A round that stopped short of a fixpoint (on the
+     stability test) has the next one run even with no poly slot to reset. */
+  int unsettled = 0;
   for (int pass = 0;; pass++) {
-    int any = !pass && pivs_settle_hash_stores(c);
+    int widened0 = pivs_hash_stores_widened(c), widened = widened0;
+    int any = pass ? unsettled : pivs_settle_hash_stores(c);
     /* Record the reset poly ivars so the re-run can re-clear them FRESH each
        iteration (a narrowing recompute), not just once. infer_ivar_types is
        monotonic (ty_unify only widens), so a one-shot reset still re-locks an
@@ -34360,6 +34366,7 @@ static void an_phase_infer_fixpoint(Compiler *c) {
       TyKind *ivsnap = (TyKind *)malloc(sizeof(TyKind) * (size_t)(ivoff[ivncls] + 1));
       for (int k = 0; k < nrec; k++) ivrec[ivoff[recCi[k]] + recIv[k]] = 1;
       AnRoundCap rc = { 128, 0, 0, NULL, 0 };
+      unsettled = 1;
       for (int iter = 0; iter < rc.cap; iter++) {
         /* Parameters bind from the SETTLED state of the previous iteration,
            before this one's re-clear. Bound after it, a parameter sampled
@@ -34426,6 +34433,10 @@ static void an_phase_infer_fixpoint(Compiler *c) {
           }
         }
         { int _w = infer_return_types(c); ch |= _w; ch_other |= _w; }
+        /* a Hash store widened this iteration, or one widened this round and
+           its readers still moved */
+        int spreading = pivs_hash_stores_widened(c) != widened || (widened != widened0 && ch_other);
+        widened = pivs_hash_stores_widened(c);
         /* With reset ivars, the re-clear makes infer_ivar_types report change
            every iteration, so converge on ivar value-stability instead. With
            none (only poly params/returns reset), fall back to the normal
@@ -34436,7 +34447,7 @@ static void an_phase_infer_fixpoint(Compiler *c) {
             if (c->classes[recCi[k]].ivar_types[recIv[k]] != prev[k]) { stable = 0; break; }
           for (int k = 0; stable && k < nlrec; k++)
             if (c->scopes[recLs[k]].locals[recLi[k]].type != lprev[k]) stable = 0;
-          if (stable) break;
+          if (stable && !spreading) break;
           /* Fixed-cycle exit: when no pass beyond the re-derive pair
              (infer_write_types / infer_ivar_types, which re-fill the slots
              the re-clear zeroes and so report "change" every round by
@@ -34452,7 +34463,7 @@ static void an_phase_infer_fixpoint(Compiler *c) {
              One 53k-line machine-generated program burned the whole cap --
              123 no-op iterations, each a dozen whole-program passes -- on
              exactly that shape. */
-          if (!ch_other && have_prevd) {
+          if (!ch_other && !spreading && have_prevd) {
             int cyc = 1;
             for (int k = 0; k < nrec && cyc; k++)
               if (c->classes[recCi[k]].ivar_types[recIv[k]] != prevd[k]) cyc = 0;
@@ -34464,7 +34475,7 @@ static void an_phase_infer_fixpoint(Compiler *c) {
           for (int k = 0; k < nlrec; k++) lprevd[k] = c->scopes[recLs[k]].locals[recLi[k]].type;
           have_prevd = 1;
         }
-        else if (!ch) break;
+        else if (!ch) { unsettled = 0; break; }
         /* a return whose parameter was reset loses its type for a round,
            and so in turn does each caller's up a chain */
         an_round_cap_step(c, &rc, iter);
@@ -34475,7 +34486,7 @@ static void an_phase_infer_fixpoint(Compiler *c) {
       free(prev); free(lprev); free(prevd); free(lprevd); free(ivoff); free(ivrec); free(ivsnap);
     }
     free(recCi); free(recIv); free(recLs); free(recLi); free(recRs); free(nsoff); free(nsbad);
-    if (!pivs_hash_stores_widened(c)) break;
+    if (pivs_hash_stores_widened(c) == widened0) break;
   }
 }
 
