@@ -1250,6 +1250,15 @@ void emit_poly_dispatch_key(Compiler *c, int tv, int cls0_cand, int prim_cand, i
   emit_poly_dispatch_key_top(c, tv, cls0_cand, prim_cand, exc_cand, NULL, b);
 }
 
+/* The reopening of builtin `cls` an OBJ box of it keys to in a dispatch of
+   `nm`: the program's class, when it has the method (or the dispatch is
+   not of one name), else -1. */
+static int poly_key_reopen(Compiler *c, const char *cls, const char *nm) {
+  int idx = comp_class_index(c, cls);
+  if (idx < 0 || !nm) return idx;
+  if (comp_method_in_chain(c, idx, nm, NULL) >= 0 || comp_reader_in_chain(c, idx, nm, NULL)) return idx;
+  return -1;
+}
 /* The dispatch key, with a boxed exception of a class that has no method of
    its own for pick_name (when given) re-keyed to the builtin exception
    reopening defining it that is nearest the runtime class up its ancestry,
@@ -1331,23 +1340,28 @@ static void emit_poly_dispatch_key_pick(Compiler *c, int tv, int cls0_cand, int 
   };
   /* a boxed Time / Range is an OBJ box whose cls_id names the builtin, so
      it has to be asked before the plain cls_id read below claims it */
+  /* An OBJ box of a builtin the program reopens keys to the reopening --
+     but, for a named call, only when the reopening has the method: one that
+     only adds other methods has no arm of its own, and its values belong to
+     the builtin arms, which key by the box's own cls_id. */
+  int opened = 0;
   {
-    int ti = comp_class_index(c, "Time"), ri = comp_class_index(c, "Range");
-    int ai = comp_class_index(c, "Array"), hi = comp_class_index(c, "Hash");
-    if (ti >= 0) buf_printf(b, "((_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_TIME) ? %d : ", tv, tv, ti);
-    if (ri >= 0) buf_printf(b, "((_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_RANGE) ? %d : ", tv, tv, ri);
+    int ti = poly_key_reopen(c, "Time", pick_name), ri = poly_key_reopen(c, "Range", pick_name);
+    int ai = poly_key_reopen(c, "Array", pick_name), hi = poly_key_reopen(c, "Hash", pick_name);
+    if (ti >= 0) { opened++; buf_printf(b, "((_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_TIME) ? %d : ", tv, tv, ti); }
+    if (ri >= 0) { opened++; buf_printf(b, "((_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_RANGE) ? %d : ", tv, tv, ri); }
     /* a boxed thread / fiber is a handle box naming the builtin, like a Time's */
-    { int thi = comp_class_index(c, "Thread"), fbi = comp_class_index(c, "Fiber");
-      if (thi >= 0) buf_printf(b, "((_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_THREAD) ? %d : ", tv, tv, thi);
-      if (fbi >= 0) buf_printf(b, "((_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_FIBER) ? %d : ", tv, tv, fbi); }
+    { int thi = poly_key_reopen(c, "Thread", pick_name), fbi = poly_key_reopen(c, "Fiber", pick_name);
+      if (thi >= 0) { opened++; buf_printf(b, "((_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_THREAD) ? %d : ", tv, tv, thi); }
+      if (fbi >= 0) { opened++; buf_printf(b, "((_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_FIBER) ? %d : ", tv, tv, fbi); } }
     /* a boxed array / hash of any element kind is its reopen's; the box's
        cls_id names the container kind, which the runtime's predicates read */
-    if (ai >= 0) buf_printf(b, "((_t%d.tag == SP_TAG_OBJ && sp_poly_is_array_kind(_t%d.cls_id)) ? %d : ", tv, tv, ai);
-    if (hi >= 0) buf_printf(b, "((_t%d.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(_t%d.cls_id)) ? %d : ", tv, tv, hi);
+    if (ai >= 0) { opened++; buf_printf(b, "((_t%d.tag == SP_TAG_OBJ && sp_poly_is_array_kind(_t%d.cls_id)) ? %d : ", tv, tv, ai); }
+    if (hi >= 0) { opened++; buf_printf(b, "((_t%d.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(_t%d.cls_id)) ? %d : ", tv, tv, hi); }
     /* a shared-mutable string travels as a handle box, not the plain string
        tag the String arm keys on; it is the String's too */
-    { int si = comp_class_index(c, "String");
-      if (si >= 0) buf_printf(b, "((_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_STRBUF) ? %d : ", tv, tv, si); }
+    { int si = poly_key_reopen(c, "String", pick_name);
+      if (si >= 0) { opened++; buf_printf(b, "((_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_STRBUF) ? %d : ", tv, tv, si); } }
   }
   buf_printf(b, "(_t%d.tag == SP_TAG_OBJ ? _t%d.cls_id", tv, tv);
   for (unsigned i = 0; i < sizeof P / sizeof P[0]; i++) {
@@ -1366,13 +1380,7 @@ static void emit_poly_dispatch_key_pick(Compiler *c, int tv, int cls0_cand, int 
                  ti >= 0 ? ti : 0x7fffffff, fi >= 0 ? fi : 0x7fffffff);
   }
   buf_puts(b, " : 0x7fffffff)");
-  if (comp_class_index(c, "Time") >= 0) buf_puts(b, ")");
-  if (comp_class_index(c, "Range") >= 0) buf_puts(b, ")");
-  if (comp_class_index(c, "Thread") >= 0) buf_puts(b, ")");
-  if (comp_class_index(c, "Fiber") >= 0) buf_puts(b, ")");
-  if (comp_class_index(c, "Array") >= 0) buf_puts(b, ")");
-  if (comp_class_index(c, "Hash") >= 0) buf_puts(b, ")");
-  if (comp_class_index(c, "String") >= 0) buf_puts(b, ")");
+  for (int i = 0; i < opened; i++) buf_puts(b, ")");
 }
 
 /* A poly receiver can hold a Class object at run time. The instance-method
