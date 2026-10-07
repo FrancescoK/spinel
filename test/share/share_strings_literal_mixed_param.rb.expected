@@ -1,0 +1,8 @@
+[7]
+[2..4]
+true
+["a\u0000bc", "a\u0000bc"]
+true
+true
+FrozenError
+["frozen", "frozen"]

@@ -2631,6 +2631,7 @@ static inline sp_String *sp_poly_as_strbuf(sp_RbVal v) {
    unsequenced writes to the channel. */
 static inline const char *sp_strbuf_read_pub(sp_String *h) {
   _sp_ret_strbuf = (void *)h;
+  if (h && sp_String_is_frozen(h)) return sp_String_read(h);
   return h ? sp_str_concat(sp_String_cstr(h), (&("\xff")[1])) : NULL;
 }
 static inline sp_bool sp_poly_is_strbuf(sp_RbVal v) {
