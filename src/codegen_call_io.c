@@ -124,6 +124,17 @@ static int emit_io_read_outbuf(Compiler *c, const char *name, const char *fn, co
 static void emit_io_read_overcount(Compiler *c, const char *name, const char *r, const int *argv, int argc,
                                    const char *expected, Buf *b);
 
+/* accept_nonblock as the boxed arm takes it: bare, or with a literal
+   `exception: false` alone; any other keyword stays with the general
+   dispatch, which words it */
+static int boxed_accept_nb_ok(const NodeTable *nt, const char *name, int argc, const int *argv) {
+  if (!sp_streq(name, "accept_nonblock")) return 0;
+  if (argc == 0) return 1;
+  if (argc != 1 || nt_kind(nt, argv[0]) != NK_KeywordHashNode) return 0;
+  int ev = kwh_lookup(nt, argv[0], "exception");
+  return ev >= 0 && nt_type(nt, ev) && sp_streq(nt_type(nt, ev), "FalseNode");
+}
+
 /* the IO methods on a poly receiver that may hold a stream (write, read, gets, puts, print, ...) */
 int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv) {
   /* IO instance methods on a poly-carried handle (an IO.pipe element): unbox
@@ -173,6 +184,12 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
           without an arm here `w.read_nonblock(n, exception: false)` had no
           emitter at all (#4236/#4237) */
        is_nonblock_io(name) ||
+       /* a listening socket read back out of an IO.select result, or out of
+          an Array built around it, and the to_io an event loop calls on
+          whatever it waited on (WEBrick's accept loop) */
+       (sp_streq(name, "to_io") && argc == 0) ||
+       (sp_feature_required("socket") &&
+        ((sp_streq(name, "accept") && argc == 0) || boxed_accept_nb_ok(nt, name, argc, argv))) ||
        /* the readiness family: a lambda's parameter is boxed, so a handle
           passed through one reached `wait_readable` with no emitter, and in
           a condition it was refused as non-bool. IO#wait stays off the list,
@@ -438,6 +455,19 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
       else if (sp_streq(name, "winsize")) buf_printf(b, "sp_File_winsize(_t%d); })", tio2);
       else if (is_socket_address(name))
         buf_printf(b, "sp_sock_addr(_t%d, %d); })", tio2, sp_streq(name, "peeraddr") ? 1 : 0);
+      else if (sp_streq(name, "to_io")) buf_printf(b, "_t%d; })", tio2);
+      else if (sp_streq(name, "accept")) buf_printf(b, "sp_sock_accept(_t%d); })", tio2);
+      /* the same answers the typed arm gives: `exception: false` swaps
+         IO::EAGAINWaitReadable for the :wait_readable marker */
+      else if (sp_streq(name, "accept_nonblock")) {
+        if (argc == 1) {
+          int tw = ++g_tmp;
+          buf_printf(b, "sp_File *_t%d = sp_sock_accept_nb(_t%d, 0);"
+                        " _t%d ? sp_box_obj(_t%d, SP_BUILTIN_IO)"
+                        " : sp_box_sym(sp_sym_intern(\"wait_readable\")); })", tw, tio2, tw, tw);
+        }
+        else buf_printf(b, "sp_sock_accept_nb(_t%d, 1); })", tio2);
+      }
       /* a stat's mode and fields, answered as the TY_IO arms answer them,
          for a stat's handle only */
       else if (sp_streq(name, "mode")) {
