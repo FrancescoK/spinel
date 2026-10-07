@@ -7516,7 +7516,7 @@ static int int_arms_round_divide(Compiler *c, int id, Buf *b, const NodeTable *n
   /* a divisor known only at run time: the pair Numeric#divmod makes for its
      kind (a Rational's is exact, sp_rat_mod_v). It was read as an Integer,
      and 7.divmod(Rational(-3, 2)) answered [-7, 0] */
-  else if (sp_streq(name, "divmod") && argc == 1 &&
+  else if (is_divmod_name(name) && argc == 1 &&
            repr_of(c, argv[0]).kind == RK_BOXED && comp_ntype(c, id) == TY_POLY_ARRAY) {
     buf_printf(b, "sp_poly_to_poly_array(sp_poly_divmod(sp_box_int(%s), ", r);
     emit_expr(c, argv[0], b); buf_puts(b, "))");
