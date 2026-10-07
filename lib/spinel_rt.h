@@ -11980,18 +11980,19 @@ static sp_PolyArray *sp_poly_hash_sum_arr(sp_RbVal v, sp_PolyArray *init) {
 /* Time#deconstruct_keys(nil): every field, for a hash pattern to match
    against (#3702). The symbols are interned at run time because these names
    are synthesized after the static symbol table is written. */
+/* Time#deconstruct_keys(nil): CRuby's keys in its order. :mon and :mday are
+   no keys of it -- they were here too, so `in {mon: 11}` matched a Time that
+   CRuby's pattern does not. */
 static sp_SymPolyHash *sp_time_deconstruct_all(sp_Time t) {
   sp_SymPolyHash *h = sp_SymPolyHash_new(); SP_GC_ROOT(h);
   sp_SymPolyHash_set(h, sp_sym_intern("year"), sp_box_int(sp_time_year(t)));
   sp_SymPolyHash_set(h, sp_sym_intern("month"), sp_box_int(sp_time_mon(t)));
-  sp_SymPolyHash_set(h, sp_sym_intern("mon"), sp_box_int(sp_time_mon(t)));
   sp_SymPolyHash_set(h, sp_sym_intern("day"), sp_box_int(sp_time_mday(t)));
-  sp_SymPolyHash_set(h, sp_sym_intern("mday"), sp_box_int(sp_time_mday(t)));
+  sp_SymPolyHash_set(h, sp_sym_intern("yday"), sp_box_int(sp_time_yday(t)));
+  sp_SymPolyHash_set(h, sp_sym_intern("wday"), sp_box_int(sp_time_wday(t)));
   sp_SymPolyHash_set(h, sp_sym_intern("hour"), sp_box_int(sp_time_hour(t)));
   sp_SymPolyHash_set(h, sp_sym_intern("min"), sp_box_int(sp_time_min(t)));
   sp_SymPolyHash_set(h, sp_sym_intern("sec"), sp_box_int(sp_time_sec(t)));
-  sp_SymPolyHash_set(h, sp_sym_intern("wday"), sp_box_int(sp_time_wday(t)));
-  sp_SymPolyHash_set(h, sp_sym_intern("yday"), sp_box_int(sp_time_yday(t)));
   sp_SymPolyHash_set(h, sp_sym_intern("subsec"),
                      t.tv_nsec == 0 ? sp_box_int(0)
                                     : sp_box_rational(sp_rational_new((sp_int)t.tv_nsec, 1000000000)));
@@ -14679,7 +14680,40 @@ static sp_PolyPolyHash *sp_poly_as_pp_hash(sp_RbVal v, const char *nm) {
    name, or for a Struct an index -- adds that member under the key as given,
    and the first key naming no member ends the hash there. A Data takes names
    only. Any other receiver is a Hash, answering itself, or NoMethodError. */
+/* The subject of a hash pattern on a boxed value, as the keyed hash its
+   #deconstruct_keys answers: a Time's fields (sp_time_deconstruct_all, what
+   the typed pattern reads), a user object through its to_h hook, and any
+   other value as it is. Time was left as it is, so `in {year:}` never
+   matched a Time read out of a container. */
+static sp_RbVal sp_poly_pat_keyed(sp_RbVal v) {
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_TIME && v.v.p)
+    return sp_box_obj(sp_time_deconstruct_all(*(sp_Time *)v.v.p), SP_BUILTIN_SYM_POLY_HASH);
+  if (v.tag == SP_TAG_OBJ && v.cls_id >= 0 && !sp_poly_is_hash_kind(v.cls_id) && sp_obj_to_h_fn)
+    return sp_obj_to_h_fn(v);
+  return v;
+}
 static sp_PolyPolyHash *sp_poly_deconstruct_keys(sp_RbVal v, sp_RbVal keys) {
+  /* Time#deconstruct_keys: every field for nil, else the requested Symbols
+     it has, skipping the rest (CRuby's, which ignores a key it does not
+     know rather than stopping there as a Struct does) */
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_TIME && v.v.p) {
+    sp_SymPolyHash *th = sp_time_deconstruct_all(*(sp_Time *)v.v.p); SP_GC_ROOT(th);
+    sp_PolyPolyHash *tout = sp_PolyPolyHash_new(); SP_GC_ROOT(tout);
+    if (keys.tag == SP_TAG_NIL) {
+      for (sp_int i = 0; i < th->len; i++)
+        sp_PolyPolyHash_set(tout, sp_box_sym(th->order[i]), sp_SymPolyHash_get(th, th->order[i]));
+      return tout;
+    }
+    if (keys.tag != SP_TAG_OBJ || !sp_poly_is_array_kind(keys.cls_id))
+      sp_raise_cls("TypeError", sp_sprintf("wrong argument type %s (expected Array or nil)", sp_poly_class_name(keys)));
+    sp_PolyArray *tks = sp_poly_to_a_arr(keys); SP_GC_ROOT(tks);
+    for (sp_int i = 0; i < tks->len; i++) {
+      sp_RbVal k = tks->data[i];
+      if (k.tag == SP_TAG_SYM && sp_SymPolyHash_has_key(th, (sp_sym)k.v.i))
+        sp_PolyPolyHash_set(tout, k, sp_SymPolyHash_get(th, (sp_sym)k.v.i));
+    }
+    return tout;
+  }
   sp_RbVal m = (v.tag == SP_TAG_OBJ && v.cls_id >= 0 && v.v.p && sp_obj_to_h_fn) ? sp_obj_to_h_fn(v) : sp_box_nil();
   if (!(m.tag == SP_TAG_OBJ && m.cls_id == SP_BUILTIN_SYM_POLY_HASH)) return sp_poly_as_pp_hash(v, "deconstruct_keys");
   sp_SymPolyHash *mh = (sp_SymPolyHash *)m.v.p; SP_GC_ROOT(mh);

@@ -3390,9 +3390,7 @@ static void emit_pm_hash_cond_poly(Compiler *c, int pat, const char *hexpr, Buf 
   int hc_const = nt_ref(nt, pat, "constant");
   char subj0[24]; snprintf(subj0, sizeof subj0, "_t%d", th0);
   buf_printf(b, "({ sp_RbVal _t%d = %s; sp_RbVal _t%d = ", th0, hexpr, th);
-  buf_printf(b, "(_t%d.tag == SP_TAG_OBJ && _t%d.cls_id >= 0 && !sp_poly_is_hash_kind(_t%d.cls_id) && sp_obj_to_h_fn)"
-                " ? sp_obj_to_h_fn(_t%d) : _t%d;",
-             th0, th0, th0, th0, th0);
+  buf_printf(b, "sp_poly_pat_keyed(_t%d);", th0);
   buf_printf(b, " sp_bool _t%d = 0; (void)_t%d; "
                 "int _t%d = (_t%d.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(_t%d.cls_id));",
              tf, tf, tok, th, th);
@@ -4479,8 +4477,7 @@ static void emit_pm_bind_hash_poly(Compiler *c, int pat, const char *hexpr, int 
      left untouched by the runtime guard (#3161/#3180). */
   int thd = ++g_tmp;
   emit_indent(b, indent);
-  buf_printf(b, "sp_RbVal _t%d = %s; if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id >= 0 && !sp_poly_is_hash_kind(_t%d.cls_id) && sp_obj_to_h_fn) _t%d = sp_obj_to_h_fn(_t%d);\n",
-             thd, hexpr, thd, thd, thd, thd, thd);
+  buf_printf(b, "sp_RbVal _t%d = sp_poly_pat_keyed(%s);\n", thd, hexpr);
   char hbuf[24]; snprintf(hbuf, sizeof hbuf, "_t%d", thd);
   hexpr = hbuf;
   for (int i = 0; i < en; i++) {
