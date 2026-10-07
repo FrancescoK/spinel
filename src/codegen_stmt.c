@@ -16577,9 +16577,14 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
       return 1;
     }
     if (!has_user) {
+      /* one argument is left: `<<` is sp_poly_shl's whatever the receiver;
+         push and append are an Array's (sp_poly_push_stmt) */
+      int shl = sp_streq(name, "<<");
       for (int a = 0; a < argc; a++) {
         emit_indent(b, indent);
-        buf_puts(b, "sp_poly_shl("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_boxed(c, argv[a], b); buf_puts(b, ");\n");
+        buf_puts(b, shl ? "sp_poly_shl(" : "sp_poly_push_stmt("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_boxed(c, argv[a], b);
+        if (!shl) buf_printf(b, ", \"%s\"", name);
+        buf_puts(b, ");\n");
       }
       return 1;
     }

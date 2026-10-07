@@ -1,0 +1,16 @@
+NoMethodError: undefined method 'push' for an instance of String
+NoMethodError: undefined method 'append' for an instance of String
+"s"
+NoMethodError: undefined method 'push' for an instance of Integer
+NoMethodError: undefined method 'push' for an instance of Integer
+5
+arg
+NoMethodError: undefined method 'push' for an instance of Integer
+NoMethodError: undefined method 'push' for an instance of Float
+NoMethodError: undefined method 'append' for an instance of Hash
+NoMethodError: undefined method 'push' for nil
+[1, 2, 3]
+["a", "b"]
+[1, "a", nil]
+1
+"s!"
