@@ -8048,6 +8048,26 @@ static int ran_first_temp(int node, int from, const char *text) {
 }
 
 /* See codegen_internal.h. */
+int hold_operand(Compiler *c, int node, TyKind ty, int boxed, int t, const char *sep, Buf *b) {
+  Buf vb; memset(&vb, 0, sizeof vb);
+  if (boxed) emit_boxed(c, node, &vb); else emit_expr(c, node, &vb);
+  /* the temp it ran into, read unconverted: no second copy, no second root */
+  int ran = ran_first_temp(node, 0, vb.p);
+  char rt[24];
+  if (ran >= 0 && snprintf(rt, sizeof rt, "_t%d", ran) > 0 && sp_streq(rt, vb.p)) {
+    free(vb.p);
+    return ran;
+  }
+  if (boxed || ty == TY_POLY) buf_puts(b, "sp_RbVal"); else emit_ctype(c, ty, b);
+  buf_printf(b, " _t%d = %s;", t, vb.p ? vb.p : boxed ? "sp_box_nil()" : default_value_from_compiler(c, ty));
+  if (boxed || ty == TY_POLY) buf_printf(b, " SP_GC_ROOT_RBVAL(_t%d);", t);
+  else if (needs_root(ty)) buf_printf(b, " SP_GC_ROOT(_t%d);", t);
+  buf_puts(b, sep);
+  free(vb.p);
+  return t;
+}
+
+/* See codegen_internal.h. */
 int read_rebound_by(Compiler *c, int x, int after) {
   const NodeTable *nt = c->nt;
   if (after < 0) return 0;
