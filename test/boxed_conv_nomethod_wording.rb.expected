@@ -1,0 +1,55 @@
+-- to_h
+NoMethodError: undefined method 'to_h' for true
+NoMethodError: undefined method 'to_h' for false
+NoMethodError: undefined method 'to_h' for an instance of Symbol
+TypeError: wrong element type Integer at 0 (expected array)
+{a: 1}
+TypeError: wrong element type Integer (expected array)
+NoMethodError: undefined method 'to_h' for an instance of String
+NoMethodError: undefined method 'to_h' for an instance of Float
+{}
+NoMethodError: undefined method 'to_h' for an instance of Integer
+TypeError: wrong element type String (expected array)
+{}
+-- to_r
+NoMethodError: undefined method 'to_r' for true
+NoMethodError: undefined method 'to_r' for false
+NoMethodError: undefined method 'to_r' for an instance of Symbol
+NoMethodError: undefined method 'to_r' for an instance of Array
+NoMethodError: undefined method 'to_r' for an instance of Hash
+NoMethodError: undefined method 'to_r' for an instance of Range
+(12/1)
+(5/2)
+(0/1)
+(3/1)
+NoMethodError: undefined method 'to_r' for an instance of Range
+NoMethodError: undefined method 'to_r' for an instance of Range
+-- to_c
+NoMethodError: undefined method 'to_c' for true
+NoMethodError: undefined method 'to_c' for false
+NoMethodError: undefined method 'to_c' for an instance of Symbol
+NoMethodError: undefined method 'to_c' for an instance of Array
+NoMethodError: undefined method 'to_c' for an instance of Hash
+NoMethodError: undefined method 'to_c' for an instance of Range
+(12+0i)
+(2.5+0i)
+(0+0i)
+(3+0i)
+NoMethodError: undefined method 'to_c' for an instance of Range
+NoMethodError: undefined method 'to_c' for an instance of Range
+-- to_a / with / rationalize
+undefined method 'to_a' for true
+undefined method 'with' for true
+undefined method 'rationalize' for true
+undefined method 'to_a' for an instance of Symbol
+undefined method 'with' for an instance of Symbol
+undefined method 'rationalize' for an instance of Symbol
+undefined method 'to_a' for an instance of Float
+undefined method 'with' for an instance of Float
+(5/2)
+[1]
+undefined method 'with' for an instance of Array
+undefined method 'rationalize' for an instance of Array
+[[:a, 1]]
+undefined method 'with' for an instance of Hash
+undefined method 'rationalize' for an instance of Hash
