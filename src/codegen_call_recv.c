@@ -12845,6 +12845,7 @@ static int emit_poly_index_call(Compiler *c, int id, Buf *b, const NodeTable *nt
       }
     }
     buf_printf(b, ", _t%d); _t%d; })", tv, tv);
+    c->args_in_call = recv;
     { *out = 1; return 1; }
   }
   /* poly receiver: [] with symbol or string key -> runtime dispatch */
