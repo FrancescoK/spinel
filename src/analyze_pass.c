@@ -1204,6 +1204,30 @@ static int infer_case_pattern_locals(Compiler *c) {
    to an sp_Foo * and the C build fails. Widen the slot to poly -- the value
    really can be either class (#3964). A scalar without a nil representation must
    widen too: coercing a boxed nil into a Bool or Symbol loses the value. */
+/* The late reconciliation's twin for a local typed as a container: its write
+   now answers poly where it answered the container (a call whose return the
+   late ivar widening just boxed, `parent = Base.defs`), so the slot widens with
+   it. The rule below leaves a container alone, since a poly write may be one
+   the slot is deliberately narrowed from; only the late loop, which has just
+   widened what the writes read, asks this one (#7602). */
+int widen_container_locals_from_poly_writes(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int changed = 0;
+  for (int id = 0; id < nt->count; id++) {
+    if (nt_kind(nt, id) != NK_LocalVariableWriteNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    Scope *s = nm ? comp_scope_of(c, id) : NULL;
+    LocalVar *lv = s ? scope_local(s, nm) : NULL;
+    if (!lv || lv->is_param || lv->is_block_param || lv->rbs_seeded) continue;
+    if (!ty_is_array(lv->type) || lv->type == TY_POLY_ARRAY) continue;
+    int v = nt_ref(nt, id, "value");
+    if (v < 0 || nt_kind(nt, v) != NK_CallNode || infer_type(c, v) != TY_POLY) continue;
+    lv->type = TY_POLY;
+    changed = 1;
+  }
+  return changed;
+}
+
 int widen_locals_from_poly_writes(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;

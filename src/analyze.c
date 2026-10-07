@@ -34640,6 +34640,10 @@ static void an_phase_late_widen(Compiler *c) {
     g_ret_no_new_poly = 2;
     ch |= infer_return_types(c);
     g_ret_no_new_poly = 0;
+    /* ... and an Array local written the value of a call the widening above
+       now makes poly (`parent = Base.defs`): it kept the array the call had
+       answered (#7602). */
+    ch |= widen_container_locals_from_poly_writes(c);
     if (!ch) break;
   }
 
