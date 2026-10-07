@@ -1,0 +1,9 @@
+["", ""]
+["a-bc", "a-bc"]
+["Z-bc", "Z-bc"]
+["Z+bc", "Z+bc"]
+["+bc", "+bc", true]
+["<xy>", "<xy>", 4]
+["Hello!", "Hello!", "Hello!", 72]
+["k", "k"]
+"k"

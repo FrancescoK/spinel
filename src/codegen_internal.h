@@ -176,6 +176,13 @@ typedef struct { unsigned char box, demand; TyKind ty; int tok, ntok; } SbReader
 int sb_reader_shim_open(Compiler *c, int recv, char *sref, size_t cap, SbReaderSave *sv);
 void sb_reader_shim_close(Compiler *c, int recv, const SbReaderSave *sv);
 int sb_shadowed_reader(int node);
+/* The shim over a shared-mutable String LOCAL: its handle's text (the local,
+   or the cell a celled or captured local is in), and what
+   sb_local_shim_open changed until sb_local_shim_close puts it back. */
+int sb_local_handle_text(Compiler *c, int recv, char *out, size_t cap);
+typedef struct { LocalVar *lv; TyKind ty; int view; } SbLocalSave;
+int sb_local_shim_open(Compiler *c, int recv, char *sref, size_t cap, SbLocalSave *sv);
+void sb_local_shim_close(const SbLocalSave *sv);
 int sb_shim_args_first(Compiler *c, int id, Buf *pre, int indent);
 int str_mut_var_recv(Compiler *c, int recv);
 void emit_str_frozen_check(Compiler *c, int recv, Buf *b);

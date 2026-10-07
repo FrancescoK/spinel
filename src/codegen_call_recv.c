@@ -4046,30 +4046,24 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       /* a global holding the handle (--share-strings) */
       if (repr_static_read_kind(nt_kind(ntS, recvS)) &&
           sb_reader_expr_shim(c, id, recvS, b, emit_array_call)) return 1;
-      const char *sbn = strbuf_local_name(c, recvS);
-      if (sbn && g_nren < MAX_RENAME) {
-        Scope *shs = comp_scope_of(c, recvS);
-        LocalVar *shlv = scope_local(shs, sbn);
+      if (strbuf_local_name(c, recvS) && g_nren < MAX_RENAME) {
         Buf pre; memset(&pre, 0, sizeof pre);
         int mark = sb_shim_args_first(c, id, &pre, g_indent);
-        int tH = ++g_tmp;
+        char srefL[1024];
+        SbLocalSave svL;
+        int tH = sb_local_shim_open(c, recvS, srefL, sizeof srefL, &svL);
         Buf armb; memset(&armb, 0, sizeof armb);
-        snprintf(g_ren_from[g_nren], sizeof g_ren_from[0], "%s", sbn);
-        snprintf(g_ren_to[g_nren], sizeof g_ren_to[0], "_sb%d", tH);
-        g_nren++;
-        TyKind sv_ty = shlv->type; shlv->type = TY_STRING;
-        int handled = emit_array_call(c, id, &armb);
-        shlv->type = sv_ty;
-        g_nren--;
+        int handled = tH && emit_array_call(c, id, &armb);
+        if (tH) sb_local_shim_close(&svL);
         view_unbind(mark);
         if (!handled) { free(armb.p); free(pre.p); }
         else {
           TyKind resty = repr_of(c, id).as_ty;
-          buf_printf(b, "({ sp_String *_t%d = lv_%s;%s"
+          buf_printf(b, "({ sp_String *_t%d = %s;%s"
                         " if (sp_String_is_frozen(_t%d)) sp_raise_frozen_str(_t%d->data);"
                         " const char *lv__sb%d = sp_str_concat(sp_String_cstr(_t%d), (&(\"\\xff\")[1]));"
                         " SP_GC_ROOT(lv__sb%d); ",
-                     tH, rename_local(sbn), pre.p ? pre.p : "", tH, tH, tH, tH, tH);
+                     tH, srefL, pre.p ? pre.p : "", tH, tH, tH, tH, tH);
           free(pre.p);
           emit_ctype(c, resty == TY_UNKNOWN || resty == TY_VOID ? TY_STRING : resty, b);
           buf_printf(b, " _res%d = %s;", tH, armb.p ? armb.p : "0");
@@ -8237,7 +8231,7 @@ static int emit_scalar_call_arms(Compiler *c, int id, Buf *b) {
       char srefB[1024];
       const char *sbnB = strbuf_local_name(c, recvS);
       int haveB = avS && acS == 2 &&
-                  (sbnB ? (snprintf(srefB, sizeof srefB, "lv_%s", sbnB), 1)
+                  (sbnB ? sb_local_handle_text(c, recvS, srefB, sizeof srefB)
                         : strbuf_recv_handle(c, id, recvS, srefB, sizeof srefB));
       if (haveB) {
         int tH = ++g_tmp;
@@ -8262,28 +8256,22 @@ static int emit_scalar_call_arms(Compiler *c, int id, Buf *b) {
       if (sb_iv_expr_shim(c, id, recvS, b, emit_scalar_call)) return 1;
       if (repr_static_read_kind(nt_kind(ntS, recvS)) &&
           sb_reader_expr_shim(c, id, recvS, b, emit_scalar_call)) return 1;
-      const char *sbn = strbuf_local_name(c, recvS);
-      if (sbn && g_nren < MAX_RENAME) {
-        Scope *shs = comp_scope_of(c, recvS);
-        LocalVar *shlv = scope_local(shs, sbn);
-        int tH = ++g_tmp;
+      char srefL[1024];
+      SbLocalSave svL;
+      int tH = sb_local_shim_open(c, recvS, srefL, sizeof srefL, &svL);
+      if (tH) {
         Buf armb; memset(&armb, 0, sizeof armb);
-        snprintf(g_ren_from[g_nren], sizeof g_ren_from[0], "%s", sbn);
-        snprintf(g_ren_to[g_nren], sizeof g_ren_to[0], "_sb%d", tH);
-        g_nren++;
-        TyKind sv_ty = shlv->type; shlv->type = TY_STRING;
         int handled = emit_scalar_call(c, id, &armb);
-        shlv->type = sv_ty;
-        g_nren--;
+        sb_local_shim_close(&svL);
         if (!handled) { free(armb.p); }
         else {
-          buf_printf(b, "({ sp_String *_t%d = lv_%s;"
+          buf_printf(b, "({ sp_String *_t%d = %s;"
                         " if (sp_String_is_frozen(_t%d)) sp_raise_frozen_str(_t%d->data);"
                         " const char *lv__sb%d = sp_str_concat(sp_String_cstr(_t%d), (&(\"\\xff\")[1]));"
                         " SP_GC_ROOT(lv__sb%d);"
                         " sp_int _res%d = %s;"
                         " sp_String_set_bin(_t%d, lv__sb%d); _res%d; })",
-                     tH, rename_local(sbn), tH, tH, tH, tH, tH,
+                     tH, srefL, tH, tH, tH, tH, tH,
                      tH, armb.p ? armb.p : "0", tH, tH, tH);
           free(armb.p);
           return 1;

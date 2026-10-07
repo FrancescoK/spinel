@@ -15698,26 +15698,20 @@ static int str_mutate_shared_arms(Compiler *c, int id, Buf *b, int indent, const
         }
       }
     }
-    const char *sbn = strbuf_local_name(c, recv);
-    if (sbn && g_nren < MAX_RENAME) {
-      Scope *shs = comp_scope_of(c, recv);
-      LocalVar *shlv = scope_local(shs, sbn);
+    if (strbuf_local_name(c, recv) && g_nren < MAX_RENAME) {
       Buf pre; memset(&pre, 0, sizeof pre);
       int mark = sb_shim_args_first(c, id, &pre, indent + 1);
-      int tH = ++g_tmp;
+      char srefL[1024];
+      SbLocalSave svL;
+      int tH = sb_local_shim_open(c, recv, srefL, sizeof srefL, &svL);
       Buf armb; memset(&armb, 0, sizeof armb);
-      snprintf(g_ren_from[g_nren], sizeof g_ren_from[0], "%s", sbn);
-      snprintf(g_ren_to[g_nren], sizeof g_ren_to[0], "_sb%d", tH);
-      g_nren++;
-      TyKind sv_ty = shlv->type; shlv->type = TY_STRING;
-      int handled = emit_array_mutate_stmt(c, id, &armb, indent + 1);
-      shlv->type = sv_ty;
-      g_nren--;
+      int handled = tH && emit_array_mutate_stmt(c, id, &armb, indent + 1);
+      if (tH) sb_local_shim_close(&svL);
       view_unbind(mark);
       if (!handled) { free(armb.p); free(pre.p); }
       else {
         emit_indent(b, indent);
-        buf_printf(b, "{ sp_String *_t%d = lv_%s;\n", tH, rename_local(sbn));
+        buf_printf(b, "{ sp_String *_t%d = %s;\n", tH, srefL);
         emit_sb_shim_swap(b, indent, tH, &pre, armb.p);
         return 1;
       }

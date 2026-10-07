@@ -2494,6 +2494,49 @@ void sb_reader_shim_close(Compiler *c, int recv, const SbReaderSave *sv) {
   view_unbind(g_n_argov - 1);
   for (int k = sv->ntok - 1; k >= 0; k--) view_pop(c, sv->tok + k);
 }
+/* The handle of the shared-mutable String local `recv` (strbuf_local_name),
+   as C text: `lv_<name>`, or the cell that holds it for a local a closure
+   captures -- `(*_cell_<name>)` in its own scope, the capture struct's in the
+   closure's body. Answers 0 when `recv` is no such local or the text does
+   not fit. */
+int sb_local_handle_text(Compiler *c, int recv, char *out, size_t cap) {
+  const char *sbn = strbuf_local_name(c, recv);
+  if (!sbn) return 0;
+  Buf hb; memset(&hb, 0, sizeof hb);
+  emit_scope_local_ref(c, comp_scope_of(c, recv), sbn, &hb);
+  int fit = hb.p && strlen(hb.p) < cap;
+  if (fit) snprintf(out, cap, "%s", hb.p);
+  free(hb.p);
+  return fit;
+}
+/* Open the shim over a shared-mutable String local `recv`, whose value arms
+   are re-run on a plain shadow copy `lv__sbT` before its bytes are swapped
+   into the handle: the handle's text goes to sref, and until
+   sb_local_shim_close the local is renamed to the shadow and typed a String.
+   A local a closure captures is read and written through its cell, which
+   the rename map does not reach, so its read node reads as the shadow too.
+   The shims took the handle as `lv_<name>`, which such a local does not
+   have, and the arm assigned the cell itself: the C did not compile. Answers
+   T, or 0 when `recv` is no such local or the rename map is full. */
+int sb_local_shim_open(Compiler *c, int recv, char *sref, size_t cap, SbLocalSave *sv) {
+  const char *sbn = strbuf_local_name(c, recv);
+  if (!sbn || g_nren >= MAX_RENAME || !sb_local_handle_text(c, recv, sref, cap)) return 0;
+  int tH = ++g_tmp;
+  snprintf(g_ren_from[g_nren], sizeof g_ren_from[0], "%s", sbn);
+  snprintf(g_ren_to[g_nren], sizeof g_ren_to[0], "_sb%d", tH);
+  g_nren++;
+  sv->lv = scope_local(comp_scope_of(c, recv), sbn);
+  sv->ty = sv->lv->type;
+  sv->lv->type = TY_STRING;
+  int cell = sv->lv->is_cell || (g_cap_struct && g_cap_names && nameset_has(g_cap_names, sbn));
+  sv->view = cell ? view_bind(recv, "lv__sb%d", tH) : -1;
+  return tH;
+}
+void sb_local_shim_close(const SbLocalSave *sv) {
+  if (sv->view >= 0) view_unbind(sv->view);
+  sv->lv->type = sv->ty;
+  g_nren--;
+}
 const char *g_sb_iv_name = NULL;
 int         g_sb_iv_cid  = -1;
 char        g_sb_iv_repl[64];
