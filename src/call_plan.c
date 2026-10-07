@@ -1798,7 +1798,9 @@ int cplan_nil(Compiler *c, int id) {
   /* the receiver as settled, not as a view retypes it: a poly arm's
      unboxed String is never its box's nil */
   TyKind rt = c->ntype[r];
-  if (!cplan_nil_family(rt) || comp_ntype(c, r) != rt) return CN_NONE;
+  /* under --share-strings, a String the rule made the shared handle is
+     nil as its NULL handle (#6765) */
+  if (!(cplan_nil_family(rt) || (rt == TY_STRBUF && c->share_strings)) || comp_ntype(c, r) != rt) return CN_NONE;
   Repr rr = repr_of(c, r);
   if ((rr.kind != RK_PTR && rr.kind != RK_STRBUF) || !rr.may_nil || rr.nil_tested) return CN_NONE;
   /* an ivar keeps the release build's policy (ivar_nil_recv_guard, #5960);
