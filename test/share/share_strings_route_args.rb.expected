@@ -12,3 +12,5 @@ NoMethodError
 "k!"
 NoMethodError
 NoMethodError
+[["frozen-literal-textlit", "other", "frozen-literal-textA", 220, 72], ["frozen-literal-textlit", "other", "frozen-literal-textA", 420, 72]]
+"frozen-literal-text"

@@ -3555,7 +3555,7 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
           int rd_call = (nt_kind(nt, recv) == NK_CallNode || hrB == 2) && g_n_argov < MAX_ARG_OVERRIDE;
           int tsb = ++g_tmp, tob = ++g_tmp, tnb = ++g_tmp;
           buf_printf(b, "({ sp_String *_t%d = %s;", tsb, srefB);
-          emit_route_recv_root(hrB, tsb, b);
+          emit_route_recv_root(c, hrB, tsb, 0, NULL, TY_UNKNOWN, b);
           buf_printf(b, " const char *_t%d = sp_String_cstr(_t%d); (void)_t%d; ", tob, tsb, tob);
           /* gsub!/sub! answer nil when no SUBSTITUTION was made, which the
              text comparison below cannot tell from a match that wrote the same
@@ -3762,7 +3762,7 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
         if (hrR) {
           int tbR = ++g_tmp;
           buf_printf(b, "({ sp_String *_t%d = %s;", tbR, srefR);
-          emit_route_recv_root(hrR, tbR, b);
+          emit_route_recv_root(c, hrR, tbR, argc, argv, TY_STRING, b);
           buf_printf(b, " sp_String_set_bin(_t%d, ", tbR);
           emit_str_expr(c, argv[0], b);
           /* marked to hand out the handle (`r = obj.buf.replace(x)`): the
@@ -3797,7 +3797,7 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
       if (hrBR) {
         int tm2 = ++g_tmp, tr3 = ++g_tmp, tn3 = ++g_tmp;
         buf_printf(b, "({ sp_String *_t%d = %s;", tm2, srefBR);
-        emit_route_recv_root(hrBR, tm2, b);
+        emit_route_recv_root(c, hrBR, tm2, 0, NULL, TY_UNKNOWN, b);
         buf_printf(b, " sp_Range _t%d = sp_range_ix(", tr3);
         emit_expr(c, argv[0], b); buf_puts(b, ")");
         buf_printf(b, "; const char *_t%d = sp_str_bytesplice(sp_String_cstr(_t%d),"
@@ -3826,7 +3826,7 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
       if (hrAB) {
         int tm2 = ++g_tmp;
         buf_printf(b, "({ sp_String *_t%d = %s;", tm2, srefAB);
-        emit_route_recv_root(hrAB, tm2, b);
+        emit_route_recv_root(c, hrAB, tm2, 0, NULL, TY_UNKNOWN, b);
         for (int a9 = 0; a9 < argc; a9++) {
           buf_printf(b, " sp_String_append_bytes(_t%d, ", tm2);
           if (comp_ntype(c, argv[a9]) == TY_INT) { buf_puts(b, "sp_int_chr("); emit_int_expr(c, argv[a9], b); buf_puts(b, ")"); }
@@ -3864,7 +3864,7 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
       if (hrBS) {
         int tm2 = ++g_tmp, tn3 = ++g_tmp;
         buf_printf(b, "({ sp_String *_t%d = %s;", tm2, srefBS);
-        emit_route_recv_root(hrBS, tm2, b);
+        emit_route_recv_root(c, hrBS, tm2, 0, NULL, TY_UNKNOWN, b);
         buf_printf(b, " const char *_t%d = sp_str_bytesplice(sp_String_cstr(_t%d), ", tn3, tm2);
         emit_int_expr(c, argv[0], b);
         buf_puts(b, ", "); emit_int_expr(c, argv[1], b);
@@ -8256,9 +8256,10 @@ static int emit_scalar_call_arms(Compiler *c, int id, Buf *b) {
       if (haveB == 2) {
         int tH = ++g_tmp;
         /* rooted: a route can answer a String of its own (`(+f)` of a frozen
-           f), which nothing else holds while the arguments allocate */
+           f), which nothing else holds while the arguments allocate (when
+           they can: emit_route_recv_root) */
         buf_printf(b, "({ sp_String *_t%d = %s;", tH, srefB);
-        emit_route_recv_root(haveB, tH, b);
+        emit_route_recv_root(c, haveB, tH, acS, avS, TY_INT, b);
         buf_printf(b, " sp_int _i%d = ", tH);
         emit_int_expr(c, avS[0], b);
         buf_printf(b, "; sp_int _v%d = ", tH);

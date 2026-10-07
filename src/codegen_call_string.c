@@ -1251,7 +1251,8 @@ int emit_string_handle_append(Compiler *c, int id, Buf *b, const char *name, int
         if (chain_handle) emit_expr(c, sr, b);
         else buf_puts(b, sref0);
         buf_puts(b, ";");
-        emit_route_recv_root(hr0, tb2, b);
+        /* (prepend builds its text with sp_str_concat, which allocates) */
+        emit_route_recv_root(c, hr0, tb2, argc, is_append_concat(name) ? argv : NULL, TY_STRING, b);
         if (!is_append_concat(name)) {
           int ordered = 0;
           for (int j = 0; j < argc && argc > 1; j++)
