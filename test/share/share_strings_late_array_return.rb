@@ -4,8 +4,9 @@
 # follow. Pathname's split_str (`out = []; ... out.push(part); out`)
 # answered that Array through an sp_StrArray * return, and its callers'
 # locals kept the typed form, so the C did not build. The conversion is a
-# late widening the method's return and the locals written from it now
-# follow. These lines are what it took for the requires to bring the
+# late widening the method's return, the locals written from it and the
+# reads of each converted local now follow; `words` is one only read, never
+# returned. These lines are what it took for the requires to bring the
 # conversion about.
 if require 'strscan'
 end
@@ -20,3 +21,7 @@ parts = Pathname.new("/a/b/c").each_filename.to_a
 kept = parts
 p kept, parts.size
 p Pathname.new("a/b/../c").cleanpath.to_s
+words = []
+"x/y".split("/").each { |w| words.push(w) }
+p Pathname.new(words[0]).to_s
+p words
