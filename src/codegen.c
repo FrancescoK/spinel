@@ -1586,6 +1586,47 @@ static void emit_boxed_strbuf(Compiler *c, int node, TyKind t, const Repr *rp, B
   buf_puts(b, "), SP_BUILTIN_STRBUF)"); RC(RF_STRBUF_FRESH, RW_NONE);
 }
 
+/* An arm st of a conditional emit_boxed_cond_arms boxes: its statements,
+   then its value boxed into _t<dst> (nil for an empty arm). */
+static void emit_boxed_cond_arm(Compiler *c, int st, int dst, Buf *b) {
+  const NodeTable *nt = c->nt;
+  if (st >= 0 && nt_kind(nt, st) == NK_ElseNode) st = nt_ref(nt, st, "statements");
+  int n = 0; const int *bb = st >= 0 && nt_kind(nt, st) == NK_StatementsNode ? nt_arr(nt, st, "body", &n) : NULL;
+  int last = bb ? (n > 0 ? bb[n - 1] : -1) : st;
+  buf_puts(b, "{ ");
+  for (int i = 0; bb && i < n - 1; i++) emit_stmt(c, bb[i], b, 0);
+  buf_printf(b, "_t%d = ", dst);
+  if (last < 0) buf_puts(b, "sp_box_nil()");
+  else emit_boxed(c, last, b);
+  buf_puts(b, "; }");
+}
+
+/* --share-strings: a String `if` or `unless` with an arm that is the shared
+   handle or a box (strbuf_cond_has_handle_leaf), boxed arm by arm, so each
+   arm's box keeps its own String; boxed whole, the value's box held a copy
+   of whichever arm ran. 0 with nothing emitted for any other node. */
+static int emit_boxed_cond_arms(Compiler *c, int node, Buf *b) {
+  const NodeTable *nt = c->nt;
+  if (!repr_share_rule(c) || node < 0) return 0;
+  NodeKind k = nt_kind(nt, node);
+  TyKind t = comp_ntype(c, node);
+  if ((k != NK_IfNode && k != NK_UnlessNode) || (t != TY_STRING && t != TY_STRBUF) ||
+      !strbuf_cond_has_handle_leaf(c, node, 0))
+    return 0;
+  int dst = ++g_tmp;
+  Buf cnd; memset(&cnd, 0, sizeof cnd);
+  emit_cond(c, nt_ref(nt, node, "predicate"), &cnd);
+  buf_printf(b, "({ sp_RbVal _t%d; if (%s%s%s) ", dst, k == NK_UnlessNode ? "!(" : "", cnd.p ? cnd.p : "0",
+             k == NK_UnlessNode ? ")" : "");
+  free(cnd.p);
+  emit_boxed_cond_arm(c, nt_ref(nt, node, "statements"), dst, b);
+  buf_puts(b, "\nelse ");
+  emit_boxed_cond_arm(c, nt_ref(nt, node, k == NK_IfNode ? "subsequent" : "else_clause"), dst, b);
+  buf_printf(b, "\n_t%d; })", dst);
+  RC(RF_SPECIAL, RW_NONE);
+  return 1;
+}
+
 static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
   /* Parentheses are transparent: box the inner expression directly so a
      wrapped yield (`out << (yield x)`) reaches the per-call-site yield boxing
@@ -1865,6 +1906,23 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
     /* --share-strings: a String a bang method answers off a variable's
        handle is that handle, boxed as it (a copy forked the box off it) */
     if (t == TY_STRING && emit_boxed_bang_self(c, node, b)) return;
+    /* --share-strings: a mutator on a narrowed box (`a << x` where an
+       is_a? guard narrows a boxed a) answers that box, read as one */
+    if (t == TY_STRING && strbuf_narrowed_box_mutator(c, node)) {
+      emit_narrowed_box_mutator(c, node, b);
+      RC(RF_PASS, RW_NONE);
+      return;
+    }
+    /* --share-strings: a String value that hands on a variable's handle (an
+       append chain over it, `a << x`): that handle, boxed as it */
+    if (t == TY_STRING && repr_share_rule(c) && nt_kind(c->nt, node) == NK_CallNode &&
+        strbuf_chain_over_handle(c, node)) {
+      buf_puts(b, "sp_box_nullable_obj(");
+      emit_strbuf_handle_of(c, node, b);
+      buf_puts(b, ", SP_BUILTIN_STRBUF)");
+      RC(RF_STRBUF_HANDLE, RW_NONE);
+      return;
+    }
     break;
   case RK_NONE:
   default:
@@ -1974,6 +2032,7 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
       return;
     }
   }
+  if (emit_boxed_cond_arms(c, node, b)) return;
   int lift = repr_share_rule(c) && node >= 0 && c->poly_strbuf_lift[node] && comp_ntype(c, node) == TY_STRING;
   /* a route that hands on a handle (`q ||= s.then { |v| v }`,
      emit_strbuf_route): that handle's box, not a new handle around a copy */

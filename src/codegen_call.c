@@ -24752,6 +24752,48 @@ int strbuf_pickup_answers_nil(Compiler *c, int id) {
   for (int i = 0; i < n && !nil; i++) nil = an_tail_answers_nil(c, t[i]);
   return nil;
 }
+/* --share-strings: is String call id a mutator (or a `<<` chain) on a local
+   an is_a? guard narrows out of its box, which the call body routes
+   through the poly append and answers boxed when read as a box (its
+   narrowed-box arm)? */
+int strbuf_narrowed_box_mutator(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  if (!repr_share_rule(c) || id < 0 || nt_kind(nt, id) != NK_CallNode) return 0;
+  const char *cn = nt_str(nt, id, "name");
+  int nch = 0, r = nt_ref(nt, id, "receiver");
+  while (is_shovel_name(cn) && r >= 0 && nt_kind(nt, r) == NK_CallNode && nch < 16 &&
+         is_shovel_name(nt_str(nt, r, "name")) && c->ntype[r] == TY_STRING) {
+    nch++;
+    r = nt_ref(nt, r, "receiver");
+  }
+  /* (as emit_call_body's narrowed-box arm takes the receiver: a String read,
+     or one the rule narrows to the handle) */
+  if (!cn || !(nch > 0 || sp_str_mutator(cn, SP_MUT_NARROW)) || r < 0 || nt_kind(nt, r) != NK_LocalVariableReadNode ||
+      !(repr_of(c, r).ty == TY_STRING || repr_of(c, r).narrowed == TY_STRBUF))
+    return 0;
+  const char *rn = nt_str(nt, r, "name");
+  Scope *rs = rn ? comp_scope_of(c, r) : NULL;
+  LocalVar *rl = rs ? scope_local(rs, rn) : NULL;
+  return rl && rl->type == TY_POLY;
+}
+/* The narrowed local strbuf_narrowed_box_mutator found under call id, its
+   box lifted to a handle first (sp_poly_strbuf_lift: a plain String's box
+   becomes its handle's), then the call read as a box: the mutation goes to
+   that handle in place, which the value names too. */
+void emit_narrowed_box_mutator(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int r = nt_ref(nt, id, "receiver");
+  while (r >= 0 && nt_kind(nt, r) == NK_CallNode) r = nt_ref(nt, r, "receiver");
+  Buf lv; memset(&lv, 0, sizeof lv);
+  emit_local_ref(c, r, nt_str(nt, r, "name"), &lv);
+  buf_printf(b, "(%s = sp_poly_strbuf_lift(%s), ", lv.p, lv.p);
+  int vc = view_push(c, id, TY_POLY);
+  emit_expr(c, id, b);
+  view_pop(c, vc);
+  buf_puts(b, ")");
+  free(lv.p);
+}
+
 /* Does call id take the deep-return pickup (#3227 P6, emit_deep_return_pickup):
    a marked receiverless call to a method (no attr reader's implicit-self
    read), or one on a class, with no block? It hands on the handle its
