@@ -156,6 +156,26 @@ def lambda_left_in_argument
 end
 lambda_left_in_argument
 
+# setbyte runs its index, then its byte, and only then checks that the
+# String is not frozen; freezing the captured local freezes the handle
+def setbyte_order(n)
+  s = +"abc"
+  u = s
+  g = -> { s } if n == 9123
+  byte = 65
+  s.setbyte((byte = 66; 0), byte)
+  p s, u
+  s.freeze
+  k = 0
+  begin
+    s.setbyte((k += 1; 1), (k += 10; 67))
+  rescue FrozenError => e
+    p e.class
+  end
+  p k, s, u.frozen?
+end
+setbyte_order(ARGV.size)
+
 # at top level
 t = +"abcde"
 u = t

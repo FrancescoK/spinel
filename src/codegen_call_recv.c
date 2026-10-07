@@ -8216,6 +8216,28 @@ static int emit_scalar_recv_arms(Compiler *c, int id, Buf *b, const NodeTable *n
   return 0;
 }
 
+/* setbyte(index, byte) on the handle `href` (a slot's text, or a route's,
+   which reads the handle once): the receiver, then the index, then the
+   byte run in the call's order, and only then the frozen check, as in
+   CRuby. The byte goes into the handle's own buffer; a static literal's
+   bytes are copied first and the copy republished. An argument that can
+   run code may rebind the receiver's slot, so the handle read first is
+   rooted then. */
+static void emit_setbyte_on_handle(Compiler *c, const char *href, const int *av, Buf *b) {
+  int tH = ++g_tmp;
+  buf_printf(b, "({ sp_String *_t%d = %s; ", tH, href);
+  if (!subtree_is_pure_read(c, av[0]) || !subtree_is_pure_read(c, av[1])) buf_printf(b, "SP_GC_ROOT(_t%d); ", tH);
+  buf_printf(b, "sp_int _i%d = ", tH);
+  emit_int_expr(c, av[0], b);
+  buf_printf(b, "; sp_int _v%d = ", tH);
+  emit_int_expr(c, av[1], b);
+  buf_printf(b, "; if (sp_String_is_frozen(_t%d)) sp_raise_frozen_str(_t%d->data);"
+                " const char *_p%d = sp_String_cstr(_t%d);"
+                " const char *_q%d = sp_str_setbyte_cow(_p%d, _i%d, _v%d);"
+                " if (_q%d != _p%d) sp_String_set_bin(_t%d, _q%d); _v%d; })",
+             tH, tH, tH, tH, tH, tH, tH, tH, tH, tH, tH, tH, tH);
+}
+
 static int emit_scalar_call_arms(Compiler *c, int id, Buf *b) {
   /* Shared-mutable shim (#3227): setbyte on a strbuf local -- shadow-copy
      re-entry, same as emit_array_call's. */
@@ -8241,17 +8263,7 @@ static int emit_scalar_call_arms(Compiler *c, int id, Buf *b) {
          strbuf_slot_ref first): a captured local's is its cell */
       int haveB = avS && acS == 2 && strbuf_recv_handle(c, id, recvS, srefB, sizeof srefB);
       if (haveB) {
-        int tH = ++g_tmp;
-        buf_printf(b, "({ sp_String *_t%d = %s;"
-                      " if (sp_String_is_frozen(_t%d)) sp_raise_frozen_str(_t%d->data);"
-                      " const char *_p%d = sp_String_cstr(_t%d); sp_int _v%d = ",
-                   tH, srefB, tH, tH, tH, tH, tH);
-        emit_int_expr(c, avS[1], b);
-        buf_printf(b, "; const char *_q%d = sp_str_setbyte_cow(_p%d, ", tH, tH);
-        emit_int_expr(c, avS[0], b);
-        buf_printf(b, ", _v%d);"
-                      " if (_q%d != _p%d) sp_String_set_bin(_t%d, _q%d); _v%d; })",
-                   tH, tH, tH, tH, tH, tH);
+        emit_setbyte_on_handle(c, srefB, avS, b);
         return 1;
       }
     }

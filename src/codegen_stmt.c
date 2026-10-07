@@ -11841,9 +11841,11 @@ else {
             const char *lnm = nt_str(nt, frcv, "name");
             Scope *lsc = comp_scope_of(c, frcv);
             LocalVar *llv = (lnm && lsc) ? scope_local(lsc, lnm) : NULL;
-            if (repr_of_slot(c, llv).kind == RK_STRBUF) {
+            /* the slot through its holder: a captured local's is its cell */
+            char lfz[1024];
+            if (repr_of_slot(c, llv).kind == RK_STRBUF && strbuf_slot_ref(c, frcv, lfz, sizeof lfz)) {
               emit_indent(b, indent);
-              buf_printf(b, "sp_gc_freeze((void *)lv_%s);\n", rename_local(lnm));
+              buf_printf(b, "sp_gc_freeze((void *)%s);\n", lfz);
               return 1;
             }
           }
