@@ -8971,10 +8971,11 @@ static int emit_struct_recv_call(Compiler *c, int id, Buf *b, const NodeTable *n
                tk, tk, tk, tk, sc->nmembers);
     /* The assignment's own value is the right-hand side in ITS type -- that
        is what the call site is typed for -- so keep it, and box a copy for
-       the per-member stores (#3897). */
+       the per-member stores (#3897). A nil has no C value of its own (its
+       C type is void): it is the boxed nil, as an untyped value is. */
     TyKind vt = repr_of(c, argv[1]).as_ty;
     int tvraw = ++g_tmp;
-    if (vt != TY_POLY && vt != TY_UNKNOWN) {
+    if (vt != TY_POLY && vt != TY_UNKNOWN && vt != TY_NIL) {
       buf_printf(b, " "); emit_ctype(c, vt, b);
       buf_printf(b, " _t%d = ", tvraw); emit_expr(c, argv[1], b); buf_puts(b, ";");
       char rawtxt[32]; snprintf(rawtxt, sizeof rawtxt, "_t%d", tvraw);
