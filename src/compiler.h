@@ -299,6 +299,9 @@ typedef struct {
                         yield answers poly, so everything it feeds widens with
                         it and one body serves every call site (#3399). */
   int is_lowered_yield; /* self-recursive yield method lowered to &block (sp_Proc) form */
+  int ctor_cycle;       /* a yielding initialize on a cycle of `new` sites that
+                           splice it (mark_ctor_cycles): its strongly connected
+                           component, numbered from 1; 0 on none */
   int lowered_lifted_yield; /* lowered because a yield sits in a Thread/Fiber
                                body: the method's value is its own tail, not
                                the block's, unlike the self-recursive form */
