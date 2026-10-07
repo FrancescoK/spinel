@@ -1229,8 +1229,9 @@ static int sh_container_default(ShareFacts *F, Compiler *c, int n, int rv, int b
 }
 
 /* A call the walk does not follow: what it is handed and what it answers
-   are UNKNOWN. */
+   are UNKNOWN. Its receiver can hand on its elements too. */
 static int sh_unknown_call(ShareFacts *F, Compiler *c, int n, int blk) {
+  sh_union(F, sh_val(F, c, nt_ref(c->nt, n, "receiver")), F->unknown);
   int vals[64];
   int nv = sh_args_vals(F, c, n, vals, 64);
   for (int i = 0; i < nv; i++) sh_union(F, vals[i], F->unknown);
