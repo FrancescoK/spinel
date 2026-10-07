@@ -5049,7 +5049,7 @@ static int infer_user_method_call(Compiler *c, int id, const NodeTable *nt, cons
        member's writer); a nil, which has no C value of its own, boxed. The
        first member's type answered it, and a nil or a value of another
        type did not fit the C the call's value was read into. */
-    if (sp_streq(name, "[]=") && argc == 2) {
+    if (is_index_assign(name) && argc == 2) {
       TyKind vt = infer_type(c, argv[1]);
       *out = vt == TY_NIL || vt == TY_UNKNOWN || vt == TY_VOID ? TY_POLY : vt;
       return 1;

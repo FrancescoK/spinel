@@ -8882,7 +8882,7 @@ static int emit_struct_recv_call(Compiler *c, int id, Buf *b, const NodeTable *n
   /* CRuby's Data defines no #[] either: a member is read by name only,
      and indexing is a NoMethodError -- not Struct's member access. Nor
      #[]= (a Data is frozen): the Struct's store wrote the member. */
-  if ((sp_streq(name, "[]") || (sp_streq(name, "[]=") && argc == 2)) && sc->is_data) {
+  if (is_element_access(name) && (argc == 2 || !is_index_assign(name)) && sc->is_data) {
     TyKind dar = repr_of(c, id).as_ty;
     buf_puts(b, "({ (void)("); emit_expr(c, recv, b); buf_puts(b, "); ");
     for (int da = 0; da < argc; da++) {
