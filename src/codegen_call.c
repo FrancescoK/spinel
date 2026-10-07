@@ -6745,6 +6745,23 @@ static int pd_hoist(Compiler *c, int id, const char *name, Buf *b, size_t from, 
    writes it here, in its place; any other's is not observable where it runs.
    One the nil arm's head ran is its temp already (head_held_read): nothing
    is written. Answers the temp the arms read. */
+/* A String argument that hands on a shared handle (strbuf_value_carries),
+   for a poly call whose arms may take it: the handle into _t<th>, rooted,
+   and the argument's read of it into _t<tn>, as emit_poly_arg_temp
+   declares the value the other arms take. */
+static void emit_poly_route_arg(Compiler *c, int node, TyKind ty, int th, int tn, int ran, Buf *b) {
+  Buf pre; memset(&pre, 0, sizeof pre);
+  Buf val; memset(&val, 0, sizeof val);
+  Buf *sv_pre = g_pre;
+  if (ran && subtree_has_side_effect(c, node)) g_pre = &pre;
+  emit_strbuf_handle_of(c, node, &val);
+  g_pre = sv_pre;
+  if (pre.p) buf_puts(b, pre.p);
+  buf_printf(b, "sp_String *_t%d = %s; SP_GC_ROOT(_t%d); ", th, val.p ? val.p : "NULL", th);
+  emit_ctype(c, ty, b);
+  buf_printf(b, " _t%d = sp_strbuf_read_pub(_t%d); ", tn, th);
+  free(pre.p); free(val.p);
+}
 static int emit_poly_arg_temp(Compiler *c, int node, TyKind ty, int boxed, int tn, int ran, Buf *b) {
   Buf pre; memset(&pre, 0, sizeof pre);
   Buf val; memset(&val, 0, sizeof val);
@@ -7907,8 +7924,18 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
               strbuf_slot_ref(c, argv[a], sref, sizeof sref)) {
             htmp[a] = ++g_tmp;
             buf_printf(b, "sp_String *_t%d = %s; SP_GC_ROOT(_t%d); ", htmp[a], sref, htmp[a]);
+            atmp[a] = emit_poly_arg_temp(c, argv[a], at, 0, atmp[a], ran, b);
           }
-          atmp[a] = emit_poly_arg_temp(c, argv[a], at, 0, atmp[a], ran, b);
+          /* --share-strings: a value that hands on a shared String's handle
+             (a route, `s << x`) runs as that handle, which a handle arm
+             takes; the temp is its read, for an arm that takes the value */
+          else if (at == TY_STRING && ak != NK_LocalVariableReadNode &&
+                   ak != NK_InstanceVariableReadNode && strbuf_value_carries(c, argv[a]) &&
+                   (takes_handle >= 0 ? takes_handle : (takes_handle = poly_name_takes_handle(c, name)))) {
+            htmp[a] = ++g_tmp;
+            emit_poly_route_arg(c, argv[a], at, htmp[a], atmp[a], ran, b);
+          }
+          else atmp[a] = emit_poly_arg_temp(c, argv[a], at, 0, atmp[a], ran, b);
         }
         ran |= subtree_has_side_effect(c, argv[a]);
         /* The temp holds the argument until an arm hands it on: past the
