@@ -312,7 +312,9 @@ no_gsub_enum:
          block: its MatchData was the value, where the call is typed by the
          block's */
       buf_printf(b, "({ sp_MatchData *_t%d = sp_re_matchdata%s(sp_re_pat_%d, ", tm, argc == 2 ? "_at" : "", rre);
-      emit_str_expr(c, argv[0], b);
+      /* a nil subject answers nil without running the block, as the
+         blockless form's does: the matchers return NULL for it */
+      emit_str_expr_nilable(c, argv[0], b);
       if (argc == 2) { buf_puts(b, ", "); emit_int_expr(c, argv[1], b); }
       buf_printf(b, "); sp_RbVal _t%d = sp_box_nil(); SP_GC_ROOT_RBVAL(_t%d); if (_t%d) { ",
                  tr2, tr2, tm);

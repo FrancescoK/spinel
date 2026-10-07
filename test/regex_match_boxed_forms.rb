@@ -22,6 +22,9 @@ def t(k)
   p m.match?(s, 1)
   p m.match?(s, 2)
   p m.match?([nil, 1][k], 0)
+  # a nil subject answers nil and the block does not run, with and without pos
+  p(m.match([nil, 1][k], 0) { |md| p :ran; md[0] })
+  p(m.match([nil, 1][k]) { |md| p :ran; md[0] })
 end
 
 t(ARGV.size)
