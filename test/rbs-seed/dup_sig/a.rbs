@@ -1,0 +1,3 @@
+module DupPaths
+  def self.path: (?show_read: String?) -> String
+end

@@ -4251,9 +4251,37 @@ static void seed_method(Compiler *c, Scope *s, const char *ret_tok, char *ptypes
 }
 
 static int is_empty_array_literal(const NodeTable *nt, int id, int cap);
+/* A method the seed file declares twice with different signatures (two .rbs
+   of one directory, one per route helper, both naming `H.path`): the later
+   record would replace the earlier one, so a call the first one contradicts
+   builds. Said once, naming the method and both signatures. */
+typedef struct { char *key; char *sig; } SeedDecl;
+static void seed_decl_note(SeedDecl **tab, int *n, int *cap, const char *kind,
+                           const char *cls, const char *name, const char *ret, const char *params) {
+  char key[600]; snprintf(key, sizeof key, "%s %s %s", kind, cls ? cls : "Object", name);
+  char sig[900]; snprintf(sig, sizeof sig, "%s %s", ret, params ? params : "");
+  for (int i = 0; i < *n; i++) {
+    if (strcmp((*tab)[i].key, key) != 0) continue;
+    if (strcmp((*tab)[i].sig, sig) != 0) {
+      fprintf(stderr, "spinel: --rbs declares %s%s%s twice with different signatures:\n"
+                      "  (%s) and (%s)\n"
+                      "  A seed is trusted and the later one would replace the earlier: keep one declaration, "
+                      "or give the methods different names.\n",
+              cls ? cls : "", cls ? (strcmp(kind, "cmeth") == 0 ? "." : "#") : "", name,
+              (*tab)[i].sig, sig);
+      exit(1);
+    }
+    return;
+  }
+  if (*n == *cap) { *cap = *cap ? *cap * 2 : 16; *tab = (SeedDecl *)realloc(*tab, sizeof(SeedDecl) * (size_t)*cap); }
+  (*tab)[*n].key = strdup(key); (*tab)[*n].sig = strdup(sig); (*n)++;
+}
+
 static void apply_rbs_seeds(Compiler *c, const char *path) {
   FILE *f = fopen(path, "rb");
   if (!f) return;
+  SeedDecl *decls = NULL; int ndecls = 0, capdecls = 0;
+  const char *cur_cname = NULL; char cur_cname_buf[300]; cur_cname_buf[0] = 0;
   int cur_ci = -1;       /* current class index; -2 = top level (Object) */
   char line[2048];
   while (fgets(line, sizeof line, f)) {
@@ -4273,6 +4301,7 @@ static void apply_rbs_seeds(Compiler *c, const char *path) {
       }
     }
     if (sp_streq(kw, "class")) {
+      snprintf(cur_cname_buf, sizeof cur_cname_buf, "%s", a1 ? a1 : ""); cur_cname = cur_cname_buf;
       if (a1 && sp_streq(a1, "Object")) cur_ci = -2;
       else cur_ci = a1 ? seed_class_index(c, a1) : -1;
     }
@@ -4320,17 +4349,21 @@ static void apply_rbs_seeds(Compiler *c, const char *path) {
       }
     }
     else if (sp_streq(kw, "meth") && a1 && a2) {
+      seed_decl_note(&decls, &ndecls, &capdecls, "meth", cur_cname, a1, a2, a3);
       int class_id = (cur_ci == -2) ? -1 : cur_ci;
       if (cur_ci == -2 || cur_ci >= 0)
         seed_method(c, find_method_scope(c, class_id, a1, 0),
                     method_in_override_family(c, class_id, a1, 0) ? NULL : a2, a3);
     }
     else if (sp_streq(kw, "cmeth") && a1 && a2 && cur_ci >= 0) {
+      seed_decl_note(&decls, &ndecls, &capdecls, "cmeth", cur_cname, a1, a2, a3);
       seed_method(c, find_method_scope(c, cur_ci, a1, 1),
                   method_in_override_family(c, cur_ci, a1, 1) ? NULL : a2, a3);
     }
   }
   fclose(f);
+  for (int i = 0; i < ndecls; i++) { free(decls[i].key); free(decls[i].sig); }
+  free(decls);
 }
 
 /* Iteration methods whose block binds a parameter to the receiver array's

@@ -10,7 +10,7 @@ class Box
   end
 end
 
-class Holder
+class HolderShapes
   def initialize
     @store = {}
   end
@@ -25,7 +25,7 @@ class Holder
   end
 end
 
-h = Holder.new
+h = HolderShapes.new
 h[:a] = { value: "from-hash", extra: true }
 h[:b] = "from-string"
 puts h[:a]

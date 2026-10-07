@@ -1,0 +1,3 @@
+module DupPaths
+  def self.path: (?feed_id: Integer?) -> String
+end
