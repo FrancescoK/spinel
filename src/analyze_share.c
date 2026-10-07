@@ -641,13 +641,15 @@ static void sh_target(ShareFacts *F, Compiler *c, int t, int v) {
    (keys 0) or deconstruct_keys (keys 1) answers, the user method's value
    as a call's is. vt is the matched value's type and cls the class the
    pattern names (`in Box[t]`), or -1. A value that may be any object reads
-   them off every user method of the name, joined once per build. -1 for a
+   them off every user method of the name, joined once per build. The
+   pattern reads the method's value as a call does (F->mread). -1 for a
    value no user method deconstructs. */
 static int sh_deconstructed(ShareFacts *F, Compiler *c, TyKind vt, int cls, int keys) {
   const char *name = keys ? "deconstruct_keys" : "deconstruct";
   if (cls < 0 && ty_is_object(vt)) cls = ty_object_class(vt);
   if (cls >= 0 && cls < c->nclasses) {
     int defc = -1, mi = comp_method_in_chain(c, cls, name, &defc);
+    if (mi >= 0 && F->mread) F->mread[mi] = 1;   /* the pattern reads its value */
     return mi >= 0 ? sh_scope_holder(F, SHK_RET, mi) : -1;
   }
   if (vt != TY_POLY && vt != TY_UNKNOWN) return -1;
@@ -655,8 +657,10 @@ static int sh_deconstructed(ShareFacts *F, Compiler *c, TyKind vt, int cls, int 
     F->any_dec[keys] = -1;
     for (int mi = 0; mi < c->nscopes; mi++) {
       Scope *m = &c->scopes[mi];
-      if (m->def_node >= 0 && m->class_id >= 0 && m->name && sp_streq(m->name, name))
+      if (m->def_node >= 0 && m->class_id >= 0 && m->name && sp_streq(m->name, name)) {
+        if (F->mread) F->mread[mi] = 1;
         F->any_dec[keys] = sh_join(F, F->any_dec[keys], sh_scope_holder(F, SHK_RET, mi));
+      }
     }
   }
   return F->any_dec[keys];
