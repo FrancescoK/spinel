@@ -689,6 +689,13 @@ static int nf_call(NF *f, int v) {
       return nf_ivar(f, cls, ivn);
     }
   }
+  /* --share-strings: `then` with a literal block answers its block's value,
+     which can be the receiver's nil (a route of the shared String, which a
+     parameter it is handed may then bind) */
+  if (c->share_strings && r >= 0 && is_then_alias(nm)) {
+    int blk = nt_ref(nt, v, "block");
+    if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode) return nf_list(f, nt_ref(nt, blk, "body"));
+  }
   /* the receiver itself */
   if (r >= 0 && (sp_streq(nm, "itself") || sp_streq(nm, "tap") || sp_streq(nm, "dup") ||
                  sp_streq(nm, "clone") || sp_streq(nm, "freeze")))

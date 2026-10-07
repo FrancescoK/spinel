@@ -1543,9 +1543,11 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
   }
   if (is_unary_plus(nt_str(nt, v, "name"))) {
     /* nil has no +@: NoMethodError, as the copy's read raised */
+    /* (a variable tested only for a nil the program writes, as a call's
+       receiver is: cplan_nil) */
     NodeKind xk = nt_kind(nt, unwrap_parens(c, x));
     if ((xk == NK_LocalVariableReadNode || xk == NK_InstanceVariableReadNode || repr_static_read_kind(xk)) &&
-        !repr_of(c, x).may_nil) {
+        (!repr_of(c, x).may_nil || !cplan_nil_written(nil_fact_why(c, unwrap_parens(c, x))))) {
       buf_puts(b, "sp_String_uplus(");
       emit_strbuf_handle_of(c, x, b);
       buf_puts(b, ")");
@@ -14452,9 +14454,13 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
   if (sp_streq(ty, "CallNode")) {
     int _srecv = nt_ref(nt, id, "receiver");
     const char *_snm = nt_str(nt, id, "name");
+    /* (--share-strings: a receiver that may be nil, a shared parameter an
+       argument binds nil, runs behind its nil test, as the statement form
+       does) */
     if (_srecv >= 0 && _snm && sp_streq(_snm, "<<") &&
         comp_ntype(c, _srecv) == TY_STRING &&
-        emit_array_mutate_stmt(c, id, b, indent)) {
+        ((repr_share_rule(c) && emit_nil_target_stmt(c, id, b, indent)) ||
+         emit_array_mutate_stmt(c, id, b, indent))) {
       /* return the chain's BASE receiver: for `buf << a << b` the immediate
          receiver is the inner `<<` call, and re-emitting it would run the
          inner links a second time (doubling the appended text -- and writing
