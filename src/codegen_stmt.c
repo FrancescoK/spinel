@@ -1202,12 +1202,27 @@ int emit_ptr_array_build(Compiler *c, int v, TyKind want, Buf *b) {
   if (sp_streq(vty, "ArrayNode")) {
     /* `[X.new, ...]` / `[[..], [..]]`: an sp_PtrArray of the unboxed element
        pointers (each an object pointer or an sp_IntArray*), rooted while
-       constructing. An empty one is just the empty array. */
+       constructing. An empty one is just the empty array. What an element
+       puts ahead of itself (a row literal's construction) runs ahead of the
+       whole build, which is unobservable until an element can run code of
+       the program's: from there on it runs right before its push, so the
+       elements run in source order (ahead of the build,
+       `[make_row, [read_state]]` read the state before make_row ran). */
     int t = ++g_tmp;
     buf_printf(b, "({ sp_PtrArray *_t%d = sp_PtrArray_new(); SP_GC_ROOT(_t%d);", t, t);
     int en = 0; const int *el = nt_arr(c->nt, v, "elements", &en);
+    int effect = 0;
     for (int e = 0; e < en; e++) {
-      buf_printf(b, " sp_PtrArray_push(_t%d, ", t); emit_expr(c, el[e], b); buf_puts(b, ");");
+      effect |= subtree_has_side_effect(c, el[e]);
+      Buf epre; memset(&epre, 0, sizeof epre);
+      Buf *sv_pre = g_pre;
+      if (e > 0 && effect) g_pre = &epre;
+      Buf ev; memset(&ev, 0, sizeof ev);
+      emit_expr(c, el[e], &ev);
+      g_pre = sv_pre;
+      if (epre.p && epre.p[0]) buf_printf(b, " %s", epre.p);
+      buf_printf(b, " sp_PtrArray_push(_t%d, %s);", t, ev.p ? ev.p : "");
+      free(epre.p); free(ev.p);
     }
     buf_printf(b, " _t%d; })", t);
     return 1;

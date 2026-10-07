@@ -87,3 +87,15 @@ W = [[1, 2], [3]].map { |a| a.take(1) }
 w = W[0].map { |n| n }
 w << "s"
 p w
+
+# a table built in place runs its rows in source order: a row a call
+# answers runs before a row literal whose element reads what that call did
+BUILT = []
+def make_row = (BUILT << 1; [10, 20])
+ORDERED = [make_row, [BUILT.size, 5]].map { |r| r.map { |n| n + 1 } }
+p ORDERED[0][1], ORDERED[1][0]
+held = [make_row, [BUILT.size, 5]]
+p held[0][1], held[1][0]
+def table_of_rows = [make_row, [BUILT.size, 5]]
+tr = table_of_rows
+p tr[0][1], tr[1][0]
