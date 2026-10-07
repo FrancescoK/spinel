@@ -7,7 +7,7 @@
 def t
   yield
 rescue ArgumentError => e
-  puts "AE: #{e.message}"
+  puts "AE: #{e.message.sub(/\Acomparison of \S+ with .* failed\z/, "comparison failed")}"
 end
 def mk(f) = f ? [2, "x"] : 3
 t { p ["a", 1].sort_by { |x| x } }
