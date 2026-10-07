@@ -16886,7 +16886,10 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
       if (lv->type != TY_STRING && lv->type != TY_STRBUF) continue;
       if (repr_of_slot(c, lv).share && !lv->byref_out) continue;
       if (lv->is_param && !lv->is_block_param) {
-        if (lv->rbs_seeded) continue;
+        /* an --rbs seed declares the Ruby type, String, and not its C form:
+           a seeded parameter takes the handle as an inferred one does
+           (reassert_rbs_param_seeds keeps it) */
+        if (lv->rbs_seeded && lv->rbs_type != TY_STRING) continue;
         if (lv->byref_out) { lv->byref_out = 0; lv->is_cell = 0; }
         lv->type = TY_STRBUF; lv->str_shared = 1;
         changed = 1;
@@ -25258,6 +25261,9 @@ static int reassert_rbs_param_seeds(Compiler *c) {
       LocalVar *lv = &sc->locals[i];
       if (!lv->is_param || !lv->rbs_seeded) continue;
       if (lv->rbs_type == TY_UNKNOWN || lv->type == lv->rbs_type) continue;
+      /* a String the share rule made the handle (share_default_apply): the
+         same Ruby type in its shared C form */
+      if (c->share_strings && lv->rbs_type == TY_STRING && lv->type == TY_STRBUF && lv->str_shared) continue;
       lv->type = lv->rbs_type;
       changed = 1;
     }
