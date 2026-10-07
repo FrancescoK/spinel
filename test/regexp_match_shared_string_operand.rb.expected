@@ -1,0 +1,5 @@
+0
+nil
+12
+nil
+TypeError: no implicit conversion of Integer into String
