@@ -2402,7 +2402,10 @@ int strbuf_boxed_elem_read(Compiler *c, int v) {
   int r = nt_ref(c->nt, v, "receiver");
   if (r < 0) return 0;
   Repr rr = repr_of(c, r);
-  return rr.kind == RK_BOXED || rr.elem == TY_POLY || rr.key != TY_UNKNOWN;
+  /* a Hash hands its values out boxed only when it holds them boxed: a
+     String-to-String Hash's read is the plain String */
+  return rr.kind == RK_BOXED || rr.elem == TY_POLY ||
+         (rr.key != TY_UNKNOWN && (rr.val == TY_POLY || rr.val == TY_UNKNOWN));
 }
 /* A String is a const char * value, so a String mutator (`<<`, the bang
    methods, replace/insert/...) is lowered to a reassignment of its receiver:
