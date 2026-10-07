@@ -1,0 +1,11 @@
+"s6"
+"s6"
+path
+suffix
+"value"
+9
+nil
+1
+1 0 3
+[TypeError, "Integer does not have #dig method"]
+[TypeError, "Integer does not have #dig method"]
