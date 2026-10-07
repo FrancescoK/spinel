@@ -1078,6 +1078,13 @@ else {
   }
   if (mi < 0) return 0;
   Scope *m = &c->scopes[mi];
+  /* `Y.new { }` in Y's own yielding initialize, or in its clone, hands its
+     block to the clone as a proc (pf_self_new, emit_ctor_new_with_proc),
+     the body not being spliced there */
+  if (m->yields && recv >= 0 && sp_streq(name, "new")) {
+    int pf = c->nscope[id] == mi ? mi : scope_proc_form_of(c, mi);
+    if (pf >= 0 && c->nscope[id] == pf) return 1;
+  }
   /* A lowered yielding method also receives its block as a real proc, so a
      block passed to it is lifted and captures enclosing locals like any other. */
   if (!m->blk_param || !m->blk_param[0]) return 0;
@@ -24636,6 +24643,24 @@ static int pf_dynamic_new(Compiler *c) {
   return 0;
 }
 
+/* Does yielding initialize `s` construct its own class from its own body
+   (`Y.new(a, b)` inside Y#initialize)? A `new` site splices the body, so
+   splicing it again at that inner site never ends: a real constructor has to
+   run the body there instead (emit_ctor_yield_inline), and the clone is the
+   function that does. */
+static int pf_self_new(Compiler *c, int s) {
+  const NodeTable *nt = c->nt;
+  for (int id = an_calls_named_first(c, "new"); id >= 0; id = an_calls_named_next(id)) {
+    if (c->nscope[id] != s || nt_kind(nt, id) != NK_CallNode) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    int rk = recv >= 0 ? nt_kind(nt, recv) : -1;
+    if (rk != NK_ConstantReadNode && rk != NK_ConstantPathNode) continue;
+    int ci = comp_class_index(c, nt_str(nt, recv, "name"));
+    if (ci >= 0 && comp_method_in_chain(c, ci, "initialize", NULL) == s) return 1;
+  }
+  return 0;
+}
+
 /* Does a `method(:name)` (or `public_method`, `instance_method`) name it? A
    Method object calls the method as a function, and a yielding one has none
    but its clone. */
@@ -24740,7 +24765,8 @@ int make_yield_proc_forms(Compiler *c) {
        re-raise and its own `new` sites alike, none of which splice the body */
     int exc_init = src->class_id >= 0 && sp_streq(src->name, "initialize") && !src->is_cmethod &&
                    class_is_exc_subclass(c, src->class_id);
-    if (src->class_id >= 0 && !exc_init && !pf_wanted(c, src->name) && !pf_in_class_dispatch(c, src))
+    if (src->class_id >= 0 && !exc_init && !pf_wanted(c, src->name) && !pf_in_class_dispatch(c, src) &&
+        !(sp_streq(src->name, "initialize") && pf_self_new(c, s)))
       continue;
     /* A method the program reopens has two definitions in the scope table
        and the last one wins (comp_method_in_class): only that one gets the

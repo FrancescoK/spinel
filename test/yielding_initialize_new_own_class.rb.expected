@@ -1,0 +1,16 @@
+[1, 2]
+[LocalJumpError, "no block given (yield)"]
+[5, 6]
+[:blk, 0]
+[80, 60, 40, 20]
+0
+[80, 60, 40, 20, 70, 35, 0]
+[:inner, [3, 1], 20, [2, 1]]
+[:inner, [2, 1], 10, [1, 1]]
+[LocalJumpError, "no block given (yield)"]
+0
+1
+2
+3
+4
+[1, 2]
