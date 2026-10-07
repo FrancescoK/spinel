@@ -139,14 +139,31 @@ int re_src_has_backref(const char *s) {
 
 static void emit_ctor_block_value(Compiler *c, int id, Buf *b);
 
+/* A `new` of class ci written in the body of the yielding initialize it
+   runs (`Y.new(a, b)` inside Y#initialize): splicing that body at this site
+   splices the same site again, without end -- one level per inline until the
+   rename table ran out, and two such sites doubled the work at every level.
+   The class has the proc-form clone for it (pf_self_new), and its
+   constructor runs the body instead, at the clone's copy of the site too: a
+   body spliced into the clone would yield to the clone's block. */
+static int ctor_new_in_own_init(Compiler *c, int id, int ci, int initm) {
+  if (initm < 0) return 0;
+  int s = c->nscope[id], pf = ctor_init_proc_form(c, ci);
+  return pf >= 0 && (s == initm || s == pf);
+}
+
 /* `new(..., &pr)` into a yielding initialize, the proc known only at run time
    (emit_ctor_yield_inline declined it): the constructor that hands it to the
-   initialize's proc-form clone. 0 when the class has no such clone. */
+   initialize's proc-form clone. A literal block at a `new` in the
+   initialize's own body goes the same way, as a proc. 0 when the class has
+   no such clone. */
 int emit_ctor_new_with_proc(Compiler *c, int id, int ci, Buf *b) {
   int blk = nt_ref(c->nt, id, "block");
-  if (blk < 0 || nt_kind(c->nt, blk) != NK_BlockArgumentNode) return 0;
-  if (ctor_init_proc_form(c, ci) < 0) return 0;
   int initm = comp_method_in_chain(c, ci, "initialize", NULL);
+  if (blk < 0) return 0;
+  if (nt_kind(c->nt, blk) != NK_BlockArgumentNode &&
+      !(nt_kind(c->nt, blk) == NK_BlockNode && ctor_new_in_own_init(c, id, ci, initm))) return 0;
+  if (ctor_init_proc_form(c, ci) < 0) return 0;
   buf_printf(b, "sp_%s_new_blk(", c->classes[ci].c_name);
   emit_args_filled(c, initm, nt_ref(c->nt, id, "arguments"), "", b);
   if (c->scopes[initm].nparams > 0) buf_puts(b, ", ");
@@ -187,6 +204,7 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
   else if (block >= 0 && (!nt_type(nt, block) || !sp_streq(nt_type(nt, block), "BlockNode"))) return 0;
   int mi = comp_method_in_chain(c, ci, "initialize", NULL);
   if (mi < 0 || !c->scopes[mi].yields) return 0;
+  if (ctor_new_in_own_init(c, id, ci, mi)) return 0;
   Scope *m = &c->scopes[mi];
   if (g_nren + m->nlocals >= MAX_RENAME) return 0;
   for (int i = 0; i < m->nlocals; i++) {
