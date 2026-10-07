@@ -70,13 +70,16 @@ static void emit_line_param_decl(Compiler *c, int id, const char *pn, int lt, Bu
    is a shared handle is filled in place, so every alias sees the bytes
    (sp_poly_str_become); a plain one is a value, and a local holding it is
    rebound, as the String arms rebind a String local. At the end of the
-   stream read answers nil and empties the buffer. The arms took every
+   stream read answers nil and empties the buffer; readpartial and pread
+   empty it just the same and then raise EOFError. The arms took every
    buffer for a String, and an Integer, a nil or a boxed one did not build.
    Emits the read `fn` over the rendered handle `r` with the `nint` Integer
    arguments before the buffer, and answers 1; a String buffer answers 0
-   and keeps its arm. `rest` is read's: a nil length reads the rest of the
-   stream. Every argument is held boxed, so each converts at run time in
-   CRuby's order. */
+   and keeps its arm. `fn` answers NULL at the end of the stream, so the
+   buffer is written back empty first; `rest` is read's, which answers that
+   nil and reads the rest of the stream for a nil length, where the others
+   raise EOFError after the write-back. Every argument is held boxed, so
+   each converts at run time in CRuby's order. */
 static int emit_io_read_outbuf(Compiler *c, const char *name, const char *fn, const char *r, const int *argv,
                                int nint, int ob, int rest, Buf *b) {
   TyKind bt = comp_ntype(c, ob);
@@ -117,6 +120,8 @@ static int emit_io_read_outbuf(Compiler *c, const char *name, const char *fn, co
     if (nt_kind(c->nt, ob) == NK_LocalVariableReadNode) { emit_expr(c, ob, b); buf_printf(b, " = _t%d; } ", tn); }
     else buf_printf(b, "(void)_t%d; } ", tn);
   }
+  /* readpartial and pread raise at the end of the stream, once the buffer is empty */
+  if (!rest) buf_printf(b, "if (!_t%d) sp_raise_cls(\"EOFError\", \"end of file reached\"); ", tr);
   buf_printf(b, "_t%d; })", tr);
   return 1;
 }
@@ -596,7 +601,7 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
       }
       /* the same (len, outbuf) rebind the typed arm makes (#3336) */
       else if (sp_streq(name, "readpartial") && argc >= 1) {
-        if (argc == 2 && emit_io_read_outbuf(c, name, "sp_File_readpartial", tio, argv, 1, argv[1], 0, b))
+        if (argc == 2 && emit_io_read_outbuf(c, name, "sp_File_readpartial_or_nil", tio, argv, 1, argv[1], 0, b))
           buf_puts(b, "; })");
         else {
           const char *sbp = NULL;
@@ -1025,7 +1030,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
     }
     if (sp_streq(name, "pread") && argc >= 1) {
       if (argc > 3) { emit_io_read_overcount(c, name, r, argv, argc, "2..3", b); free(rb.p); return 1; }
-      if (argc == 3 && emit_io_read_outbuf(c, name, "sp_File_pread", r, argv, 2, argv[2], 0, b)) {
+      if (argc == 3 && emit_io_read_outbuf(c, name, "sp_File_pread_or_nil", r, argv, 2, argv[2], 0, b)) {
         free(rb.p); return 1;
       }
       /* pread(len, off, buf): CRuby fills the buffer argument; when it is a
@@ -1124,7 +1129,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
     }
     if ((sp_streq(name, "readpartial") || sp_streq(name, "sysread")) && argc >= 1) {
       if (argc > 2) { emit_io_read_overcount(c, name, r, argv, argc, "1..2", b); free(rb.p); return 1; }
-      if (argc == 2 && emit_io_read_outbuf(c, name, "sp_File_readpartial", r, argv, 1, argv[1], 0, b)) {
+      if (argc == 2 && emit_io_read_outbuf(c, name, "sp_File_readpartial_or_nil", r, argv, 1, argv[1], 0, b)) {
         free(rb.p); return 1;
       }
       /* (len, outbuf): CRuby fills the buffer and RETURNS it; when the buffer
