@@ -1616,9 +1616,29 @@ static int strbuf_route_nonnil(Compiler *c, int v) {
    once and whose node it binds while it re-reads the receiver; 0 for
    neither, with nothing emitted. A route that can answer nil raises
    NoMethodError for id there, as the copy's own check did. */
+/* --share-strings: is recv a deep-return pickup (emit_deep_return_pickup)
+   that can answer nil (strbuf_pickup_answers_nil)? */
+int strbuf_pickup_may_nil(Compiler *c, int recv) {
+  return repr_share_rule(c) && recv >= 0 && nt_kind(c->nt, recv) == NK_CallNode && c->strbuf_box[recv] &&
+         strbuf_pickup_answers_nil(c, recv);
+}
 static int strbuf_route_recv(Compiler *c, int id, int recv, char *out, size_t cap);
 int strbuf_recv_handle(Compiler *c, int id, int recv, char *out, size_t cap) {
-  if (strbuf_slot_ref(c, recv, out, cap)) return 1;
+  if (strbuf_slot_ref(c, recv, out, cap)) {
+    /* --share-strings: a deep-return pickup that can answer nil (a nil
+       tail, an_pickup_tail) raises NoMethodError for id, as the copy's
+       own check did; its text runs the call, so it is read once */
+    if (!strbuf_pickup_may_nil(c, recv)) return 1;
+    int t = ++g_tmp;
+    Buf nb; memset(&nb, 0, sizeof nb);
+    buf_printf(&nb, "({ sp_String *_t%d = %s; if (SP_UNLIKELY(!_t%d)) "
+               "sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil())); _t%d; })",
+               t, out, t, nt_str(c->nt, id, "name"), t);
+    int fit = strlen(nb.p) < cap;
+    if (fit) snprintf(out, cap, "%s", nb.p);
+    free(nb.p);
+    return fit ? 2 : 1;
+  }
   return strbuf_route_recv(c, id, recv, out, cap) ? 2 : 0;
 }
 /* strbuf_recv_handle's route half: 1 with the text in out, else 0 with
@@ -15311,12 +15331,15 @@ static int str_mutate_reassign_arms(Compiler *c, Buf *b, int indent, const NodeT
    The root keeps the String alive when the argument drops the slot's
    reference to it. Answers 1 when the block was opened (the caller closes
    it); otherwise the C stays as it was. */
-static int strbuf_recv_hold(Compiler *c, int recv, int argc, const int *argv, int many,
+static int strbuf_recv_hold(Compiler *c, int recv, const char *name, int argc, const int *argv, int many,
                             char *sref, size_t cap, Buf *b, int indent) {
   recv = unwrap_parens(c, recv);
   int call = nt_kind(c->nt, recv) == NK_CallNode;
   int runs = call && !subtree_is_pure_read(c, recv);
-  int hold = runs && many;
+  /* --share-strings: a deep-return pickup that can answer nil is held, and
+     nil raises NoMethodError for the mutator, as the copy's check did */
+  int nilt = strbuf_pickup_may_nil(c, recv);
+  int hold = (runs && many) || nilt;
   for (int a = 0; a < argc && !hold; a++) {
     if (runs) hold = subtree_has_side_effect(c, argv[a]) || read_rebound_by(c, argv[a], recv);
     else hold = read_rebound_by(c, recv, argv[a]) || (call && subtree_may_reassign_state(c, argv[a]));
@@ -15324,7 +15347,9 @@ static int strbuf_recv_hold(Compiler *c, int recv, int argc, const int *argv, in
   if (!hold) return 0;
   int t = ++g_tmp;
   emit_indent(b, indent);
-  buf_printf(b, "{ sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n", t, sref, t);
+  buf_printf(b, "{ sp_String *_t%d = %s; SP_GC_ROOT(_t%d);", t, sref, t);
+  if (nilt) buf_printf(b, " if (SP_UNLIKELY(!_t%d)) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil()));", t, name);
+  buf_puts(b, "\n");
   snprintf(sref, cap, "_t%d", t);
   return 1;
 }
@@ -15390,7 +15415,7 @@ static int str_mutate_append_bang_arms(Compiler *c, int id, Buf *b, int indent, 
         if (nt_kind(nt, chain[j]) == NK_InterpolatedStringNode) nt_arr(nt, chain[j], "parts", &np);
         many = at == TY_INT || at == TY_POLY || np > 1;
       }
-      int held = strbuf_recv_hold(c, cur, nchain, chain, many, srefC, sizeof srefC, b, indent);
+      int held = strbuf_recv_hold(c, cur, name, nchain, chain, many, srefC, sizeof srefC, b, indent);
       for (int j = nchain - 1; j >= 0; j--) {
         int arg = chain[j];
         TyKind at = comp_ntype(c, arg);
@@ -15430,7 +15455,7 @@ static int str_mutate_append_bang_arms(Compiler *c, int id, Buf *b, int indent, 
     char srefM[1024];
     if (strbuf_slot_ref(c, recv, srefM, sizeof srefM)) {
       /* the handle is read by the frozen check and by every append */
-      int held = strbuf_recv_hold(c, recv, argc, argv, 1, srefM, sizeof srefM, b, indent);
+      int held = strbuf_recv_hold(c, recv, name, argc, argv, 1, srefM, sizeof srefM, b, indent);
       emit_str_concat_handle(c, srefM, argc, argv, b, indent + held);
       if (held) { emit_indent(b, indent); buf_puts(b, "}\n"); }
       return 1;

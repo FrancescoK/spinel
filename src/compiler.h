@@ -393,6 +393,9 @@ typedef struct {
   int ret_obj_may_nil; /* the nil fact for the method's value (analyze_nil.c,
                           #7444): its body's value or a `return` may be nil;
                           nonzero, where the nil comes from (NFW_*) */
+  unsigned char ret_nil_pickup; /* --share-strings: a `return` of the method
+                          answers nil and the deep-return pickup takes it
+                          (an_returns_shared_handles, an_tail_answers_nil) */
   TyKind ret_oa_pin;   /* the pointer-array return type the narrowing pass gave
                           this method, re-asserted every round for the same
                           reason LocalVar.oa_pin is. TY_UNKNOWN = not narrowed. */

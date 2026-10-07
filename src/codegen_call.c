@@ -24439,6 +24439,16 @@ void emit_handle_inspect(Compiler *c, int recv, TyKind rt, Buf *b) {
   buf_printf(b, "sp_sprintf(\"#<%s:0x%%016llx>\", (unsigned long long)(uintptr_t)(", hn);
   emit_expr(c, recv, b); buf_puts(b, "))");
 }
+/* --share-strings: can the deep-return pickup `id` answer nil? A target
+   the plan cannot list may be such a method; a call that reaches none (a
+   builtin's, `String.new`) has no tail to answer nil through
+   (an_tail_answers_nil). */
+int strbuf_pickup_answers_nil(Compiler *c, int id) {
+  if (!repr_share_rule(c)) return 0;
+  int t[8], n = cplan_targets(c, id, t, 8), nil = n < 0;
+  for (int i = 0; i < n && !nil; i++) nil = an_tail_answers_nil(c, t[i]);
+  return nil;
+}
 /* deep-return pickup (#3227 P6): a marked receiverless call to a method
    whose every return path yields a shared handle -- reset the side
    channel, run the ordinary call (its shared-slot tail read publishes),
@@ -24462,11 +24472,7 @@ static int emit_deep_return_pickup(Compiler *c, int id, Buf *b) {
      call's nil is nil. A target the plan cannot list may be such a
      method; a call that reaches none (a builtin's, `String.new`) has no
      tail to answer nil through. */
-  if (repr_share_rule(c)) {
-    int t[8], n = cplan_targets(c, id, t, 8), nil = n < 0;
-    for (int i = 0; i < n && !nil; i++) nil = an_tail_answers_nil(c, t[i]);
-    if (nil) buf_printf(b, "!_v%d ? NULL : ", tvD);
-  }
+  if (strbuf_pickup_answers_nil(c, id)) buf_printf(b, "!_v%d ? NULL : ", tvD);
   buf_printf(b, "_sp_ret_strbuf ? (sp_String *)_sp_ret_strbuf"
                 " : sp_String_new_shared(_v%d); })", tvD);
   return 1;
