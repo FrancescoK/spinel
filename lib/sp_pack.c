@@ -123,6 +123,16 @@ static int64_t pk_parse_count_mods(const char **pp, int *big) {
   *pp = p;
   return n;
 }
+/* `l_` / `l!` (and `L`) are the native long, 8 bytes on LP64, as CRuby packs
+   and unpacks them; the plain `l` stays 32-bit. Answers the directive to use,
+   peeking at the modifiers after it without consuming them. */
+static char pk_native_spec(char spec, const char *p) {
+  if ((spec == 'l' || spec == 'L') && sizeof(long) == 8) {
+    for (const char *q = p; *q == '<' || *q == '>' || *q == '!' || *q == '_'; q++)
+      if (*q == '!' || *q == '_') return spec == 'l' ? 'q' : 'Q';
+  }
+  return spec;
+}
 static int64_t pk_parse_count(const char **pp) {
   return pk_parse_count_mods(pp, NULL);
 }
@@ -225,6 +235,14 @@ static int pk_int_directive(char spec, int64_t v, int big, char **buf, size_t *l
     case 'q': case 'Q':
       pk_put_int(tmp, v, 8, big);
       pk_append(buf, len, cap, tmp, 8);
+      break;
+    case 'i': case 'I': /* native int, as unpack reads it */
+      pk_put_int(tmp, v, (int)sizeof(int), big);
+      pk_append(buf, len, cap, tmp, sizeof(int));
+      break;
+    case 'j': case 'J': /* intptr_t */
+      pk_put_int(tmp, v, (int)sizeof(intptr_t), big);
+      pk_append(buf, len, cap, tmp, sizeof(intptr_t));
       break;
     case 'x':
       tmp[0] = 0;
@@ -541,7 +559,7 @@ static void pk_str_spec(char spec, int64_t count, sp_RbVal e, int have,
    payload), and nil converts to neither number: CRuby raises the
    conversion's TypeError where these packed the sentinel's bits. */
 static int pk_int_directive_consumes(char spec) {
-  return spec && strchr("CcnNvVsSlLqQU", spec) != NULL;   /* the ones pk_int_directive packs */
+  return spec && strchr("CcnNvVsSlLqQiIjJU", spec) != NULL;   /* the ones pk_int_directive packs */
 }
 static SP_NORETURN void pk_nil_elem(int flt) {
   sp_raise_cls("TypeError", flt ? "can't convert nil into Float" : "no implicit conversion of nil into Integer");
@@ -573,6 +591,7 @@ const char *sp_IntArray_pack(sp_IntArray *arr, const char *fmt) {SP_GC_ROOT(arr)
   const char *p = fmt;
   while (*p) {
     char spec = *p++;
+    spec = pk_native_spec(spec, p);
     if (spec == ' ' || spec == '\t' || spec == '\n') continue;
     int big = 0;
     int64_t count = pk_parse_count_mods(&p, &big);
@@ -658,6 +677,7 @@ const char *sp_FloatArray_pack(sp_FloatArray *arr, const char *fmt) {
   const char *p = fmt;
   while (*p) {
     char spec = *p++;
+    spec = pk_native_spec(spec, p);
     if (spec == ' ' || spec == '\t' || spec == '\n') continue;
     int big = 0;
     int64_t count = pk_parse_count_mods(&p, &big);
@@ -720,6 +740,7 @@ const char *sp_PolyArray_pack(sp_PolyArray *arr, const char *fmt) {SP_GC_ROOT(ar
   const char *p = fmt;
   while (*p) {
     char spec = *p++;
+    spec = pk_native_spec(spec, p);
     if (spec == ' ' || spec == '\t' || spec == '\n') continue;
     int big = 0;
     int64_t count = pk_parse_count_mods(&p, &big);
@@ -803,6 +824,7 @@ const char *sp_StrArray_pack(sp_StrArray *arr, const char *fmt) {
   const char *p = fmt;
   while (*p) {
     char spec = *p++;
+    spec = pk_native_spec(spec, p);
     if (spec == ' ' || spec == '\t' || spec == '\n') continue;
     int big = 0;
     int64_t count = pk_parse_count_mods(&p, &big);
@@ -829,7 +851,11 @@ const char *sp_StrArray_pack(sp_StrArray *arr, const char *fmt) {
       continue;
     }
     idx++;
-    if (strchr("cCsSlLqQnNvVjJiIfdeEgGUw", spec)) {
+    if (spec == 'p' || spec == 'P') {
+      /* the string's address, a pointer-sized J as CRuby packs it */
+      pk_int_directive('J', (int64_t)(intptr_t)sp_StrArray_get(arr, idx - 1), 0, &buf, &len, &cap);
+    }
+    else if (strchr("cCsSlLqQnNvVjJiIfdeEgGUw", spec)) {
       /* a numeric directive cannot take a String element: CRuby's TypeError
          (the directive was silently dropped before) */
       sp_raise_cls("TypeError", "no implicit conversion of String into Integer");
@@ -1016,6 +1042,7 @@ sp_PolyArray *sp_str_unpack_off(const char *str, const char *fmt, sp_int byteoff
   const char *pend = fmt + flen;
   while (p < pend) {
     char spec = *p++;
+    spec = pk_native_spec(spec, p);
     if (spec == ' ' || spec == '\t' || spec == '\n' || spec == '\v' || spec == '\f' || spec == '\r') continue;
     /* `#` comments to the end of the line */
     if (spec == '#') { while (p < pend && *p != '\n') p++; continue; }
