@@ -58,6 +58,10 @@ int is_basic_arith(const char *n) {
   return sp_streq(n, "+") || sp_streq(n, "-") || sp_streq(n, "*") || sp_streq(n, "/");
 }
 
+int is_int_arith_op(const char *n) {
+  return is_basic_arith(n) || sp_streq(n, "%");
+}
+
 int is_object_root(const char *n) {
   return sp_streq(n, "Object") || sp_streq(n, "BasicObject") || sp_streq(n, "Kernel");
 }
@@ -480,6 +484,10 @@ int is_extrema_family(const char *n) {
 
 int is_unary_sign(const char *n) {
   return sp_streq(n, "-@") || sp_streq(n, "+@");
+}
+
+int is_unary_minus(const char *n) {
+  return sp_streq(n, "-@");
 }
 
 int is_text_conversion(const char *n) {

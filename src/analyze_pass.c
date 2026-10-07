@@ -13378,6 +13378,189 @@ static int infer_block_params_container_arms(Compiler *c, const NodeTable *nt, i
   return changed;
 }
 
+/* Whether every read of `pn` in subtree `n` is the receiver of a call that
+   leaves the array as it is (`ok` says so for `n` itself), and nothing
+   assigns `pn`. A read handed anywhere else -- an argument, a value, a
+   capture another name takes -- may meet a store of another kind. */
+static int rows_param_read_only(const NodeTable *nt, int n, const char *pn, int ok) {
+  if (n < 0) return 1;
+  NodeKind k = nt_kind(nt, n);
+  const char *nm = (k == NK_LocalVariableReadNode || k == NK_LocalVariableWriteNode ||
+                    k == NK_LocalVariableTargetNode || k == NK_LocalVariableOperatorWriteNode ||
+                    k == NK_LocalVariableOrWriteNode || k == NK_LocalVariableAndWriteNode)
+                   ? nt_str(nt, n, "name") : NULL;
+  if (nm && sp_streq(nm, pn)) {
+    if (k != NK_LocalVariableReadNode) return 0;
+    return ok;
+  }
+  int rcv = k == NK_CallNode ? nt_ref(nt, n, "receiver") : -1;
+  int rcv_ok = rcv >= 0 && !array_mutator_name(nt_str(nt, n, "name"));
+  const SpNode *nd = &nt->nodes[n];
+  for (int j = 0; j < nd->nr; j++) {
+    int ch = nd->r[j].ref;
+    if (!rows_param_read_only(nt, ch, pn, ch == rcv && rcv_ok)) return 0;
+  }
+  for (int j = 0; j < nd->na; j++)
+    for (int e = 0; e < nd->a[j].n; e++)
+      if (!rows_param_read_only(nt, nd->a[j].ids[e], pn, 0)) return 0;
+  return 1;
+}
+
+/* The constant call `id` is the value of (`TABLE = ...`, or `TABLE =
+   (...).freeze`), or NULL. */
+static const char *call_assigns_const(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  NT_FOREACH_KIND(nt, NK_ConstantWriteNode, w) {
+    int v = nt_ref(nt, w, "value");
+    if (v >= 0 && nt_kind(nt, v) == NK_CallNode && nt_ref(nt, v, "receiver") >= 0 &&
+        nt_str(nt, v, "name") && sp_streq(nt_str(nt, v, "name"), "freeze"))
+      v = nt_ref(nt, v, "receiver");
+    if (v == id) return nt_str(nt, w, "name");
+  }
+  return NULL;
+}
+
+/* Whether `n` is the receiver of an element read (`x[i]`, `x.at(i)`, one
+   index that is no Range), which answers an element and hands the array to
+   nothing. */
+static int rows_elem_read(const NodeTable *nt, const int *par, int n) {
+  int q = par[n];
+  if (q < 0 || nt_kind(nt, q) != NK_CallNode || nt_ref(nt, q, "receiver") != n ||
+      !is_element_at_alias(nt_str(nt, q, "name")) || nt_ref(nt, q, "block") >= 0) return 0;
+  int a = nt_ref(nt, q, "arguments"); int an = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+  return an == 1 && nt_kind(nt, av[0]) != NK_RangeNode;
+}
+
+/* Whether every read of the slot written at `w` (an ivar, by name, or a
+   local of its scope) is an element read, and nothing else writes it in
+   place: a row held there is only ever read. */
+static int rows_slot_elem_reads(const NodeTable *nt, Compiler *c, const int *par, int w) {
+  NodeKind wk = nt_kind(nt, w);
+  const char *nm = nt_str(nt, w, "name");
+  if (!nm) return 0;
+  int iv = wk == NK_InstanceVariableWriteNode;
+  Scope *ws = iv ? NULL : comp_scope_of(c, w);
+  for (int n = 0; n < nt->count; n++) {
+    NodeKind k = nt_kind(nt, n);
+    int rd = iv ? k == NK_InstanceVariableReadNode : k == NK_LocalVariableReadNode;
+    int opw = iv ? (k == NK_InstanceVariableOperatorWriteNode || k == NK_InstanceVariableOrWriteNode ||
+                    k == NK_InstanceVariableAndWriteNode || k == NK_InstanceVariableTargetNode)
+                 : (k == NK_LocalVariableOperatorWriteNode || k == NK_LocalVariableOrWriteNode ||
+                    k == NK_LocalVariableAndWriteNode || k == NK_LocalVariableTargetNode);
+    if (!rd && !opw) continue;
+    const char *rn = nt_str(nt, n, "name");
+    if (!rn || !sp_streq(rn, nm) || (!iv && comp_scope_of(c, n) != ws)) continue;
+    if (opw || !rows_elem_read(nt, par, n)) return 0;
+  }
+  return 1;
+}
+
+/* Whether the value of `w` is thrown away: a statement whose value nothing
+   reads, the last statement of a conditional, a parenthesized or a begin
+   body whose own value is thrown away, or the last statement of a method
+   every call of which (by name, whatever the receiver) throws its value
+   away in turn. A method already being asked about (a tail calling a
+   method of its own name, as `reset` methods do) counts as thrown away
+   there: its other calls decide. `seen` holds those names, `depth` of
+   them at most. */
+static int rows_value_dropped(Compiler *c, const int *par, int w, const char **seen, int nseen) {
+  const NodeTable *nt = c->nt;
+  for (int guard = 0; guard < 64; guard++) {
+    if (an_value_dropped(nt, par, w)) return 1;
+    int st = par[w];
+    if (st < 0 || nt_kind(nt, st) != NK_StatementsNode) return 0;
+    int sn = 0; const int *sb = nt_arr(nt, st, "body", &sn);
+    if (sn <= 0 || sb[sn - 1] != w) return 0;
+    int g = par[st];
+    NodeKind gk = g >= 0 ? nt_kind(nt, g) : NK_NONE;
+    if (gk == NK_ElseNode) { g = par[g]; gk = g >= 0 ? nt_kind(nt, g) : NK_NONE; }
+    if (gk == NK_IfNode || gk == NK_UnlessNode || gk == NK_ParenthesesNode || gk == NK_BeginNode) {
+      w = g; continue;
+    }
+    const char *dn = gk == NK_DefNode ? nt_str(nt, g, "name") : NULL;
+    if (!dn) return 0;
+    for (int k = 0; k < nseen; k++) if (sp_streq(seen[k], dn)) return 1;
+    if (nseen >= 4) return 0;
+    seen[nseen] = dn;
+    NT_FOREACH_KIND(nt, NK_CallNode, q) {
+      const char *qn = nt_str(nt, q, "name");
+      if (qn && sp_streq(qn, dn) && !rows_value_dropped(c, par, q, seen, nseen + 1)) return 0;
+    }
+    return 1;
+  }
+  return 0;
+}
+
+/* Whether the rows of constant `cname` are only ever read element by
+   element: every read of the constant is `CNAME[i]`, and each row it
+   answers is read by an index right there or held, by a write whose value
+   is thrown away, in an ivar or a local that is only read by an index
+   (optcarrot's `@oscillator_clocks = OSCILLATOR_CLOCKS[0]`). Such rows can be Integer arrays: nothing can
+   store into them, copy them or hand them on. */
+static int const_rows_elem_reads_only(Compiler *c, const char *cname) {
+  const NodeTable *nt = c->nt;
+  int *par = an_parent_map(nt);
+  if (!par) return 0;
+  const char *seen[4];
+  int ok = 1;
+  for (int n = comp_kind_first(c, NK_ConstantReadNode); ok && n >= 0; n = comp_kind_next(c, n)) {
+    if (nt_kind(nt, n) != NK_ConstantReadNode) continue;
+    const char *rn = nt_str(nt, n, "name");
+    if (!rn || !sp_streq(rn, cname)) continue;
+    if (!rows_elem_read(nt, par, n)) { ok = 0; break; }
+    int row = par[n], q = par[row];
+    if (rows_elem_read(nt, par, row)) continue;
+    NodeKind qk = q >= 0 ? nt_kind(nt, q) : NK_NONE;
+    if ((qk == NK_InstanceVariableWriteNode || qk == NK_LocalVariableWriteNode) &&
+        nt_ref(nt, q, "value") == row && rows_value_dropped(c, par, q, seen, 0) &&
+        rows_slot_elem_reads(nt, c, par, q)) continue;
+    ok = 0;
+  }
+  free(par);
+  return ok;
+}
+
+/* The element an Array iterator binds to its block out of receiver `recv`
+   of type rt. A constant built by a map over a literal table of Integer
+   rows, whose block derives each new row from its row by one call
+   (`TABLE = [[1, 2], [3, 4]].map { |row| row.map { |n| 12 * n } }`,
+   optcarrot's OSCILLATOR_CLOCKS), and whose rows are only ever read
+   element by element (const_rows_elem_reads_only), binds each row as the
+   Integer array the row's literal built: the literal is built in place as
+   that table (arr_want), as a local narrowed to one is, and the constant's
+   rows are then the Integer arrays the constant-table rule reads them as.
+   Bound boxed, the rows lost their kind: `row.map { |n| ... }` answered
+   boxed values, and every slot computed from the constant was boxed with
+   them. Anything else is built as before, so an array the block or the
+   program builds from a row, or a row stored into, copied or handed on,
+   keeps the general Array's representation. */
+static TyKind block_elem_ty(Compiler *c, int id, int block, const char *name, int recv, TyKind rt) {
+  const NodeTable *nt = c->nt;
+  if (recv < 0 || recv >= c->node_cap || nt_kind(nt, recv) != NK_ArrayNode ||
+      !(rt == TY_POLY_ARRAY || (rt == TY_INT_ARRAY_ARRAY && c->arr_want[recv] == rt)))
+    return ty_array_elem(rt);
+  const char *pn = block >= 0 && nt_kind(nt, block) == NK_BlockNode ? block_param_name(c, block, 0) : NULL;
+  int body = pn ? nt_ref(nt, block, "body") : -1;
+  int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+  int tail = bn == 1 ? bb[0] : -1;
+  int trecv = tail >= 0 && nt_kind(nt, tail) == NK_CallNode ? nt_ref(nt, tail, "receiver") : -1;
+  if (pn && !block_param_name(c, block, 1) && ty_iter_shape(name) == TY_ITER_MAP &&
+      trecv >= 0 && nt_kind(nt, trecv) == NK_LocalVariableReadNode &&
+      nt_str(nt, trecv, "name") && sp_streq(nt_str(nt, trecv, "name"), pn) &&
+      an_literal_int_rows(c, recv) && rows_param_read_only(nt, body, pn, 0)) {
+    const char *cn = call_assigns_const(c, id);
+    if (cn && const_rows_elem_reads_only(c, cn)) {
+      c->arr_want[recv] = TY_INT_ARRAY_ARRAY;
+      return TY_INT_ARRAY;
+    }
+  }
+  /* the rows no longer read as Integer arrays: the literal goes back to
+     the general Array its elements build */
+  if (c->arr_want[recv] == TY_INT_ARRAY_ARRAY) c->arr_want[recv] = TY_UNKNOWN;
+  return TY_POLY;
+}
+
 /* infer_block_params's per-call arms for the Enumerable family's blocks:
    each_cons / each_slice and their map / with_index / inject chains,
    with_index, combination / permutation, sort and the comparator blocks,
@@ -14563,7 +14746,7 @@ int infer_block_params(Compiler *c) {
               sp_streq(name, "grep") || sp_streq(name, "grep_v") ||
               sp_streq(name, "to_h")) &&
              ty_is_array(rt))
-      pt = ty_array_elem(rt);
+      pt = block_elem_ty(c, id, block, name, recv, rt);
     /* each_index { |i| } / fill { |i| } bind the index, not the element: always
        int (fill's block form takes the index and returns the value to store). */
     else if ((sp_streq(name, "each_index") || sp_streq(name, "fill") ||
