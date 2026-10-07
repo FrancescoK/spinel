@@ -91,6 +91,7 @@ typedef struct { int node; char path[QC_MAXDEPTH][64]; int depth; char name[128]
 int is_builtin_class_name(const char *n);
 void refuse_unreachable_bare_constants(Compiler *c);
 int is_builtin_module_name(const char *n);
+int builtin_module_at(int i, const char **name, int *id);
 int is_builtin_exception_name(const char *n);
 const char *superclass_builtin_exc_name(const NodeTable *nt, int sc);   /* analyze_util.c */
 int is_syserr_family_name(const char *n);           /* analyze_util.c */
