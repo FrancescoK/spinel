@@ -278,3 +278,35 @@ end
 $n = []
 YP.new(0) { |a| p [:yp, a] }
 p $n
+
+# A class whose own `self.new` yields (no initialize) and builds the class
+# that built it: dead sites, and 80 deep.
+class SA
+  def initialize(a, b)
+    SB.new(:dead, b) { |q| q } if ARGV.length == 9123
+    SB.new(a, :dead) { |q| q } if ARGV.length == 9123
+    yield [a, b]
+  end
+end
+class SB
+  def self.new(a, b)
+    yield a
+    SA.new(a, b) { |q| q }
+  end
+end
+SA.new(1, 2) { |y| p y }
+class SC1
+  def initialize(a)
+    SD.new(a + 1) { |q| $n << q if q % 20 == 0 } if a < 80
+    yield a
+  end
+end
+class SD
+  def self.new(a)
+    yield a
+    SC1.new(a) { |q| q }
+  end
+end
+$n = []
+SC1.new(0) { |a| p [:sc, a] }
+p $n
