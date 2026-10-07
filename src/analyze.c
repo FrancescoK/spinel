@@ -29653,8 +29653,8 @@ static int splat_builtin_range(const char *name, int *lo, int *hi, int *variadic
   return 0;
 }
 static int splat_builtin_keeps_kwsplat(const char *name) {
-  static const char *const kw[] = { "round", "encode", "each_line", "lines", "readlines", "readline", "gets",
-                                    "unpack", "unpack1", "clone", "Integer", "Float", "Rational", "Complex",
+  static const char *const kw[] = { "round", "encode", "encode!", "each_line", "lines", "readlines", "readline",
+                                    "gets", "unpack", "unpack1", "clone", "Integer", "Float", "Rational", "Complex",
                                     "update", "merge!", NULL };
   for (int i = 0; kw[i]; i++) if (sp_streq(name, kw[i])) return 1;
   return 0;

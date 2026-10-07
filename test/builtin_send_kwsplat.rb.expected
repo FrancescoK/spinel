@@ -16,6 +16,7 @@ true
 3
 2
 20
+#<Encoding:UTF-8>
 "ab"
 ["a\n", "b\n"]
 2

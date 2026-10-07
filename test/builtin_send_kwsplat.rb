@@ -25,6 +25,7 @@ p ev("ab", :%, 1)
 p ev(2.5, :round)
 p ev(2.5, :round, half: :even)
 p pub(25, :round, -1, half: :even)
+p ev(+"abc", :encode!, "UTF-8", invalid: :replace).encoding
 
 p plain("ab\n", :chomp)
 p plain("a\nb\n", :lines)
