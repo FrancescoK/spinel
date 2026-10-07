@@ -2949,6 +2949,9 @@ static int emit_array_hash_literal_expr(Compiler *c, int id, Buf *b, const NodeT
        an empty literal, use g_ret_type context (e.g. tail position in a
        poly_array-returning method) before falling back to int array. */
     if (n == 0 && atr.untyped && ty_is_array(g_ret_type)) at = g_ret_type;
+    /* a table of Integer rows the analysis builds in place (a literal an
+       iterator walks row by row, block_elem_ty) */
+    if (n > 0 && ty_is_ptr_array(at) && emit_ptr_array_build(c, id, at, b)) return 1;
     const char *k = array_kind(at);
     if (n == 0 && !k && at != TY_POLY_ARRAY) { buf_puts(b, "sp_IntArray_new()"); return 1; }
     /* poly (mixed-element) array: build an sp_PolyArray of boxed elements */
