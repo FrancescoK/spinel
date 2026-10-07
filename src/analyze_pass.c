@@ -13501,6 +13501,7 @@ static int rows_value_dropped(Compiler *c, const int *par, int w, const char **s
 static int const_rows_elem_reads_only(Compiler *c, const char *cname) {
   const NodeTable *nt = c->nt;
   int *par = an_parent_map(nt);
+  if (!par) return 0;
   const char *seen[4];
   int ok = 1;
   for (int n = comp_kind_first(c, NK_ConstantReadNode); ok && n >= 0; n = comp_kind_next(c, n)) {
