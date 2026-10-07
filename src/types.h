@@ -331,7 +331,7 @@ static inline TyKind ty_poly_handle_face(const char *nm) {
     /* MatchData's own readers. strscan's StringScanner has these names too,
        as native methods: the use sites stand down when a native class
        defines the name (native_class_defines / an_native_defines_method). */
-    static const char *const MATCHDATA[] = { "pre_match", "post_match", "captures", "regexp", 0 };
+    static const char *const MATCHDATA[] = { "pre_match", "post_match", "captures", "regexp", "string", 0 };
     for (int i = 0; MATCHDATA[i]; i++) if (sp_streq(nm, MATCHDATA[i])) return TY_MATCHDATA;
   }
   {
