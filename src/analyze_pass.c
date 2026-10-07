@@ -1193,58 +1193,6 @@ static int infer_case_pattern_locals(Compiler *c) {
 }
 
 
-/* Widen each local `x` in a `x = @ivar` write to the ivar's (possibly
-   just-widened) type, monotonically. Unlike infer_write_types this never resets
-   a local, so it only lifts a local that reads a now-wider ivar and leaves every
-   other local's carefully-derived type (pattern/massign/block bindings) intact
-   -- the reconciliation the late ivar-widening fixpoint needs (#1793). */
-/* A local typed as one object class whose write value settled POLY only after
-   the post-fixpoint write re-run (a callee's return widens last, once its
-   parameter has seen a second class): the emitted assignment hands an sp_RbVal
-   to an sp_Foo * and the C build fails. Widen the slot to poly -- the value
-   really can be either class (#3964). A scalar without a nil representation must
-   widen too: coercing a boxed nil into a Bool or Symbol loses the value. */
-/* The late reconciliation's twin for a local typed as a container: its write
-   now answers poly where it answered the container (a call whose return the
-   late ivar widening just boxed, `parent = Base.defs`), so the slot widens with
-   it. The rule below leaves a container alone, since a poly write may be one
-   the slot is deliberately narrowed from; only the late loop, which has just
-   widened what the writes read, asks this one (#7602). */
-int widen_container_locals_from_poly_writes(Compiler *c) {
-  const NodeTable *nt = c->nt;
-  int changed = 0;
-  for (int id = 0; id < nt->count; id++) {
-    if (nt_kind(nt, id) != NK_LocalVariableWriteNode) continue;
-    const char *nm = nt_str(nt, id, "name");
-    Scope *s = nm ? comp_scope_of(c, id) : NULL;
-    LocalVar *lv = s ? scope_local(s, nm) : NULL;
-    if (!lv || lv->is_param || lv->is_block_param || lv->rbs_seeded) continue;
-    if (!ty_is_array(lv->type) || lv->type == TY_POLY_ARRAY) continue;
-    int v = nt_ref(nt, id, "value");
-    if (v < 0 || nt_kind(nt, v) != NK_CallNode || infer_type(c, v) != TY_POLY) continue;
-    lv->type = TY_POLY;
-    changed = 1;
-  }
-  return changed;
-}
-
-int widen_locals_from_poly_writes(Compiler *c) {
-  const NodeTable *nt = c->nt;
-  int changed = 0;
-  for (int id = 0; id < nt->count; id++) {
-    if (nt_kind(nt, id) != NK_LocalVariableWriteNode) continue;
-    const char *nm = nt_str(nt, id, "name");
-    Scope *s = nm ? comp_scope_of(c, id) : NULL;
-    LocalVar *lv = s ? scope_local(s, nm) : NULL;
-    if (!lv || lv->is_param || lv->is_block_param || lv->rbs_seeded) continue;
-    if (!ty_is_object(lv->type) && an_ty_holds_nil(lv->type)) continue;
-    int v = nt_ref(nt, id, "value");
-    if (v < 0 || infer_type(c, v) != TY_POLY) continue;
-    lv->type = TY_POLY;
-    changed = 1;
-  }
-  return changed;
-}
 /* `arr.map! { ... }` REPLACES every element with the block's value, so a tail
    the receiver's element type cannot hold widens the receiver itself -- the
    same reasoning as a push of a foreign element, on a mutation that rewrites
@@ -1332,106 +1280,6 @@ static int lv_widen(LocalVar *lv, TyKind t) {
   if (m == lv->type) return 0;
   lv->type = m;
   return 1;
-}
-
-int reconcile_locals_reading_ivars(Compiler *c) {
-  const NodeTable *nt = c->nt;
-  int changed = 0;
-  LocalVar **widened = NULL; int nwidened = 0, cwidened = 0;
-  for (int id = 0; id < nt->count; id++) {
-    const char *ty = nt_type(nt, id);
-    if (!ty || !sp_streq(ty, "LocalVariableWriteNode")) continue;
-    int val_id = nt_ref(nt, id, "value");
-    if (val_id < 0) continue;
-    const char *vty = nt_type(nt, val_id);
-    if (!vty) continue;
-    int is_iv = sp_streq(vty, "InstanceVariableReadNode");
-    /* `x = reader` reads the same slot one call deep: an argument-less,
-       block-less attr_reader on self. Its own node type was settled before the
-       late widening below reached the slot, so reading it back would answer
-       the stale narrower type -- the local then declared the object pointer
-       while the field it is assigned from had become boxed (#3938). */
-    int is_rd = !is_iv && sp_streq(vty, "CallNode");
-    if (!is_iv && !is_rd) continue;
-    const char *nm = nt_str(nt, id, "name");
-    LocalVar *lv = nm ? scope_local(comp_scope_of(c, id), nm) : NULL;
-    if (!lv || lv->is_param || lv->is_block_param || lv->rbs_seeded) continue;
-    TyKind ivt = TY_UNKNOWN;
-    if (is_iv) ivt = infer_type(c, val_id);
-    else {
-      int rcv = nt_ref(nt, val_id, "receiver");
-      const char *rnm = nt_str(nt, val_id, "name");
-      int ra = nt_ref(nt, val_id, "arguments"); int rac = 0;
-      if (ra >= 0) nt_arr(nt, ra, "arguments", &rac);
-      if (!rnm || nt_ref(nt, val_id, "block") >= 0) continue;
-      if (rcv >= 0 && !(nt_type(nt, rcv) && sp_streq(nt_type(nt, rcv), "SelfNode"))) continue;
-      Scope *sc = comp_scope_of(c, val_id);
-      int cls = sc ? sc->class_id : -1;
-      int rdcls = -1;
-      /* ... and so does a method of the program called on self: the late
-         ivar widening re-derives the returns of the methods that answer the
-         ivar (`def current_row = (@bits if @row_ready)`), and a local
-         assigned one (`bits = current_row`) kept the Integer it was typed
-         with, nil reaching it as the sentinel that then read as a number */
-      if (cls >= 0 && !comp_reader_in_chain(c, cls, rnm, NULL)) {
-        int mi = comp_self_call_mi(c, val_id, rnm);
-        TyKind rt = mi >= 0 ? c->scopes[mi].ret : TY_UNKNOWN;
-        if (rt == TY_UNKNOWN || rt == TY_VOID) continue;
-        if (lv_widen(lv, rt)) {
-          changed = 1;
-          if (nwidened == cwidened) {
-            cwidened = cwidened ? cwidened * 2 : 8;
-            LocalVar **nw = (LocalVar **)realloc(widened, sizeof *nw * (size_t)cwidened);
-            if (!nw) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-            widened = nw;
-          }
-          widened[nwidened++] = lv;
-        }
-        continue;
-      }
-      if (rac != 0 || cls < 0 || !comp_reader_in_chain(c, cls, rnm, &rdcls)) continue;
-      if (rdcls < 0 || rdcls >= c->nclasses) continue;
-      const char *rn2 = comp_resolve_alias(c, cls, rnm);
-      char ivn2[300]; snprintf(ivn2, sizeof ivn2, "@%s", rn2 ? rn2 : rnm);
-      int iv2 = comp_ivar_index(&c->classes[rdcls], ivn2);
-      if (iv2 < 0) continue;
-      ivt = ivar_value_ty(&c->classes[rdcls], iv2);
-    }
-    if (ivt == TY_UNKNOWN) continue;
-    if (lv_widen(lv, ivt)) changed = 1;
-  }
-  /* A parameter typed from a local the rule above has just widened keeps
-     the scalar it was typed with: `hit(x, bits)` with `bits` now boxed read
-     the box through the Integer slot, nil as the sentinel, which the callee
-     then handed on as a number. Widen it to the local's type, as a call site
-     passing a boxed value would have. */
-  if (nwidened) NT_FOREACH_KIND(nt, NK_CallNode, cid) {
-    const char *cnm = nt_str(nt, cid, "name");
-    int rcv = nt_ref(nt, cid, "receiver");
-    if (!cnm || (rcv >= 0 && nt_kind(nt, rcv) != NK_SelfNode)) continue;
-    if (nt_ref(nt, cid, "arguments") < 0) continue;
-    int mi = comp_self_call_mi(c, cid, cnm);
-    if (mi < 0) continue;
-    Scope *m = &c->scopes[mi];
-    Scope *cs = comp_scope_of(c, cid);
-    for (int k = 0; k < m->nparams; k++) {
-      int spread = -1;
-      int a = arg_layout_param_node(c, m, cid, k, &spread);
-      if (a < 0 || spread >= 0 || nt_kind(nt, a) != NK_LocalVariableReadNode) continue;
-      const char *anm = nt_str(nt, a, "name");
-      LocalVar *alv = anm && cs ? scope_local(comp_scope_of(c, a), anm) : NULL;
-      int was_widened = 0;
-      for (int w = 0; w < nwidened && !was_widened; w++) was_widened = widened[w] == alv;
-      if (!alv || !was_widened || alv->type != TY_POLY) continue;
-      if (m->rest_idx >= 0 && k == m->rest_idx) continue;
-      LocalVar *plv = m->pnames[k] ? scope_local(m, m->pnames[k]) : NULL;
-      if (!plv || plv->rbs_seeded || plv->is_block_param) continue;
-      if (!(plv->type == TY_INT || plv->type == TY_FLOAT || plv->type == TY_BOOL || plv->type == TY_SYMBOL)) continue;
-      if (lv_widen(plv, TY_POLY)) changed = 1;
-    }
-  }
-  free(widened);
-  return changed;
 }
 
 /* Element type contributed by a pushed value (see yield_aware_elem_ty). */
@@ -4419,6 +4267,7 @@ int infer_write_types(Compiler *c) {
         k != NK_LocalVariableOrWriteNode && k != NK_LocalVariableAndWriteNode) continue;
     const char *nm = nt_str(nt, id, "name");
     TyKind newt = local_write_ty(c, id, 1);
+    if (id < c->node_cap) c->lw_joined[id] = newt;
     if (!nm) continue;
     LocalVar *lv = scope_local(comp_scope_of(c, id), nm);
     if (!lv || lv->is_block_param) continue;
@@ -4624,6 +4473,102 @@ int infer_write_types(Compiler *c) {
   lw_index_free(&ivw_ix);
   g_infer_write_round = 0;
   free(fb);
+  return changed;
+}
+
+/* The late re-join's join: ty_unify, aware of the containers a slot can
+   settle past its writes. A poly Array holds any Array a write builds (the
+   write converts it), and a typed Array meeting a poly one is the poly Array,
+   not the boxed scalar ty_unify answers for two array kinds. */
+static TyKind lw_join(TyKind cur, TyKind v) {
+  int flat = cur == TY_INT_ARRAY || cur == TY_STR_ARRAY || cur == TY_FLOAT_ARRAY;
+  if (cur == TY_POLY_ARRAY && (ty_is_array(v) || ty_is_obj_array(v))) return cur;
+  if (flat && v == TY_POLY_ARRAY) return v;
+  return ty_unify(cur, v);
+}
+
+/* Re-join every local with the writes whose values read differently since
+   the slot was last joined with them (lw_joined). infer_write_types fixes a
+   local's type from its writes, but the passes after it still widen what
+   those writes produce: an ivar or a return widened late (`x = @iv`,
+   `parent = Base.defs`, `bits = current_row`, #1793, #3938, #7602), a proc's
+   return re-derived (`r = g.call(e)`, #4330), an array literal over a
+   widened local (`arr = [x, y]`), and under --int-overflow=promote every
+   Integer slot. The slot follows with the join infer_write_types itself
+   uses (local_write_ty, then the decisions it keeps), but without its reset:
+   re-deriving every local this late would undo what the pattern, massign
+   and block bindings settled. Monotone, and a write whose value is unchanged
+   says nothing new, so a deliberate narrowing of the slot (an Integer local
+   over boxed writes, narrow_poly_int_locals) stays. A pointer-array pin is
+   the one decision a widened write does undo: the element read hands it a
+   box now. */
+int rejoin_local_writes(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  static const NodeKind kinds[] = { NK_LocalVariableWriteNode, NK_LocalVariableOperatorWriteNode,
+                                    NK_LocalVariableOrWriteNode, NK_LocalVariableAndWriteNode };
+  int changed = 0;
+  LocalVar **boxed = NULL; int nboxed = 0, cboxed = 0;
+  for (unsigned k = 0; k < sizeof kinds / sizeof kinds[0]; k++)
+    NT_FOREACH_KIND(nt, kinds[k], id) {
+      if (id >= c->node_cap) continue;
+      const char *nm = nt_str(nt, id, "name");
+      LocalVar *lv = nm ? scope_local(comp_scope_of(c, id), nm) : NULL;
+      if (!lv || lv->is_param || lv->is_block_param || lv->rbs_seeded) continue;
+      TyKind v = local_write_ty(c, id, 0);
+      if (v == TY_UNKNOWN || v == c->lw_joined[id]) continue;
+      TyKind was = lv->type;
+      TyKind m = lw_join(was, v);
+      c->lw_joined[id] = v;
+      if (m == was) continue;
+      slot_set(c, lv, m, v, nt_ref(nt, id, "value"));
+      if (lv->oa_pin != TY_UNKNOWN && lv->type != lv->oa_pin) lv->oa_pin = TY_UNKNOWN;
+      lv_keep_decisions(lv, 0);
+      if (lv->type == was) continue;
+      changed = 1;
+      if (lv->type != TY_POLY) continue;
+      if (nboxed == cboxed) {
+        cboxed = cboxed ? cboxed * 2 : 8;
+        LocalVar **nb = (LocalVar **)realloc(boxed, sizeof *nb * (size_t)cboxed);
+        if (!nb) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+        boxed = nb;
+      }
+      boxed[nboxed++] = lv;
+    }
+  /* A parameter typed from a local the re-join has just boxed keeps the
+     scalar it was typed with: `hit(x, bits)` with `bits` now boxed read the
+     box through the Integer slot, nil as the sentinel, which the callee then
+     handed on as a number. Widen it to the box, as a call site passing a
+     boxed value would have. */
+  if (nboxed) NT_FOREACH_KIND(nt, NK_CallNode, cid) {
+    const char *cnm = nt_str(nt, cid, "name");
+    int rcv = nt_ref(nt, cid, "receiver");
+    if (!cnm || (rcv >= 0 && nt_kind(nt, rcv) != NK_SelfNode)) continue;
+    if (nt_ref(nt, cid, "arguments") < 0) continue;
+    int mi = comp_self_call_mi(c, cid, cnm);
+    if (mi < 0) continue;
+    Scope *m = &c->scopes[mi];
+    for (int k = 0; k < m->nparams; k++) {
+      int spread = -1;
+      int a = arg_layout_param_node(c, m, cid, k, &spread);
+      if (a < 0 || spread >= 0 || nt_kind(nt, a) != NK_LocalVariableReadNode) continue;
+      const char *anm = nt_str(nt, a, "name");
+      LocalVar *alv = anm ? scope_local(comp_scope_of(c, a), anm) : NULL;
+      int was_boxed = 0;
+      for (int w = 0; w < nboxed && !was_boxed; w++) was_boxed = boxed[w] == alv;
+      if (!alv || !was_boxed || alv->type != TY_POLY) continue;
+      if (m->rest_idx >= 0 && k == m->rest_idx) continue;
+      LocalVar *plv = m->pnames[k] ? scope_local(m, m->pnames[k]) : NULL;
+      if (!plv || plv->rbs_seeded || plv->is_block_param) continue;
+      if (!(plv->type == TY_INT || plv->type == TY_FLOAT || plv->type == TY_BOOL || plv->type == TY_SYMBOL)) continue;
+      if (lv_widen(plv, TY_POLY)) changed = 1;
+    }
+  }
+  free(boxed);
+  /* A block parameter bound from a local the re-join has changed (`parent.each
+     { |d| }`) was typed from the local's old element type: re-derive it,
+     through the binder that typed it. */
+  if (changed)
+    for (int k = 0; k < 8; k++) if (!infer_block_params(c)) break;
   return changed;
 }
 
@@ -13843,11 +13788,14 @@ static int infer_block_params_enum_arms(Compiler *c, const NodeTable *nt, int id
     return changed | 2;
   }
 
-  /* array.each_with_index { |x, i| } binds element + int index */
-  if (sp_streq(name, "each_with_index") && ty_is_array(rt)) {
+  /* array.each_with_index { |x, i| } binds element + int index; a boxed
+     receiver binds a boxed element. Left to the default, a parameter typed
+     while the receiver was still a typed array kept that element type once
+     the receiver boxed late. */
+  if (sp_streq(name, "each_with_index") && (ty_is_array(rt) || rt == TY_POLY)) {
     Scope *es = comp_scope_of(c, block);
     if (!p0) return changed | 2;
-    if (bp_widen(es, p0, ty_array_elem(rt))) changed = 1;
+    if (bp_widen(es, p0, rt == TY_POLY ? TY_POLY : ty_array_elem(rt))) changed = 1;
     const char *p1 = block_param_name(c, block, 1);
     if (p1) {
       if (bp_widen(es, p1, TY_INT)) changed = 1;
