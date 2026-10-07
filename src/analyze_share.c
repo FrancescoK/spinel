@@ -2883,6 +2883,12 @@ static int sh_route_why(const Compiler *c, const ShareRoute *q) {
   if (v < 0 && F && !q->elems && q->to >= 0 && q->value >= 0 && q->value < F->nnodes &&
       F->nval[q->value] == -1)
     v = sh_route_to_root(c, q);
+  /* the same for the elements of a container the walk reached and found
+     none in: a fresh one (`s.split("\n")`) or one whose elements no name
+     holds; each String it hands on is one no other name holds */
+  if (v < 0 && F && q->elems && q->to >= 0 && q->value >= 0 && q->value < F->nnodes &&
+      (F->nval[q->value] == -1 || (F->nval[q->value] >= 0 && F->elem[sh_root(F, F->nval[q->value])] < 0)))
+    v = sh_route_to_root(c, q);
   if (v < 0) return SH_ROUTE_UNSEEN;
   if (q->to >= 0 && sh_route_to_root(c, q) != v) return SH_ROUTE_UNSEEN;
   if (!repr_str_class_shares(F->flags[v], sh_class_holders(F, v))) return SH_ROUTE_OK;
