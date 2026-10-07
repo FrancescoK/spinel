@@ -3961,6 +3961,19 @@ int hash_nil_key_stored(Compiler *c, int key, TyKind kt) {
   return kt == TY_INT && comp_ntype(c, key) == TY_NIL;
 }
 
+/* --share-strings: String Array value v as a PolyArray holding each
+   element boxed as a handle of its own, for a slot whose elements the rule
+   shares (elems_handle) */
+void emit_str_array_handles(Compiler *c, int v, Buf *b) {
+  int ta = ++g_tmp, tp = ++g_tmp, ti = ++g_tmp;
+  buf_printf(b, "({ sp_StrArray *_t%d = ", ta);
+  emit_expr(c, v, b);
+  buf_printf(b, "; SP_GC_ROOT(_t%d); sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
+                " for (sp_int _t%d = 0; _t%d < sp_StrArray_length(_t%d); _t%d++)"
+                " sp_PolyArray_push(_t%d, sp_box_nullable_obj(sp_String_new_shared(sp_StrArray_get(_t%d, _t%d)),"
+                " SP_BUILTIN_STRBUF)); _t%d; })",
+             ta, tp, tp, ti, ti, ta, ti, tp, ta, ti, tp);
+}
 /* --share-strings: is block parameter lv, bound to an element of kind et, a
    slot the scope holds as the shared handle (TY_STRBUF) over a String
    element? Then each element is a fresh String the handle wraps, bound

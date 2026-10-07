@@ -17205,7 +17205,11 @@ static int share_static_container(Compiler *c, int kind, const char *name) {
       int i = comp_cvar_index(ci, grn);
       if (i < 0 || (!ty_is_array(ci->cvar_types[i]) && !ty_is_hash(ci->cvar_types[i]))) continue;
       any = 1;
-      if (ci->cvar_types[i] == TY_STR_ARRAY) { ci->cvar_types[i] = TY_POLY_ARRAY; changed = 1; }
+      if ((ci->cvar_types[i] == TY_STR_ARRAY || ci->cvar_types[i] == TY_POLY_ARRAY) && !ci->cvar_elems_shared[i]) {
+        ci->cvar_types[i] = TY_POLY_ARRAY;
+        ci->cvar_elems_shared[i] = 1;
+        changed = 1;
+      }
     }
     if (!any) return 0;
   }
@@ -17334,6 +17338,10 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
         ci->cvar_str_shared[i] = 1;
         changed = 1;
       }
+      /* the facts key a class variable by name: a String one class holds
+         and a container another holds of the same name are one holder, so
+         the container's elements are converted here too */
+      if (repr_str_elems_share(c, h)) changed |= share_static_container(c, SHK_CVAR, sh->name);
     }
     /* a global's or a constant's Array or Hash whose elements the rule
        shares holds them as handles, as a local's does: a String Array
