@@ -383,12 +383,16 @@ static inline char *sp_str_alloc_nogc(size_t len) {
    code gave: it starts with six bytes no C string of ours starts with (a raw buffer's
    neighbour bytes are never read; these are compared from the pointer on, stopping
    at the first mismatch, and a NUL ends any shorter string), then the payload's
-   length, then the payload. A bare C string, whose length is strlen's, never matches. */
+   length, then the payload. A bare C string, whose length is strlen's, never matches.
+   The sixth byte is 0x02 for a frozen String's message (a literal's), so the
+   exception's copy is frozen too and `e.message << x` raises FrozenError, as
+   CRuby's message is the literal itself (sp_cmsg_frozen). */
 #define SP_CMSG_HDR 10
 static inline int sp_cmsg_p(const char *m) {
   return m && (unsigned char)m[0] == 0xff && (unsigned char)m[1] == 0xfe && m[2] == 'C' &&
-         m[3] == 'M' && (unsigned char)m[4] == 0xfd && (unsigned char)m[5] == 0x01;
+         m[3] == 'M' && (unsigned char)m[4] == 0xfd && ((unsigned char)m[5] == 0x01 || (unsigned char)m[5] == 0x02);
 }
+static inline int sp_cmsg_frozen(const char *m) { return (unsigned char)m[5] == 0x02; }
 static inline size_t sp_cmsg_len(const char *m) { uint32_t n; memcpy(&n, m + 6, sizeof n); return n; }
 static inline const char *sp_msg_heapify(const char *m) {
   if (!m) return NULL;
