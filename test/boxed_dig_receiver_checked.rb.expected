@@ -1,0 +1,55 @@
+undefined method 'dig' for nil [1]
+undefined method 'dig' for nil [:a, :b]
+undefined method 'dig' for nil [1]
+undefined method 'dig' for nil [1, 0]
+undefined method 'dig' for nil [0, 1, 0]
+undefined method 'dig' for an instance of Symbol [1]
+undefined method 'dig' for an instance of Symbol [:a, :b]
+undefined method 'dig' for an instance of Symbol [1]
+undefined method 'dig' for an instance of Symbol [1, 0]
+undefined method 'dig' for an instance of Symbol [0, 1, 0]
+undefined method 'dig' for an instance of String [1]
+undefined method 'dig' for an instance of String [:a, :b]
+undefined method 'dig' for an instance of String [1]
+undefined method 'dig' for an instance of String [1, 0]
+undefined method 'dig' for an instance of String [0, 1, 0]
+undefined method 'dig' for an instance of Range [1]
+undefined method 'dig' for an instance of Range [:a, :b]
+undefined method 'dig' for an instance of Range [1]
+undefined method 'dig' for an instance of Range [1, 0]
+undefined method 'dig' for an instance of Range [0, 1, 0]
+undefined method 'dig' for an instance of Integer [1]
+undefined method 'dig' for an instance of Integer [:a, :b]
+undefined method 'dig' for an instance of Integer [1]
+undefined method 'dig' for an instance of Integer [1, 0]
+undefined method 'dig' for an instance of Integer [0, 1, 0]
+undefined method 'dig' for an instance of Float [1]
+undefined method 'dig' for an instance of Float [:a, :b]
+undefined method 'dig' for an instance of Float [1]
+undefined method 'dig' for an instance of Float [1, 0]
+undefined method 'dig' for an instance of Float [0, 1, 0]
+nil
+TypeError: no implicit conversion of Symbol into Integer
+nil
+nil
+TypeError: String does not have #dig method
+nil
+1
+nil
+nil
+nil
+7
+1
+7
+undefined method 'dig' for an instance of Object [:a]
+undefined method 'dig' for an instance of Object [1]
+undefined method 'dig' for an instance of Object [1, 0]
+undefined method 'dig' for an instance of Plain [:a]
+undefined method 'dig' for an instance of Plain [1]
+undefined method 'dig' for an instance of Plain [1, 0]
+undefined method 'dig' for an instance of KeysOnly [:a]
+undefined method 'dig' for an instance of KeysOnly [1]
+undefined method 'dig' for an instance of KeysOnly [1, 0]
+undefined method 'dig' for an instance of D [:a]
+undefined method 'dig' for an instance of D [1]
+undefined method 'dig' for an instance of D [1, 0]

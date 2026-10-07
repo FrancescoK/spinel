@@ -10148,9 +10148,14 @@ static sp_RbVal sp_poly_dig_step_key(sp_RbVal a, sp_RbVal k) {
 /* dig(*keys): the key list is a runtime array, so walk it one step at a time.
    A nil at any step stops, as CRuby's #dig does. */
 static sp_RbVal sp_poly_index_poly(sp_RbVal recv, sp_RbVal idx);
+static int sp_poly_diggable(sp_RbVal v);   /* defined below */
+static int sp_poly_dig_recv_ok(sp_RbVal v);   /* defined below */
 static sp_RbVal sp_poly_dig_list(sp_RbVal recv, sp_PolyArray *keys) {
   if (!keys) return sp_box_nil();
   SP_GC_ROOT(keys);
+  /* a receiver that cannot be dug (nil answered nil) is the call's
+     NoMethodError, with the keys as its args */
+  if (!sp_poly_dig_recv_ok(recv)) sp_raise_nomethod(sp_nomethod_msg_args("dig", recv, keys->len, keys->data));
   sp_RbVal cur = recv;
   for (sp_int i = 0; i < keys->len; i++) {
     if (cur.tag == SP_TAG_NIL) return sp_box_nil();
@@ -10411,6 +10416,17 @@ static int sp_poly_diggable(sp_RbVal v) {
   return sp_poly_is_hash_kind(v.cls_id) || sp_poly_is_array_kind(v.cls_id) ||
          v.cls_id >= 0;   /* a user object: its own #dig answers, or NoMethodError does */
 }
+/* Has boxed `v` a #dig the builtin walk answers, as the receiver of the
+   call? sp_poly_diggable's answer, but a program object must be a Struct:
+   one whose class defines dig is routed to it before the walk
+   (poly_name_user_claimed), and any other has no #dig. The member-array
+   dispatch, installed wherever a Struct meets a boxed dig, tells a Struct by
+   answering one. */
+static int sp_poly_dig_recv_ok(sp_RbVal v) {
+  if (!sp_poly_diggable(v)) return 0;
+  if (v.cls_id < 0) return 1;
+  return sp_obj_struct_values_fn && sp_obj_struct_values_fn(v).tag != SP_TAG_NIL;
+}
 /* One step of a dig has landed on `v`: nil ends the walk, a container
    continues it, and anything else is the TypeError CRuby raises. */
 static void sp_poly_dig_check(sp_RbVal v) {
@@ -10421,6 +10437,9 @@ static void sp_poly_dig_check(sp_RbVal v) {
 static sp_RbVal sp_poly_dig_n(sp_RbVal recv, sp_int n, const sp_RbVal *keys) {
   /* only a nil reached PART WAY through the walk ends it quietly; a nil
      RECEIVER has no dig (#4485) */
+  /* nor has any other receiver that cannot be dug: the call's NoMethodError,
+     with the keys as its args (the TypeError below is a step's) */
+  if (!sp_poly_dig_recv_ok(recv)) sp_raise_nomethod(sp_nomethod_msg_args("dig", recv, n, (sp_RbVal *)keys));
   sp_poly_coll_chk(recv, "dig");
   sp_RbVal cur = recv;
   for (sp_int i = 0; i < n; i++) {
