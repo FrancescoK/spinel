@@ -17,6 +17,13 @@
 #
 # The answer must be identical under both, which is the other half of the leg:
 # a collection policy that changes what a program prints is not a policy.
+#
+# Each fragment's Integers go through an explicit to_s, so every part leaves
+# a short String behind as garbage: that churn is part of the shape. An
+# interpolation appended into a String writes its Integer digits in place and
+# leaves none, which moved where the two arms' last majors fall and made the
+# leg read one arm's end-of-run snapshot just before its major and the other's
+# just after.
 KEEP = (ENV["K"] || "3000").to_i
 ROUNDS = (ENV["R"] || "40000").to_i
 PARTS = (ENV["P"] || "80").to_i
@@ -26,7 +33,7 @@ def page(i)
   b = String.new
   j = 0
   while j < PARTS
-    b << "frag-#{i}-#{j}-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    b << "frag-" << i.to_s << "-" << j.to_s << "-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
     j += 1
   end
   b
