@@ -2617,20 +2617,28 @@ int strbuf_call_reads_handle(Compiler *c, int recv) {
          ((repr_of(c, recv).handle && repr_of(c, recv).as_ty == TY_STRBUF && strbuf_marked_yields_handle(c, recv)) ||
           repr_of(c, recv).demand);
 }
-/* --share-strings: a native method answering the String its object keeps
-   (`native_share ... "answers"`), on an object whose String the rule
-   shares: its handle form's call, as the handle text */
-static int native_share_answer_ref(Compiler *c, int n, char *out, size_t cap) {
+/* --share-strings: is call n a native method answering the String its
+   object keeps (`native_share ... "answers"`), on an object whose String
+   the rule shares? Its binding, or NULL. (The seal asks it too:
+   strbuf_flow_carries.) */
+const NativeMethod *strbuf_native_answer(Compiler *c, int n) {
   const NodeTable *nt = c->nt;
-  if (!repr_share_rule(c) || n < 0 || nt_kind(nt, n) != NK_CallNode || nt_ref(nt, n, "block") >= 0) return 0;
+  if (!repr_share_rule(c) || n < 0 || nt_kind(nt, n) != NK_CallNode || nt_ref(nt, n, "block") >= 0) return NULL;
   int r = nt_ref(nt, n, "receiver");
   TyKind rt = r >= 0 ? comp_ntype(c, r) : TY_UNKNOWN;
-  if (!ty_is_object(rt) || !c->classes[ty_object_class(rt)].is_native_class) return 0;
+  if (!ty_is_object(rt) || !c->classes[ty_object_class(rt)].is_native_class) return NULL;
   int a = nt_ref(nt, n, "arguments"), argc = 0;
   if (a >= 0) nt_arr(nt, a, "arguments", &argc);
   int nm = comp_native_method_find(c, ty_object_class(rt), nt_str(nt, n, "name"), argc, 0);
   const NativeMethod *m = nm >= 0 ? &c->native_methods[nm] : NULL;
-  if (!m || !(m->share & NSH_ANSWERS) || !m->share_csym || argc != 0 || !share_node_elems_share(c, r)) return 0;
+  if (!m || !(m->share & NSH_ANSWERS) || !m->share_csym || argc != 0 || !share_node_elems_share(c, r)) return NULL;
+  return m;
+}
+/* the handle text of such a call: its handle form's call */
+static int native_share_answer_ref(Compiler *c, int n, char *out, size_t cap) {
+  const NativeMethod *m = strbuf_native_answer(c, n);
+  if (!m) return 0;
+  int r = nt_ref(c->nt, n, "receiver");
   Buf rb; memset(&rb, 0, sizeof rb);
   emit_expr(c, r, &rb);
   int fit = rb.p && strlen(rb.p) + strlen(m->share_csym) + 3 <= cap;
