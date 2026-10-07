@@ -89,9 +89,12 @@ typedef struct ShareRoute {
                           its elements), or with to_name, that local in the
                           scope of node `to`; -1 none */
   const char *to_name;
-  int carry;           /* the node that hands the String along, or -1 */
+  int carry;           /* the node that hands the String along, or -1
+                          (SHARE_CARRY_NONE); SHARE_CARRY_COPY when the
+                          route hands over a copy whatever it reads */
   char *msg;           /* (a kept route's message) */
 } ShareRoute;
+enum { SHARE_CARRY_NONE = -1, SHARE_CARRY_COPY = -2 };
 ShareRoute share_route(int site, int value, int elems);
 /* Does the rule share the elements of node n's value (a container)? */
 int share_node_elems_share(const Compiler *c, int n);
@@ -105,8 +108,8 @@ int share_node_anchored(const Compiler *c, int n);
    and it passes when the facts see it (the String and the holder it
    reaches in one class) and either the rule does not share that class (no
    other name can see the copy) or it does and `carry` hands over the
-   handle; every other holder of a shared class holds the handle or is
-   refused by name at seal. Asked while the analysis runs, the facts are not
+   handle (a SHARE_CARRY_COPY route never does); every other holder of a
+   shared class holds the handle or is refused by name at seal. Asked while the analysis runs, the facts are not
    final yet: the route is kept, and repr_seal refuses it with `msg` unless
    the final facts pass (share_routes_check). Asked from codegen, it answers
    from the final facts. */

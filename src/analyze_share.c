@@ -2286,13 +2286,24 @@ static int sh_route_to_root(const Compiler *c, const ShareRoute *q) {
    the rule does not share has one name, and the copy is unobservable; one
    it shares holds the handle in every holder (seal's holder check), and
    the carrying node hands it along. */
-static int sh_route_ok(const Compiler *c, const ShareRoute *q) {
+enum { SH_ROUTE_OK, SH_ROUTE_UNSEEN, SH_ROUTE_COPIES };
+static int sh_route_why(const Compiler *c, const ShareRoute *q) {
   const ShareFacts *F = c->share;
   int v = sh_node_root(F, q->value, q->elems);
-  if (v < 0) return 0;
-  if (q->to >= 0 && sh_route_to_root(c, q) != v) return 0;
-  if (!repr_str_class_shares(F->flags[v], sh_class_holders(F, v))) return 1;
-  return q->carry < 0 || sh_carries_handle(c, q->carry);
+  /* a value the walk reached and found no String identity in (`"a#{i}"`,
+     a builtin's fresh answer) is a String no other name holds: its class
+     is the holder it reaches */
+  if (v < 0 && F && !q->elems && q->to >= 0 && q->value >= 0 && q->value < F->nnodes &&
+      F->nval[q->value] == -1)
+    v = sh_route_to_root(c, q);
+  if (v < 0) return SH_ROUTE_UNSEEN;
+  if (q->to >= 0 && sh_route_to_root(c, q) != v) return SH_ROUTE_UNSEEN;
+  if (!repr_str_class_shares(F->flags[v], sh_class_holders(F, v))) return SH_ROUTE_OK;
+  if (q->carry == SHARE_CARRY_COPY) return SH_ROUTE_COPIES;
+  return q->carry < 0 || sh_carries_handle(c, q->carry) ? SH_ROUTE_OK : SH_ROUTE_COPIES;
+}
+static int sh_route_ok(const Compiler *c, const ShareRoute *q) {
+  return sh_route_why(c, q) == SH_ROUTE_OK;
 }
 
 int share_route_defer(Compiler *c, const ShareRoute *q, const char *msg) {
@@ -2323,7 +2334,19 @@ void share_routes_check(Compiler *c) {
       fprintf(stderr, "share-route: site %d value %d%s to %d%s%s%s carry %d ok=%d\n", r->site, r->value,
               r->elems ? " (elements)" : "", r->to, r->to_elems ? " (elements)" : "",
               r->to_name ? " local " : "", r->to_name ? r->to_name : "", r->carry, sh_route_ok(c, r));
-    if (!sh_route_ok(c, r)) unsupported_feature(c, r->site, r->msg);
+    int why = sh_route_why(c, r);
+    if (why == SH_ROUTE_OK) continue;
+    /* the refusal says which half the rule could not answer */
+    const char *lead = why == SH_ROUTE_UNSEEN
+      ? "under --share-strings, the share analysis does not follow this route, so it cannot prove "
+        "that no other name sees the copy: "
+      : "under --share-strings, this String is shared with another name, and the route does not "
+        "carry the shared handle yet: ";
+    size_t n = strlen(lead) + strlen(r->msg) + 1;
+    char *m = malloc(n);
+    if (!m) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    snprintf(m, n, "%s%s", lead, r->msg);
+    unsupported_feature(c, r->site, m);
   }
 }
 

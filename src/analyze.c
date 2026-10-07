@@ -15176,17 +15176,42 @@ static int poly_local_shows_string(Compiler *c, const char *vn, Scope *vs) {
 static int sa_unseen_element(Compiler *c, int u, int k);
 static __attribute__((noreturn)) void sa_refuse(Compiler *c, int id, int route);
 static void sa_refuse_element(Compiler *c, int e, int u);
+/* A master route refusal at node `site` for String node `v` that the
+   route hands along as a copy: under --share-strings the copy is right
+   when the rule does not share v's class, since no other name can see it
+   (share_route_defer). Answers 1 when the site leaves it to the rule. */
+static int sa_copy_defer(Compiler *c, int site, int v, const char *msg) {
+  ShareRoute q = share_route(site, v, 0);
+  q.carry = SHARE_CARRY_COPY;
+  return share_route_defer(c, &q, msg);
+}
+static const char *sa_msg(int route);
 /* A String a block parameter holds that no element iterator binds (a
    proc's, a lambda's, the block of a method that yields, `each_char`'s):
    stored into a container whose elements are then mutated, the element
    stays a copy of it. Refused (#6765) rather than compiled with the change
    lost. */
+static const char stored_block_param_msg[] =
+  "a String held by a block parameter no element iterator binds (a proc's, a lambda's, a yielding "
+  "method's block, `each_char`'s) is stored into a container and mutated in place through it (a String "
+  "is not yet shared by reference through a stored block parameter). Mutate the String before storing "
+  "it, or store it where the caller holds it.";
 static __attribute__((noreturn)) void refuse_stored_block_param(Compiler *c, int id) {
-  unsupported_feature(c, id, "a String held by a block parameter no element iterator binds (a proc's, a "
-                      "lambda's, a yielding method's block, `each_char`'s) is stored into a container and "
-                      "mutated in place through it (a String is not yet shared by reference through a "
-                      "stored block parameter). Mutate the String before storing it, or store it where "
-                      "the caller holds it.");
+  unsupported_feature(c, id, stored_block_param_msg);
+}
+/* Under --share-strings the stored copy is right when the rule does not
+   share block parameter sn's String: no other name can see it
+   (share_route_defer). Where it shares, the store would hand on the
+   parameter's handle, but a class this refusal guards can hold routes that
+   copy which the seal does not check yet (a reader on a boxed receiver), so
+   the refusal stays. `to`, when the caller names it, is the container whose
+   elements the String reaches. */
+static int stored_block_param_defer(Compiler *c, int sn, int to) {
+  ShareRoute q = share_route(sn, sn, 0);
+  q.to = to;
+  q.to_elems = to >= 0;
+  q.carry = SHARE_CARRY_COPY;
+  return share_route_defer(c, &q, stored_block_param_msg);
 }
 static int strbuf_demand_store_leaf(Compiler *c, int sn, int depth) {
   const NodeTable *nt = c->nt;
@@ -15199,7 +15224,9 @@ static int strbuf_demand_store_leaf(Compiler *c, int sn, int depth) {
   if (snt == TY_STRING || snt == TY_STRBUF) {
     char rb[256]; int rdefc = -1;
     int as = an_strbuf_alias_source(c, snu);
-    if ((as >= 0 && as != snu) || an_reader_ivar_of(c, snu, &rdefc, rb, sizeof rb)) sa_refuse(c, snu, 3);
+    if (((as >= 0 && as != snu) || an_reader_ivar_of(c, snu, &rdefc, rb, sizeof rb)) &&
+        !sa_copy_defer(c, snu, snu, sa_msg(3)))
+      sa_refuse(c, snu, 3);
   }
   if (nt_kind(nt, sn) == NK_LocalVariableReadNode) {
     const char *snm = nt_str(nt, sn, "name");
@@ -15214,7 +15241,8 @@ static int strbuf_demand_store_leaf(Compiler *c, int sn, int depth) {
     if (snv->is_block_param) {
       int bound = 0;
       int ch = strbuf_block_param_source_walk(c, snm, sns, depth, SB_DEMAND, 1, &bound);
-      if (!bound && (snv->type == TY_STRING || snv->type == TY_STRBUF))
+      if (!bound && (snv->type == TY_STRING || snv->type == TY_STRBUF) &&
+          !stored_block_param_defer(c, sn, -1))
         refuse_stored_block_param(c, sn);
       return ch;
     }
@@ -15245,10 +15273,13 @@ static int strbuf_demand_store_leaf(Compiler *c, int sn, int depth) {
        e << x }`) is lost or finds no method. Refused (#6765) rather than
        compiled with the change lost; a container flowing in is left out,
        its own mutations reach it. */
-    if (snv->type == TY_POLY && !snv->is_param && !snv->poly_ctr && poly_local_shows_string(c, snm, sns))
-      unsupported_feature(c, sn, "a String a boxed local holds is stored into a container and mutated in "
-                          "place through it (a String is not yet shared by reference through a boxed "
-                          "local's container element). Mutate the String through the local itself.");
+    static const char boxed_msg[] =
+      "a String a boxed local holds is stored into a container and mutated in place through it (a "
+      "String is not yet shared by reference through a boxed local's container element). Mutate the "
+      "String through the local itself.";
+    if (snv->type == TY_POLY && !snv->is_param && !snv->poly_ctr && poly_local_shows_string(c, snm, sns) &&
+        !sa_copy_defer(c, sn, sn, boxed_msg))
+      unsupported_feature(c, sn, boxed_msg);
     if (!strbuf_slot_eligible(c, snm, sns, snv)) return 0;
     if (strbuf_mut_kind(c, snm, sns) < 0) return 0;
     snv->type = TY_STRBUF; snv->str_shared = 1;
@@ -15463,6 +15494,21 @@ static int store_after_param_rebind(Compiler *c, Scope *m, const char *pn, int s
     if (an_subtree_has(nt, bb[j], st)) return 1;
   return 0;
 }
+static const char callee_store_msg[] =
+  "a String a method stores into an Array or Hash its caller passed it is mutated in place through the "
+  "caller's container (a String is not yet shared by reference through a store into a parameter's "
+  "container). Store the String in the caller, or mutate it in the method.";
+/* Under --share-strings: String `l` the callee stores reaches the
+   elements of the caller's container `a` (the facts join a parameter's
+   container with its argument's), a copy no other name sees when the rule
+   does not share them. */
+static int callee_store_defer(Compiler *c, int l, int a) {
+  ShareRoute q = share_route(l, l, 0);
+  q.to = a;
+  q.to_elems = 1;
+  q.carry = SHARE_CARRY_COPY;
+  return share_route_defer(c, &q, callee_store_msg);
+}
 static void refuse_callee_container_stores(Compiler *c, const char *vn, Scope *vs) {
   const NodeTable *nt = c->nt;
   for (int u = comp_scall_first(c, (int)(vs - c->scopes)); u >= 0; u = comp_scall_next(c, u)) {
@@ -15486,11 +15532,8 @@ static void refuse_callee_container_stores(Compiler *c, const char *vn, Scope *v
           LocalVar *ll = nt_kind(nt, l) == NK_LocalVariableReadNode
                          ? scope_local(comp_scope_of(c, l), nt_str(nt, l, "name")) : NULL;
           if ((lt == TY_STRING || lt == TY_STRBUF) && !c->strbuf_box[l] &&
-              !(ll && ll->type == TY_STRBUF && ll->str_shared))
-            unsupported_feature(c, l, "a String a method stores into an Array or Hash its caller passed "
-                                "it is mutated in place through the caller's container (a String is not yet "
-                                "shared by reference through a store into a parameter's container). Store "
-                                "the String in the caller, or mutate it in the method.");
+              !(ll && ll->type == TY_STRBUF && ll->str_shared) && !callee_store_defer(c, l, a))
+            unsupported_feature(c, l, callee_store_msg);
         }
       }
     }
@@ -15597,7 +15640,7 @@ static int strbuf_elem_sharing_call(Compiler *c, int node, int depth, int mode, 
    reach -- each demanded into a shared handle or tested, per `mode`. Without
    following those, a mutation through an element of a method's result (`x =
    mk; x[1] << "q"`) landed in a copy. */
-/* Does global Array `grn` hold a String that is no handle? A global's
+/* A String global Array `grn` holds that is no handle, or -1. A global's
    Array is a String Array, or a boxed one its pushes fill with plain
    Strings: the walk below demands only what its writes store, and a String
    Array cannot hold a handle at all. A frozen literal raises FrozenError
@@ -15612,23 +15655,23 @@ static int gvar_site_is(Compiler *c, int e, const char *grn) {
                     ? comp_resolve_gvar(c, vn + 1) : NULL;
   return vrn && sp_streq(vrn, grn);
 }
-static int gvar_array_holds_plain_string(Compiler *c, const char *grn) {
+static int gvar_array_plain_string(Compiler *c, const char *grn) {
   const NodeTable *nt = c->nt;
   LocalVar *g = comp_gvar(c, grn);
-  if (!g || (g->type != TY_STR_ARRAY && g->type != TY_POLY_ARRAY)) return 0;
+  if (!g || (g->type != TY_STR_ARRAY && g->type != TY_POLY_ARRAY)) return -1;
   for (int e = comp_vsite_first(c, VS_WRITE, NK_GlobalVariableReadNode, grn, -1); e >= 0;
        e = comp_vsite_next(c, e)) {
     int v = an_unparen(nt, nt_ref(nt, comp_vsite_node(c, e), "value"));
     if (!gvar_site_is(c, e, grn) || v < 0) continue;
     if (nt_kind(nt, v) != NK_ArrayNode) {
-      if (g->type == TY_STR_ARRAY) return 1;
+      if (g->type == TY_STR_ARRAY) return v;
       continue;
     }
     int en = 0; const int *el = nt_arr(nt, v, "elements", &en);
     for (int e = 0; e < en; e++) {
       int l = an_unparen(nt, el[e]);
       TyKind lt = infer_type(c, l);
-      if ((lt == TY_STRING || lt == TY_STRBUF) && nt_kind(nt, l) != NK_StringNode && !c->strbuf_box[l]) return 1;
+      if ((lt == TY_STRING || lt == TY_STRBUF) && nt_kind(nt, l) != NK_StringNode && !c->strbuf_box[l]) return l;
     }
   }
   for (int e = comp_vsite_first(c, VS_RECV, NK_GlobalVariableReadNode, grn, -1); e >= 0;
@@ -15641,10 +15684,10 @@ static int gvar_array_holds_plain_string(Compiler *c, const char *grn) {
     for (int k = 0; k < an; k++) {
       int l = an_unparen(nt, av[k]);
       TyKind lt = infer_type(c, l);
-      if ((lt == TY_STRING || lt == TY_STRBUF) && nt_kind(nt, l) != NK_StringNode && !c->strbuf_box[l]) return 1;
+      if ((lt == TY_STRING || lt == TY_STRBUF) && nt_kind(nt, l) != NK_StringNode && !c->strbuf_box[l]) return l;
     }
   }
-  return 0;
+  return -1;
 }
 /* Does global Hash `grn` hold a String that is no handle? Its values are
    plain Strings when a `$g[k] = s` stores one that is not a literal (a
@@ -15685,10 +15728,20 @@ static __attribute__((noreturn)) void refuse_global_hash_element(Compiler *c, in
                       "(a String is not yet shared by reference through a global variable's Hash). Keep "
                       "the Hash in a local or an instance variable.");
 }
-static __attribute__((noreturn)) void refuse_global_array_element(Compiler *c, int id) {
-  unsupported_feature(c, id, "an element of a global Array is a String mutated in place through the Array "
-                      "(a String is not yet shared by reference through a global variable's Array). Keep "
-                      "the Array in a local or an instance variable.");
+static const char global_elem_msg[] =
+  "an element of a global Array is a String mutated in place through the Array (a String is not yet "
+  "shared by reference through a global variable's Array). Keep the Array in a local or an instance "
+  "variable.";
+/* Refused at node id, for String `l` that global read g's Array holds
+   (gvar_array_plain_string). Under --share-strings the copy is right when
+   the rule does not share g's elements, and where it does, l must hand its
+   handle into the Array (share_route_defer). */
+static void refuse_global_array_element(Compiler *c, int id, int g, int l) {
+  ShareRoute q = share_route(id, l, 0);
+  q.to = g;
+  q.to_elems = 1;
+  q.carry = l;
+  if (!share_route_defer(c, &q, global_elem_msg)) unsupported_feature(c, id, global_elem_msg);
 }
 static int strbuf_container_source_walk(Compiler *c, int node, int depth, int mode) {
   const NodeTable *nt = c->nt;
@@ -15758,8 +15811,8 @@ static int strbuf_container_source_walk(Compiler *c, int node, int depth, int mo
           for (int k = 0, e; (e = sa_unseen_element(c, u, k)) != -2; k++)
             if (e >= 0) sa_refuse_element(c, e, u);
         }
-      if (mode == SB_DEMAND && gvar_array_holds_plain_string(c, grn))
-        refuse_global_array_element(c, node);
+      int pl = mode == SB_DEMAND ? gvar_array_plain_string(c, grn) : -1;
+      if (pl >= 0) refuse_global_array_element(c, node, node, pl);
       if (mode == SB_DEMAND && gvar_hash_holds_plain_string(c, grn))
         refuse_global_hash_element(c, node);
       return changed;
@@ -17442,23 +17495,74 @@ static void an_returns_by_scope(Compiler *c, int **start, int **list) {
   free(fill);
   *start = st; *list = ls;
 }
+/* --share-strings: does statement list `st` end in nil, or in a tail
+   an_tail_is_shared_handle accepts? */
+static int an_tail_is_shared_handle(Compiler *c, int node, int nil_ok, int *reads);
+static int an_stmts_tail_shared(Compiler *c, int st, int nil_ok, int *reads) {
+  int n = 0; const int *b = st >= 0 && nt_kind(c->nt, st) == NK_StatementsNode ? nt_arr(c->nt, st, "body", &n) : NULL;
+  if (st < 0) return nil_ok;
+  return n > 0 && an_tail_is_shared_handle(c, b[n - 1], nil_ok, reads);
+}
+/* A method tail that publishes the shared handle it answers, for the
+   deep-return pickup (an_returns_shared_handles): a shared slot's read
+   (an_arg_is_shared_handle, counted in *reads), and under --share-strings
+   a conditional each of whose arms ends in one (`f ? x : y`, an elsif
+   chain). With nil_ok (the method's last statement), nil too, and an arm
+   that answers it (`x if f`): nil publishes nothing, and the pickup reads
+   the call's nil as nil whatever an earlier read published
+   (an_tail_answers_nil). */
+static int an_tail_is_shared_handle(Compiler *c, int node, int nil_ok, int *reads) {
+  const NodeTable *nt = c->nt;
+  NodeKind k = node >= 0 ? nt_kind(nt, node) : NK_NONE;
+  if (c->share_strings && k == NK_NilNode) return nil_ok;
+  if (c->share_strings && k == NK_ParenthesesNode) return an_stmts_tail_shared(c, nt_ref(nt, node, "body"), nil_ok, reads);
+  if (!c->share_strings || (k != NK_IfNode && k != NK_UnlessNode)) {
+    int ok = an_arg_is_shared_handle(c, node);
+    *reads += ok;
+    return ok;
+  }
+  int el = nt_ref(nt, node, k == NK_IfNode ? "subsequent" : "else_clause");
+  if (!an_stmts_tail_shared(c, nt_ref(nt, node, "statements"), nil_ok, reads)) return 0;
+  if (el < 0) return nil_ok;
+  return nt_kind(nt, el) == NK_ElseNode ? an_stmts_tail_shared(c, nt_ref(nt, el, "statements"), nil_ok, reads)
+                                        : an_tail_is_shared_handle(c, el, nil_ok, reads);
+}
+/* Can tail `node` answer nil: is it nil, or a conditional with an arm that
+   does, or with no else? */
+static int an_tail_nil(const NodeTable *nt, int node) {
+  NodeKind k = node >= 0 ? nt_kind(nt, node) : NK_NONE;
+  if (k == NK_NilNode) return 1;
+  if (k == NK_ParenthesesNode || k == NK_StatementsNode || k == NK_ElseNode) {
+    int st = k == NK_ParenthesesNode ? nt_ref(nt, node, "body") : k == NK_ElseNode ? nt_ref(nt, node, "statements") : node;
+    int n = 0; const int *b = st >= 0 && nt_kind(nt, st) == NK_StatementsNode ? nt_arr(nt, st, "body", &n) : NULL;
+    return st < 0 || (n > 0 && an_tail_nil(nt, b[n - 1]));
+  }
+  if (k != NK_IfNode && k != NK_UnlessNode) return 0;
+  int el = nt_ref(nt, node, k == NK_IfNode ? "subsequent" : "else_clause");
+  return el < 0 || an_tail_nil(nt, nt_ref(nt, node, "statements")) || an_tail_nil(nt, el);
+}
+int an_tail_answers_nil(Compiler *c, int mi) {
+  return an_tail_nil(c->nt, scope_body_last(c, mi));
+}
 /* Does every return tail of method mi3 (the implicit one and each `return`)
-   read a shared handle? *saw: it has one. */
+   read a shared handle? *saw: it has one. Under --share-strings the last
+   statement may answer nil, but some tail must read a handle. */
 static int an_returns_shared_handles(Compiler *c, int mi3, const int *ret_start, const int *ret_list, int *saw) {
   const NodeTable *nt = c->nt;
-  int ok = 1;
+  int ok = 1, reads = 0;
   int lastT = scope_body_last(c, mi3);
   if (lastT >= 0) {
     *saw = 1;
-    if (!an_arg_is_shared_handle(c, lastT)) ok = 0;
+    if (!an_tail_is_shared_handle(c, lastT, 1, &reads)) ok = 0;
   }
   for (int r = ret_start[mi3]; ok && r < ret_start[mi3 + 1]; r++) {
     int u = ret_list[r];
     int ra = nt_ref(nt, u, "arguments");
     int rn2 = 0; const int *rv2 = ra >= 0 ? nt_arr(nt, ra, "arguments", &rn2) : NULL;
     *saw = 1;
-    if (rn2 != 1 || !an_arg_is_shared_handle(c, rv2[0])) ok = 0;
+    if (rn2 != 1 || !an_tail_is_shared_handle(c, rv2[0], 0, &reads)) ok = 0;
   }
+  if (c->share_strings && *saw && !reads) ok = 0;
   return ok;
 }
 /* --share-strings: a String mutator whose receiver is a receiverless call
@@ -18170,10 +18274,10 @@ static int promote_shared_stored_strings(Compiler *c) {
       q.to_name = bp4;
       if (!share_route_defer(c, &q, ia_msg)) unsupported_feature(c, w, ia_msg);
     }
-    if ((bpv4->type == TY_STRING || bpv4->type == TY_STRBUF || bpv4->type == TY_POLY) &&
-        nt_kind(nt, recv4) == NK_GlobalVariableReadNode &&
-        gvar_array_holds_plain_string(c, comp_resolve_gvar(c, nt_str(nt, recv4, "name") + 1)))
-      refuse_global_array_element(c, w);
+    int gpl = (bpv4->type == TY_STRING || bpv4->type == TY_STRBUF || bpv4->type == TY_POLY) &&
+              nt_kind(nt, recv4) == NK_GlobalVariableReadNode
+              ? gvar_array_plain_string(c, comp_resolve_gvar(c, nt_str(nt, recv4, "name") + 1)) : -1;
+    if (gpl >= 0) refuse_global_array_element(c, w, recv4, gpl);
     if (!lit4 && nt_kind(nt, recv4) != NK_LocalVariableReadNode) continue;
     const char *contn4 = lit4 ? NULL : nt_str(nt, recv4, "name");
     Scope *conts4 = contn4 ? comp_scope_of(c, recv4) : NULL;
@@ -31236,11 +31340,21 @@ static void refuse_literal_element_aliases(Compiler *c) {
                    (xv->type == TY_POLY && poly_local_shows_string(c, xn, xs))) ||
           local_may_be_frozen(c, xn, xs))
         continue;
+      static const char lit_msg[] =
+        "a local bound from an element read of an Array or Hash literal holding a String variable is "
+        "mutated in place (a String is not yet shared by reference through a literal's element). Mutate "
+        "the String variable itself.";
       NT_FOREACH_KIND(nt, NK_LocalVariableReadNode, o)
-        if (o != x && comp_scope_of(c, o) == xs && sp_streq(nt_str(nt, o, "name"), xn))
-          unsupported_feature(c, w, "a local bound from an element read of an Array or Hash literal holding "
-                              "a String variable is mutated in place (a String is not yet shared by "
-                              "reference through a literal's element). Mutate the String variable itself.");
+        if (o != x && comp_scope_of(c, o) == xs && sp_streq(nt_str(nt, o, "name"), xn)) {
+          /* --share-strings: the literal boxes x's String as it is, x's
+             handle where the rule shares it (a typed String literal
+             holding shared elements is refused at seal), and the element
+             read hands that box on */
+          ShareRoute q = share_route(w, x, 0);
+          q.to = w;
+          q.carry = x;
+          if (!share_route_defer(c, &q, lit_msg)) unsupported_feature(c, w, lit_msg);
+        }
     }
   }
 }
@@ -31623,8 +31737,12 @@ static void refuse_string_alias_copies(Compiler *c) {
       /* `t = id(s)`, `t = choose(+"x", s, flag)`: each argument it may answer */
       int ra[16], nra = sa_returned_args(c, v, ra, 16);
       for (int i = 0; i < nra; i++)
-        if (sa_name(c, ra[i], &from) && sa_copy_observable(c, &to, &from, ra[i]))
-          sa_refuse(c, w, 1);
+        if (sa_name(c, ra[i], &from) && sa_copy_observable(c, &to, &from, ra[i])) {
+          ShareRoute q = share_route(w, ra[i], 0);
+          q.to = w;
+          q.carry = v;
+          if (!share_route_defer(c, &q, sa_msg(1))) sa_refuse(c, w, 1);
+        }
       /* `r = s.strip!; r << x`, `r = s.strip! || s`; of the bangs the alias
          walk follows (str_self_call), one whose two names it made the one
          handle is left out. The receiver's own later mutation is not asked
@@ -31659,7 +31777,12 @@ static void refuse_string_alias_copies(Compiler *c) {
        starts from. */
     int ra[16], nra = sa_returned_args(c, r, ra, 16);
     for (int i = 0; i < nra; i++)
-      if (sa_name(c, ra[i], &from) && sa_read_elsewhere(c, &from, ra[i])) sa_refuse(c, u, 1);
+      if (sa_name(c, ra[i], &from) && sa_read_elsewhere(c, &from, ra[i])) {
+        ShareRoute q = share_route(u, ra[i], 0);
+        q.to = r;
+        q.carry = r;
+        if (!share_route_defer(c, &q, sa_msg(1))) sa_refuse(c, u, 1);
+      }
     /* `e.to_s << (e = y)`: desugar_mutator_recv_rebind snapshots the
        receiver only through appends, so the `to_s` answers a copy of the
        String the variable held, and the handle the call's value hands on
@@ -31680,11 +31803,17 @@ static void refuse_string_alias_copies(Compiler *c) {
     for (int cur = u; cur >= 0 && cur != base && !hit; cur = an_unparen(nt, nt_ref(nt, cur, "receiver")))
       hit = rr_writes_var(nt, nt_ref(nt, cur, "arguments"), pfx, from.name) ||
             rr_writes_var(nt, nt_ref(nt, cur, "block"), pfx, from.name);
-    if (hit)
-      unsupported_feature(c, u, "`to_s` (or another call answering its String receiver) is mutated in place "
-                          "while an argument reassigns the variable it was read from (a String is not yet "
-                          "shared by reference through `to_s` on a String). Mutate the variable itself, or "
-                          "read it into another local first.");
+    static const char tos_msg[] =
+      "`to_s` (or another call answering its String receiver) is mutated in place while an argument "
+      "reassigns the variable it was read from (a String is not yet shared by reference through `to_s` "
+      "on a String). Mutate the variable itself, or read it into another local first.";
+    /* --share-strings: a String mutator's receiver is read through the
+       calls answering it down to the variable, whose handle the mutator
+       takes before the argument runs */
+    ShareRoute q = share_route(u, base, 0);
+    q.to = u;
+    q.carry = base;
+    if (hit && !share_route_defer(c, &q, tos_msg)) unsupported_feature(c, u, tos_msg);
   }
   free(arr_ix.observed);
   free(order.after_all);
@@ -31805,11 +31934,16 @@ static void refuse_string_read_copies(Compiler *c) {
     if (!rn || comp_ntype(c, r) != TY_POLY || !nt_str(nt, v, "name") ||
         !rd_string_reader_anywhere(c, nt_str(nt, v, "name")))
       continue;
-    if (rd_receiver_observed(c, r, rn))
-      unsupported_feature(c, w, "a String read through a reader on a boxed receiver (a Struct or Data "
-                          "member, an attr_reader, `def m = @iv`) is mutated in place (a String is not yet "
-                          "shared by reference through a reader on a boxed receiver). Assign the changed "
-                          "String back to the member.");
+    static const char rd_msg[] =
+      "a String read through a reader on a boxed receiver (a Struct or Data member, an attr_reader, `def "
+      "m = @iv`) is mutated in place (a String is not yet shared by reference through a reader on a boxed "
+      "receiver). Assign the changed String back to the member.";
+    /* --share-strings: the reader hands over a copy, right where the rule
+       does not share the member's String */
+    ShareRoute q = share_route(w, v, 0);
+    q.to = w;
+    q.carry = SHARE_CARRY_COPY;
+    if (rd_receiver_observed(c, r, rn) && !share_route_defer(c, &q, rd_msg)) unsupported_feature(c, w, rd_msg);
   }
   NT_FOREACH_KIND(nt, NK_CallNode, u) {
     const char *un = nt_str(nt, u, "name");
@@ -31848,7 +31982,7 @@ static void refuse_string_read_copies(Compiler *c) {
         LocalVar *lv = ln ? scope_local(comp_scope_of(c, l), ln) : NULL;
         if (!lv || !lv->is_block_param || lv->type != TY_POLY || lv->poly_ctr) continue;
         strbuf_block_param_source_walk(c, ln, comp_scope_of(c, l), 0, SB_HAS_STRING, 1, &bound);
-        if (!bound) refuse_stored_block_param(c, l);
+        if (!bound && !stored_block_param_defer(c, l, cont)) refuse_stored_block_param(c, l);
       }
     }
   }
