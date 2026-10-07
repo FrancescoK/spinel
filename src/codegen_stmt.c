@@ -2852,6 +2852,15 @@ static const char *lv_op_assign_src(Compiler *c, const char *lval, TyKind t,
   return tn;
 }
 
+/* The RHS of a String `+=`: a poly RHS (a destructured `[Int, String]`
+   element bound poly) is an sp_RbVal, coerced to const char* for
+   sp_str_concat (#2875). CRuby's String#+ raises TypeError on a non-string,
+   so this only reaches a value that is a String at run time. */
+static void emit_op_assign_str_rhs(Compiler *c, int v, Buf *b) {
+  if (repr_of(c, v).kind == RK_BOXED) { buf_puts(b, "sp_poly_to_s("); emit_expr(c, v, b); buf_puts(b, ")"); }
+  else if (comp_ntype(c, v) == TY_UNKNOWN) emit_unresolved_coerced(c, v, TY_STRING, b);   /* the raise token */
+  else emit_expr(c, v, b);
+}
 static void emit_op_assign_lv(Compiler *c, int id, Buf *b, int indent,
                               const char *lval) {
   const NodeTable *nt = c->nt;
@@ -2875,16 +2884,41 @@ static void emit_op_assign_lv(Compiler *c, int id, Buf *b, int indent,
             (subtree_writes_local(c, v, nm) || (celled && subtree_has_side_effect(c, v)));
   char rtn[32];
 
+  /* Ruby takes s's String, then runs the RHS, then concatenates what
+     that String holds by then. An RHS that changes s in place (`s += (s <<
+     "zz"; "c")`) has to run before s is read; one that rebinds s reads it
+     first (cap, lv_op_assign_src). */
   if (t == TY_STRING && sp_streq(op, "+")) {
+    if (!cap && subtree_reads_local(nt, v, nm)) {
+      int tr = ++g_tmp;
+      buf_printf(b, "%s = ({ const char *_t%d = ", lval, tr);
+      emit_op_assign_str_rhs(c, v, b);
+      buf_printf(b, "; SP_GC_ROOT_STR(_t%d); sp_str_concat(%s, _t%d); });\n", tr, lval, tr);
+      return;
+    }
     buf_printf(b, "%s = sp_str_concat(%s, ", lval, lv_op_assign_src(c, lval, t, cap, rtn, sizeof rtn));
-    /* a poly RHS (a destructured `[Int, String]` element bound poly) is an
-       sp_RbVal; coerce it to const char* for sp_str_concat (#2875). CRuby's
-       String#+ raises TypeError on a non-string, so this only reaches a value
-       that is a String at run time. */
-    if (repr_of(c, v).kind == RK_BOXED) { buf_puts(b, "sp_poly_to_s("); emit_expr(c, v, b); buf_puts(b, ")"); }
-    else if (comp_ntype(c, v) == TY_UNKNOWN) emit_unresolved_coerced(c, v, TY_STRING, b);   /* the raise token */
-    else emit_expr(c, v, b);
+    emit_op_assign_str_rhs(c, v, b);
     buf_puts(b, ");\n");
+    return;
+  }
+  /* `s += x` on a local that holds a shared handle (an alias pair's, or
+     the --share-strings rule's) makes s name a new String, as it does for
+     any String: a fresh handle over the concatenation, while every other
+     name keeps the old one. An RHS that runs code may append to the old
+     String through another name (`t << ...`) or rebind s: the handle is
+     taken first and its bytes read after the RHS ran. */
+  if (t == TY_STRBUF && is_plus_op(op) && repr_of_slot(c, lv).handle) {
+    if (!subtree_has_side_effect(c, v)) {
+      buf_printf(b, "%s = sp_String_new_fresh(sp_str_concat(sp_String_cstr(%s), ", lval, lval);
+      emit_op_assign_str_rhs(c, v, b);
+      buf_puts(b, "));\n");
+      return;
+    }
+    int th = ++g_tmp, tr = ++g_tmp;
+    buf_printf(b, "%s = ({ sp_String *_t%d = %s; SP_GC_ROOT(_t%d); const char *_t%d = ", lval, th, lval, th, tr);
+    emit_op_assign_str_rhs(c, v, b);
+    buf_printf(b, "; SP_GC_ROOT_STR(_t%d); sp_String_new_fresh(sp_str_concat(sp_String_cstr(_t%d), _t%d)); });\n",
+               tr, th, tr);
     return;
   }
   /* a loop-bounded counter's `+= k` is a plain C add (see above) */

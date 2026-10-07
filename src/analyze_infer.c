@@ -8577,7 +8577,9 @@ TyKind infer_uncached(Compiler *c, int id) {
     LocalVar *lv2 = nm2 ? scope_local(s2, nm2) : NULL;
     TyKind ct2 = lv2 ? lv2->type : TY_UNKNOWN;
     TyKind vt2 = infer_type(c, nt_ref(nt, id, "value"));
-    if (ct2 == TY_STRING) return TY_STRING;
+    /* a handle local's (TY_STRBUF) value is its String face, as its read
+       is: the operator answers a new String (`s += x`) */
+    if (ct2 == TY_STRING || ct2 == TY_STRBUF) return TY_STRING;
     if (ty_is_numeric(ct2) && ty_is_numeric(vt2))
       return (ct2 == TY_FLOAT || vt2 == TY_FLOAT) ? TY_FLOAT : TY_INT;
     return ct2 != TY_UNKNOWN ? ct2 : vt2;
