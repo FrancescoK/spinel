@@ -1555,30 +1555,42 @@ void emit_local_ref(Compiler *c, int scope_node, const char *name, Buf *b) {
 int sb_shim_shadow(const char *name, const char *rn) {
   return rn != name && !strncmp(rn, "_sb", 3) && isdigit((unsigned char)rn[3]);
 }
-/* While a shim emits its arm, the receiver local's type reads TY_STRING (the
-   arm works on a plain String shadow), though the slot is the handle. A proc
-   or a fiber made inside the arm shares the real slot, and types its capture
-   struct and its body from the local: put the handle type back for it.
-   `n` is how many locals were lifted; sb_shim_drop sets them back. */
-LocalVar **sb_shim_lift(Compiler *c, int node, int *n) {
-  LocalVar **lifted = NULL;
+/* A shim types its receiver local String for the arm it re-runs, though the
+   slot is the handle (sb_shim_enter); it answers the local's shim state as
+   it was, which sb_shim_leave puts back whole. A shim inside a proc made in
+   another shim's arm enters a local the outer one lifted: putting back only
+   the type cleared the outer shim's shim_ty, so its drop skipped the local,
+   which kept the handle type for the rest of the outer arm. */
+SbShimSave sb_shim_enter(LocalVar *lv) {
+  SbShimSave sv = { lv->type, lv->shim_ty, lv->shim_lift };
+  lv->shim_ty = lv->type;
+  lv->type = TY_STRING;
+  lv->shim_lift = 0;
+  return sv;
+}
+void sb_shim_leave(LocalVar *lv, SbShimSave sv) {
+  lv->type = sv.type;
+  lv->shim_ty = sv.shim_ty;
+  lv->shim_lift = sv.shim_lift;
+}
+/* A proc or a fiber made inside the arm shares the real slot, and types its
+   capture struct and its body from the local: put the handle type back on
+   the locals a live shim lowered, for it (sb_shim_drop sets them back). Only
+   the shim's own local carries shim_ty, so a same-named local of an inlined
+   method is left alone. */
+static void sb_shim_lifted(Compiler *c, int node, int delta) {
   Scope *sc = node >= 0 ? comp_scope_of(c, node) : NULL;
-  *n = 0;
-  if (!sc) return NULL;
+  if (!sc) return;
   for (int i = 0; i < g_nren; i++) {
     if (!sb_shim_shadow(g_ren_from[i], g_ren_to[i])) continue;
     LocalVar *lv = scope_local(sc, g_ren_from[i]);
-    if (!lv || lv->type != TY_STRING) continue;
-    if (!lifted) lifted = (LocalVar **)malloc(sizeof(LocalVar *) * (size_t)g_nren);
-    lv->type = TY_STRBUF;
-    lifted[(*n)++] = lv;
+    if (!lv || lv->shim_ty == TY_UNKNOWN) continue;
+    if (delta > 0) { if (lv->shim_lift++ == 0) lv->type = lv->shim_ty; }
+    else if (--lv->shim_lift == 0) lv->type = TY_STRING;
   }
-  return lifted;
 }
-void sb_shim_drop(LocalVar **lifted, int n) {
-  for (int i = 0; i < n; i++) lifted[i]->type = TY_STRING;
-  free(lifted);
-}
+void sb_shim_lift(Compiler *c, int node) { sb_shim_lifted(c, node, 1); }
+void sb_shim_drop(Compiler *c, int node) { sb_shim_lifted(c, node, -1); }
 void emit_scope_local_ref(Compiler *c, Scope *s, const char *name, Buf *b) {
   /* Inside a shared-handle shim the local reads as the shim's shadow, a
      plain C local the shim declares, even when the local itself lives in a
