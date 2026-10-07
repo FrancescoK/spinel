@@ -1998,6 +1998,32 @@ int exc_subclass_defines(Compiler *c, const char *name) {
   return 0;
 }
 
+/* 1 iff a call of `name` on a TY_EXCEPTION receiver can only be one of the
+   program's exception classes' own methods (HTTPStatus::Status#code): some
+   user subclass defines it, no builtin exception reopening does (that has
+   its own pick by the runtime class), and it is no name the exception
+   surface or every object answers, whose arms keep the call (a
+   class-gated reader -- #reason, #key -- only at the reader's arity). Inference and
+   codegen then treat the receiver as the boxed exception it is, which the
+   poly dispatch keys by its user class (sp_exc_user_cls_id), and anything
+   else -- a builtin exception, a subclass without the method -- raises
+   NoMethodError there. */
+int exc_user_method_name(Compiler *c, const char *name, int argc) {
+  static const char *const surface[] = {
+    "message", "to_s", "to_str", "inspect", "full_message", "detailed_message", "exception",
+    "backtrace", "backtrace_locations", "set_backtrace", "cause", "result", "class",
+    "==", "!=", "===", "=~", "!", "eql?", "equal?", "hash", "object_id", "nil?", "frozen?",
+    "freeze", "dup", "clone", "itself", "is_a?", "kind_of?", "instance_of?", "respond_to?",
+    "send", "__send__", "public_send", "method", "tap", "then", "instance_variable_get",
+    "instance_variable_set", "instance_variables", "<=>", "display", NULL };
+  if (!name || !exc_subclass_defines(c, name)) return 0;
+  for (int i = 0; surface[i]; i++) if (sp_streq(name, surface[i])) return 0;
+  if (argc == 0 && exc_gated_acc_fn(name)) return 0;
+  int xr[1];
+  if (exc_reopen_definers(c, name, xr, 1) > 0) return 0;
+  return 1;
+}
+
 /* analyze.c's an_class_can_be_reached, plus reopened builtin primitives: a
    class nothing can reach cannot own a name, and owning a name takes the
    BUILTIN away. A program that merely declared `Bucket#partition`, never
