@@ -24,3 +24,28 @@ p deferred
 replaced = [+"x", +"y", +"z"]
 replaced.slice_when { |prev, next_value| prev == "y" }.each { |copy| copy[0] = +"z" }
 p replaced
+
+before = [+"x", +"y", +"z"]
+before.slice_before { |s| s == "y" }.each { |run| run[0] << "!" }
+p before
+
+after = [+"x", +"y", +"z"]
+after.slice_after { |s| s == "y" }.each { |run| run[0] << "!" }
+p after
+
+last = [+"x", +"y", +"z"]
+last.slice_before { |s| s == "z" }.to_a.each { |run| s = run[-1]; s << "?" }
+p last
+
+held = [+"x", +"y", +"z"]
+parts = held.slice_after { |s| s == "x" }
+parts.each { |run| run[0] << "+" }
+p held
+
+swapped = [+"x", +"y", +"z"]
+swapped.slice_before { |s| s == "y" }.each { |run| run[0] = +"q" }
+p swapped
+
+pattern = [+"x", +"y", +"z"]
+pattern.slice_after("y").to_a.each { |run| run[-1] << "!" }
+p pattern
