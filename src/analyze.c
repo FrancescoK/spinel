@@ -5838,6 +5838,30 @@ static void desugar_enum_chain_shapes(Compiler *c) {
       nt_node_set_str(nt, eachn, "name", "each");
       nt_node_set_ref(nt, eachn, "receiver", recv);
       nt_node_set_ref(nt, id, "receiver", eachn);
+      /* with a block the call answers the String, not the pieces the walk
+         now goes over: (s.chars.each.with_index { }; s), for a String a
+         variable names, read again rather than evaluated twice */
+      int srecv = nt_ref(nt, recv, "receiver");
+      NodeKind sk = nt_kind(nt, srecv);
+      if (nt_ref(nt, id, "block") >= 0 &&
+          (sk == NK_LocalVariableReadNode || sk == NK_InstanceVariableReadNode)) {
+        int inner = nt_new_node(nt, "CallNode");
+        int st = nt_new_node(nt, "StatementsNode");
+        int tail = nt_clone_subtree(nt, srecv);
+        if (inner >= 0 && st >= 0 && tail >= 0) {
+          nt_node_set_str(nt, inner, "name", "with_index");
+          nt_node_set_ref(nt, inner, "receiver", eachn);
+          nt_node_set_ref(nt, inner, "arguments", nt_ref(nt, id, "arguments"));
+          nt_node_set_ref(nt, inner, "block", nt_ref(nt, id, "block"));
+          int items[2] = { inner, tail };
+          nt_node_set_arr(nt, st, "body", items, 2);
+          nt_node_set_type(nt, id, "ParenthesesNode");
+          nt_node_set_ref(nt, id, "body", st);
+          nt_node_set_ref(nt, id, "receiver", -1);
+          nt_node_set_ref(nt, id, "arguments", -1);
+          nt_node_set_ref(nt, id, "block", -1);
+        }
+      }
       comp_grow_node_arrays(c);
     }
     /* str.each_char/each_line (blockless, no args) followed by an eager
@@ -7199,6 +7223,23 @@ int scope_is_struct_synth(Compiler *c, int si) {
    ones: Enumerator and Hash chains, Struct and Set members, the finders, step
    and % (desugar_enum_method_recv's rewrites, in their order) */
 static int desugar_enum_named_call(Compiler *c, int id, NodeTable *nt, const char *nm, int *changed) {
+  /* n.times.each { } is n.times { }: the blockless times is a Range here,
+     whose each answered 0...n where the Enumerator's each answers n */
+  if (nm && sp_streq(nm, "each") && nt_kind(nt, nt_ref(nt, id, "block")) == NK_BlockNode &&
+      nt_ref(nt, id, "arguments") < 0 && !call_is_safe_nav(nt, id)) {
+    int trecv = nt_ref(nt, id, "receiver");
+    if (trecv >= 0 && nt_kind(nt, trecv) == NK_CallNode && nt_str(nt, trecv, "name") &&
+        sp_streq(nt_str(nt, trecv, "name"), "times") && nt_ref(nt, trecv, "block") < 0 &&
+        nt_ref(nt, trecv, "arguments") < 0 && !call_is_safe_nav(nt, trecv)) {
+      int n = nt_ref(nt, trecv, "receiver");
+      if (n >= 0 && infer_type(c, n) == TY_INT) {
+        nt_node_set_str(nt, id, "name", "times");
+        nt_node_set_ref(nt, id, "receiver", n);
+        *changed = 1;
+        return 1;
+      }
+    }
+  }
   /* hash.map.with_index { } / hash.each.with_index { }: interpose to_a so
      the pair-array enumerator chain (which the array machinery serves)
      carries it -- h.to_a.map.with_index. Type-aware, hence here and not in
