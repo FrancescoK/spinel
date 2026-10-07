@@ -29032,6 +29032,7 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
   /* the builtin's own counts, before a user method's widen them: what the
      kept splat call of a variadic-2 name (slice) reports as its arity */
   int blo = lo, bhi = hi;
+  int nuser = 0, ukw = 0;
   /* a user method of the name may own the call: the range widens to the
      counts it takes, so each arm calls whichever method the receiver has
      with the arguments it was given. One with a rest parameter takes any
@@ -29043,6 +29044,10 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
       Scope *s = &c->scopes[si];
       if (!s->name || !sp_streq(s->name, cnm)) continue;
       if (s->rest_idx >= 0 || s->kwrest_idx >= 0) return 0;
+      nuser++;
+      int pn = s->def_node >= 0 ? nt_ref(nt, s->def_node, "parameters") : -1, kn = 0;
+      if (pn >= 0) nt_arr(nt, pn, "keywords", &kn);
+      if (kn > 0) ukw = 1;
       int req = 0;
       for (int p = 0; p < s->nparams; p++) if (s->pdefault && s->pdefault[p] < 0) req++;
       if (req < lo) lo = req;
@@ -29100,6 +29105,26 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
     fargs[k] = nt_new_node(nt, "LocalVariableReadNode");
     nt_node_set_str(nt, fargs[k], "name", tn);
     nt_node_set_int(nt, fargs[k], "depth", 0);
+  }
+  char knm[64];
+  if (nuser > 0 && !ukw && argc > 1 && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode) {
+    snprintf(knm, sizeof knm, "__splk%s", comp_node_tag(c, id));
+    scope_local_intern(comp_scope_of(c, id), knm);
+    int ar = nt_new_node(nt, "LocalVariableReadNode");
+    nt_node_set_str(nt, ar, "name", anm);
+    nt_node_set_int(nt, ar, "depth", adepth);
+    int one = nt_new_node(nt, "ArrayNode");
+    int kv = nt_clone_subtree(nt, fargs[argc - 1]);
+    nt_node_set_arr(nt, one, "elements", &kv, 1);
+    int cat = sd_call(nt, "+", nt_clone_subtree(nt, ar), &one, 1);
+    int w = nt_new_node(nt, "LocalVariableWriteNode");
+    nt_node_set_str(nt, w, "name", knm);
+    nt_node_set_int(nt, w, "depth", 0);
+    nt_node_set_ref(nt, w, "value", sd_if(nt, sd_call(nt, "empty?", nt_clone_subtree(nt, fargs[argc - 1]), NULL, 0), ar, cat));
+    pre[npre++] = w;
+    anm = knm;
+    adepth = 0;
+    argc--;
   }
   for (int k = 0; k < argc; k++) {
     if (nt_kind(nt, argv[k]) != NK_KeywordHashNode) continue;
