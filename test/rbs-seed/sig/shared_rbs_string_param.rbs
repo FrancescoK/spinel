@@ -1,0 +1,5 @@
+class Object
+  def shrbs_id: (String?) -> String?
+  def shrbs_bang: (String) -> String
+  def shrbs_pair: (String, String) -> String
+end
