@@ -4145,6 +4145,7 @@ void emit_poly_cases_n(Compiler *c, int id, const char *name, const PolySpecials
     {
       int tbox = ++g_tmp;
       buf_puts(b, " case SP_BUILTIN_POLY_POLY_HASH:");
+      if (sp_streq(name, "key?")) buf_puts(b, " case SP_BUILTIN_THREAD:");
       if (at != TY_STRING)
         buf_puts(b, " case SP_BUILTIN_STR_INT_HASH: case SP_BUILTIN_STR_STR_HASH: case SP_BUILTIN_STR_POLY_HASH:");
       if (at != TY_SYMBOL) buf_puts(b, " case SP_BUILTIN_SYM_POLY_HASH:");
