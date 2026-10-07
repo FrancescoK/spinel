@@ -1640,6 +1640,7 @@ const char *sp_bigint_to_s_base(sp_Bigint *b, sp_int base);
 int sp_bigint_even_p(sp_Bigint *b);
 sp_Bigint *sp_bigint_abs_v(sp_Bigint *b);
 sp_int sp_bigint_bit_length(sp_Bigint *b);
+sp_int sp_bigint_int_size(sp_Bigint *b);   /* Integer#size */
 int64_t sp_bigint_to_int(sp_Bigint *b);
 double sp_bigint_to_double(sp_Bigint *b);
 int sp_bigint_cmp(sp_Bigint *a, sp_Bigint *b);
@@ -3963,12 +3964,7 @@ static sp_int sp_poly_size(sp_RbVal v) {
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_RANGE && v.v.p)
     return sp_range_count(*(sp_Range *)v.v.p);
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_STR_RANGE) return SP_INT_NIL;
-  if (v.tag == SP_TAG_BIGINT) {
-    sp_Bigint *bg = (sp_Bigint *)v.v.p;
-    sp_int bits = bg ? (sp_int)sp_bigint_bit_length(bg) : 0;
-    sp_int bytes = (bits + 7) / 8;
-    return bytes < (sp_int)sizeof(sp_int) ? (sp_int)sizeof(sp_int) : bytes;
-  }
+  if (v.tag == SP_TAG_BIGINT) return sp_bigint_int_size((sp_Bigint *)v.v.p);
   /* an Enumerator's size is its own (#size), not a length: a boxed
      each_slice(2) enumerator answered 0. A size that is not a count (nil, an
      infinite one) reads as nil. */
