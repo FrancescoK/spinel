@@ -20968,6 +20968,25 @@ static void dyn_reach_value(Compiler *c, int v, int k, int depth, DynReach *r);
 static int dyn_site_misses(Compiler *c, int n, int mi) {
   const NodeTable *nt = c->nt;
   Scope *m = &c->scopes[mi];
+  int recv0 = nt_ref(nt, n, "receiver");
+  NodeKind rk = recv0 >= 0 ? nt_kind(nt, recv0) : NK_SelfNode;
+  int by_const = rk == NK_ConstantReadNode || rk == NK_ConstantPathNode;
+  /* a receiver of a known class reaches only the method its class or a
+     subclass answers with */
+  if (rk != NK_SelfNode && !by_const && ty_is_object(comp_ntype(c, recv0))) {
+    int rc = ty_object_class(comp_ntype(c, recv0));
+    if (rc >= 0 && m->name) {
+      if (m->is_cmethod) return 1;
+      for (int k = 0; k < c->nclasses; k++)
+        if (is_descendant(c, k, rc) && comp_method_in_chain(c, k, m->name, NULL) == mi) return 0;
+      return 1;
+    }
+  }
+  /* a class value never reaches an instance method of a class */
+  if (by_const && comp_ntype(c, recv0) == TY_CLASS && !m->is_cmethod && m->class_id >= 0 &&
+      c->classes[m->class_id].def_node >= 0 &&
+      nt_kind(nt, c->classes[m->class_id].def_node) == NK_ClassNode)
+    return 1;
   if (m->is_cmethod || m->class_id < 0) return 0;
   ClassInfo *ci = &c->classes[m->class_id];
   if (ci->def_node < 0 || nt_kind(nt, ci->def_node) != NK_ClassNode || is_builtin_class_name(ci->name))
@@ -20997,6 +21016,15 @@ static unsigned dyn_blk_bits(Compiler *c, int mi) {
   const NodeTable *nt = c->nt;
   if (mi < 0 || mi >= g_dyn.nscope) return DYN_OPEN;
   if (g_dyn.blk[mi] & DYN_DONE) return g_dyn.blk[mi];
+  /* a proc form (`m#pf`) is passed the blocks of the method it copies */
+  if (c->scopes[mi].is_proc_form) {
+    int si = proc_form_source(c, mi);
+    g_dyn.blk[mi] = DYN_DONE | DYN_OPEN;
+    if (si < 0) return g_dyn.blk[mi];
+    g_dyn.blk[mi] = dyn_blk_bits(c, si);
+    g_dyn.blkpost[mi] = g_dyn.blkpost[si];
+    return g_dyn.blk[mi];
+  }
   dyn_blk_index(c);
   unsigned bits = 0;
   int any = 0;
