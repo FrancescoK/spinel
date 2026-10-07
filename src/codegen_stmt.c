@@ -1651,9 +1651,20 @@ int strbuf_value_carries(Compiler *c, int v) {
    (hr): a route's (2) can be a String of its own (`(+f)` of a frozen f),
    which nothing else holds while the mutator's arguments allocate, so it
    is rooted for the rest of the mutator's expression. A slot's (1) is held
-   by its slot. */
-void emit_route_recv_root(int hr, int t, Buf *b) {
-  if (hr == 2) buf_printf(b, " SP_GC_ROOT(_t%d);", t);
+   by its slot. argv lists the mutator's argc operands when the mutator
+   itself allocates nothing past the handle (an append's sp_String_append
+   and replace's set_bin grow a handle's payload with malloc, and setbyte
+   writes it in place), each read as a ty value with no conversion: when
+   none of them can allocate either (operand_may_allocate: a literal, a
+   local), nothing can collect while the temp is live, and it needs no
+   root. argv NULL: the mutator can allocate (a result it builds, a
+   conversion). */
+void emit_route_recv_root(Compiler *c, int hr, int t, int argc, const int *argv, TyKind ty, Buf *b) {
+  if (hr != 2) return;
+  int alloc = !argv;
+  for (int i = 0; i < argc && !alloc; i++)
+    alloc = comp_ntype(c, argv[i]) != ty || operand_may_allocate(c, argv[i]);
+  if (alloc) buf_printf(b, " SP_GC_ROOT(_t%d);", t);
 }
 /* Does route v (emit_strbuf_route) answer a String, never nil: `+s` (which
    raises for a nil s) and `String(s)`? Every other one can answer nil. */
@@ -1686,10 +1697,14 @@ static int strbuf_route_recv(Compiler *c, int id, int recv, char *out, size_t ca
   Buf nb; memset(&nb, 0, sizeof nb);
   if (strbuf_route_nonnil(c, recv)) buf_puts(&nb, hb.p);
   else {
+    /* unrooted: nothing allocates between the read and the value but the
+       raise, where the temp holds nil, and a root here would end with this
+       expression anyway; the caller roots its own temp of the value while
+       the mutator can allocate (emit_route_recv_root) */
     int t = ++g_tmp;
-    buf_printf(&nb, "({ sp_String *_t%d = %s; SP_GC_ROOT(_t%d); if (SP_UNLIKELY(!_t%d)) "
+    buf_printf(&nb, "({ sp_String *_t%d = %s; if (SP_UNLIKELY(!_t%d)) "
                "sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil())); _t%d; })",
-               t, hb.p, t, t, nt_str(c->nt, id, "name"), t);
+               t, hb.p, t, nt_str(c->nt, id, "name"), t);
   }
   int fit = nb.p && strlen(nb.p) < cap;
   if (fit) snprintf(out, cap, "%s", nb.p);
@@ -15914,7 +15929,7 @@ static int str_mutate_shared_arms(Compiler *c, int id, Buf *b, int indent, const
       if (handled) {
         emit_indent(b, indent);
         buf_printf(b, "{ sp_String *_t%d = %s;", tH, hb);
-        emit_route_recv_root(2, tH, b);
+        emit_route_recv_root(c, 2, tH, 0, NULL, TY_UNKNOWN, b);
         buf_puts(b, "\n");
         Buf nopre; memset(&nopre, 0, sizeof nopre);   /* what the route put ahead is in g_pre */
         emit_sb_shim_swap(b, indent, tH, &nopre, armb.p);

@@ -9,7 +9,8 @@
 # that answers nil, its tail or a `next` of its block) binds the parameter
 # nil, and the append raises NoMethodError, as on any nil. A route that
 # answers a String of its own (`+` of a frozen String, a `then` that makes
-# one) stays rooted while a mutator's arguments allocate.
+# one) stays rooted while a mutator's arguments allocate, or while a
+# conversion of an argument (an Integer appended as its character) does.
 def grow(u) = u << "!"
 def grow2(u, n)
   n.times { u << "+" }
@@ -68,3 +69,5 @@ p al(+"k")
 rescue NoMethodError => e
   p e.class
 end
+rs = (1..40).map { |i| [(+fz) << "lit", (+fz).replace("other"), (+fz) << 65, (+fz).concat(i.to_s * 200, "!").size, (+fz).setbyte(0, 72)] }
+p rs.uniq, fz
