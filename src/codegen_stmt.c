@@ -1354,6 +1354,22 @@ static int strbuf_route_tap(Compiler *c, int v) {
   Scope *bsc = p0 ? comp_scope_of(c, blk) : NULL;
   return rt == TY_STRING && bsc && repr_of_slot(c, scope_local(bsc, rename_local(p0))).handle;
 }
+/* --share-strings: `a.inject(s) { |m, x| ... }` over an Array with a
+   String seed carried as the handle, whose accumulator parameter is the
+   handle, and that leaves by no `break`: inject answers the block's last
+   value, or a `next`'s, as the handle (emit_reduce_block_expr), so a block
+   answering its accumulator answers the seed itself. */
+static int strbuf_route_inject(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  int recv = nt_ref(nt, v, "receiver"), blk = nt_ref(nt, v, "block"), argc = 0;
+  const int *argv = call_args(nt, v, &argc);
+  if (recv < 0 || argc != 1 || blk < 0 || nt_kind(nt, blk) != NK_BlockNode || call_breaks(c, v) ||
+      !ty_is_array(repr_of(c, recv).as_ty) || comp_ntype(c, v) != TY_STRING ||
+      !strbuf_value_carries(c, argv[0])) return 0;
+  const char *p0 = block_param_name(c, blk, 0);
+  Scope *bsc = p0 ? comp_scope_of(c, blk) : NULL;
+  return bsc && block_param_name(c, blk, 1) && repr_of_slot(c, scope_local(bsc, rename_local(p0))).handle;
+}
 /* --share-strings: a value route that answers the String it is handed, not
    a new one -- `+s` (s itself unless s is frozen), `String(s)` (s itself, ""
    for nil), `s.then { |x| ... }` (its block's value), `s.tap { |x| ... }`
@@ -1371,7 +1387,8 @@ static int strbuf_route_operand(Compiler *c, int v) {
   if (is_then_alias(nm) && recv >= 0 && argc == 0 && blk >= 0 && nt_kind(nt, blk) == NK_BlockNode &&
       !call_breaks(c, v))
     return v;
-  if (sp_streq(nm, "tap") && strbuf_route_tap(c, v)) return v;
+  if (is_tap_name(nm) && strbuf_route_tap(c, v)) return v;
+  if (is_reduce_alias(nm) && strbuf_route_inject(c, v)) return v;
   /* Kernel#String, as its arm takes it: no method of the program's own */
   int x = is_unary_plus(nm) && argc == 0 && blk < 0 ? recv
         : is_string_class_name(nm) && recv < 0 && argc == 1 && blk < 0 && comp_method_index(c, nm) < 0 &&
@@ -1595,11 +1612,12 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
        under the demand. `tap` answers its receiver's handle, and its
        block's value is dropped. */
     int tok[64];
-    int ntok = !is_then_alias(nt_str(nt, v, "name")) ? 0
+    int ntok = !is_then_alias(nt_str(nt, v, "name")) && !is_reduce_alias(nt_str(nt, v, "name")) ? 0
              : strbuf_jump_views(c, nt_ref(nt, nt_ref(nt, v, "block"), "body"), NK_NextNode, tok, 0, 64);
     if (ntok < 0) return 0;
     int sv = view_push_repr(c, v, VR_HANDLE_DEMAND, 1);
-    int ok = emit_or_take_back(c, v, b, emit_tap_then_expr);
+    int ok = emit_or_take_back(c, v, b, is_reduce_alias(nt_str(nt, v, "name")) ? emit_reduce_block_expr
+                                                                                 : emit_tap_then_expr);
     view_pop(c, sv);
     strbuf_jump_views_pop(c, tok, ntok);
     return ok;
