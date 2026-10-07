@@ -2241,8 +2241,8 @@ void emit_proc_call_args(Compiler *c, int call, int argc, const int *argv, Buf *
           /* a parameter that took the handle is NULL for a nil argument,
              whether a yield or a proc call hands it on (`def ri(x, &b) =
              b[x]` called with nil) */
-          buf_printf(g_pre, "const char *_t%d = _t%d ? sp_str_concat(sp_String_cstr(_t%d), (&(\"\\xff\")[1])) : NULL; SP_GC_ROOT(_t%d);\n",
-                     slot[k], atmp[k], atmp[k], slot[k]);
+          buf_printf(g_pre, "const char *_t%d = sp_strbuf_read(_t%d); SP_GC_ROOT(_t%d);\n",
+                     slot[k], atmp[k], slot[k]);
         }
       }
     }
@@ -21766,8 +21766,8 @@ int emit_implicit_self_member(Compiler *c, int id, Buf *b) {
     Repr rp = repr_of(c, id);
     if (rty == TY_STRBUF && !rp.handle && !rp.demand) {
       int tv = ++g_tmp;
-      buf_printf(&rb, "({ sp_String *_t%d = %s%siv_%s; _t%d ? sp_str_concat(sp_String_cstr(_t%d), (&(\"\\xff\")[1])) : NULL; })",
-                 tv, g_self, g_self_deref, iv_c(rn), tv, tv);
+      buf_printf(&rb, "({ sp_String *_t%d = %s%siv_%s; sp_strbuf_read(_t%d); })",
+                 tv, g_self, g_self_deref, iv_c(rn), tv);
       rty = TY_STRING;
     }
     else buf_printf(&rb, "%s%siv_%s", g_self, g_self_deref, iv_c(rn));

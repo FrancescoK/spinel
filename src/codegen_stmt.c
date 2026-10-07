@@ -14224,9 +14224,7 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
         if (sb8) {
           char h8[512];
           snprintf(h8, sizeof h8, "%s", islot9);
-          snprintf(islot9, sizeof islot9,
-                   "(_sp_ret_strbuf = (void *)%s, %s ? sp_str_concat(sp_String_cstr(%s), (&(\"\\xff\")[1])) : NULL)",
-                   h8, h8, h8);
+          snprintf(islot9, sizeof islot9, "sp_strbuf_read_pub(%s)", h8);
         }
         if (want_poly8 && it9 != TY_POLY) {
           Buf bx8; memset(&bx8, 0, sizeof bx8);
@@ -14290,10 +14288,8 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
     /* read out with the handle published, as the value form's is, where
        the --share-strings rule's pickup takes it */
     if (sb9 && h9.r.share)
-      snprintf(gref9, sizeof gref9,
-               "(_sp_ret_strbuf = (void *)%s, %s ? sp_str_concat(sp_String_cstr(%s), (&(\"\\xff\")[1])) : NULL)",
-               gslot9, gslot9, gslot9);
-    else if (sb9) snprintf(gref9, sizeof gref9, "(%s ? sp_str_concat(sp_String_cstr(%s), (&(\"\\xff\")[1])) : NULL)", gslot9, gslot9);
+      snprintf(gref9, sizeof gref9, "sp_strbuf_read_pub(%s)", gslot9);
+    else if (sb9) snprintf(gref9, sizeof gref9, "sp_strbuf_read(%s)", gslot9);
     else snprintf(gref9, sizeof gref9, "%s", gslot9);
     emit_indent(b, indent); emit_tail_lead(b);
     if (want_poly9 && gt9 != TY_POLY) {
