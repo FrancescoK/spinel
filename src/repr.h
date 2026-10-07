@@ -223,9 +223,5 @@ int repr_static_share(const Compiler *c, int node);
 /* a read such a slot can be: a global's, a constant's (bare or `A::B`), a
    class variable's */
 int repr_static_read_kind(NodeKind k);
-/* For a read or write node of a global, a constant or a class variable
-   that holds the shared handle (repr_static_share), write its C slot
-   (gv_<name>, cst_<name>, cvar_<owner>_<name>) to out: 1 when it did. */
-int repr_handle_static_ref(const Compiler *c, int node, char *out, size_t cap);
 
 #endif

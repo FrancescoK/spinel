@@ -6,6 +6,7 @@
 #include "repr.h"
 #include "codegen_internal.h"
 #include "share.h"
+#include "holder.h"
 
 static int repr_sealed_flag;
 
@@ -486,70 +487,12 @@ int repr_static_read_kind(NodeKind k) {
   return k == NK_GlobalVariableReadNode || k == NK_ConstantReadNode || k == NK_ConstantPathNode ||
          k == NK_ClassVariableReadNode;
 }
-static int repr_const_node(NodeKind k) {
-  return k == NK_ConstantReadNode || k == NK_ConstantPathNode || k == NK_ConstantWriteNode || k == NK_ConstantOrWriteNode ||
-         k == NK_ConstantAndWriteNode || k == NK_ConstantOperatorWriteNode;
-}
-static int repr_cvar_node(NodeKind k) {
-  return k == NK_ClassVariableReadNode || k == NK_ClassVariableWriteNode || k == NK_ClassVariableOrWriteNode ||
-         k == NK_ClassVariableAndWriteNode || k == NK_ClassVariableOperatorWriteNode;
-}
-/* The class variable node `node` names, by the read emitter's rule
-   (cvar_global_slot): its owning class and index, or 0. */
-static int repr_cvar_slot(const Compiler *c, int node, int *cid, int *idx) {
-  const char *nm = nt_str(c->nt, node, "name");
-  Scope *s = comp_scope_of((Compiler *)c, node);
-  if (!nm || !s) return 0;
-  int k = s->class_id;
-  if (k < 0 && c->node_cbody && node < c->node_cap) k = c->node_cbody[node];
-  if (k < 0) k = comp_class_index((Compiler *)c, "Toplevel");
-  if (k < 0) return 0;
-  k = comp_cvar_owner((Compiler *)c, k, nm);
-  int i = comp_cvar_index(&c->classes[k], nm);
-  if (i < 0) return 0;
-  *cid = k; *idx = i;
-  return 1;
-}
-static LocalVar *repr_static_var(const Compiler *c, int node) {
-  const NodeTable *nt = c->nt;
-  NodeKind k = nt_kind(nt, node);
-  if (k == NK_GlobalVariableReadNode || k == NK_GlobalVariableWriteNode || k == NK_GlobalVariableOrWriteNode ||
-      k == NK_GlobalVariableAndWriteNode || k == NK_GlobalVariableOperatorWriteNode) {
-    const char *gn = nt_str(nt, node, "name");
-    const char *rn = gn && gn[0] == '$' ? comp_resolve_gvar((Compiler *)c, gn + 1) : NULL;
-    return rn ? comp_gvar((Compiler *)c, rn) : NULL;
-  }
-  if (repr_const_node(k)) {
-    const char *cn = nt_str(nt, node, "name");
-    return cn ? comp_const((Compiler *)c, cn) : NULL;
-  }
-  return NULL;
-}
 /* repr_of's `share` for a read or write node of a global, a constant or a
-   class variable: its slot's (only the rule makes one the handle). The
-   handle is an sp_String * slot: its kind is asked first, as repr_of asks
-   this of every node and the slot's whole Repr scans the classes for an
-   object's dyn_cls. */
+   class variable: its slot's (only the rule makes one the handle) */
 int repr_static_share(const Compiler *c, int node) {
-  if (node < 0 || !c->share_strings) return 0;
-  if (repr_cvar_node(nt_kind(c->nt, node))) {
-    int cid, idx;
-    return repr_cvar_slot(c, node, &cid, &idx) && repr_cvar_kind(c, cid, idx) == RK_STRBUF &&
-           repr_of_cvar(c, cid, idx).share;
-  }
-  LocalVar *lv = repr_static_var(c, node);
-  return lv && repr_slot_kind(c, lv) == RK_STRBUF && repr_of_slot(c, lv).share;
-}
-int repr_handle_static_ref(const Compiler *c, int node, char *out, size_t cap) {
-  if (!repr_static_share(c, node)) return 0;
-  NodeKind k = nt_kind(c->nt, node);
-  if (repr_cvar_node(k)) {
-    int cid, idx;
-    repr_cvar_slot(c, node, &cid, &idx);
-    snprintf(out, cap, "cvar_%s_%s", c->classes[cid].name, c->classes[cid].cvars[idx] + 2);
-  }
-  else snprintf(out, cap, "%s_%s", repr_const_node(k) ? "cst" : "gv", repr_static_var(c, node)->name);
-  return 1;
+  HolderRef h;
+  if (node < 0 || !c->share_strings || !holder_static_node(nt_kind(c->nt, node))) return 0;
+  return holder_of_node(c, node, &h) && h.r.share;
 }
 
 int repr_str_class_shares(unsigned flags, int holders) {
@@ -574,7 +517,7 @@ int repr_str_elems_share(const Compiler *c, int holder) {
    is the caller's), and a class variable is every class's of the name (the
    facts key it by name alone): boxed if one is, and the handle only if
    every String one is. ty is TY_UNKNOWN for a holder with no slot. */
-static Repr repr_of_holder(Compiler *c, const ShareHolder *h) {
+static Repr repr_of_share_holder(Compiler *c, const ShareHolder *h) {
   Repr r;
   memset(&r, 0, sizeof r);
   r.ty = r.as_ty = TY_UNKNOWN;
@@ -664,7 +607,7 @@ static void repr_share_seal(Compiler *c) {
     }
     /* does the holder hold the shared handle (a box holds what is stored,
        the handle included)? -1 for one that holds no String */
-    Repr hr = repr_of_holder(c, sh);
+    Repr hr = repr_of_share_holder(c, sh);
     int carried = hr.kind == RK_BOXED || hr.share ? 1 : hr.ty == TY_STRING || hr.ty == TY_STRBUF ? 0 : -1;
     if (carried < 0) continue;
     n_str++;
