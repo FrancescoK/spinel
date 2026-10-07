@@ -162,7 +162,10 @@ class OptionParser
     is_array = false
     args.each do |a|
       if a.is_a?(String) && a.length > 1 && a[0] == "-"
-        cut = a.index(/[=\[ ]/) || (a[1] == "-" ? a.length : 2)
+        # a "[" opens an optional value ("--name[=VALUE]"), but the "[no-]" of
+        # a negatable long switch is part of its name
+        from = a.start_with?("--[no-]") ? 7 : 1
+        cut = a.index(/[=\[ ]/, from) || (a[1] == "-" ? a.length : 2)
         text = a[cut..]
         arg_text = text unless text.empty?
         (a[1] == "-" ? longs : shorts).push(a[0, cut])
