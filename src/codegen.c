@@ -15490,6 +15490,22 @@ static void emit_ffi_decls(Compiler *c, Buf *b) {
       if (m->rest) buf_puts(b, ", sp_int, sp_RbVal *");
       buf_puts(b, ");\n");
     }
+    /* --share-strings: the handle forms `native_share` names, which take
+       (a constructor's first argument) or answer the shared String as its
+       sp_String * handle */
+    for (int mi = 0; cf->share_strings && mi < cf->n_native_methods; mi++) {
+      NativeMethod *m = &cf->native_methods[mi];
+      int seen = !m->share_csym || m->rest;
+      for (int pj = 0; pj < mi && !seen; pj++)
+        seen = cf->native_methods[pj].share_csym && sp_streq(cf->native_methods[pj].share_csym, m->share_csym);
+      if (seen) continue;
+      const char *cstruct = cf->classes[m->class_id].c_struct;
+      if (m->kind == 1) buf_printf(b, "extern %s *%s(sp_int", cstruct, m->share_csym);
+      else buf_printf(b, "extern sp_String *%s(%s *", m->share_csym, cstruct);
+      for (int ai = 0; ai < m->nargs; ai++)
+        buf_printf(b, ", %s", m->kind == 1 && ai == 0 ? "sp_String *" : native_c_type(m->args[ai]));
+      buf_puts(b, ");\n");
+    }
     /* IO::Buffer as an ffi_func pointer argument (codegen_call.c) */
     if (cf->n_ffi_funcs > 0 && ffi_iobuffer_class(cf) >= 0) {
       buf_puts(b, "extern void *sp_IOBuffer_ffi_base(sp_IOBuffer *, sp_int);\n"

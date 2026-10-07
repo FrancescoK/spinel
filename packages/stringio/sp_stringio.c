@@ -13,6 +13,20 @@
    constructed over one shares it read-only ("string" keeps identity) and
    copies on the first write; CRuby's write-through into the original String
    object is not representable in this string model. */
+/* --share-strings: a StringIO over a shared handle (sio->str) reads its
+   bytes through the handle, whose payload moves when the String grows
+   through another name: the mirror fields are read again on each entry,
+   and a write is published back to it (sio_publish). */
+static void sio_sync(sp_StringIO *sio) {
+  if (!sio->str) return;
+  sio->buf = sio->str->data; sio->len = sio->str->len; sio->cap = sio->str->cap;
+}
+static void sio_publish(sp_StringIO *sio) {
+  if (!sio->str) return;
+  sio->str->len = sio->len;
+  sio->buf[sio->len] = '\0';
+  sp_fd_publish(sio->str);
+}
 static void sio_own(sp_StringIO *sio) {SP_GC_ROOT(sio);
   if (!sio->borrowed) return;
   int64_t nc = sio->len < 63 ? 63 : sio->len;
@@ -24,11 +38,21 @@ static void sio_own(sp_StringIO *sio) {SP_GC_ROOT(sio);
   sio->cap = nc;
   sio->borrowed = 0;
 }
-static void sio_grow(sp_StringIO *sio, int64_t need) {SP_GC_ROOT(sio); sio_own(sio); int64_t req = sio->pos + need; if (req <= sio->cap) return; int64_t nc = sio->cap ? sio->cap : 64; while (nc < req) nc *= 2; char *nb = (char *)realloc(sio->buf, nc + 1); if (!nb) sp_oom_die(); sio->buf = nb; sio->cap = nc; }
-static int64_t sio_write(sp_StringIO *sio, const char *d, int64_t dl) { sio_grow(sio, dl); if (sio->pos > sio->len) memset(sio->buf + sio->len, 0, sio->pos - sio->len); memcpy(sio->buf + sio->pos, d, dl); sio->pos += dl; if (sio->pos > sio->len) sio->len = sio->pos; sio->buf[sio->len] = '\0'; return dl; }
+static void sio_grow(sp_StringIO *sio, int64_t need) {SP_GC_ROOT(sio);
+  if (sio->str) {
+    /* a frozen String takes no write, as CRuby's StringIO over one */
+    if (sp_String_is_frozen(sio->str)) sp_raise_cls("IOError", "not opened for writing");
+    if (!sp_fd_grow(sio->str, sio->pos + need)) sp_oom_die();
+    sio_sync(sio);
+    return;
+  }
+  sio_own(sio); int64_t req = sio->pos + need; if (req <= sio->cap) return; int64_t nc = sio->cap ? sio->cap : 64; while (nc < req) nc *= 2; char *nb = (char *)realloc(sio->buf, nc + 1); if (!nb) sp_oom_die(); sio->buf = nb; sio->cap = nc; }
+static int64_t sio_write(sp_StringIO *sio, const char *d, int64_t dl) { sio_sync(sio); sio_grow(sio, dl); if (sio->pos > sio->len) memset(sio->buf + sio->len, 0, sio->pos - sio->len); memcpy(sio->buf + sio->pos, d, dl); sio->pos += dl; if (sio->pos > sio->len) sio->len = sio->pos; sio->buf[sio->len] = '\0'; sio_publish(sio); return dl; }
 
-void sp_StringIO_free(void *p) { sp_StringIO *s = (sp_StringIO *)p; if (!s->borrowed) free(s->buf); s->buf = NULL; }
-static void sp_StringIO_scan_gc(void *p) { sp_StringIO *s = (sp_StringIO *)p; if (s->borrowed && s->buf) sp_mark_string(s->buf); }
+/* the bytes of a shared handle (s->str) are the handle's: it keeps them
+   alive and frees them */
+void sp_StringIO_free(void *p) { sp_StringIO *s = (sp_StringIO *)p; if (!s->borrowed && !s->str) free(s->buf); s->buf = NULL; }
+static void sp_StringIO_scan_gc(void *p) { sp_StringIO *s = (sp_StringIO *)p; if (s->borrowed && s->buf) sp_mark_string(s->buf); if (s->str) sp_gc_mark((void *)s->str); }
 sp_StringIO *sp_StringIO_new(sp_int cls_id) { sp_StringIO *s = (sp_StringIO *)sp_gc_alloc(sizeof(sp_StringIO), sp_StringIO_free, sp_StringIO_scan_gc); memset(s, 0, sizeof *s); s->cls_id = cls_id; s->buf = (char *)calloc(1, 64); if (!s->buf) sp_oom_die(); s->cap = 63; return s; }
 /* Adopt the incoming GC string without copying so #string keeps identity
    with the constructor argument; the first mutation copies (sio_own). */
@@ -53,12 +77,15 @@ sp_StringIO *sp_StringIO_new_sm(sp_int cls_id, const char *init, const char *mod
    callers read the sp_str_hdr one block before the allocation (a String method
    or the GC string-heap walk), corrupting the heap (#3152). */
 const char *sp_StringIO_string(sp_StringIO *s) {SP_GC_ROOT(s);
+  /* the shared handle's bytes, as a String of their own (sp_StringIO_string_h
+     answers the handle) */
+  if (s->str) return sp_str_from_bytes(s->str->data, (size_t)s->str->len);
   if (!s->buf) return sp_str_empty;
   if (s->borrowed) return s->buf;
   return sp_str_from_bytes(s->buf, (size_t)s->len);
 }
 sp_int sp_StringIO_pos(sp_StringIO *s) { return s->pos; }
-sp_int sp_StringIO_size(sp_StringIO *s) { return s->len; }
+sp_int sp_StringIO_size(sp_StringIO *s) { sio_sync(s); return s->len; }
 /* Binary-safe: a Ruby String may carry an embedded NUL (`[0].pack("C")`),
    so the operand is measured with its recorded length, not strlen. */
 sp_int sp_StringIO_write(sp_StringIO *s, const char *str) { return sio_write(s, str, (int64_t)sp_str_byte_len(str)); }
@@ -66,13 +93,14 @@ void sp_StringIO_puts(sp_StringIO *s, const char *str) { int64_t l = (int64_t)sp
 void sp_StringIO_puts_empty(sp_StringIO *s) { sio_write(s, "\n", 1); }
 void sp_StringIO_print(sp_StringIO *s, const char *str) { sio_write(s, str, (int64_t)sp_str_byte_len(str)); }
 sp_int sp_StringIO_putc(sp_StringIO *s, sp_int ch) { char c = (char)(ch & 0xFF); sio_write(s, &c, 1); return ch; }
-const char *sp_StringIO_read(sp_StringIO *s) {SP_GC_ROOT(s); if (s->pos >= s->len) return sp_str_empty; size_t rem = s->len - s->pos; char *r = sp_str_alloc(rem); memcpy(r, s->buf + s->pos, rem); r[rem] = 0; s->pos = s->len; return r; }
+const char *sp_StringIO_read(sp_StringIO *s) {SP_GC_ROOT(s); sio_sync(s); if (s->pos >= s->len) return sp_str_empty; size_t rem = s->len - s->pos; char *r = sp_str_alloc(rem); memcpy(r, s->buf + s->pos, rem); r[rem] = 0; s->pos = s->len; return r; }
 /* read(n): nil at the end for a positive n, "" for read(0), and an
    ArgumentError for a negative n (CRuby) */
 const char *sp_StringIO_read_n(sp_StringIO *s, sp_int n) {SP_GC_ROOT(s);
   if (n < 0) sp_raise_cls("ArgumentError", sp_sprintf("negative length %lld given", (long long)n));
+  sio_sync(s);
   if (s->pos >= s->len) return n > 0 ? NULL : sp_str_empty; int64_t rem = s->len - s->pos; if (n > rem) n = rem; char *r = sp_str_alloc_raw(n+1); memcpy(r, s->buf + s->pos, n); r[n] = '\0'; sp_str_set_len(r, (size_t)n); s->pos += n; return r; }
-const char *sp_StringIO_gets(sp_StringIO *s) {SP_GC_ROOT(s); if (s->pos >= s->len) return NULL; const char *st = s->buf + s->pos; const char *nl = memchr(st, '\n', s->len - s->pos); int64_t ll = nl ? (nl - st) + 1 : s->len - s->pos; char *r = sp_str_alloc_raw(ll+1); memcpy(r, st, ll); r[ll] = '\0'; sp_str_set_len(r, (size_t)ll); s->pos += ll; s->lineno++; return r; }
+const char *sp_StringIO_gets(sp_StringIO *s) {SP_GC_ROOT(s); sio_sync(s); if (s->pos >= s->len) return NULL; const char *st = s->buf + s->pos; const char *nl = memchr(st, '\n', s->len - s->pos); int64_t ll = nl ? (nl - st) + 1 : s->len - s->pos; char *r = sp_str_alloc_raw(ll+1); memcpy(r, st, ll); r[ll] = '\0'; sp_str_set_len(r, (size_t)ll); s->pos += ll; s->lineno++; return r; }
 /* The byte length of the character at p, n bytes available: a whole UTF-8
    sequence, or one byte where the sequence is malformed or cut short (CRuby
    hands those out a byte at a time). A binary buffer is bytes only. */
@@ -90,18 +118,21 @@ static int64_t sio_char_len(const char *p, int64_t n, int binary) {
   }
   return cl;
 }
-const char *sp_StringIO_getc(sp_StringIO *s) {SP_GC_ROOT(s); if (s->pos >= s->len) return NULL;
-  int64_t cl = sio_char_len(s->buf + s->pos, s->len - s->pos, s->borrowed && sp_str_is_binary(s->buf));
+const char *sp_StringIO_getc(sp_StringIO *s) {SP_GC_ROOT(s); sio_sync(s); if (s->pos >= s->len) return NULL;
+  /* a binary String is read a byte at a time: the shared handle's own
+     mark, or a borrowed String's header */
+  int binary = s->str ? (int)s->str->binary : s->borrowed && sp_str_is_binary(s->buf);
+  int64_t cl = sio_char_len(s->buf + s->pos, s->len - s->pos, binary);
   char *gc = sp_str_alloc_raw(cl + 1); memcpy(gc, s->buf + s->pos, cl); gc[cl] = '\0'; sp_str_set_len(gc, (size_t)cl); s->pos += cl; return gc; }
-sp_RbVal sp_StringIO_getbyte(sp_StringIO *s) { if (s->pos >= s->len) return sp_box_nil(); return sp_box_int((int64_t)(unsigned char)s->buf[s->pos++]); }
+sp_RbVal sp_StringIO_getbyte(sp_StringIO *s) { sio_sync(s); if (s->pos >= s->len) return sp_box_nil(); return sp_box_int((int64_t)(unsigned char)s->buf[s->pos++]); }
 /* readbyte and readchar: getbyte and getc that raise EOFError at the end */
-sp_int sp_StringIO_readbyte(sp_StringIO *s) { if (s->pos >= s->len) sp_raise_cls("EOFError", "end of file reached"); return (int64_t)(unsigned char)s->buf[s->pos++]; }
+sp_int sp_StringIO_readbyte(sp_StringIO *s) { sio_sync(s); if (s->pos >= s->len) sp_raise_cls("EOFError", "end of file reached"); return (int64_t)(unsigned char)s->buf[s->pos++]; }
 const char *sp_StringIO_readchar(sp_StringIO *s) {SP_GC_ROOT(s); const char *r = sp_StringIO_getc(s); if (!r) sp_raise_cls("EOFError", "end of file reached"); return r; }
 sp_int sp_StringIO_rewind(sp_StringIO *s) { s->pos = 0; s->lineno = 0; return 0; }
 sp_int sp_StringIO_seek(sp_StringIO *s, sp_int off) { if (off < 0) off = 0; s->pos = off; return 0; }
 sp_int sp_StringIO_tell(sp_StringIO *s) { return s->pos; }
-sp_bool sp_StringIO_eof_p(sp_StringIO *s) { return s->pos >= s->len; }
-sp_int sp_StringIO_truncate(sp_StringIO *s, sp_int l) { if (l < 0) l = 0; if (l < s->len) { sio_own(s); s->len = l; s->buf[l] = '\0'; } return 0; }
+sp_bool sp_StringIO_eof_p(sp_StringIO *s) { sio_sync(s); return s->pos >= s->len; }
+sp_int sp_StringIO_truncate(sp_StringIO *s, sp_int l) { sio_sync(s); if (l < 0) l = 0; if (l < s->len) { if (s->str && sp_String_is_frozen(s->str)) sp_raise_cls("IOError", "not opened for writing"); sio_own(s); s->len = l; s->buf[l] = '\0'; sio_publish(s); } return 0; }
 void sp_StringIO_close(sp_StringIO *s) { s->closed = 1; }
 sp_bool sp_StringIO_closed_p(sp_StringIO *s) { return s->closed; }
 sp_StringIO *sp_StringIO_flush(sp_StringIO *s) { return s; }
@@ -127,6 +158,7 @@ sp_StringIO *sp_StringIO_shl(sp_StringIO *s, const char *str) { sio_write(s, str
    the line at that many bytes, rounded up to the end of the character it
    falls in. `chomp` takes the separator off the end. nil at EOF. */
 static const char *sio_getline(sp_StringIO *s, const char *sep, sp_int limit, sp_bool chomp) {SP_GC_ROOT(s);SP_GC_ROOT_STR(sep);
+  sio_sync(s);
   if (s->pos >= s->len) return NULL;
   const char *st = s->buf + s->pos, *e = s->buf + s->len, *p;
   int64_t w = 0;
@@ -323,6 +355,7 @@ sp_RbVal sp_StringIO_readlines_a3(sp_StringIO *s, sp_RbVal a, sp_RbVal b, sp_RbV
 
 /* seek(off, whence): 0=SET, 1=CUR, 2=END; a negative result is EINVAL. */
 sp_int sp_StringIO_seek2(sp_StringIO *s, sp_int off, sp_int whence) {SP_GC_ROOT(s);
+  sio_sync(s);
   int64_t base = whence == 1 ? s->pos : whence == 2 ? s->len : 0;
   int64_t np = base + off;
   if (np < 0) sp_raise_cls("Errno::EINVAL", "Invalid argument");
@@ -426,4 +459,44 @@ const char *sp_StringIO_read_va(sp_StringIO *s, sp_int n, sp_RbVal *v) {
   }
   sio_type_error(v[0], "Integer");
   return NULL;
+}
+
+/* --share-strings: a StringIO over the String it is opened on, as CRuby's:
+   the shared handle holds the bytes (sio_sync), so a write changes that
+   String and a change to it through another name shows in the next read.
+   The StringIO's scan keeps the handle alive, and its finalizer leaves the
+   handle's bytes alone. */
+sp_StringIO *sp_StringIO_new_h(sp_int cls_id, sp_String *str) {SP_GC_ROOT(str);
+  if (!str) sp_raise_cls("TypeError", "no implicit conversion of nil into String");
+  sp_StringIO *s = (sp_StringIO *)sp_gc_alloc(sizeof(sp_StringIO), sp_StringIO_free, sp_StringIO_scan_gc);
+  memset(s, 0, sizeof *s);
+  s->cls_id = cls_id;
+  s->str = str;
+  sio_sync(s);
+  return s;
+}
+/* with a mode: "w" truncates the String, "a" starts at its end */
+sp_StringIO *sp_StringIO_new_hm(sp_int cls_id, sp_String *str, const char *mode) {SP_GC_ROOT(str);SP_GC_ROOT_STR(mode);
+  sp_StringIO *s = sp_StringIO_new_h(cls_id, str);
+  SP_GC_ROOT(s);
+  char m0 = mode ? mode[0] : 0;
+  if (m0 == 'w') sp_StringIO_truncate(s, 0);
+  if (m0 == 'a') s->pos = s->len;
+  return s;
+}
+/* StringIO.new: over a String of its own, which #string answers */
+sp_StringIO *sp_StringIO_new_hn(sp_int cls_id) {
+  return sp_StringIO_new_h(cls_id, sp_String_new_fresh(sp_str_empty));
+}
+/* #string as the shared handle itself. One opened on no handle takes one
+   over its bytes now, which then holds them. */
+sp_String *sp_StringIO_string_h(sp_StringIO *s) {SP_GC_ROOT(s);
+  if (!s->str) {
+    sp_String *h = sp_String_new_len(s->buf ? s->buf : "", s->buf ? s->len : 0);
+    if (!s->borrowed) free(s->buf);
+    s->borrowed = 0;
+    s->str = h;
+    sio_sync(s);
+  }
+  return s->str;
 }

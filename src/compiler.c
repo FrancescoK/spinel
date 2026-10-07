@@ -104,8 +104,7 @@ Compiler *comp_new(const NodeTable *nt) {
   /* On only when set to something: empty is off, as SPINEL_DEFER_REFUSALS
      reads it, and so is "0", as SPINEL_GATE_RAISE=0 and SPINEL_INLINE_FORCE=0
      are. An environment that exports the variable as "0" or "" means off. */
-  { const char *e = getenv("SPINEL_SHARE_STRINGS");
-    c->share_strings = e && *e && strcmp(e, "0") != 0; }
+  c->share_strings = sp_share_strings_env();
   comp_node_ord(c, 0, NULL);   /* number the parsed nodes before any rewrite */
   c->node_ord_parsed = nt->count;
   return c;
@@ -2172,6 +2171,7 @@ int comp_bcall_first(Compiler *c, int scope_idx) {
 int comp_bcall_next(const Compiler *c, int u) {
   return (u >= 0 && u < c->bcall_count) ? c->bcall_next[u] : -1;
 }
+
 /* Every ReturnNode, chained by the scope it is in (comp_scope_of), in node
    order. The values a method answers through `return` were found by a
    walk over every ReturnNode of the program per method asked about. */
@@ -2205,7 +2205,6 @@ int comp_ret_first(Compiler *c, int scope_idx) {
 int comp_ret_next(const Compiler *c, int u) {
   return (u >= 0 && u < c->ret_count) ? c->ret_next[u] : -1;
 }
-
 
 /* Every ivar read handed to a call as an argument, chained by the ivar's
    name: one entry per (CallNode, argument) pair. Asking whether an ivar is
