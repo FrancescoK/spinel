@@ -630,6 +630,8 @@ int is_index_assign(const char *n) {
   return sp_streq(n, "[]=");
 }
 
+int is_fill_name(const char *n) { return sp_streq(n, "fill"); }
+
 int is_first_or_take(const char *n) {
   return sp_streq(n, "first") || sp_streq(n, "take");
 }

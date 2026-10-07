@@ -441,6 +441,9 @@ typedef struct {
   unsigned char *ivar_str_shared; /* (#3227) the slot is a shared-mutable
                                      string handle (sp_String *): survives
                                      re-clears; post-fixpoint reasserts it */
+  unsigned char *ivar_elems_shared; /* --share-strings: the TY_POLY_ARRAY slot
+                                       holds its Strings as handles, as a
+                                       LocalVar's elems_shared */
   unsigned char *ivar_nullable_int; /* the slot holds a nilable scalar: some
                                      write to it can leave the nil sentinel, so
                                      a read of it (or of its attr_reader) has to

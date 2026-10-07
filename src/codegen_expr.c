@@ -1788,10 +1788,13 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
        a later write had made a poly array */
     if (ivcls2 < 0) ivcls2 = comp_class_index(c, "Toplevel");
     TyKind ivt2 = TY_UNKNOWN;
-    int ivnull2 = 0;
+    int ivnull2 = 0, iveh2 = 0;
     if (ivcls2 >= 0) {
       int iv2 = comp_ivar_index(&c->classes[ivcls2], nm);
-      if (iv2 >= 0) { ivt2 = c->classes[ivcls2].ivar_types[iv2]; ivnull2 = c->classes[ivcls2].ivar_nullable_int[iv2]; }
+      if (iv2 >= 0) {
+        ivt2 = c->classes[ivcls2].ivar_types[iv2]; ivnull2 = c->classes[ivcls2].ivar_nullable_int[iv2];
+        iveh2 = repr_of_ivar(c, ivcls2, iv2).elems_handle;
+      }
     }
     const char *vty2 = nt_type(nt, v);
     int ven2 = 0;
@@ -1881,7 +1884,9 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
     /* a typed array into the general Array slot the ivar widened to (an
        `o.a << nil` through its reader), rebuilt as the statement form does:
        an endless `def initialize(z) = (@a = [z])` assigned the typed array
-       itself and the C did not build */
+       itself and the C did not build; --share-strings: one whose elements
+       the rule shares wraps each String as a handle */
+    else if (iveh2 && comp_ntype(c, v) == TY_STR_ARRAY) emit_str_array_handles(c, v, b);
     else if (emit_array_into_poly_slot(c, ivt2, v, b)) { }
     else if (seeded_array_kind_mismatch(ivt2, comp_ntype(c, v))) {
       /* an array of another kind into a seed-pinned array ivar: converted,
@@ -2160,6 +2165,8 @@ static int emit_ivar_cvar_gvar_expr(Compiler *c, int id, Buf *b, const NodeTable
     }
     if (emit_empty_container_for_slot(c, v, ct, b)) { /* emitted at the slot's type */ }
     else if (ct == TY_POLY) emit_boxed(c, v, b);
+    /* --share-strings: as the statement form, each String as a handle */
+    else if (h.r.elems_handle && comp_ntype(c, v) == TY_STR_ARRAY) emit_str_array_handles(c, v, b);
     else if (emit_array_into_poly_slot(c, ct, v, b)) { }
     /* the slot's nil, as the statement form writes it: an endless `def
        self.b = (@@x = nil)` stored the numeric 0 a bare NilNode renders as */
