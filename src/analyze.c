@@ -24785,11 +24785,23 @@ static int pf_scope_named(Compiler *c, const Scope *src, const char *name) {
 
 int make_yield_proc_forms(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
-  int n0 = c->nscopes;
   int made = 0;
   mark_ctor_cycles(c);
-  for (int s = 1; s < n0; s++) {
+  for (int next = 1; next < c->nscopes; next++) {
+    int s = next;
     Scope *src = &c->scopes[s];
+    /* Visit the appended clones too: a clone's super needs a callable
+       yielding shadow even when that shadow is outside the constructor
+       cycle. Following it here also handles a chain of module shadows,
+       in either definition order, without rescanning the scope table. */
+    int shadow_clone = src->is_proc_form;
+    if (shadow_clone) {
+      const char *shadow = comp_super_shadow(c, src);
+      if (!shadow || !cr_scope_has_super(c, s)) continue;
+      s = pf_scope_named(c, src, shadow);
+      if (s < 0) continue;
+      src = &c->scopes[s];
+    }
     /* reachability is decided after this pass, so do not consult it: an
        unused clone is a static function the C compiler drops. */
     if (!src->yields) continue;
@@ -24807,7 +24819,7 @@ int make_yield_proc_forms(Compiler *c) {
        re-raise and its own `new` sites alike, none of which splice the body */
     int exc_init = src->class_id >= 0 && sp_streq(src->name, "initialize") && !src->is_cmethod &&
                    class_is_exc_subclass(c, src->class_id);
-    if (src->class_id >= 0 && !exc_init && !pf_wanted(c, src->name) && !pf_in_class_dispatch(c, src) &&
+    if (src->class_id >= 0 && !shadow_clone && !exc_init && !pf_wanted(c, src->name) && !pf_in_class_dispatch(c, src) &&
         !(src->ctor_cycle && ctor_graph_init(c, s)))
       continue;
     /* A method the program reopens has two definitions in the scope table
