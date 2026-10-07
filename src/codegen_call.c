@@ -24439,6 +24439,39 @@ void emit_handle_inspect(Compiler *c, int recv, TyKind rt, Buf *b) {
   buf_printf(b, "sp_sprintf(\"#<%s:0x%%016llx>\", (unsigned long long)(uintptr_t)(", hn);
   emit_expr(c, recv, b); buf_puts(b, "))");
 }
+/* deep-return pickup (#3227 P6): a marked receiverless call to a method
+   whose every return path yields a shared handle -- reset the side
+   channel, run the ordinary call (its shared-slot tail read publishes),
+   then take the handle (falling back to a fresh wrap of the returned
+   copy if a path did not publish). An attr reader has no body to publish
+   from; its implicit-self read hands out the slot itself
+   (emit_implicit_self_member). Answers 1 when it emitted the call. */
+static int emit_deep_return_pickup(Compiler *c, int id, Buf *b) {
+  if (!c->strbuf_box[id] || nt_ref(c->nt, id, "block") >= 0 ||
+      !(nt_ref(c->nt, id, "receiver") < 0 ? implicit_self_reader_cid(c, id) < 0
+                                          : comp_ntype(c, nt_ref(c->nt, id, "receiver")) == TY_CLASS))
+    return 0;
+  int tvD = ++g_tmp;
+  buf_printf(b, "({ _sp_ret_strbuf = NULL; const char *_v%d = ", tvD);
+  int vs = view_push_repr(c, id, VR_STRBUF_BOX, 0);
+  emit_call(c, id, b);
+  view_pop(c, vs);
+  buf_puts(b, "; ");
+  /* --share-strings: a tail answering nil publishes nothing, and an
+     earlier read may have published (an_tail_is_shared_handle): the
+     call's nil is nil. A target the plan cannot list may be such a
+     method; a call that reaches none (a builtin's, `String.new`) has no
+     tail to answer nil through. */
+  if (repr_share_rule(c)) {
+    int t[8], n = cplan_targets(c, id, t, 8), nil = n < 0;
+    for (int i = 0; i < n && !nil; i++) nil = an_tail_answers_nil(c, t[i]);
+    if (nil) buf_printf(b, "!_v%d ? NULL : ", tvD);
+  }
+  buf_printf(b, "_sp_ret_strbuf ? (sp_String *)_sp_ret_strbuf"
+                " : sp_String_new_shared(_v%d); })", tvD);
+  return 1;
+}
+
 void emit_call_body(Compiler *c, int id, Buf *b) {
   /* the class's own method in a builtin's receiver test (`__r.is_a?(K) ?
      __r.m { } : __enum_m(__r) { }`): the test has decided the receiver is
@@ -24481,25 +24514,7 @@ void emit_call_body(Compiler *c, int id, Buf *b) {
       }
     }
   }
-  /* deep-return pickup (#3227 P6): a marked receiverless call to a method
-     whose every return path yields a shared handle -- reset the side
-     channel, run the ordinary call (its shared-slot tail read publishes),
-     then take the handle (falling back to a fresh wrap of the returned
-     copy if a path did not publish). */
-  /* An attr reader has no body to publish from; its implicit-self read hands
-     out the slot itself (emit_implicit_self_member). */
-  if (c->strbuf_box[id] && nt_ref(c->nt, id, "block") < 0 &&
-      (nt_ref(c->nt, id, "receiver") < 0 ? implicit_self_reader_cid(c, id) < 0
-                                         : comp_ntype(c, nt_ref(c->nt, id, "receiver")) == TY_CLASS)) {
-    int tvD = ++g_tmp;
-    buf_printf(b, "({ _sp_ret_strbuf = NULL; const char *_v%d = ", tvD);
-    int vs = view_push_repr(c, id, VR_STRBUF_BOX, 0);
-    emit_call(c, id, b);
-    view_pop(c, vs);
-    buf_printf(b, "; _sp_ret_strbuf ? (sp_String *)_sp_ret_strbuf"
-                  " : sp_String_new_shared(_v%d); })", tvD);
-    return;
-  }
+  if (emit_deep_return_pickup(c, id, b)) return;
 
   /* A program's own reopen of a builtin primitive owns the name, as it does
      in CRuby: `class Integer; def abs; 999; end; end` makes `(-5).abs` answer
