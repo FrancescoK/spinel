@@ -31951,13 +31951,31 @@ static void mark_struct_aset_targets(Compiler *c) {
        refused every such target, a value that can be such a String (not a
        fresh literal) keeps that refusal (masgn_store's). */
     if (!c->share_strings && ty_is_object(comp_ntype(c, nt_ref(nt, t, "receiver")))) {
-      int v = an_unparen(nt, nt_arr(nt, nt_ref(nt, ev, "arguments"), "arguments", NULL)[1]);
+      int evn = 0;
+      const int *eva = nt_arr(nt, nt_ref(nt, ev, "arguments"), "arguments", &evn);
+      int v = evn > 0 ? an_unparen(nt, eva[evn - 1]) : -1;   /* `[]=`'s value, or the writer's */
       TyKind vt = v >= 0 ? comp_ntype(c, v) : TY_NIL;
       NodeKind vk = v >= 0 ? nt_kind(nt, v) : NK_NilNode;
       int fresh = vk == NK_StringNode || vk == NK_InterpolatedStringNode || vk == NK_XStringNode ||
                   (vk == NK_CallNode && sp_streq(nt_str(nt, v, "name"), "+@") &&
                    nt_kind(nt, nt_ref(nt, v, "receiver")) == NK_StringNode);
       if (!fresh && (vt == TY_STRING || vt == TY_STRBUF || vt == TY_POLY || vt == TY_UNKNOWN)) continue;
+    }
+    /* A String member keeps its type (infer_struct_aset_call), so a value
+       that may not fit one the key can name would raise TypeError where it
+       runs: on a receiver typed as the Struct, by a key no literal names,
+       master's refusal stays. */
+    TyKind rt = comp_ntype(c, nt_ref(nt, t, "receiver"));
+    if (ty_is_object(rt) && sp_streq(nt_str(nt, ev, "name"), "[]=")) {
+      int evn = 0, lo, hi, str = 0;
+      const int *eva = nt_arr(nt, nt_ref(nt, ev, "arguments"), "arguments", &evn);
+      TyKind vt = evn == 2 ? comp_ntype(c, an_unparen(nt, eva[1])) : TY_UNKNOWN;
+      if (struct_aset_members(c, ev, ty_object_class(rt), &lo, &hi))
+        for (int m = lo; m < hi; m++) {
+          TyKind mt = c->classes[ty_object_class(rt)].ivar_types[m];
+          str |= mt == TY_STRING || mt == TY_STRBUF;
+        }
+      if (str && vt != TY_STRING && vt != TY_STRBUF && vt != TY_NIL) continue;
     }
     nt_node_set_int((NodeTable *)nt, t, "struct_aset", 1);
   }
@@ -31969,9 +31987,9 @@ static void mark_struct_aset_targets(Compiler *c) {
    strbuf_handle_demand), and the member, which infer_struct_aset_call boxed
    for it, holds it, so a change through the variable or the member reaches
    the other, as CRuby's one object does. The poly dispatch passes the
-   handle to the Struct's arm. A member that is not boxed (one an RBS
-   signature pins) cannot hold the handle, and a copy there would lose the
-   change: refused (#6765). */
+   handle to the Struct's arm. A member that is neither boxed nor a shared
+   String (one an RBS signature pins, a String member nothing shares) would
+   hold a copy and lose the change: refused (#6765). */
 static void share_struct_aset_handles(Compiler *c) {
   const NodeTable *nt = c->nt;
   if (!c->share_strings) return;
@@ -31985,13 +32003,16 @@ static void share_struct_aset_handles(Compiler *c) {
     for (int i = 0; i < (ks ? nk : c->nclasses); i++) {
       int k = ks ? ks[i] : i, lo, hi;
       if (!struct_aset_members(c, u, k, &lo, &hi)) continue;
-      for (int m = lo; m < hi; m++)
-        if (c->classes[k].ivar_types[m] != TY_POLY)
-          unsupported_feature(c, u, "a String stored into a Struct member by `[]=` through a boxed receiver, "
-                              "or by a key that is no literal, is mutated in place, and the member cannot hold "
-                              "it boxed (a String is not yet shared by reference through a Struct's `[]=` into "
-                              "a member of a fixed type, such as one an RBS signature declares). Store it with "
-                              "the member's writer on a receiver typed as the Struct.");
+      for (int m = lo; m < hi; m++) {
+        ClassInfo *ci = &c->classes[k];
+        /* a boxed member holds the handle, and so does a shared String one */
+        if (ci->ivar_types[m] == TY_POLY || (ci->ivar_types[m] == TY_STRBUF && ci->ivar_str_shared[m])) continue;
+        unsupported_feature(c, u, "a String stored into a Struct member by `[]=` through a boxed receiver, "
+                            "or by a key that is no literal, is mutated in place, and the member holds a copy "
+                            "(a String is not yet shared by reference through a Struct's `[]=` into a member "
+                            "of another fixed type, or a String member nothing shares). Store it with the "
+                            "member's writer on a receiver typed as the Struct.");
+      }
     }
     c->strbuf_box[v] = 1;
     c->strbuf_handle_demand[v] = 1;

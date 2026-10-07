@@ -2,8 +2,8 @@
 Integer
 4.5
 Float
-:sym
-Symbol
+"str"
+String
 true
 TrueClass
 [1]
@@ -33,7 +33,10 @@ v5.5
 5
 #<struct U x=7, y=nil>
 #<struct U x="s", y=2.5>
-#<struct U x="values", y=5>
+#<struct U x=2.5, y=5>
 #<struct U x="s!", y=5.0>
 "undefined method '[]=' for an instance of D"
 #<data D x="s">
+#<struct F flag=nil, sym=nil, n=nil>
+#<struct F flag=false, sym=:b, n=nil>
+#<struct T x=8, y=9>

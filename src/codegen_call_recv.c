@@ -8450,31 +8450,29 @@ static void emit_struct_recv_root(Compiler *c, int recv, int t, Buf *b) {
    a Range) is unboxed as before. */
 static void emit_struct_member_value(Compiler *c, TyKind mt, TyKind vt, const char *vtxt, Buf *b) {
   if (mt == TY_POLY) { buf_puts(b, vtxt); return; }
+  int str = mt == TY_STRING || mt == TY_STRBUF;
   /* a member the share rule holds as the handle: nil is no handle, NULL */
-  if (mt == TY_STRBUF) {
-    buf_printf(b, "(%s.tag == SP_TAG_NIL ? NULL : ", vtxt);
-    emit_unbox_text(c, mt, vtxt, b);
-    buf_puts(b, ")");
-    return;
-  }
+  Buf u; memset(&u, 0, sizeof u);
+  if (mt == TY_STRBUF) buf_printf(&u, "(%s.tag == SP_TAG_NIL ? NULL : ", vtxt);
+  emit_unbox_text(c, mt, vtxt, &u);
+  if (mt == TY_STRBUF) buf_puts(&u, ")");
   int obj = ty_is_object(mt) && !c->classes[ty_object_class(mt)].is_value_type;
-  const char *kind = mt == TY_INT ? "Integer" : mt == TY_FLOAT ? "Float" : mt == TY_STRING ? "String"
+  const char *kind = mt == TY_INT ? "Integer" : mt == TY_FLOAT ? "Float" : str ? "String"
                    : mt == TY_SYMBOL ? "Symbol" : mt == TY_BOOL ? "true or false"
                    : obj ? c->classes[ty_object_class(mt)].name : NULL;
-  int fits = vt == mt || (vt == TY_NIL && (mt == TY_INT || mt == TY_FLOAT || mt == TY_STRING || obj)) ||
-             (vt == TY_INT && mt == TY_FLOAT) || (vt == TY_STRBUF && mt == TY_STRING) ||
+  int fits = vt == mt || (vt == TY_NIL && (mt == TY_INT || mt == TY_FLOAT || str || obj)) ||
+             (vt == TY_INT && mt == TY_FLOAT) || (str && (vt == TY_STRING || vt == TY_STRBUF)) ||
              (obj && ty_is_object(vt) && is_descendant(c, ty_object_class(vt), ty_object_class(mt)));
   if (fits || !kind) {
-    emit_unbox_text(c, mt, vtxt, b);
+    buf_puts(b, u.p ? u.p : "");
+    free(u.p);
     return;
   }
-  Buf u; memset(&u, 0, sizeof u);
-  emit_unbox_text(c, mt, vtxt, &u);
   if (vt == TY_POLY || vt == TY_UNKNOWN) {
     buf_puts(b, "((");
     if (mt == TY_INT) buf_printf(b, "%s.tag == SP_TAG_INT || %s.tag == SP_TAG_NIL", vtxt, vtxt);
     else if (mt == TY_FLOAT) buf_printf(b, "%s.tag == SP_TAG_FLT || %s.tag == SP_TAG_INT || %s.tag == SP_TAG_NIL", vtxt, vtxt, vtxt);
-    else if (mt == TY_STRING) buf_printf(b, "%s.tag == SP_TAG_STR || %s.tag == SP_TAG_NIL || sp_poly_is_strbuf(%s)", vtxt, vtxt, vtxt);
+    else if (str) buf_printf(b, "%s.tag == SP_TAG_STR || %s.tag == SP_TAG_NIL || sp_poly_is_strbuf(%s)", vtxt, vtxt, vtxt);
     else if (mt == TY_SYMBOL) buf_printf(b, "%s.tag == SP_TAG_SYM", vtxt);
     else if (mt == TY_BOOL) buf_printf(b, "%s.tag == SP_TAG_BOOL", vtxt);
     else {
