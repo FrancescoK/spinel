@@ -25463,7 +25463,7 @@ static LocalVar *nullable_elem_local(Compiler *c, int at, const char *nm) {
    slot and a method the parent defines reads the parent's, so a mark made
    through the subclass (`k2.arr << v`, a child method's `@arr << v`) sits
    where the whole family reads it. */
-static int nullable_elem_ivar_in(Compiler *c, int cid, const char *nm, ClassInfo **out) {
+int nullable_elem_ivar_in(Compiler *c, int cid, const char *nm, ClassInfo **out) {
   int iv = -1;
   for (; nm && cid >= 0 && cid < c->nclasses; cid = c->classes[cid].parent) {
     int k = comp_ivar_index(&c->classes[cid], nm);
@@ -25485,7 +25485,7 @@ static int nullable_elem_ivar(Compiler *c, int at, ClassInfo **out) {
 /* An array method whose result elements are the receiver's own, so element
    nilability passes straight through it. `compact` is deliberately absent: it
    is what REMOVES the nils. */
-static int elem_preserving_call(const char *nm) {
+int elem_preserving_call(const char *nm) {
   static const char *const N[] = { "select", "filter", "reject", "sort", "sort_by",
                                    "uniq", "reverse", "rotate", "take", "drop",
                                    "take_while", "drop_while", "shuffle", "to_a",
@@ -25503,7 +25503,7 @@ static int elem_returning_call(const char *nm) {
 }
 
 /* `a[i, n]` / `a[r]`: an index read answering a sub-array. */
-static int slice_read_call(Compiler *c, int call) {
+int slice_read_call(Compiler *c, int call) {
   const NodeTable *nt = c->nt;
   int ca = nt_ref(nt, call, "arguments"); int an = 0;
   const int *av = ca >= 0 ? nt_arr(nt, ca, "arguments", &an) : NULL;
@@ -25649,26 +25649,67 @@ static int range_write_start(Compiler *c, int r) {
   return u >= 0 && nt_kind(nt, u) == NK_RangeNode ? nt_ref(nt, u, "left") : r;
 }
 
-/* An array mutation that can leave the sentinel in its receiver: `<<`,
-   push, append, unshift, prepend, insert (past its index), `[]=` and a
-   blockless fill given a value that can be nil, or concat and a slice's
-   `[]=` given an array whose elements can be. */
-static int nullable_elem_mutation(Compiler *c, int call, int depth) {
+/* How many leading parameters of call `call`'s block are bound to elements
+   of the array it iterates, which goes in *recv (past the enumerators a
+   blockless call hands on): 0 for none. A lone parameter is one whatever
+   the iterator, a numbered one and `it` too; `reduce`/`inject` and a
+   comparing block (`sort { |a, b| }`, `min`, `max`, `minmax`) take an
+   element in both. An iterator whose block takes the element first binds
+   only that one -- the second is `each_with_index`'s index,
+   `each_with_object`'s memo -- through an enumerator chain as well
+   (`map.with_index`, `each.with_object`). Anything else with two
+   (`|k, v|`) has a non-element slot. */
+int elem_block_params(Compiler *c, int call, int *recv_out) {
+  const NodeTable *nt = c->nt;
+  int recv = nt_ref(nt, call, "receiver"), blk = nt_ref(nt, call, "block");
+  const char *rnm2 = nt_str(nt, call, "name");
+  *recv_out = -1;
+  if (recv < 0 || blk < 0 || !rnm2) return 0;
+  int both = is_reduce_alias(rnm2) || is_sort_family(rnm2) || is_extrema_family(rnm2);
+  int first = strbuf_elem_first_iterator(rnm2) || is_enumerator_with(rnm2);
+  /* the enumerator a blockless call hands on yields the same elements */
+  for (int guard = 0; first && guard < 4 && nt_kind(nt, recv) == NK_CallNode &&
+                      nt_ref(nt, recv, "block") < 0; guard++) {
+    const char *cn = nt_str(nt, recv, "name");
+    int ca = nt_ref(nt, recv, "arguments");
+    if (!cn || !(strbuf_elem_first_iterator(cn) || is_enumerator_with(cn) || is_lazy_name(cn))) break;
+    if (ca >= 0 && !is_enumerator_with(cn) && !is_with_object_alias(cn)) break;
+    recv = nt_ref(nt, recv, "receiver");
+    if (recv < 0) break;
+  }
+  if (recv < 0) return 0;
+  int rn = 0;
+  while (rn < 9 && block_param_name(c, blk, rn)) rn++;
+  if (rn < 1 || (rn > 2 && both)) return 0;
+  if (rn > 1 && !both && !first) return 0;
+  *recv_out = recv;
+  return rn == 1 || !both ? 1 : 2;
+}
+
+/* What array mutation `call` (`<<`, push, append, unshift, prepend,
+   insert, `[]=`, fill, concat) stores: -1 when it is none of them, 1 when
+   it can leave a nil gap, else 0 with the operands it stores in
+   [*from, *to) -- each an Array whose elements land when *elems (concat, a
+   slice's `[]=` given an Array), each one value otherwise. A splice, a
+   range write, insert and fill pad a gap before a start past the end with
+   nil, so they count unless the start is provably in range: a computed
+   start (`a[i, 0] = v`) is taken as able to miss. These forms are rare in
+   a hot loop, unlike a one-index `a[i] = v`, which counts only where a gap
+   can be shown (index_write_gaps) unless `strict` asks for the same proof
+   of it (index_write_in_range): an Integer or Float Array's runtime may_nil
+   flag catches the gap the mark misses, a pointer Array has none. */
+int array_mutation_stores(Compiler *c, int call, int strict, int *from, int *to, int *elems) {
   const NodeTable *nt = c->nt;
   const char *nm = nt_str(nt, call, "name");
   int ca = nt_ref(nt, call, "arguments"); int an = 0;
   const int *av = ca >= 0 ? nt_arr(nt, ca, "arguments", &an) : NULL;
-  if (!nm || !av || (!self_mutator_call(nm) && !sp_streq(nm, "[]="))) return 0;
-  int from = 0, to = an;
-  /* A splice, a range write, insert and fill pad a gap before a start past
-     the end with the sentinel, so the array is marked unless the start is
-     provably in range: a computed start (`a[i, 0] = v`) is taken as able to
-     miss. These forms are rare in a hot loop, unlike `a[i] = v` below. */
+  *from = 0; *to = an; *elems = 0;
+  if (!nm || !av || (!self_mutator_call(nm) && !is_index_assign(nm))) return -1;
   if (sp_streq(nm, "insert")) {
     if (!index_write_in_range(c, call, av[0])) return 1;
-    from = 1;
+    *from = 1;
   }
-  else if (sp_streq(nm, "[]=")) {
+  else if (is_index_assign(nm)) {
     /* where the write starts: the index, a slice's start (`a[s, n] = v`) or
        a range's first (`a[s..e] = v`). Past the end, CRuby nil-fills up to it
        whatever the value is, and so does the typed splice. */
@@ -25677,33 +25718,47 @@ static int nullable_elem_mutation(Compiler *c, int call, int depth) {
     if (an == 3 || rng) {
       if (!index_write_in_range(c, call, rng ? range_write_start(c, av[0]) : av[0])) return 1;
     }
-    else if (an == 2 && index_write_gaps(c, call, av[0])) return 1;
-    if (ty_is_array(infer_type(c, av[an - 1]))) return nullable_int_elem_expr(c, av[an - 1], depth + 1);
-    from = an - 1;
+    else if (an == 2 && (strict ? !index_write_in_range(c, call, av[0]) : index_write_gaps(c, call, av[0])))
+      return 1;
+    TyKind vt = infer_type(c, av[an - 1]);
+    *elems = ty_is_array(vt) || ty_is_obj_array(vt);
+    *from = an - 1;
   }
   else if (sp_streq(nm, "fill")) {
     /* fill(v, start, n) / fill(v, s..e), or fill(start, n) / fill(s..e) with
        a block: a start past the end leaves a nil gap before the filled run.
-       With no length (`fill(v, start)`) nothing is written past the end. */
+       With no length (`fill(v, start)`) nothing is written past the end.
+       The block's values are the caller's to read. */
     int blk = nt_ref(nt, call, "block") >= 0;
     int fa = 1 - blk, fx = an > fa ? av[fa] : -1;
     int frng = fx >= 0 && (nt_kind(nt, an_unparen(nt, fx)) == NK_RangeNode || infer_type(c, fx) == TY_RANGE);
     if ((frng || an > fa + 1) && !index_write_in_range(c, call, frng ? range_write_start(c, fx) : fx))
       return 1;
-    if (blk) return 0;
-    to = 1;
+    *to = blk ? 0 : 1;
   }
-  else if (sp_streq(nm, "concat")) {
-    for (int k = 0; k < an; k++) if (nullable_int_elem_expr(c, av[k], depth + 1)) return 1;
-    return 0;
-  }
-  for (int k = from; k < to; k++) if (nullable_int_value(c, av[k])) return 1;
+  else if (is_concat_name(nm)) *elems = 1;
+  return 0;
+}
+
+/* An array mutation that can leave the sentinel in its receiver: `<<`,
+   push, append, unshift, prepend, insert (past its index), `[]=` and a
+   blockless fill given a value that can be nil, or concat and a slice's
+   `[]=` given an array whose elements can be. */
+static int nullable_elem_mutation(Compiler *c, int call, int depth) {
+  const NodeTable *nt = c->nt;
+  int from, to, elems;
+  int g = array_mutation_stores(c, call, 0, &from, &to, &elems);
+  if (g) return g > 0;
+  int ca = nt_ref(nt, call, "arguments"); int an = 0;
+  const int *av = ca >= 0 ? nt_arr(nt, ca, "arguments", &an) : NULL;
+  for (int k = from; k < to; k++)
+    if (elems ? nullable_int_elem_expr(c, av[k], depth + 1) : nullable_int_value(c, av[k])) return 1;
   return 0;
 }
 
 /* The array a mutation lands in, past the mutators chained before it
    (`(a << 1) << v`, `a.push(1).push(v)`), each of which answers its receiver. */
-static int mutated_array(Compiler *c, int recv) {
+int mutated_array(Compiler *c, int recv) {
   const NodeTable *nt = c->nt;
   for (int d = 0; d < 8; d++) {
     recv = an_unparen(nt, recv);
@@ -28487,42 +28542,14 @@ static void mark_nullable_int_locals(Compiler *c) {
         ci->ivar_nullable_int_elem[iv] = 1; changed = 1;
       }
     }
-    /* `ks.each { |k| h[k] = ... }`: the block parameter IS the element. A
-       lone parameter is one whatever the iterator, a numbered one and `it`
-       too; `reduce`/`inject` and a comparing block (`sort { |a, b| }`,
-       `min`, `max`, `minmax`) take an element in both. An iterator whose
-       block takes the element first binds only that one -- the second is
-       `each_with_index`'s index, `each_with_object`'s memo -- through an
-       enumerator chain as well (`map.with_index`, `each.with_object`).
-       Anything else with two (`|k, v|`) has a non-element slot. */
+    /* `ks.each { |k| h[k] = ... }`: the block parameter IS the element
+       (elem_block_params) */
     NT_FOREACH_KIND(nt, NK_CallNode, id) {
-      int recv = nt_ref(nt, id, "receiver"), blk = nt_ref(nt, id, "block");
-      const char *rnm2 = nt_str(nt, id, "name");
-      if (recv < 0 || blk < 0 || !rnm2) continue;
-      int both = sp_streq(rnm2, "reduce") || sp_streq(rnm2, "inject") ||
-                 sp_streq(rnm2, "sort") || sp_streq(rnm2, "sort!") || sp_streq(rnm2, "max") ||
-                 sp_streq(rnm2, "min") || sp_streq(rnm2, "minmax");
-      int first = strbuf_elem_first_iterator(rnm2) || sp_streq(rnm2, "with_index") ||
-                  sp_streq(rnm2, "with_object");
-      /* the enumerator a blockless call hands on yields the same elements */
-      for (int guard = 0; first && guard < 4 && nt_kind(nt, recv) == NK_CallNode &&
-                          nt_ref(nt, recv, "block") < 0; guard++) {
-        const char *cn = nt_str(nt, recv, "name");
-        int ca = nt_ref(nt, recv, "arguments");
-        if (!cn || !(strbuf_elem_first_iterator(cn) || sp_streq(cn, "with_index") ||
-                     sp_streq(cn, "with_object") || sp_streq(cn, "lazy"))) break;
-        if (ca >= 0 && !sp_streq(cn, "with_index") && !sp_streq(cn, "with_object") &&
-            !sp_streq(cn, "each_with_object")) break;
-        recv = nt_ref(nt, recv, "receiver");
-        if (recv < 0) break;
-      }
-      if (recv < 0 || !nullable_int_elem_expr(c, recv, 0)) continue;
-      int rn = 0;
-      while (rn < 9 && block_param_name(c, blk, rn)) rn++;
-      if (rn < 1 || (rn > 2 && both)) continue;
-      if (rn > 1 && !both && !first) continue;
+      int blk = nt_ref(nt, id, "block"), recv = -1;
+      int np = elem_block_params(c, id, &recv);
+      if (!np || !nullable_int_elem_expr(c, recv, 0)) continue;
       Scope *bsc = comp_scope_of(c, blk);
-      for (int pk = 0; pk < (rn == 1 || !both ? 1 : 2); pk++) {
+      for (int pk = 0; pk < np; pk++) {
         const char *pnm = block_param_name(c, blk, pk);
         LocalVar *plv = pnm && bsc ? scope_local(bsc, pnm) : NULL;
         if (!plv || (plv->type != TY_INT && plv->type != TY_FLOAT) || plv->nullable_int) continue;

@@ -956,3 +956,17 @@ int array_unseen_add_kind(const char *n) {
 }
 
 int is_scan_name(const char *n) { return sp_streq(n, "scan"); }
+
+/* with_index / with_object: an enumerator link that hands on its source's
+   elements first */
+int is_enumerator_with(const char *n) {
+  return sp_streq(n, "with_index") || sp_streq(n, "with_object");
+}
+int is_lazy_name(const char *n) { return sp_streq(n, "lazy"); }
+int is_index_assign(const char *n) { return sp_streq(n, "[]="); }
+int is_concat_name(const char *n) { return sp_streq(n, "concat"); }
+
+/* `Array.new(...)`, by its receiver's constant name and the method */
+int is_array_constructor(const char *recv, const char *meth) {
+  return recv && meth && sp_streq(meth, "new") && sp_streq(recv, "Array");
+}

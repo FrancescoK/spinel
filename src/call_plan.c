@@ -1821,11 +1821,13 @@ int cplan_nil(Compiler *c, int id) {
   }
   /* a shared String's handle a call renders is not bound like a value */
   else if (rr.kind == RK_STRBUF) return CN_NONE;
-  /* a nil the program writes; not one the fact cannot bound (an element
+  /* a nil the program writes (an element of an Array it stores one into
+     or leaves a gap in, too); not one the fact cannot bound (an element
      read, a global, an ivar, a caller not seen, a builtin's answer), which
      a hot loop over a receiver that is never nil would pay for */
   int why = nil_fact_why(c, r);
-  if (why != NFW_NIL && why != NFW_NO_ELSE && why != NFW_SAFE_NAV && why != NFW_UNSET) return CN_NONE;
+  if (why != NFW_NIL && why != NFW_NO_ELSE && why != NFW_SAFE_NAV && why != NFW_UNSET && why != NFW_ELEM_NIL)
+    return CN_NONE;
   /* the definite-assignment walk over a temp the compiler wrote itself (a
      desugared splat's receiver) is not the program's nil */
   if (why == NFW_UNSET && nt_int(nt, r, "node_line", 0) <= 0) return CN_NONE;

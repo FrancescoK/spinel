@@ -82,12 +82,20 @@ typedef struct {
                              all), as against a value-less void. A flag
                              beside the kind, not a kind of its own, so no
                              switch on the kind changes */
-  unsigned elem_nil_marked:1; /* an Integer or Float Array the analysis saw
-                             a nil stored into (nullable_int_elem): its
-                             elements can be the sentinel, its stores set
-                             no run-time may_nil flag, and its whole-array
-                             reads scan for one. An unmarked one can still
-                             hold one its run-time flag answers for */
+  unsigned elem_nil_marked:1; /* an Array the analysis saw a nil stored
+                             into. An Integer or Float one
+                             (nullable_int_elem): its elements can be the
+                             sentinel, its stores set no run-time may_nil
+                             flag, and its whole-array reads scan for one;
+                             an unmarked one can still hold one its
+                             run-time flag answers for. A pointer one (an
+                             object's, a String's, an Array's: the nil
+                             fact's obj_elem_may_nil): a nil stored, or a
+                             gap a write past the end leaves; an element
+                             read out of it or a block parameter bound from
+                             it may be NULL (NFW_ELEM_NIL), and a call on
+                             one tests it. An unmarked one is taken to hold
+                             none */
   unsigned arr_or_nil:1;  /* a boxed local proven to hold only a PolyArray
                              or nil (arr_or_nil), and a read of it: an index
                              read takes the runtime's inline array arm,
