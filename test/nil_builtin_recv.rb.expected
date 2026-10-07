@@ -33,7 +33,7 @@ push NoMethodError: undefined method 'push' for nil
 nilarg NoMethodError: undefined method 'split' for nil
 interp NoMethodError: undefined method 'split' for nil
 or NoMethodError: undefined method 'ljust' for nil
-log [:l0, :s0, :s1, :i0, :i1, :i2, :b0, :b1, :b2, :n0, :n1, :d0, :d1, :e0, :e1]
+log [:l0, :s0, :s1, :i0, :i1, :i2, :b0, :b1, :b2, :n0, :n1, :d0, :e0, :e1]
 writes undefined method 'center' for nil
 written [6, "*"]
 lines ["a,b", "c"]
@@ -43,7 +43,7 @@ push [[1], [2], [3], [4]]
 nilarg ["a,b", "c"]
 interp ["a,b\nc"]
 or "a,b\nc****"
-log [:l0, :s0, :s1, :i0, :i1, :i2, :b0, :b1, :b2, :n0, :n1, :d0, :d1, :e0, :e1]
+log [:l0, :s0, :s1, :i0, :i1, :i2, :b0, :b1, :b2, :n0, :n1, :d0, :e0, :e1]
 writes "a,b\nc*"
 written [6, "*"]
 boxed NoMethodError: undefined method 'split' for nil
