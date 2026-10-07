@@ -2086,6 +2086,42 @@ int comp_scall_next(const Compiler *c, int u) {
   return (u >= 0 && u < c->scall_count) ? c->scall_next[u] : -1;
 }
 
+/* Every CallNode with a literal block, chained by the scope its block's
+   parameters live in (comp_scope_of of the block). A block parameter's
+   source walk looked at every CallNode of the program per parameter; this
+   walks them once. */
+static void bcall_build(Compiler *c) {
+  free(c->bcall_head); free(c->bcall_next);
+  const NodeTable *nt = c->nt;
+  int n = nt->count;
+  int ns = c->nscopes > 0 ? c->nscopes : 1;
+  if (!comp_chain_alloc(&c->bcall_head, &c->bcall_next, ns, n, &c->bcall_built)) return;
+  c->bcall_nscopes = ns;
+  c->bcall_count = n;
+  for (int s = 0; s < ns; s++) c->bcall_head[s] = -1;
+  for (int u = n - 1; u >= 0; u--) {   /* reverse: chains run in node order */
+    c->bcall_next[u] = -1;
+    if (nt_kind(nt, u) != NK_CallNode) continue;
+    int blk = nt_ref(nt, u, "block");
+    if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode) continue;
+    int si = (int)(comp_scope_of(c, blk) - c->scopes);
+    if (si < 0 || si >= ns) continue;
+    c->bcall_next[u] = c->bcall_head[si];
+    c->bcall_head[si] = u;
+  }
+  c->bcall_version = nt->version;
+  c->bcall_built = 1;
+}
+int comp_bcall_first(Compiler *c, int scope_idx) {
+  if (!c->bcall_built || c->bcall_version != c->nt->version || c->bcall_count != c->nt->count ||
+      c->bcall_nscopes < c->nscopes) bcall_build(c);
+  if (!c->bcall_built || scope_idx < 0 || scope_idx >= c->bcall_nscopes) return -1;
+  return c->bcall_head[scope_idx];
+}
+int comp_bcall_next(const Compiler *c, int u) {
+  return (u >= 0 && u < c->bcall_count) ? c->bcall_next[u] : -1;
+}
+
 /* Every ivar read handed to a call as an argument, chained by the ivar's
    name: one entry per (CallNode, argument) pair. Asking whether an ivar is
    lent to a callee walked every CallNode of the program once per question,

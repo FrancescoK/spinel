@@ -830,6 +830,13 @@ typedef struct {
   int scall_nscopes, scall_count;
   unsigned scall_version;
   int scall_built;
+  /* CallNode-with-a-literal-block chain, by the block's scope; see
+     comp_bcall_first */
+  int *bcall_head;      /* [bcall_nscopes] first such CallNode id per scope */
+  int *bcall_next;      /* [bcall_count] next one whose block is in the same scope */
+  int bcall_nscopes, bcall_count;
+  unsigned bcall_version;
+  int bcall_built;
 
   /* (CallNode, ivar-read argument)-by-ivar-name index; see comp_ivarg_first */
   int *ivarg_head;      /* [ivarg_nbuckets] first entry in each name bucket */
@@ -1022,6 +1029,8 @@ int comp_lvw_first_sc(Compiler *c, int scope_idx, const char *name);
 int comp_lvw_next_sc(const Compiler *c, int w);
 int comp_scall_first(Compiler *c, int scope_idx);
 int comp_scall_next(const Compiler *c, int u);
+int comp_bcall_first(Compiler *c, int scope_idx);
+int comp_bcall_next(const Compiler *c, int u);
 int comp_ivarg_first(Compiler *c, const char *name);
 void comp_ivarg_invalidate(Compiler *c);
 int comp_ivarg_next(const Compiler *c, int e);
