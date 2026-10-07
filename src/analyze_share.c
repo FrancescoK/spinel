@@ -336,8 +336,11 @@ static int sh_holder(ShareFacts *F, int kind, int a, int b, const char *name, in
 
 /* Can a value of type t hold a String, or a container of them? An object's
    Strings sit in its ivars, which are holders of their own. */
-static int sh_may_hold(TyKind t) {
-  if (ty_is_object(t) || ty_is_obj_array(t)) return 0;
+static int sh_may_hold(const Compiler *c, TyKind t) {
+  /* an object holds its Strings in ivars, which are holders of their own;
+     a native class's object keeps the String its binding declares */
+  if (ty_is_object(t)) return ty_object_class(t) < c->nclasses && c->classes[ty_object_class(t)].native_share_keeps;
+  if (ty_is_obj_array(t)) return 0;
   switch (t) {
   case TY_VOID: case TY_NIL: case TY_INT: case TY_BIGINT: case TY_FLOAT: case TY_SYMBOL:
   case TY_BOOL: case TY_RANGE: case TY_FLOAT_RANGE: case TY_TIME: case TY_COMPLEX:
@@ -356,7 +359,7 @@ static int sh_may_hold(TyKind t) {
 static int sh_local_of(ShareFacts *F, Compiler *c, Scope *s, const char *name, int node) {
   if (!s || !name) return -1;
   LocalVar *lv = scope_local(s, name);
-  if (!lv || !sh_may_hold(lv->type)) return -1;
+  if (!lv || !sh_may_hold(c, lv->type)) return -1;
   int e = sh_holder(F, SHK_LOCAL, (int)(s - c->scopes), (int)(lv - s->locals), NULL, node);
   /* a parameter's String is the caller's, a captured local's a proc's too */
   if (e >= 0 && (lv->is_param || lv->is_block_param || lv->is_cell || lv->cell_outlives || s->def_node < 0))
@@ -378,7 +381,7 @@ static int sh_ivar_owner(Compiler *c, int node) {
 static int sh_ivar(ShareFacts *F, Compiler *c, int cid, const char *name, int node) {
   if (cid < 0 || !name) return -1;
   int iv = comp_ivar_index(&c->classes[cid], name);
-  if (iv >= 0 && !sh_may_hold(c->classes[cid].ivar_types[iv])) return -1;
+  if (iv >= 0 && !sh_may_hold(c, c->classes[cid].ivar_types[iv])) return -1;
   int nh0 = F->nh;
   int e = sh_holder(F, SHK_IVAR, cid, -1, name, node);
   /* a superclass's ivar of the name is the same slot of the same object:
@@ -438,7 +441,7 @@ static int sh_gvar(ShareFacts *F, Compiler *c, const char *name, int node) {
   const char *bare = name[0] == '$' ? name + 1 : name;
   const char *to = comp_resolve_gvar(c, bare);
   LocalVar *gv = comp_gvar(c, to);
-  if (gv && !sh_may_hold(gv->type)) return -1;
+  if (gv && !sh_may_hold(c, gv->type)) return -1;
   if (to == bare) return sh_holder(F, SHK_GVAR, 0, -1, name, node);
   size_t ln = strlen(to);
   char *full = malloc(ln + 2);
@@ -1277,6 +1280,39 @@ static int sh_builtin_new(ShareFacts *F, Compiler *c, int n, int recv, int blk) 
   return r;
 }
 
+/* A native class's object keeps a String as its binding declares
+   (`native_share`, NSH_KEEPS): its first String argument, or with none a
+   String of its own, is the element of the value the constructor answers;
+   what else it is handed joins UNKNOWN. -2 for a constructor that declares
+   nothing. */
+static int sh_native_new(ShareFacts *F, Compiler *c, int n, int cid) {
+  const NodeTable *nt = c->nt;
+  int args = nt_ref(nt, n, "arguments");
+  int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+  int nm = comp_native_method_find(c, cid, "new", argc, 1);
+  if (nm < 0 || !(c->native_methods[nm].share & NSH_KEEPS)) return -2;
+  int r = sh_new(F, SHK_VALUE);
+  int er = sh_elem(F, r);
+  for (int i = 0; i < argc; i++) sh_union(F, i == 0 ? er : F->unknown, sh_arg_val(F, c, argv[i]));
+  if (c->native_methods[nm].share & NSH_CHANGES) sh_mark_at(F, er, SHF_MUT | SHF_INDIRECT, n);
+  return r;
+}
+/* A native class's method, as its binding declares (`native_share`): one
+   that changes the String the object keeps marks it, one that answers it
+   answers it. The change is made through the object, which need not be
+   named again (`StringIO.new(s).write(x)`), so no other holder of the
+   String's class is needed for it to be seen (SHF_INDIRECT). What the
+   method is handed joins UNKNOWN, as for any call the walk does not
+   follow. -2 for a method that declares nothing. */
+static int sh_native_call(ShareFacts *F, Compiler *c, int n, int cid, const char *name, int argc, int rv, int blk) {
+  int nm = comp_native_method_find(c, cid, name, argc, 0);
+  unsigned sh = nm >= 0 ? c->native_methods[nm].share : 0;
+  if (!sh) return -2;
+  int u = sh_unknown_call(F, c, n, blk);
+  if (sh & NSH_CHANGES) sh_mark_at(F, sh_elem(F, rv), SHF_MUT | SHF_INDIRECT, n);
+  return sh & NSH_ANSWERS ? sh_elem(F, rv) : u;
+}
+
 /* `Klass.new(...)`: the class's initialize, a Struct's members */
 static int sh_new_call(ShareFacts *F, Compiler *c, int n, int recv, int blk) {
   const NodeTable *nt = c->nt;
@@ -1301,6 +1337,10 @@ static int sh_new_call(ShareFacts *F, Compiler *c, int n, int recv, int blk) {
       for (int k = 0; k < nv; k++) sh_ivar_store(F, c, iv, argc == nv ? argv[k] : -1, vals[k]);
     }
     return -1;
+  }
+  if (ci->is_native_class) {
+    int r = sh_native_new(F, c, n, cid);
+    if (r != -2) return r;
   }
   int mi = comp_method_in_chain(c, cid, "initialize", NULL);
   if (mi < 0) return ci->def_node >= 0 ? -1 : -2;
@@ -1440,6 +1480,11 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
     }
   }
 
+  /* a native class's method (its binding's `native_share`) */
+  if (ty_is_object(rt) && c->classes[ty_object_class(rt)].is_native_class) {
+    int r = sh_native_call(F, c, n, ty_object_class(rt), name, argc, rv, blk);
+    if (r != -2) return r;
+  }
   /* a Lazy (`a.lazy.map { }`, held in a variable or not) has no type of
      its own: its stages and its terminal hand out its source's elements as
      an Enumerator's do, by the container rows */
@@ -1644,7 +1689,7 @@ static int sh_val_compute(ShareFacts *F, Compiler *c, int n) {
     return l;
   }
   case NK_ClassVariableReadNode:
-    return c->ntype[n] == TY_UNKNOWN || sh_may_hold(c->ntype[n])
+    return c->ntype[n] == TY_UNKNOWN || sh_may_hold(c, c->ntype[n])
            ? sh_holder(F, SHK_CVAR, 0, -1, nt_str(nt, n, "name"), n) : -1;
   case NK_ClassVariableWriteNode: case NK_ClassVariableOrWriteNode:
   case NK_ClassVariableAndWriteNode: case NK_ClassVariableOperatorWriteNode: {
@@ -1835,7 +1880,7 @@ static int sh_val(ShareFacts *F, Compiler *c, int n) {
   int v = sh_val_compute(F, c, n);
   /* a value whose type holds no String is none, whatever it flowed
      through (a write's target is still unified above) */
-  if (v >= 0 && c->ntype[n] != TY_UNKNOWN && !sh_may_hold(c->ntype[n]) &&
+  if (v >= 0 && c->ntype[n] != TY_UNKNOWN && !sh_may_hold(c, c->ntype[n]) &&
       nt_kind(c->nt, n) != NK_StatementsNode && nt_kind(c->nt, n) != NK_ParenthesesNode)
     v = -1;
   if (v >= 0 && nt_kind(c->nt, n) == NK_CallNode && !(F->unused[n] & SHU_STMT)) F->flags[sh_find(F, v)] |= SHF_OUT;
@@ -2107,7 +2152,7 @@ static int sh_frozen_value(Compiler *c, int v) {
   NodeKind k = nt_kind(nt, v);
   if (k == NK_StringNode) return 1;
   if (k == NK_CallNode && bop_share_named(TY_STRING, nt_str(nt, v, "name")) == BSH_FROZEN) return 1;
-  return c->ntype[v] != TY_UNKNOWN && !sh_may_hold(c->ntype[v]);
+  return c->ntype[v] != TY_UNKNOWN && !sh_may_hold(c, c->ntype[v]);
 }
 
 /* The constants some write gives a value that is no frozen String. */
@@ -2135,7 +2180,7 @@ static void sh_mutable_consts(ShareFacts *F, Compiler *c) {
 static int sh_const_read(ShareFacts *F, Compiler *c, int n) {
   const char *nm = nt_str(c->nt, n, "name");
   TyKind t = c->ntype[n];
-  if (!nm || !sh_may_hold(t)) return -1;
+  if (!nm || !sh_may_hold(c, t)) return -1;
   for (int i = 0; i < F->nmconst; i++)
     if (sp_streq(F->mconst[i], nm)) return sh_holder(F, SHK_CONST, 0, -1, nm, n);
   return t == TY_STRING || t == TY_STRBUF ? -1 : sh_holder(F, SHK_CONST, 0, -1, nm, n);
