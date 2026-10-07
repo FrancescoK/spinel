@@ -162,6 +162,7 @@ int strbuf_chain_over_handle(Compiler *c, int v);
 int strbuf_narrowed_box_mutator(Compiler *c, int id);
 void emit_narrowed_box_mutator(Compiler *c, int id, Buf *b);
 int strbuf_opwrite_handle(Compiler *c, int v, char *out, size_t cap);
+int strbuf_poly_to_s(Compiler *c, int v);
 /* Is a variable holding the shared handle (or, --share-strings, a route or
    a box) one of the values conditional v can hand over (codegen_stmt.c)? */
 int strbuf_cond_has_handle_leaf(Compiler *c, int v, int depth);

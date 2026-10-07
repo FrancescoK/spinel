@@ -2034,14 +2034,30 @@ static int emit_strbuf_chain_in_place(Compiler *c, int v, int base, const char *
 }
 
 /* --share-strings: is v an append chain over a variable that holds the
-   shared handle (`a << x`), which emit_strbuf_value runs in place on that
-   handle (emit_strbuf_chain_in_place)? */
+   shared handle (`a << x`, at least one append: a nil's to_s is ""), which
+   emit_strbuf_value runs in place on that handle
+   (emit_strbuf_chain_in_place)? */
 int strbuf_chain_over_handle(Compiler *c, int v) {
   char ref[1024];
   int args[32];
   int base = str_alias_chain_base(c, v);
   return repr_share_rule(c) && base != v && strbuf_var_handle(c, unwrap_parens(c, base), ref, sizeof ref) &&
-         strbuf_chain_links(c, v, base, args) >= 0;
+         strbuf_chain_links(c, v, base, args) > 0;
+}
+
+/* --share-strings: is v `x.to_s` on a box or a variable's handle (either may
+   be nil), which a box takes as the receiver's own String, nil's ""
+   (sp_poly_to_s_box, sp_strbuf_to_s_box)? No method of the program's own
+   name. */
+int strbuf_poly_to_s(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  if (!repr_share_rule(c) || v < 0 || nt_kind(nt, v) != NK_CallNode || !nt_str(nt, v, "name") ||
+      !sp_streq(nt_str(nt, v, "name"), "to_s") || nt_ref(nt, v, "arguments") >= 0 || nt_ref(nt, v, "block") >= 0)
+    return 0;
+  int r = nt_ref(nt, v, "receiver");
+  char ref[1024];
+  return r >= 0 && comp_method_index(c, "to_s") < 0 &&
+         (repr_of(c, r).kind == RK_BOXED || strbuf_var_handle(c, r, ref, sizeof ref));
 }
 
 /* --share-strings: chain v's links over route base (`s.then { |z| z } <<
@@ -17486,7 +17502,7 @@ static int strbuf_flow_value(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, in
   /* an append chain over a variable's handle, boxed as that handle; a
      mutator on a narrowed box, which answers the box */
   if (ctx == SFC_ELEM && k == NK_CallNode && comp_ntype(c, v) == TY_STRING &&
-      (strbuf_chain_over_handle(c, v) || strbuf_narrowed_box_mutator(c, v)))
+      (strbuf_chain_over_handle(c, v) || strbuf_narrowed_box_mutator(c, v) || strbuf_poly_to_s(c, v)))
     return 1;
   /* a marked call that answers its receiver, a variable's handle (`s.tap
      { }`, `s.to_s`), and a bang method off one (emit_boxed_bang_self) */
