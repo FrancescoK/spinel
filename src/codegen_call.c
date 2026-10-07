@@ -17050,10 +17050,14 @@ static int emit_vis_refusal_x(Compiler *c, int id, Buf *b) {
     Scope *vs = comp_scope_of(c, id);
     if (vs && vs->class_id >= 0 && !vs->is_cmethod) vcid = vs->class_id;
   }
+  int top_priv = stamped && vnm && comp_method_index(c, vnm) >= 0 && !name_is_synth_method(c, vnm) &&
+                 strncmp(vnm, "__enum_", 7) != 0 &&
+                 (vrecv < 0 ? self_is_main(c, id) : !send_blind_recv_owns(c, vrecv, comp_ntype(c, vrecv), vnm));
+  int at_main = top_priv && vrecv < 0;
   if (vnm && vcid < 0 && vrecv >= 0) return emit_cmethod_vis_refusal(c, id, vrecv, vnm, plain, b);
-  if (!vnm || vcid < 0) return 0;
+  if (!vnm || (vcid < 0 && !at_main)) return 0;
   int owner = -1;
-  int vis = comp_method_vis_declared(c, vcid, vnm, &owner);
+  int vis = top_priv ? SP_VIS_PRIVATE : comp_method_vis_declared(c, vcid, vnm, &owner);
   if (vis == SP_VIS_PROTECTED && plain) {
     /* the caller's self must be an instance of the declaring class: that
        class itself or a descendant */
@@ -17068,7 +17072,7 @@ static int emit_vis_refusal_x(Compiler *c, int id, Buf *b) {
     }
   }
   if (vis == SP_VIS_PUBLIC) return 0;
-  const char *vrn = class_ruby_name(c, vcid) ? class_ruby_name(c, vcid) : c->classes[vcid].name;
+  const char *vrn = at_main ? "main" : class_ruby_name(c, vcid) ? class_ruby_name(c, vcid) : c->classes[vcid].name;
   buf_puts(b, "(");
   /* the receiver rides the error as NoMethodError#receiver */
   if (vrecv >= 0) { buf_puts(b, "sp_exc_stage_recv("); emit_boxed(c, vrecv, b); buf_puts(b, "), "); }
@@ -17078,8 +17082,8 @@ static int emit_vis_refusal_x(Compiler *c, int id, Buf *b) {
   { int vblk = nt_ref(nt, id, "block");
     int vbx = vblk >= 0 && nt_kind(nt, vblk) == NK_BlockArgumentNode ? nt_ref(nt, vblk, "expression") : -1;
     if (vbx >= 0 && nt_kind(nt, vbx) != NK_SymbolNode) { buf_puts(b, "(void)("); emit_expr(c, vbx, b); buf_puts(b, "), "); } }
-  buf_printf(b, "sp_raise_cls(\"NoMethodError\", (&(\"\\xff\" \"%s method '%s' called for an instance of %s\")[1])), %s)",
-             vis == SP_VIS_PRIVATE ? "private" : "protected", vnm, vrn,
+  buf_printf(b, "sp_raise_cls(\"NoMethodError\", (&(\"\\xff\" \"%s method '%s' called for %s%s\")[1])), %s)",
+             vis == SP_VIS_PRIVATE ? "private" : "protected", vnm, at_main ? "" : "an instance of ", vrn,
              default_value_from_compiler(c, repr_of(c, id).as_ty));
   return 1;
 }
