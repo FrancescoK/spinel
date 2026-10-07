@@ -1,0 +1,32 @@
+"a".."c"
+"e".."a"
+"a"..
+1.0..2.5
+1.0..
+"a"
+"e"
+"a"
+2.5
+2.5
+[nil, nil]
+"a".."c"
+1.0..2.5
+"a".."c"
+"a".."c"
+"a".."c"
+"a".."c"
+"a".."c"
+"a".."c"
+"e".."a"
+["a", "b", "c", "a", "b", "c", "c", "b", "a", 0, 1, 2, 2, 1, "ab", "bc"]
+[false, false, false, false, false]
+[0, false]
+[]
+[]
+[]
+[]
+nil
+[true, true]
+NoMethodError
+NoMethodError
+NoMethodError

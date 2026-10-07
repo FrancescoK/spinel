@@ -140,6 +140,7 @@ int is_fallback_block_call(const char *n); /* fetch delete fetch_values: the blo
 int is_io_write(const char *n); /* syswrite write */
 int is_to_integer(const char *n); /* to_i to_int */
 int is_match_operator(const char *n); /* !~ =~ */
+int is_object_receiver_handoff(const char *n); /* to_enum enum_for instance_eval instance_exec method public_method */
 int is_div_or_mod(const char *n); /* % / */
 int is_div_or_modulo(const char *n); /* div modulo: the named floored quotient and remainder */
 int is_add_or_mul(const char *n); /* * + */
