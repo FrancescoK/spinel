@@ -77,6 +77,15 @@ sp_Exception *sp_exc_new_for_catch(const char *cls, const char *msg);
 /* The message a bare `raise` carries: empty, and distinct from "no message
    given" (which falls back to the class name, as Exception.new does) (#3711). */
 extern const char *const sp_exc_no_msg;
+/* The same for an explicitly given empty literal (`raise C, ""`), whose
+   message CRuby keeps frozen: also "" to every reader of the raw message,
+   and an exception built from it holds a frozen "". */
+extern const char *const sp_exc_no_msg_frozen;
+/* Is m one of the two explicit-empty sentinels? A raise's message is
+   laundered onto the heap unless it is one, which keeps its identity. */
+static inline int sp_exc_msg_empty_given(const char *m) {
+  return m == sp_exc_no_msg || m == sp_exc_no_msg_frozen;
+}
 /* An explicitly given raise message: an empty one stays empty rather than
    falling back to the class name the way a message-less raise does. */
 const char *sp_exc_msg_counted(const char *m, size_t n);   /* lib/sp_exc.c */
@@ -90,8 +99,9 @@ const char *sp_exc_detailed_text(volatile sp_Exception *e, const char *msg);   /
 static inline const char *sp_exc_msg_given(const char *m) {
   if (!m) return m;
   size_t n = sp_str_byte_len(m);
-  /* a frozen String (a literal, "" too) travels counted with its frozen mark */
-  if (sp_str_is_frozen_val(m)) return sp_exc_msg_counted_frozen(m, n);
+  /* a frozen String (a literal) travels counted with its frozen mark, an
+     empty one as the frozen empty sentinel */
+  if (sp_str_is_frozen_val(m)) return n == 0 ? sp_exc_no_msg_frozen : sp_exc_msg_counted_frozen(m, n);
   if (n == 0) return sp_exc_no_msg;
   return memchr(m, 0, n) ? sp_exc_msg_counted(m, n) : m;
 }
