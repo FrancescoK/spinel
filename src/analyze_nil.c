@@ -652,6 +652,7 @@ static int nf_container(TyKind t) {
   return ty_is_array(t) || ty_is_obj_array(t) || ty_is_hash(t) || t == TY_POLY;
 }
 
+static int nf_next_nil(NF *f, int n, int depth);
 static int nf_call(NF *f, int v) {
   Compiler *c = f->c;
   const NodeTable *nt = f->nt;
@@ -687,7 +688,9 @@ static int nf_call(NF *f, int v) {
      parameter it is handed may then bind) */
   if (c->share_strings && r >= 0 && is_then_alias(nm)) {
     int blk = nt_ref(nt, v, "block");
-    if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode) return nf_list(f, nt_ref(nt, blk, "body"));
+    /* the tail's value, or a `next`'s (as a yielded block's value is read) */
+    if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode)
+      return nf_or(nf_list(f, nt_ref(nt, blk, "body")), nf_next_nil(f, nt_ref(nt, blk, "body"), 0));
   }
   /* the receiver itself */
   if (r >= 0 && (sp_streq(nm, "itself") || sp_streq(nm, "tap") || sp_streq(nm, "dup") ||
