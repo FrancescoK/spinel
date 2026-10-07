@@ -2842,7 +2842,9 @@ static int sh_carries_handle(const Compiler *c, int n) {
   Repr r = repr_of(c, n);
   /* a bang method on a handle local: a write hands over the local's handle
      (emit_strbuf_value) */
-  return r.kind == RK_STRBUF || r.strbuf_src != RS_NONE || sh_bang_self_slot(c, n);
+  return r.kind == RK_STRBUF || r.strbuf_src != RS_NONE || sh_bang_self_slot(c, n) ||
+         /* a boxed variable's read lifted into the handle (poly_strbuf_lift) */
+         r.poly_lift;
 }
 
 /* The class of node n's value (with elems, of its elements), or -1. */

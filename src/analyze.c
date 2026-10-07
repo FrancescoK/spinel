@@ -15408,6 +15408,7 @@ static int block_param_user_yield_only(Compiler *c, const char *vn, Scope *vs) {
   }
   return any;
 }
+static int lift_poly_read_store(Compiler *c, int a);
 static int strbuf_demand_store_leaf(Compiler *c, int sn, int depth) {
   const NodeTable *nt = c->nt;
   if (sn < 0 || c->strbuf_box[sn]) return 0;
@@ -15492,9 +15493,23 @@ static int strbuf_demand_store_leaf(Compiler *c, int sn, int depth) {
       "a String a boxed local holds is stored into a container and mutated in place through it (a "
       "String is not yet shared by reference through a boxed local's container element). Mutate the "
       "String through the local itself.";
-    if (snv->type == TY_POLY && !snv->is_param && !snv->poly_ctr && poly_local_shows_string(c, snm, sns) &&
-        !sa_copy_defer(c, sn, sn, boxed_msg))
-      unsupported_feature(c, sn, boxed_msg);
+    if (snv->type == TY_POLY && !snv->is_param && !snv->poly_ctr && poly_local_shows_string(c, snm, sns)) {
+      /* Under --share-strings the stored read is lifted into the handle
+         (lift_poly_read: it boxes the local's String as the handle and
+         writes that back into the local, and lift_poly_alias_reads carries
+         it to the names the local was copied from or to): the element is
+         the local's own String, which the route then carries where the
+         rule shares it (sh_carries_handle), and a copy no other name sees
+         where it does not */
+      int ch = 0;
+      if (c->share_strings) {
+        ch = lift_poly_read_store(c, sn);
+        ShareRoute q = share_route(sn, sn, 0);
+        q.carry = sn;
+        if (share_route_defer(c, &q, boxed_msg)) return ch;
+      }
+      if (!sa_copy_defer(c, sn, sn, boxed_msg)) unsupported_feature(c, sn, boxed_msg);
+    }
     if (!strbuf_slot_eligible(c, snm, sns, snv)) return 0;
     if (strbuf_mut_kind(c, snm, sns) < 0) return 0;
     snv->type = TY_STRBUF; snv->str_shared = 1;
@@ -20395,6 +20410,9 @@ static int lift_poly_read(Compiler *c, const HandleArgTab *hat, SbMutTab *lifted
     lv->poly_lift |= POLY_LIFT_APPENDED;
   return 1;
 }
+/* lift_poly_read for a container store (strbuf_demand_store_leaf), which
+   runs ahead of the call-site tables */
+static int lift_poly_read_store(Compiler *c, int a) { return lift_poly_read(c, NULL, NULL, a); }
 /* Is call `n` in yielding method `m` a call of the method's own `&b`
    (`b.call(v)`, `b.(v)`, `b[v]`, `b.yield(v)`), which is spliced as a
    yield? */
