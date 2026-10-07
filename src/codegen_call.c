@@ -4398,7 +4398,7 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
     }
     /* in the boxed slot promote gives the call, the exact floor, which can
        pass the word (sp_poly_div_m) */
-    if (crt == TY_INT && argc == 1 && sp_streq(name, "div") &&
+    if (crt == TY_INT && argc == 1 && is_div_name(name) &&
         comp_ntype(c, argv[0]) == TY_RATIONAL && repr_of(c, id).kind == RK_BOXED) {
       buf_puts(b, "sp_poly_div_m(sp_box_int("); emit_expr(c, recv, b);
       buf_puts(b, "), sp_box_rational("); emit_expr(c, argv[0], b); buf_puts(b, "))");
