@@ -310,3 +310,50 @@ end
 $n = []
 SC1.new(0) { |a| p [:sc, a] }
 p $n
+
+# Class#new reached through a class's own new still runs that method first,
+# including its replacement block. Dead sites and 80 live levels.
+class NS
+  attr_reader :a
+  def self.new(a) = super(a) { |q| q }
+  def initialize(a)
+    @a = a
+    NS.new(a) if ARGV.length == 9123
+    NS.new(a) if ARGV.length == 9123
+    NS.new(a + 1) if a < 80
+    $n << a if a % 20 == 0
+    yield a
+  end
+end
+$n = []
+p NS.new(0).a
+p $n
+
+# A yielding new has a constructor edge at its super too, for the class
+# itself and a descendant inheriting the method with its own initialize.
+class NSP
+  def self.new(a)
+    yield a if block_given?
+    super(a) { |q| $n << q if q % 20 == 0 }
+  end
+  def initialize(a)
+    NSP.new(a) if ARGV.length == 9123
+    NSP.new(a) if ARGV.length == 9123
+    NSP.new(a + 1) if a < 80
+    yield a
+  end
+end
+class NSC < NSP
+  def initialize(a)
+    NSC.new(a) if ARGV.length == 9123
+    NSC.new(a) if ARGV.length == 9123
+    NSC.new(a + 1) if a < 80
+    yield a
+  end
+end
+$n = []
+NSP.new(0) { |a| p [:nsp, a] }
+p $n
+$n = []
+NSC.new(0) { |a| p [:nsc, a] }
+p $n
