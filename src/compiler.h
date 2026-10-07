@@ -1110,11 +1110,21 @@ Scope *comp_scope_of(Compiler *c, int node_id);        /* owning scope */
    each write is still read fresh at every visit. */
 int comp_is_local_write(NodeKind k);
 /* Can a call's block `blk` (a literal or a `&blk` argument) assign the
-   variable argument node `arg` reads while the call runs: the literal's
-   body writes it (a local of the same scope, or an instance variable, by
-   any write kind, at any depth), or, for a local, a proc that captures it
-   assigns it? 0 for any other argument, or a call with no block. */
+   variable argument node `arg` reads while the call runs? A local: the
+   literal's body writes it (of the same scope, by any write kind, at any
+   depth), or a proc that captures it assigns it. An instance variable:
+   the literal's body may write it (subtree_may_write_ivar: a write, a self
+   call whose method may, anything else that runs code), and a `&blk`
+   argument always may. 0 for any other argument, or a call with no block. */
 int comp_block_rebinds_arg(Compiler *c, int blk, int arg);
+/* Can the subtree at id write ivar `iv` of class cls's object: a write of
+   it, a self call whose method may, or anything else that runs code
+   (codegen_util.c) */
+int subtree_may_write_ivar(Compiler *c, int id, const char *iv, int cls, int depth);
+/* Does the subtree under node n assign the variable argument node `arg`
+   reads (a local of the same scope, or an instance variable), by any write
+   kind, at any depth? 0 when `arg` is no variable read. */
+int comp_node_writes_var(Compiler *c, int n, int arg);
 int comp_lvw_first(Compiler *c, const char *name);
 int comp_class_singleton_has_module(Compiler *c, int ci, int mod);
 int comp_class_extends_any(Compiler *c, int ci);

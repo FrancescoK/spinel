@@ -724,7 +724,10 @@ int  g_nren = 0;
 int  g_block_id = -1;
 
 RenPark ren_park(int from) {
-  RenPark p = { g_nren, from, g_nren - from, NULL, NULL };
+  RenPark p = { g_nren, from, g_nren - from, NULL, NULL, -1 };
+  /* from 0: a C function body of its own, which cannot name the open
+     splices' slots either (view_splice_next) */
+  if (from == 0) p.fence = view_push_fn();
   if (p.n > 0) {
     p.f = (char (*)[96])malloc(sizeof(char[96]) * (size_t)p.n);
     p.t = (char (*)[112])malloc(sizeof(char[112]) * (size_t)p.n);
@@ -739,6 +742,7 @@ RenPark ren_park(int from) {
 }
 
 void ren_unpark(RenPark *p) {
+  if (p->fence >= 0) view_pop(NULL, p->fence);
   g_nren = p->sv;
   if (p->f && p->t) {
     memcpy(g_ren_from + p->from, p->f, sizeof(char[96]) * (size_t)p->n);

@@ -33,6 +33,14 @@
    (emit_with_prelude); view_stmt_top reads the innermost one. Like a face it
    is no view of a node's cached type.
 
+   view_push_splice marks a spliced method's parameter bound as an alias
+   of the caller's variable (inline_alias_params) that the call's block
+   assigns: the variable's argument node, the splice's tag and the
+   parameter's name. view_push_fn fences a C function emitted while such
+   splices are open (a proc's or a fiber's body), whose code cannot name
+   the splice's slots: view_splice_next walks the open splice entries from
+   the innermost down to the innermost fence. Neither views a node.
+
    view_push_arm does the same for the arm context a poly dispatch's
    builtin arm re-enters the call under (g_arm: the node whose dispatch
    declines its own re-entry, g_pd_skip and g_prbd_skip, and
@@ -46,7 +54,7 @@
 
 /* what an entry overrides: the node's type, one representation flag, or
    the arm context */
-enum { VK_TYPE = -1, VK_ARM = -2, VK_FACE = -3, VK_STMT = -4 };
+enum { VK_TYPE = -1, VK_ARM = -2, VK_FACE = -3, VK_STMT = -4, VK_SPLICE = -5, VK_FN = -6 };
 static struct { Compiler *c; int id; int kind; int saved; ArmCtx arm_saved; const void *pre; } view_stack[VIEW_MAX];
 static int view_face = -1;   /* the innermost face entry, or -1 */
 static int view_stmt = -1;   /* the innermost statement entry, or -1 */
@@ -198,8 +206,37 @@ int view_stmt_top(int *node, const void **pre) {
   return 1;
 }
 
+static int view_open_mark(int kind, int node, int v, const void *p) {
+  if (view_sp >= VIEW_MAX) {
+    fprintf(stderr, "spinel: internal error: codegen views nested too deep\n");
+    exit(1);
+  }
+  int tok = view_sp++;
+  view_stack[tok].c = NULL;
+  view_stack[tok].id = node;
+  view_stack[tok].kind = kind;
+  view_stack[tok].saved = v;
+  view_stack[tok].pre = p;
+  return tok;
+}
+int view_push_splice(int arg, int tag, const char *pname) { return view_open_mark(VK_SPLICE, arg, tag, pname); }
+int view_push_fn(void) { return view_open_mark(VK_FN, -1, 0, NULL); }
+
+int view_splice_next(int from, int *arg, int *tag, const char **pname) {
+  for (int i = (from < 0 || from > view_sp ? view_sp : from) - 1; i >= 0; i--) {
+    if (view_stack[i].kind == VK_FN) return -1;
+    if (view_stack[i].kind != VK_SPLICE) continue;
+    *arg = view_stack[i].id;
+    *tag = view_stack[i].saved;
+    *pname = (const char *)view_stack[i].pre;
+    return i;
+  }
+  return -1;
+}
+
 /* the entry on top, put back */
 static void view_close(int tok) {
+  if (view_stack[tok].kind == VK_SPLICE || view_stack[tok].kind == VK_FN) return;
   if (view_stack[tok].kind == VK_ARM) { g_arm = view_stack[tok].arm_saved; return; }
   if (view_stack[tok].kind == VK_FACE) { view_face = view_stack[tok].arm_saved.pd_skip; return; }
   if (view_stack[tok].kind == VK_STMT) { view_stmt = view_stack[tok].saved; return; }
