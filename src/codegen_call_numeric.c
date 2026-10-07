@@ -638,8 +638,8 @@ int emit_op_float_rationalize(Compiler *c, const BopCtx *x, Buf *b) {
     else if (et == TY_COMPLEX) { buf_puts(b, "sp_complex_abs("); emit_expr(c, arg, b); buf_puts(b, ")"); }
     else if (et == TY_POLY || et == TY_UNKNOWN) {
       int t = ++g_tmp;
-      buf_printf(b, "({ sp_RbVal _t%d = ", t); emit_boxed(c, arg, b);
-      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_poly_to_f_with_rational(sp_poly_abs(_t%d)); })", t, t);
+      buf_puts(b, "({ "); t = hold_operand(c, arg, TY_POLY, 1, t, 1, " ", b);
+      buf_printf(b, "sp_poly_to_f_with_rational(sp_poly_abs(_t%d)); })", t);
     }
     else emit_float_expr(c, arg, b);
     buf_puts(b, ")");
