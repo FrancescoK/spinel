@@ -3022,6 +3022,14 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
   return 0;
 }
 
+/* `Array.new(n, v)`: an Array of v's kind. Under --share-strings a fill
+   stored as the shared handle settles it in its poly form, whose boxes hold
+   the handle, as a literal's element does (#6765). */
+static TyKind infer_array_new_fill(Compiler *c, int fill) {
+  TyKind ft = infer_type(c, fill);
+  if (ft == TY_STRBUF && c->share_strings) ft = TY_POLY;
+  return ty_array_of(ft);
+}
 /* A constructor call: a class's .new, and the builtin constructors (infer_call_inner's rules, in their order) */
 static int infer_new_call(Compiler *c, int id, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind *out) {
   /* Class.new(...) -> an instance of that class; built-in .new constructors */
@@ -3047,7 +3055,7 @@ static int infer_new_call(Compiler *c, int id, const NodeTable *nt, const char *
       if (cn && (is_builtin_exception_name(cn) || superclass_builtin_exc_name(nt, recv)))
         { *out = TY_EXCEPTION; return 1; }
       /* ::Array.new / ::String.new / ::StringIO.new etc. */
-      if (cn && sp_streq(cn, "Array") && argc == 2) { *out = ty_array_of(infer_type(c, argv[1])); return 1; }
+      if (cn && sp_streq(cn, "Array") && argc == 2) { *out = infer_array_new_fill(c, argv[1]); return 1; }
       if (cn && sp_streq(cn, "Array")) { *out = TY_POLY_ARRAY; return 1; }
       if (cn && (is_object_base_name(cn))) { *out = TY_POLY; return 1; }
       if (cn && sp_streq(cn, "String")) { *out = TY_STRING; return 1; }
@@ -3095,7 +3103,7 @@ static int infer_new_call(Compiler *c, int id, const NodeTable *nt, const char *
         if (!(cn && is_builtin_reopen(cn))) { *out = ty_object(ci); return 1; }
       }
       if (cn && is_builtin_exception_name(cn)) { *out = TY_EXCEPTION; return 1; }
-      if (cn && sp_streq(cn, "Array") && argc == 2) { *out = ty_array_of(infer_type(c, argv[1])); return 1; }
+      if (cn && sp_streq(cn, "Array") && argc == 2) { *out = infer_array_new_fill(c, argv[1]); return 1; }
       if (cn && sp_streq(cn, "Array")) {
         int blk = nt_ref(nt, id, "block");
         if (blk >= 0) {
