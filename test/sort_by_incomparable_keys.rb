@@ -1,9 +1,12 @@
+# spinel: int64
 # sort_by, sort_by! and Hash#sort_by over keys whose `<=>` answers nil for a
 # pair raise CRuby's ArgumentError ("comparison of String with 1 failed"),
 # where they used to keep the pair in place: keys of two kinds, a nil key,
-# a NaN, true against false, Arrays holding such. Keys that are equal (nil
-# with nil) still compare, and keys of one kind that always compare sort as
-# before.
+# a NaN, true against false, Arrays holding such, a class whose own `<=>`
+# answers nil (even for one object against itself), a Bignum against a
+# String, nil, Symbol or plain object. Keys that are equal (nil with nil, an
+# object without `<=>` against itself) still compare, and keys of one kind
+# that always compare sort as before.
 def t
   yield
 rescue ArgumentError => e
@@ -27,3 +30,18 @@ p [nil, nil].sort_by { |x| x }, [1, 2].sort_by { |x| :a }
 p [3, 1, 2].sort_by { |x| -x }, %w[bb a].sort_by(&:size)
 p [[2, "b"], [1, "a"]].sort_by { |x| x }, [2.5, 1.5].sort_by { |x| x }
 p({ "a" => 1, "b" => 2 }.sort_by { |k, v| -v })
+class NoCmp
+  def <=>(o) = nil
+end
+nc = NoCmp.new
+t { p [nc, nc].sort_by { |x| x } }
+t { p({ a: nc, b: nc }.sort_by { |k, v| v }) }
+t { p [NoCmp.new, NoCmp.new].sort_by { |x| x } }
+o = Object.new
+p [o, o].sort_by { |x| x }.size, [nc].sort_by { |x| x }.size
+t { p [2**70, "a"].sort_by { |x| x } }
+t { p [nil, 2**70].sort_by { |x| x } }
+t { p({ a: 2**70, b: :s }.sort_by { |k, v| v }) }
+t { p [Object.new, 2**70].sort_by { |x| x } }
+t { a = [2**70, "a"]; a.sort_by! { |x| x }; p a }
+p [2**70, 1].sort_by { |x| x }, [2**70, 1.5].sort_by { |x| x }, [2**70, 1r / 3].sort_by { |x| x }
