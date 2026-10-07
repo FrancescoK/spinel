@@ -6574,6 +6574,35 @@ static int infer_send_blind(Compiler *c, int id, int recv, const char *name, TyK
   return 0;
 }
 
+/* A Symbol receiver: the table's rows, then the comparisons whose answer
+   turns on the operand (infer_call_inner's rules, in their order).
+   TY_UNKNOWN when none answers. */
+static TyKind infer_symbol_call(Compiler *c, int id, const NodeTable *nt, const char *name, int argc, const int *argv) {
+  TyKind rt = TY_SYMBOL;
+  {
+    const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
+    if (op && op->result != TY_UNKNOWN) return op->result;
+  }
+  /* Symbol#<=> is defined only between Symbols; String included, any other
+     operand is not comparable and the result is nil (#3081) */
+  if (sp_streq(name, "<=>") && argc == 1) {
+    TyKind at = infer_type(c, argv[0]);
+    if (at == TY_SYMBOL) return TY_INT;
+    if (at != TY_POLY && at != TY_UNKNOWN) return TY_NIL;
+  }
+  /* casecmp/casecmp? against a non-symbol operand answer nil */
+  if (sp_streq(name, "casecmp") && argc == 1)
+    return infer_type(c, argv[0]) == TY_SYMBOL ? TY_INT : TY_NIL;
+  if (sp_streq(name, "casecmp?") && argc == 1)
+    return infer_type(c, argv[0]) == TY_SYMBOL ? TY_BOOL : TY_NIL;
+  /* clamp between two Symbols is one of the three (the row's argument
+     guard is not read here, where the lookup has no argument kinds) */
+  if (sp_streq(name, "clamp") && argc == 2 &&
+      infer_type(c, argv[0]) == TY_SYMBOL && infer_type(c, argv[1]) == TY_SYMBOL)
+    return TY_SYMBOL;
+  return TY_UNKNOWN;
+}
+
 static TyKind infer_call_inner(Compiler *c, int id) {
   /* the call is inferred afresh: only the row this pass answers with counts */
   /* the builtin-only re-derivation (an_builtin_answer) asks what the call
@@ -7493,24 +7522,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   { TyKind r; if (infer_poly_operand_call(c, id, nt, name, recv, argc, argv, rt, a0, &r)) return r; }
 
   /* symbol receiver methods */
-  if (recv >= 0 && rt == TY_SYMBOL) {
-    {
-      const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
-      if (op && op->result != TY_UNKNOWN) return op->result;
-    }
-    /* Symbol#<=> is defined only between Symbols; String included, any other
-       operand is not comparable and the result is nil (#3081) */
-    if (sp_streq(name, "<=>") && argc == 1) {
-      TyKind at = infer_type(c, argv[0]);
-      if (at == TY_SYMBOL) return TY_INT;
-      if (at != TY_POLY && at != TY_UNKNOWN) return TY_NIL;
-    }
-    /* casecmp/casecmp? against a non-symbol operand answer nil */
-    if (sp_streq(name, "casecmp") && argc == 1)
-      return infer_type(c, argv[0]) == TY_SYMBOL ? TY_INT : TY_NIL;
-    if (sp_streq(name, "casecmp?") && argc == 1)
-      return infer_type(c, argv[0]) == TY_SYMBOL ? TY_BOOL : TY_NIL;
-  }
+  if (recv >= 0 && rt == TY_SYMBOL) { TyKind st = infer_symbol_call(c, id, nt, name, argc, argv); if (st != TY_UNKNOWN) return st; }
 
   { TyKind r; if (infer_range_lazy_call(c, id, nt, name, recv, argc, argv, rt, &r)) return r; }
 

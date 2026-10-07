@@ -1377,6 +1377,17 @@ static const BuiltinOp bop_rows[] = {
   { TY_SYMBOL, "end_with?",       1,   1, BF_ANY,      TY_BOOL,       BOPE_TEMPLATE, "sp_str_end_with(sp_sym_to_s($r), $s0)", BOP_K(TY_STRING) | BOP_K(TY_POLY) },
   { TY_SYMBOL, "end_with?",   1,   1, BF_ANY, TY_BOOL,    BOPE_NONE },
   { TY_SYMBOL, "match?",      1,   1, BF_ANY, TY_BOOL,    BOPE_NONE },
+  /* Comparable#clamp between Symbols: the receiver or the nearer bound, by
+     the names' order, a Symbol either way; bounds out of order raise. The
+     between? rewrite reads Symbols as their names (desugar_symbol_string_methods),
+     which would answer a String here, so clamp has its own row. */
+  { TY_SYMBOL, "clamp",           2,   2, BF_ANY,      TY_SYMBOL,     BOPE_TEMPLATE,
+    "({ sp_sym _t$t = $r; sp_sym _t$u = $e0; sp_sym _t$v = $e1;"
+    " if (sp_str_cmp_bytes(sp_sym_to_s(_t$u), sp_sym_to_s(_t$v)) > 0)"
+    " sp_raise_cls(\"ArgumentError\", \"min argument must be less than or equal to max argument\");"
+    " sp_str_cmp_bytes(sp_sym_to_s(_t$t), sp_sym_to_s(_t$u)) < 0 ? _t$u :"
+    " (sp_str_cmp_bytes(sp_sym_to_s(_t$t), sp_sym_to_s(_t$v)) > 0 ? _t$v : _t$t); })",
+    BOP_K(TY_SYMBOL), BOP_K(TY_SYMBOL) },
   { TY_SYMBOL, "casecmp",         1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_TEMPLATE, "sp_str_casecmp(sp_sym_to_s($r), sp_sym_to_s($e0))", BOP_K(TY_SYMBOL) },
   { TY_SYMBOL, "casecmp",         1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_TEMPLATE, "((void)($r), (void)($e0), 0)", 0 },
   { TY_SYMBOL, "casecmp?",        1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_TEMPLATE, "sp_str_casecmp_p(sp_sym_to_s($r), sp_sym_to_s($e0))", BOP_K(TY_SYMBOL) },
