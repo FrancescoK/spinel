@@ -433,6 +433,14 @@ int local_is_handle(Compiler *c, int a) {
   LocalVar *lv = vs ? scope_local(vs, vn) : NULL;
   return repr_of_slot(c, lv).handle;
 }
+/* --share-strings: a read of an ivar whose slot is the rule's handle */
+int ivar_read_is_handle(Compiler *c, int a) {
+  if (!repr_share_rule(c) || a < 0 || nt_kind(c->nt, a) != NK_InstanceVariableReadNode) return 0;
+  const char *nm = nt_str(c->nt, a, "name");
+  int cid = nm ? strbuf_ivar_owner(c, a) : -1;
+  int iv = cid >= 0 ? comp_ivar_index(&c->classes[cid], nm) : -1;
+  return iv >= 0 && repr_of_ivar(c, cid, iv).share;
+}
 /* A local that is the shared handle, as a reference to the handle itself
    rather than the copy a plain read of it takes. 0 when it is none. */
 /* An iterator's element text `src` (of type `want`) bound to block
@@ -1526,7 +1534,7 @@ void emit_proc_yield(Compiler *c, const char *ref, int yargc, const int *yargv, 
   int lmi = ys && ys->is_lowered_yield ? (int)(ys - c->scopes) : -1;
   unsigned live = 0;
   for (int k = 0; k < nm; k++) {
-    if (!c->strbuf_box[yargv[k]] && local_is_handle(c, yargv[k])) {
+    if (!c->strbuf_box[yargv[k]] && (local_is_handle(c, yargv[k]) || ivar_read_is_handle(c, yargv[k]))) {
       vt[nv++] = view_push_repr(c, yargv[k], VR_STRBUF_BOX, 1);
       vt[nv++] = view_push(c, yargv[k], TY_STRBUF);
     }
@@ -2744,10 +2752,20 @@ void emit_block_binds(Compiler *c, int blk, const int *yargs, int yc,
     buf_printf(b, "sp_PolyArray *_t%d = sp_PolyArray_new();%s", trest, as_expr ? " " : "\n");
     if (!as_expr) emit_indent(b, indent);
     buf_printf(b, "SP_GC_ROOT(_t%d);%s", trest, as_expr ? " " : "\n");
+    /* a rest whose elements are the rule's handles takes an ivar's handle
+       itself (a local's boxes as its handle already) */
+    LocalVar *rlv = bsc ? scope_local(bsc, brest) : NULL;
+    int rest_handles = repr_of_slot(c, rlv).elems_handle;
     for (int j = P + ot_static; j < yc - Q; j++) {
       if (!as_expr) emit_indent(b, indent);
       buf_printf(b, "sp_PolyArray_push(_t%d, ", trest);
+      int vt[2], nv = 0;
+      if (rest_handles && !c->strbuf_box[yargs[j]] && ivar_read_is_handle(c, yargs[j])) {
+        vt[nv++] = view_push_repr(c, yargs[j], VR_STRBUF_BOX, 1);
+        vt[nv++] = view_push(c, yargs[j], TY_STRBUF);
+      }
       emit_boxed(c, yargs[j], b);
+      while (nv > 0) view_pop(c, vt[--nv]);
       buf_puts(b, as_expr ? "); " : ");\n");
     }
     rest_tmp = trest;

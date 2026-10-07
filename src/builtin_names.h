@@ -247,4 +247,8 @@ int is_concat_name(const char *n);     /* concat */
 int is_array_constructor(const char *recv, const char *meth); /* Array.new */
 int is_pow_name(const char *n); /* pow: Integer power, with an optional modulus */
 
+int is_lazy_name(const char *n);         /* lazy: makes a Lazy of its receiver */
+int is_new_name(const char *n);          /* new: a class's constructor */
+int is_native_share_decl(const char *n); /* native_share: a package's share declaration */
+
 #endif

@@ -106,8 +106,7 @@ Compiler *comp_new(const NodeTable *nt) {
   /* On only when set to something: empty is off, as SPINEL_DEFER_REFUSALS
      reads it, and so is "0", as SPINEL_GATE_RAISE=0 and SPINEL_INLINE_FORCE=0
      are. An environment that exports the variable as "0" or "" means off. */
-  { const char *e = getenv("SPINEL_SHARE_STRINGS");
-    c->share_strings = e && *e && strcmp(e, "0") != 0; }
+  c->share_strings = sp_share_strings_env();
   comp_node_ord(c, 0, NULL);   /* number the parsed nodes before any rewrite */
   c->node_ord_parsed = nt->count;
   return c;
@@ -2175,6 +2174,40 @@ int comp_bcall_first(Compiler *c, int scope_idx) {
 }
 int comp_bcall_next(const Compiler *c, int u) {
   return (u >= 0 && u < c->bcall_count) ? c->bcall_next[u] : -1;
+}
+
+/* Every ReturnNode, chained by the scope it is in (comp_scope_of), in node
+   order. The values a method answers through `return` were found by a
+   walk over every ReturnNode of the program per method asked about. */
+static void ret_build(Compiler *c) {
+  free(c->ret_head); free(c->ret_next);
+  const NodeTable *nt = c->nt;
+  int n = nt->count;
+  int ns = c->nscopes > 0 ? c->nscopes : 1;
+  if (!comp_chain_alloc(&c->ret_head, &c->ret_next, ns, n, &c->ret_built)) return;
+  c->ret_nscopes = ns;
+  c->ret_count = n;
+  for (int s = 0; s < ns; s++) c->ret_head[s] = -1;
+  for (int u = n - 1; u >= 0; u--) {   /* reverse: chains run in node order */
+    c->ret_next[u] = -1;
+    if (nt_kind(nt, u) != NK_ReturnNode) continue;
+    Scope *sc = comp_scope_of(c, u);
+    int si = sc ? (int)(sc - c->scopes) : -1;
+    if (si < 0 || si >= ns) continue;
+    c->ret_next[u] = c->ret_head[si];
+    c->ret_head[si] = u;
+  }
+  c->ret_version = nt->version;
+  c->ret_built = 1;
+}
+int comp_ret_first(Compiler *c, int scope_idx) {
+  if (!c->ret_built || c->ret_version != c->nt->version || c->ret_count != c->nt->count ||
+      c->ret_nscopes < c->nscopes) ret_build(c);
+  if (!c->ret_built || scope_idx < 0 || scope_idx >= c->ret_nscopes) return -1;
+  return c->ret_head[scope_idx];
+}
+int comp_ret_next(const Compiler *c, int u) {
+  return (u >= 0 && u < c->ret_count) ? c->ret_next[u] : -1;
 }
 
 /* Every ivar read handed to a call as an argument, chained by the ivar's

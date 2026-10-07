@@ -15341,6 +15341,32 @@ static void refuse_stored_block_param(Compiler *c, int sn, int to) {
   q.carry = SHARE_CARRY_COPY;
   if (!share_route_defer(c, &q, msg)) unsupported_feature(c, sn, msg);
 }
+/* Is block parameter (vn, vs) bound only by the yields of user methods
+   (`each { |e| acc << e }` over a yielding each, inlined or taking its
+   block as a proc), which hand over what they yield? A Struct's each is
+   the compiler's own, over members the share facts do not follow. */
+static int block_param_user_yield_only(Compiler *c, const char *vn, Scope *vs) {
+  const NodeTable *nt = c->nt;
+  int any = 0;
+  /* the calls whose literal block's parameters live in vs (comp_bcall_first) */
+  for (int w = comp_bcall_first(c, (int)(vs - c->scopes)); w >= 0; w = comp_bcall_next(c, w)) {
+    int blk = nt_ref(nt, w, "block");
+    if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode || comp_scope_of(c, blk) != vs) continue;
+    int named = 0;
+    for (int k = 0; k < 4 && !named; k++) {
+      const char *bp = block_param_name(c, blk, k);
+      if (!bp) break;
+      named = sp_streq(bp, vn);
+    }
+    if (!named) continue;
+    int mi = an_call_target_mi(c, w);
+    Scope *m = mi >= 0 ? &c->scopes[mi] : NULL;
+    if (!m || !(m->yields || m->is_lowered_yield) || (m->class_id >= 0 && c->classes[m->class_id].is_struct))
+      return 0;
+    any = 1;
+  }
+  return any;
+}
 static int strbuf_demand_store_leaf(Compiler *c, int sn, int depth) {
   const NodeTable *nt = c->nt;
   if (sn < 0 || c->strbuf_box[sn]) return 0;
@@ -15369,8 +15395,18 @@ static int strbuf_demand_store_leaf(Compiler *c, int sn, int depth) {
     if (snv->is_block_param) {
       int bound = 0;
       int ch = strbuf_block_param_source_walk(c, snm, sns, depth, SB_DEMAND, 1, &bound);
-      if (!bound && (snv->type == TY_STRING || snv->type == TY_STRBUF))
+      if (!bound && (snv->type == TY_STRING || snv->type == TY_STRBUF)) {
+        /* --share-strings: the route is the rule's (share_route_defer, in the refusal).
+           A parameter the rule shares holds the handle what binds it hands over
+           (share_default_apply), or the seal refuses it by name, and the element is
+           that handle (`each { |e| acc << e }` over a yielding each) */
         refuse_stored_block_param(c, sn, -1);
+        if (block_param_user_yield_only(c, snm, sns) && c->share &&
+            repr_str_shares(c, share_local_holder(c, (int)(sns - c->scopes), (int)(snv - sns->locals)))) {
+          if (snv->type != TY_STRBUF || !snv->str_shared) { snv->type = TY_STRBUF; snv->str_shared = 1; ch = 1; }
+          if (!c->strbuf_box[sn]) { c->strbuf_box[sn] = 1; ch = 1; }
+        }
+      }
       return ch;
     }
     /* a method parameter stores the caller's string: the parameter becomes
@@ -15905,6 +15941,53 @@ static int strbuf_gvar_store_walk(Compiler *c, const char *grn, int depth) {
   }
   return changed;
 }
+/* May a method defined in class k answer a call on a receiver of class
+   rcid: k is rcid or a subclass of it, a module, or no class? */
+static int strbuf_class_may_answer(Compiler *c, int k, int rcid) {
+  if (k < 0 || k >= c->nclasses || comp_class_is_module(c, &c->classes[k])) return 1;
+  for (int d = 0; k >= 0 && k < c->nclasses && d < 64; k = c->classes[k].parent, d++)
+    if (k == rcid) return 1;
+  return 0;
+}
+/* The containers method mi answers: its body's last value and each
+   `return v`; for `def mk = yield`, the block blk of the call. */
+static int strbuf_method_ret_source_walk(Compiler *c, int mi, int blk, int depth, int mode);
+/* --share-strings: a value of method mi that is a `super` (`def parts =
+   super`): the containers the method it calls answers, handed the
+   super's own block or, with none, mi's (blk) */
+static int strbuf_super_ret_walk(Compiler *c, int mi, int v, int blk, int depth, int mode) {
+  const NodeTable *nt = c->nt;
+  v = an_unparen(nt, v);
+  if (!c->share_strings || v < 0 || (nt_kind(nt, v) != NK_SuperNode && nt_kind(nt, v) != NK_ForwardingSuperNode))
+    return -1;
+  Scope *m = &c->scopes[mi];
+  int t = m->class_id >= 0 ? a_super_target(c, m) : -1;
+  if (t < 0 || t == mi) return 0;
+  int sb = nt_ref(nt, v, "block");
+  return strbuf_method_ret_source_walk(c, t, sb >= 0 && nt_kind(nt, sb) == NK_BlockNode ? sb : blk, depth + 1, mode);
+}
+static int strbuf_method_ret_source_walk(Compiler *c, int mi, int blk, int depth, int mode) {
+  const NodeTable *nt = c->nt;
+  Scope *m = &c->scopes[mi];
+  int changed = 0, sw;
+  if (depth > 8) return 0;
+  int last = scope_body_last(c, mi);
+  if (last >= 0 && nt_kind(nt, last) == NK_YieldNode) {
+    if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode)
+      changed |= strbuf_container_source_walk(c, nt_ref(nt, blk, "body"), depth + 1, mode);
+  }
+  else if ((sw = strbuf_super_ret_walk(c, mi, last, blk, depth, mode)) >= 0) changed |= sw;
+  else changed |= strbuf_container_source_walk(c, last, depth + 1, mode);
+  for (int u = comp_ret_first(c, mi); u >= 0; u = comp_ret_next(c, u)) {
+    if (nt_kind(nt, u) != NK_ReturnNode || comp_scope_of(c, u) != m) continue;
+    int ra = nt_ref(nt, u, "arguments");
+    int rn2 = 0; const int *rv2 = ra >= 0 ? nt_arr(nt, ra, "arguments", &rn2) : NULL;
+    if (rn2 != 1) continue;
+    if ((sw = strbuf_super_ret_walk(c, mi, rv2[0], blk, depth, mode)) >= 0) changed |= sw;
+    else changed |= strbuf_container_source_walk(c, rv2[0], depth + 1, mode);
+  }
+  return changed;
+}
 static int strbuf_container_source_walk(Compiler *c, int node, int depth, int mode) {
   const NodeTable *nt = c->nt;
   if (node < 0 || depth > 8) return 0;
@@ -16024,23 +16107,18 @@ static int strbuf_container_source_walk(Compiler *c, int node, int depth, int mo
       }
       if (recv >= 0 && nt_kind(nt, recv) != NK_SelfNode &&
           !ty_is_object(infer_type(c, recv))) return 0;
-      /* every user method of the name: a call resolves by name */
+      /* every user method of the name a call resolves to: by name, but on
+         a receiver of a known class only that class's own (resolved
+         through its chain), its subclasses' and a module's. Walking every
+         class's method of a common name (each class's to_a) from each call
+         was quadratic in the classes. */
+      int rcid = recv >= 0 && nt_kind(nt, recv) != NK_SelfNode ? ty_object_class(infer_type(c, recv)) : -1;
+      int rdef = rcid >= 0 ? comp_method_in_chain(c, rcid, mn, NULL) : -1;
       for (int mi = 1; mi < c->nscopes; mi++) {
         Scope *m = &c->scopes[mi];
         if (!m->name || !sp_streq(m->name, mn)) continue;
-        int last = scope_body_last(c, mi);
-        /* `def mk = yield`: this call's own block builds the container */
-        if (last >= 0 && nt_kind(nt, last) == NK_YieldNode) {
-          if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode)
-            changed |= strbuf_container_source_walk(c, nt_ref(nt, blk, "body"), depth + 1, mode);
-        }
-        else changed |= strbuf_container_source_walk(c, last, depth + 1, mode);
-        for (int u = comp_kind_first(c, NK_ReturnNode); u >= 0; u = comp_kind_next(c, u)) {
-          if (nt_kind(nt, u) != NK_ReturnNode || comp_scope_of(c, u) != m) continue;
-          int ra = nt_ref(nt, u, "arguments");
-          int rn2 = 0; const int *rv2 = ra >= 0 ? nt_arr(nt, ra, "arguments", &rn2) : NULL;
-          if (rn2 == 1) changed |= strbuf_container_source_walk(c, rv2[0], depth + 1, mode);
-        }
+        if (rcid >= 0 && mi != rdef && !strbuf_class_may_answer(c, m->class_id, rcid)) continue;
+        changed |= strbuf_method_ret_source_walk(c, mi, blk, depth, mode);
       }
       return changed;
     }
@@ -17046,6 +17124,32 @@ static int share_gvar_container(Compiler *c, const char *name) {
       changed |= strbuf_container_source_walk(c, nt_ref(nt, comp_vsite_node(c, e), "value"), 1, SB_DEMAND);
   return changed | strbuf_gvar_store_walk(c, grn, 1);
 }
+/* Does method mi answer an Array or Hash literal of typed Strings (`const
+   char *` elements, which cannot hold the shared handle), as its last
+   value or through a `return`? */
+static int share_ret_literal(const NodeTable *nt, int v) {
+  v = an_unparen(nt, v);
+  if (v >= 0 && nt_kind(nt, v) == NK_ReturnNode) {
+    int ra = nt_ref(nt, v, "arguments"), rn = 0;
+    const int *rv = ra >= 0 ? nt_arr(nt, ra, "arguments", &rn) : NULL;
+    v = rn == 1 ? an_unparen(nt, rv[0]) : -1;
+  }
+  return v >= 0 && (nt_kind(nt, v) == NK_ArrayNode || nt_kind(nt, v) == NK_HashNode);
+}
+static int share_ret_typed_str_literal(Compiler *c, int mi) {
+  TyKind t = c->scopes[mi].ret;
+  if (!(ty_is_array(t) && ty_array_elem(t) == TY_STRING) && !(ty_is_hash(t) && ty_hash_val(t) == TY_STRING)) return 0;
+  /* its last value, or any `return` (`return [@s] if ...`) */
+  if (share_ret_literal(c->nt, scope_body_last(c, mi))) return 1;
+  for (int u = comp_ret_first(c, mi); u >= 0; u = comp_ret_next(c, u))
+    if (nt_kind(c->nt, u) == NK_ReturnNode && comp_scope_of(c, u) == &c->scopes[mi] && share_ret_literal(c->nt, u))
+      return 1;
+  return 0;
+}
+/* an instance method a pattern calls to read an object's parts */
+static int share_pattern_method(const Scope *m) {
+  return m->class_id >= 0 && m->name && (sp_streq(m->name, "deconstruct") || sp_streq(m->name, "deconstruct_keys"));
+}
 static int share_default_apply(Compiler *c, int in_fixpoint) {
   if (!c->share_strings) return 0;
   if (in_fixpoint) {
@@ -17134,6 +17238,15 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
     else if (sh->kind == SHK_GVAR && repr_str_elems_share(c, h) && share_gvar_container(c, sh->name)) {
       changed = 1;
     }
+    /* a method's value whose elements the rule shares, when they would be
+       copies otherwise: a typed String Array or Hash literal it answers
+       (`def pair = [@a, @b]`, `t = o.pair[0]`), which the seal refuses
+       (repr_share_seal), and a deconstruct's, whose parts a pattern binds
+       (its boxes hold what each element boxes as). The containers it
+       answers hold the handles, as a local's do. */
+    else if (sh->kind == SHK_RET && repr_str_elems_share(c, h) &&
+             (share_ret_typed_str_literal(c, sh->scope) || share_pattern_method(&c->scopes[sh->scope])))
+      changed |= strbuf_method_ret_source_walk(c, sh->scope, -1, 0, SB_DEMAND);
     /* a global or a constant holds the handle the way a top-level ivar's C
        global does */
     else if ((sh->kind == SHK_GVAR || sh->kind == SHK_CONST) && repr_str_shares(c, h)) {
@@ -19004,10 +19117,13 @@ static void an_call_targets_of(Compiler *c, int u, ACallTargets *t) {
      K#initialize as a constructor. Resolving to a single scope dropped one of
      them -- whichever arm ran second -- and the call site vanished from that
      scope's chain, which is how `Holder.new(s)` stopped being evidence and the
-     copy came back. */
+     copy came back. Under --share-strings a unique name still has to be this
+     call's own target: StringIO.open must not pull File.open's path into its
+     shared init. */
   int byname = an_unique_scope_by_name(c, un);
   if (byname >= 0 && c->scopes[byname].name &&
-      sp_streq(c->scopes[byname].name, un)) act_add(t, byname);
+      sp_streq(c->scopes[byname].name, un) &&
+      (!c->share_strings || cplan_user_fresh(c, u)->mi == byname)) act_add(t, byname);
   /* A name more than one method defines resolves by the call itself, and
      so does an alias, which names no scope of its own. By unique name alone
      such a call had no target, so its site was missing from every chain: a
@@ -19456,7 +19572,8 @@ static int an_call_targets_scope(Compiler *c, int u, int mi2, Scope *m2) {
   /* only an alias reaches a scope under another name */
   int aliased = !is_new && an_alias_name(c, un);
   int byname = named ? an_unique_scope_by_name(c, un) : -1;
-  if (named && byname == mi2) return 1;
+  if (named && byname == mi2 &&
+      (!c->share_strings || cplan_user_fresh(c, u)->mi == mi2)) return 1;
   /* a name more than one method defines, or an alias: the targets the call
      itself resolves to, as an_call_targets_of lists them */
   if (!is_new && ((named && byname < 0) || aliased)) {

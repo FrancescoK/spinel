@@ -988,6 +988,11 @@ share-strings-test: $(SPINEL)
 	    SPINEL_GC_STRESS=1 "$$tmp/b" 2>&1 | cmp -s - "$$e" || { echo "share-strings-test: FAIL $$t (GC stress)"; ok=0; }; \
 	  else echo "share-strings-test: FAIL $$t (refused)"; cat "$$tmp/out"; ok=0; fi; \
 	done; \
+	if ! $(SPINEL) --share-strings test/share/share_strings_open_targets.rb -c --no-line-map -o "$$tmp/open.c" >"$$tmp/out" 2>&1 || \
+	   ! grep -q 'const char \* lv_path = NULL;' "$$tmp/open.c" || \
+	   grep -q 'sp_strbuf_read_pub(lv_path)' "$$tmp/open.c"; then \
+	  echo "share-strings-test: FAIL (File.open's path shares StringIO.open's init)"; ok=0; \
+	fi; \
 	rm -rf "$$tmp"; \
 	if [ $$ok = 1 ]; then echo "share-strings-test: pass"; else exit 1; fi
 

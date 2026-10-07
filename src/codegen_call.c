@@ -8175,6 +8175,30 @@ void emit_native_rest_args(Compiler *c, const NativeMethod *m, int argc, const i
    assigned cls_id first (runtime cls_id == class index), then the args in
    their native representation. The returned pointer is GC-allocated by the
    package. Shared by every `.new` shape (ConstantRead, ConstantPath). */
+/* --share-strings: a constructor whose object keeps the String it is
+   handed (`native_share ... "keeps"`), when the rule shares the String the
+   object keeps: its handle form, handed the handle of the variable the
+   String is in, or with no argument making a String of its own. A String
+   no variable holds (a literal, a call's answer) has no other name: the
+   plain form's copy of it is what the program can see. 0 otherwise. */
+static int emit_native_share_ctor(Compiler *c, int id, int ci, const NativeMethod *m, int argc, const int *argv,
+                                  Buf *b) {
+  if (!repr_share_rule(c) || !(m->share & NSH_KEEPS) || !m->share_csym || m->rest ||
+      !share_node_elems_share(c, id))
+    return 0;
+  Buf hb; memset(&hb, 0, sizeof hb);
+  if (m->nargs > 0 && (argc < 1 || !emit_handle_var_ref(c, argv[0], &hb))) { free(hb.p); return 0; }
+  buf_printf(b, "%s(%d", m->share_csym, ci);
+  for (int ai = 0; ai < m->nargs && ai < argc; ai++) {
+    buf_puts(b, ", ");
+    if (ai == 0) buf_puts(b, hb.p);
+    else if (ffi_spec_to_ty(m->args[ai]) == TY_STRING) emit_str_expr(c, argv[ai], b);
+    else emit_expr(c, argv[ai], b);
+  }
+  free(hb.p);
+  buf_puts(b, ")");
+  return 1;
+}
 int emit_native_ctor(Compiler *c, int id, int ci, int argc, const int *argv, Buf *b) {
   if (ci < 0 || !c->classes[ci].is_native_class) return 0;
   TyKind natys[8];
@@ -8186,6 +8210,7 @@ int emit_native_ctor(Compiler *c, int id, int ci, int argc, const int *argv, Buf
   if (emit_native_count_mismatch(c, id, ci, "new", 1, -1, argc, argv, b)) return 1;
   NativeMethod *m = &c->native_methods[nn];
   native_arg_check(c, id, "native constructor", m, argc, argv);
+  if (emit_native_share_ctor(c, id, ci, m, argc, argv, b)) return 1;
   buf_printf(b, "%s(%d", m->csym, ci);
   for (int ai = 0; ai < m->nargs && ai < argc; ai++) {
     buf_puts(b, ", ");
@@ -20356,7 +20381,10 @@ void refuse_yield_string_copies(Compiler *c, int yargc, const int *yargv) {
        follow it bind by name all the same, so the scan goes on to them */
     if (nt_kind(c->nt, yargv[k]) == NK_SplatNode) spread = 1;
     if (spread) continue;
-    if (!strvar_arg(c, yargv[k], &shared) || shared || local_is_handle(c, yargv[k])) continue;
+    /* a handle goes over as itself (emit_proc_yield) */
+    if (!strvar_arg(c, yargv[k], &shared) || shared || local_is_handle(c, yargv[k]) ||
+        ivar_read_is_handle(c, yargv[k]))
+      continue;
     DynReach r;
     if (g_yield_proc_expr < 0 && g_yield_proc_method >= 0) dyn_blk_reach(c, g_yield_proc_method, k, &r);
     else dyn_value_reach(c, g_yield_proc_expr, k, &r);
