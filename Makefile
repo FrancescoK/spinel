@@ -2354,10 +2354,11 @@ backtrace-test: $(SPINEL) $(SP_RT_LIB)
 	$(SPINEL) --debug --no-inline-hot test/backtrace/required_main.rb -o "$$tmp/rq" >/dev/null 2>&1 || \
 	  { echo "backtrace-test: FAIL (compile required_main)"; ok=0; }; \
 	"$$tmp/rq" > "$$tmp/rq.out" 2>&1; \
-	for f in "required_lib.rb:3:in .Lib#inner'" "required_lib.rb:[0-9]*:in .Lib#boom'" "required_lib.rb:[0-9]*:in .Lib.go'" "required_main.rb:[0-9]*:in .Top#run'" "required_lib.rb:17:in .lib_inner'" "required_lib.rb:[0-9]*:in .lib_outer'" "required_main.rb:[0-9]*:in .entry_run'"; do \
+	l3=; l17=; [ "$$(uname -s)" = Linux ] && { l3=3:; l17=17:; }; \
+	for f in "required_lib.rb:$${l3}in .Lib#inner'" "required_lib.rb:\([0-9]*:\)\{0,1\}in .Lib#boom'" "required_lib.rb:\([0-9]*:\)\{0,1\}in .Lib.go'" "required_main.rb:\([0-9]*:\)\{0,1\}in .Top#run'" "required_lib.rb:$${l17}in .lib_inner'" "required_lib.rb:\([0-9]*:\)\{0,1\}in .lib_outer'" "required_main.rb:\([0-9]*:\)\{0,1\}in .entry_run'"; do \
 	  grep -q "$$f" "$$tmp/rq.out" || { echo "backtrace-test: FAIL (#7658: no frame $$f)"; cat "$$tmp/rq.out"; ok=0; }; \
 	done; \
-	grep -q "required_main.rb:[0-9]*:in .\(Lib\|lib_\)" "$$tmp/rq.out" && { echo "backtrace-test: FAIL (#7658: a Lib frame names the entry script)"; cat "$$tmp/rq.out"; ok=0; }; \
+	grep -q "required_main.rb:\([0-9]*:\)\{0,1\}in .\(Lib\|lib_\)" "$$tmp/rq.out" && { echo "backtrace-test: FAIL (#7658: a Lib frame names the entry script)"; cat "$$tmp/rq.out"; ok=0; }; \
 	rm -rf "$$tmp"; \
 	if [ $$ok -eq 1 ]; then echo "backtrace-test: pass"; else exit 1; fi
 
