@@ -168,6 +168,10 @@ int repr_dyn_cls(const Compiler *c, TyKind t);
    arm of call_returns_nullable_int) */
 int repr_box_nullable_arg(Compiler *c, int v);
 int repr_local_nullable_int(Compiler *c, int node);
+/* Does a container of type t hold its Strings as `const char *` (a typed
+   String Array or a Hash with String values), so none can be the shared
+   handle? */
+int repr_typed_str_container(TyKind t);
 /* Whether repr_seal has run for the current compile. */
 int repr_sealed(void);
 /* Does the share rule decide which Strings are the shared handle

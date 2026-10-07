@@ -670,6 +670,10 @@ int is_select_reject_bang(const char *n) {
 int is_raise_alias(const char *n) {
   return sp_streq(n, "raise") || sp_streq(n, "fail");
 }
+/* the Exception methods that answer the message (the share walk's sh_exc) */
+int is_exc_message_name(const char *n) {
+  return sp_streq(n, "message") || sp_streq(n, "full_message") || sp_streq(n, "detailed_message");
+}
 /* +s alone: a route that answers its String operand unless frozen
    (--share-strings, emit_strbuf_route) */
 int is_unary_plus(const char *n) {
@@ -1026,3 +1030,17 @@ int is_new_name(const char *n) { return n && sp_streq(n, "new"); }
 /* `native_share`: a package's declaration of what a native binding does
    with the String its object keeps (--share-strings) */
 int is_native_share_decl(const char *n) { return n && sp_streq(n, "native_share"); }
+/* `Proc.new`, by its receiver's constant name and the method */
+int is_proc_new(const char *recv, const char *meth) {
+  return recv && meth && sp_streq(meth, "new") && sp_streq(recv, "Proc");
+}
+/* `method`: Kernel#method, the Method of the name it is handed */
+int is_method_ref_name(const char *n) { return n && sp_streq(n, "method"); }
+/* ENV, which answers a new String each read */
+int is_env_const(const char *n) { return n && sp_streq(n, "ENV"); }
+/* ARGV, whose Strings CRuby freezes */
+int is_argv_const(const char *n) { return n && sp_streq(n, "ARGV"); }
+/* `[]` alone: an element read, not its write */
+int is_aref_name(const char *n) { return n && sp_streq(n, "[]"); }
+/* `<<` alone: String#<<'s append, a chain's link */
+int is_shovel_name(const char *n) { return n && sp_streq(n, "<<"); }

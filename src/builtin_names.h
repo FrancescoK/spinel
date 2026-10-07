@@ -130,6 +130,7 @@ int is_hash_key_value_each(const char *n); /* each_key each_value */
 int is_encoding_mutator(const char *n); /* encode! force_encoding */
 int is_range_end_reader(const char *n); /* end last */
 int is_raise_alias(const char *n); /* fail raise */
+int is_exc_message_name(const char *n); /* message full_message detailed_message */
 int is_unary_plus(const char *n); /* +@ */
 int is_loop_name(const char *n); /* loop */
 int is_first_or_take(const char *n); /* first take */
@@ -257,5 +258,11 @@ int is_pow_name(const char *n); /* pow: Integer power, with an optional modulus 
 int is_lazy_name(const char *n);         /* lazy: makes a Lazy of its receiver */
 int is_new_name(const char *n);          /* new: a class's constructor */
 int is_native_share_decl(const char *n); /* native_share: a package's share declaration */
+int is_proc_new(const char *recv, const char *meth); /* Proc.new */
+int is_method_ref_name(const char *n);   /* method: Kernel#method */
+int is_env_const(const char *n);         /* ENV */
+int is_argv_const(const char *n);        /* ARGV */
+int is_aref_name(const char *n);         /* []: an element read */
+int is_shovel_name(const char *n);       /* <<: an append, a chain's link */
 
 #endif

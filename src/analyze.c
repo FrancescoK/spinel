@@ -18214,6 +18214,14 @@ static int an_tail_handle(Compiler *c, RetHandles *R, int n, TailCount *tc) {
   for (int i = 0; i < cnt; i++) if (!an_ret_handle(c, R, mis[i])) return 0;
   return 1;
 }
+/* Is body tail n an append chain over a shared handle's read (`buf << a <<
+   b`)? The tail appends in place and answers the base's read, which
+   publishes it (emit_stmt_tail_inner's `<<` arm). */
+static int an_tail_append_chain(Compiler *c, int n) {
+  int chain[64], base = -1;
+  return n >= 0 && nt_kind(c->nt, n) == NK_CallNode && str_append_chain(c, n, chain, &base) > 0 &&
+         an_arg_is_shared_handle(c, base);
+}
 static int an_ret_handle(Compiler *c, RetHandles *R, int mi) {
   if (R->st[mi] != RH_UNSEEN) return R->st[mi] == RH_YES;
   Scope *m = &c->scopes[mi];
@@ -18228,7 +18236,7 @@ static int an_ret_handle(Compiler *c, RetHandles *R, int mi) {
   /* a body with its own rescue is a begin, whose arms answer */
   if (last < 0 && m->body >= 0 && nt_kind(nt, m->body) == NK_BeginNode) last = m->body;
   TailCount tc = { 0, 0 };
-  if (last >= 0) { saw = 1; ok = an_tail_handle(c, R, last, &tc); }
+  if (last >= 0) { saw = 1; ok = an_tail_handle(c, R, last, &tc) || an_tail_append_chain(c, last); }
   for (int r = R->ret_start[mi]; ok && r < R->ret_start[mi + 1]; r++) {
     int ra = nt_ref(nt, R->ret_list[r], "arguments");
     int rn = 0; const int *rv = ra >= 0 ? nt_arr(nt, ra, "arguments", &rn) : NULL;
