@@ -151,6 +151,12 @@ int strbuf_recv_handle(Compiler *c, int id, int recv, char *out, size_t cap);
 /* Root receiver handle _t<t> when strbuf_recv_handle answered a route (hr
    2); a slot's needs none (codegen_stmt.c) */
 void emit_route_recv_root(int hr, int t, Buf *b);
+/* --share-strings: is recv a deep-return pickup whose method can answer
+   nil? (codegen_stmt.c) */
+int strbuf_pickup_may_nil(Compiler *c, int recv);
+/* --share-strings: can the deep-return pickup `id` answer nil?
+   (codegen_call.c) */
+int strbuf_pickup_answers_nil(Compiler *c, int id);
 /* --share-strings: the handle slot a variable's read names, 0 for any
    other node (codegen_stmt.c) */
 int strbuf_var_handle(Compiler *c, int n, char *out, size_t cap);
