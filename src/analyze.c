@@ -17312,10 +17312,11 @@ static int strbuf_demand_elem_arg(Compiler *c, int an) {
    `@values[i]` itself would, so the element read it answers is demanded as
    an element read handed to an appender is. Answers whether anything
    changed. A result that is another such call is followed (bounded). */
-static int *uec_seen, *uec_depth, uec_cap, uec_gen;
+static int *uec_seen, *uec_depth, *uec_cut, uec_cap, uec_gen, uec_cut_now;
 static int strbuf_demand_user_elem_call(Compiler *c, int call, int depth) {
   const NodeTable *nt = c->nt;
-  if (call < 0 || depth > 4 || nt_kind(nt, call) != NK_CallNode) return 0;
+  if (call < 0 || nt_kind(nt, call) != NK_CallNode) return 0;
+  if (depth > 4) { uec_cut_now = 1; return 0; }
   /* Each method is walked once per demand: a poly receiver follows every
      class's method of the name, and each of their results again, so a name
      many classes define (`[]`) fanned out to the power of the depth and a
@@ -17332,10 +17333,14 @@ static int strbuf_demand_user_elem_call(Compiler *c, int call, int depth) {
       int *nd = (int *)realloc(uec_depth, sizeof(int) * (size_t)nc);
       if (!nd) return 0;
       uec_depth = nd;
+      int *nk = (int *)realloc(uec_cut, sizeof(int) * (size_t)nc);
+      if (!nk) return 0;
+      uec_cut = nk;
       memset(uec_seen + uec_cap, 0, sizeof(int) * (size_t)(nc - uec_cap));
       uec_cap = nc;
     }
     uec_gen++;
+    uec_cut_now = 0;
   }
   const char *mn = nt_str(nt, call, "name");
   if (!mn) return 0;
@@ -17359,10 +17364,16 @@ static int strbuf_demand_user_elem_call(Compiler *c, int call, int depth) {
     if (cls >= 0) { if (mi != comp_method_in_chain(c, cls, mn, NULL)) continue; }
     else if (!m->name || !sp_streq(m->name, mn) || m->class_id < 0 || m->is_cmethod) continue;
     if (mi < uec_cap) {
-      if (uec_seen[mi] == uec_gen && uec_depth[mi] <= depth) { if (cls >= 0) break; continue; }
+      if (uec_seen[mi] == uec_gen && (uec_depth[mi] <= depth || !uec_cut[mi])) {
+        uec_cut_now |= uec_cut[mi];
+        if (cls >= 0) break;
+        continue;
+      }
       uec_seen[mi] = uec_gen;
       uec_depth[mi] = depth;
     }
+    int outer_cut = uec_cut_now;
+    uec_cut_now = 0;
     int vals[64], nv = 0;
     int last = scope_body_last(c, mi);
       if (last >= 0) vals[nv++] = last;
@@ -17379,6 +17390,8 @@ static int strbuf_demand_user_elem_call(Compiler *c, int call, int depth) {
       if (r > 0) changed = 1;
       else if (r < 0) changed |= strbuf_demand_user_elem_call(c, v, depth + 1);
     }
+    if (mi < uec_cap) uec_cut[mi] = uec_cut_now;
+    uec_cut_now |= outer_cut;
     if (cls >= 0) break;
   }
   return changed;
