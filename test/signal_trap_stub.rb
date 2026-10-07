@@ -1,7 +1,8 @@
-# trap / Signal.trap / ::Signal.trap compile to no-ops at every shape;
-# Spinel has no signal-handler runtime, so the block body (if any)
-# never fires. Expression position returns "DEFAULT" -- CRuby's value
-# for any signal that was never previously trapped.
+# trap / Signal.trap / ::Signal.trap at every shape: the block runs when the
+# signal arrives (test/trap_raise_pending.rb, test/signal_default_interrupt.rb),
+# and a program that never sends the signal sees only the return value, which
+# in expression position is "DEFAULT" -- CRuby's value for any signal that
+# was never previously trapped.
 #
 # Each section uses a distinct signal name so no signal's state is
 # observed twice (CRuby would return the prior handler on the second
