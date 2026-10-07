@@ -1505,10 +1505,12 @@ static void emit_ivar_write_result(Compiler *c, int id, int value, TyKind slot,
 /* The value of a local's `||=` / `&&=`: its slot. A slot that holds the
    --share-strings handle is an sp_String *: where the write is typed
    String and no handle mark asks for the handle, the slot's read face, as
-   `=`'s value is (an sp_String * where a String is read did not build). */
-static void emit_local_orw_result(Compiler *c, int id, const char *ref, Buf *b) {
+   `=`'s value is (an sp_String * where a String is read did not build).
+   The default build's mutable handle needs the same read face. */
+static void emit_local_orw_result(Compiler *c, int id, LocalVar *lv, const char *ref, Buf *b) {
   Repr r = repr_of(c, id);
-  if (repr_write_share(c, id) && !r.handle && r.as_ty == TY_STRING) emit_strbuf_slot_read(c, id, r, ref, b);
+  if (!r.handle && r.as_ty == TY_STRING && repr_slot_kind(c, lv) == RK_STRBUF)
+    emit_strbuf_slot_read(c, id, r, ref, b);
   else buf_puts(b, ref);
 }
 
@@ -1988,7 +1990,7 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
         if (apre.p) buf_puts(b, apre.p);
         if (abody.p) buf_puts(b, abody.p);
         buf_puts(b, " } ");
-        emit_local_orw_result(c, id, lhs, b);
+        emit_local_orw_result(c, id, lv, lhs, b);
         buf_puts(b, "; })");
         free(apre.p); free(abody.p);
       }
@@ -2012,7 +2014,7 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
         if (apre.p) buf_puts(b, apre.p);
         if (abody.p) buf_puts(b, abody.p);
         buf_puts(b, " } ");
-        emit_local_orw_result(c, id, rb.p, b);
+        emit_local_orw_result(c, id, lv, rb.p, b);
         buf_puts(b, "; })");
         free(apre.p); free(abody.p);
       }
