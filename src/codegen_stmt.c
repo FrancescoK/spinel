@@ -3498,6 +3498,11 @@ int static_nil_reader_cond(Compiler *c, int pred) {
 int static_block_given_cond(Compiler *c, int pred) {
   const NodeTable *nt = c->nt;
   if (pred < 0) return -1;
+  /* In a Thread or Fiber body the active block (g_block_id) is that body's
+     own, not a block spliced in for the method's: the method's block, or
+     its &block parameter, is whatever the call that started the body was
+     given, read at run time. */
+  if (g_fiber_body >= 0) return -1;
   /* `unless block` / `if block`, where `block` is the method's own `&block`
      parameter, asks what `block_given?` asks -- packages/tempfile/tempfile.rb
      writes it that way, and so did the program that reported this. Read only
