@@ -3430,6 +3430,12 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
     else if (rb_boxed && acc_ty == TY_POLY_ARRAY) {
       buf_puts(&tail, "sp_poly_to_poly_array("); emit_expr(c, bb[bn - 1], &tail); buf_puts(&tail, ")");
     }
+    /* --share-strings: a String the rule shares goes into a boxed
+       accumulator as its handle's box (emit_boxed_next_value), so the fold's
+       answer is that String */
+    else if (acc_ty == TY_POLY && !rb_boxed && (rbt == TY_STRING || rbt == TY_STRBUF) &&
+             strbuf_value_carries(c, bb[bn - 1]))
+      emit_boxed_next_value(c, bb[bn - 1], &tail);
     /* The mirror: a concretely typed block value going back into a boxed
        accumulator has to be boxed. Without this a fold with no init over
        Hashes assigned a hash pointer into the sp_RbVal seed slot. */
