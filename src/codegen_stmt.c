@@ -15699,7 +15699,10 @@ static int str_mutate_shared_arms(Compiler *c, int id, Buf *b, int indent, const
       }
     }
     const char *sbn = strbuf_local_name(c, recv);
-    if (sbn && g_nren < MAX_RENAME) {
+    /* the handle's slot through the holder: a captured or celled local's
+       is its cell, not lv_<name> (nothing declares that) */
+    char srefL[1024];
+    if (sbn && g_nren < MAX_RENAME && strbuf_slot_ref(c, recv, srefL, sizeof srefL)) {
       Scope *shs = comp_scope_of(c, recv);
       LocalVar *shlv = scope_local(shs, sbn);
       Buf pre; memset(&pre, 0, sizeof pre);
@@ -15717,7 +15720,7 @@ static int str_mutate_shared_arms(Compiler *c, int id, Buf *b, int indent, const
       if (!handled) { free(armb.p); free(pre.p); }
       else {
         emit_indent(b, indent);
-        buf_printf(b, "{ sp_String *_t%d = lv_%s;\n", tH, rename_local(sbn));
+        buf_printf(b, "{ sp_String *_t%d = %s;\n", tH, srefL);
         emit_sb_shim_swap(b, indent, tH, &pre, armb.p);
         return 1;
       }
