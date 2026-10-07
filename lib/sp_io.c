@@ -463,10 +463,16 @@ sp_IntArray *sp_File_set_winsize(sp_File *f, sp_IntArray *size) {
     ws.ws_xpixel = (unsigned short)v[2];
     ws.ws_ypixel = (unsigned short)v[3];
   }
+#ifdef TIOCSWINSZ
   if (ioctl(fileno(f->fp), TIOCSWINSZ, &ws) != 0) {
     int e = errno;
     sp_raise_cls(sp_errno_class_name(e), strerror(e));
   }
+#else
+  /* a platform with no terminal-size ioctl (wasm32-wasi) */
+  (void)ws;
+  sp_raise_cls("NotImplementedError", "winsize= is not implemented on this platform");
+#endif
   return size;
 }
 
