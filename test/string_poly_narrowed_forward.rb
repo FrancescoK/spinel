@@ -1,4 +1,4 @@
-# Flag-only: without --share-strings (as on master) a narrowed String local forwarded through a POLY parameter is a copy, and its append is lost (from #6782).
+# A narrowed String local forwarded through POLY parameters, a rest and a rest relay keeps the caller's String: the appends reach it (from #6782).
 # Integer seeds are essential: String and nil alone can settle on a
 # nullable String slot and miss re-boxing a narrowed POLY local.
 def grow(value, ignored = 0)

@@ -23935,6 +23935,22 @@ static int fwd_poly_param_handed_on(Compiler *c, int mi, int pj, int depth) {
       if (an >= 0 && nt_kind(nt, an) == NK_LocalVariableReadNode && nt_str(nt, an, "name") &&
           sp_streq(nt_str(nt, an, "name"), pn) && fwd_param_appends(c, ct, j, depth + 1)) return 1;
     }
+    /* laid into the callee's rest (`def relay(*r) = pair(*r)` called `relay(other, value)`):
+       the parameter is element k - rest_idx of that rest, and the rest hands it on to one
+       that appends. The positions before the rest are the loop above's. */
+    if (cm->rest_idx >= 0) {
+      int args = nt_ref(nt, u, "arguments"), ac = 0;
+      const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
+      for (int k = cm->rest_idx; k < ac; k++) {
+        NodeKind ak = nt_kind(nt, av[k]);
+        if (ak == NK_SplatNode || ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode) break;
+        if (ak != NK_LocalVariableReadNode || !nt_str(nt, av[k], "name") || !sp_streq(nt_str(nt, av[k], "name"), pn)) continue;
+        unsigned rb = fwd_rest_bits(c, ct);
+        int i = k - cm->rest_idx;
+        if (i < 16 ? (rb >> i) & 1u : (rb & FWD_REST_PAST) != 0) return 1;
+        if (rb & FWD_REST_OPEN) g_fwd_taint |= 2;
+      }
+    }
   }
   return 0;
 }
