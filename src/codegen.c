@@ -11113,6 +11113,29 @@ static void super_plan_check(int id, const char *what, const char *name, int ser
             id, name, what, mi, dcls, omi, odef);
 }
 
+/* self, boxed, in a method of class `cls`: a builtin's reopening holds it
+   as the builtin's own C value (emit_method_signature) -- a double for a
+   Float, the sp_RbVal already for an Array or Object -- and an ordinary
+   class as its object pointer. What a super into Object's (boxed-self)
+   method hands on. */
+static void emit_reopen_self_boxed(Compiler *c, int cls, Buf *b) {
+  const char *cn = cls >= 0 ? c->classes[cls].c_name : NULL;
+  const char *rn = cls >= 0 ? c->classes[cls].name : NULL;
+  if (!cn) { emit_boxed_text(c, ty_object(cls), g_self, b); return; }
+  if (sp_streq(cn, "String"))       emit_boxed_text(c, TY_STRING, g_self, b);
+  else if (sp_streq(cn, "Integer")) emit_boxed_text(c, TY_INT, g_self, b);
+  else if (sp_streq(cn, "Float"))   emit_boxed_text(c, TY_FLOAT, g_self, b);
+  else if (sp_streq(cn, "Symbol"))  emit_boxed_text(c, TY_SYMBOL, g_self, b);
+  else if (sp_streq(rn, "NilClass")) buf_puts(b, "sp_box_nil()");
+  else if (sp_streq(rn, "TrueClass") || sp_streq(rn, "FalseClass")) emit_boxed_text(c, TY_BOOL, g_self, b);
+  else if (sp_streq(cn, "Array") || sp_streq(cn, "Hash") || sp_streq(cn, "Object") || sp_streq(cn, "Numeric"))
+    buf_puts(b, g_self);
+  else if (sp_streq(cn, "Range")) emit_boxed_text(c, TY_RANGE, g_self, b);
+  else if (sp_streq(cn, "Time"))  emit_boxed_text(c, TY_TIME, g_self, b);
+  else emit_boxed_text(c, ty_object(cls), g_self, b);
+}
+
+
 void emit_super(Compiler *c, int id, Buf *b) {
   if (g_plan_check) ucall_emitted(id);
   { Scope *ss = comp_scope_of(c, id);
@@ -11554,7 +11577,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
        activesupport's HashWithIndifferentAccess#reverse_merge -- and which
        have no struct to cast self to. */
     buf_printf(b, "sp_%s_%s(", c->classes[defcls].c_name, mc(uname));
-    emit_boxed_text(c, ty_object(s->class_id), g_self, b);
+    emit_reopen_self_boxed(c, s->class_id, b);
   }
   /* a user exception subclass's super reaching its builtin parent's
      reopening: that method takes the runtime's sp_Exception */
