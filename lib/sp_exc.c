@@ -780,8 +780,12 @@ const char *sp_exc_parent_of_name(const char *cls) {
        too deep to serialize raises, and `rescue JSON::ParserError` catches it
        in CRuby because it is a ParserError */
     {"JSON::NestingError",    "JSON::ParserError"},
+    /* the json package's errors descend from StandardError through JSONError, as
+       CRuby's do: an explicit `rescue StandardError` and `is_a?(StandardError)` say so (#7797) */
+    {"JSON::JSONError",       "StandardError"},
+    {"JSON::ParserError",     "JSON::JSONError"},
     /* a Float JSON has no spelling for (Infinity, NaN) is refused with it */
-    {"JSON::GeneratorError",  "StandardError"},
+    {"JSON::GeneratorError",  "JSON::JSONError"},
     /* IO::Buffer's errors (lib/sp_iobuffer.c raises them by name): all
        RuntimeError subclasses in CRuby, except MaskError < ArgumentError */
     {"IO::Buffer::AccessError",      "RuntimeError"},

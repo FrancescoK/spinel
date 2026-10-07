@@ -115,6 +115,12 @@ static const BuiltinClass BUILTIN_CLASSES[] = {
   { "Enumerator::Chain",            0,     BC_CLASS },
   { "Enumerator::Lazy",             0,     BC_CLASS },
   { "Enumerator::Product",          0,     BC_CLASS },
+  /* the json package's errors, which lib/sp_exc.c gives their parents (JSONError < StandardError):
+     a known name makes `rescue JSON::JSONError` climb that hierarchy, not compare a name (#7797) */
+  { "JSON::JSONError",              0,     BC_EXCEPTION },
+  { "JSON::ParserError",            0,     BC_EXCEPTION },
+  { "JSON::NestingError",           0,     BC_EXCEPTION },
+  { "JSON::GeneratorError",         0,     BC_EXCEPTION },
   { "Encoding::CompatibilityError",        0, BC_EXCEPTION },
   { "Encoding::InvalidByteSequenceError",  0, BC_EXCEPTION },
   { "Encoding::UndefinedConversionError",  0, BC_EXCEPTION },

@@ -1,0 +1,8 @@
+caught
+caught: JSON::ParserError
+caught: JSON::ParserError
+[JSON::ParserError, true, true, true, true]
+[JSON::GeneratorError, true]
+[JSON::ParserError, JSON::JSONError, StandardError]
+[JSON::NestingError, JSON::ParserError, JSON::JSONError, StandardError]
+[JSON::GeneratorError, JSON::JSONError, StandardError]
