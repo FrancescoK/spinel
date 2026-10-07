@@ -1399,6 +1399,9 @@ static int strbuf_route_operand(Compiler *c, int v) {
         : is_string_class_name(nm) && recv < 0 && argc == 1 && blk < 0 && comp_method_index(c, nm) < 0 &&
           !bare_call_class_owned(c, v) ? argv[0] : -1;
   TyKind xt = x >= 0 ? comp_ntype(c, x) : TY_UNKNOWN;
+  /* String's BSH_ARGS route keeps a String held in a box too. Other
+     values still take Kernel#String's ordinary conversion below. */
+  if (xt == TY_POLY && is_string_class_name(nm)) return x;
   return xt == TY_STRING || xt == TY_STRBUF ? x : -1;
 }
 /* `String(x)` (Kernel's) or `+x` over a variable x whose slot holds the
@@ -1573,6 +1576,7 @@ static int strbuf_route_carries(Compiler *c, int v, int depth) {
       strbuf_route_exc_message(c, v)) return 1;
   int x = strbuf_route_operand(c, v);
   if (x == unwrap_parens(c, v)) return 1;
+  if (x >= 0 && repr_of(c, x).kind == RK_BOXED) return 1;
   if (x >= 0) return depth < 8 && strbuf_route_carries(c, x, depth + 1);
   return strbuf_slot_ref(c, v, ref, sizeof ref);
 }
@@ -1690,6 +1694,19 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
     emit_strbuf_handle_of(c, x, b);
     buf_printf(b, "; if (SP_UNLIKELY(!_t%d)) sp_raise_nomethod(sp_nomethod_msg(\"+@\", sp_box_nil())); "
                   "sp_String_uplus(_t%d); })", t, t);
+    return 1;
+  }
+  if (repr_of(c, x).kind == RK_BOXED) {
+    int t = ++g_tmp;
+    buf_puts(b, "({ ");
+    t = hold_operand(c, x, TY_POLY, 0, t, 1, " ", b);
+    buf_printf(b, "sp_poly_is_strbuf(_t%d) ? sp_poly_as_strbuf(_t%d) : sp_String_new_shared(", t, t);
+    int mark = view_bind(x, "_t%d", t);
+    int sv = view_push_repr(c, v, VR_STRBUF_BOX, 0);
+    emit_expr(c, v, b);
+    view_pop(c, sv);
+    view_unbind(mark);
+    buf_puts(b, "); })");
     return 1;
   }
   int t = ++g_tmp;
