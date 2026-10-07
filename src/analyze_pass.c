@@ -1193,58 +1193,6 @@ static int infer_case_pattern_locals(Compiler *c) {
 }
 
 
-/* Widen each local `x` in a `x = @ivar` write to the ivar's (possibly
-   just-widened) type, monotonically. Unlike infer_write_types this never resets
-   a local, so it only lifts a local that reads a now-wider ivar and leaves every
-   other local's carefully-derived type (pattern/massign/block bindings) intact
-   -- the reconciliation the late ivar-widening fixpoint needs (#1793). */
-/* A local typed as one object class whose write value settled POLY only after
-   the post-fixpoint write re-run (a callee's return widens last, once its
-   parameter has seen a second class): the emitted assignment hands an sp_RbVal
-   to an sp_Foo * and the C build fails. Widen the slot to poly -- the value
-   really can be either class (#3964). A scalar without a nil representation must
-   widen too: coercing a boxed nil into a Bool or Symbol loses the value. */
-/* The late reconciliation's twin for a local typed as a container: its write
-   now answers poly where it answered the container (a call whose return the
-   late ivar widening just boxed, `parent = Base.defs`), so the slot widens with
-   it. The rule below leaves a container alone, since a poly write may be one
-   the slot is deliberately narrowed from; only the late loop, which has just
-   widened what the writes read, asks this one (#7602). */
-int widen_container_locals_from_poly_writes(Compiler *c) {
-  const NodeTable *nt = c->nt;
-  int changed = 0;
-  for (int id = 0; id < nt->count; id++) {
-    if (nt_kind(nt, id) != NK_LocalVariableWriteNode) continue;
-    const char *nm = nt_str(nt, id, "name");
-    Scope *s = nm ? comp_scope_of(c, id) : NULL;
-    LocalVar *lv = s ? scope_local(s, nm) : NULL;
-    if (!lv || lv->is_param || lv->is_block_param || lv->rbs_seeded) continue;
-    if (!ty_is_array(lv->type) || lv->type == TY_POLY_ARRAY) continue;
-    int v = nt_ref(nt, id, "value");
-    if (v < 0 || nt_kind(nt, v) != NK_CallNode || infer_type(c, v) != TY_POLY) continue;
-    lv->type = TY_POLY;
-    changed = 1;
-  }
-  return changed;
-}
-
-int widen_locals_from_poly_writes(Compiler *c) {
-  const NodeTable *nt = c->nt;
-  int changed = 0;
-  for (int id = 0; id < nt->count; id++) {
-    if (nt_kind(nt, id) != NK_LocalVariableWriteNode) continue;
-    const char *nm = nt_str(nt, id, "name");
-    Scope *s = nm ? comp_scope_of(c, id) : NULL;
-    LocalVar *lv = s ? scope_local(s, nm) : NULL;
-    if (!lv || lv->is_param || lv->is_block_param || lv->rbs_seeded) continue;
-    if (!ty_is_object(lv->type) && an_ty_holds_nil(lv->type)) continue;
-    int v = nt_ref(nt, id, "value");
-    if (v < 0 || infer_type(c, v) != TY_POLY) continue;
-    lv->type = TY_POLY;
-    changed = 1;
-  }
-  return changed;
-}
 /* `arr.map! { ... }` REPLACES every element with the block's value, so a tail
    the receiver's element type cannot hold widens the receiver itself -- the
    same reasoning as a push of a foreign element, on a mutation that rewrites
@@ -1332,106 +1280,6 @@ static int lv_widen(LocalVar *lv, TyKind t) {
   if (m == lv->type) return 0;
   lv->type = m;
   return 1;
-}
-
-int reconcile_locals_reading_ivars(Compiler *c) {
-  const NodeTable *nt = c->nt;
-  int changed = 0;
-  LocalVar **widened = NULL; int nwidened = 0, cwidened = 0;
-  for (int id = 0; id < nt->count; id++) {
-    const char *ty = nt_type(nt, id);
-    if (!ty || !sp_streq(ty, "LocalVariableWriteNode")) continue;
-    int val_id = nt_ref(nt, id, "value");
-    if (val_id < 0) continue;
-    const char *vty = nt_type(nt, val_id);
-    if (!vty) continue;
-    int is_iv = sp_streq(vty, "InstanceVariableReadNode");
-    /* `x = reader` reads the same slot one call deep: an argument-less,
-       block-less attr_reader on self. Its own node type was settled before the
-       late widening below reached the slot, so reading it back would answer
-       the stale narrower type -- the local then declared the object pointer
-       while the field it is assigned from had become boxed (#3938). */
-    int is_rd = !is_iv && sp_streq(vty, "CallNode");
-    if (!is_iv && !is_rd) continue;
-    const char *nm = nt_str(nt, id, "name");
-    LocalVar *lv = nm ? scope_local(comp_scope_of(c, id), nm) : NULL;
-    if (!lv || lv->is_param || lv->is_block_param || lv->rbs_seeded) continue;
-    TyKind ivt = TY_UNKNOWN;
-    if (is_iv) ivt = infer_type(c, val_id);
-    else {
-      int rcv = nt_ref(nt, val_id, "receiver");
-      const char *rnm = nt_str(nt, val_id, "name");
-      int ra = nt_ref(nt, val_id, "arguments"); int rac = 0;
-      if (ra >= 0) nt_arr(nt, ra, "arguments", &rac);
-      if (!rnm || nt_ref(nt, val_id, "block") >= 0) continue;
-      if (rcv >= 0 && !(nt_type(nt, rcv) && sp_streq(nt_type(nt, rcv), "SelfNode"))) continue;
-      Scope *sc = comp_scope_of(c, val_id);
-      int cls = sc ? sc->class_id : -1;
-      int rdcls = -1;
-      /* ... and so does a method of the program called on self: the late
-         ivar widening re-derives the returns of the methods that answer the
-         ivar (`def current_row = (@bits if @row_ready)`), and a local
-         assigned one (`bits = current_row`) kept the Integer it was typed
-         with, nil reaching it as the sentinel that then read as a number */
-      if (cls >= 0 && !comp_reader_in_chain(c, cls, rnm, NULL)) {
-        int mi = comp_self_call_mi(c, val_id, rnm);
-        TyKind rt = mi >= 0 ? c->scopes[mi].ret : TY_UNKNOWN;
-        if (rt == TY_UNKNOWN || rt == TY_VOID) continue;
-        if (lv_widen(lv, rt)) {
-          changed = 1;
-          if (nwidened == cwidened) {
-            cwidened = cwidened ? cwidened * 2 : 8;
-            LocalVar **nw = (LocalVar **)realloc(widened, sizeof *nw * (size_t)cwidened);
-            if (!nw) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-            widened = nw;
-          }
-          widened[nwidened++] = lv;
-        }
-        continue;
-      }
-      if (rac != 0 || cls < 0 || !comp_reader_in_chain(c, cls, rnm, &rdcls)) continue;
-      if (rdcls < 0 || rdcls >= c->nclasses) continue;
-      const char *rn2 = comp_resolve_alias(c, cls, rnm);
-      char ivn2[300]; snprintf(ivn2, sizeof ivn2, "@%s", rn2 ? rn2 : rnm);
-      int iv2 = comp_ivar_index(&c->classes[rdcls], ivn2);
-      if (iv2 < 0) continue;
-      ivt = ivar_value_ty(&c->classes[rdcls], iv2);
-    }
-    if (ivt == TY_UNKNOWN) continue;
-    if (lv_widen(lv, ivt)) changed = 1;
-  }
-  /* A parameter typed from a local the rule above has just widened keeps
-     the scalar it was typed with: `hit(x, bits)` with `bits` now boxed read
-     the box through the Integer slot, nil as the sentinel, which the callee
-     then handed on as a number. Widen it to the local's type, as a call site
-     passing a boxed value would have. */
-  if (nwidened) NT_FOREACH_KIND(nt, NK_CallNode, cid) {
-    const char *cnm = nt_str(nt, cid, "name");
-    int rcv = nt_ref(nt, cid, "receiver");
-    if (!cnm || (rcv >= 0 && nt_kind(nt, rcv) != NK_SelfNode)) continue;
-    if (nt_ref(nt, cid, "arguments") < 0) continue;
-    int mi = comp_self_call_mi(c, cid, cnm);
-    if (mi < 0) continue;
-    Scope *m = &c->scopes[mi];
-    Scope *cs = comp_scope_of(c, cid);
-    for (int k = 0; k < m->nparams; k++) {
-      int spread = -1;
-      int a = arg_layout_param_node(c, m, cid, k, &spread);
-      if (a < 0 || spread >= 0 || nt_kind(nt, a) != NK_LocalVariableReadNode) continue;
-      const char *anm = nt_str(nt, a, "name");
-      LocalVar *alv = anm && cs ? scope_local(comp_scope_of(c, a), anm) : NULL;
-      int was_widened = 0;
-      for (int w = 0; w < nwidened && !was_widened; w++) was_widened = widened[w] == alv;
-      if (!alv || !was_widened || alv->type != TY_POLY) continue;
-      if (m->rest_idx >= 0 && k == m->rest_idx) continue;
-      LocalVar *plv = m->pnames[k] ? scope_local(m, m->pnames[k]) : NULL;
-      if (!plv || plv->rbs_seeded || plv->is_block_param) continue;
-      if (!(plv->type == TY_INT || plv->type == TY_FLOAT || plv->type == TY_BOOL || plv->type == TY_SYMBOL)) continue;
-      if (lv_widen(plv, TY_POLY)) changed = 1;
-    }
-  }
-  free(widened);
-  return changed;
 }
 
 /* Element type contributed by a pushed value (see yield_aware_elem_ty). */
@@ -4162,6 +4010,194 @@ static void infer_write_reads_widened(Compiler *c, const NodeTable *nt) {
   free(base); free(head); free(queue); free(rw);
 }
 
+/* The type a slot is read at before a join: inside infer_write_types'
+   recompute frame, the type the round's reset stashed in gc_root; for a late
+   re-join of settled slots, the slot's own type. */
+static TyKind lv_prior(const LocalVar *lv, int stashed) {
+  return stashed ? (TyKind)lv->gc_root : lv->type;
+}
+
+/* The type local write `id` (a plain, operator, `||=` or `&&=` write) hands
+   its slot, which the slot is then joined with; TY_UNKNOWN is no evidence.
+   An empty collection literal, an operator write and a copy of a hash read
+   a slot's prior type (lv_prior, `stashed` as there). */
+static TyKind local_write_ty(Compiler *c, int id, int stashed) {
+  const NodeTable *nt = c->nt;
+  NodeKind k = nt_kind(nt, id);
+  const char *nm = NULL;
+  TyKind newt = TY_UNKNOWN;
+  if (k == NK_LocalVariableWriteNode) {
+    nm = nt_str(nt, id, "name");
+    int val_id = nt_ref(nt, id, "value");
+    newt = infer_type(c, val_id);
+    /* a `x = nil` write doesn't pin the type: flow it as TY_NIL so ty_unify
+       can narrow it against an object write (NULL encodes nil); a purely-nil
+       local is mapped to poly by a post-fixpoint backstop. */
+    /* `x = y = nil` writes nil to every target; flow TY_NIL instead of the
+       inner slot's unified type. */
+    if (comp_nil_chain_bottom(nt, val_id) >= 0) newt = TY_NIL;
+    else {
+      /* likewise `a = b = 0`: each target takes the literal's type, not the
+         inner slot's, which a later write to b may widen (#4686) */
+      int lcb = comp_scalar_literal_chain_bottom(nt, val_id);
+      if (lcb >= 0) newt = infer_type(c, lcb);
+    }
+    /* Empty-collection literal `x = []` / `x = {}` returns TY_UNKNOWN from
+       infer_type. If the container-fold from a prior iteration already gave
+       this local a meaningful type (its prior type, lv_prior), preserve it so
+       that downstream uses like `x.map {...}` are not starved of type
+       information. */
+    if (newt == TY_UNKNOWN && nm) {
+      const char *vty2 = nt_type(nt, val_id);
+      int is_empty_col = vty2 && ((sp_streq(vty2, "ArrayNode") &&
+        ({ int _n = 0; nt_arr(nt, val_id, "elements", &_n); _n; }) == 0) ||
+        (sp_streq(vty2, "HashNode") &&
+        ({ int _n2 = 0; nt_arr(nt, val_id, "elements", &_n2); _n2; }) == 0));
+      if (is_empty_col) {
+        Scope *s2 = comp_scope_of(c, id);
+        LocalVar *lv2 = scope_local(s2, nm);
+        if (lv2 && lv_prior(lv2, stashed) != TY_UNKNOWN) newt = lv_prior(lv2, stashed);
+        /* ...unless that type is not a container of the literal's kind:
+           `x = 1; x = {}` holds an Integer and a Hash, so it boxes. Kept,
+           the Integer slot was assigned the hash pointer. */
+        if (an_empty_container_disagrees(an_empty_container_kind(c, val_id), newt))
+          newt = TY_POLY;
+      }
+      else if (an_empty_container_kind(c, val_id)) {
+        LocalVar *lv2 = scope_local(comp_scope_of(c, id), nm);
+        TyKind gr = lv2 ? lv_prior(lv2, stashed) : TY_UNKNOWN;
+        if (gr == TY_POLY || an_empty_container_disagrees(an_empty_container_kind(c, val_id), gr))
+          newt = TY_POLY;
+      }
+      /* `d = h.dup/clone`: inherit receiver's hash type from prior iteration */
+      if (newt == TY_UNKNOWN) {
+        const char *rvty2 = nt_type(nt, val_id);
+        if (rvty2 && sp_streq(rvty2, "CallNode")) {
+          const char *rvnm2 = nt_str(nt, val_id, "name");
+          int rvrecv2 = nt_ref(nt, val_id, "receiver");
+          if (rvrecv2 >= 0 && rvnm2 &&
+              (is_copy_alias(rvnm2))) {
+            const char *rrt2 = nt_type(nt, rvrecv2);
+            if (rrt2 && sp_streq(rrt2, "LocalVariableReadNode")) {
+              const char *rrn2 = nt_str(nt, rvrecv2, "name");
+              LocalVar *rlv2 = rrn2 ? scope_local(comp_scope_of(c, rvrecv2), rrn2) : NULL;
+              if (rlv2 && ty_is_hash(lv_prior(rlv2, stashed))) newt = lv_prior(rlv2, stashed);
+            }
+          }
+        }
+      }
+    }
+  }
+  else if (k == NK_LocalVariableOperatorWriteNode) {
+    nm = nt_str(nt, id, "name");
+    Scope *s = comp_scope_of(c, id);
+    LocalVar *cur = nm ? scope_local(s, nm) : NULL;
+    TyKind vt = infer_type(c, nt_ref(nt, id, "value"));
+    TyKind ct = cur ? lv_prior(cur, stashed) : TY_UNKNOWN; /* old type */
+    if (ct == TY_STRING) newt = TY_STRING;
+    else if (ty_is_numeric(ct) && ty_is_numeric(vt)) {
+      if (ct == TY_FLOAT || vt == TY_FLOAT) newt = TY_FLOAT;
+      else if (ct == TY_BIGINT || vt == TY_BIGINT) newt = TY_BIGINT;
+      else newt = TY_INT;
+    }
+    else newt = ct;
+  }
+  else if (k == NK_LocalVariableOrWriteNode || k == NK_LocalVariableAndWriteNode) {
+    /* a ||= v / a &&= v : the variable can hold its prior value or v */
+    nm = nt_str(nt, id, "name");
+    Scope *s = comp_scope_of(c, id);
+    LocalVar *cur = nm ? scope_local(s, nm) : NULL;
+    TyKind ct = cur ? lv_prior(cur, stashed) : TY_UNKNOWN;
+    newt = ty_unify(ct, infer_type(c, nt_ref(nt, id, "value")));
+  }
+  /* A void value assigned in value position (`v = always_raising_method`)
+     is nil-ish: type the slot poly so it is declarable. The RHS call is
+     emitted via emit_boxed, which evaluates it (it diverges) and yields nil. */
+  if (newt == TY_VOID) newt = TY_POLY;
+  return newt;
+}
+
+/* What infer_write_types keeps of a slot across its join: the decisions
+   about the slot's representation that a re-derivation from its writes alone
+   would undo. Inside the recompute frame (`stashed`), a slot the round could
+   not derive at all also keeps the type the reset stashed. */
+static void lv_keep_decisions(LocalVar *lv, int stashed) {
+  /* A slot already promoted to the append handle keeps that REPRESENTATION
+     across the recompute frame. The round's reset re-derives `out = +""` as a
+     plain TY_STRING, and promote_append_accumulators -- which fires on a
+     TY_STRING slot -- then re-promotes it, so the two passes trade the slot
+     back and forth and the fixpoint never converges: every compile ran to the
+     128-iteration cap. TY_STRBUF *is* a String; only the storage differs, so
+     re-deriving the Ruby-level type must not clobber the choice. Same reason
+     infer_bigint_loop_locals re-seeds inside this frame. If the re-derived
+     type is neither String nor the handle, the promotion's precondition is
+     genuinely gone and the flag goes with it. */
+  if (lv->str_append) {
+    if (lv->type == TY_STRING) lv->type = TY_STRBUF;
+    else if (lv->type != TY_STRBUF) lv->str_append = 0;
+  }
+  /* The same contract for a slot narrowed to a pointer array. The reset
+     re-derives it from its writes, which still read the poly array, and the
+     two array KINDS unify to the plain poly SCALAR -- strictly worse than
+     either. The narrowing is a decision about the slot, not about any one
+     write, so re-assert it inside the frame; a slot that no longer even
+     derives as a poly array has lost the precondition and the pin with it.
+     Without this the two passes trade the slot back and forth and every
+     compile ran to the 128-iteration cap. */
+  if (lv->oa_pin != TY_UNKNOWN) {
+    /* TY_POLY too: a local narrowed to a container's ELEMENT type re-derives
+       as the plain poly scalar the read hands back, exactly as a narrowed
+       container re-derives as the poly array. */
+    if (lv->type == TY_POLY_ARRAY || lv->type == TY_POLY || lv->type == lv->oa_pin)
+      lv->type = lv->oa_pin;
+    else lv->oa_pin = TY_UNKNOWN;
+  }
+  /* The same again for the empty-`{}` argument a TY_POLY parameter widened to
+     the PolyPoly hash (#3158). The caller's own element writes (`h["k"] = v`)
+     re-derive the slot as the narrower StrStr kind every round, and the
+     reverse binding widened it back on the next -- to the cap, and the
+     callee's writes through the reference were dropped, which is the very
+     bug the binding exists to fix. A slot that no longer derives as a hash
+     at all has lost the precondition and the pin with it. */
+  if (lv->poly_hash_pin) {
+    if (lv->type == TY_UNKNOWN || lv->type == TY_POLY || ty_is_hash(lv->type))
+      lv->type = TY_POLY_POLY_HASH;
+    else lv->poly_hash_pin = 0;
+  }
+  /* And for the array-literal local a widened parameter took (poly_array_pin):
+     its literals re-derive a typed array kind every round. */
+  if (lv->poly_array_pin) {
+    if (lv->type == TY_UNKNOWN || lv->type == TY_POLY || ty_is_array(lv->type))
+      lv->type = TY_POLY_ARRAY;
+    else lv->poly_array_pin = 0;
+  }
+  /* A slot this round could not derive AT ALL keeps what it had. The round's
+     reset exists so a slot can narrow when better evidence arrives, and a
+     narrowed slot is concrete -- so restoring the stash where the answer came
+     out UNKNOWN cannot block a narrowing, and it stops the round from throwing
+     away what the rest of the program already established. Without it a write
+     the pass has no rule for (`g = Hash.new(99)`) dropped its slot every round,
+     another pass settled it again, and the fixpoint ran to its cap (#4116).
+     The empty-collection write (local_write_ty) already does this for its
+     own case; this is the same rule without the special case. */
+  if (stashed && !lv->is_param && !lv->is_block_param && !lv->rbs_seeded &&
+      lv->type == TY_UNKNOWN && (TyKind)lv->gc_root != TY_UNKNOWN)
+    lv->type = (TyKind)lv->gc_root;
+  /* The shared-mutable / append-accumulator promotion is durable -- the mark
+     is, and analyze re-asserts the slot type from it after the fixpoint. Do it
+     HERE too, before infer_write_types compares the slot with its stash: the
+     reset wipes the promotion, the writes re-derive TY_STRING, and
+     promote_shared_stored_strings puts TY_STRBUF back later in the same round.
+     Neither yielded, so the fixpoint ran to its cap on every program with a
+     shared-mutable string (#3227, #4116). Same treatment oa_pin gets just
+     above, and for the same reason. */
+  if ((lv->str_shared || lv->str_append) &&
+      (lv->type == TY_STRING || lv->type == TY_STR_ARRAY)) lv->type = TY_STRBUF;
+  /* --share-strings: a String Array the rule settled in its poly form
+     keeps it (share_default_apply) */
+  if (lv->elems_shared && lv->type == TY_STR_ARRAY) lv->type = TY_POLY_ARRAY;
+}
+
 int infer_write_types(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -4215,87 +4251,7 @@ int infer_write_types(Compiler *c) {
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
     if (!ty) continue;
-    const char *nm = NULL;
-    TyKind newt = TY_UNKNOWN;
-    if (sp_streq(ty, "LocalVariableWriteNode")) {
-      nm = nt_str(nt, id, "name");
-      int val_id = nt_ref(nt, id, "value");
-      newt = infer_type(c, val_id);
-      /* a `x = nil` write doesn't pin the type: flow it as TY_NIL so ty_unify
-         can narrow it against an object write (NULL encodes nil); a purely-nil
-         local is mapped to poly by a post-fixpoint backstop. */
-      /* `x = y = nil` writes nil to every target; flow TY_NIL instead of the
-         inner slot's unified type. */
-      if (comp_nil_chain_bottom(nt, val_id) >= 0) newt = TY_NIL;
-      /* Empty-collection literal `x = []` / `x = {}` returns TY_UNKNOWN from
-         infer_type. If the container-fold from a prior iteration already gave
-         this local a meaningful type (stored in gc_root), preserve it so that
-         downstream uses like `x.map {...}` are not starved of type information. */
-      if (newt == TY_UNKNOWN && nm) {
-        const char *vty2 = nt_type(nt, val_id);
-        int is_empty_col = vty2 && ((sp_streq(vty2, "ArrayNode") &&
-          ({ int _n = 0; nt_arr(nt, val_id, "elements", &_n); _n; }) == 0) ||
-          (sp_streq(vty2, "HashNode") &&
-          ({ int _n2 = 0; nt_arr(nt, val_id, "elements", &_n2); _n2; }) == 0));
-        if (is_empty_col) {
-          Scope *s2 = comp_scope_of(c, id);
-          LocalVar *lv2 = scope_local(s2, nm);
-          if (lv2 && (TyKind)lv2->gc_root != TY_UNKNOWN) newt = (TyKind)lv2->gc_root;
-          /* ...unless that type is not a container of the literal's kind:
-             `x = 1; x = {}` holds an Integer and a Hash, so it boxes. Kept,
-             the Integer slot was assigned the hash pointer. */
-          if (an_empty_container_disagrees(an_empty_container_kind(c, val_id), newt))
-            newt = TY_POLY;
-        }
-        else if (an_empty_container_kind(c, val_id)) {
-          LocalVar *lv2 = scope_local(comp_scope_of(c, id), nm);
-          TyKind gr = lv2 ? (TyKind)lv2->gc_root : TY_UNKNOWN;
-          if (gr == TY_POLY || an_empty_container_disagrees(an_empty_container_kind(c, val_id), gr))
-            newt = TY_POLY;
-        }
-        /* `d = h.dup/clone`: inherit receiver's hash type from prior iteration */
-        if (newt == TY_UNKNOWN) {
-          const char *rvty2 = nt_type(nt, val_id);
-          if (rvty2 && sp_streq(rvty2, "CallNode")) {
-            const char *rvnm2 = nt_str(nt, val_id, "name");
-            int rvrecv2 = nt_ref(nt, val_id, "receiver");
-            if (rvrecv2 >= 0 && rvnm2 &&
-                (is_copy_alias(rvnm2))) {
-              const char *rrt2 = nt_type(nt, rvrecv2);
-              if (rrt2 && sp_streq(rrt2, "LocalVariableReadNode")) {
-                const char *rrn2 = nt_str(nt, rvrecv2, "name");
-                LocalVar *rlv2 = rrn2 ? scope_local(comp_scope_of(c, rvrecv2), rrn2) : NULL;
-                if (rlv2 && ty_is_hash((TyKind)rlv2->gc_root)) newt = (TyKind)rlv2->gc_root;
-              }
-            }
-          }
-        }
-      }
-    }
-    else if (sp_streq(ty, "LocalVariableOperatorWriteNode")) {
-      nm = nt_str(nt, id, "name");
-      Scope *s = comp_scope_of(c, id);
-      LocalVar *cur = nm ? scope_local(s, nm) : NULL;
-      TyKind vt = infer_type(c, nt_ref(nt, id, "value"));
-      TyKind ct = cur ? (TyKind)cur->gc_root : TY_UNKNOWN; /* old type */
-      if (ct == TY_STRING) newt = TY_STRING;
-      else if (ty_is_numeric(ct) && ty_is_numeric(vt)) {
-        if (ct == TY_FLOAT || vt == TY_FLOAT) newt = TY_FLOAT;
-        else if (ct == TY_BIGINT || vt == TY_BIGINT) newt = TY_BIGINT;
-        else newt = TY_INT;
-      }
-      else newt = ct;
-    }
-    else if (sp_streq(ty, "LocalVariableOrWriteNode") ||
-             sp_streq(ty, "LocalVariableAndWriteNode")) {
-      /* a ||= v / a &&= v : the variable can hold its prior value or v */
-      nm = nt_str(nt, id, "name");
-      Scope *s = comp_scope_of(c, id);
-      LocalVar *cur = nm ? scope_local(s, nm) : NULL;
-      TyKind ct = cur ? (TyKind)cur->gc_root : TY_UNKNOWN;
-      newt = ty_unify(ct, infer_type(c, nt_ref(nt, id, "value")));
-    }
-    else if (sp_streq(ty, "MatchWriteNode")) {
+    if (sp_streq(ty, "MatchWriteNode")) {
       /* `/(?<n>..)/ =~ str` binds each named group to a local: a String when
          the group participated, nil otherwise (NULL-encoded), so type each
          target as a nilable String. */
@@ -4312,13 +4268,12 @@ int infer_write_types(Compiler *c) {
       }
       continue;
     }
-    else {
-      continue;
-    }
-    /* A void value assigned in value position (`v = always_raising_method`)
-       is nil-ish: type the slot poly so it is declarable. The RHS call is
-       emitted via emit_boxed, which evaluates it (it diverges) and yields nil. */
-    if (newt == TY_VOID) newt = TY_POLY;
+    NodeKind k = nt_kind(nt, id);
+    if (k != NK_LocalVariableWriteNode && k != NK_LocalVariableOperatorWriteNode &&
+        k != NK_LocalVariableOrWriteNode && k != NK_LocalVariableAndWriteNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    TyKind newt = local_write_ty(c, id, 1);
+    if (id < c->node_cap) c->lw_joined[id] = newt;
     if (!nm) continue;
     LocalVar *lv = scope_local(comp_scope_of(c, id), nm);
     if (!lv || lv->is_block_param) continue;
@@ -4502,105 +4457,9 @@ int infer_write_types(Compiler *c) {
     free(pr_lv); free(pr_old);
   }
 
-  /* A slot already promoted to the append handle keeps that REPRESENTATION
-     across the recompute frame. The reset above re-derives `out = +""` as a
-     plain TY_STRING, and promote_append_accumulators -- which fires on a
-     TY_STRING slot -- then re-promotes it, so the two passes trade the slot
-     back and forth and the fixpoint never converges: every compile ran to the
-     128-iteration cap. TY_STRBUF *is* a String; only the storage differs, so
-     re-deriving the Ruby-level type must not clobber the choice. Same reason
-     infer_bigint_loop_locals re-seeds inside this frame. If the re-derived
-     type is neither String nor the handle, the promotion's precondition is
-     genuinely gone and the flag goes with it. */
   for (int s = 0; s < c->nscopes; s++)
-    for (int i = 0; i < c->scopes[s].nlocals; i++) {
-      LocalVar *lv = &c->scopes[s].locals[i];
-      if (!lv->str_append) continue;
-      if (lv->type == TY_STRING) lv->type = TY_STRBUF;
-      else if (lv->type != TY_STRBUF) lv->str_append = 0;
-    }
-
-  /* The same contract for a slot narrowed to a pointer array. The reset
-     re-derives it from its writes, which still read the poly array, and the
-     two array KINDS unify to the plain poly SCALAR -- strictly worse than
-     either. The narrowing is a decision about the slot, not about any one
-     write, so re-assert it inside the frame; a slot that no longer even
-     derives as a poly array has lost the precondition and the pin with it.
-     Without this the two passes trade the slot back and forth and every
-     compile ran to the 128-iteration cap. */
-  for (int s = 0; s < c->nscopes; s++)
-    for (int i = 0; i < c->scopes[s].nlocals; i++) {
-      LocalVar *lv = &c->scopes[s].locals[i];
-      if (lv->oa_pin == TY_UNKNOWN) continue;
-      /* TY_POLY too: a local narrowed to a container's ELEMENT type re-derives
-         as the plain poly scalar the read hands back, exactly as a narrowed
-         container re-derives as the poly array. */
-      if (lv->type == TY_POLY_ARRAY || lv->type == TY_POLY || lv->type == lv->oa_pin)
-        lv->type = lv->oa_pin;
-      else lv->oa_pin = TY_UNKNOWN;
-    }
-
-  /* The same again for the empty-`{}` argument a TY_POLY parameter widened to
-     the PolyPoly hash (#3158). The caller's own element writes (`h["k"] = v`)
-     re-derive the slot as the narrower StrStr kind every round, and the
-     reverse binding widened it back on the next -- to the cap, and the
-     callee's writes through the reference were dropped, which is the very
-     bug the binding exists to fix. A slot that no longer derives as a hash
-     at all has lost the precondition and the pin with it. */
-  for (int s = 0; s < c->nscopes; s++)
-    for (int i = 0; i < c->scopes[s].nlocals; i++) {
-      LocalVar *lv = &c->scopes[s].locals[i];
-      if (!lv->poly_hash_pin) continue;
-      if (lv->type == TY_UNKNOWN || lv->type == TY_POLY || ty_is_hash(lv->type))
-        lv->type = TY_POLY_POLY_HASH;
-      else lv->poly_hash_pin = 0;
-    }
-
-  /* And for the array-literal local a widened parameter took (poly_array_pin):
-     its literals re-derive a typed array kind every round. */
-  for (int s = 0; s < c->nscopes; s++)
-    for (int i = 0; i < c->scopes[s].nlocals; i++) {
-      LocalVar *lv = &c->scopes[s].locals[i];
-      if (!lv->poly_array_pin) continue;
-      if (lv->type == TY_UNKNOWN || lv->type == TY_POLY || ty_is_array(lv->type))
-        lv->type = TY_POLY_ARRAY;
-      else lv->poly_array_pin = 0;
-    }
-
-  /* A slot this round could not derive AT ALL keeps what it had. The reset at
-     the top exists so a slot can narrow when better evidence arrives, and a
-     narrowed slot is concrete -- so restoring the stash where the answer came
-     out UNKNOWN cannot block a narrowing, and it stops the round from throwing
-     away what the rest of the program already established. Without it a write
-     the pass has no rule for (`g = Hash.new(99)`) dropped its slot every round,
-     another pass settled it again, and the fixpoint ran to its cap (#4116).
-     The empty-collection write above already does this for its own case; this
-     is the same rule without the special case. */
-  for (int s = 0; s < c->nscopes; s++)
-    for (int i = 0; i < c->scopes[s].nlocals; i++) {
-      LocalVar *lv = &c->scopes[s].locals[i];
-      if (lv->is_param || lv->is_block_param || lv->rbs_seeded) continue;
-      if (lv->type == TY_UNKNOWN && (TyKind)lv->gc_root != TY_UNKNOWN)
-        lv->type = (TyKind)lv->gc_root;
-    }
-
-  /* The shared-mutable / append-accumulator promotion is durable -- the mark
-     is, and analyze re-asserts the slot type from it after the fixpoint. Do it
-     HERE too, before the comparison below: the reset at the top of this pass
-     wipes the promotion, the writes re-derive TY_STRING, and
-     promote_shared_stored_strings puts TY_STRBUF back later in the same round.
-     Neither yielded, so the fixpoint ran to its cap on every program with a
-     shared-mutable string (#3227, #4116). Same treatment oa_pin gets just
-     above, and for the same reason. */
-  for (int s = 0; s < c->nscopes; s++)
-    for (int i = 0; i < c->scopes[s].nlocals; i++) {
-      LocalVar *lv = &c->scopes[s].locals[i];
-      if ((lv->str_shared || lv->str_append) &&
-          (lv->type == TY_STRING || lv->type == TY_STR_ARRAY)) lv->type = TY_STRBUF;
-      /* --share-strings: a String Array the rule settled in its poly form
-         keeps it (share_default_apply) */
-      if (lv->elems_shared && lv->type == TY_STR_ARRAY) lv->type = TY_POLY_ARRAY;
-    }
+    for (int i = 0; i < c->scopes[s].nlocals; i++)
+      lv_keep_decisions(&c->scopes[s].locals[i], 1);
 
   /* Detect change vs the stashed old types -- over EXACTLY the slots the reset
      above stashed. It used to skip only params and block params, so a slot the
@@ -4620,6 +4479,102 @@ int infer_write_types(Compiler *c) {
   lw_index_free(&ivw_ix);
   g_infer_write_round = 0;
   free(fb);
+  return changed;
+}
+
+/* The late re-join's join: ty_unify, aware of the containers a slot can
+   settle past its writes. A poly Array holds any Array a write builds (the
+   write converts it), and a typed Array meeting a poly one is the poly Array,
+   not the boxed scalar ty_unify answers for two array kinds. */
+static TyKind lw_join(TyKind cur, TyKind v) {
+  int flat = cur == TY_INT_ARRAY || cur == TY_STR_ARRAY || cur == TY_FLOAT_ARRAY;
+  if (cur == TY_POLY_ARRAY && (ty_is_array(v) || ty_is_obj_array(v))) return cur;
+  if (flat && v == TY_POLY_ARRAY) return v;
+  return ty_unify(cur, v);
+}
+
+/* Re-join every local with the writes whose values read differently since
+   the slot was last joined with them (lw_joined). infer_write_types fixes a
+   local's type from its writes, but the passes after it still widen what
+   those writes produce: an ivar or a return widened late (`x = @iv`,
+   `parent = Base.defs`, `bits = current_row`, #1793, #3938, #7602), a proc's
+   return re-derived (`r = g.call(e)`, #4330), an array literal over a
+   widened local (`arr = [x, y]`), and under --int-overflow=promote every
+   Integer slot. The slot follows with the join infer_write_types itself
+   uses (local_write_ty, then the decisions it keeps), but without its reset:
+   re-deriving every local this late would undo what the pattern, massign
+   and block bindings settled. Monotone, and a write whose value is unchanged
+   says nothing new, so a deliberate narrowing of the slot (an Integer local
+   over boxed writes, narrow_poly_int_locals) stays. A pointer-array pin is
+   the one decision a widened write does undo: the element read hands it a
+   box now. */
+int rejoin_local_writes(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  static const NodeKind kinds[] = { NK_LocalVariableWriteNode, NK_LocalVariableOperatorWriteNode,
+                                    NK_LocalVariableOrWriteNode, NK_LocalVariableAndWriteNode };
+  int changed = 0;
+  LocalVar **boxed = NULL; int nboxed = 0, cboxed = 0;
+  for (unsigned k = 0; k < sizeof kinds / sizeof kinds[0]; k++)
+    NT_FOREACH_KIND(nt, kinds[k], id) {
+      if (id >= c->node_cap) continue;
+      const char *nm = nt_str(nt, id, "name");
+      LocalVar *lv = nm ? scope_local(comp_scope_of(c, id), nm) : NULL;
+      if (!lv || lv->is_param || lv->is_block_param || lv->rbs_seeded) continue;
+      TyKind v = local_write_ty(c, id, 0);
+      if (v == TY_UNKNOWN || v == c->lw_joined[id]) continue;
+      TyKind was = lv->type;
+      TyKind m = lw_join(was, v);
+      c->lw_joined[id] = v;
+      if (m == was) continue;
+      slot_set(c, lv, m, v, nt_ref(nt, id, "value"));
+      if (lv->oa_pin != TY_UNKNOWN && lv->type != lv->oa_pin) lv->oa_pin = TY_UNKNOWN;
+      lv_keep_decisions(lv, 0);
+      if (lv->type == was) continue;
+      changed = 1;
+      if (lv->type != TY_POLY) continue;
+      if (nboxed == cboxed) {
+        cboxed = cboxed ? cboxed * 2 : 8;
+        LocalVar **nb = (LocalVar **)realloc(boxed, sizeof *nb * (size_t)cboxed);
+        if (!nb) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+        boxed = nb;
+      }
+      boxed[nboxed++] = lv;
+    }
+  /* A parameter typed from a local the re-join has just boxed keeps the
+     scalar it was typed with: `hit(x, bits)` with `bits` now boxed read the
+     box through the Integer slot, nil as the sentinel, which the callee then
+     handed on as a number. Widen it to the box, as a call site passing a
+     boxed value would have. */
+  if (nboxed) NT_FOREACH_KIND(nt, NK_CallNode, cid) {
+    const char *cnm = nt_str(nt, cid, "name");
+    int rcv = nt_ref(nt, cid, "receiver");
+    if (!cnm || (rcv >= 0 && nt_kind(nt, rcv) != NK_SelfNode)) continue;
+    if (nt_ref(nt, cid, "arguments") < 0) continue;
+    int mi = comp_self_call_mi(c, cid, cnm);
+    if (mi < 0) continue;
+    Scope *m = &c->scopes[mi];
+    for (int k = 0; k < m->nparams; k++) {
+      int spread = -1;
+      int a = arg_layout_param_node(c, m, cid, k, &spread);
+      if (a < 0 || spread >= 0 || nt_kind(nt, a) != NK_LocalVariableReadNode) continue;
+      const char *anm = nt_str(nt, a, "name");
+      LocalVar *alv = anm ? scope_local(comp_scope_of(c, a), anm) : NULL;
+      int was_boxed = 0;
+      for (int w = 0; w < nboxed && !was_boxed; w++) was_boxed = boxed[w] == alv;
+      if (!alv || !was_boxed || alv->type != TY_POLY) continue;
+      if (m->rest_idx >= 0 && k == m->rest_idx) continue;
+      LocalVar *plv = m->pnames[k] ? scope_local(m, m->pnames[k]) : NULL;
+      if (!plv || plv->rbs_seeded || plv->is_block_param) continue;
+      if (!(plv->type == TY_INT || plv->type == TY_FLOAT || plv->type == TY_BOOL || plv->type == TY_SYMBOL)) continue;
+      if (lv_widen(plv, TY_POLY)) changed = 1;
+    }
+  }
+  free(boxed);
+  /* A block parameter bound from a local the re-join has changed (`parent.each
+     { |d| }`) was typed from the local's old element type: re-derive it,
+     through the binder that typed it. */
+  if (changed)
+    for (int k = 0; k < 8; k++) if (!infer_block_params(c)) break;
   return changed;
 }
 
@@ -13839,11 +13794,14 @@ static int infer_block_params_enum_arms(Compiler *c, const NodeTable *nt, int id
     return changed | 2;
   }
 
-  /* array.each_with_index { |x, i| } binds element + int index */
-  if (sp_streq(name, "each_with_index") && ty_is_array(rt)) {
+  /* array.each_with_index { |x, i| } binds element + int index; a boxed
+     receiver binds a boxed element. Left to the default, a parameter typed
+     while the receiver was still a typed array kept that element type once
+     the receiver boxed late. */
+  if (sp_streq(name, "each_with_index") && (ty_is_array(rt) || rt == TY_POLY)) {
     Scope *es = comp_scope_of(c, block);
     if (!p0) return changed | 2;
-    if (bp_widen(es, p0, ty_array_elem(rt))) changed = 1;
+    if (bp_widen(es, p0, rt == TY_POLY ? TY_POLY : ty_array_elem(rt))) changed = 1;
     const char *p1 = block_param_name(c, block, 1);
     if (p1) {
       if (bp_widen(es, p1, TY_INT)) changed = 1;
