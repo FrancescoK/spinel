@@ -4370,6 +4370,15 @@ int proc_form_source(Compiler *c, int s) {
   if (pf->class_id < 0) return comp_method_index(c, src);
   return (pf->is_cmethod ? comp_cmethod_in_class : comp_method_in_class)(c, pf->class_id, src);
 }
+/* Is `new` call `id`, which runs yielding initialize `initm`, a step of a
+   cycle of constructors (mark_ctor_cycles)? Its own scope, or the method a
+   clone holding it was made from, is on the same cycle as initm. */
+int ctor_site_on_cycle(Compiler *c, int id, int initm) {
+  if (initm < 0 || initm >= c->nscopes || !c->scopes[initm].ctor_cycle) return 0;
+  int s = id >= 0 && id < c->nt->count ? c->nscope[id] : -1;
+  if (s >= 0 && s < c->nscopes && c->scopes[s].is_proc_form) s = proc_form_source(c, s);
+  return s >= 0 && s < c->nscopes && c->scopes[s].ctor_cycle == c->scopes[initm].ctor_cycle;
+}
 int scope_needs_proc_form(Compiler *c, int s) {
   return scope_proc_form_of(c, s) >= 0;
 }

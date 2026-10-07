@@ -52,3 +52,25 @@ class Flt < Base
   def run = @b.call(2.5)
 end
 p Base.make.run, Flt.make.run
+
+# The block of a bare `new { }` or a `self.new { }` in a class method is
+# lifted as `Keep.new { }`'s is, so the local it writes is shared with the
+# class method (master printed 0 for both).
+class Acc
+  def initialize(&b) = (@b = b)
+  def run(x) = @b.call(x)
+  def self.bare
+    t = 0
+    q = new { |x| t += x }
+    q.run(3)
+    q.run(4)
+    t
+  end
+  def self.with_self
+    t = 0
+    q = self.new { |x| t += x }
+    q.run(5)
+    t
+  end
+end
+p Acc.bare, Acc.with_self

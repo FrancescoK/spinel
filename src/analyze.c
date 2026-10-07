@@ -903,6 +903,35 @@ static int a_scope_forwards_block_to_poly(Compiler *c, int mi) {
   return 0;
 }
 
+/* `recv.new` with recv naming a class: 1, with the initialize it runs in
+   *init (-1 for none). 0 for any other receiver. */
+static int an_const_new_init(Compiler *c, int recv, int *init) {
+  int rk = recv >= 0 ? nt_kind(c->nt, recv) : -1;
+  if (rk != NK_ConstantReadNode && rk != NK_ConstantPathNode) return 0;
+  int ci = comp_class_index(c, nt_str(c->nt, recv, "name"));
+  if (ci < 0) return 0;
+  *init = comp_method_in_chain(c, ci, "initialize", NULL);
+  return 1;
+}
+
+/* A block forwarded (`&blk`, `&`) to a `new` on a cycle of constructors
+   reaches the clone as a proc (ctor_site_on_cycle), and so does the
+   literal block it was given, which has to be lifted for that */
+static int ctor_new_forwards_to_cycle(Compiler *c, int nid, const char *tn) {
+  int init = -1;
+  return sp_streq(tn, "new") && an_const_new_init(c, nt_ref(c->nt, nid, "receiver"), &init) &&
+         ctor_site_on_cycle(c, nid, init);
+}
+/* Does initialize `init` forward its block to such a `new`? */
+static int ctor_init_forwards_to_cycle(Compiler *c, int init) {
+  Scope *m = &c->scopes[init];
+  if (!m->blk_param || !m->blk_param[0]) return 0;
+  for (int nid = an_calls_named_first(c, "new"); nid >= 0; nid = an_calls_named_next(nid))
+    if (c->nscope[nid] == init && nt_kind(c->nt, nid) == NK_CallNode &&
+        a_call_forwards_blk_param(c->nt, nid, m) && ctor_new_forwards_to_cycle(c, nid, "new")) return 1;
+  return 0;
+}
+
 /* Does scope `mi` hand its block param on to a method that takes a REAL &block
    -- one lowered out of yield-inlining because it recurses (or yields from
    inside a lifted body)? Such a target cannot have the block spliced into it,
@@ -940,8 +969,15 @@ static int a_scope_forwards_block_to_lowered(Compiler *c, int mi) {
     if (!a_call_forwards_blk_param(nt, nid, m)) continue;
     const char *tn = nt_str(nt, nid, "name");
     if (!tn) continue;
+    if (ctor_new_forwards_to_cycle(c, nid, tn)) return 1;
     int recv = nt_ref(nt, nid, "receiver");
     int tmi = -1;
+    /* a `new` of a class whose initialize forwards the block on into a
+       cycle of constructors, one link as below */
+    if (sp_streq(tn, "new") && an_const_new_init(c, recv, &tmi)) {
+      if (tmi >= 0 && tmi != mi && ctor_init_forwards_to_cycle(c, tmi)) return 1;
+      continue;
+    }
     if (recv < 0) tmi = comp_self_call_mi(c, nid, tn);
     else {
       TyKind rt = infer_type(c, recv);
@@ -957,9 +993,20 @@ static int a_scope_forwards_block_to_lowered(Compiler *c, int mi) {
   return 0;
 }
 
+static int super_reach(Compiler *c, Scope *s);
 int a_block_is_lifted(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, id);
+  /* `super(...) { }` into a method that keeps its block as a real &blk
+     parameter -- among them a proc-form clone's super, which reaches the
+     parent's clone (a constructor cycle's subclass, mark_ctor_cycles) --
+     hands it the block as a proc (emit_super_block_arg) */
+  if (nt_kind(nt, id) == NK_SuperNode || nt_kind(nt, id) == NK_ForwardingSuperNode) {
+    int blk = nt_ref(nt, id, "block"), s = c->nscope[id];
+    if (nt_kind(nt, blk) != NK_BlockNode || s < 0 || s >= c->nscopes || c->scopes[s].class_id < 0) return 0;
+    int t = super_reach(c, &c->scopes[s]);
+    return t >= 0 && c->scopes[t].blk_param && c->scopes[t].blk_param[0] && !c->scopes[t].yields;
+  }
   if (!ty || !sp_streq(ty, "CallNode")) return 0;
   int blk = nt_ref(nt, id, "block");
   if (blk < 0 || !nt_type(nt, blk) || !sp_streq(nt_type(nt, blk), "BlockNode")) return 0;
@@ -990,6 +1037,9 @@ int a_block_is_lifted(Compiler *c, int id) {
         /* an implicit-self call inside a class method resolves to a CLASS
            method; its literal block is lifted all the same (#2444) */
         if (mi < 0) mi = comp_cmethod_in_chain(c, self->class_id, name, NULL);
+        /* and a bare `new` there runs the class's initialize */
+        if (mi < 0 && self->is_cmethod && sp_streq(name, "new"))
+          mi = comp_method_in_chain(c, self->class_id, "initialize", NULL);
       }
     }
     /* self may be an instance of a subclass whose override of the method
@@ -1026,11 +1076,18 @@ else {
         if (mi < 0 && sp_streq(name, "new")) mi = comp_method_in_chain(c, ci, "initialize", NULL);
       }
     }
+    /* `self.new { }` in a class method, as a bare `new { }` there */
+    Scope *cs = comp_scope_of(c, id);
+    if (rty && sp_streq(rty, "SelfNode") && sp_streq(name, "new") && cs && cs->is_cmethod &&
+        cs->class_id >= 0 && comp_cmethod_in_chain(c, cs->class_id, "new", NULL) < 0) {
+      const_is_class = 1;
+      mi = comp_method_in_chain(c, cs->class_id, "initialize", NULL);
+    }
     /* A constant that names no class is an ordinary VALUE (`CONFIG.each { }`),
        so it is typed like any other receiver -- including poly, whose dispatch
        lifts the block. Reading it as a class name and stopping there left such
        a block unlifted and its captures without storage. */
-    if (!const_recv || !const_is_class) {
+    if (!const_is_class) {
       TyKind rt = infer_type(c, recv);
       if (ty_is_object(rt)) mi = comp_method_in_chain(c, ty_object_class(rt), name, NULL);
       /* A Class value known only at run time dispatches on it to the class
@@ -1078,6 +1135,12 @@ else {
   }
   if (mi < 0) return 0;
   Scope *m = &c->scopes[mi];
+  /* `Y.new { }` on a cycle of constructors (`Y.new` in Y's own yielding
+     initialize, or in its clone) hands its block to the clone as a proc
+     (ctor_site_on_cycle, emit_ctor_new_with_proc), the body not being
+     spliced there */
+  if (m->yields && sp_streq(name, "new") && m->name && sp_streq(comp_prep_user_name(m->name), "initialize") &&
+      ctor_site_on_cycle(c, id, mi)) return 1;
   /* A lowered yielding method also receives its block as a real proc, so a
      block passed to it is lifted and captures enclosing locals like any other. */
   if (!m->blk_param || !m->blk_param[0]) return 0;
@@ -24636,6 +24699,9 @@ static int pf_dynamic_new(Compiler *c) {
   return 0;
 }
 
+static void mark_ctor_cycles(Compiler *c);
+static int ctor_graph_init(Compiler *c, int s);
+
 /* Does a `method(:name)` (or `public_method`, `instance_method`) name it? A
    Method object calls the method as a function, and a yielding one has none
    but its clone. */
@@ -24721,6 +24787,7 @@ int make_yield_proc_forms(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = c->nscopes;
   int made = 0;
+  mark_ctor_cycles(c);
   for (int s = 1; s < n0; s++) {
     Scope *src = &c->scopes[s];
     /* reachability is decided after this pass, so do not consult it: an
@@ -24740,7 +24807,8 @@ int make_yield_proc_forms(Compiler *c) {
        re-raise and its own `new` sites alike, none of which splice the body */
     int exc_init = src->class_id >= 0 && sp_streq(src->name, "initialize") && !src->is_cmethod &&
                    class_is_exc_subclass(c, src->class_id);
-    if (src->class_id >= 0 && !exc_init && !pf_wanted(c, src->name) && !pf_in_class_dispatch(c, src))
+    if (src->class_id >= 0 && !exc_init && !pf_wanted(c, src->name) && !pf_in_class_dispatch(c, src) &&
+        !(src->ctor_cycle && ctor_graph_init(c, s)))
       continue;
     /* A method the program reopens has two definitions in the scope table
        and the last one wins (comp_method_in_class): only that one gets the
@@ -30596,6 +30664,148 @@ static int super_reach(Compiler *c, Scope *s) {
   if (p < 0) return -1;
   return s->is_cmethod ? comp_cmethod_in_chain(c, p, s->name, NULL)
                        : comp_method_in_chain(c, p, s->name, NULL);
+}
+
+/* A node of the graph below: a yielding method, which is spliced where it
+   is called. */
+static int ctor_graph_node(Compiler *c, int s) {
+  if (s < 0 || s >= c->nscopes) return 0;
+  Scope *sc = &c->scopes[s];
+  return sc->yields && !sc->is_proc_form && sc->name;
+}
+/* ...and among those a yielding instance initialize, which a `new` site or
+   a super splices. Its copy behind a class's own initialize (`__inc 0
+   initialize`, an included module's that the class's calls super into)
+   counts too. */
+static int ctor_graph_init(Compiler *c, int s) {
+  Scope *sc = &c->scopes[s];
+  return ctor_graph_node(c, s) && sc->class_id >= 0 && !sc->is_cmethod &&
+         sp_streq(comp_prep_user_name(sc->name), "initialize");
+}
+
+/* The yielding method node `id` splices where it stands in a yielding
+   method's body: a `new` of a named class runs that class's initialize, a
+   `super` the parent's method, and any other call its target. -1 when it
+   splices none. */
+static int ctor_graph_target(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  int t = -1;
+  if (nt_kind(nt, id) == NK_CallNode) {
+    const char *name = nt_str(nt, id, "name");
+    int recv = nt_ref(nt, id, "receiver");
+    int rk = recv >= 0 ? nt_kind(nt, recv) : -1;
+    int ci = rk == NK_ConstantReadNode || rk == NK_ConstantPathNode
+           ? comp_class_index(c, nt_str(nt, recv, "name")) : -1;
+    if (!name) return -1;
+    /* a bare `new` in a class method builds that class */
+    Scope *sc = &c->scopes[c->nscope[id]];
+    if ((recv < 0 || rk == NK_SelfNode) && sc->is_cmethod) ci = sc->class_id;
+    /* a `new` runs the class's own `def self.new` when it has one, else
+       its initialize */
+    if (sp_streq(name, "new")) {
+      t = ci >= 0 ? comp_cmethod_in_chain(c, ci, "new", NULL) : -1;
+      if (t < 0 && ci >= 0) t = comp_method_in_chain(c, ci, "initialize", NULL);
+    }
+    else if (recv < 0 || rk == NK_SelfNode) t = comp_self_call_mi(c, id, name);
+    else if (ci >= 0) t = comp_cmethod_in_chain(c, ci, name, NULL);
+    else {
+      TyKind rt = infer_type(c, recv);
+      if (ty_is_object(rt)) t = comp_method_in_chain(c, ty_object_class(rt), name, NULL);
+    }
+  }
+  else t = super_reach(c, &c->scopes[c->nscope[id]]);
+  return ctor_graph_node(c, t) ? t : -1;
+}
+
+/* One edge per call and `super` in a yielding method's body that splices
+   another: counted into cnt[s + 1], or appended to adj at fill[s]. */
+static void ctor_graph_edge(Compiler *c, int id, int *cnt, int *adj, int *fill) {
+  int s = c->nscope[id];
+  if (!ctor_graph_node(c, s)) return;
+  int t = ctor_graph_target(c, id);
+  if (t < 0) return;
+  if (cnt) cnt[s + 1]++;
+  else adj[fill[s]++] = t;
+}
+static void ctor_graph_edges(Compiler *c, int *cnt, int *adj, int *fill) {
+  const NodeTable *nt = c->nt;
+  NT_FOREACH_KIND(nt, NK_CallNode, id) ctor_graph_edge(c, id, cnt, adj, fill);
+  NT_FOREACH_KIND(nt, NK_SuperNode, id) ctor_graph_edge(c, id, cnt, adj, fill);
+  NT_FOREACH_KIND(nt, NK_ForwardingSuperNode, id) ctor_graph_edge(c, id, cnt, adj, fill);
+}
+
+/* The cycles of constructors. A `new` site splices the yielding initialize
+   it runs (emit_ctor_yield_inline), so an initialize whose body reaches
+   itself again -- `Y.new` in Y#initialize, two classes' initializes
+   building each other, a parent's building a subclass whose initialize
+   calls super, or a `new` in a yielding method the initialize calls --
+   spliced without end. The graph has an edge from each yielding method to
+   the yielding method a call or a `super` in its body splices, and each
+   initialize on a cycle is marked with its strongly connected component
+   (Scope.ctor_cycle), the other methods there too. The initialize gets the
+   proc-form clone, and a `new` site within the component runs the body
+   through the constructor instead (ctor_site_on_cycle). A cycle through an
+   initialize enters it by a `new`, a `super` only going up the class tree,
+   so that ends it; a cycle of other yielding methods alone is not this
+   pass's. Tarjan's algorithm, iterative, over the calls and the supers:
+   linear in the program. */
+static void mark_ctor_cycles(Compiler *c) {
+  int n = c->nscopes;
+  for (int s = 0; s < n; s++) c->scopes[s].ctor_cycle = 0;
+  int *start = (int *)calloc((size_t)n + 1, sizeof(int));
+  if (!start) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  /* the edges, counted per initialize, then filled in */
+  ctor_graph_edges(c, start, NULL, NULL);
+  for (int s = 0; s < n; s++) start[s + 1] += start[s];
+  if (start[n] == 0) { free(start); return; }
+  int *adj = (int *)malloc(sizeof(int) * (size_t)start[n]);
+  int *fill = (int *)malloc(sizeof(int) * (size_t)n);
+  if (!adj || !fill) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  memcpy(fill, start, sizeof(int) * (size_t)n);
+  ctor_graph_edges(c, NULL, adj, fill);
+  /* index[s] is s's visit order from 1, 0 while unvisited; edge[s] the
+     next edge to follow; stack holds the open components, path the DFS */
+  int *index = (int *)calloc((size_t)n, sizeof(int)), *low = (int *)malloc(sizeof(int) * (size_t)n);
+  int *edge = (int *)malloc(sizeof(int) * (size_t)n), *stack = (int *)malloc(sizeof(int) * (size_t)n);
+  int *path = (int *)malloc(sizeof(int) * (size_t)n);
+  char *on = (char *)calloc((size_t)n, 1);
+  if (!index || !low || !edge || !stack || !path || !on) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  int order = 0, sp = 0, ncomp = 0;
+  for (int r = 0; r < n; r++) {
+    if (index[r] || start[r] == start[r + 1]) continue;
+    int np = 0;
+    path[np++] = r; index[r] = low[r] = ++order; edge[r] = start[r]; stack[sp++] = r; on[r] = 1;
+    while (np > 0) {
+      int v = path[np - 1];
+      if (edge[v] < start[v + 1]) {
+        int w = adj[edge[v]++];
+        if (!index[w]) {
+          index[w] = low[w] = ++order; edge[w] = start[w]; stack[sp++] = w; on[w] = 1;
+          path[np++] = w;
+        }
+        else if (on[w] && index[w] < low[v]) low[v] = index[w];
+        continue;
+      }
+      np--;
+      if (np > 0 && low[v] < low[path[np - 1]]) low[path[np - 1]] = low[v];
+      if (low[v] != index[v]) continue;
+      /* v roots a component: a cycle when it has two methods, or one whose
+         body splices itself, and one of constructors when an initialize is
+         on it */
+      int self = 0, init = 0, k = sp;
+      for (int e = start[v]; e < start[v + 1]; e++) if (adj[e] == v) self = 1;
+      do init |= ctor_graph_init(c, stack[--k]); while (stack[k] != v);
+      int mark = init && (self || k < sp - 1);
+      if (mark) ncomp++;
+      int w;
+      do {
+        w = stack[--sp];
+        on[w] = 0;
+        if (mark) c->scopes[w].ctor_cycle = ncomp;
+      } while (w != v);
+    }
+  }
+  free(start); free(adj); free(fill); free(index); free(low); free(edge); free(stack); free(path); free(on);
 }
 
 /* `super` from a method a module prepended into a builtin class put in front

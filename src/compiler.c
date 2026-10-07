@@ -2665,10 +2665,28 @@ void comp_prep_chain_add(ClassInfo *ci, const char *from, const char *to) {
 
 const char *comp_super_shadow(Compiler *c, const Scope *s) {
   if (!s || !s->name) return NULL;
-  if (!s->is_cmethod) return comp_prep_chain_target(c, s->class_id, s->name);
   char key[320];
-  snprintf(key, sizeof key, "self.%s", s->name);
-  return comp_prep_chain_target(c, s->class_id, key);
+  snprintf(key, sizeof key, "%s%s", s->is_cmethod ? "self." : "", s->name);
+  const char *t = comp_prep_chain_target(c, s->class_id, key);
+  /* A proc-form clone ("<m>#pf", make_yield_proc_forms) has no chain entry
+     of its own: its super reaches the shadow the method's does -- the
+     shadow's own clone when it has one, as the clone of a class's
+     initialize does that calls super into an included module's on a cycle
+     of constructors, or the shadow itself when it does not yield. Sent up
+     the parent chain instead, it raised "no superclass method". A yielding
+     shadow with no clone has no function to call and is left so. */
+  size_t n = strlen(key);
+  if (t || n <= 3 || n >= sizeof key || strcmp(key + n - 3, "#pf") != 0) return t;
+  key[n - 3] = '\0';
+  t = comp_prep_chain_target(c, s->class_id, key);
+  if (!t) return NULL;
+  char pf[320];
+  snprintf(pf, sizeof pf, "%s#pf", t);
+  int (*in_class)(Compiler *, int, const char *) = s->is_cmethod ? comp_cmethod_in_class : comp_method_in_class;
+  int k = in_class(c, s->class_id, pf);
+  if (k >= 0) return c->scopes[k].name;
+  k = in_class(c, s->class_id, t);
+  return k >= 0 && !c->scopes[k].yields ? t : NULL;
 }
 
 void comp_cprep_chain_add(ClassInfo *ci, const char *from, const char *to) {
