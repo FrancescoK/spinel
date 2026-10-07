@@ -1,0 +1,8 @@
+"undefined method 'with' for true"
+"undefined method 'zork' for an instance of Integer"
+"undefined method 'zork' for an instance of String"
+"undefined method 'zork' for an instance of Array"
+1
+"undefined method 'zork' for an instance of A"
+"AB"
+S"undefined method 'zork' for an instance of Integer"

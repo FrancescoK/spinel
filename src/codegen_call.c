@@ -3363,6 +3363,14 @@ static int emit_dynamic_send(Compiler *c, int id, Buf *b) {
     emit_boxed(c, recv, b);
     buf_printf(b, "))); _r%d = sp_box_nil(); } _r%d; })", t, t);
   }
+  /* a name no candidate answers is CRuby's NoMethodError naming the
+     receiver ("undefined method 'with' for true"), as a literal send's is;
+     a receiver with side effects was read once into its temp above */
+  else if (recv >= 0) {
+    buf_printf(b, "{ sp_raise_nomethod(sp_nomethod_msg(sp_sym_to_s(_t%d), ", t);
+    emit_boxed(c, recv, b);
+    buf_printf(b, ")); _r%d = sp_box_nil(); } _r%d; })", t, t);
+  }
   else buf_printf(b, "{ sp_raise_cls(\"NoMethodError\", sp_sprintf(\"undefined method '%%s'\", sp_sym_to_s(_t%d))); _r%d = sp_box_nil(); } _r%d; })", t, t, t);
   g_dsend_depth--;
   view_unbind(sv_nargov);
