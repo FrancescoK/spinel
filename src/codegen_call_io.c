@@ -212,10 +212,8 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
        rest are formatted and written as the typed arm does. */
     if (!iocand && sp_streq(name, "printf")) {
       int trv = ++g_tmp, tpa = ++g_tmp, tio3 = ++g_tmp, tfv = ++g_tmp, tfs = ++g_tmp;
-      buf_printf(b, "({ sp_RbVal _t%d = ", trv);
-      emit_boxed(c, recv, b);
-      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ",
-                 trv, tpa, tpa);
+      buf_puts(b, "({ "); trv = hold_operand(c, recv, TY_POLY, 1, trv, 1, " ", b);
+      buf_printf(b, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ", tpa, tpa);
       emit_push_arg_list(c, argv, argc, tpa, b);
       buf_printf(b, "sp_File *_t%d = sp_poly_as_io(_t%d, \"printf\"); ", tio3, trv);
       buf_printf(b, "if (_t%d->len == 0) sp_raise_cls(\"ArgumentError\", \"too few arguments\"); ", tpa);
@@ -233,9 +231,7 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
     if (!iocand && is_rewind_name(name) && argc > 0 && !call_has_splat_arg(nt, argv, argc)) {
       int tv = ++g_tmp;
       char msg[96]; arity_message(msg, sizeof msg, argc, 0, 0, NULL);
-      buf_printf(b, "({ sp_RbVal _t%d = ", tv);
-      emit_boxed(c, recv, b);
-      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", tv);
+      buf_puts(b, "({ "); tv = hold_operand(c, recv, TY_POLY, 1, tv, 1, " ", b);
       for (int k = 0; k < argc; k++) { buf_puts(b, "(void)("); emit_expr(c, argv[k], b); buf_puts(b, "); "); }
       buf_printf(b, "if (!(_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_ENUMERATOR)) (void)sp_poly_as_io(_t%d, \"rewind\");"
                     " sp_raise_cls(\"ArgumentError\", \"%s\"); %s; })",
@@ -248,10 +244,8 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
     if (!iocand && is_rewind_name(name) && argc == 0) {
       int tv = ++g_tmp;
       int boxed = repr_of(c, id).kind == RK_BOXED;
-      buf_printf(b, "({ sp_RbVal _t%d = ", tv);
-      emit_boxed(c, recv, b);
-      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_ENUMERATOR) ? ",
-                 tv, tv, tv);
+      buf_puts(b, "({ "); tv = hold_operand(c, recv, TY_POLY, 1, tv, 1, " ", b);
+      buf_printf(b, "(_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_ENUMERATOR) ? ", tv, tv);
       if (boxed) buf_printf(b, "(sp_Enumerator_rewind((sp_Enumerator *)_t%d.v.p), _t%d)", tv, tv);
       else buf_printf(b, "(sp_Enumerator_rewind((sp_Enumerator *)_t%d.v.p), (sp_int)0)", tv);
       buf_printf(b, " : %ssp_File_rewind(sp_poly_as_io(_t%d, \"rewind\"))%s; })",
@@ -267,10 +261,8 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
          one argument. */
       if (sp_streq(name, "write") && boxed_write_takes_list(c, id, argv, argc)) {
         int trv = ++g_tmp, tpa = ++g_tmp, tio3 = ++g_tmp, tn = ++g_tmp;
-        buf_printf(b, "({ sp_RbVal _t%d = ", trv);
-        emit_boxed(c, recv, b);
-        buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ",
-                   trv, tpa, tpa);
+        buf_puts(b, "({ "); trv = hold_operand(c, recv, TY_POLY, 1, trv, 1, " ", b);
+        buf_printf(b, "sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ", tpa, tpa);
         emit_push_arg_list(c, argv, argc, tpa, b);
         buf_printf(b, "sp_File *_t%d = sp_poly_as_io(_t%d, \"write\"); SP_IO_OPEN(_t%d); sp_int _t%d = 0; ",
                    tio3, trv, tio3, tn);
@@ -295,9 +287,7 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
         /* an offset's nil is worded by NUM2OFFT (emit_int_expr_offt) */
         int offt = is_io_offset_move(name);
         int targ[3] = {0, 0, 0}, theld[3] = {0, 0, 0};
-        buf_printf(b, "({ sp_RbVal _t%d = ", trv);
-        emit_boxed(c, recv, b);
-        buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", trv);
+        buf_puts(b, "({ "); trv = hold_operand(c, recv, TY_POLY, 1, trv, 1, " ", b);
         if (first_int) {
           /* the advice is a Symbol (:normal, :sequential, ...); read its name */
           tadv = ++g_tmp;
@@ -370,9 +360,7 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
       int tdr = 0;
       if (dirfn || qname) {
         tdr = ++g_tmp;
-        buf_printf(b, "({ sp_RbVal _t%d = ", tdr);
-        emit_boxed(c, recv, b);
-        buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", tdr);
+        buf_puts(b, "({ "); tdr = hold_operand(c, recv, TY_POLY, 1, tdr, 1, " ", b);
         if (qname) {
           buf_printf(b, "_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_QUEUE ? ", tdr, tdr);
           if (sp_streq(name, "close")) buf_printf(b, "((void)sp_Queue_close((sp_queue *)_t%d.v.p), _t%d) : ", tdr, tdr);
@@ -722,9 +710,9 @@ static int emit_boxed_positional_io(Compiler *c, int recv, const char *name, int
       call_has_splat_arg(c->nt, argv, argc)) return 0;
   int trv = ++g_tmp, th[3] = {0, 0, 0}, toff = ++g_tmp, tfirst = ++g_tmp;
   buf_puts(b, "({ ");
-  trv = hold_operand(c, recv, TY_POLY, 1, trv, " ", b);
+  trv = hold_operand(c, recv, TY_POLY, 1, trv, 1, " ", b);
   for (int i = 0; i < argc; i++) {
-    th[i] = hold_operand(c, argv[i], TY_POLY, 1, ++g_tmp, " ", b);
+    th[i] = hold_operand(c, argv[i], TY_POLY, 1, ++g_tmp, 1, " ", b);
   }
   buf_printf(b, "sp_File *_t%d = sp_poly_as_io(_t%d, \"%s\"); ", tio, trv, name);
   /* both take the offset: one argument is the handle's ArgumentError */
