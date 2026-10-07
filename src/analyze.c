@@ -13632,7 +13632,6 @@ static int an_call_target_mi(Compiler *c, int id) {
    where the splice binds it as an alias (an_inline_param_lent): `def
    run2(x) = run(x) { |u| yield u }` lends x to run, whose block yields it on
    to run2's. */
-static int an_inline_param_lent(Compiler *c, int mi, int j, int blk);
 static int an_lend_nest;   /* the splice questions a walk asks, nested */
 static int an_subtree_lends_local(Compiler *c, int node, const char *vn, int depth) {
   const NodeTable *nt = c->nt;
@@ -13862,7 +13861,7 @@ static int an_poly_param_yielded_lent(Compiler *c, int mi, int pj) {
    binds it as an alias of the caller's variable (emit_inline_call_x): the
    body appends to it or hands it to a lent parameter, or yields it to a
    block parameter the block lends. */
-static int an_inline_param_lent(Compiler *c, int mi, int j, int blk) {
+int an_inline_param_lent(Compiler *c, int mi, int j, int blk) {
   const NodeTable *nt = c->nt;
   Scope *m = &c->scopes[mi];
   if (j >= m->nparams || j >= 32 || !m->pnames[j] || (m->rest_idx >= 0 && j >= m->rest_idx)) return 0;

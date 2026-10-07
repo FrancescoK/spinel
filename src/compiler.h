@@ -1073,6 +1073,12 @@ Scope *comp_scope_of(Compiler *c, int node_id);        /* owning scope */
    keyed on name alone and revalidated against nt->version, so the scope of
    each write is still read fresh at every visit. */
 int comp_is_local_write(NodeKind k);
+/* Can a call's block `blk` (a literal or a `&blk` argument) assign the
+   variable argument node `arg` reads while the call runs: the literal's
+   body writes it (a local of the same scope, or an instance variable, by
+   any write kind, at any depth), or, for a local, a proc that captures it
+   assigns it? 0 for any other argument, or a call with no block. */
+int comp_block_rebinds_arg(Compiler *c, int blk, int arg);
 int comp_lvw_first(Compiler *c, const char *name);
 int comp_class_singleton_has_module(Compiler *c, int ci, int mod);
 int comp_class_extends_any(Compiler *c, int ci);

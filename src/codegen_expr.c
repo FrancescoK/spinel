@@ -1744,9 +1744,26 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
        inside a block that captured c by cell (e.g. `mutex.synchronize { c += 1 }`
        in a thread). */
     const char *nm = nt_str(nt, id, "name");
+    LocalVar *olv = nm ? scope_local(comp_scope_of(c, id), nm) : NULL;
+    /* Without --share-strings, a pure alias pair's handle local takes `+=`
+       as a statement only: the value kept under another name (`x = (s +=
+       y)`) would be a copy the alias rule never joined to s's String */
+    if (olv && olv->type == TY_STRBUF && repr_of_slot(c, olv).handle && !repr_of_slot(c, olv).share) {
+      unsupported(c, id, "operator assignment");
+      return 1;
+    }
     buf_puts(b, "({ ");
     emit_op_assign(c, id, b, 0);
-    emit_local_ref(c, id, nm, b);
+    /* a local holding a shared handle: the handle itself where one is
+       taken (repr_write_share, under the handle mark), else its read face,
+       as a read of the local gives */
+    if (olv && repr_of_slot(c, olv).handle && repr_of_slot(c, olv).kind == RK_STRBUF &&
+        !(repr_of(c, id).handle && repr_write_share(c, id))) {
+      buf_puts(b, "sp_strbuf_read_pub(");
+      emit_local_ref(c, id, nm, b);
+      buf_puts(b, ")");
+    }
+    else emit_local_ref(c, id, nm, b);
     buf_puts(b, "; })");
     return 1;
   }
