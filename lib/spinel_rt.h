@@ -14312,6 +14312,18 @@ static sp_Exception *sp_syserr_build(const char *cls, sp_int argc, const sp_RbVa
    anything else is CRuby's TypeError. */
 SP_NORETURN SP_COLD static void sp_raise_poly(sp_RbVal v) {
   if (v.tag == SP_TAG_STR && v.v.s) sp_raise(v.v.s);
+  /* a String boxed as its shared handle (an element the --share-strings
+     rule shares) is a String too: a RuntimeError whose message is that
+     String, held as the handle (sp_exc_attach_msg), as `raise s` holds a
+     variable's */
+  if (sp_poly_is_strbuf(v) && v.v.p) {
+    sp_String *h = (sp_String *)v.v.p;
+    SP_GC_ROOT(h);
+    sp_Exception *e = sp_exc_new_for_catch("RuntimeError", sp_exc_msg_given(sp_String_cstr(h)));
+    SP_GC_ROOT(e);
+    sp_exc_attach_msg((void *)e, (void *)h);
+    sp_raise_exc((volatile sp_Exception *)e);
+  }
   if (v.tag == SP_TAG_OBJ && v.v.p) {
     /* A carried exception object re-raises as itself. The base
      * sp_Exception uses cls_id SP_BUILTIN_EXCEPTION; a user subclass
