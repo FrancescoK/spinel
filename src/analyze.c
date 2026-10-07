@@ -30945,11 +30945,27 @@ static int ctor_graph_target(Compiler *c, int id) {
   return ctor_graph_node(c, t) ? t : -1;
 }
 
-/* One edge per call and `super` in a yielding method's body that splices
+/* Edges for calls and supers in a yielding method's body that splice
    another: counted into cnt[s + 1], or appended to adj at fill[s]. */
 static void ctor_graph_edge(Compiler *c, int id, int *cnt, int *adj, int *fill) {
   int s = c->nscope[id];
   if (!ctor_graph_node(c, s)) return;
+  /* A super reaching Class#new splices initialize on the receiving class,
+     including a descendant that inherits this class method. It has no
+     user superclass method for super_reach to find. */
+  if (comp_super_is_class_new(c, id)) {
+    int ci = c->scopes[s].class_id, nd = 0;
+    const int *ds = comp_descendants(c, ci, &nd);
+    for (int d = -1; d < nd; d++) {
+      int k = d < 0 ? ci : ds[d];
+      if (comp_cmethod_in_chain(c, k, "new", NULL) != s) continue;
+      int t = comp_method_in_chain(c, k, "initialize", NULL);
+      if (!ctor_graph_node(c, t)) continue;
+      if (cnt) cnt[s + 1]++;
+      else adj[fill[s]++] = t;
+    }
+    return;
+  }
   int t = ctor_graph_target(c, id);
   if (t < 0) return;
   if (cnt) cnt[s + 1]++;
