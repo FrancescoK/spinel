@@ -10,7 +10,7 @@ sockets.each do |s|
   p [:wait_writable, 0].include?(r)
 end
 _, writable, = IO.select(nil, sockets, nil, 5)
-p writable.size
+p writable.size >= 1   # how many of the two are ready at once is the kernel's (macOS answers one)
 conn = sockets.fetch(sockets.index(writable.first))
 p conn.getsockopt(Socket::SOL_SOCKET, Socket::SO_ERROR).int
 begin

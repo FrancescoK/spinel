@@ -836,6 +836,21 @@ int is_replace_name(const char *n) {
   return sp_streq(n, "replace");
 }
 
+/* The arguments String mutator `n`, called with `argc` of them, takes as
+   Strings: the first one's position (argc when none), the rest following
+   it, and in *int_ok whether an Integer is taken there too. `<<`, concat
+   and append_as_bytes take each one (an Integer as a codepoint), prepend
+   each one, replace its one, insert its second and `[]=` its last (the
+   value; the index is an Integer, a Range, a String or a Regexp). */
+int str_mutator_str_args(const char *n, int argc, int *int_ok) {
+  *int_ok = 0;
+  if (is_string_append(n) || sp_streq(n, "append_as_bytes")) { *int_ok = 1; return 0; }
+  if (sp_streq(n, "prepend") || (is_replace_name(n) && argc == 1)) return 0;
+  if (sp_streq(n, "insert") && argc == 2) return 1;
+  if (sp_streq(n, "[]=") && (argc == 2 || argc == 3)) return argc - 1;
+  return argc;
+}
+
 int is_string_rebind_mutator(const char *n) {
   static const char *const MUT[] = {
     "<<", "concat", "prepend", "insert", "replace", "[]=", "slice!", "setbyte", "bytesplice",
@@ -981,3 +996,9 @@ int is_concat_name(const char *n) { return sp_streq(n, "concat"); }
 int is_array_constructor(const char *recv, const char *meth) {
   return recv && meth && sp_streq(meth, "new") && sp_streq(recv, "Array");
 }
+int is_pow_name(const char *n) { return sp_streq(n, "pow"); }
+/* `new`: a class's constructor (a native binding's "new" names them) */
+int is_new_name(const char *n) { return n && sp_streq(n, "new"); }
+/* `native_share`: a package's declaration of what a native binding does
+   with the String its object keeps (--share-strings) */
+int is_native_share_decl(const char *n) { return n && sp_streq(n, "native_share"); }

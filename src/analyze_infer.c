@@ -2897,6 +2897,15 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
       if ((is_socket_address(name)) && argc == 0 &&
           sp_feature_required("socket"))
         { *out = an_poly_concrete(c, name, TY_POLY_ARRAY); return 1; }
+      /* a boxed server's accept family, as the TY_IO arm types it: the
+         connection, or with `exception: false` the connection or the
+         :wait_readable marker; to_io answers the handle itself */
+      if (sp_feature_required("socket") && sp_streq(name, "accept") && argc == 0)
+        { *out = an_poly_concrete(c, name, TY_IO); return 1; }
+      if (sp_feature_required("socket") && sp_streq(name, "accept_nonblock"))
+        { *out = an_poly_concrete(c, name, an_nonblock_no_exception(c, id) ? TY_POLY : TY_IO); return 1; }
+      if (sp_streq(name, "to_io") && argc == 0)
+        { *out = an_poly_concrete(c, name, TY_IO); return 1; }
       /* the non-blocking pair on a poly-carried handle, typed as the TY_IO arm
          types it: `exception: false` answers a wait symbol (read) or nil
          (write) as well as the ordinary result, so that shape is poly and a
@@ -3597,6 +3606,7 @@ static int infer_handle_call(Compiler *c, int id, const NodeTable *nt, const cha
     if (sp_streq(name, "write_nonblock")) { *out = TY_INT; return 1; }
     if (sp_streq(name, "read_nonblock")) { *out = TY_STRING; return 1; }
     if (sp_streq(name, "winsize") && sp_feature_enabled("io/console")) { *out = TY_INT_ARRAY; return 1; }
+    if (sp_streq(name, "winsize=") && argc == 1 && sp_feature_enabled("io/console")) { *out = TY_INT_ARRAY; return 1; }
     if (sp_streq(name, "each_line") || sp_streq(name, "each") ||
         sp_streq(name, "each_char") || sp_streq(name, "each_byte") ||
         sp_streq(name, "each_codepoint")) {

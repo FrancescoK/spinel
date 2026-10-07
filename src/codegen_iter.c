@@ -433,6 +433,14 @@ int local_is_handle(Compiler *c, int a) {
   LocalVar *lv = vs ? scope_local(vs, vn) : NULL;
   return repr_of_slot(c, lv).handle;
 }
+/* --share-strings: a read of an ivar whose slot is the rule's handle */
+int ivar_read_is_handle(Compiler *c, int a) {
+  if (!repr_share_rule(c) || a < 0 || nt_kind(c->nt, a) != NK_InstanceVariableReadNode) return 0;
+  const char *nm = nt_str(c->nt, a, "name");
+  int cid = nm ? strbuf_ivar_owner(c, a) : -1;
+  int iv = cid >= 0 ? comp_ivar_index(&c->classes[cid], nm) : -1;
+  return iv >= 0 && repr_of_ivar(c, cid, iv).share;
+}
 /* A local that is the shared handle, as a reference to the handle itself
    rather than the copy a plain read of it takes. 0 when it is none. */
 /* An iterator's element text `src` (of type `want`) bound to block
@@ -477,8 +485,19 @@ int emit_handle_var_ref(Compiler *c, int a, Buf *b) {
    instead: an alias followed the rebinding (`def m(w) = (yield; p w)`,
    `m(u) { u = "k" }` printed "k"), and a global's was refused. Each is
    marked an alias until inline_alias_release. Decided before the locals
-   are declared, since an aliased parameter gets no local of its own. */
-unsigned inline_alias_params(Compiler *c, int mi, const int *argv, int pargc, const ArgLayout *L, int blk) {
+   are declared, since an aliased parameter gets no local of its own.
+
+   An alias the body does lend keeps the caller's variable's String only
+   until the call's block assigns the variable: from there the parameter
+   still holds the String it was given. When the block literal writes the
+   variable, and nothing else assigns it while the call runs (no proc that
+   captures it does, no argument of the call does), the alias is marked
+   open for the splice `tag` (view_push_splice): each store to the
+   variable in the block moves the alias onto the splice's private slot
+   holding that String (splice_store_open/close). */
+static int splice_alias_detachable(Compiler *c, int blk, int an, const int *argv, int pargc);
+unsigned inline_alias_params(Compiler *c, int mi, const int *argv, int pargc, const ArgLayout *L, int blk,
+                             int tag, int *splice_tok) {
   const NodeTable *nt = c->nt;
   Scope *m = &c->scopes[mi];
   unsigned alias_mask = 0;
@@ -526,10 +545,91 @@ unsigned inline_alias_params(Compiler *c, int mi, const int *argv, int pargc, co
     alias_mask |= 1u << i;
     lv->inline_alias++;
     lv->is_cell = 1;
+    if (!gslot && splice_alias_detachable(c, blk, an, argv, pargc)) {
+      int tok = view_push_splice(an, tag, m->pnames[i]);
+      if (*splice_tok < 0) *splice_tok = tok;
+    }
   }
   return alias_mask;
 }
-void inline_alias_release(Scope *m, unsigned alias_mask) {
+/* Can the alias of argument `an` move onto the splice's private slot at
+   each write of the call's block (see inline_alias_params)? */
+static int splice_alias_detachable(Compiler *c, int blk, int an, const int *argv, int pargc) {
+  const NodeTable *nt = c->nt;
+  if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode || !comp_node_writes_var(c, blk, an)) return 0;
+  if (nt_kind(nt, an) == NK_LocalVariableReadNode) {
+    LocalVar *v = scope_local(comp_scope_of(c, an), nt_str(nt, an, "name"));
+    if (!v || v->proc_rebinds) return 0;
+  }
+  for (int k = 0; k < pargc; k++)
+    if (comp_node_writes_var(c, argv[k], an)) return 0;
+  return 1;
+}
+/* Does write or target node w assign the variable argument node `arg`
+   reads: a local of the same scope, or an instance variable of the same
+   class? */
+static int splice_writes_arg(Compiler *c, int w, int arg) {
+  const NodeTable *nt = c->nt;
+  NodeKind wk = nt_kind(nt, w);
+  const char *wn = nt_str(nt, w, "name"), *an = nt_str(nt, arg, "name");
+  if (!wn || !an || !sp_streq(wn, an)) return 0;
+  if (nt_kind(nt, arg) == NK_LocalVariableReadNode)
+    return comp_is_local_write(wk) && comp_scope_of(c, arg) == comp_scope_of(c, w);
+  int ivw = wk == NK_InstanceVariableWriteNode || wk == NK_InstanceVariableOrWriteNode ||
+            wk == NK_InstanceVariableAndWriteNode || wk == NK_InstanceVariableOperatorWriteNode ||
+            wk == NK_InstanceVariableTargetNode;
+  return ivw && nt_kind(nt, arg) == NK_InstanceVariableReadNode && comp_ivar_owner(c, arg) == comp_ivar_owner(c, w);
+}
+/* A store through write or target node w, about to emit the value it
+   stores: with an open splice alias of that variable (view_push_splice),
+   the value goes into a temporary first (splice_store_open), and then
+   (splice_store_close) each such alias still on the variable moves onto
+   its splice's private slot, which takes the String the variable holds
+   once the value ran -- unless the value is that String itself (`s = s`,
+   a `||=` that keeps it). The stored value is the temporary. One store
+   site brackets its value with the pair, whatever the write's kind. */
+int splice_store_open(Compiler *c, int w, Buf *b) {
+  int arg, tag;
+  const char *pn;
+  for (int e = view_splice_next(-1, &arg, &tag, &pn); e >= 0; e = view_splice_next(e, &arg, &tag, &pn))
+    if (splice_writes_arg(c, w, arg)) {
+      int n = ++g_tmp;
+      buf_printf(b, "({ const char *_t%d = (", n);
+      return n;
+    }
+  return -1;
+}
+/* `lhs = val` for a store through w whose value text is ready, bracketed
+   as above when `str` (the slot is a plain String's) */
+void emit_splice_store_text(Compiler *c, int w, const char *lhs, const char *val, int str, Buf *b) {
+  buf_printf(b, "%s = ", lhs);
+  int n = str ? splice_store_open(c, w, b) : -1;
+  buf_puts(b, val);
+  splice_store_close(c, w, n, b);
+}
+void splice_store_close(Compiler *c, int w, int n, Buf *b) {
+  if (n < 0) return;
+  buf_puts(b, ");");
+  int arg, tag;
+  const char *pn;
+  for (int e = view_splice_next(-1, &arg, &tag, &pn); e >= 0; e = view_splice_next(e, &arg, &tag, &pn))
+    if (splice_writes_arg(c, w, arg))
+      buf_printf(b, " if (_t%d != (*_cell__y%d_%s)) { lv__y%d_%s = (*_cell__y%d_%s); _cell__y%d_%s = &lv__y%d_%s; }",
+                 n, tag, pn, tag, pn, tag, pn, tag, pn, tag, pn);
+  buf_printf(b, " _t%d; })", n);
+}
+/* Is parameter `pname` of the splice `tag` an open alias (view_push_splice)? */
+static int splice_alias_open(int tag, const char *pname) {
+  int arg, t;
+  const char *pn;
+  for (int e = view_splice_next(-1, &arg, &t, &pn); e >= 0; e = view_splice_next(e, &arg, &t, &pn))
+    if (t == tag && sp_streq(pn, pname)) return 1;
+  return 0;
+}
+void inline_alias_release(Compiler *c, Scope *m, unsigned alias_mask, int splice_tok) {
+  /* the splice's open aliases, pushed last by inline_alias_params */
+  if (splice_tok >= 0)
+    for (int top = view_mark() >> 16; top > splice_tok; top--) view_pop(c, top - 1);
   for (int i = 0; i < m->nparams && i < 32; i++) {
     if (!(alias_mask & (1u << i))) continue;
     LocalVar *lv = scope_local(m, m->pnames[i]);
@@ -554,7 +654,7 @@ void emit_inline_locals_aliased(Compiler *c, int mi, int tag, unsigned alias_mas
       for (int k = 0; k < m->nparams; k++) if (m->pnames[k] && sp_streq(m->pnames[k], lv->name)) { pi = k; break; }
       if (pi >= 0 && (alias_mask & (1u << pi))) {
         int vol = inlined_local_needs_volatile(c, lv);
-        if (inline_param_rebound(c, mi, lv->name) == 1) {
+        if (inline_param_rebound(c, mi, lv->name) == 1 || splice_alias_open(tag, lv->name)) {
           emit_indent(b, din);
           buf_printf(b, "const char *%s lv_%s = NULL; SP_GC_ROOT_STR(lv_%s);\n",
                      vol ? " volatile" : "", rn, rn);
@@ -1280,13 +1380,14 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
   ArgLayout L;
   unsigned alias_mask;
+  int splice_tok = -1;
   {
     int pargc = argc;
     if (argc > 0 && argv && nt_type(nt, argv[argc - 1]) &&
         sp_streq(nt_type(nt, argv[argc - 1]), "KeywordHashNode")) pargc = argc - 1;
     arg_layout(c, m, argv, pargc, pargc < argc ? argv[pargc] : -1, 1, &L);
     refuse_yield_handle_args(c, id);
-    alias_mask = inline_alias_params(c, mi, argv, pargc, &L, nt_ref(nt, id, "block"));
+    alias_mask = inline_alias_params(c, mi, argv, pargc, &L, nt_ref(nt, id, "block"), tag, &splice_tok);
   }
 
   /* declare method locals under renamed names */
@@ -1403,7 +1504,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   if (as_expr) { emit_indent(b, indent); buf_puts(b, "})"); }
   else { emit_indent(b, indent); buf_puts(b, "}\n"); }
 
-  inline_alias_release(m, alias_mask);
+  inline_alias_release(c, m, alias_mask, splice_tok);
   g_nren = saved_nren;
   g_block_id = saved_block;
   g_yield_proc_ref = saved_ypr;
@@ -1526,7 +1627,7 @@ void emit_proc_yield(Compiler *c, const char *ref, int yargc, const int *yargv, 
   int lmi = ys && ys->is_lowered_yield ? (int)(ys - c->scopes) : -1;
   unsigned live = 0;
   for (int k = 0; k < nm; k++) {
-    if (!c->strbuf_box[yargv[k]] && local_is_handle(c, yargv[k])) {
+    if (!c->strbuf_box[yargv[k]] && (local_is_handle(c, yargv[k]) || ivar_read_is_handle(c, yargv[k]))) {
       vt[nv++] = view_push_repr(c, yargv[k], VR_STRBUF_BOX, 1);
       vt[nv++] = view_push(c, yargv[k], TY_STRBUF);
     }
@@ -1855,11 +1956,7 @@ void emit_block_kw_binds(Compiler *c, int blk, int ykw, Scope *bsc, Buf *b, int 
   int kwh_tmp = -1;
   if (ykw_splat) {
     kwh_tmp = ++g_tmp;
-    Buf hb; memset(&hb, 0, sizeof hb); emit_boxed(c, ykw, &hb);
-    emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n",
-               kwh_tmp, hb.p ? hb.p : "sp_box_nil()", kwh_tmp);
-    free(hb.p);
+    kwh_tmp = hold_operand_pre(c, ykw, TY_POLY, 1, kwh_tmp, 1);
   }
   if (nkw > 0) {
     int kw_bad = ykw_splat;
@@ -2748,10 +2845,20 @@ void emit_block_binds(Compiler *c, int blk, const int *yargs, int yc,
     buf_printf(b, "sp_PolyArray *_t%d = sp_PolyArray_new();%s", trest, as_expr ? " " : "\n");
     if (!as_expr) emit_indent(b, indent);
     buf_printf(b, "SP_GC_ROOT(_t%d);%s", trest, as_expr ? " " : "\n");
+    /* a rest whose elements are the rule's handles takes an ivar's handle
+       itself (a local's boxes as its handle already) */
+    LocalVar *rlv = bsc ? scope_local(bsc, brest) : NULL;
+    int rest_handles = repr_of_slot(c, rlv).elems_handle;
     for (int j = P + ot_static; j < yc - Q; j++) {
       if (!as_expr) emit_indent(b, indent);
       buf_printf(b, "sp_PolyArray_push(_t%d, ", trest);
+      int vt[2], nv = 0;
+      if (rest_handles && !c->strbuf_box[yargs[j]] && ivar_read_is_handle(c, yargs[j])) {
+        vt[nv++] = view_push_repr(c, yargs[j], VR_STRBUF_BOX, 1);
+        vt[nv++] = view_push(c, yargs[j], TY_STRBUF);
+      }
       emit_boxed(c, yargs[j], b);
+      while (nv > 0) view_pop(c, vt[--nv]);
       buf_puts(b, as_expr ? "); " : ");\n");
     }
     rest_tmp = trest;

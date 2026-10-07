@@ -440,6 +440,42 @@ sp_IntArray *sp_File_winsize(sp_File *f) {
   return a;
 }
 
+/* IO#winsize= [rows, cols] or [rows, cols, xpixel, ypixel], as CRuby's
+   io/console: any other length is ArgumentError, and a handle that is not a
+   terminal raises the ioctl's Errno (ENOTTY) rather than answering quietly,
+   since a size that was not set is not something to carry on from. Answers
+   its argument, which is what an assignment yields. A pty master is the case
+   that needs it: the program sizes the terminal its child sees. */
+sp_IntArray *sp_File_set_winsize(sp_File *f, sp_IntArray *size) {
+  SP_IO_OPEN(f);
+  sp_int n = size ? size->len : 0;
+  if (n != 2 && n != 4) {
+    char msg[96];
+    snprintf(msg, sizeof msg, "wrong number of arguments (given %lld, expected 2 or 4)", (long long)n);
+    sp_raise_cls("ArgumentError", msg);
+  }
+  const sp_int *v = size->data + size->start;
+  struct winsize ws;
+  memset(&ws, 0, sizeof ws);
+  ws.ws_row = (unsigned short)v[0];
+  ws.ws_col = (unsigned short)v[1];
+  if (n == 4) {
+    ws.ws_xpixel = (unsigned short)v[2];
+    ws.ws_ypixel = (unsigned short)v[3];
+  }
+#ifdef TIOCSWINSZ
+  if (ioctl(fileno(f->fp), TIOCSWINSZ, &ws) != 0) {
+    int e = errno;
+    sp_raise_cls(sp_errno_class_name(e), strerror(e));
+  }
+#else
+  /* a platform with no terminal-size ioctl (wasm32-wasi) */
+  (void)ws;
+  sp_raise_cls("NotImplementedError", "winsize= is not implemented on this platform");
+#endif
+  return size;
+}
+
 /* The standard streams are singletons in static storage, not GC allocations.
    Reads of $stdout / $stderr compile straight to these calls and only ever
    dereference the result, so nothing scanned ever held one -- until

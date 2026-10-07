@@ -3669,7 +3669,7 @@ void emit_poly_cases_n(Compiler *c, int id, const char *name, const PolySpecials
                 " case SP_BUILTIN_POLY_ARRAY: case SP_BUILTIN_PTR_ARRAY: "); 
     buf_printf(b, "_t%d = ", tr);
     if (ret == TY_POLY) buf_puts(b, "sp_box_bool(");
-    buf_printf(b, "sp_poly_intersect_p(_t%d, %s)", tv, abox);
+    buf_printf(b, "sp_poly_intersect_p_eql(_t%d, %s)", tv, abox);
     if (ret == TY_POLY) buf_puts(b, ")");
     buf_puts(b, "; break;");
   }

@@ -1,0 +1,4 @@
+"git commit -m it\\ works '' a\\'b line'\n'break"
+true
+"n 1 sym"
+""

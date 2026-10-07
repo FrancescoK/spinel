@@ -447,9 +447,9 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
          holds it only across #to_str */
       else if (at == TY_POLY) {
         int ts = ++g_tmp;
-        buf_printf(b, "({ sp_RbVal _t%d = ", ts); emit_expr(c, av[0], b);
-        buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); const char *_s%d = sp_poly_check_str(_t%d);"
-                      " _s%d ? _s%d : sp_poly_to_s(_t%d); })", ts, ts, ts, ts, ts, ts);
+        buf_puts(b, "({ "); ts = hold_operand(c, av[0], TY_POLY, 0, ts, 1, " ", b);
+        buf_printf(b, "const char *_s%d = sp_poly_check_str(_t%d);"
+                      " _s%d ? _s%d : sp_poly_to_s(_t%d); })", ts, ts, ts, ts, ts);
       }
       /* the frozen "true" / "false" true.to_s answers; a bare C literal here
          had no marker byte at all */
@@ -851,9 +851,8 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
   if (recv < 0 && !bare_call_class_owned(c, id) && (is_inspect_print(name)) && argc == 1 && nt_ref(nt, id, "block") < 0) {
     TyKind at = repr_of(c, argv[0]).as_ty;
     int t = ++g_tmp;
-    buf_printf(b, "({ sp_RbVal _t%d = ", t);
-    emit_boxed(c, argv[0], b);
-    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_puts_line(sp_poly_inspect(_t%d)); %s", t, t,
+    buf_puts(b, "({ "); t = hold_operand(c, argv[0], TY_POLY, 1, t, 1, " ", b);
+    buf_printf(b, "sp_puts_line(sp_poly_inspect(_t%d)); %s", t,
                sp_streq(name, "p") ? "fflush(stdout); " : "");   /* p flushes, as CRuby's does */
     char tv[16]; snprintf(tv, sizeof tv, "_t%d", t);
     emit_unbox_text(c, at, tv, b);

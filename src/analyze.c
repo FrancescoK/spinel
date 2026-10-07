@@ -8797,6 +8797,47 @@ static int desugar_module_function_call(Compiler *c) {
   return changed;
 }
 
+/* Thread.start / Thread.fork -> Thread.new: the same constructor by other
+   names (the arguments go to the block; neither runs the subclass's
+   initialize, which a program's Thread subclass is refused for anyway).
+   Done first, so every pass that recognizes a thread's block reads one
+   spelling. A program defining a class method of either name on a class of
+   its own named Thread keeps its call. */
+static int desugar_thread_start(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, own = 0, changed = 0;
+  for (int id = 0; id < n0 && !own; id++) {
+    if (nt_kind(nt, id) != NK_DefNode) continue;
+    const char *dn = nt_str(nt, id, "name");
+    int dr = nt_ref(nt, id, "receiver");
+    if (dn && dr >= 0 && (sp_streq(dn, "start") || sp_streq(dn, "fork"))) own = 1;
+  }
+  if (own) {
+    own = 0;
+    for (int id = 0; id < n0 && !own; id++) {
+      if (nt_kind(nt, id) != NK_ClassNode) continue;
+      int cp = nt_ref(nt, id, "constant_path");
+      const char *cn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+      if (cn && sp_streq(cn, "Thread")) own = 1;
+    }
+    if (own) return 0;
+  }
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || (!sp_streq(nm, "start") && !sp_streq(nm, "fork"))) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    if (recv < 0) continue;
+    int rk = nt_kind(nt, recv);
+    const char *rn = (rk == NK_ConstantReadNode || (rk == NK_ConstantPathNode && nt_ref(nt, recv, "parent") < 0))
+                     ? nt_str(nt, recv, "name") : NULL;
+    if (!rn || !sp_streq(rn, "Thread")) continue;
+    nt_node_set_str(nt, id, "name", "new");
+    changed = 1;
+  }
+  return changed;
+}
+
 static int desugar_file_stat_new(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
@@ -15341,6 +15382,32 @@ static void refuse_stored_block_param(Compiler *c, int sn, int to) {
   q.carry = SHARE_CARRY_COPY;
   if (!share_route_defer(c, &q, msg)) unsupported_feature(c, sn, msg);
 }
+/* Is block parameter (vn, vs) bound only by the yields of user methods
+   (`each { |e| acc << e }` over a yielding each, inlined or taking its
+   block as a proc), which hand over what they yield? A Struct's each is
+   the compiler's own, over members the share facts do not follow. */
+static int block_param_user_yield_only(Compiler *c, const char *vn, Scope *vs) {
+  const NodeTable *nt = c->nt;
+  int any = 0;
+  /* the calls whose literal block's parameters live in vs (comp_bcall_first) */
+  for (int w = comp_bcall_first(c, (int)(vs - c->scopes)); w >= 0; w = comp_bcall_next(c, w)) {
+    int blk = nt_ref(nt, w, "block");
+    if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode || comp_scope_of(c, blk) != vs) continue;
+    int named = 0;
+    for (int k = 0; k < 4 && !named; k++) {
+      const char *bp = block_param_name(c, blk, k);
+      if (!bp) break;
+      named = sp_streq(bp, vn);
+    }
+    if (!named) continue;
+    int mi = an_call_target_mi(c, w);
+    Scope *m = mi >= 0 ? &c->scopes[mi] : NULL;
+    if (!m || !(m->yields || m->is_lowered_yield) || (m->class_id >= 0 && c->classes[m->class_id].is_struct))
+      return 0;
+    any = 1;
+  }
+  return any;
+}
 static int strbuf_demand_store_leaf(Compiler *c, int sn, int depth) {
   const NodeTable *nt = c->nt;
   if (sn < 0 || c->strbuf_box[sn]) return 0;
@@ -15369,8 +15436,29 @@ static int strbuf_demand_store_leaf(Compiler *c, int sn, int depth) {
     if (snv->is_block_param) {
       int bound = 0;
       int ch = strbuf_block_param_source_walk(c, snm, sns, depth, SB_DEMAND, 1, &bound);
-      if (!bound && (snv->type == TY_STRING || snv->type == TY_STRBUF))
-        refuse_stored_block_param(c, sn, -1);
+      if (!bound && (snv->type == TY_STRING || snv->type == TY_STRBUF)) {
+        /* --share-strings: the route is the rule's (share_route_defer, in the refusal).
+           A parameter the rule shares holds the handle what binds it hands over
+           (share_default_apply), or the seal refuses it by name, and the element is
+           that handle (`each { |e| acc << e }` over a yielding each) */
+        int yo = block_param_user_yield_only(c, snm, sns);
+        if (!yo) refuse_stored_block_param(c, sn, -1);
+        else {
+          /* what binds it hands over its handle: the route carries it */
+          static const char ymsg[] =
+            "a String held by a block parameter no element iterator binds (a proc's, a lambda's, a yielding "
+            "method's block, `each_char`'s) is stored into a container and mutated in place through it (a "
+            "String is not yet shared by reference through a stored block parameter). Mutate the String "
+            "before storing it, or store it where the caller holds it.";
+          ShareRoute yq = share_route(sn, sn, 0);
+          if (!share_route_defer(c, &yq, ymsg)) unsupported_feature(c, sn, ymsg);
+        }
+        if (yo && c->share &&
+            repr_str_shares(c, share_local_holder(c, (int)(sns - c->scopes), (int)(snv - sns->locals)))) {
+          if (snv->type != TY_STRBUF || !snv->str_shared) { snv->type = TY_STRBUF; snv->str_shared = 1; ch = 1; }
+          if (!c->strbuf_box[sn]) { c->strbuf_box[sn] = 1; ch = 1; }
+        }
+      }
       return ch;
     }
     /* a method parameter stores the caller's string: the parameter becomes
@@ -15905,6 +15993,53 @@ static int strbuf_gvar_store_walk(Compiler *c, const char *grn, int depth) {
   }
   return changed;
 }
+/* May a method defined in class k answer a call on a receiver of class
+   rcid: k is rcid or a subclass of it, a module, or no class? */
+static int strbuf_class_may_answer(Compiler *c, int k, int rcid) {
+  if (k < 0 || k >= c->nclasses || comp_class_is_module(c, &c->classes[k])) return 1;
+  for (int d = 0; k >= 0 && k < c->nclasses && d < 64; k = c->classes[k].parent, d++)
+    if (k == rcid) return 1;
+  return 0;
+}
+/* The containers method mi answers: its body's last value and each
+   `return v`; for `def mk = yield`, the block blk of the call. */
+static int strbuf_method_ret_source_walk(Compiler *c, int mi, int blk, int depth, int mode);
+/* --share-strings: a value of method mi that is a `super` (`def parts =
+   super`): the containers the method it calls answers, handed the
+   super's own block or, with none, mi's (blk) */
+static int strbuf_super_ret_walk(Compiler *c, int mi, int v, int blk, int depth, int mode) {
+  const NodeTable *nt = c->nt;
+  v = an_unparen(nt, v);
+  if (!c->share_strings || v < 0 || (nt_kind(nt, v) != NK_SuperNode && nt_kind(nt, v) != NK_ForwardingSuperNode))
+    return -1;
+  Scope *m = &c->scopes[mi];
+  int t = m->class_id >= 0 ? a_super_target(c, m) : -1;
+  if (t < 0 || t == mi) return 0;
+  int sb = nt_ref(nt, v, "block");
+  return strbuf_method_ret_source_walk(c, t, sb >= 0 && nt_kind(nt, sb) == NK_BlockNode ? sb : blk, depth + 1, mode);
+}
+static int strbuf_method_ret_source_walk(Compiler *c, int mi, int blk, int depth, int mode) {
+  const NodeTable *nt = c->nt;
+  Scope *m = &c->scopes[mi];
+  int changed = 0, sw;
+  if (depth > 8) return 0;
+  int last = scope_body_last(c, mi);
+  if (last >= 0 && nt_kind(nt, last) == NK_YieldNode) {
+    if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode)
+      changed |= strbuf_container_source_walk(c, nt_ref(nt, blk, "body"), depth + 1, mode);
+  }
+  else if ((sw = strbuf_super_ret_walk(c, mi, last, blk, depth, mode)) >= 0) changed |= sw;
+  else changed |= strbuf_container_source_walk(c, last, depth + 1, mode);
+  for (int u = comp_ret_first(c, mi); u >= 0; u = comp_ret_next(c, u)) {
+    if (nt_kind(nt, u) != NK_ReturnNode || comp_scope_of(c, u) != m) continue;
+    int ra = nt_ref(nt, u, "arguments");
+    int rn2 = 0; const int *rv2 = ra >= 0 ? nt_arr(nt, ra, "arguments", &rn2) : NULL;
+    if (rn2 != 1) continue;
+    if ((sw = strbuf_super_ret_walk(c, mi, rv2[0], blk, depth, mode)) >= 0) changed |= sw;
+    else changed |= strbuf_container_source_walk(c, rv2[0], depth + 1, mode);
+  }
+  return changed;
+}
 static int strbuf_container_source_walk(Compiler *c, int node, int depth, int mode) {
   const NodeTable *nt = c->nt;
   if (node < 0 || depth > 8) return 0;
@@ -16024,23 +16159,18 @@ static int strbuf_container_source_walk(Compiler *c, int node, int depth, int mo
       }
       if (recv >= 0 && nt_kind(nt, recv) != NK_SelfNode &&
           !ty_is_object(infer_type(c, recv))) return 0;
-      /* every user method of the name: a call resolves by name */
+      /* every user method of the name a call resolves to: by name, but on
+         a receiver of a known class only that class's own (resolved
+         through its chain), its subclasses' and a module's. Walking every
+         class's method of a common name (each class's to_a) from each call
+         was quadratic in the classes. */
+      int rcid = recv >= 0 && nt_kind(nt, recv) != NK_SelfNode ? ty_object_class(infer_type(c, recv)) : -1;
+      int rdef = rcid >= 0 ? comp_method_in_chain(c, rcid, mn, NULL) : -1;
       for (int mi = 1; mi < c->nscopes; mi++) {
         Scope *m = &c->scopes[mi];
         if (!m->name || !sp_streq(m->name, mn)) continue;
-        int last = scope_body_last(c, mi);
-        /* `def mk = yield`: this call's own block builds the container */
-        if (last >= 0 && nt_kind(nt, last) == NK_YieldNode) {
-          if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode)
-            changed |= strbuf_container_source_walk(c, nt_ref(nt, blk, "body"), depth + 1, mode);
-        }
-        else changed |= strbuf_container_source_walk(c, last, depth + 1, mode);
-        for (int u = comp_kind_first(c, NK_ReturnNode); u >= 0; u = comp_kind_next(c, u)) {
-          if (nt_kind(nt, u) != NK_ReturnNode || comp_scope_of(c, u) != m) continue;
-          int ra = nt_ref(nt, u, "arguments");
-          int rn2 = 0; const int *rv2 = ra >= 0 ? nt_arr(nt, ra, "arguments", &rn2) : NULL;
-          if (rn2 == 1) changed |= strbuf_container_source_walk(c, rv2[0], depth + 1, mode);
-        }
+        if (rcid >= 0 && mi != rdef && !strbuf_class_may_answer(c, m->class_id, rcid)) continue;
+        changed |= strbuf_method_ret_source_walk(c, mi, blk, depth, mode);
       }
       return changed;
     }
@@ -17046,6 +17176,32 @@ static int share_gvar_container(Compiler *c, const char *name) {
       changed |= strbuf_container_source_walk(c, nt_ref(nt, comp_vsite_node(c, e), "value"), 1, SB_DEMAND);
   return changed | strbuf_gvar_store_walk(c, grn, 1);
 }
+/* Does method mi answer an Array or Hash literal of typed Strings (`const
+   char *` elements, which cannot hold the shared handle), as its last
+   value or through a `return`? */
+static int share_ret_literal(const NodeTable *nt, int v) {
+  v = an_unparen(nt, v);
+  if (v >= 0 && nt_kind(nt, v) == NK_ReturnNode) {
+    int ra = nt_ref(nt, v, "arguments"), rn = 0;
+    const int *rv = ra >= 0 ? nt_arr(nt, ra, "arguments", &rn) : NULL;
+    v = rn == 1 ? an_unparen(nt, rv[0]) : -1;
+  }
+  return v >= 0 && (nt_kind(nt, v) == NK_ArrayNode || nt_kind(nt, v) == NK_HashNode);
+}
+static int share_ret_typed_str_literal(Compiler *c, int mi) {
+  TyKind t = c->scopes[mi].ret;
+  if (!(ty_is_array(t) && ty_array_elem(t) == TY_STRING) && !(ty_is_hash(t) && ty_hash_val(t) == TY_STRING)) return 0;
+  /* its last value, or any `return` (`return [@s] if ...`) */
+  if (share_ret_literal(c->nt, scope_body_last(c, mi))) return 1;
+  for (int u = comp_ret_first(c, mi); u >= 0; u = comp_ret_next(c, u))
+    if (nt_kind(c->nt, u) == NK_ReturnNode && comp_scope_of(c, u) == &c->scopes[mi] && share_ret_literal(c->nt, u))
+      return 1;
+  return 0;
+}
+/* an instance method a pattern calls to read an object's parts */
+static int share_pattern_method(const Scope *m) {
+  return m->class_id >= 0 && m->name && (sp_streq(m->name, "deconstruct") || sp_streq(m->name, "deconstruct_keys"));
+}
 static int share_default_apply(Compiler *c, int in_fixpoint) {
   if (!c->share_strings) return 0;
   if (in_fixpoint) {
@@ -17084,7 +17240,10 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
       if (lv->type != TY_STRING && lv->type != TY_STRBUF) continue;
       if (repr_of_slot(c, lv).share && !lv->byref_out) continue;
       if (lv->is_param && !lv->is_block_param) {
-        if (lv->rbs_seeded) continue;
+        /* an --rbs seed declares the Ruby type, String, and not its C form:
+           a seeded parameter takes the handle as an inferred one does
+           (reassert_rbs_param_seeds keeps it) */
+        if (lv->rbs_seeded && lv->rbs_type != TY_STRING) continue;
         if (lv->byref_out) { lv->byref_out = 0; lv->is_cell = 0; }
         lv->type = TY_STRBUF; lv->str_shared = 1;
         changed = 1;
@@ -17131,6 +17290,15 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
     else if (sh->kind == SHK_GVAR && repr_str_elems_share(c, h) && share_gvar_container(c, sh->name)) {
       changed = 1;
     }
+    /* a method's value whose elements the rule shares, when they would be
+       copies otherwise: a typed String Array or Hash literal it answers
+       (`def pair = [@a, @b]`, `t = o.pair[0]`), which the seal refuses
+       (repr_share_seal), and a deconstruct's, whose parts a pattern binds
+       (its boxes hold what each element boxes as). The containers it
+       answers hold the handles, as a local's do. */
+    else if (sh->kind == SHK_RET && repr_str_elems_share(c, h) &&
+             (share_ret_typed_str_literal(c, sh->scope) || share_pattern_method(&c->scopes[sh->scope])))
+      changed |= strbuf_method_ret_source_walk(c, sh->scope, -1, 0, SB_DEMAND);
     /* a global or a constant holds the handle the way a top-level ivar's C
        global does */
     else if ((sh->kind == SHK_GVAR || sh->kind == SHK_CONST) && repr_str_shares(c, h)) {
@@ -19001,10 +19169,13 @@ static void an_call_targets_of(Compiler *c, int u, ACallTargets *t) {
      K#initialize as a constructor. Resolving to a single scope dropped one of
      them -- whichever arm ran second -- and the call site vanished from that
      scope's chain, which is how `Holder.new(s)` stopped being evidence and the
-     copy came back. */
+     copy came back. Under --share-strings a unique name still has to be this
+     call's own target: StringIO.open must not pull File.open's path into its
+     shared init. */
   int byname = an_unique_scope_by_name(c, un);
   if (byname >= 0 && c->scopes[byname].name &&
-      sp_streq(c->scopes[byname].name, un)) act_add(t, byname);
+      sp_streq(c->scopes[byname].name, un) &&
+      (!c->share_strings || cplan_user_fresh(c, u)->mi == byname)) act_add(t, byname);
   /* A name more than one method defines resolves by the call itself, and
      so does an alias, which names no scope of its own. By unique name alone
      such a call had no target, so its site was missing from every chain: a
@@ -19453,7 +19624,8 @@ static int an_call_targets_scope(Compiler *c, int u, int mi2, Scope *m2) {
   /* only an alias reaches a scope under another name */
   int aliased = !is_new && an_alias_name(c, un);
   int byname = named ? an_unique_scope_by_name(c, un) : -1;
-  if (named && byname == mi2) return 1;
+  if (named && byname == mi2 &&
+      (!c->share_strings || cplan_user_fresh(c, u)->mi == mi2)) return 1;
   /* a name more than one method defines, or an alias: the targets the call
      itself resolves to, as an_call_targets_of lists them */
   if (!is_new && ((named && byname < 0) || aliased)) {
@@ -20074,9 +20246,15 @@ static int mark_reader_identity_operands(Compiler *c) {
    multiple assignment or an operator write, and a chain deeper than a few
    variables. */
 static int poly_var_may_hold_string(Compiler *c, const HandleArgTab *hat,
-                                    const char *vn, Scope *vs, int depth);
-static int poly_value_may_be_string(Compiler *c, const HandleArgTab *hat, int v, int depth) {
+                                    const char *vn, Scope *vs, int depth, const PolyLits *lits);
+static int poly_lit_may_be_string(Compiler *c, const HandleArgTab *hat, int v, int depth, const PolyLits *lits);
+static int poly_value_may_be_string(Compiler *c, const HandleArgTab *hat, int v, int depth, const PolyLits *lits) {
   const NodeTable *nt = c->nt;
+  if (lits) {
+    v = an_unparen(nt, v);
+    int got = v >= 0 ? poly_lit_may_be_string(c, hat, v, depth, lits) : -1;
+    if (got >= 0) return got;
+  }
   if (v < 0) return 1;
   TyKind t = comp_ntype(c, v);
   if (t == TY_UNKNOWN) t = infer_type(c, v);
@@ -20085,13 +20263,56 @@ static int poly_value_may_be_string(Compiler *c, const HandleArgTab *hat, int v,
   if (nt_kind(nt, v) != NK_LocalVariableReadNode) return 1;
   const char *rn = nt_str(nt, v, "name");
   Scope *rs = rn ? comp_scope_of(c, v) : NULL;
-  return !rs || poly_var_may_hold_string(c, hat, rn, rs, depth + 1);
+  return !rs || poly_var_may_hold_string(c, hat, rn, rs, depth + 1, lits);
+}
+/* With `lits` (the share facts' question, an_recv_may_be_string, and
+   their index of the variables literal blocks bind), a value is also read
+   by its form (poly_lit_may_be_string): a literal of another
+   class is no String whatever its type settled as (an untyped method's
+   `acc = []`), and a conditional is one of its arms (`c ? [0] : 1`). The
+   lifts ask without it, and their answers and C stay as they were. An
+   arm: its last statement, through an `else`. */
+static int poly_arm_may_be_string(Compiler *c, const HandleArgTab *hat, int n, int depth, const PolyLits *lits) {
+  const NodeTable *nt = c->nt;
+  for (int d = 0; n >= 0 && d < 16; d++) {
+    NodeKind k = nt_kind(nt, n);
+    if (k == NK_ElseNode) { n = nt_ref(nt, n, "statements"); continue; }
+    if (k != NK_StatementsNode) return poly_value_may_be_string(c, hat, n, depth, lits);
+    int bn = 0; const int *bv = nt_arr(nt, n, "body", &bn);
+    n = bn > 0 ? bv[bn - 1] : -1;
+  }
+  return n >= 0;   /* an empty one answers nil */
+}
+/* 0 or 1 for a literal or a conditional, -1 for any other form */
+static int poly_lit_may_be_string(Compiler *c, const HandleArgTab *hat, int v, int depth, const PolyLits *lits) {
+  const NodeTable *nt = c->nt;
+  switch (nt_kind(nt, v)) {
+  case NK_ArrayNode: case NK_HashNode: case NK_IntegerNode: case NK_FloatNode: case NK_SymbolNode:
+  case NK_NilNode: case NK_TrueNode: case NK_FalseNode: case NK_RangeNode: case NK_LambdaNode:
+  case NK_RegularExpressionNode:
+    return 0;
+  case NK_IfNode: case NK_UnlessNode: {
+    int el = nt_ref(nt, v, nt_kind(nt, v) == NK_IfNode ? "subsequent" : "else_clause");
+    int st = nt_ref(nt, v, "statements");
+    /* a missing arm answers nil */
+    return (st >= 0 && poly_arm_may_be_string(c, hat, st, depth, lits)) ||
+           (el >= 0 && poly_arm_may_be_string(c, hat, el, depth, lits));
+  }
+  case NK_OrNode: case NK_AndNode:
+    return poly_value_may_be_string(c, hat, nt_ref(nt, v, "left"), depth, lits) ||
+           poly_value_may_be_string(c, hat, nt_ref(nt, v, "right"), depth, lits);
+  default:
+    return -1;
+  }
 }
 static int poly_var_may_hold_string(Compiler *c, const HandleArgTab *hat,
-                                    const char *vn, Scope *vs, int depth) {
+                                    const char *vn, Scope *vs, int depth, const PolyLits *lits) {
   const NodeTable *nt = c->nt;
   LocalVar *lv = vn && vs ? scope_local(vs, vn) : NULL;
-  if (!lv || depth > 4 || lv->is_cell || lv->is_block_param) return 1;
+  /* with `lits`, how a block or a lambda binds it (PolyLits.bound): one
+     bound only as Enumerator.new's yielder is no String */
+  int bound = lv && lits && !lv->is_param ? lits->bound(lits->ctx, c, (int)(vs - c->scopes), vn) : 0;
+  if (!lv || depth > 4 || lv->is_cell || (lv->is_block_param && bound != 1) || bound == 2) return 1;
   /* a variable already being asked about further up the chain (a method
      handing its parameter to itself) adds no value of its own */
   static LocalVar *asking[6];
@@ -20102,13 +20323,14 @@ static int poly_var_may_hold_string(Compiler *c, const HandleArgTab *hat,
     int pj = an_param_idx(vs, vn);
     if (pj < 0 || !hat || !hat->ok || !vs->name) return 1;
     if (vs->pdefault && vs->pdefault[pj] >= 0 &&
-        poly_value_may_be_string(c, hat, vs->pdefault[pj], depth)) return 1;
+        poly_value_may_be_string(c, hat, vs->pdefault[pj], depth, lits)) return 1;
     for (int e = hat->head[si]; e >= 0; e = hat->enext[e]) {
       int sp = -1;
       int a = arg_layout_param_node(c, vs, hat->enode[e], pj, &sp);
-      if (a < 0 || sp >= 0 || poly_value_may_be_string(c, hat, a, depth)) return 1;
+      if (a < 0 || sp >= 0 || poly_value_may_be_string(c, hat, a, depth, lits)) return 1;
     }
   }
+  int seen = 0;
   for (int w = comp_lvw_first_sc(c, si, vn); w >= 0; w = comp_lvw_next_sc(c, w)) {
     if (comp_scope_of(c, w) != vs) continue;
     const char *wn = nt_str(nt, w, "name");
@@ -20116,9 +20338,26 @@ static int poly_var_may_hold_string(Compiler *c, const HandleArgTab *hat,
     NodeKind wk = nt_kind(nt, w);
     if (wk != NK_LocalVariableWriteNode && wk != NK_LocalVariableOrWriteNode &&
         wk != NK_LocalVariableAndWriteNode) return 1;
-    if (poly_value_may_be_string(c, hat, nt_ref(nt, w, "value"), depth)) return 1;
+    if (poly_value_may_be_string(c, hat, nt_ref(nt, w, "value"), depth, lits)) return 1;
+    seen = 1;
   }
-  return 0;
+  /* with `lits`, a variable no write or yielder binds is bound some other
+     way */
+  return lits && !lv->is_param && !seen && bound != 1;
+}
+
+/* --share-strings (#6765): can receiver r, a boxed or untyped value, be a
+   String? A variable answers by its values (poly_var_may_hold_string), a
+   literal or a conditional by its form; a parameter, a block's parameter,
+   a captured local and any other value may be one. */
+int an_recv_may_be_string(Compiler *c, int r, const PolyLits *lits) {
+  const NodeTable *nt = c->nt;
+  r = an_unparen(nt, r);
+  if (r < 0) return 1;
+  if (nt_kind(nt, r) != NK_LocalVariableReadNode) return poly_lit_may_be_string(c, NULL, r, 0, lits) != 0;
+  const char *vn = nt_str(nt, r, "name");
+  Scope *vs = vn ? comp_scope_of(c, r) : NULL;
+  return !vs || poly_var_may_hold_string(c, NULL, vn, vs, 0, lits);
 }
 
 /* Is POLY variable `vn` of scope `vs` appended to in place: the receiver of
@@ -20149,7 +20388,7 @@ static int lift_poly_read(Compiler *c, const HandleArgTab *hat, SbMutTab *lifted
   const char *vn = nt_str(nt, a, "name");
   Scope *vs = vn ? comp_scope_of(c, a) : NULL;
   LocalVar *lv = vs ? scope_local(vs, vn) : NULL;
-  if (!lv || lv->type != TY_POLY || !poly_var_may_hold_string(c, hat, vn, vs, 0)) return 0;
+  if (!lv || lv->type != TY_POLY || !poly_var_may_hold_string(c, hat, vn, vs, 0,NULL)) return 0;
   c->poly_strbuf_lift[a] = 1;
   if (lifted) sb_mut_tab_note(lifted, vn, (int)(vs - c->scopes), 1);
   if (lv->is_param && !lv->is_block_param && an_param_idx(vs, vn) >= 0)
@@ -20205,6 +20444,13 @@ static int lift_poly_alias_reads(Compiler *c, const HandleArgTab *hat) {
           int pb = nt_ref(nt, v, "body"), bn = 0;
           const int *bb = pb >= 0 ? nt_arr(nt, pb, "body", &bn) : NULL;
           v = bn == 1 ? bb[0] : -1;
+          continue;
+        }
+        /* With the sharing rule, +x aliases a mutable String. The emitted
+           sp_poly_uplus still copies a frozen receiver after it is lifted. */
+        if (c->share_strings && vk == NK_CallNode && nt_str(nt, v, "name") &&
+            is_unary_plus(nt_str(nt, v, "name")) && nt_ref(nt, v, "arguments") < 0) {
+          v = nt_ref(nt, v, "receiver");
           continue;
         }
         if (vk == NK_InstanceVariableReadNode && v != w) {
@@ -20406,7 +20652,7 @@ static int convert_byref_handle_params(Compiler *c,
              much as one it appends to itself, so its callers are pulled in
              on the next round (poly_lift). */
           if (alv && alv->type == TY_POLY) {
-            if (c->poly_strbuf_lift[an2] || !poly_var_may_hold_string(c, hat, vn2, vs2, 0)) continue;
+            if (c->poly_strbuf_lift[an2] || !poly_var_may_hold_string(c, hat, vn2, vs2, 0,NULL)) continue;
             c->poly_strbuf_lift[an2] = 1; changed = 1;
             if (alv->is_param && !alv->is_block_param && an_param_idx(vs2, vn2) >= 0 &&
                 !(alv->poly_lift & POLY_LIFT_APPENDED)) {
@@ -20537,7 +20783,7 @@ static int convert_byref_handle_params(Compiler *c,
           const char *vn3 = pass ? (pi >= 0 ? s->pnames[pi] : NULL) : (an >= 0 ? nt_str(nt, an, "name") : NULL);
           Scope *vs3 = pass ? s : (an >= 0 ? comp_scope_of(c, an) : NULL);
           LocalVar *v3 = vn3 && vs3 ? scope_local(vs3, vn3) : NULL;
-          if (v3 && v3->type == TY_POLY && poly_var_may_hold_string(c, hat, vn3, vs3, 0)) {
+          if (v3 && v3->type == TY_POLY && poly_var_may_hold_string(c, hat, vn3, vs3, 0,NULL)) {
             if (!pass && !c->poly_strbuf_lift[an]) { c->poly_strbuf_lift[an] = 1; changed = 1; }
             if (pass && v3->is_param && !(v3->poly_lift & POLY_LIFT_ZSUPER)) {
               v3->poly_lift |= POLY_LIFT_ZSUPER; changed = 1;
@@ -22820,7 +23066,7 @@ static int dyn_lift_poly_arg(Compiler *c, int n, int k, int a) {
   Scope *vs = vn ? comp_scope_of(c, a) : NULL;
   LocalVar *lv = vs ? scope_local(vs, vn) : NULL;
   if (!lv || lv->type != TY_POLY || c->poly_strbuf_lift[a]) return 0;
-  if (!poly_var_may_hold_string(c, NULL, vn, vs, 0)) return 0;
+  if (!poly_var_may_hold_string(c, NULL, vn, vs, 0,NULL)) return 0;
   DynReach r; memset(&r, 0, sizeof r);
   dyn_reach_value(c, nt_ref(nt, n, "receiver"), k, 0, &r);
   if (r.unlifted) return 0;
@@ -24096,7 +24342,7 @@ static int spread_lift_poly_elems(Compiler *c, const int *av, int ac, int past) 
       const char *vn = nt_str(nt, a, "name");
       Scope *vs = vn ? comp_scope_of(c, a) : NULL;
       LocalVar *lv = vs ? scope_local(vs, vn) : NULL;
-      if (!lv || lv->type != TY_POLY || lv->is_block_param || !poly_var_may_hold_string(c, NULL, vn, vs, 0)) continue;
+      if (!lv || lv->type != TY_POLY || lv->is_block_param || !poly_var_may_hold_string(c, NULL, vn, vs, 0,NULL)) continue;
       if (!c->poly_strbuf_lift[a]) { c->poly_strbuf_lift[a] = 1; changed = 1; }
       /* the method's own POLY parameter, or one a local is written from
          (`v = x`): its box is the caller's, so it pulls its callers in */
@@ -24986,11 +25232,23 @@ static int pf_scope_named(Compiler *c, const Scope *src, const char *name) {
 
 int make_yield_proc_forms(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
-  int n0 = c->nscopes;
   int made = 0;
   mark_ctor_cycles(c);
-  for (int s = 1; s < n0; s++) {
+  for (int next = 1; next < c->nscopes; next++) {
+    int s = next;
     Scope *src = &c->scopes[s];
+    /* Visit the appended clones too: a clone's super needs a callable
+       yielding shadow even when that shadow is outside the constructor
+       cycle. Following it here also handles a chain of module shadows,
+       in either definition order, without rescanning the scope table. */
+    int shadow_clone = src->is_proc_form;
+    if (shadow_clone) {
+      const char *shadow = comp_super_shadow(c, src);
+      if (!shadow || !cr_scope_has_super(c, s)) continue;
+      s = pf_scope_named(c, src, shadow);
+      if (s < 0) continue;
+      src = &c->scopes[s];
+    }
     /* reachability is decided after this pass, so do not consult it: an
        unused clone is a static function the C compiler drops. */
     if (!src->yields) continue;
@@ -25008,7 +25266,7 @@ int make_yield_proc_forms(Compiler *c) {
        re-raise and its own `new` sites alike, none of which splice the body */
     int exc_init = src->class_id >= 0 && sp_streq(src->name, "initialize") && !src->is_cmethod &&
                    class_is_exc_subclass(c, src->class_id);
-    if (src->class_id >= 0 && !exc_init && !pf_wanted(c, src->name) && !pf_in_class_dispatch(c, src) &&
+    if (src->class_id >= 0 && !shadow_clone && !exc_init && !pf_wanted(c, src->name) && !pf_in_class_dispatch(c, src) &&
         !(src->ctor_cycle && ctor_graph_init(c, s)))
       continue;
     /* A method the program reopens has two definitions in the scope table
@@ -25527,6 +25785,9 @@ static int reassert_rbs_param_seeds(Compiler *c) {
       LocalVar *lv = &sc->locals[i];
       if (!lv->is_param || !lv->rbs_seeded) continue;
       if (lv->rbs_type == TY_UNKNOWN || lv->type == lv->rbs_type) continue;
+      /* a String the share rule made the handle (share_default_apply): the
+         same Ruby type in its shared C form */
+      if (c->share_strings && lv->rbs_type == TY_STRING && lv->type == TY_STRBUF && lv->str_shared) continue;
       lv->type = lv->rbs_type;
       changed = 1;
     }
@@ -29308,6 +29569,13 @@ static int splat_builtin_range(const char *name, int *lo, int *hi, int *variadic
   }
   return 0;
 }
+static int splat_builtin_keeps_kwsplat(const char *name) {
+  static const char *const kw[] = { "round", "encode", "each_line", "lines", "readlines", "readline", "gets",
+                                    "unpack", "unpack1", "clone", "Integer", "Float", "Rational", "Complex",
+                                    "update", "merge!", NULL };
+  for (int i = 0; kw[i]; i++) if (sp_streq(name, kw[i])) return 1;
+  return 0;
+}
 /* An arm of a dynamic send (`public_send(*args)`) on a receiver whose class
    only the run time knows takes the rest of the list into whatever builtin
    its name is: the counts come from CRuby's arity tables, over every class
@@ -29512,7 +29780,8 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
     nt_node_set_int(nt, fargs[k], "depth", 0);
   }
   char knm[64];
-  if (nuser > 0 && !ukw && argc > 1 && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode) {
+  if (!ukw && (nuser > 0 || !splat_builtin_keeps_kwsplat(cnm)) && argc > 1 &&
+      nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode) {
     snprintf(knm, sizeof knm, "__splk%s", comp_node_tag(c, id));
     scope_local_intern(comp_scope_of(c, id), knm);
     int ar = nt_new_node(nt, "LocalVariableReadNode");
@@ -30945,11 +31214,27 @@ static int ctor_graph_target(Compiler *c, int id) {
   return ctor_graph_node(c, t) ? t : -1;
 }
 
-/* One edge per call and `super` in a yielding method's body that splices
+/* Edges for calls and supers in a yielding method's body that splice
    another: counted into cnt[s + 1], or appended to adj at fill[s]. */
 static void ctor_graph_edge(Compiler *c, int id, int *cnt, int *adj, int *fill) {
   int s = c->nscope[id];
   if (!ctor_graph_node(c, s)) return;
+  /* A super reaching Class#new splices initialize on the receiving class,
+     including a descendant that inherits this class method. It has no
+     user superclass method for super_reach to find. */
+  if (comp_super_is_class_new(c, id)) {
+    int ci = c->scopes[s].class_id, nd = 0;
+    const int *ds = comp_descendants(c, ci, &nd);
+    for (int d = -1; d < nd; d++) {
+      int k = d < 0 ? ci : ds[d];
+      if (comp_cmethod_in_chain(c, k, "new", NULL) != s) continue;
+      int t = comp_method_in_chain(c, k, "initialize", NULL);
+      if (!ctor_graph_node(c, t)) continue;
+      if (cnt) cnt[s + 1]++;
+      else adj[fill[s]++] = t;
+    }
+    return;
+  }
   int t = ctor_graph_target(c, id);
   if (t < 0) return;
   if (cnt) cnt[s + 1]++;
@@ -32552,6 +32837,7 @@ static void an_phase_desugar_register(Compiler *c) {
   desugar_static_class_eval(c);
   /* `m(&nil)` is the blockless call */
   desugar_nil_block_arg(c);
+  desugar_thread_start(c);               /* Thread.start / .fork -> Thread.new */
   desugar_literal_undef_method(c);       /* undef_method :a in a body -> undef a */
   /* a bare constant CRuby's lookup cannot reach, bound by its leaf name to a
      nested definition: refused while the source still says where each
@@ -36077,6 +36363,7 @@ static void an_phase_storage(Compiler *c) {
      parameter RETAINED in a shared-handle ivar demands the handle for the
      same reason and feeds the same propagation, so the two run to a joint
      fixpoint rather than one after the other (#4363). */
+  int late_widened = 0;
   for (;;) {
     HandleArgTab hat; handle_arg_tab_init(c, &hat);
     int ch = promote_params_stored_in_shared_ivars(c, &hat);
@@ -36089,8 +36376,22 @@ static void an_phase_storage(Compiler *c) {
     if (promote_default_alias_params(c)) ch = 1;
     if (promote_forwarded_rest_args(c)) ch = 1;
     if (promote_ivar_handle_stores(c)) ch = 1;
+    /* --share-strings: a typed String Array the rule converts to the poly
+       Array this late (share_default_apply) is a late widening: a method
+       answering it, and the locals written from that method, follow it as
+       they follow the late ivar and return widenings (rejoin_local_writes) */
+    if (c->share_strings && ch) {
+      g_ret_no_new_poly = 3;
+      if (infer_return_types(c)) ch = late_widened = 1;
+      g_ret_no_new_poly = 0;
+      if (rejoin_local_writes(c)) ch = late_widened = 1;
+    }
     if (!ch) break;
   }
+  /* ... and the reads of what widened take its type, as the proc-return
+     re-derivation's refresh does (an_phase_proc_returns) */
+  if (late_widened)
+    for (int id = 0; id < c->nt->count; id++) infer_type(c, id);
   /* A read an is_a? or nil guard narrowed to String (`m(x) if
      x.is_a?(String)`) unboxed a copy of the String its POLY variable holds:
      one lifted into the handle for a parameter appended to keeps the box,

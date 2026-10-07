@@ -1,0 +1,9 @@
+:wait_readable
+true
+true
+1
+false
+"one\n"
+"two\n"
+"three\n"
+:done
