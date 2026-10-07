@@ -1,0 +1,14 @@
+[".hidden", "a.txt"]
+[".", "..", ".hidden", "a.txt"]
+[".hidden", "a.txt"]
+[".hidden", "a.txt"]
+[".hidden", "a.txt"]
+[".", "..", ".hidden", "a.txt"]
+[".hidden", "a.txt"]
+[#<Encoding:BINARY (ASCII-8BIT)>]
+[#<Encoding:BINARY (ASCII-8BIT)>]
+[#<Encoding:UTF-8>]
+ArgumentError: unknown encoding name - nope
+TypeError: no implicit conversion of Integer into String
+TypeError: no implicit conversion of Symbol into String
+ArgumentError: unknown encoding name - nope
