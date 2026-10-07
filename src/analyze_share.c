@@ -1166,14 +1166,14 @@ static void sh_peek_args(ShareFacts *F, int n, int keep) {
    where its own value is dropped. */
 static void sh_settle_peeks(ShareFacts *F, Compiler *c) {
   const NodeTable *nt = c->nt;
+  /* a method no caller reads drops its body's value, through its arms
+     (the walk is done: only the peeks read these marks now) */
+  for (int mi = 0; mi < c->nscopes && F->npk > 0; mi++)
+    if (c->scopes[mi].def_node >= 0 && !F->mread[mi]) sh_mark_unused(F, nt, c->scopes[mi].body, SHU_TAIL);
   for (int i = 0; i < F->npk; i++) {
     int n = F->pk[i] < 0 ? -F->pk[i] - 1 : F->pk[i];
     if (F->pk[i] < 0) {
-      /* dropped, or a method's last value no caller reads */
-      int mi = sh_method_index(c, n);
-      int body = mi >= 0 ? c->scopes[mi].body : -1;
-      int bn = 0; const int *bb = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &bn) : NULL;
-      if (!F->unused[n] && !(bn > 0 && bb[bn - 1] == n && !F->mread[mi])) continue;
+      if (!F->unused[n]) continue;
       F->unused[n] |= SHU_PEEK;
     }
     int args = nt_ref(nt, n, "arguments");
@@ -1449,7 +1449,10 @@ static int sh_block_param(const NodeTable *nt, int blk, int i) {
    use. A message read answers it, so a String no exception was handed
    (a builtin's own message) is a new one. */
 static int sh_exc(ShareFacts *F) {
-  if (F->exc < 0) F->exc = sh_new(F, SHK_VALUE);
+  if (F->exc < 0) {
+    F->exc = sh_new(F, SHK_VALUE);
+    F->nhold[F->exc] = 1;   /* the exceptions keep their messages: a name */
+  }
   return F->exc;
 }
 /* Call n's arguments are handed to an exception: its message may be any
@@ -1467,17 +1470,16 @@ static void sh_exc_args(ShareFacts *F, Compiler *c, int n) {
    values; Hash.new's default and its block's
    values (the block is handed the Hash, and the key each lookup asks for:
    sh_key); what Enumerator.new's block hands its yielder, which next
-   answers; an OpenStruct's fields. An exception's arguments join UNKNOWN,
-   as a user exception class's do (sh_new_call). -2 for any other class
+   answers; an OpenStruct's fields. An exception's arguments are its
+   message (sh_exc). -2 for any other class
    (sh_call then reads it as a class held in a variable). */
 static int sh_builtin_new(ShareFacts *F, Compiler *c, int n, int recv, int blk) {
   const NodeTable *nt = c->nt;
   const char *cn = nt_str(nt, recv, "name");
   if (!cn) return -2;
   int vals[64];
+  /* a builtin exception keeps its argument as its message (sh_exc) */
   if (is_builtin_exception_name(cn)) {
-    int nv = sh_args_vals(F, c, n, vals, 64);
-    for (int k = 0; k < nv; k++) sh_union(F, vals[k], F->unknown);
     sh_exc_args(F, c, n);
     return -1;
   }
@@ -1987,7 +1989,10 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
   /* an exception's message: what it was handed (sh_exc). raise and fail
      hand it their arguments. */
   if (is_exc_message_name(name)) return sh_exc(F);
-  if (recv < 0 && is_raise_alias(name)) sh_exc_args(F, c, n);
+  if (recv < 0 && is_raise_alias(name) && !sh_has_targets(c, n)) {
+    sh_exc_args(F, c, n);
+    return -1;
+  }
 
   /* a builtin */
   if (recv < 0) {
