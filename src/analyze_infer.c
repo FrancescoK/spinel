@@ -73,7 +73,7 @@ const struct an_poly_raw_row AN_POLY_RAW[] = {
       { "even?", 0, TY_BOOL }, { "odd?", 0, TY_BOOL }, { "nan?", 0, TY_BOOL },
       { "finite?", 0, TY_BOOL }, { "integer?", 0, TY_BOOL }, { "empty?", 0, TY_BOOL },
       { "eql?", 1, TY_BOOL }, { "equal?", 1, TY_BOOL }, { "instance_of?", 1, TY_BOOL },
-      { "bytesize", 0, TY_INT }, { "ord", 0, TY_INT }, { "bit_length", 0, TY_INT },
+      { "bytesize", 0, TY_INT }, { "ord", 0, TY_POLY }, { "bit_length", 0, TY_INT },
       /* Integer parts can themselves be boxed Bigints. */
       { "numerator", 0, TY_POLY }, { "denominator", 0, TY_POLY },
       { "to_i", 0, TY_INT }, { "hash", 0, TY_INT }, { "object_id", 0, TY_INT },
@@ -3468,9 +3468,8 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
             sp_streq(name, "conjugate") || sp_streq(name, "conj") ||
             sp_streq(name, "abs2") || sp_streq(name, "magnitude") ||
             sp_streq(name, "numerator") || sp_streq(name, "denominator") ||
-            sp_streq(name, "nonzero?")) { *out = an_poly_concrete(c, name, TY_POLY); return 1; }
-        if (sp_streq(name, "bytesize") || sp_streq(name, "ord") ||
-            sp_streq(name, "bit_length")) { *out = an_poly_concrete(c, name, TY_INT); return 1; }
+            sp_streq(name, "nonzero?") || sp_streq(name, "ord")) { *out = an_poly_concrete(c, name, TY_POLY); return 1; }
+        if (sp_streq(name, "bytesize") || sp_streq(name, "bit_length")) { *out = an_poly_concrete(c, name, TY_INT); return 1; }
         /* a boxed Range's bound is boxed: an Integer, a Float or nil */
         if (is_range_bound_reader(name)) { *out = an_poly_concrete(c, name, TY_POLY); return 1; }
       }
