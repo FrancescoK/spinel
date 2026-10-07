@@ -1,0 +1,36 @@
+ArgumentError: wrong number of arguments (given 0, expected 1)
+ArgumentError: wrong number of arguments (given 0, expected 1+)
+ArgumentError: wrong number of arguments (given 0, expected 1+)
+ArgumentError: wrong number of arguments (given 2, expected 1)
+NoMethodError: undefined method 'min' for an instance of String
+NoMethodError: undefined method 'group_by' for an instance of String
+NoMethodError: undefined method 'partition' for an instance of Symbol
+NoMethodError: undefined method 'count' for an instance of Symbol
+NoMethodError: undefined method 'count' for an instance of Symbol
+NoMethodError: undefined method 'include?' for an instance of Symbol
+NoMethodError: undefined method 'min' for an instance of Symbol
+NoMethodError: undefined method 'group_by' for an instance of Symbol
+NoMethodError: undefined method 'partition' for an instance of Integer
+NoMethodError: undefined method 'count' for an instance of Integer
+NoMethodError: undefined method 'count' for an instance of Integer
+NoMethodError: undefined method 'include?' for an instance of Integer
+NoMethodError: undefined method 'min' for an instance of Integer
+NoMethodError: undefined method 'group_by' for an instance of Integer
+NoMethodError: undefined method 'partition' for an instance of Float
+NoMethodError: undefined method 'count' for an instance of Float
+NoMethodError: undefined method 'count' for an instance of Float
+NoMethodError: undefined method 'include?' for an instance of Float
+NoMethodError: undefined method 'min' for an instance of Float
+NoMethodError: undefined method 'group_by' for an instance of Float
+NoMethodError: undefined method 'partition' for nil
+NoMethodError: undefined method 'count' for nil
+NoMethodError: undefined method 'count' for nil
+NoMethodError: undefined method 'include?' for nil
+NoMethodError: undefined method 'min' for nil
+NoMethodError: undefined method 'group_by' for nil
+[[1, 2], []]
+2
+2
+ArgumentError: wrong number of arguments (given 2, expected 1)
+ArgumentError: wrong number of arguments (given 2, expected 0..1)
+{1 => [1], 2 => [2]}
