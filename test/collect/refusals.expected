@@ -866,6 +866,10 @@ spinel: 1 refusal, nothing written
 == test/reject/string_global_handle_param.rb [promote] rc=1
 spinel: test/reject/string_global_handle_param.rb:15: a String is passed to `h`'s parameter `io` through the call, which the method appends to: this call hands the method a copy, so the append would not reach the caller's String (a String is not yet shared by reference from a global variable into a parameter that takes its handle). Return the String from the method and assign it, or append to it in the caller.
 spinel: 1 refusal, nothing written
+== test/reject/string_global_hash_element_mutation.rb [default] rc=1
+spinel: test/reject/string_global_hash_element_mutation.rb:6: an element of a global Hash is a String mutated in place through the Hash (a String is not yet shared by reference through a global variable's Hash). Keep the Hash in a local or an instance variable.
+== test/reject/string_global_hash_element_mutation.rb [promote] rc=1
+spinel: test/reject/string_global_hash_element_mutation.rb:6: an element of a global Hash is a String mutated in place through the Hash (a String is not yet shared by reference through a global variable's Hash). Keep the Hash in a local or an instance variable.
 == test/reject/string_global_identity_after_mutations.rb [default] rc=1
 spinel: test/reject/string_global_identity_after_mutations.rb:6: a String variable assigned from or to a global variable is mutated in place (a String is not yet shared by reference through a global variable). Mutate the String through the global, or assign the global again after the mutation.
 == test/reject/string_global_identity_after_mutations.rb [promote] rc=1
