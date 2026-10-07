@@ -505,9 +505,15 @@ int emit_op_hash_set_default(Compiler *c, const BopCtx *x, Buf *b) {
   else if (is_nil) { buf_puts(b, " (void)("); emit_expr(c, argv[0], b); buf_puts(b, ");"); }
   buf_printf(b, " if (_t%d && sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s);",
              t, t, t, hash_box_cls(rt));
+  /* --share-strings: a String the rule shares is the default itself (`h.default
+     << x`, `h[:missing] << x` change it): its handle, boxed */
+  char dref[1024];
+  int dhandle = held && (at == TY_STRING || at == TY_STRBUF) && strbuf_var_handle(c, argv[0], dref, sizeof dref);
   if (rt == TY_SYM_POLY_HASH || rt == TY_STR_POLY_HASH || rt == TY_POLY_POLY_HASH) {
     buf_printf(b, " if (_t%d) _t%d->default_v = ", t, t);
-    if (is_nil) buf_puts(b, "sp_box_nil()"); else if (held) emit_boxed_text(c, at, av, b); else emit_boxed(c, argv[0], b);
+    if (is_nil) buf_puts(b, "sp_box_nil()");
+    else if (dhandle) buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", dref);
+    else if (held) emit_boxed_text(c, at, av, b); else emit_boxed(c, argv[0], b);
     buf_puts(b, ";");
   }
   /* The typed variants keep the default in the values' slot: a value that

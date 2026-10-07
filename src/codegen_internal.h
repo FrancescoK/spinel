@@ -138,6 +138,25 @@ void emit_strbuf_param_bind(Compiler *c, const LocalVar *pv, TyKind want, const 
 void emit_strbuf_orw_guard(Compiler *c, const char *ref, int v, int is_or, Buf *b);
 /* The value a write hands a shared-handle String slot `lv` (codegen_stmt.c) */
 void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b);
+/* The handle such a slot takes from value v: its own, or a new one */
+void emit_strbuf_handle_of(Compiler *c, int v, Buf *b);
+/* --share-strings: the handle a value route that answers the String it is
+   handed (`+s`, `String(s)`, `s.then { |x| x }`) hands on: 1, or 0 with
+   nothing emitted */
+int emit_strbuf_route(Compiler *c, int v, Buf *b);
+/* String mutator id's receiver recv as the handle it changes: 1 a slot, 2
+   a route (read once, nil raising NoMethodError for id), 0 neither
+   (codegen_stmt.c) */
+int strbuf_recv_handle(Compiler *c, int id, int recv, char *out, size_t cap);
+/* --share-strings: the handle slot a variable's read names, 0 for any
+   other node (codegen_stmt.c) */
+int strbuf_var_handle(Compiler *c, int n, char *out, size_t cap);
+/* --share-strings: does value v hand over a shared String as its handle
+   (a variable, a route, a conditional with such an arm)? (codegen_stmt.c) */
+int strbuf_value_carries(Compiler *c, int v);
+/* A `next` value a block's boxed answer slot takes: a shared String as its
+   handle's box under --share-strings (codegen_stmt.c) */
+void emit_boxed_next_value(Compiler *c, int v, Buf *b);
 /* The value a Struct constructor or an attribute writer stores into a String
    ivar slot (codegen_stmt.c) */
 void emit_strbuf_ivar_store(Compiler *c, int shared, int v, Buf *b);
@@ -689,6 +708,9 @@ int arg_ran_first(int node, int from);
 /* The handle temp a shared String slot's argument took when it ran first
    (emit_arg_temp), -1 when there is none. */
 int ran_first_handle(int node);
+/* Bind node v to its value temp _t<t>, with th its handle's temp or -1
+   (codegen_fold.c) */
+void ran_first_bind(int v, int t, int th);
 int emit_splat_gather(Compiler *c, Scope *m, const int *argv, const ArgLayout *L);
 /* Does parameter i take the argument written at index i ahead of the first
    splat, however long the splats run? */

@@ -14853,6 +14853,15 @@ static int an_arg_is_shared_handle(Compiler *c, int node) {
       int el = nt_ref(nt, g, "else_clause");
       if (ok && el >= 0) ok = an_stmts_last_shared(c, nt_ref(nt, el, "statements"));
       return ok;
+    }
+    /* `x.then { |v| v }`: a block that is one read of a handle answers it,
+       and that read publishes it */
+    if (g >= 0 && nt_kind(nt, g) == NK_CallNode && nt_str(nt, g, "name") && is_then_alias(nt_str(nt, g, "name")) &&
+        nt_ref(nt, g, "receiver") >= 0 && nt_ref(nt, g, "arguments") < 0) {
+      int blk = nt_ref(nt, g, "block");
+      int body = blk >= 0 && nt_kind(nt, blk) == NK_BlockNode ? nt_ref(nt, blk, "body") : -1;
+      int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+      return bn == 1 && nt_kind(nt, bb[0]) == NK_LocalVariableReadNode && an_arg_is_shared_handle(c, bb[0]);
     } }
   /* `h[:k]` / `a[0]` -- an element of a container that holds strings. The
      container-store rules make those elements shared handles as soon as one
@@ -17461,9 +17470,24 @@ static int an_returns_shared_handles(Compiler *c, int mi3, const int *ret_start,
   }
   return ok;
 }
+/* The method a deep-return pickup call reaches: a receiverless call's
+   uniquely named method, or under --share-strings a class method of that
+   name called on its own class (`K.get`), which the pickup takes alike
+   (emit_call_body); else -1. */
+static int an_pickup_target(Compiler *c, int wv) {
+  const NodeTable *nt = c->nt;
+  int wr = nt_ref(nt, wv, "receiver");
+  if (nt_ref(nt, wv, "block") >= 0 || (wr >= 0 && !c->share_strings)) return -1;
+  const char *mn = nt_str(nt, wv, "name");
+  int mi3 = mn ? an_unique_scope_by_name(c, mn) : -1;
+  if (mi3 <= 0 || wr < 0) return mi3;
+  return infer_type(c, wr) == TY_CLASS && c->scopes[mi3].is_cmethod &&
+         c->scopes[mi3].class_id == class_recv_static_ci(c, wr) ? mi3 : -1;
+}
 /* --share-strings: a String mutator whose receiver is a receiverless call
-   of a uniquely named method answering a shared handle on every path
-   (`def get = $g`, `get << x`): the rule shares that String, so the call is
+   (or a class method's call on its class) of a uniquely named method
+   answering a shared handle on every path (`def get = $g`, `get << x`,
+   `K.get << x`): the rule shares that String, so the call is
    marked to hand out the handle its tail publishes, as the deep-return
    pickup marks `r = get`. */
 static int an_mutated_handle_returns(Compiler *c, int **ret_start, int **ret_list) {
@@ -17473,9 +17497,7 @@ static int an_mutated_handle_returns(Compiler *c, int **ret_start, int **ret_lis
     const char *qn = nt_str(nt, q, "name");
     int wv = nt_ref(nt, q, "receiver");
     if (!qn || !sp_str_mutator(qn, 0) || wv < 0 || nt_kind(nt, wv) != NK_CallNode || c->strbuf_box[wv]) continue;
-    if (nt_ref(nt, wv, "receiver") >= 0 || nt_ref(nt, wv, "block") >= 0) continue;
-    const char *mn = nt_str(nt, wv, "name");
-    int mi3 = mn ? an_unique_scope_by_name(c, mn) : -1;
+    int mi3 = an_pickup_target(c, wv);
     if (mi3 <= 0) continue;
     if (!*ret_start) an_returns_by_scope(c, ret_start, ret_list);
     int saw = 0;
@@ -18253,10 +18275,7 @@ static int promote_shared_stored_strings(Compiler *c) {
     int wv = nt_ref(nt, w, "value");
     if (wv < 0 || nt_kind(nt, wv) != NK_CallNode) continue;
     if (c->strbuf_box[wv]) continue;
-    if (nt_ref(nt, wv, "receiver") >= 0) continue;
-    if (nt_ref(nt, wv, "block") >= 0) continue;
-    const char *mn = nt_str(nt, wv, "name");
-    int mi3 = mn ? an_unique_scope_by_name(c, mn) : -1;
+    int mi3 = an_pickup_target(c, wv);
     if (mi3 <= 0) continue;
     if (!ret_start) an_returns_by_scope(c, &ret_start, &ret_list);
     /* every return tail (implicit + explicit) must be a shared slot read */

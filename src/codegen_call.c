@@ -19064,6 +19064,34 @@ static int nil_target_operands(Compiler *c, int id, int *node, TyKind *ty, int m
   return n;
 }
 
+/* Receiver r of a nil-tested call, when it is a route over a shared String
+   (emit_strbuf_route): its handle held in a rooted temp after `lead`, and
+   r bound to the handle's read (a copy, as r's own read is) with that
+   handle beside it (ran_first_bind), which a mutator changes
+   (strbuf_recv_handle). Answers the read's temp, or -1 with nothing
+   emitted. */
+static int emit_nil_target_route(Compiler *c, int r, Buf *b, const char *lead) {
+  Buf hb, op;
+  memset(&hb, 0, sizeof hb);
+  memset(&op, 0, sizeof op);
+  Buf *sv = g_pre;
+  g_pre = &op;
+  int ok = emit_strbuf_route(c, r, &hb);
+  g_pre = sv;
+  int t = -1;
+  if (ok) {
+    int th = ++g_tmp;
+    t = ++g_tmp;
+    if (op.p) buf_puts(b, op.p);
+    buf_puts(b, lead);
+    buf_printf(b, "sp_String * _t%d = %s; SP_GC_ROOT(_t%d);", th, hb.p, th);
+    buf_printf(b, " const char * _t%d = sp_strbuf_read_pub(_t%d); SP_GC_ROOT(_t%d);", t, th, t);
+    buf_puts(b, *lead ? "\n" : " ");
+    ran_first_bind(r, t, th);
+  }
+  free(hb.p); free(op.p);
+  return t;
+}
 /* The temps' declarations and the test, into b, each statement after
    `lead` (a statement prefix: an indent, or nothing inside an expression).
    The operands are bound to the temps; the caller unbinds from *mark. */
@@ -19076,6 +19104,13 @@ static void emit_nil_target_head(Compiler *c, int id, Buf *b, const char *lead, 
   *mark = g_n_argov;
   for (int i = 0; i < n; i++) {
     Buf ob, op;
+    /* --share-strings: a receiver that is a route over a shared String
+       (emit_strbuf_route) is held as the handle it hands on, which the
+       mutator then changes (strbuf_recv_handle reads it) */
+    if (node[i] == r && repr_share_rule(c) && (ty[i] == TY_STRING || ty[i] == TY_STRBUF)) {
+      int t = emit_nil_target_route(c, r, b, lead);
+      if (t >= 0) { snprintf(rtext, sizeof rtext, "_t%d", t); continue; }
+    }
     /* not fresh: ty[i] declares the temp, and a fresh String (#7580) renders as the String
        where its stored type is the handle */
     render_operand(c, node[i], 0, &ob, &op);

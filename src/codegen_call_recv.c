@@ -717,16 +717,22 @@ static void emit_fetch_blk_param(Compiler *c, int id, int blk, TyKind kt, int tk
   Scope *fbs = comp_scope_of(c, blk);
   LocalVar *flv = fbs ? scope_local(fbs, fp0) : NULL;
   if (!flv) { Scope *fes = comp_scope_of(c, id); flv = fes ? scope_local(fes, fp0) : NULL; }
+  int fac = 0; const int *fav = call_args(c->nt, id, &fac);
+  char kref[1024];
   if (flv && flv->type == TY_POLY && kt != TY_POLY) {
     char ktn[32]; snprintf(ktn, sizeof ktn, "_t%d", tk);
-    buf_printf(b, "lv_%s = ", rename_local(fp0)); emit_boxed_text(c, kt, ktn, b); buf_puts(b, "; ");
+    buf_printf(b, "lv_%s = ", rename_local(fp0));
+    /* --share-strings: the String asked for is the key the block is handed
+       (`fetch(s) { |k| k << x }` changes s): its handle, boxed */
+    if (kt == TY_STRING && fac >= 1 && strbuf_var_handle(c, fav[0], kref, sizeof kref))
+      buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", kref);
+    else emit_boxed_text(c, kt, ktn, b);
+    buf_puts(b, "; ");
   }
   /* a parameter that is the shared handle (--share-strings) takes the key
      argument's handle, the String it was asked for, or a handle of its own
      around a key that is a String of its own */
   else if (flv && repr_of_slot(c, flv).kind == RK_STRBUF && kt == TY_STRING) {
-    int fac = 0; const int *fav = call_args(c->nt, id, &fac);
-    char kref[1024];
     if (fac >= 1 && strbuf_slot_ref(c, fav[0], kref, sizeof kref))
       buf_printf(b, "lv_%s = %s; ", rename_local(fp0), kref);
     else buf_printf(b, "lv_%s = sp_String_new_shared(_t%d); ", rename_local(fp0), tk);
@@ -3543,12 +3549,14 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
          alias/container observes it: recompute via the non-bang transform of
          the current contents, then replace the buffer (#3227). */
       { char srefB[1024];
-        if (strbuf_slot_ref(c, recv, srefB, sizeof srefB)) {
+        int hrB = strbuf_recv_handle(c, id, recv, srefB, sizeof srefB);
+        if (hrB) {
           /* a reader call answering the handle (`obj.name.strip!`, `name.strip!`
              inside the class) emits as the sp_String *, which the plain form
              below cannot take as its receiver: it reads the contents already
-             bound in _tob instead, and the call runs once (#6436) */
-          int rd_call = nt_kind(nt, recv) == NK_CallNode && g_n_argov < MAX_ARG_OVERRIDE;
+             bound in _tob instead, and the call runs once (#6436); so does a
+             route over a handle (`(+s).upcase!`, --share-strings) */
+          int rd_call = (nt_kind(nt, recv) == NK_CallNode || hrB == 2) && g_n_argov < MAX_ARG_OVERRIDE;
           int tsb = ++g_tmp, tob = ++g_tmp, tnb = ++g_tmp;
           buf_printf(b, "({ sp_String *_t%d = %s; const char *_t%d = sp_String_cstr(_t%d); (void)_t%d; ",
                      tsb, srefB, tob, tsb, tob);
@@ -3753,7 +3761,7 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
     if (sp_streq(name, "replace") && argc == 1) {
       /* shared-mutable local: swap the buffer contents in place (#3227) */
       { char srefR[1024];
-        if (strbuf_slot_ref(c, recv, srefR, sizeof srefR)) {
+        if (strbuf_recv_handle(c, id, recv, srefR, sizeof srefR)) {
           int tbR = ++g_tmp;
           buf_printf(b, "({ sp_String *_t%d = %s; sp_String_set_bin(_t%d, ",
                      tbR, srefR, tbR);
@@ -3786,7 +3794,7 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
   if (rt == TY_STRING && sp_streq(name, "bytesplice") && argc == 2 && recv >= 0 &&
       comp_ntype(c, argv[0]) == TY_RANGE) {
     { char srefBR[1024];
-      if (strbuf_slot_ref(c, recv, srefBR, sizeof srefBR)) {
+      if (strbuf_recv_handle(c, id, recv, srefBR, sizeof srefBR)) {
         int tm2 = ++g_tmp, tr3 = ++g_tmp, tn3 = ++g_tmp;
         buf_printf(b, "({ sp_String *_t%d = %s; sp_Range _t%d = sp_range_ix(", tm2, srefBR, tr3);
         emit_expr(c, argv[0], b); buf_puts(b, ")");
@@ -3812,7 +3820,7 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
   /* append_as_bytes copies bytes without negotiating the receiver's encoding. */
   if (rt == TY_STRING && sp_streq(name, "append_as_bytes") && argc >= 1 && recv >= 0) {
     { char srefAB[1024];
-      if (strbuf_slot_ref(c, recv, srefAB, sizeof srefAB)) {
+      if (strbuf_recv_handle(c, id, recv, srefAB, sizeof srefAB)) {
         int tm2 = ++g_tmp;
         buf_printf(b, "({ sp_String *_t%d = %s;", tm2, srefAB);
         for (int a9 = 0; a9 < argc; a9++) {
@@ -3848,7 +3856,7 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
   if (rt == TY_STRING && sp_streq(name, "bytesplice") && argc == 3 && recv >= 0) {
     /* shared handle receiver: swap the buffer in place (#3227) */
     { char srefBS[1024];
-      if (strbuf_slot_ref(c, recv, srefBS, sizeof srefBS)) {
+      if (strbuf_recv_handle(c, id, recv, srefBS, sizeof srefBS)) {
         int tm2 = ++g_tmp, tn3 = ++g_tmp;
         buf_printf(b, "({ sp_String *_t%d = %s;"
                       " const char *_t%d = sp_str_bytesplice(sp_String_cstr(_t%d), ",
@@ -8210,16 +8218,18 @@ static int emit_scalar_call_arms(Compiler *c, int id, Buf *b) {
        mutates a heap string in place and copies only a static literal, so the
        handle's buffer serves directly and the republish is needed only in
        that one case. */
+    /* (--share-strings: a route over a handle, `(+s).setbyte(0, 90)`, too) */
     if (nmS && recvS >= 0 && sp_streq(nmS, "setbyte") &&
         (repr_of(c, recvS).as_ty == TY_STRBUF ||
-         (comp_ntype(c, recvS) == TY_STRING && strbuf_local_name(c, recvS)))) {
+         (comp_ntype(c, recvS) == TY_STRING && (strbuf_local_name(c, recvS) || repr_share_rule(c))))) {
       int aS = nt_ref(ntS, id, "arguments"); int acS = 0;
       const int *avS = aS >= 0 ? nt_arr(ntS, aS, "arguments", &acS) : NULL;
       char srefB[1024];
       const char *sbnB = strbuf_local_name(c, recvS);
-      int haveB = sbnB ? (snprintf(srefB, sizeof srefB, "lv_%s", sbnB), 1)
-                       : strbuf_slot_ref(c, recvS, srefB, sizeof srefB);
-      if (avS && acS == 2 && haveB) {
+      int haveB = avS && acS == 2 &&
+                  (sbnB ? (snprintf(srefB, sizeof srefB, "lv_%s", sbnB), 1)
+                        : strbuf_recv_handle(c, id, recvS, srefB, sizeof srefB));
+      if (haveB) {
         int tH = ++g_tmp;
         buf_printf(b, "({ sp_String *_t%d = %s;"
                       " if (sp_String_is_frozen(_t%d)) sp_raise_frozen_str(_t%d->data);"
