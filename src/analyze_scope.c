@@ -7182,6 +7182,7 @@ enum { PX_BLOCK_PARAM, PX_SYMBOL, PX_BLOCK_WRITE, PX_SUPER, PX_N };
 typedef struct PivsFacts {
   struct { int ok; char *set; } *memo;
   int *memo_at;             /* per node: its call's memo entry + 1, or 0 */
+  struct { int call; uint64_t done[4]; } *seen;
   int nmemo, cmemo, memo_n, memo_count;
   unsigned memo_ver;
   const NodeTable *ix_nt;
@@ -7204,7 +7205,7 @@ void pivs_facts_free(Compiler *c) {
   PivsFacts *f = c->pivs;
   if (!f) return;
   for (int i = 0; i < f->nmemo; i++) free(f->memo[i].set);
-  free(f->memo); free(f->memo_at);
+  free(f->memo); free(f->memo_at); free(f->seen);
   pivs_ix_clear(f);
   free(f);
   c->pivs = NULL;
@@ -7514,10 +7515,48 @@ static int pivs_branches(Compiler *c, int v, char *set, int depth, int elems) {
     default: return -1;
   }
 }
-static int pivs_value(Compiler *c, int v, char *set, int depth) {
-  const NodeTable *nt = c->nt;
-  if (v < 0) return 1;
+static int pivs_value_uncached(Compiler *c, int v, char *set, int depth);
+static int pivs_elems_uncached(Compiler *c, int v, char *set, int depth);
+/* Within one call, a completed visit has already added its classes to set.
+   Keep value and element visits separate, and the exact depth: skipping a
+   deeper visit must not turn the depth limit's unbounded answer into a set.
+   Reads of one local share its first indexed write as their key, in separate
+   slots from visits to that write node itself. The call's memo number avoids
+   clearing the table per query; failed or unfinished visits are never reused. */
+static int pivs_visit(Compiler *c, int v, char *set, int depth, int elems) {
+  if (v < 0) return !elems;
   if (depth > 32) return 0;
+  PivsFacts *f = c->pivs;
+  int key = v, slot = elems;
+  if (nt_kind(c->nt, v) == NK_LocalVariableReadNode) {
+    const char *vn = nt_str(c->nt, v, "name");
+    Scope *s = vn ? comp_scope_of(c, v) : NULL;
+    if (s) {
+      int si = (int)(s - c->scopes);
+      for (int w = comp_lvw_first_sc(c, si, vn); w >= 0; w = comp_lvw_next_sc(c, w)) {
+        if (c->nscope[w] != si || !sp_streq(nt_str(c->nt, w, "name"), vn)) continue;
+        key = w; slot += 2; break;
+      }
+    }
+  }
+  if (f->seen[key].call != f->nmemo) {
+    f->seen[key].call = f->nmemo;
+    memset(f->seen[key].done, 0, sizeof f->seen[key].done);
+  }
+  uint64_t bit = UINT64_C(1) << depth;
+  if (f->seen[key].done[slot] & bit) return 1;
+  int ok = elems ? pivs_elems_uncached(c, v, set, depth) : pivs_value_uncached(c, v, set, depth);
+  if (ok) f->seen[key].done[slot] |= bit;
+  return ok;
+}
+static int pivs_value(Compiler *c, int v, char *set, int depth) {
+  return pivs_visit(c, v, set, depth, 0);
+}
+static int pivs_elems(Compiler *c, int arr, char *set, int depth) {
+  return pivs_visit(c, arr, set, depth, 1);
+}
+static int pivs_value_uncached(Compiler *c, int v, char *set, int depth) {
+  const NodeTable *nt = c->nt;
   int br = pivs_branches(c, v, set, depth, 0);
   if (br >= 0) return br;
   switch (nt_kind(nt, v)) {
@@ -7561,9 +7600,8 @@ static int pivs_value(Compiler *c, int v, char *set, int depth) {
       return 0;
   }
 }
-static int pivs_elems(Compiler *c, int arr, char *set, int depth) {
+static int pivs_elems_uncached(Compiler *c, int arr, char *set, int depth) {
   const NodeTable *nt = c->nt;
-  if (arr < 0 || depth > 32) return 0;
   if (nt_kind(nt, arr) == NK_ArrayNode) {
     int n = 0; const int *el = nt_arr(nt, arr, "elements", &n);
     for (int i = 0; i < n; i++)
@@ -7582,11 +7620,12 @@ int poly_ivar_set_reaches(Compiler *c, int call, int k) {
   if (f->memo_n != c->nclasses || f->memo_count != c->nt->count ||
       f->memo_ver != c->nt->version) {
     for (int i = 0; i < f->nmemo; i++) free(f->memo[i].set);
-    free(f->memo_at);
+    free(f->memo_at); free(f->seen);
     f->nmemo = 0; f->memo_n = c->nclasses; f->memo_count = c->nt->count;
     f->memo_ver = c->nt->version;
     f->memo_at = calloc((size_t)(f->memo_count > 0 ? f->memo_count : 1), sizeof *f->memo_at);
-    if (!f->memo_at) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    f->seen = calloc((size_t)(f->memo_count > 0 ? f->memo_count : 1), sizeof *f->seen);
+    if (!f->memo_at || !f->seen) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   }
   if (call < 0 || call >= f->memo_count) return 0;   /* no receiver: no class */
   int m = f->memo_at[call] - 1;
