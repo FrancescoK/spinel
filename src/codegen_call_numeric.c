@@ -345,6 +345,20 @@ int emit_call_bigint_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
       }
       free(rs.p); return 1;
     }
+    /* a divisor known only at run time: divmod and modulo answer what its
+       kind makes them (a Rational's exactly, sp_rat_mod_v); the Bignum
+       operand form read a Rational as 0 */
+    if ((sp_streq(name, "divmod") || is_modulo_alias(name)) && argc == 1 &&
+        repr_of(c, argv[0]).kind == RK_BOXED &&
+        (sp_streq(name, "divmod") ? comp_ntype(c, id) == TY_POLY_ARRAY : repr_of(c, id).kind == RK_BOXED)) {
+      int tr = ++g_tmp;
+      buf_printf(b, "({ sp_Bigint *_t%d = %s; SP_GC_ROOT(_t%d); %s(sp_box_bigint(_t%d), ", tr, r, tr,
+                 sp_streq(name, "divmod") ? "sp_poly_to_poly_array(sp_poly_divmod"
+                 : sp_streq(name, "%") ? "sp_poly_mod" : "sp_poly_modulo", tr);
+      emit_expr(c, argv[0], b);
+      buf_puts(b, sp_streq(name, "divmod") ? ")); })" : "); })");
+      free(rs.p); return 1;
+    }
     /* Bignum modulo/%/remainder/divmod/#[]/modular-pow (#2594) */
     if ((is_modulo_alias(name)) && argc == 1) {
       buf_printf(b, "sp_bigint_mod(%s, ", r); emit_bigint_operand(c, argv[0], b); buf_puts(b, ")");
