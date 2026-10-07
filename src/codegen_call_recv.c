@@ -12947,7 +12947,9 @@ static int emit_poly_ivar_call(Compiler *c, int id, Buf *b, const NodeTable *nt,
         if (t == TY_STRBUF) continue;
         char val[48]; snprintf(val, sizeof val, "_ivs%d", tv);
         buf_printf(b, " case %d: ", k);
-        char obj[80]; snprintf(obj, sizeof obj, "((sp_%s *)_t%d.v.p)", c->classes[k].c_name, tv);
+        size_t obn = strlen(c->classes[k].c_name) + 32;
+        char *obj = (char *)malloc(obn);
+        snprintf(obj, obn, "((sp_%s *)_t%d.v.p)", c->classes[k].c_name, tv);
         emit_frozen_obj_guard(c, k, obj, b);
         buf_printf(b, "%s->iv_%s = ", obj, iv_c(sym + 1));
         if (t == TY_POLY) buf_puts(b, val);
@@ -12960,6 +12962,7 @@ static int emit_poly_ivar_call(Compiler *c, int id, Buf *b, const NodeTable *nt,
         else emit_unbox_text(c, t, val, b);
         buf_puts(b, ";");
         if (ivar_set_kind(c, k, sym) == 3) buf_printf(b, " %s->_sp_set_%s = TRUE;", obj, iv_c(sym + 1));
+        free(obj);
         buf_puts(b, " break;");
       }
       /* a bare Object keeps its ivars in a table of its own */

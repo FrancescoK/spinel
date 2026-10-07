@@ -9173,8 +9173,11 @@ void emit_boxed_writer_arms(Compiler *c, const char *base, const char *nm,
        NoMethodError for a writer the receiver has. */
     if (at != ivt && at != TY_POLY && ivt != TY_POLY && !slot_takes_subclass(c, ivt, at)) continue;
     buf_printf(b, " case %d: ", k);
-    { char opn[64]; snprintf(opn, sizeof opn, "((sp_%s *)%s)", c->classes[k].c_name, objp);
-      emit_frozen_obj_guard(c, k, opn, b); }
+    { size_t on = strlen(c->classes[k].c_name) + strlen(objp) + 16;
+      char *opn = (char *)malloc(on);
+      snprintf(opn, on, "((sp_%s *)%s)", c->classes[k].c_name, objp);
+      emit_frozen_obj_guard(c, k, opn, b);
+      free(opn); }
     buf_printf(b, "((sp_%s *)%s)->iv_%s = ", c->classes[k].c_name, objp, iv_c(base));
     if (ivt == TY_POLY && at != TY_POLY) emit_boxed_text(c, at, src, b);
     else if (at == TY_POLY && ivt != TY_POLY) emit_unbox_text(c, ivt, src, b);
