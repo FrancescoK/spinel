@@ -2992,6 +2992,46 @@ static int alias_target_defined_before(Compiler *c, ClassInfo *cls, int cid, con
   return 0;
 }
 
+/* The last node id under `n`: node ids number the tree depth first, so a
+   class body is the contiguous range (n, last]. Cached per node table. */
+static const NodeTable *are_nt = NULL;
+static int *are_last = NULL;
+static int are_n = 0;
+static int are_subtree_last(const NodeTable *nt, int n) {
+  if (n < 0) return n;
+  if (are_nt != nt || are_n != nt->count) {
+    free(are_last);
+    are_last = malloc(sizeof(int) * (size_t)(nt->count > 0 ? nt->count : 1));
+    if (!are_last) { are_nt = NULL; are_n = 0; return n; }
+    for (int i = 0; i < nt->count; i++) are_last[i] = -1;
+    are_nt = nt; are_n = nt->count;
+  }
+  if (n < are_n && are_last[n] >= 0) return are_last[n];
+  int last = n;
+  int nr = nt_num_refs(nt, n);
+  for (int i = 0; i < nr; i++) { int k = are_subtree_last(nt, nt_ref_at(nt, n, i)); if (k > last) last = k; }
+  int na = nt_num_arrs(nt, n);
+  for (int i = 0; i < na; i++) {
+    int m = 0; const int *ids = nt_arr_at(nt, n, i, &m);
+    for (int j = 0; j < m; j++) { int k = are_subtree_last(nt, ids[j]); if (k > last) last = k; }
+  }
+  if (n < are_n) are_last[n] = last;
+  return last;
+}
+/* The class or module body node `n` stands in, innermost first, or -1 at the
+   top level. */
+static int are_enclosing_class(Compiler *c, int n) {
+  const NodeTable *nt = c->nt;
+  int best = -1;
+  static const NodeKind HK[] = { NK_ClassNode, NK_ModuleNode };
+  for (int h = 0; h < 2; h++)
+    for (int m = comp_kind_first(c, HK[h]); m >= 0; m = comp_kind_next(c, m)) {
+      if (nt_kind(nt, m) != HK[h] || m >= n || m <= best) continue;
+      if (n <= are_subtree_last(nt, m)) best = m;
+    }
+  return best;
+}
+
 /* An alias binds for the whole program, because the method tables are static.
    Class-body code that runs between a `def a` and a later `alias a b` meets the
    def in CRuby and would meet the alias here, silently: a call of `a` made in the
@@ -3014,6 +3054,13 @@ static void alias_refuse_early_call(Compiler *c, ClassInfo *cls, const char *nw,
     if (nt_kind(nt, n) != NK_CallNode || n <= defn || n >= alias_node) continue;
     const char *nm = nt_str(nt, n, "name");
     if (!nm || !sp_streq(nm, nw) || c->nscope[n] != c->nscope[alias_node]) continue;
+    /* class-body code of this class (any reopening of it): a call of the
+       same name in another class's body, or at the top level of a flattened
+       program, is no call of this class's method */
+    int ec = are_enclosing_class(c, n);
+    int ecp = ec >= 0 ? nt_ref(nt, ec, "constant_path") : -1;
+    const char *ecn = ecp >= 0 ? nt_str(nt, ecp, "name") : NULL;
+    if (!ecn || comp_class_index(c, ecn) != cid) continue;
     char msg[300];
     snprintf(msg, sizeof msg, "`%s` is called in the class body before an alias rebinds it: an alias binds for the "
              "whole program here, so the call would run the aliased body, not the `def %s` Ruby runs at that point. "
