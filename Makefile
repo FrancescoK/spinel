@@ -2275,7 +2275,8 @@ GC_MINOR_TESTS := test/reopened_builtin_kwrest_keys.rb \
                   test/builtin_ivar_frozen_copy.rb \
                   test/builtin_ivar_boxed_reflection.rb \
                   test/array_subclass_boxed.rb \
-                  test/array_subclass_methods.rb
+                  test/array_subclass_methods.rb \
+                  test/poly_array_uniq_hash.rb
 
 # Each program runs with the minor mark off and on and must answer the same;
 # then once more under the generational verifier with stress on (every
