@@ -3,8 +3,8 @@
 # A `&` operand that is nil gives no block, and the call answers the Array:
 # a nil local, a method answering nil, a block parameter given none, an
 # anonymous `&`. The receiver, the arguments and then the `&` operand run
-# in that order. A class of the program defining its own unpack does not
-# stop a String's.
+# in that order, also where one of them writes a variable another reads.
+# A class of the program defining its own unpack does not stop a String's.
 
 p "Hello".unpack("C*") { |x| p x }
 seen = []
@@ -60,3 +60,21 @@ rcv.unpack(fmt, &blk)
 p LOG
 LOG.clear
 p rcv.unpack(fmt, &nob), LOG
+bp = proc { |v| LOG << [:bp, v] }
+LOG.clear
+b = nil
+p "AB".unpack((b = bp; "C*"), &b)
+b = bp
+p "AB".unpack("C*", offset: (b = nil; 0), &b)
+b = nil
+p (b = bp; "AB").unpack("C*", &b)
+def wr(s, pr, &b) = s.unpack((b = pr; "C*"), &b)
+p wr("AB", bp), LOG
+LOG.clear
+s = "AB"
+p s.unpack("C*", &(s = "XY"; bp))
+f = "C*"
+p "AB".unpack(f, &(f = "a*"; bp))
+def setiv(pr) = (@iv = pr; "C*")
+@iv = nil
+p "AB".unpack(setiv(bp), &@iv), LOG
