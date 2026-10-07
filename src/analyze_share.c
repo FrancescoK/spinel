@@ -80,8 +80,8 @@ typedef struct ShareFacts {
   int *any_new_blk, nany_blk, cany_blk;
   /* the attr readers and writers of every class by name, and the method
      scopes by name, sorted for a binary search (built on first use) */
-  struct ShNamed { const char *name; int k; } *attr_r, *attr_w, *scope_nm;
-  int nattr_r, nattr_w, nscope_nm, named_built;
+  struct ShNamed { const char *name; int k; } *attr_r, *attr_w;
+  int nattr_r, nattr_w, named_built;
 } ShareFacts;
 
 /* ---- the union-find ---- */
@@ -629,38 +629,15 @@ static void sh_block_to_method(ShareFacts *F, Compiler *c, int blk, int mi) {
 
 static void sh_named_build(ShareFacts *F, Compiler *c);
 static int sh_named_first(const struct ShNamed *a, int n, const char *name);
-/* the user methods a call reaches: its plan's method and, for a switch,
-   every member; -1 when they are more than cap (the caller then treats
-   the call as one the walk does not follow, never as fewer methods).
-   With F, the members are found through its index of methods by name. */
+/* the user methods a call reaches (cplan_targets: the plan's method and, for
+   a switch, every member); -1 when they are more than cap or not knowable
+   yet (the caller then treats the call as one the walk does not follow,
+   never as fewer methods). The answers are held for one build of the facts,
+   dropped at its start. */
 static int sh_targets_in(ShareFacts *F, Compiler *c, int call, int *out, int cap) {
-  const CallPlan *p = cplan_user_fresh(c, call);
-  if (p->mi < 0 || p->dispatch == CP_REFUSE) return 0;
-  CallPlan plan = *p;
-  int n = 0;
-  out[n++] = plan.mi;
-  if (plan.dispatch >= CP_SWITCH) {
-    const char *name = c->scopes[plan.mi].name;
-    if (!name) return n;
-    if (F) {
-      sh_named_build(F, c);
-      for (int i = sh_named_first(F->scope_nm, F->nscope_nm, name);
-           i < F->nscope_nm && sp_streq(F->scope_nm[i].name, name); i++) {
-        int k = F->scope_nm[i].k;
-        if (k == plan.mi || !cplan_virtual_member(c, call, &plan, k)) continue;
-        if (n == cap) return -1;
-        out[n++] = k;
-      }
-      return n;
-    }
-    for (int k = 0; k < c->nscopes; k++)
-      if (k != plan.mi && c->scopes[k].name && sp_streq(c->scopes[k].name, name) &&
-          cplan_virtual_member(c, call, &plan, k)) {
-        if (n == cap) return -1;
-        out[n++] = k;
-      }
-  }
-  return n;
+  (void)F;
+  int n = cplan_targets(c, call, out, cap);
+  return n == CPT_UNKNOWN ? -1 : n;
 }
 static int sh_targets(Compiler *c, int call, int *out, int cap) { return sh_targets_in(NULL, c, call, out, cap); }
 /* does a call reach a user method (sh_targets != 0), without listing them */
@@ -692,7 +669,6 @@ static void sh_named_build(ShareFacts *F, Compiler *c) {
   for (int k = 0; k < c->nclasses; k++) { nr += c->classes[k].nreaders; nw += c->classes[k].nwriters; }
   F->attr_r = malloc(sizeof *F->attr_r * (size_t)(nr + 1));
   F->attr_w = malloc(sizeof *F->attr_w * (size_t)(nw + 1));
-  F->scope_nm = malloc(sizeof *F->scope_nm * (size_t)(c->nscopes + 1));
   for (int k = 0; k < c->nclasses; k++) {
     ClassInfo *ci = &c->classes[k];
     for (int i = 0; i < ci->nreaders; i++)
@@ -700,11 +676,8 @@ static void sh_named_build(ShareFacts *F, Compiler *c) {
     for (int i = 0; i < ci->nwriters; i++)
       if (ci->writers[i]) F->attr_w[F->nattr_w++] = (struct ShNamed){ ci->writers[i], k };
   }
-  for (int k = 0; k < c->nscopes; k++)
-    if (c->scopes[k].name) F->scope_nm[F->nscope_nm++] = (struct ShNamed){ c->scopes[k].name, k };
   qsort(F->attr_r, (size_t)F->nattr_r, sizeof *F->attr_r, sh_named_cmp);
   qsort(F->attr_w, (size_t)F->nattr_w, sizeof *F->attr_w, sh_named_cmp);
-  qsort(F->scope_nm, (size_t)F->nscope_nm, sizeof *F->scope_nm, sh_named_cmp);
 }
 /* the first entry of a sorted index whose name is `name` (n when none) */
 static int sh_named_first(const struct ShNamed *a, int n, const char *name) {
@@ -1637,7 +1610,7 @@ static void sh_free(ShareFacts *F) {
   free(F->h); free(F->helem); free(F->bucket); free(F->hnext); free(F->nval);
   free(F->lend_arg); free(F->lend_par); free(F->lend_direct); free(F->lend_done);
   free(F->dyn); free(F->union_stack);
-  free(F->any_new_blk); free(F->attr_r); free(F->attr_w); free(F->scope_nm);
+  free(F->any_new_blk); free(F->attr_r); free(F->attr_w);
   free(F);
 }
 
@@ -1704,6 +1677,7 @@ static void sh_mark_last_unused(ShareFacts *F, const NodeTable *nt, int st) {
 
 static ShareFacts *sh_build(Compiler *c, int closed) {
   const NodeTable *nt = c->nt;
+  cplan_targets_drop();
   ShareFacts *F = calloc(1, sizeof *F);
   F->closed = closed;
   F->unknown = sh_new(F, SHK_UNKNOWN);
