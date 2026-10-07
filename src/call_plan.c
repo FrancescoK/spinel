@@ -1788,6 +1788,10 @@ static int cplan_nil_user_method(Compiler *c, const char *name) {
   return 0;
 }
 
+int cplan_nil_written(int why) {
+  return why == NFW_NIL || why == NFW_NO_ELSE || why == NFW_SAFE_NAV || why == NFW_UNSET || why == NFW_ELEM_NIL;
+}
+
 int cplan_nil(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   if (id < 0 || id >= nt->count || nt_kind(nt, id) != NK_CallNode) return CN_NONE;
@@ -1826,8 +1830,7 @@ int cplan_nil(Compiler *c, int id) {
      read, a global, an ivar, a caller not seen, a builtin's answer), which
      a hot loop over a receiver that is never nil would pay for */
   int why = nil_fact_why(c, r);
-  if (why != NFW_NIL && why != NFW_NO_ELSE && why != NFW_SAFE_NAV && why != NFW_UNSET && why != NFW_ELEM_NIL)
-    return CN_NONE;
+  if (!cplan_nil_written(why)) return CN_NONE;
   /* the definite-assignment walk over a temp the compiler wrote itself (a
      desugared splat's receiver) is not the program's nil */
   if (why == NFW_UNSET && nt_int(nt, r, "node_line", 0) <= 0) return CN_NONE;

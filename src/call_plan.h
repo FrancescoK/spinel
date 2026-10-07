@@ -340,5 +340,11 @@ typedef enum {
                   yet: the call's type has to join NilClass's answer */
 } CplanNil;
 int cplan_nil(Compiler *c, int id);
+/* Is a nil fact's source `why` (nil_fact_why) a nil the program writes --
+   a literal, a missing else, a safe navigation, a slot read before its
+   write, an element of an Array the program stores nil into -- which a
+   receiver's nil test answers for? One the fact cannot bound (any element,
+   a global, an ivar, an unseen caller) is not. */
+int cplan_nil_written(int why);
 
 #endif
