@@ -3472,9 +3472,10 @@ TyKind fold_seed_ntype(Compiler *c, int node) {
    typed-array, Hash and poly-receiver call sites, which each had the hazard. */
 void emit_poly_sum_seed(Compiler *c, int recv, int seed, Buf *b) {
   int tr = ++g_tmp, ts = ++g_tmp;
-  buf_printf(b, "({ sp_RbVal _t%d = ", tr); emit_boxed(c, recv, b);
-  buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_RbVal _t%d = ", tr, ts); emit_boxed(c, seed, b);
-  buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_poly_sum_seed(_t%d, _t%d); })", ts, tr, ts);
+  buf_puts(b, "({ ");
+  tr = hold_operand(c, recv, TY_POLY, 1, tr, " ", b);
+  ts = hold_operand(c, seed, TY_POLY, 1, ts, " ", b);
+  buf_printf(b, "sp_poly_sum_seed(_t%d, _t%d); })", tr, ts);
 }
 /* A call that never hands back a value: a receiverless raise or fail, or a
    method the program defines whose every path raises, which the analyzer
