@@ -9466,6 +9466,7 @@ static sp_RbVal sp_enum_walker_boxed(sp_RbVal v);
 static sp_bool sp_enum_is_walker(sp_RbVal v);
 static sp_int sp_enum_walk_len(sp_RbVal v);
 static sp_RbVal sp_enum_walk_at(sp_RbVal v, sp_int i);
+static sp_PolyArray *sp_enum_finite_items(sp_RbVal v);   /* fwd: a finite materialized one's items */
 static sp_RbVal sp_poly_iter_walk(sp_RbVal v) {
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_ENUMERATOR && v.v.p) {
     sp_RbVal w = sp_enum_walker_boxed(v);
@@ -9495,6 +9496,9 @@ static void sp_poly_iter_check(sp_RbVal v, const char *m) {
 static sp_int sp_poly_arr_len_ex(sp_RbVal a) {
   if (a.tag != SP_TAG_OBJ) return 0;
   if (sp_enum_is_walker(a)) return sp_enum_walk_len(a);
+  /* a finite materialized Enumerator is its items: read as none, any?, all?,
+     none? and one? on a boxed one counted nothing and answered as if empty */
+  { sp_PolyArray *fi = sp_enum_finite_items(a); if (fi) return fi->len; }
   switch (a.cls_id) {
     case SP_BUILTIN_RANGE: { sp_Range *r = (sp_Range *)a.v.p; sp_int n = r->last - r->first + (r->excl ? 0 : 1); return n > 0 ? n : 0; }
     default:
@@ -9513,6 +9517,7 @@ static sp_RbVal sp_poly_each_elem(sp_RbVal a, sp_int i) {
   SP_GC_ROOT_RBVAL(a);   /* the boxing arms below allocate */
   if (a.tag != SP_TAG_OBJ) return sp_box_nil();
   if (sp_enum_is_walker(a)) return sp_enum_walk_at(a, i);
+  { sp_PolyArray *fi = sp_enum_finite_items(a); if (fi) return (i >= 0 && i < fi->len) ? fi->data[i] : sp_box_nil(); }
   switch (a.cls_id) {
     case SP_BUILTIN_INT_ARRAY: case SP_BUILTIN_FLT_ARRAY:
     case SP_BUILTIN_STR_ARRAY: case SP_BUILTIN_POLY_ARRAY: case SP_BUILTIN_PTR_ARRAY:
@@ -11982,6 +11987,9 @@ static sp_RbVal sp_poly_min(sp_RbVal v) {
        nil, an open side raises, and nothing is materialized */
     case SP_BUILTIN_RANGE: return sp_box_int_or_nil(sp_range_min_v(*(sp_Range *)v.v.p));
     case SP_BUILTIN_STR_RANGE: { const char *m = v.v.p ? sp_srange_min_v(*(sp_StrRange *)v.v.p) : NULL; return m ? sp_box_str(m) : sp_box_nil(); }
+    /* an Enumerator walks its items, as sort and sum on one already do */
+    case SP_BUILTIN_ENUMERATOR: if (v.v.p) return sp_PolyArray_min(sp_enum_to_a_boxed(v));
+      /* fallthrough */
     default: { sp_PolyArray *ue = sp_poly_user_elems(v);
                return ue ? sp_PolyArray_min(ue) : sp_raise_nomethod(sp_nomethod_msg("min", v)); }
   }
@@ -11999,6 +12007,9 @@ static sp_RbVal sp_poly_max(sp_RbVal v) {
     case SP_BUILTIN_POLY_ARRAY: return sp_PolyArray_max((sp_PolyArray *)v.v.p);
     case SP_BUILTIN_RANGE: return sp_range_max_box(*(sp_Range *)v.v.p);
     case SP_BUILTIN_STR_RANGE: { const char *m = v.v.p ? sp_srange_max_v(*(sp_StrRange *)v.v.p) : NULL; return m ? sp_box_str(m) : sp_box_nil(); }
+    /* an Enumerator walks its items, as sort and sum on one already do */
+    case SP_BUILTIN_ENUMERATOR: if (v.v.p) return sp_PolyArray_max(sp_enum_to_a_boxed(v));
+      /* fallthrough */
     default: { sp_PolyArray *ue = sp_poly_user_elems(v);
                return ue ? sp_PolyArray_max(ue) : sp_raise_nomethod(sp_nomethod_msg("max", v)); }
   }
@@ -15887,6 +15898,14 @@ static SP_COLD SP_NOINLINE sp_RbVal sp_enum_walker_boxed(sp_RbVal v) {
 static sp_bool sp_enum_is_walker(sp_RbVal v) {
   return v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_ENUMERATOR && v.v.p &&
          ((sp_Enumerator *)v.v.p)->walk_buf != NULL;
+}
+/* The items of a finite materialized Enumerator (not a generator, not
+   endless, not a walker), which an index walk reads in place; NULL for any
+   other value. */
+static sp_PolyArray *sp_enum_finite_items(sp_RbVal v) {
+  if (!(v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_ENUMERATOR && v.v.p)) return NULL;
+  sp_Enumerator *e = (sp_Enumerator *)v.v.p;
+  return (e->items && !e->gen && !e->endless && !e->walk_buf) ? e->items : NULL;
 }
 /* The walk's length so far: one past the index it reads next while the
    source still has that item, pulling it now if it has not been. */
