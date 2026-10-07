@@ -58,3 +58,13 @@ f = nil if ARGV.size > 3
 p(f && t(:fl, "float") ? 1 : 2)
 s = :sym
 p((s && f) ? :both : :not, (s || f) ? :one : :none)
+
+# a Float or String Range is always truthy, alone or as an operand
+fr = 1.0..2.0
+sr = "a".."b"
+rlog = []
+p(fr && i > 0 ? :fr : :no)
+p(i > 5 || sr ? :sr : :no)
+p(fr ? :alone : :no)
+p(1) if (rlog << :l; fr) && (rlog << :r; sr)
+p rlog
