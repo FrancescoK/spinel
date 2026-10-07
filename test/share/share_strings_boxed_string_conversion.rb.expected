@@ -1,0 +1,14 @@
+true
+true
+true
+FrozenError
+["a\u0000bc", "a\u0000bc"]
+true
+["abc!", "abc!"]
+["pabc!", "pabc!"]
+""
+"12!"
+"true"
+"frozen"
+to_str
+"converted"
