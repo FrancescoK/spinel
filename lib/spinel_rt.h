@@ -12876,6 +12876,7 @@ void sp_fin_run_exit(void);   /* lib/sp_gc.c: finalizers still registered at exi
    places print it now: the end of sp_raise_cls, and a hook whose own exception
    reached the drain's protect frame. */
 static void sp_exc_print_uncaught(const char *cls, const char *msg);
+void sp_exc_resignal(const char *cls, const char *msg);   /* lib/sp_cold.c */
 /* CRuby's tail format "<message> (<ClassName>)", prefixed by the raising frame
    and followed by its callers when the backtrace substrate is live (a --debug
    build). Without it there is no location to print, and an uncaught raise in a
@@ -13054,6 +13055,7 @@ SP_NORETURN SP_COLD void sp_raise_cls(const char *cls, const char *msg) {
     if (_bt_keep_n > 0) { memcpy(sp_bt_buf, _bt_keep, sizeof(void *) * (size_t)_bt_keep_n); sp_bt_n = _bt_keep_n; }
 #endif
     sp_exc_print_uncaught(cls, msg);
+    sp_exc_resignal(cls, msg);
     exit(status); } }
 #endif
 static void sp_raise(const char *msg) { sp_raise_cls("RuntimeError", msg); }
@@ -16520,6 +16522,31 @@ void sp_trap_call(sp_Proc *p, int no) {
   sp_unwind_kind = uk; sp_unwind_target = ut; sp_unwind_exc_top = ue; sp_unwind_home = uh;
   if (sp_unwind_kind != SP_UNWIND_NONE) sp_unwind_resume();
   sp_pending_exc_obj = eobj; sp_raise_cls(ecls, emsg);
+}
+#endif
+/* The default of SIGINT and SIGTERM, as CRuby's: an Interrupt (a SignalException
+   "SIGTERM", #signo 15) raised where the signal arrived, so rescue and ensure
+   run. The handler is left by a jump, so its signal is unblocked first (as
+   sp_trap_call does). A trap the program sets replaces it (sp_signal_trap). Armed
+   by a program that starts no thread: the signal may arrive on any OS thread of a
+   scheduler, and the raise has to land in the main Ruby thread (#7202). */
+#ifndef SPINEL_EXT_HOST
+static SP_UNUSED void sp_sig_default_handler(int no) {
+  sp_sig_unblock(no, 0);
+  if (no == SIGINT) sp_raise_cls("Interrupt", sp_exc_no_msg);   /* the message is empty, as the interrupt CRuby raises for the signal */
+  sp_pending_exc_obj = sp_signal_exc_new(sp_box_int((sp_int)no));
+  sp_raise_cls("SignalException", "SIGTERM");
+}
+static SP_UNUSED void sp_sig_install_defaults(void) {
+  static const int sigs[] = { SIGINT, SIGTERM };
+  for (int i = 0; i < 2; i++) {
+    int no = sigs[i];
+    if (sp_trap_proc[no] || sp_trap_state[no]) continue;
+    struct sigaction sa; memset(&sa, 0, sizeof sa);
+    sa.sa_handler = sp_sig_default_handler;
+    sigemptyset(&sa.sa_mask);
+    sigaction(no, &sa, NULL);
+  }
 }
 #endif
 typedef struct { sp_RbVal obj; int which; int had; sp_RbVal ans; } sp_obj_conv_probe;

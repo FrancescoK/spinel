@@ -2707,6 +2707,7 @@ sp_RbVal sp_Enumerator_feed(sp_Enumerator *e, sp_RbVal v);
 sp_PolyArray *sp_Enumerator_take(sp_Enumerator *e, sp_int n);
 sp_PolyArray *sp_Enumerator_to_a(sp_Enumerator *e);
 void sp_sig_c_handler(int no);
+void sp_exc_resignal(const char *cls, const char *msg);
 void sp_sig_exit_dispatch(void);
 sp_RbVal sp_signal_trap(sp_RbVal sig, sp_RbVal handler);
 sp_int sp_process_kill1(sp_RbVal sig, sp_int pid);
@@ -4817,6 +4818,16 @@ sp_Exception *sp_signal_exc_new_m(sp_RbVal sig, const char *msg) {SP_GC_ROOT_RBV
 }
 sp_Exception *sp_signal_exc_new(sp_RbVal sig) {SP_GC_ROOT_RBVAL(sig);
   return sp_signal_exc_new_m(sig, NULL);
+}
+/* An exception nothing rescued that is a signal's: the process ends by that
+   signal, as CRuby's does, so its parent reads 130 for an Interrupt. */
+void sp_exc_resignal(const char *cls, const char *msg) {
+  int no = !strcmp(cls, "Interrupt") ? SIGINT
+         : (!strcmp(cls, "SignalException") && msg && !strcmp(msg, "SIGTERM")) ? SIGTERM : 0;
+  if (!no) return;
+  fflush(NULL);   /* the buffered output exit() would have written */
+  signal(no, SIG_DFL);
+  raise(no);
 }
 sp_Exception *sp_interrupt_new(const char *msg) {SP_GC_ROOT_STR(msg);
   sp_Exception *e = sp_exc_new("Interrupt", (msg && msg[0]) ? msg : "Interrupt");

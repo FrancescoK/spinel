@@ -16501,6 +16501,10 @@ char *codegen_program(const NodeTable *nt) {
   /* Adopt the main thread and chain the scheduler's GC root hook. Placed after
      sp_tu_init so it chains whatever globals hook that installed. */
   if (g_uses_threads) buf_puts(body, "    sp_sched_init();\n");
+  /* SIGINT and SIGTERM raise Interrupt / SignalException in the main thread, as CRuby's do
+     (#7202); a program with threads keeps the system default, since the signal may arrive on
+     any OS thread of the scheduler */
+  else buf_puts(body, "    sp_sig_install_defaults();\n");
   /* gsub / sub / scan record their last match only for a program that reads
      it (g_reads_match_regs) */
   if (g_reads_match_regs) buf_puts(body, "    sp_re_track_last = 1;\n");

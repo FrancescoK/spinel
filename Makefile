@@ -52,7 +52,7 @@ RBS_SRC      = $(wildcard $(RBS_DIR)/src/*.c) $(wildcard $(RBS_DIR)/src/util/*.c
 RBS_OBJ      = $(patsubst $(RBS_DIR)/src/%.c,build/rbs/%.o,$(RBS_SRC))
 RBS_LIB      = build/librbs.a
 
-.PHONY: all hooks share-strings-test gate-tool-test regexp wasm-rt wasm-test rbs_extract rbs-test rbs-seed-test rbs-seed-extractor cident plan-check-test timing-test source-marker-test repr-check-test nil-check-test traits-check-test poly-cold-test bop-arity-check-test arity-spec-check re-lit-test reject-test cli-opts-test link-names-test defer-refusals-test check-stores-test backtrace-test gc-minor-test thread-puts-test ext-test ext-cruby-test alloc-report-test rubyspec rubyspec-gate spin-check \ repr-diff c-costs alloc-diff \
+.PHONY: all hooks share-strings-test gate-tool-test regexp wasm-rt wasm-test rbs_extract rbs-test rbs-seed-test rbs-seed-extractor cident plan-check-test timing-test signal-default-test source-marker-test repr-check-test nil-check-test traits-check-test poly-cold-test bop-arity-check-test arity-spec-check re-lit-test reject-test cli-opts-test link-names-test defer-refusals-test check-stores-test backtrace-test gc-minor-test thread-puts-test ext-test ext-cruby-test alloc-report-test rubyspec rubyspec-gate spin-check \ repr-diff c-costs alloc-diff \
         test test-run clean-test-results regen-rbs-expected \
         regen-expected regen-expected-err bench optcarrot gate gate-full check gate-legs gate-test gate-bench gc-phases-test gc-stress-test gc-str-major-test threaded-render-test gc-locality-test test-corpus test-corpus-summary \
         gate-optcarrot scale-test clean install uninstall deps tools
@@ -1005,7 +1005,7 @@ test: $(SPINEL_TIMEOUT)
 # The actual run. rbs-test golden-checks the RBS extractor (cheap, C-only).
 # rbs-seed-test checks the seeds actually reach the analyzer (incl. nested
 # classes, #1417).
-test-run: timing-test source-marker-test rbs-test rbs-seed-test re-lit-test reject-test cli-opts-test link-names-test defer-refusals-test check-stores-test backtrace-test gc-minor-test gc-phases-test gc-stress-test gc-threshold-test gc-obj-budget-test gc-str-major-test threaded-render-test gc-locality-test byref-capture-test thread-puts-test ext-test ext-cruby-test test-corpus-summary
+test-run: timing-test signal-default-test source-marker-test rbs-test rbs-seed-test re-lit-test reject-test cli-opts-test link-names-test defer-refusals-test check-stores-test backtrace-test gc-minor-test gc-phases-test gc-stress-test gc-threshold-test gc-obj-budget-test gc-str-major-test threaded-render-test gc-locality-test byref-capture-test thread-puts-test ext-test ext-cruby-test test-corpus-summary
 
 # The test/*.rb corpus (and the bundled packages') on its own, without the
 # C-side legs: what a 32-bit target runs (`make test-corpus CC='cc -m32'`),
@@ -3677,6 +3677,19 @@ alloc-report-test: $(SPINEL) $(SP_RT_LIB)
 REF ?= HEAD~1
 source-marker-test: $(SPINEL)
 	@tools/source_marker_check.sh
+
+# SIGINT with no trap: an Interrupt in the main thread (test/signal_default_interrupt.rb),
+# and when nothing rescues it the ensure runs and the process ends by SIGINT, a parent reads 130 (#7202).
+signal-default-test: $(SPINEL)
+	@tmp=$$(mktemp -d "$${TMPDIR:-/tmp}/spinel-sigdef.XXXXXX"); ok=1; \
+	$(SPINEL) test/signal/interrupt_unrescued.rb -o "$$tmp/iu" >/dev/null 2>&1 || { echo "signal-default-test: FAIL (compile)"; ok=0; }; \
+	if [ $$ok -eq 1 ]; then \
+	  "$$tmp/iu" > "$$tmp/out" 2>/dev/null; rc=$$?; \
+	  [ "$$rc" -eq 130 ] || { echo "signal-default-test: FAIL (exit $$rc, want 130: ended by SIGINT)"; ok=0; }; \
+	  [ "$$(cat "$$tmp/out")" = "ensure ran" ] || { echo "signal-default-test: FAIL (the ensure did not run, or the program went on)"; ok=0; }; \
+	fi; \
+	rm -rf "$$tmp"; \
+	if [ $$ok -eq 1 ]; then echo "signal-default-test: pass"; else exit 1; fi
 
 timing-test: $(SPINEL)
 	@tools/timing_check.sh

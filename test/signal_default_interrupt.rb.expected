@@ -1,0 +1,5 @@
+rescued Interrupt (INT) ""
+[SignalException, "SIGTERM", 15]
+ensure ran
+after ensure
+left a tight loop
