@@ -17464,12 +17464,12 @@ static int strbuf_flow_has_leaf(Compiler *c, StrbufFlowMemo *fm, int v, int dept
 
 /* Is value v's String one no other name can see a copy of: a new String,
    one of a class the rule does not share or that one holder alone names
-   (the rule shares it for a change through a transient), one a method built in its own
-   locals answers (share_call_fresh), an element of ARGV, whose Strings
+   (the rule shares it for a change through a transient), a new String by
+   where it comes from (share_value_fresh), an element of ARGV, whose Strings
    CRuby freezes, or of ENV, which answers a new String each read? */
 static int strbuf_flow_unseen(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
-  if (!share_node_shares(c, v) || share_call_fresh(c, v) || share_node_one_name(c, v)) return 1;
+  if (!share_node_shares(c, v) || share_value_fresh(c, v, 0) || share_node_one_name(c, v)) return 1;
   int recv = nt_kind(nt, v) == NK_CallNode ? nt_ref(nt, v, "receiver") : -1;
   const char *rname = recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode ? nt_str(nt, recv, "name") : NULL;
   return is_argv_const(rname) || is_env_const(rname);

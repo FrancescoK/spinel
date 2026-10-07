@@ -3295,6 +3295,70 @@ int share_call_fresh(Compiler *c, int call) {
     if (tg[i] < 0 || tg[i] >= c->nscopes || F->ret_joined[tg[i]]) return 0;
   return 1;
 }
+/* Does the subtree at n hold a `next` that leaves it (not one in a nested
+   block, lambda, method or loop)? */
+static int sh_has_next(const NodeTable *nt, int n) {
+  if (n < 0) return 0;
+  NodeKind k = nt_kind(nt, n);
+  if (k == NK_NextNode) return 1;
+  if (k == NK_BlockNode || k == NK_LambdaNode || k == NK_DefNode || k == NK_WhileNode || k == NK_UntilNode ||
+      k == NK_ForNode)
+    return 0;
+  for (int i = 0; i < nt_num_refs(nt, n); i++) if (sh_has_next(nt, nt_ref_at(nt, n, i))) return 1;
+  for (int i = 0; i < nt_num_arrs(nt, n); i++) {
+    int m = 0; const int *ids = nt_arr_at(nt, n, i, &m);
+    for (int j = 0; j < m; j++) if (sh_has_next(nt, ids[j])) return 1;
+  }
+  return 0;
+}
+
+/* Is node r a temporary container (its own expression, held by no name)
+   whose elements are new Strings: an Array literal of them, or `map(&:sym)`
+   over elements that hold no String (Symbols, numbers), whose answers are
+   new? */
+static int sh_fresh_elems(Compiler *c, int r, int depth) {
+  const NodeTable *nt = c->nt;
+  r = an_unparen(nt, r);
+  if (r < 0 || depth > 8) return 0;
+  if (nt_kind(nt, r) == NK_ArrayNode) {
+    int en = 0; const int *el = nt_arr(nt, r, "elements", &en);
+    for (int i = 0; i < en; i++) if (!share_value_fresh(c, el[i], depth + 1)) return 0;
+    return 1;
+  }
+  if (nt_kind(nt, r) != NK_CallNode || sh_has_targets(c, r)) return 0;
+  int blk = nt_ref(nt, r, "block"), recv = nt_ref(nt, r, "receiver");
+  const char *nm = nt_str(nt, r, "name");
+  if (!nm || recv < 0 || blk < 0 || bop_share_named(BOP_ANY_ARRAY, nm) != BSH_ITER_MAP) return 0;
+  /* map with a literal block whose value is a new String, and no next */
+  if (nt_kind(nt, blk) == NK_BlockNode) {
+    int body = nt_ref(nt, blk, "body");
+    int bn = 0; const int *bb = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &bn) : NULL;
+    return bn > 0 && !sh_has_next(nt, body) && share_value_fresh(c, bb[bn - 1], depth + 1);
+  }
+  if (nt_kind(nt, blk) != NK_BlockArgumentNode || nt_kind(nt, nt_ref(nt, blk, "expression")) != NK_SymbolNode) return 0;
+  TyKind at = c->ntype[recv];
+  TyKind et = ty_is_array(at) ? ty_array_elem(at) : TY_UNKNOWN;
+  return et != TY_UNKNOWN && !sh_may_hold(c, et);
+}
+
+int share_value_fresh(Compiler *c, int n, int depth) {
+  const NodeTable *nt = c->nt;
+  n = an_unparen(nt, n);
+  if (n < 0 || depth > 8) return 0;
+  NodeKind k = nt_kind(nt, n);
+  if (k == NK_StringNode || k == NK_InterpolatedStringNode) return 1;
+  /* a call the walk found answers no String any name holds (a share row's
+     new or frozen String) */
+  if (k == NK_CallNode && c->share && n < c->share->nnodes && c->share->nval[n] == -1) return 1;
+  if (k != NK_CallNode) return 0;
+  if (share_call_fresh(c, n)) return 1;
+  /* an element read of a temporary container of new Strings */
+  int recv = nt_ref(nt, n, "receiver");
+  const char *nm = nt_str(nt, n, "name");
+  int sh = nm && recv >= 0 && !sh_has_targets(c, n) ? bop_share_named(BOP_ANY_ARRAY, nm) : 0;
+  return (sh == BSH_ELEM || sh == BSH_ELEM_N) && nt_ref(nt, n, "block") < 0 && sh_fresh_elems(c, recv, depth + 1);
+}
+
 unsigned share_node_flags(const Compiler *c, int n) {
   const ShareFacts *F = c->share;
   int r = sh_node_root(F, n, 0);

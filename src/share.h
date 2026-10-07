@@ -175,6 +175,11 @@ int share_method_blocks(const Compiler *c, int mi, const int **blocks);
    it reaches answers only Strings its returns did not join to its value
    (sh_settle_rets: built in its own locals, which die with the call)? */
 int share_call_fresh(Compiler *c, int call);
+/* Is node n's String a new one no name holds yet, by where it comes from: a
+   String literal, a method answering only its own locals' Strings, or an
+   element read of a temporary container of new Strings (an Array literal of
+   them, `map(&:to_s)` over Symbols)? depth: 0 from a caller. */
+int share_value_fresh(Compiler *c, int n, int depth);
 /* Is node n a container literal a builtin only reads and keeps none of
    (`puts [a, b]`)? */
 int share_node_peeked(const Compiler *c, int n);
