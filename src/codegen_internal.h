@@ -160,6 +160,9 @@ int strbuf_var_handle(Compiler *c, int n, char *out, size_t cap);
 /* --share-strings: does value v hand over a shared String as its handle
    (a variable, a route, a conditional with such an arm)? (codegen_stmt.c) */
 int strbuf_value_carries(Compiler *c, int v);
+/* `String(x)` or `+x` over a variable whose slot holds the handle: that
+   slot's text, *uplus for `+x` (codegen_stmt.c) */
+int strbuf_self_route_slot(Compiler *c, int v, int *uplus, char *out, size_t cap);
 /* A `next` value a block's boxed answer slot takes: a shared String as its
    handle's box under --share-strings (codegen_stmt.c) */
 void emit_boxed_next_value(Compiler *c, int v, Buf *b);

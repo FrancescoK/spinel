@@ -1379,6 +1379,26 @@ static int strbuf_route_operand(Compiler *c, int v) {
   TyKind xt = x >= 0 ? comp_ntype(c, x) : TY_UNKNOWN;
   return xt == TY_STRING || xt == TY_STRBUF ? x : -1;
 }
+/* `String(x)` (Kernel's) or `+x` over a variable x whose slot holds the
+   handle (strbuf_slot_ref, either build): x's slot text to out, and
+   *uplus for `+x`; else 0. Each answers x's String itself (`+x` unless
+   x is frozen), so its identity is the handle's. */
+int strbuf_self_route_slot(Compiler *c, int v, int *uplus, char *out, size_t cap) {
+  const NodeTable *nt = c->nt;
+  v = unwrap_parens(c, v);
+  if (v < 0 || nt_kind(nt, v) != NK_CallNode) return 0;
+  const char *nm = nt_str(nt, v, "name");
+  int argc = 0;
+  const int *argv = call_args(nt, v, &argc);
+  int x = strbuf_uplus_operand(c, v);
+  *uplus = x >= 0;
+  if (x < 0 && nm && sp_streq(nm, "String") && nt_ref(nt, v, "receiver") < 0 && argc == 1 &&
+      nt_ref(nt, v, "block") < 0 && comp_method_index(c, nm) < 0 && !bare_call_class_owned(c, v))
+    x = argv[0];
+  NodeKind xk = x >= 0 ? nt_kind(nt, unwrap_parens(c, x)) : NK_NONE;
+  return (xk == NK_LocalVariableReadNode || xk == NK_InstanceVariableReadNode || repr_static_read_kind(xk)) &&
+         strbuf_slot_ref(c, unwrap_parens(c, x), out, cap);
+}
 /* Is the last statement of statement list st a holder's read, nil, a
    conditional with a handle arm, or a `raise` (which leaves no value)? */
 static int strbuf_stmts_tail_plain(Compiler *c, int st) {

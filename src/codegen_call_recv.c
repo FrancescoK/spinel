@@ -6456,6 +6456,25 @@ static int str_arms_convert(Compiler *c, int id, Buf *b, const NodeTable *nt, co
         eq_sblv = 1;
       }
     }
+    /* `String(s)` or `+s` against a handle, either side: the String the
+       route answers is s's own, so the handles are compared (the route's
+       read face is a copy). The other side is a variable's slot, and the
+       route's operand is one: nothing runs but the reads. */
+    if (!eq_sblv) {
+      char hx[192], hy[192];
+      int up = 0;
+      int fwd = strbuf_self_route_slot(c, recv, &up, hx, sizeof hx) && strbuf_slot_ref(c, argv[0], hy, sizeof hy);
+      if (!fwd) fwd = -(strbuf_self_route_slot(c, argv[0], &up, hx, sizeof hx) && strbuf_slot_ref(c, recv, hy, sizeof hy));
+      if (fwd) {
+        int th = ++g_tmp;
+        buf_printf(b, "({ sp_String *_t%d = %s; ", th, hx);
+        /* +nil raises, String(nil) is "" (a new String) */
+        if (up) buf_printf(b, "if (SP_UNLIKELY(!_t%d)) sp_raise_nomethod(sp_nomethod_msg(\"+@\", sp_box_nil())); "
+                              "(sp_bool)(sp_String_uplus(_t%d) == %s); })", th, th, hy);
+        else buf_printf(b, "(sp_bool)(_t%d && _t%d == %s); })", th, th, hy);
+        eq_sblv = 1;
+      }
+    }
     if (!eq_sblv) {
       char arefE[192];
       if (strbuf_slot_ref(c, argv[0], arefE, sizeof arefE)) {
