@@ -8065,7 +8065,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       /* only an index call has an argument temp to name: atmp[0] is unset for
          a call without one (valgrind: an uninitialised read here) */
       char idxref[64] = "";
-      if (is_index && atmp_ty[0] == TY_POLY) snprintf(idxref, sizeof idxref, "sp_poly_arg_i(_t%d)", atmp[0]);
+      if (is_index && atmp_ty[0] == TY_POLY) snprintf(idxref, sizeof idxref, "sp_poly_arg_int_chk(_t%d)", atmp[0]);
       else if (is_index) snprintf(idxref, sizeof idxref, "_t%d", atmp[0]);
       PolyTemps ptemps = { argc, pos_argc, argv, atmp, atmp_ty, kwall, kwn, kwels, kwtmp, kwty, ret, tv, tr,
                            idxref };
