@@ -921,6 +921,15 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       buf_printf(b, "sp_String_is_frozen(%s)", fsref);
       return 1;
     }
+    /* --share-strings: so does a route that hands on the handle (`String(t)`,
+       `x.tap { }`, a conditional over one): its read face is an unfrozen
+       copy */
+    if (frt == TY_STRING && strbuf_value_carries(c, recv)) {
+      buf_puts(b, "sp_String_is_frozen(");
+      emit_strbuf_handle_of(c, recv, b);
+      buf_puts(b, ")");
+      return 1;
+    }
     if (frt == TY_STRING) {
       buf_puts(b, "sp_str_is_frozen_val("); emit_expr(c, recv, b); buf_puts(b, ")");
       return 1;

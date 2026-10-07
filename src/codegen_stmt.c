@@ -1339,11 +1339,27 @@ static int strbuf_jump_views(Compiler *c, int n, NodeKind k, int *tok, int ntok,
 static void strbuf_jump_views_pop(Compiler *c, const int *tok, int ntok) {
   while (ntok > 0) view_pop(c, tok[--ntok]);
 }
+/* --share-strings: `r.tap { |x| ... }` on a String whose block parameter is
+   the handle, or on a handle's read: tap answers that handle, the receiver
+   itself, frozen mark and all. Read through its bytes and wrapped as a new
+   handle, a frozen literal's tap came back unfrozen. */
+static int strbuf_route_tap(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  int recv = nt_ref(nt, v, "receiver"), blk = nt_ref(nt, v, "block");
+  if (recv < 0 || nt_ref(nt, v, "arguments") >= 0 || blk < 0 || nt_kind(nt, blk) != NK_BlockNode ||
+      call_breaks(c, v)) return 0;
+  TyKind rt = repr_of(c, recv).as_ty;
+  if (rt == TY_STRBUF) return 1;
+  const char *p0 = block_param_name(c, blk, 0);
+  Scope *bsc = p0 ? comp_scope_of(c, blk) : NULL;
+  return rt == TY_STRING && bsc && repr_of_slot(c, scope_local(bsc, rename_local(p0))).handle;
+}
 /* --share-strings: a value route that answers the String it is handed, not
    a new one -- `+s` (s itself unless s is frozen), `String(s)` (s itself, ""
-   for nil), `s.then { |x| ... }` (its block's value) -- or -1. The operand
-   for the first two; the call itself for `then`, whose block value is read
-   as the handle (emit_tap_then_expr). */
+   for nil), `s.then { |x| ... }` (its block's value), `s.tap { |x| ... }`
+   (strbuf_route_tap) -- or -1. The operand for the first two; the call
+   itself for `then` and `tap`, whose value is read as the handle
+   (emit_tap_then_expr). */
 static int strbuf_route_operand(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
   v = unwrap_parens(c, v);
@@ -1355,6 +1371,7 @@ static int strbuf_route_operand(Compiler *c, int v) {
   if (is_then_alias(nm) && recv >= 0 && argc == 0 && blk >= 0 && nt_kind(nt, blk) == NK_BlockNode &&
       !call_breaks(c, v))
     return v;
+  if (sp_streq(nm, "tap") && strbuf_route_tap(c, v)) return v;
   /* Kernel#String, as its arm takes it: no method of the program's own */
   int x = is_unary_plus(nm) && argc == 0 && blk < 0 ? recv
         : is_string_class_name(nm) && recv < 0 && argc == 1 && blk < 0 && comp_method_index(c, nm) < 0 &&
@@ -1576,9 +1593,11 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
   v = unwrap_parens(c, v);
   if (x == v) {
     /* `then` answers its block's value, or a `next`'s: read as the handle
-       under the demand */
+       under the demand. `tap` answers its receiver's handle, and its
+       block's value is dropped. */
     int tok[64];
-    int ntok = strbuf_jump_views(c, nt_ref(nt, nt_ref(nt, v, "block"), "body"), NK_NextNode, tok, 0, 64);
+    int ntok = !is_then_alias(nt_str(nt, v, "name")) ? 0
+             : strbuf_jump_views(c, nt_ref(nt, nt_ref(nt, v, "block"), "body"), NK_NextNode, tok, 0, 64);
     if (ntok < 0) return 0;
     int sv = view_push_repr(c, v, VR_HANDLE_DEMAND, 1);
     int ok = emit_or_take_back(c, v, b, emit_tap_then_expr);
