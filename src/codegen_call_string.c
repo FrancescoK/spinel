@@ -1226,7 +1226,9 @@ int emit_string_handle_append(Compiler *c, int id, Buf *b, const char *name, int
       const char *sn = nt_kind(nt, sr) == NK_CallNode ? nt_str(nt, sr, "name") : NULL;
       Repr rp = repr_of(c, sr);
       int chain_handle = sn && is_append_concat(sn) && rp.handle && rp.kind == RK_STRBUF;
-      if (chain_handle || strbuf_slot_ref(c, sr, sref0, sizeof sref0)) {
+      /* or a route over a handle (`(+s) << x`, --share-strings), which
+         appends to the String it hands on */
+      if (chain_handle || strbuf_recv_handle(c, id, sr, sref0, sizeof sref0)) {
         int tb2 = ++g_tmp;
         buf_printf(b, "({ sp_String *_t%d = ", tb2);
         if (chain_handle) emit_expr(c, sr, b);

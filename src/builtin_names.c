@@ -625,6 +625,15 @@ int is_select_reject_bang(const char *n) {
 int is_raise_alias(const char *n) {
   return sp_streq(n, "raise") || sp_streq(n, "fail");
 }
+/* +s alone: a route that answers its String operand unless frozen
+   (--share-strings, emit_strbuf_route) */
+int is_unary_plus(const char *n) {
+  return sp_streq(n, "+@");
+}
+/* Kernel#loop, whose value is what a break gives it */
+int is_loop_name(const char *n) {
+  return sp_streq(n, "loop");
+}
 
 int is_size_or_count(const char *n) {
   return sp_streq(n, "size") || sp_streq(n, "count");

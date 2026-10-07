@@ -1848,6 +1848,8 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
       char srefW2[1024];
       if (strbuf_slot_ref(c, v, srefW2, sizeof srefW2)) buf_puts(b, srefW2);
       else if (emit_strbuf_write_handle(c, v, b)) { }
+      /* a route that hands on the handle (`@a = yield`, emit_strbuf_route) */
+      else if (emit_strbuf_route(c, v, b)) { }
       else {
         buf_puts(b, "sp_String_new_shared(");
         emit_str_expr(c, v, b);

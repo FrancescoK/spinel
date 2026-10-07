@@ -123,6 +123,8 @@ int is_hash_key_value_each(const char *n); /* each_key each_value */
 int is_encoding_mutator(const char *n); /* encode! force_encoding */
 int is_range_end_reader(const char *n); /* end last */
 int is_raise_alias(const char *n); /* fail raise */
+int is_unary_plus(const char *n); /* +@ */
+int is_loop_name(const char *n); /* loop */
 int is_first_or_take(const char *n); /* first take */
 int is_lazy_force(const char *n); /* force to_a */
 int is_local_time(const char *n); /* getlocal localtime */
