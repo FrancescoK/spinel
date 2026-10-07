@@ -2777,10 +2777,11 @@ void emit_cond(Compiler *c, int id, Buf *b) {
      the first tic. */
   if (t == TY_SYMBOL) { buf_puts(b, "(("); emit_expr(c, id, b); buf_puts(b, ") != (sp_sym)-1)"); return; }
   if (t == TY_CLASS) { buf_puts(b, "(!sp_class_nil_p("); emit_expr(c, id, b); buf_puts(b, "))"); return; }
-  /* Always-truthy concrete value types: a Range / Complex / Rational /
-     Time value is never nil or false, so it is truthy in condition position.
-     Evaluate it for side effects and yield 1. */
-  if (t == TY_RANGE || t == TY_COMPLEX || t == TY_RATIONAL || t == TY_TIME) {
+  /* Always-truthy concrete value types: a Range (of Integers, Floats or
+     Strings) / Complex / Rational / Time value is never nil or false, so it
+     is truthy in condition position. Evaluate it for side effects and yield 1. */
+  if (t == TY_RANGE || t == TY_FLOAT_RANGE || t == TY_STR_RANGE || t == TY_COMPLEX ||
+      t == TY_RATIONAL || t == TY_TIME) {
     buf_puts(b, "(("); emit_expr(c, id, b); buf_puts(b, "), 1)"); return;
   }
   /* a yield no call site gives a block has no value type: reached, it
