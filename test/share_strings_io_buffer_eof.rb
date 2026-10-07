@@ -5,7 +5,11 @@
 # kept the last bytes read, or became nil, and a boxed receiver did not
 # rebind it at all. Each form runs on a typed and on a boxed receiver, with
 # the buffer a plain local and one a lambda captures; a closed stream
-# still leaves the buffer as it was.
+# still leaves the buffer as it was. A boxed buffer that holds a shared
+# String is filled in place, so its aliases see the bytes (and the
+# emptying); a boxed nil buffer stays nil and the read answers a String
+# of its own, and a boxed Integer one is a TypeError. A boxed length
+# that holds an Integer reads bytes into a shared buffer, NULs and all.
 require "tmpdir"
 
 PATH = File.join(Dir.tmpdir, "spinel_io_buffer_eof_#{Process.pid}.txt")
@@ -101,8 +105,52 @@ def closed_stream
   p buf
 end
 
+def boxed_buffer(io)
+  s = +"ab"
+  u = s
+  u << "c"
+  buf = ARGV.size > 5 ? 1 : s
+  r = io.pread(3, 2, buf)
+  p r, buf, s, u
+  eof? { io.pread(3, 20, buf) }
+  p buf, s, u
+  io.rewind
+  w = +"q"
+  t = w
+  t << "r"
+  b2 = ARGV.size > 5 ? 1 : w
+  r = io.read(3, b2)
+  p r, b2, w, t
+  r = io.read_nonblock(3, b2)
+  p r, b2, w, t
+  [nil, 5].each do |bad|
+    begin
+      r = io.pread(3, 2, bad)
+      p r, bad
+    rescue TypeError => e
+      p e.class
+    end
+  end
+end
+
+def boxed_length
+  File.binwrite(PATH + ".bin", "ab\0cd\u00e9f")
+  File.open(PATH + ".bin") do |f|
+    buf = +"xy"
+    u = buf
+    u << "z"
+    len = ARGV.size > 5 ? nil : 5
+    r = f.read(len, buf)
+    p r.b, buf.b, buf.bytesize, u.b
+  end
+  File.delete(PATH + ".bin")
+end
+
 plain_buffer(false)
 plain_buffer(true)
+File.open(PATH) { |f| boxed_buffer(f) }
+File.open(PATH) { |f| boxed_buffer([f, 1][0]) }
+boxed_length
 captured_buffer(false)
 captured_buffer(true)
 read_nil
