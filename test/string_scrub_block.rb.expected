@@ -20,3 +20,13 @@ TypeError: no implicit conversion of nil into String
 ArgumentError: replacement must be valid byte sequence '"\xFF"'
 ArgumentError: replacement must be valid byte sequence '"\xFE"'
 "abc"
+"a\xFFb"
+"a\xFFb"
+"a\xFFb"
+#<Encoding:BINARY (ASCII-8BIT)>
+0
+ArgumentError: both of block and replacement given
+"x\xFE"
+#<Encoding:BINARY (ASCII-8BIT)>
+"x\xFE"
+"x\xFE"

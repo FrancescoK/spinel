@@ -1412,9 +1412,17 @@ const char *sp_str_scrub_repl(const char *r) {
     sp_raise_cls("ArgumentError", sp_sprintf("replacement must be valid byte sequence '%s'", sp_str_inspect(r)));
   return r;
 }
-/* String#scrub: each invalid sequence (sp_str_scrub_bad) is replaced; a
-   NULL replacement is U+FFFD (3 UTF-8 bytes: EF BF BD), as in CRuby. */
-const char *sp_str_scrub(const char *s, const char *repl) {SP_GC_ROOT_STR(s);SP_GC_ROOT_STR(repl);
+/* String#scrub: an ASCII-8BIT receiver has no invalid sequence, so CRuby
+   answers a copy of it, still ASCII-8BIT, without looking at the
+   replacement; any other receiver is walked as UTF-8 (sp_str_scrub_utf8). */
+const char *sp_str_scrub(const char *s, const char *repl) {
+  if (s && sp_str_is_binary(s)) return sp_str_dup(s);
+  return sp_str_scrub_utf8(s, repl);
+}
+/* each invalid UTF-8 sequence (sp_str_scrub_bad) is replaced; a NULL
+   replacement is U+FFFD (3 UTF-8 bytes: EF BF BD), as in CRuby. encode's
+   UTF-8 to UTF-8 conversion calls it whatever the receiver's flag. */
+const char *sp_str_scrub_utf8(const char *s, const char *repl) {SP_GC_ROOT_STR(s);SP_GC_ROOT_STR(repl);
   if(!s)sp_nil_recv("scrub");
   static const char fffd[] = "\xEF\xBF\xBD";
   const char *r = repl ? repl : fffd;
