@@ -19,6 +19,63 @@ module URI
   class InvalidURIError < Error
   end
 
+  # The regexp sources CRuby's RFC 2396 parser builds itself from, which a
+  # server reads to match what a request carries -- webrick matches a Host
+  # header with `URI::RFC2396_Parser.new.pattern.fetch(:HOST)`. #pattern
+  # answers the table up to :USERINFO, each source spelled as CRuby spells
+  # it; the path and whole-URI patterns after it, the #regexp table, and
+  # the parser's own #parse/#split/#escape are absent.
+  class RFC2396_Parser
+    module PATTERN
+      ALPHA = "a-zA-Z"
+      ALNUM = "#{ALPHA}\\d"
+      HEX = "a-fA-F\\d"
+      ESCAPED = "%[#{HEX}]{2}"
+      UNRESERVED = "\\-_.!~*'()#{ALNUM}"
+      RESERVED = ";/?:@&=+$,\\[\\]"
+      DOMLABEL = "(?:[#{ALNUM}](?:[-#{ALNUM}]*[#{ALNUM}])?)"
+      TOPLABEL = "(?:[#{ALPHA}](?:[-#{ALNUM}]*[#{ALNUM}])?)"
+    end
+
+    attr_reader :pattern
+
+    def initialize
+      escaped = PATTERN::ESCAPED
+      unreserved = PATTERN::UNRESERVED
+      reserved = PATTERN::RESERVED
+      uric = "(?:[#{unreserved}#{reserved}]|#{escaped})"
+      hostname = "(?:[a-zA-Z0-9\\-.]|%\\h\\h)+"
+      ipv4addr = "\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}"
+      hex4 = "[#{PATTERN::HEX}]{1,4}"
+      lastpart = "(?:#{hex4}|#{ipv4addr})"
+      hexseq1 = "(?:#{hex4}:)*#{hex4}"
+      hexseq2 = "(?:#{hex4}:)*#{lastpart}"
+      ipv6addr = "(?:#{hexseq2}|(?:#{hexseq1})?::(?:#{hexseq2})?)"
+      ipv6ref = "\\[#{ipv6addr}\\]"
+      host = "(?:#{hostname}|#{ipv4addr}|#{ipv6ref})"
+      port = "\\d*"
+      @pattern = {
+        ESCAPED: escaped,
+        UNRESERVED: unreserved,
+        RESERVED: reserved,
+        DOMLABEL: PATTERN::DOMLABEL,
+        TOPLABEL: PATTERN::TOPLABEL,
+        HOSTNAME: hostname,
+        URIC: uric,
+        URIC_NO_SLASH: "(?:[#{unreserved};?:@&=+$,]|#{escaped})",
+        QUERY: "#{uric}*",
+        FRAGMENT: "#{uric}*",
+        IPV4ADDR: ipv4addr,
+        IPV6ADDR: ipv6addr,
+        IPV6REF: ipv6ref,
+        HOST: host,
+        PORT: port,
+        HOSTPORT: "#{host}(?::#{port})?",
+        USERINFO: "(?:[#{unreserved};:&=+$,]|#{escaped})*",
+      }
+    end
+  end
+
   class Generic
     attr_reader :scheme, :userinfo, :host, :port, :path, :query, :fragment
     # The component writers CRuby's Generic has: a parsed URI is edited
@@ -40,6 +97,12 @@ module URI
       @path = path
       @query = query
       @fragment = fragment
+    end
+
+    # true when the URI names a scheme -- a full URL rather than a bare
+    # path such as a request line's "/hello"
+    def absolute?
+      !@scheme.nil? && !@scheme.empty?
     end
 
     def default_port
