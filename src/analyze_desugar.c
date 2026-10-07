@@ -5205,6 +5205,130 @@ int desugar_to_h_block(Compiler *c) {
   return changed;
 }
 
+/* `str.unpack(fmt) { |v| body }` -> `(str.unpack(fmt).each { |v| body }; nil)`.
+   With a block, CRuby's unpack yields each value it decodes and answers nil.
+   The blockless unpack already decodes into an Array and each walks one, so
+   the call is rewritten onto that pair, as to_h's block form is onto map. A
+   receiver that may reach a program's own unpack keeps the call as written:
+   a String one where String itself is reopened with it (a String cannot be
+   subclassed), a boxed one where any class defines it.
+
+   `&e` gives no block when e is nil, and unpack then answers the Array, so
+   unless e is sure to be a block (`&:sym`, a proc or lambda literal) the
+   rewrite tests it: `e ? (str.unpack(fmt).each(&e); nil) : str.unpack(fmt)`.
+   A variable is read again for the block, an anonymous `&` asks
+   block_given?, and any other e runs once into a local. The order stays
+   CRuby's: an e that can act behind a receiver or argument that can is
+   already a local here, desugar_block_arg_order having run those three
+   into locals in turn (#4992). */
+static int unpack_block_sure(const NodeTable *nt, Compiler *c, int blk) {
+  if (nt_kind(nt, blk) == NK_BlockNode) return 1;
+  int ex = nt_ref(nt, blk, "expression");
+  return ex >= 0 && (nt_kind(nt, ex) == NK_SymbolNode || is_proc_create(c, ex));
+}
+/* The test of a `&e` that may be nil (see above): *pred, evaluated once, and
+   blk's expression replaced by a re-read of its value. 0 on node-table OOM. */
+static int unpack_block_test(Compiler *c, int id, int blk, int *pred) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int ex = nt_ref(nt, blk, "expression");
+  if (ex < 0) {
+    *pred = nt_new_node(nt, "CallNode");
+    if (*pred < 0) return 0;
+    nt_node_set_str(nt, *pred, "name", "block_given?");
+    return 1;
+  }
+  NodeKind k = nt_kind(nt, ex);
+  if (k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode || k == NK_GlobalVariableReadNode) {
+    int re = nt_clone_subtree(nt, ex);
+    if (re < 0) return 0;
+    *pred = ex;
+    nt_node_set_ref(nt, blk, "expression", re);
+    return 1;
+  }
+  char tname[48]; snprintf(tname, sizeof tname, "__unpack_blk_%d", id);
+  int w = nt_new_node(nt, "LocalVariableWriteNode"), re = nt_new_node(nt, "LocalVariableReadNode");
+  if (w < 0 || re < 0) return 0;
+  nt_node_set_str(nt, w, "name", tname); nt_node_set_int(nt, w, "depth", 0);
+  nt_node_set_ref(nt, w, "value", ex);
+  nt_node_set_str(nt, re, "name", tname); nt_node_set_int(nt, re, "depth", 0);
+  scope_local_intern(comp_scope_of(c, id), tname);
+  *pred = w;
+  nt_node_set_ref(nt, blk, "expression", re);
+  return 1;
+}
+int desugar_unpack_block(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int user_any = 0, user_str = 0;
+  for (int k = 0; k < c->nclasses; k++)
+    if (comp_method_in_chain(c, k, "unpack", NULL) >= 0) {
+      user_any = 1;
+      if (c->classes[k].name && sp_streq(c->classes[k].name, "String")) user_str = 1;
+    }
+  int changed = 0;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !is_unpack_name(nm)) continue;
+    int recv = nt_ref(nt, id, "receiver"), blk = nt_ref(nt, id, "block");
+    if (recv < 0 || (nt_kind(nt, blk) != NK_BlockNode && nt_kind(nt, blk) != NK_BlockArgumentNode)) continue;
+    /* a boxed receiver that is no String raises in unpack either way */
+    TyKind rt = infer_type(c, recv);
+    if (rt != TY_STRING && rt != TY_POLY) continue;
+    if (rt == TY_STRING ? user_str : user_any) continue;
+    int args = nt_ref(nt, id, "arguments");
+    int base = nt->count;
+    int call = nt_new_node(nt, "CallNode"), each = nt_new_node(nt, "CallNode");
+    int nil = nt_new_node(nt, "NilNode"), body = nt_new_node(nt, "StatementsNode");
+    /* the blockless call of a block that may be nil, and its test */
+    int pred = -1, call2 = -1, s2 = -1, el = -1, sure = unpack_block_sure(nt, c, blk);
+    int ok = call >= 0 && each >= 0 && nil >= 0 && body >= 0;
+    if (ok && !sure) {
+      int r2 = nt_clone_subtree(nt, recv), a2 = args >= 0 ? nt_clone_subtree(nt, args) : -1;
+      call2 = nt_new_node(nt, "CallNode"); s2 = nt_new_node(nt, "StatementsNode");
+      el = nt_new_node(nt, "ElseNode");
+      ok = r2 >= 0 && (args < 0 || a2 >= 0) && call2 >= 0 && s2 >= 0 && el >= 0 &&
+           unpack_block_test(c, id, blk, &pred);
+      if (ok) {
+        nt_node_set_ref(nt, call2, "receiver", r2);
+        nt_node_set_str(nt, call2, "name", "unpack");
+        nt_node_set_ref(nt, call2, "arguments", a2);
+      }
+    }
+    /* node-table OOM: leave the call as-is, and drop the nodes made before
+       the failure -- unreferenced, but every later all-node walk would
+       visit them, past the per-node arrays comp_grow_node_arrays sizes */
+    if (!ok) { nt->count = base; continue; }
+    nt_node_set_ref(nt, call, "receiver", recv);
+    nt_node_set_str(nt, call, "name", "unpack");
+    nt_node_set_ref(nt, call, "arguments", args);
+    nt_node_set_ref(nt, each, "receiver", call);
+    nt_node_set_str(nt, each, "name", "each");
+    nt_node_set_ref(nt, each, "block", blk);
+    int stmts[2] = { each, nil };
+    nt_node_set_arr(nt, body, "body", stmts, 2);
+    if (sure) {
+      nt_node_reset(nt, id, "ParenthesesNode");
+      nt_node_set_ref(nt, id, "body", body);
+    }
+    else {
+      nt_node_set_arr(nt, s2, "body", &call2, 1);
+      nt_node_set_ref(nt, el, "statements", s2);
+      long long line = nt_int(nt, id, "node_line", 0);
+      nt_node_reset(nt, id, "IfNode");
+      nt_node_set_ref(nt, id, "predicate", pred);
+      nt_node_set_ref(nt, id, "statements", body);
+      nt_node_set_ref(nt, id, "subsequent", el);
+      if (line) nt_node_set_int(nt, id, "node_line", line);
+    }
+    comp_grow_node_arrays(c);
+    int encl = c->nscope[id];
+    for (int j = base; j < nt->count; j++) c->nscope[j] = encl;   /* new nodes share the scope */
+    changed = 1;
+  }
+  return changed;
+}
+
 /* Descend `root`'s subtree (bounded to scope `sc`) tracking the nearest enclosing
    StatementsNode entry (curr_st/curr_idx). On reaching `target`, report that entry
    -- the innermost same-scope top-level statement whose subtree contains target.
