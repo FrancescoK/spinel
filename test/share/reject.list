@@ -62,4 +62,5 @@ test/reject/string_thread_method_param_arg.rb
 test/reject/string_yield_captured_param.rb
 test/reject/string_yield_poly_param_global.rb
 test/reject/string_yield_splat_captured.rb
+test/reject/struct_masgn_string_member.rb
 test/reject/yield_splat_elem_append.rb
