@@ -5094,6 +5094,7 @@ static int sp_parse_emit(const char *source_file, const char *argv0, SpStrBuf *o
   source = resolve_plain_requires(resolved, argv0, &fsl, &fsl_n);
   source = sp_splice_named_builtin(source, argv0, "Gem", "builtins/gem", &fsl, &fsl_n);
   source = sp_splice_named_builtin(source, argv0, "RbConfig", "builtins/rbconfig", &fsl, &fsl_n);
+  source = sp_splice_named_builtin(source, argv0, "ThreadGroup", "builtins/thread_group", &fsl, &fsl_n);
   source = sp_splice_object_space(source, argv0, &fsl, &fsl_n);
   source = sp_splice_process_detach(source, argv0, &fsl, &fsl_n);
   /* CRuby provides Set (3.2+) and IO::Buffer without a require wherever
