@@ -21999,8 +21999,8 @@ int emit_implicit_self_member(Compiler *c, int id, Buf *b) {
     Repr rp = repr_of(c, id);
     if (rty == TY_STRBUF && !rp.handle && !rp.demand) {
       int tv = ++g_tmp;
-      buf_printf(&rb, "({ sp_String *_t%d = %s%siv_%s; _t%d ? sp_str_concat(sp_String_cstr(_t%d), (&(\"\\xff\")[1])) : NULL; })",
-                 tv, g_self, g_self_deref, iv_c(rn), tv, tv);
+      buf_printf(&rb, "({ sp_String *_t%d = %s%siv_%s; sp_String_read(_t%d); })",
+                 tv, g_self, g_self_deref, iv_c(rn), tv);
       rty = TY_STRING;
     }
     else buf_printf(&rb, "%s%siv_%s", g_self, g_self_deref, iv_c(rn));

@@ -20436,6 +20436,30 @@ static int poly_var_may_hold_string(Compiler *c, const HandleArgTab *hat,
   return lits && !lv->is_param && !seen && bound != 1;
 }
 
+/* Reconcile the rule's lifted reads by variable: the final caller table
+   answers once for all its reads, through the existing variable-site index. */
+static void strbuf_reconcile_lifted_reads(Compiler *c, const HandleArgTab *hat) {
+  const NodeTable *nt = c->nt;
+  for (int si = 0; si < c->nscopes; si++) {
+    Scope *s = &c->scopes[si];
+    for (int li = 0; li < s->nlocals; li++) {
+      const char *vn = s->locals[li].name;
+      int may_str = -1;
+      for (int e = comp_vsite_first(c, VS_READ, NK_LocalVariableReadNode, vn, si);
+           e >= 0; e = comp_vsite_next(c, e)) {
+        int r = comp_vsite_var(c, e);
+        if (nt_kind(nt, r) != NK_LocalVariableReadNode || comp_scope_of(c, r) != s ||
+            !sp_streq(nt_str(nt, r, "name"), vn) || !c->poly_strbuf_lift[r]) continue;
+        if (may_str < 0) may_str = poly_var_may_hold_string(c, hat, vn, s, 0, NULL);
+        if (!may_str) { c->poly_strbuf_lift[r] = 0; continue; }
+        if (c->nilnarrow[r] != TY_STRING) continue;
+        c->nilnarrow[r] = TY_UNKNOWN;
+        c->ntype[r] = TY_POLY;
+      }
+    }
+  }
+}
+
 /* --share-strings (#6765): can receiver r, a boxed or untyped value, be a
    String? A variable answers by its values (poly_var_may_hold_string), a
    literal or a conditional by its form; a parameter, a block's parameter,
@@ -36482,12 +36506,12 @@ static void an_phase_storage(Compiler *c) {
     if (!conv0) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
     for (int s = 0; s < c->nscopes; s++) conv0[s] = share_converted_locals(c, s);
   }
+  HandleArgTab hat;
   for (;;) {
-    HandleArgTab hat; handle_arg_tab_init(c, &hat);
+    handle_arg_tab_init(c, &hat);
     int ch = promote_params_stored_in_shared_ivars(c, &hat);
     if (convert_byref_handle_params(c, &hat)) ch = 1;
     if (lift_poly_alias_reads(c, &hat)) ch = 1;
-    handle_arg_tab_free(&hat);
     if (promote_local_alias_pairs(c)) ch = 1;
     if (promote_dyncall_string_args(c)) ch = 1;
     if (promote_spread_string_args(c)) ch = 1;
@@ -36505,6 +36529,7 @@ static void an_phase_storage(Compiler *c) {
       if (rejoin_local_writes(c)) ch = late_widened = 1;
     }
     if (!ch) break;
+    handle_arg_tab_free(&hat);
   }
   /* ... and the reads of what widened take its type, as the proc-return
      re-derivation's refresh does (an_phase_proc_returns): everywhere when a
@@ -36531,12 +36556,15 @@ static void an_phase_storage(Compiler *c) {
      x.is_a?(String)`) unboxed a copy of the String its POLY variable holds:
      one lifted into the handle for a parameter appended to keeps the box,
      so the callee appends to the variable's own String. The narrowing ran
-     before the lifts were decided. */
-  NT_FOREACH_KIND(c->nt, NK_LocalVariableReadNode, r) {
+     before the lifts were decided. The rule also drops lifts whose variable
+     cannot hold a String, asking once per variable rather than per read. */
+  if (c->share_strings) strbuf_reconcile_lifted_reads(c, &hat);
+  else NT_FOREACH_KIND(c->nt, NK_LocalVariableReadNode, r) {
     if (!c->poly_strbuf_lift[r] || c->nilnarrow[r] != TY_STRING) continue;
     c->nilnarrow[r] = TY_UNKNOWN;
     c->ntype[r] = TY_POLY;
   }
+  handle_arg_tab_free(&hat);
   mark_reader_identity_operands(c);
   mark_reader_read_only_operands(c);
 

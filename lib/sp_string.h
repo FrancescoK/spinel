@@ -212,7 +212,7 @@ static inline sp_String*sp_string_handle_id(sp_String*h){return h;}
 static inline sp_String*sp_String_new_fresh(const char*s){
   if(!s)return NULL;
   int bin=sp_str_is_binary(s);
-  int frozen=(((const unsigned char*)s)[-1]==0xf1);
+  int frozen=sp_str_is_frozen_val(s);
   int mk=((const unsigned char*)s)[-1];
   int64_t len=(int64_t)sp_str_byte_len(s);
   sp_String*r=sp_String_new_inline_len(s,len);
@@ -243,6 +243,17 @@ static inline sp_String*sp_String_force_encoding(sp_String*s,int mode){
   return s;
 }
 static inline const char*sp_String_cstr(sp_String*s){return s->data;}
+/* A reader's value snapshot keeps the handle's frozen state without handing
+   out its identity. The frozen copy uses the collectible String marker. */
+static inline const char *sp_String_read(sp_String *s) {
+  if (!s) return NULL;
+  SP_GC_ROOT(s);
+  int frozen = sp_String_is_frozen(s), binary = s->binary;
+  char *r = (char *)sp_str_from_bytes(s->data, (size_t)s->len);
+  if (binary) sp_str_mark_binary(r);
+  if (frozen) ((unsigned char *)r)[-1] = 0xfa;
+  return r;
+}
 static inline int64_t sp_String_length(sp_String*s){return s->len;}
 
 /* Cold in-place mutators (compiled once in lib/sp_string.c). */

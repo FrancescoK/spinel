@@ -2042,8 +2042,7 @@ static void emit_strbuf_slot_read(Compiler *c, int id, Repr rp, const char *sref
   else if (rp.read_raw && decide_node(c->nt, id, "strbuf-raw", NULL))
     buf_printf(b, "(%s ? sp_String_cstr(%s) : NULL)", sref, sref);
   else if (repr_share_rule(c)) buf_printf(b, "sp_strbuf_read_pub(%s)", sref);
-  else buf_printf(b, "(_sp_ret_strbuf = (void *)%s, %s ? sp_str_concat(sp_String_cstr(%s), (&(\"\\xff\")[1])) : NULL)",
-                  sref, sref, sref);
+  else buf_printf(b, "(_sp_ret_strbuf = (void *)%s, sp_String_read(%s))", sref, sref);
 }
 
 /* The same for a slot read at node `id` that is not a variable's (a Struct
