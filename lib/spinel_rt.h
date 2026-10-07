@@ -14195,7 +14195,14 @@ static void sp_raise_exc(volatile sp_Exception *ve) {
   /* Carry the object so a user subclass keeps its ivars across the
      longjmp; sp_raise_cls moves it into the current frame's slot. */
   sp_pending_exc_obj = (void *)e;
-  sp_raise_cls(e->cls_name, e->msg);
+  sp_raise_cls(e->cls_name, e->msg_h ? sp_exc_message(e) : e->msg);
+}
+/* e.message as the String handle it holds (sp_Exception.msg_h), for a
+   change through it (--share-strings); a message held as bytes is handed
+   over as a new handle, whose changes it does not see, as before */
+static inline sp_String *sp_exc_message_handle(sp_Exception *e) {
+  if (e && e->msg_h) return (sp_String *)e->msg_h;
+  return sp_String_new_fresh(e ? sp_exc_message(e) : sp_str_empty);
 }
 
 /* SystemCallError#initialize, as CRuby's syserr_initialize runs it for an
