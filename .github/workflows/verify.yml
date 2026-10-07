@@ -356,7 +356,7 @@ jobs:
             # SPINEL_SHARE_STRINGS from its environment (PROBE_ENV's would
             # turn the flag on for the plain cases too), and its summary
             # counts each label per mode. A tree without the tool runs this
-            # branch's copy (shareprobe/, as of share-probe d4a73153b)
+            # branch's copy (shareprobe/, as of share-probe ebfa3c773)
             # against its own spinel.
             tool=tools/share_probe.rb; [ -f "$tool" ] || tool="$GITHUB_WORKSPACE/shareprobe/share_probe.rb"
             SPINEL="$h/spinel" ruby "$tool" --strength 2 --seed 1 --shard "$((SHARD - 1))/$OF" --jobs "$(nproc)" \
