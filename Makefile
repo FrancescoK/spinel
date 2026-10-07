@@ -802,6 +802,16 @@ SHARD_N := $(word 2,$(subst /, ,$(TEST_SHARD)))
 shard_pick = $(foreach i,$(shell seq $(SHARD_K) $(SHARD_N) $(words $(1))),$(word $(i),$(1)))
 SHARD_ALL := $(TESTS)
 TESTS := $(call shard_pick,$(TESTS))
+# TEST_ALWAYS=<file of grep -E patterns, one per line> keeps in the slice every test whose text
+# matches one of them, and every test/tools_*.rb: the tests whose answer depends on the operating
+# system (time, files, processes, signals, sockets, threads and fibers, the GC, FFI), which a
+# rotating slice would otherwise visit once in n pushes. The macOS CI lane uses it
+# (tools/os_sensitive.re). The match is the shell's: `grep -l` over the glob, not over TESTS,
+# whose names as one argument were once too long for a single `sh -c` (see above).
+ifneq ($(TEST_ALWAYS),)
+ALWAYS_PICK := $(shell grep -lEf $(TEST_ALWAYS) test/*.rb) $(wildcard test/tools_*.rb)
+TESTS := $(sort $(TESTS) $(filter $(ALWAYS_PICK),$(SHARD_ALL)))
+endif
 # A slice that comes out empty from a non-empty corpus means the pick
 # failed. Stop, rather than let a green run test nothing.
 ifneq ($(SHARD_ALL),)
@@ -831,7 +841,9 @@ ifeq ($(SPINEL_INT_BITS),32)   # the same first-line marker as test/*.rb
 PKG_TESTS := $(filter-out $(shell grep -l '^\# spinel: int64' packages/*/test/*.rb),$(PKG_TESTS))
 endif
 ifneq ($(TEST_SHARD),)
+ifeq ($(TEST_ALWAYS),)
 PKG_TESTS := $(call shard_pick,$(PKG_TESTS))
+endif
 endif
 pkg_of = $(word 2,$(subst /, ,$(1)))
 PKG_TEST_TARGETS := $(foreach t,$(PKG_TESTS),build/test-results/pkg.$(call pkg_of,$(t)).$(notdir $(t:.rb=)).ok)

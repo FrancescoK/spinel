@@ -162,8 +162,18 @@ jobs:
         run: |
           shard="${{ matrix.shard }}/${{ matrix.nshards }}"
           if [ "${{ matrix.cc }}" = gcc ]; then shard="$(( GITHUB_RUN_NUMBER % 8 + 1 ))/8"; fi
-          echo "corpus slice: $shard"
-          make -j$(getconf _NPROCESSORS_ONLN) ${{ matrix.shard == 1 && 'test' || 'test-corpus' }} TEST_SHARD=$shard ${{ matrix.cc == 'clang' && 'OPT=-O0 CC=clang' || 'OPT=-O1 CC=gcc' }}
+          # macOS on a master push: a rotating quarter plus every test whose answer depends on the
+          # operating system (tools/os_sensitive.re: time, files, processes, signals, sockets, threads,
+          # the GC, FFI) and the packages' tests, which is where its failures have been. It was the
+          # whole corpus, 20 of the run's 21 minutes. Add a pattern to the file when a test fails here
+          # alone and the pattern would have kept it in.
+          always=""
+          if [ "${{ matrix.os }}" = macos-latest ] && [ "${{ github.event_name }}" = push ]; then
+            shard="$(( GITHUB_RUN_NUMBER % 4 + 1 ))/4"
+            always="TEST_ALWAYS=tools/os_sensitive.re"
+          fi
+          echo "corpus slice: $shard $always"
+          make -j$(getconf _NPROCESSORS_ONLN) ${{ matrix.shard == 1 && 'test' || 'test-corpus' }} TEST_SHARD=$shard $always ${{ matrix.cc == 'clang' && 'OPT=-O0 CC=clang' || 'OPT=-O1 CC=gcc' }}
 
       # spin's end-to-end check: it builds real projects, which a clean
       # checkout on another machine is worth seeing. Linux/gcc only.
