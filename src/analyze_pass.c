@@ -2294,6 +2294,28 @@ static void widen_ivar_hash_literals(Compiler *c, const LWIndex *ivw, int cls, c
   }
 }
 
+/* The empty hash literals class `cls` assigns to `inm` take the variant the
+   ivar's slot settled on (a write of a shared String widens String values to
+   the poly-valued variant): left as the String-valued default, the literal
+   builds a hash the slot's boxed store cannot fill. 1 when one changed. */
+static int retype_ivar_empty_hash_literals(Compiler *c, const LWIndex *ivw, int cls, const char *inm, TyKind want) {
+  const NodeTable *nt = c->nt;
+  int changed = 0;
+  if (!c->hash_want) return 0;
+  for (int r = ivw_index_first(ivw, inm); r >= 0; r = ivw->next[r]) {
+    int wi = ivw->node[r];
+    const char *wnm = nt_str(nt, wi, "name");
+    if (!wnm || !sp_streq(wnm, inm)) continue;
+    Scope *ws = comp_scope_of(c, wi);
+    if (!ws || ws->class_id != cls) continue;
+    int wv = nt_ref(nt, wi, "value");
+    if (wv < 0 || wv >= c->node_cap || nt_kind(nt, wv) != NK_HashNode) continue;
+    int hen = 0; nt_arr(nt, wv, "elements", &hen);
+    if (hen == 0 && c->hash_want[wv] != want) { c->hash_want[wv] = want; changed = 1; }
+  }
+  return changed;
+}
+
 int a_proc_params_node(Compiler *c, int create);
 
 static int proc_literal_escapes_as_arg(Compiler *c, int lit);
@@ -3604,6 +3626,8 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
     if (*slot != before && !slot_reset) changed = 1;
     if (watch_nm && before != TY_POLY_ARRAY && *slot == TY_POLY_ARRAY)
       changed |= widen_ivar_array_params(c, &ivw_ix, watch_cls, watch_nm);
+    if (watch_nm && !is_push && !is_splice && ty_is_hash(before) && ty_is_hash(*slot) && *slot != before)
+      changed |= retype_ivar_empty_hash_literals(c, &ivw_ix, watch_cls, watch_nm, *slot);
     /* A LOCAL that widened to the poly array under a push and whose writes
        read ivar arrays (directly, or through a conditional's arms) is an
        ALIAS of those arrays: widen the sources too, or the local's read
