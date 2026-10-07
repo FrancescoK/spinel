@@ -4,6 +4,8 @@
 # of keys on nil answered nil. A value met part way still raises that
 # TypeError, and nil part way ends the walk. A Struct (and a program
 # object with its own dig) is walked by the mixed-splat form as by the others.
+# A program object whose class has no dig (a plain object, one answering
+# deconstruct_keys, a Data) is that NoMethodError too, in every form.
 
 def t
   p yield
@@ -29,3 +31,18 @@ o = [S.new({b: 1}, 7), 0][k]
 t { o.dig(*[], :k) }
 t { o.dig(*[:a], :b) }
 t { o.dig(:k) }
+
+class Plain
+  def initialize = @v = 1
+end
+class KeysOnly
+  def initialize = @v = 1
+  def deconstruct_keys(ks) = {a: 1}
+end
+D = Data.define(:a)
+[Object.new, Plain.new, KeysOnly.new, D.new(a: 1)].each do |v|
+  n = [v, 0][k]
+  t { n.dig(:a) }
+  t { n.dig(*keys) }
+  t { n.dig(*keys, 0) }
+end

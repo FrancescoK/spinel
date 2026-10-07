@@ -41,3 +41,15 @@ nil
 7
 1
 7
+undefined method 'dig' for an instance of Object [:a]
+undefined method 'dig' for an instance of Object [1]
+undefined method 'dig' for an instance of Object [1, 0]
+undefined method 'dig' for an instance of Plain [:a]
+undefined method 'dig' for an instance of Plain [1]
+undefined method 'dig' for an instance of Plain [1, 0]
+undefined method 'dig' for an instance of KeysOnly [:a]
+undefined method 'dig' for an instance of KeysOnly [1]
+undefined method 'dig' for an instance of KeysOnly [1, 0]
+undefined method 'dig' for an instance of D [:a]
+undefined method 'dig' for an instance of D [1]
+undefined method 'dig' for an instance of D [1, 0]
