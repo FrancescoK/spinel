@@ -157,6 +157,7 @@ int strbuf_flow_carries(Compiler *c, StrbufFlowMemo *fm, int kind, int site, int
 int strbuf_call_picks_up(Compiler *c, int id);
 int strbuf_self_reader_handle(Compiler *c, int id);
 int strbuf_call_reads_handle(Compiler *c, int recv);
+int strbuf_route_reader(Compiler *c, int v);
 const NativeMethod *strbuf_native_answer(Compiler *c, int n);
 int strbuf_io_outbuf(Compiler *c, int id);
 int emit_io_read_nonblock_outbuf(Compiler *c, int id, Buf *b);

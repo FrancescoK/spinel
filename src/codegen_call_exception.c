@@ -923,7 +923,11 @@ int emit_call_raise_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const
         /* `raise "msg"` raises RuntimeError with the message, holding a
            shared String's handle (exc_msg_handle) */
         char mh[256];
-        if (exc_msg_handle(c, av[0], mh, sizeof mh)) {
+        if (strbuf_route_reader(c, av[0])) {
+          /* A reader's box keeps its shared field as the message. */
+          buf_puts(b, "sp_raise_poly("); emit_boxed(c, av[0], b); buf_puts(b, ")");
+        }
+        else if (exc_msg_handle(c, av[0], mh, sizeof mh)) {
           buf_puts(b, "sp_raise_exc((sp_Exception *)sp_exc_attach_msg(sp_exc_new_for_catch(\"RuntimeError\", "
                       "sp_exc_msg_given(");
           emit_expr(c, av[0], b);
