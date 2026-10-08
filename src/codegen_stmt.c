@@ -8547,6 +8547,12 @@ static int call_names_only_void_methods(Compiler *c, int node) {
   return any;
 }
 static void emit_tail_value_1(Compiler *c, int node, Buf *b);
+static void emit_fresh_tail_value(Compiler *c, int node, Buf *b) {
+  int t = ++g_tmp;
+  buf_printf(b, "({ const char *_t%d = ", t);
+  emit_tail_value_1(c, node, b);
+  buf_printf(b, "; _sp_ret_strbuf = NULL; _t%d; })", t);
+}
 /* --share-strings: a method a deep-return pickup takes the value of, one of
    whose tails answers a fresh String (ret_pub_fresh): that tail clears the
    side channel after its value, which a read of a handle inside it may have
@@ -8554,15 +8560,16 @@ static void emit_tail_value_1(Compiler *c, int node, Buf *b);
    handle. A user call returning only its own fresh Strings clears it too. */
 static void emit_tail_value(Compiler *c, int node, Buf *b) {
   Scope *ts = g_ret_type == TY_STRING && !g_result_var ? comp_scope_of(c, node) : NULL;
+  if (ts && ts->ret_pub_fresh && share_return_owned(c, an_unparen(c->nt, node), (int)(ts - c->scopes))) {
+    emit_fresh_tail_value(c, node, b);
+    return;
+  }
   if (!ts || !ts->ret_pub_fresh ||
       !(share_node_fresh(c, an_unparen(c->nt, node)) || share_call_fresh(c, an_unparen(c->nt, node)))) {
     emit_tail_value_1(c, node, b);
     return;
   }
-  int t = ++g_tmp;
-  buf_printf(b, "({ const char *_t%d = ", t);
-  emit_tail_value_1(c, node, b);
-  buf_printf(b, "; _sp_ret_strbuf = NULL; _t%d; })", t);
+  emit_fresh_tail_value(c, node, b);
 }
 static void emit_tail_value_1(Compiler *c, int node, Buf *b) {
   /* A poly tail slot (a poly return, or a poly result var -- e.g. an inlined
