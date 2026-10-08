@@ -3743,6 +3743,11 @@ static int sh_bang_self_slot(const Compiler *c, int v) {
    copy of its bytes? */
 static int sh_carries_handle(const Compiler *c, int n) {
   Repr r = repr_of(c, n);
+  /* The boxed unary-plus arm keeps a mutable String's handle and copies
+     a frozen one, exactly as the typed value route does. */
+  if (r.kind == RK_BOXED && nt_kind(c->nt, n) == NK_CallNode &&
+      is_unary_plus(nt_str(c->nt, n, "name")) &&
+      cplan_user((Compiler *)c, n)->dispatch == CP_NONE) return 1;
   /* a bang method on a handle local: a write hands over the local's handle
      (emit_strbuf_value) */
   return r.kind == RK_STRBUF || r.strbuf_src != RS_NONE || sh_bang_self_slot(c, n) ||
