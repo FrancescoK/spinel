@@ -28,3 +28,18 @@ p parts("xaay", /a+/)
 v = +"xaay"
 def cut(str, re) = str.slice!(re)
 p cut(v, /a+/), v
+
+# the limit is read once, however many arms the call renders
+$n = 0
+p s.split(R, (begin; $n += 1; 2; rescue; 3; end)), $n
+
+# s[str] answers a String of its own
+x = "abc"[[/z/, "b"][1]]
+x << "!"
+p x
+
+# grep and grep_v with a boxed Regexp leave $~ as it was
+"xq" =~ /q/
+words = %w[ab cd]
+p words.grep(R), $~[0]
+p words.grep_v(R), $~[0]

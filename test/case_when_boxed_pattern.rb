@@ -28,3 +28,4 @@ x = case "abbc" when PATS[0] then :hit else :miss end
 p x, $~ && $~[0]
 y = case :abbc when PATS[0] then :hit else :miss end
 p y
+

@@ -6670,7 +6670,7 @@ static int str_arms_slice_encode(Compiler *c, int id, Buf *b, const char *name, 
     /* s["sub"] -> the substring if present, else nil */
     int tsub = ++g_tmp;
     buf_printf(b, "({ const char *_t%d = ", tsub); emit_str_expr(c, argv[0], b);
-    buf_printf(b, "; (strstr(%s, _t%d) ? _t%d : NULL); })", r, tsub, tsub);
+    buf_printf(b, "; (strstr(%s, _t%d) ? sp_str_dup(_t%d) : NULL); })", r, tsub, tsub);
   }
   else if ((is_slice_alias(name)) && argc == 1) {
     buf_printf(b, "sp_str_char_at_or_nil(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")");
@@ -7740,6 +7740,11 @@ static int str_arms_text(Compiler *c, int id, Buf *b, const NodeTable *nt, const
    and raised TypeError. The tag now picks the Regexp or the String arms;
    any other value takes the boxed arms as before. */
 static int g_poly_pattern_open;
+static int nt_is_literal_arg(const NodeTable *nt, int n) {
+  const char *t = nt_type(nt, n);
+  return t && (sp_streq(t, "IntegerNode") || sp_streq(t, "SymbolNode") || sp_streq(t, "StringNode") ||
+               sp_streq(t, "NilNode"));
+}
 static int str_poly_pattern_name(const char *name, int argc) {
   if (sp_streq(name, "split")) return argc == 1 || argc == 2;
   if (is_slice_alias(name)) return argc == 1 || argc == 2;
@@ -7755,10 +7760,19 @@ static int str_arms_poly_pattern(Compiler *c, int id, Buf *b, const NodeTable *n
      call, it would read the temp before it is declared */
   ConvHold *held = g_conv_hold;
   g_conv_hold = NULL;
+  size_t pre_mark = g_pre ? g_pre->len : 0;
   buf_printf(&eb, "({ const char *_t%d = %s; SP_GC_ROOT(_t%d); sp_RbVal _t%d = ", ts, r, ts, tp);
   emit_boxed(c, argv[0], &eb);
-  buf_printf(&eb, "; SP_GC_ROOT_RBVAL(_t%d); _t%d = sp_poly_strbuf_deref(_t%d);"
-                 " (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_REGEX) ? (", tp, tp, tp, tp, tp);
+  buf_printf(&eb, "; SP_GC_ROOT_RBVAL(_t%d); _t%d = sp_poly_strbuf_deref(_t%d); ", tp, tp, tp);
+  /* the limit or the second index is read once, after the pattern; every
+     branch below renders it again. A literal stays as it is, since the
+     arms read its node (s[re, :name]). */
+  int bind1 = g_n_argov;
+  if (argc == 2 && !nt_is_literal_arg(nt, argv[1])) {
+    int t1 = hold_operand(c, argv[1], comp_ntype(c, argv[1]), 0, ++g_tmp, 1, " ", &eb);
+    bind1 = view_bind(argv[1], "_t%d", t1);
+  }
+  buf_printf(&eb, "(_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_REGEX) ? (", tp, tp);
   int bind = view_bind(argv[0], "((mrb_regexp_pattern *)_t%d.v.p)", tp);
   int v = view_push(c, argv[0], TY_REGEX);
   int ok = str_arms_text(c, id, &eb, nt, name, recv, argc, argv, rs);
@@ -7775,11 +7789,15 @@ static int str_arms_poly_pattern(Compiler *c, int id, Buf *b, const NodeTable *n
   bind = view_bind(argv[0], "_t%d", tp);
   g_poly_pattern_open = 1;
   ok = ok && str_arms_text(c, id, &eb, nt, name, recv, argc, argv, rs);
+  /* only ever entered closed, so closing is restoring */
   g_poly_pattern_open = 0;
   view_unbind(bind);
+  view_unbind(bind1);
   buf_puts(&eb, "); })");
   g_conv_hold = held;
   if (ok) buf_puts(b, eb.p);
+  /* a dropped dispatch takes back what its branches hoisted */
+  else if (g_pre && g_pre->len > pre_mark) { g_pre->len = pre_mark; g_pre->p[pre_mark] = '\0'; }
   free(eb.p);
   return ok;
 }
@@ -14074,7 +14092,7 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
     for (int k = 0; k < c->nclasses && !has_user; k++)
       if (comp_poly_arm_defines_n(c, k, name, argc)) has_user = 1;
     if (!has_user) {
-      buf_puts(b, "sp_poly_case_eq(");
+      buf_puts(b, "sp_poly_case_eq_match(");
       emit_expr(c, recv, b);
       buf_puts(b, ", ");
       emit_boxed(c, argv[0], b);

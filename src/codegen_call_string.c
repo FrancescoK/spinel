@@ -1468,7 +1468,8 @@ int emit_op_string_slice(Compiler *c, const BopCtx *x, Buf *b) {
     /* slice!(/re/): remove the first match, evaluate to it (or nil).
        sp_re_match fills sp_re_match_str with the matched run; the splice
        helper replaces it with the empty string. A Regexp held in a value
-       (a parameter, a boxed element) is read once, after the receiver. */
+       is read once; a typed one after the receiver, a boxed one before it
+       (emit_string_slice_poly holds it first). */
     int tm3 = ++g_tmp, ts3 = ++g_tmp;
     char pat[32];
     buf_printf(b, "({ const char *_t%d = ", ts3); emit_expr(c, recv, b);
