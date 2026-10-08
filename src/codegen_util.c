@@ -3548,6 +3548,9 @@ static int plain_expr(Compiler *c, int n, int depth) {
   case NK_CallNode: {
     const char *nm = nt_str(nt, n, "name");
     int recv = nt_ref(nt, n, "receiver");
+    /* An Integer sum either returns a number or raises, even at INTPTR_MIN. */
+    if (nm && recv >= 0 && is_sum_name(nm) && ty_is_array(repr_of(c, recv).as_ty) &&
+        !call_is_safe_nav(nt, n) && cplan_user(c, n)->dispatch == CP_NONE) return 1;
     if (!nm || recv < 0 || nt_ref(nt, n, "block") >= 0) return 0;
     if (call_is_safe_nav(nt, n)) return 0;   /* nil&.+(1) is nil */
     int args = nt_ref(nt, n, "arguments"), argc = 0;
@@ -3807,7 +3810,8 @@ void emit_poly_sum_seed(Compiler *c, int recv, int seed, Buf *b) {
   int tr = ++g_tmp, ts = ++g_tmp;
   buf_puts(b, "({ ");
   tr = hold_operand(c, recv, TY_POLY, 1, tr, 1, " ", b);
-  ts = hold_operand(c, seed, TY_POLY, 1, ts, 1, " ", b);
+  if (seed >= 0) ts = hold_operand(c, seed, TY_POLY, 1, ts, 1, " ", b);
+  else buf_printf(b, "sp_RbVal _t%d = sp_box_int(0); ", ts);
   buf_printf(b, "sp_poly_sum_seed(_t%d, _t%d); })", tr, ts);
 }
 /* A call that never hands back a value: a receiverless raise or fail, or a

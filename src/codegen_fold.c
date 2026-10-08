@@ -1797,28 +1797,25 @@ int emit_sum_block_expr(Compiler *c, int id, Buf *b) {
   if (argc > 1) return 0;
   /* A String accumulator needs a String seed -- without one the sum starts at
      the Integer 0 and CRuby raises "String can't be coerced into Integer". */
-  if (acct == TY_STRING && !(argc == 1 && argv && comp_ntype(c, argv[0]) == TY_STRING))
-    acct = TY_POLY;
   /* Every other block value accumulates BOXED rather than bailing out. The
      answer CRuby gives for `[1, 2].sum { true }` is a TypeError from `0 + true`,
      and only sp_poly_add can raise it: declining the fold left the call to the
      generic dispatch, which answered NoMethodError instead (#4327). TY_NIL was
      already routed this way for exactly that reason. */
-  if (acct != TY_INT && acct != TY_FLOAT && acct != TY_STRING) acct = TY_POLY;
   /* So does a block with a `next` or a `redo` of its own, whose step answers
      through a slot (emit_iter_step_value): a bare `next` answers nil, which
      only the boxed add refuses as CRuby does. */
-  if (iter_step_needs_frame(c, block)) acct = TY_POLY;
   /* And so does a seed of another class than the block's values, other
      than a number: CRuby's accumulator is the seed, so `sum({}) { |x| x }`
      raises from the Hash's missing `+` (fold_seed_typed, as the blockless
      sum decides it), where the typed accumulator took the Hash as an sp_int
      and did not build. */
-  if (argc == 1 && acct != TY_POLY) {
-    TyKind st = fold_seed_ntype(c, argv[0]);
-    if (st != TY_INT && st != TY_FLOAT && st != TY_POLY && st != TY_UNKNOWN && !fold_seed_typed(st, acct))
-      acct = TY_POLY;
-  }
+  /* A boxed seed keeps its run-time class even with a typed block. */
+  /* A String seed keeps its handle until the first addition. */
+  TyKind seedt = argc == 1 ? fold_seed_ntype(c, argv[0]) : TY_INT;
+  int float_int_seed = acct == TY_FLOAT && seedt == TY_INT && !iter_step_needs_frame(c, block);
+  acct = float_int_seed ? TY_FLOAT : fold_sum_type(seedt, acct, g_promote_mode);
+  if (iter_step_needs_frame(c, block)) acct = TY_POLY;
   /* A poly block value (e.g. a product of values read out of poly containers,
      as in a range sum redispatched over an int array) accumulates into a boxed
      sp_RbVal via sp_poly_add, like the poly-receiver sum path. An empty range
@@ -1866,7 +1863,7 @@ int emit_sum_block_expr(Compiler *c, int id, Buf *b) {
       buf_printf(b, "sp_sum_step(&_t%dS, %s); }", tacc, valb.p ? valb.p : "sp_box_nil()");
       free(inner.p); free(valb.p);
     }
-    buf_printf(b, " _t%d = sp_sum_result(&_t%dS);", tacc, tacc);
+    buf_printf(b, " _t%d = _t%d ? sp_sum_result(&_t%dS) : _t%d;", tacc, tn, tacc, tacc);
     /* The call's own type may be a scalar the inference settled on (an int
        array's `sum {}` is an Integer where it answers at all), so hand back
        what the caller's slot holds; a nil term raises inside the loop before
@@ -1888,20 +1885,27 @@ int emit_sum_block_expr(Compiler *c, int id, Buf *b) {
   int ta = ++g_tmp, tacc = ++g_tmp, ti = ++g_tmp, tn = ++g_tmp;
   /* Float accumulation uses Kahan-Babuska-Neumaier compensation (matches
      CRuby's Array#sum), so it needs a running compensation temp plus
-     per-iteration x/t temps. Integer sums use none of them. */
-  int tc = -1, tx = -1, tt = -1;
-  if (acct == TY_FLOAT) { tc = ++g_tmp; tx = ++g_tmp; tt = ++g_tmp; }
+     per-iteration x/t temps. Integer sums use none of them. The shared step
+     now owns the per-iteration temporaries and the non-finite branches. */
+  int tc = -1;
+  if (acct == TY_FLOAT) tc = ++g_tmp;
   buf_printf(b, "({ sp_%sArray *_t%d = ", k, ta); emit_expr(c, recv, b);
   /* rooted the way the poly-accumulator arm above roots its receiver: the
      element is taken out of this temp on every turn and the block allocates
      in between */
   buf_printf(b, "; SP_GC_ROOT(_t%d); sp_int _t%d = sp_%sArray_length(_t%d); ", ta, tn, k, ta);
+  int tseed = -1;
+  if (float_int_seed && argc == 1) {
+    tseed = ++g_tmp;
+    buf_printf(b, "sp_int _t%d = ", tseed); emit_expr(c, argv[0], b); buf_puts(b, "; ");
+  }
   emit_ctype(c, acct, b); buf_printf(b, " _t%d = ", tacc);
   if (argc == 1) {
     Repr init_r = repr_of(c, argv[0]);
     TyKind init_t = init_r.as_ty;
     if (acct == TY_FLOAT && init_t == TY_INT) {
-      buf_puts(b, "(sp_float)("); emit_expr(c, argv[0], b); buf_puts(b, ")");
+      if (tseed >= 0) buf_printf(b, "(sp_float)_t%d", tseed);
+      else { buf_puts(b, "(sp_float)("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
     }
     else if (acct == TY_FLOAT && init_r.kind == RK_BOXED) {
       buf_puts(b, "sp_poly_to_f_or_nil("); emit_expr(c, argv[0], b); buf_puts(b, ")");
@@ -1971,7 +1975,7 @@ int emit_sum_block_expr(Compiler *c, int id, Buf *b) {
     g_pre = saved_pre;
     if (inner.p) buf_puts(b, inner.p);
     if (acct == TY_INT) {
-      buf_printf(b, "_t%d = sp_int_add(_t%d, %s)", tacc, tacc, valb.p ? valb.p : "0");
+      buf_printf(b, "_t%d = sp_int_add%s(_t%d, %s)", tacc, bn > 0 && nullable_int_value(c, bb[bn - 1]) ? "" : "_nn", tacc, valb.p ? valb.p : "0");
     }
     else if (acct == TY_STRING) {
       buf_printf(b, "_t%d = sp_str_concat(_t%d, %s)", tacc, tacc, valb.p ? valb.p : "\"\"");
@@ -1992,13 +1996,9 @@ int emit_sum_block_expr(Compiler *c, int id, Buf *b) {
         free(valb.p); memset(&valb, 0, sizeof valb);
         buf_printf(&valb, "_t%d", tv);
       }
-      /* KBN step: fold the low-order bits dropped by _tacc + _tx into _tc. */
-      buf_printf(b, "sp_float _t%d = %s; sp_float _t%d = _t%d + _t%d; "
-                    "if (fabs(_t%d) >= fabs(_t%d)) _t%d += (_t%d - _t%d) + _t%d; "
-                    "else _t%d += (_t%d - _t%d) + _t%d; _t%d = _t%d",
-                 tx, valb.p ? valb.p : "0.0", tt, tacc, tx,
-                 tacc, tx, tc, tacc, tt, tx,
-                 tc, tx, tt, tacc, tacc, tt);
+      /* Compensate finite additions and preserve Infinity and NaN. */
+      buf_printf(b, "sp_float_sum_step(&_t%d, &_t%d, %s)",
+                 tacc, tc, valb.p ? valb.p : "0.0");
     }
     free(inner.p); free(valb.p);
   }
@@ -2009,11 +2009,16 @@ int emit_sum_block_expr(Compiler *c, int id, Buf *b) {
      the concrete accumulator went into the boxed slot the method's return
      type declared (#3916). */
   {
-    char accn[48];
-    if (acct == TY_FLOAT) snprintf(accn, sizeof accn, "_t%d + _t%d", tacc, tc);
+    char accn[96];
+    if (acct == TY_FLOAT) snprintf(accn, sizeof accn, "(_t%d ? _t%d + _t%d : _t%d)", tn, tacc, tc, tacc);
     else snprintf(accn, sizeof accn, "_t%d", tacc);
     buf_puts(b, "; } ");
-    if (repr_of(c, id).kind == RK_BOXED) emit_boxed_text(c, acct, accn, b);
+    if (float_int_seed && repr_of(c, id).kind == RK_BOXED) {
+      buf_printf(b, "_t%d == 0 ? sp_box_int(", tn);
+      if (tseed >= 0) buf_printf(b, "_t%d", tseed); else buf_puts(b, "0");
+      buf_puts(b, ") : "); emit_boxed_text(c, acct, accn, b);
+    }
+    else if (repr_of(c, id).kind == RK_BOXED) emit_boxed_text(c, acct, accn, b);
     else buf_puts(b, accn);
     buf_puts(b, "; })");
   }
@@ -3132,8 +3137,13 @@ int emit_inject_expr(Compiler *c, int id, Buf *b) {
     buf_printf(b, "_t%d > 0 ? sp_%sArray_get(_t%d, 0) : %s", tn, k, ta, mt); start = 1;
   }
   buf_printf(b, "; for (sp_int _t%d = %d; _t%d < _t%d; _t%d++) _t%d = ", ti, start, ti, tn, ti, tacc);
-  if (ifn)
-    buf_printf(b, "%s(_t%d, sp_%sArray_get(_t%d, _t%d))", ifn, tacc, k, ta, ti);
+  if (ifn) {
+    if (is_add_sub_mul(op) &&
+        (init < 0 || int_value_plain(c, init)))
+      buf_printf(b, "(SP_MAY_NIL(_t%d) ? %s(_t%d, sp_%sArray_get(_t%d, _t%d)) : %s_nn(_t%d, sp_%sArray_get(_t%d, _t%d)))",
+                 ta, ifn, tacc, k, ta, ti, ifn, tacc, k, ta, ti);
+    else buf_printf(b, "%s(_t%d, sp_%sArray_get(_t%d, _t%d))", ifn, tacc, k, ta, ti);
+  }
   /* String#+'s nil checks, inline: a nil accumulator raises NoMethodError
      and a nil element TypeError, as CRuby's do, where sp_str_concat reads a
      nil as "" */

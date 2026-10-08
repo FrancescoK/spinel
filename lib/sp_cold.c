@@ -14,6 +14,7 @@
 #define _GNU_SOURCE   /* statx / STATX_BTIME for File.birthtime on Linux */
 #endif
 #include <stddef.h>
+#include <stdint.h>
 #include <string.h>
 #include <strings.h>
 #include <stdio.h>
@@ -4296,11 +4297,15 @@ const char *sp_str_gsub_str_str_hash(const char *str, const char *pat, sp_StrStr
 /* Array#sum with a String initial value: concatenation fold ("abc" from
    ["a","b","c"].sum("")), CRuby's + on each element. */
 const char *sp_StrArray_sum_str(sp_StrArray *a, const char *init) {SP_GC_ROOT(a);SP_GC_ROOT_STR(init);
-  size_t n = init ? strlen(init) : 0;
-  if (a) for (sp_int i = 0; i < a->len; i++) if (a->data[i]) n += strlen(a->data[i]);
+  size_t n = init ? sp_str_byte_len(init) : 0;
+  if (a) for (sp_int i = 0; i < a->len; i++) if (a->data[i]) {
+    size_t len = sp_str_byte_len(a->data[i]);
+    if (len > SIZE_MAX - n) sp_oom_die();
+    n += len;
+  }
   char *r = sp_str_alloc(n); size_t o = 0;
-  if (init) { memcpy(r, init, strlen(init)); o = strlen(init); }
-  if (a) for (sp_int i = 0; i < a->len; i++) if (a->data[i]) { size_t l = strlen(a->data[i]); memcpy(r + o, a->data[i], l); o += l; }
+  if (init) { o = sp_str_byte_len(init); memcpy(r, init, o); }
+  if (a) for (sp_int i = 0; i < a->len; i++) if (a->data[i]) { size_t l = sp_str_byte_len(a->data[i]); memcpy(r + o, a->data[i], l); o += l; }
   r[o] = 0; sp_str_set_len(r, o); return r;
 }
 sp_RbVal sp_StrArray_uniq_bangq(sp_StrArray *a) {SP_GC_ROOT(a);

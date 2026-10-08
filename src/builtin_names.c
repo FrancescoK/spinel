@@ -272,6 +272,8 @@ int is_each_window(const char *n) {
   return sp_streq(n, "each_cons") || sp_streq(n, "each_slice");
 }
 
+int is_sum_name(const char *n) { return n && sp_streq(n, "sum"); }
+
 int is_reduce_alias(const char *n) {
   return sp_streq(n, "inject") || sp_streq(n, "reduce");
 }

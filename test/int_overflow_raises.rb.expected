@@ -4,3 +4,9 @@
 plus: caught integer overflow in +
 minus: caught integer overflow in -
 mul: caught integer overflow in *
+[RangeError, "integer overflow in +"]
+[RangeError, "integer overflow in +"]
+[RangeError, "integer overflow in +"]
+[RangeError, "integer overflow in +"]
+[RangeError, "integer overflow in +"]
+[RangeError, "integer overflow in +"]
