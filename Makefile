@@ -1944,6 +1944,7 @@ gc-phases-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SPINEL_TIMEOUT)
 GC_STRESS_TESTS := test/gc_root_frame_slots.rb \
                    test/symbol_intern_fresh_string_root.rb \
                    test/gc_minor_byref_lent_slot.rb \
+                   test/string_range_walk_answer.rb \
                    test/struct_values_fresh_receiver_root.rb \
                    test/hash_splat_to_a.rb \
                    test/proc_cell_capture_marked.rb \

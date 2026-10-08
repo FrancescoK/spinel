@@ -4514,6 +4514,9 @@ int iter_recv_bind_once(Compiler *c, int node) {
   buf_printf(g_pre, " _t%d = %s;", t, ob.p ? ob.p : "");
   free(ob.p);
   if (needs_root(ot)) buf_printf(g_pre, ot == TY_POLY ? " SP_GC_ROOT_RBVAL(_t%d);" : " SP_GC_ROOT(_t%d);", t);
+  /* a String Range is held by value: its two ends are what the walk must
+     keep, the binding being read again as the answer after it */
+  else if (ot == TY_STR_RANGE) { buf_puts(g_pre, " "); emit_gc_root_tmp_refs(c, ot, t, g_pre); }
   buf_puts(g_pre, "\n");
   view_bind(node, "_t%d", t);
   return 1;
@@ -4615,6 +4618,8 @@ int emit_iter_value_expr(Compiler *c, int id, Buf *b) {
      for arrays, hashes and objects (it asks how a value is RETURNED, not
      whether it is collectable), so this rooted almost nothing. */
   if (needs_root(rt)) buf_printf(b, rt == TY_POLY ? "SP_GC_ROOT_RBVAL(_t%d); " : "SP_GC_ROOT(_t%d); ", ta);
+  /* a String Range is held by value: its two ends */
+  else if (rt == TY_STR_RANGE) { emit_gc_root_tmp_refs(c, rt, ta, b); buf_puts(b, " "); }
   buf_puts(b, body.p ? body.p : "");
   free(body.p);
   /* yield the original Enumerable receiver, not the intermediate member array:
