@@ -977,6 +977,7 @@ int is_nil_method(const char *n) {
   return 0;
 }
 
+int is_io_read(const char *n) { return n && sp_streq(n, "read"); }
 int is_positional_io(const char *n) {
   return sp_streq(n, "pread") || sp_streq(n, "pwrite");
 }

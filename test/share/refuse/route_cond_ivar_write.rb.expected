@@ -1,1 +1,0 @@
-spinel: test/share/refuse/route_cond_ivar_write.rb:5: under --share-strings, the String a conditional's value hands on as a variable's write is shared with another name and changed in place, and that route cannot carry the shared handle yet: it would hand on a copy (#6765)

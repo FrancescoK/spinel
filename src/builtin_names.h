@@ -122,6 +122,7 @@ int is_bivar_keyed_class(const char *n);  /* Array Hash Random */
 int is_string_class_name(const char *n);   /* String */
 int is_frozen_value_class(const char *n); /* Integer Float Symbol NilClass TrueClass FalseClass Range */
 int is_nonblock_io(const char *n); /* read_nonblock write_nonblock */
+int is_io_read(const char *n); /* read */
 
 int is_mul_or_pow(const char *n); /* * ** */
 int is_unary_sign(const char *n); /* +@ -@ */

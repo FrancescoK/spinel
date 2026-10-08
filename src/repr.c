@@ -157,6 +157,7 @@ int repr_call_returns_handle(Compiler *c, int v) {
   /* a String's value, or one the pickup marks to be stored as the handle */
   TyKind t = c->ntype[v];
   if (t != TY_STRING && !(t == TY_STRBUF && c->strbuf_box[v])) return 0;
+  if (strbuf_io_outbuf(c, v) >= 0) return 1;
   /* a Method's call: the method `method(:m)` names */
   int recv = nt_ref(nt, v, "receiver");
   const char *nm = nt_str(nt, v, "name");
@@ -231,6 +232,14 @@ static int repr_strbuf_src(const Compiler *c, int node, TyKind t) {
   if (t == TY_STRING) {
     /* a global holding the handle (--share-strings): its read boxes it */
     if (repr_static_read_kind(k)) return repr_static_share(c, node) ? RS_HANDLE : RS_NONE;
+    /* An ivar promoted after the node types settled still reads as
+       String here. Its box carries the shared slot's handle too. */
+    if (c->share_strings && k == NK_InstanceVariableReadNode) {
+      const char *nm = nt_str(nt, node, "name");
+      int cid = nm ? strbuf_ivar_owner(mc, node) : -1;
+      int iv = cid >= 0 ? comp_ivar_index(&c->classes[cid], nm) : -1;
+      return iv >= 0 && repr_of_ivar(c, cid, iv).share ? RS_HANDLE : RS_NONE;
+    }
     /* a write in value position whose slot holds the handle the rule
        assigned: its value is that slot, as the slot's read is */
     if (repr_write_share(c, node)) return RS_HANDLE;

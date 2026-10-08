@@ -158,6 +158,8 @@ int strbuf_call_picks_up(Compiler *c, int id);
 int strbuf_self_reader_handle(Compiler *c, int id);
 int strbuf_call_reads_handle(Compiler *c, int recv);
 const NativeMethod *strbuf_native_answer(Compiler *c, int n);
+int strbuf_io_outbuf(Compiler *c, int id);
+int emit_strbuf_io_read(Compiler *c, int id, Buf *b);
 int emit_bang_self_handle(Compiler *c, int v, Buf *b);
 int strbuf_chain_over_handle(Compiler *c, int v);
 int strbuf_narrowed_box_mutator(Compiler *c, int id);

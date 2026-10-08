@@ -1348,6 +1348,13 @@ static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int 
       return b;
     }
     return -1;
+  case BSH_FILL2:
+    if (argc >= 3) {
+      int b = sh_val(F, c, argv[2]);
+      sh_mark_at(F, b, SHF_MUT | (sh_holder_read(nt, argv[2]) ? 0 : SHF_INDIRECT), n);
+      return b;
+    }
+    return -1;
   case BSH_ITER: case BSH_ITER_SEL: case BSH_ITER_FIND:
     if (lit_blk) sh_iter_params(F, c, blk, sh_elem(F, rv), container == 2);
     return share == BSH_ITER_FIND ? (argc >= 1 ? rv : sh_elem(F, rv)) : rv;
@@ -2514,6 +2521,9 @@ static int sh_lendable(ShareFacts *F, Compiler *c, int p) {
    could be named elsewhere), or what the walk does not follow. A method no
    caller reads (sh_settle_reads) hands its value to nobody: its returns
    join nothing. */
+static int sh_return_owned(const ShareFacts *F, int r, int mi) {
+  return r >= 0 && F->lsc[r] == mi && F->elem[r] < 0 && !(F->flags[r] & SHF_UNKNOWN);
+}
 static int sh_settle_rets(ShareFacts *F) {
   int any = 0;
   for (int changed = 1; changed; ) {
@@ -2521,7 +2531,7 @@ static int sh_settle_rets(ShareFacts *F) {
     for (int i = 0; i < F->nret; i++) {
       if (F->ret_done[i] || (F->mread && !F->mread[F->ret_m[i]])) continue;
       int r = sh_find(F, F->ret_v[i]);
-      if (F->lsc[r] == F->ret_m[i] && F->elem[r] < 0 && !(F->flags[r] & SHF_UNKNOWN)) continue;
+      if (sh_return_owned(F, r, F->ret_m[i])) continue;
       sh_union(F, sh_scope_holder(F, SHK_RET, F->ret_m[i]), F->ret_v[i]);
       F->ret_joined[F->ret_m[i]] = 1;
       F->ret_done[i] = 1;
@@ -3438,6 +3448,12 @@ int share_elem_holder(const Compiler *c, int h) { return share_elem_holder_root(
 
 
 static int sh_node_root(const ShareFacts *F, int n, int elems);
+/* The same ownership fact that keeps a method's local String returns
+   apart from its borrowed returns. This is a return-tail fact: a local
+   read elsewhere is still the local's own String, not a fresh value. */
+int share_return_owned(const Compiler *c, int n, int mi) {
+  return c->share && mi > 0 && sh_return_owned(c->share, sh_node_root(c->share, n, 0), mi);
+}
 int share_node_fresh(const Compiler *c, int n) {
   const ShareFacts *F = c->share;
   if (!F || n < 0 || n >= F->nnodes || F->nval[n] != -1) return 0;
@@ -3744,6 +3760,9 @@ static int sh_bang_self_slot(const Compiler *c, int v) {
 /* Does node n hand over the shared handle (or a box holding it), not a
    copy of its bytes? */
 static int sh_carries_handle(const Compiler *c, int n) {
+  /* The return route takes the handle its callee publishes, including
+     when a borrowed parameter is returned beside a method-owned String. */
+  if (repr_call_returns_handle((Compiler *)c, n)) return 1;
   Repr r = repr_of(c, n);
   /* a bang method on a handle local: a write hands over the local's handle
      (emit_strbuf_value) */

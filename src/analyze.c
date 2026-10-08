@@ -18551,6 +18551,7 @@ static int an_tail_param_arg(Compiler *c, RetHandles *R, int call, int mi, TailC
    the return channel. Count it with the pickup's own tail predicate. */
 static int an_tail_handle(Compiler *c, RetHandles *R, int n, TailCount *tc) {
   const NodeTable *nt = c->nt;
+  if (share_return_owned(c, n, tc->mi)) { tc->fresh++; return 1; }
   if (an_tail_is_shared_handle(c, n, 1, tc, R)) return 1;
   if (R->fresh && an_tail_param(c, n, tc)) return 1;
   NodeKind k = n >= 0 ? nt_kind(nt, n) : NK_NONE;

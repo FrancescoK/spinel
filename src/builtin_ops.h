@@ -328,6 +328,7 @@ typedef enum {
   BSH_ARGS,       /* answers its one argument, or an Array of several (p) */
   BSH_ARRAY_OF,   /* answers its Array argument, or an Array holding it (Array()) */
   BSH_FILL1,      /* writes into its second argument in place (IO#read(n, buf)) */
+  BSH_FILL2,      /* writes into and answers its third argument (IO#pread) */
   /* the iterators' answers, BSH_ITER to BSH_ITER_THEN, stay together
      (iter_rows_check reads the run) */
   BSH_ITER,       /* block parameters bind elements; answers the receiver (each) */

@@ -184,6 +184,7 @@ int share_builtin_fresh(Compiler *c, int call);
    element read of a temporary container of new Strings (an Array literal of
    them, `map(&:to_s)` over Symbols)? depth: 0 from a caller. */
 int share_value_fresh(Compiler *c, int n, int depth);
+int share_return_owned(const Compiler *c, int n, int mi);
 /* Is node n a container literal a builtin only reads and keeps none of
    (`puts [a, b]`)? */
 int share_node_peeked(const Compiler *c, int n);

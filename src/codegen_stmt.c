@@ -1432,6 +1432,7 @@ static int strbuf_stmts_tail_plain(Compiler *c, int st) {
   int n = 0;
   const int *b = st >= 0 && nt_kind(c->nt, st) == NK_StatementsNode ? nt_arr(c->nt, st, "body", &n) : NULL;
   if (n == 0) return 0;
+  if (strbuf_native_answer(c, b[n - 1])) return 1;
   NodeKind k = nt_kind(c->nt, b[n - 1]);
   const char *nm = k == NK_CallNode ? nt_str(c->nt, b[n - 1], "name") : NULL;
   if (nm && is_raise_alias(nm) && nt_ref(c->nt, b[n - 1], "receiver") < 0 &&
@@ -1511,6 +1512,9 @@ static int strbuf_route_inline_call(Compiler *c, int v) {
   int mi = call_user_yield_mi(c, v);
   int last = mi > 0 ? scope_body_last(c, mi) : -1;
   if (last < 0) return 0;
+  /* A literal block selects this existing call-specific tail. */
+  int bl = block_given_tail_then_last(c, last);
+  if (bl >= 0) last = bl;
   NodeKind k = nt_kind(nt, last);
   return (k == NK_YieldNode || k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode ||
           repr_static_read_kind(k)) &&
@@ -1602,6 +1606,7 @@ static int strbuf_route_carries(Compiler *c, int v, int depth) {
    the String every other name of its class holds. */
 int emit_strbuf_route(Compiler *c, int v, Buf *b) {
   const NodeTable *nt = c->nt;
+  if (emit_strbuf_io_read(c, unwrap_parens(c, v), b)) return 1;
   if (strbuf_route_reader(c, v)) {
     v = unwrap_parens(c, v);
     int sv = view_push_repr(c, v, VR_HANDLE_DEMAND, 1);
@@ -8553,6 +8558,12 @@ static int call_names_only_void_methods(Compiler *c, int node) {
   return any;
 }
 static void emit_tail_value_1(Compiler *c, int node, Buf *b);
+static void emit_fresh_tail_value(Compiler *c, int node, Buf *b) {
+  int t = ++g_tmp;
+  buf_printf(b, "({ const char *_t%d = ", t);
+  emit_tail_value_1(c, node, b);
+  buf_printf(b, "; _sp_ret_strbuf = NULL; _t%d; })", t);
+}
 /* --share-strings: a method a deep-return pickup takes the value of, one of
    whose tails answers a fresh String (ret_pub_fresh): that tail clears the
    side channel after its value, which a read of a handle inside it may have
@@ -8560,15 +8571,16 @@ static void emit_tail_value_1(Compiler *c, int node, Buf *b);
    handle. A user call returning only its own fresh Strings clears it too. */
 static void emit_tail_value(Compiler *c, int node, Buf *b) {
   Scope *ts = g_ret_type == TY_STRING && !g_result_var ? comp_scope_of(c, node) : NULL;
+  if (ts && ts->ret_pub_fresh && share_return_owned(c, an_unparen(c->nt, node), (int)(ts - c->scopes))) {
+    emit_fresh_tail_value(c, node, b);
+    return;
+  }
   if (!ts || !ts->ret_pub_fresh ||
       !(share_node_fresh(c, an_unparen(c->nt, node)) || share_call_fresh(c, an_unparen(c->nt, node)))) {
     emit_tail_value_1(c, node, b);
     return;
   }
-  int t = ++g_tmp;
-  buf_printf(b, "({ const char *_t%d = ", t);
-  emit_tail_value_1(c, node, b);
-  buf_printf(b, "; _sp_ret_strbuf = NULL; _t%d; })", t);
+  emit_fresh_tail_value(c, node, b);
 }
 static void emit_tail_value_1(Compiler *c, int node, Buf *b) {
   /* A poly tail slot (a poly return, or a poly result var -- e.g. an inlined
@@ -12586,6 +12598,9 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
       char srefW[1024];
       if (vty && sp_streq(vty, "NilNode")) buf_puts(b, "NULL");
       else if (strbuf_slot_ref(c, v, srefW, sizeof srefW)) buf_puts(b, srefW);
+      /* A conditional into the shared slot takes each arm's handle. */
+      else if (repr_share_rule(c) && strbuf_cond_has_handle_leaf(c, v, 0))
+        emit_strbuf_ivar_store(c, 1, v, b);
       /* a write whose slot holds the rule's handle: that handle */
       else if (emit_strbuf_write_handle(c, v, b)) { }
       /* a route that hands on one (`@iv = s.then { |v| v }`) */
@@ -17421,6 +17436,8 @@ static int strbuf_flow_route(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, in
   if (strbuf_route_inline_call(c, v)) {
     int mi = call_user_yield_mi(c, v);
     int last = mi > 0 ? scope_body_last(c, mi) : -1;
+    int bl = block_given_tail_then_last(c, last);
+    if (bl >= 0) last = bl;
     /* a method that answers its own variable hands on that slot; one that
        answers its yield, the block's value */
     if (last >= 0 && nt_kind(nt, last) != NK_YieldNode) return 1;
@@ -17576,6 +17593,9 @@ static int strbuf_flow_value(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, in
   /* a native binding answering the String its object keeps: its handle
      form (strbuf_slot_ref's first arm) */
   if ((ctx == SFC_ALIAS || ctx == SFC_SPLICE || ctx == SFC_ARG) && strbuf_native_answer(c, v)) return 1;
+  /* A demanded tail uses emit_strbuf_handle_of, whose slot read takes
+     the native answer's handle too. */
+  if (ctx == SFC_TAIL && strbuf_native_answer(c, v)) return 1;
   if (k == NK_IfNode || k == NK_UnlessNode || k == NK_OrNode || k == NK_AndNode || k == NK_CaseNode ||
       k == NK_StatementsNode || k == NK_ElseNode || k == NK_ParenthesesNode) {
     /* emit_strbuf_value takes a conditional arm by arm only when one of its
@@ -17654,6 +17674,8 @@ int strbuf_flow_carries(Compiler *c, StrbufFlowMemo *fm, int kind, int site, int
     /* a boxed slot takes its value through emit_boxed, as an element does */
     HolderRef h;
     if (holder_of_node(c, site, &h) && h.r.kind == RK_BOXED) ctx = SFC_ELEM;
+    else if (sk == NK_InstanceVariableWriteNode && repr_write_share(c, site) &&
+             strbuf_cond_has_handle_leaf(c, v, 0)) ctx = SFC_ALIAS;
     else ctx = sk == NK_LocalVariableWriteNode || sk == NK_GlobalVariableWriteNode || sk == NK_ClassVariableWriteNode ||
                sk == NK_ConstantWriteNode || sk == NK_ConstantPathWriteNode ? SFC_ALIAS : SFC_SLOT;
     break;
