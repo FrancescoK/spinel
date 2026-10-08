@@ -20691,6 +20691,34 @@ static int poly_var_appended(Compiler *c, SbMutTab *lifted, const char *vn, Scop
   signed char *v = sb_mut_tab_slot(lifted, vn, (int)(vs - c->scopes), 0);
   return v && *v == 1;
 }
+/* Is the variable read `r` (an ivar, class or global variable) the one
+   written as `in` in the same place: one class's ivar or class variable,
+   or the global? */
+static int poly_store_same_var(Compiler *c, int r, NodeKind rk, const char *in, int ci) {
+  const NodeTable *nt = c->nt;
+  if (nt_kind(nt, r) != rk) return 0;
+  const char *rn = nt_str(nt, r, "name");
+  if (!rn || !sp_streq(rn, in)) return 0;
+  if (rk == NK_GlobalVariableReadNode) return 1;
+  Scope *rs = comp_scope_of(c, r);
+  if (!rs || rs->class_id != ci) return 0;
+  return rk == NK_ClassVariableReadNode || !rs->is_cmethod;
+}
+/* Does the program append in place to POLY variable `in` (an ivar or class
+   variable of class `ci`, or a global) -- a read of it is a String
+   mutator's receiver, or is lifted for a parameter appended to
+   (lift_poly_read)? */
+static int poly_store_appended(Compiler *c, NodeKind rk, const char *in, int ci) {
+  const NodeTable *nt = c->nt;
+  NT_FOREACH_KIND(nt, rk, r)
+    if (c->poly_strbuf_lift[r] && poly_store_same_var(c, r, rk, in, ci) && comp_ntype(c, r) == TY_POLY) return 1;
+  NT_FOREACH_KIND(nt, NK_CallNode, u) {
+    int r = nt_ref(nt, u, "receiver");
+    if (r < 0 || !an_str_mutator_name(nt_str(nt, u, "name"))) continue;
+    if (poly_store_same_var(c, r, rk, in, ci) && comp_ntype(c, r) == TY_POLY) return 1;
+  }
+  return 0;
+}
 /* Lift read `a` of a POLY variable that can hold a String (poly_strbuf_lift);
    a method's own parameter read so is appended to as well, and its callers
    are pulled in on the next round (convert_byref_handle_params). */
@@ -20793,6 +20821,26 @@ static int lift_poly_alias_reads(Compiler *c, const HandleArgTab *hat) {
         v = nt_ref(nt, v, "value");
       }
       if (!poly || !app || v < 0 || v == w) continue;
+      if (lift_poly_read(c, hat, &lifted, v)) round = changed = 1;
+    }
+    /* `@s = x` (or `@@s`, `$s`) where the program appends to that variable
+       (`@s << y`, or a read of it lifted for a parameter appended to): the
+       variable is another name for x's String, as `y = x` is, so x is
+       lifted and a parameter x pulls its callers in. Left as a copy, the
+       append landed in the variable's String only, the caller's never saw
+       it, and nothing refused. */
+    static const NodeKind skinds[3][2] = {
+      { NK_InstanceVariableWriteNode, NK_InstanceVariableReadNode },
+      { NK_ClassVariableWriteNode, NK_ClassVariableReadNode },
+      { NK_GlobalVariableWriteNode, NK_GlobalVariableReadNode } };
+    for (int sk = 0; sk < 3; sk++) NT_FOREACH_KIND(nt, skinds[sk][0], w) {
+      int v = nt_ref(nt, w, "value");
+      const char *in = nt_str(nt, w, "name");
+      Scope *ws = comp_scope_of(c, w);
+      if (v < 0 || !in || !ws || nt_kind(nt, v) != NK_LocalVariableReadNode || c->poly_strbuf_lift[v]) continue;
+      int ci = ws->class_id;
+      if (sk < 2 && ci < 0) continue;
+      if (!poly_store_appended(c, skinds[sk][1], in, ci)) continue;
       if (lift_poly_read(c, hat, &lifted, v)) round = changed = 1;
     }
     /* `def yl(v) = yield(v)` called `yl(x) { |t| t << s }`: the block's
