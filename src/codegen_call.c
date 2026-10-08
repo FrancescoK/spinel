@@ -1483,14 +1483,16 @@ int emit_reopen_arm_test(Compiler *c, int kmi, const char *name, const char *cls
 /* Class-only targets need this dispatch when the name also has builtin
    arms. Other class calls keep emit_unresolved_call's argument ordering.
    That path already serves a boxed result, unless an IO operation claims
-   the call first; ask the operation row at this call's arity. */
+   the call first; ask the operation row at this call's arity. Stat fields
+   already defer to class methods in the boxed IO arm. */
 static int poly_cmethod_collision(Compiler *c, int id, const char *name) {
   if (!cplan_boxed_cmethod(c, id, name)) return 0;
   int argc;
   call_args(c->nt, id, &argc);
   Repr r = repr_of(c, id);
   return (r.as_ty != TY_POLY && r.as_ty != TY_UNKNOWN) ||
-         bop_find(TY_IO, name, argc, nt_ref(c->nt, id, "block") >= 0);
+         (!boxed_stat_name(name) &&
+          bop_find(TY_IO, name, argc, nt_ref(c->nt, id, "block") >= 0));
 }
 
 static void emit_poly_splat_arity(Compiler *c, int id, Scope *ms, int sa, int st,
