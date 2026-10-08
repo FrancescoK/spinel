@@ -1721,7 +1721,10 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
     int ntok = strbuf_jump_views(c, nt_ref(nt, nt_ref(nt, v, "block"), "body"), NK_BreakNode, tok, 0, 64);
     if (ntok < 0) return 0;
     int sv = view_push_repr(c, v, VR_HANDLE_DEMAND, 1);
+    /* A loop already typed as STRBUF also needs its handle read face. */
+    int sb = view_push_repr(c, v, VR_STRBUF_BOX, 1);
     emit_expr(c, v, b);
+    view_pop(c, sb);
     view_pop(c, sv);
     strbuf_jump_views_pop(c, tok, ntok);
     return 1;
