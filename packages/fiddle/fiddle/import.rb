@@ -13,6 +13,8 @@
 # for there (and a bare call, in a class that includes the module, through
 # the registry). struct, union, value and bind -- which build classes and
 # methods from data -- are not provided.
+# The registry keeps the receiver: an including instance has no function
+# table unless it supplies its own, just as with CRuby's module functions.
 require "fiddle"
 
 module Fiddle
@@ -188,7 +190,11 @@ module Fiddle
 
   class Function
     # how FFI__Registry's bare-call dispatch invokes a function
-    def invoke(args, blk = nil) = call(*args)
+    def __ffi_invoke(args, blk, receiver)
+      fns = receiver.instance_variable_get(:@func_map)
+      raise NoMethodError, "undefined method '[]' for nil" if fns.nil?
+      fns[@name.to_s].call(*args)
+    end
   end
 
   module Importer
@@ -253,7 +259,8 @@ module Fiddle
       opt = parse_bind_options(opts)
       f = import_function(symname, ctype, argtype, opt[:call_type])
       name = symname.gsub(/@.+/, "")
-      @func_map[name.to_sym] = f
+      # Keep the key a String while the parser's tuple is still untyped.
+      @func_map[name.to_s] = f
       ::FFI__Registry.__add(self, name.to_sym, f)
       f
     end
@@ -272,14 +279,14 @@ module Fiddle
 
     def __ffi_call(name, args, blk = nil, &b)
       fns = @func_map
-      f = fns ? fns[name] : nil
+      f = fns ? fns[name.to_s] : nil
       raise NoMethodError, "undefined method '#{name}' for #{self}" unless f
       f.call(*args)
     end
 
     def __ffi_attached?(name)
       fns = @func_map
-      fns ? fns.key?(name.to_sym) : false
+      fns ? fns.key?(name.to_s) : false
     end
 
     def parse_bind_options(opts)
