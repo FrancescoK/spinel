@@ -14660,25 +14660,36 @@ static void reject_runtime_send(Compiler *c) {
    receiver already, so it checks Time's own class-method chain instead --
    an unrelated class's `parse` elsewhere in the program must not silence
    the limit on a genuine `Time.parse` call (CodeRabbit, #24). */
+/* Is call `id` a builtin Time.parse / Time.strptime (not a program's own)?
+   Answers the refusal's words in msg when it is. */
+int time_parse_refusal(Compiler *c, int id, char *msg, size_t cap) {
+  const char *name = nt_str(c->nt, id, "name");
+  if (!name || (!sp_streq(name, "parse") && !sp_streq(name, "strptime"))) return 0;
+  int recv = nt_ref(c->nt, id, "receiver");
+  if (recv < 0) return 0;
+  const char *rty = nt_type(c->nt, recv);
+  if (!rty || !sp_streq(rty, "ConstantReadNode")) return 0;
+  const char *rn = nt_str(c->nt, recv, "name");
+  if (!rn || !sp_streq(rn, "Time")) return 0;
+  int time_ci = comp_class_index(c, "Time");
+  if (time_ci >= 0 && comp_cmethod_in_chain(c, time_ci, name, NULL) >= 0) return 0;
+  snprintf(msg, cap,
+           "Time.%s is not supported: spinel implements Time's other `require "
+           "\"time\"` additions (iso8601, httpdate, rfc2822) but not the "
+           "string-parsing ones. Store times as epoch seconds and read them with "
+           "Time.at instead (see docs/limitations.md)", name);
+  return 1;
+}
+
+/* Under --defer-refusals the call is refused where it is emitted instead
+   (emit_call_builtin_cmethod_arms), inside the per-method probe that defers
+   it: refused here, ahead of emission, it stopped the build of a program
+   that only names it -- one that never runs that line. */
 static void reject_time_parse(Compiler *c) {
+  if (defer_refusals()) return;
   NT_FOREACH_KIND(c->nt, NK_CallNode, id) {
-    const char *name = nt_str(c->nt, id, "name");
-    if (!name || (!sp_streq(name, "parse") && !sp_streq(name, "strptime"))) continue;
-    int recv = nt_ref(c->nt, id, "receiver");
-    if (recv < 0) continue;
-    const char *rty = nt_type(c->nt, recv);
-    if (!rty || !sp_streq(rty, "ConstantReadNode")) continue;
-    const char *rn = nt_str(c->nt, recv, "name");
-    if (!rn || !sp_streq(rn, "Time")) continue;
-    int time_ci = comp_class_index(c, "Time");
-    if (time_ci >= 0 && comp_cmethod_in_chain(c, time_ci, name, NULL) >= 0) continue;
     char msg[320];
-    snprintf(msg, sizeof msg,
-             "Time.%s is not supported: spinel implements Time's other `require "
-             "\"time\"` additions (iso8601, httpdate, rfc2822) but not the "
-             "string-parsing ones. Store times as epoch seconds and read them with "
-             "Time.at instead (see docs/limitations.md)", name);
-    unsupported_feature(c, id, msg);
+    if (time_parse_refusal(c, id, msg, sizeof msg)) unsupported_feature(c, id, msg);
   }
 }
 

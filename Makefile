@@ -1199,7 +1199,8 @@ defer-refusals-test: $(SPINEL)
 	@ok=1; tmp=$$(mktemp -d /tmp/spinel-defer.XXXXXX); \
 	for spec in "deferred_refusals:2:top NotImplementedError true done " \
 	            "deferred_refusal_class_body:1:before " \
-	            "deferred_refusal_lowered_method:1:3 30 "; do \
+	            "deferred_refusal_lowered_method:1:3 30 " \
+	            "deferred_time_parse:2:start true after "; do \
 	  t=test/defer/$${spec%%:*}.rb; rest=$${spec#*:}; n=$${rest%%:*}; want=$${rest#*:}; \
 	  if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/p.c" >"$$tmp/p.out" 2>&1; then \
 	    echo "defer-refusals-test: FAIL ($$t compiled without the flag)"; ok=0; fi; \
