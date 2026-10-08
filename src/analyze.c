@@ -30753,6 +30753,83 @@ static int sd_is_string(NodeTable *nt, int recv) {
   return sd_call(nt, "is_a?", nt_clone_subtree(nt, recv), &k, 1);
 }
 
+static const char *const kwb_rows[][3] = {
+  { "lines", "chomp", "FalseNode" }, { "each_line", "chomp", "FalseNode" }, { "readlines", "chomp", "FalseNode" },
+  { "readline", "chomp", "FalseNode" }, { "gets", "chomp", "FalseNode" }, { "unpack", "offset", "IntegerNode" },
+  { "unpack1", "offset", "IntegerNode" }, { "clone", "freeze", "NilNode" }, { NULL, NULL, NULL } };
+static int kwb_is(const char *a, const char *b) { return a && sp_streq(a, b); }
+static int kwb_row(const char *name) {
+  for (int i = 0; name && kwb_rows[i][0]; i++) if (sp_streq(name, kwb_rows[i][0])) return i;
+  return -1;
+}
+static int kwb_explicit(NodeTable *nt, int row, int h) {
+  int key = nt_new_node(nt, "SymbolNode");
+  nt_node_set_str(nt, key, "value", kwb_rows[row][1]);
+  int fa[2] = { nt_clone_subtree(nt, key), nt_new_node(nt, kwb_rows[row][2]) };
+  if (nt_kind(nt, fa[1]) == NK_IntegerNode) nt_node_set_int(nt, fa[1], "value", 0);
+  int as = nt_new_node(nt, "AssocNode");
+  nt_node_set_ref(nt, as, "key", key);
+  nt_node_set_ref(nt, as, "value", sd_call(nt, "fetch", nt_clone_subtree(nt, h), fa, 2));
+  int kh = nt_new_node(nt, "KeywordHashNode");
+  nt_node_set_arr(nt, kh, "elements", &as, 1);
+  return kh;
+}
+static void kwb_clone_split(NodeTable *nt, int call) {
+  int an = nt_ref(nt, call, "arguments"), n = 0, en = 0;
+  const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &n) : NULL;
+  if (!kwb_is(nt_str(nt, call, "name"), "clone") || n != 1 || nt_kind(nt, av[0]) != NK_KeywordHashNode) return;
+  const int *el = nt_arr(nt, av[0], "elements", &en);
+  if (en != 1 || nt_kind(nt, el[0]) != NK_AssocNode) return;
+  int key = nt_ref(nt, el[0], "key"), v = nt_ref(nt, el[0], "value");
+  NodeKind vk = nt_kind(nt, v);
+  if (nt_kind(nt, key) != NK_SymbolNode || !kwb_is(nt_str(nt, key, "value"), "freeze")) return;
+  if (!(vk == NK_LocalVariableReadNode || vk == NK_InstanceVariableReadNode ||
+        (vk == NK_CallNode && kwb_is(nt_str(nt, v, "name"), "fetch") &&
+         nt_kind(nt, nt_ref(nt, v, "receiver")) == NK_LocalVariableReadNode))) return;
+  int bare = nt_clone_subtree(nt, call), arms[2];
+  nt_node_set_ref(nt, bare, "arguments", -1);
+  for (int i = 0; i < 2; i++) {
+    arms[i] = nt_clone_subtree(nt, call);
+    int m = 0, e2n = 0;
+    int kh = nt_arr(nt, nt_ref(nt, arms[i], "arguments"), "arguments", &m)[0];
+    int as = nt_arr(nt, kh, "elements", &e2n)[0];
+    int lit = nt_new_node(nt, i ? "FalseNode" : "TrueNode");
+    nt_node_set_ref(nt, as, "value", lit);
+  }
+  int tn = nt_new_node(nt, "TrueNode"), fn = nt_new_node(nt, "FalseNode");
+  int kc = nt_new_node(nt, "ConstantReadNode");
+  nt_node_set_str(nt, kc, "name", "ArgumentError");
+  int cn = sd_call(nt, "to_s", sd_call(nt, "class", nt_clone_subtree(nt, v), NULL, 0), NULL, 0);
+  int ra[2] = { kc, sd_call(nt, "+", sd_str(nt, "unexpected value for freeze: "), &cn, 1) };
+  int rz = sd_call(nt, "raise", -1, ra, 2);
+  int ifn = sd_if(nt, sd_call(nt, "nil?", nt_clone_subtree(nt, v), NULL, 0), bare,
+                  sd_if(nt, sd_call(nt, "==", nt_clone_subtree(nt, v), &tn, 1), arms[0],
+                        sd_if(nt, sd_call(nt, "==", nt_clone_subtree(nt, v), &fn, 1), arms[1], rz)));
+  nt_swap_nodes(nt, call, ifn);
+}
+static void desugar_builtin_kwsplat(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, nd = 0;
+  const int *defs = nt_nodes_of_kind(nt, NK_DefNode, &nd);
+  int dn[4096], ndn = 0;
+  for (int i = 0; i < nd && ndn < 4096; i++) dn[ndn++] = defs[i];
+  for (int id = 0; id < n0; id++) {
+    int row = nt_kind(nt, id) == NK_CallNode ? kwb_row(nt_str(nt, id, "name")) : -1;
+    for (int i = 0; row >= 0 && i < ndn; i++) if (kwb_is(nt_str(nt, dn[i], "name"), kwb_rows[row][0])) row = -1;
+    int an = row >= 0 ? nt_ref(nt, id, "arguments") : -1, n = 0, en = 0, args[16];
+    const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &n) : NULL;
+    if (n < 1 || n > 16 || nt_kind(nt, av[n - 1]) != NK_KeywordHashNode) continue;
+    for (int i = 0; i < n; i++) args[i] = av[i];
+    const int *el = nt_arr(nt, args[n - 1], "elements", &en);
+    if (en == 1 && nt_kind(nt, el[0]) == NK_AssocSplatNode && nt_ref(nt, el[0], "value") >= 0) {
+      args[n - 1] = kwb_explicit(nt, row, nt_ref(nt, el[0], "value"));
+      nt_node_set_arr(nt, an, "arguments", args, n);
+    }
+    kwb_clone_split(nt, id);
+  }
+  comp_grow_node_arrays(c);
+}
+
 /* `recv.m(pre, *a, post)` where a's length is only known at run time and m
    is a builtin taking lo..hi arguments. Expanding to the required count
    dropped every optional argument (`h.fetch(*[:k, 0])` ran fetch(:k) and
@@ -30905,8 +30982,10 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
     adepth = 0;
     argc--;
   }
+  int krow = nuser ? -1 : kwb_row(cnm);
   for (int k = 0; k < argc; k++) {
     if (nt_kind(nt, argv[k]) != NK_KeywordHashNode) continue;
+    if (krow >= 0) { fargs[k] = kwb_explicit(nt, krow, fargs[k]); continue; }
     int as = nt_new_node(nt, "AssocSplatNode");
     nt_node_set_ref(nt, as, "value", fargs[k]);
     fargs[k] = nt_new_node(nt, "KeywordHashNode");
@@ -31052,6 +31131,7 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
       nt_node_set_arr(nt, an, "arguments", args, m);
     }
     nt_node_set_ref(nt, cl, "arguments", an);
+    if (krow >= 0) kwb_clone_split(nt, cl);
     int ard = nt_new_node(nt, "LocalVariableReadNode");
     nt_node_set_str(nt, ard, "name", anm);
     nt_node_set_int(nt, ard, "depth", adepth);
@@ -34281,6 +34361,7 @@ static void an_phase_desugar_register(Compiler *c) {
   desugar_enum_chain_shapes(c);          /* 2nd pass: shapes the 1st created (e.g.
                                             map(&:sym.to_proc): to_proc->lambda first,
                                             then the lambda block attaches) */
+  desugar_builtin_kwsplat(c);
   desugar_rightward_pattern(c);          /* `x => pat` -> one-arm case/in */
   desugar_match_predicate(c);            /* `x in pat` -> case/in true/else false */
   desugar_sort_by_with_index(c);         /* sort_by.with_index -> each_with_index.sort_by */
