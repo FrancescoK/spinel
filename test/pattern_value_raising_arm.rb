@@ -21,3 +21,26 @@ begin
 rescue RuntimeError => e
   p e.message
 end
+
+# Parentheses preserve divergence, including nested parentheses and fail.
+def pick_parens(x)
+  return case x
+  in Integer then "ok"
+  in String
+    puts "raising in parentheses"
+    ((raise ArgumentError, "parenthesized"))
+  else
+    (fail "other in parentheses")
+  end
+end
+p pick_parens(1)
+begin
+  pick_parens("x")
+rescue ArgumentError => e
+  p e.message
+end
+begin
+  pick_parens(false)
+rescue RuntimeError => e
+  p e.message
+end

@@ -115,3 +115,13 @@ begin; all_when(1).equal?(S); rescue RuntimeError => e; p e.message; end
 begin; all_if(true).equal?(S); rescue RuntimeError => e; p e.message; end
 begin; all_ternary(true).equal?(S); rescue RuntimeError => e; p e.message; end
 begin; all_begin.equal?(S); rescue RuntimeError => e; p e.message; end
+
+# An assigned conditional keeps the handle and emits its raising arm for effect.
+def pick_assigned(c)
+  x = c ? S : ((raise "assigned"))
+  x << "a"
+  x
+end
+p pick_assigned(true).equal?(S)
+p S
+begin; pick_assigned(false); rescue RuntimeError => e; p e.message; end
