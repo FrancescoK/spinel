@@ -2173,6 +2173,9 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
         return sh_builtin(F, c, n, BSH_PURE, rv, blk, 0);
     }
     if (!s && !F->ostruct) s = bop_share_named(TY_STRING, name);
+    /* Explicit IO rows describe the boxed arms too. User targets and
+       OpenStruct fields stay above; an IO's wildcard cannot prove this. */
+    if (!s && !F->ostruct) s = bop_share_named(TY_IO, name);
     if (s) return sh_builtin(F, c, n, s, rv, blk, 1);
     return sh_container_default(F, c, n, rv, blk);
   }

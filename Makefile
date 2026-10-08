@@ -2251,6 +2251,10 @@ threaded-render-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SPINEL_TIMEOUT)
 
 GC_MINOR_TESTS := test/boxed_scan_capture_params.rb \
                   test/share_strings_hash_transform_params.rb \
+                  test/share/share_strings_transform_operands.rb \
+                  test/share/share_strings_captured_bytes.rb \
+                  test/share/share_strings_boxed_io_rows.rb \
+                  test/share/share_strings_find_pathname.rb \
                   test/reopened_builtin_kwrest_keys.rb \
                   test/string_unary_plus_frozen_receiver.rb \
                   test/share_strings_boxed_hash_key.rb \

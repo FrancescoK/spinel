@@ -2385,6 +2385,16 @@ static int scope_performs_match(Compiler *c, int si) {
    a Thread.new block is one cell per thread, and taking it from the capture
    made eight threads share one counter (#4410). */
 static void emit_cell_decl(Compiler *c, Scope *s, LocalVar *lv, Buf *b) {
+      /* The incoming value must survive the allocation of its cell.
+         Under sharing, a byte String parameter can be a fresh snapshot of
+         the caller's rooted handle. A captured parameter skips the ordinary
+         parameter root below; the handle's root does not hold its snapshot. */
+      if (c->share_strings && lv->is_param && repr_of_slot(c, lv).as_ty == TY_STRING) {
+        char name[512]; snprintf(name, sizeof name, "lv_%s", lv->name);
+        buf_puts(b, "    ");
+        emit_gc_root_var(c, repr_of_slot(c, lv).as_ty, name, b);
+        buf_puts(b, "\n");
+      }
       /* A cell over an INLINED block's param: the loop emitters bind the plain
          C slot, so declare it too and let the body's opening line copy it into
          the cell (emit_loop_body). */

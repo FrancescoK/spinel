@@ -13862,6 +13862,58 @@ static int emit_poly_scan_block(Compiler *c, int id, Buf *b, const NodeTable *nt
   return 0;
 }
 
+/* A boxed String transform reads shared arguments as byte snapshots. Those
+   copies are not kept by the handle's root, so two allocating operands must
+   run in order. Hold their values first to retain String identity, then root
+   the byte reads before another read can allocate. Integer slots are named
+   by the caller, just as its runtime helper takes them. The sharing rule
+   introduces these snapshots; default operands keep their existing holds. */
+static void emit_poly_str_transform(Compiler *c, int recv, int argc, const int *argv,
+                                    const char *name, const char *fn, unsigned int_args, Buf *b) {
+  int alloc = operand_may_allocate(c, recv);
+  for (int i = 0; i < argc; i++) alloc += operand_may_allocate(c, argv[i]);
+  int tr = -1, ta[2] = { -1, -1 }, views[2] = { -1, -1 }, mark = g_n_argov;
+  if (repr_share_rule(c) && alloc > 1) {
+    tr = hold_operand_pre(c, recv, TY_POLY, 1, ++g_tmp, 1);
+    for (int i = 0; i < argc; i++) if (operand_may_allocate(c, argv[i])) {
+      Repr r = repr_of(c, argv[i]);
+      int boxed = r.kind == RK_STRBUF;
+      ta[i] = hold_operand_pre(c, argv[i], r.as_ty, boxed, ++g_tmp, 1);
+      if (boxed) views[i] = view_push(c, argv[i], TY_POLY);
+      view_bind(argv[i], "_t%d", ta[i]);
+    }
+    int ts = ++g_tmp;
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "const char *_t%d = sp_poly_recv_s(_t%d, \"%s\"); SP_GC_ROOT(_t%d);\n", ts, tr, name, ts);
+    tr = ts;
+    for (int i = 0; i < argc; i++) if (ta[i] >= 0) {
+      Buf sb; memset(&sb, 0, sizeof sb);
+      int integer = (int_args & (1u << i)) != 0;
+      if (integer) emit_int_expr(c, argv[i], &sb);
+      else emit_str_expr(c, argv[i], &sb);
+      ts = ++g_tmp;
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "%s _t%d = %s;", integer ? "sp_int" : "const char *", ts, sb.p);
+      if (!integer) buf_printf(g_pre, " SP_GC_ROOT(_t%d);", ts);
+      buf_puts(g_pre, "\n");
+      free(sb.p);
+      ta[i] = ts;
+    }
+  }
+  buf_printf(b, "sp_str_%s(", fn);
+  if (tr >= 0) buf_printf(b, "_t%d", tr);
+  else { buf_puts(b, "sp_poly_recv_s("); emit_expr(c, recv, b); buf_printf(b, ", \"%s\")", name); }
+  for (int i = 0; i < argc; i++) {
+    buf_puts(b, ", ");
+    if (ta[i] >= 0) buf_printf(b, "_t%d", ta[i]);
+    else if (int_args & (1u << i)) emit_int_expr(c, argv[i], b);
+    else emit_str_expr(c, argv[i], b);
+  }
+  buf_puts(b, ")");
+  for (int i = argc - 1; i >= 0; i--) if (views[i] >= 0) view_pop(c, views[i]);
+  view_unbind(mark);
+}
+
 int emit_poly_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -14124,21 +14176,16 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
   if (recv >= 0 && rt == TY_POLY && nt_ref(nt, id, "block") < 0 &&
       !user_defines_or_reads(c, name)) {
     if (sp_streq(name, "squeeze") && argc == 1) {
-      buf_puts(b, "sp_str_squeeze_chars(sp_poly_recv_s("); emit_expr(c, recv, b);
-      buf_puts(b, ", \"squeeze\"), "); emit_str_expr(c, argv[0], b); buf_puts(b, ")");
+      emit_poly_str_transform(c, recv, argc, argv, name, "squeeze_chars", 0, b);
       return 1;
     }
     if (sp_streq(name, "tr") && argc == 2) {
-      buf_puts(b, "sp_str_tr(sp_poly_recv_s("); emit_expr(c, recv, b);
-      buf_puts(b, ", \"tr\"), "); emit_str_expr(c, argv[0], b);
-      buf_puts(b, ", "); emit_str_expr(c, argv[1], b); buf_puts(b, ")");
+      emit_poly_str_transform(c, recv, argc, argv, name, "tr", 0, b);
       return 1;
     }
     if ((is_substitution(name)) && argc == 2 &&
         comp_ntype(c, argv[0]) == TY_STRING && comp_ntype(c, argv[1]) == TY_STRING) {
-      buf_printf(b, "sp_str_%s(sp_poly_recv_s(", name); emit_expr(c, recv, b);
-      buf_printf(b, ", \"%s\"), ", name); emit_str_expr(c, argv[0], b);
-      buf_puts(b, ", "); emit_str_expr(c, argv[1], b); buf_puts(b, ")");
+      emit_poly_str_transform(c, recv, argc, argv, name, name, 0, b);
       return 1;
     }
   }
@@ -14315,6 +14362,10 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
        The tag guard stays: only a String answers #scan. */
     int re_arg = !str_arg && rli < 0 && comp_ntype(c, argv[0]) == TY_REGEX;
     if (rli >= 0 || str_arg || re_arg) {
+      if (repr_share_rule(c) && str_arg && operand_may_allocate(c, recv) && operand_may_allocate(c, argv[0])) {
+        emit_poly_str_transform(c, recv, argc, argv, name, "scan", 0, b);
+        return 1;
+      }
       /* follow the type analyze settled on, so emit and type stay in step for
          a run-time pattern (sp_re_scan_poly decides per match) */
       int poly_res = repr_of(c, id).elem == TY_POLY;
@@ -14347,8 +14398,7 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
       (sp_streq(name, "delete_prefix") || sp_streq(name, "delete_suffix")) &&
       !user_defines_or_reads(c, name)) {
     /* the inference rule answers TY_STRING, so hand back the raw const char * */
-    buf_printf(b, "sp_str_%s(sp_poly_recv_s(", name); emit_expr(c, recv, b);
-    buf_printf(b, ", \"%s\"), ", name); emit_str_expr(c, argv[0], b); buf_puts(b, ")");
+    emit_poly_str_transform(c, recv, argc, argv, name, name, 0, b);
     return 1;
   }
   /* `dig` on a receiver that stayed poly: the arms above are per container
@@ -14514,11 +14564,10 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
                      : sp_streq(name, "rjust") ? "sp_str_rjust" : "sp_str_center";
       /* unboxed as a String: an Integer or nil in the slot is NoMethodError,
          not its to_s padded (#4493) */
-      buf_printf(b, "sp_box_str(%s%s(sp_poly_recv_s(", fn, argc == 2 ? "2" : "");
-      emit_expr(c, recv, b); buf_printf(b, ", \"%s\"), ", name);
-      emit_int_expr(c, argv[0], b);
-      if (argc == 2) { buf_puts(b, ", "); emit_str_expr(c, argv[1], b); }
-      buf_puts(b, "))");
+      char op[32]; snprintf(op, sizeof op, "%s%s", fn + 7, argc == 2 ? "2" : "");
+      buf_puts(b, "sp_box_str(");
+      emit_poly_str_transform(c, recv, argc, argv, name, op, 1, b);
+      buf_puts(b, ")");
       return 1;
     }
   }
@@ -14538,9 +14587,7 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
                    : "sp_str_delete_suffix";
     /* TY_STRING, not boxed: the analyze arm types these as the String they
        are, so the slot takes a const char * directly. */
-    buf_printf(b, "%s(sp_poly_recv_s(", fn);
-    emit_expr(c, recv, b); buf_printf(b, ", \"%s\"), ", name);
-    emit_str_expr(c, argv[0], b); buf_puts(b, ")");
+    emit_poly_str_transform(c, recv, argc, argv, name, fn + 7, 0, b);
     return 1;
   }
   if (recv >= 0 && rt == TY_POLY && !user_defines_or_reads(c, name) &&
@@ -14550,9 +14597,9 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
        (sp_streq(name, "encode") && argc >= 1 && argc <= 3) ||
        ((is_encoding_mutator(name)) && argc >= 1 && argc <= 2))) {
     if (sp_streq(name, "unpack")) {
-      buf_puts(b, "sp_box_poly_array(sp_str_unpack(sp_poly_recv_s(");
-      emit_expr(c, recv, b); buf_puts(b, ", \"unpack\"), ");
-      emit_str_expr(c, argv[0], b); buf_puts(b, "))");
+      buf_puts(b, "sp_box_poly_array(");
+      emit_poly_str_transform(c, recv, argc, argv, name, "unpack", 0, b);
+      buf_puts(b, ")");
     }
     else if (sp_streq(name, "byteslice") && argc == 1 &&
              comp_ntype(c, argv[0]) == TY_RANGE) {
@@ -14579,9 +14626,9 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
       buf_puts(b, "))");
     }
     else if (sp_streq(name, "scrub")) {
-      buf_puts(b, "sp_box_str(sp_str_scrub(sp_poly_recv_s(");
-      emit_expr(c, recv, b); buf_puts(b, ", \"scrub\"), ");
-      emit_str_expr(c, argv[0], b); buf_puts(b, "))");
+      buf_puts(b, "sp_box_str(");
+      emit_poly_str_transform(c, recv, argc, argv, name, "scrub", 0, b);
+      buf_puts(b, ")");
     }
     else if (is_encoding_mutator(name)) {
       /* the String receiver's arm on the unboxed value: a `String | nil` slot
@@ -14675,10 +14722,10 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
     TyKind u1t = repr_of(c, id).as_ty;
     if (u1t == TY_INT)        buf_puts(b, "sp_poly_to_i_or_nil(");
     else if (u1t == TY_FLOAT) buf_puts(b, "sp_poly_to_f_opt(");
-    buf_puts(b, "sp_PolyArray_get(sp_str_unpack_off(sp_poly_recv_s(");
-    emit_expr(c, recv, b); buf_puts(b, ", \"unpack1\"), ");
-    emit_str_expr(c, argv[0], b); buf_puts(b, ", ");
-    emit_int_expr(c, offv, b); buf_puts(b, "), 0)");
+    const int args[2] = { argv[0], offv };
+    buf_puts(b, "sp_PolyArray_get(");
+    emit_poly_str_transform(c, recv, 2, args, name, "unpack_off", 2, b);
+    buf_puts(b, ", 0)");
     if (u1t == TY_INT || u1t == TY_FLOAT) buf_puts(b, ")");
     return 1;
   }
