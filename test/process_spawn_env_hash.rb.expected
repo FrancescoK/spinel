@@ -1,0 +1,10 @@
+SPAWN_ENV_SET=child|SPAWN_ENV_KEPT=parent|
+SPAWN_ENV_DROPPED=unset|SPAWN_ENV_KEPT=child|
+SPAWN_ENV_DROPPED=parent|
+"parent"
+"splat"
+["open3", true]
+Errno::ENOENT
+ArgumentError
+TypeError
+ArgumentError

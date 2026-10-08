@@ -1563,6 +1563,18 @@ int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable 
           buf_puts(b, ");");
         }
       }
+      /* a leading Hash is the child's environment and the command follows
+         it; through a splat or a boxed value it is told apart only at run
+         time, so the test is made there */
+      int tenv = 0;
+      TyKind tfirst = nt_kind(nt, argv[0]) == NK_SplatNode ? TY_POLY : comp_ntype(c, argv[0]);
+      if (!is_exec && (ty_is_hash(tfirst) || tfirst == TY_POLY || tfirst == TY_UNKNOWN)) {
+        tenv = ++g_tmp;
+        buf_printf(b, " sp_RbVal _t%d = sp_box_nil(); SP_GC_ROOT_RBVAL(_t%d);", tenv, tenv);
+        buf_printf(b, " if (sp_json_kind(_t%d) == 2) { if (_t%d->len == 0) sp_raise_cls(\"ArgumentError\", \"wrong number of arguments (given 0, expected 1+)\");"
+                      " _t%d = _t%d; _t%d = sp_PolyArray_shift(_t%d); }",
+                   tcmd, targs, tenv, tcmd, tcmd, targs);
+      }
       /* a [program, argv0] pair of Strings arrives as a String array: the
          runtime reads it as a general one */
       buf_printf(b, " if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id != SP_BUILTIN_POLY_ARRAY && sp_rbval_is_array(_t%d))"
@@ -1702,6 +1714,8 @@ int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable 
          slot, so it closes the parent's copies and never a caller's IO. */
       buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_int((_t%d[0] >= 0) | ((_t%d[1] >= 0) << 1) | ((_t%d[2] >= 0) << 2)));",
                  topts, town, town, town);
+      /* Slot 8, when the call can have one: the environment Hash, or nil */
+      if (tenv) buf_printf(b, " sp_PolyArray_push(_t%d, _t%d);", topts, tenv);
       if (is_exec)   /* Kernel#exec: the process becomes the command, or raises its Errno */
         buf_printf(b, " sp_process_exec(_t%d, sp_box_poly_array(_t%d)); sp_int _r = 0; (void)_t%d;", tcmd, targs, topts);
       else
