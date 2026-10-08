@@ -1601,6 +1601,7 @@ static int strbuf_route_carries(Compiler *c, int v, int depth) {
    the String every other name of its class holds. */
 int emit_strbuf_route(Compiler *c, int v, Buf *b) {
   const NodeTable *nt = c->nt;
+  if (emit_strbuf_io_read(c, unwrap_parens(c, v), b)) return 1;
   if (strbuf_route_reader(c, v)) {
     v = unwrap_parens(c, v);
     int sv = view_push_repr(c, v, VR_HANDLE_DEMAND, 1);
