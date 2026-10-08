@@ -15627,6 +15627,12 @@ static int strbuf_demand_store_leaf(Compiler *c, int sn, int depth) {
        cannot reach (refuse_stored_block_param); a boxed one is asked about
        once the mutation is known to be a String's (refuse_string_read_copies) */
     if (snv->is_block_param) {
+      /* The share rule's slot already carries the handle. A literal
+         stores that read without demanding its iterator's sources again. */
+      if (c->share_strings && an_arg_is_shared_handle(c, sn)) {
+        c->strbuf_box[sn] = 1;
+        return 1;
+      }
       int bound = 0;
       int ch = strbuf_block_param_source_walk(c, snm, sns, depth, SB_DEMAND, 1, &bound);
       if (!bound && (snv->type == TY_STRING || snv->type == TY_STRBUF)) {
@@ -17712,17 +17718,6 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
   }
   share_facts_build(c);
   int changed = 0;
-  /* A retained literal can be nested in a box instead of named by a
-     holder. Its recorded stores demand the same handles as a holder's
-     stores; inference then selects the existing boxed-element form. */
-  for (int f = 0, nf = share_flow_count(c); f < nf; f++) {
-    int site, value;
-    if (share_flow_at(c, f, &site, &value) == SHFL_ELEM && repr_str_literal_shares(c, site)) {
-      changed |= strbuf_container_source_walk(c, site, 0, SB_DEMAND);
-      /* A known attribute's conditional write need not infer its RHS. */
-      infer_type(c, site);
-    }
-  }
   int nh = share_holder_count(c);
   for (int h = 0; h < nh; h++) {
     const ShareHolder *sh = share_holder(c, h);
@@ -17840,6 +17835,19 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
       gv->type = TY_STRBUF;
       gv->str_shared = 1;
       changed = 1;
+    }
+  }
+  /* A retained literal can be nested in a box instead of named by a
+     holder. Its recorded stores demand the same handles as a holder's
+     stores; inference then selects the existing boxed-element form.
+     Apply the holder decisions first, so their handles are visible to
+     the store walk even while a block parameter still infers as String. */
+  for (int f = 0, nf = share_flow_count(c); f < nf; f++) {
+    int site, value;
+    if (share_flow_at(c, f, &site, &value) == SHFL_ELEM && repr_str_literal_shares(c, site)) {
+      changed |= strbuf_container_source_walk(c, site, 0, SB_DEMAND);
+      /* A known attribute's conditional write need not infer its RHS. */
+      infer_type(c, site);
     }
   }
   /* a container literal no holder names, iterated in place by a block
