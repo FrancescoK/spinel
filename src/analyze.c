@@ -33256,6 +33256,27 @@ static int sa_copy_observable(Compiler *c, const SaName *to, const SaName *from,
   return (sa_mutated(c, to) && sa_read_elsewhere(c, from, from_read)) ||
          (sa_mutated(c, from) && sa_read_elsewhere(c, to, -1));
 }
+/* `from` is a method's own parameter: a caller passes a variable it reads
+   again, so a copy between `from` and another name there can be seen from the
+   caller's side, which no read inside the method shows (`def entry(data); w =
+   id(data); w << "!"; end` called as `entry(s); p s`). Callers that pass a
+   fresh String keep the copy unobservable. */
+static int sa_param_caller_sees(Compiler *c, const SaName *from) {
+  const NodeTable *nt = c->nt;
+  if (from->kind != NK_LocalVariableReadNode || !from->scope) return 0;
+  int mi = (int)(from->scope - c->scopes), pj = -1;
+  Scope *m = from->scope;
+  for (int j = 0; j < m->nparams; j++)
+    if (m->pnames[j] && sp_streq(m->pnames[j], from->name)) pj = j;
+  if (pj < 0 || mi <= 0) return 0;
+  NT_FOREACH_KIND(nt, NK_CallNode, u) {
+    if (an_call_target_mi(c, u) != mi) continue;
+    int a = arg_layout_param_node(c, m, u, pj, NULL);
+    SaName av;
+    if (a >= 0 && sa_name(c, a, &av) && sa_read_elsewhere(c, &av, a)) return 1;
+  }
+  return 0;
+}
 /* A String bang method that answers its receiver (`strip!`, `sub!`): the
    receiver, or -1. */
 static int sa_bang_receiver(Compiler *c, int call) {
@@ -33542,7 +33563,8 @@ static void refuse_string_alias_copies(Compiler *c) {
       /* `t = id(s)`, `t = choose(+"x", s, flag)`: each argument it may answer */
       int ra[16], nra = sa_returned_args(c, v, ra, 16);
       for (int i = 0; i < nra; i++)
-        if (sa_name(c, ra[i], &from) && sa_copy_observable(c, &to, &from, ra[i])) {
+        if (sa_name(c, ra[i], &from) &&
+            (sa_copy_observable(c, &to, &from, ra[i]) || (sa_mutated(c, &to) && sa_param_caller_sees(c, &from)))) {
           ShareRoute q = share_route(w, ra[i], 0);
           q.to = w;
           q.carry = v;
@@ -33582,7 +33604,7 @@ static void refuse_string_alias_copies(Compiler *c) {
        starts from. */
     int ra[16], nra = sa_returned_args(c, r, ra, 16);
     for (int i = 0; i < nra; i++)
-      if (sa_name(c, ra[i], &from) && sa_read_elsewhere(c, &from, ra[i])) {
+      if (sa_name(c, ra[i], &from) && (sa_read_elsewhere(c, &from, ra[i]) || sa_param_caller_sees(c, &from))) {
         ShareRoute q = share_route(u, ra[i], 0);
         q.to = r;
         q.carry = r;

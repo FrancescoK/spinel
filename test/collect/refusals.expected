@@ -972,6 +972,10 @@ spinel: test/reject/string_identity_return_mutation.rb:6: a String a method retu
 spinel: test/reject/string_identity_return_nil_arm.rb:10: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
 == test/reject/string_identity_return_nil_arm.rb [promote] rc=1
 spinel: test/reject/string_identity_return_nil_arm.rb:10: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
+== test/reject/string_identity_return_param.rb [default] rc=1
+spinel: test/reject/string_identity_return_param.rb:7: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
+== test/reject/string_identity_return_param.rb [promote] rc=1
+spinel: test/reject/string_identity_return_param.rb:7: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
 == test/reject/string_iter_block_argument.rb [default] rc=1
 spinel: test/reject/string_iter_block_argument.rb:7: unsupported a String iterator given its block as a block argument (&blk): write the block out, or use each_char / each_byte / each_line: node 12 (CallNode `bytes`) recv=StringNode/ty6 argc=0
 spinel: 1 refusal, nothing written
