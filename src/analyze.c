@@ -38575,8 +38575,7 @@ static void an_phase_value_types(Compiler *c) {
       const char *ivsn = nt_str(c->nt, id, "name");
       if (ivsn && sp_streq(ivsn, "instance_variable_set")) {
         int ivr = nt_ref(c->nt, id, "receiver");
-        const char *ivrt = ivr >= 0 ? nt_type(c->nt, ivr) : NULL;
-        if (ivr < 0 || (ivrt && sp_streq(ivrt, "SelfNode"))) {
+        if (ivr < 0 || (nt_kind(c->nt, ivr) == NK_SelfNode && comp_ntype(c, ivr) != TY_POLY)) {
           Scope *s = comp_scope_of(c, id);
           if (s && s->class_id >= 0 && s->class_id < c->nclasses &&
               (!s->name || !sp_streq(s->name, "initialize")))

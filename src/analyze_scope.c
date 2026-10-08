@@ -7745,6 +7745,8 @@ static int pivs_value_uncached(Compiler *c, int v, char *set, int depth) {
     case NK_SelfNode: {
       Scope *s = comp_scope_of(c, v);
       if (!s || s->is_cmethod || s->class_id < 0) return 0;
+      /* Object's boxed self is not bounded by the recorded class parents. */
+      if (is_object_root(c->classes[s->class_id].name)) return 0;
       for (int k = 0; k < c->nclasses; k++)
         if (k == s->class_id || is_descendant(c, k, s->class_id)) set[k] = 1;
       return 1;
@@ -8058,9 +8060,8 @@ static int infer_ivar_set_call(Compiler *c, int id, NilWrites *writes) {
       else if (a0ty && sp_streq(a0ty, "StringNode")) sym = nt_str(nt, sav[0], "content");
       if (sym && sym[0] == '@') {
         int ivrecv = nt_ref(nt, id, "receiver");
-        const char *ivrt = ivrecv >= 0 ? nt_type(nt, ivrecv) : NULL;
         int tcid = -1;
-        if (ivrecv < 0 || (ivrt && sp_streq(ivrt, "SelfNode"))) {
+        if (ivrecv < 0 || (nt_kind(nt, ivrecv) == NK_SelfNode && comp_ntype(c, ivrecv) != TY_POLY)) {
           Scope *s = comp_scope_of(c, id);
           tcid = s->class_id;
           if (tcid < 0 && c->node_cbody[id] >= 0) tcid = c->node_cbody[id];

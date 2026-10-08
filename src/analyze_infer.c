@@ -5287,7 +5287,7 @@ static int infer_user_method_call(Compiler *c, int id, const NodeTable *nt, cons
           if (!c->classes[ci].instantiated) continue;
           int iv = comp_ivar_index(&c->classes[ci], sym);
           if (iv < 0 || (c->classes[ci].is_struct && iv < c->classes[ci].nmembers)) continue;
-          TyKind t = c->classes[ci].ivar_types[iv];
+          TyKind t = ivar_value_ty(&c->classes[ci], iv);
           if (uni == TY_UNKNOWN) uni = t;
           else if (uni != t) { uni = TY_POLY; break; }
         }
