@@ -1024,6 +1024,7 @@ share-strings-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS
 	for t in $(SHARE_TESTS) test/share_strings_*.rb test/nullable_string_identity.rb test/widened_param_reaches_its_callee.rb test/reader_or_assign_frozen.rb \
 	  test/string_freeze_value_shared_handle.rb test/string_unary_plus_frozen_receiver.rb \
 	  test/builtins_inject.rb test/issue_3174.rb test/set_string_member_frozen.rb \
+	  test/string_lent_global_slot.rb \
 	  test/dynamic_new_post_params_reach.rb test/block_forward_proc_param_type.rb test/proc_form_yield_block_arg.rb \
 	  test/builtins_partition_group_by.rb test/forwarded_block_tail_return.rb \
 	  test/boxed_scan_capture_params.rb test/fold_receiver_root.rb \

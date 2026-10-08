@@ -21306,7 +21306,11 @@ static void refuse_nonlocal_param_args(Compiler *c, int id, const char *name) {
   }
   if (!any) return;
   int tg[64], n = 0;
-  if (recv >= 0 && repr_of(c, recv).kind == RK_BOXED) {
+  /* The sharing facts bind the call plan's targets, including a bare
+     class-method call. Ask the same plan when checking those routes. */
+  int planned = repr_share_rule(c) ? cplan_targets(c, id, tg, 64) : -1;
+  if (planned >= 0) n = planned;
+  else if (recv >= 0 && repr_of(c, recv).kind == RK_BOXED) {
     for (int k = 0; k < c->nclasses && n < 64; k++) {
       if (!c->classes[k].instantiated) continue;
       int mi = comp_method_in_chain(c, k, name, NULL);
@@ -21350,7 +21354,8 @@ static void refuse_nonlocal_param_args(Compiler *c, int id, const char *name) {
       char why[128];
       snprintf(why, sizeof why, "from %s into a parameter that %s", kind,
                q->type == TY_POLY ? "boxes it" : "takes its handle");
-      refuse_string_copy(c, arg, mt, m->pnames[j], "the call", why);
+      /* The route reaches this target, not every method with its name. */
+      refuse_string_copy_to(c, arg, m->body, mt, m->pnames[j], "the call", why);
     }
   }
 }
