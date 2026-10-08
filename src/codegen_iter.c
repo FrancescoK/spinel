@@ -5578,9 +5578,10 @@ static int iter_combination_cons_arms(Compiler *c, int id, Buf *b, int indent, c
   /* The arms below bind the tuple to the first parameter only. CRuby
      spreads it across a block taking two or more parameters (or a rest, an
      optional or a post). desugar_builtin_iter_block_shapes lowers such a
-     block to one parameter; a block it leaves as written (a `&.` call, a
-     destructuring parameter it does not take) would bind m to the whole
-     tuple and n to nil, so it is refused rather than answered differently. */
+     block to one parameter; a block it leaves as written (a splatted
+     argument, a destructuring parameter it does not take) would bind m to
+     the whole tuple and n to nil, so it is refused rather than answered
+     differently. */
   if (is_combination_family(name) &&
       (rt == TY_INT_ARRAY || rt == TY_POLY_ARRAY || rt == TY_FLOAT_ARRAY) && block >= 0 &&
       (block_lead_only(c, block) || block_rest_marker(c, block) ||
