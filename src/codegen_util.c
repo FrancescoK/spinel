@@ -2053,11 +2053,34 @@ static int ivs_related(Compiler *c, int k, int cid) {
 }
 /* A slot introduced only by reflection has no ordinary assignment emitter.
    Its setter can keep presence separately even when the assigned value is nil.
-   Use the name across classes so inherited layouts agree on the extra field. */
-static int ivs_reflect_only(Compiler *c, const char *ivn) {
+   Use the name across classes so inherited layouts agree on the extra field.
+   A lowered Object setter can add a slot beside unrelated ordinary writers;
+   those classes do not share its layout or assignment emitters. */
+static int ivs_reflect_only(Compiler *c, int cid, const char *ivn) {
   const NodeTable *nt = c->nt;
-  int found = 0;
+  int found = 0, scoped = 0;
+  NT_FOREACH_KIND(nt, NK_CallNode, u) {
+    if (!is_ivar_set_name(nt_str(nt, u, "name"))) continue;
+    int a = nt_ref(nt, u, "arguments"), ac = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+    if (ac != 2) continue;
+    const char *sn = nt_kind(nt, av[0]) == NK_SymbolNode ? nt_str(nt, av[0], "value") :
+                     nt_kind(nt, av[0]) == NK_StringNode ? nt_str(nt, av[0], "content") : NULL;
+    if (sn && sp_streq(sn, ivn)) {
+      found = 1;
+      Scope *s = comp_scope_of(c, u);
+      int r = nt_ref(nt, u, "receiver");
+      if (s && !s->is_cmethod && s->class_id >= 0 && is_object_root(c->classes[s->class_id].name) &&
+          (r < 0 || nt_kind(nt, r) == NK_SelfNode)) {
+        int n = 0; const int *ks = poly_recv_classes(c, u, &n);
+        if (!ks) scoped = 1;
+        for (int k = 0; ks && k < n && !scoped; k++) scoped = ivs_related(c, ks[k], cid);
+      }
+    }
+  }
+  if (!found) return 0;
   for (int k = 0; k < c->nclasses; k++) {
+    if (scoped && !ivs_related(c, k, cid)) continue;
     ClassInfo *ci = &c->classes[k];
     for (int j = 0; j < ci->nwriters; j++)
       if (sp_streq(ci->writers[j], ivn + 1)) return 0;
@@ -2069,16 +2092,10 @@ static int ivs_reflect_only(Compiler *c, const char *ivn) {
   for (int n = 0; n < nt->count; n++) {
     const char *t = nt_type(nt, n);
     if (t && strncmp(t, "InstanceVariable", 16) == 0 && !strstr(t, "Read") &&
-        sp_streq(nt_str(nt, n, "name"), ivn)) return 0;
-  }
-  NT_FOREACH_KIND(nt, NK_CallNode, u) {
-    if (!sp_streq(nt_str(nt, u, "name"), "instance_variable_set")) continue;
-    int a = nt_ref(nt, u, "arguments"), ac = 0;
-    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
-    if (ac != 2) continue;
-    const char *sn = nt_kind(nt, av[0]) == NK_SymbolNode ? nt_str(nt, av[0], "value") :
-                     nt_kind(nt, av[0]) == NK_StringNode ? nt_str(nt, av[0], "content") : NULL;
-    if (sn && sp_streq(sn, ivn)) found = 1;
+        sp_streq(nt_str(nt, n, "name"), ivn)) {
+      int owner = comp_ivar_owner(c, n);
+      if (!scoped || owner < 0 || ivs_related(c, owner, cid)) return 0;
+    }
   }
   return found;
 }
@@ -2132,6 +2149,7 @@ int ivar_set_kind(Compiler *c, int cid, const char *ivn) {
       int a = nt_ref(nt, u, "arguments"), ac = 0;
       const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
       if (sp_streq(un, "instance_variable_set")) {
+        if (nt_int(nt, u, "builtin_only", 0) && !poly_ivar_set_reaches(c, u, cid)) continue;
         int nmok = ac == 2 && (nt_kind(nt, av[0]) == NK_SymbolNode || nt_kind(nt, av[0]) == NK_StringNode);
         const char *sn = !nmok ? NULL : nt_kind(nt, av[0]) == NK_SymbolNode ? nt_str(nt, av[0], "value")
                                                                             : nt_str(nt, av[0], "content");
@@ -2153,7 +2171,7 @@ int ivar_set_kind(Compiler *c, int cid, const char *ivn) {
       if ((rn && (sp_streq(rn, ivn + 1) || sp_streq(rn, wr))) || (wn && sp_streq(wn, wr))) kind = 2;
     }
   }
-  if (kind == 2 && ivs_reflect_only(c, ivn)) kind = 3;
+  if (kind == 2 && ivs_reflect_only(c, cid, ivn)) kind = 3;
   if (slot >= 0) memo[slot] = kind;
   return kind;
 }

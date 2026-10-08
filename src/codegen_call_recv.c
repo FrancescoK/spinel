@@ -13680,12 +13680,19 @@ static int emit_poly_ivar_call(Compiler *c, int id, Buf *b, const NodeTable *nt,
           continue;
         }
         if (!c->classes[k].instantiated) continue;
-        if (comp_ty_value_obj(c, ty_object(k))) continue;   /* by value: no reference to write through */
         int iv = comp_ivar_index(&c->classes[k], sym);
+        if (nt_int(nt, id, "builtin_only", 0) && !is_builtin_reopen(c->classes[k].name) &&
+            (iv < 0 || comp_ty_value_obj(c, ty_object(k))) && poly_ivar_set_reaches(c, id, k))
+          unsupported(c, id, "instance variable write to a receiver without a writable slot");
+        if (comp_ty_value_obj(c, ty_object(k))) continue;   /* by value: no reference to write through */
         /* a Struct member is no ivar (#2849) */
         if (iv < 0 || (c->classes[k].is_struct && iv < c->classes[k].nmembers)) continue;
         TyKind t = c->classes[k].ivar_types[iv];
-        if (t == TY_STRBUF) continue;
+        if (t == TY_STRBUF) {
+          if (nt_int(nt, id, "builtin_only", 0) && poly_ivar_set_reaches(c, id, k))
+            unsupported(c, id, "instance variable write to a shared String slot through a boxed receiver");
+          continue;
+        }
         char val[48]; snprintf(val, sizeof val, "_ivs%d", tv);
         buf_printf(b, " case %d: ", k);
         size_t obn = strlen(c->classes[k].c_name) + 32;
@@ -13761,8 +13768,17 @@ static int emit_poly_ivar_call(Compiler *c, int id, Buf *b, const NodeTable *nt,
         emit_boxed_text(c, t, fld, b);
         buf_puts(b, "; break;");
       }
-      buf_printf(b, " case SP_BUILTIN_OBJECT: _ivg%d = sp_Object_ivar_get((sp_Object *)_t%d.v.p, sp_sym_intern(\"%s\")); break;",
-                 tv, tv, sym);
+      buf_puts(b, " case SP_BUILTIN_OBJECT: ");
+      /* main's ordinary ivars live in the same statics its top-level reads use. */
+      int main_ci = comp_class_index(c, "Toplevel");
+      int main_iv = main_ci >= 0 ? comp_ivar_index(&c->classes[main_ci], sym) : -1;
+      if (main_iv >= 0) {
+        char slot[300]; snprintf(slot, sizeof slot, "civ_Toplevel_%s", iv_c(sym + 1));
+        buf_printf(b, "if (_t%d.v.p == sp_main_obj) _ivg%d = ", tv, tv);
+        emit_boxed_text(c, c->classes[main_ci].ivar_types[main_iv], slot, b);
+        buf_puts(b, "; else ");
+      }
+      buf_printf(b, "_ivg%d = sp_Object_ivar_get((sp_Object *)_t%d.v.p, sp_sym_intern(\"%s\")); break;", tv, tv, sym);
       char bst[320];
       snprintf(bst, sizeof bst, "_ivg%d = sp_bivar_get(_t%d, sp_sym_intern(\"%s\"))", tv, tv, sym);
       emit_bivar_arm(c, tv, bst, b);
@@ -13801,6 +13817,8 @@ static int emit_poly_ivar_call(Compiler *c, int id, Buf *b, const NodeTable *nt,
         if (!c->classes[k].instantiated) continue;
         int iv = comp_ivar_index(&c->classes[k], sym);
         if (iv < 0 || (c->classes[k].is_struct && iv < c->classes[k].nmembers)) continue;
+        if (nt_int(nt, id, "builtin_only", 0) && ivar_set_kind(c, k, sym) == 2)
+          unsupported(c, id, "defined? of an instance variable with untracked presence on a boxed receiver");
         char ex[200], tb[300];
         snprintf(ex, sizeof ex, "((sp_%s *)_t%d.v.p)->iv_%s", c->classes[k].c_name, tv, iv_c(sym + 1));
         const char *set = ivar_set_test(c, k, sym, ex, tb, sizeof tb);

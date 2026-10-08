@@ -1773,6 +1773,16 @@ reject-test: $(SPINEL)
 	  else grep -q "unsupported Hash#compare_by_identity" "$$tmp/cbi.out" || \
 	    { echo "reject-test: FAIL ($$t: refused without saying why)"; sed -n 1,5p "$$tmp/cbi.out"; ok=0; }; fi; \
 	done; \
+	for mode in 0 1; do \
+	  for spec in "native_slot:instance variable write to a receiver without a writable slot" \
+	              "struct_slot:instance_variable_set to an ivar absent from the fixed object layout"; do \
+	    t=test/reject/object_method_ivar_$${spec%%:*}.rb; why=$${spec#*:}; \
+	    if SPINEL_SHARE_STRINGS=$$mode $(SPINEL) "$$t" -c -o "$$tmp/ivp.c" >"$$tmp/ivp.out" 2>&1; then \
+	      echo "reject-test: FAIL ($$t compiled)"; ok=0; \
+	    else grep -qF "unsupported $$why" "$$tmp/ivp.out" || \
+	      { echo "reject-test: FAIL ($$t refused without saying why)"; cat "$$tmp/ivp.out"; ok=0; }; fi; \
+	  done; \
+	done; \
 	t=test/reject/bare_const_nested_unreachable.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/bcn.c" >"$$tmp/bcn.out" 2>&1; then \
 	  echo "reject-test: FAIL (a bare constant CRuby's lookup cannot reach compiled, bound to a nested one)"; ok=0; \
@@ -3270,6 +3280,8 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	  "$$tmp/ibin" >/dev/null 2>&1 || { echo "infer-test: FAIL ($$f: the program does not run)"; ok=0; }; \
 	done; \
 	for flags in '' --share-strings; do \
+	  $(SPINEL) $$flags test/object_method_ivar_receivers.rb -c --no-line-map -o "$$tmp/oir.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (object_method_ivar_receivers: -c)"; ok=0; }; \
+	  grep -q 'static sp_PointValue sp_PointValue_new(' "$$tmp/oir.c" && ! grep -q 'iv_unused;' "$$tmp/oir.c" || { echo "infer-test: FAIL (an Object setter changes unrelated layouts)"; ok=0; }; \
 	  $(SPINEL) $$flags test/hash_store_boxed_unbounded.rb -c --no-line-map -o "$$tmp/hbu.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (hash_store_boxed_unbounded: -c)"; ok=0; }; \
 	  ! grep -q 'sp_PolyPolyHash_new' "$$tmp/hbu.c" || { echo "infer-test: FAIL (an unbounded boxed store widened a known Hash)"; ok=0; }; \
 	  for t in $(patsubst test/%.rb,%,$(shell grep -l '^\# spinel: infer-ivar-get$$' test/*.rb)); do \

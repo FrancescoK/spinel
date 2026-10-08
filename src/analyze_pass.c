@@ -4823,7 +4823,16 @@ int class_value_escapes(Compiler *c, int cid) {
       if (!anon && (!un || !(sp_streq(un, "class") || sp_streq(un, "superclass") ||
                              sp_streq(un, "singleton_class")))) continue;
     }
-    if (!value_handed_on(nt, parent, u)) continue;
+    int passed = value_handed_on(nt, parent, u);
+    /* An Object reopening receives its receiver boxed, including a class
+       constant consumed directly by the call. */
+    int p = parent[u];
+    if (!passed && p >= 0 && nt_kind(nt, p) == NK_CallNode && nt_ref(nt, p, "receiver") == u) {
+      const CallPlan *cp = cplan_user_fresh(c, p);
+      if (cp->mi >= 0 && cp->via == UC_REOPEN && cp->owner_ci >= 0 &&
+          is_object_root(c->classes[cp->owner_ci].name)) passed = 1;
+    }
+    if (!passed) continue;
     if (k == NK_CallNode) {
       /* `x.class` handed on names x's class or a subclass of it, when x is
          known: `Sanitizer.new.class` returned from a method let every class

@@ -13714,9 +13714,10 @@ int desugar_body_ivars(Compiler *c) {
  * are left alone. A write that lands in the map, or a reflective set on
  * anything but self, sets Compiler.bivar_table: inference and codegen read
  * it, and a program without either emits what it emitted before. */
-enum { BIV_NONE, BIV_TABLE, BIV_FROZEN, BIV_STRING };
+enum { BIV_NONE, BIV_TABLE, BIV_FROZEN, BIV_STRING, BIV_OBJECT };
 static int biv_mode(const char *cn) {
   if (!cn) return BIV_NONE;
+  if (is_object_root(cn)) return BIV_OBJECT;
   if (is_bivar_keyed_class(cn)) return BIV_TABLE;
   if (is_frozen_value_class(cn)) return BIV_FROZEN;
   return is_string_class_name(cn) ? BIV_STRING : BIV_NONE;
@@ -13790,10 +13791,11 @@ static void biv_rewrite(Compiler *c, NodeTable *nt, int node, int mode) {
   if (k == NK_DefinedNode) {
     int v = nt_ref(nt, node, "value");
     if (v >= 0 && nt_kind(nt, v) == NK_InstanceVariableReadNode && nt_str(nt, v, "name")) {
-      if (mode != BIV_TABLE) { nt_node_reset(nt, node, "NilNode"); return; }
+      if (mode != BIV_TABLE && mode != BIV_OBJECT) { nt_node_reset(nt, node, "NilNode"); return; }
       /* defined?(@x): "instance-variable" when the value holds it, else nil */
       char ivb[256]; snprintf(ivb, sizeof ivb, "%s", nt_str(nt, v, "name"));
-      biv_self_call(nt, v, "__bivar_defined", ivb, -1);
+      biv_self_call(nt, v, mode == BIV_OBJECT ? "instance_variable_defined?" : "__bivar_defined", ivb, -1);
+      if (mode == BIV_OBJECT) nt_node_set_int(nt, v, "builtin_only", 1);
       int st = fwd_new_node_like(nt, node, "StatementsNode");
       int lit = str_node_like(nt, node, "instance-variable");
       nt_node_set_arr(nt, st, "body", &lit, 1);
@@ -13824,7 +13826,13 @@ static void biv_rewrite(Compiler *c, NodeTable *nt, int node, int mode) {
   if (!iv || iv[0] != '@' || iv[1] == '@') return;
   char ivb[256]; snprintf(ivb, sizeof ivb, "%s", iv);
   if (k == NK_InstanceVariableReadNode) {
-    if (mode == BIV_TABLE) biv_self_call(nt, node, "__bivar_get", ivb, -1);
+    if (mode == BIV_OBJECT) {
+      /* Object's self can be any receiver: use the reflective layout dispatch,
+         bypassing overrides because the source was an ivar, not a call. */
+      biv_self_call(nt, node, "instance_variable_get", ivb, -1);
+      nt_node_set_int(nt, node, "builtin_only", 1);
+    }
+    else if (mode == BIV_TABLE) biv_self_call(nt, node, "__bivar_get", ivb, -1);
     else {
       long long line = nt_int(nt, node, "node_line", 0);
       nt_node_reset(nt, node, "NilNode");
@@ -13835,6 +13843,7 @@ static void biv_rewrite(Compiler *c, NodeTable *nt, int node, int mode) {
     int v = nt_ref(nt, node, "value");
     if (mode == BIV_TABLE) { biv_self_call(nt, node, "__bivar_set", ivb, v); c->bivar_table = 1; }
     else biv_self_call(nt, node, "instance_variable_set", ivb, v);
+    if (mode == BIV_OBJECT) nt_node_set_int(nt, node, "builtin_only", 1);
   }
 }
 
@@ -13891,10 +13900,12 @@ int desugar_builtin_ivars(Compiler *c) {
         !biv_frozen_literal(nt, nt_ref(nt, id, "receiver")))
       c->bivar_table = 1;
   for (int m = 0; m < n0; m++) {
-    if (nt_kind(nt, m) != NK_ClassNode || nt_ref(nt, m, "superclass") >= 0) continue;
+    if ((nt_kind(nt, m) != NK_ClassNode && nt_kind(nt, m) != NK_ModuleNode) ||
+        nt_ref(nt, m, "superclass") >= 0) continue;
     int cp = nt_ref(nt, m, "constant_path");
     if (cp < 0 || nt_kind(nt, cp) != NK_ConstantReadNode) continue;
     int mode = biv_mode(nt_str(nt, cp, "name"));
+    if (nt_kind(nt, m) == NK_ModuleNode && mode != BIV_OBJECT) continue;
     int body = nt_ref(nt, m, "body");
     if (mode == BIV_NONE || body < 0 || nt_kind(nt, body) != NK_StatementsNode) continue;
     /* `module Text; class String` is the program's own class */
