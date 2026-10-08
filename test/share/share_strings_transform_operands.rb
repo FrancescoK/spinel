@@ -25,6 +25,10 @@ format = +'a*'
 saved_format = [format]
 p e.first.unpack(format).first == root
 p e.first.scrub(replacement) == root
+p e.first.ljust(4096, root).length == 4096
+p e.first.rjust(4096, root).length == 4096
+p e.first.center(4096, root).length == 4096
+p e.first.unpack1(format, offset: 0) == root
 replacement << '!'
 p saved
 p saved_letters
