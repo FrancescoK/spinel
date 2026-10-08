@@ -18746,11 +18746,11 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
      which is a worse order than the one C picked. Only a local read ahead of
      it that it can rebind runs first, with the operands before it
      (emit_operands_before_unbound). */
-  int node[8], fresh[8], nb = 0;
-  TyKind ty[8];
-  int operand[9], nop = 0;
+  int node[MAX_ARG_OVERRIDE], fresh[MAX_ARG_OVERRIDE], nb = 0;
+  TyKind ty[MAX_ARG_OVERRIDE];
+  int operand[MAX_ARG_OVERRIDE], nop = 0;
   if (recv >= 0) operand[nop++] = recv;
-  for (int i = 0; i < argc && nop < 9; i++) {
+  for (int i = 0; i < argc; i++) {
     /* keyword arguments are operands one value at a time, in the order
        written: `new(a: r.int, b: f(r.int))` runs a's call first, however
        the callee's emitter lays the values out. A `**` operand or a
@@ -18760,10 +18760,16 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
     int plain = els != NULL;
     for (int k = 0; k < nk && plain; k++)
       plain = nt_kind(nt, els[k]) == NK_AssocNode && nt_kind(nt, nt_ref(nt, els[k], "key")) == NK_SymbolNode;
-    if (!plain) { operand[nop++] = argv[i]; continue; }
-    for (int k = 0; k < nk && nop < 9; k++) {
+    if (!plain) {
+      if (nop >= MAX_ARG_OVERRIDE) return 0;
+      operand[nop++] = argv[i];
+      continue;
+    }
+    for (int k = 0; k < nk; k++) {
       int v = nt_ref(nt, els[k], "value");
-      if (v >= 0) operand[nop++] = v;
+      if (v < 0) continue;
+      if (nop >= MAX_ARG_OVERRIDE) return 0;
+      operand[nop++] = v;
     }
   }
   /* A bare read of an ivar, class variable or global is no effect of its own,
@@ -18819,7 +18825,6 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
     int fr = operand[i] != recv && operand_fresh_str(c, operand[i]);
     TyKind t = fr ? TY_STRING : repr_of(c, operand[i]).as_ty;
     if (t == TY_UNKNOWN || t == TY_VOID || t == TY_NIL) return 0;
-    if (nb >= 8) return 0;
     node[nb] = operand[i]; ty[nb] = t; fresh[nb] = fr; nb++;
   }
   /* Operands that are all pure reads -- `m.data[i * m.cols + j]`, two readers
@@ -18843,7 +18848,7 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
 
   size_t pre_mark = g_pre->len;
   int saved_tmp = g_tmp;
-  Buf opb[8], opp[8];
+  Buf opb[MAX_ARG_OVERRIDE], opp[MAX_ARG_OVERRIDE];
   int rendered = 0, ok = 1;
   /* A lone observable operand is kept only when the call converts, which the
      call's own emission tells; render the operand after that, so a declined
@@ -18856,7 +18861,7 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
     if (text_is_raise_token(opb[rendered].p)) ok = 0;
   }
   Buf ob; memset(&ob, 0, sizeof ob);
-  int tmp[8];
+  int tmp[MAX_ARG_OVERRIDE];
   if (ok) {
     for (int i = 0; i < nb; i++) {
       tmp[i] = ++g_tmp;
