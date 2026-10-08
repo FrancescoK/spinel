@@ -15815,6 +15815,22 @@ static int strbuf_demand_container_stores_here(Compiler *c, const char *contn, S
 static int an_call_targets_scope(Compiler *c, int u, int mi2, Scope *m2);
 static int an_class_dynamic_new_risk(Compiler *c, int cid);
 static int strbuf_demand_local_container(Compiler *c, const char *vn, Scope *vs, int depth, int mode);
+/* After inference, the argument bindings no longer move. Keep their reverse
+   edges on the compiler: a parameter query visits its sources, not every
+   call with the same name. A bare super carries a source parameter instead
+   of an argument node. Before storage the existing per-pass walk is used. */
+typedef struct { int next, node, scope, param; } SbArgEdge;
+typedef struct SbArgIndex {
+  int *off, *head;
+  SbArgEdge *edges;
+  int n, cap, changed;
+} SbArgIndex;
+void strbuf_arg_index_free(Compiler *c) {
+  SbArgIndex *x = c->sb_args;
+  if (!x) return;
+  free(x->off); free(x->head); free(x->edges); free(x);
+  c->sb_args = NULL;
+}
 /* The parameters one outermost walk has already followed back to their
    callers, each with the shallowest depth it was walked at. A parameter
    handed on through a chain of methods, each called from several places,
@@ -15951,11 +15967,26 @@ static int strbuf_demand_param_container_stores_walk(Compiler *c, const char *pn
   int mi = (int)(ps - c->scopes);
   if (sb_param_seen_check(mi, pj, mode, depth)) return 0;
   int ncand = 0;
-  int *cand = strbuf_scope_callers(c, mi, ps, &ncand);
-  for (int ci = 0; ci < ncand; ci++) {
-    int u = cand[ci];
-    if (nt_kind(nt, u) != NK_CallNode) continue;
-    int an = arg_layout_param_node(c, ps, u, pj, NULL);
+  SbArgIndex *x = c->sb_args;
+  int e = x ? x->head[x->off[mi] + pj] : -1;
+  int *cand = x ? NULL : strbuf_scope_callers(c, mi, ps, &ncand);
+  for (int ci = 0; x ? e >= 0 : ci < ncand; ci++) {
+    int an;
+    if (x) {
+      SbArgEdge *a = &x->edges[e];
+      e = a->next;
+      if (a->scope >= 0) {
+        Scope *s = &c->scopes[a->scope];
+        changed |= strbuf_demand_local_container(c, s->pnames[a->param], s, depth + 1, mode);
+        continue;
+      }
+      an = a->node;
+    }
+    else {
+      int u = cand[ci];
+      if (nt_kind(nt, u) != NK_CallNode) continue;
+      an = arg_layout_param_node(c, ps, u, pj, NULL);
+    }
     if (an < 0) continue;
     NodeKind ak = nt_kind(nt, an);
     if (ak == NK_LocalVariableReadNode) {
@@ -15979,6 +16010,7 @@ static int strbuf_demand_param_container_stores_walk(Compiler *c, const char *pn
     else changed |= strbuf_container_source_walk(c, an, depth + 1, mode);
   }
   free(cand);
+  if (x && changed && (SB_KIND(mode) == SB_DEMAND || SB_KIND(mode) == SB_DEMAND_NAMED)) x->changed = 1;
   return changed;
 }
 /* A block parameter names what the iterator hands the block: the receiver
@@ -20210,6 +20242,63 @@ static void an_call_targets_of(Compiler *c, int u, ACallTargets *t) {
   Scope *m2 = &c->scopes[mi];
   if (!m2->name || m2->class_id < 0 || m2->is_cmethod) return;
   act_add(t, mi);
+}
+
+static void strbuf_arg_index_call(Compiler *c, SbArgIndex *x, int u, int mi) {
+  Scope *m = &c->scopes[mi];
+  Scope *s = nt_kind(c->nt, u) == NK_ForwardingSuperNode ? comp_scope_of(c, u) : NULL;
+  for (int j = 0; j < m->nparams; j++) {
+    int p = s ? zsuper_param_source(c, s, m, j) : -1;
+    int a = s ? -1 : arg_layout_param_node(c, m, u, j, NULL);
+    if (a < 0 && p < 0) continue;
+    if (x->n == x->cap) {
+      if (x->cap > INT_MAX / 2) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      x->cap = x->cap ? x->cap * 2 : 64;
+      x->edges = realloc(x->edges, sizeof *x->edges * (size_t)x->cap);
+      if (!x->edges) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    }
+    int h = x->off[mi] + j;
+    x->edges[x->n] = (SbArgEdge){ x->head[h], a, s ? (int)(s - c->scopes) : -1, p };
+    x->head[h] = x->n++;
+  }
+}
+/* Built once at storage, after desugaring and target inference. The later
+   String representation changes leave these argument bindings intact.
+   Ordinary calls use the forward twin of the old caller predicate; new
+   and super add the targets their call plans resolve, without a name scan. */
+static void strbuf_arg_index_build(Compiler *c) {
+  if (!c->share_strings || c->sb_args) return;
+  SbArgIndex *x = calloc(1, sizeof *x);
+  if (!x) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  x->off = malloc(sizeof *x->off * ((size_t)c->nscopes + 1));
+  if (!x->off) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  x->off[0] = 0;
+  for (int i = 0; i < c->nscopes; i++) {
+    if (c->scopes[i].nparams > INT_MAX - x->off[i]) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    x->off[i + 1] = x->off[i] + c->scopes[i].nparams;
+  }
+  x->head = malloc(sizeof *x->head * ((size_t)x->off[c->nscopes] + 1));
+  if (!x->head) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int i = 0; i < x->off[c->nscopes]; i++) x->head[i] = -1;
+  ACallTargets t = {0};
+  const NodeTable *nt = c->nt;
+  for (int u = nt->count - 1; u >= 0; u--) {
+    NodeKind k = nt_kind(nt, u);
+    if (k == NK_CallNode) {
+      if (is_new_name(nt_str(nt, u, "name"))) {
+        int mi = cplan_initialize(c, u);
+        if (mi >= 0) { strbuf_arg_index_call(c, x, u, mi); continue; }
+      }
+      an_call_targets_of(c, u, &t);
+      for (int i = 0; i < t.n; i++) strbuf_arg_index_call(c, x, u, t.v[i]);
+    }
+    else if (k == NK_SuperNode || k == NK_ForwardingSuperNode) {
+      int mi = cplan_user_fresh(c, u)->mi;
+      if (mi >= 0) strbuf_arg_index_call(c, x, u, mi);
+    }
+  }
+  free(t.v);
+  c->sb_args = x;
 }
 
 /* (scope, parameter) -> "some call site hands that parameter a shared handle".
@@ -37887,6 +37976,7 @@ static void an_phase_storage(Compiler *c) {
      the promotion can exclude locals whose address is passed to a byref slot
      (a STRBUF local is an sp_String*, not the const char* slot byref needs). */
   compute_byref_out_params(c);
+  strbuf_arg_index_build(c);
   /* handle args cannot ride byref's const char** slot: convert such params
      to the handle representation, cascading through transitive passes. A
      parameter RETAINED in a shared-handle ivar demands the handle for the
@@ -37915,6 +38005,13 @@ static void an_phase_storage(Compiler *c) {
        Array this late (share_default_apply) is a late widening: a method
        answering it, and the locals written from that method, follow it as
        they follow the late ivar and return widenings (rejoin_local_writes) */
+    if (c->share_strings && c->sb_args->changed) {
+      /* Newly reached stores can widen a literal. Bind its parameters
+         again through the existing worklist, including super's chain,
+         until those bindings settle too. */
+      c->sb_args->changed = infer_param_types_settle(c);
+      if (c->sb_args->changed) ch = late_widened = 1;
+    }
     if (c->share_strings && ch) {
       g_ret_no_new_poly = 3;
       if (infer_return_types(c)) ch = late_widened = 1;
