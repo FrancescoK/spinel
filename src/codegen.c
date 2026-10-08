@@ -1677,25 +1677,6 @@ static int emit_boxed_sequence(Compiler *c, int node, Buf *b) {
   return 1;
 }
 
-/* A parenthesized sequence keeps the final value's box, as a conditional
-   arm does. Receiver snapshots introduce these sequences too. */
-static int emit_boxed_sequence(Compiler *c, int node, Buf *b) {
-  if (!repr_share_rule(c) || node < 0 || nt_kind(c->nt, node) != NK_ParenthesesNode ||
-      arg_ran_first(node, 0)) return 0;
-  TyKind t = repr_of(c, node).as_ty;
-  if ((t != TY_STRING && t != TY_STRBUF) || !strbuf_cond_has_handle_leaf(c, node, 0)) return 0;
-  int body = nt_ref(c->nt, node, "body"), n = 0;
-  if (body >= 0) nt_arr(c->nt, body, "body", &n);
-  if (n < 2) return 0;
-  int dst = ++g_tmp;
-  BoxedCondArm a = { dst, t == TY_STRING && repr_of(c, node).poly_lift };
-  buf_printf(b, "({ sp_RbVal _t%d; ", dst);
-  emit_cond_arm(c, node, b, emit_boxed_cond_body, &a);
-  buf_printf(b, " _t%d; })", dst);
-  RC(RF_SPECIAL, RW_NONE);
-  return 1;
-}
-
 static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
   /* Parentheses are transparent: box the inner expression directly so a
      wrapped yield (`out << (yield x)`) reaches the per-call-site yield boxing
