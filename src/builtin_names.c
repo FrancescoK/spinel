@@ -998,7 +998,7 @@ int is_scan_name(const char *n) { return sp_streq(n, "scan"); }
 int is_enumerator_with(const char *n) {
   return sp_streq(n, "with_index") || sp_streq(n, "with_object");
 }
-int is_lazy_name(const char *n) { return sp_streq(n, "lazy"); }
+int is_lazy_name(const char *n) { return n && sp_streq(n, "lazy"); }
 int is_concat_name(const char *n) { return sp_streq(n, "concat"); }
 
 /* `Array.new(...)`, by its receiver's constant name and the method */
