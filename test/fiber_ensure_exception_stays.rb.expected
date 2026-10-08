@@ -1,0 +1,9 @@
+outside a suspended ensure: nil
+resumed: second, cause #<RuntimeError: first>
+in a fiber under main's ensure: nil
+outer, cause nil
+from the ensure, cause #<RuntimeError: outer>
+a again, cause #<RuntimeError: a's>
+b again, cause #<RuntimeError: b's>
+after both: nil
+200
