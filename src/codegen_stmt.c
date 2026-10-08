@@ -2345,7 +2345,13 @@ void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
   int vplus = strbuf_uplus_operand(c, v);
   int shared = repr_of_slot(c, lv).handle;
   Repr rpv = repr_of(c, v);
-  if (shared && strbuf_slot_ref(c, v, srefV, sizeof srefV))
+  /* A demanded fresh String arm still emits bytes (for example 123.to_s),
+     which need their own handle; the demand alone is no reader slot. */
+  /* User calls keep their existing return pickup. */
+  int fresh = repr_share_rule(c) && rpv.strbuf_src == RS_FRESH &&
+              nt_kind(c->nt, v) == NK_CallNode && cplan_user(c, v)->dispatch == CP_NONE &&
+              share_value_fresh(c, v, 0);
+  if (shared && !fresh && strbuf_slot_ref(c, v, srefV, sizeof srefV))
     buf_puts(b, srefV);
   /* `s2 = +s1`: the same handle, or a fresh one when s1 is frozen */
   /* (--share-strings: through the route, which raises for a nil s) */
@@ -2401,7 +2407,7 @@ void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
      -- `+"lit"`, a `dup` the alias leaves demanded -- renders as a fresh
      String, wrapped below as a new handle the way a store wraps one
      (emit_boxed); handed over bare, the C did not build. */
-  else if (rpv.as_ty == TY_STRBUF &&
+  else if (rpv.as_ty == TY_STRBUF && !fresh &&
            (nt_kind(c->nt, v) != NK_CallNode || strbuf_marked_yields_handle(c, v))) {
     emit_expr(c, v, b);
   }
@@ -17660,7 +17666,8 @@ static int strbuf_flow_cond(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, int
     return strbuf_flow_cond(c, fm, ctx, nt_ref(nt, v, "else_clause"), depth + 1);
   }
   default:
-    if (ctx == SFC_ELEM_ARMS) return strbuf_flow_value(c, fm, SFC_ELEM, v, depth + 1);
+    if (ctx == SFC_ELEM_ARMS)
+      return strbuf_flow_value(c, fm, strbuf_value_carries(c, v) ? SFC_ALIAS : SFC_ELEM, v, depth + 1);
     return ctx == SFC_ALIAS || ctx == SFC_SPLICE || ctx == SFC_TAIL || ctx == SFC_ARG
            ? strbuf_flow_value(c, fm, ctx, v, depth + 1) : nt_kind(nt, v) == NK_NilNode || strbuf_flow_unseen(c, v);
   }
@@ -17777,6 +17784,11 @@ static int strbuf_flow_value(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, in
        (emit_boxed_cond_arms) */
     if (ctx == SFC_ELEM && (k == NK_IfNode || k == NK_UnlessNode) && strbuf_flow_has_leaf(c, fm, v, 0))
       ctx = SFC_ELEM_ARMS;
+    /* The other String conditionals box the existing handle-valued
+       route (emit_boxed_cond_arms), whose arms are aliasing writes. */
+    if (ctx == SFC_ELEM && (k == NK_OrNode || k == NK_AndNode || k == NK_CaseNode) &&
+        (r.ty == TY_STRING || r.ty == TY_STRBUF) && strbuf_value_carries(c, v))
+      ctx = SFC_ALIAS;
     return strbuf_flow_cond(c, fm, ctx, v, depth);
   }
   if (ctx == SFC_BOX) return 0;
@@ -17881,9 +17893,16 @@ int strbuf_flow_carries(Compiler *c, StrbufFlowMemo *fm, int kind, int site, int
           comp_ntype(c, nt_ref(nt, site, "receiver")) == TY_ENUMERATOR ? SFC_SPLICE : SFC_ELEM;
     /* a `next`'s value and map!'s block value are stored as they are: a box
        or the handle itself */
+    /* A String conditional goes through emit_boxed_cond_arms, including
+       when map! or next stores it. Other values retain their raw route. */
     if (kind == SHFL_BLOCK && ctx == SFC_ELEM &&
-        (sk == NK_NextNode || (sk == NK_CallNode && nt_str(nt, site, "name") && is_map_bang_alias(nt_str(nt, site, "name")))))
-      ctx = SFC_BOX;
+        (sk == NK_NextNode || (sk == NK_CallNode && nt_str(nt, site, "name") && is_map_bang_alias(nt_str(nt, site, "name"))))) {
+      NodeKind vk = nt_kind(nt, unwrap_parens(c, v));
+      TyKind vt = repr_of(c, v).ty;
+      if ((vt != TY_STRING && vt != TY_STRBUF) ||
+          (vk != NK_IfNode && vk != NK_UnlessNode && vk != NK_OrNode && vk != NK_AndNode && vk != NK_CaseNode))
+        ctx = SFC_BOX;
+    }
     break;
   case SHFL_ARG: ctx = SFC_ARG; break;
   case SHFL_YIELD: {
