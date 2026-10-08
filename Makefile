@@ -274,7 +274,7 @@ build/rbs/%.o: $(RBS_DIR)/src/%.c
 # `spinel` is the single binary: it emits C and then drives cc to link it.
 # (SPINEL itself is defined above, just before the `all` target.)
 
-SPINEL_HDRS = src/builtin_ops.h src/builtin_name_traits.inc src/builtin_zero_ops.inc src/builtin_arity.inc src/codegen_call_arms.h src/builtin_names.h src/ty_traits.inc src/call_plan.h src/codegen_poly.h src/repr.h src/holder.h src/share.h src/node_table.h src/codegen.h src/codegen_internal.h src/types.h src/compiler.h src/analyze.h src/analyze_internal.h src/ffi_spec.h src/csplit.h
+SPINEL_HDRS = src/builtin_ops.h src/builtin_name_traits.inc src/builtin_zero_ops.inc src/builtin_arity.inc src/codegen_call_arms.h src/builtin_names.h src/ty_traits.inc src/call_plan.h src/codegen_poly.h src/repr.h src/holder.h src/share.h src/node_table.h src/codegen.h src/codegen_internal.h src/types.h src/compiler.h src/analyze.h src/analyze_internal.h src/ffi_spec.h src/csplit.h $(PLATFORM_HDRS)
 build/csrc/analyze_desugar.o build/csrc-work/analyze_desugar.o build/csrc/codegen_call.o build/csrc-work/codegen_call.o: $(wildcard src/*_method_names.inc)
 SPINEL_OBJ  = build/csrc/node_table.o build/csrc/types.o build/csrc/compiler.o \
                build/csrc/ffi_spec.o \
@@ -354,7 +354,7 @@ build/csrc/codegen_util.o: build/csrc/sp_rt_names.h
 
 FORCE:
 
-build/csrc/sp_parse_lib.o: src/spinel_parse.c src/sp_macro.c $(PRISM_LIB) | build/csrc
+build/csrc/sp_parse_lib.o: src/spinel_parse.c src/sp_macro.c $(PRISM_LIB) $(PLATFORM_HDRS) | build/csrc
 	$(CC) $(CFLAGS) -I$(PRISM_INC) -c src/spinel_parse.c -o $@
 
 # The compiler links the regexp engine so it can compile a literal at build
@@ -376,9 +376,9 @@ build/csrc/re_lit_check.o: src/re_lit_check.c $(RE_HDRS) | build/csrc
 RE_SRC = lib/regexp/re_compile.c lib/regexp/re_exec.c lib/regexp/re_utf8.c lib/regexp/unicase.c lib/regexp/re_spinel.c
 RE_OBJ = $(patsubst lib/regexp/%.c,build/regexp/%.o,$(RE_SRC))
 
-$(SPINEL): $(SPINEL_OBJ) build/csrc/sp_parse_lib.o build/csrc/re_lit_check.o $(RE_OBJ) $(PRISM_LIB)
+$(SPINEL): $(SPINEL_OBJ) build/csrc/sp_parse_lib.o build/csrc/re_lit_check.o $(RE_OBJ) $(PRISM_LIB) $(PLATFORM_OBJ)
 	@mkdir -p bin
-	$(CC) $(CFLAGS) $(SPINEL_OBJ) build/csrc/sp_parse_lib.o build/csrc/re_lit_check.o $(RE_OBJ) $(PRISM_LIB) -lm $(LDFLAGS) -o $@
+	$(CC) $(CFLAGS) $(SPINEL_OBJ) build/csrc/sp_parse_lib.o build/csrc/re_lit_check.o $(RE_OBJ) $(PRISM_LIB) $(PLATFORM_OBJ) -lm $(LDFLAGS) $(SPINEL_LDFLAGS) -o $@
 	@# Dev convenience: a repo-root `./spinel` pointing at the built binary
 	@# (the installed command is `spinel` too). Best-effort; gitignored.
 	@ln -sf $@ spinel 2>/dev/null || cp $@ spinel 2>/dev/null || true
@@ -429,12 +429,13 @@ san-check: $(SPINEL_SAN)
 # exit code (124 on timeout), regardless of which `timeout` is on PATH.
 # The bench target keys on 124 to mark a run as SKIP; busybox uses 143
 # and BSDs use 399, which would be misclassified. Built once from C.
+SPINEL_TIMEOUT_SRC ?= scripts/spinel-timeout.c
 # Parallel sub-makes can both rebuild it while another leg runs it. Link to
 # a PID-specific name, then rename: a reader always gets a complete binary.
-$(SPINEL_TIMEOUT): scripts/spinel-timeout.c
+$(SPINEL_TIMEOUT): $(SPINEL_TIMEOUT_SRC)
 	@mkdir -p $(@D)
 	t=$@.tmp.$$$$; trap 'rm -f $$t' 0; \
-	$(CC) $(CFLAGS) $< -o $$t && mv $$t $@
+	$(CC) $(CFLAGS) $< $(SPINEL_TIMEOUT_LDFLAGS) -o $$t && mv $$t $@
 
 # ---- RBS extractor ----
 # Reads sig/**/*.rbs, emits the seed-file format spinel_analyze consumes
@@ -449,9 +450,9 @@ rbs-missing:
 else
 rbs_extract: $(RBS_EXTRACT_BIN)
 
-$(RBS_EXTRACT_BIN): tools/spinel_rbs_extract.c $(RBS_LIB)
+$(RBS_EXTRACT_BIN): tools/spinel_rbs_extract.c $(RBS_LIB) $(PLATFORM_OBJ)
 	@mkdir -p $(@D)
-	$(CC) $(CFLAGS) -I$(RBS_INC) tools/spinel_rbs_extract.c $(RBS_LIB) -o $@
+	$(CC) $(CFLAGS) -I$(RBS_INC) tools/spinel_rbs_extract.c $(RBS_LIB) $(PLATFORM_OBJ) $(PLATFORM_LIBS) -o $@
 endif
 
 # ---- Runtime library (regexp + bigint + …) ----
@@ -467,7 +468,7 @@ build/regexp/%.o: lib/regexp/%.c $(RE_HDRS)
 	@mkdir -p build/regexp
 	$(CC) -c $(COPT) $(SEC_FLAGS) $(RE_CASE_FLAGS) -Ilib/regexp -Ilib/regexp/shim $< -o $@
 
-RT_HDRS = $(wildcard lib/*.h lib/regexp/*.h lib/regexp/*.inc lib/regexp/shim/*.h lib/regexp/shim/mruby/*.h)
+RT_HDRS = $(wildcard lib/*.h lib/regexp/*.h lib/regexp/*.inc lib/regexp/shim/*.h lib/regexp/shim/mruby/*.h) $(PLATFORM_HDRS)
 
 # One rule for every lib/*.c object. The per-object header lists here used to be
 # written by hand and had drifted: build/sp_array.o never named lib/sp_str.h,
@@ -569,7 +570,7 @@ SP_RT_LIB = lib/libspinel_rt.a
 
 RT_MEMBERS = sp_bigint sp_crypto sp_pack sp_time sp_core sp_net sp_system sp_gc sp_slab sp_alloc sp_dtoa sp_marshal sp_format sp_string sp_inspect sp_poly_cold sp_array sp_str sp_str_crypt sp_hash sp_proc sp_exc sp_re sp_random sp_fiber sp_sched sp_io sp_iobuffer sp_cold sp_process sp_process_status
 
-$(SP_RT_LIB): $(RE_OBJ) $(addprefix build/,$(addsuffix .o,$(RT_MEMBERS)))
+$(SP_RT_LIB): $(RE_OBJ) $(addprefix build/,$(addsuffix .o,$(RT_MEMBERS))) $(PLATFORM_OBJ)
 	ar rcs $@ $^
 
 # ---- Threaded runtime variant (-DSP_THREADS) ----
@@ -595,7 +596,7 @@ build/mt/%.o: lib/%.c $(RT_HDRS)
 
 RE_MT_OBJ = $(patsubst lib/regexp/%.c,build/mt/regexp/%.o,$(RE_SRC))
 
-$(SP_RT_MT_LIB): $(RE_MT_OBJ) $(addprefix build/mt/,$(addsuffix .o,$(RT_MEMBERS)))
+$(SP_RT_MT_LIB): $(RE_MT_OBJ) $(addprefix build/mt/,$(addsuffix .o,$(RT_MEMBERS))) $(PLATFORM_MT_OBJ)
 	ar rcs $@ $^
 
 # ---- ThreadSanitizer build of the threaded runtime (Phase 1 validation) ----
@@ -789,6 +790,12 @@ endif
 ifeq ($(shell uname -s),Darwin)
 TESTS := $(filter-out test/io_winsize_set.rb,$(TESTS))
 endif
+# A platform that cannot give some tests their subject lists them in
+# TEST_SKIP -- native Windows (win32.mk), for tests of what only a POSIX
+# system answers -- and they are not run there.
+ifneq ($(TEST_SKIP),)
+TESTS := $(filter-out $(TEST_SKIP),$(TESTS))
+endif
 # TEST_SHARD=k/n runs the k-th of n slices of the corpus (1-based), the
 # slice taken by position in the sorted list so every test lands in exactly
 # one: CI runs the slices as parallel jobs, since the corpus is what the
@@ -847,6 +854,9 @@ endif
 ifeq ($(SPINEL_INT_BITS),32)   # the same first-line marker as test/*.rb
 PKG_TESTS := $(filter-out $(shell grep -l '^\# spinel: int64' packages/*/test/*.rb),$(PKG_TESTS))
 endif
+ifneq ($(TEST_SKIP),)
+PKG_TESTS := $(filter-out $(TEST_SKIP),$(PKG_TESTS))
+endif
 ifneq ($(TEST_SHARD),)
 ifeq ($(TEST_ALWAYS),)
 PKG_TESTS := $(call shard_pick,$(PKG_TESTS))
@@ -902,7 +912,7 @@ PCH_ROOT := build/pch/$(CC_KIND)$(call sp_pathify,$(OPT))$(if $(SP_OV_DEFINE),pr
 PCH_FLAGS = $(CFLAGS) $(SP_OV_DEFINE) -Werror $(TEST_WARN_SUPPRESS) $(SEC_FLAGS)
 PCH_PLAIN  := $(PCH_ROOT)/plain/spinel_rt.h.gch
 PCH_NOPOLY := $(PCH_ROOT)/nopoly/spinel_rt.h.gch
-SP_LIB_HDRS := $(wildcard lib/*.h)
+SP_LIB_HDRS := $(wildcard lib/*.h) $(PLATFORM_HDRS)
 
 $(PCH_PLAIN): $(SP_LIB_HDRS)
 	@mkdir -p $(@D)
@@ -4127,6 +4137,7 @@ install: all bin/spin
 	install -d $(SPNLDIR)/lib/wasi/sys
 	for h in lib/wasi/*.h; do install -m 644 $$h $(SPNLDIR)/lib/wasi/; done
 	for h in lib/wasi/sys/*.h; do install -m 644 $$h $(SPNLDIR)/lib/wasi/sys/; done
+	$(PLATFORM_INSTALL)
 	@if [ -f $(SP_RT_WASI_LIB) ]; then \
 	  install -d $(SPNLDIR)/lib/wasm32-wasi; \
 	  install -m 644 $(SP_RT_WASI_LIB) $(SPNLDIR)/lib/wasm32-wasi/; \

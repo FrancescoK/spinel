@@ -1,0 +1,48 @@
+name: Windows cross-compile
+
+# Compile-only: the compiler and the runtime cross-built for native Windows
+# with Ubuntu's x86_64-w64-mingw32 toolchain (win32.mk; see docs/windows.md).
+# Native Windows is community-maintained and nothing waits on it, so this
+# never blocks a push or a merge: it is a workflow of its own, not a
+# required check, and `continue-on-error` keeps a failure from failing the
+# run -- it only marks the job, for whoever maintains lib/win32/ to see.
+# It runs on master pushes, and on pull requests that touch the Windows
+# build, so it adds nothing to the queue of the other pull requests.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+    paths:
+      - 'lib/win32/**'
+      - 'win32.mk'
+      - 'common.mk'
+      - '.github/workflows/windows-cross.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: windows-cross-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cross:
+    name: x86_64-w64-mingw32 (compile only)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install the MinGW-w64 cross toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64 binutils-mingw-w64-x86-64
+
+      - name: Fetch libprism sources
+        run: make deps
+
+      # The posix-threads variant, as MSYS2's UCRT64 gcc is: the threaded
+      # runtime includes <pthread.h>.
+      - name: Cross-compile the compiler and the runtime
+        run: make -j$(nproc) CC=x86_64-w64-mingw32-gcc-posix bin/spinel lib/libspinel_rt.a lib/libspinel_rt_mt.a
