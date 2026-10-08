@@ -4238,10 +4238,9 @@ void emit_poly_defaults_n(Compiler *c, int id, int recv, const char *name, const
     else {
       emit_kwh_pos_hash(c, kw, 1, &mb);
     }
-    char gen[600];
-    snprintf(gen, sizeof gen, "sp_box_obj(sp_poly_hash_merge(_t%d, %s), SP_BUILTIN_POLY_POLY_HASH)",
-             tv, mb.p ? mb.p : "sp_box_nil()");
-    if (ret == TY_POLY) buf_printf(b, " default: _t%d = %s; break;", tr, gen);
+    if (ret == TY_POLY)
+      buf_printf(b, " default: _t%d = sp_box_obj(sp_poly_hash_merge(_t%d, %s), SP_BUILTIN_POLY_POLY_HASH); break;",
+                 tr, tv, mb.p ? mb.p : "sp_box_nil()");
     /* Never leave the switch without a default: with every user arm
        dropped as incompatible, an armless switch fell through and the
        call answered the result temp's zero initializer, silently. */
