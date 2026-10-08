@@ -1299,6 +1299,10 @@ static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int 
     return -1;
   case BSH_RECV: case BSH_ITER_FRESH_RECV:
     return rv;
+  case BSH_CLAMP:
+    /* A Range holds its endpoints in the existing element class. */
+    for (int i = 0; i < nv; i++) rv = sh_join(F, rv, argc == 1 ? sh_elem(F, vals[i]) : vals[i]);
+    return rv;
   case BSH_ELEM:
     if (container && nv >= 1) sh_lookup_key(F, rv, vals[0]);
     /* `a[i, n]`, `a[r]`: a run of elements */
@@ -1950,7 +1954,8 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
   /* an in-place String mutation of the receiver: through a boxed or an
      untyped receiver, only one a String can make, on a receiver that can
      be a String */
-  if (maybe_str && sp_str_mutator(name, 0) &&
+  /* Encoding changes keep the bytes but are visible through every alias. */
+  if (maybe_str && (sp_str_mutator(name, 0) || (c->share_strings && is_encoding_mutator(name))) &&
       (rt == TY_STRING || rt == TY_STRBUF ||
        (!sh_args_refuse_string(c, n, name) && an_recv_may_be_string(c, recv, &(PolyLits){ sh_blk_bound, F })))) {
     int base = sh_self_chain_base(F, c, recv);
@@ -1964,7 +1969,8 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
     const char *sym = sh_lit_name(nt, bx);
     if (sym && bx >= 0 && nt_kind(nt, bx) == NK_SymbolNode) {
       /* `&:upcase!` runs the name on each element */
-      if (sp_str_mutator(sym, 0)) sh_mark_at(F, sh_elem(F, rv), SHF_MUT | SHF_INDIRECT, n);
+      if (sp_str_mutator(sym, 0) || (c->share_strings && is_encoding_mutator(sym)))
+        sh_mark_at(F, sh_elem(F, rv), SHF_MUT | SHF_INDIRECT, n);
       sh_dyn_name(F, sym);
     }
     else sh_union(F, sh_elem(F, rv), F->unknown);
@@ -2842,11 +2848,14 @@ static void sh_mutable_consts(ShareFacts *F, Compiler *c) {
 
 /* A constant read's holder: one some write makes mutable, or a container
    the program never writes (ARGV); a constant holding a frozen String is
-   none. */
+   none. Under --share-strings it also names a frozen String: a mutated
+   alias must keep its identity and frozen state on the handle route. */
 static int sh_const_read(ShareFacts *F, Compiler *c, int n) {
   const char *nm = nt_str(c->nt, n, "name");
   TyKind t = c->ntype[n];
   if (!nm || !sh_may_hold(c, t)) return -1;
+  if (c->share_strings && (t == TY_STRING || t == TY_STRBUF))
+    return sh_holder(F, SHK_CONST, 0, -1, nm, n);
   for (int i = 0; i < F->nmconst; i++)
     if (sp_streq(F->mconst[i], nm)) return sh_holder(F, SHK_CONST, 0, -1, nm, n);
   return t == TY_STRING || t == TY_STRBUF ? -1 : sh_holder(F, SHK_CONST, 0, -1, nm, n);

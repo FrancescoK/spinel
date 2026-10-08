@@ -6445,7 +6445,7 @@ void emit_str_pattern_expr(Compiler *c, int node, Buf *b) {
   emit_str_expr_nilable(c, node, b);
 }
 
-static void emit_strbuf_force_encoding(Compiler *c, const char *name, const char *ref, const int *argv, int argc, Buf *b);
+static void emit_strbuf_force_encoding(Compiler *c, const char *name, const char *ref, int hr, const int *argv, int argc, Buf *b);
 static int emit_scalar_call_arms(Compiler *c, int id, Buf *b);
 /* The arms evaluate a scalar receiver into text before they look at the
    method name, and its prelude (`Foo.new` hoisted into a temp for
@@ -6891,6 +6891,15 @@ static int str_arms_slice_encode(Compiler *c, int id, Buf *b, const char *name, 
   }
   else if (sp_streq(name, "clamp") && (argc == 2 ||
            (argc == 1 && nt_type(c->nt, argv[0]) && sp_streq(nt_type(c->nt, argv[0]), "RangeNode")))) {
+    int ops[3];
+    if (strbuf_route_clamp(c, id, ops)) {
+      /* Publish the selected handle for a method's return pickup too. */
+      int demand = repr_of(c, id).demand;
+      if (!demand) buf_puts(b, "sp_strbuf_read_pub(");
+      emit_strbuf_route(c, id, b);
+      if (!demand) buf_puts(b, ")");
+      return 1;
+    }
     int lo_n, hi_n;
     if (argc == 2) { lo_n = argv[0]; hi_n = argv[1]; }
     else { int rn = argv[0]; lo_n = nt_ref(c->nt, rn, "left"); hi_n = nt_ref(c->nt, rn, "right"); }
@@ -6918,7 +6927,8 @@ static int str_arms_slice_encode(Compiler *c, int id, Buf *b, const char *name, 
      `b` and non-bang `encode` return a NEW string, so they never raise. */
   else if ((is_encoding_mutator(name)) && argc <= 2) {
     char feref[1024];
-    if (strbuf_slot_ref(c, recv, feref, sizeof feref)) emit_strbuf_force_encoding(c, name, feref, argv, argc, b);
+    int hr = strbuf_recv_handle(c, id, recv, feref, sizeof feref);
+    if (hr) emit_strbuf_force_encoding(c, name, feref, hr, argv, argc, b);
     else emit_str_force_encoding(c, name, r, argv, argc, b);
   }
   else if ((is_match_operator(name)) && argc == 1 &&
@@ -10571,10 +10581,12 @@ void emit_str_force_encoding(Compiler *c, const char *name, const char *r, const
    (sp_fd_publish). Marked on the bytes alone, the tag went to a copy -- a
    handle local or ivar reads back as one -- or was dropped by the next
    append that moved the bytes. `ref` is the handle; the value is its bytes. */
-static void emit_strbuf_force_encoding(Compiler *c, const char *name, const char *ref, const int *argv, int argc, Buf *b) {
+static void emit_strbuf_force_encoding(Compiler *c, const char *name, const char *ref, int hr, const int *argv, int argc, Buf *b) {
   int th = ++g_tmp;
   char hv[24]; snprintf(hv, sizeof hv, "_t%d", th);
-  buf_printf(b, "({ sp_String *_t%d = %s; if (!_t%d) sp_nil_recv(\"%s\"); sp_String_force_encoding(_t%d, ", th, ref, th, name, th);
+  buf_printf(b, "({ sp_String *_t%d = %s;", th, ref);
+  emit_route_recv_root(c, hr, th, argc, argv, TY_STRING, b);
+  buf_printf(b, " if (!_t%d) sp_nil_recv(\"%s\"); sp_String_force_encoding(_t%d, ", th, name, th);
   emit_strbuf_force_encoding_mode(c, name, hv, argv, argc, b);
   buf_printf(b, "); sp_String_cstr(_t%d); })", th);
 }

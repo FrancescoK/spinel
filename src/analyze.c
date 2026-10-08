@@ -15090,6 +15090,8 @@ int an_arg_is_shared_handle(Compiler *c, int node) {
   const NodeTable *nt = c->nt;
   if (node < 0) return 0;
   if (repr_self_shared(c, node)) return 1;
+  int ops[3];
+  if (strbuf_route_clamp(c, node, ops)) return 1;
   if (nt_kind(nt, node) == NK_LocalVariableReadNode) {
     const char *vn = nt_str(nt, node, "name");
     Scope *vs = vn ? comp_scope_of(c, node) : NULL;
