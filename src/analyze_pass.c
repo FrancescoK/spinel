@@ -15544,8 +15544,11 @@ int infer_return_types(Compiler *c) {
     }
     for (int s = 1; s < ns; s++) {
       /* A tail conditional re-derives its blockless value in irt_scope.
-         Keep that fact available to callers visited before the callee. */
-      if (c->scopes[s].yields && block_given_tail_then_last(c, scope_body_last(c, s)) >= 0) continue;
+         Keep that fact available to callers visited before the callee.
+         Shared String storage needs it during late inference; leave the
+         default build's return convergence unchanged. */
+      if (c->share_strings && c->scopes[s].yields &&
+          block_given_tail_then_last(c, scope_body_last(c, s)) >= 0) continue;
       c->scopes[s].ret_noblock = TY_UNKNOWN;
     }
     for (int id = 0; id < nt->count; id++) {
