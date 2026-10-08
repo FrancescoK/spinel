@@ -33,7 +33,7 @@ ifneq ($(OS),Windows_NT)
 endif
 PLATFORM_HDRS  = $(wildcard lib/win32/*.h lib/win32/*/*.h)
 # the winsock and CNG import libraries the shim calls
-PLATFORM_LIBS  = -lws2_32 -lbcrypt
+PLATFORM_LIBS  = -lws2_32 -lbcrypt -lwinpthread
 
 PLATFORM_SRC    = lib/win32/sp_win32.c lib/win32/sp_win32_net.c lib/win32/sp_win32_ctx.c lib/win32/sp_win32_crypt.c lib/win32/sp_win32_driver.c
 PLATFORM_OBJ    = $(patsubst lib/win32/%.c,build/win32/%.o,$(PLATFORM_SRC))
