@@ -1342,6 +1342,11 @@ static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int 
     return r;
   }
   case BSH_FILL1:
+    if (argc == 3 && is_positional_io(nt_str(nt, n, "name"))) {
+      int b = sh_val(F, c, argv[2]);
+      sh_mark_at(F, b, SHF_MUT | (sh_holder_read(nt, argv[2]) ? 0 : SHF_INDIRECT), n);
+      return b;
+    }
     if (argc >= 2) {
       int b = sh_val(F, c, argv[1]);
       sh_mark_at(F, b, SHF_MUT | (sh_holder_read(nt, argv[1]) ? 0 : SHF_INDIRECT), n);
