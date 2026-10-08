@@ -13898,7 +13898,7 @@ static void scan_prologue_features(Compiler *c) {
           {"StringScanner","strscan"}, {"Base64","base64"}, {"Digest","digest"},
           {"ERB","erb"}, {"OptionParser","optparse"}, {"Pathname","pathname"},
           {"SecureRandom","securerandom"}, {"Tempfile","tempfile"},
-          {"CGI","cgi"}, {"Benchmark","benchmark"}, {"Shellwords","shellwords"},
+          {"CGI","cgi"}, {"Benchmark","benchmark"}, {"Shellwords","shellwords"}, {"Find","find"},
           {NULL,NULL} };
         for (int pk = 0; PKG[pk].cls; pk++) {
           if (!sp_streq(nm, PKG[pk].cls)) continue;

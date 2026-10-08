@@ -1,0 +1,10 @@
+ROOT
+ROOT/café.txt
+ROOT/empty
+--
+ROOT/
+ROOT/café.txt
+ROOT/empty
+--
+[#<Encoding:UTF-8>]
+["café.txt"]

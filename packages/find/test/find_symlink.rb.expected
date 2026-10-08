@@ -1,0 +1,7 @@
+ROOT
+ROOT/broken
+ROOT/link
+ROOT/real
+ROOT/real/f.txt
+--
+ROOT/link

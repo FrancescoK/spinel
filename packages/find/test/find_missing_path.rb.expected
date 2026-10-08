@@ -1,0 +1,4 @@
+block: Errno::ENOENT
+ignore_error: Errno::ENOENT
+blockless: Errno::ENOENT
+[]

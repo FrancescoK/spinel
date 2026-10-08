@@ -1,0 +1,8 @@
+Enumerator
+["ROOT", "ROOT/a.txt", "ROOT/sub", "ROOT/sub/b.rb"]
+["b.rb"]
+4
+"ROOT"
+"ROOT"
+"ROOT/a.txt"
+4
