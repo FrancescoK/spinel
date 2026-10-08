@@ -691,11 +691,11 @@ static inline void sp_mark_string(const char *s) {
 }
 static inline void sp_mark_rbval(sp_RbVal v) {
   if (v.tag == SP_TAG_STR) sp_mark_string(v.v.s);
-  /* A class boxed by name holds its name: `e.class` of an exception names it
-     with a fresh copy (sp_exc_class_name), a Method's owner likewise, and
-     nothing else keeps that copy -- an Array holding the class printed the
-     next string allocated in its place. Literal names (SPL) are not heap
-     strings and mark as nothing. */
+  /* A class boxed by name holds its name: a Method's owner is named with a
+     fresh copy, and nothing else keeps that copy -- an Array holding the
+     class printed the next string allocated in its place. Literal names
+     (SPL), and the copy kept for an exception's class (sp_exc_class_name),
+     are not heap strings and mark as nothing. */
   else if (v.tag == SP_TAG_CLASS && v.cls_id == SP_CLASS_BY_NAME) sp_mark_string(v.v.s);
   else if (v.tag == SP_TAG_OBJ && v.cls_id != SP_BUILTIN_FOREIGN_PTR &&
            v.cls_id != SP_BUILTIN_REGEX && v.cls_id != SP_BUILTIN_ARGF) sp_gc_mark(v.v.p);
