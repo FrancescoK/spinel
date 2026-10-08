@@ -1,0 +1,6 @@
+{"row" => {"key" => "new"}}
+[["a", "replacement"], 0]
+[{1 => "two"}, 0]
+[[["shared!"], 0], "shared!"]
+"b"
+{"key" => "value"}
