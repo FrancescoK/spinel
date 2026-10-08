@@ -993,7 +993,7 @@ re-lit-test: $(SPINEL)
 # right all the same, and where the rounds stopped decided what was emitted.
 share-strings-test: $(SPINEL)
 	@tmp=$$(mktemp -d "$${TMPDIR:-/tmp}/spinel-share.XXXXXX"); ok=1; \
-	for t in test/share/*.rb test/share_strings_*.rb test/nullable_string_identity.rb test/widened_param_reaches_its_callee.rb $$(cat test/share/reject.list); do \
+	for t in test/share/*.rb test/share_strings_*.rb test/nullable_string_identity.rb test/widened_param_reaches_its_callee.rb test/reader_or_assign_frozen.rb $$(cat test/share/reject.list); do \
 	  e="$$t.expected"; case "$$t" in test/reject/*) e="test/share/reject/$${t##*/}.expected";; esac; \
 	  if $(SPINEL) --share-strings "$$t" -o "$$tmp/b" >"$$tmp/out" 2>&1; then \
 	    ! grep -q 'did not converge' "$$tmp/out" || { echo "share-strings-test: FAIL $$t (the inference fixpoint ran to its round cap)"; ok=0; }; \

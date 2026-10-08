@@ -1,0 +1,5 @@
+["a\u0000b!?.:", "a\u0000b!?.:", "a\u0000b!?.:", "a\u0000b!?.:", "a\u0000b!?.:"]
+[true, true, true, true]
+["outside!", "outside!", true]
+[true, [102, 0, 114, 111, 122, 101, 110], true]
+FrozenError
