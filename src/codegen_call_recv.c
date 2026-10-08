@@ -10187,6 +10187,13 @@ static int str_force_encoding_mode(Compiler *c, const int *argv, int argc) {
   }
   return fe_bin ? 1 : fe_txt ? 0 : -1;
 }
+/* force_encoding(enc) with an enc that is no literal (a local, a default
+   parameter): the runtime picks the tag from the Encoding or name. */
+static int str_force_encoding_computed(Compiler *c, const char *name, const int *argv, int argc) {
+  if (!sp_streq(name, "force_encoding") || argc != 1) return 0;
+  const char *at = nt_type(c->nt, argv[0]);
+  return !at || (!sp_streq(at, "ConstantPathNode") && !sp_streq(at, "StringNode"));
+}
 void emit_str_force_encoding(Compiler *c, const char *name, const char *r, const int *argv, int argc, Buf *b) {
   int mode = str_force_encoding_mode(c, argv, argc);
   int fe_bin = mode == 1, fe_txt = mode == 0;
@@ -10195,7 +10202,13 @@ void emit_str_force_encoding(Compiler *c, const char *name, const char *r, const
      FrozenError the mutability check reads a NULL as */
   buf_printf(b, "({ const char *_t%d = %s; if (!_t%d) sp_nil_recv(\"%s\"); sp_str_check_mutable(_t%d); ",
              trc, r, trc, name, trc);
-  if (fe_bin) buf_printf(b, "sp_str_as_binary(_t%d); })", trc);
+  if (str_force_encoding_computed(c, name, argv, argc)) {
+    buf_printf(b, "int _m%d = sp_force_encoding_mode(", trc);
+    emit_boxed(c, argv[0], b);
+    buf_printf(b, "); if (_m%d == 1) sp_str_as_binary(_t%d); else if (_m%d == 0) sp_str_as_text(_t%d); _t%d; })",
+               trc, trc, trc, trc, trc);
+  }
+  else if (fe_bin) buf_printf(b, "sp_str_as_binary(_t%d); })", trc);
   else if (fe_txt) buf_printf(b, "sp_str_as_text(_t%d); })", trc);
   else buf_printf(b, "_t%d; })", trc);
 }
@@ -10206,8 +10219,15 @@ void emit_str_force_encoding(Compiler *c, const char *name, const char *r, const
    append that moved the bytes. `ref` is the handle; the value is its bytes. */
 static void emit_strbuf_force_encoding(Compiler *c, const char *name, const char *ref, const int *argv, int argc, Buf *b) {
   int th = ++g_tmp;
-  buf_printf(b, "({ sp_String *_t%d = %s; if (!_t%d) sp_nil_recv(\"%s\"); sp_String_force_encoding(_t%d, %d); sp_String_cstr(_t%d); })",
-             th, ref, th, name, th, str_force_encoding_mode(c, argv, argc), th);
+  buf_printf(b, "({ sp_String *_t%d = %s; if (!_t%d) sp_nil_recv(\"%s\"); ", th, ref, th, name);
+  /* a frozen handle raises before the argument is looked at, as in CRuby */
+  if (str_force_encoding_computed(c, name, argv, argc)) {
+    buf_printf(b, "sp_String_force_encoding(_t%d, sp_String_is_frozen(_t%d) ? -1 : sp_force_encoding_mode(", th, th);
+    emit_boxed(c, argv[0], b);
+    buf_puts(b, "))");
+  }
+  else buf_printf(b, "sp_String_force_encoding(_t%d, %d)", th, str_force_encoding_mode(c, argv, argc));
+  buf_printf(b, "; sp_String_cstr(_t%d); })", th);
 }
 static void emit_str_encode_call(Compiler *c, const char *recv_txt, const int *argv, int argc, Buf *b) {
   const NodeTable *nt = c->nt;

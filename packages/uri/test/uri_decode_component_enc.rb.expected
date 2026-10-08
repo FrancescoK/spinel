@@ -1,0 +1,7 @@
+"a b cé"
+#<Encoding:UTF-8>
+"\xC3\xA9"
+#<Encoding:BINARY (ASCII-8BIT)>
+2
+#<Encoding:UTF-8>
+invalid %-encoding (100%)

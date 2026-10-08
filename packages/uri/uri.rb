@@ -194,7 +194,7 @@ module URI
     nil
   end
 
-  def self.decode_www_form_component(str)
+  def self.decode_www_form_component(str, enc = Encoding::UTF_8)
     out = String.new
     s = str.to_s
     i = 0
@@ -215,7 +215,7 @@ module URI
         i += 1
       end
     end
-    out.force_encoding("UTF-8")
+    out.force_encoding(enc)
   end
 
   # The www-form decoding of one key or value: "+" is a space and a "%" with two
