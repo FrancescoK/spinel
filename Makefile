@@ -1020,12 +1020,18 @@ SHARE_SKIP = test/share/share_strings_fiddle.rb packages/ffi/test/%.rb packages/
 endif
 share-strings-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS) $(BUNDLED_NATIVE_MT_OBJS)
 	@tmp=$$(mktemp -d "$${TMPDIR:-/tmp}/spinel-share.XXXXXX"); ok=1; \
+	check_output() { \
+	  if [ -f "$$1.err.expected" ]; then \
+	    "$$tmp/b" >"$$tmp/stdout" 2>"$$tmp/stderr"; \
+	    cmp -s "$$tmp/stdout" "$$2" && cmp -s "$$tmp/stderr" "$$1.err.expected"; \
+	  else "$$tmp/b" 2>&1 | cmp -s - "$$2"; fi; \
+	}; \
 	for t in $(filter-out $(SHARE_SKIP),$(SHARE_TESTS)); do \
 	  e="$$t.expected"; case "$$t" in test/reject/*) e="test/share/reject/$${t##*/}.expected";; esac; \
 	  if $(SPINEL) --share-strings "$$t" -o "$$tmp/b" >"$$tmp/out" 2>&1; then \
 	    ! grep -q 'did not converge' "$$tmp/out" || { echo "share-strings-test: FAIL $$t (the inference fixpoint ran to its round cap)"; ok=0; }; \
-	    "$$tmp/b" 2>&1 | cmp -s - "$$e" || { echo "share-strings-test: FAIL $$t"; ok=0; }; \
-	    SPINEL_GC_STRESS=1 "$$tmp/b" 2>&1 | cmp -s - "$$e" || { echo "share-strings-test: FAIL $$t (GC stress)"; ok=0; }; \
+	    check_output "$$t" "$$e" || { echo "share-strings-test: FAIL $$t"; ok=0; }; \
+	    SPINEL_GC_STRESS=1 check_output "$$t" "$$e" || { echo "share-strings-test: FAIL $$t (GC stress)"; ok=0; }; \
 	  else echo "share-strings-test: FAIL $$t (refused)"; cat "$$tmp/out"; ok=0; fi; \
 	done; \
 	for flags in '' '--share-strings'; do \
