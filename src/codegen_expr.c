@@ -3864,6 +3864,14 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
   return 0;
 }
 
+/* An end of a String Range that makes nothing and runs nothing: a literal,
+   or a read of a variable or a constant. */
+static int srange_end_is_plain(Compiler *c, int id) {
+  NodeKind k = nt_kind(c->nt, id);
+  return k == NK_StringNode || k == NK_ConstantReadNode || k == NK_GlobalVariableReadNode ||
+         subtree_is_pure_read(c, id);
+}
+
 /* A Range literal in value position (a..b, a...b, endless and beginless) (emit_expr_node's arms, in their order) */
 static int emit_range_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *ty) {
   if (!(sp_streq(ty, "RangeNode"))) return 0;
@@ -3941,11 +3949,65 @@ static int emit_range_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, con
   }
   /* ("a".."e"): the distinct string range, endpoints kept as strings (#3064) */
   if (repr_of(c, id).range == TY_STRING) {
+    /* Two ends each made on the spot (`(i.to_s..j.to_s)`) were siblings in
+       one C call: nothing held the one made first while the other was made,
+       so a collection in between freed it, and gcc made the end before the
+       begin. The begin goes into a rooted temp ahead of the end. An end that
+       is a literal or a plain read is nothing to collect or to order, and a
+       begin that already ran into a temp is held there. */
+    int bind = left >= 0 && right >= 0 && !arg_ran_first(left, 0) &&
+               !srange_end_is_plain(c, left) && !srange_end_is_plain(c, right);
+    /* A read beside an end that runs something (`(s..(s = t; j.to_s))`) stays
+       where the C compiler puts it, and goes into a rooted slot there: the
+       other end may let go of the String it read, and the Range would carry
+       an end already freed. So do two ends that each make a String though
+       one is a read (a shared String is read as a copy), either of which a
+       collection in the other could take. */
+    int lt = 0, rt = 0;
+    if (!bind && left >= 0 && right >= 0) {
+      int lran = arg_ran_first(left, 0), rran = arg_ran_first(right, 0);
+      int lrun = !lran && !srange_end_is_plain(c, left), rrun = !rran && !srange_end_is_plain(c, right);
+      int lmk = !lran && operand_may_allocate(c, left), rmk = !rran && operand_may_allocate(c, right);
+      /* a literal or a nil that makes nothing is nothing to keep */
+      int lcon = !lmk && (nt_kind(nt, left) == NK_StringNode || nt_kind(nt, left) == NK_NilNode);
+      int rcon = !rmk && (nt_kind(nt, right) == NK_StringNode || nt_kind(nt, right) == NK_NilNode);
+      /* a local the other end does not name and cannot reach through a
+         Proc still holds its String when the Range is made */
+      const char *ln = nt_kind(nt, left) == NK_LocalVariableReadNode ? nt_str(nt, left, "name") : NULL;
+      const char *rn = nt_kind(nt, right) == NK_LocalVariableReadNode ? nt_str(nt, right, "name") : NULL;
+      int lkept = !lmk && ln && !subtree_reads_local(nt, right, ln) &&
+                  !subtree_writes_local(c, right, ln) && !subtree_may_run_proc(c, right);
+      int rkept = !rmk && rn && !subtree_reads_local(nt, left, rn) &&
+                  !subtree_writes_local(c, left, rn) && !subtree_may_run_proc(c, left);
+      if (!lran && !lcon && !lkept && (rrun || (lmk && rmk))) lt = ++g_tmp;
+      if (!rran && !rcon && !rkept && (lrun || (lmk && rmk))) rt = ++g_tmp;
+    }
+    int bt = bind ? ++g_tmp : 0;
+    if (bind) {
+      buf_printf(b, "({ const char *_t%d = ", bt);
+      emit_str_expr_nilable(c, left, b);
+      buf_printf(b, "; SP_GC_ROOT(_t%d); ", bt);
+    }
+    if (lt || rt) buf_puts(b, "({ ");
+    if (lt) buf_printf(b, "const char *_t%d = NULL; SP_GC_ROOT(_t%d); ", lt, lt);
+    if (rt) buf_printf(b, "const char *_t%d = NULL; SP_GC_ROOT(_t%d); ", rt, rt);
     buf_puts(b, "sp_srange_new(");
-    if (left >= 0) emit_str_expr_nilable(c, left, b); else buf_puts(b, "NULL");
+    if (bind) buf_printf(b, "_t%d", bt);
+    else if (left >= 0) {
+      if (lt) buf_printf(b, "(_t%d = ", lt);
+      emit_str_expr_nilable(c, left, b);
+      if (lt) buf_puts(b, ")");
+    }
+    else buf_puts(b, "NULL");
     buf_puts(b, ", ");
-    if (right >= 0) emit_str_expr_nilable(c, right, b); else buf_puts(b, "NULL");
+    if (right >= 0) {
+      if (rt) buf_printf(b, "(_t%d = ", rt);
+      emit_str_expr_nilable(c, right, b);
+      if (rt) buf_puts(b, ")");
+    }
+    else buf_puts(b, "NULL");
     buf_printf(b, ", %d)", excl);
+    if (bind || lt || rt) buf_puts(b, "; })");
     return 1;
   }
   /* sp_Range holds sp_int bounds, so a Range OBJECT over user objects has

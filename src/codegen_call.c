@@ -13105,7 +13105,26 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
         if (fr == 2) emit_str_eq_ordered(c, recv, argv[0], eq, b);
         else if (fr == 5) { buf_puts(b, eq ? "sp_range_eq(" : "(!sp_range_eq("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, eq ? ")" : "))"); }
         else if (fr == 6) { buf_puts(b, eq ? "sp_frange_eq(" : "(!sp_frange_eq("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, eq ? ")" : "))"); }
-        else if (fr == 7) { buf_puts(b, eq ? "sp_srange_eq(" : "(!sp_srange_eq("); emit_expr(c, recv, b); buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, eq ? ")" : "))"); }
+        else if (fr == 7) {
+          /* two String Ranges, each two Strings by value: one that no name
+             holds, beside one that may allocate, goes into a rooted slot
+             where the C compiler makes it */
+          int lt = 0, at = 0;
+          if (!arg_ran_first(recv, 0) && !subtree_is_pure_read(c, recv) && operand_may_allocate(c, argv[0])) lt = ++g_tmp;
+          if (!arg_ran_first(argv[0], 0) && !subtree_is_pure_read(c, argv[0]) && operand_may_allocate(c, recv)) at = ++g_tmp;
+          if (lt || at) buf_puts(b, "({ ");
+          if (lt) { buf_printf(b, "sp_StrRange _t%d = {0}; ", lt); emit_gc_root_tmp_refs(c, rt, lt, b); buf_puts(b, " "); }
+          if (at) { buf_printf(b, "sp_StrRange _t%d = {0}; ", at); emit_gc_root_tmp_refs(c, a0, at, b); buf_puts(b, " "); }
+          buf_puts(b, eq ? "sp_srange_eq(" : "(!sp_srange_eq(");
+          if (lt) buf_printf(b, "(_t%d = ", lt);
+          emit_expr(c, recv, b);
+          buf_puts(b, lt ? "), " : ", ");
+          if (at) buf_printf(b, "(_t%d = ", at);
+          emit_expr(c, argv[0], b);
+          if (at) buf_puts(b, ")");
+          buf_puts(b, eq ? ")" : "))");
+          if (lt || at) buf_puts(b, "; })");
+        }
         /* two nullable Floats: a nil is the sentinel, a NaN, and nil == nil
            though NaN != NaN (the struct-member compare above says the same) */
         else if (rt == TY_FLOAT && a0 == TY_FLOAT &&
@@ -19108,6 +19127,8 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
       if (ty_gc_holds_refs(c, ty[i])) { emit_gc_root_tmp_refs(c, ty[i], tmp[i], b); buf_puts(b, " "); }
     }
     else if (ty[i] == TY_POLY) buf_printf(b, "SP_GC_ROOT_RBVAL(_t%d); ", tmp[i]);
+    /* a String Range is two Strings by value, each rooted as a local's are */
+    else if (ty[i] == TY_STR_RANGE) { emit_gc_root_tmp_refs(c, ty[i], tmp[i], b); buf_puts(b, " "); }
     else if (needs_root(ty[i])) buf_printf(b, "SP_GC_ROOT(_t%d); ", tmp[i]);
     free(opb[i].p);
   }
