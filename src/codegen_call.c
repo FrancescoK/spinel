@@ -8726,12 +8726,14 @@ int ctor_arm_incompat(Compiler *c, Scope *is, const ArgLayout *L, const int *arg
   for (int j = 0; is && argv && j < is->nparams; j++) {
     if (L->from[j] != ARG_NODE) continue;
     LocalVar *cp = is->pnames && is->pnames[j] ? scope_local(is, is->pnames[j]) : NULL;
-    TyKind ptc = cp ? repr_of_slot(c, cp).as_ty : TY_POLY;
-    TyKind atc = repr_of(c, argv[L->arg[j]]).as_ty;
+    TyKind ptc = cp ? (c->share_strings ? repr_of_slot(c, cp).as_ty : cp->type) : TY_POLY;
+    TyKind atc = c->share_strings ? repr_of(c, argv[L->arg[j]]).as_ty : comp_ntype(c, argv[L->arg[j]]);
     /* A shared handle and a String read hold the same Ruby class. The
-       arm's boxed argument is converted by emit_ctor_arm_param. */
-    if ((ptc == TY_STRBUF && atc == TY_STRING) ||
-        (ptc == TY_STRING && atc == TY_STRBUF)) continue;
+       arm's boxed argument is converted by emit_ctor_arm_param.
+       Keep the default build's semantic-type filter: it has no need for
+       the extra arms admitted by the sharing representation. */
+    if (c->share_strings && ((ptc == TY_STRBUF && atc == TY_STRING) ||
+                            (ptc == TY_STRING && atc == TY_STRBUF))) continue;
     if (ptc != TY_POLY && ptc != TY_UNKNOWN && atc != TY_POLY && atc != TY_UNKNOWN && ptc != atc)
       return 1;
   }
