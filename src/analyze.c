@@ -14971,11 +14971,13 @@ static int an_local_aliases_reach(const ALocalAliases *t, int si, const char *fr
    shared ivar)? */
 static int strbuf_container_stores_string(Compiler *c, const char *contn, Scope *conts);
 static int strbuf_container_stores_nonstring(Compiler *c, const char *contn, Scope *conts);
-/* A receiverless builtin raise leaves no value for a tail to share. */
+/* A receiverless builtin raise leaves no value for a tail to share.
+   An override in the enclosing class's chain can return a value. */
 static int an_call_raises(Compiler *c, int node) {
   const NodeTable *nt = c->nt;
   return node >= 0 && nt_kind(nt, node) == NK_CallNode && nt_ref(nt, node, "receiver") < 0 &&
          nt_str(nt, node, "name") && is_raise_alias(nt_str(nt, node, "name")) &&
+         !an_bare_call_class_owned(c, node) &&
          comp_method_index(c, nt_str(nt, node, "name")) < 0;
 }
 /* Is the last statement of statement list `st` a shared handle's slot
@@ -18292,7 +18294,8 @@ static int an_mutated_handle_returns(Compiler *c, int **ret_start, int **ret_lis
    any call of the method can take the handle as the deep-return pickup does
    (Scope.ret_handle). A method spliced at its calls (one that yields, a proc
    form) has no call to pick up from; one typed other than String answers
-   no handle to pick up. Each method is decided once, its tail calls'
+   no handle to pick up. Fresh String and nil arms use the pickup's existing
+   fresh-tail clearing and nil check. Each method is decided once, its tail calls'
    targets first (a cycle answers no). */
 enum { RH_UNSEEN, RH_BUSY, RH_YES, RH_NO };
 static int an_ret_handle(Compiler *c, RetHandles *R, int mi);
@@ -18304,6 +18307,7 @@ static int an_tail_handle(Compiler *c, RetHandles *R, int n, TailCount *tc) {
   const NodeTable *nt = c->nt;
   if (an_tail_is_shared_handle(c, n, 1, tc, R)) return 1;
   NodeKind k = n >= 0 ? nt_kind(nt, n) : NK_NONE;
+  if (k == NK_CallNode && c->ntype[n] == TY_NIL) { tc->nils++; return 1; }
   if (k == NK_SuperNode || k == NK_ForwardingSuperNode) {
     const CallPlan *p = cplan_user_fresh(c, n);
     int ok = p->dispatch == CP_DIRECT && p->mi > 0 && an_ret_handle(c, R, p->mi);
@@ -18311,6 +18315,9 @@ static int an_tail_handle(Compiler *c, RetHandles *R, int n, TailCount *tc) {
     return ok;
   }
   if (k != NK_CallNode || c->ntype[n] != TY_STRING) return 0;
+  /* A returning override can answer its own fresh String beside a handle.
+     The existing pickup clears that tail's return channel before wrapping. */
+  if (share_call_fresh(c, n)) { tc->fresh++; return 1; }
   int mis[CPT_MAX];
   int cnt = cplan_targets(c, n, mis, CPT_MAX);
   if (cnt <= 0) return 0;
@@ -18354,6 +18361,7 @@ static int an_ret_handle(Compiler *c, RetHandles *R, int mi) {
     else ok = rn == 1 && an_tail_handle(c, R, rv[0], &tc);
   }
   if (tc.nils) m->ret_nil_pickup = 1;
+  if (ok && tc.reads > 0 && tc.fresh) m->ret_pub_fresh = 1;
   /* An all-raising body publishes no handle for a caller to pick up. */
   R->st[mi] = ok && saw && tc.reads > 0 ? RH_YES : RH_NO;
   return R->st[mi] == RH_YES;
