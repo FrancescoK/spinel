@@ -9944,6 +9944,9 @@ static int arg_layout_param_node_inner(Compiler *c, Scope *m, int call, int i, i
   const char *pn = m->pnames[i];
   int lead = L.gather ? gather_lead_arg(c, m, argv, argc, i) : -1;
   if (L.from[i] == ARG_NODE) a = argv[L.arg[i]];
+  /* A braceless Hash bound as a positional is the container itself.
+     The sharing source walk must reach its original element stores. */
+  else if (c->share_strings && L.from[i] == ARG_KWH) a = kwh;
   else if (defaults && L.from[i] == ARG_DEFAULT && m->pdefault) a = m->pdefault[i];
   else if (lead >= 0) a = argv[lead];
   else if (L.from[i] == ARG_ELEM || L.from[i] == ARG_GATHERED) {
