@@ -4580,6 +4580,11 @@ static int infer_class_module_call(Compiler *c, int id, const NodeTable *nt, con
       if (nc > 0 && !has_blk)
         { *out = (uret == TY_UNKNOWN || uret == TY_VOID) ? TY_POLY : uret; return 1; }
     }
+    if (argc == 1 && is_ivar_access(name) && !is_ivar_set(name)) {
+      int ci = class_recv_static_ci(c, recv);
+      if (ci < 0 || comp_cmethod_in_chain(c, ci, name, NULL) < 0)
+        { *out = TY_POLY; return 1; }
+    }
   }
 
   /* `attr_reader :a` in a class body answers the names it defined */
@@ -8888,6 +8893,7 @@ TyKind infer_uncached(Compiler *c, int id) {
        unless an instance_eval/exec block there rebinds it to an object */
     if (self_cls >= 0 && s->is_cmethod) {
       int iec = ie_class_of(c, id);
+      if (iec < -1) return TY_POLY;
       if (iec < 0) return TY_CLASS;
       self_cls = iec;
     }
