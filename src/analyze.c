@@ -33619,6 +33619,81 @@ static int rd_receiver_observed(Compiler *c, int r, const char *rn) {
   }
   return 0;
 }
+/* Is `call` a query on local `wn`: no block, no String mutator? Its answer
+   must not carry the String on either: it is a branch's condition, or it
+   answers no String (a String answer could be the same object, `s.to_s`). */
+static int rd_query_on(Compiler *c, int call, const char *wn, int as_condition) {
+  const NodeTable *nt = c->nt;
+  if (call < 0 || nt_kind(nt, call) != NK_CallNode) return 0;
+  int r = an_unparen(nt, nt_ref(nt, call, "receiver"));
+  const char *rn = r >= 0 && nt_kind(nt, r) == NK_LocalVariableReadNode ? nt_str(nt, r, "name") : NULL;
+  const char *nm = nt_str(nt, call, "name");
+  if (!rn || !sp_streq(rn, wn) || !nm || nt_ref(nt, call, "block") >= 0 || sp_str_mutator(nm, SP_MUT_LOCAL))
+    return 0;
+  size_t nl = strlen(nm);
+  if (nl > 0 && nm[nl - 1] == '!') return 0;
+  int ty = comp_ntype(c, call);
+  return as_condition || (ty != TY_STRING && ty != TY_STRBUF && ty != TY_POLY);
+}
+/* Does `node` read local `wn` only as the receiver of a query
+   (rd_query_on), so the String is neither changed nor handed on? */
+static int rd_only_queried(Compiler *c, int node, const char *wn) {
+  const NodeTable *nt = c->nt;
+  if (node < 0) return 1;
+  NodeKind k = nt_kind(nt, node);
+  const char *nm = nt_str(nt, node, "name");
+  if ((k == NK_LocalVariableReadNode || k == NK_LocalVariableWriteNode) && nm && sp_streq(nm, wn)) return 0;
+  /* the query itself (its arguments are walked below), or a branch on one */
+  int skip = -1;
+  if (k == NK_CallNode && rd_query_on(c, node, wn, 0)) skip = an_unparen(nt, nt_ref(nt, node, "receiver"));
+  else if (k == NK_IfNode || k == NK_UnlessNode) {
+    int pred = an_unparen(nt, nt_ref(nt, node, "predicate"));
+    if (rd_query_on(c, pred, wn, 1)) {
+      int args = nt_ref(nt, pred, "arguments");
+      if (!rd_only_queried(c, args, wn)) return 0;
+      skip = pred;
+    }
+  }
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++) {
+    int ch = nt_ref_at(nt, node, i);
+    if (ch != skip && an_unparen(nt, ch) != skip && !rd_only_queried(c, ch, wn)) return 0;
+  }
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) {
+    int cnt = 0; const int *ids = nt_arr_at(nt, node, i, &cnt);
+    for (int j = 0; j < cnt; j++) if (!rd_only_queried(c, ids[j], wn)) return 0;
+  }
+  return 1;
+}
+/* `s = r.m` read through a reader, then only queried until the next
+   statement of the same body rebinds it to a copy, `s = s.dup`
+   (Shellwords.escape: `str = str.to_s ... str = str.dup; str.gsub!`): the
+   mutations after that change the copy, never the member. Statement order
+   is the list order, so "until" is exact. */
+static int rd_read_dropped_for_copy(Compiler *c, int w, const char *wn) {
+  const NodeTable *nt = c->nt;
+  Scope *sc = comp_scope_of(c, w);
+  if (!sc || sc->body < 0 || nt_kind(nt, sc->body) != NK_StatementsNode) return 0;
+  int sn = 0; const int *stmts = nt_arr(nt, sc->body, "body", &sn);
+  int k = 0;
+  while (k < sn && stmts[k] != w) k++;
+  for (int i = k + 1; i < sn; i++) {
+    int s = stmts[i];
+    const char *sname = nt_kind(nt, s) == NK_LocalVariableWriteNode ? nt_str(nt, s, "name") : NULL;
+    if (sname && sp_streq(sname, wn)) {
+      int v = an_unparen(nt, nt_ref(nt, s, "value"));
+      if (v < 0 || nt_kind(nt, v) != NK_CallNode || nt_ref(nt, v, "block") >= 0 || call_plain_argc(c, v) != 0)
+        return 0;
+      const char *vn = nt_str(nt, v, "name");
+      int vr = an_unparen(nt, nt_ref(nt, v, "receiver"));
+      const char *vrn = vr >= 0 && nt_kind(nt, vr) == NK_LocalVariableReadNode ? nt_str(nt, vr, "name") : NULL;
+      return vn && sp_streq(vn, "dup") && vrn && sp_streq(vrn, wn);
+    }
+    if (!rd_only_queried(c, s, wn)) return 0;
+  }
+  return 0;
+}
 /* String routes the settled types show copying where CRuby hands over the
    one object (#6765), refused rather than compiled with the change lost:
    - `t = obj.text; t << x` on a boxed obj: the reader's dispatch answers a
@@ -33639,7 +33714,7 @@ static void refuse_string_read_copies(Compiler *c) {
     int r = an_unparen(nt, nt_ref(nt, v, "receiver"));
     const char *rn = r >= 0 && nt_kind(nt, r) == NK_LocalVariableReadNode ? nt_str(nt, r, "name") : NULL;
     if (!rn || comp_ntype(c, r) != TY_POLY || !nt_str(nt, v, "name") ||
-        !rd_string_reader_anywhere(c, nt_str(nt, v, "name")))
+        !rd_string_reader_anywhere(c, nt_str(nt, v, "name")) || rd_read_dropped_for_copy(c, w, wn))
       continue;
     static const char rd_msg[] =
       "a String read through a reader on a boxed receiver (a Struct or Data member, an attr_reader, `def "
