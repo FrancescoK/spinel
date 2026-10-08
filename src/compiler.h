@@ -151,6 +151,12 @@ typedef struct {
                        conversion would take it apart as whatever another call
                        site pinned. It must stay POLY -- and survive the
                        re-narrow reset, which clears poly params (#4294) */
+  const char *widen_from_name; /* (params) set when the reverse binding widened this
+                       parameter on behalf of a callee's push-widened parameter
+                       (widen_from_scope, widen_from_name): the widening is
+                       retracted when that parameter stops being a general Array */
+  int widen_from_scope;
+  unsigned char widen_blocked; /* (params) retracted once: the reverse binding does not widen it again */
   int push_widened; /* (params) a push through this parameter carried an element
                        its bound type could not hold, so it must stay the POLY
                        ARRAY: the call-site unification would otherwise collapse

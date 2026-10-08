@@ -35247,6 +35247,26 @@ static void an_round_cap_step(Compiler *c, AnRoundCap *rc, int iter) {
   if (!grew && iter + 1 == rc->cap && rc->cap < 128 + 4 * an_type_slots(c)) rc->cap++;
 }
 
+/* Parameters a reverse binding widened to the general Array for a callee's
+   parameter that is no longer one (#7948): reset them, and bar the reverse
+   binding from them. 1 when any moved. */
+static int an_retract_stale_reverse_widening(Compiler *c) {
+  int any = 0;
+  for (int s = 0; s < c->nscopes; s++) {
+    Scope *sc = &c->scopes[s];
+    for (int i = 0; i < sc->nparams; i++) {
+      LocalVar *p = scope_local(sc, sc->pnames[i]);
+      if (!p || p->type != TY_POLY_ARRAY || !p->push_widened || !p->widen_from_name || p->rbs_seeded ||
+          p->widen_from_scope < 0 || p->widen_from_scope >= c->nscopes) continue;
+      LocalVar *cause = scope_local(&c->scopes[p->widen_from_scope], p->widen_from_name);
+      if (cause && cause->type == TY_POLY_ARRAY && cause->push_widened) continue;
+      p->type = TY_UNKNOWN; p->push_widened = 0; p->widen_from_name = NULL; p->widen_blocked = 1;
+      why_reset(&p->why); any = 1;
+    }
+  }
+  return any;
+}
+
 /* The inference fixpoint: two rounds with the proc-form clones made between them, then the optimistic re-narrow of the slots a transient poly locked (analyze_program's steps, in their order) */
 static void an_phase_infer_fixpoint(Compiler *c) {
   g_fixpoint_rounds = 0;
@@ -35738,6 +35758,12 @@ static void an_phase_infer_fixpoint(Compiler *c) {
     free(recCi); free(recIv); free(recLs); free(recLi); free(recRs); free(nsoff); free(nsbad);
     if (pivs_hash_stores_widened(c) == widened0) break;
   }
+  /* A parameter the reverse binding widened for a callee's parameter that
+     settled boxed or untyped keeps its general Array, though the callee takes
+     the array by reference (#7948). Now that the callee's type is final, give
+     the parameter back to its callers' arguments and derive once more, the
+     reverse binding held off it. */
+  if (an_retract_stale_reverse_widening(c)) an_phase_infer_fixpoint(c);
 }
 
 /* After the fixpoint: the backstops for slots left without a type (empty literals, nullable params, unknown ivars and hashes), the nil-guard and is_a? narrowing, the return-type re-run, the param and hash-shape reconciliation, the bigint loop variables (analyze_program's steps, in their order) */
