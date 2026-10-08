@@ -235,6 +235,7 @@ int emit_call_identity_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
        on every read. A nullable String boxes NULL as nil, whose fixed id
        must not be the NULL pointer's integer value. */
     else if (comp_recv_type(c, recv) == TY_STRING && repr_of(c, recv).may_nil) {
+      if (strbuf_object_ref(c, recv, b)) return 1;
       int t = ++g_tmp;
       buf_printf(b, "({ sp_RbVal _t%d = ", t);
       emit_boxed(c, recv, b);
