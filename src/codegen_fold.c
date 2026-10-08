@@ -7628,9 +7628,15 @@ void emit_rooted_operand(Compiler *c, TyKind pt, int provided, const char *expr,
    ...) that builds a NEW container, rooted only inside the converter. The
    read's own root does not reach the copy, and a callee that allocates before
    it roots the parameter (sp_<C>_new) can collect it: the object then holds
-   freed memory. */
+   freed memory. A String read or literal converted to a shared handle also
+   allocates: only a read that already supplies the handle needs no root. */
 int arg_read_converts(Compiler *c, TyKind pt, int provided) {
   if (provided < 0 || pt == TY_POLY) return 0;
+  if (pt == TY_STRBUF) {
+    char ref[192];
+    return repr_of(c, provided).as_ty != TY_NIL &&
+           !strbuf_slot_ref(c, provided, ref, sizeof ref);
+  }
   if (!(ty_is_array(pt) || ty_is_obj_array(pt) || ty_is_hash(pt))) return 0;
   Repr sr = repr_of(c, provided);
   TyKind st = sr.as_ty;
@@ -8066,7 +8072,9 @@ void ran_first_bind(int v, int t, int th) {
 /* The value `v` evaluated into a rooted temp in g_pre, pushed onto the
    g_argov overrides so its uses read the temp. */
 static void emit_arg_temp(Compiler *c, int v) {
-  TyKind at = repr_of(c, v).as_ty;
+  Repr r = repr_of(c, v);
+  int fresh = r.as_ty == TY_STRBUF && r.strbuf_src == RS_FRESH;
+  TyKind at = fresh ? TY_STRING : r.as_ty;
   /* A shared String slot's read is the value form, a copy; a shared-handle
      parameter wants the OBJECT read here, not a fresh one of its bytes. So
      a variable's handle is taken too, just ahead, and recorded with the
@@ -8094,6 +8102,12 @@ static void emit_arg_temp(Compiler *c, int v) {
   else if (wshare) {
     char thr[24]; snprintf(thr, sizeof thr, "_t%d", th);
     emit_strbuf_node_read(c, v, thr, &hb);
+  }
+  else if (fresh) {
+    /* The rest store wraps this String in its handle after the hold. */
+    int mark = view_push_repr(c, v, VR_STRBUF_BOX, 0);
+    emit_str_expr(c, v, &hb);
+    view_pop(c, mark);
   }
   else emit_expr(c, v, &hb);
   emit_indent(g_pre, g_indent);
@@ -10520,7 +10534,9 @@ void emit_args_filled_argv(Compiler *c, int callee_idx, const int *argv, int arg
       if (subtree_has_side_effect(c, argv[k])) { last_se = k; n_se++; }
     for (int k = 0; k < pos_argc && k < m->nparams; k++) {
       argov_reserve();   /* past MAX_ARG_OVERRIDE arguments too */
-      TyKind at = repr_of(c, argv[k]).as_ty;
+      Repr r = repr_of(c, argv[k]);
+      int fresh = r.as_ty == TY_STRBUF && r.strbuf_src == RS_FRESH;
+      TyKind at = fresh ? TY_STRING : r.as_ty;
       /* An argument emit_ctype would spell `void` has no C storage to
          sequence into -- `void _tN = ...` is not a declaration C accepts.
          Nor is there anything to sequence: a valueless argument is a raise
@@ -10589,7 +10605,13 @@ void emit_args_filled_argv(Compiler *c, int callee_idx, const int *argv, int arg
         ran_first_bind(argv[k], ht, ht);
         continue;
       }
-      emit_expr(c, argv[k], &hb);
+      /* As in emit_arg_temp, a fresh handle's input is still plain text. */
+      if (fresh) {
+        int mark = view_push_repr(c, argv[k], VR_STRBUF_BOX, 0);
+        emit_str_expr(c, argv[k], &hb);
+        view_pop(c, mark);
+      }
+      else emit_expr(c, argv[k], &hb);
       emit_indent(g_pre, g_indent);
       if (at == TY_POLY) {
         buf_printf(g_pre, "sp_RbVal _t%d = %s;", ht, hb.p ? hb.p : "sp_box_nil()");
