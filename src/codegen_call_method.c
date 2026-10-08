@@ -1736,7 +1736,7 @@ int emit_call_poly_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *n
        methods alone let Method#name / Class#name claim the call and raise for
        an object whose class answers it perfectly well (#4036). */
     int has_user = user_defines_or_reads(c, name) ||
-                   (!g_poly_builtin_arm && cplan_user_fresh(c, id)->mi >= 0);
+                   (!g_poly_builtin_arm && cplan_boxed_cmethod(c, id));
     if (!has_user) {
       int t = ++g_tmp;
       buf_printf(b, "({ sp_RbVal _t%d = ", t); emit_expr(c, recv, b);
