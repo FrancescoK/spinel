@@ -1837,8 +1837,7 @@ reject-test: $(SPINEL)
 	    { echo "reject-test: FAIL ($$t: refused without saying why)"; sed -n 1,5p "$$tmp/cbi.out"; ok=0; }; fi; \
 	done; \
 	for mode in 0 1; do \
-	  for spec in "presence:defined? of an instance variable with untracked presence on a boxed receiver" \
-	              "native_slot:instance variable write to a receiver without a writable slot" \
+	  for spec in "native_slot:instance variable write to a receiver without a writable slot" \
 	              "struct_slot:instance_variable_set to an ivar absent from the fixed object layout"; do \
 	    t=test/reject/object_method_ivar_$${spec%%:*}.rb; why=$${spec#*:}; \
 	    if SPINEL_SHARE_STRINGS=$$mode $(SPINEL) "$$t" -c -o "$$tmp/ivp.c" >"$$tmp/ivp.out" 2>&1; then \
@@ -2435,6 +2434,9 @@ GC_MINOR_TESTS := test/io_read_outbuf_eof.rb \
                   test/builtin_ivar_boxed_reflection.rb \
                   test/object_method_ivars.rb \
                   test/object_method_ivar_presence.rb \
+                  test/object_method_ivar_class_main.rb \
+                  test/object_method_ivar_class_set.rb \
+                  test/object_method_ivar_receivers.rb \
                   test/object_method_ivar_string.rb \
                   test/array_subclass_boxed.rb \
                   test/array_subclass_methods.rb \
@@ -3519,6 +3521,8 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	  "$$tmp/ibin" >/dev/null 2>&1 || { echo "infer-test: FAIL ($$f: the program does not run)"; ok=0; }; \
 	done; \
 	for flags in '' --share-strings; do \
+	  $(SPINEL) $$flags test/object_method_ivar_receivers.rb -c --no-line-map -o "$$tmp/oir.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (object_method_ivar_receivers: -c)"; ok=0; }; \
+	  grep -q 'static sp_PointValue sp_PointValue_new(' "$$tmp/oir.c" && ! grep -q 'iv_unused;' "$$tmp/oir.c" || { echo "infer-test: FAIL (an Object setter changes unrelated layouts)"; ok=0; }; \
 	  $(SPINEL) $$flags test/hash_store_boxed_unbounded.rb -c --no-line-map -o "$$tmp/hbu.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (hash_store_boxed_unbounded: -c)"; ok=0; }; \
 	  ! grep -q 'sp_PolyPolyHash_new' "$$tmp/hbu.c" || { echo "infer-test: FAIL (an unbounded boxed store widened a known Hash)"; ok=0; }; \
 	  for t in instance_variable_get_poly_recv poly_ivar_get_nil_bool; do \
