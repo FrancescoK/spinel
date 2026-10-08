@@ -1090,10 +1090,22 @@ spinel: 1 refusal, nothing written
 == test/reject/string_splat_global_toplevel.rb [promote] rc=1
 spinel: test/reject/string_splat_global_toplevel.rb:7: a String is passed to `app`'s parameter `a` through a splat, which the method appends to: this call hands the method a copy, so the append would not reach the caller's String (a String is not yet shared by reference through a splat). Return the String from the method and assign it, or append to it in the caller.
 spinel: 1 refusal, nothing written
+== test/reject/string_split_local_each_mutation.rb [default] rc=1
+spinel: test/reject/string_split_local_each_mutation.rb:6: a String returned in a String Array is not yet shared by reference through a local Array into an appending iterator block
+== test/reject/string_split_local_each_mutation.rb [promote] rc=1
+spinel: test/reject/string_split_local_each_mutation.rb:6: a String returned in a String Array is not yet shared by reference through a local Array into an appending iterator block
+== test/reject/string_split_map_bang_read_before.rb [default] rc=1
+spinel: test/reject/string_split_map_bang_read_before.rb:6: a String returned in a String Array is not yet shared by reference through a local Array into an appending iterator block
+== test/reject/string_split_map_bang_read_before.rb [promote] rc=1
+spinel: test/reject/string_split_map_bang_read_before.rb:6: a String returned in a String Array is not yet shared by reference through a local Array into an appending iterator block
 == test/reject/string_split_result_iterator_append.rb [default] rc=1
 spinel: test/reject/string_split_result_iterator_append.rb:4: a String returned in a String Array is not yet shared by reference through a local Array into an appending iterator block
 == test/reject/string_split_result_iterator_append.rb [promote] rc=1
 spinel: test/reject/string_split_result_iterator_append.rb:4: a String returned in a String Array is not yet shared by reference through a local Array into an appending iterator block
+== test/reject/string_split_select_mutation.rb [default] rc=1
+spinel: test/reject/string_split_select_mutation.rb:4: a String is not yet shared by reference through an ivar's or a call's Array into an appending iterator block
+== test/reject/string_split_select_mutation.rb [promote] rc=1
+spinel: test/reject/string_split_select_mutation.rb:4: a String is not yet shared by reference through an ivar's or a call's Array into an appending iterator block
 == test/reject/string_tap_fresh_append.rb [default] rc=1
 spinel: test/reject/string_tap_fresh_append.rb:2: a String is not yet shared by reference through tap on a fresh String
 spinel: 1 refusal, nothing written
