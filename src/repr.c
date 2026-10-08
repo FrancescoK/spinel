@@ -850,6 +850,7 @@ Repr repr_of_ivar(const Compiler *c, int cid, int iv) {
   if (repr_may_nil(r.ty, nil_fact_ivar(c, cid, ci->ivars[iv]))) r.may_nil = 1;
   if (r.ty == TY_STRBUF && ci->ivar_str_shared[iv]) r.handle = 1;
   r.share = r.handle && c->share_strings;
+  r.elems_handle = ci->ivar_elems_shared[iv] && r.ty == TY_POLY_ARRAY;
   /* the element marking sits on the family's topmost class that has the
      ivar, where every subclass reads it (nullable_elem_ivar_in) */
   int ec = cid, ek = iv;

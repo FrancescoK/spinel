@@ -15085,6 +15085,30 @@ static int strbuf_map_block_tail(Compiler *c, int val) {
    elements of an array/hash literal written to it (with `map_tail`, also a
    collecting iterator's block tail), or the arguments of a push/<</[]= on
    it. Fills `stores` (64 slots) and answers the count; 0 when not a store. */
+/* The values Array call w (`<<`, push, unshift, `[]=`, prepend and insert,
+   a store with a block, fill) stores into its receiver, into stores[64];
+   answers how many. insert's first argument is the index. */
+static int array_call_store_values(Compiler *c, int w, int *stores) {
+  const NodeTable *nt = c->nt;
+  const char *wcn = nt_str(nt, w, "name");
+  int a = nt_ref(nt, w, "arguments");
+  int an = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+  int nst = 0;
+  if (!wcn) return 0;
+  int add = array_unseen_add_kind(wcn);
+  /* prepend and insert under --share-strings, whose rule demands what they
+     store (the default build refuses a named String they add: sa_refuse) */
+  if (is_push_unshift(wcn) || (c->share_strings && (add == ARRAY_ADD_PREPEND || (add == ARRAY_ADD_INSERT && an >= 2))))
+    for (int e = add == ARRAY_ADD_INSERT ? 1 : 0; e < an && nst < 64; e++) stores[nst++] = av[e];
+  else if (is_index_assign(wcn) && an >= 2) stores[nst++] = av[an - 1];
+  /* under --share-strings a store with a block (not rewritten to []=)
+     stores its value as well (#6765) */
+  else if (c->share_strings && is_store_alias(wcn) && an == 2 && nt_ref(nt, w, "block") >= 0)
+    stores[nst++] = av[1];
+  else if (is_fill_name(wcn) && an >= 1 && an <= 3 &&
+           nt_ref(nt, w, "block") < 0) stores[nst++] = av[0];
+  return nst;
+}
 static int strbuf_container_store_values(Compiler *c, int w, const char *contn, Scope *conts,
                                          int map_tail, int *stores) {
   const NodeTable *nt = c->nt;
@@ -15113,20 +15137,7 @@ static int strbuf_container_store_values(Compiler *c, int w, const char *contn, 
     if (wr < 0 || nt_kind(nt, wr) != NK_LocalVariableReadNode) return 0;
     const char *wrn = nt_str(nt, wr, "name");
     if (!wrn || !sp_streq(wrn, contn) || comp_scope_of(c, wr) != conts) return 0;
-    const char *wcn = nt_str(nt, w, "name");
-    if (!wcn) return 0;
-    int a = nt_ref(nt, w, "arguments");
-    int an = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
-    if (is_push_unshift(wcn)) {
-      for (int e = 0; e < an && nst < 64; e++) stores[nst++] = av[e];
-    }
-    else if (sp_streq(wcn, "[]=") && an >= 2) stores[nst++] = av[an - 1];
-    /* under --share-strings a store with a block (not rewritten to []=)
-       stores its value as well (#6765) */
-    else if (c->share_strings && is_store_alias(wcn) && an == 2 && nt_ref(nt, w, "block") >= 0)
-      stores[nst++] = av[1];
-    else if (sp_streq(wcn, "fill") && an >= 1 && an <= 3 &&
-             nt_ref(nt, w, "block") < 0) stores[nst++] = av[0];
+    nst = array_call_store_values(c, w, stores);
   }
   return nst;
 }
@@ -16017,14 +16028,22 @@ static int strbuf_static_store_walk(Compiler *c, NodeKind kind, const char *grn,
   for (int e = comp_vsite_first(c, VS_RECV, kind, grn, -1); e >= 0;
        e = comp_vsite_next(c, e)) {
     int u = comp_vsite_node(c, e);
-    const char *un = nt_str(nt, u, "name");
-    if (!un || !static_site_is(c, kind, e, grn)) continue;
-    int a = nt_ref(nt, u, "arguments"), an = 0;
-    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
-    if (is_push_unshift(un))
-      for (int k = 0; k < an; k++) changed |= strbuf_store_leaf(c, av[k], depth, SB_DEMAND);
-    else if (is_store_alias(un) && an >= 2)
-      changed |= strbuf_store_leaf(c, av[an - 1], depth, SB_DEMAND);
+    if (!static_site_is(c, kind, e, grn)) continue;
+    int stores[64];
+    int nst = array_call_store_values(c, u, stores);
+    for (int k = 0; k < nst; k++) {
+      /* a block parameter whose String the rule shares holds the handle
+         what binds it hands over (share_default_apply, or the seal refuses
+         it by name): it is stored as itself, the handle the container (a
+         poly Array of handles) then holds */
+      int sv = an_unparen(nt, stores[k]);
+      Scope *svs = sv >= 0 && nt_kind(nt, sv) == NK_LocalVariableReadNode ? comp_scope_of(c, sv) : NULL;
+      LocalVar *slv = svs ? scope_local(svs, nt_str(nt, sv, "name")) : NULL;
+      if (slv && slv->is_block_param &&
+          repr_str_shares(c, share_local_holder(c, (int)(svs - c->scopes), (int)(slv - svs->locals))))
+        continue;
+      changed |= strbuf_store_leaf(c, stores[k], depth, SB_DEMAND);
+    }
   }
   return changed;
 }
@@ -17329,7 +17348,12 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
       if (iv < 0) continue;
       TyKind it = c->classes[sh->cid].ivar_types[iv];
       if (ty_is_array(it) || ty_is_hash(it)) {
-        if (repr_str_elems_share(c, h)) changed |= strbuf_ivar_source_walk(c, sh->cid, sh->name, 0, SB_DEMAND);
+        if (!repr_str_elems_share(c, h)) continue;
+        changed |= strbuf_ivar_source_walk(c, sh->cid, sh->name, 0, SB_DEMAND);
+        /* a poly Array holds its Strings as handles, as a local's does: a
+           String Array written into it is wrapped element by element */
+        ClassInfo *ci = &c->classes[sh->cid];
+        if (it == TY_POLY_ARRAY && !ci->ivar_elems_shared[iv]) { ci->ivar_elems_shared[iv] = 1; changed = 1; }
         continue;
       }
       if (repr_str_shares(c, h)) changed |= strbuf_promote_ivar(c, sh->cid, sh->name);

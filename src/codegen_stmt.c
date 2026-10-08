@@ -12203,10 +12203,13 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
     if (sc < 0 && g_class_body_id >= 0) sc = g_class_body_id;
     if (sc < 0) sc = comp_class_index(c, "Toplevel");
     TyKind ivt = TY_INT;
-    int iv_nullable = 0;
+    int iv_nullable = 0, iv_elems_handle = 0;
     if (sc >= 0) {
       int iv = comp_ivar_index(&c->classes[sc], nm);
-      if (iv >= 0) { ivt = c->classes[sc].ivar_types[iv]; iv_nullable = c->classes[sc].ivar_nullable_int[iv]; }
+      if (iv >= 0) {
+        ivt = c->classes[sc].ivar_types[iv]; iv_nullable = c->classes[sc].ivar_nullable_int[iv];
+        iv_elems_handle = repr_of_ivar(c, sc, iv).elems_handle;
+      }
     }
     /* an open splice alias of the ivar (a plain String slot's) */
     int sk = ivt == TY_STRING ? splice_store_open(c, id, b) : -1;
@@ -12288,8 +12291,10 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
       /* a typed array RHS into a poly-array ivar slot is rebuilt with its
          elements boxed, the same conversion the local write makes -- the
          slot widened on element evidence (a push of another type, #4196)
-         that the RHS's own node never saw */
-      emit_poly_array_from(c, v, b);
+         that the RHS's own node never saw. --share-strings: one whose
+         elements the rule shares wraps each String as a handle */
+      if (iv_elems_handle && comp_ntype(c, v) == TY_STR_ARRAY) emit_str_array_handles(c, v, b);
+      else emit_poly_array_from(c, v, b);
     }
     /* An int RHS into a bigint ivar is promoted at the boundary, the same way
        the local assignment and the argument binding do it. Without it `@n = 0`
