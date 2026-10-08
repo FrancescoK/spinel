@@ -13644,7 +13644,17 @@ static int emit_array_arith_call(Compiler *c, int id, Buf *b) {
      poly count, so accept TY_POLY as well as TY_INT -- otherwise `arr * n`
      with a poly `n` falls through to sp_poly_mul (arithmetic) and yields 0. */
   if (recv >= 0 && argc == 1 && sp_streq(name, "*") && (ty_is_array(rt) || rt == TY_POLY_ARRAY) &&
-      (comp_ntype(c, argv[0]) == TY_INT || repr_of(c, argv[0]).kind == RK_BOXED)) {
+      ty_is_object(a0) && res == TY_STRING) {
+    const char *k = rt == TY_POLY_ARRAY ? "Poly" : array_kind(rt);
+    Buf rb; char tyj[32]; snprintf(tyj, sizeof tyj, "sp_%sArray *", k ? k : "Str");
+    int ch = hold_recv_open(c, recv, 0, tyj, "SP_GC_ROOT", b, &rb);
+    buf_printf(b, "sp_%sArray_join(%s, ", k ? k : "Str", rb.p); free(rb.p);
+    emit_str_expr(c, argv[0], b); buf_puts(b, ")");
+    if (ch) buf_puts(b, "; })");
+    return 1;
+  }
+  if (recv >= 0 && argc == 1 && sp_streq(name, "*") && (ty_is_array(rt) || rt == TY_POLY_ARRAY) &&
+      (comp_ntype(c, argv[0]) == TY_INT || repr_of(c, argv[0]).kind == RK_BOXED || ty_is_object(a0))) {
     int ta = ++g_tmp, tn = ++g_tmp, tr = ++g_tmp, ti = ++g_tmp, tj = ++g_tmp;
     if (rt == TY_POLY_ARRAY) {
       buf_printf(b, "({ sp_PolyArray *_t%d = ", ta); emit_expr(c, recv, b);
