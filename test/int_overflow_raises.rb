@@ -1,4 +1,5 @@
 # spinel: int64 -- assumes a 64-bit Integer (values or arithmetic past 2^31); not run on a 32-bit target
+# spinel: not-cruby -- the default Integer overflow policy raises RangeError.
 # Integer arithmetic that overflows sp_int (int64) raises
 # RangeError rather than silently wrapping. spinel uses
 # `__builtin_add_overflow` / `_sub_overflow` / `_mul_overflow`
@@ -33,3 +34,15 @@ puts 6 * 7
     puts "#{op}: caught #{e.message}"
   end
 end
+
+def sum_overflow
+  yield
+rescue RangeError => e
+  p [e.class, e.message]
+end
+sum_overflow { [2**62].sum(2**62) }
+sum_overflow { [2**62, 2**62].sum(2**62) }
+sum_overflow { [2**62, 2**62].sum }
+sum_overflow { [2**62].sum(2**62) { |x| x } }
+sum_overflow { [2**62, 2**62].sum { |x| x } }
+sum_overflow { [2**62, 2**62, -(2**62)].sum }

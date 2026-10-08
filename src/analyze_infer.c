@@ -8776,8 +8776,8 @@ TyKind infer_uncached(Compiler *c, int id) {
     /* a handle local's (TY_STRBUF) value is its String face, as its read
        is: the operator answers a new String (`s += x`) */
     if (ct2 == TY_STRING || ct2 == TY_STRBUF) return TY_STRING;
-    if (ty_is_numeric(ct2) && ty_is_numeric(vt2))
-      return (ct2 == TY_FLOAT || vt2 == TY_FLOAT) ? TY_FLOAT : TY_INT;
+    if (ty_is_numeric(ct2) && (ty_is_numeric(vt2) || vt2 == TY_POLY))
+      return infer_op_assign_type(c, ct2, nt_ref(nt, id, "value"));
     return ct2 != TY_UNKNOWN ? ct2 : vt2;
   }
   if (nk == NK_LocalVariableOrWriteNode || nk == NK_LocalVariableAndWriteNode) {
