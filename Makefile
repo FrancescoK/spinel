@@ -3275,7 +3275,16 @@ rubyspec-gate: $(SPINEL) $(RUBYSPEC_DIR)/.pinned
 	  fi; \
 	  awk -F'\t' '$$2=="PASS"{print $$1}' tools/rubyspec/expectations/$$nm.tsv > build/rubyspec-gate-$$nm.list; \
 	  if [ -n "$(RUBYSPEC_SHARD)" ]; then \
+	    case "$(RUBYSPEC_SHARD)" in \
+	      [1-9]*/[1-9]*) ;; \
+	      *) echo "rubyspec-gate: RUBYSPEC_SHARD must be k/n with positive integers, got '$(RUBYSPEC_SHARD)'" >&2; exit 1;; \
+	    esac; \
 	    k=$$(echo $(RUBYSPEC_SHARD) | cut -d/ -f1); n=$$(echo $(RUBYSPEC_SHARD) | cut -d/ -f2); \
+	    case "$$k" in *[!0-9]*) echo "rubyspec-gate: RUBYSPEC_SHARD's k must be a plain integer, got '$$k'" >&2; exit 1;; esac; \
+	    case "$$n" in *[!0-9]*) echo "rubyspec-gate: RUBYSPEC_SHARD's n must be a plain integer, got '$$n'" >&2; exit 1;; esac; \
+	    if [ "$$k" -lt 1 ] || [ "$$n" -lt 1 ] || [ "$$k" -gt "$$n" ]; then \
+	      echo "rubyspec-gate: RUBYSPEC_SHARD=$$k/$$n must have 1 <= k <= n" >&2; exit 1; \
+	    fi; \
 	    awk -v k="$$k" -v n="$$n" '(NR-1)%n==k-1' build/rubyspec-gate-$$nm.list > build/rubyspec-gate-$$nm.list.shard; \
 	    mv build/rubyspec-gate-$$nm.list.shard build/rubyspec-gate-$$nm.list; \
 	  fi; \
