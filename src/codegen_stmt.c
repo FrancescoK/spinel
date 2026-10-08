@@ -7366,12 +7366,30 @@ static int emit_when_lambda_inline(Compiler *c, int cond, int t, TyKind pt, int 
   return 1;
 }
 
+/* A String result slot uses the return-tail emitter even when control
+   flow needs a temporary instead of a C return. */
+static void emit_string_tail_into(Compiler *c, int node, const char *dst, Buf *b) {
+  const char *sv = g_result_var; g_result_var = dst;
+  TyKind st = g_result_ty; g_result_ty = TY_STRING;
+  int sp = g_result_poly; g_result_poly = 0;
+  emit_stmts_tail(c, node, b, 0);
+  g_result_var = sv; g_result_ty = st; g_result_poly = sp;
+}
+
 /* Emit `_crN = <branch's last value>` (boxed to the case's result type when
    that is poly), after the branch's leading statements. */
 void emit_case_branch_value(Compiler *c, int stmts, TyKind rt, int cr, Buf *b) {
   const NodeTable *nt = c->nt;
   int n = 0;
   const int *bb = stmts >= 0 ? nt_arr(nt, stmts, "body", &n) : NULL;
+  /* A String return channel follows each arm's tail, including nested
+     conditionals: use the same tail emission as begin/rescue arms. */
+  Scope *sc = stmts >= 0 ? comp_scope_of(c, stmts) : NULL;
+  if (rt == TY_STRING && sc && sc->ret_pub_fresh) {
+    char dst[32]; snprintf(dst, sizeof dst, "_cr%d", cr);
+    emit_string_tail_into(c, stmts, dst, b);
+    return;
+  }
   /* an arm of a conditional value into a shared String slot: the handle
      the arm hands over (emit_strbuf_cond_value) */
   if (rt == TY_STRBUF && g_strbuf_case_node >= 0) {
@@ -8701,10 +8719,21 @@ static void emit_fresh_tail_value(Compiler *c, int node, Buf *b) {
    side channel after its value, which a read of a handle inside it may have
    published, so the caller wraps the fresh String rather than take that
    handle. A user call returning only its own fresh Strings clears it too. */
-static void emit_tail_value(Compiler *c, int node, Buf *b) {
-  Scope *ts = g_ret_type == TY_STRING && !g_result_var ? comp_scope_of(c, node) : NULL;
+void emit_tail_value(Compiler *c, int node, Buf *b) {
+  TyKind slot = g_result_var && g_result_ty != TY_UNKNOWN ? g_result_ty : g_ret_type;
+  Scope *ts = slot == TY_STRING ? comp_scope_of(c, node) : NULL;
+  NodeKind k = nt_kind(c->nt, node);
   if (ts && ts->ret_pub_fresh && share_return_owned(c, an_unparen(c->nt, node), (int)(ts - c->scopes))) {
     emit_fresh_tail_value(c, node, b);
+    return;
+  }
+  if (ts && ts->ret_pub_fresh && (k == NK_ParenthesesNode || k == NK_IfNode ||
+                                 k == NK_UnlessNode || k == NK_CaseMatchNode)) {
+    int t = ++g_tmp;
+    char dst[32]; snprintf(dst, sizeof dst, "_t%d", t);
+    buf_printf(b, "({ const char *%s = NULL;\n", dst);
+    emit_string_tail_into(c, node, dst, b);
+    buf_printf(b, "%s; })", dst);
     return;
   }
   if (!ts || !ts->ret_pub_fresh ||
@@ -9003,6 +9032,14 @@ static void emit_return_deferred(Compiler *c, const int *a, int n, Buf *b, int i
       buf_printf(b, "_retv%d = ", ctx->lid);
       /* the FRAME's slot type, not g_ret_type: see EnsureCtx.retv_ty */
       if (ctx->retv_ty == TY_POLY && repr_of(c, a[0]).kind != RK_BOXED) emit_boxed(c, a[0], b);
+      /* A deferred String return has the same publication rule as a
+         direct tail, before ensure saves its selected handle. */
+      else if (ctx->retv_ty == TY_STRING && comp_scope_of(c, a[0])->ret_pub_fresh) {
+        const char *sv = g_result_var; g_result_var = NULL;
+        TyKind st = g_ret_type; g_ret_type = ctx->retv_ty;
+        emit_tail_value(c, a[0], b);
+        g_result_var = sv; g_ret_type = st;
+      }
       else emit_coerce(c, a[0], ctx->retv_ty, CO_HOLD, "a return through ensure", b);
       buf_puts(b, "; ");
     }
@@ -9861,7 +9898,18 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
                   " if (_excf%d) sp_inflight_cause = _excobj%d ? _excobj%d"
                   " : (void *)sp_exc_new_for_catch(_exccls%d, _excmsg%d);\n",
                eid, eid, eid, eid, eid, eid);
+    /* The ensure's reads are not the method's return. Keep both a
+       published handle and a fresh tail's cleared channel across them. */
+    Scope *sc = comp_scope_of(c, id);
+    int keep_handle = sc && (sc->ret_handle || sc->ret_pub_fresh);
+    if (keep_handle) {
+      emit_indent(b, indent);
+      buf_printf(b, "sp_String *_rh%d = (sp_String *)_sp_ret_strbuf; SP_GC_ROOT(_rh%d);\n", eid, eid);
+    }
     emit_stmts(c, ensure_stmts, b, indent);
+    if (keep_handle) {
+      emit_indent(b, indent); buf_printf(b, "_sp_ret_strbuf = _rh%d;\n", eid);
+    }
     emit_indent(b, indent);
     buf_printf(b, "sp_inflight_cause = _ic%d;\n", eid);
     emit_indent(b, indent);
@@ -14673,6 +14721,13 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, id);
   if (!ty) unsupported(c, id, "tail statement (no type)");
+
+  /* Parentheses keep their last statement in tail position. In a mixed
+     String return its conditional leaves must publish or clear too. */
+  if (nt_kind(nt, id) == NK_ParenthesesNode && comp_scope_of(c, id)->ret_pub_fresh) {
+    emit_stmts_tail(c, nt_ref(nt, id, "body"), b, indent);
+    return;
+  }
 
   if (sp_streq(ty, "IfNode"))     { emit_if(c, id, b, indent, 0, 1); return; }
   if (sp_streq(ty, "UnlessNode")) { emit_if(c, id, b, indent, 1, 1); return; }

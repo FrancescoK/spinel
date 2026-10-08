@@ -7,6 +7,7 @@
 #include "codegen_poly.h"
 #include "repr.h"
 #include "call_plan.h"
+#include "share.h"
 
 /* ---- --plan-check: the arms one emitted switch wrote ----
    A frame per switch being written; a nested dispatch (an argument's
@@ -280,6 +281,26 @@ static int poly_user_arm0_decide(Compiler *c, int id, const char *name, int argc
   return 0;
 }
 
+/* A user arm boxes the String its return facts describe. A shared return
+   publishes its handle; a fresh return needs its own handle only when the
+   call's value is shared. The nil and fresh tails use the same handover as
+   the deep-return pickup, so an earlier publication cannot replace them. */
+static void emit_poly_user_box(Compiler *c, int id, Scope *m, const char *call, Buf *b) {
+  if (!repr_share_rule(c) || m->ret != TY_STRING ||
+      (!m->ret_handle && !(m->ret_fresh && share_node_shares(c, id)))) {
+    emit_boxed_text(c, m->ret, call, b);
+    return;
+  }
+  Buf hb; memset(&hb, 0, sizeof hb);
+  int t = ++g_tmp;
+  buf_printf(&hb, "({ _sp_ret_strbuf = NULL; const char *_v%d = %s; ", t, call);
+  if (m->ret_nil_pickup) buf_printf(&hb, "!_v%d ? NULL : ", t);
+  if (m->ret_handle) buf_puts(&hb, "_sp_ret_strbuf ? (sp_String *)_sp_ret_strbuf : ");
+  buf_printf(&hb, "sp_String_new_shared(_v%d); })", t);
+  emit_boxed_text(c, TY_STRBUF, hb.p, b);
+  free(hb.p);
+}
+
 /* One user-class arm of a zero-argument poly dispatch, as the plan (or the
    decision above) gives it: `case k:` writing the result temp _t<tr> from
    receiver _t<tv>, the arm's value fitted to the call's type ret. */
@@ -451,7 +472,9 @@ static void emit_poly_user_arm0(Compiler *c, int id, const char *name, TyKind re
     else {
       TyKind slotty = is_scalar_ret(ret) ? ret : TY_INT;
       buf_printf(b, "_t%d = ", tr);
-      if (ret == TY_POLY && cret9 != TY_POLY) { emit_boxed_text(c, cret9, call, b); pconv = PC_BOX; }
+      if (ret == TY_POLY && cret9 != TY_POLY) {
+        emit_poly_user_box(c, id, &c->scopes[pf9 ? pfi9 : mi], call, b); pconv = PC_BOX;
+      }
       /* The slot is scalar (e.g. a length dispatch fixed to sp_int) but
          this class's method widened its return to poly: coerce down. */
       else if (ret != TY_POLY && cret9 == TY_POLY) { emit_unbox_poly_ret(c, slotty, call, b); pconv = PC_UNBOX; }
@@ -900,7 +923,7 @@ static int poly_user_arm_n_replay(Compiler *c, int id, const char *name, const P
   /* a proc form carries its own inferred return type (#3399) */
   int pf8 = pfi8 >= 0;
   TyKind mret8 = pf8 ? c->scopes[pfi8].ret : mret;
-  int pconv = emit_poly_user_arm_n(c, k, cb.p, mret8, &c->scopes[pf8 ? pfi8 : mi], ret, tr,
+  int pconv = emit_poly_user_arm_n(c, id, k, cb.p, mret8, &c->scopes[pf8 ? pfi8 : mi], ret, tr,
                                    is_setter_val, b);
   free(cb.p);
   if (g_plan_check) pa_observe(pf8 ? PA_PROC_FORM : PA_USER, k, mi, mret8, pconv);
@@ -1057,7 +1080,7 @@ static void emit_poly_user_arm_n_plan(Compiler *c, int id, const char *name, con
   /* a proc form carries its own inferred return type (#3399) */
   int pf8 = pfi8 >= 0;
   TyKind mret8 = pf8 ? c->scopes[pfi8].ret : mret;
-  int pconv = emit_poly_user_arm_n(c, k, cb.p, mret8, &c->scopes[pf8 ? pfi8 : mi], ret, tr,
+  int pconv = emit_poly_user_arm_n(c, id, k, cb.p, mret8, &c->scopes[pf8 ? pfi8 : mi], ret, tr,
                                    is_setter_val, b);
   free(cb.p);
   if (g_plan_check) pa_observe(pf8 ? PA_PROC_FORM : PA_USER, k, mi, mret8, pconv);
@@ -1173,7 +1196,7 @@ void emit_poly_user_arms_n(Compiler *c, int id, const char *name, const PolyUser
    `call`, its value (mret, from the method or its proc form ms) into the
    result temp _t<tr> as the call's type ret takes it. The conversion
    applied (PolyConv). */
-int emit_poly_user_arm_n(Compiler *c, int k, const char *call, TyKind mret, Scope *ms, TyKind ret,
+int emit_poly_user_arm_n(Compiler *c, int id, int k, const char *call, TyKind mret, Scope *ms, TyKind ret,
                          int tr, int is_setter_val, Buf *b) {
   int conv = PC_SAME;
   buf_printf(b, " case %d: ", k);
@@ -1183,7 +1206,7 @@ int emit_poly_user_arm_n(Compiler *c, int k, const char *call, TyKind mret, Scop
   }
   else {
     buf_printf(b, "_t%d = ", tr);
-    if (ret == TY_POLY && mret != TY_POLY) { emit_boxed_text(c, mret, call, b); conv = PC_BOX; }
+    if (ret == TY_POLY && mret != TY_POLY) { emit_poly_user_box(c, id, ms, call, b); conv = PC_BOX; }
     else if (ret != TY_POLY && mret == TY_POLY) {
       emit_unbox_text(c, is_scalar_ret(ret) ? ret : TY_INT, call, b);
       conv = PC_UNBOX;
@@ -1358,7 +1381,9 @@ int emit_poly_obj_default0(Compiler *c, int id, const char *name, int argc, TyKi
         if (method_is_void(&c->scopes[obj_pf])) { buf_puts(b, oc.p); pconv = PC_VOID; }
         else {
           buf_printf(b, "_t%d = ", tr);
-          if (ret == TY_POLY && pr != TY_POLY) { emit_boxed_text(c, pr, oc.p, b); pconv = PC_BOX; }
+          if (ret == TY_POLY && pr != TY_POLY) {
+            emit_poly_user_box(c, id, &c->scopes[obj_pf], oc.p, b); pconv = PC_BOX;
+          }
           else if (ret != TY_POLY && pr == TY_POLY) {
             emit_unbox_text(c, is_scalar_ret(ret) ? ret : TY_INT, oc.p, b);
             pconv = PC_UNBOX;
@@ -1393,7 +1418,7 @@ int emit_poly_obj_default0(Compiler *c, int id, const char *name, int argc, TyKi
           TyKind oslot = is_scalar_ret(ret) ? ret : TY_INT;
           buf_printf(b, "_t%d = ", tr);
           if (ret == TY_POLY && c->scopes[obj_mi].ret != TY_POLY) {
-            emit_boxed_text(c, c->scopes[obj_mi].ret, ocall, b);
+            emit_poly_user_box(c, id, &c->scopes[obj_mi], ocall, b);
             pconv = PC_BOX;
           }
           else if (ret != TY_POLY && c->scopes[obj_mi].ret == TY_POLY) {
