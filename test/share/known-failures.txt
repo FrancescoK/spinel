@@ -19,6 +19,7 @@ pkg.net.net_http_start_block
 pkg.net.net_http_start_timeouts
 pkg.net.net_http_status_classes
 pkg.net.net_http_timeouts
+pkg.optparse.optparse_boolean_type
 poly_string_iter_user_owns_name
 string_alias_routes_unobserved
 string_handle_initialize
