@@ -1498,6 +1498,11 @@ static int strbuf_has_return(const NodeTable *nt, int n) {
   }
   return 0;
 }
+static int strbuf_inline_mi(Compiler *c, int v) {
+  const CallPlan *p = cplan_user(c, v);
+  if (p->via == UC_REOPEN && repr_self_handle(c, p->mi) && c->scopes[p->mi].yields) return p->mi;
+  return call_user_yield_mi(c, v);
+}
 /* --share-strings: a call of a yielding method spliced in here with its
    literal block, whose value is what it yields or a variable's String
    (`def f = yield`, `r = f { s }`), and that leaves by no `return` or
@@ -1509,13 +1514,14 @@ static int strbuf_route_inline_call(Compiler *c, int v) {
   if (!repr_share_rule(c) || v < 0 || nt_kind(nt, v) != NK_CallNode) return 0;
   int blk = nt_ref(nt, v, "block");
   if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode || call_breaks(c, v)) return 0;
-  int mi = call_user_yield_mi(c, v);
+  int mi = strbuf_inline_mi(c, v);
   int last = mi > 0 ? scope_body_last(c, mi) : -1;
   if (last < 0) return 0;
   /* A literal block selects this existing call-specific tail. */
   int bl = block_given_tail_then_last(c, last);
   if (bl >= 0) last = bl;
   NodeKind k = nt_kind(nt, last);
+  if (repr_self_shared(c, last)) return !strbuf_has_return(nt, c->scopes[mi].body);
   return (k == NK_YieldNode || k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode ||
           repr_static_read_kind(k)) &&
          !strbuf_has_return(nt, c->scopes[mi].body);
@@ -1758,6 +1764,7 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
    nothing. 0 for any other node. */
 int strbuf_var_handle(Compiler *c, int n, char *out, size_t cap) {
   NodeKind k = n >= 0 ? nt_kind(c->nt, n) : NK_NONE;
+  if (repr_self_shared(c, n)) return strbuf_slot_ref(c, n, out, cap);
   return repr_share_rule(c) &&
          (k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode || repr_static_read_kind(k)) &&
          strbuf_slot_ref(c, n, out, cap);
@@ -17434,7 +17441,7 @@ static int strbuf_flow_route(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, in
     return 1;
   if (nt_kind(nt, v) == NK_BeginNode) return strbuf_flow_begin(c, fm, v, depth);
   if (strbuf_route_inline_call(c, v)) {
-    int mi = call_user_yield_mi(c, v);
+    int mi = strbuf_inline_mi(c, v);
     int last = mi > 0 ? scope_body_last(c, mi) : -1;
     int bl = block_given_tail_then_last(c, last);
     if (bl >= 0) last = bl;

@@ -1476,6 +1476,11 @@ static void emit_boxed_strbuf(Compiler *c, int node, TyKind t, const Repr *rp, B
     return;
   }
   NodeKind k = nt_kind(c->nt, node);
+  if (repr_self_shared(c, node)) {
+    buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", g_self);
+    RC(RF_STRBUF_HANDLE, RW_NONE);
+    return;
+  }
   if (rp->strbuf_src == RS_HANDLE && k == NK_LocalVariableReadNode) {
     /* a marked container-store read of a shared-mutable string: box the
        sp_String* HANDLE so later in-place mutation is visible through the
@@ -3757,7 +3762,8 @@ void emit_method_signature(Compiler *c, Scope *s, Buf *b) {
   }
   if (s->class_id >= 0 && !s->is_cmethod) {
     const char *cn = c->classes[s->class_id].c_name;
-    if (sp_streq(cn, "String"))       { buf_puts(b, "const char *self"); }
+    if (repr_self_handle(c, (int)(s - c->scopes))) { buf_puts(b, "sp_String *self"); }
+    else if (is_string_class_name(cn)) { buf_puts(b, "const char *self"); }
     else if (sp_streq(cn, "Integer")) { buf_puts(b, "sp_int self"); }
     else if (sp_streq(cn, "Float"))   { buf_puts(b, "double self"); }
     else if (sp_streq(cn, "Symbol"))  { buf_puts(b, "sp_int self"); }
@@ -5250,6 +5256,7 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
   size_t gc_save_off = b->len;
   buf_puts(b, "    SP_GC_SAVE();\n");
   size_t gc_save_len = b->len - gc_save_off;
+  if (repr_self_handle(c, (int)(s - c->scopes))) buf_puts(b, "    SP_GC_ROOT(self);\n");
   emit_scope_decls(c, s, b);
   /* a method's entry is a safe point for pending finalizers (sp_gc.h) */
   if (g_uses_finalizers) buf_puts(b, "    SP_FIN_POLL();\n");
@@ -11521,7 +11528,9 @@ static void super_plan_check(int id, const char *what, const char *name, int ser
    Float, the sp_RbVal already for an Array or Object -- and an ordinary
    class as its object pointer. What a super into Object's (boxed-self)
    method hands on. */
-static void emit_reopen_self_boxed(Compiler *c, int cls, Buf *b) {
+static void emit_reopen_self_boxed(Compiler *c, Scope *s, Buf *b) {
+  if (repr_self_handle(c, (int)(s - c->scopes))) { emit_boxed_text(c, TY_STRBUF, g_self, b); return; }
+  int cls = s->class_id;
   const char *cn = cls >= 0 ? c->classes[cls].c_name : NULL;
   const char *rn = cls >= 0 ? c->classes[cls].name : NULL;
   if (!cn) { emit_boxed_text(c, ty_object(cls), g_self, b); return; }
@@ -11540,6 +11549,7 @@ static void emit_reopen_self_boxed(Compiler *c, int cls, Buf *b) {
 
 
 void emit_super(Compiler *c, int id, Buf *b) {
+  if (repr_of(c, id).demand && repr_call_returns_handle(c, id) && emit_strbuf_route(c, id, b)) return;
   if (g_plan_check) ucall_emitted(id);
   { Scope *ss = comp_scope_of(c, id);
     if (ss && ss->class_id >= 0 && ss->name) refuse_super_splat(c, id, a_super_target(c, ss)); }
@@ -11550,9 +11560,6 @@ void emit_super(Compiler *c, int id, Buf *b) {
      method's chain is taken below, in the class-method form). */
   const char *shadow = s->is_cmethod ? NULL : comp_super_shadow(c, s);
   if (shadow) {
-    buf_printf(b, "sp_%s_%s((sp_%s *)%s",
-               c->classes[s->class_id].c_name, mc(shadow),
-               c->classes[s->class_id].c_name, g_self);
     /* the shadow's method in this class: the plan's, or the latest scope of
        the shadow's name here */
     int smi = super_plan_mi(c, id, s->class_id);
@@ -11572,6 +11579,13 @@ void emit_super(Compiler *c, int id, Buf *b) {
       if (!served) smi = omi;
     }
     if (g_plan_check && smi >= 0) ucall_observe(c, id, smi, s->class_id, 0);
+    if (repr_self_handle(c, smi) || repr_self_handle(c, (int)(s - c->scopes))) {
+      buf_printf(b, "sp_%s_%s(", c->classes[s->class_id].c_name, mc(shadow));
+      emit_reopen_self_arg(c, id, smi, b);
+    }
+    else buf_printf(b, "sp_%s_%s((sp_%s *)%s",
+                    c->classes[s->class_id].c_name, mc(shadow),
+                    c->classes[s->class_id].c_name, g_self);
     if (ty && sp_streq(ty, "ForwardingSuperNode") && smi >= 0) {
       /* laid out over the shadow's parameters as any bare super is: passed
          slot by slot, a `**` went into the shadow's first keyword */
@@ -11989,12 +12003,16 @@ void emit_super(Compiler *c, int id, Buf *b) {
        activesupport's HashWithIndifferentAccess#reverse_merge -- and which
        have no struct to cast self to. */
     buf_printf(b, "sp_%s_%s(", c->classes[defcls].c_name, mc(uname));
-    emit_reopen_self_boxed(c, s->class_id, b);
+    emit_reopen_self_boxed(c, s, b);
   }
   /* a user exception subclass's super reaching its builtin parent's
      reopening: that method takes the runtime's sp_Exception */
   else if (class_is_exc_reopen(c, defcls))
     buf_printf(b, "sp_%s_%s((sp_Exception *)%s", mc_reopen_cls(c, defcls, uname), mc(uname), g_self);
+  else if (repr_self_handle(c, mi) || repr_self_handle(c, (int)(s - c->scopes))) {
+    buf_printf(b, "sp_%s_%s(", c->classes[defcls].c_name, mc(uname));
+    emit_reopen_self_arg(c, id, mi, b);
+  }
   else
     buf_printf(b, "sp_%s_%s((sp_%s *)%s", c->classes[defcls].c_name, mc(uname), c->classes[defcls].c_name, g_self);
   if (ty && sp_streq(ty, "ForwardingSuperNode")) {

@@ -3478,6 +3478,7 @@ int emit_call_reopen_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
         int oc_mi = comp_method_in_chain(c, oc_ci, name, NULL);
         if (oc_mi >= 0 && rt == TY_IO) { emit_io_reopen_call(c, id, recv, name, b); return 1; }
         if (oc_mi >= 0) {
+          if (repr_self_handle(c, oc_mi) && emit_reopen_block_call(c, id, recv, oc_mi, NULL, b)) return 1;
           if (g_plan_check) ucall_observe(c, id, oc_mi, oc_ci, 0);
           buf_printf(b, "sp_%s_%s(", mc_reopen_cls(c, oc_ci, name), mc(name));
           emit_reopen_recv_args(c, id, oc_mi, recv, 0, NULL, b);
