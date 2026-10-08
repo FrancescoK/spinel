@@ -10,6 +10,7 @@
 # class with eql? but no hash keeps its duplicates in a hashed uniq, as
 # CRuby's identity hash does, and matches by its eql? in a small set
 # operation. The large arrays take the table past its first size.
+# spinel: gc-minor
 require "ostruct"
 S = Struct.new(:x, :y)
 D = Data.define(:v)

@@ -2,4 +2,5 @@
 # variable (here the Array#map result): the inference widens a variable's
 # array to take it, but not a temporary's, so the push is refused rather
 # than writing a String into an Integer element.
+# spinel: reject-conversion: an Array push given a String
 p [1, 2].map { |x| x }.push("s")

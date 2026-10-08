@@ -3,6 +3,7 @@
 # ivar and the argument as two unsequenced operands, so the read could see
 # the array `swap` had just put there -- a wrong answer -- and, once `swap`
 # had allocated enough to collect, the old array was read after it was freed.
+# spinel: gc-minor
 class Holder
   def initialize
     @data = [10, 20, 30, 40]

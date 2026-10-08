@@ -4,6 +4,7 @@
 # array across the call: unrooted, a collection inside sp_<C>_new freed it and
 # the object kept a dangling @col (the total came out wrong, or the run
 # crashed in sp_FloatArray_get).
+# spinel: rbs-seed-check
 class ConvArgHolder
   attr_reader :col
   def initialize(col, other)

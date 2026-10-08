@@ -4,6 +4,7 @@
 # is_a?, instance_of?, case/when and the dispatch of its own methods. A
 # method its class leaves to Array (push, size, map, include?) reaches
 # Array's through the same dispatch.
+# spinel: gc-minor
 class Row < Array
   def initialize(cells, label)
     super(cells)

@@ -1,5 +1,6 @@
 # A wider Array[untyped] parameter uses the existing element-boxing
 # conversion, not a pointer reinterpretation (#6514).
+# spinel: rbs-seed-run
 module SeedArrayReader
   def self.join(list)
     list.join(" / ")

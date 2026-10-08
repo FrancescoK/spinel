@@ -4,6 +4,7 @@
 # compiler refused without a word about the signature; a union compiled, but
 # typed every call on the value from the instance side. Both now warn, and
 # the single-class declaration is ignored.
+# spinel: rbs-seed-check
 class SrcStory
   def self.none = "SrcStory.none"
 end

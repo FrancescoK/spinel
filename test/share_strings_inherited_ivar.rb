@@ -1,6 +1,7 @@
 # A shared ivar has one layout throughout its hierarchy, even in a subclass
 # with no access to the ivar of its own. Inherited methods use that layout
 # after construction, mutation and replacement of the String.
+# spinel: gc-minor
 class Buffer
   def self.raw(data) = data.upcase
   def initialize(data = nil)

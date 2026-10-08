@@ -4,6 +4,7 @@
 # across includers, so the emitted signature and the body's reads could
 # disagree (StrStrHash param vs poly receiver init, void return through
 # the recursion). Per-includer cloning keeps each copy self-consistent.
+# spinel: rbs-seed-check
 module Harness
   def stringify_keys(hash)
     out = {}

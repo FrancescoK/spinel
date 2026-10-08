@@ -1,4 +1,6 @@
 # EOF clears each output buffer before returning nil or raising EOFError.
+# spinel: gc-minor
+# spinel: share
 r, w = IO.pipe
 w.close
 buf = +"seed"

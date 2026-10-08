@@ -10,6 +10,7 @@
 # an instance, the top level and a class method, through a call, a yield,
 # an alias and a proc. Each append is 100 bytes, so it cannot land in spare
 # capacity by chance.
+# spinel: gc-minor
 def pv(s) = [s, 1][0]
 def gr(v) = v << "x" * 100
 def yl(v) = yield(v)

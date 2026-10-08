@@ -2,7 +2,7 @@
 # the index is in range and the array is not frozen: one bounds check instead
 # of the read's and then the write's. Everything else goes the long way, and
 # has to answer exactly what it did.
-
+# spinel: gc-minor
 counts = Array.new(4, 0)
 zsum = Array.new(4, 0.0)
 bins = [0, 1, 1, 3, 2, 1]

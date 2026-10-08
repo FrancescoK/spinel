@@ -11,6 +11,7 @@
 #     (object argument path).
 # Without the coercion the generated C assigns sp_RbVal to a const char* /
 # sp_bool / sp_IntArray* / sp_Thing* slot and fails to compile.
+# spinel: rbs-seed-check
 module Outer
   class Thing
     def initialize(n)

@@ -1,8 +1,10 @@
+# spinel: share
 # A String an `initialize` appends to is the caller's String (#6179): the
 # parameter takes the shared handle, which every binder of the constructor
 # hands over, and the caller's variable at each `new` and `raise` that can
 # reach it becomes the handle. Each append is 100 bytes, so it always
 # outgrows the buffer and a copy could not pass by capacity.
+# spinel: gc-minor
 X = "x" * 100
 
 # C.new, a class value, `new` and `self.new` in a class method, a subclass,

@@ -7,6 +7,7 @@
 # build. A lambda or a Method in place of the local did the same, and so
 # did instance_exec. The enclosing method's own block handed on (`&b`, an
 # anonymous `&`) still answers that block's value.
+# spinel: gc-minor
 def m1 = yield
 def f1
   lp = proc { "lp" }

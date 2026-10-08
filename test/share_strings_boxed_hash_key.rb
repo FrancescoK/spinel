@@ -1,4 +1,5 @@
 # Boxed Hash presence, fetch, deletion and assignment read a shared key.
+# spinel: gc-minor
 def key_read(h, key)
   h[key]
 end

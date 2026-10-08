@@ -4,7 +4,7 @@
 # the contradicted one raises TypeError instead of reinterpreting the value
 # (#6672). An ordinary call site with the same contradiction is still refused
 # (seed_contradiction_arg.rb).
-
+# spinel: rbs-seed-check
 class DynArmSeedReport
   def read_file(path)
     path.length

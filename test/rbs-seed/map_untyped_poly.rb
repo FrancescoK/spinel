@@ -10,6 +10,7 @@
 # unresolved-call silent-nil; an unresolved call now raises NoMethodError, so
 # `rows` is a real empty array whose map result is a poly array -- same codegen
 # check, no silent stub.)
+# spinel: rbs-seed-check
 def build_all
   rows = []
   rows.map { |row| @model.build(row) }

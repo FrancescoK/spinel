@@ -1,5 +1,6 @@
 # A fresh receiver of a user #== behind != and of an exception class's own
 # #to_s stays alive while the method allocates (GC stress).
+# spinel: gc-minor
 class C
   attr_accessor :v
   def initialize = (@v = 7; @w = 9; @s = "s" * 3)

@@ -1,5 +1,6 @@
 # A store through a box widens the Hash a global holds, as it does an ivar's:
 # every write of the global is in sight, read in a method or through an alias.
+# spinel: gc-minor
 def put(x)
   [$hp, 1][ARGV.size][0] = x
 end

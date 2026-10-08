@@ -1,5 +1,6 @@
 # Builtin IO calls read the supplied String and return independent paths
 # and lines even when an element lookup boxes the receiver.
+# spinel: gc-minor
 require 'tmpdir'
 path = File.join(Dir.tmpdir, "spinel_io_rows_#{Process.pid}")
 file = File.open(path, 'w+')

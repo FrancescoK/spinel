@@ -1,5 +1,6 @@
 # NULL in a String slot is nil to class tests, comparisons, case arms,
 # conversion and typed Array searches. An empty String is a different value.
+# spinel: gc-minor
 x = "value"
 x = ARGV.empty? ? nil : "value"
 p [String === x, NilClass === x, Object === x, Comparable === x]

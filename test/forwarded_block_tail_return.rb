@@ -1,5 +1,6 @@
 # Re-deriving returns keeps a tail conditional's blockless value available
 # while earlier callers are typed. Forwarding can take either arm.
+# spinel: share
 def collect_values(xs)
   if block_given?
     out = []

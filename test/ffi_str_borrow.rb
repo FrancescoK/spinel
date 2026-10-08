@@ -1,3 +1,4 @@
+# spinel: gc-stress
 # spinel: not-cruby -- ffi_func is Spinel's own; the answers are libc's.
 # A String held as an sp_String * handle (a second name changed in place, an
 # ivar changed by setbyte, an appended accumulator) handed to a C function's

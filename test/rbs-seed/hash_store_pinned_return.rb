@@ -2,6 +2,7 @@
 # (#7942), but a method whose return an --rbs signature pins to a concrete
 # Hash keeps the variant it declares: widening its literal left the C function
 # returning sp_StrStrHash * a sp_PolyPolyHash * (#7987).
+# spinel: rbs-seed-run
 class Widget
   def headers
     { "a" => "b" }

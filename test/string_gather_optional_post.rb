@@ -6,7 +6,7 @@
 # method's append never reached the caller. Each method has one call, so
 # no other call site changes how its parameter binds; each probe appends
 # LONG, which always reallocates.
-
+# spinel: gc-minor
 LONG = "!" * 100
 
 def seen(s) = [s[0], s.size]

@@ -3,6 +3,8 @@
 # proc, so a nested `proc { |v| two.call(v, v) }` called through freed memory
 # once full cycles were frequent (#4077). Run it under SPINEL_GC_FULL_INTERVAL=1
 # to see the difference; the shape is what matters here.
+# spinel: gc-stress
+# spinel: gc-minor
 two = proc { |a, b| [a, b] }
 nested = proc { |v| two.call(v, v) }
 

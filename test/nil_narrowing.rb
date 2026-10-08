@@ -5,7 +5,7 @@
 # write, under a flag set beside the variable's non-nil writes, and for an
 # in-bounds index read of an array nothing can leave a nil or a hole in. Each
 # shape below has a twin where the proof must NOT hold.
-
+# spinel: decisions
 def t
   yield
 rescue => e

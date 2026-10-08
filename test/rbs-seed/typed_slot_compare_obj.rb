@@ -4,6 +4,7 @@
 # names the case, rather than putting the raw pointer in the sp_int slot and
 # stopping the generated-C build. An object whose class compares nothing
 # simply misses -- pinned by test/typed_slot_conversion.rb.
+# spinel: rbs-seed-check
 class Near
   include Comparable
   def <=>(other)

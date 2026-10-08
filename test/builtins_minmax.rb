@@ -2,6 +2,7 @@
 # builtins/enumerable.rb (the blockless default-order form stays on the
 # typed emitter's dedicated min/max routines for Array/Hash: only an
 # Enumerable includer needs the Ruby computation for that form too).
+# spinel: gc-minor
 a = [3, 1, 4, 1, 5, 9, 2, 6]
 p a.minmax
 p a.minmax { |x, y| y <=> x }

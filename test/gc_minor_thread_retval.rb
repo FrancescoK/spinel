@@ -11,6 +11,7 @@
 # call. Deterministic: the body allocates far past the trigger (so `t` is old
 # and its dirty bit has been cleared by the time the retval is stored), the
 # join makes the store happen, and the churn after it is what sweeps.
+# spinel: gc-minor
 t = Thread.new do
   acc = 0
   i = 0

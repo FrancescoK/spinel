@@ -1,5 +1,6 @@
 # A Struct held beside another type still stores through []=, including nil,
 # and every member writer checks the receiver's frozen state.
+# spinel: gc-minor
 S = Struct.new(:x)
 def report
   yield

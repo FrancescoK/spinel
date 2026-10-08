@@ -15,7 +15,7 @@
 #
 # The gc-minor-test leg runs this under the verifier with stress on, so a
 # holder that goes unrecorded is reported, not merely risked.
-
+# spinel: gc-minor
 ERR = RuntimeError.new("kept")
 
 def catch_site(n)

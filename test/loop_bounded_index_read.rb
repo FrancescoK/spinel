@@ -4,7 +4,7 @@
 # shape (and must still read the right elements) or breaks one condition of it
 # (and must keep the test, because there the index can be out of range or
 # negative).
-
+# spinel: gc-minor
 # the shape itself, Integer and Float, length and size
 a = [3, 1, 4, 1, 5, 9, 2, 6]
 s = 0

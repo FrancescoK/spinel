@@ -5,5 +5,6 @@
 # typed slot and stopping the generated-C build. The blockless forms -- which
 # simply miss, the way CRuby's #hash / #eql? lookup does -- are pinned by
 # test/typed_slot_conversion.rb.
+# spinel: rbs-seed-check
 h = { 1 => 2 }
 p h.fetch("a") { |k| k }

@@ -7,7 +7,7 @@
 # `**`. A proc's prologue took its posts from the end of the arguments,
 # where a yield's block takes them after the optionals, and a boxed or
 # splatted value auto-splatted into a block bound only its requireds.
-
+# spinel: gc-minor
 h = { z: 2 }
 e = {}
 x = [[1, 2, 3], 4][0]

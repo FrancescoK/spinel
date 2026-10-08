@@ -11,6 +11,7 @@
 #
 # Each is checked twice: once through a local (the slot's own marking) and once
 # boxed straight from the expression (codegen's per-site choice).
+# spinel: rbs-seed-run
 class YkR
   def initialize(p)
     @p = p

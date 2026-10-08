@@ -4,7 +4,7 @@
 #   - poly_recv_each
 #   - poly_recv_ivar_narrow_drops_unrelated
 #   - poly_recv_setter_widens_ivar
-
+# spinel: share
 # === poly_recv_dispatch_includes_subclasses ===
 # Polymorphic-receiver dispatch must include subclass arms when the
 # ivar's observed types narrow to a base class but the runtime value

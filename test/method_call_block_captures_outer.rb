@@ -1,4 +1,5 @@
 # A block passed to a Method shares both read-only and written outer locals.
+# spinel: gc-minor
 def capture_yield = yield
 
 def capture_twice

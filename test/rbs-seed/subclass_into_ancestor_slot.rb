@@ -8,7 +8,7 @@
 #
 # An RBS signature naming the base type is the ordinary way to reach this --
 # without one the slot infers the concrete class and nothing widens.
-
+# spinel: rbs-seed-check
 class Base
   def initialize(n)
     @n = n

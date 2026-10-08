@@ -5,6 +5,7 @@
 # The answers must not move: the read is of the live buffer, so a mutation
 # made through any other reference is visible to the next read, exactly as in
 # CRuby. That is what this test pins; the copy elision is the point of it.
+# spinel: decisions
 class Holder
   attr_reader :buf
   def initialize(buf)

@@ -1,3 +1,4 @@
+# spinel: rbs-seed-check
 class Rel
   def to_a
     [1, 2]

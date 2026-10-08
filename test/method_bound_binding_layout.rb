@@ -5,7 +5,7 @@
 # anywhere, keywords with a `**kwrest`, and the block. Each binder had its
 # own index arithmetic that got some of these wrong or declined them, and a
 # bare `super` dropped its `**` into a parent naming keywords.
-
+# spinel: gc-minor
 class O
   def initialize(v) = (@v = v)
   def a(x, *r, y) = [x, r, y]

@@ -1,3 +1,4 @@
+# spinel: gc-minor
 # A top-level method with the same name leaves boxed String transforms to
 # their own operand holds. Plain reads must precede later argument calls.
 def center

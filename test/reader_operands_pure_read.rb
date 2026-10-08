@@ -6,6 +6,7 @@
 #
 # Everything that is NOT a pure read keeps its ordering, and each case below
 # is one the pure test must turn down.
+# spinel: gc-minor
 class Matrix
   attr_reader :data, :cols
   def initialize(rows, cols)

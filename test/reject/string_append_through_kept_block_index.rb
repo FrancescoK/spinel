@@ -4,6 +4,7 @@
 # pulled into the shared handle yet, so the call would hand it a copy and
 # the append would not reach `s` (CRuby prints "a!"). Refused at compile
 # time until it can be shared (#6179).
+# spinel: reject-share
 def run(x) = yield(x)
 def r2(x, &b)
   return yield(x) if x.size > 50

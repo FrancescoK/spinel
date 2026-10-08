@@ -1,4 +1,5 @@
 # Unbound prepend operands run left to right, including their hoisted code.
+# spinel: gc-minor
 s = +"a"
 2.times { s << "!" }
 i = 0

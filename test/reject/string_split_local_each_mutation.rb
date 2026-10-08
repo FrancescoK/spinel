@@ -2,6 +2,7 @@
 # place, and that is read afterwards: each keeps the elements, so the
 # mutation must be seen through the Array. Still refused, not silently
 # applied to a copy.
+# spinel: reject-thread-string
 a = " x , y ".split(",")
 a.each(&:strip!)
 p a

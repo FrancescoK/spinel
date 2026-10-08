@@ -7,6 +7,7 @@
 # CRuby answers an Enumerator that raises TypeError only when it runs (a
 # separate difference, so the check reads only that it built), and a String
 # pattern still answers the Enumerator.
+# spinel: rbs-seed-run
 def gsub_bang_recv(x) = x
 
 def t(k)

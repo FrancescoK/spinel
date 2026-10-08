@@ -1,5 +1,6 @@
 # Keywords do not fill a positional optional in initialize. Its default
 # reads the newly allocated receiver, including on a call that rejects keys.
+# spinel: gc-minor
 class KeywordDefault
   attr_reader :value
   def initialize(x = @seed, k: 1)

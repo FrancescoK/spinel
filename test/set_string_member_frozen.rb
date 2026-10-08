@@ -2,7 +2,7 @@
 # (the way a Hash takes a String key): changing the String afterwards leaves
 # the member and its membership alone, and the member cannot be changed. A
 # frozen String joins as itself. Covers every way a member gets in.
-
+# spinel: share
 def probe(label, st, s)
   e = st.find { |x| x == s }
   s << "!"

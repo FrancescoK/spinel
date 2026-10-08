@@ -4,6 +4,7 @@
 # element) reaches the caller, in a direct call, a class value's and a poly
 # receiver's dispatch. Each append is 100 bytes, so a copy cannot pass by
 # capacity; a method that only reads keeps its String a plain one.
+# spinel: gc-minor
 X = "x" * 100
 def m1(p) = (p << X; nil)
 def m2(a, p) = (p << X; nil)

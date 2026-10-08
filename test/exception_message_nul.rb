@@ -1,6 +1,7 @@
 # An exception message that holds a NUL keeps its bytes through every way of making
 # and reading it (#7556). A message the runtime builds from a C buffer is still its
 # strlen's. Tried with a GC at every allocation as well (make gc-stress-test).
+# spinel: gc-stress
 def show(e)
   p [e.class, e.message.bytes.size, e.message.bytes.count(0), e.to_s.bytes.size]
 end

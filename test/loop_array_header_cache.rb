@@ -2,7 +2,7 @@
 # C locals across its iterations, reading them again after anything that can
 # move them. Each case below is one where a stale header would read or write
 # the wrong memory, or where a check the cache stands in for has to still fire.
-
+# spinel: gc-minor
 # the histogram step itself
 counts = Array.new(4, 0)
 sums = Array.new(4, 0.0)

@@ -1,3 +1,4 @@
+# spinel: share
 # Shapes beside the String routes that are refused (a global read into a
 # local, a method returning its parameter, a bang method's result, `to_s`
 # under a rebinding argument, an Array element the element store does not

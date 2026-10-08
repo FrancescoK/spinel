@@ -6,7 +6,7 @@
 # variable another String is the same question for every call: the callee
 # appends to the String the argument read. The helper appends LONG, which
 # always reallocates.
-
+# spinel: gc-minor
 LONG = "." * 100
 
 module Helper

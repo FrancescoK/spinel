@@ -1,5 +1,6 @@
 # A poly array passed to a parameter the seed declares Array[String] or
 # Array[Integer] is converted at the call, not bound as it is.
+# spinel: rbs-seed-run
 class A
   def initialize(t)
     @t = t

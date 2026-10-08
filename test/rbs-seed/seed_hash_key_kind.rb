@@ -5,6 +5,7 @@
 # kind is not convertible: a Symbol-keyed hash can never satisfy this
 # parameter, and the pointer went unconverted, so the callee dereferenced a
 # Symbol as a `char *` and the process segfaulted (#3975).
+# spinel: rbs-seed-contradicted-return
 class V
   def self.render(attrs)
     out = ""

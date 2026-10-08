@@ -3,6 +3,7 @@
 # seed -- though it has no keys to disagree about, and the seed is the only
 # thing in the program that says which kind it is (#4025). The seed wins, and
 # the literal is built at it.
+# spinel: rbs-seed-run
 class C
   def sym_hash
     {}

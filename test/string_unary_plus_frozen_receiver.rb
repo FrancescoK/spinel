@@ -1,5 +1,7 @@
 # Unary plus keeps a mutable receiver but copies a frozen receiver,
 # including when freeze's result carries a shared String handle.
+# spinel: gc-minor
+# spinel: share
 text = +"local"
 other = text
 other << "!"

@@ -1,5 +1,6 @@
 # A shared String argument made from a literal or bare read must stay
 # rooted while a sibling rest argument allocates its array.
+# spinel: gc-minor
 def append_suffix(a, *items, suffix:)
   p a
   items.each { |s| s << suffix; p s }

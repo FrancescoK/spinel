@@ -4,6 +4,7 @@
 # params by reference. A truthful `(String io)` seed used to disqualify the
 # parameter from that ABI, so every append landed in a copy and the caller
 # got an empty buffer -- silently, and only when a sidecar was present.
+# spinel: rbs-seed-check
 module Views
   module Parts
     def self.frag_into(io, n)

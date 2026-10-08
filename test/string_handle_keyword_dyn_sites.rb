@@ -6,7 +6,7 @@
 # UnboundMethod's `bind_call` or `bind(o).call`, the keyword was refused
 # while the position was shared. Each probe appends LONG, which always
 # reallocates, and has its own variable.
-
+# spinel: gc-minor
 LONG = "!" * 100
 def seen(s) = [s[0], s.size]
 

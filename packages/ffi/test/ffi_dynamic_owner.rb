@@ -1,5 +1,6 @@
 # Two libraries attach the same name at run time: a bare call reaches the
 # one its scope includes (the latest include first), never the other's.
+# spinel: share
 require "ffi"
 module Abs
   extend FFI::Library

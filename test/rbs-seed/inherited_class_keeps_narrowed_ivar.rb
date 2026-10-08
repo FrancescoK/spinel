@@ -4,6 +4,7 @@
 # a slot, the locals in its component fell back to the poly array, and the C
 # did not build (#4642: a controller under a superclass storing a fresh
 # object array into an ivar and handing it to a declared parameter).
+# spinel: rbs-seed-check
 class HatRequest
   attr_reader :id
   def initialize(id)

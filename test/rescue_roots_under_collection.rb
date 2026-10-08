@@ -3,7 +3,7 @@
 # that materializes it and the push that roots it, the message between the
 # raiser that formats it and the slot the marker reads. Every pin below raises
 # after enough allocation for a collection to land in one of those windows.
-
+# spinel: wasm
 # an unspecialized `rescue => e` arm, on a raise that carries no object
 pad = Array.new(64) { |i| (10 ** 20) + i }
 q = pad.map { |x| x.to_s.length }

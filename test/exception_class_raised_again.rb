@@ -1,3 +1,4 @@
+# spinel: gc-stress
 # The class of a rescued error, raised again. `raise e.class, "m"` stores the
 # class's name in the new error, and that name was the fresh copy `e.class`
 # made on the string heap: nothing marks an error's class name, so the copy

@@ -5,7 +5,7 @@
 # `@b.call(s)` appended to a copy without a word, where the same block kept
 # by an ordinary method shared it (#6179). Each probe appends LONG, which
 # always reallocates, and prints what the caller's name sees.
-
+# spinel: gc-minor
 LONG = "!" * 100
 
 def seen(s) = [s[0], s.size]

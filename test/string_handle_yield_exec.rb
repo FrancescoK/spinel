@@ -2,7 +2,7 @@
 # `instance_eval` or a yielding `initialize` is the caller's own String, as
 # in CRuby: an append through the block's parameter reaches the caller
 # (#6179).
-
+# spinel: gc-minor
 def grow(v) = (v << "x"; nil)
 def mark(q) = (q << "p"; nil)
 def g(t) = (t << "!")

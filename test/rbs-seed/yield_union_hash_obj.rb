@@ -1,3 +1,4 @@
+# spinel: rbs-seed-check
 class YuResult
   def to_a
     [[1, 2]]

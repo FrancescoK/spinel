@@ -7,6 +7,7 @@
 # is a literal holding an untyped element materializes that literal at the
 # boundary instead of handing an sp_PolyArray * through an sp_IntArray *
 # signature (#4191).
+# spinel: rbs-seed-run
 class Pager
   def self.from_range(n)
     return (1..3).to_a if n > 0

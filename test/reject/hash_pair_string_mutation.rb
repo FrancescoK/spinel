@@ -1,6 +1,7 @@
 # A String a Hash holds, read back out through the [key, value] pairs a
 # builtin builds and then mutated, is not yet shared by reference: refused,
 # not silently appended to a copy.
+# spinel: reject-share
 h = {a: +"w", b: 1}
 h.to_a.each { |k, v| v << "@" if v.is_a?(String) }
 h.first[1] << "!"

@@ -1,5 +1,6 @@
 # Transform blocks bind their parameter in the representation of its slot.
 # Destructuring the same names in another block makes sharing visible here.
+# spinel: gc-minor
 def make_hash
   h = {}
   3.times { |i| h["k#{i}"] = "v#{i}" }

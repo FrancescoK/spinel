@@ -1,5 +1,7 @@
 # A boxed String's capturing scan binds the whole row or destructures it,
 # including nil for absent and surplus groups, just like a typed String.
+# spinel: gc-minor
+# spinel: share
 def scan_subject(i) = [+"a1 b", nil][i]
 
 p scan_subject(0).scan(/([a-z])(\d)?/) { |word, digit, extra| p [word, digit, extra] }

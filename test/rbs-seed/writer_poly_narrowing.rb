@@ -3,6 +3,7 @@
 # local-assignment path narrows a poly rhs into a concrete slot; the writer
 # only knew how to coerce the gate's raising token, so the sp_RbVal was
 # assigned raw into a const char * and the C build stopped (#4093).
+# spinel: rbs-seed-check
 class Cand
   attr_accessor :id
 

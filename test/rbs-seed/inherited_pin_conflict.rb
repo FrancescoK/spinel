@@ -3,6 +3,7 @@
 # (the parent writes through a (Parent*) cast of the child), so the pin
 # yields with a warning instead of splitting the layouts -- which read
 # garbage strings and 0 ints, or segfaulted (#1871).
+# spinel: rbs-seed-check
 class Base
   def assign(row)
     @id = row["id"]

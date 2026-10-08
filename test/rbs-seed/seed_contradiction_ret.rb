@@ -4,6 +4,7 @@
 # function typed sp_SymPolyHash *. Only the C compiler used to report that, in
 # its voice and against generated code (#4005); spinel refuses it here, naming
 # the method, the declared type and the returned one.
+# spinel: rbs-seed-contradicted-return
 class C
   def f
     "not a hash"

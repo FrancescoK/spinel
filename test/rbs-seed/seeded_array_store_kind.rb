@@ -3,6 +3,7 @@
 # `[]` default (through a subclass's bare super) is typed a general Array, and
 # its raw pointer went into the IntArray slot, so the C did not build. The
 # plain, value-position and `||=` stores all take the conversion.
+# spinel: rbs-seed-run
 class SeedStoreMem
   def initialize(initial = [])
     @storage = fill(initial)

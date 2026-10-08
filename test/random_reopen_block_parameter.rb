@@ -1,4 +1,5 @@
 # A Random reopening's direct call passes its escaping block parameter.
+# spinel: gc-minor
 class Random
   def capture(n = 1, &block)
     [n, block]

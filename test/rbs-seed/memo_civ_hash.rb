@@ -1,3 +1,4 @@
+# spinel: rbs-seed-check
 module M
   def self.table
     @table ||= {}

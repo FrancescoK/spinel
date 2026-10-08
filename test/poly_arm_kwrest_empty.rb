@@ -1,6 +1,7 @@
 # A `**kw` parameter reached through a poly dispatch arm with no keywords
 # at the call gets an empty hash. The arm handed the callee NULL, and the
 # first read of the hash crashed.
+# spinel: decisions
 class A
   def m(x) = x
   def k(x, **kw) = kw.empty? ? x : kw

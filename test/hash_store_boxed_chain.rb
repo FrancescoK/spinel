@@ -2,6 +2,7 @@
 # the stored value is read out of that one. Each link of such a chain widens
 # in a later round, and every Hash it reaches, through a local or a method's
 # parameter, must see its store.
+# spinel: gc-minor
 def put(h, x)
   b = [h, 1][ARGV.size]
   b[0] = x

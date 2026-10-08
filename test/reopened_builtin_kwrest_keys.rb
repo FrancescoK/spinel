@@ -1,4 +1,5 @@
 # Keyword-rest parameters of builtin reopenings accept every Ruby Hash key.
+# spinel: gc-minor
 class Random
   def take(a, **kw) = [a, kw]
   def options(a, known: 7, **kw) = [a, known, kw]

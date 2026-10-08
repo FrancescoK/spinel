@@ -4,6 +4,7 @@
 # and not how C holds it. The rule refused each of these ("a variable
 # cannot hold the shared handle yet"). A nil through the identity method
 # raises NoMethodError on the mutator, as it does without the flag.
+# spinel: rbs-seed-check
 def shrbs_id(x) = x
 
 def shrbs_bang(x)

@@ -1,6 +1,7 @@
 # A user #to_json answer is the document, byte for byte: JSON.generate hands it
 # through without reading it as C text, so a NUL inside it survives at top
 # level and nested alike.
+# spinel: wasm
 require "json"
 NUL = 0.chr
 class Raw

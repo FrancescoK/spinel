@@ -2,7 +2,7 @@
 # call, or through a forwarded `*` rest, `*`, `...` -- is the caller's own
 # String, as in CRuby: the method the argument lands on appends to it
 # (#6179).
-
+# spinel: gc-minor
 X = "x" * 100
 
 # a parameter a `**h` call types POLY, handed on by `super`

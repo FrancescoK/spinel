@@ -4,6 +4,7 @@
 # nil initializer, so the read answered nil with nothing raised (#3507). The
 # switch now ends in the runtime index, which dispatches on the receiver's own
 # kind.
+# spinel: rbs-seed-run
 class PxBag
   def [](k)
     "bag"

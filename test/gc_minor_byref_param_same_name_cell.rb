@@ -3,6 +3,7 @@
 # at its own stack local (`emit(&lv_io)`). Such a store takes no barrier --
 # the lending site records a heap cell it lends, and the caller's frame roots
 # a stack local.
+# spinel: gc-minor
 def emit(io)
   io << "a"
   io << "b"

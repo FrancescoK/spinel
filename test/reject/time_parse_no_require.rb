@@ -2,6 +2,7 @@
 # documented limit, not a run-time NoMethodError the first time the line
 # runs (K-001). Same refusal whether or not `require "time"` was written,
 # since neither path implements the string-parsing additions.
+# spinel: reject-time-parse: Time.parse is not supported
 def read_log_line(s)
   t = Time.parse(s)
   p t

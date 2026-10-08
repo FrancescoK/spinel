@@ -5,7 +5,7 @@
 #
 # Not a snapshot test -- failing to compile is the passing outcome, so the
 # Makefile runs it and asserts the diagnostic.
-
+# spinel: rbs-seed-check
 module ViewHelpers
   def self.html_escape(s)
     s

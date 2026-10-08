@@ -1,4 +1,5 @@
 # Boxed map! and collect! retain fresh block results across collections.
+# spinel: gc-minor
 def maps(c)
   c.map! { |a| [a[1], a[0]] }
   c.collect! { |q| [q] }

@@ -14,7 +14,7 @@
 # calls declines a raw BlockArgumentNode wrapping a SymbolNode, and a
 # symbol-argument fold's synthesized block once desugared, marked "sym_fold"
 # for exactly this).
-
+# spinel: share
 require "set"
 
 p [1, 2, 3, 4].inject { |acc, x| acc + x }

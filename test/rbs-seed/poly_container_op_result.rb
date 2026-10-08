@@ -4,6 +4,7 @@
 # typed as having no value at all. Both are the receiver's answer, not the
 # name owner's, once the dispatch ends in a runtime helper: the call is the
 # union, which is poly.
+# spinel: rbs-seed-run
 class PcBag
   def [](k); "bag"; end
   def delete(k); "bd"; end

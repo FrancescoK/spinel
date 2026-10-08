@@ -1,5 +1,6 @@
 # Boxed paths, including shared Strings, keep their path meaning in either
 # endpoint. Streams keep their position, and invalid endpoints name read/write.
+# spinel: gc-minor
 require "tmpdir"
 require "stringio"
 

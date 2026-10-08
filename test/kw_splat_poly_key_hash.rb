@@ -6,6 +6,7 @@
 # positional argument, or raised a TypeError at such a key when the hash
 # came out of a ternary. A method without keywords still takes it as a
 # Hash.
+# spinel: gc-minor
 def f(a: 0, b: 1) = [a, b]
 def fr(a:) = a
 def y(a: 0, b: 1) = yield(a, b)

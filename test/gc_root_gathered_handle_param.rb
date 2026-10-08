@@ -6,7 +6,7 @@
 # in the same argument list. Under SPINEL_GC_STRESS=2 that handle was
 # collected and the call read a freed object (gc-stress-test); with
 # --share-strings it was already made ahead of the call, in a rooted temp.
-
+# spinel: gc-stress
 LONG = "!" * 100
 
 def g1(a = nil, *r, z) = (a << LONG if a.is_a?(String); [a.size, r, z])

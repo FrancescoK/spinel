@@ -5,6 +5,7 @@
 # instead of rejecting the annotation or returning a poly array through a
 # StrArray* slot (which SIGSEGV'd). The returned element must be genuinely
 # String-typed, so `=~` and `.upcase` on it must work.
+# spinel: rbs-seed-check
 class Db
   def self.capture
     log = []

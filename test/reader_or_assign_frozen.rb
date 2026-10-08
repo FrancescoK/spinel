@@ -1,6 +1,8 @@
 # Reading a mutable String slot preserves its frozen state in an ordinary
 # value snapshot, including the value stored by ||=. The default build does
 # not need another shared handle for that snapshot.
+# spinel: gc-minor
+# spinel: share
 class FrozenReader
   attr_accessor :text
 

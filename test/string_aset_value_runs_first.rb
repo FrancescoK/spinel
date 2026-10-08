@@ -10,7 +10,7 @@
 # Each local lives in its own method, and the blocks change an instance
 # variable's String: a block that reads the receiver local itself is a
 # separate shape.
-
+# spinel: gc-stress
 def grow(s)
   s << "xyz"
   "G"

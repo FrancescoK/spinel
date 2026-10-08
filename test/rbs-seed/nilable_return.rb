@@ -4,6 +4,7 @@
 # kept the slot, so a page rendered `class="sidebar admin "` where Rails
 # rendered `class="sidebar admin"` (#4250). An advisory seed must never remove
 # the nil arm: `String?` says may be nil.
+# spinel: rbs-seed-check
 class Helper
   def self.guard_if(flag)
     "yes" if flag

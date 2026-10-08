@@ -12,6 +12,7 @@
 # promotion then breaks). It lives in its own file because any OTHER unpinnable
 # `new` in the program -- a no-argument one is enough -- puts the class back in
 # reach by a different count and hides the miscount.
+# spinel: share
 class Holder
   def initialize(n = 0, b)
     @n = n

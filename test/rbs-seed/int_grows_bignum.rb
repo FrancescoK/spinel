@@ -3,6 +3,7 @@
 # return pinned the signature to sp_int, and the bignum came back through it
 # as a truncated pointer -- declaring the type made the program worse than not
 # declaring it (#3518). The seed now lets a bignum body widen it.
+# spinel: rbs-seed-check
 class Backoff
   def initialize
     @mult = 2

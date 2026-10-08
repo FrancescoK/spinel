@@ -1,6 +1,7 @@
 # A definition a later `def` has REPLACED cannot be called: dispatch resolves
 # to the last one, and did before the return-seed rule existed. Judging the
 # replaced body refused a program spinel compiles and runs correctly (#4024).
+# spinel: rbs-seed-run
 class Rel
   def initialize(k)
     @k = k

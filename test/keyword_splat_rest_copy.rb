@@ -4,7 +4,7 @@
 # (`**mk(i)`) is rooted while it waits; run under SPINEL_GC_STRESS (see
 # GC_MINOR_TESTS) a collection there swept it and the copy read freed
 # memory. The positional and post-rest bindings copy the same way.
-
+# spinel: gc-minor
 def rs(*r) = r
 def opt(a, b = nil) = [a, b]
 def post(*r, z) = [r, z]

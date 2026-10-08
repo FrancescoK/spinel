@@ -1,5 +1,6 @@
 # A splat converts its operand through #to_a: a Hash spreads its [key, value]
 # pairs, a Struct its members, an object its own #to_a.
+# spinel: gc-stress
 h = {a: 1}
 p [*h, 2]
 p [*h]

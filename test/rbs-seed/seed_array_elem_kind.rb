@@ -5,6 +5,7 @@
 # (that would hand back a copy, so writes through the getter would stop
 # reaching the receiver's own array), so this is a real contradiction and
 # spinel names it in the RBS's own vocabulary (#4151).
+# spinel: rbs-seed-contradicted-return
 class Box
   def initialize
     @rows = [1, 2, 3]

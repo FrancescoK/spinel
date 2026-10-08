@@ -2,6 +2,7 @@
 # to_a, values, deconstruct, values_at and deconstruct_keys build an Array or
 # a Hash from the members. The Struct they read was held by nothing while
 # that container was allocated, which SPINEL_GC_STRESS=2 shows.
+# spinel: gc-stress
 Pt = Struct.new(:a, :b)
 Dt = Data.define(:a, :b)
 

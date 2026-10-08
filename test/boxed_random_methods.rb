@@ -1,5 +1,6 @@
 # A Random read from a mixed container keeps its public instance methods.
 # Compare bounds and state, since generators need not share CRuby's sequence.
+# spinel: gc-minor
 y = [Random.new(1), 1][0]
 p y.class
 v = y.rand(10)
