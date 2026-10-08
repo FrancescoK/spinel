@@ -12415,6 +12415,22 @@ static sp_RbVal sp_kw_splat_conv(sp_RbVal v, int user_ok) {
   sp_raise_cls("TypeError", sp_sprintf("no implicit conversion of %s into Hash", sp_convert_src_name(v)));
   return v;
 }
+static sp_RbVal sp_kernel_hash(sp_RbVal v) {
+  if (v.tag == SP_TAG_NIL || (v.tag == SP_TAG_OBJ && sp_poly_is_array_kind(v.cls_id) && sp_poly_length(v) == 0))
+    return sp_box_obj(sp_PolyPolyHash_new(), SP_BUILTIN_POLY_POLY_HASH);
+  if (v.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(v.cls_id)) return v;
+  if (sp_poly_is_user_obj(v)) {
+    sp_RbVal a = sp_box_nil();
+    SP_GC_ROOT_RBVAL(v);
+    if (sp_obj_conv_fn && sp_obj_conv_fn((int)v.cls_id, v.v.p, 5, &a)) {
+      if (a.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(a.cls_id)) return a;
+      const char *cn = sp_poly_class_name(v);
+      sp_raise_cls("TypeError", sp_sprintf("can't convert %s to Hash (%s#to_hash gives %s)", cn, cn, sp_poly_class_name(a)));
+    }
+  }
+  sp_raise_cls("TypeError", sp_sprintf("can't convert %s into Hash", sp_poly_class_name(v)));
+  return v;
+}
 
 /* NilClass-aware conversions for a boxed receiver (a nil-holding local widens
    to poly): nil converts per NilClass, a value already of the target kind is

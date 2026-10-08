@@ -413,7 +413,9 @@ static const char *nil_sum_ck_text(Compiler *c, int recv, TyKind rt, int float_s
    the compiled #to_ary / #to_hash of the defining class on the operand. */
 static void emit_obj_container_conv(Compiler *c, int node, int def, const char *conv, Buf *b) {
   int by_value = repr_of(c, node).kind == RK_VOBJ;
-  buf_printf(b, "sp_%s_%s(", c->classes[def].c_name, mc(conv));
+  int mi = comp_method_in_chain(c, def, conv, NULL);
+  if (mi >= 0 && !sp_streq(c->scopes[mi].name, conv)) { emit_method_cname(c, &c->scopes[mi], b); buf_puts(b, "("); }
+  else buf_printf(b, "sp_%s_%s(", c->classes[def].c_name, mc(conv));
   if (!by_value) buf_printf(b, "(sp_%s *)", c->classes[def].c_name);
   buf_puts(b, "("); emit_expr(c, node, b); buf_puts(b, "))");
 }

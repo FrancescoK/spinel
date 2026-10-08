@@ -1,0 +1,28 @@
+{}
+{}
+{a: 1}
+{chomp: true}
+{b: 2}
+"can't convert Integer into Hash"
+"can't convert String into Hash"
+"can't convert Symbol into Hash"
+"can't convert Array into Hash"
+"can't convert Float into Hash"
+"can't convert TrueClass into Hash"
+"can't convert Object into Hash"
+"can't convert Bad to Hash (Bad#to_hash gives Integer)"
+{}
+{}
+{a: 1}
+{chomp: true}
+{b: 2}
+"can't convert Integer into Hash"
+["a", "b"]
+["a\n", "b\n"]
+["a", "b"]
+{a: 1, b: 2}
+{a: 1, n: 1}
+{a: 1, c: 3}
+{a: 1, b: 2}
+{a: 1, c: 3}
+{a: 1, d: 4}
