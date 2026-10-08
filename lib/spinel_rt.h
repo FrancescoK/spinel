@@ -10960,6 +10960,8 @@ static sp_RbVal sp_poly_index_poly(sp_RbVal recv, sp_RbVal idx) {
    kind can never be present, so it reports FALSE. */
 static sp_bool sp_poly_has_key(sp_RbVal recv, sp_RbVal key) {
   if (recv.tag != SP_TAG_OBJ) return FALSE;
+  if (recv.cls_id != SP_BUILTIN_POLY_POLY_HASH && sp_poly_is_strbuf(key))
+    key = sp_poly_strbuf_deref(key);
   switch (recv.cls_id) {
     case SP_BUILTIN_POLY_POLY_HASH: return sp_PolyPolyHash_has_key((sp_PolyPolyHash *)recv.v.p, key);
     case SP_BUILTIN_STR_POLY_HASH:  return key.tag == SP_TAG_STR && sp_StrPolyHash_has_key((sp_StrPolyHash *)recv.v.p, key.v.s);
@@ -10986,6 +10988,8 @@ static sp_RbVal sp_fmt_hash_fetch(sp_RbVal h, sp_sym k, const char *nm) {
    answers for itself here instead. */
 static sp_RbVal sp_poly_delete_key(sp_RbVal recv, sp_RbVal key) {
   if (recv.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(recv.cls_id)) {
+    if (recv.cls_id != SP_BUILTIN_POLY_POLY_HASH && sp_poly_is_strbuf(key))
+      key = sp_poly_strbuf_deref(key);
     if (!sp_poly_has_key(recv, key)) return sp_box_nil();
     sp_RbVal was = sp_poly_index_poly(recv, key);
     switch (recv.cls_id) {
@@ -11967,6 +11971,10 @@ static sp_RbVal sp_poly_set_poly(sp_RbVal v, sp_RbVal key, sp_RbVal val) {
                    : sp_sprintf("no implicit conversion of %s into Integer",
                                 sp_poly_class_name(key)));
   }
+  /* Typed Hashes read a String key's bytes; a heterogeneous Hash keeps the
+     original key. */
+  if (v.cls_id != SP_BUILTIN_POLY_POLY_HASH && sp_poly_is_strbuf(key))
+    key = sp_poly_strbuf_deref(key);
   switch (v.cls_id) {
     case SP_BUILTIN_STR_POLY_HASH:
       if (key.tag == SP_TAG_STR) sp_StrPolyHash_set((sp_StrPolyHash*)v.v.p, key.v.s, val);
