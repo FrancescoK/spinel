@@ -5875,7 +5875,7 @@ static int fwd_poly_recv_one_param_iter(const char *name) {
     "each", "each_value", "each_key", "each_entry", "map", "collect", "flat_map",
     "filter_map", "select", "filter", "reject", "find", "detect", "find_index",
     "any?", "all?", "none?", "sort_by", "min_by", "max_by", "group_by",
-    "partition", "count", "sum", "take_while", "drop_while", NULL };
+    "partition", "count", "sum", "take_while", "drop_while", "each_char", "each_line", "each_byte", NULL };
   return str_in(name, names);
 }
 
@@ -6129,6 +6129,10 @@ static void fwd_branch_on_block_given(Compiler *c, int id) {
   nt_swap_nodes(nt, id, ifn);
   int call = ifn;
   nt_node_reset(nt, id, "IfNode");
+  if (nt_str(nt, call, "dyn_name")) {
+    nt_node_set_int(nt, id, "dyn_arm", 1);
+    nt_node_set_str(nt, id, "dyn_name", nt_str(nt, call, "dyn_name"));
+  }
   nt_node_set_arr(nt, then, "body", &call, 1);
   nt_node_set_arr(nt, other, "body", &noblk, 1);
   nt_node_set_ref(nt, els, "statements", other);
@@ -6257,7 +6261,8 @@ int desugar_value_callable_forwards(Compiler *c) {
           pty[1] = TY_POLY_ARRAY;
       }
     }
-    else if (anon && rt == TY_POLY && fwd_poly_recv_one_param_iter(name)) {
+    else if (rt == TY_POLY && fwd_poly_recv_one_param_iter(name) &&
+             (anon || sp_streq(name, "each_char") || sp_streq(name, "each_line") || sp_streq(name, "each_byte"))) {
       /* A poly receiver (`@mutex.synchronize { @items.dup }.each(&)`, a
          snapshot handed out from under a lock) has no static element type
          to read a yield shape from, and the decline below left the forward
@@ -6388,6 +6393,9 @@ int desugar_value_callable_forwards(Compiler *c) {
     if (anon) nt_node_set_int(nt, blocknode, "fwd_yield", 1);
 
     nt_node_set_ref(nt, id, "block", blocknode);  /* call now takes a literal block */
+    for (int j = 0; anon && j < n0; j++)
+      if (j != id && nt_kind(nt, j) == NK_CallNode && nt_ref(nt, j, "block") == blk && nt_str(nt, j, "name"))
+        nt_node_set_ref(nt, j, "block", nt_clone_subtree(nt, sp_streq(nt_str(nt, j, "name"), name) ? blocknode : blk));
     /* a named `&blk` forward that became a yield: its read is orphaned, and
        must not count as a use of the parameter */
     if (anon && ex >= 0) nt_node_set_str(nt, ex, "name", "__orphaned__");
@@ -6406,7 +6414,10 @@ int desugar_value_callable_forwards(Compiler *c) {
     /* the method's own block may be absent where it is called: a String
        builtin then answers its blockless form (split's Array, an
        Enumerator), not a yield to no block */
-    if (anon && rt == TY_STRING && fwd_method_called_blockless(c, comp_scope_of(c, id)))
+    Scope *fms = comp_scope_of(c, id);
+    int own = anon || (nt_kind(nt, ex) == NK_LocalVariableReadNode && fms && fms->blk_param &&
+                       nt_str(nt, ex, "name") && sp_streq(nt_str(nt, ex, "name"), fms->blk_param));
+    if (own && rt == TY_STRING && fwd_method_called_blockless(c, fms))
       fwd_branch_on_block_given(c, id);
     /* a splat beside the forward was kept whole while the block was an
        `&` (a block goes on one arm only); the literal now spreads it */
