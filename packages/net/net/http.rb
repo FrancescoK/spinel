@@ -118,6 +118,24 @@ module Net
       main + "/" + parts[1].to_s.strip
     end
 
+    # Raises unless the response is a 2xx, as CRuby's does. The message is the
+    # code and the quoted reason (`404 "Not Found"`), the class comes from the
+    # family (error_type below) and the exception carries the response.
+    def value
+      error! unless is_a?(HTTPSuccess)
+    end
+
+    def error!
+      message = @code
+      message = "#{message} #{@message.dump}" unless @message.nil?
+      raise error_type.new(message, self)
+    end
+
+    # CRuby's EXCEPTION_TYPE of the family: a 3xx is retriable, a 4xx the
+    # client's error, a 5xx fatal, and anything else a plain HTTPError.
+    def error_type
+      HTTPError
+    end
   end
 
   # The response family. CRuby's success test is `res.is_a?(Net::HTTPSuccess)`
@@ -127,9 +145,17 @@ module Net
   class HTTPInformation < HTTPResponse; end
   class HTTPSuccess < HTTPResponse; end
 
-  class HTTPRedirection < HTTPResponse; end
-  class HTTPClientError < HTTPResponse; end
-  class HTTPServerError < HTTPResponse; end
+  class HTTPRedirection < HTTPResponse
+    def error_type = HTTPRetriableError
+  end
+
+  class HTTPClientError < HTTPResponse
+    def error_type = HTTPClientException
+  end
+
+  class HTTPServerError < HTTPResponse
+    def error_type = HTTPFatalError
+  end
 
   class HTTPOK < HTTPSuccess; end
   class HTTPCreated < HTTPSuccess; end
