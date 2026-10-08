@@ -2257,6 +2257,7 @@ GC_MINOR_TESTS := test/boxed_scan_capture_params.rb \
                   test/kind_query_computed_nil.rb \
                   test/nil_string_slot_reads.rb test/nil_scalar_slot_widen.rb \
                   test/nullable_string_identity.rb \
+                  test/share_strings_nil_self_route.rb \
                   test/string_nil_conditional_assignment.rb \
                   test/yield_proc_arg_in_blocked_method.rb \
                   test/kind_query_nested_nil.rb \

@@ -2451,8 +2451,22 @@ int strbuf_object_ref(Compiler *c, int recv, Buf *b) {
   /* A receiver-returning route has the same identity as its slot. */
   char ref[1024];
   int up = 0;
-  if (strbuf_self_route_slot(c, recv, &up, ref, sizeof ref) && !up) {
-    buf_printf(b, "((sp_int)(uintptr_t)(%s))", ref);
+  int route = strbuf_self_route_slot(c, recv, &up, ref, sizeof ref);
+  if (route && !up) {
+    if (repr_of(c, route - 1).may_nil) {
+      int t = ++g_tmp;
+      buf_printf(b, "({ sp_String *_t%d = %s; _t%d ? (sp_int)(uintptr_t)_t%d : %s; })",
+                 t, ref, t, t, repr_of(c, recv).may_nil ? "4" : "(sp_int)(uintptr_t)sp_str_frozen_empty");
+    }
+    else buf_printf(b, "((sp_int)(uintptr_t)(%s))", ref);
+    return 1;
+  }
+  if (repr_of(c, recv).may_nil) {
+    Buf rb; memset(&rb, 0, sizeof rb);
+    if (!strbuf_box_ref_as(c, recv, "%s", &rb)) return 0;
+    int t = ++g_tmp;
+    buf_printf(b, "({ sp_String *_t%d = %s; _t%d ? (sp_int)(uintptr_t)_t%d : 4; })", t, rb.p, t, t);
+    free(rb.p);
     return 1;
   }
   /* The box's payload is already its identity, with or without a handle. */

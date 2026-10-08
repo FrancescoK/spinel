@@ -6507,6 +6507,9 @@ static int str_arms_convert(Compiler *c, int id, Buf *b, const NodeTable *nt, co
         /* +nil raises, String(nil) is "" (a new String) */
         if (up) buf_printf(b, "if (SP_UNLIKELY(!_t%d)) sp_raise_nomethod(sp_nomethod_msg(\"+@\", sp_box_nil())); "
                               "(sp_bool)(sp_String_uplus(_t%d) == %s); })", th, th, hy);
+        /* A route whose answer can be nil keeps nil's identity too. */
+        else if (repr_of(c, fwd > 0 ? recv : argv[0]).may_nil)
+          buf_printf(b, "(sp_bool)(_t%d == %s); })", th, hy);
         else buf_printf(b, "(sp_bool)(_t%d && _t%d == %s); })", th, th, hy);
         eq_sblv = 1;
       }
