@@ -1021,6 +1021,12 @@ SHARE_TESTS := $(filter-out test/share/share_strings_fiddle.rb,$(SHARE_TESTS))
 endif
 share-strings-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS) $(BUNDLED_NATIVE_MT_OBJS)
 	@tmp=$$(mktemp -d "$${TMPDIR:-/tmp}/spinel-share.XXXXXX"); ok=1; \
+	check_output() { \
+	  if [ -f "$$1.err.expected" ]; then \
+	    "$$tmp/b" >"$$tmp/stdout" 2>"$$tmp/stderr"; \
+	    cmp -s "$$tmp/stdout" "$$2" && cmp -s "$$tmp/stderr" "$$1.err.expected"; \
+	  else "$$tmp/b" 2>&1 | cmp -s - "$$2"; fi; \
+	}; \
 	for t in $(SHARE_TESTS) test/share_strings_*.rb test/nullable_string_identity.rb test/widened_param_reaches_its_callee.rb test/reader_or_assign_frozen.rb \
 	  test/string_freeze_value_shared_handle.rb test/string_unary_plus_frozen_receiver.rb \
 	  test/builtins_inject.rb test/issue_3174.rb test/set_string_member_frozen.rb \
@@ -1034,6 +1040,8 @@ share-strings-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS
 	  test/poly_string_iter_user_owns_name.rb test/string_handle_initialize.rb \
 	  test/string_alias_routes_unobserved.rb test/yield_string_param_block_append.rb \
 	  test/string_reader_store_routes_unaffected.rb \
+	  test/strbuf_object_return_element.rb \
+	  test/strbuf_object_return_boxed.rb \
 	  test/string_mutator_arg_rebinds_receiver.rb \
 	  test/boxed_scan_capture_params.rb test/fold_receiver_root.rb test/string_reopen_block_returns.rb \
 	  test/fresh_string_array_element_mutation.rb \
@@ -1043,8 +1051,8 @@ share-strings-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS
 	  e="$$t.expected"; case "$$t" in test/reject/*) e="test/share/reject/$${t##*/}.expected";; esac; \
 	  if $(SPINEL) --share-strings "$$t" -o "$$tmp/b" >"$$tmp/out" 2>&1; then \
 	    ! grep -q 'did not converge' "$$tmp/out" || { echo "share-strings-test: FAIL $$t (the inference fixpoint ran to its round cap)"; ok=0; }; \
-	    "$$tmp/b" 2>&1 | cmp -s - "$$e" || { echo "share-strings-test: FAIL $$t"; ok=0; }; \
-	    SPINEL_GC_STRESS=1 "$$tmp/b" 2>&1 | cmp -s - "$$e" || { echo "share-strings-test: FAIL $$t (GC stress)"; ok=0; }; \
+	    check_output "$$t" "$$e" || { echo "share-strings-test: FAIL $$t"; ok=0; }; \
+	    SPINEL_GC_STRESS=1 check_output "$$t" "$$e" || { echo "share-strings-test: FAIL $$t (GC stress)"; ok=0; }; \
 	  else echo "share-strings-test: FAIL $$t (refused)"; cat "$$tmp/out"; ok=0; fi; \
 	done; \
 	for flags in '' '--share-strings'; do \
@@ -2324,6 +2332,18 @@ GC_MINOR_TESTS := test/io_read_outbuf_eof.rb \
                   test/share/share_strings_env_boxed_values.rb \
                   test/share/share_strings_pick_element.rb \
                   test/share/share_strings_pick_then_parameter.rb \
+                  test/share/share_strings_object_return_element.rb \
+                  test/share/share_strings_object_return_hash.rb \
+                  test/share/share_strings_object_return_yield.rb \
+                  test/share/share_strings_object_return_case.rb \
+                  test/share/share_strings_object_return_case_builtin.rb \
+                  test/share/share_strings_object_return_ensure.rb \
+                  test/share/share_strings_object_return_mixed.rb \
+                  test/share/share_strings_object_return_paren.rb \
+                  test/share/share_strings_object_return_rescue.rb \
+                  test/share/share_strings_object_return_rescue_builtin.rb \
+                  test/strbuf_object_return_element.rb \
+                  test/strbuf_object_return_boxed.rb \
                   test/reopened_builtin_kwrest_keys.rb \
                   test/string_unary_plus_frozen_receiver.rb \
                   test/share_strings_boxed_hash_key.rb \
