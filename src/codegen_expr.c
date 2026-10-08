@@ -277,8 +277,9 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
         /* a value-type object (single-ivar) has a by-VALUE to_s signature;
            casting its receiver to a pointer is a C type error (#2357) */
         if (comp_ty_value_obj(c, t) || (!vexpr[0] && !iv_pre && expr_is_held_ref(c, expr))) {
-          if (comp_ty_value_obj(c, t)) buf_printf(&conv, "sp_%s_to_s(", cn);
-          else buf_printf(&conv, "sp_%s_to_s((sp_%s *)", cn, cn);
+          const char *tsm = obj_str_mname(c, ty_object_class(t), 0);
+          if (comp_ty_value_obj(c, t)) buf_printf(&conv, "sp_%s_%s(", cn, tsm);
+          else buf_printf(&conv, "sp_%s_%s((sp_%s *)", cn, tsm, cn);
           EMIT_IV(); buf_puts(&conv, ")");
         }
         else {
@@ -287,7 +288,7 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
           int to = ++g_tmp;
           buf_printf(&conv, "({ sp_%s *_t%d = (sp_%s *)(", cn, to, cn);
           EMIT_IV();
-          buf_printf(&conv, "); SP_GC_ROOT(_t%d); sp_%s_to_s(_t%d); })", to, cn, to);
+          buf_printf(&conv, "); SP_GC_ROOT(_t%d); sp_%s_%s(_t%d); })", to, cn, obj_str_mname(c, ty_object_class(t), 0), to);
         }
         if (ret_poly) buf_puts(&conv, ")");
       }

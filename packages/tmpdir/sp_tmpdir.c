@@ -171,7 +171,11 @@ static int tmpdir_usable(const char *p) {
 static const char *tmpdir_expand(const char *p) {
   char raw[PATH_MAX];
   size_t n = 0;
+#if defined(_WIN32)
+  if (!sp_file_path_root_len(p)) {
+#else
   if (p[0] != '/') {
+#endif
     if (!getcwd(raw, sizeof(raw)))
       sp_raise_cls("ArgumentError", "cannot expand a relative TMPDIR: getcwd failed");
     n = strlen(raw);
@@ -189,7 +193,15 @@ static const char *tmpdir_expand(const char *p) {
      than climbing above it -- "/.." is "/", as it is on the filesystem. */
   char out[PATH_MAX];
   size_t len = 0;
+#if defined(_WIN32)
+  /* a drive's root ("C:/") is kept: ".." stops at it, and the walk starts
+     after it */
+  size_t floor = 0, i0 = 0;
+  if (sp_file_path_root_len(raw) == 3) { out[0] = raw[0]; out[1] = ':'; len = floor = 2; i0 = 2; }
+  for (size_t i = i0; i < n; ) {
+#else
   for (size_t i = 0; i < n; ) {
+#endif
     while (i < n && raw[i] == '/') i++;
     size_t b = i;
     while (i < n && raw[i] != '/') i++;
@@ -197,15 +209,24 @@ static const char *tmpdir_expand(const char *p) {
     if (clen == 0) continue;
     if (clen == 1 && raw[b] == '.') continue;
     if (clen == 2 && raw[b] == '.' && raw[b + 1] == '.') {
+#if defined(_WIN32)
+      while (len > floor && out[len - 1] != '/') len--;
+      if (len > floor) len--;   /* drop the separator too */
+#else
       while (len > 0 && out[len - 1] != '/') len--;
       if (len > 0) len--;   /* drop the separator too */
+#endif
       continue;
     }
     out[len++] = '/';
     memcpy(out + len, raw + b, clen);
     len += clen;
   }
+#if defined(_WIN32)
+  if (len == floor) out[len++] = '/';   /* every component cancelled: the root */
+#else
   if (len == 0) out[len++] = '/';   /* every component cancelled: the root */
+#endif
 
   char *r = sp_str_alloc_raw(len + 1);
   memcpy(r, out, len);

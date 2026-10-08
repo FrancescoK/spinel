@@ -553,6 +553,10 @@ void compute_reachable(Compiler *c) {
       for (int i = 0; i < cls->naliases; i++) {
         const char *an = cls->alias_new[i], *ao = cls->alias_old[i];
         int an_live = (an && cn_live(&cn_set, an)), ao_live = (ao && cn_live(&cn_set, ao));
+        /* an alias under a name the runtime calls by itself (`alias inspect
+           readable_inspect`: p, interpolation) is live as a def of that name
+           is a root */
+        if (an && method_name_implicitly_invoked(an)) an_live = 1;
         /* also check reachable scope names (covers scope-backed aliases) */
         if (an) for (int t = SN_FIRST(an); t >= 0 && !an_live; t = sn_link[t]) if (c->scopes[t].reachable) an_live = 1;
         if (ao) for (int t = SN_FIRST(ao); t >= 0 && !ao_live; t = sn_link[t]) if (c->scopes[t].reachable) ao_live = 1;
@@ -14971,6 +14975,15 @@ static int an_local_aliases_reach(const ALocalAliases *t, int si, const char *fr
    shared ivar)? */
 static int strbuf_container_stores_string(Compiler *c, const char *contn, Scope *conts);
 static int strbuf_container_stores_nonstring(Compiler *c, const char *contn, Scope *conts);
+/* A receiverless builtin raise leaves no value for a tail to share.
+   An override in the enclosing class's chain can return a value. */
+static int an_call_raises(Compiler *c, int node) {
+  const NodeTable *nt = c->nt;
+  return node >= 0 && nt_kind(nt, node) == NK_CallNode && nt_ref(nt, node, "receiver") < 0 &&
+         nt_str(nt, node, "name") && is_raise_alias(nt_str(nt, node, "name")) &&
+         !an_bare_call_class_owned(c, node) &&
+         comp_method_index(c, nt_str(nt, node, "name")) < 0;
+}
 /* Is the last statement of statement list `st` a shared handle's slot
    (an_arg_is_shared_handle)? */
 static int an_stmts_last_shared(Compiler *c, int st) {
@@ -14979,9 +14992,7 @@ static int an_stmts_last_shared(Compiler *c, int st) {
   /* an arm that raises leaves no value (a method's body ahead of its
      rescue, `def r(x); raise "e"; rescue; x; end`) */
   int l = b[n - 1];
-  if (nt_kind(c->nt, l) == NK_CallNode && nt_ref(c->nt, l, "receiver") < 0 && nt_str(c->nt, l, "name") &&
-      is_raise_alias(nt_str(c->nt, l, "name")) && comp_method_index(c, nt_str(c->nt, l, "name")) < 0)
-    return 1;
+  if (an_call_raises(c, l)) return 1;
   return an_arg_is_shared_handle(c, l);
 }
 int an_arg_is_shared_handle(Compiler *c, int node) {
@@ -15641,8 +15652,43 @@ static int strbuf_demand_container_stores_here(Compiler *c, const char *contn, S
 static int an_call_targets_scope(Compiler *c, int u, int mi2, Scope *m2);
 static int an_class_dynamic_new_risk(Compiler *c, int cid);
 static int strbuf_demand_local_container(Compiler *c, const char *vn, Scope *vs, int depth, int mode);
+/* The parameters one outermost walk has already followed back to their
+   callers, each with the shallowest depth it was walked at. A parameter
+   handed on through a chain of methods, each called from several places,
+   was walked once per path to it -- exponential in the chain's length, and
+   each walk scans every call. Walking it again within the same walk, no
+   shallower than before, demands nothing new. */
+typedef struct { int mi, pj, mode, depth; } SbParamSeen;
+static SbParamSeen *sb_param_seen;
+static int sb_param_seen_n, sb_param_seen_cap, sb_param_walk_nest;
+static int sb_param_seen_check(int mi, int pj, int mode, int depth) {
+  for (int i = 0; i < sb_param_seen_n; i++) {
+    SbParamSeen *s = &sb_param_seen[i];
+    if (s->mi != mi || s->pj != pj || s->mode != mode) continue;
+    if (s->depth <= depth) return 1;
+    s->depth = depth;
+    return 0;
+  }
+  if (sb_param_seen_n == sb_param_seen_cap) {
+    sb_param_seen_cap = sb_param_seen_cap ? sb_param_seen_cap * 2 : 64;
+    sb_param_seen = realloc(sb_param_seen, sizeof *sb_param_seen * (size_t)sb_param_seen_cap);
+    if (!sb_param_seen) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  sb_param_seen[sb_param_seen_n++] = (SbParamSeen){ mi, pj, mode, depth };
+  return 0;
+}
+static int strbuf_demand_param_container_stores_walk(Compiler *c, const char *pn, Scope *ps,
+                                                     int depth, int mode);
 static int strbuf_demand_param_container_stores(Compiler *c, const char *pn, Scope *ps,
                                                 int depth, int mode) {
+  if (sb_param_walk_nest == 0) sb_param_seen_n = 0;
+  sb_param_walk_nest++;
+  int r = strbuf_demand_param_container_stores_walk(c, pn, ps, depth, mode);
+  sb_param_walk_nest--;
+  return r;
+}
+static int strbuf_demand_param_container_stores_walk(Compiler *c, const char *pn, Scope *ps,
+                                                     int depth, int mode) {
   const NodeTable *nt = c->nt;
   int changed = 0;
   if (depth > 8 || !ps || !pn) return 0;
@@ -15651,6 +15697,7 @@ static int strbuf_demand_param_container_stores(Compiler *c, const char *pn, Sco
   int pj = an_param_idx(ps, pn);
   if (pj < 0) return 0;
   int mi = (int)(ps - c->scopes);
+  if (sb_param_seen_check(mi, pj, mode, depth)) return 0;
   for (int u = comp_kind_first(c, NK_CallNode); u >= 0; u = comp_kind_next(c, u)) {
     if (nt_kind(nt, u) != NK_CallNode) continue;
     if (!an_call_targets_scope(c, u, mi, ps)) continue;
@@ -17360,14 +17407,23 @@ static int share_demand_rest_args(Compiler *c, int mi, const int *argv, int argc
   if (!rv || !repr_str_elems_share(c, share_local_holder(c, mi, (int)(rv - m->locals)))) return 0;
   int kwh = nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode ? argv[argc - 1] : -1;
   int pos_argc = kwh >= 0 ? argc - 1 : argc;
-  for (int k = 0; k < pos_argc; k++)
-    if (nt_kind(nt, argv[k]) == NK_SplatNode || nt_kind(nt, argv[k]) == NK_ForwardingArgumentsNode) return 0;
+  int plain_argc = pos_argc;
+  for (int k = 0; k < pos_argc; k++) {
+    if (nt_kind(nt, argv[k]) == NK_ForwardingArgumentsNode) return 0;
+    if (nt_kind(nt, argv[k]) == NK_SplatNode && k < plain_argc) plain_argc = k;
+  }
+  if (plain_argc == 0) return 0;
   ArgLayout L;
   arg_layout(c, m, argv, pos_argc, kwh, 0, &L);
   int changed = 0;
-  for (int k = 0; k < pos_argc; k++) {
+  /* Demand the plain prefix; the splat and its tail keep their fallback.
+     A gather binds its fixed leading parameters from that prefix, even
+     though their layout entries are ARG_GATHERED rather than ARG_NODE.
+     Its posts can take prefix sources too: ask which can reach the rest. */
+  for (int k = 0; k < plain_argc; k++) {
     int bound = 0;
-    for (int j = 0; j < L.n && !bound; j++) bound = L.from[j] == ARG_NODE && L.arg[j] == k;
+    if (L.gather) bound = !gather_reaches(c, m, argv, L.pos_argc, L.gather_kwh, k, m->rest_idx);
+    else for (int j = 0; j < L.n && !bound; j++) bound = L.from[j] == ARG_NODE && L.arg[j] == k;
     if (!bound) changed |= strbuf_store_leaf(c, argv[k], 0, SB_DEMAND);
   }
   arg_layout_free(&L);
@@ -18122,8 +18178,8 @@ static void an_returns_by_scope(Compiler *c, int **start, int **list) {
    slot reads and nils. */
 /* fresh_ok (--share-strings, the pickup's own ask): a tail answering a
    fresh String (share_node_fresh) is admitted too, counted in fresh */
-typedef struct { int reads, nils, fresh_ok, fresh; } TailCount;
-typedef struct { unsigned char *st; int *ret_start, *ret_list; } RetHandles;
+typedef struct { int reads, nils, fresh_ok, fresh, mi, param, arg_depth; } TailCount;
+typedef struct { unsigned char *st; int *ret_start, *ret_list; int fresh; } RetHandles;
 static int an_tail_handle(Compiler *c, RetHandles *R, int n, TailCount *tc);
 static int an_tail_is_shared_handle(Compiler *c, int node, int nil_ok, TailCount *n, RetHandles *R);
 static int an_stmts_tail_shared(Compiler *c, int st, int nil_ok, TailCount *tc, RetHandles *R) {
@@ -18144,10 +18200,12 @@ static int an_stmts_tail_shared(Compiler *c, int st, int nil_ok, TailCount *tc, 
    an earlier read published (an_tail_answers_nil). With the settled return
    analysis, each arm asks an_tail_handle too: a call can publish the handle,
    and its method's active-visit guard bounds recursive arms. Case/when and
-   case/in share the same arm list for the pickup and settled return walk. */
+   case/in share the same arm list for the pickup and settled return walk.
+   A builtin raise leaves no value, so contributes neither a read nor nil. */
 static int an_tail_is_shared_handle(Compiler *c, int node, int nil_ok, TailCount *tc, RetHandles *R) {
   const NodeTable *nt = c->nt;
   NodeKind k = node >= 0 ? nt_kind(nt, node) : NK_NONE;
+  if (c->share_strings && an_call_raises(c, node)) return 1;
   if (c->share_strings && k == NK_NilNode) { tc->nils += nil_ok; return nil_ok; }
   if (c->share_strings && k == NK_ParenthesesNode) return an_stmts_tail_shared(c, nt_ref(nt, node, "body"), nil_ok, tc, R);
   if (c->share_strings && k == NK_BeginNode) {
@@ -18173,7 +18231,11 @@ static int an_tail_is_shared_handle(Compiler *c, int node, int nil_ok, TailCount
     if (n == 0) { tc->nils += nil_ok; return nil_ok; }
     return n == 1 && an_tail_handle(c, R, v[0], tc);
   }
+  if (R && R->fresh && k == NK_RescueModifierNode)
+    return an_tail_handle(c, R, nt_ref(nt, node, "expression"), tc) &&
+           an_tail_handle(c, R, nt_ref(nt, node, "rescue_expression"), tc);
   if (!c->share_strings || (k != NK_IfNode && k != NK_UnlessNode)) {
+    if (R && R->fresh) return share_value_fresh(c, node, 0);
     int ok = an_arg_is_shared_handle(c, node);
     tc->reads += ok;
     if (!ok && tc->fresh_ok && share_node_fresh(c, node)) { tc->fresh++; ok = 1; }
@@ -18285,28 +18347,73 @@ static int an_mutated_handle_returns(Compiler *c, int **ret_start, int **ret_lis
    any call of the method can take the handle as the deep-return pickup does
    (Scope.ret_handle). A method spliced at its calls (one that yields, a proc
    form) has no call to pick up from; one typed other than String answers
-   no handle to pick up. Each method is decided once, its tail calls'
+   no handle to pick up. Fresh String and nil arms use the pickup's existing
+   fresh-tail clearing and nil check. Each method is decided once, its tail calls'
    targets first (a cycle answers no). */
 enum { RH_UNSEEN, RH_BUSY, RH_YES, RH_NO };
 static int an_ret_handle(Compiler *c, RetHandles *R, int mi);
+/* A parameter's identity survives mutation, but not rebinding. The local
+   write index is a bucket: check both its scope and name. All borrowed
+   tails must name the same parameter of the method being decided. */
+static int an_tail_param(Compiler *c, int n, TailCount *tc) {
+  const NodeTable *nt = c->nt;
+  if (n < 0 || nt_kind(nt, n) != NK_LocalVariableReadNode) return 0;
+  Scope *m = &c->scopes[tc->mi];
+  const char *pn = nt_str(nt, n, "name");
+  if (!pn || comp_scope_of(c, n) != m) return 0;
+  int pi = an_param_idx(m, pn);
+  if (pi < 0 || (tc->param >= 0 && tc->param != pi)) return 0;
+  for (int w = comp_lvw_first_sc(c, tc->mi, pn); w >= 0; w = comp_lvw_next_sc(c, w))
+    if (comp_scope_of(c, w) == m && nt_str(nt, w, "name") && sp_streq(nt_str(nt, w, "name"), pn)) return 0;
+  tc->param = pi;
+  return 1;
+}
+/* A returned parameter takes the call's binding, including a default.
+   Defaults can call their own method again without revisiting its tail;
+   bound those expression queries as share_value_fresh does. */
+static int an_tail_param_arg(Compiler *c, RetHandles *R, int call, int mi, TailCount *tc) {
+  Scope *m = &c->scopes[mi];
+  if (tc->arg_depth >= 8) return 0;
+  int a = arg_layout_param_source(c, m, call, m->ret_param, NULL);
+  tc->arg_depth++;
+  int ok = an_tail_handle(c, R, a, tc);
+  tc->arg_depth--;
+  return ok;
+}
 /* Does tail node n answer a shared handle it publishes last: a handle's
    read, or a call or `super` whose every target method does? A nullable
    tail can also answer nil, which the existing pickup tests before using
    the return channel. Count it with the pickup's own tail predicate. */
 static int an_tail_handle(Compiler *c, RetHandles *R, int n, TailCount *tc) {
   const NodeTable *nt = c->nt;
-  if (an_arg_is_shared_handle(c, n)) return 1;
   if (an_tail_is_shared_handle(c, n, 1, tc, R)) return 1;
+  if (R->fresh && an_tail_param(c, n, tc)) return 1;
   NodeKind k = n >= 0 ? nt_kind(nt, n) : NK_NONE;
+  if (k == NK_CallNode && c->ntype[n] == TY_NIL) { tc->nils++; return 1; }
   if (k == NK_SuperNode || k == NK_ForwardingSuperNode) {
     const CallPlan *p = cplan_user_fresh(c, n);
-    return p->dispatch == CP_DIRECT && p->mi > 0 && an_ret_handle(c, R, p->mi);
+    int mi = p->mi;
+    if (p->dispatch != CP_DIRECT || mi <= 0 || !an_ret_handle(c, R, mi)) return 0;
+    tc->reads++;
+    if (!R->fresh || c->scopes[mi].ret_fresh) return 1;
+    return k == NK_SuperNode && an_tail_param_arg(c, R, n, mi, tc);
   }
-  if (k != NK_CallNode || c->ntype[n] != TY_STRING) return 0;
+  if (k != NK_CallNode || (!R->fresh && c->ntype[n] != TY_STRING)) return 0;
+  /* A returning override can answer its own fresh String beside a handle.
+     The existing pickup clears that tail's return channel before wrapping. */
+  if (share_call_fresh(c, n)) { tc->fresh++; return 1; }
+  if (R->fresh && cplan_user_fresh(c, n)->via == UC_POLY && !share_builtin_fresh(c, n)) return 0;
   int mis[CPT_MAX];
   int cnt = cplan_targets(c, n, mis, CPT_MAX);
+  /* A raising arm contributes no String. A user override still returns. */
+  if (R->fresh && cnt == 0 && isa_node_diverges(c, n) && !bare_call_class_owned(c, n)) return 1;
   if (cnt <= 0) return 0;
-  for (int i = 0; i < cnt; i++) if (!an_ret_handle(c, R, mis[i])) return 0;
+  for (int i = 0; i < cnt; i++) {
+    if (!an_ret_handle(c, R, mis[i])) return 0;
+    Scope *m = &c->scopes[mis[i]];
+    if (R->fresh && !m->ret_fresh && !an_tail_param_arg(c, R, n, mis[i], tc)) return 0;
+  }
+  tc->reads++;
   return 1;
 }
 /* Is body tail n an append chain over a shared handle's read (`buf << a <<
@@ -18320,7 +18427,8 @@ static int an_tail_append_chain(Compiler *c, int n) {
 static int an_ret_handle(Compiler *c, RetHandles *R, int mi) {
   if (R->st[mi] != RH_UNSEEN) return R->st[mi] == RH_YES;
   Scope *m = &c->scopes[mi];
-  if (m->def_node < 0 || m->yields || m->is_proc_form || m->is_lowered_yield || m->ret != TY_STRING) {
+  if (m->def_node < 0 || (!R->fresh && (m->yields || m->is_proc_form || m->is_lowered_yield)) ||
+      (m->ret != TY_STRING && (!R->fresh || m->ret != TY_POLY))) {
     R->st[mi] = RH_NO;
     return 0;
   }
@@ -18330,8 +18438,13 @@ static int an_ret_handle(Compiler *c, RetHandles *R, int mi) {
   int last = scope_body_last(c, mi);
   /* a body with its own rescue is a begin, whose arms answer */
   if (last < 0 && m->body >= 0 && nt_kind(nt, m->body) == NK_BeginNode) last = m->body;
-  TailCount tc = { 0, 0 };
-  if (last >= 0) { saw = 1; ok = an_tail_handle(c, R, last, &tc) || an_tail_append_chain(c, last); }
+  TailCount tc = { .mi = mi, .param = -1 };
+  if (last >= 0) {
+    saw = 1;
+    ok = an_tail_handle(c, R, last, &tc);
+    /* The implicit append tail publishes its base's handle read too. */
+    if (!ok && !R->fresh && an_tail_append_chain(c, last)) { tc.reads++; ok = 1; }
+  }
   for (int r = R->ret_start[mi]; ok && r < R->ret_start[mi + 1]; r++) {
     int ra = nt_ref(nt, R->ret_list[r], "arguments");
     int rn = 0; const int *rv = ra >= 0 ? nt_arr(nt, ra, "arguments", &rn) : NULL;
@@ -18339,17 +18452,30 @@ static int an_ret_handle(Compiler *c, RetHandles *R, int mi) {
     if (rn == 0) tc.nils++;
     else ok = rn == 1 && an_tail_handle(c, R, rv[0], &tc);
   }
-  if (tc.nils) m->ret_nil_pickup = 1;
-  R->st[mi] = ok && saw ? RH_YES : RH_NO;
+  if (tc.nils && !R->fresh) m->ret_nil_pickup = 1;
+  if (ok && tc.reads > 0 && tc.fresh) m->ret_pub_fresh = 1;
+  /* An all-raising body publishes no handle for a caller to pick up (a fresh
+     String answered beside no handle read is the fresh pickup's own). */
+  R->st[mi] = ok && saw && (R->fresh || tc.reads > 0) ? RH_YES : RH_NO;
+  if (R->fresh) {
+    m->ret_fresh = R->st[mi] == RH_YES && tc.param < 0;
+    m->ret_param = R->st[mi] == RH_YES ? tc.param : -1;
+  }
   return R->st[mi] == RH_YES;
 }
 static void an_mark_handle_returns(Compiler *c) {
   if (!c->share_strings) return;
-  RetHandles R;
+  RetHandles R = { 0 };
   R.st = calloc((size_t)c->nscopes + 1, 1);
   if (!R.st) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   an_returns_by_scope(c, &R.ret_start, &R.ret_list);
   for (int mi = 1; mi < c->nscopes; mi++) c->scopes[mi].ret_handle = (unsigned char)an_ret_handle(c, &R, mi);
+  /* The sibling fact uses the same tails, return index and active-visit
+     guard; only its leaf question differs. Each method is asked once per
+     fact, and a cycle remains conservative. */
+  memset(R.st, 0, (size_t)c->nscopes + 1);
+  R.fresh = 1;
+  for (int mi = 1; mi < c->nscopes; mi++) an_ret_handle(c, &R, mi);
   free(R.st); free(R.ret_start); free(R.ret_list);
   /* A deep-return pickup marked while the types settled, on a call whose
      method answers a box after all (a parameter that settled poly): the
@@ -19078,7 +19204,13 @@ static int promote_shared_stored_strings(Compiler *c) {
       if (nt_kind(nt, recv4) == NK_LocalVariableReadNode) {
         const char *pn4 = nt_str(nt, recv4, "name");
         Scope *ps4 = pn4 ? comp_scope_of(c, recv4) : NULL;
-        if (ps4) changed |= strbuf_demand_container_stores(c, pn4, ps4);
+        LocalVar *pv4 = ps4 ? scope_local(ps4, pn4) : NULL;
+        /* a method's boxed parameter stays as it was: its walk goes back
+           through every caller, and on a large program's poly parameters
+           (each mutating block over one) that walk is what the
+           analysis spent its time on */
+        if (!pv4 || (pv4->is_param && !pv4->is_block_param)) continue;
+        changed |= strbuf_demand_container_stores(c, pn4, ps4);
       }
       else changed |= strbuf_container_source_walk(c, recv4, 0, SB_DEMAND);
       continue;
@@ -19622,7 +19754,7 @@ static void an_call_targets_of(Compiler *c, int u, ACallTargets *t) {
    made the pass O(writes x nodes): a 15k-line program whose classes mostly
    retain a string parameter took 3.1x as long to compile. One walk fills every
    slot, and the answers move only between passes anyway, as slots promote. */
-typedef struct {
+typedef struct HandleArgTab {
   int *off;            /* scope -> base into `bit`, or -1 when it has no params */
   unsigned char *bit;
   int ok;              /* 0 when allocation failed: fall back to no evidence */
@@ -19636,6 +19768,7 @@ typedef struct {
   int *enext;          /* edge -> next edge for the same scope */
   int *enode;          /* edge -> the call node */
 } HandleArgTab;
+enum { HA_HANDLE = 1, HA_STRING_KNOWN = 2, HA_STRING_POSSIBLE = 4 };
 
 static void handle_arg_tab_init(Compiler *c, HandleArgTab *t) {
   const NodeTable *nt = c->nt;
@@ -19690,7 +19823,7 @@ static void handle_arg_tab_init(Compiler *c, HandleArgTab *t) {
       int np = c->scopes[mi].nparams;
       for (int pj = 0; pj < np; pj++) {
         int a = arg_layout_param_node(c, &c->scopes[mi], u, pj, NULL);
-        if (a >= 0 && an_arg_hands_handle(c, a)) t->bit[t->off[mi] + pj] = 1;
+        if (a >= 0 && an_arg_hands_handle(c, a)) t->bit[t->off[mi] + pj] = HA_HANDLE;
       }
     }
   }
@@ -19801,7 +19934,7 @@ void propagate_borrowed_volatile(Compiler *c) {
 
 static int handle_arg_tab_get(const HandleArgTab *t, int mi, int pj) {
   if (!t->ok || !t->bit || mi < 0 || pj < 0 || t->off[mi] < 0) return 0;
-  return t->bit[t->off[mi] + pj] != 0;
+  return (t->bit[t->off[mi] + pj] & HA_HANDLE) != 0;
 }
 
 static int promote_params_stored_in_shared_ivars(Compiler *c,
@@ -20729,11 +20862,13 @@ static int poly_var_may_hold_string(Compiler *c, const HandleArgTab *hat,
   /* with `lits`, how a block or a lambda binds it (PolyLits.bound): one
      bound only as Enumerator.new's yielder is no String */
   int bound = lv && lits && !lv->is_param ? lits->bound(lits->ctx, c, (int)(vs - c->scopes), vn) : 0;
-  if (!lv || depth > 4 || lv->is_cell || (lv->is_block_param && bound != 1) || bound == 2) return 1;
+  if (!lv || (!lits && depth > 4) || lv->is_cell || (lv->is_block_param && bound != 1) || bound == 2) return 1;
   /* a variable already being asked about further up the chain (a method
      handing its parameter to itself) adds no value of its own */
   static LocalVar *asking[6];
   for (int k = 0; k < depth && k < 6; k++) if (asking[k] == lv) return 0;
+  /* With literals, recognize a cycle before the conservative depth limit. */
+  if (depth > 4) return 1;
   asking[depth] = lv;
   int si = (int)(vs - c->scopes);
   if (lv->is_param) {
@@ -20743,7 +20878,8 @@ static int poly_var_may_hold_string(Compiler *c, const HandleArgTab *hat,
         poly_value_may_be_string(c, hat, vs->pdefault[pj], depth, lits)) return 1;
     for (int e = hat->head[si]; e >= 0; e = hat->enext[e]) {
       int sp = -1;
-      int a = arg_layout_param_node(c, vs, hat->enode[e], pj, &sp);
+      int a = lits ? arg_layout_param_source(c, vs, hat->enode[e], pj, &sp)
+                   : arg_layout_param_node(c, vs, hat->enode[e], pj, &sp);
       if (a < 0 || sp >= 0 || poly_value_may_be_string(c, hat, a, depth, lits)) return 1;
     }
   }
@@ -20789,15 +20925,25 @@ static void strbuf_reconcile_lifted_reads(Compiler *c, const HandleArgTab *hat) 
 /* --share-strings (#6765): can receiver r, a boxed or untyped value, be a
    String? A variable answers by its values (poly_var_may_hold_string), a
    literal or a conditional by its form; a parameter, a block's parameter,
-   a captured local and any other value may be one. */
+   a captured local and any other value may be one. At seal, the final
+   caller table also bounds parameters, using the same argument walk. */
 int an_recv_may_be_string(Compiler *c, int r, const PolyLits *lits) {
   const NodeTable *nt = c->nt;
   r = an_unparen(nt, r);
   if (r < 0) return 1;
-  if (nt_kind(nt, r) != NK_LocalVariableReadNode) return poly_lit_may_be_string(c, NULL, r, 0, lits) != 0;
+  if (nt_kind(nt, r) != NK_LocalVariableReadNode) return poly_lit_may_be_string(c, lits ? c->share_args : NULL, r, 0, lits) != 0;
   const char *vn = nt_str(nt, r, "name");
   Scope *vs = vn ? comp_scope_of(c, r) : NULL;
-  return !vs || poly_var_may_hold_string(c, NULL, vn, vs, 0, lits);
+  const HandleArgTab *hat = lits ? c->share_args : NULL;
+  int pj = hat && hat->ok && vs ? an_param_idx(vs, vn) : -1;
+  unsigned char *memo = pj >= 0 && hat->off[vs - c->scopes] >= 0
+                         ? &hat->bit[hat->off[vs - c->scopes] + pj] : NULL;
+  if (memo && (*memo & HA_STRING_KNOWN)) return (*memo & HA_STRING_POSSIBLE) != 0;
+  /* Only a completed outer query is cached: a nested cycle's no-value
+     answer depends on the callers still being visited above it. */
+  int may = !vs || poly_var_may_hold_string(c, hat, vn, vs, 0, lits);
+  if (memo) *memo |= HA_STRING_KNOWN | (may ? HA_STRING_POSSIBLE : 0);
+  return may;
 }
 
 /* Is POLY variable `vn` of scope `vs` appended to in place: the receiver of
@@ -20807,6 +20953,55 @@ static int poly_var_appended(Compiler *c, SbMutTab *lifted, const char *vn, Scop
   if (strbuf_any_str_mut(c, vn, vs)) return 1;
   signed char *v = sb_mut_tab_slot(lifted, vn, (int)(vs - c->scopes), 0);
   return v && *v == 1;
+}
+/* Where an ivar, class or global variable node `id` named `nm` lives, as
+   a key: an ivar is its class's, an instance's or (in a class method) the
+   class object's; a class variable is its owner's, found as cvar_slot finds
+   the class (a class body's own, else Toplevel) and up the chain to the
+   class that declares it; a global is the one. -1 when there is none. */
+static int poly_store_place(Compiler *c, int id, NodeKind rk, const char *nm) {
+  if (rk == NK_GlobalVariableReadNode || rk == NK_GlobalVariableWriteNode) return 0;
+  Scope *s = comp_scope_of(c, id);
+  int cid = s ? s->class_id : -1;
+  if (rk == NK_InstanceVariableReadNode || rk == NK_InstanceVariableWriteNode)
+    return cid < 0 ? -1 : cid * 2 + (s->is_cmethod ? 1 : 0);
+  if (cid < 0 && c->node_cbody && id < c->node_cap) cid = c->node_cbody[id];
+  if (cid < 0) cid = comp_class_index(c, "Toplevel");
+  if (cid < 0 || cid >= c->nclasses) return -1;
+  return comp_cvar_owner(c, cid, nm);
+}
+/* The variables of read kind `rk` the program appends to in place -- a read
+   of one is a String mutator's receiver, or is lifted for a parameter
+   appended to (lift_poly_read) -- as (name, poly_store_place) pairs, found in
+   one walk of the reads and one of the calls, not one per store. */
+typedef struct { const char **nm; int *place; int n, cap; } PolyStoreApp;
+static void poly_store_app_add(PolyStoreApp *t, const char *nm, int place) {
+  for (int i = 0; i < t->n; i++) if (t->place[i] == place && sp_streq(t->nm[i], nm)) return;
+  if (t->n == t->cap) {
+    t->cap = t->cap ? t->cap * 2 : 8;
+    t->nm = realloc(t->nm, sizeof(char *) * (size_t)t->cap);
+    t->place = realloc(t->place, sizeof(int) * (size_t)t->cap);
+  }
+  t->nm[t->n] = nm; t->place[t->n] = place; t->n++;
+}
+static void poly_store_app_build(Compiler *c, NodeKind rk, PolyStoreApp *t) {
+  const NodeTable *nt = c->nt;
+  t->n = 0;
+  NT_FOREACH_KIND(nt, rk, r) {
+    const char *rn = nt_str(nt, r, "name");
+    if (rn && c->poly_strbuf_lift[r] && comp_ntype(c, r) == TY_POLY)
+      poly_store_app_add(t, rn, poly_store_place(c, r, rk, rn));
+  }
+  NT_FOREACH_KIND(nt, NK_CallNode, u) {
+    int r = nt_ref(nt, u, "receiver");
+    if (r < 0 || nt_kind(nt, r) != rk || !an_str_mutator_name(nt_str(nt, u, "name"))) continue;
+    const char *rn = nt_str(nt, r, "name");
+    if (rn && comp_ntype(c, r) == TY_POLY) poly_store_app_add(t, rn, poly_store_place(c, r, rk, rn));
+  }
+}
+static int poly_store_appended(const PolyStoreApp *t, const char *in, int wp) {
+  for (int i = 0; i < t->n; i++) if (t->place[i] == wp && sp_streq(t->nm[i], in)) return 1;
+  return 0;
 }
 /* Lift read `a` of a POLY variable that can hold a String (poly_strbuf_lift);
    a method's own parameter read so is appended to as well, and its callers
@@ -20911,6 +21106,31 @@ static int lift_poly_alias_reads(Compiler *c, const HandleArgTab *hat) {
       }
       if (!poly || !app || v < 0 || v == w) continue;
       if (lift_poly_read(c, hat, &lifted, v)) round = changed = 1;
+    }
+    /* `@s = x` (or `@@s`, `$s`) where the program appends to that variable
+       (`@s << y`, or a read of it lifted for a parameter appended to): the
+       variable is another name for x's String, as `y = x` is, so x is
+       lifted and a parameter x pulls its callers in. Left as a copy, the
+       append landed in the variable's String only, the caller's never saw
+       it, and nothing refused. */
+    static const NodeKind skinds[3][2] = {
+      { NK_InstanceVariableWriteNode, NK_InstanceVariableReadNode },
+      { NK_ClassVariableWriteNode, NK_ClassVariableReadNode },
+      { NK_GlobalVariableWriteNode, NK_GlobalVariableReadNode } };
+    for (int sk = 0; sk < 3; sk++) {
+      PolyStoreApp app_tab = { NULL, NULL, 0, 0 };
+      int built = 0;
+      NT_FOREACH_KIND(nt, skinds[sk][0], w) {
+        int v = nt_ref(nt, w, "value");
+        const char *in = nt_str(nt, w, "name");
+        if (v < 0 || !in || nt_kind(nt, v) != NK_LocalVariableReadNode || c->poly_strbuf_lift[v]) continue;
+        int wp = poly_store_place(c, w, skinds[sk][0], in);
+        if (wp < 0) continue;
+        if (!built) { poly_store_app_build(c, skinds[sk][1], &app_tab); built = 1; }
+        if (!poly_store_appended(&app_tab, in, wp)) continue;
+        if (lift_poly_read(c, hat, &lifted, v)) round = changed = 1;
+      }
+      free(app_tab.nm); free(app_tab.place);
     }
     /* `def yl(v) = yield(v)` called `yl(x) { |t| t << s }`: the block's
        parameter is another name for the caller's variable. A `b.call(v)` on
@@ -37991,6 +38211,10 @@ void analyze_program(Compiler *c) {
   /* Identity operands can ask the settled call-return fact now. */
   if (c->share_strings) mark_reader_identity_operands(c);
   /* the representation flags are final from here (repr.h) */
+  /* The final share query sees every caller without rebuilding per receiver. */
+  HandleArgTab hat;
+  if (c->share_strings) { handle_arg_tab_init(c, &hat); c->share_args = &hat; }
   repr_seal(c);
+  if (c->share_strings) { c->share_args = NULL; handle_arg_tab_free(&hat); }
   sp_timing_end(tm_an, "analysis", "");
 }

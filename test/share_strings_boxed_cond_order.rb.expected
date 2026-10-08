@@ -1,0 +1,36 @@
+predicate
+1
+2
+joined
+[0, "s12"]
+predicate
+hash arm
+7
+8
+joined
+"s1278"
+predicate
+box arm
+11
+12
+joined
+"t1112"
+predicate
+outer arm
+predicate
+inner arm
+15
+16
+joined
+[0, "t11121516"]
+predicate
+19
+boom
+predicate
+[0, nil]
+predicate
+handle arm
+25
+26
+joined
+"t111215162526"

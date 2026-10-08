@@ -1588,17 +1588,27 @@ static void emit_boxed_strbuf(Compiler *c, int node, TyKind t, const Repr *rp, B
 
 /* An arm st of a conditional emit_boxed_cond_arms boxes: its statements,
    then its value boxed into _t<dst> (nil for an empty arm). */
-static void emit_boxed_cond_arm(Compiler *c, int st, int dst, Buf *b) {
+typedef struct { int dst, lift; } BoxedCondArm;
+static void emit_boxed_cond_body(Compiler *c, int st, Buf *b, void *ctx) {
+  BoxedCondArm *a = ctx;
   const NodeTable *nt = c->nt;
-  if (st >= 0 && nt_kind(nt, st) == NK_ElseNode) st = nt_ref(nt, st, "statements");
-  int n = 0; const int *bb = st >= 0 && nt_kind(nt, st) == NK_StatementsNode ? nt_arr(nt, st, "body", &n) : NULL;
-  int last = bb ? (n > 0 ? bb[n - 1] : -1) : st;
-  buf_puts(b, "{ ");
-  for (int i = 0; bb && i < n - 1; i++) emit_stmt(c, bb[i], b, 0);
-  buf_printf(b, "_t%d = ", dst);
-  if (last < 0) buf_puts(b, "sp_box_nil()");
-  else emit_boxed(c, last, b);
-  buf_puts(b, "; }");
+  /* Unwrap sequences so their final value keeps its own handle demand.
+     Earlier statements precede even the last value's hoisted setup. */
+  while (st >= 0) {
+    NodeKind k = nt_kind(nt, st);
+    if (k == NK_ElseNode) { st = nt_ref(nt, st, "statements"); continue; }
+    if (k == NK_ParenthesesNode) { st = nt_ref(nt, st, "body"); continue; }
+    if (k != NK_StatementsNode) break;
+    int n = 0; const int *bb = nt_arr(nt, st, "body", &n);
+    for (int i = 0; i < n - 1; i++) emit_stmt(c, bb[i], g_pre, 0);
+    st = n > 0 ? bb[n - 1] : -1;
+  }
+  buf_printf(b, "_t%d = ", a->dst);
+  if (a->lift) buf_puts(b, "sp_poly_strbuf_lift(");
+  if (st < 0) buf_puts(b, "sp_box_nil()");
+  else emit_boxed(c, st, b);
+  if (a->lift) buf_puts(b, ")");
+  buf_puts(b, ";");
 }
 
 /* --share-strings: a String `if` or `unless` with an arm that is the shared
@@ -1614,14 +1624,17 @@ static int emit_boxed_cond_arms(Compiler *c, int node, Buf *b) {
       !strbuf_cond_has_handle_leaf(c, node, 0))
     return 0;
   int dst = ++g_tmp;
+  /* A lift on the whole conditional also applies to a plain String arm;
+     a handle arm passes through the lift unchanged. */
+  BoxedCondArm a = { dst, t == TY_STRING && repr_of(c, node).poly_lift };
   Buf cnd; memset(&cnd, 0, sizeof cnd);
   emit_cond(c, nt_ref(nt, node, "predicate"), &cnd);
   buf_printf(b, "({ sp_RbVal _t%d; if (%s%s%s) ", dst, k == NK_UnlessNode ? "!(" : "", cnd.p ? cnd.p : "0",
              k == NK_UnlessNode ? ")" : "");
   free(cnd.p);
-  emit_boxed_cond_arm(c, nt_ref(nt, node, "statements"), dst, b);
+  emit_cond_arm(c, nt_ref(nt, node, "statements"), b, emit_boxed_cond_body, &a);
   buf_puts(b, "\nelse ");
-  emit_boxed_cond_arm(c, nt_ref(nt, node, k == NK_IfNode ? "subsequent" : "else_clause"), dst, b);
+  emit_cond_arm(c, nt_ref(nt, node, k == NK_IfNode ? "subsequent" : "else_clause"), b, emit_boxed_cond_body, &a);
   buf_printf(b, "\n_t%d; })", dst);
   RC(RF_SPECIAL, RW_NONE);
   return 1;
@@ -7413,7 +7426,10 @@ static void emit_proc_literal_here(Compiler *c, int create, Buf *b) {
      emit_return throw. But when the tail is a plain expression, that expression
      IS the proc's value on the fall-through path (no `return` fired): keep the
      analyzed `ret` and emit it normally, so the value is not lost. */
-  int ret_proc = (g_method_pr_label != NULL) && proc_does_nonlocal_return(c, create);
+  /* Inside another proc that owns a home (a block lifted within a block
+     lifted), the method's frame is reached through that proc's home. */
+  int in_home_proc = g_method_pr_label == NULL && g_proc_return_home != NULL && !sp_streq(g_proc_return_home, "-1");
+  int ret_proc = (g_method_pr_label != NULL || in_home_proc) && proc_does_nonlocal_return(c, create);
   /* A non-lambda EXPLICIT proc (`proc {}` / `Proc.new {}`) whose body
      top-level-breaks raises LocalJumpError "break from proc-closure" when
      called -- CRuby 4 delivers a break only for a block-converted proc, never
@@ -8437,7 +8453,7 @@ else if (orecv >= 0 && onm) {
         else
           buf_printf(g_pre, "_capv_%d->__self_cls = %s;\n", pid, bs->yields && sv_self ? sv_self : "_sp_cls");
       }
-      if (ret_proc) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "_capv_%d->_home = _h.id;\n", pid); }
+      if (ret_proc) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "_capv_%d->_home = %s;\n", pid, in_home_proc ? g_proc_return_home : "_h.id"); }
       if (brk_blk) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "_capv_%d->_brkhome = %s;\n", pid, sv_bser); }
     }
     buf_printf(b, "sp_proc_new_meta((void *)_proc_%d, _capv_%d, _proc_cap_scan_%d, %d, %s, %d, %s)",
@@ -8603,6 +8619,23 @@ const char *obj_str_cname(Compiler *c, int cid, int want_inspect) {
     return c->classes[defcls].c_name;
   if (c->classes[cid].is_struct) return c->classes[cid].c_name;  /* generated #inspect/#to_s */
   return NULL;
+}
+
+/* The method part of that C function's name: the resolved method's own name,
+   which for an alias (`alias inspect readable_inspect`) is the target's, or
+   the generated struct/data method's. Callers spell the function
+   sp_<obj_str_cname>_<obj_str_mname>. */
+const char *obj_str_mname(Compiler *c, int cid, int want_inspect) {
+  const char *nm = want_inspect ? "inspect" : "to_s";
+  if (cid < 0 || cid >= c->nclasses) return nm;
+  int mi = comp_method_in_chain(c, cid, nm, NULL);
+  if (mi < 0 || !c->scopes[mi].name) return nm;
+  /* mc answers in one static buffer: keep a few results apart, a caller can
+     hold two at once */
+  static char ring[4][256]; static int ri;
+  char *r = ring[ri++ & 3];
+  snprintf(r, sizeof ring[0], "%s", mc(c->scopes[mi].name));
+  return r;
 }
 
 /* True when the resolved user to_s/inspect returns a boxed sp_RbVal (its
@@ -9167,8 +9200,9 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
         const char *mcn = ty_is_object(mt) ? obj_str_cname(c, ty_object_class(mt), 1) : NULL;
         if (mcn) {
           /* a struct/data (or user-#inspect) member recurses into its own inspect */
-          buf_printf(b, "  sp_String_append(s, self->iv_%s ? sp_%s_inspect((sp_%s *)self->iv_%s) : \"nil\");\n",
-                     iv_c(ci->ivars[i] + 1), mcn, mcn, iv_c(ci->ivars[i] + 1));
+          char ivn[128]; snprintf(ivn, sizeof ivn, "%s", iv_c(ci->ivars[i] + 1));
+          buf_printf(b, "  sp_String_append(s, self->iv_%s ? sp_%s_%s((sp_%s *)self->iv_%s) : \"nil\");\n",
+                     ivn, mcn, obj_str_mname(c, ty_object_class(mt), 1), mcn, ivn);
         }
         else {
           Buf ivb; memset(&ivb, 0, sizeof ivb); buf_printf(&ivb, "self->iv_%s", iv_c(ci->ivars[i] + 1));
@@ -10367,21 +10401,25 @@ static void emit_obj_inspect_dispatch(Compiler *c, Buf *b) {
     if (comp_class_is_module(c, tci)) continue;
     int tdef = -1;
     int tmi = comp_method_in_chain(c, i, "to_s", &tdef);
-    int tsok = tmi >= 0 && c->scopes[tmi].reachable && c->scopes[tmi].ret == TY_STRING &&
-               c->scopes[tmi].nparams == 0;
+    /* a #to_s answering its String through a boxed value (one that may also
+       answer something else) renders through sp_poly_to_s */
+    int tspoly = tmi >= 0 && c->scopes[tmi].ret == TY_POLY;
+    int tsok = tmi >= 0 && c->scopes[tmi].reachable &&
+               (c->scopes[tmi].ret == TY_STRING || tspoly) && c->scopes[tmi].nparams == 0;
     /* A boxed value-type object carries a pointer to its struct and the
        method takes self by value, as the inline poly dispatch calls it.
        Skipping value types sent `puts obj` / "#{obj}" to the #<A:0x...>
        default past the user's #to_s. */
     if (comp_ty_value_obj(c, ty_object(i))) {
       if (tsok && tdef == i)
-        buf_printf(b, "    case %d: return sp_%s_%s(*(sp_%s *)p);\n",
-                   i, tci->c_name, mc(c->scopes[tmi].name), tci->c_name);
+        buf_printf(b, "    case %d: return %ssp_%s_%s(*(sp_%s *)p)%s;\n",
+                   i, tspoly ? "sp_poly_to_s(" : "", tci->c_name, mc(c->scopes[tmi].name), tci->c_name, tspoly ? ")" : "");
       continue;
     }
     if (tsok) {
-      buf_printf(b, "    case %d: return sp_%s_%s((sp_%s *)p);\n",
-                 i, c->classes[tdef].c_name, mc(c->scopes[tmi].name), c->classes[tdef].c_name);
+      buf_printf(b, "    case %d: return %ssp_%s_%s((sp_%s *)p)%s;\n",
+                 i, tspoly ? "sp_poly_to_s(" : "", c->classes[tdef].c_name, mc(c->scopes[tmi].name),
+                 c->classes[tdef].c_name, tspoly ? ")" : "");
       continue;
     }
     /* Struct/Data #to_s IS #inspect in CRuby, and they have a generated one
@@ -10442,10 +10480,12 @@ static void emit_obj_inspect_dispatch(Compiler *c, Buf *b) {
     if (comp_ty_value_obj(c, ty_object(i)) && !comp_class_is_module(c, &c->classes[i])) {
       int vdef = -1;
       int vmi = comp_method_in_chain(c, i, "inspect", &vdef);
+      int vpoly = vmi >= 0 && c->scopes[vmi].ret == TY_POLY;
       if (vmi >= 0 && vdef == i && c->scopes[vmi].reachable &&
-          c->scopes[vmi].ret == TY_STRING && c->scopes[vmi].nparams == 0)
-        buf_printf(b, "    case %d: return sp_%s_%s(*(sp_%s *)p);\n",
-                   i, c->classes[i].c_name, mc(c->scopes[vmi].name), c->classes[i].c_name);
+          (c->scopes[vmi].ret == TY_STRING || vpoly) && c->scopes[vmi].nparams == 0)
+        buf_printf(b, "    case %d: return %ssp_%s_%s(*(sp_%s *)p)%s;\n",
+                   i, vpoly ? "sp_poly_to_s(" : "", c->classes[i].c_name, mc(c->scopes[vmi].name),
+                   c->classes[i].c_name, vpoly ? ")" : "");
       continue;
     }
     if (!class_inspectable(c, i)) continue;
@@ -10455,10 +10495,13 @@ static void emit_obj_inspect_dispatch(Compiler *c, Buf *b) {
        arm would name a function only its includers define (#4533). */
     int uidef = -1;
     int uimi = comp_class_is_module(c, ci) ? -1 : comp_method_in_chain(c, i, "inspect", &uidef);
-    if (uimi >= 0 && c->scopes[uimi].reachable && c->scopes[uimi].ret == TY_STRING &&
+    /* ...also when it answers the String through a boxed value */
+    int uipoly = uimi >= 0 && c->scopes[uimi].ret == TY_POLY;
+    if (uimi >= 0 && c->scopes[uimi].reachable && (c->scopes[uimi].ret == TY_STRING || uipoly) &&
         c->scopes[uimi].nparams == 0) {
-      buf_printf(b, "    case %d: return sp_%s_%s((sp_%s *)p);\n",
-                 i, c->classes[uidef].c_name, mc(c->scopes[uimi].name), c->classes[uidef].c_name);
+      buf_printf(b, "    case %d: return %ssp_%s_%s((sp_%s *)p)%s;\n",
+                 i, uipoly ? "sp_poly_to_s(" : "", c->classes[uidef].c_name, mc(c->scopes[uimi].name),
+                 c->classes[uidef].c_name, uipoly ? ")" : "");
       continue;
     }
     /* Struct/Data have a generated #inspect (#<struct Name a=1> / #<data ...>);

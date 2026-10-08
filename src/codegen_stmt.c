@@ -14,7 +14,7 @@ static void emit_obj_to_s(Compiler *c, int arg, TyKind t, Buf *b) {
      returns a boxed sp_RbVal; route it through sp_poly_to_s rather than a
      pointer cast (#3266). */
   buf_puts(b, ret_poly ? "sp_poly_to_s(" : "(const char *)(");
-  buf_printf(b, "sp_%s_to_s((sp_%s *)", cn, cn);
+  buf_printf(b, "sp_%s_%s((sp_%s *)", cn, obj_str_mname(c, ty_object_class(t), 0), cn);
   const char *rty = nt_type(c->nt, arg);
   if (rty && (sp_streq(rty, "LocalVariableReadNode") || sp_streq(rty, "InstanceVariableReadNode") || sp_streq(rty, "SelfNode") || sp_streq(rty, "ConstantReadNode"))) {
     emit_expr(c, arg, b);
@@ -569,7 +569,7 @@ void emit_p_one(Compiler *c, int arg, Buf *b, int indent) {
     buf_printf(b, "{ sp_%s *_t%d = (sp_%s *)(", cn, pv, cn); emit_expr(c, arg, b);
     buf_puts(b, "); ");
     if (!expr_is_held_ref(c, arg)) buf_printf(b, "SP_GC_ROOT(_t%d); ", pv);
-    buf_printf(b, "sp_puts_line(_t%d ? sp_%s_inspect(_t%d) : \"nil\"); }\n", pv, cn, pv);
+    buf_printf(b, "sp_puts_line(_t%d ? sp_%s_%s(_t%d) : \"nil\"); }\n", pv, cn, obj_str_mname(c, ty_object_class(t), 1), pv);
   }
   else if (t == TY_PROC) {
     buf_puts(b, "{ sp_Proc *_pp = ("); emit_expr(c, arg, b);
@@ -647,7 +647,7 @@ void emit_p_one(Compiler *c, int arg, Buf *b, int indent) {
     int cid = ty_object_class(t);
     const char *icn = obj_str_cname(c, cid, 1);
     if (icn && expr_is_held_ref(c, arg)) {
-      buf_printf(b, "{ const char *_pi = sp_%s_inspect((sp_%s *)(", icn, icn);
+      buf_printf(b, "{ const char *_pi = sp_%s_%s((sp_%s *)(", icn, obj_str_mname(c, cid, 1), icn);
       emit_expr(c, arg, b);
       buf_puts(b, ")); sp_puts_line(_pi ? _pi : \"nil\"); }\n");
     }
@@ -655,8 +655,8 @@ void emit_p_one(Compiler *c, int arg, Buf *b, int indent) {
       /* the receiver rooted across its #inspect, as in the arm above */
       int pv = ++g_tmp;
       buf_printf(b, "{ sp_%s *_t%d = (sp_%s *)(", icn, pv, icn); emit_expr(c, arg, b);
-      buf_printf(b, "); SP_GC_ROOT(_t%d); const char *_pi = sp_%s_inspect(_t%d);"
-                    " sp_puts_line(_pi ? _pi : \"nil\"); }\n", pv, icn, pv);
+      buf_printf(b, "); SP_GC_ROOT(_t%d); const char *_pi = sp_%s_%s(_t%d);"
+                    " sp_puts_line(_pi ? _pi : \"nil\"); }\n", pv, icn, obj_str_mname(c, cid, 1), pv);
     }
     else {
       buf_printf(b, "{ void *_po = (void *)("); emit_expr(c, arg, b);
@@ -1567,13 +1567,28 @@ int strbuf_exc_message_of_var(Compiler *c, int v) {
   NodeKind rk = nt_kind(c->nt, nt_ref(c->nt, unwrap_parens(c, v), "receiver"));
   return rk == NK_LocalVariableReadNode || rk == NK_InstanceVariableReadNode;
 }
+/* A plain reader of a shared String slot normally answers a snapshot.
+   Its field-read arm can hand on the handle under a demand instead, as
+   can the implicit-self reader. The seal asks the same predicate. */
+static int strbuf_route_reader(Compiler *c, int v) {
+  v = unwrap_parens(c, v);
+  if (!repr_share_rule(c) || v < 0 || nt_kind(c->nt, v) != NK_CallNode ||
+      repr_of(c, v).as_ty != TY_STRING) return 0;
+  int allocates = 0;
+  if (nt_ref(c->nt, v, "receiver") >= 0)
+    return call_is_field_read(c, v, &allocates) && allocates;
+  int sv = view_push_repr(c, v, VR_HANDLE_DEMAND, 1);
+  int ok = strbuf_self_reader_handle(c, v);
+  view_pop(c, sv);
+  return ok;
+}
 /* Does value v hand over a String the rule shares as the handle itself: a
    slot holding it, or a route over one? */
 static int strbuf_route_carries(Compiler *c, int v, int depth) {
   char ref[1024];
   if (strbuf_route_proc_call(c, v) || strbuf_route_ivar_get(c, v) || strbuf_route_begin(c, v) || strbuf_route_yield(c, v) ||
       strbuf_route_inline_call(c, v) || strbuf_route_loop(c, v) || repr_call_returns_handle(c, v) ||
-      strbuf_route_exc_message(c, v)) return 1;
+      strbuf_route_exc_message(c, v) || strbuf_route_reader(c, v)) return 1;
   int x = strbuf_route_operand(c, v);
   if (x == unwrap_parens(c, v)) return 1;
   if (x >= 0 && repr_of(c, x).kind == RK_BOXED) return 1;
@@ -1586,6 +1601,13 @@ static int strbuf_route_carries(Compiler *c, int v, int depth) {
    the String every other name of its class holds. */
 int emit_strbuf_route(Compiler *c, int v, Buf *b) {
   const NodeTable *nt = c->nt;
+  if (strbuf_route_reader(c, v)) {
+    v = unwrap_parens(c, v);
+    int sv = view_push_repr(c, v, VR_HANDLE_DEMAND, 1);
+    emit_expr(c, v, b);
+    view_pop(c, sv);
+    return 1;
+  }
   if (strbuf_route_exc_message(c, v)) {
     v = unwrap_parens(c, v);
     buf_puts(b, "sp_exc_message_handle((sp_Exception *)(");
@@ -1919,18 +1941,28 @@ int strbuf_cond_has_handle_leaf(Compiler *c, int v, int depth) {
 }
 /* Assign conditional `v`'s value to the handle temp `dst` as statements,
    arm by arm (strbuf_cond_has_handle_leaf): the condition is tested where
-   the value form tests it, and each arm's own setup runs only on its path. */
-static void emit_strbuf_cond_arm(Compiler *c, LocalVar *lv, int v, const char *dst, Buf *b, int depth) {
+   the value form tests it, and each arm's own setup runs only on its path.
+   Boxed conditional arms use the same scoped emission. */
+void emit_cond_arm(Compiler *c, int node, Buf *b, void (*emit)(Compiler *, int, Buf *, void *), void *ctx) {
   Buf pre; memset(&pre, 0, sizeof pre);
   Buf *sv = g_pre; g_pre = &pre;
   Buf body; memset(&body, 0, sizeof body);
-  emit_strbuf_cond_value(c, lv, v, dst, &body, depth);
+  emit(c, node, &body, ctx);
   g_pre = sv;
   buf_puts(b, "{ ");
   buf_puts(b, pre.p ? pre.p : "");
   buf_puts(b, body.p ? body.p : "");
   buf_puts(b, " }");
   free(pre.p); free(body.p);
+}
+typedef struct { LocalVar *lv; const char *dst; int depth; } StrbufCondArm;
+static void emit_strbuf_cond_body(Compiler *c, int v, Buf *b, void *ctx) {
+  StrbufCondArm *a = ctx;
+  emit_strbuf_cond_value(c, a->lv, v, a->dst, b, a->depth);
+}
+static void emit_strbuf_cond_arm(Compiler *c, LocalVar *lv, int v, const char *dst, Buf *b, int depth) {
+  StrbufCondArm a = { lv, dst, depth };
+  emit_cond_arm(c, v, b, emit_strbuf_cond_body, &a);
 }
 static void emit_strbuf_cond_value(Compiler *c, LocalVar *lv, int v, const char *dst, Buf *b, int depth) {
   const NodeTable *nt = c->nt;
@@ -1952,7 +1984,9 @@ static void emit_strbuf_cond_value(Compiler *c, LocalVar *lv, int v, const char 
       return;
     case NK_StatementsNode: {
       int n = 0; const int *bb = nt_arr(nt, v, "body", &n);
-      for (int i = 0; i < n - 1; i++) emit_stmt(c, bb[i], b, 0);
+      if (stmts_diverge(c, v)) { emit_stmts(c, v, b, 0); return; }
+      /* The tail's setup must follow the arm's earlier statements. */
+      for (int i = 0; i < n - 1; i++) emit_stmt(c, bb[i], g_pre, 0);
       if (n > 0) emit_strbuf_cond_value(c, lv, bb[n - 1], dst, b, depth);
       else buf_printf(b, "%s = NULL;\n", dst);
       return;
@@ -2085,7 +2119,9 @@ int strbuf_poly_to_s(Compiler *c, int v) {
     return 0;
   int r = nt_ref(nt, v, "receiver");
   char ref[1024];
-  return r >= 0 && comp_method_index(c, "to_s") < 0 &&
+  int targets[CPT_MAX];
+  /* The call plan also sees overrides when several classes define to_s. */
+  return r >= 0 && comp_method_index(c, "to_s") < 0 && cplan_targets(c, v, targets, CPT_MAX) == 0 &&
          (repr_of(c, r).kind == RK_BOXED || strbuf_var_handle(c, r, ref, sizeof ref));
 }
 
@@ -5155,6 +5191,8 @@ static void emit_pm_body_value(Compiler *c, int stmts, TyKind rt, int cr,
     return;
   }
   int last = bb[n - 1];
+  /* A diverging arm has no value to assign to the result temp. */
+  if (stmts_diverge(c, stmts)) { emit_stmt(c, last, b, indent); return; }
   TyKind lt = repr_of(c, last).as_ty;
   /* An empty `[]` / `{}` caches TY_UNKNOWN because it has no ELEMENT type
      yet, not because it has no value; running it for effect left the arm at
@@ -8512,10 +8550,11 @@ static void emit_tail_value_1(Compiler *c, int node, Buf *b);
    whose tails answers a fresh String (ret_pub_fresh): that tail clears the
    side channel after its value, which a read of a handle inside it may have
    published, so the caller wraps the fresh String rather than take that
-   handle */
+   handle. A user call returning only its own fresh Strings clears it too. */
 static void emit_tail_value(Compiler *c, int node, Buf *b) {
   Scope *ts = g_ret_type == TY_STRING && !g_result_var ? comp_scope_of(c, node) : NULL;
-  if (!ts || !ts->ret_pub_fresh || !share_node_fresh(c, an_unparen(c->nt, node))) {
+  if (!ts || !ts->ret_pub_fresh ||
+      !(share_node_fresh(c, an_unparen(c->nt, node)) || share_call_fresh(c, an_unparen(c->nt, node)))) {
     emit_tail_value_1(c, node, b);
     return;
   }
@@ -14393,13 +14432,13 @@ static int num_iter_answers_recv(Compiler *c, int id) {
 
 /* Does this statement list end in something that leaves the function -- a
    `return`, or a bare `raise`/`throw`? Used to decide whether a construct in
-   tail position produces a value at all. */
+   tail position produces a value at all. Parentheses preserve divergence. */
 int stmts_diverge(Compiler *c, int stmts) {
   const NodeTable *nt = c->nt;
   if (stmts < 0) return 0;
   int n = 0; const int *bb = nt_arr(nt, stmts, "body", &n);
   if (!bb || n == 0) return 0;
-  int last = bb[n - 1];
+  int last = unwrap_parens(c, bb[n - 1]);
   const char *lt = nt_type(nt, last);
   if (!lt) return 0;
   if (sp_streq(lt, "ReturnNode")) return 1;
@@ -17369,7 +17408,7 @@ static int strbuf_flow_begin(Compiler *c, StrbufFlowMemo *fm, int v, int depth) 
 static int strbuf_flow_route(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, int depth) {
   const NodeTable *nt = c->nt;
   if (strbuf_route_proc_call(c, v) || strbuf_route_ivar_get(c, v) || repr_call_returns_handle(c, v) ||
-      strbuf_route_exc_message(c, v))
+      strbuf_route_exc_message(c, v) || strbuf_route_reader(c, v))
     return 1;
   if (nt_kind(nt, v) == NK_BeginNode) return strbuf_flow_begin(c, fm, v, depth);
   if (strbuf_route_inline_call(c, v)) {

@@ -143,7 +143,7 @@ SPINEL_OPENSSL_LIBDIR := $(OPENSSL_PREFIX)/lib
 endif
 endif
 endif
-BUNDLED_NATIVE_OBJS = packages/json/sp_json.o packages/stringio/sp_stringio.o packages/strscan/sp_strscan.o packages/base64/sp_base64.o packages/tmpdir/sp_tmpdir.o packages/zlib/sp_zlib.o
+BUNDLED_NATIVE_OBJS = packages/json/sp_json.o packages/stringio/sp_stringio.o packages/strscan/sp_strscan.o packages/base64/sp_base64.o packages/tmpdir/sp_tmpdir.o packages/zlib/sp_zlib.o packages/pty/sp_pty.o
 ifeq ($(OPENSSL_AVAILABLE),yes)
 BUNDLED_NATIVE_OBJS += packages/openssl/sp_openssl.o
 endif
@@ -274,7 +274,7 @@ build/rbs/%.o: $(RBS_DIR)/src/%.c
 # `spinel` is the single binary: it emits C and then drives cc to link it.
 # (SPINEL itself is defined above, just before the `all` target.)
 
-SPINEL_HDRS = src/builtin_ops.h src/builtin_name_traits.inc src/builtin_zero_ops.inc src/builtin_arity.inc src/codegen_call_arms.h src/builtin_names.h src/ty_traits.inc src/call_plan.h src/codegen_poly.h src/repr.h src/holder.h src/share.h src/node_table.h src/codegen.h src/codegen_internal.h src/types.h src/compiler.h src/analyze.h src/analyze_internal.h src/ffi_spec.h src/csplit.h
+SPINEL_HDRS = src/builtin_ops.h src/builtin_name_traits.inc src/builtin_zero_ops.inc src/builtin_arity.inc src/codegen_call_arms.h src/builtin_names.h src/ty_traits.inc src/call_plan.h src/codegen_poly.h src/repr.h src/holder.h src/share.h src/node_table.h src/codegen.h src/codegen_internal.h src/types.h src/compiler.h src/analyze.h src/analyze_internal.h src/ffi_spec.h src/csplit.h $(PLATFORM_HDRS)
 build/csrc/analyze_desugar.o build/csrc-work/analyze_desugar.o build/csrc/codegen_call.o build/csrc-work/codegen_call.o: $(wildcard src/*_method_names.inc)
 SPINEL_OBJ  = build/csrc/node_table.o build/csrc/types.o build/csrc/compiler.o \
                build/csrc/ffi_spec.o \
@@ -354,7 +354,7 @@ build/csrc/codegen_util.o: build/csrc/sp_rt_names.h
 
 FORCE:
 
-build/csrc/sp_parse_lib.o: src/spinel_parse.c src/sp_macro.c $(PRISM_LIB) | build/csrc
+build/csrc/sp_parse_lib.o: src/spinel_parse.c src/sp_macro.c $(PRISM_LIB) $(PLATFORM_HDRS) | build/csrc
 	$(CC) $(CFLAGS) -I$(PRISM_INC) -c src/spinel_parse.c -o $@
 
 # The compiler links the regexp engine so it can compile a literal at build
@@ -376,9 +376,9 @@ build/csrc/re_lit_check.o: src/re_lit_check.c $(RE_HDRS) | build/csrc
 RE_SRC = lib/regexp/re_compile.c lib/regexp/re_exec.c lib/regexp/re_utf8.c lib/regexp/unicase.c lib/regexp/re_spinel.c
 RE_OBJ = $(patsubst lib/regexp/%.c,build/regexp/%.o,$(RE_SRC))
 
-$(SPINEL): $(SPINEL_OBJ) build/csrc/sp_parse_lib.o build/csrc/re_lit_check.o $(RE_OBJ) $(PRISM_LIB)
+$(SPINEL): $(SPINEL_OBJ) build/csrc/sp_parse_lib.o build/csrc/re_lit_check.o $(RE_OBJ) $(PRISM_LIB) $(PLATFORM_OBJ)
 	@mkdir -p bin
-	$(CC) $(CFLAGS) $(SPINEL_OBJ) build/csrc/sp_parse_lib.o build/csrc/re_lit_check.o $(RE_OBJ) $(PRISM_LIB) -lm $(LDFLAGS) -o $@
+	$(CC) $(CFLAGS) $(SPINEL_OBJ) build/csrc/sp_parse_lib.o build/csrc/re_lit_check.o $(RE_OBJ) $(PRISM_LIB) $(PLATFORM_OBJ) -lm $(LDFLAGS) $(SPINEL_LDFLAGS) -o $@
 	@# Dev convenience: a repo-root `./spinel` pointing at the built binary
 	@# (the installed command is `spinel` too). Best-effort; gitignored.
 	@ln -sf $@ spinel 2>/dev/null || cp $@ spinel 2>/dev/null || true
@@ -429,12 +429,13 @@ san-check: $(SPINEL_SAN)
 # exit code (124 on timeout), regardless of which `timeout` is on PATH.
 # The bench target keys on 124 to mark a run as SKIP; busybox uses 143
 # and BSDs use 399, which would be misclassified. Built once from C.
+SPINEL_TIMEOUT_SRC ?= scripts/spinel-timeout.c
 # Parallel sub-makes can both rebuild it while another leg runs it. Link to
 # a PID-specific name, then rename: a reader always gets a complete binary.
-$(SPINEL_TIMEOUT): scripts/spinel-timeout.c
+$(SPINEL_TIMEOUT): $(SPINEL_TIMEOUT_SRC)
 	@mkdir -p $(@D)
 	t=$@.tmp.$$$$; trap 'rm -f $$t' 0; \
-	$(CC) $(CFLAGS) $< -o $$t && mv $$t $@
+	$(CC) $(CFLAGS) $< $(SPINEL_TIMEOUT_LDFLAGS) -o $$t && mv $$t $@
 
 # ---- RBS extractor ----
 # Reads sig/**/*.rbs, emits the seed-file format spinel_analyze consumes
@@ -449,9 +450,9 @@ rbs-missing:
 else
 rbs_extract: $(RBS_EXTRACT_BIN)
 
-$(RBS_EXTRACT_BIN): tools/spinel_rbs_extract.c $(RBS_LIB)
+$(RBS_EXTRACT_BIN): tools/spinel_rbs_extract.c $(RBS_LIB) $(PLATFORM_OBJ)
 	@mkdir -p $(@D)
-	$(CC) $(CFLAGS) -I$(RBS_INC) tools/spinel_rbs_extract.c $(RBS_LIB) -o $@
+	$(CC) $(CFLAGS) -I$(RBS_INC) tools/spinel_rbs_extract.c $(RBS_LIB) $(PLATFORM_OBJ) $(PLATFORM_LIBS) -o $@
 endif
 
 # ---- Runtime library (regexp + bigint + …) ----
@@ -467,7 +468,7 @@ build/regexp/%.o: lib/regexp/%.c $(RE_HDRS)
 	@mkdir -p build/regexp
 	$(CC) -c $(COPT) $(SEC_FLAGS) $(RE_CASE_FLAGS) -Ilib/regexp -Ilib/regexp/shim $< -o $@
 
-RT_HDRS = $(wildcard lib/*.h lib/regexp/*.h lib/regexp/*.inc lib/regexp/shim/*.h lib/regexp/shim/mruby/*.h)
+RT_HDRS = $(wildcard lib/*.h lib/regexp/*.h lib/regexp/*.inc lib/regexp/shim/*.h lib/regexp/shim/mruby/*.h) $(PLATFORM_HDRS)
 
 # One rule for every lib/*.c object. The per-object header lists here used to be
 # written by hand and had drifted: build/sp_array.o never named lib/sp_str.h,
@@ -550,6 +551,15 @@ packages/tmpdir/sp_tmpdir_mt.o: packages/tmpdir/sp_tmpdir.c \
                                 lib/spinel/runtime.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h lib/sp_compat.h
 	$(CC) -c $(COPT) -Wno-all $(SEC_FLAGS) $(PKG_MT_FLAGS) -Ilib packages/tmpdir/sp_tmpdir.c -o $@
 
+# pty: PTY.spawn, a child on a new pseudo-terminal (posix_openpt + fork).
+# Pure C over libc; no wasm32-wasi object, since WASI has no fork.
+packages/pty/sp_pty.o: packages/pty/sp_pty.c \
+                       lib/spinel/runtime.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h lib/sp_compat.h
+	$(CC) -c $(COPT) -Wno-all $(SEC_FLAGS) -Ilib packages/pty/sp_pty.c -o $@
+packages/pty/sp_pty_mt.o: packages/pty/sp_pty.c \
+                          lib/spinel/runtime.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h lib/sp_compat.h
+	$(CC) -c $(COPT) -Wno-all $(SEC_FLAGS) $(PKG_MT_FLAGS) -Ilib packages/pty/sp_pty.c -o $@
+
 # zlib: DEFLATE, zlib and gzip in the package's own C. No system libz and so
 # no availability probe: a host with libz.so.1 and no zlib.h -- an ordinary
 # box without the -dev package -- would drop the package and give a green
@@ -569,7 +579,7 @@ SP_RT_LIB = lib/libspinel_rt.a
 
 RT_MEMBERS = sp_bigint sp_crypto sp_pack sp_time sp_core sp_net sp_system sp_gc sp_slab sp_alloc sp_dtoa sp_marshal sp_format sp_string sp_inspect sp_poly_cold sp_array sp_str sp_str_crypt sp_hash sp_proc sp_exc sp_re sp_random sp_fiber sp_sched sp_io sp_iobuffer sp_cold sp_process sp_process_status
 
-$(SP_RT_LIB): $(RE_OBJ) $(addprefix build/,$(addsuffix .o,$(RT_MEMBERS)))
+$(SP_RT_LIB): $(RE_OBJ) $(addprefix build/,$(addsuffix .o,$(RT_MEMBERS))) $(PLATFORM_OBJ)
 	ar rcs $@ $^
 
 # ---- Threaded runtime variant (-DSP_THREADS) ----
@@ -595,7 +605,7 @@ build/mt/%.o: lib/%.c $(RT_HDRS)
 
 RE_MT_OBJ = $(patsubst lib/regexp/%.c,build/mt/regexp/%.o,$(RE_SRC))
 
-$(SP_RT_MT_LIB): $(RE_MT_OBJ) $(addprefix build/mt/,$(addsuffix .o,$(RT_MEMBERS)))
+$(SP_RT_MT_LIB): $(RE_MT_OBJ) $(addprefix build/mt/,$(addsuffix .o,$(RT_MEMBERS))) $(PLATFORM_MT_OBJ)
 	ar rcs $@ $^
 
 # ---- ThreadSanitizer build of the threaded runtime (Phase 1 validation) ----
@@ -663,7 +673,7 @@ $(SP_RT_WASI_LIB): $(RE_WASI_OBJ) $(WASI_SHIM_OBJ) $(addprefix build/wasm32-wasi
 	@mkdir -p $(@D)
 	rm -f $@ && $(WASI_AR) rcs $@ $^
 
-BUNDLED_NATIVE_WASI_OBJS = $(patsubst %.o,%_wasi.o,$(filter-out packages/openssl/% packages/ffi/%,$(BUNDLED_NATIVE_OBJS)))
+BUNDLED_NATIVE_WASI_OBJS = $(patsubst %.o,%_wasi.o,$(filter-out packages/openssl/% packages/ffi/% packages/pty/%,$(BUNDLED_NATIVE_OBJS)))
 packages/%_wasi.o: packages/%.c lib/spinel/runtime.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h $(WASI_SHIM_HDRS)
 	$(WASI_CC) -c $(COPT) -Wno-all $(SEC_FLAGS) $(WASI_CFLAGS) -Ilib -I$(@D) $< -o $@
 
@@ -789,6 +799,12 @@ endif
 ifeq ($(shell uname -s),Darwin)
 TESTS := $(filter-out test/io_winsize_set.rb,$(TESTS))
 endif
+# A platform that cannot give some tests their subject lists them in
+# TEST_SKIP -- native Windows (win32.mk), for tests of what only a POSIX
+# system answers -- and they are not run there.
+ifneq ($(TEST_SKIP),)
+TESTS := $(filter-out $(TEST_SKIP),$(TESTS))
+endif
 # TEST_SHARD=k/n runs the k-th of n slices of the corpus (1-based), the
 # slice taken by position in the sorted list so every test lands in exactly
 # one: CI runs the slices as parallel jobs, since the corpus is what the
@@ -847,6 +863,9 @@ endif
 ifeq ($(SPINEL_INT_BITS),32)   # the same first-line marker as test/*.rb
 PKG_TESTS := $(filter-out $(shell grep -l '^\# spinel: int64' packages/*/test/*.rb),$(PKG_TESTS))
 endif
+ifneq ($(TEST_SKIP),)
+PKG_TESTS := $(filter-out $(TEST_SKIP),$(PKG_TESTS))
+endif
 ifneq ($(TEST_SHARD),)
 ifeq ($(TEST_ALWAYS),)
 PKG_TESTS := $(call shard_pick,$(PKG_TESTS))
@@ -902,7 +921,7 @@ PCH_ROOT := build/pch/$(CC_KIND)$(call sp_pathify,$(OPT))$(if $(SP_OV_DEFINE),pr
 PCH_FLAGS = $(CFLAGS) $(SP_OV_DEFINE) -Werror $(TEST_WARN_SUPPRESS) $(SEC_FLAGS)
 PCH_PLAIN  := $(PCH_ROOT)/plain/spinel_rt.h.gch
 PCH_NOPOLY := $(PCH_ROOT)/nopoly/spinel_rt.h.gch
-SP_LIB_HDRS := $(wildcard lib/*.h)
+SP_LIB_HDRS := $(wildcard lib/*.h) $(PLATFORM_HDRS)
 
 $(PCH_PLAIN): $(SP_LIB_HDRS)
 	@mkdir -p $(@D)
@@ -991,9 +1010,14 @@ re-lit-test: $(SPINEL)
 # the first `spinel:` line its .expected holds. gate-props runs it. A
 # compile whose inference ran to its round cap fails too: the answer can be
 # right all the same, and where the rounds stopped decided what was emitted.
-share-strings-test: $(SPINEL)
+SHARE_TESTS := $(wildcard test/share/*.rb)
+ifneq ($(FFI_AVAILABLE),yes)
+SHARE_TESTS := $(filter-out test/share/share_strings_fiddle.rb,$(SHARE_TESTS))
+endif
+share-strings-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS) $(BUNDLED_NATIVE_MT_OBJS)
 	@tmp=$$(mktemp -d "$${TMPDIR:-/tmp}/spinel-share.XXXXXX"); ok=1; \
-	for t in test/share/*.rb test/share_strings_*.rb test/nullable_string_identity.rb test/widened_param_reaches_its_callee.rb $$(cat test/share/reject.list); do \
+	for t in $(SHARE_TESTS) test/share_strings_*.rb test/nullable_string_identity.rb test/widened_param_reaches_its_callee.rb test/reader_or_assign_frozen.rb \
+	  test/builtins_inject.rb test/issue_3174.rb test/set_string_member_frozen.rb $$(cat test/share/reject.list); do \
 	  e="$$t.expected"; case "$$t" in test/reject/*) e="test/share/reject/$${t##*/}.expected";; esac; \
 	  if $(SPINEL) --share-strings "$$t" -o "$$tmp/b" >"$$tmp/out" 2>&1; then \
 	    ! grep -q 'did not converge' "$$tmp/out" || { echo "share-strings-test: FAIL $$t (the inference fixpoint ran to its round cap)"; ok=0; }; \
@@ -2194,7 +2218,9 @@ threaded-render-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SPINEL_TIMEOUT)
 	if [ $$ok -eq 1 ]; then echo "threaded-render-test: pass"; else exit 1; fi
 
 GC_MINOR_TESTS := test/reopened_builtin_kwrest_keys.rb \
+                  test/share_strings_argument_conversion_root.rb \
                   test/reader_or_assign_frozen.rb \
+                  test/share_strings_boxed_cond_order.rb \
                   test/string_unary_plus_nested.rb \
                   test/hash_store_boxed_origins.rb \
                   test/hash_store_boxed_chain.rb \
@@ -2263,6 +2289,7 @@ GC_MINOR_TESTS := test/reopened_builtin_kwrest_keys.rb \
                   test/reader_operands_pure_read.rb \
                   test/ivar_recv_string_handle.rb \
                   test/string_handle_forward.rb \
+                  test/share_strings_forward_fresh.rb \
                   test/shared_handle_arg_keeps_object.rb \
                   test/index_opassign_fused.rb \
                   test/loop_array_header_cache.rb \
@@ -3258,6 +3285,14 @@ rubyspec: $(SPINEL) $(RUBYSPEC_DIR)/.pinned
 # rows than the list: an example that never ran is not one that still passes.
 # Unchecked, an extractor crash left most examples unextracted, run.sh bailed
 # out, and the missing results file counted as zero regressions.
+#
+# RUBYSPEC_SHARD=k/n: keep only every n-th expected-PASS example per suite
+# (0-indexed offset k-1), so a CI fork can split the slowest suite (language)
+# across parallel jobs while every shard still runs its own "every listed
+# example ran" and "no regression" check. Running k=1..n covers the full
+# list exactly once, so the shards' combined result is the same gate the
+# unsharded target runs. Unset (the default), the whole list runs, byte-for-byte
+# as before.
 rubyspec-gate: $(SPINEL) $(RUBYSPEC_DIR)/.pinned
 	@ok=1; for d in $(RUBYSPEC_SUITES); do \
 	  nm=$$(echo $$d | tr / -); \
@@ -3266,6 +3301,20 @@ rubyspec-gate: $(SPINEL) $(RUBYSPEC_DIR)/.pinned
 	    echo "rubyspec-gate[$$d]: extraction failed"; ok=0; continue; \
 	  fi; \
 	  awk -F'\t' '$$2=="PASS"{print $$1}' tools/rubyspec/expectations/$$nm.tsv > build/rubyspec-gate-$$nm.list; \
+	  if [ -n "$(RUBYSPEC_SHARD)" ]; then \
+	    case "$(RUBYSPEC_SHARD)" in \
+	      [1-9]*/[1-9]*) ;; \
+	      *) echo "rubyspec-gate: RUBYSPEC_SHARD must be k/n with positive integers, got '$(RUBYSPEC_SHARD)'" >&2; exit 1;; \
+	    esac; \
+	    k=$$(echo $(RUBYSPEC_SHARD) | cut -d/ -f1); n=$$(echo $(RUBYSPEC_SHARD) | cut -d/ -f2); \
+	    case "$$k" in *[!0-9]*) echo "rubyspec-gate: RUBYSPEC_SHARD's k must be a plain integer, got '$$k'" >&2; exit 1;; esac; \
+	    case "$$n" in *[!0-9]*) echo "rubyspec-gate: RUBYSPEC_SHARD's n must be a plain integer, got '$$n'" >&2; exit 1;; esac; \
+	    if [ "$$k" -lt 1 ] || [ "$$n" -lt 1 ] || [ "$$k" -gt "$$n" ]; then \
+	      echo "rubyspec-gate: RUBYSPEC_SHARD=$$k/$$n must have 1 <= k <= n" >&2; exit 1; \
+	    fi; \
+	    awk -v k="$$k" -v n="$$n" '(NR-1)%n==k-1' build/rubyspec-gate-$$nm.list > build/rubyspec-gate-$$nm.list.shard; \
+	    mv build/rubyspec-gate-$$nm.list.shard build/rubyspec-gate-$$nm.list; \
+	  fi; \
 	  if ! RUBYSPEC_ONLY=build/rubyspec-gate-$$nm.list RUBYSPEC_GATE=1 \
 	    REF_RUBY="$(REF_RUBY)" bash tools/rubyspec/run.sh build/rubyspec-ex-$$nm build/rubyspec-gate-$$nm.tsv >/dev/null; then \
 	    echo "rubyspec-gate[$$d]: run.sh failed"; ok=0; continue; \
@@ -4127,6 +4176,7 @@ install: all bin/spin
 	install -d $(SPNLDIR)/lib/wasi/sys
 	for h in lib/wasi/*.h; do install -m 644 $$h $(SPNLDIR)/lib/wasi/; done
 	for h in lib/wasi/sys/*.h; do install -m 644 $$h $(SPNLDIR)/lib/wasi/sys/; done
+	$(PLATFORM_INSTALL)
 	@if [ -f $(SP_RT_WASI_LIB) ]; then \
 	  install -d $(SPNLDIR)/lib/wasm32-wasi; \
 	  install -m 644 $(SP_RT_WASI_LIB) $(SPNLDIR)/lib/wasm32-wasi/; \

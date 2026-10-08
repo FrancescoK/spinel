@@ -371,6 +371,7 @@ int opt_before_required(Compiler *c, Scope *m);                 /* codegen_fold.
 int arg_slot_for_param(Compiler *c, Scope *m, int idx, int argc); /* codegen_fold.c */
 int arg_layout_plain_arg(Compiler *c, Scope *m, int pos_argc, int i); /* codegen_fold.c */
 int arg_layout_param_node(Compiler *c, Scope *m, int call, int i, int *spread); /* codegen_fold.c */
+int arg_layout_param_source(Compiler *c, Scope *m, int call, int i, int *spread);
 int zsuper_param_source(Compiler *c, Scope *s, Scope *pm, int j);         /* codegen_fold.c */
 int rest_packable_arm(Compiler *c, Scope *s);                    /* codegen_fold.c */
 /* The type a READ of ivar slot `iv` yields (a shared-mutable string slot
@@ -636,6 +637,7 @@ void refuse_super_init_value(Compiler *c);
    `rescue <UserExc> => e` binding (#1415). */
 int class_is_exc_subclass(Compiler *c, int ci);
 int exc_subclass_defines(Compiler *c, const char *name);
+int exc_user_method_name(Compiler *c, const char *name, int argc);
 /* Defined in codegen_fold.c; 1 if class `k` is `anc` or a descendant of it. */
 int is_descendant(Compiler *c, int k, int anc);
 /* Defined in codegen_fold.c; distinct implementations of `name` across cid's

@@ -683,6 +683,7 @@ const char *class_ruby_name(Compiler *c, int ci);
 int scope_def_line(Compiler *c, Scope *s);
 const char *scope_def_file(Compiler *c, Scope *s);
 const char *obj_str_cname(Compiler *c, int cid, int want_inspect);
+const char *obj_str_mname(Compiler *c, int cid, int want_inspect);
 int obj_str_ret_poly(Compiler *c, int cid, int want_inspect);
 const char *exc_builtin_parent(Compiler *c, int ci);
 void emit_method_cname(Compiler *c, Scope *s, Buf *b);
@@ -1830,6 +1831,7 @@ int emit_native_object_protocol(Compiler *c, int id, Buf *b);
 void emit_slot_nil_test(Compiler *c, TyKind t, int tmp, int want_nil, Buf *b);
 int emit_native_case_eq(Compiler *c, int cond, TyKind subj_t, const char *subj_ref, Buf *b);
 int exc_subclass_defines(Compiler *c, const char *name);
+int exc_user_method_name(Compiler *c, const char *name, int argc);
 int emit_value_recv_call(Compiler *c, int id, Buf *b);
 int emit_range_call(Compiler *c, int id, Buf *b);
 int emit_boxed_class_aref(Compiler *c, int id, Buf *b);
@@ -2036,6 +2038,8 @@ int emit_rooted_arg_list(Compiler *c, const int *argv, int argc,
                          const char *ctype, const char *root,
                          void (*emit)(Compiler *, int, Buf *), int *tmps, Buf *b);
 void emit_split_pre(Compiler *c, int node, void (*emit)(Compiler *, int, Buf *), Buf *pre, Buf *val);
+/* A braced conditional arm whose hoisted setup stays inside that arm. */
+void emit_cond_arm(Compiler *c, int node, Buf *b, void (*emit)(Compiler *, int, Buf *, void *), void *ctx);
 void declare_local(Compiler *c, Buf *b, LocalVar *lv, int vol);
 void declare_local_named(Compiler *c, Buf *b, LocalVar *lv, const char *name, int vol);
 void emit_cell_shadow_store(Compiler *c, Scope *encl, const char *name, Buf *b, int indent);
@@ -2073,6 +2077,7 @@ int is_exc_name(const char *n);
 int class_is_exc_subclass(Compiler *c, int ci);
 const char *class_ruby_name(Compiler *c, int ci);
 const char *obj_str_cname(Compiler *c, int cid, int want_inspect);
+const char *obj_str_mname(Compiler *c, int cid, int want_inspect);
 int obj_str_ret_poly(Compiler *c, int cid, int want_inspect);
 const char *exc_builtin_parent(Compiler *c, int ci);
 void emit_class_struct(Compiler *c, ClassInfo *ci, Buf *b);

@@ -340,6 +340,9 @@ static void sh_mark_at(ShareFacts *F, int x, unsigned fl, int node) {
    holder's read and whose class the rule shares (share_flow_*). */
 static void sh_flow(ShareFacts *F, int kind, int site, int v) {
   if (v < 0 || site < 0) return;
+  /* The jump walk also reaches every emitted subtree. Desugaring leaves
+     detached nodes behind, including an expanded literal splat's Array. */
+  if (F->jseen && !F->jseen[site]) return;
   if (F->nfl >= F->cfl) {
     F->cfl = F->cfl ? F->cfl * 2 : 64;
     F->fl_site = realloc(F->fl_site, sizeof(int) * (size_t)F->cfl);
@@ -3477,16 +3480,33 @@ int share_method_blocks(const Compiler *c, int mi, const int **blocks) {
   *blocks = F->mb_blk + F->mb_start[mi];
   return F->mb_start[mi + 1] - F->mb_start[mi];
 }
-int share_call_fresh(Compiler *c, int call) {
+/* A boxed call's builtin arms answer a value of their own when the
+   any-receiver row says so. String's receiver conversions are the
+   exception to Object's row: to_s can hand its String back unchanged. */
+int share_builtin_fresh(Compiler *c, int call) {
+  const char *name = nt_str(c->nt, call, "name");
+  return bop_share_named(BOP_ANY_RECV, name) == BSH_PURE && !is_receiver_conversion(name);
+}
+static int sh_user_call_fresh(Compiler *c, int call, int depth) {
   const ShareFacts *F = c->share;
-  if (!F || call < 0 || nt_kind(c->nt, call) != NK_CallNode) return 0;
+  if (!F || call < 0 || depth > 8 || nt_kind(c->nt, call) != NK_CallNode) return 0;
+  /* A boxed dispatch can take a builtin arm too: its user targets alone
+     do not prove freshness (String#to_s can answer its receiver). */
+  if (cplan_user_fresh(c, call)->via == UC_POLY && !share_builtin_fresh(c, call)) return 0;
   int tg[64];
   int n = cplan_targets(c, call, tg, 64);
   if (n <= 0) return 0;
-  for (int i = 0; i < n; i++)
-    if (tg[i] < 0 || tg[i] >= c->nscopes || F->ret_joined[tg[i]]) return 0;
+  for (int i = 0; i < n; i++) {
+    if (tg[i] < 0 || tg[i] >= c->nscopes) return 0;
+    Scope *m = &c->scopes[tg[i]];
+    if (m->ret_param >= 0) {
+      if (!share_value_fresh(c, arg_layout_param_source(c, m, call, m->ret_param, NULL), depth + 1)) return 0;
+    }
+    else if (F->ret_joined[tg[i]] && !m->ret_fresh) return 0;
+  }
   return 1;
 }
+int share_call_fresh(Compiler *c, int call) { return sh_user_call_fresh(c, call, 0); }
 /* Does the subtree at n hold a `next` that leaves it (not one in a nested
    block, lambda, method or loop)? With any, also a break or a return. */
 static int sh_has_jump_k(const NodeTable *nt, int n, int any) {
@@ -3619,7 +3639,11 @@ int share_value_fresh(Compiler *c, int n, int depth) {
   n = an_unparen(nt, n);
   if (n < 0 || depth > 8) return 0;
   NodeKind k = nt_kind(nt, n);
+  if (k == NK_NilNode) return 1;
   if (k == NK_StringNode || k == NK_InterpolatedStringNode) return 1;
+  if (k == NK_RescueModifierNode)
+    return share_value_fresh(c, nt_ref(nt, n, "expression"), depth + 1) &&
+           share_value_fresh(c, nt_ref(nt, n, "rescue_expression"), depth + 1);
   /* a conditional each of whose arms is one, or nil */
   if (k == NK_IfNode || k == NK_UnlessNode)
     return sh_arm_fresh(c, nt_ref(nt, n, "statements"), depth + 1) &&
@@ -3632,7 +3656,7 @@ int share_value_fresh(Compiler *c, int n, int depth) {
     return mi >= 0 && sh_blocks_fresh(c, mi, depth + 1);
   }
   if (k != NK_CallNode) return 0;
-  if (share_call_fresh(c, n)) return 1;
+  if (sh_user_call_fresh(c, n, depth)) return 1;
   /* ENV's [] answers a new String each read; to_s, to_str and itself
      answer a new String receiver itself */
   int rcv = nt_ref(nt, n, "receiver");

@@ -1,0 +1,11 @@
+"w wrote hi\n"
+3
+"r read 16"
+"hi\n"
+"r read 16"
+:wait_readable
+"srv"
+"AF_INET"
+"c"
+"AF_INET"
+:done

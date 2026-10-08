@@ -348,6 +348,24 @@ int emit_call_exception_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
   /* #message / #to_s take the runtime's message dispatchers, which pick a
      reopening's override by the runtime class and fall back to the stored
      message (sp_user_exc_message / sp_user_exc_to_s) */
+  /* a method only the program's exception classes define, on a receiver
+     typed as a generic exception (a `rescue A, B => ex` binding, a
+     parameter it is passed to): the call re-enters with the receiver boxed
+     as the exception it is, and the poly dispatch keys it by its user class,
+     raising NoMethodError for any exception whose class lacks the method */
+  if (recv >= 0 && comp_ntype(c, recv) == TY_EXCEPTION && exc_user_method_name(c, name, argc)) {
+    int tv = ++g_tmp;
+    buf_printf(b, "({ sp_RbVal _t%d = sp_box_nullable_obj((void *)(", tv);
+    emit_expr(c, recv, b);
+    buf_printf(b, "), SP_BUILTIN_EXCEPTION); SP_GC_ROOT_RBVAL(_t%d); ", tv);
+    int slot = view_bind(recv, "_t%d", tv);
+    int vw = view_push(c, recv, TY_POLY);
+    emit_expr(c, id, b);
+    view_pop(c, vw);
+    view_unbind(slot);
+    buf_puts(b, "; })");
+    return 1;
+  }
   if (recv >= 0 && !sp_streq(name, "message") && !sp_streq(name, "to_s")) {
     TyKind xrt = comp_ntype(c, recv);
     int xdef = -1, xob = ty_is_object(xrt) ? ty_object_class(xrt) : -1;
