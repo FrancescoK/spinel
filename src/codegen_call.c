@@ -24946,7 +24946,7 @@ void emit_call_body(Compiler *c, int id, Buf *b) {
     /* an alias that captured the builtin (builtin_only) is the builtin's */
     if (recvR >= 0 && nmR && nt_ref(ntR, id, "block") < 0 && !nt_int(ntR, id, "builtin_only", 0)) {
       TyKind rtR = comp_ntype(c, recvR);
-      const char *ocR = rtR == TY_STRING ? "String"
+      const char *ocR = rtR == TY_STRING || rtR == TY_STRBUF ? "String"
                       : rtR == TY_INT ? "Integer"
                       : rtR == TY_FLOAT ? "Float"
                       : rtR == TY_SYMBOL ? "Symbol"
@@ -24961,7 +24961,7 @@ void emit_call_body(Compiler *c, int id, Buf *b) {
         if (miR >= 0) {
           if (g_plan_check) ucall_observe(c, id, miR, ciR, 0);
           buf_printf(b, "sp_%s_%s(", mc_reopen_cls(c, ciR, nmR), mc(nmR));
-          emit_expr(c, recvR, b);
+          if (rtR != TY_STRBUF || !emit_strbuf_read_ref(c, recvR, b)) emit_expr(c, recvR, b);
           emit_args_filled(c, miR, nt_ref(ntR, id, "arguments"), ", ", b);
           emit_callee_block_arg(c, id, &c->scopes[miR], b);
           buf_puts(b, ")");
