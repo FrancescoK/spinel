@@ -2284,6 +2284,10 @@ int emit_bang_self_handle(Compiler *c, int v, Buf *b) {
     int th = ++g_tmp, tr = ++g_tmp;
     buf_printf(b, "({ sp_String *_t%d = ", th);
     emit_strbuf_handle_of(c, r, b);
+    /* Taking the handle directly keeps the receiver route's nil check. */
+    if (!strbuf_route_nonnil(c, r))
+      buf_printf(b, "; if (SP_UNLIKELY(!_t%d)) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil()))", th,
+                 nt_str(c->nt, v, "name"));
     buf_printf(b, "; SP_GC_ROOT(_t%d); const char *_t%d = ", th, tr);
     r = unwrap_parens(c, r);
     int mark = g_n_argov;
@@ -2318,7 +2322,11 @@ int emit_bang_self_handle(Compiler *c, int v, Buf *b) {
     return 1;
   }
   int th = ++g_tmp;
-  buf_printf(b, "({ sp_String *_t%d = %s; SP_GC_ROOT(_t%d); const char *_t%d = ", th, sref, th, tr);
+  buf_printf(b, "({ sp_String *_t%d = %s; SP_GC_ROOT(_t%d); ", th, sref, th);
+  if (!strbuf_route_nonnil(c, r))
+    buf_printf(b, "if (SP_UNLIKELY(!_t%d)) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil())); ", th,
+               nt_str(c->nt, v, "name"));
+  buf_printf(b, "const char *_t%d = ", tr);
   int mark = g_n_argov;
   ran_first_bind(r, th, th);
   emit_expr(c, v, b);
