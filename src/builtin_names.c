@@ -191,6 +191,7 @@ int is_hash_key_lookup(const char *n) {
 int is_receiver_conversion(const char *n) {
   return sp_streq(n, "to_s") || sp_streq(n, "to_str") || sp_streq(n, "itself");
 }
+int is_to_s_name(const char *n) { return n && sp_streq(n, "to_s"); }
 
 int is_range_membership(const char *n) {
   return sp_streq(n, "cover?") || sp_streq(n, "include?") ||

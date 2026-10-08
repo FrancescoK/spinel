@@ -1011,6 +1011,9 @@ re-lit-test: $(SPINEL)
 # compile whose inference ran to its round cap fails too: the answer can be
 # right all the same, and where the rounds stopped decided what was emitted.
 SHARE_TESTS := $(wildcard test/share/*.rb)
+ifeq ($(FFI_AVAILABLE),yes)
+SHARE_TESTS += packages/ffi/test/ffi_dynamic_owner.rb packages/ffi/test/ffi_store_string.rb
+endif
 ifneq ($(FFI_AVAILABLE),yes)
 SHARE_TESTS := $(filter-out test/share/share_strings_fiddle.rb,$(SHARE_TESTS))
 endif

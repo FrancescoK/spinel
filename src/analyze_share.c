@@ -2049,6 +2049,8 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
     }
     /* a poly receiver may be a builtin as well */
     if (rt != TY_POLY && rt != TY_UNKNOWN) return r;
+    /* Exception#to_s hands on its stored message beside user returns. */
+    if (is_to_s_name(name) && argc == 0 && blk < 0) r = sh_join(F, r, sh_exc(F));
     return sh_join(F, r, sh_container_default(F, c, n, rv, blk));
   }
 
