@@ -1026,7 +1026,7 @@ share-strings-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS
 	  test/builtins_inject.rb test/issue_3174.rb test/set_string_member_frozen.rb \
 	  test/dynamic_new_post_params_reach.rb test/block_forward_proc_param_type.rb \
 	  test/builtins_partition_group_by.rb test/forwarded_block_tail_return.rb \
-	  test/boxed_scan_capture_params.rb test/fold_receiver_root.rb \
+	  test/boxed_scan_capture_params.rb test/fold_receiver_root.rb test/string_reopen_block_returns.rb \
 	  packages/shellwords/test/shellwords_split_unmatched_quote.rb \
 	  test/bundle_classd_27.rb test/masgn_str_array_strbuf_local.rb test/poly_aset_nullable_string_value.rb \
 	  $$(cat test/share/reject.list); do \
@@ -1409,6 +1409,12 @@ link-names-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB)
 
 reject-test: $(SPINEL)
 	@ok=1; tmp=$$(mktemp -d /tmp/spinel-reject.XXXXXX); \
+	for t in test/reject/string_reopen_yield_self_mutation.rb test/reject/string_reopen_proc_self_mutation.rb; do \
+	  if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/sk.c" >"$$tmp/sk.out" 2>&1; then \
+	    echo "reject-test: FAIL ($$t compiled)"; ok=0; \
+	  else grep -q 'String self is not yet shared by reference.*Build with --share-strings' "$$tmp/sk.out" || \
+	    { echo "reject-test: FAIL ($$t refused without saying why)"; cat "$$tmp/sk.out"; ok=0; }; fi; \
+	done; \
 	for t in test/reject/string_thread_arg.rb test/reject/string_fiber_arg.rb test/reject/string_thread_global_arg.rb test/reject/string_global_hash_element_mutation.rb test/reject/string_thread_ivar_arg.rb test/reject/string_thread_method_param_arg.rb test/reject/string_fiber_method_param_arg.rb test/reject/string_thread_block_param_arg.rb test/reject/string_thread_arg_in_loop.rb test/reject/string_split_local_each_mutation.rb test/reject/string_split_select_mutation.rb test/reject/string_split_map_bang_read_before.rb; do \
 	  if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/sk.c" >"$$tmp/sk.out" 2>&1; then \
 	    echo "reject-test: FAIL ($$t compiled)"; ok=0; \
@@ -2250,6 +2256,7 @@ threaded-render-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SPINEL_TIMEOUT)
 	if [ $$ok -eq 1 ]; then echo "threaded-render-test: pass"; else exit 1; fi
 
 GC_MINOR_TESTS := test/boxed_scan_capture_params.rb \
+                  test/string_reopen_block_returns.rb \
                   test/share_strings_hash_transform_params.rb \
                   test/reopened_builtin_kwrest_keys.rb \
                   test/string_unary_plus_frozen_receiver.rb \

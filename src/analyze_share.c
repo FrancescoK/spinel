@@ -1522,7 +1522,11 @@ static int sh_container_default(ShareFacts *F, Compiler *c, int n, int rv, int b
 static int sh_unknown_call(ShareFacts *F, Compiler *c, int n, int blk) {
   int vals[64];
   int nv = sh_args_vals(F, c, n, vals, 64);
-  for (int i = 0; i < nv; i++) sh_union(F, vals[i], F->unknown);
+  for (int i = 0; i < nv; i++) {
+    /* A proc handed self can keep or mutate that receiver. */
+    if (vals[i] >= 0 && F->kind[vals[i]] == SHK_SELF) F->own[vals[i]] |= SHE_IDENTITY;
+    sh_union(F, vals[i], F->unknown);
+  }
   if (blk >= 0 && nt_kind(c->nt, blk) == NK_BlockNode) {
     sh_block_params(F, c, blk, F->unknown, 1);
     sh_union(F, sh_block_val(F, c, blk), F->unknown);
