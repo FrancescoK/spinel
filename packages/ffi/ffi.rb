@@ -964,7 +964,10 @@ module FFI
     # Function.new(ret, params, proc_or_pointer = nil, options = {}) -- or,
     # given a FunctionType, Function.new(type, proc_or_pointer)
     def initialize(ret_or_type, params_or_target = nil, target = nil, options = nil, &blk)
-      if ret_or_type.is_a?(FunctionType)
+      if ret_or_type.is_a?(FunctionType) && params_or_target.is_a?(Array)
+        @function_type = FunctionType.new(ret_or_type, params_or_target, options)
+        tgt = target
+      elsif ret_or_type.is_a?(FunctionType)
         @function_type = ret_or_type
         tgt = params_or_target
       else
