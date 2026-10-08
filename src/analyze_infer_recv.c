@@ -1823,6 +1823,11 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
        run-time Regexp value: same shape */
     if (infer_type(c, argv[0]) == TY_POLY) { *out = TY_POLY_ARRAY; return 1; }
   }
+  /* A String scan with a block answers its checked receiver, regardless
+     of whether the block binds whole matches or capture rows. */
+  if (recv >= 0 && rt == TY_POLY && argc == 1 && is_scan_name(name) &&
+      nt_ref(nt, id, "block") >= 0 && !an_user_defines_or_reads(c, name))
+    { *out = TY_STRING; return 1; }
   /* Array#find / #detect over a poly value that is an array at runtime (an
      inner array read out of a poly container): the matched element (or nil) is
      boxed, so the result is poly (#2904). */

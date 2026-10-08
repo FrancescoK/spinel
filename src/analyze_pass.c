@@ -15542,7 +15542,15 @@ int infer_return_types(Compiler *c) {
       int sn = 0; const int *sb = stm >= 0 ? nt_arr(nt, stm, "body", &sn) : NULL;
       for (int k = 0; k < sn; k++) if (nt_kind(nt, sb[k]) == NK_ReturnNode) noblk[sb[k]] = 1;
     }
-    for (int s = 1; s < ns; s++) c->scopes[s].ret_noblock = TY_UNKNOWN;
+    for (int s = 1; s < ns; s++) {
+      /* A tail conditional re-derives its blockless value in irt_scope.
+         Keep that fact available to callers visited before the callee.
+         Shared String storage needs it during late inference; leave the
+         default build's return convergence unchanged. */
+      if (c->share_strings && c->scopes[s].yields &&
+          block_given_tail_then_last(c, scope_body_last(c, s)) >= 0) continue;
+      c->scopes[s].ret_noblock = TY_UNKNOWN;
+    }
     for (int id = 0; id < nt->count; id++) {
       if (nt_kind(nt, id) != NK_ReturnNode) continue;
       Scope *rs = comp_scope_of(c, id);
