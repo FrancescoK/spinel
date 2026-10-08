@@ -2226,6 +2226,7 @@ threaded-render-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SPINEL_TIMEOUT)
 GC_MINOR_TESTS := test/boxed_scan_capture_params.rb \
                   test/reopened_builtin_kwrest_keys.rb \
                   test/share_strings_argument_conversion_root.rb \
+                  test/share_strings_inherited_ivar.rb \
                   test/reader_or_assign_frozen.rb \
                   test/share_strings_boxed_cond_order.rb \
                   test/string_unary_plus_nested.rb \
