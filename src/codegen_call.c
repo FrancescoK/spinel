@@ -25013,7 +25013,7 @@ int strbuf_call_picks_up(Compiler *c, int id) {
    (emit_implicit_self_member). Answers 1 when it emitted the call. */
 static int emit_deep_return_pickup(Compiler *c, int id, Buf *b) {
   /* A boxed reader's identity demand takes its field handle too. */
-  if (repr_of(c, id).demand && repr_boxed_reader_handle(c, id))
+  if (repr_of(c, id).demand && repr_boxed_reader_handle(c, id) && repr_of(c, id).ty == TY_STRING)
     return emit_strbuf_route(c, id, b);
   /* An identity read demands the handle without changing String dispatch.
      The return route lifts that demand while it runs the ordinary call. */
