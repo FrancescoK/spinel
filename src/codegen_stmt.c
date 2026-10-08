@@ -1431,6 +1431,7 @@ static int strbuf_stmts_tail_plain(Compiler *c, int st) {
   int n = 0;
   const int *b = st >= 0 && nt_kind(c->nt, st) == NK_StatementsNode ? nt_arr(c->nt, st, "body", &n) : NULL;
   if (n == 0) return 0;
+  if (strbuf_native_answer(c, b[n - 1])) return 1;
   NodeKind k = nt_kind(c->nt, b[n - 1]);
   const char *nm = k == NK_CallNode ? nt_str(c->nt, b[n - 1], "name") : NULL;
   if (nm && is_raise_alias(nm) && nt_ref(c->nt, b[n - 1], "receiver") < 0 &&
@@ -1510,6 +1511,9 @@ static int strbuf_route_inline_call(Compiler *c, int v) {
   int mi = call_user_yield_mi(c, v);
   int last = mi > 0 ? scope_body_last(c, mi) : -1;
   if (last < 0) return 0;
+  /* A literal block selects this existing call-specific tail. */
+  int bl = block_given_tail_then_last(c, last);
+  if (bl >= 0) last = bl;
   NodeKind k = nt_kind(nt, last);
   return (k == NK_YieldNode || k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode ||
           repr_static_read_kind(k)) &&
@@ -17425,6 +17429,8 @@ static int strbuf_flow_route(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, in
   if (strbuf_route_inline_call(c, v)) {
     int mi = call_user_yield_mi(c, v);
     int last = mi > 0 ? scope_body_last(c, mi) : -1;
+    int bl = block_given_tail_then_last(c, last);
+    if (bl >= 0) last = bl;
     /* a method that answers its own variable hands on that slot; one that
        answers its yield, the block's value */
     if (last >= 0 && nt_kind(nt, last) != NK_YieldNode) return 1;
@@ -17580,6 +17586,9 @@ static int strbuf_flow_value(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, in
   /* a native binding answering the String its object keeps: its handle
      form (strbuf_slot_ref's first arm) */
   if ((ctx == SFC_ALIAS || ctx == SFC_SPLICE || ctx == SFC_ARG) && strbuf_native_answer(c, v)) return 1;
+  /* A demanded tail uses emit_strbuf_handle_of, whose slot read takes
+     the native answer's handle too. */
+  if (ctx == SFC_TAIL && strbuf_native_answer(c, v)) return 1;
   if (k == NK_IfNode || k == NK_UnlessNode || k == NK_OrNode || k == NK_AndNode || k == NK_CaseNode ||
       k == NK_StatementsNode || k == NK_ElseNode || k == NK_ParenthesesNode) {
     /* emit_strbuf_value takes a conditional arm by arm only when one of its
