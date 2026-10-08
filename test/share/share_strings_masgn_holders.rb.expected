@@ -1,0 +1,10 @@
+["global!", "global!", true]
+["!instance", "!instance", true]
+["CLASS", "CLASS", true]
+[true, true]
+frozen
+["attribute!", "attribute!", true]
+["member!", "member!", true]
+["element!", "element!", true]
+["entry!", "entry!", true]
+["!instance?", "!instance?", true]

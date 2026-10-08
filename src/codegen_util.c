@@ -2743,6 +2743,8 @@ int strbuf_slot_ref(Compiler *c, int recv, char *out, size_t cap) {
   }
   if (recv < 0 || nt_kind(c->nt, recv) != NK_InstanceVariableReadNode || !holder_of_node(c, recv, &h) ||
       h.idx < 0 || c->classes[h.cid].ivar_types[h.idx] != TY_STRBUF) return 0;
+  /* The ivar shim's value arm writes its shadow, as the read emitter does. */
+  if (g_sb_iv_name && sp_streq(h.name, g_sb_iv_name) && h.cid == g_sb_iv_cid) return 0;
   return holder_slot_text(c, &h, out, cap);
 }
 /* rename_local for a name whose CELL is wanted: the shim's shadow rename is

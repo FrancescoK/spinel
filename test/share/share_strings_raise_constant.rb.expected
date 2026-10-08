@@ -1,0 +1,9 @@
+RuntimeError
+[true, true]
+frozen
+["local", "local"]
+[RuntimeError, nil]
+[true, true]
+["mutable!", "mutable!", true]
+TypeError
+TypeError

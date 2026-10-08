@@ -1,0 +1,5 @@
+"ensure0"
+[true, true]
+frozen
+["frozen", "frozen"]
+["mutable!", "mutable!", true]
