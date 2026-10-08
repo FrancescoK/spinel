@@ -1032,6 +1032,7 @@ share-strings-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS
 	  test/dynamic_new_post_params_reach.rb test/block_forward_proc_param_type.rb test/proc_form_yield_block_arg.rb \
 	  test/builtins_partition_group_by.rb test/forwarded_block_tail_return.rb \
 	  test/boxed_scan_capture_params.rb test/fold_receiver_root.rb test/string_reopen_block_returns.rb \
+	  test/fresh_string_array_element_mutation.rb \
 	  packages/shellwords/test/shellwords_split_unmatched_quote.rb \
 	  test/bundle_classd_27.rb test/masgn_str_array_strbuf_local.rb test/poly_aset_nullable_string_value.rb \
 	  $$(cat test/share/reject.list); do \
@@ -2272,6 +2273,7 @@ GC_MINOR_TESTS := test/io_read_outbuf_eof.rb \
                   test/share_strings_class_value_parameter.rb \
                   test/string_reopen_block_returns.rb \
                   test/share_strings_transform_argument_order.rb \
+                  test/share_strings_fresh_element_conditional.rb \
                   test/share_strings_hash_transform_params.rb \
                   test/string_concat_value_snapshot.rb \
                   test/string_concat_rebound_receiver.rb \
