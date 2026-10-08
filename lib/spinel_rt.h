@@ -1076,6 +1076,14 @@ static const char *sp_str_frozen_name(const char *s) {
   static SP_TLS const char **src = NULL, **frz = NULL;
   static SP_TLS int n = 0, cap = 0;
   if (!s || sp_str_is_frozen_val(s)) return s;
+  /* A heap copy (an exception's class, named by sp_exc_class_name) is no
+     key: once it is swept another name can take its address, and the cache
+     answered the old name for it. Only a static name is kept. Nothing else
+     holds the copy, so it is rooted across the interning copy's allocation. */
+  if (((const unsigned char *)s)[-1] == 0xfe || ((const unsigned char *)s)[-1] == 0xfc) {
+    SP_GC_ROOT_STR(s);
+    return sp_str_uminus_val(s);
+  }
   for (int i = 0; i < n; i++) if (src[i] == s) return frz[i];
   if (n == cap) {
     int nc = cap ? cap * 2 : 16;
@@ -2650,13 +2658,33 @@ static inline sp_String *sp_poly_as_strbuf(sp_RbVal v) {
   if (sp_poly_nil_p(v)) return NULL;
   return sp_String_new((&("\xff")[1]));
 }
+/* The read face of a frozen handle: a copy that is frozen too (0xfa, a
+   frozen heap String that is collected), so the String read through it,
+   and a handle a consumer wraps around it, keep the frozen mark the
+   handle carries (`inject(s)` over a frozen s answered a String `<<`
+   changed). */
+SP_COLD static const char *sp_strbuf_read_frozen(sp_String *h) {
+  char *r = (char *)sp_str_from_bytes(sp_String_cstr(h), (size_t)sp_String_length(h));
+  if (h->binary) sp_str_mark_binary(r);
+  ((unsigned char *)r)[-1] = 0xfa;
+  return r;
+}
 /* A shared String handle's read face (a copy of its bytes, NULL for nil)
    with the handle published to the deep-return side channel, for a
    program built --share-strings: the call sequences the write, where two
    inline `(_sp_ret_strbuf = h, ...)` among one call's arguments were
    unsequenced writes to the channel. */
+/* Every build reads a handle through it now, and a frozen handle's read
+   face is frozen too (sp_strbuf_read_frozen). */
+/* A handle's read face without the publish: a copy of its bytes, NULL for
+   nil, frozen for a frozen handle (sp_strbuf_read_frozen) */
+static inline const char *sp_strbuf_read(sp_String *h) {
+  if (h && SP_UNLIKELY(sp_String_is_frozen(h))) return sp_strbuf_read_frozen(h);
+  return h ? sp_str_concat(sp_String_cstr(h), (&("\xff")[1])) : NULL;
+}
 static inline const char *sp_strbuf_read_pub(sp_String *h) {
   _sp_ret_strbuf = (void *)h;
+  if (h && SP_UNLIKELY(sp_String_is_frozen(h))) return sp_strbuf_read_frozen(h);
   return h ? sp_str_concat(sp_String_cstr(h), (&("\xff")[1])) : NULL;
 }
 static inline sp_bool sp_poly_is_strbuf(sp_RbVal v) {
@@ -6033,6 +6061,16 @@ static sp_RbVal sp_poly_uplus(sp_RbVal v) {
   }
   return v;
 }
+/* +v on a boxed value whose class has no +@ of the program's own (the
+   compiler dispatches a class that defines one): a number and a String
+   answer as sp_poly_uplus does, and everything else (nil, true, false, a
+   Symbol, a container, an object) has no +@ and raises NoMethodError, as
+   CRuby does, where sp_poly_uplus answered the value itself. */
+static sp_RbVal sp_poly_uplus_chk(sp_RbVal v) {
+  if (SP_UNLIKELY(v.tag != SP_TAG_STR && !sp_poly_tower_p(v) && !sp_poly_is_strbuf(v)))
+    sp_raise_poly_nomethod("+@", v);
+  return sp_poly_uplus(v);
+}
 static sp_RbVal sp_poly_neg(sp_RbVal a) {
   if (a.tag == SP_TAG_FLT) return sp_box_float(-a.v.f);
   if (a.tag == SP_TAG_INT) return sp_box_int(-a.v.i);
@@ -6047,6 +6085,14 @@ static sp_RbVal sp_poly_neg(sp_RbVal a) {
   if (a.tag == SP_TAG_STR) return sp_box_str(sp_str_uminus_val(a.v.s));
   if (sp_poly_is_strbuf(a)) return sp_box_str(sp_str_uminus_val(sp_poly_strbuf_deref(a).v.s));
   return sp_box_int(-sp_poly_to_i(a));
+}
+/* -v on a boxed value, the same way: a number and a String answer as
+   sp_poly_neg does, and anything else raises NoMethodError, where
+   sp_poly_neg negated it as an Integer (nil and false read as 0) */
+static sp_RbVal sp_poly_neg_chk(sp_RbVal v) {
+  if (SP_UNLIKELY(v.tag != SP_TAG_STR && !sp_poly_tower_p(v) && !sp_poly_is_strbuf(v)))
+    sp_raise_poly_nomethod("-@", v);
+  return sp_poly_neg(v);
 }
 
 /* sp_mark_rbval: inline helper in sp_gc.h. */
@@ -13702,7 +13748,9 @@ SP_NORETURN SP_COLD void sp_raise_cls(const char *cls, const char *msg) {
      recorded before its own setjmp (sp_exc_rootmark, or a C local in the
      Kernel#loop and enumerator landings), which discards this entry, and a
      fiber's trampoline hands the whole root stack back to its resumer. */
-  if (msg != sp_exc_no_msg) msg = sp_msg_heapify(msg);
+  if (!sp_exc_msg_empty_given(msg)) msg = sp_msg_heapify(msg);
+  /* a frozen message (a literal's) as frozen text (sp_exc_msg_plain) */
+  if (!sp_exc_msg_empty_given(msg)) msg = sp_exc_msg_plain(msg);
   SP_GC_ROOT_STR(msg);
 #if SP_BT_AVAILABLE
   /* a pass-through, or a bare `raise` re-raising the handled exception, keeps
@@ -14191,7 +14239,25 @@ static void sp_raise_exc(volatile sp_Exception *ve) {
   /* Carry the object so a user subclass keeps its ivars across the
      longjmp; sp_raise_cls moves it into the current frame's slot. */
   sp_pending_exc_obj = (void *)e;
-  sp_raise_cls(e->cls_name, e->msg);
+  sp_raise_cls(e->cls_name, e->msg_h ? sp_exc_message(e) : e->msg);
+}
+/* e.message as the String handle it holds (sp_Exception.msg_h), for a
+   change through it (--share-strings). A message held as bytes becomes the
+   exception's handle here, frozen when the message is (a literal's), so a
+   change through it shows in the next #message, as CRuby's message is one
+   object. The class name a message-less exception answers is a new String
+   each time in CRuby, so it is not kept (a message given equal to the
+   class name is taken for it, and keeps the old answer). */
+static inline sp_String *sp_exc_message_handle(sp_Exception *e) {
+  if (!e) return sp_String_new_fresh(sp_str_empty);
+  if (e->msg_h) return (sp_String *)e->msg_h;
+  SP_GC_ROOT(e);
+  const char *m = sp_exc_message(e);
+  int fz = sp_str_is_frozen_val(m);
+  sp_String *h = sp_String_new_fresh(m);
+  if (fz) sp_String_freeze(h);
+  if (!e->cls_name || strcmp(sp_String_cstr(h), e->cls_name) != 0) sp_exc_attach_msg((void *)e, (void *)h);
+  return h;
 }
 
 /* SystemCallError#initialize, as CRuby's syserr_initialize runs it for an
@@ -14272,6 +14338,18 @@ static sp_Exception *sp_syserr_build(const char *cls, sp_int argc, const sp_RbVa
    anything else is CRuby's TypeError. */
 SP_NORETURN SP_COLD static void sp_raise_poly(sp_RbVal v) {
   if (v.tag == SP_TAG_STR && v.v.s) sp_raise(v.v.s);
+  /* a String boxed as its shared handle (an element the --share-strings
+     rule shares) is a String too: a RuntimeError whose message is that
+     String, held as the handle (sp_exc_attach_msg), as `raise s` holds a
+     variable's */
+  if (sp_poly_is_strbuf(v) && v.v.p) {
+    sp_String *h = (sp_String *)v.v.p;
+    SP_GC_ROOT(h);
+    sp_Exception *e = sp_exc_new_for_catch("RuntimeError", sp_exc_msg_given(sp_String_cstr(h)));
+    SP_GC_ROOT(e);
+    sp_exc_attach_msg((void *)e, (void *)h);
+    sp_raise_exc((volatile sp_Exception *)e);
+  }
   if (v.tag == SP_TAG_OBJ && v.v.p) {
     /* A carried exception object re-raises as itself. The base
      * sp_Exception uses cls_id SP_BUILTIN_EXCEPTION; a user subclass
@@ -14899,6 +14977,13 @@ void sp_fiber_reraise(const char *cls, const char *msg, void *obj);
 #else
 void sp_fiber_reraise(const char *cls, const char *msg, void *obj) {
   if (obj) sp_pending_exc_obj = obj;
+  /* the message a raise left in the handler stack, or one the program
+     handed Fiber#raise / Thread#raise: a String with a marker byte. A
+     frozen one (a literal's, sp_exc_msg_plain) is handed on counted, so
+     the re-raise keeps its mark */
+  if (msg && !sp_exc_msg_empty_given(msg) && !sp_cmsg_p(msg) &&
+      (((const unsigned char *)msg)[-1] == 0xfa || ((const unsigned char *)msg)[-1] == 0xf8))
+    msg = sp_exc_msg_counted_frozen(msg, sp_str_byte_len(msg));
   sp_raise_cls(cls, msg);
 }
 #endif

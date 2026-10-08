@@ -6467,6 +6467,44 @@ static int str_arms_convert(Compiler *c, int id, Buf *b, const NodeTable *nt, co
         eq_sblv = 1;
       }
     }
+    /* `String(s)` or `+s` against a handle, either side: the String the
+       route answers is s's own, so the handles are compared (the route's
+       read face is a copy). The other side is a variable's slot, and the
+       route's operand is one: nothing runs but the reads. */
+    if (!eq_sblv) {
+      char hx[192], hy[192];
+      int up = 0;
+      int fwd = strbuf_self_route_slot(c, recv, &up, hx, sizeof hx) && strbuf_slot_ref(c, argv[0], hy, sizeof hy);
+      if (!fwd) fwd = -(strbuf_self_route_slot(c, argv[0], &up, hx, sizeof hx) && strbuf_slot_ref(c, recv, hy, sizeof hy));
+      if (fwd) {
+        int th = ++g_tmp;
+        buf_printf(b, "({ sp_String *_t%d = %s; ", th, hx);
+        /* +nil raises, String(nil) is "" (a new String) */
+        if (up) buf_printf(b, "if (SP_UNLIKELY(!_t%d)) sp_raise_nomethod(sp_nomethod_msg(\"+@\", sp_box_nil())); "
+                              "(sp_bool)(sp_String_uplus(_t%d) == %s); })", th, th, hy);
+        else buf_printf(b, "(sp_bool)(_t%d && _t%d == %s); })", th, th, hy);
+        eq_sblv = 1;
+      }
+    }
+    /* --share-strings: `e.message` against a handle, or another
+       `e.message`: the exception's message handle (sp_exc_message_handle)
+       is compared, where its read face is a copy */
+    if (!eq_sblv && (strbuf_exc_message_of_var(c, recv) || strbuf_exc_message_of_var(c, argv[0]))) {
+      char sx[192];
+      int rok = strbuf_exc_message_of_var(c, recv) || strbuf_slot_ref(c, recv, sx, sizeof sx);
+      int aok = strbuf_exc_message_of_var(c, argv[0]) || strbuf_slot_ref(c, argv[0], sx, sizeof sx);
+      if (rok && aok) {
+        int th = ++g_tmp;
+        buf_printf(b, "({ sp_String *_t%d = ", th);
+        emit_strbuf_handle_of(c, recv, b);
+        /* rooted: a new handle the argument's read makes could reuse its
+           address once it is swept */
+        buf_printf(b, "; SP_GC_ROOT(_t%d); (sp_bool)(_t%d == ", th, th);
+        emit_strbuf_handle_of(c, argv[0], b);
+        buf_puts(b, "); })");
+        eq_sblv = 1;
+      }
+    }
     if (!eq_sblv) {
       char arefE[192];
       if (strbuf_slot_ref(c, argv[0], arefE, sizeof arefE)) {
@@ -9959,8 +9997,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
           else if (repr_of(c, id).read_raw && decide_node(c->nt, id, "strbuf-raw", NULL))
             buf_printf(b, "_t%d ? sp_String_cstr(_t%d) : NULL; })", tvR, tvR);
           else
-            buf_printf(b, "_t%d ? sp_str_concat(sp_String_cstr(_t%d), (&(\"\\xff\")[1])) : NULL; })",
-                       tvR, tvR);
+            buf_printf(b, "sp_strbuf_read(_t%d); })", tvR);
           return 1;
         }
         buf_puts(b, "("); emit_expr(c, recv, b);

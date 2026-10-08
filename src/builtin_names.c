@@ -22,6 +22,15 @@ int is_record_class_builder(const char *recv, const char *meth) {
                           (sp_streq(recv, "Data") && sp_streq(meth, "define")));
 }
 
+/* the Array class's own name, exactly */
+int is_array_class_name(const char *n) {
+  return n && sp_streq(n, "Array");
+}
+/* `Array.new(...)`, by its receiver's constant name and the method */
+int is_array_new(const char *recv, const char *meth) {
+  return is_array_class_name(recv) && meth && sp_streq(meth, "new");
+}
+
 int is_call_alias(const char *n) {
   return sp_streq(n, "call") || sp_streq(n, "()") || sp_streq(n, "[]");
 }
@@ -97,6 +106,12 @@ int is_async_code_entry(const char *recv, const char *n) {
 
 int is_name_reader(const char *n) {
   return sp_streq(n, "name") || sp_streq(n, "to_s") || sp_streq(n, "inspect");
+}
+
+/* `tap` alone: it answers its receiver, where then/yield_self answer the
+   block's value (is_tap_alias takes all three) */
+int is_tap_name(const char *n) {
+  return sp_streq(n, "tap");
 }
 
 int is_tap_alias(const char *n) {

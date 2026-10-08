@@ -492,7 +492,7 @@ static void emit_poly_user_arm0(Compiler *c, int id, const char *name, TyKind re
   /* shared-mutable ivar read into a plain string slot: the safe
      copy, not the raw handle pointer (#3227) */
   else if (ivt == TY_STRBUF && ret == TY_STRING) {
-    buf_printf(b, "%s ? sp_str_concat(sp_String_cstr(%s), (&(\"\\xff\")[1])) : NULL", fld, fld);
+    buf_printf(b, "sp_strbuf_read(%s)", fld);
     pconv = PC_COPY;
   }
   else buf_puts(b, fld);

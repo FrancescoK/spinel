@@ -921,6 +921,15 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       buf_printf(b, "sp_String_is_frozen(%s)", fsref);
       return 1;
     }
+    /* --share-strings: so does a route that hands on the handle (`String(t)`,
+       `x.tap { }`, a conditional over one): its read face is an unfrozen
+       copy */
+    if (frt == TY_STRING && strbuf_value_carries(c, recv)) {
+      buf_puts(b, "sp_String_is_frozen(");
+      emit_strbuf_handle_of(c, recv, b);
+      buf_puts(b, ")");
+      return 1;
+    }
     if (frt == TY_STRING) {
       buf_puts(b, "sp_str_is_frozen_val("); emit_expr(c, recv, b); buf_puts(b, ")");
       return 1;
@@ -2408,8 +2417,7 @@ int emit_object_ivar_call(Compiler *c, int id, const char *name, int recv, TyKin
         int tvG = ++g_tmp;
         buf_printf(b, "({ sp_String *_t%d = (", tvG);
         emit_expr(c, recv, b);
-        buf_printf(b, ")%siv_%s; _t%d ? sp_str_concat(sp_String_cstr(_t%d), (&(\"\\xff\")[1])) : NULL; })",
-                   acc, iv_c(sym + 1), tvG, tvG);
+        buf_printf(b, ")%siv_%s; sp_strbuf_read(_t%d); })", acc, iv_c(sym + 1), tvG);
       }
       else {
         buf_puts(b, "("); emit_expr(c, recv, b);

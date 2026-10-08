@@ -46,6 +46,12 @@ typedef struct sp_Exception_s {
                                  means "no caller ever set one" (CRuby answers
                                  nil for the unset case). The GC mark visits it
                                  alongside the boxed fields. */
+  void *msg_h;                /* the message as a shared String handle (an
+                                 sp_String *), or NULL: a program built
+                                 --share-strings raises with the String it
+                                 was given, which #message answers itself
+                                 (sp_exc_attach_msg). Read the message
+                                 through sp_exc_message / sp_exc_msg_text. */
 } sp_Exception;
 
 extern const char *(*sp_user_exc_parent_fn)(const char *);   /* set by the generated main() */
@@ -71,9 +77,20 @@ sp_Exception *sp_exc_new_for_catch(const char *cls, const char *msg);
 /* The message a bare `raise` carries: empty, and distinct from "no message
    given" (which falls back to the class name, as Exception.new does) (#3711). */
 extern const char *const sp_exc_no_msg;
+/* The same for an explicitly given empty literal (`raise C, ""`), whose
+   message CRuby keeps frozen: also "" to every reader of the raw message,
+   and an exception built from it holds a frozen "". */
+extern const char *const sp_exc_no_msg_frozen;
+/* Is m one of the two explicit-empty sentinels? A raise's message is
+   laundered onto the heap unless it is one, which keeps its identity. */
+static inline int sp_exc_msg_empty_given(const char *m) {
+  return m == sp_exc_no_msg || m == sp_exc_no_msg_frozen;
+}
 /* An explicitly given raise message: an empty one stays empty rather than
    falling back to the class name the way a message-less raise does. */
 const char *sp_exc_msg_counted(const char *m, size_t n);   /* lib/sp_exc.c */
+const char *sp_exc_msg_counted_frozen(const char *m, size_t n);   /* the same, for a frozen String */
+const char *sp_exc_msg_plain(const char *m);   /* a frozen counted message as frozen text */
 const char *sp_exc_cat(int n, ...);   /* parts joined by byte length, NULs kept */
 const char *sp_exc_full_text(volatile sp_Exception *e, const char *msg);       /* "Class: msg" */
 const char *sp_exc_detailed_text(volatile sp_Exception *e, const char *msg);   /* "msg (Class)" */
@@ -82,6 +99,9 @@ const char *sp_exc_detailed_text(volatile sp_Exception *e, const char *msg);   /
 static inline const char *sp_exc_msg_given(const char *m) {
   if (!m) return m;
   size_t n = sp_str_byte_len(m);
+  /* a frozen String (a literal) travels counted with its frozen mark, an
+     empty one as the frozen empty sentinel */
+  if (sp_str_is_frozen_val(m)) return n == 0 ? sp_exc_no_msg_frozen : sp_exc_msg_counted_frozen(m, n);
   if (n == 0) return sp_exc_no_msg;
   return memchr(m, 0, n) ? sp_exc_msg_counted(m, n) : m;
 }
@@ -102,6 +122,10 @@ int sp_exc_exit_status(void *obj);
 sp_Exception *sp_exc_exception(sp_Exception *e, const char *msg);
 const char *sp_exc_class_name(volatile sp_Exception *ve);
 const char *sp_exc_message(volatile sp_Exception *ve);
+/* the message's text now, not to be kept (a handle's live buffer) */
+const char *sp_exc_msg_text(volatile sp_Exception *ve);
+/* e with the String handle h as its message (sp_Exception.msg_h); answers e */
+void *sp_exc_attach_msg(void *e, void *h);
 /* #to_s as #inspect renders it: a user override (the generated program's
    sp_user_exc_to_s, installed in the hook) else the stored message */
 extern const char *(*sp_user_exc_to_s_fn)(sp_Exception *);
