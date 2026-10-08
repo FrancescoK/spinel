@@ -684,12 +684,6 @@ spinel: 1 refusal, nothing written
 == test/reject/object_method_ivar_native_slot.rb [promote] rc=1
 spinel: test/reject/object_method_ivar_native_slot.rb:4: unsupported instance variable write to a receiver without a writable slot: node N (CallNode `instance_variable_set`) recv=SelfNode/ty50 argc=2 arg0ty8
 spinel: 1 refusal, nothing written
-== test/reject/object_method_ivar_presence.rb [default] rc=1
-spinel: test/reject/object_method_ivar_presence.rb:7: unsupported defined? of an instance variable with untracked presence on a boxed receiver: node N (CallNode `instance_variable_defined?`) recv=SelfNode/ty50 argc=1 arg0ty8
-spinel: 1 refusal, nothing written
-== test/reject/object_method_ivar_presence.rb [promote] rc=1
-spinel: test/reject/object_method_ivar_presence.rb:7: unsupported defined? of an instance variable with untracked presence on a boxed receiver: node N (CallNode `instance_variable_defined?`) recv=SelfNode/ty50 argc=1 arg0ty8
-spinel: 1 refusal, nothing written
 == test/reject/object_method_ivar_struct_slot.rb [default] rc=1
 spinel: test/reject/object_method_ivar_struct_slot.rb:3: unsupported instance_variable_set to an ivar absent from the fixed object layout: node N (CallNode `instance_variable_set`) recv=SelfNode/ty50 argc=2 arg0ty8
 spinel: 1 refusal, nothing written

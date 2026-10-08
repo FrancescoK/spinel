@@ -13843,7 +13843,7 @@ static void biv_rewrite(Compiler *c, NodeTable *nt, int node, int mode) {
     int v = nt_ref(nt, node, "value");
     if (mode == BIV_TABLE) { biv_self_call(nt, node, "__bivar_set", ivb, v); c->bivar_table = 1; }
     else biv_self_call(nt, node, "instance_variable_set", ivb, v);
-    if (mode == BIV_OBJECT) { nt_node_set_int(nt, node, "builtin_only", 1); c->bivar_table = 1; }
+    if (mode == BIV_OBJECT) nt_node_set_int(nt, node, "builtin_only", 1);
   }
 }
 
