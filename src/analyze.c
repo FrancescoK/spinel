@@ -5576,10 +5576,15 @@ static void desugar_enum_chain_shapes(Compiler *c) {
         int av[64];
         memcpy(av, av0, (size_t)an * sizeof(int));
         int mblk = nt_ref(nt, id, "block");
+        /* An argument with a side effect after the first runs in order with the
+           receiver and the arguments before it: each is held in a local, and
+           the whole chain is one parenthesized sequence, since C leaves the
+           order in which a call's operands are evaluated open (a read placed
+           beside the sequence that assigns it could run first). */
         int late = 0;
         for (int j = 1; j < an; j++) late |= subtree_has_side_effect(c, av[j]);
+        int seq[66], ns = 0;
         if (late) {
-          int seq[66], ns = 0, rd = -1;
           for (int j = -1; j < an; j++) {
             char tn[48];
             snprintf(tn, sizeof tn, "__mrg%d_%d", id, j + 1);
@@ -5588,13 +5593,8 @@ static void desugar_enum_chain_shapes(Compiler *c) {
             nt_node_set_ref(nt, w, "value", j < 0 ? recv : av[j]);
             nt_node_set_str(nt, r, "name", tn); nt_node_set_int(nt, r, "depth", 0);
             seq[ns++] = w;
-            if (j < 0) rd = r; else av[j] = r;
+            if (j < 0) recv = r; else av[j] = r;
           }
-          seq[ns++] = rd;
-          int st = nt_new_node(nt, "StatementsNode"), pr = nt_new_node(nt, "ParenthesesNode");
-          nt_node_set_arr(nt, st, "body", seq, ns);
-          nt_node_set_ref(nt, pr, "body", st);
-          recv = pr;
         }
         int cur = recv;
         for (int j = 0; j < an - 1; j++) {
@@ -5616,7 +5616,25 @@ static void desugar_enum_chain_shapes(Compiler *c) {
         }
         if (cur >= 0) {
           int last = nt_new_node(nt, "ArgumentsNode");
-          if (last >= 0) {
+          if (last >= 0 && late) {
+            int fin = nt_new_node(nt, "CallNode"), st = nt_new_node(nt, "StatementsNode");
+            nt_node_set_arr(nt, last, "arguments", &av[an - 1], 1);
+            nt_node_set_str(nt, fin, "name", mname);
+            nt_node_set_ref(nt, fin, "receiver", cur);
+            nt_node_set_ref(nt, fin, "arguments", last);
+            if (mblk >= 0) nt_node_set_ref(nt, fin, "block", mblk);
+            seq[ns++] = fin;
+            nt_node_set_arr(nt, st, "body", seq, ns);
+            /* the call node becomes the sequence: its own operands move into
+               the chain above */
+            nt_node_set_type(nt, id, "ParenthesesNode");
+            nt_node_set_ref(nt, id, "body", st);
+            nt_node_set_ref(nt, id, "receiver", -1);
+            nt_node_set_ref(nt, id, "arguments", -1);
+            nt_node_set_ref(nt, id, "block", -1);
+            comp_grow_node_arrays(c);
+          }
+          else if (last >= 0) {
             nt_node_set_arr(nt, last, "arguments", &av[an - 1], 1);
             nt_node_set_ref(nt, id, "receiver", cur);
             nt_node_set_ref(nt, id, "arguments", last);
