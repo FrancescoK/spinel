@@ -1,3 +1,5 @@
+# spinel: share
+# spinel: gc-minor
 # fetch with a block that takes the missing key, on a receiver that may be a
 # Hash or an Array, the key a Symbol or a String literal. The fetch itself
 # types the still untyped local as a Hash of that key type for one round of
