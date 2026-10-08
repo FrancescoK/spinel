@@ -25,6 +25,19 @@ p h.encoding, h.size
 h.force_encoding(retag("x".b).encoding)
 p h.encoding, h.size
 
+# the same handle read back out of a mixed Array
+w = [+"é", 1][0]
+pr.call(w)
+w.force_encoding(e)
+p w.encoding
+w.force_encoding(retag("x".b).encoding)
+p w.encoding
+
+# a user constant holding an Encoding is a value, not a literal
+module M; E = Encoding::BINARY; end
+p (+"é").force_encoding(M::E).encoding
+p "é".b.force_encoding(::Encoding::UTF_8).encoding
+
 # bad arguments raise as CRuby's do, a frozen String first
 [nil, 1, "nope"].each do |bad|
   begin

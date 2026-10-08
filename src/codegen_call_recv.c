@@ -10161,12 +10161,22 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
 /* The encoding a force_encoding / encode! call names as a literal: 1 for
    ASCII-8BIT, 0 for UTF-8, -1 for any other or a computed one, which only
    checks that the receiver may change. */
+/* Encoding::X or ::Encoding::X; a user constant (M::E) is a value */
+static int enc_const_path(const NodeTable *nt, int n) {
+  const char *at = nt_type(nt, n);
+  if (!at || !sp_streq(at, "ConstantPathNode")) return 0;
+  int p = nt_ref(nt, n, "parent");
+  const char *pt = p >= 0 ? nt_type(nt, p) : NULL;
+  const char *pn = p >= 0 ? nt_str(nt, p, "name") : NULL;
+  if (!pt || !pn || !sp_streq(pn, "Encoding")) return 0;
+  return sp_streq(pt, "ConstantReadNode") || (sp_streq(pt, "ConstantPathNode") && nt_ref(nt, p, "parent") < 0);
+}
 static int str_force_encoding_mode(Compiler *c, const int *argv, int argc) {
   const NodeTable *nt = c->nt;
   const char *fe_nm = NULL;
   if (argc >= 1) {
     const char *at = nt_type(nt, argv[0]);
-    if (at && sp_streq(at, "ConstantPathNode")) fe_nm = nt_str(nt, argv[0], "name");
+    if (enc_const_path(nt, argv[0])) fe_nm = nt_str(nt, argv[0], "name");
     else if (at && sp_streq(at, "StringNode")) {
       fe_nm = nt_str(nt, argv[0], "unescaped");
       if (!fe_nm) fe_nm = nt_str(nt, argv[0], "content");
@@ -10192,7 +10202,18 @@ static int str_force_encoding_mode(Compiler *c, const int *argv, int argc) {
 static int str_force_encoding_computed(Compiler *c, const char *name, const int *argv, int argc) {
   if (!sp_streq(name, "force_encoding") || argc != 1) return 0;
   const char *at = nt_type(c->nt, argv[0]);
-  return !at || (!sp_streq(at, "ConstantPathNode") && !sp_streq(at, "StringNode"));
+  return !enc_const_path(c->nt, argv[0]) && !(at && sp_streq(at, "StringNode"));
+}
+/* The mode argument of sp_String_force_encoding on handle `h`. A frozen
+   handle raises before the argument is looked at, as in CRuby. */
+static void emit_strbuf_force_encoding_mode(Compiler *c, const char *name, const char *h, const int *argv, int argc, Buf *b) {
+  if (!str_force_encoding_computed(c, name, argv, argc)) {
+    buf_printf(b, "%d", str_force_encoding_mode(c, argv, argc));
+    return;
+  }
+  buf_printf(b, "sp_String_is_frozen(%s) ? -1 : sp_force_encoding_mode(", h);
+  emit_boxed(c, argv[0], b);
+  buf_puts(b, ")");
 }
 void emit_str_force_encoding(Compiler *c, const char *name, const char *r, const int *argv, int argc, Buf *b) {
   int mode = str_force_encoding_mode(c, argv, argc);
@@ -10219,15 +10240,10 @@ void emit_str_force_encoding(Compiler *c, const char *name, const char *r, const
    append that moved the bytes. `ref` is the handle; the value is its bytes. */
 static void emit_strbuf_force_encoding(Compiler *c, const char *name, const char *ref, const int *argv, int argc, Buf *b) {
   int th = ++g_tmp;
-  buf_printf(b, "({ sp_String *_t%d = %s; if (!_t%d) sp_nil_recv(\"%s\"); ", th, ref, th, name);
-  /* a frozen handle raises before the argument is looked at, as in CRuby */
-  if (str_force_encoding_computed(c, name, argv, argc)) {
-    buf_printf(b, "sp_String_force_encoding(_t%d, sp_String_is_frozen(_t%d) ? -1 : sp_force_encoding_mode(", th, th);
-    emit_boxed(c, argv[0], b);
-    buf_puts(b, "))");
-  }
-  else buf_printf(b, "sp_String_force_encoding(_t%d, %d)", th, str_force_encoding_mode(c, argv, argc));
-  buf_printf(b, "; sp_String_cstr(_t%d); })", th);
+  char hv[24]; snprintf(hv, sizeof hv, "_t%d", th);
+  buf_printf(b, "({ sp_String *_t%d = %s; if (!_t%d) sp_nil_recv(\"%s\"); sp_String_force_encoding(_t%d, ", th, ref, th, name, th);
+  emit_strbuf_force_encoding_mode(c, name, hv, argv, argc, b);
+  buf_printf(b, "); sp_String_cstr(_t%d); })", th);
 }
 static void emit_str_encode_call(Compiler *c, const char *recv_txt, const int *argv, int argc, Buf *b) {
   const NodeTable *nt = c->nt;
@@ -14392,8 +14408,10 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
          answers the box itself */
       int tv = ++g_tmp;
       buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b);
-      buf_printf(b, "; sp_poly_is_strbuf(_t%d) ? (sp_String_force_encoding((sp_String *)_t%d.v.p, %d), _t%d) : ",
-                 tv, tv, str_force_encoding_mode(c, argv, argc), tv);
+      char hv[48]; snprintf(hv, sizeof hv, "((sp_String *)_t%d.v.p)", tv);
+      buf_printf(b, "; sp_poly_is_strbuf(_t%d) ? (sp_String_force_encoding(%s, ", tv, hv);
+      emit_strbuf_force_encoding_mode(c, name, hv, argv, argc, b);
+      buf_printf(b, "), _t%d) : ", tv);
       char rv[64]; snprintf(rv, sizeof rv, "sp_poly_recv_s(_t%d, \"%s\")", tv, name);
       buf_puts(b, "sp_box_str(");
       emit_str_force_encoding(c, name, rv, argv, argc, b);
