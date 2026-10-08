@@ -4,6 +4,7 @@ module M
   extend Fiddle::Importer
   dlload Fiddle.dlopen(nil)
   ABS = extern "int abs(int)"
+  UPPER = extern "int toupper(int)"
   p abs(-1)
   def self.a(x) = abs(x)
   def self.b(x) = self.abs(x)
@@ -31,10 +32,11 @@ end
 # A receiver that supplies a function table can use the private method.
 class WithTable
   include M
-  def initialize = @func_map = {"abs" => M::ABS}
+  def initialize(fn = M::ABS) = @func_map = {"abs" => fn}
   def a(x) = abs(x)
 end
 p WithTable.new.a(-7)
+p WithTable.new(M::UPPER).a(97)
 
 begin
   M.nothere(1)

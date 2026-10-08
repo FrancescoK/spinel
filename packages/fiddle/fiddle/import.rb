@@ -193,7 +193,7 @@ module Fiddle
     def __ffi_invoke(args, blk, receiver)
       fns = receiver.instance_variable_get(:@func_map)
       raise NoMethodError, "undefined method '[]' for nil" if fns.nil?
-      fns[@name].call(*args)
+      fns[@name.to_s].call(*args)
     end
   end
 
@@ -259,7 +259,8 @@ module Fiddle
       opt = parse_bind_options(opts)
       f = import_function(symname, ctype, argtype, opt[:call_type])
       name = symname.gsub(/@.+/, "")
-      @func_map[name] = f
+      # Keep the key a String while the parser's tuple is still untyped.
+      @func_map[name.to_s] = f
       ::FFI__Registry.__add(self, name.to_sym, f)
       f
     end
