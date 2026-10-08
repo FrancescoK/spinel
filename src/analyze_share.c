@@ -31,7 +31,7 @@
 #include "repr.h"
 
 /* element-own flags (not merged by a union) */
-enum { SHE_WRITTEN = 1, SHE_SELF_USED = 2 };
+enum { SHE_WRITTEN = 1, SHE_IDENTITY = 2 };
 /* a class flag beside share.h's SHF_*: a value of the class leaves a call
    to be read after it (`p(lit.each { |x| x << y })`, `lit.map { }.first`),
    so a container of the class can be reached again (sh_finalize) */
@@ -345,7 +345,7 @@ static void sh_flow(ShareFacts *F, int kind, int site, int v) {
      detached nodes behind, including an expanded literal splat's Array. */
   if (F->jseen && !F->jseen[site]) return;
   int e = F->nval[v];
-  if (e >= 0 && F->kind[e] == SHK_SELF) F->own[e] |= SHE_SELF_USED;
+  if (kind != SHFL_ARG && e >= 0 && F->kind[e] == SHK_SELF) F->own[e] |= SHE_IDENTITY;
   if (F->nfl >= F->cfl) {
     F->cfl = F->cfl ? F->cfl * 2 : 64;
     F->fl_site = realloc(F->fl_site, sizeof(int) * (size_t)F->cfl);
@@ -562,7 +562,6 @@ static void sh_bind_self(ShareFacts *F, Compiler *c, int call, int mi, int rv) {
   int self = sh_self(F, c, mi);
   if (self < 0) return;
   if (rv < 0) rv = sh_self(F, c, sh_method_index(c, call));
-  if (rv >= 0 && F->kind[rv] == SHK_SELF) F->own[rv] |= SHE_SELF_USED;
   sh_union(F, self, rv);
   int pf = scope_proc_form_of(c, mi);
   if (pf >= 0) sh_union(F, self, sh_self(F, c, pf));
@@ -608,7 +607,7 @@ static void sh_lend(ShareFacts *F, int arg, int par, int node, int direct) {
 /* method mi returns value v (see ShareFacts.ret_m) */
 static void sh_ret(ShareFacts *F, int mi, int v) {
   if (mi < 0 || v < 0) return;
-  if (F->kind[v] == SHK_SELF) F->own[v] |= SHE_SELF_USED;
+  if (F->kind[v] == SHK_SELF) F->own[v] |= SHE_IDENTITY;
   if (F->nret >= F->cret) {
     F->cret = F->cret ? F->cret * 2 : 64;
     F->ret_m = realloc(F->ret_m, sizeof(int) * (size_t)F->cret);
@@ -640,8 +639,8 @@ static void sh_mark_unused(ShareFacts *F, const NodeTable *nt, int n, unsigned c
 static int sh_join(ShareFacts *F, int a, int b) {
   if (a < 0) return b;
   if (b < 0) return a;
-  if (F->kind[a] == SHK_SELF) F->own[a] |= SHE_SELF_USED;
-  if (F->kind[b] == SHK_SELF) F->own[b] |= SHE_SELF_USED;
+  if (F->kind[a] == SHK_SELF) F->own[a] |= SHE_IDENTITY;
+  if (F->kind[b] == SHK_SELF) F->own[b] |= SHE_IDENTITY;
   sh_union(F, a, b);
   return a;
 }
@@ -1032,7 +1031,9 @@ static void sh_bind(ShareFacts *F, Compiler *c, int call, int mi) {
       sh_flow(F, SHFL_ARG, call, a);
       if (j == m->rest_idx || j == m->kwrest_idx) sh_union(F, sh_elem(F, p), v);
       /* self has no lendable byte slot: a callee must keep its identity. */
-      else if (v >= 0 && F->kind[v] == SHK_SELF) sh_union(F, p, v);
+      /* A byte-only parameter can still borrow it; sh_settle_lends joins
+         a held receiver to a parameter that mutates or keeps it. */
+      else if (v >= 0 && F->kind[v] == SHK_SELF) sh_lend(F, v, p, a, 0);
       else {
         int holds = sh_lend_holds(c, call, a, &plain);
         if (holds == SHL_UNSOUND) sh_union(F, p, v);
@@ -1917,7 +1918,14 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
   int rv = recv >= 0 ? sh_val(F, c, recv) : -1;
   TyKind rt = recv >= 0 ? c->ntype[recv] : TY_VOID;
   int maybe_str = recv >= 0 && (rt == TY_STRING || rt == TY_STRBUF || rt == TY_POLY || rt == TY_UNKNOWN);
-  if (rv >= 0 && F->kind[rv] == SHK_SELF && is_identity_query(name)) F->own[rv] |= SHE_SELF_USED;
+  if (c->share_strings && is_identity_query(name)) {
+    int identity = recv < 0 ? sh_self(F, c, sh_method_index(c, n)) : rv;
+    if (identity >= 0) F->own[identity] |= SHE_IDENTITY;
+    if (argc == 1 && is_equality_name(name)) {
+      int other = sh_val(F, c, argv[0]);
+      if (other >= 0) F->own[other] |= SHE_IDENTITY;
+    }
+  }
 
   /* an in-place String mutation of the receiver: through a boxed or an
      untyped receiver, only one a String can make, on a receiver that can
@@ -2546,6 +2554,7 @@ static int sh_lendable(ShareFacts *F, Compiler *c, int p) {
   if (!lv->is_param || lv->is_block_param || lv->cell_outlives) return 0;
   if (lv->type != TY_STRING && lv->type != TY_STRBUF) return 0;
   if (F->own[p] & SHE_WRITTEN) return 0;
+  if (F->own[p] & SHE_IDENTITY) return 0;
   if (lv->type == TY_STRING && sh_param_by_value(F, c, F->h[hi].scope, lv)) return 0;
   int r = sh_find(F, p);
   return F->nmem[r] == 1 && !(F->flags[r] & SHF_UNKNOWN);
@@ -3041,7 +3050,7 @@ static void sh_jump_walk(ShareFacts *F, const NodeTable *nt, ShJumps *J, int n, 
   case NK_SelfNode:
     if (J->captures_self) {
       int self = sh_self(F, J->c, sh_method_index(J->c, n));
-      if (self >= 0) F->own[self] |= SHE_SELF_USED;
+      if (self >= 0) F->own[self] |= SHE_IDENTITY;
     }
     break;
   case NK_BreakNode: case NK_NextNode: {
@@ -3425,6 +3434,50 @@ static ShareFacts *sh_build(Compiler *c, int closed) {
 void share_facts_build(Compiler *c) {
   share_facts_free(c);
   c->share = sh_build(c, 0);
+  if (!c->share_strings) return;
+  ShareFacts *F = c->share;
+  /* Argument flows depend on the parameter's representation. The walk's
+     other flows already mark direct identity uses of self. */
+  for (int i = 0; i < F->nfl; i++) {
+    int v = F->nval[F->fl_val[i]];
+    if (F->fl_kind[i] != SHFL_ARG || v < 0 || F->kind[v] != SHK_SELF || (F->own[v] & SHE_IDENTITY)) continue;
+    int tg[64], n = F->fl_site[i];
+    int ntg = sh_targets(c, n, tg, 64), used = ntg <= 0;
+    for (int t = 0; t < ntg && !used; t++) {
+      Scope *m = &c->scopes[tg[t]];
+      int bound = 0;
+      for (int j = 0; j < m->nparams; j++) {
+        if (arg_layout_param_node(c, m, n, j, NULL) != F->fl_val[i]) continue;
+        bound = 1;
+        LocalVar *lv = m->pnames[j] ? scope_local(m, m->pnames[j]) : NULL;
+        Repr r = repr_of_slot(c, lv);
+        if (j == m->rest_idx || j == m->kwrest_idx || r.kind == RK_BOXED || r.kind == RK_STRBUF ||
+            r.cell == RC_BYREF || (lv && repr_str_shares(c, share_local_holder(c, tg[t], (int)(lv - m->locals)))))
+          used = 1;
+      }
+      if (!bound) used = 1;
+    }
+    if (used) F->own[v] |= SHE_IDENTITY;
+  }
+  /* Forwarding self needs identity only when the callee does. Settle the
+     existing per-method bit over the walk's call sites, including cycles:
+     a byte-only cycle stays byte-only; a handle use propagates backwards. */
+  for (int changed = 1; changed; ) {
+    changed = 0;
+    for (int i = 0; i < F->nrsite; i++) {
+      int n = F->rsite[i], recv = nt_ref(c->nt, n, "receiver");
+      int h = recv >= 0 ? -1 : share_self_holder(c, sh_method_index(c, n));
+      int v = recv >= 0 ? F->nval[recv] : h >= 0 ? F->helem[h] : -1;
+      if (v < 0 || F->kind[v] != SHK_SELF || (F->own[v] & SHE_IDENTITY)) continue;
+      int tg[64], ntg = sh_targets(c, n, tg, 64);
+      for (int t = 0; t < ntg; t++) {
+        if (!repr_self_handle(c, tg[t])) continue;
+        F->own[v] |= SHE_IDENTITY;
+        changed = 1;
+        break;
+      }
+    }
+  }
 }
 
 void share_facts_free(Compiler *c) {
@@ -3465,7 +3518,7 @@ int share_self_holder(const Compiler *c, int scope) {
 }
 int share_self_used(const Compiler *c, int holder) {
   const ShareFacts *F = c->share;
-  return F && holder >= 0 && (F->own[F->helem[holder]] & SHE_SELF_USED) != 0;
+  return F && holder >= 0 && (F->own[F->helem[holder]] & SHE_IDENTITY) != 0;
 }
 
 /* The holders of root r's class that store a String (sh_finalize). */
@@ -3551,6 +3604,10 @@ int share_flow_at(const Compiler *c, int i, int *site, int *value) {
   }
   *site = F->fl_site[i];
   *value = F->fl_val[i];
+  /* A byte-only self argument has no identity to carry at this boundary. */
+  int e = F->nval[*value];
+  if (F->fl_kind[i] == SHFL_ARG && e >= 0 && F->kind[e] == SHK_SELF && !(F->own[e] & SHE_IDENTITY))
+    *value = -1;
   return F->fl_kind[i];
 }
 int share_method_blocks(const Compiler *c, int mi, const int **blocks) {
