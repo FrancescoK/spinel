@@ -1010,9 +1010,14 @@ re-lit-test: $(SPINEL)
 # the first `spinel:` line its .expected holds. gate-props runs it. A
 # compile whose inference ran to its round cap fails too: the answer can be
 # right all the same, and where the rounds stopped decided what was emitted.
-share-strings-test: $(SPINEL)
+SHARE_TESTS := $(wildcard test/share/*.rb)
+ifneq ($(FFI_AVAILABLE),yes)
+SHARE_TESTS := $(filter-out test/share/share_strings_fiddle.rb,$(SHARE_TESTS))
+endif
+share-strings-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS) $(BUNDLED_NATIVE_MT_OBJS)
 	@tmp=$$(mktemp -d "$${TMPDIR:-/tmp}/spinel-share.XXXXXX"); ok=1; \
-	for t in test/share/*.rb test/share_strings_*.rb test/nullable_string_identity.rb test/widened_param_reaches_its_callee.rb test/reader_or_assign_frozen.rb $$(cat test/share/reject.list); do \
+	for t in $(SHARE_TESTS) test/share_strings_*.rb test/nullable_string_identity.rb test/widened_param_reaches_its_callee.rb test/reader_or_assign_frozen.rb \
+	  test/builtins_inject.rb test/issue_3174.rb test/set_string_member_frozen.rb $$(cat test/share/reject.list); do \
 	  e="$$t.expected"; case "$$t" in test/reject/*) e="test/share/reject/$${t##*/}.expected";; esac; \
 	  if $(SPINEL) --share-strings "$$t" -o "$$tmp/b" >"$$tmp/out" 2>&1; then \
 	    ! grep -q 'did not converge' "$$tmp/out" || { echo "share-strings-test: FAIL $$t (the inference fixpoint ran to its round cap)"; ok=0; }; \
@@ -2215,6 +2220,7 @@ threaded-render-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SPINEL_TIMEOUT)
 GC_MINOR_TESTS := test/reopened_builtin_kwrest_keys.rb \
                   test/share_strings_argument_conversion_root.rb \
                   test/reader_or_assign_frozen.rb \
+                  test/share_strings_boxed_cond_order.rb \
                   test/string_unary_plus_nested.rb \
                   test/hash_store_boxed_origins.rb \
                   test/hash_store_boxed_chain.rb \

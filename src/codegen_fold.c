@@ -9905,7 +9905,7 @@ static int emit_gather_lead_lent(Compiler *c, Scope *m, int i, const int *argv, 
    into the parameter that mutates it: indexing the call's arguments by the
    parameter's position read a keyword hash, or the argument beside a rest,
    for a keyword or a post. */
-int arg_layout_param_node(Compiler *c, Scope *m, int call, int i, int *spread) {
+static int arg_layout_param_node_inner(Compiler *c, Scope *m, int call, int i, int *spread, int defaults) {
   const NodeTable *nt = c->nt;
   if (spread) *spread = -1;
   if (!m || i < 0 || i >= m->nparams) return -1;
@@ -9933,6 +9933,7 @@ int arg_layout_param_node(Compiler *c, Scope *m, int call, int i, int *spread) {
   const char *pn = m->pnames[i];
   int lead = L.gather ? gather_lead_arg(c, m, argv, argc, i) : -1;
   if (L.from[i] == ARG_NODE) a = argv[L.arg[i]];
+  else if (defaults && L.from[i] == ARG_DEFAULT && m->pdefault) a = m->pdefault[i];
   else if (lead >= 0) a = argv[lead];
   else if (L.from[i] == ARG_ELEM || L.from[i] == ARG_GATHERED) {
     if (nsplat == 1 && spread) *spread = nt_ref(nt, splat, "expression");
@@ -9963,17 +9964,29 @@ int arg_layout_param_node(Compiler *c, Scope *m, int call, int i, int *spread) {
       free(flat);
     }
   }
-  else if (L.from[i] == ARG_BY_NAME && i != m->kwrest_idx && pn && kwh >= 0 &&
+  else if (L.from[i] == ARG_BY_NAME && i != m->kwrest_idx && pn &&
            callee_has_kwarg(c, m, pn)) {
-    int en = 0; const int *el = nt_arr(nt, kwh, "elements", &en);
+    int en = 0; const int *el = kwh >= 0 ? nt_arr(nt, kwh, "elements", &en) : NULL;
     int nds = 0, ds = -1;
     for (int e = 0; e < en; e++)
       if (nt_kind(nt, el[e]) == NK_AssocSplatNode) { nds++; ds = el[e]; }
-    if (!kwh_merged(c, m, kwh)) a = kwh_lookup(nt, kwh, pn);
+    if (!kwh_merged(c, m, kwh)) {
+      a = kwh_lookup(nt, kwh, pn);
+      /* Only an omitted keyword with no spread source takes its default. */
+      if (a < 0 && !nds && defaults && m->pdefault) a = m->pdefault[i];
+    }
     if (a < 0 && nds == 1 && spread) *spread = nt_ref(nt, ds, "value");
   }
   arg_layout_free(&L);
   return a;
+}
+
+int arg_layout_param_node(Compiler *c, Scope *m, int call, int i, int *spread) {
+  return arg_layout_param_node_inner(c, m, call, i, spread, 0);
+}
+/* The value binding a parameter, including an omitted optional's default. */
+int arg_layout_param_source(Compiler *c, Scope *m, int call, int i, int *spread) {
+  return arg_layout_param_node_inner(c, m, call, i, spread, 1);
 }
 
 /* How far from the end of the positionals parameter j of m takes its value,

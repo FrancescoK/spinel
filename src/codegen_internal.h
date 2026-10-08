@@ -2038,6 +2038,8 @@ int emit_rooted_arg_list(Compiler *c, const int *argv, int argc,
                          const char *ctype, const char *root,
                          void (*emit)(Compiler *, int, Buf *), int *tmps, Buf *b);
 void emit_split_pre(Compiler *c, int node, void (*emit)(Compiler *, int, Buf *), Buf *pre, Buf *val);
+/* A braced conditional arm whose hoisted setup stays inside that arm. */
+void emit_cond_arm(Compiler *c, int node, Buf *b, void (*emit)(Compiler *, int, Buf *, void *), void *ctx);
 void declare_local(Compiler *c, Buf *b, LocalVar *lv, int vol);
 void declare_local_named(Compiler *c, Buf *b, LocalVar *lv, const char *name, int vol);
 void emit_cell_shadow_store(Compiler *c, Scope *encl, const char *name, Buf *b, int indent);
