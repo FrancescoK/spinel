@@ -19352,6 +19352,7 @@ static int nil_target_bindable(NodeKind k, int boxed) {
 /* Does an argument of the call (its `arguments` node a) reassign the
    variable read v reads (read_rebound_by)? */
 static int nil_target_read_rebound(Compiler *c, int v, int a) {
+  v = unwrap_parens(c, v);
   NodeKind k = nt_kind(c->nt, v);
   if (a < 0 || (k != NK_LocalVariableReadNode && k != NK_InstanceVariableReadNode &&
                 k != NK_GlobalVariableReadNode && k != NK_ClassVariableReadNode))

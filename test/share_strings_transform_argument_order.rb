@@ -15,6 +15,12 @@ $width = 3
 p [+'a', nil].first.center($width, padding_after_width)
 p $width
 
+# Parentheses still name the old value when the outer argument holds run.
+$width = 3
+p [+'a', nil].first.ljust(($width), padding_after_width)
+$width = 3
+p [+'a', nil].first.rjust(($width), padding_after_width)
+
 width = 3
 padding = -> {
   width = 9
@@ -39,6 +45,10 @@ end
 p sub
 $pattern = 'a'
 p [+'aabb', nil].first.sub($pattern, replacement_after_rebind)
+p $pattern
+
+$pattern = 'a'
+p [+'aabb', nil].first.tr(($pattern), replacement_after_rebind)
 p $pattern
 
 def replacement_after_mutation(pattern)
