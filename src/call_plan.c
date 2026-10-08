@@ -551,12 +551,12 @@ int cplan_targets(Compiler *c, int id, int *out, int cap) {
 
 /* A boxed receiver whose own targets include a class method. The receiver
    walk bounds instances only: a successful bound cannot contain a Class. */
-int cplan_boxed_cmethod(Compiler *c, int id) {
+int cplan_boxed_cmethod(Compiler *c, int id, const char *name) {
+  int ncc = 0;
+  comp_cmethod_candidates(c, name, &ncc);
+  if (!ncc) return 0;
   int recv = nt_ref(c->nt, id, "receiver");
   if (recv < 0 || comp_ntype(c, recv) != TY_POLY) return 0;
-  int ncc = 0;
-  comp_cmethod_candidates(c, nt_str(c->nt, id, "name"), &ncc);
-  if (!ncc) return 0;
   int n = 0;
   if (poly_recv_classes(c, id, &n)) return 0;
   int targets[CPT_MAX];

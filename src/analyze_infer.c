@@ -1923,9 +1923,9 @@ static TyKind an_poly_concrete(Compiler *c, const char *name, TyKind t) {
 /* Class-value arms share the result slot with the instance and builtin
    arms, even when no instance method owns the name. Only this call's
    targets can widen it; unrelated class methods must not change the slot. */
-TyKind an_class_concrete(Compiler *c, int id, TyKind t) {
+TyKind an_class_concrete(Compiler *c, int id, const char *name, TyKind t) {
   if (an_builtin_only || t == TY_POLY || t == TY_UNKNOWN || t == TY_VOID ||
-      !cplan_boxed_cmethod(c, id)) return t;
+      !cplan_boxed_cmethod(c, id, name)) return t;
   int targets[CPT_MAX];
   int n = cplan_targets(c, id, targets, CPT_MAX);
   if (n == CPT_UNKNOWN) return TY_POLY;
@@ -7721,7 +7721,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
 
   { TyKind r; if (infer_exception_call(c, id, nt, name, recv, argc, rt, &r)) return r; }
 
-  { TyKind r; if (infer_poly_operand_call(c, id, nt, name, recv, argc, argv, rt, a0, &r)) return an_class_concrete(c, id, r); }
+  { TyKind r; if (infer_poly_operand_call(c, id, nt, name, recv, argc, argv, rt, a0, &r)) return an_class_concrete(c, id, name, r); }
 
   /* symbol receiver methods */
   if (recv >= 0 && rt == TY_SYMBOL) { TyKind st = infer_symbol_call(c, id, nt, name, argc, argv); if (st != TY_UNKNOWN) return st; }
