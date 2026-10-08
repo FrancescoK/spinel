@@ -31,3 +31,10 @@ TypeError: no implicit conversion of Hash into Integer
 [1, 2]
 TypeError: no implicit conversion from nil to integer
 "ab"
+"hellohellohello"
+[1, 2, 1, 2, 1, 2]
+{a: 1, y: 4}
+{a: 1, w: 5}
+"1-2"
+"1+2"
+"hellohello"

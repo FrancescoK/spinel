@@ -529,6 +529,10 @@ void compute_reachable(Compiler *c) {
       const char *dn = nt_str(c->nt, did, "name");
       if (dn && sp_streq(dn, "to_hash")) has_to_hash = 1;
     }
+    NT_FOREACH_KIND(c->nt, NK_AliasMethodNode, aid) {
+      int nn = nt_ref(c->nt, aid, "new_name");
+      if (nn >= 0 && nt_str(c->nt, nn, "value") && sp_streq(nt_str(c->nt, nn, "value"), "to_hash")) has_to_hash = 1;
+    }
     c->uses_kw_to_hash = (has_kwsplat || has_hmerge) && has_to_hash;
     if (has_kint) { MARK_NAME("to_int"); MARK_NAME("to_str"); MARK_NAME("to_i"); }
     if (has_kflt || has_unum) MARK_NAME("to_f");
