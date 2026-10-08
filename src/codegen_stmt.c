@@ -8492,10 +8492,11 @@ static void emit_tail_value_1(Compiler *c, int node, Buf *b);
    whose tails answers a fresh String (ret_pub_fresh): that tail clears the
    side channel after its value, which a read of a handle inside it may have
    published, so the caller wraps the fresh String rather than take that
-   handle */
+   handle. A user call returning only its own fresh Strings clears it too. */
 static void emit_tail_value(Compiler *c, int node, Buf *b) {
   Scope *ts = g_ret_type == TY_STRING && !g_result_var ? comp_scope_of(c, node) : NULL;
-  if (!ts || !ts->ret_pub_fresh || !share_node_fresh(c, an_unparen(c->nt, node))) {
+  if (!ts || !ts->ret_pub_fresh ||
+      !(share_node_fresh(c, an_unparen(c->nt, node)) || share_call_fresh(c, an_unparen(c->nt, node)))) {
     emit_tail_value_1(c, node, b);
     return;
   }
@@ -14373,13 +14374,13 @@ static int num_iter_answers_recv(Compiler *c, int id) {
 
 /* Does this statement list end in something that leaves the function -- a
    `return`, or a bare `raise`/`throw`? Used to decide whether a construct in
-   tail position produces a value at all. */
+   tail position produces a value at all. Parentheses preserve divergence. */
 int stmts_diverge(Compiler *c, int stmts) {
   const NodeTable *nt = c->nt;
   if (stmts < 0) return 0;
   int n = 0; const int *bb = nt_arr(nt, stmts, "body", &n);
   if (!bb || n == 0) return 0;
-  int last = bb[n - 1];
+  int last = unwrap_parens(c, bb[n - 1]);
   const char *lt = nt_type(nt, last);
   if (!lt) return 0;
   if (sp_streq(lt, "ReturnNode")) return 1;
