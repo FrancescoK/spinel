@@ -78,6 +78,12 @@ static int emit_op_template(Compiler *c, const BopCtx *x, Buf *b) {
     call_args(c->nt, x->id, &pargc);
     if (plain && pargc == 0 && int_value_plain(c, x->recv)) tmpl = plain;   /* to_s(2) keeps its row */
   }
+  /* the plain form of a sub! / gsub! named in g_sub_bang_id enters the
+     runtime through its wrapper (sub_bang_reenters) */
+  if (g_sub_bang_id == x->id) {
+    if (sp_streq(tmpl, "sp_str_sub($r, $s0, $s1)")) tmpl = "sp_str_sub_own($r, $s0, $s1)";
+    else if (sp_streq(tmpl, "sp_str_gsub($r, $s0, $s1)")) tmpl = "sp_str_gsub_own($r, $s0, $s1)";
+  }
   int tn[7] = { 0, 0, 0, 0, 0, 0, 0 };
   Buf hb; memset(&hb, 0, sizeof hb);
   int held = strstr(tmpl, "$h") &&
