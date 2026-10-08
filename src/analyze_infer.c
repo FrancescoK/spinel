@@ -1883,7 +1883,7 @@ static int an_to_a_result_mutated(Compiler *c, int id) {
    answering an index came back through an sp_bool (#4072). Three arms in that
    section had thought to ask; the rest had not, which is why the answer
    depended on which name you picked. Ask once, on the way out. */
-static TyKind an_poly_concrete(Compiler *c, const char *name, TyKind t) {
+TyKind an_poly_concrete(Compiler *c, const char *name, TyKind t) {
   if (t == TY_POLY || t == TY_UNKNOWN || !name) return t;
   /* The builtin-only re-derivation asks what this call would be if NO user
      class owned the name, so the union with a user return is the one thing it
@@ -1914,6 +1914,18 @@ static TyKind an_poly_concrete(Compiler *c, const char *name, TyKind t) {
        nil, and that is exactly why the array trio may stay concrete (#3461).
        Widening those would leave the builtin arm's sp_PolyArray * meeting an
        sp_RbVal, which is the shape #3461 fixed. */
+    if (r == TY_NIL && an_ty_holds_nil(t)) continue;
+    return TY_POLY;
+  }
+  /* Class-value arms share the result slot with the instance and builtin
+     arms, even when no instance method owns the name. */
+  int ncc = 0;
+  const PolyCand *ccs = comp_cmethod_candidates(c, name, &ncc);
+  for (int i = 0; i < ncc; i++) {
+    int mi = ccs[i].mi;
+    if (mi < 0 || mi >= c->nscopes) continue;
+    TyKind r = (TyKind)c->scopes[mi].ret;
+    if (r == t || r == TY_UNKNOWN || r == TY_VOID) continue;
     if (r == TY_NIL && an_ty_holds_nil(t)) continue;
     return TY_POLY;
   }
