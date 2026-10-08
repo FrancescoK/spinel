@@ -2127,6 +2127,13 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
     /* a Module's name (no OpenStruct field of the name in the program); a
        name only a String answers, the String's row */
     if (!s && !F->ostruct) s = bop_share_named(TY_CLASS, name);
+    /* A String-only operation answering a new String Array keeps that
+       fact even when its receiver is boxed: it is no container's row. */
+    if (!s && !F->ostruct && blk < 0 && c->ntype[n] == TY_STR_ARRAY) {
+      const IterRow *ir = iter_row(TY_STRING, name, argc, 0);
+      if (ir && ir->nyield == 1 && ir->yield[0] == YS_FRESH && ir->answer == IA_RECV)
+        return sh_builtin(F, c, n, BSH_PURE, rv, blk, 0);
+    }
     if (!s && !F->ostruct) s = bop_share_named(TY_STRING, name);
     if (s) return sh_builtin(F, c, n, s, rv, blk, 1);
     return sh_container_default(F, c, n, rv, blk);
@@ -3557,6 +3564,9 @@ static int sh_fresh_elems(Compiler *c, int r, int depth) {
     for (int i = 0; i < en; i++) if (!share_value_fresh(c, el[i], depth + 1)) return 0;
     return 1;
   }
+  /* The walk already records a builtin's new String elements (split,
+     scan): a read of that temporary container owns the element too. */
+  if (share_node_fresh_elems(c, r)) return 1;
   if (nt_kind(nt, r) != NK_CallNode || sh_has_targets(c, r)) return 0;
   int blk = nt_ref(nt, r, "block"), recv = nt_ref(nt, r, "receiver");
   const char *nm = nt_str(nt, r, "name");
