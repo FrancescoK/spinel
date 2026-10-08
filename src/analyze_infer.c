@@ -5870,6 +5870,15 @@ static int infer_exception_call(Compiler *c, int id, const NodeTable *nt, const 
       { *out = xt; return 1; }
     }
   }
+  /* a method only the program's exception classes define, on a receiver
+     typed as a generic exception: typed as the boxed exception's dispatch
+     types it, which codegen re-enters (exc_user_method_name) */
+  if (recv >= 0 && rt == TY_EXCEPTION && !face_active() && exc_user_method_name(c, name, argc)) {
+    an_face_push(recv, TY_POLY);
+    TyKind ut = infer_call(c, id);
+    an_face_pop();
+    if (ut != TY_UNKNOWN) { *out = ut; return 1; }
+  }
   int exc_shaped = rt == TY_EXCEPTION ||
                    (ty_is_object(rt) && class_is_exc_subclass(c, ty_object_class(rt)) &&
                     comp_method_in_chain(c, ty_object_class(rt), name, NULL) < 0);
