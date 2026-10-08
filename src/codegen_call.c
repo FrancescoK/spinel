@@ -7544,7 +7544,9 @@ int poly_native_arm_call(Compiler *c, int k, const char *name, int n, const int 
       if (sp_streq(spec, "text")) aw = TY_STRING;
       if (aw == TY_UNKNOWN) { ok = 0; break; }
       if (atmp_ty[ai] == TY_POLY) emit_unbox_text(c, aw, tn, cb);
-      else if (atmp_ty[ai] == aw || (aw == TY_STRING && atmp_ty[ai] == TY_STRBUF)) buf_puts(cb, tn);
+      /* a shared handle into a String parameter: the String it holds */
+      else if (aw == TY_STRING && atmp_ty[ai] == TY_STRBUF) buf_printf(cb, "(%s ? sp_String_cstr(%s) : NULL)", tn, tn);
+      else if (atmp_ty[ai] == aw) buf_puts(cb, tn);
       else if (aw == TY_FLOAT && atmp_ty[ai] == TY_INT) buf_printf(cb, "(sp_float)%s", tn);
       else { ok = 0; break; }
     }
