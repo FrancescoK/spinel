@@ -44,3 +44,12 @@ p Ok.new.is_a?(Mx)
 # binding is NOT in the unsupported set: local_variable_get works
 x = 42
 p binding.local_variable_get(:x)
+
+# a user-reopened Time.parse / Time.strptime is that method, not the
+# documented limit on the builtin's own (K-001)
+class Time
+  def self.parse(s); "user-parse:#{s}"; end
+  def self.strptime(s, fmt); "user-strptime:#{s}/#{fmt}"; end
+end
+p Time.parse("2024-01-01")
+p Time.strptime("2024-01-01", "%Y-%m-%d")

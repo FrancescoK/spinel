@@ -12,3 +12,5 @@ rep:1
 "mm"
 true
 42
+"user-parse:2024-01-01"
+"user-strptime:2024-01-01/%Y-%m-%d"
