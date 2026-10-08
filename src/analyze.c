@@ -17346,12 +17346,17 @@ static int share_demand_rest_args(Compiler *c, int mi, const int *argv, int argc
   if (!rv || !repr_str_elems_share(c, share_local_holder(c, mi, (int)(rv - m->locals)))) return 0;
   int kwh = nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode ? argv[argc - 1] : -1;
   int pos_argc = kwh >= 0 ? argc - 1 : argc;
-  for (int k = 0; k < pos_argc; k++)
-    if (nt_kind(nt, argv[k]) == NK_SplatNode || nt_kind(nt, argv[k]) == NK_ForwardingArgumentsNode) return 0;
+  int plain_argc = pos_argc;
+  for (int k = 0; k < pos_argc; k++) {
+    if (nt_kind(nt, argv[k]) == NK_ForwardingArgumentsNode) return 0;
+    if (nt_kind(nt, argv[k]) == NK_SplatNode && k < plain_argc) plain_argc = k;
+  }
+  if (plain_argc == 0) return 0;
   ArgLayout L;
   arg_layout(c, m, argv, pos_argc, kwh, 0, &L);
   int changed = 0;
-  for (int k = 0; k < pos_argc; k++) {
+  /* Demand the plain prefix; the splat and its tail keep their fallback. */
+  for (int k = 0; k < plain_argc; k++) {
     int bound = 0;
     for (int j = 0; j < L.n && !bound; j++) bound = L.from[j] == ARG_NODE && L.arg[j] == k;
     if (!bound) changed |= strbuf_store_leaf(c, argv[k], 0, SB_DEMAND);
