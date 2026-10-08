@@ -7658,13 +7658,56 @@ int arg_read_converts(Compiler *c, TyKind pt, int provided) {
 /* Root a converted bare read across the call without moving its evaluation:
    the temp is declared NULL and rooted in g_pre, and assigned where the
    argument stands, so the read sees the value at its own position (the stale
-   capture arg_wants_root avoids for a hoisted read cannot happen). */
+   capture arg_wants_root avoids for a hoisted read cannot happen). A prelude
+   of nothing but these lines runs none of its operand's code
+   (prelude_is_held_decls). */
 void emit_rooted_conversion(Compiler *c, TyKind pt, const char *expr, Buf *out) {
   int t = ++g_tmp;
   emit_indent(g_pre, g_indent);
   emit_ctype(c, pt, g_pre);
   buf_printf(g_pre, " _t%d = NULL; SP_GC_ROOT(_t%d);\n", t, t);
   buf_printf(out, "(_t%d = %s)", t, expr);
+}
+
+/* `_t<digits>` then `tail`, and nothing more. */
+static int held_line_tmp(const char *q, size_t n, const char *tail) {
+  size_t k = 2, tl = strlen(tail);
+  if (n < 3 || q[0] != '_' || q[1] != 't' || !isdigit((unsigned char)q[2])) return 0;
+  while (k < n && isdigit((unsigned char)q[k])) k++;
+  return n - k == tl && !strncmp(q + k, tail, tl);
+}
+
+/* Is the prelude `p` nothing but temps declared NULL and rooted, the line
+   emit_rooted_conversion writes (`<type> _tN = NULL; SP_GC_ROOT(_tN);`)?
+   Read off the text, since an emitter that catches an operand's prelude in
+   a buffer of its own passes the lines on as bytes
+   (emit_operands_in_order). Such a prelude assigns no variable and calls
+   nothing, so it may run ahead of anything. */
+int prelude_is_held_decls(const char *p) {
+  static const char mid[] = " = NULL; SP_GC_ROOT(";
+  int lines = 0;
+  while (p && *p) {
+    const char *nl = strchr(p, '\n');
+    size_t n = nl ? (size_t)(nl - p) : strlen(p);
+    const char *q = p;
+    p = nl ? nl + 1 : p + n;
+    while (n && *q == ' ') { q++; n--; }
+    if (!n) continue;
+    const char *eq = strstr(q, mid);
+    if (!eq || eq >= q + n) return 0;
+    /* `<type> _tN`: the type is names, spaces and stars */
+    size_t e = (size_t)(eq - q), k = e;
+    while (k && q[k - 1] != ' ') k--;
+    if (k < 2 || !held_line_tmp(q + k, e - k, "")) return 0;
+    for (size_t i = 0; i < k; i++)
+      if (!(isalnum((unsigned char)q[i]) || q[i] == '_' || q[i] == ' ' || q[i] == '*')) return 0;
+    /* `_tN);`, the same temp */
+    const char *r = eq + sizeof mid - 1;
+    size_t rn = n - (size_t)(r - q);
+    if (rn != e - k + 2 || strncmp(r, q + k, e - k) || strncmp(r + rn - 2, ");", 2)) return 0;
+    lines++;
+  }
+  return lines > 0;
 }
 
 /* Like emit_arg_or_default, but hoists a pointer-backed / poly argument into a

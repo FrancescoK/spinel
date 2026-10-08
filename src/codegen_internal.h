@@ -1381,6 +1381,7 @@ int emit_nilfree_operand(Compiler *c, int v, const char *op, int left, const cha
 void emit_rooted_operand(Compiler *c, TyKind pt, int provided, const char *expr, Buf *out);
 int arg_read_converts(Compiler *c, TyKind pt, int provided);
 void emit_rooted_conversion(Compiler *c, TyKind pt, const char *expr, Buf *out);
+int prelude_is_held_decls(const char *p);
 int arg_slot_for_param(Compiler *c, Scope *m, int idx, int argc);
 /* 1 when a parameter default reads an earlier parameter: it must be evaluated
    with that parameter bound (see emit_args_filled). */

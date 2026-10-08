@@ -4599,7 +4599,12 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
       Buf *sv_pre = g_pre; g_pre = &cap;
       TyKind pvt = emit_paren_tail(c, id, bd[n - 1], &vb);
       g_pre = sv_pre;
-      if (!(cap.p && cap.p[0])) {
+      /* A prelude of nothing but held temps, declared NULL and rooted and
+         assigned where the value is built, runs no code of the tail: it
+         goes ahead as it is and the sequence stays in place. */
+      int held_only = prelude_is_held_decls(cap.p);
+      if (held_only) buf_puts(g_pre, cap.p);
+      if (!(cap.p && cap.p[0]) || held_only) {
         buf_puts(b, "({ ");
         for (int j = 0; j < n - 1; j++) {
           emit_stmt(c, bd[j], b, 0);
