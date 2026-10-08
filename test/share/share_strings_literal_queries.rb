@@ -25,3 +25,11 @@ p ["sample"].sample
 p({item: "hash", count: 1}.fetch(:item))
 p [1, "range", 3][0..1]
 p [1, nil, "count"].first(1)
+
+# A plain box must be written back by every link of a narrowed append
+# chain. Reading a temporary handle would leave the original box unchanged.
+x = [+"a", 1][0]
+if x.is_a?(String)
+  x << "b" << "c"
+end
+p x

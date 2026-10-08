@@ -2442,22 +2442,21 @@ static int strbuf_box_ref_as(Compiler *c, int recv, const char *fmt, Buf *b) {
 /* Emit a shared-mutable string receiver for an operation that only READS its
    bytes: the live buffer, not the whole-buffer copy an ordinary value read
    makes (#3227). Answers 0 when the receiver is not such a slot, so the caller
-   falls back to emit_expr. */
-int emit_strbuf_read_ref(Compiler *c, int recv, Buf *b) {
-  /* A narrowed box already has a byte read. Taking its handle first would
-     allocate one when the box holds a plain String. */
-  if (repr_share_rule(c) && recv >= 0 && repr_of(c, recv).narrowed == TY_STRBUF &&
-      repr_of(c, recv).strbuf_src == RS_SLOT_POLY) {
-    buf_puts(b, "sp_poly_unbox_s(");
-    emit_local_ref(c, recv, nt_str(c->nt, recv, "name"), b);
-    buf_puts(b, ")");
-    return 1;
-  }
-  return strbuf_box_ref_as(c, recv, "sp_String_cstr(%s)", b);
-}
+   falls back to emit_expr. A narrowed box is not a handle slot: its ordinary
+   expression reads the bytes without allocating a handle first. */
+int emit_strbuf_read_ref(Compiler *c, int recv, Buf *b) { return strbuf_box_ref_as(c, recv, "sp_String_cstr(%s)", b); }
 /* The object_id of a String held as a shared sp_String: the handle's address,
    which is what a box of it carries. 0 when `recv` is not one. */
-int strbuf_object_ref(Compiler *c, int recv, Buf *b) { return strbuf_box_ref_as(c, recv, "((sp_int)(uintptr_t)(%s))", b); }
+int strbuf_object_ref(Compiler *c, int recv, Buf *b) {
+  /* The box's payload is already its identity, with or without a handle. */
+  if (repr_share_rule(c) && recv >= 0 && repr_of(c, recv).strbuf_src == RS_SLOT_POLY) {
+    buf_puts(b, "((sp_int)(uintptr_t)(");
+    emit_local_ref(c, recv, nt_str(c->nt, recv, "name"), b);
+    buf_puts(b, ").v.p)");
+    return 1;
+  }
+  return strbuf_box_ref_as(c, recv, "((sp_int)(uintptr_t)(%s))", b);
+}
 /* `cont[k]` where the container hands its elements out BOXED (a poly array, a
    hash): the read is an sp_RbVal, so a shared-handle destination has to unbox
    it rather than wrap it (#3941). */
@@ -2614,15 +2613,6 @@ static int native_share_answer_ref(Compiler *c, int n, char *out, size_t cap) {
 int strbuf_slot_ref(Compiler *c, int recv, char *out, size_t cap) {
   HolderRef h;
   if (native_share_answer_ref(c, recv, out, cap)) return 1;
-  if (repr_share_rule(c) && recv >= 0 && repr_of(c, recv).narrowed == TY_STRBUF &&
-      holder_of_node(c, recv, &h) && h.r.kind == RK_BOXED) {
-    Buf rb; memset(&rb, 0, sizeof rb);
-    emit_local_ref(c, recv, h.name, &rb);
-    int fit = rb.p && strlen(rb.p) + 24 <= cap;
-    if (fit) snprintf(out, cap, "sp_poly_as_strbuf(%s)", rb.p);
-    free(rb.p);
-    return fit;
-  }
   /* via emit_local_ref: a celled/captured local derefs its cell */
   if (strbuf_local_name(c, recv) && holder_of_node(c, recv, &h)) return holder_slot_text(c, &h, out, cap);
   /* a demand-marked reader call typed as the handle (external reader

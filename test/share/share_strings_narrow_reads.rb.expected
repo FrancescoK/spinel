@@ -1,10 +1,3 @@
-3
-3
-true
-"abc"
-"<abc>"
-"ABC"
-"a"
 true
 3
 3
@@ -13,6 +6,15 @@ true
 "<abc>"
 "ABC"
 "a"
+true
+3
+3
+true
+"abc"
+"<abc>"
+"ABC"
+"a"
+true
 true
 3
 3
