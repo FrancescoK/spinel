@@ -17641,6 +17641,17 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
   }
   share_facts_build(c);
   int changed = 0;
+  /* A retained literal can be nested in a box instead of named by a
+     holder. Its recorded stores demand the same handles as a holder's
+     stores; inference then selects the existing boxed-element form. */
+  for (int f = 0, nf = share_flow_count(c); f < nf; f++) {
+    int site, value;
+    if (share_flow_at(c, f, &site, &value) == SHFL_ELEM && repr_str_literal_shares(c, site)) {
+      changed |= strbuf_container_source_walk(c, site, 0, SB_DEMAND);
+      /* A known attribute's conditional write need not infer its RHS. */
+      infer_type(c, site);
+    }
+  }
   int nh = share_holder_count(c);
   for (int h = 0; h < nh; h++) {
     const ShareHolder *sh = share_holder(c, h);

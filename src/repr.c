@@ -800,6 +800,14 @@ int repr_typed_str_container(TyKind t) {
   return t == TY_STR_ARRAY || t == TY_STR_STR_HASH || t == TY_INT_STR_HASH;
 }
 
+int repr_str_literal_shares(Compiler *c, int node) {
+  if (!c->share_strings || node < 0) return 0;
+  NodeKind k = nt_kind(c->nt, node);
+  return (k == NK_ArrayNode || k == NK_HashNode) &&
+         repr_typed_str_container(c->ntype[node]) && comp_scope_of(c, node)->reachable &&
+         share_node_elems_share(c, node) && share_node_anchored(c, node);
+}
+
 static const char *repr_share_kind_name(int kind) {
   switch (kind) {
   case SHK_LOCAL: return "variable";
@@ -959,14 +967,12 @@ static void repr_share_seal(Compiler *c) {
     NodeKind k = nt_kind(c->nt, n);
     if (k != NK_ArrayNode && k != NK_HashNode) continue;
     if (!comp_scope_of(c, n)->reachable) continue;
-    TyKind t = c->ntype[n];
     int ne = 0;
     nt_arr(c->nt, n, "elements", &ne);
     /* an empty one holds no String yet: what is stored later goes through
        the holder that keeps it; one nothing can reach again once its
        expression is done (`p [a, b]`) keeps no name for its copies */
-    if (ne > 0 && repr_typed_str_container(t) && share_node_elems_share(c, n) &&
-        share_node_anchored(c, n))
+    if (ne > 0 && repr_str_literal_shares(c, n))
       bad_lit = n;
   }
   if (stats && stats[0] == '3') share_dump_unknown_mutations(c);
