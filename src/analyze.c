@@ -15627,6 +15627,12 @@ static int strbuf_demand_store_leaf(Compiler *c, int sn, int depth) {
        cannot reach (refuse_stored_block_param); a boxed one is asked about
        once the mutation is known to be a String's (refuse_string_read_copies) */
     if (snv->is_block_param) {
+      /* The share rule's slot already carries the handle. A literal
+         stores that read without demanding its iterator's sources again. */
+      if (c->share_strings && an_arg_is_shared_handle(c, sn)) {
+        c->strbuf_box[sn] = 1;
+        return 1;
+      }
       int bound = 0;
       int ch = strbuf_block_param_source_walk(c, snm, sns, depth, SB_DEMAND, 1, &bound);
       if (!bound && (snv->type == TY_STRING || snv->type == TY_STRBUF)) {
@@ -17770,6 +17776,13 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
            String Array written into it is wrapped element by element */
         ClassInfo *ci = &c->classes[sh->cid];
         if (it == TY_POLY_ARRAY && !ci->ivar_elems_shared[iv]) { ci->ivar_elems_shared[iv] = 1; changed = 1; }
+        /* An externally written String Array uses that same form even
+           when the source walk cannot reach a direct ivar write. */
+        if (it == TY_STR_ARRAY && !class_ivar_pinned(ci, sh->name)) {
+          ci->ivar_types[iv] = TY_POLY_ARRAY;
+          ci->ivar_elems_shared[iv] = 1;
+          changed = 1;
+        }
         continue;
       }
       if (repr_str_shares(c, h)) changed |= strbuf_promote_ivar(c, sh->cid, sh->name);
@@ -17822,6 +17835,19 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
       gv->type = TY_STRBUF;
       gv->str_shared = 1;
       changed = 1;
+    }
+  }
+  /* A retained literal can be nested in a box instead of named by a
+     holder. Its recorded stores demand the same handles as a holder's
+     stores; inference then selects the existing boxed-element form.
+     Apply the holder decisions first, so their handles are visible to
+     the store walk even while a block parameter still infers as String. */
+  for (int f = 0, nf = share_flow_count(c); f < nf; f++) {
+    int site, value;
+    if (share_flow_at(c, f, &site, &value) == SHFL_ELEM && repr_str_literal_shares(c, site)) {
+      changed |= strbuf_container_source_walk(c, site, 0, SB_DEMAND);
+      /* A known attribute's conditional write need not infer its RHS. */
+      infer_type(c, site);
     }
   }
   /* a container literal no holder names, iterated in place by a block
