@@ -9,6 +9,7 @@
 #include "share.h"
 #include "holder.h"
 #include "call_plan.h"
+#include "builtin_ops.h"
 
 static int repr_sealed_flag;
 
@@ -165,6 +166,14 @@ int repr_call_returns_handle(Compiler *c, int v) {
   /* a Method's call: the method `method(:m)` names */
   int recv = nt_ref(nt, v, "receiver");
   const char *nm = nt_str(nt, v, "name");
+  /* A missing ENV key answers the default handle; a present one clears
+     the return channel before making its own String. */
+  if (recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode &&
+      is_env_const(nt_str(nt, recv, "name")) && !comp_const(c, "ENV") &&
+      bop_share_named(BOP_ENV, nm) == BSH_FETCH && nt_ref(nt, v, "block") < 0) {
+    int argc = 0; const int *argv = call_args(nt, v, &argc);
+    if (argc == 2 && repr_of(c, argv[1]).kind == RK_STRBUF) return 1;
+  }
   if (recv >= 0 && nm && comp_ntype(c, recv) == TY_METHOD && is_call_alias(nm)) {
     int mn = method_recv_node(c, recv);
     int mi = mn >= 0 ? method_obj_target_mi(c, mn) : -1;
@@ -237,7 +246,7 @@ int repr_boxed_to_s_operand(Compiler *c, int v) {
       (c->ntype[v] != TY_STRING && c->ntype[v] != TY_STRBUF)) return -1;
   int targets[CPT_MAX], n = cplan_targets(c, v, targets, CPT_MAX);
   int string_ci = comp_class_index(c, "String");
-  if (n <= 0 || (string_ci >= 0 && comp_method_in_chain(c, string_ci, nm, NULL) >= 0)) return -1;
+  if (n < 0 || (string_ci >= 0 && comp_method_in_chain(c, string_ci, nm, NULL) >= 0)) return -1;
   if (any_exc_reopen(c)) return -1;
   for (int i = 0; i < n; i++) {
     Scope *m = &c->scopes[targets[i]];
@@ -268,6 +277,21 @@ int repr_string_conversion_operand(Compiler *c, int v) {
   return r >= 0 && is_receiver_conversion(nt_str(c->nt, v, "name")) &&
          call_plain_argc(c, v) == 0 && nt_ref(c->nt, v, "block") < 0 &&
          comp_recv_type(c, r) == TY_STRING && cplan_user(c, v)->dispatch == CP_NONE ? r : -1;
+}
+/* ENV copies its stored bytes, but a store answers its value operand.
+   A boxed operand can still hold plain bytes: an observable alias stays
+   refused. A mutable key held across value evaluation that can change it
+   must carry its handle too. */
+int repr_env_store_operand(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  if (!repr_share_rule(c) || v < 0 || nt_kind(nt, v) != NK_CallNode) return -1;
+  int r = nt_ref(nt, v, "receiver"), argc = 0;
+  const int *argv = call_args(nt, v, &argc);
+  return r >= 0 && nt_kind(nt, r) == NK_ConstantReadNode && is_env_const(nt_str(nt, r, "name")) &&
+         !comp_const(c, "ENV") && argc == 2 && bop_share_named(BOP_ENV, nt_str(nt, v, "name")) == BSH_LAST &&
+         (repr_of(c, argv[1]).kind != RK_BOXED || share_value_unobserved(c, argv[1])) &&
+         (!(share_node_flags(c, argv[0]) & SHF_MUT) || repr_of(c, argv[0]).handle ||
+          share_value_fresh(c, argv[0], 0) || !subtree_has_side_effect(c, argv[1])) ? argv[1] : -1;
 }
 /* Where the boxed form of a shared-mutable String comes from, as emit_boxed
    decides it for a node stored as (or holding) the handle. */
@@ -338,6 +362,7 @@ static int repr_strbuf_src(const Compiler *c, int node, TyKind t) {
     if (repr_string_conversion_operand(mc, node) >= 0) return RS_HANDLE;
     int ops[3];
     if (strbuf_route_clamp(mc, node, ops)) return RS_HANDLE;
+    if (repr_env_store_operand(mc, node) >= 0) return RS_HANDLE;
     /* A demanded call whose return route carries a handle is already that
        handle, including when operand ordering holds it in a temp. */
     if (c->strbuf_handle_demand[node] && repr_call_returns_handle(mc, node)) return RS_DEMANDED;

@@ -1764,7 +1764,12 @@ static void emit_block_arg_coerced(Compiler *c, int node, TyKind ot, Buf *b) {
   /* a String into a parameter a mutating callee made a buffer, as a plain
      assignment of one takes it (#6039) */
   else if (ot == TY_STRBUF && at == TY_STRING) {
-    buf_puts(b, "sp_String_new_shared("); emit_expr(c, node, b); buf_puts(b, ")");
+    if (strbuf_poly_to_s(c, node)) {
+      int th = ran_first_handle(node);
+      if (th >= 0) buf_printf(b, "_t%d", th);
+      else emit_strbuf_handle_of(c, node, b);
+    }
+    else { buf_puts(b, "sp_String_new_shared("); emit_expr(c, node, b); buf_puts(b, ")"); }
   }
   /* the shared handle, its read marked for a proc a yield of it may call,
      into a plain String parameter: the copy a plain read takes */

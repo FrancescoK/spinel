@@ -1393,6 +1393,7 @@ static int strbuf_route_operand(Compiler *c, int v) {
   int recv = nt_ref(nt, v, "receiver"), blk = nt_ref(nt, v, "block"), argc = 0;
   const int *argv = call_args(nt, v, &argc);
   if (!nm) return -1;
+  if (repr_env_store_operand(c, v) >= 0) return v;
   if (is_then_alias(nm) && recv >= 0 && argc == 0 && blk >= 0 && nt_kind(nt, blk) == NK_BlockNode &&
       !call_breaks(c, v))
     return v;
@@ -1780,6 +1781,38 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
   if (x < 0 || !strbuf_route_carries(c, v, 0)) return 0;
   v = unwrap_parens(c, v);
   if (x == v) {
+    if (is_store_alias(nt_str(nt, v, "name"))) {
+      int argc = 0; const int *argv = call_args(nt, v, &argc);
+      int tk = ++g_tmp, tv = ++g_tmp;
+      Buf key; memset(&key, 0, sizeof key);
+      Repr vr = repr_of(c, argv[1]);
+      buf_puts(b, "({ ");
+      if (nt_kind(nt, argv[0]) != NK_StringNode &&
+          (subtree_has_side_effect(c, argv[0]) || subtree_has_side_effect(c, argv[1]))) {
+        tk = hold_operand(c, argv[0], TY_POLY, 1, tk,
+                          operand_may_allocate(c, argv[1]) || vr.kind != RK_STRBUF, " ", b);
+        buf_printf(&key, "_t%d", tk);
+      }
+      else emit_boxed(c, argv[0], &key);
+      if (vr.as_ty == TY_STRING || vr.as_ty == TY_STRBUF || strbuf_boxed_local(c, argv[1])) {
+        buf_printf(b, "sp_String *_t%d = ", tv);
+        if (strbuf_boxed_local(c, argv[1])) {
+          Buf value; memset(&value, 0, sizeof value);
+          emit_local_ref(c, argv[1], nt_str(nt, argv[1], "name"), &value);
+          buf_printf(b, "sp_poly_as_strbuf((%s = sp_poly_strbuf_lift(%s)))", value.p, value.p);
+          free(value.p);
+        }
+        else emit_strbuf_handle_of(c, argv[1], b);
+        buf_printf(b, "; SP_GC_ROOT(_t%d); sp_env_aset(sp_poly_arg_str_chk(%s), "
+                      "sp_box_nullable_obj(_t%d, SP_BUILTIN_STRBUF)); _t%d; })", tv, key.p, tv, tv);
+        free(key.p);
+        return 1;
+      }
+      tv = hold_operand(c, argv[1], TY_POLY, 1, tv, 1, " ", b);
+      buf_printf(b, "sp_env_aset(sp_poly_arg_str_chk(%s), _t%d); sp_poly_as_strbuf(_t%d); })", key.p, tv, tv);
+      free(key.p);
+      return 1;
+    }
     /* `then` answers its block's value, or a `next`'s: read as the handle
        under the demand. `tap` answers its receiver's handle, and its
        block's value is dropped. */
@@ -17801,7 +17834,8 @@ static int strbuf_flow_unseen(Compiler *c, int v) {
   if (!share_node_shares(c, v) || share_value_fresh(c, v, 0) || share_node_one_name(c, v)) return 1;
   int recv = nt_kind(nt, v) == NK_CallNode ? nt_ref(nt, v, "receiver") : -1;
   const char *rname = recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode ? nt_str(nt, recv, "name") : NULL;
-  return is_argv_const(rname) || is_env_const(rname);
+  return is_argv_const(rname) || (is_env_const(rname) &&
+         bop_share_named(BOP_ENV, nt_str(nt, v, "name")) == BSH_PURE);
 }
 
 static int strbuf_flow_value(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, int depth) {
@@ -17972,6 +18006,9 @@ int strbuf_flow_carries(Compiler *c, StrbufFlowMemo *fm, int kind, int site, int
     break;
   case SHFL_ARG: ctx = SFC_ARG; break;
   case SHFL_YIELD: {
+    /* A receiver conversion keeps its handle in both the boxed yield
+       and the typed block-parameter binder. */
+    if (strbuf_poly_to_s(c, v)) return 1;
     /* a yield takes a variable's handle only from its bare read:
        `yield((s))` hands on a copy */
     int u = unwrap_parens(c, v);
