@@ -4,6 +4,7 @@
 
 #include <string.h>
 #include "repr.h"
+#include "analyze_internal.h"
 #include "codegen_internal.h"
 #include "share.h"
 #include "holder.h"
@@ -165,7 +166,32 @@ int repr_call_returns_handle(Compiler *c, int v) {
     return mi > 0 && c->scopes[mi].ret_handle;
   }
   int mis[CPT_MAX];
-  int n = cplan_targets(c, v, mis, CPT_MAX);
+  int n;
+  /* Kernel#String calls to_str, or to_s where the class has no to_str.
+     A fresh-answering target must keep the ordinary conversion's copy.
+     A nil to_str falls through to to_s; a nil to_s falls to fresh object
+     text in the bridge, so neither may pick up an earlier publication. */
+  if (recv < 0 && is_string_class_name(nm) && comp_method_index(c, nm) < 0 && !bare_call_class_owned(c, v)) {
+    int ac = 0;
+    const int *av = call_args(nt, v, &ac);
+    if (ac != 1 || nt_ref(nt, v, "block") >= 0 || repr_of(c, av[0]).kind != RK_BOXED) return 0;
+    const int *ks = poly_recv_classes(c, v, &n);
+    if (!ks || n <= 0 || n > CPT_MAX) return 0;
+    for (int i = 0; i < n; i++) {
+      int mi = comp_method_in_chain(c, ks[i], "to_str", NULL);
+      if (mi >= 0 && c->scopes[mi].ret_nil_pickup) {
+        int fallback = comp_method_in_chain(c, ks[i], "to_s", NULL);
+        if (fallback < 0 || !c->scopes[fallback].ret_handle || c->scopes[fallback].ret_nil_pickup) return 0;
+      }
+      if (mi < 0) {
+        mi = comp_method_in_chain(c, ks[i], "to_s", NULL);
+        if (mi >= 0 && c->scopes[mi].ret_nil_pickup) return 0;
+      }
+      if (mi < 0) return 0;
+      mis[i] = mi;
+    }
+  }
+  else n = cplan_targets(c, v, mis, CPT_MAX);
   if (n <= 0) return 0;
   for (int i = 0; i < n; i++) if (!c->scopes[mis[i]].ret_handle) return 0;
   return 1;
