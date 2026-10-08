@@ -191,7 +191,7 @@ static void emit_io_read_nonblock_value(Compiler *c, int id, Buf *b) {
   g_pre = b;
   for (int i = 0; i < (exc < 0 ? 3 : 4); i++) {
     Repr r = repr_of(c, nodes[i]);
-    boxed[i] = i == 2 || r.kind == RK_BOXED ||
+    boxed[i] = i == 2 || r.kind == RK_BOXED || r.nil_scalar ||
                r.as_ty != (i == 0 ? TY_IO : i == 1 ? TY_INT : TY_BOOL);
     /* Runtime conversions run after every operand has been evaluated. */
     int root = lr.kind == RK_BOXED || needs_root(lr.as_ty) ||
