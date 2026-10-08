@@ -10422,12 +10422,17 @@ static int ie_subtree_self_calls(Compiler *c, int root, const char *cls, int dep
     int answers = nm && ((cls && builtin_method_known(cls, nm)) ||
                          (builtin_object_method_known(nm) && comp_method_index(c, nm) < 0));
     if (nm && nt_ref(nt, root, "receiver") < 0 &&
-        (answers || (!ie_kernel_global(nm) && comp_method_index(c, nm) < 0))) {
+        (answers || (!ie_kernel_global(nm) && comp_method_index(c, nm) < 0) ||
+         (ie_class_of(c, root) < -1 && comp_method_index(c, nm) >= 0))) {
       int sn = nt_new_node(nt, "SelfNode");
       if (sn < 0) return 0;
       comp_grow_node_arrays(c);
       c->nscope[sn] = c->nscope[root];
       nt_node_set_ref(nt, root, "receiver", sn);
+      /* A bare call can reach Object's private top-level definition after
+         the runtime receiver's own methods, as send's fallback does. */
+      if (ie_class_of(c, root) < -1 && comp_method_index(c, nm) >= 0)
+        nt_node_set_str(nt, root, "send_blind", "1");
       changed = 1;
     }
     if (nm && (is_instance_eval_family(nm))) skip = nt_ref(nt, root, "block");
@@ -10663,7 +10668,7 @@ int desugar_instance_eval_builtin(Compiler *c) {
     /* a boxed receiver: a receiverless call names the receiver's method, so
        it takes a `self` receiver and the poly dispatch answers it for a
        builtin value too; the body is spliced per class at emit time */
-    if (rt == TY_POLY) {
+    if (rt == TY_POLY || rt == TY_CLASS) {
       int blk = nt_ref(nt, id, "block");
       int body = blk >= 0 && nt_kind(nt, blk) == NK_BlockNode ? nt_ref(nt, blk, "body") : -1;
       if (body >= 0 && !subtree_has_kind(nt, body, NK_DefNode, 0))

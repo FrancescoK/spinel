@@ -2115,10 +2115,16 @@ int emit_send_blind(Compiler *c, int id, Buf *b) {
         view_bind(srcv, "_t%d", tv);
         if (sav && sac > 0) emit_args_in_source_order(c, sav, sac, g_pre);
         buf_printf(b, "(((_t%d.tag == SP_TAG_OBJ && (0", tv);
-        const PolyPlan *arms = cplan_poly_arms(c, id);
+        const PolyPlan *arms = cplan_poly(c, id);
         for (int k = 0; k < arms->n; k++)
           if (arms->arm[k].key >= 0 && arms->arm[k].key < c->nclasses)
             buf_printf(b, " || _t%d.cls_id == %d", tv, arms->arm[k].key);
+        int class_arm = 0;
+        for (int k = 0; k < arms->n; k++)
+          if (arms->arm[k].key >= PA_KEY_CLASS_VALUE && arms->arm[k].key < PA_KEY_BUILTIN) {
+            if (!class_arm++) buf_printf(b, ")) || (_t%d.tag == SP_TAG_CLASS && (0", tv);
+            buf_printf(b, " || _t%d.cls_id == %d", tv, arms->arm[k].key - PA_KEY_CLASS_VALUE);
+          }
         buf_puts(b, "))) ? (");
         int sv_split = view_push_arm(g_pd_skip, g_prbd_skip, g_poly_builtin_arm);
         g_arm.send_split = id;

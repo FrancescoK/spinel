@@ -148,6 +148,7 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
       int imi = comp_method_in_chain(c, pk[i], name, NULL);
       if (imi >= 0) { cplan_set(p, imi, pk[i], UC_IE, CP_SWITCH); return; }
     }
+    if (iec < -1) return;
     int cb = comp_cbody_call_mi(c, id, name);
     if (cb >= 0) { cplan_set(p, cb, c->node_cbody[id], UC_CMETH, CP_DIRECT); return; }
     int mi = comp_self_call_mi(c, id, name);
