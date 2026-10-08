@@ -17744,6 +17744,11 @@ static int strbuf_flow_value(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, in
   if (ctx == SFC_TAIL && strbuf_native_answer(c, v)) return 1;
   if (k == NK_IfNode || k == NK_UnlessNode || k == NK_OrNode || k == NK_AndNode || k == NK_CaseNode ||
       k == NK_StatementsNode || k == NK_ElseNode || k == NK_ParenthesesNode) {
+    /* A boxed sequence evaluates its statements and boxes its own tail,
+       just as a conditional arm does (emit_boxed_sequence). */
+    if (ctx == SFC_ELEM && k == NK_ParenthesesNode &&
+        (r.as_ty == TY_STRING || r.as_ty == TY_STRBUF) && strbuf_flow_has_leaf(c, fm, v, 0))
+      return strbuf_flow_cond(c, fm, SFC_ELEM_ARMS, v, depth);
     /* emit_strbuf_value takes a conditional arm by arm only when one of its
        arms is a handle (strbuf_cond_has_handle_leaf); else whole, a copy */
     if ((ctx == SFC_ALIAS || ctx == SFC_ARG || ctx == SFC_SPLICE) && !strbuf_flow_has_leaf(c, fm, v, 0)) ctx = SFC_SLOT;
