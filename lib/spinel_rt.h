@@ -9956,7 +9956,8 @@ static const char *sp_io_read_nonblock_buffer(sp_File *f, sp_int n, sp_RbVal *bu
     sp_raise_cls("ArgumentError", sp_sprintf("expected true or false as exception: %s", sp_poly_inspect(*exception)));
   int text = s && !sp_str_is_binary(s);
   const char *r = sp_sock_read_nb(f, n, 0, 0, eof);
-  SP_GC_ROOT_STR(r);
+  /* Replacing the buffer grows its malloc-backed payload without a GC
+     allocation, so the read result needs no root across that copy. */
   if (r && text) sp_str_as_text(r);
   if (s && (r || *eof)) *buffer = sp_poly_str_become(v, r ? r : sp_str_empty);
   return r;
