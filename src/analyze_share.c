@@ -1946,7 +1946,8 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
   /* an in-place String mutation of the receiver: through a boxed or an
      untyped receiver, only one a String can make, on a receiver that can
      be a String */
-  if (maybe_str && sp_str_mutator(name, 0) &&
+  /* Encoding changes keep the bytes but are visible through every alias. */
+  if (maybe_str && (sp_str_mutator(name, 0) || (c->share_strings && is_encoding_mutator(name))) &&
       (rt == TY_STRING || rt == TY_STRBUF ||
        (!sh_args_refuse_string(c, n, name) && an_recv_may_be_string(c, recv, &(PolyLits){ sh_blk_bound, F })))) {
     int base = sh_self_chain_base(F, c, recv);
@@ -1960,7 +1961,8 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
     const char *sym = sh_lit_name(nt, bx);
     if (sym && bx >= 0 && nt_kind(nt, bx) == NK_SymbolNode) {
       /* `&:upcase!` runs the name on each element */
-      if (sp_str_mutator(sym, 0)) sh_mark_at(F, sh_elem(F, rv), SHF_MUT | SHF_INDIRECT, n);
+      if (sp_str_mutator(sym, 0) || (c->share_strings && is_encoding_mutator(sym)))
+        sh_mark_at(F, sh_elem(F, rv), SHF_MUT | SHF_INDIRECT, n);
       sh_dyn_name(F, sym);
     }
     else sh_union(F, sh_elem(F, rv), F->unknown);
