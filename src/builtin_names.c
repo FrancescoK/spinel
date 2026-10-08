@@ -1040,6 +1040,8 @@ int is_method_ref_name(const char *n) { return n && sp_streq(n, "method"); }
 int is_env_const(const char *n) { return n && sp_streq(n, "ENV"); }
 /* ARGV, whose Strings CRuby freezes */
 int is_argv_const(const char *n) { return n && sp_streq(n, "ARGV"); }
+/* to_proc curry: a proc made of a Symbol, a Method or a proc */
+int is_proc_conversion_name(const char *n) { return n && (sp_streq(n, "to_proc") || sp_streq(n, "curry")); }
 /* `[]` alone: an element read, not its write */
 int is_aref_name(const char *n) { return n && sp_streq(n, "[]"); }
 /* `<<` alone: String#<<'s append, a chain's link */
