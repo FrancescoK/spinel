@@ -2096,7 +2096,9 @@ int strbuf_poly_to_s(Compiler *c, int v) {
     return 0;
   int r = nt_ref(nt, v, "receiver");
   char ref[1024];
-  return r >= 0 && comp_method_index(c, "to_s") < 0 &&
+  int targets[CPT_MAX];
+  /* The call plan also sees overrides when several classes define to_s. */
+  return r >= 0 && comp_method_index(c, "to_s") < 0 && cplan_targets(c, v, targets, CPT_MAX) == 0 &&
          (repr_of(c, r).kind == RK_BOXED || strbuf_var_handle(c, r, ref, sizeof ref));
 }
 
