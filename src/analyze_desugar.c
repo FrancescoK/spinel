@@ -8514,6 +8514,43 @@ static void bi_self_to_local(NodeTable *nt, int lo, int hi) {
   }
 }
 
+/* A method a program's own `module Enumerable` reopening adds is CRuby's
+   for an Array, a Hash, a Range or an Enumerator too, through the module
+   each includes, unless the receiver's class has a method of that name
+   ahead of it or it is one of the builtins above (#7879 settles those).
+   activesupport's index_by / many? / sole are such methods. The reopening
+   registers a class no builtin receiver dispatches through, so a name it
+   adds that none of them answers otherwise is given a generic definition
+   beside the builtins', and each call takes its copy the same way. */
+int builtin_instance_method_known(const char *cls, const char *m);
+static int own_enum_name_routable(const char *nm) {
+  static const char *const recvs[] = { "Array", "Hash", "Range", "Enumerator", NULL };
+  if (!nm || builtin_enum_name_index(nm) >= 0 || bi_kernel_call_name(nm) || object_public_method_name(nm)) return 0;
+  for (int i = 0; recvs[i]; i++) if (builtin_instance_method_known(recvs[i], nm)) return 0;
+  return 1;
+}
+
+/* The generic definition of an own Enumerable method: a copy of its def,
+   taking the receiver as the first parameter as a builtin's does, the
+   reopening's def left to answer for the module's includers */
+static int own_enum_generic(NodeTable *nt, int def) {
+  int copy = nt_clone_subtree(nt, def);
+  if (copy < 0) return -1;
+  bi_self_to_local(nt, copy, nt->count - 1);
+  int pn = nt_ref(nt, copy, "parameters");
+  if (pn < 0) { pn = nt_new_node(nt, "ParametersNode"); if (pn < 0) return -1; nt_node_set_ref(nt, copy, "parameters", pn); }
+  int sp = nt_new_node(nt, "RequiredParameterNode"); if (sp < 0) return -1;
+  nt_node_set_str(nt, sp, "name", "__self");
+  int rn = 0; const int *reqs = nt_arr(nt, pn, "requireds", &rn);
+  int *nr = (int *)malloc(sizeof(int) * (size_t)(rn + 1));
+  if (!nr) return -1;
+  nr[0] = sp; for (int j = 0; j < rn; j++) nr[j + 1] = reqs[j];
+  nt_node_set_arr(nt, pn, "requireds", nr, rn + 1); free(nr);
+  char gn[256]; snprintf(gn, sizeof gn, "__enum_%s", nt_str(nt, def, "name"));
+  nt_node_set_str(nt, copy, "name", gn);
+  return copy;
+}
+
 int desugar_builtins(Compiler *c) {
   if (sp_builtin_enum_names_n == 0) return 0;
   NodeTable *nt = (NodeTable *)c->nt;
@@ -8530,7 +8567,7 @@ int desugar_builtins(Compiler *c) {
   int *gdef = (int *)malloc(sizeof(int) * (size_t)sp_builtin_enum_names_n);
   if (!gdef) { free(nb); return 0; }
   for (int i = 0; i < sp_builtin_enum_names_n; i++) gdef[i] = -1;
-  int n0 = nt->count;   /* the program's own nodes: the call sites to clone for */
+  int *own = NULL, nown = 0;   /* the own Enumerable methods a builtin receiver takes */
   for (int i = 0; i < tn; i++) {
     int st = tb[i];
     int cp = nt_kind(nt, st) == NK_ModuleNode ? nt_ref(nt, st, "constant_path") : -1;
@@ -8541,7 +8578,17 @@ int desugar_builtins(Compiler *c) {
     int all_builtin = bn > 0;
     for (int k = 0; k < bn; k++)
       if (nt_kind(nt, bb[k]) != NK_DefNode || builtin_enum_name_index(nt_str(nt, bb[k], "name")) < 0) all_builtin = 0;
-    if (!all_builtin) { nb[nbn++] = st; continue; }   /* a program's own reopen: left as it was */
+    if (!all_builtin) {   /* a program's own reopen: left as it was, for its includers */
+      nb[nbn++] = st;
+      for (int k = 0; k < bn; k++) {
+        if (nt_kind(nt, bb[k]) != NK_DefNode || nt_ref(nt, bb[k], "receiver") >= 0 ||
+            !own_enum_name_routable(nt_str(nt, bb[k], "name"))) continue;
+        int *g = (int *)realloc(own, sizeof(int) * (size_t)(nown + 1));
+        if (!g) break;
+        own = g; own[nown++] = bb[k];
+      }
+      continue;
+    }
     for (int k = 0; k < bn; k++) {
       int def = bb[k];
       const char *name = nt_str(nt, def, "name");
@@ -8576,12 +8623,42 @@ int desugar_builtins(Compiler *c) {
     nt_node_set_type(nt, st, "NilNode");
     changed = 1;
   }
+  /* the own methods join the builtins' names; a later reopening's
+     definition of a name replaces an earlier one's, as in Ruby */
+  int nbuiltin = sp_builtin_enum_names_n, own_lo = nt->count;
+  for (int k = 0; k < nown; k++) {
+    const char *name = nt_str(nt, own[k], "name");
+    int bi = builtin_enum_name_index(name);
+    if (bi < 0) {
+      char **nn = (char **)realloc(sp_builtin_enum_names, sizeof(char *) * (size_t)(sp_builtin_enum_names_n + 1));
+      int *ng = (int *)realloc(gdef, sizeof(int) * (size_t)(sp_builtin_enum_names_n + 1));
+      if (ng) gdef = ng;
+      if (!nn || !ng) break;
+      sp_builtin_enum_names = nn;
+      bi = sp_builtin_enum_names_n++;
+      sp_builtin_enum_names[bi] = strdup(name);
+      gdef[bi] = -1;
+    }
+    if (bi < nbuiltin) continue;
+    int g = own_enum_generic(nt, own[k]);
+    if (g < 0) break;
+    if (gdef[bi] >= 0) bi_subtree_blank(nt, gdef[bi]);
+    gdef[bi] = g;
+    changed = 1;
+  }
+  free(own);
   if (!changed) { free(gdef); free(nb); return 0; }
+  int n0 = nt->count;   /* the program's own nodes (the generics among them): the call sites to clone for */
   /* the numbers carry on across calls: a second pass's copies must not
      take names the first pass's already have */
   static int *site_seq = NULL;
-  if (!site_seq) site_seq = calloc((size_t)sp_builtin_enum_names_n + 1, sizeof(int));
-  if (!site_seq) { free(gdef); free(nb); return 0; }
+  static int site_seq_n = 0;
+  if (site_seq_n < sp_builtin_enum_names_n + 1) {
+    int *g = (int *)realloc(site_seq, sizeof(int) * (size_t)(sp_builtin_enum_names_n + 1));
+    if (!g) { free(gdef); free(nb); return 0; }
+    memset(g + site_seq_n, 0, sizeof(int) * (size_t)(sp_builtin_enum_names_n + 1 - site_seq_n));
+    site_seq = g; site_seq_n = sp_builtin_enum_names_n + 1;
+  }
   /* One copy per call site. A method's parameters are typed by the union of
      its call sites, so one shared definition called on an IntArray here and
      a Hash there would carry a poly receiver and a poly memo everywhere;
@@ -8593,8 +8670,16 @@ int desugar_builtins(Compiler *c) {
      the call, and the call is
      rewritten onto it in the fixpoint once the receiver's type says the
      builtin serves it (desugar_builtin_enum_calls). A copy no site ends up
-     calling is unreachable and never reaches the generated C. */
-  for (int id = 0; id < n0; id++) {
+     calling is unreachable and never reaches the generated C. An own
+     method may call another (`without` -> `excluding`) or a builtin
+     (group_by): such a call in a copy is a site of its own, taking a copy
+     of its own once the clone is made, as the walk reaches the table's end.
+     One shared among the copies would carry every site's types at once. A
+     call back to a method its copy sits in (a recursion) calls that copy.
+     The own generics' own calls are left alone: only the copies run. */
+  for (int id = 0; id < nt->count; id++) {
+    if (id == own_lo) id = n0;
+    if (id >= nt->count) break;
     if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *cn0 = nt_str(nt, id, "name");
     /* `enum.with_object(memo)` is renamed to each_with_object by the
@@ -8635,12 +8720,22 @@ int desugar_builtins(Compiler *c) {
     }
     int bi = builtin_enum_name_index(cn0);
     if (bi < 0 || gdef[bi] < 0) continue;
+    int in_copy = (int)nt_int(nt, id, "enum_in_copy", -1), rec = -1;
+    for (int a = in_copy; a >= 0 && rec < 0; a = (int)nt_int(nt, a, "enum_in_copy", -1))
+      if ((int)nt_int(nt, a, "enum_bi", -1) == bi) rec = a;
+    if (rec >= 0) { nt_node_set_int(nt, id, "enum_copy", rec); continue; }
+    int cbase = nt->count;
     int copy = nt_clone_subtree(nt, gdef[bi]);
     if (copy < 0) break;
     char cn[256]; snprintf(cn, sizeof cn, "__enum_%s__%d", sp_builtin_enum_names[bi], site_seq[bi]++);
     nt_node_set_str(nt, copy, "name", cn);
     nt_node_set_int(nt, copy, "enum_site", id);   /* the call it serves (enum_copy_site) */
     nt_node_set_int(nt, id, "enum_copy", copy);
+    /* the calls in the copy are its sites, the walk reaches them below */
+    nt_node_set_int(nt, copy, "enum_bi", bi);
+    nt_node_set_int(nt, copy, "enum_in_copy", in_copy);
+    for (int j = cbase; j < nt->count; j++)
+      if (j != copy && nt_kind(nt, j) == NK_CallNode) nt_node_set_int(nt, j, "enum_in_copy", copy);
     if (nbn >= cap) { cap *= 2; int *g = (int *)realloc(nb, sizeof(int) * (size_t)cap); if (!g) break; nb = g; }
     nb[nbn++] = copy;
   }
@@ -9261,11 +9356,18 @@ int desugar_builtin_enum_calls(Compiler *c) {
     int args = nt_ref(nt, id, "arguments");
     int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
     /* the builtin's own arity: `str.partition(sep)` on a value that is a
-       String at run time is String's method, not Enumerable's */
+       String at run time is String's method, not Enumerable's. A program's
+       own method may take a rest (activesupport's `excluding(*elements)`)
+       or keywords, and a splatted argument counts for any number. */
     { int cpn = nt_ref(nt, copy, "parameters");
       int crn = 0; if (cpn >= 0) nt_arr(nt, cpn, "requireds", &crn);
       int con = 0; if (cpn >= 0) nt_arr(nt, cpn, "optionals", &con);
-      if (an + 1 < crn || an + 1 > crn + con) continue; }
+      int ckn = 0; if (cpn >= 0) nt_arr(nt, cpn, "keywords", &ckn);
+      int crest = cpn >= 0 && nt_ref(nt, cpn, "rest") >= 0;
+      int pos = an, splat = 0;
+      for (int j = 0; j < an; j++) if (nt_kind(nt, av[j]) == NK_SplatNode) splat = 1;
+      if (ckn > 0 && an > 0 && nt_kind(nt, av[an - 1]) == NK_KeywordHashNode) pos--;
+      if ((!splat && pos + 1 < crn) || (!crest && pos + 1 > crn + con)) continue; }
     int base = nt->count;
     int encl = c->nscope[id];
     /* A receiver known only at run time may be an instance of a class that
@@ -9276,7 +9378,10 @@ int desugar_builtin_enum_calls(Compiler *c) {
     int ndef = 0, defcls[64];
     if (rt == TY_POLY) {
       for (int k = 0; k < c->nclasses && ndef < 64; k++)
-        if (!c->classes[k].is_native_class && comp_poly_arm_defines_n(c, k, name, an)) defcls[ndef++] = k;
+        /* Enumerable itself answers through the copy: it holds a program's
+           own method of the name (index_by), and an Array is_a? it too */
+        if (!c->classes[k].is_native_class && !sp_streq(c->classes[k].name, "Enumerable") &&
+            comp_poly_arm_defines_n(c, k, name, an)) defcls[ndef++] = k;
     }
     /* `v&.m { }`: the receiver is bound once and a nil answers nil, the
        same dispatch shape with a nil test for the class test */
