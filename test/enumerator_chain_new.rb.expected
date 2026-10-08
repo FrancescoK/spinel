@@ -16,3 +16,6 @@ false
 [false, false, false, false]
 [false, false, false, false]
 [false, false, false, false]
+undefined method 'each' for an instance of Integer
+undefined method 'each' for nil
+undefined method 'each' for an instance of String

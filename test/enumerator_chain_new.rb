@@ -21,3 +21,12 @@ p Enumerator::Chain.new(*[[5].each]).map { |x| x * 2 }
 [[1].each + [2].each, [1].each, Enumerator::Product.new([1], [2]), 5, "s", nil].each do |v|
   p [v.is_a?(Enumerator::Chain), v.is_a?(Enumerator::Product), v.is_a?(Enumerator), v.is_a?(Enumerator::Lazy)]
 end
+# a source that cannot be enumerated raises CRuby's NoMethodError (CRuby when the
+# chain is iterated, spinel's snapshot chain when it is built)
+[5, nil, "s"].each do |bad|
+  begin
+    Enumerator::Chain.new([1].each, bad).to_a
+  rescue NoMethodError => e
+    puts e.message
+  end
+end

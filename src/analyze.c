@@ -7558,6 +7558,7 @@ static int desugar_enum_named_call(Compiler *c, int id, NodeTable *nt, const cha
       int cargs = nt_ref(nt, id, "arguments");
       int cn = 0; const int *cv = cargs >= 0 ? nt_arr(nt, cargs, "arguments", &cn) : NULL;
       int *els = cn > 0 ? malloc(sizeof(int) * cn) : NULL;
+      if (cn > 0 && !els) return 0;   /* out of memory: leave the call alone */
       for (int k = 0; k < cn; k++) els[k] = cv[k];   /* copy before the node table grows */
       int srcs = nt_new_node(nt, "ArrayNode");
       int nargs = srcs >= 0 ? nt_new_node(nt, "ArgumentsNode") : -1;
