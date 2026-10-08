@@ -5576,6 +5576,26 @@ static void desugar_enum_chain_shapes(Compiler *c) {
         int av[64];
         memcpy(av, av0, (size_t)an * sizeof(int));
         int mblk = nt_ref(nt, id, "block");
+        int late = 0;
+        for (int j = 1; j < an; j++) late |= subtree_has_side_effect(c, av[j]);
+        if (late) {
+          int seq[66], ns = 0, rd = -1;
+          for (int j = -1; j < an; j++) {
+            char tn[48];
+            snprintf(tn, sizeof tn, "__mrg%d_%d", id, j + 1);
+            int w = nt_new_node(nt, "LocalVariableWriteNode"), r = nt_new_node(nt, "LocalVariableReadNode");
+            nt_node_set_str(nt, w, "name", tn); nt_node_set_int(nt, w, "depth", 0);
+            nt_node_set_ref(nt, w, "value", j < 0 ? recv : av[j]);
+            nt_node_set_str(nt, r, "name", tn); nt_node_set_int(nt, r, "depth", 0);
+            seq[ns++] = w;
+            if (j < 0) rd = r; else av[j] = r;
+          }
+          seq[ns++] = rd;
+          int st = nt_new_node(nt, "StatementsNode"), pr = nt_new_node(nt, "ParenthesesNode");
+          nt_node_set_arr(nt, st, "body", seq, ns);
+          nt_node_set_ref(nt, pr, "body", st);
+          recv = pr;
+        }
         int cur = recv;
         for (int j = 0; j < an - 1; j++) {
           int call = nt_new_node(nt, "CallNode");

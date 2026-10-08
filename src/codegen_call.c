@@ -5253,16 +5253,21 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
   /* Hash#merge(other): fold both hashes into a general PolyPoly hash; a
      receiver that is no Hash (nil included) raises NoMethodError */
   if (sp_streq(name, "merge") && argc >= 1) {
-    int tm = argc > 1 ? ++g_tmp : 0;
-    if (tm) buf_printf(b, "({ sp_RbVal _t%d = sp_box_obj(", tm);
-    buf_puts(b, "sp_poly_hash_merge_m("); emit_boxed(c, recv, b);
-    buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, ")");
-    if (!tm) return 1;
-    buf_printf(b, ", SP_BUILTIN_POLY_POLY_HASH); SP_GC_ROOT_RBVAL(_t%d);", tm);
-    for (int i = 1; i < argc; i++) {
-      buf_printf(b, " _t%d = sp_box_obj(sp_poly_hash_merge(_t%d, ", tm, tm); emit_boxed(c, argv[i], b);
-      buf_puts(b, "), SP_BUILTIN_POLY_POLY_HASH);");
+    if (argc == 1) {
+      buf_puts(b, "sp_poly_hash_merge_m("); emit_boxed(c, recv, b);
+      buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, ")");
+      return 1;
     }
+    int tm = g_tmp + 1;
+    g_tmp += argc + 1;
+    buf_puts(b, "({ ");
+    for (int i = 0; i <= argc; i++) {
+      buf_printf(b, "sp_RbVal _t%d = ", tm + i); emit_boxed(c, i ? argv[i - 1] : recv, b);
+      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", tm + i);
+    }
+    buf_printf(b, "_t%d = sp_box_obj(sp_poly_hash_merge_m(_t%d, _t%d), SP_BUILTIN_POLY_POLY_HASH);", tm, tm, tm + 1);
+    for (int i = 2; i <= argc; i++)
+      buf_printf(b, " _t%d = sp_box_obj(sp_poly_hash_merge(_t%d, _t%d), SP_BUILTIN_POLY_POLY_HASH);", tm, tm, tm + i);
     buf_printf(b, " (sp_PolyPolyHash *)_t%d.v.p; })", tm);
     return 1;
   }

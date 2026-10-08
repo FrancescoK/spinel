@@ -1,0 +1,12 @@
+{a: 1, b: 2, c: 3}
+[:x, :y]
+{a: 1, b: 2, c: 3, d: 4}
+[:x, :y, :z]
+NoMethodError
+[:x, :y]
+NoMethodError
+[:x, :y, :z]
+"boom"
+[:x, :y]
+{a: 10}
+[:x, :y]
