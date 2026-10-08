@@ -18048,7 +18048,7 @@ static void an_returns_by_scope(Compiler *c, int **start, int **list) {
 /* fresh_ok (--share-strings, the pickup's own ask): a tail answering a
    fresh String (share_node_fresh) is admitted too, counted in fresh */
 typedef struct { int reads, nils, fresh_ok, fresh; } TailCount;
-typedef struct { unsigned char *st; int *ret_start, *ret_list; } RetHandles;
+typedef struct { unsigned char *st; int *ret_start, *ret_list; int fresh; } RetHandles;
 static int an_tail_handle(Compiler *c, RetHandles *R, int n, TailCount *tc);
 static int an_tail_is_shared_handle(Compiler *c, int node, int nil_ok, TailCount *n, RetHandles *R);
 static int an_stmts_tail_shared(Compiler *c, int st, int nil_ok, TailCount *tc, RetHandles *R) {
@@ -18098,7 +18098,11 @@ static int an_tail_is_shared_handle(Compiler *c, int node, int nil_ok, TailCount
     if (n == 0) { tc->nils += nil_ok; return nil_ok; }
     return n == 1 && an_tail_handle(c, R, v[0], tc);
   }
+  if (R && R->fresh && k == NK_RescueModifierNode)
+    return an_tail_handle(c, R, nt_ref(nt, node, "expression"), tc) &&
+           an_tail_handle(c, R, nt_ref(nt, node, "rescue_expression"), tc);
   if (!c->share_strings || (k != NK_IfNode && k != NK_UnlessNode)) {
+    if (R && R->fresh) return share_value_fresh(c, node, 0);
     int ok = an_arg_is_shared_handle(c, node);
     tc->reads += ok;
     if (!ok && tc->fresh_ok && share_node_fresh(c, node)) { tc->fresh++; ok = 1; }
@@ -18220,16 +18224,19 @@ static int an_ret_handle(Compiler *c, RetHandles *R, int mi);
    the return channel. Count it with the pickup's own tail predicate. */
 static int an_tail_handle(Compiler *c, RetHandles *R, int n, TailCount *tc) {
   const NodeTable *nt = c->nt;
-  if (an_arg_is_shared_handle(c, n)) return 1;
+  if (!R->fresh && an_arg_is_shared_handle(c, n)) return 1;
   if (an_tail_is_shared_handle(c, n, 1, tc, R)) return 1;
   NodeKind k = n >= 0 ? nt_kind(nt, n) : NK_NONE;
   if (k == NK_SuperNode || k == NK_ForwardingSuperNode) {
     const CallPlan *p = cplan_user_fresh(c, n);
     return p->dispatch == CP_DIRECT && p->mi > 0 && an_ret_handle(c, R, p->mi);
   }
-  if (k != NK_CallNode || c->ntype[n] != TY_STRING) return 0;
+  if (k != NK_CallNode || (!R->fresh && c->ntype[n] != TY_STRING)) return 0;
+  if (R->fresh && cplan_user_fresh(c, n)->via == UC_POLY) return 0;
   int mis[CPT_MAX];
   int cnt = cplan_targets(c, n, mis, CPT_MAX);
+  /* A raising arm contributes no String. A user override still returns. */
+  if (R->fresh && cnt == 0 && isa_node_diverges(c, n) && !bare_call_class_owned(c, n)) return 1;
   if (cnt <= 0) return 0;
   for (int i = 0; i < cnt; i++) if (!an_ret_handle(c, R, mis[i])) return 0;
   return 1;
@@ -18245,7 +18252,8 @@ static int an_tail_append_chain(Compiler *c, int n) {
 static int an_ret_handle(Compiler *c, RetHandles *R, int mi) {
   if (R->st[mi] != RH_UNSEEN) return R->st[mi] == RH_YES;
   Scope *m = &c->scopes[mi];
-  if (m->def_node < 0 || m->yields || m->is_proc_form || m->is_lowered_yield || m->ret != TY_STRING) {
+  if (m->def_node < 0 || (!R->fresh && (m->yields || m->is_proc_form || m->is_lowered_yield)) ||
+      (m->ret != TY_STRING && (!R->fresh || m->ret != TY_POLY))) {
     R->st[mi] = RH_NO;
     return 0;
   }
@@ -18256,7 +18264,10 @@ static int an_ret_handle(Compiler *c, RetHandles *R, int mi) {
   /* a body with its own rescue is a begin, whose arms answer */
   if (last < 0 && m->body >= 0 && nt_kind(nt, m->body) == NK_BeginNode) last = m->body;
   TailCount tc = { 0, 0 };
-  if (last >= 0) { saw = 1; ok = an_tail_handle(c, R, last, &tc) || an_tail_append_chain(c, last); }
+  if (last >= 0) {
+    saw = 1;
+    ok = an_tail_handle(c, R, last, &tc) || (!R->fresh && an_tail_append_chain(c, last));
+  }
   for (int r = R->ret_start[mi]; ok && r < R->ret_start[mi + 1]; r++) {
     int ra = nt_ref(nt, R->ret_list[r], "arguments");
     int rn = 0; const int *rv = ra >= 0 ? nt_arr(nt, ra, "arguments", &rn) : NULL;
@@ -18264,17 +18275,24 @@ static int an_ret_handle(Compiler *c, RetHandles *R, int mi) {
     if (rn == 0) tc.nils++;
     else ok = rn == 1 && an_tail_handle(c, R, rv[0], &tc);
   }
-  if (tc.nils) m->ret_nil_pickup = 1;
+  if (tc.nils && !R->fresh) m->ret_nil_pickup = 1;
   R->st[mi] = ok && saw ? RH_YES : RH_NO;
+  if (R->fresh) m->ret_fresh = R->st[mi] == RH_YES;
   return R->st[mi] == RH_YES;
 }
 static void an_mark_handle_returns(Compiler *c) {
   if (!c->share_strings) return;
-  RetHandles R;
+  RetHandles R = { 0 };
   R.st = calloc((size_t)c->nscopes + 1, 1);
   if (!R.st) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   an_returns_by_scope(c, &R.ret_start, &R.ret_list);
   for (int mi = 1; mi < c->nscopes; mi++) c->scopes[mi].ret_handle = (unsigned char)an_ret_handle(c, &R, mi);
+  /* The sibling fact uses the same tails, return index and active-visit
+     guard; only its leaf question differs. Each method is asked once per
+     fact, and a cycle remains conservative. */
+  memset(R.st, 0, (size_t)c->nscopes + 1);
+  R.fresh = 1;
+  for (int mi = 1; mi < c->nscopes; mi++) an_ret_handle(c, &R, mi);
   free(R.st); free(R.ret_start); free(R.ret_list);
   /* A deep-return pickup marked while the types settled, on a call whose
      method answers a box after all (a parameter that settled poly): the
