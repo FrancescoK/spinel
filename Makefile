@@ -2286,6 +2286,7 @@ GC_MINOR_TESTS := test/io_read_outbuf_eof.rb \
                   test/string_reopen_block_returns.rb \
                   test/share_strings_transform_argument_order.rb \
                   test/share_strings_fresh_element_conditional.rb \
+                  test/share_strings_fresh_inline.rb \
                   test/share_strings_class_value_builtin_names.rb \
                   test/share_strings_class_value_builtin_io.rb \
                   test/share_strings_class_value_mutating_read.rb \
