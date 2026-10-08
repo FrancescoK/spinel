@@ -1368,9 +1368,13 @@ static int strbuf_route_inject(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
   int recv = nt_ref(nt, v, "receiver"), blk = nt_ref(nt, v, "block"), argc = 0;
   const int *argv = call_args(nt, v, &argc);
+  int seed = argc == 1 && strbuf_value_carries(c, argv[0]);
+  /* The same emitter wraps a new String seed in its own rooted handle. */
+  if (!seed && argc == 1 && repr_of(c, argv[0]).as_ty == TY_STRING &&
+      share_value_fresh(c, argv[0], 0)) seed = 1;
   if (recv < 0 || argc != 1 || blk < 0 || nt_kind(nt, blk) != NK_BlockNode || call_breaks(c, v) ||
       !ty_is_array(repr_of(c, recv).as_ty) || comp_ntype(c, v) != TY_STRING ||
-      !strbuf_value_carries(c, argv[0])) return 0;
+      !seed) return 0;
   const char *p0 = block_param_name(c, blk, 0);
   Scope *bsc = p0 ? comp_scope_of(c, blk) : NULL;
   return bsc && block_param_name(c, blk, 1) && repr_of_slot(c, scope_local(bsc, rename_local(p0))).handle;
