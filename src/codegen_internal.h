@@ -193,6 +193,8 @@ int strbuf_var_handle(Compiler *c, int n, char *out, size_t cap);
 /* --share-strings: does value v hand over a shared String as its handle
    (a variable, a route, a conditional with such an arm)? (codegen_stmt.c) */
 int strbuf_value_carries(Compiler *c, int v);
+/* A builtin String clamp's receiver and two bounds, or absent endpoints. */
+int strbuf_route_clamp(Compiler *c, int v, int *ops);
 /* `String(x)` or `+x` over a variable whose slot holds the handle: that
    slot's text, *uplus for `+x` (codegen_stmt.c). Returns the operand node
    plus one, or zero when there is no route. */
