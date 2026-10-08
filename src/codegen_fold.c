@@ -826,7 +826,17 @@ int emit_transform_hash_expr(Compiler *c, int id, Buf *b) {
     buf_printf(g_pre, " _t%d = _t%d->order[_t%d];\n", tk, ts, ti);
   if (p0) {
     emit_indent(g_pre, g_indent + 1);
-    if (keys) {
+    if (repr_share_rule(c) && repr_of_slot(c, p0_lv_tv).kind == RK_STRBUF) {
+      /* A shared parameter takes the key or value through its handle
+         representation, as the other hash block walks bind it. */
+      char src[128];
+      if (keys) snprintf(src, sizeof src, "_t%d", tk);
+      else snprintf(src, sizeof src, "sp_%sHash_get(_t%d, _t%d)", shn, ts, tk);
+      buf_printf(g_pre, "lv_%s = ", p0);
+      emit_strbuf_param_bind(c, p0_lv_tv, keys ? skt : svt, src, g_pre);
+      buf_puts(g_pre, ";\n");
+    }
+    else if (keys) {
       if (needs_box_assign) {
         Buf bx; memset(&bx, 0, sizeof bx); char gk[64]; snprintf(gk, sizeof gk, "_t%d", tk);
         emit_boxed_text(c, skt, gk, &bx);

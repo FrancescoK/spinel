@@ -1023,7 +1023,8 @@ share-strings-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS
 	  test/builtins_inject.rb test/issue_3174.rb test/set_string_member_frozen.rb \
 	  test/dynamic_new_post_params_reach.rb test/block_forward_proc_param_type.rb \
 	  test/builtins_partition_group_by.rb test/forwarded_block_tail_return.rb \
-	  test/boxed_scan_capture_params.rb packages/shellwords/test/shellwords_split_unmatched_quote.rb $$(cat test/share/reject.list); do \
+	  test/boxed_scan_capture_params.rb test/fold_receiver_root.rb \
+	  packages/shellwords/test/shellwords_split_unmatched_quote.rb $$(cat test/share/reject.list); do \
 	  e="$$t.expected"; case "$$t" in test/reject/*) e="test/share/reject/$${t##*/}.expected";; esac; \
 	  if $(SPINEL) --share-strings "$$t" -o "$$tmp/b" >"$$tmp/out" 2>&1; then \
 	    ! grep -q 'did not converge' "$$tmp/out" || { echo "share-strings-test: FAIL $$t (the inference fixpoint ran to its round cap)"; ok=0; }; \
@@ -2224,6 +2225,7 @@ threaded-render-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SPINEL_TIMEOUT)
 	if [ $$ok -eq 1 ]; then echo "threaded-render-test: pass"; else exit 1; fi
 
 GC_MINOR_TESTS := test/boxed_scan_capture_params.rb \
+                  test/share_strings_hash_transform_params.rb \
                   test/reopened_builtin_kwrest_keys.rb \
                   test/share_strings_argument_conversion_root.rb \
                   test/reader_or_assign_frozen.rb \
