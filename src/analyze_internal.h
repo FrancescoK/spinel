@@ -141,6 +141,7 @@ int an_poly_raw_argc(const char *name);
    `want`: the poly dispatch accumulates its arm beside the builtin ones in one
    C temp, so the call must be typed for what both can hold. */
 int an_user_ret_disagrees(Compiler *c, const char *name, TyKind want);
+TyKind an_poly_concrete(Compiler *c, const char *name, TyKind t);
 int an_ty_holds_nil(TyKind t);
 int gvar_seeded_before_read(Compiler *c, const char *gname);
 int an_empty_container_kind(Compiler *c, int b);
