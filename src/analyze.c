@@ -15813,8 +15813,10 @@ static int strbuf_demand_container_stores(Compiler *c, const char *contn, Scope 
 static int strbuf_ivar_source_walk(Compiler *c, int cid, const char *ivn, int depth, int mode) {
   const NodeTable *nt = c->nt;
   int changed = 0;
-  for (int w = comp_kind_first(c, NK_InstanceVariableWriteNode); w >= 0; w = comp_kind_next(c, w)) {
-    if (nt_kind(nt, w) != NK_InstanceVariableWriteNode) continue;
+  /* its `=`, `||=` and `&&=` (VS_STORE) */
+  for (int e = comp_vsite_first(c, VS_STORE, NK_InstanceVariableReadNode, ivn, cid); e >= 0;
+       e = comp_vsite_next(c, e)) {
+    int w = comp_vsite_node(c, e);
     const char *wn = nt_str(nt, w, "name");
     if (!wn || !sp_streq(wn, ivn) || comp_ivar_owner(c, w) != cid) continue;
     changed |= strbuf_container_source_walk(c, nt_ref(nt, w, "value"), depth + 1, mode);
@@ -15825,15 +15827,9 @@ static int strbuf_ivar_source_walk(Compiler *c, int cid, const char *ivn, int de
     if (r < 0 || nt_kind(nt, r) != NK_InstanceVariableReadNode) continue;
     const char *rn = nt_str(nt, r, "name");
     if (!rn || !sp_streq(rn, ivn) || comp_ivar_owner(c, r) != cid) continue;
-    const char *wcn = nt_str(nt, w, "name");
-    if (!wcn) continue;
-    int a = nt_ref(nt, w, "arguments");
-    int an = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
-    if (is_push_unshift(wcn)) {
-      for (int e = 0; e < an; e++) changed |= strbuf_store_leaf(c, av[e], depth, mode);
-    }
-    else if (sp_streq(wcn, "[]=") && an >= 2)
-      changed |= strbuf_store_leaf(c, av[an - 1], depth, mode);
+    int stores[64];
+    int nst = array_call_store_values(c, w, stores);
+    for (int e = 0; e < nst; e++) changed |= strbuf_store_leaf(c, stores[e], depth, mode);
   }
   return changed;
 }
