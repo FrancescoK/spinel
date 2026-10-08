@@ -404,6 +404,8 @@ typedef struct {
                                String's handle, which the callee's tail read
                                publishes (_sp_ret_strbuf); set once the
                                analysis settles (an_mark_handle_returns) */
+  unsigned char ret_fresh; /* the same return-tail walk proves a new String
+                              (or nil) on every path; no incoming handle */
   int ret_obj_may_nil; /* the nil fact for the method's value (analyze_nil.c,
                           #7444): its body's value or a `return` may be nil;
                           nonzero, where the nil comes from (NFW_*) */
