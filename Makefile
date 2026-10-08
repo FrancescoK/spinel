@@ -1032,6 +1032,7 @@ share-strings-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS
 	  test/dynamic_new_post_params_reach.rb test/block_forward_proc_param_type.rb test/proc_form_yield_block_arg.rb \
 	  test/builtins_partition_group_by.rb test/forwarded_block_tail_return.rb \
 	  test/poly_string_iter_user_owns_name.rb test/string_handle_initialize.rb \
+	  test/poly_fetch_block_key_param.rb \
 	  test/string_alias_routes_unobserved.rb test/yield_string_param_block_append.rb \
 	  test/string_reader_store_routes_unaffected.rb \
 	  test/string_mutator_arg_rebinds_receiver.rb \
@@ -2278,6 +2279,7 @@ threaded-render-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SPINEL_TIMEOUT)
 	if [ $$ok -eq 1 ]; then echo "threaded-render-test: pass"; else exit 1; fi
 
 GC_MINOR_TESTS := test/io_read_outbuf_eof.rb \
+                  test/poly_fetch_block_key_param.rb test/share_strings_fetch_block_key.rb \
                   test/boxed_scan_capture_params.rb \
 	test/share_strings_boxed_class_include_reader.rb \
 	test/share_strings_builtin_fallback_arguments.rb \
