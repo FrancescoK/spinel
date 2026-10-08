@@ -406,6 +406,8 @@ typedef struct {
                                analysis settles (an_mark_handle_returns) */
   unsigned char ret_fresh; /* the same return-tail walk proves a new String
                               (or nil) on every path; no incoming handle */
+  int ret_param;       /* --share-strings: every non-fresh return reads this
+                          unchanged parameter; -1 when no such proof */
   int ret_obj_may_nil; /* the nil fact for the method's value (analyze_nil.c,
                           #7444): its body's value or a `return` may be nil;
                           nonzero, where the nil comes from (NFW_*) */

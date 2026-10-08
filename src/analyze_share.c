@@ -3480,19 +3480,26 @@ int share_method_blocks(const Compiler *c, int mi, const int **blocks) {
   *blocks = F->mb_blk + F->mb_start[mi];
   return F->mb_start[mi + 1] - F->mb_start[mi];
 }
-int share_call_fresh(Compiler *c, int call) {
+static int sh_user_call_fresh(Compiler *c, int call, int depth) {
   const ShareFacts *F = c->share;
-  if (!F || call < 0 || nt_kind(c->nt, call) != NK_CallNode) return 0;
+  if (!F || call < 0 || depth > 8 || nt_kind(c->nt, call) != NK_CallNode) return 0;
   /* A boxed dispatch can take a builtin arm too: its user targets alone
      do not prove freshness (String#to_s can answer its receiver). */
   if (cplan_user_fresh(c, call)->via == UC_POLY) return 0;
   int tg[64];
   int n = cplan_targets(c, call, tg, 64);
   if (n <= 0) return 0;
-  for (int i = 0; i < n; i++)
-    if (tg[i] < 0 || tg[i] >= c->nscopes || (F->ret_joined[tg[i]] && !c->scopes[tg[i]].ret_fresh)) return 0;
+  for (int i = 0; i < n; i++) {
+    if (tg[i] < 0 || tg[i] >= c->nscopes) return 0;
+    Scope *m = &c->scopes[tg[i]];
+    if (m->ret_param >= 0) {
+      if (!share_value_fresh(c, arg_layout_param_source(c, m, call, m->ret_param, NULL), depth + 1)) return 0;
+    }
+    else if (F->ret_joined[tg[i]] && !m->ret_fresh) return 0;
+  }
   return 1;
 }
+int share_call_fresh(Compiler *c, int call) { return sh_user_call_fresh(c, call, 0); }
 /* Does the subtree at n hold a `next` that leaves it (not one in a nested
    block, lambda, method or loop)? With any, also a break or a return. */
 static int sh_has_jump_k(const NodeTable *nt, int n, int any) {
@@ -3642,7 +3649,7 @@ int share_value_fresh(Compiler *c, int n, int depth) {
     return mi >= 0 && sh_blocks_fresh(c, mi, depth + 1);
   }
   if (k != NK_CallNode) return 0;
-  if (share_call_fresh(c, n)) return 1;
+  if (sh_user_call_fresh(c, n, depth)) return 1;
   /* ENV's [] answers a new String each read; to_s, to_str and itself
      answer a new String receiver itself */
   int rcv = nt_ref(nt, n, "receiver");

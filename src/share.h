@@ -173,7 +173,9 @@ int share_flow_at(const Compiler *c, int i, int *site, int *value);
 int share_method_blocks(const Compiler *c, int mi, const int **blocks);
 /* Is call node `call`'s String one no other name holds: each user method
    it reaches answers only Strings its returns did not join to its value
-   (sh_settle_rets: built in its own locals, which die with the call)? */
+   (sh_settle_rets: built in its own locals, which die with the call)?
+   The settled return-tail fact also admits fresh returns and a returned
+   parameter bound to a fresh argument or omitted fresh default. */
 int share_call_fresh(Compiler *c, int call);
 /* Is node n's String a new one no name holds yet, by where it comes from: a
    String literal, a method answering only its own locals' Strings, or an

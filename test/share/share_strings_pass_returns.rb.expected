@@ -1,0 +1,15 @@
+"fresh!"
+"literal"
+nil
+"default!"
+"keyword!"
+"given!"
+"post!"
+"splat!"
+["shared!?", "shared!?", true]
+["kept!", "kept!", true]
+["kept!?", "kept!?", true]
+["kept!?.", "kept!?.", true]
+"explicit"
+"super"
+"A & 😀"

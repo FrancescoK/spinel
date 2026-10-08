@@ -18122,7 +18122,7 @@ static void an_returns_by_scope(Compiler *c, int **start, int **list) {
    slot reads and nils. */
 /* fresh_ok (--share-strings, the pickup's own ask): a tail answering a
    fresh String (share_node_fresh) is admitted too, counted in fresh */
-typedef struct { int reads, nils, fresh_ok, fresh; } TailCount;
+typedef struct { int reads, nils, fresh_ok, fresh, mi, param, arg_depth; } TailCount;
 typedef struct { unsigned char *st; int *ret_start, *ret_list; int fresh; } RetHandles;
 static int an_tail_handle(Compiler *c, RetHandles *R, int n, TailCount *tc);
 static int an_tail_is_shared_handle(Compiler *c, int node, int nil_ok, TailCount *n, RetHandles *R);
@@ -18293,6 +18293,34 @@ static int an_mutated_handle_returns(Compiler *c, int **ret_start, int **ret_lis
    targets first (a cycle answers no). */
 enum { RH_UNSEEN, RH_BUSY, RH_YES, RH_NO };
 static int an_ret_handle(Compiler *c, RetHandles *R, int mi);
+/* A parameter's identity survives mutation, but not rebinding. The local
+   write index is a bucket: check both its scope and name. All borrowed
+   tails must name the same parameter of the method being decided. */
+static int an_tail_param(Compiler *c, int n, TailCount *tc) {
+  const NodeTable *nt = c->nt;
+  if (n < 0 || nt_kind(nt, n) != NK_LocalVariableReadNode) return 0;
+  Scope *m = &c->scopes[tc->mi];
+  const char *pn = nt_str(nt, n, "name");
+  if (!pn || comp_scope_of(c, n) != m) return 0;
+  int pi = an_param_idx(m, pn);
+  if (pi < 0 || (tc->param >= 0 && tc->param != pi)) return 0;
+  for (int w = comp_lvw_first_sc(c, tc->mi, pn); w >= 0; w = comp_lvw_next_sc(c, w))
+    if (comp_scope_of(c, w) == m && nt_str(nt, w, "name") && sp_streq(nt_str(nt, w, "name"), pn)) return 0;
+  tc->param = pi;
+  return 1;
+}
+/* A returned parameter takes the call's binding, including a default.
+   Defaults can call their own method again without revisiting its tail;
+   bound those expression queries as share_value_fresh does. */
+static int an_tail_param_arg(Compiler *c, RetHandles *R, int call, int mi, TailCount *tc) {
+  Scope *m = &c->scopes[mi];
+  if (tc->arg_depth >= 8) return 0;
+  int a = arg_layout_param_source(c, m, call, m->ret_param, NULL);
+  tc->arg_depth++;
+  int ok = an_tail_handle(c, R, a, tc);
+  tc->arg_depth--;
+  return ok;
+}
 /* Does tail node n answer a shared handle it publishes last: a handle's
    read, or a call or `super` whose every target method does? A nullable
    tail can also answer nil, which the existing pickup tests before using
@@ -18301,10 +18329,14 @@ static int an_tail_handle(Compiler *c, RetHandles *R, int n, TailCount *tc) {
   const NodeTable *nt = c->nt;
   if (!R->fresh && an_arg_is_shared_handle(c, n)) return 1;
   if (an_tail_is_shared_handle(c, n, 1, tc, R)) return 1;
+  if (R->fresh && an_tail_param(c, n, tc)) return 1;
   NodeKind k = n >= 0 ? nt_kind(nt, n) : NK_NONE;
   if (k == NK_SuperNode || k == NK_ForwardingSuperNode) {
     const CallPlan *p = cplan_user_fresh(c, n);
-    return p->dispatch == CP_DIRECT && p->mi > 0 && an_ret_handle(c, R, p->mi);
+    int mi = p->mi;
+    if (p->dispatch != CP_DIRECT || mi <= 0 || !an_ret_handle(c, R, mi)) return 0;
+    if (!R->fresh || c->scopes[mi].ret_fresh) return 1;
+    return k == NK_SuperNode && an_tail_param_arg(c, R, n, mi, tc);
   }
   if (k != NK_CallNode || (!R->fresh && c->ntype[n] != TY_STRING)) return 0;
   if (R->fresh && cplan_user_fresh(c, n)->via == UC_POLY) return 0;
@@ -18313,7 +18345,11 @@ static int an_tail_handle(Compiler *c, RetHandles *R, int n, TailCount *tc) {
   /* A raising arm contributes no String. A user override still returns. */
   if (R->fresh && cnt == 0 && isa_node_diverges(c, n) && !bare_call_class_owned(c, n)) return 1;
   if (cnt <= 0) return 0;
-  for (int i = 0; i < cnt; i++) if (!an_ret_handle(c, R, mis[i])) return 0;
+  for (int i = 0; i < cnt; i++) {
+    if (!an_ret_handle(c, R, mis[i])) return 0;
+    Scope *m = &c->scopes[mis[i]];
+    if (R->fresh && !m->ret_fresh && !an_tail_param_arg(c, R, n, mis[i], tc)) return 0;
+  }
   return 1;
 }
 /* Is body tail n an append chain over a shared handle's read (`buf << a <<
@@ -18338,7 +18374,7 @@ static int an_ret_handle(Compiler *c, RetHandles *R, int mi) {
   int last = scope_body_last(c, mi);
   /* a body with its own rescue is a begin, whose arms answer */
   if (last < 0 && m->body >= 0 && nt_kind(nt, m->body) == NK_BeginNode) last = m->body;
-  TailCount tc = { 0, 0 };
+  TailCount tc = { .mi = mi, .param = -1 };
   if (last >= 0) {
     saw = 1;
     ok = an_tail_handle(c, R, last, &tc) || (!R->fresh && an_tail_append_chain(c, last));
@@ -18352,7 +18388,10 @@ static int an_ret_handle(Compiler *c, RetHandles *R, int mi) {
   }
   if (tc.nils && !R->fresh) m->ret_nil_pickup = 1;
   R->st[mi] = ok && saw ? RH_YES : RH_NO;
-  if (R->fresh) m->ret_fresh = R->st[mi] == RH_YES;
+  if (R->fresh) {
+    m->ret_fresh = R->st[mi] == RH_YES && tc.param < 0;
+    m->ret_param = R->st[mi] == RH_YES ? tc.param : -1;
+  }
   return R->st[mi] == RH_YES;
 }
 static void an_mark_handle_returns(Compiler *c) {
