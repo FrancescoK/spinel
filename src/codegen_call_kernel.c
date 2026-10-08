@@ -42,6 +42,24 @@ static int emit_p_splat_value(Compiler *c, int argc, const int *argv, Buf *b) {
   return 1;
 }
 
+static int emit_kconv_obj_nil(Compiler *c, int arg, int ci, const char *m1, const char *m2, Buf *b) {
+  int d = ci, mi = comp_method_in_chain(c, ci, m1, &d);
+  if (mi < 0 && m2) { m1 = m2; mi = comp_method_in_chain(c, ci, m2, &d); }
+  if (mi < 0 || !repr_of(c, arg).may_nil) return 0;
+  TyKind rt = (TyKind)c->scopes[mi].ret;
+  char nil_c[64];
+  if (rt == TY_STRING) snprintf(nil_c, sizeof nil_c, "sp_str_frozen_empty");
+  else if (rt == TY_POLY_ARRAY) snprintf(nil_c, sizeof nil_c, "sp_PolyArray_new()");
+  else if (array_kind(rt)) snprintf(nil_c, sizeof nil_c, "sp_%sArray_new()", array_kind(rt));
+  else if (ty_is_hash(rt) && ty_hash_cname(rt)) snprintf(nil_c, sizeof nil_c, "sp_%sHash_new()", ty_hash_cname(rt));
+  else return 0;
+  const char *cn = c->classes[d].c_name;
+  int t = ++g_tmp;
+  buf_printf(b, "({ sp_%s *_t%d = (sp_%s *)(", cn, t, cn); emit_expr(c, arg, b);
+  buf_printf(b, "); SP_GC_ROOT(_t%d); _t%d ? sp_%s_%s(_t%d) : %s; })", t, t, cn, mc(m1), t, nil_c);
+  return 1;
+}
+
 int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv) {
   /* __dir__ -> the source file's directory (compile-time literal, mirroring
      the legacy generator). */
@@ -456,6 +474,7 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
       else if (at == TY_BOOL) { buf_puts(b, "(("); emit_expr(c, av[0], b); buf_puts(b, ") ? sp_str_frozen_true : sp_str_frozen_false)"); }
       else if (at == TY_SYMBOL) { buf_puts(b, "sp_sym_to_s_chilled("); emit_expr(c, av[0], b); buf_puts(b, ")"); }
       else if (at == TY_NIL || at == TY_UNKNOWN) { buf_puts(b, "sp_poly_to_s(sp_box_nil())"); }
+      else if (ty_is_object(at) && emit_kconv_obj_nil(c, av[0], ty_object_class(at), "to_str", NULL, b)) {}
       /* Kernel#String asks for #to_str first, and only then #to_s (#3721) */
       else if (ty_is_object(at) &&
                comp_method_in_chain(c, ty_object_class(at), "to_str", NULL) >= 0) {
@@ -515,6 +534,7 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
         else emit_expr(c, av[0], b);
         buf_printf(b, "); _t%d; })", t);
       }
+      else if (ty_is_object(at) && emit_kconv_obj_nil(c, av[0], ty_object_class(at), "to_ary", "to_a", b)) {}
       /* Kernel#Array asks the object for #to_ary, then #to_a (#3721) */
       else if (ty_is_object(at) &&
                (comp_method_in_chain(c, ty_object_class(at), "to_ary", NULL) >= 0 ||
@@ -555,6 +575,7 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
         if (_hn == 0) empty_arr_lit = 1;
       }
       if (ty_is_hash(at)) { emit_expr(c, av[0], b); }
+      else if (ty_is_object(at) && emit_kconv_obj_nil(c, av[0], ty_object_class(at), "to_hash", NULL, b)) {}
       /* an object answers through its own #to_hash (#3721) */
       else if (ty_is_object(at) &&
                comp_method_in_chain(c, ty_object_class(at), "to_hash", NULL) >= 0) {
