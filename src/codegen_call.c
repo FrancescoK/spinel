@@ -1562,6 +1562,8 @@ int poly_cls_value_cands(Compiler *c, int id, const char *name, int argc, const 
           incompat8 = 1;
         if (L.from[a] != ARG_NODE || kwh_arg || !atmp_ty) continue;
         TyKind at0 = atmp_ty[L.arg[a]];
+        /* emit_poly_temp_as reads a held handle for a plain String param. */
+        if (at0 == TY_STRBUF && pt == TY_STRING) continue;
         if (pt != TY_POLY && pt != TY_UNKNOWN && at0 != TY_POLY && at0 != TY_UNKNOWN &&
             pt != at0) incompat8 = 1;
       }
