@@ -1643,7 +1643,7 @@ static int strbuf_route_carries(Compiler *c, int v, int depth) {
 int emit_strbuf_route(Compiler *c, int v, Buf *b) {
   const NodeTable *nt = c->nt;
   if (emit_strbuf_io_read(c, unwrap_parens(c, v), b)) return 1;
-  if (repr_boxed_reader_handle(c, unwrap_parens(c, v))) {
+  if (repr_boxed_reader_handle(c, unwrap_parens(c, v)) && repr_of(c, unwrap_parens(c, v)).ty == TY_STRING) {
     v = unwrap_parens(c, v);
     int sd = view_push_repr(c, v, VR_HANDLE_DEMAND, 0);
     int sv = view_push(c, v, TY_POLY);

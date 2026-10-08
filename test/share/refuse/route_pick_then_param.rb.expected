@@ -1,1 +1,0 @@
-spinel: test/share/refuse/route_pick_then_param.rb:6: under --share-strings, the String the value of `pick` hands on as a block's parameter is shared with another name and changed in place, and that route cannot carry the shared handle yet: it would hand on a copy (#6765)

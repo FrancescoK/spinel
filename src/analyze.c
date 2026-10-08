@@ -18797,7 +18797,9 @@ static int an_ret_handle(Compiler *c, RetHandles *R, int mi) {
   int last = scope_body_last(c, mi);
   /* a body with its own rescue is a begin, whose arms answer */
   if (last < 0 && m->body >= 0 && nt_kind(nt, m->body) == NK_BeginNode) last = m->body;
-  TailCount tc = { .mi = mi, .param = -1 };
+  /* The settled walk accepts fresh arms beside handle reads, as the
+     earlier pickup does; their tails clear the return channel. */
+  TailCount tc = { .fresh_ok = 1, .mi = mi, .param = -1 };
   if (last >= 0) {
     saw = 1;
     ok = an_tail_handle(c, R, last, &tc);
