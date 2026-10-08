@@ -17429,6 +17429,21 @@ static int share_demand_rest_args(Compiler *c, int mi, const int *argv, int argc
   arg_layout_free(&L);
   return changed;
 }
+/* An element read can itself be the container whose String elements are
+   shared: [[s]][0][0] must demand s at the inner store. The existing
+   container-source walk carries the extra element depth back to it. */
+static int share_demand_nested_read(Compiler *c, int call, int recv) {
+  if (!container_elem_read_p(c->nt, recv) || nt_ref(c->nt, call, "block") >= 0) return 0;
+  TyKind rt = comp_ntype(c, recv);
+  if (rt == TY_POLY && container_elem_read_p(c->nt, call) && share_node_elems_share(c, recv))
+    return strbuf_container_source_walk(c, recv, 0, SB_DEMAND_NAMED);
+  if (!ty_is_array(rt) && !ty_is_hash(rt)) return 0;
+  int sh = bop_share_named(ty_is_array(rt) ? BOP_ANY_ARRAY : BOP_ANY_HASH,
+                           nt_str(c->nt, call, "name"));
+  if (sh != BSH_ELEM && sh != BSH_FETCH && sh != BSH_ELEM_N) return 0;
+  if (!share_node_elems_share(c, recv)) return 0;
+  return strbuf_container_source_walk(c, recv, 0, SB_DEMAND_NAMED);
+}
 static int share_default_apply(Compiler *c, int in_fixpoint) {
   if (!c->share_strings) return 0;
   if (in_fixpoint) {
@@ -17571,6 +17586,7 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
     else r = nt_ref(c->nt, n, kinds[k] == NK_CaseMatchNode ? "predicate" : "value");
     if (r < 0) continue;
     r = unwrap_parens(c, r);
+    if (kinds[k] == NK_CallNode) changed |= share_demand_nested_read(c, n, r);
     if (r < 0 || (nt_kind(c->nt, r) != NK_ArrayNode && nt_kind(c->nt, r) != NK_HashNode)) continue;
     if (kinds[k] == NK_CallNode && (blk < 0 || nt_kind(c->nt, blk) != NK_BlockNode)) {
       int s = bop_share_named(nt_kind(c->nt, r) == NK_ArrayNode ? BOP_ANY_ARRAY : BOP_ANY_HASH,
