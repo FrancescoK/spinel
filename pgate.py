@@ -71,6 +71,12 @@ SHARED_EXPECTED = {
         "@awk -f tools/shared_test_results.awk test/share/known-failures.txt $(TEST_RESULT_DIR)/*.ok"])],
     "clean-test-results": [("", ["@rm -rf $(TEST_RESULT_DIR)", "@tools/result_cache.sh prune"])],
 }
+# The sharing gate may build both PCH variants before either corpus leg.
+# Prep already ships those -O1 files, so gate-pch does no work in a part.
+PCH_EXPECTED = {
+    "test-pch": [("$(PCH_PLAIN) $(PCH_NOPOLY)", [])],
+    "gate-pch": [("", ["+@$(MAKE) --no-print-directory test-pch OPT=-O1"])],
+}
 # The only targets that may reach the corpus targets (by prerequisite or a
 # recursive make): with TESTS= the legs part runs them over nothing, so a
 # new way in would drop its programs.
@@ -110,11 +116,19 @@ def check(checkout):
     mk = text + "\n" + (open(common, errors="replace").read() if os.path.exists(common) else "")
     shared = has_shared(text)
     expected = dict(EXPECTED, **(SHARED_EXPECTED if shared else {}))
+    pch = shared and bool(rules(text, ["gate-pch"])["gate-pch"])
+    if pch:
+        expected.update(PCH_EXPECTED)
+        for t in ("gate-test", "gate-test-shared"):
+            expected[t] = [("gate-pch", [])] + expected[t]
     corpus = CORPUS | ({"test-corpus-results", "test-corpus-shared-summary"} if shared else set())
     allowed = CORPUS_CALLERS | ({"gate-test-shared", "test-corpus-summary", "test-corpus-shared-summary"} if shared else set())
     var_ok = VAR_OK + ([re.compile(r"^test-corpus-results:")] if shared else [])
     got = rules(text, list(expected) + ["test-run", "test"])
     bad = [f"the {t} rule" for t, want in expected.items() if got[t] != want]
+    if pch:
+        phony = {t for pre, _ in rules(text, [".PHONY"])[".PHONY"] for t in pre.split()}
+        bad += [f"the .PHONY declaration for {t}" for t in PCH_EXPECTED if t not in phony]
     if not any("test-corpus-summary" in pre.split() for pre, _ in got["test-run"]):
         bad.append("test-run (it no longer runs test-corpus-summary)")
     if not any(re.search(r"\$\(MAKE\).* test-run$", r) for _, rec in got["test"] for r in rec):
