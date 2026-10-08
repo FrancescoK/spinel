@@ -28,6 +28,7 @@ typedef enum {
   SHK_RET,      /* a method's value: scope */
   SHK_YIELD,    /* what a method yields: scope */
   SHK_BLKRET,   /* what the blocks a method yields to answer: scope */
+  SHK_SELF,     /* a String instance method's receiver: scope */
   SHK_UNKNOWN   /* anything the walk does not follow */
 } ShareKind;
 
@@ -94,6 +95,8 @@ const ShareHolder *share_holder(const Compiler *c, int h);
 /* The holder of a local / an ivar, or -1 when the walk made none. */
 int share_local_holder(const Compiler *c, int scope, int local);
 int share_ivar_holder(const Compiler *c, int cid, const char *name);
+int share_self_holder(const Compiler *c, int scope);
+int share_self_used(const Compiler *c, int holder);
 /* The element of holder h's containers' elements, or -1 (not a holder:
    read it with share_elem_flags / share_elem_holders). */
 int share_elem_holder(const Compiler *c, int h);

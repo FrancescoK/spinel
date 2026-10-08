@@ -352,6 +352,7 @@ static void emit_poly_user_arm0(Compiler *c, int id, const char *name, TyKind re
     else if (sp_streq(_dcn, "Float")) snprintf(_dself, sizeof _dself, "_t%d.v.f", tv);
     /* a plain string box or a mutable handle: deref answers the live
        text for the handle and is the identity for the plain box */
+    else if (repr_self_handle(c, mi)) snprintf(_dself, sizeof _dself, "sp_poly_as_strbuf(_t%d)", tv);
     else if (sp_streq(_dcn, "String")) snprintf(_dself, sizeof _dself, "sp_poly_strbuf_deref(_t%d).v.s", tv);
     else if (sp_streq(_dcn, "Symbol")) snprintf(_dself, sizeof _dself, "(sp_sym)_t%d.v.i", tv);
     else if (sp_streq(_dcn, "NilClass")) snprintf(_dself, sizeof _dself, "0");
@@ -838,6 +839,8 @@ static int poly_user_arm_n_replay(Compiler *c, int id, const char *name, const P
       snprintf(selfpbuf2, sizeof selfpbuf2, "_t%d", tv);
     else if (sp_streq(_dcn2, "Float"))
       snprintf(selfpbuf2, sizeof selfpbuf2, "_t%d.v.f", tv);
+    else if (repr_self_handle(c, mi))
+      snprintf(selfpbuf2, sizeof selfpbuf2, "sp_poly_as_strbuf(_t%d)", tv);
     else if (sp_streq(_dcn2, "String"))
       snprintf(selfpbuf2, sizeof selfpbuf2, "sp_poly_strbuf_deref(_t%d).v.s", tv);
     else if (sp_streq(_dcn2, "Symbol"))
@@ -993,6 +996,8 @@ static void emit_poly_user_arm_n_plan(Compiler *c, int id, const char *name, con
       snprintf(selfpbuf2, sizeof selfpbuf2, "_t%d", tv);
     else if (sp_streq(_dcn2, "Float"))
       snprintf(selfpbuf2, sizeof selfpbuf2, "_t%d.v.f", tv);
+    else if (repr_self_handle(c, mi))
+      snprintf(selfpbuf2, sizeof selfpbuf2, "sp_poly_as_strbuf(_t%d)", tv);
     else if (sp_streq(_dcn2, "String"))
       snprintf(selfpbuf2, sizeof selfpbuf2, "sp_poly_strbuf_deref(_t%d).v.s", tv);
     else if (sp_streq(_dcn2, "Symbol"))

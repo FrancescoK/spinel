@@ -15013,6 +15013,7 @@ static int an_stmts_last_shared(Compiler *c, int st) {
 int an_arg_is_shared_handle(Compiler *c, int node) {
   const NodeTable *nt = c->nt;
   if (node < 0) return 0;
+  if (repr_self_shared(c, node)) return 1;
   if (nt_kind(nt, node) == NK_LocalVariableReadNode) {
     const char *vn = nt_str(nt, node, "name");
     Scope *vs = vn ? comp_scope_of(c, node) : NULL;
@@ -18625,11 +18626,23 @@ static int an_tail_append_chain(Compiler *c, int n) {
   return n >= 0 && nt_kind(c->nt, n) == NK_CallNode && str_append_chain(c, n, chain, &base) > 0 &&
          an_arg_is_shared_handle(c, base);
 }
+static int an_ret_handle_body(Compiler *c, RetHandles *R, int mi) {
+  Scope *m = &c->scopes[mi];
+  /* A String reopening's proc form reads the same incoming handle. */
+  if (!R->fresh && m->def_node >= 0 && m->is_proc_form && m->ret == TY_STRING && repr_self_handle(c, mi)) return 1;
+  return !(m->def_node < 0 || (!R->fresh && (m->yields || m->is_proc_form || m->is_lowered_yield)) ||
+           (m->ret != TY_STRING && (!R->fresh || m->ret != TY_POLY)));
+}
 static int an_ret_handle(Compiler *c, RetHandles *R, int mi) {
   if (R->st[mi] != RH_UNSEEN) return R->st[mi] == RH_YES;
   Scope *m = &c->scopes[mi];
-  if (m->def_node < 0 || (!R->fresh && (m->yields || m->is_proc_form || m->is_lowered_yield)) ||
-      (m->ret != TY_STRING && (!R->fresh || m->ret != TY_POLY))) {
+  if (!R->fresh && m->yields && repr_self_handle(c, mi)) {
+    int pf = scope_proc_form_of(c, mi);
+    R->st[mi] = RH_BUSY;
+    R->st[mi] = pf >= 0 && an_ret_handle(c, R, pf) ? RH_YES : RH_NO;
+    return R->st[mi] == RH_YES;
+  }
+  if (!an_ret_handle_body(c, R, mi)) {
     R->st[mi] = RH_NO;
     return 0;
   }
