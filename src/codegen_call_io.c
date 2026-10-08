@@ -185,6 +185,7 @@ static void emit_io_read_nonblock_value(Compiler *c, int id, Buf *b) {
   const int *argv = call_args(nt, id, &argc);
   int exc = argc == 3 ? kwh_lookup(nt, argv[2], "exception") : -1;
   int nodes[4] = {recv, argv[0], argv[1], exc}, held[4], boxed[4];
+  Repr lr = repr_of(c, argv[0]), br = repr_of(c, argv[1]);
   buf_puts(b, "({ ");
   Buf *saved_pre = g_pre;
   g_pre = b;
@@ -192,7 +193,9 @@ static void emit_io_read_nonblock_value(Compiler *c, int id, Buf *b) {
     Repr r = repr_of(c, nodes[i]);
     boxed[i] = i == 2 || r.kind == RK_BOXED ||
                r.as_ty != (i == 0 ? TY_IO : i == 1 ? TY_INT : TY_BOOL);
-    int root = 0;
+    /* Runtime conversions run after every operand has been evaluated. */
+    int root = lr.kind == RK_BOXED || needs_root(lr.as_ty) ||
+               (i == 3 && (br.kind == RK_BOXED || ty_is_object(br.as_ty)));
     for (int j = i + 1; j < (exc < 0 ? 3 : 4); j++)
       root |= operand_may_allocate(c, nodes[j]);
     held[i] = hold_operand(c, nodes[i], r.as_ty, boxed[i], ++g_tmp, root && (r.kind == RK_BOXED || needs_root(r.as_ty)), " ", b);

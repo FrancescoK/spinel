@@ -71,3 +71,21 @@ p r.read_nonblock(1, buf, exception: false), buf
 buf = +"seed"
 p r.read_nonblock(1, buf, exception: (buf = nil; false)), buf
 r.close
+
+# A length conversion can collect after the fresh receiver was evaluated.
+class OutbufReadLength
+  def to_int
+    30.times { String.new("temporary") }
+    4
+  end
+end
+
+def eof_reader
+  r, w = IO.pipe
+  w.close
+  r
+end
+
+length = OutbufReadLength.new
+buf = +"seed"
+p eof_reader.read_nonblock(length, buf, exception: false), buf
