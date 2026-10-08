@@ -1,0 +1,42 @@
+true
+true
+true
+"include:hello!"
+9
+""
+"helo!"
+"helo!"
+"helo!"
+"count:helo!:helo!"
+"delete:helo!:helo!"
+"squeeze:helo!:helo!"
+"helo!"
+"helo!"
+true
+"fetch:hello!"
+"hello!"
+["h", "ell", "o!"]
+["h", "ell", "o!"]
+["h", "o!"]
+1
+false
+false
+"partition:ell"
+"rpartition:ell"
+"split:ell"
+"index:ell"
+"start_with:ell"
+"equal:ell"
+104
+"unpack1:C*"
+"AB"
+"65ell66"
+"pack:C*"
+"join:ell"
+"2020"
+"strftime:%Y"
+"ell"
+"%Y"
+200
+9
+"a*a*"
