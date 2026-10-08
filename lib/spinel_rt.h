@@ -9940,6 +9940,27 @@ static sp_RbVal sp_poly_str_become(sp_RbVal v, const char *s) {
   sp_str_check_mutable(v.v.s);
   return sp_box_str(s);
 }
+/* A value-form nonblocking read fills an existing buffer or clears it at
+   EOF. The caller writes a plain String back to its local before raising;
+   would-block leaves the buffer unchanged. No new String handle is made. */
+static const char *sp_io_read_nonblock_buffer(sp_File *f, sp_int n, sp_RbVal *buffer,
+                                             const sp_RbVal *exception, sp_bool *eof) {
+  SP_GC_ROOT(f);
+  sp_RbVal v = *buffer;
+  SP_GC_ROOT_RBVAL(v);
+  if (n < 0) sp_raise_cls("ArgumentError", sp_sprintf("negative length %lld given", (long long)n));
+  const char *s = sp_poly_nil_p(v) ? NULL : sp_poly_arg_str_chk(v);
+  if (s && sp_poly_is_strbuf(v) && sp_String_is_frozen((sp_String *)v.v.p)) sp_raise_frozen_str(s);
+  if (s) sp_str_check_mutable(s);
+  if (exception && exception->tag != SP_TAG_BOOL)
+    sp_raise_cls("ArgumentError", sp_sprintf("expected true or false as exception: %s", sp_poly_inspect(*exception)));
+  int text = s && !sp_str_is_binary(s);
+  const char *r = sp_sock_read_nb(f, n, 0, 0, eof);
+  SP_GC_ROOT_STR(r);
+  if (r && text) sp_str_as_text(r);
+  if (s && (r || *eof)) *buffer = sp_poly_str_become(v, r ? r : sp_str_empty);
+  return r;
+}
 /* The same through a receiver that is no variable -- an element read, a Hash
    value: a shared handle absorbs the new contents and every alias observes
    the change; a plain string box has nowhere to send them, and the call
