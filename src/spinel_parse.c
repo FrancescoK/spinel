@@ -3029,8 +3029,9 @@ static char *sp_rewrite_computed_requires(const char *source, const char *dir) {
    compiled, so the file is loaded eagerly. In the entry file the call becomes
    the require in place; in a required file it answers nil there, and the
    requires go at the end of the file -- after the module body the autoload
-   sits in, which the loaded file usually reopens. A receiver form
-   (`Mod.autoload`) or a computed path is left as it was. */
+   sits in, which the loaded file usually reopens. A path that starts with
+   `#{__dir__}/` is literal enough: it is a require_relative. A receiver
+   form (`Mod.autoload`) or any other computed path is left as it was. */
 static int sp_autoload_is_main = 0;
 /* the autoload's file beside the one naming it (lib/foo.rb autoloading
    "foo/bar" is lib/foo/bar.rb, the gem layout): reached without a load path */
@@ -3086,6 +3087,14 @@ static char *sp_rewrite_autoloads(const char *source, const char *dir) {
             while (*q == ' ' || *q == '\t') q++;
             if (*q == '"' || *q == '\'') {
               char qq = *q++;
+              /* `"#{__dir__}/path"` (the gem layout: lib/rdoc.rb autoloading
+                 "#{__dir__}/rdoc/x"): the one interpolation a path can carry
+                 and still name a file known at compile time. It is the
+                 requiring file's own directory, so the call is
+                 `require_relative "path"`. Any other `#{` is a computed path
+                 and leaves the call as it was. */
+              int dir_rel = 0;
+              if (qq == '"' && strncmp(q, "#{__dir__}/", 11) == 0) { q += 11; dir_rel = 1; }
               const char *fs = q;
               while (*q && *q != qq && *q != '\n' && *q != '#' ) q++;
               if (*q == qq) {
@@ -3094,7 +3103,7 @@ static char *sp_rewrite_autoloads(const char *source, const char *dir) {
                 while (*q == ' ' || *q == '\t') q++;
                 if (!paren || *q == ')') {
                   if (paren) q++;
-                  const char *kw = sp_autoload_beside(dir, fs, flen) ? "require_relative" : "require";
+                  const char *kw = (dir_rel || sp_autoload_beside(dir, fs, flen)) ? "require_relative" : "require";
                   if (sp_autoload_is_main) {
                     o += (size_t)sprintf(out + o, "%s \"%.*s\"", kw, (int)flen, fs);
                   }
