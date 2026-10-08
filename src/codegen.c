@@ -1645,6 +1645,25 @@ static int emit_boxed_cond_arms(Compiler *c, int node, Buf *b) {
   return 1;
 }
 
+/* A parenthesized sequence keeps the final value's box, as a conditional
+   arm does. Receiver snapshots introduce these sequences too. */
+static int emit_boxed_sequence(Compiler *c, int node, Buf *b) {
+  if (!repr_share_rule(c) || node < 0 || nt_kind(c->nt, node) != NK_ParenthesesNode ||
+      arg_ran_first(node, 0)) return 0;
+  TyKind t = repr_of(c, node).as_ty;
+  if ((t != TY_STRING && t != TY_STRBUF) || !strbuf_cond_has_handle_leaf(c, node, 0)) return 0;
+  int body = nt_ref(c->nt, node, "body"), n = 0;
+  if (body >= 0) nt_arr(c->nt, body, "body", &n);
+  if (n < 2) return 0;
+  int dst = ++g_tmp;
+  BoxedCondArm a = { dst, t == TY_STRING && repr_of(c, node).poly_lift };
+  buf_printf(b, "({ sp_RbVal _t%d; ", dst);
+  emit_cond_arm(c, node, b, emit_boxed_cond_body, &a);
+  buf_printf(b, " _t%d; })", dst);
+  RC(RF_SPECIAL, RW_NONE);
+  return 1;
+}
+
 static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
   /* Parentheses are transparent: box the inner expression directly so a
      wrapped yield (`out << (yield x)`) reaches the per-call-site yield boxing
@@ -2065,10 +2084,13 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
     }
   }
   if (emit_boxed_cond_arms(c, node, b)) return;
+  if (emit_boxed_sequence(c, node, b)) return;
   int lift = repr_share_rule(c) && node >= 0 && c->poly_strbuf_lift[node] && comp_ntype(c, node) == TY_STRING;
   /* a route that hands on a handle (`q ||= s.then { |v| v }`,
      emit_strbuf_route): that handle's box, not a new handle around a copy */
-  if (lift) {
+  /* A shared field's boxed value carries its handle even without a
+     container-store lift, including defaults, throw and break values. */
+  if (lift || (!arg_ran_first(node, 0) && strbuf_route_reader(c, node))) {
     Buf hb; memset(&hb, 0, sizeof hb);
     if (emit_strbuf_route(c, node, &hb)) {
       buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", hb.p);

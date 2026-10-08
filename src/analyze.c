@@ -15545,7 +15545,13 @@ static int sa_copy_defer(Compiler *c, int site, int v, int reader, const char *m
   q.carry = reader ? v : SHARE_CARRY_COPY;
   /* Unary plus already carries a mutable operand's handle; a frozen
      operand gets its own. Let the seal check that existing value route. */
-  if (nt_kind(c->nt, v) == NK_CallNode && is_unary_plus(nt_str(c->nt, v, "name")) &&
+  /* A builtin answering its String receiver is a value route over that
+     receiver's handle. The seal checks the route after storage settles. */
+  if (nt_kind(c->nt, v) == NK_CallNode &&
+      (is_unary_plus(nt_str(c->nt, v, "name")) ||
+       (bop_share_named(TY_STRING, nt_str(c->nt, v, "name")) == BSH_RECV &&
+        bop_answers_self(TY_STRING, nt_str(c->nt, v, "name"), call_plain_argc(c, v),
+                         nt_ref(c->nt, v, "block") >= 0) == BOPF_SELF)) &&
       cplan_user(c, v)->dispatch == CP_NONE) q.carry = v;
   /* A demanded String conversion already boxes its receiver's handle.
      Let the seal check that route when no user method overrides it. */
@@ -15573,7 +15579,9 @@ static void refuse_stored_block_param(Compiler *c, int sn, int to) {
   ShareRoute q = share_route(sn, sn, 0);
   q.to = to;
   q.to_elems = to >= 0;
-  q.carry = SHARE_CARRY_COPY;
+  /* The rule now gives a shared block parameter a handle slot. Its
+     stored read carries that slot; the seal checks what binds it. */
+  q.carry = sn;
   if (!share_route_defer(c, &q, msg)) unsupported_feature(c, sn, msg);
 }
 /* Is block parameter (vn, vs) bound only by the yields of user methods
@@ -21250,6 +21258,13 @@ static int mark_reader_identity_operands(Compiler *c) {
         continue;
       }
       char ivb[300]; int defc = -1;
+      /* A boxed reader's plan can give the same handle answer as a
+         statically resolved field. Its demand takes the boxed handle. */
+      if (repr_boxed_reader_handle(c, opnd)) {
+        c->strbuf_handle_demand[opnd] = 1;
+        changed = 1;
+        continue;
+      }
       const char *ivn = an_reader_ivar_of(c, opnd, &defc, ivb, sizeof ivb);
       if (!ivn || defc < 0) continue;
       int iv = comp_ivar_index(&c->classes[defc], ivn);
@@ -34091,6 +34106,8 @@ static void refuse_string_read_copies(Compiler *c) {
     ShareRoute q = share_route(w, v, 0);
     q.to = w;
     q.carry = SHARE_CARRY_COPY;
+    /* A reader whose settled plan carries shared fields uses that route. */
+    if (repr_boxed_reader_handle(c, v)) q.carry = v;
     if (rd_receiver_observed(c, r, rn) && !share_route_defer(c, &q, rd_msg)) unsupported_feature(c, w, rd_msg);
   }
   StoreVals st = {0};

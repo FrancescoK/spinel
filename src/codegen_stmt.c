@@ -1452,7 +1452,6 @@ int strbuf_self_route_slot(Compiler *c, int v, int *uplus, char *out, size_t cap
          strbuf_slot_ref(c, unwrap_parens(c, x), out, cap) ? x + 1 : 0;
 }
 static int strbuf_route_exc_message(Compiler *c, int v);
-static int strbuf_route_reader(Compiler *c, int v);
 /* Is the last statement of statement list st a holder's read, nil, a
    conditional with a handle arm, or a `raise` (which leaves no value)? */
 static int strbuf_stmts_tail_plain(Compiler *c, int st) {
@@ -1610,11 +1609,12 @@ int strbuf_exc_message_of_var(Compiler *c, int v) {
 /* A plain reader of a shared String slot normally answers a snapshot.
    Its field-read arm can hand on the handle under a demand instead, as
    can the implicit-self reader. The seal asks the same predicate. */
-static int strbuf_route_reader(Compiler *c, int v) {
+int strbuf_route_reader(Compiler *c, int v) {
   v = unwrap_parens(c, v);
   if (!repr_share_rule(c) || v < 0 || nt_kind(c->nt, v) != NK_CallNode ||
       repr_of(c, v).as_ty != TY_STRING) return 0;
   int allocates = 0;
+  if (repr_boxed_reader_handle(c, v)) return 1;
   if (nt_ref(c->nt, v, "receiver") >= 0)
     return call_is_field_read(c, v, &allocates) && allocates;
   int sv = view_push_repr(c, v, VR_HANDLE_DEMAND, 1);
@@ -1642,6 +1642,17 @@ static int strbuf_route_carries(Compiler *c, int v, int depth) {
 int emit_strbuf_route(Compiler *c, int v, Buf *b) {
   const NodeTable *nt = c->nt;
   if (emit_strbuf_io_read(c, unwrap_parens(c, v), b)) return 1;
+  if (repr_boxed_reader_handle(c, unwrap_parens(c, v))) {
+    v = unwrap_parens(c, v);
+    int sd = view_push_repr(c, v, VR_HANDLE_DEMAND, 0);
+    int sv = view_push(c, v, TY_POLY);
+    buf_puts(b, "sp_poly_as_strbuf(");
+    emit_expr(c, v, b);
+    buf_puts(b, ")");
+    view_pop(c, sv);
+    view_pop(c, sd);
+    return 1;
+  }
   if (strbuf_route_reader(c, v)) {
     v = unwrap_parens(c, v);
     int sv = view_push_repr(c, v, VR_HANDLE_DEMAND, 1);
@@ -2272,6 +2283,10 @@ int emit_bang_self_handle(Compiler *c, int v, Buf *b) {
     int th = ++g_tmp, tr = ++g_tmp;
     buf_printf(b, "({ sp_String *_t%d = ", th);
     emit_strbuf_handle_of(c, r, b);
+    /* Taking the handle directly keeps the receiver route's nil check. */
+    if (!strbuf_route_nonnil(c, r))
+      buf_printf(b, "; if (SP_UNLIKELY(!_t%d)) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil()))", th,
+                 nt_str(c->nt, v, "name"));
     buf_printf(b, "; SP_GC_ROOT(_t%d); const char *_t%d = ", th, tr);
     r = unwrap_parens(c, r);
     int mark = g_n_argov;
@@ -2306,7 +2321,11 @@ int emit_bang_self_handle(Compiler *c, int v, Buf *b) {
     return 1;
   }
   int th = ++g_tmp;
-  buf_printf(b, "({ sp_String *_t%d = %s; SP_GC_ROOT(_t%d); const char *_t%d = ", th, sref, th, tr);
+  buf_printf(b, "({ sp_String *_t%d = %s; SP_GC_ROOT(_t%d); ", th, sref, th);
+  if (!strbuf_route_nonnil(c, r))
+    buf_printf(b, "if (SP_UNLIKELY(!_t%d)) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil())); ", th,
+               nt_str(c->nt, v, "name"));
+  buf_printf(b, "const char *_t%d = ", tr);
   int mark = g_n_argov;
   ran_first_bind(r, th, th);
   emit_expr(c, v, b);
@@ -17743,6 +17762,11 @@ static int strbuf_flow_value(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, in
   if (ctx == SFC_TAIL && strbuf_native_answer(c, v)) return 1;
   if (k == NK_IfNode || k == NK_UnlessNode || k == NK_OrNode || k == NK_AndNode || k == NK_CaseNode ||
       k == NK_StatementsNode || k == NK_ElseNode || k == NK_ParenthesesNode) {
+    /* A boxed sequence evaluates its statements and boxes its own tail,
+       just as a conditional arm does (emit_boxed_sequence). */
+    if (ctx == SFC_ELEM && k == NK_ParenthesesNode &&
+        (r.as_ty == TY_STRING || r.as_ty == TY_STRBUF) && strbuf_flow_has_leaf(c, fm, v, 0))
+      return strbuf_flow_cond(c, fm, SFC_ELEM_ARMS, v, depth);
     /* emit_strbuf_value takes a conditional arm by arm only when one of its
        arms is a handle (strbuf_cond_has_handle_leaf); else whole, a copy */
     if ((ctx == SFC_ALIAS || ctx == SFC_ARG || ctx == SFC_SPLICE) && !strbuf_flow_has_leaf(c, fm, v, 0)) ctx = SFC_SLOT;

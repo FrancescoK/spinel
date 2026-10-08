@@ -29,6 +29,7 @@
 #include "call_plan.h"
 #include "share.h"
 #include "repr.h"
+#include "codegen_internal.h"
 
 /* element-own flags (not merged by a union) */
 enum { SHE_WRITTEN = 1, SHE_IDENTITY = 2 };
@@ -3916,7 +3917,10 @@ static int sh_carries_handle(const Compiler *c, int n) {
      (emit_strbuf_value) */
   return r.kind == RK_STRBUF || r.strbuf_src != RS_NONE || sh_bang_self_slot(c, n) ||
          /* a boxed variable's read lifted into the handle (poly_strbuf_lift) */
-         r.poly_lift;
+         r.poly_lift ||
+         /* A yielding call's result and a receiver-returning expression
+            use the same handle routes as their eventual store. */
+         strbuf_value_carries((Compiler *)c, n);
 }
 
 /* The class of node n's value (with elems, of its elements), or -1. */
