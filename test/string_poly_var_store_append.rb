@@ -4,7 +4,8 @@
 # Before, the store took a copy, the append was lost, and nothing refused.
 # A class method's ivar is the class object's, apart from an instance's; a
 # class body's `@@s` is the class's. The Integer calls keep the parameters
-# POLY.
+# POLY. Seven hops down (past the hand-on walk's bound) the store is shared
+# the same way.
 class StoreIvar
   def entry(data)
     return data.to_s if data.is_a?(Integer)
@@ -65,6 +66,23 @@ class StoreClassBody
   grow
   $class_body_store = x
 end
+class StoreSevenHop
+  def entry(data)
+    return data.to_s if data.is_a?(Integer)
+    hop1(data)
+  end
+  def hop1(v) = hop2(v)
+  def hop2(v) = hop3(v)
+  def hop3(v) = hop4(v)
+  def hop4(v) = hop5(v)
+  def hop5(v) = hop6(v)
+  def hop6(v) = hop7(v)
+  def hop7(v)
+    @s = v
+    @s << "~"
+    nil
+  end
+end
 a = +"a"
 StoreIvar.new.entry(1)
 StoreIvar.new.entry(a)
@@ -86,4 +104,7 @@ f = +"f"
 StoreClassIvar.keep(1)
 StoreClassIvar.keep(f)
 StoreClassIvar.grow
-p a, b, c, d, e, r, f, $class_body_store
+h = +"h"
+StoreSevenHop.new.entry(1)
+StoreSevenHop.new.entry(h)
+p a, b, c, d, e, r, f, $class_body_store, h
