@@ -2219,6 +2219,8 @@ threaded-render-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SPINEL_TIMEOUT)
 
 GC_MINOR_TESTS := test/reopened_builtin_kwrest_keys.rb \
                   test/share_strings_boxed_hash_key.rb \
+                  test/string_append_chain_prepend.rb \
+                  test/share_strings_prepend_override.rb \
                   test/share_strings_argument_conversion_root.rb \
                   test/reader_or_assign_frozen.rb \
                   test/share_strings_boxed_cond_order.rb \

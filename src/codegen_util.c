@@ -2600,6 +2600,13 @@ int strbuf_bang_self_local(const Compiler *c, int v) {
   if (!self_ans && !(nt_str(nt, v, "name") && (comp_ntype((Compiler *)c, r) == TY_STRING || comp_ntype((Compiler *)c, r) == TY_STRBUF) &&
                      bop_share_named(TY_STRING, nt_str(nt, v, "name")) == BSH_RECV))
     return 0;
+  if (!self_ans) {
+    int targets[CPT_MAX];
+    if (cplan_targets((Compiler *)c, v, targets, CPT_MAX) != 0) return 0;
+  }
+  /* The receiver can itself be a route over a handle, including an
+     append chain followed by a prepend with several arguments. */
+  if (strbuf_value_carries((Compiler *)c, r)) return 1;
   if (rk == NK_InstanceVariableReadNode || repr_static_read_kind(rk))
     return strbuf_var_handle((Compiler *)c, r, ref, sizeof ref);
   /* a reader call read as the handle on a variable or self (`o.s.strip!`),
