@@ -23972,11 +23972,24 @@ void emit_exc_exception(Compiler *c, int recv, int arg, Buf *b) {
   TyKind xrt = comp_ntype(c, recv);
   if (ty_is_object(xrt))
     buf_printf(b, "(sp_%s *)", c->classes[ty_object_class(xrt)].c_name);
+  /* --share-strings: a message read from a variable holding the shared
+     handle is held as that handle (exc_msg_handle), as `C.new(s)` holds it */
+  char mh[256];
+  int hm = comp_ntype(c, arg) == TY_STRING && exc_msg_handle(c, arg, mh, sizeof mh);
+  if (hm) buf_puts(b, "((sp_Exception *)sp_exc_attach_msg(");
   buf_puts(b, "sp_exc_exception((sp_Exception *)(");
   emit_expr(c, recv, b); buf_puts(b, "), ");
-  if (comp_ntype(c, arg) == TY_STRING) emit_expr(c, arg, b);
-  else { buf_puts(b, "sp_poly_to_s("); emit_boxed(c, arg, b); buf_puts(b, ")"); }
+  /* an explicitly given message, as `C.new(msg)` takes it: an empty one
+     stays empty and a literal's stays frozen (sp_exc_msg_given); nil is
+     no message, and the class name answers */
+  if (comp_ntype(c, arg) == TY_STRING) { buf_puts(b, "sp_exc_msg_given("); emit_expr(c, arg, b); buf_puts(b, ")"); }
+  else {
+    int mt = ++g_tmp;
+    buf_printf(b, "({ sp_RbVal _t%d = ", mt); emit_boxed(c, arg, b);
+    buf_printf(b, "; _t%d.tag == SP_TAG_NIL ? (&(\"\\xff\")[1]) : sp_exc_msg_given(sp_poly_to_s(_t%d)); })", mt, mt);
+  }
   buf_puts(b, ")");
+  if (hm) buf_printf(b, ", %s))", mh);
 }
 
 int hoist_exc_recv(Compiler *c, int recv) {
