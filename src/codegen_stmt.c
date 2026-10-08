@@ -1919,18 +1919,28 @@ int strbuf_cond_has_handle_leaf(Compiler *c, int v, int depth) {
 }
 /* Assign conditional `v`'s value to the handle temp `dst` as statements,
    arm by arm (strbuf_cond_has_handle_leaf): the condition is tested where
-   the value form tests it, and each arm's own setup runs only on its path. */
-static void emit_strbuf_cond_arm(Compiler *c, LocalVar *lv, int v, const char *dst, Buf *b, int depth) {
+   the value form tests it, and each arm's own setup runs only on its path.
+   Boxed conditional arms use the same scoped emission. */
+void emit_cond_arm(Compiler *c, int node, Buf *b, void (*emit)(Compiler *, int, Buf *, void *), void *ctx) {
   Buf pre; memset(&pre, 0, sizeof pre);
   Buf *sv = g_pre; g_pre = &pre;
   Buf body; memset(&body, 0, sizeof body);
-  emit_strbuf_cond_value(c, lv, v, dst, &body, depth);
+  emit(c, node, &body, ctx);
   g_pre = sv;
   buf_puts(b, "{ ");
   buf_puts(b, pre.p ? pre.p : "");
   buf_puts(b, body.p ? body.p : "");
   buf_puts(b, " }");
   free(pre.p); free(body.p);
+}
+typedef struct { LocalVar *lv; const char *dst; int depth; } StrbufCondArm;
+static void emit_strbuf_cond_body(Compiler *c, int v, Buf *b, void *ctx) {
+  StrbufCondArm *a = ctx;
+  emit_strbuf_cond_value(c, a->lv, v, a->dst, b, a->depth);
+}
+static void emit_strbuf_cond_arm(Compiler *c, LocalVar *lv, int v, const char *dst, Buf *b, int depth) {
+  StrbufCondArm a = { lv, dst, depth };
+  emit_cond_arm(c, v, b, emit_strbuf_cond_body, &a);
 }
 static void emit_strbuf_cond_value(Compiler *c, LocalVar *lv, int v, const char *dst, Buf *b, int depth) {
   const NodeTable *nt = c->nt;
@@ -1952,7 +1962,8 @@ static void emit_strbuf_cond_value(Compiler *c, LocalVar *lv, int v, const char 
       return;
     case NK_StatementsNode: {
       int n = 0; const int *bb = nt_arr(nt, v, "body", &n);
-      for (int i = 0; i < n - 1; i++) emit_stmt(c, bb[i], b, 0);
+      /* The tail's setup must follow the arm's earlier statements. */
+      for (int i = 0; i < n - 1; i++) emit_stmt(c, bb[i], g_pre, 0);
       if (n > 0) emit_strbuf_cond_value(c, lv, bb[n - 1], dst, b, depth);
       else buf_printf(b, "%s = NULL;\n", dst);
       return;

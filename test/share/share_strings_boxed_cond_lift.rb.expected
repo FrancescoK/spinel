@@ -1,0 +1,26 @@
+fresh arm
+"123!"
+["123!", 0]
+"s?."
+["s?.", 0]
+"s?."
+unless arm
+"789!"
+"789!"
+local arm
+"42!"
+[0, "42!"]
+global arm
+"456!"
+[0, "456!"]
+nested arm
+nested fresh
+"5!"
+["5!", 0]
+frozen arm
+frozen
+"frozen"
+"s?.A"
+"tH"
+"s?.A"
+"tH"
