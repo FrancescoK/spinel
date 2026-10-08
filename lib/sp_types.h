@@ -91,6 +91,11 @@ typedef intptr_t sp_int;
 typedef double sp_float;
 typedef bool sp_bool;
 
+/* CRuby's nil.object_id, false.object_id and true.object_id. */
+#define SP_NIL_OBJECT_ID 4
+#define SP_FALSE_OBJECT_ID 0
+#define SP_TRUE_OBJECT_ID 20
+
 /* Sentinel value reserved by the int? (scalar-nullable int) type. An
    int? slot is bit-compatible with sp_int; SP_INT_NIL marks the
    "nil" inhabitant. The pattern is INTPTR_MIN -- INT64_MIN on 64-bit

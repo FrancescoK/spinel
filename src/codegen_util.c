@@ -2456,7 +2456,7 @@ int strbuf_object_ref(Compiler *c, int recv, Buf *b) {
     if (repr_of(c, route - 1).may_nil) {
       int t = ++g_tmp;
       buf_printf(b, "({ sp_String *_t%d = %s; _t%d ? (sp_int)(uintptr_t)_t%d : %s; })",
-                 t, ref, t, t, repr_of(c, recv).may_nil ? "4" : "(sp_int)(uintptr_t)sp_str_frozen_empty");
+                 t, ref, t, t, repr_of(c, recv).may_nil ? "SP_NIL_OBJECT_ID" : "(sp_int)(uintptr_t)sp_str_frozen_empty");
     }
     else buf_printf(b, "((sp_int)(uintptr_t)(%s))", ref);
     return 1;
@@ -2465,7 +2465,7 @@ int strbuf_object_ref(Compiler *c, int recv, Buf *b) {
     Buf rb; memset(&rb, 0, sizeof rb);
     if (!strbuf_box_ref_as(c, recv, "%s", &rb)) return 0;
     int t = ++g_tmp;
-    buf_printf(b, "({ sp_String *_t%d = %s; _t%d ? (sp_int)(uintptr_t)_t%d : 4; })", t, rb.p, t, t);
+    buf_printf(b, "({ sp_String *_t%d = %s; _t%d ? (sp_int)(uintptr_t)_t%d : SP_NIL_OBJECT_ID; })", t, rb.p, t, t);
     free(rb.p);
     return 1;
   }
