@@ -5,6 +5,8 @@
 # the compiler crashed. That walk now also tests for a missing name; the
 # program stays as a guard. The answers here do not depend on the engine.
 
+ENV.delete("SPINEL_KINDIDX_UNSET")
+
 def env_or_default(name)
   return "d" unless RUBY_ENGINE == "spinel"
   ENV.fetch(name, "d")
