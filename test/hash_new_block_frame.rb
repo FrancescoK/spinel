@@ -5,7 +5,7 @@
 # of these named an identifier it never declared, and a proc made inside it
 # had its own function written into the middle of this one: the C build
 # failed. Such a block is now a real proc the hash's default calls.
-
+# spinel: gc-minor
 def keep(&b) = b
 
 kept = Hash.new { |hh, k| hh[k] = keep { k * 2 } }

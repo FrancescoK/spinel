@@ -1,4 +1,5 @@
 # Builtin arms consume shared arguments while other receivers use user methods.
+# spinel: gc-minor
 class BuiltinReader
   def include?(value) = "include:#{value}"
   def count(first, second) = "count:#{first}:#{second}"

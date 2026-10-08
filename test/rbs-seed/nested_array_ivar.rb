@@ -9,6 +9,7 @@
 #
 # With the seed applied both tables must still narrow (sp_PtrArray of
 # sp_IntArray* / sp_FloatArray*) and the program must answer what CRuby answers.
+# spinel: rbs-seed-check
 class Tables
   attr_reader :ints, :flts
   def initialize(n)

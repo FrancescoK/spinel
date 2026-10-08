@@ -4,6 +4,7 @@
 # grown later), which carries no element kind of its own. Without the seed
 # these stay boxed poly arrays; with it each table is an sp_PtrArray of typed
 # rows and the empty literals are built as rows of that kind (#4484).
+# spinel: rbs-seed-check
 class EmptyRowTables
   def initialize(n)
     @a = Array.new(n) { [] }

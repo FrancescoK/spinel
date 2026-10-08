@@ -1,3 +1,4 @@
+# spinel: share
 # A String yielded to a block that appends to its parameter: the append has
 # to reach the yielded variable, and through it the caller's, the way a
 # shared CRuby String would. Three faults met here: the usage pass typed the

@@ -2,6 +2,7 @@
 # receiver kind, the blockless Enumerator form, a class that includes
 # Enumerable, a run-time receiver, the String#partition that shares the name
 # (a different arity, left to String), and the block forwarded three ways.
+# spinel: share
 a, b = [1, 2, 3, 4].partition { |x| x.odd? }
 p a, b
 p ["a", "bb", "c"].partition { |s| s.size == 1 }

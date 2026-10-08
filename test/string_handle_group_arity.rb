@@ -2,7 +2,7 @@
 # whatever another method of the same name takes at that position: no
 # parameter, an Integer, an Array, a boxed value, a yielding method spliced
 # into its calls (#6179).
-
+# spinel: gc-minor
 X = "x" * 100
 
 # another arity

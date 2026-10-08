@@ -1,5 +1,6 @@
 # nil numeric arguments raise TypeError, but the ffi gem zeroes a callback's
 # nil return after any DataConverter runs. Both paths use the same signature.
+# spinel: share
 require "ffi"
 require "bigdecimal"
 

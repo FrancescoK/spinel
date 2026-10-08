@@ -8,6 +8,7 @@
 # The dead caller's Array only types as String because a user class defines
 # a yielding `each`; the stored-proc call is what leaves Pool#insert's
 # receiver poly.
+# spinel: share
 def check_binds(binds)
   binds.each do |value|
     puts "bind: #{value.class}"

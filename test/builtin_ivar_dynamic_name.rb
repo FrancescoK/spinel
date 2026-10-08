@@ -1,4 +1,5 @@
 # Builtin ivar reflection validates evaluated names before its fallback.
+# spinel: gc-minor
 ["x", "@", "@@x", "@1", "@x!", "@x\0y", "@valid", "@café"].each do |name|
   begin
     p "s".instance_variable_get(name)

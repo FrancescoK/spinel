@@ -3,7 +3,7 @@
 # call the earlier contradicts would build. It is an error, naming both.
 #
 # Not a snapshot test -- the Makefile runs it and asserts the diagnostic.
-
+# spinel: rbs-seed-check
 module DupPaths
   def self.path(show_read: nil, feed_id: nil)
     "/a" + (feed_id.nil? ? "" : "?f=#{feed_id.to_s}")

@@ -1,6 +1,7 @@
 # A String or Symbol read from a boxed slot answers dump and undump, and the
 # case mappings given options, as a typed one does: it raised NoMethodError
 # naming String
+# spinel: gc-minor
 x = ["ab", 1][0]
 p x.upcase(:ascii), x.downcase(:ascii), x.capitalize(:ascii), x.swapcase(:ascii)
 p x.upcase(:turkic), x.downcase(:fold), x.upcase(:turkic, :lithuanian)

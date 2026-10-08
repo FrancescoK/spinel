@@ -1,4 +1,6 @@
 # A String variable on this route must not silently lose its append.
+# spinel: reject-share
+# spinel: reject-thread-string
 class C
   def run
     @s = +"a"

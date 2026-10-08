@@ -4,6 +4,7 @@
 # still called it nil, so the miss was silent (#3493). The grouping shape at
 # the end is where it was found: a nullable foreign key whose nil bucket the
 # literal-nil lookup could not see.
+# spinel: rbs-seed-check
 class NkR
   def initialize(p)
     @p = p

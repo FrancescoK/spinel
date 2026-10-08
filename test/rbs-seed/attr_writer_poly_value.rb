@@ -1,5 +1,6 @@
 # An --rbs Integer attr_accessor assigned a boxed value as a method's value:
 # the store kept the sp_RbVal unconverted and the C did not compile (#4856).
+# spinel: rbs-seed-check
 class SeedAttrTarget
   attr_accessor :pc
   def initialize = @pc = 0

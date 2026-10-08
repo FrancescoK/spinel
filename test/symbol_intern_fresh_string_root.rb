@@ -1,3 +1,4 @@
+# spinel: gc-stress
 # A String made in place is kept alive while it becomes a new Symbol.
 
 # a name long enough that the pool's own copy collects in a plain run

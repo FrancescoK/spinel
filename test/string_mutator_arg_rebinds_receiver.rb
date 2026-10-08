@@ -1,7 +1,8 @@
+# spinel: share
 # A String mutator whose argument assigns the variable its receiver reads:
 # Ruby evaluates the receiver first, so the call mutates and answers the
 # String the variable held then, and the argument's assignment stands.
-
+# spinel: gc-minor
 # value and statement position, a local
 v = +"a"; r = v << (v = +"b"); p [r, v]
 w = +"a"; r = w.concat(w = +"b"); p [r, w]

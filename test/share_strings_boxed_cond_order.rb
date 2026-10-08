@@ -1,6 +1,7 @@
 # Boxed conditional arms run their setup after the predicate, only on the
 # chosen path, and after earlier statements in that arm. Calls with two
 # String arguments force hoisted, rooted setup; untaken setup can raise.
+# spinel: gc-minor
 def choose(v)
   puts "predicate"
   v

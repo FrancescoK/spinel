@@ -3,7 +3,7 @@
 # a container -- compares by its text like any other String. The identity
 # rules that hand such operands a handle for equal? used to take eql? too,
 # and the String arm then answered a constant false for the handle.
-
+# spinel: gc-minor
 class Names
   attr_reader :first, :last
   def initialize; @first = +"Ada"; @last = +"Bob"; end

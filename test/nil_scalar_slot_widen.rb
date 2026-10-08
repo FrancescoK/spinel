@@ -1,5 +1,6 @@
 # Bool and Symbol have no nil sentinel. A boxed RHS that settles after the
 # initial write inference must widen the destination, preserving nil's tag.
+# spinel: gc-minor
 x = false
 p x == nil
 x = (sq = [false]; _, st = *sq; st)

@@ -1,5 +1,5 @@
 # Range copies preserve endpoints but have their own frozen state.
-
+# spinel: gc-minor
 puts "integer"
 integer = (1..2)
 p integer.frozen?

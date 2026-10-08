@@ -1,4 +1,5 @@
 # Imported module functions use the calling receiver's function table.
+# spinel: share
 require "fiddle/import"
 module M
   extend Fiddle::Importer

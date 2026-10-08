@@ -3,7 +3,7 @@
 # statements run. Nothing followed the literal through the parentheses, so
 # its parameters were bound by nothing and read the elements as Integers:
 # `{a: 1}.each_with_object([], &(1; proc { |(k, v), m| m << k }))` gave [0].
-
+# spinel: gc-minor
 h = {a: 1}
 p h.each_with_object([], &(1; proc { |(k, v), m| m << k }))
 p h.each_with_object([], &(nil; proc { |(k, v), m| m << v }))

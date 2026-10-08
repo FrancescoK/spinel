@@ -2,7 +2,7 @@
 # constant read. An inline `Regexp.new(s)` / `Regexp.union(..)` / a method
 # returning a regex is the same pattern value, and String#match / #match? /
 # #=~ / #!~ / #scan must take it the way #sub / #gsub / #split already do.
-
+# spinel: gc-minor
 def re
   /\d/
 end

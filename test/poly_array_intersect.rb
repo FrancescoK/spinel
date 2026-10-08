@@ -4,7 +4,8 @@
 # an arm and the call raised NoMethodError naming Array -- which is what the
 # receiver was. Every array kind coerces to a poly array, so one arm serves
 # them all rather than one per element type.
-
+# spinel: gc-stress
+# spinel: gc-minor
 def pick(flag)
   flag ? [1, 2] : "no"
 end

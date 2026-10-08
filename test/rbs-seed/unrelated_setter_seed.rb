@@ -7,6 +7,7 @@
 # changed which method the call resolved to (#4171).
 # a real setter that CAN take the value keeps its arm, and one that cannot
 # raises for a receiver of that class rather than miscompiling
+# spinel: rbs-seed-run
 class Base
   attr_accessor :session
 end

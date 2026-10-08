@@ -4,6 +4,7 @@
 # through `show_into`, a name two modules define: resolved by unique name,
 # the call had no target, the caller's `io = String.new` stayed a plain local,
 # and `Pages.show_into` got a fresh copy that took every append (#6065).
+# spinel: rbs-seed-check
 module SeedHelper
   def self.open_into(io)
     io << "<div>"

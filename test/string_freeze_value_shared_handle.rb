@@ -2,6 +2,7 @@
 # (here because `+c` answers c itself, so d is another name for it): the
 # handle is frozen in place and the value is the frozen String. The C
 # assigned to the handle's value read and did not compile.
+# spinel: share
 c = +"abc"
 d = +c
 d << "n"

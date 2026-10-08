@@ -9,6 +9,7 @@
 # object, so a hash that has to change variant here is REBUILT, and a later
 # mutation through the seeded slot is not seen by the caller's binding. A hash
 # already at the seeded variant keeps its identity, which is the case below.
+# spinel: rbs-seed-run
 class Req
   def initialize
     @params = {}

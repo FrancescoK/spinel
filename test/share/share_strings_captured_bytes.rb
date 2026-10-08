@@ -1,5 +1,6 @@
 # A shared String's byte snapshot must survive allocation of the cell a
 # closure captures. Repeating the call also checks a fresh second argument.
+# spinel: gc-minor
 require 'find'
 require 'tmpdir'
 

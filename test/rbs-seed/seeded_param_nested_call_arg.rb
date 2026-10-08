@@ -6,6 +6,7 @@
 # call ran as a statement of its own and its result was dropped, so `upd`
 # converted the caller's String-keyed input and read no :bio. Behind a
 # receiver chain the C did not build.
+# spinel: rbs-seed-run
 class NestedArgProfile
   def initialize
     @bio = nil

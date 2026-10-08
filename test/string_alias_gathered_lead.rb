@@ -6,7 +6,7 @@
 # held when it was read. Each method has one call, so no other call site
 # makes its parameter the handle; each probe appends LONG, which always
 # reallocates.
-
+# spinel: gc-minor
 LONG = "!" * 100
 
 def seen(s) = [s[0], s.size]

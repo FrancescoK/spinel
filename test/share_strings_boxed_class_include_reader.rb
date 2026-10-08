@@ -1,4 +1,5 @@
 # Builtin fallback arms read shared String bytes without losing user method handles.
+# spinel: gc-minor
 class A
   def self.include?(value)
     "A:#{value}:#{value.length}"

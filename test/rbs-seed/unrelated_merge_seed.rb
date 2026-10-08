@@ -6,6 +6,7 @@
 # arm for a plain Hash's call and the build stopped inside that class. The
 # collapsed-keyword slot had made the same argument all along (#4172).
 # an arm whose parameter CAN take the argument keeps it
+# spinel: rbs-seed-run
 class Flash
   def merge(other)
     Flash.new

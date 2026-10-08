@@ -1,4 +1,5 @@
 # Even a receiver without zip evaluates all operands before method lookup.
+# spinel: gc-minor
 recv = [nil, [1]][0]
 items = []
 begin

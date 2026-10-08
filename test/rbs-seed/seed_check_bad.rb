@@ -2,7 +2,7 @@
 # Without -DSP_RBS_CHECK this prints the String pointer as an Integer; with it
 # the store aborts and names the slot. Not a snapshot test -- the Makefile runs
 # it and asserts the abort.
-
+# spinel: rbs-seed-check
 class Bad
   def initialize
     @v = nil

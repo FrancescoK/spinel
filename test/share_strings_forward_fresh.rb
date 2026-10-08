@@ -1,6 +1,7 @@
 # A fresh String argument held before a rest gather is still text until
 # the gather wraps its handle. Forwarding keeps the resulting String,
 # including its frozen mark, and arguments run once in source order.
+# spinel: gc-minor
 def append_fresh(s) = (s << "!"; s)
 def named_fresh(*r) = append_fresh(*r)
 def anonymous_fresh(*) = append_fresh(*)

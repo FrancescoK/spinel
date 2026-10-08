@@ -2,7 +2,7 @@
 # RangeError rather than saturating silently. spinel's int model
 # is int64-only, so the CRuby Bignum promotion path lowers to a
 # user-catchable RangeError.
-
+# spinel: wasm
 begin
   "99999999999999999999".to_i
   puts "no exception"

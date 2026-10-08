@@ -5,7 +5,7 @@
 # TypeError at run time.
 #
 # Not a snapshot test -- the Makefile runs it and asserts the diagnostic.
-
+# spinel: rbs-seed-check
 module KwPaths
   def self.show(show_read: nil)
     "/a" + (show_read.nil? ? "" : "?s=#{show_read.to_s}")

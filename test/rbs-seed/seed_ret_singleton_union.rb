@@ -1,6 +1,7 @@
 # A return declared singleton(...) -- or a union of them -- is a Class value:
 # the declaration agrees with a body returning the classes, and the seed
 # check says nothing (#5036).
+# spinel: rbs-seed-check
 class SgStory
   def self.none = "stories"
 end

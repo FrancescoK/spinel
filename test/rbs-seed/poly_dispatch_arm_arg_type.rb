@@ -10,7 +10,7 @@
 #
 # A subclass in an ancestor-typed slot is a different matter: the layouts
 # coincide and it gets a cast, so those arms stay.
-
+# spinel: rbs-seed-run
 class UserParams
   def initialize(n)
     @n = n

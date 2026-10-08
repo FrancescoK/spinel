@@ -5,7 +5,7 @@
 # (`t = y; t << x`), a chained assignment (`u = t = s`) and an alias handed
 # to an appending method (`t = s; grow(t)`) left the first name with its
 # old bytes. Each probe appends LONG, which always reallocates.
-
+# spinel: gc-minor
 LONG = "!" * 100
 
 def seen(s) = [s[0], s.size]

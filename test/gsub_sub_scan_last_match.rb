@@ -3,7 +3,7 @@
 # pattern's `$~.regexp` is the String escaped into a Regexp. Inside a block,
 # `$~` is that turn's match. A method doing one keeps its caller's `$~`, and
 # slice!, index and the other String-pattern searches leave `$~` alone.
-
+# spinel: gc-minor
 def md(m) = m.nil? ? nil : [m[0], m.regexp, m.pre_match, m.post_match, m.begin(0)]
 
 'he[[o'.gsub('[', ']')

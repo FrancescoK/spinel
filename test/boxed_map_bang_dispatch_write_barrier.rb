@@ -1,4 +1,5 @@
 # The builtin fallback beside user-defined mutators needs a barrier per store.
+# spinel: gc-minor
 class Mapper
   def map!
     yield "x"

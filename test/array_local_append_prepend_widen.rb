@@ -3,7 +3,7 @@
 # array) must widen the local to a poly array, same as #push / #unshift --
 # previously append/prepend were missing from the widening check, so the
 # value silently lowered through the typed setter instead (nil -> 0).
-
+# spinel: decisions
 a = [1, 2]
 a.append(nil)
 p a                                   #=> [1, 2, nil]

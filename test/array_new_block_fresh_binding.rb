@@ -5,7 +5,7 @@
 # block assigned must not carry into the next element. The generator used
 # to leave the index in one frame-wide cell it never wrote, so every kept
 # block answered 0 and a captured local its last value.
-
+# spinel: gc-minor
 def keep(&b) = b
 
 class Holder

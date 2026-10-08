@@ -3,6 +3,7 @@
 # refusal must not leave the next unit taking itself for a lowered method
 # too, where block_given? would ask after a block parameter it does not
 # have.
+# spinel: defer-refusals: 1:3 30
 class Walk
   def step(limit, by = 1)
     return "é".unicode_normalize unless block_given?

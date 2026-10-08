@@ -1,5 +1,6 @@
 # A poly `[]=` passing a mutable String does not take the arm of a class
 # whose value parameter is seeded Integer (#4929)
+# spinel: rbs-seed-check
 class SeedCounter
   def initialize = @n = 0
   def []=(name, value)

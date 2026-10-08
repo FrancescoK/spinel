@@ -6,6 +6,7 @@
 # `scalars` written from the block followed it to poly, and so did the KEY of
 # the `out` it was copied into -- and the poly-keyed hash no longer fit the
 # RBS-declared Hash[String, untyped] setter, stopping the C build (#4100).
+# spinel: rbs-seed-check
 module Enum
   class Pair
     def initialize(a, b)

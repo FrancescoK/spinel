@@ -1,6 +1,7 @@
 # The other half of the #3975 rule: a hash whose VALUE kind differs from the
 # seed is convertible and must still compile. Only the KEY kind is a
 # contradiction.
+# spinel: rbs-seed-run
 class V
   def self.render(attrs)
     out = ""

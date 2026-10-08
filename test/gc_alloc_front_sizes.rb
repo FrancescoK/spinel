@@ -6,7 +6,7 @@
 # are made in turn, so that every class has a run open, and read back after
 # a collection: an object given a slot of a smaller class would have the
 # next one written over it.
-
+# spinel: gc-minor
 class F1
   def initialize(v)
     @f0 = v

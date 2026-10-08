@@ -1,5 +1,7 @@
 # A nullable String's nil has nil's identity, whether read from a call,
 # a local or an ivar, including shared handles under --share-strings.
+# spinel: gc-minor
+# spinel: share
 S = +"s"
 def maybe(flag) = flag ? S : nil
 S << "!"

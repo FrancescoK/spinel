@@ -1,4 +1,6 @@
 # String block methods bind yielded values and keep fresh or self returns.
+# spinel: gc-minor
+# spinel: share
 class String
   def block_yield_tail_fresh
     yield self

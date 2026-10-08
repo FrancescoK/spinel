@@ -5,6 +5,7 @@
 # the plain conversion answers the type's zero, which in these slots is an
 # ordinary value. The argument-side sibling of #3412 (attribute) and #3458
 # (return value). #3465.
+# spinel: rbs-seed-check
 class W
   def self.pi(n); n.nil? ? "nil" : "int #{n}"; end
   def self.pf(f); f.nil? ? "nil" : "flt #{f}"; end

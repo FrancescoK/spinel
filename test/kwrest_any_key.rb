@@ -9,6 +9,7 @@
 # `Method#call`, `super`, `...` and an anonymous `**`, and the hash reads
 # as a Hash in the body and forwards on. A rest only Symbols reach is
 # unchanged.
+# spinel: gc-minor
 def lit(x) = (puts "run #{x.inspect}"; x)
 def rr(**k) = k
 def mk(a, k: 0, **r) = [a, k, r]

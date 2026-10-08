@@ -4,6 +4,7 @@
 # it -- and `.v.i` on a boxed nil reads the payload under the tag, 0. int and
 # float have a reserved sentinel to land on; bool and symbol have none, so
 # their seeds pin to the boxed union instead. #3412.
+# spinel: rbs-seed-check
 class NilRow
   def initialize
     @n = nil

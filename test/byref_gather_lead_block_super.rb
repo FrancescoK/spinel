@@ -6,7 +6,7 @@
 # `super` inside a block passed the method's captured parameter as a temp of
 # its value where a call there passes the capture's cell. Each probe appends
 # LONG, which always reallocates, and prints what the caller's name sees.
-
+# spinel: gc-minor
 LONG = "!" * 100
 
 def seen(s) = [s[0], s.size]

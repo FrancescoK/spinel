@@ -3,6 +3,7 @@
 # its bytes. Bound as a copy, the callee held a second String: a write the
 # caller made through its own name afterwards never reached it, and a context
 # built over a buffer read stale bytes for everything written after.
+# spinel: gc-minor
 class Opts
   attr_reader :threads
   def initialize

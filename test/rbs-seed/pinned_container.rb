@@ -5,6 +5,7 @@
 # to a poly array, keeping size / all? / element reads dispatchable. @meta
 # likewise stays str_poly_hash instead of demoting to poly_poly_hash when
 # read into an untyped local.
+# spinel: rbs-seed-check
 class PinItem
   attr_reader :label
   def initialize(label)

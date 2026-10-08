@@ -5,7 +5,7 @@
 # ran out, and with two such sites the work doubled at every level, so it
 # never finished. Such a site now runs the body through the constructor (the
 # initialize's proc-form clone), with the site's block, if any, as a proc.
-
+# spinel: gc-stress
 # Two blockless sites that never run (the shape the dead-code probe made).
 class Y
   def initialize(a, b)

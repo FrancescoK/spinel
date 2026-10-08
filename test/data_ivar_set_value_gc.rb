@@ -1,4 +1,5 @@
 # A Data receiver and its member survive an allocating nil-valued argument.
+# spinel: gc-minor
 D = Data.define(:a)
 def make_data
   D.new(a: "a" * 12345)

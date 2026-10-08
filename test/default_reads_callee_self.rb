@@ -7,7 +7,7 @@
 # a default reading the instance there all the same. Those constructions
 # allocate first and run initialize on the fresh object, as a class's
 # positional `.new` already did. An initialize taking a block does the same.
-
+# spinel: gc-minor
 class C
   def initialize = (@d = :callee)
   def m(k1: @d) = k1

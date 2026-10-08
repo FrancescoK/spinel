@@ -2,6 +2,7 @@
 # write left poly answers the value written: the write was emitted as a
 # statement and the method answered nil, which a caller's `<< 8` then
 # refused as an overflow.
+# spinel: rbs-seed-run
 class TwByte
   def peek(addr) = addr & 0xff
 end

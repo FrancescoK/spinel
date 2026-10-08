@@ -1,5 +1,7 @@
 # A concat used as a value takes every argument before appending any of
 # them, including aliases held in boxes. The result keeps the receiver.
+# spinel: gc-minor
+# spinel: share
 s = +"a"
 other = s
 other << "!"

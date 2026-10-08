@@ -6,7 +6,7 @@
 # only when the block appended to its parameter itself, so the block grew a
 # copy; an Array literal handed to a method whose block appends did not
 # build. Appends are LONG, which always reallocates.
-
+# spinel: gc-minor
 LONG = "!" * 100
 
 # yielded on to the method's own block

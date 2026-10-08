@@ -5,7 +5,7 @@
 # a fresh copy in the handle, and every append stayed in the copy (#6065).
 # Each probe below uses a name two methods define. The helper appends LONG,
 # which always reallocates.
-
+# spinel: gc-minor
 LONG = "." * 100
 
 module Helper

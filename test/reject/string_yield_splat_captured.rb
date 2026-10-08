@@ -4,6 +4,8 @@
 # copy, as for any splat into a yield, so the append would not reach the
 # caller's String. It is refused at the call, as the direct append is
 # (test/string_yield_block_param_captured.rb has the shapes that share).
+# spinel: reject-share
+# spinel: reject-captured-yield
 def y2(*a) = yield(*a)
 u = +"c"
 y2(u) { |q| l = -> { q << "#" }; l.() }

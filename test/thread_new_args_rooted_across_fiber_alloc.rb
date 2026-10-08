@@ -4,6 +4,8 @@
 # handed the same array (two threads then run with one's arguments). The
 # padding shifts where the collections land, so under SPINEL_GC_STRESS one
 # of the spawns collects inside the fiber's allocation.
+# spinel: gc-stress
+# spinel: gc-minor
 pad = []
 ts = (0...48).map do |t|
   (t % 7).times { pad << "p" * (t + 1) }

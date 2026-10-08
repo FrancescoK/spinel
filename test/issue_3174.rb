@@ -1,3 +1,4 @@
+# spinel: share
 require 'set'
 h = { a: Set.new }
 h[:a] << 1

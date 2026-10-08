@@ -1,5 +1,6 @@
 # Stores through a box widen the Hash it holds, including a method result,
 # an ivar and the arguments of a proc. Other references see the same store.
+# spinel: gc-minor
 def pick(i) = [{a: 1}, [1, 2]][i]
 pick(ARGV.size)[0] = 5
 p pick(0)

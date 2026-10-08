@@ -4,6 +4,7 @@
 # refused, where its C used to fail to compile. Defining the method in Order
 # (as `raise NotImplementedError`) makes it compile
 # (test/yield_method_only_in_subclass.rb).
+# spinel: reject-subclass-yield
 class Order
   def total
     if is_a?(GiftOrder)

@@ -3,6 +3,7 @@
 # call can reach appends to the parameter it binds, and the call boxes the
 # handle, which the target's parameter reads. Each append is 100 bytes, so it
 # always outgrows the buffer and a copy could not pass by capacity.
+# spinel: gc-minor
 X = "x" * 100
 KEEP = []
 

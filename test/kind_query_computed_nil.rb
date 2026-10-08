@@ -1,4 +1,5 @@
 # A computed class is checked for nil objects and for builtin receivers.
+# spinel: gc-minor
 def boxed_class(v, unused = nil) = v
 boxed_class(3)
 class Animal; end

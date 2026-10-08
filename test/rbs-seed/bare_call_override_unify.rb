@@ -3,6 +3,7 @@
 # codegen emits switches over them all. The #4593 rule answered the base's
 # declared return alone, and `@snap = attributes` assigned the switch's
 # sp_RbVal to a declared Hash slot (#4600, webit-wagner).
+# spinel: rbs-seed-check
 class Base
   def attributes
     {}

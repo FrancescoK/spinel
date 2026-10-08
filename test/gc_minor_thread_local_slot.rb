@@ -9,6 +9,7 @@
 # The fiber is load-bearing: it is what keeps the value off the C stack between
 # the write and the read, so the map is the only thing holding it. Run under
 # SPINEL_GC_MINOR=1 this segfaulted on this program within a few rounds.
+# spinel: gc-minor
 def churn(n)
   a = []
   n.times { a << ("x" * 200) }

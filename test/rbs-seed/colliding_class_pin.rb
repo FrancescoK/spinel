@@ -15,6 +15,7 @@
 # the bare `poly` tag for a heterogeneous union (#1255). The body alone would
 # infer int, so a `sp_RbVal`-returning btag proves the poly token was parsed
 # and pinned rather than silently dropped.
+# spinel: rbs-seed-check
 module Red
   class Base
     class Inner

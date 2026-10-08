@@ -6,7 +6,7 @@
 # function never declared (the C build failed), an Array.new index read a
 # cell nothing wrote (every kept block answered 0), and a recursive call of
 # the lambda rebound a local its caller still read.
-
+# spinel: gc-minor
 def keep(&b) = b
 
 f1 = -> { (0...3).map { |i| keep { i } } }

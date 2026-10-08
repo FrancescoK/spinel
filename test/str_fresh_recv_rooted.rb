@@ -5,7 +5,7 @@
 # past its collection threshold under SPINEL_GC_STRESS, and of equal length,
 # so the argument's copy lands where the freed receiver was and a wrong answer
 # reads true. Run by gc-minor-test under stress.
-
+# spinel: gc-minor
 class Names
   attr_reader :first, :last
   def initialize; @first = "A" * 3000; @last = "B" * 3000; end

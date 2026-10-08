@@ -6,7 +6,7 @@
 # appended to a boxed copy, and a String written in the call was boxed as a
 # copy too. Each method has its own probes; each probe appends LONG, which
 # always reallocates.
-
+# spinel: gc-minor
 LONG = "!" * 100
 
 def seen(s) = [s[0], s.size]

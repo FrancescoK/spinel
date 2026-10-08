@@ -2,6 +2,7 @@
 # when its value is a method's answer read out of that one: the parameter
 # bound from the widened Hash and the return reading it follow only after
 # the store that widened it. Every Hash the chain reaches sees its store.
+# spinel: gc-minor
 def read_x(h) = h["x"]
 def read_one(h) = h[1]
 def put_into(h, x)

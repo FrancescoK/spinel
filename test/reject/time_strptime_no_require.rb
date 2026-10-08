@@ -1,5 +1,6 @@
 # Time.strptime is not implemented, same as Time.parse (K-001): a
 # compile-time refusal naming the documented limit.
+# spinel: reject-time-parse: Time.strptime is not supported
 require "time"
 
 def read_log_line(s)

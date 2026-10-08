@@ -3,7 +3,7 @@
 # receiver. The splice read every argument after the switch, so it passed
 # O's @x, and where O had no @x the C did not build. The block's own
 # defaults, and a trampoline's own arguments, still read the receiver.
-
+# spinel: gc-minor
 class O
   def initialize; @x = 99; @y = 98; @s = "o"; end
   def run(v, &b) = instance_exec(@x, v, &b)

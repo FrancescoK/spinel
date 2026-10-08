@@ -7,7 +7,7 @@
 # String, Symbol, Range, Array, Hash, an object, a boxed value, a captured
 # cell, a local written in a rescue and read after it), and the rescues and
 # the allocations between them keep the collector and the setjmps busy.
-
+# spinel: gc-minor
 BEGIN { begun = 7 }
 
 class Box

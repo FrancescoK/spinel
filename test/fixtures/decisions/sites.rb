@@ -3,6 +3,7 @@
 # store, a `case` subject, a multiple assignment, a fetch with an inert key
 # and default, and a global lent to a method that appends to it, which no
 # answer about an operand may turn into a copy.
+# spinel: decisions
 def first_word(s)
   parts = s.split(" ")
   parts[0]

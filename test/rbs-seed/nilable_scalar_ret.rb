@@ -5,6 +5,7 @@
 # without help: the poly box and NULL carry nil natively. int and float have a
 # reserved sentinel to land on, and every consumer already tests for it, so the
 # tail spells the sentinel instead. The return-value counterpart of #3412.
+# spinel: rbs-seed-check
 class Seed
   def self.i(present); present ? 1 : nil; end
   def self.f(present); present ? 1.5 : nil; end

@@ -7,7 +7,7 @@
 # every read comes back as garbage -- silently, on a compiler that only warns
 # about the type mismatch. It converts now, entry by entry, as the array side
 # already did.
-
+# spinel: rbs-seed-run
 class Facade
   def params
     { "charset" => "utf-8" }

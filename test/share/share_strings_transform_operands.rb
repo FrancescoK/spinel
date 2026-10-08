@@ -1,5 +1,6 @@
 # A shared argument's byte snapshot must survive an allocating boxed receiver.
 # The transforms also keep the String itself when a later argument mutates it.
+# spinel: gc-minor
 require 'find'
 require 'tmpdir'
 

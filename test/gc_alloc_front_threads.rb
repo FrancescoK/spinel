@@ -3,7 +3,7 @@
 # each holding its latest in a ring and checking an object as it leaves, and
 # the main thread collects on the way: every object holds the values its own
 # thread gave it, and a field no constructor set reads nil.
-
+# spinel: gc-minor
 class Pair
   attr_reader :a, :b
   def initialize(a, b)

@@ -4,6 +4,7 @@
 # which excludes TY_NIL). The proc trampoline returns sp_int, so returning
 # emit's (void) result emitted `return <void-call>;` and failed to compile.
 # The proc must run the body for effect and return nil.
+# spinel: rbs-seed-check
 class Sink
   def emit(s)
     puts s

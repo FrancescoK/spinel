@@ -1,4 +1,5 @@
 # A yield-set ivar is boxed, while its combinatorial block can have a typed row.
+# spinel: gc-minor
 class YieldRows
   attr_reader :got
   def each = (@got = yield)

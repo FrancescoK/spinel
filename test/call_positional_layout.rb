@@ -9,7 +9,7 @@
 # beside other values gathers the same way, and a Struct or Data member list
 # takes any splat operand with an array form, an empty `[]` or `nil`
 # included.
-
+# spinel: gc-minor
 e = []
 one = [1]
 two = [2]

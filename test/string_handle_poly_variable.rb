@@ -6,6 +6,7 @@
 # a proc, a Method, `send`, a class method, a poly receiver, `new`,
 # `super` and a bare `super`, and a parameter handed on to such a method.
 # Each append is 100 bytes, so it cannot land in spare capacity by chance.
+# spinel: gc-minor
 def pv(s) = [s, 1][0]
 def gr(v) = v << "x" * 100
 def m(q) = (gr(q); q)

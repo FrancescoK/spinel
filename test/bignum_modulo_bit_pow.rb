@@ -1,4 +1,5 @@
 # Bignum modulo / % / remainder / divmod / #[] / modular pow (#2594).
+# spinel: wasm
 b = 2 ** 100
 p b.modulo(7)
 p((-b).modulo(7))

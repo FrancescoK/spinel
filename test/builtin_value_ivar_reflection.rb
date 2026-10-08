@@ -3,7 +3,7 @@
 # set on: instance_variable_get is nil, instance_variables is empty and
 # instance_variable_defined? false, and a set on a frozen kind (an Integer,
 # nil) raises FrozenError. Each raised NoMethodError.
-
+# spinel: gc-minor
 s = +"s"
 p s.instance_variable_get(:@a), s.instance_variables, s.instance_variable_defined?(:@a)
 p 5.instance_variable_get(:@a), 5.instance_variables, 5.instance_variable_defined?(:@a)

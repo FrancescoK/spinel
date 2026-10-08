@@ -1,5 +1,6 @@
 # Builtin receiver-return rules must not replace a String override's result,
 # whether the receiver is an append chain, a shared slot or a reader call.
+# spinel: gc-minor
 class String
   def strip! = +"other"
   def upcase! = +"upper"

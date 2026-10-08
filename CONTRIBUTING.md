@@ -92,6 +92,27 @@ tests `tools/gate.rb` itself.
   - Use `Dir.tmpdir` for temporary files, not a fixed `/tmp` path, and no
     OS-specific paths.
   - Give every new test its `.expected` file.
+  - A new test registers itself with these header lines; no Makefile edit:
+    `# spinel: share` runs it under `--share-strings`, `# spinel: gc-minor`
+    runs it with the minor mark off, on, and under the generational verifier
+    with GC stress, and `# spinel: gc-stress` runs stress level 2 with and
+    without the full verifier. Use one line per marker.
+    `# spinel: reject-share` marks a `test/reject/` program that runs under
+    `--share-strings`, with its output in `test/share/reject/`.
+    `# spinel: wasm` selects the WASI smoke tests; `# spinel: decisions`
+    selects the decision checks. In `test/rbs-seed/`, `# spinel: rbs-seed-run`
+    selects an output check and `# spinel: rbs-seed-check` selects an existing
+    named assertion in the RBS harness.
+    The other `reject-*` markers select the diagnostic assertion named in
+    `reject-test`; `rbs-seed-contradicted-return` selects its grouped refusal
+    check, and `infer-ivar-get` selects the boxed instance-variable read check.
+    A rejection marker followed by `: text` supplies the literal diagnostic
+    text to match. In `test/defer/`, `# spinel: defer-refusals: count:output`
+    gives the refusal count and stdout, with output lines separated by spaces.
+    The ordinary corpus, `test/share/*.rb`, `test/share_strings_*.rb` and
+    `test/share/refuse/*.rb` are still discovered by name. Keep `int64` on
+    its own first line when needed; platform and overflow exclusions still
+    apply.
 - **Function size.**
   - A function over 1,000 lines does not grow: add a new arm through a
     helper, or in the file for its receiver type.

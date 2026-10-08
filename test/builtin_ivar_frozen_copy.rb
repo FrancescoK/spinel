@@ -2,7 +2,7 @@
 # dup and clone copy the ivars (clone keeps the frozen state, dup does not),
 # a write to a frozen value raises FrozenError naming it, and an immediate
 # or a Range -- frozen always -- reads nil and raises on a write.
-
+# spinel: gc-minor
 class Array
   def tag = @tag
   def tag=(v)

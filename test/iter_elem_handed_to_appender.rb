@@ -4,7 +4,7 @@
 # appended to its element in place, so `a.each { |e| go(e) }` with
 # `def go(e) = (e << x; nil)` grew the block parameter's copy and the Array
 # kept its old bytes. Each probe appends LONG, which always reallocates.
-
+# spinel: gc-minor
 LONG = "!" * 100
 def go(e) = (e << LONG; nil)
 def gc(e) = (e.concat(LONG); nil)

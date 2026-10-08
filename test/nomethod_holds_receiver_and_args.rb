@@ -1,3 +1,4 @@
+# spinel: gc-stress
 # A NoMethodError keeps the receiver and the arguments of the call that
 # failed. The helper that builds it allocated the list of the arguments
 # first: a receiver or an argument that is a temporary was held by nothing

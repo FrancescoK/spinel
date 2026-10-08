@@ -1,3 +1,4 @@
+# spinel: gc-stress
 # The value of each, its kin and step with a block over a String Range is
 # the Range itself, read again after the walk. A Range with an end made on
 # the spot keeps both ends across it, whatever the block collects.

@@ -8,6 +8,7 @@
 # the fix, seed_class_index matched by exact name only, so the qualified seed
 # name found nothing and every module-nested class's ivar/method seeds were
 # silently dropped -- here, `@label` stayed poly instead of pinning to a string.
+# spinel: rbs-seed-check
 module Outer
   class Box
     def initialize

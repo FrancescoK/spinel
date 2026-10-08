@@ -7,7 +7,7 @@
 # Each arm now binds them as a direct call to its method does. A Class in a
 # boxed value took each argument once already, but only 64 of them: past
 # that, the rest ran after a `*` or `**` operand written after them.
-
+# spinel: gc-minor
 $log = []
 def lg(x) = ($log << x; x)
 

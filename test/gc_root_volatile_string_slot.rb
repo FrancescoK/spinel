@@ -1,6 +1,7 @@
 # A String local a rescue can write is a volatile slot, and is rooted as a
 # String all the same: the buffer it names stays alive when nothing else
 # holds it. Run under SPINEL_GC_STRESS=2 by gc-stress-test.
+# spinel: gc-stress
 APPEND = ->(x) { x << "-appended-0123456789-abcdefghij" }
 
 def fresh(i)

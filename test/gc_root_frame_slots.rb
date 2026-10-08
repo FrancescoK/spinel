@@ -4,6 +4,8 @@
 # made and the point it is read, so a slot that went unregistered, was
 # zeroed too late or was shared with a live neighbour would read a freed
 # object. Run under SPINEL_GC_STRESS=1 by gc-minor-test.
+# spinel: gc-stress
+# spinel: gc-minor
 def pick(i)
   case i % 5
   when 0 then "s#{i}" * 4

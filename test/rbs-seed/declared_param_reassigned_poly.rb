@@ -3,6 +3,7 @@
 # hash), took the raw sp_RbVal and the C did not compile (#4640). The write
 # goes through the checked unbox: nil stays NULL, so the `if` test ends the
 # walk, and the class is verified.
+# spinel: rbs-seed-check
 class Comment
   attr_reader :id, :parent_comment_id
   def initialize(id, parent)

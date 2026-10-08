@@ -3,6 +3,7 @@
 # value in one accumulator assigned by both arms, and that accumulator is
 # typed from the union (poly), so the tail had to narrow into the declared
 # slot. The if/else and ternary forms of the same union already did (#4154).
+# spinel: rbs-seed-run
 class Box
   def self.f(x)
     begin

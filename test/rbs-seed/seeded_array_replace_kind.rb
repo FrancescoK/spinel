@@ -2,6 +2,7 @@
 # another kind (a helper's boxed result, a general Array) cannot widen the
 # receiver: the source converts to the receiver's kind. With no arm the call
 # fell to NoMethodError. nil is Ruby's TypeError.
+# spinel: rbs-seed-run
 class SeedReplaceMem
   def initialize(initial = [])
     @storage = fill(initial)

@@ -3,6 +3,7 @@
 # ivar to a temp, and for a shared String slot that read is the value form, a
 # COPY: `@buf.setbyte(idx, 90)` wrote into the copy, and the object and every
 # alias of it kept the old byte.
+# spinel: gc-minor
 class Buf
   attr_reader :buf
 

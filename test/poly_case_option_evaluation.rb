@@ -1,4 +1,5 @@
 # Case options run in order even when the boxed receiver has no case method.
+# spinel: gc-minor
 def case_option(label)
   puts label
   :turkic

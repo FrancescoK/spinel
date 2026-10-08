@@ -3,7 +3,7 @@
 # does for a local stored the same way. The ivar never took the shared
 # handle (#6179) for such a store, and the element was wrapped as a fresh
 # handle over a copy of its text, so the append was lost to the ivar.
-
+# spinel: gc-minor
 def app(x) = x << "!"
 
 class Holder

@@ -1,5 +1,6 @@
 # Array#zip with a block and other than one operand (two, three, a splat,
 # none; a Range receiver too) yields each tuple and answers nil.
+# spinel: gc-minor
 r = []; [1, 2, 3].zip([4, 5, 6], [7, 8, 9]) { |c| r << c }
 p r
 r2 = []; [1, 2].zip([3, 4]) { |a, b| r2 << a + b }
