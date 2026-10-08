@@ -31021,7 +31021,8 @@ static int kwb_explicit(NodeTable *nt, int row, int h, Scope *sc) {
   nt_node_set_arr(nt, kh, "elements", &as, 1);
   return kh;
 }
-static void kwb_clone_split(NodeTable *nt, int call, Scope *sc) {
+static void kwb_clone_split(Compiler *c, int call, Scope *sc) {
+  NodeTable *nt = (NodeTable *)c->nt;
   int an = nt_ref(nt, call, "arguments"), n = 0, en = 0;
   const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &n) : NULL;
   if (!kwb_is(nt_str(nt, call, "name"), "clone") || n != 1 || nt_kind(nt, av[0]) != NK_KeywordHashNode) return;
@@ -31036,10 +31037,13 @@ static void kwb_clone_split(NodeTable *nt, int call, Scope *sc) {
   snprintf(vn, sizeof vn, "__kwcv%d", nt->count);
   int rcv = nt_ref(nt, call, "receiver"), st[3], ns = 0;
   NodeKind rk = rcv >= 0 ? nt_kind(nt, rcv) : NK_SelfNode;
-  int bind = !(rk == NK_SelfNode || rk == NK_LocalVariableReadNode || rk == NK_InstanceVariableReadNode ||
-               rk == NK_ConstantReadNode);
+  int sn = call_is_safe_nav(nt, call);
+  int bind = rcv >= 0 && (sn || (rk != NK_SelfNode && rk != NK_ConstantReadNode &&
+                                 (subtree_has_side_effect(c, v) ||
+                                  (rk != NK_LocalVariableReadNode && rk != NK_InstanceVariableReadNode))));
   if (bind) st[ns++] = kwb_lv(nt, sc, rn, nt_clone_subtree(nt, rcv));
-  st[ns++] = kwb_lv(nt, sc, vn, nt_clone_subtree(nt, v));
+  int vs = kwb_lv(nt, sc, vn, nt_clone_subtree(nt, v));
+  if (!sn) st[ns++] = vs;
   int bare = nt_clone_subtree(nt, call), arms[2];
   nt_node_set_ref(nt, bare, "arguments", -1);
   if (bind) nt_node_set_ref(nt, bare, "receiver", kwb_lv(nt, sc, rn, -1));
@@ -31056,9 +31060,14 @@ static void kwb_clone_split(NodeTable *nt, int call, Scope *sc) {
   int cn = sd_call(nt, "to_s", sd_call(nt, "class", kwb_lv(nt, sc, vn, -1), NULL, 0), NULL, 0);
   int ra[2] = { kwb_const(nt, "ArgumentError"), sd_call(nt, "+", sd_str(nt, "unexpected value for freeze: "), &cn, 1) };
   int rz = sd_call(nt, "raise", -1, ra, 2);
-  st[ns++] = sd_if(nt, sd_call(nt, "nil?", kwb_lv(nt, sc, vn, -1), NULL, 0), bare,
-                   sd_if(nt, sd_call(nt, "==", kwb_lv(nt, sc, vn, -1), &tn, 1), arms[0],
-                         sd_if(nt, sd_call(nt, "==", kwb_lv(nt, sc, vn, -1), &fn, 1), arms[1], rz)));
+  int ch = sd_if(nt, sd_call(nt, "nil?", kwb_lv(nt, sc, vn, -1), NULL, 0), bare,
+                 sd_if(nt, sd_call(nt, "==", kwb_lv(nt, sc, vn, -1), &tn, 1), arms[0],
+                       sd_if(nt, sd_call(nt, "==", kwb_lv(nt, sc, vn, -1), &fn, 1), arms[1], rz)));
+  if (sn) {
+    int g[2] = { vs, ch };
+    ch = sd_if(nt, sd_call(nt, "nil?", kwb_lv(nt, sc, rn, -1), NULL, 0), nt_new_node(nt, "NilNode"), kwb_seq(nt, g, 2));
+  }
+  st[ns++] = ch;
   nt_swap_nodes(nt, call, kwb_seq(nt, st, ns));
 }
 static void desugar_builtin_kwsplat(Compiler *c) {
@@ -31079,7 +31088,7 @@ static void desugar_builtin_kwsplat(Compiler *c) {
       args[n - 1] = kwb_explicit(nt, row, nt_ref(nt, el[0], "value"), NULL);
       nt_node_set_arr(nt, an, "arguments", args, n);
     }
-    kwb_clone_split(nt, id, NULL);
+    kwb_clone_split(c, id, NULL);
   }
   comp_grow_node_arrays(c);
 }
@@ -31385,7 +31394,7 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
       nt_node_set_arr(nt, an, "arguments", args, m);
     }
     nt_node_set_ref(nt, cl, "arguments", an);
-    if (krow >= 0) kwb_clone_split(nt, cl, comp_scope_of(c, id));
+    if (krow >= 0) kwb_clone_split(c, cl, comp_scope_of(c, id));
     int ard = nt_new_node(nt, "LocalVariableReadNode");
     nt_node_set_str(nt, ard, "name", anm);
     nt_node_set_int(nt, ard, "depth", adepth);
