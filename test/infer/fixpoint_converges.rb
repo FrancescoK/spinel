@@ -90,3 +90,24 @@ def fp_maybe_first(*a)
   a
 end
 p fp_perform(7), fp_maybe_first(7), fp_maybe_first
+
+# A Hash parameter its body reassigns from a boxed value and then writes
+# String keys into (ActionView's `html_options = (html_options || {})
+# .stringify_keys; html_options["href"] = ...`): the String-keyed writes
+# narrowed the poly parameter to the StrStr hash, and the body's own write
+# widened it back to poly, every round. A multiple assignment the same.
+def fp_norm(h)
+  return h if h.is_a?(Hash)
+  "x"
+end
+def fp_link(addr, opts = {})
+  opts = fp_norm(opts)
+  opts["href"] = "mailto:#{addr}"
+  opts
+end
+def fp_link2(addr, opts = {})
+  opts, n = fp_norm(opts), 1
+  opts["href"] = "tel:#{addr}#{n}"
+  opts
+end
+p fp_link("a@b"), fp_link2("5")

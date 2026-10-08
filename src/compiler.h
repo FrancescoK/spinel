@@ -280,6 +280,9 @@ typedef struct {
   int shim_lift;    /* how many sb_shim_lift calls hold the local at shim_ty */
   unsigned char plain_int; /* (TY_INT) int_value_plain's memo: 0 not asked, 1 being
                        asked, 2 never holds the nil sentinel, 3 may */
+  TyKind body_write; /* (parameter) the join of what its own body assigns it, as
+                        infer_write_types last folded the writes; TY_UNKNOWN when
+                        nothing does */
 } LocalVar;
 #define POLY_LIFT_APPENDED 1
 #define POLY_LIFT_ZSUPER   2

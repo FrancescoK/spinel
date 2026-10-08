@@ -451,6 +451,12 @@ int infer_param_hash_value(Compiler *c) {
       if (seedable && param_gets_boxed_arg(c, sc, p)) continue;
       TyKind hv = ty_hash_of(kt, vt);
       if (hv == TY_UNKNOWN) continue;
+      /* A parameter its own body assigns a value the hash does not hold
+         (`opts = norm(opts)` boxed, then `opts["k"] = "v"`) is not narrowed:
+         infer_write_types joins that write into the parameter every round,
+         so the narrowing was undone by the next round's writes and made
+         again after them, to the round cap. */
+      if (lv->body_write != TY_UNKNOWN && ty_unify(hv, lv->body_write) != hv) continue;
       if (empty_hash_default && !seedable) {
         /* only the key mismatch, and keep whatever value type is already
            settled unless the writes are more specific */
@@ -2464,7 +2470,11 @@ int masgn_tuple_rhs(const NodeTable *nt, int value) {
    it left `mk, x = 0, nil` storing a boxed nil into an Integer `x`. */
 static int masgn_local_take(Compiler *c, LocalVar *lv, TyKind t, int node) {
   if (!lv || lv->is_block_param) return 0;
-  if (lv->is_param) return t != TY_UNKNOWN && !lv->rbs_seeded ? slot_take(c, lv, t, node) : 0;
+  if (lv->is_param) {
+    if (t == TY_UNKNOWN || lv->rbs_seeded) return 0;
+    lv->body_write = ty_unify(lv->body_write, t);
+    return slot_take(c, lv, t, node);
+  }
   lv->type = ty_unify(lv->type, t);
   return 0;
 }
@@ -4221,6 +4231,9 @@ int infer_write_types(Compiler *c) {
         lv->gc_root = (int)lv->type;
         lv->type = TY_UNKNOWN;
       }
+      /* a parameter keeps its type, but what its body assigns it is
+         gathered afresh (infer_param_hash_value reads it) */
+      if (lv->is_param) lv->body_write = TY_UNKNOWN;
     }
   /* Because of that reset, a site below that types a non-param local must NOT
      report `changed` itself: it is comparing against UNKNOWN, so it answers
@@ -4281,8 +4294,10 @@ int infer_write_types(Compiler *c) {
        of a different type widens them too (e.g. `x = "s"` in an int param's
        body -> poly). Only widen -- never let an unknown RHS reset them. */
     if (lv->is_param) {
-      if (newt != TY_UNKNOWN && !lv->rbs_seeded)
+      if (newt != TY_UNKNOWN && !lv->rbs_seeded) {
+        lv->body_write = ty_unify(lv->body_write, newt);
         changed |= slot_take(c, lv, newt, nt_ref(nt, id, "value"));
+      }
       continue;
     }
     slot_take(c, lv, newt, nt_ref(nt, id, "value"));
