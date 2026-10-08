@@ -2250,6 +2250,9 @@ threaded-render-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SPINEL_TIMEOUT)
 	if [ $$ok -eq 1 ]; then echo "threaded-render-test: pass"; else exit 1; fi
 
 GC_MINOR_TESTS := test/boxed_scan_capture_params.rb \
+	test/share_strings_boxed_class_include_reader.rb \
+	test/share_strings_builtin_fallback_arguments.rb \
+	test/share_strings_builtin_fallback_reads.rb \
                   test/share_strings_class_value_parameter.rb \
                   test/share_strings_hash_transform_params.rb \
                   test/reopened_builtin_kwrest_keys.rb \
