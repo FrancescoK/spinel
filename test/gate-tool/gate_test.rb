@@ -165,6 +165,36 @@ Dir.mktmpdir("gate-tool-test") do |dir|
   ENV["LC_ALL"] = locale
 end
 
+# The sharing leg accepts only listed corpus failures, including package
+# names, and keeps improvements non-fatal so the list can shrink.
+Dir.mktmpdir("gate-shared-test") do |dir|
+  script = File.expand_path("../../tools/shared_test_results.awk", __dir__)
+  list = File.join(dir, "known-failures.txt")
+  result = File.join(dir, "pkg.stringio.sample.ok")
+  judge = lambda do |known, status|
+    File.write(list, known)
+    File.write(result, "#{status}\n")
+    Open3.capture2e("awk", "-f", script, list, result)
+  end
+  out, st = judge.("# failures\n\npkg.stringio.sample # reason\n", "FAIL")
+  ok(st.success? && out.include?("1 known failures"), "sharing accepts a listed package failure and comments")
+  out, st = judge.("pkg.stringio.sample\n", "ERR")
+  ok(st.success? && out.include?("known ERR: pkg.stringio.sample"), "sharing accepts a listed compile error")
+  out, st = judge.("", "FAIL")
+  ok(!st.success? && out.include?("FAIL: pkg.stringio.sample (not in known-failures.txt)"),
+     "sharing rejects an unlisted failure with an empty list")
+  out, st = judge.("# empty\n", "ERR")
+  ok(!st.success? && out.include?("ERR: pkg.stringio.sample"), "sharing rejects an unlisted compile error")
+  out, st = judge.("pkg.stringio.sample\n", "PASS")
+  ok(st.success? && out.include?("passes; remove it from the list"), "sharing reports a passing listed program without failing")
+  out, st = judge.("", "PASS")
+  ok(st.success? && out.include?("1 pass, 0 known failures, 0 new failures"), "sharing accepts an unlisted pass")
+  _, st = judge.("", "BROKEN")
+  ok(!st.success?, "sharing rejects an invalid verdict")
+  _, st = judge.("two names\n", "PASS")
+  ok(!st.success?, "sharing rejects a malformed list")
+end
+
 if $fails > 0
   puts "gate-tool-test: #{$fails} FAILED"
   exit 1

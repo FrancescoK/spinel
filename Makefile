@@ -54,7 +54,7 @@ RBS_LIB      = build/librbs.a
 
 .PHONY: int-min-test all hooks share-strings-test gate-tool-test regexp wasm-rt wasm-test rbs_extract rbs-test rbs-seed-test rbs-seed-extractor cident plan-check-test timing-test signal-default-test source-marker-test repr-check-test nil-check-test traits-check-test poly-cold-test bop-arity-check-test arity-spec-check re-lit-test reject-test cli-opts-test link-names-test defer-refusals-test check-stores-test backtrace-test gc-minor-test thread-puts-test ext-test ext-cruby-test alloc-report-test rubyspec rubyspec-gate spin-check \ repr-diff c-costs alloc-diff \
         test test-run clean-test-results regen-rbs-expected \
-        regen-expected regen-expected-err bench optcarrot gate gate-full check gate-legs gate-test gate-bench gc-phases-test gc-stress-test gc-str-major-test threaded-render-test gc-locality-test test-corpus test-corpus-summary \
+        regen-expected regen-expected-err bench optcarrot gate gate-full check gate-legs gate-test gate-test-shared gate-bench gc-phases-test gc-stress-test gc-str-major-test threaded-render-test gc-locality-test test-corpus test-corpus-summary \
         gate-optcarrot scale-test clean install uninstall deps tools
 
 # `make all` includes the RBS extractor when vendor/rbs has been fetched
@@ -843,7 +843,8 @@ $(error TEST_SHARD=$(TEST_SHARD) picked no test out of $(words $(SHARD_ALL)))
 endif
 endif
 endif
-TEST_TARGETS := $(patsubst test/%.rb,build/test-results/%.ok,$(TESTS))
+TEST_RESULT_DIR ?= build/test-results
+TEST_TARGETS := $(patsubst test/%.rb,$(TEST_RESULT_DIR)/%.ok,$(TESTS))
 
 # Bundled spin packages carry their own test/*.rb (the same snapshot contract,
 # runnable with `spin test` inside the package). The compiler gate runs them
@@ -872,7 +873,7 @@ PKG_TESTS := $(call shard_pick,$(PKG_TESTS))
 endif
 endif
 pkg_of = $(word 2,$(subst /, ,$(1)))
-PKG_TEST_TARGETS := $(foreach t,$(PKG_TESTS),build/test-results/pkg.$(call pkg_of,$(t)).$(notdir $(t:.rb=)).ok)
+PKG_TEST_TARGETS := $(foreach t,$(PKG_TESTS),$(TEST_RESULT_DIR)/pkg.$(call pkg_of,$(t)).$(notdir $(t:.rb=)).ok)
 
 # Warnings the generated-C -Werror check should not gate on. clang enables
 # -Wunused-value by default (gcc only under -Wall, which the build disables),
@@ -1099,13 +1100,15 @@ test-run: int-min-test timing-test signal-default-test source-marker-test rbs-te
 test-corpus: $(SPINEL_TIMEOUT)
 	+@$(MAKE) --no-print-directory clean-test-results
 	+@$(MAKE) $(TEST_JOBS) --no-print-directory test-corpus-summary
-test-corpus-summary: $(TEST_TARGETS) $(PKG_TEST_TARGETS)
+.PHONY: test-corpus-results test-corpus-shared-summary
+test-corpus-results: $(TEST_TARGETS) $(PKG_TEST_TARGETS)
+test-corpus-summary: test-corpus-results
 	@if [ -z "$(TIMEOUT_BIN)" ]; then echo "Note: no 'timeout' command found; running without time limits."; fi
 	@if [ -t 1 ]; then printf '\n'; fi
-	@pass=$$(grep -l '^PASS' build/test-results/*.ok 2>/dev/null | wc -l); \
-	fail=$$(grep -l '^FAIL' build/test-results/*.ok 2>/dev/null | wc -l); \
-	err=$$(grep -l '^ERR' build/test-results/*.ok 2>/dev/null | wc -l); \
-	for f in build/test-results/*.ok; do \
+	@pass=$$(grep -l '^PASS' $(TEST_RESULT_DIR)/*.ok 2>/dev/null | wc -l); \
+	fail=$$(grep -l '^FAIL' $(TEST_RESULT_DIR)/*.ok 2>/dev/null | wc -l); \
+	err=$$(grep -l '^ERR' $(TEST_RESULT_DIR)/*.ok 2>/dev/null | wc -l); \
+	for f in $(TEST_RESULT_DIR)/*.ok; do \
 	  bn=$$(basename "$$f" .ok); \
 	  status=$$(cat "$$f"); \
 	  if [ "$$status" = FAIL ]; then \
@@ -3062,6 +3065,8 @@ endif
 #     ($(CC), CFLAGS/OPT, the -O0 override, the overflow and thread defines,
 #     the PCH flag, the archive and package objects picked, -l flags), and the
 #     timeout;
+#   - SPINEL_SHARE_STRINGS, so the default and sharing legs never reuse
+#     each other's passes even when they emit identical C;
 #   - RESULT_CACHE_FP, computed once per run after the prerequisites are
 #     built: the content of both runtime archives, every bundled package
 #     object, both PCH files and build/spinel-timeout, every header under lib/
@@ -3096,7 +3101,7 @@ export GATE_CACHE
 RESULT_CACHE_HARNESS := 1
 RESULT_CACHE_FP = $(if $(filter 0,$(GATE_CACHE)),off,$(eval RESULT_CACHE_FP := $(shell RC_CC="$(CC)" tools/result_cache.sh fp $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS) $(BUNDLED_NATIVE_MT_OBJS) $(PCH_PLAIN) $(PCH_NOPOLY) $(SPINEL_TIMEOUT)))$(RESULT_CACHE_FP))
 define RUN_ONE_TEST
-@mkdir -p build/test-results
+@mkdir -p $(TEST_RESULT_DIR)
 @# Raise the descriptor soft limit toward the hard one, best effort. A test
 @# that has to reach a descriptor past FD_SETSIZE (io_select_high_fd, #4314)
 @# cannot get there under a 1024 soft limit, and a shell that refuses the
@@ -3130,7 +3135,7 @@ $(SPINEL) "$<" $(SP_OV_FLAG) -c --no-line-map -o "$$cfile" 2>/dev/null && \
   fi; \
   if [ -f "$<.expected" ]; then \
     ckey=$$(RC_CC="$(CC)" tools/result_cache.sh key "$<" "$$cfile" \
-      "$(RESULT_CACHE_FP)|$(RESULT_CACHE_HARNESS)|$(CC)|$(TEST_SINGLE_INVOKE)|$(CFLAGS) $$bigopt $(SP_OV_DEFINE) $$mtdef -Werror $(TEST_WARN_SUPPRESS) $(SEC_FLAGS) $$pchuse -Ilib|$$natobjs $$rtlib $(LDFLAGS) -lm $$mtld $$xlibs $(GC_FLAGS)|$(TIMEOUT10)" \
+      "$(RESULT_CACHE_FP)|$(RESULT_CACHE_HARNESS)|$(CC)|$(TEST_SINGLE_INVOKE)|$(CFLAGS) $$bigopt $(SP_OV_DEFINE) $$mtdef -Werror $(TEST_WARN_SUPPRESS) $(SEC_FLAGS) $$pchuse -Ilib|$$natobjs $$rtlib $(LDFLAGS) -lm $$mtld $$xlibs $(GC_FLAGS)|$(TIMEOUT10)|share=$(SPINEL_SHARE_STRINGS)" \
       "$<.expected" "$<.err.expected" "$<.args" "$<.stdin"); \
     if [ -n "$$ckey" ] && tools/result_cache.sh get "$$ckey" 2>/dev/null | grep -qx PASS; then hit=1; fi; \
   fi; \
@@ -3187,16 +3192,16 @@ endef
 # Per-package test rules (one pattern rule per bundled package: GNU Make
 # patterns allow a single %, so the package name is fixed per rule).
 define PKG_TEST_RULE
-build/test-results/pkg.$(1).%.ok: packages/$(1)/test/%.rb $$(SP_RT_LIB) $$(SP_RT_MT_LIB) $$(BUNDLED_NATIVE_OBJS) $$(BUNDLED_NATIVE_MT_OBJS) $$(PCH_PLAIN) $$(PCH_NOPOLY) | $$(SPINEL) $$(SPINEL_TIMEOUT)
+$(TEST_RESULT_DIR)/pkg.$(1).%.ok: packages/$(1)/test/%.rb $$(SP_RT_LIB) $$(SP_RT_MT_LIB) $$(BUNDLED_NATIVE_OBJS) $$(BUNDLED_NATIVE_MT_OBJS) $$(PCH_PLAIN) $$(PCH_NOPOLY) | $$(SPINEL) $$(SPINEL_TIMEOUT)
 	$$(RUN_ONE_TEST)
 endef
 $(foreach d,$(wildcard packages/*/test),$(eval $(call PKG_TEST_RULE,$(patsubst packages/%/test,%,$(d)))))
 
-build/test-results/%.ok: test/%.rb $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS) $(BUNDLED_NATIVE_MT_OBJS) $(PCH_PLAIN) $(PCH_NOPOLY) | $(SPINEL) $(SPINEL_TIMEOUT)
+$(TEST_RESULT_DIR)/%.ok: test/%.rb $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS) $(BUNDLED_NATIVE_MT_OBJS) $(PCH_PLAIN) $(PCH_NOPOLY) | $(SPINEL) $(SPINEL_TIMEOUT)
 	$(RUN_ONE_TEST)
 
 clean-test-results:
-	@rm -rf build/test-results
+	@rm -rf $(TEST_RESULT_DIR)
 	@tools/result_cache.sh prune
 
 # ---- Expected-output regeneration ----
@@ -3981,6 +3986,7 @@ hooks:
 
 # tools/gate.rb in a throwaway repository (test/gate-tool). Not a gate leg:
 # it needs a Ruby 4.0 (GATE_RUBY or PATH) and is skipped without one.
+# Also checks the shared corpus's known-failure summary.
 gate-tool-test:
 	@r=$$(sh tools/gate-ruby) || { echo "gate-tool-test: skipped (no Ruby 4.0 or later; set GATE_RUBY)"; exit 0; }; \
 	"$$r" test/gate-tool/gate_test.rb
@@ -3989,9 +3995,19 @@ gate-tool-test:
 gate-full:
 	+@$(MAKE) --no-print-directory gate GATE_CACHE=0
 
-gate-legs: gate-test gate-bench gate-optcarrot gate-rubyspec gate-props
+gate-legs: gate-test gate-test-shared gate-bench gate-optcarrot gate-rubyspec gate-props
 gate-test:
 	+@$(MAKE) --no-print-directory test OPT=-O1
+# The same corpus, including packages, with String sharing. Separate verdicts
+# let the two legs run together; the result-cache key includes the flag too.
+# infer-test and reject-test keep their default-build expectations.
+gate-test-shared:
+	+@$(MAKE) --no-print-directory clean-test-results TEST_RESULT_DIR=build/test-results-shared
+	+@$(MAKE) $(TEST_JOBS) --no-print-directory test-corpus-shared-summary OPT=-O1 SPINEL_SHARE_STRINGS=1 TEST_RESULT_DIR=build/test-results-shared
+
+test-corpus-shared-summary: test-corpus-results
+	@awk -f tools/shared_test_results.awk test/share/known-failures.txt $(TEST_RESULT_DIR)/*.ok
+
 # The property gates `check` runs. They were in the fast pre-commit target and
 # NOT in the pre-push one, so the full gate was not a superset of the quick one
 # and a representation regression could pass every leg of it. infer-test caught
