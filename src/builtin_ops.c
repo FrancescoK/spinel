@@ -2736,6 +2736,11 @@ static const BopShareRow bop_share_rows[] = {
   { TY_IO, "sysread",      BSH_FILL1 },
   { TY_IO, "read_nonblock", BSH_FILL1 },
   { TY_IO, "pread",        BSH_FILL2 },
+  /* These calls keep no caller String, also on a boxed IO or Dir. */
+  { TY_IO, "write",        BSH_PURE },
+  { TY_IO, "gets",         BSH_PURE },
+  { TY_IO, "path",         BSH_PURE },
+  { TY_IO, "to_path",      BSH_PURE },
 
   /* The scalars copy whatever String they are handed; their iterators hand
      a block numbers or new Strings. */
