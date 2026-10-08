@@ -1,0 +1,8 @@
+[true, true, 103, 98]
+[104, "next"]
+[true, true, 120]
+[121, 0]
+["newold", "new", true]
+["new", "new", true, false]
+insert frozen
+replace frozen

@@ -139,6 +139,8 @@ typedef enum {
 int repr_call_returns_handle(Compiler *c, int v);
 /* A boxed to_s that keeps its String receiver beside fresh user returns. */
 int repr_boxed_to_s_operand(Compiler *c, int v);
+/* A boxed call whose reader arms all hold shared String handles. */
+int repr_boxed_reader_handle(Compiler *c, int v);
 /* The representation of node `node`'s value. */
 Repr repr_of(const Compiler *c, int node);
 int repr_self_handle(const Compiler *c, int scope);

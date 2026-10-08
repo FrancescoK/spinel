@@ -8719,7 +8719,7 @@ static void emit_reopen_primitive_call(Compiler *c, int id, int ci, int mi, int 
   buf_printf(b, "sp_%s_%s(", mc_reopen_cls(c, ci, name), mc(name));
   if (repr_self_handle(c, mi)) emit_reopen_recv_args(c, id, mi, recv, 0, NULL, b);
   else {
-    if (comp_ntype(c, recv) != TY_STRBUF || !emit_strbuf_read_ref(c, recv, b)) emit_expr(c, recv, b);
+    if (repr_of(c, recv).as_ty != TY_STRBUF || !emit_strbuf_read_ref(c, recv, b)) emit_expr(c, recv, b);
     emit_args_filled(c, mi, nt_ref(c->nt, id, "arguments"), ", ", b);
   }
   emit_callee_block_arg(c, id, &c->scopes[mi], b);
@@ -18858,6 +18858,9 @@ static int operand_hoists_effect(Compiler *c, int node) {
 }
 
 static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
+  /* The buffer arm holds its operands, including the handle a keyword
+     may replace, before it checks or converts any of them. */
+  if (emit_io_read_nonblock_outbuf(c, id, b)) return 1;
   if (emit_or_take_back(c, id, b, emit_str_append_chain_handle)) return 1;
   const NodeTable *nt = c->nt;
   if (id == g_operand_order_node) return 0;
@@ -20170,6 +20173,23 @@ static int emit_recv_snapshot(Compiler *c, int id, Buf *b) {
   if (id == g_recv_snapshot_node || !g_pre || g_n_argov >= MAX_ARG_OVERRIDE) return 0;
   int recv = nt_ref(nt, id, "receiver");
   int args = nt_ref(nt, id, "arguments");
+  /* A concat's slot can be rebound by an argument. Keep the existing
+     handle before operand ordering runs those arguments. */
+  char ref[1024];
+  if (recv >= 0 && args >= 0 && is_concat_name(nt_str(nt, id, "name")) &&
+      !arg_ran_first(recv, 0) && strbuf_slot_ref(c, recv, ref, sizeof ref) && read_rebound_by(c, recv, args)) {
+    int th = ++g_tmp, mark = g_n_argov;
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n", th, ref, th);
+    int sv = view_push_repr(c, recv, VR_STRBUF_BOX, 1), st = view_push(c, recv, TY_STRBUF);
+    ran_first_bind(recv, th, th);
+    int saved = g_recv_snapshot_node;
+    g_recv_snapshot_node = id;
+    emit_call(c, id, b);
+    g_recv_snapshot_node = saved;
+    view_unbind(mark); view_pop(c, st); view_pop(c, sv);
+    return 1;
+  }
   if (recv < 0 || args < 0 || nt_kind(nt, recv) != NK_LocalVariableReadNode) return 0;
   const char *nm = nt_str(nt, id, "name");
   static const char *const ops[] = {
@@ -21304,7 +21324,11 @@ static void refuse_nonlocal_param_args(Compiler *c, int id, const char *name) {
   }
   if (!any) return;
   int tg[64], n = 0;
-  if (recv >= 0 && repr_of(c, recv).kind == RK_BOXED) {
+  /* The sharing facts bind the call plan's targets, including a bare
+     class-method call. Ask the same plan when checking those routes. */
+  int planned = repr_share_rule(c) ? cplan_targets(c, id, tg, 64) : -1;
+  if (planned >= 0) n = planned;
+  else if (recv >= 0 && repr_of(c, recv).kind == RK_BOXED) {
     for (int k = 0; k < c->nclasses && n < 64; k++) {
       if (!c->classes[k].instantiated) continue;
       int mi = comp_method_in_chain(c, k, name, NULL);
@@ -21348,7 +21372,8 @@ static void refuse_nonlocal_param_args(Compiler *c, int id, const char *name) {
       char why[128];
       snprintf(why, sizeof why, "from %s into a parameter that %s", kind,
                q->type == TY_POLY ? "boxes it" : "takes its handle");
-      refuse_string_copy(c, arg, mt, m->pnames[j], "the call", why);
+      /* The route reaches this target, not every method with its name. */
+      refuse_string_copy_to(c, arg, m->body, mt, m->pnames[j], "the call", why);
     }
   }
 }
@@ -24971,6 +24996,9 @@ int strbuf_call_picks_up(Compiler *c, int id) {
    from; its implicit-self read hands out the slot itself
    (emit_implicit_self_member). Answers 1 when it emitted the call. */
 static int emit_deep_return_pickup(Compiler *c, int id, Buf *b) {
+  /* A boxed reader's identity demand takes its field handle too. */
+  if (repr_of(c, id).demand && repr_boxed_reader_handle(c, id))
+    return emit_strbuf_route(c, id, b);
   /* An identity read demands the handle without changing String dispatch.
      The return route lifts that demand while it runs the ordinary call. */
   if (repr_share_rule(c) && repr_of(c, id).demand && repr_call_returns_handle(c, id))
