@@ -1,0 +1,16 @@
+200 Net::HTTPOK (success) value: -
+202 Net::HTTPAccepted (success) value: -
+304 Net::HTTPNotModified (redirection) value: Net::HTTPRetriableError
+307 Net::HTTPTemporaryRedirect (redirection) value: Net::HTTPRetriableError
+308 Net::HTTPPermanentRedirect (redirection) value: Net::HTTPRetriableError
+404 Net::HTTPNotFound (client error) value: Net::HTTPClientException
+405 Net::HTTPMethodNotAllowed (client error) value: Net::HTTPClientException
+409 Net::HTTPConflict (client error) value: Net::HTTPClientException
+410 Net::HTTPGone (client error) value: Net::HTTPClientException
+418 Net::HTTPClientError (client error) value: Net::HTTPClientException
+422 Net::HTTPUnprocessableEntity (client error) value: Net::HTTPClientException
+429 Net::HTTPTooManyRequests (client error) value: Net::HTTPClientException
+502 Net::HTTPBadGateway (server error) value: Net::HTTPFatalError
+503 Net::HTTPServiceUnavailable (server error) value: Net::HTTPFatalError
+504 Net::HTTPGatewayTimeout (server error) value: Net::HTTPFatalError
+599 Net::HTTPServerError (server error) value: Net::HTTPFatalError
