@@ -10385,21 +10385,25 @@ static void emit_obj_inspect_dispatch(Compiler *c, Buf *b) {
     if (comp_class_is_module(c, tci)) continue;
     int tdef = -1;
     int tmi = comp_method_in_chain(c, i, "to_s", &tdef);
-    int tsok = tmi >= 0 && c->scopes[tmi].reachable && c->scopes[tmi].ret == TY_STRING &&
-               c->scopes[tmi].nparams == 0;
+    /* a #to_s answering its String through a boxed value (one that may also
+       answer something else) renders through sp_poly_to_s */
+    int tspoly = tmi >= 0 && c->scopes[tmi].ret == TY_POLY;
+    int tsok = tmi >= 0 && c->scopes[tmi].reachable &&
+               (c->scopes[tmi].ret == TY_STRING || tspoly) && c->scopes[tmi].nparams == 0;
     /* A boxed value-type object carries a pointer to its struct and the
        method takes self by value, as the inline poly dispatch calls it.
        Skipping value types sent `puts obj` / "#{obj}" to the #<A:0x...>
        default past the user's #to_s. */
     if (comp_ty_value_obj(c, ty_object(i))) {
       if (tsok && tdef == i)
-        buf_printf(b, "    case %d: return sp_%s_%s(*(sp_%s *)p);\n",
-                   i, tci->c_name, mc(c->scopes[tmi].name), tci->c_name);
+        buf_printf(b, "    case %d: return %ssp_%s_%s(*(sp_%s *)p)%s;\n",
+                   i, tspoly ? "sp_poly_to_s(" : "", tci->c_name, mc(c->scopes[tmi].name), tci->c_name, tspoly ? ")" : "");
       continue;
     }
     if (tsok) {
-      buf_printf(b, "    case %d: return sp_%s_%s((sp_%s *)p);\n",
-                 i, c->classes[tdef].c_name, mc(c->scopes[tmi].name), c->classes[tdef].c_name);
+      buf_printf(b, "    case %d: return %ssp_%s_%s((sp_%s *)p)%s;\n",
+                 i, tspoly ? "sp_poly_to_s(" : "", c->classes[tdef].c_name, mc(c->scopes[tmi].name),
+                 c->classes[tdef].c_name, tspoly ? ")" : "");
       continue;
     }
     /* Struct/Data #to_s IS #inspect in CRuby, and they have a generated one
@@ -10460,10 +10464,12 @@ static void emit_obj_inspect_dispatch(Compiler *c, Buf *b) {
     if (comp_ty_value_obj(c, ty_object(i)) && !comp_class_is_module(c, &c->classes[i])) {
       int vdef = -1;
       int vmi = comp_method_in_chain(c, i, "inspect", &vdef);
+      int vpoly = vmi >= 0 && c->scopes[vmi].ret == TY_POLY;
       if (vmi >= 0 && vdef == i && c->scopes[vmi].reachable &&
-          c->scopes[vmi].ret == TY_STRING && c->scopes[vmi].nparams == 0)
-        buf_printf(b, "    case %d: return sp_%s_%s(*(sp_%s *)p);\n",
-                   i, c->classes[i].c_name, mc(c->scopes[vmi].name), c->classes[i].c_name);
+          (c->scopes[vmi].ret == TY_STRING || vpoly) && c->scopes[vmi].nparams == 0)
+        buf_printf(b, "    case %d: return %ssp_%s_%s(*(sp_%s *)p)%s;\n",
+                   i, vpoly ? "sp_poly_to_s(" : "", c->classes[i].c_name, mc(c->scopes[vmi].name),
+                   c->classes[i].c_name, vpoly ? ")" : "");
       continue;
     }
     if (!class_inspectable(c, i)) continue;
@@ -10473,10 +10479,13 @@ static void emit_obj_inspect_dispatch(Compiler *c, Buf *b) {
        arm would name a function only its includers define (#4533). */
     int uidef = -1;
     int uimi = comp_class_is_module(c, ci) ? -1 : comp_method_in_chain(c, i, "inspect", &uidef);
-    if (uimi >= 0 && c->scopes[uimi].reachable && c->scopes[uimi].ret == TY_STRING &&
+    /* ...also when it answers the String through a boxed value */
+    int uipoly = uimi >= 0 && c->scopes[uimi].ret == TY_POLY;
+    if (uimi >= 0 && c->scopes[uimi].reachable && (c->scopes[uimi].ret == TY_STRING || uipoly) &&
         c->scopes[uimi].nparams == 0) {
-      buf_printf(b, "    case %d: return sp_%s_%s((sp_%s *)p);\n",
-                 i, c->classes[uidef].c_name, mc(c->scopes[uimi].name), c->classes[uidef].c_name);
+      buf_printf(b, "    case %d: return %ssp_%s_%s((sp_%s *)p)%s;\n",
+                 i, uipoly ? "sp_poly_to_s(" : "", c->classes[uidef].c_name, mc(c->scopes[uimi].name),
+                 c->classes[uidef].c_name, uipoly ? ")" : "");
       continue;
     }
     /* Struct/Data have a generated #inspect (#<struct Name a=1> / #<data ...>);
