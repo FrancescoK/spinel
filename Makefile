@@ -1024,8 +1024,17 @@ share-strings-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS
 	for t in $(SHARE_TESTS) test/share_strings_*.rb test/nullable_string_identity.rb test/widened_param_reaches_its_callee.rb test/reader_or_assign_frozen.rb \
 	  test/string_freeze_value_shared_handle.rb test/string_unary_plus_frozen_receiver.rb \
 	  test/builtins_inject.rb test/issue_3174.rb test/set_string_member_frozen.rb \
+	  test/string_lent_global_slot.rb \
+	  test/concat_self_alias_snapshot.rb test/string_concat_value_snapshot.rb \
+	  test/string_concat_rebound_receiver.rb \
+	  test/pattern_methodobj_kwsplat_undersupply.rb \
+	  test/io_captured_buffer_rebind.rb test/io_read_nonblock_buffer.rb test/io_read_outbuf_eof.rb \
 	  test/dynamic_new_post_params_reach.rb test/block_forward_proc_param_type.rb \
 	  test/builtins_partition_group_by.rb test/forwarded_block_tail_return.rb \
+	  test/poly_string_iter_user_owns_name.rb test/string_handle_initialize.rb \
+	  test/string_alias_routes_unobserved.rb test/yield_string_param_block_append.rb \
+	  test/string_reader_store_routes_unaffected.rb \
+	  test/string_mutator_arg_rebinds_receiver.rb \
 	  test/boxed_scan_capture_params.rb test/fold_receiver_root.rb \
 	  packages/shellwords/test/shellwords_split_unmatched_quote.rb \
 	  test/bundle_classd_27.rb test/masgn_str_array_strbuf_local.rb test/poly_aset_nullable_string_value.rb \
@@ -2249,8 +2258,11 @@ threaded-render-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SPINEL_TIMEOUT)
 	rm -rf "$$tmp"; \
 	if [ $$ok -eq 1 ]; then echo "threaded-render-test: pass"; else exit 1; fi
 
-GC_MINOR_TESTS := test/boxed_scan_capture_params.rb \
+GC_MINOR_TESTS := test/io_read_outbuf_eof.rb \
+                  test/boxed_scan_capture_params.rb \
                   test/share_strings_hash_transform_params.rb \
+                  test/string_concat_value_snapshot.rb \
+                  test/string_concat_rebound_receiver.rb \
                   test/reopened_builtin_kwrest_keys.rb \
                   test/string_unary_plus_frozen_receiver.rb \
                   test/share_strings_boxed_hash_key.rb \

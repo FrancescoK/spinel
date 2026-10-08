@@ -157,9 +157,12 @@ int strbuf_flow_carries(Compiler *c, StrbufFlowMemo *fm, int kind, int site, int
 int strbuf_call_picks_up(Compiler *c, int id);
 int strbuf_self_reader_handle(Compiler *c, int id);
 int strbuf_call_reads_handle(Compiler *c, int recv);
+int strbuf_route_reader(Compiler *c, int v);
 const NativeMethod *strbuf_native_answer(Compiler *c, int n);
 int strbuf_io_outbuf(Compiler *c, int id);
+int emit_io_read_nonblock_outbuf(Compiler *c, int id, Buf *b);
 int emit_strbuf_io_read(Compiler *c, int id, Buf *b);
+void emit_str_concat_handle(Compiler *c, const char *sref, int argc, const int *argv, Buf *b, int indent);
 int emit_bang_self_handle(Compiler *c, int v, Buf *b);
 int strbuf_chain_over_handle(Compiler *c, int v);
 int strbuf_narrowed_box_mutator(Compiler *c, int id);
