@@ -176,10 +176,11 @@ static const char *sp_pty_login_shell(void) {
 /* Run `args` (an Array of Strings; one String with a shell character runs
    through /bin/sh -c, as Process.spawn reads it) on the slave of `master`,
    with `env` (a Hash of String => String or nil, or nil) laid over the
-   current environment; no command runs the login shell, as in CRuby.
+   current environment, in the directory `chdir` (a String, or nil for this
+   one); no command runs the login shell, as in CRuby.
    Answers the child's pid. `master` and `writer` are
    closed here if it raises. */
-sp_int sp_pty_spawn_child(sp_int master, sp_int writer, sp_RbVal env, sp_RbVal args) {
+sp_int sp_pty_spawn_child(sp_int master, sp_int writer, sp_RbVal env, sp_RbVal args, sp_RbVal chdir_to) {
   int m = (int)master, wfd = (int)writer;
 
   /* every argument checked before anything is allocated or opened */
@@ -209,6 +210,11 @@ sp_int sp_pty_spawn_child(sp_int master, sp_int writer, sp_RbVal env, sp_RbVal a
       }
     }
   }
+  if (chdir_to.tag != SP_TAG_NIL && !sp_pty_is_str(chdir_to)) {
+    sp_pty_close2(m, wfd);
+    sp_raise_cls("TypeError", "no implicit conversion into String (chdir)");
+  }
+  const char *dir = chdir_to.tag == SP_TAG_NIL ? NULL : chdir_to.v.s;
 
   /* the program's path, searched on the PATH the child will have */
   const char *first = na > 0 ? sp_json_aref_fn(args, 0).v.s : sp_pty_login_shell();
@@ -317,8 +323,8 @@ sp_int sp_pty_spawn_child(sp_int master, sp_int writer, sp_RbVal env, sp_RbVal a
       setsid();
       int s = open(slave, O_RDWR);
       if (s < 0) {
-        int e = errno;
-        (void)!write(err_pipe[1], &e, sizeof e);
+        int failed[2] = { errno, 0 };
+        (void)!write(err_pipe[1], failed, sizeof failed);
         _exit(127);
       }
 #ifdef TIOCSCTTY
@@ -328,10 +334,15 @@ sp_int sp_pty_spawn_child(sp_int master, sp_int writer, sp_RbVal env, sp_RbVal a
       dup2(s, 1);
       dup2(s, 2);
       if (s > 2) close(s);
+      if (dir && chdir(dir) != 0) {
+        int failed[2] = { errno, 1 };
+        (void)!write(err_pipe[1], failed, sizeof failed);
+        _exit(127);
+      }
       execve(exe, argv, envp);
       if (errno == ENOEXEC) execve("/bin/sh", sh_argv, envp);
-      int e = errno;
-      (void)!write(err_pipe[1], &e, sizeof e);
+      int failed[2] = { errno, 0 };
+      (void)!write(err_pipe[1], failed, sizeof failed);
       _exit(127);
     }
     if (pid < 0) { fail = errno; fail_what = "fork"; }
@@ -345,16 +356,18 @@ sp_int sp_pty_spawn_child(sp_int master, sp_int writer, sp_RbVal env, sp_RbVal a
   if (err_pipe[1] >= 0) close(err_pipe[1]);
 
   if (!fail) {
+    /* the child's errno, and 1 when it was the chdir that failed */
+    int failed[2] = { 0, 0 };
     ssize_t got;
-    do { got = read(err_pipe[0], &fail, sizeof fail); } while (got < 0 && errno == EINTR);
+    do { got = read(err_pipe[0], failed, sizeof failed); } while (got < 0 && errno == EINTR);
     if (got > 0) {
       /* the child could not exec: reap it before the raise, as CRuby does */
       int st = 0;
       pid_t r;
       do { r = waitpid(pid, &st, 0); } while (r < 0 && errno == EINTR);
-      fail_what = first;
+      fail = failed[0];
+      fail_what = failed[1] ? "chdir" : first;
     }
-    else fail = 0;
   }
   if (err_pipe[0] >= 0) close(err_pipe[0]);
   if (fail) {
