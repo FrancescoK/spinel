@@ -19078,7 +19078,13 @@ static int promote_shared_stored_strings(Compiler *c) {
       if (nt_kind(nt, recv4) == NK_LocalVariableReadNode) {
         const char *pn4 = nt_str(nt, recv4, "name");
         Scope *ps4 = pn4 ? comp_scope_of(c, recv4) : NULL;
-        if (ps4) changed |= strbuf_demand_container_stores(c, pn4, ps4);
+        LocalVar *pv4 = ps4 ? scope_local(ps4, pn4) : NULL;
+        /* a method's boxed parameter stays as it was: its walk goes back
+           through every caller, and on a large program's poly parameters
+           (each mutating block over one) that walk is what the
+           analysis spent its time on */
+        if (!pv4 || (pv4->is_param && !pv4->is_block_param)) continue;
+        changed |= strbuf_demand_container_stores(c, pn4, ps4);
       }
       else changed |= strbuf_container_source_walk(c, recv4, 0, SB_DEMAND);
       continue;
