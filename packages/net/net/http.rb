@@ -31,7 +31,39 @@ module Timeout
 end
 
 module Net
-  class HTTPError < StandardError
+  # The part of CRuby's protocol error tree the HTTP errors sit under, so a
+  # `rescue Net::ProtocolError` catches what it catches there.
+  class ProtocolError < StandardError; end
+  class ProtoFatalError < ProtocolError; end
+  class ProtoServerError < ProtocolError; end
+  class ProtoRetriableError < ProtocolError; end
+
+  # The response an HTTP error came from, as CRuby carries it. The package
+  # also raises HTTPError itself with a message alone (no status line at
+  # all), so the response is optional here.
+  module HTTPExceptions
+    def initialize(msg, res = nil)
+      super(msg)
+      @response = res
+    end
+
+    attr_reader :response
+  end
+
+  class HTTPError < ProtocolError
+    include HTTPExceptions
+  end
+
+  class HTTPRetriableError < ProtoRetriableError
+    include HTTPExceptions
+  end
+
+  class HTTPClientException < ProtoServerError
+    include HTTPExceptions
+  end
+
+  class HTTPFatalError < ProtoFatalError
+    include HTTPExceptions
   end
 
   # Raised when the peer accepts the connection and then says nothing for
@@ -85,6 +117,7 @@ module Net
       return main if parts.length < 2
       main + "/" + parts[1].to_s.strip
     end
+
   end
 
   # The response family. CRuby's success test is `res.is_a?(Net::HTTPSuccess)`
@@ -93,6 +126,7 @@ module Net
   # the ones a client actually names are, which is the usual subset rule.
   class HTTPInformation < HTTPResponse; end
   class HTTPSuccess < HTTPResponse; end
+
   class HTTPRedirection < HTTPResponse; end
   class HTTPClientError < HTTPResponse; end
   class HTTPServerError < HTTPResponse; end
