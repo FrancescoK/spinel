@@ -211,8 +211,10 @@ static void emit_io_read_nonblock_value(Compiler *c, int id, Buf *b) {
   else buf_printf(b, "_t%d; ", held[3]);
   int rebound = exc >= 0 && read_rebound_by(c, argv[1], exc), update = ++g_tmp;
   if (rebound) {
-    buf_printf(b, "sp_bool _t%d = sp_poly_unbox_s(_t%d) == sp_poly_unbox_s(", update, held[2]);
-    emit_boxed(c, argv[1], b); buf_puts(b, "); ");
+    buf_printf(b, "sp_bool _t%d = sp_poly_unbox_s(_t%d) == ", update, held[2]);
+    if (repr_of(c, argv[1]).as_ty == TY_STRING) emit_expr(c, argv[1], b);
+    else { buf_puts(b, "sp_poly_unbox_s("); emit_boxed(c, argv[1], b); buf_puts(b, ")"); }
+    buf_puts(b, "; ");
   }
   buf_printf(b, "sp_bool _e%d; const char *_t%d = sp_io_read_nonblock_buffer(_t%d, _t%d, &_t%d, ",
              eof, tr, tf, tn, held[2]);
