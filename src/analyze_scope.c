@@ -8690,6 +8690,8 @@ typedef struct {
   int dyn_consts;       /* const_set with a computed name: any constant may be here */
   char **inc; int ninc;   /* includes and prepends: all are ancestors */
   char **ext; int next;   /* extends: ancestors of the singleton class */
+  int const_missing;    /* defines `def self.const_missing` in its body */
+  int inst_const_missing; /* defines `def const_missing` in its body (a module extended into a class) */
 } BcMod;
 
 typedef struct {
@@ -8707,6 +8709,7 @@ typedef struct {
   int global_unknown;    /* a computed module included into an unknown receiver */
   int ext_global_unknown;
   int has_const_missing;
+  int cm_unattributed;  /* a const_missing defined other than `def self.const_missing` in a class body */
   int give_up;
   const char *cref[64]; int ncref;
   char **strs; int nstrs, cstrs;   /* owned strings the cref stack points at */
@@ -9060,6 +9063,29 @@ static int bc_push(Bc *b, const char *full) {
   return 1;
 }
 
+/* Whether CRuby could call a const_missing for a miss looked up from cref
+   `top`: one defined on it or a superclass (class methods are inherited),
+   or one spinel cannot place (written elsewhere than `def self.const_missing`
+   in a body, or a class whose superclass or extends it does not know). */
+static int bc_const_missing_reaches(Bc *b, const char *top) {
+  if (!b->has_const_missing) return 0;
+  if (b->cm_unattributed) return 1;
+  const char *k = top;
+  for (int g = 0; k && *k && g < 64; g++) {
+    BcMod *m = bc_mod(b, k, 0);
+    if (!m) return 1;
+    if (m->const_missing) return 1;
+    if (m->super_unknown || m->ext_unknown) return 1;
+    /* an extended module's instance const_missing is a class method here */
+    for (int e = 0; e < m->next; e++) {
+      BcMod *x = bc_mod(b, m->ext[e], 0);
+      if (!x || x->inst_const_missing || x->inc_unknown || x->ninc > 0) return 1;
+    }
+    k = m->super;
+  }
+  return 0;
+}
+
 /* Mode 2: one bare read */
 static void bc_check(Bc *b, int id, int in_defined) {
   const NodeTable *nt = b->nt;
@@ -9081,6 +9107,41 @@ static void bc_check(Bc *b, int id, int in_defined) {
     return;
   }
   const char *top = b->cref[b->ncref - 1];
+  /* With no const_missing to take the miss, CRuby raises NameError when the
+     read runs, and only then: a method that reads the name and is never
+     called runs fine (a ruby/spec fixture, a library's unused code). The read
+     becomes that raise, `(raise NameError, "uninitialized constant ..."; nil)`,
+     as an unresolved call raises NoMethodError when it runs. */
+  if (!bc_const_missing_reaches(b, top) && *top != '?') {
+    NodeTable *wnt = (NodeTable *)nt;
+    char nmsg[600];
+    if (*top) snprintf(nmsg, sizeof nmsg, "uninitialized constant %s::%s", top, n);
+    else snprintf(nmsg, sizeof nmsg, "uninitialized constant %s", n);
+    long long ln = nt_int(nt, id, "node_line", 0), fl = nt_int(nt, id, "node_file", 0);
+    int rc = nt_new_node(wnt, "CallNode"), ra = nt_new_node(wnt, "ArgumentsNode");
+    int ne = nt_new_node(wnt, "ConstantReadNode"), sn = nt_new_node(wnt, "StringNode");
+    int nl = nt_new_node(wnt, "NilNode"), st = nt_new_node(wnt, "StatementsNode");
+    if (rc < 0 || ra < 0 || ne < 0 || sn < 0 || nl < 0 || st < 0) return;
+    nt_node_set_str(wnt, ne, "name", "NameError");
+    nt_node_set_str(wnt, sn, "content", nmsg);
+    nt_node_set_str(wnt, sn, "unescaped", nmsg);
+    int av[2] = { ne, sn };
+    nt_node_set_arr(wnt, ra, "arguments", av, 2);
+    nt_node_set_str(wnt, rc, "name", "raise");
+    nt_node_set_ref(wnt, rc, "arguments", ra);
+    int body[2] = { rc, nl };
+    nt_node_set_arr(wnt, st, "body", body, 2);
+    int all[6] = { rc, ra, ne, sn, nl, st };
+    for (int k = 0; k < 6; k++) {
+      if (ln) nt_node_set_int(wnt, all[k], "node_line", ln);
+      if (fl) nt_node_set_int(wnt, all[k], "node_file", fl);
+    }
+    nt_node_reset(wnt, id, "ParenthesesNode");
+    if (ln) nt_node_set_int(wnt, id, "node_line", ln);
+    if (fl) nt_node_set_int(wnt, id, "node_file", fl);
+    nt_node_set_ref(wnt, id, "body", st);
+    return;
+  }
   /* the program's own definitions of the name, for the message */
   char where[512]; where[0] = 0;
   for (unsigned i = 0; i < b->defs.cap; i++) {
@@ -9170,9 +9231,24 @@ static void bc_walk(Bc *b, int id, const char *self, int mode) {
   }
   if (sp_streq(ty, "DefNode")) {
     const char *nm = nt_str(nt, id, "name");
-    if (mode == 0 && nm && sp_streq(nm, "const_missing")) b->has_const_missing = 1;
     int rv = nt_ref(nt, id, "receiver");
     const char *rt = rv >= 0 ? nt_type(nt, rv) : NULL;
+    if (mode == 0 && nm && sp_streq(nm, "const_missing")) {
+      b->has_const_missing = 1;
+      /* `def self.const_missing` in a class or module body: that class's */
+      const char *cur = b->cref[b->ncref - 1];
+      if (rt && sp_streq(rt, "SelfNode") && self && *self && *self != '?') {
+        BcMod *cm = bc_mod(b, self, 1);
+        if (cm) cm->const_missing = 1; else b->cm_unattributed = 1;
+      }
+      /* an instance `def const_missing` in a module body reaches the classes
+         that extend the module */
+      else if (rv < 0 && cur && *cur && *cur != '?') {
+        BcMod *cm = bc_mod(b, cur, 1);
+        if (cm) cm->inst_const_missing = 1; else b->cm_unattributed = 1;
+      }
+      else b->cm_unattributed = 1;
+    }
     const char *ds = (rt && sp_streq(rt, "SelfNode")) ? self : NULL;
     bc_walk(b, nt_ref(nt, id, "parameters"), ds, mode);
     bc_walk(b, nt_ref(nt, id, "body"), ds, mode);

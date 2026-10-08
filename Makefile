@@ -1793,16 +1793,11 @@ reject-test: $(SPINEL)
 	      { echo "reject-test: FAIL ($$t refused without saying why)"; cat "$$tmp/ivp.out"; ok=0; }; fi; \
 	  done; \
 	done; \
-	t=test/reject/bare_const_nested_unreachable.rb; \
+	t=test/reject/bare_const_unreachable_const_missing.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/bcn.c" >"$$tmp/bcn.out" 2>&1; then \
-	  echo "reject-test: FAIL (a bare constant CRuby's lookup cannot reach compiled, bound to a nested one)"; ok=0; \
-	else grep -q "uninitialized constant X (NameError): the program defines it only as A::X" "$$tmp/bcn.out" || \
+	  echo "reject-test: FAIL (an unreachable bare constant compiled beside a const_missing that would take the miss)"; ok=0; \
+	else grep -q "uninitialized constant B::X (NameError): the program defines it only as A::X" "$$tmp/bcn.out" || \
 	  { echo "reject-test: FAIL (an unreachable bare constant refused without saying why)"; sed -n 1,5p "$$tmp/bcn.out"; ok=0; }; fi; \
-	t=test/reject/bare_const_compact_class_path.rb; \
-	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/bcp.c" >"$$tmp/bcp.out" 2>&1; then \
-	  echo "reject-test: FAIL (a constant of A read bare from a class A::B body compiled)"; ok=0; \
-	else grep -q "uninitialized constant A::B::LIMIT (NameError)" "$$tmp/bcp.out" || \
-	  { echo "reject-test: FAIL (a constant of A read bare from class A::B refused without saying why)"; sed -n 1,5p "$$tmp/bcp.out"; ok=0; }; fi; \
 	for t in test/reject/systemcallerror_subclass_errno_const*.rb; do \
 	  if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/sce.c" >"$$tmp/sce.out" 2>&1; then \
 	    echo "reject-test: FAIL ($$t: an Errno constant in a subclass of SystemCallError compiled)"; ok=0; \

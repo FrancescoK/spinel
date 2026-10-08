@@ -28,14 +28,10 @@ spinel: 1 refusal, nothing written
 == test/reject/attr_assign_value_shared_string.rb [promote] rc=1
 spinel: test/reject/attr_assign_value_shared_string.rb:6: an attribute assignment in value position (kept, passed on, or a method's last expression, which the method answers) stores into an instance variable that is mutated in place through another name, and its value would be a copy (a String is not yet shared by reference through an assignment's value). Make the assignment a statement of its own, or read the String back through the reader.
 spinel: 1 refusal, nothing written
-== test/reject/bare_const_compact_class_path.rb [default] rc=1
-spinel: test/reject/bare_const_compact_class_path.rb:7: uninitialized constant A::B::LIMIT (NameError): the program defines it only as A::LIMIT, which CRuby's lookup from A::B (its lexical scope, then its ancestors) does not reach
-== test/reject/bare_const_compact_class_path.rb [promote] rc=1
-spinel: test/reject/bare_const_compact_class_path.rb:7: uninitialized constant A::B::LIMIT (NameError): the program defines it only as A::LIMIT, which CRuby's lookup from A::B (its lexical scope, then its ancestors) does not reach
-== test/reject/bare_const_nested_unreachable.rb [default] rc=1
-spinel: test/reject/bare_const_nested_unreachable.rb:7: uninitialized constant X (NameError): the program defines it only as A::X, which CRuby's lookup from the top level does not reach
-== test/reject/bare_const_nested_unreachable.rb [promote] rc=1
-spinel: test/reject/bare_const_nested_unreachable.rb:7: uninitialized constant X (NameError): the program defines it only as A::X, which CRuby's lookup from the top level does not reach
+== test/reject/bare_const_unreachable_const_missing.rb [default] rc=1
+spinel: test/reject/bare_const_unreachable_const_missing.rb:9: uninitialized constant B::X (NameError): the program defines it only as A::X, which CRuby's lookup from B (its lexical scope, then its ancestors) does not reach; CRuby then calls const_missing (or raises NameError), which spinel does not follow here
+== test/reject/bare_const_unreachable_const_missing.rb [promote] rc=1
+spinel: test/reject/bare_const_unreachable_const_missing.rb:9: uninitialized constant B::X (NameError): the program defines it only as A::X, which CRuby's lookup from B (its lexical scope, then its ancestors) does not reach; CRuby then calls const_missing (or raises NameError), which spinel does not follow here
 == test/reject/basicobject_toplevel_include_call.rb [default] rc=1
 spinel: test/reject/basicobject_toplevel_include_call.rb:18: unsupported call: node N (CallNode `hello`) recv=-/ty-1 argc=0
 spinel: 1 refusal, nothing written
