@@ -2897,6 +2897,16 @@ static const BopShareRow bop_share_rows[] = {
   { BOP_FILE_CLASS, "unlink",      BSH_PURE },
   { BOP_FILE_CLASS, "rename",      BSH_PURE },
 
+  /* ENV answers a new String for each read, and keeps a copy of what it
+     is handed (fetch answers its default when the name is unset) */
+  { BOP_ENV,        "[]",          BSH_PURE },
+  { BOP_ENV,        "[]=",         BSH_PURE },
+  { BOP_ENV,        "store",       BSH_PURE },
+  { BOP_ENV,        "fetch",       BSH_FETCH },
+  { BOP_ENV,        "key?",        BSH_PURE },
+  { BOP_ENV,        "include?",    BSH_PURE },
+  { BOP_ENV,        "delete",      BSH_PURE },
+
   /* a proc's, a lambda's or a Method's invocations */
   { BOP_CALLABLE, "call",        BSH_CALL },
   { BOP_CALLABLE, "()",          BSH_CALL },
