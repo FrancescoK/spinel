@@ -84,6 +84,12 @@ v = [n[0].plus, n[1].plus]
 v[0] << "!"
 p v, v[1].nil?
 
+# the same fresh dispatch stored in a variable, then named twice
+fresh = n[0].plus
+other = fresh
+other << "?"
+p fresh, other, fresh.equal?(other)
+
 # a block's value and an Array inside an Array
 m = [0, 1].map { |i| pick(i) }
 m[0] << "!"

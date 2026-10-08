@@ -1,0 +1,1 @@
+spinel: test/share/refuse/route_dispatch_alias_element.rb:13: under --share-strings, the String the value of `plus` hands on as a container's element is shared with another name and changed in place, and that route cannot carry the shared handle yet: it would hand on a copy (#6765)

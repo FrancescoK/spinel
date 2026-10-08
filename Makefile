@@ -1037,6 +1037,7 @@ share-strings-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS
 	  test/string_mutator_arg_rebinds_receiver.rb \
 	  test/boxed_scan_capture_params.rb test/fold_receiver_root.rb test/string_reopen_block_returns.rb \
 	  test/fresh_string_array_element_mutation.rb \
+	  test/string_or_nil_stored_then_appended.rb \
 	  packages/shellwords/test/shellwords_split_unmatched_quote.rb \
 	  test/bundle_classd_27.rb test/masgn_str_array_strbuf_local.rb test/poly_aset_nullable_string_value.rb \
 	  $$(cat test/share/reject.list); do \
