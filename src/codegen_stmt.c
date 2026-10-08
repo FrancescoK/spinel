@@ -5,6 +5,7 @@
 #include "builtin_ops.h"
 #include "call_plan.h"
 #include "codegen_call_arms.h"
+#include "codegen_poly.h"
 
 /* an object arg's #to_s as a C string expression (the puts/print arms) */
 static void emit_obj_to_s(Compiler *c, int arg, TyKind t, Buf *b) {
@@ -14571,6 +14572,28 @@ static int yield_block_value_boxed(Compiler *c) {
 }
 
 
+/* A tail write's slot, handed back as the method's value: boxed for a poly
+   return, converted for a poly slot returned as a typed value (an RBS
+   `-> Integer` over a slot some write left poly), read as it is otherwise.
+   0 when the slot's type cannot reach the return slot this way. */
+static int tail_slot_reaches_ret(TyKind slot) {
+  TyKind ret = g_result_var ? g_result_ty : g_ret_type;
+  int want_poly = g_result_var ? g_result_poly : (ret == TY_POLY);
+  if (slot == TY_UNKNOWN || slot == TY_VOID) return 0;
+  if (want_poly || slot == ret) return 1;
+  return slot == TY_POLY && ret != TY_UNKNOWN && ret != TY_VOID && ret != TY_NIL;
+}
+static void emit_tail_slot(Compiler *c, TyKind slot, const char *ref, Buf *b) {
+  TyKind ret = g_result_var ? g_result_ty : g_ret_type;
+  int want_poly = g_result_var ? g_result_poly : (ret == TY_POLY);
+  Buf bx; memset(&bx, 0, sizeof bx);
+  if (want_poly && slot != TY_POLY) emit_boxed_text(c, slot, ref, &bx);
+  else if (!want_poly && slot == TY_POLY && ret != TY_POLY) emit_unbox_poly_ret(c, ret, ref, &bx);
+  else buf_puts(&bx, ref);
+  buf_printf(b, "%s;\n", bx.p ? bx.p : "sp_box_nil()");
+  free(bx.p);
+}
+
 void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, id);
@@ -14721,10 +14744,7 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
          Without the rule nothing picks it up, and the tail is as before. */
       int sb8 = it9 == TY_STRBUF && repr_write_share(c, id);
       if (sb8) it9 = TY_STRING;
-      int want_poly8 = g_result_var ? g_result_poly : (g_ret_type == TY_POLY);
-      int slot_ok8 = iidx9 >= 0 && it9 != TY_UNKNOWN && it9 != TY_VOID &&
-                     (want_poly8 || it9 == (g_result_var ? g_result_ty : g_ret_type));
-      if (slot_ok8) {
+      if (iidx9 >= 0 && tail_slot_reaches_ret(it9)) {
         emit_stmt(c, id, b, indent);
         emit_indent(b, indent); emit_tail_lead(b);
         char islot9[512];
@@ -14736,13 +14756,7 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
           snprintf(h8, sizeof h8, "%s", islot9);
           snprintf(islot9, sizeof islot9, "sp_strbuf_read_pub(%s)", h8);
         }
-        if (want_poly8 && it9 != TY_POLY) {
-          Buf bx8; memset(&bx8, 0, sizeof bx8);
-          emit_boxed_text(c, it9, islot9, &bx8);
-          buf_printf(b, "%s;\n", bx8.p ? bx8.p : "sp_box_nil()");
-          free(bx8.p);
-        }
-        else buf_printf(b, "%s;\n", islot9);
+        emit_tail_slot(c, it9, islot9, b);
         return;
       }
     }
@@ -14761,21 +14775,13 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
     HolderRef h9;
     LocalVar *lv9 = holder_of_node(c, id, &h9) ? h9.lv : NULL;
     TyKind lt9 = lv9 ? lv9->type : TY_UNKNOWN;
-    int want_poly9 = g_result_var ? g_result_poly : (g_ret_type == TY_POLY);
-    int slot_ok = lv9 && lt9 != TY_UNKNOWN && lt9 != TY_VOID &&
-                  (want_poly9 || lt9 == (g_result_var ? g_result_ty : g_ret_type));
+    int slot_ok = lv9 && tail_slot_reaches_ret(lt9);
     emit_stmt(c, id, b, indent);
     if (!slot_ok) return;
     char lref9[1024];
     holder_slot_text(c, &h9, lref9, sizeof lref9);
     emit_indent(b, indent); emit_tail_lead(b);
-    if (want_poly9 && lt9 != TY_POLY) {
-      Buf bx9; memset(&bx9, 0, sizeof bx9);
-      emit_boxed_text(c, lt9, lref9, &bx9);
-      buf_printf(b, "%s;\n", bx9.p ? bx9.p : "sp_box_nil()");
-      free(bx9.p);
-    }
-    else buf_printf(b, "%s;\n", lref9);
+    emit_tail_slot(c, lt9, lref9, b);
     return;
   }
   /* A tail GLOBAL write answers the stored value too (`def m; $g = v; end`),
@@ -14788,9 +14794,7 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
     /* a global holding the shared handle answers its String */
     int sb9 = gv9 && h9.r.kind == RK_STRBUF;
     if (sb9) gt9 = TY_STRING;
-    int want_poly9 = g_result_var ? g_result_poly : (g_ret_type == TY_POLY);
-    int slot_ok = gv9 && gt9 != TY_UNKNOWN && gt9 != TY_VOID &&
-                  (want_poly9 || gt9 == (g_result_var ? g_result_ty : g_ret_type));
+    int slot_ok = gv9 && tail_slot_reaches_ret(gt9);
     emit_stmt(c, id, b, indent);
     if (!slot_ok) return;
     char gslot9[256], gref9[512];
@@ -14802,13 +14806,7 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
     else if (sb9) snprintf(gref9, sizeof gref9, "sp_strbuf_read(%s)", gslot9);
     else snprintf(gref9, sizeof gref9, "%s", gslot9);
     emit_indent(b, indent); emit_tail_lead(b);
-    if (want_poly9 && gt9 != TY_POLY) {
-      Buf bx9; memset(&bx9, 0, sizeof bx9);
-      emit_boxed_text(c, gt9, gref9, &bx9);
-      buf_printf(b, "%s;\n", bx9.p ? bx9.p : "sp_box_nil()");
-      free(bx9.p);
-    }
-    else buf_printf(b, "%s;\n", gref9);
+    emit_tail_slot(c, gt9, gref9, b);
     return;
   }
   if ((sp_streq(ty, "InstanceVariableWriteNode") && !_iv_tail_val) ||
