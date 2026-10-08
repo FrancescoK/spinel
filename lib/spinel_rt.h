@@ -10523,6 +10523,21 @@ static SP_UNUSED sp_int sp_array_fill_offset_arg(sp_RbVal v, int range_alone) {
     sp_raise_cls("RangeError", "bignum too big to convert into 'long'");
   return sp_poly_arg_int_chk(v);
 }
+/* An Array's offset in fetch and values_at, as CRuby's NUM2LONG reads it:
+   sp_poly_arg_int_chk, with Array#fill's check for a Float or a Bignum past a
+   word in front of it (a NaN converted to the smallest Integer). The smallest
+   Integer is an offset like any other: boxed, its tag says it is no nil, and
+   held as a Bignum it still fits the word. Out of an int slot it arrives as
+   nil, so nil stays the offset 0 it was where no raise tells the two apart:
+   on an empty Array (n is the Array's length). */
+static SP_INLINE sp_int sp_poly_ary_offset(sp_RbVal v, sp_int n) {
+  if (v.tag == SP_TAG_INT) return v.v.i;
+  if (v.tag == SP_TAG_NIL && n == 0) return 0;
+  if (v.tag == SP_TAG_BIGINT && sp_bigint_bit_length((sp_Bigint *)v.v.p) < (sp_int)(sizeof(sp_int) * 8))
+    return (sp_int)sp_bigint_to_int((sp_Bigint *)v.v.p);
+  return (v.tag == SP_TAG_FLT || v.tag == SP_TAG_BIGINT) ? sp_array_fill_offset_arg(v, 0)
+                                                         : sp_poly_arg_int_chk_slow(v);
+}
 static sp_IntArray *sp_poly_as_int_array(sp_RbVal v) {
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_INT_ARRAY) return (sp_IntArray *)v.v.p;
   if (v.tag == SP_TAG_NIL || !sp_poly_is_array_kind(v.cls_id)) return (sp_IntArray *)0;
@@ -11191,13 +11206,18 @@ static sp_RbVal sp_poly_fetch(sp_RbVal recv, sp_RbVal key, int has_dflt, sp_RbVa
     sp_raise_key_not_found(key);
   }
   if (recv.tag == SP_TAG_OBJ && sp_poly_is_array_kind(recv.cls_id)) {
-    sp_int n = sp_poly_length(recv), i = sp_poly_to_i(key);
+    /* any index that converts to an Integer, and no other; the element is
+       read by the converted index */
+    sp_int n = sp_poly_length(recv), i0 = sp_poly_ary_offset(key, n), i = i0;
+    /* an object's to_int is the program's code, and may have changed the
+       receiver's length */
+    if (SP_UNLIKELY(key.tag == SP_TAG_OBJ)) n = sp_poly_length(recv);
     if (i < 0) i += n;
-    if (i >= 0 && i < n) return sp_poly_index_poly(recv, key);
+    if (i >= 0 && i < n) return sp_poly_arr_get(recv, i);
     if (has_dflt) return dflt;
     sp_raise_cls("IndexError",
                  sp_sprintf("index %lld outside of array bounds: %lld...%lld",
-                            (long long)sp_poly_to_i(key), (long long)-n, (long long)n));
+                            (long long)i0, (long long)-n, (long long)n));
   }
   sp_raise_nomethod(sp_nomethod_msg("fetch", recv));
   return sp_box_nil();
@@ -12942,7 +12962,11 @@ static sp_RbVal sp_poly_arr_values_at(sp_RbVal v, sp_PolyArray *idx) {
       for (sp_int k = f; k <= l; k++) sp_PolyArray_push(out, k < alen ? sp_poly_arr_get(v, k) : sp_box_nil());
       continue;
     }
-    sp_int k = sp_poly_to_i(idx->data[i]);
+    /* a Symbol or true is no offset: it read an element, as a Float Range
+       still does */
+    sp_int k = idx->data[i].tag == SP_TAG_INT ? idx->data[i].v.i
+             : (idx->data[i].tag == SP_TAG_OBJ && idx->data[i].cls_id == SP_BUILTIN_FLOAT_RANGE)
+               ? sp_poly_to_i(idx->data[i]) : sp_poly_ary_offset(idx->data[i], alen);
     if (k < 0) k += alen;
     sp_PolyArray_push(out, (k < 0 || k >= alen) ? sp_box_nil() : sp_poly_arr_get(v, k));
   }
