@@ -2564,6 +2564,8 @@ static const BopShareRow bop_share_rows[] = {
   { TY_STRING, "<<",         BSH_RECV },
   { TY_STRING, "concat",     BSH_RECV },
   { TY_STRING, "prepend",    BSH_RECV },
+  { TY_STRING, "insert",     BSH_RECV },
+  { TY_STRING, "replace",    BSH_RECV },
   { TY_STRING, "+@",         BSH_RECV },
   { TY_STRING, "freeze",     BSH_FROZEN },
   { TY_STRING, "-@",         BSH_FROZEN },
