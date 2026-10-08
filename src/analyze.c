@@ -33611,6 +33611,19 @@ static int sa_read_elsewhere(Compiler *c, const SaName *a, int except) {
     if (comp_vsite_node(c, e) != except) return 1;
   return 0;
 }
+/* A local's only read, with no parameter or captured slot behind it and
+   only fresh values written to it. The indexed sites check exact names. */
+int an_local_read_once(Compiler *c, int n) {
+  SaName a;
+  if (nt_kind(c->nt, n) != NK_LocalVariableReadNode || !sa_name(c, n, &a)) return 0;
+  LocalVar *lv = scope_local(a.scope, a.name);
+  if (!lv || lv->is_param || lv->is_block_param || lv->is_cell || sa_read_elsewhere(c, &a, n)) return 0;
+  for (int e = sa_site_first(c, &a, VS_WRITE); e >= 0; e = sa_site_next(c, &a, e)) {
+    int w = comp_vsite_node(c, e);
+    if (!share_value_fresh(c, nt_ref(c->nt, w, "value"), 0)) return 0;
+  }
+  return 1;
+}
 /* Can a copy between `to` and `from` (read at `from_read`) be seen: `to`
    mutated while `from` is read elsewhere, or `from` mutated while `to` is
    read? */

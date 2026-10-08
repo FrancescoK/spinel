@@ -2790,6 +2790,7 @@ static const BopShareRow bop_share_rows[] = {
 
   /* Kernel's functions. A name with no row (raise, throw, define_method,
      lambda, ...) is not followed. */
+  { BOP_KERNEL, "__env_to_h", BSH_PURE },
   { BOP_KERNEL, "puts",     BSH_PURE },
   { BOP_KERNEL, "print",    BSH_PURE },
   { BOP_KERNEL, "printf",   BSH_PURE },
@@ -2911,14 +2912,16 @@ static const BopShareRow bop_share_rows[] = {
   { BOP_FILE_CLASS, "rename",      BSH_PURE },
 
   /* ENV answers a new String for each read, and keeps a copy of what it
-     is handed (fetch answers its default when the name is unset) */
+     is handed (fetch answers its default when the name is unset).
+     Stores answer their value argument; delete's missing-key block has
+     fetch's argument and result flow. ENV has no retained elements. */
   { BOP_ENV,        "[]",          BSH_PURE },
-  { BOP_ENV,        "[]=",         BSH_PURE },
-  { BOP_ENV,        "store",       BSH_PURE },
+  { BOP_ENV,        "[]=",         BSH_LAST },
+  { BOP_ENV,        "store",       BSH_LAST },
   { BOP_ENV,        "fetch",       BSH_FETCH },
   { BOP_ENV,        "key?",        BSH_PURE },
   { BOP_ENV,        "include?",    BSH_PURE },
-  { BOP_ENV,        "delete",      BSH_PURE },
+  { BOP_ENV,        "delete",      BSH_FETCH },
 
   /* a proc's, a lambda's or a Method's invocations */
   { BOP_CALLABLE, "call",        BSH_CALL },

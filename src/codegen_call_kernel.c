@@ -9,6 +9,7 @@
 #include "builtin_ops.h"
 #include "repr.h"
 #include "call_plan.h"
+#include "share.h"
 #include "codegen_call_arms.h"
 
 /* the Kernel calls without a receiver: __dir__, at_exit, attr_* declarations, block_given?,
@@ -1376,6 +1377,14 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
                       " unsetenv(_t%d); ", t2, t1, t2, t2, t2, t1);
         if (dblk >= 0) {
           const char *dp0 = block_param_name(c, dblk, 0);
+          char kref[1024];
+          int key_handle = repr_share_rule(c) && strbuf_slot_ref(c, eav[0], kref, sizeof kref);
+          if (repr_share_rule(c) && dp0 && share_node_shares(c, eav[0])) {
+            ShareRoute q = share_route(id, eav[0], 0);
+            q.to = dblk; q.to_name = dp0; q.carry = key_handle ? eav[0] : SHARE_CARRY_COPY;
+            const char *msg = "ENV.delete is not supported: its block would receive a copy of a shared String key; see docs/limitations.md";
+            if (!share_route_defer(c, &q, msg)) unsupported_feature(c, id, msg);
+          }
           int dbody = nt_ref(nt, dblk, "body");
           int dbn = 0; const int *dbb = dbody >= 0 ? nt_arr(nt, dbody, "body", &dbn) : NULL;
           int dval = dbn > 0 ? dbb[dbn - 1] : -1;
@@ -1385,7 +1394,19 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
                analyzed type (it may not be a declared local here) */
             LocalVar *dlv = scope_local(comp_scope_of(c, id), dp0);
             TyKind dpt = dlv ? dlv->type : TY_STRING;
-            if (dpt == TY_POLY)
+            if (repr_share_rule(c) && dpt != TY_STRING && dpt != TY_STRBUF && dpt != TY_POLY)
+              unsupported_feature(c, id, "ENV.delete is not supported: its block parameter cannot carry the String key; see docs/limitations.md");
+            if (repr_share_rule(c) && repr_of_slot(c, dlv).handle) {
+              if (!key_handle && nt_kind(nt, eav[0]) != NK_StringNode) buf_printf(b, "SP_GC_ROOT(_t%d); ", t1);
+              buf_printf(b, "sp_String *lv_%s = ", rename_local(dp0));
+              if (key_handle) buf_puts(b, kref);
+              else buf_printf(b, "sp_String_new_shared(_t%d)", t1);
+              buf_printf(b, "; SP_GC_ROOT(lv_%s); ", rename_local(dp0));
+            }
+            else if (dpt == TY_POLY && key_handle)
+              buf_printf(b, "sp_RbVal lv_%s = sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF); SP_GC_ROOT_RBVAL(lv_%s); ",
+                         rename_local(dp0), kref, rename_local(dp0));
+            else if (dpt == TY_POLY)
               buf_printf(b, "sp_RbVal lv_%s = sp_box_str(_t%d); (void)lv_%s; ",
                          rename_local(dp0), t1, rename_local(dp0));
             else
@@ -1494,22 +1515,27 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
            nil default keeps the nullable string, any other default boxes both
            arms. (The block form is the ENV snapshot's Hash#fetch, #2742.) */
         int fpoly = repr_of(c, id).kind == RK_BOXED;
+        int fhandle = repr_call_returns_handle(c, id);
         int tk = ++g_tmp, tky = ++g_tmp, tv = ++g_tmp, td = ++g_tmp;
         buf_printf(b, "({ const char *_t%d = ", tky); emit_str_expr(c, argv[0], b);
         /* the default is an argument: it evaluates whether or not the
            variable is set, before the lookup */
         if (argc >= 2) {
-          buf_puts(b, "; "); emit_ctype(c, fpoly ? TY_POLY : TY_STRING, b);
+          buf_puts(b, "; "); emit_ctype(c, fhandle ? TY_STRBUF : fpoly ? TY_POLY : TY_STRING, b);
           buf_printf(b, " _t%d = ", td);
-          if (fpoly) emit_boxed(c, argv[1], b);
+          if (fhandle) emit_strbuf_handle_of(c, argv[1], b);
+          else if (fpoly) emit_boxed(c, argv[1], b);
           else emit_expr(c, argv[1], b);
+          if (fhandle) buf_printf(b, "; SP_GC_ROOT(_t%d)", td);
         }
         buf_printf(b, "; const char *_t%d = getenv(_t%d); ", tk, tky);
         emit_ctype(c, fpoly ? TY_POLY : TY_STRING, b);
         buf_printf(b, " _t%d = _t%d ? ", tv, tk);
-        if (fpoly) buf_printf(b, "sp_box_str(sp_str_dup_external(_t%d)) : ", tk);
+        if (fhandle) buf_printf(b, "(_sp_ret_strbuf = NULL, sp_str_dup_external(_t%d)) : ", tk);
+        else if (fpoly) buf_printf(b, "sp_box_str(sp_str_dup_external(_t%d)) : ", tk);
         else buf_printf(b, "sp_str_dup_external(_t%d) : ", tk);
-        if (argc >= 2) buf_printf(b, "_t%d", td);
+        if (fhandle) buf_printf(b, "sp_strbuf_read_pub(_t%d)", td);
+        else if (argc >= 2) buf_printf(b, "_t%d", td);
         else
           /* no default: CRuby raises KeyError naming the key. Route it through
              sp_raise_key_not_found so the key is staged for #key (#3027). */
