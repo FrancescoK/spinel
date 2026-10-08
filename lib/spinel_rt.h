@@ -10849,6 +10849,10 @@ static sp_RbVal sp_poly_index_poly(sp_RbVal recv, sp_RbVal idx) {
     sp_RbVal _u;
     if (sp_poly_user_cmp("[]", recv, idx, &_u)) return _u;
   }
+  /* A shared String key reads as its live value. The callable, object and
+     heterogeneous Hash arms above keep the original argument; the typed
+     String-keyed arms below need its bytes. */
+  if (SP_UNLIKELY(sp_poly_is_strbuf(idx))) idx = sp_poly_strbuf_deref(idx);
   if (idx.tag == SP_TAG_STR) return sp_poly_get_str(recv, idx.v.s);
   if (idx.tag == SP_TAG_SYM) return sp_poly_get_sym(recv, (sp_sym)idx.v.i);
   /* a Range index on a poly STRING is a substring (String#[Range]); without
