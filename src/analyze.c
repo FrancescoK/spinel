@@ -18955,6 +18955,25 @@ static int promote_shared_stored_strings(Compiler *c) {
               nt_kind(nt, recv4) == NK_GlobalVariableReadNode
               ? gvar_array_plain_string(c, comp_resolve_gvar(c, nt_str(nt, recv4, "name") + 1)) : -1;
     if (gpl >= 0) refuse_global_array_element(c, w, recv4, gpl);
+    /* An Array read out of a boxed slot -- a Hash's value, through `h.each
+       { |k, vs| }`, `h[k]` or `vs = h[k]` -- is iterated as a boxed value,
+       so its elements bind the parameter boxed. Only a handle element takes
+       the mutation in place: demand the Strings stored there (the walk
+       follows the block parameter, the index read or the local back to the
+       stores into the Hash and on into its Arrays), as for a poly Array
+       below. Left alone, the element was a plain String and each mutation
+       changed a copy. */
+    if (!lit4 && bpv4->type == TY_POLY && infer_type(c, recv4) == TY_POLY &&
+        (nt_kind(nt, recv4) == NK_LocalVariableReadNode || nt_kind(nt, recv4) == NK_CallNode)) {
+      if (g_infer_optimistic) continue;
+      if (nt_kind(nt, recv4) == NK_LocalVariableReadNode) {
+        const char *pn4 = nt_str(nt, recv4, "name");
+        Scope *ps4 = pn4 ? comp_scope_of(c, recv4) : NULL;
+        if (ps4) changed |= strbuf_demand_container_stores(c, pn4, ps4);
+      }
+      else changed |= strbuf_container_source_walk(c, recv4, 0, SB_DEMAND);
+      continue;
+    }
     if (!lit4 && nt_kind(nt, recv4) != NK_LocalVariableReadNode) continue;
     const char *contn4 = lit4 ? NULL : nt_str(nt, recv4, "name");
     Scope *conts4 = contn4 ? comp_scope_of(c, recv4) : NULL;
