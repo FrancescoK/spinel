@@ -232,7 +232,14 @@ int emit_call_identity_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
     else if (rt == TY_POLY) { buf_puts(b, "((sp_int)(uintptr_t)("); emit_expr(c, recv, b); buf_puts(b, ").v.p)"); }
     /* a mutable String held as its shared sp_String: that handle is the
        identity, and the one a box of it carries; its text is a fresh copy
-       on every read */
+       on every read. A nullable String boxes NULL as nil, whose fixed id
+       must not be the NULL pointer's integer value. */
+    else if (comp_recv_type(c, recv) == TY_STRING && repr_of(c, recv).may_nil) {
+      int t = ++g_tmp;
+      buf_printf(b, "({ sp_RbVal _t%d = ", t);
+      emit_boxed(c, recv, b);
+      buf_printf(b, "; _t%d.tag == SP_TAG_NIL ? 4 : (sp_int)(uintptr_t)_t%d.v.p; })", t, t);
+    }
     else if (rt == TY_STRING && strbuf_object_ref(c, recv, b)) { }
     /* unboxed value structs have no identity: derive a stable Integer from
        the value hash (see the identity note in docs/limitations.md) */

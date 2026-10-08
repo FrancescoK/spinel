@@ -18195,10 +18195,13 @@ enum { RH_UNSEEN, RH_BUSY, RH_YES, RH_NO };
 typedef struct { unsigned char *st; int *ret_start, *ret_list; } RetHandles;
 static int an_ret_handle(Compiler *c, RetHandles *R, int mi);
 /* Does tail node n answer a shared handle it publishes last: a handle's
-   read, or a call or `super` whose every target method does? */
-static int an_tail_handle(Compiler *c, RetHandles *R, int n) {
+   read, or a call or `super` whose every target method does? A nullable
+   tail can also answer nil, which the existing pickup tests before using
+   the return channel. Count it with the pickup's own tail predicate. */
+static int an_tail_handle(Compiler *c, RetHandles *R, int n, TailCount *tc) {
   const NodeTable *nt = c->nt;
   if (an_arg_is_shared_handle(c, n)) return 1;
+  if (an_tail_is_shared_handle(c, n, 1, tc)) return 1;
   NodeKind k = n >= 0 ? nt_kind(nt, n) : NK_NONE;
   if (k == NK_SuperNode || k == NK_ForwardingSuperNode) {
     const CallPlan *p = cplan_user_fresh(c, n);
@@ -18224,13 +18227,16 @@ static int an_ret_handle(Compiler *c, RetHandles *R, int mi) {
   int last = scope_body_last(c, mi);
   /* a body with its own rescue is a begin, whose arms answer */
   if (last < 0 && m->body >= 0 && nt_kind(nt, m->body) == NK_BeginNode) last = m->body;
-  if (last >= 0) { saw = 1; ok = an_tail_handle(c, R, last); }
+  TailCount tc = { 0, 0 };
+  if (last >= 0) { saw = 1; ok = an_tail_handle(c, R, last, &tc); }
   for (int r = R->ret_start[mi]; ok && r < R->ret_start[mi + 1]; r++) {
     int ra = nt_ref(nt, R->ret_list[r], "arguments");
     int rn = 0; const int *rv = ra >= 0 ? nt_arr(nt, ra, "arguments", &rn) : NULL;
     saw = 1;
-    ok = rn == 1 && an_tail_handle(c, R, rv[0]);
+    if (rn == 0) tc.nils++;
+    else ok = rn == 1 && an_tail_handle(c, R, rv[0], &tc);
   }
+  if (tc.nils) m->ret_nil_pickup = 1;
   R->st[mi] = ok && saw ? RH_YES : RH_NO;
   return R->st[mi] == RH_YES;
 }
