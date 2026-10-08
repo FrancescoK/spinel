@@ -210,7 +210,9 @@ module FFI
     end
 
     def write_return(addr, v, keep)
-      if integer? then Native.put_ret_int(addr, @kind, Type.int_arg(v))
+      # The gem zeroes a nil callback result after any mapped conversion.
+      if v.nil? then Native.memset(addr, 0, integer? ? slot_size : @size)
+      elsif integer? then Native.put_ret_int(addr, @kind, Type.int_arg(v))
       else write_native(addr, v, keep)
       end
       nil
@@ -1203,7 +1205,6 @@ module FFI
       Native.memcpy(addr, src, size)
       nil
     end
-    def write_return(addr, v, keep) = write_native(addr, v, keep)
   end
 
   # A struct inline in another struct: reads give a view into the outer
