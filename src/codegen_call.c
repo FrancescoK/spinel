@@ -13795,7 +13795,14 @@ static int emit_array_arith_call(Compiler *c, int id, Buf *b) {
     }
     if (eff_res == TY_INT) {
       int isdivmod = is_div_or_mod(name);
-      buf_printf(b, "%s(", int_arith_fn(name));
+      /* both operands never the nil sentinel (int_value_plain): the helper
+         without the test of it, which -2**63 would fail (#7612) */
+      const char *afn = int_arith_fn(name);
+      char afn_nn[24];
+      if (rt == TY_INT && a0 == TY_INT && int_value_plain(c, recv) && int_value_plain(c, argv[0]) &&
+          strcmp(afn, "sp_int_pow") && snprintf(afn_nn, sizeof afn_nn, "%s_nn", afn) < (int)sizeof afn_nn)
+        afn = afn_nn;
+      buf_printf(b, "%s(", afn);
       emit_expr(c, recv, b); buf_puts(b, ", ");
       if (isdivmod) emit_int_divisor(c, argv[0], b);
       else emit_scalar_operand(c, argv[0], "0", b);

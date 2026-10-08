@@ -1351,7 +1351,7 @@ static int emit_array_op_assign_value(Compiler *c, const char *ref, TyKind t,
 static int emit_scalar_op_assign_value(Compiler *c, const char *ref, TyKind t,
                                        const char *op, int v, int lhs_nil, Buf *b) {
   Buf ab; memset(&ab, 0, sizeof ab);
-  int ok = emit_scalar_op_assign(c, ref, t, op, v, 1, lhs_nil, &ab);
+  int ok = emit_scalar_op_assign(c, ref, t, op, v, 1, lhs_nil, 0, &ab);
   if (ok) buf_printf(b, "({ %s%s; })", ab.p, ref);
   free(ab.p);
   return ok;

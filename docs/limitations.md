@@ -499,7 +499,10 @@ arithmetic or bitwise operator, `||` / `&&` / `?:` of such values, and a local
 whose every write is one of those are plain Integers, and printing,
 interpolating, `to_s` / `inspect` / `to_i` / `to_f`, `nil?`, `zero?` /
 `even?` / `positive?` and the like, and a condition test them for nothing
-(test/int_min_plain_locals.rb, in raise and wrap). Parameters, return values,
+(test/int_min_plain_locals.rb, in raise and wrap). An `+ - * / %` whose two
+operands are plain uses the helper without the nil test of its operands
+(`sp_int_add_nn` ...), so -2**63 is a number there in raise mode too, and the
+test is not paid. Parameters, return values,
 instance variables and elements of Arrays and Hashes are not seen that way
 yet: a bitboard that travels through them still reads as `nil` at the
 sentinel's word. This is deliberate: checking the result of every `+ - *` costs

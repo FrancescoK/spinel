@@ -3400,8 +3400,18 @@ static int plain_expr(Compiler *c, int n, int depth) {
     const char *nm = nt_str(nt, n, "name");
     int recv = nt_ref(nt, n, "receiver");
     if (!nm || recv < 0 || nt_ref(nt, n, "block") >= 0) return 0;
+    if (call_is_safe_nav(nt, n)) return 0;   /* nil&.+(1) is nil */
     int args = nt_ref(nt, n, "arguments"), argc = 0;
     const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+    /* a collection's or String's size: a count, never nil (unless the program
+       reopens the class with its own) */
+    if (argc == 0 && (!strcmp(nm, "size") || !strcmp(nm, "length") || !strcmp(nm, "bytesize"))) {
+      TyKind rk = comp_ntype(c, recv);
+      const char *cn = rk == TY_STRING ? "String" : ty_is_array(rk) ? "Array" : ty_is_hash(rk) ? "Hash" : NULL;
+      if (!cn) return 0;
+      int ci = comp_class_index(c, cn);
+      return ci < 0 || comp_method_in_chain(c, ci, nm, NULL) < 0;
+    }
     if (comp_ntype(c, recv) != TY_INT) return 0;
     if (argc == 0 && (!strcmp(nm, "~") || !strcmp(nm, "-@") || !strcmp(nm, "+@"))) {
       int ci = comp_class_index(c, "Integer");
@@ -3423,6 +3433,12 @@ static int plain_expr(Compiler *c, int n, int depth) {
   }
   default: return 0;
   }
+}
+/* a local (written under `name`) that never holds the nil sentinel, as int_value_plain
+   asks of its reads: for the target of `x += 1` */
+int int_local_plain(Compiler *c, LocalVar *lv, const char *name) {
+  if (g_promote_mode) return 0;
+  return plain_local(c, lv, name, 0);
 }
 int int_value_plain(Compiler *c, int node) {
   if (g_promote_mode) return 0;

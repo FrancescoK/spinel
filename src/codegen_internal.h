@@ -1897,12 +1897,13 @@ int emit_output_call(Compiler *c, int id, Buf *b, int indent);
 void system_refuse_unsupported(Compiler *c, int id, const int *argv, int argc);
 int emit_system_splat(Compiler *c, const int *argv, int argc, Buf *b);
 int int_value_plain(Compiler *c, int node);   /* an Integer that can never be the nil sentinel */
+int int_local_plain(Compiler *c, LocalVar *lv, const char *name);
 int emit_output_spilled(Compiler *c, const char *name, int argc, const int *argv, Buf *b, int indent);
 void emit_assign(Compiler *c, int id, Buf *b, int indent);
 void emit_op_assign(Compiler *c, int id, Buf *b, int indent);
 int emit_array_op_assign(Compiler *c, const char *lval, TyKind t, const char *op, int v, Buf *b);
 int emit_scalar_op_assign(Compiler *c, const char *lval, TyKind t, const char *op,
-                          int v, int capture, int lhs_nil, Buf *b);
+                          int v, int capture, int lhs_nil, int lhs_plain, Buf *b);
 const char *poly_pow_fn(TyKind rt);   /* sp_poly_pow, or sp_poly_pow_recv for a receiver that may lack `**` */
 int emit_poly_op_assign(Compiler *c, const char *lval, const char *op, int v,
                         int capture, Buf *b);

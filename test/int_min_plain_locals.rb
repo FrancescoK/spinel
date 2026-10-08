@@ -24,6 +24,12 @@ w = -9223372036854775807 - (n + 1)
   p x.negative?
   p x.to_f
   p x.to_i
+  p x + 0
+  p x - 0
+  p x * 1
+  p x / 1
+  p x % 7
+  p x + n
   p(x || 8)
   p(x && 7)
   i = 0
@@ -33,6 +39,7 @@ w = -9223372036854775807 - (n + 1)
   p i
 end
 y = v
+y += 0
 p y
 z = (v | 0)
 puts z

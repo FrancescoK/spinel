@@ -286,12 +286,19 @@ static SP_NOINLINE SP_COLD sp_float sp_FloatArray_get_recv(sp_FloatArray *a, sp_
    but taking it moved optcarrot's code enough to cost it 2% (branch
    aliasing, not work), so / keeps the general path. */
 #define SP_POW2_CONST(b) (SP_CONSTANT_P(b) && (b) > 0 && ((b) & ((b) - 1)) == 0)
-static inline sp_int sp_idiv(sp_int a, sp_int b) {
-  SP_INT_NIL_CK(a, b, "/");
+/* The _nn variants are for operands the compiler knows are never the nil
+   sentinel (int_value_plain: a literal, an operator's result, a local only
+   those are written to): -2**63 is that number there, not nil (#7612). They
+   keep the overflow and zero-divisor checks and drop the sentinel test. */
+static inline sp_int sp_idiv_nn(sp_int a, sp_int b) {
   if (b == 0) sp_raise_cls("ZeroDivisionError", "divided by 0");
   sp_int q = a / b; sp_int r = a % b;
   if ((r != 0) && ((r ^ b) < 0)) q--;
   return q;
+}
+static inline sp_int sp_idiv(sp_int a, sp_int b) {
+  SP_INT_NIL_CK(a, b, "/");
+  return sp_idiv_nn(a, b);
 }
 /* Integer#abs: nil-checked (and free of the -INTPTR_MIN overflow the inline
    ternary had on the sentinel). */
@@ -299,13 +306,16 @@ static inline sp_int sp_int_abs(sp_int a) {
   SP_INT_NIL_CK(a, (sp_int)0, "abs");
   return a < 0 ? -a : a;
 }
-static inline sp_int sp_imod(sp_int a, sp_int b) {
-  SP_INT_NIL_CK(a, b, "%");
+static inline sp_int sp_imod_nn(sp_int a, sp_int b) {
   if (SP_POW2_CONST(b)) return a & (b - 1);
   if (b == 0) sp_raise_cls("ZeroDivisionError", "divided by 0");
   sp_int r = a % b;
   if ((r != 0) && ((r ^ b) < 0)) r += b;
   return r;
+}
+static inline sp_int sp_imod(sp_int a, sp_int b) {
+  SP_INT_NIL_CK(a, b, "%");
+  return sp_imod_nn(a, b);
 }
 /* Float#% (and Integer % Float): floored modulo whose result takes the sign of
    the divisor, unlike C fmod which follows the dividend (-5.5 % 2 == 0.5). */
@@ -387,7 +397,19 @@ static inline sp_int sp_iremainder(sp_int a, sp_int b) {
 #  define sp_int_sub(a, b) ((a) - (b))
 #  define sp_int_mul(a, b) ((a) * (b))
 #  define sp_int_neg(a)    (-(a))
+#  define sp_int_add_nn(a, b) ((a) + (b))
+#  define sp_int_sub_nn(a, b) ((a) - (b))
+#  define sp_int_mul_nn(a, b) ((a) * (b))
 #else
+#  define sp_int_add_nn(a, b) ({ sp_int _sp_a = (a), _sp_b = (b), _sp_r; \
+    if (sp_int_add_overflow_p(_sp_a, _sp_b, &_sp_r)) sp_raise_cls("RangeError", "integer overflow in +"); \
+    _sp_r; })
+#  define sp_int_sub_nn(a, b) ({ sp_int _sp_a = (a), _sp_b = (b), _sp_r; \
+    if (sp_int_sub_overflow_p(_sp_a, _sp_b, &_sp_r)) sp_raise_cls("RangeError", "integer overflow in -"); \
+    _sp_r; })
+#  define sp_int_mul_nn(a, b) ({ sp_int _sp_a = (a), _sp_b = (b), _sp_r; \
+    if (sp_int_mul_overflow_p(_sp_a, _sp_b, &_sp_r)) sp_raise_cls("RangeError", "integer overflow in *"); \
+    _sp_r; })
 #  define sp_int_add(a, b) ({ sp_int _sp_a = (a), _sp_b = (b), _sp_r; \
     SP_INT_NIL_CK(_sp_a, _sp_b, "+"); \
     if (sp_int_add_overflow_p(_sp_a, _sp_b, &_sp_r)) sp_raise_cls("RangeError", "integer overflow in +"); \
