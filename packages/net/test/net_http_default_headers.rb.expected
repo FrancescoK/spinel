@@ -1,0 +1,7 @@
+["*/*", "Ruby"]
+"accept=*/* user-agent=Ruby"
+"accept=application/json user-agent=Ruby"
+"accept=*/* user-agent=my-client/1.0"
+"accept=text/plain"
+"accept=*/* user-agent=Ruby"
+"accept=*/* user-agent=Ruby"

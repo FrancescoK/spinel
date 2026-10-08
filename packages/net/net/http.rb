@@ -209,6 +209,11 @@ module Net
           self[k] = v
         end
       end
+      # The two headers CRuby's request carries unless the caller set them.
+      # CRuby also asks for gzip; this package does not decode a compressed
+      # body (see the top of the file), so it does not ask.
+      self["Accept"] = "*/*" unless key?("accept")
+      self["User-Agent"] = "Ruby" unless key?("user-agent")
     end
 
     # Header names are case-insensitive on the wire, and CRuby's
