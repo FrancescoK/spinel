@@ -244,6 +244,7 @@ extern const char *g_yield_block_fallback_param_name;
 extern int  g_nren;
 extern int  g_block_id;
 int builtin_method_known(const char *cls, const char *m);
+int builtin_instance_name_known(const char *m);
 int builtin_arity_violation(Compiler *c, int id);
 int builtin_object_method_known(const char *m);
 int name_is_enumerable_module_method(const char *m);
@@ -296,6 +297,7 @@ int subtree_may_run_proc(Compiler *c, int id);
    -- variable and literal reads, scalar arithmetic, typed-array reads and
    plain field reads, all the way down (codegen_call.c)? */
 int subtree_is_pure_read(Compiler *c, int id);
+int operand_is_held_read(Compiler *c, int id);
 /* Is the call a reader the emitter lowers to a plain field read? *allocates is
    set when the read builds a copy (a shared String slot). codegen_call.c */
 int call_is_field_read(Compiler *c, int id, int *allocates);

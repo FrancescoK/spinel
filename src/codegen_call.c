@@ -1792,6 +1792,12 @@ int builtin_instance_method_known(const char *cls, const char *m) {
     if (sp_streq(sp_builtin_names_tbl[i].cls, cls) && sp_streq(sp_builtin_names_tbl[i].m, m)) return 1;
   return 0;
 }
+/* Does any builtin class have an instance method of this name? */
+int builtin_instance_name_known(const char *m) {
+  for (int i = 0; sp_builtin_names_tbl[i].cls; i++)
+    if (sp_streq(sp_builtin_names_tbl[i].m, m)) return 1;
+  return 0;
+}
 /* Exported probes for the analyze-side method() desugar (#2752): whether the
    builtin table knows (cls, m), and whether m is universal Object surface. */
 int builtin_method_known(const char *cls, const char *m);
@@ -18653,6 +18659,31 @@ static int prog_has_hash_default_block(Compiler *c) {
     if (!rn || sp_streq(rn, "Hash")) memo = 1;   /* a computed class may be Hash */
   }
   return memo;
+}
+/* Is this operand a call that only reads, and builds nothing: a typed
+   Array's element or a plain slot's reader (subtree_is_pure_read), a Hash's
+   value under a Symbol, String or Integer key that allocates nothing, in a
+   program with no Hash default block, or the length of a String, an Array
+   or a Hash? Nothing in it can collect a sibling, and what it answers is
+   held by its owner. */
+int operand_is_held_read(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  id = unwrap_parens(c, id);
+  if (id < 0 || nt_kind(nt, id) != NK_CallNode) return 0;
+  if (subtree_is_pure_read(c, id)) return 1;
+  const char *nm = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver");
+  int a = nt_ref(nt, id, "arguments"); int ac = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+  if (!nm || recv < 0 || nt_ref(nt, id, "block") >= 0 || !subtree_is_pure_read(c, recv)) return 0;
+  TyKind rt = comp_ntype(c, recv);
+  if (ac == 0)
+    return (sp_streq(nm, "size") || sp_streq(nm, "length") || sp_streq(nm, "bytesize")) &&
+           (rt == TY_STRING || rt == TY_STRBUF || ty_is_array(rt) || ty_is_hash(rt));
+  if (ac != 1 || !sp_streq(nm, "[]") || !ty_is_hash(rt)) return 0;
+  TyKind kt = comp_ntype(c, av[0]);
+  return (kt == TY_SYMBOL || kt == TY_STRING || kt == TY_INT) && !operand_may_allocate(c, av[0]) &&
+         !prog_has_hash_default_block(c);
 }
 /* Can evaluating this subtree store a new value into an ivar, a class
    variable or a global? A write to one does, and so can anything that runs
