@@ -262,6 +262,7 @@ int is_proc_new(const char *recv, const char *meth); /* Proc.new */
 int is_method_ref_name(const char *n);   /* method: Kernel#method */
 int is_env_const(const char *n);         /* ENV */
 int is_argv_const(const char *n);        /* ARGV */
+int is_proc_conversion_name(const char *n); /* to_proc curry: makes a proc */
 int is_aref_name(const char *n);         /* []: an element read */
 int is_shovel_name(const char *n);       /* <<: an append, a chain's link */
 

@@ -173,6 +173,10 @@ typedef struct ShareFacts {
   int any_dec[2];
   /* does the program make a Lazy (a `lazy` call): -1 not asked yet */
   int any_lazy;
+  /* does the program make a proc or a Method a box could hold (a lambda,
+     a proc literal, a block taken as &blk, a Method, a to_proc): -1 not
+     asked yet */
+  int any_callable;
   int *any_new_blk, nany_blk, cany_blk;
   /* the attr readers and writers of every class by name, and the method
      scopes by name, sorted for a binary search (built on first use) */
@@ -1808,6 +1812,26 @@ static int sh_args_refuse_string(Compiler *c, int n, const char *name) {
   return 0;
 }
 
+/* Can the box call n is made on hold a proc or a Method? Not where the
+   boxed-receiver walk bounds the receiver (poly_recv_classes: a proc is no
+   class it lists), nor in a program that makes none (found once per build) */
+static int sh_box_may_be_callable(ShareFacts *F, Compiler *c, int n) {
+  const NodeTable *nt = c->nt;
+  if (F->any_callable < 0) {
+    F->any_callable = 0;
+    for (int k = 0; k < nt->count && !F->any_callable; k++) {
+      NodeKind kk = nt_kind(nt, k);
+      const char *nm = kk == NK_CallNode ? nt_str(nt, k, "name") : NULL;
+      int r = nm ? nt_ref(nt, k, "receiver") : -1;
+      const char *rn = r >= 0 && nt_kind(nt, r) == NK_ConstantReadNode ? nt_str(nt, r, "name") : NULL;
+      F->any_callable = kk == NK_LambdaNode || kk == NK_BlockParameterNode ||
+                        (nm && (is_proc_constructor(nm) || is_proc_conversion_name(nm) ||
+                                is_object_receiver_handoff(nm) || is_proc_new(rn, nm)));
+    }
+  }
+  int nk;
+  return F->any_callable && !poly_recv_classes(c, n, &nk);
+}
 /* is node n a Lazy: a chain ending in a lazy stage, or a local holding
    one? Asked only of a program that makes one, found once per build */
 static int sh_lazy_valued(ShareFacts *F, Compiler *c, int n) {
@@ -2059,8 +2083,11 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
     return s ? sh_builtin(F, c, n, s, rv, blk, 0) : sh_unknown_call(F, c, n, blk);
   }
   if (rt == TY_POLY || rt == TY_UNKNOWN) {
-    /* a proc or a Method in the box: called with what it is handed */
+    /* a proc or a Method in the box, where it may hold one: called with
+       what it is handed; else a container's or a String's element, at any
+       depth (the container default) */
     if (bop_share_named(BOP_CALLABLE, name) == BSH_CALL) {
+      if (!sh_box_may_be_callable(F, c, n)) return sh_container_default(F, c, n, rv, blk);
       sh_unknown_call(F, c, n, blk);
       return sh_join(F, F->unknown, sh_container_default(F, c, n, rv, blk));
     }
@@ -3216,6 +3243,7 @@ static ShareFacts *sh_build(Compiler *c, int closed) {
   F->any_new_kw = -1;
   F->any_dec[0] = F->any_dec[1] = -2;
   F->any_lazy = -1;
+  F->any_callable = -1;
   F->nnodes = nt->count;
   F->nval = malloc(sizeof(int) * (size_t)(F->nnodes > 0 ? F->nnodes : 1));
   for (int i = 0; i < F->nnodes; i++) F->nval[i] = -2;
