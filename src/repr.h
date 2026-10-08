@@ -137,6 +137,8 @@ typedef enum {
 
 /* Does a call's settled return route hand back a shared String handle? */
 int repr_call_returns_handle(Compiler *c, int v);
+/* A boxed to_s that keeps its String receiver beside fresh user returns. */
+int repr_boxed_to_s_operand(Compiler *c, int v);
 /* The representation of node `node`'s value. */
 Repr repr_of(const Compiler *c, int node);
 /* The representation of a local variable's slot (a global's and a
