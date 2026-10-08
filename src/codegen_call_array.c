@@ -17,6 +17,14 @@ static const char *arr_kind(TyKind rt) {
   return rt == TY_POLY_ARRAY ? "Poly" : array_kind(rt);
 }
 
+/* Array.new's poly fill keeps an existing shared slot's handle. Static
+   reads retain String dispatch even when their storage is the handle. */
+int array_fill_boxes_handle(Compiler *c, int id, int fill) {
+  if (repr_of(c, id).as_ty != TY_POLY_ARRAY || !repr_share_rule(c)) return 0;
+  if (repr_of(c, fill).as_ty == TY_STRBUF) return 1;
+  return repr_static_share(c, fill);
+}
+
 /* The inspect label of a blockless combinator's Enumerator, CRuby's
    `combination(2)` or an argless `permutation`; `tn` holds the count. */
 static void emit_combinator_enum_label(const char *name, int argc, int tn, Buf *b) {
