@@ -500,13 +500,14 @@ void compute_reachable(Compiler *c) {
      desugared, Kernel.Float(x)) convert the same way, so any call by the name
      counts, and the program is marked as one that converts at all. */
   {
-    int has_kint = 0, has_kflt = 0;
+    int has_kint = 0, has_kflt = 0, has_hmerge = 0;
     for (int id = 0; id < c->nt->count; id++) {
       if (nt_kind(c->nt, id) != NK_CallNode) continue;
       const char *nm = nt_str(c->nt, id, "name");
       if (!nm) continue;
       if (sp_streq(nm, "Integer")) has_kint = 1;
       else if (sp_streq(nm, "Float")) has_kflt = 1;
+      else if (sp_streq(nm, "merge") || sp_streq(nm, "merge!") || sp_streq(nm, "update")) has_hmerge = 1;
     }
     /* a Numeric of the program's own converts through its #to_f wherever a
        Float argument is taken (Math.sqrt(big_decimal)): the same bridge */
@@ -528,7 +529,7 @@ void compute_reachable(Compiler *c) {
       const char *dn = nt_str(c->nt, did, "name");
       if (dn && sp_streq(dn, "to_hash")) has_to_hash = 1;
     }
-    c->uses_kw_to_hash = has_kwsplat && has_to_hash;
+    c->uses_kw_to_hash = (has_kwsplat || has_hmerge) && has_to_hash;
     if (has_kint) { MARK_NAME("to_int"); MARK_NAME("to_str"); MARK_NAME("to_i"); }
     if (has_kflt || has_unum) MARK_NAME("to_f");
     if (c->uses_kw_to_hash) MARK_NAME("to_hash");
