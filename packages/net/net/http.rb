@@ -272,7 +272,7 @@ module Net
     # Decided by the method rather than per class, since `Net::HTTP#post` and
     # `Net::HTTP.post_form` build a plain HTTPRequest with the method name.
     def request_body_permitted?
-      @method == "POST" || @method == "PUT"
+      @method == "POST" || @method == "PUT" || @method == "PATCH"
     end
 
     # Yields the spelling the caller wrote, not the downcased key: for a
@@ -322,6 +322,12 @@ module Net
     class Put < HTTPRequest
       def initialize(path, initheader = nil)
         super("PUT", path, initheader)
+      end
+    end
+
+    class Patch < HTTPRequest
+      def initialize(path, initheader = nil)
+        super("PATCH", path, initheader)
       end
     end
 
