@@ -1025,6 +1025,7 @@ share-strings-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS
 	  test/string_freeze_value_shared_handle.rb test/string_unary_plus_frozen_receiver.rb \
 	  test/builtins_inject.rb test/issue_3174.rb test/set_string_member_frozen.rb \
 	  test/string_lent_global_slot.rb \
+	  test/concat_self_alias_snapshot.rb test/string_concat_value_snapshot.rb \
 	  test/dynamic_new_post_params_reach.rb test/block_forward_proc_param_type.rb test/proc_form_yield_block_arg.rb \
 	  test/builtins_partition_group_by.rb test/forwarded_block_tail_return.rb \
 	  test/boxed_scan_capture_params.rb test/fold_receiver_root.rb \
@@ -2256,6 +2257,7 @@ GC_MINOR_TESTS := test/boxed_scan_capture_params.rb \
 	test/share_strings_builtin_fallback_reads.rb \
                   test/share_strings_class_value_parameter.rb \
                   test/share_strings_hash_transform_params.rb \
+                  test/string_concat_value_snapshot.rb \
                   test/share/share_strings_transform_operands.rb \
                   test/share/share_strings_captured_bytes.rb \
                   test/share/share_strings_boxed_io_rows.rb \

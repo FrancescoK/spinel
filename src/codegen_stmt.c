@@ -15936,7 +15936,7 @@ static int strbuf_recv_hold(Compiler *c, int recv, const char *name, int argc, c
    every argument taken before anything is appended, as CRuby does (a handle
    argument reads as a copy, so `s.concat(s, s)` appends the String as it
    was), then the frozen check, then the appends in order */
-static void emit_str_concat_handle(Compiler *c, const char *sref, int argc, const int *argv, Buf *b, int indent) {
+void emit_str_concat_handle(Compiler *c, const char *sref, int argc, const int *argv, Buf *b, int indent) {
   int base = g_tmp + 1; g_tmp += argc;
   emit_indent(b, indent);
   buf_puts(b, "{");
