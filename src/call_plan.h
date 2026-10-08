@@ -74,6 +74,8 @@ const CallPlan *cplan_user(Compiler *c, int id);
    analyze_nil.c): it answers from the types as they stand. The answer
    lasts until the next call. */
 const CallPlan *cplan_user_fresh(Compiler *c, int id);
+/* A constant receiver's builtin new reaches this initialize, or -1. */
+int cplan_initialize(Compiler *c, int id);
 /* Every user method the call node id may reach, into out (at most cap):
    its plan's method and, for a switch, each member. Answered from the types
    as they stand, never kept past cplan_targets_drop.

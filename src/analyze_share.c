@@ -1703,7 +1703,7 @@ static int sh_new_call(ShareFacts *F, Compiler *c, int n, int recv, int blk) {
     int r = sh_native_new(F, c, n, cid);
     if (r != -2) return r;
   }
-  int mi = comp_method_in_chain(c, cid, "initialize", NULL);
+  int mi = cplan_initialize(c, n);
   if (mi < 0) return ci->def_node >= 0 ? -1 : -2;
   sh_bind(F, c, n, mi);
   if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode) sh_block_to_method(F, c, blk, mi);
