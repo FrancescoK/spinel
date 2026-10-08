@@ -1,0 +1,13 @@
+true
+"s!a"
+true
+"s!a!!f"
+true
+"s!a!!f!!p"
+true
+"s!a!!f!!p!!e"
+true
+"s!a!!f!!p!!e!!z"
+"if"
+"case"
+"rescue"

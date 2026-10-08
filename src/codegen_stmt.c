@@ -1952,6 +1952,7 @@ static void emit_strbuf_cond_value(Compiler *c, LocalVar *lv, int v, const char 
       return;
     case NK_StatementsNode: {
       int n = 0; const int *bb = nt_arr(nt, v, "body", &n);
+      if (stmts_diverge(c, v)) { emit_stmts(c, v, b, 0); return; }
       for (int i = 0; i < n - 1; i++) emit_stmt(c, bb[i], b, 0);
       if (n > 0) emit_strbuf_cond_value(c, lv, bb[n - 1], dst, b, depth);
       else buf_printf(b, "%s = NULL;\n", dst);
@@ -5155,6 +5156,8 @@ static void emit_pm_body_value(Compiler *c, int stmts, TyKind rt, int cr,
     return;
   }
   int last = bb[n - 1];
+  /* A diverging arm has no value to assign to the result temp. */
+  if (stmts_diverge(c, stmts)) { emit_stmt(c, last, b, indent); return; }
   TyKind lt = repr_of(c, last).as_ty;
   /* An empty `[]` / `{}` caches TY_UNKNOWN because it has no ELEMENT type
      yet, not because it has no value; running it for effect left the arm at
