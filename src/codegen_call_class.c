@@ -3460,7 +3460,7 @@ int emit_call_reopen_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
     }
     const char *oc_cn = NULL;
     switch (rt) {
-    case TY_STRING: oc_cn = "String"; break;
+    case TY_STRING: case TY_STRBUF: oc_cn = "String"; break;
     case TY_INT:    oc_cn = "Integer"; break;
     case TY_FLOAT:  oc_cn = "Float"; break;
     case TY_SYMBOL: oc_cn = "Symbol"; break;
@@ -3478,7 +3478,7 @@ int emit_call_reopen_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
         int oc_mi = comp_method_in_chain(c, oc_ci, name, NULL);
         if (oc_mi >= 0 && rt == TY_IO) { emit_io_reopen_call(c, id, recv, name, b); return 1; }
         if (oc_mi >= 0) {
-          if (rt == TY_STRING && emit_reopen_block_call(c, id, recv, oc_mi, NULL, b)) return 1;
+          if ((rt == TY_STRING || rt == TY_STRBUF) && emit_reopen_block_call(c, id, recv, oc_mi, NULL, b)) return 1;
           if (g_plan_check) ucall_observe(c, id, oc_mi, oc_ci, 0);
           buf_printf(b, "sp_%s_%s(", mc_reopen_cls(c, oc_ci, name), mc(name));
           emit_reopen_recv_args(c, id, oc_mi, recv, 0, NULL, b);

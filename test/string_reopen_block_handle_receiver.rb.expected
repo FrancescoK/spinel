@@ -1,0 +1,28 @@
+[102, 114, 101, 115, 104]
+7
+"done"
+"fresh"
+7
+"done"
+"fresh"
+7
+"done"
+"local!"
+[109, 101, 116, 104, 111, 100]
+"method done"
+"optional done"
+"optional"
+"optional done"
+"proc"
+"proc done"
+"local!"
+"local!"
+"ivar!"
+"ivar!"
+"ivar!"
+"ivar!"
+"parameter!"
+"parameter!"
+"fresh"
+7
+"done"
