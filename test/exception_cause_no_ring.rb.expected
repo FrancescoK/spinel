@@ -1,0 +1,8 @@
+cleanup: work failed cause=nil chain=1
+three: a1 cause=nil chain=1
+ensure: a2 cause=nil chain=1
+itself: a3 cause=nil chain=1
+kept: a4 cause=root chain=2
+fresh: fresh cause=h5 chain=2
+unrelated: old cause=h6 chain=2
+1690

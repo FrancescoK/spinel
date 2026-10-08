@@ -13936,6 +13936,17 @@ static int sp_exc_cause_chain_reaches(sp_Exception *c, void *obj) {
   }
   return 0;
 }
+/* The cause a raise takes when none is named is `c`: the exception being
+   handled, else the one an ensure body has in flight. An object raised again
+   while one of its own effects is that exception (an exception whose cause
+   chain leads back to it) keeps the cause it had: the other would close a
+   ring, or make it its own cause. Every raise passes here, so the raised
+   object comes in as a local and `c` is tested first: a raise made with
+   nothing handled and nothing in flight goes on at that test. */
+static SP_INLINE void *sp_exc_implicit_cause(void *c, void *obj) {
+  if (c && obj && sp_exc_cause_chain_reaches((sp_Exception *)c, obj)) return ((sp_Exception *)obj)->cause;
+  return c;
+}
 SP_NORETURN SP_COLD void sp_raise_cls(const char *cls, const char *msg) {
   /* Launder the message onto the string heap and root the copy before anything
      below allocates. `msg` is the caller's own pointer and comes in one of two
@@ -14027,7 +14038,7 @@ SP_NORETURN SP_COLD void sp_raise_cls(const char *cls, const char *msg) {
      `raise e`, or through an ensure), it keeps the cause it had instead of
      becoming its own -- the pending cause is that cause, so a rescue that
      stores the pending cause outright (a modifier rescue) keeps it too. */
-  if (sp_exc_top > 0) { sp_exc_msg[sp_exc_top-1] = msg; sp_exc_cls[sp_exc_top-1] = cls; sp_exc_obj[sp_exc_top-1] = sp_pending_exc_obj; sp_pending_exc_obj = NULL; sp_pending_cause = sp_explicit_cause_set ? sp_explicit_cause : sp_cur_handled() ? (sp_cur_handled() == sp_exc_obj[sp_exc_top-1] ? (void *)((sp_Exception *)sp_cur_handled())->cause : sp_cur_handled()) : sp_inflight_cause; sp_inflight_cause = NULL; sp_explicit_cause = NULL; sp_explicit_cause_set = 0; sp_last_exc_cls = cls; sp_handler_stacks_unwind(); sp_poly_recur_unwind(); longjmp(sp_exc_stack[sp_exc_top-1], 1); }
+  if (sp_exc_top > 0) { sp_exc_msg[sp_exc_top-1] = msg; sp_exc_cls[sp_exc_top-1] = cls; void *raised = sp_pending_exc_obj; sp_exc_obj[sp_exc_top-1] = raised; sp_pending_exc_obj = NULL; sp_pending_cause = sp_explicit_cause_set ? sp_explicit_cause : sp_cur_handled() ? (sp_cur_handled() == raised ? (void *)((sp_Exception *)raised)->cause : sp_exc_implicit_cause(sp_cur_handled(), raised)) : sp_exc_implicit_cause(sp_inflight_cause, raised); sp_inflight_cause = NULL; sp_explicit_cause = NULL; sp_explicit_cause_set = 0; sp_last_exc_cls = cls; sp_handler_stacks_unwind(); sp_poly_recur_unwind(); longjmp(sp_exc_stack[sp_exc_top-1], 1); }
   /* Uncaught SystemExit terminates silently with its status (Kernel#exit).
      Read the status BEFORE the hooks run: it lives in the pending exception
      object, which nothing roots once the hooks start allocating. */
