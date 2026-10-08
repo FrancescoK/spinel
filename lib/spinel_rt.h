@@ -9726,6 +9726,10 @@ static sp_RbVal sp_poly_get_sym(sp_RbVal v, sp_sym key) {
     sp_RbVal h = sp_obj_to_h_fn(v);
     if (h.tag == SP_TAG_OBJ && h.cls_id == SP_BUILTIN_SYM_POLY_HASH)
       return sp_SymPolyHash_get((sp_SymPolyHash *)h.v.p, key);
+  } else if (sp_poly_is_array_kind(v.cls_id)) {
+    /* An Array indexed by a Symbol is a TypeError, as the store raises it
+       (sp_poly_set_sym): the read answered nil. */
+    sp_raise_cls("TypeError", SPL("no implicit conversion of Symbol into Integer"));
   }
   return sp_box_nil();
 }
@@ -10156,6 +10160,9 @@ static sp_RbVal sp_poly_get_str(sp_RbVal v, const char *key) {
   /* Struct#["member"] names the member, like the symbol form (#3369) */
   if (v.cls_id >= 0 && sp_obj_to_h_fn && key)
     return sp_poly_get_sym(v, sp_sym_intern(key));
+  /* nor is a String an Array's index (sp_poly_set_str) */
+  if (sp_poly_is_array_kind(v.cls_id))
+    sp_raise_cls("TypeError", SPL("no implicit conversion of String into Integer"));
   return sp_box_nil();
 }
 /* Extend sp_poly_arr_len for hash types defined after the initial declaration. */
