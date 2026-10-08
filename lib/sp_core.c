@@ -122,7 +122,9 @@ static int sp_digit36(int c) {
 /* Skips leading whitespace and sign, resolves base 0 from the prefix
    (0x -> 16, 0b -> 2, 0/0o -> 8, 0d -> 10, otherwise 10), and skips a
    prefix matching the base. Per CRuby, only base 0 enables prefix-based
-   dispatch -- explicit bases just *accept* the matching prefix. */
+   dispatch -- explicit bases just *accept* the matching prefix. A leading
+   0 followed by anything but a prefix letter is octal whatever comes next,
+   so "08" stops at the 8 (Integer() refuses it) rather than reading 8. */
 static const char *sp_int_head(const char *p, sp_int *base, int *neg) {
   while (isspace((unsigned char)*p)) p++;
   *neg = 0;
@@ -135,7 +137,7 @@ static const char *sp_int_head(const char *p, sp_int *base, int *neg) {
       if (n == 'x' || n == 'X') *base = 16;
       else if (n == 'b' || n == 'B') *base = 2;
       else if (n == 'o' || n == 'O') *base = 8;
-      else if (n >= '0' && n <= '7') *base = 8;
+      else if (n != 0 && n != 'd' && n != 'D') *base = 8;
     }
   }
   if (*p == '0' && p[1] != 0) {
