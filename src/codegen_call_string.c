@@ -1233,6 +1233,20 @@ static void emit_string_prepend_ordered(Compiler *c, int recv_tmp, int argc,
 
 int emit_string_handle_append(Compiler *c, int id, Buf *b, const char *name, int recv, int argc, const int *argv) {
   const NodeTable *nt = c->nt;
+  /* The zero-argument row still checks frozen state and answers self,
+     including when an outer call has held the receiver as a handle. */
+  if (repr_share_rule(c) && argc == 0 && is_string_append_or_prepend(name) &&
+      bop_answers_self(TY_STRING, name, argc, 0) == BOPF_SELF) {
+    char ref[1024];
+    if (strbuf_recv_handle(c, id, unwrap_parens(c, recv), ref, sizeof ref)) {
+      int t = ++g_tmp;
+      buf_printf(b, "({ sp_String *_t%d = %s; if (sp_String_is_frozen(_t%d)) "
+                    "sp_raise_frozen_str(sp_String_cstr(_t%d)); ", t, ref, t, t);
+      if (repr_of(c, id).handle) buf_printf(b, "_t%d; })", t);
+      else buf_printf(b, "sp_String_cstr(_t%d); })", t);
+      return 1;
+    }
+  }
   if (is_string_append_or_prepend(name) && argc >= 1) {
     /* a STRBUF-promoted local (repeated `<<`) appends in place: the read
        form sp_String_cstr(lv) is not an lvalue, so the generic write-back

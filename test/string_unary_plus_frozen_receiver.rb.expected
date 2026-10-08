@@ -1,0 +1,4 @@
+["local!?", "local!?", true]
+["local!?", "local!?", "local!?+", false, true, false]
+["ivar!?", "ivar!?", true]
+["ivar!?", "ivar!?", "ivar!?+", false, true, false]
