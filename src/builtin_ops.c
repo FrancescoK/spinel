@@ -2569,6 +2569,9 @@ static const BopShareRow bop_share_rows[] = {
   { TY_STRING, "dedup",      BSH_FROZEN },
   { TY_STRING, "dup",        BSH_PURE },
   { TY_STRING, "clone",      BSH_PURE },
+  /* Explicit rows also describe a String read through a box. */
+  { TY_STRING, "delete_prefix", BSH_PURE },
+  { TY_STRING, "delete_suffix", BSH_PURE },
   /* the bang methods answer the receiver itself (or nil when nothing
      changed): `r = s.strip!` names s's String (slice! answers what it cut) */
   { TY_STRING, "capitalize!", BSH_RECV },
@@ -2755,6 +2758,7 @@ static const BopShareRow bop_share_rows[] = {
   { TY_CLASS,       "spawn", BSH_PURE },
   { TY_CLASS,       "waitpid2", BSH_PURE },
   { TY_CLASS,       "pid", BSH_PURE },
+  { TY_CLASS,       "allocate", BSH_PURE },
   { TY_BOOL,        "*", BSH_PURE },
   { TY_NIL,         "*", BSH_PURE },
   { TY_RANGE,       "*", BSH_PURE },
