@@ -7628,9 +7628,15 @@ void emit_rooted_operand(Compiler *c, TyKind pt, int provided, const char *expr,
    ...) that builds a NEW container, rooted only inside the converter. The
    read's own root does not reach the copy, and a callee that allocates before
    it roots the parameter (sp_<C>_new) can collect it: the object then holds
-   freed memory. */
+   freed memory. A String read or literal converted to a shared handle also
+   allocates: only a read that already supplies the handle needs no root. */
 int arg_read_converts(Compiler *c, TyKind pt, int provided) {
   if (provided < 0 || pt == TY_POLY) return 0;
+  if (pt == TY_STRBUF) {
+    char ref[192];
+    return repr_of(c, provided).as_ty != TY_NIL &&
+           !strbuf_slot_ref(c, provided, ref, sizeof ref);
+  }
   if (!(ty_is_array(pt) || ty_is_obj_array(pt) || ty_is_hash(pt))) return 0;
   Repr sr = repr_of(c, provided);
   TyKind st = sr.as_ty;
