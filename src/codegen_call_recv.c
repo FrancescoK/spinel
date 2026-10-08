@@ -7102,12 +7102,18 @@ static int str_arms_pattern(Compiler *c, int id, Buf *b, const NodeTable *nt, co
     int blk = nt_ref(nt, id, "block");
     int re_idx = re_lit_index(c, argv[0]);
     int has_cap = re_idx >= 0 && an_re_has_captures(re_lit_src(c, argv[0]));
+    int runtime_cap = re_idx < 0 && (comp_ntype(c, argv[0]) == TY_REGEX ||
+                                   comp_ntype(c, argv[0]) == TY_POLY);
     int np = 0; while (block_param_name(c, blk, np)) np++;
     int body = nt_ref(nt, blk, "body");
     int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
     int tr = ++g_tmp, tm = ++g_tmp, ti = ++g_tmp, tpat = -1;
     emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "const char *_t%d = %s;\n", tr, r);
+    if (runtime_cap) {
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "SP_GC_ROOT_STR(_t%d);\n", tr);
+    }
     emit_indent(g_pre, g_indent);
     if (has_cap)
       buf_printf(g_pre, "sp_PolyArray *_t%d = sp_re_scan_poly(sp_re_pat_%d, _t%d); SP_GC_ROOT(_t%d);\n",
@@ -7119,14 +7125,15 @@ static int str_arms_pattern(Compiler *c, int id, Buf *b, const NodeTable *nt, co
        holding one): the value already IS the mrb_regexp_pattern*. has_cap
        is 0 for such a pattern, so the block param stays a whole-match
        String -- the same shape a local bound to a capturing literal
-       already yields here (#3389). */
+       already yields here (#3389). Runtime patterns now retain the capture
+       rows too, with their shape checked when binding the parameters. */
     else if (comp_ntype(c, argv[0]) == TY_REGEX) {
       /* render the pattern to a scratch buffer: `Regexp.new(s)` roots its
          own argument, and those decls go to g_pre, which must receive them
          as whole statements rather than spliced into this initializer */
       Buf eb; memset(&eb, 0, sizeof eb);
       emit_expr(c, argv[0], &eb);
-      buf_printf(g_pre, "sp_StrArray *_t%d = sp_re_scan(%s, _t%d); SP_GC_ROOT(_t%d);\n",
+      buf_printf(g_pre, "sp_PolyArray *_t%d = sp_re_scan_poly(%s, _t%d); SP_GC_ROOT(_t%d);\n",
                  tm, eb.p ? eb.p : "NULL", tr, tm);
       free(eb.p);
     }
@@ -7135,7 +7142,7 @@ static int str_arms_pattern(Compiler *c, int id, Buf *b, const NodeTable *nt, co
          String, told apart at run time (sp_scan_boxed) */
       Buf pb2; memset(&pb2, 0, sizeof pb2);
       emit_boxed(c, argv[0], &pb2);
-      buf_printf(g_pre, "sp_StrArray *_t%d = sp_scan_boxed(_t%d, %s); SP_GC_ROOT(_t%d);\n",
+      buf_printf(g_pre, "sp_PolyArray *_t%d = sp_scan_boxed_poly(_t%d, %s); SP_GC_ROOT(_t%d);\n",
                  tm, tr, pb2.p ? pb2.p : "sp_box_nil()", tm);
       free(pb2.p);
     }
@@ -7178,7 +7185,24 @@ static int str_arms_pattern(Compiler *c, int id, Buf *b, const NodeTable *nt, co
                         " _t%d = sp_re_caps[1] > sp_re_caps[0] ? sp_re_caps[1] : sp_re_caps[1] + 1;\n",
                  re_idx, tr, sc_pos, sc_pos);
     }
-    if (has_cap && np >= 2) {
+    if (runtime_cap) {
+      for (int pj = 0; pj < np; pj++) {
+        const char *pn = block_param_name(c, blk, pj);
+        Scope *sc = comp_scope_of(c, blk);
+        LocalVar *lv = sc ? scope_local(sc, pn) : NULL;
+        char row[64], value[256];
+        snprintf(row, sizeof row, "_t%d->data[_t%d]", tm, ti);
+        if (np == 1) snprintf(value, sizeof value, "%s", row);
+        else snprintf(value, sizeof value, "%s.tag == SP_TAG_OBJ ? sp_poly_arr_get(%s, %d) : %s",
+                      row, row, pj, pj == 0 ? row : "sp_box_nil()");
+        emit_indent(g_pre, g_indent + 1);
+        buf_printf(g_pre, "lv_%s = ", rename_local(pn));
+        emit_coerce_text(c, id, TY_POLY, lv ? repr_of_slot(c, lv).as_ty : TY_POLY,
+                         CO_HOLD, value, "a runtime scan parameter", g_pre);
+        buf_puts(g_pre, ";\n");
+      }
+    }
+    else if (has_cap && np >= 2) {
       int trow = ++g_tmp;
       emit_indent(g_pre, g_indent + 1);
       buf_printf(g_pre, "sp_PolyArray *_t%d = (sp_PolyArray *)_t%d->data[_t%d].v.p;\n", trow, tm, ti);
@@ -13743,6 +13767,20 @@ static void emit_poly_int_pow(Compiler *c, int recv, int arg, Buf *b) {
   buf_printf(b, "; sp_poly_int_pow(_t%d, _t%d); })", tv, te);
 }
 
+static int emit_poly_scan_rows(Compiler *c, int id, Buf *b, const NodeTable *nt,
+                               const char *name, int recv, int argc, const int *argv, int root) {
+  int ts = ++g_tmp;
+  Buf rb; memset(&rb, 0, sizeof rb);
+  emit_expr(c, recv, &rb);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "const char *_t%d = sp_poly_recv_s(%s, \"scan\");", ts, rb.p ? rb.p : "sp_box_nil()");
+  if (root) buf_printf(g_pre, " SP_GC_ROOT_STR(_t%d);", ts);
+  buf_puts(g_pre, "\n");
+  free(rb.p);
+  char r[32]; snprintf(r, sizeof r, "_t%d", ts);
+  return str_arms_pattern(c, id, b, nt, name, argc, argv, r);
+}
+
 static int emit_poly_scan_block(Compiler *c, int id, Buf *b, const NodeTable *nt,
                                const char *name, int recv, int argc, const int *argv) {
   /* poly.scan(pat) { }: the block form over a receiver only known to be a
@@ -13763,16 +13801,10 @@ static int emit_poly_scan_block(Compiler *c, int id, Buf *b, const NodeTable *nt
     /* Capturing patterns use the typed String emitter's row binding.
        Hold the checked subject across the scan's allocations. */
     if (re_i >= 0 && an_re_has_captures(re_lit_src(c, argv[0]))) {
-      int ts = ++g_tmp;
-      Buf rb; memset(&rb, 0, sizeof rb);
-      emit_expr(c, recv, &rb);
-      emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "const char *_t%d = sp_poly_recv_s(%s, \"scan\"); SP_GC_ROOT_STR(_t%d);\n",
-                 ts, rb.p ? rb.p : "sp_box_nil()", ts);
-      free(rb.p);
-      char r[32]; snprintf(r, sizeof r, "_t%d", ts);
-      return str_arms_pattern(c, id, b, nt, name, argc, argv, r);
+      return emit_poly_scan_rows(c, id, b, nt, name, recv, argc, argv, 1);
     }
+    if (re_i < 0 && (pat_t == TY_REGEX || pat_t == TY_POLY))
+      return emit_poly_scan_rows(c, id, b, nt, name, recv, argc, argv, 0);
     int ts = ++g_tmp, tm = ++g_tmp, ti = ++g_tmp;
     /* a body that reads `$~` or a capture global walks the subject for its
        own turn's match, as the typed-String arm does (#3601) */
