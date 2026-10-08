@@ -90,25 +90,26 @@ int emit_call_poly_builtin_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
         if (nt_type(nt, argv[k]) && sp_streq(nt_type(nt, argv[k]), "SplatNode")) {
           int sx9 = nt_ref(nt, argv[k], "expression");
           int ts9 = ++g_tmp, tj9 = ++g_tmp;
-          emit_indent(g_pre, g_indent);
-          buf_printf(g_pre, "sp_PolyArray *_t%d = sp_poly_to_poly_array(", ts9);
+          /* the list first: what it hoists belongs ahead of the line that
+             reads it, not inside that line's call */
           { Buf sb9; memset(&sb9, 0, sizeof sb9);
             if (sx9 >= 0) emit_boxed(c, sx9, &sb9);
-            buf_puts(g_pre, sb9.p ? sb9.p : "sp_box_nil()"); free(sb9.p); }
-          buf_printf(g_pre, "); SP_GC_ROOT(_t%d);\n", ts9);
+            emit_indent(g_pre, g_indent);
+            buf_printf(g_pre, "sp_PolyArray *_t%d = sp_poly_to_poly_array(%s); SP_GC_ROOT(_t%d);\n",
+                       ts9, sb9.p ? sb9.p : "sp_box_nil()", ts9);
+            free(sb9.p); }
           emit_indent(g_pre, g_indent);
           buf_printf(g_pre, "for (sp_int _t%d = 0; _t%d < sp_PolyArray_length(_t%d); _t%d++)"
                             " sp_PolyArray_push(_t%d, sp_PolyArray_get(_t%d, _t%d));\n",
                      tj9, tj9, ts9, tj9, ti9, ts9, tj9);
           continue;
         }
-        emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "sp_PolyArray_push(_t%d, ", ti9);
+        /* the index first, for the same reason */
         Buf ab9; memset(&ab9, 0, sizeof ab9);
         emit_boxed(c, argv[k], &ab9);
-        buf_puts(g_pre, ab9.p ? ab9.p : "sp_box_nil()");
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "sp_PolyArray_push(_t%d, %s);\n", ti9, ab9.p ? ab9.p : "sp_box_nil()");
         free(ab9.p);
-        buf_puts(g_pre, ");\n");
       }
       Buf cv9; memset(&cv9, 0, sizeof cv9);
       buf_puts(&cv9, "sp_poly_arr_values_at(");
