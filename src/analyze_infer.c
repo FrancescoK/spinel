@@ -1850,14 +1850,21 @@ int an_ty_holds_nil(TyKind t) {
    mutator, or written to a local that is? */
 static int an_to_a_result_mutated(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
-  for (int q = comp_kind_first(c, NK_CallNode); q >= 0; q = comp_kind_next(c, q))
-    if (nt_kind(nt, q) == NK_CallNode && nt_ref(nt, q, "receiver") == id &&
-        array_mutator_name(nt_str(nt, q, "name"))) return 1;
+  /* the call it is the receiver of, and the calls on each local it is
+     written to, off the variable-site index: scanning every call per ask
+     (twice over for a written result) made this a large program's hottest
+     inference question */
+  int p = comp_recv_parent(c, id);
+  if (p >= 0 && nt_kind(nt, p) == NK_CallNode && nt_ref(nt, p, "receiver") == id &&
+      array_mutator_name(nt_str(nt, p, "name"))) return 1;
   for (int w = comp_kind_first(c, NK_LocalVariableWriteNode); w >= 0; w = comp_kind_next(c, w)) {
     if (nt_kind(nt, w) != NK_LocalVariableWriteNode || nt_ref(nt, w, "value") != id) continue;
     const char *wn = nt_str(nt, w, "name");
     Scope *ws = comp_scope_of(c, w);
-    for (int q = comp_kind_first(c, NK_CallNode); wn && q >= 0; q = comp_kind_next(c, q)) {
+    if (!wn || !ws) continue;
+    for (int e = comp_vsite_first(c, VS_RECV, NK_LocalVariableReadNode, wn, (int)(ws - c->scopes)); e >= 0;
+         e = comp_vsite_next(c, e)) {
+      int q = comp_vsite_node(c, e);
       if (nt_kind(nt, q) != NK_CallNode) continue;
       int r = nt_ref(nt, q, "receiver");
       if (r < 0 || nt_kind(nt, r) != NK_LocalVariableReadNode || comp_scope_of(c, r) != ws) continue;

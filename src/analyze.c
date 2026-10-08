@@ -15174,6 +15174,56 @@ static int strbuf_container_store_values(Compiler *c, int w, const char *contn, 
    stores are walked in turn. */
 enum { SB_DEMAND, SB_HAS_STRING, SB_HAS_NONSTRING, SB_DEMAND_NAMED, SB_KIND_MASK = 3, SB_NEST1 = 4 };
 #define SB_KIND(m) ((m) & SB_KIND_MASK)
+/* What one outermost store walk has already walked: an expression, a
+   method's return, an ivar's or a local container's stores, each by mode,
+   with the shallowest depth it was walked at and its answer. The walks
+   reach the same method or container along many paths -- a method's return
+   through every call naming it, a local through each read of it -- and
+   each reached it again in full, so a large program's walk grew with the
+   number of paths, not of the things walked. A thing walked again within
+   the same walk, no shallower than before, answers what it answered (0
+   while its walk is still running: a cycle adds nothing); its demands are
+   already made. The memo is dropped when the outermost walk returns. */
+enum { SBM_EXPR, SBM_RET, SBM_IVAR, SBM_LOCAL };
+typedef struct { unsigned long long key; int depth, res, gen; } SbMemo;
+static SbMemo *sb_memo;
+static int sb_memo_cap, sb_memo_n, sb_memo_gen = 1, sb_walk_nest;
+static unsigned long long sb_memo_key(int kind, int a, int b, int mode) {
+  return ((unsigned long long)(unsigned)kind << 60) ^ ((unsigned long long)(unsigned)mode << 52) ^
+         ((unsigned long long)(unsigned)a << 24) ^ (unsigned long long)(unsigned)(b + 1);
+}
+static SbMemo *sb_memo_slot(unsigned long long key) {
+  if (sb_memo_n * 2 >= sb_memo_cap) {
+    int oc = sb_memo_cap; SbMemo *old = sb_memo;
+    sb_memo_cap = oc ? oc * 2 : 1024;
+    sb_memo = calloc((size_t)sb_memo_cap, sizeof *sb_memo);
+    if (!sb_memo) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    sb_memo_n = 0;
+    for (int i = 0; i < oc; i++)
+      if (old[i].gen == sb_memo_gen) { *sb_memo_slot(old[i].key) = old[i]; sb_memo_n++; }
+    free(old);
+  }
+  unsigned long long h = key * 0x9E3779B97F4A7C15ull;
+  for (int i = (int)(h >> 40) & (sb_memo_cap - 1);; i = (i + 1) & (sb_memo_cap - 1))
+    if (sb_memo[i].gen != sb_memo_gen || sb_memo[i].key == key) return &sb_memo[i];
+}
+/* Enter a walk of (kind, a, b, mode) at depth: 1 with *res set when it has
+   been walked already, else 0 (the caller walks it and sb_memo_leave's). */
+static int sb_memo_enter(int kind, int a, int b, int mode, int depth, int *res) {
+  if (sb_walk_nest++ == 0) { sb_memo_gen++; sb_memo_n = 0; }
+  unsigned long long key = sb_memo_key(kind, a, b, mode);
+  SbMemo *m = sb_memo_slot(key);
+  if (m->gen == sb_memo_gen && m->depth <= depth) { *res = m->res; sb_walk_nest--; return 1; }
+  if (m->gen != sb_memo_gen) sb_memo_n++;
+  m->key = key; m->gen = sb_memo_gen; m->depth = depth; m->res = 0;
+  return 0;
+}
+static int sb_memo_leave(int kind, int a, int b, int mode, int res) {
+  SbMemo *m = sb_memo_slot(sb_memo_key(kind, a, b, mode));
+  if (m->gen == sb_memo_gen && m->key == sb_memo_key(kind, a, b, mode)) m->res |= res;
+  sb_walk_nest--;
+  return res;
+}
 static int strbuf_container_source_walk(Compiler *c, int node, int depth, int mode);
 static int strbuf_store_leaf(Compiler *c, int sn, int depth, int mode);
 /* Some value stored into this container is a string (mode SB_HAS_STRING), or
@@ -15679,6 +15729,95 @@ static int sb_param_seen_check(int mi, int pj, int mode, int depth) {
 }
 static int strbuf_demand_param_container_stores_walk(Compiler *c, const char *pn, Scope *ps,
                                                      int depth, int mode);
+/* The calls that can reach method scope m, ascending, as an_call_targets_scope
+   decides it: those named as m is, those under a name some class aliases a
+   method as, and `new` for an initialize. Every other call answers no there,
+   so the walk below asks only these -- it asked every call of the program for
+   each parameter it followed, and a large program's walk spent its time in
+   that scan. Collected up front: the walk can rebuild the by-name lists. */
+static int an_alias_name(Compiler *c, const char *nm);
+static int sb_int_cmp(const void *a, const void *b) {
+  int x = *(const int *)a, y = *(const int *)b;
+  return (x > y) - (x < y);
+}
+static int *strbuf_scope_call_candidates(Compiler *c, Scope *m, int *n) {
+  int cap = 16, cnt = 0;
+  int *v = malloc(sizeof(int) * (size_t)cap);
+  if (!v) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  const char *names[2] = { m->name, sp_streq(m->name ? m->name : "", "initialize") ? "new" : NULL };
+  /* the alias names, each once */
+  ANameHash seen; memset(&seen, 0, sizeof seen);
+  int nnames = 0; const char **all = NULL;
+  for (int i = 0; i < 2; i++)
+    if (names[i] && !anh_has(&seen, names[i])) {
+      anh_add(&seen, names[i]);
+      all = realloc(all, sizeof *all * (size_t)(nnames + 1)); all[nnames++] = names[i];
+    }
+  for (int k = 0; k < c->nclasses; k++)
+    for (int a = 0; a < c->classes[k].naliases; a++) {
+      const char *an = c->classes[k].alias_new[a];
+      if (an && an_alias_name(c, an) && !anh_has(&seen, an)) {
+        anh_add(&seen, an);
+        all = realloc(all, sizeof *all * (size_t)(nnames + 1)); all[nnames++] = an;
+      }
+    }
+  for (int i = 0; i < nnames; i++)
+    for (int u = an_calls_named_first(c, all[i]); u >= 0; u = an_calls_named_next(u)) {
+      if (cnt == cap) {
+        cap *= 2; v = realloc(v, sizeof(int) * (size_t)cap);
+        if (!v) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      }
+      v[cnt++] = u;
+    }
+  anh_free(&seen); free(all);
+  qsort(v, (size_t)cnt, sizeof(int), sb_int_cmp);
+  *n = cnt;
+  return v;
+}
+/* The calls that reach method scope mi (an_call_targets_scope), ascending.
+   During one promote_shared_stored_strings pass the answer for a method is
+   kept: the pass walks back to the same method's callers from many
+   containers, and asking every candidate call again -- a common name's
+   calls, each resolved through its receiver's possible classes -- was what
+   a large program's pass spent its time on. The pass marks Strings shared;
+   it does not change what a call resolves to. Outside the pass nothing is
+   kept. The caller frees the list. */
+static int sb_targets_gen, sb_targets_on;
+typedef struct { int gen, n; int *ids; } SbTargets;
+static SbTargets *sb_targets; static int sb_targets_cap;
+static int *strbuf_scope_callers(Compiler *c, int mi, Scope *m, int *n) {
+  const NodeTable *nt = c->nt;
+  if (sb_targets_on && mi < sb_targets_cap && sb_targets[mi].gen == sb_targets_gen) {
+    *n = sb_targets[mi].n;
+    int *cp = malloc(sizeof(int) * (size_t)(*n > 0 ? *n : 1));
+    if (!cp) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    memcpy(cp, sb_targets[mi].ids, sizeof(int) * (size_t)*n);
+    return cp;
+  }
+  int ncand = 0, k = 0;
+  int *cand = strbuf_scope_call_candidates(c, m, &ncand);
+  for (int i = 0; i < ncand; i++) {
+    int u = cand[i];
+    if (nt_kind(nt, u) != NK_CallNode || !an_call_targets_scope(c, u, mi, m)) continue;
+    cand[k++] = u;
+  }
+  *n = k;
+  if (sb_targets_on) {
+    if (mi >= sb_targets_cap) {
+      int oc = sb_targets_cap;
+      sb_targets_cap = c->nscopes > mi ? c->nscopes + 64 : mi + 64;
+      sb_targets = realloc(sb_targets, sizeof *sb_targets * (size_t)sb_targets_cap);
+      if (!sb_targets) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      memset(sb_targets + oc, 0, sizeof *sb_targets * (size_t)(sb_targets_cap - oc));
+    }
+    free(sb_targets[mi].ids);
+    sb_targets[mi].ids = malloc(sizeof(int) * (size_t)(k > 0 ? k : 1));
+    if (!sb_targets[mi].ids) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    memcpy(sb_targets[mi].ids, cand, sizeof(int) * (size_t)k);
+    sb_targets[mi].n = k; sb_targets[mi].gen = sb_targets_gen;
+  }
+  return cand;
+}
 static int strbuf_demand_param_container_stores(Compiler *c, const char *pn, Scope *ps,
                                                 int depth, int mode) {
   if (sb_param_walk_nest == 0) sb_param_seen_n = 0;
@@ -15698,9 +15837,11 @@ static int strbuf_demand_param_container_stores_walk(Compiler *c, const char *pn
   if (pj < 0) return 0;
   int mi = (int)(ps - c->scopes);
   if (sb_param_seen_check(mi, pj, mode, depth)) return 0;
-  for (int u = comp_kind_first(c, NK_CallNode); u >= 0; u = comp_kind_next(c, u)) {
+  int ncand = 0;
+  int *cand = strbuf_scope_callers(c, mi, ps, &ncand);
+  for (int ci = 0; ci < ncand; ci++) {
+    int u = cand[ci];
     if (nt_kind(nt, u) != NK_CallNode) continue;
-    if (!an_call_targets_scope(c, u, mi, ps)) continue;
     int an = arg_layout_param_node(c, ps, u, pj, NULL);
     if (an < 0) continue;
     NodeKind ak = nt_kind(nt, an);
@@ -15724,6 +15865,7 @@ static int strbuf_demand_param_container_stores_walk(Compiler *c, const char *pn
     }
     else changed |= strbuf_container_source_walk(c, an, depth + 1, mode);
   }
+  free(cand);
   return changed;
 }
 /* A block parameter names what the iterator hands the block: the receiver
@@ -15881,11 +16023,13 @@ static void refuse_callee_container_stores(Compiler *c, const char *vn, Scope *v
 static int strbuf_demand_local_container(Compiler *c, const char *vn, Scope *vs, int depth, int mode) {
   LocalVar *lv = scope_local(vs, vn);
   if (!lv || depth > 8) return 0;
+  int si = (int)(vs - c->scopes), li = (int)(lv - vs->locals), res;
+  if (sb_memo_enter(SBM_LOCAL, si, li, mode, depth, &res)) return res;
   int changed = strbuf_demand_container_stores_here(c, vn, vs, depth, mode);
   if (lv->is_block_param) changed |= strbuf_block_param_source_walk(c, vn, vs, depth, mode, 0, NULL);
   else if (lv->is_param) changed |= strbuf_demand_param_container_stores(c, vn, vs, depth, mode);
   else if (mode == SB_DEMAND) refuse_callee_container_stores(c, vn, vs);
-  return changed;
+  return sb_memo_leave(SBM_LOCAL, si, li, mode, changed);
 }
 static int strbuf_demand_container_stores(Compiler *c, const char *contn, Scope *conts) {
   return strbuf_demand_local_container(c, contn, conts, 0, SB_DEMAND);
@@ -15893,7 +16037,14 @@ static int strbuf_demand_container_stores(Compiler *c, const char *contn, Scope 
 
 /* The values stored into container ivar (cid, ivn): what is written to it,
    and what is pushed or []='d into it. */
+static int strbuf_ivar_source_walk_body(Compiler *c, int cid, const char *ivn, int depth, int mode);
 static int strbuf_ivar_source_walk(Compiler *c, int cid, const char *ivn, int depth, int mode) {
+  int iv = comp_ivar_index(&c->classes[cid], ivn), res;
+  if (iv < 0) return strbuf_ivar_source_walk_body(c, cid, ivn, depth, mode);
+  if (sb_memo_enter(SBM_IVAR, cid, iv, mode, depth, &res)) return res;
+  return sb_memo_leave(SBM_IVAR, cid, iv, mode, strbuf_ivar_source_walk_body(c, cid, ivn, depth, mode));
+}
+static int strbuf_ivar_source_walk_body(Compiler *c, int cid, const char *ivn, int depth, int mode) {
   const NodeTable *nt = c->nt;
   int changed = 0;
   /* its `=`, `||=` and `&&=` (VS_STORE) */
@@ -16156,7 +16307,14 @@ static int strbuf_super_ret_walk(Compiler *c, int mi, int v, int blk, int depth,
   int sb = nt_ref(nt, v, "block");
   return strbuf_method_ret_source_walk(c, t, sb >= 0 && nt_kind(nt, sb) == NK_BlockNode ? sb : blk, depth + 1, mode);
 }
+static int strbuf_method_ret_source_walk_body(Compiler *c, int mi, int blk, int depth, int mode);
 static int strbuf_method_ret_source_walk(Compiler *c, int mi, int blk, int depth, int mode) {
+  int res;
+  if (depth > 8) return 0;
+  if (sb_memo_enter(SBM_RET, mi, blk, mode, depth, &res)) return res;
+  return sb_memo_leave(SBM_RET, mi, blk, mode, strbuf_method_ret_source_walk_body(c, mi, blk, depth, mode));
+}
+static int strbuf_method_ret_source_walk_body(Compiler *c, int mi, int blk, int depth, int mode) {
   const NodeTable *nt = c->nt;
   Scope *m = &c->scopes[mi];
   int changed = 0, sw;
@@ -16178,7 +16336,14 @@ static int strbuf_method_ret_source_walk(Compiler *c, int mi, int blk, int depth
   }
   return changed;
 }
+static int strbuf_container_source_walk_body(Compiler *c, int node, int depth, int mode);
 static int strbuf_container_source_walk(Compiler *c, int node, int depth, int mode) {
+  int res;
+  if (node < 0 || depth > 8) return 0;
+  if (sb_memo_enter(SBM_EXPR, node, 0, mode, depth, &res)) return res;
+  return sb_memo_leave(SBM_EXPR, node, 0, mode, strbuf_container_source_walk_body(c, node, depth, mode));
+}
+static int strbuf_container_source_walk_body(Compiler *c, int node, int depth, int mode) {
   const NodeTable *nt = c->nt;
   if (node < 0 || depth > 8) return 0;
   int changed = 0;
@@ -18490,7 +18655,14 @@ static void an_mark_handle_returns(Compiler *c) {
     if (poly) c->strbuf_box[n] = 0;
   }
 }
+static int promote_shared_stored_strings_pass(Compiler *c);
 static int promote_shared_stored_strings(Compiler *c) {
+  sb_targets_gen++; sb_targets_on = 1;
+  int r = promote_shared_stored_strings_pass(c);
+  sb_targets_on = 0;
+  return r;
+}
+static int promote_shared_stored_strings_pass(Compiler *c) {
   int changed = 0;
   /* --share-strings: the one rule decides first (#6765) */
   changed |= share_default_apply(c, 1);
