@@ -2318,6 +2318,9 @@ GC_MINOR_TESTS := test/io_read_outbuf_eof.rb \
                   test/share/share_strings_poly_module_return_rescue.rb \
                   test/share/share_strings_poly_module_return_yield.rb \
                   test/share/share_strings_poly_transient_returns.rb \
+                  test/share/share_strings_poly_throw_arguments.rb \
+                  test/share/share_strings_poly_iterator_memos.rb \
+                  test/share/share_strings_env_boxed_values.rb \
                   test/share/share_strings_pick_element.rb \
                   test/share/share_strings_pick_then_parameter.rb \
                   test/reopened_builtin_kwrest_keys.rb \
