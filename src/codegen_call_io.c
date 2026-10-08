@@ -1619,6 +1619,10 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
       if (bpn2 && file_block_param_poly(c, id, bpn2))
         buf_printf(b, " sp_RbVal lv_%s = %s(_t%d); SP_GC_ROOT_RBVAL(lv_%s);", bpn2,
                    (is_byte || is_cp) ? "sp_box_int" : "sp_box_str", lt2, bpn2);
+      /* A character is a fresh String, bound just as a fresh line is. */
+      else if (bpn2 && !is_byte && !is_cp && repr_share_rule(c) &&
+               repr_of_slot(c, scope_local(comp_scope_of(c, blk2), bp2)).kind == RK_STRBUF)
+        emit_line_param_decl(c, id, bpn2, lt2, b);
       else if (bpn2) {
         buf_printf(b, " %s lv_%s = _t%d;", (is_byte || is_cp) ? "sp_int" : "const char *", bpn2, lt2);
         if (!is_byte && !is_cp) buf_printf(b, " SP_GC_ROOT_STR(lv_%s);", bpn2);
