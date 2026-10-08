@@ -29,6 +29,7 @@
 #include "call_plan.h"
 #include "share.h"
 #include "repr.h"
+#include "codegen_internal.h"
 
 /* element-own flags (not merged by a union) */
 enum { SHE_WRITTEN = 1, SHE_IDENTITY = 2 };
@@ -1469,6 +1470,17 @@ static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int 
   case BSH_METHOD_REF:
     /* the method it names is called from wherever the Method goes; a
        define_method body is called with what the walk does not see */
+    if (is_method_obj_call(c, n)) {
+      int mi = method_obj_target_mi(c, n);
+      if (method_call_param_shift(c, n, mi)) {
+        Scope *m = &c->scopes[mi];
+        int p = sh_local_of(F, c, m, m->pnames[0], m->def_node);
+        /* The wrapper's first parameter is the captured receiver, not
+           an independent argument. A boxed capture holds it in an Array. */
+        sh_union(F, nt_int(nt, m->def_node, "bam_poly", 0) ? sh_elem(F, p) : p, rv);
+        sh_flow(F, SHFL_ARG, n, nt_ref(nt, n, "receiver"));
+      }
+    }
     sh_dyn_name(F, argc >= 1 ? sh_lit_name(nt, argv[0]) : NULL);
     if (lit_blk) {
       sh_block_params(F, c, blk, F->unknown, 1);
@@ -3901,7 +3913,10 @@ static int sh_carries_handle(const Compiler *c, int n) {
      (emit_strbuf_value) */
   return r.kind == RK_STRBUF || r.strbuf_src != RS_NONE || sh_bang_self_slot(c, n) ||
          /* a boxed variable's read lifted into the handle (poly_strbuf_lift) */
-         r.poly_lift;
+         r.poly_lift ||
+         /* A yielding call's result and a receiver-returning expression
+            use the same handle routes as their eventual store. */
+         strbuf_value_carries((Compiler *)c, n);
 }
 
 /* The class of node n's value (with elems, of its elements), or -1. */
