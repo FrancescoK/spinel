@@ -12027,7 +12027,7 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
         Buf nb; memset(&nb, 0, sizeof nb); emit_int_expr(c, argv[0], &nb);
         /* --share-strings: a fill stored as the shared handle is boxed as
            its handle, one object in every slot, as a literal's element is */
-        int fh = at == TY_POLY_ARRAY && repr_share_rule(c) && repr_of(c, argv[1]).as_ty == TY_STRBUF;
+        int fh = array_fill_boxes_handle(c, id, argv[1]);
         Buf vb; memset(&vb, 0, sizeof vb);
         if (fh) emit_boxed(c, argv[1], &vb);
         else vb = expr_buf(c, argv[1]);
