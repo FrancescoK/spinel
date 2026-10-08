@@ -5393,7 +5393,7 @@ static int infer_method_proc_call(Compiler *c, int id, const NodeTable *nt, cons
      result is always a String. Only when no user class supplies strftime, to
      match the codegen guard. Issue #2457 (family2 nilable value-method). */
   if (recv >= 0 && rt == TY_POLY && sp_streq(name, "strftime") && argc == 1 &&
-      infer_type(c, argv[0]) == TY_STRING) {
+      (infer_type(c, argv[0]) == TY_STRING || infer_type(c, argv[0]) == TY_POLY)) {   /* a boxed format converts or raises */
     int ncand = 0;
     for (int k = 0; k < c->nclasses; k++) {
       if (c->classes[k].is_native_class) {   /* bindings only (#4504) */
