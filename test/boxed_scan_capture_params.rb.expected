@@ -8,3 +8,87 @@
 ["b", 3]
 match
 match
+"1x 2y 3"
+[["1", "x"], ["2", "y"]]
+["1", "x"]
+["2", "y"]
+match
+match
+["1", "x"]
+["2", nil]
+["3", nil]
+"1x 2y 3"
+["1", "x"]
+["2", nil]
+["3", nil]
+match
+match
+match
+["1", "x", nil]
+["2", "y", nil]
+"1x 2y 3"
+["1", "x"]
+["2", "y"]
+match
+match
+["1", "x", nil]
+["2", "y", nil]
+"1x 2y 3"
+["1", "x"]
+["2", "y"]
+match
+match
+["1", "x", nil]
+["2", nil, nil]
+["3", nil, nil]
+"1x 2y 3"
+["1", "x"]
+["2", nil]
+["3", nil]
+match
+match
+match
+["1", "x", nil]
+["2", nil, nil]
+["3", nil, nil]
+"1x 2y 3"
+["1", "x"]
+["2", nil]
+["3", nil]
+match
+match
+match
+["1", nil, nil]
+["2", nil, nil]
+["3", nil, nil]
+"1x 2y 3"
+"1"
+"2"
+"3"
+match
+match
+match
+["1", nil, nil]
+["2", nil, nil]
+["3", nil, nil]
+"1x 2y 3"
+"1"
+"2"
+"3"
+match
+match
+match
+["1x", nil, nil]
+"1x 2y 3"
+"1x"
+match
+["1x", nil, nil]
+"1x 2y 3"
+"1x"
+match
+["1", "x"]
+["2", nil]
+["3", nil]
+["1", "x"]
+["2", nil]
+["3", nil]
