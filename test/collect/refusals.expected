@@ -1072,6 +1072,18 @@ spinel: test/reject/string_nested_masgn_target.rb:3: a nested multiple-assignmen
 spinel: test/reject/string_proc_param_store.rb:5: a String held by a block parameter no element iterator binds (a proc's, a lambda's, a yielding method's block, `each_char`'s) is stored into a container and mutated in place through it (a String is not yet shared by reference through a stored block parameter). Mutate the String before storing it, or store it where the caller holds it.
 == test/reject/string_proc_param_store.rb [promote] rc=1
 spinel: test/reject/string_proc_param_store.rb:5: a String held by a block parameter no element iterator binds (a proc's, a lambda's, a yielding method's block, `each_char`'s) is stored into a container and mutated in place through it (a String is not yet shared by reference through a stored block parameter). Mutate the String before storing it, or store it where the caller holds it.
+== test/reject/string_reopen_proc_self_mutation.rb [default] rc=1
+spinel: test/reject/string_reopen_proc_self_mutation.rb:4: String self is not yet shared by reference with a block that mutates it: the default build would hand on a copy. Build with --share-strings to support this call.
+spinel: 1 refusal, nothing written
+== test/reject/string_reopen_proc_self_mutation.rb [promote] rc=1
+spinel: test/reject/string_reopen_proc_self_mutation.rb:4: String self is not yet shared by reference with a block that mutates it: the default build would hand on a copy. Build with --share-strings to support this call.
+spinel: 1 refusal, nothing written
+== test/reject/string_reopen_yield_self_mutation.rb [default] rc=1
+spinel: test/reject/string_reopen_yield_self_mutation.rb:4: String self is not yet shared by reference with a block that mutates it: the default build would hand on a copy. Build with --share-strings to support this call.
+spinel: 1 refusal, nothing written
+== test/reject/string_reopen_yield_self_mutation.rb [promote] rc=1
+spinel: test/reject/string_reopen_yield_self_mutation.rb:4: String self is not yet shared by reference with a block that mutates it: the default build would hand on a copy. Build with --share-strings to support this call.
+spinel: 1 refusal, nothing written
 == test/reject/string_rest_splat_yield.rb [default] rc=1
 spinel: test/reject/string_rest_splat_yield.rb:6: a String is passed to a block's parameter `b` through a splat into a yield, which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference through a splat into a yield). Return the String from the proc and assign it, or append to it in the caller.
 spinel: 1 refusal, nothing written
