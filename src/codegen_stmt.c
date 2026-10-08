@@ -1399,6 +1399,9 @@ static int strbuf_route_operand(Compiler *c, int v) {
   if (is_tap_name(nm) && strbuf_route_tap(c, v)) return v;
   if (is_reduce_alias(nm) && strbuf_route_inject(c, v)) return v;
   if (repr_boxed_to_s_operand(c, v) >= 0) return recv;
+  /* A builtin conversion on a String returns that same String. */
+  int conversion = repr_string_conversion_operand(c, v);
+  if (conversion >= 0) return conversion;
   /* Kernel#String, as its arm takes it: no method of the program's own */
   int x = is_unary_plus(nm) && argc == 0 && blk < 0 ? recv
         : is_string_class_name(nm) && recv < 0 && argc == 1 && blk < 0 && comp_method_index(c, nm) < 0 &&
@@ -1776,6 +1779,18 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
     else buf_puts(b, "); })");
     return 1;
   }
+  if (is_receiver_conversion(nt_str(nt, v, "name")) && !is_to_s_name(nt_str(nt, v, "name"))) {
+    /* itself keeps nil; to_str raises on nil. Only to_s makes an empty
+       String for it. The nonnil conversion keeps the operand's handle. */
+    int t = ++g_tmp;
+    buf_printf(b, "({ sp_String *_t%d = ", t);
+    emit_strbuf_handle_of(c, x, b);
+    buf_puts(b, "; ");
+    if (!is_self_copy(nt_str(nt, v, "name")))
+      buf_printf(b, "if (!_t%d) sp_raise_nomethod(sp_nomethod_msg(\"to_str\", sp_box_nil())); ", t);
+    buf_printf(b, "_t%d; })", t);
+    return 1;
+  }
   int t = ++g_tmp;
   buf_printf(b, "({ sp_String *_t%d = ", t);
   emit_strbuf_handle_of(c, x, b);
@@ -1845,6 +1860,9 @@ static int strbuf_route_nonnil(Compiler *c, int v) {
   if (strbuf_route_exc_message(c, v)) return 1;
   /* A fresh user return may be nil, unlike the builtin conversion. */
   if (repr_boxed_to_s_operand(c, unwrap_parens(c, v)) >= 0) return 0;
+  /* itself also preserves a nil receiver on the String route. */
+  const char *nm = nt_str(c->nt, unwrap_parens(c, v), "name");
+  if (nm && is_receiver_conversion(nm) && is_self_copy(nm)) return 0;
   int x = strbuf_route_operand(c, v);
   return x >= 0 && x != unwrap_parens(c, v);
 }

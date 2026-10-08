@@ -15511,6 +15511,9 @@ static int sa_copy_defer(Compiler *c, int site, int v, int reader, const char *m
      operand gets its own. Let the seal check that existing value route. */
   if (nt_kind(c->nt, v) == NK_CallNode && is_unary_plus(nt_str(c->nt, v, "name")) &&
       cplan_user(c, v)->dispatch == CP_NONE) q.carry = v;
+  /* A demanded String conversion already boxes its receiver's handle.
+     Let the seal check that route when no user method overrides it. */
+  if (repr_string_conversion_operand(c, v) >= 0) q.carry = v;
   return share_route_defer(c, &q, msg);
 }
 static const char *sa_msg(int route);
