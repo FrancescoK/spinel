@@ -15679,6 +15679,95 @@ static int sb_param_seen_check(int mi, int pj, int mode, int depth) {
 }
 static int strbuf_demand_param_container_stores_walk(Compiler *c, const char *pn, Scope *ps,
                                                      int depth, int mode);
+/* The calls that can reach method scope m, ascending, as an_call_targets_scope
+   decides it: those named as m is, those under a name some class aliases a
+   method as, and `new` for an initialize. Every other call answers no there,
+   so the walk below asks only these -- it asked every call of the program for
+   each parameter it followed, and a large program's walk spent its time in
+   that scan. Collected up front: the walk can rebuild the by-name lists. */
+static int an_alias_name(Compiler *c, const char *nm);
+static int sb_int_cmp(const void *a, const void *b) {
+  int x = *(const int *)a, y = *(const int *)b;
+  return (x > y) - (x < y);
+}
+static int *strbuf_scope_call_candidates(Compiler *c, Scope *m, int *n) {
+  int cap = 16, cnt = 0;
+  int *v = malloc(sizeof(int) * (size_t)cap);
+  if (!v) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  const char *names[2] = { m->name, sp_streq(m->name ? m->name : "", "initialize") ? "new" : NULL };
+  /* the alias names, each once */
+  ANameHash seen; memset(&seen, 0, sizeof seen);
+  int nnames = 0; const char **all = NULL;
+  for (int i = 0; i < 2; i++)
+    if (names[i] && !anh_has(&seen, names[i])) {
+      anh_add(&seen, names[i]);
+      all = realloc(all, sizeof *all * (size_t)(nnames + 1)); all[nnames++] = names[i];
+    }
+  for (int k = 0; k < c->nclasses; k++)
+    for (int a = 0; a < c->classes[k].naliases; a++) {
+      const char *an = c->classes[k].alias_new[a];
+      if (an && an_alias_name(c, an) && !anh_has(&seen, an)) {
+        anh_add(&seen, an);
+        all = realloc(all, sizeof *all * (size_t)(nnames + 1)); all[nnames++] = an;
+      }
+    }
+  for (int i = 0; i < nnames; i++)
+    for (int u = an_calls_named_first(c, all[i]); u >= 0; u = an_calls_named_next(u)) {
+      if (cnt == cap) {
+        cap *= 2; v = realloc(v, sizeof(int) * (size_t)cap);
+        if (!v) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      }
+      v[cnt++] = u;
+    }
+  anh_free(&seen); free(all);
+  qsort(v, (size_t)cnt, sizeof(int), sb_int_cmp);
+  *n = cnt;
+  return v;
+}
+/* The calls that reach method scope mi (an_call_targets_scope), ascending.
+   During one promote_shared_stored_strings pass the answer for a method is
+   kept: the pass walks back to the same method's callers from many
+   containers, and asking every candidate call again -- a common name's
+   calls, each resolved through its receiver's possible classes -- was what
+   a large program's pass spent its time on. The pass marks Strings shared;
+   it does not change what a call resolves to. Outside the pass nothing is
+   kept. The caller frees the list. */
+static int sb_targets_gen, sb_targets_on;
+typedef struct { int gen, n; int *ids; } SbTargets;
+static SbTargets *sb_targets; static int sb_targets_cap;
+static int *strbuf_scope_callers(Compiler *c, int mi, Scope *m, int *n) {
+  const NodeTable *nt = c->nt;
+  if (sb_targets_on && mi < sb_targets_cap && sb_targets[mi].gen == sb_targets_gen) {
+    *n = sb_targets[mi].n;
+    int *cp = malloc(sizeof(int) * (size_t)(*n > 0 ? *n : 1));
+    if (!cp) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    memcpy(cp, sb_targets[mi].ids, sizeof(int) * (size_t)*n);
+    return cp;
+  }
+  int ncand = 0, k = 0;
+  int *cand = strbuf_scope_call_candidates(c, m, &ncand);
+  for (int i = 0; i < ncand; i++) {
+    int u = cand[i];
+    if (nt_kind(nt, u) != NK_CallNode || !an_call_targets_scope(c, u, mi, m)) continue;
+    cand[k++] = u;
+  }
+  *n = k;
+  if (sb_targets_on) {
+    if (mi >= sb_targets_cap) {
+      int oc = sb_targets_cap;
+      sb_targets_cap = c->nscopes > mi ? c->nscopes + 64 : mi + 64;
+      sb_targets = realloc(sb_targets, sizeof *sb_targets * (size_t)sb_targets_cap);
+      if (!sb_targets) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      memset(sb_targets + oc, 0, sizeof *sb_targets * (size_t)(sb_targets_cap - oc));
+    }
+    free(sb_targets[mi].ids);
+    sb_targets[mi].ids = malloc(sizeof(int) * (size_t)(k > 0 ? k : 1));
+    if (!sb_targets[mi].ids) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    memcpy(sb_targets[mi].ids, cand, sizeof(int) * (size_t)k);
+    sb_targets[mi].n = k; sb_targets[mi].gen = sb_targets_gen;
+  }
+  return cand;
+}
 static int strbuf_demand_param_container_stores(Compiler *c, const char *pn, Scope *ps,
                                                 int depth, int mode) {
   if (sb_param_walk_nest == 0) sb_param_seen_n = 0;
@@ -15698,9 +15787,11 @@ static int strbuf_demand_param_container_stores_walk(Compiler *c, const char *pn
   if (pj < 0) return 0;
   int mi = (int)(ps - c->scopes);
   if (sb_param_seen_check(mi, pj, mode, depth)) return 0;
-  for (int u = comp_kind_first(c, NK_CallNode); u >= 0; u = comp_kind_next(c, u)) {
+  int ncand = 0;
+  int *cand = strbuf_scope_callers(c, mi, ps, &ncand);
+  for (int ci = 0; ci < ncand; ci++) {
+    int u = cand[ci];
     if (nt_kind(nt, u) != NK_CallNode) continue;
-    if (!an_call_targets_scope(c, u, mi, ps)) continue;
     int an = arg_layout_param_node(c, ps, u, pj, NULL);
     if (an < 0) continue;
     NodeKind ak = nt_kind(nt, an);
@@ -15724,6 +15815,7 @@ static int strbuf_demand_param_container_stores_walk(Compiler *c, const char *pn
     }
     else changed |= strbuf_container_source_walk(c, an, depth + 1, mode);
   }
+  free(cand);
   return changed;
 }
 /* A block parameter names what the iterator hands the block: the receiver
@@ -18436,7 +18528,14 @@ static void an_mark_handle_returns(Compiler *c) {
     if (poly) c->strbuf_box[n] = 0;
   }
 }
+static int promote_shared_stored_strings_pass(Compiler *c);
 static int promote_shared_stored_strings(Compiler *c) {
+  sb_targets_gen++; sb_targets_on = 1;
+  int r = promote_shared_stored_strings_pass(c);
+  sb_targets_on = 0;
+  return r;
+}
+static int promote_shared_stored_strings_pass(Compiler *c) {
   int changed = 0;
   /* --share-strings: the one rule decides first (#6765) */
   changed |= share_default_apply(c, 1);
