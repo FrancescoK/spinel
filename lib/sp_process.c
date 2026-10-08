@@ -35,6 +35,9 @@
  *                      its copies, and on every raise this file makes
  *                      before the fork.
  *                      A caller's IO or Integer fd is never in the mask.
+ *   [8] env          - optional: the Hash a call gave before the command,
+ *                      or nil. The codegen adds the slot only where the
+ *                      first argument can be a Hash.
  *
  * An IO value in opts[0..2] is resolved to its fd by the codegen (which
  * has access to sp_File_fileno); a String value reaches the runtime
@@ -66,6 +69,10 @@
 #include "sp_process_status.h"   /* sp_ProcessStatus, sp_box_process_status */
 #include "sp_system.h"   /* sp_last_status: $? */
 #include "sp_string.h"   /* sp_String: a shared String's handle */
+
+#if !defined(_WIN32)
+extern char **environ;
+#endif
 
 /* A String the program holds as the shared handle (--share-strings) arrives
    boxed as that handle: the spawn reads its bytes as it reads a String's. */
@@ -186,6 +193,65 @@ int sp_process_open_redirect(const char *path, int slot, int *owned) {
   return fd;
 }
 
+/* An environment Hash's names and values are Strings, a value may be nil,
+   and a name holds no '=', as CRuby checks them before it starts a child. */
+static void sp_spawn_env_check(sp_RbVal env, int *owned) {
+  sp_int n = sp_json_len_fn(env);
+  for (sp_int i = 0; i < n; i++) {
+    sp_RbVal key, val;
+    sp_json_hpair_fn(env, i, &key, &val);
+    key = sp_spawn_str(key);
+    val = sp_spawn_str(val);
+    if (key.tag != SP_TAG_STR) sp_process_spawn_fail(owned, "TypeError", sp_errf_conv(key));
+    if (val.tag != SP_TAG_STR && val.tag != SP_TAG_NIL) sp_process_spawn_fail(owned, "TypeError", sp_errf_conv(val));
+    if (strchr(key.v.s, '=')) {
+      snprintf(sp_err_buf, sizeof sp_err_buf, "environment name contains a equal : %s", key.v.s);
+      sp_process_spawn_fail(owned, "ArgumentError", sp_err_buf);
+    }
+  }
+}
+
+/* The child's environment for a checked Hash, built as CRuby builds it: this
+   process's environment less every name the Hash mentions, then each name
+   whose value is a String. One block, the entries after the pointers; NULL
+   when out of memory. */
+static char **sp_spawn_envp(sp_RbVal env) {
+  sp_int n = sp_json_len_fn(env);
+  size_t nenv = 0, bytes = 0;
+  while (environ && environ[nenv]) nenv++;
+  for (sp_int i = 0; i < n; i++) {
+    sp_RbVal key, val;
+    sp_json_hpair_fn(env, i, &key, &val);
+    val = sp_spawn_str(val);
+    if (val.tag == SP_TAG_STR) bytes += strlen(sp_spawn_str(key).v.s) + strlen(val.v.s) + 2;
+  }
+  char **envp = (char **)malloc(sizeof(char *) * (nenv + (size_t)n + 1) + bytes);
+  if (!envp) return NULL;
+  char *entry = (char *)(envp + nenv + (size_t)n + 1);
+  size_t at = 0;
+  for (size_t e = 0; e < nenv; e++) {
+    int named = 0;
+    for (sp_int i = 0; i < n && !named; i++) {
+      sp_RbVal key, val;
+      sp_json_hpair_fn(env, i, &key, &val);
+      const char *name = sp_spawn_str(key).v.s;
+      size_t len = strlen(name);
+      named = strncmp(environ[e], name, len) == 0 && environ[e][len] == '=';
+    }
+    if (!named) envp[at++] = environ[e];
+  }
+  for (sp_int i = 0; i < n; i++) {
+    sp_RbVal key, val;
+    sp_json_hpair_fn(env, i, &key, &val);
+    val = sp_spawn_str(val);
+    if (val.tag != SP_TAG_STR) continue;
+    envp[at++] = entry;
+    entry += sprintf(entry, "%s=%s", sp_spawn_str(key).v.s, val.v.s) + 1;
+  }
+  envp[at] = NULL;
+  return envp;
+}
+
 /* Extract a resolved Integer fd from a pre-resolved opts slot. The
    codegen turns IO/false into Integer before passing, and a String
    path arrives as the fd sp_process_open_redirect returned; we just
@@ -246,6 +312,9 @@ sp_int sp_process_spawn(sp_RbVal cmd, sp_RbVal args_box,
   if (chdir_v.tag == SP_TAG_STR) chdir_to = chdir_v.v.s;
   else if (opts->data[6].tag != SP_TAG_NIL)
     sp_process_spawn_fail(owned, "TypeError", "chdir must be a String");
+
+  sp_RbVal env = opts->len > 8 ? opts->data[8] : sp_box_nil();
+  if (env.tag != SP_TAG_NIL) sp_spawn_env_check(env, owned);
 
   /* Resolve cmd + args into argv. */
   const char *prog = NULL;
@@ -310,6 +379,12 @@ sp_int sp_process_spawn(sp_RbVal cmd, sp_RbVal args_box,
   }
   argv[ai] = NULL;
 
+  char **envp = NULL;
+  if (env.tag != SP_TAG_NIL && !(envp = sp_spawn_envp(env))) {
+    free(argv);
+    sp_process_spawn_fail(owned, "NoMemoryError", "out of memory");
+  }
+
 #if defined(_WIN32)
   /* posix_spawn, where there is no fork (lib/win32 answers it over
      CreateProcess). The child's setup is the file actions -- the same dup2s and closes the fork
@@ -328,6 +403,7 @@ sp_int sp_process_spawn(sp_RbVal cmd, sp_RbVal args_box,
       if (sr != 0 || !S_ISDIR(cst.st_mode)) {
         int e = sr != 0 ? errno : ENOTDIR;
         free(argv);
+        free(envp);
         sp_last_status = 127 << 8;   /* as after the fork path's child fails its chdir */
         errno = e;
         sp_process_spawn_fail(owned, e == ENOENT ? "Errno::ENOENT" : e == ENOTDIR ? "Errno::ENOTDIR" :
@@ -353,11 +429,12 @@ sp_int sp_process_spawn(sp_RbVal cmd, sp_RbVal args_box,
     }
     fflush(NULL);
     pid_t pid = 0;
-    int rc = posix_spawnp(&pid, prog, &fa, &at, argv, environ);
+    int rc = posix_spawnp(&pid, prog, &fa, &at, argv, envp ? envp : environ);
     posix_spawn_file_actions_destroy(&fa);
     posix_spawnattr_destroy(&at);
     close_owned(owned);
     free(argv);
+    free(envp);
     if (rc != 0) {
       /* $? reads the 127 a failed exec exits with under the fork path */
       sp_last_status = 127 << 8;
@@ -376,6 +453,7 @@ sp_int sp_process_spawn(sp_RbVal cmd, sp_RbVal args_box,
   int err_pipe[2];
   if (pipe(err_pipe) < 0) {
     free(argv);
+    free(envp);
     sp_process_spawn_fail(owned, "SystemCallError", sp_errf_errno("pipe failed", errno));
   }
 
@@ -383,6 +461,7 @@ sp_int sp_process_spawn(sp_RbVal cmd, sp_RbVal args_box,
      child can write to the same descriptors, as CRuby flushes them */
   fflush(NULL);
   pid_t pid = fork();
+  if (pid != 0) free(envp);
   if (pid < 0) {
     free(argv);
     sp_process_spawn_fail(owned, "SystemCallError", sp_errf_errno("fork failed", errno));
@@ -422,6 +501,9 @@ sp_int sp_process_spawn(sp_RbVal cmd, sp_RbVal args_box,
     apply_redirect(1, out_fd);
     apply_redirect(2, err_fd);
     close_redirect_srcs(in_fd, out_fd, err_fd);
+    /* execvp searches the PATH of the environment it passes on, as CRuby
+       searches the child's */
+    if (envp) environ = envp;
     execvp(prog, argv);
     /* exec returned: failure. Send the errno to the parent. */
     int fail[2] = { errno, 0 };
