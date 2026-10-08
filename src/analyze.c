@@ -15468,6 +15468,9 @@ static void sa_refuse_element(Compiler *c, int e, int u);
 static int sa_copy_defer(Compiler *c, int site, int v, int reader, const char *msg) {
   ShareRoute q = share_route(site, v, 0);
   q.carry = reader ? v : SHARE_CARRY_COPY;
+  /* A demanded String conversion already boxes its receiver's handle.
+     Let the seal check that route when no user method overrides it. */
+  if (repr_string_conversion_operand(c, v) >= 0) q.carry = v;
   return share_route_defer(c, &q, msg);
 }
 static const char *sa_msg(int route);
