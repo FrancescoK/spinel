@@ -1,0 +1,7 @@
+[package]
+name = "pty"
+sources = ["sp_pty.c"]   # carried C is declared, not discovered (#4362)
+
+# Pre-installed spin package: ships with the compiler, versioned with it.
+# PTY.spawn over posix_openpt and fork, carried in C (sp_pty.c). Needs fork,
+# so it is not built for the wasm32-wasi target.

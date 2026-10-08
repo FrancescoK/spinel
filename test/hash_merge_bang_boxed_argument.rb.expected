@@ -1,0 +1,7 @@
+true
+{words_connector: " o ", last_word_connector: ", and "}
+{a: 1, words_connector: " o ", b: 2}
+TypeError: no implicit conversion of String into Hash
+{a: 1, words_connector: " o ", b: 2, c: 3}
+FrozenError
+{words_connector: " o "}

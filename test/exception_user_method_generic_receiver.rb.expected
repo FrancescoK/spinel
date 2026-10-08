@@ -1,0 +1,9 @@
+[:other, EOFErr, "EOFErr"]
+[:status, 404, 404, "x:NotFound", "status"]
+[:status, 418, 418, "x:Teapot", :teapot]
+[:other, RuntimeError, "boom"]
+404
+418
+"undefined method 'code' for an instance of Plain"
+"undefined method 'code' for an instance of ArgumentError"
+"undefined method 'code' for nil"

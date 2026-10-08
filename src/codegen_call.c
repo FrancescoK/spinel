@@ -2040,6 +2040,32 @@ int exc_subclass_defines(Compiler *c, const char *name) {
   return 0;
 }
 
+/* 1 iff a call of `name` on a TY_EXCEPTION receiver can only be one of the
+   program's exception classes' own methods (HTTPStatus::Status#code): some
+   user subclass defines it, no builtin exception reopening does (that has
+   its own pick by the runtime class), and it is no name the exception
+   surface or every object answers, whose arms keep the call (a
+   class-gated reader -- #reason, #key -- only at the reader's arity). Inference and
+   codegen then treat the receiver as the boxed exception it is, which the
+   poly dispatch keys by its user class (sp_exc_user_cls_id), and anything
+   else -- a builtin exception, a subclass without the method -- raises
+   NoMethodError there. */
+int exc_user_method_name(Compiler *c, const char *name, int argc) {
+  static const char *const surface[] = {
+    "message", "to_s", "to_str", "inspect", "full_message", "detailed_message", "exception",
+    "backtrace", "backtrace_locations", "set_backtrace", "cause", "result", "class",
+    "==", "!=", "===", "=~", "!", "eql?", "equal?", "hash", "object_id", "nil?", "frozen?",
+    "freeze", "dup", "clone", "itself", "is_a?", "kind_of?", "instance_of?", "respond_to?",
+    "send", "__send__", "public_send", "method", "tap", "then", "instance_variable_get",
+    "instance_variable_set", "instance_variables", "<=>", "display", NULL };
+  if (!name || !exc_subclass_defines(c, name)) return 0;
+  for (int i = 0; surface[i]; i++) if (sp_streq(name, surface[i])) return 0;
+  if (argc == 0 && exc_gated_acc_fn(name)) return 0;
+  int xr[1];
+  if (exc_reopen_definers(c, name, xr, 1) > 0) return 0;
+  return 1;
+}
+
 /* analyze.c's an_class_can_be_reached, plus reopened builtin primitives: a
    class nothing can reach cannot own a name, and owning a name takes the
    BUILTIN away. A program that merely declared `Bucket#partition`, never
@@ -7553,7 +7579,9 @@ int poly_native_arm_call(Compiler *c, int k, const char *name, int n, const int 
       if (sp_streq(spec, "text")) aw = TY_STRING;
       if (aw == TY_UNKNOWN) { ok = 0; break; }
       if (atmp_ty[ai] == TY_POLY) emit_unbox_text(c, aw, tn, cb);
-      else if (atmp_ty[ai] == aw || (aw == TY_STRING && atmp_ty[ai] == TY_STRBUF)) buf_puts(cb, tn);
+      /* a shared handle into a String parameter: the String it holds */
+      else if (aw == TY_STRING && atmp_ty[ai] == TY_STRBUF) buf_printf(cb, "(%s ? sp_String_cstr(%s) : NULL)", tn, tn);
+      else if (atmp_ty[ai] == aw) buf_puts(cb, tn);
       else if (aw == TY_FLOAT && atmp_ty[ai] == TY_INT) buf_printf(cb, "(sp_float)%s", tn);
       else { ok = 0; break; }
     }
@@ -18746,11 +18774,11 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
      which is a worse order than the one C picked. Only a local read ahead of
      it that it can rebind runs first, with the operands before it
      (emit_operands_before_unbound). */
-  int node[8], fresh[8], nb = 0;
-  TyKind ty[8];
-  int operand[9], nop = 0;
+  int node[MAX_ARG_OVERRIDE], fresh[MAX_ARG_OVERRIDE], nb = 0;
+  TyKind ty[MAX_ARG_OVERRIDE];
+  int operand[MAX_ARG_OVERRIDE], nop = 0;
   if (recv >= 0) operand[nop++] = recv;
-  for (int i = 0; i < argc && nop < 9; i++) {
+  for (int i = 0; i < argc; i++) {
     /* keyword arguments are operands one value at a time, in the order
        written: `new(a: r.int, b: f(r.int))` runs a's call first, however
        the callee's emitter lays the values out. A `**` operand or a
@@ -18760,10 +18788,16 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
     int plain = els != NULL;
     for (int k = 0; k < nk && plain; k++)
       plain = nt_kind(nt, els[k]) == NK_AssocNode && nt_kind(nt, nt_ref(nt, els[k], "key")) == NK_SymbolNode;
-    if (!plain) { operand[nop++] = argv[i]; continue; }
-    for (int k = 0; k < nk && nop < 9; k++) {
+    if (!plain) {
+      if (nop >= MAX_ARG_OVERRIDE) return 0;
+      operand[nop++] = argv[i];
+      continue;
+    }
+    for (int k = 0; k < nk; k++) {
       int v = nt_ref(nt, els[k], "value");
-      if (v >= 0) operand[nop++] = v;
+      if (v < 0) continue;
+      if (nop >= MAX_ARG_OVERRIDE) return 0;
+      operand[nop++] = v;
     }
   }
   /* A bare read of an ivar, class variable or global is no effect of its own,
@@ -18819,7 +18853,6 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
     int fr = operand[i] != recv && operand_fresh_str(c, operand[i]);
     TyKind t = fr ? TY_STRING : repr_of(c, operand[i]).as_ty;
     if (t == TY_UNKNOWN || t == TY_VOID || t == TY_NIL) return 0;
-    if (nb >= 8) return 0;
     node[nb] = operand[i]; ty[nb] = t; fresh[nb] = fr; nb++;
   }
   /* Operands that are all pure reads -- `m.data[i * m.cols + j]`, two readers
@@ -18843,7 +18876,7 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
 
   size_t pre_mark = g_pre->len;
   int saved_tmp = g_tmp;
-  Buf opb[8], opp[8];
+  Buf opb[MAX_ARG_OVERRIDE], opp[MAX_ARG_OVERRIDE];
   int rendered = 0, ok = 1;
   /* A lone observable operand is kept only when the call converts, which the
      call's own emission tells; render the operand after that, so a declined
@@ -18856,7 +18889,7 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
     if (text_is_raise_token(opb[rendered].p)) ok = 0;
   }
   Buf ob; memset(&ob, 0, sizeof ob);
-  int tmp[8];
+  int tmp[MAX_ARG_OVERRIDE];
   if (ok) {
     for (int i = 0; i < nb; i++) {
       tmp[i] = ++g_tmp;
@@ -23479,6 +23512,10 @@ void gets_sep_arg_texts(Compiler *c, const int *argv, int argc, int strict, Buf 
     }
     TyKind at = comp_ntype(c, argv[k]);
     if (at == TY_INT) glim = argv[k];
+    /* a second positional argument is the limit, whatever its static type:
+       `gets(sep, limit)` forwarded through a splat reads both boxed, and
+       taking the second for the separator read to the end */
+    else if (!strict && pos == 1) glim = argv[k];
     else if (!strict) gsep = argv[k];
     else if (pos == 0 && (at == TY_STRING || at == TY_NIL)) gsep = argv[k];   /* a nil after it is no limit */
     pos++;

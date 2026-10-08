@@ -2514,8 +2514,10 @@ void poly_specials_n(Compiler *c, int id, const char *name, int argc, const int 
      user classes that define strftime the Time arm joins theirs, and the
      switch's own default raises (#7334): a program-defined Date left a real
      Time with no arm at all. */
+  /* the format may be boxed too: a String formats, anything else raises the
+     TypeError CRuby's does (sp_poly_arg_str_chk) */
   int is_strftime = sp_streq(name, "strftime") && argc == 1 &&
-                    comp_ntype(c, argv[0]) == TY_STRING;
+                    (comp_ntype(c, argv[0]) == TY_STRING || comp_ntype(c, argv[0]) == TY_POLY);
   /* cover? on a container-read Range; gcdlcm on a container-read int
      receiver (#3234): builtin pre-arms, no user candidates required */
   /* `merge` on a poly value that is really a builtin Hash. A user class
@@ -3680,10 +3682,13 @@ void emit_poly_cases_n(Compiler *c, int id, const char *name, const PolySpecials
      the switch it had) */
   if (is_strftime && (ps->ncand == 0 || ret == TY_STRING || ret == TY_POLY)) {
     if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_STRFTIME, -1, TY_UNKNOWN, PC_SAME);
+    char fa[64];
+    if (comp_ntype(c, argv[0]) == TY_POLY) snprintf(fa, sizeof fa, "sp_poly_arg_str_chk(_t%d)", atmp[0]);
+    else snprintf(fa, sizeof fa, "_t%d", atmp[0]);
     if (ret == TY_POLY)
-      buf_printf(b, " case SP_BUILTIN_TIME: _t%d = sp_box_str(sp_time_strftime(*(sp_Time *)_t%d.v.p, _t%d)); break;", tr, tv, atmp[0]);
+      buf_printf(b, " case SP_BUILTIN_TIME: _t%d = sp_box_str(sp_time_strftime(*(sp_Time *)_t%d.v.p, %s)); break;", tr, tv, fa);
     else
-      buf_printf(b, " case SP_BUILTIN_TIME: _t%d = sp_time_strftime(*(sp_Time *)_t%d.v.p, _t%d); break;", tr, tv, atmp[0]);
+      buf_printf(b, " case SP_BUILTIN_TIME: _t%d = sp_time_strftime(*(sp_Time *)_t%d.v.p, %s); break;", tr, tv, fa);
     /* with user arms in the switch, the default is theirs to emit */
     if (ps->ncand == 0)
       buf_printf(b, " default: sp_raise_cls(\"NoMethodError\", sp_nomethod_msg(\"strftime\", _t%d)); break;", tv);

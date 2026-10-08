@@ -4995,26 +4995,35 @@ static int emit_merge_any_block_boxed(Compiler *c, int id, int recv, int arg, Bu
   return nt_kind(nt, mblk) == NK_BlockNode && emit_merge_block_boxed(c, id, recv, arg, mblk, b);
 }
 
-/* merge!/update on a typed Hash given an argument typed as no Hash: the
-   receiver and every argument run, in order, then the nil and frozen
-   checks; then each argument in turn merges in, as CRuby's does, until the
-   first that converts to no Hash raises its TypeError -- a boxed one at run
-   time, the typed misfit there. The arms that merge took no such argument,
-   and the call fell to NoMethodError. A block form keeps those arms when a
-   Hash comes first: the block resolves its conflicts. Each argument is a
-   statement of its own after its own prelude, so one built in place does
-   not run ahead of the ones before it. */
+/* merge!/update on a typed Hash given an argument typed as no Hash, or
+   one known only at run time (boxed): the receiver and every argument run,
+   in order, then the nil and frozen checks; then each argument in turn
+   merges in, as CRuby's does, until the first that converts to no Hash
+   raises its TypeError -- a boxed one at run time, the typed misfit there.
+   The arms that merge took no such argument, and the call fell to
+   NoMethodError. A block form keeps those arms when a Hash comes first:
+   the block resolves its conflicts (a boxed argument with a block is left
+   to them too). Each argument is a statement of its own after its own
+   prelude, so one built in place does not run ahead of the ones before
+   it. */
 static int emit_hash_merge_misfit(Compiler *c, int id, TyKind rt, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
   int argc;
   const int *argv = call_args(nt, id, &argc);
-  if (!is_hash_merge_bang(name) || argc < 1 || !nt_call_args_plain(nt, id) ||
-      an_zero_arg_builtin_shadowed(c, name, argc) || user_defines_or_reads(c, name)) return 0;
-  int bad = -1;
-  for (int i = 0; i < argc && bad < 0; i++)
-    if (nt_kind(nt, argv[i]) != NK_HashNode && face_arg_misfit(c, PF_HASH, argv[i])) bad = i;
-  if (bad < 0 || (bad > 0 && nt_ref(nt, id, "block") >= 0)) return 0;
+  if (!is_hash_merge_bang(name) || argc < 1 || !nt_call_args_plain(nt, id)) return 0;
+  /* the receiver is a builtin Hash: only a reopening of Hash owns the name
+     over it, not a program class of its own with a merge! */
+  int hc_ci = comp_class_index(c, "Hash");
+  if (hc_ci >= 0 && comp_method_in_chain(c, hc_ci, name, NULL) >= 0) return 0;
+  int bad = -1, boxed = 0;
+  for (int i = 0; i < argc && bad < 0; i++) {
+    if (nt_kind(nt, argv[i]) == NK_HashNode) continue;
+    if (face_arg_misfit(c, PF_HASH, argv[i])) bad = i;
+    else { TyKind at = comp_ntype(c, argv[i]); if (at == TY_POLY || at == TY_UNKNOWN) boxed = 1; }
+  }
+  if ((bad < 0 && !boxed) || (bad != 0 && nt_ref(nt, id, "block") >= 0)) return 0;
+  int last = bad >= 0 ? bad : argc - 1;
   int tr = ++g_tmp, t0 = g_tmp + 1;
   g_tmp += argc;
   Buf *sv_pre = g_pre;
@@ -5034,11 +5043,11 @@ static int emit_hash_merge_misfit(Compiler *c, int id, TyKind rt, Buf *b) {
   buf_printf(b, "if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s); ", tr, tr, hash_box_cls(rt));
   char rtxt[32];
   snprintf(rtxt, sizeof rtxt, "_t%d", tr);
-  for (int i = 0; i <= bad; i++) {
+  for (int i = 0; i <= last; i++) {
     buf_printf(b, "if (_t%d.tag != SP_TAG_OBJ || !sp_poly_is_hash_kind(_t%d.cls_id))"
                   " sp_raise_cls(\"TypeError\", sp_sprintf(\"no implicit conversion of %%s into Hash\", sp_convert_src_name(_t%d))); ",
                t0 + i, t0 + i, t0 + i);
-    if (i < bad) { buf_puts(b, "sp_poly_hash_merge_into("); emit_boxed_text(c, rt, rtxt, b); buf_printf(b, ", _t%d); ", t0 + i); }
+    if (i != bad) { buf_puts(b, "sp_poly_hash_merge_into("); emit_boxed_text(c, rt, rtxt, b); buf_printf(b, ", _t%d); ", t0 + i); }
   }
   buf_printf(b, "_t%d; })", tr);
   return 1;
@@ -8684,7 +8693,7 @@ static int emit_struct_recv_call(Compiler *c, int id, Buf *b, const NodeTable *n
   /* #inspect / #to_s -> the generated (or user-overridden) struct/data stringifier */
   if ((is_text_conversion(name)) && argc == 0) {
     const char *cn = obj_str_cname(c, ty_object_class(rt), sp_streq(name, "inspect"));
-    if (cn) { buf_printf(b, "sp_%s_%s((sp_%s *)", cn, name, cn); emit_expr(c, recv, b); buf_puts(b, ")"); { *out = 1; return 1; } }
+    if (cn) { buf_printf(b, "sp_%s_%s((sp_%s *)", cn, obj_str_mname(c, ty_object_class(rt), sp_streq(name, "inspect")), cn); emit_expr(c, recv, b); buf_puts(b, ")"); { *out = 1; return 1; } }
   }
   int is_to_a = (sp_streq(name, "to_a") || sp_streq(name, "values") || sp_streq(name, "deconstruct"));
   /* CRuby's Data has neither #to_a nor #values (Struct has both); only
@@ -12984,7 +12993,11 @@ static int emit_poly_index_call(Compiler *c, int id, Buf *b, const NodeTable *nt
       char objp[32]; snprintf(objp, sizeof objp, "_t%d.v.p", tv);
       emit_boxed_writer_arms(c, base, name, objp, src, at_eff, argv[0], b);
       buf_printf(b, " default: sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d)); break;", name, tv);
-      buf_printf(b, " } _t%d; })", tval);
+      /* the call answers the value it stored; a shared handle stored where
+         the call is read as a String answers the String it holds */
+      if (at == TY_STRBUF && comp_ntype(c, id) != TY_STRBUF)
+        buf_printf(b, " } (_t%d ? sp_String_cstr(_t%d) : NULL); })", tval, tval);
+      else buf_printf(b, " } _t%d; })", tval);
       { *out = 1; return 1; }
     }
   }

@@ -1,0 +1,8 @@
+/* Windows: AF_UNIX stream sockets (Windows 10 1803 and later; afunix.h's
+   layout). */
+#ifndef SP_WIN32_SYS_UN_H
+#define SP_WIN32_SYS_UN_H
+#include <sys/socket.h>
+#define UNIX_PATH_MAX 108
+struct sockaddr_un { sa_family_t sun_family; char sun_path[UNIX_PATH_MAX]; };
+#endif

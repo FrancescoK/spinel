@@ -404,6 +404,10 @@ typedef struct {
                                String's handle, which the callee's tail read
                                publishes (_sp_ret_strbuf); set once the
                                analysis settles (an_mark_handle_returns) */
+  unsigned char ret_fresh; /* the same return-tail walk proves a new String
+                              (or nil) on every path; no incoming handle */
+  int ret_param;       /* --share-strings: every non-fresh return reads this
+                          unchanged parameter; -1 when no such proof */
   int ret_obj_may_nil; /* the nil fact for the method's value (analyze_nil.c,
                           #7444): its body's value or a `return` may be nil;
                           nonzero, where the nil comes from (NFW_*) */
@@ -1081,6 +1085,7 @@ typedef struct {
   int nshare_route, cshare_route;
   int share_strings;
   struct ShareFacts *share;
+  struct HandleArgTab *share_args; /* final callers, while sealing share facts */
   unsigned share_sig;   /* the types the facts were last applied over */
   /* the methods compute_byref_out_params let take a lent slot
      (an_byref_eligible_scopes), kept for the share facts built after it

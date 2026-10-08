@@ -7628,9 +7628,15 @@ void emit_rooted_operand(Compiler *c, TyKind pt, int provided, const char *expr,
    ...) that builds a NEW container, rooted only inside the converter. The
    read's own root does not reach the copy, and a callee that allocates before
    it roots the parameter (sp_<C>_new) can collect it: the object then holds
-   freed memory. */
+   freed memory. A String read or literal converted to a shared handle also
+   allocates: only a read that already supplies the handle needs no root. */
 int arg_read_converts(Compiler *c, TyKind pt, int provided) {
   if (provided < 0 || pt == TY_POLY) return 0;
+  if (pt == TY_STRBUF) {
+    char ref[192];
+    return repr_of(c, provided).as_ty != TY_NIL &&
+           !strbuf_slot_ref(c, provided, ref, sizeof ref);
+  }
   if (!(ty_is_array(pt) || ty_is_obj_array(pt) || ty_is_hash(pt))) return 0;
   Repr sr = repr_of(c, provided);
   TyKind st = sr.as_ty;
@@ -8066,7 +8072,9 @@ void ran_first_bind(int v, int t, int th) {
 /* The value `v` evaluated into a rooted temp in g_pre, pushed onto the
    g_argov overrides so its uses read the temp. */
 static void emit_arg_temp(Compiler *c, int v) {
-  TyKind at = repr_of(c, v).as_ty;
+  Repr r = repr_of(c, v);
+  int fresh = r.as_ty == TY_STRBUF && r.strbuf_src == RS_FRESH;
+  TyKind at = fresh ? TY_STRING : r.as_ty;
   /* A shared String slot's read is the value form, a copy; a shared-handle
      parameter wants the OBJECT read here, not a fresh one of its bytes. So
      a variable's handle is taken too, just ahead, and recorded with the
@@ -8094,6 +8102,12 @@ static void emit_arg_temp(Compiler *c, int v) {
   else if (wshare) {
     char thr[24]; snprintf(thr, sizeof thr, "_t%d", th);
     emit_strbuf_node_read(c, v, thr, &hb);
+  }
+  else if (fresh) {
+    /* The rest store wraps this String in its handle after the hold. */
+    int mark = view_push_repr(c, v, VR_STRBUF_BOX, 0);
+    emit_str_expr(c, v, &hb);
+    view_pop(c, mark);
   }
   else emit_expr(c, v, &hb);
   emit_indent(g_pre, g_indent);
@@ -9891,7 +9905,7 @@ static int emit_gather_lead_lent(Compiler *c, Scope *m, int i, const int *argv, 
    into the parameter that mutates it: indexing the call's arguments by the
    parameter's position read a keyword hash, or the argument beside a rest,
    for a keyword or a post. */
-int arg_layout_param_node(Compiler *c, Scope *m, int call, int i, int *spread) {
+static int arg_layout_param_node_inner(Compiler *c, Scope *m, int call, int i, int *spread, int defaults) {
   const NodeTable *nt = c->nt;
   if (spread) *spread = -1;
   if (!m || i < 0 || i >= m->nparams) return -1;
@@ -9919,6 +9933,7 @@ int arg_layout_param_node(Compiler *c, Scope *m, int call, int i, int *spread) {
   const char *pn = m->pnames[i];
   int lead = L.gather ? gather_lead_arg(c, m, argv, argc, i) : -1;
   if (L.from[i] == ARG_NODE) a = argv[L.arg[i]];
+  else if (defaults && L.from[i] == ARG_DEFAULT && m->pdefault) a = m->pdefault[i];
   else if (lead >= 0) a = argv[lead];
   else if (L.from[i] == ARG_ELEM || L.from[i] == ARG_GATHERED) {
     if (nsplat == 1 && spread) *spread = nt_ref(nt, splat, "expression");
@@ -9949,17 +9964,29 @@ int arg_layout_param_node(Compiler *c, Scope *m, int call, int i, int *spread) {
       free(flat);
     }
   }
-  else if (L.from[i] == ARG_BY_NAME && i != m->kwrest_idx && pn && kwh >= 0 &&
+  else if (L.from[i] == ARG_BY_NAME && i != m->kwrest_idx && pn &&
            callee_has_kwarg(c, m, pn)) {
-    int en = 0; const int *el = nt_arr(nt, kwh, "elements", &en);
+    int en = 0; const int *el = kwh >= 0 ? nt_arr(nt, kwh, "elements", &en) : NULL;
     int nds = 0, ds = -1;
     for (int e = 0; e < en; e++)
       if (nt_kind(nt, el[e]) == NK_AssocSplatNode) { nds++; ds = el[e]; }
-    if (!kwh_merged(c, m, kwh)) a = kwh_lookup(nt, kwh, pn);
+    if (!kwh_merged(c, m, kwh)) {
+      a = kwh_lookup(nt, kwh, pn);
+      /* Only an omitted keyword with no spread source takes its default. */
+      if (a < 0 && !nds && defaults && m->pdefault) a = m->pdefault[i];
+    }
     if (a < 0 && nds == 1 && spread) *spread = nt_ref(nt, ds, "value");
   }
   arg_layout_free(&L);
   return a;
+}
+
+int arg_layout_param_node(Compiler *c, Scope *m, int call, int i, int *spread) {
+  return arg_layout_param_node_inner(c, m, call, i, spread, 0);
+}
+/* The value binding a parameter, including an omitted optional's default. */
+int arg_layout_param_source(Compiler *c, Scope *m, int call, int i, int *spread) {
+  return arg_layout_param_node_inner(c, m, call, i, spread, 1);
 }
 
 /* How far from the end of the positionals parameter j of m takes its value,
@@ -10520,7 +10547,9 @@ void emit_args_filled_argv(Compiler *c, int callee_idx, const int *argv, int arg
       if (subtree_has_side_effect(c, argv[k])) { last_se = k; n_se++; }
     for (int k = 0; k < pos_argc && k < m->nparams; k++) {
       argov_reserve();   /* past MAX_ARG_OVERRIDE arguments too */
-      TyKind at = repr_of(c, argv[k]).as_ty;
+      Repr r = repr_of(c, argv[k]);
+      int fresh = r.as_ty == TY_STRBUF && r.strbuf_src == RS_FRESH;
+      TyKind at = fresh ? TY_STRING : r.as_ty;
       /* An argument emit_ctype would spell `void` has no C storage to
          sequence into -- `void _tN = ...` is not a declaration C accepts.
          Nor is there anything to sequence: a valueless argument is a raise
@@ -10589,7 +10618,13 @@ void emit_args_filled_argv(Compiler *c, int callee_idx, const int *argv, int arg
         ran_first_bind(argv[k], ht, ht);
         continue;
       }
-      emit_expr(c, argv[k], &hb);
+      /* As in emit_arg_temp, a fresh handle's input is still plain text. */
+      if (fresh) {
+        int mark = view_push_repr(c, argv[k], VR_STRBUF_BOX, 0);
+        emit_str_expr(c, argv[k], &hb);
+        view_pop(c, mark);
+      }
+      else emit_expr(c, argv[k], &hb);
       emit_indent(g_pre, g_indent);
       if (at == TY_POLY) {
         buf_printf(g_pre, "sp_RbVal _t%d = %s;", ht, hb.p ? hb.p : "sp_box_nil()");

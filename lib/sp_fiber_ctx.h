@@ -23,7 +23,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#if defined(__x86_64__) || defined(__aarch64__)
+/* Windows takes the ucontext fallback, which lib/win32 provides: its x64
+   ABI saves more registers, and a switch there also moves the stack bounds
+   the thread's TEB holds. */
+#if (defined(__x86_64__) || defined(__aarch64__)) && !defined(_WIN32)
   #define SP_FIBER_ASM 1
 #else
   #define SP_FIBER_ASM 0

@@ -1,0 +1,8 @@
+"GET / HTTP/1.1\r\n"
+"Host: x\r\n"
+"Accept: */*\r\n"
+"\r\n"
+"abcd"
+"efghij\n"
+"xyz"
+nil

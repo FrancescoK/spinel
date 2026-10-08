@@ -5393,7 +5393,7 @@ static int infer_method_proc_call(Compiler *c, int id, const NodeTable *nt, cons
      result is always a String. Only when no user class supplies strftime, to
      match the codegen guard. Issue #2457 (family2 nilable value-method). */
   if (recv >= 0 && rt == TY_POLY && sp_streq(name, "strftime") && argc == 1 &&
-      infer_type(c, argv[0]) == TY_STRING) {
+      (infer_type(c, argv[0]) == TY_STRING || infer_type(c, argv[0]) == TY_POLY)) {   /* a boxed format converts or raises */
     int ncand = 0;
     for (int k = 0; k < c->nclasses; k++) {
       if (c->classes[k].is_native_class) {   /* bindings only (#4504) */
@@ -5869,6 +5869,15 @@ static int infer_exception_call(Compiler *c, int id, const NodeTable *nt, const 
         if (method_call_ret(c, comp_method_in_chain(c, xr[q], name, NULL), id) != xt) { *out = TY_POLY; return 1; }
       { *out = xt; return 1; }
     }
+  }
+  /* a method only the program's exception classes define, on a receiver
+     typed as a generic exception: typed as the boxed exception's dispatch
+     types it, which codegen re-enters (exc_user_method_name) */
+  if (recv >= 0 && rt == TY_EXCEPTION && !face_active() && exc_user_method_name(c, name, argc)) {
+    an_face_push(recv, TY_POLY);
+    TyKind ut = infer_call(c, id);
+    an_face_pop();
+    if (ut != TY_UNKNOWN) { *out = ut; return 1; }
   }
   int exc_shaped = rt == TY_EXCEPTION ||
                    (ty_is_object(rt) && class_is_exc_subclass(c, ty_object_class(rt)) &&
@@ -7758,13 +7767,13 @@ static TyKind infer_call_inner(Compiler *c, int id) {
    result for nothing: `case o when Integer then 7 when String then 12 else
    raise end` is an Integer, not a poly. The BeginNode arm has applied the same
    rule to a diverging body since #2739; this generalizes it to the branch
-   forms. */
+   forms. Parentheses around the call do not make it return a value. */
 static int stmts_diverge(Compiler *c, int st) {
   const NodeTable *nt = c->nt;
   if (st < 0) return 0;
   int n = 0; const int *b = nt_arr(nt, st, "body", &n);
   if (n <= 0 || !b) return 0;
-  int last = b[n - 1];
+  int last = unwrap_parens(c, b[n - 1]);
   if (nt_kind(nt, last) != NK_CallNode || nt_ref(nt, last, "receiver") >= 0) return 0;
   const char *nm = nt_str(nt, last, "name");
   return nm && is_diverging_call(nm) && !an_bare_call_class_owned(c, last) &&
