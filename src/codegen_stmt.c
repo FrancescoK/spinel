@@ -1420,6 +1420,22 @@ int strbuf_self_route_slot(Compiler *c, int v, int *uplus, char *out, size_t cap
   if (x < 0 && nm && is_string_class_name(nm) && nt_ref(nt, v, "receiver") < 0 && argc == 1 &&
       nt_ref(nt, v, "block") < 0 && comp_method_index(c, nm) < 0 && !bare_call_class_owned(c, v))
     x = argv[0];
+  /* A receiver-returning conversion or freeze keeps the existing handle
+     too. Ask the builtin's return fact before accepting a freeze-family
+     name; frozen? returns a Boolean. */
+  int recv = nt_ref(nt, v, "receiver");
+  if (x < 0 && recv >= 0 && argc == 0 && nt_ref(nt, v, "block") < 0 &&
+      comp_recv_type(c, recv) == TY_STRING && cplan_user(c, v)->dispatch == CP_NONE &&
+      (is_receiver_conversion(nm) ||
+       (is_freeze_family(nm) && (bop_answers_self(TY_STRING, nm, 0, 0) & BOPF_SELF)))) {
+    NodeKind rk = nt_kind(nt, unwrap_parens(c, recv));
+    if (rk != NK_LocalVariableReadNode && rk != NK_InstanceVariableReadNode && !repr_static_read_kind(rk)) return 0;
+    char ref[1024];
+    if (!strbuf_slot_ref(c, unwrap_parens(c, recv), ref, sizeof ref)) return 0;
+    int n = is_freeze_family(nm) ? snprintf(out, cap, "(sp_String_freeze(%s), %s)", ref, ref)
+                               : snprintf(out, cap, "%s", ref);
+    return n >= 0 && (size_t)n < cap;
+  }
   NodeKind xk = x >= 0 ? nt_kind(nt, unwrap_parens(c, x)) : NK_NONE;
   return (xk == NK_LocalVariableReadNode || xk == NK_InstanceVariableReadNode || repr_static_read_kind(xk)) &&
          strbuf_slot_ref(c, unwrap_parens(c, x), out, cap);
