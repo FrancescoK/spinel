@@ -177,6 +177,8 @@ int share_method_blocks(const Compiler *c, int mi, const int **blocks);
    The settled return-tail fact also admits fresh returns and a returned
    parameter bound to a fresh argument or omitted fresh default. */
 int share_call_fresh(Compiler *c, int call);
+/* The builtin arms of a boxed call, before checking its user targets. */
+int share_builtin_fresh(Compiler *c, int call);
 /* Is node n's String a new one no name holds yet, by where it comes from: a
    String literal, a method answering only its own locals' Strings, or an
    element read of a temporary container of new Strings (an Array literal of
