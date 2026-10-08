@@ -720,6 +720,7 @@ values too.
 
 Not yet shared:
 
+- String `self` handed to a mutating block through `yield` or `block.call` in the default build. Build with `--share-strings` to keep receiver mutations through this route. Read-only blocks and fresh String returns work in both builds;
 - a String variable in a splatted Hash literal (`**{ k: v }`) at a dynamic call or yield whose key binds an appending keyword parameter;
 
 - a String variable in an Array literal feeding an appended nested multiple-assignment target;
