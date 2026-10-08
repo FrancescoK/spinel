@@ -6938,6 +6938,14 @@ static void emit_poly_temp_as(Compiler *c, TyKind pt, int tmp, TyKind at, Buf *p
   /* a boxed argument may be nil, which an Integer or Float parameter takes
      as its own nil: the plain unbox read the zero under the nil tag */
   else if (at == TY_POLY && pt != TY_POLY && pt != TY_UNKNOWN) emit_unbox_nilable_text(c, pt, tn, pa);
+  /* A held shared handle into a plain String parameter takes its read
+     face. Keep that copy rooted across the other parameters' reads and
+     defaults, in the arm's prelude where those allocations run. */
+  else if (at == TY_STRBUF && pt == TY_STRING) {
+    int t = ++g_tmp;
+    buf_printf(g_pre, "const char *_t%d = sp_strbuf_read_pub(%s); SP_GC_ROOT(_t%d); ", t, tn, t);
+    buf_printf(pa, "_t%d", t);
+  }
   /* a subclass argument into an ancestor-typed parameter: layout-compatible,
      but C wants it spelled (#3418) */
   else { emit_obj_upcast_prefix(c, pt, at, pa); buf_puts(pa, tn); }
