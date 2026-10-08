@@ -3,7 +3,7 @@ tty
 hello
 got=hello
 0
-[false, true, true]
+[false, true, true, true]
 one
 two
 Errno::ENOENT
