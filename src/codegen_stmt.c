@@ -17634,6 +17634,9 @@ static int strbuf_flow_has_leaf(Compiler *c, StrbufFlowMemo *fm, int v, int dept
   }
   case NK_GlobalVariableReadNode: case NK_ConstantReadNode: case NK_ConstantPathNode:
     return depth > 0 && strbuf_var_handle(c, v, ref, sizeof ref);
+  case NK_InstanceVariableReadNode:
+    /* The emitter's slot route also carries an ivar arm's handle. */
+    return depth > 0 && strbuf_var_handle(c, v, ref, sizeof ref);
   case NK_GlobalVariableWriteNode: case NK_GlobalVariableOrWriteNode: case NK_GlobalVariableAndWriteNode:
   case NK_ConstantWriteNode:
     return depth > 0 && strbuf_gvar_write_handle(c, v, ref, sizeof ref);
