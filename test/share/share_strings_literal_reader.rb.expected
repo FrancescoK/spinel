@@ -11,9 +11,32 @@ FrozenError
 ["c\u0000d", "c\u0000d"]
 true
 ["rs", "rs"]
+"a!"
+["b!"]
+"lead"
+"c!"
+["d!"]
+"lead"
+"e!"
+["f!"]
+"g!"
+"h!"
+FrozenError
+"frozen"
+["unchanged"]
 true
 "xy"
 true
 "xyz"
 ["xyz", "xyz"]
 ["xyz", "xyz"]
+"a!"
+["b!"]
+"a"
+"b!"
+["c!"]
+"a"
+"b!"
+["c!"]
+"a!"
+"b!"
