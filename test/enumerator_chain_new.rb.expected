@@ -1,0 +1,18 @@
+[1, 2, 3]
+Enumerator::Chain
+true
+true
+true
+true
+false
+[1, 2, 3]
+[2, 3]
+[]
+[1, 2, 3, 4]
+[10]
+[true, false, true, false]
+[false, false, true, false]
+[false, true, true, false]
+[false, false, false, false]
+[false, false, false, false]
+[false, false, false, false]

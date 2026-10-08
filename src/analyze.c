@@ -7503,6 +7503,38 @@ static int desugar_enum_named_call(Compiler *c, int id, NodeTable *nt, const cha
       return 1;
     }
   }
+  /* Enumerator::Chain.new(*enums) -> __enum_chain_of([*enums]): a chain over
+     each source's items in order, a splat contributing its elements as
+     sources (an Array literal spreads it); #class reports Enumerator::Chain,
+     as for Enumerable#chain. No sources give the empty chain. */
+  if (nm && sp_streq(nm, "new")) {
+    int prv = nt_ref(nt, id, "receiver");
+    int ppar = prv >= 0 && nt_kind(nt, prv) == NK_ConstantPathNode ? nt_ref(nt, prv, "parent") : -1;
+    if (ppar >= 0 && nt_str(nt, prv, "name") && sp_streq(nt_str(nt, prv, "name"), "Chain") &&
+        nt_kind(nt, ppar) == NK_ConstantReadNode && nt_str(nt, ppar, "name") &&
+        sp_streq(nt_str(nt, ppar, "name"), "Enumerator") && nt_ref(nt, id, "block") < 0) {
+      int cargs = nt_ref(nt, id, "arguments");
+      int cn = 0; const int *cv = cargs >= 0 ? nt_arr(nt, cargs, "arguments", &cn) : NULL;
+      int *els = cn > 0 ? malloc(sizeof(int) * cn) : NULL;
+      for (int k = 0; k < cn; k++) els[k] = cv[k];   /* copy before the node table grows */
+      int srcs = nt_new_node(nt, "ArrayNode");
+      int nargs = srcs >= 0 ? nt_new_node(nt, "ArgumentsNode") : -1;
+      if (nargs >= 0) {
+        nt_node_set_arr(nt, srcs, "elements", els, cn);
+        nt_node_set_arr(nt, nargs, "arguments", &srcs, 1);
+        comp_grow_node_arrays(c);
+        c->nscope[srcs] = c->nscope[id];
+        c->nscope[nargs] = c->nscope[id];
+        nt_node_set_ref(nt, id, "receiver", -1);
+        nt_node_set_str(nt, id, "name", "__enum_chain_of");
+        nt_node_set_ref(nt, id, "arguments", nargs);
+        free(els);
+        *changed = 1;
+        return 1;
+      }
+      free(els);
+    }
+  }
   /* Enumerator.product(*enums) { blk } iterates the tuples and answers nil;
      the constructor arm builds the Enumerator, so drive it with #each
      (#3589) */
