@@ -867,7 +867,7 @@ void emit_unbox_nilable_text(Compiler *c, TyKind t, const char *expr, Buf *b);
    emits the reader/writer pair as an expression, or answers 0 to leave the
    caller's direct-ivar shapes alone. See codegen_expr.c. */
 void emit_orw_guard(Compiler *c, int v, TyKind slot, const char *cond, const char *lhs, int value_form, int indent, Buf *b);
-void emit_slot_orw_value(Compiler *c, TyKind t, const char *ref, int v, int is_or, Buf *b);
+void emit_slot_orw_value(Compiler *c, TyKind t, int elems_handle, const char *ref, int v, int is_or, Buf *b);
 int emit_empty_literal_as(Compiler *c, int v, TyKind slot, Buf *b);
 int emit_call_or_write_via_methods(Compiler *c, int id, int is_or, Buf *b);
 /* Wrap a boxed expression in the --rbs seed assertion (a no-op macro without

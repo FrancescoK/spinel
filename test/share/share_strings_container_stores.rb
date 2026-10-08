@@ -48,3 +48,34 @@ s = +"k"
 keep.call(s)
 s << "!"
 p KEEP
+# An instance variable's Array takes insert and prepend as its other stores
+# do, and a `||=` or `&&=` of a new String Array into an instance
+# variable's or a class variable's Array wraps each String as its plain
+# write does.
+class I
+  def initialize = (@a = "p q".split(" "))
+  def go
+    @a << +"y"
+    @a.insert(1, +"z")
+    @a.prepend(+"w")
+    @a.each { |e| t = e; t << "!" }
+    @a
+  end
+end
+p I.new.go
+class O
+  def go
+    @a ||= "p q".split(" ")
+    @a << +"z"
+    @a.each { |e| t = e; t << "&" }
+    @a
+  end
+  def self.go
+    @@b = ["x"].map { |x| x + "" }
+    @@b &&= "r s".split(" ")
+    @@b << +"t"
+    @@b.each { |e| t = e; t << "^" }
+    @@b
+  end
+end
+p O.new.go, O.go

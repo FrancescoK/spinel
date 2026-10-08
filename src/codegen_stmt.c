@@ -12565,6 +12565,8 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
     emit_slot_truthy(ot, ref, b);
     buf_printf(b, is_or ? ") { %s = " : " { %s = ", ref);
     if (ot == TY_POLY) emit_boxed(c, v, b);
+    /* --share-strings: as the plain write, each String as a handle */
+    else if (h.r.elems_handle && comp_ntype(c, v) == TY_STR_ARRAY) emit_str_array_handles(c, v, b);
     else emit_coerce(c, v, ot, CO_HOLD, "a class variable's `||=` or `&&=`", b);
     buf_puts(b, "; ");
     emit_cvar_set_flag(c, sc, nm, 0, b);
@@ -13655,7 +13657,11 @@ void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
     if (sc2 < 0 && g_class_body_id >= 0) sc2 = g_class_body_id;
     if (sc2 < 0) sc2 = comp_class_index(c, "Toplevel");
     TyKind ivt2 = TY_UNKNOWN;
-    if (sc2 >= 0) { int iv2 = comp_ivar_index(&c->classes[sc2], nm); if (iv2 >= 0) ivt2 = c->classes[sc2].ivar_types[iv2]; }
+    int eh2 = 0;
+    if (sc2 >= 0) {
+      int iv2 = comp_ivar_index(&c->classes[sc2], nm);
+      if (iv2 >= 0) { ivt2 = c->classes[sc2].ivar_types[iv2]; eh2 = repr_of_ivar(c, sc2, iv2).elems_handle; }
+    }
     char ref2[300];
     if (cws2 && cws2->is_cmethod && cws2->class_id >= 0)
       snprintf(ref2, sizeof ref2, "civ_%s_%s", c->classes[cws2->class_id].name, iv_c(nm + 1));
@@ -13691,6 +13697,8 @@ void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
                ivt2 == TY_MATCHDATA || ivt2 == TY_EXCEPTION || ivt2 == TY_REGEX) {
         emitted_lit = emit_empty_literal_as(c, v, ivt2, &vval);
         if (emitted_lit) { }
+        /* --share-strings: as the plain write, each String as a handle */
+        else if (eh2 && comp_ntype(c, v) == TY_STR_ARRAY) emit_str_array_handles(c, v, &vval);
         else if (seeded_array_kind_mismatch(ivt2, comp_ntype(c, v)))
           emit_array_store_value(c, ivt2, v, &vval);   /* a seed-pinned kind converts */
         else emit_coerce(c, v, ivt2, CO_HOLD, "an instance variable's `||=` or `&&=`", &vval);
@@ -13763,7 +13771,9 @@ void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
        it, and the guard is the ivar's own: a pointer-backed attribute that
        was never assigned is NULL, not truthy (#5428). */
     char lhs[300]; snprintf(lhs, sizeof lhs, "_t%d->iv_%s", tr, iv_c(attr));
-    buf_puts(b, "(void)"); emit_slot_orw_value(c, ivt, lhs, v, is_or, b); buf_puts(b, "; }\n");
+    buf_puts(b, "(void)");
+    emit_slot_orw_value(c, ivt, iidx >= 0 && repr_of_ivar(c, class_id, iidx).elems_handle, lhs, v, is_or, b);
+    buf_puts(b, "; }\n");
     return;
   }
   if (emit_ivar_cvar_write_stmt(c, id, b, indent, nt, ty)) return;
