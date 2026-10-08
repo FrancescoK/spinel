@@ -1287,6 +1287,13 @@ int emit_string_handle_append(Compiler *c, int id, Buf *b, const char *name, int
             buf_printf(b, ", sp_String_cstr(_t%d)); sp_String_set_bin(_t%d, _t%d);", tb2, tb2, tp3);
           }
         }
+        else if (is_concat_name(name) && argc >= 2) {
+          /* Value position takes the same argument snapshots as a
+             statement before an alias of the receiver can grow. */
+          char ref[48];
+          snprintf(ref, sizeof ref, "_t%d", tb2);
+          emit_str_concat_handle(c, ref, argc, argv, b, 0);
+        }
         else {
           for (int j = 0; j < argc; j++) {
             buf_printf(b, " sp_String_append(_t%d, ", tb2);

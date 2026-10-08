@@ -1884,6 +1884,12 @@ int strbuf_pickup_may_nil(Compiler *c, int recv) {
 }
 static int strbuf_route_recv(Compiler *c, int id, int recv, char *out, size_t cap);
 int strbuf_recv_handle(Compiler *c, int id, int recv, char *out, size_t cap) {
+  int held = ran_first_handle(recv);
+  NodeKind k = recv >= 0 ? nt_kind(c->nt, recv) : NK_NONE;
+  if (held >= 0 && (k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode || repr_static_read_kind(k))) {
+    snprintf(out, cap, "_t%d", held);
+    return 1;
+  }
   if (strbuf_slot_ref(c, recv, out, cap)) {
     /* --share-strings: a deep-return pickup that can answer nil (a nil
        tail, an_pickup_tail) raises NoMethodError for id, as the copy's
@@ -2281,6 +2287,18 @@ int emit_bang_self_handle(Compiler *c, int v, Buf *b) {
   }
   if (!slot) return 0;
   int tr = ++g_tmp;
+  /* The result keeps the old handle too when an argument rebinds its
+     slot; taking the slot after the call would return the new String. */
+  int args = nt_ref(c->nt, v, "arguments");
+  if (args >= 0 && read_rebound_by(c, r, args)) {
+    int th = ++g_tmp, mark = g_n_argov;
+    buf_printf(b, "({ sp_String *_t%d = %s; SP_GC_ROOT(_t%d); const char *_t%d = ", th, sref, th, tr);
+    ran_first_bind(r, th, th);
+    emit_expr(c, v, b);
+    view_unbind(mark);
+    buf_printf(b, "; _t%d ? _t%d : (sp_String *)NULL; })", tr, th);
+    return 1;
+  }
   if (nt_kind(c->nt, r) != NK_CallNode) {
     buf_printf(b, "({ const char *_t%d = ", tr);
     emit_expr(c, v, b);
@@ -15947,7 +15965,15 @@ static int strbuf_recv_hold(Compiler *c, int recv, const char *name, int argc, c
    every argument taken before anything is appended, as CRuby does (a handle
    argument reads as a copy, so `s.concat(s, s)` appends the String as it
    was), then the frozen check, then the appends in order */
-static void emit_str_concat_handle(Compiler *c, const char *sref, int argc, const int *argv, Buf *b, int indent) {
+void emit_str_concat_handle(Compiler *c, const char *sref, int argc, const int *argv, Buf *b, int indent) {
+  int last_alloc = -1;
+  for (int a = argc - 1; a >= 0; a--) {
+    Repr r = repr_of(c, argv[a]);
+    if (r.as_ty != TY_STRING || (!arg_ran_first(argv[a], 0) && operand_may_allocate(c, argv[a]))) {
+      last_alloc = a;
+      break;
+    }
+  }
   int base = g_tmp + 1; g_tmp += argc;
   emit_indent(b, indent);
   buf_puts(b, "{");
@@ -15959,7 +15985,20 @@ static void emit_str_concat_handle(Compiler *c, const char *sref, int argc, cons
     int boxed = repr_of(c, argv[a]).kind == RK_BOXED;
     buf_printf(b, " const char *_t%d = %s", base + a, boxed ? "sp_str_concat(" : "");
     emit_str_append_arg(c, argv[a], rt, b);
-    buf_printf(b, "%s; SP_GC_ROOT_STR(_t%d);", boxed ? ", \"\")" : "", base + a);
+    buf_printf(b, "%s;", boxed ? ", \"\")" : "");
+    int v = argv[a];
+    while (v >= 0 && nt_kind(c->nt, v) == NK_ParenthesesNode) {
+      int body = nt_ref(c->nt, v, "body"), n = 0;
+      const int *seq = body >= 0 ? nt_arr(c->nt, body, "body", &n) : NULL;
+      v = n > 0 ? seq[n - 1] : -1;
+    }
+    int literal = v >= 0 && nt_kind(c->nt, v) == NK_StringNode && !operand_may_allocate(c, v);
+    int held = repr_of(c, argv[a]).as_ty == TY_STRING && arg_ran_first(argv[a], 0);
+    /* Fresh snapshots span later sp_strbuf_read_pub/sp_str_concat copies
+       or argument allocations such as sp_str_repeat. append_bin cannot
+       collect; an ordered String temp or immortal literal needs no root. */
+    if (a < last_alloc && (boxed || (!literal && !held)))
+      buf_printf(b, " SP_GC_ROOT_STR(_t%d);", base + a);
   }
   buf_printf(b, " if (sp_String_is_frozen(%s)) sp_raise_frozen_str((%s)->data);\n", sref, sref);
   for (int a = 0; a < argc; a++) {
