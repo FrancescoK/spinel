@@ -1453,7 +1453,6 @@ int strbuf_self_route_slot(Compiler *c, int v, int *uplus, char *out, size_t cap
          strbuf_slot_ref(c, unwrap_parens(c, x), out, cap) ? x + 1 : 0;
 }
 static int strbuf_route_exc_message(Compiler *c, int v);
-static int strbuf_route_reader(Compiler *c, int v);
 /* Is the last statement of statement list st a holder's read, nil, a
    conditional with a handle arm, or a `raise` (which leaves no value)? */
 static int strbuf_stmts_tail_plain(Compiler *c, int st) {
@@ -1611,7 +1610,7 @@ int strbuf_exc_message_of_var(Compiler *c, int v) {
 /* A plain reader of a shared String slot normally answers a snapshot.
    Its field-read arm can hand on the handle under a demand instead, as
    can the implicit-self reader. The seal asks the same predicate. */
-static int strbuf_route_reader(Compiler *c, int v) {
+int strbuf_route_reader(Compiler *c, int v) {
   v = unwrap_parens(c, v);
   if (!repr_share_rule(c) || v < 0 || nt_kind(c->nt, v) != NK_CallNode ||
       repr_of(c, v).as_ty != TY_STRING) return 0;
