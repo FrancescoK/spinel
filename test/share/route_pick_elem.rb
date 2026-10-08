@@ -1,3 +1,4 @@
+# spinel: gc-minor
 # Flag-only: under --share-strings, an Array literal's element takes the
 # value of a method that answers its parameter on one path, s itself, as a
 # copy: refused.
