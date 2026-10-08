@@ -33634,16 +33634,29 @@ static int rd_receiver_observed(Compiler *c, int r, const char *rn) {
   }
   return 0;
 }
-/* Is `call` a query on local `wn`: no block, no String mutator? Its answer
-   must not carry the String on either: it is a branch's condition, or it
-   answers no String (a String answer could be the same object, `s.to_s`). */
+int builtin_instance_method_known(const char *cls, const char *m);
+/* Does a String answer `nm` with its built-in method: one String has, that
+   the program defines nowhere on String's chain (a reopen, an include, a
+   prepend) and with no `method_missing` there to answer it instead? A
+   program's own `String#dup` can answer self, its `touch?` can append. */
+static int rd_builtin_string_method(Compiler *c, const char *nm) {
+  if (!builtin_instance_method_known("String", nm)) return 0;
+  int sci = comp_class_index(c, "String");
+  return sci < 0 || (comp_method_in_chain(c, sci, nm, NULL) < 0 &&
+                     comp_method_in_chain(c, sci, "method_missing", NULL) < 0);
+}
+/* Is `call` a query on local `wn`: no block, a built-in String method that
+   is no mutator? Its answer must not carry the String on either: it is a
+   branch's condition, or it answers no String (a String answer could be the
+   same object, `s.to_s`). */
 static int rd_query_on(Compiler *c, int call, const char *wn, int as_condition) {
   const NodeTable *nt = c->nt;
   if (call < 0 || nt_kind(nt, call) != NK_CallNode) return 0;
   int r = an_unparen(nt, nt_ref(nt, call, "receiver"));
   const char *rn = r >= 0 && nt_kind(nt, r) == NK_LocalVariableReadNode ? nt_str(nt, r, "name") : NULL;
   const char *nm = nt_str(nt, call, "name");
-  if (!rn || !sp_streq(rn, wn) || !nm || nt_ref(nt, call, "block") >= 0 || sp_str_mutator(nm, SP_MUT_LOCAL))
+  if (!rn || !sp_streq(rn, wn) || !nm || nt_ref(nt, call, "block") >= 0 || sp_str_mutator(nm, SP_MUT_LOCAL) ||
+      !rd_builtin_string_method(c, nm))
     return 0;
   size_t nl = strlen(nm);
   if (nl > 0 && nm[nl - 1] == '!') return 0;
@@ -33682,7 +33695,8 @@ static int rd_only_queried(Compiler *c, int node, const char *wn) {
   return 1;
 }
 /* `s = r.m` read through a reader, then only queried until the next
-   statement of the same body rebinds it to a copy, `s = s.dup`
+   statement of the same body rebinds it to a copy, `s = s.dup` (String's own
+   dup, rd_builtin_string_method)
    (Shellwords.escape: `str = str.to_s ... str = str.dup; str.gsub!`): the
    mutations after that change the copy, never the member. Statement order
    is the list order, so "until" is exact. */
@@ -33703,7 +33717,7 @@ static int rd_read_dropped_for_copy(Compiler *c, int w, const char *wn) {
       const char *vn = nt_str(nt, v, "name");
       int vr = an_unparen(nt, nt_ref(nt, v, "receiver"));
       const char *vrn = vr >= 0 && nt_kind(nt, vr) == NK_LocalVariableReadNode ? nt_str(nt, vr, "name") : NULL;
-      return vn && sp_streq(vn, "dup") && vrn && sp_streq(vrn, wn);
+      return vn && sp_streq(vn, "dup") && vrn && sp_streq(vrn, wn) && rd_builtin_string_method(c, "dup");
     }
     if (!rd_only_queried(c, s, wn)) return 0;
   }
