@@ -1451,7 +1451,6 @@ int strbuf_self_route_slot(Compiler *c, int v, int *uplus, char *out, size_t cap
   return (xk == NK_LocalVariableReadNode || xk == NK_InstanceVariableReadNode || repr_static_read_kind(xk)) &&
          strbuf_slot_ref(c, unwrap_parens(c, x), out, cap) ? x + 1 : 0;
 }
-static int strbuf_route_exc_message(Compiler *c, int v);
 /* Is the last statement of statement list st a holder's read, nil, a
    conditional with a handle arm, or a `raise` (which leaves no value)? */
 static int strbuf_stmts_tail_plain(Compiler *c, int st) {
@@ -1586,7 +1585,7 @@ static int strbuf_route_ivar_get(Compiler *c, int v) {
 /* --share-strings: an exception's #message or #to_s with no override of
    the program's own: the String the exception was raised with, which it
    holds as a handle when the String is shared (sp_exc_message_handle) */
-static int strbuf_route_exc_message(Compiler *c, int v) {
+int strbuf_route_exc_message(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
   v = unwrap_parens(c, v);
   if (!repr_share_rule(c) || v < 0 || nt_kind(nt, v) != NK_CallNode) return 0;

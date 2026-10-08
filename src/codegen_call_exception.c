@@ -70,6 +70,11 @@ static int emit_exception_object_accessor(Compiler *c, int id, int recv, const c
 
 /* the methods of an exception object: message, full_message, backtrace, set_backtrace, cause, ==, and the rest of TY_EXCEPTION */
 int emit_call_exception_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv) {
+  /* A marked message read takes the existing exception handle route,
+     including a rescued variable specialized to an exception subclass. */
+  if (repr_share_rule(c) && is_exception_message(name) &&
+      (repr_of(c, id).handle || repr_of(c, id).demand) && strbuf_route_exc_message(c, id))
+    return emit_strbuf_route(c, id, b);
   /* A specialized rescue var (`rescue MyError => e`, MyError carrying ivars)
      is typed as the subclass object so `e.<ivar>` reads work. Its
      exception-shaped queries still route through the base sp_Exception helpers
