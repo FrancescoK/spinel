@@ -14,3 +14,19 @@ v = nil
 v ||= b
 p Marshal.load(Marshal.dump(v)).bytesize
 p Marshal.dump(v) == Marshal.dump("x\0yz")
+
+# Binary Strings omit the encoding ivar, through both a handle and a plain
+# String. Include a NUL and repeated links, and retain UTF-8 metadata.
+s = +"\xFF".b; t = s; t << "\0".b
+u = nil
+u ||= s
+p Marshal.dump(u).bytes
+p Marshal.dump([u, u]).bytes
+p Marshal.dump("\xFF\0".b).bytes
+p Marshal.dump("".b).bytes
+p Marshal.dump("ascii".b).bytes
+p Marshal.dump("text").bytes
+s = +"é"; t = s; t << "!"
+u = nil
+u ||= s
+p Marshal.dump(u).bytes
