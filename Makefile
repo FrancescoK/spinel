@@ -988,7 +988,7 @@ re-lit-test: $(SPINEL)
 # test/share/reject/). gate-props runs it.
 share-strings-test: $(SPINEL)
 	@tmp=$$(mktemp -d "$${TMPDIR:-/tmp}/spinel-share.XXXXXX"); ok=1; \
-	for t in test/share/*.rb test/share_strings_*.rb test/widened_param_reaches_its_callee.rb $$(cat test/share/reject.list); do \
+	for t in test/share/*.rb test/share_strings_*.rb test/nullable_string_identity.rb test/widened_param_reaches_its_callee.rb $$(cat test/share/reject.list); do \
 	  e="$$t.expected"; case "$$t" in test/reject/*) e="test/share/reject/$${t##*/}.expected";; esac; \
 	  if $(SPINEL) --share-strings "$$t" -o "$$tmp/b" >"$$tmp/out" 2>&1; then \
 	    "$$tmp/b" 2>&1 | cmp -s - "$$e" || { echo "share-strings-test: FAIL $$t"; ok=0; }; \
@@ -2192,6 +2192,7 @@ GC_MINOR_TESTS := test/reopened_builtin_kwrest_keys.rb \
                   test/random_reopen_block_parameter.rb \
                   test/kind_query_computed_nil.rb \
                   test/nil_string_slot_reads.rb test/nil_scalar_slot_widen.rb \
+                  test/nullable_string_identity.rb \
                   test/string_nil_conditional_assignment.rb \
                   test/yield_proc_arg_in_blocked_method.rb \
                   test/kind_query_nested_nil.rb \

@@ -97,3 +97,36 @@ p get.equal?(fresh)
 p fresh.equal?(get)
 p fresh.equal?(fresh)
 p literal.frozen?
+
+# A nullable return route carries either the handle or nil. Every identity
+# form must observe that answer, directly and through a local.
+def maybe_handle(flag)
+  return nil unless flag
+  S
+end
+p maybe_handle(false).equal?(nil)
+p nil.equal?(maybe_handle(false))
+p maybe_handle(false).equal?(maybe_handle(false))
+p maybe_handle(false).equal?([nil, S][0])
+p maybe_handle(false).object_id == nil.object_id
+p maybe_handle(false).__id__ == nil.__id__
+p maybe_handle(false).frozen?
+p maybe_handle(true).equal?(S)
+p maybe_handle(true).object_id == S.object_id
+p maybe_handle(true).__id__ == S.__id__
+p maybe_handle(true).frozen?
+missing = maybe_handle(false)
+p missing.equal?(nil)
+p missing.equal?([nil, S][0])
+p missing.object_id == nil.object_id
+p missing.__id__ == nil.__id__
+p missing.frozen?
+def bare_handle(flag)
+  return unless flag
+  S
+end
+p bare_handle(false).equal?(nil)
+p bare_handle(false).object_id == nil.object_id
+p bare_handle(false).__id__ == nil.__id__
+p bare_handle(false).frozen?
+p bare_handle(true).equal?(S)
