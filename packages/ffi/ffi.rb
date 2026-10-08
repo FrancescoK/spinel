@@ -953,6 +953,7 @@ module FFI
     end
 
     def call(*args) = @prc.call(*args)
+    def __ffi_invoke(args, blk, receiver) = invoke(args, blk)
   end
 
   class Function < Pointer
@@ -991,6 +992,7 @@ module FFI
     def inspect = "#<FFI::Function address=0x#{@address.to_s(16)}>"
 
     def call(*args, &blk) = invoke(args, blk)
+    def __ffi_invoke(args, blk, receiver) = invoke(args, blk)
 
     def invoke(args, blk)
       ft = @function_type
@@ -1785,11 +1787,11 @@ module FFI__Registry
     (FUNCTIONS[mod.name.to_s.to_sym] ||= {})[name] = fn
   end
 
-  def self.__ffi_dispatch(owners, name, args, blk = nil, &b)
+  def self.__ffi_dispatch(owners, name, args, receiver = nil, blk = nil, &b)
     owners.each do |o|
       fns = FUNCTIONS[o]
       fn = fns ? fns[name] : nil
-      return fn.invoke(args, blk || b) if fn
+      return fn.__ffi_invoke(args, blk || b, receiver) if fn
     end
     raise NoMethodError, "undefined method '#{name}' for main"
   end
