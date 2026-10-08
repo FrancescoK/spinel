@@ -9,5 +9,4 @@ pkg.net.net_http_request_host
 pkg.net.net_http_response_value
 pkg.net.net_http_rest_verbs
 pkg.net.net_http_start_block
-pkg.optparse.optparse_boolean_type
-poly_fetch_block_key_param
+string_or_nil_stored_then_appended
