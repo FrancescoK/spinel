@@ -1,0 +1,11 @@
+[0, true]
+[1, false]
+[7, false]
+[2, false]
+[0, true]
+[1, false]
+1
+0
+3
+"no implicit conversion of String into Integer"
+"no implicit conversion from nil to integer"
