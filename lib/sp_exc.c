@@ -410,10 +410,66 @@ const char *sp_exc_class_name(volatile sp_Exception *ve) {
   /* cls_name points into rodata (see sp_exc_gc_scan) and it comes from the
      raise site's bare literal, so it carries no marker byte. This name reaches
      Ruby as `e.class.to_s`, where the caller roots it and the collector reads
-     that byte -- hand back a string of our own instead. Every caller is a cold
-     path (a render, a cross-thread re-raise), so the copy costs nothing that
-     matters. */
-  return e && e->cls_name ? sp_str_dup_external(e->cls_name) : SPL("RuntimeError");
+     that byte -- hand back a marked copy instead. One copy is made for a name
+     and kept, as a literal is. A Class value carries its name in a plain
+     struct that no root and no scan knows (`k = e.class` held in a local, a
+     parameter or an instance variable), so a copy on the string heap was
+     collected under it and `k.to_s` answered the String that took its place. */
+  struct kept_name { const char *key, *copy; };
+  static struct kept_name *kept = NULL;   /* guarded by the heap lock */
+  static size_t n = 0, cap = 0;           /* cap is a power of two; open addressing */
+  const char *name, *r = NULL;
+  if (!e || !e->cls_name) return SPL("RuntimeError");
+  name = e->cls_name;
+  /* A name with no header is a literal, or a copy kept here: its address
+     names it, and the table is keyed by address. A heap name (a class
+     raised across threads) is found by its text. */
+  int by_addr = !sp_str_has_hdr(name);
+#define SP_KEPT_SLOT(p) ((size_t)(((uint64_t)(uintptr_t)(p) * 0x9E3779B97F4A7C15ull) >> 40) & (cap - 1))
+  SP_HEAP_LOCK();
+  if (by_addr && cap)
+    for (size_t h = SP_KEPT_SLOT(name); kept[h].key && !r; h = (h + 1) & (cap - 1))
+      if (kept[h].key == name) r = kept[h].copy;
+  if (!r) {
+    /* The first sight of this address. Room for it first, so that a copy
+       made is a copy kept. */
+    if ((n + 1) * 2 > cap) {
+      size_t oc = cap, nc = cap ? cap * 2 : 16;
+      struct kept_name *ok = kept, *nk = (struct kept_name *)calloc(nc, sizeof *nk);
+      if (nk) {
+        kept = nk; cap = nc;
+        for (size_t i = 0; i < oc; i++) if (ok[i].key) {
+          size_t h = SP_KEPT_SLOT(ok[i].key);
+          while (kept[h].key) h = (h + 1) & (cap - 1);
+          kept[h] = ok[i];
+        }
+        free(ok);
+      }
+    }
+    if ((n + 1) * 2 <= cap) {
+      /* the same name may be kept already, written at another address */
+      const char *copy = NULL;
+      for (size_t i = 0; i < cap && !copy; i++)
+        if (kept[i].key && !strcmp(kept[i].copy, name)) copy = kept[i].copy;
+      int made = 0;
+      if (!copy) {
+        size_t len = strlen(name);
+        char *m = (char *)malloc(len + 2);
+        if (m) { m[0] = (char)0xff; memcpy(m + 1, name, len + 1); copy = m + 1; made = 1; }
+      }
+      /* keyed by this address from now on; a heap name's address is no key,
+         so a copy made for one is keyed by itself (`raise k` hands it back) */
+      if (copy && (by_addr || made)) {
+        size_t h = SP_KEPT_SLOT(by_addr ? name : copy);
+        while (kept[h].key) h = (h + 1) & (cap - 1);
+        kept[h].key = by_addr ? name : copy; kept[h].copy = copy; n++;
+      }
+      r = copy;
+    }
+  }
+  SP_HEAP_UNLOCK();
+#undef SP_KEPT_SLOT
+  return r ? r : sp_str_dup_external(e->cls_name);   /* out of memory */
 }
 /* A copy of a message handle's String as it is now: #message answers a
    String a caller keeps, and the handle's buffer moves as it grows. Sized

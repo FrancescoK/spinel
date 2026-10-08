@@ -1,0 +1,23 @@
+0
+0
+0
+0
+0
+0
+0
+"ArgumentError!"
+"ARGUMENTERROR"
+"ArgumentError"
+"ArgumentError"
+ArgumentError
+false
+true
+true
+[Slow, true, 8572]
+[Slow, "again"]
+[Slow, "m", true, 8572]
+rescued Slow
+12
+"E0"
+"E11"
+"E11"
