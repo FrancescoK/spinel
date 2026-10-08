@@ -801,7 +801,8 @@ module FFI
     end
 
     def to_native(v, ctx)
-      if v.is_a?(Array)
+      if v.nil? then 0
+      elsif v.is_a?(Array)
         r = 0
         v.each { |s| r |= super(s, ctx) }
         r
