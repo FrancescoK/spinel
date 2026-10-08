@@ -1004,6 +1004,10 @@ share-strings-test: $(SPINEL)
 	   grep -q 'sp_String_new_shared' "$$tmp/queries.c"; then \
 	  echo "share-strings-test: FAIL (a literal query unnecessarily shares its Strings)"; ok=0; \
 	fi; \
+	if ! $(SPINEL) --share-strings test/share/share_strings_narrow_reads.rb -c --no-line-map -o "$$tmp/reads.c" >"$$tmp/out" 2>&1 || \
+	   grep -q 'sp_poly_as_strbuf' "$$tmp/reads.c"; then \
+	  echo "share-strings-test: FAIL (a narrowed byte read allocates a handle)"; ok=0; \
+	fi; \
 	rm -rf "$$tmp"; \
 	if [ $$ok = 1 ]; then echo "share-strings-test: pass"; else exit 1; fi
 

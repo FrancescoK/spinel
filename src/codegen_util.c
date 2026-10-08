@@ -2443,7 +2443,18 @@ static int strbuf_box_ref_as(Compiler *c, int recv, const char *fmt, Buf *b) {
    bytes: the live buffer, not the whole-buffer copy an ordinary value read
    makes (#3227). Answers 0 when the receiver is not such a slot, so the caller
    falls back to emit_expr. */
-int emit_strbuf_read_ref(Compiler *c, int recv, Buf *b) { return strbuf_box_ref_as(c, recv, "sp_String_cstr(%s)", b); }
+int emit_strbuf_read_ref(Compiler *c, int recv, Buf *b) {
+  /* A narrowed box already has a byte read. Taking its handle first would
+     allocate one when the box holds a plain String. */
+  if (repr_share_rule(c) && recv >= 0 && repr_of(c, recv).narrowed == TY_STRBUF &&
+      repr_of(c, recv).strbuf_src == RS_SLOT_POLY) {
+    buf_puts(b, "sp_poly_unbox_s(");
+    emit_local_ref(c, recv, nt_str(c->nt, recv, "name"), b);
+    buf_puts(b, ")");
+    return 1;
+  }
+  return strbuf_box_ref_as(c, recv, "sp_String_cstr(%s)", b);
+}
 /* The object_id of a String held as a shared sp_String: the handle's address,
    which is what a box of it carries. 0 when `recv` is not one. */
 int strbuf_object_ref(Compiler *c, int recv, Buf *b) { return strbuf_box_ref_as(c, recv, "((sp_int)(uintptr_t)(%s))", b); }
