@@ -231,6 +231,13 @@ static int repr_strbuf_src(const Compiler *c, int node, TyKind t) {
   if (t == TY_STRING) {
     /* a global holding the handle (--share-strings): its read boxes it */
     if (repr_static_read_kind(k)) return repr_static_share(c, node) ? RS_HANDLE : RS_NONE;
+    /* An ivar can retain String dispatch after its slot becomes shared. */
+    if (c->share_strings && k == NK_InstanceVariableReadNode) {
+      const char *nm = nt_str(nt, node, "name");
+      int cid = nm ? strbuf_ivar_owner(mc, node) : -1;
+      int iv = cid >= 0 ? comp_ivar_index(&c->classes[cid], nm) : -1;
+      if (iv >= 0 && repr_of_ivar(c, cid, iv).share) return RS_HANDLE;
+    }
     /* a write in value position whose slot holds the handle the rule
        assigned: its value is that slot, as the slot's read is */
     if (repr_write_share(c, node)) return RS_HANDLE;
