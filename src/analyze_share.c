@@ -3644,7 +3644,41 @@ int share_method_blocks(const Compiler *c, int mi, const int **blocks) {
    exception to Object's row: to_s can hand its String back unchanged. */
 int share_builtin_fresh(Compiler *c, int call) {
   const char *name = nt_str(c->nt, call, "name");
-  return bop_share_named(BOP_ANY_RECV, name) == BSH_PURE && !is_receiver_conversion(name);
+  if (bop_share_named(BOP_ANY_RECV, name) == BSH_PURE && !is_receiver_conversion(name)) return 1;
+  /* A name no builtin owns has only the user targets' answers; every
+     other receiver raises. The arity tables already record that ownership.
+     The dispatch plan must also exclude readers, native bindings and
+     catch-all arms such as OpenStruct's member read. Object's public
+     method table covers the names the arity tables omit. A user-defined
+     method_missing can answer a name with no ordinary target too. */
+  int lo, hi;
+  if (object_public_method_name(name)) return 0;
+  if (comp_method_index(c, "method_missing") >= 0) return 0;
+  int missing = 0;
+  comp_poly_candidates(c, "method_missing", &missing);
+  if (missing) return 0;
+  comp_cmethod_candidates(c, "method_missing", &missing);
+  if (missing) return 0;
+  if (builtin_name_arity_span(name, nt_ref(c->nt, call, "block") >= 0, &lo, &hi)) return 0;
+  /* A scope-name lookup can miss an alias's method. Every returning user
+     arm must occur in the target set whose return identities we check. */
+  int tg[CPT_MAX], n = cplan_targets(c, call, tg, CPT_MAX);
+  const PolyPlan *p = cplan_poly(c, call);
+  for (int i = 0; i < p->n; i++) {
+    const PolyArm *a = &p->arm[i];
+    if (a->kind != PA_USER && a->kind != PA_PROC_FORM) continue;
+    int found = 0;
+    for (int j = 0; j < n; j++) if (tg[j] == a->mi) { found = 1; break; }
+    if (!found) return 0;
+  }
+  for (int i = 0; i < p->n; i++) {
+    const PolyArm *a = &p->arm[i];
+    if (a->kind == PA_USER || a->kind == PA_ARITY) continue;
+    if (a->kind == PA_TRIAL && (a->key == PA_KEY_TRIAL + PT_DEFAULT0 ||
+                               a->key == PA_KEY_TRIAL + PT_DEFAULT_N)) continue;
+    return 0;
+  }
+  return p->n > 0;
 }
 static int sh_user_call_fresh(Compiler *c, int call, int depth) {
   const ShareFacts *F = c->share;

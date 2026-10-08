@@ -57,6 +57,9 @@ nil
 ["v!", nil, nil, "PA", nil]
 ["sa!", nil]
 true
+"sa?"
+"sa?"
+true
 ["pa!", nil]
 ["pa!", nil]
 [["pa!", nil], [nil]]
