@@ -29,4 +29,5 @@ module StringIOPackage
   # the buffer)
   native_share "read",     [],                 "fresh"
   native_share "read",     [:int],             "fresh"
+  native_share "readline", "fresh"
 end
