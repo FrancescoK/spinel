@@ -353,6 +353,13 @@ static int needle_misses(Compiler *c, int recv, TyKind rt, int node) {
   return value_kind_misses(c, node, ty_array_elem(rt));
 }
 
+/* A boxed needle can hold a legacy shared handle in either build. A
+   statically plain needle keeps its existing default emission. */
+static int needle_needs_deref(Compiler *c, int node) {
+  Repr r = repr_of(c, node);
+  return repr_share_rule(c) || r.kind == RK_BOXED || r.kind == RK_STRBUF;
+}
+
 /* A needle in the Integer or Float array's own slot type. nil is the
    sentinel, evaluated for effect first, and a nilable scalar passes its
    sentinel unchecked: the runtime search compares it like any value (the
@@ -2221,9 +2228,10 @@ else {
              there, as include? and index read it (#4458) */
           int tv = ++g_tmp;
           char tvn[32]; snprintf(tvn, sizeof tvn, "_t%d", tv);
-          const char *nd = held[0] ? held : tvn;
+          const char *nd = held[0] && !needle_needs_deref(c, argv[0]) ? held : tvn;
           buf_puts(b, "({ ");
-          if (!held[0]) { buf_printf(b, "sp_RbVal %s = ", tvn); emit_boxed(c, argv[0], b); buf_puts(b, "; "); }
+          if (!held[0] || needle_needs_deref(c, argv[0])) { buf_printf(b, "sp_RbVal %s = %s", tvn, needle_needs_deref(c, argv[0]) ? "sp_poly_strbuf_deref(" : "");
+            if (held[0]) buf_puts(b, held); else emit_boxed(c, argv[0], b); buf_puts(b, needle_needs_deref(c, argv[0]) ? "); " : "; "); }
           buf_printf(b, "const char *_t%d = %s.tag == SP_TAG_STR ? sp_StrArray_delete(%s, %s.v.s)"
                         " : (const char *)0; _t%d ? sp_box_str(_t%d) : ", tdr, nd, rdb.p, nd, tdr, tdr);
         }
@@ -2258,7 +2266,7 @@ else {
     else if (rt == TY_STR_ARRAY && a0 == TY_POLY) {
       /* a boxed needle, read as the block form above reads it */
       int tv = ++g_tmp;
-      buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_boxed(c, argv[0], b);
+      buf_printf(b, "({ sp_RbVal _t%d = %s", tv, needle_needs_deref(c, argv[0]) ? "sp_poly_strbuf_deref(" : ""); emit_boxed(c, argv[0], b); if (needle_needs_deref(c, argv[0])) buf_puts(b, ")");
       buf_printf(b, "; _t%d.tag == SP_TAG_STR ? sp_StrArray_delete(%s, _t%d.v.s)"
                     " : _t%d.tag == SP_TAG_NIL ? sp_StrArray_delete(%s, NULL) : (const char *)0; })",
                  tv, rdl.p, tv, tv, rdl.p);
@@ -2386,7 +2394,7 @@ else {
          compile (#4458). */
       int ta = ++g_tmp, tv = ++g_tmp;
       buf_printf(b, "({ sp_StrArray *_t%d = ", ta); emit_recv_rooted(c, recv, ta, "SP_GC_ROOT", b);
-      buf_printf(b, "sp_RbVal _t%d = ", tv); emit_boxed(c, argv[0], b);
+      buf_printf(b, "sp_RbVal _t%d = %s", tv, needle_needs_deref(c, argv[0]) ? "sp_poly_strbuf_deref(" : ""); emit_boxed(c, argv[0], b); if (needle_needs_deref(c, argv[0])) buf_puts(b, ")");
       buf_printf(b, "; _t%d.tag == SP_TAG_STR ? sp_StrArray_%s(_t%d, _t%d.v.s)"
                     " : _t%d.tag == SP_TAG_NIL ? sp_StrArray_%s(_t%d, NULL) : sp_box_nil(); })", tv, fn, ta, tv, tv, fn, ta);
       { *out = 1; return 1; }
@@ -2465,7 +2473,7 @@ else {
     if (rt == TY_STR_ARRAY && (sat == TY_POLY || sat == TY_NIL)) {
       int ta = ++g_tmp, tv = ++g_tmp;
       buf_printf(b, "({ sp_StrArray *_t%d = ", ta); emit_recv_rooted(c, recv, ta, "SP_GC_ROOT", b);
-      buf_printf(b, "sp_RbVal _t%d = ", tv); emit_boxed(c, argv[0], b);
+      buf_printf(b, "sp_RbVal _t%d = %s", tv, needle_needs_deref(c, argv[0]) ? "sp_poly_strbuf_deref(" : ""); emit_boxed(c, argv[0], b); if (needle_needs_deref(c, argv[0])) buf_puts(b, ")");
       buf_printf(b, "; _t%d.tag == SP_TAG_STR ? sp_StrArray_%s(_t%d, _t%d.v.s)"
                     " : _t%d.tag == SP_TAG_NIL ? sp_StrArray_%s(_t%d, NULL) : FALSE; })",
                  tv, fn, ta, tv, tv, fn, ta);
@@ -10637,8 +10645,8 @@ int emit_value_recv_call(Compiler *c, int id, Buf *b) {
            object answers #to_int, and nil or an Object is CRuby's TypeError,
            where sp_poly_to_i read them as group 0. */
         int mtmp = ++g_tmp, ktmp = ++g_tmp;
-        buf_printf(b, "({ sp_MatchData *_t%d = %s; sp_RbVal _t%d = ", mtmp, r, ktmp);
-        emit_expr(c, argv[0], b);
+        buf_printf(b, "({ sp_MatchData *_t%d = %s; sp_RbVal _t%d = %s", mtmp, r, ktmp, needle_needs_deref(c, argv[0]) ? "sp_poly_strbuf_deref(" : "");
+        emit_expr(c, argv[0], b); if (needle_needs_deref(c, argv[0])) buf_puts(b, ")");
         buf_printf(b, "; _t%d.tag == SP_TAG_SYM ? sp_MatchData_aref_name(_t%d, sp_sym_to_s((sp_sym)_t%d.v.i)) :"
                       " _t%d.tag == SP_TAG_STR ? sp_MatchData_aref_name(_t%d, _t%d.v.s) :"
                       " sp_MatchData_aref(_t%d, sp_poly_arg_int_chk(_t%d)); })",
@@ -10755,9 +10763,9 @@ int emit_value_recv_call(Compiler *c, int id, Buf *b) {
              by name, anything else is an index. Passing the raw sp_RbVal to
              sp_MatchData_aref (sp_int) would be a C type error. */
           int kt = ++g_tmp;
-          buf_printf(b, " sp_RbVal _t%d = ", kt);
+          buf_printf(b, " sp_RbVal _t%d = %s", kt, needle_needs_deref(c, argv[i]) ? "sp_poly_strbuf_deref(" : "");
           if (hold) buf_printf(b, "_t%d", held[i]);
-          else emit_expr(c, argv[i], b);
+          else emit_expr(c, argv[i], b); if (needle_needs_deref(c, argv[i])) buf_puts(b, ")");
           buf_printf(b, "; sp_PolyArray_push(_t%d, sp_box_nullable_str("
                         "_t%d.tag == SP_TAG_SYM ? sp_MatchData_aref_name(_t%d, sp_sym_to_s((sp_sym)_t%d.v.i)) :"
                         " _t%d.tag == SP_TAG_STR ? sp_MatchData_aref_name(_t%d, _t%d.v.s) :"

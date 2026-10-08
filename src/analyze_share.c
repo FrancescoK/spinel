@@ -3774,6 +3774,11 @@ static int sh_carries_handle(const Compiler *c, int n) {
      when a borrowed parameter is returned beside a method-owned String. */
   if (repr_call_returns_handle((Compiler *)c, n)) return 1;
   Repr r = repr_of(c, n);
+  /* The boxed unary-plus arm keeps a mutable String's handle and copies
+     a frozen one, exactly as the typed value route does. */
+  if (r.kind == RK_BOXED && nt_kind(c->nt, n) == NK_CallNode &&
+      is_unary_plus(nt_str(c->nt, n, "name")) &&
+      cplan_user((Compiler *)c, n)->dispatch == CP_NONE) return 1;
   /* a bang method on a handle local: a write hands over the local's handle
      (emit_strbuf_value) */
   return r.kind == RK_STRBUF || r.strbuf_src != RS_NONE || sh_bang_self_slot(c, n) ||

@@ -2448,6 +2448,13 @@ int emit_strbuf_read_ref(Compiler *c, int recv, Buf *b) { return strbuf_box_ref_
 /* The object_id of a String held as a shared sp_String: the handle's address,
    which is what a box of it carries. 0 when `recv` is not one. */
 int strbuf_object_ref(Compiler *c, int recv, Buf *b) {
+  /* A receiver-returning route has the same identity as its slot. */
+  char ref[1024];
+  int up = 0;
+  if (strbuf_self_route_slot(c, recv, &up, ref, sizeof ref) && !up) {
+    buf_printf(b, "((sp_int)(uintptr_t)(%s))", ref);
+    return 1;
+  }
   /* The box's payload is already its identity, with or without a handle. */
   if (repr_share_rule(c) && recv >= 0 && repr_of(c, recv).strbuf_src == RS_SLOT_POLY) {
     buf_puts(b, "((sp_int)(uintptr_t)(");

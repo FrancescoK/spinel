@@ -82,14 +82,18 @@ static void emit_line_param_decl(Compiler *c, int id, const char *pn, int lt, Bu
    raise EOFError after the write-back. Every argument is held boxed, so
    each converts at run time in CRuby's order. */
 static void emit_io_read_buffer(Compiler *c, const char *name, const char *fn, const char *r, const int *argv,
-                                int nint, int ob, int rest, int boxed, int shared, Buf *b) {
+                                int nint, int ob, int rest, int boxed, int shared, const char *handle, Buf *b) {
   int tf = ++g_tmp, ta = g_tmp + 1;
   g_tmp += 2 * nint + 1;
   int ti = ta + nint + 1, ts = ++g_tmp, tr = ++g_tmp;
   buf_printf(b, "({ sp_File *_t%d = %s; SP_GC_ROOT(_t%d); ", tf, r, tf);
   for (int k = 0; k <= nint; k++) {
-    buf_printf(b, "sp_RbVal _t%d = ", ta + k); emit_boxed(c, k < nint ? argv[k] : ob, b);
-    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", ta + k);
+    buf_printf(b, "sp_RbVal _t%d = ", ta + k);
+    if (k == nint && handle) buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", handle);
+    else emit_boxed(c, k < nint ? argv[k] : ob, b);
+    buf_puts(b, "; ");
+    if (!handle || k == nint || repr_of(c, argv[k]).kind != RK_SCALAR)
+      buf_printf(b, "SP_GC_ROOT_RBVAL(_t%d); ", ta + k);
   }
   buf_printf(b, "if (!_t%d) sp_nil_recv(\"%s\"); ", tf, name);
   for (int k = 0; k < nint; k++) {
@@ -100,10 +104,10 @@ static void emit_io_read_buffer(Compiler *c, const char *name, const char *fn, c
   if (sp_streq(name, "read") || sp_streq(name, "readpartial"))
     buf_printf(b, "if (_t%d < 0) sp_raise_cls(\"ArgumentError\", sp_sprintf(\"negative length %%lld given\", (long long)_t%d)); ",
                ti, ti);
-  if (shared) buf_printf(b, "_t%d = sp_poly_strbuf_lift(_t%d); ", ta + nint, ta + nint);
+  if (shared && !handle) buf_printf(b, "_t%d = sp_poly_strbuf_lift(_t%d); ", ta + nint, ta + nint);
   buf_printf(b, "const char *_t%d = sp_poly_nil_p(_t%d) ? NULL : sp_poly_arg_str_chk(_t%d); ",
              ts, ta + nint, ta + nint);
-  if (shared) buf_printf(b, "SP_GC_ROOT_STR(_t%d); ", ts);
+  if (shared && !handle) buf_printf(b, "SP_GC_ROOT_STR(_t%d); ", ts);
   /* a shared handle's frozen flag is on the handle, not in its bytes */
   if (boxed)
     buf_printf(b, "if (_t%d && sp_poly_is_strbuf(_t%d) && sp_String_is_frozen((sp_String *)_t%d.v.p))"
@@ -113,8 +117,11 @@ static void emit_io_read_buffer(Compiler *c, const char *name, const char *fn, c
   buf_printf(b, "%s(_t%d", fn, tf);
   for (int k = 0; k < nint; k++) buf_printf(b, ", _t%d", ti + k);
   buf_puts(b, "); ");
-  if (shared) buf_printf(b, "SP_GC_ROOT_STR(_t%d); ", tr);
-  if (boxed) {
+  if (shared || handle) buf_printf(b, "SP_GC_ROOT_STR(_t%d); ", tr);
+  if (handle)
+    buf_printf(b, "if (_t%d) sp_String_set_read_bytes((sp_String *)_t%d.v.p, _t%d ? _t%d : sp_str_empty); ",
+               ts, ta + nint, tr, tr);
+  else if (boxed) {
     int tn = ++g_tmp;
     buf_printf(b, "if (_t%d) { sp_RbVal _t%d = sp_poly_str_become(_t%d, _t%d ? _t%d : sp_str_empty); ",
                ts, tn, ta + nint, tr, tr);
@@ -126,15 +133,23 @@ static void emit_io_read_buffer(Compiler *c, const char *name, const char *fn, c
   if (shared)
     buf_printf(b, "!_t%d ? NULL : sp_poly_nil_p(_t%d) ? sp_String_new_shared(_t%d) : sp_poly_as_strbuf(_t%d); })",
                tr, ta + nint, tr, ta + nint);
+  else if (handle)
+    buf_printf(b, "_t%d && _t%d ? sp_String_cstr((sp_String *)_t%d.v.p) : _t%d; })", tr, ts, ta + nint, tr);
   else buf_printf(b, "_t%d; })", tr);
 }
 
-static int emit_io_read_outbuf(Compiler *c, const char *name, const char *fn, const char *r, const int *argv,
+static int emit_io_read_outbuf(Compiler *c, int id, const char *name, const char *fn, const char *r, const int *argv,
                                int nint, int ob, int rest, Buf *b) {
   TyKind bt = comp_ntype(c, ob);
   int boxed = repr_of(c, ob).kind == RK_BOXED;
-  if (!boxed && (bt == TY_STRING || bt == TY_STRBUF)) return 0;
-  emit_io_read_buffer(c, name, fn, r, argv, nint, ob, rest, boxed, 0, b);
+  char ref[1024];
+  /* The default build already has handle slots, including unshared
+     accumulators. Fill that slot, and answer its handle under a demand.
+     Its rooted box keeps the old bytes alive across the read. */
+  int handle = !repr_share_rule(c) && strbuf_slot_ref(c, ob, ref, sizeof ref);
+  if (!boxed && !handle && (bt == TY_STRING || bt == TY_STRBUF)) return 0;
+  emit_io_read_buffer(c, name, fn, r, argv, nint, ob, rest, boxed || handle,
+                      handle && repr_of(c, id).demand, handle ? ref : NULL, b);
   return 1;
 }
 
@@ -196,7 +211,7 @@ int emit_strbuf_io_read(Compiler *c, int id, Buf *b) {
   }
   char r[128];
   snprintf(r, sizeof r, "sp_poly_as_io(_t%d, \"%s\")", tr, name);
-  emit_io_read_buffer(c, name, fn, r, argv, ob, argv[ob], rest, 1, 1, b);
+  emit_io_read_buffer(c, name, fn, r, argv, ob, argv[ob], rest, 1, 1, NULL, b);
   for (int i = argc - 1; i >= 0; i--) { view_pop(c, views[i]); view_unbind(marks[i]); }
   buf_puts(b, "; })");
   return 1;
@@ -819,7 +834,7 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
       }
       /* the same (len, outbuf) rebind the typed arm makes (#3336) */
       else if (sp_streq(name, "readpartial") && argc >= 1) {
-        if (argc == 2 && emit_io_read_outbuf(c, name, "sp_File_readpartial_or_nil", tio, argv, 1, argv[1], 0, b))
+        if (argc == 2 && emit_io_read_outbuf(c, id, name, "sp_File_readpartial_or_nil", tio, argv, 1, argv[1], 0, b))
           buf_puts(b, "; })");
         else {
           const char *sbp = NULL;
@@ -1175,7 +1190,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
     }
     if (sp_streq(name, "read")) {
       if (argc > 2) emit_io_read_overcount(c, name, r, argv, argc, "0..2", b);
-      else if (argc == 2 && emit_io_read_outbuf(c, name, "sp_File_read_n", r, argv, 1, argv[1], 1, b)) {}
+      else if (argc == 2 && emit_io_read_outbuf(c, id, name, "sp_File_read_n", r, argv, 1, argv[1], 1, b)) {}
       else if (argc >= 2 && nt_type(nt, argv[1]) &&
                sp_streq(nt_type(nt, argv[1]), "LocalVariableReadNode")) {
         /* read(len, buffer): rebind the buffer local to the bytes read (#2811) */
@@ -1228,7 +1243,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
     }
     if (sp_streq(name, "pread") && argc >= 1) {
       if (argc > 3) { emit_io_read_overcount(c, name, r, argv, argc, "2..3", b); free(rb.p); return 1; }
-      if (argc == 3 && emit_io_read_outbuf(c, name, "sp_File_pread_or_nil", r, argv, 2, argv[2], 0, b)) {
+      if (argc == 3 && emit_io_read_outbuf(c, id, name, "sp_File_pread_or_nil", r, argv, 2, argv[2], 0, b)) {
         free(rb.p); return 1;
       }
       /* pread(len, off, buf): CRuby fills the buffer argument; when it is a
@@ -1336,7 +1351,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
     }
     if ((sp_streq(name, "readpartial") || sp_streq(name, "sysread")) && argc >= 1) {
       if (argc > 2) { emit_io_read_overcount(c, name, r, argv, argc, "1..2", b); free(rb.p); return 1; }
-      if (argc == 2 && emit_io_read_outbuf(c, name, "sp_File_readpartial_or_nil", r, argv, 1, argv[1], 0, b)) {
+      if (argc == 2 && emit_io_read_outbuf(c, id, name, "sp_File_readpartial_or_nil", r, argv, 1, argv[1], 0, b)) {
         free(rb.p); return 1;
       }
       /* (len, outbuf): CRuby fills the buffer and RETURNS it; when the buffer
