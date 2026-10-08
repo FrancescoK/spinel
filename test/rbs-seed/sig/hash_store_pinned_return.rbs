@@ -1,0 +1,3 @@
+class Widget
+  def headers: () -> Hash[String, String]
+end

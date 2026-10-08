@@ -7643,6 +7643,10 @@ static int pivs_branches(Compiler *c, int v, char *set, int depth, int elems) {
       c->pivs->memo[c->pivs->active].typed = 1;
       if (nm <= 0) return nm < 0 ? 0 : -1;
       for (int i = 0; i < nm; i++) {
+        /* a method whose return an --rbs signature pins to a concrete Hash
+           keeps the Hash it declares: its literal is not widened (the C
+           function returns that variant, #7987) */
+        if (c->scopes[ms[i]].ret_rbs_seeded && ty_is_hash(c->scopes[ms[i]].ret)) continue;
         int n = method_value_leaves_or_nil(c, ms[i], vals, 64);
         if (n < 0) return 0;
         for (int j = 0; j < n; j++) if (!f(c, vals[j], set, depth + 1)) return 0;
