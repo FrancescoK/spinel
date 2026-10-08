@@ -14231,6 +14231,26 @@ static int cs_type_proc_name(Compiler *c, int recv, const int *argv, int argc, i
   return changed;
 }
 
+static TyKind scan_block_param_type(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  /* scan { |m| } yields each match; m is string (no captures) or str_array (captures) */
+  int scan_args_id = nt_ref(nt, id, "arguments");
+  int scan_argc = 0;
+  const int *scan_argv = scan_args_id >= 0 ? nt_arr(nt, scan_args_id, "arguments", &scan_argc) : NULL;
+  if (scan_argc == 1 && scan_argv) {
+    /* through a name too: `PAT = /(\d)(\w)/; s.scan(PAT) { |a, b| }` must
+       destructure the capture row exactly as the inline literal does
+       (#3391) */
+    const char *src = an_regex_lit_src(c, scan_argv[0]);
+    if (src && an_re_has_captures(src)) return TY_POLY_ARRAY;
+    /* Without a literal source, one parameter can receive either a
+       capture Array or a whole-match String; keep that value boxed. */
+    if (!src && (infer_type(c, scan_argv[0]) == TY_REGEX ||
+                 infer_type(c, scan_argv[0]) == TY_POLY)) return TY_POLY;
+  }
+  return TY_STRING;
+}
+
 int infer_block_params(Compiler *c) {
   nn_inference_round(c);
   const NodeTable *nt = c->nt;
@@ -14621,18 +14641,8 @@ int infer_block_params(Compiler *c) {
     else if (rt == TY_STRING && (sp_streq(name, "each_byte") || sp_streq(name, "bytes") || sp_streq(name, "codepoints")))
       pt = TY_INT;
     else if (rt == TY_STRING && sp_streq(name, "scan")) {
-      /* scan { |m| } yields each match; m is string (no captures) or str_array (captures) */
-      int scan_args_id = nt_ref(nt, id, "arguments");
-      int scan_argc = 0;
-      const int *scan_argv = scan_args_id >= 0 ? nt_arr(nt, scan_args_id, "arguments", &scan_argc) : NULL;
-      int has_cap = 0;
-      if (scan_argc == 1 && scan_argv) {
-        /* through a name too: `PAT = /(\d)(\w)/; s.scan(PAT) { |a, b| }` must
-           destructure the capture row exactly as the inline literal does
-           (#3391) */
-        const char *src = an_regex_lit_src(c, scan_argv[0]);
-        if (src && an_re_has_captures(src)) has_cap = 1;
-      }
+      TyKind scan_pt = scan_block_param_type(c, id);
+      int has_cap = scan_pt == TY_POLY_ARRAY;
       /* a capturing scan yields each captures ROW (a boxed-element array);
          multiple params destructure it into strings */
       if (has_cap && block_param_name(c, block, 1)) {
@@ -14644,7 +14654,7 @@ int infer_block_params(Compiler *c) {
         }
         continue;
       }
-      pt = has_cap ? TY_POLY_ARRAY : TY_STRING;
+      pt = scan_pt;
     }
     else if ((sp_streq(name, "each") || ty_iter_shape(name) == TY_ITER_MAP ||
               sp_streq(name, "select") || sp_streq(name, "reject") || sp_streq(name, "filter") ||
