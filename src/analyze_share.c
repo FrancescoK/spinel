@@ -31,7 +31,7 @@
 #include "repr.h"
 
 /* element-own flags (not merged by a union) */
-enum { SHE_WRITTEN = 1 };
+enum { SHE_WRITTEN = 1, SHE_SELF_USED = 2 };
 /* a class flag beside share.h's SHF_*: a value of the class leaves a call
    to be read after it (`p(lit.each { |x| x << y })`, `lit.map { }.first`),
    so a container of the class can be reached again (sh_finalize) */
@@ -200,6 +200,7 @@ static int sh_find(ShareFacts *F, int x) {
 }
 
 static int sh_storing_kind(int k) {
+  if (k == SHK_SELF) return 1;
   return k == SHK_LOCAL || k == SHK_IVAR || k == SHK_GVAR || k == SHK_CVAR ||
          k == SHK_CONST || k == SHK_ELEM;
 }
@@ -343,6 +344,8 @@ static void sh_flow(ShareFacts *F, int kind, int site, int v) {
   /* The jump walk also reaches every emitted subtree. Desugaring leaves
      detached nodes behind, including an expanded literal splat's Array. */
   if (F->jseen && !F->jseen[site]) return;
+  int e = F->nval[v];
+  if (e >= 0 && F->kind[e] == SHK_SELF) F->own[e] |= SHE_SELF_USED;
   if (F->nfl >= F->cfl) {
     F->cfl = F->cfl ? F->cfl * 2 : 64;
     F->fl_site = realloc(F->fl_site, sizeof(int) * (size_t)F->cfl);
@@ -374,6 +377,7 @@ static int sh_holder(ShareFacts *F, int kind, int a, int b, const char *name, in
   for (int i = F->bucket[hb]; i >= 0; i = F->hnext[i]) {
     ShareHolder *h = &F->h[i];
     if (h->kind != kind) continue;
+    if (kind == SHK_SELF) { if (h->scope == a) return F->helem[i]; continue; }
     if (kind == SHK_LOCAL ? (h->scope == a && h->local == b) :
         kind == SHK_IVAR ? (h->cid == a && sp_streq(h->name, name)) :
         (kind == SHK_RET || kind == SHK_YIELD || kind == SHK_BLKRET) ? h->scope == a :
@@ -545,6 +549,25 @@ static int sh_method_index(Compiler *c, int node) {
   return s && s->def_node >= 0 ? (int)(s - c->scopes) : -1;
 }
 
+/* A reopening's receiver is a binding, just as an explicit parameter is.
+   Its byte-only uses do not require a handle ABI. */
+static int sh_self(ShareFacts *F, Compiler *c, int mi) {
+  if (!c->share_strings || mi < 0) return -1;
+  Scope *s = &c->scopes[mi];
+  return !s->is_cmethod && s->class_id >= 0 && s->class_id == comp_class_index(c, "String")
+       ? sh_scope_holder(F, SHK_SELF, mi) : -1;
+}
+
+static void sh_bind_self(ShareFacts *F, Compiler *c, int call, int mi, int rv) {
+  int self = sh_self(F, c, mi);
+  if (self < 0) return;
+  if (rv < 0) rv = sh_self(F, c, sh_method_index(c, call));
+  if (rv >= 0 && F->kind[rv] == SHK_SELF) F->own[rv] |= SHE_SELF_USED;
+  sh_union(F, self, rv);
+  int pf = scope_proc_form_of(c, mi);
+  if (pf >= 0) sh_union(F, self, sh_self(F, c, pf));
+}
+
 static int sh_holder_read(const NodeTable *nt, int n) {
   NodeKind k = n >= 0 ? nt_kind(nt, n) : NK_NONE;
   return k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode ||
@@ -585,6 +608,7 @@ static void sh_lend(ShareFacts *F, int arg, int par, int node, int direct) {
 /* method mi returns value v (see ShareFacts.ret_m) */
 static void sh_ret(ShareFacts *F, int mi, int v) {
   if (mi < 0 || v < 0) return;
+  if (F->kind[v] == SHK_SELF) F->own[v] |= SHE_SELF_USED;
   if (F->nret >= F->cret) {
     F->cret = F->cret ? F->cret * 2 : 64;
     F->ret_m = realloc(F->ret_m, sizeof(int) * (size_t)F->cret);
@@ -616,6 +640,8 @@ static void sh_mark_unused(ShareFacts *F, const NodeTable *nt, int n, unsigned c
 static int sh_join(ShareFacts *F, int a, int b) {
   if (a < 0) return b;
   if (b < 0) return a;
+  if (F->kind[a] == SHK_SELF) F->own[a] |= SHE_SELF_USED;
+  if (F->kind[b] == SHK_SELF) F->own[b] |= SHE_SELF_USED;
   sh_union(F, a, b);
   return a;
 }
@@ -1005,6 +1031,8 @@ static void sh_bind(ShareFacts *F, Compiler *c, int call, int mi) {
       int v = sh_val(F, c, a);
       sh_flow(F, SHFL_ARG, call, a);
       if (j == m->rest_idx || j == m->kwrest_idx) sh_union(F, sh_elem(F, p), v);
+      /* self has no lendable byte slot: a callee must keep its identity. */
+      else if (v >= 0 && F->kind[v] == SHK_SELF) sh_union(F, p, v);
       else {
         int holds = sh_lend_holds(c, call, a, &plain);
         if (holds == SHL_UNSOUND) sh_union(F, p, v);
@@ -1889,6 +1917,7 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
   int rv = recv >= 0 ? sh_val(F, c, recv) : -1;
   TyKind rt = recv >= 0 ? c->ntype[recv] : TY_VOID;
   int maybe_str = recv >= 0 && (rt == TY_STRING || rt == TY_STRBUF || rt == TY_POLY || rt == TY_UNKNOWN);
+  if (rv >= 0 && F->kind[rv] == SHK_SELF && is_identity_query(name)) F->own[rv] |= SHE_SELF_USED;
 
   /* an in-place String mutation of the receiver: through a boxed or an
      untyped receiver, only one a String can make, on a receiver that can
@@ -2050,7 +2079,8 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
         sh_union(F, sh_scope_holder(F, SHK_BLKRET, tg[i]), F->unknown);
       }
       /* a method of a String reopen: self is the receiver */
-      if (rv >= 0 && c->scopes[tg[i]].class_id >= 0 &&
+      if (c->share_strings) sh_bind_self(F, c, n, tg[i], rv);
+      else if (rv >= 0 && c->scopes[tg[i]].class_id >= 0 &&
           c->scopes[tg[i]].class_id == comp_class_index(c, "String"))
         sh_union(F, rv, F->unknown);
     }
@@ -2166,6 +2196,7 @@ static int sh_super(ShareFacts *F, Compiler *c, int n) {
   int r = -1;
   for (int i = 0; i < ntg; i++) {
     Scope *m = &c->scopes[tg[i]];
+    sh_bind_self(F, c, n, tg[i], -1);
     if (nt_kind(nt, n) == NK_ForwardingSuperNode && cur >= 0) {
       /* zsuper hands on this method's own parameters, and its block */
       Scope *s = &c->scopes[cur];
@@ -2453,6 +2484,7 @@ static int sh_val_compute(ShareFacts *F, Compiler *c, int n) {
     return sh_jumped(F, n, sh_super(F, c, n));
   case NK_SelfNode: {
     Scope *s = comp_scope_of(c, n);
+    if (c->share_strings) return sh_self(F, c, sh_method_index(c, n));
     int cid = s ? s->class_id : -1;
     return cid >= 0 && cid == comp_class_index(c, "String") ? F->unknown : -1;
   }
@@ -2934,6 +2966,7 @@ typedef struct {
   int *t, *n, np, cp;
   Compiler *c;
   int gen;   /* the Enumerator.new call whose block the walk is in, or -1 */
+  int captures_self;   /* a block keeps the enclosing method's receiver */
   ShCatch *caught;
 } ShJumps;
 
@@ -2996,7 +3029,14 @@ static void sh_jump_walk(ShareFacts *F, const NodeTable *nt, ShJumps *J, int n, 
   ShCatch *saved = J->caught;
   NodeKind k = nt_kind(nt, n);
   int gen = J->gen;
+  int captures_self = J->captures_self;
   switch (k) {
+  case NK_SelfNode:
+    if (J->captures_self) {
+      int self = sh_self(F, J->c, sh_method_index(J->c, n));
+      if (self >= 0) F->own[self] |= SHE_SELF_USED;
+    }
+    break;
   case NK_BreakNode: case NK_NextNode: {
     int t = k == NK_BreakNode ? brk : nxt;
     if (t == -1 || nt_ref(nt, n, "arguments") < 0) break;
@@ -3012,16 +3052,19 @@ static void sh_jump_walk(ShareFacts *F, const NodeTable *nt, ShJumps *J, int n, 
     brk = n; nxt = -1;
     break;
   case NK_LambdaNode:
+    J->captures_self = 1;
     J->caught = NULL;
     brk = nxt = n;
     J->gen = -1;
     break;
   case NK_BlockNode:   /* a block no call is walked with */
+    J->captures_self = 1;
     J->caught = NULL;
     brk = -2; nxt = n;
     J->gen = -1;
     break;
   case NK_DefNode: case NK_ClassNode: case NK_ModuleNode: case NK_SingletonClassNode:
+    J->captures_self = 0;
     J->caught = NULL;
     brk = nxt = -2;
     J->gen = -1;
@@ -3061,7 +3104,9 @@ static void sh_jump_walk(ShareFacts *F, const NodeTable *nt, ShJumps *J, int n, 
       if (rn && sp_streq(nt_str(nt, n, "name"), "new") && bop_share_named(BOP_CLASS_NEW, rn) == BSH_NEW_YIELDER)
         J->gen = n;
       else if (an_fiber_new_block(J->c, n) >= 0) J->gen = -1;
+      J->captures_self = 1;
       sh_jump_kids(F, nt, J, blk, n, blk);
+      J->captures_self = captures_self;
       J->gen = gen;
       J->caught = saved;
     }
@@ -3071,6 +3116,7 @@ static void sh_jump_walk(ShareFacts *F, const NodeTable *nt, ShJumps *J, int n, 
     break;
   }
   sh_jump_kids(F, nt, J, n, brk, nxt);
+  J->captures_self = captures_self;
   J->gen = gen;
   J->caught = saved;
 }
@@ -3098,7 +3144,7 @@ static int sh_jump_val(ShareFacts *F, Compiler *c, int n) {
 
 static void sh_jumps(ShareFacts *F, Compiler *c) {
   const NodeTable *nt = c->nt;
-  ShJumps J = { NULL, NULL, 0, 0, c, -1, NULL };
+  ShJumps J = { NULL, NULL, 0, 0, c, -1, 0, NULL };
   F->jseen = calloc((size_t)(F->nnodes > 0 ? F->nnodes : 1), 1);
   if (!F->jseen) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   sh_jump_walk(F, nt, &J, nt->root_id, -2, -2);
@@ -3340,6 +3386,7 @@ static ShareFacts *sh_build(Compiler *c, int closed) {
     int reach = F->dyn_all || sp_streq(m->name, "method_missing");
     for (int k = 0; k < F->ndyn && !reach; k++) reach = sp_streq(F->dyn[k], m->name);
     if (!reach) continue;
+    sh_union(F, sh_self(F, c, mi), F->unknown);
     F->mread[mi] = 1;
     for (int j = 0; j < m->nparams; j++)
       sh_union(F, m->pnames[j] ? sh_local_of(F, c, m, m->pnames[j], m->def_node) : -1, F->unknown);
@@ -3394,6 +3441,7 @@ static int sh_lookup(const ShareFacts *F, int kind, int a, int b, const char *na
   for (int i = F->bucket[hb]; i >= 0; i = F->hnext[i]) {
     const ShareHolder *h = &F->h[i];
     if (h->kind != kind) continue;
+    if (kind == SHK_SELF) { if (h->scope == a) return i; continue; }
     if (kind == SHK_LOCAL ? (h->scope == a && h->local == b) : (h->cid == a && sp_streq(h->name, name)))
       return i;
   }
@@ -3404,6 +3452,13 @@ int share_local_holder(const Compiler *c, int scope, int local) {
 }
 int share_ivar_holder(const Compiler *c, int cid, const char *name) {
   return name ? sh_lookup(c->share, SHK_IVAR, cid, -1, name) : -1;
+}
+int share_self_holder(const Compiler *c, int scope) {
+  return sh_lookup(c->share, SHK_SELF, scope, -1, NULL);
+}
+int share_self_used(const Compiler *c, int holder) {
+  const ShareFacts *F = c->share;
+  return F && holder >= 0 && (F->own[F->helem[holder]] & SHE_SELF_USED) != 0;
 }
 
 /* The holders of root r's class that store a String (sh_finalize). */

@@ -3417,11 +3417,17 @@ static int emit_dynamic_send(Compiler *c, int id, Buf *b) {
        read through them */
     EmitUnitState *sv_state = emit_state_snapshot();
     volatile int ok;
+    int mi = cplan_user(c, arm)->mi;
+    int self_ret = repr_self_handle(c, mi) && repr_call_returns_handle(c, arm);
     /* the enclosing recovery point is restored after the probe: left
        pointing into this frame, a later refusal in the same unit jumped
        back into it after it had returned */
     jmp_buf sv_jb; memcpy(sv_jb, g_unsup_recover, sizeof(jmp_buf));
-    if (setjmp(g_unsup_recover) == 0) { emit_expr(c, arm, &body); ok = 1; }
+    if (setjmp(g_unsup_recover) == 0) {
+      if (self_ret) emit_strbuf_handle_of(c, arm, &body);
+      else emit_expr(c, arm, &body);
+      ok = 1;
+    }
     else { ok = 0; comp_scope_move_unwind(sv_moves); view_unwind(sv_views); }
     emit_state_release(sv_state, !ok);
     g_conv_hold = sv_hold;  /* a dropped arm may have unwound through emit_call */
@@ -3436,7 +3442,7 @@ static int emit_dynamic_send(Compiler *c, int id, Buf *b) {
       buf_printf(b, "if (_t%d == (sp_sym)%d) { ", t, comp_sym_intern(c, nm));
       if (pre.p && pre.len) buf_puts(b, pre.p);
       buf_printf(b, "_r%d = ", t);
-      emit_boxed_text(c, at, body.p ? body.p : "0", b);
+      emit_boxed_text(c, self_ret ? TY_STRBUF : at, body.p ? body.p : "0", b);
       buf_puts(b, "; }\nelse ");
     }
     free(pre.p); free(body.p);
@@ -8597,8 +8603,9 @@ int ctor_needs_self_defaults(Compiler *c, int initm, int argc) {
    is emitted in place, as it always was. `boxed`: the method takes its
    self boxed, through `box_fn` when given (an Array's kind), else by its
    type. */
-static void emit_reopen_recv(Compiler *c, int recv, int boxed, const char *box_fn, Buf *b) {
-  if (box_fn) { buf_printf(b, "%s(", box_fn); emit_expr(c, recv, b); buf_puts(b, ")"); }
+static void emit_reopen_recv(Compiler *c, int mi, int recv, int boxed, const char *box_fn, Buf *b) {
+  if (repr_self_handle(c, mi)) emit_strbuf_handle_of(c, recv, b);
+  else if (box_fn) { buf_printf(b, "%s(", box_fn); emit_expr(c, recv, b); buf_puts(b, ")"); }
   else if (boxed) emit_boxed(c, recv, b);
   else emit_expr(c, recv, b);
 }
@@ -8615,17 +8622,18 @@ void emit_reopen_recv_args(Compiler *c, int id, int mi, int recv, int boxed, con
     hold = m->pdefault && m->pdefault[i] >= 0 &&
            (callee_param_is_declared_kwarg(c, m, m->pnames[i]) || arg_slot_for_param(c, m, i, n) < 0) &&
            ctor_default_reads_self(c, m, m->pdefault[i], 0);
+  if (repr_self_handle(c, mi)) hold = 1;
   if (!hold) {
-    emit_reopen_recv(c, recv, boxed, box_fn, b);
+    emit_reopen_recv(c, mi, recv, boxed, box_fn, b);
     emit_args_filled(c, mi, args, ", ", b);
     return;
   }
-  TyKind rt = boxed ? TY_POLY : comp_ntype(c, recv);
+  TyKind rt = repr_self_handle(c, mi) ? TY_STRBUF : boxed ? TY_POLY : comp_ntype(c, recv);
   int t = ++g_tmp;
   char self[32]; snprintf(self, sizeof self, "_t%d", t);
   emit_indent(g_pre, g_indent);
   buf_printf(g_pre, "%s _t%d = ", boxed ? "sp_RbVal" : c_type_name(rt), t);
-  emit_reopen_recv(c, recv, boxed, box_fn, g_pre);
+  emit_reopen_recv(c, mi, recv, boxed, box_fn, g_pre);
   buf_puts(g_pre, ";\n");
   if (boxed || rt == TY_POLY) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_t%d);\n", t); }
   else if (needs_root(rt)) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", t); }
@@ -8635,6 +8643,30 @@ void emit_reopen_recv_args(Compiler *c, int id, int mi, int recv, int boxed, con
   g_arm_self = self; g_arm_scope = m; g_arm_depth = g_expr_depth;
   emit_args_filled(c, mi, args, ", ", b);
   g_arm_self = sv_arm_self; g_arm_scope = sv_arm_scope; g_arm_depth = sv_arm_depth;
+}
+
+static void emit_reopen_primitive_call(Compiler *c, int id, int ci, int mi, int recv, const char *name, Buf *b) {
+  if (repr_self_handle(c, mi) && c->scopes[mi].yields && emit_inline_expr(c, id, b)) return;
+  if (repr_self_handle(c, mi) && emit_reopen_block_call(c, id, recv, mi, NULL, b)) return;
+  if (g_plan_check) ucall_observe(c, id, mi, ci, 0);
+  buf_printf(b, "sp_%s_%s(", mc_reopen_cls(c, ci, name), mc(name));
+  if (repr_self_handle(c, mi)) emit_reopen_recv_args(c, id, mi, recv, 0, NULL, b);
+  else {
+    emit_expr(c, recv, b);
+    emit_args_filled(c, mi, nt_ref(c->nt, id, "arguments"), ", ", b);
+  }
+  emit_callee_block_arg(c, id, &c->scopes[mi], b);
+  buf_puts(b, ")");
+}
+
+/* An implicit call can cross the selected receiver ABI in either direction. */
+void emit_reopen_self_arg(Compiler *c, int id, int mi, Buf *b) {
+  Scope *s = comp_scope_of(c, id);
+  int from = s && repr_self_handle(c, (int)(s - c->scopes));
+  int to = repr_self_handle(c, mi);
+  if (from && !to) buf_printf(b, "sp_strbuf_read_pub(%s)", g_self);
+  else if (to && !from) buf_printf(b, "sp_String_new_shared(%s)", g_self);
+  else buf_puts(b, g_self);
 }
 
 /* One constructor argument of a `k.new(...)` dispatch arm, `val` its text.
@@ -22011,7 +22043,8 @@ int emit_reopen_own_call(Compiler *c, int id, int dispatch_cid, Buf *b) {
   int mi = comp_method_in_chain(c, dispatch_cid, name, NULL);
   if (mi < 0 || mi >= c->nscopes || c->scopes[mi].class_id != dispatch_cid || c->scopes[mi].is_cmethod) return 0;
   if (g_plan_check) ucall_observe(c, id, mi, dispatch_cid, 0);
-  buf_printf(b, "sp_%s_%s(%s", mc_reopen_cls(c, dispatch_cid, name), mc(name), g_self);
+  buf_printf(b, "sp_%s_%s(", mc_reopen_cls(c, dispatch_cid, name), mc(name));
+  emit_reopen_self_arg(c, id, mi, b);
   emit_args_filled(c, mi, nt_ref(nt, id, "arguments"), ", ", b);
   buf_puts(b, ")");
   return 1;
@@ -24745,7 +24778,15 @@ int emit_reopen_block_call(Compiler *c, int id, int recv, int mi, const char *bo
   /* a forwarded `&blk` resolves below 0 when the caller passed no block:
      the clone's block parameter is then NULL (block_given? is false) */
   Buf rb; memset(&rb, 0, sizeof rb);
-  if (box_fn) { buf_printf(&rb, "%s(", box_fn); emit_expr(c, recv, &rb); buf_puts(&rb, ")"); }
+  if (repr_self_handle(c, mi)) {
+    int t = ++g_tmp;
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "sp_String *_t%d = ", t);
+    emit_strbuf_handle_of(c, recv, g_pre);
+    buf_printf(g_pre, "; SP_GC_ROOT(_t%d);\n", t);
+    buf_printf(&rb, "_t%d", t);
+  }
+  else if (box_fn) { buf_printf(&rb, "%s(", box_fn); emit_expr(c, recv, &rb); buf_puts(&rb, ")"); }
   else emit_boxed(c, recv, &rb);
   emit_reopen_pf_call(c, id, pf, cblk, rb.p ? rb.p : "sp_box_nil()", b);
   free(rb.p);
@@ -24959,12 +25000,7 @@ void emit_call_body(Compiler *c, int id, Buf *b) {
         int miR = ciR >= 0 ? comp_method_in_chain(c, ciR, nmR, NULL) : -1;
         if (miR >= 0 && rtR == TY_IO) { emit_io_reopen_call(c, id, recvR, nmR, b); return; }
         if (miR >= 0) {
-          if (g_plan_check) ucall_observe(c, id, miR, ciR, 0);
-          buf_printf(b, "sp_%s_%s(", mc_reopen_cls(c, ciR, nmR), mc(nmR));
-          emit_expr(c, recvR, b);
-          emit_args_filled(c, miR, nt_ref(ntR, id, "arguments"), ", ", b);
-          emit_callee_block_arg(c, id, &c->scopes[miR], b);
-          buf_puts(b, ")");
+          emit_reopen_primitive_call(c, id, ciR, miR, recvR, nmR, b);
           return;
         }
       }
