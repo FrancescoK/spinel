@@ -48,7 +48,7 @@ static void cplan_set(CallPlan *p, int mi, int owner, int via, int dispatch) {
 /* the class a builtin receiver kind is reopened as, or NULL */
 static const char *cplan_reopen_class(TyKind rt) {
   switch (rt) {
-  case TY_STRING: return "String";
+  case TY_STRING: case TY_STRBUF: return "String";
   case TY_INT:    return "Integer";
   case TY_FLOAT:  return "Float";
   case TY_SYMBOL: return "Symbol";

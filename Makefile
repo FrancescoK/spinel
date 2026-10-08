@@ -2230,6 +2230,7 @@ GC_MINOR_TESTS := test/boxed_scan_capture_params.rb \
                   test/share_strings_boxed_hash_key.rb \
                   test/string_append_chain_prepend.rb \
                   test/share_strings_prepend_override.rb \
+                  test/share_strings_bang_override.rb \
                   test/share_strings_argument_conversion_root.rb \
                   test/reader_or_assign_frozen.rb \
                   test/share_strings_boxed_cond_order.rb \
