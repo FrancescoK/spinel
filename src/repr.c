@@ -240,6 +240,16 @@ int repr_self_shared(const Compiler *c, int node) {
   return s && repr_self_handle(c, (int)(s - c->scopes));
 }
 
+/* A builtin receiver conversion on a String keeps its handle. The seal,
+   the route emitter and boxed-form prediction use the same fact. */
+int repr_string_conversion_operand(Compiler *c, int v) {
+  v = unwrap_parens(c, v);
+  if (!repr_share_rule(c) || v < 0 || nt_kind(c->nt, v) != NK_CallNode) return -1;
+  int r = nt_ref(c->nt, v, "receiver");
+  return r >= 0 && is_receiver_conversion(nt_str(c->nt, v, "name")) &&
+         call_plain_argc(c, v) == 0 && nt_ref(c->nt, v, "block") < 0 &&
+         comp_recv_type(c, r) == TY_STRING && cplan_user(c, v)->dispatch == CP_NONE ? r : -1;
+}
 /* Where the boxed form of a shared-mutable String comes from, as emit_boxed
    decides it for a node stored as (or holding) the handle. */
 static int repr_strbuf_src(const Compiler *c, int node, TyKind t) {
@@ -306,6 +316,7 @@ static int repr_strbuf_src(const Compiler *c, int node, TyKind t) {
   if (k == NK_CallNode) {
     /* A boxed receiver route keeps its handle beside fresh user answers. */
     if (repr_boxed_to_s_operand(mc, node) >= 0) return RS_HANDLE;
+    if (repr_string_conversion_operand(mc, node) >= 0) return RS_HANDLE;
     /* A demanded call whose return route carries a handle is already that
        handle, including when operand ordering holds it in a temp. */
     if (c->strbuf_handle_demand[node] && repr_call_returns_handle(mc, node)) return RS_DEMANDED;
