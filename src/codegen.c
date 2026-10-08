@@ -6913,6 +6913,12 @@ static int proc_body_uses_self(Compiler *c, int id, int class_id) {
     /* an attr_reader is not a method in the chain -- it reads the ivar
        directly off self, which the body needs captured all the same (#3750) */
     if (nm && comp_reader_in_chain(c, class_id, nm, NULL)) return 1;
+    /* A bare Method capture binds the resolved instance method to self.
+       Enable this route only where returned Strings keep their handles. */
+    if (repr_share_rule(c) && is_method_ref_name(nm)) {
+      int mi = method_obj_target_mi(c, id);
+      if (mi >= 0 && c->scopes[mi].class_id >= 0 && !c->scopes[mi].is_cmethod) return 1;
+    }
   }
   int nr = nt_num_refs(c->nt, id);
   for (int i = 0; i < nr; i++)

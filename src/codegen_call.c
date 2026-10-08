@@ -2224,6 +2224,8 @@ static TyKind proc_arg_ty(Compiler *c, int a) {
   Repr r = repr_of(c, a);
   /* A static slot's read face is a String, but its box carries the handle. */
   if (repr_share_rule(c) && r.strbuf_src == RS_HANDLE) return TY_STRBUF;
+  /* A value route publishes the same handle its boxed emission carries. */
+  if (r.as_ty == TY_STRING && strbuf_value_carries(c, a)) return TY_STRBUF;
   TyKind t = r.as_ty;
   if (t == TY_UNKNOWN && nt_kind(c->nt, a) == NK_ArrayNode && node_is_empty_container(c->nt, a))
     return TY_INT_ARRAY;
@@ -25064,7 +25066,7 @@ int strbuf_call_picks_up(Compiler *c, int id) {
    (emit_implicit_self_member). Answers 1 when it emitted the call. */
 static int emit_deep_return_pickup(Compiler *c, int id, Buf *b) {
   /* A boxed reader's identity demand takes its field handle too. */
-  if (repr_of(c, id).demand && repr_boxed_reader_handle(c, id))
+  if (repr_of(c, id).demand && repr_boxed_reader_handle(c, id) && repr_of(c, id).ty == TY_STRING)
     return emit_strbuf_route(c, id, b);
   /* An identity read demands the handle without changing String dispatch.
      The return route lifts that demand while it runs the ordinary call. */

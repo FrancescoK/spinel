@@ -1,0 +1,26 @@
+[true, false]
+["m", "n!", "z", "n!"]
+true
+["z", "a", "upper", "upper"]
+["MIDDLE", "MIDDLE", true]
+["MIDDLE!", "MIDDLE!", true]
+["array", ["array"], true]
+["array!", {v: "array!"}, true]
+["m!", "m!", true]
+["m!", "m!", true]
+["m!", "m!", true]
+["m!", "m!", true]
+["rlh", "m!", "m!", true]
+"m0!"
+[true, false]
+["m!", "m", "m!"]
+ArgumentError
+ArgumentError
+["b!", "b!", true]
+["y!", "y!", true]
+["m!", "m!", true]
+["m!", "m!", true]
+[["m!"], "m!", true]
+[{v: "m!"}, "m!", true]
+["abc!", "abc!", true]
+5

@@ -21,8 +21,7 @@ static const char *arr_kind(TyKind rt) {
    reads retain String dispatch even when their storage is the handle. */
 int array_fill_boxes_handle(Compiler *c, int id, int fill) {
   if (repr_of(c, id).as_ty != TY_POLY_ARRAY || !repr_share_rule(c)) return 0;
-  if (repr_of(c, fill).as_ty == TY_STRBUF) return 1;
-  return repr_static_share(c, fill);
+  return repr_of(c, fill).kind == RK_STRBUF;
 }
 
 /* The inspect label of a blockless combinator's Enumerator, CRuby's

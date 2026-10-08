@@ -1623,10 +1623,28 @@ int strbuf_route_reader(Compiler *c, int v) {
   view_pop(c, sv);
   return ok;
 }
+/* String clamp chooses one operand unchanged. The literal Range form
+   exposes its endpoints; a stored Range has no endpoint handles. */
+int strbuf_route_clamp(Compiler *c, int v, int *ops) {
+  const NodeTable *nt = c->nt;
+  v = unwrap_parens(c, v);
+  if (!repr_share_rule(c) || v < 0 || nt_kind(nt, v) != NK_CallNode ||
+      bop_share_named(TY_STRING, nt_str(nt, v, "name")) != BSH_CLAMP) return 0;
+  ops[0] = nt_ref(nt, v, "receiver");
+  if (ops[0] < 0 || comp_recv_type(c, ops[0]) != TY_STRING ||
+      cplan_user(c, v)->dispatch != CP_NONE) return 0;
+  int argc = 0; const int *argv = call_args(nt, v, &argc);
+  if (argc == 2) { ops[1] = argv[0]; ops[2] = argv[1]; return 1; }
+  if (argc != 1 || nt_kind(nt, argv[0]) != NK_RangeNode) return 0;
+  ops[1] = nt_ref(nt, argv[0], "left"); ops[2] = nt_ref(nt, argv[0], "right");
+  return 1;
+}
 /* Does value v hand over a String the rule shares as the handle itself: a
    slot holding it, or a route over one? */
 static int strbuf_route_carries(Compiler *c, int v, int depth) {
   char ref[1024];
+  int ops[3];
+  if (strbuf_route_clamp(c, v, ops)) return 1;
   if (strbuf_route_proc_call(c, v) || strbuf_route_ivar_get(c, v) || strbuf_route_begin(c, v) || strbuf_route_yield(c, v) ||
       strbuf_route_inline_call(c, v) || strbuf_route_loop(c, v) || repr_call_returns_handle(c, v) ||
       strbuf_route_exc_message(c, v) || strbuf_route_reader(c, v)) return 1;
@@ -1642,8 +1660,30 @@ static int strbuf_route_carries(Compiler *c, int v, int depth) {
    the String every other name of its class holds. */
 int emit_strbuf_route(Compiler *c, int v, Buf *b) {
   const NodeTable *nt = c->nt;
+  int ops[3];
+  if (strbuf_route_clamp(c, v, ops)) {
+    int ts[3], argc = 0; const int *argv = call_args(nt, unwrap_parens(c, v), &argc);
+    buf_puts(b, "({ ");
+    for (int i = 0; i < 3; i++) {
+      ts[i] = ++g_tmp;
+      TyKind t = ops[i] >= 0 ? repr_of(c, ops[i]).as_ty : TY_NIL;
+      if (t == TY_STRING || t == TY_STRBUF) {
+        buf_printf(b, "sp_RbVal _t%d = sp_box_nullable_obj(", ts[i]);
+        emit_strbuf_handle_of(c, ops[i], b);
+        buf_printf(b, ", SP_BUILTIN_STRBUF); SP_GC_ROOT_RBVAL(_t%d); ", ts[i]);
+      }
+      else if (ops[i] >= 0) ts[i] = hold_operand(c, ops[i], TY_POLY, 1, ts[i], 1, " ", b);
+      else buf_printf(b, "sp_RbVal _t%d = sp_box_nil(); ", ts[i]);
+    }
+    if (argc == 1 && (nt_int(nt, argv[0], "flags", 0) & 4) &&
+        ops[2] >= 0 && nt_kind(nt, ops[2]) != NK_NilNode)
+      buf_puts(b, "sp_raise_cls(\"ArgumentError\", \"cannot clamp with an exclusive range\"); ");
+    buf_printf(b, "sp_poly_recv_ck(_t%d, \"clamp\"); sp_poly_as_strbuf(sp_obj_clamp(_t%d, _t%d, _t%d)); })",
+               ts[0], ts[0], ts[1], ts[2]);
+    return 1;
+  }
   if (emit_strbuf_io_read(c, unwrap_parens(c, v), b)) return 1;
-  if (repr_boxed_reader_handle(c, unwrap_parens(c, v))) {
+  if (repr_boxed_reader_handle(c, unwrap_parens(c, v)) && repr_of(c, unwrap_parens(c, v)).ty == TY_STRING) {
     v = unwrap_parens(c, v);
     int sd = view_push_repr(c, v, VR_HANDLE_DEMAND, 0);
     int sv = view_push(c, v, TY_POLY);
@@ -1721,7 +1761,10 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
     int ntok = strbuf_jump_views(c, nt_ref(nt, nt_ref(nt, v, "block"), "body"), NK_BreakNode, tok, 0, 64);
     if (ntok < 0) return 0;
     int sv = view_push_repr(c, v, VR_HANDLE_DEMAND, 1);
+    /* A loop already typed as STRBUF also needs its handle read face. */
+    int sb = view_push_repr(c, v, VR_STRBUF_BOX, 1);
     emit_expr(c, v, b);
+    view_pop(c, sb);
     view_pop(c, sv);
     strbuf_jump_views_pop(c, tok, ntok);
     return 1;
@@ -11743,6 +11786,9 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
     int hread = hshared && elt != TY_STRBUF &&
         ((nt_kind(nt, els[i]) == NK_LocalVariableReadNode && strbuf_slot_ref(c, els[i], hsrc, sizeof hsrc)) ||
          (hup >= 0 && nt_kind(nt, hup) == NK_LocalVariableReadNode && strbuf_slot_ref(c, hup, hsrc, sizeof hsrc)));
+    /* The sharing rule gives other holders the same handle route. */
+    if (!hread && repr_share_rule(c) && hshared && elt != TY_STRBUF)
+      hread = strbuf_slot_ref(c, hup >= 0 ? hup : els[i], hsrc, sizeof hsrc);
     /* a write whose slot holds the rule's handle (--share-strings): that
        handle, as a local's read hands over its own */
     Buf hw; memset(&hw, 0, sizeof hw);
@@ -16033,6 +16079,15 @@ void emit_str_concat_handle(Compiler *c, const char *sref, int argc, const int *
 }
 
 static int str_mutate_append_bang_arms(Compiler *c, int id, Buf *b, int indent, const NodeTable *nt, const char *name, int recv, TyKind rt, int argc, const int *argv) {
+  /* A value route's bang emitter already binds the handle once and reads
+     its bytes under a view while emitting the non-bang transform. */
+  if (repr_share_rule(c) && nt_kind(nt, recv) == NK_CallNode &&
+      ty_str_typed_bang_flags(name) && strbuf_value_carries(c, recv)) {
+    emit_indent(b, indent);
+    emit_expr(c, id, b);
+    buf_puts(b, ";\n");
+    return 1;
+  }
   /* mutable-string append: a STRBUF-typed local appends in place (amortized
      O(1)) via sp_String_append. Chains (`s << a << b`) all target the same
      buffer. recv is emitted raw (the sp_String*), not via emit_expr (which
@@ -17599,6 +17654,12 @@ static int strbuf_flow_begin(Compiler *c, StrbufFlowMemo *fm, int v, int depth) 
    whose own tail carries it in turn: 1, else 0. */
 static int strbuf_flow_route(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, int depth) {
   const NodeTable *nt = c->nt;
+  int ops[3];
+  if (strbuf_route_clamp(c, v, ops)) {
+    for (int i = 0; i < 3; i++)
+      if (!strbuf_flow_value(c, fm, SFC_ALIAS, ops[i], depth + 1)) return 0;
+    return 1;
+  }
   if (strbuf_route_proc_call(c, v) || strbuf_route_ivar_get(c, v) || repr_call_returns_handle(c, v) ||
       strbuf_route_exc_message(c, v) || strbuf_route_reader(c, v))
     return 1;
