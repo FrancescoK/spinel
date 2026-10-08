@@ -6540,10 +6540,23 @@ int gather_reaches(Compiler *c, Scope *m, const int *argv, int pos_argc, int gat
   for (int k = 0; k < nsrc; k++) {
     if (k < pos_argc && nt_kind(nt, argv[k]) == NK_BlockArgumentNode) continue;
     int v = k < pos_argc ? nt_kind(nt, argv[k]) == NK_SplatNode : gather_kwh == 1;
+    /* An empty literal splat cannot move a source into the rest. Keep
+       the individual positional queries' existing conservative bounds. */
+    if (i == m->rest_idx && v && k < pos_argc) {
+      int ex = unwrap_parens(c, nt_ref(nt, argv[k], "expression")), en = 0;
+      if (ex >= 0 && nt_kind(nt, ex) == NK_ArrayNode) {
+        nt_arr(nt, ex, "elements", &en);
+        if (!en) { if (k == s) return 0; continue; }
+      }
+    }
     if (k == s) var = v;
     else if (k < s) { if (v) sb = 1; else nb++; }
     else { if (v) sa = 1; else na++; }
   }
+  /* The rest takes a range, after the leading parameters and before the
+     posts, rather than the single position the other parameters take. */
+  if (i == m->rest_idx)
+    return (var || sb || nb >= i) && (var || sa || na >= m->npost_rest);
   /* the positional parameters: every one but the rest and those bound by
      name (arg_layout's ARG_BY_NAME) */
   int last = -1, nreq = 0;

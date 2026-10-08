@@ -21,6 +21,14 @@ true
 ["f!"]
 "g!"
 "h!"
+"a?"
+"a!"
+"b?"
+"x!"
+"a?"
+"x!"
+"a!"
+"b?"
 FrozenError
 "frozen"
 ["unchanged"]
@@ -40,3 +48,19 @@ true
 ["c!"]
 "a!"
 "b!"
+"a?"
+"a!"
+"a?"
+"x!"
+"a!"
+"b?"
+"lead"
+"a?"
+"lead"
+"x!"
+"a?"
+[]
+"reader?"
+["first!", "reader!"]
+"reader!"
+"last?"
