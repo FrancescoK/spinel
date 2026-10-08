@@ -16503,7 +16503,15 @@ static sp_Enumerator *sp_enum_chain_of(sp_RbVal sources) {
   sp_PolyArray *srcs = sp_enum_items_from(sources); SP_GC_ROOT(srcs);
   sp_PolyArray *items = sp_PolyArray_new(); SP_GC_ROOT(items);
   for (sp_int i = 0; i < srcs->len; i++) {
-    sp_PolyArray *part = sp_enum_items_from(srcs->data[i]); SP_GC_ROOT(part);
+    /* a source with no #each is CRuby's NoMethodError, not an empty part
+       (raised here, as the chain is built, where CRuby raises on iteration) */
+    sp_RbVal src = srcs->data[i];
+    if (src.tag == SP_TAG_NIL)
+      sp_raise_cls("NoMethodError", sp_sprintf("undefined method 'each' for nil"));
+    if (!sp_poly_kind_of_builtin(src, "Enumerable"))
+      sp_raise_cls("NoMethodError", sp_sprintf("undefined method 'each' for an instance of %s",
+                                               sp_poly_class_name(src)));
+    sp_PolyArray *part = sp_enum_items_from(src); SP_GC_ROOT(part);
     for (sp_int j = 0; j < part->len; j++) sp_PolyArray_push(items, part->data[j]);
   }
   sp_Enumerator *e = sp_Enumerator_new_from_items(items);
