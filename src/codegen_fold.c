@@ -6674,6 +6674,7 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
     }
     int dvP = m->pdefault[idx];
     if (dvP >= 0 && comp_ntype(c, dvP) == TY_NIL) { buf_puts(out, "NULL"); return; }
+    if (repr_self_shared(c, dvP)) { emit_strbuf_handle_of(c, dvP, out); return; }
     /* a default that is an earlier parameter binds that parameter's handle,
        the one String both names hold (promote_default_alias_params) */
     { char srefD[192];

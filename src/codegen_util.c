@@ -625,6 +625,7 @@ int operand_may_allocate(Compiler *c, int id) {
   id = unwrap_parens(c, id);
   if (id < 0 || repr_of(c, id).handle) return 0;
   if (strbuf_local_name(c, id)) return 1;
+  if (repr_self_shared(c, id)) return 1;
   if (nt_kind(c->nt, id) != NK_InstanceVariableReadNode) return 0;
   const char *nm = nt_str(c->nt, id, "name");
   int cid = nm ? strbuf_ivar_owner(c, id) : -1;
@@ -2648,6 +2649,11 @@ static int native_share_answer_ref(Compiler *c, int n, char *out, size_t cap) {
 }
 int strbuf_slot_ref(Compiler *c, int recv, char *out, size_t cap) {
   HolderRef h;
+  if (repr_self_shared(c, recv)) {
+    if (!g_self || strlen(g_self) >= cap) return 0;
+    snprintf(out, cap, "%s", g_self);
+    return 1;
+  }
   if (native_share_answer_ref(c, recv, out, cap)) return 1;
   /* via emit_local_ref: a celled/captured local derefs its cell */
   if (strbuf_local_name(c, recv) && holder_of_node(c, recv, &h)) return holder_slot_text(c, &h, out, cap);

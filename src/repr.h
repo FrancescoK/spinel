@@ -139,6 +139,8 @@ typedef enum {
 int repr_call_returns_handle(Compiler *c, int v);
 /* The representation of node `node`'s value. */
 Repr repr_of(const Compiler *c, int node);
+int repr_self_handle(const Compiler *c, int scope);
+int repr_self_shared(const Compiler *c, int node);
 /* The representation of a local variable's slot (a global's and a
    constant's LocalVar too). */
 Repr repr_of_slot(const Compiler *c, const LocalVar *lv);

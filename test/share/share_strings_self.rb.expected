@@ -1,0 +1,22 @@
+[true, true]
+["abc", "abc"]
+[true, true]
+"abcd"
+"abcd?"
+["abcd?!", "abcd?!", true, true]
+["abcd?!z", "abcd?!z", true]
+7
+[true, true, false]
+7
+true
+true
+"abcd?!z:"
+["abcd?!z:*", "abcd?!z:*", true]
+["abcd?!z:*=", "abcd?!z:*=", true]
+true
+["abcd?!z:*=~/", "abcd?!z:*=~/", true]
+13
+"abcd?!z:*=~/;"
+["abcd?!z:*=~/;+", "abcd?!z:*=~/;+", true]
+["abcd?!z:*=~/;+-", "abcd?!z:*=~/;+-", true]
+["abcd?!z:*=~/;+-%", "abcd?!z:*=~/;+-%", true]

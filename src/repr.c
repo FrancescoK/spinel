@@ -153,6 +153,10 @@ int repr_write_share(const Compiler *c, int node) {
 int repr_call_returns_handle(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
   v = unwrap_parens(c, v);
+  if (repr_share_rule(c) && v >= 0 && (nt_kind(nt, v) == NK_SuperNode || nt_kind(nt, v) == NK_ForwardingSuperNode)) {
+    const CallPlan *p = cplan_user(c, v);
+    return p->dispatch == CP_DIRECT && repr_self_handle(c, p->mi) && c->scopes[p->mi].ret_handle;
+  }
   if (!repr_share_rule(c) || v < 0 || nt_kind(nt, v) != NK_CallNode) return 0;
   /* a String's value, or one the pickup marks to be stored as the handle */
   TyKind t = c->ntype[v];
@@ -196,12 +200,25 @@ int repr_call_returns_handle(Compiler *c, int v) {
   for (int i = 0; i < n; i++) if (!c->scopes[mis[i]].ret_handle) return 0;
   return 1;
 }
+int repr_self_handle(const Compiler *c, int scope) {
+  if (!c->share_strings) return 0;
+  int h = share_self_holder(c, scope);
+  return share_self_used(c, h) && repr_str_shares(c, h);
+}
+
+int repr_self_shared(const Compiler *c, int node) {
+  if (!c->share_strings || node < 0 || nt_kind(c->nt, node) != NK_SelfNode) return 0;
+  Scope *s = comp_scope_of((Compiler *)c, node);
+  return s && repr_self_handle(c, (int)(s - c->scopes));
+}
+
 /* Where the boxed form of a shared-mutable String comes from, as emit_boxed
    decides it for a node stored as (or holding) the handle. */
 static int repr_strbuf_src(const Compiler *c, int node, TyKind t) {
   Compiler *mc = (Compiler *)c;
   const NodeTable *nt = c->nt;
   NodeKind k = nt_kind(nt, node);
+  if (repr_self_shared(c, node)) return RS_HANDLE;
   if (t == TY_STRING) {
     /* a global holding the handle (--share-strings): its read boxes it */
     if (repr_static_read_kind(k)) return repr_static_share(c, node) ? RS_HANDLE : RS_NONE;
@@ -678,6 +695,11 @@ static Repr repr_of_share_holder(Compiler *c, const ShareHolder *h) {
   memset(&r, 0, sizeof r);
   r.ty = r.as_ty = TY_UNKNOWN;
   switch (h->kind) {
+  case SHK_SELF:
+    if (!share_self_used(c, share_self_holder(c, h->scope))) break;
+    r.ty = r.as_ty = TY_STRING;
+    r.share = repr_self_handle(c, h->scope);
+    break;
   case SHK_LOCAL: {
     LocalVar *lv = &c->scopes[h->scope].locals[h->local];
     r = repr_of_slot(c, lv);

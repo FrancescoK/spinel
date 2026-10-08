@@ -4043,6 +4043,35 @@ static TyKind emit_paren_tail(Compiler *c, int paren, int tail, Buf *b) {
   emit_expr(c, tail, b);
   return tt;
 }
+static void emit_self_expr(Compiler *c, int id, Buf *b) {
+  /* a statement of a class or module body: the class object itself */
+  { int cb = self_class_body(c, id);
+    if (cb >= 0) { buf_printf(b, "((sp_Class){%d})", cb); return; } }
+  /* top-level self is main, which no C scope holds (#4926) */
+  if (self_is_main(c, id)) { buf_puts(b, "sp_main_self()"); return; }
+  /* self inside a method added to Array (desugar_builtin_reopen_self_calls
+     marks it): the method holds self boxed, read here as the poly array */
+  if (nt_int(c->nt, id, "ary_self", 0) && g_self && sp_streq(g_self, "self") &&
+      repr_of(c, id).as_ty == TY_POLY_ARRAY) {
+    buf_puts(b, "sp_poly_to_poly_array(self)");
+    return;
+  }
+  if (repr_self_shared(c, id)) {
+    Repr r = repr_of(c, id);
+    if (r.demand) buf_puts(b, g_self);
+    else emit_strbuf_slot_read(c, id, r, g_self, b);
+    return;
+  }
+  /* An inherited method inlined at a call site (a yielding one, say) binds
+     self to the receiver temp, typed as the receiver's class, while the
+     body's own typing reads self as the defining class: the standalone
+     function takes `sp_Parent *self`. A value use of self (a temp, a local,
+     an argument) is a Parent slot, so spell the upcast C needs (#6769). */
+  if (g_emitting_class_id >= 0 && g_self_deref && sp_streq(g_self_deref, "->"))
+    emit_obj_upcast_prefix(c, comp_ntype(c, id), ty_object(g_emitting_class_id), b);
+  buf_puts(b, g_self); return;   /* self is the object reference (pointer) */
+}
+
 static void emit_expr_node(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, id);
@@ -4519,28 +4548,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     }
     return;
   }
-  if (sp_streq(ty, "SelfNode")) {
-    /* a statement of a class or module body: the class object itself */
-    { int cb = self_class_body(c, id);
-      if (cb >= 0) { buf_printf(b, "((sp_Class){%d})", cb); return; } }
-    /* top-level self is main, which no C scope holds (#4926) */
-    if (self_is_main(c, id)) { buf_puts(b, "sp_main_self()"); return; }
-    /* self inside a method added to Array (desugar_builtin_reopen_self_calls
-       marks it): the method holds self boxed, read here as the poly array */
-    if (nt_int(c->nt, id, "ary_self", 0) && g_self && sp_streq(g_self, "self") &&
-        repr_of(c, id).as_ty == TY_POLY_ARRAY) {
-      buf_puts(b, "sp_poly_to_poly_array(self)");
-      return;
-    }
-    /* An inherited method inlined at a call site (a yielding one, say) binds
-       self to the receiver temp, typed as the receiver's class, while the
-       body's own typing reads self as the defining class: the standalone
-       function takes `sp_Parent *self`. A value use of self (a temp, a local,
-       an argument) is a Parent slot, so spell the upcast C needs (#6769). */
-    if (g_emitting_class_id >= 0 && g_self_deref && sp_streq(g_self_deref, "->"))
-      emit_obj_upcast_prefix(c, comp_ntype(c, id), ty_object(g_emitting_class_id), b);
-    buf_puts(b, g_self); return;   /* self is the object reference (pointer) */
-  }
+  if (nt_kind(c->nt, id) == NK_SelfNode) { emit_self_expr(c, id, b); return; }
   if (emit_ivar_cvar_gvar_expr(c, id, b, nt, ty)) return;
   if (emit_constant_expr(c, id, b, nt, ty, 0)) return;
   if (emit_defined_expr(c, id, b, nt, ty)) return;
