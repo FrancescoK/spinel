@@ -563,8 +563,13 @@ int cplan_targets(Compiler *c, int id, int *out, int cap) {
 }
 
 /* A boxed receiver whose own targets include a class method. The receiver
-   walk bounds instances only: a successful bound cannot contain a Class. */
+   walk bounds instances only: a successful bound cannot contain a Class.
+   A call with a literal block is not one: its builtin iteration arm types
+   the result, and joining a class method's return made it poly, which that
+   arm does not build, so an Array's `map { }` raised NoMethodError. */
 int cplan_boxed_cmethod(Compiler *c, int id, const char *name) {
+  int blk = nt_ref(c->nt, id, "block");
+  if (blk >= 0 && nt_kind(c->nt, blk) == NK_BlockNode) return 0;
   int ncc = 0;
   comp_cmethod_candidates(c, name, &ncc);
   if (!ncc) return 0;
