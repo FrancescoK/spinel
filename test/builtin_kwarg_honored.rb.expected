@@ -1,0 +1,27 @@
+["a", "b"]
+["a", "b"]
+["a\n", "b\n"]
+["a", "b"]
+["a", "b"]
+["a", "b"]
+["a", "b"]
+["a", "b"]
+2
+[2, 3]
+2
+3
+true
+true
+1
+false
+true
+true
+true
+false
+false
+true
+true
+false
+"unexpected value for freeze: Integer"
+["x", "y"]
+["x", "y"]
