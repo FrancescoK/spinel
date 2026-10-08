@@ -844,6 +844,24 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
           buf_printf(b, "; (sp_bool)((sp_Queue_max(_t%d) > 0) == %d); })", tq3, want_sized ? 1 : 0);
         return 1;
       } }
+    /* A chain and a product are one Enumerator object told apart by a flag
+       (is_chain / is_product), as #class reads it, so is_a?(Enumerator::Chain)
+       and is_a?(Enumerator::Product) are asked at run time; from TY_ENUMERATOR
+       alone they folded to false. Both classes are leaves under Enumerator,
+       so instance_of? asks the same. */
+    if (eff_rt == TY_ENUMERATOR && nt_kind(nt, argv[0]) == NK_ConstantPathNode) {
+      int epar = nt_ref(nt, argv[0], "parent");
+      const char *ecn = nt_str(nt, argv[0], "name");
+      if (epar >= 0 && nt_kind(nt, epar) == NK_ConstantReadNode && ecn &&
+          nt_str(nt, epar, "name") && sp_streq(nt_str(nt, epar, "name"), "Enumerator") &&
+          (sp_streq(ecn, "Chain") || sp_streq(ecn, "Product"))) {
+        int te = ++g_tmp;
+        buf_printf(b, "({ sp_Enumerator *_t%d = ", te); emit_expr(c, recv, b);
+        buf_printf(b, "; (sp_bool)(_t%d && _t%d->%s); })", te, te,
+                   sp_streq(ecn, "Chain") ? "is_chain" : "is_product");
+        return 1;
+      }
+    }
     int yes = ty_matches_class(eff_rt, nt_str(nt, argv[0], "name"), sp_streq(name, "instance_of?"));
     /* an Integer or a Float reads its nil sentinel at run time, as nil?
        does: the nullable-value analysis does not see every way nil reaches

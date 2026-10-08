@@ -11565,6 +11565,10 @@ static sp_bool sp_poly_kind_of_builtin(sp_RbVal v, const char *cn) {
   if (v.tag == SP_TAG_CLASS && strcmp(cn, "Class") == 0 && sp_poly_is_a_hook)
     return (sp_bool)(sp_poly_is_a_hook(v, (sp_Class){-109, NULL}) != 0);
   if (strcmp(sp_poly_class_name(v), cn) == 0) return TRUE;  /* exact builtin class */
+  /* a chain or a product is an Enumerator whose #class names its subclass
+     (Enumerator::Chain, Enumerator::Product), so the exact name above misses it */
+  if (strcmp(cn, "Enumerator") == 0 && v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_ENUMERATOR && v.v.p)
+    return TRUE;
   /* a class is a Module too: Class < Module */
   if (strcmp(cn, "Module") == 0) return v.tag == SP_TAG_CLASS;
   /* a boxed class object is a Class, and a Class is a Module (Object /
@@ -16356,6 +16360,22 @@ static sp_Enumerator *sp_enum_chain_new(sp_RbVal arr) SP_UNUSED;
 static sp_Enumerator *sp_enum_chain_new(sp_RbVal arr) {
   SP_GC_ROOT_RBVAL(arr);
   sp_PolyArray *items = sp_enum_items_from(arr); SP_GC_ROOT(items);   /* the enumerator below is an allocation */
+  sp_Enumerator *e = sp_Enumerator_new_from_items(items);
+  e->is_chain = TRUE;
+  return e;
+}
+/* Enumerator::Chain.new(*sources): `sources` is the boxed Array of the
+   sources in order; the chain holds every source's items, each read as
+   #to_a reads it, and reports as Enumerator::Chain. */
+static sp_Enumerator *sp_enum_chain_of(sp_RbVal sources) SP_UNUSED;
+static sp_Enumerator *sp_enum_chain_of(sp_RbVal sources) {
+  SP_GC_ROOT_RBVAL(sources);
+  sp_PolyArray *srcs = sp_enum_items_from(sources); SP_GC_ROOT(srcs);
+  sp_PolyArray *items = sp_PolyArray_new(); SP_GC_ROOT(items);
+  for (sp_int i = 0; i < srcs->len; i++) {
+    sp_PolyArray *part = sp_enum_items_from(srcs->data[i]); SP_GC_ROOT(part);
+    for (sp_int j = 0; j < part->len; j++) sp_PolyArray_push(items, part->data[j]);
+  }
   sp_Enumerator *e = sp_Enumerator_new_from_items(items);
   e->is_chain = TRUE;
   return e;

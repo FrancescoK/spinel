@@ -7329,6 +7329,8 @@ static TyKind infer_call_inner(Compiler *c, int id) {
       (rt == TY_BOOL || rt == TY_NIL)) return TY_POLY;
   /* __enum_chain(arr): the desugared Enumerable#chain / Enumerator#+ (#2545) */
   if (recv < 0 && sp_streq(name, "__enum_chain") && argc == 1) return TY_ENUMERATOR;
+  /* __enum_chain_of([*sources]): the desugared Enumerator::Chain.new */
+  if (recv < 0 && sp_streq(name, "__enum_chain_of") && argc == 1) return TY_ENUMERATOR;
   if (recv < 0 && sp_streq(name, "__enum_pairs") && argc == 1) return TY_ENUMERATOR;
   /* Dir surface (#2823, #2828, #2830) */
   if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&

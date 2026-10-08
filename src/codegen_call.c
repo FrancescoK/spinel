@@ -3911,6 +3911,11 @@ static int emit_complex_rational_call(Compiler *c, int id, Buf *b) {
     buf_puts(b, "sp_enum_chain_new("); emit_boxed(c, argv[0], b); buf_puts(b, ")");
     return 1;
   }
+  /* __enum_chain_of([*sources]): the desugared Enumerator::Chain.new */
+  if (recv < 0 && sp_streq(name, "__enum_chain_of") && argc == 1) {
+    buf_puts(b, "sp_enum_chain_of("); emit_boxed(c, argv[0], b); buf_puts(b, ")");
+    return 1;
+  }
   if (recv < 0 && sp_streq(name, "__enum_pairs") && argc == 1) {
     buf_puts(b, "sp_enum_pairs_new("); emit_boxed(c, argv[0], b); buf_puts(b, ")");
     return 1;
