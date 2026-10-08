@@ -244,12 +244,6 @@ spinel: test/reject/class_superclass_method_call.rb:10: unsupported superclass e
 spinel: test/reject/class_then_module.rb:6: Thing is not a module (the first declaration, at line 3, is a class)
 == test/reject/class_then_module.rb [promote] rc=1
 spinel: test/reject/class_then_module.rb:6: Thing is not a module (the first declaration, at line 3, is a class)
-== test/reject/combination_safe_nav_two_params.rb [default] rc=1
-spinel: test/reject/combination_safe_nav_two_params.rb:6: a block taking more than one parameter on combination, permutation or their repeated forms
-spinel: 1 refusal, nothing written
-== test/reject/combination_safe_nav_two_params.rb [promote] rc=1
-spinel: test/reject/combination_safe_nav_two_params.rb:6: a block taking more than one parameter on combination, permutation or their repeated forms
-spinel: 1 refusal, nothing written
 == test/reject/compare_by_identity_chained.rb [default] rc=1
 spinel: test/reject/compare_by_identity_chained.rb:8: unsupported Hash#compare_by_identity (identity-keyed hashing): node N (CallNode `compare_by_identity`) recv=LocalVariableReadNode/ty28 argc=0
 spinel: 1 refusal, nothing written

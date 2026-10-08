@@ -10654,18 +10654,20 @@ static int bs_extras_read(Compiler *c, int blk, const char *const *names, int np
   return pdl_body_reads(c->nt, nt_ref(c->nt, blk, "body"), (const char **)names + m, np - m);
 }
 
-/* Can `recv`'s Hash type still be a guess the fixpoint revises? In the
+/* Can `recv`'s type still be a guess the fixpoint revises? In the
    optimistic rounds a local or an instance variable read can be typed from
    partial evidence: `c[5] = 9` on a local read out of an ivar not yet typed
-   reads as a store into a Hash. Where a Hash and an Array yield a different
-   count (the filters: the key and the value, or the element), the rewrite,
-   which is for good, waits until those rounds are over. */
-static int bs_hash_guess(Compiler *c, int recv, TyKind rt, const char *nm) {
+   reads as a store into a Hash, and `x = pair_or_nil` reads nil. Where a
+   Hash and an Array yield a different count (the filters: the key and the
+   value, or the element), or the yield is the receiver itself (tap, then),
+   the rewrite, which is for good, waits until those rounds are over. */
+static int bs_type_guess(Compiler *c, int recv, TyKind rt, const char *nm) {
   static const char *const two[] = {
     "select", "filter", "reject", "delete_if", "keep_if", "select!", "filter!", "reject!", NULL };
-  if (!g_infer_optimistic || !ty_is_hash(rt)) return 0;
+  if (!g_infer_optimistic || (!ty_is_hash(rt) && rt != TY_NIL)) return 0;
   NodeKind k = nt_kind(c->nt, recv);
   if (k != NK_LocalVariableReadNode && k != NK_InstanceVariableReadNode) return 0;
+  if (rt == TY_NIL) return is_tap_alias(nm);
   for (int i = 0; two[i]; i++) if (sp_streq(nm, two[i])) return 1;
   return 0;
 }
@@ -10724,8 +10726,6 @@ int desugar_builtin_iter_block_shapes(Compiler *c) {
        (bs_spreads) */
     if (s.O == 0 && s.Q == 0 && s.rest < 0 && !has_kw && s.P < 2) continue;
     int bad = 0;
-    const char *cop = nt_str(nt, id, "call_operator");
-    if (cop && sp_streq(cop, "&.")) bad = 1;
     int args = nt_ref(nt, id, "arguments");
     int argc = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
     for (int k = 0; k < argc; k++) {
@@ -10738,7 +10738,7 @@ int desugar_builtin_iter_block_shapes(Compiler *c) {
        and so does its own method of the name on a boxed receiver */
     if ((rt == TY_POLY || is_tap_alias(nm)) &&
         def_exists_by_name(nt, nm)) continue;
-    if (bs_hash_guess(c, recv, rt, nm)) continue;
+    if (bs_type_guess(c, recv, rt, nm)) continue;
     TyKind elem; int hash_pair;
     int m = bs_enum_yield_count(c, recv, nm, argc, &elem);
     int via_enum = m != 0;
