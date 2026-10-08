@@ -1597,14 +1597,17 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
   if (repr_call_returns_handle(c, v)) {
     /* the deep-return pickup (emit_call_body's): the channel cleared, the
        call run, its published handle taken, or a String of its own if none
-       was published */
+       was published. A nil answer takes precedence over an earlier
+       published handle, as in emit_deep_return_pickup. */
     v = unwrap_parens(c, v);
     int t = ++g_tmp;
     buf_printf(b, "({ _sp_ret_strbuf = NULL; const char *_v%d = ", t);
     int sv = view_push_repr(c, v, VR_STRBUF_BOX, 0), sd = view_push_repr(c, v, VR_HANDLE_DEMAND, 0);
     emit_expr(c, v, b);
     view_pop(c, sd); view_pop(c, sv);
-    buf_printf(b, "; _sp_ret_strbuf ? (sp_String *)_sp_ret_strbuf : sp_String_new_shared(_v%d); })", t);
+    buf_puts(b, "; ");
+    if (strbuf_pickup_answers_nil(c, v)) buf_printf(b, "!_v%d ? NULL : ", t);
+    buf_printf(b, "_sp_ret_strbuf ? (sp_String *)_sp_ret_strbuf : sp_String_new_shared(_v%d); })", t);
     return 1;
   }
   if (strbuf_route_inline_call(c, v)) {
