@@ -1038,6 +1038,7 @@ share-strings-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS
 	  test/boxed_scan_capture_params.rb test/fold_receiver_root.rb test/string_reopen_block_returns.rb \
 	  test/poly_string_iter_user_owns_name.rb test/string_handle_initialize.rb \
 	  test/string_alias_routes_unobserved.rb test/yield_string_param_block_append.rb \
+	  test/string_reader_store_routes_unaffected.rb \
 	  packages/shellwords/test/shellwords_split_unmatched_quote.rb \
 	  test/bundle_classd_27.rb test/masgn_str_array_strbuf_local.rb test/poly_aset_nullable_string_value.rb \
 	  $$(cat test/share/reject.list); do \
