@@ -1,0 +1,10 @@
+never started: IOError: HTTP session not yet started
+"r0"
+open: finished
+again: IOError: HTTP session not yet started
+after a block: IOError: HTTP session not yet started
+"r2"
+false
+after a request on its own: IOError: HTTP session not yet started
+"r3"
+"r4"

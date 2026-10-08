@@ -457,7 +457,12 @@ module Net
       nil
     end
 
+    # Closes the session, and raises IOError when none is open, as CRuby's
+    # does. The package's own teardown goes through do_finish instead, which
+    # is silent: a start whose connect failed has nothing open, and a block
+    # given to Net::HTTP.start may have finished the session itself.
     def finish
+      raise IOError, "HTTP session not yet started" unless started?
       do_finish
     end
 
