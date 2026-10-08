@@ -88,6 +88,7 @@ enum {
   RW_YIELD,          /* a yield boxed by the block of this call site */
   RW_TRANSPLANT,     /* a module ivar read boxed by the including class's field */
   RW_RAN_FIRST,      /* an argument that already ran: its temp */
+  RW_HANDLE_ROUTE,   /* a conditional boxed through its shared handle route */
   RW_LITERAL         /* an empty literal or Hash.new boxed by its shape */
 };
 static int rc_depth;        /* emit_boxed nesting */
@@ -110,6 +111,7 @@ static void rc_note(Compiler *c, int node, int form, int why, int from_text) {
   else if (why == RW_YIELD) cls = "yield-site";
   else if (why == RW_TRANSPLANT) cls = "transplant";
   else if (why == RW_RAN_FIRST) cls = "ran-first";
+  else if (why == RW_HANDLE_ROUTE) cls = "handle-route";
   else if (why == RW_LITERAL) cls = "literal";
   else if ((form == RF_INT_NIL || form == RF_FLT_NIL) &&
            nt_kind(c->nt, node) == NK_LocalVariableReadNode) {
@@ -1611,7 +1613,8 @@ static void emit_boxed_cond_body(Compiler *c, int st, Buf *b, void *ctx) {
   buf_printf(b, "_t%d = ", a->dst);
   if (a->lift) buf_puts(b, "sp_poly_strbuf_lift(");
   if (st < 0) buf_puts(b, "sp_box_nil()");
-  else emit_boxed(c, st, b);
+  /* An arm can hand on a route's handle as well as a variable's. */
+  else emit_boxed_next_value(c, st, b);
   if (a->lift) buf_puts(b, ")");
   buf_puts(b, ";");
 }
@@ -1625,6 +1628,16 @@ static int emit_boxed_cond_arms(Compiler *c, int node, Buf *b) {
   if (!repr_share_rule(c) || node < 0) return 0;
   NodeKind k = nt_kind(nt, node);
   TyKind t = comp_ntype(c, node);
+  /* The other String conditionals already have a handle-valued route:
+     box its answer so ||, && and case keep the selected arm's String. */
+  if ((k == NK_OrNode || k == NK_AndNode || k == NK_CaseNode) &&
+      (t == TY_STRING || t == TY_STRBUF) && strbuf_value_carries(c, node)) {
+    buf_puts(b, "sp_box_nullable_obj(");
+    emit_strbuf_handle_of(c, node, b);
+    buf_puts(b, ", SP_BUILTIN_STRBUF)");
+    RC(RF_STRBUF_HANDLE, RW_HANDLE_ROUTE);
+    return 1;
+  }
   if ((k != NK_IfNode && k != NK_UnlessNode) || (t != TY_STRING && t != TY_STRBUF) ||
       !strbuf_cond_has_handle_leaf(c, node, 0))
     return 0;
@@ -1641,7 +1654,7 @@ static int emit_boxed_cond_arms(Compiler *c, int node, Buf *b) {
   buf_puts(b, "\nelse ");
   emit_cond_arm(c, nt_ref(nt, node, k == NK_IfNode ? "subsequent" : "else_clause"), b, emit_boxed_cond_body, &a);
   buf_printf(b, "\n_t%d; })", dst);
-  RC(RF_SPECIAL, RW_NONE);
+  RC(RF_SPECIAL, RW_HANDLE_ROUTE);
   return 1;
 }
 
