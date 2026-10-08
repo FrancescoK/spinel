@@ -2572,6 +2572,7 @@ static const BopShareRow bop_share_rows[] = {
   { TY_STRING, "dedup",      BSH_FROZEN },
   { TY_STRING, "dup",        BSH_PURE },
   { TY_STRING, "clone",      BSH_PURE },
+  { TY_STRING, "clamp",      BSH_CLAMP },
   /* Explicit rows also describe a String read through a box. */
   { TY_STRING, "delete_prefix", BSH_PURE },
   { TY_STRING, "delete_suffix", BSH_PURE },
