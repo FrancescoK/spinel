@@ -1,0 +1,83 @@
+true
+true
+true
+true
+true
+true
+true
+true
+true
+true
+true
+true
+true
+true
+true
+true
+true
+true
+true
+true
+true
+false
+false
+false
+true
+true
+false
+true
+false
+false
+false
+true
+true
+true
+to_str raises
+to_str equal? raises
+equal? to_str raises
+to_str object_id raises
+to_str frozen? raises
+to_str == raises
++nil raises
+false
+true
+true
+true
+true
+true
+true
+true
+true
+true
+false
+false
+false
+false
+true
+false
+false
+true
+ivar to_str equal? raises
+ivar to_str __id__ raises
+ivar to_str frozen? raises
+ivar to_str == raises
+true
+true
+true
+true
+true
+true
+true
+true
+true
+true
+true
+true
+true
+true
+true
+true
+true
+true
+true
+true

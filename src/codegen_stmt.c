@@ -1412,7 +1412,8 @@ static int strbuf_route_operand(Compiler *c, int v) {
 /* `String(x)` (Kernel's) or `+x` over a variable x whose slot holds the
    handle (strbuf_slot_ref, either build): x's slot text to out, and
    *uplus for `+x`; else 0. Each answers x's String itself (`+x` unless
-   x is frozen), so its identity is the handle's. */
+   x is frozen), so its identity is the handle's. A successful route answers
+   its operand node plus one, so consumers can ask its nil fact too. */
 int strbuf_self_route_slot(Compiler *c, int v, int *uplus, char *out, size_t cap) {
   const NodeTable *nt = c->nt;
   v = unwrap_parens(c, v);
@@ -1438,12 +1439,14 @@ int strbuf_self_route_slot(Compiler *c, int v, int *uplus, char *out, size_t cap
     char ref[1024];
     if (!strbuf_slot_ref(c, unwrap_parens(c, recv), ref, sizeof ref)) return 0;
     int n = is_freeze_family(nm) ? snprintf(out, cap, "(sp_String_freeze(%s), %s)", ref, ref)
-                               : snprintf(out, cap, "%s", ref);
-    return n >= 0 && (size_t)n < cap;
+          : repr_of(c, recv).may_nil && !is_nil_method(nm)
+            ? snprintf(out, cap, "(%s ? %s : (sp_nil_recv(\"%s\"), (sp_String *)NULL))", ref, ref, nm)
+            : snprintf(out, cap, "%s", ref);
+    return n >= 0 && (size_t)n < cap ? recv + 1 : 0;
   }
   NodeKind xk = x >= 0 ? nt_kind(nt, unwrap_parens(c, x)) : NK_NONE;
   return (xk == NK_LocalVariableReadNode || xk == NK_InstanceVariableReadNode || repr_static_read_kind(xk)) &&
-         strbuf_slot_ref(c, unwrap_parens(c, x), out, cap);
+         strbuf_slot_ref(c, unwrap_parens(c, x), out, cap) ? x + 1 : 0;
 }
 static int strbuf_route_exc_message(Compiler *c, int v);
 /* Is the last statement of statement list st a holder's read, nil, a

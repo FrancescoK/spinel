@@ -221,13 +221,13 @@ int emit_call_identity_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
       char ref[24];
       buf_puts(b, "({ "); emit_sentinel_bind(c, rt, recv, ref, sizeof ref, b);
       emit_slot_truthy(rt, ref, b);
-      if (rt == TY_INT) buf_printf(b, " ? 2*%s+1 : 4; })", ref);
-      else buf_printf(b, " ? sp_rbval_hash_key(sp_box_float(%s)) : 4; })", ref);
+      if (rt == TY_INT) buf_printf(b, " ? 2*%s+1 : SP_NIL_OBJECT_ID; })", ref);
+      else buf_printf(b, " ? sp_rbval_hash_key(sp_box_float(%s)) : SP_NIL_OBJECT_ID; })", ref);
     }
     else if (rt == TY_INT) { buf_puts(b, "(2*("); emit_expr(c, recv, b); buf_puts(b, ")+1)"); }
     else if (rt == TY_SYMBOL) { buf_puts(b, "((sp_int)("); emit_expr(c, recv, b); buf_puts(b, ")*2)"); }
-    else if (rt == TY_NIL) { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), 4)"); }
-    else if (rt == TY_BOOL) { buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") ? 20 : 0)"); }
+    else if (rt == TY_NIL) { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), SP_NIL_OBJECT_ID)"); }
+    else if (rt == TY_BOOL) { buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") ? SP_TRUE_OBJECT_ID : SP_FALSE_OBJECT_ID)"); }
     /* a boxed value: its identity is the boxed payload (heap pointer / int) */
     else if (rt == TY_POLY) { buf_puts(b, "((sp_int)(uintptr_t)("); emit_expr(c, recv, b); buf_puts(b, ").v.p)"); }
     /* a mutable String held as its shared sp_String: that handle is the
@@ -235,10 +235,11 @@ int emit_call_identity_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
        on every read. A nullable String boxes NULL as nil, whose fixed id
        must not be the NULL pointer's integer value. */
     else if (comp_recv_type(c, recv) == TY_STRING && repr_of(c, recv).may_nil) {
+      if (strbuf_object_ref(c, recv, b)) return 1;
       int t = ++g_tmp;
       buf_printf(b, "({ sp_RbVal _t%d = ", t);
       emit_boxed(c, recv, b);
-      buf_printf(b, "; _t%d.tag == SP_TAG_NIL ? 4 : (sp_int)(uintptr_t)_t%d.v.p; })", t, t);
+      buf_printf(b, "; _t%d.tag == SP_TAG_NIL ? SP_NIL_OBJECT_ID : (sp_int)(uintptr_t)_t%d.v.p; })", t, t);
     }
     else if (rt == TY_STRING && strbuf_object_ref(c, recv, b)) { }
     /* unboxed value structs have no identity: derive a stable Integer from
