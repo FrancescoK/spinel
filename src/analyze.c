@@ -17892,7 +17892,14 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
      the store walk even while a block parameter still infers as String. */
   for (int f = 0, nf = share_flow_count(c); f < nf; f++) {
     int site, value;
-    if (share_flow_at(c, f, &site, &value) == SHFL_ELEM && repr_str_literal_shares(c, site)) {
+    if (share_flow_at(c, f, &site, &value) != SHFL_ELEM) continue;
+    int recv = nt_kind(c->nt, site) == NK_CallNode ? nt_ref(c->nt, site, "receiver") : -1;
+    /* A fill constructor stores its argument as an element too. */
+    int fill = recv >= 0 && (nt_kind(c->nt, recv) == NK_ConstantReadNode ||
+                            nt_kind(c->nt, recv) == NK_ConstantPathNode) &&
+               is_array_new(nt_str(c->nt, recv, "name"), nt_str(c->nt, site, "name")) &&
+               share_node_elems_share(c, site);
+    if (repr_str_literal_shares(c, site) || fill) {
       changed |= strbuf_container_source_walk(c, site, 0, SB_DEMAND);
       /* A known attribute's conditional write need not infer its RHS. */
       infer_type(c, site);
