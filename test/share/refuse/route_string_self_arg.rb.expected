@@ -1,1 +1,0 @@
-spinel: test/share/refuse/route_string_self_arg.rb:7: under --share-strings, the String this value hands on as a method's argument is shared with another name and changed in place, and that route cannot carry the shared handle yet: it would hand on a copy (#6765)
