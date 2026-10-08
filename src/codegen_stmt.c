@@ -1602,10 +1602,26 @@ static int strbuf_route_reader(Compiler *c, int v) {
   view_pop(c, sv);
   return ok;
 }
+/* The blocking IO read arms fill a shared buffer and can answer that
+   same handle (emit_io_read_outbuf), or nil at the end of the stream. */
+static int strbuf_route_outbuf(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  v = unwrap_parens(c, v);
+  if (!repr_share_rule(c) || v < 0 || nt_kind(nt, v) != NK_CallNode ||
+      nt_ref(nt, v, "block") >= 0 || cplan_user(c, v)->dispatch != CP_NONE) return 0;
+  int recv = nt_ref(nt, v, "receiver"), argc = 0;
+  const int *argv = call_args(nt, v, &argc);
+  const char *nm = nt_str(nt, v, "name");
+  char ref[1024];
+  return recv >= 0 && comp_recv_type(c, recv) == TY_IO && !is_nonblock_io(nm) &&
+         bop_share_named(TY_IO, nm) == BSH_FILL1 && argc == (is_positional_io(nm) ? 3 : 2) &&
+         strbuf_slot_ref(c, argv[argc - 1], ref, sizeof ref);
+}
 /* Does value v hand over a String the rule shares as the handle itself: a
    slot holding it, or a route over one? */
 static int strbuf_route_carries(Compiler *c, int v, int depth) {
   char ref[1024];
+  if (strbuf_route_outbuf(c, v)) return 1;
   if (strbuf_route_proc_call(c, v) || strbuf_route_ivar_get(c, v) || strbuf_route_begin(c, v) || strbuf_route_yield(c, v) ||
       strbuf_route_inline_call(c, v) || strbuf_route_loop(c, v) || repr_call_returns_handle(c, v) ||
       strbuf_route_exc_message(c, v) || strbuf_route_reader(c, v)) return 1;
@@ -1621,6 +1637,12 @@ static int strbuf_route_carries(Compiler *c, int v, int depth) {
    the String every other name of its class holds. */
 int emit_strbuf_route(Compiler *c, int v, Buf *b) {
   const NodeTable *nt = c->nt;
+  if (strbuf_route_outbuf(c, v)) {
+    int sv = view_push_repr(c, v, VR_HANDLE_DEMAND, 1);
+    emit_expr(c, v, b);
+    view_pop(c, sv);
+    return 1;
+  }
   if (strbuf_route_reader(c, v)) {
     v = unwrap_parens(c, v);
     int sv = view_push_repr(c, v, VR_HANDLE_DEMAND, 1);
@@ -17427,6 +17449,7 @@ static int strbuf_flow_begin(Compiler *c, StrbufFlowMemo *fm, int v, int depth) 
    whose own tail carries it in turn: 1, else 0. */
 static int strbuf_flow_route(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, int depth) {
   const NodeTable *nt = c->nt;
+  if (strbuf_route_outbuf(c, v)) return 1;
   if (strbuf_route_proc_call(c, v) || strbuf_route_ivar_get(c, v) || repr_call_returns_handle(c, v) ||
       strbuf_route_exc_message(c, v) || strbuf_route_reader(c, v))
     return 1;
