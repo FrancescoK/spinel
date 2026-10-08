@@ -52,3 +52,24 @@ File.open(path) { |io| io.each_line(**h) { |l| r << l } }
 p r
 p File.open(path) { |io| io.readlines(**h) }
 File.delete(path)
+
+class ToHashOpts
+  def to_hash = {chomp: true}
+end
+nk = nil
+p "a\nb\n".lines(**nk)
+p "a\nb\n".lines(**ToHashOpts.new)
+def fwd_lines(s, **k) = s.lines(**k)
+[{chomp: true, foo: 1}, {foo: 1, bar: 2}].each do |bad|
+  fwd_lines("a\n", **bad)
+rescue ArgumentError => e
+  p e.message
+end
+begin
+  "ab".unpack1("C", **{offset: 1, x: 2})
+rescue ArgumentError => e
+  p e.message
+end
+flag = false
+src = +"x"
+p (flag = true; src).clone(freeze: flag).frozen?

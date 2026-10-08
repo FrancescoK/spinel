@@ -25,3 +25,9 @@ false
 "unexpected value for freeze: Integer"
 ["x", "y"]
 ["x", "y"]
+["a\n", "b\n"]
+["a", "b"]
+"unknown keyword: :foo"
+"unknown keywords: :foo, :bar"
+"unknown keyword: :x"
+true
