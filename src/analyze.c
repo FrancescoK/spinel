@@ -14971,6 +14971,13 @@ static int an_local_aliases_reach(const ALocalAliases *t, int si, const char *fr
    shared ivar)? */
 static int strbuf_container_stores_string(Compiler *c, const char *contn, Scope *conts);
 static int strbuf_container_stores_nonstring(Compiler *c, const char *contn, Scope *conts);
+/* A receiverless builtin raise leaves no value for a tail to share. */
+static int an_call_raises(Compiler *c, int node) {
+  const NodeTable *nt = c->nt;
+  return node >= 0 && nt_kind(nt, node) == NK_CallNode && nt_ref(nt, node, "receiver") < 0 &&
+         nt_str(nt, node, "name") && is_raise_alias(nt_str(nt, node, "name")) &&
+         comp_method_index(c, nt_str(nt, node, "name")) < 0;
+}
 /* Is the last statement of statement list `st` a shared handle's slot
    (an_arg_is_shared_handle)? */
 static int an_stmts_last_shared(Compiler *c, int st) {
@@ -14979,9 +14986,7 @@ static int an_stmts_last_shared(Compiler *c, int st) {
   /* an arm that raises leaves no value (a method's body ahead of its
      rescue, `def r(x); raise "e"; rescue; x; end`) */
   int l = b[n - 1];
-  if (nt_kind(c->nt, l) == NK_CallNode && nt_ref(c->nt, l, "receiver") < 0 && nt_str(c->nt, l, "name") &&
-      is_raise_alias(nt_str(c->nt, l, "name")) && comp_method_index(c, nt_str(c->nt, l, "name")) < 0)
-    return 1;
+  if (an_call_raises(c, l)) return 1;
   return an_arg_is_shared_handle(c, l);
 }
 int an_arg_is_shared_handle(Compiler *c, int node) {
@@ -18144,10 +18149,12 @@ static int an_stmts_tail_shared(Compiler *c, int st, int nil_ok, TailCount *tc, 
    an earlier read published (an_tail_answers_nil). With the settled return
    analysis, each arm asks an_tail_handle too: a call can publish the handle,
    and its method's active-visit guard bounds recursive arms. Case/when and
-   case/in share the same arm list for the pickup and settled return walk. */
+   case/in share the same arm list for the pickup and settled return walk.
+   A builtin raise leaves no value, so contributes neither a read nor nil. */
 static int an_tail_is_shared_handle(Compiler *c, int node, int nil_ok, TailCount *tc, RetHandles *R) {
   const NodeTable *nt = c->nt;
   NodeKind k = node >= 0 ? nt_kind(nt, node) : NK_NONE;
+  if (c->share_strings && an_call_raises(c, node)) return 1;
   if (c->share_strings && k == NK_NilNode) { tc->nils += nil_ok; return nil_ok; }
   if (c->share_strings && k == NK_ParenthesesNode) return an_stmts_tail_shared(c, nt_ref(nt, node, "body"), nil_ok, tc, R);
   if (c->share_strings && k == NK_BeginNode) {
@@ -18295,18 +18302,20 @@ static int an_ret_handle(Compiler *c, RetHandles *R, int mi);
    the return channel. Count it with the pickup's own tail predicate. */
 static int an_tail_handle(Compiler *c, RetHandles *R, int n, TailCount *tc) {
   const NodeTable *nt = c->nt;
-  if (an_arg_is_shared_handle(c, n)) return 1;
   if (an_tail_is_shared_handle(c, n, 1, tc, R)) return 1;
   NodeKind k = n >= 0 ? nt_kind(nt, n) : NK_NONE;
   if (k == NK_SuperNode || k == NK_ForwardingSuperNode) {
     const CallPlan *p = cplan_user_fresh(c, n);
-    return p->dispatch == CP_DIRECT && p->mi > 0 && an_ret_handle(c, R, p->mi);
+    int ok = p->dispatch == CP_DIRECT && p->mi > 0 && an_ret_handle(c, R, p->mi);
+    tc->reads += ok;
+    return ok;
   }
   if (k != NK_CallNode || c->ntype[n] != TY_STRING) return 0;
   int mis[CPT_MAX];
   int cnt = cplan_targets(c, n, mis, CPT_MAX);
   if (cnt <= 0) return 0;
   for (int i = 0; i < cnt; i++) if (!an_ret_handle(c, R, mis[i])) return 0;
+  tc->reads++;
   return 1;
 }
 /* Is body tail n an append chain over a shared handle's read (`buf << a <<
@@ -18331,7 +18340,12 @@ static int an_ret_handle(Compiler *c, RetHandles *R, int mi) {
   /* a body with its own rescue is a begin, whose arms answer */
   if (last < 0 && m->body >= 0 && nt_kind(nt, m->body) == NK_BeginNode) last = m->body;
   TailCount tc = { 0, 0 };
-  if (last >= 0) { saw = 1; ok = an_tail_handle(c, R, last, &tc) || an_tail_append_chain(c, last); }
+  if (last >= 0) {
+    saw = 1;
+    ok = an_tail_handle(c, R, last, &tc);
+    /* The implicit append tail publishes its base's handle read too. */
+    if (!ok && an_tail_append_chain(c, last)) { tc.reads++; ok = 1; }
+  }
   for (int r = R->ret_start[mi]; ok && r < R->ret_start[mi + 1]; r++) {
     int ra = nt_ref(nt, R->ret_list[r], "arguments");
     int rn = 0; const int *rv = ra >= 0 ? nt_arr(nt, ra, "arguments", &rn) : NULL;
@@ -18340,7 +18354,8 @@ static int an_ret_handle(Compiler *c, RetHandles *R, int mi) {
     else ok = rn == 1 && an_tail_handle(c, R, rv[0], &tc);
   }
   if (tc.nils) m->ret_nil_pickup = 1;
-  R->st[mi] = ok && saw ? RH_YES : RH_NO;
+  /* An all-raising body publishes no handle for a caller to pick up. */
+  R->st[mi] = ok && saw && tc.reads > 0 ? RH_YES : RH_NO;
   return R->st[mi] == RH_YES;
 }
 static void an_mark_handle_returns(Compiler *c) {
