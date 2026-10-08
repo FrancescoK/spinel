@@ -2224,6 +2224,8 @@ static TyKind proc_arg_ty(Compiler *c, int a) {
   Repr r = repr_of(c, a);
   /* A static slot's read face is a String, but its box carries the handle. */
   if (repr_share_rule(c) && r.strbuf_src == RS_HANDLE) return TY_STRBUF;
+  /* A value route publishes the same handle its boxed emission carries. */
+  if (r.as_ty == TY_STRING && strbuf_value_carries(c, a)) return TY_STRBUF;
   TyKind t = r.as_ty;
   if (t == TY_UNKNOWN && nt_kind(c->nt, a) == NK_ArrayNode && node_is_empty_container(c->nt, a))
     return TY_INT_ARRAY;
