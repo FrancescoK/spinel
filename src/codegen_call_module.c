@@ -1201,6 +1201,14 @@ int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable 
     /* IO.popen is not implemented: refused at compile time, as an
        unsupported API is, rather than a NoMethodError the first time the
        line runs (#7199). A program's own IO.popen is its own. */
+    /* Time.parse / Time.strptime, refused here under --defer-refusals (the
+       pass ahead of emission refuses them otherwise; see reject_time_parse) */
+    { char tpm[320];
+      if (defer_refusals() && time_parse_refusal(c, id, tpm, sizeof tpm)) {
+        unsupported_feature(c, id, tpm);
+        buf_puts(b, "sp_box_nil()");
+        return 1;
+      } }
     if (tcn && (sp_streq(tcn, "IO") || sp_streq(tcn, "File")) && sp_streq(name, "popen")) {
       int ioc = comp_class_index(c, tcn);
       if (ioc < 0 || comp_cmethod_in_chain(c, ioc, name, NULL) < 0) {

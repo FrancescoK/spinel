@@ -1087,6 +1087,7 @@ extern jmp_buf g_unsup_recover;    /* per-unit recovery point, armed by the driv
 extern int g_unsup_armed;          /* nonzero while a recovery point is live */
 extern int g_unsup_quiet;          /* record a refusal without printing it (codegen.c decides) */
 int defer_refusals(void);
+int time_parse_refusal(Compiler *c, int id, char *msg, size_t cap);
 int emit_stmt_or_defer(Compiler *c, int st, Buf *b, int indent);
 extern int g_unsup_probe;          /* silent emittability probe (drop a dynamic-send arm) */
 extern int g_open_defaults;        /* parameter defaults being emitted, innermost last */
