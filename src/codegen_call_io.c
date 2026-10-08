@@ -9,6 +9,7 @@
 #include "call_plan.h"
 #include "codegen_call_arms.h"
 #include "repr.h"
+#include "share.h"
 static int emit_boxed_positional_io(Compiler *c, int recv, const char *name, int argc,
                                     const int *argv, int tio, Buf *b);
 
@@ -80,11 +81,8 @@ static void emit_line_param_decl(Compiler *c, int id, const char *pn, int lt, Bu
    nil and reads the rest of the stream for a nil length, where the others
    raise EOFError after the write-back. Every argument is held boxed, so
    each converts at run time in CRuby's order. */
-static int emit_io_read_outbuf(Compiler *c, const char *name, const char *fn, const char *r, const int *argv,
-                               int nint, int ob, int rest, Buf *b) {
-  TyKind bt = comp_ntype(c, ob);
-  int boxed = repr_of(c, ob).kind == RK_BOXED;
-  if (!boxed && (bt == TY_STRING || bt == TY_STRBUF)) return 0;
+static void emit_io_read_buffer(Compiler *c, const char *name, const char *fn, const char *r, const int *argv,
+                                int nint, int ob, int rest, int boxed, int shared, Buf *b) {
   int tf = ++g_tmp, ta = g_tmp + 1;
   g_tmp += 2 * nint + 1;
   int ti = ta + nint + 1, ts = ++g_tmp, tr = ++g_tmp;
@@ -102,8 +100,10 @@ static int emit_io_read_outbuf(Compiler *c, const char *name, const char *fn, co
   if (sp_streq(name, "read") || sp_streq(name, "readpartial"))
     buf_printf(b, "if (_t%d < 0) sp_raise_cls(\"ArgumentError\", sp_sprintf(\"negative length %%lld given\", (long long)_t%d)); ",
                ti, ti);
+  if (shared) buf_printf(b, "_t%d = sp_poly_strbuf_lift(_t%d); ", ta + nint, ta + nint);
   buf_printf(b, "const char *_t%d = sp_poly_nil_p(_t%d) ? NULL : sp_poly_arg_str_chk(_t%d); ",
              ts, ta + nint, ta + nint);
+  if (shared) buf_printf(b, "SP_GC_ROOT_STR(_t%d); ", ts);
   /* a shared handle's frozen flag is on the handle, not in its bytes */
   if (boxed)
     buf_printf(b, "if (_t%d && sp_poly_is_strbuf(_t%d) && sp_String_is_frozen((sp_String *)_t%d.v.p))"
@@ -113,6 +113,7 @@ static int emit_io_read_outbuf(Compiler *c, const char *name, const char *fn, co
   buf_printf(b, "%s(_t%d", fn, tf);
   for (int k = 0; k < nint; k++) buf_printf(b, ", _t%d", ti + k);
   buf_puts(b, "); ");
+  if (shared) buf_printf(b, "SP_GC_ROOT_STR(_t%d); ", tr);
   if (boxed) {
     int tn = ++g_tmp;
     buf_printf(b, "if (_t%d) { sp_RbVal _t%d = sp_poly_str_become(_t%d, _t%d ? _t%d : sp_str_empty); ",
@@ -122,7 +123,82 @@ static int emit_io_read_outbuf(Compiler *c, const char *name, const char *fn, co
   }
   /* readpartial and pread raise at the end of the stream, once the buffer is empty */
   if (!rest) buf_printf(b, "if (!_t%d) sp_raise_cls(\"EOFError\", \"end of file reached\"); ", tr);
-  buf_printf(b, "_t%d; })", tr);
+  if (shared)
+    buf_printf(b, "!_t%d ? NULL : sp_poly_nil_p(_t%d) ? sp_String_new_shared(_t%d) : sp_poly_as_strbuf(_t%d); })",
+               tr, ta + nint, tr, ta + nint);
+  else buf_printf(b, "_t%d; })", tr);
+}
+
+static int emit_io_read_outbuf(Compiler *c, const char *name, const char *fn, const char *r, const int *argv,
+                               int nint, int ob, int rest, Buf *b) {
+  TyKind bt = comp_ntype(c, ob);
+  int boxed = repr_of(c, ob).kind == RK_BOXED;
+  if (!boxed && (bt == TY_STRING || bt == TY_STRBUF)) return 0;
+  emit_io_read_buffer(c, name, fn, r, argv, nint, ob, rest, boxed, 0, b);
+  return 1;
+}
+
+/* The blocking IO fill rows answer the supplied buffer, or a new String
+   when it is nil. Only a carried handle or a fresh buffer can preserve
+   that identity. The seal and the emitter ask this same predicate. */
+int strbuf_io_outbuf(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  if (!repr_share_rule(c) || id < 0 || nt_kind(nt, id) != NK_CallNode) return -1;
+  const char *name = nt_str(nt, id, "name");
+  int sh = bop_share_named(TY_IO, name);
+  if ((sh != BSH_FILL1 && sh != BSH_FILL2) || is_nonblock_io(name)) return -1;
+  int recv = nt_ref(nt, id, "receiver"), argc = 0;
+  const int *argv = call_args(nt, id, &argc);
+  int ob = sh == BSH_FILL2 ? 2 : 1;
+  if (recv < 0 || argc != ob + 1 || nt_ref(nt, id, "block") >= 0 || call_has_splat_arg(nt, argv, argc)) return -1;
+  Repr rr = repr_of(c, recv);
+  if (rr.as_ty != TY_IO && rr.kind != RK_BOXED) return -1;
+  int targets[CPT_MAX];
+  if (cplan_targets(c, id, targets, CPT_MAX) != 0) return -1;
+  return repr_of(c, argv[ob]).kind == RK_BOXED || strbuf_value_carries(c, argv[ob]) ||
+         share_value_fresh(c, argv[ob], 0) ? ob : -1;
+}
+
+/* Hold each operand before dispatch, including a boxed receiver. The
+   existing read helper fills the buffer and answers its handle here. */
+int emit_strbuf_io_read(Compiler *c, int id, Buf *b) {
+  int ob = strbuf_io_outbuf(c, id);
+  if (ob < 0) return 0;
+  const NodeTable *nt = c->nt;
+  int recv = nt_ref(nt, id, "receiver"), argc = 0;
+  const int *argv = call_args(nt, id, &argc);
+  const char *name = nt_str(nt, id, "name");
+  int rest = ob == 1 && is_io_read(name);
+  const char *fn = ob == 2 ? "sp_File_pread_or_nil" : rest ? "sp_File_read_n" : "sp_File_readpartial_or_nil";
+  buf_puts(b, "({ ");
+  int tr = hold_operand(c, recv, TY_POLY, 1, ++g_tmp, 1, " ", b), marks[3], views[3];
+  int held[3];
+  for (int i = 0; i < argc; i++) {
+    if (i == ob && strbuf_boxed_local(c, argv[i])) {
+      held[i] = ++g_tmp;
+      Buf lv = {0};
+      emit_local_ref(c, argv[i], nt_str(nt, argv[i], "name"), &lv);
+      buf_printf(b, "sp_RbVal _t%d = (%s = sp_poly_strbuf_lift(%s)); SP_GC_ROOT_RBVAL(_t%d); ",
+                 held[i], lv.p, lv.p, held[i]);
+      free(lv.p);
+    }
+    else if (i == ob && strbuf_value_carries(c, argv[i])) {
+      held[i] = ++g_tmp;
+      buf_printf(b, "sp_RbVal _t%d = sp_box_nullable_obj(", held[i]);
+      emit_strbuf_handle_of(c, argv[i], b);
+      buf_printf(b, ", SP_BUILTIN_STRBUF); SP_GC_ROOT_RBVAL(_t%d); ", held[i]);
+    }
+    else held[i] = hold_operand(c, argv[i], TY_POLY, 1, ++g_tmp, 1, " ", b);
+  }
+  for (int i = 0; i < argc; i++) {
+    marks[i] = view_bind(argv[i], "_t%d", held[i]);
+    views[i] = view_push(c, argv[i], TY_POLY);
+  }
+  char r[128];
+  snprintf(r, sizeof r, "sp_poly_as_io(_t%d, \"%s\")", tr, name);
+  emit_io_read_buffer(c, name, fn, r, argv, ob, argv[ob], rest, 1, 1, b);
+  for (int i = argc - 1; i >= 0; i--) { view_pop(c, views[i]); view_unbind(marks[i]); }
+  buf_puts(b, "; })");
   return 1;
 }
 
@@ -911,6 +987,12 @@ static int emit_boxed_positional_io(Compiler *c, int recv, const char *name, int
 }
 
 int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv) {
+  if (strbuf_io_outbuf(c, id) >= 0) {
+    buf_puts(b, "sp_strbuf_read_pub(");
+    emit_strbuf_io_read(c, id, b);
+    buf_puts(b, ")");
+    return 1;
+  }
   if (recv >= 0 && comp_ntype(c, recv) == TY_IO) {
     const char *r = NULL;
     Buf rb = {0};

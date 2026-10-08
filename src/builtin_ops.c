@@ -2734,7 +2734,7 @@ static const BopShareRow bop_share_rows[] = {
   { TY_IO, "readpartial",  BSH_FILL1 },
   { TY_IO, "sysread",      BSH_FILL1 },
   { TY_IO, "read_nonblock", BSH_FILL1 },
-  { TY_IO, "pread",        BSH_FILL1 },
+  { TY_IO, "pread",        BSH_FILL2 },
 
   /* The scalars copy whatever String they are handed; their iterators hand
      a block numbers or new Strings. */
