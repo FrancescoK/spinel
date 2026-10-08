@@ -1236,7 +1236,8 @@ int call_never_returns(Compiler *c, int id);
    its container kind rather than left TY_UNKNOWN (see types.c). */
 TyKind fold_seed_ntype(Compiler *c, int node);
 /* `sum(seed)` through sp_poly_sum_seed, with both operands boxed into rooted
-   temporaries in receiver-then-seed order (see codegen_util.c). */
+   temporaries in receiver-then-seed order (see codegen_util.c). A negative
+   seed denotes the implicit Integer zero. */
 void emit_poly_sum_seed(Compiler *c, int recv, int seed, Buf *b);
 void emit_c_escaped_n(Buf *b, const char *s, size_t len);
 void emit_c_escaped(Buf *b, const char *s);

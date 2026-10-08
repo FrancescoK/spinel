@@ -1801,7 +1801,7 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
        the value at THIS site is what the block one level out answers, the
        one the splice will run (#4495), and a tail yield there answers what
        the block a level further out does (yield_block_out). */
-    int tblk = g_block_id;
+    int tblk = g_block_id, plain = 0;
     TyKind bt = TY_NIL;
     for (int depth = 0; tblk >= 0; depth++) {
       int bbody = nt_ref(c->nt, tblk, "body");
@@ -1824,10 +1824,12 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
          splice; counting it widened blocks that carry one and put an sp_int
          where the slot was an sp_RbVal. */
       { TyKind nx = block_next_value_ty(c, bbody);
-        if (nx != TY_UNKNOWN) bt = (bt == TY_UNKNOWN) ? nx : ty_unify(bt, nx); }
+        if (nx != TY_UNKNOWN) bt = (bt == TY_UNKNOWN) ? nx : ty_unify(bt, nx);
+        else plain = bt == TY_INT && int_value_plain(c, tail); }
       break;
     }
-    if (bt != t && bt != TY_UNKNOWN) {
+    /* The same Integer type can still differ in whether INTPTR_MIN is nil. */
+    if ((bt != t || plain) && bt != TY_UNKNOWN) {
       if (bt == TY_POLY) { emit_expr(c, node, b); RC(RF_PASS, RW_YIELD); return; }
       Buf yb; memset(&yb, 0, sizeof yb);
       emit_expr(c, node, &yb);
@@ -1843,6 +1845,10 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
       else if (pre_boxed) {
         buf_puts(b, yt);
         RC(RF_PASS, RW_YIELD);
+      }
+      else if (plain) {
+        buf_printf(b, "sp_box_int_nn(%s)", yt);
+        RC(RF_INT, RW_YIELD);
       }
       else {
         emit_boxed_text(c, bt, yt, b);
@@ -2105,6 +2111,17 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
                     : tr.elem == TY_STRING ? "SP_BUILTIN_STR_ARRAY" : tr.elem == TY_POLY ? "SP_BUILTIN_POLY_ARRAY"
                     : t == TY_OPENSTRUCT ? "SP_BUILTIN_OPENSTRUCT" : NULL;
     if (aid) {
+      /* A box loses the static element-nil fact. Carry that fact in the
+         existing array flag so boxed sums distinguish nil from INTPTR_MIN. */
+      if (tr.elem_nil_marked && (t == TY_INT_ARRAY || t == TY_FLOAT_ARRAY)) {
+        const char *k = t == TY_INT_ARRAY ? "Int" : "Float";
+        int ta = ++g_tmp;
+        buf_printf(b, "({ sp_%sArray *_t%d = ", k, ta); emit_expr(c, node, b);
+        buf_printf(b, "; sp_%sArray_note_nil(_t%d); sp_box_nullable_obj(_t%d, %s); })",
+                   k, ta, ta, aid);
+        RC(RF_NULLABLE, RW_NONE);
+        return;
+      }
       buf_puts(b, "sp_box_nullable_obj((void *)("); emit_expr(c, node, b);
       buf_printf(b, "), %s)", aid);
       RC(RF_NULLABLE, RW_NONE);
