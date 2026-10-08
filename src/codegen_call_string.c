@@ -507,10 +507,11 @@ no_gsub_enum:
               buf_printf(b, "sp_re_match_poly(%s, ", rp.p); emit_expr(c, argv[0], b); buf_puts(b, ")");
             }
             else if (a0 == TY_POLY) {
-              /* runtime type check: raise TypeError if not a string */
+              /* runtime type check: raise TypeError if not a string (a
+                 shared-string handle is a String, #4279) */
               int tv = ++g_tmp;
               emit_indent(g_pre, g_indent);
-              buf_printf(g_pre, "sp_RbVal _t%d = ", tv); emit_expr(c, argv[0], g_pre); buf_puts(g_pre, ";\n");
+              buf_printf(g_pre, "sp_RbVal _t%d = sp_poly_strbuf_deref(", tv); emit_expr(c, argv[0], g_pre); buf_puts(g_pre, ");\n");
               emit_indent(g_pre, g_indent);
               buf_printf(g_pre, "if (_t%d.tag != SP_TAG_STR && _t%d.tag != SP_TAG_NIL) sp_raise_no_str_conversion(_t%d);\n", tv, tv, tv);
               buf_printf(b, "sp_re_match_poly(%s, _t%d.v.s)", rp.p, tv);
