@@ -12579,6 +12579,9 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
       char srefW[1024];
       if (vty && sp_streq(vty, "NilNode")) buf_puts(b, "NULL");
       else if (strbuf_slot_ref(c, v, srefW, sizeof srefW)) buf_puts(b, srefW);
+      /* A conditional into the shared slot takes each arm's handle. */
+      else if (repr_share_rule(c) && strbuf_cond_has_handle_leaf(c, v, 0))
+        emit_strbuf_ivar_store(c, 1, v, b);
       /* a write whose slot holds the rule's handle: that handle */
       else if (emit_strbuf_write_handle(c, v, b)) { }
       /* a route that hands on one (`@iv = s.then { |v| v }`) */
@@ -17647,6 +17650,8 @@ int strbuf_flow_carries(Compiler *c, StrbufFlowMemo *fm, int kind, int site, int
     /* a boxed slot takes its value through emit_boxed, as an element does */
     HolderRef h;
     if (holder_of_node(c, site, &h) && h.r.kind == RK_BOXED) ctx = SFC_ELEM;
+    else if (sk == NK_InstanceVariableWriteNode && repr_write_share(c, site) &&
+             strbuf_cond_has_handle_leaf(c, v, 0)) ctx = SFC_ALIAS;
     else ctx = sk == NK_LocalVariableWriteNode || sk == NK_GlobalVariableWriteNode || sk == NK_ClassVariableWriteNode ||
                sk == NK_ConstantWriteNode || sk == NK_ConstantPathWriteNode ? SFC_ALIAS : SFC_SLOT;
     break;
