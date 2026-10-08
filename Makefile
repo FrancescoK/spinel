@@ -2250,6 +2250,7 @@ threaded-render-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SPINEL_TIMEOUT)
 	if [ $$ok -eq 1 ]; then echo "threaded-render-test: pass"; else exit 1; fi
 
 GC_MINOR_TESTS := test/boxed_scan_capture_params.rb \
+                  test/share_strings_transform_argument_order.rb \
                   test/share_strings_hash_transform_params.rb \
                   test/share/share_strings_transform_operands.rb \
                   test/share/share_strings_captured_bytes.rb \
@@ -2399,6 +2400,7 @@ gc-minor-test: $(GC_MINOR_RESULTS)
 # when it is done and its result file records 1 (pass) or 0.
 # The sharing fixtures must exercise their handle and snapshot roots here too.
 build/gc-minor-results/share/%.res: GC_MINOR_FLAGS = --share-strings
+build/gc-minor-results/share_strings_transform_argument_order.res: GC_MINOR_FLAGS = --share-strings
 build/gc-minor-results/%.res: test/%.rb FORCE | $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SPINEL_TIMEOUT)
 	@mkdir -p $(@D); tmp=$$(mktemp -d /tmp/spinel-gcminor.XXXXXX); ok=1; src=$<; \
 	{ \

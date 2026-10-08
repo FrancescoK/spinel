@@ -13867,7 +13867,8 @@ static int emit_poly_scan_block(Compiler *c, int id, Buf *b, const NodeTable *nt
    run in order. Hold their values first to retain String identity, then root
    the byte reads before another read can allocate. Integer slots are named
    by the caller, just as its runtime helper takes them. The sharing rule
-   introduces these snapshots; default operands keep their existing holds. */
+   introduces these snapshots; default operands keep their existing holds.
+   Hold even plain reads before later arguments can reassign their slots. */
 static void emit_poly_str_transform(Compiler *c, int recv, int argc, const int *argv,
                                     const char *name, const char *fn, unsigned int_args, Buf *b) {
   int alloc = operand_may_allocate(c, recv);
@@ -13875,7 +13876,7 @@ static void emit_poly_str_transform(Compiler *c, int recv, int argc, const int *
   int tr = -1, ta[2] = { -1, -1 }, views[2] = { -1, -1 }, mark = g_n_argov;
   if (repr_share_rule(c) && alloc > 1) {
     tr = hold_operand_pre(c, recv, TY_POLY, 1, ++g_tmp, 1);
-    for (int i = 0; i < argc; i++) if (operand_may_allocate(c, argv[i])) {
+    for (int i = 0; i < argc; i++) {
       Repr r = repr_of(c, argv[i]);
       int boxed = r.kind == RK_STRBUF;
       ta[i] = hold_operand_pre(c, argv[i], r.as_ty, boxed, ++g_tmp, 1);
