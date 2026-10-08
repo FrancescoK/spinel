@@ -1883,7 +1883,7 @@ static int an_to_a_result_mutated(Compiler *c, int id) {
    answering an index came back through an sp_bool (#4072). Three arms in that
    section had thought to ask; the rest had not, which is why the answer
    depended on which name you picked. Ask once, on the way out. */
-TyKind an_poly_concrete(Compiler *c, const char *name, TyKind t) {
+static TyKind an_poly_concrete(Compiler *c, const char *name, TyKind t) {
   if (t == TY_POLY || t == TY_UNKNOWN || !name) return t;
   /* The builtin-only re-derivation asks what this call would be if NO user
      class owned the name, so the union with a user return is the one thing it
@@ -1917,14 +1917,22 @@ TyKind an_poly_concrete(Compiler *c, const char *name, TyKind t) {
     if (r == TY_NIL && an_ty_holds_nil(t)) continue;
     return TY_POLY;
   }
-  /* Class-value arms share the result slot with the instance and builtin
-     arms, even when no instance method owns the name. */
-  int ncc = 0;
-  const PolyCand *ccs = comp_cmethod_candidates(c, name, &ncc);
-  for (int i = 0; i < ncc; i++) {
-    int mi = ccs[i].mi;
-    if (mi < 0 || mi >= c->nscopes) continue;
-    TyKind r = (TyKind)c->scopes[mi].ret;
+  return t;
+}
+
+/* Class-value arms share the result slot with the instance and builtin
+   arms, even when no instance method owns the name. Only this call's
+   targets can widen it; unrelated class methods must not change the slot. */
+TyKind an_class_concrete(Compiler *c, int id, TyKind t) {
+  if (an_builtin_only || t == TY_POLY || t == TY_UNKNOWN || t == TY_VOID ||
+      !cplan_boxed_cmethod(c, id)) return t;
+  int targets[CPT_MAX];
+  int n = cplan_targets(c, id, targets, CPT_MAX);
+  if (n == CPT_UNKNOWN) return TY_POLY;
+  for (int i = 0; i < n; i++) {
+    Scope *s = &c->scopes[targets[i]];
+    if (!s->is_cmethod) continue;
+    TyKind r = (TyKind)s->ret;
     if (r == t || r == TY_UNKNOWN || r == TY_VOID) continue;
     if (r == TY_NIL && an_ty_holds_nil(t)) continue;
     return TY_POLY;
@@ -7713,7 +7721,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
 
   { TyKind r; if (infer_exception_call(c, id, nt, name, recv, argc, rt, &r)) return r; }
 
-  { TyKind r; if (infer_poly_operand_call(c, id, nt, name, recv, argc, argv, rt, a0, &r)) return r; }
+  { TyKind r; if (infer_poly_operand_call(c, id, nt, name, recv, argc, argv, rt, a0, &r)) return an_class_concrete(c, id, r); }
 
   /* symbol receiver methods */
   if (recv >= 0 && rt == TY_SYMBOL) { TyKind st = infer_symbol_call(c, id, nt, name, argc, argv); if (st != TY_UNKNOWN) return st; }

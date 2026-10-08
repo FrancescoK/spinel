@@ -549,6 +549,24 @@ int cplan_targets(Compiler *c, int id, int *out, int cap) {
   return n;
 }
 
+/* A boxed receiver whose own targets include a class method. The receiver
+   walk bounds instances only: a successful bound cannot contain a Class. */
+int cplan_boxed_cmethod(Compiler *c, int id) {
+  int recv = nt_ref(c->nt, id, "receiver");
+  if (recv < 0 || comp_ntype(c, recv) != TY_POLY) return 0;
+  int ncc = 0;
+  comp_cmethod_candidates(c, nt_str(c->nt, id, "name"), &ncc);
+  if (!ncc) return 0;
+  int n = 0;
+  if (poly_recv_classes(c, id, &n)) return 0;
+  int targets[CPT_MAX];
+  n = cplan_targets(c, id, targets, CPT_MAX);
+  if (n == CPT_UNKNOWN) return 1;
+  for (int i = 0; i < n; i++)
+    if (c->scopes[targets[i]].is_cmethod) return 1;
+  return 0;
+}
+
 /* ---- CP_REFUSE ---- */
 
 /* The positional-argument count of a CallNode (0 when it has none). */
