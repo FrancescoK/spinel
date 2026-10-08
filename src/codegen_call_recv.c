@@ -13350,13 +13350,17 @@ static int class_ivar_slot(Compiler *c, int k, const char *sym, char *out, size_
    from `_ivs<tv>`, 'g' reads into `_ivg<tv>`, 'd' asks into `_ivd<tv>`. A
    set records the name in the map too, so 'd' and the listing see it; a
    slot only a class method wrote counts when it holds a value.
-   Static slots remain readable when no builtin-ivar map is needed. */
+   Static slots remain readable when no builtin-ivar map is needed.
+   A boxed receiver only needs those of a class value that can escape. */
 static void emit_class_ivar_arm(Compiler *c, int tv, const char *sym, char op, const char *dflt, int chain, Buf *b) {
   if (!c->bivar_table && op != 'g') return;
-  buf_printf(b, "%sif (_t%d.tag == SP_TAG_CLASS) switch (_t%d.cls_id) {", chain ? "else " : "", tv, tv);
+  int any = 0;
   for (int k = 0; k < c->nclasses; k++) {
     char slot[300]; TyKind t;
     if (!class_ivar_slot(c, k, sym, slot, sizeof slot, &t)) continue;
+    if (!c->bivar_table && chain && !class_value_escapes(c, k)) continue;
+    if (!any) buf_printf(b, "%sif (_t%d.tag == SP_TAG_CLASS) switch (_t%d.cls_id) {", chain ? "else " : "", tv, tv);
+    any = 1;
     buf_printf(b, " case %d: ", k);
     if (op == 's') {
       char val[24]; snprintf(val, sizeof val, "_ivs%d", tv);
@@ -13379,6 +13383,10 @@ static void emit_class_ivar_arm(Compiler *c, int tv, const char *sym, char op, c
       buf_puts(b, ";");
     }
     buf_puts(b, " break;");
+  }
+  if (!any) {
+    if (!c->bivar_table) return;
+    buf_printf(b, "%sif (_t%d.tag == SP_TAG_CLASS) switch (_t%d.cls_id) {", chain ? "else " : "", tv, tv);
   }
   if (op == 'd') buf_printf(b, " default: _ivd%d = %s; break; } ", tv, dflt);
   else if (c->bivar_table) buf_printf(b, " default: %s; break; } ", dflt);

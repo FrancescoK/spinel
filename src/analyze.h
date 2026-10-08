@@ -398,6 +398,10 @@ int method_call_param_shift(Compiler *c, int mn, int mi); /* 1 when self carries
    (analyze.c) and codegen's user_defines_or_reads. */
 int an_class_can_be_reached(Compiler *c, int ci);
 
+/* Can a Class value reach a receiver the analysis cannot pin? Memoized
+   alongside dynamic constructor binding; shared with boxed ivar emission. */
+int class_value_escapes(Compiler *c, int cid);
+
 int a_block_is_lifted(Compiler *c, int id);
 
 /* The parameter of Struct/Data initialize scope `s` that a bare `super`
