@@ -1,6 +1,7 @@
 # A Ruby String is not stored into native memory (nothing would keep it
 # alive after the store): put, put_pointer, :string fields, inline arrays and
 # attached variables refuse it, as the gem does. A call's argument is fine.
+# spinel: share
 require "ffi"
 
 class Names < FFI::Struct

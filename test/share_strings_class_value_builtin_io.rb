@@ -1,3 +1,4 @@
+# spinel: gc-minor
 # User class methods keep their return types beside IO instance arms.
 class ClassWriter
   def self.write(value) = "class:#{value}"

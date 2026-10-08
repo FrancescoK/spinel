@@ -1,3 +1,4 @@
+# spinel: share
 # A String yielded out of a fresh Array (split, scan) and mutated in place
 # where nothing can read the mutation back through that Array: the Array is
 # a call's temporary whose iterator answer is dropped or is the block's

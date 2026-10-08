@@ -1,6 +1,7 @@
 # A private method of a program's Object reopening is refused on an explicit
 # receiver, as CRuby refuses it: NoMethodError naming the receiver's class.
 # A bare call, and a call on self, still reach it.
+# spinel: decisions
 class Object
   def foo = 1
   private :foo

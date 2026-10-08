@@ -1,3 +1,4 @@
+# spinel: gc-minor
 # Shared String storage still selects and binds a reopening's block method.
 # Assignment receivers retain the storage type that ordinary reads unwrap.
 class String

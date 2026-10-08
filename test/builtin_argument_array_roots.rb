@@ -1,5 +1,6 @@
 # Each computed operand survives allocation by the next operand, including
 # setup for an Array argument and the boxed File.join route.
+# spinel: gc-minor
 require "tmpdir"
 i = 7
 a = [1, 2]

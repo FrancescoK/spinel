@@ -3,6 +3,7 @@
 # past the signature's variant the two are separate C structs, and the return
 # went back uncoerced (#4095). The assignment side already made this
 # conversion; the return side did not.
+# spinel: rbs-seed-check
 class Jar
   def initialize(inbound = {})
     @inbound = {}

@@ -2,6 +2,7 @@
 # bindings in typed-array patterns, hash-pattern **rest / **nil, Method
 # objects over builtin receivers, **hash degrading into *args, char-range
 # Enumerable methods, and String accumulators in each_with_object.
+# spinel: share
 def m(a, b) = a + b
 begin
   puts m(1)

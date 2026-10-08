@@ -12,6 +12,7 @@
 # All three ingredients are load-bearing: the nilable return seed on
 # find_by, the subclass override of instantiate, and the unresolved
 # (poly-dispatch) receiver at the call site.
+# spinel: rbs-seed-check
 class OfrBase
   def self.instantiate(_row)
   end

@@ -685,9 +685,7 @@ wasm-rt: $(SP_RT_WASI_LIB) $(BUNDLED_NATIVE_WASI_OBJS)
 # bundled package, a 32-bit Integer. Not in the gate: it needs the sdk and
 # an engine. `make wasm-test` where both are.
 WASMTIME ?= wasmtime
-WASM_TESTS = test/string_gsub_block.rb test/rescue_roots_under_collection.rb test/float_round_half.rb \
-             test/bignum_modulo_bit_pow.rb test/json_user_to_json_bytes.rb test/array_flatten_typed_elements.rb \
-             test/string_to_i_overflow_raises.rb
+WASM_TESTS = $(shell grep -l '^\# spinel: wasm$$' test/*.rb)
 # WASM_ENGINE_REQUIRED=1 makes a missing engine a failure rather than a skip:
 # the one job whose whole purpose is to prove these programs still link and run
 # cannot report that by exiting 0 with "skipped" (#4807). CI sets it.
@@ -1001,8 +999,8 @@ re-lit-test: $(SPINEL)
 # --share-strings (#6765): test/share/*.rb hold answers only the flag gives
 # (the default build refuses them or answers with a copy), so `make test`
 # leaves them out. Each runs under the flag, as do the top-level
-# test/share_strings_*.rb and the test/reject programs test/share/reject.list
-# names (the String routes the default build refuses, #6179's), plain and
+# test/share_strings_*.rb and the test/reject programs marked reject-share
+# (the String routes the default build refuses, #6179's), plain and
 # with GC stress, against its CRuby .expected (a test/reject program's in
 # test/share/reject/). Each test/share/refuse/*.rb is a program the flag
 # would answer with a copy of a shared String (a route codegen does not
@@ -1010,36 +1008,15 @@ re-lit-test: $(SPINEL)
 # the first `spinel:` line its .expected holds. gate-props runs it. A
 # compile whose inference ran to its round cap fails too: the answer can be
 # right all the same, and where the rounds stopped decided what was emitted.
-SHARE_TESTS := $(wildcard test/share/*.rb)
-ifeq ($(FFI_AVAILABLE),yes)
-SHARE_TESTS += packages/ffi/test/ffi_dynamic_owner.rb packages/ffi/test/ffi_store_string.rb
-SHARE_TESTS += packages/ffi/test/ffi_nil_numeric_arg.rb
-SHARE_TESTS += packages/fiddle/test/fiddle_importer_include.rb
-endif
+SHARE_TESTS = $(wildcard test/share/*.rb test/share_strings_*.rb) \
+               $(shell grep -l '^\# spinel: share$$' test/*.rb packages/*/test/*.rb) \
+               $(shell grep -l '^\# spinel: reject-share$$' test/reject/*.rb)
 ifneq ($(FFI_AVAILABLE),yes)
-SHARE_TESTS := $(filter-out test/share/share_strings_fiddle.rb,$(SHARE_TESTS))
+SHARE_SKIP = test/share/share_strings_fiddle.rb packages/ffi/test/%.rb packages/fiddle/test/%.rb
 endif
 share-strings-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS) $(BUNDLED_NATIVE_MT_OBJS)
 	@tmp=$$(mktemp -d "$${TMPDIR:-/tmp}/spinel-share.XXXXXX"); ok=1; \
-	for t in $(SHARE_TESTS) test/share_strings_*.rb test/nullable_string_identity.rb test/widened_param_reaches_its_callee.rb test/reader_or_assign_frozen.rb \
-	  test/string_freeze_value_shared_handle.rb test/string_unary_plus_frozen_receiver.rb \
-	  test/builtins_inject.rb test/issue_3174.rb test/set_string_member_frozen.rb \
-	  test/string_lent_global_slot.rb \
-	  test/concat_self_alias_snapshot.rb test/string_concat_value_snapshot.rb \
-	  test/string_concat_rebound_receiver.rb \
-	  test/pattern_methodobj_kwsplat_undersupply.rb \
-	  test/io_captured_buffer_rebind.rb test/io_read_nonblock_buffer.rb test/io_read_outbuf_eof.rb \
-	  test/dynamic_new_post_params_reach.rb test/block_forward_proc_param_type.rb test/proc_form_yield_block_arg.rb \
-	  test/builtins_partition_group_by.rb test/forwarded_block_tail_return.rb \
-	  test/poly_string_iter_user_owns_name.rb test/string_handle_initialize.rb \
-	  test/string_alias_routes_unobserved.rb test/yield_string_param_block_append.rb \
-	  test/string_reader_store_routes_unaffected.rb \
-	  test/string_mutator_arg_rebinds_receiver.rb \
-	  test/boxed_scan_capture_params.rb test/fold_receiver_root.rb test/string_reopen_block_returns.rb \
-	  test/fresh_string_array_element_mutation.rb \
-	  packages/shellwords/test/shellwords_split_unmatched_quote.rb \
-	  test/bundle_classd_27.rb test/masgn_str_array_strbuf_local.rb test/poly_aset_nullable_string_value.rb \
-	  $$(cat test/share/reject.list); do \
+	for t in $(filter-out $(SHARE_SKIP),$(SHARE_TESTS)); do \
 	  e="$$t.expected"; case "$$t" in test/reject/*) e="test/share/reject/$${t##*/}.expected";; esac; \
 	  if $(SPINEL) --share-strings "$$t" -o "$$tmp/b" >"$$tmp/out" 2>&1; then \
 	    ! grep -q 'did not converge' "$$tmp/out" || { echo "share-strings-test: FAIL $$t (the inference fixpoint ran to its round cap)"; ok=0; }; \
@@ -1197,10 +1174,8 @@ ext-cruby-test: $(SPINEL) $(SP_RT_LIB)
 # class-body statement is left out.
 defer-refusals-test: $(SPINEL)
 	@ok=1; tmp=$$(mktemp -d /tmp/spinel-defer.XXXXXX); \
-	for spec in "deferred_refusals:2:top NotImplementedError true done " \
-	            "deferred_refusal_class_body:1:before " \
-	            "deferred_refusal_lowered_method:1:3 30 "; do \
-	  t=test/defer/$${spec%%:*}.rb; rest=$${spec#*:}; n=$${rest%%:*}; want=$${rest#*:}; \
+	for t in $(shell grep -l '^\# spinel: defer-refusals: ' test/defer/*.rb); do \
+	  rest=$$(sed -n 's/^# spinel: defer-refusals: //p' "$$t"); n=$${rest%%:*}; want="$${rest#*:} "; \
 	  if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/p.c" >"$$tmp/p.out" 2>&1; then \
 	    echo "defer-refusals-test: FAIL ($$t compiled without the flag)"; ok=0; fi; \
 	  if ! $(SPINEL) --defer-refusals "$$t" -o "$$tmp/d" >"$$tmp/d.out" 2>&1; then \
@@ -1246,10 +1221,7 @@ test-run: decisions-test
 # kind changes some program's C when it is denied: a key that gates nothing
 # would be named by no bisect. A key holds the whole of a long name.
 # Each kind also has its row in the table in tools/README.md.
-DECISION_TESTS = test/fixtures/decisions/sites.rb test/fixtures/decisions/nn_infer.rb \
-                 test/gc_root_elided_array_slot.rb test/nil_narrowing.rb test/reader_read_only_no_copy.rb \
-                 test/array_local_append_prepend_widen.rb test/poly_arm_kwrest_empty.rb \
-                 test/struct_class_aref_arity_guard_scope.rb test/object_reopen_private_explicit_receiver.rb
+DECISION_TESTS = $(shell grep -l '^\# spinel: decisions$$' test/*.rb test/fixtures/decisions/*.rb)
 DECISION_KINDS = aon-get case-root fetch-inert gc-save inline-force masgn-root nn-inb nn-read no-alloc \
                  pd-hoist push-slot root-elide root-frame strbuf-raw
 decisions-test: $(SPINEL) $(SPINEL_TIMEOUT)
@@ -1425,37 +1397,25 @@ link-names-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB)
 
 reject-test: $(SPINEL)
 	@ok=1; tmp=$$(mktemp -d /tmp/spinel-reject.XXXXXX); \
-	for t in test/reject/string_reopen_yield_self_mutation.rb test/reject/string_reopen_proc_self_mutation.rb; do \
+	for t in $(shell grep -l '^\# spinel: reject-self-mutation$$' test/reject/*.rb); do \
 	  if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/sk.c" >"$$tmp/sk.out" 2>&1; then \
 	    echo "reject-test: FAIL ($$t compiled)"; ok=0; \
 	  else grep -q 'String self is not yet shared by reference.*Build with --share-strings' "$$tmp/sk.out" || \
 	    { echo "reject-test: FAIL ($$t refused without saying why)"; cat "$$tmp/sk.out"; ok=0; }; fi; \
 	done; \
-	for t in test/reject/string_thread_arg.rb test/reject/string_fiber_arg.rb test/reject/string_thread_global_arg.rb test/reject/string_global_hash_element_mutation.rb test/reject/string_thread_ivar_arg.rb test/reject/string_thread_method_param_arg.rb test/reject/string_fiber_method_param_arg.rb test/reject/string_thread_block_param_arg.rb test/reject/string_thread_arg_in_loop.rb test/reject/string_split_local_each_mutation.rb test/reject/string_split_select_mutation.rb test/reject/string_split_map_bang_read_before.rb; do \
+	for t in $(shell grep -l '^\# spinel: reject-thread-string$$' test/reject/*.rb); do \
 	  if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/sk.c" >"$$tmp/sk.out" 2>&1; then \
 	    echo "reject-test: FAIL ($$t compiled)"; ok=0; \
 	  else grep -q "is not yet shared by reference" "$$tmp/sk.out" || \
 	    { echo "reject-test: FAIL ($$t refused without saying why)"; sed -n 1,5p "$$tmp/sk.out"; ok=0; }; fi; \
 	done; \
-	for t in test/reject/string_hash_value_variable.rb test/reject/string_hash_pair_variable.rb test/reject/string_hash_values_variable.rb test/reject/string_hash_literal_captured.rb \
-	         test/reject/string_hash_store_value.rb test/reject/string_hash_store_pair.rb \
-	         test/reject/string_hash_store_value_block.rb test/reject/string_hash_store_pair_block.rb \
-	         test/reject/string_hash_fresh.rb \
-	         test/reject/string_hash_fresh_each.rb \
-	         test/reject/string_hash_fresh_pair.rb \
-	         test/reject/string_hash_fresh_values.rb \
-	         test/reject/string_hash_interpolated.rb \
-	         test/reject/string_hash_call.rb \
-	         test/reject/string_hash_fresh_store.rb \
-	         test/reject/string_hash_fresh_store_block.rb \
-	         test/reject/string_hash_fresh_index.rb \
-	         test/reject/string_hash_fresh_literal.rb; do \
+	for t in $(shell grep -l '^\# spinel: reject-hash-string$$' test/reject/*.rb); do \
 	  if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/sk.c" >"$$tmp/sk.out" 2>&1; then \
 	    echo "reject-test: FAIL ($$t compiled)"; ok=0; \
 	  else grep -q "is not yet shared by reference" "$$tmp/sk.out" || \
 	    { echo "reject-test: FAIL ($$t refused without saying why)"; sed -n 1,5p "$$tmp/sk.out"; ok=0; }; fi; \
 	done; \
-	for t in test/reject/string_yield_captured_param.rb test/reject/string_yield_splat_captured.rb; do \
+	for t in $(shell grep -l '^\# spinel: reject-captured-yield$$' test/reject/*.rb); do \
 	  if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/sk.c" >"$$tmp/sk.out" 2>&1; then \
 	    echo "reject-test: FAIL ($$t compiled)"; ok=0; \
 	  else grep -q "is not yet shared by reference" "$$tmp/sk.out" || \
@@ -1526,8 +1486,7 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (a next in a class body block compiled)"; ok=0; \
 	else grep -q "next in a block that is a class body" "$$tmp/cbn.out" || \
 	  { echo "reject-test: FAIL (a next in a class body block rejected without saying why)"; sed -n 1,5p "$$tmp/cbn.out"; ok=0; }; fi; \
-	for t in test/reject/yield_method_only_in_subclass.rb test/reject/yield_method_only_in_subclass_statement.rb \
-	         test/reject/yield_method_only_in_subclass_when.rb; do \
+	for t in $(shell grep -l '^\# spinel: reject-subclass-yield$$' test/reject/*.rb); do \
 	  if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/yms.c" >"$$tmp/yms.out" 2>&1; then \
 	    echo "reject-test: FAIL ($$t compiled)"; ok=0; \
 	  else grep -q "defined only in subclasses" "$$tmp/yms.out" || \
@@ -1543,7 +1502,7 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (an Array element splatted into a yield to an appending block compiled)"; ok=0; \
 	else grep -q "from a value that is not a String variable" "$$tmp/yse.out" || \
 	  { echo "reject-test: FAIL (an Array element splatted into a yield rejected without saying why)"; sed -n 1,5p "$$tmp/yse.out"; ok=0; }; fi; \
-	for t in test/reject/string_method_object_mutator.rb test/reject/string_method_object_mutator_user_method.rb; do \
+	for t in $(shell grep -l '^\# spinel: reject-string-method$$' test/reject/*.rb); do \
 	  if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/smm.c" >"$$tmp/smm.out" 2>&1; then \
 	    echo "reject-test: FAIL ($$t, a Method bound to a String mutator, compiled)"; ok=0; \
 	  else grep -q "String#method is not supported for a method that changes the String in place" "$$tmp/smm.out" || \
@@ -1564,7 +1523,7 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (a global in a changed splatted Array compiled)"; ok=0; \
 	else grep -q "through a splat of an Array the program changes" "$$tmp/sca.out" || \
 	  { echo "reject-test: FAIL (changed splatted Array rejected without saying why)"; sed -n 1,5p "$$tmp/sca.out"; ok=0; }; fi; \
-	for t in test/reject/lazy_stage_string_mutation.rb test/reject/lazy_stage_string_mutation_with_index.rb; do \
+	for t in $(shell grep -l '^\# spinel: reject-lazy-mutation$$' test/reject/*.rb); do \
 	  if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/lsm.c" >"$$tmp/lsm.out" 2>&1; then \
 	    echo "reject-test: FAIL ($$t, a lazy stage changing its String element, compiled)"; ok=0; \
 	  else grep -q "a lazy stage's block that changes its String element in place" "$$tmp/lsm.out" || \
@@ -1605,7 +1564,7 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (a global through a POLY hand-on past the depth bound compiled)"; ok=0; \
 	else grep -q "through a parameter it hands on" "$$tmp/fpc.out" || \
 	  { echo "reject-test: FAIL (a global through a POLY hand-on past the depth bound rejected without saying why)"; sed -n 1,5p "$$tmp/fpc.out"; ok=0; }; fi; \
-	for t in test/reject/string_kwsplat_last_dynamic.rb test/reject/string_kwsplat_last_yieldproc.rb test/reject/string_kwsplat_last_yieldblock.rb; do \
+	for t in $(shell grep -l '^\# spinel: reject-last-keyword$$' test/reject/*.rb); do \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/kwlast.c" >"$$tmp/kwlast.out" 2>&1; then \
 	  echo "reject-test: FAIL (a final splat carrying a String variable compiled: $$t)"; ok=0; \
 	else grep -q 'splatted Hash literal' "$$tmp/kwlast.out" || \
@@ -1666,8 +1625,7 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (a BasicObject instance method reached a top-level included module method)"; ok=0; \
 	else grep -q "unsupported call: node [0-9]* (CallNode \`hello\`)" "$$tmp/bo.out" || \
 	  { echo "reject-test: FAIL (BasicObject bare call rejected without naming it)"; sed -n 1,5p "$$tmp/bo.out"; ok=0; }; fi; \
-	for t in test/reject/super_init_value.rb test/reject/super_init_value_if.rb \
-	         test/reject/super_init_value_begin.rb; do \
+	for t in $(shell grep -l '^\# spinel: reject-super-value$$' test/reject/*.rb); do \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/siv.c" >"$$tmp/siv.out" 2>&1; then \
 	  echo "reject-test: FAIL (the value of super in initialize compiled: $$t)"; ok=0; \
 	else grep -q "unsupported value of \`super\` in initialize" "$$tmp/siv.out" || \
@@ -1688,39 +1646,15 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (#4309: a constant declared class and then module compiled)"; ok=0; \
 	else grep -q "Thing is not a module" "$$tmp/m.out" || \
 	  { echo "reject-test: FAIL (#4309: rejected without saying why)"; sed -n 1,5p "$$tmp/m.out"; ok=0; }; fi; \
-	for spec in "class_reopens_builtin_module:Comparable is not a class (TypeError)" \
-	            "class_reopens_builtin_module_kernel:Kernel is not a class (TypeError)" \
-	            "class_reopens_builtin_module_errno:Errno is not a class (TypeError)" \
-	            "class_reopens_builtin_module_alias:Foo is not a class (TypeError)" \
-	            "class_reopens_builtin_module_rooted:collides with the builtin module" \
-	            "class_reopens_builtin_module_class_new:collides with the builtin module" \
-	            "class_named_like_builtin_module:collides with the builtin module" \
-	            "class_named_like_builtin_module_path:collides with the builtin module"; do \
-	  t=test/reject/$${spec%%:*}.rb; why=$${spec#*:}; \
+	for t in $(shell grep -l '^\# spinel: reject-builtin-module: ' test/reject/*.rb); do \
+	  why=$$(sed -n 's/^# spinel: reject-builtin-module: //p' "$$t"); \
 	  if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/bm.c" >"$$tmp/bm.out" 2>&1; then \
 	    echo "reject-test: FAIL ($$t compiled: a builtin module reopened as a class)"; ok=0; \
 	  else grep -qF "$$why" "$$tmp/bm.out" || \
 	    { echo "reject-test: FAIL ($$t refused without saying why)"; sed -n 1,5p "$$tmp/bm.out"; ok=0; }; fi; \
 	done; \
-	for spec in "class_reopens_monitor:reopening the builtin class Monitor is not supported" \
-	            "class_reopens_monitor_empty:reopening the builtin class Monitor is not supported" \
-	            "class_reopens_mutex:reopening the builtin class Mutex is not supported" \
-	            "class_reopens_mutex_path:reopening the builtin class Mutex is not supported" \
-	            "class_reopens_mutex_alias:reopening the builtin class Mutex is not supported" \
-	            "class_reopens_mutex_rooted:reopening the builtin class Mutex is not supported" \
-	            "class_reopens_mutex_in_thread:reopening the builtin class Mutex is not supported" \
-	            "class_reopens_queue_in_object:reopening the builtin class Queue is not supported" \
-	            "class_named_like_monitor:unsupported class name 'Monitor': collides with the builtin class of that name" \
-	            "class_named_like_monitor_path:unsupported class name 'Monitor': collides with the builtin class of that name" \
-	            "class_named_like_open_struct:unsupported class name 'OpenStruct': collides with the builtin class of that name" \
-	            "module_named_like_monitor:Monitor is not a module (TypeError)" \
-	            "module_named_like_open_struct:OpenStruct is not a module (TypeError)" \
-	            "class_reopens_queue:reopening the builtin class Queue is not supported" \
-	            "class_reopens_sized_queue:reopening the builtin class SizedQueue is not supported" \
-	            "class_reopens_condition_variable:reopening the builtin class ConditionVariable is not supported" \
-	            "class_reopens_open_struct:reopening the builtin class OpenStruct is not supported" \
-	            "class_reopens_encoding:reopening the builtin class Encoding is not supported"; do \
-	  t=test/reject/$${spec%%:*}.rb; why=$${spec#*:}; \
+	for t in $(shell grep -l '^\# spinel: reject-builtin-class: ' test/reject/*.rb); do \
+	  why=$$(sed -n 's/^# spinel: reject-builtin-class: //p' "$$t"); \
 	  if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/nc.c" >"$$tmp/nc.out" 2>&1; then \
 	    echo "reject-test: FAIL ($$t compiled: a builtin class built in C was reopened)"; ok=0; \
 	  else grep -qF "$$why" "$$tmp/nc.out" || \
@@ -1731,7 +1665,7 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (#4309: a class reopened with another superclass compiled)"; ok=0; \
 	else grep -q "superclass mismatch for class Thing" "$$tmp/s.out" || \
 	  { echo "reject-test: FAIL (#4309: rejected without saying why)"; sed -n 1,5p "$$tmp/s.out"; ok=0; }; fi; \
-	for t in const_value_not_a_class const_value_not_a_module; do \
+	for t in $(patsubst test/reject/%.rb,%,$(shell grep -l '^\# spinel: reject-constant-kind$$' test/reject/*.rb)); do \
 	  if $(SPINEL) "test/reject/$$t.rb" -c --no-line-map -o "$$tmp/$$t.c" >"$$tmp/$$t.out" 2>&1; then \
 	    echo "reject-test: FAIL (#4318: $$t compiled)"; ok=0; \
 	  else grep -Eq "is not a (class|module)" "$$tmp/$$t.out" || \
@@ -1757,7 +1691,7 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (#6179: a block parameter's String copied through a kept block's b[] compiled)"; ok=0; \
 	else grep -q "a proc or Method it can reach appends to the String" "$$tmp/kb.out" || \
 	  { echo "reject-test: FAIL (#6179: b[] rejected without saying why)"; sed -n 1,5p "$$tmp/kb.out"; ok=0; }; fi; \
-	for t in string_lent_global_rebound string_lent_ivar_rebound string_lent_global_rebound_block; do \
+	for t in $(patsubst test/reject/%.rb,%,$(shell grep -l '^\# spinel: reject-lent-rebound$$' test/reject/*.rb)); do \
 	  if $(SPINEL) "test/reject/$$t.rb" -c --no-line-map -o "$$tmp/$$t.c" >"$$tmp/$$t.out" 2>&1; then \
 	    echo "reject-test: FAIL (#6179: $$t, a lent global slot assigned during the call, compiled)"; ok=0; \
 	  else grep -q "where the assignment can run during the call" "$$tmp/$$t.out" || \
@@ -1867,27 +1801,15 @@ reject-test: $(SPINEL)
 	$(SPINEL) "$$t" -c --no-line-map -o "$$tmp/ds.c" >"$$tmp/ds.out" 2>&1; st=$$?; \
 	if [ $$st -ne 1 ] || ! grep -q "1 refusal," "$$tmp/ds.out"; then \
 	  echo "reject-test: FAIL (a refusal after a dynamic send's probed arms did not report cleanly, exit $$st)"; sed -n 1,5p "$$tmp/ds.out"; ok=0; fi; \
-	for spec in "complex_bignum_component:a Complex component given an Integer past 64 bits" \
-	            "rational_pow_bignum:the receiver of a Float \`**\` given a Rational" \
-	            "array_push_other_class_temporary:an Array push given a String"; do \
-	  t=test/reject/$${spec%%:*}.rb; why=$${spec#*:}; \
+	for t in $(shell grep -l '^\# spinel: reject-conversion: ' test/reject/*.rb); do \
+	  why=$$(sed -n 's/^# spinel: reject-conversion: //p' "$$t"); \
 	  if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/co.c" >"$$tmp/co.out" 2>&1; then \
 	    echo "reject-test: FAIL ($$t compiled: a value no conversion keeps went into its slot)"; ok=0; \
 	  else grep -qF "$$why" "$$tmp/co.out" || \
 	    { echo "reject-test: FAIL ($$t refused without saying why)"; sed -n 1,5p "$$tmp/co.out"; ok=0; }; fi; \
 	done; \
-	for spec in "subclass_hash:class Registry < Hash: subclassing Hash is not supported yet" \
-	            "subclass_string:class Name < String: subclassing String is not supported yet" \
-	            "subclass_hash_own_methods_only:class Opts < Hash: subclassing Hash" \
-	            "subclass_hash_class_new:Class.new(Hash): subclassing Hash" \
-	            "subclass_hash_class_new_block:class Registry < Hash: subclassing Hash" \
-	            "subclass_range:class Span < Range: subclassing Range" \
-	            "subclass_thread_queue:class Jobs < Queue: subclassing Queue" \
-	            "subclass_stringio:class Buffer < StringIO: subclassing StringIO" \
-	            "subclass_array_class_new_call:Class.new(Array) without a block is not supported yet" \
-	            "subclass_array_reopened:class Stack < Array: subclassing Array in a program that also reopens Array" \
-	            "subclass_array_zsuper_post:a bare \`super\` into Array from a method with keyword, post-rest"; do \
-	  t=test/reject/$${spec%%:*}.rb; why=$${spec#*:}; \
+	for t in $(shell grep -l '^\# spinel: reject-subclass: ' test/reject/*.rb); do \
+	  why=$$(sed -n 's/^# spinel: reject-subclass: //p' "$$t"); \
 	  if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/sb.c" >"$$tmp/sb.out" 2>&1; then \
 	    echo "reject-test: FAIL ($$t compiled: a subclass of a builtin has none of its parent's methods)"; ok=0; \
 	  else grep -qF "$$why" "$$tmp/sb.out" || \
@@ -1898,9 +1820,8 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (IO.popen compiled into a run-time NoMethodError)"; ok=0; \
 	else grep -q "IO.popen is not supported" "$$tmp/pop.out" || \
 	  { echo "reject-test: FAIL (IO.popen refused without saying why)"; sed -n 1,5p "$$tmp/pop.out"; ok=0; }; fi; \
-	for spec in "time_parse_no_require:Time.parse is not supported" \
-	            "time_strptime_no_require:Time.strptime is not supported"; do \
-	  t=test/reject/$${spec%%:*}.rb; why=$${spec#*:}; \
+	for t in $(shell grep -l '^\# spinel: reject-time-parse: ' test/reject/*.rb); do \
+	  why=$$(sed -n 's/^# spinel: reject-time-parse: //p' "$$t"); \
 	  if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/tp.c" >"$$tmp/tp.out" 2>&1; then \
 	    echo "reject-test: FAIL ($$t compiled into a run-time NoMethodError)"; ok=0; \
 	  else grep -qF "$$why" "$$tmp/tp.out" || \
@@ -1920,6 +1841,7 @@ reject-test: $(SPINEL)
 # One leg per barrier gap that shipped. A single program was what this target
 # ran when a store into a capture cell shipped with no barrier at all, so a
 # fix here adds its reproducer to the list rather than testing by hand.
+# The gc-minor header marker now supplies that list.
 # SPINEL_GC_PHASES only reports; it must not change what a program computes, and
 # it must say nothing at all when it is off. Both halves are the contract, and
 # neither is visible to the ordinary harness, which cannot vary the environment
@@ -1952,25 +1874,7 @@ gc-phases-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SPINEL_TIMEOUT)
 # threshold floor asked for beside it too: the level is over the floors. Then the
 # other half of the contract: programs that root what they use answer the same
 # at level 2, alone and beside the full verifier, on both runtimes.
-GC_STRESS_TESTS := test/gc_root_frame_slots.rb \
-                   test/symbol_intern_fresh_string_root.rb \
-                   test/gc_minor_byref_lent_slot.rb \
-                   test/string_range_walk_answer.rb \
-                   test/struct_values_fresh_receiver_root.rb \
-                   test/hash_splat_to_a.rb \
-                   test/proc_cell_capture_marked.rb \
-                   test/poly_array_intersect.rb \
-                   test/exception_class_raised_again.rb \
-                   test/thread_new_args_rooted_across_fiber_alloc.rb \
-                   test/nomethod_holds_receiver_and_args.rb \
-                   test/gc_root_volatile_string_slot.rb \
-                   test/gc_root_gathered_handle_param.rb \
-                   test/ffi_str_borrow.rb \
-                   test/ffi_str_arg_beside_alloc.rb \
-                   test/dispatch_arm_roots_operands.rb \
-                   test/exception_message_nul.rb \
-                   test/string_aset_value_runs_first.rb \
-                   test/yielding_initialize_new_own_class.rb
+GC_STRESS_TESTS = $(shell grep -l '^\# spinel: gc-stress$$' test/*.rb)
 gc-stress-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SPINEL_TIMEOUT)
 	@tmp=$$(mktemp -d /tmp/spinel-gcstress.XXXXXX); ok=1; \
 	if $(CC) -O1 -w -Ilib test/gc-stress/lost.c $(SP_RT_LIB) $(LDFLAGS) -lm -o "$$tmp/lost" 2>"$$tmp/cc.err"; then \
@@ -2277,154 +2181,7 @@ threaded-render-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SPINEL_TIMEOUT)
 	rm -rf "$$tmp"; \
 	if [ $$ok -eq 1 ]; then echo "threaded-render-test: pass"; else exit 1; fi
 
-GC_MINOR_TESTS := test/io_read_outbuf_eof.rb \
-                  test/boxed_scan_capture_params.rb \
-	test/share_strings_boxed_class_include_reader.rb \
-	test/share_strings_builtin_fallback_arguments.rb \
-	test/share_strings_builtin_fallback_reads.rb \
-                  test/share_strings_class_value_parameter.rb \
-                  test/string_reopen_block_returns.rb \
-                  test/share_strings_transform_argument_order.rb \
-                  test/share_strings_fresh_element_conditional.rb \
-                  test/share_strings_class_value_builtin_names.rb \
-                  test/share_strings_class_value_builtin_io.rb \
-                  test/share_strings_class_value_mutating_read.rb \
-	  test/string_reopen_block_handle_receiver.rb \
-                  test/share_strings_hash_transform_params.rb \
-                  test/string_concat_value_snapshot.rb \
-                  test/string_concat_rebound_receiver.rb \
-                  test/share/share_strings_transform_operands.rb \
-                  test/share/share_strings_captured_bytes.rb \
-                  test/share/share_strings_boxed_io_rows.rb \
-                  test/share/share_strings_find_pathname.rb \
-                  test/reopened_builtin_kwrest_keys.rb \
-                  test/string_unary_plus_frozen_receiver.rb \
-                  test/share_strings_boxed_hash_key.rb \
-                  test/string_append_chain_prepend.rb \
-                  test/share_strings_prepend_override.rb \
-                  test/share_strings_bang_override.rb \
-                  test/share_strings_argument_conversion_root.rb \
-                  test/share_strings_inherited_ivar.rb \
-                  test/reader_or_assign_frozen.rb \
-                  test/share_strings_boxed_cond_order.rb \
-                  test/string_unary_plus_nested.rb \
-                  test/hash_store_boxed_origins.rb \
-                  test/hash_store_boxed_chain.rb \
-                  test/hash_store_boxed_returns.rb \
-                  test/hash_store_boxed_globals.rb \
-                  test/reflect_ivar_nil_presence.rb \
-                  test/ctor_ivar_default_keywords.rb \
-                  test/random_reopen_block_parameter.rb \
-                  test/kind_query_computed_nil.rb \
-                  test/nil_string_slot_reads.rb test/nil_scalar_slot_widen.rb \
-                  test/nullable_string_identity.rb \
-                  test/share_strings_nil_self_route.rb \
-                  test/string_nil_conditional_assignment.rb \
-                  test/yield_proc_arg_in_blocked_method.rb \
-                  test/kind_query_nested_nil.rb \
-                  test/poly_struct_member_write.rb \
-                  test/builtin_argument_array_roots.rb \
-                  test/zip_boxed_receiver_argument_order.rb \
-                  test/poly_case_option_evaluation.rb \
-                  test/builtin_ivar_dynamic_name.rb \
-                  test/string_prepend_operand_order.rb \
-                  test/io_copy_stream_boxed_path.rb \
-                  test/data_ivar_set_value_gc.rb \
-                  test/method_call_block_captures_outer.rb \
-                  test/range_dup_unfrozen.rb \
-                  test/zip_block_many_operands.rb \
-                  test/block_arg_paren_sequence_proc.rb \
-                  test/gc_fresh_receiver_eq_exc_rooted.rb \
-                  test/poly_string_dump_case_options.rb \
-                  test/send_recv_class_before_toplevel.rb \
-                  test/boxed_random_methods.rb \
-                  test/exc_accessor_name_object_method.rb \
-                  test/combinations_yield_ivar.rb \
-                  test/gc_minor_thread_local_slot.rb \
-                  test/boxed_map_bang_write_barrier.rb \
-                  test/boxed_map_bang_dispatch_write_barrier.rb \
-                  test/gc_minor_thread_retval.rb \
-                  test/gc_alloc_front_sizes.rb \
-                  test/gc_alloc_front_threads.rb \
-                  test/str_fresh_recv_rooted.rb \
-                  test/gc_minor_thread_tls_first_write.rb \
-                  test/proc_cell_capture_marked.rb \
-                  test/builtins_minmax.rb \
-                  test/gc_minor_byref_lent_slot.rb \
-                  test/gc_minor_byref_param_same_name_cell.rb \
-                  test/string_handle_group_arity.rb \
-                  test/string_mutator_arg_rebinds_receiver.rb \
-                  test/string_handle_eql.rb \
-                  test/string_handle_yield_exec.rb \
-                  test/gc_minor_barrier_holders.rb \
-                  test/bound_method_fresh_receiver.rb \
-                  test/issue_2890.rb \
-                  test/thread_new_args_rooted_across_fiber_alloc.rb \
-                  test/gc_root_frame_slots.rb \
-                  test/keyword_splat_rest_copy.rb \
-                  test/kw_splat_poly_key_hash.rb \
-                  test/poly_array_intersect.rb \
-                  test/kw_splat_true_false_nil_operand.rb \
-                  test/call_positional_layout.rb \
-                  test/block_autosplat_keywords_posts.rb \
-                  test/keyword_binding_plan.rb \
-                  test/regex_value_as_match_arg.rb \
-                  test/kwrest_any_key.rb \
-                  test/method_bound_binding_layout.rb \
-                  test/bind_call_shapes.rb \
-                  test/ivar_recv_before_call_arg.rb \
-                  test/reader_operands_pure_read.rb \
-                  test/ivar_recv_string_handle.rb \
-                  test/string_handle_forward.rb \
-                  test/share_strings_forward_fresh.rb \
-                  test/shared_handle_arg_keeps_object.rb \
-                  test/index_opassign_fused.rb \
-                  test/loop_array_header_cache.rb \
-                  test/array_new_fill_sized.rb \
-                  test/loop_bounded_index_read.rb \
-                  test/loop_bounded_index_polls.rb \
-                  test/array_new_block_fresh_binding.rb \
-                  test/proc_body_block_fresh_binding.rb \
-                  test/hash_new_block_frame.rb \
-                  test/kw_splat_boxed_to_hash.rb \
-                  test/byref_keyword_rest_splat_param.rb \
-                  test/byref_gather_lead_block_super.rb \
-                  test/shared_handle_nonunique_callee.rb \
-                  test/shared_handle_poly_args.rb \
-                  test/instance_exec_args_caller_self.rb \
-                  test/class_value_dispatch_args.rb \
-                  test/string_handle_proc_method.rb \
-                  test/string_handle_bind_dm_curry.rb \
-                  test/string_handle_initialize.rb \
-                  test/string_handle_poly_variable.rb \
-                  test/string_lent_global_slot.rb \
-                  test/string_alias_conditional_write.rb \
-                  test/string_handle_poly_alias.rb \
-                  test/string_handle_splat_gather.rb \
-                  test/string_alias_gathered_lead.rb \
-                  test/string_gather_optional_post.rb \
-                  test/default_reads_callee_self.rb \
-                  test/main_body_split.rb \
-                  test/string_handle_initialize_kept_block.rb \
-                  test/string_handle_captured_param.rb \
-                  test/string_alias_yield_block_param.rb \
-                  test/string_yield_poly_param_alias.rb \
-                  test/string_alias_chain_append.rb \
-                  test/string_handle_keyword_args.rb \
-                  test/gsub_sub_scan_last_match.rb \
-                  test/iter_elem_handed_to_appender.rb \
-                  test/iter_block_string_share.rb \
-                  test/string_handle_ivar_in_container.rb \
-                  test/string_handle_yield_paths.rb \
-                  test/string_handle_keyword_dyn_sites.rb \
-                  test/gc_minor_never_young_store.rb \
-                  test/builtin_value_ivar_reflection.rb \
-                  test/builtin_ivar_gc.rb \
-                  test/builtin_ivar_frozen_copy.rb \
-                  test/builtin_ivar_boxed_reflection.rb \
-                  test/array_subclass_boxed.rb \
-                  test/array_subclass_methods.rb \
-                  test/poly_array_uniq_hash.rb
+GC_MINOR_TESTS := $(shell grep -l '^\# spinel: gc-minor$$' test/*.rb test/share/*.rb)
 
 # Each program runs with the minor mark off and on and must answer the same;
 # then once more under the generational verifier with stress on (every
@@ -2596,8 +2353,9 @@ ifeq ($(wildcard $(RBS_INC)/rbs/parser.h),)
 rbs-seed-test:
 	@echo "rbs-seed-test: skipped (vendor/rbs not fetched; run 'make deps')"
 else
-RBS_SEED_CHECKS := seed_decl_conflict seed_contradiction_kwarg attr_writer_poly_value dyn_send_arm_seed_contradiction seed_ret_instance_for_class seed_ret_singleton_union hash_or_write_index_setter poly_aset_strbuf_int_arm bare_call_override_unify declared_param_reassigned_poly kw_nil_from_poly_hash inherited_class_keeps_narrowed_ivar nested_ivar nested_array_ivar nested_array_empty_rows nested_array_seed_conflict boundary module_clone_divergent nilable_return byref_string_param shared_handle_nonunique_callee colliding_class_pin return_hash_variant writer_poly_narrowing nilable_scalar_hash_key void_block_tail map_untyped_poly nilable_elem_array_return int_grows_bignum capture_civ_array memo_civ_hash block_param_hash_widen hash_kind_arg_boundary strbuf_ivar_write_value poly_array_ivar pinned_container nilable_arg_group_by inherited_pin_conflict override_family_ret untyped_array_ret yield_union_hash_obj nilable_scalar_ivar nilable_scalar_ret nilable_scalar_arg subclass_into_ancestor_slot ancestor_into_subclass_ret seed_check seed_check_bad seed_contradiction seed_contradiction_arg contradicted_returns implicit_conv_no_method typed_slot_block_key typed_slot_compare_obj seeded_param_typed_array_mutation seeded_param_converted_arg_rooted shared_rbs_string_param
-RBS_SEED_RUN_CHECKS := hash_kind_widened_return hash_store_pinned_return module_typed_seed poly_dispatch_arm_arg_type nilable_scalar_yield_key nilable_scalar_deep_chain nilable_scalar_paths poly_index_hash_dispatch yield_site_scalar_tail poly_container_op_result untyped_param_two_shapes untyped_recv_string_surface seeded_hash_boundary_values seed_hash_value_kind seed_ret_replaced_def seed_ret_empty_literal untyped_array_ret_from_call nilable_ret_begin_rescue seeded_caller_binds_callee unrelated_setter_seed unrelated_merge_seed seeded_array_store_kind seeded_array_replace_kind seeded_param_poly_array_arg seeded_param_splat_elem seeded_param_nested_call_arg seeded_param_typed_array_arg array_transpose_nil nil_builtin_recv str_gsub_bang_enum_pattern tail_write_poly_slot_ret
+# contradicted_returns checks a group of refusal fixtures, not one program.
+RBS_SEED_CHECKS := $(patsubst test/rbs-seed/%.rb,%,$(shell grep -l '^\# spinel: rbs-seed-check$$' test/rbs-seed/*.rb)) contradicted_returns
+RBS_SEED_RUN_CHECKS := $(patsubst test/rbs-seed/%.rb,%,$(shell grep -l '^\# spinel: rbs-seed-run$$' test/rbs-seed/*.rb))
 RBS_SEED_RESULTS := $(patsubst %,build/rbs-seed-results/%.res,$(RBS_SEED_CHECKS)) \
                     $(patsubst %,build/rbs-seed-results/%.run,$(RBS_SEED_RUN_CHECKS))
 rbs-seed-test: $(RBS_SEED_RESULTS)
@@ -2989,7 +2747,7 @@ build/rbs-seed-results/%.res: FORCE | rbs-seed-extractor $(SP_RT_LIB) $(SPINEL_T
 	else grep -q "seed contradicted" "$$tmp/sxa.out" || { echo "rbs-seed-test: FAIL (contradicted argument rejected without saying why)"; sed -n 1,5p "$$tmp/sxa.out"; ok=0; }; fi; \
 	;; \
 	contradicted_returns) \
-	for t in seed_contradiction_ret seed_contradiction_ret_obj seed_hash_key_kind seed_array_elem_kind; do \
+	for t in $(patsubst test/rbs-seed/%.rb,%,$(shell grep -l '^\# spinel: rbs-seed-contradicted-return$$' test/rbs-seed/*.rb)); do \
 	  if $(SPINEL) test/rbs-seed/$$t.rb --rbs test/rbs-seed/sig \
 	       -c --no-line-map -o "$$tmp/$$t.c" >"$$tmp/$$t.out" 2>&1; then \
 	    echo "rbs-seed-test: FAIL (a contradicted RETURN seed compiled: $$t)"; ok=0; \
@@ -3507,7 +3265,7 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	for flags in '' --share-strings; do \
 	  $(SPINEL) $$flags test/hash_store_boxed_unbounded.rb -c --no-line-map -o "$$tmp/hbu.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (hash_store_boxed_unbounded: -c)"; ok=0; }; \
 	  ! grep -q 'sp_PolyPolyHash_new' "$$tmp/hbu.c" || { echo "infer-test: FAIL (an unbounded boxed store widened a known Hash)"; ok=0; }; \
-	  for t in instance_variable_get_poly_recv poly_ivar_get_nil_bool; do \
+	  for t in $(patsubst test/%.rb,%,$(shell grep -l '^\# spinel: infer-ivar-get$$' test/*.rb)); do \
 	    $(SPINEL) $$flags test/$$t.rb -c --no-line-map -o "$$tmp/ivg.c" >/dev/null 2>&1 || { echo "infer-test: FAIL ($$t: -c)"; ok=0; }; \
 	    ! grep -Eq 'else if \(_t[0-9]+.tag == SP_TAG_CLASS\)' "$$tmp/ivg.c" || { echo "infer-test: FAIL ($$t: an instance-only getter boxes class ivars)"; ok=0; }; \
 	  done; \

@@ -1,3 +1,4 @@
+# spinel: gc-stress
 # spinel: not-cruby -- ffi_func is Spinel's own; the answers are libc's.
 # A String held as an sp_String * handle is handed to a :str argument as a
 # copy when another argument of the call runs code. That copy, like a

@@ -1,3 +1,4 @@
+# spinel: gc-minor
 C = Data.define(:a)
 r = [C.new(1), C.new(2)]
 p r.map { |c| c.with(a: c.a + 1) }.map(&:a)

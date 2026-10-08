@@ -3,6 +3,7 @@
 # owns the slot, unifying the declared slot types (mixed types stay poly,
 # a single shared type stays concrete).
 
+# spinel: infer-ivar-get
 class Grid
   def initialize
     @columns = [["a", 1], ["b", 2], ["c", 3]]

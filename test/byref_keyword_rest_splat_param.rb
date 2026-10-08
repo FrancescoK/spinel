@@ -5,7 +5,7 @@
 # arrived through a splat or a `**` all took a copy, and the appends stayed in
 # the callee once the String outgrew its first allocation. Each probe appends
 # LONG, which always reallocates, and prints what the caller's name sees.
-
+# spinel: gc-minor
 LONG = "!" * 100
 
 def seen(s) = [s[0], s.size]

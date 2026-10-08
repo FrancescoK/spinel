@@ -6,7 +6,7 @@
 # given, so an arm whose receiver was collected mid-walk reports a short count
 # rather than passing quietly. The local-receiver arms are the control: those
 # were always safe, because the local is a root.
-
+# spinel: share
 ENTRIES = 40
 CHURN = 100
 

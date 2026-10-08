@@ -1,4 +1,5 @@
 # A reflection-created slot records presence separately from an assigned nil.
+# spinel: gc-minor
 class K; end
 fresh = K.new
 p fresh.instance_variable_defined?(:@q)

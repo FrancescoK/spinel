@@ -5,7 +5,7 @@
 # receiver in a rooted C temporary across the constructor. Run under GC stress
 # by gc-minor-test. The same hazard applies to UnboundMethod#bind,
 # Method#super_method, and the generic Method#to_proc fallback.
-
+# spinel: gc-minor
 class FreshRecv
   def initialize(n) = @n = n
   def v = @n

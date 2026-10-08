@@ -1,3 +1,4 @@
+# spinel: share
 # A user class owning a String iterator's name (packages/stringio's
 # StringIO#each_char) made every block-taking call of that name on a
 # run-time-typed receiver a dispatch over the user classes alone, and a

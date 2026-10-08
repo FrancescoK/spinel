@@ -22,6 +22,7 @@
 # emits as `users.map { |r| r.id }` seeded `Array[Integer]`. `id` is nullable
 # on the ActiveRecord base -- an unsaved record has none -- so every such
 # reader on every model has this shape.
+# spinel: rbs-seed-check
 class Item
   attr_reader :id
 

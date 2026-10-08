@@ -4,7 +4,7 @@
 # the call's Hash, and so did one an inlined `yield(k: s)` or `blk.call(k:
 # s)` bound to a block's keyword, so the target's append was lost. Each
 # probe appends LONG, which always reallocates.
-
+# spinel: gc-minor
 LONG = "!" * 100
 
 def seen(s) = [s[0], s.size]

@@ -1,5 +1,6 @@
 # Conditional assignment distinguishes nil from an empty String in boxed,
 # plain String and mutable-handle slots, including a proc's boxed arguments.
+# spinel: gc-minor
 c = [nil, "x"][ARGV.size]
 s = c
 s ||= +"b"

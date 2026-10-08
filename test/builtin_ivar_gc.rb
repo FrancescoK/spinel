@@ -2,7 +2,7 @@
 # no dead value alive and drops its entry, keeps a live value's ivars (and
 # what they hold) through every collection, and an ivar that refers back to
 # its own value does not keep it alive.
-
+# spinel: gc-minor
 class Array
   def tag = @tag
   def tag=(v)

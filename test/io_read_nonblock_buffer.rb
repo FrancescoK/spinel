@@ -1,5 +1,6 @@
 # Nonblocking reads fill a captured output buffer, clear it at EOF, and
 # leave it alone on would-block. The exception keyword may be a value.
+# spinel: share
 r, w = IO.pipe
 buf = +"seed"
 read_buffer = -> { buf }

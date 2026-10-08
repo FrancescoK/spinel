@@ -1,3 +1,4 @@
+# spinel: gc-minor
 # A boxed Class calls its own class method before a colliding builtin.
 # The result slot holds the class methods' answers, including different types.
 class ClassReader

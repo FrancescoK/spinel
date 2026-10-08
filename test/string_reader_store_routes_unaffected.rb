@@ -1,3 +1,4 @@
+# spinel: share
 # Shapes beside the String routes that are refused (a reader on a boxed
 # receiver, a kept `scan` match): no in-place change is observed through
 # the other name, the value is no String, or the analysis already shares

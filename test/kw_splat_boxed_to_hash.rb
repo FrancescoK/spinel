@@ -7,6 +7,7 @@
 # operand, the operand alone into named keywords and a **kwrest, a
 # positional, a poly receiver, a block, a Struct, a Data, `new`, `super`, a
 # class method, `send`, Method#call, a hash literal and a refused call.
+# spinel: gc-minor
 class H
   def to_hash = (puts "to_hash"; { z: 1 })
 end

@@ -1,5 +1,6 @@
 # Receiver-returning calls keep a shared slot's nil identity. Conversions
 # keep their own nil answers, including to_str's NoMethodError.
+# spinel: gc-minor
 def pick(i) = i > 0 ? +"ab" : nil
 s = pick(ARGV.size)
 t = pick(1)

@@ -1,3 +1,4 @@
+# spinel: reject-share
 s = +"a\xff"
 r = s.scrub!
 r << "Z"

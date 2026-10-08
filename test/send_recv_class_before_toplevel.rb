@@ -1,7 +1,7 @@
 # `x.send(:m)` reaches a top-level `def m` (Object's private method) only
 # when x's class does not define m first. A boxed receiver, and a builtin
 # one whose class defines the name, were sent to the top-level def instead.
-
+# spinel: gc-minor
 def k(**h) = :top
 class A; def k(**h) = :a; end
 class B; def k(**h) = :b; end

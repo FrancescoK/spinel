@@ -4,6 +4,7 @@
 # handle. It was boxed as a plain string, whose C parameter is a const char *,
 # so the generated C did not compile -- and only with the RBS seed, which is
 # what pins the ivar to String and keeps the slot out of poly.
+# spinel: rbs-seed-check
 class Box
   def initialize
     @body = nil

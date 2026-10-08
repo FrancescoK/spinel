@@ -4,6 +4,7 @@
 # parameters, the element was bound as the sp_RbVal it is and the C did not
 # compile; it is unboxed to the pinned type, through a method on an object,
 # a top-level method and a class method.
+# spinel: rbs-seed-run
 class SplatPinBox
   attr_reader :n
   def initialize(n) = @n = n

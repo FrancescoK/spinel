@@ -1,6 +1,7 @@
 # A method that hands its block on (`@parts.each(&blk)`) yields the Strings
 # to the blocks its own callers pass. A lambda elsewhere that appends to what
 # it is handed is never one of them, so it does not make the yield refuse.
+# spinel: share
 class EachBody
   def initialize(parts) = @parts = parts
   def each(&blk) = @parts.each(&blk)

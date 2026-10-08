@@ -4,6 +4,7 @@
 # handle and the call hands it over. Each append is 100 bytes, so a copy
 # cannot pass by capacity; a method or proc that only reads keeps the plain
 # String.
+# spinel: gc-minor
 X = "x" * 100
 class C
   def m(t) = (t << X; nil)

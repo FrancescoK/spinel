@@ -1,3 +1,4 @@
+# spinel: gc-minor
 # A conditional stored as a block value keeps the String its chosen arm
 # answers. Both changed and unchanged bang results must reach the container.
 p " a ,b,, c ".split(",", -1).map! { |x| x.strip! || x }

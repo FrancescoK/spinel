@@ -1,6 +1,7 @@
 # Class-value arms accept a held shared String for a plain String parameter.
 # A mutating parameter keeps the handle, and unrelated concrete parameter
 # types remain excluded from the same dispatch.
+# spinel: gc-minor
 class FirstClassReader
   def self.read(left, right, padding = "x" * 500)
     "first:#{left}:#{right}:#{padding.size}"

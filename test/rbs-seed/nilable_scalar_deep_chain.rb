@@ -4,6 +4,7 @@
 # to compile this program outright rather than mismarking it, so the cap is
 # derived from the program: a round that changes anything sets one of the flags
 # it counts, so it cannot run out while the pass is monotone.
+# spinel: rbs-seed-run
 class DcR
   def initialize(p)
     @p = p

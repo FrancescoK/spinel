@@ -2,6 +2,7 @@
 # appends to it: the box holds a copy of the class variable's String, so
 # the append would not reach it. Refused rather than compiled with the
 # append lost.
+# spinel: reject-share
 def poly(io) = (io << "y"; nil)
 poly([]) if ARGV.size > 5   # a second caller makes io POLY
 class Y

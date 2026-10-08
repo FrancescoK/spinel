@@ -1,5 +1,6 @@
 # A nested unary + follows the String handle through each wrapper once.
 # Frozen receivers give mutable copies; mutable receivers keep their identity.
+# spinel: gc-minor
 s = "ab"
 t = (+(+s))
 t << "c"

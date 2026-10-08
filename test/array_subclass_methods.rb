@@ -5,6 +5,7 @@
 # while the other methods answer plain Arrays (to_a a new one), dup and clone
 # keeping the class and its instance variables, freeze, and a subclass of the
 # subclass.
+# spinel: gc-minor
 module Countable
   def twice = size * 2
 end

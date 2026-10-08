@@ -1,6 +1,7 @@
 # A method the program adds to Object under the name of a class-gated
 # exception accessor (tag, key, status, name, ...) answers for every
 # exception class but the ones owning the accessor, which keep it.
+# spinel: gc-minor
 class Object
   def tag = :t
   def key = "k"

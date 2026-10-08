@@ -12,7 +12,8 @@
 # the buffer comes back short, silently. Before the fix the first arm answered
 # 630 under SPINEL_GC_MINOR=1 and 39375 without it. The leg runs both modes
 # against this file, so an arm that only works with the minor mark off fails.
-
+# spinel: gc-stress
+# spinel: gc-minor
 FRAG = "-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 
 def fill(io, n)

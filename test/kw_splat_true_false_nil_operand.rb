@@ -6,6 +6,7 @@
 # and a Data or Struct constructor. So does an operand of another class
 # into a positional parameter, unless it is a slot that is nil at run time.
 # The operand runs once, where it stands.
+# spinel: gc-minor
 class Base
   def initialize(a: 0, b:) = (@a = a; @b = b)
   def v = [@a, @b]

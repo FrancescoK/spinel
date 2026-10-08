@@ -1,3 +1,4 @@
+# spinel: gc-minor
 # Class and instance arms bind a mutable String through the same binder.
 # A plain String argument also reaches a class method's buffer parameter.
 class AppendingClassReader

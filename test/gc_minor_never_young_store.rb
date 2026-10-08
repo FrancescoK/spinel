@@ -18,7 +18,7 @@
 #     that stores what it allocated
 #   * initialize called again on an object that is already old
 #   * a field read into an argument, then replaced inside the callee
-
+# spinel: gc-minor
 class Node
   attr_accessor :left, :right, :tag, :n
   def initialize(n)

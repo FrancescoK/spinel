@@ -3,6 +3,7 @@
 # hash), and that narrowing must not be trusted the way a declaration is. It was
 # -- so a String-passing caller had its pointer reinterpreted, and the program
 # segfaulted with no diagnostic (#3977).
+# spinel: rbs-seed-run
 class Box
   def self.value_of(value)
     return value[:value].to_s if value.is_a?(Hash)

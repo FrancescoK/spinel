@@ -1,3 +1,4 @@
+# spinel: share
 def fwd_map(&b)  = ["a", "bb"].map(&b)
 def fwd_sel(&b)  = ["a", "bb"].select(&b)
 def fwd_sort(&b) = ["a", "bb"].sort_by(&b)

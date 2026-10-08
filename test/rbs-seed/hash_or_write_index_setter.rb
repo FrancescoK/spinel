@@ -4,6 +4,7 @@
 # to the unrelated SeedOrwMem#[]=: a Proc reached the declared Integer
 # parameter of SeedOrwMem#poke and the C did not compile. The same holds
 # through a getter whose value is the or-write.
+# spinel: rbs-seed-check
 class SeedOrwMem
   def initialize
     @cells = Array.new(4, 0)

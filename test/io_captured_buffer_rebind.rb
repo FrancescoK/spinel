@@ -2,6 +2,7 @@
 # read_nonblock) rebinds the buffer local to the bytes read. A local a
 # proc captures lives in a cell, and the rebind spelled it lv_<name>,
 # which nothing declares, so the C did not compile.
+# spinel: share
 require "tmpdir"
 
 path = File.join(Dir.tmpdir, "spinel_io_captured_buffer_#{Process.pid}.txt")

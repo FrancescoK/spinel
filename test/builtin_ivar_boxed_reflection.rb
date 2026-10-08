@@ -3,7 +3,7 @@
 # reaches the builtin value's own ivars, as CRuby's does: the set used to
 # be dropped and the get answered nil. A frozen value or an immediate
 # raises FrozenError. (The call-binding probe's case 542.)
-
+# spinel: gc-minor
 class Q
   def inspect = "q"
 end

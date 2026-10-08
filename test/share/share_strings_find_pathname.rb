@@ -1,5 +1,6 @@
 # A reverse traversal binds boxed directory entries into the String slot
 # that a reassigned block parameter and an inlined yield share.
+# spinel: gc-minor
 require 'find'
 require 'pathname'
 require 'tmpdir'

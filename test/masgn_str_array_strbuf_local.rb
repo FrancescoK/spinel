@@ -1,5 +1,6 @@
 # A destructured String element into a local that a callee mutates (a mutable
 # String slot): the element is wrapped, not assigned as a const char *.
+# spinel: share
 class Lib
   def self.open(name, flags = 0)
     name << "!"

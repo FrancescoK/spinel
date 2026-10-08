@@ -3,6 +3,7 @@
 # have run. The typed emission read the NULL pointer as an empty
 # collection (count answered 0, transpose [], merge {}) or crashed (sort,
 # rotate, except).
+# spinel: rbs-seed-run
 def nbr_ints(x) = x
 def nbr_strs(x) = x
 def nbr_floats(x) = x

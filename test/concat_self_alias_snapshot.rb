@@ -1,6 +1,7 @@
 # Array#concat and String#concat take every argument as it was before any
 # is appended, as CRuby does: an argument aliasing the receiver is not the
 # grown receiver. a.concat(a, a) appended 8 elements where CRuby has 6.
+# spinel: share
 a = [1, 2]
 a.concat(a, a)
 p a

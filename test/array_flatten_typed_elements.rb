@@ -2,6 +2,7 @@
 # arrays into one flat typed array. Previously only int elements were
 # specialized; str and float now mirror it (the pr_geohash gem's
 # neighbors does map{...}.flatten over string cells).
+# spinel: wasm
 ints = [[1, 2], [3, 4]]
 p ints.flatten
 puts ints.flatten.length

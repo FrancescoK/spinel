@@ -5,6 +5,7 @@
 # call site, and the call inside `wrapper` -- whose own parameter is `untyped`,
 # the weakest thing an .rbs can say -- no longer fitted. The .rbs never
 # mentions `callee` (#4165).
+# spinel: rbs-seed-run
 class M
   def self.callee(t)
     t.to_s

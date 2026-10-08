@@ -8,6 +8,7 @@
 # splat only once the run time has judged the count, and every argument runs
 # before a `**` converts or a keyword is judged. A Struct taking keywords
 # binds them by name when a splat beside them leaves no positional.
+# spinel: gc-minor
 def t(l)
   r = yield
   puts "#{l}: #{r.inspect}"

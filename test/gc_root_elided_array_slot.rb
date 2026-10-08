@@ -4,6 +4,7 @@
 # read out of. Codegen drops the root for that local, which is what lets the
 # C compiler keep it in a register. The shape below is optcarrot's sprite map:
 # a nil-filled table whose entries are handed out of a preallocated buffer.
+# spinel: decisions
 class Sprites
   def initialize(n)
     @map = [nil] * n

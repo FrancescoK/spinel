@@ -2,7 +2,7 @@
 # size n and fills it. Each case checks something the pushes it replaced
 # used to get right: the length, every slot's value, room to grow past n,
 # and the argument checks.
-
+# spinel: gc-minor
 [0, 1, 15, 16, 17, 1000].each do |n|
   a = Array.new(n, 7)
   f = Array.new(n, 2.5)

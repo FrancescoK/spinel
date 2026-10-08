@@ -5,7 +5,7 @@
 # (`t, u = s, 1`, a swap) gave the new name a copy, and the swap of two
 # shared Strings did not compile. Each probe appends LONG, which always
 # reallocates.
-
+# spinel: gc-minor
 LONG = "!" * 100
 
 def seen(s) = [s[0], s.size]

@@ -12,6 +12,7 @@
 # store by accident. So it writes its slot, hands the main thread the baton,
 # and parks. Under SPINEL_GC_MINOR=1 this printed nil in 8 runs out of 10
 # before the fix, and does not print it at all after.
+# spinel: gc-minor
 ready = Queue.new
 go = Queue.new
 t = Thread.new do

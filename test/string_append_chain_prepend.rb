@@ -1,4 +1,5 @@
 # Prepending to an append chain keeps the existing shared String handle.
+# spinel: gc-minor
 def local_prepend
   s = +"a"
   t = s

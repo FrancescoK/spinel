@@ -7,7 +7,7 @@
 # the program poll; the loop itself runs on one thread.) A loop that keeps its
 # bounds test still caches the array's header, and polls in its body; it reads
 # the header again after either poll.
-
+# spinel: gc-minor
 class Holder
   def initialize(n); @n = n; end
 end

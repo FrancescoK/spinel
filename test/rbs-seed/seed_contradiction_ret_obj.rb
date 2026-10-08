@@ -3,6 +3,7 @@
 # but a seeded return converts nothing: a class defining #to_h and #to_hash
 # lands in the Hash slot exactly like one defining neither. Two objects stay
 # unjudged, though -- a subclass in an ancestor's slot is legitimate.
+# spinel: rbs-seed-contradicted-return
 class P
   def to_h
     { a: 1 }

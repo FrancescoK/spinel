@@ -9,6 +9,7 @@
 # unconditionally -- so the consumer read an sp_RbVal unboxed and the C
 # compiler reported it against generated code, in its voice rather than
 # spinel's.
+# spinel: rbs-seed-run
 class K
   def zero_p(a, b)
     a.casecmp(b).zero?

@@ -2,6 +2,7 @@
 # builtin `[]` reads the receiver's temp, so it runs inside the expression
 # that holds that temp, not ahead of the statement, where it read whatever
 # an earlier statement had left in the slot (a String raised ArgumentError).
+# spinel: decisions
 S = Struct.new(:a, :b)
 s = [S, 0][0]
 str = ["abc", 0][0]

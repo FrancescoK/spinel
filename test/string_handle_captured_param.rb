@@ -6,7 +6,7 @@
 # the name appended to a copy too. The group takes the shared handle instead
 # (#6179). Each probe appends LONG, which always reallocates, and prints what
 # the caller's name sees.
-
+# spinel: gc-minor
 LONG = "!" * 100
 
 def seen(s) = [s[0], s.size]

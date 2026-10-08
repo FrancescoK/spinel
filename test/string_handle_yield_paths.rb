@@ -5,6 +5,7 @@
 # keyword yield, or a block yielding its parameter on to the block one
 # level out (#6473). Each appended to a copy of the caller's String. Each
 # probe appends LONG, which always reallocates, and has its own variable.
+# spinel: gc-minor
 LONG = "!" * 100
 SH = proc { |x| x << "" }
 KW = proc { |k:| k << "" }

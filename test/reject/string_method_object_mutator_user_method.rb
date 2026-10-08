@@ -2,6 +2,7 @@
 # class defines its own `method`: that method is not what a String's
 # `.method` reaches, so the call is still refused, naming the line (it
 # crashed).
+# spinel: reject-string-method
 class Foo
   def method(x) = x
 end

@@ -5,6 +5,7 @@
 # the attr_reader over it, a constructor argument (no instance receiver, so the
 # parameter binding could not see it), and an array element read back out or
 # bound to a block parameter (#3505).
+# spinel: rbs-seed-run
 class NpR
   def initialize(p)
     @p = p

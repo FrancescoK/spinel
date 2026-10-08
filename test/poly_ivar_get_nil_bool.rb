@@ -1,4 +1,5 @@
 # A boxed getter preserves nil beside Boolean slots and Struct members.
+# spinel: infer-ivar-get
 S = Struct.new(:flag)
 class K
   def initialize(flag)

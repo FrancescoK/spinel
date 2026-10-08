@@ -1,4 +1,6 @@
 # Concat captures the receiver before any argument can replace its slot.
+# spinel: gc-minor
+# spinel: share
 class ConcatSnapshot
   def run
     @text = +"old"

@@ -2,6 +2,7 @@
 # inference widens its value to the boxed-key hash -- two different C structs,
 # so the assignment was not one C accepts. The argument converts at the
 # boundary now, which is where the seed's claim about the value is checked.
+# spinel: rbs-seed-check
 module SVG
   class T
     def initialize(o)

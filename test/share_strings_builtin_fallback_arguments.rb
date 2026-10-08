@@ -1,4 +1,5 @@
 # A boxed user call keeps its handle while byte-taking builtin fallbacks read it.
+# spinel: gc-minor
 class ClassReader
   def self.index(value) = "index:#{value}"
   def self.rindex(value) = "rindex:#{value}"

@@ -6,6 +6,8 @@
 # and an optional parameter, a top-level method, a class and a module
 # method, a block and a lambda, and a yield into a block that appends.
 # Each append is 100 bytes, so it cannot land in spare capacity by chance.
+# spinel: gc-minor
+# spinel: share
 def gr(v) = v << "x" * 100
 def kw(v:) = v << "k" * 100
 def opt(a, v = nil) = v << "o" * 100

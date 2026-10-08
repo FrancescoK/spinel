@@ -3,6 +3,7 @@
 # parameter takes the String (here a when e has an element, z when it is
 # empty), and the one that appends would grow a copy out of the gathered
 # Array. Refused rather than compiled with the append lost (#6179).
+# spinel: reject-share
 def g(a = nil, *r, z) = (a << "!" if a.is_a?(String); [r, z])
 e = ARGV.empty? ? [] : [1]
 s = +"s"

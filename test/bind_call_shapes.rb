@@ -7,7 +7,7 @@
 # object, for a module's), for bind_call and for bind. bind_call took each
 # argument as one parameter and refused the rest, and passed no block to a
 # `&b` target, whose C call was one argument short; neither checked obj.
-
+# spinel: gc-minor
 module Tag
   def tag(a, b = :d) = [:tag, a, b]
 end

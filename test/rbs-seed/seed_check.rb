@@ -8,7 +8,7 @@
 # actually does, so it must run identically with and without the define. The
 # dishonest half cannot be a snapshot test (it aborts by design); the Makefile
 # runs it separately and asserts that it does abort.
-
+# spinel: rbs-seed-check
 class Row
   def initialize
     @n = nil

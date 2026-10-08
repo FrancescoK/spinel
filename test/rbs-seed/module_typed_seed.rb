@@ -1,6 +1,7 @@
 # A value seeded with a module type is any of its includers, boxed: its
 # calls go to the includer's copy of the module's methods, and an includer
 # stores into it (#7169).
+# spinel: rbs-seed-run
 module MtsTagged
   def label = "tag:#{name}"
 end

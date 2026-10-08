@@ -7,6 +7,7 @@
 # about sp_str_index_opt). The run-time half of the protocol -- the same class
 # reached through a poly slot, where it IS a run-time question -- is pinned by
 # test/implicit_conversion_args.rb.
+# spinel: rbs-seed-check
 class Inert
 end
 

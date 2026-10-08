@@ -3,6 +3,7 @@
 # scalar, and coercing THAT through the poly unbox is not merely redundant: the
 # emitted C unboxes a value that was never boxed and does not compile. The
 # coercion asks the block being spliced here, not the union.
+# spinel: rbs-seed-run
 class YsBag
   def [](k)
     "bag"

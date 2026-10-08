@@ -4,6 +4,7 @@
 # Refused rather than compiled with the append lost. The global is run
 # first here, as a later argument assigns it, which is the binder path a
 # variable holding no handle takes.
+# spinel: reject-share
 module Helper
   def self.open_into(io) = (io << "<div>"; nil)
 end

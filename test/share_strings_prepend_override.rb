@@ -1,4 +1,5 @@
 # A program-defined prepend keeps its own return value.
+# spinel: gc-minor
 class String
   def prepend(a, b)
     +"fresh"

@@ -3,6 +3,7 @@
 # switched off for every call inside it, so `inner.is_a?(Animal)` on a nil
 # `inner` answered for an Animal there. A class argument that runs code
 # runs once, before the outer receiver's test.
+# spinel: gc-minor
 class Animal; end
 class Dog < Animal; end
 class Cat; end
