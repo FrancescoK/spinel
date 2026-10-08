@@ -2169,6 +2169,10 @@ int strbuf_poly_to_s(Compiler *c, int v) {
       !sp_streq(nt_str(nt, v, "name"), "to_s") || nt_ref(nt, v, "arguments") >= 0 || nt_ref(nt, v, "block") >= 0)
     return 0;
   int r = nt_ref(nt, v, "receiver");
+  /* A narrowed String's resolved conversion keeps its boxed slot even
+     when an unrelated class supplies its own conversion method. */
+  if (r >= 0 && repr_of(c, r).strbuf_src == RS_SLOT_POLY && repr_string_conversion_operand(c, v) == r)
+    return 1;
   char ref[1024];
   int targets[CPT_MAX];
   /* The call plan also sees overrides when several classes define to_s. */
