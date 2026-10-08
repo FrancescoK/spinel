@@ -813,6 +813,10 @@ int is_file_class_name(const char *n) {
   return n && sp_streq(n, "File");
 }
 
+int is_filetest_module_name(const char *n) {
+  return n && sp_streq(n, "FileTest");
+}
+
 int is_io_class_name(const char *n) {
   return sp_streq(n, "IO") || sp_streq(n, "File");
 }
