@@ -5837,7 +5837,7 @@ else {
            merge already does. */
         if (at == TY_POLY) {
           buf_puts(b, "sp_poly_hash_merge("); emit_boxed(c, recv, b);
-          buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, ")");
+          buf_puts(b, ", sp_poly_hash_merge_arg("); emit_boxed(c, argv[0], b); buf_puts(b, "))");
           return 1;
         }
         if (!ty_is_hash(at) && at != TY_POLY && at != TY_UNKNOWN) {

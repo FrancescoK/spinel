@@ -5280,7 +5280,7 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
     }
     buf_printf(b, "_t%d = sp_box_obj(sp_poly_hash_merge_m(_t%d, _t%d), SP_BUILTIN_POLY_POLY_HASH);", tm, tm, tm + 1);
     for (int i = 2; i <= argc; i++)
-      buf_printf(b, " _t%d = sp_box_obj(sp_poly_hash_merge(_t%d, _t%d), SP_BUILTIN_POLY_POLY_HASH);", tm, tm, tm + i);
+      buf_printf(b, " _t%d = sp_box_obj(sp_poly_hash_merge(_t%d, sp_poly_hash_merge_arg(_t%d)), SP_BUILTIN_POLY_POLY_HASH);", tm, tm, tm + i);
     buf_printf(b, " (sp_PolyPolyHash *)_t%d.v.p; })", tm);
     return 1;
   }
