@@ -14527,8 +14527,11 @@ static void reject_runtime_send(Compiler *c) {
    call still compiled and only raised "undefined method 'parse' for class
    Time" at run time, identically whether or not `require "time"` was ever
    written. Left alone if the program reopens Time with its own
-   `parse`/`strptime` (diag_user_defines finds that method and this is not
-   the builtin's call) -- same escape hatch as every other named limit here. */
+   `parse`/`strptime`: unlike every other named limit here (which defer to
+   diag_user_defines, a program-wide check), this one is keyed on the
+   receiver already, so it checks Time's own class-method chain instead --
+   an unrelated class's `parse` elsewhere in the program must not silence
+   the limit on a genuine `Time.parse` call (CodeRabbit, #24). */
 static void reject_time_parse(Compiler *c) {
   NT_FOREACH_KIND(c->nt, NK_CallNode, id) {
     const char *name = nt_str(c->nt, id, "name");
@@ -14538,7 +14541,9 @@ static void reject_time_parse(Compiler *c) {
     const char *rty = nt_type(c->nt, recv);
     if (!rty || !sp_streq(rty, "ConstantReadNode")) continue;
     const char *rn = nt_str(c->nt, recv, "name");
-    if (!rn || !sp_streq(rn, "Time") || diag_user_defines(c, name)) continue;
+    if (!rn || !sp_streq(rn, "Time")) continue;
+    int time_ci = comp_class_index(c, "Time");
+    if (time_ci >= 0 && comp_cmethod_in_chain(c, time_ci, name, NULL) >= 0) continue;
     char msg[320];
     snprintf(msg, sizeof msg,
              "Time.%s is not supported: spinel implements Time's other `require "
