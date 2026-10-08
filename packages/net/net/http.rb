@@ -548,6 +548,23 @@ module Net
       request(req)
     end
 
+    def put(path, body, headers = nil)
+      req = Put.new(path, headers)
+      req.body = body
+      request(req)
+    end
+
+    def patch(path, body, headers = nil)
+      req = Patch.new(path, headers)
+      req.body = body
+      request(req)
+    end
+
+    # Sends Depth: Infinity unless headers are given, as in CRuby.
+    def delete(path, headers = { "Depth" => "Infinity" })
+      request(Delete.new(path, headers))
+    end
+
     # A block gets the response, as CRuby's does. CRuby streams the body to it;
     # this reads the body whole first, so the block sees a complete response --
     # the difference is when the bytes arrive, not what the block is handed.
