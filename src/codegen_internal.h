@@ -407,6 +407,8 @@ extern int g_redo_depth;
 extern int g_redo_pending;
 /* The body whose own `redo`s each label serves (subtree_owns_redo). */
 extern int g_redo_owner[64];
+int redo_label_push(int owner);
+void emit_redo_unwind(Buf *b);   /* pops what a redo leaves on its way to the label */
 int subtree_owns_redo(const NodeTable *nt, int body, int redo);
 int block_of_body(Compiler *c, int body);
 int block_param_rebind_len(const NodeTable *nt, int body);
