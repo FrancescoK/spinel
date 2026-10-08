@@ -207,7 +207,8 @@ int repr_call_returns_handle(Compiler *c, int v) {
 int repr_boxed_reader_handle(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
   if (!repr_share_rule(c) || v < 0 || nt_kind(nt, v) != NK_CallNode ||
-      c->ntype[v] != TY_STRING || nt_ref(nt, v, "block") >= 0 ||
+      (c->ntype[v] != TY_STRING && !(c->ntype[v] == TY_STRBUF && c->strbuf_box[v])) ||
+      nt_ref(nt, v, "block") >= 0 ||
       nt_ref(nt, v, "arguments") >= 0) return 0;
   int recv = nt_ref(nt, v, "receiver");
   if (recv < 0 || repr_of(c, recv).kind != RK_BOXED ||
@@ -340,7 +341,8 @@ static int repr_strbuf_src(const Compiler *c, int node, TyKind t) {
     /* A demanded call whose return route carries a handle is already that
        handle, including when operand ordering holds it in a temp. */
     if (c->strbuf_handle_demand[node] && repr_call_returns_handle(mc, node)) return RS_DEMANDED;
-    if (c->strbuf_handle_demand[node] && repr_boxed_reader_handle(mc, node)) return RS_DEMANDED;
+    /* A container store can mark the reader itself as the handle too. */
+    if (repr_boxed_reader_handle(mc, node)) return RS_DEMANDED;
     int r = nt_ref(nt, node, "receiver");
     if (r >= 0 && ty_is_object(comp_ntype(c, r)) &&
         (strbuf_marked_yields_handle(mc, node) || c->strbuf_handle_demand[node]))
