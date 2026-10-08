@@ -46,6 +46,7 @@ int is_eval_exec_family(const char *n);   /* class/module/instance eval and exec
 int is_key_query(const char *n);      /* key? has_key? include? member?: Hash/ENV membership aliases */
 int is_hash_key_lookup(const char *n); /* [] fetch delete and is_key_query: a Hash call that only compares its key */
 int is_receiver_conversion(const char *n); /* to_s to_str itself: conversions a String answers with itself */
+int is_to_s_name(const char *n);
 int is_range_membership(const char *n); /* cover? include? member? ===: Range membership predicates */
 int is_each_walk_or_with_index(const char *n); /* each each_entry reverse_each each_with_index */
 int is_call_or_yield(const char *n);  /* call () [] yield: is_call_alias's names and yield */
