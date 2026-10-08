@@ -2249,6 +2249,51 @@ static int hash_new_body_needs_frame(Compiler *c, int id, const char *hp, const 
   }
   return 0;
 }
+/* A `return` of the default block itself: not one of a def, a lambda, a proc
+   or another default block written in it. */
+static int hash_new_body_returns(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  if (id < 0) return 0;
+  NodeKind k = nt_kind(nt, id);
+  if (k == NK_ReturnNode) return 1;
+  if (k == NK_DefNode || k == NK_LambdaNode || is_proc_literal(c, id) || is_hash_new_block(nt, id)) return 0;
+  int nr = nt_num_refs(nt, id);
+  for (int i = 0; i < nr; i++) if (hash_new_body_returns(c, nt_ref_at(nt, id, i))) return 1;
+  int na = nt_num_arrs(nt, id);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *ids = nt_arr_at(nt, id, i, &n);
+    for (int j = 0; j < n; j++) if (hash_new_body_returns(c, ids[j])) return 1;
+  }
+  return 0;
+}
+/* Marks the Hash.new calls written in a def's own statements, with no block,
+   lambda or class body between: there the frame that makes the hash is the
+   method's. */
+static void mark_hash_new_in_def(const NodeTable *nt, int id, char *in_def) {
+  if (id < 0 || id >= nt->count) return;
+  NodeKind k = nt_kind(nt, id);
+  if (k == NK_DefNode || k == NK_LambdaNode || k == NK_BlockNode || k == NK_ClassNode || k == NK_ModuleNode ||
+      k == NK_SingletonClassNode) return;
+  if (is_hash_new_block(nt, id)) in_def[id] = 1;
+  int nr = nt_num_refs(nt, id);
+  for (int i = 0; i < nr; i++) mark_hash_new_in_def(nt, nt_ref_at(nt, id, i), in_def);
+  int na = nt_num_arrs(nt, id);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *ids = nt_arr_at(nt, id, i, &n);
+    for (int j = 0; j < n; j++) mark_hash_new_in_def(nt, ids[j], in_def);
+  }
+}
+static int hash_new_in_def(Compiler *c, int id) {
+  static const Compiler *memo_c; static char *in_def; static int memo_n;
+  const NodeTable *nt = c->nt;
+  if (memo_c != c || memo_n != nt->count) {
+    free(in_def); in_def = calloc(nt->count ? nt->count : 1, 1);
+    memo_c = c; memo_n = nt->count;
+    for (int d = 0; d < nt->count; d++)
+      if (nt_kind(nt, d) == NK_DefNode) mark_hash_new_in_def(nt, nt_ref(nt, d, "body"), in_def);
+  }
+  return in_def[id];
+}
 /* A `Hash.new { |h, k| ... }` block that is lowered to a real sp_Proc, which
    the hash's default calls through sp_dyn_hash_dproc. The bare function
    declares nothing but the hash and the key: a local the block writes, the
@@ -2262,6 +2307,10 @@ int hash_new_block_is_proc(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   if (!is_hash_new_block(nt, id)) return 0;
   int blk = nt_ref(nt, id, "block");
+  /* a `return` leaves the method that made the hash, which only a proc with
+     a home can do: in the bare function it ended the block. Taken where the
+     hash is made in the method's own frame. */
+  if (hash_new_in_def(c, id) && hash_new_body_returns(c, nt_ref(nt, blk, "body"))) return 1;
   return hash_new_body_needs_frame(c, nt_ref(nt, blk, "body"),
                                    block_param_name(c, blk, 0), block_param_name(c, blk, 1));
 }
