@@ -7426,7 +7426,10 @@ static void emit_proc_literal_here(Compiler *c, int create, Buf *b) {
      emit_return throw. But when the tail is a plain expression, that expression
      IS the proc's value on the fall-through path (no `return` fired): keep the
      analyzed `ret` and emit it normally, so the value is not lost. */
-  int ret_proc = (g_method_pr_label != NULL) && proc_does_nonlocal_return(c, create);
+  /* Inside another proc that owns a home (a block lifted within a block
+     lifted), the method's frame is reached through that proc's home. */
+  int in_home_proc = g_method_pr_label == NULL && g_proc_return_home != NULL && !sp_streq(g_proc_return_home, "-1");
+  int ret_proc = (g_method_pr_label != NULL || in_home_proc) && proc_does_nonlocal_return(c, create);
   /* A non-lambda EXPLICIT proc (`proc {}` / `Proc.new {}`) whose body
      top-level-breaks raises LocalJumpError "break from proc-closure" when
      called -- CRuby 4 delivers a break only for a block-converted proc, never
@@ -8450,7 +8453,7 @@ else if (orecv >= 0 && onm) {
         else
           buf_printf(g_pre, "_capv_%d->__self_cls = %s;\n", pid, bs->yields && sv_self ? sv_self : "_sp_cls");
       }
-      if (ret_proc) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "_capv_%d->_home = _h.id;\n", pid); }
+      if (ret_proc) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "_capv_%d->_home = %s;\n", pid, in_home_proc ? g_proc_return_home : "_h.id"); }
       if (brk_blk) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "_capv_%d->_brkhome = %s;\n", pid, sv_bser); }
     }
     buf_printf(b, "sp_proc_new_meta((void *)_proc_%d, _capv_%d, _proc_cap_scan_%d, %d, %s, %d, %s)",
