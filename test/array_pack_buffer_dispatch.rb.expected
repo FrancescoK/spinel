@@ -1,0 +1,20 @@
+format
+"bA"
+"bA"
+format
+"rest:[\"C\"]:{buffer: \"b\"}"
+"b"
+format
+"named:C:\"b\""
+"b"
+"A"
+"rest:[\"C\"]:{buffer: nil}"
+"named:C:nil"
+"unknown keyword: :extra"
+"rest:[\"C\"]:{buffer: \"x\", extra: 1}"
+format
+keywords
+"kwA"
+format
+keywords
+"rest:[\"C\"]:{buffer: \"kw\"}"

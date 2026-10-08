@@ -6490,6 +6490,14 @@ static int emit_poly_builtin_default_at(Compiler *c, int id, int recv, const cha
   for (int a = 0; a < argc; a++) {
     int is_splat = nt_kind(nt, argv[a]) == NK_SplatNode;
     if (is_splat && !splat_ok) return 0;
+    /* pack reads the keyword's value, already held by operand ordering. */
+    if (nt_kind(nt, argv[a]) == NK_KeywordHashNode && bop_share_named(BOP_ANY_ARRAY, name) == BSH_PACK) {
+      int en = 0, held = 1;
+      const int *el = nt_arr(nt, argv[a], "elements", &en);
+      for (int e = 0; e < en; e++)
+        if (!arg_ran_first(nt_ref(nt, el[e], "value"), 0)) held = 0;
+      if (held) continue;
+    }
     if (subtree_has_side_effect(c, argv[a]) &&
         (is_splat || repr_of(c, argv[a]).as_ty != atmp_ty[a]))
       return 0;
@@ -7146,6 +7154,8 @@ static int poly_last_live(Compiler *c, const int *args, int n) {
 static int poly_arg_held(Compiler *c, int node, TyKind held) {
   node = unwrap_parens(c, node);
   if (node < 0) return 0;
+  /* A literal's bytes are static, but a demanded fresh handle is not. */
+  if (held == TY_STRBUF && repr_of(c, node).strbuf_src == RS_FRESH) return 0;
   /* The handle read copies nothing; its slot holds it until a later
      argument or default can rebind that slot. The byte read allocates.
      Answer 2 when the existing frame slot holds it even across later code. */
@@ -8118,7 +8128,9 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
          arm's keyword params by name below (#3268) */
       int kwn = 0; const int *kwels = NULL;
       int *kwtmp = NULL; TyKind *kwty = NULL;
-      int kwall = -1;
+      int kwall = -1, kwmark = g_n_argov;
+      if (kw_ds && bop_share_named(BOP_ANY_ARRAY, name) == BSH_PACK)
+        emit_args_in_source_order(c, &kwh, 1, b);
       int kwall_any = kw_ds && (kw_strkey || poly_kw_any_key(c, kwh));
       if (kw_ds) {
         kwall = atmp[pos_argc] = ++g_tmp;
@@ -8289,6 +8301,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       free(htmp);
       free(kwtmp);
       free(kwty);
+      view_unbind(kwmark);
       c->args_in_call = recv;
       return 1;
     }
@@ -15553,6 +15566,7 @@ static const char *const bop_arity_kw_rows[][2] = {
   {"Rational", "round"}, {"Rational", "floor"}, {"Rational", "ceil"}, {"Rational", "truncate"},  /* half: */
   {"Proc", "parameters"},   /* lambda: */
   {"String", "unpack"},     /* offset: */
+  {"Array", "pack"},        /* buffer: */
   {"Queue", "pop"}, {"Queue", "shift"}, {"Queue", "deq"},    /* timeout: */
   {"Queue", "push"}, {"Queue", "<<"}, {"Queue", "enq"},      /* timeout: (SizedQueue's) */
   {NULL, NULL}
