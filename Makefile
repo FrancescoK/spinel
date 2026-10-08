@@ -1013,6 +1013,7 @@ re-lit-test: $(SPINEL)
 SHARE_TESTS := $(wildcard test/share/*.rb)
 ifeq ($(FFI_AVAILABLE),yes)
 SHARE_TESTS += packages/ffi/test/ffi_dynamic_owner.rb packages/ffi/test/ffi_store_string.rb
+SHARE_TESTS += packages/fiddle/test/fiddle_importer_include.rb
 endif
 ifneq ($(FFI_AVAILABLE),yes)
 SHARE_TESTS := $(filter-out test/share/share_strings_fiddle.rb,$(SHARE_TESTS))
