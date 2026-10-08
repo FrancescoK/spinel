@@ -8,3 +8,29 @@ NoMethodError: undefined method '[]' for nil
 7
 65
 NoMethodError
+NoMethodError: undefined method '[]' for nil
+65
+97
+NoMethodError: undefined method '[]' for nil
+65
+97
+NoMethodError: undefined method '[]' for nil
+65
+8
+9
+10
+NoMethodError: undefined method '[]' for nil
+65
+11
+NoMethodError: undefined method '[]' for nil
+65
+12
+13
+14
+NoMethodError: undefined method '[]' for nil
+65
+NoMethodError: undefined method '[]' for nil
+65
+15
+true
+true

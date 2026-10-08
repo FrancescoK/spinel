@@ -13349,10 +13349,11 @@ static int class_ivar_slot(Compiler *c, int k, const char *sym, char *out, size_
    lives in the runtime's map (`dflt`, the map's statement). `op`: 's' sets
    from `_ivs<tv>`, 'g' reads into `_ivg<tv>`, 'd' asks into `_ivd<tv>`. A
    set records the name in the map too, so 'd' and the listing see it; a
-   slot only a class method wrote counts when it holds a value. */
-static void emit_class_ivar_arm(Compiler *c, int tv, const char *sym, char op, const char *dflt, Buf *b) {
-  if (!c->bivar_table) return;
-  buf_printf(b, "else if (_t%d.tag == SP_TAG_CLASS) switch (_t%d.cls_id) {", tv, tv);
+   slot only a class method wrote counts when it holds a value.
+   Static slots remain readable when no builtin-ivar map is needed. */
+static void emit_class_ivar_arm(Compiler *c, int tv, const char *sym, char op, const char *dflt, int chain, Buf *b) {
+  if (!c->bivar_table && op != 'g') return;
+  buf_printf(b, "%sif (_t%d.tag == SP_TAG_CLASS) switch (_t%d.cls_id) {", chain ? "else " : "", tv, tv);
   for (int k = 0; k < c->nclasses; k++) {
     char slot[300]; TyKind t;
     if (!class_ivar_slot(c, k, sym, slot, sizeof slot, &t)) continue;
@@ -13380,7 +13381,8 @@ static void emit_class_ivar_arm(Compiler *c, int tv, const char *sym, char op, c
     buf_puts(b, " break;");
   }
   if (op == 'd') buf_printf(b, " default: _ivd%d = %s; break; } ", tv, dflt);
-  else buf_printf(b, " default: %s; break; } ", dflt);
+  else if (c->bivar_table) buf_printf(b, " default: %s; break; } ", dflt);
+  else buf_puts(b, " default: break; } ");
 }
 
 /* instance_variables of a class value: its map's names, then those of the
@@ -13416,6 +13418,29 @@ static void emit_ivar_switch_key(Compiler *c, int tv, Buf *b) {
 }
 
 static int emit_poly_ivar_call(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, int *out) {
+  /* A class value reads the same static ivar slots as the boxed class arm. */
+  if (recv >= 0 && rt == TY_CLASS && is_ivar_access(name) && !is_ivar_set(name) &&
+      argc == 1 && nt_ref(nt, id, "block") < 0 &&
+      (nt_kind(nt, argv[0]) == NK_SymbolNode || nt_kind(nt, argv[0]) == NK_StringNode)) {
+    const char *sym = nt_str(nt, argv[0], nt_kind(nt, argv[0]) == NK_SymbolNode ? "value" : "content");
+    if (sym && sym[0] == '@') {
+      int tv = ++g_tmp;
+      buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_boxed(c, recv, b);
+      buf_printf(b, "; sp_RbVal _ivg%d = sp_box_nil(); ", tv);
+      char dflt[320];
+      snprintf(dflt, sizeof dflt, "_ivg%d = sp_bivar_get(_t%d, sp_sym_intern(\"%s\"))", tv, tv, sym);
+      emit_class_ivar_arm(c, tv, sym, 'g', dflt, 0, b);
+      char val[24]; snprintf(val, sizeof val, "_ivg%d", tv);
+      Repr rp = repr_of(c, id);
+      if (rp.kind != RK_BOXED && rp.kind != RK_NONE) {
+        if (rp.as_ty == TY_INT || rp.as_ty == TY_FLOAT) emit_unbox_nilable_text(c, rp.as_ty, val, b);
+        else emit_unbox_text(c, rp.as_ty, val, b);
+      }
+      else buf_puts(b, val);
+      buf_puts(b, "; })");
+      *out = 1; return 1;
+    }
+  }
   /* instance_variable_set(:@x, v) on a POLY receiver with a literal name: the
      write twin of the dispatch below. The value is evaluated once, then
      stored into whichever instantiated class the receiver is, converted to
@@ -13488,7 +13513,7 @@ static int emit_poly_ivar_call(Compiler *c, int id, Buf *b, const NodeTable *nt,
       snprintf(bst, sizeof bst, "sp_bivar_set(_t%d, sp_sym_intern(\"%s\"), _ivs%d)", tv, sym, tv);
       emit_bivar_arm(c, tv, bst, b);
       buf_puts(b, " } ");
-      emit_class_ivar_arm(c, tv, sym, 's', bst, b);
+      emit_class_ivar_arm(c, tv, sym, 's', bst, 1, b);
       /* an immediate, a String, a Time: FrozenError, or refused when it runs */
       if (c->bivar_table) buf_printf(b, "else %s; ", bst);
       if (rp.kind != RK_BOXED && rp.kind != RK_NONE) {
@@ -13541,7 +13566,7 @@ static int emit_poly_ivar_call(Compiler *c, int id, Buf *b, const NodeTable *nt,
       snprintf(bst, sizeof bst, "_ivg%d = sp_bivar_get(_t%d, sp_sym_intern(\"%s\"))", tv, tv, sym);
       emit_bivar_arm(c, tv, bst, b);
       buf_puts(b, " } ");
-      emit_class_ivar_arm(c, tv, sym, 'g', bst, b);
+      emit_class_ivar_arm(c, tv, sym, 'g', bst, 1, b);
       if (rp.kind != RK_BOXED && rp.kind != RK_NONE) {
         /* a receiver whose class lacks the slot answers nil: an Integer or
            Float answer takes its nil sentinel */
@@ -13588,7 +13613,7 @@ static int emit_poly_ivar_call(Compiler *c, int id, Buf *b, const NodeTable *nt,
       buf_puts(b, " } ");
       char dex[300];
       snprintf(dex, sizeof dex, "sp_bivar_defined(_t%d, sp_sym_intern(\"%s\"))", tv, sym);
-      emit_class_ivar_arm(c, tv, sym, 'd', dex, b);
+      emit_class_ivar_arm(c, tv, sym, 'd', dex, 1, b);
       buf_printf(b, "_ivd%d; })", tv);
       { *out = 1; return 1; }
     }
