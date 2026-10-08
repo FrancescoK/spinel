@@ -3242,7 +3242,9 @@ static void sh_mark_printed(ShareFacts *F, Compiler *c) {
   const NodeTable *nt = c->nt;
   NT_FOREACH_KIND(nt, NK_CallNode, n) {
     int recv = nt_ref(nt, n, "receiver");
-    if (recv >= 0 && !sh_has_targets(c, n) && sh_iter_drops_block(c, n, c->ntype[recv]))
+    /* The iterator row rejects calls with no dropped block before the
+       user-target lookup; an override still owns every candidate. */
+    if (recv >= 0 && sh_iter_drops_block(c, n, c->ntype[recv]) && !sh_has_targets(c, n))
       sh_mark_unused(F, nt, nt_ref(nt, nt_ref(nt, n, "block"), "body"), SHU_TAIL);
   }
   NT_FOREACH_KIND(nt, NK_CallNode, n) {
