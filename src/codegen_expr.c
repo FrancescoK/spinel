@@ -1115,7 +1115,7 @@ static void emit_strbuf_orw_share_value(Compiler *c, int id, const char *ref, in
    sentinel for Integer and Symbol) and the RHS converts to the slot's kind.
    Shared by an ivar and by a generated attribute read through a typed
    receiver, which had its own partial copy and lost the write (#5428). */
-void emit_slot_orw_value(Compiler *c, TyKind t, const char *ref, int v, int is_or, Buf *b) {
+void emit_slot_orw_value(Compiler *c, TyKind t, int elems_handle, const char *ref, int v, int is_or, Buf *b) {
   /* The RHS is rendered with its setup captured: the statements a composite
      RHS spills to g_pre (a hash literal's fills, a block-taking call's loop)
      would otherwise run unconditionally, ahead of the guard, so
@@ -1158,6 +1158,9 @@ void emit_slot_orw_value(Compiler *c, TyKind t, const char *ref, int v, int is_o
     else if (emit_empty_literal_as(c, v, t, &vval)) { }
     /* a typed array into a general Array slot is rebuilt as one, as a plain
        write does */
+    /* --share-strings: a slot whose elements the rule shares, each String
+       as a handle, as its plain write */
+    else if (elems_handle && comp_ntype(c, v) == TY_STR_ARRAY) emit_str_array_handles(c, v, &vval);
     else if (emit_array_into_poly_slot(c, t, v, &vval)) { }
     else if (seeded_array_kind_mismatch(t, comp_ntype(c, v)))
       emit_array_store_value(c, t, v, &vval);   /* a seed-pinned kind converts */
@@ -1931,7 +1934,11 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
     int tl3 = cid3 < 0 && g_ie_class_id < 0 && cws3 && !cws3->is_cmethod;
     if (tl3) cid3 = comp_class_index(c, "Toplevel");
     TyKind ivt3 = TY_UNKNOWN;
-    if (cid3 >= 0) { int iv3 = comp_ivar_index(&c->classes[cid3], nm); if (iv3 >= 0) ivt3 = c->classes[cid3].ivar_types[iv3]; }
+    int eh3 = 0;
+    if (cid3 >= 0) {
+      int iv3 = comp_ivar_index(&c->classes[cid3], nm);
+      if (iv3 >= 0) { ivt3 = c->classes[cid3].ivar_types[iv3]; eh3 = repr_of_ivar(c, cid3, iv3).elems_handle; }
+    }
     char ref3[300];
     if (cws3 && cws3->is_cmethod && cid3 >= 0)
       snprintf(ref3, sizeof ref3, "civ_%s_%s", c->classes[cid3].name, iv_c(nm + 1));
@@ -1943,7 +1950,7 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
        handle itself */
     if (repr_of(c, id).handle && repr_write_share(c, id))
       emit_strbuf_orw_share_value(c, id, ref3, v, is_or, -1, NULL, b);
-    else emit_slot_orw_value(c, ivt3, ref3, v, is_or, b);
+    else emit_slot_orw_value(c, ivt3, eh3, ref3, v, is_or, b);
     return 1;
   }
   if (sp_streq(ty, "LocalVariableOrWriteNode") || sp_streq(ty, "LocalVariableAndWriteNode")) {
@@ -2241,7 +2248,7 @@ static int emit_ivar_cvar_gvar_expr(Compiler *c, int id, Buf *b, const NodeTable
     /* the handle under the mark, as an ivar's */
     if (repr_of(c, id).handle && repr_write_share(c, id))
       emit_strbuf_orw_share_value(c, id, gref, nt_ref(nt, id, "value"), is_or, -1, NULL, b);
-    else emit_slot_orw_value(c, lv->type, gref, nt_ref(nt, id, "value"), is_or, b);
+    else emit_slot_orw_value(c, lv->type, repr_of_slot(c, lv).elems_handle, gref, nt_ref(nt, id, "value"), is_or, b);
     return 1;
   }
   if (sp_streq(ty, "ClassVariableOperatorWriteNode")) {
@@ -2284,6 +2291,7 @@ static int emit_ivar_cvar_gvar_expr(Compiler *c, int id, Buf *b, const NodeTable
     emit_slot_truthy(ot, ref, b);
     buf_printf(b, " ? %s : (%s = ", ref, ref);
     if (ot == TY_POLY) emit_boxed(c, v, b);
+    else if (h.r.elems_handle && comp_ntype(c, v) == TY_STR_ARRAY) emit_str_array_handles(c, v, b);
     else emit_expr(c, v, b);
     emit_cvar_set_flag_after(c, cid, nm, b);
     buf_puts(b, "))");
@@ -2304,6 +2312,7 @@ static int emit_ivar_cvar_gvar_expr(Compiler *c, int id, Buf *b, const NodeTable
     emit_slot_truthy(at, ref, b);
     buf_printf(b, " ? (%s = ", ref);
     if (at == TY_POLY) emit_boxed(c, v, b);
+    else if (h.r.elems_handle && comp_ntype(c, v) == TY_STR_ARRAY) emit_str_array_handles(c, v, b);
     else emit_expr(c, v, b);
     buf_printf(b, ") : %s)", ref);
     return 1;
@@ -4782,7 +4791,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
       buf_puts(b, "({ ");
       emit_ctype(c, rt, b); buf_printf(b, " _t%d = ", tr); emit_expr(c, recv, b); buf_puts(b, "; ");
       char lhs[300]; snprintf(lhs, sizeof lhs, "_t%d->iv_%s", tr, iv_c(attr));
-      emit_slot_orw_value(c, ivt, lhs, v, is_or, b);
+      emit_slot_orw_value(c, ivt, iidx >= 0 && repr_of_ivar(c, class_id, iidx).elems_handle, lhs, v, is_or, b);
       buf_puts(b, "; })");
       return;
     }
