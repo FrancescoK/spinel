@@ -1567,13 +1567,28 @@ int strbuf_exc_message_of_var(Compiler *c, int v) {
   NodeKind rk = nt_kind(c->nt, nt_ref(c->nt, unwrap_parens(c, v), "receiver"));
   return rk == NK_LocalVariableReadNode || rk == NK_InstanceVariableReadNode;
 }
+/* A plain reader of a shared String slot normally answers a snapshot.
+   Its field-read arm can hand on the handle under a demand instead, as
+   can the implicit-self reader. The seal asks the same predicate. */
+static int strbuf_route_reader(Compiler *c, int v) {
+  v = unwrap_parens(c, v);
+  if (!repr_share_rule(c) || v < 0 || nt_kind(c->nt, v) != NK_CallNode ||
+      repr_of(c, v).as_ty != TY_STRING) return 0;
+  int allocates = 0;
+  if (nt_ref(c->nt, v, "receiver") >= 0)
+    return call_is_field_read(c, v, &allocates) && allocates;
+  int sv = view_push_repr(c, v, VR_HANDLE_DEMAND, 1);
+  int ok = strbuf_self_reader_handle(c, v);
+  view_pop(c, sv);
+  return ok;
+}
 /* Does value v hand over a String the rule shares as the handle itself: a
    slot holding it, or a route over one? */
 static int strbuf_route_carries(Compiler *c, int v, int depth) {
   char ref[1024];
   if (strbuf_route_proc_call(c, v) || strbuf_route_ivar_get(c, v) || strbuf_route_begin(c, v) || strbuf_route_yield(c, v) ||
       strbuf_route_inline_call(c, v) || strbuf_route_loop(c, v) || repr_call_returns_handle(c, v) ||
-      strbuf_route_exc_message(c, v)) return 1;
+      strbuf_route_exc_message(c, v) || strbuf_route_reader(c, v)) return 1;
   int x = strbuf_route_operand(c, v);
   if (x == unwrap_parens(c, v)) return 1;
   if (x >= 0 && repr_of(c, x).kind == RK_BOXED) return 1;
@@ -1586,6 +1601,13 @@ static int strbuf_route_carries(Compiler *c, int v, int depth) {
    the String every other name of its class holds. */
 int emit_strbuf_route(Compiler *c, int v, Buf *b) {
   const NodeTable *nt = c->nt;
+  if (strbuf_route_reader(c, v)) {
+    v = unwrap_parens(c, v);
+    int sv = view_push_repr(c, v, VR_HANDLE_DEMAND, 1);
+    emit_expr(c, v, b);
+    view_pop(c, sv);
+    return 1;
+  }
   if (strbuf_route_exc_message(c, v)) {
     v = unwrap_parens(c, v);
     buf_puts(b, "sp_exc_message_handle((sp_Exception *)(");
@@ -17369,7 +17391,7 @@ static int strbuf_flow_begin(Compiler *c, StrbufFlowMemo *fm, int v, int depth) 
 static int strbuf_flow_route(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, int depth) {
   const NodeTable *nt = c->nt;
   if (strbuf_route_proc_call(c, v) || strbuf_route_ivar_get(c, v) || repr_call_returns_handle(c, v) ||
-      strbuf_route_exc_message(c, v))
+      strbuf_route_exc_message(c, v) || strbuf_route_reader(c, v))
     return 1;
   if (nt_kind(nt, v) == NK_BeginNode) return strbuf_flow_begin(c, fm, v, depth);
   if (strbuf_route_inline_call(c, v)) {
