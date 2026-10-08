@@ -26,3 +26,29 @@ t { s * 1.9 }
 a = [[1, 2], 1][0]
 [0, 1, 4, 3].each { |i| t { a * bx(i) } }
 t { "ab" * bx(4) }
+class TI
+  def to_int = 3
+end
+class TA
+  def hv = {y: 4}
+  alias to_hash hv
+end
+class TM
+  def hm = {w: 5}
+  alias_method :to_hash, :hm
+end
+t { s * TI.new }
+t { a * TI.new }
+h = [{a: 1}, 1][0]
+t { h.merge(TA.new) }
+t { h.merge(TM.new) }
+class TS
+  def to_str = "-"
+end
+class TB
+  def to_str = "+"
+  def to_int = 2
+end
+t { a * TS.new }
+t { a * TB.new }
+t { s * TB.new }
