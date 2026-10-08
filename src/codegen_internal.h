@@ -1780,6 +1780,7 @@ int emit_op_array_shift_n(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_array_cycle_n(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_array_last(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_array_join(Compiler *c, const BopCtx *x, Buf *b);
+int emit_op_array_pack_buffer(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_array_sort_bang(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_array_slice_bang_range(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_array_plus(Compiler *c, const BopCtx *x, Buf *b);

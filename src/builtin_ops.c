@@ -2109,6 +2109,8 @@ static const BuiltinOp bop_rows[] = {
   { BOP_ANY_ARRAY, "minmax",                0, 127, BF_ANY,      BOPR_SELF,     BOPE_NONE },  /* [min, max], same element kind */
   { BOP_ANY_ARRAY, "join",                  0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
   { BOP_ANY_ARRAY, "pack",                  1,   1, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_$AArray_pack($h, $s0)" },
+  { BOP_ANY_ARRAY, "pack",                  2,   2, BF_ANY,      TY_POLY,       BOPE_ARRAY_PACK_BUFFER },
+  { TY_POLY, "pack",                       2,   2, BF_ANY,      TY_POLY,       BOPE_ARRAY_PACK_BUFFER },
   { BOP_ANY_ARRAY, "inspect",               0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
   { BOP_ANY_ARRAY, "to_s",                  0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
   { BOP_ANY_ARRAY, "empty?",                0, 127, BF_ANY,      TY_BOOL,       BOPE_NONE },
@@ -2656,7 +2658,7 @@ static const BopShareRow bop_share_rows[] = {
   { BOP_ANY_ARRAY, "transpose", BSH_SUB },
   { BOP_ANY_ARRAY, "sum",       BSH_PURE },
   { BOP_ANY_ARRAY, "join",      BSH_PURE },
-  { BOP_ANY_ARRAY, "pack",      BSH_PURE },
+  { BOP_ANY_ARRAY, "pack",      BSH_PACK },
   { BOP_ANY_ARRAY, "to_s",      BSH_PURE },
   { BOP_ANY_ARRAY, "inspect",   BSH_PURE },
   { BOP_ANY_ARRAY, "include?",  BSH_PURE },
