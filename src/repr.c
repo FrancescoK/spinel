@@ -196,6 +196,32 @@ int repr_call_returns_handle(Compiler *c, int v) {
   for (int i = 0; i < n; i++) if (!c->scopes[mis[i]].ret_handle) return 0;
   return 1;
 }
+/* A boxed to_s can answer the String in the box itself,
+   beside user methods answering fresh Strings. Keep that handle; the
+   ordinary call still dispatches every other receiver. A String reopen
+   must run even on the handle, so cannot take this shortcut. */
+/* Exception#to_s also borrows its stored message. Its builtin arm can
+   carry that handle, but an exception override (including one supplied
+   by a module) needs the ordinary dispatch and declines this route. */
+int repr_boxed_to_s_operand(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  if (!repr_share_rule(c) || v < 0 || nt_kind(nt, v) != NK_CallNode) return -1;
+  const char *nm = nt_str(nt, v, "name");
+  int recv = nt_ref(nt, v, "receiver");
+  if (!is_to_s_name(nm) || recv < 0 || call_plain_argc(c, v) != 0 ||
+      nt_ref(nt, v, "block") >= 0 || repr_of(c, recv).kind != RK_BOXED ||
+      (c->ntype[v] != TY_STRING && c->ntype[v] != TY_STRBUF)) return -1;
+  int targets[CPT_MAX], n = cplan_targets(c, v, targets, CPT_MAX);
+  int string_ci = comp_class_index(c, "String");
+  if (n <= 0 || (string_ci >= 0 && comp_method_in_chain(c, string_ci, nm, NULL) >= 0)) return -1;
+  if (any_exc_reopen(c)) return -1;
+  for (int i = 0; i < n; i++) {
+    Scope *m = &c->scopes[targets[i]];
+    if (!m->ret_fresh || m->class_id < 0 || comp_class_is_module(c, &c->classes[m->class_id]) ||
+        class_is_exc_subclass(c, m->class_id)) return -1;
+  }
+  return recv;
+}
 /* Where the boxed form of a shared-mutable String comes from, as emit_boxed
    decides it for a node stored as (or holding) the handle. */
 static int repr_strbuf_src(const Compiler *c, int node, TyKind t) {
@@ -251,6 +277,8 @@ static int repr_strbuf_src(const Compiler *c, int node, TyKind t) {
   /* a reader call (or a call answering its receiver) that renders the
      handle itself */
   if (k == NK_CallNode) {
+    /* A boxed receiver route keeps its handle beside fresh user answers. */
+    if (repr_boxed_to_s_operand(mc, node) >= 0) return RS_HANDLE;
     /* A demanded call whose return route carries a handle is already that
        handle, including when operand ordering holds it in a temp. */
     if (c->strbuf_handle_demand[node] && repr_call_returns_handle(mc, node)) return RS_DEMANDED;

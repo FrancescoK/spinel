@@ -1394,6 +1394,7 @@ static int strbuf_route_operand(Compiler *c, int v) {
     return v;
   if (is_tap_name(nm) && strbuf_route_tap(c, v)) return v;
   if (is_reduce_alias(nm) && strbuf_route_inject(c, v)) return v;
+  if (repr_boxed_to_s_operand(c, v) >= 0) return recv;
   /* Kernel#String, as its arm takes it: no method of the program's own */
   int x = is_unary_plus(nm) && argc == 0 && blk < 0 ? recv
         : is_string_class_name(nm) && recv < 0 && argc == 1 && blk < 0 && comp_method_index(c, nm) < 0 &&
@@ -1724,6 +1725,10 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
     t = hold_operand(c, x, TY_POLY, 0, t, 1, " ", b);
     int pickup = repr_call_returns_handle(c, v);
     buf_printf(b, "sp_poly_is_strbuf(_t%d) ? sp_poly_as_strbuf(_t%d) : ", t, t);
+    if (repr_boxed_to_s_operand(c, v) >= 0)
+      buf_printf(b, "(_t%d.tag == SP_TAG_OBJ && (_t%d.cls_id == SP_BUILTIN_EXCEPTION || "
+                    "sp_is_exc_subclass_cls(_t%d.cls_id))) ? sp_exc_message_handle((sp_Exception *)_t%d.v.p) : ",
+                 t, t, t, t);
     if (pickup) buf_printf(b, "({ _sp_ret_strbuf = NULL; const char *_v%d = ", t);
     else buf_puts(b, "sp_String_new_shared(");
     int mark = view_bind(x, "_t%d", t);
@@ -1803,6 +1808,8 @@ void emit_route_recv_root(Compiler *c, int hr, int t, int argc, const int *argv,
    raises for a nil s) and `String(s)`? Every other one can answer nil. */
 static int strbuf_route_nonnil(Compiler *c, int v) {
   if (strbuf_route_exc_message(c, v)) return 1;
+  /* A fresh user return may be nil, unlike the builtin conversion. */
+  if (repr_boxed_to_s_operand(c, unwrap_parens(c, v)) >= 0) return 0;
   int x = strbuf_route_operand(c, v);
   return x >= 0 && x != unwrap_parens(c, v);
 }
