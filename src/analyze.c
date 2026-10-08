@@ -14619,6 +14619,21 @@ static int strbuf_promote_ivar(Compiler *c, int cid, const char *nm) {
   if (ci->ivar_types[iv] == TY_STRBUF && ci->ivar_str_shared[iv]) return 0;
   ci->ivar_types[iv] = TY_STRBUF;
   ci->ivar_str_shared[iv] = 1;
+  /* Under the share rule the inherited field has this representation in
+     every descendant, including one with no ivar node of its own (and so
+     no share holder). sh_ivar already joins a child's holder to its
+     ancestor's; carry the promotion to the passive copies of that slot. */
+  if (c->share_strings) {
+    int nk = 0;
+    const int *ks = comp_descendants(c, cid, &nk);
+    for (int k = 0; k < nk; k++) {
+      ClassInfo *sc = &c->classes[ks[k]];
+      int si = comp_ivar_index(sc, nm);
+      if (si < 0 || (sc->ivar_types[si] != TY_STRING && sc->ivar_types[si] != TY_STRBUF)) continue;
+      sc->ivar_types[si] = TY_STRBUF;
+      sc->ivar_str_shared[si] = 1;
+    }
+  }
   return 1;
 }
 

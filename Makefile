@@ -2241,6 +2241,7 @@ GC_MINOR_TESTS := test/boxed_scan_capture_params.rb \
                   test/string_append_chain_prepend.rb \
                   test/share_strings_prepend_override.rb \
                   test/share_strings_argument_conversion_root.rb \
+                  test/share_strings_inherited_ivar.rb \
                   test/reader_or_assign_frozen.rb \
                   test/share_strings_boxed_cond_order.rb \
                   test/string_unary_plus_nested.rb \
