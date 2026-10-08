@@ -5284,7 +5284,8 @@ static int infer_user_method_call(Compiler *c, int id, const NodeTable *nt, cons
       if (sym && sym[0] == '@') {
         TyKind uni = TY_UNKNOWN;
         for (int ci = 0; ci < c->nclasses; ci++) {
-          if (!c->classes[ci].instantiated) continue;
+          if (!c->classes[ci].instantiated && !class_value_escapes(c, ci) &&
+              ci != comp_class_index(c, "Toplevel")) continue;
           int iv = comp_ivar_index(&c->classes[ci], sym);
           if (iv < 0 || (c->classes[ci].is_struct && iv < c->classes[ci].nmembers)) continue;
           TyKind t = ivar_value_ty(&c->classes[ci], iv);

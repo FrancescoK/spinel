@@ -7378,7 +7378,8 @@ static int pivs_local_writes_ok(Compiler *c, int si, const char *vn) {
    optional one ahead of any rest), rebound nowhere: the argument each call
    of the method's name passes there, or its default. A Symbol of the name
    (send, method, define_method) may reach it some other way, which leaves
-   it unbounded. */
+   it unbounded. With no parameter name, follow the same calls' receivers
+   to bound a root method's boxed self. */
 static int pivs_param(Compiler *c, Scope *s, const char *pn, char *set, int depth) {
   const NodeTable *nt = c->nt;
   const char *mn = s->name;
@@ -7395,34 +7396,45 @@ static int pivs_param(Compiler *c, Scope *s, const char *pn, char *set, int dept
   for (int k = 0; PROTO[k]; k++) if (sp_streq(mn, PROTO[k])) return 0;
   if (!(isalpha((unsigned char)mn[0]) || mn[0] == '_')) return 0;
   for (const char *q = mn; *q; q++)
-    if (!(isalnum((unsigned char)*q) || *q == '_' || ((*q == '?' || *q == '!') && !q[1]))) return 0;
+    if (!(isalnum((unsigned char)*q) || *q == '_' || ((*q == '?' || *q == '!' || (!pn && *q == '=')) && !q[1]))) return 0;
   /* `super` in a method of this name passes its own arguments on */
   for (int u = pivs_ix_first(c, PX_SUPER, mn); u >= 0; u = c->pivs->next[u]) {
     Scope *us = comp_scope_of(c, u);
     if (us && us->name && sp_streq(us->name, mn)) return 0;
   }
-  int ps = nt_ref(nt, s->def_node, "parameters");
-  int rn = 0, on = 0;
-  const int *rq = ps >= 0 ? nt_arr(nt, ps, "requireds", &rn) : NULL;
-  const int *op = ps >= 0 ? nt_arr(nt, ps, "optionals", &on) : NULL;
   int i = -1, dflt = -1;
-  for (int k = 0; k < rn && i < 0; k++)
-    if (nt_kind(nt, rq[k]) == NK_RequiredParameterNode && sp_streq(nt_str(nt, rq[k], "name"), pn)) i = k;
-  for (int k = 0; k < on && i < 0; k++)
-    if (sp_streq(nt_str(nt, op[k], "name"), pn)) { i = rn + k; dflt = nt_ref(nt, op[k], "value"); }
-  if (i < 0) return 0;
-  /* Optional arguments precede the post-required arguments only when supplied. */
-  int posts = 0;
-  if (ps >= 0) nt_arr(nt, ps, "posts", &posts);
-  if (i >= rn && posts > 0) return 0;
-  int si = (int)(s - c->scopes);
-  for (int w = comp_lvw_first_sc(c, si, pn); w >= 0; w = comp_lvw_next_sc(c, w))
-    if (c->nscope[w] == si && sp_streq(nt_str(nt, w, "name"), pn)) return 0;
+  if (pn) {
+    int ps = nt_ref(nt, s->def_node, "parameters");
+    int rn = 0, on = 0;
+    const int *rq = ps >= 0 ? nt_arr(nt, ps, "requireds", &rn) : NULL;
+    const int *op = ps >= 0 ? nt_arr(nt, ps, "optionals", &on) : NULL;
+    for (int k = 0; k < rn && i < 0; k++)
+      if (nt_kind(nt, rq[k]) == NK_RequiredParameterNode && sp_streq(nt_str(nt, rq[k], "name"), pn)) i = k;
+    for (int k = 0; k < on && i < 0; k++)
+      if (sp_streq(nt_str(nt, op[k], "name"), pn)) { i = rn + k; dflt = nt_ref(nt, op[k], "value"); }
+    if (i < 0) return 0;
+    /* Optional arguments precede the post-required arguments only when supplied. */
+    int posts = 0;
+    if (ps >= 0) nt_arr(nt, ps, "posts", &posts);
+    if (i >= rn && posts > 0) return 0;
+    int si = (int)(s - c->scopes);
+    for (int w = comp_lvw_first_sc(c, si, pn); w >= 0; w = comp_lvw_next_sc(c, w))
+      if (c->nscope[w] == si && sp_streq(nt_str(nt, w, "name"), pn)) return 0;
+  }
   for (int y = pivs_ix_first(c, PX_SYMBOL, mn); y >= 0; y = c->pivs->next[y])
     if (sp_streq(nt_str(nt, y, nt_kind(nt, y) == NK_SymbolNode ? "value" : "content"), mn)) return 0;
   int ncalls = 0;
   for (int u = an_calls_named_first(c, mn); u >= 0; u = an_calls_named_next(u)) {
     if (nt_kind(nt, u) != NK_CallNode || !sp_streq(nt_str(nt, u, "name"), mn)) continue;
+    if (!pn) {
+      int r = nt_ref(nt, u, "receiver");
+      Scope *us = comp_scope_of(c, u);
+      if (r < 0 && us && us->class_id >= 0) return 0;
+      if ((nt_kind(nt, r) == NK_ConstantReadNode || nt_kind(nt, r) == NK_ConstantPathNode) &&
+          comp_class_index(c, nt_str(nt, r, "name")) >= 0) continue;
+      if (!pivs_value(c, r, set, depth + 1)) return 0;
+      continue;
+    }
     int a = nt_ref(nt, u, "arguments"), ac = 0;
     const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
     for (int k = 0; k < ac && k <= i; k++) {
@@ -7434,7 +7446,7 @@ static int pivs_param(Compiler *c, Scope *s, const char *pn, char *set, int dept
     if (!pivs_value(c, x, set, depth + 1)) return 0;
     ncalls++;
   }
-  return ncalls > 0;
+  return !pn || ncalls > 0;
 }
 /* A proc parameter follows arguments only while all its calls are in sight. */
 static int pivs_proc_param(Compiler *c, int lit, const char *pn, char *set, int depth, int elems) {
@@ -7746,7 +7758,8 @@ static int pivs_value_uncached(Compiler *c, int v, char *set, int depth) {
       Scope *s = comp_scope_of(c, v);
       if (!s || s->is_cmethod || s->class_id < 0) return 0;
       /* Object's boxed self is not bounded by the recorded class parents. */
-      if (is_object_root(c->classes[s->class_id].name)) return 0;
+      if (is_object_root(c->classes[s->class_id].name))
+        return !s->reachable || pivs_param(c, s, NULL, set, depth);
       for (int k = 0; k < c->nclasses; k++)
         if (k == s->class_id || is_descendant(c, k, s->class_id)) set[k] = 1;
       return 1;
@@ -8060,6 +8073,14 @@ static int infer_ivar_set_call(Compiler *c, int id, NilWrites *writes) {
       else if (a0ty && sp_streq(a0ty, "StringNode")) sym = nt_str(nt, sav[0], "content");
       if (sym && sym[0] == '@') {
         int ivrecv = nt_ref(nt, id, "receiver");
+        Scope *owner = comp_scope_of(c, id);
+        if (owner && !owner->is_cmethod && owner->class_id >= 0 &&
+            is_object_root(c->classes[owner->class_id].name) &&
+            (ivrecv < 0 || nt_kind(nt, ivrecv) == NK_SelfNode)) {
+          /* Only a reachable boxed-self setter needs the builtin map. */
+          if (!owner->reachable) return 0;
+          if (!c->bivar_table) { c->bivar_table = 1; changed = 1; }
+        }
         int tcid = -1;
         if (ivrecv < 0 || (nt_kind(nt, ivrecv) == NK_SelfNode && comp_ntype(c, ivrecv) != TY_POLY)) {
           Scope *s = comp_scope_of(c, id);

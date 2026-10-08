@@ -15,6 +15,10 @@
 /* Whether a boxed ivar setter's receiver can hold class k; an unproved
    receiver conservatively reaches every class. Shared by layout/emission. */
 int poly_ivar_set_reaches(Compiler *c, int call, int k);
+/* The classes the boxed receiver of call `call` can be an instance of, *n
+   of them, or NULL when the analysis cannot bound them (analyze_scope.c) */
+/* Kernel#String uses its argument as the conversion's implicit receiver. */
+const int *poly_recv_classes(Compiler *c, int call, int *n);
 /* --share-strings: the callable literals (a lambda, a proc's literal
    block, a top-level method's `method(:name)`) the receiver of call `call`
    can be, by the same walk: into out (at most cap), their count, or -1

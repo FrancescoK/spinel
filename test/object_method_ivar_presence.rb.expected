@@ -4,5 +4,31 @@ nil
 nil
 nil
 "instance-variable"
+nil
+false
+[]
+false
+"instance-variable"
+true
+[:@note]
+true
+nil
+[]
+false
+nil
+"instance-variable"
+false
+[:@note]
+[false, true, true]
+nil
+7
+[:@tail]
+nil
+7
+[:@tail, :@note]
+[:@tail]
+false
+true
+[:@note]
 false
 "instance-variable"
