@@ -3771,8 +3771,7 @@ int emit_call_reopen_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
           if (g_plan_check) ucall_observe(c, id, oc_mi3, oc_ci3, 0);
           if (void3) buf_puts(b, "(");
           buf_printf(b, "sp_Object_%s(", mc(c->scopes[oc_mi3].name));
-          emit_boxed(c, recv, b);
-          emit_args_filled(c, oc_mi3, nt_ref(nt, id, "arguments"), ", ", b);
+          emit_reopen_recv_args(c, id, oc_mi3, recv, 1, NULL, b);
           emit_trailing_blk_arg(c, &c->scopes[oc_mi3], id, -1, b);
           buf_puts(b, ")");
           if (void3) buf_printf(b, ", %s)", want3 == TY_POLY ? "sp_box_nil()" : default_value_from_compiler(c, want3));

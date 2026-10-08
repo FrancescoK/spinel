@@ -1836,6 +1836,17 @@ reject-test: $(SPINEL)
 	  else grep -q "unsupported Hash#compare_by_identity" "$$tmp/cbi.out" || \
 	    { echo "reject-test: FAIL ($$t: refused without saying why)"; sed -n 1,5p "$$tmp/cbi.out"; ok=0; }; fi; \
 	done; \
+	for mode in 0 1; do \
+	  for spec in "presence:defined? of an instance variable with untracked presence on a boxed receiver" \
+	              "native_slot:instance variable write to a receiver without a writable slot" \
+	              "struct_slot:instance_variable_set to an ivar absent from the fixed object layout"; do \
+	    t=test/reject/object_method_ivar_$${spec%%:*}.rb; why=$${spec#*:}; \
+	    if SPINEL_SHARE_STRINGS=$$mode $(SPINEL) "$$t" -c -o "$$tmp/ivp.c" >"$$tmp/ivp.out" 2>&1; then \
+	      echo "reject-test: FAIL ($$t compiled)"; ok=0; \
+	    else grep -qF "unsupported $$why" "$$tmp/ivp.out" || \
+	      { echo "reject-test: FAIL ($$t refused without saying why)"; cat "$$tmp/ivp.out"; ok=0; }; fi; \
+	  done; \
+	done; \
 	t=test/reject/bare_const_nested_unreachable.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/bcn.c" >"$$tmp/bcn.out" 2>&1; then \
 	  echo "reject-test: FAIL (a bare constant CRuby's lookup cannot reach compiled, bound to a nested one)"; ok=0; \
@@ -2422,6 +2433,9 @@ GC_MINOR_TESTS := test/io_read_outbuf_eof.rb \
                   test/builtin_ivar_gc.rb \
                   test/builtin_ivar_frozen_copy.rb \
                   test/builtin_ivar_boxed_reflection.rb \
+                  test/object_method_ivars.rb \
+                  test/object_method_ivar_presence.rb \
+                  test/object_method_ivar_string.rb \
                   test/array_subclass_boxed.rb \
                   test/array_subclass_methods.rb \
                   test/poly_array_uniq_hash.rb

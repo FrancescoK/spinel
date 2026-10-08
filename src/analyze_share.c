@@ -1495,6 +1495,10 @@ static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int 
     int cid = ty_is_object(rt) ? ty_object_class(rt) : rt == TY_VOID ? sh_ivar_owner(c, n) : -1;
     int iv = lit && cid >= 0 ? sh_ivar(F, c, cid, lit, n) : -1;
     if (!lit || cid < 0) { F->dyn_ivars = 1; iv = F->unknown; }
+    /* A lowered ivar read must carry the handle through its reflective
+       result too, even when the caller only reads the method's answer. */
+    if (share == BSH_IVAR_GET && nt_int(nt, n, "builtin_only", 0))
+      sh_flow(F, SHFL_WRITE, n, n);
     if (share == BSH_IVAR_SET && nv >= 2) {
       sh_ivar_store(F, c, iv, argc >= 2 ? argv[1] : -1, vals[1]);
       if (argc >= 2) sh_flow(F, SHFL_MEMBER, n, argv[1]);
