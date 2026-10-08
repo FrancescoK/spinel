@@ -126,6 +126,11 @@ static int an_nonblock_no_exception(Compiler *c, int id) {
   const char *lty = nt_type(nt, av[an - 1]);
   if (!lty || !sp_streq(lty, "KeywordHashNode")) return 0;
   int e = kwh_lookup(nt, av[an - 1], "exception");
+  /* An output-buffer read with a runtime exception switch may also answer
+     nil or the wait symbol. Keep that narrow route boxed. */
+  if (e >= 0 && an == 3 && nt_kind(nt, av[1]) != NK_KeywordHashNode &&
+      bop_share_named(TY_IO, nt_str(nt, id, "name")) == BSH_FILL1 &&
+      nt_kind(nt, e) != NK_TrueNode && nt_kind(nt, e) != NK_FalseNode) return 1;
   return e >= 0 && nt_type(nt, e) && sp_streq(nt_type(nt, e), "FalseNode");
 }
 

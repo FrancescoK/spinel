@@ -197,6 +197,24 @@ int repr_call_returns_handle(Compiler *c, int v) {
   for (int i = 0; i < n; i++) if (!c->scopes[mis[i]].ret_handle) return 0;
   return 1;
 }
+/* A boxed receiver's reader arms already box their shared fields as
+   handles. A String demand can take that boxed result without a copy.
+   Names with a builtin face keep their own route. */
+int repr_boxed_reader_handle(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  if (!repr_share_rule(c) || v < 0 || nt_kind(nt, v) != NK_CallNode ||
+      c->ntype[v] != TY_STRING || nt_ref(nt, v, "block") >= 0 ||
+      nt_ref(nt, v, "arguments") >= 0) return 0;
+  int recv = nt_ref(nt, v, "receiver");
+  if (recv < 0 || repr_of(c, recv).kind != RK_BOXED ||
+      ty_poly_face_owners(nt_str(nt, v, "name"), 0, 0, 1, 1)) return 0;
+  const PolyPlan *p = cplan_poly_arms(c, v);
+  if (p->n == 0) return 0;
+  for (int i = 0; i < p->n; i++)
+    if (p->arm[i].kind != PA_READER || p->arm[i].vty != TY_STRBUF) return 0;
+  return 1;
+}
+
 /* A boxed to_s can answer the String in the box itself,
    beside user methods answering fresh Strings. Keep that handle; the
    ordinary call still dispatches every other receiver. A String reopen
@@ -291,6 +309,7 @@ static int repr_strbuf_src(const Compiler *c, int node, TyKind t) {
     /* A demanded call whose return route carries a handle is already that
        handle, including when operand ordering holds it in a temp. */
     if (c->strbuf_handle_demand[node] && repr_call_returns_handle(mc, node)) return RS_DEMANDED;
+    if (c->strbuf_handle_demand[node] && repr_boxed_reader_handle(mc, node)) return RS_DEMANDED;
     int r = nt_ref(nt, node, "receiver");
     if (r >= 0 && ty_is_object(comp_ntype(c, r)) &&
         (strbuf_marked_yields_handle(mc, node) || c->strbuf_handle_demand[node]))

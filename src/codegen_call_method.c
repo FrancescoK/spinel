@@ -1034,6 +1034,17 @@ int emit_call_method_obj_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       buf_printf(b, "void *_t%d = (void *)sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
                     " sp_PolyArray_push((sp_PolyArray *)_t%d, _t%d); ", self_tmp, self_tmp, self_tmp, tbr);
     }
+    else if (self_receiver && repr_share_rule(c) && method_call_param_shift(c, id, mi) &&
+             repr_of_slot(c, scope_local(&c->scopes[mi], c->scopes[mi].pnames[0])).kind == RK_STRBUF) {
+      /* Capture the representation the wrapper receives, including the
+         root kind the Method's collector follows after construction. */
+      self_tmp = ++g_tmp;
+      self_kind = "SP_BM_SELF_OBJ";
+      self_rooted = 1;
+      buf_printf(b, "({ void *_t%d = (void *)(", self_tmp);
+      emit_strbuf_handle_of(c, recv, b);
+      buf_printf(b, "); SP_GC_ROOT(_t%d); ", self_tmp);
+    }
     else if (self_receiver) {
       Repr rr2 = repr_of(c, recv);
       TyKind rt2 = rr2.as_ty;
