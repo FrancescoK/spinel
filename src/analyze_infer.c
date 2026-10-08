@@ -4915,7 +4915,9 @@ static int infer_receiverless_call(Compiler *c, int id, const NodeTable *nt, con
       pr = pr == TY_UNKNOWN ? t : ty_unify(pr, t);
     }
     if (pr != TY_UNKNOWN) { *out = pr; return 1; }
-    if (iec < -1) { *out = TY_POLY; return 1; }
+    /* Kernel globals stay receiverless in the self-call rewrite and keep
+       their builtin result type, including p's argument type. */
+    if (iec < -1 && !ie_kernel_global(name)) { *out = TY_POLY; return 1; }
   }
   /* Kernel conversion with an explicit user-object receiver: obj.send(:Float, x)
      desugars to obj.Float(x); the private Kernel method is available on every

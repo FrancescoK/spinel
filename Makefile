@@ -1018,6 +1018,8 @@ SHARE_TESTS += packages/fiddle/test/fiddle_importer_include.rb
 SHARE_TESTS += test/instance_eval_poly_fiddle.rb
 endif
 SHARE_TESTS += test/instance_eval_poly_unconstrained.rb
+SHARE_TESTS += test/instance_eval_poly_kernel_result.rb test/instance_eval_poly_builtin_self_call.rb
+SHARE_TESTS += test/instance_exec_args_caller_self.rb test/instance_exec_kwsplat_autosplat.rb test/main_self_paths.rb
 ifneq ($(FFI_AVAILABLE),yes)
 SHARE_TESTS := $(filter-out test/share/share_strings_fiddle.rb,$(SHARE_TESTS))
 endif
