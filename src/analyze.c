@@ -18339,7 +18339,7 @@ static int an_tail_handle(Compiler *c, RetHandles *R, int n, TailCount *tc) {
     return k == NK_SuperNode && an_tail_param_arg(c, R, n, mi, tc);
   }
   if (k != NK_CallNode || (!R->fresh && c->ntype[n] != TY_STRING)) return 0;
-  if (R->fresh && cplan_user_fresh(c, n)->via == UC_POLY) return 0;
+  if (R->fresh && cplan_user_fresh(c, n)->via == UC_POLY && !share_builtin_fresh(c, n)) return 0;
   int mis[CPT_MAX];
   int cnt = cplan_targets(c, n, mis, CPT_MAX);
   /* A raising arm contributes no String. A user override still returns. */
