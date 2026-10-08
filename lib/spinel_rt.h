@@ -13289,6 +13289,52 @@ static int sp_poly_queue_push_n(sp_RbVal v, int argc, const sp_RbVal *args) {
                                                 argc, sized ? "1..2" : "1"));
   return 1;
 }
+/* The Array arms of sp_poly_shl, for a caller that has no use for its other
+   arms: 1 when v, an object, is an Array of one of these kinds and x was
+   appended. sp_poly_shl keeps its own: taken out of it, they cost a loop of
+   two `<<` statements ten instructions a pass under gcc. */
+static SP_INLINE int sp_poly_ary_append(sp_RbVal v, sp_RbVal x) {
+  if (v.cls_id == SP_BUILTIN_INT_ARRAY) {
+    sp_IntArray_push((sp_IntArray *)v.v.p, sp_poly_elem_i(x));
+    return 1;
+  }
+  if (v.cls_id == SP_BUILTIN_POLY_ARRAY) {
+    sp_PolyArray_push((sp_PolyArray *)v.v.p, x);
+    return 1;
+  }
+  if (v.cls_id == SP_BUILTIN_PTR_ARRAY) {
+    sp_PtrArray *pa = (sp_PtrArray *)v.v.p;
+    sp_PtrArray_push(pa, sp_PtrArray_elem_unbox(pa, x));
+    return 1;
+  }
+  if (v.cls_id == SP_BUILTIN_FLT_ARRAY) {
+    sp_FloatArray_push((sp_FloatArray *)v.v.p, sp_poly_elem_f(x));
+    return 1;
+  }
+  if (v.cls_id == SP_BUILTIN_STR_ARRAY) {
+    /* a shared String handle stores a copy of its contents, as in sp_poly_shl */
+    const char *_es = x.tag == SP_TAG_STR ? (const char *)x.v.p
+                    : (x.tag == SP_TAG_OBJ && x.cls_id == SP_BUILTIN_STRBUF && x.v.p)
+                        ? sp_str_dup(sp_String_cstr((sp_String *)x.v.p))
+                        : sp_poly_elem_s(x);
+    sp_StrArray_push((sp_StrArray *)v.v.p, _es);
+    return 1;
+  }
+  return 0;
+}
+/* push / append with one argument, as a statement on a boxed value: an Array
+   appends and a queue takes a push. Nothing else has the method: a String, an
+   Integer or an IO has `<<` only, which sp_poly_shl would run for it. */
+static SP_UNUSED void sp_poly_push_stmt(sp_RbVal v, sp_RbVal x, const char *m) {
+  if (v.tag == SP_TAG_OBJ) {
+    if (sp_poly_ary_append(v, x)) return;
+    if (sp_poly_is_array_kind(v.cls_id) || (v.cls_id == SP_BUILTIN_QUEUE && m[0] == 'p')) {
+      sp_poly_shl(v, x);
+      return;
+    }
+  }
+  sp_raise_nomethod(sp_nomethod_msg(m, v));
+}
 /* a boxed sleep timeout as seconds: CRuby's TypeError for anything that is
    not a number (nil, meaning none, is the caller's to check first) */
 static double sp_poly_time_interval(sp_RbVal v) {
