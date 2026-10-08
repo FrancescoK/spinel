@@ -18,6 +18,9 @@
 #     switches share raises AmbiguousOption
 #   - Integer reads 12, -3, 0x1f, 0b11, 010 and 1_000, and Float reads 1.5,
 #     -.5 and 1e3; any other word raises OptionParser::InvalidArgument
+#   - String refuses an empty value with OptionParser::InvalidArgument, and
+#     Array passes nil for an empty item ("a,,b"); without a type an empty
+#     value passes as it is
 #   - OptionParser::InvalidOption, OptionParser::AmbiguousOption,
 #     OptionParser::MissingArgument, OptionParser::NeedlessArgument and
 #     OptionParser::InvalidArgument, all subclasses of OptionParser::ParseError
@@ -115,7 +118,7 @@ class OptionParser
   end
 
   def separator(text)
-    @entries.push(Switch.new([], [], "", [text], nil, String))
+    @entries.push(Switch.new([], [], "", [text], nil, Object))
   end
 
   def on(*args, &block)
@@ -178,7 +181,7 @@ class OptionParser
     longs = []
     arg_text = ""
     descriptions = []
-    type = String
+    type = Object
     args.each do |a|
       if a.is_a?(String) && a.length > 1 && a[0] == "-"
         # a "[" opens an optional value ("--name[=VALUE]"), but the "[no-]" of
@@ -190,7 +193,7 @@ class OptionParser
         (a[1] == "-" ? longs : shorts).push(a[0, cut])
       elsif a.is_a?(String)
         descriptions.push(a)
-      elsif a == Array || a == Integer || a == Float
+      elsif a == String || a == Array || a == Integer || a == Float
         type = a
       end
     end
@@ -215,15 +218,19 @@ class OptionParser
     (@entries + @tail).find { |e| e.matches?(name) }
   end
 
-  # Passes the value to the block in the switch's type. A word that is not
-  # an Integer or a Float raises InvalidArgument naming it as given (shown).
+  # Passes the value to the block in the switch's type. An empty String or
+  # a word that is not an Integer or a Float raises InvalidArgument naming
+  # it as given (shown). Object is the type of a switch declared without one.
   def invoke(sw, value, shown)
     handler = sw.handler
     type = sw.type
-    if value.nil? || type == String
+    if value.nil? || type == Object
+      handler.call(value) if handler
+    elsif type == String
+      raise invalid_argument(shown) if value.empty?
       handler.call(value) if handler
     elsif type == Array
-      handler.call(value.split(",")) if handler
+      handler.call(value.split(",").map { |item| item.empty? ? nil : item }) if handler
     elsif type == Integer
       raise invalid_argument(shown) unless value.match?(INTEGER_VALUE)
       begin
