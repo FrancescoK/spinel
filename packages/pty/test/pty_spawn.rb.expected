@@ -1,0 +1,13 @@
+set=yes home=unset
+tty
+hello
+got=hello
+0
+[false, true, true]
+one
+two
+Errno::ENOENT
+1
+2
+first=1
+second=2
