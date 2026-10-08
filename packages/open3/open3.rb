@@ -9,7 +9,7 @@
 require "tmpdir"
 
 module Open3
-  def self.__capture(cmd, stdin_data, merge, keep_err)
+  def self.__capture(cmd, stdin_data, merge, keep_err, chdir)
     env = nil
     args = cmd.dup
     env = args.shift if args[0].is_a?(Hash)
@@ -31,6 +31,7 @@ module Open3
       # reads EOF instead of the parent's input. Merged streams: stderr is
       # the child's own stdout, one file seeing both in the order written.
       opts = { out: outf, in: inf || File::NULL }
+      opts[:chdir] = chdir if chdir
       if merge
         opts[:err] = [:child, :out]
       elsif keep_err
@@ -47,20 +48,20 @@ module Open3
     [out, err, status]
   end
 
-  # capture3(*cmd, stdin_data: nil) -> [stdout, stderr, status]
-  def self.capture3(*cmd, stdin_data: nil, binmode: false)
-    __capture(cmd, stdin_data, false, true)
+  # capture3(*cmd, stdin_data: nil, chdir: nil) -> [stdout, stderr, status]
+  def self.capture3(*cmd, stdin_data: nil, binmode: false, chdir: nil)
+    __capture(cmd, stdin_data, false, true, chdir)
   end
 
-  # capture2(*cmd, stdin_data: nil) -> [stdout, status]; stderr is the parent's
-  def self.capture2(*cmd, stdin_data: nil, binmode: false)
-    out, _err, status = __capture(cmd, stdin_data, false, false)
+  # capture2(*cmd, stdin_data: nil, chdir: nil) -> [stdout, status]; stderr is the parent's
+  def self.capture2(*cmd, stdin_data: nil, binmode: false, chdir: nil)
+    out, _err, status = __capture(cmd, stdin_data, false, false, chdir)
     [out, status]
   end
 
-  # capture2e(*cmd, stdin_data: nil) -> [stdout and stderr merged, status]
-  def self.capture2e(*cmd, stdin_data: nil, binmode: false)
-    out, _err, status = __capture(cmd, stdin_data, true, true)
+  # capture2e(*cmd, stdin_data: nil, chdir: nil) -> [stdout and stderr merged, status]
+  def self.capture2e(*cmd, stdin_data: nil, binmode: false, chdir: nil)
+    out, _err, status = __capture(cmd, stdin_data, true, true, chdir)
     [out, status]
   end
 end
