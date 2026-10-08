@@ -13400,14 +13400,42 @@ static int rows_elem_read(const NodeTable *nt, const int *par, int n) {
   return an == 1 && nt_kind(nt, av[0]) != NK_RangeNode;
 }
 
+/* Whether `name`, or an instance variable's name without its `@`, is
+   written anywhere as a Symbol or a String. That reaches a constant, an
+   instance variable or a method with no read or call of its name:
+   const_get(:T), attr_reader :row, instance_variable_get(:@row), alias,
+   method(:pick). The Symbols and Strings are gathered once and again when
+   the node table changes: every round of inference asks. */
+static ANameHash g_rows_spelled;
+static const NodeTable *g_rows_spelled_nt;
+static unsigned g_rows_spelled_ver;
+static int g_rows_spelled_cnt = -1;
+static int rows_name_spelled(const NodeTable *nt, const char *name) {
+  if (g_rows_spelled_nt != nt || g_rows_spelled_ver != nt->version || g_rows_spelled_cnt != nt->count) {
+    anh_free(&g_rows_spelled); memset(&g_rows_spelled, 0, sizeof g_rows_spelled);
+    NT_FOREACH_KIND(nt, NK_SymbolNode, s) {
+      const char *v = nt_str(nt, s, "value");
+      if (v && !anh_has(&g_rows_spelled, v)) anh_add(&g_rows_spelled, v);
+    }
+    NT_FOREACH_KIND(nt, NK_StringNode, s) {
+      const char *v = nt_str(nt, s, "content");
+      if (v && !anh_has(&g_rows_spelled, v)) anh_add(&g_rows_spelled, v);
+    }
+    g_rows_spelled_nt = nt; g_rows_spelled_ver = nt->version; g_rows_spelled_cnt = nt->count;
+  }
+  return anh_has(&g_rows_spelled, name) || (name[0] == '@' && anh_has(&g_rows_spelled, name + 1));
+}
+
 /* Whether every read of the slot written at `w` (an ivar, by name, or a
    local of its scope) is an element read, and nothing else writes it in
-   place: a row held there is only ever read. */
+   place: a row held there is only ever read. An ivar whose name is spelled
+   (rows_name_spelled) may be handed out by a reader. */
 static int rows_slot_elem_reads(const NodeTable *nt, Compiler *c, const int *par, int w) {
   NodeKind wk = nt_kind(nt, w);
   const char *nm = nt_str(nt, w, "name");
   if (!nm) return 0;
   int iv = wk == NK_InstanceVariableWriteNode;
+  if (iv && rows_name_spelled(nt, nm)) return 0;
   Scope *ws = iv ? NULL : comp_scope_of(c, w);
   for (int n = 0; n < nt->count; n++) {
     NodeKind k = nt_kind(nt, n);
@@ -13424,18 +13452,47 @@ static int rows_slot_elem_reads(const NodeTable *nt, Compiler *c, const int *par
   return 1;
 }
 
+/* an_value_dropped has said the value of `w` is thrown away. For the last
+   statement of a block it went by the iterator's name (`each`, `times`):
+   a method of the program's own by that name may answer what its block
+   answers (`def each = yield`). */
+static int rows_block_drops(Compiler *c, const int *par, int w) {
+  const NodeTable *nt = c->nt;
+  int st = par[w], bl = par[st];
+  int sn = 0; const int *sb = nt_arr(nt, st, "body", &sn);
+  if (sn <= 0 || sb[sn - 1] != w || bl < 0 || nt_kind(nt, bl) != NK_BlockNode) return 1;
+  const char *iter = par[bl] >= 0 ? nt_str(nt, par[bl], "name") : NULL;
+  return iter && !an_user_defines_method(c, iter);
+}
+
+/* Whether the value of method `dn` can be taken other than by a call of
+   its name or a `super`: the name is spelled (rows_name_spelled: an alias,
+   method(:dn), instance_method), `x.dn ||= v` reads through it, or it is a
+   conversion Kernel#Array and a multiple assignment call by themselves. */
+static int rows_method_taken(const NodeTable *nt, const char *dn) {
+  if (sp_streq(dn, "to_a") || sp_streq(dn, "to_ary") || rows_name_spelled(nt, dn)) return 1;
+  const NodeKind rd[] = { NK_CallOrWriteNode, NK_CallAndWriteNode };
+  for (size_t k = 0; k < sizeof rd / sizeof rd[0]; k++)
+    NT_FOREACH_KIND(nt, rd[k], q) {
+      const char *qn = nt_str(nt, q, "name");
+      if (qn && sp_streq(qn, dn)) return 1;
+    }
+  return 0;
+}
+
 /* Whether the value of `w` is thrown away: a statement whose value nothing
    reads, the last statement of a conditional, a parenthesized or a begin
    body whose own value is thrown away, or the last statement of a method
    every call of which (by name, whatever the receiver) throws its value
-   away in turn. A method already being asked about (a tail calling a
-   method of its own name, as `reset` methods do) counts as thrown away
+   away in turn, and whose value nothing takes another way
+   (rows_method_taken). A method already being asked about (a tail calling
+   a method of its own name, as `reset` methods do) counts as thrown away
    there: its other calls decide. `seen` holds those names, `depth` of
    them at most. */
 static int rows_value_dropped(Compiler *c, const int *par, int w, const char **seen, int nseen) {
   const NodeTable *nt = c->nt;
   for (int guard = 0; guard < 64; guard++) {
-    if (an_value_dropped(nt, par, w)) return 1;
+    if (an_value_dropped(nt, par, w)) return rows_block_drops(c, par, w);
     int st = par[w];
     if (st < 0 || nt_kind(nt, st) != NK_StatementsNode) return 0;
     int sn = 0; const int *sb = nt_arr(nt, st, "body", &sn);
@@ -13447,7 +13504,7 @@ static int rows_value_dropped(Compiler *c, const int *par, int w, const char **s
       w = g; continue;
     }
     const char *dn = gk == NK_DefNode ? nt_str(nt, g, "name") : NULL;
-    if (!dn) return 0;
+    if (!dn || rows_method_taken(nt, dn)) return 0;
     for (int k = 0; k < nseen; k++) if (sp_streq(seen[k], dn)) return 1;
     if (nseen >= 4) return 0;
     seen[nseen] = dn;
@@ -13455,36 +13512,65 @@ static int rows_value_dropped(Compiler *c, const int *par, int w, const char **s
       const char *qn = nt_kind(nt, q) == NK_CallNode ? nt_str(nt, q, "name") : NULL;
       if (qn && sp_streq(qn, dn) && !rows_value_dropped(c, par, q, seen, nseen + 1)) return 0;
     }
+    /* `super` is a call of the method it is written in; outside a `def`
+       (a define_method block) it may be a call of any */
+    const NodeKind sup[] = { NK_SuperNode, NK_ForwardingSuperNode };
+    for (size_t k = 0; k < sizeof sup / sizeof sup[0]; k++)
+      NT_FOREACH_KIND(nt, sup[k], q) {
+        int d = par[q];
+        while (d >= 0 && nt_kind(nt, d) != NK_DefNode) d = par[d];
+        const char *in = d >= 0 ? nt_str(nt, d, "name") : NULL;
+        if ((!in || sp_streq(in, dn)) && !rows_value_dropped(c, par, q, seen, nseen + 1)) return 0;
+      }
     return 1;
   }
   return 0;
 }
 
+/* Whether constant `cname` is reached other than by the reads
+   const_rows_elem_reads_only examines: by a compound or a multiple
+   assignment, which reads or rebinds it, or by its name given to const_get
+   (rows_name_spelled). */
+static int rows_const_reached(const NodeTable *nt, const char *cname) {
+  const NodeKind by[] = { NK_ConstantOperatorWriteNode, NK_ConstantOrWriteNode, NK_ConstantAndWriteNode,
+                          NK_ConstantTargetNode, NK_ConstantPathTargetNode };
+  for (size_t k = 0; k < sizeof by / sizeof by[0]; k++)
+    NT_FOREACH_KIND(nt, by[k], n) {
+      const char *nn = nt_str(nt, n, "name");
+      if (nn && sp_streq(nn, cname)) return 1;
+    }
+  return rows_name_spelled(nt, cname);
+}
+
 /* Whether the rows of constant `cname` are only ever read element by
-   element: every read of the constant is `CNAME[i]`, and each row it
+   element: every read of the constant, by its bare name or through a path
+   (`M::CNAME`), is `CNAME[i]`, and each row it
    answers is read by an index right there or held, by a write whose value
    is thrown away, in an ivar or a local that is only read by an index
    (optcarrot's `@oscillator_clocks = OSCILLATOR_CLOCKS[0]`). Such rows can be Integer arrays: nothing can
    store into them, copy them or hand them on. */
 static int const_rows_elem_reads_only(Compiler *c, const char *cname) {
   const NodeTable *nt = c->nt;
+  if (rows_const_reached(nt, cname)) return 0;
   int *par = an_parent_map(nt);
   if (!par) return 0;
   const char *seen[4];
+  const NodeKind rd[] = { NK_ConstantReadNode, NK_ConstantPathNode };
   int ok = 1;
-  for (int n = comp_kind_first(c, NK_ConstantReadNode); ok && n >= 0; n = comp_kind_next(c, n)) {
-    if (nt_kind(nt, n) != NK_ConstantReadNode) continue;
-    const char *rn = nt_str(nt, n, "name");
-    if (!rn || !sp_streq(rn, cname)) continue;
-    if (!rows_elem_read(nt, par, n)) { ok = 0; break; }
-    int row = par[n], q = par[row];
-    if (rows_elem_read(nt, par, row)) continue;
-    NodeKind qk = q >= 0 ? nt_kind(nt, q) : NK_NONE;
-    if ((qk == NK_InstanceVariableWriteNode || qk == NK_LocalVariableWriteNode) &&
-        nt_ref(nt, q, "value") == row && rows_value_dropped(c, par, q, seen, 0) &&
-        rows_slot_elem_reads(nt, c, par, q)) continue;
-    ok = 0;
-  }
+  for (int k = 0; ok && k < 2; k++)
+    for (int n = comp_kind_first(c, rd[k]); ok && n >= 0; n = comp_kind_next(c, n)) {
+      if (nt_kind(nt, n) != rd[k]) continue;
+      const char *rn = nt_str(nt, n, "name");
+      if (!rn || !sp_streq(rn, cname)) continue;
+      if (!rows_elem_read(nt, par, n)) { ok = 0; break; }
+      int row = par[n], q = par[row];
+      if (rows_elem_read(nt, par, row)) continue;
+      NodeKind qk = q >= 0 ? nt_kind(nt, q) : NK_NONE;
+      if ((qk == NK_InstanceVariableWriteNode || qk == NK_LocalVariableWriteNode) &&
+          nt_ref(nt, q, "value") == row && rows_value_dropped(c, par, q, seen, 0) &&
+          rows_slot_elem_reads(nt, c, par, q)) continue;
+      ok = 0;
+    }
   free(par);
   return ok;
 }
