@@ -7,6 +7,7 @@
 #include "repr.h"
 #include "holder.h"
 #include "builtin_ops.h"
+#include "share.h"
 
 /* The value of the block a `fetch` or `delete` runs when it finds nothing, as
    `({ bind; leading statements; setup; value; })`. `bind` sets the block's
@@ -720,6 +721,28 @@ static int emit_dig_splat(Compiler *c, int recv, int arg, Buf *b) {
   return 1;
 }
 
+/* --share-strings: the key reaches this parameter through the fetch row's
+   existing route. A String slot reads its bytes; a handle slot takes the
+   handle out of the boxed key, so both still denote the requested String. */
+static int fetch_blk_param_routes_key(Compiler *c, int id, int blk, LocalVar *lv, const char *p0) {
+  if (!repr_share_rule(c) || !lv) return 0;
+  Repr r = repr_of_slot(c, lv);
+  if (r.ty != TY_STRING && r.kind != RK_STRBUF) return 0;
+  int ac = 0; const int *av = call_args(c->nt, id, &ac);
+  if (ac < 1) return 0;
+  Repr kr = repr_of(c, av[0]);
+  if (kr.ty != TY_STRING && kr.kind != RK_STRBUF) return 0;
+  ShareRoute q = share_route(id, av[0], 0);
+  q.to = blk;
+  q.to_name = p0;
+  /* A fresh key needs its own handle. A variable's handle survives the
+     argument temp; a String-valued call's temp can hold only its bytes. */
+  char ref[1024];
+  if (!share_node_fresh(c, av[0]))
+    q.carry = strbuf_var_handle(c, av[0], ref, sizeof ref) ? av[0] : SHARE_CARRY_COPY;
+  return share_route_defer(c, &q, "");
+}
+
 /* Is a fetch block of the program left with a slot of another type than its
    key? The types have settled and the answer is the whole program's, so it
    is asked once and kept (and asked again if the node table has changed):
@@ -737,7 +760,8 @@ static int fetch_blk_left_behind(Compiler *c) {
     const int *fav = call_args(nt, f, &fac);
     const char *op = fn && sp_streq(fn, "fetch") && nt_kind(nt, fb) == NK_BlockNode ? block_param_name(c, fb, 0) : NULL;
     LocalVar *ov = op && fac > 0 && comp_ntype(c, nt_ref(nt, f, "receiver")) == TY_POLY ? scope_local(comp_scope_of(c, fb), op) : NULL;
-    if (ov && ov->type != TY_POLY && ov->type != comp_ntype(c, fav[0])) { kept = 1; break; }
+    if (ov && ov->type != TY_POLY && ov->type != comp_ntype(c, fav[0]) &&
+        !fetch_blk_param_routes_key(c, f, fb, ov, op)) { kept = 1; break; }
   }
   return kept;
 }
@@ -754,10 +778,12 @@ static int fetch_blk_left_behind(Compiler *c) {
    fetch block of the program is left with a slot of another type than its
    key, whose failure a program that now builds would reach. */
 static int fetch_blk_param_is_key(Compiler *c, int id, int blk, LocalVar *flv, const char *fp0) {
+  /* The flag's route also carries a String whose slot became a handle. */
+  int routed = fetch_blk_param_routes_key(c, id, blk, flv, fp0);
   const NodeTable *nt = c->nt;
   int ac = 0; const int *av = call_args(nt, id, &ac);
-  if (ac < 1 || flv->type != comp_ntype(c, av[0]) || repr_of_slot(c, flv).kind == RK_STRBUF ||
-      !(flv->type == TY_SYMBOL || (flv->type == TY_STRING && nt_kind(nt, av[0]) == NK_StringNode))) return 0;
+  if (!routed && (ac < 1 || flv->type != comp_ntype(c, av[0]) || repr_of_slot(c, flv).kind == RK_STRBUF ||
+      !(flv->type == TY_SYMBOL || (flv->type == TY_STRING && nt_kind(nt, av[0]) == NK_StringNode)))) return 0;
   int pn = nt_ref(nt, nt_ref(nt, blk, "parameters"), "parameters");
   int rn = 0, on = 0, sn = 0, kn = 0;
   nt_arr(nt, pn, "requireds", &rn); nt_arr(nt, pn, "optionals", &on);
@@ -768,7 +794,8 @@ static int fetch_blk_param_is_key(Compiler *c, int id, int blk, LocalVar *flv, c
   int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
   int last = bn > 0 ? bb[bn - 1] : -1;
   TyKind vt = last >= 0 ? comp_ntype(c, last) : TY_NIL;
-  if (!(vt == TY_INT || vt == TY_FLOAT || vt == TY_BOOL || vt == TY_NIL || vt == TY_SYMBOL || vt == TY_STRING) ||
+  if (!(vt == TY_INT || vt == TY_FLOAT || vt == TY_BOOL || vt == TY_NIL || vt == TY_SYMBOL || vt == TY_STRING ||
+        (routed && vt == TY_STRBUF)) ||
       block_next_value_ty(c, body) != TY_UNKNOWN || !block_param_used_up(c, blk, fp0, last)) return 0;
   return !fetch_blk_left_behind(c);
 }
@@ -809,7 +836,7 @@ static void emit_fetch_blk_param(Compiler *c, int id, int blk, TyKind kt, int tk
   }
   else if (own && kt == TY_POLY && fetch_blk_param_is_key(c, id, blk, own, fp0)) {
     char ktn[32]; snprintf(ktn, sizeof ktn, "_t%d", tk);
-    buf_printf(b, "lv_%s = ", rename_local(fp0)); emit_unbox_text(c, own->type, ktn, b); buf_puts(b, "; ");
+    buf_printf(b, "lv_%s = ", rename_local(fp0)); emit_unbox_text(c, repr_of_slot(c, own).as_ty, ktn, b); buf_puts(b, "; ");
   }
   else buf_printf(b, "lv_%s = _t%d; ", rename_local(fp0), tk);
 }
