@@ -21258,6 +21258,13 @@ static int mark_reader_identity_operands(Compiler *c) {
         continue;
       }
       char ivb[300]; int defc = -1;
+      /* A boxed reader's plan can give the same handle answer as a
+         statically resolved field. Its demand takes the boxed handle. */
+      if (repr_boxed_reader_handle(c, opnd)) {
+        c->strbuf_handle_demand[opnd] = 1;
+        changed = 1;
+        continue;
+      }
       const char *ivn = an_reader_ivar_of(c, opnd, &defc, ivb, sizeof ivb);
       if (!ivn || defc < 0) continue;
       int iv = comp_ivar_index(&c->classes[defc], ivn);
@@ -33980,6 +33987,8 @@ static void refuse_string_read_copies(Compiler *c) {
     ShareRoute q = share_route(w, v, 0);
     q.to = w;
     q.carry = SHARE_CARRY_COPY;
+    /* A reader whose settled plan carries shared fields uses that route. */
+    if (repr_boxed_reader_handle(c, v)) q.carry = v;
     if (rd_receiver_observed(c, r, rn) && !share_route_defer(c, &q, rd_msg)) unsupported_feature(c, w, rd_msg);
   }
   StoreVals st = {0};

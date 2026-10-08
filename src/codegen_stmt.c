@@ -1616,6 +1616,7 @@ static int strbuf_route_reader(Compiler *c, int v) {
   if (!repr_share_rule(c) || v < 0 || nt_kind(c->nt, v) != NK_CallNode ||
       repr_of(c, v).as_ty != TY_STRING) return 0;
   int allocates = 0;
+  if (repr_boxed_reader_handle(c, v)) return 1;
   if (nt_ref(c->nt, v, "receiver") >= 0)
     return call_is_field_read(c, v, &allocates) && allocates;
   int sv = view_push_repr(c, v, VR_HANDLE_DEMAND, 1);
@@ -1643,6 +1644,17 @@ static int strbuf_route_carries(Compiler *c, int v, int depth) {
 int emit_strbuf_route(Compiler *c, int v, Buf *b) {
   const NodeTable *nt = c->nt;
   if (emit_strbuf_io_read(c, unwrap_parens(c, v), b)) return 1;
+  if (repr_boxed_reader_handle(c, unwrap_parens(c, v))) {
+    v = unwrap_parens(c, v);
+    int sd = view_push_repr(c, v, VR_HANDLE_DEMAND, 0);
+    int sv = view_push(c, v, TY_POLY);
+    buf_puts(b, "sp_poly_as_strbuf(");
+    emit_expr(c, v, b);
+    buf_puts(b, ")");
+    view_pop(c, sv);
+    view_pop(c, sd);
+    return 1;
+  }
   if (strbuf_route_reader(c, v)) {
     v = unwrap_parens(c, v);
     int sv = view_push_repr(c, v, VR_HANDLE_DEMAND, 1);
