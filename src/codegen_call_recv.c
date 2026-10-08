@@ -7169,15 +7169,29 @@ static int str_arms_pattern(Compiler *c, int id, Buf *b, const NodeTable *nt, co
       for (int pj = 0; pj < np; pj++) {
         const char *pn = rename_local(block_param_name(c, blk, pj));
         emit_indent(g_pre, g_indent + 1);
-        buf_printf(g_pre, "lv_%s = (_t%d && _t%d->len > %d && _t%d->data[%d].tag == SP_TAG_STR) ? _t%d->data[%d].v.s : NULL;\n",
-                   pn, trow, trow, pj, trow, pj, trow, pj);
+        char value[256];
+        snprintf(value, sizeof value, "(_t%d && _t%d->len > %d && _t%d->data[%d].tag == SP_TAG_STR) ? _t%d->data[%d].v.s : NULL",
+                 trow, trow, pj, trow, pj, trow, pj);
+        Scope *sc = comp_scope_of(c, blk);
+        LocalVar *lv = sc ? scope_local(sc, block_param_name(c, blk, pj)) : NULL;
+        buf_printf(g_pre, "lv_%s = ", pn);
+        emit_coerce_text(c, id, TY_STRING, lv ? repr_of_slot(c, lv).as_ty : TY_STRING,
+                         CO_HOLD, value, "a scan capture parameter", g_pre);
+        buf_puts(g_pre, ";\n");
       }
     }
     else if (block_param_name(c, blk, 0)) {
       const char *p0r = rename_local(block_param_name(c, blk, 0));
       emit_indent(g_pre, g_indent + 1);
-      if (has_cap)
-        buf_printf(g_pre, "lv_%s = (sp_PolyArray *)_t%d->data[_t%d].v.p;\n", p0r, tm, ti);
+      if (has_cap) {
+        char value[80]; snprintf(value, sizeof value, "(sp_PolyArray *)_t%d->data[_t%d].v.p", tm, ti);
+        Scope *sc = comp_scope_of(c, blk);
+        LocalVar *lv = sc ? scope_local(sc, block_param_name(c, blk, 0)) : NULL;
+        buf_printf(g_pre, "lv_%s = ", p0r);
+        emit_coerce_text(c, id, TY_POLY_ARRAY, lv ? repr_of_slot(c, lv).as_ty : TY_POLY_ARRAY,
+                         CO_HOLD, value, "a scan capture row", g_pre);
+        buf_puts(g_pre, ";\n");
+      }
       else
         buf_printf(g_pre, "lv_%s = _t%d->data[_t%d];\n", p0r, tm, ti);
     }
@@ -13599,6 +13613,82 @@ static void emit_poly_int_pow(Compiler *c, int recv, int arg, Buf *b) {
   buf_printf(b, "; sp_poly_int_pow(_t%d, _t%d); })", tv, te);
 }
 
+static int emit_poly_scan_block(Compiler *c, int id, Buf *b, const NodeTable *nt,
+                               const char *name, int recv, int argc, const int *argv) {
+  /* poly.scan(pat) { }: the block form over a receiver only known to be a
+     String at run time. Rows are precomputed exactly as the typed-String arm
+     does, then the block runs per row; the value is the receiver string
+     (CRuby answers self). A native class defining scan does not step this
+     aside as it does the blockless forms: the dispatch has no String arm
+     for a call with a block, so a genuine String would raise there. */
+  if (is_scan_name(name) && argc == 1 && nt_ref(nt, id, "block") >= 0 &&
+      !user_defines_or_reads(c, "scan")) {
+    int sblk = nt_ref(nt, id, "block");
+    const char *sp0 = block_param_name(c, sblk, 0);
+    const char *sp0r = sp0 ? rename_local(sp0) : NULL;
+    int sbody = nt_ref(nt, sblk, "body");
+    int sbn = 0; const int *sbb = sbody >= 0 ? nt_arr(nt, sbody, "body", &sbn) : NULL;
+    int re_i = re_lit_index(c, argv[0]);
+    TyKind pat_t = comp_ntype(c, argv[0]);
+    /* Capturing patterns use the typed String emitter's row binding.
+       Hold the checked subject across the scan's allocations. */
+    if (re_i >= 0 && an_re_has_captures(re_lit_src(c, argv[0]))) {
+      int ts = ++g_tmp;
+      Buf rb; memset(&rb, 0, sizeof rb);
+      emit_expr(c, recv, &rb);
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "const char *_t%d = sp_poly_recv_s(%s, \"scan\"); SP_GC_ROOT_STR(_t%d);\n",
+                 ts, rb.p ? rb.p : "sp_box_nil()", ts);
+      free(rb.p);
+      char r[32]; snprintf(r, sizeof r, "_t%d", ts);
+      return str_arms_pattern(c, id, b, nt, name, argc, argv, r);
+    }
+    int ts = ++g_tmp, tm = ++g_tmp, ti = ++g_tmp;
+    /* a body that reads `$~` or a capture global walks the subject for its
+       own turn's match, as the typed-String arm does (#3601) */
+    int tw = (re_i >= 0 || pat_t == TY_STRING) && subtree_reads_match_globals(c, sbody) ? ++g_tmp : -1;
+    int tp = tw >= 0 && re_i < 0 ? ++g_tmp : -1;
+    buf_printf(b, "({ const char *_t%d = sp_poly_recv_s(", ts); emit_expr(c, recv, b);
+    buf_printf(b, ", \"%s\"); SP_GC_ROOT(_t%d);", name, ts);
+    if (tp >= 0) {
+      buf_printf(b, " const char *_t%d = ", tp); emit_expr(c, argv[0], b);
+      buf_printf(b, "; SP_GC_ROOT_STR(_t%d);", tp);
+    }
+    if (tw >= 0) buf_printf(b, " sp_int _t%d = 0;", tw);
+    buf_printf(b, " sp_StrArray *_t%d = ", tm);
+    if (re_i >= 0) buf_printf(b, "sp_re_scan(sp_re_pat_%d, _t%d)", re_i, ts);
+    else if (pat_t == TY_REGEX) { buf_puts(b, "sp_re_scan("); emit_expr(c, argv[0], b); buf_printf(b, ", _t%d)", ts); }
+    else if (tp >= 0) buf_printf(b, "sp_str_scan(_t%d, _t%d)", ts, tp);
+    else if (pat_t == TY_STRING) { buf_printf(b, "sp_str_scan(_t%d, ", ts); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+    else {
+      /* the pattern arrived boxed (read out of a table): a Regexp or a
+         String, told apart at run time */
+      buf_printf(b, "sp_scan_boxed(_t%d, ", ts);
+      emit_boxed(c, argv[0], b);
+      buf_puts(b, ")");
+    }
+    buf_printf(b, "; SP_GC_ROOT(_t%d);", tm);
+    buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_StrArray_length(_t%d); _t%d++) {", ti, ti, tm, ti);
+    if (tp >= 0) buf_printf(b, " _t%d = sp_str_scan_at(_t%d, _t%d, _t%d);", tw, ts, tp, tw);
+    else if (tw >= 0)
+      buf_printf(b, " if (sp_re_match_at(sp_re_pat_%d, _t%d, _t%d) >= 0)"
+                    " _t%d = sp_re_caps[1] > sp_re_caps[0] ? sp_re_caps[1] : sp_re_caps[1] + 1;",
+                 re_i, ts, tw, tw);
+    if (sp0r) {
+      Scope *sbs = comp_scope_of(c, sblk);
+      LocalVar *sblv = sbs ? scope_local(sbs, sp0r) : NULL;
+      if (sblv && sblv->type == TY_POLY)
+        buf_printf(b, " sp_RbVal lv_%s = sp_box_str(sp_StrArray_get(_t%d, _t%d));", sp0r, tm, ti);
+      else
+        buf_printf(b, " const char *lv_%s = sp_StrArray_get(_t%d, _t%d);", sp0r, tm, ti);
+    }
+    for (int k2 = 0; k2 < sbn; k2++) emit_stmt(c, sbb[k2], b, 0);
+    buf_printf(b, " } _t%d; })", ts);
+    return 1;
+  }
+  return 0;
+}
+
 int emit_poly_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -14184,65 +14274,7 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
     else { buf_puts(b, ", sp_poly_recv_s("); emit_expr(c, recv, b); buf_printf(b, ", \"%s\"))", name); }
     return 1;
   }
-  if (recv >= 0 && rt == TY_POLY)
-  /* poly.scan(pat) { }: the block form over a receiver only known to be a
-     String at run time. Rows are precomputed exactly as the typed-String arm
-     does, then the block runs per row; the value is the receiver string
-     (CRuby answers self). A native class defining scan does not step this
-     aside as it does the blockless forms: the dispatch has no String arm
-     for a call with a block, so a genuine String would raise there. */
-  if (sp_streq(name, "scan") && argc == 1 && nt_ref(nt, id, "block") >= 0 &&
-      !user_defines_or_reads(c, "scan")) {
-    int sblk = nt_ref(nt, id, "block");
-    const char *sp0 = block_param_name(c, sblk, 0);
-    const char *sp0r = sp0 ? rename_local(sp0) : NULL;
-    int sbody = nt_ref(nt, sblk, "body");
-    int sbn = 0; const int *sbb = sbody >= 0 ? nt_arr(nt, sbody, "body", &sbn) : NULL;
-    int re_i = re_lit_index(c, argv[0]);
-    TyKind pat_t = comp_ntype(c, argv[0]);
-    int ts = ++g_tmp, tm = ++g_tmp, ti = ++g_tmp;
-    /* a body that reads `$~` or a capture global walks the subject for its
-       own turn's match, as the typed-String arm does (#3601) */
-    int tw = (re_i >= 0 || pat_t == TY_STRING) && subtree_reads_match_globals(c, sbody) ? ++g_tmp : -1;
-    int tp = tw >= 0 && re_i < 0 ? ++g_tmp : -1;
-    buf_printf(b, "({ const char *_t%d = sp_poly_recv_s(", ts); emit_expr(c, recv, b);
-    buf_printf(b, ", \"%s\"); SP_GC_ROOT(_t%d);", name, ts);
-    if (tp >= 0) {
-      buf_printf(b, " const char *_t%d = ", tp); emit_expr(c, argv[0], b);
-      buf_printf(b, "; SP_GC_ROOT_STR(_t%d);", tp);
-    }
-    if (tw >= 0) buf_printf(b, " sp_int _t%d = 0;", tw);
-    buf_printf(b, " sp_StrArray *_t%d = ", tm);
-    if (re_i >= 0) buf_printf(b, "sp_re_scan(sp_re_pat_%d, _t%d)", re_i, ts);
-    else if (pat_t == TY_REGEX) { buf_puts(b, "sp_re_scan("); emit_expr(c, argv[0], b); buf_printf(b, ", _t%d)", ts); }
-    else if (tp >= 0) buf_printf(b, "sp_str_scan(_t%d, _t%d)", ts, tp);
-    else if (pat_t == TY_STRING) { buf_printf(b, "sp_str_scan(_t%d, ", ts); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-    else {
-      /* the pattern arrived boxed (read out of a table): a Regexp or a
-         String, told apart at run time */
-      buf_printf(b, "sp_scan_boxed(_t%d, ", ts);
-      emit_boxed(c, argv[0], b);
-      buf_puts(b, ")");
-    }
-    buf_printf(b, "; SP_GC_ROOT(_t%d);", tm);
-    buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_StrArray_length(_t%d); _t%d++) {", ti, ti, tm, ti);
-    if (tp >= 0) buf_printf(b, " _t%d = sp_str_scan_at(_t%d, _t%d, _t%d);", tw, ts, tp, tw);
-    else if (tw >= 0)
-      buf_printf(b, " if (sp_re_match_at(sp_re_pat_%d, _t%d, _t%d) >= 0)"
-                    " _t%d = sp_re_caps[1] > sp_re_caps[0] ? sp_re_caps[1] : sp_re_caps[1] + 1;",
-                 re_i, ts, tw, tw);
-    if (sp0r) {
-      Scope *sbs = comp_scope_of(c, sblk);
-      LocalVar *sblv = sbs ? scope_local(sbs, sp0r) : NULL;
-      if (sblv && sblv->type == TY_POLY)
-        buf_printf(b, " sp_RbVal lv_%s = sp_box_str(sp_StrArray_get(_t%d, _t%d));", sp0r, tm, ti);
-      else
-        buf_printf(b, " const char *lv_%s = sp_StrArray_get(_t%d, _t%d);", sp0r, tm, ti);
-    }
-    for (int k2 = 0; k2 < sbn; k2++) emit_stmt(c, sbb[k2], b, 0);
-    buf_printf(b, " } _t%d; })", ts);
-    return 1;
-  }
+  if (recv >= 0 && rt == TY_POLY && emit_poly_scan_block(c, id, b, nt, name, recv, argc, argv)) return 1;
   if (rt == TY_POLY && emit_builtin_op(c, id, recv, rt, name, b)) return 1;
   { int r; if (emit_poly_call0_arms(c, id, b, nt, name, recv, argc, argv, rt, &r)) return r; }
   /* blockless cycle(n) on a poly value: the Enumerator over its items
