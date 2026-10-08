@@ -562,6 +562,13 @@ FILE *sp_io_closed_sentinel(void) {
   if (!sentinel) {
     FILE *s = fopen("/dev/null", "r+");
     if (!s) s = fopen("/dev/null", "r");
+#ifdef __wasi__
+    /* WASI has no /dev/null (nor any path the host did not grant): an
+       in-memory stream positioned at its end reads EOF the same way ("r"
+       makes the whole buffer readable, so it starts at the end). A write
+       racing a close fails here rather than being discarded. */
+    if (!s) { static char none[1]; if ((s = fmemopen(none, sizeof none, "r"))) fseek(s, 0, SEEK_END); }
+#endif
     if (!s) sp_raise_cls("IOError", "cannot open /dev/null");
     if (!SP_ATOMIC_CAS(&sentinel, &(FILE *){NULL}, s, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) fclose(s);
   }
