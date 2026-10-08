@@ -16121,6 +16121,16 @@ static const char *sp_poly_pat_gsub(sp_RbVal pat, const char *s, const char *rep
   sp_raise_cls("TypeError", sp_sprintf("wrong argument type %s (expected Regexp)", sp_poly_class_name(pat)));
   return s;
 }
+/* sub! / gsub! answer nil when the call made no substitution, which they
+   read from sp_re_sub_matched. They enter the runtime through these: the
+   flag is cleared here, after the call's arguments have run, so that an
+   argument which is a sub or gsub of its own does not leave its answer in
+   it. The plain forms do not come this way. */
+static inline const char *sp_str_sub_own(const char *s, const char *pat, const char *rep) { sp_re_sub_matched = 0; return sp_str_sub(s, pat, rep); }
+static inline const char *sp_str_gsub_own(const char *s, const char *pat, const char *rep) { sp_re_sub_matched = 0; return sp_str_gsub(s, pat, rep); }
+static inline const char *sp_re_sub_own(mrb_regexp_pattern *pat, const char *s, const char *rep) { sp_re_sub_matched = 0; return sp_re_sub(pat, s, rep); }
+static inline const char *sp_re_gsub_own(mrb_regexp_pattern *pat, const char *s, const char *rep) { sp_re_sub_matched = 0; return sp_re_gsub(pat, s, rep); }
+static inline const char *sp_poly_pat_gsub_own(sp_RbVal pat, const char *s, const char *rep, int once) { sp_re_sub_matched = 0; return sp_poly_pat_gsub(pat, s, rep, once); }
 static sp_PolyArray *sp_poly_uniq(sp_RbVal v) {
   sp_PolyArray *src = sp_poly_arr_recv(v, "uniq");
   SP_GC_ROOT(src);

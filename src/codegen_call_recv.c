@@ -3522,6 +3522,83 @@ static void emit_str_mut_writeback(Compiler *c, int recv, int lvw, int tn, Buf *
   }
 }
 
+/* sub! / gsub! ask the runtime's flag whether the call made a substitution.
+   It is cleared ahead of the statement, so a sub or gsub that the receiver,
+   an argument, a conversion of one or the block runs leaves its own answer
+   there (`y.sub!("q", z.sub("a", "b"))`). A read runs none: what
+   subtree_is_pure_read names, a global, a constant, and a reader call on
+   one of those. */
+static int sub_bang_reads(Compiler *c, int n) {
+  const NodeTable *nt = c->nt;
+  while (n >= 0) {
+    NodeKind k = nt_kind(nt, n);
+    int alloc = 0;
+    if (k == NK_GlobalVariableReadNode || k == NK_ConstantReadNode) return 1;
+    if (k == NK_ConstantPathNode) n = nt_ref(nt, n, "parent");
+    else if (k == NK_CallNode && call_is_field_read(c, n, &alloc)) n = nt_ref(nt, n, "receiver");
+    else return subtree_is_pure_read(c, n);
+  }
+  return 1;
+}
+/* Nor does an operand that is a String or Regexp literal, or a read of a
+   String or a Regexp. `boxed_ok` takes a read of a boxed value too: the
+   runtime tells a boxed pattern apart by its tag and never converts it, and
+   a boxed replacement converts through #to_str only in a program that
+   defines one. */
+static int sub_bang_operand_runs(Compiler *c, int n, int boxed_ok) {
+  if (n < 0) return 0;
+  NodeKind k = nt_kind(c->nt, n);
+  if (k == NK_StringNode || k == NK_RegularExpressionNode) return 0;
+  TyKind t = comp_ntype(c, n);
+  return !((t == TY_STRING || t == TY_REGEX || (boxed_ok && t == TY_POLY)) && sub_bang_reads(c, n));
+}
+/* Is the call `id` all that the statement `s` runs ahead of its branches or
+   its store: `if x.sub!(a, b)`, `v = x.sub!(a, b)`, `p x.sub!(a, b)`? Beside
+   another operand that runs (`"#{w.sub(a, b)} #{x.sub!(c, d)}"`) the flag
+   holds that one's answer. */
+static int sub_bang_alone(Compiler *c, int s, int id) {
+  const NodeTable *nt = c->nt;
+  while (s >= 0 && s != id) {
+    switch (nt_kind(nt, s)) {
+      case NK_IfNode: case NK_UnlessNode: case NK_WhileNode: case NK_UntilNode:
+        s = nt_ref(nt, s, "predicate"); break;
+      case NK_LocalVariableWriteNode: case NK_InstanceVariableWriteNode: case NK_GlobalVariableWriteNode:
+        s = nt_ref(nt, s, "value"); break;
+      case NK_CallNode: {
+        int ac = 0; const int *av = call_args(nt, s, &ac);
+        int r = nt_ref(nt, s, "receiver"), run = r >= 0 && !sub_bang_reads(c, r) ? r : -1;
+        if (nt_ref(nt, s, "block") >= 0) return 0;
+        for (int a = 0; a < ac; a++) {
+          if (nt_kind(nt, av[a]) == NK_StringNode || sub_bang_reads(c, av[a])) continue;
+          if (run >= 0) return 0;
+          run = av[a];
+        }
+        s = run; break;
+      }
+      default: return 0;
+    }
+  }
+  return s == id;
+}
+/* A call that is not alone, or one of whose operands may run a sub, is
+   named in g_sub_bang_id while its plain form is emitted: the emitters of
+   sub and gsub then enter the runtime through the wrapper that clears the
+   flag after the operands have run (sp_str_sub_own and its kin, in
+   spinel_rt.h), and a block form answers from a C local of its loop. Every
+   other sub! / gsub! reads the flag as it did. */
+static int sub_bang_reenters(Compiler *c, int id, int recv, int argc, const int *argv) {
+  const NodeTable *nt = c->nt;
+  if (!sub_bang_alone(c, g_stmt_cur, id) || !sub_bang_reads(c, recv)) return 1;
+  for (int a = 0; a < argc; a++)
+    if (sub_bang_operand_runs(c, argv[a], a == 0 || !prog_has_conv_method(c, "to_str", TY_STRING))) return 1;
+  int blk = nt_ref(nt, id, "block");
+  if (blk < 0) return 0;
+  int body = nt_kind(nt, blk) == NK_BlockNode ? nt_ref(nt, blk, "body") : -1;
+  if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) return 1;
+  int sn = 0; const int *sb = nt_arr(nt, body, "body", &sn);
+  for (int k = 0; k < sn; k++) if (sub_bang_operand_runs(c, sb[k], 0)) return 1;
+  return 0;
+}
 /* A String mutator: the value-form bangs, the in-place mutators, append_as_bytes, bytesplice (emit_array_call's arms, in their order) */
 static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, int *out) {
   /* String value-form mutators: the expression yields the post-mutation
@@ -3591,7 +3668,17 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
             if (was_sb) { view_push(c, recv, TY_STRING); nC = 3; }
             view_bind(recv, "_t%d", tob);
           }
+          /* a sibling, an operand or the block may run a sub of its own: the
+             call enters the runtime through its wrapper, and a block form answers
+             "a match was found" in a C local of its loop, which the block
+             cannot touch (sub_bang_reenters, emit_gsub_block_expr) */
+          int sv_sbB = g_sub_bang_id;
+          g_sub_bang_id = subm && sub_bang_reenters(c, id, recv, argc, argv) ? id : -1; g_sub_bang_tm = 0;
           emit_expr(c, id, &nbB);
+          int tsmB = g_sub_bang_tm; g_sub_bang_id = sv_sbB; g_sub_bang_tm = 0;
+          char smB[40] = "";
+          if (tsmB) snprintf(smB, sizeof smB, " || _t%d", tsmB);
+          else if (subm) snprintf(smB, sizeof smB, " || sp_re_sub_matched");
           if (rd_call) {
             view_unbind(g_n_argov - 1);
             for (int k = nC - 1; k >= 0; k--) view_pop(c, vC + k);
@@ -3604,7 +3691,7 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
           int tchg = ++g_tmp;
           buf_printf(b, "const char *_t%d = %s; ", tnb, nbB.p ? nbB.p : "");
           if (sb_nil_nc)
-            buf_printf(b, "int _t%d = !sp_str_eq(_t%d, _t%d)%s; ", tchg, tob, tnb, subm ? " || sp_re_sub_matched" : "");
+            buf_printf(b, "int _t%d = !sp_str_eq(_t%d, _t%d)%s; ", tchg, tob, tnb, smB);
           buf_printf(b, "sp_String_set_bin(_t%d, _t%d); ", tsb, tnb);
           free(nbB.p);
           if (sb_nil_nc)
@@ -3647,7 +3734,13 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
       nt_node_set_str((NodeTable *)nt, id, "name", sb_plain);
       Buf nb; memset(&nb, 0, sizeof nb);
       int nbind = lvw || held || hbind >= 0 ? -1 : view_bind(recv, "_t%d", to);
+      int sv_sb = g_sub_bang_id;   /* the wrapper or a block form's local, as above */
+      g_sub_bang_id = subm2 && sub_bang_reenters(c, id, recv, argc, argv) ? id : -1; g_sub_bang_tm = 0;
       emit_expr(c, id, &nb);
+      int tsm = g_sub_bang_tm; g_sub_bang_id = sv_sb; g_sub_bang_tm = 0;
+      char sm[40] = "";
+      if (tsm) snprintf(sm, sizeof sm, " && !_t%d", tsm);
+      else if (subm2) snprintf(sm, sizeof sm, " && !sp_re_sub_matched");
       if (nbind >= 0) view_unbind(nbind);
       if (hbind >= 0) view_unbind(hbind);
       nt_node_set_str((NodeTable *)nt, id, "name", sb_bang);
@@ -3655,7 +3748,7 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
       free(nb.p);
       emit_str_mut_writeback(c, recv, lvw, tn2, b);
       if (sb_nil_nc)
-        buf_printf(b, "(sp_str_eq(_t%d, _t%d)%s) ? NULL : _t%d; })", to, tn2, subm2 ? " && !sp_re_sub_matched" : "", tn2);
+        buf_printf(b, "(sp_str_eq(_t%d, _t%d)%s) ? NULL : _t%d; })", to, tn2, sm, tn2);
       else
         buf_printf(b, "_t%d; })", tn2);
       { *out = 1; return 1; }
@@ -7038,7 +7131,7 @@ static int str_arms_pattern(Compiler *c, int id, Buf *b, const NodeTable *nt, co
     Repr hr = repr_of(c, argv[1]);
     int str_pairs = repr_hash_is(hr, TY_STRING, TY_STRING);
     const char *hconv = repl_hash_to_s_fn(hr);
-    const char *suf = (str_pairs || hconv) ? "_str_str_hash" : "";
+    const char *suf = (str_pairs || hconv) ? "_str_str_hash" : g_sub_bang_id == id ? "_own" : "";
     buf_printf(b, "sp_re_%s%s(sp_re_pat_%d, %s, ", name, suf, re_lit_index(c, argv[0]), r);
     if (str_pairs) emit_expr(c, argv[1], b);
     else if (hconv) { buf_printf(b, "%s(", hconv); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
@@ -7051,7 +7144,7 @@ static int str_arms_pattern(Compiler *c, int id, Buf *b, const NodeTable *nt, co
     Repr hr = repr_of(c, argv[1]);
     int str_pairs = repr_hash_is(hr, TY_STRING, TY_STRING);
     const char *hconv = repl_hash_to_s_fn(hr);
-    const char *suf = (str_pairs || hconv) ? "_str_str_hash" : "";
+    const char *suf = (str_pairs || hconv) ? "_str_str_hash" : g_sub_bang_id == id ? "_own" : "";
     Buf rp; memset(&rp, 0, sizeof rp);
     emit_regex_pat_to_buf(c, argv[0], &rp);
     buf_printf(b, "sp_re_%s%s(%s, %s, ", name, suf, rp.p ? rp.p : "NULL", r);
@@ -7069,7 +7162,7 @@ static int str_arms_pattern(Compiler *c, int id, Buf *b, const NodeTable *nt, co
     Repr hr = repr_of(c, argv[1]);
     int str_pairs = repr_hash_is(hr, TY_STRING, TY_STRING);
     const char *hconv = repl_hash_to_s_fn(hr);
-    const char *suf = (str_pairs || hconv) ? "_str_str_hash" : "";
+    const char *suf = (str_pairs || hconv) ? "_str_str_hash" : g_sub_bang_id == id ? "_own" : "";
     buf_printf(b, "sp_re_%s%s(", name, suf);
     emit_expr(c, argv[0], b); buf_printf(b, ", %s, ", r);
     if (str_pairs) emit_expr(c, argv[1], b);
@@ -7082,7 +7175,7 @@ static int str_arms_pattern(Compiler *c, int id, Buf *b, const NodeTable *nt, co
     /* a pattern that is a Regexp or a String only at runtime (an inflection
        rule read out of a [pattern, replacement] pair): the runtime picks
        the engine by its tag. The string-pattern path coerced the Regexp. */
-    buf_puts(b, "sp_poly_pat_gsub("); emit_boxed(c, argv[0], b);
+    buf_printf(b, "sp_poly_pat_gsub%s(", g_sub_bang_id == id ? "_own" : ""); emit_boxed(c, argv[0], b);
     buf_printf(b, ", %s, ", r); emit_str_expr(c, argv[1], b);
     buf_printf(b, ", %d)", sp_streq(name, "sub") ? 1 : 0);
   }

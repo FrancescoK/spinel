@@ -1494,6 +1494,7 @@ int g_emit_class_names = 0;
 int g_emit_obj_dispatch = 0;
 int g_uses_program_name = 0;
 int g_reads_match_regs = 0;
+int g_sub_bang_id = -1, g_sub_bang_tm = 0;
 int g_gen_obj_hash = 0;
 int g_gen_obj_to_json = 0;
 int g_gen_obj_to_h = 0;
