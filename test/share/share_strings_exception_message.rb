@@ -88,3 +88,8 @@ rescue => e
   e.message << "!"
   p e.message, e.message.equal?(e.message)
 end
+# Exception#exception(s) holds s as its message too.
+w2 = +"w2"
+ex2 = ArgumentError.new("orig").exception(w2)
+w2 << "!"
+p ex2.message, ex2.message.equal?(w2)

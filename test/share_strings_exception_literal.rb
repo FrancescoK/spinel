@@ -80,3 +80,12 @@ end
   end
 end
 p ArgumentError.new("").message.frozen?, E.new("").message
+# Exception#exception(msg) keeps an explicitly given message as `new` does:
+# an empty one stays empty (frozen for a literal), a literal's stays
+# frozen, nil gives the class name, and no argument answers the receiver.
+ex = ArgumentError.new("orig")
+[-> { ex.exception("") }, -> { ex.exception(+"") }, -> { ex.exception(nil) }, -> { ex.exception("x") },
+ -> { ex.exception(+"y") }, -> { ex.exception }].each do |f|
+  x = f.call
+  p [x.message, x.message.frozen?, x.equal?(ex)]
+end
