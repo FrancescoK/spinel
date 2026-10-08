@@ -122,7 +122,7 @@ Some stdlib ships with Spinel as Ruby source and is spliced when required --
 `set`, `forwardable`, `optparse`, `erb`, `csv`, `pathname`, `digest`, `base64`,
 `fileutils`, `tmpdir`, `zlib`, `open3` (the capture forms), `fiddle` (where libffi is,
 like `ffi`),
-`benchmark` (CRuby's own gem, unmodified), `shellwords` (likewise),
+`benchmark` (CRuby's own gem, unmodified), `shellwords` (likewise), `find` (likewise, but for one line; see its note),
 `fileutils`, `tmpdir`, `zlib`, `logger` (a compact implementation of its API),
 `benchmark` (CRuby's own gem, unmodified),
 `bigdecimal` (a minimal subset, see `packages/bigdecimal/bigdecimal.rb`)
