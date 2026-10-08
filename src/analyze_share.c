@@ -1337,7 +1337,9 @@ static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int 
   case BSH_FETCH: {
     /* a default block is handed the key it was asked for */
     if (lit_blk && nv >= 1) sh_block_params(F, c, blk, vals[0], 0);
-    int r = sh_elem(F, rv);
+    /* Only a container can answer an element. String assignment copies
+       bytes into its receiver and answers the argument, not that receiver. */
+    int r = container ? sh_elem(F, rv) : -1;
     if (nv >= 2) r = sh_join(F, r, vals[nv - 1]);
     return sh_join(F, r, bv);
   }
