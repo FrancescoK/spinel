@@ -13451,8 +13451,8 @@ static int rows_value_dropped(Compiler *c, const int *par, int w, const char **s
     for (int k = 0; k < nseen; k++) if (sp_streq(seen[k], dn)) return 1;
     if (nseen >= 4) return 0;
     seen[nseen] = dn;
-    NT_FOREACH_KIND(nt, NK_CallNode, q) {
-      const char *qn = nt_str(nt, q, "name");
+    for (int q = an_calls_named_first(c, dn); q >= 0; q = an_calls_named_next(q)) {
+      const char *qn = nt_kind(nt, q) == NK_CallNode ? nt_str(nt, q, "name") : NULL;
       if (qn && sp_streq(qn, dn) && !rows_value_dropped(c, par, q, seen, nseen + 1)) return 0;
     }
     return 1;
