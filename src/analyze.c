@@ -18048,11 +18048,14 @@ static void an_returns_by_scope(Compiler *c, int **start, int **list) {
 /* fresh_ok (--share-strings, the pickup's own ask): a tail answering a
    fresh String (share_node_fresh) is admitted too, counted in fresh */
 typedef struct { int reads, nils, fresh_ok, fresh; } TailCount;
-static int an_tail_is_shared_handle(Compiler *c, int node, int nil_ok, TailCount *n);
-static int an_stmts_tail_shared(Compiler *c, int st, int nil_ok, TailCount *tc) {
+typedef struct { unsigned char *st; int *ret_start, *ret_list; } RetHandles;
+static int an_tail_handle(Compiler *c, RetHandles *R, int n, TailCount *tc);
+static int an_tail_is_shared_handle(Compiler *c, int node, int nil_ok, TailCount *n, RetHandles *R);
+static int an_stmts_tail_shared(Compiler *c, int st, int nil_ok, TailCount *tc, RetHandles *R) {
   int n = 0; const int *b = st >= 0 && nt_kind(c->nt, st) == NK_StatementsNode ? nt_arr(c->nt, st, "body", &n) : NULL;
   if (st < 0) { tc->nils += nil_ok; return nil_ok; }
-  return n > 0 && an_tail_is_shared_handle(c, b[n - 1], nil_ok, tc);
+  return n > 0 && (R ? an_tail_handle(c, R, b[n - 1], tc)
+                      : an_tail_is_shared_handle(c, b[n - 1], nil_ok, tc, NULL));
 }
 /* A method tail that publishes the shared handle it answers, for the
    deep-return pickup (an_returns_shared_handles): a shared slot's read
@@ -18063,19 +18066,34 @@ static int an_stmts_tail_shared(Compiler *c, int st, int nil_ok, TailCount *tc) 
    too, and an arm that answers it, written or missing (`x if f`, `if f;
    else; x; end`, `begin; x; rescue; nil; end`), counted in tc->nils: nil
    publishes nothing, and the pickup reads the call's nil as nil whatever
-   an earlier read published (an_tail_answers_nil). */
-static int an_tail_is_shared_handle(Compiler *c, int node, int nil_ok, TailCount *tc) {
+   an earlier read published (an_tail_answers_nil). With the settled return
+   analysis, each arm asks an_tail_handle too: a call can publish the handle,
+   and its method's active-visit guard bounds recursive arms. */
+static int an_tail_is_shared_handle(Compiler *c, int node, int nil_ok, TailCount *tc, RetHandles *R) {
   const NodeTable *nt = c->nt;
   NodeKind k = node >= 0 ? nt_kind(nt, node) : NK_NONE;
   if (c->share_strings && k == NK_NilNode) { tc->nils += nil_ok; return nil_ok; }
-  if (c->share_strings && k == NK_ParenthesesNode) return an_stmts_tail_shared(c, nt_ref(nt, node, "body"), nil_ok, tc);
+  if (c->share_strings && k == NK_ParenthesesNode) return an_stmts_tail_shared(c, nt_ref(nt, node, "body"), nil_ok, tc, R);
   if (c->share_strings && k == NK_BeginNode) {
     /* the body's value is the begin's only when no else follows it */
     int be = nt_ref(nt, node, "else_clause");
-    if (be < 0 && !an_stmts_tail_shared(c, nt_ref(nt, node, "statements"), nil_ok, tc)) return 0;
+    if (be < 0 && !an_stmts_tail_shared(c, nt_ref(nt, node, "statements"), nil_ok, tc, R)) return 0;
     for (int rc = nt_ref(nt, node, "rescue_clause"); rc >= 0; rc = nt_ref(nt, rc, "subsequent"))
-      if (!an_stmts_tail_shared(c, nt_ref(nt, rc, "statements"), nil_ok, tc)) return 0;
-    return be < 0 || an_stmts_tail_shared(c, nt_ref(nt, be, "statements"), nil_ok, tc);
+      if (!an_stmts_tail_shared(c, nt_ref(nt, rc, "statements"), nil_ok, tc, R)) return 0;
+    return be < 0 || an_stmts_tail_shared(c, nt_ref(nt, be, "statements"), nil_ok, tc, R);
+  }
+  if (R && k == NK_CaseNode) {
+    int n = 0; const int *arms = nt_arr(nt, node, "conditions", &n);
+    for (int i = 0; i < n; i++)
+      if (!an_stmts_tail_shared(c, nt_ref(nt, arms[i], "statements"), nil_ok, tc, R)) return 0;
+    int el = nt_ref(nt, node, "else_clause");
+    return an_stmts_tail_shared(c, el >= 0 ? nt_ref(nt, el, "statements") : -1, nil_ok, tc, R);
+  }
+  if (R && k == NK_ReturnNode) {
+    int args = nt_ref(nt, node, "arguments"), n = 0;
+    const int *v = args >= 0 ? nt_arr(nt, args, "arguments", &n) : NULL;
+    if (n == 0) { tc->nils += nil_ok; return nil_ok; }
+    return n == 1 && an_tail_handle(c, R, v[0], tc);
   }
   if (!c->share_strings || (k != NK_IfNode && k != NK_UnlessNode)) {
     int ok = an_arg_is_shared_handle(c, node);
@@ -18084,10 +18102,10 @@ static int an_tail_is_shared_handle(Compiler *c, int node, int nil_ok, TailCount
     return ok;
   }
   int el = nt_ref(nt, node, k == NK_IfNode ? "subsequent" : "else_clause");
-  if (!an_stmts_tail_shared(c, nt_ref(nt, node, "statements"), nil_ok, tc)) return 0;
+  if (!an_stmts_tail_shared(c, nt_ref(nt, node, "statements"), nil_ok, tc, R)) return 0;
   if (el < 0) { tc->nils += nil_ok; return nil_ok; }
-  return nt_kind(nt, el) == NK_ElseNode ? an_stmts_tail_shared(c, nt_ref(nt, el, "statements"), nil_ok, tc)
-                                        : an_tail_is_shared_handle(c, el, nil_ok, tc);
+  return nt_kind(nt, el) == NK_ElseNode ? an_stmts_tail_shared(c, nt_ref(nt, el, "statements"), nil_ok, tc, R)
+                                        : R ? an_tail_handle(c, R, el, tc) : an_tail_is_shared_handle(c, el, nil_ok, tc, NULL);
 }
 /* Can method mi answer nil, through its last statement or a `return`? The
    same walk that admitted the tail for the pickup counts its nils, so the
@@ -18096,7 +18114,7 @@ static int an_tail_is_shared_handle(Compiler *c, int node, int nil_ok, TailCount
    nils are the ones an_returns_shared_handles counted. */
 int an_tail_answers_nil(Compiler *c, int mi) {
   TailCount tc = { 0, 0 };
-  return !an_tail_is_shared_handle(c, scope_body_last(c, mi), 1, &tc) || tc.nils > 0 ||
+  return !an_tail_is_shared_handle(c, scope_body_last(c, mi), 1, &tc, NULL) || tc.nils > 0 ||
          c->scopes[mi].ret_nil_pickup;
 }
 /* Does every return tail of method mi3 (the implicit one and each `return`)
@@ -18112,7 +18130,7 @@ static int an_returns_shared_handles(Compiler *c, int mi3, const int *ret_start,
   int lastT = scope_body_last(c, mi3);
   if (lastT >= 0) {
     *saw = 1;
-    if (!an_tail_is_shared_handle(c, lastT, 1, &tc)) ok = 0;
+    if (!an_tail_is_shared_handle(c, lastT, 1, &tc, NULL)) ok = 0;
   }
   int lnils = tc.nils, rnils = 0;
   for (int r = ret_start[mi3]; ok && r < ret_start[mi3 + 1]; r++) {
@@ -18122,7 +18140,7 @@ static int an_returns_shared_handles(Compiler *c, int mi3, const int *ret_start,
     *saw = 1;
     if (rn2 > 1 || (rn2 == 0 && !c->share_strings)) ok = 0;
     else if (rn2 == 0) rnils++;
-    else if (!an_tail_is_shared_handle(c, rv2[0], c->share_strings, &tc)) ok = 0;
+    else if (!an_tail_is_shared_handle(c, rv2[0], c->share_strings, &tc, NULL)) ok = 0;
   }
   rnils += tc.nils - lnils;
   if (c->share_strings && *saw && !tc.reads) ok = 0;
@@ -18192,7 +18210,6 @@ static int an_mutated_handle_returns(Compiler *c, int **ret_start, int **ret_lis
    no handle to pick up. Each method is decided once, its tail calls'
    targets first (a cycle answers no). */
 enum { RH_UNSEEN, RH_BUSY, RH_YES, RH_NO };
-typedef struct { unsigned char *st; int *ret_start, *ret_list; } RetHandles;
 static int an_ret_handle(Compiler *c, RetHandles *R, int mi);
 /* Does tail node n answer a shared handle it publishes last: a handle's
    read, or a call or `super` whose every target method does? A nullable
@@ -18201,7 +18218,7 @@ static int an_ret_handle(Compiler *c, RetHandles *R, int mi);
 static int an_tail_handle(Compiler *c, RetHandles *R, int n, TailCount *tc) {
   const NodeTable *nt = c->nt;
   if (an_arg_is_shared_handle(c, n)) return 1;
-  if (an_tail_is_shared_handle(c, n, 1, tc)) return 1;
+  if (an_tail_is_shared_handle(c, n, 1, tc, R)) return 1;
   NodeKind k = n >= 0 ? nt_kind(nt, n) : NK_NONE;
   if (k == NK_SuperNode || k == NK_ForwardingSuperNode) {
     const CallPlan *p = cplan_user_fresh(c, n);
