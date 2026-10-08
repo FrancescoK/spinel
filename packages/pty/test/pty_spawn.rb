@@ -30,11 +30,14 @@ reader, writer, pid = PTY.spawn(
   "sh", "-c", 'echo "set=$PTY_SET home=${HOME-unset}"; tty >/dev/null && echo tty; read line; echo "got=$line"'
 )
 print read_until(reader, "tty\n")
-writer.write("hello\n")
+# The writer is synchronous: even input without a newline reaches the terminal.
+writer.write("hello")
+print read_until(reader, "hello")
+writer.write("\n")
 print drain(reader)
 _, status = Process.waitpid2(pid)
 p status.exitstatus
-p [reader.fileno == writer.fileno, reader.close_on_exec?, writer.close_on_exec?]
+p [reader.fileno == writer.fileno, reader.close_on_exec?, writer.close_on_exec?, writer.sync]
 
 reader, _writer, pid = PTY.spawn("echo one && echo two")
 print drain(reader)
@@ -48,8 +51,10 @@ end
 
 # The master read from another thread while this one writes: how a program
 # that relays a terminal (a web terminal) uses it.
-reader, writer, pid = PTY.spawn("sh", "-c", "read a; echo \"first=$a\"; read b; echo \"second=$b\"")
+# Read both lines before replying: one write does not guarantee both echoes
+# precede the child's first reply. Drain through EOF/EIO before waiting.
+reader, writer, pid = PTY.spawn("sh", "-c", "read a; read b; echo \"first=$a\"; echo \"second=$b\"")
 relay = Thread.new { drain(reader) }
-writer.write("1\n2\n")   # one write: the terminal echoes both lines before the child reads
-Process.waitpid2(pid)
+writer.write("1\n2\n")
 print relay.value
+Process.waitpid2(pid)
