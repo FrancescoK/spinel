@@ -2443,6 +2443,8 @@ gc-minor-test: $(GC_MINOR_RESULTS)
 # The sharing fixtures must exercise their handle and snapshot roots here too.
 build/gc-minor-results/share/%.res: GC_MINOR_FLAGS = --share-strings
 build/gc-minor-results/share_strings_transform_argument_order.res: GC_MINOR_FLAGS = --share-strings
+build/gc-minor-results/poly_fetch_block_key_param.res: GC_MINOR_FLAGS = --share-strings
+build/gc-minor-results/share_strings_fetch_block_key.res: GC_MINOR_FLAGS = --share-strings
 build/gc-minor-results/%.res: test/%.rb FORCE | $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SPINEL_TIMEOUT)
 	@mkdir -p $(@D); tmp=$$(mktemp -d /tmp/spinel-gcminor.XXXXXX); ok=1; src=$<; \
 	{ \
