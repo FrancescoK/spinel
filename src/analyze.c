@@ -20824,27 +20824,37 @@ static int poly_store_place(Compiler *c, int id, NodeKind rk, const char *nm) {
   if (cid < 0 || cid >= c->nclasses) return -1;
   return comp_cvar_owner(c, cid, nm);
 }
-/* Is the variable read `r` the one written as `in` at place `wp`
-   (poly_store_place)? */
-static int poly_store_same_var(Compiler *c, int r, NodeKind rk, const char *in, int wp) {
-  const NodeTable *nt = c->nt;
-  if (nt_kind(nt, r) != rk) return 0;
-  const char *rn = nt_str(nt, r, "name");
-  if (!rn || !sp_streq(rn, in)) return 0;
-  return poly_store_place(c, r, rk, rn) == wp;
+/* The variables of read kind `rk` the program appends to in place -- a read
+   of one is a String mutator's receiver, or is lifted for a parameter
+   appended to (lift_poly_read) -- as (name, poly_store_place) pairs, found in
+   one walk of the reads and one of the calls, not one per store. */
+typedef struct { const char **nm; int *place; int n, cap; } PolyStoreApp;
+static void poly_store_app_add(PolyStoreApp *t, const char *nm, int place) {
+  for (int i = 0; i < t->n; i++) if (t->place[i] == place && sp_streq(t->nm[i], nm)) return;
+  if (t->n == t->cap) {
+    t->cap = t->cap ? t->cap * 2 : 8;
+    t->nm = realloc(t->nm, sizeof(char *) * (size_t)t->cap);
+    t->place = realloc(t->place, sizeof(int) * (size_t)t->cap);
+  }
+  t->nm[t->n] = nm; t->place[t->n] = place; t->n++;
 }
-/* Does the program append in place to POLY variable `in` at place `wp`
-   (poly_store_place) -- a read of it is a String mutator's receiver, or is
-   lifted for a parameter appended to (lift_poly_read)? */
-static int poly_store_appended(Compiler *c, NodeKind rk, const char *in, int wp) {
+static void poly_store_app_build(Compiler *c, NodeKind rk, PolyStoreApp *t) {
   const NodeTable *nt = c->nt;
-  NT_FOREACH_KIND(nt, rk, r)
-    if (c->poly_strbuf_lift[r] && poly_store_same_var(c, r, rk, in, wp) && comp_ntype(c, r) == TY_POLY) return 1;
+  t->n = 0;
+  NT_FOREACH_KIND(nt, rk, r) {
+    const char *rn = nt_str(nt, r, "name");
+    if (rn && c->poly_strbuf_lift[r] && comp_ntype(c, r) == TY_POLY)
+      poly_store_app_add(t, rn, poly_store_place(c, r, rk, rn));
+  }
   NT_FOREACH_KIND(nt, NK_CallNode, u) {
     int r = nt_ref(nt, u, "receiver");
-    if (r < 0 || !an_str_mutator_name(nt_str(nt, u, "name"))) continue;
-    if (poly_store_same_var(c, r, rk, in, wp) && comp_ntype(c, r) == TY_POLY) return 1;
+    if (r < 0 || nt_kind(nt, r) != rk || !an_str_mutator_name(nt_str(nt, u, "name"))) continue;
+    const char *rn = nt_str(nt, r, "name");
+    if (rn && comp_ntype(c, r) == TY_POLY) poly_store_app_add(t, rn, poly_store_place(c, r, rk, rn));
   }
+}
+static int poly_store_appended(const PolyStoreApp *t, const char *in, int wp) {
+  for (int i = 0; i < t->n; i++) if (t->place[i] == wp && sp_streq(t->nm[i], in)) return 1;
   return 0;
 }
 /* Lift read `a` of a POLY variable that can hold a String (poly_strbuf_lift);
@@ -20961,13 +20971,20 @@ static int lift_poly_alias_reads(Compiler *c, const HandleArgTab *hat) {
       { NK_InstanceVariableWriteNode, NK_InstanceVariableReadNode },
       { NK_ClassVariableWriteNode, NK_ClassVariableReadNode },
       { NK_GlobalVariableWriteNode, NK_GlobalVariableReadNode } };
-    for (int sk = 0; sk < 3; sk++) NT_FOREACH_KIND(nt, skinds[sk][0], w) {
-      int v = nt_ref(nt, w, "value");
-      const char *in = nt_str(nt, w, "name");
-      if (v < 0 || !in || nt_kind(nt, v) != NK_LocalVariableReadNode || c->poly_strbuf_lift[v]) continue;
-      int wp = poly_store_place(c, w, skinds[sk][0], in);
-      if (wp < 0 || !poly_store_appended(c, skinds[sk][1], in, wp)) continue;
-      if (lift_poly_read(c, hat, &lifted, v)) round = changed = 1;
+    for (int sk = 0; sk < 3; sk++) {
+      PolyStoreApp app_tab = { NULL, NULL, 0, 0 };
+      int built = 0;
+      NT_FOREACH_KIND(nt, skinds[sk][0], w) {
+        int v = nt_ref(nt, w, "value");
+        const char *in = nt_str(nt, w, "name");
+        if (v < 0 || !in || nt_kind(nt, v) != NK_LocalVariableReadNode || c->poly_strbuf_lift[v]) continue;
+        int wp = poly_store_place(c, w, skinds[sk][0], in);
+        if (wp < 0) continue;
+        if (!built) { poly_store_app_build(c, skinds[sk][1], &app_tab); built = 1; }
+        if (!poly_store_appended(&app_tab, in, wp)) continue;
+        if (lift_poly_read(c, hat, &lifted, v)) round = changed = 1;
+      }
+      free(app_tab.nm); free(app_tab.place);
     }
     /* `def yl(v) = yield(v)` called `yl(x) { |t| t << s }`: the block's
        parameter is another name for the caller's variable. A `b.call(v)` on
