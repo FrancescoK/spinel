@@ -2015,6 +2015,7 @@ static int ie_poly_mark(Compiler *c, int id, TyKind rt) {
       (!sp_streq(nm, "instance_eval") && !sp_streq(nm, "instance_exec"))) return -1;
   int k[2];
   int n = ie_poly_self_classes(c, nm, nt_ref(nt, blk, "body"), k, 2, NULL);
+  if (n == 0) return -2 - id;  /* self is still rebound when no call constrains it */
   return n == 1 ? k[0] : n > 1 ? -2 - id : -1;
 }
 
@@ -2355,6 +2356,7 @@ int ie_block_body(Compiler *c, int blk) {
 static int ie_class_value_target(Compiler *c, int id, int recv, TyKind rt, int blk) {
   const char *nm = nt_str(c->nt, id, "name");
   int arg = nt_kind(c->nt, blk) == NK_BlockArgumentNode, cls = -1;
+  if (rt == TY_CLASS && is_instance_eval_family(nm)) return -2 - id;
   if (rt == TY_CLASS) return ie_forward_target(c, class_recv_static_ci(c, recv), 1, nm, 0);
   for (int k = 0; rt == TY_POLY && cls >= -1 && k < 2 * c->nclasses; k++) {
     int t = ie_forward_target(c, k / 2, k % 2, nm, 0);
