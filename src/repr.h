@@ -176,6 +176,8 @@ int repr_local_nullable_int(Compiler *c, int node);
    String Array or a Hash with String values), so none can be the shared
    handle? */
 int repr_typed_str_container(TyKind t);
+/* A retained typed literal whose String elements need shared handles. */
+int repr_str_literal_shares(Compiler *c, int node);
 /* Whether repr_seal has run for the current compile. */
 int repr_sealed(void);
 /* Does the share rule decide which Strings are the shared handle
