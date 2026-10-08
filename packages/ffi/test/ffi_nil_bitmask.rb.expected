@@ -1,0 +1,7 @@
+[]
+[]
+[:read]
+[:read, :write]
+[]
+ArgumentError: invalid enum value, nil
+:one

@@ -5,6 +5,73 @@ TypeError: no implicit conversion from nil to integer
 TypeError: no implicit conversion to float from nil
 TypeError: no implicit conversion to float from nil
 4
-TypeError: no implicit conversion from nil to integer
+0
 1.5
-TypeError: no implicit conversion to float from nil
+0.0
+char
+7
+0
+nil argument: TypeError
+uchar
+7
+0
+nil argument: TypeError
+short
+7
+0
+nil argument: TypeError
+ushort
+7
+0
+nil argument: TypeError
+int
+7
+0
+nil argument: TypeError
+uint
+7
+0
+nil argument: TypeError
+long
+7
+0
+nil argument: TypeError
+ulong
+7
+0
+nil argument: TypeError
+long_long
+7
+0
+nil argument: TypeError
+ulong_long
+7
+0
+nil argument: TypeError
+float
+7.0
+0.0
+nil argument: TypeError
+double
+7.0
+0.0
+nil argument: TypeError
+0.0
+false
+true
+false
+true
+nil
+nil
+true
+nil
+nil
+0
+0.0
+true
+convert :missing
+0
+convert nil
+0
+convert :missing
+converted nil argument: TypeError

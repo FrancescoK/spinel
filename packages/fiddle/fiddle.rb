@@ -524,6 +524,20 @@ module Fiddle
         end
       end
       r = call(*conv)
+      # Unlike ffi callbacks, Fiddle closures reject nil numeric returns.
+      if r.nil?
+        if @ctype == TYPE_FLOAT || @ctype == TYPE_DOUBLE
+          FFI::Type.float_arg(r)
+        elsif @ctype == TYPE_LONG_LONG
+          raise ::TypeError, "no implicit conversion from nil"
+        elsif @ctype < 0 || @ctype == TYPE_VOIDP
+          Fiddle.__int(r)
+        elsif @ctype == TYPE_CONST_STRING
+          raise ::TypeError, "no implicit conversion of nil into String"
+        elsif @ctype != TYPE_VOID && @ctype != TYPE_BOOL
+          FFI::Type.int_arg(r)
+        end
+      end
       r.is_a?(Pointer) ? r.to_i : r
     end
 

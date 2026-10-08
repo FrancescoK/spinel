@@ -210,7 +210,9 @@ module FFI
     end
 
     def write_return(addr, v, keep)
-      if integer? then Native.put_ret_int(addr, @kind, Type.int_arg(v))
+      # The gem zeroes a nil callback result after any mapped conversion.
+      if v.nil? then Native.memset(addr, 0, integer? ? slot_size : @size)
+      elsif integer? then Native.put_ret_int(addr, @kind, Type.int_arg(v))
       else write_native(addr, v, keep)
       end
       nil
@@ -799,7 +801,8 @@ module FFI
     end
 
     def to_native(v, ctx)
-      if v.is_a?(Array)
+      if v.nil? then 0
+      elsif v.is_a?(Array)
         r = 0
         v.each { |s| r |= super(s, ctx) }
         r
@@ -961,7 +964,10 @@ module FFI
     # Function.new(ret, params, proc_or_pointer = nil, options = {}) -- or,
     # given a FunctionType, Function.new(type, proc_or_pointer)
     def initialize(ret_or_type, params_or_target = nil, target = nil, options = nil, &blk)
-      if ret_or_type.is_a?(FunctionType)
+      if ret_or_type.is_a?(FunctionType) && params_or_target.is_a?(Array)
+        @function_type = FunctionType.new(ret_or_type, params_or_target, options)
+        tgt = target
+      elsif ret_or_type.is_a?(FunctionType)
         @function_type = ret_or_type
         tgt = params_or_target
       else
@@ -1203,7 +1209,6 @@ module FFI
       Native.memcpy(addr, src, size)
       nil
     end
-    def write_return(addr, v, keep) = write_native(addr, v, keep)
   end
 
   # A struct inline in another struct: reads give a view into the outer

@@ -17,3 +17,19 @@ begin
 rescue TypeError => e
   puts "TypeError: #{e.message}"
 end
+
+# Fiddle keeps its strict closure conversion even though ffi zeroes nil.
+[Fiddle::TYPE_CHAR, Fiddle::TYPE_SHORT, Fiddle::TYPE_INT, Fiddle::TYPE_LONG,
+ Fiddle::TYPE_LONG_LONG, -Fiddle::TYPE_CHAR, -Fiddle::TYPE_SHORT,
+ -Fiddle::TYPE_INT, -Fiddle::TYPE_LONG, -Fiddle::TYPE_LONG_LONG,
+ Fiddle::TYPE_FLOAT, Fiddle::TYPE_DOUBLE, Fiddle::TYPE_VOIDP,
+ Fiddle::TYPE_CONST_STRING, Fiddle::TYPE_BOOL, Fiddle::TYPE_VOID].each do |type|
+  puts type
+  closure = Fiddle::Closure::BlockCaller.new(type, []) { nil }
+  function = Fiddle::Function.new(closure.to_i, [], type)
+  begin
+    p function.call
+  rescue TypeError => e
+    puts "TypeError: #{e.message}"
+  end
+end
