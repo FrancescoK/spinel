@@ -396,12 +396,7 @@ module Net
       http.ipaddr = ipaddr.to_s
       http.open_timeout = open_timeout
       http.read_timeout = read_timeout
-      http.start
-      begin
-        yield http
-      ensure
-        http.finish
-      end
+      http.start { |h| yield h }
     end
 
     # Net::HTTP.get(uri) -> the body String.
@@ -415,12 +410,7 @@ module Net
       https = u.scheme == "https"
       http = HTTP.new(u.host, u.port)
       http.use_ssl = https
-      http.start
-      begin
-        http.request(HTTPRequest.new("GET", u.request_uri))
-      ensure
-        http.finish
-      end
+      http.start { |h| h.request(HTTPRequest.new("GET", u.request_uri)) }
     end
 
     def self.post_form(uri, params)
@@ -429,12 +419,7 @@ module Net
       req.set_form_data(params)
       http = HTTP.new(u.host, u.port)
       http.use_ssl = (u.scheme == "https")
-      http.start
-      begin
-        http.request(req)
-      ensure
-        http.finish
-      end
+      http.start { |h| h.request(req) }
     end
 
     # With a block, the session lasts for the block: CRuby opens it, yields
@@ -447,7 +432,7 @@ module Net
           @started = true
           yield self
         ensure
-          finish
+          do_finish
         end
       else
         open_connection
@@ -473,6 +458,10 @@ module Net
     end
 
     def finish
+      do_finish
+    end
+
+    def do_finish
       @tls.sysclose unless @tls.nil?
       @socket.close unless @socket.nil?
       @tls = nil
@@ -481,6 +470,7 @@ module Net
       @started = false
       nil
     end
+    private :do_finish
 
     # open_timeout, honoured rather than stored: a non-blocking connect and a
     # bounded wait for writability. A timeout of 0 or less means "no limit",
@@ -568,13 +558,14 @@ module Net
       unless @started
         # `start` is INSIDE the begin: `open_connection` assigns @socket and
         # only then completes the TLS handshake, so a handshake failure raises
-        # with a live socket that nothing else will close. `finish` is a no-op
-        # when there is nothing open, which is the other way start can fail.
+        # with a live socket that nothing else will close. `do_finish` is a
+        # no-op when there is nothing open, which is the other way start can
+        # fail.
         begin
           start
           return perform(req)
         ensure
-          finish
+          do_finish
         end
       end
       # Every request goes out with `Connection: close`, so the server hangs
