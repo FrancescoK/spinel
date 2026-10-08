@@ -1,0 +1,71 @@
+["pa!", nil]
+nil
+true
+true
+2
+""
+"<>"
+"nil"
+NilClass
+nil
+"d"
+["pa!"]
+1
+true
+1
+1
+[false, true]
+["pa!"]
+["pa!"]
+true
+false
+"pa!"
+nil
+[0, "pa!"]
+[1, nil]
+["pa!", nil]
+[nil, "pa!"]
+["pa!", nil, "pa!", nil]
+["pa!", nil]
+nil
+["pa!", nil]
+"pa!-"
+true
+
+["pa!", nil]
+["pa!", nil]
+["pa?", nil, "pa?"]
+[nil, "pa!", nil, "pa"]
+2
+["pa+", "pa!", nil, nil]
+"pa!"
+nil
+true
+["pa!", nil]
+:b
+true
+1
+[[:a, "pa!"], [:b, nil]]
+[:a, "pa!"]
+[:b, nil]
+"pa!"
+nil
+["pa!"]
+nil
+["el!", nil, "el", nil]
+["xy!", nil, nil, nil]
+["v!", nil, nil, "PA", nil]
+["sa!", nil]
+true
+["pa!", nil]
+["pa!", nil]
+[["pa!", nil], [nil]]
+true
+["pa!", "lit", "a1", "he?"]
+false
+false
+true
+nil
+["ab!", "cd", "ef", "5", nil, nil, nil, "pa?"]
+true
+true
