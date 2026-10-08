@@ -221,7 +221,7 @@ module URI
   # The www-form decoding of one key or value: "+" is a space and a "%" with two
   # hex digits is that byte. Unlike decode_www_form_component, a "%" that is not
   # followed by two hex digits is left as it is, not an error.
-  def self.decode_www_form_lenient(s)
+  def self.decode_www_form_lenient(s, enc = Encoding::UTF_8)
     out = String.new
     i = 0
     while i < s.length
@@ -237,13 +237,13 @@ module URI
         i += 1
       end
     end
-    out.force_encoding("UTF-8").scrub
+    out.force_encoding(enc).scrub
   end
 
-  # `URI.decode_www_form("a=1&b=x+y")` -> [["a", "1"], ["b", "x y"]]. The
-  # encoding argument is taken and ignored (a String here is UTF-8 bytes), and
-  # `use__charset_` is not supported.
-  def self.decode_www_form(str, enc = nil, separator: "&", use__charset_: false, isindex: false)
+  # `URI.decode_www_form("a=1&b=x+y")` -> [["a", "1"], ["b", "x y"]]. Keys and
+  # values take the encoding argument, UTF-8 by default. `use__charset_` is not
+  # supported.
+  def self.decode_www_form(str, enc = Encoding::UTF_8, separator: "&", use__charset_: false, isindex: false)
     raise ArgumentError, "the input of URI.decode_www_form must be ASCII only string" unless str.ascii_only?
     raise NotImplementedError, "URI.decode_www_form: use__charset_ is not supported" if use__charset_
     raise NotImplementedError, "URI.decode_www_form: an empty separator is not supported" if separator.empty?
@@ -271,7 +271,7 @@ module URI
         end
         isindex = false
       end
-      ary << [decode_www_form_lenient(key), decode_www_form_lenient(val)]
+      ary << [decode_www_form_lenient(key, enc), decode_www_form_lenient(val, enc)]
     end
     ary
   end

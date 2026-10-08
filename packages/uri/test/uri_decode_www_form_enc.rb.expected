@@ -1,0 +1,7 @@
+[["k\xC3\xA9", "v\xC3\xA9"], ["b", "x y"]]
+[#<Encoding:BINARY (ASCII-8BIT)>, #<Encoding:BINARY (ASCII-8BIT)>, 3]
+[#<Encoding:BINARY (ASCII-8BIT)>, #<Encoding:BINARY (ASCII-8BIT)>, 3]
+[["a", "é"]]
+#<Encoding:UTF-8>
+[["�", #<Encoding:UTF-8>]]
+[["\xFF", #<Encoding:BINARY (ASCII-8BIT)>]]
