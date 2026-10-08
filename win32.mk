@@ -22,7 +22,8 @@ endif
 
 # the shim's headers first; 64-bit st_size and offsets; no winsock.h through
 # <windows.h> (the shim declares its own sockets)
-PLATFORM_FLAGS = -Ilib/win32 -D_FILE_OFFSET_BITS=64 -DWIN32_LEAN_AND_MEAN
+# Windows 10: the stack-limit and other calls the shim makes are declared from 0x0602 on, and a mingw-w64 default is Windows 7 (0x0601)
+PLATFORM_FLAGS = -Ilib/win32 -D_FILE_OFFSET_BITS=64 -DWIN32_LEAN_AND_MEAN -D_WIN32_WINNT=0x0A00 -DWINVER=0x0A00
 # a cross toolchain (Debian's and Ubuntu's mingw-w64) defaults to the old
 # msvcrt.dll; the native ones above target the UCRT, and so does the build:
 # its headers say the UCRT's, and its import library goes ahead of msvcrt's
