@@ -63,7 +63,7 @@ static void interp_flatten(const NodeTable *nt, int id, int **out, int *n, int *
    The plan is shared with the append form (`s << "..#{x}.."`), which
    writes the same parts into the receiver instead of a fresh string. */
 enum { WK_LIT, WK_INT, WK_BOOL, WK_NIL, WK_DYN };
-typedef struct { int kind; int tmp; int lit_off; int lit_esc_len; long lit_len; } WPart;
+typedef struct { int kind; int tmp; int lit_off; int lit_esc_len; long lit_len; int plain; } WPart;
 typedef struct {
   WPart *wp; int nwp; int ndyn_or_scalar;
   Buf lits;      /* escaped literal texts, concatenated */
@@ -108,7 +108,7 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
         else if (ch >= 0x20 && ch < 0x7f) buf_printf(&lits, "%c", ch);
         else buf_printf(&lits, "\\%03o", ch);
       }
-      wp[nwp].kind = WK_LIT; wp[nwp].tmp = -1;
+      wp[nwp].kind = WK_LIT; wp[nwp].tmp = -1; wp[nwp].plain = 0;
       wp[nwp].lit_off = off; wp[nwp].lit_esc_len = lits.len - off;
       wp[nwp].lit_len = blen;
       nwp++;
@@ -383,6 +383,7 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
       }
       free(conv.p);
       wp[nwp].kind = wkind; wp[nwp].tmp = tv2;
+      wp[nwp].plain = wkind == WK_INT && int_value_plain(c, expr);   /* never the nil sentinel (#7612) */
       wp[nwp].lit_off = 0; wp[nwp].lit_esc_len = 0; wp[nwp].lit_len = 0;
       nwp++;
       ndyn_or_scalar++;
@@ -465,7 +466,7 @@ void emit_interp(Compiler *c, int id, Buf *b) {
                      wp[k].lit_len, wpid, wp[k].lit_len);
         break;
       case WK_INT:
-        buf_printf(b, "_t%d = sp_w_int(_t%d, _t%d); ", wpid, wpid, wp[k].tmp);
+        buf_printf(b, "_t%d = %s(_t%d, _t%d); ", wpid, wp[k].plain ? "sp_w_int_plain" : "sp_w_int", wpid, wp[k].tmp);
         break;
       case WK_BOOL:
         buf_printf(b, "_t%d = sp_w_bool(_t%d, _t%d); ", wpid, wpid, wp[k].tmp);
@@ -522,6 +523,11 @@ int emit_interp_append(Compiler *c, int id, const char *open, const char *open_n
            (SP_GC_ROOT_STR) reads them as foreign memory. A nil part
            appends the empty String, as before. */
         int dg = ++g_tmp;
+        if (w->plain) {
+          buf_printf(b, "{ char _d%d[24]; _d%d[0] = 0; %s_d%d + 1, (size_t)(sp_w_int_plain(_d%d + 1, _t%d) - (_d%d + 1))); }\n",
+                     dg, dg, open_n, dg, dg, w->tmp, dg);
+          break;
+        }
         buf_printf(b, "{ char _d%d[24]; _d%d[0] = 0; if (_t%d == SP_INT_NIL) %ssp_str_empty);\n",
                    dg, dg, w->tmp, open);
         emit_indent(b, indent + 1);
@@ -3635,7 +3641,8 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
     if (lt == TY_POLY)      buf_printf(&tcond, "sp_poly_truthy(_t%d)", t);
     else if (lt == TY_BOOL) buf_printf(&tcond, "_t%d", t);
     else if (lt_falsy_const) buf_puts(&tcond, "0");
-    else if (lt == TY_INT)  buf_printf(&tcond, "(_t%d != SP_INT_NIL)", t);  /* a nullable int reads falsy at the sentinel; a plain int is always truthy */
+    else if (lt == TY_INT && int_value_plain(c, left)) buf_puts(&tcond, "1");   /* never the sentinel: always truthy */
+    else if (lt == TY_INT)  buf_printf(&tcond, "(_t%d != SP_INT_NIL)", t);  /* a nullable int reads falsy at the sentinel */
     else if (lt == TY_FLOAT) buf_printf(&tcond, "(!sp_float_is_nil(_t%d))", t);
     else if (lt == TY_STRING || ty_is_array(lt) || ty_is_hash(lt) || ty_is_object(lt) ||
              lt == TY_PROC || lt == TY_MATCHDATA || lt == TY_EXCEPTION ||

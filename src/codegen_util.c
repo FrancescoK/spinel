@@ -3297,6 +3297,137 @@ const char *default_value(TyKind t) {
   if (tr) return tr->zero;
   return (ty_is_hash(t) || ty_is_object(t) || ty_is_obj_array(t)) ? "NULL" : "0";
 }
+/* An Integer node that can never hold the nil sentinel, by its shape alone:
+   no analysis is trusted (the nil analysis misses some sources, and the tests
+   of the sentinel the emitters used to make unconditionally were what hid
+   that). A literal; the result of an arithmetic or bitwise operator, which
+   raises on a nil operand and otherwise answers a number; a local whose every
+   write is one of those. Printing it, testing it for nil or truthiness,
+   converting it or asking it a predicate then needs no test of the sentinel:
+   a plain Integer that equals INTPTR_MIN is that number (-2**63 in wrap mode,
+   a bitboard's top square), not nil (#7612). A parameter, a return, an ivar,
+   an element or any other source keeps the tests. Under
+   --int-overflow=promote every Integer read is asked (repr_nil_scalar). */
+static const char *const plain_int_ops[] = {
+  "+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>", NULL
+};
+static int plain_int_op(Compiler *c, const char *nm) {
+  for (int i = 0; plain_int_ops[i]; i++)
+    if (!strcmp(nm, plain_int_ops[i])) {
+      /* a program that reopens Integer with the operator owns its answer */
+      int ci = comp_class_index(c, "Integer");
+      return ci < 0 || comp_method_in_chain(c, ci, nm, NULL) < 0;
+    }
+  return 0;
+}
+typedef struct { int node; } PlainWrite;
+static PlainWrite *pw_list; static int pw_n, pw_cap;
+static const NodeTable *pw_nt; static int pw_count = -1;
+static int plain_expr(Compiler *c, int n, int depth);
+/* every local write of the program, once per node table */
+static void plain_writes_build(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  if (pw_nt == nt && pw_count == nt->count) return;
+  pw_n = 0;
+  for (int id = 0; id < nt->count; id++) {
+    NodeKind k = nt_kind(nt, id);
+    if (k != NK_LocalVariableWriteNode && k != NK_LocalVariableOperatorWriteNode &&
+        k != NK_LocalVariableOrWriteNode && k != NK_LocalVariableAndWriteNode &&
+        k != NK_LocalVariableTargetNode) continue;
+    if (pw_n == pw_cap) { pw_cap = pw_cap ? pw_cap * 2 : 1024; pw_list = realloc(pw_list, sizeof *pw_list * (size_t)pw_cap); }
+    pw_list[pw_n++].node = id;
+  }
+  pw_nt = nt; pw_count = nt->count;
+}
+static int plain_local(Compiler *c, LocalVar *lv, const char *name, int depth) {
+  if (!lv || lv->type != TY_INT || lv->is_param || lv->is_block_param || lv->rbs_seeded ||
+      lv->nullable_int || lv->box_nullable || lv->maybe_unset || lv->or_written || lv->is_cell || g_promote_mode)
+    return 0;
+  if (lv->plain_int == 2) return 1;
+  if (lv->plain_int == 3) return 0;
+  if (lv->plain_int == 1) return 1;   /* a write that reads the local itself (x = x + 1): the others decide */
+  if (depth > 8) return 0;
+  lv->plain_int = 1;
+  plain_writes_build(c);
+  const NodeTable *nt = c->nt;
+  int ok = 1, saw = 0;
+  for (int i = 0; i < pw_n && ok; i++) {
+    int w = pw_list[i].node;
+    const char *wn = nt_str(nt, w, "name");
+    if (!wn || strcmp(wn, name)) continue;
+    Scope *ws = comp_scope_of(c, w);
+    if (!ws || scope_local(ws, wn) != lv) continue;
+    saw = 1;
+    NodeKind k = nt_kind(nt, w);
+    if (k == NK_LocalVariableWriteNode) ok = plain_expr(c, nt_ref(nt, w, "value"), depth + 1);
+    else if (k == NK_LocalVariableOperatorWriteNode) {
+      const char *op = nt_str(nt, w, "binary_operator");
+      ok = op && plain_int_op(c, op) && comp_ntype(c, w) == TY_INT;
+    }
+    else ok = 0;
+  }
+  lv->plain_int = (ok && saw) ? 2 : 3;
+  return lv->plain_int == 2;
+}
+static int plain_expr(Compiler *c, int n, int depth) {
+  const NodeTable *nt = c->nt;
+  if (n < 0) return 0;
+  n = unwrap_parens(c, n);
+  if (n < 0 || comp_ntype(c, n) != TY_INT) return 0;
+  switch (nt_kind(nt, n)) {
+  case NK_IntegerNode: return 1;
+  case NK_LocalVariableReadNode: {
+    const char *nm = nt_str(nt, n, "name");
+    Scope *s = nm ? comp_scope_of(c, n) : NULL;
+    return nm && s && plain_local(c, scope_local(s, nm), nm, depth);
+  }
+  case NK_LocalVariableWriteNode: return plain_expr(c, nt_ref(nt, n, "value"), depth + 1);
+  /* `c ? a : b` and if/else: plain when every branch's last value is, and
+     there is an else (a missing one answers nil) */
+  case NK_IfNode: case NK_ElseNode: case NK_StatementsNode: {
+    NodeKind k = nt_kind(nt, n);
+    int st = k == NK_StatementsNode ? n : nt_ref(nt, n, "statements");
+    int sub = k == NK_IfNode ? nt_ref(nt, n, "subsequent") : -1;
+    if (k == NK_IfNode && sub < 0) return 0;
+    int bn = 0; const int *body = st >= 0 ? nt_arr(nt, st, "body", &bn) : NULL;
+    if (bn < 1 || !plain_expr(c, body[bn - 1], depth + 1)) return 0;
+    return k != NK_IfNode || plain_expr(c, sub, depth + 1);
+  }
+  /* `a || b` and `a && b` answer one of their operands: plain when both are */
+  case NK_OrNode: case NK_AndNode:
+    return plain_expr(c, nt_ref(nt, n, "left"), depth + 1) && plain_expr(c, nt_ref(nt, n, "right"), depth + 1);
+  case NK_CallNode: {
+    const char *nm = nt_str(nt, n, "name");
+    int recv = nt_ref(nt, n, "receiver");
+    if (!nm || recv < 0 || nt_ref(nt, n, "block") >= 0) return 0;
+    int args = nt_ref(nt, n, "arguments"), argc = 0;
+    const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+    if (comp_ntype(c, recv) != TY_INT) return 0;
+    if (argc == 0 && (!strcmp(nm, "~") || !strcmp(nm, "-@") || !strcmp(nm, "+@"))) {
+      int ci = comp_class_index(c, "Integer");
+      if (ci >= 0 && comp_method_in_chain(c, ci, nm, NULL) >= 0) return 0;
+      /* ~ of any word is a number; + and - hand a nil operand's word on
+         (+nil raises in CRuby, and in a C int is the identity), so they
+         are plain when their operand is */
+      return !strcmp(nm, "~") || plain_expr(c, recv, depth + 1);
+    }
+    /* an Integer's own conversion and neighbours: to_i / to_int hand the word
+       on (plain when the receiver is); abs, succ and pred compute a number */
+    if (argc == 0 && (!strcmp(nm, "to_i") || !strcmp(nm, "to_int") || !strcmp(nm, "abs") ||
+                      !strcmp(nm, "succ") || !strcmp(nm, "pred"))) {
+      int ci = comp_class_index(c, "Integer");
+      if (ci >= 0 && comp_method_in_chain(c, ci, nm, NULL) >= 0) return 0;
+      return nm[0] == 't' ? plain_expr(c, recv, depth + 1) : 1;
+    }
+    return plain_int_op(c, nm) && argc == 1 && comp_ntype(c, argv[0]) == TY_INT;
+  }
+  default: return 0;
+  }
+}
+int int_value_plain(Compiler *c, int node) {
+  if (g_promote_mode) return 0;
+  return plain_expr(c, node, 0);
+}
 /* Ruby truthiness of a slot `ref` of type `t`, as a C condition: the scalar
    kinds hold nil as a sentinel (default_value), which C reads as true. */
 void emit_slot_truthy(TyKind t, const char *ref, Buf *b) {

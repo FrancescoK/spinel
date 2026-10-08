@@ -75,7 +75,8 @@ void emit_puts_one(Compiler *c, int arg, Buf *b, int indent) {
        refuses it (#4896), so the nilable emitter is the right one here. */
     int tv = ++g_tmp;
     buf_printf(b, "{ sp_int _t%d = ", tv); emit_int_expr_nilable(c, arg, b);
-    buf_printf(b, "; if (_t%d == SP_INT_NIL) putchar('\\n'); else printf(\"%%lld\\n\", (long long)_t%d); }\n", tv, tv);
+    if (int_value_plain(c, arg)) buf_printf(b, "; printf(\"%%lld\\n\", (long long)_t%d); }\n", tv);
+    else buf_printf(b, "; if (_t%d == SP_INT_NIL) putchar('\\n'); else printf(\"%%lld\\n\", (long long)_t%d); }\n", tv, tv);
   }
   else if (t == TY_BIGINT) {
     /* NULL is this slot's nil (nil_value), so it prints the empty line
@@ -426,7 +427,8 @@ void emit_p_one(Compiler *c, int arg, Buf *b, int indent) {
        it (#4896), so the nilable emitter is the right one here. */
     int tv = ++g_tmp;
     buf_printf(b, "{ sp_int _t%d = ", tv); emit_int_expr_nilable(c, arg, b);
-    buf_printf(b, "; if (_t%d == SP_INT_NIL) fputs(\"nil\\n\", stdout); else printf(\"%%lld\\n\", (long long)_t%d); }\n", tv, tv);
+    if (int_value_plain(c, arg)) buf_printf(b, "; printf(\"%%lld\\n\", (long long)_t%d); }\n", tv);
+    else buf_printf(b, "; if (_t%d == SP_INT_NIL) fputs(\"nil\\n\", stdout); else printf(\"%%lld\\n\", (long long)_t%d); }\n", tv, tv);
   }
   else if (t == TY_FLOAT) {
     buf_puts(b, "{ const char *_fs = sp_float_opt_inspect("); emit_expr(c, arg, b);
@@ -3427,6 +3429,7 @@ void emit_cond(Compiler *c, int id, Buf *b) {
       t == TY_METHOD || t == TY_IO || t == TY_ARGF || t == TY_ENUMERATOR || t == TY_OPENSTRUCT) {
     buf_puts(b, "(("); emit_expr(c, id, b); buf_puts(b, ") != 0)"); return;
   }
+  if (t == TY_INT && int_value_plain(c, id)) { buf_puts(b, "(("); emit_expr(c, id, b); buf_puts(b, "), 1)"); return; }   /* never the sentinel: always truthy */
   if (t == TY_INT)   { buf_puts(b, "(("); emit_expr(c, id, b); buf_puts(b, ") != SP_INT_NIL)"); return; }
   if (t == TY_FLOAT) { buf_puts(b, "(!sp_float_is_nil("); emit_expr(c, id, b); buf_puts(b, "))"); return; }
   /* a nilable symbol slot holds (sp_sym)-1 for nil (default_value), so

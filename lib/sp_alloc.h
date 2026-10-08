@@ -563,6 +563,16 @@ static inline void sp_u64_write_back(char *end, uint64_t u) {
   if (u >= 10) { end -= 2; end[0] = d2[2 * u]; end[1] = d2[2 * u + 1]; }
   else *--end = (char)('0' + u);
 }
+/* An Integer the program knows is never the nil sentinel (the analysis says
+   no nil reaches it): INTPTR_MIN is that number here, not "" (#7612). */
+static inline char *sp_w_int_plain(char *p, sp_int n) {
+  uint64_t u;
+  if (n < 0) { *p++ = '-'; u = (uint64_t)(-(n + 1)) + 1; }
+  else u = (uint64_t)n;
+  p += sp_u64_ndigits(u);
+  sp_u64_write_back(p, u);
+  return p;
+}
 static inline char *sp_w_int(char *p, sp_int n) {
   if (n == SP_INT_NIL) return p;  /* a nil int slot interpolates as "" */
   uint64_t u;

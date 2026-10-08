@@ -491,9 +491,18 @@ representation.
 
 That holds in every `--int-overflow` mode (#7612): an Integer that is exactly
 -2**63 -- `-9223372036854775807 - 1` computed without overflowing, a wrapping
-`+ - *`, `~0x7fffffffffffffff` -- is the sentinel's word, so it reads as `nil`
-where it is printed, tested for nil or truthiness, or computed on, and no mode
-raises for it. This is deliberate: checking the result of every `+ - *` costs
+`+ - *`, `~0x7fffffffffffffff`, a bitboard's `1 << 63` in wrap mode -- is the
+sentinel's word, so where it is printed, tested for nil or truthiness, or
+computed on it can read as `nil`, and no mode raises for it. **Not where the
+compiler can see that no nil reaches the value:** a literal, the result of an
+arithmetic or bitwise operator, `||` / `&&` / `?:` of such values, and a local
+whose every write is one of those are plain Integers, and printing,
+interpolating, `to_s` / `inspect` / `to_i` / `to_f`, `nil?`, `zero?` /
+`even?` / `positive?` and the like, and a condition test them for nothing
+(test/int_min_plain_locals.rb, in raise and wrap). Parameters, return values,
+instance variables and elements of Arrays and Hashes are not seen that way
+yet: a bitboard that travels through them still reads as `nil` at the
+sentinel's word. This is deliberate: checking the result of every `+ - *` costs
 10 to 37% of the run time on integer-heavy programs (measured on `bm_tarai`,
 `bm_tak`, `bm_sudoku`, `bm_structaref` and `bm_throw`), and an error where the
 word was a real nil (a nil the analysis did not mark) would be wrong the other

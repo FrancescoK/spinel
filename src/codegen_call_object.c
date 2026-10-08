@@ -282,6 +282,7 @@ int emit_call_identity_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
      (e.g. an int-valued hash miss). A plain int is never the sentinel, so
      `5.nil?` constant-folds to false; a missing-key value reads true. */
   if (recv >= 0 && rt == TY_INT && sp_streq(name, "nil?") && argc == 0) {
+    if (int_value_plain(c, recv)) { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), FALSE)"); return 1; }
     buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") == SP_INT_NIL)");
     return 1;
   }

@@ -48,20 +48,48 @@ static char *op_recv_text(Compiler *c, const BopCtx *x) {
      $sN  argument N as a String (emit_str_expr)
      $cN  argument N as an sp_Complex (emit_complex_coerce)
      $qN  argument N as an sp_Rational (emit_rat_coerce) */
+/* The template of an Integer row for a receiver that can never be the nil
+   sentinel: the row's own C text asks the sentinel first (an Integer slot
+   some write leaves nil in), and a plain Integer that is INTPTR_MIN is that
+   number (#7612). NULL: the row has no such variant. */
+static const char *int_plain_template(const char *name) {
+  static const struct { const char *name, *arg; } rows[] = {
+    { "to_s",      "sp_int_to_s($r)" },
+    { "inspect",   "sp_int_to_s($r)" },
+    { "to_f",      "((sp_float)($r))" },
+    { "to_i",      "($r)" },
+    { "even?",     "((($r) % 2) == 0)" },
+    { "odd?",      "((($r) % 2) != 0)" },
+    { "zero?",     "(($r) == 0)" },
+    { "positive?", "(($r) > 0)" },
+    { "negative?", "(($r) < 0)" },
+  };
+  for (size_t i = 0; i < sizeof rows / sizeof *rows; i++)
+    if (!strcmp(name, rows[i].name)) return rows[i].arg;
+  return NULL;
+}
+
 static int emit_op_template(Compiler *c, const BopCtx *x, Buf *b) {
   static const char tnames[] = "tuvwxyz";
+  const char *tmpl = x->op->arg;
+  if (x->op->recv == TY_INT && x->rt == TY_INT && x->op->name) {
+    const char *plain = int_plain_template(x->op->name);
+    int pargc = 0;
+    call_args(c->nt, x->id, &pargc);
+    if (plain && pargc == 0 && int_value_plain(c, x->recv)) tmpl = plain;   /* to_s(2) keeps its row */
+  }
   int tn[7] = { 0, 0, 0, 0, 0, 0, 0 };
   Buf hb; memset(&hb, 0, sizeof hb);
-  int held = strstr(x->op->arg, "$h") &&
+  int held = strstr(tmpl, "$h") &&
              hold_recv_open(c, x->recv, 0, c_type_name(x->rt), "SP_GC_ROOT", b, &hb);
   for (int k = 0; k < 7; k++) {
     char pat[3] = { '$', tnames[k], 0 };
-    if (strstr(x->op->arg, pat)) tn[k] = ++g_tmp;
+    if (strstr(tmpl, pat)) tn[k] = ++g_tmp;
   }
   char *r = NULL;
   int argc;
   const int *argv = call_args(c->nt, x->id, &argc);
-  for (const char *p = x->op->arg; *p; p++) {
+  for (const char *p = tmpl; *p; p++) {
     const char *tk = p[0] == '$' && p[1] ? strchr(tnames, p[1]) : NULL;
     if (p[0] == '$' && p[1] == 'r') {
       if (!r && x->rtext) { r = strdup(x->rtext); buf_puts(b, r); }
