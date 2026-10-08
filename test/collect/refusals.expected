@@ -790,10 +790,18 @@ spinel: test/reject/string_boxed_local_iterator_element.rb:7: a String a boxed l
 spinel: test/reject/string_boxed_reader_copied_too_late.rb:12: a String read through a reader on a boxed receiver (a Struct or Data member, an attr_reader, `def m = @iv`) is mutated in place (a String is not yet shared by reference through a reader on a boxed receiver). Assign the changed String back to the member.
 == test/reject/string_boxed_reader_copied_too_late.rb [promote] rc=1
 spinel: test/reject/string_boxed_reader_copied_too_late.rb:12: a String read through a reader on a boxed receiver (a Struct or Data member, an attr_reader, `def m = @iv`) is mutated in place (a String is not yet shared by reference through a reader on a boxed receiver). Assign the changed String back to the member.
+== test/reject/string_boxed_reader_copy_reopened_dup.rb [default] rc=1
+spinel: test/reject/string_boxed_reader_copy_reopened_dup.rb:16: a String read through a reader on a boxed receiver (a Struct or Data member, an attr_reader, `def m = @iv`) is mutated in place (a String is not yet shared by reference through a reader on a boxed receiver). Assign the changed String back to the member.
+== test/reject/string_boxed_reader_copy_reopened_dup.rb [promote] rc=1
+spinel: test/reject/string_boxed_reader_copy_reopened_dup.rb:16: a String read through a reader on a boxed receiver (a Struct or Data member, an attr_reader, `def m = @iv`) is mutated in place (a String is not yet shared by reference through a reader on a boxed receiver). Assign the changed String back to the member.
 == test/reject/string_boxed_reader_mutation.rb [default] rc=1
 spinel: test/reject/string_boxed_reader_mutation.rb:6: a String read through a reader on a boxed receiver (a Struct or Data member, an attr_reader, `def m = @iv`) is mutated in place (a String is not yet shared by reference through a reader on a boxed receiver). Assign the changed String back to the member.
 == test/reject/string_boxed_reader_mutation.rb [promote] rc=1
 spinel: test/reject/string_boxed_reader_mutation.rb:6: a String read through a reader on a boxed receiver (a Struct or Data member, an attr_reader, `def m = @iv`) is mutated in place (a String is not yet shared by reference through a reader on a boxed receiver). Assign the changed String back to the member.
+== test/reject/string_boxed_reader_query_reopened.rb [default] rc=1
+spinel: test/reject/string_boxed_reader_query_reopened.rb:16: a String read through a reader on a boxed receiver (a Struct or Data member, an attr_reader, `def m = @iv`) is mutated in place (a String is not yet shared by reference through a reader on a boxed receiver). Assign the changed String back to the member.
+== test/reject/string_boxed_reader_query_reopened.rb [promote] rc=1
+spinel: test/reject/string_boxed_reader_query_reopened.rb:16: a String read through a reader on a boxed receiver (a Struct or Data member, an attr_reader, `def m = @iv`) is mutated in place (a String is not yet shared by reference through a reader on a boxed receiver). Assign the changed String back to the member.
 == test/reject/string_callee_reader_store.rb [default] rc=1
 spinel: test/reject/string_callee_reader_store.rb:8: a String a method stores into an Array or Hash its caller passed it is mutated in place through the caller's container (a String is not yet shared by reference through a store into a parameter's container). Store the String in the caller, or mutate it in the method.
 == test/reject/string_callee_reader_store.rb [promote] rc=1
