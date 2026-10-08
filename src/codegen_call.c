@@ -8716,7 +8716,7 @@ void emit_reopen_recv_args(Compiler *c, int id, int mi, int recv, int boxed, con
 
 static void emit_reopen_primitive_call(Compiler *c, int id, int ci, int mi, int recv, const char *name, Buf *b) {
   if (repr_self_handle(c, mi) && c->scopes[mi].yields && emit_inline_expr(c, id, b)) return;
-  if (repr_self_handle(c, mi) && emit_reopen_block_call(c, id, recv, mi, NULL, b)) return;
+  if (ci == comp_class_index(c, "String") && emit_reopen_block_call(c, id, recv, mi, NULL, b)) return;
   if (g_plan_check) ucall_observe(c, id, mi, ci, 0);
   buf_printf(b, "sp_%s_%s(", mc_reopen_cls(c, ci, name), mc(name));
   if (repr_self_handle(c, mi)) emit_reopen_recv_args(c, id, mi, recv, 0, NULL, b);
@@ -20236,6 +20236,7 @@ static const char *strvar_arg(Compiler *c, int a, int *shared) {
     return lv->is_param ? "a parameter" : "a local variable";
   }
   if (at != TY_STRING && at != TY_STRBUF) return NULL;
+  if (k == NK_SelfNode) { *shared = repr_self_shared(c, a); return "String self"; }
   if (k == NK_InstanceVariableReadNode) return "an instance variable";
   if (k == NK_GlobalVariableReadNode) return "a global variable";
   if (k == NK_ClassVariableReadNode) return "a class variable";
@@ -20252,6 +20253,9 @@ static int refuse_method_body(Compiler *c, const char *mname);
 static void refuse_string_copy(Compiler *c, int arg, const char *target,
                                const char *pname, const char *through,
                                const char *why) {
+  if (!c->share_strings && nt_kind(c->nt, arg) == NK_SelfNode)
+    unsupported_feature(c, arg, "String self is not yet shared by reference with a block that mutates it: "
+                        "the default build would hand on a copy. Build with --share-strings to support this call.");
   int is_method = target && target[0] == '`';
   /* --share-strings: a user method's parameter, by its method's name, is
      the rule's first (refuse_string_copy_routed) */
@@ -24852,6 +24856,14 @@ int emit_reopen_block_call(Compiler *c, int id, int recv, int mi, const char *bo
     emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "sp_String *_t%d = ", t);
     emit_strbuf_handle_of(c, recv, g_pre);
+    buf_printf(g_pre, "; SP_GC_ROOT(_t%d);\n", t);
+    buf_printf(&rb, "_t%d", t);
+  }
+  else if (c->scopes[mi].class_id == comp_class_index(c, "String")) {
+    int t = ++g_tmp;
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "const char *_t%d = ", t);
+    emit_expr(c, recv, g_pre);
     buf_printf(g_pre, "; SP_GC_ROOT(_t%d);\n", t);
     buf_printf(&rb, "_t%d", t);
   }
