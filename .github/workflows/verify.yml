@@ -32,6 +32,7 @@ name: verify
 # and packs the tree; legs, PGATE_CORPUS_SHARDS corpus slices and
 # PGATE_RUBYSPEC_SHARDS ruby/spec groups run on it (10 jobs by default); a
 # finish job adds them up into the gate leg's files and runs gate.rb stamp.
+# A tree with gate-test-shared also runs PGATE_CORPUS_SHARDS shared slices.
 # The gate's own result cache (tools/result_cache.sh, GATE_CACHE=1 as
 # `make gate` runs) is carried between pgate runs: its entries are keyed by
 # the generated C and every input of the build and run, and hold passes only.
@@ -52,8 +53,8 @@ jobs:
       label: ${{ steps.m.outputs.label }}
       shards: ${{ steps.m.outputs.shards }}
       pgates: ${{ steps.m.outputs.pgates }}
-      pgate_parts: ${{ steps.m.outputs.pgate_parts }}
-      pgate_expect: ${{ steps.m.outputs.pgate_expect }}
+      pgate_corpus_shards: ${{ steps.m.outputs.pgate_corpus_shards }}
+      pgate_rubyspec_shards: ${{ steps.m.outputs.pgate_rubyspec_shards }}
       has_pgate: ${{ steps.m.outputs.has_pgate }}
       pgate_cache: ${{ steps.m.outputs.pgate_cache }}
     steps:
@@ -109,12 +110,9 @@ jobs:
           pg = "pgate" in legs
           nc = int(os.environ.get("PGATE_CORPUS_SHARDS", "8"))
           nr = int(os.environ.get("PGATE_RUBYSPEC_SHARDS", "4"))
-          parts = ([("rubyspec", k, nr) for k in range(1, nr + 1)] +
-                   [("corpus", k, nc) for k in range(1, nc + 1)] + [("legs", 0, 0)])
           print("pgates=" + json.dumps({"include": [{"name": name, "sha": sha} for name, sha in heads] if pg else []}))
-          print("pgate_parts=" + json.dumps({"include": [{"name": name, "sha": sha, "part": p, "k": k, "of": of}
-                                                         for name, sha in heads for p, k, of in parts] if pg else []}))
-          print("pgate_expect=" + " ".join(f"{p}-{k}" for p, k, _ in parts))
+          print(f"pgate_corpus_shards={nc}")
+          print(f"pgate_rubyspec_shards={nr}")
           print("has_pgate=" + str(pg).lower())
           # PGATE_CACHE=0: start from no earlier run's result cache
           print("pgate_cache=" + os.environ.get("PGATE_CACHE", "1"))
@@ -736,21 +734,53 @@ jobs:
           path: prep/
           compression-level: 0
           retention-days: 1
+      # Planning needs only metadata, not every head's packed build.
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: pgate-meta-${{ matrix.name }}
+          path: prep/gate-meta.txt
+          retention-days: 1
       - name: sccache stats
         if: always()
         run: sccache --show-stats
 
+  # Each merged head can have different gate legs. Plan after prep has
+  # checked those rules; use the same plan for the matrix and finish.
+  pgate-plan:
+    needs: [plan, pgate-prep]
+    if: ${{ !cancelled() && needs.plan.outputs.has_pgate == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      parts: ${{ steps.m.outputs.parts }}
+      expect: ${{ steps.m.outputs.expect }}
+    steps:
+      - uses: actions/checkout@v7
+      # As in report, gh preserves artifact directories even for one head.
+      - name: Download prep metadata
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run download ${{ github.run_id }} -R ${{ github.repository }} -p 'pgate-meta-*' -D "$RUNNER_TEMP/metas"
+      - id: m
+        env:
+          HEADS: ${{ needs.plan.outputs.pgates }}
+          NC: ${{ needs.plan.outputs.pgate_corpus_shards }}
+          NR: ${{ needs.plan.outputs.pgate_rubyspec_shards }}
+        run: python3 pgate.py plan "$RUNNER_TEMP/metas" "$HEADS" "$NC" "$NR" >> "$GITHUB_OUTPUT"
+
   # pgate, 2 of 3: the parts. max-parallel keeps a run to 10 of the
   # account's 20 jobs (see the run job).
   pgate-part:
-    needs: [plan, pgate-prep]
+    needs: [plan, pgate-prep, pgate-plan]
     if: ${{ !cancelled() && needs.plan.outputs.has_pgate == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
       fail-fast: false
       max-parallel: 10
-      matrix: ${{ fromJSON(needs.plan.outputs.pgate_parts) }}
+      matrix: ${{ fromJSON(needs.pgate-plan.outputs.parts) }}
     env:
       NAME: ${{ matrix.name }}
       SCCACHE_DIR: ${{ github.workspace }}/.sccache
@@ -795,7 +825,7 @@ jobs:
   # pgate, 3 of 3: the parts added up into the gate leg's files (report.py
   # reads them as a gate), the stamp, and the result cache's new store.
   pgate:
-    needs: [plan, pgate-prep, pgate-part]
+    needs: [plan, pgate-prep, pgate-plan, pgate-part]
     if: ${{ !cancelled() && needs.plan.outputs.has_pgate == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -805,7 +835,7 @@ jobs:
       matrix: ${{ fromJSON(needs.plan.outputs.pgates) }}
     env:
       NAME: ${{ matrix.name }}
-      EXPECT: ${{ needs.plan.outputs.pgate_expect }}
+      EXPECT: ${{ fromJSON(needs.pgate-plan.outputs.expect || '{}')[matrix.name] }}
     steps:
       - uses: actions/checkout@v7
       - uses: ruby/setup-ruby@v1

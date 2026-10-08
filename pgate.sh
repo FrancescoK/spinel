@@ -19,6 +19,8 @@
 #   PART is legs, corpus (K of N) or rubyspec (K of N). OUT gets part.txt
 #   (rc, the tree after the run, the command, seconds, cache use),
 #   part.log, result-cache.tar and, for corpus, test-results.tar.
+#   Trees with gate-test-shared also have shared (K of N) parts, with
+#   test-results-shared.tar for finish's known-failure summary.
 # GATE_JOBS overrides the job count (default nproc), as in gate-leg.sh.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
@@ -67,6 +69,7 @@ prep)
     setmeta status FAIL
     setmeta exit_status 1
     python3 "$here/pgate.py" check . >> "$log" 2>&1
+    setmeta shared "$(python3 "$here/pgate.py" shared .)"
     make deps >> "$log" 2>&1 || { sleep 30; make deps >> "$log" 2>&1; }
     # the gate recipe's first two steps, on the master that was merged
     { r=$(sh tools/gate-ruby) && GATE_MASTER=$master "$r" tools/gate.rb start || true; } >> "$log" 2>&1
@@ -125,6 +128,7 @@ part)
     log="$out/part.log"
     : > "$log"
     status=$(sed -n 's/^status=//p' "$prep/gate-meta.txt" 2>/dev/null || true)
+    shared=$(sed -n 's/^shared=//p' "$prep/gate-meta.txt" 2>/dev/null || true)
     if [ "$status" != PREPARED ] || [ ! -f "$prep/tree.tar.zst" ]; then
         # a conflict, or a prep that failed: finish reports it from the prep
         echo "[pgate] no tree to run on (prep status: ${status:-missing})" | tee -a "$log"
@@ -152,11 +156,27 @@ part)
         # every leg of the gate, the corpus and the ruby/spec suites taken
         # out (they are the other parts), under one job server as the gate
         # runs them
-        run make -j"$jobs" --no-print-directory gate-legs TESTS= PKG_TESTS= RUBYSPEC_SUITES=
+        if [ "$shared" = 1 ]; then
+            # The checked gate-legs prerequisites, except gate-test-shared:
+            # even with TESTS= its summary needs results, supplied by finish.
+            run make -j"$jobs" --no-print-directory gate-test gate-bench gate-optcarrot gate-rubyspec gate-props TESTS= PKG_TESTS= RUBYSPEC_SUITES=
+        else
+            run make -j"$jobs" --no-print-directory gate-legs TESTS= PKG_TESTS= RUBYSPEC_SUITES=
+        fi
         ;;
     corpus)
         run make -j"$jobs" --no-print-directory test-corpus TEST_SHARD="$k/$n" OPT=-O1
         if [ -d build/test-results ]; then tar -C build -cf "$out/test-results.tar" test-results; fi
+        ;;
+    shared)
+        if [ "$shared" != 1 ]; then
+            echo "[pgate] the tree has no shared corpus leg" | tee -a "$log"
+            rc=2
+        else
+            run make -j"$jobs" --no-print-directory clean-test-results TEST_RESULT_DIR=build/test-results-shared
+            run make -j"$jobs" --no-print-directory test-corpus-results TEST_SHARD="$k/$n" OPT=-O1 SPINEL_SHARE_STRINGS=1 TEST_RESULT_DIR=build/test-results-shared
+            if [ -d build/test-results-shared ]; then tar -C build -cf "$out/test-results-shared.tar" test-results-shared; fi
+        fi
         ;;
     rubyspec)
         # shellcheck disable=SC2046
@@ -178,6 +198,8 @@ part)
     cache="result cache $before entries, $(( $(entries) - before )) new"
     if [ "$part" = corpus ]; then
         cache="$cache, $(count build/test-results '*.ok.cached') of $(count build/test-results '*.ok') programs reused"
+    elif [ "$part" = shared ]; then
+        cache="$cache, $(count build/test-results-shared '*.ok.cached') of $(count build/test-results-shared '*.ok') programs reused"
     fi
     if [ -d build/result-cache ]; then tar -C build -cf "$out/result-cache.tar" result-cache; fi
     printf 'part=%s\nk=%s\nn=%s\nrc=%s\ntree=%s\ncmd=%s\nsecs=%s\ncache=%s\n' \

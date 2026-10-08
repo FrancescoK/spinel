@@ -65,6 +65,6 @@ set +e
 RUBYSPEC_JOBS=${GATE_JOBS:-$(nproc)} make -j"${GATE_JOBS:-$(nproc)}" "${GATE_TARGET:-gate}" 2>&1 | tee -a "$out/gate.log"
 rc=${PIPESTATUS[0]}
 set -e
-grep -E 'Tests:|scale-test|gate:' "$out/gate.log" > "$out/gate-summary.txt" || true
+grep -E 'Tests:|scale-test|gate:|^gate-test-shared: [0-9]+ pass,' "$out/gate.log" > "$out/gate-summary.txt" || true
 [ "$rc" -ne 0 ] || status=PASS
 exit "$rc"

@@ -4,6 +4,10 @@
 #
 # usage: pgate.py check CHECKOUT
 #          fail unless the tree's gate splits the way pgate splits it
+#        pgate.py shared CHECKOUT
+#          print 1 when gate-legs includes gate-test-shared, otherwise 0
+#        pgate.py plan PREPS HEADS_JSON CORPUS_SHARDS RUBYSPEC_SHARDS
+#          matrix and expected parts per head, from prep metadata
 #        pgate.py group CHECKOUT K N SUITE...
 #          the K-th of N groups of the rubyspec suites, balanced by
 #          expected-PASS examples
@@ -20,12 +24,17 @@
 #                                corpus and the ruby/spec suites taken out:
 #                                test's C-side legs, bench, optcarrot,
 #                                props, and test-corpus-summary over nothing
+#                                (gate-test-shared is omitted when present)
 #     the corpus                 corpus k/S: `make test-corpus TEST_SHARD=k/S
 #                                OPT=-O1` (gate-test's -O1); the Makefile's
 #                                slices are disjoint and cover the corpus
 #     the ruby/spec suites       rubyspec k/R: `make gate-rubyspec
 #                                RUBYSPEC_SUITES=<group k>`; the groups
 #                                partition the tree's RUBYSPEC_SUITES
+#     gate-test-shared, if any    shared k/S: the same corpus slices with
+#                                SPINEL_SHARE_STRINGS=1, OPT=-O1 and their
+#                                own result directory; finish runs the
+#                                tree's shared_test_results.awk over them
 #   gate.rb stamp                finish, on the prep's tree with every
 #                                slice's results, when every part passed
 #   echo "gate: ALL GREEN"       finish, when every part passed
@@ -33,7 +42,7 @@
 # variables read nowhere else), so a Makefile change that would let a part
 # drop a target stops pgate instead. `finish` checks the parts covered the
 # corpus and the suites, each once.
-import os, re, shutil, subprocess, sys, tarfile
+import json, os, re, shutil, subprocess, sys, tarfile
 
 # The rules the split depends on, as master has them (5cd50e094): each
 # target's rule lines, prerequisites and recipe, in order.
@@ -50,6 +59,17 @@ EXPECTED = {
     "test-corpus": [("$(SPINEL_TIMEOUT)", [
         "+@$(MAKE) --no-print-directory clean-test-results",
         "+@$(MAKE) $(TEST_JOBS) --no-print-directory test-corpus-summary"])],
+}
+# The sharing leg also factors the corpus prerequisites out of its summary.
+SHARED_EXPECTED = {
+    "gate-legs": [("gate-test gate-test-shared gate-bench gate-optcarrot gate-rubyspec gate-props", [])],
+    "gate-test-shared": [("", [
+        "+@$(MAKE) --no-print-directory clean-test-results TEST_RESULT_DIR=build/test-results-shared",
+        "+@$(MAKE) $(TEST_JOBS) --no-print-directory test-corpus-shared-summary OPT=-O1 SPINEL_SHARE_STRINGS=1 TEST_RESULT_DIR=build/test-results-shared"])],
+    "test-corpus-results": [("$(TEST_TARGETS) $(PKG_TEST_TARGETS)", [])],
+    "test-corpus-shared-summary": [("test-corpus-results", [
+        "@awk -f tools/shared_test_results.awk test/share/known-failures.txt $(TEST_RESULT_DIR)/*.ok"])],
+    "clean-test-results": [("", ["@rm -rf $(TEST_RESULT_DIR)", "@tools/result_cache.sh prune"])],
 }
 # The only targets that may reach the corpus targets (by prerequisite or a
 # recursive make): with TESTS= the legs part runs them over nothing, so a
@@ -88,21 +108,28 @@ def check(checkout):
     text = open(os.path.join(checkout, "Makefile"), errors="replace").read()
     common = os.path.join(checkout, "common.mk")
     mk = text + "\n" + (open(common, errors="replace").read() if os.path.exists(common) else "")
-    got = rules(text, list(EXPECTED) + ["test-run", "test"])
-    bad = [f"the {t} rule" for t, want in EXPECTED.items() if got[t] != want]
+    shared = has_shared(text)
+    expected = dict(EXPECTED, **(SHARED_EXPECTED if shared else {}))
+    corpus = CORPUS | ({"test-corpus-results", "test-corpus-shared-summary"} if shared else set())
+    allowed = CORPUS_CALLERS | ({"gate-test-shared", "test-corpus-summary", "test-corpus-shared-summary"} if shared else set())
+    var_ok = VAR_OK + ([re.compile(r"^test-corpus-results:")] if shared else [])
+    got = rules(text, list(expected) + ["test-run", "test"])
+    bad = [f"the {t} rule" for t, want in expected.items() if got[t] != want]
     if not any("test-corpus-summary" in pre.split() for pre, _ in got["test-run"]):
         bad.append("test-run (it no longer runs test-corpus-summary)")
     if not any(re.search(r"\$\(MAKE\).* test-run$", r) for _, rec in got["test"] for r in rec):
         bad.append("test (it no longer runs test-run)")
     callers = set()
     for t, rs in rules(text).items():
+        if t == ".PHONY":
+            continue
         for pre, rec in rs:
-            if CORPUS & set(pre.split()) or any("$(MAKE)" in r and CORPUS & set(r.split()) for r in rec):
+            if corpus & set(pre.split()) or any("$(MAKE)" in r and corpus & set(r.split()) for r in rec):
                 callers.add(t)
-    if callers - CORPUS_CALLERS:
-        bad.append(f"the corpus targets, now also reached from {' '.join(sorted(callers - CORPUS_CALLERS))}")
+    if callers - allowed:
+        bad.append(f"the corpus targets, now also reached from {' '.join(sorted(callers - allowed))}")
     for line in mk.splitlines():
-        if not line.lstrip().startswith("#") and VAR_REF.search(line) and not any(p.search(line) for p in VAR_OK):
+        if not line.lstrip().startswith("#") and VAR_REF.search(line) and not any(p.search(line) for p in var_ok):
             bad.append(f"a new reader of an overridden variable: {line.strip()[:120]}")
     for b in bad:
         print(f"[pgate] the tree changed {b}; run the gate leg, or update pgate.py")
@@ -110,6 +137,28 @@ def check(checkout):
         return 1
     print("[pgate] the tree's gate splits as pgate splits it")
     return 0
+
+
+def has_shared(text):
+    return any("gate-test-shared" in pre.split() for pre, _ in rules(text, ["gate-legs"])["gate-legs"])
+
+
+def plan(preps, heads, nc, nr):
+    """Plan each merged tree separately; absent prep metadata still gets
+    the usual parts so finish reports the failed/missing prep."""
+    if nc < 1 or nr < 1:
+        raise ValueError("pgate shard counts must be positive")
+    jobs, expect = [], {}
+    for head in heads["include"]:
+        name = head["name"]
+        meta = kv(read(os.path.join(preps, f"pgate-meta-{name}", "gate-meta.txt")))
+        parts = [("rubyspec", k, nr) for k in range(1, nr + 1)]
+        for part in (["corpus", "shared"] if meta.get("shared") == "1" else ["corpus"]):
+            parts += [(part, k, nc) for k in range(1, nc + 1)]
+        parts.append(("legs", 0, 0))
+        jobs += [dict(head, part=p, k=k, of=n) for p, k, n in parts]
+        expect[name] = " ".join(f"{p}-{k}" for p, k, _ in parts)
+    return {"parts": {"include": jobs}, "expect": expect}
 
 
 def groups(checkout, n, suites):
@@ -142,8 +191,51 @@ def kv(text):
     return dict(l.split("=", 1) for l in text.splitlines() if "=" in l)
 
 
-SUMMARY = re.compile(r"Tests:|scale-test|gate:")
+SHARED_SUMMARY = re.compile(r"^gate-test-shared: \d+ pass,")
+SUMMARY = re.compile(r"Tests:|scale-test|gate:|" + SHARED_SUMMARY.pattern)
 TESTS = re.compile(r"Tests:\s+(\d+) pass,\s+(\d+) fail,\s+(\d+) error")
+
+
+def shared_results(prep, parts, checkout):
+    """Combine shared verdicts, require the same coverage as the corpus,
+    and let the tree's own known-failure checker decide their result."""
+    notes, seen, dup = [], set(), []
+    if not checkout or not os.path.isdir(checkout):
+        return 1, "", ["[pgate] no checkout for the shared corpus summary"]
+    checkout = os.path.abspath(checkout)
+    res = os.path.join(checkout, "build", "test-results-shared")
+    shutil.rmtree(res, ignore_errors=True)
+    os.makedirs(res)
+    for p, (d, _, _) in parts.items():
+        if not p.startswith("shared-"):
+            continue
+        try:
+            with tarfile.open(os.path.join(d, "test-results-shared.tar")) as t:
+                for member in t.getmembers():
+                    if not re.fullmatch(r"(\./)?test-results-shared/[^/.][^/]*\.ok(\.diff)?", member.name):
+                        continue
+                    if not member.isfile():
+                        notes.append(f"[pgate] part {p} has a non-file shared result: {member.name}")
+                        continue
+                    if member.name.endswith(".ok"):
+                        name = os.path.basename(member.name)
+                        (dup.append(name) if name in seen else seen.add(name))
+                    t.extract(member, os.path.join(checkout, "build"), filter="data")
+        except (OSError, tarfile.TarError) as e:
+            notes.append(f"[pgate] part {p} has no usable test-results-shared.tar: {e}")
+    targets = os.path.join(prep, "targets.txt")
+    if not os.path.isfile(targets):
+        notes.append("[pgate] no targets.txt for shared corpus coverage")
+    else:
+        want = {os.path.basename(l) for l in read(targets).split()}
+        missing, extra = sorted(want - seen), sorted(seen - want)
+        if missing or dup or extra:
+            notes.append(f"[pgate] the shared slices missed {len(missing)} programs ({' '.join(missing[:10])}), "
+                         f"ran {len(dup)} twice and added {len(extra)} results")
+    r = subprocess.run(["awk", "-f", "tools/shared_test_results.awk", "test/share/known-failures.txt"] +
+                       [os.path.join(res, n) for n in (sorted(seen) or ["*.ok"])],
+                       cwd=checkout, capture_output=True, text=True)
+    return r.returncode, (r.stdout + r.stderr).rstrip("\n"), notes
 
 
 def finish(a):
@@ -243,6 +335,16 @@ def finish(a):
     ran = [s for p in parts for s in re.findall(r"^rubyspec-gate\[([^\]]+)\]:", parts[p][2], re.M)]
     if not fails and sorted(ran) != sorted(suites):
         notes.append(f"[pgate] the rubyspec groups ran {' '.join(sorted(ran)) or 'no suite'}; the tree's RUBYSPEC_SUITES is {' '.join(sorted(suites))}")
+    if meta.get("shared") == "1":
+        shared_expect = {p.replace("corpus-", "shared-", 1) for p in expect if p.startswith("corpus-")}
+        if not shared_expect or shared_expect != {p for p in expect if p.startswith("shared-")}:
+            notes.append("[pgate] expected shared parts do not match the corpus parts")
+        sr, slog, snotes = shared_results(prep, parts, a.get("--checkout"))
+        log.append(slog)
+        lines += [l for l in slog.splitlines() if SHARED_SUMMARY.search(l)]
+        notes += snotes
+        if sr:
+            fails.append(("gate-test-shared", sr))
     log += notes
     if fails:
         log.append("[pgate] FAIL in " + ", ".join(p for p, _ in fails))
@@ -295,13 +397,21 @@ def main(argv):
     cmd = argv[1] if len(argv) > 1 else ""
     if cmd == "check":
         return check(argv[2])
+    if cmd == "shared":
+        print(int(has_shared(read(os.path.join(argv[2], "Makefile")))))
+        return 0
+    if cmd == "plan":
+        for k, v in plan(argv[2], json.loads(argv[3]), int(argv[4]), int(argv[5])).items():
+            print(k + "=" + json.dumps(v))
+        return 0
     if cmd == "group":
         k, n = int(argv[3]), int(argv[4])
         print(" ".join(groups(argv[2], n, argv[5:])[k - 1]))
         return 0
     if cmd == "finish":
         return finish(dict(zip(argv[2::2], argv[3::2])))
-    print("usage: pgate.py check CHECKOUT | group CHECKOUT K N SUITE... | finish --prep DIR --parts DIR "
+    print("usage: pgate.py check CHECKOUT | shared CHECKOUT | plan PREPS HEADS_JSON CORPUS_SHARDS RUBYSPEC_SHARDS | "
+          "group CHECKOUT K N SUITE... | finish --prep DIR --parts DIR "
           "--out DIR --name NAME --expect PARTS [--checkout DIR]", file=sys.stderr)
     return 2
 
