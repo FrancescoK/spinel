@@ -14518,6 +14518,42 @@ static void reject_runtime_send(Compiler *c) {
   NT_FOREACH_KIND(c->nt, NK_CallNode, id) refuse_from_plan(c, id, CRF_SEND, "refuse-send");
 }
 
+/* Time.parse / Time.strptime (docs/limitations.md, K-001): the `require
+   "time"` string-parsing additions spinel does not implement. Time's other
+   `require "time"` additions -- iso8601, httpdate, rfc2822 -- are supported
+   (sp_feature_enabled("time"), gated in analyze_infer.c and codegen_call.c),
+   so leaving `parse`/`strptime` to the generic unresolved-method path reads
+   like an implementation gap rather than the documented limit it is: the
+   call still compiled and only raised "undefined method 'parse' for class
+   Time" at run time, identically whether or not `require "time"` was ever
+   written. Left alone if the program reopens Time with its own
+   `parse`/`strptime`: unlike every other named limit here (which defer to
+   diag_user_defines, a program-wide check), this one is keyed on the
+   receiver already, so it checks Time's own class-method chain instead --
+   an unrelated class's `parse` elsewhere in the program must not silence
+   the limit on a genuine `Time.parse` call (CodeRabbit, #24). */
+static void reject_time_parse(Compiler *c) {
+  NT_FOREACH_KIND(c->nt, NK_CallNode, id) {
+    const char *name = nt_str(c->nt, id, "name");
+    if (!name || (!sp_streq(name, "parse") && !sp_streq(name, "strptime"))) continue;
+    int recv = nt_ref(c->nt, id, "receiver");
+    if (recv < 0) continue;
+    const char *rty = nt_type(c->nt, recv);
+    if (!rty || !sp_streq(rty, "ConstantReadNode")) continue;
+    const char *rn = nt_str(c->nt, recv, "name");
+    if (!rn || !sp_streq(rn, "Time")) continue;
+    int time_ci = comp_class_index(c, "Time");
+    if (time_ci >= 0 && comp_cmethod_in_chain(c, time_ci, name, NULL) >= 0) continue;
+    char msg[320];
+    snprintf(msg, sizeof msg,
+             "Time.%s is not supported: spinel implements Time's other `require "
+             "\"time\"` additions (iso8601, httpdate, rfc2822) but not the "
+             "string-parsing ones. Store times as epoch seconds and read them with "
+             "Time.at instead (see docs/limitations.md)", name);
+    unsupported_feature(c, id, msg);
+  }
+}
+
 
 /* Layer 2 (ext-design.md): generate the CRuby extension shim over the
    Layer-1 emission -- the mechanization of the M0 hand shim. Conversions are
@@ -16202,6 +16238,7 @@ char *codegen_program(const NodeTable *nt) {
   reject_runtime_send(c);
   reject_runtime_const_get(c);
   reject_binding(c);
+  reject_time_parse(c);
 
   Buf b; memset(&b, 0, sizeof b);
   memset(&g_procs, 0, sizeof g_procs);

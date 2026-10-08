@@ -1861,6 +1861,14 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (IO.popen compiled into a run-time NoMethodError)"; ok=0; \
 	else grep -q "IO.popen is not supported" "$$tmp/pop.out" || \
 	  { echo "reject-test: FAIL (IO.popen refused without saying why)"; sed -n 1,5p "$$tmp/pop.out"; ok=0; }; fi; \
+	for spec in "time_parse_no_require:Time.parse is not supported" \
+	            "time_strptime_no_require:Time.strptime is not supported"; do \
+	  t=test/reject/$${spec%%:*}.rb; why=$${spec#*:}; \
+	  if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/tp.c" >"$$tmp/tp.out" 2>&1; then \
+	    echo "reject-test: FAIL ($$t compiled into a run-time NoMethodError)"; ok=0; \
+	  else grep -qF "$$why" "$$tmp/tp.out" || \
+	    { echo "reject-test: FAIL ($$t refused without saying why)"; sed -n 1,5p "$$tmp/tp.out"; ok=0; }; fi; \
+	done; \
 	rm -rf "$$tmp"; \
 	if [ $$ok -eq 1 ]; then echo "reject-test: pass"; else exit 1; fi
 
