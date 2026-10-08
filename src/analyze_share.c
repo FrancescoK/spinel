@@ -1970,6 +1970,14 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
     return s ? sh_builtin(F, c, n, s, rv, blk, 1) : sh_container_default(F, c, n, rv, blk);
   }
 
+  /* ENV's rows, when the program defines no ENV of its own; an
+     assignment whose value is taken answers the String it was handed,
+     which no row says, so only a statement takes the row */
+  if (recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode && is_env_const(nt_str(nt, recv, "name")) &&
+      !comp_const(c, "ENV")) {
+    int es = bop_share_named(BOP_ENV, name);
+    if (es && (!is_store_alias(name) || (F->unused[n] & SHU_STMT))) return sh_builtin(F, c, n, es, -1, blk, 0);
+  }
   /* a user method */
   int tg[64];
   int ntg = sh_targets_in(F, c, n, tg, 64);
