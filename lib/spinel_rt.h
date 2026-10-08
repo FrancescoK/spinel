@@ -2827,6 +2827,8 @@ static inline sp_bool sp_poly_tower_arm_p(sp_RbVal v) {
    Bignum's side, "no implicit conversion of Integer into String" from the
    String's. Asked once at the head of each of the six arithmetic ops. */
 static inline sp_bool sp_poly_tower_mismatch(sp_RbVal a, sp_RbVal b) {
+  /* A scalar numeric receiver also needs a numeric operand before conversion. */
+  if (sp_poly_numeric_p(a) && !sp_poly_tower_p(b)) return TRUE;
   return (sp_poly_tower_arm_p(a) || sp_poly_tower_arm_p(b)) &&
          (!sp_poly_tower_p(a) || !sp_poly_tower_p(b));
 }
@@ -8185,6 +8187,28 @@ static sp_int sp_PolyArray_sum_int(sp_PolyArray *a) { if (!a) return 0; sp_int s
    compensation, so `[3, 0.1, 0.2].sum` was 3.3000000000000003 where CRuby,
    and this array's own `.sum(0)` through sp_poly_sum_seed, answer 3.3. */
 static sp_RbVal sp_poly_sum_seed(sp_RbVal v, sp_RbVal seed);
+/* The typed sum observes the translation unit's overflow policy, just like
+   an Integer block sum. The cold library's unchecked += cannot do that. */
+static sp_int sp_IntArray_sum_checked(sp_IntArray *a, sp_int seed) {
+  sp_int sum;
+  if (sp_IntArray_sum_prefix(a, seed, &sum) != a->len)
+    sp_raise_cls("RangeError", "integer overflow in +");
+  return sum;
+}
+#ifndef SP_INT_OVERFLOW_MODE_WRAP
+#define sp_IntArray_sum sp_IntArray_sum_checked
+#endif
+static sp_RbVal sp_IntArray_sum_promote(sp_IntArray *a, sp_int seed) {
+  sp_int sum;
+  sp_int i = sp_IntArray_sum_prefix(a, seed, &sum);
+  if (i == a->len) return sp_box_int_nn(sum);
+  /* An overflowing prefix still needs the Array after boxing can allocate. */
+  SP_GC_ROOT(a);
+  sp_RbVal acc = sp_box_int_nn(sum);
+  SP_GC_ROOT_RBVAL(acc);
+  for (; i < a->len; i++) acc = sp_poly_add(acc, sp_box_int(a->data[a->start + i]));
+  return acc;
+}
 static sp_RbVal sp_PolyArray_sum_poly(sp_PolyArray *a) {
   if (!a) return sp_box_int(0);
   return sp_poly_sum_seed(sp_box_poly_array(a), sp_box_int(0));
@@ -8212,6 +8236,20 @@ static sp_PolyArray *sp_PolyArray_sum_concat(sp_PolyArray *a, sp_RbVal init) {
   sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r);
   sp_PolyArray_flatten_into_n(r, init, 1);
   if (a) for (sp_int i = 0; i < a->len; i++) sp_PolyArray_flatten_into_n(r, a->data[i], 1);
+  return r;
+}
+/* Check each addend as it is appended. A non-Array still goes through
+   Array#+, including its to_ary conversion and TypeError wording. */
+static sp_PolyArray *sp_PolyArray_sum_concat_checked(sp_PolyArray *a, sp_RbVal init) {
+  SP_GC_ROOT(a);
+  sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r);
+  sp_PolyArray_flatten_into_n(r, init, 1);
+  if (a) for (sp_int i = 0; i < a->len; i++) {
+    sp_RbVal e = a->data[i];
+    if (e.tag != SP_TAG_OBJ || !sp_poly_is_array_kind(e.cls_id))
+      r = sp_poly_to_poly_array(sp_poly_add(sp_box_poly_array(r), e));
+    else sp_PolyArray_flatten_into_n(r, e, 1);
+  }
   return r;
 }
 /* A widened copy is still the same Ruby object, so it carries the frozen bit:
@@ -12666,6 +12704,8 @@ static sp_RbVal sp_poly_sum(sp_RbVal v) {
   /* a Symbol (or any other value that is no collection) has no sum: it
      answered 0 */
   if (v.tag != SP_TAG_OBJ) { sp_raise_poly_nomethod("sum", v); return sp_box_nil(); }
+  /* The native Integer path needs the caller's overflow policy and nil flag. */
+  if (v.cls_id == SP_BUILTIN_INT_ARRAY) return sp_poly_sum_seed(v, sp_box_int(0));
   switch (v.cls_id) {
     /* a nil element (the sentinel) raises CRuby's TypeError, as the typed sum
        does for a marked array */
@@ -12772,6 +12812,34 @@ static sp_RbVal sp_poly_sum_seed(sp_RbVal v, sp_RbVal seed) {
     n = items->len;
   }
   else return seed;
+  if (n == 0) return seed;
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_INT_ARRAY && seed.tag == SP_TAG_INT) {
+    sp_IntArray *a = sp_IntArray_nil_sum_if_flagged((sp_IntArray *)v.v.p, 0);
+#ifdef SP_INT_OVERFLOW_MODE_PROMOTE
+    return sp_IntArray_sum_promote(a, seed.v.i);
+#else
+    return sp_box_int_nn(sp_IntArray_sum(a, seed.v.i));
+#endif
+  }
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_FLT_ARRAY &&
+      (seed.tag == SP_TAG_INT || seed.tag == SP_TAG_FLT)) {
+    sp_FloatArray *a = sp_FloatArray_nil_sum_if_flagged((sp_FloatArray *)v.v.p, seed.tag == SP_TAG_FLT);
+    return sp_box_float(sp_FloatArray_sum(a, seed.tag == SP_TAG_FLT ? seed.v.f : (sp_float)seed.v.i));
+  }
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_STR_ARRAY &&
+      (seed.tag == SP_TAG_STR || sp_poly_is_strbuf(seed))) {
+    sp_StrArray *a = (sp_StrArray *)v.v.p;
+    sp_int j = 0;
+    while (j < n && a->data[j]) j++;
+    if (j == n) return sp_box_str(sp_StrArray_sum_str(a, sp_poly_strbuf_deref(seed).v.s));
+  }
+  /* Concatenation is linear when every addend is an Array. Check first so an
+     invalid addend still reaches its ordinary + at the correct fold step.
+     The concatenator now performs that check while appending each addend. */
+  if (v.tag == SP_TAG_OBJ && sp_poly_is_array_kind(v.cls_id) &&
+      seed.tag == SP_TAG_OBJ && sp_poly_is_array_kind(seed.cls_id)) {
+    return sp_box_poly_array(sp_PolyArray_sum_concat_checked(sp_poly_to_poly_array(v), seed));
+  }
   sp_RbVal acc = seed;
   SP_GC_ROOT_RBVAL(acc);
   sp_int i = 0;
@@ -12813,6 +12881,8 @@ static sp_RbVal sp_poly_sum_seed(sp_RbVal v, sp_RbVal seed) {
     }
   }
   for (; i < n; i++) acc = sp_poly_add(acc, sp_poly_sum_item(v, items, i));
+  /* The numeric result owns the full word; legacy nullable slots do not. */
+  if (acc.tag == SP_TAG_INT && acc.v.i == SP_INT_NIL) return sp_box_i64(acc.v.i);
   return acc;
 }
 /* The same fold one value at a time, for a sum with a block: the block's
@@ -12846,6 +12916,8 @@ static void sp_sum_step(sp_SumState *s, sp_RbVal e) {
 }
 static sp_RbVal sp_sum_result(sp_SumState *s) SP_UNUSED;
 static sp_RbVal sp_sum_result(sp_SumState *s) {
+  if (s->phase != 1 && s->acc.tag == SP_TAG_INT && s->acc.v.i == SP_INT_NIL)
+    return sp_box_i64(s->acc.v.i);
   return s->phase == 1 ? sp_box_float(s->f + s->c) : s->acc;
 }
 static sp_PolyArray *sp_enum_to_a_boxed(sp_RbVal v);  /* defined below, after sp_enum.h */
