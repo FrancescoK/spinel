@@ -318,6 +318,7 @@ typedef enum {
   BSH_FROZEN,     /* answers its receiver frozen (or a frozen copy): nothing
                      can change that String in place any more */
   BSH_RECV,       /* answers its receiver */
+  BSH_CLAMP,      /* answers its receiver or one of its bounds */
   BSH_ELEM,       /* answers an element of the receiver (with a count: a SUB) */
   BSH_SUB,        /* answers a container of the receiver's elements */
   BSH_STORE_LAST, /* stores its last argument among the receiver's elements */
