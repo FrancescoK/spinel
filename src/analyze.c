@@ -15017,12 +15017,13 @@ int an_arg_is_shared_handle(Compiler *c, int node) {
        `&&=`): its value is that slot, and the write publishes it */
     if (g >= 0 && repr_write_share(c, g)) return 1;
     /* a begin's value is its body's last value, or a rescue's or its
-       else's: each must be one (an ensure's is dropped) */
+       else's: each must be one (an ensure's is dropped, and so is the
+       body's when an else follows it) */
     if (g >= 0 && nt_kind(nt, g) == NK_BeginNode) {
-      int ok = an_stmts_last_shared(c, nt_ref(nt, g, "statements"));
+      int el = nt_ref(nt, g, "else_clause");
+      int ok = el >= 0 || an_stmts_last_shared(c, nt_ref(nt, g, "statements"));
       for (int rc = nt_ref(nt, g, "rescue_clause"); ok && rc >= 0; rc = nt_ref(nt, rc, "subsequent"))
         ok = an_stmts_last_shared(c, nt_ref(nt, rc, "statements"));
-      int el = nt_ref(nt, g, "else_clause");
       if (ok && el >= 0) ok = an_stmts_last_shared(c, nt_ref(nt, el, "statements"));
       return ok;
     }
@@ -18049,10 +18050,11 @@ static int an_tail_is_shared_handle(Compiler *c, int node, int nil_ok, TailCount
   if (c->share_strings && k == NK_NilNode) { tc->nils += nil_ok; return nil_ok; }
   if (c->share_strings && k == NK_ParenthesesNode) return an_stmts_tail_shared(c, nt_ref(nt, node, "body"), nil_ok, tc);
   if (c->share_strings && k == NK_BeginNode) {
-    if (!an_stmts_tail_shared(c, nt_ref(nt, node, "statements"), nil_ok, tc)) return 0;
+    /* the body's value is the begin's only when no else follows it */
+    int be = nt_ref(nt, node, "else_clause");
+    if (be < 0 && !an_stmts_tail_shared(c, nt_ref(nt, node, "statements"), nil_ok, tc)) return 0;
     for (int rc = nt_ref(nt, node, "rescue_clause"); rc >= 0; rc = nt_ref(nt, rc, "subsequent"))
       if (!an_stmts_tail_shared(c, nt_ref(nt, rc, "statements"), nil_ok, tc)) return 0;
-    int be = nt_ref(nt, node, "else_clause");
     return be < 0 || an_stmts_tail_shared(c, nt_ref(nt, be, "statements"), nil_ok, tc);
   }
   if (!c->share_strings || (k != NK_IfNode && k != NK_UnlessNode)) {

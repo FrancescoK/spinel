@@ -1443,10 +1443,11 @@ static int strbuf_route_begin(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
   v = unwrap_parens(c, v);
   if (!repr_share_rule(c) || v < 0 || nt_kind(nt, v) != NK_BeginNode) return 0;
-  int ok = strbuf_stmts_tail_plain(c, nt_ref(nt, v, "statements"));
+  /* the body's value is the begin's only when no else follows it */
+  int el = nt_ref(nt, v, "else_clause");
+  int ok = el >= 0 || strbuf_stmts_tail_plain(c, nt_ref(nt, v, "statements"));
   for (int rc = nt_ref(nt, v, "rescue_clause"); ok && rc >= 0; rc = nt_ref(nt, rc, "subsequent"))
     ok = strbuf_stmts_tail_plain(c, nt_ref(nt, rc, "statements"));
-  int el = nt_ref(nt, v, "else_clause");
   return ok && (el < 0 || strbuf_stmts_tail_plain(c, nt_ref(nt, el, "statements")));
 }
 /* --share-strings: a `yield` to a literal block spliced in here whose
