@@ -138,7 +138,8 @@ const char *sp_poly_to_s(sp_RbVal v)
 {
   switch (v.tag) {
     /* int-typed nil (SP_INT_NIL) is Ruby nil; nil.to_s is "" -- match it. */
-    case SP_TAG_INT: return v.v.i == SP_INT_NIL ? sp_str_frozen_empty : sp_int_to_s(v.v.i);
+    /* A boxed nil has SP_TAG_NIL; an Integer tag owns INTPTR_MIN too. */
+    case SP_TAG_INT: return sp_int_to_s(v.v.i);
     case SP_TAG_STR: return v.v.s ? v.v.s : sp_str_frozen_empty;
     case SP_TAG_FLT: return sp_float_to_s(v.v.f);
     case SP_TAG_BOOL: return v.v.b ? sp_str_frozen_true : sp_str_frozen_false;
@@ -423,7 +424,8 @@ const char *sp_poly_inspect(sp_RbVal v)
   switch (v.tag) {
     /* An int-typed nil (unfilled int block param, nullable-int miss) carries
        the SP_INT_NIL sentinel; render it as nil, not the raw INT64_MIN. */
-    case SP_TAG_INT:  return v.v.i == SP_INT_NIL ? SPL("nil") : sp_int_to_s(v.v.i);
+    /* A boxed nil has SP_TAG_NIL; the tagged Integer is not a sentinel. */
+    case SP_TAG_INT:  return sp_int_to_s(v.v.i);
     case SP_TAG_STR:  return sp_str_inspect(v.v.s);
     case SP_TAG_FLT:  return sp_float_to_s(v.v.f);
     /* true.inspect is true.to_s, the frozen one; nil.inspect is a new "nil" */

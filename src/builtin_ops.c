@@ -2532,7 +2532,7 @@ TyKind bop_result(const BuiltinOp *op, TyKind rt) {
   case (int)BOPR_ELEM:      return ty_array_elem(rt);
   case (int)BOPR_HASH_KEY_OF: return rt == TY_SYM_POLY_HASH ? TY_SYMBOL : TY_POLY;
   case (int)BOPR_HASH_INVERT: return rt == TY_STR_STR_HASH ? TY_STR_STR_HASH : TY_POLY_POLY_HASH;
-  case (int)BOPR_ARRAY_SUM: return rt == TY_STR_ARRAY ? TY_POLY : ty_array_elem(rt);
+  case (int)BOPR_ARRAY_SUM: return rt == TY_INT_ARRAY ? TY_UNKNOWN : fold_sum_type(TY_INT, ty_array_elem(rt), 0);
   case (int)BOPR_ARRAY_INDEX:
     return rt == TY_INT_ARRAY || rt == TY_STR_ARRAY || rt == TY_FLOAT_ARRAY ? TY_POLY : TY_INT;
   case (int)BOPR_ARRAY_TUPLES: return rt == TY_POLY_ARRAY ? TY_POLY_ARRAY : TY_ENUMERATOR;
@@ -2654,7 +2654,7 @@ static const BopShareRow bop_share_rows[] = {
   { BOP_ANY_ARRAY, "to_a",      BSH_SUB },
   { BOP_ANY_ARRAY, "entries",   BSH_SUB },
   { BOP_ANY_ARRAY, "transpose", BSH_SUB },
-  { BOP_ANY_ARRAY, "sum",       BSH_PURE },
+  { BOP_ANY_ARRAY, "sum",       BSH_ARGS },
   { BOP_ANY_ARRAY, "join",      BSH_PURE },
   { BOP_ANY_ARRAY, "pack",      BSH_PURE },
   { BOP_ANY_ARRAY, "to_s",      BSH_PURE },
@@ -2707,7 +2707,7 @@ static const BopShareRow bop_share_rows[] = {
   { BOP_ANY_HASH, "merge!",     BSH_MERGE },
   { BOP_ANY_HASH, "update",     BSH_MERGE },
   { BOP_ANY_HASH, "replace",    BSH_MERGE },
-  { BOP_ANY_HASH, "sum",        BSH_PURE },
+  { BOP_ANY_HASH, "sum",        BSH_ARGS },
   { BOP_ANY_HASH, "keys",       BSH_PURE },
   { BOP_ANY_HASH, "key",        BSH_PURE },
   { BOP_ANY_HASH, "key?",       BSH_PURE },

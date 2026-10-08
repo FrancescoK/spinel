@@ -207,6 +207,7 @@ TyKind ty_promote_numeric(TyKind a, TyKind b); /* fold-accumulator numeric promo
    in Ruby too. Every other seed folds boxed. Read by the inference and by the
    emitters, so the two can never disagree about which fold is emitted. */
 int fold_seed_typed(TyKind seed, TyKind elem);
+TyKind fold_sum_type(TyKind seed, TyKind elem, int promote);
 /* The seed kind a fold decides by, from the kind already resolved for the node
    and the node's own type name. An empty `[]` or `{}` literal resolves to
    TY_UNKNOWN so that a later push can narrow it, and TY_UNKNOWN is the one

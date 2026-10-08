@@ -4106,11 +4106,9 @@ static TyKind local_write_ty(Compiler *c, int id, int stashed) {
     TyKind vt = infer_type(c, nt_ref(nt, id, "value"));
     TyKind ct = cur ? lv_prior(cur, stashed) : TY_UNKNOWN; /* old type */
     if (ct == TY_STRING) newt = TY_STRING;
-    else if (ty_is_numeric(ct) && ty_is_numeric(vt)) {
-      if (ct == TY_FLOAT || vt == TY_FLOAT) newt = TY_FLOAT;
-      else if (ct == TY_BIGINT || vt == TY_BIGINT) newt = TY_BIGINT;
-      else newt = TY_INT;
-    }
+    /* A boxed addend can promote the accumulator at run time as well. */
+    else if (ty_is_numeric(ct) && (ty_is_numeric(vt) || vt == TY_POLY))
+      newt = infer_op_assign_type(c, ct, nt_ref(nt, id, "value"));
     else newt = ct;
   }
   else if (k == NK_LocalVariableOrWriteNode || k == NK_LocalVariableAndWriteNode) {

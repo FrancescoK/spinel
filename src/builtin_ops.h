@@ -236,7 +236,8 @@ typedef struct BuiltinOp {
                                            stays one, any other is the general hash */
 #define BOPR_ARRAY_SUM   ((TyKind)-17)  /* Array#sum, no seed or block: the element
                                            kind; a String array's is boxed (it only
-                                           raises, or answers 0 when empty) */
+                                           raises, or answers 0 when empty). Float results are
+                                           boxed too; Integer results defer to mode-aware inference. */
 #define BOPR_ARRAY_INDEX ((TyKind)-18)  /* Array#index/find_index/rindex(v): an Int,
                                            Str or Float array's boxed (nil on a miss),
                                            any other's an Integer */

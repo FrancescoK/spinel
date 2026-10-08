@@ -1357,6 +1357,9 @@ static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int 
     /* one argument is the answer; several, an Array of them, which joins
        them only where something takes it (`p a, b` as a statement keeps
        neither) */
+    /* An empty sum can answer its seed; its block still reads the elements. */
+    if (lit_blk && container) sh_block_params(F, c, blk, sh_elem(F, rv), 1);
+    if (container && nv == 0) return -1;
     sh_peek_args(F, n, 1);
     if (nv == 1) return vals[0];
     if (F->unused[n] & SHU_STMT) return -1;
