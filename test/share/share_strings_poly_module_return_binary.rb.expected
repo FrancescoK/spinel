@@ -1,0 +1,6 @@
+[#<Encoding:BINARY (ASCII-8BIT)>, #<Encoding:UTF-8>, #<Encoding:BINARY (ASCII-8BIT)>, #<Encoding:UTF-8>]
+[false, true, false, false]
+[3, 3, 3, 1]
+frozen
+["\xFF\x00s!", "fro", "\xFF\x00s?", "b"]
+"\xFF\x00s!"
