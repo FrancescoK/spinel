@@ -1,0 +1,19 @@
+"literal"
+"zero"
+"else 0"
+nil
+"value"
+"else 1"
+"value"
+nil
+"else 2"
+"interpolation 3"
+nil
+"else 3"
+"rescued"
+"value"
+nil
+"fallback"
+nil
+"native"
+["held!", "held!", true]
