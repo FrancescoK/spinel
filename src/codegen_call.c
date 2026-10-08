@@ -24229,13 +24229,26 @@ void emit_exc_exception(Compiler *c, int recv, int arg, Buf *b) {
   TyKind xrt = comp_ntype(c, recv);
   if (ty_is_object(xrt))
     buf_printf(b, "(sp_%s *)", c->classes[ty_object_class(xrt)].c_name);
+  /* The message helper below builds a counted copy of a frozen String or of
+     one with a NUL, a literal's too, and a C call leaves its operands
+     unsequenced: gcc ran an allocating receiver after it and the copy was
+     swept, clang before it and the receiver was. Such a receiver comes
+     first and is held; one the caller bound to a temp is held already. */
+  int tr = operand_may_allocate(c, recv);
+  for (int i = 0; i < g_n_argov && tr; i++) if (g_argov_node[i] == recv) tr = 0;
+  if (tr) {
+    tr = ++g_tmp;
+    buf_printf(b, "({ sp_Exception *_t%d = (sp_Exception *)(", tr); emit_expr(c, recv, b);
+    buf_printf(b, "); SP_GC_ROOT(_t%d); ", tr);
+  }
   /* --share-strings: a message read from a variable holding the shared
      handle is held as that handle (exc_msg_handle), as `C.new(s)` holds it */
   char mh[256];
   int hm = comp_ntype(c, arg) == TY_STRING && exc_msg_handle(c, arg, mh, sizeof mh);
   if (hm) buf_puts(b, "((sp_Exception *)sp_exc_attach_msg(");
   buf_puts(b, "sp_exc_exception((sp_Exception *)(");
-  emit_expr(c, recv, b); buf_puts(b, "), ");
+  if (tr) buf_printf(b, "_t%d", tr); else emit_expr(c, recv, b);
+  buf_puts(b, "), ");
   /* an explicitly given message, as `C.new(msg)` takes it: an empty one
      stays empty and a literal's stays frozen (sp_exc_msg_given); nil is
      no message, and the class name answers */
@@ -24247,6 +24260,7 @@ void emit_exc_exception(Compiler *c, int recv, int arg, Buf *b) {
   }
   buf_puts(b, ")");
   if (hm) buf_printf(b, ", %s))", mh);
+  if (tr) buf_puts(b, "; })");
 }
 
 int hoist_exc_recv(Compiler *c, int recv) {
