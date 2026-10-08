@@ -391,7 +391,11 @@ int sp_exc_exit_status(void *obj) {
 sp_Exception *sp_exc_exception(sp_Exception *e, const char *msg) {SP_GC_ROOT(e);if (!sp_exc_msg_empty_given(msg)) msg = sp_msg_heapify(msg); SP_GC_ROOT_STR(msg);
   sp_Exception *n = sp_exc_dup(e);
   SP_GC_ROOT(n);
-  n->msg = sp_exc_msg_copy((msg && msg[0]) ? msg : (n->cls_name ? n->cls_name : "RuntimeError"));
+  /* an explicitly given empty message stays empty, frozen for a literal's,
+     as sp_exc_new keeps it */
+  n->msg = sp_exc_msg_copy((msg && msg[0]) ? msg
+                           : (sp_exc_msg_empty_given(msg) ? "" : (n->cls_name ? n->cls_name : "RuntimeError")));
+  if (msg == sp_exc_no_msg_frozen) ((unsigned char *)n->msg)[-1] = 0xfa;
   n->msg_h = NULL;   /* the new message, not the receiver's handle */
   sp_gc_wb((void *)n);   /* same reason as sp_exc_new_sub_sized */
   return n;

@@ -59,3 +59,32 @@ begin
 rescue NoMethodError => e
   p e.class
 end
+# A begin with an else answers the else's value, never the body's: the
+# body's tail need not be a String, also with an ensure.
+SE = +"se"
+def ge
+  begin
+    1
+  rescue
+    SE
+  else
+    SE
+  end
+end
+def ge2
+  begin
+    1
+  rescue
+    SE
+  else
+    SE
+  ensure
+    2
+  end
+end
+ge << "1"
+ge2 << "2"
+p SE
+re = ge
+re << "3"
+p SE, re.equal?(SE)
