@@ -12646,6 +12646,76 @@ static void emit_cmp_derived_eq(Compiler *c, int id, int recv, int arg, int ecid
   free(argb.p);
   free(selfb.p);
 }
+/* Does the program give nil an `==` or a `!=` of its own: on NilClass, on a
+   class every object has, or at the top level? */
+static int nil_eq_is_the_programs(Compiler *c) {
+  static const char *const owners[] = { "NilClass", "Object", "Kernel", "BasicObject", NULL };
+  if (comp_method_index(c, "==") >= 0 || comp_method_index(c, "!=") >= 0) return 1;
+  for (int i = 0; owners[i]; i++) {
+    int k = comp_class_index(c, owners[i]);
+    if (k >= 0 && (comp_method_in_chain(c, k, "==", NULL) >= 0 || comp_method_in_chain(c, k, "!=", NULL) >= 0))
+      return 1;
+  }
+  return 0;
+}
+/* A program's own `==` on a receiver that may be nil (Repr.may_nil, the nil
+   fact): the NULL of a nil slot is no object to run the method on -- it ran
+   with a NULL self, answered by its own rule (`a[1] == nil` false) and
+   faulted on the first ivar it read. nil answers as NilClass does, equal to
+   nil alone, and the method runs for an object. `name` is the method
+   dispatched to (`==` for a `!=` derived from it); `eq` is 0 for a `!=`
+   call. The argument is read once, as emit_cmp_derived_eq reads its own.
+   0, and nothing written, where the receiver is not nil, the argument's nil
+   is not one of the kinds read here, the call does not answer a bool, or
+   the program gives nil an `==` of its own. */
+static int emit_eq_on_nil_slot(Compiler *c, int id, int recv, int arg, int ecid, const char *name, int eq, Buf *b) {
+  const NodeTable *nt = c->nt;
+  Repr rr = repr_of(c, recv), ar = repr_of(c, arg);
+  TyKind rt = comp_ntype(c, recv), at = ar.as_ty;
+  if (rr.kind != RK_PTR || !rr.may_nil || rr.nil_tested) return 0;
+  if (comp_ntype(c, id) != TY_BOOL || nt_ref(nt, id, "block") >= 0) return 0;
+  for (int k = 0; k < c->nclasses; k++) {
+    int kmi = is_descendant(c, k, ecid) ? comp_method_in_chain(c, k, name, NULL) : -1;
+    if (kmi >= 0 && c->scopes[kmi].ret != TY_BOOL) return 0;
+  }
+  /* the argument's nil: a literal's, a pointer's NULL, or the box's, which
+     says what a scalar's sentinel is */
+  int lit_nil = nt_kind(nt, arg) == NK_NilNode;
+  int scalar = (ar.kind == RK_SCALAR || ar.kind == RK_SENTINEL) &&
+               (at == TY_INT || at == TY_FLOAT || at == TY_BOOL || at == TY_SYMBOL);
+  if (!lit_nil && ar.kind != RK_PTR && ar.kind != RK_BOXED && !scalar) return 0;
+  if (nil_eq_is_the_programs(c)) return 0;
+  Buf selfb = emit_cmp_self(c, recv, rt);
+  int mark = -1;
+  Buf argb; memset(&argb, 0, sizeof argb);
+  NodeKind ak = nt_kind(nt, arg);
+  if (lit_nil) {}
+  else if (ak == NK_LocalVariableReadNode || ak == NK_InstanceVariableReadNode || ak == NK_SelfNode)
+    argb = expr_buf(c, arg);
+  else {
+    /* no root: the dispatch binds it to its parameter next, and holds that;
+       the nil test reads the value, not what it points to */
+    int ta = ++g_tmp;
+    Buf vb = expr_buf(c, arg);
+    emit_indent(g_pre, g_indent);
+    if (ar.kind == RK_BOXED) buf_puts(g_pre, "sp_RbVal"); else emit_ctype(c, ar.as_ty, g_pre);
+    buf_printf(g_pre, " _t%d = %s;\n", ta, vb.p ? vb.p : "");
+    free(vb.p);
+    buf_printf(&argb, "_t%d", ta);
+    mark = view_bind(arg, "_t%d", ta);
+  }
+  buf_printf(b, "((%s) ? %s", selfb.p, eq || !sp_streq(name, "==") ? "" : "!");
+  emit_dispatch(c, ecid, name, selfb.p, nt_ref(nt, id, "arguments"), -1, b);
+  buf_puts(b, eq ? " : " : " : !");
+  if (lit_nil) buf_puts(b, "1");
+  else if (ar.kind == RK_PTR) buf_printf(b, "((%s) == NULL)", argb.p);
+  else { buf_puts(b, "sp_poly_nil_p("); emit_boxed(c, arg, b); buf_puts(b, ")"); }
+  buf_puts(b, ")");
+  if (mark >= 0) view_unbind(mark);
+  free(argb.p);
+  free(selfb.p);
+  return 1;
+}
 static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -12837,10 +12907,13 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
         buf_puts(b, eq ? "sp_float_is_nil(" : "(!sp_float_is_nil(");
         emit_expr(c, other, b); buf_puts(b, eq ? ")" : "))");
       }
-      else if (ty_null_is_nil(ot)) {
+      else if (ty_null_is_nil(ot) ||
+               (ty_is_object(ot) && repr_of(c, other).kind == RK_PTR && repr_of(c, other).may_nil &&
+                !nil_eq_is_the_programs(c))) {
         /* nullable heap pointer: a NULL pointer encodes nil (a `@h = {}` slot is
            still NULL until assigned, so `@h == nil` must be a NULL test, not the
-           always-false fallback below). */
+           always-false fallback below). So does an object slot that may be nil
+           (Repr.may_nil), which is all `nil == a[1]` reaches here. */
         buf_puts(b, "(("); emit_expr(c, other, b); buf_printf(b, ") %s 0)", eq ? "==" : "!=");
       }
       else { buf_puts(b, "(("); emit_expr(c, other, b); buf_printf(b, "), %d)", eq ? 0 : 1); }
@@ -13037,6 +13110,7 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
         int ueq_def = -1;
         int ueq_mi = comp_method_in_chain(c, ty_object_class(rt), "==", &ueq_def);
         if (ueq_mi >= 0) {
+          if (emit_eq_on_nil_slot(c, id, recv, argv[0], ty_object_class(rt), "==", eq, b)) return 1;
           if (eq) return 0;
           Scope *um = &c->scopes[ueq_mi];
           LocalVar *up = um->nparams >= 1 ? scope_local(um, um->pnames[0]) : NULL;
@@ -13134,6 +13208,7 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
       int ecid = ty_object_class(rt);
       int emi = comp_method_in_chain(c, ecid, name, NULL);
       if (emi >= 0) {
+        if (emit_eq_on_nil_slot(c, id, recv, argv[0], ecid, name, eq, b)) return 1;
         Buf selfb = emit_cmp_self(c, recv, rt);
         emit_dispatch(c, ecid, name, selfb.p, nt_ref(nt, id, "arguments"), nt_ref(nt, id, "block"), b);
         free(selfb.p);
@@ -13159,6 +13234,7 @@ static int emit_case_eq_call(Compiler *c, int id, Buf *b) {
       if (!eq) {
         int eqm2 = comp_method_in_chain(c, ecid, "==", NULL);
         if (eqm2 >= 0) {
+          if (emit_eq_on_nil_slot(c, id, recv, argv[0], ecid, "==", 0, b)) return 1;
           Buf selfb = emit_cmp_self(c, recv, rt);
           buf_puts(b, "(!");
           emit_dispatch(c, ecid, "==", selfb.p, nt_ref(nt, id, "arguments"), -1, b);
