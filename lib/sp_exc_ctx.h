@@ -35,6 +35,7 @@ typedef struct {
   int uk, ut, ue; sp_proc_home *uh;  /* transient unwind state (in flight only while running ensures) */
   void **shand; int rn, rcap;        /* sp_exc_handling prefix [0..sp_rescue_sp) */
   void *pcause;                      /* sp_pending_cause */
+  void *icause;                      /* sp_inflight_cause: the exception an ensure body runs for */
   sp_poly_recur_frame *rrf; int rrn, rrcap;  /* sp_poly_recur_stack prefix [0..sp_poly_recur_top) */
   int *rrem, *rrcm, *rrbm;           /* the walk-path marks of the exception, catch and break arms */
   int *erm, *ersm, *crm;             /* the GC-root and rescue-stack watermarks of the exception
