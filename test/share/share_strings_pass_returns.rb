@@ -34,6 +34,14 @@ p a
 a = pass_post(*[1, +"splat"]) rescue nil
 p a
 
+# An omitted keyword supplies its fresh default even through a rescue value.
+def wrap_text(s, buf: +"", extra: nil) = (buf << s; buf)
+x = wrap_text("a") rescue nil; y = x; y << "!"; p x
+x = wrap_text("b", extra: 1) rescue nil; y = x; y << "!"; p x
+x = wrap_text("c", buf: +"") rescue nil; y = x; y << "!"; p x
+buf = +""; held = buf
+x = wrap_text("d", buf: buf); y = x; y << "!"; p x, held
+
 # The same method's borrowed call must keep the caller's handle.
 shared = +"shared"
 held = shared

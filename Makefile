@@ -991,9 +991,13 @@ re-lit-test: $(SPINEL)
 # the first `spinel:` line its .expected holds. gate-props runs it. A
 # compile whose inference ran to its round cap fails too: the answer can be
 # right all the same, and where the rounds stopped decided what was emitted.
+SHARE_TESTS := $(wildcard test/share/*.rb)
+ifneq ($(FFI_AVAILABLE),yes)
+SHARE_TESTS := $(filter-out test/share/share_strings_fiddle.rb,$(SHARE_TESTS))
+endif
 share-strings-test: $(SPINEL)
 	@tmp=$$(mktemp -d "$${TMPDIR:-/tmp}/spinel-share.XXXXXX"); ok=1; \
-	for t in test/share/*.rb test/share_strings_*.rb test/nullable_string_identity.rb test/widened_param_reaches_its_callee.rb \
+	for t in $(SHARE_TESTS) test/share_strings_*.rb test/nullable_string_identity.rb test/widened_param_reaches_its_callee.rb \
 	  test/builtins_inject.rb test/issue_3174.rb test/set_string_member_frozen.rb $$(cat test/share/reject.list); do \
 	  e="$$t.expected"; case "$$t" in test/reject/*) e="test/share/reject/$${t##*/}.expected";; esac; \
 	  if $(SPINEL) --share-strings "$$t" -o "$$tmp/b" >"$$tmp/out" 2>&1; then \
