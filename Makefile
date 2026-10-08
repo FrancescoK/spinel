@@ -2289,6 +2289,7 @@ GC_MINOR_TESTS := test/io_read_outbuf_eof.rb \
                   test/share_strings_class_value_builtin_names.rb \
                   test/share_strings_class_value_builtin_io.rb \
                   test/share_strings_class_value_mutating_read.rb \
+	  test/string_reopen_block_handle_receiver.rb \
                   test/share_strings_hash_transform_params.rb \
                   test/string_concat_value_snapshot.rb \
                   test/string_concat_rebound_receiver.rb \

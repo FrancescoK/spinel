@@ -14118,7 +14118,7 @@ static int infer_block_params_call_arms(Compiler *c, const NodeTable *nt, int id
     int ymi = -1;
     if (tmi >= 0 && !method_call_param_shift(c, bx, tmi)) {
       if (recv < 0) ymi = comp_self_call_mi(c, id, name);
-      else if (infer_type(c, recv) == TY_STRING) ymi = cplan_user_fresh(c, id)->mi;
+      else if (infer_type(c, recv) == TY_STRING || infer_type(c, recv) == TY_STRBUF) ymi = cplan_user_fresh(c, id)->mi;
       else if (sp_streq(name, "new") && (nt_kind(nt, recv) == NK_ConstantReadNode ||
                                          nt_kind(nt, recv) == NK_ConstantPathNode)) {
         int cid = nt_str(nt, recv, "name") ? comp_class_index(c, nt_str(nt, recv, "name")) : -1;
@@ -14252,7 +14252,7 @@ static int infer_block_params_call_arms(Compiler *c, const NodeTable *nt, int id
     }
     else {
       TyKind rt0 = infer_type(c, recv);
-      if (rt0 == TY_STRING) mi = cplan_user_fresh(c, id)->mi;
+      if (rt0 == TY_STRING || rt0 == TY_STRBUF) mi = cplan_user_fresh(c, id)->mi;
       if (ty_is_object(rt0)) mi = comp_method_in_chain(c, ty_object_class(rt0), name, NULL);
       /* Class.new { |...| }: the yielding method is Class#initialize.
          A ConstantPATH receiver counts: `N::Conn` names a class as much as
