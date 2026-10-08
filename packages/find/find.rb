@@ -1,7 +1,10 @@
 # frozen_string_literal: true
 # Spinel bundled `find`: ruby/find 0.2.0 (the default gem CRuby ships),
-# carried unmodified apart from this note. Ruby's license or the 2-clause
-# BSDL, see COPYING and BSDL beside this file.
+# carried unmodified apart from this note and one line in Find.find: its
+# blockless form builds the Enumerator with Enumerator.new instead of
+# enum_for(__method__, *paths, ignore_error: ignore_error), which Spinel
+# does not compile yet. Ruby's license or the 2-clause BSDL, see COPYING and
+# BSDL beside this file.
 #
 # find.rb: the Find module for processing all files under a given directory.
 #
@@ -42,7 +45,7 @@ module Find
   # See the +Find+ module documentation for an example.
   #
   def find(*paths, ignore_error: true) # :yield: path
-    block_given? or return enum_for(__method__, *paths, ignore_error: ignore_error)
+    block_given? or return Enumerator.new { |y| find(*paths, ignore_error: ignore_error) { |f| y << f } }
 
     fs_encoding = Encoding.find("filesystem")
 

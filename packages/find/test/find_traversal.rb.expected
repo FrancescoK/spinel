@@ -1,0 +1,11 @@
+ROOT
+ROOT/.dot
+ROOT/a.txt
+ROOT/b
+ROOT/b/c
+ROOT/b/c/d.rb
+--
+ROOT/b
+ROOT/b/c
+ROOT/b/c/d.rb
+ROOT/a.txt
