@@ -507,7 +507,7 @@ void compute_reachable(Compiler *c) {
       if (!nm) continue;
       if (sp_streq(nm, "Integer")) has_kint = 1;
       else if (sp_streq(nm, "Float")) has_kflt = 1;
-      else if (sp_streq(nm, "merge") || sp_streq(nm, "merge!") || sp_streq(nm, "update")) has_hmerge = 1;
+      else if (sp_streq(nm, "merge") || sp_streq(nm, "merge!") || sp_streq(nm, "update") || sp_streq(nm, "Hash")) has_hmerge = 1;
     }
     /* a Numeric of the program's own converts through its #to_f wherever a
        Float argument is taken (Math.sqrt(big_decimal)): the same bridge */

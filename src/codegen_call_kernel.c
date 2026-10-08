@@ -559,8 +559,10 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
       else if (ty_is_object(at) &&
                comp_method_in_chain(c, ty_object_class(at), "to_hash", NULL) >= 0) {
         int hci = ty_object_class(at), hdef = hci;
-        (void)comp_method_in_chain(c, hci, "to_hash", &hdef);
-        buf_printf(b, "sp_%s_to_hash((sp_%s *)(", c->classes[hdef].c_name, c->classes[hdef].c_name);
+        int hmi = comp_method_in_chain(c, hci, "to_hash", &hdef);
+        if (sp_streq(c->scopes[hmi].name, "to_hash")) buf_printf(b, "sp_%s_to_hash(", c->classes[hdef].c_name);
+        else { emit_method_cname(c, &c->scopes[hmi], b); buf_puts(b, "("); }
+        buf_printf(b, "(sp_%s *)(", c->classes[hdef].c_name);
         emit_expr(c, av[0], b); buf_puts(b, "))");
       }
       else if (at == TY_NIL || empty_arr_lit) {
@@ -568,15 +570,8 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
         buf_puts(b, "((void)("); emit_expr(c, av[0], b);
         buf_puts(b, "), sp_PolyPolyHash_new())");
       }
-      else if (at == TY_POLY) {
-        int t = ++g_tmp;
-        buf_printf(b, "({ sp_RbVal _t%d = ", t); emit_expr(c, av[0], b);
-        buf_printf(b, "; _t%d.tag == SP_TAG_NIL ? sp_box_obj(sp_PolyPolyHash_new(), SP_BUILTIN_POLY_POLY_HASH)"
-                      " : (_t%d.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(_t%d.cls_id)) ? _t%d"
-                      " : (sp_raise_cls(\"TypeError\", \"can't convert to Hash\"), sp_box_nil()); })",
-                   t, t, t, t);
-      }
-      else { buf_puts(b, "((void)("); emit_expr(c, av[0], b); buf_puts(b, "), sp_raise_cls(\"TypeError\", \"can't convert to Hash\"), sp_PolyPolyHash_new())"); }
+      else if (at == TY_POLY) { buf_puts(b, "sp_kernel_hash("); emit_expr(c, av[0], b); buf_puts(b, ")"); }
+      else { buf_puts(b, "((void)sp_kernel_hash("); emit_boxed(c, av[0], b); buf_puts(b, "), sp_PolyPolyHash_new())"); }
       return 1;
     }
     if ((is_format_alias(name)) && ac == 1 &&
