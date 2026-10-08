@@ -1027,6 +1027,7 @@ share-strings-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS
 	  test/dynamic_new_post_params_reach.rb test/block_forward_proc_param_type.rb \
 	  test/builtins_partition_group_by.rb test/forwarded_block_tail_return.rb \
 	  test/boxed_scan_capture_params.rb test/fold_receiver_root.rb test/string_reopen_block_returns.rb \
+	  test/string_reopen_block_handle_receiver.rb \
 	  packages/shellwords/test/shellwords_split_unmatched_quote.rb \
 	  test/bundle_classd_27.rb test/masgn_str_array_strbuf_local.rb test/poly_aset_nullable_string_value.rb \
 	  $$(cat test/share/reject.list); do \
@@ -2257,6 +2258,7 @@ threaded-render-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SPINEL_TIMEOUT)
 
 GC_MINOR_TESTS := test/boxed_scan_capture_params.rb \
                   test/string_reopen_block_returns.rb \
+                  test/string_reopen_block_handle_receiver.rb \
                   test/share_strings_hash_transform_params.rb \
                   test/reopened_builtin_kwrest_keys.rb \
                   test/string_unary_plus_frozen_receiver.rb \
