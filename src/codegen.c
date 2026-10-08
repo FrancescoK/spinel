@@ -6018,6 +6018,10 @@ int proc_does_nonlocal_return(Compiler *c, int create) {
     const char *lbt = lblk >= 0 ? nt_type(c->nt, lblk) : NULL;
     if (lbt && sp_streq(lbt, "BlockNode") && a_block_is_lifted(c, create))
       return proc_body_has_return(c, nt_ref(c->nt, lblk, "body")); }
+  /* A Hash.new default block lowered to a proc runs when a key is missing,
+     under whatever reads the hash: its `return` leaves the home frame too. */
+  if (hash_new_block_is_proc(c, create))
+    return proc_body_has_return(c, nt_ref(c->nt, nt_ref(c->nt, create, "block"), "body"));
   int recv = nt_ref(c->nt, create, "receiver");
   int is_proc = (recv < 0 && sp_streq(cn, "proc"));
   int is_proc_new = (sp_streq(cn, "new") && recv >= 0 &&

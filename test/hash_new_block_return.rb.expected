@@ -1,0 +1,22 @@
+1002
+[2, 4]
+:big
+:b
+:none
+:early
+nil
+[2, 3]
+:early
+[:ensure]
+["x", "b", "b"]
+"default z"
+3
+107
+1005
+:made_end
+[:found, 1002]
+:none
+200400
+67350
+2
+LocalJumpError: unexpected return
