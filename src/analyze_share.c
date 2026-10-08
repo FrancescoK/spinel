@@ -1250,7 +1250,8 @@ static void sh_peek_args(ShareFacts *F, int n, int keep) {
 /* Each recorded call's container literal arguments are SHU_PEEK, and so is
    a `p a, b` whose value is dropped (the Array it answers): no name sees
    their elements again. A call that answers its arguments counts only
-   where its own value is dropped. */
+   where its own value is dropped. The same marks describe transient call
+   results, which need no handle when a builtin only reads them. */
 static void sh_settle_peeks(ShareFacts *F, Compiler *c) {
   const NodeTable *nt = c->nt;
   /* a method no caller reads drops its body's value, through its arms
@@ -1268,7 +1269,9 @@ static void sh_settle_peeks(ShareFacts *F, Compiler *c) {
     for (int k = 0; k < argc; k++) {
       NodeKind ak = nt_kind(nt, argv[k]);
       if (ak == NK_ArrayNode || ak == NK_HashNode) F->unused[argv[k]] |= SHU_PEEK;
+      else sh_mark_unused(F, nt, argv[k], SHU_PEEK);
     }
+    if (F->pk[i] >= 0) sh_mark_unused(F, nt, nt_ref(nt, n, "receiver"), SHU_PEEK);
   }
 }
 
@@ -3855,6 +3858,10 @@ unsigned share_node_flags(const Compiler *c, int n) {
 int share_node_peeked(const Compiler *c, int n) {
   const ShareFacts *F = c->share;
   return F && n >= 0 && n < F->nnodes && (F->unused[n] & SHU_PEEK);
+}
+int share_node_transient(const Compiler *c, int n) {
+  const ShareFacts *F = c->share;
+  return F && n >= 0 && n < F->nnodes && (F->unused[n] & (SHU_STMT | SHU_TAIL | SHU_PEEK));
 }
 int share_node_one_name(const Compiler *c, int n) {
   const ShareFacts *F = c->share;
