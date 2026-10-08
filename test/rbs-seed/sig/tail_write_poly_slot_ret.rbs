@@ -1,0 +1,5 @@
+class TwBus
+  def peek: (Integer) -> Integer
+  def local: (Integer) -> Integer
+  def global: (Integer) -> Integer
+end
