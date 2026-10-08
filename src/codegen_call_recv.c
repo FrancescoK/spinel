@@ -12890,7 +12890,11 @@ static int emit_poly_index_call(Compiler *c, int id, Buf *b, const NodeTable *nt
       char objp[32]; snprintf(objp, sizeof objp, "_t%d.v.p", tv);
       emit_boxed_writer_arms(c, base, name, objp, src, at_eff, argv[0], b);
       buf_printf(b, " default: sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d)); break;", name, tv);
-      buf_printf(b, " } _t%d; })", tval);
+      /* the call answers the value it stored; a shared handle stored where
+         the call is read as a String answers the String it holds */
+      if (at == TY_STRBUF && comp_ntype(c, id) != TY_STRBUF)
+        buf_printf(b, " } (_t%d ? sp_String_cstr(_t%d) : NULL); })", tval, tval);
+      else buf_printf(b, " } _t%d; })", tval);
       { *out = 1; return 1; }
     }
   }
