@@ -1601,7 +1601,8 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
     view_pop(c, sv);
     return 1;
   }
-  if (repr_call_returns_handle(c, v)) {
+  int x = strbuf_route_operand(c, v);
+  if (repr_call_returns_handle(c, v) && (x < 0 || repr_of(c, x).kind != RK_BOXED)) {
     /* the deep-return pickup (emit_call_body's): the channel cleared, the
        call run, its published handle taken, or a String of its own if none
        was published */
@@ -1652,7 +1653,6 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
     view_pop(c, sv);
     return 1;
   }
-  int x = strbuf_route_operand(c, v);
   if (x < 0 || !strbuf_route_carries(c, v, 0)) return 0;
   v = unwrap_parens(c, v);
   if (x == v) {
@@ -1694,13 +1694,19 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
     int t = ++g_tmp;
     buf_puts(b, "({ ");
     t = hold_operand(c, x, TY_POLY, 0, t, 1, " ", b);
-    buf_printf(b, "sp_poly_is_strbuf(_t%d) ? sp_poly_as_strbuf(_t%d) : sp_String_new_shared(", t, t);
+    int pickup = repr_call_returns_handle(c, v);
+    buf_printf(b, "sp_poly_is_strbuf(_t%d) ? sp_poly_as_strbuf(_t%d) : ", t, t);
+    if (pickup) buf_printf(b, "({ _sp_ret_strbuf = NULL; const char *_v%d = ", t);
+    else buf_puts(b, "sp_String_new_shared(");
     int mark = view_bind(x, "_t%d", t);
-    int sv = view_push_repr(c, v, VR_STRBUF_BOX, 0);
+    int sv = view_push_repr(c, v, VR_STRBUF_BOX, 0), sd = view_push_repr(c, v, VR_HANDLE_DEMAND, 0);
     emit_expr(c, v, b);
-    view_pop(c, sv);
+    view_pop(c, sd); view_pop(c, sv);
     view_unbind(mark);
-    buf_puts(b, "); })");
+    /* As in the deep-return pickup, nil wins over an earlier publication. */
+    if (pickup) buf_printf(b, "; !_v%d ? NULL : _sp_ret_strbuf ? (sp_String *)_sp_ret_strbuf"
+                            " : sp_String_new_shared(_v%d); }); })", t, t);
+    else buf_puts(b, "); })");
     return 1;
   }
   int t = ++g_tmp;
