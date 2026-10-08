@@ -21450,6 +21450,7 @@ static int poly_store_place(Compiler *c, int id, NodeKind rk, const char *nm) {
    one walk of the reads and one of the calls, not one per store. */
 typedef struct { const char **nm; int *place; int n, cap; } PolyStoreApp;
 static void poly_store_app_add(PolyStoreApp *t, const char *nm, int place) {
+  while (*nm == '@') nm++;
   for (int i = 0; i < t->n; i++) if (t->place[i] == place && sp_streq(t->nm[i], nm)) return;
   if (t->n == t->cap) {
     t->cap = t->cap ? t->cap * 2 : 8;
@@ -21457,6 +21458,27 @@ static void poly_store_app_add(PolyStoreApp *t, const char *nm, int place) {
     t->place = realloc(t->place, sizeof(int) * (size_t)t->cap);
   }
   t->nm[t->n] = nm; t->place[t->n] = place; t->n++;
+}
+static int sa_returned_args_t(Compiler *c, int call, int *out, int cap, int poly_args);
+/* The poly_store_place of the ivar an attr_reader / attr_writer call (`box`,
+   `self.box = v`, `o.box`) reaches, or -1: a call on the current instance or
+   on a receiver of a known class, whose name is an attribute of it. */
+static int poly_attr_place(Compiler *c, int call, const char *base, int want_write) {
+  const NodeTable *nt = c->nt;
+  int recv = nt_ref(nt, call, "receiver"), cid = -1;
+  if (recv < 0 || nt_kind(nt, recv) == NK_SelfNode) {
+    Scope *s = comp_scope_of(c, call);
+    if (!s || s->is_cmethod) return -1;
+    cid = s->class_id;
+  }
+  else {
+    TyKind t = comp_ntype(c, recv);
+    if (!ty_is_object(t)) return -1;
+    cid = ty_object_class(t);
+  }
+  int dc = -1, mi = -1;
+  if (cid < 0 || comp_resolve_member(c, cid, base, want_write, &dc, &mi) != SP_MEMBER_ATTR || dc < 0) return -1;
+  return dc * 2;
 }
 static void poly_store_app_build(Compiler *c, NodeKind rk, PolyStoreApp *t) {
   const NodeTable *nt = c->nt;
@@ -21468,12 +21490,21 @@ static void poly_store_app_build(Compiler *c, NodeKind rk, PolyStoreApp *t) {
   }
   NT_FOREACH_KIND(nt, NK_CallNode, u) {
     int r = nt_ref(nt, u, "receiver");
-    if (r < 0 || nt_kind(nt, r) != rk || !an_str_mutator_name(nt_str(nt, u, "name"))) continue;
+    if (r < 0 || !an_str_mutator_name(nt_str(nt, u, "name"))) continue;
     const char *rn = nt_str(nt, r, "name");
-    if (rn && comp_ntype(c, r) == TY_POLY) poly_store_app_add(t, rn, poly_store_place(c, r, rk, rn));
+    if (nt_kind(nt, r) == rk) {
+      if (rn && comp_ntype(c, r) == TY_POLY) poly_store_app_add(t, rn, poly_store_place(c, r, rk, rn));
+    }
+    /* `box << y` through an attribute reader of the instance variable */
+    else if (rk == NK_InstanceVariableReadNode && nt_kind(nt, r) == NK_CallNode && rn &&
+             nt_ref(nt, r, "arguments") < 0 && nt_ref(nt, r, "block") < 0 && comp_ntype(c, r) == TY_POLY) {
+      int pl = poly_attr_place(c, r, rn, 0);
+      if (pl >= 0) poly_store_app_add(t, rn, pl);
+    }
   }
 }
 static int poly_store_appended(const PolyStoreApp *t, const char *in, int wp) {
+  while (*in == '@') in++;
   for (int i = 0; i < t->n; i++) if (t->place[i] == wp && sp_streq(t->nm[i], in)) return 1;
   return 0;
 }
@@ -21569,6 +21600,13 @@ static int lift_poly_alias_reads(Compiler *c, const HandleArgTab *hat) {
           poly = comp_ntype(c, v) == TY_POLY;
           break;
         }
+        /* `y = id(x)`: a method that answers its argument as it is hands y
+           the String x holds (a single such argument) */
+        if (vk == NK_CallNode && v != w) {
+          int ra[2];
+          if (sa_returned_args_t(c, v, ra, 2, 1) == 1 && nt_kind(nt, ra[0]) == NK_LocalVariableReadNode) { v = ra[0]; continue; }
+          v = -1; break;
+        }
         if (vk != NK_LocalVariableReadNode && (v != w && vk != NK_LocalVariableWriteNode)) { v = -1; break; }
         const char *vn = nt_str(nt, v, "name");
         Scope *vs = vn ? comp_scope_of(c, v) : NULL;
@@ -21603,6 +21641,30 @@ static int lift_poly_alias_reads(Compiler *c, const HandleArgTab *hat) {
         if (!built) { poly_store_app_build(c, skinds[sk][1], &app_tab); built = 1; }
         if (!poly_store_appended(&app_tab, in, wp)) continue;
         if (lift_poly_read(c, hat, &lifted, v)) round = changed = 1;
+      }
+      free(app_tab.nm); free(app_tab.place);
+    }
+    /* `self.box = x` through an attr_writer, where the program appends to
+       the attribute (`box << y`): the instance variable is another name for
+       x's String, as in the stores above */
+    {
+      PolyStoreApp app_tab = { NULL, NULL, 0, 0 };
+      int built = 0;
+      NT_FOREACH_KIND(nt, NK_CallNode, w) {
+        const char *wn = nt_str(nt, w, "name");
+        size_t wl = wn ? strlen(wn) : 0;
+        if (wl < 2 || wn[wl - 1] != '=' || !(isalnum((unsigned char)wn[wl - 2]) || wn[wl - 2] == '_')) continue;
+        int wa = nt_ref(nt, w, "arguments"), wc = 0;
+        const int *wv = wa >= 0 ? nt_arr(nt, wa, "arguments", &wc) : NULL;
+        if (wc != 1 || nt_kind(nt, wv[0]) != NK_LocalVariableReadNode || c->poly_strbuf_lift[wv[0]]) continue;
+        char base[128];
+        if (wl - 1 >= sizeof base) continue;
+        memcpy(base, wn, wl - 1); base[wl - 1] = 0;
+        int wp = poly_attr_place(c, w, base, 1);
+        if (wp < 0) continue;
+        if (!built) { poly_store_app_build(c, NK_InstanceVariableReadNode, &app_tab); built = 1; }
+        if (!poly_store_appended(&app_tab, base, wp)) continue;
+        if (lift_poly_read(c, hat, &lifted, wv[0])) round = changed = 1;
       }
       free(app_tab.nm); free(app_tab.place);
     }
@@ -33413,7 +33475,11 @@ static int sa_bang_receiver(Compiler *c, int call) {
    parameters the method never reassigns, read as one of its values. Up to
    `cap` into out; the count. A call the deep-return rule hands the shared
    handle (strbuf_box) answers none. */
+static int sa_returned_args_t(Compiler *c, int call, int *out, int cap, int poly_args);
 static int sa_returned_args(Compiler *c, int call, int *out, int cap) {
+  return sa_returned_args_t(c, call, out, cap, 0);
+}
+static int sa_returned_args_t(Compiler *c, int call, int *out, int cap, int poly_args) {
   const NodeTable *nt = c->nt;
   int got = 0;
   call = an_unparen(nt, call);
@@ -33442,7 +33508,7 @@ static int sa_returned_args(Compiler *c, int call, int *out, int cap) {
       if (!m->pnames[j] || !sp_streq(m->pnames[j], pn)) continue;
       int a = arg_layout_param_node(c, m, call, j, NULL);
       TyKind at = a >= 0 ? comp_ntype(c, a) : TY_UNKNOWN;
-      if ((at == TY_STRING || at == TY_STRBUF) && got < cap) out[got++] = a;
+      if ((at == TY_STRING || at == TY_STRBUF || (poly_args && at == TY_POLY)) && got < cap) out[got++] = a;
     }
   }
   return got;
