@@ -6536,17 +6536,17 @@ static sp_PolyArray *sp_poly_product(sp_RbVal *arrs, sp_int n) {
   if (idx != idx_stack) free(idx);
   return res;
 }
-static sp_bool sp_poly_case_eq(sp_RbVal pat, sp_RbVal e);   /* defined below */
+static sp_bool sp_poly_case_eq_match(sp_RbVal pat, sp_RbVal e);   /* defined below */
 /* `when *arr` in a case value: does any element of arr match the
    scrutinee? The scrutinee equal to the element, as before, or the element
-   matching it through sp_poly_case_eq: a Class its instances, a Regexp a
-   String, a Range its members. */
+   matching it through sp_poly_case_eq_match: a Class its instances, a Regexp
+   a String (setting $~, as a `when` arm does), a Range its members. */
 static sp_bool sp_case_splat_match(sp_RbVal scrut, sp_RbVal arr) {
   SP_GC_ROOT_RBVAL(scrut);
   SP_GC_ROOT_RBVAL(arr);
   sp_int n = sp_poly_length(arr);
   for (sp_int i = 0; i < n; i++)
-    if (sp_poly_rb_equal(scrut, sp_poly_arr_get(arr, i)) || sp_poly_case_eq(sp_poly_arr_get(arr, i), scrut))
+    if (sp_poly_rb_equal(scrut, sp_poly_arr_get(arr, i)) || sp_poly_case_eq_match(sp_poly_arr_get(arr, i), scrut))
       return TRUE;
   return FALSE;
 }
