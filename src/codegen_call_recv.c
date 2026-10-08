@@ -12628,6 +12628,8 @@ static int emit_poly_call0_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
        so the call became an unconditional raise whatever the receiver was
        (#3805). Defining `length` does not define `empty?` in Ruby either. */
     int has_user_len = poly_name_user_claimed(c, name, argc);
+    /* A Class value's own method takes the general dispatch too. */
+    if (!has_user_len && !g_poly_builtin_arm) has_user_len = cplan_user_fresh(c, id)->mi >= 0;
     if (!has_user_len) {
       if (sp_streq(name, "empty?")) {
         /* A user object has no #empty? of its own here, and sp_poly_length

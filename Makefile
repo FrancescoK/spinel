@@ -2254,6 +2254,9 @@ GC_MINOR_TESTS := test/boxed_scan_capture_params.rb \
 	test/share_strings_builtin_fallback_arguments.rb \
 	test/share_strings_builtin_fallback_reads.rb \
                   test/share_strings_class_value_parameter.rb \
+                  test/share_strings_class_value_builtin_names.rb \
+                  test/share_strings_class_value_builtin_io.rb \
+                  test/share_strings_class_value_mutating_read.rb \
                   test/share_strings_hash_transform_params.rb \
                   test/share/share_strings_transform_operands.rb \
                   test/share/share_strings_captured_bytes.rb \
