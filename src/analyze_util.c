@@ -2450,6 +2450,9 @@ int send_blind_recv_owns(Compiler *c, int recv, TyKind srt, const char *name) {
            ? comp_class_index(c, nt_str(c->nt, recv, "name")) : self_class_static_ci(c, recv);
   if (ci >= 0 && comp_cmethod_in_chain(c, ci, name, NULL) >= 0) return 1;
   if (srt == TY_POLY) {
+    int ncc = 0;
+    comp_cmethod_candidates(c, name, &ncc);
+    if (ncc > 0) return 1;
     for (int k = 0; k < c->nclasses; k++)
       if (comp_method_in_chain(c, k, name, NULL) >= 0 || comp_reader_in_chain(c, k, name, NULL)) return 1;
     return 0;
