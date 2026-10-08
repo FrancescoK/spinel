@@ -2900,12 +2900,13 @@ int proc_to_proc_method_nodes(Compiler *c, int recv, int **out) {
    `<recv>.method(:__bam_N)` resolves to a synthesized top-level wrapper whose
    first param (__bam_r) is carried by the Method's self slot, so positional
    call args map to params[1..]. A real instance/class method keeps self
-   implicit (params are the declared ones) and shifts by 0. */
+   implicit (params are the declared ones) and shifts by 0. A target without
+   a first parameter has no receiver slot to shift past. */
 int method_call_param_shift(Compiler *c, int mn, int mi) {
   if (mn < 0 || mi < 0) return 0;
   if (nt_ref(c->nt, mn, "receiver") < 0) return 0;
   Scope *m = &c->scopes[mi];
-  return (m->class_id < 0 && !m->is_cmethod) ? 1 : 0;
+  return (m->class_id < 0 && !m->is_cmethod && m->nparams > 0 && m->pnames) ? 1 : 0;
 }
 
 /* True when scope `scope_idx` contains an explicit `return`, which needs
