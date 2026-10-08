@@ -553,6 +553,10 @@ void compute_reachable(Compiler *c) {
       for (int i = 0; i < cls->naliases; i++) {
         const char *an = cls->alias_new[i], *ao = cls->alias_old[i];
         int an_live = (an && cn_live(&cn_set, an)), ao_live = (ao && cn_live(&cn_set, ao));
+        /* an alias under a name the runtime calls by itself (`alias inspect
+           readable_inspect`: p, interpolation) is live as a def of that name
+           is a root */
+        if (an && method_name_implicitly_invoked(an)) an_live = 1;
         /* also check reachable scope names (covers scope-backed aliases) */
         if (an) for (int t = SN_FIRST(an); t >= 0 && !an_live; t = sn_link[t]) if (c->scopes[t].reachable) an_live = 1;
         if (ao) for (int t = SN_FIRST(ao); t >= 0 && !ao_live; t = sn_link[t]) if (c->scopes[t].reachable) ao_live = 1;
