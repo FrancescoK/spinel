@@ -13,6 +13,7 @@ class Machine
   def initialize = @trap = nil
   def install = @trap = Trap.new
   def trap_layout = @trap&.layout
+  def bump = @trap&.layout += 1
 
   def changed(layout)
     @trap&.layout = layout
@@ -23,9 +24,11 @@ end
 
 machine = Machine.new
 machine.changed(2)
+p machine.bump
 p machine.trap_layout
 machine.install
 machine.changed(3)
+p machine.bump
 p machine.trap_layout
 
 def set(t, v) = (t&.layout = v)
