@@ -15573,7 +15573,9 @@ static void refuse_stored_block_param(Compiler *c, int sn, int to) {
   ShareRoute q = share_route(sn, sn, 0);
   q.to = to;
   q.to_elems = to >= 0;
-  q.carry = SHARE_CARRY_COPY;
+  /* The rule now gives a shared block parameter a handle slot. Its
+     stored read carries that slot; the seal checks what binds it. */
+  q.carry = sn;
   if (!share_route_defer(c, &q, msg)) unsupported_feature(c, sn, msg);
 }
 /* Is block parameter (vn, vs) bound only by the yields of user methods
