@@ -1,0 +1,32 @@
+true
+FrozenError
+true
+["aabc", "aabc"]
+["aabc", "aabc"]
+ok
+["AABC", "AABC"]
+["AABC", "AABC"]
+true
+FrozenError
+true
+["aabc", "aabc"]
+true
+ok
+true
+["aab0x", "aab0x"]
+true
+FrozenError
+true
+["aabc", "aabc"]
+true
+ok
+true
+["zz", "zz"]
+true
+ok
+true
+["aadc", "aadc"]
+["aab0", "aab0"]
+ok
+["Aab0", "Aab0"]
+["Aab0", "Aab0"]

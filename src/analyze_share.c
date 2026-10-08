@@ -1299,6 +1299,10 @@ static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int 
     return -1;
   case BSH_RECV: case BSH_ITER_FRESH_RECV:
     return rv;
+  case BSH_CLAMP:
+    /* A Range holds its endpoints in the existing element class. */
+    for (int i = 0; i < nv; i++) rv = sh_join(F, rv, argc == 1 ? sh_elem(F, vals[i]) : vals[i]);
+    return rv;
   case BSH_ELEM:
     if (container && nv >= 1) sh_lookup_key(F, rv, vals[0]);
     /* `a[i, n]`, `a[r]`: a run of elements */

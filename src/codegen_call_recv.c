@@ -6864,6 +6864,15 @@ static int str_arms_slice_encode(Compiler *c, int id, Buf *b, const char *name, 
   }
   else if (sp_streq(name, "clamp") && (argc == 2 ||
            (argc == 1 && nt_type(c->nt, argv[0]) && sp_streq(nt_type(c->nt, argv[0]), "RangeNode")))) {
+    int ops[3];
+    if (strbuf_route_clamp(c, id, ops)) {
+      /* Publish the selected handle for a method's return pickup too. */
+      int demand = repr_of(c, id).demand;
+      if (!demand) buf_puts(b, "sp_strbuf_read_pub(");
+      emit_strbuf_route(c, id, b);
+      if (!demand) buf_puts(b, ")");
+      return 1;
+    }
     int lo_n, hi_n;
     if (argc == 2) { lo_n = argv[0]; hi_n = argv[1]; }
     else { int rn = argv[0]; lo_n = nt_ref(c->nt, rn, "left"); hi_n = nt_ref(c->nt, rn, "right"); }
