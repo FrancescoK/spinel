@@ -157,6 +157,7 @@ int repr_call_returns_handle(Compiler *c, int v) {
   /* a String's value, or one the pickup marks to be stored as the handle */
   TyKind t = c->ntype[v];
   if (t != TY_STRING && !(t == TY_STRBUF && c->strbuf_box[v])) return 0;
+  if (strbuf_io_outbuf(c, v) >= 0) return 1;
   /* a Method's call: the method `method(:m)` names */
   int recv = nt_ref(nt, v, "receiver");
   const char *nm = nt_str(nt, v, "name");

@@ -1348,6 +1348,13 @@ static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int 
       return b;
     }
     return -1;
+  case BSH_FILL2:
+    if (argc >= 3) {
+      int b = sh_val(F, c, argv[2]);
+      sh_mark_at(F, b, SHF_MUT | (sh_holder_read(nt, argv[2]) ? 0 : SHF_INDIRECT), n);
+      return b;
+    }
+    return -1;
   case BSH_ITER: case BSH_ITER_SEL: case BSH_ITER_FIND:
     if (lit_blk) sh_iter_params(F, c, blk, sh_elem(F, rv), container == 2);
     return share == BSH_ITER_FIND ? (argc >= 1 ? rv : sh_elem(F, rv)) : rv;
