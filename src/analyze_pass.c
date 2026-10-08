@@ -1,4 +1,5 @@
 #include "analyze_internal.h"
+#include "call_plan.h"
 #include "repr.h"
 int callee_has_kwarg(Compiler *c, Scope *m, const char *name);
 int callee_declares_kwargs(Compiler *c, Scope *m);
@@ -5833,6 +5834,9 @@ static int widen_array_sources(Compiler *c, int v) {
    is followed back to where its arrays are built (widen_array_sources): a
    local assigned a method's value, the value of a method, a chain of them.
    Returns 1 on a change. */
+/* The callee parameter a reverse binding widens on behalf of (-1: none). */
+static int g_wcause_scope = -1;
+static const char *g_wcause_name = NULL;
 static int widen_arg_array(Compiler *c, int arg) {
   const NodeTable *nt = c->nt;
   arg = unwrap_parens(c, arg);
@@ -5849,7 +5853,10 @@ static int widen_arg_array(Compiler *c, int arg) {
     if (!al || !ty_is_array(al->type) || al->type == TY_POLY_ARRAY || al->is_block_param) return 0;
     if (al->is_param) {
       if (al->rbs_seeded) return 0;
-      al->type = TY_POLY_ARRAY; al->push_widened = 1;
+      if (g_wcause_name && al->widen_blocked) return 0;
+      al->type = TY_POLY_ARRAY;
+      if (!al->push_widened && g_wcause_name) { al->widen_from_scope = g_wcause_scope; al->widen_from_name = g_wcause_name; }
+      al->push_widened = 1;
       return 1;
     }
     if (local_all_writes_empty_array(c, asc, an)) { al->type = TY_POLY_ARRAY; return 1; }
@@ -6862,7 +6869,11 @@ static int bind_args_params(Compiler *c, int call_id, int mi, const int *argv, i
        direction, only to the poly array, so it stays monotonic. A hash
        parameter a foreign store widened widens the caller's hash the same
        way. */
-    if (p->push_widened && p->type != TY_POLY_POLY_HASH) changed |= widen_arg_array(c, anode);
+    if (p->push_widened && p->type == TY_POLY_ARRAY) {
+      g_wcause_scope = (int)(m - c->scopes); g_wcause_name = p->name;
+      changed |= widen_arg_array(c, anode);
+      g_wcause_scope = -1; g_wcause_name = NULL;
+    }
     if (p->push_widened && p->type == TY_POLY_POLY_HASH && ty_is_hash(at))
       changed |= widen_arg_hash(c, anode);
     /* A BOXED parameter hides the container from its callee, so the element
@@ -13847,6 +13858,7 @@ static int infer_block_params_call_arms(Compiler *c, const NodeTable *nt, int id
     int ymi = -1;
     if (tmi >= 0 && !method_call_param_shift(c, bx, tmi)) {
       if (recv < 0) ymi = comp_self_call_mi(c, id, name);
+      else if (infer_type(c, recv) == TY_STRING) ymi = cplan_user_fresh(c, id)->mi;
       else if (sp_streq(name, "new") && (nt_kind(nt, recv) == NK_ConstantReadNode ||
                                          nt_kind(nt, recv) == NK_ConstantPathNode)) {
         int cid = nt_str(nt, recv, "name") ? comp_class_index(c, nt_str(nt, recv, "name")) : -1;
@@ -13980,6 +13992,7 @@ static int infer_block_params_call_arms(Compiler *c, const NodeTable *nt, int id
     }
     else {
       TyKind rt0 = infer_type(c, recv);
+      if (rt0 == TY_STRING) mi = cplan_user_fresh(c, id)->mi;
       if (ty_is_object(rt0)) mi = comp_method_in_chain(c, ty_object_class(rt0), name, NULL);
       /* Class.new { |...| }: the yielding method is Class#initialize.
          A ConstantPATH receiver counts: `N::Conn` names a class as much as

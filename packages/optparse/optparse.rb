@@ -4,7 +4,7 @@
 #   - OptionParser.new(banner, width, indent) { |opts| ... }
 #   - on / on_tail with any number of switch names ("-nNAME" declares -n with
 #     a value), any number of description lines and an optional value type
-#     (String, Array, Integer or Float), in any order
+#     (String, Array, Integer, Float, TrueClass or FalseClass), in any order
 #   - separator, banner=, summary_width, summary_indent, to_s (help text)
 #   - parse! with --long=VALUE, --long VALUE, -s VALUE, -sVALUE, clustered
 #     short switches (-vq, -vuNAME) and "--"
@@ -25,7 +25,14 @@
 #     OptionParser::MissingArgument, OptionParser::NeedlessArgument and
 #     OptionParser::InvalidArgument, all subclasses of OptionParser::ParseError
 #
-# Not supported: other value types than String, Array, Integer and Float.
+#   - TrueClass and FalseClass read yes, true and + as true and no, false, - and
+#     nil as false, each cut short as far as it stays a prefix ("y", "fa");
+#     case matters. Any other word raises InvalidArgument, an empty one
+#     AmbiguousArgument (a subclass of it). Without a value ("--force[=YES]")
+#     TrueClass passes true and FalseClass false
+#
+# Not supported: other value types than String, Array, Integer, Float, TrueClass
+# and FalseClass.
 
 class OptionParser
   class ParseError < StandardError
@@ -44,6 +51,9 @@ class OptionParser
   end
 
   class InvalidArgument < ParseError
+  end
+
+  class AmbiguousArgument < InvalidArgument
   end
 
   # The words an Integer or a Float switch accepts. radix is a leading 0
@@ -193,7 +203,7 @@ class OptionParser
         (a[1] == "-" ? longs : shorts).push(a[0, cut])
       elsif a.is_a?(String)
         descriptions.push(a)
-      elsif a == String || a == Array || a == Integer || a == Float
+      elsif a == String || a == Array || a == Integer || a == Float || a == TrueClass || a == FalseClass
         type = a
       end
     end
@@ -224,8 +234,12 @@ class OptionParser
   def invoke(sw, value, shown)
     handler = sw.handler
     type = sw.type
-    if value.nil? || type == Object
+    if value.nil? && (type == TrueClass || type == FalseClass)
+      handler.call(type == TrueClass) if handler
+    elsif value.nil? || type == Object
       handler.call(value) if handler
+    elsif type == TrueClass || type == FalseClass
+      handler.call(boolean_value(value, shown)) if handler
     elsif type == String
       raise invalid_argument(shown) if value.empty?
       handler.call(value) if handler
@@ -243,6 +257,16 @@ class OptionParser
       raise invalid_argument(shown) unless value.match?(FLOAT_VALUE)
       handler.call(value.to_f) if handler
     end
+  end
+
+  # The words a TrueClass or FalseClass switch reads: true for a prefix of
+  # "yes" or "true" or "+", false for a prefix of "no", "false" or "nil" or
+  # "-". An empty word is ambiguous, any other invalid.
+  def boolean_value(word, shown)
+    raise AmbiguousArgument.new("ambiguous argument: " + shown) if word.empty?
+    return true if word == "+" || "yes".start_with?(word) || "true".start_with?(word)
+    return false if word == "-" || "no".start_with?(word) || "false".start_with?(word) || "nil".start_with?(word)
+    raise invalid_argument(shown)
   end
 
   def invalid_argument(shown)

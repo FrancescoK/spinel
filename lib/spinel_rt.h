@@ -3436,6 +3436,7 @@ static SP_NOINLINE SP_COLD void sp_ffi_nil_dbl_raise(void) { sp_raise_cls("TypeE
    receiver. Anything else converts as sp_poly_to_i does. */
 static SP_UNUSED sp_int sp_poly_arg_i(sp_RbVal v) { if (SP_UNLIKELY(v.tag == SP_TAG_NIL)) sp_raise_nil_to_int(0); return sp_poly_to_i(v); }
 static SP_UNUSED sp_int sp_poly_arg_i_msg(sp_RbVal v, const char *msg) { if (SP_UNLIKELY(v.tag == SP_TAG_NIL)) sp_raise_cls("TypeError", msg); return sp_poly_to_i(v); }
+static SP_UNUSED int sp_poly_exit_status(sp_RbVal v) { return v.tag == SP_TAG_BOOL ? !v.v.b : (int)sp_poly_arg_int_chk(v); }
 /* The right operand of an Integer or Float op-assign read out of a box:
    `x += nil` is the coercion TypeError ("nil can't be coerced into
    Integer"), and a shift count the conversion one, as CRuby raises. */

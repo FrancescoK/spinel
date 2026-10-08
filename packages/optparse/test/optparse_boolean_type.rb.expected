@@ -1,0 +1,40 @@
+y: true true
+ye: true true
+yes: true true
+t: true true
+tr: true true
+tru: true true
+true: true true
++: true true
+n: false false
+no: false false
+nil: false false
+ni: false false
+f: false false
+fa: false false
+fal: false false
+fals: false false
+false: false false
+-: false false
+YES: ["OptionParser::InvalidArgument", "invalid argument: --c=YES"] ["OptionParser::InvalidArgument", "invalid argument: --c=YES"]
+TRUE: ["OptionParser::InvalidArgument", "invalid argument: --c=TRUE"] ["OptionParser::InvalidArgument", "invalid argument: --c=TRUE"]
+maybe: ["OptionParser::InvalidArgument", "invalid argument: --c=maybe"] ["OptionParser::InvalidArgument", "invalid argument: --c=maybe"]
+yy: ["OptionParser::InvalidArgument", "invalid argument: --c=yy"] ["OptionParser::InvalidArgument", "invalid argument: --c=yy"]
+x: ["OptionParser::InvalidArgument", "invalid argument: --c=x"] ["OptionParser::InvalidArgument", "invalid argument: --c=x"]
+["OptionParser::AmbiguousArgument", "ambiguous argument: --c="]
+["OptionParser::AmbiguousArgument", "ambiguous argument: --c "]
+false
+["OptionParser::InvalidArgument", "invalid argument: --c=maybe"]
+["TrueClass", true]
+["TrueClass", false]
+[:d, true]
+[:d, false]
+[:d, false]
+["FalseClass", false]
+["FalseClass", false]
+[:d, true]
+[:d, false]
+[:d, false]
+[:flag, true]
+[:flag, false]
+OptionParser::InvalidArgument

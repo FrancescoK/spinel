@@ -456,8 +456,10 @@ void emit_strbuf_param_bind(Compiler *c, const LocalVar *pv, TyKind want, const 
 int emit_handle_var_ref(Compiler *c, int a, Buf *b) {
   /* so is a write whose slot holds the rule's handle (--share-strings) */
   if (emit_strbuf_write_handle(c, a, b)) return 1;
-  /* under --share-strings a global or an ivar holding the handle is one too */
+  /* under --share-strings a global or an ivar holding the handle is one too.
+     A String reopening's self has the handle selected by its receiver ABI. */
   if (!local_is_handle(c, a) && !repr_static_share(c, a) &&
+      !repr_self_shared(c, a) &&
       !(repr_share_rule(c) && a >= 0 && nt_kind(c->nt, a) == NK_InstanceVariableReadNode))
     return 0;
   /* a value that ran first, ahead of a later one that rebinds the local
