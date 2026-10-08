@@ -1885,6 +1885,12 @@ int strbuf_pickup_may_nil(Compiler *c, int recv) {
 }
 static int strbuf_route_recv(Compiler *c, int id, int recv, char *out, size_t cap);
 int strbuf_recv_handle(Compiler *c, int id, int recv, char *out, size_t cap) {
+  int held = ran_first_handle(recv);
+  NodeKind k = recv >= 0 ? nt_kind(c->nt, recv) : NK_NONE;
+  if (held >= 0 && (k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode || repr_static_read_kind(k))) {
+    snprintf(out, cap, "_t%d", held);
+    return 1;
+  }
   if (strbuf_slot_ref(c, recv, out, cap)) {
     /* --share-strings: a deep-return pickup that can answer nil (a nil
        tail, an_pickup_tail) raises NoMethodError for id, as the copy's
@@ -2282,6 +2288,18 @@ int emit_bang_self_handle(Compiler *c, int v, Buf *b) {
   }
   if (!slot) return 0;
   int tr = ++g_tmp;
+  /* The result keeps the old handle too when an argument rebinds its
+     slot; taking the slot after the call would return the new String. */
+  int args = nt_ref(c->nt, v, "arguments");
+  if (args >= 0 && read_rebound_by(c, r, args)) {
+    int th = ++g_tmp, mark = g_n_argov;
+    buf_printf(b, "({ sp_String *_t%d = %s; SP_GC_ROOT(_t%d); const char *_t%d = ", th, sref, th, tr);
+    ran_first_bind(r, th, th);
+    emit_expr(c, v, b);
+    view_unbind(mark);
+    buf_printf(b, "; _t%d ? _t%d : (sp_String *)NULL; })", tr, th);
+    return 1;
+  }
   if (nt_kind(c->nt, r) != NK_CallNode) {
     buf_printf(b, "({ const char *_t%d = ", tr);
     emit_expr(c, v, b);
