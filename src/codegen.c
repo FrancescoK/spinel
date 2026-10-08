@@ -5441,7 +5441,12 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
       /* the longjmp-home delivery also restores sp_catch_top: a return out of a
          catch block inside the home (or a callee) must not leak its catch slot. */
       buf_puts(b, "    if (setjmp(_h.jb)) { sp_proc_ret_head = _h.prev; sp_catch_top = _h.catch_top; return ");
+      /* The box is the selected return, even if its evaluation or an
+         intervening ensure published a different String. */
+      int pub = repr_share_rule(c) && s->ret == TY_STRING && (s->ret_handle || s->ret_pub_fresh);
+      if (pub) buf_puts(b, "(_sp_ret_strbuf = sp_poly_is_strbuf(_h.val) ? _h.val.v.p : NULL, ");
       emit_unbox_text(c, s->ret, "_h.val", b);
+      if (pub) buf_puts(b, ")");
       buf_puts(b, "; }\n");
     }
     else {

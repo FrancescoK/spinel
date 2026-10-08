@@ -18600,9 +18600,12 @@ static int an_tail_is_shared_handle(Compiler *c, int node, int nil_ok, TailCount
     if (n == 0) { tc->nils += nil_ok; return nil_ok; }
     return n == 1 && an_tail_handle(c, R, v[0], tc);
   }
-  if (R && R->fresh && k == NK_RescueModifierNode)
-    return an_tail_handle(c, R, nt_ref(nt, node, "expression"), tc) &&
-           an_tail_handle(c, R, nt_ref(nt, node, "rescue_expression"), tc);
+  if (c->share_strings && k == NK_RescueModifierNode) {
+    int e = nt_ref(nt, node, "expression"), r = nt_ref(nt, node, "rescue_expression");
+    return R ? an_tail_handle(c, R, e, tc) && an_tail_handle(c, R, r, tc)
+             : an_tail_is_shared_handle(c, e, nil_ok, tc, NULL) &&
+               an_tail_is_shared_handle(c, r, nil_ok, tc, NULL);
+  }
   if (!c->share_strings || (k != NK_IfNode && k != NK_UnlessNode)) {
     if (R && R->fresh) return share_value_fresh(c, node, 0);
     int ok = an_arg_is_shared_handle(c, node);
@@ -18798,7 +18801,9 @@ static int an_ret_handle_body(Compiler *c, RetHandles *R, int mi) {
   Scope *m = &c->scopes[mi];
   /* A String reopening's proc form reads the same incoming handle. */
   if (!R->fresh && m->def_node >= 0 && m->is_proc_form && m->ret == TY_STRING && repr_self_handle(c, mi)) return 1;
-  return !(m->def_node < 0 || (!R->fresh && (m->yields || m->is_proc_form || m->is_lowered_yield)) ||
+  /* A proc form is emitted as a function and publishes its tails just as
+     a non-yielding method does; only the original inline body has no call. */
+  return !(m->def_node < 0 || (!R->fresh && !m->is_proc_form && (m->yields || m->is_lowered_yield)) ||
            (m->ret != TY_STRING && (!R->fresh || m->ret != TY_POLY)));
 }
 static int an_ret_handle(Compiler *c, RetHandles *R, int mi) {

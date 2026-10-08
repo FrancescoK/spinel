@@ -1,0 +1,11 @@
+["sa", "s!"]
+"s!"
+["sa?", "s!"]
+"s!"
+true
+["pa", "b\x00c!"]
+"b\x00c!"
+true
+#<Encoding:BINARY (ASCII-8BIT)>
+frozen
+["fa", "frozen"]
