@@ -16036,6 +16036,15 @@ void emit_str_concat_handle(Compiler *c, const char *sref, int argc, const int *
 }
 
 static int str_mutate_append_bang_arms(Compiler *c, int id, Buf *b, int indent, const NodeTable *nt, const char *name, int recv, TyKind rt, int argc, const int *argv) {
+  /* A value route's bang emitter already binds the handle once and reads
+     its bytes under a view while emitting the non-bang transform. */
+  if (repr_share_rule(c) && nt_kind(nt, recv) == NK_CallNode &&
+      ty_str_typed_bang_flags(name) && strbuf_value_carries(c, recv)) {
+    emit_indent(b, indent);
+    emit_expr(c, id, b);
+    buf_puts(b, ";\n");
+    return 1;
+  }
   /* mutable-string append: a STRBUF-typed local appends in place (amortized
      O(1)) via sp_String_append. Chains (`s << a << b`) all target the same
      buffer. recv is emitted raw (the sp_String*), not via emit_expr (which
