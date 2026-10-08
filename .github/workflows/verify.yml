@@ -16,6 +16,9 @@ name: verify
 # against BASE, plain and with CIDENT_FLAGS=--share-strings; its cident.txt
 # opens with the two lines a restructuring PR pastes (cident-leg.sh).
 #
+# fsuite runs every corpus slice with --share-strings, on the base and
+# every head; infer-test and reject-test run separately in slice 1.
+#
 # Each sha is built once, by the build job, and the legs unpack its tree.
 # Every make-driven compile goes through sccache, as upstream CI's do: the
 # build and each suite slice carry sccache's disk store between runs as one
@@ -68,6 +71,7 @@ jobs:
           assert all(name != "base" for name, _ in heads), "a head may not be called base"
           # the rubyspec gate in shards of suites (the Run step's case)
           rs = [{"leg": "rubyspec", "shard": k} for k in (1, 2, 3, 4, 5)] if "rubyspec" in legs else []
+          fs = [{"leg": "fsuite", "shard": k, "of": n} for k in range(1, n + 1)] if "fsuite" in legs else []
           # the sharded probes (the Run step's case), each on the base and
           # every head: brow the builtin-row probe in --shard slices of its
           # ops; sh the String-sharing probe in --shard slices of its rows;
@@ -85,16 +89,16 @@ jobs:
           for leg in ("cb", "vf", "nn"):
               if leg in legs:
                   jobs.append({"leg": leg, "name": "base", "sha": base, "shard": 0})
-          jobs += [dict(j, name="base", sha=base) for j in rs + sp]
+          jobs += [dict(j, name="base", sha=base) for j in rs + fs + sp]
           for name, sha in heads:
               if "suite" in legs:
                   jobs += [{"leg": "suite", "name": name, "sha": sha, "shard": k} for k in range(1, n + 1)]
               for leg in ("cb", "vf", "nn", "cdiff", "cident", "extra", "scale"):
                   if leg in legs:
                       jobs.append({"leg": leg, "name": name, "sha": sha, "shard": 0})
-              jobs += [dict(j, name=name, sha=sha) for j in rs + sp]
+              jobs += [dict(j, name=name, sha=sha) for j in rs + fs + sp]
           builds = []
-          if any(leg in legs for leg in ("cb", "vf", "nn", "cdiff", "scale", "rubyspec", *sharded)):
+          if any(leg in legs for leg in ("cb", "vf", "nn", "cdiff", "scale", "rubyspec", "fsuite", *sharded)):
               builds.append({"name": "base", "sha": base, "dir": "base"})
           if any(leg not in ("gate", "pgate") for leg in legs):
               builds += [{"name": name, "sha": sha, "dir": "head"} for name, sha in heads]
@@ -222,7 +226,7 @@ jobs:
       NAME: ${{ matrix.name }}
       SHA: ${{ matrix.sha }}
       SHARD: ${{ matrix.shard }}
-      # a sharded probe's count of shards (the plan's `sharded`)
+      # a sharded probe's or fsuite's count of shards
       OF: ${{ matrix.of }}
       SCCACHE_DIR: ${{ github.workspace }}/.sccache
       SCCACHE_STARTUP_TIMEOUT: "30"
@@ -233,16 +237,16 @@ jobs:
       # sccache for the suite's per-test compiles, one store per slice
       - name: Set up sccache (suite legs only)
         uses: mozilla-actions/sccache-action@v0.0.10
-        if: matrix.leg == 'suite'
+        if: matrix.leg == 'suite' || matrix.leg == 'fsuite'
       - name: Restore the sccache store (suite legs only)
-        if: matrix.leg == 'suite'
+        if: matrix.leg == 'suite' || matrix.leg == 'fsuite'
         uses: actions/cache@v6
         with:
           path: .sccache
-          key: sccache-verify-suite-${{ needs.plan.outputs.shards }}-${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: sccache-verify-suite-${{ needs.plan.outputs.shards }}-${{ matrix.shard }}-
+          key: sccache-verify-${{ matrix.leg }}-${{ needs.plan.outputs.shards }}-${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: sccache-verify-${{ matrix.leg }}-${{ needs.plan.outputs.shards }}-${{ matrix.shard }}-
       - name: Start sccache (suite legs only)
-        if: matrix.leg == 'suite'
+        if: matrix.leg == 'suite' || matrix.leg == 'fsuite'
         run: sccache --start-server
       - uses: ruby/setup-ruby@v1
         with:
@@ -266,7 +270,7 @@ jobs:
           # a head run with PROBE_ENV on the base's own sha must not share the base's key
           pe=""; [ "$NAME" != base ] && [ -n "${PROBE_ENV:-}" ] && pe="-pe$(printf %s "$PROBE_ENV" | sha256sum | cut -c1-8)"
           echo "key=verify-base-$LEG-$SHARD${OF:+of$OF}-$of$pe-$env_id" >> "$GITHUB_OUTPUT"
-      - name: Restore the base result (base side of a probe or rubyspec only)
+      - name: Restore the base result (probes, rubyspec and fsuite)
         id: based
         if: matrix.name == 'base'
         uses: actions/cache/restore@v6
@@ -310,6 +314,7 @@ jobs:
           # PROBE_ENV: NAME=value pairs for the legs' own runs only, not the build (a flag such as
           # SPINEL_SHARE_STRINGS=1 must not reach the tools the build compiles with spinel)
           # the head side only: base is the comparison WITHOUT the flag (PROBESHARE2 exported it in both)
+          # fsuite supplies its own flag on both sides, at each test invocation
           [ -n "${PROBE_ENV:-}" ] && [ "$NAME" != base ] && export ${PROBE_ENV}
           out="$GITHUB_WORKSPACE/out"; mkdir -p "$out"
           h="$RUNNER_TEMP/head"; [ "$NAME" = base ] && h="$RUNNER_TEMP/base"
@@ -329,12 +334,32 @@ jobs:
               ruby build/optcarrot/tools/pack-for-spinel.rb > build/optcarrot-single.rb || rm -f build/optcarrot-single.rb
             fi
           }
+          suite_fails() {
+            # The runner's summary spells these FAIL: and ERR:.
+            awk '/^(FAIL:|ERR:) +[^[:space:]]+$/ {print ($1 == "FAIL:" ? "FAIL " : "ERROR ") $2}' "$out/test.log" |
+              LC_ALL=C sort -u > "$out/fails.txt"
+          }
           case "$LEG" in
           suite)
             tgt="test-corpus"; [ "$SHARD" = 1 ] && tgt="test"
             make -j"$(nproc)" "$tgt" TEST_SHARD="$SHARD/$SHARDS" OPT=-O1 CC=gcc > "$out/test.log" 2>&1 || true
+            suite_fails
             if [ "$SHARD" = 1 ]; then make infer-test > "$out/infer.log" 2>&1 || true; fi
             printf '%s\n' test/*.rb | wc -l > "$out/corpus.txt"
+            ;;
+          fsuite)
+            echo "$SHARDS" > "$out/shards.txt"
+            SPINEL_SHARE_STRINGS=1 make -j"$(nproc)" test-corpus TEST_SHARD="$SHARD/$SHARDS" OPT=-O1 CC=gcc > "$out/test.log" 2>&1 || true
+            suite_fails
+            if [ "$SHARD" = 1 ]; then
+              for target in infer reject; do
+                { SPINEL_SHARE_STRINGS=1 make "$target-test" > "$out/$target.log" 2>&1 && echo "$target-test: pass" ||
+                  echo "$target-test: FAIL (rc $?)"; } > "$out/$target.txt"
+              done
+            fi
+            if [ "$NAME" = base ] && grep -q -E '^Tests: +[0-9]+ pass, +[0-9]+ fail, +[0-9]+ error' "$out/test.log"; then
+              echo save=true >> "$GITHUB_OUTPUT"
+            fi
             ;;
           cb|vf|nn|brow)
             tool=tools/call_binding_probe.rb; more=""; [ "$LEG" = vf ] && tool=tools/value_flow_probe.rb
@@ -518,7 +543,7 @@ jobs:
           esac
         shell: bash
       # the base's result, or a head's probe result kept for a later base
-      - name: Save the base result (probes and rubyspec, when computed this run)
+      - name: Save the base result (probes, rubyspec and fsuite, when computed this run)
         if: matrix.leg != 'cdiff' && steps.run.outputs.save == 'true'
         uses: actions/cache/save@v6
         with:
@@ -531,7 +556,7 @@ jobs:
           path: ${{ runner.temp }}/cbase
           key: ${{ steps.key.outputs.key }}
       - name: sccache stats (suite legs only)
-        if: always() && matrix.leg == 'suite'
+        if: always() && (matrix.leg == 'suite' || matrix.leg == 'fsuite')
         run: mkdir -p out && sccache --show-stats | tee out/sccache.txt
       - uses: actions/upload-artifact@v7
         if: always()

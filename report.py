@@ -5,7 +5,7 @@ import os, re, sys
 res = sys.argv[1]
 jobs = {}
 for d in sorted(os.listdir(res)):
-    m = re.match(r"r-(suite|cb|vf|nn|brow|sh|dc|lit|op|ord|cdiff|cident|extra|scale|rubyspec|gate|pgate)-(.+)-(\d+)$", d)
+    m = re.match(r"r-(suite|fsuite|cb|vf|nn|brow|sh|dc|lit|op|ord|cdiff|cident|extra|scale|rubyspec|gate|pgate)-(.+)-(\d+)$", d)
     if m:
         jobs[(m.group(1), m.group(2), int(m.group(3)))] = os.path.join(res, d)
 
@@ -221,12 +221,46 @@ def probe_origin(dirs):
         by.setdefault(origin(d) or "no result", []).append(str(k))
     return "; ".join(f"shard{'s' if len(ks) > 1 else ''} {', '.join(ks)} {o}" for o, ks in by.items())
 
+def fsuite_tree(name):
+    # Compare program names across all slices: adding a test can move the
+    # later programs to other slices. An unfinished tree cannot show fixes.
+    dirs = dict(shard_dirs("fsuite", name))
+    expected = {k for (l, _, k) in jobs if l == "fsuite"}
+    for (l, _, _), d in jobs.items():
+        if l == "fsuite":
+            count = read(os.path.join(d, "shards.txt")).strip()
+            if count.isdigit():
+                expected.update(range(1, int(count) + 1))
+    tp = tf = te = 0
+    fails, notes = {}, []
+    for k in sorted(expected):
+        d = dirs.get(k)
+        log = read(os.path.join(d, "test.log")) if d else ""
+        m = re.findall(r"^Tests:\s+(\d+) pass,\s+(\d+) fail,\s+(\d+) error", log, re.M)
+        if not m:
+            notes.append(f"slice {k}: no Tests line" + (" (missing artifact)" if not d else ""))
+            continue
+        p, f, e = map(int, m[-1]); tp += p; tf += f; te += e
+        path = os.path.join(d, "fails.txt")
+        rows = re.findall(r"^(FAIL|ERROR) (\S+)$", read(path), re.M)
+        if (not os.path.exists(path) or sum(s == "FAIL" for s, _ in rows) != f or
+                sum(s == "ERROR" for s, _ in rows) != e):
+            notes.append(f"slice {k}: missing or incomplete fails.txt")
+        fails.update((program, status) for status, program in rows)
+    line = f"{tp} pass, {tf} fail, {te} error; corpus {tp + tf + te} programs"
+    return f"({len(expected)} slices): {line}", fails, notes
+
+def fsuite_checks(name):
+    d = jobs.get(("fsuite", name, 1))
+    return "; ".join((read(os.path.join(d, f"{t}.txt")).strip() if d else "") or f"{t}-test: no result"
+                     for t in ("infer", "reject"))
+
 names = sorted({n for (_, n, _) in jobs if n != "base"})
 print("# verify\n")
 # what this run checks: a batch gate runs only pgate, a staged PR only its
 # legs, so the other mode's jobs show as skipped on the run page
 LEG_NAMES = {"pgate": "parallel gate", "gate": "gate", "cdiff": "corpus C diff", "cident": "cident", "suite": "suite",
-             "rubyspec": "rubyspec-gate", "scale": "scale-test", "extra": "new tests"}
+             "fsuite": "fsuite (--share-strings)", "rubyspec": "rubyspec-gate", "scale": "scale-test", "extra": "new tests"}
 ran = sorted({l for (l, _, _) in jobs}, key=lambda l: list(LEG_NAMES).index(l) if l in LEG_NAMES else 99)
 if not ran:
     print("No results: no r-* artifact was uploaded (see the jobs' logs).\n")
@@ -251,6 +285,11 @@ if len(rsb) == 1:
     print(f"- base rubyspec-gate: {origin(rsb[0][1]) or 'no result'}")
 elif rsb:
     print(f"- base rubyspec-gate: {'; '.join(f'shard {k} ' + (origin(d) or 'no result') for k, d in rsb)}")
+if shard_dirs("fsuite", "base"):
+    line, _, notes = fsuite_tree("base")
+    print(f"- base fsuite {line}; {probe_origin(shard_dirs('fsuite', 'base'))}" +
+          "".join(f"\n  - {x}" for x in notes))
+    print(f"- base fsuite checks (outside corpus): {fsuite_checks('base')}")
 print()
 for n in names:
     rev = next((read(os.path.join(d, "rev.txt")).split(" ", 3)[-1].strip()
@@ -280,6 +319,23 @@ for n in names:
             print(f"- sccache hits per slice: {', '.join(m.group(1) if m else '?' for m in rates)}")
         for l in fails[:30]:
             print(f"  - `{l.strip()}`")
+    if shard_dirs("fsuite", n):
+        line, h, notes = fsuite_tree(n)
+        print(f"- fsuite {line}" + "".join(f"\n  - {x}" for x in notes))
+        print(f"- fsuite checks (outside corpus): {fsuite_checks(n)}")
+        if not shard_dirs("fsuite", "base"):
+            print("- fsuite vs base: no base results")
+        else:
+            _, b, bnotes = fsuite_tree("base")
+            if notes or bnotes:
+                print("- fsuite vs base: comparison unavailable (incomplete head or base corpus results)")
+            else:
+                new, fixed = sorted(h.keys() - b.keys()), sorted(b.keys() - h.keys())
+                print(f"- fsuite vs base: {len(new)} new, {len(fixed)} fixed")
+                for program in new:
+                    print(f"  - new: `{h[program]} {program}`")
+                for program in fixed:
+                    print(f"  - fixed: `{b[program]} {program}`")
     for probe in ("cb", "vf", "nn"):
         if (probe, n, 0) in jobs:
             d = jobs[(probe, n, 0)]
