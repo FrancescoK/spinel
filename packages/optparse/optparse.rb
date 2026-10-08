@@ -3,8 +3,8 @@
 # A statically typable subset of CRuby's OptionParser:
 #   - OptionParser.new(banner, width, indent) { |opts| ... }
 #   - on / on_tail with any number of switch names ("-nNAME" declares -n with
-#     a value), any number of description lines and an optional Array type,
-#     in any order
+#     a value), any number of description lines and an optional value type
+#     (String, Array, Integer or Float), in any order
 #   - separator, banner=, summary_width, summary_indent, to_s (help text)
 #   - parse! with --long=VALUE, --long VALUE, -s VALUE, -sVALUE, clustered
 #     short switches (-vq, -vuNAME) and "--"
@@ -16,11 +16,13 @@
 #   - abbreviated long switches: "--verb" is "--verbose", each word may be
 #     shortened ("--d-r" is "--dry-run") and case is ignored; a name two
 #     switches share raises AmbiguousOption
+#   - Integer reads 12, -3, 0x1f, 0b11, 010 and 1_000, and Float reads 1.5,
+#     -.5 and 1e3; any other word raises OptionParser::InvalidArgument
 #   - OptionParser::InvalidOption, OptionParser::AmbiguousOption,
-#     OptionParser::MissingArgument and OptionParser::NeedlessArgument, all
-#     subclasses of OptionParser::ParseError
+#     OptionParser::MissingArgument, OptionParser::NeedlessArgument and
+#     OptionParser::InvalidArgument, all subclasses of OptionParser::ParseError
 #
-# Not supported: other value types than String and Array.
+# Not supported: other value types than String, Array, Integer and Float.
 
 class OptionParser
   class ParseError < StandardError
@@ -38,17 +40,28 @@ class OptionParser
   class NeedlessArgument < ParseError
   end
 
+  class InvalidArgument < ParseError
+  end
+
+  # The words an Integer or a Float switch accepts. radix is a leading 0
+  # with an octal, binary (0b) or hexadecimal (0x) number.
+  digits = '\d+(?:_\d+)*'
+  radix = '0(?:[0-7]+(?:_[0-7]+)*|b[01]+(?:_[01]+)*|x[\da-f]+(?:_[\da-f]+)*)?'
+  INTEGER_VALUE = /\A[-+]?(?:#{radix}|#{digits})\z/io
+  FLOAT_VALUE = /\A[-+]?(?:#{digits}(?:\.(?:#{digits})?)?|\.#{digits})
+                 (?:E[-+]?#{digits})?\z/iox
+
   # One entry of the help text: a switch, or a separator line (no names).
   class Switch
-    attr_reader :shorts, :longs, :arg, :descriptions, :handler, :is_array
+    attr_reader :shorts, :longs, :arg, :descriptions, :handler, :type
 
-    def initialize(shorts, longs, arg, descriptions, handler, is_array)
+    def initialize(shorts, longs, arg, descriptions, handler, type)
       @shorts = shorts
       @longs = longs
       @arg = arg
       @descriptions = descriptions
       @handler = handler
-      @is_array = is_array
+      @type = type
     end
 
     def takes_value
@@ -102,7 +115,7 @@ class OptionParser
   end
 
   def separator(text)
-    @entries.push(Switch.new([], [], "", [text], nil, false))
+    @entries.push(Switch.new([], [], "", [text], nil, String))
   end
 
   def on(*args, &block)
@@ -114,12 +127,13 @@ class OptionParser
   end
 
   # When a switch raises an error, argv keeps only the words after the
-  # switch that failed, as in CRuby.
+  # switch that failed and the value it read, as in CRuby.
   def parse!(argv = ARGV)
     rest = []
     i = 0
     begin
       while i < argv.length
+        @used = i
         arg = argv[i]
         if arg == "--"
           rest.concat(argv[(i + 1)..])
@@ -135,7 +149,7 @@ class OptionParser
         i += 1
       end
     rescue ParseError
-      rest = argv[(i + 1)..]
+      rest = argv[(@used + 1)..]
       argv.clear
       argv.concat(rest)
       raise
@@ -164,7 +178,7 @@ class OptionParser
     longs = []
     arg_text = ""
     descriptions = []
-    is_array = false
+    type = String
     args.each do |a|
       if a.is_a?(String) && a.length > 1 && a[0] == "-"
         # a "[" opens an optional value ("--name[=VALUE]"), but the "[no-]" of
@@ -176,11 +190,11 @@ class OptionParser
         (a[1] == "-" ? longs : shorts).push(a[0, cut])
       elsif a.is_a?(String)
         descriptions.push(a)
-      elsif a == Array
-        is_array = true
+      elsif a == Array || a == Integer || a == Float
+        type = a
       end
     end
-    Switch.new(shorts, longs, arg_text, descriptions, block, is_array)
+    Switch.new(shorts, longs, arg_text, descriptions, block, type)
   end
 
   def help_line(sw)
@@ -201,14 +215,31 @@ class OptionParser
     (@entries + @tail).find { |e| e.matches?(name) }
   end
 
-  def invoke(sw, value)
+  # Passes the value to the block in the switch's type. A word that is not
+  # an Integer or a Float raises InvalidArgument naming it as given (shown).
+  def invoke(sw, value, shown)
     handler = sw.handler
-    return if handler.nil?
-    if sw.is_array
-      handler.call(value.nil? ? nil : value.split(","))
+    type = sw.type
+    if value.nil? || type == String
+      handler.call(value) if handler
+    elsif type == Array
+      handler.call(value.split(",")) if handler
+    elsif type == Integer
+      raise invalid_argument(shown) unless value.match?(INTEGER_VALUE)
+      begin
+        number = Integer(value)
+      rescue ArgumentError
+        raise invalid_argument(shown)
+      end
+      handler.call(number) if handler
     else
-      handler.call(value)
+      raise invalid_argument(shown) unless value.match?(FLOAT_VALUE)
+      handler.call(value.to_f) if handler
     end
+  end
+
+  def invalid_argument(shown)
+    InvalidArgument.new("invalid argument: " + shown)
   end
 
   def invoke_flag(sw, value)
@@ -281,8 +312,9 @@ class OptionParser
     if sw.takes_value && is_enabled
       attached = eq ? arg[(eq + 1)..] : nil
       value = attached || next_value(sw, argv, index, name)
-      invoke(sw, value)
       index += 1 if attached.nil? && value
+      @used = index
+      invoke(sw, value, attached ? arg : name + " " + value.to_s)
     else
       raise NeedlessArgument.new("needless argument: " + arg) if eq
       invoke_flag(sw, is_enabled)
@@ -305,8 +337,9 @@ class OptionParser
       if sw.takes_value
         attached = pos + 1 < arg.length ? arg[(pos + 1)..] : nil
         value = attached || next_value(sw, argv, index, name)
-        invoke(sw, value)
         index += 1 if attached.nil? && value
+        @used = index
+        invoke(sw, value, attached ? from_here : name + " " + value.to_s)
         break
       end
       raise NeedlessArgument.new("needless argument: " + from_here) if arg[pos + 1] == "="
