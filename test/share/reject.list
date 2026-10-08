@@ -71,3 +71,5 @@ test/reject/string_yield_captured_param.rb
 test/reject/string_yield_poly_param_global.rb
 test/reject/string_yield_splat_captured.rb
 test/reject/yield_splat_elem_append.rb
+test/reject/string_reopen_yield_self_mutation.rb
+test/reject/string_reopen_proc_self_mutation.rb
