@@ -197,6 +197,8 @@ unsigned share_node_flags(const Compiler *c, int n);
    holder stores its String, and nothing the walk does not follow meets it
    (its other values are transients a call or a mutator made)? */
 int share_node_one_name(const Compiler *c, int n);
+/* A fresh value or a single-use local whose destination is its only live name. */
+int share_value_unobserved(Compiler *c, int n);
 /* Does the rule share the class of node n's value? */
 int share_node_shares(const Compiler *c, int n);
 

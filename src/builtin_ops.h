@@ -327,6 +327,7 @@ typedef enum {
   BSH_MERGE,      /* stores the elements of its container arguments; answers
                      the receiver or a container of both */
   BSH_ARGS,       /* answers its one argument, or an Array of several (p) */
+  BSH_LAST,       /* answers its last argument without retaining it */
   BSH_ARRAY_OF,   /* answers its Array argument, or an Array holding it (Array()) */
   BSH_FILL1,      /* writes into its second argument in place (IO#read(n, buf)) */
   BSH_FILL2,      /* writes into and answers its third argument (IO#pread) */
