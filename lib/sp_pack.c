@@ -555,6 +555,27 @@ static void pk_str_spec(char spec, int64_t count, sp_RbVal e, int have,
 
 /* ---------- Pack entry points ---------- */
 
+/* X backs the output up; @ pads with NUL to (or truncates to) an absolute
+   length. Both were dropped, so the packed bytes came out shifted (#3553).
+   Shared by the four pack entry points, whose prologues are otherwise
+   identical. Returns 1 when it handled the directive (caller should
+   `continue`), 0 for any other spec. */
+static int pk_cursor_directive(char spec, int64_t count, char **buf, size_t *len, size_t *cap) {
+  if (spec == 'X') {
+    size_t back = count < 0 ? 1 : (size_t)count;
+    if (back > *len) sp_raise_cls("ArgumentError", "X outside of string");
+    *len -= back;
+    return 1;
+  }
+  if (spec == '@') {
+    size_t abs = count < 0 ? *len : (size_t)count;
+    if (abs <= *len) *len = abs;
+    else { char _z = 0; while (*len < abs) pk_append(buf, len, cap, &_z, 1); }
+    return 1;
+  }
+  return 0;
+}
+
 /* A typed array's nil is the slot's sentinel (SP_INT_NIL, the Float NaN
    payload), and nil converts to neither number: CRuby raises the
    conversion's TypeError where these packed the sentinel's bits. */
@@ -595,20 +616,7 @@ const char *sp_IntArray_pack(sp_IntArray *arr, const char *fmt) {SP_GC_ROOT(arr)
     if (spec == ' ' || spec == '\t' || spec == '\n') continue;
     int big = 0;
     int64_t count = pk_parse_count_mods(&p, &big);
-    /* X backs the output up; @ pads with NUL to (or truncates to) an absolute
-       length. Both were dropped, so the packed bytes came out shifted (#3553). */
-    if (spec == 'X') {
-      size_t back = count < 0 ? 1 : (size_t)count;
-      if (back > len) sp_raise_cls("ArgumentError", "X outside of string");
-      len -= back;
-      continue;
-    }
-    if (spec == '@') {
-      size_t abs = count < 0 ? len : (size_t)count;
-      if (abs <= len) len = abs;
-      else { char _z = 0; while (len < abs) pk_append(&buf, &len, &cap, &_z, 1); }
-      continue;
-    }
+    if (pk_cursor_directive(spec, count, &buf, &len, &cap)) continue;
     /* a String directive converts the element as CRuby does: an Integer
        is no String (TypeError), the nil sentinel is nil */
     if (pk_is_str_spec(spec)) {
@@ -681,20 +689,7 @@ const char *sp_FloatArray_pack(sp_FloatArray *arr, const char *fmt) {
     if (spec == ' ' || spec == '\t' || spec == '\n') continue;
     int big = 0;
     int64_t count = pk_parse_count_mods(&p, &big);
-    /* X backs the output up; @ pads with NUL to (or truncates to) an absolute
-       length. Both were dropped, so the packed bytes came out shifted (#3553). */
-    if (spec == 'X') {
-      size_t back = count < 0 ? 1 : (size_t)count;
-      if (back > len) sp_raise_cls("ArgumentError", "X outside of string");
-      len -= back;
-      continue;
-    }
-    if (spec == '@') {
-      size_t abs = count < 0 ? len : (size_t)count;
-      if (abs <= len) len = abs;
-      else { char _z = 0; while (len < abs) pk_append(&buf, &len, &cap, &_z, 1); }
-      continue;
-    }
+    if (pk_cursor_directive(spec, count, &buf, &len, &cap)) continue;
     /* a String directive converts the element as CRuby does: a Float is no
        String (TypeError), the nil sentinel is nil */
     if (pk_is_str_spec(spec)) {
@@ -744,20 +739,7 @@ const char *sp_PolyArray_pack(sp_PolyArray *arr, const char *fmt) {SP_GC_ROOT(ar
     if (spec == ' ' || spec == '\t' || spec == '\n') continue;
     int big = 0;
     int64_t count = pk_parse_count_mods(&p, &big);
-    /* X backs the output up; @ pads with NUL to (or truncates to) an absolute
-       length. Both were dropped, so the packed bytes came out shifted (#3553). */
-    if (spec == 'X') {
-      size_t back = count < 0 ? 1 : (size_t)count;
-      if (back > len) sp_raise_cls("ArgumentError", "X outside of string");
-      len -= back;
-      continue;
-    }
-    if (spec == '@') {
-      size_t abs = count < 0 ? len : (size_t)count;
-      if (abs <= len) len = abs;
-      else { char _z = 0; while (len < abs) pk_append(&buf, &len, &cap, &_z, 1); }
-      continue;
-    }
+    if (pk_cursor_directive(spec, count, &buf, &len, &cap)) continue;
     /* a/A/Z, m/M, H/h, B/b, u: consume one element, converted as CRuby
        converts it (pk_str_elem_bytes) */
     if (pk_is_str_spec(spec)) {
@@ -828,20 +810,7 @@ const char *sp_StrArray_pack(sp_StrArray *arr, const char *fmt) {
     if (spec == ' ' || spec == '\t' || spec == '\n') continue;
     int big = 0;
     int64_t count = pk_parse_count_mods(&p, &big);
-    /* X backs the output up; @ pads with NUL to (or truncates to) an absolute
-       length. Both were dropped, so the packed bytes came out shifted (#3553). */
-    if (spec == 'X') {
-      size_t back = count < 0 ? 1 : (size_t)count;
-      if (back > len) sp_raise_cls("ArgumentError", "X outside of string");
-      len -= back;
-      continue;
-    }
-    if (spec == '@') {
-      size_t abs = count < 0 ? len : (size_t)count;
-      if (abs <= len) len = abs;
-      else { char _z = 0; while (len < abs) pk_append(&buf, &len, &cap, &_z, 1); }
-      continue;
-    }
+    if (pk_cursor_directive(spec, count, &buf, &len, &cap)) continue;
     /* a nil element (NULL) is nil to the String directives: padding for
        a A Z B b H h, "" for M, and the TypeError m and u raise */
     if (pk_is_str_spec(spec)) {
