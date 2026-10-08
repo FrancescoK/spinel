@@ -1,0 +1,8 @@
+["PATCH", "/r", true]
+[Net::HTTPOK, "PUT /u HTTP/1.1 content-length=1 body=x"]
+"PUT /u HTTP/1.1 content-length=2 content-type=application/json body={}"
+"PATCH /p HTTP/1.1 content-length=7 content-type=application/json body={\"a\":1}"
+"PATCH /p HTTP/1.1 content-length=0 body="
+"DELETE /d HTTP/1.1 depth=Infinity body="
+"DELETE /d HTTP/1.1 x-a=1 body="
+"PATCH /q HTTP/1.1 content-length=2 content-type=text/plain body=hi"
