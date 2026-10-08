@@ -3,6 +3,7 @@
 # is int64-only, so the CRuby Bignum promotion path lowers to a
 # user-catchable RangeError.
 # spinel: wasm
+# spinel: not-cruby
 begin
   "99999999999999999999".to_i
   puts "no exception"
