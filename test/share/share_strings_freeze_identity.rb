@@ -18,3 +18,5 @@ class IdentityOverride
 end
 o = IdentityOverride.new
 p o.itself.equal?(o), o.freeze.equal?(o)
+p s.freeze.object_id == s.object_id, s.itself.__id__ == s.__id__
+p s.to_s.object_id == s.object_id, s.to_str.frozen?, s.itself.frozen?

@@ -925,6 +925,11 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
     /* a shared String handle keeps its own frozen flag: read through it, not
        through the String value the handle is read as (a fresh copy) */
     char fsref[1024];
+    int up = 0;
+    if (frt == TY_STRING && strbuf_self_route_slot(c, recv, &up, fsref, sizeof fsref) && !up) {
+      buf_printf(b, "sp_String_is_frozen(%s)", fsref);
+      return 1;
+    }
     if ((frt == TY_STRING || frt == TY_STRBUF) && strbuf_slot_ref(c, recv, fsref, sizeof fsref)) {
       buf_printf(b, "sp_String_is_frozen(%s)", fsref);
       return 1;
