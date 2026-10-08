@@ -451,6 +451,19 @@ const CallPlan *cplan_user_fresh(Compiler *c, int id) {
   return &fresh;
 }
 
+/* A constructor's result can be discarded, so resolve from its receiver
+   after the user new plan has declined, rather than from its result type. */
+int cplan_initialize(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  if (id < 0 || nt_kind(nt, id) != NK_CallNode || !is_new_name(nt_str(nt, id, "name"))) return -1;
+  int r = nt_ref(nt, id, "receiver");
+  NodeKind k = nt_kind(nt, r);
+  if (k != NK_ConstantReadNode && k != NK_ConstantPathNode) return -1;
+  if (cplan_user_fresh(c, id)->dispatch != CP_NONE) return -1;
+  int ci = comp_class_index(c, nt_str(nt, r, "name"));
+  return ci >= 0 ? comp_method_in_chain(c, ci, "initialize", NULL) : -1;
+}
+
 /* ---- cplan_targets: the user methods a call may reach ---- */
 
 /* Held answers, per node id: g_ct_n[id] is CT_NONE (not asked), CPT_UNKNOWN

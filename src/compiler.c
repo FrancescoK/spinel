@@ -261,6 +261,7 @@ void comp_free(Compiler *c) {
   c->byref_elig = NULL;
   c->nbyref_elig = 0;
   pivs_facts_free(c);
+  strbuf_arg_index_free(c);
   free(c->vs_head); free(c->vs_site); free(c->vs_var); free(c->vs_next); free(c->vs_kind);
   free(c->vs_rparent); free(c->vs_dropped);
   c->vs_head = c->vs_site = c->vs_var = c->vs_next = c->vs_rparent = NULL;
