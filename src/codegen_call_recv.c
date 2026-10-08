@@ -6436,6 +6436,14 @@ static int str_arms_convert(Compiler *c, int id, Buf *b, const NodeTable *nt, co
      argument for its side effects. */
   else if (sp_streq(name, "equal?") && argc == 1) {
     TyKind eqa = comp_ntype(c, argv[0]);
+    /* A narrowed box keeps its identity in the original box, whether the
+       payload is a plain String or a shared handle. */
+    if (repr_share_rule(c) && (repr_of(c, recv).strbuf_src == RS_SLOT_POLY ||
+                             repr_of(c, argv[0]).strbuf_src == RS_SLOT_POLY)) {
+      buf_puts(b, "sp_poly_equal("); emit_boxed(c, recv, b);
+      buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, ")");
+      return 1;
+    }
     /* a mutable StringBuffer local as the argument: compare the buffer's
        OWN cstr pointer -- the plain read emits a defensive snapshot copy
        (sp_str_concat(cstr, "")), which would break `(s << "x").equal?(s)`

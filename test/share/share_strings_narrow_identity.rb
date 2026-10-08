@@ -5,6 +5,7 @@ def narrow_array(value)
   if copy.is_a?(String)
     copy << "!"
     p value.equal?(copy)
+    p copy.equal?(value), value.object_id == copy.object_id
   end
   p copy
 end
