@@ -337,8 +337,6 @@ static int repr_strbuf_src(const Compiler *c, int node, TyKind t) {
     if (repr_string_conversion_operand(mc, node) >= 0) return RS_HANDLE;
     int ops[3];
     if (strbuf_route_clamp(mc, node, ops)) return RS_HANDLE;
-    /* A boxed return pickup keeps its published handle too. */
-    if (c->strbuf_box[node] && repr_call_returns_handle(mc, node)) return RS_HANDLE;
     /* A demanded call whose return route carries a handle is already that
        handle, including when operand ordering holds it in a temp. */
     if (c->strbuf_handle_demand[node] && repr_call_returns_handle(mc, node)) return RS_DEMANDED;
@@ -347,6 +345,9 @@ static int repr_strbuf_src(const Compiler *c, int node, TyKind t) {
     if (r >= 0 && ty_is_object(comp_ntype(c, r)) &&
         (strbuf_marked_yields_handle(mc, node) || c->strbuf_handle_demand[node]))
       return RS_DEMANDED;
+    /* A boxed return pickup keeps its published handle too. A demanded
+       reader above already emits the handle, including from a held temp. */
+    if (c->strbuf_box[node] && repr_call_returns_handle(mc, node)) return RS_HANDLE;
   }
   /* a String value stored where a handle is demanded: a fresh one */
   return RS_FRESH;
