@@ -11,6 +11,7 @@ class LiteralReader
   def append_rest(*items) = items.each { |e| e << "!" }
   def append_tail(a, *items) = items.each { |e| e << "!" }
   def append_keyword(a, *items, suffix:) = items.each { |e| e << suffix }
+  def append_post(*items, last) = (items.each { |e| e << "!" }; last << "?")
 
   def run
     self.text = "aabc"
@@ -66,6 +67,25 @@ class LiteralReader
     append_rest(self.text, *[last])
     p self.text, last
 
+    # A post takes the reader before an empty splat; a nonempty splat can
+    # instead leave the reader in the rest, even after another rest source.
+    self.text = +"a"
+    append_post(self.text, *[])
+    p self.text
+    self.text = +"a"
+    last = +"b"
+    append_post(self.text, *[last])
+    p self.text, last
+    self.text = +"a"
+    first = +"x"
+    append_post(first, self.text, *[])
+    p first, self.text
+    self.text = +"a"
+    first = +"x"
+    last = +"b"
+    append_post(first, self.text, *[last])
+    p first, self.text, last
+
     self.text = "frozen"
     frozen_tail = [+"unchanged"]
     begin
@@ -119,3 +139,41 @@ s = +"a"
 t = +"b"
 append_rest_top(s, *[t])
 p s, t
+
+# Posts take their arguments from the end, including a plain source before
+# an empty splat. A nonempty splat can leave that same source in the rest.
+def append_post_fresh(*rest, last) = (rest.each { |e| e << "!" }; last << "?")
+s = +"a"
+append_post_fresh(s, *[])
+p s
+s = +"a"
+append_post_fresh(s, *[+"b"])
+p s
+s = +"a"
+append_post_fresh(+"x", s, *[])
+p s
+s = +"a"
+x = +"x"
+b = +"b"
+append_post_fresh(x, s, *[b])
+p x, s, b
+
+def append_lead_post_fresh(lead, *rest, last) = (rest.each { |e| e << "!" }; last << "?")
+lead = +"lead"
+s = +"a"
+append_lead_post_fresh(lead, s, *([]))
+p lead, s
+s = +"a"
+x = +"x"
+append_lead_post_fresh(lead, x, s, *[])
+p lead, x, s
+
+# The same placement holds when the rest escapes as the call's result.
+def append_post_kept(*rest, last) = (rest.each { |e| e << "!" }; last << "?"; rest)
+r.text = +"reader"
+p append_post_kept(r.text, *[])
+p r.text
+r.text = +"reader"
+last = +"last"
+p append_post_kept(+"first", r.text, *[last])
+p r.text, last
