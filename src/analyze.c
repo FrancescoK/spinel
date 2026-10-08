@@ -15081,38 +15081,50 @@ static int strbuf_map_block_tail(Compiler *c, int val) {
   return bn > 0 ? bb[bn - 1] : -1;
 }
 
-/* The values node `w` stores into container local (contn, conts): the
-   elements of an array/hash literal written to it (with `map_tail`, also a
-   collecting iterator's block tail), or the arguments of a push/<</[]= on
-   it. Fills `stores` (64 slots) and answers the count; 0 when not a store. */
+/* The values a store walk collects, grown to the call's or literal's whole
+   length: a fixed buffer left the values past it out of the walk (a
+   `push` or an Array literal of 70 Strings). */
+typedef struct { int *v; int n, cap; } StoreVals;
+static void store_vals_add(StoreVals *sv, int node) {
+  if (sv->n == sv->cap) {
+    sv->cap = sv->cap ? sv->cap * 2 : 16;
+    sv->v = realloc(sv->v, sizeof(int) * (size_t)sv->cap);
+    if (!sv->v) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  sv->v[sv->n++] = node;
+}
 /* The values Array call w (`<<`, push, unshift, `[]=`, prepend and insert,
-   a store with a block, fill) stores into its receiver, into stores[64];
-   answers how many. insert's first argument is the index. */
-static int array_call_store_values(Compiler *c, int w, int *stores) {
+   a store with a block, fill) stores into its receiver, into sv; answers
+   how many. insert's first argument is the index. */
+static int array_call_store_values(Compiler *c, int w, StoreVals *sv) {
   const NodeTable *nt = c->nt;
   const char *wcn = nt_str(nt, w, "name");
   int a = nt_ref(nt, w, "arguments");
   int an = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
-  int nst = 0;
+  sv->n = 0;
   if (!wcn) return 0;
   int add = array_unseen_add_kind(wcn);
   /* prepend and insert under --share-strings, whose rule demands what they
      store (the default build refuses a named String they add: sa_refuse) */
   if (is_push_unshift(wcn) || (c->share_strings && (add == ARRAY_ADD_PREPEND || (add == ARRAY_ADD_INSERT && an >= 2))))
-    for (int e = add == ARRAY_ADD_INSERT ? 1 : 0; e < an && nst < 64; e++) stores[nst++] = av[e];
-  else if (is_index_assign(wcn) && an >= 2) stores[nst++] = av[an - 1];
+    for (int e = add == ARRAY_ADD_INSERT ? 1 : 0; e < an; e++) store_vals_add(sv, av[e]);
+  else if (is_index_assign(wcn) && an >= 2) store_vals_add(sv, av[an - 1]);
   /* under --share-strings a store with a block (not rewritten to []=)
      stores its value as well (#6765) */
   else if (c->share_strings && is_store_alias(wcn) && an == 2 && nt_ref(nt, w, "block") >= 0)
-    stores[nst++] = av[1];
+    store_vals_add(sv, av[1]);
   else if (is_fill_name(wcn) && an >= 1 && an <= 3 &&
-           nt_ref(nt, w, "block") < 0) stores[nst++] = av[0];
-  return nst;
+           nt_ref(nt, w, "block") < 0) store_vals_add(sv, av[0]);
+  return sv->n;
 }
+/* The values node `w` stores into container local (contn, conts): the
+   elements of an array/hash literal written to it (with `map_tail`, also a
+   collecting iterator's block tail), or the arguments of a push/<</[]= on
+   it. Fills sv and answers the count; 0 when not a store. */
 static int strbuf_container_store_values(Compiler *c, int w, const char *contn, Scope *conts,
-                                         int map_tail, int *stores) {
+                                         int map_tail, StoreVals *sv) {
   const NodeTable *nt = c->nt;
-  int nst = 0;
+  sv->n = 0;
   NodeKind wk = nt_kind(nt, w);
   if (wk == NK_LocalVariableWriteNode) {
     const char *wn = nt_str(nt, w, "name");
@@ -15122,14 +15134,14 @@ static int strbuf_container_store_values(Compiler *c, int w, const char *contn, 
     NodeKind vk = nt_kind(nt, val);
     if (vk == NK_ArrayNode) {
       int en = 0; const int *el = nt_arr(nt, val, "elements", &en);
-      for (int e = 0; e < en && nst < 64; e++) stores[nst++] = el[e];
+      for (int e = 0; e < en; e++) store_vals_add(sv, el[e]);
     }
     else if (map_tail && strbuf_map_block_tail(c, val) >= 0)
-      stores[nst++] = strbuf_map_block_tail(c, val);
+      store_vals_add(sv, strbuf_map_block_tail(c, val));
     else if (vk == NK_HashNode || vk == NK_KeywordHashNode) {
       int en = 0; const int *el = nt_arr(nt, val, "elements", &en);
-      for (int e = 0; e < en && nst < 64; e++)
-        if (nt_kind(nt, el[e]) == NK_AssocNode) stores[nst++] = nt_ref(nt, el[e], "value");
+      for (int e = 0; e < en; e++)
+        if (nt_kind(nt, el[e]) == NK_AssocNode) store_vals_add(sv, nt_ref(nt, el[e], "value"));
     }
   }
   else if (wk == NK_CallNode) {
@@ -15137,9 +15149,9 @@ static int strbuf_container_store_values(Compiler *c, int w, const char *contn, 
     if (wr < 0 || nt_kind(nt, wr) != NK_LocalVariableReadNode) return 0;
     const char *wrn = nt_str(nt, wr, "name");
     if (!wrn || !sp_streq(wrn, contn) || comp_scope_of(c, wr) != conts) return 0;
-    nst = array_call_store_values(c, w, stores);
+    array_call_store_values(c, w, sv);
   }
-  return nst;
+  return sv->n;
 }
 /* What a walk over the values stored into a container does with each one:
    demand it into a shared handle, or ask whether it is (provably not) a
@@ -15158,19 +15170,21 @@ static int strbuf_container_stores_kind(Compiler *c, const char *contn, Scope *c
                                         int depth, int mode) {
   const NodeTable *nt = c->nt;
   if (depth > 8) return 0;
-  for (int w = 0; w < nt->count; w++) {
-    int stores[64];
-    int nst = strbuf_container_store_values(c, w, contn, conts, SB_KIND(mode) == SB_HAS_STRING, stores);
-    for (int e = 0; e < nst; e++)
-      if (strbuf_store_leaf(c, stores[e], depth, mode)) return 1;
-    if (nst == 0 && nt_kind(nt, w) == NK_LocalVariableWriteNode) {
+  StoreVals stores = {0};
+  int found = 0;
+  for (int w = 0; w < nt->count && !found; w++) {
+    int nst = strbuf_container_store_values(c, w, contn, conts, SB_KIND(mode) == SB_HAS_STRING, &stores);
+    for (int e = 0; e < nst && !found; e++)
+      found = strbuf_store_leaf(c, stores.v[e], depth, mode);
+    if (!found && nst == 0 && nt_kind(nt, w) == NK_LocalVariableWriteNode) {
       const char *wn = nt_str(nt, w, "name");
       if (wn && sp_streq(wn, contn) && comp_scope_of(c, w) == conts &&
           strbuf_container_source_walk(c, nt_ref(nt, w, "value"), depth + 1, mode))
-        return 1;
+        found = 1;
     }
   }
-  return 0;
+  free(stores.v);
+  return found;
 }
 static int strbuf_container_stores_string(Compiler *c, const char *contn, Scope *conts) {
   return strbuf_container_stores_kind(c, contn, conts, 0, SB_HAS_STRING);
@@ -15576,11 +15590,11 @@ static int strbuf_demand_container_stores_here(Compiler *c, const char *contn, S
        literal writes, push/<<, []= */
     int nsn = 0;
     const int *sns0 = sb_store_nodes(c, contn, conts, &nsn);
+    StoreVals stores = {0};
     for (int si = 0; si < nsn; si++) {
-      int stores[64];
-      int nst = strbuf_container_store_values(c, sns0[si], contn, conts, 1, stores);
+      int nst = strbuf_container_store_values(c, sns0[si], contn, conts, 1, &stores);
       for (int e3 = 0; e3 < nst; e3++)
-        changed |= strbuf_store_leaf(c, stores[e3], depth, mode);
+        changed |= strbuf_store_leaf(c, stores.v[e3], depth, mode);
       /* `a.insert(0, s)`: a store this walk does not take (sa_refuse) */
       for (int k = 0, e; mode == SB_DEMAND && nst == 0 && (e = sa_unseen_element(c, sns0[si], k)) != -2; k++)
         if (e >= 0) sa_refuse_element(c, e, sns0[si]);
@@ -15592,6 +15606,7 @@ static int strbuf_demand_container_stores_here(Compiler *c, const char *contn, S
           changed |= strbuf_container_source_walk(c, nt_ref(nt, sns0[si], "value"), depth + 1, mode);
       }
     }
+    free(stores.v);
   return changed;
 }
 
@@ -15764,6 +15779,7 @@ static void refuse_callee_container_store(Compiler *c, int l, int a) {
 }
 static void refuse_callee_container_stores(Compiler *c, const char *vn, Scope *vs) {
   const NodeTable *nt = c->nt;
+  StoreVals st = {0};
   for (int u = comp_scall_first(c, (int)(vs - c->scopes)); u >= 0; u = comp_scall_next(c, u)) {
     int mi = nt_kind(nt, u) == NK_CallNode && comp_scope_of(c, u) == vs ? an_call_target_mi(c, u) : -1;
     Scope *m = mi > 0 ? &c->scopes[mi] : NULL;
@@ -15775,12 +15791,11 @@ static void refuse_callee_container_stores(Compiler *c, const char *vn, Scope *v
       int ns = 0;
       const int *sn = sb_store_nodes(c, pn, m, &ns);
       for (int i = 0; i < ns; i++) {
-        int st[64];
         /* `def keep(a) = (a = []; a << s)`: a store into the method's own Array */
         if (store_after_param_rebind(c, m, pn, sn[i])) continue;
-        int n = strbuf_container_store_values(c, sn[i], pn, m, 0, st);
+        int n = strbuf_container_store_values(c, sn[i], pn, m, 0, &st);
         for (int e = 0; e < n; e++) {
-          int l = an_unparen(nt, st[e]);
+          int l = an_unparen(nt, st.v[e]);
           TyKind lt = infer_type(c, l);
           LocalVar *ll = nt_kind(nt, l) == NK_LocalVariableReadNode
                          ? scope_local(comp_scope_of(c, l), nt_str(nt, l, "name")) : NULL;
@@ -15791,6 +15806,7 @@ static void refuse_callee_container_stores(Compiler *c, const char *vn, Scope *v
       }
     }
   }
+  free(st.v);
 }
 /* The stores into container local (vn, vs): its own, and for a parameter
    or a block parameter, those of what the caller or the iterator binds it
@@ -15821,16 +15837,17 @@ static int strbuf_ivar_source_walk(Compiler *c, int cid, const char *ivn, int de
     if (!wn || !sp_streq(wn, ivn) || comp_ivar_owner(c, w) != cid) continue;
     changed |= strbuf_container_source_walk(c, nt_ref(nt, w, "value"), depth + 1, mode);
   }
+  StoreVals stores = {0};
   for (int w = comp_kind_first(c, NK_CallNode); w >= 0; w = comp_kind_next(c, w)) {
     if (nt_kind(nt, w) != NK_CallNode) continue;
     int r = nt_ref(nt, w, "receiver");
     if (r < 0 || nt_kind(nt, r) != NK_InstanceVariableReadNode) continue;
     const char *rn = nt_str(nt, r, "name");
     if (!rn || !sp_streq(rn, ivn) || comp_ivar_owner(c, r) != cid) continue;
-    int stores[64];
-    int nst = array_call_store_values(c, w, stores);
-    for (int e = 0; e < nst; e++) changed |= strbuf_store_leaf(c, stores[e], depth, mode);
+    int nst = array_call_store_values(c, w, &stores);
+    for (int e = 0; e < nst; e++) changed |= strbuf_store_leaf(c, stores.v[e], depth, mode);
   }
+  free(stores.v);
   return changed;
 }
 /* A builtin call whose result holds the receiver's own element objects,
@@ -16021,26 +16038,27 @@ static int static_site_is(Compiler *c, NodeKind kind, int e, const char *name) {
 static int strbuf_static_store_walk(Compiler *c, NodeKind kind, const char *grn, int depth) {
   const NodeTable *nt = c->nt;
   int changed = 0;
+  StoreVals stores = {0};
   for (int e = comp_vsite_first(c, VS_RECV, kind, grn, -1); e >= 0;
        e = comp_vsite_next(c, e)) {
     int u = comp_vsite_node(c, e);
     if (!static_site_is(c, kind, e, grn)) continue;
-    int stores[64];
-    int nst = array_call_store_values(c, u, stores);
+    int nst = array_call_store_values(c, u, &stores);
     for (int k = 0; k < nst; k++) {
       /* a block parameter whose String the rule shares holds the handle
          what binds it hands over (share_default_apply, or the seal refuses
          it by name): it is stored as itself, the handle the container (a
          poly Array of handles) then holds */
-      int sv = an_unparen(nt, stores[k]);
+      int sv = an_unparen(nt, stores.v[k]);
       Scope *svs = sv >= 0 && nt_kind(nt, sv) == NK_LocalVariableReadNode ? comp_scope_of(c, sv) : NULL;
       LocalVar *slv = svs ? scope_local(svs, nt_str(nt, sv, "name")) : NULL;
       if (slv && slv->is_block_param &&
           repr_str_shares(c, share_local_holder(c, (int)(svs - c->scopes), (int)(slv - svs->locals))))
         continue;
-      changed |= strbuf_store_leaf(c, stores[k], depth, SB_DEMAND);
+      changed |= strbuf_store_leaf(c, stores.v[k], depth, SB_DEMAND);
     }
   }
+  free(stores.v);
   return changed;
 }
 static int strbuf_gvar_store_walk(Compiler *c, const char *grn, int depth) {
@@ -17580,21 +17598,19 @@ static void an_hash_store_routes(Compiler *c, int hr, int site, int blk, const c
   if (!lit && nt_kind(nt, hr) != NK_LocalVariableReadNode) return;
   const char *hn = lit ? NULL : nt_str(nt, hr, "name");
   Scope *hs = lit ? NULL : comp_scope_of(c, hr);
-  /* (a literal's every element: a fixed buffer left the ones past it
-     unchecked) */
-  int lit_en = 0;
-  if (lit) nt_arr(nt, hr, "elements", &lit_en);
-  int *stores = malloc(sizeof(int) * (size_t)(lit_en > 64 ? lit_en + 1 : 65));
+  StoreVals stores = {0};
   for (int w = 0; w < (lit ? 1 : nt->count); w++) {
     int ns = 0;
     if (lit) {
       int en = 0; const int *el = nt_arr(nt, hr, "elements", &en);
+      stores.n = 0;
       for (int e = 0; e < en; e++)
-        if (nt_kind(nt, el[e]) == NK_AssocNode) stores[ns++] = nt_ref(nt, el[e], "value");
-        else if (nt_kind(nt, hr) == NK_ArrayNode) stores[ns++] = el[e];
+        if (nt_kind(nt, el[e]) == NK_AssocNode) store_vals_add(&stores, nt_ref(nt, el[e], "value"));
+        else if (nt_kind(nt, hr) == NK_ArrayNode) store_vals_add(&stores, el[e]);
+      ns = stores.n;
     }
     else {
-      ns = strbuf_container_store_values(c, w, hn, hs, 0, stores);
+      ns = strbuf_container_store_values(c, w, hn, hs, 0, &stores);
       /* A store with a block is not rewritten to []=. */
       if (nt_kind(nt, w) == NK_CallNode && nt_str(nt, w, "name") &&
           sp_streq(nt_str(nt, w, "name"), "store")) {
@@ -17602,23 +17618,26 @@ static void an_hash_store_routes(Compiler *c, int hr, int site, int blk, const c
         const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
         if (wr >= 0 && nt_kind(nt, wr) == NK_LocalVariableReadNode &&
             nt_str(nt, wr, "name") && sp_streq(nt_str(nt, wr, "name"), hn) &&
-            comp_scope_of(c, wr) == hs && an == 2 && ns < 64) stores[ns++] = av[1];
+            comp_scope_of(c, wr) == hs && an == 2) {
+          store_vals_add(&stores, av[1]);
+          ns = stores.n;
+        }
       }
     }
     int at = site >= 0 ? site : w ? w : hr;
     for (int e = 0; e < ns; e++) {
-      TyKind st = infer_type(c, stores[e]);
+      TyKind st = infer_type(c, stores.v[e]);
       /* A frozen literal already raises FrozenError on this route. */
       if (st != TY_STRING && st != TY_STRBUF) continue;
-      if (nt_kind(nt, stores[e]) == NK_StringNode) continue;
+      if (nt_kind(nt, stores.v[e]) == NK_StringNode) continue;
       ShareRoute q = share_route(at, hr, 1);
       q.to = blk;
       q.to_name = bp;
-      q.carry = stores[e];
+      q.carry = stores.v[e];
       if (!share_route_defer(c, &q, msg)) unsupported_feature(c, at, msg);
     }
   }
-  free(stores);
+  free(stores.v);
 }
 
 static int an_hash_value_block(Compiler *c, const char *itn, int recv, int *hrecv, int *vi) {
@@ -17690,6 +17709,7 @@ static int an_hash_chain_is_unobserved_literal(Compiler *c, int hrecv) {
 static int an_local_string_array_has_untracked_call_store(Compiler *c,
                                                             const char *name, Scope *scope) {
   const NodeTable *nt = c->nt;
+  StoreVals stores = {0};
   for (int w = comp_lvw_first(c, name); w >= 0; w = comp_lvw_next(c, w)) {
     const char *wn = nt_str(nt, w, "name");
     if (!wn || !sp_streq(wn, name) || comp_scope_of(c, w) != scope ||
@@ -17698,9 +17718,9 @@ static int an_local_string_array_has_untracked_call_store(Compiler *c,
     if (value < 0 || nt_kind(nt, value) != NK_CallNode || infer_type(c, value) != TY_STR_ARRAY ||
         !nt_str(nt, value, "name") || !sp_streq(nt_str(nt, value, "name"), "split"))
       continue;
-    int stores[64];
-    if (strbuf_container_store_values(c, w, name, scope, 1, stores) == 0) return 1;
+    if (strbuf_container_store_values(c, w, name, scope, 1, &stores) == 0) { free(stores.v); return 1; }
   }
+  free(stores.v);
   return 0;
 }
 
@@ -32849,6 +32869,7 @@ static void refuse_string_read_copies(Compiler *c) {
     q.carry = SHARE_CARRY_COPY;
     if (rd_receiver_observed(c, r, rn) && !share_route_defer(c, &q, rd_msg)) unsupported_feature(c, w, rd_msg);
   }
+  StoreVals st = {0};
   NT_FOREACH_KIND(nt, NK_CallNode, u) {
     const char *un = nt_str(nt, u, "name");
     int blk = nt_ref(nt, u, "block"), r = nt_ref(nt, u, "receiver");
@@ -32878,10 +32899,9 @@ static void refuse_string_read_copies(Compiler *c) {
     int ns = 0;
     const int *sn = sb_store_nodes(c, cn, comp_scope_of(c, cont), &ns);
     for (int i = 0; i < ns; i++) {
-      int st[64];
-      int n = strbuf_container_store_values(c, sn[i], cn, comp_scope_of(c, cont), 0, st);
+      int n = strbuf_container_store_values(c, sn[i], cn, comp_scope_of(c, cont), 0, &st);
       for (int e = 0; e < n; e++) {
-        int l = an_unparen(nt, st[e]), bound = 0;
+        int l = an_unparen(nt, st.v[e]), bound = 0;
         const char *ln = nt_kind(nt, l) == NK_LocalVariableReadNode ? nt_str(nt, l, "name") : NULL;
         LocalVar *lv = ln ? scope_local(comp_scope_of(c, l), ln) : NULL;
         if (!lv || !lv->is_block_param || lv->type != TY_POLY || lv->poly_ctr) continue;
@@ -32890,6 +32910,7 @@ static void refuse_string_read_copies(Compiler *c) {
       }
     }
   }
+  free(st.v);
 }
 
 /* A multiple assignment's index target that a Struct's own `[]=` can take
