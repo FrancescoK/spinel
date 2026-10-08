@@ -18490,6 +18490,65 @@ static void an_mark_handle_returns(Compiler *c) {
     if (poly) c->strbuf_box[n] = 0;
   }
 }
+/* A String builtin answering a new Array of new Strings nothing else holds
+   (`s.split(",")`, `s.scan(re)`, `s.lines`, `s.chars`). */
+static int sb_fresh_string_array_call(Compiler *c, int n) {
+  const NodeTable *nt = c->nt;
+  n = an_unparen(nt, n);
+  if (n < 0 || nt_kind(nt, n) != NK_CallNode || nt_ref(nt, n, "block") >= 0) return 0;
+  const char *mn = nt_str(nt, n, "name");
+  int r = nt_ref(nt, n, "receiver");
+  if (!mn || r < 0) return 0;
+  if (!sp_streq(mn, "split") && !sp_streq(mn, "scan") && !sp_streq(mn, "lines") && !sp_streq(mn, "chars"))
+    return 0;
+  TyKind rt = infer_type(c, r);
+  return (rt == TY_STRING || rt == TY_STRBUF) && infer_type(c, n) == TY_STR_ARRAY;
+}
+static int sb_subtree_max(const NodeTable *nt, int n) {
+  if (n < 0) return -1;
+  int m = n;
+  const SpNode *nd = &nt->nodes[n];
+  for (int i = 0; i < nd->nr; i++) { int x = sb_subtree_max(nt, nd->r[i].ref); if (x > m) m = x; }
+  for (int i = 0; i < nd->na; i++)
+    for (int j = 0; j < nd->a[i].n; j++) { int x = sb_subtree_max(nt, nd->a[i].ids[j]); if (x > m) m = x; }
+  return m;
+}
+/* map!/collect! over local `vn` (call w) mutating each element it yields:
+   the elements are replaced by the block's values, so a mutation of the
+   yielded String is seen only where the block's value carries it -- unless
+   the String is reachable some other way. It is not when the local is only
+   ever bound to a fresh String Array (sb_fresh_string_array_call) ahead of
+   w, every other read of it comes after w (none can hand an element out
+   before the replacement), and no loop around w runs it again over Strings
+   a later read may have handed out. */
+static int sb_map_bang_local_unobserved(Compiler *c, int w, int recv, const char *vn, Scope *vs) {
+  const NodeTable *nt = c->nt;
+  if (!vs || vs->body < 0 || !an_subtree_has(nt, vs->body, w)) return 0;
+  int wmax = sb_subtree_max(nt, w), writes = 0;
+  for (int u = comp_kind_first(c, NK_LocalVariableWriteNode); u >= 0; u = comp_kind_next(c, u)) {
+    if (nt_kind(nt, u) != NK_LocalVariableWriteNode || !sp_streq(nt_str(nt, u, "name"), vn)) continue;
+    if (!an_subtree_has(nt, vs->body, u)) continue;
+    if (u > w || !sb_fresh_string_array_call(c, nt_ref(nt, u, "value"))) return 0;
+    writes++;
+  }
+  if (writes == 0) return 0;
+  NodeKind other[] = { NK_LocalVariableOrWriteNode, NK_LocalVariableAndWriteNode,
+                       NK_LocalVariableOperatorWriteNode, NK_LocalVariableTargetNode };
+  for (int k = 0; k < (int)(sizeof other / sizeof other[0]); k++)
+    for (int u = comp_kind_first(c, other[k]); u >= 0; u = comp_kind_next(c, u))
+      if (nt_kind(nt, u) == other[k] && sp_streq(nt_str(nt, u, "name"), vn) &&
+          an_subtree_has(nt, vs->body, u)) return 0;
+  for (int u = comp_kind_first(c, NK_LocalVariableReadNode); u >= 0; u = comp_kind_next(c, u)) {
+    if (u == recv || nt_kind(nt, u) != NK_LocalVariableReadNode || !sp_streq(nt_str(nt, u, "name"), vn)) continue;
+    if (u <= wmax && an_subtree_has(nt, vs->body, u)) return 0;
+  }
+  NodeKind loops[] = { NK_WhileNode, NK_UntilNode, NK_ForNode };
+  for (int k = 0; k < 3; k++)
+    for (int u = comp_kind_first(c, loops[k]); u >= 0; u = comp_kind_next(c, u))
+      if (nt_kind(nt, u) == loops[k] && an_subtree_has(nt, u, w)) return 0;
+  /* w runs where the local lives, not in a block that may run it again */
+  return comp_scope_of(c, w) == vs;
+}
 static int promote_shared_stored_strings(Compiler *c) {
   int changed = 0;
   /* --share-strings: the one rule decides first (#6765) */
@@ -19173,6 +19232,19 @@ static int promote_shared_stored_strings(Compiler *c) {
       for (int e = 0; e < en && !var; e++) var = nt_kind(nt, el[e]) == NK_LocalVariableReadNode;
       if (!var) continue;
     }
+    /* A fresh String Array a call answers (`s.split(",").map! { |t| t.strip!
+       ... }`) that nothing else holds: a mutation of the String an iterator
+       yields is seen only through the block's own value when the
+       iterator's answer is dropped, or is the block's values (map, and
+       map!/collect!, which store them over the elements). An iterator
+       answering the Array or some of its elements (each, select, find) is
+       read again where its answer is used, and stays refused here. The
+       parameter then binds the element as a copy, as for any read. */
+    if ((bpv4->type == TY_STRING || bpv4->type == TY_STRBUF) && sb_fresh_string_array_call(c, recv4) &&
+        (is_map_bang_alias(itn) || comp_value_dropped(c, w) ||
+         bop_share_named(BOP_ANY_ARRAY, itn) == BSH_ITER_MAP ||
+         bop_share_named(BOP_ANY_ARRAY, itn) == BSH_ITER_MAP_BANG))
+      continue;
     if ((bpv4->type == TY_STRING || bpv4->type == TY_STRBUF) &&
         (nt_kind(nt, recv4) == NK_InstanceVariableReadNode || nt_kind(nt, recv4) == NK_CallNode) &&
         (infer_type(c, recv4) == TY_STR_ARRAY || infer_type(c, recv4) == TY_POLY_ARRAY)) {
@@ -19226,6 +19298,12 @@ static int promote_shared_stored_strings(Compiler *c) {
        (settled or literal) element type so an array-of-arrays each+<<
        never promotes its param */
     if (contt4 != TY_STR_ARRAY && contt4 != TY_POLY_ARRAY) continue;
+    /* map!/collect! over a local only ever bound to a fresh String Array,
+       read nowhere before the replacement: the block's value is what each
+       element becomes, and the mutated String is reachable only through it */
+    if (!lit4 && contt4 == TY_STR_ARRAY && is_map_bang_alias(itn) &&
+        sb_map_bang_local_unobserved(c, w, recv4, contn4, conts4))
+      continue;
     if (!lit4 && contt4 == TY_STR_ARRAY &&
         an_local_string_array_has_untracked_call_store(c, contn4, conts4)) {
       static const char sa_msg[] =
