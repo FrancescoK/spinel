@@ -11743,6 +11743,9 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
     int hread = hshared && elt != TY_STRBUF &&
         ((nt_kind(nt, els[i]) == NK_LocalVariableReadNode && strbuf_slot_ref(c, els[i], hsrc, sizeof hsrc)) ||
          (hup >= 0 && nt_kind(nt, hup) == NK_LocalVariableReadNode && strbuf_slot_ref(c, hup, hsrc, sizeof hsrc)));
+    /* The sharing rule gives other holders the same handle route. */
+    if (!hread && repr_share_rule(c) && hshared && elt != TY_STRBUF)
+      hread = strbuf_slot_ref(c, hup >= 0 ? hup : els[i], hsrc, sizeof hsrc);
     /* a write whose slot holds the rule's handle (--share-strings): that
        handle, as a local's read hands over its own */
     Buf hw; memset(&hw, 0, sizeof hw);
