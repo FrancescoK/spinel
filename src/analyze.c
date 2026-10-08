@@ -17371,11 +17371,12 @@ static int share_demand_rest_args(Compiler *c, int mi, const int *argv, int argc
   int changed = 0;
   /* Demand the plain prefix; the splat and its tail keep their fallback.
      A gather binds its fixed leading parameters from that prefix, even
-     though their layout entries are ARG_GATHERED rather than ARG_NODE. */
+     though their layout entries are ARG_GATHERED rather than ARG_NODE.
+     Its posts can take prefix sources too: ask which can reach the rest. */
   for (int k = 0; k < plain_argc; k++) {
-    if (L.gather && k < m->rest_idx) continue;
     int bound = 0;
-    for (int j = 0; j < L.n && !bound; j++) bound = L.from[j] == ARG_NODE && L.arg[j] == k;
+    if (L.gather) bound = !gather_reaches(c, m, argv, L.pos_argc, L.gather_kwh, k, m->rest_idx);
+    else for (int j = 0; j < L.n && !bound; j++) bound = L.from[j] == ARG_NODE && L.arg[j] == k;
     if (!bound) changed |= strbuf_store_leaf(c, argv[k], 0, SB_DEMAND);
   }
   arg_layout_free(&L);
