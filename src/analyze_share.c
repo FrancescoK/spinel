@@ -3908,6 +3908,8 @@ static int sh_carries_handle(const Compiler *c, int n) {
      when a borrowed parameter is returned beside a method-owned String. */
   if (repr_call_returns_handle((Compiler *)c, n)) return 1;
   Repr r = repr_of(c, n);
+  /* A boxed holder's read keeps what its incoming flows stored there. */
+  if (r.kind == RK_BOXED && strbuf_boxed_local((Compiler *)c, n)) return 1;
   /* The boxed unary-plus arm keeps a mutable String's handle and copies
      a frozen one, exactly as the typed value route does. */
   if (r.kind == RK_BOXED && nt_kind(c->nt, n) == NK_CallNode &&
