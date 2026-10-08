@@ -4782,7 +4782,10 @@ static char *rewrite_syntax_sugar(char *source) {
             if (ch == ' ' || ch == '\t' || ch == '\r') { k3++; continue; }
             if (ch == ',') { after_comma = 1; k3++; continue; }
             if (ch == '(') { paren3++; k3++; continue; }
-            if (ch == ')') { if (paren3 > 0) paren3--; k3++; continue; }
+            /* the call's `)` closes the list: a comma before it is a
+               trailing comma, not a continuation (rack-test's
+               `def_delegators(:current_session,\n :get,\n)`) */
+            if (ch == ')') { if (paren3 > 0) paren3--; after_comma = 0; k3++; continue; }
             if (ch == '\\' && k3 + 1 < len && source[k3 + 1] == '\n') { nl3++; k3 += 2; continue; }
             if (ch == '\n' && (after_comma || paren3 > 0)) { nl3++; k3++; continue; }
             break;
