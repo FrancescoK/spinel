@@ -1,0 +1,27 @@
+true
+true
+"direct!"
+"Direct!"
+true
+true
+FrozenError
+["frozen", "frozen"]
+true
+true
+true
+true
+FrozenError
+["abc", "abc", "abc"]
+true
+true
+["abc!", "abc!"]
+["new", "new", "new"]
+true
+true
+true
+true
+true
+true
+"constant!"
+"class!"
+"ivar!"
