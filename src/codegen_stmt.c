@@ -1461,6 +1461,8 @@ static int strbuf_stmts_tail_plain(Compiler *c, int st) {
   if (strbuf_native_answer(c, b[n - 1])) return 1;
   /* A shared reader's demanded value is its slot's handle too. */
   if (strbuf_route_reader(c, b[n - 1])) return 1;
+  /* A receiver conversion's demanded value keeps its operand's handle. */
+  if (repr_string_conversion_operand(c, b[n - 1]) >= 0 || repr_boxed_to_s_operand(c, b[n - 1]) >= 0) return 1;
   NodeKind k = nt_kind(c->nt, b[n - 1]);
   const char *nm = k == NK_CallNode ? nt_str(c->nt, b[n - 1], "name") : NULL;
   if (nm && is_raise_alias(nm) && nt_ref(c->nt, b[n - 1], "receiver") < 0 &&
@@ -17786,6 +17788,8 @@ static int strbuf_flow_value(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, in
       !bare_call_class_owned(c, v) && comp_method_index(c, nt_str(nt, v, "name")) < 0)
     return 1;
   if (ctx == SFC_TAIL && strbuf_route_reader(c, v)) return 1;
+  if (ctx == SFC_TAIL && (repr_string_conversion_operand(c, v) >= 0 || repr_boxed_to_s_operand(c, v) >= 0))
+    return strbuf_flow_route(c, fm, SFC_ALIAS, v, depth);
   if (ctx == SFC_TAIL)
     return (k == NK_BeginNode && strbuf_flow_begin(c, fm, v, depth)) || repr_call_returns_handle(c, v) ||
            strbuf_route_exc_message(c, v) ||
