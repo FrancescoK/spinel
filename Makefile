@@ -1028,6 +1028,7 @@ share-strings-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS
 	  test/concat_self_alias_snapshot.rb test/string_concat_value_snapshot.rb \
 	  test/string_concat_rebound_receiver.rb \
 	  test/pattern_methodobj_kwsplat_undersupply.rb \
+	  test/io_captured_buffer_rebind.rb test/io_read_nonblock_buffer.rb \
 	  test/dynamic_new_post_params_reach.rb test/block_forward_proc_param_type.rb test/proc_form_yield_block_arg.rb \
 	  test/builtins_partition_group_by.rb test/forwarded_block_tail_return.rb \
 	  test/boxed_scan_capture_params.rb test/fold_receiver_root.rb \
