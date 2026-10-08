@@ -4809,7 +4809,7 @@ static int infer_receiverless_call(Compiler *c, int id, const NodeTable *nt, con
   /* implicit-self call inside an instance method */
   if (recv < 0) {
     Scope *self = comp_scope_of(c, id);
-    if (self->class_id >= 0 && ie_class_of(c, id) < 0) {
+    if (self->class_id >= 0 && ie_class_of(c, id) == -1) {
       /* inside a class method self is the class, so its class methods come
          first, as comp_self_call_mi and the inline splice resolve the call:
          an instance method or reader of the same name stood in for
@@ -4884,7 +4884,7 @@ static int infer_receiverless_call(Compiler *c, int id, const NodeTable *nt, con
      module-body cmethod call (e.g. `take(mk)` where mk is `def self.mk`) typed
      void. The scope pass records the enclosing cbody per node in node_cbody[id]
      (cf. analyze_scope.c, analyze.c which already read it during inference). */
-  if (recv < 0) {
+  if (recv < 0 && ie_class_of(c, id) == -1) {
     int cbody = c->node_cbody[id];
     if (cbody < 0) cbody = g_cbody_class_id;
     if (cbody >= 0) {
@@ -4910,6 +4910,7 @@ static int infer_receiverless_call(Compiler *c, int id, const NodeTable *nt, con
       pr = pr == TY_UNKNOWN ? t : ty_unify(pr, t);
     }
     if (pr != TY_UNKNOWN) { *out = pr; return 1; }
+    if (iec < -1) { *out = TY_POLY; return 1; }
   }
   /* Kernel conversion with an explicit user-object receiver: obj.send(:Float, x)
      desugars to obj.Float(x); the private Kernel method is available on every
@@ -6979,6 +6980,13 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   TyKind send_ret;
   if (infer_send_blind(c, id, recv, name, &send_ret)) return send_ret;
 
+  /* No candidate class does not restore the lexical self. Desugaring
+     gives these calls the boxed runtime receiver. */
+  if (recv < 0 && ie_class_of(c, id) < -1) {
+    TyKind r;
+    if (infer_receiverless_call(c, id, nt, name, recv, argc, argv, &r)) return r;
+  }
+
   /* A call with NO receiver resolves the way CRuby's ancestry does: the
      enclosing scope's own chain first, then Object -- where a top-level `def`
      lands -- and only then a Kernel builtin. The user-method arm further down
@@ -8889,11 +8897,11 @@ TyKind infer_uncached(Compiler *c, int id) {
   if (nk == NK_SelfNode) {
     Scope *s = comp_scope_of(c, id);
     int self_cls = s->class_id;
+    if (ie_class_of(c, id) < -1) return TY_POLY;
     /* inside a class method, bare `self` is the Class object (#2443) --
        unless an instance_eval/exec block there rebinds it to an object */
     if (self_cls >= 0 && s->is_cmethod) {
       int iec = ie_class_of(c, id);
-      if (iec < -1) return TY_POLY;
       if (iec < 0) return TY_CLASS;
       self_cls = iec;
     }

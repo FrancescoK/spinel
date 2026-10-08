@@ -310,7 +310,7 @@ int desugar_bare_object_reopen_calls(Compiler *c) {
     /* in a class body self is the class, and in an instance_eval block
        the receiver */
     Scope *sc = comp_scope_of(c, id);
-    if (((!sc || !sc->name) && c->node_cbody[id] >= 0) || ie_class_of(c, id) >= 0) continue;
+    if (((!sc || !sc->name) && c->node_cbody[id] >= 0) || ie_class_of(c, id) != -1) continue;
     int cls = sc ? sc->class_id : -1;
     if (sc && sc->is_cmethod) continue;
     if (cls >= 0) {
@@ -337,7 +337,7 @@ int desugar_descendant_reader_calls(Compiler *c) {
   int changed = 0;
   NT_FOREACH_KIND(nt, NK_CallNode, id) {
     if (nt_ref(nt, id, "receiver") >= 0 || nt_ref(nt, id, "arguments") >= 0 ||
-        nt_ref(nt, id, "block") >= 0 || id >= c->node_cap || ie_class_of(c, id) >= 0) continue;
+        nt_ref(nt, id, "block") >= 0 || id >= c->node_cap || ie_class_of(c, id) != -1) continue;
     const char *nm = nt_str(nt, id, "name");
     Scope *sc = comp_scope_of(c, id);
     if (!nm || !sc || !sc->name || sc->is_cmethod || sc->class_id < 0) continue;
@@ -15107,19 +15107,19 @@ int rewrite_ffi_dynamic_calls(Compiler *c) {
       changed = 1;
     }
     else {
-      if (comp_method_index(c, name) >= 0) continue;
       int bk = body_cls ? body_cls[id] : -1;
+      if (bk != -2 && comp_method_index(c, name) >= 0) continue;
       int obj = comp_class_index(c, "Object");
       if (bk >= 0) {
         /* a class-body statement: self is the class */
         if (comp_cmethod_in_chain(c, bk, name, NULL) >= 0) continue;
         if (ffi_sclass_defines(c, bk, name)) continue;
       }
-      else if (s && s->is_cmethod && s->class_id >= 0) {
+      else if (bk != -2 && s && s->is_cmethod && s->class_id >= 0) {
         if (comp_cmethod_in_chain(c, s->class_id, name, NULL) >= 0) continue;
         if (ffi_sclass_defines(c, s->class_id, name)) continue;
       }
-      else if (s && s->class_id >= 0) {
+      else if (bk != -2 && s && s->class_id >= 0) {
         if (comp_method_in_chain(c, s->class_id, name, NULL) >= 0 ||
             comp_reader_in_chain(c, s->class_id, name, NULL)) continue;
       }
