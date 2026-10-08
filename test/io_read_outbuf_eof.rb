@@ -93,10 +93,10 @@ p eof_reader.read_nonblock(length, buf, exception: false), buf
 # A nil Integer sentinel remains nil at the runtime length conversion.
 r, w = IO.pipe
 w.close
-length = [1][ARGV.size + 1]
+missing_length = [1][ARGV.size + 1]
 buf = +"seed"
 begin
-  r.read_nonblock(length, buf, exception: false)
+  r.read_nonblock(missing_length, buf, exception: false)
 rescue TypeError
   p :length_type
 end
