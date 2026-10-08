@@ -9891,7 +9891,7 @@ static int emit_gather_lead_lent(Compiler *c, Scope *m, int i, const int *argv, 
    into the parameter that mutates it: indexing the call's arguments by the
    parameter's position read a keyword hash, or the argument beside a rest,
    for a keyword or a post. */
-int arg_layout_param_node(Compiler *c, Scope *m, int call, int i, int *spread) {
+static int arg_layout_param_node_inner(Compiler *c, Scope *m, int call, int i, int *spread, int defaults) {
   const NodeTable *nt = c->nt;
   if (spread) *spread = -1;
   if (!m || i < 0 || i >= m->nparams) return -1;
@@ -9919,6 +9919,7 @@ int arg_layout_param_node(Compiler *c, Scope *m, int call, int i, int *spread) {
   const char *pn = m->pnames[i];
   int lead = L.gather ? gather_lead_arg(c, m, argv, argc, i) : -1;
   if (L.from[i] == ARG_NODE) a = argv[L.arg[i]];
+  else if (defaults && L.from[i] == ARG_DEFAULT && m->pdefault) a = m->pdefault[i];
   else if (lead >= 0) a = argv[lead];
   else if (L.from[i] == ARG_ELEM || L.from[i] == ARG_GATHERED) {
     if (nsplat == 1 && spread) *spread = nt_ref(nt, splat, "expression");
@@ -9960,6 +9961,14 @@ int arg_layout_param_node(Compiler *c, Scope *m, int call, int i, int *spread) {
   }
   arg_layout_free(&L);
   return a;
+}
+
+int arg_layout_param_node(Compiler *c, Scope *m, int call, int i, int *spread) {
+  return arg_layout_param_node_inner(c, m, call, i, spread, 0);
+}
+/* The value binding a parameter, including an omitted optional's default. */
+int arg_layout_param_source(Compiler *c, Scope *m, int call, int i, int *spread) {
+  return arg_layout_param_node_inner(c, m, call, i, spread, 1);
 }
 
 /* How far from the end of the positionals parameter j of m takes its value,

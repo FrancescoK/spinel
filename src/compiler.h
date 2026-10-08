@@ -1081,6 +1081,7 @@ typedef struct {
   int nshare_route, cshare_route;
   int share_strings;
   struct ShareFacts *share;
+  struct HandleArgTab *share_args; /* final callers, while sealing share facts */
   unsigned share_sig;   /* the types the facts were last applied over */
   /* the methods compute_byref_out_params let take a lent slot
      (an_byref_eligible_scopes), kept for the share facts built after it
