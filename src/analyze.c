@@ -15148,7 +15148,7 @@ static int strbuf_container_store_values(Compiler *c, int w, const char *contn, 
    between the walked expression and the strings: `r[0][0] << "!"` walks `r`
    one level out, so the values stored into r are themselves containers whose
    stores are walked in turn. */
-enum { SB_DEMAND, SB_HAS_STRING, SB_HAS_NONSTRING, SB_KIND_MASK = 3, SB_NEST1 = 4 };
+enum { SB_DEMAND, SB_HAS_STRING, SB_HAS_NONSTRING, SB_DEMAND_NAMED, SB_KIND_MASK = 3, SB_NEST1 = 4 };
 #define SB_KIND(m) ((m) & SB_KIND_MASK)
 static int strbuf_container_source_walk(Compiler *c, int node, int depth, int mode);
 static int strbuf_store_leaf(Compiler *c, int sn, int depth, int mode);
@@ -15563,6 +15563,10 @@ static int strbuf_demand_store_leaf(Compiler *c, int sn, int depth) {
 }
 static int strbuf_store_leaf(Compiler *c, int sn, int depth, int mode) {
   if (mode >= SB_NEST1) return strbuf_container_source_walk(c, sn, depth + 1, mode - SB_NEST1);
+  /* An unanchored literal hands a fresh String to its reader alone. The
+     destination can lift it if needed; no other name sees a store copy. */
+  if (mode == SB_DEMAND_NAMED)
+    return share_node_fresh(c, sn) ? 0 : strbuf_demand_store_leaf(c, sn, depth);
   if (mode == SB_DEMAND) return strbuf_demand_store_leaf(c, sn, depth);
   TyKind st = sn >= 0 ? infer_type(c, sn) : TY_UNKNOWN;
   if (mode == SB_HAS_STRING) return st == TY_STRING || st == TY_STRBUF;
@@ -17417,22 +17421,34 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
   }
   /* a container literal no holder names, iterated in place by a block
      (`[+"a"].each { |x| x << y }`), whose elements the rule shares: its
-     stores are the handles the block's parameters bind.
+     stores are the handles the block's parameters bind. An indexed
+     literal hands on those same elements without a block: only the share
+     row's element-reading answers extend this to calls without blocks.
+     That arm follows named elements of an unanchored literal: a fresh
+     element has no earlier owner, and a retained container has its own
+     store demand above.
      A pattern's subject carries the same handles into its bound locals. */
   static const NodeKind kinds[] = { NK_CallNode, NK_CaseMatchNode, NK_MatchRequiredNode, NK_MatchPredicateNode };
   for (size_t k = 0; k < sizeof kinds / sizeof *kinds; k++)
   NT_FOREACH_KIND(c->nt, kinds[k], n) {
-    int r;
+    int r, blk = -1, mode = SB_DEMAND;
     if (kinds[k] == NK_CallNode) {
-      int blk = nt_ref(c->nt, n, "block");
-      if (blk < 0 || nt_kind(c->nt, blk) != NK_BlockNode) continue;
+      blk = nt_ref(c->nt, n, "block");
       r = nt_ref(c->nt, n, "receiver");
     }
     else r = nt_ref(c->nt, n, kinds[k] == NK_CaseMatchNode ? "predicate" : "value");
+    if (r < 0) continue;
     r = unwrap_parens(c, r);
-    if (r >= 0 && (nt_kind(c->nt, r) == NK_ArrayNode || nt_kind(c->nt, r) == NK_HashNode) &&
-        share_node_elems_share(c, r))
-      changed |= strbuf_container_source_walk(c, r, 0, SB_DEMAND);
+    if (r < 0 || (nt_kind(c->nt, r) != NK_ArrayNode && nt_kind(c->nt, r) != NK_HashNode)) continue;
+    if (kinds[k] == NK_CallNode && (blk < 0 || nt_kind(c->nt, blk) != NK_BlockNode)) {
+      int s = bop_share_named(nt_kind(c->nt, r) == NK_ArrayNode ? BOP_ANY_ARRAY : BOP_ANY_HASH,
+                             nt_str(c->nt, n, "name"));
+      if (s != BSH_ELEM && s != BSH_FETCH && s != BSH_ELEM_N) continue;
+      if (share_node_anchored(c, r)) continue;
+      mode = SB_DEMAND_NAMED;
+    }
+    if (share_node_elems_share(c, r))
+      changed |= strbuf_container_source_walk(c, r, 0, mode);
   }
   return changed;
 }
@@ -36694,9 +36710,19 @@ static void an_phase_storage(Compiler *c) {
      so the callee appends to the variable's own String. The narrowing ran
      before the lifts were decided. */
   NT_FOREACH_KIND(c->nt, NK_LocalVariableReadNode, r) {
-    if (!c->poly_strbuf_lift[r] || c->nilnarrow[r] != TY_STRING) continue;
-    c->nilnarrow[r] = TY_UNKNOWN;
-    c->ntype[r] = TY_POLY;
+    if (c->nilnarrow[r] != TY_STRING) continue;
+    if (c->poly_strbuf_lift[r]) {
+      c->nilnarrow[r] = TY_UNKNOWN;
+      c->ntype[r] = TY_POLY;
+    }
+    /* Other narrowed boxes keep the handle under the sharing rule too.
+       Its ordinary String read still uses the byte face, as a handle
+       local's does; identity and mutation take the handle itself. */
+    else if (c->share_strings) {
+      Scope *s = comp_scope_of(c, r);
+      LocalVar *lv = s ? scope_local(s, nt_str(c->nt, r, "name")) : NULL;
+      if (lv && lv->type == TY_POLY) c->nilnarrow[r] = c->ntype[r] = TY_STRBUF;
+    }
   }
   mark_reader_identity_operands(c);
   mark_reader_read_only_operands(c);

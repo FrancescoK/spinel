@@ -2442,11 +2442,21 @@ static int strbuf_box_ref_as(Compiler *c, int recv, const char *fmt, Buf *b) {
 /* Emit a shared-mutable string receiver for an operation that only READS its
    bytes: the live buffer, not the whole-buffer copy an ordinary value read
    makes (#3227). Answers 0 when the receiver is not such a slot, so the caller
-   falls back to emit_expr. */
+   falls back to emit_expr. A narrowed box is not a handle slot: its ordinary
+   expression reads the bytes without allocating a handle first. */
 int emit_strbuf_read_ref(Compiler *c, int recv, Buf *b) { return strbuf_box_ref_as(c, recv, "sp_String_cstr(%s)", b); }
 /* The object_id of a String held as a shared sp_String: the handle's address,
    which is what a box of it carries. 0 when `recv` is not one. */
-int strbuf_object_ref(Compiler *c, int recv, Buf *b) { return strbuf_box_ref_as(c, recv, "((sp_int)(uintptr_t)(%s))", b); }
+int strbuf_object_ref(Compiler *c, int recv, Buf *b) {
+  /* The box's payload is already its identity, with or without a handle. */
+  if (repr_share_rule(c) && recv >= 0 && repr_of(c, recv).strbuf_src == RS_SLOT_POLY) {
+    buf_puts(b, "((sp_int)(uintptr_t)(");
+    emit_local_ref(c, recv, nt_str(c->nt, recv, "name"), b);
+    buf_puts(b, ").v.p)");
+    return 1;
+  }
+  return strbuf_box_ref_as(c, recv, "((sp_int)(uintptr_t)(%s))", b);
+}
 /* `cont[k]` where the container hands its elements out BOXED (a poly array, a
    hash): the read is an sp_RbVal, so a shared-handle destination has to unbox
    it rather than wrap it (#3941). */

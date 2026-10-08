@@ -1415,6 +1415,13 @@ static int emit_boxed_write_handle(Compiler *c, int node, Buf *b) {
 /* A shared-mutable String's box, by where its handle comes from
    (repr_of's strbuf_src). */
 static void emit_boxed_strbuf(Compiler *c, int node, TyKind t, const Repr *rp, Buf *b) {
+  /* A narrowed read takes the handle out of its box; boxing that read
+     hands on the original box, including through a captured local. */
+  if (rp->strbuf_src == RS_SLOT_POLY) {
+    emit_local_ref(c, node, nt_str(c->nt, node, "name"), b);
+    RC(RF_STRBUF_HANDLE, RW_NONE);
+    return;
+  }
   if (t == TY_STRING) {
     /* The node-type cache is finalized before the late handle passes run,
        so a local promoted to a shared handle still reads as String here

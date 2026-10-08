@@ -1558,7 +1558,8 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
       if (c->nilnarrow[id] == TY_POLY_ARRAY)
         buf_printf(b, "sp_poly_to_poly_array(%s)", rb2.p ? rb2.p : "");
       else
-        emit_unbox_text(c, c->nilnarrow[id], rb2.p ? rb2.p : "", b);
+        emit_unbox_text(c, repr_share_rule(c) && c->nilnarrow[id] == TY_STRBUF ? repr_of(c, id).as_ty : c->nilnarrow[id],
+                        rb2.p ? rb2.p : "", b);
       free(rb2.p);
       return 1;
     }

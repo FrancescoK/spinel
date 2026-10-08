@@ -7907,18 +7907,16 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           buf_printf(b, "; SP_GC_ROOT(_t%d); ", atmp[a]);
           continue;
         }
-        TyKind at = repr_of(c, argv[a]).as_ty;
+        Repr ar = repr_of(c, argv[a]);
+        TyKind at = ar.as_ty;
         /* A local whose slot is boxed reads as an sp_RbVal where its read is
            typed a shared String handle (a String-or-nil parameter that a
            handle arm asks for as a String): no read unboxes a handle, so the
            temp takes the slot's kind, or the C bound an sp_RbVal to an
            sp_String * (#7305). */
-        if (at == TY_STRBUF && nt_kind(nt, argv[a]) == NK_LocalVariableReadNode) {
-          Scope *ls = comp_scope_of(c, argv[a]);
-          const char *lnm = nt_str(nt, argv[a], "name");
-          LocalVar *alv = ls && lnm ? scope_local(ls, lnm) : NULL;
-          if (alv && alv->type == TY_POLY) at = TY_POLY;
-        }
+        /* A narrowed read can now take the handle out; its boxed argument
+           still hands on the original box, as repr's source records. */
+        if (ar.strbuf_src == RS_SLOT_POLY) at = TY_POLY;
         /* A nil/void/unresolved arg has no concrete C storage (emit_ctype would
            print `void`); hold it as a boxed poly so it can flow into a poly
            param slot. */
@@ -7953,7 +7951,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
             htmp[a] = ++g_tmp;
             emit_poly_route_arg(c, argv[a], at, htmp[a], atmp[a], ran, b);
           }
-          else atmp[a] = emit_poly_arg_temp(c, argv[a], at, 0, atmp[a], ran, b);
+          else atmp[a] = emit_poly_arg_temp(c, argv[a], at, repr_share_rule(c) && ar.narrowed == TY_STRBUF, atmp[a], ran, b);
         }
         ran |= subtree_has_side_effect(c, argv[a]);
         /* The temp holds the argument until an arm hands it on: past the
@@ -21648,7 +21646,8 @@ static void emit_call_unwrapped(Compiler *c, int id, Buf *b) {
     int over = 0;
     for (int i = 0; r >= 0 && i < g_n_argov && !over; i++) over = g_argov_node[i] == r;
     if (cn && !over && (nch > 0 || sp_str_mutator(cn, SP_MUT_NARROW)) && r >= 0 &&
-        nt_kind(c->nt, r) == NK_LocalVariableReadNode && c->ntype[r] == TY_STRING) {
+        nt_kind(c->nt, r) == NK_LocalVariableReadNode &&
+        (repr_of(c, r).ty == TY_STRING || (repr_share_rule(c) && repr_of(c, r).narrowed == TY_STRBUF))) {
       const char *rn = nt_str(c->nt, r, "name");
       Scope *rs = rn ? comp_scope_of(c, r) : NULL;
       LocalVar *rl = rs ? scope_local(rs, rn) : NULL;
