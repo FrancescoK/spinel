@@ -8657,7 +8657,7 @@ static void emit_reopen_primitive_call(Compiler *c, int id, int ci, int mi, int 
   buf_printf(b, "sp_%s_%s(", mc_reopen_cls(c, ci, name), mc(name));
   if (repr_self_handle(c, mi)) emit_reopen_recv_args(c, id, mi, recv, 0, NULL, b);
   else {
-    emit_expr(c, recv, b);
+    if (comp_ntype(c, recv) != TY_STRBUF || !emit_strbuf_read_ref(c, recv, b)) emit_expr(c, recv, b);
     emit_args_filled(c, mi, nt_ref(c->nt, id, "arguments"), ", ", b);
   }
   emit_callee_block_arg(c, id, &c->scopes[mi], b);
@@ -24992,7 +24992,7 @@ void emit_call_body(Compiler *c, int id, Buf *b) {
     /* an alias that captured the builtin (builtin_only) is the builtin's */
     if (recvR >= 0 && nmR && nt_ref(ntR, id, "block") < 0 && !nt_int(ntR, id, "builtin_only", 0)) {
       TyKind rtR = comp_ntype(c, recvR);
-      const char *ocR = rtR == TY_STRING ? "String"
+      const char *ocR = rtR == TY_STRING || rtR == TY_STRBUF ? "String"
                       : rtR == TY_INT ? "Integer"
                       : rtR == TY_FLOAT ? "Float"
                       : rtR == TY_SYMBOL ? "Symbol"
