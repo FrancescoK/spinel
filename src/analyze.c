@@ -18068,7 +18068,8 @@ static int an_stmts_tail_shared(Compiler *c, int st, int nil_ok, TailCount *tc, 
    publishes nothing, and the pickup reads the call's nil as nil whatever
    an earlier read published (an_tail_answers_nil). With the settled return
    analysis, each arm asks an_tail_handle too: a call can publish the handle,
-   and its method's active-visit guard bounds recursive arms. */
+   and its method's active-visit guard bounds recursive arms. Case/when and
+   case/in share the same arm list for the pickup and settled return walk. */
 static int an_tail_is_shared_handle(Compiler *c, int node, int nil_ok, TailCount *tc, RetHandles *R) {
   const NodeTable *nt = c->nt;
   NodeKind k = node >= 0 ? nt_kind(nt, node) : NK_NONE;
@@ -18082,11 +18083,13 @@ static int an_tail_is_shared_handle(Compiler *c, int node, int nil_ok, TailCount
       if (!an_stmts_tail_shared(c, nt_ref(nt, rc, "statements"), nil_ok, tc, R)) return 0;
     return be < 0 || an_stmts_tail_shared(c, nt_ref(nt, be, "statements"), nil_ok, tc, R);
   }
-  if (R && k == NK_CaseNode) {
+  if (c->share_strings && (k == NK_CaseNode || k == NK_CaseMatchNode)) {
     int n = 0; const int *arms = nt_arr(nt, node, "conditions", &n);
     for (int i = 0; i < n; i++)
       if (!an_stmts_tail_shared(c, nt_ref(nt, arms[i], "statements"), nil_ok, tc, R)) return 0;
     int el = nt_ref(nt, node, "else_clause");
+    /* Without an else, a failed pattern raises NoMatchingPatternError. */
+    if (el < 0 && k == NK_CaseMatchNode) return 1;
     return an_stmts_tail_shared(c, el >= 0 ? nt_ref(nt, el, "statements") : -1, nil_ok, tc, R);
   }
   if (R && k == NK_ReturnNode) {
