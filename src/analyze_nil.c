@@ -586,7 +586,9 @@ static int nf_local_guarded(NF *f, int rd, const char *nm, const LocalVar *lv) {
              nf_truthy_implies(c, nt_ref(nt, p, "left"), nm)) region = cur;
     else if (pk == NK_OrNode && cur == nt_ref(nt, p, "right") &&
              nf_falsy_implies(c, nt_ref(nt, p, "left"), nm)) region = cur;
-    else if (pk == NK_WhileNode && cur == nt_ref(nt, p, "statements") &&
+    /* not a loop that tests after its body (`begin ... end while nm`,
+       Prism's begin-modifier flag): that body runs once before the test */
+    else if (pk == NK_WhileNode && !(nt_int(nt, p, "flags", 0) & 4) && cur == nt_ref(nt, p, "statements") &&
              nf_truthy_implies(c, nt_ref(nt, p, "predicate"), nm)) region = cur;
     if (region >= 0) {
       if (!nf_region_writes(f, region, nm)) return 1;
