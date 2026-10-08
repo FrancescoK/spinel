@@ -13,18 +13,23 @@
 #   - optional values: "--name[=VALUE]" and "-n[VALUE]" take only an attached
 #     value; "--name [VALUE]" also takes the next word unless it looks like a
 #     switch. Without a value the block gets nil
-#   - OptionParser::InvalidOption, OptionParser::MissingArgument and
-#     OptionParser::NeedlessArgument, all subclasses of
-#     OptionParser::ParseError
+#   - abbreviated long switches: "--verb" is "--verbose", each word may be
+#     shortened ("--d-r" is "--dry-run") and case is ignored; a name two
+#     switches share raises AmbiguousOption
+#   - OptionParser::InvalidOption, OptionParser::AmbiguousOption,
+#     OptionParser::MissingArgument and OptionParser::NeedlessArgument, all
+#     subclasses of OptionParser::ParseError
 #
-# Not supported: abbreviated long switches,
-# other value types than String and Array.
+# Not supported: other value types than String and Array.
 
 class OptionParser
   class ParseError < StandardError
   end
 
   class InvalidOption < ParseError
+  end
+
+  class AmbiguousOption < ParseError
   end
 
   class MissingArgument < ParseError
@@ -226,14 +231,53 @@ class OptionParser
     word
   end
 
+  # Returns the full name of a long switch from a shortened one. Each word
+  # may be cut ("--d-r" is "--dry-run") and case is ignored; an exact name
+  # wins. When names of several switches match, the shortest wins if it
+  # starts all the others ("--lis" is "--list" beside "--listen"), else
+  # raises AmbiguousOption. Switches from on come before on_tail ones, and
+  # a bare "--" matches nothing.
+  def complete_long(name)
+    return name if find_switch(name)
+    return nil if name == "--"
+    words = Regexp.quote(name[2..]).gsub(/\w+\b/, "\\&\\w*")
+    pattern = Regexp.new("\\A" + words, Regexp::IGNORECASE)
+    complete_in(@entries, name, pattern) || complete_in(@tail, name, pattern)
+  end
+
+  # complete_long within one list; nil when nothing matches.
+  def complete_in(entries, name, pattern)
+    found = []
+    entries.each do |sw|
+      sw.longs.each do |long|
+        if long.start_with?("--[no-]")
+          base = long.delete_prefix("--[no-]")
+          found.push(["--" + base, sw]) if base.match?(pattern)
+          found.push(["--no-" + base, sw]) if ("no-" + base).match?(pattern)
+        elsif long[2..].match?(pattern)
+          found.push([long, sw])
+        end
+      end
+    end
+    return nil if found.empty?
+    found = found.sort_by { |pair| pair[0].length }
+    best, best_sw = found[0]
+    found.each do |full, sw|
+      next if sw == best_sw || full.start_with?(best)
+      raise AmbiguousOption.new("ambiguous option: " + name)
+    end
+    best
+  end
+
   # Returns the index of the last word used, so parse! skips a value word.
   def parse_long(argv, index)
     arg = argv[index]
     eq = arg.index("=")
     name = eq ? arg[0, eq] : arg
-    sw = find_switch(name)
-    raise InvalidOption.new("invalid option: " + name) if sw.nil?
-    is_enabled = !sw.negated?(name)
+    full = complete_long(name)
+    raise InvalidOption.new("invalid option: " + name) if full.nil?
+    sw = find_switch(full)
+    is_enabled = !sw.negated?(full)
     if sw.takes_value && is_enabled
       attached = eq ? arg[(eq + 1)..] : nil
       value = attached || next_value(sw, argv, index, name)
