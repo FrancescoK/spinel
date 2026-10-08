@@ -6,6 +6,11 @@ nil
 "given!"
 "post!"
 "splat!"
+"a!"
+"b!"
+"c!"
+"d!"
+"d!"
 ["shared!?", "shared!?", true]
 ["kept!", "kept!", true]
 ["kept!?", "kept!?", true]

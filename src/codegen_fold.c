@@ -9950,13 +9950,17 @@ static int arg_layout_param_node_inner(Compiler *c, Scope *m, int call, int i, i
       free(flat);
     }
   }
-  else if (L.from[i] == ARG_BY_NAME && i != m->kwrest_idx && pn && kwh >= 0 &&
+  else if (L.from[i] == ARG_BY_NAME && i != m->kwrest_idx && pn &&
            callee_has_kwarg(c, m, pn)) {
-    int en = 0; const int *el = nt_arr(nt, kwh, "elements", &en);
+    int en = 0; const int *el = kwh >= 0 ? nt_arr(nt, kwh, "elements", &en) : NULL;
     int nds = 0, ds = -1;
     for (int e = 0; e < en; e++)
       if (nt_kind(nt, el[e]) == NK_AssocSplatNode) { nds++; ds = el[e]; }
-    if (!kwh_merged(c, m, kwh)) a = kwh_lookup(nt, kwh, pn);
+    if (!kwh_merged(c, m, kwh)) {
+      a = kwh_lookup(nt, kwh, pn);
+      /* Only an omitted keyword with no spread source takes its default. */
+      if (a < 0 && !nds && defaults && m->pdefault) a = m->pdefault[i];
+    }
     if (a < 0 && nds == 1 && spread) *spread = nt_ref(nt, ds, "value");
   }
   arg_layout_free(&L);
