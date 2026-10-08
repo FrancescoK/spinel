@@ -13866,13 +13866,14 @@ static int emit_poly_scan_block(Compiler *c, int id, Buf *b, const NodeTable *nt
    copies are not kept by the handle's root, so two allocating operands must
    run in order. Hold their values first to retain String identity, then root
    the byte reads before another read can allocate. Integer slots are named
-   by the caller, just as its runtime helper takes them. */
+   by the caller, just as its runtime helper takes them. The sharing rule
+   introduces these snapshots; default operands keep their existing holds. */
 static void emit_poly_str_transform(Compiler *c, int recv, int argc, const int *argv,
                                     const char *name, const char *fn, unsigned int_args, Buf *b) {
   int alloc = operand_may_allocate(c, recv);
   for (int i = 0; i < argc; i++) alloc += operand_may_allocate(c, argv[i]);
   int tr = -1, ta[2] = { -1, -1 }, views[2] = { -1, -1 }, mark = g_n_argov;
-  if (alloc > 1) {
+  if (repr_share_rule(c) && alloc > 1) {
     tr = hold_operand_pre(c, recv, TY_POLY, 1, ++g_tmp, 1);
     for (int i = 0; i < argc; i++) if (operand_may_allocate(c, argv[i])) {
       Repr r = repr_of(c, argv[i]);
@@ -14361,7 +14362,7 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
        The tag guard stays: only a String answers #scan. */
     int re_arg = !str_arg && rli < 0 && comp_ntype(c, argv[0]) == TY_REGEX;
     if (rli >= 0 || str_arg || re_arg) {
-      if (str_arg && operand_may_allocate(c, recv) && operand_may_allocate(c, argv[0])) {
+      if (repr_share_rule(c) && str_arg && operand_may_allocate(c, recv) && operand_may_allocate(c, argv[0])) {
         emit_poly_str_transform(c, recv, argc, argv, name, "scan", 0, b);
         return 1;
       }
