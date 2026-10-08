@@ -9,6 +9,7 @@
 #include "repr.h"
 #include "call_plan.h"
 #include "codegen_call_arms.h"
+#include "holder.h"
 
 /* The receiver of an Integer bit operator. For a shift, an Integer slot
    that can hold its nil sentinel (cmp_operand_may_be_nil) is tested first:
@@ -30,6 +31,28 @@ static void emit_int_bit_recv(Compiler *c, int recv, TyKind rt, const char *conv
 
 /* Integer shifts, <=>, the comparison and equality operators, and is_a? on a poly receiver */
 int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt) {
+  /* A call's shared String answer is compared as its handle, including
+     against a boxed operand. Hold the receiver before the argument can
+     replace the return channel, without a fixed-size slot-text buffer. */
+  if (repr_share_rule(c) && recv >= 0 && argc == 1 && is_identity_query(name) && is_equality_name(name) &&
+      comp_recv_type(c, recv) == TY_STRING &&
+      (repr_call_returns_handle(c, recv) || repr_call_returns_handle(c, argv[0]))) {
+    int operand[2] = { recv, argv[0] }, t[2];
+    buf_puts(b, "({ ");
+    for (int i = 0; i < 2; i++) {
+      HolderRef h;
+      int sv = -1;
+      if (holder_of_node(c, operand[i], &h) && h.r.share) {
+        sv = view_push(c, operand[i], TY_STRBUF);
+        view_push_repr(c, operand[i], VR_STRBUF_BOX, 1);
+      }
+      t[i] = hold_operand(c, operand[i], TY_POLY, 1, ++g_tmp,
+                          i == 0 && operand_may_allocate(c, argv[0]), " ", b);
+      if (sv >= 0) { view_pop(c, sv + 1); view_pop(c, sv); }
+    }
+    buf_printf(b, "sp_poly_equal(_t%d, _t%d); })", t[0], t[1]);
+    return 1;
+  }
   /* a literal `<<` whose result overflowed int64 (`1 << 64`): the node is typed
      bigint, but the int receiver would otherwise emit a UB C `1LL << 64LL`.
      Promote to a bigint shift. */

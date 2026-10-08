@@ -135,6 +135,8 @@ typedef enum {
                     the caller's variable for its duration */
 } ReprCell;
 
+/* Does a call's settled return route hand back a shared String handle? */
+int repr_call_returns_handle(Compiler *c, int v);
 /* The representation of node `node`'s value. */
 Repr repr_of(const Compiler *c, int node);
 /* The representation of a local variable's slot (a global's and a
