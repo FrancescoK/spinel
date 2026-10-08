@@ -51,6 +51,11 @@ true
 "abc!"
 "abc!"
 nil
+"slice!"
+["slice!"]
+true
+["fresh!"]
+true
 true
 nil
 7

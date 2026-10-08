@@ -113,6 +113,18 @@ s = +"abc"; narrow_parameter(s, s); p s
 end
 narrow_reader(nil, 0)
 
+# A retained subarray still carries its elements' handles, whether they
+# have an earlier owner or were made by the literal itself.
+s = +"slice"
+a = [s, 1][0, 1]
+copy = a[0]
+copy << "!" if copy.is_a?(String)
+p s, a, copy.equal?(s)
+a = [+"fresh", 1].first(1)
+copy = a[0]
+copy << "!" if copy.is_a?(String)
+p a, copy.equal?(a[0])
+
 # Keep the other parameter and element slots boxed, and exercise their
 # other arms. narrow_array above also covers a String-only parameter.
 narrow_before(nil)

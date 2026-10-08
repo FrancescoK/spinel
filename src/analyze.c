@@ -15147,7 +15147,7 @@ static int strbuf_container_store_values(Compiler *c, int w, const char *contn, 
    between the walked expression and the strings: `r[0][0] << "!"` walks `r`
    one level out, so the values stored into r are themselves containers whose
    stores are walked in turn. */
-enum { SB_DEMAND, SB_HAS_STRING, SB_HAS_NONSTRING, SB_KIND_MASK = 3, SB_NEST1 = 4 };
+enum { SB_DEMAND, SB_HAS_STRING, SB_HAS_NONSTRING, SB_DEMAND_NAMED, SB_KIND_MASK = 3, SB_NEST1 = 4 };
 #define SB_KIND(m) ((m) & SB_KIND_MASK)
 static int strbuf_container_source_walk(Compiler *c, int node, int depth, int mode);
 static int strbuf_store_leaf(Compiler *c, int sn, int depth, int mode);
@@ -15562,6 +15562,10 @@ static int strbuf_demand_store_leaf(Compiler *c, int sn, int depth) {
 }
 static int strbuf_store_leaf(Compiler *c, int sn, int depth, int mode) {
   if (mode >= SB_NEST1) return strbuf_container_source_walk(c, sn, depth + 1, mode - SB_NEST1);
+  /* An unanchored literal hands a fresh String to its reader alone. The
+     destination can lift it if needed; no other name sees a store copy. */
+  if (mode == SB_DEMAND_NAMED)
+    return share_node_fresh(c, sn) ? 0 : strbuf_demand_store_leaf(c, sn, depth);
   if (mode == SB_DEMAND) return strbuf_demand_store_leaf(c, sn, depth);
   TyKind st = sn >= 0 ? infer_type(c, sn) : TY_UNKNOWN;
   if (mode == SB_HAS_STRING) return st == TY_STRING || st == TY_STRBUF;
@@ -17413,11 +17417,14 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
      stores are the handles the block's parameters bind. An indexed
      literal hands on those same elements without a block: only the share
      row's element-reading answers extend this to calls without blocks.
+     That arm follows named elements of an unanchored literal: a fresh
+     element has no earlier owner, and a retained container has its own
+     store demand above.
      A pattern's subject carries the same handles into its bound locals. */
   static const NodeKind kinds[] = { NK_CallNode, NK_CaseMatchNode, NK_MatchRequiredNode, NK_MatchPredicateNode };
   for (size_t k = 0; k < sizeof kinds / sizeof *kinds; k++)
   NT_FOREACH_KIND(c->nt, kinds[k], n) {
-    int r, blk = -1;
+    int r, blk = -1, mode = SB_DEMAND;
     if (kinds[k] == NK_CallNode) {
       blk = nt_ref(c->nt, n, "block");
       r = nt_ref(c->nt, n, "receiver");
@@ -17430,9 +17437,11 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
       int s = bop_share_named(nt_kind(c->nt, r) == NK_ArrayNode ? BOP_ANY_ARRAY : BOP_ANY_HASH,
                              nt_str(c->nt, n, "name"));
       if (s != BSH_ELEM && s != BSH_FETCH && s != BSH_ELEM_N) continue;
+      if (share_node_anchored(c, r)) continue;
+      mode = SB_DEMAND_NAMED;
     }
     if (share_node_elems_share(c, r))
-      changed |= strbuf_container_source_walk(c, r, 0, SB_DEMAND);
+      changed |= strbuf_container_source_walk(c, r, 0, mode);
   }
   return changed;
 }
