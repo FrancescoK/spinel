@@ -2,3 +2,35 @@
 TypeError: no implicit conversion from nil to integer
 2.5
 TypeError: no implicit conversion to float from nil
+2
+TypeError: no implicit conversion from nil to integer
+3
+TypeError: no implicit conversion from nil to integer
+4
+TypeError: no implicit conversion from nil to integer
+5
+TypeError: no implicit conversion from nil to integer
+6
+TypeError: no implicit conversion from nil
+-2
+TypeError: no implicit conversion of nil into Integer
+-3
+TypeError: no implicit conversion of nil into Integer
+-4
+TypeError: no implicit conversion of nil into Integer
+-5
+TypeError: no implicit conversion of nil into Integer
+-6
+TypeError: no implicit conversion of nil into Integer
+7
+TypeError: no implicit conversion to float from nil
+8
+TypeError: no implicit conversion to float from nil
+1
+TypeError: no implicit conversion of nil into Integer
+10
+TypeError: no implicit conversion of nil into String
+11
+false
+0
+nil
