@@ -24746,6 +24746,10 @@ int strbuf_pickup_answers_nil(Compiler *c, int id) {
    from; its implicit-self read hands out the slot itself
    (emit_implicit_self_member). Answers 1 when it emitted the call. */
 static int emit_deep_return_pickup(Compiler *c, int id, Buf *b) {
+  /* An identity read demands the handle without changing String dispatch.
+     The return route lifts that demand while it runs the ordinary call. */
+  if (repr_share_rule(c) && repr_of(c, id).demand && repr_call_returns_handle(c, id))
+    return emit_strbuf_route(c, id, b);
   /* (the call answers its String as a const char *: a method whose value
      widened past a String after the pickup was marked answers a box) */
   if (!c->strbuf_box[id] || nt_ref(c->nt, id, "block") >= 0 || comp_ntype(c, id) == TY_POLY ||
