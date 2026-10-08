@@ -1480,6 +1480,21 @@ int emit_reopen_arm_test(Compiler *c, int kmi, const char *name, const char *cls
   else buf_printf(b, "(%s) ? ", t);
   return 1;
 }
+/* Class-only targets need this dispatch when the name also has builtin
+   arms. Other class calls keep emit_unresolved_call's argument ordering.
+   That path already serves a boxed result, unless an IO operation claims
+   the call first; ask the operation row at this call's arity. Stat fields
+   already defer to class methods in the boxed IO arm. */
+static int poly_cmethod_collision(Compiler *c, int id, const char *name) {
+  if (!cplan_boxed_cmethod(c, id, name)) return 0;
+  int argc;
+  call_args(c->nt, id, &argc);
+  Repr r = repr_of(c, id);
+  return (r.as_ty != TY_POLY && r.as_ty != TY_UNKNOWN) ||
+         (!boxed_stat_name(name) &&
+          bop_find(TY_IO, name, argc, nt_ref(c->nt, id, "block") >= 0));
+}
+
 static void emit_poly_splat_arity(Compiler *c, int id, Scope *ms, int sa, int st,
                                   const PolyKw *kw, Buf *b);
 static void emit_poly_splat_param(Compiler *c, Scope *ms, int a, int sa, int st, const int *atmp,
@@ -1564,6 +1579,9 @@ int poly_cls_value_cands(Compiler *c, int id, const char *name, int argc, const 
         TyKind at0 = atmp_ty[L.arg[a]];
         /* emit_poly_temp_as reads a held handle for a plain String param. */
         if (at0 == TY_STRBUF && pt == TY_STRING) continue;
+        /* emit_poly_shared_arg binds String bytes to a handle parameter.
+           Otherwise the unresolved Class path already binds this pair. */
+        if (at0 == TY_STRING && pt == TY_STRBUF && poly_cmethod_collision(c, id, name)) continue;
         if (pt != TY_POLY && pt != TY_UNKNOWN && at0 != TY_POLY && at0 != TY_UNKNOWN &&
             pt != at0) incompat8 = 1;
       }
@@ -7822,8 +7840,9 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
        Opening the switch with no user arm at this arity is safe: the arms
        are per class and per arity as before, and a name with no builtin arm
        either lands on the switch's own raising default, which is the answer
-       it had. */
-    int name_taken = user_defines_or_reads(c, name);
+       it had. Class-only targets with a builtin collision open the same
+       switch, since user_defines_or_reads counts instance methods. */
+    int name_taken = user_defines_or_reads(c, name) || poly_cmethod_collision(c, id, name);
     if (ncand > 0 || name_taken || is_lengthlike || is_pred || is_class_named || is_class_reflect || is_ostruct || is_io_rewind || is_poly_to_a || is_poly_to_h) {
       TyKind ret = repr_of(c, id).as_ty;
       /* an OpenStruct member is a boxed value; but when analyze typed the
@@ -7968,7 +7987,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
        two frames up rather than reaching the numeric default arm below. */
     /* see the zero-argument gate's own note: the emitters stand down by
        name, so the dispatch has to open by name too */
-    int name_taken2 = user_defines_or_reads(c, name);
+    int name_taken2 = user_defines_or_reads(c, name) || poly_cmethod_collision(c, id, name);
     if (ncand > 0 || name_taken2 || is_index || is_pdelete || is_pdig || is_pvalues_at || is_pfirstn || is_include || is_fetch || is_push || is_unshift || is_pjoin || is_ppack || is_pred || is_strftime || is_intersect || is_arr_index || is_cover || is_gcdlcm || is_pmerge || is_ctryconv) {
       /* A splatted argument spreads across each arm's own parameters: its
          temp holds the array, and every arm gathers the call's positionals

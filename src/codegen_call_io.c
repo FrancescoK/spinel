@@ -577,7 +577,7 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
        /* File::Stat's predicates: a stat read out of a container is the
           same boxed handle. Not where a class method may own the name. */
        (argc == 0 && boxed_stat_pred(name) >= 0 && !class_method_named(c, name)))) {
-    int iocand = 0;
+    int iocand = !g_poly_builtin_arm && cplan_boxed_cmethod(c, id, name);
     /* Inside the builtin default arm of a class-id switch (the call
        re-entered by emit_poly_builtin_default) the value is none of the
        classes that own the name, so none is a candidate: counting them

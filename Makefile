@@ -1047,6 +1047,12 @@ share-strings-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS
 	    SPINEL_GC_STRESS=1 "$$tmp/b" 2>&1 | cmp -s - "$$e" || { echo "share-strings-test: FAIL $$t (GC stress)"; ok=0; }; \
 	  else echo "share-strings-test: FAIL $$t (refused)"; cat "$$tmp/out"; ok=0; fi; \
 	done; \
+	for flags in '' '--share-strings'; do \
+	  if ! $(SPINEL) $$flags test/share_strings_class_value_stat_fields.rb -c --no-line-map -o "$$tmp/stat.c" >"$$tmp/out" 2>&1 || \
+	     grep -q 'sp_pd_[0-9]' "$$tmp/stat.c"; then \
+	    echo "share-strings-test: FAIL (Class calls of Stat field names add a dispatch)"; ok=0; \
+	  fi; \
+	done; \
 	if ! $(SPINEL) --share-strings test/share/share_strings_open_targets.rb -c --no-line-map -o "$$tmp/open.c" >"$$tmp/out" 2>&1 || \
 	   ! grep -q 'const char \* lv_path = NULL;' "$$tmp/open.c" || \
 	   grep -q 'sp_strbuf_read_pub(lv_path)' "$$tmp/open.c"; then \
@@ -2280,6 +2286,9 @@ GC_MINOR_TESTS := test/io_read_outbuf_eof.rb \
                   test/string_reopen_block_returns.rb \
                   test/share_strings_transform_argument_order.rb \
                   test/share_strings_fresh_element_conditional.rb \
+                  test/share_strings_class_value_builtin_names.rb \
+                  test/share_strings_class_value_builtin_io.rb \
+                  test/share_strings_class_value_mutating_read.rb \
                   test/share_strings_hash_transform_params.rb \
                   test/string_concat_value_snapshot.rb \
                   test/string_concat_rebound_receiver.rb \
