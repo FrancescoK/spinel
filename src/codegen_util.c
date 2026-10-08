@@ -2575,6 +2575,14 @@ int strbuf_marked_yields_handle(Compiler *c, int v) {
   if (nt_kind(nt, v) != NK_CallNode) return 0;
   int r = nt_ref(nt, v, "receiver");
   TyKind rt = r >= 0 ? comp_ntype(c, r) : TY_UNKNOWN;
+  /* A fresh object-method result is bytes to wrap, not a reader's handle. */
+  if (repr_share_rule(c) && ty_is_object(rt) && share_value_fresh(c, v, 0)) return 0;
+  /* Without the flag, a native String return uses its declared byte ABI;
+     there is no native shared-answer route to yield a handle. */
+  if (!repr_share_rule(c) && ty_is_object(rt)) {
+    int nm = comp_native_method_find(c, ty_object_class(rt), nt_str(nt, v, "name"), call_plain_argc(c, v), 0);
+    if (nm >= 0 && native_spec_to_ty(c->native_methods[nm].ret) == TY_STRING) return 0;
+  }
   if (rt != TY_STRING && rt != TY_STRBUF) return 1;
   const char *nm = nt_str(nt, v, "name");
   return nm && (is_append_concat(nm) || str_self_call(nt, v));
