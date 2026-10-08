@@ -6828,7 +6828,9 @@ static int emit_poly_arg_temp(Compiler *c, int node, TyKind ty, int boxed, int t
                   nt_kind(c->nt, node) != NK_LocalVariableReadNode &&
                   nt_kind(c->nt, node) != NK_InstanceVariableReadNode;
   if (as_handle) buf_puts(&val, "SP_AS_STRING_HANDLE(");
-  if (boxed) emit_boxed(c, node, &val); else emit_expr(c, node, &val);
+  if (!boxed && ty == TY_STRBUF && repr_share_rule(c) && repr_of(c, node).strbuf_src == RS_HANDLE)
+    emit_strbuf_handle_of(c, node, &val);
+  else if (boxed) emit_boxed(c, node, &val); else emit_expr(c, node, &val);
   if (as_handle) buf_puts(&val, ")");
   g_pre = sv_pre;
   if (pre.p) buf_puts(b, pre.p);
@@ -6839,6 +6841,13 @@ static int emit_poly_arg_temp(Compiler *c, int node, TyKind ty, int boxed, int t
   }
   free(pre.p); free(val.p);
   return held >= 0 ? held : tn;
+}
+
+/* A String-typed slot may already hold the shared handle. The argument
+   temp keeps that representation so boxed arms keep its identity too. */
+static TyKind poly_arg_storage(Compiler *c, Repr r) {
+  if (repr_share_rule(c) && r.as_ty == TY_STRING && r.strbuf_src == RS_HANDLE) return TY_STRBUF;
+  return r.as_ty;
 }
 
 /* `sp_raise_cls("ArgumentError", msg);` with msg a C string literal: a
@@ -7945,7 +7954,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           continue;
         }
         Repr ar = repr_of(c, argv[a]);
-        TyKind at = ar.as_ty;
+        TyKind at = poly_arg_storage(c, ar);
         /* A local whose slot is boxed reads as an sp_RbVal where its read is
            typed a shared String handle (a String-or-nil parameter that a
            handle arm asks for as a String): no read unboxes a handle, so the
