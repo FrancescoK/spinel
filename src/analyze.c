@@ -15652,8 +15652,43 @@ static int strbuf_demand_container_stores_here(Compiler *c, const char *contn, S
 static int an_call_targets_scope(Compiler *c, int u, int mi2, Scope *m2);
 static int an_class_dynamic_new_risk(Compiler *c, int cid);
 static int strbuf_demand_local_container(Compiler *c, const char *vn, Scope *vs, int depth, int mode);
+/* The parameters one outermost walk has already followed back to their
+   callers, each with the shallowest depth it was walked at. A parameter
+   handed on through a chain of methods, each called from several places,
+   was walked once per path to it -- exponential in the chain's length, and
+   each walk scans every call. Walking it again within the same walk, no
+   shallower than before, demands nothing new. */
+typedef struct { int mi, pj, mode, depth; } SbParamSeen;
+static SbParamSeen *sb_param_seen;
+static int sb_param_seen_n, sb_param_seen_cap, sb_param_walk_nest;
+static int sb_param_seen_check(int mi, int pj, int mode, int depth) {
+  for (int i = 0; i < sb_param_seen_n; i++) {
+    SbParamSeen *s = &sb_param_seen[i];
+    if (s->mi != mi || s->pj != pj || s->mode != mode) continue;
+    if (s->depth <= depth) return 1;
+    s->depth = depth;
+    return 0;
+  }
+  if (sb_param_seen_n == sb_param_seen_cap) {
+    sb_param_seen_cap = sb_param_seen_cap ? sb_param_seen_cap * 2 : 64;
+    sb_param_seen = realloc(sb_param_seen, sizeof *sb_param_seen * (size_t)sb_param_seen_cap);
+    if (!sb_param_seen) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  sb_param_seen[sb_param_seen_n++] = (SbParamSeen){ mi, pj, mode, depth };
+  return 0;
+}
+static int strbuf_demand_param_container_stores_walk(Compiler *c, const char *pn, Scope *ps,
+                                                     int depth, int mode);
 static int strbuf_demand_param_container_stores(Compiler *c, const char *pn, Scope *ps,
                                                 int depth, int mode) {
+  if (sb_param_walk_nest == 0) sb_param_seen_n = 0;
+  sb_param_walk_nest++;
+  int r = strbuf_demand_param_container_stores_walk(c, pn, ps, depth, mode);
+  sb_param_walk_nest--;
+  return r;
+}
+static int strbuf_demand_param_container_stores_walk(Compiler *c, const char *pn, Scope *ps,
+                                                     int depth, int mode) {
   const NodeTable *nt = c->nt;
   int changed = 0;
   if (depth > 8 || !ps || !pn) return 0;
@@ -15662,6 +15697,7 @@ static int strbuf_demand_param_container_stores(Compiler *c, const char *pn, Sco
   int pj = an_param_idx(ps, pn);
   if (pj < 0) return 0;
   int mi = (int)(ps - c->scopes);
+  if (sb_param_seen_check(mi, pj, mode, depth)) return 0;
   for (int u = comp_kind_first(c, NK_CallNode); u >= 0; u = comp_kind_next(c, u)) {
     if (nt_kind(nt, u) != NK_CallNode) continue;
     if (!an_call_targets_scope(c, u, mi, ps)) continue;
@@ -19114,7 +19150,13 @@ static int promote_shared_stored_strings(Compiler *c) {
       if (nt_kind(nt, recv4) == NK_LocalVariableReadNode) {
         const char *pn4 = nt_str(nt, recv4, "name");
         Scope *ps4 = pn4 ? comp_scope_of(c, recv4) : NULL;
-        if (ps4) changed |= strbuf_demand_container_stores(c, pn4, ps4);
+        LocalVar *pv4 = ps4 ? scope_local(ps4, pn4) : NULL;
+        /* a method's boxed parameter stays as it was: its walk goes back
+           through every caller, and on a large program's poly parameters
+           (each mutating block over one) that walk is what the
+           analysis spent its time on */
+        if (!pv4 || (pv4->is_param && !pv4->is_block_param)) continue;
+        changed |= strbuf_demand_container_stores(c, pn4, ps4);
       }
       else changed |= strbuf_container_source_walk(c, recv4, 0, SB_DEMAND);
       continue;
