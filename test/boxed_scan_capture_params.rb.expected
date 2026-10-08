@@ -1,0 +1,10 @@
+["a", "1", nil]
+["b", nil, nil]
+"a1 b"
+["a", "1"]
+["b", nil]
+"a1 b"
+["a1", 0]
+["b", 3]
+match
+match
