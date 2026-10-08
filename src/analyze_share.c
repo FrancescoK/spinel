@@ -3480,12 +3480,19 @@ int share_method_blocks(const Compiler *c, int mi, const int **blocks) {
   *blocks = F->mb_blk + F->mb_start[mi];
   return F->mb_start[mi + 1] - F->mb_start[mi];
 }
+/* A boxed call's builtin arms answer a value of their own when the
+   any-receiver row says so. String's receiver conversions are the
+   exception to Object's row: to_s can hand its String back unchanged. */
+int share_builtin_fresh(Compiler *c, int call) {
+  const char *name = nt_str(c->nt, call, "name");
+  return bop_share_named(BOP_ANY_RECV, name) == BSH_PURE && !is_receiver_conversion(name);
+}
 static int sh_user_call_fresh(Compiler *c, int call, int depth) {
   const ShareFacts *F = c->share;
   if (!F || call < 0 || depth > 8 || nt_kind(c->nt, call) != NK_CallNode) return 0;
   /* A boxed dispatch can take a builtin arm too: its user targets alone
      do not prove freshness (String#to_s can answer its receiver). */
-  if (cplan_user_fresh(c, call)->via == UC_POLY) return 0;
+  if (cplan_user_fresh(c, call)->via == UC_POLY && !share_builtin_fresh(c, call)) return 0;
   int tg[64];
   int n = cplan_targets(c, call, tg, 64);
   if (n <= 0) return 0;
