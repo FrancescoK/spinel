@@ -12371,12 +12371,12 @@ static int emit_call_stmt(Compiler *c, int id, Buf *b, int indent, const NodeTab
     }
   }
   if (emit_iteration_stmt(c, id, b, indent)) return 1;
-  /* attr writer: obj.x = v */
+  /* attr writer: obj.x = v (`obj&.x = v` keeps the call path's nil guard) */
   {
     const char *nm = nt_str(nt, id, "name");
     int recv = nt_ref(nt, id, "receiver");
     size_t ln = nm ? strlen(nm) : 0;
-    if (nm && recv >= 0 && ln >= 2 && nm[ln - 1] == '=') {
+    if (nm && recv >= 0 && ln >= 2 && nm[ln - 1] == '=' && !call_is_safe_nav(nt, id)) {
       TyKind rt = comp_ntype(c, recv);
       if (ty_is_object(rt)) {
         char base[256];
