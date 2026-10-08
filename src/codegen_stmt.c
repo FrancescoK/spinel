@@ -1952,6 +1952,7 @@ static void emit_strbuf_cond_value(Compiler *c, LocalVar *lv, int v, const char 
       return;
     case NK_StatementsNode: {
       int n = 0; const int *bb = nt_arr(nt, v, "body", &n);
+      if (stmts_diverge(c, v)) { emit_stmts(c, v, b, 0); return; }
       for (int i = 0; i < n - 1; i++) emit_stmt(c, bb[i], b, 0);
       if (n > 0) emit_strbuf_cond_value(c, lv, bb[n - 1], dst, b, depth);
       else buf_printf(b, "%s = NULL;\n", dst);
@@ -5155,6 +5156,8 @@ static void emit_pm_body_value(Compiler *c, int stmts, TyKind rt, int cr,
     return;
   }
   int last = bb[n - 1];
+  /* A diverging arm has no value to assign to the result temp. */
+  if (stmts_diverge(c, stmts)) { emit_stmt(c, last, b, indent); return; }
   TyKind lt = repr_of(c, last).as_ty;
   /* An empty `[]` / `{}` caches TY_UNKNOWN because it has no ELEMENT type
      yet, not because it has no value; running it for effect left the arm at
@@ -8512,10 +8515,11 @@ static void emit_tail_value_1(Compiler *c, int node, Buf *b);
    whose tails answers a fresh String (ret_pub_fresh): that tail clears the
    side channel after its value, which a read of a handle inside it may have
    published, so the caller wraps the fresh String rather than take that
-   handle */
+   handle. A user call returning only its own fresh Strings clears it too. */
 static void emit_tail_value(Compiler *c, int node, Buf *b) {
   Scope *ts = g_ret_type == TY_STRING && !g_result_var ? comp_scope_of(c, node) : NULL;
-  if (!ts || !ts->ret_pub_fresh || !share_node_fresh(c, an_unparen(c->nt, node))) {
+  if (!ts || !ts->ret_pub_fresh ||
+      !(share_node_fresh(c, an_unparen(c->nt, node)) || share_call_fresh(c, an_unparen(c->nt, node)))) {
     emit_tail_value_1(c, node, b);
     return;
   }
@@ -14393,13 +14397,13 @@ static int num_iter_answers_recv(Compiler *c, int id) {
 
 /* Does this statement list end in something that leaves the function -- a
    `return`, or a bare `raise`/`throw`? Used to decide whether a construct in
-   tail position produces a value at all. */
+   tail position produces a value at all. Parentheses preserve divergence. */
 int stmts_diverge(Compiler *c, int stmts) {
   const NodeTable *nt = c->nt;
   if (stmts < 0) return 0;
   int n = 0; const int *bb = nt_arr(nt, stmts, "body", &n);
   if (!bb || n == 0) return 0;
-  int last = bb[n - 1];
+  int last = unwrap_parens(c, bb[n - 1]);
   const char *lt = nt_type(nt, last);
   if (!lt) return 0;
   if (sp_streq(lt, "ReturnNode")) return 1;
