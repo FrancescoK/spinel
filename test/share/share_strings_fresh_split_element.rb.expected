@@ -1,0 +1,6 @@
+["one two", "one!"]
+["three four", "four!"]
+nil receiver
+["five six", "five?"]
+nil receiver
+["borrowed?", "borrowed?", true]
