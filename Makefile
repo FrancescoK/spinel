@@ -2297,6 +2297,22 @@ GC_MINOR_TESTS := test/io_read_outbuf_eof.rb \
                   test/share/share_strings_captured_bytes.rb \
                   test/share/share_strings_boxed_io_rows.rb \
                   test/share/share_strings_find_pathname.rb \
+                  test/share/share_strings_poly_module_return.rb \
+                  test/share/share_strings_poly_module_return_tails.rb \
+                  test/share/share_strings_deep_return_arms.rb \
+                  test/share/share_strings_return_rescue.rb \
+                  test/share/share_strings_return_case.rb \
+                  test/share/share_strings_return_parentheses.rb \
+                  test/share/share_strings_poly_module_return_binary.rb \
+                  test/share/share_strings_poly_module_return_case.rb \
+                  test/share/share_strings_poly_module_return_ensure.rb \
+                  test/share/share_strings_poly_module_return_deferred.rb \
+                  test/share/share_strings_return_deferred.rb \
+                  test/share/share_strings_return_proc_home.rb \
+                  test/share/share_strings_poly_module_return_rescue.rb \
+                  test/share/share_strings_poly_module_return_yield.rb \
+                  test/share/share_strings_pick_element.rb \
+                  test/share/share_strings_pick_then_parameter.rb \
                   test/reopened_builtin_kwrest_keys.rb \
                   test/string_unary_plus_frozen_receiver.rb \
                   test/share_strings_boxed_hash_key.rb \

@@ -1,0 +1,7 @@
+["fresh", "s!"]
+"s!"
+1
+["s!?", "s!a!", nil]
+"s!?"
+4
+[true, false, true]
