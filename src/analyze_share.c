@@ -2840,11 +2840,14 @@ static void sh_mutable_consts(ShareFacts *F, Compiler *c) {
 
 /* A constant read's holder: one some write makes mutable, or a container
    the program never writes (ARGV); a constant holding a frozen String is
-   none. */
+   none. Under --share-strings it also names a frozen String: a mutated
+   alias must keep its identity and frozen state on the handle route. */
 static int sh_const_read(ShareFacts *F, Compiler *c, int n) {
   const char *nm = nt_str(c->nt, n, "name");
   TyKind t = c->ntype[n];
   if (!nm || !sh_may_hold(c, t)) return -1;
+  if (c->share_strings && (t == TY_STRING || t == TY_STRBUF))
+    return sh_holder(F, SHK_CONST, 0, -1, nm, n);
   for (int i = 0; i < F->nmconst; i++)
     if (sp_streq(F->mconst[i], nm)) return sh_holder(F, SHK_CONST, 0, -1, nm, n);
   return t == TY_STRING || t == TY_STRBUF ? -1 : sh_holder(F, SHK_CONST, 0, -1, nm, n);
