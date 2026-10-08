@@ -8726,8 +8726,12 @@ int ctor_arm_incompat(Compiler *c, Scope *is, const ArgLayout *L, const int *arg
   for (int j = 0; is && argv && j < is->nparams; j++) {
     if (L->from[j] != ARG_NODE) continue;
     LocalVar *cp = is->pnames && is->pnames[j] ? scope_local(is, is->pnames[j]) : NULL;
-    TyKind ptc = cp ? cp->type : TY_POLY;
-    TyKind atc = comp_ntype(c, argv[L->arg[j]]);
+    TyKind ptc = cp ? repr_of_slot(c, cp).as_ty : TY_POLY;
+    TyKind atc = repr_of(c, argv[L->arg[j]]).as_ty;
+    /* A shared handle and a String read hold the same Ruby class. The
+       arm's boxed argument is converted by emit_ctor_arm_param. */
+    if ((ptc == TY_STRBUF && atc == TY_STRING) ||
+        (ptc == TY_STRING && atc == TY_STRBUF)) continue;
     if (ptc != TY_POLY && ptc != TY_UNKNOWN && atc != TY_POLY && atc != TY_UNKNOWN && ptc != atc)
       return 1;
   }
