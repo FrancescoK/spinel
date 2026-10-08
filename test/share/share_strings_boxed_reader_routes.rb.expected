@@ -1,0 +1,9 @@
+[103, 103, "a\u0000b"]
+true
+true
+[101, 101]
+true
+true
+["new", 101]
+true
+"fixed"
