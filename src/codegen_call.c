@@ -6839,7 +6839,9 @@ static int emit_poly_arg_temp(Compiler *c, int node, TyKind ty, int boxed, int t
                   nt_kind(c->nt, node) != NK_LocalVariableReadNode &&
                   nt_kind(c->nt, node) != NK_InstanceVariableReadNode;
   if (as_handle) buf_puts(&val, "SP_AS_STRING_HANDLE(");
-  if (boxed) emit_boxed(c, node, &val); else emit_expr(c, node, &val);
+  if (!boxed && ty == TY_STRBUF && repr_share_rule(c) && repr_of(c, node).strbuf_src == RS_HANDLE)
+    emit_strbuf_handle_of(c, node, &val);
+  else if (boxed) emit_boxed(c, node, &val); else emit_expr(c, node, &val);
   if (as_handle) buf_puts(&val, ")");
   g_pre = sv_pre;
   if (pre.p) buf_puts(b, pre.p);
@@ -6850,6 +6852,13 @@ static int emit_poly_arg_temp(Compiler *c, int node, TyKind ty, int boxed, int t
   }
   free(pre.p); free(val.p);
   return held >= 0 ? held : tn;
+}
+
+/* A String-typed slot may already hold the shared handle. The argument
+   temp keeps that representation so boxed arms keep its identity too. */
+static TyKind poly_arg_storage(Compiler *c, Repr r) {
+  if (repr_share_rule(c) && r.as_ty == TY_STRING && r.strbuf_src == RS_HANDLE) return TY_STRBUF;
+  return r.as_ty;
 }
 
 /* `sp_raise_cls("ArgumentError", msg);` with msg a C string literal: a
@@ -6934,12 +6943,23 @@ void poly_arm_layout(Compiler *c, Scope *ms, const PolyArgs *A, ArgLayout *L) {
 }
 
 /* Temp `tmp` of type `at` as a parameter of type `pt`. */
-static void emit_poly_temp_as(Compiler *c, TyKind pt, int tmp, TyKind at, Buf *pa) {
+static void emit_poly_temp_as(Compiler *c, TyKind pt, int tmp, TyKind at, int root, Buf *pa) {
   char tn[32]; snprintf(tn, sizeof tn, "_t%d", tmp);
   if (pt == TY_POLY && at != TY_POLY) emit_boxed_text(c, at, tn, pa);
   /* a boxed argument may be nil, which an Integer or Float parameter takes
      as its own nil: the plain unbox read the zero under the nil tag */
   else if (at == TY_POLY && pt != TY_POLY && pt != TY_UNKNOWN) emit_unbox_nilable_text(c, pt, tn, pa);
+  /* A held shared handle into a plain String parameter takes its read
+     face. Keep that copy rooted across the other parameters' reads and
+     defaults, in the arm's prelude where those allocations run.
+     The last read needs none when the remaining bindings cannot allocate;
+     an earlier-parameter default's binding supplies its own root. */
+  else if (at == TY_STRBUF && pt == TY_STRING) {
+    int t = ++g_tmp;
+    buf_printf(g_pre, "const char *_t%d = sp_strbuf_read_pub(%s); ", t, tn);
+    if (root) { emit_gc_root_tmp(c, TY_STRING, t, g_pre); buf_puts(g_pre, " "); }
+    buf_printf(pa, "_t%d", t);
+  }
   /* a subclass argument into an ancestor-typed parameter: layout-compatible,
      but C wants it spelled (#3418) */
   else { emit_obj_upcast_prefix(c, pt, at, pa); buf_puts(pa, tn); }
@@ -7075,10 +7095,12 @@ static int poly_inert(Compiler *c, int node) {
 }
 
 /* The index of the last of the `n` in `args` that is not inert, -1 for
-   none: an argument before it has code run after its temp is made. */
+   none: an argument before it has code run after its temp is made.
+   Under sharing, an argument already evaluated by the operand holder is
+   just its temp here; it cannot rebind an earlier handle's source. */
 static int poly_last_live(Compiler *c, const int *args, int n) {
   for (int j = n - 1; j >= 0; j--)
-    if (!poly_inert(c, args[j])) return j;
+    if (!(repr_share_rule(c) && arg_ran_first(args[j], 0)) && !poly_inert(c, args[j])) return j;
   return -1;
 }
 
@@ -7088,9 +7110,15 @@ static int poly_last_live(Compiler *c, const int *args, int n) {
    a container literal, a conditional whose arm boxes, a backtick, the copy
    a shared-mutable String's read makes) may have built a value only the
    temp holds. */
-static int poly_arg_held(Compiler *c, int node) {
+static int poly_arg_held(Compiler *c, int node, TyKind held) {
   node = unwrap_parens(c, node);
-  if (node < 0 || operand_may_allocate(c, node)) return 0;
+  if (node < 0) return 0;
+  /* The handle read copies nothing; its slot holds it until a later
+     argument or default can rebind that slot. The byte read allocates.
+     Answer 2 when the existing frame slot holds it even across later code. */
+  int handle = repr_share_rule(c) && held == TY_STRBUF && repr_of(c, node).strbuf_src == RS_HANDLE;
+  if (handle && (read_unbound_in_stmt(c, node) || read_of_fixed_param(c, node))) return 2;
+  if (!handle && operand_may_allocate(c, node)) return 0;
   switch (nt_kind(c->nt, node)) {
   case NK_LocalVariableReadNode: case NK_InstanceVariableReadNode:
   case NK_ClassVariableReadNode: case NK_GlobalVariableReadNode:
@@ -7253,7 +7281,7 @@ static int emit_poly_boxed_shared_arg(Compiler *c, const PolyArgs *A, int k, Buf
    keyword hash as one more positional, the rest, the gather, or the
    default. `ct` is the gather's temp. */
 static void emit_poly_arm_param(Compiler *c, Scope *ms, int a, const ArgLayout *L,
-                                const PolyArgs *A, int ct, const char *selfd, Buf *pa) {
+                                const PolyArgs *A, int ct, const char *selfd, int read_root, Buf *pa) {
   const char *pnm = ms->pnames ? ms->pnames[a] : NULL;
   LocalVar *pv = pnm ? scope_local(ms, pnm) : NULL;
   /* a parameter inference left unknown is spelled sp_RbVal in the signature
@@ -7272,7 +7300,7 @@ static void emit_poly_arm_param(Compiler *c, Scope *ms, int a, const ArgLayout *
       if (repr_of_slot(c, pv).handle && emit_poly_shared_arg(c, A, L->arg[a], pa)) return;
       if (pt == TY_POLY && pv && (pv->poly_lift & POLY_LIFT_APPENDED) &&
           emit_poly_boxed_shared_arg(c, A, L->arg[a], pa)) return;
-      emit_poly_temp_as(c, pt, A->atmp[L->arg[a]], A->atmp_ty[L->arg[a]], pa);
+      emit_poly_temp_as(c, pt, A->atmp[L->arg[a]], A->atmp_ty[L->arg[a]], read_root, pa);
       return;
     }
     /* fall through */
@@ -7296,6 +7324,28 @@ static void emit_poly_arm_param(Compiler *c, Scope *ms, int a, const ArgLayout *
   g_self = saved_self;
 }
 
+/* The last handle read needs no root before a callee roots its parameters
+   when the other bindings just pass held values. A default, gather or
+   conversion that may allocate keeps the read rooted across the call's
+   arguments, whose C evaluation order is unspecified. */
+static int poly_arm_last_read(Compiler *c, Scope *ms, const ArgLayout *L, const PolyArgs *A) {
+  int last = -1;
+  for (int a = 0; a < ms->nparams; a++) {
+    LocalVar *pv = ms->pnames && ms->pnames[a] ? scope_local(ms, ms->pnames[a]) : NULL;
+    Repr pr = repr_of_slot(c, pv);
+    /* A captured parameter allocates its cell before storing the value. */
+    if (pr.cell == RC_HEAP) return ms->nparams;
+    if (L->from[a] != ARG_NODE || L->arg[a] >= A->pos_argc) return ms->nparams;
+    TyKind at = A->atmp_ty[L->arg[a]];
+    if (pr.as_ty == at || (pr.handle && at == TY_STRBUF)) continue;
+    if (pr.as_ty == TY_STRING && at == TY_STRBUF) { last = a; continue; }
+    Repr ar = repr_of(c, A->argv[L->arg[a]]);
+    if (pr.kind == RK_BOXED && ar.kind != RK_STRUCT && ar.kind != RK_VOBJ) continue;
+    return ms->nparams;
+  }
+  return last;
+}
+
 /* An arm's arguments into `cb`, the first after `lead`, each parameter as
    the layout says; what they need ahead of the call into `pre`: the gather
    and its count, then the keywords' checks (the count first, as CRuby
@@ -7315,6 +7365,7 @@ void emit_poly_arm_args(Compiler *c, Scope *m, Scope *ms, const ArgLayout *L,
   if (L->gather && kw_plan_error(&L->kw, msg, sizeof msg)) emit_poly_arity_raise(pre, msg);
   emit_poly_kw_arm_checks(c, m, ms, A->kw, A->pos_argc, L->gather, pre);
   int pd_arm = default_refs_earlier_param(c, ms);
+  int last_read = pd_arm ? -1 : poly_arm_last_read(c, ms, L, A);
   int pd_uid = pd_arm ? ++g_tmp : 0, ren_base = g_nren;
   /* Two arguments that each build a fresh object in a statement expression
      (a rest's slice, a **kwrest's hash) root it only to the end of that
@@ -7326,7 +7377,7 @@ void emit_poly_arm_args(Compiler *c, Scope *m, Scope *ms, const ArgLayout *L,
   if (!pd_arm && ms->nparams > 1) {
     pav = calloc((size_t)ms->nparams, sizeof *pav);
     for (int a = 0; pav && a < ms->nparams; a++) {
-      emit_poly_arm_param(c, ms, a, L, A, ct, selfd, &pav[a]);
+      emit_poly_arm_param(c, ms, a, L, A, ct, selfd, a < last_read, &pav[a]);
       if (pav[a].p && strstr(pav[a].p, "SP_GC_ROOT(")) nfresh++;
     }
   }
@@ -7350,7 +7401,7 @@ void emit_poly_arm_args(Compiler *c, Scope *m, Scope *ms, const ArgLayout *L,
         continue;
       }
     }
-    else emit_poly_arm_param(c, ms, a, L, A, ct, selfd, &pa);
+    else emit_poly_arm_param(c, ms, a, L, A, ct, selfd, a < last_read, &pa);
     const char *pnm = ms->pnames ? ms->pnames[a] : NULL;
     if (pd_arm && pnm && g_nren < MAX_RENAME) {
       LocalVar *pv = scope_local(ms, pnm);
@@ -7956,7 +8007,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           continue;
         }
         Repr ar = repr_of(c, argv[a]);
-        TyKind at = ar.as_ty;
+        TyKind at = poly_arg_storage(c, ar);
         /* A local whose slot is boxed reads as an sp_RbVal where its read is
            typed a shared String handle (a String-or-nil parameter that a
            handle arm asks for as a String): no read unboxes a handle, so the
@@ -7965,6 +8016,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         /* A narrowed read can now take the handle out; its boxed argument
            still hands on the original box, as repr's source records. */
         if (ar.strbuf_src == RS_SLOT_POLY) at = TY_POLY;
+        int held = poly_arg_held(c, argv[a], at);
         /* A nil/void/unresolved arg has no concrete C storage (emit_ctype would
            print `void`); hold it as a boxed poly so it can flow into a poly
            param slot. */
@@ -7987,8 +8039,13 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
               (takes_handle >= 0 ? takes_handle : (takes_handle = poly_name_takes_handle(c, name))) &&
               strbuf_slot_ref(c, argv[a], sref, sizeof sref)) {
             htmp[a] = ++g_tmp;
-            buf_printf(b, "sp_String *_t%d = %s; SP_GC_ROOT(_t%d); ", htmp[a], sref, htmp[a]);
-            atmp[a] = emit_poly_arg_temp(c, argv[a], at, 0, atmp[a], ran, b);
+            buf_printf(b, "sp_String *_t%d = %s; ", htmp[a], sref);
+            if (!repr_share_rule(c) || at != TY_STRBUF || (held != 2 && (a < pos_live || kw_runs ||
+                (arm_runs >= 0 ? arm_runs : (arm_runs = poly_arm_runs_code(c, name, pos_argc, has_splat_arg, kwh)))))) {
+              emit_gc_root_tmp(c, TY_STRBUF, htmp[a], b); buf_puts(b, " ");
+            }
+            if (repr_share_rule(c) && at == TY_STRBUF) atmp[a] = htmp[a];
+            else atmp[a] = emit_poly_arg_temp(c, argv[a], at, 0, atmp[a], ran, b);
           }
           /* --share-strings: a value that hands on a shared String's handle
              (a route, `s << x`) runs as that handle, which a handle arm
@@ -8017,8 +8074,8 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
            already ran into a temp is rooted here all the same: not every
            hoist roots its temp, nor the Strings a by-value kind carries;
            the nil arm's head does (head_held_temp). */
-        if (ty_gc_holds_refs(c, atmp_ty[a]) && atmp[a] != head_held_temp(c, argv[a]) &&
-            (!poly_arg_held(c, argv[a]) || a < pos_live || kw_runs ||
+        if (held != 2 && ty_gc_holds_refs(c, atmp_ty[a]) && atmp[a] != htmp[a] && atmp[a] != head_held_temp(c, argv[a]) &&
+            (!held || a < pos_live || kw_runs ||
              (arm_runs >= 0 ? arm_runs : (arm_runs = poly_arm_runs_code(c, name, pos_argc, has_splat_arg, kwh))))) {
           emit_gc_root_tmp_refs(c, atmp_ty[a], atmp[a], b); buf_puts(b, " ");
         }
@@ -8060,7 +8117,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           /* rooted as a positional's temp is: an arm allocates its keyword
              hash before it stores this value into it */
           if (val >= 0 && ty_gc_holds_refs(c, kwty[e]) && kwtmp[e] != head_held_temp(c, val) &&
-              (!poly_arg_held(c, val) || e < kw_live ||
+              (!poly_arg_held(c, val, kwty[e]) || e < kw_live ||
                (arm_runs >= 0 ? arm_runs : (arm_runs = poly_arm_runs_code(c, name, pos_argc, has_splat_arg, kwh))))) {
             emit_gc_root_tmp_refs(c, kwty[e], kwtmp[e], b); buf_puts(b, " ");
           }
@@ -12055,7 +12112,7 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
         Buf nb; memset(&nb, 0, sizeof nb); emit_int_expr(c, argv[0], &nb);
         /* --share-strings: a fill stored as the shared handle is boxed as
            its handle, one object in every slot, as a literal's element is */
-        int fh = at == TY_POLY_ARRAY && repr_share_rule(c) && repr_of(c, argv[1]).as_ty == TY_STRBUF;
+        int fh = array_fill_boxes_handle(c, id, argv[1]);
         Buf vb; memset(&vb, 0, sizeof vb);
         if (fh) emit_boxed(c, argv[1], &vb);
         else vb = expr_buf(c, argv[1]);

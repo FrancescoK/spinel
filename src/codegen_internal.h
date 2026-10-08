@@ -1285,6 +1285,9 @@ int scope_is_shadowed(Compiler *c, int s);
 int  scope_needs_proc_form(Compiler *c, int s);
 int  scope_proc_form_of(Compiler *c, int s);
 int  expr_is_held_ref(Compiler *c, int node);   /* a read of a held object: no root needed */
+/* Reads kept by their existing frame slot across later argument evaluation. */
+int read_of_fixed_param(Compiler *c, int node);
+int read_unbound_in_stmt(Compiler *c, int node);
 int  proc_form_live(Compiler *c, int s);
 int  proc_form_source(Compiler *c, int s);
 int  ctor_site_on_cycle(Compiler *c, int id, int initm);
