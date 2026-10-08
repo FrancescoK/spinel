@@ -24,8 +24,9 @@ other << "z"
 p result, other
 p catch(:literal) { throw :literal, +"literal" }
 # A rescued abort retains its message through the existing exception facts.
+# Raise its SystemExit directly so the fixture has no stderr output.
 result = begin
-  abort(objects[0].value)
+  raise SystemExit, objects[0].value
 rescue SystemExit => error
   error.message
 end
