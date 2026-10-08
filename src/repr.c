@@ -7,6 +7,7 @@
 #include "codegen_internal.h"
 #include "share.h"
 #include "holder.h"
+#include "call_plan.h"
 
 static int repr_sealed_flag;
 
@@ -144,6 +145,31 @@ int repr_write_share(const Compiler *c, int node) {
   return 0;
 }
 
+/* --share-strings: a call whose every target method answers a shared
+   String's handle (Scope.ret_handle): the value is that handle, which the
+   callee's tail read publishes. (A call marked to be stored as the handle
+   is read with its mark lifted, as a String, and picked up here.) */
+int repr_call_returns_handle(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  v = unwrap_parens(c, v);
+  if (!repr_share_rule(c) || v < 0 || nt_kind(nt, v) != NK_CallNode) return 0;
+  /* a String's value, or one the pickup marks to be stored as the handle */
+  TyKind t = c->ntype[v];
+  if (t != TY_STRING && !(t == TY_STRBUF && c->strbuf_box[v])) return 0;
+  /* a Method's call: the method `method(:m)` names */
+  int recv = nt_ref(nt, v, "receiver");
+  const char *nm = nt_str(nt, v, "name");
+  if (recv >= 0 && nm && comp_ntype(c, recv) == TY_METHOD && is_call_alias(nm)) {
+    int mn = method_recv_node(c, recv);
+    int mi = mn >= 0 ? method_obj_target_mi(c, mn) : -1;
+    return mi > 0 && c->scopes[mi].ret_handle;
+  }
+  int mis[CPT_MAX];
+  int n = cplan_targets(c, v, mis, CPT_MAX);
+  if (n <= 0) return 0;
+  for (int i = 0; i < n; i++) if (!c->scopes[mis[i]].ret_handle) return 0;
+  return 1;
+}
 /* Where the boxed form of a shared-mutable String comes from, as emit_boxed
    decides it for a node stored as (or holding) the handle. */
 static int repr_strbuf_src(const Compiler *c, int node, TyKind t) {
@@ -199,6 +225,9 @@ static int repr_strbuf_src(const Compiler *c, int node, TyKind t) {
   /* a reader call (or a call answering its receiver) that renders the
      handle itself */
   if (k == NK_CallNode) {
+    /* A demanded call whose return route carries a handle is already that
+       handle, including when operand ordering holds it in a temp. */
+    if (c->strbuf_handle_demand[node] && repr_call_returns_handle(mc, node)) return RS_DEMANDED;
     int r = nt_ref(nt, node, "receiver");
     if (r >= 0 && ty_is_object(comp_ntype(c, r)) &&
         (strbuf_marked_yields_handle(mc, node) || c->strbuf_handle_demand[node]))

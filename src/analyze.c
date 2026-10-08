@@ -20459,6 +20459,25 @@ static int mark_reader_identity_operands(Compiler *c) {
     if (recv < 0 || ac != pair) continue;
     for (int side = pair ? 0 : 1; side < 2; side++) {
       int opnd = side == 0 ? av[0] : recv;
+      /* A call answering a handle uses the same demand as a reader. Its
+         settled return fact is the one the return route picks up. Replace
+         an earlier box mark too: its storage type lets operand ordering
+         mistake the call for a fresh String to wrap. */
+      if (c->share_strings && opnd >= 0 && !c->strbuf_handle_demand[opnd] &&
+          repr_call_returns_handle(c, opnd) && cplan_user_fresh(c, w)->dispatch == CP_NONE) {
+        c->strbuf_box[opnd] = 0;
+        comp_sn_retype(c, opnd, TY_STRING);
+        c->strbuf_handle_demand[opnd] = 1;
+        /* Boxing a parenthesized operand reads its inner value directly. */
+        int inner = unwrap_parens(c, opnd);
+        if (inner != opnd) {
+          c->strbuf_box[inner] = 0;
+          comp_sn_retype(c, inner, TY_STRING);
+          c->strbuf_handle_demand[inner] = 1;
+        }
+        changed = 1;
+        continue;
+      }
       if (opnd < 0 || c->strbuf_box[opnd] || c->strbuf_handle_demand[opnd]) continue;
       /* a local the handle pass above made shared: its read is marked the
          way the in-fixpoint rule marks one shared by then */
@@ -36720,7 +36739,7 @@ static void an_phase_storage(Compiler *c) {
       if (lv && lv->type == TY_POLY) c->nilnarrow[r] = c->ntype[r] = TY_STRBUF;
     }
   }
-  mark_reader_identity_operands(c);
+  if (!c->share_strings) mark_reader_identity_operands(c);
   mark_reader_read_only_operands(c);
 
   /* Promote `<<`-appended string locals to mutable strings (TY_STRBUF) so the
@@ -37790,6 +37809,8 @@ void analyze_program(Compiler *c) {
   share_mark_borrows(c);
   /* --share-strings: the methods whose value is a shared String's handle */
   an_mark_handle_returns(c);
+  /* Identity operands can ask the settled call-return fact now. */
+  if (c->share_strings) mark_reader_identity_operands(c);
   /* the representation flags are final from here (repr.h) */
   repr_seal(c);
   sp_timing_end(tm_an, "analysis", "");
