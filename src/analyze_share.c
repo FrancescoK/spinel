@@ -340,6 +340,9 @@ static void sh_mark_at(ShareFacts *F, int x, unsigned fl, int node) {
    holder's read and whose class the rule shares (share_flow_*). */
 static void sh_flow(ShareFacts *F, int kind, int site, int v) {
   if (v < 0 || site < 0) return;
+  /* The jump walk also reaches every emitted subtree. Desugaring leaves
+     detached nodes behind, including an expanded literal splat's Array. */
+  if (F->jseen && !F->jseen[site]) return;
   if (F->nfl >= F->cfl) {
     F->cfl = F->cfl ? F->cfl * 2 : 64;
     F->fl_site = realloc(F->fl_site, sizeof(int) * (size_t)F->cfl);
