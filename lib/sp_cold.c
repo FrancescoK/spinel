@@ -4135,6 +4135,17 @@ sp_RbVal sp_encoding_find(sp_RbVal v) {
   sp_raise_cls("ArgumentError", sp_sprintf("unknown encoding name - %s", n));
   return sp_box_nil();
 }
+/* force_encoding with an Encoding or a name known only at run time: 1 for
+   ASCII-8BIT, 0 for UTF-8 or US-ASCII, -1 for an encoding spinel has no tag
+   for. A bad argument raises as CRuby's does. */
+int sp_force_encoding_mode(sp_RbVal enc) {
+  sp_RbVal e = sp_encoding_find(enc);
+  const char *n = e.tag == SP_TAG_ENCODING ? e.v.s : NULL;
+  if (!n) return -1;
+  if (!strcmp(n, "ASCII-8BIT")) return 1;
+  if (!strcmp(n, "UTF-8") || !strcmp(n, "US-ASCII")) return 0;
+  return -1;
+}
 sp_RbVal sp_box_nullable_str(const char *v) { return v ? sp_box_str(v) : sp_box_nil(); }
 /* An opaque foreign/FFI pointer: boxed with SP_BUILTIN_FOREIGN_PTR so the
    collector skips it (it is not a sp_gc_alloc allocation). NULL -> nil. */
