@@ -8164,8 +8164,13 @@ static void emit_arg_temp(Compiler *c, int v) {
      (emit_strbuf_write_handle): it runs here, its handle taken, and the
      value is the slot's read of that handle. */
   int wshare = repr_write_share(c, unwrap_parens(c, v));
+  /* A builtin to_s keeps the receiver's String too. Capture its handle
+     before later arguments can replace the receiver. */
+  int conversion = at == TY_STRING && strbuf_poly_to_s(c, v);
   Buf hw; memset(&hw, 0, sizeof hw);
-  if (wshare) emit_strbuf_write_handle(c, v, &hw);
+  if (conversion) emit_strbuf_handle_of(c, v, &hw);
+  else if (wshare) emit_strbuf_write_handle(c, v, &hw);
+  wshare |= conversion;
   if (wshare || ((vk == NK_LocalVariableReadNode || vk == NK_InstanceVariableReadNode ||
                   repr_static_read_kind(vk)) &&
                  strbuf_slot_ref(c, v, sref, sizeof sref))) {

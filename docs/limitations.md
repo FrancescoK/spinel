@@ -669,6 +669,22 @@ assignment binds. Build the array as a general Array where it is created, or
 give the parameter the argument's kind (an rbs seed, or call sites that all
 pass the same kind).
 
+#### Some ENV result routes cannot carry a shared String yet
+
+With `--share-strings`, `ENV.store` and `ENV.[]=` return their value
+argument's handle while the environment keeps a copy. A shared String
+stored through a boxed value is refused when another live name could
+observe a copy of its plain bytes. Fresh results and fresh values passed
+at a local's only read are supported. The result route also refuses a
+mutable key whose handle cannot be held while value evaluation can change
+it; a plain value read does not require this refusal. A shared String
+returned by an `ENV.delete` block is refused when the result route cannot
+carry that handle. Delete's block parameter is the String key, and a block
+that returns its own new String remains supported. `ENV.fetch` preserves
+a default's available String handle. The snapshot
+routes for `ENV.assoc` and `ENV.rassoc` likewise refuse an observable copy
+of the supplied key or value.
+
 #### A plain String in a slot that holds other values too is not shared by `<<`
 
 A local, ivar, Hash value or Array element that holds more than one kind of

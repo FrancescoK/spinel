@@ -1,0 +1,1 @@
+spinel: test/share/refuse/env_fetch_block_result.rb:4: under --share-strings, the String the value of `fetch` hands on as a variable's write is shared with another name and changed in place, and that route cannot carry the shared handle yet: it would hand on a copy (#6765)
