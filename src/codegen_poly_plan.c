@@ -284,19 +284,22 @@ static int poly_user_arm0_decide(Compiler *c, int id, const char *name, int argc
 /* A user arm boxes the String its return facts describe. A shared return
    publishes its handle; a fresh return needs its own handle only when the
    call's value is shared. The nil and fresh tails use the same handover as
-   the deep-return pickup, so an earlier publication cannot replace them. */
+   the deep-return pickup, so an earlier publication cannot replace them.
+   A fresh result a builtin only reads, or the caller drops, keeps no alias. */
 static void emit_poly_user_box(Compiler *c, int id, Scope *m, const char *call, Buf *b) {
   if (!repr_share_rule(c) || m->ret != TY_STRING ||
-      (!m->ret_handle && !(m->ret_fresh && share_node_shares(c, id)))) {
+      (!m->ret_handle && !(m->ret_fresh && share_node_shares(c, id) && !share_node_transient(c, id)))) {
     emit_boxed_text(c, m->ret, call, b);
     return;
   }
   Buf hb; memset(&hb, 0, sizeof hb);
   int t = ++g_tmp;
-  buf_printf(&hb, "({ _sp_ret_strbuf = NULL; const char *_v%d = %s; ", t, call);
-  if (m->ret_nil_pickup) buf_printf(&hb, "!_v%d ? NULL : ", t);
+  buf_puts(&hb, "({ ");
+  if (m->ret_handle) buf_puts(&hb, "_sp_ret_strbuf = NULL; ");
+  buf_printf(&hb, "const char *_t%d = %s; ", t, call);
+  if (m->ret_nil_pickup) buf_printf(&hb, "!_t%d ? NULL : ", t);
   if (m->ret_handle) buf_puts(&hb, "_sp_ret_strbuf ? (sp_String *)_sp_ret_strbuf : ");
-  buf_printf(&hb, "sp_String_new_shared(_v%d); })", t);
+  buf_printf(&hb, "sp_String_new_shared(_t%d); })", t);
   emit_boxed_text(c, TY_STRBUF, hb.p, b);
   free(hb.p);
 }
