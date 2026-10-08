@@ -11125,7 +11125,7 @@ static LocalVar *read_of_rooted_local(Compiler *c, int node, Scope **sp) {
    holds that value for the whole call and is rooted on entry
    (emit_scope_decls), so an argument temp copied from it is reachable without
    a root of its own however much the later arguments allocate. */
-static int read_of_fixed_param(Compiler *c, int node) {
+int read_of_fixed_param(Compiler *c, int node) {
   Scope *s = NULL;
   LocalVar *lv = read_of_rooted_local(c, node, &s);
   return lv && lv->is_param && s->def_node >= 0 &&
@@ -11139,7 +11139,7 @@ static int read_of_fixed_param(Compiler *c, int node) {
    a non-captured local of this frame. The local's own root holds the value
    meanwhile. A temp written into any other buffer -- a private one spliced
    elsewhere, or with no statement open -- is not judged. */
-static int read_unbound_in_stmt(Compiler *c, int node) {
+int read_unbound_in_stmt(Compiler *c, int node) {
   Scope *s = NULL;
   if (!read_of_rooted_local(c, node, &s)) return 0;
   int st = -1;
