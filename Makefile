@@ -1015,7 +1015,9 @@ ifeq ($(FFI_AVAILABLE),yes)
 SHARE_TESTS += packages/ffi/test/ffi_dynamic_owner.rb packages/ffi/test/ffi_store_string.rb
 SHARE_TESTS += packages/ffi/test/ffi_nil_numeric_arg.rb
 SHARE_TESTS += packages/fiddle/test/fiddle_importer_include.rb
+SHARE_TESTS += test/instance_eval_poly_fiddle.rb
 endif
+SHARE_TESTS += test/instance_eval_poly_unconstrained.rb
 ifneq ($(FFI_AVAILABLE),yes)
 SHARE_TESTS := $(filter-out test/share/share_strings_fiddle.rb,$(SHARE_TESTS))
 endif
@@ -2267,6 +2269,7 @@ GC_MINOR_TESTS := test/io_read_outbuf_eof.rb \
 	test/share_strings_builtin_fallback_reads.rb \
                   test/share_strings_class_value_parameter.rb \
                   test/string_reopen_block_returns.rb \
+                  test/instance_eval_poly_unconstrained.rb \
                   test/share_strings_hash_transform_params.rb \
                   test/string_concat_value_snapshot.rb \
                   test/string_concat_rebound_receiver.rb \

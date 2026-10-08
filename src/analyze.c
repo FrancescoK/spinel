@@ -7676,7 +7676,7 @@ static int desugar_enum_named_call(Compiler *c, int id, NodeTable *nt, const cha
         sp_streq(nt_type(nt, srecv), "SelfNode") &&
         nm[0] && nm[strlen(nm) - 1] != '=') {
       Scope *ssc = comp_scope_of(c, id);
-      if (ssc && ssc->is_cmethod && ssc->class_id >= 0 &&
+      if (ssc && ssc->is_cmethod && ssc->class_id >= 0 && ie_class_of(c, id) == -1 &&
           comp_cmethod_in_chain(c, ssc->class_id, nm, NULL) >= 0) {
         nt_node_set_ref(nt, id, "receiver", -1);
         *changed = 1;
