@@ -4,6 +4,7 @@ class ConcatSnapshot
     @text = +"old"
     original = @text
     original << "!"
+    # The receiver root spans rebind's sp_str_uplus and then sp_str_repeat.
     result = @text.concat(rebind, "z" * 100)
     p result, original, @text
   end

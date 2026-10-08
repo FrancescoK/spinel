@@ -15955,6 +15955,14 @@ static int strbuf_recv_hold(Compiler *c, int recv, const char *name, int argc, c
    argument reads as a copy, so `s.concat(s, s)` appends the String as it
    was), then the frozen check, then the appends in order */
 void emit_str_concat_handle(Compiler *c, const char *sref, int argc, const int *argv, Buf *b, int indent) {
+  int last_alloc = -1;
+  for (int a = argc - 1; a >= 0; a--) {
+    Repr r = repr_of(c, argv[a]);
+    if (r.as_ty != TY_STRING || (!arg_ran_first(argv[a], 0) && operand_may_allocate(c, argv[a]))) {
+      last_alloc = a;
+      break;
+    }
+  }
   int base = g_tmp + 1; g_tmp += argc;
   emit_indent(b, indent);
   buf_puts(b, "{");
@@ -15966,7 +15974,20 @@ void emit_str_concat_handle(Compiler *c, const char *sref, int argc, const int *
     int boxed = repr_of(c, argv[a]).kind == RK_BOXED;
     buf_printf(b, " const char *_t%d = %s", base + a, boxed ? "sp_str_concat(" : "");
     emit_str_append_arg(c, argv[a], rt, b);
-    buf_printf(b, "%s; SP_GC_ROOT_STR(_t%d);", boxed ? ", \"\")" : "", base + a);
+    buf_printf(b, "%s;", boxed ? ", \"\")" : "");
+    int v = argv[a];
+    while (v >= 0 && nt_kind(c->nt, v) == NK_ParenthesesNode) {
+      int body = nt_ref(c->nt, v, "body"), n = 0;
+      const int *seq = body >= 0 ? nt_arr(c->nt, body, "body", &n) : NULL;
+      v = n > 0 ? seq[n - 1] : -1;
+    }
+    int literal = v >= 0 && nt_kind(c->nt, v) == NK_StringNode && !operand_may_allocate(c, v);
+    int held = repr_of(c, argv[a]).as_ty == TY_STRING && arg_ran_first(argv[a], 0);
+    /* Fresh snapshots span later sp_strbuf_read_pub/sp_str_concat copies
+       or argument allocations such as sp_str_repeat. append_bin cannot
+       collect; an ordered String temp or immortal literal needs no root. */
+    if (a < last_alloc && (boxed || (!literal && !held)))
+      buf_printf(b, " SP_GC_ROOT_STR(_t%d);", base + a);
   }
   buf_printf(b, " if (sp_String_is_frozen(%s)) sp_raise_frozen_str((%s)->data);\n", sref, sref);
   for (int a = 0; a < argc; a++) {

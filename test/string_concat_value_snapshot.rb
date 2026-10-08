@@ -3,6 +3,7 @@
 s = +"a"
 other = s
 other << "!"
+# The first s snapshot spans the final s read's sp_strbuf_read_pub allocation.
 result = s.concat(s, "b", s)
 p s, result
 
@@ -10,6 +11,8 @@ s = +"x\0y"
 other = s
 other << "!"
 arg = [s, 1][ARGV.size]
+# The first arg copy spans sp_str_repeat and the final sp_str_concat copy.
+# The repeated String spans that final sp_str_concat allocation too.
 result = s.concat(arg, "z" * 100, arg)
 p result.bytes, s == result
 

@@ -20176,7 +20176,9 @@ static int emit_recv_snapshot(Compiler *c, int id, Buf *b) {
   int recv = nt_ref(nt, id, "receiver");
   int args = nt_ref(nt, id, "arguments");
   /* A concat's slot can be rebound by an argument. Keep the existing
-     handle before operand ordering runs those arguments. */
+     handle before operand ordering runs those arguments.
+     Its root spans the rebind's sp_str_uplus/sp_String_new_shared and
+     later argument allocations such as sp_str_repeat. */
   char ref[1024];
   if (recv >= 0 && args >= 0 && is_concat_name(nt_str(nt, id, "name")) &&
       !arg_ran_first(recv, 0) && strbuf_slot_ref(c, recv, ref, sizeof ref) && read_rebound_by(c, recv, args)) {
