@@ -3045,6 +3045,8 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
 static TyKind infer_array_new_fill(Compiler *c, int fill) {
   TyKind ft = infer_type(c, fill);
   if (ft == TY_STRBUF && c->share_strings) ft = TY_POLY;
+  /* Static slots keep their String type after their storage is shared. */
+  if (ft == TY_STRING && c->share_strings && repr_static_share(c, fill)) ft = TY_POLY;
   return ty_array_of(ft);
 }
 /* A constructor call: a class's .new, and the builtin constructors (infer_call_inner's rules, in their order) */

@@ -11,6 +11,8 @@
 #include "builtin_ops.h"
 #include "call_plan.h"
 
+int array_fill_boxes_handle(Compiler *c, int id, int fill);
+
 /* ---- the arms ---- */
 int emit_call_synchronize_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv);
 int emit_call_bigint_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt);
