@@ -15545,7 +15545,13 @@ static int sa_copy_defer(Compiler *c, int site, int v, int reader, const char *m
   q.carry = reader ? v : SHARE_CARRY_COPY;
   /* Unary plus already carries a mutable operand's handle; a frozen
      operand gets its own. Let the seal check that existing value route. */
-  if (nt_kind(c->nt, v) == NK_CallNode && is_unary_plus(nt_str(c->nt, v, "name")) &&
+  /* A builtin answering its String receiver is a value route over that
+     receiver's handle. The seal checks the route after storage settles. */
+  if (nt_kind(c->nt, v) == NK_CallNode &&
+      (is_unary_plus(nt_str(c->nt, v, "name")) ||
+       (bop_share_named(TY_STRING, nt_str(c->nt, v, "name")) == BSH_RECV &&
+        bop_answers_self(TY_STRING, nt_str(c->nt, v, "name"), call_plain_argc(c, v),
+                         nt_ref(c->nt, v, "block") >= 0) == BOPF_SELF)) &&
       cplan_user(c, v)->dispatch == CP_NONE) q.carry = v;
   /* A demanded String conversion already boxes its receiver's handle.
      Let the seal check that route when no user method overrides it. */
