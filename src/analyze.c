@@ -17781,6 +17781,13 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
            String Array written into it is wrapped element by element */
         ClassInfo *ci = &c->classes[sh->cid];
         if (it == TY_POLY_ARRAY && !ci->ivar_elems_shared[iv]) { ci->ivar_elems_shared[iv] = 1; changed = 1; }
+        /* An externally written String Array uses that same form even
+           when the source walk cannot reach a direct ivar write. */
+        if (it == TY_STR_ARRAY && !class_ivar_pinned(ci, sh->name)) {
+          ci->ivar_types[iv] = TY_POLY_ARRAY;
+          ci->ivar_elems_shared[iv] = 1;
+          changed = 1;
+        }
         continue;
       }
       if (repr_str_shares(c, h)) changed |= strbuf_promote_ivar(c, sh->cid, sh->name);
