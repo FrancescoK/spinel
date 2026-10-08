@@ -6683,8 +6683,8 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
                      ? "sp_String_new_fresh" : "sp_String_new_shared", tpv);
         return;
       }
-      buf_puts(out, p->dyn_handle && pk != NK_LocalVariableReadNode && pk != NK_InstanceVariableReadNode
-                      ? "sp_String_new_fresh(" : "sp_String_new_shared(");
+      buf_printf(out, "%s(", p->dyn_handle && pk != NK_LocalVariableReadNode && pk != NK_InstanceVariableReadNode
+                      ? "sp_String_new_fresh" : strbuf_new_func(c, provided));
       emit_str_expr(c, provided, out);
       buf_puts(out, ")");
       return;
@@ -6703,7 +6703,7 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
     /* a default that writes a slot holding the --share-strings handle
        (`v = (@s = +"s")`) binds that handle */
     if (dvP >= 0 && emit_strbuf_write_handle(c, dvP, out)) return;
-    buf_puts(out, "sp_String_new_shared(");
+    buf_printf(out, "%s(", strbuf_new_func(c, dvP));
     if (dvP >= 0) emit_str_expr(c, dvP, out);
     else buf_puts(out, "(&(\"\\xff\")[1])");
     buf_puts(out, ")");
