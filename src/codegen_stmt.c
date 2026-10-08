@@ -5,7 +5,6 @@
 #include "builtin_ops.h"
 #include "call_plan.h"
 #include "codegen_call_arms.h"
-#include "codegen_poly.h"
 
 /* an object arg's #to_s as a C string expression (the puts/print arms) */
 static void emit_obj_to_s(Compiler *c, int arg, TyKind t, Buf *b) {
@@ -8501,16 +8500,14 @@ void emit_for(Compiler *c, int id, Buf *b, int indent) {
    `.v.p` form, so they fall back to a plain emit (no coercion was applied for
    them before either, and no such poly-bodied return arises). Used where a
    method's RBS return type is narrower than its poly body value (#1417). */
-static void emit_unbox_node(Compiler *c, TyKind t, int node, Buf *b) {
+static void emit_unbox_ret_text(Compiler *c, TyKind t, const char *expr, Buf *b) {
   /* When the slot being narrowed into is a SEEDED return, the narrowing is the
      moment the seed's truth becomes checkable, so it carries the assertion --
      a no-op macro without -DSP_RBS_CHECK (#3412). g_ret_seeded is set for the
      scope currently being emitted. */
-  Buf src; memset(&src, 0, sizeof src);
-  emit_expr(c, node, &src);
   Buf val; memset(&val, 0, sizeof val);
-  if (g_ret_seeded) emit_rbs_checked_text(c, t, "the return value", src.p ? src.p : "sp_box_nil()", &val);
-  else buf_puts(&val, src.p ? src.p : "");
+  if (g_ret_seeded) emit_rbs_checked_text(c, t, "the return value", expr && *expr ? expr : "sp_box_nil()", &val);
+  else buf_puts(&val, expr ? expr : "");
   const char *v = val.p ? val.p : "";
   /* int and float keep nil distinguishable: the plain conversions answer the
      type's zero for a boxed nil, which in these two slots is a real value and
@@ -8535,7 +8532,21 @@ static void emit_unbox_node(Compiler *c, TyKind t, int node, Buf *b) {
     break;
   }
   }
-  free(val.p); free(src.p);
+  free(val.p);
+}
+static void emit_unbox_node(Compiler *c, TyKind t, int node, Buf *b) {
+  Buf src; memset(&src, 0, sizeof src);
+  emit_expr(c, node, &src);
+  emit_unbox_ret_text(c, t, src.p ? src.p : "", b);
+  free(src.p);
+}
+/* Whether emit_unbox_ret_text converts a poly value into slot type `t` (the
+   by-value types other than Rational it leaves boxed). */
+static int unbox_ret_converts(Compiler *c, TyKind t) {
+  if (t == TY_INT || t == TY_FLOAT || t == TY_BOOL || t == TY_RATIONAL || t == TY_STRING || ty_is_object(t))
+    return 1;
+  const char *cn = c_type_name(t);
+  return cn && cn[0] && cn[strlen(cn) - 1] == '*';
 }
 
 /* A genuine poly body (TY_POLY) is unboxed into any narrower (non-poly) return
@@ -14598,19 +14609,19 @@ static int yield_block_value_boxed(Compiler *c) {
    return, converted for a poly slot returned as a typed value (an RBS
    `-> Integer` over a slot some write left poly), read as it is otherwise.
    0 when the slot's type cannot reach the return slot this way. */
-static int tail_slot_reaches_ret(TyKind slot) {
+static int tail_slot_reaches_ret(Compiler *c, TyKind slot) {
   TyKind ret = g_result_var ? g_result_ty : g_ret_type;
   int want_poly = g_result_var ? g_result_poly : (ret == TY_POLY);
   if (slot == TY_UNKNOWN || slot == TY_VOID) return 0;
   if (want_poly || slot == ret) return 1;
-  return slot == TY_POLY && ret != TY_UNKNOWN && ret != TY_VOID && ret != TY_NIL;
+  return slot == TY_POLY && ret != TY_UNKNOWN && ret != TY_VOID && ret != TY_NIL && unbox_ret_converts(c, ret);
 }
 static void emit_tail_slot(Compiler *c, TyKind slot, const char *ref, Buf *b) {
   TyKind ret = g_result_var ? g_result_ty : g_ret_type;
   int want_poly = g_result_var ? g_result_poly : (ret == TY_POLY);
   Buf bx; memset(&bx, 0, sizeof bx);
   if (want_poly && slot != TY_POLY) emit_boxed_text(c, slot, ref, &bx);
-  else if (!want_poly && slot == TY_POLY && ret != TY_POLY) emit_unbox_poly_ret(c, ret, ref, &bx);
+  else if (!want_poly && slot == TY_POLY && ret != TY_POLY) emit_unbox_ret_text(c, ret, ref, &bx);
   else buf_puts(&bx, ref);
   buf_printf(b, "%s;\n", bx.p ? bx.p : "sp_box_nil()");
   free(bx.p);
@@ -14766,7 +14777,7 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
          Without the rule nothing picks it up, and the tail is as before. */
       int sb8 = it9 == TY_STRBUF && repr_write_share(c, id);
       if (sb8) it9 = TY_STRING;
-      if (iidx9 >= 0 && tail_slot_reaches_ret(it9)) {
+      if (iidx9 >= 0 && tail_slot_reaches_ret(c, it9)) {
         emit_stmt(c, id, b, indent);
         emit_indent(b, indent); emit_tail_lead(b);
         char islot9[512];
@@ -14797,7 +14808,7 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
     HolderRef h9;
     LocalVar *lv9 = holder_of_node(c, id, &h9) ? h9.lv : NULL;
     TyKind lt9 = lv9 ? lv9->type : TY_UNKNOWN;
-    int slot_ok = lv9 && tail_slot_reaches_ret(lt9);
+    int slot_ok = lv9 && tail_slot_reaches_ret(c, lt9);
     emit_stmt(c, id, b, indent);
     if (!slot_ok) return;
     char lref9[1024];
@@ -14816,7 +14827,7 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
     /* a global holding the shared handle answers its String */
     int sb9 = gv9 && h9.r.kind == RK_STRBUF;
     if (sb9) gt9 = TY_STRING;
-    int slot_ok = gv9 && tail_slot_reaches_ret(gt9);
+    int slot_ok = gv9 && tail_slot_reaches_ret(c, gt9);
     emit_stmt(c, id, b, indent);
     if (!slot_ok) return;
     char gslot9[256], gref9[512];
