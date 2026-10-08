@@ -3943,6 +3943,13 @@ void emit_poly_defaults_n(Compiler *c, int id, int recv, const char *name, const
   int is_cover = ps->cover, is_gcdlcm = ps->gcdlcm, is_strdel = ps->strdel, is_strsplit = ps->strsplit;
   int is_pdelete = ps->pdelete, is_pdig = ps->pdig, is_pvalues_at = ps->pvalues_at;
   int is_pfirstn = ps->pfirstn, is_pmerge = ps->pmerge, is_arr_index = ps->arr_index;
+  int kwmark = g_n_argov;
+  if (bop_share_named(BOP_ANY_ARRAY, name) == BSH_PACK) {
+    for (int e = 0; e < kw->kwn; e++) {
+      int v = nt_ref(nt, kw->kwels[e], "value");
+      if (v >= 0) view_bind(v, "_t%d", kw->kwtmp[e]);
+    }
+  }
   /* Same fallthrough rule as the zero-arg dispatch, but only when the
      switch is made of user-class arms alone. Where a builtin pre-arm is in
      play the fallthrough can mean "right receiver, wrong argument" --
@@ -4292,6 +4299,7 @@ void emit_poly_defaults_n(Compiler *c, int id, int recv, const char *name, const
            buf_puts(b, "; break;"); }
     free(kb.p); free(db.p);
   }
+  view_unbind(kwmark);
 }
 
 /* The last `default:` a poly dispatch writes: the builtin surface's answer

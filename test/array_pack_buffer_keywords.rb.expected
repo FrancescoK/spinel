@@ -1,0 +1,19 @@
+"opB"
+{buffer: "opB"}
+"litA"
+"A"
+"A"
+keyword
+"unknown keyword: :buf"
+"unknown keyword: :extra"
+"unknown keywords: :extra, :buf"
+"unknown keyword: \"buffer\""
+"lastA"
+"lastA"
+"firstB"
+{buffer: "firstB"}
+"otherC"
+{buffer: "firstB"}
+{buffer: "otherC"}
+"A"
+{}

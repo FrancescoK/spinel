@@ -1,0 +1,53 @@
+"abA"
+"abA"
+"abAB"
+"B"
+"B"
+"abC"
+"abA"
+"abA"
+"abA"
+"aA"
+"aA"
+"aA"
+"aA"
+"aB\u0000\u0000\u0000"
+[97, 66, 0, 0, 0]
+"a"
+"a"
+"abA"
+"abA"
+"abx\u0000y"
+[97, 98, 120, 0, 121]
+"abAz"
+"abAz"
+"éA"
+#<Encoding:UTF-8>
+[97, 98, 195, 169]
+#<Encoding:UTF-8>
+"abA"
+"abA"
+"abA"
+"abA"
+"A"
+nil
+"A"
+boxed frozen buffer FrozenError
+typed buffer TypeError
+boxed buffer TypeError
+literal buffer FrozenError
+frozen buffer FrozenError
+receiver
+format
+buffer
+"abA"
+"abA"
+"abA"
+"user"
+"ab"
+receiver NoMethodError
+receiver NoMethodError
+buffer
+"abA"
+buffer
+"user"

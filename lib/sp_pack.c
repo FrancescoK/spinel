@@ -345,7 +345,8 @@ static int64_t pk_poly_to_int(sp_RbVal v) {
   return 0;
 }
 
-static double pk_poly_to_flt(sp_RbVal v) {
+/* Keep the ordinary loop's inlined conversion with a second packing entry. */
+static inline double pk_poly_to_flt(sp_RbVal v) {
   switch (v.tag) {
     case SP_TAG_FLT:  return v.v.f;
     case SP_TAG_INT:  return (double)v.v.i;
@@ -788,6 +789,76 @@ const char *sp_PolyArray_pack(sp_PolyArray *arr, const char *fmt) {SP_GC_ROOT(ar
   memcpy(r, buf, len);
   sp_str_set_len(r, len);
   if (!pk_fmt_utf8(fmt)) sp_str_mark_binary(r);   /* pack answers ASCII-8BIT bytes: inspect them \xNN */
+  free(buf);
+  return r;
+}
+
+/* Keep ordinary packing on its original entry; only keyword calls seed it. */
+const char *sp_PolyArray_pack_buffer(sp_PolyArray *arr, const char *fmt, const char *initial) {SP_GC_ROOT(arr);
+  if (!arr || !fmt) return sp_str_empty;
+  size_t cap = 64;
+  char *buf = (char *)malloc(cap);
+  if (!buf) { perror("malloc"); exit(1); }
+  size_t len = 0;
+  if (initial) pk_append(&buf, &len, &cap, initial, sp_str_byte_len(initial));
+  sp_int idx = 0;
+  const char *p = fmt;
+  while (*p) {
+    char spec = *p++;
+    spec = pk_native_spec(spec, p);
+    if (spec == ' ' || spec == '\t' || spec == '\n') continue;
+    int big = 0;
+    int64_t count = pk_parse_count_mods(&p, &big);
+    if (pk_cursor_directive(spec, count, &buf, &len, &cap)) continue;
+    /* a/A/Z, m/M, H/h, B/b, u: consume one element, converted as CRuby
+       converts it (pk_str_elem_bytes) */
+    if (pk_is_str_spec(spec)) {
+      int have = idx < arr->len;
+      pk_str_spec(spec, count, have ? arr->data[idx] : sp_box_nil(), have, &buf, &len, &cap);
+      idx++;
+      continue;
+    }
+    /* w: BER-compressed integers (base-128, high bit = continuation). */
+    if (spec == 'w') {
+      int64_t wc = count < 0 ? arr->len - idx : count;
+      for (int64_t k = 0; k < wc; k++) {
+        int64_t sv = (idx < arr->len) ? pk_poly_to_int(arr->data[idx]) : 0; idx++;
+        if (sv < 0) sp_raise_cls("ArgumentError", "can't compress negative numbers");
+        uint64_t v = (uint64_t)sv;
+        unsigned char tmp[10]; int ti = 0;
+        tmp[ti++] = (unsigned char)(v & 0x7F); v >>= 7;
+        while (v > 0) { tmp[ti++] = (unsigned char)((v & 0x7F) | 0x80); v >>= 7; }
+        for (int j = ti - 1; j >= 0; j--) pk_append(&buf, &len, &cap, (char *)&tmp[j], 1);
+      }
+      continue;
+    }
+    if (count < 0) count = arr->len - idx;
+    if (count < 0) count = 0;
+    if (pk_is_flt_spec(spec)) {
+      for (int64_t k = 0; k < count; k++) {
+        /* a poly array's nil is a tagged one, which pk_poly_to_flt reads as
+           0.0; it raises here as a typed array's sentinel does */
+        if (idx < arr->len && arr->data[idx].tag == SP_TAG_NIL) pk_nil_elem(1);
+        double dv = (idx < arr->len) ? pk_poly_to_flt(arr->data[idx]) : 0.0;
+        idx++;
+        pk_flt_directive(spec, dv, &buf, &len, &cap);
+      }
+      continue;
+    }
+    for (int64_t k = 0; k < count; k++) {
+      /* converted only for a directive that takes the element: `x` packs a
+         NUL and leaves it, so a nil under it (`[1, nil].pack("qx")`) is not
+         converted, as the typed arrays' sentinel check already skips it */
+      int64_t v = (idx < arr->len && pk_int_directive_consumes(spec)) ? pk_poly_to_int(arr->data[idx]) : 0;
+      idx++;
+      if (!pk_int_directive(spec, v, big, &buf, &len, &cap)) idx--;
+    }
+  }
+  char *r = sp_str_alloc(len);
+  memcpy(r, buf, len);
+  sp_str_set_len(r, len);
+  /* A supplied buffer keeps its encoding unless the template selects UTF-8. */
+  if (!pk_fmt_utf8(fmt) && (!initial || sp_str_is_binary(initial))) sp_str_mark_binary(r);   /* pack answers ASCII-8BIT bytes: inspect them \xNN */
   free(buf);
   return r;
 }
