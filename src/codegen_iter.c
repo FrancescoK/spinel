@@ -5994,6 +5994,14 @@ static int iter_enum_poly_walk_arms(Compiler *c, int id, Buf *b, int indent, con
         buf_printf(b, "lv_%s = sp_String_new_shared(sp_StrArray_get(", p0);
         buf_puts(b, rb.p); buf_printf(b, ", _t%d));\n", t);
       }
+      else if (et == TY_POLY && repr_of_slot(c, bp0).kind == RK_STRBUF) {
+        /* Sharing can box the source array after the parameter has
+           settled as a String handle. Bind the box through its slot. */
+        Buf src = {0};
+        buf_printf(&src, "sp_PolyArray_get(%s, _t%d)", rb.p, t);
+        emit_block_param_from_boxed(c, p0, TY_STRBUF, src.p, b);
+        free(src.p);
+      }
       else {
         buf_printf(b, "lv_%s = sp_%sArray_get(", p0, k);
         buf_puts(b, rb.p); buf_printf(b, ", _t%d);\n", t);
