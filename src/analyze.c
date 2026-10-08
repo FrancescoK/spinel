@@ -15310,7 +15310,8 @@ static const int *sb_store_nodes(Compiler *c, const char *nm, Scope *sc, int *n)
         const char *wn = nt_str(nt, id, "name");
         if (wn) sb_store_add(wn, comp_scope_of(c, id), id);
       }
-      else if (k == NK_CallNode) {
+      /* `(h[k] ||= []) << s` hands out the element it reads or stores */
+      else if (k == NK_CallNode || k == NK_IndexOrWriteNode) {
         int r = nt_ref(nt, id, "receiver");
         if (r < 0 || nt_kind(nt, r) != NK_LocalVariableReadNode) continue;
         const char *rn = nt_str(nt, r, "name");
@@ -15601,6 +15602,19 @@ static int strbuf_demand_container_stores_here(Compiler *c, const char *contn, S
       int nst = strbuf_container_store_values(c, sns0[si], contn, conts, 1, &stores);
       for (int e3 = 0; e3 < nst; e3++)
         changed |= strbuf_store_leaf(c, stores.v[e3], depth, mode);
+      /* the strings sit a level in (`h.each { |k, vs| vs.each(&:strip!) }`)
+         and a push lands in an element the container hands out (`h[k] <<
+         s`): the push stores into that inner container */
+      int orw = nt_kind(nt, sns0[si]) == NK_IndexOrWriteNode;
+      if (orw) changed |= strbuf_store_leaf(c, nt_ref(nt, sns0[si], "value"), depth, mode);
+      if (mode >= SB_NEST1 && nst == 0 && (orw || container_elem_read_p(nt, sns0[si]))) {
+        int p = comp_recv_parent(c, sns0[si]);
+        StoreVals inner = {0};
+        int ni = p >= 0 && nt_kind(nt, p) == NK_CallNode ? array_call_store_values(c, p, &inner) : 0;
+        for (int e3 = 0; e3 < ni; e3++)
+          changed |= strbuf_store_leaf(c, inner.v[e3], depth, mode - SB_NEST1);
+        free(inner.v);
+      }
       /* `a.insert(0, s)`: a store this walk does not take (sa_refuse) */
       for (int k = 0, e; mode == SB_DEMAND && nst == 0 && (e = sa_unseen_element(c, sns0[si], k)) != -2; k++)
         if (e >= 0) sa_refuse_element(c, e, sns0[si]);
@@ -19050,6 +19064,25 @@ static int promote_shared_stored_strings(Compiler *c) {
               nt_kind(nt, recv4) == NK_GlobalVariableReadNode
               ? gvar_array_plain_string(c, comp_resolve_gvar(c, nt_str(nt, recv4, "name") + 1)) : -1;
     if (gpl >= 0) refuse_global_array_element(c, w, recv4, gpl);
+    /* An Array read out of a boxed slot -- a Hash's value, through `h.each
+       { |k, vs| }`, `h[k]` or `vs = h[k]` -- is iterated as a boxed value,
+       so its elements bind the parameter boxed. Only a handle element takes
+       the mutation in place: demand the Strings stored there (the walk
+       follows the block parameter, the index read or the local back to the
+       stores into the Hash and on into its Arrays), as for a poly Array
+       below. Left alone, the element was a plain String and each mutation
+       changed a copy. */
+    if (!lit4 && bpv4->type == TY_POLY && infer_type(c, recv4) == TY_POLY &&
+        (nt_kind(nt, recv4) == NK_LocalVariableReadNode || nt_kind(nt, recv4) == NK_CallNode)) {
+      if (g_infer_optimistic) continue;
+      if (nt_kind(nt, recv4) == NK_LocalVariableReadNode) {
+        const char *pn4 = nt_str(nt, recv4, "name");
+        Scope *ps4 = pn4 ? comp_scope_of(c, recv4) : NULL;
+        if (ps4) changed |= strbuf_demand_container_stores(c, pn4, ps4);
+      }
+      else changed |= strbuf_container_source_walk(c, recv4, 0, SB_DEMAND);
+      continue;
+    }
     if (!lit4 && nt_kind(nt, recv4) != NK_LocalVariableReadNode) continue;
     const char *contn4 = lit4 ? NULL : nt_str(nt, recv4, "name");
     Scope *conts4 = contn4 ? comp_scope_of(c, recv4) : NULL;
