@@ -1,0 +1,44 @@
+TypeError: no implicit conversion of true into Integer
+TypeError: no implicit conversion of Symbol into Integer
+TypeError: no implicit conversion of String into Integer
+TypeError: no implicit conversion of Array into Integer
+TypeError: no implicit conversion from nil to integer
+"s"
+:z
+TypeError: no implicit conversion of Symbol into Integer
+IndexError: index 7 outside of array bounds: -3...3
+:dflt
+TypeError: no implicit conversion of true into Integer
+TypeError: no implicit conversion of Symbol into Integer
+TypeError: no implicit conversion of String into Integer
+TypeError: no implicit conversion from nil to integer
+["s", :z]
+TypeError: no implicit conversion of Symbol into Integer
+TypeError: no implicit conversion of String into Integer
+RangeError: float NaN out of range of integer
+RangeError: float NaN out of range of integer
+RangeError: float 1e+30 out of range of integer
+RangeError: bignum too big to convert into 'long'
+RangeError: float NaN out of range of integer
+RangeError: bignum too big to convert into 'long'
+:dflt
+IndexError: index -9223372036854775808 outside of array bounds: -3...3
+[10, nil, "s"]
+RangeError: bignum too big to convert into 'long'
+:dflt
+"d"
+[]
+IndexError: index 2 outside of array bounds: 0...0
+"d"
+[10]
+77
+d
+10
+:z
+:dflt
+IndexError: index 5 outside of array bounds: -3...3
+[10, :z, nil]
+[10, "s"]
+1
+[1, nil]
+KeyError: key not found: :b
