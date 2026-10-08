@@ -985,12 +985,15 @@ re-lit-test: $(SPINEL)
 # test/share_strings_*.rb and the test/reject programs test/share/reject.list
 # names (the String routes the default build refuses, #6179's), plain and
 # with GC stress, against its CRuby .expected (a test/reject program's in
-# test/share/reject/). gate-props runs it.
+# test/share/reject/). gate-props runs it. A compile whose inference ran to
+# its round cap fails too: the answer can be right all the same, and where
+# the rounds stopped decided what was emitted.
 share-strings-test: $(SPINEL)
 	@tmp=$$(mktemp -d "$${TMPDIR:-/tmp}/spinel-share.XXXXXX"); ok=1; \
 	for t in test/share/*.rb test/share_strings_*.rb test/widened_param_reaches_its_callee.rb $$(cat test/share/reject.list); do \
 	  e="$$t.expected"; case "$$t" in test/reject/*) e="test/share/reject/$${t##*/}.expected";; esac; \
 	  if $(SPINEL) --share-strings "$$t" -o "$$tmp/b" >"$$tmp/out" 2>&1; then \
+	    ! grep -q 'did not converge' "$$tmp/out" || { echo "share-strings-test: FAIL $$t (the inference fixpoint ran to its round cap)"; ok=0; }; \
 	    "$$tmp/b" 2>&1 | cmp -s - "$$e" || { echo "share-strings-test: FAIL $$t"; ok=0; }; \
 	    SPINEL_GC_STRESS=1 "$$tmp/b" 2>&1 | cmp -s - "$$e" || { echo "share-strings-test: FAIL $$t (GC stress)"; ok=0; }; \
 	  else echo "share-strings-test: FAIL $$t (refused)"; cat "$$tmp/out"; ok=0; fi; \
