@@ -15453,6 +15453,10 @@ static void sa_refuse_element(Compiler *c, int e, int u);
 static int sa_copy_defer(Compiler *c, int site, int v, int reader, const char *msg) {
   ShareRoute q = share_route(site, v, 0);
   q.carry = reader ? v : SHARE_CARRY_COPY;
+  /* Unary plus already carries a mutable operand's handle; a frozen
+     operand gets its own. Let the seal check that existing value route. */
+  if (nt_kind(c->nt, v) == NK_CallNode && is_unary_plus(nt_str(c->nt, v, "name")) &&
+      cplan_user(c, v)->dispatch == CP_NONE) q.carry = v;
   return share_route_defer(c, &q, msg);
 }
 static const char *sa_msg(int route);
