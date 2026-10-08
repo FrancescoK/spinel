@@ -1,4 +1,4 @@
-# spinel: gc-minor
+# spinel: gc-stress
 # The two ends of a String Range, each made on the spot, are made in the
 # order written, and the first is kept while the second is made.
 def lo
