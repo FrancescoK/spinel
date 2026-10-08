@@ -19528,7 +19528,7 @@ static void an_call_targets_of(Compiler *c, int u, ACallTargets *t) {
    made the pass O(writes x nodes): a 15k-line program whose classes mostly
    retain a string parameter took 3.1x as long to compile. One walk fills every
    slot, and the answers move only between passes anyway, as slots promote. */
-typedef struct {
+typedef struct HandleArgTab {
   int *off;            /* scope -> base into `bit`, or -1 when it has no params */
   unsigned char *bit;
   int ok;              /* 0 when allocation failed: fall back to no evidence */
@@ -19542,6 +19542,7 @@ typedef struct {
   int *enext;          /* edge -> next edge for the same scope */
   int *enode;          /* edge -> the call node */
 } HandleArgTab;
+enum { HA_HANDLE = 1, HA_STRING_KNOWN = 2, HA_STRING_POSSIBLE = 4 };
 
 static void handle_arg_tab_init(Compiler *c, HandleArgTab *t) {
   const NodeTable *nt = c->nt;
@@ -19596,7 +19597,7 @@ static void handle_arg_tab_init(Compiler *c, HandleArgTab *t) {
       int np = c->scopes[mi].nparams;
       for (int pj = 0; pj < np; pj++) {
         int a = arg_layout_param_node(c, &c->scopes[mi], u, pj, NULL);
-        if (a >= 0 && an_arg_hands_handle(c, a)) t->bit[t->off[mi] + pj] = 1;
+        if (a >= 0 && an_arg_hands_handle(c, a)) t->bit[t->off[mi] + pj] = HA_HANDLE;
       }
     }
   }
@@ -19707,7 +19708,7 @@ void propagate_borrowed_volatile(Compiler *c) {
 
 static int handle_arg_tab_get(const HandleArgTab *t, int mi, int pj) {
   if (!t->ok || !t->bit || mi < 0 || pj < 0 || t->off[mi] < 0) return 0;
-  return t->bit[t->off[mi] + pj] != 0;
+  return (t->bit[t->off[mi] + pj] & HA_HANDLE) != 0;
 }
 
 static int promote_params_stored_in_shared_ivars(Compiler *c,
@@ -20635,11 +20636,13 @@ static int poly_var_may_hold_string(Compiler *c, const HandleArgTab *hat,
   /* with `lits`, how a block or a lambda binds it (PolyLits.bound): one
      bound only as Enumerator.new's yielder is no String */
   int bound = lv && lits && !lv->is_param ? lits->bound(lits->ctx, c, (int)(vs - c->scopes), vn) : 0;
-  if (!lv || depth > 4 || lv->is_cell || (lv->is_block_param && bound != 1) || bound == 2) return 1;
+  if (!lv || (!lits && depth > 4) || lv->is_cell || (lv->is_block_param && bound != 1) || bound == 2) return 1;
   /* a variable already being asked about further up the chain (a method
      handing its parameter to itself) adds no value of its own */
   static LocalVar *asking[6];
   for (int k = 0; k < depth && k < 6; k++) if (asking[k] == lv) return 0;
+  /* With literals, recognize a cycle before the conservative depth limit. */
+  if (depth > 4) return 1;
   asking[depth] = lv;
   int si = (int)(vs - c->scopes);
   if (lv->is_param) {
@@ -20649,7 +20652,8 @@ static int poly_var_may_hold_string(Compiler *c, const HandleArgTab *hat,
         poly_value_may_be_string(c, hat, vs->pdefault[pj], depth, lits)) return 1;
     for (int e = hat->head[si]; e >= 0; e = hat->enext[e]) {
       int sp = -1;
-      int a = arg_layout_param_node(c, vs, hat->enode[e], pj, &sp);
+      int a = lits ? arg_layout_param_source(c, vs, hat->enode[e], pj, &sp)
+                   : arg_layout_param_node(c, vs, hat->enode[e], pj, &sp);
       if (a < 0 || sp >= 0 || poly_value_may_be_string(c, hat, a, depth, lits)) return 1;
     }
   }
@@ -20672,15 +20676,25 @@ static int poly_var_may_hold_string(Compiler *c, const HandleArgTab *hat,
 /* --share-strings (#6765): can receiver r, a boxed or untyped value, be a
    String? A variable answers by its values (poly_var_may_hold_string), a
    literal or a conditional by its form; a parameter, a block's parameter,
-   a captured local and any other value may be one. */
+   a captured local and any other value may be one. At seal, the final
+   caller table also bounds parameters, using the same argument walk. */
 int an_recv_may_be_string(Compiler *c, int r, const PolyLits *lits) {
   const NodeTable *nt = c->nt;
   r = an_unparen(nt, r);
   if (r < 0) return 1;
-  if (nt_kind(nt, r) != NK_LocalVariableReadNode) return poly_lit_may_be_string(c, NULL, r, 0, lits) != 0;
+  if (nt_kind(nt, r) != NK_LocalVariableReadNode) return poly_lit_may_be_string(c, lits ? c->share_args : NULL, r, 0, lits) != 0;
   const char *vn = nt_str(nt, r, "name");
   Scope *vs = vn ? comp_scope_of(c, r) : NULL;
-  return !vs || poly_var_may_hold_string(c, NULL, vn, vs, 0, lits);
+  const HandleArgTab *hat = lits ? c->share_args : NULL;
+  int pj = hat && hat->ok && vs ? an_param_idx(vs, vn) : -1;
+  unsigned char *memo = pj >= 0 && hat->off[vs - c->scopes] >= 0
+                         ? &hat->bit[hat->off[vs - c->scopes] + pj] : NULL;
+  if (memo && (*memo & HA_STRING_KNOWN)) return (*memo & HA_STRING_POSSIBLE) != 0;
+  /* Only a completed outer query is cached: a nested cycle's no-value
+     answer depends on the callers still being visited above it. */
+  int may = !vs || poly_var_may_hold_string(c, hat, vn, vs, 0, lits);
+  if (memo) *memo |= HA_STRING_KNOWN | (may ? HA_STRING_POSSIBLE : 0);
+  return may;
 }
 
 /* Is POLY variable `vn` of scope `vs` appended to in place: the receiver of
@@ -37869,6 +37883,10 @@ void analyze_program(Compiler *c) {
   /* Identity operands can ask the settled call-return fact now. */
   if (c->share_strings) mark_reader_identity_operands(c);
   /* the representation flags are final from here (repr.h) */
+  /* The final share query sees every caller without rebuilding per receiver. */
+  HandleArgTab hat;
+  if (c->share_strings) { handle_arg_tab_init(c, &hat); c->share_args = &hat; }
   repr_seal(c);
+  if (c->share_strings) { c->share_args = NULL; handle_arg_tab_free(&hat); }
   sp_timing_end(tm_an, "analysis", "");
 }
