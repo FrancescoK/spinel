@@ -122,10 +122,31 @@ int emit_call_poly_builtin_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
   }
   /* resume / transfer / raise on a boxed Fiber (one read out of an Array, or
      a local that was nil first). Anything else in the slot raises
-     NoMethodError at run time. */
+     NoMethodError at run time -- but a boxed Thread answers #raise too (one
+     read back out of a Hash's keys): raised in that thread, answering nil
+     as Thread#raise does. */
   if (recv >= 0 && rt == TY_POLY && nt_ref(nt, id, "block") < 0 &&
       (sp_streq(name, "resume") || sp_streq(name, "transfer") ||
        (sp_streq(name, "raise") && argc <= 3))) {
+    if (!poly_name_user_claimed(c, name, argc) && sp_streq(name, "raise")) {
+      Buf fv; memset(&fv, 0, sizeof fv);
+      int tv = ++g_tmp, tf = ++g_tmp, tr = ++g_tmp;
+      buf_printf(&fv, "({ sp_RbVal _t%d = ", tv);
+      emit_boxed(c, recv, &fv);
+      buf_printf(&fv, "; SP_GC_ROOT_RBVAL(_t%d); sp_RbVal _t%d; "
+                      "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_THREAD) { (void)(",
+                 tv, tr, tv, tv);
+      char tt[48]; snprintf(tt, sizeof tt, "((sp_thread *)_t%d.v.p)", tv);
+      emit_concurrency_raise(c, tt, argc, argv, "sp_thread", 't', "sp_Thread_raise", &fv);
+      buf_printf(&fv, "); _t%d = sp_box_nil(); } else { sp_Fiber *_t%d = sp_poly_as_fiber(_t%d, \"raise\"); "
+                      "SP_GC_ROOT(_t%d); _t%d = ", tr, tf, tv, tf, tr);
+      char ft[32]; snprintf(ft, sizeof ft, "_t%d", tf);
+      emit_concurrency_raise(c, ft, argc, argv, "sp_Fiber", 'f', "sp_Fiber_raise", &fv);
+      buf_printf(&fv, "; } _t%d; })", tr);
+      emit_unbox_text(c, repr_of(c, id).as_ty, fv.p, b);
+      free(fv.p);
+      return 1;
+    }
     if (!poly_name_user_claimed(c, name, argc)) {
       Buf fv; memset(&fv, 0, sizeof fv);
       int tf = ++g_tmp;
@@ -133,12 +154,8 @@ int emit_call_poly_builtin_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
       emit_boxed(c, recv, &fv);
       buf_printf(&fv, ", \"%s\"); SP_GC_ROOT(_t%d); ", name, tf);
       char ft[32]; snprintf(ft, sizeof ft, "_t%d", tf);
-      if (sp_streq(name, "raise"))
-        emit_concurrency_raise(c, ft, argc, argv, "sp_Fiber", 'f', "sp_Fiber_raise", &fv);
-      else {
-        char fn[32]; snprintf(fn, sizeof fn, "sp_Fiber_%s_n", name);
-        emit_fiber_pass_call(c, fn, ft, argc, argv, &fv);
-      }
+      char fn[32]; snprintf(fn, sizeof fn, "sp_Fiber_%s_n", name);
+      emit_fiber_pass_call(c, fn, ft, argc, argv, &fv);
       buf_puts(&fv, "; })");
       emit_unbox_text(c, repr_of(c, id).as_ty, fv.p, b);
       free(fv.p);
