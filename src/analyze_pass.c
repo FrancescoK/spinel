@@ -1265,9 +1265,14 @@ void intern_block_params(Compiler *c) {
 /* --share-strings: is lv the shared handle a String of type t is held in?
    A pass that types the slot as that String leaves it so; resetting it each
    round, against share_default_apply setting it back, kept the fixpoint
-   from settling. */
+   from settling. A String Array the rule settled in its poly form, whose
+   boxes hold the handles, is that Array the same way: a block's parameter
+   `tap` hands the Array of `"x y".split(" ")` went back to the typed Array
+   every round and the rule converted it again. */
 static int lv_is_handle_of(const Compiler *c, const LocalVar *lv, TyKind t) {
-  return t == TY_STRING && repr_of_slot(c, lv).share;
+  if (t != TY_STRING && t != TY_STR_ARRAY) return 0;
+  Repr r = repr_of_slot(c, lv);
+  return t == TY_STRING ? r.share : r.elems_handle;
 }
 
 static int lv_widen(LocalVar *lv, TyKind t) {
