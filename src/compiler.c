@@ -438,6 +438,7 @@ Scope *comp_scope_new(Compiler *c, const char *name, int def_node) {
   }
   Scope *s = &c->scopes[c->nscopes++];
   memset(s, 0, sizeof(*s));
+  s->ret_param = -1;
   s->name = name ? strdup(name) : NULL;
   s->def_node = def_node;
   s->body = -1;
