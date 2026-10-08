@@ -30,6 +30,9 @@ module PTY
     env = args.shift if args[0].is_a?(Hash)
     master = Native.open_master
     pid = Native.spawn_child(master, env, args)
-    [IO.new(master, "r"), IO.new(Native.dup_fd(master), "w"), pid]
+    reader = IO.new(master, "r")
+    writer = IO.new(Native.dup_fd(master), "w")
+    writer.sync = true
+    [reader, writer, pid]
   end
 end
