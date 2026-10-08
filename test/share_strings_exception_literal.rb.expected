@@ -54,3 +54,9 @@ FrozenError
 [ArgumentError, "", false]
 true
 ""
+["", true, false]
+["", false, false]
+["ArgumentError", false, false]
+["x", true, false]
+["y", false, false]
+["orig", true, true]
