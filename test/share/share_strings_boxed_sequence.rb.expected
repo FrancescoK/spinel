@@ -1,0 +1,7 @@
+[[1, 2], true, 102]
+[103, 0]
+[["oldnext", "next"], true]
+"oldnext!"
+[[1, 2, 3, 4], true, true]
+still frozen
+[1, 2, 3, 4, 5]
