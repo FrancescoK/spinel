@@ -22015,6 +22015,20 @@ int implicit_self_plan_mi(Compiler *c, int id, int dispatch_cid) {
   return spl->chain && spl->via == UC_INST && spl->owner_ci == dispatch_cid ? spl->mi : -1;
 }
 
+/* Does receiverless call id read an attr reader's slot that holds a String
+   handle and hand that handle out (emit_implicit_self_member's slot read,
+   a call marked to keep it), not a copy? (The seal asks it too:
+   strbuf_flow_carries.) */
+int strbuf_self_reader_handle(Compiler *c, int id) {
+  int cid = implicit_self_reader_cid(c, id);
+  if (cid < 0) return 0;
+  char ivn[300];
+  snprintf(ivn, sizeof ivn, "@%s", comp_resolve_alias(c, cid, nt_str(c->nt, id, "name")));
+  int ivi = comp_ivar_index(&c->classes[cid], ivn);
+  Repr rp = repr_of(c, id);
+  return ivi >= 0 && c->classes[cid].ivar_types[ivi] == TY_STRBUF && (rp.handle || rp.demand);
+}
+
 int emit_implicit_self_member(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -24745,6 +24759,59 @@ int strbuf_pickup_answers_nil(Compiler *c, int id) {
   for (int i = 0; i < n && !nil; i++) nil = an_tail_answers_nil(c, t[i]);
   return nil;
 }
+/* --share-strings: is String call id a mutator (or a `<<` chain) on a local
+   an is_a? guard narrows out of its box, which the call body routes
+   through the poly append and answers boxed when read as a box (its
+   narrowed-box arm)? */
+int strbuf_narrowed_box_mutator(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  if (!repr_share_rule(c) || id < 0 || nt_kind(nt, id) != NK_CallNode) return 0;
+  const char *cn = nt_str(nt, id, "name");
+  int nch = 0, r = nt_ref(nt, id, "receiver");
+  while (is_shovel_name(cn) && r >= 0 && nt_kind(nt, r) == NK_CallNode && nch < 16 &&
+         is_shovel_name(nt_str(nt, r, "name")) && c->ntype[r] == TY_STRING) {
+    nch++;
+    r = nt_ref(nt, r, "receiver");
+  }
+  /* (as emit_call_body's narrowed-box arm takes the receiver: a String read,
+     or one the rule narrows to the handle) */
+  if (!cn || !(nch > 0 || sp_str_mutator(cn, SP_MUT_NARROW)) || r < 0 || nt_kind(nt, r) != NK_LocalVariableReadNode ||
+      !(repr_of(c, r).ty == TY_STRING || repr_of(c, r).narrowed == TY_STRBUF))
+    return 0;
+  const char *rn = nt_str(nt, r, "name");
+  Scope *rs = rn ? comp_scope_of(c, r) : NULL;
+  LocalVar *rl = rs ? scope_local(rs, rn) : NULL;
+  return rl && rl->type == TY_POLY;
+}
+/* The narrowed local strbuf_narrowed_box_mutator found under call id, its
+   box lifted to a handle first (sp_poly_strbuf_lift: a plain String's box
+   becomes its handle's), then the call read as a box: the mutation goes to
+   that handle in place, which the value names too. */
+void emit_narrowed_box_mutator(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int r = nt_ref(nt, id, "receiver");
+  while (r >= 0 && nt_kind(nt, r) == NK_CallNode) r = nt_ref(nt, r, "receiver");
+  Buf lv; memset(&lv, 0, sizeof lv);
+  emit_local_ref(c, r, nt_str(nt, r, "name"), &lv);
+  buf_printf(b, "(%s = sp_poly_strbuf_lift(%s), ", lv.p, lv.p);
+  int vc = view_push(c, id, TY_POLY);
+  emit_expr(c, id, b);
+  view_pop(c, vc);
+  buf_puts(b, ")");
+  free(lv.p);
+}
+
+/* Does call id take the deep-return pickup (#3227 P6, emit_deep_return_pickup):
+   a marked receiverless call to a method (no attr reader's implicit-self
+   read), or one on a class, with no block? It hands on the handle its
+   method's tail read publishes. (The seal asks it too: strbuf_flow_carries.) */
+int strbuf_call_picks_up(Compiler *c, int id) {
+  /* (the call answers its String as a const char *: a method whose value
+     widened past a String after the pickup was marked answers a box) */
+  return c->strbuf_box[id] && nt_ref(c->nt, id, "block") < 0 && comp_ntype(c, id) != TY_POLY &&
+         (nt_ref(c->nt, id, "receiver") < 0 ? implicit_self_reader_cid(c, id) < 0
+                                            : comp_ntype(c, nt_ref(c->nt, id, "receiver")) == TY_CLASS);
+}
 /* deep-return pickup (#3227 P6): a marked receiverless call to a method
    whose every return path yields a shared handle -- reset the side
    channel, run the ordinary call (its shared-slot tail read publishes),
@@ -24757,12 +24824,7 @@ static int emit_deep_return_pickup(Compiler *c, int id, Buf *b) {
      The return route lifts that demand while it runs the ordinary call. */
   if (repr_share_rule(c) && repr_of(c, id).demand && repr_call_returns_handle(c, id))
     return emit_strbuf_route(c, id, b);
-  /* (the call answers its String as a const char *: a method whose value
-     widened past a String after the pickup was marked answers a box) */
-  if (!c->strbuf_box[id] || nt_ref(c->nt, id, "block") >= 0 || comp_ntype(c, id) == TY_POLY ||
-      !(nt_ref(c->nt, id, "receiver") < 0 ? implicit_self_reader_cid(c, id) < 0
-                                          : comp_ntype(c, nt_ref(c->nt, id, "receiver")) == TY_CLASS))
-    return 0;
+  if (!strbuf_call_picks_up(c, id)) return 0;
   int tvD = ++g_tmp;
   buf_printf(b, "({ _sp_ret_strbuf = NULL; const char *_v%d = ", tvD);
   int vs = view_push_repr(c, id, VR_STRBUF_BOX, 0);

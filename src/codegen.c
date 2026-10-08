@@ -1412,6 +1412,35 @@ static int emit_boxed_write_handle(Compiler *c, int node, Buf *b) {
   return 1;
 }
 
+/* --share-strings: a bang method on a variable's handle answers that
+   variable's String, or nil (strbuf_bang_self_local): box that handle. 0
+   for any other node, with nothing emitted. */
+static int emit_boxed_bang_self(Compiler *c, int node, Buf *b) {
+  if (!repr_share_rule(c) || !strbuf_bang_self_local(c, node)) return 0;
+  int r = nt_ref(c->nt, node, "receiver");
+  char srefB[1024];
+  if (!strbuf_slot_ref(c, r, srefB, sizeof srefB)) return 0;
+  if (nt_kind(c->nt, r) == NK_CallNode) {
+    /* a reader call: read once (emit_bang_self_handle) */
+    Buf hb; memset(&hb, 0, sizeof hb);
+    int sv_b = view_push_repr(c, node, VR_STRBUF_BOX, 0);
+    int ok = emit_bang_self_handle(c, node, &hb);
+    view_pop(c, sv_b);
+    if (ok) buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", hb.p);
+    free(hb.p);
+    if (ok) RC(RF_STRBUF_HANDLE, RW_NONE);
+    return ok;
+  }
+  int tb = ++g_tmp;
+  buf_printf(b, "({ const char *_t%d = ", tb);
+  int sv_b = view_push_repr(c, node, VR_STRBUF_BOX, 0);
+  emit_expr(c, node, b);
+  view_pop(c, sv_b);
+  buf_printf(b, "; _t%d ? sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF) : sp_box_nil(); })", tb, srefB);
+  RC(RF_STRBUF_HANDLE, RW_NONE);
+  return 1;
+}
+
 /* A shared-mutable String's box, by where its handle comes from
    (repr_of's strbuf_src). */
 static void emit_boxed_strbuf(Compiler *c, int node, TyKind t, const Repr *rp, Buf *b) {
@@ -1523,21 +1552,7 @@ static void emit_boxed_strbuf(Compiler *c, int node, TyKind t, const Repr *rp, B
       return;
     }
   }
-  /* --share-strings: a bang method on a handle local answers that local's
-     String, or nil (strbuf_bang_self_local) */
-  if (repr_share_rule(c) && strbuf_bang_self_local(c, node)) {
-    char srefB[256];
-    if (strbuf_slot_ref(c, nt_ref(c->nt, node, "receiver"), srefB, sizeof srefB)) {
-      int tb = ++g_tmp;
-      buf_printf(b, "({ const char *_t%d = ", tb);
-      int sv_b = view_push_repr(c, node, VR_STRBUF_BOX, 0);
-      emit_expr(c, node, b);
-      view_pop(c, sv_b);
-      buf_printf(b, "; _t%d ? sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF) : sp_box_nil(); })", tb, srefB);
-      RC(RF_STRBUF_HANDLE, RW_NONE);
-      return;
-    }
-  }
+  if (emit_boxed_bang_self(c, node, b)) return;
   /* --share-strings: a variable that holds a handle the rule shares (a
      `next s` an Array.new block answers), or a route that hands on one
      (emit_strbuf_route): that handle's box */
@@ -1569,6 +1584,47 @@ static void emit_boxed_strbuf(Compiler *c, int node, TyKind t, const Repr *rp, B
     buf_puts(b, eb0.p ? eb0.p : "(&(\"\\xff\")[1])");
     free(eb0.p); }
   buf_puts(b, "), SP_BUILTIN_STRBUF)"); RC(RF_STRBUF_FRESH, RW_NONE);
+}
+
+/* An arm st of a conditional emit_boxed_cond_arms boxes: its statements,
+   then its value boxed into _t<dst> (nil for an empty arm). */
+static void emit_boxed_cond_arm(Compiler *c, int st, int dst, Buf *b) {
+  const NodeTable *nt = c->nt;
+  if (st >= 0 && nt_kind(nt, st) == NK_ElseNode) st = nt_ref(nt, st, "statements");
+  int n = 0; const int *bb = st >= 0 && nt_kind(nt, st) == NK_StatementsNode ? nt_arr(nt, st, "body", &n) : NULL;
+  int last = bb ? (n > 0 ? bb[n - 1] : -1) : st;
+  buf_puts(b, "{ ");
+  for (int i = 0; bb && i < n - 1; i++) emit_stmt(c, bb[i], b, 0);
+  buf_printf(b, "_t%d = ", dst);
+  if (last < 0) buf_puts(b, "sp_box_nil()");
+  else emit_boxed(c, last, b);
+  buf_puts(b, "; }");
+}
+
+/* --share-strings: a String `if` or `unless` with an arm that is the shared
+   handle or a box (strbuf_cond_has_handle_leaf), boxed arm by arm, so each
+   arm's box keeps its own String; boxed whole, the value's box held a copy
+   of whichever arm ran. 0 with nothing emitted for any other node. */
+static int emit_boxed_cond_arms(Compiler *c, int node, Buf *b) {
+  const NodeTable *nt = c->nt;
+  if (!repr_share_rule(c) || node < 0) return 0;
+  NodeKind k = nt_kind(nt, node);
+  TyKind t = comp_ntype(c, node);
+  if ((k != NK_IfNode && k != NK_UnlessNode) || (t != TY_STRING && t != TY_STRBUF) ||
+      !strbuf_cond_has_handle_leaf(c, node, 0))
+    return 0;
+  int dst = ++g_tmp;
+  Buf cnd; memset(&cnd, 0, sizeof cnd);
+  emit_cond(c, nt_ref(nt, node, "predicate"), &cnd);
+  buf_printf(b, "({ sp_RbVal _t%d; if (%s%s%s) ", dst, k == NK_UnlessNode ? "!(" : "", cnd.p ? cnd.p : "0",
+             k == NK_UnlessNode ? ")" : "");
+  free(cnd.p);
+  emit_boxed_cond_arm(c, nt_ref(nt, node, "statements"), dst, b);
+  buf_puts(b, "\nelse ");
+  emit_boxed_cond_arm(c, nt_ref(nt, node, k == NK_IfNode ? "subsequent" : "else_clause"), dst, b);
+  buf_printf(b, "\n_t%d; })", dst);
+  RC(RF_SPECIAL, RW_NONE);
+  return 1;
 }
 
 static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
@@ -1847,6 +1903,40 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
     emit_boxed_strbuf(c, node, t, &tr, b);
     return;
   case RK_PTR:
+    /* --share-strings: a String a bang method answers off a variable's
+       handle is that handle, boxed as it (a copy forked the box off it) */
+    if (t == TY_STRING && emit_boxed_bang_self(c, node, b)) return;
+    /* --share-strings: a mutator on a narrowed box (`a << x` where an
+       is_a? guard narrows a boxed a) answers that box, read as one */
+    if (t == TY_STRING && strbuf_narrowed_box_mutator(c, node)) {
+      emit_narrowed_box_mutator(c, node, b);
+      RC(RF_PASS, RW_NONE);
+      return;
+    }
+    /* --share-strings: a box's to_s is the box's own String
+       (sp_poly_to_s_box) */
+    if (t == TY_STRING && strbuf_poly_to_s(c, node)) {
+      int r = nt_ref(c->nt, node, "receiver");
+      char hr[1024];
+      if (strbuf_var_handle(c, r, hr, sizeof hr)) buf_printf(b, "sp_strbuf_to_s_box(%s)", hr);
+      else {
+        buf_puts(b, "sp_poly_to_s_box(");
+        emit_boxed(c, r, b);
+        buf_puts(b, ")");
+      }
+      RC(RF_PASS, RW_NONE);
+      return;
+    }
+    /* --share-strings: a String value that hands on a variable's handle (an
+       append chain over it, `a << x`): that handle, boxed as it */
+    if (t == TY_STRING && repr_share_rule(c) && nt_kind(c->nt, node) == NK_CallNode &&
+        strbuf_chain_over_handle(c, node)) {
+      buf_puts(b, "sp_box_nullable_obj(");
+      emit_strbuf_handle_of(c, node, b);
+      buf_puts(b, ", SP_BUILTIN_STRBUF)");
+      RC(RF_STRBUF_HANDLE, RW_NONE);
+      return;
+    }
     break;
   case RK_NONE:
   default:
@@ -1956,6 +2046,7 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
       return;
     }
   }
+  if (emit_boxed_cond_arms(c, node, b)) return;
   int lift = repr_share_rule(c) && node >= 0 && c->poly_strbuf_lift[node] && comp_ntype(c, node) == TY_STRING;
   /* a route that hands on a handle (`q ||= s.then { |v| v }`,
      emit_strbuf_route): that handle's box, not a new handle around a copy */

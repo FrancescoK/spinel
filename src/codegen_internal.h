@@ -144,6 +144,30 @@ void emit_strbuf_handle_of(Compiler *c, int v, Buf *b);
    handed (`+s`, `String(s)`, `s.then { |x| x }`) hands on: 1, or 0 with
    nothing emitted */
 int emit_strbuf_route(Compiler *c, int v, Buf *b);
+/* --share-strings: does codegen hand the shared handle along flow kind
+   `kind` (ShareFlowKind) at node site, from value node v?
+   The routes codegen carries, which the seal requires of every flow into a
+   shared class (repr_share_flows_check). fm holds the answers asked once
+   per method, for one check. */
+typedef struct {
+  signed char *yield_ok;   /* per method scope: its yields carry the handle
+                              (1), do not (0), not asked yet (-1) */
+} StrbufFlowMemo;
+int strbuf_flow_carries(Compiler *c, StrbufFlowMemo *fm, int kind, int site, int v);
+int strbuf_call_picks_up(Compiler *c, int id);
+int strbuf_self_reader_handle(Compiler *c, int id);
+int strbuf_call_reads_handle(Compiler *c, int recv);
+const NativeMethod *strbuf_native_answer(Compiler *c, int n);
+int emit_bang_self_handle(Compiler *c, int v, Buf *b);
+int strbuf_chain_over_handle(Compiler *c, int v);
+int strbuf_narrowed_box_mutator(Compiler *c, int id);
+void emit_narrowed_box_mutator(Compiler *c, int id, Buf *b);
+int strbuf_opwrite_handle(Compiler *c, int v, char *out, size_t cap);
+int strbuf_poly_to_s(Compiler *c, int v);
+int strbuf_boxed_local(Compiler *c, int v);
+/* Is a variable holding the shared handle (or, --share-strings, a route or
+   a box) one of the values conditional v can hand over (codegen_stmt.c)? */
+int strbuf_cond_has_handle_leaf(Compiler *c, int v, int depth);
 /* String mutator id's receiver recv as the handle it changes: 1 a slot, 2
    a route (read once, nil raising NoMethodError for id), 0 neither
    (codegen_stmt.c) */

@@ -2739,6 +2739,22 @@ static const BopShareRow bop_share_rows[] = {
   { TY_BIGINT,      "*", BSH_PURE },
   { TY_FLOAT,       "*", BSH_PURE },
   { TY_SYMBOL,      "*", BSH_PURE },
+  { TY_CLASS,       "name", BSH_FROZEN },   /* Module#name: a frozen String */
+  /* File.open and Dir.open with a block hand it the handle they open and
+     answer its value */
+  { TY_CLASS,       "open", BSH_ITER_THEN },
+  /* Dir's and Process's class methods read the Strings they are handed
+     and keep none; Dir.pwd, glob and children answer new Strings */
+  { TY_CLASS,       "pwd", BSH_PURE },
+  { TY_CLASS,       "getwd", BSH_PURE },
+  { TY_CLASS,       "glob", BSH_PURE },
+  { TY_CLASS,       "children", BSH_PURE },
+  { TY_CLASS,       "entries", BSH_PURE },
+  { TY_CLASS,       "mkdir", BSH_PURE },
+  { TY_CLASS,       "exist?", BSH_PURE },
+  { TY_CLASS,       "spawn", BSH_PURE },
+  { TY_CLASS,       "waitpid2", BSH_PURE },
+  { TY_CLASS,       "pid", BSH_PURE },
   { TY_BOOL,        "*", BSH_PURE },
   { TY_NIL,         "*", BSH_PURE },
   { TY_RANGE,       "*", BSH_PURE },
@@ -2816,6 +2832,8 @@ static const BopShareRow bop_share_rows[] = {
   { BOP_ANY_RECV, "class",       BSH_PURE },
   { BOP_ANY_RECV, "object_id",   BSH_PURE },
   { BOP_ANY_RECV, "inspect",     BSH_PURE },
+  /* only a Symbol answers id2name, with a new String */
+  { BOP_ANY_RECV, "id2name",     BSH_PURE },
   { BOP_ANY_RECV, "to_s",        BSH_PURE },
   { BOP_ANY_RECV, "display",     BSH_PURE },
   { BOP_ANY_RECV, "instance_variables", BSH_PURE },
@@ -2859,6 +2877,35 @@ static const BopShareRow bop_share_rows[] = {
   { BOP_FILE_CLASS, "extname",     BSH_PURE },
   { BOP_FILE_CLASS, "expand_path", BSH_PURE },
   { BOP_FILE_CLASS, "absolute_path", BSH_PURE },
+  { BOP_FILE_CLASS, "realpath",    BSH_PURE },
+  { BOP_FILE_CLASS, "realdirpath", BSH_PURE },
+  { BOP_FILE_CLASS, "readlink",    BSH_PURE },
+  { BOP_FILE_CLASS, "path",        BSH_FROZEN },   /* a new frozen String */
+  /* File's reads answer a new String; its writes, tests and file
+     operations read the Strings they are handed and keep none */
+  { BOP_FILE_CLASS, "read",        BSH_PURE },
+  { BOP_FILE_CLASS, "binread",     BSH_PURE },
+  { BOP_FILE_CLASS, "write",       BSH_PURE },
+  { BOP_FILE_CLASS, "binwrite",    BSH_PURE },
+  { BOP_FILE_CLASS, "exist?",      BSH_PURE },
+  { BOP_FILE_CLASS, "file?",       BSH_PURE },
+  { BOP_FILE_CLASS, "directory?",  BSH_PURE },
+  { BOP_FILE_CLASS, "symlink?",    BSH_PURE },
+  { BOP_FILE_CLASS, "executable?", BSH_PURE },
+  { BOP_FILE_CLASS, "mtime",       BSH_PURE },
+  { BOP_FILE_CLASS, "delete",      BSH_PURE },
+  { BOP_FILE_CLASS, "unlink",      BSH_PURE },
+  { BOP_FILE_CLASS, "rename",      BSH_PURE },
+
+  /* ENV answers a new String for each read, and keeps a copy of what it
+     is handed (fetch answers its default when the name is unset) */
+  { BOP_ENV,        "[]",          BSH_PURE },
+  { BOP_ENV,        "[]=",         BSH_PURE },
+  { BOP_ENV,        "store",       BSH_PURE },
+  { BOP_ENV,        "fetch",       BSH_FETCH },
+  { BOP_ENV,        "key?",        BSH_PURE },
+  { BOP_ENV,        "include?",    BSH_PURE },
+  { BOP_ENV,        "delete",      BSH_PURE },
 
   /* a proc's, a lambda's or a Method's invocations */
   { BOP_CALLABLE, "call",        BSH_CALL },
