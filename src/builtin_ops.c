@@ -2566,6 +2566,7 @@ static const BopShareRow bop_share_rows[] = {
   { TY_STRING, "prepend",    BSH_RECV },
   { TY_STRING, "insert",     BSH_RECV },
   { TY_STRING, "replace",    BSH_RECV },
+  { TY_STRING, "[]=",        BSH_FETCH },
   { TY_STRING, "+@",         BSH_RECV },
   { TY_STRING, "freeze",     BSH_FROZEN },
   { TY_STRING, "-@",         BSH_FROZEN },
@@ -2654,9 +2655,9 @@ static const BopShareRow bop_share_rows[] = {
   { BOP_ANY_ARRAY, "to_a",      BSH_SUB },
   { BOP_ANY_ARRAY, "entries",   BSH_SUB },
   { BOP_ANY_ARRAY, "transpose", BSH_SUB },
-  { BOP_ANY_ARRAY, "sum",       BSH_PURE },
+  { BOP_ANY_ARRAY, "sum",       BSH_ARGS },
   { BOP_ANY_ARRAY, "join",      BSH_PURE },
-  { BOP_ANY_ARRAY, "pack",      BSH_PURE },
+  { BOP_ANY_ARRAY, "pack",      BSH_ARGS }, /* the supplied buffer */
   { BOP_ANY_ARRAY, "to_s",      BSH_PURE },
   { BOP_ANY_ARRAY, "inspect",   BSH_PURE },
   { BOP_ANY_ARRAY, "include?",  BSH_PURE },
@@ -2678,7 +2679,7 @@ static const BopShareRow bop_share_rows[] = {
   { BOP_ANY_ARRAY, "<=>",       BSH_PURE },
   { BOP_ANY_ARRAY, "hash",      BSH_PURE },
   { BOP_ANY_ARRAY, "frozen?",   BSH_PURE },
-  { BOP_ANY_ARRAY, "clear",     BSH_PURE },
+  { BOP_ANY_ARRAY, "clear",     BSH_RECV },
 
   /* A Hash: a String key is dup'd and frozen as it is stored, so only the
      values are elements; keys and key queries answer fresh Strings. */
@@ -2707,7 +2708,7 @@ static const BopShareRow bop_share_rows[] = {
   { BOP_ANY_HASH, "merge!",     BSH_MERGE },
   { BOP_ANY_HASH, "update",     BSH_MERGE },
   { BOP_ANY_HASH, "replace",    BSH_MERGE },
-  { BOP_ANY_HASH, "sum",        BSH_PURE },
+  { BOP_ANY_HASH, "sum",        BSH_ARGS },
   { BOP_ANY_HASH, "keys",       BSH_PURE },
   { BOP_ANY_HASH, "key",        BSH_PURE },
   { BOP_ANY_HASH, "key?",       BSH_PURE },
@@ -2729,7 +2730,7 @@ static const BopShareRow bop_share_rows[] = {
   { BOP_ANY_HASH, "!=",         BSH_PURE },
   { BOP_ANY_HASH, "hash",       BSH_PURE },
   { BOP_ANY_HASH, "frozen?",    BSH_PURE },
-  { BOP_ANY_HASH, "clear",      BSH_PURE },
+  { BOP_ANY_HASH, "clear",      BSH_RECV },
 
   /* An IO copies what it writes and answers new Strings for what it reads;
      the buffer forms of the reads fill their second argument in place. */
@@ -2739,6 +2740,14 @@ static const BopShareRow bop_share_rows[] = {
   { TY_IO, "sysread",      BSH_FILL1 },
   { TY_IO, "read_nonblock", BSH_FILL1 },
   { TY_IO, "pread",        BSH_FILL2 },
+  { TY_IO, "putc",         BSH_ARGS },
+  { TY_IO, "sync=",        BSH_ARGS },
+  { TY_IO, "autoclose=",   BSH_ARGS },
+  { TY_IO, "<<",           BSH_RECV },
+  { TY_IO, "flush",        BSH_RECV },
+  { TY_IO, "binmode",      BSH_RECV },
+  { TY_IO, "reopen",       BSH_RECV },
+  { TY_IO, "set_encoding", BSH_RECV },
   /* These calls keep no caller String, also on a boxed IO or Dir. */
   { TY_IO, "write",        BSH_PURE },
   { TY_IO, "gets",         BSH_PURE },
@@ -2789,7 +2798,7 @@ static const BopShareRow bop_share_rows[] = {
   { TY_OPENSTRUCT, "to_h",        BSH_SUB },
 
   /* Kernel's functions. A name with no row (raise, throw, define_method,
-     lambda, ...) is not followed. */
+     lambda, ...) is not followed. throw now has an argument-answer row. */
   { BOP_KERNEL, "puts",     BSH_PURE },
   { BOP_KERNEL, "print",    BSH_PURE },
   { BOP_KERNEL, "printf",   BSH_PURE },
@@ -2800,7 +2809,7 @@ static const BopShareRow bop_share_rows[] = {
   { BOP_KERNEL, "require_relative", BSH_PURE },
   { BOP_KERNEL, "exit",     BSH_PURE },
   { BOP_KERNEL, "exit!",    BSH_PURE },
-  { BOP_KERNEL, "abort",    BSH_PURE },
+  { BOP_KERNEL, "abort",    BSH_CALL }, /* SystemExit keeps the message */
   { BOP_KERNEL, "sleep",    BSH_PURE },
   { BOP_KERNEL, "rand",     BSH_PURE },
   { BOP_KERNEL, "srand",    BSH_PURE },
@@ -2813,9 +2822,9 @@ static const BopShareRow bop_share_rows[] = {
   { BOP_KERNEL, "`",        BSH_PURE },
   { BOP_KERNEL, "block_given?", BSH_PURE },
   { BOP_KERNEL, "frozen?",  BSH_PURE },
-  { BOP_KERNEL, "freeze",   BSH_PURE },
-  /* throw compares the tag and keeps nothing */
-  { BOP_KERNEL, "throw",    BSH_PURE },
+  { BOP_KERNEL, "freeze",   BSH_RECV },
+  /* throw compares the tag and hands its value to catch. */
+  { BOP_KERNEL, "throw",    BSH_FETCH },
   { BOP_KERNEL, "p",        BSH_ARGS },
   { BOP_KERNEL, "pp",       BSH_ARGS },
   { BOP_KERNEL, "String",   BSH_ARGS },
@@ -2856,6 +2865,9 @@ static const BopShareRow bop_share_rows[] = {
   { BOP_ANY_RECV, "<=>",         BSH_PURE },
   { BOP_ANY_RECV, "freeze",      BSH_RECV },
   { BOP_ANY_RECV, "itself",      BSH_RECV },
+  { BOP_ANY_RECV, "clamp",       BSH_ARGS },
+  { BOP_ANY_RECV, "sum",         BSH_ARGS }, /* an empty fold keeps its seed */
+  { BOP_ANY_RECV, "zip",         BSH_MERGE },
   { BOP_ANY_RECV, "dup",         BSH_RECV },
   { BOP_ANY_RECV, "clone",       BSH_RECV },
   { BOP_ANY_RECV, "method",      BSH_METHOD_REF },
@@ -2913,12 +2925,12 @@ static const BopShareRow bop_share_rows[] = {
   /* ENV answers a new String for each read, and keeps a copy of what it
      is handed (fetch answers its default when the name is unset) */
   { BOP_ENV,        "[]",          BSH_PURE },
-  { BOP_ENV,        "[]=",         BSH_PURE },
-  { BOP_ENV,        "store",       BSH_PURE },
+  { BOP_ENV,        "[]=",         BSH_FETCH },
+  { BOP_ENV,        "store",       BSH_FETCH },
   { BOP_ENV,        "fetch",       BSH_FETCH },
   { BOP_ENV,        "key?",        BSH_PURE },
   { BOP_ENV,        "include?",    BSH_PURE },
-  { BOP_ENV,        "delete",      BSH_PURE },
+  { BOP_ENV,        "delete",      BSH_FETCH },
 
   /* a proc's, a lambda's or a Method's invocations */
   { BOP_CALLABLE, "call",        BSH_CALL },
@@ -3183,7 +3195,11 @@ static const IterRow iter_rows[] = {
   { BOP_ANY_RECV, "yield_self", 0, 0, 1, { YS_RECV }, IA_BLOCKVAL, 0 },
   /* Enumerable's, read by the shape desugar on any receiver */
   { BOP_ANY_RECV, "each_with_index",  0, 0, 2, { YS_ELEM, YS_INDEX }, IA_RECV, IRF_GAP_SHARE },
-  { BOP_ANY_RECV, "each_with_object", 1, 1, 2, { YS_ELEM, YS_MEMO }, IA_MEMO, IRF_GAP_SHARE },
+  { BOP_ANY_RECV, "each_with_object", 1, 1, 2, { YS_ELEM, YS_MEMO }, IA_MEMO, 0 },
+  { BOP_ANY_RECV, "inject", 1, 1, 2, { YS_MEMO, YS_ELEM }, IA_MEMO, IRF_GAP_SHAPE | IRF_GAP_FWD },
+  { BOP_ANY_RECV, "inject", 0, 0, 2, { YS_MEMO, YS_ELEM }, IA_MEMO, IRF_GAP_SHAPE | IRF_GAP_FWD },
+  { BOP_ANY_RECV, "reduce", 1, 1, 2, { YS_MEMO, YS_ELEM }, IA_MEMO, IRF_GAP_SHAPE | IRF_GAP_FWD },
+  { BOP_ANY_RECV, "reduce", 0, 0, 2, { YS_MEMO, YS_ELEM }, IA_MEMO, IRF_GAP_SHAPE | IRF_GAP_FWD },
 };
 #define ITER_NROWS ((int)(sizeof iter_rows / sizeof iter_rows[0]))
 
@@ -3278,10 +3294,11 @@ int iter_keeps_no_block_value(TyKind fam, const char *name, int argc) {
 
 /* The families whose iterator rows the share analysis reads: a number's or
    a Range's iterators hand their blocks numbers, and the family's "*" row
-   answers for them. */
+   answers for them. Numeric and Range rows now participate too: a memo
+   or a block's answer can hold Strings even when yielded elements cannot. */
 static int iter_share_family(TyKind fam) {
   return fam == TY_STRING || fam == BOP_ANY_ARRAY || fam == BOP_ANY_HASH || fam == BOP_KERNEL ||
-         fam == BOP_ANY_RECV;
+         fam == BOP_ANY_RECV || fam == TY_RANGE || fam == TY_FLOAT_RANGE || fam == TY_INT || fam == TY_FLOAT;
 }
 
 /* the hand row's answer for the name, or 0 */
