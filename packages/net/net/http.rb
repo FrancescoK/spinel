@@ -377,10 +377,23 @@ module Net
       end
     end
 
+    # With a block, the session lasts for the block: CRuby opens it, yields
+    # self, closes it in an ensure and answers the block's value. Without
+    # one, the session stays open until `finish`.
     def start
-      open_connection
-      @started = true
-      self
+      if block_given?
+        begin
+          open_connection
+          @started = true
+          yield self
+        ensure
+          finish
+        end
+      else
+        open_connection
+        @started = true
+        self
+      end
     end
 
     def open_connection
