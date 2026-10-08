@@ -28,18 +28,18 @@ t = s
 t << "345"
 x = "12"
 
-p LibC.strncmp(s, t, s.size + 0)
-p LibC.strncmp(s, joined(x, "345"), 5)
-p LibC.strncmp(joined(x, "345"), s, 5)
-p LibC.strncmp(joined(x, "345"), joined(x, "346"), 5)
-p LibC.strncmp(s, "12345", width(1))
-p LibC.strncmp("12345", s, width(1))
+p LibC.strncmp(s, t, s.size + 0) <=> 0
+p LibC.strncmp(s, joined(x, "345"), 5) <=> 0
+p LibC.strncmp(joined(x, "345"), s, 5) <=> 0
+p LibC.strncmp(joined(x, "345"), joined(x, "346"), 5) <=> 0
+p LibC.strncmp(s, "12345", width(1)) <=> 0
+p LibC.strncmp("12345", s, width(1)) <=> 0
 r = [Named.new(joined(x, "345")), joined(x, "345")]
 i = 1
-p LibC.strncmp(s, r[i].dup, 5)
-p LibC.strncmp(s, r[i - 1].dup, 5)
+p LibC.strncmp(s, r[i].dup, 5) <=> 0
+p LibC.strncmp(s, r[i - 1].dup, 5) <=> 0
 q = [Named.new(joined(x, "345")), Named.new(joined(x, "346"))]
-p LibC.strncmp(s, q[i - 1].get, 5)
-p LibC.strncmp(s, q[i].get, 5)
+p LibC.strncmp(s, q[i - 1].get, 5) <=> 0
+p LibC.strncmp(s, q[i].get, 5) <=> 0
 LibC.printf("%s %s\n", s, joined(x, "345"))
 LibC.printf("%s %s\n", joined(x, "345"), s)
