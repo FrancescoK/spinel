@@ -9,6 +9,7 @@
 #include "sp_marshal.h"   /* sp_gc.h: sp_RbVal, hooks, SP_GC_ROOT, cls_ids */
 #include "sp_alloc.h"     /* sp_str_alloc_raw, sp_str_set_len, sp_str_byte_len, sp_float_to_s */
 #include "sp_dtoa.h"      /* sp_format_float / sp_read_float (locale-independent) */
+#include "sp_string.h"    /* sp_String: a shared String handle in a box */
 #include <string.h>
 #include <setjmp.h>
 #include <math.h>
@@ -149,8 +150,11 @@ void sp_mar_w(sp_mar_buf *b, sp_RbVal v) {
       const char *s = v.v.s ? v.v.s : "";
       if (sp_mar_seen(b, (void *)(uintptr_t)s)) break;
       /* CRuby wraps a String in an encoding ivar: I "<bytes>" 1 :E T. */
-      sp_mar_b(b, 'I'); sp_mar_b(b, '"'); sp_mar_bytes(b, s, sp_str_byte_len(s));
-      sp_mar_long(b, 1); sp_mar_sym(b, "E"); sp_mar_b(b, 'T');
+      /* A binary String has no encoding ivar. */
+      int binary = sp_str_is_binary(v.v.s);
+      if (!binary) sp_mar_b(b, 'I');
+      sp_mar_b(b, '"'); sp_mar_bytes(b, s, sp_str_byte_len(s));
+      if (!binary) { sp_mar_long(b, 1); sp_mar_sym(b, "E"); sp_mar_b(b, 'T'); }
       break;
     }
     case SP_TAG_OBJ:
@@ -179,6 +183,17 @@ void sp_mar_w(sp_mar_buf *b, sp_RbVal v) {
         else if (kind == 2) {  /* hash */
           if (sp_mar_seen(b, v.v.p)) break;
           sp_mar_w_hash(b, v);
+        }
+        /* a shared String handle in a box (--share-strings, #6765): the
+           String it holds, with the handle as its identity */
+        else if (v.cls_id == SP_BUILTIN_STRBUF) {
+          if (sp_mar_seen(b, v.v.p)) break;
+          sp_String *h = (sp_String *)v.v.p;
+          int binary = h && h->binary;
+          if (!binary) sp_mar_b(b, 'I');
+          sp_mar_b(b, '"');
+          sp_mar_bytes(b, h && h->data ? h->data : "", h && h->data ? (size_t)h->len : 0);
+          if (!binary) { sp_mar_long(b, 1); sp_mar_sym(b, "E"); sp_mar_b(b, 'T'); }
         }
         else if (v.cls_id >= 0) {  /* user object */
           if (sp_mar_seen(b, v.v.p)) break;

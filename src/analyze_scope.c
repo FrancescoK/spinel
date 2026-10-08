@@ -7843,7 +7843,15 @@ static const char *pivs_call_set(Compiler *c, int call, const int **cls, int *n,
     f->hash_mode = hashes; f->active = m; f->query++;
     memset(f->memo[m].set, 0, (size_t)(c->nclasses > 0 ? c->nclasses : 1));
     free(f->memo[m].cls);
-    f->memo[m].ok = pivs_value(c, nt_ref(c->nt, call, "receiver"), f->memo[m].set, 0);
+    int recv = nt_ref(c->nt, call, "receiver");
+    /* Kernel#String dispatches a conversion on its argument. Keep that
+       implicit receiver in the same per-call class memo. */
+    if (recv < 0 && is_string_class_name(nt_str(c->nt, call, "name"))) {
+      int ac = 0, a = nt_ref(c->nt, call, "arguments");
+      const int *av = a >= 0 ? nt_arr(c->nt, a, "arguments", &ac) : NULL;
+      if (ac == 1) recv = av[0];
+    }
+    f->memo[m].ok = pivs_value(c, recv, f->memo[m].set, 0);
     f->memo[m].cls = NULL; f->memo[m].ncls = 0;
     if (f->memo[m].ok) {
       int nk = 0;

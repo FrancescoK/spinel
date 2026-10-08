@@ -1,0 +1,34 @@
+true
+true
+true
+FrozenError
+["a\u0000bc", "a\u0000bc"]
+true
+["abc!", "abc!"]
+["pabc!", "pabc!"]
+""
+"12!"
+"true"
+"frozen"
+to_str
+"converted"
+to_str
+true
+["str!", "str!"]
+to_s
+true
+["s!", "s!"]
+original
+false
+["original", "fresh!"]
+false
+["plain fresh!", "plain fresh"]
+held
+"held!"
+held
+"fresh!"
+to_str
+"other!"
+"plain fresh!"
+earlier
+"fallback!"

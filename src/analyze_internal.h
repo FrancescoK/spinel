@@ -197,6 +197,7 @@ int struct_aset_members(Compiler *c, int id, int k, int *lo, int *hi);
 int struct_aset_may_reach(Compiler *c, int id);
 /* The classes the boxed receiver of call `call` can be an instance of, *n
    of them, or NULL when the analysis cannot bound them (analyze_scope.c) */
+/* Kernel#String uses its argument as the conversion's implicit receiver. */
 const int *poly_recv_classes(Compiler *c, int call, int *n);
 /* A read of a String slot the share rule holds as the handle (analyze.c) */
 int an_arg_is_shared_handle(Compiler *c, int node);

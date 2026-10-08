@@ -17312,6 +17312,53 @@ static int share_ret_typed_str_literal(Compiler *c, int mi) {
 static int share_pattern_method(const Scope *m) {
   return m->class_id >= 0 && m->name && (sp_streq(m->name, "deconstruct") || sp_streq(m->name, "deconstruct_keys"));
 }
+/* A literal argument a user method's parameters name the elements of: the
+   argument itself, the operand of `*`, or that of a `**` among keyword
+   arguments. Its stores carry the handles where the rule shares them. */
+static int share_demand_literal_arg(Compiler *c, int a) {
+  const NodeTable *nt = c->nt;
+  NodeKind k = nt_kind(nt, a);
+  if (k == NK_KeywordHashNode) {
+    int changed = 0, en = 0;
+    const int *el = nt_arr(nt, a, "elements", &en);
+    for (int e = 0; e < en; e++)
+      if (nt_kind(nt, el[e]) == NK_AssocSplatNode)
+        changed |= share_demand_literal_arg(c, nt_ref(nt, el[e], "value"));
+    return changed;
+  }
+  if (k == NK_SplatNode) a = nt_ref(nt, a, "expression");
+  a = unwrap_parens(c, a);
+  if (a < 0 || (nt_kind(nt, a) != NK_ArrayNode && nt_kind(nt, a) != NK_HashNode) ||
+      !share_node_elems_share(c, a))
+    return 0;
+  return strbuf_container_source_walk(c, a, 0, SB_DEMAND);
+}
+/* A user method's rest parameter holds its callers' arguments as its
+   elements: where the rule shares them, each argument the call's layout
+   leaves to the rest (`def first(*items)`, `first(self.text)`) is stored as
+   its handle, as a literal's element is. A splat's elements are the
+   literal's (share_demand_literal_arg) or the run time's. */
+static int share_demand_rest_args(Compiler *c, int mi, const int *argv, int argc) {
+  const NodeTable *nt = c->nt;
+  Scope *m = &c->scopes[mi];
+  if (m->rest_idx < 0 || !m->pnames[m->rest_idx]) return 0;
+  LocalVar *rv = scope_local(m, m->pnames[m->rest_idx]);
+  if (!rv || !repr_str_elems_share(c, share_local_holder(c, mi, (int)(rv - m->locals)))) return 0;
+  int kwh = nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode ? argv[argc - 1] : -1;
+  int pos_argc = kwh >= 0 ? argc - 1 : argc;
+  for (int k = 0; k < pos_argc; k++)
+    if (nt_kind(nt, argv[k]) == NK_SplatNode || nt_kind(nt, argv[k]) == NK_ForwardingArgumentsNode) return 0;
+  ArgLayout L;
+  arg_layout(c, m, argv, pos_argc, kwh, 0, &L);
+  int changed = 0;
+  for (int k = 0; k < pos_argc; k++) {
+    int bound = 0;
+    for (int j = 0; j < L.n && !bound; j++) bound = L.from[j] == ARG_NODE && L.arg[j] == k;
+    if (!bound) changed |= strbuf_store_leaf(c, argv[k], 0, SB_DEMAND);
+  }
+  arg_layout_free(&L);
+  return changed;
+}
 static int share_default_apply(Compiler *c, int in_fixpoint) {
   if (!c->share_strings) return 0;
   if (in_fixpoint) {
@@ -17464,6 +17511,20 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
     }
     if (share_node_elems_share(c, r))
       changed |= strbuf_container_source_walk(c, r, 0, mode);
+  }
+  /* The same holds when a literal is passed to a user method, whole or
+     spread with `*` or `**`, and for each argument a rest parameter
+     gathers: the callee's parameters name those elements again. A literal
+     handed to a builtin (`p [a, b]`), a proc or a block's value is left as
+     before. The call's targets are the plan's, as the facts read them. */
+  NT_FOREACH_KIND(c->nt, NK_CallNode, n) {
+    int args = nt_ref(c->nt, n, "arguments"), an = 0;
+    const int *av = args >= 0 ? nt_arr(c->nt, args, "arguments", &an) : NULL;
+    if (an == 0) continue;
+    int mis[CPT_MAX], cnt = cplan_targets(c, n, mis, CPT_MAX);
+    if (cnt <= 0) continue;
+    for (int i = 0; i < an; i++) changed |= share_demand_literal_arg(c, av[i]);
+    for (int t = 0; t < cnt; t++) changed |= share_demand_rest_args(c, mis[t], av, an);
   }
   return changed;
 }
@@ -20667,6 +20728,29 @@ static int poly_var_may_hold_string(Compiler *c, const HandleArgTab *hat,
   /* with `lits`, a variable no write or yielder binds is bound some other
      way */
   return lits && !lv->is_param && !seen && bound != 1;
+}
+
+/* Drop the rule's lifts of a variable that cannot hold a String: the final
+   caller table answers once for all its reads, through the existing
+   variable-site index. */
+static void strbuf_reconcile_lifted_reads(Compiler *c, const HandleArgTab *hat) {
+  const NodeTable *nt = c->nt;
+  for (int si = 0; si < c->nscopes; si++) {
+    Scope *s = &c->scopes[si];
+    for (int li = 0; li < s->nlocals; li++) {
+      const char *vn = s->locals[li].name;
+      int may_str = -1;
+      for (int e = comp_vsite_first(c, VS_READ, NK_LocalVariableReadNode, vn, si);
+           e >= 0; e = comp_vsite_next(c, e)) {
+        int r = comp_vsite_var(c, e);
+        if (nt_kind(nt, r) != NK_LocalVariableReadNode || comp_scope_of(c, r) != s ||
+            !sp_streq(nt_str(nt, r, "name"), vn) || !c->poly_strbuf_lift[r]) continue;
+        if (may_str < 0) may_str = poly_var_may_hold_string(c, hat, vn, s, 0, NULL);
+        if (may_str) break;
+        c->poly_strbuf_lift[r] = 0;
+      }
+    }
+  }
 }
 
 /* --share-strings (#6765): can receiver r, a boxed or untyped value, be a
@@ -36731,12 +36815,12 @@ static void an_phase_storage(Compiler *c) {
     if (!conv0) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
     for (int s = 0; s < c->nscopes; s++) conv0[s] = share_converted_locals(c, s);
   }
+  HandleArgTab hat;
   for (;;) {
-    HandleArgTab hat; handle_arg_tab_init(c, &hat);
+    handle_arg_tab_init(c, &hat);
     int ch = promote_params_stored_in_shared_ivars(c, &hat);
     if (convert_byref_handle_params(c, &hat)) ch = 1;
     if (lift_poly_alias_reads(c, &hat)) ch = 1;
-    handle_arg_tab_free(&hat);
     if (promote_local_alias_pairs(c)) ch = 1;
     if (promote_dyncall_string_args(c)) ch = 1;
     if (promote_spread_string_args(c)) ch = 1;
@@ -36754,6 +36838,7 @@ static void an_phase_storage(Compiler *c) {
       if (rejoin_local_writes(c)) ch = late_widened = 1;
     }
     if (!ch) break;
+    handle_arg_tab_free(&hat);
   }
   /* ... and the reads of what widened take its type, as the proc-return
      re-derivation's refresh does (an_phase_proc_returns): everywhere when a
@@ -36780,7 +36865,10 @@ static void an_phase_storage(Compiler *c) {
      x.is_a?(String)`) unboxed a copy of the String its POLY variable holds:
      one lifted into the handle for a parameter appended to keeps the box,
      so the callee appends to the variable's own String. The narrowing ran
-     before the lifts were decided. */
+     before the lifts were decided. Under the rule, a lift whose variable
+     cannot hold a String is dropped first, asking once per variable rather
+     than per read. */
+  if (c->share_strings) strbuf_reconcile_lifted_reads(c, &hat);
   NT_FOREACH_KIND(c->nt, NK_LocalVariableReadNode, r) {
     if (c->nilnarrow[r] != TY_STRING) continue;
     if (c->poly_strbuf_lift[r]) {
@@ -36796,6 +36884,7 @@ static void an_phase_storage(Compiler *c) {
       if (lv && lv->type == TY_POLY) c->nilnarrow[r] = c->ntype[r] = TY_STRBUF;
     }
   }
+  handle_arg_tab_free(&hat);
   if (!c->share_strings) mark_reader_identity_operands(c);
   mark_reader_read_only_operands(c);
 
