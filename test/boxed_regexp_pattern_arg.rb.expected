@@ -1,0 +1,31 @@
+["a=1", "b=2"]
+["a=1", "b=2&c=3"]
+["a=1", "b=2", "c=3"]
+["a", "b c"]
+["a", "c", "d"]
+["a", "", "c", "", "d"]
+["a", "bb", "cbbd"]
+["a", "b", "bcbbd"]
+["abbcb", "b", "d"]
+["abbcb", "b", "d"]
+false
+true
+false
+"bb"
+"b"
+"bb"
+"bb"
+"bb"
+"acbbd"
+"b"
+"abcbbd"
+[["x", "aa", "y"], ["xa", "a", "y"], false]
+"aa"
+"xy"
+["a", "cbbd"]
+1
+"b!"
+["ab"]
+"q"
+["cd"]
+"q"

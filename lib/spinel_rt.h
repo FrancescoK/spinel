@@ -16657,8 +16657,13 @@ static sp_bool sp_range_cover_poly(sp_Range *r, sp_RbVal x) {
 static sp_bool sp_poly_case_eq(sp_RbVal pat, sp_RbVal e) {
   if (pat.tag == SP_TAG_CLASS)
     return sp_poly_is_a_hook ? (sp_bool)(sp_poly_is_a_hook(e, sp_unbox_class(pat)) != 0) : 0;
-  if (pat.tag == SP_TAG_OBJ && pat.cls_id == SP_BUILTIN_REGEX)
-    return e.tag == SP_TAG_STR && e.v.s && sp_re_match_p(pat.v.p, e.v.s);
+  /* a String, a shared String or a Symbol; $~ is left alone, as grep's is */
+  if (pat.tag == SP_TAG_OBJ && pat.cls_id == SP_BUILTIN_REGEX) {
+    sp_RbVal ed = sp_poly_strbuf_deref(e);
+    const char *s = ed.tag == SP_TAG_STR ? ed.v.s
+                  : ed.tag == SP_TAG_SYM && sp_sym_name_fn ? sp_sym_name_fn((sp_sym)ed.v.i) : NULL;
+    return s && sp_re_match_p(pat.v.p, s);
+  }
   if (pat.tag == SP_TAG_OBJ && pat.cls_id == SP_BUILTIN_RANGE) {
     /* a Rational or a Bignum compares against the bounds too (it answered
        false), through the same reader as cover? */
@@ -16677,9 +16682,14 @@ static sp_bool sp_poly_case_eq(sp_RbVal pat, sp_RbVal e) {
   /* a shared-mutable string on either side behaves as its value (#3227) */
   if (sp_poly_is_strbuf(pat) || sp_poly_is_strbuf(e))
     return sp_poly_rb_equal(sp_poly_strbuf_deref(pat), sp_poly_strbuf_deref(e));
-  if (pat.tag == SP_TAG_OBJ && pat.cls_id == SP_BUILTIN_REGEX && e.tag == SP_TAG_SYM)
-    return sp_re_case_eq((mrb_regexp_pattern *)pat.v.p, e);
   return sp_poly_rb_equal(pat, e);
+}
+/* `pat === e` where CRuby's Regexp#=== sets $~: a `when` arm, an explicit
+   ===. Every other pattern answers as sp_poly_case_eq. */
+static sp_bool sp_poly_case_eq_match(sp_RbVal pat, sp_RbVal e) {
+  if (pat.tag == SP_TAG_OBJ && pat.cls_id == SP_BUILTIN_REGEX)
+    return sp_re_case_eq((mrb_regexp_pattern *)pat.v.p, e);
+  return sp_poly_case_eq(pat, e);
 }
 static sp_PolyArray *sp_poly_slice_groups(sp_RbVal arr, sp_RbVal pat, int after) {
   /* The pattern is read on every element while the loop below allocates a
