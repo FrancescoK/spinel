@@ -6287,6 +6287,8 @@ static int desugar_builtin_method_obj(Compiler *c) {
     collect_def_params(c, def, ws);
     LocalVar *plv = scope_local(ws, "__bam_r");
     if (plv) { plv->type = poly_self ? TY_POLY_ARRAY : rt; plv->rbs_seeded = 1; }  /* pin: no call sites exist */
+    /* A bound String keeps its Ruby type when sharing chooses its handle. */
+    if (plv && c->share_strings && rt == TY_STRING) plv->rbs_type = TY_STRING;
     comp_grow_node_arrays(c);
     walk_scope(c, body, ws_idx, -1);
     /* the builtin takes the rest by its run-time length, as any
