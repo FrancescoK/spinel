@@ -3483,11 +3483,14 @@ int share_method_blocks(const Compiler *c, int mi, const int **blocks) {
 int share_call_fresh(Compiler *c, int call) {
   const ShareFacts *F = c->share;
   if (!F || call < 0 || nt_kind(c->nt, call) != NK_CallNode) return 0;
+  /* A boxed dispatch can take a builtin arm too: its user targets alone
+     do not prove freshness (String#to_s can answer its receiver). */
+  if (cplan_user_fresh(c, call)->via == UC_POLY) return 0;
   int tg[64];
   int n = cplan_targets(c, call, tg, 64);
   if (n <= 0) return 0;
   for (int i = 0; i < n; i++)
-    if (tg[i] < 0 || tg[i] >= c->nscopes || F->ret_joined[tg[i]]) return 0;
+    if (tg[i] < 0 || tg[i] >= c->nscopes || (F->ret_joined[tg[i]] && !c->scopes[tg[i]].ret_fresh)) return 0;
   return 1;
 }
 /* Does the subtree at n hold a `next` that leaves it (not one in a nested
@@ -3622,7 +3625,11 @@ int share_value_fresh(Compiler *c, int n, int depth) {
   n = an_unparen(nt, n);
   if (n < 0 || depth > 8) return 0;
   NodeKind k = nt_kind(nt, n);
+  if (k == NK_NilNode) return 1;
   if (k == NK_StringNode || k == NK_InterpolatedStringNode) return 1;
+  if (k == NK_RescueModifierNode)
+    return share_value_fresh(c, nt_ref(nt, n, "expression"), depth + 1) &&
+           share_value_fresh(c, nt_ref(nt, n, "rescue_expression"), depth + 1);
   /* a conditional each of whose arms is one, or nil */
   if (k == NK_IfNode || k == NK_UnlessNode)
     return sh_arm_fresh(c, nt_ref(nt, n, "statements"), depth + 1) &&
