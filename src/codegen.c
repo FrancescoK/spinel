@@ -1582,15 +1582,23 @@ static void emit_boxed_strbuf(Compiler *c, int node, TyKind t, const Repr *rp, B
       return;
     } }
   /* a demanded literal / expression store: wrap a FRESH handle so the
-     container element is mutable in place (#3227 P3) */
-  buf_puts(b, "sp_box_obj(sp_String_new_shared(");
+     container element is mutable in place (#3227 P3). A value that can be
+     nil (a String-or-nil call, a slice past the end, a pick that misses) is
+     tested before it is wrapped and boxed as nil: sp_String_new_shared
+     hands a nil back as NULL, and sp_box_obj boxed that NULL as a String.
+     One the never-nil list proves is wrapped as it was. */
+  int tn = stored_value_may_be_nil(c, node) ? ++g_tmp : 0;
+  if (tn) buf_printf(b, "({ const char *_t%d = ", tn);
+  else buf_puts(b, "sp_box_obj(sp_String_new_shared(");
   { Buf eb0; memset(&eb0, 0, sizeof eb0);
     int sv_mark = view_push_repr(c, node, VR_STRBUF_BOX, 0);   /* emit the plain string value */
     emit_str_expr(c, node, &eb0);
     view_pop(c, sv_mark);
     buf_puts(b, eb0.p ? eb0.p : "(&(\"\\xff\")[1])");
     free(eb0.p); }
-  buf_puts(b, "), SP_BUILTIN_STRBUF)"); RC(RF_STRBUF_FRESH, RW_NONE);
+  if (tn) buf_printf(b, "; _t%d ? sp_box_obj(sp_String_new_shared(_t%d), SP_BUILTIN_STRBUF) : sp_box_nil(); })", tn, tn);
+  else buf_puts(b, "), SP_BUILTIN_STRBUF)");
+  RC(RF_STRBUF_FRESH, RW_NONE);
 }
 
 /* An arm st of a conditional emit_boxed_cond_arms boxes: its statements,

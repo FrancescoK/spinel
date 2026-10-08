@@ -898,6 +898,9 @@ const char *poly_sink_unbox_fn(TyKind slot);
 const char *token_unbox_fmt(TyKind target);
 /* A node of such a type may hold NULL: not a literal, not self. */
 int node_may_be_null_nil(Compiler *c, int node);
+/* A value stored where a String handle is wanted may be nil: one the
+   never-nil list (ivs_never_nil) does not prove. */
+int stored_value_may_be_nil(Compiler *c, int v);
 /* `fn(recv)` with recv evaluated once, answering nil_c for a NULL recv. */
 void emit_null_guarded_call(Compiler *c, int recv, TyKind rt, const char *fn, const char *nil_c, Buf *b);
 void emit_unbox_text(Compiler *c, TyKind t, const char *expr, Buf *b);

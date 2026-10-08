@@ -2018,6 +2018,17 @@ static int ivs_never_nil(Compiler *c, int v) {
       return 0;
   }
 }
+/* May a value stored where a String handle is wanted be nil? Not one the list
+   above proves never is. nil.dup is nil, so a dup is proven only with its
+   receiver. */
+int stored_value_may_be_nil(Compiler *c, int v) {
+  v = unwrap_parens(c, v);
+  if (!node_may_be_null_nil(c, v)) return 0;
+  if (nt_kind(c->nt, v) == NK_ParenthesesNode || !ivs_never_nil(c, v)) return 1;
+  if (nt_kind(c->nt, v) == NK_CallNode && sp_streq(nt_str(c->nt, v, "name"), "dup"))
+    return stored_value_may_be_nil(c, nt_ref(c->nt, v, "receiver"));
+  return 0;
+}
 /* Does the subtree under `n` write ivar `ivn`? Past the depth it follows,
    it answers that it may. */
 static int ivs_subtree_writes(const NodeTable *nt, int n, const char *ivn, int depth) {
