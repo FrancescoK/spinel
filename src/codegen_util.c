@@ -2613,22 +2613,25 @@ int strbuf_bang_self_local(const Compiler *c, int v) {
   int self_ans = bop_share_self_answer(nt_str(nt, v, "name"), nt_ref(nt, v, "block") >= 0);
   if (!self_ans && !repr_share_rule(c)) return 0;
   int r = nt_ref(nt, v, "receiver");
-  if (self_ans && r >= 0 && nt_kind(nt, r) == NK_LocalVariableReadNode && repr_of(c, r).kind == RK_STRBUF) return 1;
-  /* (--share-strings: a String method that answers its receiver always,
-     `insert`, too) */
-  if (!repr_share_rule(c) || r < 0) return 0;
-  char ref[1024];
-  NodeKind rk = nt_kind(nt, r);
+  if (r < 0) return 0;
   if (!self_ans && !(nt_str(nt, v, "name") && (comp_ntype((Compiler *)c, r) == TY_STRING || comp_ntype((Compiler *)c, r) == TY_STRBUF) &&
                      bop_share_named(TY_STRING, nt_str(nt, v, "name")) == BSH_RECV))
     return 0;
+  /* The builtin's receiver answer does not describe a user override. */
+  int targets[CPT_MAX];
+  if (cplan_targets((Compiler *)c, v, targets, CPT_MAX) != 0) return 0;
+  if (self_ans && nt_kind(nt, r) == NK_LocalVariableReadNode && repr_of(c, r).kind == RK_STRBUF) return 1;
+  /* (--share-strings: a String method that answers its receiver always,
+     `insert`, too) */
+  if (!repr_share_rule(c)) return 0;
+  char ref[1024];
+  NodeKind rk = nt_kind(nt, r);
   if (!self_ans) {
-    int argc, targets[CPT_MAX];
+    int argc;
     call_args(nt, v, &argc);
     /* A sharing row can also describe a conditional copy (`+@` on a
        frozen String). Only an exact receiver answer keeps this handle. */
     if (bop_answers_self(TY_STRING, nt_str(nt, v, "name"), argc, nt_ref(nt, v, "block") >= 0) != BOPF_SELF) return 0;
-    if (cplan_targets((Compiler *)c, v, targets, CPT_MAX) != 0) return 0;
   }
   /* The receiver can itself be a route over a handle, including an
      append chain followed by a prepend with several arguments. */
