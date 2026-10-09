@@ -1733,6 +1733,7 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
     view_pop(c, sd); view_pop(c, sv);
     buf_puts(b, "; ");
     if (strbuf_pickup_answers_nil(c, v)) buf_printf(b, "!_v%d ? NULL : ", t);
+    if (g_repr_check) repr_channel_pickup(c, v, strbuf_pickup_answers_nil(c, v));
     buf_printf(b, "_sp_ret_strbuf ? (sp_String *)_sp_ret_strbuf : sp_String_new_shared(_v%d); })", t);
     return 1;
   }
@@ -1824,6 +1825,7 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
       buf_printf(b, "(_t%d.tag == SP_TAG_OBJ && (_t%d.cls_id == SP_BUILTIN_EXCEPTION || "
                     "sp_is_exc_subclass_cls(_t%d.cls_id))) ? sp_exc_message_handle((sp_Exception *)_t%d.v.p) : ",
                  t, t, t, t);
+    if (g_repr_check && pickup) repr_channel_pickup(c, v, 1);
     if (pickup) buf_printf(b, "({ _sp_ret_strbuf = NULL; const char *_v%d = ", t);
     else buf_puts(b, "sp_String_new_shared(");
     int mark = view_bind(x, "_t%d", t);
@@ -8736,8 +8738,11 @@ static void emit_tail_value_1(Compiler *c, int node, Buf *b);
 static void emit_fresh_tail_value(Compiler *c, int node, Buf *b) {
   int t = ++g_tmp;
   buf_printf(b, "({ const char *_t%d = ", t);
+  if (g_repr_check) repr_channel_clearing(c, 1);
   emit_tail_value_1(c, node, b);
+  if (g_repr_check) repr_channel_clearing(c, -1);
   buf_printf(b, "; _sp_ret_strbuf = NULL; _t%d; })", t);
+  if (g_repr_check) repr_channel_note(c, node, RCH_CLEAR);
 }
 /* --share-strings: a method a deep-return pickup takes the value of, one of
    whose tails answers a fresh String (ret_pub_fresh): that tail clears the
@@ -8745,17 +8750,21 @@ static void emit_fresh_tail_value(Compiler *c, int node, Buf *b) {
    published, so the caller wraps the fresh String rather than take that
    handle. A user call returning only its own fresh Strings clears it too. */
 static void emit_tail_value(Compiler *c, int node, Buf *b) {
+  int frame = g_repr_check ? repr_channel_begin(c, node) : -1;
   Scope *ts = g_ret_type == TY_STRING && !g_result_var ? comp_scope_of(c, node) : NULL;
   if (ts && ts->ret_pub_fresh && share_return_owned(c, an_unparen(c->nt, node), (int)(ts - c->scopes))) {
     emit_fresh_tail_value(c, node, b);
+    if (g_repr_check) repr_channel_end(c, frame);
     return;
   }
   if (!ts || !ts->ret_pub_fresh ||
       !(share_node_fresh(c, an_unparen(c->nt, node)) || share_call_fresh(c, an_unparen(c->nt, node)))) {
     emit_tail_value_1(c, node, b);
+    if (g_repr_check) repr_channel_end(c, frame);
     return;
   }
   emit_fresh_tail_value(c, node, b);
+  if (g_repr_check) repr_channel_end(c, frame);
 }
 static void emit_tail_value_1(Compiler *c, int node, Buf *b) {
   /* A poly tail slot (a poly return, or a poly result var -- e.g. an inlined
@@ -9904,7 +9913,9 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
                   " if (_excf%d) sp_inflight_cause = _excobj%d ? _excobj%d"
                   " : (void *)sp_exc_new_for_catch(_exccls%d, _excmsg%d);\n",
                eid, eid, eid, eid, eid, eid);
+    int cf = g_repr_check ? repr_channel_ensure(c, id) : -1;
     emit_stmts(c, ensure_stmts, b, indent);
+    if (g_repr_check) repr_channel_end(c, cf);
     emit_indent(b, indent);
     buf_printf(b, "sp_inflight_cause = _ic%d;\n", eid);
     emit_indent(b, indent);
@@ -10171,8 +10182,10 @@ void emit_stmt(Compiler *c, int id, Buf *b, int indent) {
   }
 }
 void emit_stmt_tail(Compiler *c, int id, Buf *b, int indent) {
+  int frame = g_repr_check ? repr_channel_begin(c, id) : -1;
   emit_line_directive(c, id, b);
   emit_with_prelude(c, id, b, indent, emit_stmt_tail_inner);
+  if (g_repr_check) repr_channel_end(c, frame);
 }
 
 /* Emit a `cond ? nil : <int>` ivar-write RHS as a C `?:` in int context: the
@@ -14878,6 +14891,7 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
           char h8[512];
           snprintf(h8, sizeof h8, "%s", islot9);
           snprintf(islot9, sizeof islot9, "sp_strbuf_read_pub(%s)", h8);
+          if (g_repr_check) repr_channel_note(c, id, RCH_PUBLISH);
         }
         emit_tail_slot(c, it9, islot9, b);
         return;
@@ -14928,6 +14942,7 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
       snprintf(gref9, sizeof gref9, "sp_strbuf_read_pub(%s)", gslot9);
     else if (sb9) snprintf(gref9, sizeof gref9, "sp_strbuf_read(%s)", gslot9);
     else snprintf(gref9, sizeof gref9, "%s", gslot9);
+    if (g_repr_check && sb9 && h9.r.share) repr_channel_note(c, id, RCH_PUBLISH);
     emit_indent(b, indent); emit_tail_lead(b);
     emit_tail_slot(c, gt9, gref9, b);
     return;
