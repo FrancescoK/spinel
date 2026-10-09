@@ -2072,6 +2072,14 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
     int es = bop_share_named(BOP_ENV, name);
     if (es) return sh_builtin(F, c, n, es, -1, blk, 0);
   }
+  /* FileTest is a call receiver without a Class type unless reopened.
+     User targets still win; only the builtin bypasses the unknown fallback. */
+  if (nt_kind(nt, recv) == NK_ConstantReadNode && is_filetest_module_name(nt_str(nt, recv, "name")) &&
+      !comp_const(c, nt_str(nt, recv, "name")) && !sh_has_targets(c, n)) {
+    int fs = bop_share_named(BOP_FILETEST, name);
+    if (fs) return sh_builtin(F, c, n, fs, rv, blk, 0);
+  }
+
   /* a user method */
   int tg[64];
   int ntg = sh_targets_in(F, c, n, tg, 64);

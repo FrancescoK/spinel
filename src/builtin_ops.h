@@ -311,6 +311,7 @@ int bop_args_as_builtin(TyKind rt, const char *name, int argc, int has_block);
 #define BOP_CLASS_NEW ((TyKind)-8)  /* a builtin class's `new`, by the class's name */
 #define BOP_FILE_CLASS ((TyKind)-9) /* a class method of File (`File.join`) */
 #define BOP_ENV      ((TyKind)-10)  /* ENV's methods (`ENV["HOME"]`) */
+#define BOP_FILETEST ((TyKind)-11)  /* FileTest's path tests */
 
 typedef enum {
   BSH_PURE = 1,   /* keeps none of its arguments; answers no value it was handed
