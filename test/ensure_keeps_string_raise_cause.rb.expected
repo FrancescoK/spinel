@@ -1,0 +1,8 @@
+[:ensure, "boom", "seed"]
+[:filter, "boom", "seed"]
+[:filter_bare, "boom", "seed"]
+[:synchronize, "boom", "seed"]
+[:implicit, "inner", "outer"]
+[:none, "plain", nil]
+[:nested, "deep", "seed"]
+5

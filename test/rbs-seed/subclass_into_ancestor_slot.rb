@@ -54,6 +54,12 @@ class Holder
     end
     Base.new(2)
   end
+
+  # and out of a modifier rescue, whose frame a return pops too
+  def pick_modifier(f)
+    (return Gadget.new(6) if f) rescue nil
+    Base.new(3)
+  end
 end
 
 class Box
@@ -85,6 +91,8 @@ puts h.pick(true).n
 puts h.pick(false).n
 puts h.pick_rescued(true).n
 puts h.pick_rescued(false).n
+puts h.pick_modifier(true).n
+puts h.pick_modifier(false).n
 
 # free-method return
 puts make.n

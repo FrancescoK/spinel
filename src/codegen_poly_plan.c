@@ -498,7 +498,12 @@ static void emit_poly_user_arm0(Compiler *c, int id, const char *name, TyKind re
     else {
       TyKind slotty = is_scalar_ret(ret) ? ret : TY_INT;
       buf_printf(b, "_t%d = ", tr);
-      if (ret == TY_POLY && cret9 != TY_POLY) {
+      if (ret == TY_STRBUF && cret9 == TY_STRING && repr_boxed_to_s_operand(c, id) >= 0) {
+        buf_puts(b, "sp_poly_as_strbuf(");
+        emit_poly_user_box(c, id, &c->scopes[pf9 ? pfi9 : mi], call, b);
+        buf_puts(b, ")");
+      }
+      else if (ret == TY_POLY && cret9 != TY_POLY) {
         emit_poly_user_box(c, id, &c->scopes[pf9 ? pfi9 : mi], call, b); pconv = PC_BOX;
       }
       /* The slot is scalar (e.g. a length dispatch fixed to sp_int) but
@@ -1592,8 +1597,16 @@ void emit_poly_prearms0(Compiler *c, int id, const char *name, const PolySpecial
        those), as the Encoding and Symbol arms below intern theirs; its
        to_s and inspect are not frozen */
     int fzn = sp_streq(name, "name");
-    buf_printf(b, "if (_t%d.tag == SP_TAG_CLASS) _t%d = %s%ssp_class_val_name(_t%d)%s%s; else ",
-               tv, tr, sbopen, fzn ? "sp_str_uminus_val(" : "", tv, fzn ? ")" : "", sbclose);
+    /* A Class.new class answers its name only once a constant names it: nil
+       before, its display form for to_s and inspect (sp_class_val_display). */
+    if (c->has_anonymous_classes && fzn)
+      buf_printf(b, "if (_t%d.tag == SP_TAG_CLASS) { const char *_cn%d = sp_class_name_or_nil(sp_unbox_class(_t%d)); "
+                    "_t%d = _cn%d ? %ssp_str_uminus_val(_cn%d)%s : %s; } else ",
+                 tv, tv, tv, tr, tv, sbopen, tv, sbclose, ret == TY_POLY ? "sp_box_nil()" : "NULL");
+    else
+      buf_printf(b, "if (_t%d.tag == SP_TAG_CLASS) _t%d = %s%s%s(_t%d)%s%s; else ",
+                 tv, tr, sbopen, fzn ? "sp_str_uminus_val(" : "",
+                 c->has_anonymous_classes ? "sp_class_val_display" : "sp_class_val_name", tv, fzn ? ")" : "", sbclose);
     /* `name` on an Encoding (always carried boxed) and on a Symbol: a
        frozen String, as CRuby answers and as the typed Symbol#name does */
     if (sp_streq(name, "name"))
@@ -2077,7 +2090,18 @@ int emit_poly_defaults0(Compiler *c, int id, int recv, const char *name, const P
     if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_D_TO_S, -1, TY_UNKNOWN, PC_SAME);
     const char *pfn = sp_streq(name, "to_s") ? "sp_poly_to_s" : "sp_poly_inspect";
     buf_printf(b, " default: _t%d = ", tr);
-    if (ret == TY_POLY) buf_printf(b, "sp_box_str(%s(_t%d))", pfn, tv);
+    if (ret == TY_STRBUF && repr_boxed_to_s_operand(c, id) >= 0)
+      buf_printf(b, "sp_poly_is_strbuf(_t%d) ? (sp_String *)_t%d.v.p : "
+                    "(_t%d.tag == SP_TAG_OBJ && (_t%d.cls_id == SP_BUILTIN_EXCEPTION || "
+                    "sp_is_exc_subclass_cls(_t%d.cls_id))) ? "
+                    "sp_exc_message_handle((sp_Exception *)_t%d.v.p) : "
+                    "sp_String_new_shared(%s(_t%d))", tv, tv, tv, tv, tv, tv, pfn, tv);
+    /* A boxed to_s answers a String receiver itself: with sharing, the
+       box it holds is the answer, not a copy of its bytes. */
+    else if (ret == TY_POLY && repr_share_rule(c) && is_to_s_name(name))
+      buf_printf(b, "(_t%d.tag == SP_TAG_STR || sp_poly_is_strbuf(_t%d)) ? _t%d : sp_box_str(%s(_t%d))",
+                 tv, tv, tv, pfn, tv);
+    else if (ret == TY_POLY) buf_printf(b, "sp_box_str(%s(_t%d))", pfn, tv);
     else buf_printf(b, "%s(_t%d)", pfn, tv);
     buf_puts(b, "; break;");
     obj_default_done = 1;
@@ -2486,7 +2510,8 @@ void poly_specials_n(Compiler *c, int id, const char *name, int argc, const int 
      a genuine String receiver falls to its NoMethodError default, the
      same hole the single-set delete had (#4195). String-typed sets only:
      the temps below carry them as const char *. */
-  int is_strsetop_n = ((sp_streq(name, "count") || sp_streq(name, "squeeze"))
+  int is_strsetop_n = ((sp_streq(name, "count") || sp_streq(name, "squeeze") || sp_streq(name, "strip") ||
+                          sp_streq(name, "lstrip") || sp_streq(name, "rstrip"))
                          ? argc >= 1     /* their 1-set form has no other pre-arm */
                          : sp_streq(name, "delete") && argc >= 2) &&
                       argc <= 8 && !has_splat_arg &&
@@ -3016,9 +3041,7 @@ void emit_poly_prearms_n(Compiler *c, const char *name, const PolySpecialsN *ps,
       }
       snprintf(sets + sl, sizeof sets - (size_t)sl, "}, %d", argc);
       char call[384];
-      snprintf(call, sizeof call, "sp_str_%s_n(_t%d.v.s ? _t%d.v.s : \"\", %s)",
-               is_cnt ? "count" : sp_streq(name, "delete") ? "delete" : "squeeze",
-               tv, tv, sets);
+      snprintf(call, sizeof call, "sp_str_%s_n(_t%d.v.s ? _t%d.v.s : \"\", %s)", name, tv, tv, sets);
       buf_printf(b, "_t%d = ", tr);
       if (ret == TY_POLY) buf_printf(b, "%s(%s)", is_cnt ? "sp_box_int" : "sp_box_str", call);
       else buf_puts(b, call);

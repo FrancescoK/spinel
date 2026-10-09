@@ -254,6 +254,34 @@ static void yield_target_enter(int fe) {
   g_yield_emitting_class_fallback2 = t->emcls;
   g_yield_proc_ref_fallback2 = t->ypr; g_yield_slot_ty_fallback2 = t->yslot;
 }
+/* Record a literal block passed to an inline, which yields to the block
+   current at the call site (saved_block): its context is that call site's,
+   as the inliner hands it to g_block_id -- caller code at the depth before
+   the inline's renames. Answers whether an entry was pushed; the caller
+   keeps g_ytgt_cur to hand back to yield_target_pop. */
+int yield_target_push(int block, int saved_block, const char *owner, int nren,
+                      const char *brk, int brk_ebase) {
+  if (block >= 0 && block != saved_block && g_nytgt <= SP_INLINE_DEPTH_MAX) {
+    YieldTarget *yt = &g_ytgt[g_nytgt];
+    yt->blk = block; yt->target = saved_block;
+    yt->up = (g_ytgt_cur >= 0 && g_ytgt[g_ytgt_cur].blk == saved_block) ? g_ytgt_cur : -1;
+    yt->owner = owner;
+    yt->nren = nren;
+    yt->brk = brk; yt->brk_ebase = brk_ebase;
+    yt->self = g_self; yt->self_deref = g_self_deref; yt->emcls = g_emitting_class_id;
+    yt->ypr = g_yield_proc_ref; yt->yslot = g_yield_slot_ty;
+    yt->lowered = g_current_scope_is_lowered; yt->lowered_blk = g_lowered_blk_name;
+    g_ytgt_cur = g_nytgt++;
+    return 1;
+  }
+  if (block != saved_block) g_ytgt_cur = -1;
+  return 0;
+}
+int yield_target_cur(void) { return g_ytgt_cur; }
+void yield_target_pop(int pushed, int saved_cur) {
+  if (pushed) g_nytgt--;
+  g_ytgt_cur = saved_cur;
+}
 static int yield_target_of(int blk, const char **owner) {
   for (int i = g_nytgt - 1; i >= 0; i--)
     if (g_ytgt[i].blk == blk) { *owner = g_ytgt[i].owner; return g_ytgt[i].target; }
@@ -699,6 +727,18 @@ void emit_inline_alias_arg(Compiler *c, int av, Buf *b) {
     buf_printf(b, "; sp_gc_pin_remembered((void *)_cell_%s)", rename_local(avn));
 }
 
+/* --share-strings: partition's definition (__enum_partition__N) takes a
+   fresh String Array whose elements the rule shares as the boxed PolyArray
+   of handles a local's would be, so the two Arrays it answers hold the
+   handles its block saw. 1 when the argument was bound so. */
+static int emit_inline_partition_src(Compiler *c, Scope *m, int i, int arg, Buf *b) {
+  if (i != 0 || !m->name || !is_enum_partition_def(m->name) || !iter_src_as_handles(c, arg))
+    return 0;
+  LocalVar *pl = scope_local(m, m->pnames[0]);
+  if (!pl || pl->type != TY_POLY) return 0;
+  emit_boxed_iter_src(c, arg, b);
+  return 1;
+}
 /* Bind an inlined yielding method's parameters from a call's arguments:
    a splat spread at run time, a keyword hash by name, a rest and its posts
    packed, as the ordinary call paths bind them. The expansion's renames
@@ -810,8 +850,10 @@ void emit_inline_bind_params(Compiler *c, Scope *m, int args, const int *argv, i
     /* a keyword or **kwrest param never takes a positional: a surplus one
        (refused above) bound `ykw(1, 2)`'s 2 into the kwrest's hash slot, a
        C type error */
-    else if (L->from[i] == ARG_NODE)
-      emit_arg_or_default(c, m, i, argv[L->arg[i]], b);
+    else if (L->from[i] == ARG_NODE) {
+      if (!emit_inline_partition_src(c, m, i, argv[L->arg[i]], b))
+        emit_arg_or_default(c, m, i, argv[L->arg[i]], b);
+    }
     else if (L->from[i] == ARG_KWH)
       emit_arg_or_default(c, m, i, kwh, b);
     else {
@@ -1223,22 +1265,8 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   }
   /* a literal block yields to the block current here (a forwarded one keeps
      the target it was given where it was written) */
-  int pushed_ytgt = 0, saved_ytgt_cur = g_ytgt_cur;
-  if (block >= 0 && block != saved_block && g_nytgt <= SP_INLINE_DEPTH_MAX) {
-    /* its context is this call site's, as the assignments below hand it to
-       g_block_id: caller code at the depth before this inline's renames */
-    YieldTarget *yt = &g_ytgt[g_nytgt];
-    yt->blk = block; yt->target = saved_block;
-    yt->up = (g_ytgt_cur >= 0 && g_ytgt[g_ytgt_cur].blk == saved_block) ? g_ytgt_cur : -1;
-    yt->owner = saved_bpn;
-    yt->nren = saved_nren;
-    yt->brk = saved_ser; yt->brk_ebase = saved_ebase;
-    yt->self = g_self; yt->self_deref = g_self_deref; yt->emcls = g_emitting_class_id;
-    yt->ypr = g_yield_proc_ref; yt->yslot = g_yield_slot_ty;
-    yt->lowered = g_current_scope_is_lowered; yt->lowered_blk = g_lowered_blk_name;
-    g_ytgt_cur = g_nytgt++; pushed_ytgt = 1;
-  }
-  else if (block != saved_block) g_ytgt_cur = -1;
+  int saved_ytgt_cur = g_ytgt_cur;
+  int pushed_ytgt = yield_target_push(block, saved_block, saved_bpn, saved_nren, saved_ser, saved_ebase);
   if (!fwd_kept) {
     g_yield_blk_brk_fallback = saved_bbv;
     g_yield_blk_brk_efallback = saved_bbe;
@@ -1540,8 +1568,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   g_emitting_class_id = saved_emcls;
   g_block_param_name = saved_bpn;
   g_yield_block_fallback = saved_yfb;
-  if (pushed_ytgt) g_nytgt--;
-  g_ytgt_cur = saved_ytgt_cur;
+  yield_target_pop(pushed_ytgt, saved_ytgt_cur);
   g_block_nren = saved_bnren;
   g_yield_block_fallback_nren = saved_yfbn;
   g_block_owner_param_name = saved_bown;
@@ -1854,6 +1881,9 @@ static int block_tail_needs_value_form(Compiler *c, int id) {
      whose value it is must take the expression form (`wrap { M.build(n) {
      ... } }` assigned a void ({...}) to wrap's slot). */
   if (call_targets_yielding_method(c, id)) return 1;
+  /* and a `scan` with a block on a subject that is not a plain read answers
+     that subject, which the statement form leaves out */
+  if (is_scan_name(nm) && tail_iter_receiver(c, id) < 0) return 1;
   return iter_value_answers_recv(c, id) && tail_iter_receiver(c, id) < 0;
 }
 
@@ -4921,6 +4951,10 @@ int emit_array_filter_loop(Compiler *c, int recv, int block, TyKind rt, const ch
      the first name alone, `|*qs|` was never bound and read nil, and
      `|a, b|` took the whole element. */
   char es[32]; snprintf(es, sizeof es, "_t%d", te);
+  /* --share-strings: the elements of a PolyArray of handles (a fresh String
+     Array's, emit_array_filter_loop_handles) are Strings, not tuples to
+     spread, bound to a parameter the scope holds as the handle */
+  int handle_param = et == TY_POLY && c->share_strings && (fsaved == TY_STRBUF || fsaved == TY_STRING);
   if (block_binds_gathered(c, block)) {
     Buf eb; memset(&eb, 0, sizeof eb);
     if (et == TY_POLY) buf_puts(&eb, es);
@@ -4930,7 +4964,7 @@ int emit_array_filter_loop(Compiler *c, int recv, int block, TyKind rt, const ch
     emit_boxed_step_binds(c, block, vals.p, b, li + 1, 0);
     free(eb.p); free(vals.p);
   }
-  else if (et == TY_POLY && block_lead_only(c, block) && !block_param_is_multi(c, block, 0)) {
+  else if (et == TY_POLY && block_lead_only(c, block) && !block_param_is_multi(c, block, 0) && !handle_param) {
     Buf pb; memset(&pb, 0, sizeof pb);
     emit_tuple_block_params(c, block, block, es, &pb);
     if (pb.p) { emit_indent(b, li + 1); buf_printf(b, "%s\n", pb.p + (pb.p[0] == ' ')); }
@@ -4940,9 +4974,14 @@ int emit_array_filter_loop(Compiler *c, int recv, int block, TyKind rt, const ch
     /* a poly parameter is the hoisted local, rooted where it is declared; a
        typed one shadows it at the element type, and a String is rooted */
     emit_indent(b, li + 1);
-    if (et != TY_POLY) { emit_ctype(c, et, b); buf_puts(b, " "); }
+    /* under --share-strings a parameter the scope holds as the handle over
+       a PolyArray of handles (emit_array_filter_loop_handles) is shadowed
+       boxed, as a typed one is */
+    int boxed_shadow = handle_param;
+    if (et != TY_POLY || boxed_shadow) { emit_ctype(c, et, b); buf_puts(b, " "); }
     buf_printf(b, "lv_%s = _t%d;", bp, te);
     if (et == TY_STRING) buf_printf(b, " SP_GC_ROOT_STR(lv_%s);", bp);
+    else if (boxed_shadow) buf_printf(b, " SP_GC_ROOT_RBVAL(lv_%s);", bp);
     buf_puts(b, "\n");
   }
   emit_filter_body(c, body, tnv, tk, is_rej, b, li);
@@ -4961,7 +5000,7 @@ int emit_array_filter_loop(Compiler *c, int recv, int block, TyKind rt, const ch
   emit_indent(b, indent + 1); buf_puts(b, "sp_gc_nroots = sp_exc_rootmark[sp_exc_top]; sp_rescue_sp = sp_rescue_mark[sp_exc_top];\n");
   emit_indent(b, indent + 1); buf_puts(b, "if (sp_unwind_kind == SP_UNWIND_NONE) {\n");
   emit_indent(b, indent + 2);
-  buf_printf(b, "_excf%d = 1; _excmsg%d = sp_exc_msg[sp_exc_top]; _exccls%d = sp_exc_cls[sp_exc_top]; _excobj%d = sp_exc_obj[sp_exc_top];\n",
+  buf_printf(b, "_excf%d = 1; _excmsg%d = sp_exc_msg[sp_exc_top]; _exccls%d = sp_exc_cls[sp_exc_top]; _excobj%d = sp_exc_caught_obj();\n",
              eid, eid, eid, eid);
   emit_indent(b, indent + 1); buf_puts(b, "}\n");
   emit_indent(b, indent); buf_puts(b, "}\n");
@@ -4977,14 +5016,22 @@ int emit_array_filter_loop(Compiler *c, int recv, int block, TyKind rt, const ch
   emit_indent(b, indent);
   if (g_ensure_depth > 0) {
     EnsureCtx *outer = &g_ensure_stack[g_ensure_depth - 1];
-    if (has_retval && outer->has_retval)
-      buf_printf(b, "if (_retf%d) { _retv%d = _retv%d; _retf%d = 1; sp_exc_top--; goto _ensure%d; }\n",
-                 eid, outer->lid, eid, outer->lid, outer->lid);
-    else
-      buf_printf(b, "if (_retf%d) { _retf%d = 1; sp_exc_top--; goto _ensure%d; }\n", eid, outer->lid, outer->lid);
+    buf_printf(b, "if (_retf%d) { ", eid);
+    if (has_retval && outer->has_retval) buf_printf(b, "_retv%d = _retv%d; ", outer->lid, eid);
+    buf_printf(b, "_retf%d = 1; ", outer->lid);
+    emit_ensure_chain_pops(b, outer);
+    buf_printf(b, "goto _ensure%d; }\n", outer->lid);
     emit_indent(b, indent);
-    buf_printf(b, "if (_excf%d) { _excf%d = 1; _excmsg%d = _excmsg%d; _exccls%d = _exccls%d; _excobj%d = _excobj%d; sp_exc_top--; goto _ensure%d; }\n",
-               eid, outer->lid, outer->lid, eid, outer->lid, eid, outer->lid, eid, outer->lid);
+    /* a rescue between this region and the enclosing one is the nearer
+       handler: its frame sits between them, so re-raise there, as the
+       begin..ensure epilogue in codegen_stmt.c does. Handed straight to the
+       enclosing ensure, the rescue never ran and the ensure ran twice. */
+    if (g_exc_frame_depth > outer->exc_base + 1)
+      buf_printf(b, "if (_excf%d) { sp_pending_exc_obj = _excobj%d; sp_raise_cls(_exccls%d, _excmsg%d); }\n",
+                 eid, eid, eid, eid);
+    else
+      buf_printf(b, "if (_excf%d) { _excf%d = 1; _excmsg%d = _excmsg%d; _exccls%d = _exccls%d; _excobj%d = _excobj%d; sp_exc_top--; goto _ensure%d; }\n",
+                 eid, outer->lid, outer->lid, eid, outer->lid, eid, outer->lid, eid, outer->lid);
   }
   else {
     {
@@ -5000,6 +5047,32 @@ int emit_array_filter_loop(Compiler *c, int recv, int block, TyKind rt, const ch
   if (flv) flv->type = fsaved;
   *tr = t; *torig = to; *twp = tw;
   return 1;
+}
+
+/* --share-strings: the in-place filter loop over a fresh String Array
+   whose elements the rule shares (iter_filter_src_as_handles). The array is
+   hoisted as the PolyArray of handles a local's would be, the receiver reads
+   as it, and the loop is the PolyArray one: the block's parameter names the
+   handle that stays in the array. Answers 0, having emitted nothing, for a
+   block with no body. */
+int emit_array_filter_loop_handles(Compiler *c, int recv, int block, const char *name,
+                                   Buf *b, int indent, int *tr, int *torig, int *twp) {
+  const NodeTable *nt = c->nt;
+  int body = nt_ref(nt, block, "body"), bn = 0;
+  if (body >= 0) nt_arr(nt, body, "body", &bn);
+  if (bn < 1) return 0;
+  Buf hb; memset(&hb, 0, sizeof hb);
+  emit_str_array_handles(c, recv, &hb);
+  int th = ++g_tmp;
+  emit_indent(b, indent);
+  buf_printf(b, "sp_PolyArray *_t%d = %s; SP_GC_ROOT(_t%d);\n", th, hb.p ? hb.p : "NULL", th);
+  free(hb.p);
+  int slot = view_bind(recv, "_t%d", th);
+  int v = view_push(c, recv, TY_POLY_ARRAY);
+  int done = emit_array_filter_loop(c, recv, block, TY_POLY_ARRAY, name, b, indent, tr, torig, twp);
+  view_pop(c, v);
+  view_unbind(slot);
+  return done;
 }
 
 /* Bind one zip block param. A poly slot takes a boxed source; a concrete
@@ -5365,7 +5438,12 @@ static int iter_tap_slice_string_arms(Compiler *c, int id, Buf *b, int indent, c
     Scope *csc = p0 ? comp_scope_of(c, block) : NULL;
     LocalVar *clv0 = (csc && p0) ? scope_local(csc, p0) : NULL;
     TyKind csaved0 = clv0 ? clv0->type : TY_UNKNOWN;
-    int use_shadow_sc = clv0 && clv0->type != et && et != TY_UNKNOWN;
+    /* --share-strings: a parameter that is the shared handle takes each
+       match, a fresh String, as a handle of its own (a plain String under
+       a String-typed shadow would hand the body a copy) */
+    LocalVar *sclv = (csc && p0_orig) ? scope_local(csc, p0_orig) : NULL;
+    int sc_handle = sclv && repr_share_rule(c) && repr_of_slot(c, sclv).kind == RK_STRBUF;
+    int use_shadow_sc = clv0 && clv0->type != et && et != TY_UNKNOWN && !sc_handle;
     int tm = ++g_tmp, ti = ++g_tmp;
     Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
     emit_indent(b, indent);
@@ -5394,7 +5472,13 @@ static int iter_tap_slice_string_arms(Compiler *c, int id, Buf *b, int indent, c
       clv0->type = csaved0;
     }
     else {
-      if (p0) { emit_indent(b, bodyIndent); buf_printf(b, "lv_%s = sp_StrArray_get(_t%d, _t%d);\n", p0, tm, ti); }
+      if (p0) {
+        char sc_src[64];
+        snprintf(sc_src, sizeof sc_src, "sp_StrArray_get(_t%d, _t%d)", tm, ti);
+        emit_indent(b, bodyIndent); buf_printf(b, "lv_%s = ", p0);
+        emit_strbuf_param_bind(c, sclv, TY_STRING, sc_src, b);
+        buf_puts(b, ";\n");
+      }
       emit_loop_body(c, body, b, bodyIndent);
     }
     emit_indent(b, indent); buf_puts(b, "}\n");

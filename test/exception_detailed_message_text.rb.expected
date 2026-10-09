@@ -1,0 +1,13 @@
+"unhandled exception"
+"StandardError"
+"ArgumentError"
+"DetailedError"
+"RuntimeError (RuntimeError)"
+"one (RuntimeError)"
+"one (RuntimeError)\ntwo"
+"one (RuntimeError)\ntwo\nthree"
+"one (RuntimeError)"
+" (RuntimeError)\none"
+" (RuntimeError)"
+"one (RuntimeError)\n\n"
+[111, 110, 101, 0, 116, 119, 111, 32, 40, 82, 117, 110, 116, 105, 109, 101, 69, 114, 114, 111, 114, 41, 10, 116, 104, 114, 101, 101]

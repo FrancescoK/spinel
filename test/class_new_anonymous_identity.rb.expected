@@ -1,0 +1,22 @@
+"m"
+true
+"#<Class:0xX>"
+true
+"n"
+"z"
+"#<#<Class:0xX>:0xY @a=1>"
+"#<#<Class:0xX>:0xY>"
+"#<#<Class:0xX>:0xY @a=1>"
+"#<Named:0xX @a=1>"
+"#<Named:0xX>"
+#<#<Class:0xX>:0xY>
+true
+[Class, Integer, String]
+nil
+true
+"Named"
+"Named"
+"superclass must be an instance of Class (given an instance of Module)"
+"superclass must be an instance of Class (given an instance of Module)"
+"superclass must be an instance of Class (given an instance of Module)"
+"superclass must be an instance of Class (given an instance of Module)"

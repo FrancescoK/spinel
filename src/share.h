@@ -129,6 +129,10 @@ typedef struct ShareRoute {
   int carry;           /* the node that hands the String along, or -1
                           (SHARE_CARRY_NONE); SHARE_CARRY_COPY when the
                           route hands over a copy whatever it reads */
+  int sole;            /* a local's read node whose String must have no other
+                          name, or -1: a plain local (no parameter, no
+                          capture) whose class holds one name at most
+                          (share_node_one_name), asked of the final facts */
   int fresh_elems;     /* (with elems) the container's elements reach only the
                           route's holder: an element iterator answering its
                           receiver whose value is dropped, so a container
@@ -147,6 +151,16 @@ int share_node_elems_share(const Compiler *c, int n);
    the rule shares? Its one evaluation is the only source of those Strings,
    so where it is consumed each can be wrapped as a handle of its own. */
 int share_node_fresh_elems(const Compiler *c, int n);
+/* Is call node `call` a retaining iterator (select, reject, find_all, the
+   in-place filters, partition) with a literal block over a fresh Array of
+   new Strings (as share_node_fresh_elems has it, before the rule is asked
+   whether they share)? Its answer keeps elements the block's parameter
+   names. */
+int share_iter_fresh_elems(const Compiler *c, int call);
+/* ... and the rule shares those elements: the answer holds the handles its
+   block saw, so the receiver is consumed as the PolyArray of handles a
+   local's would be and the answer is one too. */
+int share_iter_answers_handles(const Compiler *c, int call);
 /* Can node n's value (a container) be reached again once its expression
    is done: a holder keeps it, it leaves a call to be read after, or it
    meets what the walk does not follow? */
@@ -187,6 +201,9 @@ int share_builtin_fresh(Compiler *c, int call);
    element read of a temporary container of new Strings (an Array literal of
    them, `map(&:to_s)` over Symbols)? depth: 0 from a caller. */
 int share_value_fresh(Compiler *c, int n, int depth);
+/* Is node n the frozen String literal itself (a literal, or a freeze, -@ or
+   dedup of one)? Its handle is the literal's own, never a new one. */
+int share_frozen_literal(Compiler *c, int n);
 int share_return_owned(const Compiler *c, int n, int mi);
 /* Is node n a container literal a builtin only reads and keeps none of
    (`puts [a, b]`)? */

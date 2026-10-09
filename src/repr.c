@@ -230,13 +230,12 @@ int repr_boxed_reader_handle(Compiler *c, int v) {
   return 1;
 }
 
-/* A boxed to_s can answer the String in the box itself,
-   beside user methods answering fresh Strings. Keep that handle; the
-   ordinary call still dispatches every other receiver. A String reopen
-   must run even on the handle, so cannot take this shortcut. */
-/* Exception#to_s also borrows its stored message. Its builtin arm can
-   carry that handle, but an exception override (including one supplied
-   by a module) needs the ordinary dispatch and declines this route. */
+/* A boxed to_s can answer the String in the box itself. The route takes a
+   block-less, argument-less to_s on a boxed receiver, typed as a String or
+   shared buffer, under --share-strings. Every user method the call can
+   dispatch to must return the handle or a new String; a target answering
+   anything else, or one the call cannot resolve, declines. Builtin arms
+   are not among those targets. */
 int repr_boxed_to_s_operand(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
   if (!repr_share_rule(c) || v < 0 || nt_kind(nt, v) != NK_CallNode) return -1;
@@ -246,13 +245,10 @@ int repr_boxed_to_s_operand(Compiler *c, int v) {
       nt_ref(nt, v, "block") >= 0 || repr_of(c, recv).kind != RK_BOXED ||
       (c->ntype[v] != TY_STRING && c->ntype[v] != TY_STRBUF)) return -1;
   int targets[CPT_MAX], n = cplan_targets(c, v, targets, CPT_MAX);
-  int string_ci = comp_class_index(c, "String");
-  if (n < 0 || (string_ci >= 0 && comp_method_in_chain(c, string_ci, nm, NULL) >= 0)) return -1;
-  if (any_exc_reopen(c)) return -1;
+  if (n < 0) return -1;
   for (int i = 0; i < n; i++) {
     Scope *m = &c->scopes[targets[i]];
-    if (!m->ret_fresh || m->class_id < 0 || comp_class_is_module(c, &c->classes[m->class_id]) ||
-        class_is_exc_subclass(c, m->class_id)) return -1;
+    if (m->ret != TY_STRING || (!m->ret_handle && !m->ret_fresh)) return -1;
   }
   return recv;
 }

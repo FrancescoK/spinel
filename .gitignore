@@ -10,6 +10,7 @@
 /vendor/
 /lib/regexp/libspre.a
 lib/libspinel_rt.a
+lib/libspinel_cext_rt.a
 lib/libspinel_rt_mt.a
 lib/libspinel_rt_mt_tsan.a
 lib/wasm32-wasi/

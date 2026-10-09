@@ -1991,40 +1991,160 @@ int strbuf_ivar_owner(Compiler *c, int node) {
      1 -- set exactly when it is not nil: every write the program makes to
           it stores a value that is never nil, so a nil slot is unset;
      2 -- neither can be told; reflection lists it as before;
-     3 -- a reflection-only slot has an explicit presence flag. */
-static int ivs_writes_toplevel(Compiler *c, int body, const char *ivn, int cid, int depth);
-static int ivs_init_sets(Compiler *c, int cid, const char *ivn, int depth) {
-  if (cid < 0 || depth > 16) return 0;
-  int mi = comp_method_in_chain(c, cid, "initialize", NULL);
-  if (mi < 0) return 0;
+     3 -- the slot has an explicit presence flag: a reflection-only slot,
+          or one a read of presence reaches (ivs_tracked). */
+static int ivs_writes_toplevel(Compiler *c, int body, const char *ivn, int cid, int depth, int strict);
+static int ivs_may_observe(Compiler *c, int n, int cid, int depth, int lvl);
+/* Strict, the write must also come before anything that may see the
+   object (ivs_may_observe): an observation inside initialize ahead of it
+   finds the ivar unset. */
+static int ivs_method_sets(Compiler *c, int mi, const char *ivn, int depth, int strict) {
+  if (mi < 0 || depth > 16) return 0;
   Scope *m = &c->scopes[mi];
   if (m->def_node < 0 || nt_kind(c->nt, m->def_node) != NK_DefNode) return 0;
-  return ivs_writes_toplevel(c, nt_ref(c->nt, m->def_node, "body"), ivn, m->class_id, depth);
+  /* a default of an optional parameter, or of an optional keyword, runs
+     before the body: one that may see the object finds the ivar unset */
+  int ps = strict ? nt_ref(c->nt, m->def_node, "parameters") : -1;
+  for (int a = 0; a < 2 && ps >= 0; a++) {
+    int dn = 0; const int *ds = nt_arr(c->nt, ps, a ? "keywords" : "optionals", &dn);
+    for (int i = 0; i < dn; i++)
+      if (ivs_may_observe(c, nt_ref(c->nt, ds[i], "value"), m->class_id, 0, 0)) return 0;
+  }
+  return ivs_writes_toplevel(c, nt_ref(c->nt, m->def_node, "body"), ivn, m->class_id, depth, strict);
 }
-static int ivs_writes_toplevel(Compiler *c, int body, const char *ivn, int cid, int depth) {
+static int ivs_init_sets(Compiler *c, int cid, const char *ivn, int depth, int strict) {
+  if (cid < 0) return 0;
+  return ivs_method_sets(c, comp_method_in_chain(c, cid, "initialize", NULL), ivn, depth, strict);
+}
+/* The method the `super` at node runs, from a method of class cid, as the
+   emitters resolve it: the shadowed copy in the method's own class (an
+   included module's, a prepend's), else the parent's chain under name.
+   -1 when there is none, -2 when it cannot be told. */
+static int ivs_super_method(Compiler *c, int node, int cid, const char *name) {
+  Scope *s = comp_scope_of(c, node);
+  if (!s || s->is_cmethod) return -2;
+  const char *shadow = comp_super_shadow(c, s);
+  if (shadow) { int mi = comp_method_in_class(c, s->class_id, shadow); return mi < 0 ? -2 : mi; }
+  int pc = comp_super_parent(c, cid, 0);
+  return pc < 0 ? -1 : comp_method_in_chain(c, pc, name, NULL);
+}
+/* May code under `n`, run in a method of class cid, see the object's ivars:
+   self handed on (kept in an ivar of its own, it is not), a reflective read
+   or a print of a variable, in it or in a method of the program's it calls
+   on self (the override of a class below cid too) or the parent's
+   initialize its `super` runs? lvl counts the calls followed; past the
+   levels it follows, or on a call back into a method being walked, it
+   answers that it may. */
+static int ivs_never_nil(Compiler *c, int v);
+static int ivs_may_observe(Compiler *c, int n, int cid, int depth, int lvl);
+/* ... in the body of method scope mi. The answer depends on the method
+   alone, not on the ivar asked about, so it is kept per scope
+   (Compiler.pres_obs). */
+enum { IVO_BUSY = 1, IVO_NO, IVO_MAY };
+static int ivs_body_may_observe(Compiler *c, int mi, int lvl) {
+  if (mi < 0) return 0;
+  Scope *m = &c->scopes[mi];
+  if (m->def_node < 0 || nt_kind(c->nt, m->def_node) != NK_DefNode) return 1;
+  if (c->pres_obs_n != c->nscopes) {
+    free(c->pres_obs);
+    c->pres_obs = (unsigned char *)calloc((size_t)(c->nscopes > 0 ? c->nscopes : 1), 1);
+    if (!c->pres_obs) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    c->pres_obs_n = c->nscopes;
+  }
+  if (c->pres_obs[mi]) return c->pres_obs[mi] != IVO_NO;
+  if (lvl >= 32) return 1;
+  c->pres_obs[mi] = IVO_BUSY;
+  int r = ivs_may_observe(c, nt_ref(c->nt, m->def_node, "body"), m->class_id, 0, lvl + 1);
+  c->pres_obs[mi] = r ? IVO_MAY : IVO_NO;
+  return r;
+}
+/* ... a call named nm on self in a method of class cid: the method cid
+   resolves, or an override in a class below it, which a parent's
+   initialize calling a hook runs for a subclass's instance */
+static int ivs_self_call_may_observe(Compiler *c, int cid, const char *nm, int lvl) {
+  int mi = comp_method_in_chain(c, cid, nm, NULL);
+  if (ivs_body_may_observe(c, mi, lvl)) return 1;
+  for (int d = 0; d < c->nclasses; d++) {
+    if (d == cid || !is_descendant(c, d, cid)) continue;
+    int md = comp_method_in_chain(c, d, nm, NULL);
+    if (md >= 0 && md != mi && ivs_body_may_observe(c, md, lvl)) return 1;
+  }
+  return 0;
+}
+static int ivs_may_observe(Compiler *c, int n, int cid, int depth, int lvl) {
+  const NodeTable *nt = c->nt;
+  if (n < 0) return 0;
+  if (depth > 200) return 1;
+  switch (nt_kind(nt, n)) {
+    case NK_SelfNode: return 1;
+    case NK_SuperNode: case NK_ForwardingSuperNode: {
+      Scope *s = comp_scope_of(c, n);
+      if (!s || !s->name) return 1;
+      int sm = ivs_super_method(c, n, cid, s->name);
+      if (sm == -2 || ivs_body_may_observe(c, sm, lvl)) return 1;
+      break;
+    }
+    case NK_DefinedNode:
+      if (nt_kind(nt, nt_ref(nt, n, "value")) == NK_InstanceVariableReadNode) return 1;
+      break;
+    case NK_InstanceVariableWriteNode:
+      if (nt_kind(nt, nt_ref(nt, n, "value")) == NK_SelfNode) return 0;
+      break;
+    case NK_CallNode: {
+      const char *nm = nt_str(nt, n, "name");
+      int r = nt_ref(nt, n, "receiver");
+      if (!nm) return 1;
+      if ((r < 0 || nt_kind(nt, r) == NK_SelfNode) && ivs_self_call_may_observe(c, cid, nm, lvl)) return 1;
+      if (is_ivar_presence_read(nm) && !is_inspect_print(nm)) return 1;
+      if (is_inspect_print(nm) && r < 0) {
+        int a = nt_ref(nt, n, "arguments"), ac = 0;
+        const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+        for (int i = 0; i < ac; i++) if (!ivs_never_nil(c, av[i]) || nt_kind(nt, av[i]) == NK_ArrayNode ||
+                                         nt_kind(nt, av[i]) == NK_HashNode) return 1;
+      }
+      break;
+    }
+    default: break;
+  }
+  int nr = nt_num_refs(nt, n);
+  for (int i = 0; i < nr; i++) if (ivs_may_observe(c, nt_ref_at(nt, n, i), cid, depth + 1, lvl)) return 1;
+  int na = nt_num_arrs(nt, n);
+  for (int i = 0; i < na; i++) {
+    int m = 0; const int *ids = nt_arr_at(nt, n, i, &m);
+    for (int j = 0; j < m; j++) if (ivs_may_observe(c, ids[j], cid, depth + 1, lvl)) return 1;
+  }
+  return 0;
+}
+static int ivs_writes_toplevel(Compiler *c, int body, const char *ivn, int cid, int depth, int strict) {
   const NodeTable *nt = c->nt;
   if (body < 0) return 0;
   NodeKind k = nt_kind(nt, body);
   if (k == NK_StatementsNode) {
     int n = 0; const int *st = nt_arr(nt, body, "body", &n);
-    for (int i = 0; i < n; i++) if (ivs_writes_toplevel(c, st[i], ivn, cid, depth)) return 1;
+    for (int i = 0; i < n; i++) {
+      if (ivs_writes_toplevel(c, st[i], ivn, cid, depth, strict)) return 1;
+      if (strict && ivs_may_observe(c, st[i], cid, 0, 0)) return 0;
+    }
     return 0;
   }
   if (k == NK_ParenthesesNode || k == NK_BeginNode) {
     /* a begin with a rescue may stop before the write */
     if (k == NK_BeginNode && nt_ref(nt, body, "rescue_clause") >= 0) return 0;
-    return ivs_writes_toplevel(c, nt_ref(nt, body, k == NK_BeginNode ? "statements" : "body"), ivn, cid, depth);
+    return ivs_writes_toplevel(c, nt_ref(nt, body, k == NK_BeginNode ? "statements" : "body"), ivn, cid, depth, strict);
   }
   if (k == NK_InstanceVariableWriteNode || k == NK_InstanceVariableOrWriteNode)
-    return sp_streq(nt_str(nt, body, "name"), ivn);
+    return sp_streq(nt_str(nt, body, "name"), ivn) && !(strict && ivs_may_observe(c, body, cid, 0, 0));
   if (k == NK_MultiWriteNode) {
     int ln = 0; const int *l = nt_arr(nt, body, "lefts", &ln);
+    if (strict && ivs_may_observe(c, nt_ref(nt, body, "value"), cid, 0, 0)) return 0;
     for (int i = 0; i < ln; i++)
       if (nt_kind(nt, l[i]) == NK_InstanceVariableTargetNode && sp_streq(nt_str(nt, l[i], "name"), ivn)) return 1;
     return 0;
   }
-  if (k == NK_SuperNode || k == NK_ForwardingSuperNode)
-    return ivs_init_sets(c, comp_super_parent(c, cid, 0), ivn, depth + 1);
+  if (k == NK_SuperNode || k == NK_ForwardingSuperNode) {
+    if (strict && ivs_may_observe(c, nt_ref(nt, body, "arguments"), cid, 0, 0)) return 0;
+    return ivs_method_sets(c, ivs_super_method(c, body, cid, "initialize"), ivn, depth + 1, strict);
+  }
   return 0;
 }
 /* A value that is never nil: a literal, a constructor of a class with no
@@ -2145,24 +2265,15 @@ static int ivs_reflect_only(Compiler *c, int cid, const char *ivn) {
   }
   return found;
 }
-int ivar_set_kind(Compiler *c, int cid, const char *ivn) {
+/* The kinds above before ivs_tracked: 0, 1, 2, or 3 for a reflection-only
+   slot. */
+static int ivs_base_kind(Compiler *c, int cid, const char *ivn) {
   const NodeTable *nt = c->nt;
-  if (cid < 0 || cid >= c->nclasses || !ivn) return 2;
-  static int *memo = NULL, memo_n = -1;
   ClassInfo *ci = &c->classes[cid];
   int iv = comp_ivar_index(ci, ivn);
-  if (iv < 0) return 2;
-  if (memo_n != c->nclasses * 64) {
-    free(memo); memo_n = c->nclasses * 64;
-    memo = (int *)malloc(sizeof(int) * (size_t)(memo_n > 0 ? memo_n : 1));
-    if (!memo) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-    for (int i = 0; i < memo_n; i++) memo[i] = -1;
-  }
-  int slot = iv < 64 ? cid * 64 + iv : -1;
-  if (slot >= 0 && memo[slot] >= 0) return memo[slot];
   int kind;
   TyKind t = ci->ivar_types[iv];
-  if (ivs_init_sets(c, cid, ivn, 0)) kind = 0;
+  if (ivs_init_sets(c, cid, ivn, 0, 0)) kind = 0;
   /* a type with no nil of its own cannot tell an unset slot */
   else if (!(t == TY_INT || t == TY_FLOAT || t == TY_POLY || t == TY_STRING || t == TY_STRBUF ||
              ty_is_array(t) || ty_is_hash(t) || ty_is_object(t))) kind = 2;
@@ -2218,6 +2329,82 @@ int ivar_set_kind(Compiler *c, int cid, const char *ivn) {
     }
   }
   if (kind == 2 && ivs_reflect_only(c, cid, ivn)) kind = 3;
+  return kind;
+}
+/* ---- An assigned flag where presence is read ----
+   A class a read of presence reaches (presence_observed) keeps a flag
+   beside each ivar the kinds above cannot answer for: one a write may set
+   to nil or that has no nil of its own (kind 2), or one its initialize
+   sets only after something that may see the object, or that
+   remove_instance_variable can unset (kind 0). A store sets the flag after
+   its value is computed and a removal clears it. The flag is a field of the
+   layout, which the classes above and below share and a module's methods
+   write through each including class's, so one answer covers them all:
+   tracked when one of them is observed and one needs the flag, unless a
+   write no emitter can mark reaches the ivar. */
+/* Can a write reach ivar ivn of class k that sets no flag: one the
+   analysis noted (Compiler.pres_names), or one a class whose ivars the
+   compiler writes itself makes (a Struct's members, which are no ivars,
+   among them)? */
+static int ivs_unmarked_write(Compiler *c, int k, const char *ivn) {
+  ClassInfo *ki = &c->classes[k];
+  int ix = comp_ivar_index(ki, ivn);
+  return c->pres_any || (comp_pres_flags(c, ivn) & PRES_UNMARKED) || ki->ncs > 0 || ki->is_native_class ||
+         ki->is_data || (ki->is_struct && ix >= 0 && ix < ki->nmembers);
+}
+/* Does ivar ivn of class cid keep an assigned flag? One answer for its
+   family (presence_family): memo (the final kinds) and bmemo (the base
+   kinds) take every member's. The flag is needed for an answer of kind 2,
+   or of kind 0 that an observation in initialize or a removal can
+   contradict. */
+static int ivs_tracked(Compiler *c, int cid, const char *ivn, int *memo, int *bmemo) {
+  int fam = c->classes[cid].presence_family;
+  int seen = 0, needs = 0, set0 = 0, unmarked = 0;
+  /* the base kinds of the members, and whether one is observed; only then
+     do the costlier checks of initialize's order and of the writes run */
+  for (int k = 0; k < c->nclasses && fam > 0; k++) {
+    int iv = c->classes[k].presence_family == fam ? comp_ivar_index(&c->classes[k], ivn) : -1;
+    if (iv < 0) continue;
+    int slot = iv < 64 ? k * 64 + iv : -1;
+    int base = slot >= 0 && bmemo[slot] >= 0 ? bmemo[slot] : ivs_base_kind(c, k, ivn);
+    if (slot >= 0) bmemo[slot] = base;
+    seen |= c->classes[k].presence_observed != 0;
+    needs |= base == 2 || base == 3;
+    set0 |= base == 0;
+  }
+  for (int k = 0; k < c->nclasses && seen; k++) {
+    int iv = c->classes[k].presence_family == fam ? comp_ivar_index(&c->classes[k], ivn) : -1;
+    if (iv < 0) continue;
+    int base = iv < 64 ? bmemo[k * 64 + iv] : ivs_base_kind(c, k, ivn);
+    if (base == 0 && !needs && !ivs_init_sets(c, k, ivn, 0, 1)) needs = 1;
+    unmarked |= ivs_unmarked_write(c, k, ivn);
+  }
+  if (seen && !needs && set0) needs = (comp_pres_flags(c, ivn) & PRES_REMOVED) != 0;
+  int tracked = seen && needs && !unmarked;
+  for (int k = 0; k < c->nclasses && fam > 0; k++) {
+    int iv = c->classes[k].presence_family == fam ? comp_ivar_index(&c->classes[k], ivn) : -1;
+    if (iv >= 0 && iv < 64 && bmemo[k * 64 + iv] >= 0) memo[k * 64 + iv] = tracked ? 3 : bmemo[k * 64 + iv];
+  }
+  return tracked;
+}
+int ivar_set_kind(Compiler *c, int cid, const char *ivn) {
+  if (cid < 0 || cid >= c->nclasses || !ivn) return 2;
+  ClassInfo *ci = &c->classes[cid];
+  int iv = comp_ivar_index(ci, ivn);
+  if (iv < 0) return 2;
+  int n = c->nclasses * 64;
+  if (c->pres_memo_n != n * 2) {
+    free(c->pres_memo); c->pres_memo_n = n * 2;
+    c->pres_memo = (int *)malloc(sizeof(int) * (size_t)(c->pres_memo_n > 0 ? c->pres_memo_n : 1));
+    if (!c->pres_memo) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int i = 0; i < c->pres_memo_n; i++) c->pres_memo[i] = -1;
+  }
+  int *memo = c->pres_memo;
+  int slot = iv < 64 ? cid * 64 + iv : -1;
+  if (slot >= 0 && memo[slot] >= 0) return memo[slot];
+  int kind = slot >= 0 && memo[n + slot] >= 0 ? memo[n + slot] : ivs_base_kind(c, cid, ivn);
+  if (slot >= 0) memo[n + slot] = kind;
+  if (c->pres_seen && ivs_tracked(c, cid, ivn, memo, memo + n)) kind = 3;
   if (slot >= 0) memo[slot] = kind;
   return kind;
 }
@@ -2237,6 +2424,27 @@ const char *ivar_set_test(Compiler *c, int cid, const char *ivn, const char *exp
   else if (t == TY_POLY) snprintf(buf, cap, "((%s).tag != SP_TAG_NIL)", expr);
   else snprintf(buf, cap, "(%s != NULL)", expr);
   return buf;
+}
+/* The C statement that marks ivar `ivn` (of class `cid`, whose object reads
+   as `obj` through `acc`) assigned, for the end of a store into an ivar of
+   kind 3; NULL for any other. */
+const char *ivar_set_mark(Compiler *c, int cid, const char *ivn, const char *obj, const char *acc,
+                          char *buf, size_t cap) {
+  if (ivar_set_kind(c, cid, ivn) != 3) return NULL;
+  snprintf(buf, cap, "%s%s_sp_set_%s = TRUE;", obj, acc, iv_c(ivn + 1));
+  return buf;
+}
+/* The same for ivar write node `w`, which stores into self: an instance
+   method's, or an instance_eval body's, whose self is the rebound receiver
+   (the class the write emitters take, ie_class_of first); NULL for a
+   class-level ivar's write. */
+const char *ivar_write_mark(Compiler *c, int w, char *buf, size_t cap) {
+  Scope *s = comp_scope_of(c, w);
+  const char *nm = nt_str(c->nt, w, "name");
+  int iec = ie_class_of(c, w);
+  int cid = iec >= 0 ? iec : s && !s->is_cmethod && s->class_id >= 0 ? s->class_id : g_ie_class_id;
+  if (!s || cid < 0 || !nm || !g_self) return NULL;
+  return ivar_set_mark(c, cid, nm, g_self, g_self_deref, buf, cap);
 }
 /* The C global ivar read `node` lives in, by the read emitter's storage
    rule: a class method's ivar is the class's civ_ slot, a top-level one
@@ -2523,7 +2731,8 @@ static int strbuf_box_ref_as(Compiler *c, int recv, const char *fmt, Buf *b) {
    expression reads the bytes without allocating a handle first. */
 int emit_strbuf_read_ref(Compiler *c, int recv, Buf *b) { return strbuf_box_ref_as(c, recv, "sp_String_cstr(%s)", b); }
 /* The object_id of a String held as a shared sp_String: the handle's address,
-   which is what a box of it carries. 0 when `recv` is not one. */
+   which is what a box of it carries. 0 when `recv` is not one.
+   A frozen literal's handle keeps the identity of its static bytes. */
 int strbuf_object_ref(Compiler *c, int recv, Buf *b) {
   /* A receiver-returning route has the same identity as its slot. */
   char ref[1024];
@@ -2532,28 +2741,31 @@ int strbuf_object_ref(Compiler *c, int recv, Buf *b) {
   if (route && !up) {
     if (repr_of(c, route - 1).may_nil) {
       int t = ++g_tmp;
-      buf_printf(b, "({ sp_String *_t%d = %s; _t%d ? (sp_int)(uintptr_t)_t%d : %s; })",
+      buf_printf(b, repr_share_rule(c) ? "({ sp_String *_t%d = %s; _t%d ? (sp_int)(uintptr_t)sp_String_identity(_t%d) : %s; })"
+                                     : "({ sp_String *_t%d = %s; _t%d ? (sp_int)(uintptr_t)_t%d : %s; })",
                  t, ref, t, t, repr_of(c, recv).may_nil ? "SP_NIL_OBJECT_ID" : "(sp_int)(uintptr_t)sp_str_frozen_empty");
     }
-    else buf_printf(b, "((sp_int)(uintptr_t)(%s))", ref);
+    else buf_printf(b, (repr_share_rule(c) ? "((sp_int)(uintptr_t)sp_String_identity(%s))" : "((sp_int)(uintptr_t)(%s))"), ref);
     return 1;
   }
   if (repr_of(c, recv).may_nil) {
     Buf rb; memset(&rb, 0, sizeof rb);
     if (!strbuf_box_ref_as(c, recv, "%s", &rb)) return 0;
     int t = ++g_tmp;
-    buf_printf(b, "({ sp_String *_t%d = %s; _t%d ? (sp_int)(uintptr_t)_t%d : SP_NIL_OBJECT_ID; })", t, rb.p, t, t);
+    buf_printf(b, repr_share_rule(c) ? "({ sp_String *_t%d = %s; _t%d ? (sp_int)(uintptr_t)sp_String_identity(_t%d) : SP_NIL_OBJECT_ID; })"
+                                   : "({ sp_String *_t%d = %s; _t%d ? (sp_int)(uintptr_t)_t%d : SP_NIL_OBJECT_ID; })", t, rb.p, t, t);
     free(rb.p);
     return 1;
   }
-  /* The box's payload is already its identity, with or without a handle. */
+  /* The box's payload is already its identity, with or without a handle.
+     A frozen literal's handle resolves to the same identity as its bytes. */
   if (repr_share_rule(c) && recv >= 0 && repr_of(c, recv).strbuf_src == RS_SLOT_POLY) {
-    buf_puts(b, "((sp_int)(uintptr_t)(");
+    buf_puts(b, "((sp_int)(uintptr_t)sp_poly_identity_ptr(");
     emit_local_ref(c, recv, nt_str(c->nt, recv, "name"), b);
-    buf_puts(b, ").v.p)");
+    buf_puts(b, "))");
     return 1;
   }
-  return strbuf_box_ref_as(c, recv, "((sp_int)(uintptr_t)(%s))", b);
+  return strbuf_box_ref_as(c, recv, (repr_share_rule(c) ? "((sp_int)(uintptr_t)sp_String_identity(%s))" : "((sp_int)(uintptr_t)(%s))"), b);
 }
 /* `cont[k]` where the container hands its elements out BOXED (a poly array, a
    hash): the read is an sp_RbVal, so a shared-handle destination has to unbox
@@ -2849,6 +3061,23 @@ __attribute__((noreturn)) void unsupported_feature(Compiler *c, int id, const ch
   refuse_at(c, id);
   int ln; const char *file = unsup_pos(c, id, &ln);
   unsup_leave(file, ln, msg);
+}
+
+/* A NoMethodError text that names a Class.new class `ci`: "<head><class>" as a C
+   expression, appended to b. The class prints at run time (its constant may be
+   assigned only after the program starts), so the text is built where it is
+   raised and kept per raise site as a persistent string, because the raise
+   stages it before anything roots it; it is rebuilt only when the class's
+   display changes. 0 (nothing appended) for any other class. */
+int anon_class_text(Compiler *c, int ci, const char *head, Buf *b) {
+  if (!comp_class_anonymous(c, ci)) return 0;
+  int t = ++g_tmp;
+  /* two workers may run this site at once: the message is stored before the
+     display it was built for, and an empty slot always rebuilds */
+  buf_printf(b, "({ static const char *_nd%d, *_nm%d; const char *_d%d = sp_class_display((sp_Class){%d}); "
+                "if (_d%d != _nd%d || !_nm%d) { const char *_m%d = sp_anon_text(\"%s\", _d%d); _nm%d = _m%d; _nd%d = _d%d; } _nm%d; })",
+             t, t, t, ci, t, t, t, t, head, t, t, t, t, t, t);
+  return 1;
 }
 
 /* The words `unsupported` refuses node id in, into msg; answers what the
@@ -3998,10 +4227,33 @@ void emit_frozen_literal(Buf *b, const char *esc, size_t esc_len, size_t raw_len
   }
   buf_printf(b, "((char *)_fzl_%d.d)", id);
 }
+/* --repr-check, with handles: a frozen literal built into a handle by a
+   constructor that copies it. sp_String_new_shared answers the literal's own
+   handle (sp_String_literal_handle) and sp_String_new_unfrozen is the copy a
+   `+"lit"` asks for; any other sp_String_new* taking the literal itself would
+   make a new String per evaluation. Reported as a conflict, which the
+   sharing verifier (tools/share_verify.rb) fails on. */
+static int fzl_ctor_is(const char *s, size_t n, const char *name) {
+  return strlen(name) == n && strncmp(s, name, n) == 0;
+}
+static void fzl_check_handles(const char *t) {
+  static const char lit[] = "((char *)_fzl_";
+  for (const char *p = t; p && (p = strstr(p, lit)); p += sizeof lit - 1) {
+    if (p == t || p[-1] != '(') continue;
+    const char *e = p - 1, *s = e;
+    while (s > t && (isalnum((unsigned char)s[-1]) || s[-1] == '_')) s--;
+    size_t n = (size_t)(e - s);
+    if (strncmp(s, "sp_String_new", 13) != 0 || fzl_ctor_is(s, n, "sp_String_new_shared") ||
+        fzl_ctor_is(s, n, "sp_String_new_unfrozen")) continue;
+    fprintf(stderr, "repr-check: conflict: frozen literal _fzl_%ld is built into a new handle by %.*s\n",
+            strtol(p + sizeof lit - 1, NULL, 10), (int)n, s);
+  }
+}
 /* The definitions of the literals the unit `t` names, in the order they were
    first met. A literal only a discarded emission named (a speculative arm, an
    abandoned unit) is left out. Resets the table for the next unit. */
-void fzl_emit_defs(const char *t, Buf *out) {
+void fzl_emit_defs(const char *t, Buf *out, int handles) {
+  if (handles && g_repr_check) fzl_check_handles(t);
   char *used = calloc((size_t)g_fzl_n + 1, 1);
   for (const char *p = t; p && (p = strstr(p, "_fzl_")); ) {
     p += 5;
@@ -4012,7 +4264,13 @@ void fzl_emit_defs(const char *t, Buf *out) {
   }
   for (int k = 0; k < g_fzl_n; k++) {
     FzlLit *f = &g_fzl[k];
-    if (used[k])
+    if (used[k] && handles)
+      buf_printf(out, "static struct { sp_str_hdr h; unsigned char m; char d[%zu]; sp_StringLiteral literal; } _fzl_%d = "
+                      "{ { (sp_str_hdr *)((char *)&_fzl_%d.literal + 1), %zu%s, %zu, 0 }, 0xf1, \"%s\", { NULL, NULL } };\n",
+                 f->raw_len + 1, k, k, f->raw_len + 1,
+                 fzl_esc_ascii7(f->esc, f->esc_len) ? " | SP_STR_SIZE_ASCII7" : "",
+                 f->raw_len, f->esc);
+    else if (used[k])
       buf_printf(out, "static struct { sp_str_hdr h; unsigned char m; char d[%zu]; } _fzl_%d = "
                       "{ { NULL, %zu%s, %zu, 0 }, 0xf1, \"%s\" };\n",
                  f->raw_len + 1, k, f->raw_len + 1,
@@ -4133,7 +4391,8 @@ void emit_str_literal_n(Buf *b, const char *content, size_t len, int frozen) {
      were built at runtime (#1749; ASAN: global-buffer-overflow). Emit a
      static header+marker+data object instead: the layout matches a heap
      string exactly (hdr | marker | bytes), the hash cache write hits our
-     own static storage, and next=NULL keeps it off the sweep list. */
+     own static storage, and next=NULL keeps it off the sweep list.
+     Shared literal definitions use a tagged link to their handle slot. */
   if (frozen) {
     Buf e; memset(&e, 0, sizeof e);
     if (content && len) emit_c_escaped_n(&e, content, len);
@@ -4312,6 +4571,13 @@ void emit_str_array_handles(Compiler *c, int v, Buf *b) {
    handles a local's Array would be. */
 int iter_src_as_handles(Compiler *c, int n) {
   return c->share_strings && comp_ntype(c, n) == TY_STR_ARRAY && share_node_fresh_elems(c, n);
+}
+/* A retaining iterator call `id` (select, reject, find_all, the in-place
+   filters) over a fresh sharing String Array `recv`: the receiver is
+   consumed as the PolyArray of handles, and the answer is one too
+   (share_iter_answers_handles types it so). */
+int iter_filter_src_as_handles(Compiler *c, int id, int recv) {
+  return share_iter_answers_handles(c, id) && iter_src_as_handles(c, recv);
 }
 /* emit_boxed for an Enumerator's source, as iter_src_as_handles has it */
 void emit_boxed_iter_src(Compiler *c, int n, Buf *b) {

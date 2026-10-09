@@ -665,8 +665,9 @@ TyKind ie_block_break_next_ty(Compiler *c, int node) {
       if (aty && sp_streq(aty, "SplatNode")) return TY_POLY_ARRAY;
       return infer_type(c, av[0]);
     }
-    /* a bare `next` yields nil: `[1,2].map { |v| next if v == 1; v }` is [nil, 2] */
-    return sp_streq(ty, "NextNode") ? TY_NIL : TY_UNKNOWN;
+    /* a bare `next` yields nil: `[1,2].map { |v| next if v == 1; v }` is [nil, 2];
+       so does a bare `break`, which leaves a lambda with nil (#8277) */
+    return TY_NIL;
   }
   if (sp_streq(ty, "WhileNode") || sp_streq(ty, "UntilNode") || sp_streq(ty, "ForNode") ||
       sp_streq(ty, "BlockNode") || sp_streq(ty, "LambdaNode") || sp_streq(ty, "DefNode") ||
@@ -2234,7 +2235,10 @@ void an_user_call_record(Compiler *c, int id, int mi, int via, int owner_ci) {
 
 TyKind an_user_call(Compiler *c, int id, int mi, int via, int owner_ci) {
   an_user_call_record(c, id, mi, via, owner_ci);
-  return method_call_ret(c, mi, id);
+  /* A yielding reopening is called through its proc form. Its return
+     includes the block's boxed answer, also through rescue or ensure. */
+  int pf = via == UC_REOPEN && c->scopes[mi].yields ? scope_proc_form_of(c, mi) : -1;
+  return method_call_ret(c, pf >= 0 ? pf : mi, id);
 }
 
 const BuiltinOp *an_bop_find(Compiler *c, int id, TyKind rt, const char *name,
@@ -4959,6 +4963,8 @@ static int infer_receiverless_call(Compiler *c, int id, const NodeTable *nt, con
     if (cbody >= 0) {
       int smi = comp_cmethod_in_chain(c, cbody, name, NULL);
       if (smi >= 0) { *out = an_user_call(c, id, smi, UC_CMETH, cbody); return 1; }
+      if (argc == 0 && comp_class_anonymous(c, cbody) && is_name_reader(name))
+        { *out = TY_STRING; return 1; }
     }
   }
   /* bare call inside an instance_eval/exec block: dispatch on receiver class */

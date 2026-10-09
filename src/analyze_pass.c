@@ -2219,7 +2219,7 @@ static int proc_call_name(const char *cn) {
    that parameter, a local's reads and its reads that call a Proc. */
 typedef struct { const Scope *s; const char *nm; int lit, reads, calls; } PplEnt;
 static PplEnt *ppl_tab = NULL; static int ppl_cap = 0;
-static signed char *ppl_sight = NULL;   /* per literal: 1 when its calls are all in sight */
+static signed char *ppl_sight = NULL;   /* per literal: bit 1 when its calls are all in sight, bit 2 when nothing reads it */
 static const NodeTable *ppl_nt = NULL; static int ppl_ntc = -1;
 
 /* The entry of (s, nm): made when `add`, else NULL when there is none. The
@@ -2274,10 +2274,29 @@ static void ppl_build(Compiler *c) {
     const char *rn = nt_str(nt, r, "name");
     if (rn) ppl_slot(comp_scope_of(c, r), rn)->reads++;
   }
+  /* What a constant, instance variable or global holding a proc is read
+     through, keyed by name in the null scope (no local has it, and the sigils
+     keep the kinds apart). An attr_reader of a Symbol reads the ivar of that
+     name, keyed bare; instance_variable_get of a literal reads it by its sigil. */
+  const NodeKind rk[4] = { NK_ConstantReadNode, NK_ConstantPathNode,
+                           NK_InstanceVariableReadNode, NK_GlobalVariableReadNode };
+  for (int k = 0; k < 4; k++)
+    NT_FOREACH_KIND(nt, rk[k], r) {
+      const char *rn = nt_str(nt, r, "name");
+      if (rn) ppl_slot(NULL, rn)->reads++;
+    }
   NT_FOREACH_KIND(nt, NK_CallNode, id) {
     int r = nt_ref(nt, id, "receiver");
-    if (r < 0 || r >= n) continue;
     const char *cn = nt_str(nt, id, "name");
+    if (cn && (is_attr_reader_family(cn) || is_ivar_access(cn))) {
+      int an = nt_ref(nt, id, "arguments"), ac = 0;
+      const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
+      for (int k = 0; k < ac; k++) {
+        const char *sn = nt_kind(nt, av[k]) == NK_SymbolNode ? nt_str(nt, av[k], "value") : NULL;
+        if (sn) ppl_slot(NULL, sn)->reads++;
+      }
+    }
+    if (r < 0 || r >= n) continue;
     if (recv_call[r] < 0) recv_call[r] = proc_call_name(cn);
     if (nt_kind(nt, r) != NK_LocalVariableReadNode || !proc_call_name(cn)) continue;
     const char *rn = nt_str(nt, r, "name");
@@ -2295,8 +2314,19 @@ static void ppl_build(Compiler *c) {
   for (int id = 0; id < n; id++) {
     if (!is_proc_create(c, id) || proc_literal_escapes_as_arg(c, id)) continue;
     if (recv_call[id] >= 0) ppl_sight[id] = (signed char)recv_call[id];
-    else ppl_sight[id] = nw[id] == 1 && wl[id]->reads == wl[id]->calls;
+    else if (nw[id] == 1 && wl[id]->reads == wl[id]->calls)
+      ppl_sight[id] = wl[id]->calls ? 1 : 3;
   }
+  /* a proc held by a constant, ivar or global that nothing reads is never called */
+  const NodeKind wk[3] = { NK_ConstantWriteNode, NK_InstanceVariableWriteNode, NK_GlobalVariableWriteNode };
+  for (int k = 0; k < 3; k++)
+    NT_FOREACH_KIND(nt, wk[k], w) {
+      int v = nt_ref(nt, w, "value");
+      const char *wn = nt_str(nt, w, "name");
+      if (v < 0 || v >= n || !wn || !is_proc_create(c, v) || proc_literal_escapes_as_arg(c, v)) continue;
+      PplEnt *full = ppl_slot_at(NULL, wn, 0), *bare = wn[0] == '@' ? ppl_slot_at(NULL, wn + 1, 0) : NULL;
+      if (!(full && full->reads) && !(bare && bare->reads)) ppl_sight[v] |= 2;
+    }
   free(recv_call); free(nw); free(wl);
   ppl_nt = nt; ppl_ntc = n;
 }
@@ -2322,7 +2352,13 @@ int local_proc_literal_param_of(Compiler *c, Scope *sc, const char *nm) {
    cannot look. A call on the literal that does not run it (`.curry`,
    `.itself`) answers a Proc its caller calls out of sight. */
 int proc_literal_calls_in_sight(Compiler *c, int lit) {
-  return ppl_ready(c) && lit >= 0 && lit < ppl_ntc && ppl_sight[lit];
+  return ppl_ready(c) && lit >= 0 && lit < ppl_ntc && (ppl_sight[lit] & 1);
+}
+
+/* The closed-call fact also proves a proc uncalled when no read reaches it:
+   an unread local, or one held by a constant, ivar or global that is never read. */
+int proc_literal_uncalled(Compiler *c, int lit) {
+  return ppl_ready(c) && lit >= 0 && lit < ppl_ntc && (ppl_sight[lit] & 2);
 }
 
 /* The `@h ||= {}` / `h ||= {}` a container write's receiver evaluates to:

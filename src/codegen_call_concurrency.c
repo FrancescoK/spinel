@@ -316,7 +316,16 @@ int emit_call_synchronize_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
       buf_printf(b, "sp_mutex *_t%d = ", mtmp);
       if (rty == TY_POLY) { buf_puts(b, "sp_poly_mutex_recv("); emit_boxed(c, recv, b); buf_puts(b, ")"); }
       else emit_expr(c, recv, b);
-      buf_printf(b, "; sp_Mutex_lock(_t%d); ", mtmp);
+      buf_puts(b, "; ");
+      /* a Mutex nothing else names (`Mutex.new.synchronize { }`, one out of
+         a call) is held by this temp alone: the body and the exception it
+         raises allocate */
+      { NodeKind rk = nt_kind(c->nt, recv);
+        if (rk != NK_LocalVariableReadNode && rk != NK_InstanceVariableReadNode &&
+            rk != NK_ConstantReadNode && rk != NK_ConstantPathNode && rk != NK_GlobalVariableReadNode &&
+            rk != NK_ClassVariableReadNode)
+          buf_printf(b, "SP_GC_ROOT(_t%d); ", mtmp); }
+      buf_printf(b, "sp_Mutex_lock(_t%d); ", mtmp);
       buf_printf(b, "int _retf%d = 0; int _excf%d = 0; const char *_excmsg%d = NULL, *_exccls%d = NULL; ",
                  eid, eid, eid, eid);
       /* the fields a begin..ensure nested in the block hands its deferred
@@ -382,7 +391,7 @@ int emit_call_synchronize_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
     if (is_mx) {
       g_ensure_depth--;
       g_exc_frame_depth--;
-      buf_printf(b, "sp_exc_top--; }\nelse { sp_exc_top--; sp_gc_nroots = sp_exc_rootmark[sp_exc_top]; if (sp_unwind_kind == SP_UNWIND_NONE) { _excf%d = 1; _excmsg%d = sp_exc_msg[sp_exc_top]; _exccls%d = sp_exc_cls[sp_exc_top]; _excobj%d = sp_exc_obj[sp_exc_top]; } } ",
+      buf_printf(b, "sp_exc_top--; }\nelse { sp_exc_top--; sp_gc_nroots = sp_exc_rootmark[sp_exc_top]; if (sp_unwind_kind == SP_UNWIND_NONE) { _excf%d = 1; _excmsg%d = sp_exc_msg[sp_exc_top]; _exccls%d = sp_exc_cls[sp_exc_top]; _excobj%d = sp_exc_caught_obj(); } } ",
                  eid, eid, eid, eid);
       buf_printf(b, "_ensure%d: ; sp_Mutex_unlock(_t%d); ", eid, mtmp);
       buf_puts(b, "if (sp_unwind_kind != SP_UNWIND_NONE) sp_unwind_resume(); ");
@@ -414,13 +423,20 @@ int emit_call_synchronize_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         /* nested inside another begin..ensure / synchronize: hand the deferred
            return and unhandled exception to the enclosing ensure. */
         EnsureCtx *outer = &g_ensure_stack[g_ensure_depth - 1];
-        if (has_retval && outer->has_retval)
-          buf_printf(b, "if (_retf%d) { _retv%d = _retv%d; _retf%d = 1; sp_exc_top--; goto _ensure%d; } ",
-                     eid, outer->lid, eid, outer->lid, outer->lid);
+        buf_printf(b, "if (_retf%d) { ", eid);
+        if (has_retval && outer->has_retval) buf_printf(b, "_retv%d = _retv%d; ", outer->lid, eid);
+        buf_printf(b, "_retf%d = 1; ", outer->lid);
+        emit_ensure_chain_pops(b, outer);
+        buf_printf(b, "goto _ensure%d; } ", outer->lid);
+        /* An intervening rescue owns the exception after the unlock, as
+           in the begin..ensure epilogue. Its still-live frame distinguishes
+           it from a direct handoff to the enclosing ensure. */
+        if (g_exc_frame_depth > outer->exc_base + 1)
+          buf_printf(b, "if (_excf%d) { sp_pending_exc_obj = _excobj%d; sp_raise_cls(_exccls%d, _excmsg%d); } ",
+                     eid, eid, eid, eid);
         else
-          buf_printf(b, "if (_retf%d) { _retf%d = 1; sp_exc_top--; goto _ensure%d; } ", eid, outer->lid, outer->lid);
-        buf_printf(b, "if (_excf%d) { _excf%d = 1; _excmsg%d = _excmsg%d; _exccls%d = _exccls%d; _excobj%d = _excobj%d; sp_exc_top--; goto _ensure%d; } ",
-                   eid, outer->lid, outer->lid, eid, outer->lid, eid, outer->lid, eid, outer->lid);
+          buf_printf(b, "if (_excf%d) { _excf%d = 1; _excmsg%d = _excmsg%d; _exccls%d = _exccls%d; _excobj%d = _excobj%d; sp_exc_top--; goto _ensure%d; } ",
+                     eid, outer->lid, outer->lid, eid, outer->lid, eid, outer->lid, eid, outer->lid);
       }
       else {
         /* the deferred return leaves through every enclosing live begin

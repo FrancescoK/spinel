@@ -6,6 +6,9 @@
    of sp_types.h so every translation unit that includes it defines them before
    the first system header. Must precede <stdio.h>. */
 #include "sp_types.h"
+#ifdef SP_CEXT
+#include "sp_cext.h"
+#endif
 #include "sp_alloc.h"   /* shared string-heap state + allocators (extern; see sp_alloc.c) */
 #include "sp_marshal.h" /* Marshal.dump/load (lib/sp_marshal.c) + the sp_marshal_v vtable */
 #include "sp_format.h"  /* cold value-type display helpers (lib/sp_format.c) */
@@ -1550,6 +1553,9 @@ extern SP_TLS sp_RbVal _sp_proc_poly_ret;
    sp_proc_call and proc bodies must meet in the same slot. */
 extern SP_TLS sp_Proc *_sp_proc_blk;
 static void sp_re_mark_globals(void) {
+#ifdef SP_SHARE_STRING_LITERALS
+  sp_String_mark_literals();
+#endif
   /* The sub-markers below are static and inline away, so a fault in one of
      them reports as this frame with nothing to distinguish them. Under verify,
      name the group being walked: `phase=globals` alone cannot say whether the
@@ -1869,6 +1875,19 @@ static inline const char *sp_class_val_name(sp_RbVal v) {
   if (v.cls_id == SP_CLASS_BY_NAME) return v.v.s ? v.v.s : "";
   sp_Class _c = {v.v.i, NULL};
   return sp_class_to_s(_c);
+}
+/* The print form of a boxed class (to_s, inspect, error messages). A program
+   with Class.new classes installs the table that prints them (an unnamed one
+   prints CRuby's #<Class:0x...>), while sp_class_val_name stays the identity
+   key; any other program prints the name. */
+extern const char *(*sp_class_display_fn)(sp_Class);
+static inline const char *sp_class_val_display(sp_RbVal v) {
+  if (v.cls_id == SP_CLASS_BY_NAME) {   /* a name that is a Class.new class's key prints as that class */
+    sp_Class _n = {-1, v.v.s ? v.v.s : ""};
+    return sp_class_display_fn ? sp_class_display_fn(_n) : _n.name;
+  }
+  sp_Class _c = {v.v.i, NULL};
+  return sp_class_display_fn ? sp_class_display_fn(_c) : sp_class_to_s(_c);
 }
 /* Class identity: a name-backed class compares by its (complete) name, so it
    equals the id-backed class of the same name. */
@@ -2796,6 +2815,9 @@ static inline sp_String *sp_poly_as_strbuf(sp_RbVal v) {
    handle carries (`inject(s)` over a frozen s answered a String `<<`
    changed). */
 SP_COLD static const char *sp_strbuf_read_frozen(sp_String *h) {
+#ifdef SP_SHARE_STRING_LITERALS
+  if (sp_String_literal_slot(sp_String_cstr(h))) return sp_String_cstr(h);
+#endif
   char *r = (char *)sp_str_from_bytes(sp_String_cstr(h), (size_t)sp_String_length(h));
   if (h->binary) sp_str_mark_binary(r);
   ((unsigned char *)r)[-1] = 0xfa;
@@ -2821,6 +2843,17 @@ static inline const char *sp_strbuf_read_pub(sp_String *h) {
 }
 static inline sp_bool sp_poly_is_strbuf(sp_RbVal v) {
   return v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_STRBUF;
+}
+/* A literal's byte and handle faces name the same static object. */
+static inline sp_RbVal sp_poly_literal_identity(sp_RbVal v) {
+  if (sp_poly_is_strbuf(v) && v.v.p) {
+    sp_String *h = (sp_String *)v.v.p;
+    if (sp_String_literal_slot(h->data)) return sp_box_str(h->data);
+  }
+  return v;
+}
+static inline const void *sp_poly_identity_ptr(sp_RbVal v) {
+  return sp_poly_literal_identity(v).v.p;
 }
 /* A POLY variable's value as it is handed to a parameter the callee appends
    to in place: a plain String becomes the shared handle, boxed, and the
@@ -11832,6 +11865,10 @@ static SP_NOINLINE sp_bool sp_poly_eql_strict_slow(sp_RbVal a, sp_RbVal b) {
    bool, flonum) are their own identity by value; everything heap-backed
    (string buffer, boxed object, bignum) compares by pointer. */
 static sp_bool sp_poly_equal(sp_RbVal a, sp_RbVal b) {
+#ifdef SP_SHARE_STRING_LITERALS
+  a = sp_poly_literal_identity(a);
+  b = sp_poly_literal_identity(b);
+#endif
   if (a.tag != b.tag) return FALSE;
   switch (a.tag) {
     case SP_TAG_INT: return a.v.i == b.v.i;
@@ -13966,6 +14003,9 @@ static SP_TLS const char *sp_exc_msg[SP_EXC_STACK_MAX];
    (not a per-region C local) so protected regions add no stack locals --
    an extra local per region measurably shifts hot-function frames. */
 static SP_TLS int sp_exc_rootmark[SP_EXC_STACK_MAX];
+#ifdef SP_CEXT
+static SP_TLS sp_cext_arena_mark sp_exc_cextmark[SP_EXC_STACK_MAX];
+#endif
 static SP_TLS volatile int sp_exc_top = 0;
 static SP_TLS const char *sp_exc_cls[SP_EXC_STACK_MAX];
 static SP_TLS volatile const char *sp_last_exc_cls = sp_str_empty;
@@ -14031,6 +14071,9 @@ static SP_TLS int sp_poly_recur_mark[SP_EXC_STACK_MAX];
    is the one on top, and the walk frames pushed since it armed are about to be
    jumped over, so give the path back the depth that frame recorded. */
 static inline void sp_poly_recur_unwind(void) {
+#ifdef SP_CEXT
+  if (sp_exc_top > 0) sp_cext_arena_restore(sp_exc_cextmark[sp_exc_top - 1]);
+#endif
   if (sp_exc_top > 0) sp_poly_recur_pop(sp_poly_recur_mark[sp_exc_top - 1]);
 }
 #define sp_cur_handled() (sp_rescue_sp > 0 ? sp_exc_handling[sp_rescue_sp-1] : NULL)
@@ -14045,9 +14088,30 @@ static void sp_rescue_push(void *e) {
   }
   sp_exc_handling[sp_rescue_sp++] = e;
 }
+#ifdef SP_CEXT
+int sp_cext_handled_push(void *e) {
+  int mark = sp_rescue_sp; sp_rescue_push(e); return mark;
+}
+void sp_cext_handled_restore(int mark) { sp_rescue_sp = mark; }
+#endif
 /* SP_CLEANUP target: an ensure body that pushed the exception in flight
    as $! gives the handler stack back however it is left */
 static inline void sp_rescue_sp_restore(int *p) { sp_rescue_sp = *p; }
+/* The exception an ensure catches to raise again once its body has run. A
+   String raise carries no object until a rescue makes one, and the cause it
+   was raised with (an explicit `cause:`, or the one in flight) waits in
+   sp_pending_cause, which the raise again replaces: such an exception gets
+   its object here, holding that cause (#8272). */
+static SP_NOINLINE SP_COLD void *sp_exc_caught_obj_make(void) {
+  sp_Exception *e = sp_exc_new_for_catch(sp_exc_cls[sp_exc_top], sp_exc_msg[sp_exc_top]);
+  sp_gc_wb((void *)e); e->cause = (sp_Exception *)sp_pending_cause;
+  sp_exc_obj[sp_exc_top] = e;
+  return e;
+}
+static inline void *sp_exc_caught_obj(void) {
+  void *o = sp_exc_obj[sp_exc_top];
+  return o || !sp_pending_cause ? o : sp_exc_caught_obj_make();
+}
 /* Each of the fixed-depth handler stacks below fails the same way when a
    program nests deeper than its array holds: CRuby's SystemStackError words,
    on stderr, and out. One copy of them, called from each stack's check. Not a
@@ -14066,6 +14130,9 @@ SP_NORETURN SP_COLD void sp_stack_too_deep(void);   /* lib/sp_exc.c */
    (sp_exc_arm below), so 63 of the body's own is the last that fits. */
 static inline void sp_exc_check_depth(void) {
   if (SP_UNLIKELY(sp_exc_top >= SP_EXC_STACK_MAX)) sp_stack_too_deep();
+#ifdef SP_CEXT
+  sp_exc_cextmark[sp_exc_top] = sp_cext_arena_snapshot();
+#endif
   sp_poly_recur_mark[sp_exc_top] = sp_poly_recur_top;
 }
 /* ---- Native backtrace formatting (spinel --debug) ---------------------- */
@@ -14224,7 +14291,10 @@ static int sp_exc_cause_chain_reaches(sp_Exception *c, void *obj) {
    ring, or make it its own cause. Every raise passes here, so the raised
    object comes in as a local and `c` is tested first: a raise made with
    nothing handled and nothing in flight goes on at that test. */
+/* A frozen exception takes no implicit cause, as in CRuby: one first raised
+   with `cause: nil` kept nil when raised again inside a rescue (#8276) */
 static SP_INLINE void *sp_exc_implicit_cause(void *c, void *obj) {
+  if (obj && sp_gc_is_frozen(obj)) return ((sp_Exception *)obj)->cause;
   if (c && obj && sp_exc_cause_chain_reaches((sp_Exception *)c, obj)) return ((sp_Exception *)obj)->cause;
   return c;
 }
@@ -14277,6 +14347,7 @@ SP_NORETURN SP_COLD void sp_raise_cls(const char *cls, const char *msg) {
        strncmp(msg, "undefined local variable or method '", 36) == 0 ||   /* 36 = prefix len; 37 compared the NUL too (#3121) */
        strncmp(msg, "private method '", 16) == 0 ||      /* visibility refusals carry the name too */
        strncmp(msg, "protected method '", 18) == 0 ||
+       strncmp(msg, "instance variable ", 18) == 0 ||   /* remove_instance_variable of an absent ivar */
        strncmp(msg, "uninitialized constant ", 23) == 0))   /* const_get / bad const (#3034) */
     sp_pending_exc_obj = sp_exc_recover_named(cls, msg);
   /* the introspection staging (receiver/key/value) rides the carried object */
@@ -14610,6 +14681,16 @@ static sp_bool sp_exc_matches_splat(const char *raised, sp_RbVal list) {
   return FALSE;
 }
 
+/* `rescue klass`: a single operand that is not a constant. The clause matches
+   when the raised class is (or descends from) the operand's class, and an
+   operand that is not a class or module is a TypeError (an Array is not a
+   list here, as it is only after `*`). */
+static sp_bool sp_exc_matches_operand(const char *raised, sp_RbVal v) {
+  if (v.tag != SP_TAG_CLASS)
+    sp_raise_cls("TypeError", "class or module required for rescue clause");
+  return sp_exc_cls_matches(raised, sp_class_val_name(v));
+}
+
 /* Issue #781: bridge between the regex compile-error path (which lives
    in the .a library and can't see the user program's static-inline
    sp_raise_cls) and the user's Ruby-level exception machinery. The
@@ -14691,6 +14772,15 @@ static void *sp_exc_recover_named(const char *cls, const char *msg) {
   if (q2 && q2 > q1 + 1 && (size_t)(q2 - q1) <= 128) {
     size_t n = (size_t)(q2 - q1 - 1);
     memcpy(nb, q1 + 1, n); nb[n] = 0;
+  }
+  else if (strncmp(msg, "instance variable ", 18) == 0) {
+    /* "instance variable @v not defined": the name is the unquoted token
+       after the prefix, the ivar remove_instance_variable could not find */
+    const char *p = msg + 18;
+    size_t n = 0;
+    while (p[n] && p[n] != ' ' && n < 127) n++;
+    if (n == 0) return NULL;
+    memcpy(nb, p, n); nb[n] = 0;
   }
   else {
     /* "uninitialized constant NAME": the name is the unquoted trailing token,
@@ -14881,6 +14971,9 @@ SP_NORETURN SP_COLD static void sp_raise_poly(sp_RbVal v) {
       /* the SystemCallError family's message is its errno text */
       if (sp_syserr_kind(cn, NULL) != SP_SYSERR_NONE)
         sp_raise_cls(cn, sp_syserr_build(cn, 0, NULL)->msg);
+      /* the message is the class's to_s: an unnamed Class.new class differs
+         from the name it raises under */
+      { const char *dn = sp_class_val_display(v); if (strcmp(dn, cn)) sp_raise_cls(cn, dn); }
       sp_raise_cls(cn, sp_str_empty);
     }
   }
@@ -14912,6 +15005,10 @@ SP_NORETURN SP_COLD static void sp_raise_poly_msg(sp_RbVal v, sp_RbVal m) {
            larger than the one built here */
         if (!(sp_user_exc_parent_fn && sp_user_exc_parent_fn(cn))) sp_raise_exc(se);
         sp_raise_cls(cn, se->msg);
+      }
+      if (!msg) {   /* as sp_raise_poly: the class's to_s, where it differs from its name */
+        const char *dn = sp_class_val_display(v);
+        if (strcmp(dn, cn)) msg = dn;
       }
       sp_raise_cls(cn, msg ? msg : sp_str_empty);
     }
@@ -15049,8 +15146,21 @@ static void sp_throw_boxed(sp_RbVal tagv, sp_RbVal val) {
   sp_throw(tag, kind, val);
 }
 static void sp_throw(const char *tag, int kind, sp_RbVal val) {
+#ifdef SP_SHARE_STRING_LITERALS
+  if (kind == 3 && tag && sp_String_literal_slot(((sp_String *)tag)->data)) {
+    tag = ((sp_String *)tag)->data;
+    kind = 2;
+  }
+#endif
   int i = sp_catch_top - 1;
   while (i >= 0) {
+#ifdef SP_SHARE_STRING_LITERALS
+    if (sp_catch_tag_kind[i] == 3 && sp_catch_tag[i] &&
+        sp_String_literal_slot(((sp_String *)sp_catch_tag[i])->data)) {
+      sp_catch_tag[i] = ((sp_String *)sp_catch_tag[i])->data;
+      sp_catch_tag_kind[i] = 2;
+    }
+#endif
     if (sp_catch_tag_kind[i] == kind &&
         (kind ? sp_catch_tag[i] == tag : strcmp(sp_catch_tag[i], tag) == 0)) {
       sp_catch_val[i] = val; sp_catch_top = i + 1;
@@ -15352,6 +15462,14 @@ void sp_exc_ctx_save(void *p) {            /* current globals -> ctx */
     x->rrem = (int *)realloc(x->rrem, sizeof(int) * n);
     x->erm = (int *)realloc(x->erm, sizeof(int) * n);
     x->ersm = (int *)realloc(x->ersm, sizeof(int) * n); }
+#ifdef SP_CEXT
+  x->cext_marks = (sp_cext_arena_mark *)realloc(x->cext_marks, sizeof(sp_cext_arena_mark) * n);
+  if (n && !x->cext_marks) sp_oom_die();
+  for (int i = 0; i < n; ++i) x->cext_marks[i] = sp_exc_cextmark[i];
+  sp_cext_arena_context_save(&x->cext_arena);
+  x->cext_errinfo = rb_errinfo();
+  rb_gc_register_address(&x->cext_errinfo);
+#endif
   for (int i = 0; i < n; i++) { memcpy(x->es[i], sp_exc_stack[i], sizeof(jmp_buf));
     x->em[i] = sp_exc_msg[i]; x->ec[i] = sp_exc_cls[i]; x->eo[i] = sp_exc_obj[i];
     x->erm[i] = sp_exc_rootmark[i]; x->ersm[i] = sp_rescue_mark[i];
@@ -15413,6 +15531,11 @@ void sp_exc_ctx_load(void *p);
 #else
 void sp_exc_ctx_load(void *p) {            /* ctx -> current globals */
   sp_exc_ctx_t *x = (sp_exc_ctx_t *)p;
+#ifdef SP_CEXT
+  for (int i = 0; i < x->en; ++i) sp_exc_cextmark[i] = x->cext_marks[i];
+  sp_cext_arena_context_load(&x->cext_arena);
+  rb_set_errinfo(x->cext_errinfo);
+#endif
   for (int i = 0; i < x->en; i++) { memcpy(sp_exc_stack[i], x->es[i], sizeof(jmp_buf));
     sp_exc_msg[i] = x->em[i]; sp_exc_cls[i] = x->ec[i]; sp_exc_obj[i] = x->eo[i];
     sp_poly_recur_mark[i] = x->rrem[i];
@@ -15447,12 +15570,40 @@ void sp_exc_ctx_load(void *p) {            /* ctx -> current globals */
 #ifdef SPINEL_EXT_HOST
 void sp_exc_arm(jmp_buf b);
 #else
-void sp_exc_arm(jmp_buf b)     { sp_exc_check_depth(); memcpy(sp_exc_stack[sp_exc_top], b, sizeof(jmp_buf)); sp_exc_msg[sp_exc_top] = 0; sp_exc_obj[sp_exc_top] = 0; sp_exc_top++; }
+void sp_exc_arm(jmp_buf b)     { sp_exc_check_depth();
+#ifdef SP_CEXT
+  sp_exc_rootmark[sp_exc_top] = sp_gc_nroots; sp_rescue_mark[sp_exc_top] = sp_rescue_sp;
+#endif
+  memcpy(sp_exc_stack[sp_exc_top], b, sizeof(jmp_buf)); sp_exc_msg[sp_exc_top] = 0; sp_exc_obj[sp_exc_top] = 0; sp_exc_top++; }
 #endif
 #ifdef SPINEL_EXT_HOST
 void sp_exc_disarm(void);
 #else
 void sp_exc_disarm(void)       { if (sp_exc_top > 0) sp_exc_top--; }
+#endif
+#ifdef SP_CEXT
+int sp_cext_exception_p(sp_RbVal v) {
+  return v.tag == SP_TAG_OBJ && v.v.p &&
+    (v.cls_id == SP_BUILTIN_EXCEPTION || sp_is_exc_subclass_cls(v.cls_id));
+}
+sp_RbVal sp_cext_box_exception(void *object) {
+  sp_Exception *e = (sp_Exception *)object;
+  if (sp_obj_cls_name_fn) for (sp_int i = 0; i < sp_exc_subclass_count; ++i) {
+    int id = (int)sp_exc_subclass_ids[i];
+    const char *name = sp_obj_cls_name_fn(id);
+    if (name && !strcmp(name, e->cls_name)) return sp_box_obj(object, id);
+  }
+  return sp_box_obj(object, SP_BUILTIN_EXCEPTION);
+}
+void sp_cext_exception_caught(void *object) {
+  sp_Exception *e = (sp_Exception *)object;
+  if (!e->cause) { sp_gc_wb(e); e->cause = (sp_Exception *)sp_pending_cause; }
+  sp_pending_cause = NULL;
+  if (!e->backtrace) {
+    sp_StrArray *trace = sp_backtrace_captured();
+    sp_gc_wb(e); e->backtrace = trace;
+  }
+}
 #endif
 #ifdef SPINEL_EXT_HOST
 const char *sp_exc_cur_cls(void);
@@ -19315,6 +19466,11 @@ sp_PolyArray *sp_str_unpack_off(const char *str, const char *fmt, sp_int byteoff
 static sp_RbVal sp_poly_pack_buffer(sp_RbVal recv, sp_RbVal format, sp_RbVal buffer) {
   SP_GC_ROOT_RBVAL(recv); SP_GC_ROOT_RBVAL(format); SP_GC_ROOT_RBVAL(buffer);
   sp_poly_ary_chk(recv, "pack", 0);
+  /* sp_poly_ary_chk leaves a user object to the helper, and
+     sp_poly_to_poly_array reads one as an empty Array: a user object
+     without its own pack raises here as CRuby does. */
+  if (recv.tag != SP_TAG_OBJ || !sp_poly_is_array_kind(recv.cls_id))
+    sp_raise_poly_nomethod("pack", recv);
   const char *fmt = sp_poly_arg_str_chk(format); SP_GC_ROOT_STR(fmt);
   const char *initial = NULL;
   if (!sp_poly_nil_p(buffer)) {

@@ -122,6 +122,11 @@ int strbuf_ivar_owner(Compiler *c, int node);
 /* Is an object's ivar set: 0 always, 1 when not nil, 2 cannot tell, 3 explicit flag (codegen_util.c) */
 int ivar_set_kind(Compiler *c, int cid, const char *ivn);
 const char *ivar_set_test(Compiler *c, int cid, const char *ivn, const char *expr, char *buf, size_t cap);
+/* ... and the statement that marks one of kind 3 assigned after a store */
+const char *ivar_set_mark(Compiler *c, int cid, const char *ivn, const char *obj, const char *acc,
+                          char *buf, size_t cap);
+const char *ivar_write_mark(Compiler *c, int w, char *buf, size_t cap);
+int ie_class_of(Compiler *c, int node);
 /* The shared-mutable shim (codegen_stmt.c) re-runs a value-semantics mutator
    arm against a plain shadow copy, then swaps the handle's bytes for it. A
    LOCAL receiver is redirected into the shadow by the rename table; an ivar
@@ -367,6 +372,10 @@ int iter_recv_bind_once(Compiler *c, int node);
    passed block can chain back to the outermost caller's block. */
 extern int  g_yield_block_fallback;
 int yield_block_out(int k);   /* codegen_iter.c */
+int yield_target_push(int block, int saved_block, const char *owner, int nren,
+                      const char *brk, int brk_ebase);   /* codegen_iter.c */
+void yield_target_pop(int pushed, int saved_cur);
+int yield_target_cur(void);
 extern const char *g_yield_self_fallback;        /* see codegen_util.c */
 extern const char *g_yield_self_fallback2;
 extern const char *g_yield_self_deref_fallback2;
@@ -588,6 +597,10 @@ extern int        g_rescue_save_depth;
    (deferred return), both are wrapped in `if (guard) { ... }`. Returns 1 if it
    emitted anything. */
 void emit_rescue_pops_to(Buf *b, int rescue_base);
+/* A retry's pops back to the body of the begin it restarts (codegen_stmt.c) */
+void emit_retry_unwind(Buf *b);
+/* The pops of a deferred return handed on to an enclosing ensure (codegen_stmt.c) */
+void emit_ensure_chain_pops(Buf *b, const EnsureCtx *outer);
 void emit_loop_unwind(Buf *b);
 int emit_frame_unwind(Buf *b, int pop_base, const char *guard);
 int rescues_crossed(int pop_base);
@@ -738,6 +751,8 @@ int exc_has_user_msg_override(Compiler *c);
 int exc_has_nonstring_msg_override(Compiler *c);
 int fi_fiber_stack_risk(Compiler *c);
 const char *class_ruby_name(Compiler *c, int ci);
+void obj_default_name(Compiler *c, int ci, char *name, size_t nn, char *arg, size_t na);
+int anon_class_text(Compiler *c, int ci, const char *head, Buf *b);
 int scope_def_line(Compiler *c, Scope *s);
 const char *scope_def_file(Compiler *c, Scope *s);
 const char *obj_str_cname(Compiler *c, int cid, int want_inspect);
@@ -958,7 +973,8 @@ void emit_unbox_nilable_text(Compiler *c, TyKind t, const char *expr, Buf *b);
    emits the reader/writer pair as an expression, or answers 0 to leave the
    caller's direct-ivar shapes alone. See codegen_expr.c. */
 void emit_orw_guard(Compiler *c, int v, TyKind slot, const char *cond, const char *lhs, int value_form, int indent, Buf *b);
-void emit_slot_orw_value(Compiler *c, TyKind t, int elems_handle, const char *ref, int v, int is_or, Buf *b);
+void emit_slot_orw_value(Compiler *c, TyKind t, int elems_handle, const char *ref, int v, int is_or,
+                         const char *mark, Buf *b);
 int emit_empty_literal_as(Compiler *c, int v, TyKind slot, Buf *b);
 int emit_call_or_write_via_methods(Compiler *c, int id, int is_or, Buf *b);
 /* Wrap a boxed expression in the --rbs seed assertion (a no-op macro without
@@ -1063,6 +1079,7 @@ void cg_memo_put(CgMemo *m, const char *key, int tag, int val);
    capture detection). Returns NULL when nid is not a resolvable regex. */
 const char *re_lit_src(Compiler *c, int nid);
 void emit_interp(Compiler *c, int id, Buf *b);
+int interp_is_literal_fold(const NodeTable *nt, int id);
 int emit_regex_pat_to_buf(Compiler *c, int nid, Buf *b);
 int nameset_has(NameSet *s, const char *nm);
 void nameset_add(NameSet *s, const char *nm);
@@ -1289,7 +1306,7 @@ int emit_empty_container_for_slot(Compiler *c, int v, TyKind slot, Buf *b);
 /* A frozen literal from its C-escaped bytes: a reference to the one file-scope
    object for that content, whose definition fzl_emit_defs writes. */
 void emit_frozen_literal(Buf *b, const char *esc, size_t esc_len, size_t raw_len);
-void fzl_emit_defs(const char *t, Buf *out);
+void fzl_emit_defs(const char *t, Buf *out, int handles);
 /* Emit a Ruby string literal. len is the true byte count (may exceed strlen
    when the string contains embedded NUL bytes). */
 /* What a `round`-family call's trailing keyword hash says, as far as it can
@@ -1335,6 +1352,7 @@ int emit_str_append_chain_handle(Compiler *c, int id, Buf *b);
 int kwh_only_spreads(const NodeTable *nt, int kwh);
 void emit_str_array_handles(Compiler *c, int v, Buf *b);
 int iter_src_as_handles(Compiler *c, int n);
+int iter_filter_src_as_handles(Compiler *c, int id, int recv);
 void emit_boxed_iter_src(Compiler *c, int n, Buf *b);
 int elem_param_is_handle(const LocalVar *lv, TyKind et);
 const char *int_arith_fn(const char *op);
@@ -1926,6 +1944,7 @@ int diagnose_unsupported_call(Compiler *c, int id);
 int diag_user_defines(Compiler *c, const char *name);
 int recv_user_defines(Compiler *c, const char *name);
 int emit_object_ivar_list(Compiler *c, int recv, int cid, Buf *b);
+void emit_object_ivar_remove(Compiler *c, int recv, TyKind rt, int cid, const char *sym, Buf *b);
 int emit_object_ivar_call(Compiler *c, int id, const char *name, int recv, TyKind rt,
                           int cid, int argc, const int *argv, Buf *b);
 const char *case_map_suffix(Compiler *c, int argc, const int *argv);
@@ -1992,6 +2011,8 @@ void emit_loop_body(Compiler *c, int body, Buf *b, int indent);
 int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent);
 int emit_array_filter_loop(Compiler *c, int recv, int block, TyKind rt, const char *name,
                            Buf *b, int indent, int *tr, int *torig, int *twp);
+int emit_array_filter_loop_handles(Compiler *c, int recv, int block, const char *name,
+                                   Buf *b, int indent, int *tr, int *torig, int *twp);
 void emit_synth_line_marker(Buf *b);
 /* --ext-init / --ext-entry (library emission, docs/internals/ext-design.md):
    when g_ext_init_name is set, codegen emits `void <name>(void)` in place of

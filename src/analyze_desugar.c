@@ -485,6 +485,12 @@ int desugar_masgn_store_evidence(Compiler *c) {
           for (int k = from; ra && k < to; k++) ra[k - from] = tuple ? els[k] : value;
           rv = ra ? nt_new_node(nt, "ArrayNode") : -1;
           if (rv >= 0) nt_node_set_arr(nt, rv, "elements", ra, to - from);
+          /* the assignment's position, so a diagnostic about this Array
+             names the line that wrote it */
+          if (rv >= 0 && nt_int(nt, id, "node_line", 0) > 0) {
+            nt_node_set_int(nt, rv, "node_line", nt_int(nt, id, "node_line", 0));
+            nt_node_set_int(nt, rv, "node_file", nt_int(nt, id, "node_file", 0));
+          }
           free(ra);
         }
       }
@@ -12044,6 +12050,17 @@ static int str_node_like(NodeTable *nt, int like, const char *s) {
   return n;
 }
 
+/* Turns node `id` into a bare CallNode (a reset drops its position, which a
+   refusal naming the construct prints as FILE:LINE). */
+static void cn_reset_call(NodeTable *nt, int id) {
+  long long line = nt_int(nt, id, "node_line", 0), file = nt_int(nt, id, "node_file", 0),
+            col = nt_int(nt, id, "node_col", 0);
+  nt_node_reset(nt, id, "CallNode");
+  nt_node_set_int(nt, id, "node_line", line);
+  nt_node_set_int(nt, id, "node_file", file);
+  nt_node_set_int(nt, id, "node_col", col);
+}
+
 static int cn_reads_outer_local(const NodeTable *nt, int node, int level) {
   if (node < 0) return 0;
   NodeKind k = nt_kind(nt, node);
@@ -12137,6 +12154,39 @@ static void cn_neutralize(NodeTable *nt, int node) {
   nt_node_reset(nt, node, "NilNode");
 }
 
+/* Whether constant `k` names a module: a builtin one, or a `module` the program declares. */
+static int cn_names_module(const NodeTable *nt, int k) {
+  const char *nm = nt_kind(nt, k) == NK_ConstantReadNode ? nt_str(nt, k, "name") : NULL;
+  if (!nm) return 0;
+  if (is_builtin_module_const_name(nm)) return 1;
+  NT_FOREACH_KIND(nt, NK_ModuleNode, m) {
+    int cp = nt_ref(nt, m, "constant_path");
+    const char *mn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+    if (mn && sp_streq(mn, nm)) return 1;
+  }
+  return 0;
+}
+
+/* `Class.new(M)` with M a module: CRuby raises this TypeError as the call
+   runs, so the call, and a constant write holding it, become that raise. */
+static void cn_raise_module_super(NodeTable *nt, int id, int par) {
+  nt_node_reset(nt, id, "CallNode");
+  nt_node_set_str(nt, id, "name", "raise");
+  int args = fwd_new_node_like(nt, id, "ArgumentsNode");
+  int ex = fwd_new_node_like(nt, id, "ConstantReadNode");
+  nt_node_set_str(nt, ex, "name", "TypeError");
+  int msg = str_node_like(nt, id, "superclass must be an instance of Class (given an instance of Module)");
+  int av2[2] = { ex, msg };
+  nt_node_set_arr(nt, args, "arguments", av2, 2);
+  nt_node_set_ref(nt, id, "arguments", args);
+  if (par >= 0 && (nt_kind(nt, par) == NK_ConstantWriteNode || nt_kind(nt, par) == NK_ConstantPathWriteNode) &&
+      nt_ref(nt, par, "value") == id) {
+    nt_node_reset(nt, par, "CallNode");
+    nt_node_set_str(nt, par, "name", "raise");
+    nt_node_set_ref(nt, par, "arguments", args);
+  }
+}
+
 int desugar_class_new_blocks(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count, changed = 0, serial = 0;
@@ -12207,7 +12257,7 @@ int desugar_class_new_blocks(Compiler *c) {
         continue;
       }
     }
-    if (!nm || !sp_streq(nm, "new") || recv < 0 || blk < 0 || nt_kind(nt, blk) != NK_BlockNode) continue;
+    if (!is_new_name(nm) || recv < 0) continue;
     if (nt_kind(nt, recv) != NK_ConstantReadNode) continue;
     const char *rn = nt_str(nt, recv, "name");
     int is_module = rn && sp_streq(rn, "Module");
@@ -12215,6 +12265,55 @@ int desugar_class_new_blocks(Compiler *c) {
     int an = nt_ref(nt, id, "arguments");
     int ac = 0; const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
     int super_node = (!is_module && ac >= 1) ? av[0] : -1;
+    int dynamic_super = super_node >= 0 && nt_kind(nt, super_node) != NK_ConstantReadNode &&
+                        nt_kind(nt, super_node) != NK_ConstantPathNode;
+    if (dynamic_super) {
+      cn_neutralize(nt, blk);
+      cn_reset_call(nt, id);
+      nt_node_set_str(nt, id, "name", "raise");
+      nt_node_set_int(nt, id, "class_new_superclass", 1);
+      int args = fwd_new_node_like(nt, id, "ArgumentsNode");
+      int msg = str_node_like(nt, id, "Class.new with a non-constant superclass is not supported");
+      nt_node_set_arr(nt, args, "arguments", &msg, 1);
+      nt_node_set_ref(nt, id, "arguments", args);
+      int par = parent[id];
+      if (par >= 0 && (nt_kind(nt, par) == NK_ConstantWriteNode ||
+                      nt_kind(nt, par) == NK_ConstantPathWriteNode) &&
+          nt_ref(nt, par, "value") == id) {
+        cn_reset_call(nt, par);
+        nt_node_set_str(nt, par, "name", "raise");
+        nt_node_set_int(nt, par, "class_new_superclass", 1);
+        nt_node_set_ref(nt, par, "arguments", args);
+      }
+      changed = 1;
+      continue;
+    }
+    if (super_node >= 0 && cn_names_module(nt, super_node)) {
+      cn_neutralize(nt, blk);
+      cn_raise_module_super(nt, id, parent[id]);
+      changed = 1;
+      continue;
+    }
+    if (blk >= 0 && nt_kind(nt, blk) != NK_BlockNode) continue;
+    /* An omitted block has the same empty class body as `{}`. */
+    if (blk < 0) {
+      if (is_module || ac > 1) continue;
+      if (super_node >= 0 && nt_kind(nt, super_node) != NK_ConstantReadNode &&
+          nt_kind(nt, super_node) != NK_ConstantPathNode) continue;
+      if (super_node >= 0 && is_embedding_builtin(nt_str(nt, super_node, "name"))) continue;
+      /* Keep repeated evaluation on its existing path until class identity
+         can be preserved: lowering it would reuse one static class. */
+      int repeated = 0;
+      for (int p = parent[id]; p >= 0; p = parent[p]) {
+        NodeKind pk = nt_kind(nt, p);
+        if (pk == NK_DefNode || pk == NK_BlockNode || pk == NK_LambdaNode ||
+            pk == NK_WhileNode || pk == NK_UntilNode || pk == NK_ForNode) { repeated = 1; break; }
+      }
+      if (repeated) continue;
+      blk = fwd_new_node_like(nt, id, "BlockNode");
+      if (blk < 0) continue;
+      nt_node_set_ref(nt, id, "block", blk);
+    }
     /* a superclass the program names is static; one held in a variable is
        a class built at run time */
     int static_super = super_node < 0 || nt_kind(nt, super_node) == NK_ConstantReadNode ||
@@ -12224,7 +12323,9 @@ int desugar_class_new_blocks(Compiler *c) {
     int par = parent[id];
     /* a class body opens a scope of its own, a block does not: a body reading
        the surrounding locals stays a block */
-    int reads_outer = cn_reads_outer_local(nt, body, 0);
+    int reads_outer = cn_reads_outer_local(nt, body, 0) ||
+                      cn_reads_outer_local(nt, nt_ref(nt, blk, "parameters"), 0);
+    int capture_refusal = reads_outer && !defer_refusals();
     if (static_super && !reads_outer && par >= 0 && nt_kind(nt, par) == NK_ConstantWriteNode &&
         nt_ref(nt, par, "value") == id) {
       /* Name = Class.new(...) do ... end  ->  class Name < ...; ...; end */
@@ -12236,6 +12337,7 @@ int desugar_class_new_blocks(Compiler *c) {
       nt_node_set_ref(nt, par, "constant_path", cp);
       if (!is_module) nt_node_set_ref(nt, par, "superclass", super_node);
       nt_node_set_ref(nt, par, "body", body);
+      if (!is_module) nt_node_set_int(nt, par, "class_new_anonymous", 1);
       changed = 1;
       continue;
     }
@@ -12256,6 +12358,7 @@ int desugar_class_new_blocks(Compiler *c) {
       char name[64]; snprintf(name, sizeof name, "SpinelAnonClass%d", ++serial);
       int cls = cn_make_class(nt, id, is_module, name, super_node, body);
       if (cls < 0) continue;
+      if (!is_module) nt_node_set_int(nt, cls, "class_new_anonymous", 2);
       rs = nt_arr(nt, host_st, "body", &rn2);
       int *out = malloc(sizeof(int) * (size_t)(rn2 + 1));
       memcpy(out, rs, sizeof(int) * (size_t)at);
@@ -12273,16 +12376,29 @@ int desugar_class_new_blocks(Compiler *c) {
        whole table by node kind would otherwise still find its defs and
        ivar writes and give them to the top level. */
     cn_neutralize(nt, blk);
-    nt_node_reset(nt, id, "CallNode");
+    cn_reset_call(nt, id);
     nt_node_set_str(nt, id, "name", "raise");
+    /* A pruned method need not compile its class-building call. */
+    if (capture_refusal) nt_node_set_int(nt, id, "class_new_capture", 1);
     int args = fwd_new_node_like(nt, id, "ArgumentsNode");
     int ex = fwd_new_node_like(nt, id, "ConstantReadNode");
     nt_node_set_str(nt, ex, "name", "NotImplementedError");
-    int msg = str_node_like(nt, id, "spinel: a class built at run time (Class.new with a block that reads the "
-                             "surrounding method's locals) is not supported");
+    int msg = str_node_like(nt, id, static_super
+                             ? "spinel: Class.new or Module.new with a block that captures outer locals is not supported"
+                             : "spinel: Class.new with a non-constant superclass is not supported");
     int av2[2] = { ex, msg };
     nt_node_set_arr(nt, args, "arguments", av2, 2);
     nt_node_set_ref(nt, id, "arguments", args);
+    /* A deferred capture always raises, so its constant assignment never
+       completes and needs no (untypable) constant storage. */
+    if (reads_outer && par >= 0 &&
+        (nt_kind(nt, par) == NK_ConstantWriteNode || nt_kind(nt, par) == NK_ConstantPathWriteNode) &&
+        nt_ref(nt, par, "value") == id) {
+      cn_reset_call(nt, par);
+      nt_node_set_str(nt, par, "name", "raise");
+      nt_node_set_ref(nt, par, "arguments", args);
+      if (capture_refusal) nt_node_set_int(nt, par, "class_new_capture", 1);
+    }
     changed = 1;
   }
   free(parent);

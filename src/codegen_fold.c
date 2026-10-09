@@ -5256,6 +5256,10 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
     return 1;
   }
   if (!ty_is_array(rt) && !ty_is_ptr_array(rt) && !range_recv) return 0;
+  /* a retaining iterator over a fresh sharing String Array walks the
+     PolyArray of handles a local's would be, and answers one */
+  int as_handles = iter_filter_src_as_handles(c, id, recv);
+  if (as_handles) { rt = TY_POLY_ARRAY; rr.elem = TY_POLY; }
   const char *k = range_recv ? "Int" : array_iter_kind(rt);
   if (!k) return 0;
 
@@ -5328,6 +5332,7 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
     rt = TY_INT_ARRAY;
     rr.elem = TY_INT;
   }
+  else if (as_handles) emit_str_array_handles(c, recv, &rb);
   else emit_expr(c, recv, &rb);
   emit_indent(g_pre, g_indent);
   emit_ctype(c, rt, g_pre);
@@ -5349,9 +5354,11 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
   /* 2-param auto-splat: |a, b| over a poly array whose elements are sub-arrays
      binds each param to a positional element of the sub-array, matching CRuby's
      proc auto-splat. The per-param types were pinned by infer_block_params, so
-     bind directly (no shadow). select/reject still push the whole element. */
+     bind directly (no shadow). select/reject still push the whole element.
+     The handles of a fresh String Array are Strings, not sub-arrays: the
+     first parameter binds one and the others stay nil. */
   int np_cl = 0; while (block_param_name(c, block, np_cl)) np_cl++;
-  int autosplat = (np_cl >= 2 && rr.elem == TY_POLY && !block_param_is_multi(c, block, 0));
+  int autosplat = (np_cl >= 2 && rr.elem == TY_POLY && !block_param_is_multi(c, block, 0) && !as_handles);
 
   /* If the block param's scope type was widened (e.g. TY_POLY), pin it to
      the element type and use a C shadow declaration so body emission sees the
@@ -5395,7 +5402,9 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
   if (!autosplat && block_rest_name(c, block)) {
     char es_r[256];
     snprintf(es_r, sizeof es_r, "sp_%sArray_get(_t%d, _t%d)", k, trecv, ti);
-    if (emit_iter_bind_rest(c, block, np_cl, et_elem, es_r, g_pre,
+    /* the handles of a fresh String Array are Strings, which never spread:
+       a rest beside a required parameter binds empty */
+    if (emit_iter_bind_rest(c, block, np_cl, as_handles && np_cl >= 1 ? TY_STRING : et_elem, es_r, g_pre,
                             use_shadow ? innerIndent : bodyIndent) < 0) {
       unsupported(c, id, "block splat parameter alongside required params over a poly element");
       return 1;
@@ -8212,6 +8221,10 @@ static void emit_arg_temp(Compiler *c, int v) {
   /* A builtin to_s keeps the receiver's String too. Capture its handle
      before later arguments can replace the receiver. */
   int conversion = at == TY_STRING && strbuf_poly_to_s(c, v);
+  /* So does a call result lifted into the handle for a boxed parameter: the
+     handle its method publishes is taken where the call runs. */
+  if (!conversion && at == TY_STRING && repr_share_rule(c) && c->poly_strbuf_lift[v] && strbuf_value_carries(c, v))
+    conversion = 1;
   Buf hw; memset(&hw, 0, sizeof hw);
   if (conversion) emit_strbuf_handle_of(c, v, &hw);
   else if (wshare) emit_strbuf_write_handle(c, v, &hw);
@@ -9361,6 +9374,12 @@ void emit_pd_param_bind(Compiler *c, Scope *m, int i, int uid, const char *val, 
     if (needs_root(pt)) {
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, pt == TY_POLY ? "SP_GC_ROOT_RBVAL(lv_%s);\n" : "SP_GC_ROOT(lv_%s);\n", uniq);
+    }
+    /* A String Range is a by-value pair of Strings. A later argument or
+       default can collect while this named copy is their only root. */
+    else if (pt == TY_STR_RANGE) {
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "SP_GC_ROOT_STR(lv_%s.first); SP_GC_ROOT_STR(lv_%s.last);\n", uniq, uniq);
     }
     emit_pd_cell_alias(c, plv, uniq);
   }
@@ -10870,7 +10889,8 @@ void emit_args_filled_argv(Compiler *c, int callee_idx, const int *argv, int arg
       /* --share-strings: a value that hands on a shared String's handle (a
          route, `s << x`) into a parameter that is the handle runs as that
          handle, which the binding takes (ran_first_handle) */
-      if (repr_of_slot(c, hp).kind == RK_STRBUF && at == TY_STRING && strbuf_value_carries(c, argv[k])) {
+      if ((repr_of_slot(c, hp).kind == RK_STRBUF || (repr_of_slot(c, hp).kind == RK_BOXED && c->poly_strbuf_lift[argv[k]])) &&
+          at == TY_STRING && strbuf_value_carries(c, argv[k])) {
         emit_strbuf_handle_of(c, argv[k], &hb);
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n", ht, hb.p, ht);

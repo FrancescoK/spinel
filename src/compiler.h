@@ -641,6 +641,15 @@ typedef struct {
   char *native_free;   /* finalizer C symbol, or NULL */
   int freeze_observed; /* freeze/frozen? reaches instances of this class: codegen
                           guards its ivar stores with the GC-header frozen bit */
+  int presence_observed; /* a read that tells an assigned ivar from one never
+                          assigned reaches instances of this class
+                          (an_presence_observe): ivar_set_kind may give
+                          its ivars an assigned flag */
+  int presence_family; /* 1 + the class that stands for the classes sharing
+                          this one's layout or methods (those above and below
+                          it, the modules they include or that include them),
+                          which agree on an ivar's assigned flag; 0 for none
+                          or one shared with Object (an_presence_families) */
   int is_value_type;   /* small immutable scalar-ivar class represented by value
                           (sp_X, not sp_X *): no heap alloc / GC. Set by
                           detect_value_types after analysis. */
@@ -914,6 +923,8 @@ typedef struct {
      is_anon_struct is set */
   int *anon_struct_ids;
   int n_anon_struct_ids, anon_struct_ids_valid;
+  int has_anonymous_classes; /* Class.new identities with execution-time names */
+  int user_define_method;    /* 0 not asked yet, 1 none, 2 the program defines or aliases its own define_method */
 
   /* local-write-by-name index; see comp_lvw_first */
   int *lvw_head;        /* [lvw_nbuckets] first write id in each name bucket */
@@ -1123,7 +1134,28 @@ typedef struct {
      reflective read, list or copy of an Array, a Hash or a Random asks the
      runtime's map (sp_bivar_*), and the boxed set gains its builtin arm */
   int bivar_table;
+  /* the ivar names whose writes or removals an assigned flag cannot follow
+     (an_presence_observe, read by ivar_set_kind): PRES_UNMARKED, a write no
+     emitter marks reaches one (`for @x in`, `rescue => @x`, a writer reached
+     by its name); PRES_REMOVED, the program
+     removes one. pres_any: an instance_variable_set of a computed name
+     reaches every name. pres_seen: a read of presence reaches some class
+     (an_presence_class). pres_obs: per method scope, whether the code of
+     its body may see the object's ivars (ivs_body_may_observe; the answer
+     does not depend on the ivar asked about), sized pres_obs_n. */
+  char **pres_names;
+  unsigned char *pres_flags;
+  int npres, cpres;
+  int pres_any;
+  int pres_seen;
+  unsigned char *pres_obs;
+  int pres_obs_n;
+  /* ivar_set_kind's answers, 64 ivars per class: the final kinds, then the
+     base kinds (ivs_base_kind); pres_memo_n counts both, -1 before the first */
+  int *pres_memo;
+  int pres_memo_n;
 } Compiler;
+enum { PRES_UNMARKED = 1, PRES_REMOVED = 2 };
 
 Compiler *comp_new(const NodeTable *nt);
 void comp_free(Compiler *c);
@@ -1196,6 +1228,9 @@ int comp_ivarg_call(const Compiler *c, int e);
 int comp_ivarg_arg(const Compiler *c, int e);
 /* The owning class of an ivar read or write node, or -1. */
 int comp_ivar_owner(Compiler *c, int node);
+/* The PRES_* facts of an ivar name (Compiler.pres_names), and adding one */
+int comp_pres_flags(const Compiler *c, const char *ivn);
+void comp_pres_note(Compiler *c, const char *ivn, int flag);
 typedef enum { VS_READ, VS_WRITE, VS_MUT, VS_RECV, VS_STORE, VS_NKINDS } VsKind;
 /* Variable-site chains (compiler.c, see vsite_build): the entries of one
    site kind of the variable named by read kind `kind`
@@ -1324,6 +1359,8 @@ static inline int singleton_visible_ci(Compiler *c, int ci) {
   if (ci < 0 || ci >= c->nclasses) return ci;
   return c->classes[ci].is_singleton_of ? c->classes[ci].is_singleton_of - 1 : ci;
 }
+int        comp_class_anonymous(Compiler *c, int ci);
+const char *comp_class_display_fn(Compiler *c);
 int        class_var_static_ci(Compiler *c, int node);  /* local holding one class const */
 int        class_recv_static_ci(Compiler *c, int node); /* constant or local naming one class */
 int        dynamic_new_may_reach(Compiler *c, int call_id, int cid);  /* k.new can build cid */

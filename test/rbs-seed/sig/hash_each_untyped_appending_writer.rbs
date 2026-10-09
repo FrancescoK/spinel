@@ -1,0 +1,3 @@
+class UntypedAppendWriter
+  def []=: (String key, untyped value) -> untyped
+end

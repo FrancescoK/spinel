@@ -13,6 +13,7 @@
 int is_zip_name(const char *n);       /* zip: tuple-yielding iteration */
 int is_call_alias(const char *n);     /* call () []: a Proc/Method's invocation */
 int is_method_invoke(const char *n);  /* call () [] ===: Method invocation */
+int is_bind_call(const char *n);  /* bind_call: an UnboundMethod bound and called in one */
 int is_kind_query(const char *n);     /* is_a? kind_of? instance_of? */
 int is_member_blind_query(const char *n); /* class object_id __id__ nil? frozen? equal? respond_to? is_a? ... */
 int is_round_family(const char *n);   /* round ceil floor truncate */
@@ -22,6 +23,9 @@ int is_basic_arith(const char *n);    /* + - * / (is_arith_op adds % and **) */
 int is_int_arith_op(const char *n);   /* + - * / %: an Integer's arithmetic that answers an Integer */
 int is_add_sub_mul(const char *n);    /* + - * */
 int is_int_bit_op(const char *n);     /* & | ^ << >>: Integer's bitwise operators */
+int is_embedding_builtin(const char *nm); /* Array Hash: subclass instances embed the builtin */
+int is_class_name_name(const char *n);   /* name */
+int is_inspect_name(const char *n);       /* inspect */
 int is_object_root(const char *n);    /* Object Kernel BasicObject: the classes every object has */
 int is_send_family(const char *n);    /* send __send__ public_send */
 int is_opaque_reaching_call(const char *n); /* send family, call, new, lambda/proc, freeze, eval, instance_/class_/module_*, *method* */
@@ -34,6 +38,8 @@ int is_set_op(const char *n);         /* & intersection | union - difference */
 int is_combination_family(const char *n);  /* combination permutation repeated_combination repeated_permutation */
 int is_visibility_name(const char *n);     /* private protected public */
 int is_select_bang(const char *n);    /* select! filter! keep_if reject! delete_if: the in-place filters */
+int is_retaining_filter(const char *n); /* select filter find_all reject, and the in-place filters: the iterators answering some of their elements */
+int is_enum_partition_def(const char *n); /* __enum_partition__N: partition's builtin definition, per call site */
 int is_each_walk(const char *n);      /* each each_entry reverse_each */
 int is_index_query(const char *n);    /* find_index index rindex */
 int is_self_copy(const char *n);      /* freeze dup clone itself: the receiver, or a copy of it */
@@ -119,6 +125,9 @@ int is_freeze_family(const char *n); /* freeze frozen? */
 int is_bivar_access(const char *n);  /* __bivar_get __bivar_set __bivar_defined */
 int is_object_copy(const char *n);   /* dup clone */
 int is_ivar_set_name(const char *n); /* instance_variable_set */
+int is_marshal_dump(const char *recv, const char *meth); /* Marshal.dump */
+int is_ivar_remove_name(const char *n); /* remove_instance_variable */
+int is_ivar_presence_read(const char *n); /* instance_variables instance_variable_defined? remove_instance_variable inspect p pp */
 int is_bivar_keyed_class(const char *n);  /* Array Hash Random */
 int is_string_class_name(const char *n);   /* String */
 int is_frozen_value_class(const char *n); /* Integer Float Symbol NilClass TrueClass FalseClass Range */
@@ -179,6 +188,7 @@ int is_with_object_alias(const char *n); /* each_with_object with_object */
 int is_exist_alias(const char *n); /* exist? exists? */
 int is_select_alias(const char *n); /* filter select */
 int is_format_alias(const char *n); /* format sprintf */
+int is_initialize_name(const char *n); /* initialize */
 int is_initialize_family(const char *n); /* initialize initialize_copy */
 
 int is_iso8601_alias(const char *n); /* iso8601 xmlschema */
@@ -278,5 +288,8 @@ const char *dir_surface_alias(const char *n, int blockless_iter);
 int is_kernel_module_name(const char *n);
 int is_kernel_module_function(const char *n);
 int is_builtin_module_const_name(const char *n);
+
+int is_define_method_name(const char *n); /* define_method */
+int is_alias_method_name(const char *n);  /* alias_method */
 
 #endif

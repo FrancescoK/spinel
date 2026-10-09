@@ -1,0 +1,29 @@
+["sbig!", "s", "other?", "b"]
+"s"
+["sbig!", "s#", "other?", "b"]
+"s#"
+true
+["s", "so!", "c"]
+"s"
+["s#", "so!", "c"]
+"s#"
+["s", "sn!", "d"]
+"s"
+["s#", "sn!", "d"]
+"s#"
+true
+["s", "sk1", "sw2", "sw", "e"]
+"s"
+["s", "sk1", "sw2", "sw3", "e"]
+"s"
+true
+["s0!", "s1"]
+["s?%", "s?%"]
+["s?z#", "s?%"]
+"s?%"
+true
+"srcx"
+true
+true
+"s!"
+:frozen

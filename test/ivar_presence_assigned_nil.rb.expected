@@ -1,0 +1,72 @@
+[:@name]
+false
+#<Person:0x @name="Ann">
+[:@name, :@nickname]
+true
+#<Person:0x @name="Ann", @nickname=nil>
+[:@x]
+false
+nil
+"\x04\bo:\x06N\x06:\a@xi\x06"
+[:@x]
+[:@x]
+[:@x]
+[#<N:0x @x=1>]
+{k: #<N:0x @x=1>}
+[:@x, :@y]
+true
+"instance-variable"
+"\x04\bo:\x06N\a:\a@xi\x06:\a@y0"
+[:@x, :@y]
+[:@x, :@y]
+[:@x, :@y]
+[#<N:0x @x=1, @y=nil>]
+{k: #<N:0x @x=1, @y=nil>}
+#<Holder:0x @n=#<N:0x @x=1>>
+[:@k]
+[:@a, :@k]
+nil
+[:@a, :@b, :@k]
+[:@a, :@b, :@k, :@p, :@q]
+nil
+[:@a, :@b, :@k, :@p, :@q, :@r]
+[:@a, :@b, :@k, :@p, :@q, :@r]
+[:@a, :@b, :@k, :@p, :@q, :@r, :@t]
+[:@a, :@b, :@k, :@p, :@q, :@r, :@t, :@u, :@v]
+[:@a, :@b, :@k, :@p, :@q, :@r, :@t, :@u, :@v, :@w]
+[:@a, :@k]
+[:@a, :@b, :@k]
+[:@a, :@c]
+[:@a, :@b, :@c, :@tag]
+true
+[]
+nil
+false
+[:@x]
+#<Box:0x @o=#<Aa:0x @a=1>>
+#<Box:0x @o=#<Bb:0x @c=2>>
+#<Box:0x @o=#<Aa:0x @a=1, @b=nil>>
+[]
+[:@x]
+Ui!
+[:@a]
+[:@a, :@n]
+true
+[:@a, :@m]
+[:@a]
+[:@a, :@z]
+[:@a, :@q]
+#<Hold:0x @o=#<Aa:0x @a=1>>
+#<Hold:0x @o=#<Bb:0x @c=2>>
+#<Hold:0x @o=#<Aa:0x @a=1, @b=nil>>
+false
+true
+[:@y]
+#<Km:0x @y=3>
+[]
+[]
+[:@a]
+0
+1
+[:@a]
+true

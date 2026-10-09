@@ -6,6 +6,7 @@
 #endif
 #include "sp_sched.h"
 #include "sp_alloc.h"   /* sp_box_nil / sp_box_obj */
+#include "sp_exc.h"     /* sp_exc_cls_display / sp_exc_cls_unnamed (the thread report) */
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -2030,7 +2031,9 @@ static void sp_thread_report(sp_thread *t) {
   SP_GC_ROOT_STR(msg);
   const char *ins = sp_Thread_inspect(t);
   fprintf(stderr, "%s terminated with exception (report_on_exception is true):\n", ins);
-  fprintf(stderr, "%s (%s)\n", (msg && *msg) ? msg : cls, cls);
+  const char *shown = sp_exc_cls_display(cls);   /* an unnamed Class.new class takes no suffix */
+  if (sp_exc_cls_unnamed(shown)) fprintf(stderr, "%s\n", (msg && *msg) ? msg : shown);
+  else fprintf(stderr, "%s (%s)\n", (msg && *msg) ? msg : shown, shown);
 }
 
 /* Park/wake primitives (defined below; used by join here). */
