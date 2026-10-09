@@ -515,6 +515,12 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
         emit_boxed(c, av[0], b);
         buf_puts(b, ")");
       }
+      else if (repr_share_rule(c) && at == TY_STRING && repr_of(c, id).as_ty == TY_POLY_ARRAY) {
+        /* The inferred boxed element keeps its shared String handle. */
+        int t = ++g_tmp;
+        buf_printf(b, "({ sp_String *_t%d = ", t); emit_strbuf_handle_of(c, av[0], b);
+        buf_printf(b, "; SP_GC_ROOT(_t%d); sp_kernel_array(sp_box_nullable_obj(_t%d, SP_BUILTIN_STRBUF)); })", t, t);
+      }
       else if (at == TY_INT || at == TY_FLOAT || at == TY_STRING) {
         const char *ak = at == TY_INT ? "Int" : at == TY_FLOAT ? "Float" : "Str";
         int t = ++g_tmp;
