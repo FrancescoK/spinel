@@ -15051,6 +15051,9 @@ int tail_iter_receiver(Compiler *c, int id) {
   if (!rt) return -1;
   if (!sp_streq(rt, "LocalVariableReadNode") && !sp_streq(rt, "InstanceVariableReadNode") &&
       !sp_streq(rt, "SelfNode")) return -1;
+  /* a scan's answer is the String it walked, which a boxed read is not: the
+     value form checks the boxed subject and answers that String */
+  if (is_scan_name(nm) && comp_ntype(c, r) == TY_POLY) return -1;
   return r;
 }
 
@@ -15455,9 +15458,12 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
      below produces the tail value by RE-READING the receiver, which it cannot
      do for a call without evaluating it twice, so it emitted the loop and let
      the method fall through to nil. The value path hoists the receiver into a
-     temp before the loop and yields that temp, so route these there. */
+     temp before the loop and yields that temp, so route these there. A
+     `"lit".scan(re) { }` is one of them: its subject is a literal, a
+     constant or a call, and the method fell through to nil. */
   int is_tail_recv_val = sp_streq(ty, "CallNode") && nt_ref(nt, id, "block") >= 0 &&
-                         (iter_value_answers_recv(c, id) || num_iter_answers_recv(c, id)) &&
+                         (iter_value_answers_recv(c, id) || num_iter_answers_recv(c, id) ||
+                          (tv_name && is_scan_name(tv_name))) &&
                          tail_iter_receiver(c, id) < 0;
   if (!is_tail_loop && !is_tail_valued && !is_tail_recv_val &&
       sp_streq(ty, "CallNode") && nt_ref(nt, id, "block") >= 0 &&
