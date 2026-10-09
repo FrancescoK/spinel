@@ -998,6 +998,10 @@ spinel: test/reject/string_array_uplus_param.rb:7: a String variable added to an
 spinel: test/reject/string_bang_result_mutation.rb:5: the result of a String bang method, which is its receiver, is mutated in place (a String is not yet shared by reference through a bang method's result). Mutate the receiver instead.
 == test/reject/string_bang_result_mutation.rb [promote] rc=1
 spinel: test/reject/string_bang_result_mutation.rb:5: the result of a String bang method, which is its receiver, is mutated in place (a String is not yet shared by reference through a bang method's result). Mutate the receiver instead.
+== test/reject/string_bang_result_second_name.rb [default] rc=1
+spinel: test/reject/string_bang_result_second_name.rb:7: the result of a String bang method, which is its receiver, is mutated in place (a String is not yet shared by reference through a bang method's result). Mutate the receiver instead.
+== test/reject/string_bang_result_second_name.rb [promote] rc=1
+spinel: test/reject/string_bang_result_second_name.rb:7: the result of a String bang method, which is its receiver, is mutated in place (a String is not yet shared by reference through a bang method's result). Mutate the receiver instead.
 == test/reject/string_boxed_local_container_element.rb [default] rc=1
 spinel: test/reject/string_boxed_local_container_element.rb:7: a String a boxed local holds is stored into a container and mutated in place through it (a String is not yet shared by reference through a boxed local's container element). Mutate the String through the local itself.
 == test/reject/string_boxed_local_container_element.rb [promote] rc=1
