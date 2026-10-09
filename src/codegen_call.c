@@ -7031,6 +7031,7 @@ static void emit_poly_temp_as(Compiler *c, TyKind pt, int tmp, TyKind at, int ro
   else { emit_obj_upcast_prefix(c, pt, at, pa); buf_puts(pa, tn); }
 }
 
+static int emit_poly_boxed_shared_arg(Compiler *c, const PolyArgs *A, int k, Buf *pa);
 /* The gather of a layout whose count is the run time's, built from the
    temps (emit_splat_gather builds it from the nodes, which would run them a
    second time): every positional, a splat spread, the keyword hash last
@@ -7047,8 +7048,12 @@ static int emit_poly_arm_gather(Compiler *c, Scope *ms, const ArgLayout *L, cons
       continue;
     }
     Buf eb; memset(&eb, 0, sizeof eb);
+    /* a String variable that is the shared handle rides as the handle, as
+       a direct call's gather boxes it: its temp holding the String's value
+       boxed a copy, and a parameter the gather funds appended to that */
     if (A->atmp_ty[k] == TY_POLY) buf_puts(&eb, tn);
-    else emit_boxed_text(c, A->atmp_ty[k], tn, &eb);
+    else if (A->atmp_ty[k] != TY_STRING || !emit_poly_boxed_shared_arg(c, A, k, &eb))
+      emit_boxed_text(c, A->atmp_ty[k], tn, &eb);
     buf_printf(g_pre, " sp_PolyArray_push(_t%d, %s);", ct, eb.p ? eb.p : "sp_box_nil()");
     free(eb.p);
   }
