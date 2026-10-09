@@ -2859,9 +2859,11 @@ int emit_step_array_expr(Compiler *c, int id, Buf *b) {
   int args = nt_ref(nt, id, "arguments");
   int sc = 0; const int *sv = args >= 0 ? nt_arr(nt, args, "arguments", &sc) : NULL;
   if (comp_ntype(c, id) == TY_ENUMERATOR && (sc == 0 || nt_kind(nt, sv[0]) == NK_NilNode)) {
-    buf_puts(b, "sp_range_endless_step("); emit_boxed(c, recv, b); buf_puts(b, ", ");
+    int t = ++g_tmp;
+    buf_printf(b, "({ sp_RbVal _er%d = ", t); emit_boxed(c, recv, b);
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_er%d); sp_RbVal _es%d = ", t, t);
     if (sc >= 2) emit_boxed(c, sv[1], b); else buf_puts(b, "sp_box_int(1)");
-    buf_puts(b, ")");
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_es%d); sp_range_endless_step(_er%d, _es%d); })", t, t, t);
     return 1;
   }
   if (sc < 1) return 0;

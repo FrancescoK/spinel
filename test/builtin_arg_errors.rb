@@ -57,3 +57,14 @@ show { :ab.upcase(foo: 1) }
 u = +"ab"
 show { u.upcase!(foo: 1) }
 p u
+
+bin = "\xFFab\xFF".b
+[bin.strip("\xFF".b), bin.lstrip("\xFF".b), bin.rstrip("\xFF".b), "xa\xE9bx".b.strip("x")].each { |r| p r, r.encoding, r.bytes }
+p "aab".strip("a").encoding
+
+$order = []
+def step_recv(v) = ($order << :recv; v)
+def step_by(v) = ($order << :step; v)
+p step_recv(1).step(nil, step_by(2)).first(3), $order
+x = 1
+p (x += 1; x).step(nil, (x *= 10; x)).first(3)
