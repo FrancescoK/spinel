@@ -3124,7 +3124,8 @@ static int infer_new_call(Compiler *c, int id, const NodeTable *nt, const char *
       if (cn && (is_builtin_exception_name(cn) || superclass_builtin_exc_name(nt, recv)))
         { *out = TY_EXCEPTION; return 1; }
       /* ::Array.new / ::String.new / ::StringIO.new etc. */
-      if (is_array_class_name(cn) && argc == 2) { *out = infer_array_new_fill(c, argv[1]); return 1; }
+      if (is_array_class_name(cn) && argc == 2 && nt_ref(nt, id, "block") < 0)
+        { *out = infer_array_new_fill(c, argv[1]); return 1; }
       if (cn && sp_streq(cn, "Array")) { *out = TY_POLY_ARRAY; return 1; }
       if (cn && (is_object_base_name(cn))) { *out = TY_POLY; return 1; }
       if (cn && sp_streq(cn, "String")) { *out = TY_STRING; return 1; }
@@ -3172,7 +3173,8 @@ static int infer_new_call(Compiler *c, int id, const NodeTable *nt, const char *
         if (!(cn && is_builtin_reopen(cn))) { *out = ty_object(ci); return 1; }
       }
       if (cn && is_builtin_exception_name(cn)) { *out = TY_EXCEPTION; return 1; }
-      if (is_array_class_name(cn) && argc == 2) { *out = infer_array_new_fill(c, argv[1]); return 1; }
+      if (is_array_class_name(cn) && argc == 2 && nt_ref(nt, id, "block") < 0)
+        { *out = infer_array_new_fill(c, argv[1]); return 1; }
       if (cn && sp_streq(cn, "Array")) {
         int blk = nt_ref(nt, id, "block");
         if (blk >= 0) {
