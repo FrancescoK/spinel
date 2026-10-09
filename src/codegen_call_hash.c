@@ -493,6 +493,8 @@ int emit_op_hash_set_default(Compiler *c, const BopCtx *x, Buf *b) {
      nil-typed value (a nil literal, or a call that returns nil as void)
      is evaluated for its effects and stored as nil. */
   TyKind at = comp_ntype(c, argv[0]);
+  int shared_default = strbuf_hash_default_arg(c, x->id) >= 0;
+  if (shared_default) at = TY_STRBUF;
   int is_nil = at == TY_NIL || at == TY_VOID;
   int held = !is_nil && (ty_is_object(at) || c_type_name(at));
   int t = ++g_tmp, tv = ++g_tmp;
@@ -500,14 +502,18 @@ int emit_op_hash_set_default(Compiler *c, const BopCtx *x, Buf *b) {
   snprintf(av, sizeof av, is_nil ? "0" : "_t%d", tv);
   buf_printf(b, "({ %s _t%d = ", c_type_name(rt), t); emit_expr(c, recv, b);
   buf_printf(b, "; SP_GC_ROOT(_t%d);", t);
-  if (held) { buf_puts(b, " "); emit_ctype(c, at, b); buf_printf(b, " _t%d = ", tv); emit_expr(c, argv[0], b); buf_puts(b, ";"); }
+  if (shared_default) {
+    buf_printf(b, " sp_String *_t%d = ", tv); emit_strbuf_handle_of(c, argv[0], b);
+    buf_printf(b, "; SP_GC_ROOT(_t%d);", tv);
+  }
+  else if (held) { buf_puts(b, " "); emit_ctype(c, at, b); buf_printf(b, " _t%d = ", tv); emit_expr(c, argv[0], b); buf_puts(b, ";"); }
   else if (is_nil) { buf_puts(b, " (void)("); emit_expr(c, argv[0], b); buf_puts(b, ");"); }
   buf_printf(b, " if (_t%d && sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s);",
              t, t, t, hash_box_cls(rt));
   /* --share-strings: a String the rule shares is the default itself (`h.default
      << x`, `h[:missing] << x` change it): its handle, boxed */
   char dref[1024];
-  int dhandle = held && (at == TY_STRING || at == TY_STRBUF) && strbuf_var_handle(c, argv[0], dref, sizeof dref);
+  int dhandle = !shared_default && held && (at == TY_STRING || at == TY_STRBUF) && strbuf_var_handle(c, argv[0], dref, sizeof dref);
   if (rt == TY_SYM_POLY_HASH || rt == TY_STR_POLY_HASH || rt == TY_POLY_POLY_HASH) {
     buf_printf(b, " if (_t%d) _t%d->default_v = ", t, t);
     if (is_nil) buf_puts(b, "sp_box_nil()");
@@ -542,7 +548,8 @@ int emit_op_hash_set_default(Compiler *c, const BopCtx *x, Buf *b) {
     buf_puts(b, ";");
   }
   buf_puts(b, " ");
-  if (held || is_nil) buf_puts(b, av); else emit_expr(c, argv[0], b);
+  if (shared_default && !repr_of(c, x->id).demand) buf_printf(b, "sp_strbuf_read_pub(%s)", av);
+  else if (held || is_nil) buf_puts(b, av); else emit_expr(c, argv[0], b);
   buf_puts(b, "; })"); return 1;
 }
 
