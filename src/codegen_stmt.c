@@ -1864,6 +1864,11 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
   }
   if (x < 0 || !strbuf_route_carries(c, v, 0)) return 0;
   v = unwrap_parens(c, v);
+  /* `s&.to_s`: the operand's handle, nil for a nil operand. */
+  if (x == repr_string_conversion_operand(c, v) && call_is_safe_nav(nt, v) && repr_of(c, x).kind != RK_BOXED) {
+    emit_strbuf_handle_of(c, x, b);
+    return 1;
+  }
   if (x == v && bop_share_named(BOP_ANY_ARRAY, nt_str(nt, v, "name")) == BSH_SUM) {
     int argc = 0; const int *argv = call_args(nt, v, &argc);
     buf_puts(b, "sp_poly_as_strbuf(");
@@ -1958,6 +1963,10 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
     t = hold_operand(c, x, TY_POLY, 0, t, 1, " ", b);
     int pickup = repr_call_returns_handle(c, v);
     buf_printf(b, "sp_poly_is_strbuf(_t%d) ? sp_poly_as_strbuf(_t%d) : ", t, t);
+    /* `s&.to_s` on a nil box answers nil; the guard is this test, not one
+       hoisted ahead of the held box. */
+    int sn = call_is_safe_nav(nt, v), sn_skip = g_sn_skip;
+    if (sn) buf_printf(b, "_t%d.tag == SP_TAG_NIL ? (sp_String *)NULL : ", t);
     if (repr_boxed_to_s_operand(c, v) >= 0)
       buf_printf(b, "(_t%d.tag == SP_TAG_OBJ && (_t%d.cls_id == SP_BUILTIN_EXCEPTION || "
                     "sp_is_exc_subclass_cls(_t%d.cls_id))) ? sp_exc_message_handle((sp_Exception *)_t%d.v.p) : ",
@@ -1967,7 +1976,9 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
     else buf_puts(b, "sp_String_new_shared(");
     int mark = view_bind(x, "_t%d", t);
     int sv = view_push_repr(c, v, VR_STRBUF_BOX, 0), sd = view_push_repr(c, v, VR_HANDLE_DEMAND, 0);
+    if (sn) g_sn_skip = v;
     emit_expr(c, v, b);
+    g_sn_skip = sn_skip;
     view_pop(c, sd); view_pop(c, sv);
     view_unbind(mark);
     /* As in the deep-return pickup, nil wins over an earlier publication. */
@@ -2026,8 +2037,11 @@ int strbuf_value_carries(Compiler *c, int v) {
 int strbuf_builtin_tail(Compiler *c, int v) {
   if (!repr_share_rule(c) || !c->share || v < 0 || nt_kind(c->nt, v) != NK_CallNode ||
       an_arg_is_shared_handle(c, v)) return 0;
-  /* Only the block route carries a demanded handle through &.'s guard. */
-  if (sn_guard_pending(c, v) && strbuf_route_operand(c, v) != v) return 0;
+  /* Only the block route carries a demanded handle through &.'s guard.
+     A conversion does too: its route answers the operand's handle, nil for
+     a nil operand. */
+  if (sn_guard_pending(c, v) && strbuf_route_operand(c, v) != v && repr_string_conversion_operand(c, v) < 0 &&
+      repr_boxed_to_s_operand(c, v) < 0) return 0;
   TyKind t = repr_of(c, v).ty;
   return (t == TY_STRING || t == TY_STRBUF) && cplan_user_fresh(c, v)->dispatch == CP_NONE &&
          !share_node_fresh(c, v) && strbuf_value_carries(c, v);
@@ -2069,6 +2083,8 @@ static int strbuf_route_nonnil(Compiler *c, int v) {
   if (strbuf_route_exc_message(c, v)) return 1;
   /* A fresh user return may be nil, unlike the builtin conversion. */
   if (repr_boxed_to_s_operand(c, unwrap_parens(c, v)) >= 0) return 0;
+  /* `s&.to_s` answers nil for a nil s, where `s.to_s` answers "". */
+  if (repr_string_conversion_operand(c, v) >= 0 && call_is_safe_nav(c->nt, unwrap_parens(c, v))) return 0;
   /* itself also preserves a nil receiver on the String route. */
   const char *nm = nt_str(c->nt, unwrap_parens(c, v), "name");
   if (nm && is_receiver_conversion(nm) && is_self_copy(nm)) return 0;
@@ -18241,6 +18257,16 @@ static int strbuf_flow_unseen(Compiler *c, int v) {
          bop_share_named(BOP_ENV, nt_str(nt, v, "name")) == BSH_PURE);
 }
 
+/* Does every method the pickup call v reaches publish its handle (the
+   settled ret_handle)? A pickup marked while the types were still moving
+   can reach a tail that publishes none, and the call then answers a copy.
+   Targets the plan cannot list are left to the mark. */
+static int strbuf_pickup_published(Compiler *c, int v) {
+  int tg[CPT_MAX], n = cplan_targets(c, v, tg, CPT_MAX);
+  for (int i = 0; i < n; i++)
+    if (!c->scopes[tg[i]].ret_handle) return 0;
+  return 1;
+}
 static int strbuf_flow_value(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, int depth) {
   const NodeTable *nt = c->nt;
   v = unwrap_parens(c, v);
@@ -18259,7 +18285,8 @@ static int strbuf_flow_value(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, in
   if (r.kind == RK_STRBUF && r.strbuf_src != RS_FRESH && r.strbuf_src != RS_NONE) return 1;
   /* the deep-return pickup: the handle the method's tail publishes; an
      attr reader's slot read on self: the slot's handle */
-  if (ctx != SFC_ELEM && ctx != SFC_TAIL && k == NK_CallNode && strbuf_call_picks_up(c, v)) return 1;
+  if (ctx != SFC_ELEM && ctx != SFC_TAIL && k == NK_CallNode && strbuf_call_picks_up(c, v))
+    return strbuf_pickup_published(c, v);
   if (k == NK_CallNode && strbuf_self_reader_handle(c, v)) return 1;
   /* a demand-marked reader call typed as the handle: its read is the
      handle (strbuf_slot_ref's call arm, which a write and a mutator take
