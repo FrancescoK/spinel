@@ -8033,7 +8033,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
     /* see the zero-argument gate's own note: the emitters stand down by
        name, so the dispatch has to open by name too */
     int name_taken2 = user_defines_or_reads(c, name) || poly_cmethod_collision(c, id, name);
-    if (ncand > 0 || name_taken2 || is_index || is_pdelete || is_pdig || is_pvalues_at || is_pfirstn || is_include || is_fetch || is_push || is_unshift || is_pjoin || is_ppack || is_pred || is_strftime || is_intersect || is_arr_index || is_cover || is_gcdlcm || is_pmerge || is_ctryconv) {
+    if (ncand > 0 || name_taken2 || is_index || is_pdelete || is_pdig || is_pvalues_at || is_pfirstn || is_include || is_fetch || is_push || is_unshift || is_pjoin || is_ppack || is_pred || is_strftime || is_intersect || is_arr_index || is_cover || is_gcdlcm || is_pmerge || is_ctryconv || is_strsetop_n) {
       /* A splatted argument spreads across each arm's own parameters: its
          temp holds the array, and every arm gathers the call's positionals
          from the temps, judges the count they give and binds each parameter

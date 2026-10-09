@@ -507,6 +507,10 @@ static inline void sp_str_set_len(char *s, size_t len) {
    `io.read(0)` the binary encoding, and the shared empty string cannot carry
    it -- marking that would tag it for every other holder of the same pointer.
    So these allocate, and only on that path. */
+static inline char *sp_str_bin_like(const char *s, char *r) {
+  if (sp_str_is_binary(s)) sp_str_mark_binary(r);
+  return r;
+}
 static inline char *sp_str_empty_binary(void) {
   char *r = sp_str_alloc_raw(1);
   r[0] = 0;
