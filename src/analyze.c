@@ -27881,9 +27881,14 @@ static int pf_wanted(Compiler *c, const char *name) {
       TyKind rt = infer_type(c, recv);
       const char *rcn = ty_is_array(rt) ? "Array" : ty_is_hash(rt) ? "Hash"
                       : (rt == TY_STRING || rt == TY_STRBUF) ? "String"
+                      : rt == TY_RANDOM ? "Random"
                       : (rt == TY_INT || rt == TY_FLOAT || rt == TY_BIGINT) ? "Numeric" : NULL;
       int rci = rcn ? comp_class_index(c, rcn) : -1;
       if (rci >= 0 && comp_method_in_class(c, rci, name) >= 0) return 1;
+      /* a Float's or Symbol's own reopening is reached the same way */
+      int oci = rt == TY_FLOAT ? comp_class_index(c, "Float")
+              : rt == TY_SYMBOL ? comp_class_index(c, "Symbol") : -1;
+      if (oci >= 0 && comp_method_in_class(c, oci, name) >= 0) return 1;
       /* and an Object reopening's, on a builtin receiver, with a block or
          without one: the Object fallback reaches it the same way */
       int obj = comp_class_index(c, "Object");

@@ -13379,14 +13379,23 @@ int object_public_method_name(const char *n) {
 
 static int rbself_builtin(const char *cn) {
   static const char *const B[] = { "String", "Integer", "Float", "Symbol", "TrueClass",
-    "FalseClass", "NilClass", "Array", "Hash", "Time", "Numeric", "Range", "Regexp", NULL };
+    "FalseClass", "NilClass", "Array", "Hash", "Time", "Numeric", "Range", "Regexp", "Random", NULL };
   return str_in(cn, B);
+}
+
+/* 1 for Array, 2 for Random, else 0 (the `is_array` of rbself_walk) */
+static int rbself_kind(const char *cn) {
+  static const char *const A[] = { "Array", NULL };
+  static const char *const R[] = { "Random", NULL };
+  return str_in(cn, A) ? 1 : str_in(cn, R) ? 2 : 0;
 }
 
 static int rbself_array_method(const char *nm) {
   return core_method_name(nm) && !name_in_list(OBJECT_METHOD_NAMES, nm);
 }
 
+/* `is_array`: 1 in a method added to Array, 2 in one added to Random, whose
+   own `rand`, `seed` and `bytes` a bare call reaches before Kernel's. */
 static void rbself_walk(NodeTable *nt, int node, char **defs, int nd, int *changed, int is_array) {
   if (node < 0) return;
   NodeKind k = nt_kind(nt, node);
@@ -13394,7 +13403,7 @@ static void rbself_walk(NodeTable *nt, int node, char **defs, int nd, int *chang
   /* in a method added to Array, self is held boxed while typed as the poly
      array: as the receiver of an Array method it reads through the
      conversion (Object's methods, `self.class`, take the boxed value) */
-  if (k == NK_CallNode && is_array) {
+  if (k == NK_CallNode && is_array == 1) {
     int r = nt_ref(nt, node, "receiver");
     const char *nm = nt_str(nt, node, "name");
     if (r >= 0 && nt_kind(nt, r) == NK_SelfNode && nm && rbself_array_method(nm))
@@ -13405,12 +13414,13 @@ static void rbself_walk(NodeTable *nt, int node, char **defs, int nd, int *chang
     int user = 0;
     for (int i = 0; nm && i < nd; i++) if (sp_streq(defs[i], nm)) user = 1;
     if (nm && !user && ((core_method_name(nm) && !name_in_list(OBJECT_METHOD_NAMES, nm)) ||
-                        name_in_list(RB_OBJECT_PUBLIC, nm)) &&
+                        name_in_list(RB_OBJECT_PUBLIC, nm) ||
+                        (is_array == 2 && builtin_instance_method_known("Random", nm))) &&
         !sp_streq(nm, "lambda") && !sp_streq(nm, "proc") && !sp_streq(nm, "loop") &&
         !sp_streq(nm, "catch") && !sp_streq(nm, "throw") && !sp_streq(nm, "attr_reader") &&
         !sp_streq(nm, "attr_accessor") && !sp_streq(nm, "attr_writer") && !sp_streq(nm, "binding")) {
       int rself = fwd_new_node_like(nt, node, "SelfNode");
-      if (is_array && rbself_array_method(nm)) nt_node_set_int(nt, rself, "ary_self", 1);
+      if (is_array == 1 && rbself_array_method(nm)) nt_node_set_int(nt, rself, "ary_self", 1);
       nt_node_set_ref(nt, node, "receiver", rself);
       *changed = 1;
     }
@@ -13481,7 +13491,7 @@ int desugar_builtin_reopen_self_calls(Compiler *c) {
         if (nt_kind(nt, bs2[k]) == NK_DefNode && nt_str(nt, bs2[k], "name"))
           defs[nd++] = (char *)nt_str(nt, bs2[k], "name");
     }
-    rbself_defs(nt, nt_ref(nt, m, "body"), defs, nd, &changed, sp_streq(cn, "Array"));
+    rbself_defs(nt, nt_ref(nt, m, "body"), defs, nd, &changed, rbself_kind(cn));
   }
   if (changed) comp_grow_node_arrays(c);
   return changed;

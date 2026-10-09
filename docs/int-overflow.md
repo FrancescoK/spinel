@@ -33,6 +33,11 @@ almost always a bug or a case that needs `promote`; raising surfaces it at the
 point it happens rather than producing a truncated value. This is a deliberate
 deviation from CRuby (which would never raise here) in favour of loudness.
 
+A Float converted to an `Integer` outside the signed 64-bit range (`1e300.round`,
+`1.0e19.to_i`, `floor`, `ceil`) raises `RangeError` (`float out of Integer range
+(Bignum promotion pending)`) in every mode but `promote`, which answers the bignum
+as CRuby does.
+
 ### `wrap`
 
 `wrap` skips the overflow check entirely, so arithmetic is plain C wraparound.

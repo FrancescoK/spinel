@@ -193,6 +193,7 @@ const char *emit_str_format_held(Compiler *c, int recv, int arg, int fck, Buf *b
 /* That last case: the format is a call's answer and `arg` runs code, so the
    whole `recv % arg` is emitted as it was before the format was held. */
 int str_format_left_alone(Compiler *c, int recv, int arg);
+int reopen_yields_container(Compiler *c, Scope *m);
 int emit_str_format_untyped_array(Compiler *c, int recv, int a0n, int fck, Buf *b);
 void emit_voided_operands(Compiler *c, int recv, int arg, int v, Buf *b);
 int parse_named_format(const char *fmt, Buf *rew, const char **names, int *name_len, int maxn);
