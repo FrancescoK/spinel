@@ -5145,11 +5145,10 @@ static int ir_rdoc_directive(const char *s, size_t n) {
 }
 
 /* What kind of line a comment is, for the block grouping below. */
-typedef enum { CL_PROSE, CL_COLON, CL_RBS, CL_BAR } ir_cline;
+typedef enum { CL_PROSE, CL_COLON, CL_RBS } ir_cline;
 
 static ir_cline ir_classify(const char *s, size_t n) {
     if (n >= 2 && s[1] == ':') return ir_rdoc_directive(s + 2, n - 2) ? CL_PROSE : CL_COLON;
-    if (n >= 2 && s[1] == '|') return CL_BAR;
     size_t i = 1;
     if (i < n && s[i] == ' ') i++;
     if (n - i >= 4 && memcmp(s + i, "@rbs", 4) == 0 &&
@@ -5167,14 +5166,29 @@ static ir_cline ir_classify(const char *s, size_t n) {
    read, and is not applied -- which is said once, at the first one, rather
    than nothing at all. */
 static int sp_inline_rbs_run(pm_parser_t *parser, pm_node_t *root, const char *source, size_t len) {
-  (void)root; (void)source; (void)len;
+  (void)root; (void)len;
   if (!sp_inline_rbs_enabled) return 0;
+  int previous_line = 0, previous_col = -1, block_leading = 1;
   for (const pm_comment_t *c = (const pm_comment_t *)parser->comment_list.head; c; c = (const pm_comment_t *)c->node.next) {
     const uint8_t *s = c->location.start;
     size_t n = (size_t)(c->location.end - s);
-    if (c->type != PM_COMMENT_INLINE || sp_in_builtin(s) || n < 2) continue;
-    if (ir_classify((const char *)s, n) != CL_PROSE || s[1] == '[') {
-      int bl = pm_newline_list_line(&parser->newline_list, s, parser->start_line);
+    if (c->type != PM_COMMENT_INLINE || sp_in_builtin(s)) continue;
+    const uint8_t *line_start = s;
+    while (line_start > (const uint8_t *)source && line_start[-1] != '\n') line_start--;
+    int leading = 1;
+    for (const uint8_t *p = line_start; p < s; p++)
+      if (*p != ' ' && *p != '\t') { leading = 0; break; }
+    int bl = pm_newline_list_line(&parser->newline_list, s, parser->start_line);
+    int col = (int)(s - line_start);
+    int continued = leading && bl == previous_line + 1 && col == previous_col;
+    if (!continued) block_leading = leading;
+    previous_line = bl;
+    previous_col = col;
+    /* A trailing block is recognized by its first comment only. Leading
+       @rbs lines and trailing #[...] applications have distinct placements. */
+    if (n < 2 || (continued && !block_leading)) continue;
+    ir_cline kind = ir_classify((const char *)s, n);
+    if (kind == CL_COLON || (block_leading && kind == CL_RBS) || (!block_leading && s[1] == '[')) {
       const char *file = g_source_file;
       int line = bl;
       if (sp_line_map_n > 0 && bl >= 1 && bl <= sp_line_map_n && sp_line_orig[bl] > 0) { file = sp_file_table[sp_line_file[bl]]; line = sp_line_orig[bl]; }

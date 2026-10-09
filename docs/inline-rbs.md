@@ -1,8 +1,8 @@
 # Inline RBS comments
 
-Spinel reads RBS type annotations written as comments in the Ruby source,
-in the syntax [ruby/rbs](https://github.com/ruby/rbs) and
-[Sorbet](https://sorbet.org/docs/rbs-support) document:
+Spinel reads type annotations from Ruby comments using
+[ruby/rbs inline syntax](https://github.com/ruby/rbs/blob/e84e0724656b2ffd1c4f11f893e75b27aadddaf3/docs/inline.md).
+Inline RBS is enabled by default; `--no-inline-rbs` disables it.
 
 ```ruby
 class Bag
@@ -18,230 +18,172 @@ class Bag
     @count = items.size
   end
 
-  #: -> Array[Integer]
+  #: () -> Array[Integer]
   def items = @items || EMPTY
 end
 ```
 
-An annotation means exactly what the same signature in a `.rbs` file means
-to [`--rbs`](rbs-extract.md): it pins the slot, and the program compiles to
-the same C it would with that `.rbs` file. Annotations are comments, so
-CRuby ignores them and the program's behaviour under CRuby does not change.
-They are read on every compile; `--no-inline-rbs` turns them off.
+Inline annotations use the [`--rbs`](rbs-extract.md) type mapping and
+pinning rules. When both forms apply to a declaration, they produce the
+same generated C.
+CRuby ignores these comments, so they do not change CRuby's behavior.
+
+## Through the compiler
+
+![RBS declarations in the Spinel compiler](rbs-compilation.svg)
+
+The parser attaches inline declarations to Ruby AST nodes. The analyzer
+registers classes and methods, then applies supported declarations before
+inference. External `.rbs` signatures enter the same pinning stage.
+Inference determines the remaining types, and the compiler emits C for the
+native executable.
 
 ## What an annotation does
 
-An applied annotation is a seed, with the whole of a seed's trust model:
+An applied annotation uses the existing RBS seed trust model:
 
-1. **It is an assertion.** The slot is pinned to the declared type, and a
-   value the compiler can see that contradicts it is a compile error,
-   reported at the store (see [Contradictions](rbs-extract.md#contradictions)).
-2. **A seeded parameter converts its argument** on a dynamic call, and
-   raises `TypeError` where it cannot.
-3. **Built with `-DSP_RBS_CHECK`**, every place a boxed value narrows into a
-   pinned slot checks its tag and aborts on a mismatch
-   (see [Checking seeds](rbs-extract.md#checking-seeds)).
+1. **It asserts a type.** A contradictory value that the compiler can see
+   causes a compile error at the store. See
+   [Contradictions](rbs-extract.md#contradictions).
+2. **A seeded parameter converts its argument** on a dynamic call.
+   An incompatible argument raises `TypeError`.
+3. **With `-DSP_RBS_CHECK`**, boxed values that narrow into pinned slots
+   undergo tag checks. A mismatch aborts the program. See
+   [Checking seeds](rbs-extract.md#checking-seeds).
 
-A false annotation the compiler cannot see is not caught otherwise: the
-value is reinterpreted, as with a false `.rbs` signature. Write annotations
-that describe the program.
+Without these checks, a false annotation that the compiler cannot disprove
+can reinterpret a value incorrectly. Write annotations that describe the
+program, as with external RBS signatures.
 
-A contradiction is reported as the annotation's, naming both the code that
-contradicts it and the annotation:
+A contradiction names the store and the annotation:
 
 ```
 spinel: meter.rb:9: inline RBS annotation contradicted: @reading is declared Integer at meter.rb:6 but this assigns String
 ```
 
-Two messages of the compiled program itself -- the `SP_RBS_CHECK` abort
-(`--rbs seed violated`) and the `TypeError` of a `send` that picks a method
-whose seeded parameter the arguments contradict -- name the slot in
-`--rbs`'s words whichever source pinned it: the program does not carry
-where a pin came from.
+Runtime checks retain the existing `--rbs seed violated` wording. The
+compiled program does not retain the annotation's source location.
 
-Leaving a declaration unannotated leaves it to inference. Spinel does not
-adopt the references' default that an unannotated method is
-`(?) -> untyped` or inherits its super method's type, or that an
-unannotated attribute is `untyped`: those would box slots that inference
-types precisely today.
+Unannotated slots remain inferred. Spinel does not replace missing
+annotations with ruby/rbs's default `untyped` signatures.
 
 ## Supported forms
 
-| Form | Example | Source |
-|---|---|---|
-| Method type above a `def` | `#: (Integer, String) -> bool` | both |
-| No parameters | `#: -> void` | Sorbet |
-| `@rbs` method type | `# @rbs (Integer) -> Integer` | ruby/rbs |
-| Continued with `#\|` | `#: (Integer,` then `#\|  String) -> void` | Sorbet |
-| Continued by indentation | `# @rbs (Integer,` then `#   String) -> void` | ruby/rbs |
-| Parameter and return lines | `# @rbs x: Integer`, `# @rbs k: Symbol`, `# @rbs return: String` | ruby/rbs |
-| Return after the parameters | `def m(x) #: Integer` | ruby/rbs |
-| Endless `def` | `def m(x) = x #: Integer` | ruby/rbs `master` |
-| Class methods | above `def self.m`, or a `def` in `class << self` | both |
-| Modifiers | above `private def m(x)` | both |
-| Skip a method | `# @rbs skip` | ruby/rbs |
-| Attribute, trailing | `attr_reader :name, :title #: String` | ruby/rbs |
-| Attribute, leading | `#: String` on the line above `attr_accessor :name` | Sorbet |
-| Instance variable | `# @rbs @name: String` in a class body | ruby/rbs |
-| Instance variable write | `@name = nil #: String?` in an instance method | Sorbet |
+| Form | Example |
+|---|---|
+| Leading method signature | `#: (Integer, String) -> bool` |
+| No parameters | `#: () -> void` or `#: -> void` |
+| Leading `@rbs` signature | `# @rbs (Integer) -> Integer` |
+| Indented continuation | `#: (Integer,` followed by `#   String) -> void` |
+| Named parameter and return lines | `# @rbs x: Integer`, `# @rbs return: String` |
+| Trailing return on a regular method | `def m(x) #: Integer` |
+| Leading signature on an endless method | `#: (Integer) -> Integer` above `def m(x) = x` |
+| Class method in a class or module | A leading signature above `def self.m` |
+| Method modifier | A leading signature above `private def m(x)` |
+| Skip a method annotation | `# @rbs skip` |
+| Trailing attribute type | `attr_reader :name, :title #: String` |
+| Standalone class/module-body ivar | `# @rbs @name: String`, separated from the next declaration by a blank line |
 
-The types are the ones `--rbs` can pin: `Integer`, `Float`, `String`,
-`Symbol`, `bool`, `nil`/`void`, `untyped`, classes of the program,
-`Array[T]`, `Hash[K, V]`, `T?`, unions (as boxed values) and
-`singleton(C)`. See [Type vocabulary](rbs-extract.md#type-vocabulary).
+The supported types match `--rbs`: `Integer`, `Float`, `String`, `Symbol`,
+`bool`, `nil`/`void`, `untyped`, program classes, `Array[T]`, `Hash[K, V]`,
+`T?`, unions as boxed values, and `singleton(C)`. See
+[Type vocabulary](rbs-extract.md#type-vocabulary).
 
-A method's annotation is one signature: a method type (`#:` or
-`# @rbs (...) -> ...`), or parameter and return lines. The parameters of a
-method type are matched to the `def`'s by position and keyword name. Only
-required positional and keyword parameters can be seeded; a block parameter
-after them is left to inference.
-
-`@x = v #: T` declares the instance variable, as `@x: T` in a `.rbs` does;
-it is not a check of that one write.
+A method uses one signature: a method type or named parameter and return
+lines. Method-type parameters match Ruby parameters by position and keyword
+name. Required positional parameters and keywords, including optional keywords,
+can receive pins.
+A Ruby block parameter without an RBS block declaration remains inferred.
 
 ## Where an annotation attaches
 
-- A comment block above a `def` or an `attr_*` call attaches to it. Blank
-  lines and ordinary comments may come between them; a statement may not
-  (Sorbet's rule; ruby/rbs alone would also detach at a blank line).
-- A trailing `#:` attaches to the `def` whose parameter list ends on that
-  line, or to the attribute or instance variable write ending there.
-- `# @rbs @x: T` belongs to the class body it is written in, whichever
-  declaration follows it.
-- Inside `Name = Struct.new(...) do ... end`, `Class.new do` and
-  `Data.define do`, annotations belong to `Name`, as a `.rbs` file would
-  declare it.
-- Only the program's own files are read: the entry file and what it
-  `require`s and `require_relative`s, as the compiler parses them. A Ruby
-  file under an `--rbs` directory is never read.
+- Leading comments must form a consecutive block at the same column,
+  immediately above the declaration. A blank source line breaks attachment.
+  Ordinary comments can share the block. Indented text continues an RBS line.
+- Methods must belong to a static `class` or `module` declaration.
+  This includes reopened declarations and `def self.m` inside them.
+- A trailing `#:` return attaches to the line that ends a regular method's
+  parameter list. An endless method needs a leading signature.
+- Attribute types attach only after the `attr_reader`, `attr_writer`, or
+  `attr_accessor` call. Leading types do not annotate attributes.
+- A class-body `# @rbs @x: T` applies only when its block is standalone
+  and the class/module body contains Ruby statements. Annotation-only bodies
+  have no analyzer node for the declaration and warn without a pin.
+  A following method, attribute, or constant consumes an adjacent block
+  without an ivar pin. Separate the ivar block with a blank source line.
+- Top-level methods, `class << self`, non-self singleton receivers, and
+  dynamic `Class.new`, `Struct.new`, or `Data.define` bodies receive no pins.
+  Explicit-receiver `C.class_eval` blocks receive no pins. Receiverless
+  `class_eval` inside a static declaration retains that declaration's context.
+- Spinel reads the entry file and required Ruby files as it parses them.
+  It does not read Ruby files from an `--rbs` directory or comments inside
+  source strings passed to `class_eval`.
 
-## What is not applied, and what Spinel says
+These placements follow the
+[ruby/rbs visitor](https://github.com/ruby/rbs/blob/e84e0724656b2ffd1c4f11f893e75b27aadddaf3/lib/rbs/inline_parser.rb)
+and its
+[attachment tests](https://github.com/ruby/rbs/blob/e84e0724656b2ffd1c4f11f893e75b27aadddaf3/test/rbs/inline_parser_test.rb).
+In particular, the tests leave endless-method trailing returns untyped.
 
-Every comment that starts like an annotation is applied, refused, or
-ignored with a warning. Nothing is applied in part.
+## Diagnostics and limitations
+
+An error stops compilation. Unsupported signatures never apply only some
+of their types. Warnings leave annotations unapplied, except that an
+overridden return can remain inferred while supported parameter types apply.
 
 | Situation | Response |
 |---|---|
-| An annotation that does not parse | **error** at its line and column, with the RBS parser's message |
-| Two signatures for one method, or one parameter annotated twice | **error** naming both lines |
-| An annotation disagreeing with an `--rbs` signature, or with another annotation of the same method | **error** naming both |
-| A type Spinel cannot pin: literal types, interfaces, tuples, records, procs, `self`/`instance`/`class`, type variables | **warning**; the whole annotation is ignored |
-| A type naming a class the program does not define (`Time`, `Array[Time]`, `Net::HTTP`) | **warning** naming the type as written; the whole annotation is ignored |
-| Optional, rest, trailing, rest-keyword and block parameters (`?T`, `*T`, `# @rbs *a:`, `&block:`) | **warning**; ignored |
-| Overloads (several `#:` lines, or `\|` in `# @rbs`) and `...` | **warning**; ignored (`--rbs` keeps the first overload; an annotation is never applied in part) |
-| Generic methods `#: [U] (U) -> U` | **warning**; ignored |
-| Local variables `x = v #: T`, casts `#: as T`, `#: as !nil`, `#: as untyped`, `#: absurd`, `#: self as T` | **warning**; ignored: Spinel does not hold a type for one expression |
-| Constants `X = 1 #: Integer`, `#: class-alias`, `#: [E]` on a class, `#[T]` on a superclass or mixin, `#: type t = ...` | **warning**; ignored |
-| An instance variable written in a class body or class method, or declared in `class << self` | **warning**; ignored: a class's own variables are not seeded |
-| An annotation that attaches to nothing (a statement follows it, the file ends, it is inside a method body) | **warning** with the reason |
-| An annotated method or attribute the analyzer finds no class for | **warning**; ignored |
-| The return type of a method a related class overrides | **warning**; the return stays inferred and the parameters are applied, as with `--rbs` |
-| An annotated method of a module mixed in with `include`, `extend` or `prepend` (calls run a copy made for each class it is mixed into) | **warning** naming the mixin; ignored. The same signature through `--rbs` is not applied either: it reaches the module's own method, which is copied away. A `module_function` (or `extend self`) method is applied, since its one function serves every caller |
-| An annotated `def` that a later definition of the same method replaces -- a `def` in a reopened class, a `def` in a `class_eval` block, a `define_method` -- when that definition has no applied annotation of its own (none, one that is ignored, or one naming a type Spinel cannot pin) | **warning** naming the replacement; ignored, since the annotated code never runs |
+| Malformed RBS annotation | Error with the parser's message and source position |
+| Two signatures for one method, or duplicate parameter annotations | Error naming both locations |
+| Conflicting applied inline or external declarations | Error naming both locations |
+| Unseedable types: literals, interfaces, tuples, records, procs, `self`/`instance`/`class`, type variables | Warning; ignore the whole annotation |
+| Unknown program class, such as `Time` or `Array[Time]` | Warning naming the type as written; ignore the whole annotation |
+| Optional positional, rest, trailing, rest-keyword, or RBS block parameters | Warning; ignore the whole signature |
+| Overloads, `...`, generic method signatures, and superclass/mixin type arguments | Warning; ignore the annotation |
+| Constants and type/module declarations that have no analyzer pin | Warning; ignore the annotation |
+| Unattached annotations and unsupported placements | Warning with the reason; no pin |
+| Return of a method overridden by a related class | Warning; leave the return inferred and apply supported parameter types, as with `--rbs` |
+| Module methods copied through `include`, `extend`, or `prepend` | Warning; no pin reaches those per-class copies, as with `--rbs` |
+| Annotated method replaced by a later unannotated or unsupported definition | Warning naming the replacement; ignore the original annotation |
 
-An error stops the compile; a warning does not, and the program compiles as
-it would without the annotation. Messages look like
-`spinel: FILE:LINE:COL: warning: inline RBS: ... is not applied: ...`,
-where COL is the column of the comment's `#`, and a type is named as the
-comment wrote it.
+A `module_function` or `extend self` method can receive a pin because its
+function serves every caller. Other module methods copied into classes
+need separate analyzer support.
 
-These are never annotations, and are not reported:
+Warnings use this format:
 
-- RDoc directives: `#:nodoc:`, `#:yields:`, `#:call-seq:`, `#:stopdoc:` and
-  the rest of RDoc's `:name:` list. None of them is valid RBS.
-- Prose, magic comments (`# frozen_string_literal:`, `# typed:`),
-  `# spinel:` directives, and comments that only mention `#:` or `@rbs`
-  after other text.
-- `#` inside strings, heredocs, `%`-literals and regexps, and anything in a
-  `=begin`/`=end` block.
-- Sorbet and YARD doc tags such as `# @abstract`, `# @override`, `# @final`.
-- Comments in source compiled at build time from a string (`class_eval`).
+```
+spinel: FILE:LINE:COL: warning: inline RBS: ... is not applied: ...
+```
+
+The column identifies the comment's `#`. Type names retain their source
+spelling.
+
+Prose, RDoc directives such as `#:nodoc:`, ordinary documentation tags,
+magic comments, and `# spinel:` directives are not annotations. Strings,
+heredocs, regexps, and `=begin`/`=end` blocks do not supply annotations.
+
+The compiler links the vendored ruby/rbs 4.0.1 grammar after `make deps`.
+A build without that parser warns once and skips inline annotations.
 
 ## With `--rbs`
 
-Both may be used together. Where an annotation and a `.rbs` signature say
-something about the same slot they must agree, and then the program compiles
-as with either alone; where they disagree the compile stops and names both.
-A `.rbs` directory generated from the annotations is therefore harmless.
+Inline and external signatures can coexist. Declarations for the same slot
+must agree. Agreement produces the same C as either declaration alone;
+disagreement stops compilation and names both locations.
 
-The same rule holds between two annotations of one method: a method
-annotated in two openings of its class, or a `def` replaced by a later
-annotated `def`, compiles when the two say the same thing and is refused,
-naming both, when they do not. Agreement compares the types themselves, so
-`Array[Foo]` and `Array[Bar]` disagree, as do `Integer` and `Integer?`.
-An annotation that is not applied, for whatever reason it was reported,
-takes part in neither comparison.
+This also applies to annotated methods in reopened classes. Comparison
+uses the full type: `Array[Foo]` differs from `Array[Bar]`, and `Integer`
+differs from `Integer?`. Ignored annotations do not participate.
 
-Two `.rbs` declarations of one method that differ are refused by `--rbs`
-itself, naming both, before any annotation is compared with them. An
-annotation that agrees with one of the two does not choose between them.
+Conflicting external `.rbs` declarations fail before comparison with inline
+annotations. An inline annotation does not select between them.
 
 ## Turning it off
 
-`--no-inline-rbs` compiles the program as if it had no annotations: nothing
-is applied and nothing is reported. Use it for code whose annotations were
-written for another checker and are not trusted to describe the program.
-`--rbs` still works with it.
-
-## Compatibility matrix
-
-Every inline form either reference documents, and what Spinel does with it.
-The type grammar is ruby/rbs's, and the comment surface Sorbet's; where they
-differ the row names the one followed. The references were read as of
-ruby/rbs `master` at `bf6ca576` (the parser Spinel links is the 4.0.1 release
-`make deps` fetches) and Sorbet's
-[RBS comments](https://sorbet.org/docs/rbs-support) page as of 2026-10-06.
-
-*Implemented* forms are applied as described above. *Deferred* forms are
-recognised and reported with a warning, and the program compiles as without
-them. *Ignored* forms are documentation and draw no message. No form is
-incompatible with Spinel as such; `#: as untyped` is the nearest, since its
-meaning ("stop checking this") has no counterpart in a compiler that does
-not check.
-
-| Form | Spelling | Source | Status | Why |
-|---|---|---|---|---|
-| Method type | `#: (Integer) -> String` above `def` | both | implemented | the seed a `.rbs` `def` gives |
-| Method of a mixed-in module | any method type above a `def` in a module that is included, extended or prepended | both | deferred | the calls run per-class copies no seed reaches, with `--rbs` as well; seeding every copy, for both, is a separate change |
-| No parameters | `#: -> void` | Sorbet | implemented | as above |
-| `@rbs` method type | `# @rbs (Integer) -> Integer` | ruby/rbs | implemented | as above |
-| Overloads | several `#:` lines; `\|` in `# @rbs` | both | deferred | a seed has one signature, and keeping the first would apply part of the annotation |
-| Super-type overload | `# @rbs ... \| ...`, `# @rbs ...` | ruby/rbs | deferred | needs the super method's type |
-| Continuation with `#\|` | `#: (Integer,` / `#\|  String) -> void` | Sorbet | implemented | joined, then read as one method type |
-| Continuation by indentation | `# @rbs (Integer,` / `#   String) -> void` | ruby/rbs | implemented | as above |
-| Parameter and return lines | `# @rbs x: Integer`, `# @rbs return: String` | ruby/rbs | implemented | matched to the `def`'s parameters by name |
-| Rest and block parameter lines | `# @rbs *a: T`, `**b: T`, `&block: T` | ruby/rbs | deferred | rest and block parameters are not seeded |
-| Trailing return | `def m(x) #: Integer` | ruby/rbs | implemented | the return seed |
-| Endless `def` | `def m(x) = x #: Integer` | ruby/rbs `master` | implemented | the return seed |
-| Class method | above `def self.m` | both | implemented | the class-method seed |
-| `class << self` | above a `def` inside it | Sorbet | implemented | the class-method seed |
-| Skip | `# @rbs skip` | ruby/rbs | implemented | no fact for that declaration |
-| Generic method | `#: [U] (U) -> U` | Sorbet | deferred | type variables are not representable |
-| Optional, rest, trailing, rest-keyword, block parameters | `(?Integer)`, `(*Integer)`, `?k: T`, `**T`, `{ ... }` | both | deferred, whole signature | `--rbs` drops these signatures; inline says so |
-| Block `self` type | `{ () [self: T] -> void }` | both | deferred | blocks are not seeded |
-| Modifiers | above `private def m` | both | implemented | attaches to the `def` |
-| Attribute, trailing | `attr_reader :x #: String` | ruby/rbs | implemented | the ivar seed of each name |
-| Attribute, leading | `#: String` above `attr_reader :x` | Sorbet | implemented | as above |
-| Instance variable | `# @rbs @x: String` in a class body | ruby/rbs | implemented | the ivar seed |
-| Instance variable write | `@x = v #: T` in an instance method | Sorbet | implemented, as a declaration | the ivar seed; not a check of that one write |
-| Class-level instance variable | `@x = v #: T` in a class body or class method; `# @rbs @x: T` in `class << self` | both | deferred | a class's own variables are not seeded |
-| Constant | `X = 42 #: Integer` | both | deferred | constants are not seeded; a literal constant is inferred already |
-| Alias | `#: class-alias`, `#: module-alias` | ruby/rbs | deferred | no use in compilation |
-| Local variable | `x = v #: T` | Sorbet | deferred | needs a type held for one local through inference |
-| Cast | `expr #: as T` | Sorbet | deferred | needs a type for one expression |
-| Non-nil cast | `expr #: as !nil` | Sorbet | deferred | as above |
-| Untyped cast | `expr #: as untyped` | Sorbet | deferred | see above |
-| Absurd | `x #: absurd` | Sorbet | deferred | exhaustiveness is a checker's feature |
-| `self` binding | `#: self as T` | Sorbet | deferred | needs `self` typed in `instance_eval` blocks |
-| Generic instance | `Box.new #: Box[Integer]` | Sorbet | deferred | generic classes are not modelled |
-| Generic class | `#: [E]` above `class` | Sorbet | deferred | as above |
-| Type alias | `#: type t = ...` | Sorbet | deferred | not seeded |
-| Superclass and mixin arguments | `class A < B #[T]`, `include M #[T]` | ruby/rbs | deferred | mixins are not modelled |
-| Module self type | `# @rbs module-self: T` | ruby/rbs `master` | deferred | not in 4.0.1; mixins are not modelled |
-| Types outside the subset | interfaces, literals, tuples, records, procs, `self`/`instance`/`class`, `top`/`bot`, type variables, in any form | both | deferred, whole annotation | not representable |
-| Doc tags | `# @abstract`, `# @override`, `# @overridable`, `# @final`, `# @interface`, `# @sealed`, `# @requires_ancestor:` | Sorbet | ignored | the same spellings are YARD doc tags |
-| RDoc directives | `#:nodoc:`, `#:yields:`, ... | -- | ignored | none is valid RBS |
-| Comments in `class_eval` strings | `class_eval "..."` | -- | ignored | parsed apart from the program's comments |
+`--no-inline-rbs` disables inline parsing, pins, and diagnostics.
+External `--rbs` signatures still apply. Use this option when source
+annotations are not trusted to describe the compiled program.
 
 ## What a signature buys
 
@@ -252,7 +194,7 @@ dispatched at run time -- becomes the declared C type.
 
 `benchmark/bm_rbs_items.rb` is one such call site. `Bag#items` returns
 `@items || EMPTY`, and some bags hold no array, so without its
-`#: -> Array[Integer]` the `.size` in the hot loop compiles to
+`#: () -> Array[Integer]` the `.size` in the hot loop compiles to
 `sp_poly_size`, a dispatch on a boxed value; with it, to
 `sp_IntArray_length`. `make bench-rbs` (`tools/rbs_bench.rb`) builds that
 program without RBS, with the annotation, and with the same signature
@@ -281,15 +223,3 @@ These numbers describe one loop on one machine. They show what one
 signature does to one call site; they are not a measure of how much faster
 a program gets, which depends on how much of its time is spent in slots
 inference could not type.
-
-## Limitations
-
-- A method's annotation reaches its method through the `def` itself, and a
-  class-level annotation its class through the class body it is written in,
-  so reopened classes, `class << self`, renamed same-named classes and the
-  bodies of `Struct.new`, `Class.new` and `Data.define` need no name matching.
-  Class names inside types (`#: () -> Item`) are resolved as `--rbs` resolves
-  them.
-- The reference grammar is the vendored `ruby/rbs` 4.0.1 parser, which the
-  compiler links when built after `make deps`. A compiler built from the
-  Prism gem alone cannot read annotations, and says so at the first one.

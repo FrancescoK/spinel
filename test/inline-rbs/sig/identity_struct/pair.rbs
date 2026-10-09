@@ -1,7 +1,0 @@
-class Outer
-  class Pair
-    def scaled: (untyped) -> untyped
-    @note: String?
-    attr_reader note: String?
-  end
-end

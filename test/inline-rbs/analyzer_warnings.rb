@@ -7,13 +7,14 @@ require_relative "analyzer_warnings_part"
 
 class Clock
   # @rbs @log: Array[Time]
+  # @rbs @zone: Net::HTTP
 
   attr_accessor :stamp #: Time?
 
   def initialize
     @log = []
     @stamp = nil
-    @zone = "UTC" #: Net::HTTP
+    @zone = "UTC"
   end
 
   #: (Integer) -> Time
@@ -29,10 +30,11 @@ class Clock
   def zone = @zone
 end
 
+# @rbs @noted: bool
 def note
-  @noted = true #: bool
+  @noted = true
 end
 
 c = Clock.new
 p c.at(1), c.size("abc"), c.stamp, c.zone
-p note, part_count([1, 2])
+p note, Counts.part_count([1, 2])

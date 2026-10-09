@@ -1,7 +1,0 @@
-class Foo
-  def m: (untyped) -> untyped
-end
-
-module Mod
-  def self.q: (untyped) -> untyped
-end

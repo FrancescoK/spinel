@@ -10,7 +10,7 @@ class Bag
     @items = items
   end
 
-  #: -> Array[Integer]
+  #: () -> Array[Integer]
   def items
     @items || EMPTY
   end

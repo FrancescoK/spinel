@@ -9,6 +9,7 @@ end
 
 class Box
   # @rbs @items: Array[Foo]
+
   def initialize
     @items = [Foo.new(1), Foo.new(2)]
   end

@@ -1,0 +1,6 @@
+class Association
+  def in_block: (untyped) -> untyped
+  attr_reader block_attr: String?
+  attr_accessor multiline: String?
+  def internal_blank: (untyped, untyped) -> untyped
+end

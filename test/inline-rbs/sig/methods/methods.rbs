@@ -8,12 +8,7 @@ class Calc
   def m9k: (untyped, k: untyped) -> untyped
   def m11: (untyped) -> untyped
   def m12: (untyped) -> untyped
-  def blank_line_between: (untyped) -> untyped
+  def adjacent_signature: (untyped) -> untyped
   def priv: (untyped) -> untyped
   def self.m13: (untyped) -> untyped
-  def self.m14: (untyped) -> untyped
-end
-
-class Object
-  def top_level: (untyped) -> untyped
 end

@@ -6,16 +6,16 @@
 class Label
   attr_reader :trailing #: String?
 
-  #: String?
-  attr_accessor :leading
+  attr_accessor :editable #: String?
 
   # @rbs @declared: String?
+  # @rbs	@assigned: String?
 
   def initialize
     @trailing = nil
-    @leading = nil
+    @editable = nil
     @declared = nil
-    @assigned = nil #: String?
+    @assigned = nil
     @plain = nil
   end
 
@@ -34,7 +34,7 @@ end
 
 l = Label.new
 p l.trailing
-p l.leading
+p l.editable
 p l.declared
 p l.assigned
 p l.plain

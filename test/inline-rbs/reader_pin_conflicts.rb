@@ -1,20 +1,24 @@
 # Direct ivar annotations and container-return-induced pins must agree in
 # either declaration order, as must differently named readers of one ivar.
 class IvarFirst
+  # @rbs @items: Array[String]
+
   def initialize
-    @items = [1] #: Array[String]
+    @items = [1]
   end
 
-  #: -> Array[Integer]
+  #: () -> Array[Integer]
   def items = @items
 end
 
 class ReaderFirst
-  #: -> Array[String]
+  #: () -> Array[String]
   def items = @items
 
+  # @rbs @items: Array[Integer]
+
   def initialize
-    @items = [1] #: Array[Integer]
+    @items = [1]
   end
 end
 
@@ -23,10 +27,10 @@ class StringsFirst
     @items = [1]
   end
 
-  #: -> Array[String]
+  #: () -> Array[String]
   def strings = @items
 
-  #: -> Array[Integer]
+  #: () -> Array[Integer]
   def items = @items
 end
 
@@ -35,9 +39,9 @@ class IntegersFirst
     @items = [1]
   end
 
-  #: -> Array[Integer]
+  #: () -> Array[Integer]
   def items = @items
 
-  #: -> Array[String]
+  #: () -> Array[String]
   def strings = @items
 end

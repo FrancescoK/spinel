@@ -3,11 +3,12 @@
 # without the define. check_false.rb is the dishonest half.
 
 class Row
-  #: String?
-  attr_accessor :s
+  # @rbs @n: Integer?
+
+  attr_accessor :s #: String?
 
   def initialize
-    @n = nil #: Integer?
+    @n = nil
     @s = nil
   end
 
@@ -18,11 +19,11 @@ class Row
   def n
     @n
   end
-end
 
-#: (Integer) -> Integer
-def take(x)
-  x
+  #: (Integer) -> Integer
+  def take(x)
+    x
+  end
 end
 
 # values arrive boxed, out of a poly container, so each store is a real
@@ -34,4 +35,4 @@ r.n = vals[0]
 p r.n
 r.s = vals[1]
 p r.s
-p take(vals[0])
+p r.take(vals[0])

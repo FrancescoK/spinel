@@ -32,7 +32,7 @@ HERE = <<~EOS
   #: (untyped) -> untyped
   # @rbs @x: Integer
 EOS
-WORDS = %w(#: #| #[ @rbs)
+WORDS = %w(#: #[ @rbs)
 RE = /#: x/
 
 d = Doc.new

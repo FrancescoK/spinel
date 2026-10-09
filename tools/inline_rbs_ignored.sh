@@ -8,8 +8,8 @@
 # of it reached the C: a fact applied early and reported later still shapes
 # the code its readers were compiled to. So the program is compiled once as
 # written; every annotation a `warning: inline RBS` line names is then
-# removed (the comment blanked, so no line moves, with the `#|` / `# |`
-# continuation lines and stacked `#:` overloads that belong to it), and the
+# removed (the comment blanked, so no line moves, with native same-column
+# indented continuation lines and stacked `#:` overloads), and the
 # program compiled again. The two C files must be identical byte for byte.
 #
 # The program's directory is copied whole, so `require_relative` finds the
@@ -47,11 +47,22 @@ for f in $(cut -d' ' -f1 "$tmp/lines" | sort -u); do
   awk -v lines="$lines" '
     BEGIN { n = split(lines, a, " "); for (i = 1; i <= n; i++) strip[a[i]] = 1 }
     strip[NR] {
+      col = match($0, /#(:|[ \t]*@rbs|\[)/)
+      prefix = substr($0, 1, col - 1)
+      trailing = prefix ~ /[^ \t]/
       if ($0 ~ /^[ \t]*#/) $0 = ""
       else sub(/[ \t]*#(:|[ \t]*@rbs|\[).*$/, "")
-      cont = 1; print; next
+      cont = col > 0; print; next
     }
-    cont && $0 ~ /^[ \t]*#[ \t]*(\||:)/ { print ""; next }
+    cont && $0 ~ /^[ \t]*#/ {
+      if (index($0, "#") == col) {
+        text = substr($0, col + 1)
+        if (substr(text, 1, 1) == " ") text = substr(text, 2)
+        if (trailing || text ~ /^[ \t]/ || text ~ /^[ \t]*$/ || text ~ /^:/) {
+          print ""; next
+        }
+      }
+    }
     { cont = 0; print }
   ' "$f" > "$tmp/stripped" && cat "$tmp/stripped" > "$f"
 done

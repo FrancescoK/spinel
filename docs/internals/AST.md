@@ -319,8 +319,8 @@ written onto the node it describes, and only onto that node:
   method's signature, as seed-file tags (`int`, `string?`, `obj_Foo`, ...;
   see [rbs-extract.md](../rbs-extract.md#seed-file-format)), one parameter
   field per parameter in the def's order, empty where unsaid, `-` for none.
-- `S <attr_* call | InstanceVariableWriteNode> rbs_ivar <tag>` -- the type of
-  each attribute the call declares, or of the written instance variable.
+- `S <attr_* call> rbs_ivar <tag>` -- the type of each attribute the call
+  declares.
 - `S <class body StatementsNode> rbs_ivars @x=<tag>@<line>@<file>@<col>,...` --
   the class body's `# @rbs @x: T` declarations, each with its position.
 - `I <node> rbs_line <line>`, `I <node> rbs_col <col>`, `I <node> rbs_file

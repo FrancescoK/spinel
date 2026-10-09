@@ -1,4 +1,0 @@
-class Counter
-  attr_reader label: String?
-  def bump: (untyped) -> untyped
-end

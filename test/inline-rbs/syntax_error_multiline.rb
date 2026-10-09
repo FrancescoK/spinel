@@ -1,7 +1,7 @@
 # spinel: not-cruby -- a malformed continued signature fails as a whole
 class Greeter
   #: (Integer,
-  #|  String) -> -> String
+  #   String) -> -> String
   def greet(n, s)
     s * n
   end

@@ -1,10 +1,12 @@
 # spinel: not-cruby -- a false instance variable annotation is refused
-# A write in a mixed-in module's method is copied into the class that
-# includes it; a false annotation on it is reported once, as --rbs reports
-# the equivalent declaration.
+# A mixed-in module's instance variable is declared in the module body.
+# A false assignment is reported once, as --rbs reports the equivalent
+# declaration.
 module Box
+  # @rbs @x: String
+
   def fill(v)
-    @x = v #: String
+    @x = v
   end
   def x = @x
 end

@@ -9,7 +9,7 @@ class Meter
     @reading = "zero"
   end
 
-  #: -> Integer
+  #: () -> Integer
   def label = "meter"
 
   #: (Integer) -> Integer

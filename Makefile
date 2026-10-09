@@ -2881,9 +2881,9 @@ ifeq ($(wildcard $(RBS_INC)/rbs/parser.h),)
 inline-rbs-test:
 	@echo "inline-rbs-test: parser-backed cases skipped (vendor/rbs not fetched; run 'make deps')"
 else
-INLINE_RBS_PARITY := methods attrs identity_reopen identity_collide identity_struct identity_class_new identity_data check_honest
+INLINE_RBS_PARITY := methods attrs association identity_reopen identity_collide check_honest
 INLINE_RBS_CHECKS := false_positives ignored_symlink warnings syntax_error syntax_error_multiline syntax_error_rbs two_annotations precedence_agree precedence_disagree reader_pin_precedence reader_pin_conflicts stray_rb override_family check_false off_switch \
-                     toplevel_def_self identity_block_forms duplicate_reopen_agree duplicate_reopen_disagree duplicate_nilable precedence_objarray duplicate_rbs_decl \
+                     placements duplicate_reopen_agree duplicate_reopen_disagree duplicate_nilable precedence_objarray duplicate_rbs_decl \
                      redefine_unannotated redefine_unannotated_req redefine_define_method redefine_class_eval redefine_ignored redefine_refused mixin_not_applied analyzer_warnings dump_ast_malformed \
                      contradiction_inline objarray_boxed
 INLINE_RBS_RESULTS := $(patsubst %,build/inline-rbs-results/%.par,$(INLINE_RBS_PARITY)) \
@@ -2900,7 +2900,11 @@ build/inline-rbs-results/%.par: FORCE | rbs-seed-extractor $(SP_RT_LIB) $(SPINEL
 	@mkdir -p $(@D); tmp=$$(mktemp -d /tmp/spinel-inlinerbs.XXXXXX); ok=1; t=$*; \
 	{ \
 	  $(SPINEL) $(IRB)/$$t.rb -c --no-line-map -o "$$tmp/inline.c" 2>"$$tmp/inline.err" || { echo "inline-rbs-test: FAIL ($$t: the inline compile failed)"; sed -n 1,5p "$$tmp/inline.err"; ok=0; }; \
-	  if [ -s "$$tmp/inline.err" ] && grep -v '^Wrote ' "$$tmp/inline.err" | grep -q .; then echo "inline-rbs-test: FAIL ($$t: the inline compile printed a diagnostic)"; sed -n 1,5p "$$tmp/inline.err"; ok=0; fi; \
+	  if [ "$$t" = association ]; then \
+	    grep -q 'association.rb:10:3: warning: inline RBS' "$$tmp/inline.err" && [ "$$(grep -c 'warning: inline RBS' "$$tmp/inline.err")" = 1 ] || { echo "inline-rbs-test: FAIL (association: expected one unused leading attribute annotation)"; cat "$$tmp/inline.err"; ok=0; }; \
+	    if grep -v '^Wrote ' "$$tmp/inline.err" | grep -v 'association.rb:10:3: warning: inline RBS' | grep -q .; then echo "inline-rbs-test: FAIL (association: unexpected diagnostics)"; cat "$$tmp/inline.err"; ok=0; fi; \
+	    $(call IRB_IGNORED,association.rb); \
+	  elif [ -s "$$tmp/inline.err" ] && grep -v '^Wrote ' "$$tmp/inline.err" | grep -q .; then echo "inline-rbs-test: FAIL ($$t: the inline compile printed a diagnostic)"; sed -n 1,5p "$$tmp/inline.err"; ok=0; fi; \
 	  $(SPINEL) $(IRB)/$$t.rb --no-inline-rbs --rbs $(IRB)/sig/$$t -c --no-line-map -o "$$tmp/rbs.c" >/dev/null 2>&1 || { echo "inline-rbs-test: FAIL ($$t: the --rbs compile failed)"; ok=0; }; \
 	  $(SPINEL) $(IRB)/$$t.rb --no-inline-rbs -c --no-line-map -o "$$tmp/none.c" >/dev/null 2>&1 || { echo "inline-rbs-test: FAIL ($$t: the unannotated compile failed)"; ok=0; }; \
 	  cmp -s "$$tmp/inline.c" "$$tmp/rbs.c" || { echo "inline-rbs-test: FAIL ($$t: inline RBS and the equivalent --rbs produce different C)"; diff "$$tmp/rbs.c" "$$tmp/inline.c" | head -10; ok=0; }; \
@@ -2909,9 +2913,6 @@ build/inline-rbs-results/%.par: FORCE | rbs-seed-extractor $(SP_RT_LIB) $(SPINEL
 	  identity_collide) \
 	    grep -Eq 'sp_RbVal sp_Left__Item_weigh' "$$tmp/inline.c" || { echo "inline-rbs-test: FAIL (Left::Item#weigh did not take its annotation)"; ok=0; }; \
 	    if grep -Eq 'sp_RbVal sp_Right__Item_weigh' "$$tmp/inline.c"; then echo "inline-rbs-test: FAIL (Left::Item's annotation pinned Right::Item)"; ok=0; fi ;; \
-	  identity_struct) \
-	    grep -Eq 'sp_RbVal sp_Pair_scaled' "$$tmp/inline.c" || { echo "inline-rbs-test: FAIL (a method in a Struct.new block did not take its annotation)"; ok=0; }; \
-	    [ "$$(grep -Ec 'const char \* iv_note;' "$$tmp/inline.c")" = 1 ] || { echo "inline-rbs-test: FAIL (an annotated Struct attribute pinned the wrong class, or none)"; ok=0; } ;; \
 	  esac; \
 	  if $(CC) -O0 -Ilib $(RBS_SEED_STRICT) "$$tmp/inline.c" $(SP_RT_LIB) $(LDFLAGS) -lm -o "$$tmp/$$t" 2>"$$tmp/cc.err"; then \
 	    "$$tmp/$$t" > "$$tmp/out" 2>"$$tmp/err"; rc=$$?; \
@@ -2954,10 +2955,10 @@ build/inline-rbs-results/%.res: FORCE | rbs-seed-extractor $(SP_RT_LIB) $(SPINEL
 	$(SPINEL) $(IRB)/warnings.rb $$fl -c --no-line-map -o "$$tmp/w.c" 2>"$$tmp/w.err" || { echo "inline-rbs-test: FAIL (an unapplied annotation stopped the compile)"; sed -n 1,5p "$$tmp/w.err"; ok=0; }; \
 	$(SPINEL) $(IRB)/warnings.rb $$fl --no-inline-rbs -c --no-line-map -o "$$tmp/n.c" >/dev/null 2>&1 || { echo "inline-rbs-test: FAIL (disabled warning fixture did not compile)"; ok=0; }; \
 	cmp -s "$$tmp/w.c" "$$tmp/n.c" || { echo "inline-rbs-test: FAIL (an annotation that was warned about was applied, in part or whole)"; diff "$$tmp/n.c" "$$tmp/w.c" | head -10; ok=0; }; \
-	for ln in 7 12 17 22 28 34 39 45 46 47 48 53 57 60 62 82 85; do \
+	for ln in 7 12 17 22 28 34 39 45 52 55 56 59 62 64 84 87; do \
 	  grep -q "warnings.rb:$$ln:[0-9:]* warning: inline RBS" "$$tmp/w.err" || { echo "inline-rbs-test: FAIL (no inline RBS warning at warnings.rb:$$ln)"; ok=0; }; done; \
 	grep -q "warnings_part.rb:2:[0-9:]* warning: inline RBS" "$$tmp/w.err" || { echo "inline-rbs-test: FAIL (a warning in a required file did not name that file and line)"; ok=0; }; \
-	[ "$$(grep -c 'warning: inline RBS' "$$tmp/w.err")" = 18 ] || { echo "inline-rbs-test: FAIL (expected 18 inline RBS warnings)"; cat "$$tmp/w.err"; ok=0; }; \
+	[ "$$(grep -c 'warning: inline RBS' "$$tmp/w.err")" = 17 ] || { echo "inline-rbs-test: FAIL (expected 17 inline RBS warnings)"; cat "$$tmp/w.err"; ok=0; }; \
 	if $(CC) -O0 -Ilib $$ovdef "$$tmp/w.c" $(SP_RT_LIB) $(LDFLAGS) -lm -o "$$tmp/w" 2>/dev/null; then \
 	  "$$tmp/w" > "$$tmp/w.out" 2>"$$tmp/w.run.err"; rc=$$?; \
 	  [ $$rc -eq 0 ] && [ ! -s "$$tmp/w.run.err" ] || { echo "inline-rbs-test: FAIL (warnings.rb $$fl: runtime failed)"; ok=0; }; \
@@ -3008,7 +3009,7 @@ build/inline-rbs-results/%.res: FORCE | rbs-seed-extractor $(SP_RT_LIB) $(SPINEL
 	  else echo "inline-rbs-test: FAIL (reader_pin_precedence $$fl: C did not compile)"; sed -n 1,10p "$$tmp/cc.err"; ok=0; fi; \
 	  if $(SPINEL) $(IRB)/reader_pin_precedence.rb $$fl --rbs $(IRB)/sig/reader_pin_disagree -c --no-line-map -o "$$tmp/d.c" >"$$tmp/d.err" 2>&1; then echo "inline-rbs-test: FAIL (conflicting external reader pins compiled $$fl)"; ok=0; fi; \
 	  [ "$$(grep -c 'disagrees with the .rbs signature' "$$tmp/d.err")" = 4 ] || { echo "inline-rbs-test: FAIL (expected four external reader-pin disagreements $$fl)"; cat "$$tmp/d.err"; ok=0; }; \
-	  for at in 5:2:ExplicitReader 18:6:ImplicitReader 18:7:ImplicitReader 25:11:MemoReader; do \
+	  for at in 5:2:ExplicitReader 19:6:ImplicitReader 19:7:ImplicitReader 26:11:MemoReader; do \
 	    ln=$${at%%:*}; rest=$${at#*:}; rln=$${rest%%:*}; cn=$${rest#*:}; \
 	    grep -q "reader_pin_precedence.rb:$$ln: inline RBS: the type of $$cn @items disagrees with the .rbs signature at .*readers.rbs:$$rln$$" "$$tmp/d.err" || { echo "inline-rbs-test: FAIL (external reader-pin disagreement omitted $$at $$fl)"; cat "$$tmp/d.err"; ok=0; }; \
 	  done; \
@@ -3018,7 +3019,7 @@ build/inline-rbs-results/%.res: FORCE | rbs-seed-extractor $(SP_RT_LIB) $(SPINEL
 	for fl in "" --int-overflow=promote; do \
 	  if $(SPINEL) $(IRB)/reader_pin_conflicts.rb $$fl -c --no-line-map -o "$$tmp/d.c" >"$$tmp/d.err" 2>&1; then echo "inline-rbs-test: FAIL (conflicting inline reader pins compiled $$fl)"; ok=0; fi; \
 	  [ "$$(grep -c 'disagrees with another annotation' "$$tmp/d.err")" = 4 ] || { echo "inline-rbs-test: FAIL (expected four inline reader-pin disagreements $$fl)"; cat "$$tmp/d.err"; ok=0; }; \
-	  for at in 8:5:IvarFirst 17:13:ReaderFirst 29:26:StringsFirst 41:38:IntegersFirst; do \
+	  for at in 10:4:IvarFirst 15:18:ReaderFirst 33:30:StringsFirst 45:42:IntegersFirst; do \
 	    ln=$${at%%:*}; rest=$${at#*:}; prev=$${rest%%:*}; cn=$${rest#*:}; \
 	    grep -q "reader_pin_conflicts.rb:$$ln: inline RBS: the type of $$cn @items disagrees with another annotation at .*reader_pin_conflicts.rb:$$prev$$" "$$tmp/d.err" || { echo "inline-rbs-test: FAIL (inline reader-pin disagreement omitted $$at $$fl)"; cat "$$tmp/d.err"; ok=0; }; \
 	  done; \
@@ -3056,34 +3057,34 @@ build/inline-rbs-results/%.res: FORCE | rbs-seed-extractor $(SP_RT_LIB) $(SPINEL
 	  if grep -v '^Wrote ' "$$tmp/n.err" | grep -q .; then echo "inline-rbs-test: FAIL ($$t: disabled annotations produced diagnostics)"; ok=0; fi; \
 	done; \
 	;; \
-	toplevel_def_self|identity_block_forms|duplicate_reopen_agree) \
-	case $* in \
-	toplevel_def_self) forms="5=sp_RbVal sp_tl(sp_RbVal lv_x)" ;; \
-	identity_block_forms) forms="7=sp_RbVal sp_Foo_m(sp_Foo \*self, sp_RbVal lv_x)@12=sp_RbVal sp_Mod_s_q(sp_RbVal lv_x)" ;; \
-	duplicate_reopen_agree) forms="6=sp_RbVal sp_K_m(sp_K \*self, sp_RbVal lv_x)@11=sp_RbVal sp_K_m(sp_K \*self, sp_RbVal lv_x)" ;; \
-	esac; \
-	$(SPINEL) $(IRB)/$*.rb -c --no-line-map -o "$$tmp/i.c" 2>"$$tmp/i.err" || { echo "inline-rbs-test: FAIL ($*: the inline compile failed)"; sed -n 1,5p "$$tmp/i.err"; ok=0; }; \
+	placements) \
+	for fl in "" --int-overflow=promote; do \
+	  ovdef=""; [ "$$fl" != --int-overflow=promote ] || ovdef=-DSP_INT_OVERFLOW_MODE_PROMOTE; \
+	  $(SPINEL) $(IRB)/placements.rb $$fl -c --no-line-map -o "$$tmp/i.c" 2>"$$tmp/i.err" || { echo "inline-rbs-test: FAIL (placements: an unused annotation stopped the compile)"; cat "$$tmp/i.err"; ok=0; }; \
+	  $(SPINEL) $(IRB)/placements.rb $$fl --no-inline-rbs -c --no-line-map -o "$$tmp/n.c" >/dev/null 2>&1 || { echo "inline-rbs-test: FAIL (placements: disabled compile failed)"; ok=0; }; \
+	  cmp -s "$$tmp/i.c" "$$tmp/n.c" || { echo "inline-rbs-test: FAIL (placements: an unused annotation produced type facts)"; diff "$$tmp/n.c" "$$tmp/i.c" | head -10; ok=0; }; \
+	  for ln in 3 6 12 16 19 22 30 35 38 45 50 55 60; do \
+	    grep -q "placements.rb:$$ln:[0-9:]* warning: inline RBS" "$$tmp/i.err" || { echo "inline-rbs-test: FAIL (placements: no unused-annotation warning at line $$ln)"; ok=0; }; \
+	  done; \
+	  [ "$$(grep -c 'warning: inline RBS' "$$tmp/i.err")" = 13 ] || { echo "inline-rbs-test: FAIL (placements: expected thirteen unused-annotation warnings)"; cat "$$tmp/i.err"; ok=0; }; \
+	  if grep -v '^Wrote ' "$$tmp/i.err" | grep -v 'warning: inline RBS' | grep -q .; then echo "inline-rbs-test: FAIL (placements: unexpected diagnostics)"; cat "$$tmp/i.err"; ok=0; fi; \
+	  if $(CC) -O0 -Ilib $(RBS_SEED_STRICT) $$ovdef "$$tmp/i.c" $(SP_RT_LIB) $(LDFLAGS) -lm -o "$$tmp/x" 2>"$$tmp/cc.err"; then \
+	    "$$tmp/x" > "$$tmp/x.out" 2>"$$tmp/x.err"; rc=$$?; \
+	    [ $$rc -eq 0 ] && [ ! -s "$$tmp/x.err" ] && cmp -s "$$tmp/x.out" $(IRB)/placements.expected || { echo "inline-rbs-test: FAIL (placements: runtime differs from CRuby)"; ok=0; }; \
+	  else echo "inline-rbs-test: FAIL (placements: C did not compile)"; sed -n 1,10p "$$tmp/cc.err"; ok=0; fi; \
+	done; \
+	$(call IRB_IGNORED,placements.rb); \
+	;; \
+	duplicate_reopen_agree) \
+	$(SPINEL) $(IRB)/$*.rb -c --no-line-map -o "$$tmp/i.c" 2>"$$tmp/i.err" || { echo "inline-rbs-test: FAIL ($*: the inline compile failed)"; cat "$$tmp/i.err"; ok=0; }; \
+	if grep -v '^Wrote ' "$$tmp/i.err" | grep -q .; then echo "inline-rbs-test: FAIL (agreeing reopened definitions produced diagnostics)"; cat "$$tmp/i.err"; ok=0; fi; \
+	grep -q 'sp_RbVal sp_K_m(sp_K \*self, sp_RbVal lv_x)' "$$tmp/i.c" || { echo "inline-rbs-test: FAIL (the final agreeing definition lost its annotation)"; ok=0; }; \
 	$(SPINEL) $(IRB)/$*.rb --no-inline-rbs -c --no-line-map -o "$$tmp/n.c" >/dev/null 2>&1; \
-	nwarn=0; npin=0; \
-	IFS=@; for f in $$forms; do \
-	  ln=$${f%%=*}; sig=$${f#*=}; \
-	  if grep -q "$*.rb:$$ln:[0-9:]* warning: inline RBS" "$$tmp/i.err"; then nwarn=$$((nwarn+1)); \
-	  elif grep -q "$$sig" "$$tmp/i.c"; then npin=$$((npin+1)); \
-	  else echo "inline-rbs-test: FAIL ($*.rb:$$ln: the annotation was neither applied nor reported)"; ok=0; fi; \
-	done; unset IFS; \
-	if [ "$*" = duplicate_reopen_agree ]; then \
-	  if [ $$npin -ne 2 ] || grep -v '^Wrote ' "$$tmp/i.err" | grep -q .; then echo "inline-rbs-test: FAIL (agreeing reopened definitions were not both annotated without diagnostics)"; ok=0; fi; \
-	fi; \
-	if grep -v '^Wrote ' "$$tmp/i.err" | grep -v "warning: inline RBS" | grep -q .; then echo "inline-rbs-test: FAIL ($*: an unexpected diagnostic)"; sed -n 1,5p "$$tmp/i.err"; ok=0; fi; \
-	if [ $$npin -eq 0 ]; then cmp -s "$$tmp/i.c" "$$tmp/n.c" || { echo "inline-rbs-test: FAIL ($*: an annotation that was reported was applied, in part or whole)"; ok=0; }; fi; \
-	$(call IRB_IGNORED,$*.rb); \
-	if [ $$nwarn -eq 0 ] && [ -d $(IRB)/sig/$* ]; then \
-	  $(SPINEL) $(IRB)/$*.rb --no-inline-rbs --rbs $(IRB)/sig/$* -c --no-line-map -o "$$tmp/r.c" >/dev/null 2>&1; \
-	  cmp -s "$$tmp/i.c" "$$tmp/r.c" || { echo "inline-rbs-test: FAIL ($*: inline RBS and the equivalent --rbs produce different C)"; ok=0; }; fi; \
-	if $(CC) -O0 -Ilib $(RBS_SEED_STRICT) "$$tmp/i.c" $(SP_RT_LIB) $(LDFLAGS) -lm -o "$$tmp/x" 2>/dev/null; then \
-	  "$$tmp/x" > "$$tmp/x.out" 2>"$$tmp/x.err"; rc=$$?; [ $$rc -eq 0 ] || { echo "inline-rbs-test: FAIL ($* exited $$rc; CRuby exits 0)"; ok=0; }; \
-	  cmp -s "$$tmp/x.out" $(IRB)/$*.expected || { echo "inline-rbs-test: FAIL ($* output differs from CRuby)"; ok=0; }; \
-	else echo "inline-rbs-test: FAIL ($*: C did not compile)"; ok=0; fi; \
+	if cmp -s "$$tmp/i.c" "$$tmp/n.c"; then echo "inline-rbs-test: FAIL (agreeing reopened annotations changed nothing)"; ok=0; fi; \
+	if $(CC) -O0 -Ilib $(RBS_SEED_STRICT) "$$tmp/i.c" $(SP_RT_LIB) $(LDFLAGS) -lm -o "$$tmp/x" 2>"$$tmp/cc.err"; then \
+	  "$$tmp/x" > "$$tmp/x.out" 2>"$$tmp/x.err"; rc=$$?; \
+	  [ $$rc -eq 0 ] && [ ! -s "$$tmp/x.err" ] && cmp -s "$$tmp/x.out" $(IRB)/$*.expected || { echo "inline-rbs-test: FAIL (agreeing reopened definitions differ from CRuby)"; ok=0; }; \
+	else echo "inline-rbs-test: FAIL ($*: C did not compile)"; sed -n 1,10p "$$tmp/cc.err"; ok=0; fi; \
 	;; \
 	duplicate_reopen_disagree|duplicate_nilable) \
 	case $* in duplicate_reopen_disagree) lines="9 4" ;; duplicate_nilable) lines="10 5" ;; esac; \
@@ -3156,20 +3157,20 @@ build/inline-rbs-results/%.res: FORCE | rbs-seed-extractor $(SP_RT_LIB) $(SPINEL
 	  grep -q "mixin_controls.rb:$${ln%%:*}: .*contradicted: parameter n of $${ln##*:} " "$$tmp/c.err" || { echo "inline-rbs-test: FAIL (mixin_controls: the annotation on $${ln##*:} was not applied and refused at line $${ln%%:*})"; ok=0; }; done; \
 	if grep -q 'warning: inline RBS' "$$tmp/c.err"; then echo "inline-rbs-test: FAIL (mixin_controls: an annotation that applies was reported as not applied)"; grep 'warning: inline RBS' "$$tmp/c.err"; ok=0; fi; \
 	if $(SPINEL) $(IRB)/mixin_ivar.rb -c --no-line-map -o "$$tmp/v.c" >"$$tmp/v.err" 2>&1; then echo "inline-rbs-test: FAIL (mixin_ivar: a false instance variable annotation compiled)"; ok=0; fi; \
-	[ "$$(grep -c 'mixin_ivar.rb:7: inline RBS annotation contradicted: @x' "$$tmp/v.err")" = 1 ] || { echo "inline-rbs-test: FAIL (mixin_ivar: one false assignment was not reported exactly once)"; cat "$$tmp/v.err"; ok=0; }; \
+	[ "$$(grep -c 'mixin_ivar.rb:9: inline RBS annotation contradicted: @x' "$$tmp/v.err")" = 1 ] || { echo "inline-rbs-test: FAIL (mixin_ivar: one false assignment was not reported exactly once)"; cat "$$tmp/v.err"; ok=0; }; \
 	;; \
 	analyzer_warnings) \
 	$(SPINEL) $(IRB)/analyzer_warnings.rb -c --no-line-map -o "$$tmp/w.c" 2>"$$tmp/w.err" || { echo "inline-rbs-test: FAIL (an annotation the compiler cannot apply stopped the compile)"; sed -n 1,5p "$$tmp/w.err"; ok=0; }; \
 	$(SPINEL) $(IRB)/analyzer_warnings.rb --no-inline-rbs -c --no-line-map -o "$$tmp/n.c" >/dev/null 2>&1; \
 	cmp -s "$$tmp/w.c" "$$tmp/n.c" || { echo "inline-rbs-test: FAIL (an annotation the compiler reported was applied, in part or whole)"; diff "$$tmp/n.c" "$$tmp/w.c" | head -10; ok=0; }; \
 	$(call IRB_IGNORED,analyzer_warnings.rb); \
-	for w in 'analyzer_warnings_part.rb:2:1: warning: inline RBS: the signature of `part_count` is not applied: `Array[Set]` names no type' \
+	for w in 'analyzer_warnings_part.rb:3:3: warning: inline RBS: the signature of `part_count` is not applied: `Array[Set]` names no type' \
 	         'analyzer_warnings.rb:9:3: warning: inline RBS: the declaration of @log is not applied: `Array[Time]` names no type' \
-	         'analyzer_warnings.rb:11:24: warning: inline RBS: this type is not applied: `Time?` names no type' \
-	         'analyzer_warnings.rb:16:19: warning: inline RBS: this type is not applied: `Net::HTTP` names no type' \
-	         'analyzer_warnings.rb:19:3: warning: inline RBS: the signature of `at` is not applied: `Time` names no type' \
-	         'analyzer_warnings.rb:24:3: warning: inline RBS: the signature of `size` is not applied: `Pathname` names no type' \
-	         'analyzer_warnings.rb:33:17: warning: inline RBS: this annotation is not applied: no class was found for it'; do \
+	         'analyzer_warnings.rb:12:24: warning: inline RBS: this type is not applied: `Time?` names no type' \
+	         'analyzer_warnings.rb:10:3: warning: inline RBS: the declaration of @zone is not applied: `Net::HTTP` names no type' \
+	         'analyzer_warnings.rb:20:3: warning: inline RBS: the signature of `at` is not applied: `Time` names no type' \
+	         'analyzer_warnings.rb:25:3: warning: inline RBS: the signature of `size` is not applied: `Pathname` names no type' \
+	         'analyzer_warnings.rb:33:1: warning: inline RBS: this instance variable declaration is not applied: it is not inside a class body'; do \
 	  grep -qF "$$w" "$$tmp/w.err" || { echo "inline-rbs-test: FAIL (no warning '$$w')"; ok=0; }; done; \
 	[ "$$(grep -c 'warning: inline RBS' "$$tmp/w.err")" = 7 ] || { echo "inline-rbs-test: FAIL (expected 7 inline RBS warnings)"; cat "$$tmp/w.err"; ok=0; }; \
 	if grep -q 'obj_' "$$tmp/w.err"; then echo "inline-rbs-test: FAIL (a warning spelled a type as a seed tag, not as written)"; ok=0; fi; \

@@ -1,3 +1,0 @@
-class Point
-  def shift: (untyped) -> untyped
-end

@@ -5,15 +5,13 @@
  *
  * sp_parse_emit calls sp_inline_rbs_run between pm_parse and flatten, when
  * the whole spliced program and its comment list are alive together. The pass
- * groups the comments into blocks the way ruby/rbs does, attaches each
- * annotation to the node it describes (Sorbet's rule: blank lines and
- * ordinary comments may come between a signature and its `def`, a statement
- * may not), parses it with the rbs C parser and maps its types with the
+ * groups the comments into blocks, attaches each annotation to the node it
+ * describes, parses it with the rbs C parser and maps its types with the
  * extractor's own map_type (rbs_map.c). The result is a fact on that node,
  * written by flatten as attributes of the node (docs/internals/AST.md):
  *
  *   S <def> rbs_ret <tag>        S <def> rbs_params <tag>,<tag>,...
- *   S <attr_* call | @x = v> rbs_ivar <tag>
+ *   S <attr_* call> rbs_ivar <tag>
  *   S <class body> rbs_ivars @x=<tag>@<line>@<file>@<col>,...
  *   I <node> rbs_line <line>     I <node> rbs_file <file id>
  *   I <node> rbs_col <col>       S <node> rbs_names <tag>=<type as written>...
@@ -108,7 +106,7 @@ typedef struct {
     const pm_node_t *node;
     char *ret;        /* a def: the return tag, NULL if unsaid */
     char *params;     /* a def: the parameter tags, comma-separated, empty if unsaid */
-    char *ivar;       /* an attr_* call or an ivar write: the tag */
+    char *ivar;       /* an attr_* call: the tag */
     sbuf_t ivars;     /* a class body: `@x=<tag>@<line>@<file>@<col>,...` */
     sbuf_t names;     /* `<tag>=<type as written>` per tag, newline-separated */
     int line;         /* buffer line of the annotation */
@@ -193,7 +191,6 @@ typedef struct {
     char *lookup;          /* the namespace a bare type name is looked up in first */
     int is_cmethod;
     int in_def;            /* writes: 0 class body / top level, 1 instance method, 2 class method */
-    int in_singleton;      /* written in `class << self` */
     ir_ann **anns;
     int nanns;
 } ir_target;
@@ -201,7 +198,7 @@ typedef struct {
 /* A lexical container a comment can sit in. */
 typedef struct {
     size_t start, end;
-    int is_def;            /* a method body, where declarations do not attach */
+    int is_def;            /* 0 class/module body, 1 method, 2 singleton class, 3 block */
     char *owner;           /* for a class body: its qualified name */
     char *lookup;
     const pm_node_t *body; /* a class body: its statements, which carry its `# @rbs @x:` facts */
@@ -220,7 +217,6 @@ typedef struct {
     ir_walk *w;
     const char *owner;     /* "" at top level */
     const char *lookup;    /* the parent namespace of owner */
-    int singleton;         /* inside `class << self` */
     int in_def;            /* 0, 1 instance method, 2 class method */
 } ir_ctx;
 
@@ -277,7 +273,6 @@ static ir_target *ir_target_new(ir_walk *w, ir_target_kind kind, const pm_node_t
     t->owner = ir_strdup(cx->owner[0] ? cx->owner : "Object");
     t->lookup = ir_strdup(cx->lookup);
     t->in_def = cx->in_def;
-    t->in_singleton = cx->singleton;
     return t;
 }
 
@@ -305,30 +300,7 @@ static bool ir_is_attr_call(const ir_file *f, const pm_call_node_t *call) {
         || (c->length == 13 && memcmp(c->start, "attr_accessor", 13) == 0);
 }
 
-/* `Name = Struct.new(...) do ... end`, `Class.new do`, `Data.define do`:
- * the block body is the body of a class named by the constant. */
-static const pm_block_node_t *ir_class_block(const ir_file *f, const pm_node_t *value) {
-    if (value == NULL || !PM_NODE_TYPE_P(value, PM_CALL_NODE)) return NULL;
-    const pm_call_node_t *call = (const pm_call_node_t *) value;
-    if (call->block == NULL || !PM_NODE_TYPE_P(call->block, PM_BLOCK_NODE)) return NULL;
-    if (call->receiver == NULL || !PM_NODE_TYPE_P(call->receiver, PM_CONSTANT_READ_NODE)) return NULL;
-    sbuf_t r, m;
-    sbuf_init(&r); sbuf_init(&m);
-    ir_name_into(f, ((const pm_constant_read_node_t *) call->receiver)->name, &r);
-    ir_name_into(f, call->name, &m);
-    bool ok = r.buf && m.buf &&
-              ((strcmp(r.buf, "Struct") == 0 && strcmp(m.buf, "new") == 0) ||
-               (strcmp(r.buf, "Class") == 0 && strcmp(m.buf, "new") == 0) ||
-               (strcmp(r.buf, "Data") == 0 && strcmp(m.buf, "define") == 0));
-    sbuf_free(&r); sbuf_free(&m);
-    return ok ? (const pm_block_node_t *) call->block : NULL;
-}
-
 static bool ir_visit(const pm_node_t *n, void *data);
-
-static void ir_visit_children_in(const pm_node_t *n, ir_ctx *cx) {
-    pm_visit_child_nodes(n, ir_visit, cx);
-}
 
 static void ir_class_body(ir_ctx *cx, const pm_node_t *container, const pm_node_t *body,
                           const char *leaf_path) {
@@ -336,7 +308,7 @@ static void ir_class_body(ir_ctx *cx, const pm_node_t *container, const pm_node_
     ir_container_add(cx->w, container, 0, owner, cx->owner);
     cx->w->conts[cx->w->nconts - 1].body = body;
     known_names_add(owner, strlen(owner));
-    ir_ctx sub = { cx->w, owner, cx->owner, 0, 0 };
+    ir_ctx sub = { cx->w, owner, cx->owner, 0 };
     if (body != NULL) pm_visit_node(body, ir_visit, &sub);
     free(owner);
 }
@@ -386,41 +358,26 @@ static bool ir_visit(const pm_node_t *n, void *data) {
             sbuf_free(&p);
             return false;
         }
-        case PM_SINGLETON_CLASS_NODE: {
-            const pm_singleton_class_node_t *sc = (const pm_singleton_class_node_t *) n;
+        case PM_SINGLETON_CLASS_NODE:
             ir_container_add(w, n, 2, cx->owner, cx->lookup);
-            if (sc->expression && PM_NODE_TYPE_P(sc->expression, PM_SELF_NODE) && sc->body) {
-                ir_ctx sub = *cx;
-                sub.singleton = 1;
-                pm_visit_node(sc->body, ir_visit, &sub);
-            }
             return false;
-        }
+        case PM_BLOCK_NODE:
+        case PM_LAMBDA_NODE:
+            /* Generic receiverless calls and lambdas preserve the lexical
+               class for declarations, but do not declare class-body ivars. */
+            ir_container_add(w, n, 3, cx->owner, cx->lookup);
+            return !cx->in_def;
         case PM_CONSTANT_WRITE_NODE:
-        case PM_CONSTANT_PATH_WRITE_NODE: {
+        case PM_CONSTANT_PATH_WRITE_NODE:
             ir_target_new(w, IT_CONST_WRITE, n, cx);
-            const pm_node_t *value = PM_NODE_TYPE_P(n, PM_CONSTANT_WRITE_NODE)
-                ? ((const pm_constant_write_node_t *) n)->value
-                : ((const pm_constant_path_write_node_t *) n)->value;
-            const pm_block_node_t *blk = ir_class_block(f, value);
-            if (blk != NULL) {
-                sbuf_t p;
-                sbuf_init(&p);
-                bool ok = PM_NODE_TYPE_P(n, PM_CONSTANT_WRITE_NODE)
-                    ? (ir_name_into(f, ((const pm_constant_write_node_t *) n)->name, &p), true)
-                    : ir_const_path(f, (const pm_node_t *) ((const pm_constant_path_write_node_t *) n)->target, &p);
-                if (ok && p.buf) ir_class_body(cx, (const pm_node_t *) blk, blk->body, p.buf);
-                sbuf_free(&p);
-                const pm_call_node_t *call = (const pm_call_node_t *) value;
-                if (call->arguments) pm_visit_node((const pm_node_t *) call->arguments, ir_visit, cx);
-                return false;
-            }
             return true;
-        }
         case PM_DEF_NODE: {
             const pm_def_node_t *d = (const pm_def_node_t *) n;
+            ir_container_add(w, n, 1, cx->owner, cx->lookup);
+            if (!cx->owner[0] || cx->in_def ||
+                (d->receiver && !PM_NODE_TYPE_P(d->receiver, PM_SELF_NODE))) return false;
             ir_target *t = ir_target_new(w, IT_DEF, n, cx);
-            t->is_cmethod = cx->singleton || (d->receiver && PM_NODE_TYPE_P(d->receiver, PM_SELF_NODE));
+            t->is_cmethod = d->receiver != NULL;
             /* the line a trailing return annotation is written on: after `)`,
                or after the name of a def with no parentheses */
             const uint8_t *se = d->rparen_loc.start ? d->rparen_loc.end : d->name_loc.end;
@@ -428,19 +385,25 @@ static bool ir_visit(const pm_node_t *n, void *data) {
             t->sig_end = ir_off(f, se);
             t->sig_line = ir_line_of(f, t->sig_end > 0 ? t->sig_end - 1 : 0);
             t->start_line = ir_line_of(f, ir_off(f, d->def_keyword_loc.start));
-            ir_container_add(w, n, 1, cx->owner, cx->lookup);
-            if (d->receiver && !PM_NODE_TYPE_P(d->receiver, PM_SELF_NODE)) return false;
             ir_ctx sub = *cx;
             sub.in_def = t->is_cmethod ? 2 : 1;
             if (d->body) pm_visit_node(d->body, ir_visit, &sub);
             return false;
         }
-        case PM_CALL_NODE:
-            if (ir_is_attr_call(f, (const pm_call_node_t *) n)) {
+        case PM_CALL_NODE: {
+            const pm_call_node_t *call = (const pm_call_node_t *) n;
+            if (call->receiver != NULL) return false;
+            if (ir_is_attr_call(f, call)) {
+                if (!cx->owner[0]) return false;
                 ir_target_new(w, IT_ATTR, n, cx);
                 return false;
             }
+            pm_constant_t *name = pm_constant_pool_id_to_constant(&f->pm->constant_pool, call->name);
+            if (name && ((name->length == 7 && memcmp(name->start, "include", 7) == 0) ||
+                         (name->length == 6 && memcmp(name->start, "extend", 6) == 0) ||
+                         (name->length == 7 && memcmp(name->start, "prepend", 7) == 0))) return false;
             return true;
+        }
         case PM_INSTANCE_VARIABLE_WRITE_NODE:
             ir_target_new(w, IT_IVAR_WRITE, n, cx);
             return true;
@@ -455,7 +418,7 @@ static bool ir_visit(const pm_node_t *n, void *data) {
 /* ---- annotations -------------------------------------------------------- */
 
 typedef enum {
-    IA_COLON,        /* `#:` leading: a method type, or a type above an attribute */
+    IA_COLON,        /* `#:` leading: a method type */
     IA_RBS,          /* `# @rbs ...` */
     IA_TRAILING,     /* `#:` / `#[` after code on the same line */
 } ir_ann_shape;
@@ -518,6 +481,14 @@ typedef struct {
     int leading;
 } ir_comment;
 
+static void ir_ann_add_comment(const ir_file *f, ir_ann *a, const ir_comment *cm) {
+    const char *s = (const char *) f->src + cm->start;
+    size_t n = cm->end - cm->start;
+    while (n > 0 && (s[n - 1] == '\r' || s[n - 1] == '\n')) n--;
+    size_t pre = n >= 2 && s[1] == ' ' ? 2 : 1;
+    ir_ann_add_line(a, s + pre, n - pre, cm->line, cm->col + (int) pre);
+}
+
 static int ir_find_container(const ir_walk *w, size_t off) {
     int best = -1;
     for (int i = 0; i < w->nconts; i++) {
@@ -557,30 +528,7 @@ static void ir_warn(const ir_file *f, const ir_ann *a, const char *what, const c
             "inline RBS: %s is not applied: %s", what, why);
 }
 
-/* The leading word of a `#:` annotation that Sorbet gives a meaning the rbs
- * grammar does not have: `as T`, `as !nil`, `as untyped`, `absurd`, `self as`. */
-static const char *ir_sorbet_form(const ir_ann *a) {
-    const char *s = a->text;
-    if (*s == ':') s++;
-    while (*s == ' ' || *s == '\t') s++;
-    if (strncmp(s, "as", 2) == 0 && (s[2] == ' ' || s[2] == '\t' || s[2] == '!')) {
-        const char *r = s + 2;
-        while (*r == ' ' || *r == '\t') r++;
-        if (strncmp(r, "!nil", 4) == 0) return "a non-nil assertion (`#: as !nil`)";
-        if (strncmp(r, "untyped", 7) == 0 && !(r[7] >= 'a' && r[7] <= 'z')) return "an untyped cast (`#: as untyped`)";
-        return "a cast (`#: as T`)";
-    }
-    if (strncmp(s, "absurd", 6) == 0 && !((s[6] >= 'a' && s[6] <= 'z') || s[6] == '_'))
-        return "an exhaustiveness assertion (`#: absurd`)";
-    if (strncmp(s, "self", 4) == 0) {
-        const char *r = s + 4;
-        while (*r == ' ' || *r == '\t') r++;
-        if (strncmp(r, "as", 2) == 0) return "a self binding (`#: self as T`)";
-    }
-    return NULL;
-}
-
-/* Parse a type on its own: `#: T` above or after an attribute or a write. */
+/* Parse a type on its own: `attr_reader :name #: T`. */
 static rbs_node_t *ir_parse_type(const ir_file *f, const ir_ann *a, rbs_parser_t **pout) {
     /* the text is ": T" */
     rbs_parser_t *p = ir_parser_for(a, 1);
@@ -803,7 +751,7 @@ static void ir_emit_method_fact(const ir_file *f, const ir_target *t, const ir_a
     ir_names_merge(&fa->names, &g_ir_names);
 }
 
-/* an attr_* call or an `@x = v` write: one tag, for every name it declares */
+/* An attr_* call: one tag for every name it declares. */
 static void ir_emit_ivar_fact(const ir_target *t, const char *tag, const ir_ann *a) {
     ir_nfact *fa = ir_nfact_for(t->node);
     fa->ivar = ir_strdup(tag);
@@ -841,11 +789,6 @@ static void ir_apply_def(const ir_file *f, ir_target *t) {
     /* parse every annotation first: a syntax error anywhere stops the compile */
     for (int i = 0; i < na; i++) {
         ir_ann *a = t->anns[i];
-        const char *sorbet = ir_sorbet_form(a);
-        if (sorbet) {
-            ir_warn(f, a, sorbet, "it applies to an expression, not to a method definition");
-            continue;
-        }
         rbs_parser_t *p = parsers[i] = ir_parser_for(a, 0);
         rbs_ast_ruby_annotations_t *an = NULL;
         bool ok = a->shape == IA_TRAILING ? rbs_parse_inline_trailing_annotation(p, &an)
@@ -880,7 +823,9 @@ static void ir_apply_def(const ir_file *f, ir_target *t) {
                 skip = 1;
                 break;
             case RBS_AST_RUBY_ANNOTATIONS_INSTANCE_VARIABLE_ANNOTATION:
-                break;   /* applied with the class body, where it belongs */
+                ir_warn(f, t->anns[i], "this instance variable declaration",
+                        "it belongs to the method's leading comment block; separate it from the declaration with a blank line");
+                break;
             default:
                 ir_warn(f, t->anns[i], "this annotation", "it does not describe a method");
                 break;
@@ -1024,26 +969,30 @@ static void ir_apply_def(const ir_file *f, ir_target *t) {
     ir_free_params(ps, np);
 }
 
-/* `attr_reader :a, :b #: T` (ruby/rbs) or `#: T` above it (Sorbet): one ivar
- * seed per name, which is what `attr_reader a: T` in a .rbs gives. */
+/* `attr_reader :a, :b #: T`: one ivar seed per name, which is what
+ * `attr_reader a: T` in a .rbs gives. */
 static void ir_apply_attr(const ir_file *f, ir_target *t) {
     const pm_call_node_t *call = (const pm_call_node_t *) t->node;
-    if (t->nanns > 1) {
-        ir_diag(f->path, t->anns[1]->first_line, t->anns[1]->first_col + 1, 1,
-                "inline RBS: this attribute has a second type annotation; the first is at %s",
-                ir_where(t->anns[0]->first_line));
+    ir_ann *a = NULL;
+    for (int i = 0; i < t->nanns; i++) {
+        ir_ann *next = t->anns[i];
+        if (next->shape != IA_TRAILING) {
+            ir_warn(f, next, "this attribute annotation", "an attribute takes a trailing `#: T` type");
+            continue;
+        }
+        if (a != NULL) {
+            ir_diag(f->path, next->first_line, next->first_col + 1, 1,
+                    "inline RBS: this attribute has a second type annotation; the first is at %s",
+                    ir_where(a->first_line));
+            return;
+        }
+        a = next;
+    }
+    if (a == NULL) return;
+    if (t->in_def) {
+        ir_warn(f, a, "this attribute type", "the attribute is declared inside a method body");
         return;
     }
-    ir_ann *a = t->anns[0];
-    const char *sorbet = ir_sorbet_form(a);
-    if (sorbet) { ir_warn(f, a, sorbet, "Spinel does not apply it to an attribute declaration"); return; }
-    if (t->in_singleton || t->in_def) {
-        ir_warn(f, a, "this attribute type", t->in_singleton
-                ? "the attribute is declared in `class << self`, so its variable is the class's own, which is not seeded"
-                : "the attribute is declared inside a method body");
-        return;
-    }
-    if (a->shape == IA_RBS) { ir_warn(f, a, "a `# @rbs` line above an attribute", "an attribute takes a `#:` type"); return; }
     sbuf_free(&g_ir_names);
     rbs_parser_t *p = NULL;
     rbs_node_t *type = ir_parse_type(f, a, &p);
@@ -1065,28 +1014,6 @@ static void ir_apply_attr(const ir_file *f, ir_target *t) {
     else {
         ir_emit_ivar_fact(t, tag.buf, a);
     }
-    sbuf_free(&tag);
-    rbs_parser_free(p);
-}
-
-/* `@x = v #: T`: a declaration of the slot, the same as `@x: T` in a .rbs. */
-static void ir_apply_ivar_write(const ir_file *f, ir_target *t) {
-    ir_ann *a = t->anns[0];
-    const char *sorbet = ir_sorbet_form(a);
-    if (sorbet) { ir_warn(f, a, sorbet, "Spinel does not hold a type for a single expression"); return; }
-    if (t->in_def != 1) {
-        ir_warn(f, a, "a type on this instance variable",
-                t->in_def == 2 ? "it is written in a class method, so it is the class's own variable, which is not seeded"
-                               : "it is written outside any method, so it is the class's own variable, which is not seeded");
-        return;
-    }
-    sbuf_free(&g_ir_names);
-    rbs_parser_t *p = NULL;
-    rbs_node_t *type = ir_parse_type(f, a, &p);
-    if (type == NULL) { rbs_parser_free(p); return; }
-    sbuf_t tag; sbuf_init(&tag);
-    if (!ir_map(p, type, t, &tag)) ir_warn(f, a, "this instance variable type", "it is outside the types Spinel can pin");
-    else ir_emit_ivar_fact(t, tag.buf, a);
     sbuf_free(&tag);
     rbs_parser_free(p);
 }
@@ -1138,12 +1065,10 @@ static void ir_apply_ivar_decl(const ir_file *f, const ir_ann *a, const ir_conta
 static void ir_apply_other(const ir_file *f, ir_target *t) {
     for (int i = 0; i < t->nanns; i++) {
         ir_ann *a = t->anns[i];
-        const char *sorbet = ir_sorbet_form(a);
         if (a->shape == IA_TRAILING && a->text[0] == '[') {
             ir_warn(f, a, "a type application (`#[...]`)", "generic superclasses and mixins are not modelled");
             continue;
         }
-        if (sorbet) { ir_warn(f, a, sorbet, "Spinel does not hold a type for a single expression"); continue; }
         switch (t->kind) {
             case IT_LOCAL_WRITE:
                 ir_warn(f, a, "a type on a local variable", "Spinel infers local variables and cannot pin one");
@@ -1154,9 +1079,6 @@ static void ir_apply_other(const ir_file *f, ir_target *t) {
             case IT_CLASS:
                 ir_warn(f, a, "an annotation on a class or module", "generic classes, type aliases and module self types are not modelled");
                 break;
-            case IT_IVAR_WRITE:
-                ir_warn(f, a, "this annotation", "an instance variable write takes a trailing `#: T`");
-                break;
             default:
                 ir_warn(f, a, "a type on an expression", "Spinel does not hold a type for a single expression");
                 break;
@@ -1166,31 +1088,15 @@ static void ir_apply_other(const ir_file *f, ir_target *t) {
 
 /* Build the comment blocks of one file and attach each annotation. */
 static void ir_associate(ir_file *f, ir_walk *w) {
-    /* which lines hold code: everything but blank lines and comment-only lines */
-    char *is_code = (char *) calloc((size_t) f->nlines + 2, 1);
-    for (int l = 1; l <= f->nlines; l++) {
-        size_t s = f->line_starts[l - 1];
-        size_t e = l < f->nlines ? f->line_starts[l] : f->len;
-        for (size_t i = s; i < e; i++) {
-            uint8_t ch = f->src[i];
-            if (ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n') continue;
-            is_code[l] = 1;
-            break;
-        }
-    }
     int ncm = 0;
     ir_comment *cms = NULL;
     for (const pm_comment_t *c = (const pm_comment_t *) f->pm->comment_list.head; c; c = (const pm_comment_t *) c->node.next) {
         size_t s = ir_off(f, c->location.start), e = ir_off(f, c->location.end);
-        if (c->type == PM_COMMENT_EMBDOC) {
-            for (int l = ir_line_of(f, s); l <= ir_line_of(f, e > s ? e - 1 : s); l++) is_code[l] = 0;
-            continue;
-        }
+        if (c->type == PM_COMMENT_EMBDOC) continue;
         int line = ir_line_of(f, s);
         size_t ls = f->line_starts[line - 1];
         int leading = 1;
         for (size_t i = ls; i < s; i++) if (f->src[i] != ' ' && f->src[i] != '\t') { leading = 0; break; }
-        if (leading) is_code[line] = 0;
         cms = (ir_comment *) realloc(cms, sizeof(ir_comment) * (size_t) (ncm + 1));
         cms[ncm].start = s; cms[ncm].end = e; cms[ncm].line = line;
         cms[ncm].col = (int) (s - ls); cms[ncm].leading = leading;
@@ -1202,19 +1108,26 @@ static void ir_associate(ir_file *f, ir_walk *w) {
         const char *txt = (const char *) f->src + cm->start;
         size_t tl = cm->end - cm->start;
         while (tl > 0 && (txt[tl - 1] == '\r' || txt[tl - 1] == '\n')) tl--;
+        /* A block can begin after code; later comments must be leading,
+           consecutive, and at the same column as its first comment. */
+        int j = i + 1;
+        while (j < ncm && cms[j].leading && cms[j].line == cms[j - 1].line + 1 && cms[j].col == cm->col) j++;
         if (!cm->leading) {
-            i++;
+            int first = i;
+            i = j;
             if (!(tl >= 2 && (txt[1] == ':' || txt[1] == '['))) continue;
             if (txt[1] == ':' && ir_rdoc_directive(txt + 2, tl - 2)) continue;
             ir_ann *a = ir_ann_new(IA_TRAILING);
             ir_ann_add_line(a, txt + 1, tl - 1, cm->line, cm->col + 1);
+            for (int k = first + 1; k < j; k++) ir_ann_add_comment(f, a, &cms[k]);
             a->first_col = cm->col;
             /* the target: a def whose signature this line ends, else the
                outermost statement ending here, before the comment */
             ir_target *best = NULL;
             for (int k = 0; k < w->ntargets; k++) {
                 ir_target *t = &w->targets[k];
-                if (t->kind == IT_DEF && t->sig_line == cm->line && t->sig_end <= cm->start) { best = t; break; }
+                if (t->kind == IT_DEF && !((const pm_def_node_t *) t->node)->equal_loc.start &&
+                    t->sig_line == cm->line && t->sig_end <= cm->start) { best = t; break; }
             }
             if (!best) for (int k = 0; k < w->ntargets; k++) {
                 ir_target *t = &w->targets[k];
@@ -1229,19 +1142,17 @@ static void ir_associate(ir_file *f, ir_walk *w) {
             }
             if (best) ir_attach(best, a);
             else {
-                ir_warn(f, a, "this annotation", "it does not follow a method definition, an attribute or an assignment on its line");
+                ir_warn(f, a, "this annotation", "it does not follow a supported declaration on its line");
                 ir_ann_free(a);
             }
             continue;
         }
-        /* a leading block: consecutive lines at one column */
-        int j = i + 1;
-        while (j < ncm && cms[j].leading && cms[j].line == cms[j - 1].line + 1 && cms[j].col == cm->col) j++;
         int block_end = cms[j - 1].line;
         /* annotations in the block, with their continuation lines */
         ir_ann **anns = NULL;
         int nanns = 0;
         ir_ann *cur = NULL;
+        int pending_blank = -1;
         for (int k = i; k < j; k++) {
             const char *s = (const char *) f->src + cms[k].start;
             size_t n = cms[k].end - cms[k].start;
@@ -1254,36 +1165,39 @@ static void ir_associate(ir_file *f, ir_walk *w) {
                 cur->first_col = cms[k].col;
                 anns = (ir_ann **) realloc(anns, sizeof(ir_ann *) * (size_t) (nanns + 1));
                 anns[nanns++] = cur;
+                pending_blank = -1;
             }
-            else if (kind == CL_BAR && cur != NULL && cur->shape == IA_COLON) {
-                ir_ann_add_line(cur, s + 2, n - 2, cms[k].line, cms[k].col + 2);
+            else if (cur != NULL) {
+                size_t pre = n >= 2 && s[1] == ' ' ? 2 : 1;
+                bool blank = true;
+                for (size_t z = pre; z < n; z++)
+                    if (s[z] != ' ' && s[z] != '\t') { blank = false; break; }
+                if (blank) {
+                    if (pending_blank < 0) pending_blank = k;
+                }
+                else if (s[pre] == ' ' || s[pre] == '\t') {
+                    /* Internal blank comment lines belong to a continuation;
+                       trailing blank comment lines do not. */
+                    if (pending_blank >= 0)
+                        for (int z = pending_blank; z < k; z++) ir_ann_add_comment(f, cur, &cms[z]);
+                    ir_ann_add_comment(f, cur, &cms[k]);
+                    pending_blank = -1;
+                }
+                else { cur = NULL; pending_blank = -1; }
             }
-            else if (cur != NULL && n >= 2 && s[1] == ' ' && n >= 3 && (s[2] == ' ' || s[2] == '\t')) {
-                /* ruby/rbs: a line indented further than `# ` continues */
-                ir_ann_add_line(cur, s + 2, n - 2, cms[k].line, cms[k].col + 2);
-            }
-            else if (kind == CL_BAR) {
-                ir_ann *a = ir_ann_new(IA_COLON);
-                ir_ann_add_line(a, s + 1, n - 1, cms[k].line, cms[k].col + 1);
-                a->first_col = cms[k].col;
-                ir_warn(f, a, "this `#|` line", "it does not continue a `#:` annotation");
-                ir_ann_free(a);
-                cur = NULL;
-            }
-            else cur = NULL;
         }
         i = j;
         if (nanns == 0) { free(anns); continue; }
         int ci = ir_find_container(w, cms[j - 1].start);
         const ir_container *cont = ci >= 0 ? &w->conts[ci] : NULL;
-        /* the next line of code, and what starts on it */
+        /* A leading block belongs to the declaration on the following line. */
         int next = block_end + 1;
-        while (next <= f->nlines && !is_code[next]) next++;
         ir_target *target = NULL;
         if (next <= f->nlines) {
             for (int k = 0; k < w->ntargets && !target; k++) {
                 ir_target *t = &w->targets[k];
-                if ((t->kind == IT_DEF || t->kind == IT_ATTR || t->kind == IT_CLASS) && t->start_line == next) target = t;
+                if ((t->kind == IT_DEF || t->kind == IT_ATTR || t->kind == IT_CLASS || t->kind == IT_CONST_WRITE) &&
+                    t->start_line == next) target = t;
             }
         }
         for (int k = 0; k < nanns; k++) {
@@ -1291,18 +1205,9 @@ static void ir_associate(ir_file *f, ir_walk *w) {
             /* `# @rbs @x: T` belongs to the class body it is written in */
             if (a->shape == IA_RBS) {
                 const char *r = a->text + 4;
-                while (*r == ' ') r++;
-                if (*r == '@') {
+                while (*r == ' ' || *r == '\t') r++;
+                if (*r == '@' && target == NULL) {
                     ir_apply_ivar_decl(f, a, cont, cont ? cont->owner : "", cont ? cont->lookup : "");
-                    ir_ann_free(a);
-                    continue;
-                }
-            }
-            if (a->shape == IA_COLON) {
-                const char *s = a->text + 1;
-                while (*s == ' ') s++;
-                if (strncmp(s, "self", 4) == 0 && ir_sorbet_form(a)) {
-                    ir_warn(f, a, "a self binding (`#: self as T`)", "the type of `self` in a block is not modelled");
                     ir_ann_free(a);
                     continue;
                 }
@@ -1315,7 +1220,7 @@ static void ir_associate(ir_file *f, ir_walk *w) {
             if (target == NULL) {
                 ir_warn(f, a, "this annotation",
                         next > f->nlines ? "nothing follows it in the file"
-                                         : "the next line of code is not a method definition or an attribute");
+                                         : "this comment block has no supported declaration on the following line");
                 ir_ann_free(a);
                 continue;
             }
@@ -1324,7 +1229,6 @@ static void ir_associate(ir_file *f, ir_walk *w) {
         free(anns);
     }
     free(cms);
-    free(is_code);
 
     for (int k = 0; k < w->ntargets; k++) {
         ir_target *t = &w->targets[k];
@@ -1332,10 +1236,6 @@ static void ir_associate(ir_file *f, ir_walk *w) {
         switch (t->kind) {
             case IT_DEF: ir_apply_def(f, t); break;
             case IT_ATTR: ir_apply_attr(f, t); break;
-            case IT_IVAR_WRITE:
-                if (t->nanns == 1 && t->anns[0]->shape == IA_TRAILING && t->anns[0]->text[0] == ':') ir_apply_ivar_write(f, t);
-                else ir_apply_other(f, t);
-                break;
             default: ir_apply_other(f, t); break;
         }
     }
@@ -1373,7 +1273,7 @@ static int sp_inline_rbs_run(pm_parser_t *parser, pm_node_t *root,
     ir_walk w;
     memset(&w, 0, sizeof w);
     w.f = &f;
-    ir_ctx cx = { &w, "", "", 0, 0 };
+    ir_ctx cx = { &w, "", "", 0 };
     pm_visit_node(root, ir_visit, &cx);
     g_hold = 1;
     ir_associate(&f, &w);

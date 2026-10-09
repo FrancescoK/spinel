@@ -1,5 +1,5 @@
-# A program annotated with inline RBS comments, as Sorbet and ruby/rbs spell
-# them (docs/inline-rbs.md). CRuby reads them as comments; Spinel pins the
+# A program annotated with ruby/rbs inline comments (docs/inline-rbs.md).
+# CRuby reads them as comments; Spinel pins the
 # slots they describe, as the same signatures in a .rbs file would. Either
 # way the program prints the same thing.
 class Bag
@@ -14,7 +14,7 @@ class Bag
 
   # Without the signature, `@items || EMPTY` is a value of either kind and
   # every `.size` on it is dispatched at run time.
-  #: -> Array[Integer]
+  #: () -> Array[Integer]
   def items
     @items || EMPTY
   end
@@ -39,13 +39,12 @@ class Point
   end
 
   #: (Integer dx,
-  #|  Integer dy) -> Point
+  #   Integer dy) -> Point
   def moved(dx, dy) = Point.new(x + dx, y + dy)
 end
 
 class Label
-  #: String?
-  attr_accessor :text
+  attr_accessor :text #: String?
 
   def initialize
     @text = nil

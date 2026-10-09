@@ -10,7 +10,7 @@ class Calc
     x
   end
 
-  #: -> void
+  #: () -> void
   def m2
     @last = 2
   end
@@ -21,7 +21,7 @@ class Calc
   end
 
   #: (untyped,
-  #|  untyped) -> untyped
+  #   untyped) -> untyped
   def m7(x, y)
     x + y
   end
@@ -54,11 +54,11 @@ class Calc
   end
 
   # @rbs x: untyped
-  def m12(x) = x #: untyped
+  # @rbs return: untyped
+  def m12(x) = x
 
   #: (untyped) -> untyped
-
-  def blank_line_between(x)
+  def adjacent_signature(x)
     x
   end
 
@@ -77,7 +77,6 @@ class Calc
   end
 
   class << self
-    #: (untyped) -> untyped
     def m14(x)
       x
     end
@@ -89,7 +88,6 @@ class Calc
   end
 end
 
-#: (untyped) -> untyped
 def top_level(x)
   x
 end
@@ -104,7 +102,7 @@ p c.m9(4, 5)
 p c.m9k(5, k: 5)
 p c.m11(11)
 p c.m12(12)
-p c.blank_line_between(13)
+p c.adjacent_signature(13)
 p c.call_priv(14)
 p Calc.m13(13)
 p Calc.m14(14)

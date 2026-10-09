@@ -43,15 +43,17 @@ class Shapes
 
   def locals
     a = 1 #: Integer
-    b = [a].first #: as Integer
-    c = [b].first #: as !nil
-    d = [c].first #: as untyped
+    b = [a].first
+    c = [b].first
+    d = [c].first
     a + b + c + d
   end
 
+  #: () -> Integer
+
   def inner
     # @rbs @inner: String
-    @inner = "x"
+    @inner = "x" #: Integer
   end
 
   attr_reader "named" #: String

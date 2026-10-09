@@ -1,7 +1,9 @@
 # spinel: not-cruby -- a false inline annotation aborts under -DSP_RBS_CHECK
 class Row
+  # @rbs @n: Integer?
+
   def initialize
-    @n = nil #: Integer?
+    @n = nil
   end
 
   def n=(v)

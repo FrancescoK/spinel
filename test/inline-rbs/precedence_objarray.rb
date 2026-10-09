@@ -5,6 +5,7 @@ class Foo; end
 class Bar; end
 class Box
   # @rbs @items: Array[Foo]
+
   def initialize
     @items = [Foo.new]
   end

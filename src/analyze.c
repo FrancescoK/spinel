@@ -4633,8 +4633,8 @@ static void seed_class_ivar(Compiler *c, int cur_ci, const char *a1, const char 
 
 /* ---- inline RBS (docs/inline-rbs.md) ----
    The parser attaches each applied annotation to its node as attributes
-   (rbs_ret / rbs_params on a def, rbs_ivar on an attr_* call or an `@x = v`
-   write, rbs_ivars on a class body; rbs_line / rbs_col / rbs_file name the
+   (rbs_ret / rbs_params on a def, rbs_ivar on an attr_* call,
+   rbs_ivars on a class body; rbs_line / rbs_col / rbs_file name the
    comment, and rbs_names spells each tag the way the comment wrote it).
    apply_inline_rbs pins them through the same helpers as the seed file, so
    the slots and flags are the ones the equivalent --rbs signature gives; the
@@ -4960,23 +4960,14 @@ static void apply_inline_rbs(Compiler *c) {
         inline_pin_record(ms, -1, NULL, ret, params, where, head);
       }
     }
-    else if (ivt && (k == NK_CallNode || k == NK_InstanceVariableWriteNode)) {
-      int ci = -1;
-      if (k == NK_CallNode) ci = sown[id] >= 0 ? sown[id] : c->node_cbody[id];
-      else { Scope *ws = comp_scope_of(c, id); ci = ws ? ws->class_id : -1; }
+    else if (ivt && k == NK_CallNode) {
+      int ci = sown[id] >= 0 ? sown[id] : c->node_cbody[id];
       if (ci < 0 || ci >= c->nclasses) { inline_warn(head, "this annotation is not applied: no class was found for it%s%s", "", ""); continue; }
       if (!inline_seed_tok_ok(c, ivt) && seed_obj_array_class(c, ivt) < 0 && !seed_nested_array_req(ivt)) {
         inline_warn(head, "this type is not applied: %s names no type Spinel can pin%s",
                     inline_spelling(nt, id, ivt, spell, sizeof spell), ""); continue;
       }
-      if (k == NK_InstanceVariableWriteNode) {
-        const char *ivn = nt_str(nt, id, "name");
-        if (ivn && inline_pin_agrees(c, NULL, ci, ivn, ivt, NULL, where, 0)) {
-          seed_class_ivar(c, ci, ivn, ivt);
-          inline_pin_record(NULL, ci, ivn, ivt, NULL, where, head);
-        }
-      }
-      else {
+      {
         int an = nt_ref(nt, id, "arguments"), n = 0, nsym = 0;
         const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &n) : NULL;
         for (int j = 0; j < n; j++) {

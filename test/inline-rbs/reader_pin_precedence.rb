@@ -3,6 +3,7 @@
 # whether it came from an ivar annotation or another method's return.
 class ExplicitReader
   # @rbs @items: Array[String]
+
   def initialize
     @items = ["explicit"]
   end
@@ -15,14 +16,14 @@ class ImplicitReader
     @items = ["implicit"]
   end
 
-  #: -> Array[String]
+  #: () -> Array[String]
   def strings = @items
 
   def items = @items
 end
 
 class MemoReader
-  #: -> Array[String]
+  #: () -> Array[String]
   def self.strings
     @items ||= ["memo"]
   end

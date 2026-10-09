@@ -1,5 +1,5 @@
 # frozen_string_literal: true
-# typed: true
+#[notes]
 # Comments that look like inline RBS and are not. None of them may be read as
 # a type: the C must equal the C of false_positives_plain.rb, which is this
 # file with every comment blanked out, line for line.
@@ -8,10 +8,10 @@ class Doc #:nodoc:
   # :nodoc:
   #:yields: value
   #:call-seq: frob(x) -> y
-  # Returns #: the value, see #[] and #| too
+  # Returns #: the value, see #[] too
   #   @rbs is mentioned here in prose
   # x = frob(1) #: Integer
-  def frob(x) # :nodoc:
+  def frob(x) # @rbs is mentioned here
     x
   end
 
@@ -32,7 +32,7 @@ HERE = <<~EOS
   #: (untyped) -> untyped
   # @rbs @x: Integer
 EOS
-WORDS = %w(#: #| #[ @rbs)
+WORDS = %w(#: #[ @rbs)
 RE = /#: x/
 
 d = Doc.new
