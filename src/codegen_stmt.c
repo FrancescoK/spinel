@@ -9235,7 +9235,12 @@ static void emit_return_deferred(Compiler *c, const int *a, int n, Buf *b, int i
         emit_tail_value(c, a[0], b);
         g_result_var = sv; g_ret_type = st;
       }
-      else emit_coerce(c, a[0], ctx->retv_ty, CO_HOLD, "a return through ensure", b);
+      else {
+        /* a subclass through an ancestor-typed slot, as the flat return
+           casts it (#3418, #8204) */
+        emit_obj_upcast_prefix(c, ctx->retv_ty, ret_arg_ntype(c, a[0]), b);
+        emit_coerce(c, a[0], ctx->retv_ty, CO_HOLD, "a return through ensure", b);
+      }
       buf_puts(b, "; ");
     }
   }
@@ -9305,7 +9310,12 @@ void emit_return(Compiler *c, int id, Buf *b, int indent) {
         else if (emit_ret_hash_widen_conv(c, g_ret_type, r0, a[0], b)) { }
         else if (emit_ret_poly_array_conv(c, g_ret_type, r0, a[0], b)) { }
         else if (tail_needs_unbox(r0, g_ret_type)) emit_unbox_node(c, g_ret_type, a[0], b);
-        else emit_tail_value(c, a[0], b);
+        else {
+          /* a subclass through an ancestor-typed slot, as the flat return
+             casts it (#3418, #8204) */
+          emit_obj_upcast_prefix(c, g_ret_type, r0, b);
+          emit_tail_value(c, a[0], b);
+        }
         buf_puts(b, "; ");
       }
       else {

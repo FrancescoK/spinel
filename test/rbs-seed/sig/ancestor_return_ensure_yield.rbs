@@ -1,0 +1,4 @@
+class Holder
+  def pick: (bool f) -> Base
+  def pick_inline: (bool f) { () -> void } -> Base
+end
