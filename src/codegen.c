@@ -7388,6 +7388,14 @@ static void emit_proc_poly_arg(Compiler *c, Scope *bs, LocalVar *lv, const char 
   buf_printf(pb, "(argc > %d) ? _sp_proc_poly_args[%d] : sp_box_nil();\n", k, k);
   emit_block_param_share(c, bs, lv, name, pb, 0);
 }
+static void emit_proc_numbered_args(Compiler *c, Scope *bs, int n, Buf *pb) {
+  for (int k = 0; k < n; k++) {
+    char name[32]; snprintf(name, sizeof name, "_%d", k + 1);
+    buf_printf(pb, "    sp_RbVal lv_%s = ", name);
+    emit_proc_poly_arg(c, bs, scope_local(bs, name), name, k, pb);
+    buf_printf(pb, "    (void)lv_%s;\n", name);
+  }
+}
 static void emit_proc_poly_post(Compiler *c, Scope *bs, int create, LocalVar *lv,
                                 const char *name, int j, Buf *pb) {
   buf_puts(pb, "    "); emit_local_ctype(c, TY_POLY, proc_local_needs_volatile(c, create, lv), pb);
@@ -8377,11 +8385,7 @@ else if (orecv >= 0 && onm) {
        names and the requireds loop above has already declared and bound them;
        doing it twice is a redefinition the C compiler stops on. */
     if (proc_numbered_params_node(c, create) < 0)
-      for (int k = 0; k < nnumbered; k++) {
-        buf_printf(pb, "    sp_RbVal lv__%d = (argc > %d) ? _sp_proc_poly_args[%d] : sp_box_nil();\n",
-                   k + 1, k, k);
-        buf_printf(pb, "    (void)lv__%d;\n", k + 1);
-      }
+      emit_proc_numbered_args(c, bs, nnumbered, pb);
     /* Optionals fill from the front with whatever arguments remain after the
        requireds and the posts (_sp_ot of them); a slot with no argument evaluates its
        default (which may reference earlier params -- they are bound above /
