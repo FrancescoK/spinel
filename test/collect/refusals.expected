@@ -1282,14 +1282,18 @@ spinel: 1 refusal, nothing written
 == test/reject/systemcallerror_zsuper_keyword.rb [promote] rc=1
 spinel: test/reject/systemcallerror_zsuper_keyword.rb:6: unsupported a bare super forwarding a rest, keyword or block parameter to SystemCallError#initialize: node N (ForwardingSuperNode)
 spinel: 1 refusal, nothing written
+== test/reject/time_class_parsers.rb [default] rc=1
+spinel: test/reject/time_class_parsers.rb:8: Time.iso8601 is not supported: spinel implements Time's other `require "time"` additions (the instance methods iso8601, httpdate, rfc2822) but not the string-parsing ones. Store times as epoch seconds and read them with Time.at instead (see docs/limitations.md)
+== test/reject/time_class_parsers.rb [promote] rc=1
+spinel: test/reject/time_class_parsers.rb:8: Time.iso8601 is not supported: spinel implements Time's other `require "time"` additions (the instance methods iso8601, httpdate, rfc2822) but not the string-parsing ones. Store times as epoch seconds and read them with Time.at instead (see docs/limitations.md)
 == test/reject/time_parse_no_require.rb [default] rc=1
-spinel: test/reject/time_parse_no_require.rb:7: Time.parse is not supported: spinel implements Time's other `require "time"` additions (iso8601, httpdate, rfc2822) but not the string-parsing ones. Store times as epoch seconds and read them with Time.at instead (see docs/limitations.md)
+spinel: test/reject/time_parse_no_require.rb:7: Time.parse is not supported: spinel implements Time's other `require "time"` additions (the instance methods iso8601, httpdate, rfc2822) but not the string-parsing ones. Store times as epoch seconds and read them with Time.at instead (see docs/limitations.md)
 == test/reject/time_parse_no_require.rb [promote] rc=1
-spinel: test/reject/time_parse_no_require.rb:7: Time.parse is not supported: spinel implements Time's other `require "time"` additions (iso8601, httpdate, rfc2822) but not the string-parsing ones. Store times as epoch seconds and read them with Time.at instead (see docs/limitations.md)
+spinel: test/reject/time_parse_no_require.rb:7: Time.parse is not supported: spinel implements Time's other `require "time"` additions (the instance methods iso8601, httpdate, rfc2822) but not the string-parsing ones. Store times as epoch seconds and read them with Time.at instead (see docs/limitations.md)
 == test/reject/time_strptime_no_require.rb [default] rc=1
-spinel: test/reject/time_strptime_no_require.rb:7: Time.strptime is not supported: spinel implements Time's other `require "time"` additions (iso8601, httpdate, rfc2822) but not the string-parsing ones. Store times as epoch seconds and read them with Time.at instead (see docs/limitations.md)
+spinel: test/reject/time_strptime_no_require.rb:7: Time.strptime is not supported: spinel implements Time's other `require "time"` additions (the instance methods iso8601, httpdate, rfc2822) but not the string-parsing ones. Store times as epoch seconds and read them with Time.at instead (see docs/limitations.md)
 == test/reject/time_strptime_no_require.rb [promote] rc=1
-spinel: test/reject/time_strptime_no_require.rb:7: Time.strptime is not supported: spinel implements Time's other `require "time"` additions (iso8601, httpdate, rfc2822) but not the string-parsing ones. Store times as epoch seconds and read them with Time.at instead (see docs/limitations.md)
+spinel: test/reject/time_strptime_no_require.rb:7: Time.strptime is not supported: spinel implements Time's other `require "time"` additions (the instance methods iso8601, httpdate, rfc2822) but not the string-parsing ones. Store times as epoch seconds and read them with Time.at instead (see docs/limitations.md)
 == test/reject/toplevel_include_yield_ivar_target.rb [default] rc=1
 spinel: test/reject/toplevel_include_yield_ivar_target.rb:14: unsupported top-level include of a module method that uses instance variables: node N (CallNode `pair`) recv=-/ty-1 argc=0
 spinel: 1 refusal, nothing written
