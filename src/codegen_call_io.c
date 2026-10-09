@@ -56,7 +56,16 @@ static void emit_io_readlines_args(Compiler *c, const char *r, const int *pos, i
 static void emit_line_param_decl(Compiler *c, int id, const char *pn, int lt, Buf *b) {
   Scope *s = comp_scope_of(c, id);
   LocalVar *lv = s ? scope_local(s, pn) : NULL;
-  if (repr_of_slot(c, lv).kind == RK_STRBUF)
+  /* inside a yield spliced into its caller `pn` is the renamed local: the
+     slot is the block's own parameter, under its written name */
+  int blk = nt_ref(c->nt, id, "block");
+  if (!lv && blk >= 0 && nt_kind(c->nt, blk) == NK_BlockNode) {
+    Scope *bs = comp_scope_of(c, blk);
+    const char *raw = block_param_name(c, blk, 0);
+    lv = bs && raw ? scope_local(bs, raw) : NULL;
+  }
+  /* a buffer, or a parameter held as the shared handle (--share-strings) */
+  if (repr_of_slot(c, lv).kind == RK_STRBUF || repr_of_slot(c, lv).handle)
     buf_printf(b, " sp_String *lv_%s = sp_String_new_shared(_t%d); SP_GC_ROOT(lv_%s);", pn, lt, pn);
   else buf_printf(b, " const char *lv_%s = _t%d; SP_GC_ROOT_STR(lv_%s);", pn, lt, pn);
 }
