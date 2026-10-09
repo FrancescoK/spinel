@@ -15520,6 +15520,17 @@ int builtin_cmethod_known(const char *cls, const char *name) {
           (builtin_method_known(cls, name) || is_kernel_module_function(name)));
 }
 
+int builtin_super_cmethod_known(const char *cls, const char *name) {
+  if (is_kernel_module_name(cls) && builtin_cmethod_known(cls, name)) return 1;
+  int bid = builtin_class_id(cls);
+  if (!bid) return 0;
+  int parent = builtin_class_parent_id(bid);
+  for (int i = 0; sp_builtin_cmeth_arity_spec_tbl[i].cls; i++) {
+    const SpAritySpec *r = &sp_builtin_cmeth_arity_spec_tbl[i];
+    if (sp_streq(r->m, name) && builtin_class_id(r->cls) == parent) return 1;
+  }
+  return 0;
+}
 
 /* The arity table's class for a row's receiver kind, or NULL: the kinds the
    table probes a receiver of. */
