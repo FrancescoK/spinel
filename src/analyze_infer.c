@@ -2925,6 +2925,10 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
          `size[0]` that follows reads it as an untyped value. */
       if (sp_streq(name, "winsize") && sp_feature_enabled("io/console"))
         { *out = an_poly_concrete(c, name, TY_INT_ARRAY); return 1; }
+      /* and winsize=, which answers its Integer Array argument */
+      if (sp_streq(name, "winsize=") && argc == 1 && sp_feature_enabled("io/console") &&
+          infer_type(c, argv[0]) == TY_INT_ARRAY)
+        { *out = an_poly_concrete(c, name, TY_INT_ARRAY); return 1; }
       /* a boxed socket's non-blocking connect and options, as the TY_IO arms
          type them */
       if (sp_feature_required("socket")) {

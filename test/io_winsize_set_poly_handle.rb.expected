@@ -1,0 +1,4 @@
+Errno::ENOTTY
+[:size, :no_method]
+:no_method
+true
