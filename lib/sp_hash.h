@@ -27,6 +27,10 @@
 
 void sp_StrIntHash_fin(void*p);
 void sp_StrIntHash_scan(void*p);
+/* A Hash set up inside a bigger object that starts with it -- a Hash
+   subclass instance, whose struct embeds its Hash -- as _new sets a fresh one
+   up; the enclosing object is zeroed by its allocation, as _new's is. */
+void sp_StrIntHash_init_embedded(sp_StrIntHash*h);
 sp_StrIntHash*sp_StrIntHash_new(void);
 sp_StrIntHash*sp_StrIntHash_new_with_default(sp_int d);
 void sp_StrIntHash_grow(sp_StrIntHash*h);
@@ -48,6 +52,7 @@ void sp_StrIntHash_clear(sp_StrIntHash*h);
 sp_bool sp_StrIntHash_eq(sp_StrIntHash*a,sp_StrIntHash*b);
 void sp_StrStrHash_fin(void*p);
 void sp_StrStrHash_scan(void*p);
+void sp_StrStrHash_init_embedded(sp_StrStrHash*h);
 sp_StrStrHash*sp_StrStrHash_new(void);
 sp_StrStrHash*sp_StrStrHash_new_with_default(const char*d);
 void sp_StrStrHash_grow(sp_StrStrHash*h);
@@ -68,6 +73,7 @@ void sp_StrStrHash_clear(sp_StrStrHash*h);
 sp_bool sp_StrStrHash_eq(sp_StrStrHash*a,sp_StrStrHash*b);
 void sp_IntStrHash_fin(void*p);
 void sp_IntStrHash_scan(void*p);
+void sp_IntStrHash_init_embedded(sp_IntStrHash*h);
 sp_IntStrHash*sp_IntStrHash_new(void);
 sp_IntStrHash*sp_IntStrHash_new_with_default(const char*d);
 void sp_IntStrHash_grow(sp_IntStrHash*h);
@@ -84,6 +90,7 @@ sp_IntStrHash*sp_IntStrHash_dup(sp_IntStrHash*h);
 sp_IntStrHash*sp_IntStrHash_replace(sp_IntStrHash*h,sp_IntStrHash*o);
 sp_bool sp_IntStrHash_eq(sp_IntStrHash*a,sp_IntStrHash*b);
 void sp_IntIntHash_fin(void*p);
+void sp_IntIntHash_init_embedded(sp_IntIntHash*h);
 sp_IntIntHash*sp_IntIntHash_new(void);
 sp_IntIntHash*sp_IntIntHash_new_with_default(sp_int d);
 void sp_IntIntHash_grow(sp_IntIntHash*h);
