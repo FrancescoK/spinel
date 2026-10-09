@@ -15801,7 +15801,8 @@ static int toplevel_def(Compiler *c, const char *name) {
   return mi >= 0 && !c->scopes[mi].is_cmethod;
 }
 
-static int arity_call_block(const NodeTable *nt, int id, int *argc) {
+static int arity_call_block(const NodeTable *nt, int id, int *argc, int *kwh) {
+  *kwh = 0;
   /* nil&.m short-circuits before any arity check */
   const char *safe_op = nt_str(nt, id, "call_operator");
   if (safe_op && sp_streq(safe_op, "&.")) return -1;
@@ -15822,6 +15823,12 @@ static int arity_call_block(const NodeTable *nt, int id, int *argc) {
   const int *argv = anode >= 0 ? nt_arr(nt, anode, "arguments", argc) : NULL;
   for (int i = 0; i < *argc; i++) {
     const char *at = nt_type(nt, argv[i]);
+    if (i == *argc - 1 && nt_kind(nt, argv[i]) == NK_KeywordHashNode) {
+      int en = 0; const int *els = nt_arr(nt, argv[i], "elements", &en);
+      for (int e = 0; e < en; e++) if (nt_kind(nt, els[e]) == NK_AssocSplatNode) return -1;
+      *kwh = 1;
+      continue;
+    }
     if (at && (sp_streq(at, "SplatNode") || sp_streq(at, "KeywordHashNode") ||
                nt_kind(nt, argv[i]) == NK_ForwardingArgumentsNode ||
                sp_streq(at, "BlockArgumentNode")))
@@ -15838,13 +15845,14 @@ static int arity_violation(Compiler *c, int id, char *exp, size_t n, int *eval_r
   const char *name = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver");
   if (!name) return 0;
-  int argc = 0, with_block = arity_call_block(nt, id, &argc);
+  int argc = 0, kwh, with_block = arity_call_block(nt, id, &argc, &kwh);
   if (with_block < 0) return 0;
   exp[0] = 0;
   *eval_recv = 1;
   const SpAritySpec *itbl = sp_builtin_arity_spec_tbl;
   const SpAritySpec *ctbl = sp_builtin_cmeth_arity_spec_tbl;
   const char *rty2 = recv >= 0 ? nt_type(nt, recv) : NULL;
+  if (kwh && (recv < 0 || (rty2 && sp_streq(rty2, "ConstantReadNode")))) return 0;
   if (recv < 0) {
     /* A bare call resolves to the enclosing class's chain, then to a
        top-level def or a reopened Kernel or Object, and only then to the
@@ -15955,6 +15963,8 @@ static int arity_violation(Compiler *c, int id, char *exp, size_t n, int *eval_r
     if (reopened_owns(c, bcn, name) || reopened_owns(c, owner, name) ||
         (twin && reopened_owns(c, twin, name)) ||
         (sp_streq(owner, "Object") && toplevel_def(c, name))) return 0;
+    int fa;
+    if (kwh && (!builtin_method_arity(owner, name, &fa) || fa < 0)) return 0;
   }
   return 1;
 }
@@ -15987,7 +15997,15 @@ void emit_wrong_count(Compiler *c, int id, const char *exp, int eval_recv, int g
   buf_puts(b, "({ ");
   if (eval_recv) { buf_puts(b, "(void)("); emit_expr(c, recv, b); buf_puts(b, "); "); }
   for (int i = 0; i < argc; i++) {
-    buf_puts(b, "(void)("); emit_expr(c, argv[i], b); buf_puts(b, "); ");
+    if (nt_kind(nt, argv[i]) != NK_KeywordHashNode) {
+      buf_puts(b, "(void)("); emit_expr(c, argv[i], b); buf_puts(b, "); ");
+      continue;
+    }
+    int en = 0; const int *els = nt_arr(nt, argv[i], "elements", &en);
+    for (int e = 0; e < en; e++) {
+      buf_puts(b, "(void)("); emit_expr(c, nt_ref(nt, els[e], "key"), b); buf_puts(b, "); ");
+      buf_puts(b, "(void)("); emit_expr(c, nt_ref(nt, els[e], "value"), b); buf_puts(b, "); ");
+    }
   }
   buf_printf(b, "sp_raise_cls(\"ArgumentError\","
                 " \"wrong number of arguments (given %d, expected %s)\"); %s; })",
@@ -16217,7 +16235,7 @@ static int poly_arity_plan(Compiler *c, int id, const char **tests, char exps[][
   const char *name = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver");
   if (!name || recv < 0 || repr_of(c, recv).kind != RK_BOXED) return 0;
-  int argc = 0, with_block = arity_call_block(nt, id, &argc);
+  int argc = 0, kwh, with_block = arity_call_block(nt, id, &argc, &kwh);
   if (with_block < 0) return 0;
   if (recv_user_defines(c, name) || comp_method_index(c, name) >= 0) return 0;
   for (int k = 0; k < c->nclasses; k++)
@@ -16258,6 +16276,8 @@ static int poly_arity_plan(Compiler *c, int id, const char **tests, char exps[][
       snprintf(exp, sizeof exp, "%d", a);
     }
     if (!exp[0]) return 0;        /* this class takes the count */
+    int fa;
+    if (kwh && (!(builtin_method_arity(CLS[q], name, &fa) || builtin_method_arity("Object", name, &fa)) || fa < 0)) return 0;
     tests[n] = TST[q];
     snprintf(exps[n], 32, "%s", exp);
     n++;
@@ -16267,7 +16287,7 @@ static int poly_arity_plan(Compiler *c, int id, const char **tests, char exps[][
      none of is CRuby's ArgumentError, in the class's own range where the
      spec rows know it, else the declared counts' */
   static char ntst[POLY_ARITY_MAX][64];
-  for (int k = 0; k < c->nclasses && n < POLY_ARITY_MAX; k++) {
+  for (int k = 0; k < c->nclasses && n < POLY_ARITY_MAX && !kwh; k++) {
     if (!c->classes[k].is_native_class || !c->classes[k].instantiated) continue;
     int mn = -1, mx = -1, takes = 0;
     for (int i = 0; i < c->n_native_methods; i++) {
