@@ -17838,6 +17838,7 @@ static unsigned share_types_digest(Compiler *c) {
 /* (a read of a holder is not lifted: the rule makes that holder the
    handle, whose box is the handle already) */
 static int share_lift_value(Compiler *c, int v);
+static int share_lift_jumps(Compiler *c, int n, NodeKind k);
 /* An arm of a conditional value: its last statement, through parentheses
    and an `else`. */
 static int share_lift_arms(Compiler *c, int n) {
@@ -17861,6 +17862,10 @@ static int share_lift_value(Compiler *c, int v) {
   if (k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode || k == NK_GlobalVariableReadNode ||
       k == NK_ClassVariableReadNode || k == NK_ConstantReadNode || k == NK_ConstantPathNode)
     return 0;
+  /* (nor is a frozen literal: nothing changes it in place, and its box is
+     the one object each evaluation answers, which a new handle would not
+     be) */
+  if (k == NK_StringNode) return 0;
   /* a String-typed value, a conditional's included, is boxed whole */
   if (infer_type(c, v) == TY_STRING) {
     if (c->poly_strbuf_lift[v]) return 0;
@@ -17892,8 +17897,39 @@ static int share_lift_value(Compiler *c, int v) {
     }
     case NK_RescueModifierNode:
       return share_lift_arms(c, nt_ref(nt, v, "expression")) | share_lift_arms(c, nt_ref(nt, v, "rescue_expression"));
+    /* a loop's value is what a `break` gives it, as is the value of a
+       call whose literal block breaks */
+    case NK_WhileNode: case NK_UntilNode:
+      return share_lift_jumps(c, nt_ref(nt, v, "statements"), NK_BreakNode);
+    case NK_CallNode: {
+      int blk = nt_ref(nt, v, "block");
+      return blk >= 0 && nt_kind(nt, blk) == NK_BlockNode ? share_lift_jumps(c, nt_ref(nt, blk, "body"), NK_BreakNode) : 0;
+    }
     default: return 0;
   }
+}
+/* Each `next` (k NK_NextNode) or `break` (NK_BreakNode) under n that leaves
+   what n is the body of, not one in a nested block, lambda, method or loop:
+   its value is boxed as share_lift_value boxes. */
+static int share_lift_jumps(Compiler *c, int n, NodeKind k) {
+  const NodeTable *nt = c->nt;
+  if (n < 0) return 0;
+  NodeKind nk = nt_kind(nt, n);
+  if (nk == NK_BlockNode || nk == NK_LambdaNode || nk == NK_DefNode || nk == NK_WhileNode || nk == NK_UntilNode ||
+      nk == NK_ForNode)
+    return 0;
+  int changed = 0;
+  if (nk == k) {
+    int args = nt_ref(nt, n, "arguments"), argc = 0;
+    const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+    if (argc == 1 && an_unparen(nt, argv[0]) >= 0) changed |= share_lift_value(c, an_unparen(nt, argv[0]));
+  }
+  for (int i = 0; i < nt_num_refs(nt, n); i++) changed |= share_lift_jumps(c, nt_ref_at(nt, n, i), k);
+  for (int i = 0; i < nt_num_arrs(nt, n); i++) {
+    int m = 0; const int *ids = nt_arr_at(nt, n, i, &m);
+    for (int j = 0; j < m; j++) changed |= share_lift_jumps(c, ids[j], k);
+  }
+  return changed;
 }
 /* The same for local `name` of scope `scope`: its `=`, `||=` and `&&=`
    (comp_lvw_first_sc, the local write index). */
@@ -18070,6 +18106,26 @@ static int share_ret_typed_str_literal(Compiler *c, int mi) {
     if (nt_kind(c->nt, u) == NK_ReturnNode && comp_scope_of(c, u) == &c->scopes[mi] && share_ret_literal(c->nt, u))
       return 1;
   return 0;
+}
+/* --share-strings: method mi answers a box whose class the rule shares:
+   each String it answers (its last value, a `begin` body's arms, each
+   `return`'s) is boxed as its handle, as a boxed local's stores are
+   (share_lift_value), so a `<<` through the box its caller keeps appends
+   to the String every name holds. */
+static int share_lift_poly_returns(Compiler *c, int mi) {
+  const NodeTable *nt = c->nt;
+  Scope *m = &c->scopes[mi];
+  int last = scope_body_last(c, mi), changed = 0;
+  /* a body with its own rescue is a begin, whose arms answer */
+  if (last < 0 && m->body >= 0 && nt_kind(nt, m->body) == NK_BeginNode) last = m->body;
+  if (last >= 0) changed |= share_lift_value(c, an_unparen(nt, last));
+  for (int u = comp_ret_first(c, mi); u >= 0; u = comp_ret_next(c, u)) {
+    if (nt_kind(nt, u) != NK_ReturnNode || comp_scope_of(c, u) != m) continue;
+    int ra = nt_ref(nt, u, "arguments"), rn = 0;
+    const int *rv = ra >= 0 ? nt_arr(nt, ra, "arguments", &rn) : NULL;
+    if (rn == 1 && an_unparen(nt, rv[0]) >= 0) changed |= share_lift_value(c, an_unparen(nt, rv[0]));
+  }
+  return changed;
 }
 /* an instance method a pattern calls to read an object's parts */
 static int share_pattern_method(const Scope *m) {
@@ -18263,6 +18319,10 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
     else if (sh->kind == SHK_RET && repr_str_elems_share(c, h) &&
              (share_ret_typed_str_literal(c, sh->scope) || share_pattern_method(&c->scopes[sh->scope])))
       changed |= strbuf_method_ret_source_walk(c, sh->scope, -1, 0, SB_DEMAND);
+    /* a method answering a box the rule shares: the Strings it answers are
+       boxed as handles (share_lift_poly_returns) */
+    else if (sh->kind == SHK_RET && c->scopes[sh->scope].ret == TY_POLY && repr_str_shares(c, h))
+      changed |= share_lift_poly_returns(c, sh->scope);
     /* a global or a constant holds the handle the way a top-level ivar's C
        global does */
     else if ((sh->kind == SHK_GVAR || sh->kind == SHK_CONST) && repr_str_shares(c, h)) {
@@ -18284,7 +18344,18 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
      the store walk even while a block parameter still infers as String. */
   for (int f = 0, nf = share_flow_count(c); f < nf; f++) {
     int site, value;
-    if (share_flow_at(c, f, &site, &value) != SHFL_ELEM) continue;
+    int fk = share_flow_at(c, f, &site, &value);
+    /* The block values a call stores (map's: its block's last value and
+       each `next`'s) into a container whose elements the rule shares: a
+       String one is boxed as its handle, as a boxed local's stores are
+       (share_lift_value). The call's flow names the block's last value. */
+    if (fk == SHFL_BLOCK && value >= 0 && nt_kind(c->nt, site) == NK_CallNode && share_node_elems_share(c, site)) {
+      int blk = nt_ref(c->nt, site, "block");
+      changed |= share_lift_value(c, an_unparen(c->nt, value));
+      if (blk >= 0 && nt_kind(c->nt, blk) == NK_BlockNode)
+        changed |= share_lift_jumps(c, nt_ref(c->nt, blk, "body"), NK_NextNode);
+    }
+    if (fk != SHFL_ELEM) continue;
     int recv = nt_kind(c->nt, site) == NK_CallNode ? nt_ref(c->nt, site, "receiver") : -1;
     /* A fill constructor stores its argument as an element too. */
     int fill = recv >= 0 && (nt_kind(c->nt, recv) == NK_ConstantReadNode ||
