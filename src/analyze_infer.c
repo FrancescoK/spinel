@@ -4287,7 +4287,7 @@ static int infer_operator_call(Compiler *c, int id, const NodeTable *nt, const c
     if (sp_streq(name, "*") && (ty_is_array(rt) || rt == TY_POLY_ARRAY) && a0 == TY_STRING) { *out = TY_STRING; return 1; }
     if (sp_streq(name, "*") && (ty_is_array(rt) || rt == TY_POLY_ARRAY) && ty_is_object(a0)) {
       int smi = comp_method_in_chain(c, ty_object_class(a0), "to_str", NULL);
-      *out = smi >= 0 && c->scopes[smi].nparams == 0 ? TY_STRING : rt;
+      *out = smi >= 0 && c->scopes[smi].nrequired == 0 ? TY_STRING : rt;
       return 1;
     }
     if (ty_is_numeric(rt) && ty_is_numeric(a0)) {

@@ -426,13 +426,19 @@ static void emit_values_at_boxed(const char *an, const char *vs, int to, int tr,
 
 /* The direct call of the container conversion obj_container_conv found:
    the compiled #to_ary / #to_hash of the defining class on the operand. */
-static void emit_obj_container_conv(Compiler *c, int node, int def, const char *conv, Buf *b) {
-  int by_value = repr_of(c, node).kind == RK_VOBJ;
+static void emit_obj_conv_call(Compiler *c, int def, const char *conv, int by_value, const char *recv, Buf *b) {
   int mi = comp_method_in_chain(c, def, conv, NULL);
   if (mi >= 0 && !sp_streq(c->scopes[mi].name, conv)) { emit_method_cname(c, &c->scopes[mi], b); buf_puts(b, "("); }
   else buf_printf(b, "sp_%s_%s(", c->classes[def].c_name, mc(conv));
   if (!by_value) buf_printf(b, "(sp_%s *)", c->classes[def].c_name);
-  buf_puts(b, "("); emit_expr(c, node, b); buf_puts(b, "))");
+  buf_printf(b, "(%s))", recv);
+}
+
+static void emit_obj_container_conv(Compiler *c, int node, int def, const char *conv, Buf *b) {
+  Buf r = {0, 0, 0};
+  emit_expr(c, node, &r);
+  emit_obj_conv_call(c, def, conv, repr_of(c, node).kind == RK_VOBJ, r.p ? r.p : "NULL", b);
+  free(r.p);
 }
 
 /* Array#product's operand as an Array: an array passes; an object converts
@@ -5216,6 +5222,11 @@ static int emit_merge_any_block_boxed(Compiler *c, int id, int recv, int arg, Bu
    to them too). Each argument is a statement of its own after its own
    prelude, so one built in place does not run ahead of the ones before
    it. */
+static int merge_arg_dyn_to_hash(Compiler *c, TyKind at) {
+  int mi = ty_is_object(at) ? comp_method_in_chain(c, ty_object_class(at), "to_hash", NULL) : -1;
+  return mi >= 0 && c->scopes[mi].nrequired == 0 && c->scopes[mi].rest_idx < 0 && !ty_is_hash(c->scopes[mi].ret);
+}
+
 static int emit_hash_merge_misfit(Compiler *c, int id, TyKind rt, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -5227,8 +5238,6 @@ static int emit_hash_merge_misfit(Compiler *c, int id, TyKind rt, Buf *b) {
   int hc_ci = comp_class_index(c, "Hash");
   if (hc_ci >= 0 && comp_method_in_chain(c, hc_ci, name, NULL) >= 0) return 0;
   int bad = -1, boxed = 0;
-  int conv[8] = {0};
-  TyKind convk[8];
   for (int i = 0; i < argc && bad < 0; i++) {
     if (nt_kind(nt, argv[i]) == NK_HashNode) continue;
     TyKind at = comp_ntype(c, argv[i]);
@@ -5237,7 +5246,7 @@ static int emit_hash_merge_misfit(Compiler *c, int id, TyKind rt, Buf *b) {
     int fits = mk != TY_UNKNOWN && (ty_hash_key(rt) == TY_POLY || ty_hash_key(rt) == ty_hash_key(mk)) &&
                (ty_hash_val(rt) == TY_POLY || ty_hash_val(rt) == ty_hash_val(mk));
     if (mk != TY_UNKNOWN && !fits) { unsupported_feature(c, id, "Hash#merge! with a #to_hash of another layout than the receiver"); return 0; }
-    if (fits && i < 8) { conv[i] = def + 1; convk[i] = mk; boxed = 1; }
+    if (fits || merge_arg_dyn_to_hash(c, at)) boxed = 1;
     else if (face_arg_misfit(c, PF_HASH, argv[i]) || ty_is_object(at)) bad = i;
     else if (at == TY_POLY || at == TY_UNKNOWN) boxed = 1;
   }
@@ -5251,12 +5260,7 @@ static int emit_hash_merge_misfit(Compiler *c, int id, TyKind rt, Buf *b) {
     Buf ap = {0, 0, 0}, av = {0, 0, 0};
     g_pre = &ap;
     if (i < 0) emit_expr(c, nt_ref(nt, id, "receiver"), &av);
-    else if (i < 8 && conv[i]) {
-      Buf cv = {0, 0, 0};
-      emit_obj_container_conv(c, argv[i], conv[i] - 1, "to_hash", &cv);
-      emit_boxed_text(c, convk[i], cv.p ? cv.p : "NULL", &av);
-      free(cv.p);
-    } else emit_boxed(c, argv[i], &av);
+    else emit_boxed(c, argv[i], &av);
     g_pre = sv_pre;
     if (ap.p) buf_puts(b, ap.p);
     if (i < 0) buf_printf(b, "%s _t%d = %s; SP_GC_ROOT(_t%d); ", c_type_name(rt), tr, av.p ? av.p : "NULL", tr);
@@ -5268,6 +5272,10 @@ static int emit_hash_merge_misfit(Compiler *c, int id, TyKind rt, Buf *b) {
   char rtxt[32];
   snprintf(rtxt, sizeof rtxt, "_t%d", tr);
   for (int i = 0; i <= last; i++) {
+    TyKind at = comp_ntype(c, argv[i]);
+    int def = -1;
+    if (i != bad && ty_is_object(at) && (obj_container_conv(c, at, "to_hash", &def) != TY_UNKNOWN || merge_arg_dyn_to_hash(c, at)))
+      buf_printf(b, "_t%d = sp_kw_splat_conv(_t%d, 0); ", t0 + i, t0 + i);
     buf_printf(b, "if (_t%d.tag != SP_TAG_OBJ || !sp_poly_is_hash_kind(_t%d.cls_id))"
                   " sp_raise_cls(\"TypeError\", sp_sprintf(\"no implicit conversion of %%s into Hash\", sp_convert_src_name(_t%d))); ",
                t0 + i, t0 + i, t0 + i);
@@ -5852,9 +5860,21 @@ else {
         if (at != rt && (!ty_is_object(at) || obj_container_conv(c, at, "to_hash", &mdef) != rt)) return 0;
         int tr = ++g_tmp, to = ++g_tmp, ti = ++g_tmp, tk = ++g_tmp;
         buf_printf(b, "({ %s _t%d = ", c_type_name(rt), tr); emit_expr(c, recv, b); buf_puts(b, ";");
+        int tob = at != rt ? ++g_tmp : 0, byv = repr_of(c, argv[0]).kind == RK_VOBJ;
+        char ob[32]; snprintf(ob, sizeof ob, "_t%d", tob);
+        if (at != rt) {
+          buf_printf(b, " SP_GC_ROOT(_t%d); ", tr); emit_ctype(c, at, b); buf_printf(b, " _t%d = ", tob);
+          emit_expr(c, argv[0], b); buf_puts(b, ";");
+          if (!byv) buf_printf(b, " SP_GC_ROOT(_t%d);", tob);
+        }
         buf_printf(b, " if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s);", tr, tr, hash_box_cls(rt));   /* (#3001) */
         buf_printf(b, " %s _t%d = ", c_type_name(rt), to);
-        if (at != rt) emit_obj_container_conv(c, argv[0], mdef, "to_hash", b); else emit_expr(c, argv[0], b);
+        if (at != rt) {
+          emit_obj_conv_call(c, mdef, "to_hash", byv, ob, b);
+          buf_printf(b, "; if (!_t%d) { const char *_cn%d = sp_poly_class_name(", to, to); emit_boxed_text(c, at, ob, b);
+          buf_printf(b, "); sp_raise_cls(\"TypeError\", sp_sprintf(\"can't convert %%s to Hash (%%s#to_hash gives NilClass)\", _cn%d, _cn%d)); }"
+                        " SP_GC_ROOT(_t%d)", to, to, to);
+        } else emit_expr(c, argv[0], b);
         buf_puts(b, ";");
         buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {", ti, ti, to, ti);
         /* a PolyPoly hash's order[] holds slot indices: its keys are keys[] */
