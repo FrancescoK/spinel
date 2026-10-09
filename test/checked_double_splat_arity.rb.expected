@@ -1,0 +1,27 @@
+TypeError
+no implicit conversion of true into Hash
+TypeError
+no implicit conversion of false into Hash
+TypeError
+no implicit conversion of Integer into Hash
+TypeError
+no implicit conversion of Symbol into Hash
+TypeError
+no implicit conversion of String into Hash
+TypeError
+no implicit conversion of Array into Hash
+ArgumentError
+no keywords accepted
+TypeError
+no implicit conversion of true into Hash
+TypeError
+no implicit conversion of Integer into Hash
+ArgumentError
+no keywords accepted
+8
+TypeError
+no implicit conversion of true into Hash
+no keywords accepted
+:block
+no implicit conversion of Integer into Hash
+no implicit conversion of Integer into Hash

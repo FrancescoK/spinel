@@ -8723,9 +8723,15 @@ int emit_ds_hash_merge(Compiler *c, int kwh, int any_key, TyKind *out_type) {
    a second time. A `tmp` of -1 is an operand that brings no keywords, run
    and converted already, which reads as nothing. The caller pops the
    override with its own. */
-static void ds_operand_reads_temp(int node, int tmp) {
+static void ds_operand_reads_temp(Compiler *c, int node, int tmp) {
   argov_reserve();
-  if (tmp < 0) view_bind(node, "((void)0)");
+  if (tmp < 0) {
+    /* A later arity check may box this already-checked operand. Keep its
+       representation valid; only nil can get past its conversion check. */
+    TyKind ty = repr_of(c, node).as_ty;
+    const char *nil = nil_value(ty);
+    view_bind(node, "%s", nil ? nil : default_value_from_compiler(c, ty));
+  }
   else view_bind(node, "_t%d", tmp);
 }
 
@@ -8806,7 +8812,7 @@ int emit_ds_hash_materialize(Compiler *c, Scope *m, int kwh, TyKind *out_type) {
           buf_printf(g_pre, "SP_GC_ROOT(_t%d); if (!_t%d) _t%d = sp_%sHash_new();\n",
                      ds_hash_tmp, ds_hash_tmp, ds_hash_tmp, ty_hash_cname(*out_type));
         }
-        ds_operand_reads_temp(inner2, ds_hash_tmp);
+        ds_operand_reads_temp(c, inner2, ds_hash_tmp);
       }
       else if (nt_kind(nt, inner2) == NK_HashNode && empty_hash_literal(nt, inner2)) {
         /* `**{}` types as no hash at all; it carries no keywords */
@@ -8833,7 +8839,7 @@ int emit_ds_hash_materialize(Compiler *c, Scope *m, int kwh, TyKind *out_type) {
           buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_t%d);\n", ds_hash_tmp);
         }
         free(hb.p);
-        ds_operand_reads_temp(inner2, ds_hash_tmp);
+        ds_operand_reads_temp(c, inner2, ds_hash_tmp);
         /* the keywords bound, checked and collected are the converted
            operand's: a user object converts through its #to_hash here, once */
         char tn[32]; snprintf(tn, sizeof tn, "_t%d", ds_hash_tmp);
@@ -8856,13 +8862,13 @@ int emit_ds_hash_materialize(Compiler *c, Scope *m, int kwh, TyKind *out_type) {
         free(hb.p);
         char tn[32]; snprintf(tn, sizeof tn, "_t%d", ds_hash_tmp);
         emit_kw_splat_conv_check(c, TY_POLY, tn);
-        ds_operand_reads_temp(inner2, -1);
+        ds_operand_reads_temp(c, inner2, -1);
       }
       else if (kw_splat_bad_cls(c, *out_type)) {
         /* `**1`: no keywords to bind, only the operand to evaluate and
            CRuby's TypeError to raise before any keyword is checked */
         emit_kw_splat_bad_operand(c, inner2);
-        ds_operand_reads_temp(inner2, -1);
+        ds_operand_reads_temp(c, inner2, -1);
       }
       else if (*out_type == TY_NIL) {
         /* `**nil`, or `**f` where f answers nil (f still runs, once): no
@@ -8875,7 +8881,7 @@ int emit_ds_hash_materialize(Compiler *c, Scope *m, int kwh, TyKind *out_type) {
           emit_indent(g_pre, g_indent);
           buf_printf(g_pre, "(void)(%s);\n", hb.p ? hb.p : "0");
           free(hb.p);
-          ds_operand_reads_temp(inner2, -1);
+          ds_operand_reads_temp(c, inner2, -1);
         }
         if (callee_declares_kwargs(c, m)) {
           *out_type = TY_SYM_POLY_HASH;
