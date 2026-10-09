@@ -151,6 +151,7 @@ static void rc_note(Compiler *c, int node, int form, int why, int from_text) {
    A kind whose row has no box_text cannot be boxed, and stops the compile
    rather than fall back to an int box (the poly-box bug family). */
 void emit_boxed_text(Compiler *c, TyKind t, const char *expr, Buf *b) {
+  if (g_plan_check) pa_box_text(t);
   if (g_repr_check) { rc_text_form = -1; rc_text_ty = t; }
   const TyTraits *tr = ty_traits_of(t);
   if (tr) {
