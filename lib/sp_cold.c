@@ -2290,14 +2290,13 @@ sp_int sp_file_write_mode(const char *path, const char *data, const char *mode) 
   }
   return (sp_int)w;
 }
+extern const char *sp_errno_class_name(int e);   /* lib/sp_exc.c: the Errno:: class for a C errno */
 /* File.open(path, flags, perm): the flag word selects the fdopen mode; the
    permission bits reach open(2) only through this entry, so a created file
    carries the bits the caller asked for rather than 0666. */
 static void sp_file_open_raise(const char *path) {
   int e = errno;
-  const char *cls = e == ENOENT ? "Errno::ENOENT" : e == EACCES ? "Errno::EACCES"
-                  : e == EEXIST ? "Errno::EEXIST" : e == EISDIR ? "Errno::EISDIR" : "SystemCallError";
-  sp_raise_cls(cls, sp_sprintf("%s @ rb_sysopen - %s", strerror(e), path ? path : ""));
+  sp_raise_cls(sp_errno_class_name(e), sp_sprintf("%s @ rb_sysopen - %s", strerror(e), path ? path : ""));
 }
 /* open(2) on a FIFO waits for the other end, and it waits in the kernel with
    no descriptor to wait on. A green thread is pinned to its OS worker, so

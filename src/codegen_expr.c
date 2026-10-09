@@ -2717,6 +2717,10 @@ static int emit_constant_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       if (sp_streq(nm, "TRUNC"))    { buf_puts(b, "((sp_int)O_TRUNC)"); return 1; }
       if (sp_streq(nm, "APPEND"))   { buf_puts(b, "((sp_int)O_APPEND)"); return 1; }
       if (sp_streq(nm, "NONBLOCK")) { buf_puts(b, "((sp_int)O_NONBLOCK)"); return 1; }
+      if (sp_streq(nm, "NOFOLLOW")) { buf_puts(b, "((sp_int)O_NOFOLLOW)"); return 1; }
+      if (sp_streq(nm, "NOCTTY"))   { buf_puts(b, "((sp_int)O_NOCTTY)"); return 1; }
+      if (sp_streq(nm, "SYNC"))     { buf_puts(b, "((sp_int)O_SYNC)"); return 1; }
+      if (sp_streq(nm, "DSYNC"))    { buf_puts(b, "((sp_int)O_DSYNC)"); return 1; }
       if (sp_streq(nm, "BINARY"))   { buf_puts(b, "((sp_int)0)"); return 1; }
       /* the flock(2) operation constants (#2808) */
       if (sp_streq(nm, "LOCK_SH")) { buf_puts(b, "((sp_int)LOCK_SH)"); return 1; }
