@@ -1,3 +1,5 @@
+# spinel: share
+# spinel: gc-minor
 # A String override must run even when its receiver is a shared handle.
 class String
   def to_s = +"override"
