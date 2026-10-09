@@ -2016,7 +2016,8 @@ int comp_method_overridden(Compiler *c, int cid, const char *name, int cmeth) {
   for (int i = 0; i < nd; i++) {
     int k = ds[i];
     if (k == cid) continue;
-    if ((cmeth ? comp_cmethod_in_class(c, k, name) : comp_method_in_class(c, k, name)) >= 0) {
+    if (!sp_streq(comp_resolve_alias(c, k, name), name) ||
+        (cmeth ? comp_cmethod_in_class(c, k, name) : comp_method_in_class(c, k, name)) >= 0) {
       overridden = 1;
       break;
     }
