@@ -105,10 +105,18 @@ and coercions; not every handwritten argument or element store uses it.
 
 ## What the review checks
 
-- **Same answer as CRuby.** Compare a new test's output with CRuby 4.0
-  run with `--enable-frozen-string-literal`: Spinel's string literals are
-  always frozen. A path Spinel cannot handle is refused at compile time with
-  a message; it must never give a different answer silently.
+- **Same answer as CRuby, or a refusal.** Compare a new test's output with
+  CRuby 4.0 run with `--enable-frozen-string-literal`: Spinel's string
+  literals are always frozen. A path Spinel cannot handle is refused at
+  compile time with a `spinel: FILE:LINE: ...` message naming the construct.
+  A program Spinel compiles must behave as CRuby does: it must not give a
+  different answer silently, raise an error CRuby would not raise (a
+  `NoMethodError` for a method that was never defined, a
+  `NotImplementedError` for an unsupported construct), or fail in the C
+  compiler. Turning a refusal into a runtime `NotImplementedError` is only
+  for `--defer-refusals`, which a user asks for explicitly.
+  `docs/limitations.md` describes the refusals; when a change supports or
+  refuses a construct, update its entry in the same pull request.
 - **No cost where the change does not apply.** If optcarrot's generated C
   changes, show callgrind numbers; its checksum stays 59662. A rise of more
   than 0.05 in any scale-test ratio is a finding.
