@@ -1640,9 +1640,13 @@ int emit_gsub_block_expr(Compiler *c, int id, Buf *b) {
     Scope *ps = comp_scope_of(c, block);
     LocalVar *plv = ps ? scope_local(ps, block_param_name(c, block, 0)) : NULL;
     int box = plv && plv->type == TY_POLY;
+    /* a parameter held as a shared handle (--share-strings) takes a fresh
+       String of the match */
+    int hnd = !box && plv && repr_of_slot(c, plv).handle;
     emit_indent(g_pre, g_indent + 1);
     buf_printf(g_pre, "lv_%s = %ssp_str_substr(_t%d + _t%d, _t%d, _t%d - _t%d)%s;\n",
-               p0, box ? "sp_box_str(" : "", ts, tpos, tms, tme, tms, box ? ")" : "");
+               p0, box ? "sp_box_str(" : hnd ? "sp_String_new_fresh(" : "", ts, tpos, tms, tme, tms,
+               (box || hnd) ? ")" : "");
   }
   IterStep st; emit_iter_step_open(c, block, 0, g_indent + 1, &st);
   int save = g_indent; g_indent++;
