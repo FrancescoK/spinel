@@ -2554,6 +2554,18 @@ static int emit_data_ivar_set(Compiler *c, int id, int recv, int value, int cid,
   return 1;
 }
 
+/* The value of an instance_variable_set into a shared String handle slot
+   (a TY_STRBUF ivar): the handle the store made, which a dropped value or
+   one taken as the handle uses as it is. A call whose value is asked as a
+   String reads it instead; the handle written where a const char * was
+   expected printed garbage. Under --share-strings only: the default build
+   keeps what it emitted. */
+static int ivar_set_slot_read(Compiler *c, int id, TyKind mt) {
+  if (mt != TY_STRBUF || !repr_share_rule(c)) return 0;
+  Repr rp = repr_of(c, id);
+  return rp.as_ty == TY_STRING && rp.kind != RK_BOXED && !rp.handle && !comp_value_dropped(c, id);
+}
+
 /* Reflection-only slots keep an assigned bit beside their value. Evaluate
    the value before either the frozen check or the successful store. */
 static void emit_reflect_ivar_set(Compiler *c, int id, int recv, int value, int cid,
@@ -2578,7 +2590,9 @@ static void emit_reflect_ivar_set(Compiler *c, int id, int recv, int value, int 
   const char *mark = ivar_set_mark(c, cid, sym, obj, "->", mk, sizeof mk);
   buf_printf(b, "%s->iv_%s = %s; %s ", obj, iv_c(sym + 1), val, mark ? mark : "");
   Repr rp = repr_of(c, id);
-  emit_coerce_text(c, id, mt, rp.as_ty, CO_HOLD, val, "an instance variable write result", b);
+  if (ivar_set_slot_read(c, id, mt)) emit_strbuf_node_read(c, id, val, b);
+  else if (mt == TY_STRBUF && rp.as_ty == TY_STRING && rp.kind != RK_BOXED && repr_share_rule(c)) buf_puts(b, val);
+  else emit_coerce_text(c, id, mt, rp.as_ty, CO_HOLD, val, "an instance variable write result", b);
   buf_puts(b, "; })");
 }
 
@@ -2642,17 +2656,47 @@ int emit_object_ivar_call(Compiler *c, int id, const char *name, int recv, TyKin
                      rbf.p ? rbf.p : "NULL");
           free(rbf.p);
           char selft[32]; snprintf(selft, sizeof selft, "_t%d", tf9);
+          int rdf = ivar_set_slot_read(c, id, mt);
+          if (rdf) buf_printf(b, "SP_GC_ROOT(_t%d); ", tf9);
           emit_frozen_obj_guard(c, cid, selft, b);
           buf_printf(b, "_t%d->iv_%s = ", tf9, iv_c(sym + 1));
           if (mt == TY_POLY) emit_boxed(c, argv[1], b);
           else if (nt_kind(nt, argv[1]) == NK_NilNode && nil_value(mt)) buf_puts(b, nil_value(mt));
           else if (emit_array_into_poly_slot(c, mt, argv[1], b)) { }
           else emit_coerce(c, argv[1], mt, CO_HOLD, "an instance variable write", b);
-          buf_puts(b, "; })");
+          buf_puts(b, "; ");
+          if (rdf) {
+            char ivt[48]; snprintf(ivt, sizeof ivt, "_t%d->iv_%s", tf9, iv_c(sym + 1));
+            emit_strbuf_node_read(c, id, ivt, b);
+            buf_puts(b, "; ");
+          }
+          buf_puts(b, "})");
           return 1;
         }
-        buf_puts(b, "(("); emit_expr(c, recv, b);
-        buf_printf(b, ")%siv_%s = ", acc, iv_c(sym + 1));
+        /* A value asked as a String makes the store a statement of its own
+           (the write-barrier pass puts a statement's barrier after the
+           value is built, which an assignment inside an expression does
+           not get), and reads the slot back once it is made. */
+        int rdp = ivar_set_slot_read(c, id, mt), tvp = rdp ? ++g_tmp : 0;
+        Buf lhs; memset(&lhs, 0, sizeof lhs);
+        if (rdp) {
+          if (is_val) {
+            buf_puts(b, "({ "); buf_puts(&lhs, "("); emit_expr(c, recv, &lhs);
+            buf_printf(&lhs, ").iv_%s", iv_c(sym + 1));
+          }
+          else {
+            int trp = ++g_tmp;
+            buf_printf(b, "({ sp_%s *_t%d = ", c->classes[cid].c_name, trp);
+            emit_expr(c, recv, b);
+            buf_printf(b, "; SP_GC_ROOT(_t%d); ", trp);
+            buf_printf(&lhs, "_t%d->iv_%s", trp, iv_c(sym + 1));
+          }
+          buf_printf(b, "%s = ", lhs.p);
+        }
+        else {
+          buf_puts(b, "(("); emit_expr(c, recv, b);
+          buf_printf(b, ")%siv_%s = ", acc, iv_c(sym + 1));
+        }
         if (mt == TY_POLY) emit_boxed(c, argv[1], b);
         else if (mt == TY_STRBUF) {
           char srefIS[1024];
@@ -2670,7 +2714,14 @@ int emit_object_ivar_call(Compiler *c, int id, const char *name, int recv, TyKin
            `@x = v` write does */
         else if (emit_array_into_poly_slot(c, mt, argv[1], b)) { }
         else emit_coerce(c, argv[1], mt, CO_HOLD, "an instance variable write", b);
-        buf_puts(b, ")");
+        if (rdp) {
+          char tvn[32]; snprintf(tvn, sizeof tvn, "_t%d", tvp);
+          buf_printf(b, "; sp_String *%s = %s; SP_GC_ROOT(%s); ", tvn, lhs.p, tvn);
+          emit_strbuf_node_read(c, id, tvn, b);
+          buf_puts(b, "; })");
+          free(lhs.p);
+        }
+        else buf_puts(b, ")");
       }
       else if ((mt == TY_STRBUF || (repr_share_rule(c) && mt == TY_STRING)) && repr_of(c, id).demand) {
         /* the caller asked for the HANDLE, not a reading of it. The

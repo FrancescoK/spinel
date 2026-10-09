@@ -672,6 +672,11 @@ int repr_coerce_plan(Compiler *c, int node, TyKind slot, int how, TyKind *from_o
   if (container && repr_empty_lit_as(c, node, slot)) return CF_EMPTY_LIT;
   if (from == TY_NIL && nt_kind(c->nt, node) == NK_NilNode) return CF_NIL_SENT;
   if (slot == TY_BIGINT && from == TY_INT) return CF_INT2BIG;
+  /* a String into the shared handle slot an ivar holds under the share
+     rule: the handle the value is, or a fresh one around it, as a plain
+     `@x = v` stores it. A frozen literal is the handle of its own site
+     (SP_SHARE_STRING_LITERALS), so it keeps one identity and stays frozen */
+  if (slot == TY_STRBUF && how == CO_HOLD && from == TY_STRING && repr_share_rule(c)) return CF_STRBUF_HANDLE;
   if (from == TY_POLY && how == CO_HOLD) {
     if (repr_poly_rhs_ok(slot)) return CF_POLY_RHS;
     if (ty_is_array(slot) || ty_is_ptr_array(slot) || ty_is_hash(slot) || slot == TY_BIGINT ||
@@ -687,7 +692,7 @@ int repr_coerce_form(Compiler *c, int node, TyKind slot, int how) {
 
 const char *repr_coerce_form_name(int form) {
   static const char *const names[CF__COUNT] = {
-    "FIT", "BOX", "EMPTY_LIT", "NIL_SENT", "INT2BIG", "POLY_RHS", "CHECKED_UNBOX", "CONVERT", "REFUSE",
+    "FIT", "BOX", "EMPTY_LIT", "NIL_SENT", "INT2BIG", "POLY_RHS", "CHECKED_UNBOX", "STRBUF_HANDLE", "CONVERT", "REFUSE",
   };
   return form >= 0 && form < CF__COUNT ? names[form] : "?";
 }

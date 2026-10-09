@@ -550,6 +550,12 @@ spinel: 1 refusal, nothing written
 == test/reject/io_reopen_yielding_call.rb [promote] rc=1
 spinel: test/reject/io_reopen_yielding_call.rb:10: unsupported call: node N (CallNode `twice`) recv=GlobalVariableReadNode/ty46 argc=0
 spinel: 1 refusal, nothing written
+== test/reject/ivar_set_shared_string_slot.rb [default] rc=1
+spinel: test/reject/ivar_set_shared_string_slot.rb:10: an instance variable write given a String, which no conversion keeps in its sp_String * slot
+spinel: 1 refusal, nothing written
+== test/reject/ivar_set_shared_string_slot.rb [promote] rc=1
+spinel: test/reject/ivar_set_shared_string_slot.rb:10: an instance variable write given a String, which no conversion keeps in its sp_String * slot
+spinel: 1 refusal, nothing written
 == test/reject/lazy_stage_string_mutation.rb [default] rc=1
 spinel: test/reject/lazy_stage_string_mutation.rb:6: a lazy stage's block that changes its String element in place (`<<`, `concat`, a `!` method) is not supported: the lazy pipeline hands the block a copy of the element, so the String the source holds would not change. Use the eager form (drop `.lazy`), or return a new String (`x + "!"`) (see docs/limitations.md)
 spinel: 1 refusal, nothing written

@@ -3991,6 +3991,14 @@ void emit_coerce(Compiler *c, int node, TyKind slot, int how, const char *what, 
     RCC(CF_CHECKED_UNBOX);
     return;
   }
+  case CF_STRBUF_HANDLE:
+    /* --share-strings: a String into a shared handle slot is the handle the
+       value is (a variable that is one) or a fresh handle around it; a
+       variable that is no handle is refused rather than copied
+       (emit_strbuf_ivar_store) */
+    emit_strbuf_ivar_store(c, 1, node, b);
+    RCC(CF_STRBUF_HANDLE);
+    return;
   default:
     break;
   }

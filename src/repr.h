@@ -270,6 +270,9 @@ typedef enum {
   CF_POLY_RHS,      /* a boxed value through its scalar conversion
                        (emit_poly_rhs_coerced) */
   CF_CHECKED_UNBOX, /* a boxed value through the checked unbox */
+  CF_STRBUF_HANDLE, /* --share-strings: a String into a shared String handle
+                       slot, as the handle it is or a fresh one
+                       (emit_strbuf_ivar_store) */
   CF_CONVERT,       /* a conversion Ruby makes itself: truthiness, a Bignum
                        or Rational to a Float */
   CF_REFUSE,        /* no conversion keeps the value: refused */
