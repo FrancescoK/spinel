@@ -118,9 +118,13 @@ static const char *sp_errf_conv(sp_RbVal v) {
    The previous /dev/null behaviour silently swallowed the child's stderr
    and made `Process.spawn("cc -c foo.c")` in verbose mode look like it
    produced no output. */
-static void apply_redirect(int target_fd, int src_fd) {
-  if (src_fd < 0) return;
-  if (src_fd != target_fd) dup2(src_fd, target_fd);
+static int apply_redirect(int target_fd, int src_fd) {
+  if (src_fd < 0) return 0;
+  if (src_fd != target_fd) { dup2(src_fd, target_fd); return 0; }
+  /* already in place (a pipe took a free fd 0): no dup2 clears close-on-exec */
+  int fl = fcntl(target_fd, F_GETFD);
+  if (fl < 0) return -1;
+  return (fl & FD_CLOEXEC) ? fcntl(target_fd, F_SETFD, fl & ~FD_CLOEXEC) : 0;
 }
 
 /* Close the source descriptors, once every dup2 above has been made. Not
@@ -497,9 +501,12 @@ sp_int sp_process_spawn(sp_RbVal cmd, sp_RbVal args_box,
     else if (pgroup > 1) {
       setpgid(0, pgroup);
     }
-    apply_redirect(0, in_fd);
-    apply_redirect(1, out_fd);
-    apply_redirect(2, err_fd);
+    if (apply_redirect(0, in_fd) != 0 || apply_redirect(1, out_fd) != 0 ||
+        apply_redirect(2, err_fd) != 0) {
+      int fail[2] = { errno, 0 };
+      (void)!write(err_pipe[1], fail, sizeof fail);
+      _exit(127);
+    }
     close_redirect_srcs(in_fd, out_fd, err_fd);
     /* execvp searches the PATH of the environment it passes on, as CRuby
        searches the child's */
