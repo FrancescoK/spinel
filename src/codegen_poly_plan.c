@@ -2611,6 +2611,7 @@ void poly_specials_n(Compiler *c, int id, const char *name, int argc, const int 
      is what CRuby answers for a non-String separator anyway. */
   if (is_pjoin && argc == 1) {
     TyKind jat = comp_ntype(c, argv[0]);
+    if (repr_share_rule(c) && jat == TY_STRBUF) jat = TY_STRING;
     if (!(jat == TY_STRING || jat == TY_POLY || jat == TY_NIL || jat == TY_UNKNOWN))
       is_pjoin = 0;
   }
@@ -2629,6 +2630,7 @@ void poly_specials_n(Compiler *c, int id, const char *name, int argc, const int 
      non-String format anyway. */
   if (is_ppack) {
     TyKind pat = comp_ntype(c, argv[0]);
+    if (repr_share_rule(c) && pat == TY_STRBUF) pat = TY_STRING;
     if (!(pat == TY_STRING || pat == TY_POLY || pat == TY_UNKNOWN)) is_ppack = 0;
   }
   /* Both arms answer a String, so they can only be emitted where the result
@@ -4158,9 +4160,13 @@ void emit_poly_defaults_n(Compiler *c, int id, int recv, const char *name, const
         else if (atmp_ty[0] == TY_REGEX) buf_printf(&ab5, "sp_box_regexp(%s)", tn5);
         else emit_boxed_text(c, atmp_ty[0], tn5, &ab5); }
       if (argc == 2) {
-        char sx[64];
-        if (atmp_ty[1] == TY_POLY) snprintf(sx, sizeof sx, "sp_poly_arg_int_chk(_t%d)", atmp[1]);
-        else snprintf(sx, sizeof sx, "(sp_int)_t%d", atmp[1]);
+        char sx[160];
+        if (atmp_ty[1] == TY_INT || atmp_ty[1] == TY_FLOAT) snprintf(sx, sizeof sx, "(sp_int)_t%d", atmp[1]);
+        else if (atmp_ty[1] == TY_POLY) snprintf(sx, sizeof sx, "sp_poly_arg_int_chk(_t%d)", atmp[1]);
+        /* a keyword hash or any other object is no offset: TypeError, as in CRuby */
+        else { Buf ob; memset(&ob, 0, sizeof ob); char on[32]; snprintf(on, sizeof on, "_t%d", atmp[1]);
+          emit_boxed_text(c, atmp_ty[1], on, &ob);
+          snprintf(sx, sizeof sx, "sp_poly_arg_int_chk(%s)", ob.p ? ob.p : "sp_box_nil()"); free(ob.p); }
         buf_printf(b, " if (_t%d.tag == SP_TAG_STR || sp_poly_is_strbuf(_t%d)) {"
                       " sp_int _t%d = sp_poly_str_index_from_val(_t%d, %s, %s, %d); _t%d = ",
                    tv, tv, tsi, tv, ab5.p ? ab5.p : "sp_box_nil()", sx,

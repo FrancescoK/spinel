@@ -25,7 +25,8 @@ enum {
   BOP_MUT_LOCAL = 1u,
   BOP_MUT_CONTAINER = 2u,
   BOP_MUT_IVAR = 4u,
-  BOP_MUT_NARROW = 8u
+  BOP_MUT_NARROW = 8u,
+  BOP_MUT_STATE = 16u
 };
 int bop_name_has_reader(const char *name, unsigned surface);
 int bop_name_mutates(const char *name, unsigned sites);
@@ -304,9 +305,9 @@ int bop_args_as_builtin(TyKind rt, const char *name, int argc, int has_block);
 /* ---- What a builtin call does with the Strings it is handed (#6765) ----
    The facts --share-strings reads (analyze_share.c): which of the call's
    values the answer can be, and where the arguments can end up. One row per
-   receiver family and name. A name with no row on a family that has a
-   default row ("*") takes the default; one on a family without a default
-   is not followed (the analysis treats it as unknown). */
+   receiver family and name. Generated pure rows cover exact observed
+   names; "*" denotes an operator. A name without a row receives the
+   unknown treatment. */
 #define BOP_KERNEL   ((TyKind)-5)   /* a receiverless builtin (Kernel) */
 #define BOP_ANY_RECV ((TyKind)-6)   /* Object's methods, on any receiver */
 #define BOP_CALLABLE ((TyKind)-7)   /* a proc, a lambda or a Method */
@@ -367,13 +368,25 @@ typedef enum {
                      its nested containers' elements, at any depth (flatten) */
   /* the constructors (BOP_CLASS_NEW): */
   BSH_NEW_FILL,   /* a container of its second argument and of its block's
-                     values (Array.new(n, s), Array.new(n) { }) */
+                     values (Array.new(n, s), Array.new(n) { }); also holds the
+                     elements of an Array first argument (Array.new(a)) */
   BSH_NEW_DEFAULT, /* a container of its default argument and of its block's
                      values; the block is handed the container and each key a
                      lookup asks for (Hash.new) */
   BSH_NEW_YIELDER, /* a container of what its block hands its first parameter
                      (Enumerator.new's yielder) */
-  BSH_NEW_FIELDS  /* a container of its Hash argument's values (OpenStruct.new) */
+  BSH_NEW_FIELDS, /* a container of its Hash argument's values (OpenStruct.new) */
+  BSH_LAST,       /* answers its last argument without storing it */
+  BSH_SUM,        /* the initializer, receiver elements and block values can
+                     contribute to the answer; the block takes elements */
+  BSH_FILL,       /* fill stores arguments, or its block's values */
+  BSH_QUERY,      /* an element query: a bare Enumerator retains the receiver */
+  BSH_SUBST,      /* a String substitution yields its pattern, returns a fresh String */
+  BSH_SUBST_BANG, /* the same, answering the receiver */
+  BSH_LINE,       /* line iteration may yield the receiver for a nil separator */
+  BSH_BLOCK,      /* answers its block's value; yields a fresh value */
+  BSH_EMPTY_SELF, /* answers an empty receiver itself, otherwise a new String */
+  BSH_UNKNOWN     /* a mixed identity contract, conservatively untracked */
 } BopShare;
 
 /* The BSH_* of `name` on receiver family fam (TY_STRING, BOP_ANY_ARRAY,
@@ -381,8 +394,11 @@ typedef enum {
    family's default row's when the name has none, or 0 when the family has
    no default either. */
 int bop_share(TyKind fam, const char *name);
-/* the name's own row only, without the family's default */
+int builtin_ops_share_check(void);
+/* Exact name lookup, including iterator contracts. */
 int bop_share_named(TyKind fam, const char *name);
+/* Hand and iterator contracts only: generated observations cover typed receivers. */
+int bop_share_boxed(TyKind fam, const char *name);
 /* A String method whose value is its receiver, or nil: a bang method that
    answers it, or nil when it changed nothing (`strip!`, `gsub!`), and,
    given a block, an iterator that answers it (`each_char`, `scan`, `tap`). */

@@ -191,11 +191,11 @@ int infer_range_call(Compiler *c, int id, TyKind rt, TyKind *out) {
      Kernel#Float first), so only an Integer or Float seed lands in a scalar
      slot -- a Bignum seed wrapped in one, and a Rational one did not compile
      at all. */
-  if (rt == TY_RANGE && sp_streq(name, "sum") && argc == 1 &&
+  if (rt == TY_RANGE && is_sum_name(name) && argc <= 1 &&
       nt_ref(nt, id, "block") < 0) {
-    TyKind st = fold_seed_infer_ty(c, argv[0]);
+    TyKind st = argc == 1 ? fold_seed_infer_ty(c, argv[0]) : TY_INT;
     if (st == TY_FLOAT) { *out = TY_FLOAT; return 1; }
-    *out = fold_seed_typed(st, TY_INT) ? TY_INT : TY_POLY;
+    *out = !g_promote_mode && fold_seed_typed(st, TY_INT) ? TY_INT : TY_POLY;
     return 1;
   }
   /* each_slice(n) { } / each_cons(n) { } answer the receiver, which the value
@@ -405,6 +405,18 @@ int infer_numeric_call(Compiler *c, int id, TyKind rt, TyKind *out) {
     if (argc == 1 && sp_streq(name, "divmod")) { *out = TY_POLY_ARRAY; return 1; }
   }
   return 0;
+}
+
+/* A sum adds both the tail and any next value that leaves its block.
+   Reachability asks the same fact without erasing Rational or object kinds
+   into the poly-array representation of a map result. */
+TyKind infer_sum_block_ty(Compiler *c, int block) {
+  const NodeTable *nt = c->nt;
+  int body = nt_ref(nt, block, "body"), bn = 0;
+  const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+  TyKind et = bn > 0 ? infer_type(c, bb[bn - 1]) : TY_POLY;
+  TyKind nx = block_next_value_ty(c, body);
+  return nx == TY_UNKNOWN ? et : et == TY_UNKNOWN ? nx : ty_unify(et, nx);
 }
 
 /* The array a map-shaped call `id` answers: the tail value of its `block`
@@ -827,9 +839,7 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
          and an empty receiver returns it without any conversion. */
       /* A String block seed can carry the same shared handle. */
       if (blk >= 0) {
-        int body = nt_ref(nt, blk, "body");
-        int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
-        TyKind et = bn > 0 ? infer_type(c, bb[bn - 1]) : TY_POLY;
+        TyKind et = infer_sum_block_ty(c, blk);
         TyKind st = argc == 1 ? fold_seed_infer_ty(c, argv[0]) : TY_INT;
         /* A block whose value is nil accumulates BOXED: the sum is the init
            (0) for an empty receiver and a TypeError for a non-empty one --
@@ -1633,7 +1643,8 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
     if (argc <= 2 && argc >= 1 &&
         (sp_streq(name, "byteindex") || sp_streq(name, "byterindex"))) { *out = TY_INT; return 1; }
     if (argc == 1 && (is_partition_family(name)))
-      { *out = TY_STR_ARRAY; return 1; }
+      { *out = c->share_strings && (infer_type(c, argv[0]) == TY_STRING || infer_type(c, argv[0]) == TY_STRBUF || infer_type(c, argv[0]) == TY_REGEX) && share_node_elems_share(c, id)
+                   ? TY_POLY_ARRAY : TY_STR_ARRAY; return 1; }
     if (argc == 2 && sp_streq(name, "tr_s")) { *out = TY_STRING; return 1; }
     if (argc == 1 && sp_streq(name, "crypt")) { *out = TY_STRING; return 1; }
     /* try_convert on a class-tagged boxed value: the value or nil, as the

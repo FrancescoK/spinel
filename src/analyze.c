@@ -463,7 +463,21 @@ static int cn_live(const ANameHash *cn_set, const char *nm) {
   return anh_has(cn_set, nm) || anh_has(cn_set, ib);
 }
 
-void compute_reachable(Compiler *c) {
+/* The settled element kind already includes a literal block's next values.
+   Before inference, retain every possible coerce target as before. */
+static int an_sum_needs_coerce(Compiler *c, int id, int typed) {
+  if (!typed) return 1;
+  int blk = nt_ref(c->nt, id, "block"), recv = nt_ref(c->nt, id, "receiver");
+  TyKind rt = comp_ntype(c, recv), et;
+  if (blk >= 0) {
+    if (nt_kind(c->nt, blk) != NK_BlockNode) return 1;
+    et = infer_sum_block_ty(c, blk);
+  }
+  else et = rt == TY_RANGE ? TY_INT : ty_array_elem(rt);
+  return et == TY_UNKNOWN || et == TY_POLY || ty_is_object(et);
+}
+
+void compute_reachable(Compiler *c, int typed) {
   /* Build per-scope call sets (CallNode names, not entering nested DefNodes). */
   char ***scope_calls = calloc((size_t)c->nscopes, sizeof(char **));
   int   *sc_n        = calloc((size_t)c->nscopes, sizeof(int));
@@ -685,7 +699,9 @@ void compute_reachable(Compiler *c) {
         int an = 0; const int *av = args >= 0 ? nt_arr(c->nt, args, "arguments", &an) : NULL;
         /* A numeric seed can reach a user + through an element's coerce,
            including a block's value. Reuse the pass's indexed method names. */
-        if (SN_FIRST("coerce") >= 0) { MARK_NAME("coerce"); MARK_NAME("+"); break; }
+        if (SN_FIRST("coerce") >= 0 && an_sum_needs_coerce(c, id, typed)) {
+          MARK_NAME("coerce"); MARK_NAME("+"); break;
+        }
         if (an < 1 || !av) continue;
         if (an_seed_is_builtin(c->nt, av[0])) continue;
         MARK_NAME("+");
@@ -15919,6 +15935,12 @@ static int array_call_store_values(Compiler *c, int w, StoreVals *sv) {
     store_vals_add(sv, av[1]);
   else if (is_fill_name(wcn) && an >= 1 && an <= 3 &&
            nt_ref(nt, w, "block") < 0) store_vals_add(sv, av[0]);
+  else if (c->share_strings && is_fill_name(wcn) && an <= 2) {
+    int blk = nt_ref(nt, w, "block");
+    int body = blk >= 0 && nt_kind(nt, blk) == NK_BlockNode ? nt_ref(nt, blk, "body") : -1;
+    int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+    if (bn > 0) store_vals_add(sv, bb[bn - 1]);
+  }
   return sv->n;
 }
 /* The values node `w` stores into container local (contn, conts): the
@@ -16947,9 +16969,14 @@ static int strbuf_elem_sharing_call(Compiler *c, int node, int depth, int mode, 
   int recv = nt_ref(nt, node, "receiver");
   if (!mn || recv < 0) return 0;
   TyKind rt = infer_type(c, recv);
-  if (!ty_is_array(rt) && !ty_is_hash(rt)) return 0;
   int a = nt_ref(nt, node, "arguments");
   int an = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+  if (c->share_strings && (rt == TY_STRING || rt == TY_POLY) && an == 1 &&
+      is_partition_family(mn) && infer_type(c, av[0]) == TY_STRING && an_call_target_mi(c, node) < 0) {
+    *changed |= strbuf_store_leaf(c, av[0], depth, mode);
+    return 1;
+  }
+  if (!ty_is_array(rt) && !ty_is_hash(rt)) return 0;
   int nest = -1;
   if (is_slice_alias(mn))
     nest = (an == 1 && nt_kind(nt, av[0]) != NK_RangeNode) || ty_is_hash(rt) ? 1 : 0;
@@ -17318,6 +17345,10 @@ static int strbuf_container_source_walk_body(Compiler *c, int node, int depth, i
            handle, infer_call's Array.new arm) */
         int fa = nt_ref(nt, node, "arguments"), fn = 0;
         const int *fv = fa >= 0 ? nt_arr(nt, fa, "arguments", &fn) : NULL;
+        /* A shallow copy stores the source's elements, including fresh
+           Strings that have no holder of their own. */
+        if (c->share_strings && fn == 1 && blk < 0 && ty_is_array(infer_type(c, fv[0])))
+          return strbuf_container_source_walk(c, fv[0], depth + 1, mode);
         if (c->share_strings && fn == 2 && blk < 0) return strbuf_store_leaf(c, fv[1], depth, mode);
         if (SB_KIND(mode) == SB_HAS_NONSTRING || blk < 0 || nt_kind(nt, blk) != NK_BlockNode) return 0;
         int body = nt_ref(nt, blk, "body");
@@ -17653,7 +17684,7 @@ static int smc_first(Compiler *c, int si) {
       smc_next[u] = -1;
       if (nt_kind(nt, u) != NK_CallNode) continue;
       const char *un = nt_str(nt, u, "name");
-      if (!un || !an_str_mutator_name(un)) continue;
+      if (!un || (!an_str_mutator_name(un) && !(c->share_strings && bop_name_mutates(un, 0)))) continue;
       int s = c->nscope ? c->nscope[u] : 0;
       if (s < 0 || s >= ns) s = 0;
       smc_next[u] = smc_head[s];
@@ -17669,7 +17700,8 @@ static int smc_next_of(int u) { return u >= 0 && u < smc_count ? smc_next[u] : -
    The byref machinery answers the same question, but it is computed after the
    fixpoint (compute_byref_out_params), so this pass -- which runs inside it --
    asks the body directly. Only a plain local read of the parameter counts:
-   a rebind makes the name someone else's. */
+   a rebind makes the name someone else's. Encoding and frozen-state changes
+   under sharing need the same parameter handle as byte mutations. */
 static int an_param_mutated_in_place(Compiler *c, int mi, int pi) {
   if (mi < 0 || mi >= c->nscopes) return 0;
   Scope *m = &c->scopes[mi];
@@ -17682,9 +17714,6 @@ static int an_param_mutated_in_place(Compiler *c, int mi, int pi) {
      chain strbuf_slot_eligible_shape moved to), and of those only the ones
      a mutator's name calls (smc_first) */
   for (int u = smc_first(c, mi); u >= 0; u = smc_next_of(u)) {
-    if (nt_kind(nt, u) != NK_CallNode) continue;
-    const char *un = nt_str(nt, u, "name");
-    if (!un || !an_str_mutator_name(un)) continue;
     int ur = nt_ref(nt, u, "receiver");
     if (ur < 0 || nt_kind(nt, ur) != NK_LocalVariableReadNode) continue;
     const char *urn = nt_str(nt, ur, "name");
@@ -19601,7 +19630,8 @@ static void an_mark_handle_returns(Compiler *c) {
 }
 static int promote_shared_stored_strings_pass(Compiler *c);
 /* A String builtin answering a new Array of new Strings nothing else holds
-   (`s.split(",")`, `s.scan(re)`, `s.lines`, `s.chars`). */
+   (`s.split(",")`, `s.scan(re)`, `s.lines`, `s.chars`), or Dir's listing
+   of a directory (`Dir.entries(d)`, `Dir.children(d)`, `Dir.glob(p)`). */
 static int sb_fresh_string_array_call(Compiler *c, int n) {
   const NodeTable *nt = c->nt;
   n = an_unparen(nt, n);
@@ -19609,6 +19639,10 @@ static int sb_fresh_string_array_call(Compiler *c, int n) {
   const char *mn = nt_str(nt, n, "name");
   int r = nt_ref(nt, n, "receiver");
   if (!mn || r < 0) return 0;
+  if (nt_kind(nt, r) == NK_ConstantReadNode && sp_streq(nt_str(nt, r, "name"), "Dir") &&
+      comp_class_index(c, "Dir") < 0 &&
+      (sp_streq(mn, "entries") || sp_streq(mn, "children") || sp_streq(mn, "glob")))
+    return infer_type(c, n) == TY_STR_ARRAY;
   if (!sp_streq(mn, "split") && !sp_streq(mn, "scan") && !sp_streq(mn, "lines") && !sp_streq(mn, "chars"))
     return 0;
   TyKind rt = infer_type(c, r);
@@ -34806,8 +34840,13 @@ static int sa_unseen_element(Compiler *c, int u, int k) {
   int a = nt_ref(nt, u, "arguments"), an = 0;
   const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
   if (!nm || r < 0 || !ty_is_array(comp_ntype(c, r))) return -2;
-  int add = array_unseen_add_kind(nm);
-  if (add == ARRAY_ADD_CONCAT && an == 1 && nt_kind(nt, av[0]) == NK_ArrayNode)
+  int block = nt_ref(nt, u, "block"), add = array_unseen_add_kind(nm);
+  if (is_fill_name(nm) && block >= 0 && nt_kind(nt, block) == NK_BlockNode) {
+    int body = nt_ref(nt, block, "body");
+    av = body >= 0 ? nt_arr(nt, body, "body", &an) : NULL;
+    if (an > 0) { av += an - 1; an = 1; }
+  }
+  else if (add == ARRAY_ADD_CONCAT && an == 1 && nt_kind(nt, av[0]) == NK_ArrayNode)
     av = nt_arr(nt, av[0], "elements", &an);
   else if (add == ARRAY_ADD_INSERT && an >= 2) { av++; an--; }
   else if (add != ARRAY_ADD_PREPEND &&
@@ -35052,6 +35091,19 @@ static void refuse_string_alias_copies(Compiler *c) {
   NT_FOREACH_KIND(nt, NK_CallNode, u) {
     const char *nm = nt_str(nt, u, "name");
     SaName from;
+    if (bop_share_named(TY_STRING, nm) == BSH_LINE && an_call_target_mi(c, u) < 0) {
+      int recv = nt_ref(nt, u, "receiver"), argc = 0, blk = nt_ref(nt, u, "block");
+      int args = nt_ref(nt, u, "arguments");
+      const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+      const char *pn = blk >= 0 ? block_param_name(c, blk, 0) : NULL;
+      if (recv >= 0 && comp_recv_type(c, recv) == TY_STRING && argc >= 1 &&
+          comp_ntype(c, argv[0]) == TY_NIL && pn && sa_name(c, recv, &from)) {
+        SaName param = {0};
+        param.kind = NK_LocalVariableReadNode; param.scope = comp_scope_of(c, blk); param.name = pn;
+        if (sa_copy_observable(c, &param, &from, recv))
+          unsupported_feature(c, u, "String line iteration with a nil separator cannot carry a shared receiver into its block; see docs/limitations.md");
+      }
+    }
     /* `a.insert(0, s)`, `a << t << s`, `$a << s`, then `s << x` where the
        Array is read, or a mutation through the element */
     for (int k = 0, e; (e = sa_unseen_element(c, u, k)) != -2; k++)
@@ -36531,7 +36583,7 @@ static void an_phase_pre_fixpoint(Compiler *c) {
      compute_instantiated): reachability is a matter of names and a
      construction site is a call node, so both are known now. Recomputed
      after the fixpoint, when a dynamic `.new` can be told from a static one. */
-  compute_reachable(c);
+  compute_reachable(c, 0);
   compute_instantiated(c, 1);
 }
 
@@ -37903,7 +37955,7 @@ static void an_phase_procs(Compiler *c) {
      literal (covering send/method/define_method). Names never mentioned
      are dead code; skipping them avoids type-checking uninvoked methods
      (e.g. a never-called method with an uninferrable param). */
-  compute_reachable(c);
+  compute_reachable(c, 1);
   /* a module method named by Mod.instance_method(:m) is referenced directly */
   unmark_referenced_module_sources(c);
   /* Which exact cls_ids can appear at runtime -- lets the poly-dispatch switch

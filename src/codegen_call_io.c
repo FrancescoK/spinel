@@ -56,7 +56,16 @@ static void emit_io_readlines_args(Compiler *c, const char *r, const int *pos, i
 static void emit_line_param_decl(Compiler *c, int id, const char *pn, int lt, Buf *b) {
   Scope *s = comp_scope_of(c, id);
   LocalVar *lv = s ? scope_local(s, pn) : NULL;
-  if (repr_of_slot(c, lv).kind == RK_STRBUF)
+  /* inside a yield spliced into its caller `pn` is the renamed local: the
+     slot is the block's own parameter, under its written name */
+  int blk = nt_ref(c->nt, id, "block");
+  if (!lv && blk >= 0 && nt_kind(c->nt, blk) == NK_BlockNode) {
+    Scope *bs = comp_scope_of(c, blk);
+    const char *raw = block_param_name(c, blk, 0);
+    lv = bs && raw ? scope_local(bs, raw) : NULL;
+  }
+  /* a buffer, or a parameter held as the shared handle (--share-strings) */
+  if (repr_of_slot(c, lv).kind == RK_STRBUF || repr_of_slot(c, lv).handle)
     buf_printf(b, " sp_String *lv_%s = sp_String_new_shared(_t%d); SP_GC_ROOT(lv_%s);", pn, lt, pn);
   else buf_printf(b, " const char *lv_%s = _t%d; SP_GC_ROOT_STR(lv_%s);", pn, lt, pn);
 }
@@ -506,6 +515,12 @@ static int boxed_accept_nb_ok(const NodeTable *nt, const char *name, int argc, c
   return ev >= 0 && nt_type(nt, ev) && sp_streq(nt_type(nt, ev), "FalseNode");
 }
 
+/* winsize= as the typed arm takes it: one Integer Array */
+static int boxed_winsize_set(Compiler *c, const char *name, int argc, const int *argv) {
+  return sp_streq(name, "winsize=") && argc == 1 && sp_feature_enabled("io/console") &&
+         comp_ntype(c, argv[0]) == TY_INT_ARRAY;
+}
+
 /* the IO methods on a poly receiver that may hold a stream (write, read, gets, puts, print, ...) */
 int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv) {
   if (emit_io_read_nonblock_outbuf(c, id, b)) return 1;
@@ -527,6 +542,7 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
        sp_streq(name, "to_path") ||
        sp_streq(name, "tty?") || sp_streq(name, "isatty") ||
        (sp_streq(name, "winsize") && sp_feature_enabled("io/console")) ||
+       (boxed_winsize_set(c, name, argc, argv)) ||
        sp_streq(name, "readlines") || sp_streq(name, "rewind") ||
        sp_streq(name, "readpartial") ||
        /* a socket read back out of a container: its non-blocking connect and
@@ -687,6 +703,18 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
       }
       int tio2 = ++g_tmp;
       char tio[32]; snprintf(tio, sizeof tio, "_t%d", tio2);
+      /* winsize=: the receiver, then the size, then the handle, as the
+         typed arm sets it; a PTY master returned through a lambda is boxed */
+      if (boxed_winsize_set(c, name, argc, argv)) {
+        int trv = ++g_tmp, tsz = ++g_tmp;
+        buf_puts(b, "({ "); trv = hold_operand(c, recv, TY_POLY, 1, trv, 1, " ", b);
+        buf_printf(b, "sp_IntArray *_t%d = ", tsz);
+        emit_expr(c, argv[0], b);
+        buf_printf(b, "; SP_GC_ROOT(_t%d); ", tsz);
+        buf_printf(b, "sp_File_set_winsize(sp_poly_as_io(_t%d, \"winsize=\"), _t%d); })", trv, tsz);
+        c->args_in_call = recv;
+        return 1;
+      }
       /* pos=, sysseek, flock, fcntl and advise, answering what the typed
          arms answer: the offset pos= set, sysseek's and fcntl's integers,
          flock's status, nil from advise. The receiver and then the
@@ -772,8 +800,10 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
       }
       /* and a boxed Queue closes and answers closed? itself */
       int qname = argc == 0 && (sp_streq(name, "close") || sp_streq(name, "closed?"));
+      /* and a boxed Mutex answers owned? itself, where a stat answers its own */
+      int mname = argc == 0 && sp_streq(name, "owned?");
       int tdr = 0;
-      if (dirfn || qname) {
+      if (dirfn || qname || mname) {
         tdr = ++g_tmp;
         buf_puts(b, "({ "); tdr = hold_operand(c, recv, TY_POLY, 1, tdr, 1, " ", b);
         if (qname) {
@@ -781,6 +811,9 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
           if (sp_streq(name, "close")) buf_printf(b, "((void)sp_Queue_close((sp_queue *)_t%d.v.p), _t%d) : ", tdr, tdr);
           else buf_printf(b, "sp_Queue_closed((sp_queue *)_t%d.v.p) : ", tdr);
         }
+        if (mname)
+          buf_printf(b, "_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_MUTEX ? "
+                        "sp_Mutex_owned((sp_mutex *)_t%d.v.p) : ", tdr, tdr, tdr);
         if (dirfn) {
           buf_printf(b, "_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_DIR ? ", tdr, tdr);
           if (sp_streq(name, "close")) buf_printf(b, "((void)sp_Dir_close((sp_Dir *)_t%d.v.p), sp_box_nil()) : ", tdr);

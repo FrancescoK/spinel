@@ -53,14 +53,14 @@ registry, or stack reification -- none of which exist in a flat compiled binary.
 | `Object#singleton_class` as an OBJECT (and `Class#attached_object`) | unsupported | the singleton class above is synthesized, not reified: there is no runtime class object to hand back. `class << obj` as a *definition* form works -- see the row above. `singleton_class.prepend(Mod)` / `singleton_class.include(Mod)` as a statement of a class or module body (activesupport's const_missing hook on Enumerable) is read as `extend Mod`, the precedence between Mod and the class's own singleton methods aside |
 | Runtime structural mutation of a class through an explicit receiver (`Klass.include(M)`, `Klass.attr_accessor(...)`, `Klass.define_method(...)` outside the class body) | unsupported | the class graph, ancestor chain, and method/ivar layout are baked at compile time; the same declarations *inside* a `class` body work |
 | A call through an `@ivar` before the method that assigns it has run (`@store[k] = v` ahead of a `reset` that sets `@store = {}`) | a release build dereferences the unset slot and crashes (SIGSEGV); a `-g` / `--debug` build raises CRuby's `NoMethodError` (`undefined method '[]=' for nil`) | the test would stand in front of every call through such an ivar, and state a `reset` or `setup` method assigns is often the hottest there is (optcarrot lost 10-20% to it), so only the debug build carries it. An ivar the program fills only by memoization (`@c ||= {}`) is guarded in both builds |
-| An ivar write in an Object or Kernel method with boxed `self` | uses the existing reflective setter; refused if a possible receiver has no writable slot, or the slot is a shared String handle the setter cannot store | ordinary user-class slots are registered by the existing boxed-receiver analysis, including a class that starts with no ivars; its indexed call sites bound the receiver layouts, while calls it cannot follow remain conservative; an unused setter adds no instance slots; no write is silently dropped |
+| An ivar write in an Object or Kernel method with boxed `self` | uses the existing reflective setter; refused if a possible receiver has no writable slot, or the default build encounters a shared String handle slot; `--share-strings` carries the handle through the setter | ordinary user-class slots are registered by the existing boxed-receiver analysis, including a class that starts with no ivars; its indexed call sites bound the receiver layouts, while calls it cannot follow remain conservative; an unused setter adds no instance slots; no write is silently dropped |
 | `defined?(@x)` in an Object or Kernel method whose receiver is boxed | refused when the existing layout facts cannot track whether a possible receiver's slot has been assigned | an initialized slot, a slot whose value distinguishes unset, or a slot with an explicit presence bit is supported; a slot introduced by a root setter keeps its presence bit even if an unrelated class writes an ivar of the same name; mixed ordinary/reflective nil writes to related layouts can leave presence untracked |
 | General reflection (`methods`, `instance_variables`) and `instance_variable_get`/`set` with a **non-literal** name | unsupported | ivars are C struct offsets with no name→offset table; DCE strips method names. A **literal** `instance_variable_get(:@x)` / `instance_variable_set(:@x, v)` *is* supported -- it resolves to the known struct offset, like `send(:literal)` below. |
 | User-defined `#hash` / `#eql?` for hash *keys* | not dispatched (identity probe) | the hash machinery can't call back into a user method per key |
 | A method that **uses its block** (`yield` or `block.call`) **and recurses into itself** (`def rec(n, &b); ...; rec(n-1, &b); yield n; end`) | compile error (loud, was a hang / undefined-symbol) | a block-using method is inlined at each call site (there is no standalone function that takes the block), so a self-call inlines its own body unboundedly -- the runtime base case is invisible at compile time. Recursion *through a yielded block* (`with_state { with_state { } }`, finite source nesting) does work |
 | `Monitor#class` | reports `Thread::Mutex` | a Monitor IS a mutex here, with reentrancy switched on per object, and the class name for a `TY_MUTEX` value is decided at compile time from the type rather than read off the object. `#synchronize` (including reentrant use), `#try_enter` and mutual exclusion across threads all behave as CRuby's do; only the name differs. `Monitor#new_cond` / the `MonitorMixin` module are not modelled. |
 | `require` of stdlib `.rb` that leans on metaprogramming / C extensions (e.g. `json/pure`) | unsupported | such stdlib code runs off the AOT path. A `require` is resolved at parse time by splicing a bundled `lib/X.rb`; the libraries that ship this way -- `set`, `forwardable`, `optparse`, `erb`, `csv`, `pathname`, `stringio`, `strscan` -- do work. |
-| `Time.parse` / `Time.strptime` (the `require "time"` string-parsing additions) | refused at compile time, naming the limit | the built-in `Time` class (`Time.now` / `at` / `local` / `utc`, plus `strftime` / `zone`) works *without* any `require`, and `require "time"`'s other additions (`iso8601`, `httpdate`, `rfc2822`) work too; only parsing a String into a Time is missing. Store times as epoch seconds and read them with `Time.at` instead. A program that reopens `Time` with its own `parse`/`strptime` keeps calling that method, not this limit. |
+| `Time.parse` / `Time.strptime` / `Time.iso8601` / `Time.xmlschema` / `Time.httpdate` / `Time.rfc2822` / `Time.rfc822` (the `require "time"` string-parsing additions) | refused at compile time, naming the limit | the built-in `Time` class (`Time.now` / `at` / `local` / `utc`, plus `strftime` / `zone`) works *without* any `require`, and `require "time"`'s other additions (the instance methods `iso8601`, `httpdate`, `rfc2822`) work too; only parsing a String into a Time is missing. Store times as epoch seconds and read them with `Time.at` instead. A program that reopens `Time` with its own class method of one of these names keeps calling that method, not this limit. |
 
 **`net/http` / `uri`.** An HTTP/1.1 client with `Connection: close`, one
 request per connection -- a second request inside one `Net::HTTP.start` block
@@ -367,6 +367,11 @@ still works.
   to mutate; a construct would remove nothing. The call is reported rather than
   silently ignored. (A class that defines its own method by one of these names
   keeps it.)
+- **`String#then` / `#yield_self` with a callable block** -- a non-literal
+  `&proc` is refused in both builds: the builtin emitter cannot invoke it while
+  preserving its returned String's identity. Use a literal block. Literal blocks,
+  symbol-to-proc forms that desugar to one, and user-owned methods still compile.
+
 - **Frozen literals** -- explicit `.freeze` then mutation raises `FrozenError`,
   matching CRuby. String literals ARE frozen by default here
   (`frozen_string_literal: true` semantics, with no opt-out) -- see
@@ -1519,3 +1524,9 @@ blocks, the collection protocols, exceptions, mixins -- and compiles it to fast
 native code. When a program does need a feature in the *fundamental* table, that
 program is not a fit for AOT; for everything else, the limits are either by
 design or on the relaxable list.
+
+String line iteration with a nil separator yields the receiver itself. A block
+that mutates that String while another name observes it is refused because the
+line iterator cannot bind the receiver handle. Array#fill block results use
+shared handles under `--share-strings`; the default build refuses an observed
+mutation through a retained String result.

@@ -1,0 +1,8 @@
+[TypeError, "wrong argument type nil (expected Regexp)"]
+[TypeError, "wrong argument type nil (expected Regexp)"]
+[TypeError, "wrong argument type nil (expected Regexp)"]
+[TypeError, "wrong argument type nil (expected Regexp)"]
+["", "", "a-b"]
+["a-b", "", ""]
+["a", "-", "b"]
+["a", "-", "b"]

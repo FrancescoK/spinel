@@ -1,0 +1,20 @@
+ensure bare-raise
+caught RuntimeError: x cause=nil
+ensure new-raise
+caught ArgumentError: y cause="x"
+ensure unmatched
+caught RuntimeError: x cause=nil
+ensure method-level
+caught RuntimeError: z cause="x"
+tries 3
+ensure after retry
+ensure return
+:returned
+ensure 1
+ensure 2
+inner ensure
+middle ensure
+outer from inner deep
+"b"
+"c"
+nil

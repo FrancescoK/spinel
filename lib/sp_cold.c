@@ -565,8 +565,10 @@ sp_StrArray *sp_dir_glob_dot(const char *pattern) {SP_GC_ROOT_STR(pattern);
   return a;
 }
 
-/* One pattern, already brace-free, into `a`. */
-static void sp_dir_glob_one(const char *pattern, sp_StrArray *a) {
+/* One pattern, already brace-free, into `a`. A relative pattern is walked
+   from `base` (NULL or "" is the current directory), and its answers are
+   spelled relative to it, as Dir.glob(pattern, base:) answers. */
+static void sp_dir_glob_one(const char *pattern, const char *base, sp_StrArray *a) {
   char buf[2048];
   snprintf(buf, sizeof buf, "%s", pattern);
   char *comps[64];
@@ -605,7 +607,8 @@ static void sp_dir_glob_one(const char *pattern, sp_StrArray *a) {
   if (dir_only && ncomp > 0 && strcmp(comps[ncomp - 1], "**") == 0 && ncomp < 64) {
     comps[ncomp++] = dstar;   /* ** + / + *  -- every entry at every depth */
   }
-  if (!dir_only) { sp_glob_walk(absolute ? SP_GLOB_ROOT : "", absolute ? SP_GLOB_ROOT : "", comps, ncomp, 0, a); return; }
+  const char *start = absolute ? SP_GLOB_ROOT : (base ? base : "");
+  if (!dir_only) { sp_glob_walk(start, absolute ? SP_GLOB_ROOT : "", comps, ncomp, 0, a); return; }
   /* A symlink to a directory IS one of the answers for a non-recursive form
      ("*" + SEP lists it) and is not for the recursive one, which does not
      follow links at all -- the same split the walk itself makes. */
@@ -613,15 +616,18 @@ static void sp_dir_glob_one(const char *pattern, sp_StrArray *a) {
     for (int i = 0; i < ncomp; i++) if (strcmp(comps[i], "**") == 0) recursive = 1;
     sp_StrArray *tmp = sp_StrArray_new();
     SP_GC_ROOT(tmp);
-    sp_glob_walk(absolute ? SP_GLOB_ROOT : "", absolute ? SP_GLOB_ROOT : "", comps, ncomp, 0, tmp);
+    sp_glob_walk(start, absolute ? SP_GLOB_ROOT : "", comps, ncomp, 0, tmp);
     for (sp_int i = 0; i < tmp->len; i++) {
       const char *e = tmp->data[i];
       /* lstat, for the reason the recursive walk uses it: a symlink to a
          directory is not one of the directories this form answers. */
       struct stat lst;
       if (!e) continue;
-      if (recursive) { if (lstat(e, &lst) != 0 || !S_ISDIR(lst.st_mode)) continue; }
-      else if (!sp_glob_is_dir(e)) continue;
+      char fspath[4096];
+      if (start[0] && !absolute) snprintf(fspath, sizeof fspath, "%s%s%s", start, SP_GLOB_SEP(start), e);
+      else snprintf(fspath, sizeof fspath, "%s", e);
+      if (recursive) { if (lstat(fspath, &lst) != 0 || !S_ISDIR(lst.st_mode)) continue; }
+      else if (!sp_glob_is_dir(fspath)) continue;
       char withslash[2048];
       snprintf(withslash, sizeof withslash, "%s/", e);
       sp_glob_push(a, withslash);
@@ -631,21 +637,21 @@ static void sp_dir_glob_one(const char *pattern, sp_StrArray *a) {
 /* CRuby expands `{a,b}` before matching, and the system matcher does not do it
    at all, so it is expanded here: one alternative at a time, recursively, so
    nested and multiple braces both work. */
-static void sp_dir_glob_braces(const char *pattern, sp_StrArray *a, int depth) {
+static void sp_dir_glob_braces(const char *pattern, const char *base, sp_StrArray *a, int depth) {
   const char *open = NULL;
   int nest = 0;
   for (const char *q = pattern; *q; q++) {
     if (*q == '\\' && q[1]) { q++; continue; }
     if (*q == '{') { open = q; break; }
   }
-  if (!open || depth > 8) { sp_dir_glob_one(pattern, a); return; }
+  if (!open || depth > 8) { sp_dir_glob_one(pattern, base, a); return; }
   const char *close = NULL;
   for (const char *q = open; *q; q++) {
     if (*q == '\\' && q[1]) { q++; continue; }
     if (*q == '{') nest++;
     else if (*q == '}') { nest--; if (nest == 0) { close = q; break; } }
   }
-  if (!close) { sp_dir_glob_one(pattern, a); return; }
+  if (!close) { sp_dir_glob_one(pattern, base, a); return; }
   size_t prelen = (size_t)(open - pattern);
   const char *alt = open + 1;
   nest = 0;
@@ -660,24 +666,26 @@ static void sp_dir_glob_braces(const char *pattern, sp_StrArray *a, int depth) {
         memcpy(expanded, pattern, prelen);
         memcpy(expanded + prelen, alt, altlen);
         strcpy(expanded + prelen + altlen, close + 1);
-        sp_dir_glob_braces(expanded, a, depth + 1);
+        sp_dir_glob_braces(expanded, base, a, depth + 1);
       }
       alt = q + 1;
     }
   }
 }
 
-sp_StrArray *sp_dir_glob(const char *pattern) {
+/* Dir.glob(pattern, base: dir) */
+sp_StrArray *sp_dir_glob_base(const char *pattern, const char *base) {
   /* the pattern is often a fresh interpolation temp, unrooted at the call
      site; the per-match sp_str_allocs below can collect it mid-walk */
   SP_GC_ROOT_STR(pattern);
+  SP_GC_ROOT_STR(base);
   sp_StrArray *a = sp_StrArray_new();
   /* every matched entry sp_str_allocs inside the walk below, and enough of
      them trigger a collection mid-build -- root the result like
      sp_dir_entries_impl or it (and its pushed names) get swept under us */
   SP_GC_ROOT(a);
   if (!pattern) return a;
-  sp_dir_glob_braces(pattern, a, 0);
+  sp_dir_glob_braces(pattern, base, a, 0);
   sp_StrArray_sort_bang(a);
   /* Two or more recursive components can reach the same path by different
      splits -- "a" + SEP + "**" + SEP + "**" + SEP + "*.rs" found each file
@@ -692,6 +700,8 @@ sp_StrArray *sp_dir_glob(const char *pattern) {
     a->len = w; }
   return a;
 }
+
+sp_StrArray *sp_dir_glob(const char *pattern) { return sp_dir_glob_base(pattern, NULL); }
 
 /* ---- File.read/size/mtime/join/readlines + Math.lgamma (cold) ---- */
 
@@ -2290,14 +2300,13 @@ sp_int sp_file_write_mode(const char *path, const char *data, const char *mode) 
   }
   return (sp_int)w;
 }
+extern const char *sp_errno_class_name(int e);   /* lib/sp_exc.c: the Errno:: class for a C errno */
 /* File.open(path, flags, perm): the flag word selects the fdopen mode; the
    permission bits reach open(2) only through this entry, so a created file
    carries the bits the caller asked for rather than 0666. */
 static void sp_file_open_raise(const char *path) {
   int e = errno;
-  const char *cls = e == ENOENT ? "Errno::ENOENT" : e == EACCES ? "Errno::EACCES"
-                  : e == EEXIST ? "Errno::EEXIST" : e == EISDIR ? "Errno::EISDIR" : "SystemCallError";
-  sp_raise_cls(cls, sp_sprintf("%s @ rb_sysopen - %s", strerror(e), path ? path : ""));
+  sp_raise_cls(sp_errno_class_name(e), sp_sprintf("%s @ rb_sysopen - %s", strerror(e), path ? path : ""));
 }
 /* open(2) on a FIFO waits for the other end, and it waits in the kernel with
    no descriptor to wait on. A green thread is pinned to its OS worker, so

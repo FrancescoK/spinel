@@ -1388,7 +1388,8 @@ int strbuf_hash_default_arg(Compiler *c, int v) {
    String seed carried as the handle, whose accumulator parameter is the
    handle, and that leaves by no `break`: inject answers the block's last
    value, or a `next`'s, as the handle (emit_reduce_block_expr), so a block
-   answering its accumulator answers the seed itself. */
+   answering its accumulator answers the seed itself. A numeric Range uses
+   the same fold after its existing Array conversion. */
 static int strbuf_route_inject(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
   int recv = nt_ref(nt, v, "receiver"), blk = nt_ref(nt, v, "block"), argc = 0;
@@ -1398,11 +1399,14 @@ static int strbuf_route_inject(Compiler *c, int v) {
   if (!seed && argc == 1 && repr_of(c, argv[0]).as_ty == TY_STRING &&
       share_value_fresh(c, argv[0], 0)) seed = 1;
   if (recv < 0 || argc != 1 || blk < 0 || nt_kind(nt, blk) != NK_BlockNode || call_breaks(c, v) ||
-      !ty_is_array(repr_of(c, recv).as_ty) || comp_ntype(c, v) != TY_STRING ||
+      (!ty_is_array(repr_of(c, recv).as_ty) && repr_of(c, recv).as_ty != TY_RANGE) ||
+      comp_ntype(c, v) != TY_STRING ||
       !seed) return 0;
   const char *p0 = block_param_name(c, blk, 0);
   Scope *bsc = p0 ? comp_scope_of(c, blk) : NULL;
-  return bsc && block_param_name(c, blk, 1) && repr_of_slot(c, scope_local(bsc, rename_local(p0))).handle;
+  return bsc && block_param_name(c, blk, 1) &&
+         (repr_of_slot(c, scope_local(bsc, rename_local(p0))).handle ||
+          repr_of_slot(c, scope_local(bsc, rename_local(p0))).kind == RK_BOXED);
 }
 /* --share-strings: a value route that answers the String it is handed, not
    a new one -- `+s` (s itself unless s is frozen), `String(s)` (s itself, ""
@@ -1423,6 +1427,13 @@ static int strbuf_route_operand(Compiler *c, int v) {
     return v;
   if (is_tap_name(nm) && strbuf_route_tap(c, v)) return v;
   if (is_reduce_alias(nm) && strbuf_route_inject(c, v)) return v;
+  if (recv >= 0 && argc == 1 && blk < 0 &&
+      bop_share_named(BOP_ANY_ARRAY, nm) == BSH_SUM &&
+      cplan_user(c, v)->dispatch == CP_NONE &&
+      (ty_is_array(repr_of(c, recv).as_ty) || repr_of(c, recv).as_ty == TY_UNKNOWN) &&
+      (comp_ntype(c, argv[0]) == TY_STRING || comp_ntype(c, argv[0]) == TY_STRBUF)) return v;
+  if (recv >= 0 && argc == 0 && blk < 0 && comp_recv_type(c, recv) == TY_STRING &&
+      bop_share_named(TY_STRING, nm) == BSH_EMPTY_SELF && cplan_user(c, v)->dispatch == CP_NONE) return recv;
   if (repr_boxed_to_s_operand(c, v) >= 0) return recv;
   /* A builtin conversion on a String returns that same String. */
   int conversion = repr_string_conversion_operand(c, v);
@@ -1694,6 +1705,11 @@ static int strbuf_route_carries(Compiler *c, int v, int depth) {
    the String every other name of its class holds. */
 int emit_strbuf_route(Compiler *c, int v, Buf *b) {
   const NodeTable *nt = c->nt;
+  /* An ordered operand has already taken its callee's return handle. */
+  if (repr_share_rule(c) && repr_of(c, v).kind == RK_STRBUF) {
+    int held = head_held_temp(c, v);
+    if (held >= 0) { buf_printf(b, "_t%d", held); return 1; }
+  }
   int ops[3];
   if (strbuf_route_clamp(c, v, ops)) {
     int ts[3], argc = 0; const int *argv = call_args(nt, unwrap_parens(c, v), &argc);
@@ -1814,6 +1830,13 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
   }
   if (x < 0 || !strbuf_route_carries(c, v, 0)) return 0;
   v = unwrap_parens(c, v);
+  if (x == v && bop_share_named(BOP_ANY_ARRAY, nt_str(nt, v, "name")) == BSH_SUM) {
+    int argc = 0; const int *argv = call_args(nt, v, &argc);
+    buf_puts(b, "sp_poly_as_strbuf(");
+    emit_poly_sum_seed(c, nt_ref(nt, v, "receiver"), argv[0], b);
+    buf_puts(b, ")");
+    return 1;
+  }
   if (x == v) {
     /* `then` answers its block's value, or a `next`'s: read as the handle
        under the demand. `tap` answers its receiver's handle, and its
@@ -1833,6 +1856,15 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
     view_pop(c, sv);
     strbuf_jump_views_pop(c, tok, ntok);
     return ok;
+  }
+  if (bop_share_named(TY_STRING, nt_str(nt, v, "name")) == BSH_EMPTY_SELF) {
+    int t = ++g_tmp;
+    buf_printf(b, "({ sp_String *_t%d = ", t);
+    emit_strbuf_handle_of(c, x, b);
+    buf_printf(b, "; SP_GC_ROOT(_t%d); if (!_t%d) sp_nil_recv(\"capitalize\"); "
+                  "sp_String_length(_t%d) == 0 ? _t%d : sp_String_new_shared(sp_str_capitalize(sp_strbuf_read(_t%d))); })",
+               t, t, t, t, t);
+    return 1;
   }
   if (is_unary_plus(nt_str(nt, v, "name"))) {
     /* nil has no +@: NoMethodError, as the copy's read raised */
@@ -9439,6 +9471,10 @@ int rescue_is_catchall_name(const char *n) {
   return n && sp_streq(n, "Exception");
 }
 
+/* exception frames a retry leaves on its way back to the body: the frame
+   the rescue clauses of a begin with an ensure run in */
+static int g_retry_pops;
+
 /* Return 1 if the subtree at id contains a RetryNode (not crossing DefNode). */
 int subtree_has_retry(const NodeTable *nt, int id) {
   if (id < 0) return 0;
@@ -9948,6 +9984,8 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
       buf_printf(b, "%s:;\n", ens_retry_label);
       g_retry_label = ens_retry_label;
     }
+    int ens_saved_retry_pops = g_retry_pops;
+    if (ens_has_retry) g_retry_pops = 0;
     emit_indent(b, indent); buf_puts(b, "sp_exc_check_depth();\n");
     emit_indent(b, indent); buf_puts(b, "sp_exc_rootmark[sp_exc_top] = sp_gc_nroots; sp_rescue_mark[sp_exc_top] = sp_rescue_sp;\n");
     emit_indent(b, indent); buf_puts(b, "sp_exc_msg[sp_exc_top] = 0; sp_exc_obj[sp_exc_top] = 0; sp_exc_top++;\n");
@@ -9996,7 +10034,41 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
       buf_printf(b, "if (strcmp((const char *)sp_last_exc_cls, \"FiberKillSignal\") == 0) { _excf%d = 1; _excmsg%d = sp_exc_msg[sp_exc_top]; _exccls%d = sp_exc_cls[sp_exc_top]; }\n",
                  eid, eid, eid);
       emit_indent(b, indent + 2); buf_puts(b, "else {\n");
-      emit_rescue(c, rescue, b, indent + 3, fr, resultvar);
+      /* The rescue clauses run in a frame of their own: an exception that
+         leaves through them -- one no clause matches, a bare `raise`, a new
+         raise in a clause -- is held for the re-raise after the ensure, as
+         one the body raises with no rescue is. Raised straight to the
+         caller's handler, it skipped the ensure (#8182). A retry leaves
+         the frame back to the body's. */
+      /* the clauses read the exception at sp_exc_top, one slot above the
+         frame pushed here: it moves up first */
+      emit_indent(b, indent + 3); buf_puts(b, "sp_exc_check_depth(); if (SP_UNLIKELY(sp_exc_top + 1 >= SP_EXC_STACK_MAX)) sp_stack_too_deep();\n");
+      emit_indent(b, indent + 3); buf_puts(b, "sp_exc_msg[sp_exc_top+1] = sp_exc_msg[sp_exc_top]; sp_exc_cls[sp_exc_top+1] = sp_exc_cls[sp_exc_top]; sp_exc_obj[sp_exc_top+1] = sp_exc_obj[sp_exc_top];\n");
+      emit_indent(b, indent + 3); buf_puts(b, "sp_exc_rootmark[sp_exc_top] = sp_gc_nroots; sp_rescue_mark[sp_exc_top] = sp_rescue_sp;\n");
+      emit_indent(b, indent + 3); buf_puts(b, "sp_exc_msg[sp_exc_top] = 0; sp_exc_obj[sp_exc_top] = 0; sp_exc_top++;\n");
+      emit_indent(b, indent + 3); buf_puts(b, "if (setjmp(sp_exc_stack[sp_exc_top-1]) == 0) {\n");
+      g_exc_frame_depth++;
+      int sv_retry_pops = g_retry_pops;
+      if (ens_has_retry) g_retry_pops++;
+      emit_rescue(c, rescue, b, indent + 4, fr, resultvar);
+      g_retry_pops = sv_retry_pops;
+      g_exc_frame_depth--;
+      emit_indent(b, indent + 4); buf_puts(b, "sp_exc_top--;\n");
+      emit_indent(b, indent + 3); buf_puts(b, "}\n");
+      emit_indent(b, indent + 3); buf_puts(b, "else {\n");
+      emit_indent(b, indent + 4); buf_puts(b, "sp_exc_top--;\n");
+      emit_indent(b, indent + 4); buf_puts(b, "sp_gc_nroots = sp_exc_rootmark[sp_exc_top]; sp_rescue_sp = sp_rescue_mark[sp_exc_top];\n");
+      emit_indent(b, indent + 4);
+      /* held as its object, which takes the cause a raise in a clause gave
+         it (the exception that clause handled), as a rescue's binding does */
+      buf_printf(b, "if (sp_unwind_kind == SP_UNWIND_NONE) {"
+                    " sp_Exception *_xo%d = sp_exc_obj[sp_exc_top] ? (sp_Exception *)sp_exc_obj[sp_exc_top]"
+                    " : sp_exc_new_for_catch(sp_exc_cls[sp_exc_top], sp_exc_msg[sp_exc_top]);"
+                    " if (!_xo%d->cause) { sp_gc_wb((void *)_xo%d); _xo%d->cause = (sp_Exception *)sp_pending_cause; }"
+                    " sp_pending_cause = NULL;"
+                    " _excf%d = 1; _excmsg%d = sp_exc_msg[sp_exc_top]; _exccls%d = sp_exc_cls[sp_exc_top]; _excobj%d = _xo%d; }\n",
+                 eid, eid, eid, eid, eid, eid, eid, eid, eid);
+      emit_indent(b, indent + 3); buf_puts(b, "}\n");
       emit_indent(b, indent + 2); buf_puts(b, "}\n");
     }
     else {
@@ -10043,6 +10115,11 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
     emit_indent(b, indent);
     buf_printf(b, "{ void *_icr%d SP_CLEANUP(sp_inflight_restore) = _ic%d; (void)_icr%d;\n", eid, eid, eid);
     int cf = g_repr_check ? repr_channel_ensure(c, id) : -1;
+    /* ...and $! in the body is that exception, as CRuby's is while an
+       ensure runs for one */
+    emit_indent(b, indent);
+    buf_printf(b, "int _rsp%d SP_CLEANUP(sp_rescue_sp_restore) = sp_rescue_sp; if (_excf%d) sp_rescue_push(sp_inflight_cause);\n",
+               eid, eid);
     emit_stmts(c, ensure_stmts, b, indent);
     if (g_repr_check) repr_channel_end(c, cf);
     if (keep_handle) {
@@ -10121,6 +10198,7 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
       buf_printf(b, "if (_excf%d) { sp_pending_exc_obj = _excobj%d; sp_raise_cls(_exccls%d, _excmsg%d); }\n", eid, eid, eid, eid);
     }
     g_retry_label = ens_saved_retry;
+    g_retry_pops = ens_saved_retry_pops;
     return;
   }
 
@@ -10134,6 +10212,8 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
   if (has_retry) buf_printf(b, "%s:;\n", retry_label);
   const char *saved_retry = g_retry_label;
   if (has_retry) g_retry_label = retry_label;
+  int saved_retry_pops = g_retry_pops;
+  if (has_retry) g_retry_pops = 0;
 
   emit_indent(b, indent); buf_puts(b, "sp_exc_check_depth();\n");
   emit_indent(b, indent); buf_puts(b, "sp_exc_rootmark[sp_exc_top] = sp_gc_nroots; sp_rescue_mark[sp_exc_top] = sp_rescue_sp;\n");
@@ -10199,6 +10279,7 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
   emit_indent(b, indent + 1); buf_puts(b, "if (sp_unwind_kind != SP_UNWIND_NONE) sp_unwind_resume();\n");
   emit_indent(b, indent); buf_puts(b, "}\n");
   g_retry_label = saved_retry;
+  g_retry_pops = saved_retry_pops;
 }
 
 /* Wrap a line-emitting statement so any expression preludes are flushed
@@ -14610,6 +14691,8 @@ void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
          innermost rescue save). */
       if (g_rescue_save_depth > 0)
         buf_puts(b, "sp_rescue_sp--; ");
+      /* and the frame the rescue clauses run in under an ensure */
+      if (g_retry_pops > 0) buf_printf(b, "sp_exc_top -= %d; ", g_retry_pops);
       buf_printf(b, "goto %s;\n", g_retry_label);
     }
     else unsupported(c, id, "retry (outside rescue)");

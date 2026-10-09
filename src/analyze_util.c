@@ -660,7 +660,8 @@ const char *sym_static_value(Compiler *c, int node) {
    its handle, through the shared-mutable shim's shadow (#4363), and a
    guard-narrowed box through its poly arm as the others do. */
 int sp_str_mutator(const char *nm, unsigned want) {
-  return bop_name_mutates(nm, want);
+  /* This byte-mutator API excludes state-only names. */
+  return bop_name_mutates(nm, want ? want : BOP_MUT_LOCAL);
 }
 /* A String call whose value is its receiver, whatever it did to it first:
    to_s, to_str, itself and freeze, and the mutators that answer self --

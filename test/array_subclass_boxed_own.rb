@@ -1,3 +1,4 @@
+# spinel: share
 # An Array subclass instance read out of a mixed Array is boxed (#7449), and
 # it answers as CRuby's does through the boxed path: its own questions: its class and ancestry, is_a?, ===, case, respond_to?,
 # dup, its ivars (read and written), its own method, send, method, freeze.

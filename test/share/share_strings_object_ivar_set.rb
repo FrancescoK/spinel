@@ -1,4 +1,5 @@
-# The boxed reflective setter cannot store into a shared String handle slot.
+# spinel: share
+# A boxed reflective setter stores the caller's shared String handle.
 class Object
   def change(v) = (@text = v)
 end

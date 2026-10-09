@@ -1,1 +1,0 @@
-spinel: test/share/refuse/route_object_ivar_set.rb:3: unsupported instance variable write to a shared String slot through a boxed receiver: node 11 (CallNode `instance_variable_set`) recv=SelfNode/ty50 argc=2 arg0ty8

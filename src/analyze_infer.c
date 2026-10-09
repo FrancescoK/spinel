@@ -2925,6 +2925,12 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
       if ((sp_streq(name, "deq") && argc <= 1) || (sp_streq(name, "enq") && (argc == 1 || argc == 2)))
         { *out = an_poly_concrete(c, name, TY_POLY); return 1; }
       if (sp_streq(name, "num_waiting") && argc == 0) { *out = an_poly_concrete(c, name, TY_INT); return 1; }
+      /* and the Mutex's, where no user class owns the name: lock and unlock
+         answer the mutex, try_lock and locked? a truth */
+      if (argc == 0 && !an_user_poly_arm(c, name, argc)) {
+        if (sp_streq(name, "lock") || sp_streq(name, "unlock")) { *out = TY_POLY; return 1; }
+        if (sp_streq(name, "try_lock") || sp_streq(name, "locked?")) { *out = TY_BOOL; return 1; }
+      }
       if (sp_streq(name, "alive?") || sp_streq(name, "dead?") || sp_streq(name, "closed?") ||
           (sp_streq(name, "blocking?") && argc == 0) ||
           sp_streq(name, "eof?") || sp_streq(name, "tty?") || sp_streq(name, "isatty") ||
@@ -2937,6 +2943,10 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
          arm. Without this the call falls through to a plain poly result and the
          `size[0]` that follows reads it as an untyped value. */
       if (sp_streq(name, "winsize") && sp_feature_enabled("io/console"))
+        { *out = an_poly_concrete(c, name, TY_INT_ARRAY); return 1; }
+      /* and winsize=, which answers its Integer Array argument */
+      if (sp_streq(name, "winsize=") && argc == 1 && sp_feature_enabled("io/console") &&
+          infer_type(c, argv[0]) == TY_INT_ARRAY)
         { *out = an_poly_concrete(c, name, TY_INT_ARRAY); return 1; }
       /* a boxed socket's non-blocking connect and options, as the TY_IO arms
          type them */
@@ -4044,6 +4054,9 @@ static int infer_range_lazy_call(Compiler *c, int id, const NodeTable *nt, const
 static int infer_string_recv_call(Compiler *c, int id, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, TyKind *out) {
   /* string receiver methods */
   if (recv >= 0 && rt == TY_STRING) {
+    if (c->share_strings && argc == 1 && is_partition_family(name) &&
+        (infer_type(c, argv[0]) == TY_STRING || infer_type(c, argv[0]) == TY_STRBUF || infer_type(c, argv[0]) == TY_REGEX) &&
+        share_node_elems_share(c, id)) { *out = TY_POLY_ARRAY; return 1; }
     /* promote mode: a String#to_i past sp_int is a Bignum (sp_str_to_i_promote).
        It reads the mode, so it sits ahead of the to_i row. */
     if (g_promote_mode && sp_streq(name, "to_i") && argc <= 1) { *out = TY_POLY; return 1; }
@@ -4146,6 +4159,7 @@ static int infer_int_float_recv_call(Compiler *c, int id, const NodeTable *nt, c
     /* a Bignum limit or step walks the sequence boxed (#3006) */
     for (int sk = 0; sk < sc; sk++)
       if (infer_type(c, sv[sk]) == TY_BIGINT) { *out = TY_POLY_ARRAY; return 1; }
+    if ((rt == TY_INT || rt == TY_FLOAT) && (sc == 0 || nt_kind(nt, sv[0]) == NK_NilNode)) { *out = TY_ENUMERATOR; return 1; }
     { *out = isf ? TY_FLOAT_ARRAY : TY_INT_ARRAY; return 1; }
   }
   /* integer receiver methods */
@@ -8338,6 +8352,8 @@ static int infer_constant_path(Compiler *c, int id, const NodeTable *nt, NodeKin
     if (nm && (sp_streq(nm, "RDONLY") || sp_streq(nm, "WRONLY") || sp_streq(nm, "RDWR") ||
                sp_streq(nm, "CREAT") || sp_streq(nm, "EXCL") || sp_streq(nm, "TRUNC") ||
                sp_streq(nm, "APPEND") || sp_streq(nm, "NONBLOCK") || sp_streq(nm, "BINARY") ||
+               sp_streq(nm, "NOFOLLOW") || sp_streq(nm, "NOCTTY") || sp_streq(nm, "SYNC") ||
+               sp_streq(nm, "DSYNC") ||
                sp_streq(nm, "LOCK_SH") || sp_streq(nm, "LOCK_EX") || sp_streq(nm, "LOCK_UN") ||
                sp_streq(nm, "LOCK_NB")))
       { *out = TY_INT; return 1; }   /* the open(2)/flock(2) flag constants (#2788, #2808) */

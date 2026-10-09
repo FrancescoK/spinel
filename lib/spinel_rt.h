@@ -12855,7 +12855,11 @@ static sp_RbVal sp_poly_sum(sp_RbVal v) {
     case SP_BUILTIN_RANGE: {
       sp_IntArray *ia = sp_range_to_ia(*(sp_Range *)v.v.p);
       SP_GC_ROOT(ia);
+#ifdef SP_INT_OVERFLOW_MODE_PROMOTE
+      return sp_IntArray_sum_promote(ia, 0);
+#else
       return sp_box_int(sp_IntArray_sum(ia, 0));
+#endif
     }
     /* an Enumerator's seedless sum is its sum(0), as in CRuby: from the
        first Float on, compensated */
@@ -12880,16 +12884,26 @@ static sp_PolyArray *sp_poly_to_a_arr(sp_RbVal v);  /* defined below; hash -> pa
    String seed raises ArgumentError from the conversion, not from the addition.
    An EMPTY range never touches the seed and answers it unchanged. */
 static sp_RbVal sp_range_sum_seed(sp_Range r, sp_RbVal seed) {
+  /* An empty Range still normalizes a Float zero seed, unlike an Array. */
+  if (seed.tag == SP_TAG_FLT && seed.v.f == 0.0) seed.v.f = 0.0;
   if (sp_range_count(r) <= 0) return seed;
   SP_GC_ROOT_RBVAL(seed);
   sp_IntArray *ia = sp_range_to_ia(r);
   SP_GC_ROOT(ia);
+#ifdef SP_INT_OVERFLOW_MODE_PROMOTE
+  sp_RbVal promoted = sp_IntArray_sum_promote(ia, 0);
+  SP_GC_ROOT_RBVAL(promoted);
+  if (seed.tag == SP_TAG_INT || seed.tag == SP_TAG_BIGINT)
+    return sp_poly_add(promoted, seed);
+  return sp_box_float(sp_poly_Float(seed) + sp_poly_Float(promoted));
+#else
   sp_int total = sp_IntArray_sum(ia, 0);
   /* through sp_poly_add so a Bignum seed keeps its digits instead of wrapping
      into the sp_int the typed emitter used to hand this path */
   if (seed.tag == SP_TAG_INT || seed.tag == SP_TAG_BIGINT)
     return sp_poly_add(sp_box_int(total), seed);
   return sp_box_float(sp_poly_Float(seed) + (sp_float)total);
+#endif
 }
 /* Is this a value CRuby's Array#sum keeps in its EXACT accumulation phase --
    the Integer/Rational family, which adds without dropping a digit? A Float is
@@ -13488,6 +13502,17 @@ static sp_queue *sp_poly_as_queue(sp_RbVal v, const char *name) {
 static sp_RbVal sp_poly_queue_num_waiting(sp_RbVal v) { return sp_box_int(sp_Queue_num_waiting(sp_poly_as_queue(v, "num_waiting"))); }
 static sp_RbVal sp_poly_queue_deq(sp_RbVal v) { return sp_Queue_pop(sp_poly_as_queue(v, "deq")); }
 static sp_RbVal sp_poly_queue_enq(sp_RbVal v, sp_RbVal x) { sp_Queue_push(sp_poly_as_queue(v, "enq"), x); return v; }
+/* The Mutex names no other builtin has, on a boxed receiver: lock and
+   unlock answer the receiver, the predicates their truth. */
+static sp_mutex *sp_poly_as_mutex(sp_RbVal v, const char *name) {
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_MUTEX && v.v.p) return (sp_mutex *)v.v.p;
+  sp_raise_nomethod(sp_nomethod_msg(name, v));
+  return NULL;
+}
+static sp_RbVal sp_poly_mutex_lock(sp_RbVal v) { sp_Mutex_lock(sp_poly_as_mutex(v, "lock")); return v; }
+static sp_RbVal sp_poly_mutex_unlock(sp_RbVal v) { sp_Mutex_unlock(sp_poly_as_mutex(v, "unlock")); return v; }
+static sp_bool sp_poly_mutex_try_lock(sp_RbVal v) { return sp_Mutex_try_lock(sp_poly_as_mutex(v, "try_lock")); }
+static sp_bool sp_poly_mutex_locked(sp_RbVal v) { return sp_Mutex_locked(sp_poly_as_mutex(v, "locked?")); }
 /* pop/shift/deq(non_block): an Array's pop(true) is still CRuby's TypeError */
 static sp_RbVal sp_poly_queue_pop_flag(sp_RbVal v, const char *name, sp_bool nb) {
   if (v.tag == SP_TAG_OBJ && sp_poly_is_array_kind(v.cls_id))
@@ -13971,6 +13996,9 @@ static void sp_rescue_push(void *e) {
   }
   sp_exc_handling[sp_rescue_sp++] = e;
 }
+/* SP_CLEANUP target: an ensure body that pushed the exception in flight
+   as $! gives the handler stack back however it is left */
+static inline void sp_rescue_sp_restore(int *p) { sp_rescue_sp = *p; }
 /* Each of the fixed-depth handler stacks below fails the same way when a
    program nests deeper than its array holds: CRuby's SystemStackError words,
    on stderr, and out. One copy of them, called from each stack's check. Not a
@@ -15598,6 +15626,7 @@ void sp_dir_glob_rec(const char *fsdir, const char *outprefix,
    `.`. Results are sorted, matching Ruby 3.0+ default glob ordering. */
 /* sp_dir_glob: moved to lib/sp_cold.c */
 sp_StrArray *sp_dir_glob(const char *pattern);
+sp_StrArray *sp_dir_glob_base(const char *pattern, const char *base);
 sp_StrArray *sp_dir_glob_dot(const char *pattern);
 /* Dir.entries / Dir.children: every entry of one directory, dotfiles
    included; children drops "." / "..". Sorted for determinism (CRuby
