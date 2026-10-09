@@ -4263,7 +4263,7 @@ build/csrc/main-share-check.o: src/main.c build/csrc/spinel_rev.h $(SPINEL_HDRS)
 	$(CC) $(CFLAGS) -DSP_BOP_SHARE_CHECK -Isrc -Ibuild/csrc -c $< -o $@
 
 SHARE_CHECK_OBJ = $(filter-out build/csrc/builtin_ops.o build/csrc/main.o,$(SPINEL_OBJ)) build/csrc/builtin_ops-share-check.o build/csrc/main-share-check.o
-build/spinel-share-check: $(SHARE_CHECK_OBJ) build/csrc/sp_parse_lib.o build/csrc/re_lit_check.o $(RE_OBJ) $(PRISM_LIB) $(PLATFORM_OBJ)
+build/spinel-share-check: $(SHARE_CHECK_OBJ) build/csrc/sp_parse_lib.o build/csrc/re_lit_check.o $(RE_OBJ) $(PRISM_LIB) $(INLINE_RBS_LIBS) $(PLATFORM_OBJ)
 	$(CC) $(CFLAGS) $^ -lm $(LDFLAGS) $(SPINEL_LDFLAGS) -o $@
 
 bop-share-check-test: build/spinel-share-check
