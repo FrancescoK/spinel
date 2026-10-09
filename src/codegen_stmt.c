@@ -14266,6 +14266,21 @@ static void emit_ivar_write_marks(Compiler *c, int t, Buf *b, int indent) {
 }
 
 static void emit_stmt_node(Compiler *c, int id, Buf *b, int indent);
+/* A break leaving a lambda uses its return slot, after evaluating the
+   value with the body's handlers still live. Pop those handlers and frames
+   before returning; an ensure still goes through the deferred return path. */
+static void emit_lambda_body_break(Compiler *c, int id, Buf *b, int indent) {
+  if (g_result_var && g_ensure_depth == 0) {
+    emit_indent(b, indent);
+    buf_printf(b, "{ %s = ", g_result_var);
+    emit_break_value(c, id, b);
+    buf_puts(b, "; ");
+    emit_frame_unwind(b, 0, NULL);
+    buf_puts(b, "return 0; }\n");
+  }
+  else emit_return(c, id, b, indent);
+}
+
 void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
   emit_stmt_node(c, id, b, indent);
   emit_ivar_write_marks(c, id, b, indent);
@@ -14751,14 +14766,7 @@ static void emit_stmt_node(Compiler *c, int id, Buf *b, int indent) {
        C loop within the lambda (`loop { break }`) the break exits THAT loop,
        not the lambda -- fall through to the plain C break below. */
     if (g_proc_body_kind == 1 && g_c_loop_depth == 0) {
-      if (g_result_var && g_ensure_depth == 0) {
-        emit_indent(b, indent);
-        buf_printf(b, "{ %s = ", g_result_var);
-        emit_break_value(c, id, b);
-        buf_puts(b, "; return 0; }\n");
-        return;
-      }
-      emit_return(c, id, b, indent);
+      emit_lambda_body_break(c, id, b, indent);
       return;
     }
     /* break inside a non-lambda proc body: throw to the captured creating
