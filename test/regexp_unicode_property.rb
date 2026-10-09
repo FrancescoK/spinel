@@ -70,3 +70,36 @@ p "Hello".match?(/\A\p{Lu}\p{Ll}+\z/)
 p "hello".match?(/\A\p{Lu}\p{Ll}+\z/)
 p "a1".match?(/\A(\p{L}|\p{N})+\z/)
 p "Wörld! 123".gsub(/\p{L}+/) { |w| w.upcase }
+
+# The long names of the categories, which CRuby reads as the short ones: RDoc's
+# darkfish generator writes \p{letter}. LC (Lc, Cased_Letter) is Lu, Ll and Lt
+# together, which no category is on its own; RDoc's text.rb writes \p{Lc}.
+t = "Aaǅʰあ1Ⅳ½_-(«»!+$^©  é́"
+p t.scan(/\p{Letter}/).join
+p t.scan(/\p{Lc}/).join
+p t.scan(/\p{Cased_Letter}/).join
+p t.scan(/\p{LC}/) == t.scan(/[\p{Lu}\p{Ll}\p{Lt}]/)
+p t.scan(/\p{Uppercase_Letter}/).join + t.scan(/\p{Lowercase_Letter}/).join
+p t.scan(/\p{Titlecase_Letter}/).join + t.scan(/\p{Modifier_Letter}/).join + t.scan(/\p{Other_Letter}/).join
+p t.scan(/\p{Number}/).join
+p t.scan(/\p{Decimal_Number}/).join + t.scan(/\p{Letter_Number}/).join + t.scan(/\p{Other_Number}/).join
+p t.scan(/\p{Punctuation}/).join
+p t.scan(/\p{Connector_Punctuation}/).join + t.scan(/\p{Dash_Punctuation}/).join
+p t.scan(/\p{Open_Punctuation}/).join + t.scan(/\p{Initial_Punctuation}/).join + t.scan(/\p{Final_Punctuation}/).join
+p t.scan(/\p{Symbol}/).join
+p t.scan(/\p{Math_Symbol}/).join + t.scan(/\p{Currency_Symbol}/).join + t.scan(/\p{Modifier_Symbol}/).join + t.scan(/\p{Other_Symbol}/).join
+p t.scan(/\p{Separator}/).length
+p t.scan(/\p{Mark}/).length
+p t.scan(/\p{Combining_Mark}/) == t.scan(/\p{Nonspacing_Mark}/)
+p "\u0007​".scan(/\p{Other}/).length
+p "\u0007".match?(/\p{Control}/)
+p "​".match?(/\p{Format}/)
+p "".match?(/\p{Private_Use}/)
+
+# Negated, inside a class, and spelled any way the short names may be.
+p t.scan(/\P{Letter}/).length == t.scan(/\P{L}/).length
+p t.scan(/[^\p{Cased_Letter}\p{Number}]/).length
+p "a_1!".scan(/[\p{Nd}\p{Lc}\p{Pc}]/)
+p "ǅ".match?(/\p{cased-letter}/)
+p "ǅ".match?(/\p{TITLECASE_LETTER}/)
+p "see RDoc.new".match?(/\b\p{letter}[^.\/:]++\./)
