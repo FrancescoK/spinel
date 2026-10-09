@@ -1995,6 +1995,7 @@ static sp_RbVal sp_poly_bitop(sp_RbVal a, sp_RbVal b, int op) {  /* 0:& 1:| 2:^ 
 static const char *sp_class_to_s(sp_Class c);
 #endif
 const char *sp_poly_class_name(sp_RbVal v);  /* fwd: user-object to_s default */
+extern const char *(*sp_user_exc_parent_fn)(const char *);  /* fwd: the program's exception parent table (defined ~line 14477) */
 static const char *sp_convert_src_name(sp_RbVal v);  /* fwd: nil/true/false spell themselves */
 static sp_int sp_poly_Integer_ex(sp_RbVal v, sp_int base, int raise);  /* fwd: Kernel#Integer / #Float on a user object */
 static sp_float sp_poly_Float_ex(sp_RbVal v, int raise);
@@ -2186,12 +2187,41 @@ static sp_bool sp_poly_responds_builtin(sp_RbVal v, const char *m) {
     "flatten", "compact", "uniq", "reverse", "last", "index", "delete",
     "delete_at", "delete_if", "insert", "fetch", "sample", "shuffle",
     "rotate", "slice", "fill", "dig", "values_at", "+", "-", "*", "&", "|",
-    "to_ary", NULL };
+    "to_ary",
+    /* the rest of bop_rows's BOP_ANY_ARRAY surface (#8140-class gap: a
+       widened Array parameter's respond_to?(:uniq!) answered false and
+       jaccard's Jaccard.coefficient silently stopped deduping its union) */
+    "append", "assoc", "at", "bsearch", "bsearch_index", "chain",
+    "chunk", "chunk_while", "clear", "collect!", "collect_concat",
+    "combination", "compact!", "cycle", "deconstruct", "difference",
+    "drop_while", "each_entry", "each_index", "entries", "fetch_values",
+    "filter!", "filter_map", "find_all", "find_index", "flatten!",
+    "grep", "grep_v", "intersect?", "intersection", "keep_if", "lazy",
+    "map!", "max_by", "member?", "min_by", "minmax", "minmax_by", "pack",
+    "permutation", "prepend", "product", "rassoc", "reject!",
+    "repeated_combination", "repeated_permutation", "replace",
+    "reverse!", "reverse_each", "rfind", "rindex", "rotate!", "select!",
+    "shuffle!", "slice!", "slice_after", "slice_before", "slice_when",
+    "sort!", "sort_by!", "take_while", "tally", "to_h", "to_set",
+    "transpose", "union", "uniq!", NULL };
   static const char *const hashm[] = {
     "empty?", "[]", "[]=", "keys", "values", "fetch", "store", "delete", "key?",
     "has_key?", "member?", "value?", "has_value?", "each_pair", "each_key",
     "each_value", "merge", "merge!", "update", "to_h", "invert", "dig",
-    "default", "key", "transform_keys", "transform_values", "to_hash", NULL };
+    "default", "key", "transform_keys", "transform_values", "to_hash",
+    /* the rest of bop_rows's BOP_ANY_HASH surface (same gap as arrm) */
+    "<", "<=", ">", ">=", "assoc", "chain", "chunk", "chunk_while",
+    "clear", "collect_concat", "compact", "compact!",
+    "compare_by_identity", "compare_by_identity?", "cycle",
+    "deconstruct_keys", "default=", "default_proc", "default_proc=",
+    "delete_if", "drop_while", "each_entry", "entries", "except",
+    "fetch_values", "filter!", "filter_map", "find_all", "find_index",
+    "flatten", "grep", "grep_v", "keep_if", "lazy", "max_by", "min_by",
+    "minmax", "minmax_by", "rassoc", "rehash", "reject!", "replace",
+    "reverse_each", "select!", "shift", "slice", "slice_after",
+    "slice_before", "slice_when", "take_while", "tally", "to_proc",
+    "to_set", "transform_keys!", "transform_values!", "uniq",
+    "values_at", NULL };
   static const char *const strm[] = {
     "[]", "[]=", "+", "*", "%", "<=>", "<", ">", "<=", ">=", "=~", "length",
     "size", "empty?", "upcase", "downcase", "capitalize", "swapcase", "strip",
@@ -2201,32 +2231,65 @@ static sp_bool sp_poly_responds_builtin(sp_RbVal v, const char *m) {
     "next", "to_i", "to_f", "to_sym", "to_str", "center", "ljust", "rjust",
     "tr", "delete", "squeeze", "count", "each_char", "each_line", "slice",
     "unpack", "encoding", "force_encoding", "bytesize", "ord", "hex", "oct",
-    "match", "match?", "scan", "format", "freeze", NULL };
+    "match", "match?", "scan", "freeze",
+    /* the rest of bop_rows's TY_STRING surface (same gap as arrm) */
+    "+@", "-@", "append_as_bytes", "ascii_only?", "b", "between?",
+    "byteindex", "byterindex", "byteslice", "bytesplice", "capitalize!",
+    "casecmp", "casecmp?", "chomp!", "chop!", "chr", "clamp", "clear",
+    "codepoints", "crypt", "dedup", "delete!", "delete_prefix",
+    "delete_prefix!", "delete_suffix", "delete_suffix!", "downcase!",
+    "dump", "each_byte", "each_codepoint", "each_grapheme_cluster",
+    "encode", "encode!", "getbyte", "grapheme_clusters", "insert",
+    "intern", "lstrip!", "next!", "partition", "prepend", "reverse!",
+    "rpartition", "rstrip!", "scrub", "scrub!", "setbyte", "slice!",
+    "squeeze!", "strip!", "succ!", "sum", "swapcase!", "to_c", "to_r",
+    "tr!", "tr_s", "tr_s!", "undump", "unicode_normalize",
+    "unicode_normalize!", "unicode_normalized?", "unpack1", "upcase!",
+    "upto", "valid_encoding?", NULL };
   static const char *const numm[] = {
     "+", "-", "*", "/", "%", "**", "<=>", "<", ">", "<=", ">=", "abs",
     "to_i", "to_int", "to_f", "to_r", "to_c", "zero?", "positive?",
     "negative?", "coerce", "divmod", "fdiv", "round", "ceil", "floor",
-    "truncate", "between?", "clamp", "step", NULL };
+    "truncate", "between?", "clamp", "step",
+    /* the rest of bop_rows's Numeric surface shared by Integer and Float
+       (same gap as arrm) */
+    "abs2", "angle", "arg", "conj", "conjugate", "denominator", "div",
+    "i", "imag", "imaginary", "magnitude", "modulo", "nonzero?",
+    "numerator", "phase", "polar", "rationalize", "real", "real?",
+    "rect", "rectangular", "remainder", NULL };
   static const char *const intm[] = {
     "times", "upto", "downto", "succ", "next", "pred", "even?", "odd?",
     "gcd", "lcm", "digits", "bit_length", "chr", "ord", "pow", "&", "|",
     "^", "<<", ">>", "~", "integer?", "allbits?", "anybits?", "nobits?",
-    "size", NULL };
+    "size",
+    "[]", "ceildiv", "finite?", "gcdlcm", "infinite?", NULL };
   static const char *const fltm[] = {
-    "nan?", "infinite?", "finite?", "integer?", NULL };
+    "nan?", "infinite?", "finite?", "integer?",
+    "next_float", "prev_float", NULL };
   static const char *const rngm[] = {
     "begin", "end", "first", "last", "min", "max", "step", "cover?",
-    "exclude_end?", "to_a", "each", "size", "sum", "include?", "===", NULL };
+    "exclude_end?", "to_a", "each", "size", "sum", "include?", "===",
+    /* the rest of its Enumerable surface, desugared rather than a
+       bop_rows row, so verified by direct execution (same gap as arrm) */
+    "collect_concat", "drop_while", "each_entry", "filter_map",
+    "find_all", "find_index", "max_by", "min_by", "reverse_each",
+    "take_while", "to_h", NULL };
   static const char *const symm[] = {
     "to_proc", "to_sym", "id2name", "name", "length", "size", "succ", "next",
     "upcase", "downcase", "capitalize", "swapcase", "empty?", "start_with?",
-    "end_with?", "<=>", "[]", NULL };
+    "end_with?", "<=>", "[]",
+    "casecmp", "casecmp?", "clamp", "intern", "match?", "slice", NULL };
   static const char *const procm[] = {
     "call", "()", "[]", "yield", "arity", "lambda?", "curry", "to_proc",
-    "parameters", "<<", ">>", NULL };
+    "parameters", "<<", ">>", "source_location", NULL };
+  /* "name" (NameError), "key"/"receiver" (KeyError/NameError) and
+     "result" (UncaughtThrowError) are real but gated to one subclass each
+     -- a generic RuntimeError does not respond_to?(:key) in CRuby, and
+     bop_rows has no owning-subclass field to gate them by (same class of
+     gap as sp_poly_responds_builtin's own Exception exclusion above:
+     found by tools/respond_to_audit.rb, which this answers for). */
   static const char *const excm[] = {
-    "message", "to_s", "full_message", "backtrace", "cause", "exception",
-    "name", "key", "receiver", "result", NULL };
+    "message", "to_s", "full_message", "backtrace", "cause", "exception", NULL };
   const char *cn;
   if (!m) return 0;
   if (sp_str_in_list(m, uni)) return 1;
@@ -2271,8 +2334,43 @@ static sp_bool sp_poly_responds_builtin(sp_RbVal v, const char *m) {
      by its kind */
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_IO && v.v.p)
     return sp_io_responds((sp_File *)v.v.p, m, 0);
-  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_EXCEPTION)
-    return sp_str_in_list(m, excm);
+  if (v.tag == SP_TAG_OBJ && v.v.p &&
+      (v.cls_id == SP_BUILTIN_EXCEPTION ||
+       /* A user exception boxes under its own class id, not
+          SP_BUILTIN_EXCEPTION, once it has anything of its own (a method,
+          an ivar) that needs separate storage -- a trivial `class
+          MyKeyError < KeyError; end` happens to share the builtin's cls_id
+          and was never actually exercising this arm. Without this check, a
+          non-trivial subclass fell through to `return 0` below and every
+          accessor answered false, even though is_a?(KeyError) (which
+          already handles this case two arms below) answered true for the
+          same value. Mirrors the is_a? arm's own user-subclass check. */
+       (v.cls_id >= 0 && sp_user_exc_parent_fn && sp_user_exc_parent_fn(sp_poly_class_name(v))))) {
+    if (sp_str_in_list(m, excm)) return 1;
+    /* bop_rows registers these accessors for ANY exception (no
+       owning-subclass field), but CRuby gates each to the subclass that
+       actually defines it: a plain RuntimeError does not respond_to?
+       (:key), only KeyError (and NoMatchingPatternKeyError) do. The
+       mapping below is CRuby's own (ClassName.instance_method(:m).owner
+       for each name, run against every Exception descendant), and
+       sp_exc_is_a walks the boxed exception's real ancestor chain the
+       same way its own is_a? does (#3096), so a user subclass of e.g.
+       KeyError answers true here too, not just the exact builtin class. */
+    volatile struct sp_Exception_s *ve = (volatile struct sp_Exception_s *)v.v.p;
+    if (strcmp(m, "key") == 0)
+      return sp_exc_is_a(ve, "KeyError") || sp_exc_is_a(ve, "NoMatchingPatternKeyError");
+    if (strcmp(m, "receiver") == 0)
+      return sp_exc_is_a(ve, "NameError") || sp_exc_is_a(ve, "FrozenError") || sp_exc_is_a(ve, "KeyError");
+    if (strcmp(m, "name") == 0) return sp_exc_is_a(ve, "NameError");
+    if (strcmp(m, "args") == 0 || strcmp(m, "private_call?") == 0) return sp_exc_is_a(ve, "NoMethodError");
+    if (strcmp(m, "errno") == 0) return sp_exc_is_a(ve, "SystemCallError");
+    if (strcmp(m, "status") == 0 || strcmp(m, "success?") == 0) return sp_exc_is_a(ve, "SystemExit");
+    if (strcmp(m, "signo") == 0 || strcmp(m, "signm") == 0) return sp_exc_is_a(ve, "SignalException");
+    if (strcmp(m, "tag") == 0 || strcmp(m, "value") == 0) return sp_exc_is_a(ve, "UncaughtThrowError");
+    if (strcmp(m, "result") == 0) return sp_exc_is_a(ve, "StopIteration");
+    if (strcmp(m, "reason") == 0 || strcmp(m, "exit_value") == 0) return sp_exc_is_a(ve, "LocalJumpError");
+    return 0;
+  }
   return 0;
 }
 /* respond_to? on a typed IO handle: the names its typed emitters call, and
