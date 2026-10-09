@@ -2652,9 +2652,20 @@ int strbuf_marked_yields_handle(Compiler *c, int v) {
   TyKind rt = r >= 0 ? comp_ntype(c, r) : TY_UNKNOWN;
   /* A fresh object-method result is bytes to wrap, not a reader's handle. */
   if (repr_share_rule(c) && ty_is_object(rt) && share_value_fresh(c, v, 0)) return 0;
+  /* A yielding method is inlined into the demanded handle slot. Other
+     method calls keep their byte ABI and need a proved return pickup;
+     a field reader has its own handle arm. */
+  if (repr_share_rule(c) && ty_is_object(rt)) {
+    int mi = cplan_user(c, v)->mi;
+    if (mi >= 0) return c->scopes[mi].yields || an_memo_reader_ivar(c, mi) || repr_call_returns_handle(c, v);
+  }
   /* Without the flag, a native String return uses its declared byte ABI;
      there is no native shared-answer route to yield a handle. */
   if (!repr_share_rule(c) && ty_is_object(rt)) {
+    /* A user method's byte return takes the default copy wrapper. A
+       boxed return already has its own representation and keeps it. */
+    int mi = cplan_user(c, v)->mi;
+    if (mi >= 0) return c->scopes[mi].yields || repr_of_ret(c, &c->scopes[mi]).as_ty == TY_STRING;
     int nm = comp_native_method_find(c, ty_object_class(rt), nt_str(nt, v, "name"), call_plain_argc(c, v), 0);
     if (nm >= 0 && native_spec_to_ty(c->native_methods[nm].ret) == TY_STRING) return 0;
   }

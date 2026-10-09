@@ -10464,6 +10464,22 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
         return 1;
       }
     }
+    /* Keep the reader shortcuts above. Other marked String calls still
+       return bytes: take the proved return channel before boxing them,
+       using the same fact as strbuf_marked_yields_handle. */
+    if (repr_share_rule(c) && repr_of(c, id).handle && repr_call_returns_handle(c, id))
+      return emit_strbuf_route(c, id, b);
+    /* Without sharing, the same handle demand wraps the method's byte
+       result as the container's mutable copy. Reader shortcuts have
+       already handed out their slots; other calls keep their byte ABI. */
+    if (!repr_share_rule(c) && mi >= 0 && repr_of(c, id).handle && strbuf_marked_yields_handle(c, id)) {
+      int sv = view_push_repr(c, id, VR_STRBUF_BOX, 0);
+      buf_puts(b, "sp_String_new_shared(");
+      emit_str_expr(c, id, b);
+      buf_puts(b, ")");
+      view_pop(c, sv);
+      return 1;
+    }
     if (mi >= 0) {
       /* a value-type receiver is passed by value; an ordinary object by
          pointer. For a value recv we hand emit_dispatch the value expression
