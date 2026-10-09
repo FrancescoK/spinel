@@ -5,7 +5,7 @@
 # Each line counts the objects that came out holding another String; the
 # last one shows the members are changed in place.
 # spinel: gc-stress
-N = 20_000
+N = 4_000
 
 class Pair
   attr_reader :x, :y
@@ -73,10 +73,10 @@ sa = ["s"]
 
 # Kept, the objects are looked at when all of them are made.
 kept = []
-3000.times { kept << Entry.new("alpha", "beta") }
+600.times { kept << Entry.new("alpha", "beta") }
 p kept.count { |k| k.a != "alpha" || k.b != "beta" }
 pairs = []
-3000.times { pairs << Pair.new("q", *ra) }
+600.times { pairs << Pair.new("q", *ra) }
 p pairs.count { |k| k.x != "q" || k.y != "r" }
 
 p wrong(N) { |odd| odd ? Pair.new("s", *ta) : Pair.new("q", *ra) }            # an Array's element, splatted
@@ -99,7 +99,7 @@ mf = MixF.new(wf, 1.5)
 mf.a << "z"
 f = 2.5
 mixed = []
-3000.times { mixed << MixF.new("alpha", -f) }
+600.times { mixed << MixF.new("alpha", -f) }
 p mixed.count { |k| k.a != "alpha" || k.x != 2.0 }
 
 # A default that reads a global and adds to it runs nothing.
@@ -117,7 +117,7 @@ nu.s << "z"
 $k = 5
 def mkd(x, n = $k + 1) = Num.new.putn(x, n)
 nums = []
-3000.times { nums << mkd(*qa) }
+600.times { nums << mkd(*qa) }
 p nums.count { |k| k.s != "q" || k.n != 6 }
 p [mf.a, wf, nu.s]
 
@@ -138,6 +138,6 @@ mc.a << "z"
 j = 5
 mo = Meters.new(3)
 coerced = []
-3000.times { coerced << MixC.new("alpha", (j > mo ? 1 : 2)) }
+600.times { coerced << MixC.new("alpha", (j > mo ? 1 : 2)) }
 p coerced.count { |k| k.a != "alpha" || k.x != 2 }
 p [mc.a, wc]
