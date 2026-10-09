@@ -1810,6 +1810,35 @@ static void sp_bt_lines(void **buf, int n, int *lines) {
   }
   pclose(p);
 }
+#elif defined(__APPLE__) && defined(HAVE_EXECINFO_H)
+#include <mach-o/dyld.h>
+/* The same on macOS through atos, which reads the dSYM a debug build leaves
+   beside the program (clang writes it when it compiles and links in one
+   step). The main image's load address is handed over with -l, so the
+   run-time addresses are asked as they are; each answer line ends in
+   "(file:line)". */
+static void sp_bt_lines(void **buf, int n, int *lines) {
+  char exe[1024];
+  uint32_t el = sizeof exe;
+  if (_NSGetExecutablePath(exe, &el) != 0 || strchr(exe, '\'')) return;
+  const struct mach_header *mh = _dyld_get_image_header(0);
+  if (!mh) return;
+  char cmd[4096];
+  int o = snprintf(cmd, sizeof cmd, "atos -o '%s' -l 0x%lx", exe, (unsigned long)(uintptr_t)mh);
+  for (int i = 0; i < n && o < (int)sizeof cmd - 32; i++)
+    o += snprintf(cmd + o, sizeof cmd - (size_t)o, " 0x%lx", (unsigned long)((uintptr_t)buf[i] - 1));
+  if (o < (int)sizeof cmd - 16) snprintf(cmd + o, sizeof cmd - (size_t)o, " 2>/dev/null");
+  FILE *p = popen(cmd, "r");
+  if (!p) return;
+  char line[2048];
+  for (int i = 0; i < n && fgets(line, sizeof line, p); i++) {
+    char *close = strrchr(line, ')');
+    char *open = close ? strrchr(line, '(') : NULL;
+    char *c = open ? strrchr(open, ':') : NULL;
+    if (c && c < close && c[1] >= '1' && c[1] <= '9') lines[i] = atoi(c + 1);
+  }
+  pclose(p);
+}
 #else
 static void sp_bt_lines(void **buf, int n, int *lines) { (void)buf; (void)n; (void)lines; }
 #endif
