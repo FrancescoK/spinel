@@ -979,6 +979,10 @@ int splat_string_var(Compiler *c, const int *av, int ac, int *fs);
 void refuse_super_splat(Compiler *c, int id, int target);
 void refuse_yield_splat(Compiler *c, int blk, int yc, const int *yv);
 void emit_proc_call_args(Compiler *c, int call, int argc, const int *argv, Buf *b, int force_poly);
+/* the rooted holder of a by-value struct's box handed to a Proc, and the box
+   written through it (codegen_call.c) */
+int proc_arg_box_hold(Compiler *c, TyKind at, Buf *decl, int indent);
+void emit_proc_arg_boxed(Compiler *c, TyKind at, const char *tn, int hold, Buf *b);
 int call_args_need_spread(const NodeTable *nt, const int *argv, int argc);
 int emit_spread_args(Compiler *c, const int *argv, int argc);
 int emit_spread_args_kw(Compiler *c, const int *argv, int argc, char *kwpos, size_t kwsz);
