@@ -13069,10 +13069,37 @@ static int hash_key_slot_same(Compiler *c, const HashKeySlot *a, const HashKeySl
   if (a->cls == b->cls) return 1;
   return related && (hash_key_class_under(c, a->cls, b->cls) || hash_key_class_under(c, b->cls, a->cls));
 }
+/* Can the method this call sits in run? Reachability is settled before a
+   `send(:m)` is rewritten to the call it is, so a method it leaves out still
+   runs when its name is written anywhere: called, or a Symbol or a String.
+   One nothing names is not emitted. `written` holds those names, gathered
+   by the first call that asks: one walk a pass, however many calls ask. */
+static int hash_key_call_can_run(Compiler *c, int id, ANameHash *written) {
+  const NodeTable *nt = c->nt;
+  const Scope *s = comp_scope_of(c, id);
+  if (s->reachable || !s->name) return 1;
+  if (!written->nb) {
+    NT_FOREACH_KIND(nt, NK_CallNode, q) {
+      const char *nm = nt_str(nt, q, "name");
+      if (nm && !anh_has(written, nm)) anh_add(written, nm);
+    }
+    NT_FOREACH_KIND(nt, NK_SymbolNode, q) {
+      const char *nm = nt_str(nt, q, "value");
+      if (nm && !anh_has(written, nm)) anh_add(written, nm);
+    }
+    NT_FOREACH_KIND(nt, NK_StringNode, q) {
+      const char *nm = nt_str(nt, q, "content");
+      if (!nm) nm = nt_str(nt, q, "unescaped");
+      if (nm && !anh_has(written, nm)) anh_add(written, nm);
+    }
+  }
+  return anh_has(written, s->name);
+}
 static int widen_mixed_key_hash_slots(Compiler *c) {
   if (!c->hash_want) return 0;
   const NodeTable *nt = c->nt;
   HashKeySlot *slots = NULL; int ns = 0, cap = 0;
+  ANameHash written; memset(&written, 0, sizeof written);
   static const NodeKind wkinds[] = {
     NK_CallNode, NK_IndexOrWriteNode, NK_IndexAndWriteNode, NK_IndexOperatorWriteNode };
   for (size_t wk = 0; wk < sizeof(wkinds) / sizeof(wkinds[0]); wk++) {
@@ -13107,7 +13134,19 @@ static int widen_mixed_key_hash_slots(Compiler *c) {
            as `h["e"] = 1.5` would */
         for (int q = 0; q < an; q++) {
           NodeKind ak = nt_kind(nt, av[q]);
-          if (ak != NK_HashNode && ak != NK_KeywordHashNode) continue;
+          if (ak != NK_HashNode && ak != NK_KeywordHashNode) {
+            /* A Hash that is not written out here (`h.update(opts)`) stores
+               its pairs too, and a Symbol-keyed one says so by its variant.
+               The other key classes stay with the usage fold, which widens
+               a local for them and leaves it as it is for a Symbol key
+               (fold_container_evidence). A call in a method that cannot run
+               widens nothing. */
+            if (ty_hash_key(infer_type(c, av[q])) == TY_SYMBOL &&
+                infer_type(c, recv) != TY_POLY_POLY_HASH &&
+                hash_key_call_can_run(c, id, &written))
+              kb |= hash_key_class_bit(TY_SYMBOL);
+            continue;
+          }
           int en = 0; const int *els = nt_arr(nt, av[q], "elements", &en);
           for (int e = 0; e < en; e++) {
             if (nt_kind(nt, els[e]) != NK_AssocNode) continue;
@@ -13236,6 +13275,7 @@ static int widen_mixed_key_hash_slots(Compiler *c) {
     }
   }
   free(slots);
+  anh_free(&written);
   return changed;
 }
 /* `TBL = {}` followed by `TBL[k] = v` elsewhere: an empty literal bound to a
