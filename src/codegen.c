@@ -16226,12 +16226,33 @@ static void emit_sym_class_name_rt(Compiler *c, Buf *b) {
        name made two Symbols one. The block it leaves is kept: a Thread that
        read the pool's address before the move still finds its Symbol's name
        there, and the heap blocks left behind sum to less than the one in use. */
-    buf_puts(b, "static SP_NOINLINE SP_COLD void sp_dyn_syms_grow(void){"
-                "int nc=sp_dyn_cap>0?sp_dyn_cap*2:64;"
-                "const char **np=(const char **)malloc(sizeof(*np)*(size_t)nc);"
-                "if(!np)sp_raise_cls(\"NoMemoryError\",\"failed to grow the symbol table\");"
-                "memcpy(np,sp_dyn_syms,sizeof(*np)*(size_t)sp_ndyn);"
-                "sp_dyn_syms=np;sp_dyn_cap=nc;}\n");
+    /* Threads run on several OS workers, and two that make a new Symbol at
+       once both stored it in the slot at sp_ndyn and both counted it: the
+       slot after it stayed NULL and the next lookup read through it. In a
+       program that uses Threads a miss takes this lock to add its entry.
+       Nothing allocates and nothing polls a safepoint while it is held, so a
+       collection never waits on a worker that waits for the lock. A lookup
+       takes no lock: it reads the count, then the pool's address, and an
+       entry is stored before the count that covers it. */
+    int mt = g_uses_threads;
+    if (mt)
+      buf_puts(b, "#ifdef SP_THREADS\n"
+                  "static pthread_mutex_t sp_dyn_syms_mu = PTHREAD_MUTEX_INITIALIZER;\n"
+                  "#define SP_DYN_SYMS_LOCK() pthread_mutex_lock(&sp_dyn_syms_mu)\n"
+                  "#define SP_DYN_SYMS_UNLOCK() pthread_mutex_unlock(&sp_dyn_syms_mu)\n"
+                  "#else\n"
+                  "#define SP_DYN_SYMS_LOCK() ((void)0)\n"
+                  "#define SP_DYN_SYMS_UNLOCK() ((void)0)\n"
+                  "#endif\n");
+    buf_printf(b, "static SP_NOINLINE SP_COLD void sp_dyn_syms_grow(void){"
+                  "int nc=sp_dyn_cap>0?sp_dyn_cap*2:64;"
+                  "const char **np=(const char **)malloc(sizeof(*np)*(size_t)nc);"
+                  "if(!np)%s"
+                  "memcpy(np,sp_dyn_syms,sizeof(*np)*(size_t)sp_ndyn);"
+                  "%s;sp_dyn_cap=nc;}\n",
+               mt ? "{SP_DYN_SYMS_UNLOCK();sp_raise_cls(\"NoMemoryError\",\"failed to grow the symbol table\");}"
+                  : "sp_raise_cls(\"NoMemoryError\",\"failed to grow the symbol table\");",
+               mt ? "SP_ATOMIC_STORE(&sp_dyn_syms,np,__ATOMIC_RELEASE)" : "sp_dyn_syms=np");
     /* Those entries are string-heap strings (sp_str_dup_external) held only by
        this static array, which the collector does not walk: the string sweep
        freed them and the next intern compared against a corpse. Emitted here,
@@ -16247,11 +16268,19 @@ static void emit_sym_class_name_rt(Compiler *c, Buf *b) {
        out-of-range arm (id -1), so this was reachable from ordinary
        Ruby. sp_str_empty is the marked empty string. */
     buf_printf(b, "%s", g_ext_init_name ? "" : "static ");
-    buf_printf(b, "const char *sp_sym_to_s(sp_sym id){"
-                   "if(id>=0&&id<%d)return %s;"
-                   "if(id>=%d&&id<%d+sp_ndyn)return sp_dyn_syms[id-%d];"
-                   "return sp_str_empty;}\n",
-                   ns, ns > 0 ? "sp_sym_names[id]" : "sp_str_empty", ns, ns, ns);
+    if (mt)
+      buf_printf(b, "const char *sp_sym_to_s(sp_sym id){"
+                     "if(id>=0&&id<%d)return %s;"
+                     "int _k=SP_ATOMIC_LOAD(&sp_ndyn,__ATOMIC_ACQUIRE);const char **_p=SP_ATOMIC_LOAD(&sp_dyn_syms,__ATOMIC_ACQUIRE);"
+                     "if(id>=%d&&id<%d+_k)return _p[id-%d];"
+                     "return sp_str_empty;}\n",
+                     ns, ns > 0 ? "sp_sym_names[id]" : "sp_str_empty", ns, ns, ns);
+    else
+      buf_printf(b, "const char *sp_sym_to_s(sp_sym id){"
+                     "if(id>=0&&id<%d)return %s;"
+                     "if(id>=%d&&id<%d+sp_ndyn)return sp_dyn_syms[id-%d];"
+                     "return sp_str_empty;}\n",
+                     ns, ns > 0 ? "sp_sym_names[id]" : "sp_str_empty", ns, ns, ns);
     /* Byte-exact interning: a name may hold a NUL, which strcmp cannot see
        past. The stored entries carry their length (a 0xf1 struct entry in its
        header, a 0xff literal through strlen, a dyn entry through its heap
@@ -16270,13 +16299,35 @@ static void emit_sym_class_name_rt(Compiler *c, Buf *b) {
        of those bare literals, and a root's mark reads the byte in front of
        its string. So the pool's String is allocated by sp_str_alloc_nogc,
        which is for a pointer that cannot be rooted. */
+    /* With Threads a miss is added by sp_dyn_syms_add. The pool's String is
+       made before the lock is taken, and under the lock the entries added
+       since the lookup are compared with it: another Thread may have made
+       the same name meanwhile, and one name is one Symbol. The lookup counts
+       up to the end of the entries it read: written so, gcc and clang both
+       compile it to the loop a program without Threads has. */
+    if (mt)
+      buf_printf(b, "static SP_NOINLINE sp_sym sp_dyn_syms_add(const char *s, size_t n, int _k){"
+                     "char *_e=sp_str_alloc_nogc(n);if(n)memcpy(_e,s,n);"
+                     "SP_DYN_SYMS_LOCK();"
+                     "for(int i=_k;i<sp_ndyn;i++){const char*_c=sp_dyn_syms[i];if(_c[0]==_e[0]&&sp_str_byte_len(_c)==n&&memcmp(_c,_e,n)==0){SP_DYN_SYMS_UNLOCK();return (sp_sym)(%d+i);}}"
+                     "if(sp_ndyn>=sp_dyn_cap)sp_dyn_syms_grow();"
+                     "int _id=sp_ndyn;sp_dyn_syms[_id]=_e;SP_ATOMIC_STORE(&sp_ndyn,_id+1,__ATOMIC_RELEASE);"
+                     "SP_DYN_SYMS_UNLOCK();return (sp_sym)(%d+_id);}\n", ns, ns);
     buf_printf(b, "%s", g_ext_init_name ? "" : "static ");
-    buf_printf(b, "sp_sym sp_sym_intern_n(const char *s, size_t n){"
-                   "for(int i=0;i<%d;i++){const char*_c=%s;if(_c[0]==s[0]&&sp_str_byte_len(_c)==n&&memcmp(_c,s,n)==0)return (sp_sym)i;}"
-                   "for(int i=0;i<sp_ndyn;i++){const char*_c=sp_dyn_syms[i];if(_c[0]==s[0]&&sp_str_byte_len(_c)==n&&memcmp(_c,s,n)==0)return (sp_sym)(%d+i);}"
-                   "if(sp_ndyn>=sp_dyn_cap)sp_dyn_syms_grow();"
-                   "char *_d=sp_str_alloc_nogc(n);if(n)memcpy(_d,s,n);sp_dyn_syms[sp_ndyn]=_d;return (sp_sym)(%d+sp_ndyn++);}\n",
-                   ns, ns > 0 ? "sp_sym_names[i]" : "sp_str_empty", ns, ns);
+    if (mt)
+      buf_printf(b, "sp_sym sp_sym_intern_n(const char *s, size_t n){"
+                     "for(int i=0;i<%d;i++){const char*_c=%s;if(_c[0]==s[0]&&sp_str_byte_len(_c)==n&&memcmp(_c,s,n)==0)return (sp_sym)i;}"
+                     "int _k=SP_ATOMIC_LOAD(&sp_ndyn,__ATOMIC_ACQUIRE);const char **_pe=SP_ATOMIC_LOAD(&sp_dyn_syms,__ATOMIC_ACQUIRE)+_k;"
+                     "for(long i=-(long)_k;i<0;i++){const char*_c=_pe[i];if(_c[0]==s[0]&&sp_str_byte_len(_c)==n&&memcmp(_c,s,n)==0)return (sp_sym)(%d+_k+(int)i);}"
+                     "return sp_dyn_syms_add(s,n,_k);}\n",
+                     ns, ns > 0 ? "sp_sym_names[i]" : "sp_str_empty", ns);
+    else
+      buf_printf(b, "sp_sym sp_sym_intern_n(const char *s, size_t n){"
+                     "for(int i=0;i<%d;i++){const char*_c=%s;if(_c[0]==s[0]&&sp_str_byte_len(_c)==n&&memcmp(_c,s,n)==0)return (sp_sym)i;}"
+                     "for(int i=0;i<sp_ndyn;i++){const char*_c=sp_dyn_syms[i];if(_c[0]==s[0]&&sp_str_byte_len(_c)==n&&memcmp(_c,s,n)==0)return (sp_sym)(%d+i);}"
+                     "if(sp_ndyn>=sp_dyn_cap)sp_dyn_syms_grow();"
+                     "char *_d=sp_str_alloc_nogc(n);if(n)memcpy(_d,s,n);sp_dyn_syms[sp_ndyn]=_d;return (sp_sym)(%d+sp_ndyn++);}\n",
+                     ns, ns > 0 ? "sp_sym_names[i]" : "sp_str_empty", ns, ns);
     buf_printf(b, "%ssp_sym sp_sym_intern(const char *s){return sp_sym_intern_n(s,s?strlen(s):0);}\n\n",
                g_ext_init_name ? "" : "static ");
   }
