@@ -5221,6 +5221,14 @@ static void desugar_data_positional_new(Compiler *c) {
   }
 }
 
+/* Does Struct class `cls` have a member named `nm`? Its accessor is the
+   class's own and answers in place of Struct's iterator of that name. */
+static int struct_has_member(const ClassInfo *cls, const char *nm) {
+  for (int j = 0; j < cls->nmembers; j++)
+    if (cls->ivars[j] && sp_streq(cls->ivars[j] + 1, nm)) return 1;
+  return 0;
+}
+
 static void synth_struct_each(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int ncls0 = c->nclasses;
@@ -5229,6 +5237,9 @@ static void synth_struct_each(Compiler *c) {
     /* Data is not Enumerable: each/each_pair/each_with_index are Struct's */
     if (!cls->is_struct || cls->is_data || cls->nmembers == 0) continue;
     if (comp_method_in_class(c, ci, "each") >= 0) continue;
+    /* a member of an iterator's name is read by its accessor, which the
+       struct defines over the one it inherits (#8203) */
+    if (!struct_has_member(cls, "each")) {
     int stmts[65]; int nst = 0;
     for (int j = 0; j < cls->nmembers && nst < 64; j++) {
       int ivr = nt_new_node(nt, "InstanceVariableReadNode");
@@ -5256,8 +5267,9 @@ static void synth_struct_each(Compiler *c) {
     ms->yields = 1;
     comp_grow_node_arrays(c);
     walk_scope(c, body, c->nscopes - 1, ci);
+    }
     /* def each_pair; yield :m1, @m1; ...; self; end */
-    if (comp_method_in_class(c, ci, "each_pair") < 0) {
+    if (comp_method_in_class(c, ci, "each_pair") < 0 && !struct_has_member(cls, "each_pair")) {
       int pst[65]; int pn = 0;
       for (int j = 0; j < cls->nmembers && pn < 64; j++) {
         int sy = nt_new_node(nt, "SymbolNode");
@@ -5294,7 +5306,7 @@ static void synth_struct_each(Compiler *c) {
     /* def each_with_index; yield @m1, 0; yield @m2, 1; ...; self; end
        (returns the receiver, unlike the __enum_to_a redirect which would
        return the flat member array). The index is a literal per member. */
-    if (comp_method_in_class(c, ci, "each_with_index") < 0) {
+    if (comp_method_in_class(c, ci, "each_with_index") < 0 && !struct_has_member(cls, "each_with_index")) {
       int wst[65]; int wn = 0;
       for (int j = 0; j < cls->nmembers && wn < 64; j++) {
         int ivr = nt_new_node(nt, "InstanceVariableReadNode");
@@ -8475,7 +8487,8 @@ static int desugar_enum_named_call(Compiler *c, int id, NodeTable *nt, const cha
     int okc = pcid >= 0 && pcid < c->nclasses;
     int smi = wix && okc ? comp_method_in_chain(c, pcid, nm, NULL) : -1;
     int cmi = wix && okc ? comp_method_in_chain(c, pcid, "to_a", NULL) : -1;
-    int own = (smi >= 0 && !scope_is_struct_synth(c, smi)) || cmi >= 0;
+    int own = (smi >= 0 && !scope_is_struct_synth(c, smi)) || cmi >= 0 ||
+              (okc && c->classes[pcid].is_struct && struct_has_member(&c->classes[pcid], nm));
     if (okc && c->classes[pcid].is_struct && !c->classes[pcid].is_data && !own) {
       int wrap = nt_new_node(nt, "CallNode");
       if (wrap >= 0) {
