@@ -1,3 +1,4 @@
+# spinel: reject-share
 # keep stores its reader's String (@n itself) into the caller's Array, and
 # the caller appends through the element. The element store is walked in
 # the caller only, so the element would stay a copy: refused, not compiled
