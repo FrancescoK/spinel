@@ -14800,11 +14800,21 @@ static void reject_runtime_send(Compiler *c) {
    receiver already, so it checks Time's own class-method chain instead --
    an unrelated class's `parse` elsewhere in the program must not silence
    the limit on a genuine `Time.parse` call (CodeRabbit, #24). */
-/* Is call `id` a builtin Time.parse / Time.strptime (not a program's own)?
+/* The class-method parsers iso8601, xmlschema, httpdate, rfc2822 and
+   rfc822 are the same limit: only the instance methods of those names exist. */
+static int is_time_string_parser(const char *name) {
+  static const char *const names[] = { "parse", "strptime", "iso8601", "xmlschema",
+                                       "httpdate", "rfc2822", "rfc822" };
+  for (size_t i = 0; i < sizeof names / sizeof names[0]; i++)
+    if (sp_streq(name, names[i])) return 1;
+  return 0;
+}
+
+/* Is call `id` a builtin Time string parser (not a program's own)?
    Answers the refusal's words in msg when it is. */
 int time_parse_refusal(Compiler *c, int id, char *msg, size_t cap) {
   const char *name = nt_str(c->nt, id, "name");
-  if (!name || (!sp_streq(name, "parse") && !sp_streq(name, "strptime"))) return 0;
+  if (!name || !is_time_string_parser(name)) return 0;
   int recv = nt_ref(c->nt, id, "receiver");
   if (recv < 0) return 0;
   const char *rty = nt_type(c->nt, recv);
@@ -14815,7 +14825,8 @@ int time_parse_refusal(Compiler *c, int id, char *msg, size_t cap) {
   if (time_ci >= 0 && comp_cmethod_in_chain(c, time_ci, name, NULL) >= 0) return 0;
   snprintf(msg, cap,
            "Time.%s is not supported: spinel implements Time's other `require "
-           "\"time\"` additions (iso8601, httpdate, rfc2822) but not the "
+           "\"time\"` additions (the instance methods iso8601, httpdate, rfc2822) "
+           "but not the "
            "string-parsing ones. Store times as epoch seconds and read them with "
            "Time.at instead (see docs/limitations.md)", name);
   return 1;
