@@ -1,14 +1,14 @@
 /* Canonical extension handles. The table is weak; arenas and registered
  * VALUE addresses provide the roots. Collection runs under the GC barrier.
  * Extension access will be serialized by the CXL in the threading stage. */
+/* Built only into the optional SP_CEXT runtime: a build that compiles every
+ * file under lib (ext-cruby-test, spin's extension build) gets an empty unit. */
+#ifdef SP_CEXT
 #include "sp_cext.h"
 #include "sp_alloc.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
-#ifndef SP_CEXT
-#error "sp_cext.c requires the optional SP_CEXT runtime"
-#endif
 
 typedef struct {
     sp_RbVal value;
@@ -202,3 +202,4 @@ int sp_cext_data_is_kind_of(const sp_cext_data *object, const rb_data_type_t *ty
         if (t == type) return 1;
     return 0;
 }
+#endif /* SP_CEXT */
