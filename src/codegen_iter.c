@@ -1644,14 +1644,17 @@ const char *blockless_block_param_call_name(Compiler *c, int id) {
    trailing `**h` that passes nothing when empty, makes the count dynamic:
    the args are collected into an array and spread at run time. */
 void emit_proc_yield(Compiler *c, const char *ref, int yargc, const int *yargv, Buf *b) {
+  int pf_src = 0;   /* the proc form whose own block this yields to, + 1 */
   /* the proc behind the yield, when the inline that drives it named one */
   { int sv = g_yield_proc_expr;
     if (!ref || g_yield_proc_expr_ref != g_yield_proc_ref || ref != g_yield_proc_ref) g_yield_proc_expr = -1;
     /* a proc form's own block: the blocks its source method's calls pass */
     Scope *ys = yargc > 0 ? comp_scope_of(c, yargv[0]) : NULL;
     g_yield_proc_method = -1;
-    if (ref && ys && ys->is_proc_form && ys->blk_param && !strncmp(ref, "lv_", 3) && sp_streq(ref + 3, ys->blk_param))
+    if (ref && ys && ys->is_proc_form && ys->blk_param && !strncmp(ref, "lv_", 3) && sp_streq(ref + 3, ys->blk_param)) {
       g_yield_proc_method = proc_form_source(c, (int)(ys - c->scopes));
+      pf_src = (int)(ys - c->scopes) + 1;
+    }
     refuse_yield_string_copies(c, yargc, yargv);
     g_yield_proc_method = -1;
     g_yield_proc_expr = sv; }
@@ -1686,6 +1689,7 @@ void emit_proc_yield(Compiler *c, const char *ref, int yargc, const int *yargv, 
     }
   }
   unsigned sv_live = g_yield_live_mask; g_yield_live_mask = live;
+  c->proc_arg_src = pf_src;
   emit_proc_call_args(c, -1, yargc, yargv, b, 1);
   g_yield_live_mask = sv_live;
   while (nv > 0) view_pop(c, vt[--nv]);

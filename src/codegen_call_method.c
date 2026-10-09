@@ -2035,7 +2035,7 @@ int emit_call_poly_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       /* through the callable helper, so a curried Proc in the slot takes its
          arguments instead of being read as an sp_Proc (#3885) */
       buf_printf(b, " : sp_poly_callable_call_kw(_t%d, %d, (sp_int[16]){", t, argc);
-      pc_conv = "sp_poly_slot_i";
+      pc_conv = "sp_poly_slot_arg";
       for (int k = 0; k < argc; k++) {
         if (k) buf_puts(b, ", ");
         EMIT_POLY_CALL_SLOT(k);

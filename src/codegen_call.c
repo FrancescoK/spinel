@@ -2257,9 +2257,71 @@ static TyKind proc_arg_ty(Compiler *c, int a) {
   return t;
 }
 
+/* The sp_int slot of a boxed argument `tn` of a proc call at position k.
+   A block parameter typed as a pointer reads it from that slot, so the
+   pointer rides it: sp_poly_slot_kinds hands over the box's pointer when the
+   box is a String, a handle or an object or collection of a class the
+   parameters of the blocks that take the argument are typed as. Those blocks
+   are the ones a proc form's source method, or the method owning a `&blk`
+   that is called, is passed (dyn_blk_params; `src` is that scope or -1);
+   what no block reads from the slot (a boxed or scalar parameter) is not
+   asked. Otherwise, or when the blocks are not known, sp_poly_slot_arg. */
+static void refuse_string_copy(Compiler *c, int arg, const char *target, const char *pname,
+                               const char *through, const char *why);
+static void emit_poly_slot_text(Compiler *c, int src, int k, int arg, const char *tn, Buf *b) {
+  DynParams dp;
+  if (src >= 0) dyn_blk_params(c, src, k, &dp); else { memset(&dp, 0, sizeof dp); dp.unknown = 1; }
+  int strs = 0, nid = 0;
+  char ids[4][48];
+  for (int t = 0; t < dp.n && !dp.unknown; t++) {
+    TyKind pt = dp.ty[t];
+    if (pt == TY_STRING) { strs |= 1; continue; }
+    if (pt == TY_STRBUF) { strs |= 2; continue; }
+    const TyTraits *tr = ty_traits_of(pt);
+    const char *id = pt == TY_INT_ARRAY ? "SP_BUILTIN_INT_ARRAY" : pt == TY_FLOAT_ARRAY ? "SP_BUILTIN_FLT_ARRAY"
+                   : pt == TY_STR_ARRAY ? "SP_BUILTIN_STR_ARRAY" : pt == TY_POLY_ARRAY ? "SP_BUILTIN_POLY_ARRAY"
+                   : tr && tr->box_id ? tr->box_id : tr ? tr->hash_id : NULL;
+    if (id && proc_slot_is_ptr(pt)) snprintf(ids[nid++], sizeof ids[0], "%s", id);
+    else if (ty_is_object(pt) && !comp_ty_value_obj(c, pt)) {
+      Buf ib; memset(&ib, 0, sizeof ib);
+      arysub_box_id(c, pt, &ib);
+      snprintf(ids[nid++], sizeof ids[0], "%s", ib.p ? ib.p : "0");
+      free(ib.p);
+    }
+  }
+  /* the default build hands a plain String parameter a copy, so an append
+     to it would not reach the String the boxed argument came from */
+  if ((strs & 1) && dp.app && !c->share_strings)
+    refuse_string_copy(c, arg, NULL, NULL, "a boxed argument of a yield or a block call",
+                       "through a boxed argument of a `yield` or a block call");
+  if (dp.unknown || (!strs && !nid)) { buf_printf(b, "sp_poly_slot_arg(%s)", tn); return; }
+  /* a handle box's live bytes move on its next growing append, so a block that
+     may keep what it reads (returns it, stores it, captures it) gets a copy,
+     rooted across the call */
+  int tc = -1;
+  if (strs == 1 && dp.keeps) {
+    tc = ++g_tmp;
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "const char *_t%d = sp_poly_strbuf_copy(%s); SP_GC_ROOT(_t%d);\n", tc, tn, tc);
+    buf_printf(b, "(_t%d ? (sp_int)(uintptr_t)_t%d : ", tc, tc);
+  }
+  buf_printf(b, "sp_poly_slot_kinds(%s, %d", tn, strs);
+  for (int t = 0; t < 4; t++) buf_printf(b, ", %s", t < nid ? ids[t] : "(-99999)");
+  buf_puts(b, tc >= 0 ? "))" : ")");
+}
+
 void emit_proc_call_args(Compiler *c, int call, int argc, const int *argv, Buf *b, int force_poly) {
   int nargs = argc < 16 ? argc : 16;  /* proc-call ABI caps args at sp_int[16] */
   int any_poly = force_poly;
+  /* the scope whose block takes the arguments, to type the slots by its parameters */
+  int src = -1;
+  if (call < 0) { src = c->proc_arg_src - 1; c->proc_arg_src = 0; }
+  else {
+    int rv = nt_ref(c->nt, call, "receiver");
+    Scope *rs = rv >= 0 && nt_kind(c->nt, rv) == NK_LocalVariableReadNode ? comp_scope_of(c, rv) : NULL;
+    const char *rn = rs ? nt_str(c->nt, rv, "name") : NULL;
+    if (rn && rs->name && rs->blk_param && sp_streq(rs->blk_param, rn)) src = (int)(rs - c->scopes);
+  }
   /* A float arg also forces the boxed side-channel: an sp_float placed in the
      sp_int[] slot is value-truncated (0.7 -> 0), so it must be published boxed
      like a poly and read back with sp_poly_to_f in the callee. */
@@ -2378,7 +2440,12 @@ void emit_proc_call_args(Compiler *c, int call, int argc, const int *argv, Buf *
          unboxed copy is read only by a callee whose parameter is concretely
          typed -- speculative, exactly like the dead float slot below, so an
          object here must not raise. */
-      if (at == TY_POLY) buf_printf(b, "sp_poly_slot_i(_t%d)", atmp[k]);
+      /* A callee typed for a String or an object reads that pointer from this
+         slot: sp_poly_slot_arg carries it (sp_poly_slot_i otherwise). */
+      if (at == TY_POLY) {
+        char tn[24]; snprintf(tn, sizeof tn, "_t%d", atmp[k]);
+        emit_poly_slot_text(c, src, k, argv[k], tn, b);
+      }
       /* the by-value test goes first: proc_slot_is_ptr answers yes for every
          object type, a value-type one included, and a struct cast to
          (sp_int)(uintptr_t) does not compile */
@@ -6173,7 +6240,7 @@ int emit_poly_callable_prearm(Compiler *c, const char *name, int argc,
   /* Proc/Curry go through the callable helper, which raises NoMethodError for
      anything that is not a Proc rather than reading it as one. */
   buf_printf(&eb, " : sp_poly_callable_call_kw(_t%d, %d, (sp_int[16]){", tv, argc);
-  pa_conv = "sp_poly_slot_i";
+  pa_conv = "sp_poly_slot_arg";
   for (int k = 0; k < argc; k++) { if (k) buf_puts(&eb, ", "); PA_SLOT(k); }
   if (argc == 0) buf_puts(&eb, "0");
   buf_printf(&eb, "}, %d))", kwpos);

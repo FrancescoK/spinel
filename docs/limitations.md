@@ -892,6 +892,7 @@ Not yet shared:
 - into an Array or Hash a caller passes a method, a String the method stores (`def keep(a) = (a << n)`), when the caller mutates the element in place;
 
 - through an ivar's or a call's Array, a fresh Array literal, a narrowed boxed String element, or a fresh String's `tap`, into an appending block or parameter;
+- through a parameter of a reopened builtin's method that the method yields on or passes to its `&block` (`class String; def po(a) = yield(a); end`, then `s.po(u) { |v| v << x }`), into an appending block;
 
 - by keyword, through a curried proc;
 - through `instance_exec`, a String variable in or ahead of a splat
