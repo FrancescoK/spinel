@@ -1,12 +1,18 @@
 /* sp_sched.c -- cooperative M:N thread scheduler bodies, Phase 0 (N=1).
  * See sp_sched.h. Built on the sp_fiber context switch: the main thread runs on
  * the root fiber and pumps a run queue of green threads whenever it blocks. */
+#if defined(__linux__) && !defined(_GNU_SOURCE)
+#define _GNU_SOURCE   /* sched_getaffinity / CPU_COUNT for the worker count */
+#endif
 #include "sp_sched.h"
 #include "sp_alloc.h"   /* sp_box_nil / sp_box_obj */
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 #include <unistd.h>     /* sysconf (worker count) */
+#ifdef __linux__
+#include <sched.h>      /* sched_getaffinity (worker count) */
+#endif
 #include <time.h>       /* clock_gettime (Kernel#sleep) */
 #include <errno.h>      /* EINTR (sleep fallback) */
 #ifdef __linux__
@@ -2604,12 +2610,56 @@ sp_PolyArray *sp_Thread_tls_keys(sp_thread *t) {
 /* ---- helper OS workers (design 3.2, Appendix B) ---- */
 static pthread_t g_worker_threads[SP_MAX_WORKERS];
 
-/* min(online cores, SPINEL_WORKERS); the env var overrides the autodetect. */
+#ifdef __linux__
+/* The CPU quota a cgroup gives the process, rounded up, or 0 for none:
+   cgroup v2's cpu.max ("200000 100000" is two CPUs, "max ..." is none),
+   else v1's cfs_quota_us / cfs_period_us (a quota of -1 is none). */
+static int sp_cgroup_cpu_quota(void) {
+  long quota = -1, period = 0;
+  FILE *f = fopen("/sys/fs/cgroup/cpu.max", "r");
+  if (f) {
+    char q[32];
+    if (fscanf(f, "%31s %ld", q, &period) == 2 && strcmp(q, "max") != 0) quota = atol(q);
+    fclose(f);
+  }
+  else {
+    f = fopen("/sys/fs/cgroup/cpu/cpu.cfs_quota_us", "r");
+    if (f) { if (fscanf(f, "%ld", &quota) != 1) quota = -1; fclose(f); }
+    f = fopen("/sys/fs/cgroup/cpu/cpu.cfs_period_us", "r");
+    if (f) { if (fscanf(f, "%ld", &period) != 1) period = 0; fclose(f); }
+  }
+  if (quota <= 0 || period <= 0) return 0;
+  long n = (quota + period - 1) / period;
+  return n > 0 ? (int)n : 1;
+}
+#endif
+
+/* The CPUs this process may run on: the online ones, narrowed by its
+   affinity mask and a cgroup's CPU quota (a container's --cpus), as
+   CRuby's Etc.nprocessors and Go's GOMAXPROCS narrow them. Sized from the
+   host's count alone, a 2-CPU container on an 18-CPU host ran 18 workers
+   (#8206). */
+static int sp_available_cpus(void) {
+  long c = sysconf(_SC_NPROCESSORS_ONLN);
+  int n = (c > 0) ? (int)c : 1;
+#ifdef __linux__
+  cpu_set_t set;
+  if (sched_getaffinity(0, sizeof set, &set) == 0) {
+    int a = CPU_COUNT(&set);
+    if (a > 0 && a < n) n = a;
+  }
+  int q = sp_cgroup_cpu_quota();
+  if (q > 0 && q < n) n = q;
+#endif
+  return n;
+}
+
+/* min(available CPUs, SPINEL_WORKERS); the env var overrides the autodetect. */
 static int sp_worker_count(void) {
   const char *e = getenv("SPINEL_WORKERS");
   int n;
   if (e && *e) { n = atoi(e); if (n < 1) n = 1; }
-  else { long c = sysconf(_SC_NPROCESSORS_ONLN); n = (c > 0) ? (int)c : 1; }
+  else n = sp_available_cpus();
   if (n > SP_MAX_WORKERS) n = SP_MAX_WORKERS;
   return n;
 }
