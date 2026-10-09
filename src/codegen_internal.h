@@ -306,6 +306,9 @@ int operand_is_held_read(Compiler *c, int id);
 /* Is the call a reader the emitter lowers to a plain field read? *allocates is
    set when the read builds a copy (a shared String slot). codegen_call.c */
 int call_is_field_read(Compiler *c, int id, int *allocates);
+/* Is the receiverless call a class's own attr reader, lowered to a plain
+   read of self's slot? codegen_call.c */
+int implicit_self_is_field_read(Compiler *c, int id);
 /* Typed-array headers cached across an innermost loop (codegen_stmt.c, see
    emit_while). hc_array / hc_string answer 1 and the names of the cached
    header locals when the receiver is cached in the loop being emitted;
@@ -1313,6 +1316,7 @@ int  expr_is_held_ref(Compiler *c, int node);   /* a read of a held object: no r
 /* Reads kept by their existing frame slot across later argument evaluation. */
 int read_of_fixed_param(Compiler *c, int node);
 int read_unbound_in_stmt(Compiler *c, int node);
+int  typed_array_src_held(Compiler *c, int node);   /* a typed Array held while it is boxed */
 int  proc_form_live(Compiler *c, int s);
 int  proc_form_source(Compiler *c, int s);
 int  ctor_site_on_cycle(Compiler *c, int id, int initm);
@@ -1644,6 +1648,7 @@ int subtree_may_write_ivar(Compiler *c, int id, const char *iv, int cls, int dep
 int block_call_takes_class_dispatch(Compiler *c, int id);
 void emit_dispatch(Compiler *c, int cid, const char *name, const char *selfptr, int argsNode, int blk_node, Buf *b);
 int emit_reader_override_dispatch(Compiler *c, int id, int cid, const char *name, const char *selfptr, const char *reader, TyKind reader_ty, Buf *b);
+int reader_override_arms(Compiler *c, int id, int cid, const char *name, TyKind reader_ty);
 TyKind reader_override_ty(Compiler *c, int id, int cid, const char *name);
 int emit_tap_then_expr(Compiler *c, int id, Buf *b);
 int recv_is_const(const NodeTable *nt, int recv, const char *name);

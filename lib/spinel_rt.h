@@ -8901,12 +8901,22 @@ static sp_PolyArray *sp_typed_to_poly(void *tp, int kind) {
   }
   return tb;
 }
+/* The same for a source nothing is known to hold, such as a call's result.
+   It roots the source for the call: sp_typed_to_poly allocates the new array
+   before it reads the source, and that allocation can collect it. */
+static sp_PolyArray *sp_typed_to_poly_unheld(void *tp, int kind) {
+  SP_GC_ROOT(tp);
+  return sp_typed_to_poly(tp, kind);
+}
 /* Compare a poly array against a typed (int/str/float) array by boxing the
    typed side element-wise. `kind` is the typed array's SP_BUILTIN_* tag. */
 static sp_bool sp_PolyArray_eq_typed(sp_PolyArray *pa, void *tp, int kind) {
   if (!pa || !tp) return FALSE;
   SP_GC_ROOT(pa); SP_GC_ROOT(tp);  /* sp_typed_to_poly allocates */
-  return sp_PolyArray_eq(pa, sp_typed_to_poly(tp, kind));
+  /* An element's own == allocates. The slot holds the boxed copy from here,
+     and the copy holds the Strings of a source nothing else holds. */
+  tp = sp_typed_to_poly(tp, kind);
+  return sp_PolyArray_eq(pa, (sp_PolyArray *)tp);
 }
 static sp_bool sp_PolyArray_include(sp_PolyArray *a, sp_RbVal v) {
   if (!a) return FALSE;

@@ -4,6 +4,7 @@
 #include "repr.h"
 #include "holder.h"
 #include "builtin_ops.h"
+#include "codegen_call_arms.h"
 
 Buf expr_buf(Compiler *c, int node) {
   Buf b; memset(&b, 0, sizeof b);
@@ -4769,6 +4770,103 @@ int expr_is_held_ref(Compiler *c, int node) {
   NodeKind k = nt_kind(c->nt, node);
   return k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode ||
          k == NK_SelfNode || k == NK_ConstantReadNode;
+}
+/* Is `node` a read of an object that a root reaches where the read ends: a
+   variable, a constant or self; a plain field read off such a read (an
+   attr_reader's or a Struct member's slot), or a class's own reader called
+   with no receiver; an element of such an Array, by an Integer index; a
+   conditional, a `case` or a `begin` whose every arm is one such read of
+   its own type, or an `||` or `&&` of two? Once its conditions and its
+   index have run, such a read allocates nothing and calls nothing of the
+   program's, so what it read is still held where it ends. `recv[i]` is an
+   element read only while the program gives Array no `[]` of its own
+   (array_index_is_own): that one is what the call reaches, and its answer
+   is a call's result. An index that only reads leaves any receiver's Array
+   where it was; one that runs code does too if the receiver is a variable
+   that code cannot give another Array (read_rebound_by, which does not
+   look at a constant). */
+static int read_is_held(Compiler *c, int node);
+/* Does `[]` on an Array reach a method of the program's? Only one in the
+   chain of the program's own reopening of Array can be: a `[]` another class
+   defines (a Grid's) is never what an Array receiver calls. */
+static int array_index_is_own(Compiler *c) {
+  int ci = comp_class_index(c, "Array");
+  return ci >= 0 && (comp_method_in_chain(c, ci, "[]", NULL) >= 0 ||
+                     comp_reader_in_chain(c, ci, "[]", NULL));
+}
+/* one statement, a held read of type t */
+static int arm_is_held(Compiler *c, int stmts, TyKind t) {
+  int n = 0;
+  const int *body = stmts >= 0 ? nt_arr(c->nt, stmts, "body", &n) : NULL;
+  return n == 1 && comp_ntype(c, body[0]) == t && read_is_held(c, body[0]);
+}
+static int else_is_held(Compiler *c, int els, TyKind t) {
+  return els >= 0 && nt_kind(c->nt, els) == NK_ElseNode &&
+         arm_is_held(c, nt_ref(c->nt, els, "statements"), t);
+}
+static int read_is_held(Compiler *c, int node) {
+  const NodeTable *nt = c->nt;
+  node = unwrap_parens(c, node);
+  if (node < 0) return 0;
+  NodeKind k = nt_kind(nt, node);
+  TyKind t = comp_ntype(c, node);
+  if (expr_is_held_ref(c, node) || k == NK_ConstantPathNode ||
+      k == NK_GlobalVariableReadNode || k == NK_ClassVariableReadNode)
+    return 1;
+  if (k == NK_IfNode) {
+    int sub = nt_ref(nt, node, "subsequent");
+    if (!arm_is_held(c, nt_ref(nt, node, "statements"), t)) return 0;
+    /* an elsif is the if of its own arm */
+    if (sub >= 0 && nt_kind(nt, sub) == NK_IfNode) return comp_ntype(c, sub) == t && read_is_held(c, sub);
+    return else_is_held(c, sub, t);
+  }
+  if (k == NK_UnlessNode)
+    return arm_is_held(c, nt_ref(nt, node, "statements"), t) &&
+           else_is_held(c, nt_ref(nt, node, "else_clause"), t);
+  if (k == NK_CaseNode) {
+    int nw = 0;
+    const int *whens = nt_arr(nt, node, "conditions", &nw);
+    for (int w = 0; w < nw; w++)
+      if (!arm_is_held(c, nt_ref(nt, whens[w], "statements"), t)) return 0;
+    return nw > 0 && else_is_held(c, nt_ref(nt, node, "else_clause"), t);
+  }
+  if (k == NK_BeginNode)
+    return nt_ref(nt, node, "rescue_clause") < 0 && nt_ref(nt, node, "ensure_clause") < 0 &&
+           nt_ref(nt, node, "else_clause") < 0 && arm_is_held(c, nt_ref(nt, node, "statements"), t);
+  if (k == NK_OrNode || k == NK_AndNode) {
+    int l = nt_ref(nt, node, "left"), r = nt_ref(nt, node, "right");
+    return l >= 0 && r >= 0 && comp_ntype(c, l) == t && comp_ntype(c, r) == t &&
+           read_is_held(c, l) && read_is_held(c, r);
+  }
+  if (k == NK_CallNode) {
+    int recv = nt_ref(nt, node, "receiver"), alloc = 0;
+    if (recv < 0) return implicit_self_is_field_read(c, node);
+    if (!read_is_held(c, recv)) return 0;
+    if (call_is_field_read(c, node, &alloc)) return !alloc;
+    const char *nm = nt_str(nt, node, "name");
+    int a = nt_ref(nt, node, "arguments"), ac = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+    if (!nm || !sp_streq(nm, "[]") || ac != 1 || nt_ref(nt, node, "block") >= 0 ||
+        !(ty_is_array(comp_ntype(c, recv)) || ty_is_obj_array(comp_ntype(c, recv))) ||
+        comp_ntype(c, av[0]) != TY_INT || array_index_is_own(c))
+      return 0;
+    if (subtree_is_pure_read(c, av[0])) return 1;
+    recv = unwrap_parens(c, recv);
+    NodeKind rk = nt_kind(nt, recv);
+    return (rk == NK_LocalVariableReadNode || rk == NK_InstanceVariableReadNode ||
+            rk == NK_GlobalVariableReadNode || rk == NK_ClassVariableReadNode) &&
+           !read_rebound_by(c, recv, av[0]);
+  }
+  return 0;
+}
+/* Is `node` a typed Array that something else holds while sp_typed_to_poly
+   boxes it? One a root reaches (read_is_held), or an Array literal, which
+   sits in a rooted temp. Any other source is boxed by
+   sp_typed_to_poly_unheld. */
+int typed_array_src_held(Compiler *c, int node) {
+  node = unwrap_parens(c, node);
+  if (node < 0) return 0;
+  return read_is_held(c, node) || nt_kind(c->nt, node) == NK_ArrayNode;
 }
 /* The proc-form clone of scope `s`, or -1. Made in analyze (make_yield_proc_forms):
    a second scope named "<name>#pf" on the same class, holding an independently
