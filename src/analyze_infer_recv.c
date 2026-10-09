@@ -10,6 +10,7 @@
    "declined". */
 #include "analyze_internal.h"
 #include "builtin_ops.h"
+#include "share.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -428,6 +429,9 @@ TyKind infer_map_block_ty(Compiler *c, int id, int block) {
      in only to unbox it again on each read. */
   if (c->arr_want && id < c->node_cap && ty_is_ptr_array(c->arr_want[id]))
     return c->arr_want[id];
+  /* A temporary result has no holder to select boxed element storage.
+     Its shared block values need the same layout as a stored result. */
+  if (c->share_strings && share_node_elems_share(c, id)) return TY_POLY_ARRAY;
   return ty_array_of(bt);
 }
 
