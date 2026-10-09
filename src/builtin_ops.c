@@ -3491,3 +3491,148 @@ void iter_rows_check(void) {
                      h->name, (int)h->fam, why);
   }
 }
+
+/* The probe records identity edges, not Ruby value equality. These are the
+   conservative projections of sh_builtin's existing share kinds. Receiver
+   mutation is a separate fact (bop_name_mutates), not a promise of BSH_PURE.
+   An unobserved edge is only an optimisation candidate: finite probing does
+   not prove that no other argument shape can take it. */
+static void bop_share_effects(int s, int container, int argc, int block, unsigned out[4]) {
+  unsigned r = 1, e = 2, a = ((1u << argc) - 1) << 2, b = block ? 32 : 0;
+  unsigned last = argc ? 1u << (argc + 1) : 0;
+  out[0] = out[1] = out[2] = out[3] = 0;
+  switch (s) {
+  case BSH_PURE: out[2] = container ? e : 0; break;
+  case BSH_FROZEN: out[3] = r; break;
+  case BSH_RECV: case BSH_ITER_FRESH_RECV: out[0] = r | e; break;
+  case BSH_CLAMP: out[0] = r | e | a; break;
+  case BSH_ELEM: case BSH_ELEM_N: case BSH_SUB: case BSH_FLATTEN:
+    out[0] = e; break;
+  case BSH_FETCH: out[0] = e | (argc >= 2 ? last : 0) | b; out[2] = block && argc ? 4 : 0; break;
+  case BSH_STORE_LAST: out[0] = last; out[1] = last; break;
+  case BSH_STORE_ALL: case BSH_STORE_TAIL:
+    out[0] = r | e | a; out[1] = s == BSH_STORE_TAIL ? a & ~4u : a; break;
+  case BSH_MERGE: out[0] = r | e | a; out[1] = a; out[2] = e | a; break;
+  case BSH_ARGS: case BSH_ARRAY_OF: out[0] = a; break;
+  case BSH_FILL1: out[0] = out[3] = 8; break;
+  case BSH_FILL2: out[0] = out[3] = 16; break;
+  case BSH_ITER: case BSH_ITER_SEL: case BSH_ITER_FIND: case BSH_ITER_SUB:
+    out[0] = r | e; out[2] = e; break;
+  case BSH_ITER_MAP: case BSH_ITER_MAP_BANG:
+    out[0] = !block || s == BSH_ITER_MAP_BANG ? r | e | b : b; out[2] = e;
+    if (s == BSH_ITER_MAP_BANG) out[1] = b;
+    break;
+  case BSH_ITER_MEMO0: case BSH_ITER_MEMO1:
+    out[0] = e | 4 | (s == BSH_ITER_MEMO0 ? b : 0); out[2] = e | 4; break;
+  case BSH_ITER_SELF: out[0] = r | e; out[2] = r | e; break;
+  case BSH_ITER_THEN: out[0] = b; out[2] = r | e; break;
+  case BSH_ITER_FRESH: break;
+  case BSH_IVAR_GET: out[0] = e; break;
+  case BSH_IVAR_SET: out[0] = 8; out[1] = 8; break;
+  case BSH_EXEC: out[0] = b; out[1] = a; out[2] = a; break;
+  case BSH_NEW_FILL: out[0] = (argc >= 2 ? 8 : 0) | b; break;
+  case BSH_NEW_DEFAULT: out[0] = (argc ? 4 : 0) | b; out[2] = b; break;
+  case BSH_NEW_FIELDS: out[0] = argc ? 4 : 0; break;
+  default: out[0] = out[1] = out[2] = out[3] = 63; break;
+  }
+  if (!block) out[2] = 0;
+}
+
+static const char *bop_share_kind_name(int s) {
+  switch (s) {
+  case BSH_PURE: return "BSH_PURE";
+  case BSH_FROZEN: return "BSH_FROZEN";
+  case BSH_RECV: return "BSH_RECV";
+  case BSH_CLAMP: return "BSH_CLAMP";
+  case BSH_ELEM: return "BSH_ELEM";
+  case BSH_SUB: return "BSH_SUB";
+  case BSH_STORE_LAST: return "BSH_STORE_LAST";
+  case BSH_STORE_ALL: return "BSH_STORE_ALL";
+  case BSH_STORE_TAIL: return "BSH_STORE_TAIL";
+  case BSH_MERGE: return "BSH_MERGE";
+  case BSH_ARGS: return "BSH_ARGS";
+  case BSH_ARRAY_OF: return "BSH_ARRAY_OF";
+  case BSH_FILL1: return "BSH_FILL1";
+  case BSH_FILL2: return "BSH_FILL2";
+  case BSH_ITER_THEN: return "BSH_ITER_THEN";
+  case BSH_ITER: return "BSH_ITER";
+  case BSH_ITER_SEL: return "BSH_ITER_SEL";
+  case BSH_ITER_MAP: return "BSH_ITER_MAP";
+  case BSH_ITER_MAP_BANG: return "BSH_ITER_MAP_BANG";
+  case BSH_ITER_SUB: return "BSH_ITER_SUB";
+  case BSH_ITER_FIND: return "BSH_ITER_FIND";
+  case BSH_ITER_FRESH: return "BSH_ITER_FRESH";
+  case BSH_ITER_FRESH_RECV: return "BSH_ITER_FRESH_RECV";
+  case BSH_ITER_MEMO0: return "BSH_ITER_MEMO0";
+  case BSH_ITER_MEMO1: return "BSH_ITER_MEMO1";
+  case BSH_ITER_SELF: return "BSH_ITER_SELF";
+  case BSH_FETCH: return "BSH_FETCH";
+  case BSH_ELEM_N: return "BSH_ELEM_N";
+  case BSH_CALL: return "BSH_CALL";
+  case BSH_METHOD_REF: return "BSH_METHOD_REF";
+  case BSH_IVAR_GET: return "BSH_IVAR_GET";
+  case BSH_IVAR_SET: return "BSH_IVAR_SET";
+  case BSH_EXEC: return "BSH_EXEC";
+  case BSH_NEW: return "BSH_NEW";
+  case BSH_FLATTEN: return "BSH_FLATTEN";
+  case BSH_NEW_FILL: return "BSH_NEW_FILL";
+  case BSH_NEW_DEFAULT: return "BSH_NEW_DEFAULT";
+  case BSH_NEW_YIELDER: return "BSH_NEW_YIELDER";
+  default: return "unknown";
+  }
+}
+
+static int bop_share_spec_one(TyKind fam, const char *cls, const char *name,
+                              int argc, int block, int object, unsigned origins, unsigned wrapped,
+                              unsigned ret, unsigned store, unsigned yield, unsigned mut,
+                              int *more, int *unknown) {
+  int s = bop_share_named(fam, name);
+  int container = fam == BOP_ANY_ARRAY || fam == BOP_ANY_HASH;
+  if (!s) s = bop_share_named(BOP_ANY_RECV, name);
+  if (!s && !container) s = bop_share(fam, name);
+  if (!s) { (*unknown)++; return 0; }
+  unsigned want[4], got[4] = { ret, store, yield, mut };
+  bop_share_effects(s, container, argc, block, want);
+  /* String identity and mutation also have existing operation-row facts.
+     The report keeps mutation separate; only argument mutation belongs to
+     the share kind's buffer contract. */
+  if (fam == TY_STRING) {
+    if (bop_name_mutates(name, 0)) want[3] |= 1;
+  }
+  unsigned missing = 0, extra = 0;
+  for (int k = 0; k < 3; k++) {
+    missing |= got[k] & ~want[k];
+    extra |= want[k] & origins & ~got[k];
+  }
+  missing |= (mut & 28) & ~want[3];
+  if (missing || extra) {
+    printf("%s\t%s\t%s\t%s\t%d/%d/%s\t%u/%u/%u/%u\t%u/%u/%u/%u\n",
+           missing ? "LESS" : "MORE", cls, name, bop_share_kind_name(s), argc, block, object ? "Object" : "String",
+           got[0], got[1], got[2], got[3], want[0], want[1], want[2], want[3]);
+    if (!missing) (*more)++;
+  }
+  return missing != 0;
+}
+
+int builtin_ops_share_check(void) {
+  static const struct {
+    TyKind fam;
+    const char *cls, *name;
+    unsigned char argc, block, object, origins, wrapped, ret, store, yield, mut;
+  } specs[] = {
+#define BSS(fam, cls, name, argc, block, object, origins, wrapped, ret, store, yield, mut) \
+    { fam, cls, name, argc, block, object, origins, wrapped, ret, store, yield, mut },
+#include "builtin_share_spec.inc"
+#undef BSS
+  };
+  int bad = 0, more = 0, unknown = 0;
+  int count = (int)(sizeof specs / sizeof specs[0]);
+  puts("comparison\tclass\tmethod\tshare-kind\targc/block/marker\tobserved R/S/Y/M\tallowed R/S/Y/M");
+  for (int i = 0; i < count; i++)
+    bad += bop_share_spec_one(specs[i].fam, specs[i].cls, specs[i].name,
+                             specs[i].argc, specs[i].block, specs[i].object, specs[i].origins, specs[i].wrapped,
+                             specs[i].ret, specs[i].store, specs[i].yield, specs[i].mut, &more, &unknown);
+  printf("bop-share-check: %d observed shapes, %d less conservative, %d potential opportunities, %d unknown contracts\n",
+         count, bad, more, unknown);
+  return bad;
+}

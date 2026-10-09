@@ -380,6 +380,7 @@ typedef enum {
    family's default row's when the name has none, or 0 when the family has
    no default either. */
 int bop_share(TyKind fam, const char *name);
+int builtin_ops_share_check(void);
 /* the name's own row only, without the family's default */
 int bop_share_named(TyKind fam, const char *name);
 /* A String method whose value is its receiver, or nil: a bang method that

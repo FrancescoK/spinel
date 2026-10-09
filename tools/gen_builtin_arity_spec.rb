@@ -264,6 +264,7 @@ def full_spec_of(recv, m)
   [*(bare || NO_SPEC), *(blk || NO_SPEC)]
 end
 
+if $PROGRAM_NAME == __FILE__
 ver = RUBY_DESCRIPTION.split(" (").first
 
 # Probe inside a throwaway directory: the Pathname receiver is the relative
@@ -387,4 +388,5 @@ elsif ARGV.include?("--write")
 else
   puts out
   $stderr.puts summary
+end
 end
