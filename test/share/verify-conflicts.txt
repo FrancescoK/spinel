@@ -3,54 +3,9 @@
 test/share/share_strings_boxed_class_include_mutator.rb	plan-check: channel-box-conflict: node 60 include? arm 8192 method include?: emitted sp_box_str, predicted published handle
 test/share/share_strings_boxed_class_include_mutator.rb	plan-check: channel-box-conflict: node 60 include? arm 8193 method include?: emitted sp_box_str, predicted published handle
 test/share/share_strings_pass_returns.rb	repr-check: channel-conflict: node 1873 CallNode method decode_entity: emitted clear, predicted publish
-test/share/verify/conflicts/case_fresh_tail.rb	repr-check: channel-conflict: node 17 CallNode method get: emitted unobserved, predicted clear
-test/share/verify/conflicts/element_dispatch_q3.rb	plan-check: channel-box-conflict: node 51 plus arm 2 method plus: emitted sp_box_str, predicted published handle
-test/share/verify/conflicts/element_dispatch_q3.rb	plan-check: channel-box-conflict: node 56 plus arm 2 method plus: emitted sp_box_str, predicted published handle
-test/share/verify/conflicts/element_dispatch_q4.rb	plan-check: channel-box-conflict: node 57 plus arm 2 method plus: emitted sp_box_str, predicted published handle
-test/share/verify/conflicts/element_dispatch_q4.rb	plan-check: channel-box-conflict: node 62 plus arm 2 method plus: emitted sp_box_str, predicted published handle
-test/share/verify/conflicts/parenthesized_copy_identity.rb	repr-check: channel-conflict: node 32 CallNode method get: emitted unobserved, predicted clear
-test/share/verify/conflicts/parenthesized_copy_tail.rb	repr-check: channel-conflict: node 32 CallNode method get: emitted unobserved, predicted clear
 test/share/verify/conflicts/poly_class_value_return.rb	plan-check: channel-box-conflict: node 59 include? arm 8192 method include?: emitted sp_box_str, predicted published handle
 test/share/verify/conflicts/poly_class_value_return.rb	plan-check: channel-box-conflict: node 59 include? arm 8193 method include?: emitted sp_box_str, predicted published handle
-test/share/verify/conflicts/poly_return2_a06.rb	plan-check: channel-box-conflict: node 105 mix2 arm 1 method mix2: emitted sp_box_str, predicted published handle
-test/share/verify/conflicts/poly_return2_a06.rb	plan-check: channel-box-conflict: node 112 mix2 arm 1 method mix2: emitted sp_box_str, predicted published handle
-test/share/verify/conflicts/poly_return2_a06.rb	plan-check: channel-box-conflict: node 119 mix3 arm 1 method mix3: emitted sp_box_str, predicted published handle
-test/share/verify/conflicts/poly_return2_a06.rb	plan-check: channel-box-conflict: node 126 mix3 arm 1 method mix3: emitted sp_box_str, predicted published handle
-test/share/verify/conflicts/poly_return2_a06.rb	plan-check: channel-box-conflict: node 133 mix3 arm 1 method mix3: emitted sp_box_str, predicted published handle
-test/share/verify/conflicts/poly_return2_a06.rb	plan-check: channel-box-conflict: node 91 mix arm 1 method mix: emitted sp_box_str, predicted published handle
-test/share/verify/conflicts/poly_return2_a06.rb	plan-check: channel-box-conflict: node 98 mix arm 1 method mix: emitted sp_box_str, predicted published handle
-test/share/verify/conflicts/poly_return2_b04.rb	plan-check: channel-box-conflict: node 80 get arm 1 method get: emitted sp_box_str, predicted published handle
-test/share/verify/conflicts/poly_return2_b04.rb	plan-check: channel-box-conflict: node 80 get arm 2 method get: emitted sp_box_str, predicted published handle
-test/share/verify/conflicts/poly_return2_b04.rb	plan-check: channel-box-conflict: node 88 get arm 1 method get: emitted sp_box_str, predicted published handle
-test/share/verify/conflicts/poly_return2_b04.rb	plan-check: channel-box-conflict: node 88 get arm 2 method get: emitted sp_box_str, predicted published handle
-test/share/verify/conflicts/poly_return2_b04.rb	plan-check: channel-box-conflict: node 96 get arm 1 method get: emitted sp_box_str, predicted published handle
-test/share/verify/conflicts/poly_return2_b04.rb	plan-check: channel-box-conflict: node 96 get arm 2 method get: emitted sp_box_str, predicted published handle
-test/share/verify/conflicts/poly_return2_e01.rb	plan-check: channel-box-conflict: node 114 get arm 1 method get: emitted sp_box_str, predicted published handle
-test/share/verify/conflicts/poly_return2_e01.rb	plan-check: channel-box-conflict: node 126 get2 arm 1 method get2: emitted sp_box_str, predicted published handle
-test/share/verify/conflicts/poly_return2_e01.rb	plan-check: channel-box-conflict: node 143 get arm 1 method get: emitted sp_box_str, predicted published handle
-test/share/verify/conflicts/poly_return2_e01.rb	plan-check: channel-box-conflict: node 155 get2 arm 1 method get2: emitted sp_box_str, predicted published handle
-test/share/verify/conflicts/poly_return2_e03.rb	plan-check: channel-box-conflict: node 69 get arm 1 method get: emitted sp_box_str, predicted published handle
-test/share/verify/conflicts/poly_return2_e03.rb	plan-check: channel-box-conflict: node 85 get arm 1 method get: emitted sp_box_str, predicted published handle
-test/share/verify/conflicts/poly_return_o06.rb	plan-check: channel-box-conflict: node 59 get arm 3 method get: emitted sp_box_str, predicted published handle
-test/share/verify/conflicts/poly_return_o06.rb	plan-check: channel-box-conflict: node 64 get arm 3 method get: emitted sp_box_str, predicted published handle
-test/share/verify/conflicts/poly_return_p06.rb	plan-check: channel-box-conflict: node 66 pick arm 1 method pick: emitted sp_box_str, predicted published handle
-test/share/verify/conflicts/poly_return_p06.rb	plan-check: channel-box-conflict: node 73 pick arm 1 method pick: emitted sp_box_str, predicted published handle
-test/share/verify/conflicts/poly_return_p06.rb	plan-check: channel-box-conflict: node 80 pick arm 1 method pick: emitted sp_box_str, predicted published handle
-test/share/verify/conflicts/rescue_fresh_tail.rb	repr-check: channel-conflict: node 20 CallNode method get: emitted unobserved, predicted clear
-test/share/verify_buffer_f13_ioread_valueobj.rb	plan-check: channel-box-conflict: node 420 b arm 2 method b: emitted sp_box_str, predicted published handle
-test/share/verify_buffer_f13_ioread_valueobj.rb	plan-check: channel-box-conflict: node 420 b arm 3 method b: emitted sp_box_str, predicted published handle
-test/share/verify_buffer_f13_ioread_valueobj.rb	plan-check: channel-box-conflict: node 450 b arm 2 method b: emitted sp_box_str, predicted published handle
-test/share/verify_buffer_f13_ioread_valueobj.rb	plan-check: channel-box-conflict: node 450 b arm 3 method b: emitted sp_box_str, predicted published handle
-test/share/verify_poly_return2_c03.rb	plan-check: channel-box-conflict: node 107 g1 arm 1 method g1: emitted sp_box_str, predicted published handle
-test/share/verify_poly_return2_c03.rb	plan-check: channel-box-conflict: node 119 g2 arm 1 method g2: emitted sp_box_str, predicted published handle
-test/share/verify_poly_return2_c03.rb	plan-check: channel-box-conflict: node 131 g3 arm 1 method g3: emitted sp_box_str, predicted published handle
-test/share/verify_poly_return2_c03.rb	repr-check: channel-conflict: node 155 CallNode method g1: emitted unobserved, predicted clear
-test/share/verify_poly_return2_c03.rb	repr-check: channel-conflict: node 169 InterpolatedStringNode method g2: emitted unobserved, predicted clear
-test/share/verify_poly_return2_c03.rb	repr-check: channel-conflict: node 187 CallNode method g3: emitted unobserved, predicted clear
-test/share/verify_poly_return2_f01.rb	plan-check: channel-box-conflict: node 57 get arm 1 method get: emitted sp_box_str, predicted published handle
-test/share/verify_poly_return2_f01.rb	repr-check: channel-conflict: node 79 CallNode method get: emitted unobserved, predicted clear
-test/share_strings_class_value_parameter.rb	plan-check: channel-box-conflict: node 184 consume arm 0 method consume: emitted sp_box_str, predicted published handle
-test/share_strings_class_value_parameter.rb	plan-check: channel-box-conflict: node 184 consume arm 1 method consume: emitted sp_box_str, predicted published handle
-test/share_strings_class_value_parameter.rb	plan-check: channel-box-conflict: node 184 consume arm 2 method consume: emitted sp_box_str, predicted published handle
 test/share_strings_class_value_parameter.rb	plan-check: channel-box-conflict: node 184 consume arm 8192 method consume: emitted sp_box_str, predicted published handle
 test/share_strings_class_value_parameter.rb	plan-check: channel-box-conflict: node 184 consume arm 8193 method consume: emitted sp_box_str, predicted published handle
+test/share_strings_class_value_parameter.rb	plan-check: channel-box-conflict: node 184 consume arm 0 method consume: emitted sp_box_str, predicted published handle
+test/share_strings_class_value_parameter.rb	plan-check: channel-box-conflict: node 184 consume arm 1 method consume: emitted sp_box_str, predicted published handle
