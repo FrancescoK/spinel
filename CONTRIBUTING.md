@@ -80,9 +80,13 @@ otherwise, and the `.expected` comparison is skipped with a warning. `make gate-
 tests `tools/gate.rb` itself and the shared corpus's known-failure summary.
 
 `make share-verify-test` compiles `test/share/*.rb`, `test/share_strings_*.rb`
-and `test/share/verify/conflicts/` with `SPINEL_SHARE_STRINGS=1 --repr-check --plan-check`.
+and `test/share/verify/**/*.rb` with `SPINEL_SHARE_STRINGS=1 --repr-check --plan-check`.
 It fails on a new conflict, a failed compilation, or generated C that differs
-with the checking flags. A stale entry in `test/share/verify-conflicts.txt`
+with the checking flags, or an output mismatch. Each executable program runs
+once against its `.expected`, without GC stress. The 13 examples under
+`test/share/verify/conflicts/` remain compile-only; their expected files record
+CRuby answers that the compiler does not yet produce. Verifier fixtures have
+no `share` marker and do not join `share-strings-test`. A stale entry in `test/share/verify-conflicts.txt`
 prints a removal reminder and does not fail the target. The ratchet contains
 exact diagnostics, one per line; remove an entry when its disagreement is fixed.
 `SHARE_VERIFY_JOBS` controls parallelism (default 2).
