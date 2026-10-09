@@ -9,3 +9,4 @@ pkg.net.net_http_request_host
 pkg.net.net_http_response_value
 pkg.net.net_http_rest_verbs
 pkg.net.net_http_start_block
+string_plain_mutator_result_kept
