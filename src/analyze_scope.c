@@ -1157,7 +1157,8 @@ static void walk_scope_in(Compiler *c, int id, int scope_idx, int class_id, int 
   c->nscope[id] = scope_idx;
   c->node_cbody[id] = g_cbody_class_id;
   if (proc >= 0 && nt_kind(c->nt, id) == NK_CallNode &&
-      (nt_int(c->nt, id, "class_new_capture", 0) || nt_int(c->nt, id, "class_new_superclass", 0)))
+      (nt_int(c->nt, id, "class_new_capture", 0) || nt_int(c->nt, id, "class_new_superclass", 0) ||
+       is_ivar_access(nt_str(c->nt, id, "name"))))
     nt_node_set_int((NodeTable *)c->nt, id, "refusal_proc", proc);
   if (dead && nt_kind(c->nt, id) == NK_CallNode &&
       (nt_int(c->nt, id, "class_new_capture", 0) || nt_int(c->nt, id, "class_new_superclass", 0) ||
