@@ -318,6 +318,17 @@ int subtree_may_run_proc(Compiler *c, int id);
    -- variable and literal reads, scalar arithmetic, typed-array reads and
    plain field reads, all the way down (codegen_call.c)? */
 int subtree_is_pure_read(Compiler *c, int id);
+/* A pure read, or one of the forms beside that list which run no call of the
+   program's and make nothing either: a global's read; a unary minus, `abs`
+   or an operator on numbers; `!` on a boolean; `size` or `length` of a
+   String, an Array or a Hash; `&&`, `||` and a conditional of such values.
+   An index, an operator, a reader or one of those calls counts only while it
+   is provably the builtin's (plain_name_is_builtin, codegen_call.c). */
+int subtree_is_plain_value(Compiler *c, int id);
+/* The uses by which a program can hold a method the node table does not
+   show (plain_uses_walk, codegen_call.c), asked of the table as the parser
+   wrote it: called ahead of analyze_program, whose desugars may rewrite one. */
+void plain_note_parsed(Compiler *c);
 int operand_is_held_read(Compiler *c, int id);
 /* Is the call a reader the emitter lowers to a plain field read? *allocates is
    set when the read builds a copy (a shared String slot). codegen_call.c */

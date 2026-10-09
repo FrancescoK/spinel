@@ -11377,6 +11377,26 @@ static int emit_struct_new_call(Compiler *c, int id, int ci, int argc, const int
        and too many arguments when they hold a key */
     int spread_over = spread_tail && argc - 1 == cls->nmembers ? ++g_tmp : -1;
     if (spread_over >= 0) buf_printf(b, "({ sp_%s *_t%d = ", cls->c_name, spread_over);
+    /* How many member values are made in the constructor's own argument
+       list by something that allocates: a converted literal or read, the
+       spread hash, a member read out of a keyword splat, or a value that
+       is neither hoisted into a rooted temp nor a plain read (a call that
+       answers a scalar)? The constructor roots its parameters before it
+       allocates the object, so one such value is held by then; with two,
+       the second can collect the first. */
+    int made = 0;
+    for (int a = 0; a < cls->nmembers && made < 2; a++) {
+      int vnode = -1;
+      TyKind mt = cls->ivar_types[a];
+      if (kwh >= 0) vnode = merged ? -1 : struct_kwarg_value(c, kwh, cls->ivars[a] + 1);
+      else if (a < argc) vnode = argv[a];
+      if (lit_tmp && lit_tmp[a] >= 0) continue;
+      if (spread_tail && a == argc - 1) made += !arg_wants_root(c, mt, -1);
+      else if (vnode < 0) made += splat_tmp >= 0;
+      else if (!arg_ran_first(vnode, argov_saved) && !arg_wants_root(c, mt, vnode))
+        made += arg_read_converts(c, mt, vnode) ||
+                (operand_may_allocate(c, vnode) && !subtree_is_plain_value(c, vnode));
+    }
     buf_printf(b, "sp_%s_new(", cls->c_name);
     for (int a = 0; a < cls->nmembers; a++) {
       if (a) buf_puts(b, ", ");
@@ -11411,8 +11431,15 @@ static int emit_struct_new_call(Compiler *c, int id, int ci, int argc, const int
            dangling and the next mark reads freed memory (#4049). */
         Buf mv; memset(&mv, 0, sizeof mv);
         emit_struct_member_value(c, cls, a, vnode, &mv);
-        if (arg_wants_root(c, cls->ivar_types[a], vnode) && !arg_ran_first(vnode, argov_saved))
+        int first = arg_ran_first(vnode, argov_saved);
+        if (!first && arg_wants_root(c, cls->ivar_types[a], vnode))
           emit_rooted_operand(c, cls->ivar_types[a], -1, mv.p ? mv.p : "", b);
+        /* a literal or a bare read wrapped in a handle of its own: as fresh
+           as a call's answer, and held where it stands (arg_read_converts)
+           when another value of the list can collect it */
+        else if (!first && made >= 2 && mv.p && cls->ivar_types[a] == TY_STRBUF &&
+                 arg_read_converts(c, TY_STRBUF, vnode))
+          emit_rooted_conversion(c, TY_STRBUF, mv.p, b);
         else buf_puts(b, mv.p ? mv.p : "");
         free(mv.p);
       }
@@ -19140,6 +19167,345 @@ int subtree_is_pure_read(Compiler *c, int id) {
       if (!subtree_is_pure_read(c, ids[j])) return 0;
   }
   return 1;
+}
+static int plain_is_attr_call(const char *nm) {
+  return sp_streq(nm, "attr") || sp_streq(nm, "attr_reader") || sp_streq(nm, "attr_writer") ||
+         sp_streq(nm, "attr_accessor");
+}
+static int plain_name_in(const char *nm, const char *const *names) {
+  for (int w = 0; names[w]; w++) if (sp_streq(nm, names[w])) return 1;
+  return 0;
+}
+/* A call of one of these names can define or remove a method and leave no
+   def and no attr of its name in the node table, run a method by a name the
+   table does not show, or run text. A `require` or a `require_relative`
+   still standing is one the parser did not splice in (it replaces each one
+   it reads with the file's text) and the emitter makes a no-op: the file's
+   defs are not in the table. A `load` is refused where it is emitted. */
+static int plain_is_word(const char *nm) {
+  static const char *const WORDS[] = {
+    "alias_method", "define_method", "define_singleton_method", "undef_method", "remove_method",
+    "send", "__send__", "public_send", "local_variable_set",
+    "class_eval", "module_eval", "class_exec", "module_exec", "instance_eval", "instance_exec", "eval",
+    "def_delegator", "def_delegators", "delegate", "require", "require_relative", NULL };
+  return plain_name_in(nm, WORDS);
+}
+/* The calls that answer a method by its name, and the visibility words:
+   counted only where the name they are handed is not a Symbol literal. */
+static int plain_is_by_name(const char *nm) {
+  static const char *const NAMES[] = {
+    "method", "public_method", "singleton_method", "instance_method", "public_instance_method", NULL };
+  return plain_name_in(nm, NAMES);
+}
+static int plain_is_visibility(const char *nm) {
+  static const char *const NAMES[] = {
+    "public", "private", "protected", "module_function", "private_class_method", "public_class_method",
+    NULL };
+  return plain_name_in(nm, NAMES);
+}
+/* Is the name one that a call running a method by its name must not be
+   handed (`inject(:send)`, `&:attr_accessor`)? */
+static int plain_names_a_word(const char *sv) {
+  return plain_is_word(sv) || plain_is_attr_call(sv) || plain_is_by_name(sv) || plain_is_visibility(sv) ||
+         sp_streq(sv, "to_proc") || sp_streq(sv, "inject") || sp_streq(sv, "reduce");
+}
+/* A Symbol literal that names none of them. */
+static int plain_is_plain_symbol(const NodeTable *nt, int id) {
+  const char *sv = id >= 0 && nt_kind(nt, id) == NK_SymbolNode ? nt_str(nt, id, "value") : NULL;
+  return sv && !plain_names_a_word(sv);
+}
+/* Is the receiver the parameter of the block the parser writes for a
+   `&:name` (`m(&:name)` reaches the table as `m { |_spx| _spx.name }`)? */
+static int plain_recv_is_sym_proc(const NodeTable *nt, int call) {
+  int r = nt_ref(nt, call, "receiver");
+  const char *rn = r >= 0 && nt_kind(nt, r) == NK_LocalVariableReadNode ? nt_str(nt, r, "name") : NULL;
+  return rn && sp_streq(rn, "_spx");
+}
+/* Is the local only ever a `&` parameter: every node of the table that
+   carries its name is a read of it, a `&` parameter, or a call (which
+   binds nothing)? Then it holds a block some caller passed, and each such
+   pass is asked where it stands. `it` and `_1` are bound with no node. */
+static int plain_is_block_param(const NodeTable *nt, const char *nm) {
+  if (sp_streq(nm, "it") || (nm[0] == '_' && nm[1] >= '0' && nm[1] <= '9')) return 0;
+  for (int id = 0; id < nt->count; id++) {
+    const char *s = nt_str(nt, id, "name");
+    if (!s || !sp_streq(s, nm)) continue;
+    NodeKind k = nt_kind(nt, id);
+    if (k != NK_LocalVariableReadNode && k != NK_BlockParameterNode && k != NK_CallNode) return 0;
+  }
+  return 1;
+}
+/* Can the operand of a `&` only be a block the table holds: none (the
+   anonymous `&` of the def), a Symbol literal that names no word, a `->`
+   literal, or a local that is only ever a `&` parameter? */
+static int plain_block_pass_is_plain(const NodeTable *nt, int e) {
+  if (e < 0) return 1;
+  NodeKind k = nt_kind(nt, e);
+  if (k == NK_SymbolNode) return plain_is_plain_symbol(nt, e);
+  if (k == NK_LambdaNode) return 1;
+  const char *nm = k == NK_LocalVariableReadNode ? nt_str(nt, e, "name") : NULL;
+  return nm && plain_is_block_param(nt, nm);
+}
+/* The answers below walk the whole program, so each is kept once the
+   analysis is done (g_scopes_settled, set in codegen_program when
+   analyze_program has returned; scope_is_shadowed keeps its table from
+   there too): every file the program requires was spliced into the one
+   text that is parsed, and every desugar has run, so the nodes the walks
+   read are all in the table. A question asked sooner is walked and nothing
+   is kept. The number answered changes with the Compiler or its table.
+   The emitter still edits the table while it writes, and no edit of its
+   changes an answer. The walks read the defs' names, the aliases, the
+   undefs, the classes' names, the operand of each `&`, the calls named a
+   word, an attr, a by-name call, a visibility word, to_proc, inject or
+   reduce with their receiver and arguments, and, for a local handed to a
+   `&`, the kind of every node of its name. The nodes the emitter adds are
+   a StatementsNode, a `raise` call, a ConstantReadNode, a StringNode,
+   ArgumentsNodes and LocalVariableReadNodes: no def, alias, undef, class
+   or `&`, and a read or a call of a name is what a `&` parameter's name
+   may be on. The one string it writes on a node that stands is a call's
+   name, between two spellings of a builtin and back after the re-entry:
+   `===` and `==`, `<=>` and `==`, `slice` and `[]`, `[]` and `new`,
+   `find_all` and `select`, `each_grapheme_cluster` and `each_char`, and a
+   String's bang method (ty_str_typed_bang_flags) and its plain name. The
+   arguments and the block it swaps are a setter's and those of a splatted
+   universal_object_method; the receiver, a `slice!`'s. None of these is a
+   node or a name the walks read, so the table's `version`, which each such
+   edit bumps, is not asked. A new place in the emitter that adds a node or
+   writes a name is to be checked against what the walks read. */
+static int plain_answers_kept(Compiler *c) {
+  static const Compiler *mc; static const NodeTable *mnt; static int gen;
+  if (!g_scopes_settled) return 0;
+  if (mc != c || mnt != c->nt) { mc = c; mnt = c->nt; gen++; }
+  return gen;
+}
+/* Can the program have a method that leaves neither a def nor an attr of
+   that name in the node table? It can by text it evaluates (the evals, the
+   execs, ERB), by an alias or an undef, by a call named one of the words,
+   and by a method run or named by a name the table does not show: an attr,
+   a by-name call, a visibility word, a to_proc, or an inject or a reduce,
+   handed a name that is not a Symbol literal or is one of those words, and
+   a `&` whose operand is not provably a block the table holds. An inject's
+   last operand is a name unless it is the only one and a literal block
+   follows: beside a `&` that holds no block when it runs, CRuby reads the
+   one operand as the name. A file the parser did not read is not asked
+   for: what it would define is not in the compiled program either. */
+static int plain_uses_walk(const NodeTable *nt) {
+  int n = 0, found = 0;
+  nt_nodes_of_kind(nt, NK_AliasMethodNode, &n);
+  if (n > 0) found = 1;
+  nt_nodes_of_kind(nt, NK_UndefNode, &n);
+  if (n > 0) found = 1;
+  const int *ids = nt_nodes_of_kind(nt, NK_ClassNode, &n);
+  for (int i = 0; i < n && !found; i++) {
+    int cp = nt_ref(nt, ids[i], "constant_path");
+    const char *cn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+    if (cn && sp_streq(cn, "ERB")) found = 1;
+  }
+  const char *asked = NULL;
+  ids = nt_nodes_of_kind(nt, NK_BlockArgumentNode, &n);
+  for (int i = 0; i < n && !found; i++) {
+    int e = nt_ref(nt, ids[i], "expression");
+    const char *ln = e >= 0 && nt_kind(nt, e) == NK_LocalVariableReadNode ? nt_str(nt, e, "name") : NULL;
+    if (ln && asked && sp_streq(ln, asked)) continue;
+    if (!plain_block_pass_is_plain(nt, e)) found = 1;
+    asked = ln;
+  }
+  ids = nt_nodes_of_kind(nt, NK_CallNode, &n);
+  for (int i = 0; i < n && !found; i++) {
+    const char *nm = nt_str(nt, ids[i], "name");
+    if (!nm) continue;
+    if (plain_is_word(nm)) { found = 1; continue; }
+    int attr = plain_is_attr_call(nm), by_name = !attr && plain_is_by_name(nm);
+    int vis = !attr && !by_name && plain_is_visibility(nm);
+    int to_proc = sp_streq(nm, "to_proc"), fold = sp_streq(nm, "inject") || sp_streq(nm, "reduce");
+    if (!attr && !by_name && !vis && !to_proc && !fold) continue;
+    int a = nt_ref(nt, ids[i], "arguments"), ac = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+    if (plain_recv_is_sym_proc(nt, ids[i])) found = 1;
+    else if (to_proc) found = !plain_is_plain_symbol(nt, nt_ref(nt, ids[i], "receiver"));
+    else if (by_name) found = ac > 0 && !plain_is_plain_symbol(nt, av[0]);
+    else if (fold) {
+      int blk = nt_ref(nt, ids[i], "block");
+      int own_block = ac == 1 && blk >= 0 && nt_kind(nt, blk) == NK_BlockNode;
+      found = ac > 0 && !own_block && !plain_is_plain_symbol(nt, av[ac - 1]);
+    }
+    else {
+      for (int j = 0; j < ac && !found; j++) {
+        NodeKind k = nt_kind(nt, av[j]);
+        const char *an = vis && k == NK_CallNode ? nt_str(nt, av[j], "name") : NULL;
+        found = k != NK_SymbolNode && !(vis && (k == NK_DefNode || (an && plain_is_attr_call(an))));
+      }
+    }
+  }
+  return found;
+}
+/* The walk is run on the table as the parser wrote it, ahead of
+   analyze_program (codegen_program), and again on the table the emitter
+   has: a desugar of the analysis may rewrite a use into nodes the walk
+   does not count (a block-pass into a block the call then holds), and one
+   may add a use. A table that was not walked as parsed is answered as
+   holding one. */
+static const NodeTable *plain_parsed_nt;
+static int plain_parsed_unseen;
+void plain_note_parsed(Compiler *c) {
+  plain_parsed_nt = c->nt;
+  plain_parsed_unseen = plain_uses_walk(c->nt);
+}
+static int plain_prog_defines_unseen(Compiler *c) {
+  static int memo_gen, memo;
+  int g = plain_answers_kept(c);
+  if (g && memo_gen == g) return memo;
+  int found = plain_parsed_nt != c->nt || plain_parsed_unseen || plain_uses_walk(c->nt);
+  if (g) { memo_gen = g; memo = found; }
+  return found;
+}
+/* Is a call of `nm` on a builtin's value provably the builtin's own: the
+   program has no def of that name anywhere, no attr of that name, and no
+   way to define one that the node table does not show? Asked by the name
+   alone, whatever the class: a def in a subclass, a module or a singleton
+   counts. `!=` runs `==`. A reader (`reader`) is asked for a def of its name
+   only: its attr is what makes it a read. */
+static int plain_name_scan(Compiler *c, const char *nm, int reader) {
+  const NodeTable *nt = c->nt;
+  if (plain_prog_defines_unseen(c)) return 0;
+  const char *also = sp_streq(nm, "!=") ? "==" : nm;
+  int n = 0;
+  const int *defs = nt_nodes_of_kind(nt, NK_DefNode, &n);
+  for (int i = 0; i < n; i++) {
+    const char *dn = nt_str(nt, defs[i], "name");
+    if (!dn || sp_streq(dn, nm) || sp_streq(dn, also)) return 0;
+  }
+  if (reader) return 1;
+  const int *calls = nt_nodes_of_kind(nt, NK_CallNode, &n);
+  for (int i = 0; i < n; i++) {
+    const char *cn = nt_str(nt, calls[i], "name");
+    if (!cn || !plain_is_attr_call(cn)) continue;
+    int a = nt_ref(nt, calls[i], "arguments"), ac = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+    for (int j = 0; j < ac; j++) {
+      const char *sv = nt_kind(nt, av[j]) == NK_SymbolNode ? nt_str(nt, av[j], "value") : NULL;
+      if (!sv || sp_streq(sv, nm) || sp_streq(sv, also)) return 0;
+    }
+  }
+  return 1;
+}
+/* The scan's answer, kept by name while the table stands (the name is
+   copied: the emitter frees a call's name where it writes another). */
+static int plain_name_answer(Compiler *c, const char *nm, int reader) {
+  static struct { char *name; char reader, answer; } *kept;
+  static int used, cap, memo_gen;
+  if (!nm) return 0;
+  int g = plain_answers_kept(c);
+  if (!g) return plain_name_scan(c, nm, reader);
+  if (memo_gen != g) { while (used > 0) free(kept[--used].name); memo_gen = g; }
+  for (int i = 0; i < used; i++)
+    if (kept[i].reader == reader && sp_streq(kept[i].name, nm)) return kept[i].answer;
+  int ans = plain_name_scan(c, nm, reader);
+  if (used == cap) {
+    void *grown = realloc(kept, sizeof *kept * (size_t)(cap ? cap * 2 : 32));
+    if (!grown) return ans;
+    kept = grown; cap = cap ? cap * 2 : 32;
+  }
+  if ((kept[used].name = strdup(nm)) != NULL) { kept[used].reader = (char)reader; kept[used++].answer = (char)ans; }
+  return ans;
+}
+/* Is the operator's operand typed a number or a boolean? An Integer's or a
+   Float's operator hands an operand of any other class to that operand's
+   own `coerce`, or to its `==`: the program's code. */
+static int plain_operand_is_scalar(Compiler *c, int call) {
+  const NodeTable *nt = c->nt;
+  int a = nt_ref(nt, call, "arguments"), ac = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+  TyKind t = ac == 1 ? comp_ntype(c, av[0]) : TY_UNKNOWN;
+  return t == TY_INT || t == TY_FLOAT || t == TY_BOOL;
+}
+static int plain_name_is_builtin(Compiler *c, const char *nm) {
+  return plain_name_answer(c, nm, 0);
+}
+/* Does the subtree, a pure read by the list above, hold a call that is not
+   provably the builtin's? That list takes an index into a typed Array, an
+   operator on numbers or booleans and a reader's field read by the type of
+   the receiver; the program's own `[]` or `+` runs its code, and may
+   allocate, and so may the `coerce` of an operator's operand that is no
+   number. A reader is asked for a def of its name only: its attr is what
+   makes it a read. */
+static int plain_calls_own(Compiler *c, int a) {
+  const NodeTable *nt = c->nt;
+  if (a < 0) return 0;
+  if (nt_kind(nt, a) == NK_CallNode) {
+    const char *nm = nt_str(nt, a, "name");
+    int alloc = 0;
+    if (!nm) return 1;
+    if (!plain_name_answer(c, nm, call_is_field_read(c, a, &alloc))) return 1;
+    if (call_is_scalar_op(c, a) && !plain_operand_is_scalar(c, a)) return 1;
+  }
+  int nr = nt_num_refs(nt, a);
+  for (int i = 0; i < nr; i++)
+    if (plain_calls_own(c, nt_ref_at(nt, a, i))) return 1;
+  int na = nt_num_arrs(nt, a);
+  for (int i = 0; i < na; i++) {
+    int n = 0;
+    const int *ids = nt_arr_at(nt, a, i, &n);
+    for (int j = 0; j < n; j++)
+      if (plain_calls_own(c, ids[j])) return 1;
+  }
+  return 0;
+}
+/* See codegen_internal.h. */
+int subtree_is_plain_value(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  id = unwrap_parens(c, id);
+  if (id < 0) return 1;
+  if (subtree_is_pure_read(c, id)) return !plain_calls_own(c, id);
+  switch (nt_kind(nt, id)) {
+    /* a global's read is off the list above, which also answers for
+       reordering; the match globals build their value */
+    case NK_GlobalVariableReadNode:
+      return !operand_may_allocate(c, id);
+    case NK_AndNode: case NK_OrNode:
+      return subtree_is_plain_value(c, nt_ref(nt, id, "left")) &&
+             subtree_is_plain_value(c, nt_ref(nt, id, "right"));
+    case NK_IfNode: case NK_UnlessNode: {
+      int unless = nt_kind(nt, id) == NK_UnlessNode;
+      int parts[2] = { nt_ref(nt, id, "statements"), nt_ref(nt, id, unless ? "else_clause" : "subsequent") };
+      if (!subtree_is_plain_value(c, nt_ref(nt, id, "predicate"))) return 0;
+      for (int i = 0; i < 2; i++) {
+        int st = parts[i], n = 0;
+        if (st >= 0 && nt_kind(nt, st) == NK_IfNode) {
+          if (!subtree_is_plain_value(c, st)) return 0;
+          continue;
+        }
+        if (st >= 0 && nt_kind(nt, st) == NK_ElseNode) st = nt_ref(nt, st, "statements");
+        const int *bd = st >= 0 ? nt_arr(nt, st, "body", &n) : NULL;
+        if (n != 1 || !subtree_is_plain_value(c, bd[0])) return 0;
+      }
+      return 1;
+    }
+    case NK_CallNode: {
+      const char *nm = nt_str(nt, id, "name");
+      int recv = nt_ref(nt, id, "receiver");
+      int a = nt_ref(nt, id, "arguments"), ac = 0;
+      const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+      if (!nm || recv < 0 || nt_ref(nt, id, "block") >= 0 || !subtree_is_plain_value(c, recv)) return 0;
+      TyKind rt = comp_ntype(c, recv), vt = comp_ntype(c, id);
+      int num = (rt == TY_INT || rt == TY_FLOAT) && (vt == TY_INT || vt == TY_FLOAT);
+      int ok = 0;
+      /* `size`, `length` and `abs` as master's own lists of calls with
+         nothing to run take them: hash_new_capacity_pure and nn_pure_call
+         (analyze.c) */
+      if (ac == 0 && (sp_streq(nm, "-@") || sp_streq(nm, "abs"))) ok = num;
+      else if (ac == 0 && sp_streq(nm, "!")) ok = rt == TY_BOOL;
+      else if (ac == 0 && (sp_streq(nm, "size") || sp_streq(nm, "length")))
+        ok = (ty_is_array(rt) || ty_is_hash(rt) || rt == TY_STRING) && vt == TY_INT &&
+             !operand_may_allocate(c, recv);
+      /* an operator on scalars whose operand is one of the forms here */
+      else if (ac == 1)
+        ok = call_is_scalar_op(c, id) && plain_operand_is_scalar(c, id) && subtree_is_plain_value(c, av[0]);
+      return ok && plain_name_is_builtin(c, nm);
+    }
+    default:
+      return 0;
+  }
 }
 
 /* Does the program give a Hash a default block anywhere (`Hash.new { }`,
