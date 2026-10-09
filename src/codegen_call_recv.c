@@ -410,6 +410,20 @@ static const char *nil_sum_ck_text(Compiler *c, int recv, TyKind rt, int float_s
   return out->p;
 }
 
+static void emit_values_at_boxed(const char *an, const char *vs, int to, int tr, const char *val, Buf *b) {
+  int k = ++g_tmp;
+  buf_printf(b, "{ sp_RbVal _e%d = %s; if (_e%d.tag == SP_TAG_OBJ && _e%d.cls_id == SP_BUILTIN_RANGE) {"
+                " sp_Range _r%d = *(sp_Range *)_e%d.v.p; sp_int _n%d = sp_%sArray_length(_t%d);"
+                " sp_int _f%d = _r%d.first == INTPTR_MIN ? 0 : (_r%d.first < 0 ? _r%d.first + _n%d : _r%d.first);",
+             k, val, k, k, k, k, k, an, tr, k, k, k, k, k, k);
+  buf_printf(b, " if (_f%d < 0) sp_raise_cls(\"RangeError\", sp_sprintf(\"%%s out of range\", sp_poly_inspect(_e%d)));"
+                " sp_int _l%d = _r%d.last == INTPTR_MAX ? _n%d - 1 : ((_r%d.last < 0 ? _r%d.last + _n%d : _r%d.last) - (_r%d.excl ? 1 : 0));",
+             k, k, k, k, k, k, k, k, k, k);
+  buf_printf(b, " for (sp_int _k%d = _f%d; _k%d <= _l%d; _k%d++) sp_%sArray_push%s(_t%d, sp_%sArray_get(_t%d, _k%d)); }"
+                " else sp_%sArray_push%s(_t%d, sp_%sArray_get(_t%d, sp_poly_arg_int_chk(_e%d))); } ",
+             k, k, k, k, k, an, vs, to, an, tr, k, an, vs, to, an, tr, k);
+}
+
 /* The direct call of the container conversion obj_container_conv found:
    the compiled #to_ary / #to_hash of the defining class on the operand. */
 static void emit_obj_container_conv(Compiler *c, int node, int def, const char *conv, Buf *b) {
@@ -2810,11 +2824,16 @@ static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *n
           /* values_at(*idx): each element of the splatted array is a
              separate index (#3277). */
           int ts = ++g_tmp, tk = ++g_tmp;
+          char ev[64]; snprintf(ev, sizeof ev, "sp_PolyArray_get(_t%d, _t%d)", ts, tk);
           buf_printf(b, "{ sp_PolyArray *_t%d = ", ts); emit_expr(c, argv[a], b);
-          buf_printf(b, "; for (sp_int _t%d = 0; _t%d < sp_PolyArray_length(_t%d); _t%d++)"
-                        " sp_%sArray_push%s(_t%d, sp_%sArray_get(_t%d,"
-                        " sp_poly_arg_int_chk(sp_PolyArray_get(_t%d, _t%d)))); } ",
-                     tk, tk, ts, tk, an, vs, to, an, tr, ts, tk);
+          buf_printf(b, "; for (sp_int _t%d = 0; _t%d < sp_PolyArray_length(_t%d); _t%d++) ", tk, tk, ts, tk);
+          emit_values_at_boxed(an, vs, to, tr, ev, b);
+          buf_puts(b, "} ");
+        }
+        else if (at == TY_POLY) {
+          Buf bv = {0, 0, 0}; emit_boxed(c, argv[a], &bv);
+          emit_values_at_boxed(an, vs, to, tr, bv.p ? bv.p : "sp_box_nil()", b);
+          free(bv.p);
         }
         else if (at == TY_RANGE) {
           /* an open or negative endpoint resolves against the length, the
@@ -5208,10 +5227,19 @@ static int emit_hash_merge_misfit(Compiler *c, int id, TyKind rt, Buf *b) {
   int hc_ci = comp_class_index(c, "Hash");
   if (hc_ci >= 0 && comp_method_in_chain(c, hc_ci, name, NULL) >= 0) return 0;
   int bad = -1, boxed = 0;
+  int conv[8] = {0};
+  TyKind convk[8];
   for (int i = 0; i < argc && bad < 0; i++) {
     if (nt_kind(nt, argv[i]) == NK_HashNode) continue;
-    if (face_arg_misfit(c, PF_HASH, argv[i])) bad = i;
-    else { TyKind at = comp_ntype(c, argv[i]); if (at == TY_POLY || at == TY_UNKNOWN) boxed = 1; }
+    TyKind at = comp_ntype(c, argv[i]);
+    int def = -1;
+    TyKind mk = ty_is_object(at) ? obj_container_conv(c, at, "to_hash", &def) : TY_UNKNOWN;
+    int fits = mk != TY_UNKNOWN && (ty_hash_key(rt) == TY_POLY || ty_hash_key(rt) == ty_hash_key(mk)) &&
+               (ty_hash_val(rt) == TY_POLY || ty_hash_val(rt) == ty_hash_val(mk));
+    if (mk != TY_UNKNOWN && !fits) { unsupported_feature(c, id, "Hash#merge! with a #to_hash of another layout than the receiver"); return 0; }
+    if (fits && i < 8) { conv[i] = def + 1; convk[i] = mk; boxed = 1; }
+    else if (face_arg_misfit(c, PF_HASH, argv[i]) || ty_is_object(at)) bad = i;
+    else if (at == TY_POLY || at == TY_UNKNOWN) boxed = 1;
   }
   if ((bad < 0 && !boxed) || (bad != 0 && nt_ref(nt, id, "block") >= 0)) return 0;
   int last = bad >= 0 ? bad : argc - 1;
@@ -5223,7 +5251,12 @@ static int emit_hash_merge_misfit(Compiler *c, int id, TyKind rt, Buf *b) {
     Buf ap = {0, 0, 0}, av = {0, 0, 0};
     g_pre = &ap;
     if (i < 0) emit_expr(c, nt_ref(nt, id, "receiver"), &av);
-    else emit_boxed(c, argv[i], &av);
+    else if (i < 8 && conv[i]) {
+      Buf cv = {0, 0, 0};
+      emit_obj_container_conv(c, argv[i], conv[i] - 1, "to_hash", &cv);
+      emit_boxed_text(c, convk[i], cv.p ? cv.p : "NULL", &av);
+      free(cv.p);
+    } else emit_boxed(c, argv[i], &av);
     g_pre = sv_pre;
     if (ap.p) buf_puts(b, ap.p);
     if (i < 0) buf_printf(b, "%s _t%d = %s; SP_GC_ROOT(_t%d); ", c_type_name(rt), tr, av.p ? av.p : "NULL", tr);
@@ -5815,11 +5848,14 @@ else {
           buf_printf(b, "); } } _t%d; })", tr);
           return 1;
         }
-        if (at != rt) return 0;
+        int mdef = -1;
+        if (at != rt && (!ty_is_object(at) || obj_container_conv(c, at, "to_hash", &mdef) != rt)) return 0;
         int tr = ++g_tmp, to = ++g_tmp, ti = ++g_tmp, tk = ++g_tmp;
         buf_printf(b, "({ %s _t%d = ", c_type_name(rt), tr); emit_expr(c, recv, b); buf_puts(b, ";");
         buf_printf(b, " if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s);", tr, tr, hash_box_cls(rt));   /* (#3001) */
-        buf_printf(b, " %s _t%d = ", c_type_name(rt), to); emit_expr(c, argv[0], b); buf_puts(b, ";");
+        buf_printf(b, " %s _t%d = ", c_type_name(rt), to);
+        if (at != rt) emit_obj_container_conv(c, argv[0], mdef, "to_hash", b); else emit_expr(c, argv[0], b);
+        buf_puts(b, ";");
         buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {", ti, ti, to, ti);
         /* a PolyPoly hash's order[] holds slot indices: its keys are keys[] */
         if (rt == TY_POLY_POLY_HASH)
