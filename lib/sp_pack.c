@@ -528,18 +528,25 @@ static void pk_str_bytes_directive(char spec, int64_t count, const char *s, size
 }
 
 
+static SP_NORETURN void pk_too_few(char *buf) {
+  free(buf);
+  sp_raise_cls("ArgumentError", "too few arguments");
+}
+
 /* The String directives: each takes one element, its count a width. */
 static int pk_is_str_spec(char spec) {
   return spec && strchr("aAZmMuHhBb", spec) != NULL;
 }
 
 /* One String directive over element `e` (`have` 0: the elements ran out,
-   which packs no bytes), shared by the four pack entry points so a typed
-   Array's element converts as a poly one's does. */
+   which raises), shared by the four pack entry points so a typed
+   Array's element converts as a poly one's does. Even a zero byte count
+   consumes one element. */
 static void pk_str_spec(char spec, int64_t count, sp_RbVal e, int have,
                         char **buf, size_t *len, size_t *cap) {
   size_t sl = 0;
-  const char *s = have ? pk_str_elem_bytes(spec, e, &sl) : "";
+  if (!have) pk_too_few(*buf);
+  const char *s = pk_str_elem_bytes(spec, e, &sl);
   if (spec == 'a' || spec == 'A' || spec == 'Z') {
     size_t want = (count < 0) ? sl : (size_t)count;
     if (spec == 'Z' && count < 0) want = sl + 1;
@@ -589,6 +596,10 @@ static inline int pk_cursor_directive(char spec, int64_t count, char **buf, size
 static int pk_int_directive_consumes(char spec) {
   return spec && strchr("CcnNvVsSlLqQiIjJU", spec) != NULL;   /* the ones pk_int_directive packs */
 }
+static SP_NOINLINE SP_COLD int64_t pk_missing_int(char spec, char *buf) {
+  if (pk_int_directive_consumes(spec)) pk_too_few(buf);
+  return 0;
+}
 static SP_NORETURN void pk_nil_elem(int flt) {
   sp_raise_cls("TypeError", flt ? "can't convert nil into Float" : "no implicit conversion of nil into Integer");
 }
@@ -637,7 +648,7 @@ const char *sp_IntArray_pack(sp_IntArray *arr, const char *fmt) {SP_GC_ROOT(arr)
     if (spec == 'w') {
       int64_t wc = count < 0 ? arr->len - idx : count;
       for (int64_t k = 0; k < wc; k++) {
-        int64_t sv = (idx < arr->len) ? arr->data[arr->start + idx] : 0; idx++;
+        int64_t sv = (idx < arr->len) ? arr->data[arr->start + idx] : (pk_too_few(buf), 0); idx++;
         if (sv == SP_INT_NIL) pk_nil_elem(0);
         if (sv < 0) sp_raise_cls("ArgumentError", "can't compress negative numbers");
         uint64_t v = (uint64_t)sv;
@@ -653,14 +664,14 @@ const char *sp_IntArray_pack(sp_IntArray *arr, const char *fmt) {SP_GC_ROOT(arr)
     if (pk_is_flt_spec(spec)) {
       for (int64_t k = 0; k < count; k++) {
         if (idx < arr->len && arr->data[arr->start + idx] == SP_INT_NIL) pk_nil_elem(1);
-        double dv = (idx < arr->len) ? (double)arr->data[arr->start + idx] : 0.0;
+        double dv = (idx < arr->len) ? (double)arr->data[arr->start + idx] : (pk_too_few(buf), 0.0);
         idx++;
         pk_flt_directive(spec, dv, &buf, &len, &cap);
       }
       continue;
     }
     for (int64_t k = 0; k < count; k++) {
-      int64_t v = (idx < arr->len) ? arr->data[arr->start + idx] : 0;
+      int64_t v = (idx < arr->len) ? arr->data[arr->start + idx] : pk_missing_int(spec, buf);
       if (idx < arr->len && v == SP_INT_NIL && pk_int_directive_consumes(spec)) pk_nil_elem(0);
       idx++;
       if (!pk_int_directive(spec, v, big, &buf, &len, &cap)) idx--;
@@ -710,7 +721,7 @@ const char *sp_FloatArray_pack(sp_FloatArray *arr, const char *fmt) {
     if (count < 0) count = 0;
     if (pk_is_flt_spec(spec)) {
       for (int64_t k = 0; k < count; k++) {
-        double dv = (idx < arr->len) ? arr->data[idx] : 0.0;
+        double dv = (idx < arr->len) ? arr->data[idx] : (pk_too_few(buf), 0.0);
         if (idx < arr->len && sp_float_is_nil(dv)) pk_nil_elem(1);
         idx++;
         pk_flt_directive(spec, dv, &buf, &len, &cap);
@@ -719,7 +730,7 @@ const char *sp_FloatArray_pack(sp_FloatArray *arr, const char *fmt) {
     }
     for (int64_t k = 0; k < count; k++) {
       if (idx < arr->len && sp_float_is_nil(arr->data[idx]) && pk_int_directive_consumes(spec)) pk_nil_elem(0);
-      int64_t v = (idx < arr->len) ? pk_flt_to_int(arr->data[idx]) : 0;
+      int64_t v = (idx < arr->len) ? pk_flt_to_int(arr->data[idx]) : pk_missing_int(spec, buf);
       idx++;
       if (!pk_int_directive(spec, v, big, &buf, &len, &cap)) idx--;
     }
@@ -759,7 +770,7 @@ const char *sp_PolyArray_pack(sp_PolyArray *arr, const char *fmt) {SP_GC_ROOT(ar
     if (spec == 'w') {
       int64_t wc = count < 0 ? arr->len - idx : count;
       for (int64_t k = 0; k < wc; k++) {
-        int64_t sv = (idx < arr->len) ? pk_poly_to_int(arr->data[idx]) : 0; idx++;
+        int64_t sv = (idx < arr->len) ? pk_poly_to_int(arr->data[idx]) : (pk_too_few(buf), 0); idx++;
         if (sv < 0) sp_raise_cls("ArgumentError", "can't compress negative numbers");
         uint64_t v = (uint64_t)sv;
         unsigned char tmp[10]; int ti = 0;
@@ -776,7 +787,7 @@ const char *sp_PolyArray_pack(sp_PolyArray *arr, const char *fmt) {SP_GC_ROOT(ar
         /* a poly array's nil is a tagged one, which pk_poly_to_flt reads as
            0.0; it raises here as a typed array's sentinel does */
         if (idx < arr->len && arr->data[idx].tag == SP_TAG_NIL) pk_nil_elem(1);
-        double dv = (idx < arr->len) ? pk_poly_to_flt(arr->data[idx]) : 0.0;
+        double dv = (idx < arr->len) ? pk_poly_to_flt(arr->data[idx]) : (pk_too_few(buf), 0.0);
         idx++;
         pk_flt_directive(spec, dv, &buf, &len, &cap);
       }
@@ -786,7 +797,8 @@ const char *sp_PolyArray_pack(sp_PolyArray *arr, const char *fmt) {SP_GC_ROOT(ar
       /* converted only for a directive that takes the element: `x` packs a
          NUL and leaves it, so a nil under it (`[1, nil].pack("qx")`) is not
          converted, as the typed arrays' sentinel check already skips it */
-      int64_t v = (idx < arr->len && pk_int_directive_consumes(spec)) ? pk_poly_to_int(arr->data[idx]) : 0;
+      int64_t v = pk_int_directive_consumes(spec)
+                  ? (idx < arr->len ? pk_poly_to_int(arr->data[idx]) : (pk_too_few(buf), 0)) : 0;
       idx++;
       if (!pk_int_directive(spec, v, big, &buf, &len, &cap)) idx--;
     }
@@ -828,7 +840,7 @@ const char *sp_PolyArray_pack_buffer(sp_PolyArray *arr, const char *fmt, const c
     if (spec == 'w') {
       int64_t wc = count < 0 ? arr->len - idx : count;
       for (int64_t k = 0; k < wc; k++) {
-        int64_t sv = (idx < arr->len) ? pk_poly_to_int(arr->data[idx]) : 0; idx++;
+        int64_t sv = (idx < arr->len) ? pk_poly_to_int(arr->data[idx]) : (pk_too_few(buf), 0); idx++;
         if (sv < 0) sp_raise_cls("ArgumentError", "can't compress negative numbers");
         uint64_t v = (uint64_t)sv;
         unsigned char tmp[10]; int ti = 0;
@@ -845,7 +857,7 @@ const char *sp_PolyArray_pack_buffer(sp_PolyArray *arr, const char *fmt, const c
         /* a poly array's nil is a tagged one, which pk_poly_to_flt reads as
            0.0; it raises here as a typed array's sentinel does */
         if (idx < arr->len && arr->data[idx].tag == SP_TAG_NIL) pk_nil_elem(1);
-        double dv = (idx < arr->len) ? pk_poly_to_flt(arr->data[idx]) : 0.0;
+        double dv = (idx < arr->len) ? pk_poly_to_flt(arr->data[idx]) : (pk_too_few(buf), 0.0);
         idx++;
         pk_flt_directive(spec, dv, &buf, &len, &cap);
       }
@@ -855,7 +867,8 @@ const char *sp_PolyArray_pack_buffer(sp_PolyArray *arr, const char *fmt, const c
       /* converted only for a directive that takes the element: `x` packs a
          NUL and leaves it, so a nil under it (`[1, nil].pack("qx")`) is not
          converted, as the typed arrays' sentinel check already skips it */
-      int64_t v = (idx < arr->len && pk_int_directive_consumes(spec)) ? pk_poly_to_int(arr->data[idx]) : 0;
+      int64_t v = pk_int_directive_consumes(spec)
+                  ? (idx < arr->len ? pk_poly_to_int(arr->data[idx]) : (pk_too_few(buf), 0)) : 0;
       idx++;
       if (!pk_int_directive(spec, v, big, &buf, &len, &cap)) idx--;
     }
@@ -896,6 +909,8 @@ const char *sp_StrArray_pack(sp_StrArray *arr, const char *fmt) {
       idx++;
       continue;
     }
+    if (count == 0 || (count < 0 && idx == arr->len)) continue;
+    if (idx >= arr->len) pk_too_few(buf);
     idx++;
     if (spec == 'p' || spec == 'P') {
       /* the string's address, a pointer-sized J as CRuby packs it */
