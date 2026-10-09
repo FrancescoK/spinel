@@ -38,3 +38,19 @@ ArgumentError: invalid option
 ArgumentError: invalid option
 ArgumentError: invalid option
 "ab"
+"ab"
+#<Encoding:BINARY (ASCII-8BIT)>
+[97, 98]
+"ab\xFF"
+#<Encoding:BINARY (ASCII-8BIT)>
+[97, 98, 255]
+"\xFFab"
+#<Encoding:BINARY (ASCII-8BIT)>
+[255, 97, 98]
+"a\xE9b"
+#<Encoding:BINARY (ASCII-8BIT)>
+[97, 233, 98]
+#<Encoding:UTF-8>
+[1, 3, 5]
+[:recv, :step]
+[2, 22, 42]
