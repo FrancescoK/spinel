@@ -2877,6 +2877,9 @@ static const BopShareRow bop_share_rows[] = {
   { BOP_ANY_RECV, "module_eval", BSH_EXEC },
   { BOP_ANY_RECV, "new",         BSH_NEW },
 
+  /* Formatting an exception makes text of its own. */
+  { TY_EXCEPTION, "detailed_message", BSH_PURE },
+
   /* A builtin class's constructor keeps what it is handed in the container
      it answers. (An exception keeps its message, which #message hands back
      as what the analysis does not follow, as for a user exception class.) */
