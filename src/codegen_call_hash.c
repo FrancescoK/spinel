@@ -612,7 +612,7 @@ int emit_op_hash_shift(Compiler *c, const BopCtx *x, Buf *b) {
   else if (vt == TY_INT) buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_int(sp_%sHash_get(_t%d, _t%d)));", tp, hn, th, tk);
   else buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_str(sp_%sHash_get(_t%d, _t%d)));", tp, hn, th, tk);
   buf_printf(b, " _t%d = sp_box_poly_array(_t%d);", tr, tp);
-  buf_printf(b, " sp_%sHash_delete(_t%d, _t%d); }", hn, th, tk);
+  buf_printf(b, " sp_%sHash_delete%s(_t%d, _t%d); }", hn, rt == TY_STR_POLY_HASH ? "_bytes" : "", th, tk);
   buf_printf(b, " _t%d; })", tr);
   return 1;
 }
@@ -637,7 +637,7 @@ int emit_op_hash_delete(Compiler *c, const BopCtx *x, Buf *b) {
   buf_printf(b, "; %s _t%d = sp_%sHash_has_key(_t%d, _t%d) ? sp_%sHash_get(_t%d, _t%d) : %s;",
              c_type_name(vt), tv, hn, th, tk, hn, th, tk,
              vt == TY_POLY ? "sp_box_nil()" : vt == TY_INT ? "SP_INT_NIL" : vt == TY_STRING ? "NULL" : default_value_from_compiler(c, vt));
-  buf_printf(b, " sp_%sHash_delete(_t%d, _t%d); _t%d; })", hn, th, tk, tv);
+  buf_printf(b, " sp_%sHash_delete%s(_t%d, _t%d); _t%d; })", hn, rt == TY_STR_POLY_HASH ? "_bytes" : "", th, tk, tv);
   return 1;
 }
 
