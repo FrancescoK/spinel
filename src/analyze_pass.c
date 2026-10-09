@@ -6703,6 +6703,14 @@ static TyKind bound_source_type(Compiler *c, int src, const LocalVar *p) {
 }
 
 /* Type method mi's parameters from the arguments `argv` of call_id. */
+/* A module method an include copied away never runs as itself: each copy
+   binds its own calls, typed against its class. The original, whose ivars
+   nothing writes, sent its arguments to every method of the name. */
+static int call_in_transplanted_source(Compiler *c, int call_id) {
+  Scope *cs = comp_scope_of(c, call_id);
+  return cs && cs->is_transplanted_source;
+}
+
 static int bind_args_params(Compiler *c, int call_id, int mi, const int *argv, int argc) {
   if (mi < 0) return 0;
   const NodeTable *nt = c->nt;
@@ -6712,6 +6720,7 @@ static int bind_args_params(Compiler *c, int call_id, int mi, const int *argv, i
      changes before it returns, ends the shared generation
      (widen_boxed_array_sources) */
   if (wbas_shared && wbas_share_changed) wbas_share_step(wbas_share_changed, wbas_share_any);
+  if (call_in_transplanted_source(c, call_id)) return 0;
   /* `callee(...)`: the arg list is a single ForwardingArgumentsNode. Bind the
      callee's params from the enclosing `def foo(...)` method's synthesized
      __fwd_* params, positionally, so the callee's return type resolves (#1288).
@@ -8855,7 +8864,8 @@ static int infer_param_types_ex(Compiler *c, int settle) {
        convergence only -- during the fixpoint both the receiver and the
        argument may still settle, and this is not reversible -- and the flag
        carries it through the re-narrow reset, which clears poly parameters. */
-    if (g_final_bind_pass && (rt == TY_UNKNOWN || rt == TY_POLY) && name) {
+    if (g_final_bind_pass && (rt == TY_UNKNOWN || rt == TY_POLY) && name &&
+        !call_in_transplanted_source(c, id)) {
       int uargs = nt_ref(nt, id, "arguments");
       int uac = 0; const int *uav = uargs >= 0 ? nt_arr(nt, uargs, "arguments", &uac) : NULL;
       for (int a4 = 0; a4 < uac; a4++) {
