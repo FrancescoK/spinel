@@ -315,12 +315,44 @@ int64_t sp_bigint_to_int(sp_Bigint *b);  /* wraps mod 2^64, as pack does */
 #define pk_box_i64 sp_box_i64
 
 sp_Bigint *sp_bigint_new_u64(uint64_t v);
+sp_Bigint *sp_bigint_from_le_bytes(int negative, const unsigned char *bytes, size_t n);
 /* The same for an UNSIGNED 64-bit quantity, whose top half no int64 holds:
    `Q` above 2**63-1 is a Bignum in CRuby, and reading it as a signed value
    answered a negative number for every such byte pattern. */
 static sp_RbVal pk_box_u64(uint64_t v) {
   if (v > (uint64_t)INT64_MAX) return sp_box_bigint(sp_bigint_new_u64(v));
   return pk_box_i64((int64_t)v);
+}
+
+/* A complete BER value fits a uint64 until its next seven-bit shift would
+   overflow. Larger values use the existing magnitude-byte import in one
+   linear pass, rather than repeatedly shifting an ever-growing Bignum. */
+static sp_RbVal uk_ber_value(const unsigned char *src, size_t n) {
+  uint64_t v = 0;
+  size_t i = 0;
+  for (; i < n; i++) {
+    if (v > (UINT64_MAX >> 7)) break;
+    v = (v << 7) | (src[i] & 0x7F);
+  }
+  if (i == n) return pk_box_u64(v);
+  /* Seven-bit digits need at most n bytes; this bound cannot overflow. */
+  unsigned char *bytes = (unsigned char *)malloc(n);
+  if (!bytes) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  unsigned int bits = 0, digit = 0;
+  size_t used = 0;
+  for (i = n; i > 0; i--) {
+    digit |= (unsigned int)(src[i - 1] & 0x7F) << bits;
+    bits += 7;
+    if (bits >= 8) {
+      bytes[used++] = (unsigned char)digit;
+      digit >>= 8;
+      bits -= 8;
+    }
+  }
+  if (bits) bytes[used++] = (unsigned char)digit;
+  sp_Bigint *b = sp_bigint_from_le_bytes(0, bytes, used);
+  free(bytes);
+  return sp_box_bigint(b);
 }
 
 static int64_t pk_poly_to_int(sp_RbVal v) {
@@ -1331,13 +1363,11 @@ else if (spec == 'Z') {
     if (spec == 'w') {
       int64_t got = 0;
       while ((count < 0 || got < count) && off < slen) {
-        int64_t v = 0;
-        while (off < slen) {
-          unsigned char c = (unsigned char)str[off++];
-          v = (v << 7) | (c & 0x7F);
-          if (!(c & 0x80)) break;
-        }
-        sp_PolyArray_push(out, pk_box_i64(v));
+        size_t start = off;
+        while (off < slen && ((unsigned char)str[off++] & 0x80)) {}
+        /* A trailing continuation has no value until its final byte arrives. */
+        if ((unsigned char)str[off - 1] & 0x80) break;
+        sp_PolyArray_push(out, uk_ber_value((const unsigned char *)str + start, off - start));
         got++;
       }
       continue;
