@@ -10495,22 +10495,26 @@ static int emit_splat_given_count(Compiler *c, Scope *m, const ArgLayout *L, int
 
 /* Parameter i from element `off` of the splat temp `tmp` (of array type
    `at`), boxed from a gather (`gathered`) or typed from a splat spread in
-   place (ArgLayout's ARG_ELEM). */
+   place (ArgLayout's ARG_ELEM). `hold`: a String element wrapped in a handle
+   of its own is rooted where it is made (elems_want_hold). */
 static void emit_elem_param(Compiler *c, Scope *m, int i, int off, int tmp, TyKind at, int gathered,
-                            Buf *out) {
+                            int hold, Buf *out) {
   LocalVar *sp = m->pnames[i] ? scope_local(m, m->pnames[i]) : NULL;
   if (sp && sp->byref_out) {
     /* an element (or the default it falls back to) has no caller variable
        to write back to: bind the value, then lend a temp */
     Buf vb; memset(&vb, 0, sizeof vb);
     sp->byref_out = 0;
-    emit_elem_param(c, m, i, off, tmp, at, gathered, &vb);
+    emit_elem_param(c, m, i, off, tmp, at, gathered, hold, &vb);
     sp->byref_out = 1;
     emit_lent_temp(vb.p, out);
     free(vb.p);
     return;
   }
   TyKind set = ty_array_elem(at);
+  /* a String element into a shared-handle parameter: a handle of its own, as
+     any value that is not a caller's variable gets */
+  int handle = repr_of_slot(c, sp).handle && set == TY_STRING;
   Buf eb; memset(&eb, 0, sizeof eb);
   if (sp && sp->type == TY_POLY && set != TY_POLY && set != TY_UNKNOWN) {
     /* a scalar splat element into a poly-widened param: box it */
@@ -10518,9 +10522,7 @@ static void emit_elem_param(Compiler *c, Scope *m, int i, int off, int tmp, TyKi
     emit_array_elem_at(at, tmp, off, &raw);
     emit_boxed_text(c, set, raw.p ? raw.p : "0", &eb); free(raw.p);
   }
-  else if (repr_of_slot(c, sp).handle && set == TY_STRING) {
-    /* a String element into a shared-handle parameter: a handle of its own,
-       as any value that is not a caller's variable gets */
+  else if (handle) {
     Buf raw; memset(&raw, 0, sizeof raw);
     emit_array_elem_at(at, tmp, off, &raw);
     buf_printf(&eb, "sp_String_new_shared(%s)", raw.p ? raw.p : "NULL"); free(raw.p);
@@ -10549,12 +10551,55 @@ static void emit_elem_param(Compiler *c, Scope *m, int i, int off, int tmp, TyKi
     Buf db; memset(&db, 0, sizeof db);
     emit_arg_or_default(c, m, i, -1, &db);
     TyKind pt = sp ? sp->type : TY_INT;
-    buf_printf(out, "(%d < (_t%d ? _t%d->len : 0) ? %s : %s)", off, tmp, tmp,
+    Buf cb; memset(&cb, 0, sizeof cb);
+    buf_printf(&cb, "(%d < (_t%d ? _t%d->len : 0) ? %s : %s)", off, tmp, tmp,
                eb.p ? eb.p : "", db.p ? db.p : default_value_from_compiler(c, pt));
-    free(db.p);
+    free(db.p); free(eb.p); eb = cb;
   }
+  /* held as a converted read is (arg_read_converts), with the default it
+     may fall back to */
+  if (handle && hold && eb.p) emit_rooted_conversion(c, TY_STRBUF, eb.p, out);
   else buf_puts(out, eb.p ? eb.p : "");
   free(eb.p);
+}
+
+/* Is the value parameter `i` of `m` takes made in the call's own argument
+   list by something that allocates: a splat's element or a gathered value
+   wrapped in a handle, the rest Array, a converted read or literal, an
+   argument or a default that is neither hoisted into a rooted temp nor a
+   plain read? */
+static int param_made_in_place(Compiler *c, Scope *m, const ArgLayout *L, int i, const int *argv,
+                               TyKind splat_at, int argov_from) {
+  LocalVar *sp = m->pnames[i] ? scope_local(m, m->pnames[i]) : NULL;
+  TyKind pt = sp ? sp->type : TY_UNKNOWN;
+  int dflt = m->pdefault ? m->pdefault[i] : -1;
+  int dflt_made = dflt >= 0 && operand_may_allocate(c, dflt) && !subtree_is_plain_value(c, dflt);
+  switch (L->from[i]) {
+    case ARG_REST: case ARG_GATHERED: return 1;
+    case ARG_ELEM:
+      return (repr_of_slot(c, sp).handle && ty_array_elem(splat_at) == TY_STRING) || dflt_made;
+    case ARG_NODE: {
+      int n = argv[L->arg[i]];
+      if (arg_ran_first(n, argov_from) || arg_wants_root(c, pt, n)) return 0;
+      return arg_read_converts(c, pt, n) || (operand_may_allocate(c, n) && !subtree_is_plain_value(c, n));
+    }
+    default: return !arg_wants_root(c, pt, -1) && dflt_made;
+  }
+}
+/* Does a String element this call's splat spreads into a shared-handle
+   parameter want its handle rooted where it is made? A callee's frame takes
+   its parameters at entry, so one handle made in the list is held by then.
+   It is lost only where something allocates between its making and that
+   entry: a class's `new`, which pools the object before initialize takes
+   the parameters (the list leads with nothing there; a method's or a
+   super's leads with self), or a second value of the list made in place. */
+static int elems_want_hold(Compiler *c, Scope *m, const ArgLayout *L, const int *argv,
+                           const char *lead, TyKind splat_at, int argov_from) {
+  if (m->name && sp_streq(m->name, "initialize") && !lead[0]) return 1;
+  int made = 0;
+  for (int i = 0; i < m->nparams && made < 2; i++)
+    made += param_made_in_place(c, m, L, i, argv, splat_at, argov_from);
+  return made >= 2;
 }
 
 void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lead, Buf *out) {
@@ -10875,7 +10920,8 @@ else {
       }
     }
 else if (L.from[i] == ARG_ELEM)
-      emit_elem_param(c, m, i, L.arg[i], splat_tmp, splat_at, splat_all, out);
+      emit_elem_param(c, m, i, L.arg[i], splat_tmp, splat_at, splat_all,
+                      elems_want_hold(c, m, &L, argv, lead, splat_at, argov_saved), out);
 else {
       /* Check if this param has a keyword match (lookup by param name in kwh).
          Only a true KEYWORD param consumes a key -- a positional param whose
@@ -11739,7 +11785,9 @@ else {
         g_emitting_class_id = pm->class_id;
         if (lent) {}
         else if (from == ARG_GATHERED) emit_gathered_param(c, pm, k, splat_tmp_d, &ab);
-        else emit_elem_param(c, pm, k, L.arg[k], splat_tmp_d, splat_at_d, L.gather, &ab);
+        /* the dispatch binds each argument to a rooted temp of its own:
+           an element's handle is held there, with no second root */
+        else emit_elem_param(c, pm, k, L.arg[k], splat_tmp_d, splat_at_d, L.gather, 0, &ab);
         g_self = saved_self;
         g_self_deref = saved_deref4;
         g_emitting_class_id = saved_emcls4;
