@@ -653,6 +653,12 @@ const char *cplan_feature_why(Compiler *c, int id, int *stop, char *buf, size_t 
   if (!name) return NULL;
   if (is_raise_alias(name) && nt_int(nt, id, "class_new_capture", 0) && cplan_reachable(c, id))
     return "Class.new or Module.new with a block that captures outer locals is not supported; see docs/limitations.md";
+  if (is_raise_alias(name) && nt_int(nt, id, "class_new_superclass", 0) && cplan_reachable(c, id))
+    return "Class.new with a non-constant superclass is not supported; "
+           "use a constant superclass (see docs/limitations.md)";
+  if (nt_int(nt, id, "define_method_name", 0) && cplan_reachable(c, id))
+    return "Module#define_method with a non-literal name is not supported; "
+           "use a literal Symbol or String (see docs/limitations.md)";
   int recv = nt_ref(nt, id, "receiver");
   if ((nt_kind(nt, recv) == NK_ConstantReadNode || nt_kind(nt, recv) == NK_ConstantPathNode) &&
       !nt_int(nt, id, "builtin_only", 0)) {
@@ -832,6 +838,7 @@ static int cplan_user_names(Compiler *c, const char *name) {
    enclosing method's scope, and the emit loop emits a scope's body only when
    it is reachable */
 static int cplan_reachable(Compiler *c, int id) {
+  if (nt_int(c->nt, id, "refusal_dead", 0)) return 0;
   int proc = nt_int(c->nt, id, "refusal_proc", -1);
   if (proc >= 0 && proc_literal_uncalled(c, proc)) return 0;
   int sc = c->nscope[id];

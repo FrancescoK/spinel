@@ -1126,13 +1126,43 @@ void refuse_native_singleton_reopen(Compiler *c, Scope *s) {
   refuse_native_class_reopen(c, s->def_node, recv, ci, nt_str(c->nt, recv, "name"));
 }
 
-static void walk_scope_in(Compiler *c, int id, int scope_idx, int class_id, int proc) {
+static int alias_pred_const(const NodeTable *nt, int pred);
+
+/* Whether the program defines or aliases a define_method of its own (a def,
+   a singleton def, `alias` or `alias_method`), whose call with a computed name
+   is then an ordinary call. Asked once per compile: the first computed-name
+   call scans the node table and the answer is kept on the Compiler. */
+static int user_define_method(Compiler *c) {
+  if (c->user_define_method) return c->user_define_method == 2;
+  const NodeTable *nt = c->nt;
+  int found = 0;
+  NT_FOREACH_KIND(nt, NK_DefNode, d)
+    if (is_define_method_name(nt_str(nt, d, "name"))) found = 1;
+  NT_FOREACH_KIND(nt, NK_AliasMethodNode, a) {
+    int nn = nt_ref(nt, a, "new_name");
+    if (nn >= 0 && is_define_method_name(nt_str(nt, nn, "value"))) found = 1;
+  }
+  NT_FOREACH_KIND(nt, NK_CallNode, k) {
+    int an = nt_ref(nt, k, "arguments"), ac = 0;
+    const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
+    if (ac > 0 && is_alias_method_name(nt_str(nt, k, "name")) &&
+        is_define_method_name(nt_str(nt, av[0], "value"))) found = 1;
+  }
+  c->user_define_method = found ? 2 : 1;
+  return found;
+}
+
+static void walk_scope_in(Compiler *c, int id, int scope_idx, int class_id, int proc, int dead) {
   if (id < 0 || id >= c->nt->count) return;
   c->nscope[id] = scope_idx;
   c->node_cbody[id] = g_cbody_class_id;
   if (proc >= 0 && nt_kind(c->nt, id) == NK_CallNode &&
       (nt_int(c->nt, id, "class_new_capture", 0) || nt_int(c->nt, id, "class_new_superclass", 0)))
     nt_node_set_int((NodeTable *)c->nt, id, "refusal_proc", proc);
+  if (dead && nt_kind(c->nt, id) == NK_CallNode &&
+      (nt_int(c->nt, id, "class_new_capture", 0) || nt_int(c->nt, id, "class_new_superclass", 0) ||
+       is_define_method_name(nt_str(c->nt, id, "name")) || is_ivar_access(nt_str(c->nt, id, "name"))))
+    nt_node_set_int((NodeTable *)c->nt, id, "refusal_dead", 1);
   if (nt_kind(c->nt, id) == NK_DefNode) proc = -1;
   else if (is_proc_create(c, id)) proc = id;
   const char *ty = nt_type(c->nt, id);
@@ -1313,6 +1343,21 @@ static void walk_scope_in(Compiler *c, int id, int scope_idx, int class_id, int 
        function (class_id stays -1), matching `def`. */
     const char *dm_cn = nt_str(c->nt, id, "name");
     int dm_recv = nt_ref(c->nt, id, "receiver");
+    if (is_define_method_name(dm_cn) && (scope_idx > 0 || g_cbody_direct >= 0) &&
+        (dm_recv < 0 || nt_kind(c->nt, dm_recv) == NK_SelfNode)) {
+      int an = nt_ref(c->nt, id, "arguments"), ac = 0;
+      const int *av = an >= 0 ? nt_arr(c->nt, an, "arguments", &ac) : NULL;
+      if (ac > 0 && nt_kind(c->nt, av[0]) != NK_SymbolNode && nt_kind(c->nt, av[0]) != NK_StringNode &&
+          !user_define_method(c)) {
+        NodeTable *nt = (NodeTable *)c->nt;
+        nt_node_set_int(nt, id, "define_method_name", 1);
+        nt_node_set_str(nt, id, "name", "raise");
+        nt_node_set_ref(nt, id, "receiver", -1);
+        nt_node_set_ref(nt, id, "block", -1);
+        nt_node_set_ref(nt, id, "arguments", -1);
+        dm_cn = nt_str(nt, id, "name");
+      }
+    }
     int dm_is_dm  = dm_cn && sp_streq(dm_cn, "define_method") && dm_recv < 0;
     int dm_is_dsm = dm_cn && sp_streq(dm_cn, "define_singleton_method");
     /* define_singleton_method registers a class method on the resolved target:
@@ -1401,24 +1446,33 @@ static void walk_scope_in(Compiler *c, int id, int scope_idx, int class_id, int 
   if (child != scope_idx) g_cbody_direct = -1;
   else if (child_class >= 0) g_cbody_direct = child_class;
 
+  int pred = -1, then_body = -1, else_body = -1;
+  NodeKind kind = nt_kind(c->nt, id);
+  if (kind == NK_IfNode || kind == NK_UnlessNode) {
+    pred = alias_pred_const(c->nt, nt_ref(c->nt, id, "predicate"));
+    if (pred >= 0 && kind == NK_UnlessNode) pred = !pred;
+    then_body = nt_ref(c->nt, id, "statements");
+    else_body = nt_ref(c->nt, id, kind == NK_UnlessNode ? "else_clause" : "subsequent");
+  }
   int nr = nt_num_refs(c->nt, id);
   for (int i = 0; i < nr; i++) {
     int r = nt_ref_at(c->nt, id, i);
-    if (r >= 0) walk_scope_in(c, r, child, child_class, proc);
+    int arm_dead = dead || (pred == 0 && r == then_body) || (pred == 1 && r == else_body);
+    if (r >= 0) walk_scope_in(c, r, child, child_class, proc, arm_dead);
   }
   int na = nt_num_arrs(c->nt, id);
   for (int i = 0; i < na; i++) {
     int n = 0;
     const int *ids = nt_arr_at(c->nt, id, i, &n);
     for (int j = 0; j < n; j++)
-      if (ids[j] >= 0) walk_scope_in(c, ids[j], child, child_class, proc);
+      if (ids[j] >= 0) walk_scope_in(c, ids[j], child, child_class, proc, dead);
   }
   g_cbody_class_id = saved_cbody;
   g_cbody_direct = saved_direct;
 }
 
 void walk_scope(Compiler *c, int id, int scope_idx, int class_id) {
-  walk_scope_in(c, id, scope_idx, class_id, -1);
+  walk_scope_in(c, id, scope_idx, class_id, -1, 0);
 }
 
 /* A `module_function` call of module `ci`'s body: bare, it turns on the mode

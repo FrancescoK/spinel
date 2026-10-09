@@ -12257,8 +12257,7 @@ int desugar_class_new_blocks(Compiler *c) {
         continue;
       }
     }
-    if (!is_new_name(nm) || recv < 0 ||
-        (blk >= 0 && nt_kind(nt, blk) != NK_BlockNode)) continue;
+    if (!is_new_name(nm) || recv < 0) continue;
     if (nt_kind(nt, recv) != NK_ConstantReadNode) continue;
     const char *rn = nt_str(nt, recv, "name");
     int is_module = rn && sp_streq(rn, "Module");
@@ -12266,12 +12265,36 @@ int desugar_class_new_blocks(Compiler *c) {
     int an = nt_ref(nt, id, "arguments");
     int ac = 0; const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
     int super_node = (!is_module && ac >= 1) ? av[0] : -1;
+    int dynamic_super = super_node >= 0 && nt_kind(nt, super_node) != NK_ConstantReadNode &&
+                        nt_kind(nt, super_node) != NK_ConstantPathNode;
+    if (dynamic_super) {
+      cn_neutralize(nt, blk);
+      cn_reset_call(nt, id);
+      nt_node_set_str(nt, id, "name", "raise");
+      nt_node_set_int(nt, id, "class_new_superclass", 1);
+      int args = fwd_new_node_like(nt, id, "ArgumentsNode");
+      int msg = str_node_like(nt, id, "Class.new with a non-constant superclass is not supported");
+      nt_node_set_arr(nt, args, "arguments", &msg, 1);
+      nt_node_set_ref(nt, id, "arguments", args);
+      int par = parent[id];
+      if (par >= 0 && (nt_kind(nt, par) == NK_ConstantWriteNode ||
+                      nt_kind(nt, par) == NK_ConstantPathWriteNode) &&
+          nt_ref(nt, par, "value") == id) {
+        cn_reset_call(nt, par);
+        nt_node_set_str(nt, par, "name", "raise");
+        nt_node_set_int(nt, par, "class_new_superclass", 1);
+        nt_node_set_ref(nt, par, "arguments", args);
+      }
+      changed = 1;
+      continue;
+    }
     if (super_node >= 0 && cn_names_module(nt, super_node)) {
       cn_neutralize(nt, blk);
       cn_raise_module_super(nt, id, parent[id]);
       changed = 1;
       continue;
     }
+    if (blk >= 0 && nt_kind(nt, blk) != NK_BlockNode) continue;
     /* An omitted block has the same empty class body as `{}`. */
     if (blk < 0) {
       if (is_module || ac > 1) continue;
