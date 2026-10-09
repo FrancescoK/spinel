@@ -17955,6 +17955,10 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
     for (int i = 0; i < an; i++) changed |= share_demand_literal_arg(c, av[i]);
     for (int t = 0; t < cnt; t++) changed |= share_demand_rest_args(c, mis[t], av, an);
   }
+  /* The next round must settle on the types AFTER these promotions.
+     Comparing with the pre-promotion types asks for another inference
+     round even when no dependent type moved. */
+  if (in_fixpoint && changed) c->share_sig = share_types_digest(c);
   return changed;
 }
 
