@@ -345,6 +345,65 @@ static int64_t pk_poly_to_int(sp_RbVal v) {
   return 0;
 }
 
+size_t sp_bigint_byte_len(sp_Bigint *b);
+size_t sp_bigint_to_le_bytes(sp_Bigint *b, unsigned char *out, size_t cap);
+sp_Bigint *sp_bigint_new_double(double d);
+
+static void pk_ber_int(int64_t sv, char **buf, size_t *len, size_t *cap) {
+  if (sv < 0) { free(*buf); sp_raise_cls("ArgumentError", "can't compress negative numbers"); }
+  uint64_t v = (uint64_t)sv;
+  unsigned char tmp[10]; int ti = 0;
+  tmp[ti++] = (unsigned char)(v & 0x7F); v >>= 7;
+  while (v > 0) { tmp[ti++] = (unsigned char)((v & 0x7F) | 0x80); v >>= 7; }
+  for (int j = ti - 1; j >= 0; j--) pk_append(buf, len, cap, (char *)&tmp[j], 1);
+}
+
+/* BER has no fixed width. Read the existing magnitude serialization in
+   seven-bit groups, then reverse just this element's bytes. Unlike the
+   fixed-width directives, w must not narrow a Bignum modulo 2^64. */
+static void pk_ber_bigint(sp_Bigint *b, char **buf, size_t *len, size_t *cap) {
+  if (sp_bigint_sign(b) < 0) { free(*buf); sp_raise_cls("ArgumentError", "can't compress negative numbers"); }
+  size_t n = sp_bigint_byte_len(b);
+  unsigned char *bytes = (unsigned char *)malloc(n ? n : 1);
+  if (!bytes) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  n = sp_bigint_to_le_bytes(b, bytes, n);
+  size_t start = *len;
+  unsigned int v = 0, bits = 0;
+  for (size_t i = 0; i < n; i++) {
+    v |= (unsigned int)bytes[i] << bits;
+    bits += 8;
+    while (bits >= 7) {
+      char digit = (char)((v & 0x7F) | 0x80);
+      pk_append(buf, len, cap, &digit, 1);
+      v >>= 7;
+      bits -= 7;
+    }
+  }
+  if (v || *len == start) {
+    char digit = (char)(v | 0x80);
+    pk_append(buf, len, cap, &digit, 1);
+  }
+  free(bytes);
+  while (*len > start + 1 && (unsigned char)(*buf)[*len - 1] == 0x80) (*len)--;
+  (*buf)[start] &= 0x7F;
+  for (size_t i = start, j = *len - 1; i < j; i++, j--) {
+    char t = (*buf)[i]; (*buf)[i] = (*buf)[j]; (*buf)[j] = t;
+  }
+}
+
+static void pk_ber_poly(sp_RbVal v, char **buf, size_t *len, size_t *cap) {
+  if (v.tag == SP_TAG_BIGINT) {
+    pk_ber_bigint((sp_Bigint *)v.v.p, buf, len, cap);
+    return;
+  }
+  if (v.tag == SP_TAG_FLT && isfinite(v.v.f) &&
+      (v.v.f >= 9223372036854775808.0 || v.v.f < -9223372036854775808.0)) {
+    pk_ber_bigint(sp_bigint_new_double(v.v.f), buf, len, cap);
+    return;
+  }
+  pk_ber_int(pk_poly_to_int(v), buf, len, cap);
+}
+
 /* Keep the ordinary loop's inlined conversion with a second packing entry. */
 static inline double pk_poly_to_flt(sp_RbVal v) {
   switch (v.tag) {
@@ -650,12 +709,7 @@ const char *sp_IntArray_pack(sp_IntArray *arr, const char *fmt) {SP_GC_ROOT(arr)
       for (int64_t k = 0; k < wc; k++) {
         int64_t sv = (idx < arr->len) ? arr->data[arr->start + idx] : (pk_too_few(buf), 0); idx++;
         if (sv == SP_INT_NIL) pk_nil_elem(0);
-        if (sv < 0) sp_raise_cls("ArgumentError", "can't compress negative numbers");
-        uint64_t v = (uint64_t)sv;
-        unsigned char tmp[10]; int ti = 0;
-        tmp[ti++] = (unsigned char)(v & 0x7F); v >>= 7;
-        while (v > 0) { tmp[ti++] = (unsigned char)((v & 0x7F) | 0x80); v >>= 7; }
-        for (int j = ti - 1; j >= 0; j--) pk_append(&buf, &len, &cap, (char *)&tmp[j], 1);
+        pk_ber_int(sv, &buf, &len, &cap);
       }
       continue;
     }
@@ -717,6 +771,16 @@ const char *sp_FloatArray_pack(sp_FloatArray *arr, const char *fmt) {
       idx++;
       continue;
     }
+    if (spec == 'w') {
+      int64_t wc = count < 0 ? arr->len - idx : count;
+      for (int64_t k = 0; k < wc; k++) {
+        if (idx >= arr->len) pk_too_few(buf);
+        sp_float v = arr->data[idx++];
+        if (sp_float_is_nil(v)) pk_nil_elem(0);
+        pk_ber_poly(sp_box_float(v), &buf, &len, &cap);
+      }
+      continue;
+    }
     if (count < 0) count = arr->len - idx;
     if (count < 0) count = 0;
     if (pk_is_flt_spec(spec)) {
@@ -770,13 +834,8 @@ const char *sp_PolyArray_pack(sp_PolyArray *arr, const char *fmt) {SP_GC_ROOT(ar
     if (spec == 'w') {
       int64_t wc = count < 0 ? arr->len - idx : count;
       for (int64_t k = 0; k < wc; k++) {
-        int64_t sv = (idx < arr->len) ? pk_poly_to_int(arr->data[idx]) : (pk_too_few(buf), 0); idx++;
-        if (sv < 0) sp_raise_cls("ArgumentError", "can't compress negative numbers");
-        uint64_t v = (uint64_t)sv;
-        unsigned char tmp[10]; int ti = 0;
-        tmp[ti++] = (unsigned char)(v & 0x7F); v >>= 7;
-        while (v > 0) { tmp[ti++] = (unsigned char)((v & 0x7F) | 0x80); v >>= 7; }
-        for (int j = ti - 1; j >= 0; j--) pk_append(&buf, &len, &cap, (char *)&tmp[j], 1);
+        if (idx >= arr->len) pk_too_few(buf);
+        pk_ber_poly(arr->data[idx++], &buf, &len, &cap);
       }
       continue;
     }
@@ -840,13 +899,8 @@ const char *sp_PolyArray_pack_buffer(sp_PolyArray *arr, const char *fmt, const c
     if (spec == 'w') {
       int64_t wc = count < 0 ? arr->len - idx : count;
       for (int64_t k = 0; k < wc; k++) {
-        int64_t sv = (idx < arr->len) ? pk_poly_to_int(arr->data[idx]) : (pk_too_few(buf), 0); idx++;
-        if (sv < 0) sp_raise_cls("ArgumentError", "can't compress negative numbers");
-        uint64_t v = (uint64_t)sv;
-        unsigned char tmp[10]; int ti = 0;
-        tmp[ti++] = (unsigned char)(v & 0x7F); v >>= 7;
-        while (v > 0) { tmp[ti++] = (unsigned char)((v & 0x7F) | 0x80); v >>= 7; }
-        for (int j = ti - 1; j >= 0; j--) pk_append(&buf, &len, &cap, (char *)&tmp[j], 1);
+        if (idx >= arr->len) pk_too_few(buf);
+        pk_ber_poly(arr->data[idx++], &buf, &len, &cap);
       }
       continue;
     }
