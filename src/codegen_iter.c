@@ -5013,11 +5013,11 @@ int emit_array_filter_loop(Compiler *c, int recv, int block, TyKind rt, const ch
   emit_indent(b, indent);
   if (g_ensure_depth > 0) {
     EnsureCtx *outer = &g_ensure_stack[g_ensure_depth - 1];
-    if (has_retval && outer->has_retval)
-      buf_printf(b, "if (_retf%d) { _retv%d = _retv%d; _retf%d = 1; sp_exc_top--; goto _ensure%d; }\n",
-                 eid, outer->lid, eid, outer->lid, outer->lid);
-    else
-      buf_printf(b, "if (_retf%d) { _retf%d = 1; sp_exc_top--; goto _ensure%d; }\n", eid, outer->lid, outer->lid);
+      { buf_printf(b, "if (_retf%d) { ", eid);
+        if (has_retval && outer->has_retval) buf_printf(b, "_retv%d = _retv%d; ", outer->lid, eid);
+        buf_printf(b, "_retf%d = 1; ", outer->lid);
+        emit_ensure_chain_pops(b, outer);
+        buf_printf(b, "goto _ensure%d; }\n", outer->lid); }
     emit_indent(b, indent);
     /* a rescue between this region and the enclosing one is the nearer
        handler: its frame sits between them, so re-raise there, as the

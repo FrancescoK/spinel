@@ -9923,6 +9923,16 @@ void emit_rescue(Compiler *c, int id, Buf *b, int indent, int fr, const char *re
   }
 }
 
+/* A deferred return or exception handed on to the enclosing ensure `outer`:
+   the frames and rescue handlers between the two go, down to and including
+   outer's frame. A rescue between the ensures also leaves scope; the
+   ordinary one-frame spelling stays when there is nothing else (#8275). */
+void emit_ensure_chain_pops(Buf *b, const EnsureCtx *outer) {
+  if (g_exc_frame_depth == outer->exc_base + 1 && rescues_crossed(outer->exc_base) == 0)
+    buf_puts(b, "sp_exc_top--; ");
+  else emit_frame_unwind(b, outer->exc_base, NULL);
+}
+
 /* A deferred return runs only ensures belonging to its method, then pops
    frames down to that method's exit. An inline exit is inside the caller's
    protected regions, which must remain live after the call. */
@@ -9934,11 +9944,7 @@ static void emit_ensure_return(Compiler *c, int eid, int has_retval, Buf *b, int
     if (has_retval && outer->has_retval)
       buf_printf(b, "_retv%d = _retv%d; ", outer->lid, eid);
     buf_printf(b, "_retf%d = 1; ", outer->lid);
-    /* A rescue between the ensures also leaves scope. Keep the ordinary
-       one-frame spelling when there are no other handlers to unwind. */
-    if (g_exc_frame_depth == outer->exc_base + 1 && rescues_crossed(outer->exc_base) == 0)
-      buf_puts(b, "sp_exc_top--; ");
-    else emit_frame_unwind(b, outer->exc_base, NULL);
+    emit_ensure_chain_pops(b, outer);
     buf_printf(b, "goto _ensure%d; }\n", outer->lid);
     return;
   }

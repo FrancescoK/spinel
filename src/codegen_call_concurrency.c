@@ -414,11 +414,11 @@ int emit_call_synchronize_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         /* nested inside another begin..ensure / synchronize: hand the deferred
            return and unhandled exception to the enclosing ensure. */
         EnsureCtx *outer = &g_ensure_stack[g_ensure_depth - 1];
-        if (has_retval && outer->has_retval)
-          buf_printf(b, "if (_retf%d) { _retv%d = _retv%d; _retf%d = 1; sp_exc_top--; goto _ensure%d; } ",
-                     eid, outer->lid, eid, outer->lid, outer->lid);
-        else
-          buf_printf(b, "if (_retf%d) { _retf%d = 1; sp_exc_top--; goto _ensure%d; } ", eid, outer->lid, outer->lid);
+          { buf_printf(b, "if (_retf%d) { ", eid);
+        if (has_retval && outer->has_retval) buf_printf(b, "_retv%d = _retv%d; ", outer->lid, eid);
+        buf_printf(b, "_retf%d = 1; ", outer->lid);
+        emit_ensure_chain_pops(b, outer);
+        buf_printf(b, "goto _ensure%d; } ", outer->lid); }
         buf_printf(b, "if (_excf%d) { _excf%d = 1; _excmsg%d = _excmsg%d; _exccls%d = _exccls%d; _excobj%d = _excobj%d; sp_exc_top--; goto _ensure%d; } ",
                    eid, outer->lid, outer->lid, eid, outer->lid, eid, outer->lid, eid, outer->lid);
       }
