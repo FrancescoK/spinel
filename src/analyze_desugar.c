@@ -7558,6 +7558,53 @@ static void dmc_walk(NodeTable *nt, int id, int lvl, int in_dm, const char *cls,
   }
 }
 
+/* Rename every reference in a body's lexical scope (blocks included, defs
+   and nested classes not) to a local the body owns: depth equal to the
+   blocks entered. */
+static void bls_walk(NodeTable *nt, int id, int lvl, const char *tag) {
+  if (id < 0) return;
+  NodeKind k = nt_kind(nt, id);
+  if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode ||
+      k == NK_SingletonClassNode) return;
+  const char *nm = dmc_local_kind(k) >= 0 ? nt_str(nt, id, "name") : NULL;
+  if (nm && nt_int(nt, id, "depth", 0) == lvl) {
+    char buf[256];
+    snprintf(buf, sizeof buf, "%s__cb%s", nm, tag);
+    nt_node_set_str(nt, id, "name", buf);
+  }
+  if (k == NK_BlockNode || k == NK_LambdaNode) lvl++;
+  int nr = nt_num_refs(nt, id);
+  for (int i = 0; i < nr; i++) bls_walk(nt, nt_ref_at(nt, id, i), lvl, tag);
+  int na = nt_num_arrs(nt, id);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *v = nt_arr_at(nt, id, i, &n);
+    for (int j = 0; j < n; j++) bls_walk(nt, v[j], lvl, tag);
+  }
+}
+
+/* `module M; a = 5; end; a ||= 10`: a class, module or singleton class body
+   is a local scope of its own, but its statements are emitted into the
+   top level's C function, where a local of the same name shared one C
+   variable with the top level's (and with every other body's). Each body's
+   locals take a name private to the body. Runs before any pass turns a
+   block into a class body (Class.new do..end), whose locals are the
+   block's and may read the enclosing scope's. */
+int desugar_body_local_scopes(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  int n0 = nt->count;
+  for (int cls = 0; cls < n0; cls++) {
+    NodeKind ck = nt_kind(nt, cls);
+    if (ck != NK_ClassNode && ck != NK_ModuleNode && ck != NK_SingletonClassNode) continue;
+    int body = nt_ref(nt, cls, "body");
+    if (body < 0) continue;
+    char tag[64]; snprintf(tag, sizeof tag, "%s", comp_node_tag(c, cls));
+    bls_walk(nt, body, 0, tag);
+    changed = 1;
+  }
+  return changed;
+}
+
 /* `singleton_class.define_method(:m) { }` (or `self.singleton_class.`) in a
    class or module body -> `define_singleton_method(:m) { }`: self is the
    class there, so its singleton class is the class's own. */

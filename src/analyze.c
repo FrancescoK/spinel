@@ -34799,6 +34799,7 @@ static void an_phase_desugar_register(Compiler *c) {
     }
   }
   mark_sym_proc_blocks(c);               /* { |_spx| _spx.m } is `&:m` */
+  desugar_body_local_scopes(c);          /* a class body local -> a name of its own */
   desugar_root_scoped_constants(c);      /* ::Name -> Name (#4801) */
   desugar_errno_aliases(c);             /* Errno::EWOULDBLOCK -> Errno::EAGAIN where they share a number */
   desugar_builtin_reopen_named_superclass(c); /* class Rational < Numeric -> class Rational */
