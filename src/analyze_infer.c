@@ -8522,6 +8522,8 @@ static int infer_yield_node(Compiler *c, int id, const NodeTable *nt, NodeKind n
            emitted the String into an sp_int. Poly boxes each site's. */
         const char *wn = nt_str(nt, w, "name");
         if (wn && call_may_reach_user_method(c, w, wn)) { *out = TY_POLY; return 1; }
+        if (wn && sp_streq(wn, "synchronize") && nt_ref(nt, w, "receiver") >= 0)
+          { *out = TY_POLY; return 1; }
         break;
       }
       case YU_RECEIVER: {
