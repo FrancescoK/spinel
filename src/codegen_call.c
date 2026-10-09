@@ -2213,6 +2213,27 @@ void emit_proc_ret_unbox(Compiler *c, TyKind rty, Buf *b) {
    boxed and published, not just the statically-poly ones. (A `yield` knows its
    block's parameter types, so it passes force_poly=0 and keeps the lean ABI.) */
 unsigned g_yield_live_mask = 0;
+
+/* A by-value struct (a Range, a Time, a Rational, a Complex, a value-type
+   object) handed to a Proc is boxed for the side channel alone, and the
+   callee's prologue clears the channel: a poly parameter is then all that
+   holds the box, and nothing roots a parameter. The call site holds it
+   instead. proc_arg_box_hold declares the rooted holder into `decl`, where
+   the argument's own temp is declared, and answers its number, or -1 for a
+   kind whose box is no allocation of its own; emit_proc_arg_boxed writes
+   the box, through the holder when there is one. */
+int proc_arg_box_hold(Compiler *c, TyKind at, Buf *decl, int indent) {
+  if (!proc_slot_via_poly(c, at) || at == TY_CLASS) return -1;   /* a Class boxes without allocating */
+  int t = ++g_tmp;
+  emit_indent(decl, indent);
+  buf_printf(decl, "sp_RbVal _t%d = sp_box_nil(); SP_GC_ROOT_RBVAL(_t%d);\n", t, t);
+  return t;
+}
+void emit_proc_arg_boxed(Compiler *c, TyKind at, const char *tn, int hold, Buf *b) {
+  if (hold >= 0) buf_printf(b, "(_t%d = ", hold);
+  emit_boxed_text(c, at, tn, b);
+  if (hold >= 0) buf_puts(b, ")");
+}
 /* The type a proc call publishes an argument as. An empty Array literal
    inference left without an element type emits as the empty Integer Array
    it starts as, so it is published as that, not as a nil in an sp_int. */
@@ -2255,7 +2276,7 @@ void emit_proc_call_args(Compiler *c, int call, int argc, const int *argv, Buf *
        published both unboxed (the sp_int[] slot, for a concrete parameter)
        and boxed (the side-channel, for a poly parameter). A nil/unknown arg
        has no storable C type; it rides an sp_int temp and boxes to nil. */
-    int atmp[16], slot[16];
+    int atmp[16], slot[16], hold[16];
     for (int k = 0; k < nargs; k++) {
       TyKind at = proc_arg_ty(c, argv[k]);
       int storable = ty_is_object(at) || c_type_name(at) != NULL;
@@ -2295,6 +2316,7 @@ void emit_proc_call_args(Compiler *c, int call, int argc, const int *argv, Buf *
         else if (proc_slot_is_ptr(at) || at == TY_PROC) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", atmp[k]); }
         free(vb.p);
       }
+      hold[k] = proc_arg_box_hold(c, at, g_pre, g_indent);
       /* A shared String handle (#6179) rides the box, which a boxed or handle
          parameter reads and appends through. A plain String parameter reads
          the sp_int slot instead, and the handle's live bytes are malloc'd
@@ -2339,7 +2361,7 @@ void emit_proc_call_args(Compiler *c, int call, int argc, const int *argv, Buf *
       buf_printf(b, "_sp_proc_poly_args[%d] = ", k);
       /* a handle parameter is NULL for a nil argument: it boxes as nil */
       if (at == TY_STRBUF) buf_printf(b, "(%s ? sp_box_obj(%s, SP_BUILTIN_STRBUF) : sp_box_nil())", tn, tn);
-      else if (storable) emit_boxed_text(c, at, tn, b);
+      else if (storable) emit_proc_arg_boxed(c, at, tn, hold[k], b);
       else buf_puts(b, "sp_box_nil()");
       buf_puts(b, ", ");
     }
@@ -6020,13 +6042,14 @@ int emit_poly_callable_prearm(Compiler *c, const char *name, int argc,
      statement) because an argument that is itself a call clobbers the
      channel, and its callee's prologue then clears it (#4059, #4333). */
   Buf pubs; memset(&pubs, 0, sizeof pubs);
+  Buf holds; memset(&holds, 0, sizeof holds);
   if (argc > 0) {
     g_needs_proc_poly_argslot = 1;
     for (int k = 0; k < argc; k++) {
       char tn[24]; snprintf(tn, sizeof tn, "_t%d", atmp[k]);
       buf_printf(&pubs, "_sp_proc_poly_args[%d] = ", k);
       if (atmp_ty[k] == TY_POLY) buf_puts(&pubs, tn);
-      else emit_boxed_text(c, atmp_ty[k], tn, &pubs);
+      else emit_proc_arg_boxed(c, atmp_ty[k], tn, proc_arg_box_hold(c, atmp_ty[k], &holds, 0), &pubs);
       buf_puts(&pubs, ", ");
     }
   }
@@ -6176,11 +6199,11 @@ int emit_poly_callable_prearm(Compiler *c, const char *name, int argc,
     buf_puts(b, " || ");
   }
   buf_printf(b, "sp_bm_thunk_ok((sp_BoundMethod *)_t%d.v.p, %d)))", tv, argc);
-  buf_printf(b, ")) { _t%d = ", tr);
+  buf_printf(b, ")) { %s_t%d = ", holds.p ? holds.p : "", tr);
   if (ret == TY_POLY) buf_puts(b, eb.p ? eb.p : "");
   else emit_unbox_poly_ret(c, ret, eb.p ? eb.p : "", b);
   buf_puts(b, "; }\nelse ");
-  free(pubs.p); free(eb.p);
+  free(pubs.p); free(eb.p); free(holds.p);
   return 1;
 }
 

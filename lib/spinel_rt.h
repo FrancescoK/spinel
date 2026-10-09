@@ -9703,6 +9703,13 @@ static sp_RbVal sp_poly_call_aref(sp_RbVal v, sp_RbVal arg) {
   sp_int slot = sp_poly_slot_i(arg);
   return sp_poly_callable_call(v, 1, &slot);
 }
+/* sp_poly_call_aref for an argument its caller may have boxed for this call
+   alone (a Range, a Time: a by-value struct): the box is held while the
+   Proc runs */
+static sp_RbVal sp_poly_call_aref_held(sp_RbVal v, sp_RbVal arg) {
+  SP_GC_ROOT_RBVAL(arg);
+  return sp_poly_call_aref(v, arg);
+}
 /* A key of a kind the Hash's storage cannot hold (a String or an Integer on a
    Symbol-keyed Hash, a Symbol or an Integer on a String-keyed one, a Float or
    an Array on any typed kind, ...) is a miss, and answers the Hash's default:
@@ -10905,8 +10912,11 @@ static sp_RbVal sp_poly_index_poly(sp_RbVal recv, sp_RbVal idx) {
     return sp_curry_call_poly((sp_Curry *)recv.v.p, 1, &idx);
   /* a Proc's or a Method's [] is a call, and its argument of any kind (a
      shared String handle, nil, an Integer) is the one argument: the
-     key-typed arms below would take it for an index (#6179) */
-  if (sp_poly_is_call_aref(recv)) return sp_poly_call_aref(recv, idx);
+     key-typed arms below would take it for an index (#6179). A Proc keeps
+     the argument in a parameter nothing roots, so it is held for the Proc. */
+  if (sp_poly_is_call_aref(recv))
+    return recv.cls_id == SP_BUILTIN_PROC ? sp_poly_call_aref_held(recv, idx)
+                                          : sp_poly_call_aref(recv, idx);
   /* Reading through a shared-string handle is non-mutating, so it answers as
      its live value: the String arms below all test SP_TAG_STR, and a handle
      fell past every one of them to the trailing nil (#4279). */
@@ -10934,6 +10944,11 @@ static sp_RbVal sp_poly_index_poly(sp_RbVal recv, sp_RbVal idx) {
   if (SP_UNLIKELY(sp_poly_is_user_obj(recv))) {
     sp_RbVal _u;
     if (sp_poly_user_cmp("[]", recv, idx, &_u)) return _u;
+    /* ...and one that has none is CRuby's NoMethodError, which `r[k] ||= v`
+       raises before it stores: the reads below answered nil, and the store
+       ran. A Struct's or a Data's members are read below. */
+    if (!(sp_obj_to_h_fn && sp_obj_to_h_fn(recv).tag == SP_TAG_OBJ))
+      sp_raise_nomethod(sp_nomethod_msg("[]", recv));
   }
   /* A shared String key reads as its live value. The callable, object and
      heterogeneous Hash arms above keep the original argument; the typed
@@ -13943,6 +13958,17 @@ static int sp_exc_cause_chain_reaches(sp_Exception *c, void *obj) {
   }
   return 0;
 }
+/* The cause a raise takes when none is named is `c`: the exception being
+   handled, else the one an ensure body has in flight. An object raised again
+   while one of its own effects is that exception (an exception whose cause
+   chain leads back to it) keeps the cause it had: the other would close a
+   ring, or make it its own cause. Every raise passes here, so the raised
+   object comes in as a local and `c` is tested first: a raise made with
+   nothing handled and nothing in flight goes on at that test. */
+static SP_INLINE void *sp_exc_implicit_cause(void *c, void *obj) {
+  if (c && obj && sp_exc_cause_chain_reaches((sp_Exception *)c, obj)) return ((sp_Exception *)obj)->cause;
+  return c;
+}
 SP_NORETURN SP_COLD void sp_raise_cls(const char *cls, const char *msg) {
   /* Launder the message onto the string heap and root the copy before anything
      below allocates. `msg` is the caller's own pointer and comes in one of two
@@ -14034,7 +14060,7 @@ SP_NORETURN SP_COLD void sp_raise_cls(const char *cls, const char *msg) {
      `raise e`, or through an ensure), it keeps the cause it had instead of
      becoming its own -- the pending cause is that cause, so a rescue that
      stores the pending cause outright (a modifier rescue) keeps it too. */
-  if (sp_exc_top > 0) { sp_exc_msg[sp_exc_top-1] = msg; sp_exc_cls[sp_exc_top-1] = cls; sp_exc_obj[sp_exc_top-1] = sp_pending_exc_obj; sp_pending_exc_obj = NULL; sp_pending_cause = sp_explicit_cause_set ? sp_explicit_cause : sp_cur_handled() ? (sp_cur_handled() == sp_exc_obj[sp_exc_top-1] ? (void *)((sp_Exception *)sp_cur_handled())->cause : sp_cur_handled()) : sp_inflight_cause; sp_inflight_cause = NULL; sp_explicit_cause = NULL; sp_explicit_cause_set = 0; sp_last_exc_cls = cls; sp_handler_stacks_unwind(); sp_poly_recur_unwind(); longjmp(sp_exc_stack[sp_exc_top-1], 1); }
+  if (sp_exc_top > 0) { sp_exc_msg[sp_exc_top-1] = msg; sp_exc_cls[sp_exc_top-1] = cls; void *raised = sp_pending_exc_obj; sp_exc_obj[sp_exc_top-1] = raised; sp_pending_exc_obj = NULL; sp_pending_cause = sp_explicit_cause_set ? sp_explicit_cause : sp_cur_handled() ? (sp_cur_handled() == raised ? (void *)((sp_Exception *)raised)->cause : sp_exc_implicit_cause(sp_cur_handled(), raised)) : sp_exc_implicit_cause(sp_inflight_cause, raised); sp_inflight_cause = NULL; sp_explicit_cause = NULL; sp_explicit_cause_set = 0; sp_last_exc_cls = cls; sp_handler_stacks_unwind(); sp_poly_recur_unwind(); longjmp(sp_exc_stack[sp_exc_top-1], 1); }
   /* Uncaught SystemExit terminates silently with its status (Kernel#exit).
      Read the status BEFORE the hooks run: it lives in the pending exception
      object, which nothing roots once the hooks start allocating. */

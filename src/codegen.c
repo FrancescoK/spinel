@@ -402,6 +402,36 @@ TyKind yield_site_type(Compiler *c, int node) {
    build. Handles only a conversion method taking no parameters whose static
    return type is the slot's type; anything else keeps the prior behavior.
    Returns 1 when it emitted, 0 to fall through. */
+static int conv_dflt_reads_local(Compiler *c, int node) {
+  if (node < 0) return 0;
+  NodeKind k = nt_kind(c->nt, node);
+  if (k == NK_LocalVariableReadNode || k == NK_YieldNode) return 1;
+  const SpNode *nd = &c->nt->nodes[node];
+  for (int i = 0; i < nd->nr; i++)
+    if (conv_dflt_reads_local(c, nd->r[i].ref)) return 1;
+  for (int i = 0; i < nd->na; i++)
+    for (int j = 0; j < nd->a[i].n; j++)
+      if (conv_dflt_reads_local(c, nd->a[i].ids[j])) return 1;
+  return 0;
+}
+
+int conv_takes_no_args(Compiler *c, int mi) {
+  Scope *s = &c->scopes[mi];
+  if (s->nparams == 0) return 1;
+  if (s->nrequired || s->rest_idx >= 0 || s->kwrest_idx >= 0 || !s->pdefault || s->def_node < 0) return 0;
+  int pn = nt_ref(c->nt, s->def_node, "parameters"), kn = 0;
+  if (pn >= 0) (void)nt_arr(c->nt, pn, "keywords", &kn);
+  if (kn) return 0;
+  for (int i = 0; i < s->nparams; i++)
+    if (s->pdefault[i] < 0 || fiber_body_uses_self(c, s->pdefault[i]) || conv_dflt_reads_local(c, s->pdefault[i])) return 0;
+  return 1;
+}
+
+void emit_conv_dflt_args(Compiler *c, int mi, Buf *b) {
+  Scope *s = &c->scopes[mi];
+  for (int i = 0; i < s->nparams; i++) { buf_puts(b, ", "); emit_arg_or_default(c, s, i, -1, b); }
+}
+
 int obj_conv_method(Compiler *c, TyKind t, const char *conv, TyKind want, int *def_out) {
   if (!ty_is_object(t)) return -1;
   int cid = ty_object_class(t);
@@ -417,7 +447,7 @@ int obj_conv_method(Compiler *c, TyKind t, const char *conv, TyKind want, int *d
      own; refusing it here instead left the raw object pointer in the scalar
      slot and the generated C did not compile. Any other shape -- a #to_int
      answering a String -- is not this protocol. */
-  if ((um->ret != want && um->ret != TY_POLY) || um->nparams != 0) return -1;
+  if ((um->ret != want && um->ret != TY_POLY) || !conv_takes_no_args(c, mi)) return -1;
   if (def_out) *def_out = def;
   return mi;
 }
@@ -447,7 +477,7 @@ TyKind obj_container_conv(Compiler *c, TyKind t, const char *conv, int *def) {
   int cid = ty_object_class(t);
   if (cid < 0 || cid >= c->nclasses) return TY_UNKNOWN;
   int d = -1, mi = comp_method_in_chain(c, cid, conv, &d);
-  if (mi < 0 || c->scopes[mi].nparams != 0) return TY_UNKNOWN;
+  if (mi < 0 || !conv_takes_no_args(c, mi)) return TY_UNKNOWN;
   TyKind ret = c->scopes[mi].ret;
   if (sp_streq(conv, "to_hash") ? !ty_is_hash(ret) : !ty_is_array(ret)) return TY_UNKNOWN;
   if (def) *def = d;
@@ -524,7 +554,9 @@ static void emit_obj_conv_call_inline(Compiler *c, int node, TyKind t, int def, 
     int tr = ++g_tmp;
     buf_printf(b, "({ sp_%s *_t%d = (sp_%s *)(", c->classes[def].c_name, tr, c->classes[def].c_name);
     emit_expr(c, node, b);
-    buf_printf(b, "); SP_GC_ROOT(_t%d); sp_%s_%s(_t%d); })", tr, c->classes[def].c_name, mc(conv), tr);
+    buf_printf(b, "); SP_GC_ROOT(_t%d); sp_%s_%s(_t%d", tr, c->classes[def].c_name, mc(conv), tr);
+    if (mi_c >= 0) emit_conv_dflt_args(c, mi_c, b);
+    buf_puts(b, "); })");
     if (unbox) buf_puts(b, ")");
     return;
   }
@@ -532,7 +564,9 @@ static void emit_obj_conv_call_inline(Compiler *c, int node, TyKind t, int def, 
   if (!comp_ty_value_obj(c, t)) buf_printf(b, "(sp_%s *)", c->classes[def].c_name);
   buf_puts(b, "(");
   emit_expr(c, node, b);
-  buf_puts(b, "))");
+  buf_puts(b, ")");
+  if (mi_c >= 0) emit_conv_dflt_args(c, mi_c, b);
+  buf_puts(b, ")");
   if (unbox) buf_puts(b, ")");
 }
 
@@ -12350,6 +12384,14 @@ static int user_dispatch_arg(Compiler *c, Scope *m, int pi, const char *v,
   }
   else if (pt == TY_SYMBOL) { snprintf(guard, gsz, "%s.tag == SP_TAG_SYM", v); snprintf(arg, asz, "(sp_sym)%s.v.i", v); }
   else return 0;
+  /* a parameter the method rebinds in place (comp_byref_param) takes the
+     address of a slot: one of its own here, as the box is not one */
+  if (comp_byref_param(c, m, pi)) {
+    char tmp[200];
+    snprintf(tmp, sizeof tmp, "&(%s){%s}", c_type_name(pt), arg);
+    if (strlen(tmp) >= asz) return 0;
+    snprintf(arg, asz, "%s", tmp);
+  }
   return 1;
 }
 

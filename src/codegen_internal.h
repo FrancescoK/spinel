@@ -879,6 +879,8 @@ int hash_nil_key_stored(Compiler *c, int key, TyKind kt);
 const char *conv_wrong_cls_name(TyKind t);
 const char *conv_cls_name_of(Compiler *c, TyKind t);
 TyKind obj_container_conv(Compiler *c, TyKind t, const char *conv, int *def);
+int conv_takes_no_args(Compiler *c, int mi);
+void emit_conv_dflt_args(Compiler *c, int mi, Buf *b);
 void emit_str_pattern_expr(Compiler *c, int node, Buf *b);
 void emit_boxed_text(Compiler *c, TyKind t, const char *expr, Buf *b);
 /* the form --repr-check records when emit_boxed_text boxes a kind t (RF_*) */
@@ -979,6 +981,10 @@ int splat_string_var(Compiler *c, const int *av, int ac, int *fs);
 void refuse_super_splat(Compiler *c, int id, int target);
 void refuse_yield_splat(Compiler *c, int blk, int yc, const int *yv);
 void emit_proc_call_args(Compiler *c, int call, int argc, const int *argv, Buf *b, int force_poly);
+/* the rooted holder of a by-value struct's box handed to a Proc, and the box
+   written through it (codegen_call.c) */
+int proc_arg_box_hold(Compiler *c, TyKind at, Buf *decl, int indent);
+void emit_proc_arg_boxed(Compiler *c, TyKind at, const char *tn, int hold, Buf *b);
 int call_args_need_spread(const NodeTable *nt, const int *argv, int argc);
 int emit_spread_args(Compiler *c, const int *argv, int argc);
 int emit_spread_args_kw(Compiler *c, const int *argv, int argc, char *kwpos, size_t kwsz);
