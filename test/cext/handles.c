@@ -38,8 +38,17 @@ int main(void) {
     sp_RbVal box = {SP_TAG_OBJ, 123, {.p = object}};
     VALUE a = sp_cext_value(box), b = sp_cext_value(box);
     assert(a == b && sp_cext_rbval(a).v.p == object);
+    sp_cext_arena_mark initial_inner = sp_cext_arena_enter();
+    void *dead = sp_gc_alloc(sizeof(long), NULL, NULL);
+    sp_RbVal dead_value = {SP_TAG_OBJ, 123, {.p = dead}};
+    (void)sp_cext_value(dead_value);
     sp_gc_collect();
     assert(!finalized && *object == 42);
+    sp_cext_arena_restore(initial_inner);
+    sp_gc_mark_gen = 0x7ffffffu;
+    sp_gc_cycle = 0; /* Make the rollover collection full. */
+    sp_gc_collect();
+    assert(sp_gc_mark_gen == 1 && sp_cext_handle_count() == 1);
     sp_cext_arena_mark inner = sp_cext_arena_enter();
     sp_RbVal number = {SP_TAG_FLT, 0, {.f = 1.5}};
     VALUE f = sp_cext_value(number);

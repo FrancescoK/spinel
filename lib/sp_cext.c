@@ -139,15 +139,30 @@ void rb_gc_unregister_address(VALUE *address) {
     }
 }
 void sp_cext_mark_roots(void) {
-    for (size_t i = 0; i < arena_n; ++i) rb_gc_mark((VALUE)(uintptr_t)arena[i]);
+    /* Pins belong to active AND suspended fiber arenas. */
+    for (size_t i = 0; i < capacity; ++i)
+        if (table[i] && table[i]->pins) rb_gc_mark((VALUE)(uintptr_t)table[i]);
     for (size_t i = 0; i < globals_n; ++i) rb_gc_mark(*globals[i]);
+}
+void sp_cext_arena_context_save(sp_cext_arena_context *ctx) {
+    ctx->entries = arena; ctx->length = arena_n;
+    ctx->capacity = arena_cap; ctx->depth = arena_depth;
+}
+void sp_cext_arena_context_load(const sp_cext_arena_context *ctx) {
+    arena = ctx->entries; arena_n = ctx->length;
+    arena_cap = ctx->capacity; arena_depth = ctx->depth;
+}
+void sp_cext_arena_context_dispose(sp_cext_arena_context *ctx) {
+    sp_cext_handle **entries = ctx->entries;
+    for (size_t i = 0; i < ctx->length; ++i) --entries[i]->pins;
+    free(entries); memset(ctx, 0, sizeof(*ctx));
 }
 /* Called after the mark drains, before either object or string sweep can
  * recycle an address. Canonical handles of live objects survive even without
  * a C root; the table itself must never keep those objects alive. */
 static int live(sp_cext_handle *h, int full) {
     sp_RbVal v = h->value;
-    if (h->pins || h->marked == sp_gc_mark_gen) return 1;
+    if (h->pins) return 1;
     if ((v.tag == SP_TAG_OBJ && v.cls_id != SP_BUILTIN_FOREIGN_PTR &&
         v.cls_id != SP_BUILTIN_REGEX && v.cls_id != SP_BUILTIN_ARGF) || v.tag == SP_TAG_BIGINT) {
         if (!v.v.p) return 0;
@@ -169,7 +184,9 @@ static int live(sp_cext_handle *h, int full) {
             return sp_slab_is_marked(s) || (!full && sp_slab_is_old(s));
         return tag == 0xfc || tag == 0xf8 || !full;
     }
-    return 0;
+    /* Heap liveness above is authoritative even on a GC generation wrap;
+       an old handle stamp must never retain a pointer the sweep will free. */
+    return h->marked == sp_gc_mark_gen;
 }
 void sp_cext_sweep_handles(int full) {
     int changed = 0;
