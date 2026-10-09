@@ -11968,6 +11968,171 @@ static int emit_multi_write_scalar(Compiler *c, int id, Buf *b, int indent, cons
   return 0;
 }
 
+/* Could a `[]=`, a `+@` or a `dup` be the program's own? Asked of the
+   program as written and not of a class's chain, which a `class_eval`, a
+   `prepend` or a singleton `def` goes round: no def and no Symbol of such a
+   name, and no site that names, makes or loads a method by something the
+   text does not spell (an_prog_never_gives). */
+static int masgn_program_may_own(void) {
+  return !an_prog_never_gives("[]=", 0) || !an_prog_never_gives("+@", 0) || !an_prog_never_gives("dup", 0);
+}
+
+/* Is every part of interpolation `s` text, or one literal or one local
+   read? Then no part of it writes a local, and none holds a call, a block
+   or a write that could. The values of a multiple assignment are
+   evaluated before its keys and its holder are read, where CRuby reads
+   those first: a value that changes a key's local or rebinds the holder
+   (`r[k], r[1] = "a#{k += 1}", +"cd"`) would store where CRuby does not. */
+static int masgn_interp_reads_only(const NodeTable *nt, int s) {
+  int pn = 0;
+  const int *parts = nt_arr(nt, s, "parts", &pn);
+  for (int i = 0; i < pn; i++) {
+    NodeKind k = nt_kind(nt, parts[i]);
+    if (k == NK_StringNode) continue;
+    if (k != NK_EmbeddedStatementsNode) return 0;
+    int st = nt_ref(nt, parts[i], "statements"), bn = 0;
+    const int *body = st >= 0 ? nt_arr(nt, st, "body", &bn) : NULL;
+    if (bn != 1) return 0;
+    k = nt_kind(nt, body[0]);
+    if (k != NK_IntegerNode && k != NK_FloatNode && k != NK_SymbolNode && k != NK_StringNode && k != NK_NilNode &&
+        k != NK_TrueNode && k != NK_FalseNode && k != NK_LocalVariableReadNode)
+      return 0;
+  }
+  return 1;
+}
+
+/* Is tuple element `el` a new String written as one, which its element
+   target wraps in a handle of its own (repr_of's RS_FRESH): an
+   interpolation of literals and locals (masgn_interp_reads_only),
+   `+"lit"`, `"lit".dup`? Only these kinds: a value in parentheses, a bang
+   method's result or a lambda's call names a String that lives elsewhere,
+   and a second handle around it would be a copy. `+@` and `dup` are
+   String's own here: masgn_fresh_stmt lists no statement of a program
+   that could have either of its own. */
+static int masgn_el_fresh_str(Compiler *c, int el) {
+  const NodeTable *nt = c->nt;
+  Repr er = repr_of(c, el);
+  if (er.as_ty != TY_STRBUF || er.strbuf_src != RS_FRESH) return 0;
+  NodeKind k = nt_kind(nt, el);
+  if (k == NK_InterpolatedStringNode) return masgn_interp_reads_only(nt, el);
+  if (k != NK_CallNode) return 0;
+  const char *nm = nt_str(nt, el, "name");
+  int r = nt_ref(nt, el, "receiver");
+  if (!nm || r < 0 || nt_ref(nt, el, "arguments") >= 0 || nt_ref(nt, el, "block") >= 0) return 0;
+  if (!sp_streq(nm, "+@") && !sp_streq(nm, "dup")) return 0;
+  return nt_kind(nt, r) == NK_StringNode ||
+         (nt_kind(nt, r) == NK_InterpolatedStringNode && masgn_interp_reads_only(nt, r));
+}
+
+/* Is `v` an Array or a Hash by its text, or nil written as nil: a
+   literal, or a conditional or parentheses whose every arm is one? The nil
+   fact (may_nil) follows a nil written so. */
+static int masgn_holder_value(const NodeTable *nt, int v, int depth) {
+  if (v < 0 || depth > 8) return 0;
+  NodeKind k = nt_kind(nt, v);
+  if (k == NK_ArrayNode || k == NK_HashNode || k == NK_NilNode) return 1;
+  if (k == NK_ParenthesesNode) return masgn_holder_value(nt, nt_ref(nt, v, "body"), depth + 1);
+  if (k == NK_ElseNode) return masgn_holder_value(nt, nt_ref(nt, v, "statements"), depth + 1);
+  if (k == NK_StatementsNode) {
+    int n = 0;
+    const int *st = nt_arr(nt, v, "body", &n);
+    return n == 1 && masgn_holder_value(nt, st[0], depth + 1);
+  }
+  return k == NK_IfNode && masgn_holder_value(nt, nt_ref(nt, v, "statements"), depth + 1) &&
+         masgn_holder_value(nt, nt_ref(nt, v, "subsequent"), depth + 1);
+}
+
+/* Is the local `r` reads known to hold an Array or a Hash wherever its nil
+   fact says it is not nil? Only by its text: each write of it is a plain
+   assignment of a value that is one (masgn_holder_value). A call's answer
+   is not: one typed an Array can be nil when it runs (`r.uniq!`, `r[5..]`,
+   a method that answers nil), and nothing follows that. A parameter is
+   what its callers hand it, a block's parameter what the iterator does,
+   and a local a proc captures is written where these writes do not show. */
+static int masgn_local_written_as_holder(Compiler *c, int r) {
+  const NodeTable *nt = c->nt;
+  Scope *s = comp_scope_of(c, r);
+  const char *rn = nt_str(nt, r, "name");
+  LocalVar *lv = s && rn ? scope_local(s, rn) : NULL;
+  if (!lv || lv->is_param || lv->is_block_param || lv->is_cell || lv->proc_rebinds) return 0;
+  int writes = 0;
+  for (int w = comp_lvw_first_sc(c, (int)(s - c->scopes), rn); w >= 0; w = comp_lvw_next_sc(c, w)) {
+    const char *wn = nt_str(nt, w, "name");
+    if (!wn || !sp_streq(wn, rn) || comp_scope_of(c, w) != s) continue;
+    if (nt_kind(nt, w) != NK_LocalVariableWriteNode || !masgn_holder_value(nt, nt_ref(nt, w, "value"), 0)) return 0;
+    writes++;
+  }
+  return writes > 0;
+}
+
+/* A target the wrap is proved for: `r[k]` on a local that is an Array or a
+   Hash by its text and is not nil here (masgn_local_written_as_holder), k a
+   literal or a local no proc rebinds (no part of it runs the program's
+   code, and nothing a value runs can change it) of the kind the store
+   takes as it is: an Integer that is not nil for an Array (a Bignum
+   raises in CRuby), the Hash's own kind of key for a Hash. A boxed
+   local (a block's parameter, a `for` variable, a local a pattern binds, a
+   local of two kinds) stores by another road, whatever it holds, and a
+   store on a local that can be nil is not this statement's to make. */
+static int masgn_plain_element_target(Compiler *c, int t) {
+  const NodeTable *nt = c->nt;
+  if (nt_kind(nt, t) != NK_IndexTargetNode || nt_ref(nt, t, "block") >= 0) return 0;
+  int r = nt_ref(nt, t, "receiver"), args = nt_ref(nt, t, "arguments"), an = 0;
+  const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  if (r < 0 || nt_kind(nt, r) != NK_LocalVariableReadNode || an != 1) return 0;
+  TyKind rt = comp_ntype(c, r);
+  if ((!ty_is_array(rt) && !ty_is_hash(rt)) || repr_of(c, r).may_nil || !masgn_local_written_as_holder(c, r)) return 0;
+  NodeKind k = nt_kind(nt, av[0]);
+  if (k != NK_IntegerNode && k != NK_SymbolNode && k != NK_StringNode && k != NK_LocalVariableReadNode) return 0;
+  TyKind kt = comp_ntype(c, av[0]);
+  if (repr_of(c, av[0]).may_nil) return 0;
+  if (k == NK_LocalVariableReadNode) {
+    Scope *ks = comp_scope_of(c, av[0]);
+    const char *kn = nt_str(nt, av[0], "name");
+    LocalVar *kl = ks && kn ? scope_local(ks, kn) : NULL;
+    if (!kl || kl->proc_rebinds) return 0;
+  }
+  if (ty_is_array(rt)) return kt == TY_INT;
+  return ty_hash_cname(rt) && (ty_hash_key(rt) == TY_POLY || ty_hash_key(rt) == kt);
+}
+
+/* Whether the statement is one whose new Strings are held as handles
+   (masgn_el_fresh_str): as many values as targets, every target a plain
+   element or a local, every value a new String, a literal or a local (so
+   no value writes a local, or runs more of the program's than a `to_s`),
+   and one new String at least bound for an element. A new String bound
+   for a local is none of these (masgn_el_fresh_str asks what the target
+   keeps), and a String literal bound for an element has no handle to be
+   held as: either takes the statement off the list. So does an
+   assignment read for its value, whose values are held before the
+   statement is emitted (emit_expr binds them), and a program that could
+   have a `[]=`, a `+@` or a `dup` of its own (masgn_program_may_own).
+   Any other statement is emitted as it was. */
+static int masgn_fresh_stmt(Compiler *c, int id, const int *lefts, int ln, const int *els, int en) {
+  const NodeTable *nt = c->nt;
+  int rn = 0, fresh = 0, any = 0;
+  nt_arr(nt, id, "rights", &rn);
+  if (!els || en != ln || rn > 0 || nt_ref(nt, id, "rest") >= 0) return 0;
+  /* the values first: a statement with no new String asks nothing more */
+  for (int i = 0; i < en; i++) {
+    NodeKind k = nt_kind(nt, els[i]);
+    if (arg_ran_first(els[i], 0)) return 0;
+    if (masgn_el_fresh_str(c, els[i])) fresh = 1;
+    else if (k != NK_IntegerNode && k != NK_FloatNode && k != NK_SymbolNode && k != NK_StringNode &&
+             k != NK_NilNode && k != NK_TrueNode && k != NK_FalseNode && k != NK_LocalVariableReadNode)
+      return 0;
+  }
+  if (!fresh) return 0;
+  for (int i = 0; i < ln; i++) {
+    int elem = masgn_plain_element_target(c, lefts[i]);
+    if (!elem && nt_kind(nt, lefts[i]) != NK_LocalVariableTargetNode) return 0;
+    if (!elem) continue;
+    if (nt_kind(nt, els[i]) == NK_StringNode) return 0;
+    if (masgn_el_fresh_str(c, els[i])) any = 1;
+  }
+  return any && !masgn_program_may_own();
+}
+
 /* A MultiWriteNode statement (a, b = ...) (emit_stmt_inner's arms, in their order) */
 static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const NodeTable *nt, const char *ty) {
   if (!(sp_streq(ty, "MultiWriteNode"))) return 0;
@@ -12113,6 +12278,10 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
   /* evaluate all RHS values into temps first (so `a, b = b, a` swaps).
      Save each temp index separately: emit_expr may consume extra g_tmp
      slots via preludes (e.g. array literals), so base+i is unreliable. */
+  /* a statement whose new Strings are held as handles roots every temp:
+     nothing else holds a handle until its own store, and a store before
+     it can allocate (a Hash copies a String key, a container grows) */
+  int fresh_stmt = masgn_fresh_stmt(c, id, lefts, ln, els, en);
   int *tmps = en > 0 ? alloca(sizeof(int) * (size_t)en) : NULL;
   /* The RESOLVED C type each temp was declared with (empty-literal adoption
      below can override the element node's inferred type); the assign loop
@@ -12190,7 +12359,7 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
       else buf_printf(b, hup >= 0 ? "sp_String * _t%d = sp_String_uplus(%s);" : "sp_String * _t%d = %s;", tmps[i], hsrc);
       free(hw.p);
       if (tmpts) tmpts[i] = TY_STRBUF;
-      int later_alloc_h = store_alloc;
+      int later_alloc_h = store_alloc || fresh_stmt;
       for (int j = i + 1; j < en && !later_alloc_h; j++) later_alloc_h = masgn_part_allocates(c, els[j]);
       if (later_alloc_h) masgn_root(c, TY_STRBUF, tmps[i], b);
       buf_puts(b, "\n");
@@ -12199,6 +12368,8 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
     /* an element with no C type of its own (an unresolved call, which
        raises) is held boxed: `void _tN` is no declaration */
     int boxed_el = !nilish && !c_type_name(elt) && !ty_is_object(elt);
+    int fresh_str = fresh_stmt && elt == TY_STRBUF && masgn_el_fresh_str(c, els[i]) &&
+                    masgn_plain_element_target(c, lefts[i]);
     emit_ctype(c, nilish || boxed_el ? TY_POLY : elt, b);
     buf_printf(b, " _t%d = ", tmps[i]);
     if (nilish) {
@@ -12226,6 +12397,15 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
     else if (poly_empty_hash)
       buf_puts(b, "sp_box_obj(sp_PolyPolyHash_new(), SP_BUILTIN_POLY_POLY_HASH)");
     else if (boxed_el) emit_coerce(c, els[i], TY_POLY, CO_HOLD, "a multiple assignment's value", b);
+    /* held as the handle its target wraps it in, as a store wraps one
+       (emit_boxed); handed over bare, the C did not build */
+    else if (fresh_str) {
+      int sv = view_push_repr(c, els[i], VR_STRBUF_BOX, 0);
+      buf_puts(b, "sp_String_new_shared(");
+      emit_str_expr(c, els[i], b);
+      buf_puts(b, ")");
+      view_pop(c, sv);
+    }
     else {
       Buf vb; memset(&vb, 0, sizeof vb); emit_expr(c, els[i], &vb);
       buf_puts(b, vb.p ? vb.p : ""); free(vb.p);
@@ -12235,7 +12415,7 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
     /* Nothing holds the temp until its target takes it, and whatever can
        allocate after it can run user code that drops its other holder, so
        it is rooted while a later value or a store can collect. */
-    int later_alloc = store_alloc;
+    int later_alloc = store_alloc || fresh_stmt;
     for (int j = i + 1; j < en && !later_alloc; j++) later_alloc = masgn_part_allocates(c, els[j]);
     if (!nilish && !masgn_rodata(c, els[i]) && later_alloc) masgn_root(c, elt, tmps[i], b);
     buf_puts(b, "\n");
