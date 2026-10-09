@@ -485,6 +485,12 @@ int desugar_masgn_store_evidence(Compiler *c) {
           for (int k = from; ra && k < to; k++) ra[k - from] = tuple ? els[k] : value;
           rv = ra ? nt_new_node(nt, "ArrayNode") : -1;
           if (rv >= 0) nt_node_set_arr(nt, rv, "elements", ra, to - from);
+          /* the assignment's position, so a diagnostic about this Array
+             names the line that wrote it */
+          if (rv >= 0 && nt_int(nt, id, "node_line", 0) > 0) {
+            nt_node_set_int(nt, rv, "node_line", nt_int(nt, id, "node_line", 0));
+            nt_node_set_int(nt, rv, "node_file", nt_int(nt, id, "node_file", 0));
+          }
           free(ra);
         }
       }
