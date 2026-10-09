@@ -30936,6 +30936,8 @@ static int splat_constructor_arity(const NodeTable *nt, int id, const char *name
   const char *cn = nt_kind(nt, recv) == NK_ConstantReadNode ? nt_str(nt, recv, "name") : NULL;
   int sh = cn ? bop_share_named(BOP_CLASS_NEW, cn) : 0;
   if (sh == BSH_NEW_DEFAULT) return 1;
+  /* A fill constructor consumes size and fill separately. */
+  if (sh == BSH_NEW_FILL) return 2;
   return -1;
 }
 /* A literal receiver is the builtin's own, whatever user classes share the
