@@ -1464,7 +1464,7 @@ int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable 
       }
       buf_puts(b, "sp_signal_signame(");
       /* a Float argument truncates toward zero, as CRuby's to_int does (#3105) */
-      if (sa0 == TY_FLOAT) { buf_puts(b, "(sp_int)("); emit_float_expr(c, argv[0], b); buf_puts(b, ")"); }
+      if (sa0 == TY_FLOAT) { buf_puts(b, "sp_float_arg_i("); emit_float_expr(c, argv[0], b); buf_puts(b, ")"); }
       else emit_int_expr(c, argv[0], b);
       buf_puts(b, ")");
       return 1;
@@ -1874,7 +1874,7 @@ int emit_call_enum_random_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
     }
     if (sp_streq(name, "bytes") && argc == 1) {
       buf_puts(b, "sp_Random_bytes(sp_random_default_get(), ");
-      emit_int_expr_conv(c, argv[0], b); buf_puts(b, ")");
+      emit_to_int_expr(c, argv[0], b); buf_puts(b, ")");
       return 1;
     }
     if (sp_streq(name, "new_seed") && argc == 0) {   /* #2523 */
@@ -1887,7 +1887,7 @@ int emit_call_enum_random_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
     }
     if (sp_streq(name, "srand")) {                    /* #2525 (returns previous seed) */
       if (argc == 0) { buf_puts(b, "sp_kernel_srand((sp_int)time(NULL))"); return 1; }
-      buf_puts(b, "sp_kernel_srand("); emit_int_expr_conv(c, argv[0], b); buf_puts(b, ")");
+      buf_puts(b, "sp_kernel_srand("); emit_to_int_expr(c, argv[0], b); buf_puts(b, ")");
       return 1;
     }
   }

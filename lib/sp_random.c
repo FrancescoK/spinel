@@ -111,6 +111,7 @@ sp_Random *sp_Random_dup(sp_Random *r) {
    -- always deterministic (same float -> same stream), which is the actual
    contract (the exact sequence is not MT19937 anyway). */
 sp_Random *sp_Random_new_float(sp_float f) {
+  if (!isfinite(f)) (void)sp_float_to_i_checked(f);
   uint64_t s;
   if (f >= -9.2233720368547758e18 && f < 9.2233720368547758e18) {
     s = (uint64_t)(int64_t)f;

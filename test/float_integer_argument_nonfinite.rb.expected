@@ -1,0 +1,142 @@
+RangeError: float Inf out of range of integer
+RangeError: float Inf out of range of integer
+RangeError: float Inf out of range of integer
+RangeError: float Inf out of range of integer
+RangeError: float Inf out of range of integer
+RangeError: float Inf out of range of integer
+RangeError: float Inf out of range of integer
+RangeError: float Inf out of range of integer
+RangeError: float Inf out of range of integer
+RangeError: float Inf out of range of integer
+FloatDomainError: Infinity
+RangeError: float Inf out of range of integer
+RangeError: float Inf out of range of integer
+RangeError: float Inf out of range of integer
+RangeError: float Inf out of range of integer
+RangeError: float Inf out of range of integer
+RangeError: float Inf out of range of integer
+RangeError: float Inf out of range of integer
+RangeError: float Inf out of range of integer
+RangeError: float Inf out of range of integer
+FloatDomainError: Infinity
+FloatDomainError: Infinity
+FloatDomainError: Infinity
+RangeError: float Inf out of range of integer
+FloatDomainError: Infinity
+FloatDomainError: Infinity
+FloatDomainError: Infinity
+RangeError: float Inf out of range of integer
+RangeError: float -Inf out of range of integer
+RangeError: float -Inf out of range of integer
+RangeError: float -Inf out of range of integer
+RangeError: float -Inf out of range of integer
+RangeError: float -Inf out of range of integer
+RangeError: float -Inf out of range of integer
+RangeError: float -Inf out of range of integer
+RangeError: float -Inf out of range of integer
+RangeError: float -Inf out of range of integer
+RangeError: float -Inf out of range of integer
+FloatDomainError: -Infinity
+RangeError: float -Inf out of range of integer
+RangeError: float -Inf out of range of integer
+RangeError: float -Inf out of range of integer
+RangeError: float -Inf out of range of integer
+RangeError: float -Inf out of range of integer
+RangeError: float -Inf out of range of integer
+RangeError: float -Inf out of range of integer
+RangeError: float -Inf out of range of integer
+RangeError: float -Inf out of range of integer
+FloatDomainError: -Infinity
+FloatDomainError: -Infinity
+FloatDomainError: -Infinity
+RangeError: float -Inf out of range of integer
+FloatDomainError: -Infinity
+FloatDomainError: -Infinity
+FloatDomainError: -Infinity
+RangeError: float -Inf out of range of integer
+RangeError: float NaN out of range of integer
+RangeError: float NaN out of range of integer
+RangeError: float NaN out of range of integer
+RangeError: float NaN out of range of integer
+RangeError: float NaN out of range of integer
+RangeError: float NaN out of range of integer
+RangeError: float NaN out of range of integer
+RangeError: float NaN out of range of integer
+RangeError: float NaN out of range of integer
+RangeError: float NaN out of range of integer
+FloatDomainError: NaN
+RangeError: float NaN out of range of integer
+RangeError: float NaN out of range of integer
+RangeError: float NaN out of range of integer
+RangeError: float NaN out of range of integer
+RangeError: float NaN out of range of integer
+RangeError: float NaN out of range of integer
+RangeError: float NaN out of range of integer
+RangeError: float NaN out of range of integer
+RangeError: float NaN out of range of integer
+FloatDomainError: NaN
+FloatDomainError: NaN
+FloatDomainError: NaN
+RangeError: float NaN out of range of integer
+FloatDomainError: NaN
+FloatDomainError: NaN
+FloatDomainError: NaN
+RangeError: float NaN out of range of integer
+42
+42
+42
+42
+4.2
+4.2
+4.2
+4.2
+42
+4.2
+[0, 1, 0, 1, 0, 1]
+[1, 2]
+[1, 2]
+"abab"
+nil
+IndexError: index 2 outside of array bounds: -2...2
+[nil]
+[1, 2]
+[]
+nil
+0
+2
+"2"
+" x"
+4
+2
+2
+"INT"
+FloatDomainError: Infinity
+FloatDomainError: Infinity
+FloatDomainError: Infinity
+FloatDomainError: Infinity
+FloatDomainError: Infinity
+RangeError: float Inf out of range of integer
+FloatDomainError: -Infinity
+FloatDomainError: -Infinity
+FloatDomainError: -Infinity
+FloatDomainError: -Infinity
+FloatDomainError: -Infinity
+RangeError: float -Inf out of range of integer
+FloatDomainError: NaN
+FloatDomainError: NaN
+FloatDomainError: NaN
+FloatDomainError: NaN
+FloatDomainError: NaN
+RangeError: float NaN out of range of integer
+0
+1
+0
+0
+0
+0
+0
+0
+0
+1
+0
+0

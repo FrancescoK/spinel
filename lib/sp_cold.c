@@ -4092,10 +4092,17 @@ sp_RbVal sp_float_numerator(sp_float f) {
    until the promotion plan covers statically-int results (#2024), raise
    loudly instead of saturating silently. NaN/Inf raise FloatDomainError. */
 sp_int sp_float_to_i_checked_slow(sp_float f) {
-  if (isnan(f) || isinf(f)) sp_raise_cls("FloatDomainError", sp_sprintf("%g", f));
+  if (isnan(f) || isinf(f)) sp_raise_cls("FloatDomainError", isnan(f) ? "NaN" : f > 0 ? "Infinity" : "-Infinity");
   if (f >= -(sp_float)INTPTR_MIN || f < (sp_float)INTPTR_MIN)  /* exact at either sp_int width */
     sp_raise_cls("RangeError", "float out of Integer range (Bignum promotion pending)");
   return (sp_int)f;
+}
+
+void sp_float_arg_range_error(sp_float f) {
+  if (!isfinite(f))
+    sp_raise_cls("RangeError", sp_sprintf("float %s out of range of integer",
+                 isnan(f) ? "NaN" : f > 0 ? "Inf" : "-Inf"));
+  sp_raise_cls("RangeError", sp_sprintf("float %.10g out of range of integer", f));
 }
 
 /* ---- Box helpers (0 optcarrot uses) -- relocated from spinel_rt.h. ---- */

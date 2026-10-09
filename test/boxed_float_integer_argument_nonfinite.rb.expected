@@ -1,0 +1,95 @@
+RangeError: float Inf out of range of integer
+RangeError: float Inf out of range of integer
+RangeError: float Inf out of range of integer
+RangeError: float Inf out of range of integer
+RangeError: float Inf out of range of integer
+RangeError: float Inf out of range of integer
+RangeError: float Inf out of range of integer
+RangeError: float Inf out of range of integer
+FloatDomainError: Infinity
+RangeError: float Inf out of range of integer
+RangeError: float Inf out of range of integer
+RangeError: float Inf out of range of integer
+FloatDomainError: Infinity
+RangeError: float -Inf out of range of integer
+RangeError: float -Inf out of range of integer
+RangeError: float -Inf out of range of integer
+RangeError: float -Inf out of range of integer
+RangeError: float -Inf out of range of integer
+RangeError: float -Inf out of range of integer
+RangeError: float -Inf out of range of integer
+RangeError: float -Inf out of range of integer
+FloatDomainError: -Infinity
+RangeError: float -Inf out of range of integer
+RangeError: float -Inf out of range of integer
+RangeError: float -Inf out of range of integer
+FloatDomainError: -Infinity
+RangeError: float NaN out of range of integer
+RangeError: float NaN out of range of integer
+RangeError: float NaN out of range of integer
+RangeError: float NaN out of range of integer
+RangeError: float NaN out of range of integer
+RangeError: float NaN out of range of integer
+RangeError: float NaN out of range of integer
+RangeError: float NaN out of range of integer
+FloatDomainError: NaN
+RangeError: float NaN out of range of integer
+RangeError: float NaN out of range of integer
+RangeError: float NaN out of range of integer
+FloatDomainError: NaN
+42
+42
+42
+42
+4.2
+4.2
+4.2
+4.2
+[0, 1, 0, 1, 0, 1]
+[1, 2]
+"abab"
+nil
+4
+TypeError: no implicit conversion of String into Integer
+TypeError: no implicit conversion of String into Integer
+TypeError: no implicit conversion of String into Integer
+TypeError: no implicit conversion of String into Integer
+TypeError: no implicit conversion of String into Integer
+TypeError: no implicit conversion of String into Integer
+TypeError: no implicit conversion of String into Integer
+TypeError: no implicit conversion of String into Integer
+TypeError: no implicit conversion of String into Integer
+TypeError: no implicit conversion of String into Integer
+TypeError: no implicit conversion of String into Integer
+TypeError: no implicit conversion of String into Integer
+TypeError: no implicit conversion of String into Integer
+RangeError: float Inf out of range of integer
+RangeError: float Inf out of range of integer
+RangeError: float Inf out of range of integer
+RangeError: float Inf out of range of integer
+RangeError: float Inf out of range of integer
+RangeError: float -Inf out of range of integer
+RangeError: float -Inf out of range of integer
+RangeError: float -Inf out of range of integer
+RangeError: float -Inf out of range of integer
+RangeError: float -Inf out of range of integer
+RangeError: float NaN out of range of integer
+RangeError: float NaN out of range of integer
+RangeError: float NaN out of range of integer
+RangeError: float NaN out of range of integer
+RangeError: float NaN out of range of integer
+RangeError: float Inf out of range of integer
+RangeError: float Inf out of range of integer
+RangeError: float Inf out of range of integer
+RangeError: float Inf out of range of integer
+RangeError: float Inf out of range of integer
+RangeError: float -Inf out of range of integer
+RangeError: float -Inf out of range of integer
+RangeError: float -Inf out of range of integer
+RangeError: float -Inf out of range of integer
+RangeError: float -Inf out of range of integer
+RangeError: float NaN out of range of integer
+RangeError: float NaN out of range of integer
+RangeError: float NaN out of range of integer
+RangeError: float NaN out of range of integer
+RangeError: float NaN out of range of integer

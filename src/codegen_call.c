@@ -12113,7 +12113,7 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
         else {
           buf_puts(b, "sp_Random_new(");
           if (is_big) { buf_puts(b, "sp_bigint_to_int("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-          else emit_int_expr_conv(c, argv[0], b);
+          else emit_to_int_expr(c, argv[0], b);
           buf_puts(b, ")");
         }
       }

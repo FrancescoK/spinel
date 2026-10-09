@@ -7753,7 +7753,7 @@ static int int_arms_clamp_pow(Compiler *c, Buf *b, const NodeTable *nt, const ch
     buf_printf(b, " sp_IntArray *_t%d = sp_IntArray_new(); SP_GC_ROOT(_t%d);", tdb, tdb);
     buf_printf(b, " sp_IntArray_push(_t%d, %s); _t%d; })", tdb, r, tdb);
   }
-  else if (sp_streq(name, "digits") && argc == 1) { buf_printf(b, "sp_int_digits(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
+  else if (sp_streq(name, "digits") && argc == 1) { buf_printf(b, "sp_int_digits(%s, ", r); emit_to_int_expr(c, argv[0], b); buf_puts(b, ")"); }
   else if (is_bits_query(name) &&
            argc == 1 && repr_of(c, argv[0]).big) {
     /* A Bignum mask exceeds int64, so an int receiver can never cover all
@@ -7996,14 +7996,22 @@ static int int_arms_round_divide(Compiler *c, int id, Buf *b, const NodeTable *n
       buf_puts(b, "({ (void)("); emit_expr(c, argv[0], b);
       buf_printf(b, "); (sp_int)((%s) < 0 ? 1 : 0); })", r);
     }
-    else { buf_printf(b, "sp_int_bit((%s), ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
+    else {
+      buf_printf(b, "sp_int_bit((%s), ", r);
+      Repr ar = repr_of(c, argv[0]);
+      if (ar.as_ty == TY_FLOAT || ar.kind == RK_BOXED) {
+        buf_puts(b, "sp_poly_bit_index_arg("); emit_boxed(c, argv[0], b); buf_puts(b, ")");
+      }
+      else emit_to_int_expr(c, argv[0], b);
+      buf_puts(b, ")");
+    }
   }
   else if (sp_streq(name, "[]") && argc == 2) {
     /* n[start, len]: the len-bit field starting at bit `start`. Routed
        through a runtime helper that clamps an out-of-range start/len so
        the shift never goes undefined. */
-    buf_printf(b, "sp_int_bit_range((%s), ", r); emit_int_expr(c, argv[0], b);
-    buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")");
+    buf_printf(b, "sp_int_bit_range((%s), ", r); emit_to_int_expr(c, argv[0], b);
+    buf_puts(b, ", "); emit_to_int_expr(c, argv[1], b); buf_puts(b, ")");
   }
   else if (sp_streq(name, "divmod") && argc == 1 && comp_ntype(c, argv[0]) == TY_FLOAT) {
     /* a Float divisor divides as floats, CRuby's flodivmod (sp_flo_divmod):
@@ -14530,7 +14538,7 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
       }
       else if (sp_streq(name, "digits")) {
         buf_puts(b, "sp_poly_int_digits("); emit_boxed(c, recv, b); buf_puts(b, ", ");
-        if (argc == 1) emit_int_expr_conv(c, argv[0], b); else buf_puts(b, "10");
+        if (argc == 1) emit_to_int_expr(c, argv[0], b); else buf_puts(b, "10");
         buf_puts(b, ")");
       }
       else if (argc == 0) { buf_printf(b, "sp_poly_int_%s(", name); emit_boxed(c, recv, b); buf_puts(b, ")"); }
