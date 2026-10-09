@@ -331,8 +331,24 @@ int emit_call_synchronize_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
       buf_puts(b, "sp_exc_msg[sp_exc_top] = 0; sp_exc_obj[sp_exc_top] = 0; sp_exc_top++; if (setjmp(sp_exc_stack[sp_exc_top-1]) == 0) { ");
       g_exc_frame_depth++;
     }
-    for (int k = 0; k < bbn - 1; k++) emit_stmt(c, bbb[k], b, 0);
-    if (bbn > 0) {
+    /* A `next` in the block answers synchronize's value and leaves the
+       block, not the loop around it: the body runs in the do{}while(0) a
+       collecting block's does, its value into the result temp (#8205).
+       A body with a break of its own keeps the plain shape, whose break
+       is the enclosing loop's. */
+    int via_next = fold_body_has_next(c, bdy) && !block_has_top_break(c, bdy);
+    if (via_next) {
+      char dest[32];
+      int dv = rv;
+      if (!scalar) { dv = ++g_tmp; buf_printf(b, "sp_RbVal _t%d = sp_box_nil(); (void)_t%d; ", dv, dv); }
+      snprintf(dest, sizeof dest, "_t%d", dv);
+      Buf *sv_pre = g_pre; int sv_ind = g_indent;
+      g_pre = b; g_indent = 0;
+      emit_block_value_into(c, blk, dest, !scalar || res == TY_POLY, 0);
+      g_pre = sv_pre; g_indent = sv_ind;
+    }
+    for (int k = 0; !via_next && k < bbn - 1; k++) emit_stmt(c, bbb[k], b, 0);
+    if (bbn > 0 && !via_next) {
       TyKind lty = comp_ntype(c, bbb[bbn-1]);
       const char *lnty = nt_type(nt, bbb[bbn-1]);
       int nil_lit = (lty == TY_NIL && lnty && sp_streq(lnty, "NilNode"));
@@ -374,9 +390,13 @@ int emit_call_synchronize_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
          way an ordinary ensure frame passes its own (codegen_stmt.c) */
       if (g_ensure_depth > g_loop_ensure_base) {
         EnsureCtx *o2 = &g_ensure_stack[g_ensure_depth - 1];
-        buf_printf(b, "if (_nxtf%d) { _nxtf%d = 1; sp_exc_top--; goto _ensure%d; } ", eid, o2->lid, o2->lid);
+        int fp2 = g_exc_frame_depth - o2->exc_base;
+        buf_printf(b, "if (_nxtf%d) { _nxtf%d = 1; ", eid, o2->lid);
+        if (fp2 > 0) buf_printf(b, "sp_exc_top -= %d; ", fp2);
+        emit_rescue_pops_to(b, o2->rescue_base);
+        buf_printf(b, "goto _ensure%d; } ", o2->lid);
       }
-      else if (g_c_loop_depth > 0) buf_printf(b, "if (_nxtf%d) continue; ", eid);
+      else if (g_c_loop_depth > 0) { buf_printf(b, "if (_nxtf%d) { ", eid); emit_loop_unwind(b); buf_puts(b, "continue; } "); }
       if (g_c_loop_depth > 0 && g_ensure_depth > g_loop_ensure_base) {
         EnsureCtx *o3 = &g_ensure_stack[g_ensure_depth - 1];
         int fp3 = g_exc_frame_depth - o3->exc_base;

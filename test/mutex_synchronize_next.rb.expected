@@ -1,0 +1,14 @@
+5
+false
+after 1
+after 2
+[10, 2, 30]
+"early"
+[:inner_next, :outer_next]
+loop 1
+loop 2
+loop 3
+false
+:returned
+false
+["boom", false]
