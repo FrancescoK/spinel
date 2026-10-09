@@ -2856,7 +2856,7 @@ static const BopShareRow bop_share_rows[] = {
   { BOP_ANY_RECV, "<=>",         BSH_PURE },
   { BOP_ANY_RECV, "freeze",      BSH_RECV },
   { BOP_ANY_RECV, "itself",      BSH_RECV },
-  { BOP_ANY_RECV, "clamp",       BSH_ARGS },
+  { BOP_ANY_RECV, "clamp",       BSH_CLAMP }, /* the receiver or a bound */
   { BOP_ANY_RECV, "sum",         BSH_ARGS }, /* an empty fold keeps its seed */
   { BOP_ANY_RECV, "zip",         BSH_MERGE },
   { BOP_ANY_RECV, "dup",         BSH_RECV },
