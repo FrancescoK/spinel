@@ -1,0 +1,32 @@
+["", nil, "1.0"]
+["a-b-c", "-", "+"]
+"a+b+c"
+"a+b+c"
+"a-b-c-"
+"a==b==c"
+"a++b-c"
+"abc"
+"-+a-b-c-+"
+2
+nil
+[false, false, true]
+"a-b-c-+"
+"a-b-c--+"
+"x-y!abc+"
+"-w+abc"
+"bc"
+"x-y!"
+"x-y!?abc-waz"
+"x-y!?!"
+"x+y!?!"
+"x-y!?!Y-waza-wazax-y!?!Y"
+"x-y!?!Yxy"
+["x-y!?!Yxy", "-waza", "+a"]
+"a+b+c"
+"ayb-c"
+"a+x+xb-c"
+"a+x+xb-c"
+{"a-b-c" => "--", "-" => "a-b-ca-b-c"}
+{"a-b-c" => "--"}
+"a-b-ca-b-c"
+"a-b-c-"

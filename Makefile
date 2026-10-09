@@ -1015,6 +1015,8 @@ re-lit-test: $(SPINEL)
 SHARE_TESTS = $(wildcard test/share/*.rb test/share_strings_*.rb) \
                $(shell grep -l '^\# spinel: share$$' test/*.rb packages/*/test/*.rb) \
                $(shell grep -l '^\# spinel: reject-share$$' test/reject/*.rb)
+# test/share_strings_copy_beside_alloc.rb runs at SPINEL_GC_STRESS=2 as
+# well: a copy its roots lost can still read right at level 1.
 ifneq ($(FFI_AVAILABLE),yes)
 SHARE_SKIP = test/share/share_strings_fiddle.rb packages/ffi/test/%.rb packages/fiddle/test/%.rb
 endif
@@ -1058,6 +1060,11 @@ share-strings-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS
 	   ! grep -q 'sp_String_self_bytes_argument(const char \*self)' "$$tmp/forward.c" || \
 	   ! grep -q 'sp_String_self_handle_argument(sp_String \*self)' "$$tmp/forward.c"; then \
 	  echo "share-strings-test: FAIL (String self forwarding does not select the callee ABI)"; ok=0; \
+	fi; \
+	t=test/share_strings_copy_beside_alloc.rb; \
+	if ! $(SPINEL) --share-strings "$$t" -o "$$tmp/cba" >"$$tmp/out" 2>&1 || \
+	   ! SPINEL_GC_STRESS=2 "$$tmp/cba" 2>&1 | cmp -s - "$$t.expected"; then \
+	  echo "share-strings-test: FAIL (a shared String's copy beside an allocating operand is not rooted, GC stress 2)"; ok=0; \
 	fi; \
 	for t in test/share/refuse/*.rb; do \
 	  if $(SPINEL) --share-strings "$$t" -c -o "$$tmp/r.c" >"$$tmp/out" 2>&1; then \
