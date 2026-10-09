@@ -31289,6 +31289,15 @@ static int splat_constructor_arity(const NodeTable *nt, int id, const char *name
   if (sh == BSH_NEW_FILL) return 2;
   return -1;
 }
+/* Is scope s a class method `new` of a class other than the constructor
+   call's receiver class (and other than Object or BasicObject, whose
+   singleton methods every class inherits)? Such a method never answers
+   that call. */
+static int splat_ctor_other_cnew(Compiler *c, const Scope *s, int recv) {
+  const char *cn = nt_str(c->nt, recv, "name");
+  const char *kn = s->class_id >= 0 ? c->classes[s->class_id].name : NULL;
+  return s->is_cmethod && cn && kn && !sp_streq(kn, cn) && !is_object_root(kn);
+}
 /* A literal receiver is the builtin's own, whatever user classes share the
    method name. */
 static int splat_recv_is_builtin_literal(NodeTable *nt, int id) {
@@ -31752,6 +31761,9 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
     for (int si = 0; si < c->nscopes; si++) {
       Scope *s = &c->scopes[si];
       if (!s->name || !sp_streq(s->name, cnm)) continue;
+      /* A constructor's receiver names its class: another class's own
+         `def self.new` is not the one `Hash.new` reaches. */
+      if (ctor >= 0 && splat_ctor_other_cnew(c, s, recv)) continue;
       if (s->rest_idx >= 0 || s->kwrest_idx >= 0) return 0;
       nuser++;
       int pn = s->def_node >= 0 ? nt_ref(nt, s->def_node, "parameters") : -1, kn = 0;
