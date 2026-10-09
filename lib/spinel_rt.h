@@ -2281,9 +2281,14 @@ static sp_bool sp_poly_responds_builtin(sp_RbVal v, const char *m) {
   static const char *const procm[] = {
     "call", "()", "[]", "yield", "arity", "lambda?", "curry", "to_proc",
     "parameters", "<<", ">>", "source_location", NULL };
+  /* "name" (NameError), "key"/"receiver" (KeyError/NameError) and
+     "result" (UncaughtThrowError) are real but gated to one subclass each
+     -- a generic RuntimeError does not respond_to?(:key) in CRuby, and
+     bop_rows has no owning-subclass field to gate them by (same class of
+     gap as sp_poly_responds_builtin's own Exception exclusion above:
+     found by tools/respond_to_audit.rb, which this answers for). */
   static const char *const excm[] = {
-    "message", "to_s", "full_message", "backtrace", "cause", "exception",
-    "name", "key", "receiver", "result", NULL };
+    "message", "to_s", "full_message", "backtrace", "cause", "exception", NULL };
   const char *cn;
   if (!m) return 0;
   if (sp_str_in_list(m, uni)) return 1;
@@ -2328,8 +2333,32 @@ static sp_bool sp_poly_responds_builtin(sp_RbVal v, const char *m) {
      by its kind */
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_IO && v.v.p)
     return sp_io_responds((sp_File *)v.v.p, m, 0);
-  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_EXCEPTION)
-    return sp_str_in_list(m, excm);
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_EXCEPTION && v.v.p) {
+    if (sp_str_in_list(m, excm)) return 1;
+    /* bop_rows registers these accessors for ANY exception (no
+       owning-subclass field), but CRuby gates each to the subclass that
+       actually defines it: a plain RuntimeError does not respond_to?
+       (:key), only KeyError (and NoMatchingPatternKeyError) do. The
+       mapping below is CRuby's own (ClassName.instance_method(:m).owner
+       for each name, run against every Exception descendant), and
+       sp_exc_is_a walks the boxed exception's real ancestor chain the
+       same way its own is_a? does (#3096), so a user subclass of e.g.
+       KeyError answers true here too, not just the exact builtin class. */
+    volatile struct sp_Exception_s *ve = (volatile struct sp_Exception_s *)v.v.p;
+    if (strcmp(m, "key") == 0)
+      return sp_exc_is_a(ve, "KeyError") || sp_exc_is_a(ve, "NoMatchingPatternKeyError");
+    if (strcmp(m, "receiver") == 0)
+      return sp_exc_is_a(ve, "NameError") || sp_exc_is_a(ve, "FrozenError") || sp_exc_is_a(ve, "KeyError");
+    if (strcmp(m, "name") == 0) return sp_exc_is_a(ve, "NameError");
+    if (strcmp(m, "args") == 0 || strcmp(m, "private_call?") == 0) return sp_exc_is_a(ve, "NoMethodError");
+    if (strcmp(m, "errno") == 0) return sp_exc_is_a(ve, "SystemCallError");
+    if (strcmp(m, "status") == 0 || strcmp(m, "success?") == 0) return sp_exc_is_a(ve, "SystemExit");
+    if (strcmp(m, "signo") == 0 || strcmp(m, "signm") == 0) return sp_exc_is_a(ve, "SignalException");
+    if (strcmp(m, "tag") == 0 || strcmp(m, "value") == 0) return sp_exc_is_a(ve, "UncaughtThrowError");
+    if (strcmp(m, "result") == 0) return sp_exc_is_a(ve, "StopIteration");
+    if (strcmp(m, "reason") == 0 || strcmp(m, "exit_value") == 0) return sp_exc_is_a(ve, "LocalJumpError");
+    return 0;
+  }
   return 0;
 }
 /* respond_to? on a typed IO handle: the names its typed emitters call, and

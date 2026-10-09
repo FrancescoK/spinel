@@ -3269,7 +3269,16 @@ check:
 	+@$(MAKE) --no-print-directory test OPT=-O1
 	+@$(MAKE) --no-print-directory alloc-report-test
 	+@$(MAKE) --no-print-directory infer-test
+	+@$(MAKE) --no-print-directory respond-to-audit
 	+@$(MAKE) --no-print-directory spin-check
+
+# Cross-checks sp_poly_responds_builtin's per-class method tables
+# (lib/spinel_rt.h) against src/builtin_ops.c's bop_rows, the actual
+# dispatch registry, so the two cannot drift silently again the way they
+# did before this target existed (tools/respond_to_audit.rb has the full
+# story and its scope's limits).
+respond-to-audit: $(SPINEL) $(SP_RT_LIB)
+	@SPINEL=$(SPINEL) ruby tools/respond_to_audit.rb
 
 # SPINEL_ALLOC_REPORT / SPINEL_ALLOC_SITES (#1336): the site is an address, so
 # assert the line SHAPE rather than a snapshot -- per-type lines without the
