@@ -3844,7 +3844,9 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
     int tce = ++g_tmp;
     buf_printf(b, "sp_Exception *_t%d = sp_exc_obj[sp_exc_top] ? (sp_Exception *)sp_exc_obj[sp_exc_top]"
                   " : sp_exc_new_for_catch(sp_exc_cls[sp_exc_top], sp_exc_msg[sp_exc_top]);\n  ", tce);
-    buf_printf(b, "sp_gc_wb((void *)_t%d); _t%d->cause = (sp_Exception *)sp_pending_cause; sp_pending_cause = NULL;\n  ", tce, tce);
+    /* an exception never loses a cause it already carries, as in
+       emit_rescue (#3745); an explicit `cause:` was set by the raise */
+    buf_printf(b, "if (!_t%d->cause) { sp_gc_wb((void *)_t%d); _t%d->cause = (sp_Exception *)sp_pending_cause; } sp_pending_cause = NULL;\n  ", tce, tce, tce);
     buf_printf(b, "sp_rescue_push((void *)_t%d);\n  ", tce);
     /* rescue arm: its preludes (e.g. a hoisted `$!` read) must land INSIDE
        this else block, after the push -- swap g_pre to a local buffer. */
