@@ -1,0 +1,1 @@
+spinel: test/share/refuse/yield_self_callable_capture.rb:5: String#then / #yield_self with a callable block is not supported; use a literal block to preserve its result identity (see docs/limitations.md)

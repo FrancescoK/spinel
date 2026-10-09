@@ -3067,7 +3067,8 @@ static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *n
          the store begun, its setup lines landed inside the call. */
       Repr vr = repr_of(c, fbb[fbn - 1]);
       TyKind vt = vr.as_ty;
-      IterStep st; emit_iter_step_open(c, fblk, sp_streq(fk, "Poly") && (vt == TY_POLY || vr.untyped), g_indent + 1, &st);
+      IterStep st; emit_iter_step_open(c, fblk, sp_streq(fk, "Poly") && (vt == TY_POLY || vr.untyped ||
+        (repr_share_rule(c) && (vr.strbuf_src != RS_NONE || strbuf_value_carries(c, fbb[fbn - 1])))), g_indent + 1, &st);
       Buf vb; memset(&vb, 0, sizeof vb); vt = emit_iter_step_tail(c, &st, &vb);
       emit_indent(g_pre, g_indent + 1);
       if (sp_streq(fk, "Poly")) {
@@ -7180,6 +7181,37 @@ static int str_arms_slice_encode(Compiler *c, int id, Buf *b, const char *name, 
    swapcase), chomp, dup / clone, and its searches: start_with?, index /
    rindex, byteindex / byterindex, partition / rpartition, scrub
    (emit_scalar_recv_arms's String chain; answers 1 when a branch was taken) */
+static int str_arms_case_search(Compiler *c, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, const char *r);
+/* A partition's middle element is its String separator on a match. The
+   byte splitter supplies fresh outer pieces; its empty middle on a miss
+   must remain a new String, including for an empty receiver. */
+static int str_partition_shared(Compiler *c, int id, Buf *b, const char *name, int recv,
+                                int argc, const int *argv) {
+  if (!repr_share_rule(c) || argc != 1 || !is_partition_family(name) ||
+      repr_of(c, id).elem != TY_POLY) return 0;
+  TyKind at = comp_ntype(c, argv[0]);
+  if (at == TY_STRBUF) at = TY_STRING;
+  if (at != TY_STRING && at != TY_REGEX) return 0;
+  int tr = ++g_tmp, ts = ++g_tmp, tp = ++g_tmp, to = ++g_tmp;
+  buf_puts(b, "({ ");
+  tr = hold_operand(c, recv, TY_STRING, 0, tr, 1, " ", b);
+  if (at == TY_STRING) ts = hold_operand(c, argv[0], TY_POLY, 1, ts, 1, " ", b);
+  buf_printf(b, "sp_StrArray *_t%d = ", tp);
+  if (at == TY_STRING) buf_printf(b, "sp_str_%s(_t%d, sp_poly_arg_str_or_null(_t%d))", name, tr, ts);
+  else {
+    char r[24]; snprintf(r, sizeof r, "_t%d", tr);
+    str_arms_case_search(c, b, c->nt, name, recv, argc, argv, r);
+  }
+  buf_printf(b, "; SP_GC_ROOT(_t%d); sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); "
+                "for (int i = 0; i < 3; i++) sp_PolyArray_push(_t%d, sp_box_obj(sp_String_new_shared(sp_StrArray_get(_t%d, i)), SP_BUILTIN_STRBUF)); ",
+             tp, to, to, to, tp);
+  if (at == TY_STRING)
+    buf_printf(b, "if (sp_str_byte_len(sp_poly_arg_str_or_null(_t%d)) == 0 || sp_str_byte_len(sp_StrArray_get(_t%d, 1)) > 0) "
+                  "sp_PolyArray_set(_t%d, 1, _t%d); ", ts, tp, to, ts);
+  buf_printf(b, "_t%d; })", to);
+  return 1;
+}
+
 static int str_arms_case_search(Compiler *c, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, const char *r) {
   if (is_len_alias(name)) {
     if (g_hoist_len_var && g_hoist_len_recv && recv >= 0 && nt_type(nt, recv) &&
@@ -8240,6 +8272,7 @@ static int emit_scalar_recv_arms(Compiler *c, int id, Buf *b, const NodeTable *n
   /* scalar receiver methods: evaluate the receiver once into rs, then
      splice its text (so a literal/complex receiver isn't rebuilt). */
   if (!(recv >= 0 && (rt == TY_STRING || rt == TY_INT || rt == TY_FLOAT))) return 0;
+  if (rt == TY_STRING && str_partition_shared(c, id, b, name, recv, argc, argv)) { *out = 1; return 1; }
   Buf rs; memset(&rs, 0, sizeof rs);
   /* Reading a shared-mutable string as a value copies its whole buffer so
      the value cannot alias the handle (#3227). A method that only looks at
@@ -13902,7 +13935,7 @@ static int emit_poly_ivar_call(Compiler *c, int id, Buf *b, const NodeTable *nt,
         /* a Struct member is no ivar (#2849) */
         if (iv < 0 || (c->classes[k].is_struct && iv < c->classes[k].nmembers)) continue;
         TyKind t = c->classes[k].ivar_types[iv];
-        if (t == TY_STRBUF) {
+        if (t == TY_STRBUF && !repr_share_rule(c)) {
           if (nt_int(nt, id, "builtin_only", 0) && poly_ivar_set_reaches(c, id, k))
             unsupported(c, id, "instance variable write to a shared String slot through a boxed receiver");
           continue;

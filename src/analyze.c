@@ -15505,6 +15505,12 @@ static int array_call_store_values(Compiler *c, int w, StoreVals *sv) {
     store_vals_add(sv, av[1]);
   else if (is_fill_name(wcn) && an >= 1 && an <= 3 &&
            nt_ref(nt, w, "block") < 0) store_vals_add(sv, av[0]);
+  else if (c->share_strings && is_fill_name(wcn) && an <= 2) {
+    int blk = nt_ref(nt, w, "block");
+    int body = blk >= 0 && nt_kind(nt, blk) == NK_BlockNode ? nt_ref(nt, blk, "body") : -1;
+    int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+    if (bn > 0) store_vals_add(sv, bb[bn - 1]);
+  }
   return sv->n;
 }
 /* The values node `w` stores into container local (contn, conts): the
@@ -16533,9 +16539,14 @@ static int strbuf_elem_sharing_call(Compiler *c, int node, int depth, int mode, 
   int recv = nt_ref(nt, node, "receiver");
   if (!mn || recv < 0) return 0;
   TyKind rt = infer_type(c, recv);
-  if (!ty_is_array(rt) && !ty_is_hash(rt)) return 0;
   int a = nt_ref(nt, node, "arguments");
   int an = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+  if (c->share_strings && (rt == TY_STRING || rt == TY_POLY) && an == 1 &&
+      is_partition_family(mn) && infer_type(c, av[0]) == TY_STRING && an_call_target_mi(c, node) < 0) {
+    *changed |= strbuf_store_leaf(c, av[0], depth, mode);
+    return 1;
+  }
+  if (!ty_is_array(rt) && !ty_is_hash(rt)) return 0;
   int nest = -1;
   if (is_slice_alias(mn))
     nest = (an == 1 && nt_kind(nt, av[0]) != NK_RangeNode) || ty_is_hash(rt) ? 1 : 0;
@@ -16904,6 +16915,10 @@ static int strbuf_container_source_walk_body(Compiler *c, int node, int depth, i
            handle, infer_call's Array.new arm) */
         int fa = nt_ref(nt, node, "arguments"), fn = 0;
         const int *fv = fa >= 0 ? nt_arr(nt, fa, "arguments", &fn) : NULL;
+        /* A shallow copy stores the source's elements, including fresh
+           Strings that have no holder of their own. */
+        if (c->share_strings && fn == 1 && blk < 0 && ty_is_array(infer_type(c, fv[0])))
+          return strbuf_container_source_walk(c, fv[0], depth + 1, mode);
         if (c->share_strings && fn == 2 && blk < 0) return strbuf_store_leaf(c, fv[1], depth, mode);
         if (SB_KIND(mode) == SB_HAS_NONSTRING || blk < 0 || nt_kind(nt, blk) != NK_BlockNode) return 0;
         int body = nt_ref(nt, blk, "body");
@@ -17239,7 +17254,7 @@ static int smc_first(Compiler *c, int si) {
       smc_next[u] = -1;
       if (nt_kind(nt, u) != NK_CallNode) continue;
       const char *un = nt_str(nt, u, "name");
-      if (!un || !an_str_mutator_name(un)) continue;
+      if (!un || (!an_str_mutator_name(un) && !(c->share_strings && bop_name_mutates(un, 0)))) continue;
       int s = c->nscope ? c->nscope[u] : 0;
       if (s < 0 || s >= ns) s = 0;
       smc_next[u] = smc_head[s];
@@ -17255,7 +17270,8 @@ static int smc_next_of(int u) { return u >= 0 && u < smc_count ? smc_next[u] : -
    The byref machinery answers the same question, but it is computed after the
    fixpoint (compute_byref_out_params), so this pass -- which runs inside it --
    asks the body directly. Only a plain local read of the parameter counts:
-   a rebind makes the name someone else's. */
+   a rebind makes the name someone else's. Encoding and frozen-state changes
+   under sharing need the same parameter handle as byte mutations. */
 static int an_param_mutated_in_place(Compiler *c, int mi, int pi) {
   if (mi < 0 || mi >= c->nscopes) return 0;
   Scope *m = &c->scopes[mi];
@@ -17268,9 +17284,6 @@ static int an_param_mutated_in_place(Compiler *c, int mi, int pi) {
      chain strbuf_slot_eligible_shape moved to), and of those only the ones
      a mutator's name calls (smc_first) */
   for (int u = smc_first(c, mi); u >= 0; u = smc_next_of(u)) {
-    if (nt_kind(nt, u) != NK_CallNode) continue;
-    const char *un = nt_str(nt, u, "name");
-    if (!un || !an_str_mutator_name(un)) continue;
     int ur = nt_ref(nt, u, "receiver");
     if (ur < 0 || nt_kind(nt, ur) != NK_LocalVariableReadNode) continue;
     const char *urn = nt_str(nt, ur, "name");
@@ -34342,8 +34355,13 @@ static int sa_unseen_element(Compiler *c, int u, int k) {
   int a = nt_ref(nt, u, "arguments"), an = 0;
   const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
   if (!nm || r < 0 || !ty_is_array(comp_ntype(c, r))) return -2;
-  int add = array_unseen_add_kind(nm);
-  if (add == ARRAY_ADD_CONCAT && an == 1 && nt_kind(nt, av[0]) == NK_ArrayNode)
+  int block = nt_ref(nt, u, "block"), add = array_unseen_add_kind(nm);
+  if (is_fill_name(nm) && block >= 0 && nt_kind(nt, block) == NK_BlockNode) {
+    int body = nt_ref(nt, block, "body");
+    av = body >= 0 ? nt_arr(nt, body, "body", &an) : NULL;
+    if (an > 0) { av += an - 1; an = 1; }
+  }
+  else if (add == ARRAY_ADD_CONCAT && an == 1 && nt_kind(nt, av[0]) == NK_ArrayNode)
     av = nt_arr(nt, av[0], "elements", &an);
   else if (add == ARRAY_ADD_INSERT && an >= 2) { av++; an--; }
   else if (add != ARRAY_ADD_PREPEND &&
@@ -34588,6 +34606,19 @@ static void refuse_string_alias_copies(Compiler *c) {
   NT_FOREACH_KIND(nt, NK_CallNode, u) {
     const char *nm = nt_str(nt, u, "name");
     SaName from;
+    if (bop_share_named(TY_STRING, nm) == BSH_LINE && an_call_target_mi(c, u) < 0) {
+      int recv = nt_ref(nt, u, "receiver"), argc = 0, blk = nt_ref(nt, u, "block");
+      int args = nt_ref(nt, u, "arguments");
+      const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+      const char *pn = blk >= 0 ? block_param_name(c, blk, 0) : NULL;
+      if (recv >= 0 && comp_recv_type(c, recv) == TY_STRING && argc >= 1 &&
+          comp_ntype(c, argv[0]) == TY_NIL && pn && sa_name(c, recv, &from)) {
+        SaName param = {0};
+        param.kind = NK_LocalVariableReadNode; param.scope = comp_scope_of(c, blk); param.name = pn;
+        if (sa_copy_observable(c, &param, &from, recv))
+          unsupported_feature(c, u, "String line iteration with a nil separator cannot carry a shared receiver into its block; see docs/limitations.md");
+      }
+    }
     /* `a.insert(0, s)`, `a << t << s`, `$a << s`, then `s << x` where the
        Array is read, or a mutation through the element */
     for (int k = 0, e; (e = sa_unseen_element(c, u, k)) != -2; k++)

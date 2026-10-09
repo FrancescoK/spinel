@@ -668,6 +668,15 @@ const char *cplan_feature_why(Compiler *c, int id, int *stop, char *buf, size_t 
       return buf;
     }
   }
+  if (is_then_alias(name)) {
+    int blk = nt_ref(nt, id, "block"), recv = nt_ref(nt, id, "receiver");
+    TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
+    /* A callable block has no inline body or returned-String identity fact. */
+    if (blk >= 0 && nt_kind(nt, blk) != NK_BlockNode &&
+        (rt == TY_STRING || rt == TY_STRBUF) && cplan_user_fresh(c, id)->dispatch == CP_NONE)
+      return "String#then / #yield_self with a callable block is not supported; "
+             "use a literal block to preserve its result identity (see docs/limitations.md)";
+  }
   static const struct { const char *m; const char *why; } tbl[] = {
     { "define_singleton_method",
       "Object#define_singleton_method is not supported by AOT compilation: a per-object "

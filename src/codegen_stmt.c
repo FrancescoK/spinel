@@ -1388,7 +1388,8 @@ int strbuf_hash_default_arg(Compiler *c, int v) {
    String seed carried as the handle, whose accumulator parameter is the
    handle, and that leaves by no `break`: inject answers the block's last
    value, or a `next`'s, as the handle (emit_reduce_block_expr), so a block
-   answering its accumulator answers the seed itself. */
+   answering its accumulator answers the seed itself. A numeric Range uses
+   the same fold after its existing Array conversion. */
 static int strbuf_route_inject(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
   int recv = nt_ref(nt, v, "receiver"), blk = nt_ref(nt, v, "block"), argc = 0;
@@ -1398,11 +1399,14 @@ static int strbuf_route_inject(Compiler *c, int v) {
   if (!seed && argc == 1 && repr_of(c, argv[0]).as_ty == TY_STRING &&
       share_value_fresh(c, argv[0], 0)) seed = 1;
   if (recv < 0 || argc != 1 || blk < 0 || nt_kind(nt, blk) != NK_BlockNode || call_breaks(c, v) ||
-      !ty_is_array(repr_of(c, recv).as_ty) || comp_ntype(c, v) != TY_STRING ||
+      (!ty_is_array(repr_of(c, recv).as_ty) && repr_of(c, recv).as_ty != TY_RANGE) ||
+      comp_ntype(c, v) != TY_STRING ||
       !seed) return 0;
   const char *p0 = block_param_name(c, blk, 0);
   Scope *bsc = p0 ? comp_scope_of(c, blk) : NULL;
-  return bsc && block_param_name(c, blk, 1) && repr_of_slot(c, scope_local(bsc, rename_local(p0))).handle;
+  return bsc && block_param_name(c, blk, 1) &&
+         (repr_of_slot(c, scope_local(bsc, rename_local(p0))).handle ||
+          repr_of_slot(c, scope_local(bsc, rename_local(p0))).kind == RK_BOXED);
 }
 /* --share-strings: a value route that answers the String it is handed, not
    a new one -- `+s` (s itself unless s is frozen), `String(s)` (s itself, ""
@@ -1423,6 +1427,13 @@ static int strbuf_route_operand(Compiler *c, int v) {
     return v;
   if (is_tap_name(nm) && strbuf_route_tap(c, v)) return v;
   if (is_reduce_alias(nm) && strbuf_route_inject(c, v)) return v;
+  if (recv >= 0 && argc == 1 && blk < 0 &&
+      bop_share_named(BOP_ANY_ARRAY, nm) == BSH_SUM &&
+      cplan_user(c, v)->dispatch == CP_NONE &&
+      (ty_is_array(repr_of(c, recv).as_ty) || repr_of(c, recv).as_ty == TY_UNKNOWN) &&
+      (comp_ntype(c, argv[0]) == TY_STRING || comp_ntype(c, argv[0]) == TY_STRBUF)) return v;
+  if (recv >= 0 && argc == 0 && blk < 0 && comp_recv_type(c, recv) == TY_STRING &&
+      bop_share_named(TY_STRING, nm) == BSH_EMPTY_SELF && cplan_user(c, v)->dispatch == CP_NONE) return recv;
   if (repr_boxed_to_s_operand(c, v) >= 0) return recv;
   /* A builtin conversion on a String returns that same String. */
   int conversion = repr_string_conversion_operand(c, v);
@@ -1694,6 +1705,11 @@ static int strbuf_route_carries(Compiler *c, int v, int depth) {
    the String every other name of its class holds. */
 int emit_strbuf_route(Compiler *c, int v, Buf *b) {
   const NodeTable *nt = c->nt;
+  /* An ordered operand has already taken its callee's return handle. */
+  if (repr_share_rule(c) && repr_of(c, v).kind == RK_STRBUF) {
+    int held = head_held_temp(c, v);
+    if (held >= 0) { buf_printf(b, "_t%d", held); return 1; }
+  }
   int ops[3];
   if (strbuf_route_clamp(c, v, ops)) {
     int ts[3], argc = 0; const int *argv = call_args(nt, unwrap_parens(c, v), &argc);
@@ -1814,6 +1830,13 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
   }
   if (x < 0 || !strbuf_route_carries(c, v, 0)) return 0;
   v = unwrap_parens(c, v);
+  if (x == v && bop_share_named(BOP_ANY_ARRAY, nt_str(nt, v, "name")) == BSH_SUM) {
+    int argc = 0; const int *argv = call_args(nt, v, &argc);
+    buf_puts(b, "sp_poly_as_strbuf(");
+    emit_poly_sum_seed(c, nt_ref(nt, v, "receiver"), argv[0], b);
+    buf_puts(b, ")");
+    return 1;
+  }
   if (x == v) {
     /* `then` answers its block's value, or a `next`'s: read as the handle
        under the demand. `tap` answers its receiver's handle, and its
@@ -1833,6 +1856,15 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
     view_pop(c, sv);
     strbuf_jump_views_pop(c, tok, ntok);
     return ok;
+  }
+  if (bop_share_named(TY_STRING, nt_str(nt, v, "name")) == BSH_EMPTY_SELF) {
+    int t = ++g_tmp;
+    buf_printf(b, "({ sp_String *_t%d = ", t);
+    emit_strbuf_handle_of(c, x, b);
+    buf_printf(b, "; SP_GC_ROOT(_t%d); if (!_t%d) sp_nil_recv(\"capitalize\"); "
+                  "sp_String_length(_t%d) == 0 ? _t%d : sp_String_new_shared(sp_str_capitalize(sp_strbuf_read(_t%d))); })",
+               t, t, t, t, t);
+    return 1;
   }
   if (is_unary_plus(nt_str(nt, v, "name"))) {
     /* nil has no +@: NoMethodError, as the copy's read raised */

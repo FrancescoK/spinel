@@ -1,3 +1,4 @@
+# spinel: share
 # A local is typed once for its whole life, so one nil written to it makes
 # every read of it nullable: a compare tests for the sentinel, a box takes the
 # nil-aware form, and the mark spreads to whatever the value is copied into.

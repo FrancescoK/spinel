@@ -544,21 +544,34 @@ static void emit_obj_conv_call_inline(Compiler *c, int node, TyKind t, int def, 
      two raise -- the same judgement the bridge row makes for its own half */
   int mi_c = comp_method_in_chain(c, def, conv, NULL);
   const char *unbox = NULL;
+  /* Sharing can narrow a boxed conversion result to a nullable String;
+     keep its result check when that representation changes. */
+  int nil_string = c->share_strings && mi_c >= 0 && c->scopes[mi_c].ret == TY_STRING &&
+                   c->scopes[mi_c].ret_obj_may_nil;
   if (mi_c >= 0 && c->scopes[mi_c].ret == TY_POLY)
     unbox = sp_streq(conv, "to_int") ? "sp_poly_arg_int_chk("
           : sp_streq(conv, "to_str") ? "sp_poly_arg_str("
           : NULL;  /* #to_path is wrapped by its own site, not here */
+  if (nil_string) unbox = "sp_poly_arg_str_chk(sp_box_str(";
   if (unbox) buf_puts(b, unbox);
   /* a fresh object (`xs.first(C.new)`) is held by nothing but the argument
      while its conversion allocates: root it first */
   if (!comp_ty_value_obj(c, t) && !expr_is_held_ref(c, node)) {
     int tr = ++g_tmp;
-    buf_printf(b, "({ sp_%s *_t%d = (sp_%s *)(", c->classes[def].c_name, tr, c->classes[def].c_name);
-    emit_expr(c, node, b);
+    Buf pre, val;
+    memset(&pre, 0, sizeof pre); memset(&val, 0, sizeof val);
+    emit_split_pre(c, node, emit_expr, &pre, &val);
+    /* A shared argument's declaration belongs ahead of the conversion,
+       which a conversion hold can move ahead of the enclosing call. */
+    buf_puts(b, "({ ");
+    if (pre.p) buf_puts(b, pre.p);
+    buf_printf(b, "sp_%s *_t%d = (sp_%s *)(%s", c->classes[def].c_name, tr, c->classes[def].c_name,
+               val.p ? val.p : "");
     buf_printf(b, "); SP_GC_ROOT(_t%d); sp_%s_%s(_t%d", tr, c->classes[def].c_name, mc(conv), tr);
     if (mi_c >= 0) emit_conv_dflt_args(c, mi_c, b);
     buf_puts(b, "); })");
-    if (unbox) buf_puts(b, ")");
+    free(pre.p); free(val.p);
+    if (unbox) buf_puts(b, nil_string ? "))" : ")");
     return;
   }
   buf_printf(b, "sp_%s_%s(", c->classes[def].c_name, mc(conv));
@@ -568,7 +581,7 @@ static void emit_obj_conv_call_inline(Compiler *c, int node, TyKind t, int def, 
   buf_puts(b, ")");
   if (mi_c >= 0) emit_conv_dflt_args(c, mi_c, b);
   buf_puts(b, ")");
-  if (unbox) buf_puts(b, ")");
+  if (unbox) buf_puts(b, nil_string ? "))" : ")");
 }
 
 static int emit_obj_conv(Compiler *c, int node, const char *conv, TyKind want,
@@ -4740,6 +4753,9 @@ static int main_body_split(Compiler *c, Buf *body, size_t open, size_t *frame_in
     size_t re = q == np ? sbeg : cuts[pend[q]];
     for (size_t i = rb; i < re; ) {
       size_t j = frame_skip_noncode(p, i, re);
+      /* A loop-cache macro reads its arrays in the part that expands it.
+         Its replacement text must count toward each local's uses. */
+      if (re - i >= 8 && !strncmp(p + i, "#define ", 8)) j = i;
       if (j != i) { i = j; continue; }
       if (!frame_idch(p[i])) { i++; continue; }
       size_t k = i;

@@ -1,3 +1,4 @@
+# spinel: share
 # bytesplice and append_as_bytes mutate their receiver in place, as the
 # other String mutators do: a parameter, a block's or a proc's parameter
 # they are called on is the caller's own String, as in CRuby. They were not

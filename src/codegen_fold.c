@@ -3207,15 +3207,18 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
   }
   Repr rr = repr_of(c, recv);
   TyKind rt = rr.as_ty;
-  if (!ty_is_array(rt)) return 0;
+  /* A demanded String memo uses the Array fold's handle accumulator.
+     Range elements come from a counter; the memo never needs an Array. */
+  int range = rt == TY_RANGE && repr_share_rule(c) && repr_of(c, id).demand;
+  if (!ty_is_array(rt) && !range) return 0;
   /* `[[ints],...].inject { |a, b| a & b }`: the inner int arrays are boxed in a
      poly array; fold them as int arrays (unboxing each element). The poly array
      itself has no array_kind, so detect this before the typed-array bail. */
   int nested = (rr.elem == TY_POLY && comp_is_nested_int_array_literal(c, recv));
-  const char *k = (rr.elem == TY_POLY && !nested) ? "Poly" : array_iter_kind(rt);
+  const char *k = range ? "Int" : (rr.elem == TY_POLY && !nested) ? "Poly" : array_iter_kind(rt);
   if (!k && !nested) return 0;
   if (nested) k = "Poly";  /* length via sp_PolyArray_length; elements unboxed below */
-  TyKind et = nested ? TY_INT_ARRAY : rr.elem;
+  TyKind et = range ? TY_INT : nested ? TY_INT_ARRAY : rr.elem;
   int block = resolve_forwarded_block(c, nt_ref(nt, id, "block"));
   if (block < 0) return 0;
   const char *bty = nt_type(nt, block);
@@ -3240,6 +3243,7 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
   int args = nt_ref(nt, id, "arguments");
   int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
   int init = (argc > 0 && argv) ? argv[0] : -1;
+  if (range && init < 0) return 0;
 
   /* Accumulator type comes from the seed init when provided, else from the element type. */
   TyKind acc_ty = et;
@@ -3337,11 +3341,13 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
      the block's first parameter binds it, and each turn takes the block's
      value as a handle, so a block answering its accumulator answers the
      seed itself */
-  int hacc = 0;
+  int hacc = 0, bacc = 0;
   if (acc_ty == TY_STRING && init >= 0 && p0_orig && repr_share_rule(c) && repr_of(c, id).demand) {
     Scope *hsc = comp_scope_of(c, block);
     hacc = repr_of_slot(c, hsc ? scope_local(hsc, p0_orig) : NULL).handle;
+    bacc = repr_of_slot(c, hsc ? scope_local(hsc, p0_orig) : NULL).kind == RK_BOXED;
     if (hacc) acc_ty = TY_STRBUF;
+    else if (bacc) acc_ty = TY_POLY;
   }
   int ta = ++g_tmp, tacc = ++g_tmp, ti = ++g_tmp;
   buf_puts(b, "({ ");
@@ -3355,8 +3361,8 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
      needs_root test here, unlike the accumulator below: this emitter has
      already returned 0 unless rt is an array kind, and every array kind needs
      a root and none of them is a value-type object, so the root and its
-     separator are always wanted. */
-  emit_gc_root_tmp(c, rt, ta, b); buf_puts(b, " ");
+     separator are always wanted. The Range arm holds only scalar bounds. */
+  if (!range) { emit_gc_root_tmp(c, rt, ta, b); buf_puts(b, " "); }
   /* --int-overflow=promote: the body is re-inferred under the parameter
      shadow below, and an Integer `+` / `*` in it is typed poly then (it may
      promote), so a numeric accumulator has to be boxed to take it back.
@@ -3397,6 +3403,13 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
   else if (init >= 0) {
     /* a boxed accumulator wants a boxed seed */
     if (hacc) emit_strbuf_handle_of(c, init, b);
+    else if (bacc) {
+      /* The box keeps the memo's handle, so appends reuse its capacity. */
+      Buf seed = {0};
+      emit_strbuf_handle_of(c, init, &seed);
+      emit_boxed_text(c, TY_STRBUF, seed.p, b);
+      free(seed.p);
+    }
     else if (acc_ty == TY_POLY && repr_of(c, init).kind != RK_BOXED) emit_boxed(c, init, b);
     /* a seed of a narrower array kind than the widened accumulator converts */
     else if (acc_ty == TY_POLY_ARRAY && repr_of(c, init).elem != TY_POLY) {
@@ -3440,8 +3453,16 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
   if (rlv0) rlv0->type = acc_ty;
   if (rlv1) rlv1->type = et;
   for (int j = 0; j < bn; j++) infer_subtree(c, bb[j]);  /* refresh ntype cache */
-  buf_printf(b, "for (sp_int _t%d = %d; _t%d < sp_%sArray_length(_t%d); _t%d++) { ",
-             ti, start, ti, k, ta, ti);
+  if (range) {
+    int ts = ++g_tmp, te = ++g_tmp;
+    buf_printf(b, "sp_int _t%d = sp_range_step(_t%d); sp_int _t%d = _t%d.last - (_t%d.excl ? (_t%d > 0 ? 1 : -1) : 0); ",
+               ts, ta, te, ta, ta, ts);
+    buf_printf(b, "if (_t%d.first == INTPTR_MIN && _t%d > 0) sp_range_nil_begin_raise(); ", ta, ts);
+    buf_printf(b, "for (sp_int _t%d = _t%d.first; _t%d > 0 ? _t%d <= _t%d : _t%d >= _t%d; _t%d += _t%d) { ",
+               ti, ta, ts, ti, te, ti, te, ti, ts);
+  }
+  else buf_printf(b, "for (sp_int _t%d = %d; _t%d < sp_%sArray_length(_t%d); _t%d++) { ",
+                  ti, start, ti, k, ta, ti);
   buf_puts(b, "{ ");
   if (p0) { emit_ctype(c, acc_ty, b); buf_printf(b, " lv_%s = _t%d; ", p0, tacc); }
   if (p1_multi) {
@@ -3456,6 +3477,7 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
     }
   }
   else if (!p1) { }
+  else if (range) buf_printf(b, "sp_int lv_%s = _t%d; ", p1, ti);
   else if (nested) { emit_ctype(c, et, b); buf_printf(b, " lv_%s = (sp_IntArray *)sp_PolyArray_get(_t%d, _t%d).v.p; ", p1, ta, ti); }
   else { emit_ctype(c, et, b); buf_printf(b, " lv_%s = sp_%sArray_get(_t%d, _t%d); ", p1, k, ta, ti); }
   /* `next v` inside a fold block sets the accumulator and moves on, so point
@@ -3522,7 +3544,8 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
   g_ie_next_var = sv_nxv; g_ie_res_poly = sv_nxp;
   /* the expression must carry the INFERRED type: a poly-typed reduce
      (e.g. a dyn-send body) boxes its scalar accumulator */
-  if (repr_of(c, id).kind == RK_BOXED && acc_ty != TY_POLY) {
+  if (bacc) buf_printf(b, "sp_poly_as_strbuf(_t%d); })", tacc);
+  else if (repr_of(c, id).kind == RK_BOXED && acc_ty != TY_POLY) {
     char accn[24]; snprintf(accn, sizeof accn, "_t%d", tacc);
     Buf bx; memset(&bx, 0, sizeof bx);
     emit_boxed_text(c, acc_ty, accn, &bx);
