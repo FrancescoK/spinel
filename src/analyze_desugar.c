@@ -5990,13 +5990,20 @@ static void fwd_drop_spent_anon_block_param(Compiler *c, int id, int n0) {
    value, or a second forward keeps the parameter a value. */
 static int fwd_blk_param_read_elsewhere(Compiler *c, Scope *ms, const char *name, int only) {
   const NodeTable *nt = c->nt;
-  for (int id = 0; id < nt->count; id++) {
-    if (id == only || comp_scope_of(c, id) != ms) continue;
-    NodeKind k = nt_kind(nt, id);
-    if (k != NK_LocalVariableReadNode && k != NK_LocalVariableWriteNode) continue;
-    const char *n = nt_str(nt, id, "name");
-    if (n && sp_streq(n, name)) return 1;
-  }
+  /* the reads and writes of the name in ms, off the variable-site index:
+     scanning every node of the program, for each `&blk` forward every
+     round, was a fifth of a large program's second-pass fixpoint round */
+  int key = (int)(ms - c->scopes);
+  static const VsKind kinds[2] = { VS_READ, VS_WRITE };
+  for (int k = 0; k < 2; k++)
+    for (int e = comp_vsite_first(c, kinds[k], NK_LocalVariableReadNode, name, key); e >= 0; e = comp_vsite_next(c, e)) {
+      int id = comp_vsite_node(c, e);
+      if (id == only || comp_scope_of(c, id) != ms) continue;
+      NodeKind nk = nt_kind(nt, id);
+      if (nk != NK_LocalVariableReadNode && nk != NK_LocalVariableWriteNode) continue;
+      const char *n = nt_str(nt, id, "name");
+      if (n && sp_streq(n, name)) return 1;
+    }
   return 0;
 }
 
