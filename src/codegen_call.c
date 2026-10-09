@@ -2158,7 +2158,8 @@ int diagnose_unsupported_call(Compiler *c, int id) {
   refuse_from_plan(c, id, CRF_LIMIT, "refuse-limit");
   /* extend and define_singleton_method: the plan leaves them to codegen */
   int stop;
-  const char *why = cplan_feature_why(c, id, &stop);
+  char why_buf[512];
+  const char *why = cplan_feature_why(c, id, &stop, why_buf, sizeof why_buf);
   if (why && g_plan_check && !g_unsup_probe) fprintf(stderr, "plan-check: cplan-fallback: refuse-limit node %d\n", id);
   if (why) unsupported_feature(c, id, why);
   int recv = stop ? -1 : nt_ref(c->nt, id, "receiver");
@@ -15039,9 +15040,7 @@ static int class_object_private_method(const char *qm, int is_module) {
   return 0;
 }
 static int class_is_module(Compiler *c, int ci) {
-  int dn = c->classes[ci].def_node;
-  const char *dt = dn >= 0 ? nt_type(c->nt, dn) : NULL;
-  return dt && sp_streq(dt, "ModuleNode");
+  return comp_class_is_module(c, &c->classes[ci]);
 }
 
 static int class_responds_to(Compiler *c, int ci, const char *qm) {
@@ -15058,9 +15057,7 @@ static int class_responds_to(Compiler *c, int ci, const char *qm) {
     }
   }
   else if (comp_is_sg_reader(&c->classes[ci], qm)) return 1;
-  int dn = c->classes[ci].def_node;
-  const char *dt = dn >= 0 ? nt_type(nt, dn) : NULL;
-  int is_module = dt && sp_streq(dt, "ModuleNode");
+  int is_module = comp_class_is_module(c, &c->classes[ci]);
   /* A module's `module_function` methods are recorded class-level and were
      already matched above. Its plain `def m` are instance methods, which the
      module object itself does NOT respond to -- answering true for those made
@@ -15550,6 +15547,16 @@ static int arity_spec_row(const SpAritySpec *tbl, const char *cls, const char *n
   }
   return 0;
 }
+int builtin_cmethod_known(const char *cls, const char *name) {
+  char exp[32] = "";
+  if (!cls || !name) return 0;
+  /* Kernel module functions also occur in the instance method table. */
+  return arity_spec_row(sp_builtin_cmeth_arity_spec_tbl, cls, name, 0, 0, exp, sizeof exp) ||
+         (is_kernel_module_name(cls) &&
+          (builtin_method_known(cls, name) || is_kernel_module_function(name)));
+}
+
+
 /* The arity table's class for a row's receiver kind, or NULL: the kinds the
    table probes a receiver of. */
 static const char *bop_spec_class(TyKind k) {
@@ -24788,6 +24795,10 @@ int respond_to_static_answer(Compiler *c, int id, int recv, TyKind rt, const cha
       else if (ci >= 0) {
         resolved = 1;
         yes = class_responds_to(c, ci, qm);
+        /* A reopening retains the builtin methods its own table does not list. */
+        if (!yes && (is_builtin_class_name(rcn) || is_builtin_module_const_name(rcn)) &&
+            !(class_is_module(c, ci) && class_only_method(qm)))
+          rt_probe_answer(c, id, &yes);
         /* a private/protected class method answers only to include_all */
         if (yes && foldable && comp_cmethod_vis_declared(c, ci, qm, NULL) != SP_VIS_PUBLIC)
           yes = include_all;
@@ -25299,6 +25310,39 @@ static int emit_deep_return_pickup(Compiler *c, int id, Buf *b) {
   return 1;
 }
 
+static int emit_const_user_call(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int recv = nt_ref(nt, id, "receiver");
+  NodeKind rk = nt_kind(nt, recv);
+  if (rk != NK_ConstantReadNode && rk != NK_ConstantPathNode) return 0;
+  const CallPlan *pl = cplan_const_user(c, id, nt_str(nt, recv, "name"), 0);
+  if (!pl) return 0;
+  int yields = c->scopes[pl->mi].yields;
+  if (emit_vis_refusal(c, id, b) || emit_operands_in_order(c, id, b)) return 1;
+  /* Yielding wrappers, including blockless calls, use the inline path below;
+     they have no standalone C function. */
+  if (yields) return emit_inline_expr(c, id, b);
+  return emit_call_const_cmethod_arms(c, id, b, nt, nt_str(nt, id, "name"),
+                                    recv);
+}
+
+/* k = Struct.new(:a, :b): the registered anonymous struct class, as a
+     first-class class value */
+static int emit_anon_struct_value(Compiler *c, int id, Buf *b) {
+  int aci = anon_struct_ci_for_value(c, id);
+  if (aci >= 0) {
+    /* A duplicate member name is an ArgumentError at definition time in
+       CRuby; raise at runtime so a surrounding rescue can catch it (#2705). */
+    const char *dup = struct_call_dup_member(c, id);
+    if (dup) {
+      buf_printf(b, "(sp_raise_cls(\"ArgumentError\", \"duplicate member: %s\"), (sp_Class){%d})", dup, aci);
+      return 1;
+    }
+    buf_printf(b, "((sp_Class){%d})", aci); return 1;
+  }
+  return 0;
+}
+
 void emit_call_body(Compiler *c, int id, Buf *b) {
   /* the class's own method in a builtin's receiver test (`__r.is_a?(K) ?
      __r.m { } : __enum_m(__r) { }`): the test has decided the receiver is
@@ -25444,6 +25488,7 @@ void emit_call_body(Compiler *c, int id, Buf *b) {
     }
   }
   const NodeTable *nt = c->nt;
+  if (emit_const_user_call(c, id, b)) return;
   /* A provably wrong argument count raises before any type guard, as CRuby
      checks arity at dispatch (defined above). */
   if (emit_or_take_back(c, id, b, emit_builtin_arity_guard)) return;
@@ -25487,21 +25532,7 @@ void emit_call_body(Compiler *c, int id, Buf *b) {
     }
   }
   if (emit_or_take_back(c, id, b, emit_vis_refusal)) return;
-  /* k = Struct.new(:a, :b): the registered anonymous struct class, as a
-     first-class class value */
-  {
-    int aci = anon_struct_ci_for_value(c, id);
-    if (aci >= 0) {
-      /* A duplicate member name is an ArgumentError at definition time in
-         CRuby; raise at runtime so a surrounding rescue can catch it (#2705). */
-      const char *dup = struct_call_dup_member(c, id);
-      if (dup) {
-        buf_printf(b, "(sp_raise_cls(\"ArgumentError\", \"duplicate member: %s\"), (sp_Class){%d})", dup, aci);
-        return;
-      }
-      buf_printf(b, "((sp_Class){%d})", aci); return;
-    }
-  }
+  if (emit_anon_struct_value(c, id, b)) return;
   /* push/append/<< on an empty array literal in value position: the literal
      has no storage to mutate and returns self, so `[].push(1, 2)` is just the
      array `[1, 2]`, a fresh poly array of the args (the empty literal infers

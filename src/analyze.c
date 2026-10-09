@@ -631,6 +631,7 @@ void compute_reachable(Compiler *c) {
   for (int s = 0; s < c->nscopes; s++) {
     for (int i = 0; i < sc_n[s]; i++) free(scope_calls[s][i]);
     free(scope_calls[s]);
+    refuse_native_singleton_reopen(c, &c->scopes[s]);
   }
   free(scope_calls); free(sc_n); free(sc_cap); free(queue);
 }
@@ -7101,6 +7102,7 @@ static int desugar_hash_new_capacity(Compiler *c) {
     int argsn = nt_ref(nt, id, "arguments"), an = 0;
     const int *av = argsn >= 0 ? nt_arr(nt, argsn, "arguments", &an) : NULL;
     if (an == 0 || nt_kind(nt, av[an - 1]) != NK_KeywordHashNode) continue;
+    if (cplan_const_user(c, id, nt_str(nt, r, "name"), 1)) continue;
     int en = 0; const int *el = nt_arr(nt, av[an - 1], "elements", &en);
     if (en != 1 || nt_kind(nt, el[0]) != NK_AssocNode) continue;
     int key = nt_ref(nt, el[0], "key"), val = nt_ref(nt, el[0], "value");
@@ -7147,6 +7149,7 @@ static int pin_arg_position_hash_new(Compiler *c) {
       if (!rty || (!sp_streq(rty, "ConstantReadNode") && !sp_streq(rty, "ConstantPathNode"))) continue;
       const char *cn = nt_str(nt, arecv, "name");
       if (cn && sp_streq(cn, "Hash")) {
+        if (cplan_const_user(c, a, cn, 1)) continue;
         nt_node_set_str(nt, a, "name", "__hash_new_default");
         changed = 1;
       }
@@ -7169,6 +7172,7 @@ static int pin_arg_position_hash_new(Compiler *c) {
     if (!rty || (!sp_streq(rty, "ConstantReadNode") && !sp_streq(rty, "ConstantPathNode"))) continue;
     const char *cn = nt_str(nt, arecv, "name");
     if (cn && sp_streq(cn, "Hash")) {
+      if (cplan_const_user(c, a, cn, 1)) continue;
       nt_node_set_str(nt, a, "name", "__hash_new_default");
       changed = 1;
     }
@@ -7190,24 +7194,6 @@ static int name_is_math_fn(const char *nm) {
    them (#2600). Only fires when the program includes Math and no user method of
    the same name shadows it; a bare call needs at least one argument (the Math
    functions are all n-ary), so a receiverless niladic call is never touched. */
-/* Kernel's module functions, by name. A whitelist rather than "anything with
-   the Kernel receiver": Kernel is also a VALUE, so `Kernel === 5` asks whether
-   5 is in the Object hierarchy, and `Kernel.name` / `.to_s` / `.freeze` /
-   `.instance_methods` are Module's own methods on it. Dropping the receiver for
-   those would change what they mean. Only names that Module does not also
-   answer belong here. */
-static int kernel_module_function(const char *m) {
-  static const char *const K[] = {
-    "puts", "print", "p", "pp", "printf", "sprintf", "format",
-    "raise", "fail", "exit", "exit!", "abort", "at_exit",
-    "rand", "srand", "sleep", "gets", "loop", "lambda", "proc",
-    "block_given?", "catch", "throw", "caller", "binding", "__method__",
-    "require", "require_relative", "load", "warn", "system", "exec", "spawn",
-    "Integer", "Float", "String", "Array", "Hash", "Rational", "Complex",
-    NULL
-  };
-  return str_in(m, K);
-}
 
 /* `Kernel.puts x` / `Kernel.exit(1)` / `Kernel.format(...)`: Kernel's module
    functions are callable with the module as an explicit receiver, and mean
@@ -7217,10 +7203,10 @@ static int kernel_module_function(const char *m) {
    injectable in a CLI library.
 
    Drop the receiver and let the bare-call machinery handle it. Skipped when the
-   program defines its own Kernel, where the name means whatever it says. */
+   program defines its own Kernel, where the name means whatever it says.
+   A reopening now skips only the singleton methods it actually replaces. */
 int desugar_kernel_recv(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
-  if (comp_class_index(c, "Kernel") >= 0) return 0;
   int changed = 0;
   int n0 = nt->count;
   for (int id = 0; id < n0; id++) {
@@ -7232,7 +7218,7 @@ int desugar_kernel_recv(Compiler *c) {
     const char *rn = nt_str(nt, recv, "name");
     if (!rn || !sp_streq(rn, "Kernel")) continue;
     const char *mn = nt_str(nt, id, "name");
-    if (!mn || !kernel_module_function(mn)) continue;
+    if (!mn || !is_kernel_module_function(mn) || cplan_const_user(c, id, rn, 1)) continue;
     nt_node_set_ref(nt, id, "receiver", -1);
     changed = 1;
   }
@@ -8941,6 +8927,7 @@ static int desugar_file_stat_new(Compiler *c) {
     int par = nt_ref(nt, recv, "parent");
     const char *pn = par >= 0 ? nt_str(nt, par, "name") : NULL;
     if (!pn || !sp_streq(pn, "File")) continue;
+    if (cplan_const_user(c, id, cn, 1)) continue;
     int args = nt_ref(nt, id, "arguments");
     int an = 0;
     if (args >= 0) nt_arr(nt, args, "arguments", &an);
@@ -8950,6 +8937,7 @@ static int desugar_file_stat_new(Compiler *c) {
     nt_node_set_str(nt, fc, "name", "File");
     nt_node_set_ref(nt, id, "receiver", fc);
     nt_node_set_str(nt, id, "name", "stat");
+    nt_node_set_int(nt, id, "builtin_only", 1);
     comp_grow_node_arrays(c);
     c->nscope[fc] = c->nscope[id];
     changed = 1;

@@ -14257,7 +14257,7 @@ void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
       const char *cn = nt_str(nt, sexpr, "name");
       class_self = cn && comp_class_index(c, cn) >= 0;
     }
-    if (class_self) {
+    if (class_self || nt_int(nt, nt_ref(nt, id, "body"), "singleton_body", 0)) {
       /* ... but the rest of the body runs here, top to bottom, like a class
          body: a constant it assigns is read by the singleton methods beside
          it (#5996), and a statement like `p 5` has its effect where it

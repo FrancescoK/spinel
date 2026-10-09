@@ -3147,3 +3147,13 @@ int io_reopen_leaves_builtin(Compiler *c, const char *name) {
   for (int i = 0; i < n; i++) if (sp_streq(c->classes[ks[i]].name, "IO")) return 0;
   return n > 0;
 }
+
+int is_builtin_module_const_name(const char *n) {
+  if (!n) return 0;
+  static const char *const names[] = {
+    "Kernel", "Comparable", "Enumerable", "Math", "Marshal", "FileTest", "Errno", "Warning",
+    "ObjectSpace", "Process", "GC", "Signal", NULL
+  };
+  for (int i = 0; names[i]; i++) if (sp_streq(names[i], n)) return 1;
+  return is_builtin_module_name(n);
+}

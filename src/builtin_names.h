@@ -269,4 +269,10 @@ int is_proc_conversion_name(const char *n); /* to_proc curry: makes a proc */
 int is_aref_name(const char *n);         /* []: an element read */
 int is_shovel_name(const char *n);       /* <<: an append, a chain's link */
 
+const char *dir_surface_alias(const char *n, int blockless_iter);
+
+int is_kernel_module_name(const char *n);
+int is_kernel_module_function(const char *n);
+int is_builtin_module_const_name(const char *n);
+
 #endif

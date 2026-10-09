@@ -559,6 +559,7 @@ ClassInfo *comp_class_new(Compiler *c, const char *name, int def_node) {
   ci->ctor_reachable = 1;   /* conservatively, until compute_instantiated's early pass has looked */
   ci->name = name ? strdup(name) : NULL;
   ci->c_name = sp_class_c_name(name);
+  ci->is_builtin_const = is_builtin_class_name(name) || is_builtin_module_const_name(name);
   ci->def_node = def_node;
   ci->parent = -1;
   ci->enclosing_class = -1;
@@ -1659,7 +1660,7 @@ const char *comp_resolve_alias_ex(Compiler *c, int class_id, const char *name, i
           lim_cls = cid; lim = i;
           /* it captured a primitive's builtin: that is where it ends */
           if (ci->alias_builtin && ci->alias_builtin[i]) {
-            if (builtin) *builtin = 1;
+            if (builtin) *builtin = ci->alias_builtin[i];
             return next;
           }
           break;
