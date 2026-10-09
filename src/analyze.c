@@ -16287,8 +16287,12 @@ static int strbuf_ivar_source_walk_body(Compiler *c, int cid, const char *ivn, i
     if (!wn || !sp_streq(wn, ivn) || comp_ivar_owner(c, w) != cid) continue;
     changed |= strbuf_container_source_walk(c, nt_ref(nt, w, "value"), depth + 1, mode);
   }
+  /* the calls on it (VS_RECV): asking every call of the program, for each
+     ivar the walk reaches, was a large program's costliest line */
   StoreVals stores = {0};
-  for (int w = comp_kind_first(c, NK_CallNode); w >= 0; w = comp_kind_next(c, w)) {
+  for (int e = comp_vsite_first(c, VS_RECV, NK_InstanceVariableReadNode, ivn, cid); e >= 0;
+       e = comp_vsite_next(c, e)) {
+    int w = comp_vsite_node(c, e);
     if (nt_kind(nt, w) != NK_CallNode) continue;
     int r = nt_ref(nt, w, "receiver");
     if (r < 0 || nt_kind(nt, r) != NK_InstanceVariableReadNode) continue;
