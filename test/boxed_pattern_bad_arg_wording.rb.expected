@@ -26,6 +26,10 @@ true 3: wrong argument type true (expected Regexp)
 #<Se 1: ["a", "c d"]
 #<Se 2: ["a", "b", "c d"]
 #<Se 3: ["a", "b", "c d"]
+#<Pt 0: wrong argument type Pt (expected Regexp)
+#<Pt 1: wrong argument type Pt (expected Regexp)
+#<Pt 2: wrong argument type Pt (expected Regexp)
+#<Pt 3: wrong argument type Pt (expected Regexp)
 "b" 0: ["a", "c d"]
 "b" 1: ["a", "c d"]
 "b" 2: ["a", "b", "c d"]
