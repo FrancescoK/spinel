@@ -15897,7 +15897,6 @@ static int *strbuf_scope_call_candidates(Compiler *c, Scope *m, int *n) {
   int *v = malloc(sizeof(int) * (size_t)cap);
   if (!v) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   const char *names[2] = { m->name, sp_streq(m->name ? m->name : "", "initialize") ? "new" : NULL };
-  /* the alias names, each once */
   ANameHash seen; memset(&seen, 0, sizeof seen);
   int nnames = 0; const char **all = NULL;
   for (int i = 0; i < 2; i++)
@@ -15905,14 +15904,22 @@ static int *strbuf_scope_call_candidates(Compiler *c, Scope *m, int *n) {
       anh_add(&seen, names[i]);
       all = realloc(all, sizeof *all * (size_t)(nnames + 1)); all[nnames++] = names[i];
     }
-  for (int k = 0; k < c->nclasses; k++)
-    for (int a = 0; a < c->classes[k].naliases; a++) {
-      const char *an = c->classes[k].alias_new[a];
-      if (an && an_alias_name(c, an) && !anh_has(&seen, an)) {
+  /* ... and the alias names that lead to one of them: an alias resolves by
+     name, from its new name to its old (comp_resolve_alias_ex), so only a
+     name whose chain of old names reaches the method's can call it. Every
+     alias name of the program was a candidate before, and each method asked
+     every call on all of them through its receiver's classes. */
+  for (int grew = 1; grew; ) {
+    grew = 0;
+    for (int k = 0; k < c->nclasses; k++)
+      for (int a = 0; a < c->classes[k].naliases; a++) {
+        const char *an = c->classes[k].alias_new[a], *ao = c->classes[k].alias_old[a];
+        if (!an || !ao || anh_has(&seen, an) || !anh_has(&seen, ao)) continue;
         anh_add(&seen, an);
         all = realloc(all, sizeof *all * (size_t)(nnames + 1)); all[nnames++] = an;
+        grew = 1;
       }
-    }
+  }
   for (int i = 0; i < nnames; i++)
     for (int u = an_calls_named_first(c, all[i]); u >= 0; u = an_calls_named_next(u)) {
       if (cnt == cap) {
