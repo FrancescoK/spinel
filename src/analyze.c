@@ -19666,13 +19666,20 @@ static int promote_shared_stored_strings_pass(Compiler *c) {
       NodeKind rk = nt_kind(nt, curecv);
       /* an object receiver's class names the one body as well (`k.m(h[:a])`) */
       if (rk != NK_SelfNode && rk != NK_ConstantReadNode && rk != NK_ConstantPathNode) {
-        if (!ty_is_object(infer_type(c, curecv))) continue;
-        objrecv = 1;
+        TyKind crt = infer_type(c, curecv);
+        if (!ty_is_object(crt) && crt != TY_POLY) continue;
+        objrecv = crt == TY_POLY ? 2 : 1;
       }
     }
     const char *cun = nt_str(nt, cu, "name");
     if (!cun) continue;
-    int cmi = objrecv ? an_call_target_mi(c, cu) : an_any_scope_by_name(c, cun);
+    /* a poly receiver (`(f ? A.new : B.new).add(h[:a])`) has no one body:
+       each user method of the name it may answer with is asked (#8233) */
+    int npc5 = 0;
+    const PolyCand *pc5 = objrecv == 2 ? comp_poly_candidates(c, cun, &npc5) : NULL;
+    for (int pq5 = objrecv == 2 ? 0 : -1; pq5 < (objrecv == 2 ? npc5 : 0); pq5++) {
+    int cmi = pq5 >= 0 ? (pc5[pq5].native ? -1 : pc5[pq5].mi)
+                      : objrecv ? an_call_target_mi(c, cu) : an_any_scope_by_name(c, cun);
     if (cmi < 0) continue;
     for (int j = 0; j < c->scopes[cmi].nparams; j++) {
       int app5 = an_param_mutated_in_place(c, cmi, j);
@@ -19769,6 +19776,7 @@ static int promote_shared_stored_strings_pass(Compiler *c) {
           changed = 1;
         }
       }
+    }
     }
   }
 

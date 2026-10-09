@@ -6904,7 +6904,10 @@ static int emit_poly_arg_temp(Compiler *c, int node, TyKind ty, int boxed, int t
   int as_handle = !boxed && ty == TY_STRBUF && c->strbuf_box[node] &&
                   nt_kind(c->nt, node) != NK_LocalVariableReadNode &&
                   nt_kind(c->nt, node) != NK_InstanceVariableReadNode;
-  if (as_handle) buf_puts(&val, "SP_AS_STRING_HANDLE(");
+  /* a read that answers a boxed value (an element of a poly Hash) carries
+     the handle in the box: it is taken out, not wrapped */
+  int poly_src = as_handle && infer_type(c, node) == TY_POLY;
+  if (as_handle) buf_puts(&val, poly_src ? "sp_poly_as_strbuf(" : "SP_AS_STRING_HANDLE(");
   if (!boxed && ty == TY_STRBUF && repr_share_rule(c) && repr_of(c, node).strbuf_src == RS_HANDLE)
     emit_strbuf_handle_of(c, node, &val);
   else if (boxed) emit_boxed(c, node, &val); else emit_expr(c, node, &val);
