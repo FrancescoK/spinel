@@ -538,10 +538,16 @@ sp_int sp_File_close(sp_File *f) {
      check reads EOF from the sentinel instead of dereferencing NULL or the
      connection the next accept gave that number (#4546). */
   if (f && f->fp && !f->closed && f->fp != stdout && f->fp != stderr && f->fp != stdin) {
+    /* Two threads closing one handle at once both passed the check above
+       and both fclosed the FILE: a double free (two pumps of a connection
+       closing it from their ensures, #8205's test). The one that swaps the
+       sentinel in owns the close; the other finds it already taken. */
     FILE *fp = f->fp;
+    FILE *sentinel = sp_io_closed_sentinel();
+    if (fp == sentinel || !SP_ATOMIC_CAS(&f->fp, &fp, sentinel, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+      return 0;
     int fd = fileno(fp);
     f->closed = 1;
-    f->fp = sp_io_closed_sentinel();
     sp_sched_ev_forget(fd);
     /* autoclose=false on an IO that wraps the fd itself: flush and abandon
        the FILE (see sp_File_fin); a for_fd wrapper holds a dup, so its
