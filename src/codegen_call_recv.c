@@ -13343,6 +13343,16 @@ static int emit_poly_call0_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
      String has to answer it: sp_poly_recv_s raises for anything else, which
      is what a non-String must do here. */
   if (sp_streq(name, "to_str") && argc == 0) {
+    /* --share-strings: a String's to_str is the String itself, so a box
+       holding one answers that box, as to_s does (sp_poly_to_s_box). */
+    if (repr_share_rule(c)) {
+      int t = ++g_tmp;
+      buf_printf(b, "({ sp_RbVal _t%d = ", t); emit_expr(c, recv, b);
+      buf_printf(b, "; const char *_s%d = sp_poly_recv_s(_t%d, \"to_str\"); "
+                    "(_t%d.tag == SP_TAG_STR && _t%d.v.s) || sp_poly_is_strbuf(_t%d) ? _t%d : sp_box_str(_s%d); })",
+                 t, t, t, t, t, t, t);
+      { *out = 1; return 1; }
+    }
     buf_puts(b, "sp_box_str(sp_poly_recv_s("); emit_expr(c, recv, b); buf_puts(b, ", \"to_str\"))"); { *out = 1; return 1; }
   }
   if (sp_streq(name, "ascii_only?") && argc == 0) {

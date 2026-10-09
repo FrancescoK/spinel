@@ -2048,7 +2048,18 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
     if (t == TY_STRING && strbuf_poly_to_s(c, node)) {
       int r = nt_ref(c->nt, node, "receiver");
       char hr[1024];
-      if (strbuf_var_handle(c, r, hr, sizeof hr)) buf_printf(b, "sp_strbuf_to_s_box(%s)", hr);
+      /* `s&.to_s` answers nil for a nil s, where `s.to_s` answers "". */
+      int sn = call_is_safe_nav(c->nt, node) && g_sn_skip != node;
+      if (strbuf_var_handle(c, r, hr, sizeof hr)) {
+        if (sn) buf_printf(b, "(%s ? sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF) : sp_box_nil())", hr, hr);
+        else buf_printf(b, "sp_strbuf_to_s_box(%s)", hr);
+      }
+      else if (sn) {
+        int t2 = ++g_tmp;
+        buf_printf(b, "({ sp_RbVal _t%d = ", t2);
+        emit_boxed(c, r, b);
+        buf_printf(b, "; _t%d.tag == SP_TAG_NIL ? _t%d : sp_poly_to_s_box(_t%d); })", t2, t2, t2);
+      }
       else {
         buf_puts(b, "sp_poly_to_s_box(");
         emit_boxed(c, r, b);

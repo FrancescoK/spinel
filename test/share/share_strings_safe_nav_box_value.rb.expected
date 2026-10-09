@@ -1,0 +1,13 @@
+"abc1"
+nil
+true
+true
+false
+"abc12"
+["abc12", 1]
+"abc123"
+{k: "abc123"}
+[nil, 1]
+{k: nil}
+true
+true
