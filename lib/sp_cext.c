@@ -1,8 +1,6 @@
 /* Canonical extension handles. The table is weak; arenas and registered
  * VALUE addresses provide the roots. Collection runs under the GC barrier.
  * Extension access will be serialized by the CXL in the threading stage. */
-/* Built only into the optional SP_CEXT runtime: a build that compiles every
- * file under lib (ext-cruby-test, spin's extension build) gets an empty unit. */
 #ifdef SP_CEXT
 #include "sp_cext.h"
 #include "sp_alloc.h"
@@ -21,6 +19,10 @@ static sp_cext_handle **arena;
 static size_t arena_n, arena_cap, arena_depth;
 static VALUE **globals;
 static size_t globals_n, globals_cap;
+static void install_hooks(void) {
+    sp_gc_mark_cext_hook = sp_cext_mark_roots;
+    sp_gc_sweep_cext_hook = sp_cext_sweep_handles;
+}
 
 static void *allocate(size_t bytes) {
     void *p = malloc(bytes);
@@ -68,6 +70,7 @@ static void pin(sp_cext_handle *h) {
     arena[arena_n++] = h; ++h->pins;
 }
 VALUE sp_cext_value(sp_RbVal v) {
+    install_hooks();
     if (v.tag == SP_TAG_NIL) return Qnil;
     if (v.tag == SP_TAG_BOOL) return v.v.b ? Qtrue : Qfalse;
     if (v.tag == SP_TAG_INT && v.v.i >= RUBY_FIXNUM_MIN && v.v.i <= RUBY_FIXNUM_MAX)
@@ -95,8 +98,7 @@ sp_RbVal sp_cext_rbval(VALUE v) {
     return r;
 }
 sp_cext_arena_mark sp_cext_arena_enter(void) {
-    sp_gc_mark_cext_hook = sp_cext_mark_roots;
-    sp_gc_sweep_cext_hook = sp_cext_sweep_handles;
+    install_hooks();
     sp_cext_arena_mark mark = {arena_n, arena_depth};
     ++arena_depth;
     return mark;
@@ -120,6 +122,7 @@ void rb_gc_mark(VALUE v) {
 void rb_gc_mark_movable(VALUE v) { rb_gc_mark(v); }
 VALUE rb_gc_location(VALUE v) { return v; }
 void rb_gc_register_address(VALUE *address) {
+    install_hooks();
     for (size_t i = 0; i < globals_n; ++i) if (globals[i] == address) return;
     if (globals_n == globals_cap) {
         size_t n = globals_cap ? globals_cap * 2 : 16;
@@ -170,8 +173,9 @@ static int live(sp_cext_handle *h, int full) {
 }
 void sp_cext_sweep_handles(int full) {
     int changed = 0;
-    for (size_t i = 0; i < capacity; ++i) if (table[i] && !live(table[i], full)) {
-        free(table[i]); table[i] = NULL; --count; changed = 1;
+    for (size_t i = 0; i < capacity; ++i) if (table[i]) {
+        if (!live(table[i], full)) { free(table[i]); table[i] = NULL; --count; changed = 1; }
+        else table[i]->marked = 0;
     }
     if (changed) rehash(capacity);
 }
@@ -202,4 +206,4 @@ int sp_cext_data_is_kind_of(const sp_cext_data *object, const rb_data_type_t *ty
         if (t == type) return 1;
     return 0;
 }
-#endif /* SP_CEXT */
+#endif /* SP_CEXT: wildcard runtime/export builds compile an empty TU. */

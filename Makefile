@@ -345,7 +345,7 @@ build/csrc/sp_rt_names.h: $(SP_RT_NAME_SRC) | build/csrc
 	{ echo "/* generated from the runtime sources; see the Makefile rule */"; \
 	  echo "static const char *const SP_RT_PREFIXES[] = {"; \
 	  { grep -hoE '\bsp_[a-z][a-z0-9_]*' $(SP_RT_NAME_SRC) 2>/dev/null \
-	    | sed 's/^sp_//' | cut -d_ -f1; echo rb; } \
+    | sed 's/^sp_//' | cut -d_ -f1 | grep -v '^cext$$'; echo rb; } \
 	    | sort -u | sed 's/.*/  "&",/'; \
 	  echo "  NULL"; echo "};"; } > $$t; \
 	if cmp -s $$t $@; then rm -f $$t; else mv $$t $@; fi
@@ -1114,7 +1114,7 @@ share-strings-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS
 # `make test` always runs fresh: it wipes the prior `.ok` stamps first,
 # then runs the suite. (The old incremental `test` + `retest` split is
 # gone -- a stale `.ok` reading PASS was a recurring foot-gun.)
-test: $(SPINEL_TIMEOUT)
+test: $(SPINEL_TIMEOUT) cext-header-test cext-gc-test
 	@if [ -z "$(TIMEOUT_BIN)" ]; then \
 	  echo "WARNING: no 'timeout'/'gtimeout' on PATH -- tests run with NO time limit."; \
 	  echo "         A hanging test will hang this run until the CI job's own limit."; \
