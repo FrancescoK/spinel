@@ -226,6 +226,20 @@ extern int g_repr_check;
 /* --repr-check: ask repr_of of a node codegen is about to emit, whose
    answer is dropped; the C must not change (repr_of changes nothing) */
 void repr_check_ask(const Compiler *c, int node);
+/* The settled return walk's leaf decisions and the emitter's observations.
+   All callers guard these with g_repr_check; no shadow exists otherwise. */
+enum { RCH_NONE, RCH_PUBLISH, RCH_CLEAR, RCH_NIL, RCH_HANDLE, RCH_BYTES, RCH_BOXED };
+void repr_channel_predict(Compiler *c, int node, int mi, int form);
+void repr_channel_clearing(Compiler *c, int delta);
+int repr_channel_begin(Compiler *c, int node);
+int repr_channel_ensure(Compiler *c, int node);
+void repr_channel_note(Compiler *c, int node, int form);
+void repr_channel_end(Compiler *c, int frame);
+void repr_channel_boxed(Compiler *c, int node, int frame);
+void repr_channel_call(Compiler *c, int node, int mi);
+void repr_channel_pickup(Compiler *c, int node, int nil_guard);
+void repr_channel_report(Compiler *c);
+void repr_channel_free(Compiler *c);
 /* --dump-repr is on (#7501) */
 extern int g_dump_repr;
 /* --dump-repr: each slot's representation, one sorted line per slot, as

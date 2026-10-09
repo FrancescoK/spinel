@@ -1430,7 +1430,7 @@ static int emit_boxed_bang_self(Compiler *c, int node, Buf *b) {
     view_pop(c, sv_b);
     if (ok) buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", hb.p);
     free(hb.p);
-    if (ok) RC(RF_STRBUF_HANDLE, RW_NONE);
+    if (ok) RC(RF_STRBUF_HANDLE, RW_HANDLE_ROUTE);
     return ok;
   }
   int tb = ++g_tmp;
@@ -1439,7 +1439,7 @@ static int emit_boxed_bang_self(Compiler *c, int node, Buf *b) {
   emit_expr(c, node, b);
   view_pop(c, sv_b);
   buf_printf(b, "; _t%d ? sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF) : sp_box_nil(); })", tb, srefB);
-  RC(RF_STRBUF_HANDLE, RW_NONE);
+  RC(RF_STRBUF_HANDLE, RW_HANDLE_ROUTE);
   return 1;
 }
 
@@ -1578,7 +1578,7 @@ static void emit_boxed_strbuf(Compiler *c, int node, TyKind t, const Repr *rp, B
     if (emit_strbuf_route(c, node, &hb)) {
       buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", hb.p);
       free(hb.p);
-      RC(RF_STRBUF_HANDLE, RW_NONE);
+      RC(RF_STRBUF_HANDLE, RW_HANDLE_ROUTE);
       return;
     } }
   /* a demanded literal / expression store: wrap a FRESH handle so the
@@ -1681,7 +1681,7 @@ static int emit_boxed_sequence(Compiler *c, int node, Buf *b) {
   buf_printf(b, "({ sp_RbVal _t%d; ", dst);
   emit_cond_arm(c, node, b, emit_boxed_cond_body, &a);
   buf_printf(b, " _t%d; })", dst);
-  RC(RF_SPECIAL, RW_NONE);
+  RC(RF_SPECIAL, RW_HANDLE_ROUTE);
   return 1;
 }
 
@@ -1968,7 +1968,7 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
        is_a? guard narrows a boxed a) answers that box, read as one */
     if (t == TY_STRING && strbuf_narrowed_box_mutator(c, node)) {
       emit_narrowed_box_mutator(c, node, b);
-      RC(RF_PASS, RW_NONE);
+      RC(RF_PASS, RW_HANDLE_ROUTE);
       return;
     }
     /* --share-strings: a box's to_s is the box's own String
@@ -1982,7 +1982,7 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
         emit_boxed(c, r, b);
         buf_puts(b, ")");
       }
-      RC(RF_PASS, RW_NONE);
+      RC(RF_PASS, RW_HANDLE_ROUTE);
       return;
     }
     /* --share-strings: a String value that hands on a variable's handle (an
@@ -1992,7 +1992,7 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
       buf_puts(b, "sp_box_nullable_obj(");
       emit_strbuf_handle_of(c, node, b);
       buf_puts(b, ", SP_BUILTIN_STRBUF)");
-      RC(RF_STRBUF_HANDLE, RW_NONE);
+      RC(RF_STRBUF_HANDLE, RW_HANDLE_ROUTE);
       return;
     }
     break;
@@ -2090,6 +2090,7 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
    --repr-check it keeps the nesting the recorder reads */
 void emit_boxed(Compiler *c, int node, Buf *b) {
   if (b == g_pre) { emit_into_pre_line(c, emit_boxed, node); return; }
+  int frame = g_repr_check ? repr_channel_begin(c, node) : -1;
   /* --share-strings: a String stored into a boxed slot the rule shares (an
      ivar that also holds nil) is boxed as its handle, which a later `<<`
      on the slot's box appends to in place (share_lift_poly_ivar_stores) */
@@ -2101,11 +2102,18 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
     TyKind at = na == 1 ? comp_ntype(c, av[0]) : TY_UNKNOWN;
     if ((at == TY_STRING || at == TY_STRBUF) && strbuf_value_carries(c, av[0])) {
       emit_boxed_next_value(c, av[0], b);
+      if (g_repr_check) repr_channel_boxed(c, node, frame);
       return;
     }
   }
-  if (emit_boxed_cond_arms(c, node, b)) return;
-  if (emit_boxed_sequence(c, node, b)) return;
+  if (emit_boxed_cond_arms(c, node, b)) {
+    if (g_repr_check) repr_channel_boxed(c, node, frame);
+    return;
+  }
+  if (emit_boxed_sequence(c, node, b)) {
+    if (g_repr_check) repr_channel_boxed(c, node, frame);
+    return;
+  }
   int lift = repr_share_rule(c) && node >= 0 && c->poly_strbuf_lift[node] && comp_ntype(c, node) == TY_STRING;
   /* a route that hands on a handle (`q ||= s.then { |v| v }`,
      emit_strbuf_route): that handle's box, not a new handle around a copy */
@@ -2116,6 +2124,7 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
     if (emit_strbuf_route(c, node, &hb)) {
       buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", hb.p);
       free(hb.p);
+      if (g_repr_check) repr_channel_boxed(c, node, frame);
       return;
     }
   }
@@ -2124,6 +2133,7 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
   emit_boxed_impl(c, node, b);
   rc_depth--;
   if (lift) buf_puts(b, ")");
+  if (g_repr_check) repr_channel_boxed(c, node, frame);
 }
 
 /* `vol` makes the local volatile (required for locals live across a setjmp
@@ -17247,6 +17257,7 @@ char *codegen_program(const NodeTable *nt) {
   }
   if (repr_text) { fputs(repr_text, stdout); exit(0); }
   if (g_plan_check) ucall_report(c);
+  if (g_repr_check) repr_channel_report(c);
   if (g_nil_check) nil_check_report(c);
   comp_free(c);
   { const char *keep = getenv("SPINEL_EMIT_TYPES_KEEP_C");
