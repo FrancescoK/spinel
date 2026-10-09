@@ -10883,6 +10883,29 @@ static int masgn_index_writer(Compiler *c, TyKind rt, int *cdef, TyKind *kt) {
   }
   return wmi;
 }
+/* Whether storing into the target can allocate or run user code, and so
+   collect: an index store on a receiver typed at run time, on the general
+   hash, on a String-keyed hash (which copies a mutable key, #6410), on an
+   object with a user `[]=` or a Struct; an attribute store on a receiver
+   typed at run time or on an object whose writer is a user method (a plain
+   attr_writer is one field store). */
+static int masgn_store_allocates(Compiler *c, int tgt) {
+  int r, k;
+  masgn_target_parts(c->nt, tgt, &r, &k);
+  if (r < 0) return 0;
+  TyKind rt = comp_ntype(c, r);
+  if (sp_streq(nt_type(c->nt, tgt), "CallTargetNode")) {
+    const char *nm = nt_str(c->nt, tgt, "name");
+    int dc = -1;
+    return rt == TY_POLY || rt == TY_UNKNOWN ||
+           (nm && ty_is_object(rt) && comp_method_in_chain(c, ty_object_class(rt), nm, &dc) >= 0 && dc >= 0);
+  }
+  if (k < 0) return 0;
+  return rt == TY_POLY || rt == TY_UNKNOWN || rt == TY_POLY_POLY_HASH ||
+         (ty_is_hash(rt) && ty_hash_key(rt) == TY_STRING) ||
+         (ty_is_object(rt) && masgn_index_writer(c, rt, NULL, NULL) >= 0) ||
+         nt_int(c->nt, tgt, "struct_aset", 0);
+}
 /* An index target's key as the `[]=` key parameter of type `kt` takes it. */
 static void masgn_index_key(Compiler *c, int key, TyKind kt, Buf *b) {
   if (kt == TY_POLY && repr_of(c, key).kind != RK_BOXED) emit_boxed(c, key, b);
@@ -12013,18 +12036,13 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
   }
   if (emit_multi_write_scalar(c, id, b, indent, nt, ln, lefts, value, vty, tuple, rn, rights, rest_var, rest_gvar, rest_tgt, ttr, ttk)) return 1;
   /* A store that can run user code -- the general hash's key hooks, a
-     receiver typed at run time -- or that allocates -- the rest array, a
+     receiver typed at run time, a user `[]=` or writer -- or that
+     allocates -- the rest array, a store that copies a String key (#6410), a
      value that is a by-value struct into a slot that boxes it -- comes
      after every value is built and after the targets before it have taken
      theirs, so it can collect what an earlier target dropped. */
   int store_alloc = rest_var || rest_gvar || rest_tgt >= 0;
-  for (int i = 0; i < ln && !store_alloc; i++) {
-    int r, k;
-    masgn_target_parts(nt, lefts[i], &r, &k);
-    if (k < 0) continue;
-    TyKind rt = comp_ntype(c, r);
-    store_alloc = rt == TY_POLY || rt == TY_UNKNOWN || rt == TY_POLY_POLY_HASH;
-  }
+  for (int i = 0; i < ln && !store_alloc; i++) store_alloc = masgn_store_allocates(c, lefts[i]);
   for (int i = 0; i < en && !store_alloc; i++) {
     Repr vr = repr_of(c, els[i]);
     store_alloc = (vr.kind == RK_STRUCT || vr.kind == RK_VOBJ) && masgn_slot_boxes(c, id, lefts, ln, i, vr.as_ty);
