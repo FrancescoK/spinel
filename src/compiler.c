@@ -1127,6 +1127,21 @@ int comp_method_vis_declared(Compiler *c, int class_id, const char *name, int *a
   name = comp_resolve_alias(c, class_id, name);
   if (name != alias && (v = vis_declared_in_chain(c, class_id, name, at)) >= 0) return v;
   int mi = comp_method_in_chain(c, class_id, name, NULL);
+  /* an attribute a module declares (`attr_reader :x; private :x` in it) is
+     no method scope with an origin module: the visibility is the included
+     module's own table's (#8201) */
+  if (mi < 0) {
+    for (int cid = class_id, g = 0; cid >= 0 && cid < c->nclasses && g <= c->nclasses; cid = c->classes[cid].parent, g++) {
+      ClassInfo *ci = &c->classes[cid];
+      for (int m = 0; m < ci->nincluded_mods; m++) {
+        int mci = ci->included_mods[m];
+        if (mci < 0 || mci >= c->nclasses) continue;
+        ClassInfo *mc_ = &c->classes[mci];
+        for (int i = 0; i < mc_->nvis; i++)
+          if (sp_streq(mc_->vis_names[i], name)) { if (at) *at = mci; return mc_->vis_kinds[i]; }
+      }
+    }
+  }
   if (mi >= 0 && mi < c->nscopes && c->scopes[mi].origin_module_ci > 0) {
     int mci = c->scopes[mi].origin_module_ci - 1;
     if (mci >= 0 && mci < c->nclasses) {
