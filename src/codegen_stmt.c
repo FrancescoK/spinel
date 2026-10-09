@@ -1662,6 +1662,9 @@ static int strbuf_route_carries(Compiler *c, int v, int depth) {
   if (x == unwrap_parens(c, v)) return 1;
   if (x >= 0 && repr_of(c, x).kind == RK_BOXED) return 1;
   if (x >= 0) return depth < 8 && strbuf_route_carries(c, x, depth + 1);
+  /* Ask the slot's call facts without rendering its receiver in analysis. */
+  if (v >= 0 && nt_kind(c->nt, v) == NK_CallNode)
+    return strbuf_native_answer(c, v) || strbuf_call_reads_handle(c, v);
   return strbuf_slot_ref(c, v, ref, sizeof ref);
 }
 /* The handle a route (strbuf_route_operand) hands on, as an sp_String *:
@@ -1798,8 +1801,13 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
              : strbuf_jump_views(c, nt_ref(nt, nt_ref(nt, v, "block"), "body"), NK_NextNode, tok, 0, 64);
     if (ntok < 0) return 0;
     int sv = view_push_repr(c, v, VR_HANDLE_DEMAND, 1);
-    int ok = emit_or_take_back(c, v, b, is_reduce_alias(nt_str(nt, v, "name")) ? emit_reduce_block_expr
-                                                                                 : emit_tap_then_expr);
+    int ok;
+    if (sn_guard_pending(c, v)) {
+      /* The guard's result slot holds the demanded handle, including nil. */
+      ok = emit_call_safe_nav_arms(c, v, b, nt, nt_str(nt, v, "name"), nt_ref(nt, v, "receiver"));
+    }
+    else ok = emit_or_take_back(c, v, b, is_reduce_alias(nt_str(nt, v, "name")) ? emit_reduce_block_expr
+                                                                                      : emit_tap_then_expr);
     view_pop(c, sv);
     strbuf_jump_views_pop(c, tok, ntok);
     return ok;
@@ -1890,6 +1898,18 @@ int strbuf_value_carries(Compiler *c, int v) {
   int cb = str_alias_chain_base(c, v);
   if (cb != v && cb >= 0 && strbuf_var_handle(c, cb, ref, sizeof ref)) return 1;
   return strbuf_route_carries(c, v, 0) || strbuf_cond_has_handle_leaf(c, v, 0) || strbuf_opwrite_handle(c, v, ref, sizeof ref);
+}
+/* A builtin value route can publish its handle as a method's return too.
+   The return analysis and tail emitter ask the same route predicate.
+   A fresh result has no existing identity for the tail to publish. */
+int strbuf_builtin_tail(Compiler *c, int v) {
+  if (!repr_share_rule(c) || !c->share || v < 0 || nt_kind(c->nt, v) != NK_CallNode ||
+      an_arg_is_shared_handle(c, v)) return 0;
+  /* Only the block route carries a demanded handle through &.'s guard. */
+  if (sn_guard_pending(c, v) && strbuf_route_operand(c, v) != v) return 0;
+  TyKind t = repr_of(c, v).ty;
+  return (t == TY_STRING || t == TY_STRBUF) && cplan_user_fresh(c, v)->dispatch == CP_NONE &&
+         !share_node_fresh(c, v) && strbuf_value_carries(c, v);
 }
 /* --share-strings: an operator write (`$g += x`) whose slot holds the
    rule's handle: that slot's text to out. The write stores a new handle
@@ -8796,6 +8816,12 @@ void emit_tail_value(Compiler *c, int node, Buf *b) {
   TyKind slot = g_result_var && g_result_ty != TY_UNKNOWN ? g_result_ty : g_ret_type;
   Scope *ts = slot == TY_STRING ? comp_scope_of(c, node) : NULL;
   NodeKind k = nt_kind(c->nt, node);
+  if (ts && ts->ret_handle && strbuf_builtin_tail(c, node)) {
+    buf_puts(b, "sp_strbuf_read_pub(");
+    emit_strbuf_handle_of(c, node, b);
+    buf_puts(b, ")");
+    return;
+  }
   if (ts && ts->ret_pub_fresh && share_return_owned(c, an_unparen(c->nt, node), (int)(ts - c->scopes))) {
     emit_fresh_tail_value(c, node, b);
     return;

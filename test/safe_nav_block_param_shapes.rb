@@ -1,3 +1,4 @@
+# spinel: share
 # A block given to a builtin iterator through `&.` binds its parameters as
 # it does through `.`: a block of two parameters spreads the one Array that
 # then, yield_self or tap yields, and an optional, a post-required or a rest
