@@ -644,6 +644,35 @@ static int cplan_str_method_mutator(Compiler *c, int id) {
 
 static int cplan_reachable(Compiler *c, int id);
 
+/* Computed names cannot select a field in a compiled user-class layout.
+   The boxed-receiver fact keeps builtin-only reflective calls on their map. */
+static int cplan_computed_ivar_get(Compiler *c, int id, const char *name) {
+  if (!is_ivar_access(name) || is_ivar_set(name) || !cplan_reachable(c, id)) return 0;
+  const NodeTable *nt = c->nt;
+  int args = nt_ref(nt, id, "arguments"), ac = 0;
+  const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
+  if (ac < 1 || nt_kind(nt, av[0]) == NK_SymbolNode || nt_kind(nt, av[0]) == NK_StringNode) return 0;
+  int recv = nt_ref(nt, id, "receiver");
+  TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
+  if (rt != TY_POLY && cplan_user_fresh(c, id)->dispatch != CP_NONE) return 0;
+  if (recv < 0) {
+    Scope *s = comp_scope_of(c, id);
+    if (s && s->class_id >= 0 && !s->is_cmethod && !is_builtin_reopen(c->classes[s->class_id].name)) return 1;
+  }
+  if (ty_is_object(rt)) return 1;
+  if (rt != TY_POLY) return 0;
+  int n = 0;
+  const int *ks = poly_recv_classes(c, id, &n);
+  int count = ks ? n : c->nclasses;
+  for (int i = 0; i < count; i++) {
+    int ci = ks ? ks[i] : i;
+    ClassInfo *cl = &c->classes[ci];
+    if (!cl->instantiated || cl->is_native_class || is_builtin_reopen(cl->name)) continue;
+    if (comp_method_in_chain(c, ci, name, NULL) < 0) return 1;
+  }
+  return 0;
+}
+
 const char *cplan_feature_why(Compiler *c, int id, int *stop, char *buf, size_t cap) {
   *stop = 1;
   const NodeTable *nt = c->nt;
@@ -659,6 +688,10 @@ const char *cplan_feature_why(Compiler *c, int id, int *stop, char *buf, size_t 
   if (nt_int(nt, id, "define_method_name", 0) && cplan_reachable(c, id))
     return "Module#define_method with a non-literal name is not supported; "
            "use a literal Symbol or String (see docs/limitations.md)";
+
+  if (cplan_computed_ivar_get(c, id, name))
+    return "Object#instance_variable_get with a non-literal name on a user-class instance "
+           "is not supported; use a literal Symbol or String (see docs/limitations.md)";
   int recv = nt_ref(nt, id, "receiver");
   if ((nt_kind(nt, recv) == NK_ConstantReadNode || nt_kind(nt, recv) == NK_ConstantPathNode) &&
       !nt_int(nt, id, "builtin_only", 0)) {

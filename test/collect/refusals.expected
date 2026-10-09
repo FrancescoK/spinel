@@ -414,6 +414,24 @@ spinel: 1 refusal, nothing written
 == test/reject/complex_bignum_component.rb [promote] rc=1
 spinel: test/reject/complex_bignum_component.rb:7: a Complex component given an Integer past 64 bits, which no conversion keeps in its sp_float slot
 spinel: 1 refusal, nothing written
+== test/reject/computed_ivar_get_direct.rb [default] rc=1
+spinel: test/reject/computed_ivar_get_direct.rb:6: Object#instance_variable_get with a non-literal name on a user-class instance is not supported; use a literal Symbol or String (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/computed_ivar_get_direct.rb [promote] rc=1
+spinel: test/reject/computed_ivar_get_direct.rb:6: Object#instance_variable_get with a non-literal name on a user-class instance is not supported; use a literal Symbol or String (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/computed_ivar_get_poly.rb [default] rc=1
+spinel: test/reject/computed_ivar_get_poly.rb:6: Object#instance_variable_get with a non-literal name on a user-class instance is not supported; use a literal Symbol or String (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/computed_ivar_get_poly.rb [promote] rc=1
+spinel: test/reject/computed_ivar_get_poly.rb:6: Object#instance_variable_get with a non-literal name on a user-class instance is not supported; use a literal Symbol or String (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/computed_ivar_get_self.rb [default] rc=1
+spinel: test/reject/computed_ivar_get_self.rb:4: Object#instance_variable_get with a non-literal name on a user-class instance is not supported; use a literal Symbol or String (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/computed_ivar_get_self.rb [promote] rc=1
+spinel: test/reject/computed_ivar_get_self.rb:4: Object#instance_variable_get with a non-literal name on a user-class instance is not supported; use a literal Symbol or String (see docs/limitations.md)
+spinel: 1 refusal, nothing written
 == test/reject/const_get_runtime_name.rb [default] rc=1
 spinel: test/reject/const_get_runtime_name.rb:7: unsupported const_get with a name known only at run time and no class or module receiver (an instance has no const_get; constants are resolved at compile time): node N (CallNode `const_get`) recv=-/ty-1 argc=1 arg0ty6
 == test/reject/const_get_runtime_name.rb [promote] rc=1

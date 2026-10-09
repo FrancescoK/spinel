@@ -25,12 +25,12 @@ fails once with the count and writes no binary. `--emit-types` carries the same
 refusals in its `diagnostics` array with `"severity":"error"`.
 
 Some unsupported constructs compile and fail only when reached at runtime.
-For example, a computed `instance_variable_get` or `instance_variable_set`
-on a user-class instance can raise `NoMethodError`. `define_method` with a
-non-literal name, in a class body or a method body, and `Class.new` with a
-non-constant superclass are refused at compile time. `Class.new` and `Module.new`
-blocks that capture outer locals are refused at compile time unless
-`--defer-refusals` is supplied.
+For example, a computed `instance_variable_set` on a user-class instance can
+raise `NoMethodError`; computed getters on such receivers are refused at
+compile time. `define_method` with a non-literal name, in a class body or a
+method body, and `Class.new` with a non-constant superclass are refused at
+compile time. `Class.new` and `Module.new` blocks that capture outer locals
+are refused at compile time unless `--defer-refusals` is supplied.
 A successful compile does not establish CRuby-compatible behavior.
 Separately, `--defer-refusals` explicitly turns eligible compile-time
 refusals into runtime `NotImplementedError`s.
@@ -66,7 +66,7 @@ registry, or stack reification -- none of which exist in a flat compiled binary.
 | A call through an `@ivar` before the method that assigns it has run (`@store[k] = v` ahead of a `reset` that sets `@store = {}`) | a release build dereferences the unset slot and crashes (SIGSEGV); a `-g` / `--debug` build raises CRuby's `NoMethodError` (`undefined method '[]=' for nil`) | the test would stand in front of every call through such an ivar, and state a `reset` or `setup` method assigns is often the hottest there is (optcarrot lost 10-20% to it), so only the debug build carries it. An ivar the program fills only by memoization (`@c ||= {}`) is guarded in both builds |
 | An ivar write in an Object or Kernel method with boxed `self` | uses the existing reflective setter; refused if a possible receiver has no writable slot, or the default build encounters a shared String handle slot; `--share-strings` carries the handle through the setter | ordinary user-class slots are registered by the existing boxed-receiver analysis, including a class that starts with no ivars; its indexed call sites bound the receiver layouts, while calls it cannot follow remain conservative; an unused setter adds no instance slots; no write is silently dropped |
 | `defined?(@x)` in an Object or Kernel method whose receiver is boxed | refused when the existing layout facts cannot track whether a possible receiver's slot has been assigned | an initialized slot, a slot whose value distinguishes unset, or a slot with an explicit presence bit is supported; a slot introduced by a root setter keeps its presence bit even if an unrelated class writes an ivar of the same name; mixed ordinary/reflective nil writes to related layouts can leave presence untracked |
-| General reflection (`methods`, `instance_variables`) and `instance_variable_get`/`set` with a **non-literal** name | limited; a computed `instance_variable_get` on a user-class instance compiles but raises `NoMethodError` at runtime | user-class ivars are C struct offsets; literal access resolves to the known offset. `instance_variables` can list these known fields. A **literal** `instance_variable_get(:@x)` / `instance_variable_set(:@x, v)` *is* supported, like `send(:literal)` below. |
+| General reflection (`methods`, `instance_variables`) and `instance_variable_get`/`set` with a **non-literal** name | non-literal `instance_variable_get` calls whose receiver may be a user-class instance are refused in reachable code, including input-dependent branches; computed `instance_variable_set` on user instances remains unsupported and can raise `NoMethodError` at runtime | user-class ivars are C struct offsets; literal access resolves to the known offset. Builtin reflective paths and ordinary ivar access in Object methods keep working. Computed setters are not refused: `test/reflect_ivar_dynamic_name.rb` contains a reachable conditional setter whose untaken branch already works. `instance_variables` can list these known fields. A **literal** `instance_variable_get(:@x)` / `instance_variable_set(:@x, v)` *is* supported, like `send(:literal)` below. |
 | User-defined `#hash` / `#eql?` for hash *keys* | not dispatched (identity probe) | the hash machinery can't call back into a user method per key |
 | A method that **uses its block** (`yield` or `block.call`) **and recurses into itself** (`def rec(n, &b); ...; rec(n-1, &b); yield n; end`) | compile error (loud, was a hang / undefined-symbol) | a block-using method is inlined at each call site (there is no standalone function that takes the block), so a self-call inlines its own body unboundedly -- the runtime base case is invisible at compile time. Recursion *through a yielded block* (`with_state { with_state { } }`, finite source nesting) does work |
 | `Monitor#class` | reports `Thread::Mutex` | a Monitor IS a mutex here, with reentrancy switched on per object, and the class name for a `TY_MUTEX` value is decided at compile time from the type rather than read off the object. `#synchronize` (including reentrant use), `#try_enter` and mutual exclusion across threads all behave as CRuby's do; only the name differs. `Monitor#new_cond` / the `MonitorMixin` module are not modelled. |
