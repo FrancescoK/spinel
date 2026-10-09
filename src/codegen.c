@@ -5498,8 +5498,8 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
     buf_puts(b, "    _h.prev = sp_proc_ret_head; sp_proc_ret_head = &_h;\n");
     /* a proc's return out of an ensure body drops the exception that body
        had in flight: the landing gives back the one in flight at the call */
-    const char *hic = g_uses_ensure ? " sp_inflight_cause = _hic;" : "";
-    if (*hic) buf_puts(b, "    void *_hic = sp_inflight_cause;\n");
+    const char *hic = g_uses_ensure ? " sp_inflight_cause = _hic; sp_rescue_sp = _hicr;" : "";
+    if (*hic) buf_puts(b, "    void *_hic = sp_inflight_cause; int _hicr = sp_rescue_sp;\n");
     if (!is_void) {
       buf_puts(b, "    "); emit_ctype(c, s->ret, b); buf_puts(b, " _prret = ");
       if (ty_is_object(s->ret) && !comp_ty_value_obj(c, s->ret)) buf_puts(b, "NULL");

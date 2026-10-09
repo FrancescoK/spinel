@@ -10083,6 +10083,11 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
     emit_indent(b, indent);
     buf_printf(b, "{ void *_icr%d SP_CLEANUP(sp_inflight_restore) = _ic%d; (void)_icr%d;\n", eid, eid, eid);
     int cf = g_repr_check ? repr_channel_ensure(c, id) : -1;
+    /* ...and $! in the body is that exception, as CRuby's is while an
+       ensure runs for one */
+    emit_indent(b, indent);
+    buf_printf(b, "int _rsp%d SP_CLEANUP(sp_rescue_sp_restore) = sp_rescue_sp; if (_excf%d) sp_rescue_push(sp_inflight_cause);\n",
+               eid, eid);
     emit_stmts(c, ensure_stmts, b, indent);
     if (g_repr_check) repr_channel_end(c, cf);
     if (keep_handle) {

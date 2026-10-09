@@ -15,3 +15,6 @@ ensure 2
 inner ensure
 middle ensure
 outer from inner deep
+"b"
+"c"
+nil

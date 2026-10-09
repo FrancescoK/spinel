@@ -13971,6 +13971,9 @@ static void sp_rescue_push(void *e) {
   }
   sp_exc_handling[sp_rescue_sp++] = e;
 }
+/* SP_CLEANUP target: an ensure body that pushed the exception in flight
+   as $! gives the handler stack back however it is left */
+static inline void sp_rescue_sp_restore(int *p) { sp_rescue_sp = *p; }
 /* Each of the fixed-depth handler stacks below fails the same way when a
    program nests deeper than its array holds: CRuby's SystemStackError words,
    on stderr, and out. One copy of them, called from each stack's check. Not a

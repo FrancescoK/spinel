@@ -95,3 +95,24 @@ begin
 rescue => e
   puts "outer #{e.message}"
 end
+
+# $! in an ensure is the exception unwinding through it
+begin
+  begin
+    raise "a"
+  rescue => e
+    raise "b"
+  ensure
+    p $!&.message
+  end
+rescue
+end
+begin
+  begin
+    raise "c"
+  ensure
+    p $!&.message
+  end
+rescue
+end
+p $!
