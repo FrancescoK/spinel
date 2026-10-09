@@ -1893,6 +1893,7 @@ int emit_call_poly_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *n
             if (at == TY_POLY) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_t%d);\n", aptmp[k]); }
             else if (proc_slot_is_ptr(at) || at == TY_PROC) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", aptmp[k]); }
           }
+          int hold = proc_arg_box_hold(c, at, g_pre, g_indent);
           /* The publish belongs to THIS call, not to the statement above it:
              the side channel is one global array, and an argument that is
              itself a proc call writes it -- and its callee's prologue then
@@ -1904,7 +1905,7 @@ int emit_call_poly_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *n
              The temps stay in the prelude: they are what the roots are on. */
           buf_printf(&pubs, "_sp_proc_poly_args[%d] = ", k);
           { char tn[24]; snprintf(tn, sizeof tn, "_t%d", aptmp[k]);
-            if (storable) emit_boxed_text(c, at, tn, &pubs); else buf_puts(&pubs, "sp_box_nil()"); }
+            if (storable) emit_proc_arg_boxed(c, at, tn, hold, &pubs); else buf_puts(&pubs, "sp_box_nil()"); }
           buf_puts(&pubs, ", ");
           free(inner.p); free(valb.p);
         }
