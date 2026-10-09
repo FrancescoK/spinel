@@ -6493,6 +6493,8 @@ int desugar_block_implicit_rest(Compiler *c) {
    value consumer sees one argument. The per-jump builders pushed each
    argument boxed, a splat as one nested array, and `next` kept only the
    first argument. A splat-free `return` / `break` keeps its own path.
+   Multiple `break` values also use the Array path: the loop's type and
+   its result slot must consume the whole value, not its first argument.
    `yield a, *b` and `blk.call(a, *b)` become `yield(*[a, *b])`, which the
    block binder already spreads; it bound each argument to one parameter,
    the splat's whole array included. */
@@ -6515,7 +6517,7 @@ int desugar_multi_value_jump(Compiler *c) {
       else if (ak == NK_SplatNode) splat = 1;
       else if (ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode) other = 1;
     }
-    if (other || (!splat && k != NK_NextNode)) continue;
+    if (other || (!splat && k != NK_NextNode && k != NK_BreakNode)) continue;
     int arr = nt_new_node(nt, "ArrayNode");
     int wrap = (k == NK_YieldNode || is_call) ? nt_new_node(nt, "SplatNode") : arr;
     if (arr < 0 || wrap < 0) continue;
