@@ -25772,6 +25772,142 @@ static int emit_anon_struct_value(Compiler *c, int id, Buf *b) {
   return 0;
 }
 
+/* Does evaluating `n` run none of the program's code and store nothing? A
+   pure read, a global, a String literal, and an Array, a Hash or a Range
+   made of those. A call among them is a pure read whose name the program
+   has not given the builtin (`[]` on an Array may be its own), and an
+   operator is one of Integers and Floats, for `5 == o` runs o's ==; a Hash
+   key is a String, a Symbol or an Integer, for any other key's hash may be
+   the program's. A whitelist, as subtree_is_pure_read is. */
+static int sn_arg_runs_nothing(Compiler *c, int n) {
+  const NodeTable *nt = c->nt;
+  if (n < 0) return 1;
+  switch (nt_kind(nt, n)) {
+    case NK_GlobalVariableReadNode: case NK_StringNode: return 1;
+    case NK_CallNode: {
+      int r = nt_ref(nt, n, "receiver");
+      const char *nm = nt_str(nt, n, "name");
+      if (!subtree_is_pure_read(c, n) ||
+          (r >= 0 && nm && comp_builtin_kind_reopen_mi(c, comp_ntype(c, r), nm) >= 0)) return 0;
+      if (call_is_scalar_op(c, n)) {
+        int a = nt_ref(nt, n, "arguments"), ac = 0;
+        const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+        if (comp_ntype(c, r) == TY_BOOL) return 0;
+        for (int i = 0; i < ac; i++)
+          if (comp_ntype(c, av[i]) != TY_INT && comp_ntype(c, av[i]) != TY_FLOAT) return 0;
+      }
+      break;
+    }
+    case NK_AssocNode: {
+      TyKind kt = comp_ntype(c, nt_ref(nt, n, "key"));
+      if (kt != TY_STRING && kt != TY_SYMBOL && kt != TY_INT) return 0;
+      break;
+    }
+    case NK_ParenthesesNode: case NK_StatementsNode: case NK_ArrayNode: case NK_HashNode:
+    case NK_KeywordHashNode: case NK_RangeNode: break;
+    default: {
+      /* a call's argument list has no kind of its own */
+      const char *ty = nt_type(nt, n);
+      if (!ty || !sp_streq(ty, "ArgumentsNode")) return subtree_is_pure_read(c, n);
+      break;
+    }
+  }
+  int nr = nt_num_refs(nt, n), na = nt_num_arrs(nt, n);
+  for (int i = 0; i < nr; i++) if (!sn_arg_runs_nothing(c, nt_ref_at(nt, n, i))) return 0;
+  for (int i = 0; i < na; i++) {
+    int k = 0;
+    const int *ids = nt_arr_at(nt, n, i, &k);
+    for (int j = 0; j < k; j++) if (!sn_arg_runs_nothing(c, ids[j])) return 0;
+  }
+  return 1;
+}
+/* The program's own method `mi` on a builtin class takes call `id` ahead of
+   the builtin arms. What stands ahead of the plain call there: an IO
+   reopening has an emitter of its own, and a `&.` on a String, an Integer
+   or a Float never met its nil guard, so the method ran on the nil, and
+   its arguments ran too. The guard is written where the call stands: the
+   receiver runs in its place, and what the call hoists (its arguments'
+   temps) runs inside the arm that is not nil, so nothing the statement runs
+   before the call falls behind it. The value is boxed by the type inference
+   read for the call, so the guard is written only where that is the
+   method's own answer.
+   A String held in a temp is the String as it was, and the call read it
+   after its arguments: `s&.pair(add(s))`, where add appends to s, passes
+   the longer one, as CRuby's one object shows it. So a String that is a
+   read (a local, an instance variable, a global, a field) is tested where
+   it stands and read again by the call, as it was; a read that runs the
+   program's code (`ys[0]` against its own Array#[]) is not read again.
+   Any other String receiver runs once, into a temp, and is guarded only
+   where no argument and no default the call leaves out can run the
+   program's code (sn_arg_runs_nothing); it is rooted there unless nothing
+   can run between the temp and the call (no hoist, and each parameter
+   given a pure read of its own type). A method that keeps self as a
+   handle (--share-strings) takes the receiver's handle, which the temp is
+   not: its call is guarded only where the receiver is read again. Answers
+   1 when it emitted the call. */
+static int emit_reopen_call_first(Compiler *c, int id, int recv, TyKind rt, const char *name, int mi, Buf *b) {
+  if (rt == TY_IO) { emit_io_reopen_call(c, id, recv, name, b); return 1; }
+  if ((rt != TY_STRING && rt != TY_INT && rt != TY_FLOAT) || !sn_guard_pending(c, id)) return 0;
+  TyKind ret = repr_of(c, id).as_ty, nat = ret == TY_POLY ? infer_uncached(c, id) : ret;
+  if (nat != c->scopes[mi].ret || repr_of(c, recv).kind == RK_BOXED || g_n_argov >= MAX_ARG_OVERRIDE) return 0;
+  int an = nt_ref(c->nt, id, "arguments"), argc = 0;
+  const int *argv = an >= 0 ? nt_arr(c->nt, an, "arguments", &argc) : NULL;
+  Scope *m = &c->scopes[mi];
+  int reread = rt == TY_STRING && ((subtree_is_pure_read(c, recv) && sn_arg_runs_nothing(c, recv)) ||
+                                   nt_kind(c->nt, unwrap_parens(c, recv)) == NK_GlobalVariableReadNode);
+  if (rt == TY_STRING && !reread) {
+    if (repr_self_handle(c, mi)) return 0;
+    int given = argc - (argc > 0 && nt_kind(c->nt, argv[argc - 1]) == NK_KeywordHashNode);
+    for (int i = 0; i < argc; i++) if (!sn_arg_runs_nothing(c, argv[i])) return 0;
+    for (int i = 0; m->pdefault && i < m->nparams; i++) {
+      int d = m->pdefault[i];
+      if (d < 0 || (!callee_param_is_declared_kwarg(c, m, m->pnames[i]) && arg_slot_for_param(c, m, i, given) >= 0)) continue;
+      if (!sn_arg_runs_nothing(c, d)) return 0;
+    }
+  }
+  int t = ++g_tmp, box = ret == TY_POLY && nat != TY_POLY && nat != TY_UNKNOWN && nat != TY_VOID;
+  int novalue = !ty_is_object(ret) && (!c_type_name(ret) || sp_streq(c_type_name(ret), "void"));
+  Buf rpre, pre, vb, val;
+  memset(&rpre, 0, sizeof rpre); memset(&pre, 0, sizeof pre); memset(&vb, 0, sizeof vb); memset(&val, 0, sizeof val);
+  Buf *sv_pre = g_pre;
+  g_pre = &rpre;
+  Buf rx = expr_buf(c, recv);
+  g_pre = &pre;
+  if (!reread) view_bind(recv, "_t%d", t);
+  int sv_skip = g_sn_skip; g_sn_skip = id;
+  int vw = box ? view_push(c, id, nat) : -1;
+  emit_expr(c, id, &vb);
+  if (vw >= 0) view_pop(c, vw);
+  g_sn_skip = sv_skip;
+  if (!reread) view_unbind(g_n_argov - 1);
+  g_pre = sv_pre;
+  if (box) emit_boxed_text(c, nat, vb.p ? vb.p : "", &val);
+  else buf_puts(&val, vb.p ? vb.p : "");
+  buf_puts(b, "({ ");
+  if (rpre.p) buf_puts(b, rpre.p);
+  int still = !(rpre.p && rpre.p[0]) && !(pre.p && pre.p[0]) && argc == m->nparams;
+  for (int i = 0; still && i < argc; i++) {
+    LocalVar *p = scope_local(m, m->pnames[i]);
+    still = p && !p->byref_out && p->type == comp_ntype(c, argv[i]) && subtree_is_pure_read(c, argv[i]);
+  }
+  if (rt == TY_STRING && (reread || still)) buf_printf(b, "const char *_t%d = %s; ", t, rx.p ? rx.p : "NULL");
+  else if (rt == TY_STRING) buf_printf(b, "const char *_t%d = %s; SP_GC_ROOT_STR(_t%d); ", t, rx.p ? rx.p : "NULL", t);
+  else buf_printf(b, "%s _t%d = %s; ", rt == TY_INT ? "sp_int" : "sp_float", t, rx.p ? rx.p : "0");
+  if (!novalue) {
+    emit_ctype(c, ret, b);
+    buf_printf(b, " _r%d = %s; ", t, ret == TY_POLY ? "sp_box_nil()" : ret == TY_INT ? "SP_INT_NIL"
+               : ret == TY_FLOAT ? "sp_float_nil()" : ret == TY_STRING ? "((const char *)NULL)"
+               : default_value_from_compiler(c, ret) ? default_value_from_compiler(c, ret) : "0");
+  }
+  if (rt == TY_STRING) buf_printf(b, "if (_t%d != NULL) { ", t);
+  else if (rt == TY_INT) buf_printf(b, "if (_t%d != SP_INT_NIL) { ", t);
+  else buf_printf(b, "if (!sp_float_is_nil(_t%d)) { ", t);
+  if (pre.p) buf_puts(b, pre.p);
+  if (novalue) buf_printf(b, "%s; } })", val.p ? val.p : "");
+  else buf_printf(b, "_r%d = (%s); } _r%d; })", t, val.p ? val.p : "", t);
+  free(rpre.p); free(pre.p); free(vb.p); free(val.p); free(rx.p);
+  return 1;
+}
 void emit_call_body(Compiler *c, int id, Buf *b) {
   /* the class's own method in a builtin's receiver test (`__r.is_a?(K) ?
      __r.m { } : __enum_m(__r) { }`): the test has decided the receiver is
@@ -25844,7 +25980,7 @@ void emit_call_body(Compiler *c, int id, Buf *b) {
       if (ocR) {
         int ciR = rtR == TY_IO ? io_reopen_class(c, nmR) : comp_class_index(c, ocR);
         int miR = ciR >= 0 ? comp_method_in_chain(c, ciR, nmR, NULL) : -1;
-        if (miR >= 0 && rtR == TY_IO) { emit_io_reopen_call(c, id, recvR, nmR, b); return; }
+        if (miR >= 0 && emit_reopen_call_first(c, id, recvR, rtR, nmR, miR, b)) return;
         if (miR >= 0) {
           emit_reopen_primitive_call(c, id, ciR, miR, recvR, nmR, b);
           return;
