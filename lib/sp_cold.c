@@ -3470,8 +3470,9 @@ sp_RbVal sp_env_shift(void) {
   size_t n = eq ? (size_t)(eq - ent) : strlen(ent);
   char *k = sp_str_alloc(n);
   memcpy(k, ent, n); k[n] = 0;
+  ((unsigned char *)k)[-1] = 0xfa;
   SP_GC_ROOT_STR(k);
-  const char *v = sp_sprintf("%s", eq ? eq + 1 : "");
+  const char *v = sp_env_str(eq ? eq + 1 : "");
   SP_GC_ROOT_STR(v);
   sp_PolyArray *a = sp_PolyArray_new();
   SP_GC_ROOT(a);
@@ -3502,7 +3503,7 @@ sp_StrStrHash *sp_env_to_h(void) {
     /* copy the VALUE first and root it: the key below is a fresh unreachable
        heap string until the set, and the value copy may GC (#2842 -- a large
        environment collected mid-loop and swept the just-built key) */
-    const char *v = sp_str_dup_external(eq + 1);
+    const char *v = sp_env_str(eq + 1);
     SP_GC_ROOT_STR(v);
     size_t kl = (size_t)(eq - *e);
     char *k = sp_str_alloc_raw(kl + 1);
@@ -3525,17 +3526,27 @@ sp_StrStrHash *sp_env_clear(void) {
   }
   return sp_env_to_h();
 }
-/* ENV.update/merge!/replace with a string-pair hash */
+/* ENV.update/merge!/replace with a string-pair hash. The pairs are stored
+   in order, so the ones before a name or value CRuby rejects stay set;
+   replace then deletes every variable the hash does not name, as
+   sp_env_update_v does. */
 sp_StrStrHash *sp_env_update_h(sp_StrStrHash *h, int replace) {
-  if (replace) sp_env_clear();
   if (h) {
     SP_GC_ROOT(h);
     for (sp_int i = 0; i < h->len; i++) {
       const char *v = sp_StrStrHash_get(h, h->order[i]);
-      if (v) setenv(h->order[i], v, 1); else unsetenv(h->order[i]);
+      sp_env_chk(h->order[i], 0);
+      if (v) setenv(h->order[i], sp_env_chk(v, 1), 1); else unsetenv(h->order[i]);
     }
   }
-  return sp_env_to_h();
+  sp_StrStrHash *env = sp_env_to_h();
+  if (replace) {
+    SP_GC_ROOT(env);
+    for (sp_int i = 0; i < env->len; i++)
+      if (!h || !sp_StrStrHash_has_key(h, env->order[i])) unsetenv(env->order[i]);
+    env = sp_env_to_h();
+  }
+  return env;
 }
 /* Keys are spinel rodata literals (SPL: 0xff marker prefix) so the str-hash
    header cache's s[-1] read is in-bounds -- a bare C literal here would

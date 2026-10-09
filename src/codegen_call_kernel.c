@@ -899,6 +899,20 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
   return 0;
 }
 
+/* Does ENV name or value node v need CRuby's run-time check for an
+   embedded NUL? A String literal without one, or nil, does not. */
+static int env_str_checked(const Compiler *c, int v) {
+  if (nt_kind(c->nt, v) == NK_NilNode) return 0;
+  const char *s = nt_kind(c->nt, v) == NK_StringNode ? nt_str(c->nt, v, "content") : NULL;
+  return !s || strlen(s) != nt_str_len(c->nt, v, "content");
+}
+/* ENV name or value (value != 0) node v as a C string, checked */
+static void emit_env_str(Compiler *c, int v, int value, Buf *b) {
+  if (env_str_checked(c, v)) buf_puts(b, "sp_env_chk(");
+  emit_str_expr(c, v, b);
+  if (env_str_checked(c, v)) buf_printf(b, ", %d)", value);
+}
+
 /* control flow and the process: caller, eval, caller_locations, loop, catch / throw, system, trap, Fiber storage reads, and ENV */
 int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv) {
   /* loop { break val } as expression: emit pre-statement for-loop, result via break var */
@@ -1389,10 +1403,13 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
       if (enm && sp_streq(enm, "delete") && eac == 1) {
         int t1 = ++g_tmp, t2 = ++g_tmp;
         int dblk = nt_ref(nt, id, "block");
-        buf_printf(b, "({ const char *_t%d = ", t1); emit_str_expr(c, eav[0], b);
+        int dpoly = repr_of(c, id).kind == RK_BOXED;
+        int result = dpoly ? ++g_tmp : t2;
+        buf_printf(b, "({ const char *_t%d = ", t1); emit_env_str(c, eav[0], 0, b);
         buf_printf(b, "; const char *_t%d = getenv(_t%d);"
-                      " _t%d = _t%d ? sp_str_dup_external(_t%d) : NULL;"
+                      " _t%d = _t%d ? sp_env_str(_t%d) : NULL;"
                       " unsetenv(_t%d); ", t2, t1, t2, t2, t2, t1);
+        if (dpoly) buf_printf(b, "sp_RbVal _t%d = sp_box_str(_t%d); ", result, t2);
         if (dblk >= 0) {
           const char *dp0 = block_param_name(c, dblk, 0);
           char kref[1024];
@@ -1433,20 +1450,13 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
           }
           for (int k = 0; k < dbn - 1; k++) emit_stmt(c, dbb[k], b, 0);
           if (dval >= 0) {
-            Repr dvr = repr_of(c, dval);
-            TyKind dvt = dvr.as_ty;
-            buf_printf(b, "_t%d = ", t2);
-            if (dvt == TY_STRING) emit_expr(c, dval, b);
-            else if (dvr.kind == RK_BOXED) {
-              buf_puts(b, "({ sp_RbVal _dv = "); emit_expr(c, dval, b);
-              buf_puts(b, "; _dv.tag == SP_TAG_NIL ? NULL : sp_poly_to_s(_dv); })");
-            }
-            else { buf_puts(b, "sp_poly_to_s("); emit_boxed(c, dval, b); buf_puts(b, ")"); }
+            buf_printf(b, "_t%d = ", result);
+            emit_coerce(c, dval, dpoly ? TY_POLY : TY_STRING, CO_HOLD, "an ENV.delete block result", b);
             buf_puts(b, "; ");
           }
           buf_puts(b, "} ");
         }
-        buf_printf(b, "_t%d; })", t2);
+        buf_printf(b, "_t%d; })", result);
         return 1;
       }
       /* ENV.store(k, v) is []= */
@@ -1464,7 +1474,7 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
     if (rty2 && sp_streq(rty2, "ConstantReadNode")) {
       const char *rn = nt_str(nt, recv, "name");
       if (rn && sp_streq(rn, "ENV")) {
-        buf_puts(b, "sp_str_dup_external(getenv("); emit_str_expr(c, argv[0], b); buf_puts(b, "))");
+        buf_puts(b, "sp_env_str(getenv("); emit_env_str(c, argv[0], 0, b); buf_puts(b, "))");
         return 1;
       }
     }
@@ -1483,8 +1493,9 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
           buf_printf(b, "({ const char *_t%d = ", tk); emit_str_expr(c, argv[0], b);
           /* a nil VALUE unsets the variable; only the key is strict */
           buf_printf(b, "; const char *_t%d = ", tv); emit_str_expr_nilable(c, argv[1], b);
-          buf_printf(b, "; if (_t%d) setenv(_t%d, _t%d, 1); else unsetenv(_t%d); _t%d; })",
-                     tv, tk, tv, tk, tv);
+          if (env_str_checked(c, argv[0])) buf_printf(b, "; sp_env_chk(_t%d, 0)", tk);
+          buf_printf(b, "; if (_t%d) setenv(_t%d, %s_t%d%s, 1); else unsetenv(_t%d); _t%d; })", tv, tk,
+                     env_str_checked(c, argv[1]) ? "sp_env_chk(" : "", tv, env_str_checked(c, argv[1]) ? ", 1)" : "", tk, tv);
         }
         else {
           /* runtime-typed RHS: nil deletes, a String sets, anything else
@@ -1518,7 +1529,7 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
     if (rty2 && sp_streq(rty2, "ConstantReadNode")) {
       const char *rn = nt_str(nt, recv, "name");
       if (rn && sp_streq(rn, "ENV")) {
-        buf_puts(b, "(getenv("); emit_str_expr(c, argv[0], b); buf_puts(b, ") != NULL)");
+        buf_puts(b, "(getenv("); emit_env_str(c, argv[0], 0, b); buf_puts(b, ") != NULL)");
         return 1;
       }
     }
@@ -1546,12 +1557,14 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
           else emit_expr(c, argv[1], b);
           if (fhandle) buf_printf(b, "; SP_GC_ROOT(_t%d)", td);
         }
-        buf_printf(b, "; const char *_t%d = getenv(_t%d); ", tk, tky);
+        /* the name is checked after the default evaluates, as CRuby does */
+        buf_printf(b, "; const char *_t%d = getenv(%s_t%d%s); ", tk, env_str_checked(c, argv[0]) ? "sp_env_chk(" : "",
+                   tky, env_str_checked(c, argv[0]) ? ", 0)" : "");
         emit_ctype(c, fpoly ? TY_POLY : TY_STRING, b);
         buf_printf(b, " _t%d = _t%d ? ", tv, tk);
-        if (fhandle) buf_printf(b, "(_sp_ret_strbuf = NULL, sp_str_dup_external(_t%d)) : ", tk);
-        else if (fpoly) buf_printf(b, "sp_box_str(sp_str_dup_external(_t%d)) : ", tk);
-        else buf_printf(b, "sp_str_dup_external(_t%d) : ", tk);
+        if (fhandle) buf_printf(b, "(_sp_ret_strbuf = NULL, sp_env_str(_t%d)) : ", tk);
+        else if (fpoly) buf_printf(b, "sp_box_str(sp_env_str(_t%d)) : ", tk);
+        else buf_printf(b, "sp_env_str(_t%d) : ", tk);
         if (fhandle) buf_printf(b, "sp_strbuf_read_pub(_t%d)", td);
         else if (argc >= 2) buf_printf(b, "_t%d", td);
         else
