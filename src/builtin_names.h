@@ -124,7 +124,6 @@ int is_freeze_family(const char *n); /* freeze frozen? */
 int is_bivar_access(const char *n);  /* __bivar_get __bivar_set __bivar_defined */
 int is_object_copy(const char *n);   /* dup clone */
 int is_ivar_set_name(const char *n); /* instance_variable_set */
-int is_inspect_name(const char *n);  /* inspect */
 int is_marshal_dump(const char *recv, const char *meth); /* Marshal.dump */
 int is_ivar_remove_name(const char *n); /* remove_instance_variable */
 int is_ivar_presence_read(const char *n); /* instance_variables instance_variable_defined? remove_instance_variable inspect p pp */

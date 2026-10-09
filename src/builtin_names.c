@@ -454,7 +454,7 @@ int is_ivar_set_name(const char *n) {
 
 /* Object#inspect, the text p prints */
 int is_inspect_name(const char *n) {
-  return sp_streq(n, "inspect");
+  return n && sp_streq(n, "inspect");
 }
 
 /* `Marshal.dump`, by its receiver's constant name and the method */
@@ -1154,7 +1154,6 @@ int is_embedding_builtin(const char *nm) {
 }
 
 int is_class_name_name(const char *n) { return n && sp_streq(n, "name"); }
-int is_inspect_name(const char *n) { return n && sp_streq(n, "inspect"); }
 
 int is_alias_method_name(const char *n) { return n && sp_streq(n, "alias_method"); }
 
