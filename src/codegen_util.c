@@ -4002,10 +4002,33 @@ void emit_frozen_literal(Buf *b, const char *esc, size_t esc_len, size_t raw_len
   }
   buf_printf(b, "((char *)_fzl_%d.d)", id);
 }
+/* --repr-check, with handles: a frozen literal built into a handle by a
+   constructor that copies it. sp_String_new_shared answers the literal's own
+   handle (sp_String_literal_handle) and sp_String_new_unfrozen is the copy a
+   `+"lit"` asks for; any other sp_String_new* taking the literal itself would
+   make a new String per evaluation. Reported as a conflict, which the
+   sharing verifier (tools/share_verify.rb) fails on. */
+static int fzl_ctor_is(const char *s, size_t n, const char *name) {
+  return strlen(name) == n && strncmp(s, name, n) == 0;
+}
+static void fzl_check_handles(const char *t) {
+  static const char lit[] = "((char *)_fzl_";
+  for (const char *p = t; p && (p = strstr(p, lit)); p += sizeof lit - 1) {
+    if (p == t || p[-1] != '(') continue;
+    const char *e = p - 1, *s = e;
+    while (s > t && (isalnum((unsigned char)s[-1]) || s[-1] == '_')) s--;
+    size_t n = (size_t)(e - s);
+    if (strncmp(s, "sp_String_new", 13) != 0 || fzl_ctor_is(s, n, "sp_String_new_shared") ||
+        fzl_ctor_is(s, n, "sp_String_new_unfrozen")) continue;
+    fprintf(stderr, "repr-check: conflict: frozen literal _fzl_%ld is built into a new handle by %.*s\n",
+            strtol(p + sizeof lit - 1, NULL, 10), (int)n, s);
+  }
+}
 /* The definitions of the literals the unit `t` names, in the order they were
    first met. A literal only a discarded emission named (a speculative arm, an
    abandoned unit) is left out. Resets the table for the next unit. */
 void fzl_emit_defs(const char *t, Buf *out, int handles) {
+  if (handles && g_repr_check) fzl_check_handles(t);
   char *used = calloc((size_t)g_fzl_n + 1, 1);
   for (const char *p = t; p && (p = strstr(p, "_fzl_")); ) {
     p += 5;
