@@ -1681,11 +1681,15 @@ static void emit_boxed_cond_body(Compiler *c, int st, Buf *b, void *ctx) {
     st = n > 0 ? bb[n - 1] : -1;
   }
   buf_printf(b, "_t%d = ", a->dst);
-  if (a->lift) buf_puts(b, "sp_poly_strbuf_lift(");
+  /* (a variable's handle arm is boxed as that handle: nothing to lift) */
+  char ref[1024];
+  int lift = a->lift && st >= 0 && nt_kind(c->nt, st) != NK_StringNode &&
+             !strbuf_var_handle(c, st, ref, sizeof ref);
+  if (lift) buf_puts(b, "sp_poly_strbuf_lift(");
   if (st < 0) buf_puts(b, "sp_box_nil()");
   /* An arm can hand on a route's handle as well as a variable's. */
   else emit_boxed_next_value(c, st, b);
-  if (a->lift) buf_puts(b, ")");
+  if (lift) buf_puts(b, ")");
   buf_puts(b, ";");
 }
 
