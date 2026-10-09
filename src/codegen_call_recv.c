@@ -7928,6 +7928,16 @@ static int int_divisor_coerce_fail(Compiler *c, const char *r, int arg, Buf *b) 
   return 1;
 }
 
+/* Keep Float digits unconverted until the keyword expressions have run. */
+static int emit_round_precision_bind(Compiler *c, int node, int temp, Buf *b) {
+  int is_float = comp_ntype(c, node) == TY_FLOAT;
+  buf_printf(b, "%s _t%d = ", is_float ? "double" : "sp_int", temp);
+  if (is_float) emit_scalar_operand(c, node, "0", b);
+  else emit_int_expr(c, node, b);
+  buf_puts(b, "; ");
+  return is_float;
+}
+
 /* An Integer receiver's round(half:) and the rounding family, chr, [] / bit
    reads, and its division family: divmod, div, gcd / lcm, modulo,
    remainder, gcdlcm (emit_scalar_recv_arms's Integer chain; answers 1 when
@@ -7944,7 +7954,7 @@ static int int_arms_round_divide(Compiler *c, int id, Buf *b, const NodeTable *n
     buf_printf(b, "({ sp_int _t%d = (%s); ", tr, r);
     if (argc == 2) {
       int tn = ++g_tmp;
-      buf_printf(b, "sp_int _t%d = ", tn); emit_int_expr(c, argv[0], b); buf_puts(b, "; ");
+      int nd_float = emit_round_precision_bind(c, argv[0], tn, b);
       if (!sp_streq(name, "round")) {
         /* the hash is built before the call rejects it */
         emit_round_kw_effects(c, &kw, b);
@@ -7954,7 +7964,9 @@ static int int_arms_round_divide(Compiler *c, int id, Buf *b, const NodeTable *n
       }
       else {
         int tm = emit_round_kw_binds(c, &kw, b);
-        buf_printf(b, "sp_int_round_half_v(_t%d, _t%d, ", tr, tn);
+        buf_printf(b, "sp_int_round_half_v(_t%d, ", tr);
+        if (nd_float) buf_printf(b, "sp_float_arg_i(_t%d), ", tn);
+        else buf_printf(b, "_t%d, ", tn);
         if (tm >= 0) buf_printf(b, "_t%d", tm); else buf_puts(b, "sp_box_nil()");
         buf_puts(b, "); })");
       }
@@ -8473,11 +8485,11 @@ static int emit_scalar_recv_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       /* CRuby evaluates the receiver, the digit count and every keyword
          value before the call decides anything, so they are bound in that
          order and only then read. */
-      int tv = ++g_tmp, tn = -1;
+      int tv = ++g_tmp, tn = -1, nd_float = 0;
       buf_printf(b, "({ double _t%d = (%s); ", tv, r);
       if (eff_argc == 1) {
         tn = ++g_tmp;
-        buf_printf(b, "sp_int _t%d = ", tn); emit_int_expr(c, argv[0], b); buf_puts(b, "; ");
+        nd_float = emit_round_precision_bind(c, argv[0], tn, b);
       }
       int tm = emit_round_kw_binds(c, &kw, b);
       int pv_wide = g_promote_mode && (eff_argc == 0 ||
@@ -8502,7 +8514,7 @@ static int emit_scalar_recv_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       buf_printf(b, "%s(_t%d", fn, tv);
       if (!pv_wide) {
         buf_puts(b, ", ");
-        if (tn >= 0) buf_printf(b, "_t%d", tn); else buf_puts(b, "0");
+        if (tn >= 0) buf_printf(b, nd_float ? "sp_float_arg_i(_t%d)" : "_t%d", tn); else buf_puts(b, "0");
       }
       if (tm >= 0) buf_printf(b, ", _t%d); })", tm);
       else buf_puts(b, ", sp_box_nil()); })");
