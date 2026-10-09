@@ -39,6 +39,10 @@ enum { SHE_WRITTEN = 1, SHE_IDENTITY = 2, SHE_COMPARED = 4 };
    to be read after it (`p(lit.each { |x| x << y })`, `lit.map { }.first`),
    so a container of the class can be reached again (sh_finalize) */
 enum { SHF_OUT = 8 };
+/* a class flag: a mutation other than freeze reaches the class (SHF_MUT
+   alone may be a freeze, which changes no bytes), and the input marker
+   sh_mark_at takes off again: this mutation is a freeze */
+enum { SHF_CHG = 64, SHF_FRZ = 128 };
 /* per-node marks: a statement whose value is dropped (SHU_STMT), and a value
    its construct drops that the walk itself still follows -- a loop body's
    last statement, the tail of a block whose iterator keeps none of its
@@ -119,6 +123,11 @@ typedef struct ShareFacts {
   unsigned *byval, *byval_done;
   /* the mutation sites, for SPINEL_SHARE_STATS=3: node, value */
   int *mut_n, *mut_v, nmut, cmut;
+  /* the value of an explicit writer's attribute assignment and the right-hand
+     side's class, joined once something observes the value as that String
+     (sh_settle_assign_joins) */
+  int *aj_v, *aj_s, naj, caj;
+  unsigned char *aj_done;
   /* the flows (sh_flow): per flow, the node that takes the value (site),
      the node whose value it takes, and the kind (ShareFlowKind) */
   int *fl_site, *fl_val, nfl, cfl;
@@ -377,6 +386,8 @@ static void sh_mark_at(ShareFacts *F, int x, unsigned fl, int node) {
   F->mut_n[F->nmut] = node;
   F->mut_v[F->nmut] = x;
   F->nmut++;
+  if (fl & SHF_FRZ) fl &= ~(unsigned)SHF_FRZ;
+  else if (fl & SHF_MUT) fl |= SHF_CHG;
   F->flags[sh_find(F, x)] |= (unsigned char)fl;
 }
 
@@ -2327,6 +2338,75 @@ static int sh_iter_drops_block(Compiler *c, int n, TyKind rt) {
 }
 
 static int sh_builtin_fresh(Compiler *c, int call, int ostruct);
+/* Under --share-strings, is call n an attribute assignment (`obj.x = v`,
+   call_is_setter_assign) of one plain value? Its value is the right-hand
+   side whatever the writer returns, and the object the writer was handed,
+   so no name-free String. */
+static int sh_assign_call(const Compiler *c, int n) {
+  if (!c->share_strings || nt_kind(c->nt, n) != NK_CallNode || nt_ref(c->nt, n, "block") >= 0 ||
+      !call_is_setter_assign(c->nt, n)) return 0;
+  int args = nt_ref(c->nt, n, "arguments"), argc = 0;
+  const int *argv = args >= 0 ? nt_arr(c->nt, args, "arguments", &argc) : NULL;
+  return argc == 1 && nt_kind(c->nt, argv[0]) != NK_SplatNode && nt_kind(c->nt, argv[0]) != NK_KeywordHashNode &&
+         nt_kind(c->nt, argv[0]) != NK_BlockArgumentNode;
+}
+
+/* ...or is node n (through parentheses) a call that answers its receiver
+   (`<<`, `concat`, `freeze`) over one? */
+static int sh_assign_chain(const Compiler *c, int n, int depth) {
+  const NodeTable *nt = c->nt;
+  n = an_unparen(nt, n);
+  if (n < 0 || depth > 8) return 0;
+  if (sh_assign_call(c, n)) return 1;
+  if (nt_kind(nt, n) != NK_CallNode || !nt_str(nt, n, "name") || nt_ref(nt, n, "block") >= 0) return 0;
+  int argc = 0;
+  const int *argv = nt_ref(nt, n, "arguments") >= 0 ? nt_arr(nt, nt_ref(nt, n, "arguments"), "arguments", &argc) : NULL;
+  (void)argv;
+  return ((bop_answers_self(TY_STRING, nt_str(nt, n, "name"), argc, 0) & BOPF_SELF) || str_self_call(nt, n)) &&
+         sh_assign_chain(c, nt_ref(nt, n, "receiver"), depth + 1);
+}
+
+static void sh_assign_join_later(ShareFacts *F, int v, int s) {
+  if (F->naj >= F->caj) {
+    F->caj = F->caj ? F->caj * 2 : 16;
+    F->aj_v = realloc(F->aj_v, sizeof(int) * (size_t)F->caj);
+    F->aj_s = realloc(F->aj_s, sizeof(int) * (size_t)F->caj);
+    F->aj_done = realloc(F->aj_done, (size_t)F->caj);
+  }
+  F->aj_v[F->naj] = v;
+  F->aj_s[F->naj] = s;
+  F->aj_done[F->naj++] = 0;
+}
+
+int share_assign_call(const Compiler *c, int n) { return sh_assign_call(c, n); }
+/* Is node n (through parentheses, a unary plus and the branches of a
+   conditional) an attribute assignment, or a chain over one? */
+static int sh_freeze_recv_assign(const Compiler *c, int n, int depth) {
+  const NodeTable *nt = c->nt;
+  n = an_unparen(nt, n);
+  if (n < 0 || depth > 8) return 0;
+  switch (nt_kind(nt, n)) {
+  case NK_IfNode: case NK_UnlessNode:
+    return sh_freeze_recv_assign(c, nt_ref(nt, n, "statements"), depth + 1) ||
+           sh_freeze_recv_assign(c, nt_ref(nt, n, nt_kind(nt, n) == NK_IfNode ? "subsequent" : "else_clause"), depth + 1);
+  case NK_ElseNode:
+    return sh_freeze_recv_assign(c, nt_ref(nt, n, "statements"), depth + 1);
+  case NK_StatementsNode: {
+    int k = 0; const int *bb = nt_arr(nt, n, "body", &k);
+    return k > 0 && sh_freeze_recv_assign(c, bb[k - 1], depth + 1);
+  }
+  case NK_OrNode: case NK_AndNode:
+    return sh_freeze_recv_assign(c, nt_ref(nt, n, "left"), depth + 1) || sh_freeze_recv_assign(c, nt_ref(nt, n, "right"), depth + 1);
+  case NK_CallNode: {
+    const char *nm = nt_str(nt, n, "name");
+    if (nm && is_unary_plus(nm) && nt_ref(nt, n, "arguments") < 0 && nt_ref(nt, n, "block") < 0)
+      return sh_freeze_recv_assign(c, nt_ref(nt, n, "receiver"), depth + 1);
+    return sh_assign_chain(c, n, 0);
+  }
+  default: return 0;
+  }
+}
+
 static int sh_call(ShareFacts *F, Compiler *c, int n) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, n, "name");
@@ -2355,7 +2435,11 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
       (rt == TY_STRING || rt == TY_STRBUF ||
        (!sh_args_refuse_string(c, n, name) && an_recv_may_be_string(c, recv, &(PolyLits){ sh_blk_bound, F })))) {
     int base = sh_self_chain_base(F, c, recv);
-    sh_mark_at(F, rv, SHF_MUT | (sh_holder_read(nt, base) ? 0 : SHF_INDIRECT), n);
+    /* a freeze changes no bytes: the value of an attribute assignment it
+       freezes is one pointer all its names read, frozen in place, so no
+       slot needs the new pointer back */
+    int frz = is_freeze_name(name) && argc == 0 && sh_freeze_recv_assign(c, recv, 0);
+    sh_mark_at(F, rv, SHF_MUT | (sh_holder_read(nt, base) || frz ? 0 : SHF_INDIRECT) | (is_freeze_name(name) ? SHF_FRZ : 0), n);
     sh_flow(F, SHFL_MUTATE, n, base, -1);
   }
 
@@ -2542,6 +2626,23 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
           c->scopes[tg[i]].class_id == comp_class_index(c, "String"))
         sh_union(F, rv, F->unknown);
     }
+    /* an attribute assignment's value is its right-hand side, not the
+       writer's return: the value the walk found for it, else (a new
+       String) the parameter that now holds it */
+    if (sh_assign_call(c, n)) {
+      int vals[1];
+      r = sh_args_vals(F, c, n, vals, 1) == 1 ? vals[0] : -1;
+      if (r >= 0) {
+        int v = sh_new(F, SHK_VALUE);
+        sh_assign_join_later(F, v, r);
+        r = v;
+      }
+      for (int i = 0; r < 0 && i < ntg; i++) {
+        Scope *m = &c->scopes[tg[i]];
+        int simple = m->nparams == 1 && m->rest_idx < 0 && m->kwrest_idx < 0;
+        r = sh_join(F, r, simple ? sh_local_of(F, c, m, m->pnames[0], m->def_node) : F->unknown);
+      }
+    }
     /* a poly receiver may be a builtin as well */
     if (c->share_strings && rt == TY_EXCEPTION && is_exception_message(name))
       return sh_join(F, r, sh_exc(F));
@@ -2579,6 +2680,8 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
         if (nv == 1) sh_ivar_store(F, c, iv, argc == 1 ? argv[0] : -1, vals[0]);
         if (nv == 1 && argc == 1) sh_flow(F, SHFL_MEMBER, n, argv[0], iv);
         r = nv == 1 ? vals[0] : -1;
+        /* the value is the String the slot holds now, a new one included */
+        if (sh_assign_call(c, n)) r = iv;
       }
       if (rt != TY_POLY && rt != TY_UNKNOWN) return r;
       return sh_join(F, r, sh_container_default(F, c, n, rv, blk));
@@ -2665,6 +2768,11 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
      Enumerator's each runs the iterator it was made by, map's included.) */
   if (sh_iter_drops_block(c, n, rt)) sh_mark_unused(F, nt, nt_ref(nt, blk, "body"), SHU_TAIL);
   int s = bop_share_named(fam, name);
+  /* freeze over an attribute assignment answers that very String, which the
+     assignment's value names (as over a variable): frozen, but one object */
+  if (s == BSH_FROZEN && fam == TY_STRING && argc == 0 && (bop_answers_self(TY_STRING, name, 0, 0) & BOPF_SELF) &&
+      sh_assign_chain(c, recv, 0))
+    s = BSH_RECV;
   /* the Strings' answers-self names the face table lists */
   if (!s && fam == TY_STRING && str_self_call(nt, n)) s = BSH_RECV;
   if (!s) s = bop_share_named(BOP_ANY_RECV, name);
@@ -3195,6 +3303,27 @@ static int sh_lend_arg_held(ShareFacts *F, int i) {
   return F->nhold[r] > 0 || (F->flags[r] & SHF_UNKNOWN);
 }
 
+/* The value of an explicit writer's attribute assignment is the right-hand
+   side's String, but it is that one object to the rule only where something
+   can tell: the value is changed in place (a freeze changes no bytes),
+   meets what the walk does not follow, is held by names the rule makes handles
+   (freeze alone, through two names), or the right-hand side's class is
+   changed in place, so that a handle exists whose changes the value must
+   see. Until then it is a value of its own, as the writer's answer was. */
+static int sh_settle_assign_joins(ShareFacts *F) {
+  int changed = 0;
+  for (int i = 0; i < F->naj; i++) {
+    if (F->aj_done[i]) continue;
+    int rv = sh_find(F, F->aj_v[i]);
+    unsigned fv = F->flags[rv], fs = F->flags[sh_find(F, F->aj_s[i])];
+    if (!(fv & (SHF_CHG | SHF_UNKNOWN)) && !(fs & SHF_MUT) && !(F->nhold[rv] > 0 && repr_str_class_shares(fv, F->nhold[rv]))) continue;
+    sh_union(F, F->aj_v[i], F->aj_s[i]);
+    F->aj_done[i] = 1;
+    changed = 1;
+  }
+  return changed;
+}
+
 static void sh_settle_lends(ShareFacts *F, Compiler *c) {
   for (int again = 1; again; ) {
     again = 0;
@@ -3208,6 +3337,7 @@ static void sh_settle_lends(ShareFacts *F, Compiler *c) {
       }
       if (sh_settle_rets(F)) changed = 1;
       if (sh_settle_keys(F)) changed = 1;
+      if (sh_settle_assign_joins(F)) changed = 1;
     }
     /* a lent parameter's mutation is its argument's; one a held String
        reaches as a temporary joins it, and the classes settle again */
@@ -3224,10 +3354,13 @@ static void sh_settle_lends(ShareFacts *F, Compiler *c) {
           continue;
         }
         int ra = sh_find(F, F->lend_arg[i]);
-        unsigned want = SHF_MUT | (F->lend_direct[i] ? 0 : SHF_INDIRECT);
+        unsigned want = SHF_MUT | (F->flags[rp] & SHF_CHG) | (F->lend_direct[i] ? 0 : SHF_INDIRECT);
         if ((F->flags[ra] & want) == want) continue;
         F->flags[ra] |= (unsigned char)want;
         changed = 1;
+        /* (a value kept apart from its right-hand side's String may join
+           it now: the settle runs again) */
+        if (F->naj) again = 1;
       }
     }
   }
@@ -3386,6 +3519,7 @@ static void sh_free(ShareFacts *F) {
   free(F->parent); free(F->elem); free(F->nhold); free(F->nmem); free(F->nelem); free(F->hidx);
   free(F->owner); free(F->hcount); free(F->anchored); free(F->mconst);
   free(F->mut_n); free(F->mut_v);
+  free(F->aj_v); free(F->aj_s); free(F->aj_done);
   free(F->fl_site); free(F->fl_val); free(F->fl_kind); free(F->fl_dest); free(F->into); free(F->pk); free(F->lam);
   free(F->lsc); free(F->ret_m); free(F->ret_v); free(F->ret_done); free(F->unused); free(F->fresh_cont);
   if (F->own_elig) free(F->byref_elig);
@@ -4249,6 +4383,9 @@ int share_builtin_fresh(Compiler *c, int call) {
 static int sh_user_call_fresh(Compiler *c, int call, int depth) {
   const ShareFacts *F = c->share;
   if (!F || call < 0 || depth > 8 || nt_kind(c->nt, call) != NK_CallNode) return 0;
+  /* an attribute assignment answers the String it handed the writer, not
+     what the writer returns */
+  if (sh_assign_call(c, call)) return 0;
   /* A boxed dispatch can take a builtin arm too: its user targets alone
      do not prove freshness (String#to_s can answer its receiver). */
   if (cplan_user_fresh(c, call)->via == UC_POLY && !share_builtin_fresh(c, call)) return 0;
@@ -4476,6 +4613,10 @@ int share_node_peeked(const Compiler *c, int n) {
   const ShareFacts *F = c->share;
   return F && n >= 0 && n < F->nnodes && (F->unused[n] & SHU_PEEK);
 }
+int share_node_unread(const Compiler *c, int n) {
+  const ShareFacts *F = c->share;
+  return F && n >= 0 && n < F->nnodes && (F->unused[n] & (SHU_STMT | SHU_TAIL));
+}
 int share_node_transient(const Compiler *c, int n) {
   const ShareFacts *F = c->share;
   return F && n >= 0 && n < F->nnodes && (F->unused[n] & (SHU_STMT | SHU_TAIL | SHU_PEEK));
@@ -4684,8 +4825,36 @@ static int sh_route_to_root(const Compiler *c, const ShareRoute *q) {
    it shares holds the handle in every holder (seal's holder check), and
    the carrying node hands it along. */
 enum { SH_ROUTE_OK, SH_ROUTE_UNSEEN, SH_ROUTE_COPIES };
+/* Is node n (through parentheses) an explicit writer's attribute assignment
+   whose value the facts kept apart from its right-hand side's String
+   (sh_settle_assign_joins): nothing changes that String in place or sees it
+   through a handle, so the value is the pointer all its names read? */
+/* Does the rule share the String an attribute assignment hands on: its
+   right-hand side's class, or the value's where the right-hand side is a
+   new String that has no class of its own? */
+int share_assign_shares(const Compiler *c, int n) {
+  const ShareFacts *F = c->share;
+  const NodeTable *nt = c->nt;
+  int args = nt_ref(nt, n, "arguments"), argc = 0;
+  const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+  if (!F || argc != 1 || n < 0 || n >= F->nnodes || argv[0] < 0 || argv[0] >= F->nnodes) return 0;
+  return share_node_shares(c, F->nval[argv[0]] >= 0 ? argv[0] : n);
+}
+
+int share_assign_unjoined(const Compiler *c, int n) {
+  const ShareFacts *F = c->share;
+  const NodeTable *nt = c->nt;
+  n = an_unparen(nt, n);
+  if (!F || n < 0 || n >= F->nnodes || !sh_assign_call(c, n)) return 0;
+  int args = nt_ref(nt, n, "arguments"), argc = 0;
+  const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+  if (argc != 1 || argv[0] < 0 || argv[0] >= F->nnodes || F->nval[n] < 0 || F->nval[argv[0]] < 0) return 0;
+  return sh_find((ShareFacts *)F, F->nval[n]) != sh_find((ShareFacts *)F, F->nval[argv[0]]);
+}
+
 static int sh_route_why(const Compiler *c, const ShareRoute *q) {
   const ShareFacts *F = c->share;
+  if (F && q->value >= 0 && !q->elems && share_assign_unjoined(c, q->value)) return SH_ROUTE_OK;
   /* a route that vouches for a local by its being the only name its String
      has: the final facts have to show a plain local that no other holder,
      no capture and nothing the walk does not follow reaches */

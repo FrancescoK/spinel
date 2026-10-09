@@ -1,0 +1,1 @@
+spinel: test/share/refuse/attr_assign_value_enumerator_writer_mutates.rb:14: under --share-strings, an Enumerator over the value of an assignment whose writer changes the String it was handed would keep a copy of it (a String is not yet shared by reference through an Enumerator). Make the assignment a statement of its own.

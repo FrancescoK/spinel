@@ -36228,8 +36228,11 @@ static void refuse_string_alias_copies(Compiler *c) {
       /* `t = id(s)`, `t = choose(+"x", s, flag)`: each argument it may answer */
       int ra[16], nra = sa_returned_args(c, v, ra, 16);
       for (int i = 0; i < nra; i++)
-        if (sa_name(c, ra[i], &from) &&
-            (sa_copy_observable(c, &to, &from, ra[i]) || (sa_mutated(c, &to) && sa_param_caller_sees(c, &from)))) {
+        /* an attribute assignment's value handed to such a method has no
+           name to ask about: the String it answers is the field's too */
+        if ((sa_name(c, ra[i], &from) &&
+             (sa_copy_observable(c, &to, &from, ra[i]) || (sa_mutated(c, &to) && sa_param_caller_sees(c, &from)))) ||
+            (c->share_strings && share_assign_call(c, an_unparen(nt, ra[i])))) {
           ShareRoute q = share_route(w, ra[i], 0);
           q.to = w;
           q.carry = v;
@@ -36309,6 +36312,19 @@ static void refuse_string_alias_copies(Compiler *c) {
           ((sa_mutated(c, &from) && sa_array_observed(c, &arr_ix, u)) || sa_chain_demanded(c, u)))
         sa_refuse_element(c, e, u);
     int r = an_unparen(nt, nt_ref(nt, u, "receiver"));
+    /* `id(o.a = s).freeze`, `id(o.a = s) << x`: the String the method
+       answers is the field's, and these take a copy of it */
+    if (c->share_strings && r >= 0 && nm && (sp_str_mutator(nm, SP_MUT_LOCAL) || is_freeze_family(nm)) &&
+        (comp_ntype(c, r) == TY_STRING || comp_ntype(c, r) == TY_STRBUF)) {
+      int la[16], nla = sa_returned_args(c, r, la, 16);
+      for (int i = 0; i < nla; i++)
+        if (share_assign_call(c, an_unparen(nt, la[i]))) {
+          ShareRoute q = share_route(u, la[i], 0);
+          q.to = r;
+          q.carry = r;
+          if (!share_route_defer(c, &q, sa_msg(1))) sa_refuse(c, u, 1);
+        }
+    }
     if (r < 0 || !nm || !sp_str_mutator(nm, SP_MUT_LOCAL)) continue;
     TyKind rt = comp_ntype(c, r);
     if (rt != TY_STRING && rt != TY_STRBUF) continue;

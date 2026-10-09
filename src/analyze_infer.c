@@ -2600,6 +2600,7 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
         int owned = call_is_setter_assign(nt, id) ? (has_def || has_writer)
                                                   : (has_writer && !has_def);
         TyKind at = owned ? infer_type(c, argv[0]) : TY_UNKNOWN;
+        if (at == TY_STRBUF && c->share_strings) at = TY_STRING;
         if (at != TY_UNKNOWN) { *out = at; return 1; }
       }
       /* []= on a poly receiver yields the assigned value, emitted boxed */

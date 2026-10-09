@@ -724,6 +724,374 @@ static void ffi_arg_hold(Buf *call, size_t at, Buf *pre, int tb, int ai) {
   free(arg.p);
 }
 
+/* Does `obj.x = v` (receiver class arc, writer base name `x`) reach the
+   field of an attr writer, rather than an explicit `def x=` at an
+   equal-or-more-derived class? The class that defines the writer in *defc,
+   or -1 for the receiver's own. CRuby: attr_accessor defines an ordinary
+   writer method. */
+static int attr_writer_field(Compiler *c, int arc, const char *base, const char *name, int *defc) {
+  int awmdc = -1;
+  *defc = -1;
+  int awins = comp_writer_in_chain(c, arc, base, defc);
+  if (awins && comp_method_in_chain(c, arc, name, &awmdc) >= 0) {
+    for (int k = arc; k >= 0; k = c->classes[k].parent) {
+      if (k == awmdc) { awins = 0; break; }
+      if (k == *defc) { awins = 1; break; }
+    }
+  }
+  return awins;
+}
+
+/* The ivar slot of an attribute assignment `obj.x = v` of one plain value
+   that an attr writer makes: its class in *cid and ivar index in *iv, or 0
+   for any other call. The assignment's value is v itself (the slot's String
+   too, under --share-strings: repr_write_share). */
+int attr_assign_slot(Compiler *c, int id, int *cid, int *iv) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver"), argc = 0;
+  const int *argv = call_args(nt, id, &argc);
+  if (recv < 0 || argc != 1 || nt_ref(nt, id, "block") >= 0 || !call_is_setter_assign(nt, id) ||
+      nt_kind(nt, argv[0]) == NK_SplatNode || nt_kind(nt, argv[0]) == NK_KeywordHashNode ||
+      nt_kind(nt, argv[0]) == NK_BlockArgumentNode)
+    return 0;
+  TyKind rt = comp_ntype(c, recv);
+  size_t ln = strlen(name);
+  char base[256], ivn[258];
+  if (!ty_is_object(rt) || ln - 1 >= sizeof base) return 0;
+  memcpy(base, name, ln - 1);
+  base[ln - 1] = '\0';
+  int defc;
+  if (!attr_writer_field(c, ty_object_class(rt), base, name, &defc)) return 0;
+  snprintf(ivn, sizeof ivn, "@%s", base);
+  *cid = defc < 0 ? ty_object_class(rt) : defc;
+  *iv = comp_ivar_index(&c->classes[*cid], ivn);
+  return *iv >= 0;
+}
+
+/* Is call id an attribute assignment of one plain String to an explicit
+   `def x=(v)` (one required parameter, the one method the call reaches),
+   where the --share-strings rule shares its value's String? Its value is
+   the String the writer was handed, as the handle it is a name of, whatever
+   the writer returns (call_is_setter_assign). */
+int user_assign_handle(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  int recv = nt_ref(nt, id, "receiver"), argc = 0;
+  const int *argv = call_args(nt, id, &argc);
+  /* (the rule's answer is the cheap test, and most assignments fail it: it
+     goes before the representation reads) */
+  if (!c->share_strings || recv < 0 || argc != 1 || nt_ref(nt, id, "block") >= 0 || !call_is_setter_assign(nt, id) ||
+      !share_assign_shares(c, id) || repr_of(c, argv[0]).kind == RK_BOXED ||
+      (comp_ntype(c, argv[0]) != TY_STRING && comp_ntype(c, argv[0]) != TY_STRBUF))
+    return 0;
+  /* a boxed receiver is dispatched on its class, and its arms answer the
+     handle the call was given (a safe-navigation link answers nil for a nil
+     receiver) */
+  TyKind rty = comp_ntype(c, recv);
+  if (rty == TY_POLY || rty == TY_UNKNOWN) {
+    /* ...of a safe-navigation chain, when one user class has the writer
+       (an explicit one; a class with an attr writer or a Struct member
+       beside it is a second class the dispatch has no arm for) */
+    const char *wn = nt_str(nt, id, "name");
+    size_t wl = wn ? strlen(wn) : 0;
+    char base[256];
+    int found = 0, mi = -1;
+    if (wl < 2 || wl - 1 >= sizeof base) return 0;
+    memcpy(base, wn, wl - 1);
+    base[wl - 1] = '\0';
+    for (int k = 0; k < c->nclasses; k++) {
+      int m = comp_method_in_class(c, k, wn), dc;
+      if (m >= 0) { found++; mi = m; }
+      else if (attr_writer_field(c, k, base, wn, &dc) && (dc < 0 || dc == k)) { found++; mi = -1; }
+    }
+    if (!call_is_safe_nav(nt, id) || found != 1) return 0;
+    if (mi < 0) return 0;   /* (an attr writer or a Struct member is not dispatched on a boxed receiver) */
+    const Scope *w = &c->scopes[mi];
+    return w->nparams == 1 && w->rest_idx < 0 && w->kwrest_idx < 0 && !w->blk_param;
+  }
+  if (!ty_is_object(rty)) return 0;
+  const CallPlan *p = cplan_user(c, id);
+  if (p->dispatch != CP_DIRECT || p->mi < 0) return 0;
+  const Scope *m = &c->scopes[p->mi];
+  return m->nparams == 1 && m->rest_idx < 0 && m->kwrest_idx < 0 && !m->blk_param;
+}
+
+static int assign_value_slot(const NodeTable *nt, int p, int n);
+/* Is call id the value its own method answers: the last statement of the
+   method's body, or of a branch body of a conditional, case or begin that
+   is itself the last? Climbs from the call, so its cost is the depth. */
+static int assign_is_tail(Compiler *c, int id, const int *par) {
+  const NodeTable *nt = c->nt;
+  int n = id;
+  for (int p = par[n]; p >= 0; n = p, p = par[p]) {
+    NodeKind k = nt_kind(nt, p);
+    if (k == NK_DefNode) return nt_ref(nt, p, "body") == n;
+    if (k == NK_StatementsNode) {
+      int sn = 0;
+      const int *sb = nt_arr(nt, p, "body", &sn);
+      if (sn == 0 || sb[sn - 1] != n) return 0;
+      continue;
+    }
+    if (k == NK_BeginNode && n == nt_ref(nt, p, "ensure_clause")) return 0;
+    if (k == NK_BlockNode || k == NK_LambdaNode) return 0;
+    if (k == NK_NONE) {
+      /* a `when` arm: the only unnamed kind a case holds */
+      int gp = par[p];
+      if (gp < 0 || (nt_kind(nt, gp) != NK_CaseNode)) return 0;
+      continue;
+    }
+    if (!assign_value_slot(nt, p, n)) return 0;
+  }
+  return 0;
+}
+
+/* Is call id the value of a `return` of its own method: through parentheses
+   and the return's argument list, with no block, lambda or method between
+   them? Climbs from the call, so its cost is the nesting depth. */
+static int assign_is_returned(Compiler *c, int id, const int *par) {
+  const NodeTable *nt = c->nt;
+  int p = par[id];
+  while (p >= 0 && (nt_kind(nt, p) == NK_ParenthesesNode || nt_kind(nt, p) == NK_StatementsNode)) p = par[p];
+  /* p is the return's argument list */
+  int ret = p >= 0 ? par[p] : -1;
+  if (ret < 0 || nt_kind(nt, ret) != NK_ReturnNode || nt_ref(nt, ret, "arguments") != p) return 0;
+  for (int q = par[ret]; q >= 0; q = par[q]) {
+    NodeKind qk = nt_kind(nt, q);
+    if (qk == NK_BlockNode || qk == NK_LambdaNode) return 0;
+    if (qk == NK_DefNode) return 1;
+  }
+  return 0;
+}
+
+/* Is n a place in node p whose value is p's value: a branch body, not a
+   condition, a case or pattern subject, a rescue's class list or a guard? */
+static int assign_value_slot(const NodeTable *nt, int p, int n) {
+  switch (nt_kind(nt, p)) {
+  case NK_IfNode: case NK_UnlessNode: case NK_CaseNode: case NK_CaseMatchNode:
+    return n != nt_ref(nt, p, "predicate");
+  case NK_InNode: case NK_RescueNode:
+    return n == nt_ref(nt, p, "statements") || n == nt_ref(nt, p, "subsequent");
+  case NK_ElseNode: case NK_BeginNode: case NK_ParenthesesNode:
+    return 1;
+  default:
+    return 0;
+  }
+}
+
+/* Is call id (through parentheses) the receiver of a String mutator or of
+   freeze, whose emitter takes the receiver as the handle it changes
+   (strbuf_recv_handle, the freeze arm), so the text a copy would give is
+   never read? */
+static int assign_mutated_receiver(Compiler *c, int id, int explicit_writer) {
+  const NodeTable *nt = c->nt;
+  int q = comp_recv_parent(c, id);
+  /* through the links that answer the receiver itself (`itself`, `to_s`) */
+  for (int d = 0; d < 8 && q >= 0 && nt_kind(nt, q) == NK_CallNode && str_self_call(nt, q) &&
+                  is_receiver_conversion(nt_str(nt, q, "name")) && !call_is_safe_nav(nt, q); d++)
+    q = comp_recv_parent(c, q);
+  const char *nm = q >= 0 && nt_kind(nt, q) == NK_CallNode ? nt_str(nt, q, "name") : NULL;
+  /* a safe-navigation mutator takes no route over the handle (it must skip a
+     nil): an attr writer's value stays refused there, an explicit writer's
+     keeps its emission without the handle */
+  int argc = 0;
+  if (q >= 0) call_args(nt, q, &argc);
+  /* (a mutator given nothing to append, `concat`, answers its receiver
+     without the route taking a handle) */
+  return nm && (is_string_rebind_mutator(nm) || is_freeze_family(nm)) && !(argc == 0 && is_append_concat(nm)) &&
+         (explicit_writer || !call_is_safe_nav(nt, q));
+}
+
+/* Is call id, as a call's receiver, only read: the call changes nothing,
+   does not answer its receiver and keeps none of its value (the share walk
+   peeked it, or it answers a count, a flag or the like: `size`, `bytes`,
+   `start_with?`, `upcase`; not `<<`, `freeze`, `to_s`, `itself`)? */
+static int assign_peeked_reader(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  int q = comp_recv_parent(c, id);
+  if (q < 0 || nt_kind(nt, q) != NK_CallNode) return 0;
+  const char *nm = nt_str(nt, q, "name");
+  int argc = 0;
+  call_args(nt, q, &argc);
+  TyKind qt = comp_ntype(c, q);
+  /* (a blockless iterator's Enumerator keeps its receiver) */
+  if (qt == TY_ENUMERATOR) return 0;
+  /* (an argument that runs code can change the String after the receiver's
+     read was taken: `(o.a = s) + (s << "3")`) */
+  const int *qav = nt_ref(nt, q, "arguments") >= 0 ? call_args(nt, q, &argc) : NULL;
+  for (int i = 0; qav && i < argc; i++)
+    if (subtree_has_side_effect(c, qav[i])) return 0;
+  int keeps_none = share_node_peeked(c, id) || (qt != TY_STRING && qt != TY_STRBUF && qt != TY_POLY && qt != TY_UNKNOWN);
+  return nm && keeps_none && nt_ref(nt, q, "block") < 0 && !is_string_rebind_mutator(nm) && !is_freeze_family(nm) &&
+         !bop_name_mutates(nm, 0) && bop_answers_self(TY_STRING, nm, argc, 0) == 0 &&
+         cplan_user(c, q)->dispatch == CP_NONE;
+}
+
+/* Is the value of call id thrown away: the share walk found it unread, or a
+   builtin that keeps none only prints it (`p x`; never one that changes its
+   receiver, whose mutation the aliases must see), or it is a statement that
+   is not the last of its sequence, or the value of a conditional, begin or
+   parenthesized expression that is itself dropped, or the value of a block
+   whose call just answers the yield (`def y = yield`) and is itself
+   dropped? What ends the climb (a loop body, a block of an iterator) is
+   an_value_dropped's, unless a user class defines a method of the block
+   call's name, which can answer the block's value. */
+static int assign_value_dropped(Compiler *c, int id, const int *par) {
+  const NodeTable *nt = c->nt;
+  int n = id;
+  for (int p = par[n]; ; p = par[n]) {
+    /* (a node can be a call's receiver and a statement's value both: the
+       parent map keeps one of them, comp_recv_parent the receiver) */
+    if (share_node_unread(c, n) || (share_node_peeked(c, n) && comp_recv_parent(c, n) < 0) || assign_peeked_reader(c, n)) return 1;
+    /* a String Hash key is copied (frozen) by CRuby: no identity is asked of it */
+    if (p >= 0 && nt_kind(nt, p) == NK_AssocNode && nt_ref(nt, p, "key") == n) return 1;
+    if (p < 0) return 0;
+    NodeKind k = nt_kind(nt, p);
+    if (k == NK_StatementsNode) {
+      int sn = 0;
+      const int *sb = nt_arr(nt, p, "body", &sn);
+      if (sn > 0 && sb[sn - 1] != n) return 1;
+      int gp = par[p];
+      NodeKind gk = gp >= 0 ? nt_kind(nt, gp) : NK_NONE;
+      if (gk == NK_BlockNode && par[gp] >= 0 && nt_kind(nt, par[gp]) == NK_CallNode) {
+        /* the block's value is its call's when the method only yields */
+        const CallPlan *pl = cplan_user(c, par[gp]);
+        int mb = pl->dispatch == CP_DIRECT && pl->mi > 0 ? c->scopes[pl->mi].body : -1;
+        int mn = 0;
+        const int *mbb = mb >= 0 && nt_kind(nt, mb) == NK_StatementsNode ? nt_arr(nt, mb, "body", &mn) : NULL;
+        if (mn == 1 && nt_kind(nt, mbb[0]) == NK_YieldNode) { n = par[gp]; continue; }
+      }
+      if (gp >= 0 && assign_value_slot(nt, gp, p)) {
+        n = p;
+        continue;
+      }
+      return an_value_dropped(nt, par, n) && !cow_user_block_value(c, par, n);
+    }
+    if (!assign_value_slot(nt, p, n)) return 0;
+    n = p;
+  }
+}
+
+/* An attribute assignment's value that is taken as a String, not as the
+   handle (the call is not marked to hand it out), is a copy of the one
+   object the writer was handed. That is right where the rule does not share
+   the String, and refused where it does (share_route_defer), the consumer
+   being one that takes a copy of the value. The tail of a method that
+   answers handles is no such consumer: the read of the field publishes its
+   handle for the caller to pick up (Scope.ret_handle), and so is a `return`
+   of it. */
+/* Does the subtree at n change local `name` in place (a mutator called on
+   its read; not freeze)? */
+static int subtree_changes_local(const NodeTable *nt, int n, const char *name) {
+  if (n < 0) return 0;
+  NodeKind k = nt_kind(nt, n);
+  if (k == NK_DefNode) return 0;
+  if (k == NK_CallNode) {
+    const char *nm = nt_str(nt, n, "name");
+    int r = nt_ref(nt, n, "receiver");
+    if (nm && r >= 0 && nt_kind(nt, r) == NK_LocalVariableReadNode && sp_streq(nt_str(nt, r, "name"), name) &&
+        !is_freeze_family(nm) && (is_string_rebind_mutator(nm) || bop_name_mutates(nm, 0)))
+      return 1;
+  }
+  for (int i = 0; i < nt_num_refs(nt, n); i++)
+    if (subtree_changes_local(nt, nt_ref_at(nt, n, i), name)) return 1;
+  for (int i = 0; i < nt_num_arrs(nt, n); i++) {
+    int m = 0; const int *ids = nt_arr_at(nt, n, i, &m);
+    for (int j = 0; j < m; j++) if (subtree_changes_local(nt, ids[j], name)) return 1;
+  }
+  return 0;
+}
+
+/* Does the explicit writer call id reaches change its parameter in place? */
+static int writer_changes_param(Compiler *c, int id) {
+  const CallPlan *p = cplan_user(c, id);
+  if (p->dispatch != CP_DIRECT || p->mi <= 0) return 1;
+  const Scope *m = &c->scopes[p->mi];
+  return m->nparams != 1 || !m->pnames[0] || subtree_changes_local(c->nt, m->body, m->pnames[0]);
+}
+
+/* Is call id the receiver of a blockless iterator's Enumerator? */
+static int assign_feeds_enumerator(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  int q = comp_recv_parent(c, id);
+  if (q < 0 || nt_kind(nt, q) != NK_CallNode) return 0;
+  if (comp_ntype(c, q) == TY_ENUMERATOR) return 1;
+  /* (the iterators a chain such as `.each_char.with_index` fuses) */
+  const char *nm = nt_str(nt, q, "name");
+  /* (`.each_char.with_index` is rewritten to a blockless `each` over
+     `chars`, which answers an Enumerator) */
+  int w = comp_recv_parent(c, q);
+  const char *wn = w >= 0 && nt_kind(nt, w) == NK_CallNode ? nt_str(nt, w, "name") : NULL;
+  if (wn && (is_enumerator_with(wn) ||
+             (is_each_walk(wn) && nt_ref(nt, w, "block") < 0 && comp_ntype(c, w) == TY_ENUMERATOR))) return 1;
+  return nm && nt_ref(nt, q, "block") < 0 && is_str_each_iter(nm);
+}
+
+/* Does the call id feed an Enumerator whose copy of the bytes nobody can
+   tell from the live String: a lazy chain over it (read when it is
+   consumed), or a local read only to step it (`next`, `peek`, `size`)? */
+static int enum_copy_unseen(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  int q = comp_recv_parent(c, id), w = q >= 0 ? comp_recv_parent(c, q) : -1;
+  const char *wn = w >= 0 && nt_kind(nt, w) == NK_CallNode ? nt_str(nt, w, "name") : NULL;
+  if (wn && is_lazy_name(wn)) return 1;
+  /* the local the Enumerator is written to, and every read of it */
+  int p = q >= 0 ? comp_lwrite_of_value(c, q) : -1;
+  if (p < 0 || comp_lwrite_next(c, p) >= 0) return 0;
+  const char *ln = nt_str(nt, p, "name");
+  Scope *sc = comp_scope_of(c, p);
+  if (!ln || !sc) return 0;
+  int si = (int)(sc - c->scopes);
+  for (int e = comp_vsite_first(c, VS_READ, NK_LocalVariableReadNode, ln, si); e >= 0; e = comp_vsite_next(c, e)) {
+    int n = comp_vsite_var(c, e);
+    if (nt_kind(nt, n) != NK_LocalVariableReadNode || comp_scope_of(c, n) != sc || !sp_streq(nt_str(nt, n, "name"), ln))
+      continue;
+    int u = comp_recv_parent(c, n);
+    const char *un = u >= 0 && nt_kind(nt, u) == NK_CallNode ? nt_str(nt, u, "name") : NULL;
+    if (!un || !is_enum_step_name(un)) return 0;
+  }
+  return 1;
+}
+
+static void assign_value_route(Compiler *c, int id, int value, int as_string, int explicit_writer) {
+  static const char msg[] =
+    "an attribute assignment in value position (kept, passed on, or a method's last expression, "
+    "which the method answers) stores into an instance variable that is mutated in place through "
+    "another name, and its value would be a copy (a String is not yet shared by reference through "
+    "an assignment's value). Make the assignment a statement of its own, or read the String back "
+    "through the reader.";
+  /* a dropped value (a statement) is no consumer of a copy */
+  const int *par = codegen_node_parents(c, id);
+  if (c->share_strings && par && (assign_value_dropped(c, id, par) || assign_mutated_receiver(c, id, explicit_writer))) return;
+  /* an Enumerator over an explicit writer's value keeps the bytes it was
+     made from, as one over a local variable's String does: left as it was
+     where that copy is never told from the String (enum_copy_unseen), and
+     where the writer does not change the String it was handed */
+  if (c->share_strings && explicit_writer && assign_feeds_enumerator(c, id) && !writer_changes_param(c, id) &&
+      enum_copy_unseen(c, id)) return;
+  ShareRoute q = share_route(id, value, 0);
+  q.to = id;
+  Scope *sc = comp_scope_of(c, id);
+  int mi = sc ? (int)(sc - c->scopes) : -1;
+  int tail = mi > 0 && par && sc->def_node >= 0 && sc->ret_handle &&
+             (assign_is_tail(c, id, par) || assign_is_returned(c, id, par));
+  Repr mk = repr_of(c, id);
+  q.carry = ((mk.handle || mk.demand) && !as_string) || tail ? id : SHARE_CARRY_COPY;
+  if (!share_route_defer(c, &q, msg)) unsupported_feature(c, id, msg);
+}
+
+/* The writer call of `obj.x = v`, whose value the caller supplies. Where
+   the rule shares the String (shr) that value is the handle the writer was
+   handed, so the call takes no value temp of its own (setter_value_open),
+   which would hand the writer a copy. */
+static void emit_setter_call_for_effect(Compiler *c, int id, int shr, Buf *b) {
+  int saved = g_setter_stmt_id;
+  if (shr) g_setter_stmt_id = id;
+  g_setter_value_inner++;
+  emit_call_body(c, id, b);
+  g_setter_value_inner--;
+  g_setter_stmt_id = saved;
+}
+
 /* a call on a module or a class: native and FFI functions, singleton accessors, a writer in an instance_eval block, class methods */
 int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv) {
   /* native binding dispatch (Path B): Module.func(...) where Module declared
@@ -1309,17 +1677,10 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
       char _abase[256]; int _ablen = _alen - 1;
       if (_ablen < (int)sizeof _abase) {
         memcpy(_abase, name, (size_t)_ablen); _abase[_ablen] = '\0';
-        int _arc = ty_object_class(_art), _adefc = -1, _awmdc = -1;
+        int _arc = ty_object_class(_art), _adefc = -1;
         /* attr writer -> field write, UNLESS an explicit `def x=` overrides it
-           at an equal-or-more-derived class; then fall through to dispatch.
-           CRuby: attr_accessor defines an ordinary writer method. */
-        int _awins = comp_writer_in_chain(c, _arc, _abase, &_adefc);
-        if (_awins && comp_method_in_chain(c, _arc, name, &_awmdc) >= 0) {
-          for (int k = _arc; k >= 0; k = c->classes[k].parent) {
-            if (k == _awmdc) { _awins = 0; break; }
-            if (k == _adefc) { _awins = 1; break; }
-          }
-        }
+           at an equal-or-more-derived class; then fall through to dispatch. */
+        int _awins = attr_writer_field(c, _arc, _abase, name, &_adefc);
         if (_awins) {
           if (emit_or_take_back(c, id, b, emit_vis_refusal)) return 1;   /* `private :x=` on the writer */
           char _aivn[258]; snprintf(_aivn, sizeof _aivn, "@%s", _abase);
@@ -1359,25 +1720,23 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
           if (argc >= 1 && _aivt == TY_STRBUF && repr_of(c, argv[0]).kind != RK_BOXED) {
             ClassInfo *_aci = &c->classes[_adefc < 0 ? _arc : _adefc];
             TyKind _avt = repr_of(c, id).as_ty;
-            static const char _amsg[] =
-              "an attribute assignment in value position (kept, passed on, or a method's last expression, "
-              "which the method answers) stores into an instance variable that is mutated in place through "
-              "another name, and its value would be a copy (a String is not yet shared by reference through "
-              "an assignment's value). Make the assignment a statement of its own, or read the String back "
-              "through the reader.";
+            /* a tail emitted into a String result slot takes a String, the
+               handle mark or not */
+            int _ahv = _avt == TY_STRBUF && !(g_result_var && g_result_ty == TY_STRING && !g_result_poly);
             /* --share-strings: the copy is right where the rule does not
-               share the String (share_route_defer) */
-            ShareRoute _aq = share_route(id, argv[0], 0);
-            _aq.carry = SHARE_CARRY_COPY;
-            if (_avt != TY_STRBUF && _aci->ivar_str_shared[_aiv] && !share_route_defer(c, &_aq, _amsg))
-              unsupported_feature(c, id, _amsg);
+               share the String; where it does, the value has to be the
+               handle, which the route check asks of every consumer, the
+               mark or not (assign_value_route) */
+            if (_aci->ivar_str_shared[_aiv] && (c->share_strings || _avt != TY_STRBUF))
+              assign_value_route(c, id, argv[0], _avt == TY_STRBUF && !_ahv, 0);
             buf_printf(b, "_t%d->iv_%s = ", _atmp, iv_c(_abase));
             emit_strbuf_ivar_store(c, _aci->ivar_str_shared[_aiv], argv[0], b);
-            if (_avt == TY_STRBUF) buf_printf(b, "; %s_t%d->iv_%s; })", _amsp, _atmp, iv_c(_abase));
+            if (_ahv) buf_printf(b, "; %s_t%d->iv_%s; })", _amsp, _atmp, iv_c(_abase));
             else {
               char _asr[300]; snprintf(_asr, sizeof _asr, "_t%d->iv_%s", _atmp, iv_c(_abase));
               buf_printf(b, "; %s", _amsp);
-              emit_strbuf_node_read(c, id, _asr, b);
+              if (_avt == TY_STRBUF) buf_printf(b, "sp_strbuf_read_pub(%s)", _asr);
+              else emit_strbuf_node_read(c, id, _asr, b);
               buf_puts(b, "; })");
             }
             return 1;
@@ -1424,14 +1783,33 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
                                sp_streq(aty, "StringNode") || sp_streq(aty, "LocalVariableReadNode") ||
                                sp_streq(aty, "InstanceVariableReadNode") || sp_streq(aty, "SelfNode"));
           TyKind at = repr_of(c, argv[0]).as_ty;
+          /* --share-strings: where the rule shares the String (shr), the
+             writer is handed its handle, not a copy of its bytes, and where
+             the value is taken as the handle it is that handle (hv) */
+          Repr hr = repr_of(c, id);
+          int shr = user_assign_handle(c, id), hv = shr && (hr.handle || hr.demand);
+          if (shr && assign_feeds_enumerator(c, id) && writer_changes_param(c, id))
+            unsupported_feature(c, id, "under --share-strings, an Enumerator over the value of an assignment whose "
+                                "writer changes the String it was handed would keep a copy of it (a String is not "
+                                "yet shared by reference through an Enumerator). Make the assignment a statement "
+                                "of its own.");
+          if (shr && !hv) assign_value_route(c, id, argv[0], 0, 1);
           if (simple) {
             buf_puts(b, "({ (void)(");
-            g_setter_value_inner++; emit_call_body(c, id, b); g_setter_value_inner--;
+            emit_setter_call_for_effect(c, id, shr, b);
             buf_puts(b, "); ");
-            emit_expr(c, argv[0], b);
+            if (shr) {
+              Buf hb; memset(&hb, 0, sizeof hb);
+              emit_strbuf_handle_of(c, argv[0], &hb);
+              if (hv) buf_puts(b, hb.p);
+              else emit_strbuf_node_read(c, id, hb.p, b);
+              free(hb.p);
+            }
+            else emit_expr(c, argv[0], b);
             buf_puts(b, "; })");
             return 1;
           }
+          if (shr) at = TY_STRBUF;
           if (at != TY_UNKNOWN && at != TY_VOID) {
             Scope *esc = comp_scope_of(c, id);
             int saved0_arg = argv[0];
@@ -1439,6 +1817,7 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
               char svn[32]; snprintf(svn, sizeof svn, "__sv%d", ++g_tmp);
               LocalVar *lv = scope_local_intern(esc, svn);
               lv->type = at;
+              lv->str_shared = shr;
               /* the temporary holds the argument's value, nil included: an
                  Integer one that can be nil (`r.x = h[k]&.to_i`) keeps the
                  slot's nil, or the setter's -2^63 check reads it as -2^63 */
@@ -1458,7 +1837,10 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
                  ahead of the declaration, not into the middle of it */
               Buf apre; memset(&apre, 0, sizeof apre);
               Buf aval; memset(&aval, 0, sizeof aval);
-              { Buf *sv_pre = g_pre; g_pre = &apre; emit_one_arg(c, saved0, 0, &aval); g_pre = sv_pre; }
+              { Buf *sv_pre = g_pre; g_pre = &apre;
+                if (shr) emit_strbuf_handle_of(c, saved0, &aval);
+                else emit_one_arg(c, saved0, 0, &aval);
+                g_pre = sv_pre; }
               if (!g_pre) buf_puts(b, "({ ");
               if (apre.p) buf_puts(decl, apre.p);
               if (g_pre) emit_indent(g_pre, g_indent);
@@ -1473,11 +1855,16 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
               if (g_pre) { buf_puts(g_pre, "\n"); buf_puts(b, "({ "); }
               nt_node_set_arr((NodeTable *)nt, argsn, "arguments", one, 1);
               buf_puts(b, "(void)(");
-              g_setter_value_inner++; emit_call_body(c, id, b); g_setter_value_inner--;
+              emit_setter_call_for_effect(c, id, shr, b);
               buf_puts(b, "); ");
               int back[1] = { saved0 };
               nt_node_set_arr((NodeTable *)nt, argsn, "arguments", back, 1);
-              buf_printf(b, "lv_%s; })", svn);
+              if (shr && !hv) {
+                char sref[40]; snprintf(sref, sizeof sref, "lv_%s", svn);
+                emit_strbuf_node_read(c, id, sref, b);   /* the handle's read */
+              }
+              else buf_printf(b, "lv_%s", svn);
+              buf_puts(b, "; })");
               for (int k = esc->nlocals - 1; k >= 0; k--)
                 if (sp_streq(esc->locals[k].name, svn)) {
                   memmove(&esc->locals[k], &esc->locals[k + 1], sizeof(LocalVar) * (size_t)(esc->nlocals - k - 1));

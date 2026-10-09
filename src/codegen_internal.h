@@ -119,6 +119,12 @@ int cvar_global_slot(Compiler *c, int node, char *out, size_t cap);
 int lent_global_slot_rebound(Compiler *c, int arg, const char *slot);
 void refuse_lent_global_rebound(Compiler *c, int arg, const char *slot, const char *target, const char *pname);
 int strbuf_ivar_owner(Compiler *c, int node);
+int attr_assign_slot(Compiler *c, int id, int *cid, int *iv);
+const int *codegen_node_parents(Compiler *c, int node);
+int user_assign_handle(Compiler *c, int id);
+int strbuf_assign_leaf(Compiler *c, int v);
+int strbuf_freeze_leaf(Compiler *c, int v);
+int strbuf_assign_route(Compiler *c, int v);
 /* Is an object's ivar set: 0 always, 1 when not nil, 2 cannot tell, 3 explicit flag (codegen_util.c) */
 int ivar_set_kind(Compiler *c, int cid, const char *ivn);
 /* ... and whether the family keeps the rank of each ivar's first assignment in place of the flag (codegen_util.c) */

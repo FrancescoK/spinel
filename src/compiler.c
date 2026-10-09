@@ -272,6 +272,9 @@ void comp_free(Compiler *c) {
   c->vs_dropped = c->vs_kind = NULL;
   c->vs_count = c->vs_cap = 0;
   c->vs_built = 0;
+  free(c->cg_parent);
+  c->cg_parent = NULL;
+  c->cg_parent_n = 0;
   free(c->hash_default_arg_memo);
   c->hash_default_arg_memo = NULL;
   free(c->blk_body_map);

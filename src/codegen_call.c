@@ -20171,7 +20171,10 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
        shared handle written inside it (`h[:k] = (o = +"d")`) no longer is
        the value the call stores */
     TyKind pty = k == NK_ParenthesesNode ? repr_of(c, operand[i]).as_ty : TY_UNKNOWN;
-    int bindable = (k == NK_CallNode || k == NK_SuperNode || k == NK_IfNode || k == NK_UnlessNode ||
+    /* (an attribute assignment on a handle, or a chain over one, keeps its
+       place too: the arms take its handle through the node) */
+    int route_op = repr_share_rule(c) && strbuf_assign_route(c, operand[i]);
+    int bindable = !route_op && (k == NK_CallNode || k == NK_SuperNode || k == NK_IfNode || k == NK_UnlessNode ||
                     k == NK_ForwardingSuperNode || k == NK_YieldNode ||
                     (k == NK_ParenthesesNode && pty != TY_STRING && pty != TY_STRBUF) ||
                     state_read || local_read);
@@ -20180,7 +20183,7 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
        taken last, so it can only follow an operand that is bound */
     /* (one whose value is a shared handle keeps its place: the arms read
        the handle through the node) */
-    if (!bindable && (!operand_binds_as_value(k) || repr_of(c, unwrap_parens(c, operand[i])).as_ty == TY_STRBUF ||
+    if (!bindable && (route_op || !operand_binds_as_value(k) || repr_of(c, unwrap_parens(c, operand[i])).as_ty == TY_STRBUF ||
                       repr_of(c, unwrap_parens(c, operand[i])).handle)) {
       if (unb < 0) unb = i;
       unb_lit = 1;
@@ -26716,6 +26719,8 @@ int strbuf_call_picks_up(Compiler *c, int id) {
    from; its implicit-self read hands out the slot itself
    (emit_implicit_self_member). Answers 1 when it emitted the call. */
 static int emit_deep_return_pickup(Compiler *c, int id, Buf *b) {
+  /* (an attribute assignment is its own route: emit_strbuf_write_handle) */
+  if (repr_share_rule(c) && strbuf_assign_leaf(c, id)) return 0;
   /* A boxed reader's identity demand takes its field handle too. */
   if (repr_of(c, id).demand && repr_boxed_reader_handle(c, id) && repr_of(c, id).ty == TY_STRING)
     return emit_strbuf_route(c, id, b);

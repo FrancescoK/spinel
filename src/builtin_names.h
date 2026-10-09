@@ -62,6 +62,8 @@ int is_push_unshift(const char *n);   /* << push append unshift: is_push_alias's
 int is_identity_query(const char *n); /* equal? object_id __id__ frozen?: tells an object from its copy */
 int is_len_alias(const char *n);      /* length size */
 int is_str_each_iter(const char *n);  /* each_char each_line each_byte each_codepoint: String's element iterators */
+int is_freeze_name(const char *n);    /* freeze */
+int is_enum_step_name(const char *n); /* next peek size: an Enumerator stepped from outside */
 int is_str_string_yield(const char *n); /* each_char each_line upto chars lines split scrub: String methods whose block takes a String */
 int is_unpack_name(const char *n); /* unpack: a String decoded into values, which a block takes one by one */
 int is_catch_name(const char *n); /* catch: a tagged non-local jump target */

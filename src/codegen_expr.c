@@ -434,7 +434,46 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
   pl->lits = lits; pl->decls = decls; pl->fixed_cap = fixed_cap; pl->flat = flat;
 }
 
+/* Does the subtree at n call a String mutator? */
+static int interp_part_mutates(const NodeTable *nt, int n) {
+  if (n < 0) return 0;
+  if (nt_kind(nt, n) == NK_CallNode && nt_str(nt, n, "name") && is_string_rebind_mutator(nt_str(nt, n, "name"))) return 1;
+  for (int i = 0; i < nt_num_refs(nt, n); i++)
+    if (interp_part_mutates(nt, nt_ref_at(nt, n, i))) return 1;
+  for (int i = 0; i < nt_num_arrs(nt, n); i++) {
+    int m = 0; const int *ids = nt_arr_at(nt, n, i, &m);
+    for (int j = 0; j < m; j++) if (interp_part_mutates(nt, ids[j])) return 1;
+  }
+  return 0;
+}
+
+/* --share-strings: an interpolation whose part changes an attribute
+   assignment's String while another part changes a String too. CRuby reads
+   every part's String after all of them ran; the parts here are read as each
+   runs, a copy of the String at that moment (as for a variable). */
+static void interp_refuse_assign_order(Compiler *c, int id) {
+  if (!repr_share_rule(c)) return;
+  const NodeTable *nt = c->nt;
+  int *flat = NULL, n = 0, cap = 0;
+  interp_flatten(nt, id, &flat, &n, &cap);
+  int hit = 0;
+  for (int i = 0; i < n && !hit; i++) {
+    int body = nt_ref(nt, flat[i], "statements"), bn = 0;
+    const int *bb = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &bn) : NULL;
+    if (bn != 1 || !strbuf_assign_route(c, bb[0]) || !interp_part_mutates(nt, bb[0])) continue;
+    for (int j = 0; j < n && !hit; j++)
+      if (j != i && interp_part_mutates(nt, flat[j])) hit = 1;
+  }
+  free(flat);
+  if (hit)
+    unsupported_feature(c, id, "under --share-strings, an interpolation that changes an attribute assignment's String "
+                        "in one part and a String in another reads each part as it runs, where CRuby reads them all "
+                        "after the last (a String is not yet shared by reference through an interpolation). Make the "
+                        "changes statements of their own.");
+}
+
 void emit_interp(Compiler *c, int id, Buf *b) {
+  interp_refuse_assign_order(c, id);
   InterpPlan pl; memset(&pl, 0, sizeof pl);
   interp_plan(c, id, &pl);
   WPart *wp = pl.wp; int nwp = pl.nwp, ndyn_or_scalar = pl.ndyn_or_scalar;

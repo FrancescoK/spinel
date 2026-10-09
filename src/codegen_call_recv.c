@@ -6943,6 +6943,18 @@ static int str_arms_convert(Compiler *c, int id, Buf *b, const NodeTable *nt, co
         eq_sblv = 1;
       }
     }
+    /* an attribute assignment on a handle, or freeze over one, against a
+       handle: its own handle is compared (the read face is a copy) */
+    if (!eq_sblv && repr_share_rule(c) && strbuf_assign_route(c, recv)) {
+      char arefL[192];
+      if (strbuf_slot_ref(c, argv[0], arefL, sizeof arefL)) {
+        int thl = ++g_tmp;
+        buf_printf(b, "({ sp_String *_t%d = ", thl);
+        emit_strbuf_route(c, recv, b);
+        buf_printf(b, "; SP_GC_ROOT(_t%d); (sp_bool)(_t%d == %s); })", thl, thl, arefL);
+        eq_sblv = 1;
+      }
+    }
     if (!eq_sblv) {
       char arefE[192];
       if (strbuf_slot_ref(c, argv[0], arefE, sizeof arefE)) {
@@ -10770,7 +10782,8 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
     /* Keep the reader shortcuts above. Other marked String calls still
        return bytes: take the proved return channel before boxing them,
        using the same fact as strbuf_marked_yields_handle. */
-    if (repr_share_rule(c) && repr_of(c, id).handle && repr_call_returns_handle(c, id))
+    /* (an attribute assignment is its own route, which reaches here again) */
+    if (repr_share_rule(c) && repr_of(c, id).handle && repr_call_returns_handle(c, id) && !strbuf_assign_leaf(c, id))
       return emit_strbuf_route(c, id, b);
     /* Without sharing, the same handle demand wraps the method's byte
        result as the container's mutable copy. Reader shortcuts have

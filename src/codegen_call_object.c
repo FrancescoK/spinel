@@ -974,6 +974,44 @@ int emit_call_instance_eval_arms(Compiler *c, int id, Buf *b, const NodeTable *n
   return 0;
 }
 
+/* Is v (through parentheses) a conditional one of whose branches is an
+   attribute assignment, or a chain or freeze over one? */
+static int cond_attr_leaf(Compiler *c, int v, int depth) {
+  const NodeTable *nt = c->nt;
+  v = unwrap_parens(c, v);
+  if (v < 0 || depth > 8) return 0;
+  switch (nt_kind(nt, v)) {
+  case NK_IfNode: case NK_UnlessNode:
+    return cond_attr_leaf(c, nt_ref(nt, v, "statements"), depth + 1) ||
+           cond_attr_leaf(c, nt_ref(nt, v, nt_kind(nt, v) == NK_IfNode ? "subsequent" : "else_clause"), depth + 1);
+  case NK_ElseNode:
+    return cond_attr_leaf(c, nt_ref(nt, v, "statements"), depth + 1);
+  case NK_StatementsNode: {
+    int n = 0; const int *bb = nt_arr(nt, v, "body", &n);
+    return n > 0 && cond_attr_leaf(c, bb[n - 1], depth + 1);
+  }
+  case NK_OrNode: case NK_AndNode:
+    return cond_attr_leaf(c, nt_ref(nt, v, "left"), depth + 1) || cond_attr_leaf(c, nt_ref(nt, v, "right"), depth + 1);
+  case NK_CallNode:
+    return depth > 0 && strbuf_assign_route(c, v);
+  default: return 0;
+  }
+}
+
+/* Is call r (through parentheses) a user method's call that is handed an
+   attribute assignment's value? Its answer can be that very String, which a
+   freeze would take a copy of. */
+static int freeze_over_assign_arg(Compiler *c, int r) {
+  const NodeTable *nt = c->nt;
+  r = unwrap_parens(c, r);
+  if (r < 0 || nt_kind(nt, r) != NK_CallNode || cplan_user(c, r)->dispatch == CP_NONE) return 0;
+  int argc = 0;
+  const int *argv = call_args(nt, r, &argc);
+  for (int i = 0; i < argc; i++)
+    if (strbuf_assign_route(c, argv[i])) return 1;
+  return 0;
+}
+
 /* freeze / frozen?, dup / clone, the identity methods that answer the receiver, and then / yield_self */
 int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc) {
   if (recv >= 0 && (comp_ntype(c, recv) == TY_RANGE || comp_ntype(c, recv) == TY_FLOAT_RANGE ||
@@ -1074,6 +1112,23 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       buf_puts(b, "({ ");
       emit_expr(c, recv, b); buf_puts(b, " = sp_str_freeze_val("); emit_expr(c, recv, b); buf_puts(b, "); ");
       emit_expr(c, recv, b); buf_puts(b, "; })");
+    }
+    else if (repr_share_rule(c) && cond_attr_leaf(c, recv, 0)) {
+      unsupported_feature(c, id, "under --share-strings, freeze over a conditional with an attribute assignment's "
+                          "value for a branch would freeze a copy of the String the field holds (a String is not yet "
+                          "shared by reference through a conditional). Freeze it before the conditional.");
+    }
+    else if (repr_share_rule(c) && freeze_over_assign_arg(c, recv)) {
+      unsupported_feature(c, id, "under --share-strings, freeze over the result of a method that is handed an attribute "
+                          "assignment's value would freeze a copy of the String the field holds (a String is not yet "
+                          "shared by reference through a method returning its parameter). Freeze it before passing it on.");
+    }
+    else if (repr_share_rule(c) && strbuf_assign_route(c, recv)) {
+      /* an attribute assignment on a handle (or a chain over one): freeze the handle it stores */
+      int th = ++g_tmp;
+      buf_printf(b, "({ sp_String *_t%d = ", th);
+      emit_strbuf_route(c, recv, b);
+      buf_printf(b, "; SP_GC_ROOT(_t%d); sp_String_freeze(_t%d); sp_str_freeze_val(sp_strbuf_read_pub(_t%d)); })", th, th, th);
     }
     else {
       buf_puts(b, "sp_str_freeze_val("); emit_expr(c, recv, b); buf_puts(b, ")");
@@ -1537,7 +1592,9 @@ int emit_call_safe_nav_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
            result is inferred poly, force the call boxed; for a concretely-typed
            result, emit the natural form and default the nil arm to match. */
         int tsn = ++g_tmp;
-        TyKind ret2 = repr_share_rule(c) && repr_of(c, id).demand ? TY_STRBUF : repr_of(c, id).as_ty;
+        /* (an attribute assignment marked to hand out its handle answers it) */
+        TyKind ret2 = repr_share_rule(c) && (repr_of(c, id).demand || (repr_of(c, id).handle && repr_write_share(c, id)))
+                      ? TY_STRBUF : repr_of(c, id).as_ty;
         Buf rsn = expr_buf(c, recv);
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "sp_RbVal _sn%d = %s; SP_GC_ROOT_RBVAL(_sn%d);\n",
@@ -1663,7 +1720,9 @@ int emit_call_safe_nav_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
       int sn_cont = needs_root(rrt) && rrt != TY_POLY && rrt != TY_STRING && !ty_is_object(rrt);
       if ((sn_obj || rrt == TY_STRING || sn_scalar || sn_cont) && g_sn_skip != id) {
         int tsn2 = ++g_tmp;
-        TyKind ret2 = repr_share_rule(c) && repr_of(c, id).demand ? TY_STRBUF : repr_of(c, id).as_ty;
+        /* (an attribute assignment marked to hand out its handle answers it) */
+        TyKind ret2 = repr_share_rule(c) && (repr_of(c, id).demand || (repr_of(c, id).handle && repr_write_share(c, id)))
+                      ? TY_STRBUF : repr_of(c, id).as_ty;
         /* The temp lives in g_pre (statement scope), not an inline ({ }):
            the re-entered dispatch hoists its (substituted) receiver into
            g_pre too, which lands before the statement and must still see

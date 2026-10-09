@@ -159,6 +159,12 @@ int repr_write_share(const Compiler *c, int node) {
   if (k == NK_GlobalVariableWriteNode || k == NK_GlobalVariableOrWriteNode || k == NK_GlobalVariableAndWriteNode ||
       k == NK_ClassVariableWriteNode || k == NK_ClassVariableOrWriteNode || k == NK_ClassVariableAndWriteNode)
     return repr_static_share(c, node);
+  /* an attribute assignment (`obj.x = v`): its value is v, the handle an
+     attr writer stored in its field or an explicit writer was handed */
+  if (k == NK_CallNode) {
+    int cid, iv;
+    return attr_assign_slot(mc, node, &cid, &iv) ? repr_of_ivar(c, cid, iv).share : user_assign_handle(mc, node);
+  }
   return 0;
 }
 
@@ -1145,6 +1151,9 @@ static int repr_flow_checked(Compiler *c, int v) {
   if (t != TY_STRING && t != TY_STRBUF && t != TY_POLY) return 0;
   /* a container literal is no String */
   if (k == NK_ArrayNode || k == NK_HashNode || k == NK_RangeNode) return 0;
+  /* an explicit writer's assignment whose value nothing sees as its
+     right-hand side's object: the value a holder wraps is its own */
+  if (share_assign_unjoined(c, v)) return 0;
   return share_node_shares(c, v);
 }
 

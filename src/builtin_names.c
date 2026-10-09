@@ -268,6 +268,9 @@ int is_str_each_iter(const char *n) {
          sp_streq(n, "each_byte") || sp_streq(n, "each_codepoint");
 }
 
+int is_freeze_name(const char *n) { return sp_streq(n, "freeze"); }
+int is_enum_step_name(const char *n) { return sp_streq(n, "next") || sp_streq(n, "peek") || sp_streq(n, "size"); }
+
 int is_str_string_yield(const char *n) {
   return sp_streq(n, "each_char") || sp_streq(n, "each_line") || sp_streq(n, "upto") ||
          sp_streq(n, "chars") || sp_streq(n, "lines") || sp_streq(n, "split") || sp_streq(n, "scrub");

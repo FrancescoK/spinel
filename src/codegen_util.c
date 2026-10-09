@@ -2697,23 +2697,36 @@ int cvar_global_slot(Compiler *c, int node, char *out, size_t cap) {
 /* The innermost block or lambda `node` is written in, within its method;
    -1 at the method's own level. */
 int *an_parent_map(const NodeTable *nt);
-static int *g_lent_parent;
-static int g_lent_parent_n = -1;
-static unsigned g_lent_parent_ver;
+/* The parent map of the program being emitted, kept on the Compiler. A
+   strict ask rebuilds it when the node table changed; a loose one (for a
+   node the program had before emission, whose parent no temporary node
+   changes) only when the node is newer than the map. */
+static const int *codegen_parents(Compiler *c, int node, int strict) {
+  const NodeTable *nt = c->nt;
+  if (!c->cg_parent || (strict && (c->cg_parent_n != nt->count || c->cg_parent_ver != nt->version)) ||
+      (!strict && node >= c->cg_parent_n)) {
+    free(c->cg_parent);
+    c->cg_parent = an_parent_map(nt);
+    if (!c->cg_parent) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    c->cg_parent_n = nt->count; c->cg_parent_ver = nt->version;
+  }
+  return c->cg_parent;
+}
 static int lent_enclosing_closure(Compiler *c, int node) {
   const NodeTable *nt = c->nt;
-  if (!g_lent_parent || g_lent_parent_n != nt->count || g_lent_parent_ver != nt->version) {
-    free(g_lent_parent);
-    g_lent_parent = an_parent_map(nt);
-    if (!g_lent_parent) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-    g_lent_parent_n = nt->count; g_lent_parent_ver = nt->version;
-  }
-  for (int p = node >= 0 && node < nt->count ? g_lent_parent[node] : -1; p >= 0; p = g_lent_parent[p]) {
+  const int *par = codegen_parents(c, node, 1);
+  for (int p = node >= 0 && node < nt->count ? par[node] : -1; p >= 0; p = par[p]) {
     NodeKind k = nt_kind(nt, p);
     if (k == NK_BlockNode || k == NK_LambdaNode) return p;
     if (k == NK_DefNode) return -1;
   }
   return -1;
+}
+/* The parent map for asking about node (a node the program had before
+   emission; one emission added has no entry), or NULL when node is not one. */
+const int *codegen_node_parents(Compiler *c, int node) {
+  const NodeTable *nt = c->nt;
+  return node >= 0 && node < nt->count ? codegen_parents(c, node, 0) : NULL;
 }
 /* A write of the C global `slot` (ivar_global_slot, gvar_global_slot,
    cvar_global_slot) that can run while a call lent `slot` at `arg` is
@@ -2949,6 +2962,13 @@ int strbuf_object_ref(Compiler *c, int recv, Buf *b) {
     buf_puts(b, "))");
     return 1;
   }
+  /* an attribute assignment on a handle, freeze or a chain over one: that handle's */
+  if (strbuf_assign_route(c, recv)) {
+    buf_puts(b, "((sp_int)(uintptr_t)sp_String_identity(");
+    emit_strbuf_route(c, recv, b);
+    buf_puts(b, "))");
+    return 1;
+  }
   /* A receiver-returning route has the same identity as its slot. */
   char ref[1024];
   int up = 0;
@@ -3141,6 +3161,9 @@ int strbuf_bang_self_local(const Compiler *c, int v) {
   if (!self_ans && !repr_share_rule(c)) return 0;
   int r = nt_ref(nt, v, "receiver");
   if (r < 0) return 0;
+  /* a `concat` given nothing, over an attribute assignment's handle, reads its receiver as bytes */
+  if (is_append_concat(nt_str(nt, v, "name")) && call_plain_argc((Compiler *)c, v) == 0 && strbuf_assign_leaf((Compiler *)c, r))
+    return 0;
   if (!self_ans && !(nt_str(nt, v, "name") && (comp_ntype((Compiler *)c, r) == TY_STRING || comp_ntype((Compiler *)c, r) == TY_STRBUF) &&
                      bop_share_named(TY_STRING, nt_str(nt, v, "name")) == BSH_RECV))
     return 0;

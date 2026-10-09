@@ -4289,6 +4289,20 @@ void emit_loop_body(Compiler *c, int body, Buf *b, int indent) {
   g_loop_ensure_base = sv_lens;
 }
 
+/* Does the subtree at n call freeze (not one in a nested method)? */
+static int subtree_calls_freeze(const NodeTable *nt, int n) {
+  if (n < 0) return 0;
+  NodeKind k = nt_kind(nt, n);
+  if (k == NK_DefNode) return 0;
+  if (k == NK_CallNode && nt_str(nt, n, "name") && is_freeze_family(nt_str(nt, n, "name"))) return 1;
+  for (int i = 0; i < nt_num_refs(nt, n); i++)
+    if (subtree_calls_freeze(nt, nt_ref_at(nt, n, i))) return 1;
+  for (int i = 0; i < nt_num_arrs(nt, n); i++) {
+    int m = 0; const int *ids = nt_arr_at(nt, n, i, &m);
+    for (int j = 0; j < m; j++) if (subtree_calls_freeze(nt, ids[j])) return 1;
+  }
+  return 0;
+}
 /* `recv.tap { |x| body }` / `recv.then { |x| body }` (alias yield_self) in
    expression position. tap runs the block for its side effect and yields the
    (unchanged) receiver; then yields the block's value. The loop body emits into
@@ -4333,6 +4347,14 @@ int emit_tap_then_expr(Compiler *c, int id, Buf *b) {
   const char *p0 = block_param_name(c, block, 0);
   if (p0) p0 = rename_local(p0);
 
+  /* --share-strings: a block that freezes its parameter would freeze a copy
+     of the String an attribute assignment's value names */
+  const int *tpar = repr_share_rule(c) ? codegen_node_parents(c, id) : NULL;
+  if (repr_share_rule(c) && is_then && et == TY_STRING && strbuf_assign_route(c, recv) && subtree_calls_freeze(nt, body) &&
+      !(tpar && an_value_dropped(nt, tpar, id) && !cow_user_block_value(c, tpar, id)))
+    unsupported_feature(c, id, "under --share-strings, a block that freezes the value of an attribute assignment "
+                        "would freeze a copy of the String the field holds (a String is not yet shared by reference "
+                        "through a block parameter). Freeze it before passing it on.");
   int tr = ++g_tmp;
   Buf rb; memset(&rb, 0, sizeof rb);
   /* --share-strings: a block parameter that is the shared handle is bound

@@ -1122,6 +1122,12 @@ typedef struct {
      checked against the final facts at seal */
   struct ShareRoute *share_route;
   int nshare_route, cshare_route;
+  /* the program's parent map, for the emitter's questions about where a node
+     sits (codegen_util.c's codegen_parents); rebuilt when the node table
+     changed, freed with the Compiler */
+  int *cg_parent;
+  int cg_parent_n;
+  unsigned cg_parent_ver;
   int share_strings;
   /* the scope + 1 whose block a yield under emit_proc_yield hands its
      arguments to (a proc form, or a method with a `&blk` it calls), or 0 */

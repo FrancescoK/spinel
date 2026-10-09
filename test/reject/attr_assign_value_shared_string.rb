@@ -7,3 +7,4 @@ r = (s.a = y)
 t = s.a
 t << "!"
 p s.a, y, r
+# spinel: reject-share

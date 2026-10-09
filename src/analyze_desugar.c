@@ -4826,7 +4826,7 @@ int desugar_array_at(Compiler *c) {
 /* The last statement of a block whose call any user class defines (a
    user `each`): an_value_dropped reads only the call's name, but that
    method can answer the block's value. */
-static int cow_user_block_value(Compiler *c, const int *parent, int id) {
+int cow_user_block_value(Compiler *c, const int *parent, int id) {
   const NodeTable *nt = c->nt;
   int st = parent[id];
   if (st < 0 || nt_kind(nt, st) != NK_StatementsNode) return 0;
