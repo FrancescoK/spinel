@@ -4355,12 +4355,456 @@ static void seed_decl_note(SeedDecl **tab, int *n, int *cap, const char *kind,
   (*tab)[*n].key = strdup(key); (*tab)[*n].sig = strdup(sig); (*n)++;
 }
 
+/* Pin instance variable `a1` of class `cur_ci` to seed type `a2`, as an
+   `ivar` seed line does (an Array[Foo] or nested table type is a request for
+   narrow_object_arrays rather than a pin). */
+static void seed_class_ivar(Compiler *c, int cur_ci, const char *a1, const char *a2) {
+  int oac = seed_obj_array_class(c, a2);
+  int nreq = oac >= 0 ? 0 : seed_nested_array_req(a2);
+  TyKind t = (oac >= 0 || nreq) ? TY_UNKNOWN : parse_seed_type(c, a2);
+  if (oac >= 0 || nreq) {   /* a request for narrow_object_arrays, not a pin */
+    char ivn[300];
+    snprintf(ivn, sizeof ivn, "%s%s", a1[0] == '@' ? "" : "@", a1);
+    int idx = comp_ivar_intern(&c->classes[cur_ci], ivn);
+    c->classes[cur_ci].ivar_oa_seed[idx] = nreq ? nreq : oac + 1;
+    /* `@t = []` under a nested seed: the empty literal's default kind is
+       the int array, which would type the ivar as one and keep it out of
+       the narrowing pass altogether. The seed says the literal is the
+       table, so it starts as the poly array the pass narrows (#4484). */
+    if (nreq && c->arr_want) {
+      const NodeTable *nt = c->nt;
+      NT_FOREACH_KIND(nt, NK_InstanceVariableWriteNode, wid) {
+        const char *wn = nt_str(nt, wid, "name");
+        int wv = nt_ref(nt, wid, "value");
+        if (!wn || !sp_streq(wn, ivn) || !is_empty_array_literal(nt, wv, c->node_cap)) continue;
+        Scope *wsc = comp_scope_of(c, wid);
+        if (!wsc || wsc->class_id != cur_ci) continue;
+        if (c->arr_want[wv] == TY_UNKNOWN) c->arr_want[wv] = TY_POLY_ARRAY;
+      }
+    }
+  }
+  else if (t != TY_UNKNOWN) {
+    ClassInfo *ci = &c->classes[cur_ci];
+    /* The extractor emits the name WITHOUT the sigil (`ivar w1 obj_Mat`),
+       but ClassInfo interns parse-time ivars as `@w1`. Interning the bare
+       token created a PHANTOM parallel ivar: the seed typed and pinned
+       "w1" while every lookup asked about "@w1" -- so seeds never pinned
+       the real ivar, and the phantom's static emission strips the first
+       character (`ivars[j] + 1` assumes the sigil), colliding `w1`/`b1`
+       into two `civ_..._1` statics of conflicting C types (the toy FFN
+       double-emission). Normalize to the sigil form. */
+    char ivn[300];
+    snprintf(ivn, sizeof ivn, "%s%s", a1[0] == '@' ? "" : "@", a1);
+    int idx = comp_ivar_intern(ci, ivn);
+    sp_ivwatch(a1, "rbs_seed_pin", ci->ivar_types[idx], t);
+    ci->ivar_types[idx] = t;
+    class_pin_ivar(ci, ivn);
+  }
+}
+
+/* ---- inline RBS (docs/inline-rbs.md) ----
+   The parser attaches each applied annotation to its node as attributes
+   (rbs_ret / rbs_params on a def, rbs_ivar on an attr_* call or an `@x = v`
+   write, rbs_ivars on a class body; rbs_line / rbs_col / rbs_file name the
+   comment, and rbs_names spells each tag the way the comment wrote it).
+   apply_inline_rbs pins them through the same helpers as the seed file, so
+   the slots and flags are the ones the equivalent --rbs signature gives; the
+   method is found by its def node and the class by the node's class body,
+   so no class name is matched. It runs just before apply_rbs_seeds, which
+   then checks each .rbs signature against what an annotation pinned. */
+typedef struct {
+  Scope *s;          /* a method's annotation, or NULL */
+  int def_node;      /* its def node, which outlives the Scope pointer */
+  int ci;            /* an ivar's class */
+  char *ivar;
+  char *ret, *params;
+  char where[300];   /* FILE:LINE of the annotation */
+  char head[300];    /* FILE:LINE:COL, for a warning about it */
+} InlinePin;
+static InlinePin *g_inline_pins = NULL;
+static int g_n_inline_pins = 0;
+static int g_inline_rbs_bad = 0;
+
+static void inline_pin_record(Scope *s, int ci, const char *ivar, const char *ret,
+                              const char *params, const char *where, const char *head) {
+  g_inline_pins = realloc(g_inline_pins, sizeof(InlinePin) * (size_t)(g_n_inline_pins + 1));
+  InlinePin *p = &g_inline_pins[g_n_inline_pins++];
+  p->s = s; p->ci = ci;
+  p->def_node = s ? s->def_node : -1;
+  p->ivar = ivar ? strdup(ivar) : NULL;
+  p->ret = ret ? strdup(ret) : NULL;
+  p->params = params ? strdup(params) : NULL;
+  snprintf(p->where, sizeof p->where, "%s", where);
+  snprintf(p->head, sizeof p->head, "%s", head);
+}
+
+static int inline_seed_tok_ok(Compiler *c, const char *tok) {
+  if (!tok || !*tok || sp_streq(tok, "-")) return 1;
+  int nil = g_seed_nilable;
+  int ok = parse_seed_type(c, tok) != TY_UNKNOWN;
+  g_seed_nilable = nil;
+  return ok;
+}
+
+/* Do two seed tokens say the same type? Both sides are mapped by rbs_map.c,
+   so one type is one token (`T | nil` is `T?`) and agreement is equality of
+   the tokens -- not of the TyKind they parse to, which is the same for every
+   array of objects. Unsaid on either side agrees. */
+static int inline_tok_same(const char *a, const char *b) {
+  if (!a || !*a || sp_streq(a, "-") || !b || !*b || sp_streq(b, "-")) return 1;
+  return sp_streq(a, b);
+}
+
+static int inline_nfields(const char *list) {
+  if (!list || !*list || sp_streq(list, "-")) return 0;
+  int n = 1;
+  for (const char *q = list; *q; q++) n += *q == ',';
+  return n;
+}
+
+/* the i-th comma field of a parameter list into buf ("" past the end) */
+static const char *inline_field(const char *list, int i, char *buf, size_t n) {
+  buf[0] = '\0';
+  if (!list) return buf;
+  const char *p = list;
+  for (int k = 0; k < i; k++) { p = strchr(p, ','); if (!p) return buf; p++; }
+  const char *e = strchr(p, ',');
+  size_t l = e ? (size_t)(e - p) : strlen(p);
+  if (l >= n) l = n - 1;
+  memcpy(buf, p, l); buf[l] = '\0';
+  return buf;
+}
+
+/* The annotation that pinned a slot, as FILE:LINE, or NULL when none did
+   (the pin is an --rbs seed's). A contradiction found later names the
+   annotation, which is what the program's reader wrote; a slot both pin
+   agrees on names the annotation too. `param` < 0 asks about the return. */
+static const char *inline_pin_at_method(const Scope *s, int param) {
+  char f[128];
+  for (int i = 0; s && i < g_n_inline_pins; i++) {
+    const InlinePin *p = &g_inline_pins[i];
+    if (!p->s || p->def_node != s->def_node) continue;
+    const char *tok = param < 0 ? p->ret : inline_field(p->params, param, f, sizeof f);
+    if (tok && *tok && !sp_streq(tok, "-")) return p->where;
+  }
+  return NULL;
+}
+
+static const InlinePin *inline_pin_of_ivar(int ci, const char *ivar) {
+  const char *a = ivar[0] == '@' ? ivar + 1 : ivar;
+  for (int i = 0; i < g_n_inline_pins; i++) {
+    const InlinePin *p = &g_inline_pins[i];
+    if (p->s || !p->ivar || p->ci != ci) continue;
+    if (sp_streq(p->ivar[0] == '@' ? p->ivar + 1 : p->ivar, a)) return p;
+  }
+  return NULL;
+}
+
+static const char *inline_pin_at_ivar(int ci, const char *ivar) {
+  const InlinePin *p = inline_pin_of_ivar(ci, ivar);
+  return p ? p->where : NULL;
+}
+
+/* A fact about to be applied -- a .rbs seed line (rbs_where is its position,
+   "" when the extractor gave none), or another annotation (from_rbs 0) --
+   against every annotation already pinned on the same slot: the method
+   (class, singleton or not, name: every definition of it, in any opening of
+   the class) or the ivar of a class. They must agree; a disagreement is
+   reported naming both and fails the compile once every fact has been read. */
+static int inline_pin_agrees(Compiler *c, Scope *s, int ci, const char *ivar, const char *ret,
+                             const char *params, const char *where, int from_rbs) {
+  for (int i = 0; i < g_n_inline_pins; i++) {
+    InlinePin *p = &g_inline_pins[i];
+    const char *what = NULL;
+    char wbuf[64];
+    if (s && p->s && p->s->class_id == s->class_id && !p->s->is_cmethod == !s->is_cmethod &&
+        p->s->name && s->name && sp_streq(p->s->name, s->name)) {
+      if (!inline_tok_same(p->ret, ret)) what = "the return type";
+      else {
+        char fa[128], fb[128];
+        int nf = inline_nfields(p->params), nb = inline_nfields(params);
+        if (nb > nf) nf = nb;
+        for (int k = 0; k < nf && !what; k++) {
+          if (!inline_tok_same(inline_field(p->params, k, fa, sizeof fa), inline_field(params, k, fb, sizeof fb))) {
+            if (k < s->nparams && s->pnames[k]) snprintf(wbuf, sizeof wbuf, "the type of parameter `%s`", s->pnames[k]);
+            else snprintf(wbuf, sizeof wbuf, "the type of parameter %d", k + 1);
+            what = wbuf;
+          }
+        }
+      }
+    }
+    else if (!s && ivar && p->ivar && p->ci == ci) {
+      char iv[300];
+      snprintf(iv, sizeof iv, "%s%s", ivar[0] == '@' ? "" : "@", ivar);
+      char pv[300];
+      snprintf(pv, sizeof pv, "%s%s", p->ivar[0] == '@' ? "" : "@", p->ivar);
+      if (sp_streq(iv, pv) && !inline_tok_same(p->ret, ret)) what = "the type";
+    }
+    if (!what) continue;
+    const char *cn = (s ? s->class_id : ci) >= 0 ? c->classes[s ? s->class_id : ci].name : NULL;
+    const char *slot = s ? (s->name ? s->name : "?") : p->ivar;
+    const char *sep = s ? (s->is_cmethod ? "." : "#") : " ";
+    if (from_rbs)
+      fprintf(stderr, "spinel: %s: inline RBS: %s of %s%s%s disagrees with the .rbs signature at %s\n"
+                      "  the two must say the same thing; correct one, or remove it\n",
+              p->where, what, cn ? cn : "", sep, slot, where[0] ? where : "(a .rbs file)");
+    else
+      fprintf(stderr, "spinel: %s: inline RBS: %s of %s%s%s disagrees with another annotation at %s\n"
+                      "  the two must say the same thing; correct one, or remove it\n",
+              where, what, cn ? cn : "", sep, slot, p->where);
+    g_inline_rbs_bad = 1;
+    return 0;
+  }
+  return 1;
+}
+
+static void inline_warn(const char *where, const char *fmt, const char *a, const char *b) {
+  fprintf(stderr, "spinel: %s: warning: inline RBS: ", where);
+  fprintf(stderr, fmt, a ? a : "", b ? b : "");
+  fputc('\n', stderr);
+}
+
+/* The class a class-level node belongs to: the struct's, for a direct
+   statement of a `Name = Struct.new(...) do` / `Data.define do` block, whose
+   node_cbody still names the class around the write (fix_struct_block_scopes
+   re-homes only the block's defs); otherwise its class body's. */
+static int *inline_struct_owner(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int *own = malloc(sizeof(int) * (size_t)(nt->count ? nt->count : 1));
+  for (int i = 0; i < nt->count; i++) own[i] = -1;
+  for (int id = 0; id < nt->count; id++) {
+    NodeKind wk = nt_kind(nt, id);
+    if (wk != NK_ConstantWriteNode && wk != NK_LocalVariableWriteNode) continue;
+    int bbody = class_def_body(c, id);
+    if (bbody < 0) continue;
+    char an[48];
+    const char *cname = nt_str(nt, id, "name");
+    if (wk == NK_LocalVariableWriteNode) { snprintf(an, sizeof an, "StructAnon_%s", comp_node_tag(c, id)); cname = an; }
+    int ci = cname ? comp_class_index(c, cname) : -1;
+    if (ci < 0) continue;
+    own[bbody] = ci;
+    int bn = 0;
+    const int *stmts = nt_arr(nt, bbody, "body", &bn);
+    for (int k = 0; k < bn; k++) own[stmts[k]] = ci;
+  }
+  return own;
+}
+
+/* FILE:LINE of a node's annotation, and FILE:LINE:COL for a warning
+   about it: the position the parser's own warnings carry */
+static void inline_where(const NodeTable *nt, int id, char *buf, size_t n) {
+  const char *f = nt_file_path(nt, (int)nt_int(nt, id, "rbs_file", 0));
+  snprintf(buf, n, "%s:%lld", f ? f : "?", nt_int(nt, id, "rbs_line", 0));
+}
+
+static void inline_head(const NodeTable *nt, int id, char *buf, size_t n) {
+  inline_where(nt, id, buf, n);
+  long long col = nt_int(nt, id, "rbs_col", 0);
+  size_t l = strlen(buf);
+  if (col > 0 && l < n) snprintf(buf + l, n - l, ":%lld", col);
+}
+
+/* A tag as the comment spelled it (`Time`, `Array[Time]`), from the node's
+   rbs_names; a tag is never shown to the program's reader. */
+static const char *inline_spelling(const NodeTable *nt, int id, const char *tok, char *buf, size_t n) {
+  const char *names = nt_str(nt, id, "rbs_names");
+  size_t tl = tok ? strlen(tok) : 0;
+  for (const char *e = names; e && *e && tl; ) {
+    const char *nl = strchr(e, '\n');
+    size_t el = nl ? (size_t)(nl - e) : strlen(e);
+    if (el > tl && e[tl] == '=' && !strncmp(e, tok, tl)) {
+      snprintf(buf, n, "`%.*s`", (int)(el - tl - 1), e + tl + 1);
+      return buf;
+    }
+    e = nl ? nl + 1 : NULL;
+  }
+  snprintf(buf, n, "a type it names");
+  return buf;
+}
+
+/* The node of the definition that answers calls to the method `ms`
+   defines, when that is not `ms`'s own: a later definition of the name in
+   the same class replaces an earlier one (comp_method_in_class keeps the
+   last), whatever form it takes -- a `def`, a `def` in a class_eval block,
+   a `define_method` call. -1 when `ms` is the live one. */
+static int inline_replacing_def(Compiler *c, Scope *ms) {
+  if (!ms->name) return -1;
+  int li = ms->is_cmethod ? comp_cmethod_in_class(c, ms->class_id, ms->name)
+                          : comp_method_in_class(c, ms->class_id, ms->name);
+  int dn = li >= 0 ? c->scopes[li].def_node : -1;
+  return dn >= 0 && dn != ms->def_node ? dn : -1;
+}
+
+/* How the module method `ms` (def node `id`) is mixed in, when it is: the
+   word for the mixin a copy made for an includer records ("include",
+   "extend", "prepend"; a module mixed in more than one way, or copied away
+   with no copy left, is all three), or NULL when it is not. Calls to such a
+   method run the copies, each a Scope of its own that shares the def node,
+   and no signature reaches them: --rbs seeds the module's own Scope, which
+   is copied away. A module_function is not mixed in: its one function
+   serves the includer's calls too (is_transplanted_source stays clear). */
+static const char *inline_def_mixed_in(Compiler *c, int id, const Scope *ms) {
+  if (ms->is_module_function) return NULL;
+  const char *how = NULL;
+  for (int si = 1; si < c->nscopes; si++) {
+    const Scope *s = &c->scopes[si];
+    if (s == ms || s->def_node != id) continue;
+    const char *w = s->is_prepend_copy ? "prepend" : s->is_extend_copy ? "extend"
+                  : s->is_include_copy ? "include" : s->origin_module_ci ? "extend" : NULL;
+    if (w) how = how && !sp_streq(how, w) ? "include, extend or prepend" : w;
+  }
+  if (!how && ms->is_transplanted_source && ms->class_id >= 0 &&
+      comp_class_is_module(c, &c->classes[ms->class_id])) how = "include, extend or prepend";
+  return how;
+}
+
+/* Does the annotation on def node `id` apply: the parser kept a signature
+   for it, its method was found and is not a mixed-in module's, and every
+   type it names pins something in this program? The one test of "applied"
+   for a method annotation, asked of the annotated def itself and of a later
+   definition that replaces it, so the two answers cannot differ. `ms` gets
+   the def's Scope (NULL when not found); `bad`, when not applicable for a
+   type, gets that type's tag, and for a mixed-in method the mixin's word. */
+enum { INLINE_DEF_NOT_FOUND, INLINE_DEF_MIXED_IN, INLINE_DEF_BAD_TYPE, INLINE_DEF_APPLIES };
+static int inline_def_applicable(Compiler *c, const NodeTable *nt, int id, Scope **ms, char *bad, size_t n) {
+  *ms = NULL;
+  bad[0] = '\0';
+  if (nt_kind(nt, id) != NK_DefNode || !nt_int(nt, id, "rbs_line", 0)) return INLINE_DEF_NOT_FOUND;
+  for (int si = 1; si < c->nscopes && !*ms; si++) if (c->scopes[si].def_node == id) *ms = &c->scopes[si];
+  if (!*ms) return INLINE_DEF_NOT_FOUND;
+  const char *how = inline_def_mixed_in(c, id, *ms);
+  if (how) { snprintf(bad, n, "%s", how); return INLINE_DEF_MIXED_IN; }
+  const char *ret = nt_str(nt, id, "rbs_ret"), *params = nt_str(nt, id, "rbs_params");
+  if (!inline_seed_tok_ok(c, ret)) { snprintf(bad, n, "%s", ret); return INLINE_DEF_BAD_TYPE; }
+  for (int f = 0; f < inline_nfields(params); f++)
+    if (!inline_seed_tok_ok(c, inline_field(params, f, bad, n))) return INLINE_DEF_BAD_TYPE;
+  bad[0] = '\0';
+  return INLINE_DEF_APPLIES;
+}
+
+static void apply_inline_rbs(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  if (nt->root_id < 0 || !nt_int(nt, nt->root_id, "rbs_any", 0)) return;
+  int *sown = inline_struct_owner(c);
+  for (int id = 0; id < nt->count; id++) {
+    if (!nt_int(nt, id, "rbs_line", 0) && !nt_str(nt, id, "rbs_ivars")) continue;
+    char where[300], head[300], spell[300];
+    inline_where(nt, id, where, sizeof where);
+    inline_head(nt, id, head, sizeof head);
+    NodeKind k = nt_kind(nt, id);
+    const char *ivt = nt_str(nt, id, "rbs_ivar");
+    if (k == NK_DefNode) {
+      const char *ret = nt_str(nt, id, "rbs_ret"), *params = nt_str(nt, id, "rbs_params");
+      const char *name = nt_str(nt, id, "name");
+      Scope *ms = NULL, *rs = NULL;
+      char bad[128], rbad[128];
+      int app = inline_def_applicable(c, nt, id, &ms, bad, sizeof bad);
+      int rep = app == INLINE_DEF_APPLIES ? inline_replacing_def(c, ms) : -1;
+      if (app == INLINE_DEF_NOT_FOUND) inline_warn(head, "the signature of `%s` is not applied: its method was not found after the parse%s", name, "");
+      else if (app == INLINE_DEF_MIXED_IN)
+        inline_warn(head, "the signature of `%s` is not applied: it is a method of a module mixed in with %s, whose calls "
+                          "run a copy made for each class it is mixed into, which no signature reaches; the same signature "
+                          "through --rbs is not applied either", name, bad);
+      else if (app == INLINE_DEF_BAD_TYPE) inline_warn(head, "the signature of `%s` is not applied: %s names no type Spinel can pin", name,
+                                                      inline_spelling(nt, id, bad, spell, sizeof spell));
+      else if (rep >= 0 && inline_def_applicable(c, nt, rep, &rs, rbad, sizeof rbad) != INLINE_DEF_APPLIES) {
+        /* the annotated def never runs, and the one that does carries no
+           applied annotation of its own (none, one the parser ignored, or
+           one whose types pin nothing here): applying the signature to
+           either would be wrong. A replacement whose annotation applies must
+           agree with this one, as two openings of a class must
+           (inline_pin_agrees). */
+        const char *rf = nt_file_path(nt, (int)nt_int(nt, rep, "node_file", 0));
+        char rw[300];
+        snprintf(rw, sizeof rw, "%s:%lld", rf ? rf : "?", nt_int(nt, rep, "node_line", 0));
+        inline_warn(head, "the signature of `%s` is not applied: a later definition without an applied annotation, at %s, replaces this one", name, rw);
+      }
+      else {
+        int fam = method_in_override_family(c, ms->class_id, ms->name, ms->is_cmethod);
+        if (fam && ret && !sp_streq(ret, "-"))
+          inline_warn(head, "the return type of %s is not applied: the method is overridden in a related class, "
+                             "whose calls share one return representation (its parameter types are applied)%s", name, "");
+        if (!inline_pin_agrees(c, ms, -1, NULL, ret, params, where, 0)) continue;
+        char *pcopy = params ? strdup(params) : NULL;
+        seed_method(c, ms, fam ? NULL : ret, pcopy);
+        free(pcopy);
+        inline_pin_record(ms, -1, NULL, ret, params, where, head);
+      }
+    }
+    else if (ivt && (k == NK_CallNode || k == NK_InstanceVariableWriteNode)) {
+      int ci = -1;
+      if (k == NK_CallNode) ci = sown[id] >= 0 ? sown[id] : c->node_cbody[id];
+      else { Scope *ws = comp_scope_of(c, id); ci = ws ? ws->class_id : -1; }
+      if (ci < 0 || ci >= c->nclasses) { inline_warn(head, "this annotation is not applied: no class was found for it%s%s", "", ""); continue; }
+      if (!inline_seed_tok_ok(c, ivt) && seed_obj_array_class(c, ivt) < 0 && !seed_nested_array_req(ivt)) {
+        inline_warn(head, "this type is not applied: %s names no type Spinel can pin%s",
+                    inline_spelling(nt, id, ivt, spell, sizeof spell), ""); continue;
+      }
+      if (k == NK_InstanceVariableWriteNode) {
+        const char *ivn = nt_str(nt, id, "name");
+        if (ivn && inline_pin_agrees(c, NULL, ci, ivn, ivt, NULL, where, 0)) {
+          seed_class_ivar(c, ci, ivn, ivt);
+          inline_pin_record(NULL, ci, ivn, ivt, NULL, where, head);
+        }
+      }
+      else {
+        int an = nt_ref(nt, id, "arguments"), n = 0, nsym = 0;
+        const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &n) : NULL;
+        for (int j = 0; j < n; j++) {
+          const char *sym = nt_str(nt, av[j], "value");
+          if (nt_kind(nt, av[j]) != NK_SymbolNode || !sym) continue;
+          nsym++;
+          char ivn[300];
+          snprintf(ivn, sizeof ivn, "@%s", sym);
+          if (!inline_pin_agrees(c, NULL, ci, ivn, ivt, NULL, where, 0)) continue;
+          seed_class_ivar(c, ci, ivn, ivt);
+          inline_pin_record(NULL, ci, ivn, ivt, NULL, where, head);
+        }
+        if (!nsym) inline_warn(head, "this type is not applied: the call names no attribute Spinel can see%s%s", "", "");
+      }
+    }
+    else if (nt_int(nt, id, "rbs_line", 0)) {
+      /* every fact the parser wrote is applied or reported: one on a node
+         an earlier pass rewrote into another kind would otherwise be lost */
+      inline_warn(head, "this annotation is not applied: its declaration became a %s before types were read%s",
+                  nt_type(nt, id) ? nt_type(nt, id) : "node", "");
+    }
+    if (nt_str(nt, id, "rbs_ivars")) {
+      int ci = sown[id] >= 0 ? sown[id] : c->node_cbody[id];
+      char *list = strdup(nt_str(nt, id, "rbs_ivars"));
+      for (char *e = strtok(list, ","); e; e = strtok(NULL, ",")) {
+        /* @x=<tag>@<line>@<file>@<col> */
+        char *eq = strchr(e, '='), *at1 = eq ? strchr(eq, '@') : NULL, *at2 = at1 ? strchr(at1 + 1, '@') : NULL;
+        char *at3 = at2 ? strchr(at2 + 1, '@') : NULL;
+        if (!eq || !at1 || !at2) continue;
+        *eq = '\0'; *at1 = '\0'; *at2 = '\0';
+        if (at3) *at3 = '\0';
+        const char *f = nt_file_path(nt, atoi(at2 + 1));
+        snprintf(where, sizeof where, "%s:%s", f ? f : "?", at1 + 1);
+        if (at3 && atoi(at3 + 1) > 0) snprintf(head, sizeof head, "%s:%d", where, atoi(at3 + 1));
+        else snprintf(head, sizeof head, "%s", where);
+        if (ci < 0 || ci >= c->nclasses) { inline_warn(head, "the declaration of %s is not applied: no class was found for it%s", e, ""); continue; }
+        if (!inline_seed_tok_ok(c, eq + 1) && seed_obj_array_class(c, eq + 1) < 0 && !seed_nested_array_req(eq + 1)) {
+          inline_warn(head, "the declaration of %s is not applied: %s names no type Spinel can pin", e,
+                      inline_spelling(nt, id, eq + 1, spell, sizeof spell)); continue;
+        }
+        if (!inline_pin_agrees(c, NULL, ci, e, eq + 1, NULL, where, 0)) continue;
+        seed_class_ivar(c, ci, e, eq + 1);
+        inline_pin_record(NULL, ci, e, eq + 1, NULL, where, head);
+      }
+      free(list);
+    }
+  }
+  free(sown);
+}
+
 static void apply_rbs_seeds(Compiler *c, const char *path) {
   FILE *f = fopen(path, "rb");
   if (!f) return;
   SeedDecl *decls = NULL; int ndecls = 0, capdecls = 0;
   const char *cur_cname = NULL; char cur_cname_buf[300]; cur_cname_buf[0] = 0;
   int cur_ci = -1;       /* current class index; -2 = top level (Object) */
+  char src[512] = "";    /* `src FILE:LINE` (--positions): where the next seed is from */
   char line[2048];
   while (fgets(line, sizeof line, f)) {
     size_t L = strlen(line);
@@ -4382,61 +4826,29 @@ static void apply_rbs_seeds(Compiler *c, const char *path) {
       snprintf(cur_cname_buf, sizeof cur_cname_buf, "%s", a1 ? a1 : ""); cur_cname = cur_cname_buf;
       if (a1 && sp_streq(a1, "Object")) cur_ci = -2;
       else cur_ci = a1 ? seed_class_index(c, a1) : -1;
+      src[0] = '\0';
     }
     else if (sp_streq(kw, "ivar") && a1 && a2 && cur_ci >= 0) {
-      int oac = seed_obj_array_class(c, a2);
-      int nreq = oac >= 0 ? 0 : seed_nested_array_req(a2);
-      TyKind t = (oac >= 0 || nreq) ? TY_UNKNOWN : parse_seed_type(c, a2);
-      if (oac >= 0 || nreq) {   /* a request for narrow_object_arrays, not a pin */
-        char ivn[300];
-        snprintf(ivn, sizeof ivn, "%s%s", a1[0] == '@' ? "" : "@", a1);
-        int idx = comp_ivar_intern(&c->classes[cur_ci], ivn);
-        c->classes[cur_ci].ivar_oa_seed[idx] = nreq ? nreq : oac + 1;
-        /* `@t = []` under a nested seed: the empty literal's default kind is
-           the int array, which would type the ivar as one and keep it out of
-           the narrowing pass altogether. The seed says the literal is the
-           table, so it starts as the poly array the pass narrows (#4484). */
-        if (nreq && c->arr_want) {
-          const NodeTable *nt = c->nt;
-          NT_FOREACH_KIND(nt, NK_InstanceVariableWriteNode, wid) {
-            const char *wn = nt_str(nt, wid, "name");
-            int wv = nt_ref(nt, wid, "value");
-            if (!wn || !sp_streq(wn, ivn) || !is_empty_array_literal(nt, wv, c->node_cap)) continue;
-            Scope *wsc = comp_scope_of(c, wid);
-            if (!wsc || wsc->class_id != cur_ci) continue;
-            if (c->arr_want[wv] == TY_UNKNOWN) c->arr_want[wv] = TY_POLY_ARRAY;
-          }
-        }
-      }
-      else if (t != TY_UNKNOWN) {
-        ClassInfo *ci = &c->classes[cur_ci];
-        /* The extractor emits the name WITHOUT the sigil (`ivar w1 obj_Mat`),
-           but ClassInfo interns parse-time ivars as `@w1`. Interning the bare
-           token created a PHANTOM parallel ivar: the seed typed and pinned
-           "w1" while every lookup asked about "@w1" -- so seeds never pinned
-           the real ivar, and the phantom's static emission strips the first
-           character (`ivars[j] + 1` assumes the sigil), colliding `w1`/`b1`
-           into two `civ_..._1` statics of conflicting C types (the toy FFN
-           double-emission). Normalize to the sigil form. */
-        char ivn[300];
-        snprintf(ivn, sizeof ivn, "%s%s", a1[0] == '@' ? "" : "@", a1);
-        int idx = comp_ivar_intern(ci, ivn);
-        sp_ivwatch(a1, "rbs_seed_pin", ci->ivar_types[idx], t);
-        ci->ivar_types[idx] = t;
-        class_pin_ivar(ci, ivn);
-      }
+      if (!inline_pin_agrees(c, NULL, cur_ci, a1, a2, NULL, src, 1)) continue;
+      seed_class_ivar(c, cur_ci, a1, a2);
     }
     else if (sp_streq(kw, "meth") && a1 && a2) {
       seed_decl_note(&decls, &ndecls, &capdecls, "meth", cur_cname, a1, a2, a3);
       int class_id = (cur_ci == -2) ? -1 : cur_ci;
-      if (cur_ci == -2 || cur_ci >= 0)
-        seed_method(c, find_method_scope(c, class_id, a1, 0),
-                    method_in_override_family(c, class_id, a1, 0) ? NULL : a2, a3);
+      if (cur_ci == -2 || cur_ci >= 0) {
+        Scope *ms = find_method_scope(c, class_id, a1, 0);
+        if (ms && !inline_pin_agrees(c, ms, -1, NULL, a2, a3, src, 1)) continue;
+        seed_method(c, ms, method_in_override_family(c, class_id, a1, 0) ? NULL : a2, a3);
+      }
     }
     else if (sp_streq(kw, "cmeth") && a1 && a2 && cur_ci >= 0) {
       seed_decl_note(&decls, &ndecls, &capdecls, "cmeth", cur_cname, a1, a2, a3);
-      seed_method(c, find_method_scope(c, cur_ci, a1, 1),
-                  method_in_override_family(c, cur_ci, a1, 1) ? NULL : a2, a3);
+      Scope *ms = find_method_scope(c, cur_ci, a1, 1);
+      if (ms && !inline_pin_agrees(c, ms, -1, NULL, a2, a3, src, 1)) continue;
+      seed_method(c, ms, method_in_override_family(c, cur_ci, a1, 1) ? NULL : a2, a3);
+    }
+    else if (sp_streq(kw, "src") && a1) {
+      snprintf(src, sizeof src, "%s", a1);   /* --positions: the .rbs line the next seed is from */
     }
   }
   fclose(f);
@@ -26916,9 +27328,12 @@ int collect_mode(void);
    one is the bug this check exists to prevent), but it hands back the whole
    list. Same bargain the codegen gaps already make. */
 static int g_seed_bad = 0;
+typedef struct { int fid, ln; const char *nm; } SeedIvarReport;
 static void check_seed_contradictions(Compiler *c) {
   const NodeTable *nt = c->nt;
   char _sn1[192], _sn2[192];
+  SeedIvarReport *reported = NULL;
+  int nreported = 0;
   for (int id = 0; id < nt->count; id++) {
     if (nt_kind(nt, id) != NK_InstanceVariableWriteNode) continue;
     const char *nm = nt_str(nt, id, "name");
@@ -26939,17 +27354,40 @@ static void check_seed_contradictions(Compiler *c) {
     const char *file = nt_file_path(nt, fid);
     if (!file || !*file) file = nt->source_file;
     if (!file || !*file) file = "source.rb";
-    fprintf(stderr,
-            "spinel: %s:%d: --rbs seed contradicted: %s is declared %s but this "
-            "assigns %s\n"
-            "  A seed is trusted, so the emitted code would reinterpret the value "
-            "rather than convert it.\n"
-            "  Fix the signature or the assignment.\n",
-            file, ln, nm, seed_ty_name_into(c, slot, _sn1, sizeof _sn1),
-            seed_ty_name_into(c, val, _sn2, sizeof _sn2));
+    const char *by = inline_pin_at_ivar(cid, nm);
+    /* A write in a mixed-in module's method is cloned into each includer's
+       copy, and the clone carries the annotation, so one assignment in the
+       source can contradict the pin twice: it is reported once. */
+    if (by) {
+      int seen = 0;
+      for (int k = 0; k < nreported && !seen; k++)
+        seen = reported[k].fid == fid && reported[k].ln == ln && sp_streq(reported[k].nm, nm);
+      if (seen) continue;
+      reported = realloc(reported, sizeof *reported * (size_t)(nreported + 1));
+      reported[nreported++] = (SeedIvarReport){ fid, ln, nm };
+    }
+    if (by)
+      fprintf(stderr,
+              "spinel: %s:%d: inline RBS annotation contradicted: %s is declared %s at %s "
+              "but this assigns %s\n"
+              "  An annotation is trusted, so the emitted code would reinterpret the value "
+              "rather than convert it.\n"
+              "  Fix the annotation or the assignment.\n",
+              file, ln, nm, seed_ty_name_into(c, slot, _sn1, sizeof _sn1), by,
+              seed_ty_name_into(c, val, _sn2, sizeof _sn2));
+    else
+      fprintf(stderr,
+              "spinel: %s:%d: --rbs seed contradicted: %s is declared %s but this "
+              "assigns %s\n"
+              "  A seed is trusted, so the emitted code would reinterpret the value "
+              "rather than convert it.\n"
+              "  Fix the signature or the assignment.\n",
+              file, ln, nm, seed_ty_name_into(c, slot, _sn1, sizeof _sn1),
+              seed_ty_name_into(c, val, _sn2, sizeof _sn2));
     if (!collect_mode()) exit(1);
     g_seed_bad = 1;
   }
+  free(reported);
   /* The same contradiction on a RETURN. A seeded return is trusted, so the
      emitted function carries the pinned C type and the body's value is placed
      in it as-is: a String body under a `-> Hash[...]` seed returns a char* from
@@ -27033,15 +27471,27 @@ static void check_seed_contradictions(Compiler *c) {
       char pos[1200];
       if (ln > 0) snprintf(pos, sizeof pos, "%s:%d: ", file, ln);
       else        snprintf(pos, sizeof pos, "%s: ", file);
-      fprintf(stderr,
-              "spinel: %s--rbs seed contradicted: %s%s%s is declared to return "
-              "%s but this returns %s\n"
-              "  A seed is trusted, so the emitted function carries the declared type "
-              "and the value is placed in it rather than converted.\n"
-              "  Fix the signature or the body.\n",
-              pos, cn ? cn : "", cn ? "#" : "", sc->name ? sc->name : "?",
-              seed_ty_name_into(c, slot, _sn1, sizeof _sn1),
-              seed_ty_name_into(c, val, _sn2, sizeof _sn2));
+      const char *by = inline_pin_at_method(sc, -1);
+      if (by)
+        fprintf(stderr,
+                "spinel: %sinline RBS annotation contradicted: %s%s%s is declared to return "
+                "%s at %s but this returns %s\n"
+                "  An annotation is trusted, so the emitted function carries the declared type "
+                "and the value is placed in it rather than converted.\n"
+                "  Fix the annotation or the body.\n",
+                pos, cn ? cn : "", cn ? "#" : "", sc->name ? sc->name : "?",
+                seed_ty_name_into(c, slot, _sn1, sizeof _sn1), by,
+                seed_ty_name_into(c, val, _sn2, sizeof _sn2));
+      else
+        fprintf(stderr,
+                "spinel: %s--rbs seed contradicted: %s%s%s is declared to return "
+                "%s but this returns %s\n"
+                "  A seed is trusted, so the emitted function carries the declared type "
+                "and the value is placed in it rather than converted.\n"
+                "  Fix the signature or the body.\n",
+                pos, cn ? cn : "", cn ? "#" : "", sc->name ? sc->name : "?",
+                seed_ty_name_into(c, slot, _sn1, sizeof _sn1),
+                seed_ty_name_into(c, val, _sn2, sizeof _sn2));
       if (!collect_mode()) exit(1);
       g_seed_bad = 1;
     }
@@ -27128,15 +27578,27 @@ static void check_seed_contradictions(Compiler *c) {
       const char *file = nt_file_path(nt, fid);
       if (!file || !*file) file = nt->source_file;
       if (!file || !*file) file = "source.rb";
-      fprintf(stderr,
-              "spinel: %s:%d: --rbs seed contradicted: parameter %s of %s is "
-              "declared %s but this call passes %s\n"
-              "  A seed is trusted, so the emitted code would reinterpret the value "
-              "rather than convert it.\n"
-              "  Fix the signature or the call.\n",
-              file, ln, m->pnames[i], name,
-              seed_ty_name_into(c, slot, _sn1, sizeof _sn1),
-              seed_ty_name_into(c, val, _sn2, sizeof _sn2));
+      const char *by = inline_pin_at_method(m, i);
+      if (by)
+        fprintf(stderr,
+                "spinel: %s:%d: inline RBS annotation contradicted: parameter %s of %s is "
+                "declared %s at %s but this call passes %s\n"
+                "  An annotation is trusted, so the emitted code would reinterpret the value "
+                "rather than convert it.\n"
+                "  Fix the annotation or the call.\n",
+                file, ln, m->pnames[i], name,
+                seed_ty_name_into(c, slot, _sn1, sizeof _sn1), by,
+                seed_ty_name_into(c, val, _sn2, sizeof _sn2));
+      else
+        fprintf(stderr,
+                "spinel: %s:%d: --rbs seed contradicted: parameter %s of %s is "
+                "declared %s but this call passes %s\n"
+                "  A seed is trusted, so the emitted code would reinterpret the value "
+                "rather than convert it.\n"
+                "  Fix the signature or the call.\n",
+                file, ln, m->pnames[i], name,
+                seed_ty_name_into(c, slot, _sn1, sizeof _sn1),
+                seed_ty_name_into(c, val, _sn2, sizeof _sn2));
       if (!collect_mode()) exit(1);
       g_seed_bad = 1;
     }
@@ -35642,7 +36104,9 @@ static void an_phase_pre_fixpoint(Compiler *c) {
      No-op unless SPINEL_RBS_SEED names a seed file. */
   {
     const char *seed = getenv("SPINEL_RBS_SEED");
+    apply_inline_rbs(c);
     if (seed && *seed) apply_rbs_seeds(c, seed);
+    if (g_inline_rbs_bad) exit(1);
   }
 
   /* Scope shape (count, class_id, name, is_cmethod) is fixed from here on, so
@@ -37753,22 +38217,40 @@ static void an_phase_late_widen(Compiler *c) {
          the same contradiction a flat seed reports (a seed is trusted, so the
          emitted table would hand a row of one layout to a reader of the
          other): refused like one, not warned about (#4484). */
+      const InlinePin *byp = inline_pin_of_ivar(ci, cl->ivars[iv]);
+      const char *by = byp ? byp->where : NULL;
       if (req < 0 && (cl->ivar_oa_conflict[iv] || ty_is_ptr_array(got))) {
-        fprintf(stderr,
-                "spinel: --rbs seed contradicted: %s %s is declared Array[%s] but the program "
-                "gives it rows of another kind\n"
-                "  A seed is trusted, so the emitted table would hand a row of one layout to "
-                "a reader of the other.\n"
-                "  Fix the signature or the rows.\n",
-                cl->name, cl->ivars[iv], asked);
+        if (by)
+          fprintf(stderr,
+                  "spinel: %s: inline RBS annotation contradicted: %s %s is declared Array[%s] but "
+                  "the program gives it rows of another kind\n"
+                  "  An annotation is trusted, so the emitted table would hand a row of one layout "
+                  "to a reader of the other.\n"
+                  "  Fix the annotation or the rows.\n",
+                  by, cl->name, cl->ivars[iv], asked);
+        else
+          fprintf(stderr,
+                  "spinel: --rbs seed contradicted: %s %s is declared Array[%s] but the program "
+                  "gives it rows of another kind\n"
+                  "  A seed is trusted, so the emitted table would hand a row of one layout to "
+                  "a reader of the other.\n"
+                  "  Fix the signature or the rows.\n",
+                  cl->name, cl->ivars[iv], asked);
         if (!collect_mode()) exit(1);
         g_seed_bad = 1;
         continue;
       }
-      fprintf(stderr, "warning: --rbs: %s %s: Array[%s] stays a boxed array; every use of it must be "
-                      "one the unboxed array supports ([], []=, push, length, empty?, first, last, "
-                      "min, max, sort) from the class's own instance methods or its attr_reader\n",
-              cl->name, cl->ivars[iv], asked);
+      if (by)   /* the request is not applied, and the C is as without it */
+        fprintf(stderr, "spinel: %s: warning: inline RBS: the type of %s %s is not applied: Array[%s] "
+                        "stays a boxed array; every use of it must be one the unboxed array supports "
+                        "([], []=, push, length, empty?, first, last, min, max, sort) from the class's "
+                        "own instance methods or its attr_reader\n",
+                byp->head, cl->name, cl->ivars[iv], asked);
+      else
+        fprintf(stderr, "warning: --rbs: %s %s: Array[%s] stays a boxed array; every use of it must be "
+                        "one the unboxed array supports ([], []=, push, length, empty?, first, last, "
+                        "min, max, sort) from the class's own instance methods or its attr_reader\n",
+                cl->name, cl->ivars[iv], asked);
     }
   }
 

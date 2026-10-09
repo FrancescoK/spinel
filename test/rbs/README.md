@@ -23,6 +23,11 @@ Each case is one input/golden pair:
 diffs stdout against the golden. It is a prerequisite of `make test`,
 and skips gracefully when `vendor/rbs` has not been fetched.
 
+`positions.rbs` also has a `.positions.expected` golden for `--positions`.
+The harness runs that fixture with LF and CRLF line endings, normalizes only
+the input path, and compares all seed records in order. Its UTF-8 comment,
+repeated declaration line, and nested class protect source-line mapping.
+
 ## Adding or updating a case
 
 1. Add (or edit) `<name>.rbs`.

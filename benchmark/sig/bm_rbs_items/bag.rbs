@@ -1,0 +1,4 @@
+# bm_rbs_items.rb's inline annotation, as a .rbs file (tools/rbs_bench.rb)
+class Bag
+  def items: () -> Array[Integer]
+end

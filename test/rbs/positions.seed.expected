@@ -1,0 +1,8 @@
+class Outer
+ivar after float
+meth both int string
+cmeth both int string
+meth first int -
+meth second string -
+class Outer_Inner
+meth nested string -

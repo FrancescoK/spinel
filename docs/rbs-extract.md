@@ -7,6 +7,9 @@ line-oriented seed file, passes it to the compiler through the
 `SPINEL_RBS_SEED` environment variable, and the analyzer applies it
 before the inference fixpoint.
 
+The same signatures can be written as comments in the Ruby source;
+see [inline-rbs.md](inline-rbs.md). They pin the same slots.
+
 A signature that spinel cannot represent is dropped, and dropping is
 harmless: the seed line isn't emitted and the analyzer falls back to its
 normal inference for that method or ivar. The rest of this document is
@@ -264,6 +267,7 @@ so the boxed fallback is never silent.
 - `def self.name: (...) -> R` -- class method (`cmeth`)
 - `def self?.name: (...) -> R` -- emits both `meth` and `cmeth`
 - `attr_accessor`, `attr_reader`, `attr_writer` -- emits `ivar`
+- `@name: T` instance variable declarations -- emits `ivar`
 
 ### Unqualified type resolution
 
@@ -317,7 +321,7 @@ than emitted partially.
 - `include`, `extend`, `prepend` -- mixin ancestry not modeled
 - `public`, `private`
 - `alias`
-- `@ivar` / `@@cvar` declarations (use `attr_*` for ivars)
+- `@@cvar` declarations
 
 ## Seed file format
 
@@ -330,6 +334,9 @@ class <QualifiedName>           # enter class scope; nested names use `_`
 meth <name> <ret> <ptypes>      # `-` means "leave alone"; ptypes is
 cmeth <name> <ret> <ptypes>     # comma-separated, or `-` for nullary
 ivar <name> <type>
+src <file>:<line>               # --positions only: the .rbs line the next
+                                # seed is from (named when an inline RBS
+                                # annotation disagrees with it)
 ```
 
 Lines whose first token isn't a keyword are treated as comments.
