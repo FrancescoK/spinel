@@ -1,0 +1,18 @@
+"one"
+"one"
+"one+"
+"three"
+nil
+false
+"abab"
+"abab"
+true
+3
+"abab!"
+"bb"
+NoMethodError
+false
+"bad environment variable value: contains null byte"
+false
+"112"
+[]

@@ -1806,6 +1806,17 @@ static void reject_env_value_uses(Compiler *c) {
     int v = nt_ref(nt, id, "value");
     if (v >= 0) ok[v] = 1;
   }
+  /* `ENV[k] op= v` with one plain key: desugar_index_assign_user_recv
+     writes it as the [] and []= calls (when ENV is the environment's) */
+  static const NodeKind opw[] = { NK_IndexOperatorWriteNode, NK_IndexOrWriteNode, NK_IndexAndWriteNode };
+  for (size_t w = 0; w < sizeof opw / sizeof *opw && !comp_const(c, "ENV"); w++)
+  NT_FOREACH_KIND(nt, opw[w], id) {
+    int r = nt_ref(nt, id, "receiver"), args = nt_ref(nt, id, "arguments"), an = 0;
+    const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    NodeKind ak = an == 1 ? nt_kind(nt, av[0]) : NK_SplatNode;
+    if (r >= 0 && nt_ref(nt, id, "block") < 0 && ak != NK_SplatNode && ak != NK_BlockArgumentNode &&
+        ak != NK_KeywordHashNode) ok[r] = 1;
+  }
   NT_FOREACH_KIND(nt, NK_ConstantReadNode, id) {
     const char *nm = nt_str(nt, id, "name");
     if (!nm || !sp_streq(nm, "ENV") || ok[id]) continue;

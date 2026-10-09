@@ -14223,7 +14223,9 @@ int desugar_param_default_assigns_local(Compiler *c) {
      r[k] op= v   ->  r[k] = r[k] op v            (a []= call)
    with the receiver and key cloned for their second evaluation, so only a
    receiver and key without side effects (a variable, self, a constant, a
-   literal) qualify; anything else stays refused as before. The []= call's
+   literal) qualify; anything else stays refused as before. ENV, whose []
+   and []= are the environment's, takes any key: one with effects is held
+   in a local first, as desugar_index_op_write_user holds it. The []= call's
    value is that method's answer, where Ruby answers v -- the same for every
    []= that returns its value, which is the convention. */
 static int ix_pure(const NodeTable *nt, int n) {
@@ -14260,9 +14262,14 @@ int desugar_index_assign_user_recv(Compiler *c) {
     int v = nt_ref(nt, id, "value");
     int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
     if (recv < 0 || v < 0 || an != 1 || !av || nt_ref(nt, id, "block") >= 0) continue;
-    if (!ix_pure(nt, recv) || !ix_pure(nt, av[0])) continue;
     NodeKind rk = nt_kind(nt, recv);
-    if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) {
+    /* ENV's own [] and []= (no program constant named ENV): a key with
+       effects is held in a local, read for both calls */
+    int env = rk == NK_ConstantReadNode && is_env_const(nt_str(nt, recv, "name")) && !comp_const(c, "ENV");
+    NodeKind ak = nt_kind(nt, av[0]);
+    if (env && (ak == NK_SplatNode || ak == NK_BlockArgumentNode || ak == NK_KeywordHashNode)) continue;
+    if (!ix_pure(nt, recv) || (!env && !ix_pure(nt, av[0]))) continue;
+    if (!env && (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode)) {
       /* `Mod[k] ||= v` on a module or class whose `[]` / `[]=` are its own
          class-level methods (activesupport's IsolatedExecutionState store):
          the same rewrite, calling the constant's methods */
@@ -14271,7 +14278,7 @@ int desugar_index_assign_user_recv(Compiler *c) {
       if (cid < 0 || cid >= c->nclasses) continue;
       if (comp_cmethod_in_chain(c, cid, "[]", NULL) < 0 || comp_cmethod_in_chain(c, cid, "[]=", NULL) < 0) continue;
     }
-    else {
+    else if (!env) {
       TyKind rt = comp_ntype(c, recv);
       if (!ty_is_object(rt)) rt = infer_type(c, recv);   /* a local's type lives in its scope slot */
       if (!ty_is_object(rt)) continue;
@@ -14283,28 +14290,49 @@ int desugar_index_assign_user_recv(Compiler *c) {
     if (k == NK_IndexOperatorWriteNode && !op) continue;
     int key = av[0];
     int base = nt->count;
+    char kname[48]; snprintf(kname, sizeof kname, "__ixk_%s", comp_node_tag(c, id));
+    int kw = -1;
+    if (!ix_pure(nt, key)) {
+      kw = nt_new_node(nt, "LocalVariableWriteNode");
+      if (kw < 0) continue;
+      nt_node_set_str(nt, kw, "name", kname); nt_node_set_int(nt, kw, "depth", 0);
+      nt_node_set_ref(nt, kw, "value", key);
+      key = ixw_read(nt, kname);
+    }
     int recv2 = nt_clone_subtree(nt, recv), key2 = nt_clone_subtree(nt, key);
     if (recv2 < 0 || key2 < 0) continue;
     int read = ix_index_call(nt, "[]", recv, key, -1);
     if (read < 0) continue;
+    /* a held key makes id `(k = key; <the rewrite>)`, the rewrite a node of its own */
+    int tgt = kw >= 0 ? nt_new_node(nt, "CallNode") : id;
+    if (tgt < 0) continue;
     if (op) {
       /* r[k] = (r[k] op v) */
       int opc = ix_index_call(nt, op, read, v, -1);
       int store = opc >= 0 ? ix_index_call(nt, "[]=", recv2, key2, opc) : -1;
       if (store < 0) continue;
       int na = nt_ref(nt, store, "arguments");
-      nt_node_reset(nt, id, "CallNode");
-      nt_node_set_ref(nt, id, "receiver", recv2);
-      nt_node_set_str(nt, id, "name", "[]=");
-      nt_node_set_ref(nt, id, "arguments", na);
-      nt_node_set_ref(nt, id, "block", -1);
+      nt_node_reset(nt, tgt, "CallNode");
+      nt_node_set_ref(nt, tgt, "receiver", recv2);
+      nt_node_set_str(nt, tgt, "name", "[]=");
+      nt_node_set_ref(nt, tgt, "arguments", na);
+      nt_node_set_ref(nt, tgt, "block", -1);
     }
     else {
       int store = ix_index_call(nt, "[]=", recv2, key2, v);
       if (store < 0) continue;
-      nt_node_reset(nt, id, k == NK_IndexOrWriteNode ? "OrNode" : "AndNode");
-      nt_node_set_ref(nt, id, "left", read);
-      nt_node_set_ref(nt, id, "right", store);
+      nt_node_reset(nt, tgt, k == NK_IndexOrWriteNode ? "OrNode" : "AndNode");
+      nt_node_set_ref(nt, tgt, "left", read);
+      nt_node_set_ref(nt, tgt, "right", store);
+    }
+    if (kw >= 0) {
+      int stmts = nt_new_node(nt, "StatementsNode");
+      if (stmts < 0) continue;
+      int body[2] = { kw, tgt };
+      nt_node_set_arr(nt, stmts, "body", body, 2);
+      nt_node_reset(nt, id, "ParenthesesNode");
+      nt_node_set_ref(nt, id, "body", stmts);
+      scope_local_intern(comp_scope_of(c, id), kname);
     }
     comp_grow_node_arrays(c);
     int encl = c->nscope[id];
