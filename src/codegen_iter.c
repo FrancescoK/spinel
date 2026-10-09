@@ -3367,6 +3367,15 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
       int bn4 = 0; const int *bd4 = nt_arr(c->nt, bbody, "body", &bn4);
       int rr4 = (bd4 && bn4 > 0) ? tail_iter_receiver(c, bd4[bn4 - 1]) : -1;
       if (rr4 >= 0) { emit_tail_recv_value(c, bd4[bn4 - 1], rr4, b); buf_puts(b, "; "); }
+      /* a tail that jumps (`helper { break :x }`) leaves the statement
+         expression without a value: give it the slot's nil, never reached,
+         or the expression was void where the yield's value was read (#8215) */
+      int tk4 = (bd4 && bn4 > 0) ? (int)nt_kind(c->nt, bd4[bn4 - 1]) : -1;
+      if (rr4 < 0 && (tk4 == NK_BreakNode || tk4 == NK_NextNode || tk4 == NK_ReturnNode ||
+                      tk4 == NK_RedoNode || tk4 == NK_RetryNode)) {
+        if (want_poly || want_ty == TY_POLY || want_ty == TY_UNKNOWN) buf_puts(b, "sp_box_nil(); ");
+        else if (want_ty != TY_VOID) buf_printf(b, "%s; ", default_value_from_compiler(c, want_ty));
+      }
       else if (bd4 && bn4 > 0 && (want_poly || (want_ty != TY_UNKNOWN && want_ty != TY_VOID && want_ty != TY_NIL)) &&
                block_tail_lacks_value(c, unwrap_parens(c, bd4[bn4 - 1]), want_poly))
         buf_printf(b, "%s; ", want_poly ? "sp_box_nil()" : default_value_from_compiler(c, want_ty));
