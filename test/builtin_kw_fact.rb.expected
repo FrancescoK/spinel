@@ -1,0 +1,29 @@
+"ArgumentError: wrong number of arguments (given 2, expected 0..1)"
+"ArgumentError: wrong number of arguments (given 2, expected 0..1)"
+"ArgumentError: wrong number of arguments (given 3, expected 1..2)"
+"ArgumentError: wrong number of arguments (given 3, expected 1..2)"
+"ArgumentError: wrong number of arguments (given 2, expected 0..1)"
+"ArgumentError: wrong number of arguments (given 2, expected 0..1)"
+"ArgumentError: wrong number of arguments (given 2, expected 0..1)"
+"ArgumentError: wrong number of arguments (given 2, expected 0..1)"
+"ArgumentError: wrong number of arguments (given 2, expected 0..1)"
+"ArgumentError: wrong number of arguments (given 3, expected 1..2)"
+"ArgumentError: wrong number of arguments (given 2, expected 0..1)"
+"ArgumentError: wrong number of arguments (given 2, expected 0..1)"
+"ArgumentError: wrong number of arguments (given 2, expected 0..1)"
+"TypeError: no implicit conversion of Hash into Integer"
+"TypeError: no implicit conversion of Hash into Integer"
+"ArgumentError: wrong number of arguments (given 2, expected 0..1)"
+"ArgumentError: wrong number of arguments (given 3, expected 1..2)"
+"ArgumentError: wrong number of arguments (given 2, expected 0..1)"
+"ArgumentError: wrong number of arguments (given 2, expected 0..1)"
+"ArgumentError: wrong number of arguments (given 3, expected 1..2)"
+"ArgumentError: wrong number of arguments (given 2, expected 0..1)"
+"ArgumentError: wrong number of arguments (given 2, expected 0..1)"
+2
+(1/1)
+["a", "b"]
+Integer
+12
+"1-2"
+[1]

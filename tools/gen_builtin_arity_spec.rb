@@ -216,6 +216,18 @@ rescue Exception
   :ok  # the count was accepted; the values (or environment) were not
 end
 
+def kw_positional?(thunk, m, max, block: false)
+  r2 = thunk.call
+  Timeout.timeout(2) do
+    block ? r2.__send__(m, *Array.new(max), __kwprobe: 1) { |*| "a" } : r2.__send__(m, *Array.new(max), __kwprobe: 1)
+  end
+  false
+rescue ArgumentError => e
+  e.message.start_with?("wrong number of arguments (given #{max + 1},")
+rescue Exception
+  false
+end
+
 # block: probe the counts of the block-carrying call ("2.step { }" accepts 0
 # args where the bare call wants 1..; Array#fill drops to 0..2). The block
 # used is inert but really runs, which is why the probe surface excludes
@@ -348,6 +360,12 @@ arity_all = IO.popen([RbConfig.ruby, "--disable-gems", "-e", arity_src], &:read)
                 .lines.map { |l| c, m, a = l.chomp.split("\t"); [c, m, a.to_i] }
 abort "Method#arity dump failed" unless $?.success? && !arity_all.empty?
 kernel_arity, arity = arity_all.partition { |r| r[0] == "Kernel" }
+kwpos = inst.select do |cls, m, min, max, _, _, bmin, bmax|
+  sides = [[min, max, false], [bmin, bmax, true]].select { |lo, hi, _| lo >= 0 && hi >= 0 }
+  thunk = INSTANCE_RECEIVERS.fetch(cls)
+  next false if sides.empty? || (thunk.call.method(m).arity rescue 0) >= 0
+  sides.all? { |_, hi, blk| kw_positional?(thunk, m.to_sym, hi, block: blk) }
+end
 # Keep both facts where available; introspection is not an acceptance rule.
 # Retain Method#arity order, including the receiverless Kernel wrappers.
 counts = inst.to_h { |r| [r[0, 2], r[2..]] }
@@ -369,6 +387,7 @@ end
 end
 inst.each { |r| render.("BAS", r) if counts.key?(r[0, 2]) }
 cm.each { |r| render.("BAC", r) }
+kwpos.each { |r| render.("BAK", r[0, 2]) }
 summary = "#{arity.length + kernel_arity.length} Method#arity + #{inst.length} instance + #{cm.length} class-method entries"
 if ARGV.include?("--check")
   if File.read(SOURCE) == out

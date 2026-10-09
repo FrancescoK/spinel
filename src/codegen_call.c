@@ -1777,6 +1777,7 @@ static int name_is_comparable_module_method(const char *m) {
   return 0;
 }
 
+#define BAK(...)
 /* Method#arity reads the introspection column of the shared facts. */
 #define BAI(c,m,a,...) {c,m,a},
 #define BAM(c,m,a) {c,m,a},
@@ -15765,6 +15766,28 @@ sp_builtin_cmeth_arity_spec_tbl[] = {
 #undef BAM
 #undef BAS
 #undef BAC
+#undef BAK
+#define BAI(...)
+#define BAM(...)
+#define BAS(...)
+#define BAC(...)
+#define BAK(c,m) {c,m},
+static const struct { const char *cls; const char *m; } sp_builtin_kwpos_tbl[] = {
+#include "builtin_arity.inc"
+  {NULL, NULL}
+};
+#undef BAI
+#undef BAM
+#undef BAS
+#undef BAC
+#undef BAK
+static int kwh_counts(const char *cls, const char *name) {
+  int fa;
+  if (builtin_method_arity(cls, name, &fa) && fa >= 0) return 1;
+  for (int i = 0; sp_builtin_kwpos_tbl[i].cls; i++)
+    if (sp_streq(sp_builtin_kwpos_tbl[i].cls, cls) && sp_streq(sp_builtin_kwpos_tbl[i].m, name)) return 1;
+  return 0;
+}
 int builtin_kernel_fn_span(const char *name, int with_block, int *lo, int *hi) {
   for (int i = 0; sp_builtin_cmeth_arity_spec_tbl[i].cls; i++) {
     const SpAritySpec *r = &sp_builtin_cmeth_arity_spec_tbl[i];
@@ -16226,8 +16249,7 @@ static int arity_violation(Compiler *c, int id, char *exp, size_t n, int *eval_r
     if (reopened_owns(c, bcn, name) || reopened_owns(c, owner, name) ||
         (twin && reopened_owns(c, twin, name)) ||
         (sp_streq(owner, "Object") && toplevel_def(c, name))) return 0;
-    int fa;
-    if (kwh && (!builtin_method_arity(owner, name, &fa) || fa < 0)) return 0;
+    if (kwh && !kwh_counts(owner, name)) return 0;
   }
   return 1;
 }
@@ -16241,7 +16263,7 @@ int builtin_arity_violation(Compiler *c, int id) {
   char exp[32]; int eval_recv;
   if (arity_violation(c, id, exp, sizeof exp, &eval_recv)) return 1;
   const char *tests[POLY_ARITY_MAX]; char exps[POLY_ARITY_MAX][32];
-  return poly_arity_plan(c, id, tests, exps) > 0;
+  return poly_arity_plan(c, id, tests, exps) > 0 ? 2 : 0;
 }
 
 /* The raise for a count a method refuses: the receiver (when asked) and the
@@ -16255,7 +16277,7 @@ void emit_wrong_count(Compiler *c, int id, const char *exp, int eval_recv, int g
   int anode = nt_ref(nt, id, "arguments");
   int argc = 0; const int *argv = anode >= 0 ? nt_arr(nt, anode, "arguments", &argc) : NULL;
   TyKind rty = repr_of(c, id).as_ty;
-  const char *dv = default_value_from_compiler(c, rty);
+  const char *dv = rty == TY_NIL ? "NULL" : default_value_from_compiler(c, rty);
   if (given < 0) given = argc;
   buf_puts(b, "({ ");
   if (eval_recv) { buf_puts(b, "(void)("); emit_expr(c, recv, b); buf_puts(b, "); "); }
@@ -16539,8 +16561,7 @@ static int poly_arity_plan(Compiler *c, int id, const char **tests, char exps[][
       snprintf(exp, sizeof exp, "%d", a);
     }
     if (!exp[0]) return 0;        /* this class takes the count */
-    int fa;
-    if (kwh && (!(builtin_method_arity(CLS[q], name, &fa) || builtin_method_arity("Object", name, &fa)) || fa < 0)) return 0;
+    if (kwh && !kwh_counts(CLS[q], name) && !kwh_counts("Object", name)) return 0;
     tests[n] = TST[q];
     snprintf(exps[n], 32, "%s", exp);
     n++;
