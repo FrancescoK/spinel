@@ -1860,14 +1860,15 @@ int an_ty_holds_nil(TyKind t) {
    mutator, or written to a local that is? */
 static int an_to_a_result_mutated(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
-  /* the call it is the receiver of, and the calls on each local it is
-     written to, off the variable-site index: scanning every call per ask
+  /* the call it is the receiver of, the locals it is written to, and the
+     calls on each, off the variable-site index: scanning every call per ask
      (twice over for a written result) made this a large program's hottest
-     inference question */
+     inference question, and then the scan of every local write for the
+     ones it is the value of */
   int p = comp_recv_parent(c, id);
   if (p >= 0 && nt_kind(nt, p) == NK_CallNode && nt_ref(nt, p, "receiver") == id &&
       array_mutator_name(nt_str(nt, p, "name"))) return 1;
-  for (int w = comp_kind_first(c, NK_LocalVariableWriteNode); w >= 0; w = comp_kind_next(c, w)) {
+  for (int w = comp_lwrite_of_value(c, id); w >= 0; w = comp_lwrite_next(c, w)) {
     if (nt_kind(nt, w) != NK_LocalVariableWriteNode || nt_ref(nt, w, "value") != id) continue;
     const char *wn = nt_str(nt, w, "name");
     Scope *ws = comp_scope_of(c, w);

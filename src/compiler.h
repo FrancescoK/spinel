@@ -973,6 +973,7 @@ typedef struct {
   int *vs_next;         /* [vs_count] the next entry sharing the bucket */
   unsigned char *vs_kind; /* [vs_count] an entry's site kind (VsKind) */
   int *vs_rparent;      /* [vs_nodes] the call whose receiver a node is, or -1 */
+  int *vs_whead, *vs_wnext; /* [vs_nodes] the local writes whose value a node is, in node order */
   unsigned char *vs_dropped; /* [vs_nodes] a statement the next statement follows */
   int vs_nbuckets, vs_count, vs_cap, vs_nodes, vs_toplevel;
   unsigned vs_version, vs_gen;
@@ -1207,6 +1208,10 @@ int comp_vsite_var(const Compiler *c, int e);
    whether it is a statement the next statement follows, so its value is
    dropped. */
 int comp_recv_parent(Compiler *c, int n);
+/* The local-variable writes whose value is node n, ascending: for (w =
+   comp_lwrite_of_value(c, n); w >= 0; w = comp_lwrite_next(c, w)). */
+int comp_lwrite_of_value(Compiler *c, int n);
+int comp_lwrite_next(const Compiler *c, int w);
 int comp_value_dropped(Compiler *c, int n);
 int comp_kind_first(Compiler *c, int kind);
 int comp_kind_next(const Compiler *c, int id);
