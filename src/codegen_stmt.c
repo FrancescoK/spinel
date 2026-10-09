@@ -958,7 +958,7 @@ else {
   if (sp_streq(name, "srand")) {
     emit_indent(b, indent);
     if (argc == 0) buf_puts(b, "(void)sp_kernel_srand((sp_int)time(NULL));\n");
-    else { buf_puts(b, "(void)sp_kernel_srand("); emit_int_expr_conv(c, argv[0], b); buf_puts(b, ");\n"); }
+    else { buf_puts(b, "(void)sp_kernel_srand("); emit_to_int_expr(c, argv[0], b); buf_puts(b, ");\n"); }
     return 1;
   }
   if (sp_streq(name, "rand") && argc >= 1) {

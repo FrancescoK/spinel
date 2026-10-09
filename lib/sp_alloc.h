@@ -1029,6 +1029,17 @@ static inline sp_int sp_float_to_i_checked(sp_float f) {
   return sp_float_to_i_checked_slow(f);
 }
 
+/* Machine-integer arguments use NUM2LONG's RangeError, unlike Float#to_i. */
+SP_NORETURN SP_COLD void sp_float_arg_range_error(sp_float f);
+static inline void sp_float_arg_check(sp_float f) {
+  if (SP_UNLIKELY(!(f >= (sp_float)INTPTR_MIN && f < -(sp_float)INTPTR_MIN)))
+    sp_float_arg_range_error(f);
+}
+static inline sp_int sp_float_arg_i(sp_float f) {
+  sp_float_arg_check(f);
+  return (sp_int)f;
+}
+
 /* ---- forward declarations for pointer-only box params (full types stay
    opaque to lib/sp_alloc.h -- these box functions only store the pointer). ---- */
 typedef struct sp_Bigint sp_Bigint;               /* full def: spinel_rt.h bigint block */

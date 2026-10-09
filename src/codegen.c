@@ -776,7 +776,8 @@ static void emit_int_expr_ex(Compiler *c, int node, int strict, Buf *b) {
      deliberately carried on the integer representation) truncates; say so, or
      clang warns that the literal changes value and the build reads as broken. */
   if (comp_ntype(c, node) == TY_FLOAT) {
-    buf_puts(b, "(sp_int)("); emit_scalar_operand(c, node, "0", b); buf_puts(b, ")");
+    /* Non-finite arguments raise before C truncates them. */
+    buf_puts(b, "sp_float_arg_i("); emit_scalar_operand(c, node, "0", b); buf_puts(b, ")");
     return;
   }
   /* A Rational or a Complex converts through #to_int too, which the struct
@@ -889,6 +890,18 @@ void emit_range_endpoint(Compiler *c, int node, const char *none, Buf *b) {
    Random.srand's seed, Dir.mkdir's mode, Random#bytes' size. */
 void emit_int_expr_conv(Compiler *c, int node, Buf *b) {
   emit_int_expr_ex(c, node, 2, b);
+}
+
+/* rb_to_int preserves Float#to_int's domain error rather than NUM2LONG's. */
+void emit_to_int_expr(Compiler *c, int node, Buf *b) {
+  Repr r = repr_of(c, node);
+  if (r.kind == RK_BOXED) {
+    buf_puts(b, "sp_poly_to_int_arg("); emit_boxed(c, node, b); buf_puts(b, ")");
+  }
+  else if (r.as_ty == TY_FLOAT) {
+    buf_puts(b, "sp_float_to_i_checked("); emit_scalar_operand(c, node, "0", b); buf_puts(b, ")");
+  }
+  else emit_int_expr_conv(c, node, b);
 }
 
 /* Strict, with NUM2OFFT's wording ("from nil"): an IO offset -- seek,

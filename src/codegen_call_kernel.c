@@ -736,7 +736,7 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
     if (sp_streq(name, "srand")) {
       /* srand returns the PREVIOUS seed (#2517). */
       if (ac == 0) { buf_puts(b, "sp_kernel_srand((sp_int)time(NULL))"); return 1; }
-      buf_puts(b, "sp_kernel_srand("); emit_int_expr_conv(c, av[0], b); buf_puts(b, ")");
+      buf_puts(b, "sp_kernel_srand("); emit_to_int_expr(c, av[0], b); buf_puts(b, ")");
       return 1;
     }
     /* Kernel#gets reads the next line of ARGF, as `ARGF.gets` does; nil at

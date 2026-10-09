@@ -418,8 +418,8 @@ int emit_call_bigint_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
     if (sp_streq(name, "[]") && argc == 2) {
       /* Bignum n[start, len]: the len-bit field starting at bit `start`. */
       int tst = ++g_tmp, tln = ++g_tmp, tsh = ++g_tmp;
-      buf_printf(b, "({ sp_int _t%d = ", tst); emit_int_expr(c, argv[0], b);
-      buf_printf(b, "; sp_int _t%d = ", tln); emit_int_expr(c, argv[1], b);
+      buf_printf(b, "({ sp_int _t%d = ", tst); emit_to_int_expr(c, argv[0], b);
+      buf_printf(b, "; sp_int _t%d = ", tln); emit_to_int_expr(c, argv[1], b);
       buf_printf(b, "; sp_Bigint *_t%d = sp_bigint_shr(%s, (int64_t)_t%d);"
                     " (_t%d < 0 || _t%d < 0) ? (sp_int)0"
                     " : sp_bigint_to_int(sp_bigint_and(_t%d,"
