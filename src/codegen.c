@@ -12384,6 +12384,14 @@ static int user_dispatch_arg(Compiler *c, Scope *m, int pi, const char *v,
   }
   else if (pt == TY_SYMBOL) { snprintf(guard, gsz, "%s.tag == SP_TAG_SYM", v); snprintf(arg, asz, "(sp_sym)%s.v.i", v); }
   else return 0;
+  /* a parameter the method rebinds in place (comp_byref_param) takes the
+     address of a slot: one of its own here, as the box is not one */
+  if (comp_byref_param(c, m, pi)) {
+    char tmp[200];
+    snprintf(tmp, sizeof tmp, "&(%s){%s}", c_type_name(pt), arg);
+    if (strlen(tmp) >= asz) return 0;
+    snprintf(arg, asz, "%s", tmp);
+  }
   return 1;
 }
 

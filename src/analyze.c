@@ -13550,6 +13550,22 @@ int comp_byref_param(Compiler *c, Scope *m, int idx) {
 static int an_any_scope_by_name(Compiler *c, const char *nm);
 static int an_param_mutated_in_place(Compiler *c, int mi, int pi);
 static int an_call_target_mi(Compiler *c, int id);
+/* A call whose receiver is a builtin value -- a Hash, an Array, a String,
+   a number -- is the builtin's method, or a reopen's, which
+   an_call_target_mi already answers: no method of a class of the program's
+   own of the same name can take it. The lend tests below fall back to any
+   method by that name only for a receiver that may be such an object
+   (#8144: `target[k] = v` on a Hash lent v to an unrelated class's
+   appending `[]=`, and v became a String handle its Hash#each binder could
+   not fill). */
+static int an_lend_recv_builtin(Compiler *c, int u) {
+  int r = nt_ref(c->nt, u, "receiver");
+  if (r < 0 || nt_kind(c->nt, r) == NK_SelfNode) return 0;
+  TyKind rt = infer_type(c, r);
+  return rt != TY_UNKNOWN && rt != TY_POLY && !ty_is_object(rt) && rt != TY_NIL &&
+         (ty_is_hash(rt) || ty_is_array(rt) || rt == TY_STRING || rt == TY_STRBUF ||
+          ty_is_numeric(rt) || rt == TY_SYMBOL || rt == TY_RANGE);
+}
 static int an_local_lent(Compiler *c, const char *vn, Scope *vs) {
   const NodeTable *nt = c->nt;
   if (!vn || !vs) return 0;
@@ -13557,7 +13573,7 @@ static int an_local_lent(Compiler *c, const char *vn, Scope *vs) {
   for (int u = comp_scall_first(c, vsi); u >= 0; u = comp_scall_next(c, u)) {
     if (nt_kind(nt, u) != NK_CallNode || comp_scope_of(c, u) != vs) continue;
     int mi = an_call_target_mi(c, u);
-    if (mi < 0) mi = an_any_scope_by_name(c, nt_str(nt, u, "name"));
+    if (mi < 0 && !an_lend_recv_builtin(c, u)) mi = an_any_scope_by_name(c, nt_str(nt, u, "name"));
     if (mi < 0) continue;
     for (int j = 0; j < c->scopes[mi].nparams; j++) {
       if (!comp_byref_param(c, &c->scopes[mi], j) && !an_param_mutated_in_place(c, mi, j)) continue;
@@ -13579,7 +13595,7 @@ static int an_ivar_lent(Compiler *c, int cid, const char *ivn) {
     int u = comp_ivarg_call(c, e), av = comp_ivarg_arg(c, e);
     if (!sp_streq(nt_str(nt, av, "name"), ivn) || comp_ivar_owner(c, av) != cid) continue;
     int mi = an_call_target_mi(c, u);
-    if (mi < 0) mi = an_any_scope_by_name(c, nt_str(nt, u, "name"));
+    if (mi < 0 && !an_lend_recv_builtin(c, u)) mi = an_any_scope_by_name(c, nt_str(nt, u, "name"));
     if (mi < 0) continue;
     for (int j = 0; j < c->scopes[mi].nparams; j++) {
       if (!comp_byref_param(c, &c->scopes[mi], j) && !an_param_mutated_in_place(c, mi, j)) continue;
