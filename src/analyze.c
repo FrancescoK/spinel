@@ -32588,6 +32588,29 @@ static void desugar_builtin_kwsplat(Compiler *c) {
   comp_grow_node_arrays(c);
 }
 
+static void desugar_begin_args(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    int an = nt_ref(nt, id, "arguments"), n = 0;
+    const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &n) : NULL;
+    for (int i = 0; i < n; i++) {
+      if (nt_kind(nt, av[i]) != NK_BeginNode || (i == 0 && nt_ref(nt, id, "receiver") < 0)) continue;
+      int s = nt_new_node(nt, "StatementsNode"), one[1] = { av[i] };
+      nt_node_set_arr(nt, s, "body", one, 1);
+      int p = nt_new_node(nt, "ParenthesesNode");
+      nt_node_set_ref(nt, p, "body", s);
+      comp_grow_node_arrays(c);
+      c->nscope[s] = c->nscope[p] = c->nscope[av[i]];
+      int args[64], m = n < 64 ? n : 64;
+      for (int j = 0; j < m; j++) args[j] = j == i ? p : av[j];
+      nt_node_set_arr(nt, an, "arguments", args, m);
+      av = nt_arr(nt, an, "arguments", &n);
+    }
+  }
+}
+
 static void desugar_diverging_args(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count;
@@ -36806,6 +36829,7 @@ static void an_phase_class_structure(Compiler *c) {
 
 /* Explicit self receivers for implicit-self reads, then the block-forward inlining: a callee whose block is only called or forwarded is inlined at its call sites (analyze_program's steps, in their order) */
 static void an_phase_block_inline(Compiler *c) {
+  desugar_begin_args(c);
   desugar_diverging_args(c);
   /* A bare identifier inside a class method that names a `class << self`
      attr reader is an implicit-self read of that singleton attribute; give it
