@@ -6835,9 +6835,12 @@ static int str_arms_convert(Compiler *c, int id, Buf *b, const NodeTable *nt, co
         int teq3 = ++g_tmp;
         buf_printf(b, "({ sp_RbVal _t%d = ", teq3);
         emit_boxed(c, argv[0], b);
-        buf_printf(b, "; (sp_bool)(_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_STRBUF"
-                      " && (sp_String *)_t%d.v.p == %s); })",
-                   teq3, teq3, teq3, rrefE3);
+        if (repr_share_rule(c))
+          buf_printf(b, "; sp_poly_equal(sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF), _t%d); })", rrefE3, teq3);
+        else
+          buf_printf(b, "; (sp_bool)(_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_STRBUF"
+                        " && (sp_String *)_t%d.v.p == %s); })",
+                     teq3, teq3, teq3, rrefE3);
         eq_sblv = 1;
       }
     }

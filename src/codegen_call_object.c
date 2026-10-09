@@ -275,7 +275,11 @@ int emit_call_identity_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
     else if (rt == TY_NIL) { buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), SP_NIL_OBJECT_ID)"); }
     else if (rt == TY_BOOL) { buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, ") ? SP_TRUE_OBJECT_ID : SP_FALSE_OBJECT_ID)"); }
     /* a boxed value: its identity is the boxed payload (heap pointer / int) */
-    else if (rt == TY_POLY) { buf_puts(b, "((sp_int)(uintptr_t)("); emit_expr(c, recv, b); buf_puts(b, ").v.p)"); }
+    else if (rt == TY_POLY) {
+      buf_puts(b, repr_share_rule(c) ? "((sp_int)(uintptr_t)sp_poly_identity_ptr(" : "((sp_int)(uintptr_t)(");
+      emit_expr(c, recv, b);
+      buf_puts(b, repr_share_rule(c) ? "))" : ").v.p)");
+    }
     /* a mutable String held as its shared sp_String: that handle is the
        identity, and the one a box of it carries; its text is a fresh copy
        on every read. A nullable String boxes NULL as nil, whose fixed id

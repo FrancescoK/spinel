@@ -16538,6 +16538,13 @@ static void emit_user_exc_dispatch(Compiler *c, Buf *b) {
 }
 
 extern const Compiler *g_tmc_c;
+
+static void emit_runtime_include(Compiler *c, Buf *b, int blank) {
+  if (repr_share_rule(c)) buf_puts(b, "#define SP_SHARE_STRING_LITERALS 1\n");
+  buf_puts(b, "#include \"spinel_rt.h\"\n");
+  if (blank) buf_puts(b, "\n");
+}
+
 char *codegen_program(const NodeTable *nt) {
   char *isa_ext = NULL;  /* sp_poly_is_a's class-value arms, and where they go */
   size_t isa_ext_at = 0;
@@ -16660,7 +16667,7 @@ char *codegen_program(const NodeTable *nt) {
      this TU deliberately omits). */
   if (!g_emit_sym_rt)
     buf_puts(&b, "#define SP_TU_NO_POLY_RENDER 1\n");
-  buf_puts(&b, "#include \"spinel_rt.h\"\n");
+  emit_runtime_include(c, &b, 0);
   /* the frozen literals' file-scope objects go here, once the unit is done */
   size_t fzl_at = b.len;
   emit_ffi_decls(c, &b);
@@ -17432,7 +17439,7 @@ char *codegen_program(const NodeTable *nt) {
      at a time left a quarter of the stores bare. */
   gc_wb_insert(c, &b, 0);
   { Buf fz; memset(&fz, 0, sizeof fz);
-    fzl_emit_defs(b.p ? b.p : "", &fz);
+    fzl_emit_defs(b.p ? b.p : "", &fz, repr_share_rule(c));
     if (fz.len) buf_splice(&b, fzl_at, fz.p);
     free(fz.p); }
   if (g_line_map) line_map_reanchor(&b);
@@ -17456,7 +17463,7 @@ char *codegen_program(const NodeTable *nt) {
                g_ext_init_name, g_ext_init_name, g_ext_init_name);
     buf_puts(&hb, "#ifndef SPINEL_EXT_H\n#define SPINEL_EXT_H\n");
     buf_puts(&hb, "#define SPINEL_EXT_HOST 1  /* runtime globals resolve to the kernel TU */\n");
-    buf_puts(&hb, "#include \"spinel_rt.h\"\n\n");
+    emit_runtime_include(c, &hb, 1);
     buf_printf(&hb, "void %s(void);\n", g_ext_init_name);
     buf_printf(&hb, "int %s_try(void (*fn)(void *), void *ctx, const char **cls, const char **msg);\n\n",
                g_ext_init_name);
