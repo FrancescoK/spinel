@@ -1071,8 +1071,23 @@ const char *sp_exc_detailed_text(volatile sp_Exception *ve, const char *msg) {
   sp_Exception *e = (sp_Exception *)ve;
   const char *cn = e && e->cls_name ? e->cls_name : "RuntimeError";
   size_t lc = strlen(cn), lm = sp_str_byte_len(msg);
-  char *r = sp_str_alloc_nogc(lm + 2 + lc + 1);
-  memcpy(r, msg, lm); memcpy(r + lm, " (", 2); memcpy(r + lm + 2, cn, lc); r[lm + 2 + lc] = ')';
+  /* An empty message names the class, except RuntimeError's default text.
+     The class annotation belongs on the first line; a lone final newline
+     is replaced by it, while subsequent lines keep their bytes. */
+  if (!lm) {
+    const char *text = strcmp(cn, "RuntimeError") == 0 ? "unhandled exception" : cn;
+    size_t len = strlen(text);
+    char *r = sp_str_alloc_nogc(len);
+    memcpy(r, text, len);
+    return r;
+  }
+  const char *nl = memchr(msg, '\n', lm);
+  size_t first = nl ? (size_t)(nl - msg) : lm;
+  size_t tail = lm - first;
+  if (tail == 1) tail = 0;
+  char *r = sp_str_alloc_nogc(first + 2 + lc + 1 + tail);
+  memcpy(r, msg, first); memcpy(r + first, " (", 2); memcpy(r + first + 2, cn, lc); r[first + 2 + lc] = ')';
+  if (tail) memcpy(r + first + 2 + lc + 1, msg + first, tail);
   return r;
 }
 const char *sp_exc_inspect(void *p) {
