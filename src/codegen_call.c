@@ -16657,6 +16657,7 @@ static int emit_case_opts_guard(Compiler *c, int id, Buf *b) {
   if (argc == 0 || user_defines_or_reads(c, name)) return 0;
   for (int i = 0; i < argc; i++) {
     NodeKind ak = nt_kind(nt, av[i]);
+    if (ak == NK_KeywordHashNode && !kwh_has_splat(nt, av[i])) continue;
     if (ak == NK_SplatNode || ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode) return 0;
   }
   int down = sp_streq(base, "downcase");

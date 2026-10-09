@@ -7109,8 +7109,15 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
     int is_float = (rt == TY_FLOAT) || comp_ntype(c, sargv[0]) == TY_FLOAT ||
                    (sargc >= 2 && comp_ntype(c, sargv[1]) == TY_FLOAT);
     if (!is_float) {
-      int t = ++g_tmp, tl = ++g_tmp, ts = ++g_tmp;
-      emit_indent(b, indent); buf_printf(b, "sp_int _t%d = ", tl); emit_int_expr(c, sargv[0], b); buf_puts(b, ";\n");
+      int t = ++g_tmp, tl = ++g_tmp, ts = ++g_tmp, tv = 0;
+      if (comp_ntype(c, sargv[0]) == TY_POLY) {
+        char tvs[32]; tv = ++g_tmp; snprintf(tvs, sizeof tvs, "_t%d", tv);
+        emit_indent(b, indent); buf_printf(b, "sp_RbVal _t%d = ", tv); emit_boxed(c, sargv[0], b);
+        buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);\n", tv);
+        emit_indent(b, indent); buf_printf(b, "sp_int _t%d = _t%d.tag == SP_TAG_NIL ? 0 : ", tl, tv);
+        emit_unbox_text(c, TY_INT, tvs, b); buf_puts(b, ";\n");
+      }
+      else { emit_indent(b, indent); buf_printf(b, "sp_int _t%d = ", tl); emit_int_expr(c, sargv[0], b); buf_puts(b, ";\n"); }
       emit_indent(b, indent); buf_printf(b, "sp_int _t%d = ", ts);
       if (sargc >= 2) emit_int_expr(c, sargv[1], b); else buf_puts(b, "1");
       buf_puts(b, ";\n");
@@ -7118,8 +7125,10 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
       buf_printf(b, "if (_t%d == 0) sp_raise_cls(\"ArgumentError\", \"step can't be 0\");\n", ts);
       emit_indent(b, indent);
       buf_printf(b, "for (sp_int _t%d = ", t); emit_expr(c, recv, b);
-      buf_printf(b, "; _t%d >= 0 ? _t%d <= _t%d : _t%d >= _t%d; _t%d += _t%d) {\n",
-                 ts, t, tl, t, tl, t, ts);
+      if (tv) buf_printf(b, "; _t%d.tag == SP_TAG_NIL || (_t%d >= 0 ? _t%d <= _t%d : _t%d >= _t%d); _t%d += _t%d) {\n",
+                         tv, ts, t, tl, t, tl, t, ts);
+      else buf_printf(b, "; _t%d >= 0 ? _t%d <= _t%d : _t%d >= _t%d; _t%d += _t%d) {\n",
+                      ts, t, tl, t, tl, t, ts);
       if (p0) { char ts2[32]; snprintf(ts2, sizeof ts2, "_t%d", t); emit_iter_param_assign(c, block, p0_orig, p0, TY_INT, ts2, b, indent + 1); }
     { char rs_es[32]; snprintf(rs_es, sizeof rs_es, "_t%d", t);
       int rs_np = 0; while (block_param_name(c, block, rs_np)) rs_np++;
