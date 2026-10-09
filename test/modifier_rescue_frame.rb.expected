@@ -1,0 +1,9 @@
+600
+inner ensure ran
+rescued
+inner ensure ran
+:rescued
+outer ensure ran
+rescued
+nil
+nil

@@ -14773,7 +14773,11 @@ void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
     emit_indent(b, indent); buf_puts(b, "sp_exc_rootmark[sp_exc_top] = sp_gc_nroots; sp_rescue_mark[sp_exc_top] = sp_rescue_sp;\n");
     emit_indent(b, indent); buf_puts(b, "sp_exc_msg[sp_exc_top] = 0; sp_exc_obj[sp_exc_top] = 0; sp_exc_top++;\n");
     emit_indent(b, indent); buf_puts(b, "if (setjmp(sp_exc_stack[sp_exc_top-1]) == 0) {\n");
+    /* the guard is an exception frame the statement has to count, as the
+       rvalue form does */
+    g_exc_frame_depth++;
     if (e >= 0) emit_stmt(c, e, b, indent + 1);
+    g_exc_frame_depth--;
     emit_indent(b, indent + 1); buf_puts(b, "sp_exc_top--;\n");
     emit_indent(b, indent); buf_puts(b, "}\n");
     emit_indent(b, indent); buf_puts(b, "else {\n");

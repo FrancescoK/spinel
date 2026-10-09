@@ -3800,6 +3800,11 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
        temp) must land INSIDE the protected region -- with the enclosing
        statement's g_pre they would run before the setjmp, unprotected
        (#2723). Same swap the rescue arm below has always done. */
+    /* the guard is an exception frame: a return, break or next out of the
+       expression pops it, and an ensure region inside it sees a handler
+       between itself and an enclosing ensure (`g_exc_frame_depth >
+       outer->exc_base + 1`) */
+    g_exc_frame_depth++;
     if (e >= 0 && !e_diverges) {
       Buf epre; memset(&epre, 0, sizeof epre);
       Buf *sv_pre0 = g_pre; int sv_ind0 = g_indent;
@@ -3825,6 +3830,7 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
       buf_printf(b, "%s;", ev.p ? ev.p : "");
       free(epre.p); free(ev.p);
     }
+    g_exc_frame_depth--;
     /* restore the handled-exception depth too: a body that exits by raising
        out of its own rescue leaves its push behind, and `$!` would keep
        reading it long after the handler is gone (#3726) */

@@ -3,6 +3,7 @@ class Holder
   def swap: (Base other) -> Holder
   def pick: (bool f) -> Base
   def pick_rescued: (bool f) -> Base
+  def pick_modifier: (bool f) -> Base
 end
 
 class Box
