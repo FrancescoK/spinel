@@ -1108,6 +1108,18 @@ spinel: test/reject/string_returned_arg_second.rb:7: a String a method returns a
 spinel: test/reject/string_returned_arg_second_append.rb:6: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
 == test/reject/string_returned_arg_second_append.rb [promote] rc=1
 spinel: test/reject/string_returned_arg_second_append.rb:6: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
+== test/reject/string_returned_arg_stored.rb [default] rc=1
+spinel: test/reject/string_returned_arg_stored.rb:7: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
+== test/reject/string_returned_arg_stored.rb [promote] rc=1
+spinel: test/reject/string_returned_arg_stored.rb:7: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
+== test/reject/string_returned_arg_stored_element.rb [default] rc=1
+spinel: test/reject/string_returned_arg_stored_element.rb:6: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
+== test/reject/string_returned_arg_stored_element.rb [promote] rc=1
+spinel: test/reject/string_returned_arg_stored_element.rb:6: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
+== test/reject/string_returned_arg_stored_literal.rb [default] rc=1
+spinel: test/reject/string_returned_arg_stored_literal.rb:5: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
+== test/reject/string_returned_arg_stored_literal.rb [promote] rc=1
+spinel: test/reject/string_returned_arg_stored_literal.rb:5: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
 == test/reject/string_scan_block_kept_mutation.rb [default] rc=1
 spinel: test/reject/string_scan_block_kept_mutation.rb:5: a match `scan` hands its block is kept and mutated in place (a String is not yet shared by reference through `scan`'s block parameter). Mutate a copy (`m = +m.dup`) and keep that.
 == test/reject/string_scan_block_kept_mutation.rb [promote] rc=1
