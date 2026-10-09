@@ -9439,6 +9439,10 @@ int rescue_is_catchall_name(const char *n) {
   return n && sp_streq(n, "Exception");
 }
 
+/* exception frames a retry leaves on its way back to the body: the frame
+   the rescue clauses of a begin with an ensure run in */
+static int g_retry_pops;
+
 /* Return 1 if the subtree at id contains a RetryNode (not crossing DefNode). */
 int subtree_has_retry(const NodeTable *nt, int id) {
   if (id < 0) return 0;
@@ -9948,6 +9952,8 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
       buf_printf(b, "%s:;\n", ens_retry_label);
       g_retry_label = ens_retry_label;
     }
+    int ens_saved_retry_pops = g_retry_pops;
+    if (ens_has_retry) g_retry_pops = 0;
     emit_indent(b, indent); buf_puts(b, "sp_exc_check_depth();\n");
     emit_indent(b, indent); buf_puts(b, "sp_exc_rootmark[sp_exc_top] = sp_gc_nroots; sp_rescue_mark[sp_exc_top] = sp_rescue_sp;\n");
     emit_indent(b, indent); buf_puts(b, "sp_exc_msg[sp_exc_top] = 0; sp_exc_obj[sp_exc_top] = 0; sp_exc_top++;\n");
@@ -9996,7 +10002,41 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
       buf_printf(b, "if (strcmp((const char *)sp_last_exc_cls, \"FiberKillSignal\") == 0) { _excf%d = 1; _excmsg%d = sp_exc_msg[sp_exc_top]; _exccls%d = sp_exc_cls[sp_exc_top]; }\n",
                  eid, eid, eid);
       emit_indent(b, indent + 2); buf_puts(b, "else {\n");
-      emit_rescue(c, rescue, b, indent + 3, fr, resultvar);
+      /* The rescue clauses run in a frame of their own: an exception that
+         leaves through them -- one no clause matches, a bare `raise`, a new
+         raise in a clause -- is held for the re-raise after the ensure, as
+         one the body raises with no rescue is. Raised straight to the
+         caller's handler, it skipped the ensure (#8182). A retry leaves
+         the frame back to the body's. */
+      /* the clauses read the exception at sp_exc_top, one slot above the
+         frame pushed here: it moves up first */
+      emit_indent(b, indent + 3); buf_puts(b, "sp_exc_check_depth(); if (SP_UNLIKELY(sp_exc_top + 1 >= SP_EXC_STACK_MAX)) sp_stack_too_deep();\n");
+      emit_indent(b, indent + 3); buf_puts(b, "sp_exc_msg[sp_exc_top+1] = sp_exc_msg[sp_exc_top]; sp_exc_cls[sp_exc_top+1] = sp_exc_cls[sp_exc_top]; sp_exc_obj[sp_exc_top+1] = sp_exc_obj[sp_exc_top];\n");
+      emit_indent(b, indent + 3); buf_puts(b, "sp_exc_rootmark[sp_exc_top] = sp_gc_nroots; sp_rescue_mark[sp_exc_top] = sp_rescue_sp;\n");
+      emit_indent(b, indent + 3); buf_puts(b, "sp_exc_msg[sp_exc_top] = 0; sp_exc_obj[sp_exc_top] = 0; sp_exc_top++;\n");
+      emit_indent(b, indent + 3); buf_puts(b, "if (setjmp(sp_exc_stack[sp_exc_top-1]) == 0) {\n");
+      g_exc_frame_depth++;
+      int sv_retry_pops = g_retry_pops;
+      if (ens_has_retry) g_retry_pops++;
+      emit_rescue(c, rescue, b, indent + 4, fr, resultvar);
+      g_retry_pops = sv_retry_pops;
+      g_exc_frame_depth--;
+      emit_indent(b, indent + 4); buf_puts(b, "sp_exc_top--;\n");
+      emit_indent(b, indent + 3); buf_puts(b, "}\n");
+      emit_indent(b, indent + 3); buf_puts(b, "else {\n");
+      emit_indent(b, indent + 4); buf_puts(b, "sp_exc_top--;\n");
+      emit_indent(b, indent + 4); buf_puts(b, "sp_gc_nroots = sp_exc_rootmark[sp_exc_top]; sp_rescue_sp = sp_rescue_mark[sp_exc_top];\n");
+      emit_indent(b, indent + 4);
+      /* held as its object, which takes the cause a raise in a clause gave
+         it (the exception that clause handled), as a rescue's binding does */
+      buf_printf(b, "if (sp_unwind_kind == SP_UNWIND_NONE) {"
+                    " sp_Exception *_xo%d = sp_exc_obj[sp_exc_top] ? (sp_Exception *)sp_exc_obj[sp_exc_top]"
+                    " : sp_exc_new_for_catch(sp_exc_cls[sp_exc_top], sp_exc_msg[sp_exc_top]);"
+                    " if (!_xo%d->cause) { sp_gc_wb((void *)_xo%d); _xo%d->cause = (sp_Exception *)sp_pending_cause; }"
+                    " sp_pending_cause = NULL;"
+                    " _excf%d = 1; _excmsg%d = sp_exc_msg[sp_exc_top]; _exccls%d = sp_exc_cls[sp_exc_top]; _excobj%d = _xo%d; }\n",
+                 eid, eid, eid, eid, eid, eid, eid, eid, eid);
+      emit_indent(b, indent + 3); buf_puts(b, "}\n");
       emit_indent(b, indent + 2); buf_puts(b, "}\n");
     }
     else {
@@ -10121,6 +10161,7 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
       buf_printf(b, "if (_excf%d) { sp_pending_exc_obj = _excobj%d; sp_raise_cls(_exccls%d, _excmsg%d); }\n", eid, eid, eid, eid);
     }
     g_retry_label = ens_saved_retry;
+    g_retry_pops = ens_saved_retry_pops;
     return;
   }
 
@@ -10134,6 +10175,8 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
   if (has_retry) buf_printf(b, "%s:;\n", retry_label);
   const char *saved_retry = g_retry_label;
   if (has_retry) g_retry_label = retry_label;
+  int saved_retry_pops = g_retry_pops;
+  if (has_retry) g_retry_pops = 0;
 
   emit_indent(b, indent); buf_puts(b, "sp_exc_check_depth();\n");
   emit_indent(b, indent); buf_puts(b, "sp_exc_rootmark[sp_exc_top] = sp_gc_nroots; sp_rescue_mark[sp_exc_top] = sp_rescue_sp;\n");
@@ -10199,6 +10242,7 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
   emit_indent(b, indent + 1); buf_puts(b, "if (sp_unwind_kind != SP_UNWIND_NONE) sp_unwind_resume();\n");
   emit_indent(b, indent); buf_puts(b, "}\n");
   g_retry_label = saved_retry;
+  g_retry_pops = saved_retry_pops;
 }
 
 /* Wrap a line-emitting statement so any expression preludes are flushed
@@ -14610,6 +14654,8 @@ void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
          innermost rescue save). */
       if (g_rescue_save_depth > 0)
         buf_puts(b, "sp_rescue_sp--; ");
+      /* and the frame the rescue clauses run in under an ensure */
+      if (g_retry_pops > 0) buf_printf(b, "sp_exc_top -= %d; ", g_retry_pops);
       buf_printf(b, "goto %s;\n", g_retry_label);
     }
     else unsupported(c, id, "retry (outside rescue)");
