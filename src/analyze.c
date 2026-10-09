@@ -40578,6 +40578,11 @@ static void an_presence_writes(Compiler *c, int id) {
     const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
     NodeKind k0 = ac > 0 ? nt_kind(nt, av[0]) : NK_NONE;
     if (!nm) return;
+    /* objects made without initialize: the order it assigns the ivars in says nothing of theirs */
+    { int rr = nt_ref(nt, id, "receiver");
+      if (is_allocate_name(nm) ||
+          (rr >= 0 && nt_kind(nt, rr) == NK_ConstantReadNode && is_marshal_load(nt_str(nt, rr, "name"), nm)))
+        c->pres_noinit = 1; }
     if (is_ivar_set(nm) && k0 != NK_SymbolNode && k0 != NK_StringNode) c->pres_any = 1;
     else if (is_ivar_remove_name(nm) && (k0 == NK_SymbolNode || k0 == NK_StringNode))
       comp_pres_note(c, nt_str(nt, av[0], k0 == NK_SymbolNode ? "value" : "content"), PRES_REMOVED);

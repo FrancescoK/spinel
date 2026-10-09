@@ -275,8 +275,11 @@ void comp_free(Compiler *c) {
   c->hash_default_arg_memo = NULL;
   free(c->blk_body_map);
   for (int i = 0; i < c->npres; i++) free(c->pres_names[i]);
-  free(c->pres_names); free(c->pres_flags); free(c->pres_obs); free(c->pres_memo);
+  free(c->pres_names); free(c->pres_flags); free(c->pres_obs); free(c->pres_memo); free(c->pres_rank);
   c->pres_obs = NULL; c->pres_obs_n = 0; c->pres_memo = NULL; c->pres_memo_n = 0;
+  c->pres_rank = NULL; c->pres_rank_n = 0;
+  for (int i = 0; i < c->pres_ord_n; i++) free(c->pres_ord[i]);
+  free(c->pres_ord); c->pres_ord = NULL; c->pres_ord_n = 0;
   c->pres_names = NULL; c->pres_flags = NULL; c->npres = c->cpres = 0;
   free(c->nil_fact);
   free(c->nil_elem_fact);

@@ -9192,6 +9192,18 @@ void emit_class_struct(Compiler *c, ClassInfo *ci, Buf *b) {
      emitter and the runtime take, and cls_id follows it. */
   if (ci->ary_root > 0) buf_printf(b, "  %s ary;\n", arysub_array_ctype(c, cid));
   buf_puts(b, "  sp_int cls_id;\n");  /* runtime class tag for virtual dispatch */
+  /* A family that keeps the rank of each ivar's first assignment (ivar_ranked)
+     has the last rank given in the object too, after the ivars the family's
+     topmost class lays out and before its subclasses' own, so every class of
+     it finds it at one offset and nothing sits between cls_id and the
+     ivars. A rank takes the place of each ivar's flag. */
+  int ranked = ivar_ranked(c, cid), ordk = 0;
+  if (ranked) {
+    int top = cid;
+    for (int a = ci->parent; a >= 0 && !c->classes[a].is_native_class && ivar_ranked(c, a); a = c->classes[a].parent) top = a;
+    ordk = c->classes[top].nivars;
+  }
+  if (ranked && ordk == 0) buf_puts(b, "  sp_ivrank _sp_ord;\n");
   for (int i = 0; i < ci->nivars; i++) {
     buf_puts(b, "  ");
     emit_ivar_field_ctype(c, ci->ivar_types[i], b);
@@ -9199,9 +9211,40 @@ void emit_class_struct(Compiler *c, ClassInfo *ci, Buf *b) {
        like `verbose?` whose raw name is not a valid C identifier) */
     buf_printf(b, " iv_%s;\n", iv_c(ci->ivars[i] + 1));
     if (ivar_set_kind(c, cid, ci->ivars[i]) == 3)
-      buf_printf(b, "  sp_bool _sp_set_%s;\n", iv_c(ci->ivars[i] + 1));
+      buf_printf(b, "  %s _sp_set_%s;\n", ranked ? "sp_ivrank" : "sp_bool", iv_c(ci->ivars[i] + 1));
+    if (ranked && i + 1 == ordk) buf_puts(b, "  sp_ivrank _sp_ord;\n");
   }
   buf_puts(b, "};\n");
+  /* ... the indexes of the ivars assigned, in the order they were first, and
+     the renumbering of their ranks 1..n for a rank counter that ran out */
+  if (ranked) {
+    buf_printf(b, "static inline int sp_%s_ivar_order(sp_%s *o, int *ix) {\n", ci->c_name, ci->c_name);
+    buf_printf(b, "  sp_ivrank rk[%d]; int n = 0;\n", ci->nivars > 0 ? ci->nivars : 1);
+    for (int i = 0; i < ci->nivars; i++)
+      buf_printf(b, "  if (o->_sp_set_%s) { ix[n] = %d; rk[n++] = o->_sp_set_%s; }\n",
+                 iv_c(ci->ivars[i] + 1), i, iv_c(ci->ivars[i] + 1));
+    buf_puts(b, "  return sp_ivar_sort(ix, rk, n);\n}\n");
+    buf_printf(b, "static inline void sp_%s_ivar_renumber(sp_%s *o) {\n", ci->c_name, ci->c_name);
+    buf_printf(b, "  int ix[%d]; int n = sp_%s_ivar_order(o, ix);\n", ci->nivars > 0 ? ci->nivars : 1, ci->c_name);
+    buf_puts(b, "  for (int k = 0; k < n; k++) switch (ix[k]) {\n");
+    for (int i = 0; i < ci->nivars; i++)
+      buf_printf(b, "    case %d: o->_sp_set_%s = (sp_ivrank)(k + 1); break;\n", i, iv_c(ci->ivars[i] + 1));
+    buf_puts(b, "  }\n  o->_sp_ord = (sp_ivrank)n;\n}\n");
+  }
+}
+
+/* sp_ivar_renumber: the renumbering of the ranked class an object is an instance of */
+static void emit_ivar_renumber_dispatch(Compiler *c, Buf *b) {
+  int any = 0;
+  for (int i = 0; i < c->nclasses && !any; i++)
+    any = !c->classes[i].is_native_class && !is_builtin_reopen(c->classes[i].name) && ivar_ranked(c, i);
+  if (!any) return;
+  buf_puts(b, "static void sp_ivar_renumber(int cls_id, void *o) {\n  switch (cls_id) {\n");
+  for (int i = 0; i < c->nclasses; i++) {
+    if (c->classes[i].is_native_class || is_builtin_reopen(c->classes[i].name) || !ivar_ranked(c, i)) continue;
+    buf_printf(b, "    case %d: sp_%s_ivar_renumber((sp_%s *)o); break;\n", i, c->classes[i].c_name, c->classes[i].c_name);
+  }
+  buf_puts(b, "  }\n}\n");
 }
 
 /* A class needs a GC scan iff any ivar holds a heap reference. A String range
@@ -10890,18 +10933,27 @@ static void emit_obj_inspect_dispatch(Compiler *c, Buf *b) {
     int any1 = 0;
     for (int j = 0; j < ci->nivars && !any1; j++) any1 = (ivar_set_kind(c, i, ci->ivars[j]) & 1);
     if (any1) buf_puts(b, "      int _ivsep = 0; (void)_ivsep;\n");
-    for (int j = 0; j < ci->nivars; j++) {
+    /* a ranked class shows them in the order they were first assigned */
+    int ranked = ivar_ranked(c, i);
+    if (ranked) { buf_puts(b, "      "); emit_ivar_order_open(c, i, "o", b); buf_puts(b, "\n"); }
+    int *ord = ivar_listing_order_new(c, i);
+    for (int jj = 0; jj < ci->nivars; jj++) {
+      int j = ord[jj];
       char expr[160]; snprintf(expr, sizeof expr, "o->iv_%s", iv_c(ci->ivars[j] + 1));
       char tb[256];
-      const char *set = any1 ? ivar_set_test(c, i, ci->ivars[j], expr, tb, sizeof tb) : NULL;
-      if (set) buf_printf(b, "      if %s { ", set);
+      const char *set = any1 && !ranked ? ivar_set_test(c, i, ci->ivars[j], expr, tb, sizeof tb) : NULL;
+      if (ranked) buf_printf(b, "      case %d: ", j);
+      else if (set) buf_printf(b, "      if %s { ", set);
       else if (any1) buf_puts(b, "      ");
-      if (any1)
+      if (ranked)
+        buf_printf(b, "sp_String_append(_s, _ixk ? \", %s=\" : \" %s=\"); sp_String_append(_s, ",
+                   ci->ivars[j], ci->ivars[j]);
+      else if (any1)
         buf_printf(b, "sp_String_append(_s, _ivsep++ ? \", %s=\" : \" %s=\"); sp_String_append(_s, ",
                    ci->ivars[j], ci->ivars[j]);
       else
         buf_printf(b, "      sp_String_append(_s, \"%s%s=\"); sp_String_append(_s, ",
-                   j ? ", " : " ", ci->ivars[j]);
+                   jj ? ", " : " ", ci->ivars[j]);
       TyKind ivt = ci->ivar_types[j];
       /* containers have their own typed inspect; scalars box through the
          marshal helper into sp_poly_inspect; an UNKNOWN (never usefully
@@ -10934,8 +10986,10 @@ static void emit_obj_inspect_dispatch(Compiler *c, Buf *b) {
       }
       else
         buf_puts(b, "\"#<?>\"");
-      buf_puts(b, set ? "); }\n" : ");\n");
+      buf_puts(b, ranked ? "); break;\n" : set ? "); }\n" : ");\n");
     }
+    free(ord);
+    if (ranked) { buf_puts(b, "      "); emit_ivar_order_close(b); buf_puts(b, "\n"); }
     buf_puts(b, "      sp_String_append(_s, \">\");\n");
     if (ci->nivars > 0) buf_puts(b, "      sp_poly_recur_pop(_rcm);\n");
     buf_puts(b, "      return _s->data;\n    }\n");
@@ -10967,17 +11021,25 @@ static void emit_marshal_dispatch(Compiler *c, Buf *b) {
        no table bounded by the class's ivar count */
     char tb[256];
     int fixed = 0;
+    /* a ranked class writes them in the order they were first assigned */
+    int ranked = ivar_ranked(c, i);
     for (int j = 0; j < ci->nivars; j++) {
       char expr[160]; snprintf(expr, sizeof expr, "o->iv_%s", iv_c(ci->ivars[j] + 1));
       if (!ivar_set_test(c, i, ci->ivars[j], expr, tb, sizeof tb)) fixed++;
     }
-    buf_printf(b, "      sp_int _niv = %d", fixed);
-    for (int j = 0; j < ci->nivars; j++) {
-      char expr[160]; snprintf(expr, sizeof expr, "o->iv_%s", iv_c(ci->ivars[j] + 1));
-      const char *set = ivar_set_test(c, i, ci->ivars[j], expr, tb, sizeof tb);
-      if (set) buf_printf(b, " + !!%s", set);
+    if (ranked) {
+      buf_printf(b, "      int _ixv[%d]; sp_int _niv = sp_%s_ivar_order(o, _ixv);\n",
+                 ci->nivars > 0 ? ci->nivars : 1, ci->c_name);
     }
-    buf_puts(b, ";\n");
+    else {
+      buf_printf(b, "      sp_int _niv = %d", fixed);
+      for (int j = 0; j < ci->nivars; j++) {
+        char expr[160]; snprintf(expr, sizeof expr, "o->iv_%s", iv_c(ci->ivars[j] + 1));
+        const char *set = ivar_set_test(c, i, ci->ivars[j], expr, tb, sizeof tb);
+        if (set) buf_printf(b, " + !!%s", set);
+      }
+      buf_puts(b, ";\n");
+    }
     /* an Array subclass instance (#7449) is written as CRuby writes it:
        `C`, its class, its elements as an Array's, and its ivars after them
        under `I` when it has any */
@@ -10988,15 +11050,23 @@ static void emit_marshal_dispatch(Compiler *c, Buf *b) {
       buf_puts(b, ");\n      if (_niv) sp_mar_long(b, _niv);\n");
     }
     else buf_printf(b, "      sp_mar_b(b, 'o'); sp_mar_sym(b, %s);\n      sp_mar_long(b, _niv);\n", mnq);
-    for (int j = 0; j < ci->nivars; j++) {
+    if (ranked)
+      buf_puts(b, "      for (int _ixk = 0; _ixk < _niv; _ixk++) switch (_ixv[_ixk]) {\n");
+    int *ord = ivar_listing_order_new(c, i);
+    for (int jj = 0; jj < ci->nivars; jj++) {
+      int j = ord[jj];
       char expr[160]; snprintf(expr, sizeof expr, "o->iv_%s", iv_c(ci->ivars[j] + 1));
-      const char *set = ivar_set_test(c, i, ci->ivars[j], expr, tb, sizeof tb);
+      const char *set = ranked ? NULL : ivar_set_test(c, i, ci->ivars[j], expr, tb, sizeof tb);
+      if (ranked) buf_printf(b, "      case %d:\n", j);
       if (set) buf_printf(b, "      if %s {\n", set);
       buf_printf(b, "      sp_mar_sym(b, \"%s\"); sp_mar_w(b, ", ci->ivars[j]);
       emit_marshal_box_ivar(c, ci->ivar_types[j], expr, b);
       buf_puts(b, ");\n");
       if (set) buf_puts(b, "      }\n");
+      if (ranked) buf_puts(b, "      break;\n");
     }
+    free(ord);
+    if (ranked) buf_puts(b, "      }\n");
     buf_puts(b, "      return 1;\n    }\n");
   }
   buf_puts(b, "    default: return 0;\n  }\n}\n");
@@ -11021,13 +11091,14 @@ static void emit_marshal_dispatch(Compiler *c, Buf *b) {
       buf_puts(b, "      const char *nm = sp_sym_to_s((sp_sym)sp_PolyArray_get(iv, k).v.i);\n");
       buf_puts(b, "      sp_RbVal val = sp_PolyArray_get(iv, k + 1); (void)val; (void)nm;\n");
       for (int j = 0; j < ci->nivars; j++) {
-        int present = ivar_set_kind(c, i, ci->ivars[j]) == 3;
-        buf_printf(b, present ? "      %sif (!strcmp(nm, \"%s\")) { o->iv_%s = " :
-                                "      %sif (!strcmp(nm, \"%s\")) o->iv_%s = ",
+        char mk[300];
+        const char *mark = ivar_set_mark(c, i, ci->ivars[j], "o", "->", mk, sizeof mk);
+        buf_printf(b, mark ? "      %sif (!strcmp(nm, \"%s\")) { o->iv_%s = " :
+                             "      %sif (!strcmp(nm, \"%s\")) o->iv_%s = ",
                    j ? "else " : "", ci->ivars[j], iv_c(ci->ivars[j] + 1));
         emit_marshal_unbox_ivar(c, ci->ivar_types[j], b);
         buf_puts(b, ";\n");
-        if (present) buf_printf(b, "      o->_sp_set_%s = TRUE; }\n", iv_c(ci->ivars[j] + 1));
+        if (mark) buf_printf(b, "      %s }\n", mark);
       }
       buf_puts(b, "    }\n");
     }
@@ -16870,6 +16941,7 @@ char *codegen_program(const NodeTable *nt) {
   for (int i = 0; i < c->nclasses; i++)
     if (!is_builtin_reopen(c->classes[i].name))
       emit_class_struct(c, &c->classes[i], &b);
+  emit_ivar_renumber_dispatch(c, &b);
   for (int i = 0; i < c->nclasses; i++)
     if (!is_builtin_reopen(c->classes[i].name)) {
       emit_class_scan(c, &c->classes[i], &b);

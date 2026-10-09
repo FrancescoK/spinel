@@ -464,6 +464,16 @@ int is_marshal_dump(const char *recv, const char *meth) {
   return recv && meth && sp_streq(meth, "dump") && sp_streq(recv, "Marshal");
 }
 
+/* `Marshal.load`, which builds the objects it reads without their initialize */
+int is_marshal_load(const char *recv, const char *meth) {
+  return recv && meth && sp_streq(meth, "load") && sp_streq(recv, "Marshal");
+}
+
+/* Class#allocate, an object without its initialize run */
+int is_allocate_name(const char *n) {
+  return sp_streq(n, "allocate");
+}
+
 /* The reflective ivar removal */
 int is_ivar_remove_name(const char *n) {
   return sp_streq(n, "remove_instance_variable");

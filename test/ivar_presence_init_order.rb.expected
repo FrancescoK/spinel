@@ -1,0 +1,43 @@
+[:@a, :@b]
+[:@w, :@z, :@v]
+[:@m, :@p, :@q, :@n]
+#<Zz:0x @a=1, @b=2>
+#<C3:0x @w=1, @z=0, @v=2>
+#<C4:0x @m=0, @p=1, @q=2, @n=3>
+"\x04\bo:\aC3\b:\a@wi\x06:\a@zi\x00:\a@vi\a"
+[[:@m, :@p, :@q, :@n], [:@a, :@b]]
+[:@a, :@b]
+[:@size, :@buf]
+[:@a, :@b]
+[:@c, :@d, :@e]
+#<K3:0x @a=1, @b=2>
+#<K2:0x @size=1, @buf=[]>
+#<H5:0x @a=1, @b=2>
+[:@k, :@m, :@p, :@mm]
+[:@b]
+[:@q, :@r]
+#<Kx:0x @k=0, @m=1, @p=2, @mm=4>
+#<Cb:0x @q=1, @r=2>
+[:@y]
+[:@pdb, :@pda]
+[:@pka, :@pkb]
+[:@pea, :@pec, :@peb]
+#<Pe:0x @pea=1, @pec=3, @peb=2>
+[:@ppa, :@ppb]
+[:@ppb, :@ppa]
+[:@ppa, :@ppb]
+[:@ppa, :@ppb, :@ppz]
+[:@ra, :@rb]
+[:@ra, :@rb]
+[:@rb, :@ra, :@rc]
+[:@rd]
+[:@re, :@rb, :@ra, :@rc]
+[:@ra, :@rb, :@sq]
+["#<Ra:0x @ra=1, @rb=2>", "#<Rc:0x @rb=2, @ra=1, @rc=3>", "#<Rd:0x @rd=9>", "#<Re:0x @re=5, @rb=2, @ra=1, @rc=3>", "#<Sq:0x @ra=1, @rb=2, @sq=3>"]
+[:@ra, :@rb]
+[:@rb, :@ra, :@rc]
+[:@rd]
+[:@re, :@rb, :@ra, :@rc]
+[:@ra, :@rb, :@sq]
+[:@rb, :@ra, :@rc]
+[:@rb, :@ra, :@rc]
