@@ -2234,7 +2234,10 @@ void an_user_call_record(Compiler *c, int id, int mi, int via, int owner_ci) {
 
 TyKind an_user_call(Compiler *c, int id, int mi, int via, int owner_ci) {
   an_user_call_record(c, id, mi, via, owner_ci);
-  return method_call_ret(c, mi, id);
+  /* A yielding reopening is called through its proc form. Its return
+     includes the block's boxed answer, also through rescue or ensure. */
+  int pf = via == UC_REOPEN && c->scopes[mi].yields ? scope_proc_form_of(c, mi) : -1;
+  return method_call_ret(c, pf >= 0 ? pf : mi, id);
 }
 
 const BuiltinOp *an_bop_find(Compiler *c, int id, TyKind rt, const char *name,
