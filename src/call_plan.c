@@ -105,12 +105,17 @@ static void cplan_resolve_super(Compiler *c, int id, CallPlan *p) {
     return;
   }
   int par = comp_super_parent(c, s->class_id, s->is_cmethod);
-  if (par < 0) return;
   const char *uname = comp_super_name(c, par, s->name, s->is_cmethod);
   if (!uname) return;
-  int mi = s->is_cmethod ? comp_cmethod_in_chain(c, par, uname, NULL)
-                         : comp_method_in_chain(c, par, uname, NULL);
+  int mi = par < 0 ? -1 : s->is_cmethod ? comp_cmethod_in_chain(c, par, uname, NULL)
+                                       : comp_method_in_chain(c, par, uname, NULL);
   if (mi >= 0) cplan_set(p, mi, par, UC_SUPER, CP_DIRECT);
+  else if (s->is_cmethod &&
+           builtin_super_cmethod_known(c->classes[s->class_id].name, uname)) {
+    cplan_set(p, -1, s->class_id, UC_SUPER, CP_REFUSE);
+    p->rkind = CR_FEATURE; p->rfrom = CRF_LIMIT;
+    p->msg = "super to an inherited builtin singleton method is not supported; see docs/limitations.md";
+  }
 }
 
 static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
@@ -967,7 +972,19 @@ static void cplan_refuse_set(CallPlan *p, int from, int rkind, const char *msg, 
 /* in the order codegen meets them: the prepasses, then the emitters */
 static void cplan_refuse_resolve(Compiler *c, int id, CallPlan *p, char *buf, size_t cap) {
   cplan_set(p, -1, -1, UC_NONE, CP_NONE);
-  if (nt_kind(c->nt, id) != NK_CallNode) return;
+  NodeKind k = nt_kind(c->nt, id);
+  if (k == NK_SuperNode || k == NK_ForwardingSuperNode) {
+    const CallPlan *sp = cplan_user(c, id);
+    if (sp->dispatch == CP_REFUSE) {
+      Scope *s = comp_scope_of(c, id);
+      char msg[2400];
+      snprintf(msg, sizeof msg, "%s.%s: %s", c->classes[s->class_id].name,
+               comp_prep_user_name(s->name), sp->msg);
+      cplan_refuse_set(p, sp->rfrom, sp->rkind, msg, buf, cap);
+    }
+    return;
+  }
+  if (k != NK_CallNode) return;
   const char *what = NULL;
   int from = CRF_NONE;
   if ((what = cplan_runtime_send_what(c, id))) from = CRF_SEND;
