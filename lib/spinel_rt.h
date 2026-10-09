@@ -8236,6 +8236,13 @@ static SP_NORETURN void sp_scan_bad_pattern(sp_RbVal pat) {
 static sp_RbVal sp_poly_pattern_chk(sp_RbVal v, int nil_ok) {
   if (v.tag == SP_TAG_NIL ? !nil_ok : v.tag != SP_TAG_OBJ || (v.cls_id < 0 && !sp_poly_is_strbuf(v)))
     sp_scan_bad_pattern(v);
+  /* a user object without #to_str is no pattern either */
+  if (v.tag == SP_TAG_OBJ && v.cls_id >= 0) {
+    SP_GC_ROOT_RBVAL(v);
+    const char *r = v.v.p && sp_obj_to_str_fn ? sp_obj_to_str_fn((int)v.cls_id, v.v.p) : NULL;
+    if (!r) sp_scan_bad_pattern(v);
+    return sp_box_str(r);
+  }
   return v;
 }
 /* match? / match on a boxed operand, ahead of the poly match helpers,
