@@ -22231,6 +22231,101 @@ static int poly_spliced_block_call(Compiler *c, Scope *m, int n) {
   const char *rn = nt_str(nt, r, "name");
   return rn && m->blk_param[0] && sp_streq(rn, m->blk_param);
 }
+/* --share-strings: the String a boxed to_s answers is the one its receiver
+   holds. For a parameter receiver every call site has to pass a String no
+   other name holds, or one the lift can make a handle in the caller. A call
+   answering its String argument (`b.itself`, a lambda's value), or a
+   variable that was given such a value, is boxed as bytes, and the callee's
+   lift would copy them. So the rule looks one level only: an argument is a
+   value that cannot be a String, a fresh String (a literal, `+"lit"`), a
+   reader over a shared slot, a local whose every write is one of those, or
+   a poly ivar whose every write passes this rule. A parameter, or a local
+   written from a call or another variable, keeps the refusal. The refusal
+   and the lift ask the same question. */
+static int boxed_to_s_fresh(Compiler *c, int a) {
+  const NodeTable *nt = c->nt;
+  a = an_unparen(nt, a);
+  if (a < 0) return 0;
+  NodeKind k = nt_kind(nt, a);
+  if (k == NK_StringNode || k == NK_InterpolatedStringNode) return 1;
+  return k == NK_CallNode && is_unary_plus(nt_str(nt, a, "name")) && nt_ref(nt, a, "arguments") < 0 &&
+         nt_ref(nt, a, "block") < 0 && boxed_to_s_fresh(c, nt_ref(nt, a, "receiver"));
+}
+static int boxed_to_s_arg_ok(Compiler *c, const HandleArgTab *hat, int a, int ivar_depth);
+/* A write's value: fresh, or no String */
+static int boxed_to_s_value_ok(Compiler *c, const HandleArgTab *hat, int v) {
+  return v >= 0 && (boxed_to_s_fresh(c, v) || !poly_value_may_be_string(c, hat, v, 0, NULL));
+}
+static int boxed_to_s_arg_ok(Compiler *c, const HandleArgTab *hat, int a, int ivar_depth) {
+  const NodeTable *nt = c->nt;
+  a = an_unparen(nt, a);
+  if (a < 0) return 0;
+  if (boxed_to_s_value_ok(c, hat, a)) return 1;
+  NodeKind k = nt_kind(nt, a);
+  if (k == NK_CallNode) return an_arg_hands_handle(c, a);
+  if (k == NK_LocalVariableReadNode) {
+    const char *vn = nt_str(nt, a, "name");
+    Scope *vs = vn ? comp_scope_of(c, a) : NULL;
+    LocalVar *lv = vs ? scope_local(vs, vn) : NULL;
+    if (!lv || lv->is_param || lv->is_block_param) return 0;
+    int writes = 0;
+    for (int w = comp_lvw_first_sc(c, (int)(vs - c->scopes), vn); w >= 0; w = comp_lvw_next_sc(c, w)) {
+      if (comp_scope_of(c, w) != vs || !sp_streq(nt_str(nt, w, "name"), vn)) continue;
+      if (nt_kind(nt, w) != NK_LocalVariableWriteNode || !boxed_to_s_value_ok(c, hat, nt_ref(nt, w, "value"))) return 0;
+      writes++;
+    }
+    return writes > 0;
+  }
+  if (k == NK_InstanceVariableReadNode && !ivar_depth && comp_ntype(c, a) == TY_POLY) {
+    const char *in = nt_str(nt, a, "name");
+    int cid = in ? comp_ivar_owner(c, a) : -1, writes = 0;
+    if (cid < 0) return 0;
+    NT_FOREACH_KIND(nt, NK_InstanceVariableWriteNode, w) {
+      const char *wn = nt_str(nt, w, "name");
+      if (!wn || !sp_streq(wn, in) || comp_ivar_owner(c, w) != cid) continue;
+      if (!boxed_to_s_arg_ok(c, hat, nt_ref(nt, w, "value"), 1)) return 0;
+      writes++;
+    }
+    /* any other kind of write (`@v ||= x`, `@v += x`) is not looked at */
+    static const NodeKind other[] = { NK_InstanceVariableOrWriteNode, NK_InstanceVariableAndWriteNode,
+                                       NK_InstanceVariableOperatorWriteNode, NK_InstanceVariableTargetNode };
+    for (size_t i = 0; i < sizeof other / sizeof *other; i++)
+      NT_FOREACH_KIND(nt, other[i], w) {
+        const char *wn = nt_str(nt, w, "name");
+        if (wn && sp_streq(wn, in)) return 0;
+      }
+    return writes > 0;
+  }
+  return 0;
+}
+static int boxed_to_s_recv_ok(Compiler *c, const HandleArgTab *hat, int r) {
+  const NodeTable *nt = c->nt;
+  const char *vn = nt_kind(nt, r) == NK_LocalVariableReadNode ? nt_str(nt, r, "name") : NULL;
+  Scope *vs = vn ? comp_scope_of(c, r) : NULL;
+  LocalVar *lv = vs ? scope_local(vs, vn) : NULL;
+  if (!lv) return 0;
+  /* a local receiver is judged by its writes, as an argument is */
+  if (!lv->is_param) return boxed_to_s_arg_ok(c, hat, r, 0);
+  int pj = an_param_idx(vs, vn), si = (int)(vs - c->scopes);
+  if (pj < 0 || lv->is_block_param || !hat || !hat->ok || hat->head[si] < 0) return 0;
+  /* a parameter written from something else inside the method is no longer
+     the caller's String; one rebound from a call on itself (`o = o.to_s`,
+     `o = o.dup`) is read where it is rebound */
+  for (int w = comp_lvw_first_sc(c, si, vn); w >= 0; w = comp_lvw_next_sc(c, w)) {
+    if (comp_scope_of(c, w) != vs || !sp_streq(nt_str(nt, w, "name"), vn)) continue;
+    int wv = nt_kind(nt, w) == NK_LocalVariableWriteNode ? an_unparen(nt, nt_ref(nt, w, "value")) : -1;
+    int wr = wv >= 0 && nt_kind(nt, wv) == NK_CallNode ? an_unparen(nt, nt_ref(nt, wv, "receiver")) : -1;
+    if (wr < 0 || nt_kind(nt, wr) != NK_LocalVariableReadNode || !sp_streq(nt_str(nt, wr, "name"), vn)) return 0;
+  }
+  if (vs->pdefault && vs->pdefault[pj] >= 0 && !boxed_to_s_arg_ok(c, hat, vs->pdefault[pj], 0)) return 0;
+  for (int e = hat->head[si]; e >= 0; e = hat->enext[e]) {
+    int sp = -1;
+    int a = arg_layout_param_node(c, vs, hat->enode[e], pj, &sp);
+    if (sp >= 0 || (a < 0 && !(vs->pdefault && vs->pdefault[pj] >= 0)) ||
+        (a >= 0 && !boxed_to_s_arg_ok(c, hat, a, 0))) return 0;
+  }
+  return 1;
+}
 /* A POLY variable holds a plain String as a value, so a second name for it
    is a copy: `y = x` copied the box, and `sp_poly_shl` on either name
    answered a new String the other never saw, as did a callee's append
@@ -22299,6 +22394,20 @@ static int lift_poly_alias_reads(Compiler *c, const HandleArgTab *hat) {
       if (!poly || !app || v < 0 || v == w) continue;
       if (lift_poly_read(c, hat, &lifted, v)) round = changed = 1;
     }
+    /* `s = o.to_s` where the program appends to s in place: a boxed to_s
+       answers the String in o's box as the handle (repr_boxed_to_s_operand),
+       so o is lifted into the handle as `s = o` would lift it, and a
+       parameter o pulls its callers in. A plain box would answer a copy. */
+    if (c->share_strings)
+      NT_FOREACH_KIND(nt, NK_LocalVariableWriteNode, w) {
+        int v = an_unparen(nt, nt_ref(nt, w, "value"));
+        const char *wn = nt_str(nt, w, "name");
+        int r = v >= 0 && nt_kind(nt, v) == NK_CallNode ? nt_ref(nt, v, "receiver") : -1;
+        if (r < 0 || !wn || nt_kind(nt, r) != NK_LocalVariableReadNode || !is_to_s_name(nt_str(nt, v, "name")) ||
+            nt_ref(nt, v, "block") >= 0 || call_plain_argc(c, v) != 0 ||
+            !strbuf_any_str_mut(c, wn, comp_scope_of(c, w)) || !boxed_to_s_recv_ok(c, hat, r)) continue;
+        if (lift_poly_read(c, hat, &lifted, r)) round = changed = 1;
+      }
     /* `@s = x` (or `@@s`, `$s`) where the program appends to that variable
        (`@s << y`, or a read of it lifted for a parameter appended to): the
        variable is another name for x's String, as `y = x` is, so x is
@@ -35169,6 +35278,8 @@ static int rd_read_dropped_for_copy(Compiler *c, int w, const char *wn) {
      parameter no element iterator binds (refuse_stored_block_param). */
 static void refuse_string_read_copies(Compiler *c) {
   const NodeTable *nt = c->nt;
+  HandleArgTab hat;
+  int hat_built = 0;
   NT_FOREACH_KIND(nt, NK_LocalVariableWriteNode, w) {
     int v = an_unparen(nt, nt_ref(nt, w, "value"));
     const char *wn = nt_str(nt, w, "name");
@@ -35191,6 +35302,15 @@ static void refuse_string_read_copies(Compiler *c) {
     q.carry = SHARE_CARRY_COPY;
     /* A reader whose settled plan carries shared fields uses that route. */
     if (repr_boxed_reader_handle(c, v)) q.carry = v;
+    /* A boxed to_s has a builtin face, so the reader plan declines it. The
+       seal asks repr_boxed_to_s_operand once the targets' returns settle:
+       every arm's own answer (a field's handle, a fresh String, the handle
+       in the box) is kept, and a target that settles otherwise still copies. */
+    else if (c->share_strings && is_to_s_name(nt_str(nt, v, "name"))) {
+      /* the receiver's callers must pass what the lift can make a handle */
+      if (!hat_built) { handle_arg_tab_init(c, &hat); hat_built = 1; }
+      if (boxed_to_s_recv_ok(c, &hat, r)) q.carry = v;
+    }
     if (rd_receiver_observed(c, r, rn) && !share_route_defer(c, &q, rd_msg)) unsupported_feature(c, w, rd_msg);
   }
   StoreVals st = {0};
@@ -35235,6 +35355,7 @@ static void refuse_string_read_copies(Compiler *c) {
     }
   }
   free(st.v);
+  if (hat_built) handle_arg_tab_free(&hat);
 }
 
 /* A multiple assignment's index target that a Struct's own `[]=` can take

@@ -1,3 +1,4 @@
+# spinel: reject-share
 # A String read through a reader on a boxed receiver, rebound with a `dup`
 # the program redefines to answer self: the change after it is the
 # member's own in CRuby, so the copy exception does not apply: refused
