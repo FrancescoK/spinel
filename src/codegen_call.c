@@ -14550,6 +14550,9 @@ void emit_brk_wrapped_call(Compiler *c, int id, Buf *b) {
     buf_printf(g_pre, "sp_int _brkser%d = sp_brk_push(); (void)_brkser%d;\n", tS, tS);
     emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "_brkslot%d = sp_brk_top;\n", tS);
+    /* as a catch does (emit of `catch`): the exception in flight here */
+    int brkic = g_uses_ensure;
+    if (brkic) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "void *_brkic%d = sp_inflight_cause;\n", tS); }
     emit_indent(g_pre, g_indent);
     buf_puts(g_pre, "if (setjmp(sp_brk_stack[sp_brk_top - 1]) == 0) {\n");
     buf_puts(g_pre, body.p ? body.p : "");
@@ -14564,6 +14567,7 @@ void emit_brk_wrapped_call(Compiler *c, int id, Buf *b) {
     emit_indent(g_pre, g_indent + 1);
     buf_printf(g_pre, "sp_exc_top = _brkexc%d; sp_catch_top = _brkcat%d; sp_brk_top = _brkslot%d;\n",
                tS, tS, tS);
+    if (brkic) { emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_inflight_cause = _brkic%d;\n", tS); }
     emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "_t%d = sp_brk_val[sp_brk_top - 1];\n", tR);
     emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "sp_brk_top--;\n");
     emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");

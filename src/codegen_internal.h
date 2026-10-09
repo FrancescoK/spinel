@@ -652,6 +652,7 @@ extern int g_uses_regex;
 extern int g_uses_argv;
 extern int g_uses_threads;
 extern int g_uses_finalizers;
+extern int g_uses_ensure;   /* the program holds an ensure clause: only then is an exception ever in flight (sp_inflight_cause) */
 extern int g_has_user_cmp;
 extern int g_has_user_binop;
 extern int g_has_user_aset;

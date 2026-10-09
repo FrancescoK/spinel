@@ -9975,12 +9975,18 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
       emit_indent(b, indent);
       buf_printf(b, "sp_String *_rh%d = (sp_String *)_sp_ret_strbuf; SP_GC_ROOT(_rh%d);\n", eid, eid);
     }
+    /* The body gives the outer exception in flight back however it is left
+       in this function: by its end, a return, a break or a next. A raise
+       after one of the last three took the exception this ensure dropped
+       as its cause. */
+    emit_indent(b, indent);
+    buf_printf(b, "{ void *_icr%d SP_CLEANUP(sp_inflight_restore) = _ic%d; (void)_icr%d;\n", eid, eid, eid);
     emit_stmts(c, ensure_stmts, b, indent);
     if (keep_handle) {
       emit_indent(b, indent); buf_printf(b, "_sp_ret_strbuf = _rh%d;\n", eid);
     }
     emit_indent(b, indent);
-    buf_printf(b, "sp_inflight_cause = _ic%d;\n", eid);
+    buf_puts(b, "}\n");
     emit_indent(b, indent);
     buf_printf(b, "sp_unwind_kind = _uk%d; sp_unwind_target = _ut%d; sp_unwind_exc_top = _ue%d; sp_unwind_home = _uh%d;\n",
                eid, eid, eid, eid);
