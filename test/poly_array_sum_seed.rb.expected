@@ -1,0 +1,43 @@
+"ab"
+[9]
+10
+0.0
+(1/2)
+"ab!"
+"abc"
+[9, 1, 2]
+13.5
+0.6
+(7/4)
+1.75
+1.0
+1.0
+"abc"
+[9, 1, 2]
+[1, 2]
+"ab"
+[9]
+[]
+[TypeError, "no implicit conversion of Integer into String"]
+[TypeError, "no implicit conversion of Integer into Array"]
+[TypeError, "no implicit conversion of Integer into String"]
+[TypeError, "no implicit conversion of Integer into Array"]
+(7/2)
+"ab"
+"abcd"
+[9, 1, 2]
+13.5
+0.6
+(7/2)
+3.5
+[TypeError, "no implicit conversion of Integer into String"]
+3.5
+0.6
+Infinity
+true
+6.5
+"ab"
+(7/2)
+"abcd"
+13.5
+["receiver", "seed"]

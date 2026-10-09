@@ -14,6 +14,7 @@
  * generated TU and resolved at the final link, the same way lib/sp_core.c
  * calls them -- so lib/sp_array.c can use them without a runtime include.
  */
+#include <stdint.h>
 #include <math.h>      /* isnan / isinf / signbit / NAN / fabs for sp_float_sum_step */
 #include "sp_gc.h"      /* sp_gc_hdr, sp_gc_bytes, SP_GC_ROOT, sp_oom_die */
 #include "sp_alloc.h"   /* sp_gc_alloc, sp_str_alloc, sp_raise_cls, sp_raise_frozen_array */
@@ -96,6 +97,34 @@ sp_int sp_IntArray_max(sp_IntArray *a);
 const char *sp_StrArray_min(sp_StrArray *a);
 const char *sp_StrArray_max(sp_StrArray *a);
 sp_int sp_IntArray_sum(sp_IntArray *a, sp_int init);
+/* A vectorizable reduction for nonnegative, bounded elements. The OR is
+   an upper bound for every term, so the bound covers every ordered prefix.
+   Otherwise resume with checked additions, stopping before the first overflow. */
+static inline sp_int sp_IntArray_sum_prefix(sp_IntArray *a, sp_int seed, sp_int *sum) {
+  uintptr_t total = 0, bound = 0;
+  for (sp_int i = 0; i < a->len; i++) {
+    uintptr_t v = (uintptr_t)a->data[a->start + i];
+    total += v;
+    bound |= v;
+  }
+  uint64_t limit;
+  if (bound <= INTPTR_MAX &&
+      !sp_ckd_mul_u64(bound, (uint64_t)a->len, &limit) &&
+      limit <= (uintptr_t)INTPTR_MAX - (uintptr_t)seed) {
+    *sum = (sp_int)((uintptr_t)seed + total);
+    return a->len;
+  }
+  for (sp_int i = 0; i < a->len; i++) {
+    sp_int next;
+    if (sp_ckd_add_iptr(seed, a->data[a->start + i], &next)) {
+      *sum = seed;
+      return i;
+    }
+    seed = next;
+  }
+  *sum = seed;
+  return a->len;
+}
 sp_bool sp_IntArray_include(sp_IntArray *a, sp_int v);
 sp_int sp_IntArray_index(sp_IntArray *a, sp_int v);
 sp_int sp_IntArray_rindex(sp_IntArray *a, sp_int v);
@@ -158,7 +187,7 @@ static inline void sp_FloatArray_set(sp_FloatArray*a,sp_int i,sp_float v){if(!a)
    (inf - inf) and `[Float::INFINITY, 1.0].sum` answered NaN where Ruby
    answers Infinity. Shared so the typed float sum and the boxed fold in
    spinel_rt.h cannot drift apart. */
-static inline void sp_float_sum_step(sp_float *sum, sp_float *comp, sp_float x) {
+static SP_INLINE void sp_float_sum_nonfinite(sp_float *sum, sp_float *comp, sp_float x) {
   sp_float f = *sum;
   if (isnan(f)) return;
   if (isnan(x)) { *sum = x; return; }
@@ -173,6 +202,13 @@ static inline void sp_float_sum_step(sp_float *sum, sp_float *comp, sp_float x) 
     else *comp += (x - t) + f;
     *sum = t;
   }
+}
+static inline void sp_float_sum_step(sp_float *sum, sp_float *comp, sp_float x) {
+  sp_float f = *sum, t = f + x;
+  if (SP_UNLIKELY(!isfinite(t))) { sp_float_sum_nonfinite(sum, comp, x); return; }
+  if (fabs(f) >= fabs(x)) *comp += (f - t) + x;
+  else *comp += (x - t) + f;
+  *sum = t;
 }
 
 /* ---- sp_FloatArray cold ops (compiled in lib/sp_array.c) ---- */

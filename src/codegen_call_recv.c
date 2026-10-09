@@ -1787,20 +1787,28 @@ static int emit_kind_array_iter_call(Compiler *c, int id, Buf *b, const NodeTabl
     TyKind init_t = fold_seed_ntype(c, argv[0]);
     /* a String initial value concatenates (["a","b"].sum("") == "ab") */
     if (rt == TY_STR_ARRAY && init_t == TY_STRING) {
-      Buf rss;
-      int css = hold_recv_open(c, recv, 0, "sp_StrArray *", "SP_GC_ROOT", b, &rss);
-      buf_printf(b, "sp_StrArray_sum_str(%s, ", rss.p);
-      emit_expr(c, argv[0], b); buf_puts(b, ")");
-      free(rss.p);
-      if (css) buf_puts(b, "; })");
+      emit_poly_sum_seed(c, recv, argv[0], b);
       { *out = 1; return 1; }
     }
     /* a float initial value promotes an integer-array sum to Float: add the
        float init to the integer total in floating point (sp_IntArray_sum
        returns sp_int, so accumulating the init through it would truncate). */
     if (rt == TY_INT_ARRAY && init_t == TY_FLOAT) {
-      buf_puts(b, "((sp_float)("); emit_expr(c, argv[0], b);
-      buf_puts(b, ") + (sp_float)sp_IntArray_sum("); emit_nil_ck_recv(c, recv, rt, "sum", 1, b); buf_puts(b, ", 0))");
+      int tr = ++g_tmp, ts = ++g_tmp;
+      buf_puts(b, "({ ");
+      tr = hold_operand(c, recv, TY_INT_ARRAY, 0, tr, 1, " ", b);
+      ts = hold_operand(c, argv[0], TY_FLOAT, 0, ts, 1, " ", b);
+      char rn[32]; snprintf(rn, sizeof rn, "_t%d", tr);
+      Buf ck; memset(&ck, 0, sizeof ck);
+      const char *ar = nil_sum_ck_text(c, recv, rt, 1, rn, &ck);
+      /* The empty sum keeps signed zero. An exact prefix may need a Bignum
+         before conversion to Float, just as an Integer-seeded sum does. */
+      buf_printf(b, "sp_IntArray_length(_t%d) == 0 ? _t%d : _t%d + ", tr, ts, ts);
+      if (g_promote_mode)
+        buf_printf(b, "sp_poly_to_f(sp_IntArray_sum_promote(%s, 0))", ar);
+      else buf_printf(b, "(sp_float)sp_IntArray_sum(%s, 0)", ar);
+      free(ck.p);
+      buf_puts(b, "; })");
       { *out = 1; return 1; }
     }
     /* Any other seed keeps its OWN class for the whole fold: CRuby's
@@ -1810,7 +1818,7 @@ static int emit_kind_array_iter_call(Compiler *c, int id, Buf *b, const NodeTabl
        that operator itself produces -- worded for the ELEMENT's class, which
        the hard-coded String-seed raise that used to stand here could only
        get right over Integers. sp_poly_sum_seed runs CRuby's own phases. */
-    if (rt == TY_STR_ARRAY || !fold_seed_typed(init_t, ty_array_elem(rt))) {
+    if (rt == TY_STR_ARRAY || fold_sum_type(init_t, ty_array_elem(rt), g_promote_mode) == TY_POLY) {
       emit_poly_sum_seed(c, recv, argv[0], b);
       { *out = 1; return 1; }
     }

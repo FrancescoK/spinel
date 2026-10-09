@@ -64,6 +64,7 @@ int is_diverging_call(const char *n); /* raise fail throw exit exit! abort: a Ke
 int is_block_loop_method(const char *n); /* times each upto downto step loop each_with_index: a block run an unbounded number of times */
 
 int is_each_window(const char *n); /* each_cons each_slice: consecutive or disjoint element windows */
+int is_sum_name(const char *n);
 int is_reduce_alias(const char *n); /* inject reduce: Enumerable reduction aliases */
 int is_minmax_query(const char *n); /* min max: extrema queries */
 int is_endpoint_query(const char *n); /* first last: collection or Range endpoints */

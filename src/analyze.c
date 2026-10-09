@@ -463,12 +463,14 @@ void compute_reachable(Compiler *c) {
       if (nt_kind(c->nt, id) != NK_CallNode) continue;
       { const char *nm = nt_str(c->nt, id, "name");
         if (!nm || !sp_streq(nm, "sum")) continue; }
-      if (nt_ref(c->nt, id, "block") >= 0) continue;   /* a block decides what is summed */
       /* `"abc".sum(16)` is String's checksum width, not a fold seed */
       { int rcv = nt_ref(c->nt, id, "receiver");
         if (rcv >= 0 && nt_kind(c->nt, rcv) == NK_StringNode) continue; }
       { int args = nt_ref(c->nt, id, "arguments");
         int an = 0; const int *av = args >= 0 ? nt_arr(c->nt, args, "arguments", &an) : NULL;
+        /* A numeric seed can reach a user + through an element's coerce,
+           including a block's value. Reuse the pass's indexed method names. */
+        if (SN_FIRST("coerce") >= 0) { MARK_NAME("coerce"); MARK_NAME("+"); break; }
         if (an < 1 || !av) continue;
         if (an_seed_is_builtin(c->nt, av[0])) continue;
         MARK_NAME("+");
