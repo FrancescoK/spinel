@@ -3759,6 +3759,11 @@ plan-check-test: $(SPINEL)
 repr-check-test: $(SPINEL)
 	@tools/repr_check.sh
 
+# The sharing verifier has its own focused corpus and conflict ratchet.
+.PHONY: share-verify-test
+share-verify-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS) $(BUNDLED_NATIVE_MT_OBJS)
+	@ruby tools/share_verify.rb
+
 # nil-check (#7444): the analysis's nil fact held against the answers the
 # codegen helpers give today. #7444's shapes (test/nil_check/) must report
 # as recorded; over the corpus nothing may be HELPER-ONLY, and the C must be

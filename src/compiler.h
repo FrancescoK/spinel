@@ -416,6 +416,7 @@ typedef struct {
                                String's handle, which the callee's tail read
                                publishes (_sp_ret_strbuf); set once the
                                analysis settles (an_mark_handle_returns) */
+  unsigned char ret_channel_check; /* --repr-check: the earlier pickup proof succeeded */
   unsigned char ret_fresh; /* the same return-tail walk proves a new String
                               (or nil) on every path; no incoming handle */
   int ret_param;       /* --share-strings: every non-fresh return reads this
@@ -1078,6 +1079,7 @@ typedef struct {
   /* body-node id -> enclosing BlockNode id (lazy; emit_stmts block-local
      resets). Sized nt->count; -1 = not a block body. */
   int *blk_body_map;
+  struct ReprChannelCheck *repr_channel_check; /* --repr-check return-channel shadow */
   /* node id -> the number a name invented from the node carries
      (comp_node_ord), bit 0 set for a builtin's. Extended over appended
      nodes, never refilled. A builtin node counts within its base, the

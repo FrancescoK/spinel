@@ -79,6 +79,30 @@ it); the hooks run under `GATE_RUBY` or `ruby`. Without such a Ruby,
 otherwise, and the `.expected` comparison is skipped with a warning. `make gate-tool-test`
 tests `tools/gate.rb` itself and the shared corpus's known-failure summary.
 
+`make share-verify-test` compiles `test/share/*.rb`, `test/share_strings_*.rb`
+and `test/share/verify/**/*.rb` with `SPINEL_SHARE_STRINGS=1 --repr-check --plan-check`.
+It fails on a new conflict, a failed compilation, or generated C that differs
+with the checking flags, or an output mismatch. Each executable program runs
+once against its `.expected`, without GC stress. The 13 examples under
+`test/share/verify/conflicts/` remain compile-only; their expected files record
+CRuby answers that the compiler does not yet produce. Verifier fixtures have
+no `share` marker and do not join `share-strings-test`. A stale entry in `test/share/verify-conflicts.txt`
+prints a removal reminder and does not fail the target. The ratchet contains
+exact diagnostics, one per line; remove an entry when its disagreement is fixed.
+`SHARE_VERIFY_JOBS` controls parallelism (default 2).
+Use `ruby tools/share_verify.rb -v` for classified observations and coverage
+gaps, or pass Ruby files to check a focused subset. `--extra DIR` includes
+another directory's Ruby files. This target is separate from `make gate`.
+
+The String channel shadow records the existing return-tail analysis and
+observes publishing reads, fresh-tail clearing, nil guards at pickups, and
+the existing polymorphic arm records. Boxed proc/block results use their
+own value channel. `channel-unobserved` identifies a publication or target
+the shadow cannot verify; it is not a clean bill of health. In particular,
+the shadow does not yet prove channel preservation across an ensure body
+that publishes another value. The ordinary repr shadow still checks boxes
+and coercions; not every handwritten argument or element store uses it.
+
 ## What the review checks
 
 - **Same answer as CRuby.** Compare a new test's output with CRuby 4.0
