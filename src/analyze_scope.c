@@ -8423,7 +8423,7 @@ int pivs_settle_hash_stores(Compiler *c) {
 int pivs_hash_stores_widened(Compiler *c) {
   return c->pivs ? c->pivs->stores_widened : 0;
 }
-
+/** @brief Infer ivar types, including writes through uniquely resolved boxed attr-writer families. */
 int infer_ivar_types(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
