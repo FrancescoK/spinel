@@ -1,0 +1,14 @@
+:right
+[:caught, ArgumentError, "a"]
+[:base, AppError]
+:call
+[:outer, "o"]
+:chosen
+[:nil, "class or module required for rescue clause"]
+[:int, "class or module required for rescue clause"]
+[:string, "class or module required for rescue clause"]
+[:array, "class or module required for rescue clause"]
+[:object, "class or module required for rescue clause"]
+[:range, "class or module required for rescue clause"]
+[:exception, "class or module required for rescue clause"]
+[:class, :wrong]

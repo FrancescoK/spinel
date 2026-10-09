@@ -9646,18 +9646,17 @@ void emit_rescue(Compiler *c, int id, Buf *b, int indent, int fr, const char *re
           continue;
         }
       }
-      /* an operand that is plainly not a class or module is a TypeError in
-         CRuby, not a clause that matches everything (#3712) */
-      if (en && !sp_streq(en, "ConstantReadNode") && !sp_streq(en, "ConstantPathNode")) {
-        TyKind ot = comp_ntype(c, exc[i]);
-        if (ot == TY_INT || ot == TY_FLOAT || ot == TY_STRING || ot == TY_SYMBOL ||
-            ot == TY_BOOL || ot == TY_NIL || ty_is_array(ot) || ty_is_hash(ot)) {
-          if (!first) buf_puts(b, " || ");
-          first = 0;
-          buf_puts(b, "((void)("); emit_expr(c, exc[i], b);
-          buf_puts(b, "), sp_raise_cls(\"TypeError\", \"class or module required for rescue clause\"), 0)");
-          continue;
-        }
+      /* any other operand (a variable, a call, an ivar, a literal): the clause
+         matches by the class value's identity at run time, and a value that is
+         not a class or module is a TypeError, as in CRuby, not a clause that
+         matches everything (#3712) */
+      if (nt_kind(nt, exc[i]) != NK_ConstantReadNode && nt_kind(nt, exc[i]) != NK_ConstantPathNode) {
+        if (!first) buf_puts(b, " || ");
+        first = 0;
+        buf_printf(b, "sp_exc_matches_operand(_rcls_%d, ", rc);
+        emit_boxed(c, exc[i], b);
+        buf_puts(b, ")");
+        continue;
       }
       if (!en || (!sp_streq(en, "ConstantReadNode") && !sp_streq(en, "ConstantPathNode"))) continue;
       if (!first) buf_puts(b, " || ");
