@@ -4971,19 +4971,10 @@ static void check_builtin_subclasses(Compiler *c) {
     int cp = nt_ref(nt, id, "constant_path");
     const char *cn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
     const char *par = refused_builtin_superclass(c, sc);
-    /* a program that reopens Array (Hash) has a class of its own named so,
-       which resolve_parents would take for the superclass */
-    if (!par && (par = builtin_value_superclass(c, sc)) != NULL) {
-      /* a Hash subclass beside a reopen of Hash takes the reopen's methods
-         as Hash's (comp_arysub_reopen); an Array one does not yet */
-      if (comp_class_index(c, par) >= 0 && !sp_streq(par, "Hash")) {
-        char msg[400];
-        snprintf(msg, sizeof msg, "class %s < %s: subclassing %s in a program that "
-                 "also reopens %s is not supported yet", cn ? cn : "?", par, par, par);
-        unsupported_feature(c, sc, msg);
-      }
-      continue;
-    }
+    /* an Array or Hash subclass is supported (mark_array_subclasses), beside
+       a reopen of its builtin too: the reopen's methods are the builtin's
+       (comp_arysub_reopen) */
+    if (!par && builtin_value_superclass(c, sc) != NULL) continue;
     if (!par) {
       NodeKind sk = nt_kind(nt, sc);
       if (sk != NK_ConstantReadNode && sk != NK_ConstantPathNode) continue;
@@ -5087,22 +5078,23 @@ static void refuse_anon_superclass_reflection(Compiler *c) {
 
 /* The classes whose chain reaches the builtin Array or Hash (#7449): each
    records the root of its chain, the class right below the builtin, whose
-   instances and its descendants' share one embedded kind. A program that
-   reopens the builtin was refused above. */
+   instances and its descendants' share one embedded kind. Where the
+   program reopens the builtin, resolve_parents makes the reopen the root's
+   parent; the root is the class right below it. */
 static void mark_array_subclasses(Compiler *c) {
-  /* the program's reopen of Hash, which a Hash subclass's chain reaches
-     above its root */
-  int hro = comp_class_index(c, "Hash");
+  /* the program's reopens of Array and Hash, which a subclass's chain
+     reaches above its root */
+  int aro = comp_class_index(c, "Array"), hro = comp_class_index(c, "Hash");
   for (int i = 0; i < c->nclasses; i++) {
     int r = i;
     for (int g = 0; c->classes[r].parent >= 0 && c->classes[r].parent != r &&
-                    c->classes[r].parent != hro && g < 256; g++)
+                    c->classes[r].parent != hro && c->classes[r].parent != aro && g < 256; g++)
       r = c->classes[r].parent;
-    if (r == hro) continue;
+    if (r == hro || r == aro) continue;
     int dn = c->classes[r].def_node;
     if (dn < 0 || nt_kind(c->nt, dn) != NK_ClassNode) continue;
     const char *par = builtin_value_superclass(c, nt_ref(c->nt, dn, "superclass"));
-    if (is_embedding_builtin(par) && (comp_class_index(c, par) < 0 || sp_streq(par, "Hash"))) {
+    if (is_embedding_builtin(par)) {
       c->classes[i].ary_root = r + 1;
       c->classes[i].ary_hash = sp_streq(par, "Hash");
       c->has_arysub = 1;

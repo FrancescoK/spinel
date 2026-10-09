@@ -58,6 +58,8 @@ class IndifferentHash < Hash
     h
   end
 
+  def note = blank? ? "empty" : "full"
+
   private
 
   def convert_key(key) = key.is_a?(Symbol) ? key.name : key
@@ -78,3 +80,4 @@ p h.delete(:b), h
 w = {x: 1}.with_indifferent_access
 p w.class, w[:x], w["x"], w.blank?, IndifferentHash.new.blank?
 p h.to_hash.class, h.to_hash
+p h.note, IndifferentHash.new.note

@@ -23,3 +23,5 @@ false
 true
 Hash
 {"a" => 11, "c" => 3}
+"full"
+"empty"

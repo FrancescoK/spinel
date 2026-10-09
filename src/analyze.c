@@ -33208,7 +33208,10 @@ static void rewrite_array_subclass_self_call(Compiler *c, int id) {
   const char *nm = nt_str(c->nt, id, "name");
   if (!s || !s->name || s->is_cmethod || !nm || comp_ary_root(c, s->class_id) < 0) return;
   int k = s->class_id;
-  if (comp_method_in_chain(c, k, nm, NULL) >= 0 || comp_reader_in_chain(c, k, nm, NULL)) return;
+  /* a method of the builtin's reopen is the builtin's, called on self boxed */
+  int dc = -1, ro = comp_arysub_reopen(c, k);
+  if ((comp_method_in_chain(c, k, nm, &dc) >= 0 && (ro < 0 || dc != ro)) ||
+      comp_reader_in_chain(c, k, nm, NULL)) return;
   if (!comp_arysub_builtin_name(c, k, nm)) return;
   int self = arysub_node(c, "SelfNode", id);
   if (self >= 0) nt_node_set_ref((NodeTable *)c->nt, id, "receiver", self);

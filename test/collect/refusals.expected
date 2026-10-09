@@ -1224,10 +1224,6 @@ spinel: test/reject/subclass_array_builtin_alias_recv.rb:11: calling `raw_size`,
 spinel: test/reject/subclass_array_class_new_call.rb:5: Class.new(Array) without a block is not supported yet (the call makes its class at run time); declare it as `class Name < Array`
 == test/reject/subclass_array_class_new_call.rb [promote] rc=1
 spinel: test/reject/subclass_array_class_new_call.rb:5: Class.new(Array) without a block is not supported yet (the call makes its class at run time); declare it as `class Name < Array`
-== test/reject/subclass_array_reopened.rb [default] rc=1
-spinel: test/reject/subclass_array_reopened.rb:9: class Stack < Array: subclassing Array in a program that also reopens Array is not supported yet
-== test/reject/subclass_array_reopened.rb [promote] rc=1
-spinel: test/reject/subclass_array_reopened.rb:9: class Stack < Array: subclassing Array in a program that also reopens Array is not supported yet
 == test/reject/subclass_array_zsuper_post.rb [default] rc=1
 spinel: test/reject/subclass_array_zsuper_post.rb:8: a bare `super` into Array from a method with keyword, post-rest or destructured parameters is not supported yet; pass the arguments explicitly
 == test/reject/subclass_array_zsuper_post.rb [promote] rc=1
