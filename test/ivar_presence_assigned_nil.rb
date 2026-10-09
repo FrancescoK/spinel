@@ -228,3 +228,30 @@ end
 km = Km.new
 p km.instance_variable_defined?(:@x), km.instance_variable_defined?(:@y), km.instance_variables
 puts show(km)
+
+# a default of an optional parameter, or of an optional keyword, runs before
+# the body's assignments, and sees the object without them
+class Dp
+  def show = instance_variables
+  def initialize(x = show)
+    @a = 1
+    p x
+  end
+end
+class Dk
+  def show = instance_variables
+  def initialize(k: show, j: 1)
+    @a = 1
+    @b = nil
+    p k
+  end
+end
+class Dq
+  def initialize(x = 5)
+    @a = x
+  end
+end
+Dp.new
+Dk.new
+p Dq.new.instance_variables
+p Dp.new(0).instance_variables, Dk.new(k: 1).instance_variable_defined?(:@a)

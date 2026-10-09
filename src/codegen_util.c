@@ -1994,6 +1994,7 @@ int strbuf_ivar_owner(Compiler *c, int node) {
      3 -- the slot has an explicit presence flag: a reflection-only slot,
           or one a read of presence reaches (ivs_tracked). */
 static int ivs_writes_toplevel(Compiler *c, int body, const char *ivn, int cid, int depth, int strict);
+static int ivs_may_observe(Compiler *c, int n, int cid, int depth, int lvl);
 /* Strict, the write must also come before anything that may see the
    object (ivs_may_observe): an observation inside initialize ahead of it
    finds the ivar unset. */
@@ -2001,6 +2002,14 @@ static int ivs_method_sets(Compiler *c, int mi, const char *ivn, int depth, int 
   if (mi < 0 || depth > 16) return 0;
   Scope *m = &c->scopes[mi];
   if (m->def_node < 0 || nt_kind(c->nt, m->def_node) != NK_DefNode) return 0;
+  /* a default of an optional parameter, or of an optional keyword, runs
+     before the body: one that may see the object finds the ivar unset */
+  int ps = strict ? nt_ref(c->nt, m->def_node, "parameters") : -1;
+  for (int a = 0; a < 2 && ps >= 0; a++) {
+    int dn = 0; const int *ds = nt_arr(c->nt, ps, a ? "keywords" : "optionals", &dn);
+    for (int i = 0; i < dn; i++)
+      if (ivs_may_observe(c, nt_ref(c->nt, ds[i], "value"), m->class_id, 0, 0)) return 0;
+  }
   return ivs_writes_toplevel(c, nt_ref(c->nt, m->def_node, "body"), ivn, m->class_id, depth, strict);
 }
 static int ivs_init_sets(Compiler *c, int cid, const char *ivn, int depth, int strict) {
