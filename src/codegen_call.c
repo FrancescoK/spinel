@@ -22904,6 +22904,7 @@ int emit_env_args_before(Compiler *c, int id) {
 }
 
 void emit_call(Compiler *c, int id, Buf *b) {
+  refuse_prepass_at_emit(c, id);
   if (g_plan_check) ucall_emitted(id);
   if (g_repr_check) repr_check_ask(c, id);
   /* A builtin_only call on a boxed receiver (a prepended Array method's
