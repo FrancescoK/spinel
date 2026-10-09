@@ -1681,6 +1681,20 @@ int strbuf_route_clamp(Compiler *c, int v, int *ops) {
   ops[1] = nt_ref(nt, argv[0], "left"); ops[2] = nt_ref(nt, argv[0], "right");
   return 1;
 }
+/* A boxed bound of a String clamp route read from its slot: clamp can
+   answer it, and sp_poly_as_strbuf would wrap a plain String it holds in a
+   new handle. The slot's String is lifted to its handle and stored back
+   first (emit_poly_lift_ref), so the answer is that slot's own String. */
+static int emit_clamp_lifted_bound(Compiler *c, int op, int t, Buf *b) {
+  HolderRef h;
+  char ref[1024];
+  if (!holder_of_node(c, unwrap_parens(c, op), &h) || h.r.kind != RK_BOXED ||
+      !holder_slot_text(c, &h, ref, sizeof ref)) return 0;
+  buf_printf(b, "sp_RbVal _t%d = ", t);
+  emit_poly_lift_ref(ref, b);
+  buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", t);
+  return 1;
+}
 /* Does value v hand over a String the rule shares as the handle itself: a
    slot holding it, or a route over one? */
 static int strbuf_route_carries(Compiler *c, int v, int depth) {
@@ -1723,6 +1737,7 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
         emit_strbuf_handle_of(c, ops[i], b);
         buf_printf(b, ", SP_BUILTIN_STRBUF); SP_GC_ROOT_RBVAL(_t%d); ", ts[i]);
       }
+      else if (ops[i] >= 0 && emit_clamp_lifted_bound(c, ops[i], ts[i], b)) {}
       else if (ops[i] >= 0) ts[i] = hold_operand(c, ops[i], TY_POLY, 1, ts[i], 1, " ", b);
       else buf_printf(b, "sp_RbVal _t%d = sp_box_nil(); ", ts[i]);
     }
