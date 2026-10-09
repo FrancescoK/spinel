@@ -2379,7 +2379,9 @@ SP_NORETURN SP_COLD static void sp_raise_no_str_conversion(sp_RbVal v) {
 /* ENV[key] = value with a boxed RHS: a String sets, nil deletes, anything
    else raises CRuby's TypeError. Returns the assigned string (NULL = nil),
    matching the statically-string path's expression type. */
+static inline sp_RbVal sp_poly_strbuf_deref(sp_RbVal v);
 static const char *sp_env_aset(const char *k, sp_RbVal v) {
+  v = sp_poly_strbuf_deref(v);
   if (v.tag == SP_TAG_NIL) { unsetenv(k); return NULL; }
   if (v.tag != SP_TAG_STR) sp_raise_no_str_conversion(v);
   if (v.v.s) setenv(k, v.v.s, 1); else unsetenv(k);
@@ -18396,6 +18398,8 @@ static sp_StrStrHash *sp_env_update_v(sp_RbVal hv, int replace) {
   SP_GC_ROOT(h);
   for (sp_int i = 0; i < h->len; i++) {
     sp_RbVal k = h->keys[h->order[i]], v = h->vals[h->order[i]];
+    k = sp_poly_strbuf_deref(k);
+    v = sp_poly_strbuf_deref(v);
     if (k.tag != SP_TAG_STR) sp_raise_no_str_conversion(k);
     if (v.tag != SP_TAG_STR && v.tag != SP_TAG_NIL) sp_raise_no_str_conversion(v);
     if (v.tag == SP_TAG_STR && v.v.s) setenv(k.v.s, v.v.s, 1); else unsetenv(k.v.s);

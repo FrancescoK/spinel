@@ -45,7 +45,9 @@ enum { SHF_OUT = 8 };
    targets (sh_masgn_plain): no container holds its elements. SHU_PEEK
    marks a container literal handed to a builtin that only reads it and
    keeps none of it (`puts [a, b]`, `p [a, b]` as a statement), and such a
-   `p a, b` itself: no name sees its elements again (sh_settle_peeks). */
+   `p a, b` itself: no name sees its elements again (sh_settle_peeks).
+   It also marks transient arguments and receivers whose builtin keeps
+   none of their value, including fresh call results needing no handle. */
 enum { SHU_STMT = 1, SHU_TAIL = 2, SHU_SPLIT = 4, SHU_PEEK = 8 };
 
 typedef struct ShareFacts {
@@ -1250,7 +1252,8 @@ static void sh_peek_args(ShareFacts *F, int n, int keep) {
 /* Each recorded call's container literal arguments are SHU_PEEK, and so is
    a `p a, b` whose value is dropped (the Array it answers): no name sees
    their elements again. A call that answers its arguments counts only
-   where its own value is dropped. */
+   where its own value is dropped. The same marks describe transient call
+   results, which need no handle when a builtin only reads them. */
 static void sh_settle_peeks(ShareFacts *F, Compiler *c) {
   const NodeTable *nt = c->nt;
   /* a method no caller reads drops its body's value, through its arms
@@ -1265,10 +1268,21 @@ static void sh_settle_peeks(ShareFacts *F, Compiler *c) {
     }
     int args = nt_ref(nt, n, "arguments");
     int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+    int recv = nt_ref(nt, n, "receiver");
+    const char *name = nt_str(nt, n, "name");
+    /* A family's wildcard is not proof that an unlisted operation keeps
+       no value. Non-literal peeks require the operation's own row. */
+    int named = F->pk[i] < 0 || recv < 0 || bop_share_named(sh_family(c->ntype[recv]), name) ||
+                bop_share_named(BOP_ANY_RECV, name);
+    if (!named && (c->ntype[recv] == TY_POLY || c->ntype[recv] == TY_UNKNOWN))
+      named = bop_share_named(BOP_ANY_ARRAY, name) || bop_share_named(BOP_ANY_HASH, name) ||
+              bop_share_named(TY_CLASS, name) || bop_share_named(TY_STRING, name) || bop_share_named(TY_IO, name);
     for (int k = 0; k < argc; k++) {
       NodeKind ak = nt_kind(nt, argv[k]);
       if (ak == NK_ArrayNode || ak == NK_HashNode) F->unused[argv[k]] |= SHU_PEEK;
+      else if (named) sh_mark_unused(F, nt, argv[k], SHU_PEEK);
     }
+    if (F->pk[i] >= 0 && named) sh_mark_unused(F, nt, recv, SHU_PEEK);
   }
 }
 
@@ -1323,7 +1337,9 @@ static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int 
   case BSH_FETCH: {
     /* a default block is handed the key it was asked for */
     if (lit_blk && nv >= 1) sh_block_params(F, c, blk, vals[0], 0);
-    int r = sh_elem(F, rv);
+    /* Only a container can answer an element. String assignment copies
+       bytes into its receiver and answers the argument, not that receiver. */
+    int r = container ? sh_elem(F, rv) : -1;
     if (nv >= 2) r = sh_join(F, r, vals[nv - 1]);
     return sh_join(F, r, bv);
   }
@@ -1354,6 +1370,7 @@ static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int 
     if (lit_blk) sh_block_params(F, c, blk, sh_elem(F, rv), 1);
     return rv;
   case BSH_ARGS: {
+    if (lit_blk && container) sh_block_params(F, c, blk, sh_elem(F, rv), 1);
     /* one argument is the answer; several, an Array of them, which joins
        them only where something takes it (`p a, b` as a statement keeps
        neither) */
@@ -2049,11 +2066,11 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
 
   /* ENV's rows, when the program defines no ENV of its own; an
      assignment whose value is taken answers the String it was handed,
-     which no row says, so only a statement takes the row */
+     as the store rows' BSH_FETCH now describes for statements and values. */
   if (recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode && is_env_const(nt_str(nt, recv, "name")) &&
       !comp_const(c, "ENV")) {
     int es = bop_share_named(BOP_ENV, name);
-    if (es && (!is_store_alias(name) || (F->unused[n] & SHU_STMT))) return sh_builtin(F, c, n, es, -1, blk, 0);
+    if (es) return sh_builtin(F, c, n, es, -1, blk, 0);
   }
   /* a user method */
   int tg[64];
@@ -2160,6 +2177,12 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
      hand it their arguments. */
   if (is_exc_message_name(name)) return sh_exc(F);
   if (recv < 0 && is_raise_alias(name) && !sh_has_targets(c, n)) {
+    sh_exc_args(F, c, n);
+    return -1;
+  }
+  /* A retaining Kernel call that never returns hands its arguments on
+     through the exception, as abort's SystemExit does with its message. */
+  if (recv < 0 && is_diverging_call(name) && bop_share_named(BOP_KERNEL, name) == BSH_CALL) {
     sh_exc_args(F, c, n);
     return -1;
   }
@@ -3908,6 +3931,10 @@ unsigned share_node_flags(const Compiler *c, int n) {
 int share_node_peeked(const Compiler *c, int n) {
   const ShareFacts *F = c->share;
   return F && n >= 0 && n < F->nnodes && (F->unused[n] & SHU_PEEK);
+}
+int share_node_transient(const Compiler *c, int n) {
+  const ShareFacts *F = c->share;
+  return F && n >= 0 && n < F->nnodes && (F->unused[n] & (SHU_STMT | SHU_TAIL | SHU_PEEK));
 }
 int share_node_one_name(const Compiler *c, int n) {
   const ShareFacts *F = c->share;

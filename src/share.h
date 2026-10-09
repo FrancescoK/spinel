@@ -191,6 +191,8 @@ int share_return_owned(const Compiler *c, int n, int mi);
 /* Is node n a container literal a builtin only reads and keeps none of
    (`puts [a, b]`)? */
 int share_node_peeked(const Compiler *c, int n);
+/* Is node n's result dropped or only read by a builtin that keeps none? */
+int share_node_transient(const Compiler *c, int n);
 /* The facts (SHF_*) of the class of node n's value. */
 unsigned share_node_flags(const Compiler *c, int n);
 /* Does the class of node n's value hold one name at most: no more than one
