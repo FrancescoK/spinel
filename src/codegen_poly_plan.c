@@ -2486,7 +2486,8 @@ void poly_specials_n(Compiler *c, int id, const char *name, int argc, const int 
      a genuine String receiver falls to its NoMethodError default, the
      same hole the single-set delete had (#4195). String-typed sets only:
      the temps below carry them as const char *. */
-  int is_strsetop_n = ((sp_streq(name, "count") || sp_streq(name, "squeeze"))
+  int is_strsetop_n = ((sp_streq(name, "count") || sp_streq(name, "squeeze") || sp_streq(name, "strip") ||
+                          sp_streq(name, "lstrip") || sp_streq(name, "rstrip"))
                          ? argc >= 1     /* their 1-set form has no other pre-arm */
                          : sp_streq(name, "delete") && argc >= 2) &&
                       argc <= 8 && !has_splat_arg &&
@@ -3016,9 +3017,7 @@ void emit_poly_prearms_n(Compiler *c, const char *name, const PolySpecialsN *ps,
       }
       snprintf(sets + sl, sizeof sets - (size_t)sl, "}, %d", argc);
       char call[384];
-      snprintf(call, sizeof call, "sp_str_%s_n(_t%d.v.s ? _t%d.v.s : \"\", %s)",
-               is_cnt ? "count" : sp_streq(name, "delete") ? "delete" : "squeeze",
-               tv, tv, sets);
+      snprintf(call, sizeof call, "sp_str_%s_n(_t%d.v.s ? _t%d.v.s : \"\", %s)", name, tv, tv, sets);
       buf_printf(b, "_t%d = ", tr);
       if (ret == TY_POLY) buf_printf(b, "%s(%s)", is_cnt ? "sp_box_int" : "sp_box_str", call);
       else buf_puts(b, call);

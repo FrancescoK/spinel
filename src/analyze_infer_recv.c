@@ -1590,6 +1590,10 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
        sp_streq(name, "squeeze")) &&
       !an_user_defines_or_reads(c, name))
     { *out = TY_STRING; return 1; }
+  if (recv >= 0 && rt == TY_POLY && argc >= 1 && argc <= 8 && nt_ref(nt, id, "block") < 0 &&
+      (sp_streq(name, "strip") || sp_streq(name, "lstrip") || sp_streq(name, "rstrip")) &&
+      !an_user_defines_or_reads(c, name))
+    { *out = TY_STRING; return 1; }
   /* poly.pack(fmt): the emitter's sp_poly_pack answers a String whatever array
      kind the box holds. Untyped, the call was nil and the packed string was
      dropped. A user object as the format is left untyped, as the emitter
