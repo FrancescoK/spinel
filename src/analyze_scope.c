@@ -8710,6 +8710,7 @@ typedef struct {
   int ext_global_unknown;
   int has_const_missing;
   int cm_unattributed;  /* a const_missing defined other than `def self.const_missing` in a class body */
+  int scoped_defined;   /* the program has a defined?(P::n) */
   int give_up;
   const char *cref[64]; int ncref;
   char **strs; int nstrs, cstrs;   /* owned strings the cref stack points at */
@@ -9166,6 +9167,49 @@ static void bc_check(Bc *b, int id, int in_defined) {
   unsupported_feature(b->c, id, msg);
 }
 
+/* `P::n` from a namespace P the program defines: CRuby looks n up in P and
+   P's ancestors, but not in Object (nor, for a module, past it), so a
+   top-level constant is not P::n. Whether n is there: BC_FOUND, BC_UNSURE,
+   or 0. */
+static int bc_scoped_lookup(Bc *b, const char *p, const char *n) {
+  if (b->global_unknown || bc_has(&b->unknown_set, n)) return BC_UNSURE;
+  BcSet seen = {0}; char *hit = NULL;
+  bc_add(&seen, "");
+  int r = bc_anc(b, p, n, &seen, &hit, 0);
+  BcMod *m = bc_mod(b, p, 0);
+  if (m && m->is_module != 1) r = bc_merge(r, bc_anc_object(b, n, &seen, &hit, 0));
+  bc_set_free(&seen); free(hit);
+  if (r != 0) return r;
+  for (unsigned i = 0; i < b->unknown_inc.cap; i++) {
+    if (!b->unknown_inc.k[i]) continue;
+    BcSet s2 = {0}; char *h2 = NULL;
+    int r2 = bc_anc(b, b->unknown_inc.k[i], n, &s2, &h2, 1);
+    bc_set_free(&s2); free(h2);
+    if (r2 != 0) return BC_UNSURE;
+  }
+  return 0;
+}
+
+/* defined?(P::n) (or a longer path) whose head resolves: a segment that the
+   namespace before it does not hold answers nil, though a constant of that
+   leaf name exists elsewhere (defined?(Mod::String) is nil in CRuby). The
+   segment is renamed to one defined nowhere, as bc_check does a bare one. */
+static void bc_check_scoped(Bc *b, int v) {
+  const NodeTable *nt = b->nt;
+  int par = nt_ref(nt, v, "parent");
+  const char *nm = nt_str(nt, v, "name");
+  if (par < 0 || !nm) return;
+  if (nt_type(nt, par) && sp_streq(nt_type(nt, par), "ConstantPathNode")) {
+    bc_check_scoped(b, par);
+    if (sp_streq(nt_str(nt, par, "name"), "SpinelNoSuchConstant__")) return;
+  }
+  char *p = bc_resolve(b, par);
+  if (p && *p && p[0] != '?' && p[0] != '#' && bc_mod(b, p, 0) &&
+      bc_scoped_lookup(b, p, nm) == 0)
+    nt_set_str((NodeTable *)nt, v, "name", "SpinelNoSuchConstant__");
+  free(p);
+}
+
 static void bc_walk(Bc *b, int id, const char *self, int mode) {
   const NodeTable *nt = b->nt;
   if (id < 0 || b->give_up) return;
@@ -9298,6 +9342,8 @@ static void bc_walk(Bc *b, int id, const char *self, int mode) {
       char *full = bc_resolve(b, tg);
       int vv = tg == id ? -1 : nt_ref(nt, id, "value"), am = 0;
       if (mode == 0 && full && *full) bc_define(b, full);
+      /* `self::X = v`, `obj::X = v`: X may be in any namespace */
+      if (mode == 0 && !full && nt_str(nt, tg, "name")) bc_add(&b->unknown_set, nt_str(nt, tg, "name"));
       if (mode == 0 && full && *full && !bc_anon_class_call(nt, vv, &am)) bc_add(&b->written, full);
       if (mode == 1 && full) {
         char *par = strdup(full), *cut = NULL;
@@ -9315,6 +9361,7 @@ static void bc_walk(Bc *b, int id, const char *self, int mode) {
   if (sp_streq(ty, "DefinedNode")) {
     int v = nt_ref(nt, id, "value");
     const char *vt = v >= 0 ? nt_type(nt, v) : NULL;
+    if (mode == 0 && vt && sp_streq(vt, "ConstantPathNode")) b->scoped_defined = 1;
     if (mode == 2 && vt && sp_streq(vt, "ConstantReadNode")) { bc_check(b, v, 1); return; }
     if (mode == 2 && vt && sp_streq(vt, "ConstantPathNode")) {
       /* defined?(X::Y) is nil, not NameError, when the head X is unreachable */
@@ -9323,6 +9370,7 @@ static void bc_walk(Bc *b, int id, const char *self, int mode) {
         head = nt_ref(nt, head, "parent");
       if (head >= 0 && nt_type(nt, head) && sp_streq(nt_type(nt, head), "ConstantReadNode")) {
         bc_check(b, head, 1);
+        if (!sp_streq(nt_str(nt, head, "name"), "SpinelNoSuchConstant__")) bc_check_scoped(b, v);
         return;
       }
     }
@@ -9430,7 +9478,7 @@ void refuse_unreachable_bare_constants(Compiler *c) {
   b->ncref = 1;
   int root = c->nt->root_id;
   bc_walk(b, root, "", 0);
-  if (b->nested.n > 0 && !b->give_up) {
+  if ((b->nested.n > 0 || b->scoped_defined) && !b->give_up) {
     b->ncref = 1;
     bc_walk(b, root, "", 1);
     b->ncref = 1;
