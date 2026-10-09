@@ -1307,6 +1307,9 @@ static int strbuf_uplus_operand(Compiler *c, int v) {
 /* The handle a slot the rule shares takes from value v (emit_strbuf_value
    into such a slot): a handle's own, a fresh String's a new one. */
 void emit_strbuf_handle_of(Compiler *c, int v, Buf *b) {
+  int held = repr_share_rule(c) ? ran_first_handle(v) : -1;
+  if (held < 0 && repr_share_rule(c)) held = ran_first_handle(unwrap_parens(c, v));
+  if (held >= 0) { buf_printf(b, "_t%d", held); return; }
   if (v >= 0 && nt_kind(c->nt, v) == NK_NilNode) { buf_puts(b, "(sp_String *)NULL"); return; }
   LocalVar slot;
   memset(&slot, 0, sizeof slot);
@@ -1375,7 +1378,7 @@ int strbuf_hash_default_arg(Compiler *c, int v) {
   int recv = nt_ref(c->nt, v, "receiver"), argc = 0;
   const int *argv = call_args(c->nt, v, &argc);
   TyKind rt = recv >= 0 ? repr_of(c, recv).as_ty : TY_UNKNOWN;
-  if (!ty_is_hash(rt) || ty_hash_val(rt) != TY_POLY || argc != 1 ||
+  if ((rt != TY_POLY && (!ty_is_hash(rt) || ty_hash_val(rt) != TY_POLY)) || argc != 1 ||
       cplan_user_fresh(c, v)->dispatch != CP_NONE) return -1;
   /* A dropped frozen literal already keeps its frozen mark in the box. */
   if (nt_kind(c->nt, unwrap_parens(c, argv[0])) == NK_StringNode && share_node_transient(c, v)) return -1;

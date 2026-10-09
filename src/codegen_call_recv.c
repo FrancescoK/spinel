@@ -12333,6 +12333,7 @@ static TyKind emit_face_arm(Compiler *c, int id, unsigned kind, unsigned flags, 
   int v = view_push(c, recv, as);
   int fv = view_push_face(recv, as);
   TyKind nat = infer_uncached(c, id);
+  if (kind == PF_HASH && repr_of(c, id).demand && strbuf_hash_default_arg(c, id) >= 0) nat = TY_STRBUF;
   /* A numeric iterator with a block answers its receiver, and the arm's
      expression bridge renders exactly that, in the owner's own kind -- but
      a `break v` in the block makes the pinned inference say poly for the
@@ -12639,7 +12640,9 @@ static int emit_face_reentry(Compiler *c, int id, unsigned kind, unsigned flags,
     free(rb.p);
   }
   if (pre.p) buf_puts(g_pre, pre.p);
-  emit_face_value(c, repr_of(c, id).as_ty, nat, val.p ? val.p : "0", b);
+  TyKind slot = repr_of(c, id).as_ty;
+  if (repr_of(c, id).demand && strbuf_hash_default_arg(c, id) >= 0) slot = TY_STRBUF;
+  emit_face_value(c, slot, nat, val.p ? val.p : "0", b);
   free(pre.p); free(val.p);
   return 1;
 }
