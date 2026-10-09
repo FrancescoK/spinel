@@ -19315,6 +19315,11 @@ sp_PolyArray *sp_str_unpack_off(const char *str, const char *fmt, sp_int byteoff
 static sp_RbVal sp_poly_pack_buffer(sp_RbVal recv, sp_RbVal format, sp_RbVal buffer) {
   SP_GC_ROOT_RBVAL(recv); SP_GC_ROOT_RBVAL(format); SP_GC_ROOT_RBVAL(buffer);
   sp_poly_ary_chk(recv, "pack", 0);
+  /* sp_poly_ary_chk leaves a user object to the helper, and
+     sp_poly_to_poly_array reads one as an empty Array: a user object
+     without its own pack raises here as CRuby does. */
+  if (recv.tag != SP_TAG_OBJ || !sp_poly_is_array_kind(recv.cls_id))
+    sp_raise_poly_nomethod("pack", recv);
   const char *fmt = sp_poly_arg_str_chk(format); SP_GC_ROOT_STR(fmt);
   const char *initial = NULL;
   if (!sp_poly_nil_p(buffer)) {
