@@ -17825,7 +17825,21 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
       if (fpop && recv >= 0 && grt == TY_POLY && fpb >= 0 && nt_type(nt, fpb) &&
           sp_streq(nt_type(nt, fpb), "BlockArgumentNode")) {
         Buf fpp; memset(&fpp, 0, sizeof fpp);
-        if (emit_forwarded_proc_arg(c, fpb, &fpp)) {
+        /* a `&blk` forwarding the block of an inlined body is its caller's:
+           a literal built into a proc, the caller's `&expr`, the real proc
+           the inline was handed, or none */
+        int fpr_blk = resolve_forwarded_block(c, fpb);
+        int fp_ok;
+        if (fpr_blk == fpb) fp_ok = emit_forwarded_proc_arg(c, fpb, &fpp);
+        else if (fpr_blk >= 0) {
+          fp_ok = 1;
+          if (!emit_forwarded_proc_arg(c, fpr_blk, &fpp)) emit_proc_literal(c, fpr_blk, &fpp);
+        }
+        else {
+          const char *fwd = forwarded_real_proc(fpb, fpr_blk);
+          fp_ok = 1; buf_puts(&fpp, fwd ? fwd : "NULL");
+        }
+        if (fp_ok) {
           int fpt = ++g_tmp;
           Buf fpr; memset(&fpr, 0, sizeof fpr); emit_boxed(c, recv, &fpr);
           char fcall[600];

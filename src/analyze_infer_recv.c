@@ -480,6 +480,10 @@ int infer_hash_call(Compiler *c, int id, TyKind rt, TyKind *out) {
         if (ty_unify(vt, dt) == TY_POLY) { *out = TY_POLY; return 1; }
       }
       int blk = nt_ref(nt, id, "block");
+      /* a block handed in (`&b`): whatever it answers for a missing key,
+         which nothing here can read -- the caller's literal once an inline
+         splices it, a proc's value at run time */
+      if (blk >= 0 && nt_kind(nt, blk) == NK_BlockArgumentNode) { *out = TY_POLY; return 1; }
       if (blk >= 0) {
         int bbody = nt_ref(nt, blk, "body");
         int bn = 0; const int *bb = bbody >= 0 ? nt_arr(nt, bbody, "body", &bn) : NULL;

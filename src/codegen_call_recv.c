@@ -830,6 +830,16 @@ static int fetch_blk_param_is_key(Compiler *c, int id, int blk, LocalVar *flv, c
    (fetch_blk_param_is_key): `x.fetch(:k) { |k| k }` on a receiver that may
    be a Hash or an Array put the boxed key in a Symbol's slot and the C did
    not build. */
+/* The fallback block of a fetch: its literal, or -- for a `&blk` that hands
+   on the block an inlined body was given (a `super` into Array#fetch or
+   Hash#fetch from a subclass's override passes the method's own) -- the
+   caller's literal it stands for. A real proc stays the BlockArgumentNode. */
+static int fetch_fallback_block(Compiler *c, int id) {
+  int blk0 = nt_ref(c->nt, id, "block");
+  int r = resolve_forwarded_block(c, blk0);
+  if (blk0 >= 0 && r >= 0 && r != blk0 && nt_kind(c->nt, r) == NK_BlockNode) return r;
+  return blk0;
+}
 static void emit_fetch_blk_param(Compiler *c, int id, int blk, TyKind kt, int tk, Buf *b) {
   const char *fp0 = block_param_name(c, blk, 0);
   if (!fp0) return;
@@ -1234,7 +1244,7 @@ static int emit_poly_array_call(Compiler *c, int id, Buf *b, const NodeTable *nt
     }
   }
   if (sp_streq(name, "fetch") && (argc == 1 || argc == 2)) {
-    int blk = nt_ref(nt, id, "block");
+    int blk = fetch_fallback_block(c, id);
     int ta = ++g_tmp, ti = ++g_tmp, tn = ++g_tmp, tnorm = ++g_tmp;
     Buf ra = expr_buf(c, recv);
     /* rooted across the index argument, as the typed-array arm is */
@@ -2006,7 +2016,7 @@ else {
     }
   }
   if (sp_streq(name, "fetch") && (argc == 1 || argc == 2)) {
-    int blk = nt_ref(nt, id, "block");
+    int blk = fetch_fallback_block(c, id);
     TyKind et = ty_array_elem(rt);
     /* the whole expression's inferred type: poly when the default (or
        block value) type differs from the element type -- box both arms */
@@ -5543,7 +5553,37 @@ int emit_hash_call(Compiler *c, int id, Buf *b) {
            two-argument-with-block form as the one-argument-with-block form is
            exactly that rule. fetch(key) without a block is a row. */
       if (sp_streq(name, "fetch") && (argc == 1 || argc == 2) && nt_ref(nt, id, "block") >= 0) {
-        int blk = nt_ref(nt, id, "block");
+        int blk = fetch_fallback_block(c, id);
+        /* a proc handed in (`&b` holding one, or nil): called with the key
+           at run time, after the nil check a missing block raises KeyError
+           for; the call is typed boxed (infer: a block argument) */
+        if (nt_kind(nt, blk) == NK_BlockArgumentNode) {
+          Buf pp; memset(&pp, 0, sizeof pp);
+          int pb = resolve_forwarded_block(c, nt_ref(nt, id, "block"));
+          const char *fwd = forwarded_real_proc(nt_ref(nt, id, "block"), pb);
+          if (pb >= 0) emit_forwarded_proc_arg(c, pb, &pp);
+          else buf_puts(&pp, fwd ? fwd : "NULL");
+          TyKind vt = ty_hash_val(rt), kt = ty_hash_key(rt);
+          int th = ++g_tmp, tk = ++g_tmp, tp = ++g_tmp, tb = ++g_tmp;
+          buf_printf(b, "({ %s _t%d = ", c_type_name(rt), th); emit_expr(c, recv, b);
+          buf_printf(b, "; SP_GC_ROOT(_t%d); %s _t%d = ", th, c_type_name(kt), tk);
+          emit_hash_key(c, argv[0], kt, b);
+          buf_printf(b, "; sp_Proc *_t%d = %s; SP_GC_ROOT(_t%d); sp_RbVal _t%d; ", tp, pp.p ? pp.p : "NULL", tp, tb);
+          free(pp.p);
+          char getexpr[128], keyexpr[32];
+          snprintf(getexpr, sizeof getexpr, "sp_%sHash_get(_t%d, _t%d)", hn, th, tk);
+          snprintf(keyexpr, sizeof keyexpr, "_t%d", tk);
+          buf_printf(b, "if (sp_%sHash_has_key(_t%d, _t%d)) _t%d = ", hn, th, tk, tb);
+          emit_boxed_text(c, vt, getexpr, b);
+          buf_printf(b, "; else if (_t%d) { _sp_proc_poly_args[0] = ", tp);
+          emit_boxed_text(c, kt, keyexpr, b);
+          buf_printf(b, "; sp_int _sl[1] = { sp_poly_slot_i(_sp_proc_poly_args[0]) };"
+                        " _t%d = sp_poly_callable_call(sp_box_obj(_t%d, SP_BUILTIN_PROC), 1, _sl); }"
+                        " else { _t%d = sp_box_nil(); sp_raise_key_not_found(", tb, tp, tb);
+          emit_boxed_text(c, kt, keyexpr, b);
+          buf_printf(b, "); } _t%d; })", tb);
+          return 1;
+        }
         if (blk >= 0 && hash_key_misses(c, argv[0], ty_hash_key(rt))) {
           /* the block receives the missing key, and its parameter is typed
              as the table's key kind; a key of another kind has no slot */
@@ -5562,8 +5602,10 @@ int emit_hash_call(Compiler *c, int id, Buf *b) {
           int bval = bn > 0 ? bb[bn - 1] : -1;
           TyKind bvt = bval >= 0 ? repr_of(c, bval).as_ty : vt;
           /* When the block's return type differs from the hash value type,
-             box both arms so the ternary produces a consistent sp_RbVal. */
-          int mismatch = vt != TY_POLY && bvt != vt;
+             box both arms so the ternary produces a consistent sp_RbVal --
+             and so for the caller's literal an inlined `&blk` stands for,
+             which the call's type (boxed) was given without reading */
+          int mismatch = vt != TY_POLY && (bvt != vt || repr_of(c, id).as_ty == TY_POLY);
           if (mismatch) {
             buf_printf(b, "; sp_%sHash_has_key(_t%d, _t%d) ? ", hn, th, tk);
             char getexpr[128]; snprintf(getexpr, sizeof getexpr, "sp_%sHash_get(_t%d, _t%d)", hn, th, tk);
@@ -5746,8 +5788,20 @@ else {
         buf_printf(b, " _t%d; })", tr);
         return 1;
       }
+      /* ... and so with a block handed in as a proc (`update(other, &block)`,
+         nil when the caller gave none), which resolves a key already there:
+         the proc is called with the key, the old value and the new one */
+      int mb_blk = nt_ref(nt, id, "block");
+      int mb_proc = mb_blk >= 0 && nt_kind(nt, mb_blk) == NK_BlockArgumentNode
+                    ? nt_ref(nt, mb_blk, "expression") : -1;
+      /* the proc a forward of an inlined body's own block stands for: the
+         caller's literal built into one, its `&expr`, the real proc the
+         inline was handed, or none */
+      int mb_res = mb_blk >= 0 ? resolve_forwarded_block(c, mb_blk) : -1;
+      int mb_fwd = mb_blk >= 0 && mb_res != mb_blk;
       if ((is_hash_merge_bang(name)) && argc >= 1 &&
-          nt_ref(nt, id, "block") < 0 && rt == TY_POLY_POLY_HASH) {
+          (mb_blk < 0 || (mb_proc >= 0 && (mb_fwd || nt_kind(nt, mb_res) != NK_BlockNode))) &&
+          rt == TY_POLY_POLY_HASH) {
         /* An argument that is a Hash at run time only is checked there, as
            CRuby's implicit conversion would, so a boxed hash merges into
            another; an empty literal has no variant to infer and nothing to
@@ -5756,9 +5810,24 @@ else {
           TyKind at = comp_ntype(c, argv[ai]);
           if (!ty_is_hash(at) && at != TY_POLY && !hash_lit_empty(nt, argv[ai])) return 0;
         }
-        int tr = ++g_tmp;
+        int tr = ++g_tmp, tb = -1;
         buf_printf(b, "({ sp_PolyPolyHash *_t%d = ", tr); emit_expr(c, recv, b); buf_puts(b, ";");
         buf_printf(b, " if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s);", tr, tr, hash_box_cls(rt));   /* (#3001) */
+        if (mb_proc >= 0) {
+          Buf pp; memset(&pp, 0, sizeof pp);
+          if (!mb_fwd) emit_boxed(c, mb_proc, &pp);
+          else {
+            Buf pr; memset(&pr, 0, sizeof pr);
+            if (mb_res >= 0) { if (!emit_forwarded_proc_arg(c, mb_res, &pr)) emit_proc_literal(c, mb_res, &pr); }
+            else { const char *fwd = forwarded_real_proc(mb_blk, mb_res); buf_puts(&pr, fwd ? fwd : "NULL"); }
+            buf_printf(&pp, "({ sp_Proc *_pp = %s; _pp ? sp_box_obj(_pp, SP_BUILTIN_PROC) : sp_box_nil(); })",
+                       pr.p ? pr.p : "NULL");
+            free(pr.p);
+          }
+          tb = ++g_tmp;
+          buf_printf(b, " sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);", tb, pp.p ? pp.p : "sp_box_nil()", tb);
+          free(pp.p);
+        }
         for (int ai = 0; ai < argc; ai++) {
           if (hash_lit_empty(nt, argv[ai])) continue;
           int to = ++g_tmp, ti = ++g_tmp, tp = ++g_tmp;
@@ -5768,6 +5837,24 @@ else {
             buf_printf(b, " if (_t%d.tag != SP_TAG_OBJ || !sp_poly_is_hash_kind(_t%d.cls_id))"
                           " sp_raise_cls(\"TypeError\", sp_sprintf(\"no implicit conversion of %%s into Hash\", sp_convert_src_name(_t%d)));",
                        to, to, to);
+          if (tb >= 0) {
+            int tk = ++g_tmp, tv = ++g_tmp;
+            buf_printf(b, " sp_int _t%d = sp_poly_arr_len_ex(_t%d);"
+                          " for (sp_int _i9 = 0; _i9 < _t%d; _i9++) {"
+                          " sp_RbVal _t%d = sp_poly_each_elem(_t%d, _i9);"
+                          " sp_RbVal _t%d = sp_PolyArray_get((sp_PolyArray *)_t%d.v.p, 0);"
+                          " sp_RbVal _t%d = sp_PolyArray_get((sp_PolyArray *)_t%d.v.p, 1);"
+                          " if (_t%d.tag != SP_TAG_NIL && sp_PolyPolyHash_has_key(_t%d, _t%d)) {"
+                          " _sp_proc_poly_args[0] = _t%d; _sp_proc_poly_args[1] = sp_PolyPolyHash_get(_t%d, _t%d);"
+                          " _sp_proc_poly_args[2] = _t%d;"
+                          " sp_int _sl[3] = { sp_poly_slot_i(_sp_proc_poly_args[0]), sp_poly_slot_i(_sp_proc_poly_args[1]),"
+                          " sp_poly_slot_i(_sp_proc_poly_args[2]) };"
+                          " _t%d = sp_poly_callable_call(_t%d, 3, _sl); }"
+                          " sp_PolyPolyHash_set(_t%d, _t%d, _t%d); }",
+                       ti, to, ti, tp, to, tk, tp, tv, tp,
+                       tb, tr, tk, tk, tr, tk, tv, tv, tb, tr, tk, tv);
+            continue;
+          }
           buf_printf(b, " sp_int _t%d = sp_poly_arr_len_ex(_t%d);"
                         " for (sp_int _i9 = 0; _i9 < _t%d; _i9++) {"
                         " sp_RbVal _t%d = sp_poly_each_elem(_t%d, _i9);"
