@@ -79,6 +79,23 @@ p force_poly([no_method_error, 1], 0).respond_to?(:args)        # true
 p force_poly([key_error, 1], 0).respond_to?(:args)              # false
 p force_poly([RuntimeError.new, 1], 0).respond_to?(:message)    # true (universal)
 
+# A user subclass that defines its own method boxes under its own cls_id,
+# not SP_BUILTIN_EXCEPTION (a trivial `class X < KeyError; end` with no
+# body happens to share the builtin's cls_id and never exercised this).
+# is_a?(KeyError) already followed the ancestor chain for this case;
+# respond_to?(:key) must too, not fall through to false.
+class MyKeyError < KeyError
+  def extra = "hi"
+end
+my_key_error = begin
+  raise MyKeyError.new("x")
+rescue MyKeyError => mke
+  mke
+end
+p force_poly([my_key_error, 1], 0).respond_to?(:key)            # true
+p force_poly([my_key_error, 1], 0).respond_to?(:extra)          # true
+p force_poly([my_key_error, 1], 0).is_a?(KeyError)              # true
+
 # Negative controls: a real method name no class defines, and format, a
 # Kernel method (BOP_KERNEL in bop_rows), not a String instance method --
 # "x".respond_to?(:format) is false in CRuby, so it must not be read off

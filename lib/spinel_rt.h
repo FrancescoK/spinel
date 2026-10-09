@@ -1995,6 +1995,7 @@ static sp_RbVal sp_poly_bitop(sp_RbVal a, sp_RbVal b, int op) {  /* 0:& 1:| 2:^ 
 static const char *sp_class_to_s(sp_Class c);
 #endif
 const char *sp_poly_class_name(sp_RbVal v);  /* fwd: user-object to_s default */
+extern const char *(*sp_user_exc_parent_fn)(const char *);  /* fwd: the program's exception parent table (defined ~line 14477) */
 static const char *sp_convert_src_name(sp_RbVal v);  /* fwd: nil/true/false spell themselves */
 static sp_int sp_poly_Integer_ex(sp_RbVal v, sp_int base, int raise);  /* fwd: Kernel#Integer / #Float on a user object */
 static sp_float sp_poly_Float_ex(sp_RbVal v, int raise);
@@ -2333,7 +2334,18 @@ static sp_bool sp_poly_responds_builtin(sp_RbVal v, const char *m) {
      by its kind */
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_IO && v.v.p)
     return sp_io_responds((sp_File *)v.v.p, m, 0);
-  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_EXCEPTION && v.v.p) {
+  if (v.tag == SP_TAG_OBJ && v.v.p &&
+      (v.cls_id == SP_BUILTIN_EXCEPTION ||
+       /* A user exception boxes under its own class id, not
+          SP_BUILTIN_EXCEPTION, once it has anything of its own (a method,
+          an ivar) that needs separate storage -- a trivial `class
+          MyKeyError < KeyError; end` happens to share the builtin's cls_id
+          and was never actually exercising this arm. Without this check, a
+          non-trivial subclass fell through to `return 0` below and every
+          accessor answered false, even though is_a?(KeyError) (which
+          already handles this case two arms below) answered true for the
+          same value. Mirrors the is_a? arm's own user-subclass check. */
+       (v.cls_id >= 0 && sp_user_exc_parent_fn && sp_user_exc_parent_fn(sp_poly_class_name(v))))) {
     if (sp_str_in_list(m, excm)) return 1;
     /* bop_rows registers these accessors for ANY exception (no
        owning-subclass field), but CRuby gates each to the subclass that
