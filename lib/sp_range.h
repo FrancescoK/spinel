@@ -85,6 +85,29 @@ static inline sp_IntArray *sp_range_to_ia(sp_Range r){
   if(s==1)return sp_IntArray_from_range(r.first,r.last-r.excl);
   return sp_IntArray_from_range_step(r.first,r.last,s,r.excl);
 }
+/* The first n elements of the range, or all of them when it has fewer:
+   what zip reads of a Range argument, which stops at its receiver's size
+   (an endless one included, as CRuby's zip takes an infinite enumerator). */
+static inline sp_IntArray *sp_range_to_ia_first(sp_Range r, sp_int n){
+  if(r.first==INTPTR_MIN)sp_raise_cls("TypeError","can't iterate from NilClass");
+  sp_int s=sp_range_step(r);
+  sp_int cnt=r.last==INTPTR_MAX?n:sp_range_count(r);
+  if(cnt>n)cnt=n;
+  sp_IntArray *a=sp_IntArray_new();
+  for(sp_int i=0;i<cnt;i++)sp_IntArray_push(a,r.first+i*s);
+  return a;
+}
+/* A Float limit of upto / downto as an Integer bound, floor (upto) or ceil
+   (downto): an infinite or out-of-range limit saturates (+Infinity is the
+   endless bound) and NaN leaves nothing to enumerate. The plain cast was
+   undefined behaviour there. */
+static inline sp_int sp_flt_range_bound(sp_float f, int up){
+  if(f!=f)return up?INTPTR_MIN+1:INTPTR_MAX-1;
+  f=up?floor(f):ceil(f);
+  if(f>=9.2233720368547758e18)return INTPTR_MAX;
+  if(f<=-9.2233720368547758e18)return INTPTR_MIN+1;
+  return (sp_int)f;
+}
 /* Last enumerated element (== first for an empty range), and the min/max of the
    enumerated set -- direction-aware, so a descending range reports them right. */
 static inline sp_int sp_range_last_elem(sp_Range r){

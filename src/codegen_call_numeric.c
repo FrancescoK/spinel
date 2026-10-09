@@ -594,7 +594,7 @@ int emit_call_iter_expr_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
       int lf = comp_ntype(c, argv[0]) == TY_FLOAT;
       buf_puts(b, "(sp_Range){ .first = "); emit_upto_recv(c, recv, argv[0], b);
       buf_puts(b, ", .last = ");
-      if (lf) { buf_puts(b, "(sp_int)floor("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      if (lf) { buf_puts(b, "sp_flt_range_bound("); emit_expr(c, argv[0], b); buf_puts(b, ", 1)"); }
       else emit_int_expr(c, argv[0], b);
       buf_puts(b, ", .excl = 0 }");
       return 1;
@@ -606,7 +606,7 @@ int emit_call_iter_expr_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
       int lf = comp_ntype(c, argv[0]) == TY_FLOAT;
       buf_puts(b, "sp_range_new_step("); emit_int_recv_named(c, recv, name, b);
       buf_puts(b, ", ");
-      if (lf) { buf_puts(b, "(sp_int)ceil("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
+      if (lf) { buf_puts(b, "sp_flt_range_bound("); emit_expr(c, argv[0], b); buf_puts(b, ", 0)"); }
       else emit_int_expr(c, argv[0], b);
       buf_puts(b, ", 0, -1LL)");
       return 1;
