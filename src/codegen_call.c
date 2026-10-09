@@ -26185,7 +26185,9 @@ static int emit_deep_return_pickup(Compiler *c, int id, Buf *b) {
     return emit_strbuf_route(c, id, b);
   /* An identity read demands the handle without changing String dispatch.
      The return route lifts that demand while it runs the ordinary call. */
-  if (repr_share_rule(c) && repr_of(c, id).demand && repr_call_returns_handle(c, id))
+  /* A boxed conversion carries each arm directly under that demand. */
+  if (repr_share_rule(c) && repr_of(c, id).demand && repr_call_returns_handle(c, id) &&
+      repr_boxed_to_s_operand(c, id) < 0)
     return emit_strbuf_route(c, id, b);
   if (!strbuf_call_picks_up(c, id)) return 0;
   int tvD = ++g_tmp;

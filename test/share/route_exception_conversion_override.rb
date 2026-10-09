@@ -1,3 +1,5 @@
+# spinel: share
+# spinel: gc-minor
 # An exception's override must run instead of reading its stored message.
 module Text
   def to_s = +"override"

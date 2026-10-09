@@ -1792,6 +1792,16 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
     return 1;
   }
   int x = strbuf_route_operand(c, v);
+  if (repr_boxed_to_s_operand(c, v) >= 0 && cplan_user(c, v)->dispatch != CP_NONE) {
+    /* The ordinary dispatch keeps each selected arm's own answer. */
+    /* Without user targets, the builtin route below already carries the handle. */
+    int sb = view_push_repr(c, v, VR_STRBUF_BOX, 0);
+    int sd = view_push_repr(c, v, VR_HANDLE_DEMAND, 1);
+    int st = view_push(c, v, TY_STRING);
+    emit_expr(c, v, b);
+    view_pop(c, st); view_pop(c, sd); view_pop(c, sb);
+    return 1;
+  }
   if (repr_call_returns_handle(c, v) && (x < 0 || repr_of(c, x).kind != RK_BOXED)) {
     /* the deep-return pickup (emit_call_body's): the channel cleared, the
        call run, its published handle taken, or a String of its own if none

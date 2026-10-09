@@ -1,3 +1,5 @@
+# spinel: share
+# spinel: gc-minor
 # A builtin exception reopening must run on the boxed exception too.
 class RuntimeError
   def to_s = +"override"
