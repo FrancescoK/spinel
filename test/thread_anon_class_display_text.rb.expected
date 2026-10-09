@@ -1,0 +1,7 @@
+["undefined method 'nope' for an instance of #<Class:0xX>", "#<Class:0xX>"]
+["#<Class:0xX>"]
+[["undefined method 'nope' for an instance of Named", "Named", "#<Class:0xX>"]]
+"undefined method 'nope' for an instance of Named"
+"Named"
+"#<Class:0xX>"
+[["#<Class:0xX>", "Named3", "undefined method 'nope' for an instance of Named3"]]
