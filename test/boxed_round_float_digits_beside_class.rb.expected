@@ -1,0 +1,46 @@
+RangeError: float Inf out of range of integer
+RangeError: float Inf out of range of integer
+RangeError: float Inf out of range of integer
+RangeError: float Inf out of range of integer
+RangeError: float Inf out of range of integer
+RangeError: float Inf out of range of integer
+RangeError: float Inf out of range of integer
+RangeError: float Inf out of range of integer
+RangeError: float -Inf out of range of integer
+RangeError: float -Inf out of range of integer
+RangeError: float -Inf out of range of integer
+RangeError: float -Inf out of range of integer
+RangeError: float -Inf out of range of integer
+RangeError: float -Inf out of range of integer
+RangeError: float -Inf out of range of integer
+RangeError: float -Inf out of range of integer
+RangeError: float NaN out of range of integer
+RangeError: float NaN out of range of integer
+RangeError: float NaN out of range of integer
+RangeError: float NaN out of range of integer
+RangeError: float NaN out of range of integer
+RangeError: float NaN out of range of integer
+RangeError: float NaN out of range of integer
+RangeError: float NaN out of range of integer
+RangeError: float 1e+30 out of range of integer
+RangeError: float 1e+30 out of range of integer
+RangeError: float 1e+30 out of range of integer
+RangeError: float 1e+30 out of range of integer
+RangeError: float 1e+30 out of range of integer
+RangeError: float 1e+30 out of range of integer
+RangeError: float 1e+30 out of range of integer
+RangeError: float 1e+30 out of range of integer
+1230
+1230
+1240
+1230
+12.57
+12.56
+12.57
+12.56
+tile round 2.9
+tile floor 2.9
+tile ceil -1.9
+tile truncate -1.9
+NoMethodError
+NoMethodError
