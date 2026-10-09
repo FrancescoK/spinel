@@ -360,6 +360,10 @@ spinel: 1 refusal, nothing written
 spinel: test/reject/hash_pair_string_mutation.rb:6: a String read out of a Hash through its [key, value] pairs is mutated: a String is not yet shared by reference through a Hash's pairs. Mutate it through the Hash (h[k] << x)
 == test/reject/hash_pair_string_mutation.rb [promote] rc=1
 spinel: test/reject/hash_pair_string_mutation.rb:6: a String read out of a Hash through its [key, value] pairs is mutated: a String is not yet shared by reference through a Hash's pairs. Mutate it through the Hash (h[k] << x)
+== test/reject/hash_value_method_answer_appending_writer.rb [default] rc=1
+spinel: test/reject/hash_value_method_answer_appending_writer.rb:20: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
+== test/reject/hash_value_method_answer_appending_writer.rb [promote] rc=1
+spinel: test/reject/hash_value_method_answer_appending_writer.rb:20: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
 == test/reject/hash_value_poly_appending_writer.rb [default] rc=1
 spinel: test/reject/hash_value_poly_appending_writer.rb:16: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
 == test/reject/hash_value_poly_appending_writer.rb [promote] rc=1

@@ -18592,6 +18592,19 @@ static int promote_local_alias_pair(Compiler *c, Scope *ws, const char *srcn, co
    `h.each_value { |v| }`, `h.each { |k, v| }` / `each_pair`, and an element
    iterator over `h.values`. Answers the Hash's read in *hrecv and the
    value's parameter position in *vi. */
+/* The user method a call answering a Hash runs: an object's method, or a
+   class method a constant names (`Source.build`) */
+static int an_hash_src_mi(Compiler *c, int call) {
+  const NodeTable *nt = c->nt;
+  int mi = an_call_target_mi(c, call);
+  if (mi >= 0) return mi;
+  int recv = nt_ref(nt, call, "receiver");
+  const char *nm = nt_str(nt, call, "name");
+  if (recv < 0 || !nm || (nt_kind(nt, recv) != NK_ConstantReadNode && nt_kind(nt, recv) != NK_ConstantPathNode))
+    return -1;
+  int ci = comp_class_index(c, nt_str(nt, recv, "name"));
+  return ci >= 0 ? comp_cmethod_in_chain(c, ci, nm, NULL) : -1;
+}
 /* Each String stored into container hr (a Hash or Array literal, or a
    local's stores) that an appending block reaches: refused with msg at the
    store (at `site` when one is given), unless --share-strings leaves the
@@ -18599,6 +18612,25 @@ static int promote_local_alias_pair(Compiler *c, Scope *ws, const char *srcn, co
    block blk's parameter bp, each store carrying the handle). */
 static void an_hash_store_routes(Compiler *c, int hr, int site, int blk, const char *bp, const char *msg) {
   const NodeTable *nt = c->nt;
+  /* the Hash a user method answers (`Source.build.each { |k, v| }`): the
+     ones its tail and its returns hand out (#8278) */
+  if (nt_kind(nt, hr) == NK_CallNode) {
+    static int depth;
+    int mi = an_hash_src_mi(c, hr);
+    if (mi < 0 || depth > 4) return;
+    Scope *m = &c->scopes[mi];
+    depth++;
+    int last = scope_body_last(c, mi);
+    if (last >= 0) an_hash_store_routes(c, last, site, blk, bp, msg);
+    for (int u = comp_ret_first(c, mi); u >= 0; u = comp_ret_next(c, u)) {
+      if (nt_kind(nt, u) != NK_ReturnNode || comp_scope_of(c, u) != m) continue;
+      int ra = nt_ref(nt, u, "arguments");
+      int rn = 0; const int *rv = ra >= 0 ? nt_arr(nt, ra, "arguments", &rn) : NULL;
+      if (rn == 1) an_hash_store_routes(c, rv[0], site, blk, bp, msg);
+    }
+    depth--;
+    return;
+  }
   int lit = nt_kind(nt, hr) == NK_HashNode || nt_kind(nt, hr) == NK_ArrayNode;
   if (!lit && nt_kind(nt, hr) != NK_LocalVariableReadNode) return;
   const char *hn = lit ? NULL : nt_str(nt, hr, "name");
@@ -18661,7 +18693,9 @@ static int an_hash_value_block(Compiler *c, const char *itn, int recv, int *hrec
   else if (sp_streq(itn, "each_value")) *vi = 0;
   else if (is_each_or_pair(itn)) *vi = 1;
   else return 0;
-  if (recv < 0 || (nt_kind(nt, recv) != NK_LocalVariableReadNode && nt_kind(nt, recv) != NK_HashNode) ||
+  /* or a user method's answer, whose Hashes an_hash_store_routes follows */
+  if (recv < 0 || (nt_kind(nt, recv) != NK_LocalVariableReadNode && nt_kind(nt, recv) != NK_HashNode &&
+                   !(nt_kind(nt, recv) == NK_CallNode && an_hash_src_mi(c, recv) >= 0)) ||
       !ty_is_hash(infer_type(c, recv)))
     return 0;
   *hrecv = recv;
