@@ -18475,6 +18475,7 @@ static sp_StrStrHash *sp_env_update_h_blk(sp_StrStrHash *h, sp_Proc *p) { SP_GC_
       const char *ov = getenv(k);
       if (ov && p) {
         const char *ovh = sp_str_dup_external(ov);  /* environ may move */
+        ((unsigned char *)ovh)[-1] = 0xfa;
         SP_GC_ROOT(ovh);
         _sp_proc_poly_args[0] = sp_box_str(k);
         _sp_proc_poly_args[1] = sp_box_str(ovh);

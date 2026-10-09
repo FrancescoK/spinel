@@ -803,6 +803,7 @@ int emit_op_hash_assoc(Compiler *c, const BopCtx *x, Buf *b) {
   const int *argv = call_args(c->nt, x->id, &argc);
   /* find first pair where key==arg (assoc) or value==arg (rassoc); returns [k,v] or nil */
   int is_rassoc = sp_streq(name, "rassoc");
+  int env = nt_int(c->nt, x->id, "env_snapshot", 0);
   TyKind kt = ty_hash_key(rt), vt = ty_hash_val(rt);
   int th = ++g_tmp, tr = ++g_tmp, ti = ++g_tmp, ta = ++g_tmp;
   /* PolyPolyHash's order[] holds SLOT INDEXES; keys/vals index directly.
@@ -814,6 +815,7 @@ int emit_op_hash_assoc(Compiler *c, const BopCtx *x, Buf *b) {
   else
     snprintf(vget, sizeof vget, "sp_%sHash_get(_t%d, _t%d->order[_t%d])", hn, th, th, ti);
   buf_printf(b, "({ sp_%sHash *_t%d = ", hn, th); emit_expr(c, recv, b); buf_puts(b, ";");
+  if (env) buf_printf(b, " SP_GC_ROOT(_t%d);", th);
   /* store argument */
   if (!is_rassoc) {
     buf_printf(b, " %s _t%d = ", c_type_name(kt), ta); emit_hash_key(c, argv[0], kt, b); buf_puts(b, ";");
@@ -822,6 +824,7 @@ int emit_op_hash_assoc(Compiler *c, const BopCtx *x, Buf *b) {
     /* rassoc: arg has value type */
     buf_printf(b, " sp_RbVal _t%d = ", ta); emit_boxed(c, argv[0], b); buf_puts(b, ";");
   }
+  if (env) buf_printf(b, is_rassoc ? " SP_GC_ROOT_RBVAL(_t%d);" : " SP_GC_ROOT_STR(_t%d);", ta);
   buf_printf(b, " sp_PolyArray *_t%d = NULL;", tr);
   buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {", ti, ti, th, ti);
   if (!is_rassoc) {
@@ -845,8 +848,16 @@ int emit_op_hash_assoc(Compiler *c, const BopCtx *x, Buf *b) {
   }
   /* build pair */
   buf_printf(b, " _t%d = sp_PolyArray_new();", tr);
-  emit_push_hash_key(kt, tr, th, ti, b);
-  if (vt == TY_POLY)
+  if (env) {
+    buf_printf(b, " SP_GC_ROOT(_t%d); sp_PolyArray_push(_t%d, sp_box_str(", tr, tr);
+    if (is_rassoc) buf_printf(b, "sp_str_dup_external(_t%d->order[_t%d])", th, ti);
+    else buf_printf(b, "_t%d", ta);
+    buf_puts(b, "));");
+  }
+  else emit_push_hash_key(kt, tr, th, ti, b);
+  if (env && is_rassoc)
+    buf_printf(b, " sp_PolyArray_push(_t%d, _t%d);", tr, ta);
+  else if (vt == TY_POLY)
     buf_printf(b, " sp_PolyArray_push(_t%d, %s);", tr, vget);
   else if (vt == TY_INT)
     buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_int(%s));", tr, vget);

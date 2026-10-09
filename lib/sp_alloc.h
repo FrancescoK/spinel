@@ -543,6 +543,13 @@ static inline const char *sp_str_dup_external(const char *s) {
   return r;
 }
 
+/* ENV copies are frozen but remain collectible, like frozen Hash keys. */
+static inline const char *sp_env_str(const char *s) {
+  char *r = (char *)sp_str_dup_external(s);
+  if (r) ((unsigned char *)r)[-1] = 0xfa;
+  return r;
+}
+
 /* Integer / Float -> decimal string. Shared here (over the string heap) so cold
    readers such as lib/sp_json.c can format numbers without spinel_rt.h. */
 /* Interpolation writers: append one part into a caller-provided buffer and

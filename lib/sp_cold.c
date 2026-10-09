@@ -3460,8 +3460,9 @@ sp_RbVal sp_env_shift(void) {
   size_t n = eq ? (size_t)(eq - ent) : strlen(ent);
   char *k = sp_str_alloc(n);
   memcpy(k, ent, n); k[n] = 0;
+  ((unsigned char *)k)[-1] = 0xfa;
   SP_GC_ROOT_STR(k);
-  const char *v = sp_sprintf("%s", eq ? eq + 1 : "");
+  const char *v = sp_env_str(eq ? eq + 1 : "");
   SP_GC_ROOT_STR(v);
   sp_PolyArray *a = sp_PolyArray_new();
   SP_GC_ROOT(a);
@@ -3492,7 +3493,7 @@ sp_StrStrHash *sp_env_to_h(void) {
     /* copy the VALUE first and root it: the key below is a fresh unreachable
        heap string until the set, and the value copy may GC (#2842 -- a large
        environment collected mid-loop and swept the just-built key) */
-    const char *v = sp_str_dup_external(eq + 1);
+    const char *v = sp_env_str(eq + 1);
     SP_GC_ROOT_STR(v);
     size_t kl = (size_t)(eq - *e);
     char *k = sp_str_alloc_raw(kl + 1);

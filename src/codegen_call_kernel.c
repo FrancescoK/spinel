@@ -1377,10 +1377,13 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
       if (enm && sp_streq(enm, "delete") && eac == 1) {
         int t1 = ++g_tmp, t2 = ++g_tmp;
         int dblk = nt_ref(nt, id, "block");
+        int dpoly = repr_of(c, id).kind == RK_BOXED;
+        int result = dpoly ? ++g_tmp : t2;
         buf_printf(b, "({ const char *_t%d = ", t1); emit_str_expr(c, eav[0], b);
         buf_printf(b, "; const char *_t%d = getenv(_t%d);"
-                      " _t%d = _t%d ? sp_str_dup_external(_t%d) : NULL;"
+                      " _t%d = _t%d ? sp_env_str(_t%d) : NULL;"
                       " unsetenv(_t%d); ", t2, t1, t2, t2, t2, t1);
+        if (dpoly) buf_printf(b, "sp_RbVal _t%d = sp_box_str(_t%d); ", result, t2);
         if (dblk >= 0) {
           const char *dp0 = block_param_name(c, dblk, 0);
           char kref[1024];
@@ -1421,20 +1424,13 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
           }
           for (int k = 0; k < dbn - 1; k++) emit_stmt(c, dbb[k], b, 0);
           if (dval >= 0) {
-            Repr dvr = repr_of(c, dval);
-            TyKind dvt = dvr.as_ty;
-            buf_printf(b, "_t%d = ", t2);
-            if (dvt == TY_STRING) emit_expr(c, dval, b);
-            else if (dvr.kind == RK_BOXED) {
-              buf_puts(b, "({ sp_RbVal _dv = "); emit_expr(c, dval, b);
-              buf_puts(b, "; _dv.tag == SP_TAG_NIL ? NULL : sp_poly_to_s(_dv); })");
-            }
-            else { buf_puts(b, "sp_poly_to_s("); emit_boxed(c, dval, b); buf_puts(b, ")"); }
+            buf_printf(b, "_t%d = ", result);
+            emit_coerce(c, dval, dpoly ? TY_POLY : TY_STRING, CO_HOLD, "an ENV.delete block result", b);
             buf_puts(b, "; ");
           }
           buf_puts(b, "} ");
         }
-        buf_printf(b, "_t%d; })", t2);
+        buf_printf(b, "_t%d; })", result);
         return 1;
       }
       /* ENV.store(k, v) is []= */
@@ -1452,7 +1448,7 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
     if (rty2 && sp_streq(rty2, "ConstantReadNode")) {
       const char *rn = nt_str(nt, recv, "name");
       if (rn && sp_streq(rn, "ENV")) {
-        buf_puts(b, "sp_str_dup_external(getenv("); emit_str_expr(c, argv[0], b); buf_puts(b, "))");
+        buf_puts(b, "sp_env_str(getenv("); emit_str_expr(c, argv[0], b); buf_puts(b, "))");
         return 1;
       }
     }
@@ -1537,9 +1533,9 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         buf_printf(b, "; const char *_t%d = getenv(_t%d); ", tk, tky);
         emit_ctype(c, fpoly ? TY_POLY : TY_STRING, b);
         buf_printf(b, " _t%d = _t%d ? ", tv, tk);
-        if (fhandle) buf_printf(b, "(_sp_ret_strbuf = NULL, sp_str_dup_external(_t%d)) : ", tk);
-        else if (fpoly) buf_printf(b, "sp_box_str(sp_str_dup_external(_t%d)) : ", tk);
-        else buf_printf(b, "sp_str_dup_external(_t%d) : ", tk);
+        if (fhandle) buf_printf(b, "(_sp_ret_strbuf = NULL, sp_env_str(_t%d)) : ", tk);
+        else if (fpoly) buf_printf(b, "sp_box_str(sp_env_str(_t%d)) : ", tk);
+        else buf_printf(b, "sp_env_str(_t%d) : ", tk);
         if (fhandle) buf_printf(b, "sp_strbuf_read_pub(_t%d)", td);
         else if (argc >= 2) buf_printf(b, "_t%d", td);
         else

@@ -6260,6 +6260,17 @@ static int infer_nil_chain_call(Compiler *c, int id, const NodeTable *nt, const 
 
 /* A Kernel method that runs its block: loop, catch and throw, instance_eval and instance_exec, a trampoline's block (infer_call_inner's rules, in their order) */
 static int infer_block_kernel_call(Compiler *c, int id, const NodeTable *nt, const char *name, int recv, TyKind rt, TyKind *out) {
+  if (recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode &&
+      is_env_const(nt_str(nt, recv, "name")) && !comp_const(c, "ENV") &&
+      bop_share_named(BOP_ENV, name) == BSH_FETCH) {
+    int blk = nt_ref(nt, id, "block");
+    if (blk >= 0) {
+      /* The missing-key block has the same tail/next union as a conflict block. */
+      TyKind bt = hash_merge_block_value_ty(c, id);
+      *out = bt == TY_STRBUF ? TY_STRING : ty_unify(TY_STRING, bt);
+      return 1;
+    }
+  }
   /* loop { break val } -> the type of the break value */
   if (recv < 0 && sp_streq(name, "loop") && !an_bare_call_class_owned(c, id)) {
     int blk = nt_ref(nt, id, "block");

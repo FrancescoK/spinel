@@ -2678,6 +2678,7 @@ int desugar_env_enum(Compiler *c) {
     nt_node_set_ref(nt, snap, "receiver", -1);
     nt_node_set_ref(nt, snap, "arguments", -1);
     nt_node_set_ref(nt, snap, "block", -1);
+    nt_node_set_int(nt, id, "env_snapshot", 1);
     comp_grow_node_arrays(c);
     c->nscope[snap] = c->nscope[id];
     /* the plain-Enumerable names ride the pair ARRAY (the typed-hash surface
