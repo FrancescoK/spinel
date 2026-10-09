@@ -2202,6 +2202,12 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
      emit_strbuf_route): that handle's box, not a new handle around a copy */
   /* A shared field's boxed value carries its handle even without a
      container-store lift, including defaults, throw and break values. */
+  /* an argument that ran ahead as the handle it hands on (a lifted call result) */
+  if (lift && ran_first_handle(node) >= 0) {
+    buf_printf(b, "sp_box_nullable_obj(_t%d, SP_BUILTIN_STRBUF)", ran_first_handle(node));
+    if (g_repr_check) repr_channel_boxed(c, node, frame);
+    return;
+  }
   if (lift || (!arg_ran_first(node, 0) && strbuf_route_reader(c, node))) {
     Buf hb; memset(&hb, 0, sizeof hb);
     if (emit_strbuf_route(c, node, &hb)) {

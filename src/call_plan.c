@@ -467,17 +467,52 @@ const CallPlan *cplan_user_fresh(Compiler *c, int id) {
   return &fresh;
 }
 
+/* The class a constructor call builds: a constant receiver's, or the class
+   its method runs for, as inference types it (bare or `self.new` in a class
+   method, `self.class.new` in an instance method). *own is set for the
+   second kind, which a subclass receiving the method builds its own of. */
+static int cplan_new_class(Compiler *c, int id, int *own) {
+  const NodeTable *nt = c->nt;
+  int r = nt_ref(nt, id, "receiver");
+  NodeKind k = r >= 0 ? nt_kind(nt, r) : NK_NONE;
+  *own = 0;
+  if (k == NK_ConstantReadNode || k == NK_ConstantPathNode) return comp_class_index(c, nt_str(nt, r, "name"));
+  Scope *s = comp_scope_of(c, id);
+  int ci = -1;
+  if (s && s->is_cmethod && (r < 0 || k == NK_SelfNode)) ci = s->class_id;
+  else if (s && !s->is_cmethod && k == NK_CallNode && nt_ref(nt, r, "receiver") >= 0 &&
+           nt_kind(nt, nt_ref(nt, r, "receiver")) == NK_SelfNode && nt_str(nt, r, "name") &&
+           sp_streq(nt_str(nt, r, "name"), "class")) ci = s->class_id;
+  if (ci < 0 || ci >= c->nclasses || comp_class_is_module(c, &c->classes[ci])) return -1;
+  *own = 1;
+  return ci;
+}
+
 /* A constructor's result can be discarded, so resolve from its receiver
    after the user new plan has declined, rather than from its result type. */
 int cplan_initialize(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   if (id < 0 || nt_kind(nt, id) != NK_CallNode || !is_new_name(nt_str(nt, id, "name"))) return -1;
-  int r = nt_ref(nt, id, "receiver");
-  NodeKind k = nt_kind(nt, r);
-  if (k != NK_ConstantReadNode && k != NK_ConstantPathNode) return -1;
-  if (cplan_user_fresh(c, id)->dispatch != CP_NONE) return -1;
-  int ci = comp_class_index(c, nt_str(nt, r, "name"));
-  return ci >= 0 ? comp_method_in_chain(c, ci, "initialize", NULL) : -1;
+  int own, ci = cplan_new_class(c, id, &own);
+  if (ci < 0 || cplan_user_fresh(c, id)->dispatch != CP_NONE) return -1;
+  return comp_method_in_chain(c, ci, "initialize", NULL);
+}
+
+/* Every initialize a constructor call may run: cplan_initialize's, and for
+   a `new` on the class its method runs for the initialize of each subclass
+   too, which may be the one that receives the method. Answers the count. */
+int cplan_initializers(Compiler *c, int id, int *out, int cap) {
+  const NodeTable *nt = c->nt;
+  if (id < 0 || nt_kind(nt, id) != NK_CallNode || !is_new_name(nt_str(nt, id, "name"))) return 0;
+  int own, ci = cplan_new_class(c, id, &own), n = 0;
+  if (ci < 0 || cplan_user_fresh(c, id)->dispatch != CP_NONE) return 0;
+  for (int k = ci; k < c->nclasses && n < cap; k++) {
+    if (k != ci && (!own || !is_descendant(c, k, ci))) continue;
+    int mi = comp_method_in_chain(c, k, "initialize", NULL), dup = 0;
+    for (int j = 0; j < n; j++) dup |= out[j] == mi;
+    if (mi >= 0 && !dup) out[n++] = mi;
+  }
+  return n;
 }
 
 /* ---- cplan_targets: the user methods a call may reach ---- */

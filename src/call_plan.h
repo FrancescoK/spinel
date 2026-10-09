@@ -77,6 +77,7 @@ const CallPlan *cplan_user_fresh(Compiler *c, int id);
 const CallPlan *cplan_const_user(Compiler *c, int id, const char *cn, int fresh);
 /* A constant receiver's builtin new reaches this initialize, or -1. */
 int cplan_initialize(Compiler *c, int id);
+int cplan_initializers(Compiler *c, int id, int *out, int cap);
 /* Every user method the call node id may reach, into out (at most cap):
    its plan's method and, for a switch, each member. Answered from the types
    as they stand, never kept past cplan_targets_drop.
