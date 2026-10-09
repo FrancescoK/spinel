@@ -35775,6 +35775,45 @@ static void an_pass_note(const char *name, double t0, int changed) {
    inferred types. Every pass still runs; a call that would have been
    skipped is counted with its time, and one that changed anything all the
    same is reported as a violation. */
+/* The desugar passes that read nothing but the tree (#7237): no inferred type,
+   directly or through what they call, and none of them ever changed anything
+   in the shadow schedule over the corpus. One that has run since the node
+   table last changed is not run again: it would find what it found then.
+   A pass that comes to read types leaves this list; `make shadow-check` runs
+   the shadow schedule and fails on a violation by one of these. */
+static const char *const an_tree_only_passes[] = {
+  "desugar_bare_class_self_calls",
+  "desugar_bare_object_reopen_calls",
+  "desugar_binding_lvget",
+  "desugar_block_capture_wrap",
+  "desugar_body_self_call",
+  "desugar_builtin_class_var_recv",
+  "desugar_call_op_write",
+  "desugar_class_body_bare_new",
+  "desugar_class_literal_ctors",
+  "desugar_cmethod_cvar_reflection",
+  "desugar_defined_method_call",
+  "desugar_descendant_reader_calls",
+  "desugar_dynamic_const_get_arms",
+  "desugar_dynamic_respond_to",
+  "desugar_empty_block_body",
+  "desugar_file_stat_new",
+  "desugar_handle_reopen_self_recv",
+  "desugar_ie_bare_object_calls",
+  "desugar_implicit_send",
+  "desugar_include_math",
+  "desugar_kernel_recv",
+  "desugar_lazy_method_call",
+  "desugar_lazy_terminal",
+  "desugar_main_self_call",
+  "desugar_method_call_runtime_name",
+  "desugar_module_function_call",
+  "desugar_reduce_method_symbol",
+  "desugar_step_kwargs",
+  "desugar_sym_to_proc_call",
+  "desugar_symbol_to_proc_call",
+  "desugar_toplevel_instance_exec",
+  NULL };
 static int an_shadow_on(void) {
   static int on = -1;
   if (on < 0) on = getenv("SP_SHADOW_GEN") != NULL;
@@ -35814,8 +35853,10 @@ static void an_shadow_end(Compiler *c, int i, int r) {
                           (double)(ts1.tv_nsec - g_an_sh_t0.tv_nsec) / 1e6;
     if (r || c->nt->version != g_an_sh_v0) {
       g_an_sh[i].violations++;
-      fprintf(stderr, "spinel-shadow: violation pass=%s round=%d%s\n", g_an_sh[i].name, g_infer_round,
-              c->nt->version != g_an_sh_v0 ? " tree" : " result");
+      int listed = 0;
+      for (int k = 0; an_tree_only_passes[k]; k++) if (strcmp(an_tree_only_passes[k], g_an_sh[i].name) == 0) listed = 1;
+      fprintf(stderr, "spinel-shadow: violation pass=%s round=%d%s%s\n", g_an_sh[i].name, g_infer_round,
+              c->nt->version != g_an_sh_v0 ? " tree" : " result", listed ? " LISTED" : "");
     }
   }
   g_an_sh[i].ran = 1;
@@ -35831,8 +35872,42 @@ static void an_shadow_report(void) {
     fprintf(stderr, "spinel-shadow: pass=%s skippable=%d skippable_ms=%.2f violations=%d\n",
             g_an_sh[i].name, g_an_sh[i].skippable, g_an_sh[i].skip_ms, g_an_sh[i].violations);
 }
-#define AN_SHADOWED(nm, call) (!an_shadow_on() ? (call) : \
+static int an_tree_skip_off(void) {
+  static int off = -1;
+  if (off < 0) off = getenv("SP_NO_TREE_SKIP") != NULL || an_shadow_on();
+  return off;
+}
+#define AN_TREE_MAX 64
+static struct { const char *name; unsigned after; int ran; } g_an_tree[AN_TREE_MAX];
+static int g_an_ntree = -1;
+/* the slot of a tree-only pass, -1 for any other */
+static int an_tree_slot(const char *name) {
+  if (g_an_ntree < 0) {
+    g_an_ntree = 0;
+    for (int k = 0; an_tree_only_passes[k] && g_an_ntree < AN_TREE_MAX; k++) {
+      g_an_tree[g_an_ntree].name = an_tree_only_passes[k];
+      g_an_tree[g_an_ntree].ran = 0;
+      g_an_ntree++;
+    }
+  }
+  for (int i = 0; i < g_an_ntree; i++)
+    if (g_an_tree[i].name == name || strcmp(g_an_tree[i].name, name) == 0) return i;
+  return -1;
+}
+/* a tree-only pass that ran with the tree as it is now: skip it */
+static int an_tree_skip(Compiler *c, const char *name, int *slot) {
+  *slot = an_tree_skip_off() ? -1 : an_tree_slot(name);
+  return *slot >= 0 && g_an_tree[*slot].ran && g_an_tree[*slot].after == c->nt->version;
+}
+static void an_tree_ran(Compiler *c, int slot) {
+  if (slot < 0) return;
+  g_an_tree[slot].ran = 1;
+  g_an_tree[slot].after = c->nt->version;
+}
+#define AN_SHADOWED(nm, call) (!an_shadow_on() ? AN_TREE_SKIPPED(nm, call) : \
   ({ int _si = an_shadow_begin(c, (nm)); int _sr = (call); an_shadow_end(c, _si, _sr); _sr; }))
+#define AN_TREE_SKIPPED(nm, call) \
+  ({ int _ts; int _tr = an_tree_skip(c, (nm), &_ts) ? 0 : (call); if (!_tr || _ts >= 0) an_tree_ran(c, _ts); _tr; })
 #define AN_PASS(nm, call) (!sp_timing_on() ? AN_SHADOWED(nm, call) : \
   ({ double _pt0 = sp_timing_now(); int _pr = AN_SHADOWED(nm, call); an_pass_note((nm), _pt0, _pr != 0); _pr; }))
 #define AN_PASS_V(nm, call) do { if (!sp_timing_on()) { call; } else { \
