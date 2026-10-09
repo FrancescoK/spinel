@@ -14649,6 +14649,16 @@ static sp_bool sp_exc_matches_splat(const char *raised, sp_RbVal list) {
   return FALSE;
 }
 
+/* `rescue klass`: a single operand that is not a constant. The clause matches
+   when the raised class is (or descends from) the operand's class, and an
+   operand that is not a class or module is a TypeError (an Array is not a
+   list here, as it is only after `*`). */
+static sp_bool sp_exc_matches_operand(const char *raised, sp_RbVal v) {
+  if (v.tag != SP_TAG_CLASS)
+    sp_raise_cls("TypeError", "class or module required for rescue clause");
+  return sp_exc_cls_matches(raised, sp_class_val_name(v));
+}
+
 /* Issue #781: bridge between the regex compile-error path (which lives
    in the .a library and can't see the user program's static-inline
    sp_raise_cls) and the user's Ruby-level exception machinery. The
