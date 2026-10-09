@@ -13502,6 +13502,17 @@ static sp_queue *sp_poly_as_queue(sp_RbVal v, const char *name) {
 static sp_RbVal sp_poly_queue_num_waiting(sp_RbVal v) { return sp_box_int(sp_Queue_num_waiting(sp_poly_as_queue(v, "num_waiting"))); }
 static sp_RbVal sp_poly_queue_deq(sp_RbVal v) { return sp_Queue_pop(sp_poly_as_queue(v, "deq")); }
 static sp_RbVal sp_poly_queue_enq(sp_RbVal v, sp_RbVal x) { sp_Queue_push(sp_poly_as_queue(v, "enq"), x); return v; }
+/* The Mutex names no other builtin has, on a boxed receiver: lock and
+   unlock answer the receiver, the predicates their truth. */
+static sp_mutex *sp_poly_as_mutex(sp_RbVal v, const char *name) {
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_MUTEX && v.v.p) return (sp_mutex *)v.v.p;
+  sp_raise_nomethod(sp_nomethod_msg(name, v));
+  return NULL;
+}
+static sp_RbVal sp_poly_mutex_lock(sp_RbVal v) { sp_Mutex_lock(sp_poly_as_mutex(v, "lock")); return v; }
+static sp_RbVal sp_poly_mutex_unlock(sp_RbVal v) { sp_Mutex_unlock(sp_poly_as_mutex(v, "unlock")); return v; }
+static sp_bool sp_poly_mutex_try_lock(sp_RbVal v) { return sp_Mutex_try_lock(sp_poly_as_mutex(v, "try_lock")); }
+static sp_bool sp_poly_mutex_locked(sp_RbVal v) { return sp_Mutex_locked(sp_poly_as_mutex(v, "locked?")); }
 /* pop/shift/deq(non_block): an Array's pop(true) is still CRuby's TypeError */
 static sp_RbVal sp_poly_queue_pop_flag(sp_RbVal v, const char *name, sp_bool nb) {
   if (v.tag == SP_TAG_OBJ && sp_poly_is_array_kind(v.cls_id))

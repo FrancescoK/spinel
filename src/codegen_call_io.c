@@ -800,8 +800,10 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
       }
       /* and a boxed Queue closes and answers closed? itself */
       int qname = argc == 0 && (sp_streq(name, "close") || sp_streq(name, "closed?"));
+      /* and a boxed Mutex answers owned? itself, where a stat answers its own */
+      int mname = argc == 0 && sp_streq(name, "owned?");
       int tdr = 0;
-      if (dirfn || qname) {
+      if (dirfn || qname || mname) {
         tdr = ++g_tmp;
         buf_puts(b, "({ "); tdr = hold_operand(c, recv, TY_POLY, 1, tdr, 1, " ", b);
         if (qname) {
@@ -809,6 +811,9 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
           if (sp_streq(name, "close")) buf_printf(b, "((void)sp_Queue_close((sp_queue *)_t%d.v.p), _t%d) : ", tdr, tdr);
           else buf_printf(b, "sp_Queue_closed((sp_queue *)_t%d.v.p) : ", tdr);
         }
+        if (mname)
+          buf_printf(b, "_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_MUTEX ? "
+                        "sp_Mutex_owned((sp_mutex *)_t%d.v.p) : ", tdr, tdr, tdr);
         if (dirfn) {
           buf_printf(b, "_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_DIR ? ", tdr, tdr);
           if (sp_streq(name, "close")) buf_printf(b, "((void)sp_Dir_close((sp_Dir *)_t%d.v.p), sp_box_nil()) : ", tdr);

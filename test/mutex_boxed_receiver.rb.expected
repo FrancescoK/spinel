@@ -1,0 +1,12 @@
+[false, false]
+:acquired
+[true, true, false]
+true
+true
+[false, true, false]
+:not_locked
+true
+true
+:no_method
+[Thread::Mutex, Symbol]
+[true, :gate]
