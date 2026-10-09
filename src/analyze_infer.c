@@ -2274,7 +2274,19 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
        not infer the enclosing Money type). */
     if (argc == 0 && (is_unary_sign(name))) { *out = TY_POLY; return 1; }
     if (argc == 0 && sp_streq(name, "~")) { *out = TY_INT; return 1; }
-    if ((is_membership_alias(name)) &&
+    /* The disagreeing arm only matters when the RECEIVER's own identity is
+       ambiguous (rt == TY_POLY: it could dynamically be the reopening
+       class). A poly ARGUMENT alone, on a receiver whose kind is concrete
+       and known (rt == TY_STRING, say), can never reach a method some
+       unrelated class reopened -- that concrete kind's own reopen, if any,
+       is answered by the built-in-class-reopening arm below instead. Gated
+       on a0 too, `yield.include?(poly_arg)` with `Array#include?` reopened
+       elsewhere widened every String-site call to poly though the site's
+       receiver was always a literal String: codegen's per-site answer
+       (yield_builtin_method_site_type) only covers the yield_recv_builtin_
+       every_site family (K-024/K-025b), not this arm, so the site's bare
+       `bool` landed in the poly slot unboxed and the C did not compile. */
+    if (rt == TY_POLY && (is_membership_alias(name)) &&
         an_user_ret_disagrees(c, name, TY_BOOL))
       { *out = TY_POLY; return 1; }   /* the user arm answers something a bool cannot hold */
     /* a user comparison operator answering something other than a bool
