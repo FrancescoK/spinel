@@ -185,8 +185,11 @@ p make.new.hi                               # 1
 p make == make                              # true (CRuby: false)
 ```
 
-Each such expression refers to one compiled class, so repeated calls reuse
-that class. It does not create a fresh class on each evaluation as CRuby does.
+Each evaluation of the same supported `Class.new` expression yields the same
+compiled class; CRuby creates a new class on each evaluation. Factories with
+a block remain accepted, including programs that do not observe class identity.
+Calls without a block in a method, loop or block are not lowered, so they gain
+no support for repeated construction.
 
 A `Class.new` or `Module.new` block that captures outer locals is refused at
 compile time for constant assignments, local assignments and reachable method
