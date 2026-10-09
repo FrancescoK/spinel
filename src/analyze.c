@@ -34293,6 +34293,19 @@ int an_local_read_once(Compiler *c, int n) {
   if (nt_kind(c->nt, n) != NK_LocalVariableReadNode || !sa_name(c, n, &a)) return 0;
   LocalVar *lv = scope_local(a.scope, a.name);
   if (!lv || lv->is_param || lv->is_block_param || lv->is_cell || sa_read_elsewhere(c, &a, n)) return 0;
+  /* VS_WRITE holds the plain `x = v` writes only: a multiple-assignment
+     target, `x ||= v`, `x += v` hand it a value no freshness test sees.
+     Conditional writes can test their right side just as a plain write does. */
+  int sc = (int)(a.scope - c->scopes);
+  for (int w = comp_lvw_first_sc(c, sc, a.name); w >= 0; w = comp_lvw_next_sc(c, w)) {
+    const char *wn = nt_str(c->nt, w, "name");
+    if (w >= c->node_cap || c->nscope[w] != sc || !wn || !sp_streq(wn, a.name)) continue;
+    NodeKind wk = nt_kind(c->nt, w);
+    if (wk == NK_LocalVariableWriteNode) continue;
+    if ((wk == NK_LocalVariableOrWriteNode || wk == NK_LocalVariableAndWriteNode) &&
+        share_value_fresh(c, nt_ref(c->nt, w, "value"), 0)) continue;
+    return 0;
+  }
   for (int e = sa_site_first(c, &a, VS_WRITE); e >= 0; e = sa_site_next(c, &a, e)) {
     int w = comp_vsite_node(c, e);
     if (!share_value_fresh(c, nt_ref(c->nt, w, "value"), 0)) return 0;
