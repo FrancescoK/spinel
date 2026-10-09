@@ -168,9 +168,10 @@ sp_bool sp_warning_aref(const char *cat);
 void sp_warning_aset(const char *cat, sp_bool v);
 sp_bool sp_warning_enabled(const char *cat);
 void sp_warning_warn(const char *msg);
-/* Capacity of the runtime symbol-intern pool the generated TU declares
-   (sp_dyn_syms). 8 bytes/entry, so the default is a 64 KB static buffer holding
-   symbols minted at runtime (String#to_sym, :"#{interp}"). Embedded targets that
+/* Size of the first block of the runtime symbol-intern pool the generated TU
+   declares (sp_dyn_syms0). 8 bytes/entry, so the default is a 64 KB static
+   buffer holding symbols minted at runtime (String#to_sym, :"#{interp}"); a
+   program that mints more moves the pool to the heap. Embedded targets that
    intern few or no symbols at runtime can shrink it with -DSP_DYN_SYMS_MAX=<n>. */
 #ifndef SP_DYN_SYMS_MAX
 #define SP_DYN_SYMS_MAX 8192
