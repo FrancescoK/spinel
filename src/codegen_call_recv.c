@@ -431,13 +431,25 @@ static void emit_obj_conv_call(Compiler *c, int def, const char *conv, int by_va
   if (mi >= 0 && !sp_streq(c->scopes[mi].name, conv)) { emit_method_cname(c, &c->scopes[mi], b); buf_puts(b, "("); }
   else buf_printf(b, "sp_%s_%s(", c->classes[def].c_name, mc(conv));
   if (!by_value) buf_printf(b, "(sp_%s *)", c->classes[def].c_name);
-  buf_printf(b, "(%s))", recv);
+  buf_printf(b, "(%s)", recv);
+  if (mi >= 0) emit_conv_dflt_args(c, mi, b);
+  buf_puts(b, ")");
 }
 
 static void emit_obj_container_conv(Compiler *c, int node, int def, const char *conv, Buf *b) {
   Buf r = {0, 0, 0};
   emit_expr(c, node, &r);
-  emit_obj_conv_call(c, def, conv, repr_of(c, node).kind == RK_VOBJ, r.p ? r.p : "NULL", b);
+  int byv = repr_of(c, node).kind == RK_VOBJ;
+  if (!byv && !expr_is_held_ref(c, node)) {
+    int tr = ++g_tmp;
+    char rv[32];
+    snprintf(rv, sizeof rv, "_t%d", tr);
+    buf_printf(b, "({ sp_%s *_t%d = (sp_%s *)(%s); SP_GC_ROOT(_t%d); ", c->classes[def].c_name, tr,
+               c->classes[def].c_name, r.p ? r.p : "NULL", tr);
+    emit_obj_conv_call(c, def, conv, 0, rv, b);
+    buf_puts(b, "; })");
+  }
+  else emit_obj_conv_call(c, def, conv, byv, r.p ? r.p : "NULL", b);
   free(r.p);
 }
 
@@ -5284,7 +5296,20 @@ static int emit_hash_merge_misfit(Compiler *c, int id, TyKind rt, Buf *b) {
   for (int i = 0; i <= last; i++) {
     TyKind at = comp_ntype(c, argv[i]);
     int def = -1;
-    if (i != bad && ty_is_object(at) && (obj_container_conv(c, at, "to_hash", &def) != TY_UNKNOWN || merge_arg_dyn_to_hash(c, at)))
+    int hmi = ty_is_object(at) ? comp_method_in_chain(c, ty_object_class(at), "to_hash", &def) : -1;
+    if (i != bad && ty_is_object(at) && hmi >= 0 && c->scopes[hmi].nparams && conv_takes_no_args(c, hmi)) {
+      int byv = comp_ty_value_obj(c, at);
+      char rv[96];
+      if (byv) snprintf(rv, sizeof rv, "*(sp_%s *)_t%d.v.p", c->classes[def].c_name, t0 + i);
+      else snprintf(rv, sizeof rv, "_t%d.v.p", t0 + i);
+      Buf cb = {0, 0, 0};
+      emit_obj_conv_call(c, def, "to_hash", byv, rv, &cb);
+      buf_printf(b, "_t%d = ", t0 + i);
+      emit_boxed_text(c, c->scopes[hmi].ret, cb.p ? cb.p : "NULL", b);
+      buf_puts(b, "; ");
+      free(cb.p);
+    }
+    else if (i != bad && ty_is_object(at) && (obj_container_conv(c, at, "to_hash", &def) != TY_UNKNOWN || merge_arg_dyn_to_hash(c, at)))
       buf_printf(b, "_t%d = sp_kw_splat_conv(_t%d, 0); ", t0 + i, t0 + i);
     buf_printf(b, "if (_t%d.tag != SP_TAG_OBJ || !sp_poly_is_hash_kind(_t%d.cls_id))"
                   " sp_raise_cls(\"TypeError\", sp_sprintf(\"no implicit conversion of %%s into Hash\", sp_convert_src_name(_t%d))); ",

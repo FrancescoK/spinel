@@ -785,25 +785,31 @@ void sp_poly_hash_merge_into(sp_RbVal dst, sp_RbVal src)
       case SP_BUILTIN_POLY_POLY_HASH: sp_PolyPolyHash_set((sp_PolyPolyHash *)dst.v.p, k, v); break;
       case SP_BUILTIN_SYM_POLY_HASH:
         if (k.tag == SP_TAG_SYM) sp_SymPolyHash_set((sp_SymPolyHash *)dst.v.p, (sp_sym)k.v.i, v);
+        else sp_poly_typed_hash_store_miss(k, v, "Symbol", NULL);
         break;
       case SP_BUILTIN_STR_POLY_HASH:
         if (k.tag == SP_TAG_STR) sp_StrPolyHash_set((sp_StrPolyHash *)dst.v.p, k.v.s, v);
+        else sp_poly_typed_hash_store_miss(k, v, "String", NULL);
         break;
       case SP_BUILTIN_STR_STR_HASH:
         if (k.tag == SP_TAG_STR && v.tag == SP_TAG_STR)
           sp_StrStrHash_set((sp_StrStrHash *)dst.v.p, k.v.s, v.v.s);
+        else sp_poly_typed_hash_store_miss(k, v, "String", "String");
         break;
       case SP_BUILTIN_STR_INT_HASH:
         if (k.tag == SP_TAG_STR && v.tag == SP_TAG_INT)
           sp_StrIntHash_set((sp_StrIntHash *)dst.v.p, k.v.s, v.v.i);
+        else sp_poly_typed_hash_store_miss(k, v, "String", "Integer");
         break;
       case SP_BUILTIN_INT_INT_HASH:
         if (k.tag == SP_TAG_INT && v.tag == SP_TAG_INT)
           sp_IntIntHash_set((sp_IntIntHash *)dst.v.p, k.v.i, v.v.i);
+        else sp_poly_typed_hash_store_miss(k, v, "Integer", "Integer");
         break;
       case SP_BUILTIN_INT_STR_HASH:
         if (k.tag == SP_TAG_INT && v.tag == SP_TAG_STR)
           sp_IntStrHash_set((sp_IntStrHash *)dst.v.p, k.v.i, v.v.s);
+        else sp_poly_typed_hash_store_miss(k, v, "Integer", "String");
         break;
       default: break;
     }

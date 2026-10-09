@@ -1,0 +1,8 @@
+merge!: TypeError: cannot store a String key with a Integer value into a hash Spinel typed as Symbol-keyed (the hash was not widened for this store)
+{a: 1}
+update: TypeError: cannot store a String key with a Integer value into a hash Spinel typed as Symbol-keyed (the hash was not widened for this store)
+{a: 1, x: 1}
+boxed: TypeError: cannot store a String key with a Integer value into a hash Spinel typed as Symbol-keyed (the hash was not widened for this store)
+{a: 1}
+value: TypeError: cannot store a String key with a Integer value into a hash Spinel typed as Symbol-keyed (the hash was not widened for this store)
+{a: "v"}
