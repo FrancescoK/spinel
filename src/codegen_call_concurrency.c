@@ -423,13 +423,20 @@ int emit_call_synchronize_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         /* nested inside another begin..ensure / synchronize: hand the deferred
            return and unhandled exception to the enclosing ensure. */
         EnsureCtx *outer = &g_ensure_stack[g_ensure_depth - 1];
-          { buf_printf(b, "if (_retf%d) { ", eid);
+        buf_printf(b, "if (_retf%d) { ", eid);
         if (has_retval && outer->has_retval) buf_printf(b, "_retv%d = _retv%d; ", outer->lid, eid);
         buf_printf(b, "_retf%d = 1; ", outer->lid);
         emit_ensure_chain_pops(b, outer);
-        buf_printf(b, "goto _ensure%d; } ", outer->lid); }
-        buf_printf(b, "if (_excf%d) { _excf%d = 1; _excmsg%d = _excmsg%d; _exccls%d = _exccls%d; _excobj%d = _excobj%d; sp_exc_top--; goto _ensure%d; } ",
-                   eid, outer->lid, outer->lid, eid, outer->lid, eid, outer->lid, eid, outer->lid);
+        buf_printf(b, "goto _ensure%d; } ", outer->lid);
+        /* An intervening rescue owns the exception after the unlock, as
+           in the begin..ensure epilogue. Its still-live frame distinguishes
+           it from a direct handoff to the enclosing ensure. */
+        if (g_exc_frame_depth > outer->exc_base + 1)
+          buf_printf(b, "if (_excf%d) { sp_pending_exc_obj = _excobj%d; sp_raise_cls(_exccls%d, _excmsg%d); } ",
+                     eid, eid, eid, eid);
+        else
+          buf_printf(b, "if (_excf%d) { _excf%d = 1; _excmsg%d = _excmsg%d; _exccls%d = _exccls%d; _excobj%d = _excobj%d; sp_exc_top--; goto _ensure%d; } ",
+                     eid, outer->lid, outer->lid, eid, outer->lid, eid, outer->lid, eid, outer->lid);
       }
       else {
         /* the deferred return leaves through every enclosing live begin

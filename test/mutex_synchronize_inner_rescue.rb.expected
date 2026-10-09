@@ -1,0 +1,14 @@
+[:rescued, 9, false]
+after rescue
+outer ensure ran
+false
+[:rescued, 10, true, false]
+:done
+[false, false]
+rescued 11
+12
+outer ensure ran
+false
+outer ensure ran
+[true, 13]
+false
