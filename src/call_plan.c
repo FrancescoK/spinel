@@ -1888,7 +1888,11 @@ int cplan_nil(Compiler *c, int id) {
   TyKind rt = c->ntype[r];
   /* under --share-strings, a String the rule made the shared handle is
      nil as its NULL handle (#6765) */
-  if (!(cplan_nil_family(rt) || (rt == TY_STRBUF && c->share_strings)) || comp_ntype(c, r) != rt) return CN_NONE;
+  /* Exception text dispatch has the same nil target as an ordinary call,
+     including a subclass whose #message invokes #to_s implicitly. */
+  int exc_text = is_exception_message(nm) &&
+    (rt == TY_EXCEPTION || (ty_is_object(rt) && class_is_exc_subclass(c, ty_object_class(rt))));
+  if (!(cplan_nil_family(rt) || exc_text || (rt == TY_STRBUF && c->share_strings)) || comp_ntype(c, r) != rt) return CN_NONE;
   Repr rr = repr_of(c, r);
   if ((rr.kind != RK_PTR && rr.kind != RK_STRBUF) || !rr.may_nil || rr.nil_tested) return CN_NONE;
   /* an ivar keeps the release build's policy (ivar_nil_recv_guard, #5960);

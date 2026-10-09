@@ -11,6 +11,22 @@
 #include "codegen_call_arms.h"
 
 static void emit_exc_own_render(Compiler *c, int id, int recv, int xcm, int own, Buf *b) {
+  /* NilClass#to_s answers its one frozen empty String before a nullable
+     exception's own renderer. The call plan already proves the written nil
+     arm and its builtin target. */
+  if (is_to_s_name(c->scopes[own].name) && cplan_nil(c, id) == CN_ANSWER &&
+      (TyKind)c->scopes[own].ret == TY_STRING) {
+    int t = ++g_tmp;
+    buf_printf(b, "({ sp_%s *_t%d = ", c->classes[xcm].c_name, t);
+    emit_expr(c, recv, b);
+    buf_printf(b, "; SP_GC_ROOT(_t%d); _t%d ? ", t, t);
+    int mark = view_bind(recv, "_t%d", t);
+    int tested = view_push_repr(c, recv, VR_NIL_TESTED, 1);
+    emit_exc_own_render(c, id, recv, xcm, own, b);
+    view_pop(c, tested); view_unbind(mark);
+    buf_puts(b, " : sp_str_frozen_empty; })");
+    return;
+  }
   int defc = xcm;
   (void)comp_method_in_chain(c, xcm, c->scopes[own].name, &defc);
   if (g_plan_check) ucall_observe(c, id, own, defc, 0);
