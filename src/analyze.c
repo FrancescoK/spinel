@@ -10944,9 +10944,15 @@ static int narrow_object_arrays(Compiler *c) {
   }
 
   /* 5b. a return slot's own value: the method's tail expression and every
-         explicit `return`, classified exactly like a local's write sources. */
+         explicit `return`, classified exactly like a local's write sources.
+         A slot already dead is classified too, as the explicit returns below
+         are: the tail call's value then joins it and dies with it. Skipped,
+         the tail kept its statement position as a modeled consumer, so the
+         callee narrowed under a caller that had refused to; the caller read
+         that narrowed value back and stopped being a slot, and the two traded
+         the verdict every round until the cap (#7993). */
   for (int i = 0; i < n; i++) {
-    if (sl[i].lv || sl[i].ici >= 0 || !sl[i].alive) continue;
+    if (sl[i].lv || sl[i].ici >= 0) continue;
     Scope *M = &c->scopes[sl[i].sidx];
     int bn = 0; const int *bl = M->body >= 0 ? nt_arr(nt, M->body, "body", &bn) : NULL;
     if (!bl || bn == 0) { sl[i].alive = 0; continue; }
