@@ -571,10 +571,13 @@ void compute_reachable(Compiler *c) {
            by its own call must not stop the alias from reaching the instance
            side (cgi's escape_html on CGI::Escape). The marking is by name and
            idempotent, so a live counterpart costs nothing. */
+        /* A name newly called counts as a change even with no scope of its
+           own: the old name of an alias of an alias is itself an alias, and
+           the entry that carries it on may come earlier in the table. */
         if (an_live) {
-          int prev_qtail = qtail;
+          int prev_qtail = qtail, prev_cn = cn_n;
           MARK_NAME(ao);
-          if (qtail > prev_qtail) changed = 1;
+          if (qtail > prev_qtail || cn_n > prev_cn) changed = 1;
           /* drain newly enqueued scopes */
           while (qhead < qtail) {
             int s = queue[qhead++];
@@ -582,9 +585,9 @@ void compute_reachable(Compiler *c) {
           }
         }
         if (ao_live) {
-          int prev_qtail = qtail;
+          int prev_qtail = qtail, prev_cn = cn_n;
           MARK_NAME(an);
-          if (qtail > prev_qtail) changed = 1;
+          if (qtail > prev_qtail || cn_n > prev_cn) changed = 1;
           while (qhead < qtail) {
             int s = queue[qhead++];
             for (int ni = 0; ni < sc_n[s]; ni++) MARK_NAME(scope_calls[s][ni]);
