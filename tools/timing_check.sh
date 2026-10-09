@@ -19,6 +19,15 @@ for p in frontend analysis_fixpoint analysis codegen_program write_c; do
   grep -Eq "^spinel-timing: phase=$p ms=" "$tmp/env.err" || fail "SP_TIMING: no $p line"
 done
 grep -Eq '^spinel-timing: phase=analysis_fixpoint ms=[0-9.]+ rounds=[0-9]+' "$tmp/on.err" || fail "no round count"
+# the analysis phases, the re-narrowing loop, and each fixpoint pass summed
+# over the rounds
+for p in an_desugar_register an_pre_fixpoint an_post_fixpoint an_reconcile_check; do
+  grep -Eq "^spinel-timing: phase=$p ms=[0-9.]+$" "$tmp/on.err" || fail "no $p line"
+done
+grep -Eq '^spinel-timing: phase=analysis_renarrow ms=[0-9.]+ rounds=[0-9]+$' "$tmp/on.err" || fail "no analysis_renarrow line"
+grep -Eq '^spinel-timing: pass=infer_write_types ms=[0-9.]+ calls=[1-9][0-9]* changed=[0-9]+$' "$tmp/on.err" ||
+  fail "no infer_write_types pass line"
+[ "$(grep -c '^spinel-timing: pass=' "$tmp/on.err")" -ge 100 ] || fail "fewer than 100 pass lines"
 # the native phases, single unit and split
 $SPINEL --timing -o "$tmp/a.out" $src 2>"$tmp/cc1.err" || fail "native compile"
 grep -q 'phase=cc_total ms=' "$tmp/cc1.err" || fail "no cc_total"

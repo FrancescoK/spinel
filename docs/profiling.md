@@ -192,8 +192,11 @@ spinel-timing: phase=analysis_fixpoint ms=3.2 rounds=4
 | phase | covers |
 |---|---|
 | `frontend` | parse, require resolution, loading the AST |
+| `an_desugar_register`, `an_class_structure`, `an_block_inline`, `an_pre_fixpoint` | the analysis phases ahead of the fixpoint |
 | `analysis_fixpoint` | the inference fixpoint (`rounds=N`, plus `capped=1` if it hit the cap) |
-| `analysis` | all of `analyze_program`; includes `analysis_fixpoint` |
+| `analysis_renarrow` | the loop that re-narrows poly slots once the fixpoint has settled (`rounds=N`); inside `analysis_fixpoint` |
+| `an_post_fixpoint`, `an_procs`, `an_method_backstops`, `an_late_widen`, `an_proc_returns`, `an_storage`, `an_value_types`, `an_reconcile_check` | the analysis phases after it |
+| `analysis` | all of `analyze_program`; includes the phases above |
 | `codegen_program` | analysis and C generation; includes `analysis` |
 | `write_c` | writing the C file |
 | `cc_preprocess`, `cc_split` | a split build (`--jobs=N`, or a large unit): the preprocess and the split into parts |
@@ -202,7 +205,21 @@ spinel-timing: phase=analysis_fixpoint ms=3.2 rounds=4
 | `cc_total` | the whole native step, single unit or split |
 
 A phase nested in another is counted in both, so the lines do not add up to the
-total. A phase that did not run (a `-c` build has no `cc_*`) or failed prints
+total.
+
+Each pass of the inference fixpoint also gets a line, its wall time summed over
+the rounds, longest first, right after `analysis_fixpoint`:
+
+```
+spinel-timing: pass=infer_write_types ms=47.2 calls=15 changed=12
+```
+
+`calls` is how often it ran, `changed` how many of those calls reported a
+change to the fixpoint (a pass the fixpoint calls only for its effect counts
+none). The name is the C function's. The passes are a part of
+`analysis_fixpoint` (and of `analysis_renarrow` for the ones its loop runs);
+the remainder is the fixpoint's own bookkeeping. With the flag off a pass call
+costs a flag test. A phase that did not run (a `-c` build has no `cc_*`) or failed prints
 nothing, so a failed build is not a sample. Record the compiler, the input,
 the flags, the host and the cache state beside the lines; they are not in them.
 

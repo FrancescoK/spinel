@@ -35747,6 +35747,46 @@ static int an_retract_stale_reverse_widening(Compiler *c) {
 }
 
 /* The inference fixpoint: two rounds with the proc-form clones made between them, then the optimistic re-narrow of the slots a transient poly locked (analyze_program's steps, in their order) */
+/* --timing (#7236): each pass of the inference fixpoint, its wall time
+   summed over the rounds, how often it ran and how often it reported a
+   change. AN_PASS wraps a pass call: off, a flag test and the call; on, a
+   clock read on each side. Reported by an_pass_report after the analysis. */
+#define AN_PASS_MAX 256
+static struct { const char *name; double ms; int calls, changed; } g_an_pass[AN_PASS_MAX];
+static int g_an_npass;
+static double g_renarrow_ms;
+static int g_renarrow_rounds;
+static void an_pass_note(const char *name, double t0, int changed) {
+  double ms = sp_timing_now() - t0;
+  int i = 0;
+  while (i < g_an_npass && g_an_pass[i].name != name && strcmp(g_an_pass[i].name, name) != 0) i++;
+  if (i == g_an_npass) {
+    if (g_an_npass == AN_PASS_MAX) return;
+    g_an_pass[g_an_npass].name = name; g_an_pass[g_an_npass].ms = 0;
+    g_an_pass[g_an_npass].calls = g_an_pass[g_an_npass].changed = 0;
+    g_an_npass++;
+  }
+  g_an_pass[i].ms += ms; g_an_pass[i].calls++;
+  if (changed) g_an_pass[i].changed++;
+}
+#define AN_PASS(nm, call) (!sp_timing_on() ? (call) : \
+  ({ double _pt0 = sp_timing_now(); int _pr = (call); an_pass_note((nm), _pt0, _pr != 0); _pr; }))
+#define AN_PASS_V(nm, call) do { if (!sp_timing_on()) { call; } else { \
+  double _pt0 = sp_timing_now(); call; an_pass_note((nm), _pt0, 0); } } while (0)
+static int an_pass_cmp(const void *a, const void *b) {
+  double x = ((const typeof(g_an_pass[0]) *)a)->ms, y = ((const typeof(g_an_pass[0]) *)b)->ms;
+  return x < y ? 1 : x > y ? -1 : 0;
+}
+static void an_pass_report(void) {
+  if (!sp_timing_on()) return;
+  if (g_renarrow_rounds)
+    fprintf(stderr, "spinel-timing: phase=analysis_renarrow ms=%.1f rounds=%d\n", g_renarrow_ms, g_renarrow_rounds);
+  qsort(g_an_pass, (size_t)g_an_npass, sizeof g_an_pass[0], an_pass_cmp);
+  for (int i = 0; i < g_an_npass; i++)
+    fprintf(stderr, "spinel-timing: pass=%s ms=%.1f calls=%d changed=%d\n",
+            g_an_pass[i].name, g_an_pass[i].ms, g_an_pass[i].calls, g_an_pass[i].changed);
+}
+
 static void an_phase_infer_fixpoint(Compiler *c) {
   g_fixpoint_rounds = 0;
   g_fixpoint_capped = 0;
@@ -35762,169 +35802,169 @@ static void an_phase_infer_fixpoint(Compiler *c) {
     if (iter + 1 > g_fixpoint_rounds) g_fixpoint_rounds = iter + 1;
     g_infer_round = iter + 1;
     int ch = 0;
-    seed_unsupplied_nil_defaults(c);   /* ahead of the round's binding, every round: the round's reset clears it (#4583) */
+    AN_PASS_V("seed_unsupplied_nil_defaults", seed_unsupplied_nil_defaults(c));   /* ahead of the round's binding, every round: the round's reset clears it (#4583) */
     sp_narrow_memo_bump();  /* invalidate per-iteration narrow-helper memo */
-    build_ie_map(c);  /* refresh instance_exec receiver-class map each pass */
-    ch |= register_ie_block_ivars(c);  /* slot ivars first assigned in iexec blocks */
-    ch |= infer_write_types(c);
+    AN_PASS_V("build_ie_map", build_ie_map(c));  /* refresh instance_exec receiver-class map each pass */
+    ch |= AN_PASS("register_ie_block_ivars", register_ie_block_ivars(c));  /* slot ivars first assigned in iexec blocks */
+    ch |= AN_PASS("infer_write_types", infer_write_types(c));
     /* The table type has to be visible HERE, not after the fixpoint: a
        parameter bound from `@t[k][j]` widens to poly on the first iteration
        and never comes back (parameters only widen). The narrowing needs
        infer_write_types to have given the ivar its poly-array type first, and
        the locals read out of it (`row = @t[r]`) need one more write pass to
        re-derive from the narrowed type before the binding below sees them. */
-    if (narrow_int_table_ivars(c, 1)) ch |= infer_write_types(c);
+    if (AN_PASS("narrow_int_table_ivars", narrow_int_table_ivars(c, 1))) ch |= AN_PASS("infer_write_types", infer_write_types(c));
     /* The same timing argument for a table held in a LOCAL, or one that
        crosses a call: the helper reading `row = t[i]` binds its parameter on
        the round the call is first seen, and a parameter only ever widens. Run
        after the ivar narrowing so a table read out of an ivar is already
        typed when the local reading it is derived. */
-    if (narrow_object_arrays(c)) ch |= infer_write_types(c);
+    if (AN_PASS("narrow_object_arrays", narrow_object_arrays(c))) ch |= AN_PASS("infer_write_types", infer_write_types(c));
     /* Enumerable over a Hash/Range with only an Array arm: route through to_a
        (needs the receiver kind, so it runs inside the fixpoint). */
-    if (desugar_enumerable_via_to_a(c)) ch |= infer_write_types(c);
-    narrow_locals_from_arrays(c);
+    if (AN_PASS("desugar_enumerable_via_to_a", desugar_enumerable_via_to_a(c))) ch |= AN_PASS("infer_write_types", infer_write_types(c));
+    AN_PASS_V("narrow_locals_from_arrays", narrow_locals_from_arrays(c));
     /* the binding settles a forwarding chain within the round
        (infer_param_types_settle); the re-runs after the fixpoint, which
        reset slots on purpose, bind once as before */
-    ch |= infer_param_types_settle(c);
-    reassert_rbs_param_seeds(c);   /* a seed outranks a narrowing derived from one call site */
-    ch |= bind_coerce_operator_params(c);   /* 3 + obj calls obj's op WITH obj */
-    ch |= infer_param_hash_value(c);
-    ch |= propagate_prep_params(c);
-    ch |= infer_string_params(c);
-    ch |= infer_default_param_types(c);
-    ch |= expand_literal_splat_args(c);        /* builtin/proc m(*[a,b]) -> m(a, b) */
-    ch |= desugar_hash_new_capacity(c);        /* Hash.new(capacity: n) -> Hash.new */
-    ch |= pin_arg_position_hash_new(c);        /* f(Hash.new(d)) -> PolyPoly variant */
-    ch |= pad_unsupplied_params(c);            /* under-supplied call: placeholder param type */
-    ch |= desugar_builtin_method_obj(c);       /* builtin recv.method(:sym) -> wrapper def */
-    ch |= desugar_class_body_bare_new(c);      /* class body `new(x)` -> `Klass.new(x)` */
-    ch |= desugar_bare_class_self_calls(c);    /* cmethod `const_get(:K)` -> `self.const_get(:K)` */
-    ch |= desugar_ie_bare_object_calls(c);     /* instance_eval { is_a?(K) } -> self.is_a?(K) */
-    ch |= desugar_bare_object_reopen_calls(c);  /* Object reopened: `helper` -> `self.helper` */
-    ch |= desugar_descendant_reader_calls(c);
-    ch |= desugar_masgn_store_evidence(c);     /* h[k], o.x = v, w -> detached h[k] = v, o.x = w as type evidence */
-    ch |= desugar_index_assign_user_recv(c);   /* r[k] ||= v on a user [] / []= receiver -> r[k] || (r[k] = v) */
-    ch |= desugar_dynamic_const_get_arms(c);   /* recv.const_get(var) on any other receiver -> static name dispatch */
-    ch |= desugar_reopen_implicit_self(c);     /* `last` in `class Range; def m` -> self.last */
-    ch |= desugar_include_math(c);             /* include Math: sqrt(x) -> Math.sqrt(x) */
-    ch |= desugar_bare_spawn(c);               /* spawn(...) -> Process.spawn(...) */
-    ch |= desugar_kernel_recv(c);              /* Kernel.puts x -> puts x */
-    ch |= desugar_class_literal_ctors(c);      /* Array[a,b] -> [a,b]; Range.new -> (a..b) */
-    ch |= desugar_enum_iter_splat_args(c);     /* enum.map(*a, &b) -> enum.map(&b) */
-    ch |= desugar_enum_pair_lone_param(c);     /* a.each_with_index.map { |x| } -> { |x, i| } */
-    ch |= desugar_builtin_iter_block_shapes(c);  /* [1].each { |c, a = 10| } -> { |v| c = v; a = 10 } */
-    ch |= desugar_fresh_array_each_writeback(c); /* s.scan(re).each { |x| x.gsub!(..) }.join -> map! { |x| ..; x } */
-    ch |= desugar_multi_yield_map_param(c);    /* multi-yield each: map's |x| takes the 1st */
-    ch |= desugar_ewi_pack_values(c);          /* multi-yield each: each_with_index packs */
-    ch |= desugar_enum_walk_calls(c);          /* enum.map { break } -> __enumw_map(enum) { } */
-    ch |= desugar_enum_method_recv(c);         /* obj.map{} -> obj.__enum_to_a.map{} */
-    ch |= give_native_self_calls_a_receiver(c);  /* native class: implicit self -> self.m */
-    ch |= give_self_predicates_a_receiver(c);    /* is_a?(X) on implicit self -> self.is_a?(X) */
-    ch |= desugar_for_enumerable(c);           /* for x in obj -> for x in obj.__enum_to_a */
-    ch |= desugar_lazy_terminal(c);            /* lz.sum -> lz.to_a.sum */
-    ch |= desugar_string_upto(c);              /* "a".upto("c") -> ("a".."c").each */
-    ch |= desugar_file_stat_new(c);            /* File::Stat.new(p) -> File.stat(p) */
-    ch |= desugar_module_function_call(c);     /* helper(x) in an includer -> M.helper(x) */
-    ch |= desugar_method_block_arg(c);         /* m(&method(:x)) -> m(&method(:x).to_proc) */
-    ch |= desugar_curry_block_arg(c);          /* iter(&curried) -> iter { |e| curried[e] } */
-    ch |= desugar_yielder_block_arg(c);        /* src.each(&y) -> src.each { |e| y << e } */
-    ch |= desugar_to_enum(c);                  /* recv.to_enum(:m) -> generator/blockless */
-    ch |= type_block_rest_params(c);           /* |*rest| locals are poly arrays */
-    ch |= desugar_public_method(c);            /* recv.public_method(:m) -> recv.method(:m) */
-    ch |= desugar_class_eval_value(c);
-    ch |= desugar_instance_eval_builtin(c);    /* "s".instance_eval { m } -> splice on a temp */
-    ch |= desugar_builtin_class_var_recv(c);   /* k = Array; k.new(..) -> Array.new(..) */
-    ch |= desugar_compose_method_operand(c);   /* proc >> meth -> proc >> meth.to_proc */
-    ch |= desugar_array_op_to_ary(c);          /* [1] + w -> [1] + w.to_ary (w answers to_ary) */
-    ch |= desugar_mutator_receiver_value(c);   /* (c ? s : t) << x -> (c ? s << x : t << x) */
-    ch |= desugar_method_curry(c);             /* meth.curry -> meth.to_proc.curry */
-    ch |= desugar_curry_arity_to_int(c);       /* proc.curry(obj) -> proc.curry(obj.to_int) */
-    ch |= desugar_int_enum_with_index(c);      /* n.times.with_index -> n.times.each.with_index */
-    ch |= desugar_hash_iter_with_index(c);     /* h.select.with_index { } -> h.select { } with a counter */
-    ch |= widen_shared_cmp_params(c);          /* multi-class <=> takes its operand boxed */
-    ch |= desugar_reduce_proc_arg(c);          /* reduce(&pr) -> reduce { |a,b| pr.call(a,b) } */
-    ch |= desugar_block_capture_wrap(c);       /* { |i| ->{i} } -> { |i| (->(i){ ->{i} }).call(i) } */
-    ch |= desugar_user_not_match(c);            /* a !~ b -> !(a =~ b) for a user =~ (#3019) */
-    ch |= desugar_env_enum(c);                 /* ENV.keys/... -> __env_to_h.keys/... */
-    ch |= desugar_dir_surface(c);              /* Dir.foreach{} -> entries.each{}, chdir{} splice, ... */           /* C.class_eval { v } -> (->(){v}).call */
-    ch |= desugar_enumerable_chain(c);               /* x.chain(y) / enum+enum -> __enum_chain(x.to_a + y.to_a) */
-    ch |= desugar_implicit_send(c);            /* send(:m, a) -> m(a) on self */
-    ch |= desugar_public_send_recv(c);         /* r.public_send(:m, a) -> r.m(a), visibility-stamped */
-    ch |= desugar_symbol_string_methods(c);    /* :sym.match(re) -> :sym.to_s.match(re) */
-    ch |= desugar_interp_reopened_to_s(c);     /* "#{5}" with Integer#to_s reopened -> "#{5.to_s}" */
+    ch |= AN_PASS("infer_param_types_settle", infer_param_types_settle(c));
+    AN_PASS_V("reassert_rbs_param_seeds", reassert_rbs_param_seeds(c));   /* a seed outranks a narrowing derived from one call site */
+    ch |= AN_PASS("bind_coerce_operator_params", bind_coerce_operator_params(c));   /* 3 + obj calls obj's op WITH obj */
+    ch |= AN_PASS("infer_param_hash_value", infer_param_hash_value(c));
+    ch |= AN_PASS("propagate_prep_params", propagate_prep_params(c));
+    ch |= AN_PASS("infer_string_params", infer_string_params(c));
+    ch |= AN_PASS("infer_default_param_types", infer_default_param_types(c));
+    ch |= AN_PASS("expand_literal_splat_args", expand_literal_splat_args(c));        /* builtin/proc m(*[a,b]) -> m(a, b) */
+    ch |= AN_PASS("desugar_hash_new_capacity", desugar_hash_new_capacity(c));        /* Hash.new(capacity: n) -> Hash.new */
+    ch |= AN_PASS("pin_arg_position_hash_new", pin_arg_position_hash_new(c));        /* f(Hash.new(d)) -> PolyPoly variant */
+    ch |= AN_PASS("pad_unsupplied_params", pad_unsupplied_params(c));            /* under-supplied call: placeholder param type */
+    ch |= AN_PASS("desugar_builtin_method_obj", desugar_builtin_method_obj(c));       /* builtin recv.method(:sym) -> wrapper def */
+    ch |= AN_PASS("desugar_class_body_bare_new", desugar_class_body_bare_new(c));      /* class body `new(x)` -> `Klass.new(x)` */
+    ch |= AN_PASS("desugar_bare_class_self_calls", desugar_bare_class_self_calls(c));    /* cmethod `const_get(:K)` -> `self.const_get(:K)` */
+    ch |= AN_PASS("desugar_ie_bare_object_calls", desugar_ie_bare_object_calls(c));     /* instance_eval { is_a?(K) } -> self.is_a?(K) */
+    ch |= AN_PASS("desugar_bare_object_reopen_calls", desugar_bare_object_reopen_calls(c));  /* Object reopened: `helper` -> `self.helper` */
+    ch |= AN_PASS("desugar_descendant_reader_calls", desugar_descendant_reader_calls(c));
+    ch |= AN_PASS("desugar_masgn_store_evidence", desugar_masgn_store_evidence(c));     /* h[k], o.x = v, w -> detached h[k] = v, o.x = w as type evidence */
+    ch |= AN_PASS("desugar_index_assign_user_recv", desugar_index_assign_user_recv(c));   /* r[k] ||= v on a user [] / []= receiver -> r[k] || (r[k] = v) */
+    ch |= AN_PASS("desugar_dynamic_const_get_arms", desugar_dynamic_const_get_arms(c));   /* recv.const_get(var) on any other receiver -> static name dispatch */
+    ch |= AN_PASS("desugar_reopen_implicit_self", desugar_reopen_implicit_self(c));     /* `last` in `class Range; def m` -> self.last */
+    ch |= AN_PASS("desugar_include_math", desugar_include_math(c));             /* include Math: sqrt(x) -> Math.sqrt(x) */
+    ch |= AN_PASS("desugar_bare_spawn", desugar_bare_spawn(c));               /* spawn(...) -> Process.spawn(...) */
+    ch |= AN_PASS("desugar_kernel_recv", desugar_kernel_recv(c));              /* Kernel.puts x -> puts x */
+    ch |= AN_PASS("desugar_class_literal_ctors", desugar_class_literal_ctors(c));      /* Array[a,b] -> [a,b]; Range.new -> (a..b) */
+    ch |= AN_PASS("desugar_enum_iter_splat_args", desugar_enum_iter_splat_args(c));     /* enum.map(*a, &b) -> enum.map(&b) */
+    ch |= AN_PASS("desugar_enum_pair_lone_param", desugar_enum_pair_lone_param(c));     /* a.each_with_index.map { |x| } -> { |x, i| } */
+    ch |= AN_PASS("desugar_builtin_iter_block_shapes", desugar_builtin_iter_block_shapes(c));  /* [1].each { |c, a = 10| } -> { |v| c = v; a = 10 } */
+    ch |= AN_PASS("desugar_fresh_array_each_writeback", desugar_fresh_array_each_writeback(c)); /* s.scan(re).each { |x| x.gsub!(..) }.join -> map! { |x| ..; x } */
+    ch |= AN_PASS("desugar_multi_yield_map_param", desugar_multi_yield_map_param(c));    /* multi-yield each: map's |x| takes the 1st */
+    ch |= AN_PASS("desugar_ewi_pack_values", desugar_ewi_pack_values(c));          /* multi-yield each: each_with_index packs */
+    ch |= AN_PASS("desugar_enum_walk_calls", desugar_enum_walk_calls(c));          /* enum.map { break } -> __enumw_map(enum) { } */
+    ch |= AN_PASS("desugar_enum_method_recv", desugar_enum_method_recv(c));         /* obj.map{} -> obj.__enum_to_a.map{} */
+    ch |= AN_PASS("give_native_self_calls_a_receiver", give_native_self_calls_a_receiver(c));  /* native class: implicit self -> self.m */
+    ch |= AN_PASS("give_self_predicates_a_receiver", give_self_predicates_a_receiver(c));    /* is_a?(X) on implicit self -> self.is_a?(X) */
+    ch |= AN_PASS("desugar_for_enumerable", desugar_for_enumerable(c));           /* for x in obj -> for x in obj.__enum_to_a */
+    ch |= AN_PASS("desugar_lazy_terminal", desugar_lazy_terminal(c));            /* lz.sum -> lz.to_a.sum */
+    ch |= AN_PASS("desugar_string_upto", desugar_string_upto(c));              /* "a".upto("c") -> ("a".."c").each */
+    ch |= AN_PASS("desugar_file_stat_new", desugar_file_stat_new(c));            /* File::Stat.new(p) -> File.stat(p) */
+    ch |= AN_PASS("desugar_module_function_call", desugar_module_function_call(c));     /* helper(x) in an includer -> M.helper(x) */
+    ch |= AN_PASS("desugar_method_block_arg", desugar_method_block_arg(c));         /* m(&method(:x)) -> m(&method(:x).to_proc) */
+    ch |= AN_PASS("desugar_curry_block_arg", desugar_curry_block_arg(c));          /* iter(&curried) -> iter { |e| curried[e] } */
+    ch |= AN_PASS("desugar_yielder_block_arg", desugar_yielder_block_arg(c));        /* src.each(&y) -> src.each { |e| y << e } */
+    ch |= AN_PASS("desugar_to_enum", desugar_to_enum(c));                  /* recv.to_enum(:m) -> generator/blockless */
+    ch |= AN_PASS("type_block_rest_params", type_block_rest_params(c));           /* |*rest| locals are poly arrays */
+    ch |= AN_PASS("desugar_public_method", desugar_public_method(c));            /* recv.public_method(:m) -> recv.method(:m) */
+    ch |= AN_PASS("desugar_class_eval_value", desugar_class_eval_value(c));
+    ch |= AN_PASS("desugar_instance_eval_builtin", desugar_instance_eval_builtin(c));    /* "s".instance_eval { m } -> splice on a temp */
+    ch |= AN_PASS("desugar_builtin_class_var_recv", desugar_builtin_class_var_recv(c));   /* k = Array; k.new(..) -> Array.new(..) */
+    ch |= AN_PASS("desugar_compose_method_operand", desugar_compose_method_operand(c));   /* proc >> meth -> proc >> meth.to_proc */
+    ch |= AN_PASS("desugar_array_op_to_ary", desugar_array_op_to_ary(c));          /* [1] + w -> [1] + w.to_ary (w answers to_ary) */
+    ch |= AN_PASS("desugar_mutator_receiver_value", desugar_mutator_receiver_value(c));   /* (c ? s : t) << x -> (c ? s << x : t << x) */
+    ch |= AN_PASS("desugar_method_curry", desugar_method_curry(c));             /* meth.curry -> meth.to_proc.curry */
+    ch |= AN_PASS("desugar_curry_arity_to_int", desugar_curry_arity_to_int(c));       /* proc.curry(obj) -> proc.curry(obj.to_int) */
+    ch |= AN_PASS("desugar_int_enum_with_index", desugar_int_enum_with_index(c));      /* n.times.with_index -> n.times.each.with_index */
+    ch |= AN_PASS("desugar_hash_iter_with_index", desugar_hash_iter_with_index(c));     /* h.select.with_index { } -> h.select { } with a counter */
+    ch |= AN_PASS("widen_shared_cmp_params", widen_shared_cmp_params(c));          /* multi-class <=> takes its operand boxed */
+    ch |= AN_PASS("desugar_reduce_proc_arg", desugar_reduce_proc_arg(c));          /* reduce(&pr) -> reduce { |a,b| pr.call(a,b) } */
+    ch |= AN_PASS("desugar_block_capture_wrap", desugar_block_capture_wrap(c));       /* { |i| ->{i} } -> { |i| (->(i){ ->{i} }).call(i) } */
+    ch |= AN_PASS("desugar_user_not_match", desugar_user_not_match(c));            /* a !~ b -> !(a =~ b) for a user =~ (#3019) */
+    ch |= AN_PASS("desugar_env_enum", desugar_env_enum(c));                 /* ENV.keys/... -> __env_to_h.keys/... */
+    ch |= AN_PASS("desugar_dir_surface", desugar_dir_surface(c));              /* Dir.foreach{} -> entries.each{}, chdir{} splice, ... */           /* C.class_eval { v } -> (->(){v}).call */
+    ch |= AN_PASS("desugar_enumerable_chain", desugar_enumerable_chain(c));               /* x.chain(y) / enum+enum -> __enum_chain(x.to_a + y.to_a) */
+    ch |= AN_PASS("desugar_implicit_send", desugar_implicit_send(c));            /* send(:m, a) -> m(a) on self */
+    ch |= AN_PASS("desugar_public_send_recv", desugar_public_send_recv(c));         /* r.public_send(:m, a) -> r.m(a), visibility-stamped */
+    ch |= AN_PASS("desugar_symbol_string_methods", desugar_symbol_string_methods(c));    /* :sym.match(re) -> :sym.to_s.match(re) */
+    ch |= AN_PASS("desugar_interp_reopened_to_s", desugar_interp_reopened_to_s(c));     /* "#{5}" with Integer#to_s reopened -> "#{5.to_s}" */
     /* re-run inside the fixpoint: a key whose type comes from a PARAMETER is
        still UNKNOWN on the pre-fixpoint pass, so `h[k] ||= []` fell back to
        the StrPolyHash default and handed an Integer key to a const char *
        (#3353). The mark is monotone, so repeating it only ever fills in. */
-    ch |= mark_empty_hash_key_ctx(c);
-    ch |= widen_mixed_key_hash_slots(c);
-    ch |= desugar_lazy_stateful_stage(c);     /* arr.lazy.uniq -> arr.uniq (finite source) */
-    ch |= desugar_lazy_method_call(c);         /* lz.first where `def lz; ...lazy...; end` */
-    ch |= desugar_str_range_methods(c);        /* ("a".."e").map -> .to_a.map */
-    ch |= desugar_sym_to_proc_call(c);         /* :m.to_proc.call(r, a) -> r.m(a) */
-    ch |= desugar_reduce_method_symbol(c);     /* reduce(:gcd) -> reduce { |a,x| a.gcd(x) } */
-    ch |= desugar_symbol_var_block_arg(c);     /* m(&sym_var) -> m { |x| x.send(sym_var) } */
-    ch |= desugar_poly_symbol_block_arg(c);    /* m(&poly) -> each literal Symbol its own proc */
-    ch |= desugar_kernel_method_block_arg(c);  /* m(&method(:Integer)) -> m { |x| Integer(x) } */
-    ch |= desugar_empty_block_body(c);         /* m { } -> m { nil } */
-    ch |= desugar_hash_block_arg(c);           /* m(&hash) -> m { |x| hash[x] } */
-    ch |= desugar_method_call_runtime_name(c); /* method(var).call(a) -> send(var, a) */
-    ch |= desugar_dynamic_send(c);             /* recv.send(var, a) -> static name dispatch */
-    ch |= desugar_dynamic_method(c);
-    ch |= desugar_dynamic_respond_to(c);       /* recv.respond_to?(var) -> static name dispatch */
-    ch |= desugar_toplevel_instance_exec(c);   /* top-level instance_exec(&b) -> b.call */
-    ch |= desugar_binding_lvget(c);            /* binding.local_variable_get(:x) -> x.itself */
-    ch |= desugar_step_kwargs(c);              /* n.step(to: X, by: Y) -> n.step(X, Y) */
-    ch |= desugar_defined_method_call(c);      /* defined?(r.m) -> r.respond_to?(:m) */
-    ch |= desugar_respond_to_probe(c);         /* recv.respond_to?(:m) -> probe recv.m type */
-    ch |= desugar_body_self_call(c);           /* self.m(..) in a class body -> Klass.m(..) */
-    ch |= desugar_handle_reopen_self_recv(c);  /* bare m(..) in a Thread/Fiber reopen -> self.m(..) */
-    ch |= desugar_symbol_to_proc_call(c);      /* :sym.to_proc.call(x) -> x.sym */
-    ch |= desugar_call_op_write(c);            /* r.x += 1 with a def writer -> r.x = r.x + 1 */
-    ch |= desugar_call_or_write_reopen(c);     /* r.x ||= v on a reopened builtin with a def writer -> the two calls */
-    ch |= desugar_index_op_write_user(c);      /* obj[k] ||= v on a user [] / []= -> the calls */
-    ch |= desugar_main_self_call(c);           /* self.m on main with a top-level def m -> m */
-    ch |= desugar_cmethod_cvar_reflection(c); /* class_variable_get(:@@x) in def self.m -> K.class_variable_get */
-    ch |= desugar_array_at(c);                 /* a.at(i) -> a[i] */
-    ch |= desugar_array_first_last(c);         /* arr.first -> arr[0], arr.last -> arr[-1] */
-    ch |= desugar_to_h_block(c);               /* recv.to_h{|e|[k,v]} -> recv.map{...}.to_h */
-    ch |= desugar_unpack_block(c);             /* s.unpack(f){|v|..} -> (s.unpack(f).each{|v|..}; nil) */
-    ch |= desugar_to_proc_block_arg(c);        /* &obj (user to_proc) -> &(obj.to_proc) hoisted once */
-    ch |= desugar_proc_expr_block_arg(c);      /* &(a >> b) -> hoisted temp */
-    ch |= desugar_to_hash_splat(c);            /* f(**obj) -> f(**obj.to_hash) */
-    ch |= desugar_splat_to_a(c);               /* [*h] -> [*h.to_a] (Hash, user #to_a) */
-    ch |= desugar_value_callable_forwards(c);  /* &proc -> { |x| proc.call(x) } */
-    if (desugar_builtin_enum_calls(c)) {       /* recv.m(a) { } -> __enum_m(recv, a) { } */
+    ch |= AN_PASS("mark_empty_hash_key_ctx", mark_empty_hash_key_ctx(c));
+    ch |= AN_PASS("widen_mixed_key_hash_slots", widen_mixed_key_hash_slots(c));
+    ch |= AN_PASS("desugar_lazy_stateful_stage", desugar_lazy_stateful_stage(c));     /* arr.lazy.uniq -> arr.uniq (finite source) */
+    ch |= AN_PASS("desugar_lazy_method_call", desugar_lazy_method_call(c));         /* lz.first where `def lz; ...lazy...; end` */
+    ch |= AN_PASS("desugar_str_range_methods", desugar_str_range_methods(c));        /* ("a".."e").map -> .to_a.map */
+    ch |= AN_PASS("desugar_sym_to_proc_call", desugar_sym_to_proc_call(c));         /* :m.to_proc.call(r, a) -> r.m(a) */
+    ch |= AN_PASS("desugar_reduce_method_symbol", desugar_reduce_method_symbol(c));     /* reduce(:gcd) -> reduce { |a,x| a.gcd(x) } */
+    ch |= AN_PASS("desugar_symbol_var_block_arg", desugar_symbol_var_block_arg(c));     /* m(&sym_var) -> m { |x| x.send(sym_var) } */
+    ch |= AN_PASS("desugar_poly_symbol_block_arg", desugar_poly_symbol_block_arg(c));    /* m(&poly) -> each literal Symbol its own proc */
+    ch |= AN_PASS("desugar_kernel_method_block_arg", desugar_kernel_method_block_arg(c));  /* m(&method(:Integer)) -> m { |x| Integer(x) } */
+    ch |= AN_PASS("desugar_empty_block_body", desugar_empty_block_body(c));         /* m { } -> m { nil } */
+    ch |= AN_PASS("desugar_hash_block_arg", desugar_hash_block_arg(c));           /* m(&hash) -> m { |x| hash[x] } */
+    ch |= AN_PASS("desugar_method_call_runtime_name", desugar_method_call_runtime_name(c)); /* method(var).call(a) -> send(var, a) */
+    ch |= AN_PASS("desugar_dynamic_send", desugar_dynamic_send(c));             /* recv.send(var, a) -> static name dispatch */
+    ch |= AN_PASS("desugar_dynamic_method", desugar_dynamic_method(c));
+    ch |= AN_PASS("desugar_dynamic_respond_to", desugar_dynamic_respond_to(c));       /* recv.respond_to?(var) -> static name dispatch */
+    ch |= AN_PASS("desugar_toplevel_instance_exec", desugar_toplevel_instance_exec(c));   /* top-level instance_exec(&b) -> b.call */
+    ch |= AN_PASS("desugar_binding_lvget", desugar_binding_lvget(c));            /* binding.local_variable_get(:x) -> x.itself */
+    ch |= AN_PASS("desugar_step_kwargs", desugar_step_kwargs(c));              /* n.step(to: X, by: Y) -> n.step(X, Y) */
+    ch |= AN_PASS("desugar_defined_method_call", desugar_defined_method_call(c));      /* defined?(r.m) -> r.respond_to?(:m) */
+    ch |= AN_PASS("desugar_respond_to_probe", desugar_respond_to_probe(c));         /* recv.respond_to?(:m) -> probe recv.m type */
+    ch |= AN_PASS("desugar_body_self_call", desugar_body_self_call(c));           /* self.m(..) in a class body -> Klass.m(..) */
+    ch |= AN_PASS("desugar_handle_reopen_self_recv", desugar_handle_reopen_self_recv(c));  /* bare m(..) in a Thread/Fiber reopen -> self.m(..) */
+    ch |= AN_PASS("desugar_symbol_to_proc_call", desugar_symbol_to_proc_call(c));      /* :sym.to_proc.call(x) -> x.sym */
+    ch |= AN_PASS("desugar_call_op_write", desugar_call_op_write(c));            /* r.x += 1 with a def writer -> r.x = r.x + 1 */
+    ch |= AN_PASS("desugar_call_or_write_reopen", desugar_call_or_write_reopen(c));     /* r.x ||= v on a reopened builtin with a def writer -> the two calls */
+    ch |= AN_PASS("desugar_index_op_write_user", desugar_index_op_write_user(c));      /* obj[k] ||= v on a user [] / []= -> the calls */
+    ch |= AN_PASS("desugar_main_self_call", desugar_main_self_call(c));           /* self.m on main with a top-level def m -> m */
+    ch |= AN_PASS("desugar_cmethod_cvar_reflection", desugar_cmethod_cvar_reflection(c)); /* class_variable_get(:@@x) in def self.m -> K.class_variable_get */
+    ch |= AN_PASS("desugar_array_at", desugar_array_at(c));                 /* a.at(i) -> a[i] */
+    ch |= AN_PASS("desugar_array_first_last", desugar_array_first_last(c));         /* arr.first -> arr[0], arr.last -> arr[-1] */
+    ch |= AN_PASS("desugar_to_h_block", desugar_to_h_block(c));               /* recv.to_h{|e|[k,v]} -> recv.map{...}.to_h */
+    ch |= AN_PASS("desugar_unpack_block", desugar_unpack_block(c));             /* s.unpack(f){|v|..} -> (s.unpack(f).each{|v|..}; nil) */
+    ch |= AN_PASS("desugar_to_proc_block_arg", desugar_to_proc_block_arg(c));        /* &obj (user to_proc) -> &(obj.to_proc) hoisted once */
+    ch |= AN_PASS("desugar_proc_expr_block_arg", desugar_proc_expr_block_arg(c));      /* &(a >> b) -> hoisted temp */
+    ch |= AN_PASS("desugar_to_hash_splat", desugar_to_hash_splat(c));            /* f(**obj) -> f(**obj.to_hash) */
+    ch |= AN_PASS("desugar_splat_to_a", desugar_splat_to_a(c));               /* [*h] -> [*h.to_a] (Hash, user #to_a) */
+    ch |= AN_PASS("desugar_value_callable_forwards", desugar_value_callable_forwards(c));  /* &proc -> { |x| proc.call(x) } */
+    if (AN_PASS("desugar_builtin_enum_calls", desugar_builtin_enum_calls(c))) {       /* recv.m(a) { } -> __enum_m(recv, a) { } */
       ch = 1;
       /* the call is a user method's now: its empty `{}` argument takes the
          widest hash the way any yielding method's does */
-      mark_empty_literal_args(c);
+      AN_PASS_V("mark_empty_literal_args", mark_empty_literal_args(c));
     }
-    ch |= desugar_builtin_scalar_calls(c);     /* recv.m(a) -> __int_m(recv, a) etc */
-    ch |= narrow_empty_array_args_by_yield(c); /* f([]) { |m| m << 1 }: the [] is an int array */
-    ch |= fold_static_is_a(c);                 /* if v.is_a?(Array) on a typed local: one arm */
-    ch |= infer_block_params(c);
-    ch |= infer_for_index(c);
-    ch |= infer_catch_block_params(c);
+    ch |= AN_PASS("desugar_builtin_scalar_calls", desugar_builtin_scalar_calls(c));     /* recv.m(a) -> __int_m(recv, a) etc */
+    ch |= AN_PASS("narrow_empty_array_args_by_yield", narrow_empty_array_args_by_yield(c)); /* f([]) { |m| m << 1 }: the [] is an int array */
+    ch |= AN_PASS("fold_static_is_a", fold_static_is_a(c));                 /* if v.is_a?(Array) on a typed local: one arm */
+    ch |= AN_PASS("infer_block_params", infer_block_params(c));
+    ch |= AN_PASS("infer_for_index", infer_for_index(c));
+    ch |= AN_PASS("infer_catch_block_params", infer_catch_block_params(c));
     /* Resolve constant types before ivar inference: a destructured constant
        (`CLK_1,.. = (1..8).map{...}`) is transiently poly in infer_write_types
        before its array element type settles, and a monotonic ivar that reads
        it (`@clk += CLK_1`) would lock onto that poly. Resolving constants
        first feeds the settled type into ivar inference. */
-    ch |= infer_global_const_types(c);
-    ch |= infer_multiwrite_const_types(c);
-    ch |= promote_shared_stored_strings(c);
-    ch |= promote_dyncall_string_args(c);
-    ch |= promote_spread_string_args(c);
-    ch |= promote_forwarded_rest_args(c);
-    ch |= promote_append_accumulators(c);
-    ch |= infer_ivar_types(c);
-    ch |= infer_cvar_types(c, 0);
-    ch |= infer_inherited_ivars(c);
-    ch |= infer_return_types(c);
-    ch |= backprop_hash_return_types(c);
+    ch |= AN_PASS("infer_global_const_types", infer_global_const_types(c));
+    ch |= AN_PASS("infer_multiwrite_const_types", infer_multiwrite_const_types(c));
+    ch |= AN_PASS("promote_shared_stored_strings", promote_shared_stored_strings(c));
+    ch |= AN_PASS("promote_dyncall_string_args", promote_dyncall_string_args(c));
+    ch |= AN_PASS("promote_spread_string_args", promote_spread_string_args(c));
+    ch |= AN_PASS("promote_forwarded_rest_args", promote_forwarded_rest_args(c));
+    ch |= AN_PASS("promote_append_accumulators", promote_append_accumulators(c));
+    ch |= AN_PASS("infer_ivar_types", infer_ivar_types(c));
+    ch |= AN_PASS("infer_cvar_types", infer_cvar_types(c, 0));
+    ch |= AN_PASS("infer_inherited_ivars", infer_inherited_ivars(c));
+    ch |= AN_PASS("infer_return_types", infer_return_types(c));
+    ch |= AN_PASS("backprop_hash_return_types", backprop_hash_return_types(c));
     if (!ch) {
       /* Converged with the ambiguous guesses held at bottom. Clear the flag
          and keep going: a slot whose evidence never arrived is genuinely
@@ -35980,7 +36020,9 @@ static void an_phase_infer_fixpoint(Compiler *c) {
      in the same round. A round that stopped short of a fixpoint (on the
      stability test) has the next one run even with no poly slot to reset. */
   int unsettled = 0;
+  double tm_rn = sp_timing_now();
   for (int pass = 0;; pass++) {
+    g_renarrow_rounds++;
     int widened0 = pivs_hash_stores_widened(c), widened = widened0;
     int any = pass ? unsettled : pivs_settle_hash_stores(c);
     /* Record the reset poly ivars so the re-run can re-clear them FRESH each
@@ -36093,7 +36135,7 @@ static void an_phase_infer_fixpoint(Compiler *c) {
       }
     }
     free(rtg.v);
-    if (reset_locked_iter_block_params(c)) any = 1;
+    if (AN_PASS("reset_locked_iter_block_params", reset_locked_iter_block_params(c))) any = 1;
     if (any) {
       TyKind *prev = (TyKind *)malloc(sizeof(TyKind) * (nrec > 0 ? nrec : 1));
       TyKind *lprev = (TyKind *)malloc(sizeof(TyKind) * (nlrec > 0 ? nlrec : 1));
@@ -36127,8 +36169,8 @@ static void an_phase_infer_fixpoint(Compiler *c) {
            bind sampled the same partial state. The call site then read the
            Array's header as a Relation (#4437). One iteration of lag, and the
            loop's stability test already waits for the ivars to stop moving. */
-        seed_unsupplied_nil_defaults(c);   /* a re-cleared nil-default parameter is poly again before anything binds on it (#4583) */
-        infer_param_types(c);
+        AN_PASS_V("seed_unsupplied_nil_defaults", seed_unsupplied_nil_defaults(c));   /* a re-cleared nil-default parameter is poly again before anything binds on it (#4583) */
+        AN_PASS_V("infer_param_types", infer_param_types(c));
         /* A default is a binding like any call site's argument, and reads the
            same settled state: after the re-clear below, a default reading a
            reset ivar (`romh: @rom`, @rom poly) saw UNKNOWN every iteration, so
@@ -36145,7 +36187,7 @@ static void an_phase_infer_fixpoint(Compiler *c) {
         for (int k = 0; k < nrrec; k++) c->scopes[recRs[k]].ret = TY_UNKNOWN;
         sp_narrow_memo_bump();  /* invalidate per-iteration narrow-helper memo */
         int ch = pre_def, ch_other = pre_def;
-        ch |= infer_write_types(c);
+        ch |= AN_PASS("infer_write_types", infer_write_types(c));
         { int _w = bind_coerce_operator_params(c); ch |= _w; ch_other |= _w; }   /* 3 + obj calls obj's op WITH obj */
         { int _w = infer_param_hash_value(c); ch |= _w; ch_other |= _w; }
         { int _w = propagate_prep_params(c); ch |= _w; ch_other |= _w; }
@@ -36156,7 +36198,7 @@ static void an_phase_infer_fixpoint(Compiler *c) {
         { int _w = infer_catch_block_params(c); ch |= _w; ch_other |= _w; }
         { int _w = infer_global_const_types(c); ch |= _w; ch_other |= _w; }
         { int _w = infer_multiwrite_const_types(c); ch |= _w; ch_other |= _w; }
-        ch |= infer_ivar_types(c);
+        ch |= AN_PASS("infer_ivar_types", infer_ivar_types(c));
         /* AFTER the ivar write-merge: the re-clear zeroes recorded ivars at
            each iteration's top, so a promote gated on STRING must see the
            freshly re-derived type, not the cleared UNKNOWN (#3227 P4) */
@@ -36173,7 +36215,7 @@ static void an_phase_infer_fixpoint(Compiler *c) {
         for (int ci = 0; ivsame && ci < ivncls; ci++)
           for (int iv = 0; iv < c->classes[ci].nivars; iv++)
             ivsnap[ivoff[ci] + iv] = c->classes[ci].ivar_types[iv];
-        if (infer_inherited_ivars(c)) {
+        if (AN_PASS("infer_inherited_ivars", infer_inherited_ivars(c))) {
           ch = 1;
           if (!ivsame) ch_other = 1;   /* the layout moved: count it, as before */
           for (int ci = 0; ci < ivncls && !ch_other; ci++) {
@@ -36231,18 +36273,19 @@ static void an_phase_infer_fixpoint(Compiler *c) {
       }
       free(rc.seen);
       /* the bind lags one iteration; take the settled state once more */
-      infer_param_types(c);
+      AN_PASS_V("infer_param_types", infer_param_types(c));
       free(prev); free(lprev); free(prevd); free(lprevd); free(ivoff); free(ivrec); free(ivsnap);
     }
     free(recCi); free(recIv); free(recLs); free(recLi); free(recRs); free(nsoff); free(nsbad);
-    if (pivs_hash_stores_widened(c) == widened0) break;
+    if (AN_PASS("pivs_hash_stores_widened", pivs_hash_stores_widened(c)) == widened0) break;
   }
+  if (sp_timing_on()) g_renarrow_ms += sp_timing_now() - tm_rn;
   /* A parameter the reverse binding widened for a callee's parameter that
      settled boxed or untyped keeps its general Array, though the callee takes
      the array by reference (#7948). Now that the callee's type is final, give
      the parameter back to its callers' arguments and derive once more, the
      reverse binding held off it. */
-  if (an_retract_stale_reverse_widening(c)) an_phase_infer_fixpoint(c);
+  if (AN_PASS("an_retract_stale_reverse_widening", an_retract_stale_reverse_widening(c))) an_phase_infer_fixpoint(c);
 }
 
 /* After the fixpoint: the backstops for slots left without a type (empty literals, nullable params, unknown ivars and hashes), the nil-guard and is_a? narrowing, the return-type re-run, the param and hash-shape reconciliation, the bigint loop variables (analyze_program's steps, in their order) */
@@ -39364,23 +39407,26 @@ static void an_phase_reconcile_check(Compiler *c) {
             g_fixpoint_rounds);
 }
 
+/* an analysis phase under --timing: `phase=an_<name>` */
+#define AN_PHASE(nm, call) do { double _ph0 = sp_timing_now(); call; sp_timing_end(_ph0, "an_" nm, ""); } while (0)
 void analyze_program(Compiler *c) {
   double tm_an = sp_timing_now();
-  an_phase_desugar_register(c);
-  an_phase_class_structure(c);
-  an_phase_block_inline(c);
-  an_phase_pre_fixpoint(c);
+  AN_PHASE("desugar_register", an_phase_desugar_register(c));
+  AN_PHASE("class_structure", an_phase_class_structure(c));
+  AN_PHASE("block_inline", an_phase_block_inline(c));
+  AN_PHASE("pre_fixpoint", an_phase_pre_fixpoint(c));
   double tm_fp = sp_timing_now();
   an_phase_infer_fixpoint(c);
   { char ex[64]; snprintf(ex, sizeof ex, " rounds=%d%s", g_fixpoint_rounds, g_fixpoint_capped ? " capped=1" : ""); sp_timing_end(tm_fp, "analysis_fixpoint", ex); }
-  an_phase_post_fixpoint(c);
-  an_phase_procs(c);
-  an_phase_method_backstops(c);
-  an_phase_late_widen(c);
-  an_phase_proc_returns(c);
-  an_phase_storage(c);
-  an_phase_value_types(c);
-  an_phase_reconcile_check(c);
+  an_pass_report();
+  AN_PHASE("post_fixpoint", an_phase_post_fixpoint(c));
+  AN_PHASE("procs", an_phase_procs(c));
+  AN_PHASE("method_backstops", an_phase_method_backstops(c));
+  AN_PHASE("late_widen", an_phase_late_widen(c));
+  AN_PHASE("proc_returns", an_phase_proc_returns(c));
+  AN_PHASE("storage", an_phase_storage(c));
+  AN_PHASE("value_types", an_phase_value_types(c));
+  AN_PHASE("reconcile_check", an_phase_reconcile_check(c));
 
   if (getenv("SP_FIXPOINT_LOG"))
     fprintf(stderr, "[fp] rounds=%d%s\n", g_fixpoint_rounds,
