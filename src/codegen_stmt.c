@@ -1314,6 +1314,12 @@ void emit_strbuf_handle_of(Compiler *c, int v, Buf *b) {
   slot.str_shared = 1;
   emit_strbuf_value(c, &slot, v, b);
 }
+/* A proven fresh value can keep a small payload inside its new handle.
+   The runtime copies before collection and falls back for larger payloads. */
+const char *strbuf_new_func(Compiler *c, int v) {
+  return repr_share_rule(c) && share_value_fresh(c, v, 0)
+    ? "sp_String_new_fresh" : "sp_String_new_shared";
+}
 /* --share-strings: put the handle demand on each `next` (k NK_NextNode) or
    `break` (NK_BreakNode) with a value under n that leaves what n is the body
    of: not one in a nested block, lambda, method or loop, which leaves that.
@@ -2457,7 +2463,7 @@ void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
   }
   else if (rpv.as_ty == TY_STRBUF) {
     int sv = view_push_repr(c, v, VR_STRBUF_BOX, 0);
-    buf_puts(b, "sp_String_new_shared(");
+    buf_printf(b, "%s(", strbuf_new_func(c, v));
     emit_str_expr(c, v, b);
     buf_puts(b, ")");
     view_pop(c, sv);
@@ -2526,7 +2532,7 @@ void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
       const char *rtxt = rv.p ? rv.p : "";
       if (strncmp(past_open_parens(rtxt), "sp_raise_", 9) == 0)
         buf_printf(b, "((void)(%s), (sp_String *)NULL)", rtxt);
-      else buf_printf(b, "sp_String_new_shared(%s)", rtxt);
+      else buf_printf(b, "%s(%s)", strbuf_new_func(c, v), rtxt);
       free(rv.p);
     }
   }
@@ -12830,7 +12836,7 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
       /* a route that hands on one (`@iv = s.then { |v| v }`) */
       else if (emit_strbuf_route(c, v, b)) { }
       else {
-        buf_puts(b, "sp_String_new_shared(");
+        buf_printf(b, "%s(", strbuf_new_func(c, v));
         emit_str_expr(c, v, b);
         buf_puts(b, ")");
       }
