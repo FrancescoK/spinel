@@ -59,3 +59,7 @@ true
 #<Hold:0x @o=#<Aa:0x @a=1>>
 #<Hold:0x @o=#<Bb:0x @c=2>>
 #<Hold:0x @o=#<Aa:0x @a=1, @b=nil>>
+false
+true
+[:@y]
+#<Km:0x @y=3>

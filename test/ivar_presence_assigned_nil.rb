@@ -210,3 +210,21 @@ cb = Bb.new
 puts show(Hold.new(ca)), show(Hold.new(cb))
 ca.setb(nil)
 puts show(Hold.new(ca))
+
+# a super that runs an included module's initialize, not the parent's
+class Pm
+  def initialize
+    @x = 1
+    @y = 2
+  end
+end
+module Mi
+  def initialize = (@y = 3)
+end
+class Km < Pm
+  include Mi
+  def initialize = super
+end
+km = Km.new
+p km.instance_variable_defined?(:@x), km.instance_variable_defined?(:@y), km.instance_variables
+puts show(km)

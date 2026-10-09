@@ -1997,13 +1997,27 @@ static int ivs_writes_toplevel(Compiler *c, int body, const char *ivn, int cid, 
 /* Strict, the write must also come before anything that may see the
    object (ivs_may_observe): an observation inside initialize ahead of it
    finds the ivar unset. */
-static int ivs_init_sets(Compiler *c, int cid, const char *ivn, int depth, int strict) {
-  if (cid < 0 || depth > 16) return 0;
-  int mi = comp_method_in_chain(c, cid, "initialize", NULL);
-  if (mi < 0) return 0;
+static int ivs_method_sets(Compiler *c, int mi, const char *ivn, int depth, int strict) {
+  if (mi < 0 || depth > 16) return 0;
   Scope *m = &c->scopes[mi];
   if (m->def_node < 0 || nt_kind(c->nt, m->def_node) != NK_DefNode) return 0;
   return ivs_writes_toplevel(c, nt_ref(c->nt, m->def_node, "body"), ivn, m->class_id, depth, strict);
+}
+static int ivs_init_sets(Compiler *c, int cid, const char *ivn, int depth, int strict) {
+  if (cid < 0) return 0;
+  return ivs_method_sets(c, comp_method_in_chain(c, cid, "initialize", NULL), ivn, depth, strict);
+}
+/* The method the `super` at node runs, from a method of class cid, as the
+   emitters resolve it: the shadowed copy in the method's own class (an
+   included module's, a prepend's), else the parent's chain under name.
+   -1 when there is none, -2 when it cannot be told. */
+static int ivs_super_method(Compiler *c, int node, int cid, const char *name) {
+  Scope *s = comp_scope_of(c, node);
+  if (!s || s->is_cmethod) return -2;
+  const char *shadow = comp_super_shadow(c, s);
+  if (shadow) { int mi = comp_method_in_class(c, s->class_id, shadow); return mi < 0 ? -2 : mi; }
+  int pc = comp_super_parent(c, cid, 0);
+  return pc < 0 ? -1 : comp_method_in_chain(c, pc, name, NULL);
 }
 /* May code under `n`, run in a method of class cid, see the object's ivars:
    self handed on (kept in an ivar of its own, it is not), a reflective read
@@ -2056,9 +2070,9 @@ static int ivs_may_observe(Compiler *c, int n, int cid, int depth, int lvl) {
     case NK_SelfNode: return 1;
     case NK_SuperNode: case NK_ForwardingSuperNode: {
       Scope *s = comp_scope_of(c, n);
-      int pc = comp_super_parent(c, cid, 0);
       if (!s || !s->name) return 1;
-      if (pc >= 0 && ivs_body_may_observe(c, comp_method_in_chain(c, pc, s->name, NULL), lvl)) return 1;
+      int sm = ivs_super_method(c, n, cid, s->name);
+      if (sm == -2 || ivs_body_may_observe(c, sm, lvl)) return 1;
       break;
     }
     case NK_DefinedNode:
@@ -2120,7 +2134,7 @@ static int ivs_writes_toplevel(Compiler *c, int body, const char *ivn, int cid, 
   }
   if (k == NK_SuperNode || k == NK_ForwardingSuperNode) {
     if (strict && ivs_may_observe(c, nt_ref(nt, body, "arguments"), cid, 0, 0)) return 0;
-    return ivs_init_sets(c, comp_super_parent(c, cid, 0), ivn, depth + 1, strict);
+    return ivs_method_sets(c, ivs_super_method(c, body, cid, "initialize"), ivn, depth + 1, strict);
   }
   return 0;
 }
