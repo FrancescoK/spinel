@@ -487,11 +487,14 @@ extern int g_exc_frame_depth;      /* live begin/rescue setjmp frames (see codeg
 extern int g_method_pr_exc_depth;
 extern int g_method_pr_ensure_depth;  /* g_ensure_depth at the return-funnel target (see codegen_util.c) */
 extern int g_loop_exc_base;
+extern int g_loop_rescue_base;
 extern int g_loop_ensure_base;  /* g_ensure_depth at the innermost C-loop entry:
    a `next` crossing ensure regions opened INSIDE the loop defers through them
    (runs their bodies) before the C continue */
 extern int g_brk_exc_base;
 extern int g_block_brk_exc_base;
+extern int g_brk_rescue_base;
+extern int g_block_brk_rescue_base;
 /* Return type of the method currently being emitted, so a tail/return value
    can be boxed when the method returns poly but the value is concrete. */
 extern TyKind g_ret_type;
@@ -556,7 +559,7 @@ void emit_line_directive(Compiler *c, int id, Buf *b);
    yield then defers a `return` belonging to the OUTER method into it. Reading
    g_ret_type at the store site therefore asked the wrong function whether to
    box, and a String went into an sp_RbVal slot unboxed. */
-typedef struct { int lid; int has_retval; int exc_base; TyKind retv_ty; } EnsureCtx;
+typedef struct { int lid; int has_retval; int exc_base; TyKind retv_ty; int rescue_base; } EnsureCtx;
 extern EnsureCtx g_ensure_stack[MAX_ENSURE_DEPTH];
 extern int       g_ensure_depth;
 
@@ -572,6 +575,8 @@ extern int        g_rescue_save_depth;
    `sp_exc_top -= N;` emission at every non-local-exit site. When guard != NULL
    (deferred return), both are wrapped in `if (guard) { ... }`. Returns 1 if it
    emitted anything. */
+void emit_rescue_pops_to(Buf *b, int rescue_base);
+void emit_loop_unwind(Buf *b);
 int emit_frame_unwind(Buf *b, int pop_base, const char *guard);
 int rescues_crossed(int pop_base);
 /* Pop the sp_rescue_sp handlers crossed (no frame pop), for the begin..ensure

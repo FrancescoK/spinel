@@ -1,0 +1,9 @@
+#<RuntimeError: x>
+#<RuntimeError: x>
+#<RuntimeError: x>
+2000
+[1, "in 1"]
+[3, "in 3"]
+33
+"outer"
+nil

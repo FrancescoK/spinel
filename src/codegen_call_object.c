@@ -870,9 +870,9 @@ int emit_call_instance_eval_arms(Compiler *c, int id, Buf *b, const NodeTable *n
         int sv_iep = g_ie_res_poly;
         g_ie_res_poly = (scalar_res && body_ty == TY_POLY);
         char bvbuf[32];
-        int sv_lexc2 = g_loop_exc_base, sv_lens2 = g_loop_ensure_base;
+        int sv_lexc2 = g_loop_exc_base, sv_lexc2_rb = g_loop_rescue_base, sv_lens2 = g_loop_ensure_base;
         if (ie_bn_wrap) {
-          g_loop_exc_base = g_exc_frame_depth;   /* break/next exit the do{}while(0) */
+          g_loop_exc_base = g_exc_frame_depth; g_loop_rescue_base = g_rescue_save_depth;   /* break/next exit the do{}while(0) */
           g_loop_ensure_base = g_ensure_depth;   /* ... and run only ensures opened inside it */
           emit_indent(g_pre, g_indent); buf_puts(g_pre, "do {\n"); g_indent++;
           if (scalar_res) { snprintf(bvbuf, sizeof bvbuf, "_t%d", tres); g_loop_break_var = bvbuf; g_ie_next_var = bvbuf; }
@@ -900,7 +900,7 @@ int emit_call_instance_eval_arms(Compiler *c, int id, Buf *b, const NodeTable *n
           g_loop_break_var = sv_lb; g_ie_next_var = sv_nx;
           g_indent--; emit_indent(g_pre, g_indent); buf_puts(g_pre, "} while (0);\n");
         }
-        g_loop_exc_base = sv_lexc2; g_loop_ensure_base = sv_lens2;
+        g_loop_exc_base = sv_lexc2; g_loop_rescue_base = sv_lexc2_rb; g_loop_ensure_base = sv_lens2;
         g_ie_res_poly = sv_iep;
         g_brk_ser_var = sv_bser;
         g_ie_discard_value = saved_discard;

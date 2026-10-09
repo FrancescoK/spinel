@@ -14720,6 +14720,7 @@ void emit_brk_wrapped_call(Compiler *c, int id, Buf *b) {
   const char *sv_ser = g_brk_ser_var; g_brk_ser_var = servar;
   int sv_ebase = g_brk_ensure_base; g_brk_ensure_base = g_ensure_depth;
   int sv_bexc = g_brk_exc_base; g_brk_exc_base = g_exc_frame_depth;
+  int sv_bres = g_brk_rescue_base; g_brk_rescue_base = g_rescue_save_depth;
   int sv_skip = g_brk_skip_id; g_brk_skip_id = id;
   Buf inner; memset(&inner, 0, sizeof inner);
   Buf body; memset(&body, 0, sizeof body);
@@ -14751,7 +14752,7 @@ void emit_brk_wrapped_call(Compiler *c, int id, Buf *b) {
   }
   g_indent--;
   g_pre = sv_pre;
-  g_brk_ser_var = sv_ser; g_brk_ensure_base = sv_ebase; g_brk_exc_base = sv_bexc; g_brk_skip_id = sv_skip;
+  g_brk_ser_var = sv_ser; g_brk_ensure_base = sv_ebase; g_brk_exc_base = sv_bexc; g_brk_rescue_base = sv_bres; g_brk_skip_id = sv_skip;
   view_pop(c, vw);
   if (spilled_argov) view_unbind(g_n_argov - 1);
   free(inner.p); free(boxed.p);

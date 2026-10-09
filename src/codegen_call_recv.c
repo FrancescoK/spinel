@@ -11516,12 +11516,12 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
         if (lv7 && lv7->type == TY_POLY) buf_printf(g_pre, "lv_%s = sp_box_int(_t%d);\n", bpr7, ti7);
         else buf_printf(g_pre, "lv_%s = _t%d;\n", bpr7, ti7);
         /* a real C loop, so a `break` in the body lowers to a C break */
-        int sv_lexc7 = g_loop_exc_base, sv_lens7 = g_loop_ensure_base;
-        g_loop_exc_base = g_exc_frame_depth; g_loop_ensure_base = g_ensure_depth;
+        int sv_lexc7 = g_loop_exc_base, sv_lexc7_rb = g_loop_rescue_base, sv_lens7 = g_loop_ensure_base;
+        g_loop_exc_base = g_exc_frame_depth; g_loop_rescue_base = g_rescue_save_depth; g_loop_ensure_base = g_ensure_depth;
         g_c_loop_depth++;
         for (int j = 0; j < bn7; j++) emit_stmt(c, bb7[j], g_pre, g_indent + 1);
         g_c_loop_depth--;
-        g_loop_exc_base = sv_lexc7; g_loop_ensure_base = sv_lens7;
+        g_loop_exc_base = sv_lexc7; g_loop_rescue_base = sv_lexc7_rb; g_loop_ensure_base = sv_lens7;
         emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
         /* #reverse_each answers its receiver */
         buf_printf(b, "_t%d", tr7);

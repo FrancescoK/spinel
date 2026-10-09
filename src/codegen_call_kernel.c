@@ -1009,9 +1009,9 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
            inside must pop it (see the statement-form loop). The break base is
            taken AFTER the bump -- a `break` leaves through the code below the
            loop, which pops that frame itself. */
-        int sv_lexc = g_loop_exc_base;
+        int sv_lexc = g_loop_exc_base, sv_lexc_rb = g_loop_rescue_base;
         g_exc_frame_depth++;
-        g_loop_exc_base = g_exc_frame_depth;
+        g_loop_exc_base = g_exc_frame_depth; g_loop_rescue_base = g_rescue_save_depth;
         /* a C loop like the statement form's (emit_loop_body): a break or
            next crossing an ensure opened in the body runs it, then leaves */
         int sv_lens = g_loop_ensure_base; g_loop_ensure_base = g_ensure_depth;
@@ -1027,7 +1027,7 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         g_c_loop_depth--;
         g_loop_ensure_base = sv_lens;
         g_loop_break_var = sv_lb;
-        g_loop_exc_base = sv_lexc;
+        g_loop_exc_base = sv_lexc; g_loop_rescue_base = sv_lexc_rb;
         g_ie_res_poly = sv_iep;
         g_brk_ser_var = sv_bj;
         emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "}\n");

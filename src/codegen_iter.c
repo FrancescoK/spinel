@@ -1200,6 +1200,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   const char *saved_ser = g_brk_ser_var;
   int saved_bbe = g_block_brk_ebase, saved_yfbe = g_yield_blk_brk_efallback;
   int saved_bbexc = g_block_brk_exc_base, saved_bexc = g_brk_exc_base;
+  int saved_bbres = g_block_brk_rescue_base, saved_bres = g_brk_rescue_base;
   int saved_ebase = g_brk_ensure_base;
   /* Stack-local, not static: emit_inline_call_x recurses (a yielded block can
      call the same yielding method), and g_self points into this buffer. A
@@ -1326,6 +1327,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   g_block_brk_var = (block == saved_block) ? saved_bbv : saved_ser;
   g_block_brk_ebase = (block == saved_block) ? saved_bbe : saved_ebase;
   g_block_brk_exc_base = (block == saved_block) ? saved_bbexc : saved_bexc;
+  g_block_brk_rescue_base = (block == saved_block) ? saved_bbres : saved_bres;
   /* the METHOD BODY's own breaks (a while inside m) never target the caller */
   g_brk_ser_var = NULL;
   g_block_param_name = m->blk_param;
@@ -1530,6 +1532,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   g_block_brk_var = saved_bbv; g_yield_blk_brk_fallback = saved_yfbv;
   g_block_brk_ebase = saved_bbe; g_yield_blk_brk_efallback = saved_yfbe;
   g_block_brk_exc_base = saved_bbexc; g_brk_exc_base = saved_bexc;
+  g_block_brk_rescue_base = saved_bbres; g_brk_rescue_base = saved_bres;
   g_brk_ser_var = saved_ser; g_brk_ensure_base = saved_ebase;
   g_self = saved_self;
   g_self_deref = saved_deref;
@@ -3028,6 +3031,7 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
   const char *svser = g_brk_ser_var; g_brk_ser_var = g_block_brk_var;
   int svebase = g_brk_ensure_base; g_brk_ensure_base = g_block_brk_ebase;
   int svbexc = g_brk_exc_base; g_brk_exc_base = g_block_brk_exc_base;
+  int svbres = g_brk_rescue_base; g_brk_rescue_base = g_block_brk_rescue_base;
   const char *svbbv = g_block_brk_var; g_block_brk_var = g_yield_blk_brk_fallback;
   int svbbe = g_block_brk_ebase; g_block_brk_ebase = g_yield_blk_brk_efallback;
   /* The block body lexically belongs to the REAL enclosing function: a
@@ -3098,13 +3102,13 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
      previous emission. */
   int nx_own = subtree_has_own_next(nt, bbody);
   const char *sv_nx2 = g_ie_next_var; int sv_poly2 = g_ie_res_poly; TyKind sv_nty2 = g_ie_next_ty;
-  int sv_lexc2 = g_loop_exc_base;
+  int sv_lexc2 = g_loop_exc_base, sv_lexc2_rb = g_loop_rescue_base;
   int sv_lens2 = g_loop_ensure_base;
   char nxbuf[32]; int nx_tmp = 0;
   int bn3 = 0; const int *bd3 = bbody >= 0 ? nt_arr(nt, bbody, "body", &bn3) : NULL;
   TyKind nx_bt = TY_NIL; int nx_tail_stmt = 0;
   if (nx_own) {
-    g_loop_exc_base = g_exc_frame_depth;
+    g_loop_exc_base = g_exc_frame_depth; g_loop_rescue_base = g_rescue_save_depth;
     g_loop_ensure_base = g_ensure_depth;
     g_c_loop_depth++;
     if (as_expr) {
@@ -3364,7 +3368,7 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
   if (rd_lbl) g_redo_depth--;
   if (nx_own) {
     g_c_loop_depth--;
-    g_loop_exc_base = sv_lexc2;
+    g_loop_exc_base = sv_lexc2; g_loop_rescue_base = sv_lexc2_rb;
     g_loop_ensure_base = sv_lens2;
     if (as_expr) buf_printf(b, "} while(0); %s; ", g_ie_next_var ? nxbuf : "(void)0");
     else { emit_indent(b, indent); buf_puts(b, "} while(0);\n"); }
@@ -3382,7 +3386,7 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
   g_method_pr_label = sv_bl; g_method_pr_var = sv_bv; g_ret_type = sv_bt;
   g_method_pr_exc_depth = sv_bexc;
   g_method_pr_ensure_depth = sv_bens;
-  g_brk_ser_var = svser; g_brk_ensure_base = svebase; g_brk_exc_base = svbexc;
+  g_brk_ser_var = svser; g_brk_ensure_base = svebase; g_brk_exc_base = svbexc; g_brk_rescue_base = svbres;
   g_block_brk_var = svbbv; g_block_brk_ebase = svbbe;
   g_block_nren = sv_bnren;
   BI_METHOD_SIDE();
@@ -4105,8 +4109,8 @@ void emit_loop_body(Compiler *c, int body, Buf *b, int indent) {
   /* break/next inside this body exit THIS C loop: record the live
      begin/rescue frame depth at loop entry so their emission can pop the
      frames opened inside the body (mirrors emit_return's accounting). */
-  int sv_lexc = g_loop_exc_base;
-  g_loop_exc_base = g_exc_frame_depth;
+  int sv_lexc = g_loop_exc_base, sv_lexc_rb = g_loop_rescue_base;
+  g_loop_exc_base = g_exc_frame_depth; g_loop_rescue_base = g_rescue_save_depth;
   int sv_lens = g_loop_ensure_base;
   g_loop_ensure_base = g_ensure_depth;
   g_c_loop_depth++;
@@ -4145,7 +4149,7 @@ void emit_loop_body(Compiler *c, int body, Buf *b, int indent) {
   if (has_redo) g_redo_depth--;
   g_c_loop_depth--;
   g_ie_next_var = sv_nxv; g_ie_next_ty = sv_nxt;
-  g_loop_exc_base = sv_lexc;
+  g_loop_exc_base = sv_lexc; g_loop_rescue_base = sv_lexc_rb;
   g_loop_ensure_base = sv_lens;
 }
 
@@ -4313,8 +4317,8 @@ int emit_tap_then_expr(Compiler *c, int id, Buf *b) {
        same wrapper, no destination. */
     const char *sv_nxv = g_ie_next_var;
     g_ie_next_var = NULL;
-    int sv_lexcw = g_loop_exc_base, sv_lensw = g_loop_ensure_base;
-    g_loop_exc_base = g_exc_frame_depth; g_loop_ensure_base = g_ensure_depth;
+    int sv_lexcw = g_loop_exc_base, sv_lexcw_rb = g_loop_rescue_base, sv_lensw = g_loop_ensure_base;
+    g_loop_exc_base = g_exc_frame_depth; g_loop_rescue_base = g_rescue_save_depth; g_loop_ensure_base = g_ensure_depth;
     g_c_loop_depth++;
     emit_indent(g_pre, din); buf_puts(g_pre, "do {\n");
     int bi = din + 1; g_indent = bi;
@@ -4322,7 +4326,7 @@ int emit_tap_then_expr(Compiler *c, int id, Buf *b) {
     g_indent = din;
     emit_indent(g_pre, din); buf_puts(g_pre, "} while (0);\n");
     g_c_loop_depth--;
-    g_loop_exc_base = sv_lexcw; g_loop_ensure_base = sv_lensw;
+    g_loop_exc_base = sv_lexcw; g_loop_rescue_base = sv_lexcw_rb; g_loop_ensure_base = sv_lensw;
     g_ie_next_var = sv_nxv;
   }
   g_indent = sv;
@@ -4646,10 +4650,10 @@ static void emit_filter_body(Compiler *c, int body, int tnv, int tk, int is_rej,
   const NodeTable *nt = c->nt;
   int bn = 0; const int *bb = nt_arr(nt, body, "body", &bn);
   const char *sv_nx = g_ie_next_var; int sv_poly = g_ie_res_poly; TyKind sv_nty = g_ie_next_ty;
-  int sv_lexc = g_loop_exc_base, sv_lens = g_loop_ensure_base;
+  int sv_lexc = g_loop_exc_base, sv_lexc_rb = g_loop_rescue_base, sv_lens = g_loop_ensure_base;
   char nxbuf[32]; snprintf(nxbuf, sizeof nxbuf, "_t%d", tnv);
   g_ie_next_var = nxbuf; g_ie_res_poly = 1; g_ie_next_ty = TY_UNKNOWN;
-  g_loop_exc_base = g_exc_frame_depth; g_loop_ensure_base = g_ensure_depth;
+  g_loop_exc_base = g_exc_frame_depth; g_loop_rescue_base = g_rescue_save_depth; g_loop_ensure_base = g_ensure_depth;
   g_c_loop_depth++;
   /* the step's setup: locals fresh, and a redo's label after them */
   if (block_of_body(c, body) >= 0) emit_block_locals_reset(c, block_of_body(c, body), b, indent + 1);
@@ -4671,7 +4675,7 @@ static void emit_filter_body(Compiler *c, int body, int tnv, int tk, int is_rej,
   }
   if (rd_lbl) g_redo_depth--;
   g_c_loop_depth--;
-  g_loop_exc_base = sv_lexc; g_loop_ensure_base = sv_lens;
+  g_loop_exc_base = sv_lexc; g_loop_rescue_base = sv_lexc_rb; g_loop_ensure_base = sv_lens;
   g_ie_next_var = sv_nx; g_ie_res_poly = sv_poly; g_ie_next_ty = sv_nty;
 }
 
@@ -4876,7 +4880,7 @@ int emit_array_filter_loop(Compiler *c, int recv, int block, TyKind rt, const ch
       emit_indent(b, indent); emit_ctype(c, g_ret_type, b);
       buf_printf(b, " _retv%d = %s;\n", eid, default_value_from_compiler(c, g_ret_type));
     }
-    g_ensure_stack[g_ensure_depth++] = (EnsureCtx){ eid, has_retval, g_exc_frame_depth, g_ret_type };
+    g_ensure_stack[g_ensure_depth++] = (EnsureCtx){ eid, has_retval, g_exc_frame_depth, g_ret_type, g_rescue_save_depth };
     emit_indent(b, indent); buf_puts(b, "sp_exc_check_depth();\n");
     emit_indent(b, indent); buf_puts(b, "sp_exc_rootmark[sp_exc_top] = sp_gc_nroots; sp_rescue_mark[sp_exc_top] = sp_rescue_sp;\n");
     emit_indent(b, indent); buf_puts(b, "sp_exc_msg[sp_exc_top] = 0; sp_exc_obj[sp_exc_top] = 0; sp_exc_top++;\n");
