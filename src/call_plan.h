@@ -318,6 +318,7 @@ int  pa_begin(int id);
 void pa_resume(int frame);
 void pa_drop(int frame);     /* a dispatch that declined after opening its frame */
 void pa_flags(unsigned flags);
+void pa_box_text(TyKind ty);
 void pa_observe(int kind, int key, int mi, TyKind vty, int conv);
 /* the same, only into node id's own frame: for a helper more than one
    dispatch shares */
