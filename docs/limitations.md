@@ -1375,73 +1375,51 @@ not matched and raises. The call needs a class or module receiver, explicit
 or the implicit self of a class method or class body; in an instance method
 an instance has no `const_get`, and the call is refused where it is written.
 
-#### `defined?(@ivar)` has static and runtime paths
+#### `defined?(@ivar)` and the other reads of ivar presence
 
 CRuby answers `defined?(@ivar)` from the object's runtime state: `nil` until
 the instance variable is first assigned, `"instance-variable"` after -- which
 is what makes it usable as a memoization guard for falsy values
-(`return @x if defined?(@x)`).
+(`return @x if defined?(@x)`). `instance_variables`,
+`instance_variable_defined?`, the default `inspect` and `Marshal.dump` read
+the same state, and `remove_instance_variable` clears it.
 
 Spinel's instance variables are C struct fields, pre-filled with their type's
-nil representation. In an instance method, the compiler can emit a runtime
-presence check when it can use the field's nil representation to identify an
-unset slot: the field has a suitable representation, `initialize` does not
-unconditionally assign it, and every relevant write is proven to store a
-non-nil value. Some fields created only through reflection instead have an
-explicit presence flag. For example, this guard works as in CRuby:
-
-```ruby
-class Foo
-  def foo
-    return @foo if defined?(@foo)
-    @foo = 42
-  end
-end
-f = Foo.new
-p f.foo, f.foo                    # 42, 42
-```
-
-Otherwise, `defined?(@ivar)` folds to `"instance-variable"` if the program
-contains a plain assignment to that ivar name anywhere, or `nil` if it does
-not. This does not track whether the particular object has received a write.
-The presence analysis does not prove a user method call non-nil merely from
-its inferred return type, so replacing the literal with `compute` changes the
-guard's behavior:
+nil representation. A field `initialize` always assigns before anything can
+look at the object is always present, and one every write of which stores a
+non-nil value is present exactly when it is not nil. A field neither answers
+for keeps an explicit assigned flag beside it, set by each store after its
+value is computed and cleared by `remove_instance_variable`, in the classes
+such a read reaches (the receiver's class and those below it, through a
+container or another object's ivar for `inspect` and `Marshal.dump`). So
+these work as in CRuby:
 
 ```ruby
 class Foo
   def compute = 42
   def foo
-    return @foo if defined?(@foo)  # compile-time truthy
-    @foo = compute                # never reached
+    return @foo if defined?(@foo)
+    @foo = compute
   end
 end
 f = Foo.new
-p f.foo, f.foo                    # nil, nil
-```
+p f.foo, f.foo                    # 42, 42
 
-A conditional assignment from a potentially nil value can also report a field
-as defined before it has been written:
-
-```ruby
-class Foo
+class Bar
   def initialize(v) = (@v = v if v)
   def has? = defined?(@v)
 end
-p Foo.new(nil).has?               # "instance-variable" (CRuby: nil)
+p Bar.new(nil).has?               # nil
 ```
 
-Use `@foo ||= compute` when `compute` never yields nil/false, or an explicit
-flag when it can. The `defined?` guard is not a general falsy-value memoization
-mechanism in Spinel:
-
-```ruby
-def foo
-  return @foo if @foo_set
-  @foo_set = true
-  @foo = compute
-end
-```
+The flag cannot follow an ivar that is a `for` loop's or a `rescue => @x`
+target, that a writer reached by name (`send(:x=, v)`) or a bitwise
+op-write through a writer (`o.x |= v`) assigns, or that a class whose ivars
+the compiler writes itself holds; nor any ivar once the program calls
+`instance_variable_set` with a computed name. Such an ivar, and one whose reads reach it only
+through a boxed value the analysis cannot bound, is reported as assigned
+from the start, as before. `instance_variables` lists the ivars in the
+order the class lays them out, not in the order they were first assigned.
 
 #### `Hash#compare_by_identity`
 

@@ -10508,11 +10508,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
       if (sym && sym[0] == '@')
         for (int i = c->classes[cid].is_struct ? c->classes[cid].nmembers : 0; i < c->classes[cid].nivars; i++)
           if (sp_streq(c->classes[cid].ivars[i], sym)) { mi = i; break; }
-      if (mi >= 0) {
-        const char *acc = comp_ty_value_obj(c, rt) ? "." : "->";
-        buf_puts(b, "("); emit_expr(c, recv, b);
-        buf_printf(b, ")%siv_%s", acc, iv_c(sym + 1));
-      }
+      if (mi >= 0) emit_object_ivar_remove(c, recv, rt, cid, sym, b);
       else {
         if (recv >= 0) { buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, "), "); }
         else buf_puts(b, "(");

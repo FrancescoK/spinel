@@ -11,8 +11,10 @@
 #include "codegen_call_arms.h"
 #include "share.h"
 
+/* `mark` (or NULL) is the slot's assigned mark (ivar_set_mark), set after
+   the store. */
 static void emit_attr_writer_converted(Compiler *c, int arg, TyKind ivt, int tmp,
-                                       const char *name, Buf *b) {
+                                       const char *name, const char *mark, Buf *b) {
   TyKind avk = store_value_kind(c, arg);
   /* A nil-valued argument has no C type for a temporary. Keep its
      effects, store the slot's nil, and answer nil as the writer
@@ -20,7 +22,7 @@ static void emit_attr_writer_converted(Compiler *c, int arg, TyKind ivt, int tmp
   if (avk == TY_NIL || avk == TY_VOID) {
     buf_printf(b, "_t%d->iv_%s = ", tmp, iv_c(name));
     emit_coerce(c, arg, ivt, CO_HOLD, "an attribute writer", b);
-    buf_puts(b, "; 0; })");
+    buf_printf(b, "; %s%s0; })", mark ? mark : "", mark ? " " : "");
     return;
   }
   int tv = ++g_tmp;
@@ -28,7 +30,7 @@ static void emit_attr_writer_converted(Compiler *c, int arg, TyKind ivt, int tmp
   emit_ctype(c, avk, b); buf_printf(b, " %s = ", tn); emit_expr(c, arg, b);
   buf_printf(b, "; _t%d->iv_%s = ", tmp, iv_c(name));
   emit_coerce_text(c, arg, avk, ivt, CO_HOLD, tn, "an attribute writer", b);
-  buf_printf(b, "; %s; })", tn);
+  buf_printf(b, "; %s%s%s; })", mark ? mark : "", mark ? " " : "", tn);
   return;
 }
 
@@ -1312,6 +1314,11 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
              before the store, even in value position (#3078) */
           int _atmp = ++g_tmp;
           char _aself[32]; snprintf(_aself, sizeof _aself, "_t%d", _atmp);
+          /* the slot's assigned mark, after each store below */
+          char _amk[300];
+          const char *_am = _aiv >= 0 ? ivar_set_mark(c, _adefc < 0 ? _arc : _adefc, _aivn, _aself, "->",
+                                                      _amk, sizeof _amk) : NULL;
+          char _amsp[304]; snprintf(_amsp, sizeof _amsp, "%s%s", _am ? _am : "", _am ? " " : "");
           buf_printf(b, "({ sp_%s *_t%d = ", c->classes[_arc].c_name, _atmp); emit_expr(c, recv, b); buf_puts(b, "; ");
           emit_frozen_obj_guard(c, _arc, _aself, b);
           /* a typed slot (an --rbs seed pins one) given a boxed value: the
@@ -1326,8 +1333,8 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
             buf_printf(b, "; SP_GC_ROOT_RBVAL(%s); _t%d->iv_%s = ", _tvn, _atmp, iv_c(_abase));
             emit_unbox_text(c, _aivt, _tvn, b);
             TyKind _nt = repr_of(c, id).as_ty;
-            if (_nt == TY_POLY || _nt == TY_UNKNOWN) buf_printf(b, "; %s; })", _tvn);
-            else buf_printf(b, "; _t%d->iv_%s; })", _atmp, iv_c(_abase));
+            if (_nt == TY_POLY || _nt == TY_UNKNOWN) buf_printf(b, "; %s%s; })", _amsp, _tvn);
+            else buf_printf(b, "; %s_t%d->iv_%s; })", _amsp, _atmp, iv_c(_abase));
             return 1;
           }
           /* a String slot that is a handle (TY_STRBUF) takes the handle the
@@ -1351,10 +1358,10 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
               unsupported_feature(c, id, _amsg);
             buf_printf(b, "_t%d->iv_%s = ", _atmp, iv_c(_abase));
             emit_strbuf_ivar_store(c, _aci->ivar_str_shared[_aiv], argv[0], b);
-            if (_avt == TY_STRBUF) buf_printf(b, "; _t%d->iv_%s; })", _atmp, iv_c(_abase));
+            if (_avt == TY_STRBUF) buf_printf(b, "; %s_t%d->iv_%s; })", _amsp, _atmp, iv_c(_abase));
             else {
               char _asr[300]; snprintf(_asr, sizeof _asr, "_t%d->iv_%s", _atmp, iv_c(_abase));
-              buf_puts(b, "; ");
+              buf_printf(b, "; %s", _amsp);
               emit_strbuf_node_read(c, id, _asr, b);
               buf_puts(b, "; })");
             }
@@ -1366,7 +1373,7 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
           if (argc >= 1 && _aivt != TY_POLY && _aivt != TY_UNKNOWN &&
               !repr_of(c, argv[0]).untyped &&
               !store_fits(c, store_value_kind(c, argv[0]), _aivt)) {
-            emit_attr_writer_converted(c, argv[0], _aivt, _atmp, _abase, b);
+            emit_attr_writer_converted(c, argv[0], _aivt, _atmp, _abase, _am, b);
             return 1;
           }
           buf_printf(b, "_t%d->iv_%s = ", _atmp, iv_c(_abase));
@@ -1378,7 +1385,9 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
             else emit_one_arg(c, argv[0], 0, b);
           }
           else buf_puts(b, "0");
-          buf_puts(b, "; })");
+          /* the value is the slot's after its mark, as the store's is */
+          if (_am) buf_printf(b, "; %s _t%d->iv_%s; })", _am, _atmp, iv_c(_abase));
+          else buf_puts(b, "; })");
           return 1;
         }
         /* An explicit `def x=(v)` reached as `obj.x = v` in value position:

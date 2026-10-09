@@ -121,6 +121,10 @@ int is_freeze_family(const char *n); /* freeze frozen? */
 int is_bivar_access(const char *n);  /* __bivar_get __bivar_set __bivar_defined */
 int is_object_copy(const char *n);   /* dup clone */
 int is_ivar_set_name(const char *n); /* instance_variable_set */
+int is_inspect_name(const char *n);  /* inspect */
+int is_marshal_dump(const char *recv, const char *meth); /* Marshal.dump */
+int is_ivar_remove_name(const char *n); /* remove_instance_variable */
+int is_ivar_presence_read(const char *n); /* instance_variables instance_variable_defined? remove_instance_variable inspect p pp */
 int is_bivar_keyed_class(const char *n);  /* Array Hash Random */
 int is_string_class_name(const char *n);   /* String */
 int is_frozen_value_class(const char *n); /* Integer Float Symbol NilClass TrueClass FalseClass Range */
@@ -181,6 +185,7 @@ int is_with_object_alias(const char *n); /* each_with_object with_object */
 int is_exist_alias(const char *n); /* exist? exists? */
 int is_select_alias(const char *n); /* filter select */
 int is_format_alias(const char *n); /* format sprintf */
+int is_initialize_name(const char *n); /* initialize */
 int is_initialize_family(const char *n); /* initialize initialize_copy */
 
 int is_iso8601_alias(const char *n); /* iso8601 xmlschema */

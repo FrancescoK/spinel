@@ -2354,7 +2354,15 @@ int emit_object_ivar_list(Compiler *c, int recv, int ivcid, Buf *b) {
     tracked |= kind == 3;
   }
   int tro = any1 ? ++g_tmp : -1;
-  if (any1) { buf_printf(b, "({ sp_%s *_t%d = ", ivc->c_name, tro); emit_expr(c, recv, b); buf_puts(b, ";"); }
+  /* A by-value object's tests read a local copy; self is one only outside
+     initialize, where it is passed by address. */
+  int self_ptr = recv >= 0 && nt_kind(c->nt, recv) == NK_SelfNode && g_self_deref && !strcmp(g_self_deref, "->");
+  if (any1 && ivc->is_value_type && !self_ptr) {
+    buf_printf(b, "({ sp_%s _t%dv = ", ivc->c_name, tro); emit_expr(c, recv, b);
+    buf_printf(b, "; sp_%s *_t%d = &_t%dv;", ivc->c_name, tro, tro);
+    tracked = 0;
+  }
+  else if (any1) { buf_printf(b, "({ sp_%s *_t%d = ", ivc->c_name, tro); emit_expr(c, recv, b); buf_puts(b, ";"); }
   else { buf_printf(b, "({ (void)("); emit_expr(c, recv, b); buf_puts(b, ");"); }
   if (tracked) buf_printf(b, " SP_GC_ROOT(_t%d);", tro);
   buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ", tia, tia);
@@ -2368,6 +2376,35 @@ int emit_object_ivar_list(Compiler *c, int recv, int ivcid, Buf *b) {
   }
   buf_printf(b, "_t%d; })", tia);
   return 1;
+}
+
+/* remove_instance_variable(:@x) of a layout slot, on a receiver of class
+   cid: the value it held. Where presence is known (ivar_set_kind 1 or 3)
+   an ivar never assigned raises NameError, as CRuby's does, and the
+   removed one reads nil and unassigned after; elsewhere the slot cannot be
+   undefined and keeps its value. */
+void emit_object_ivar_remove(Compiler *c, int recv, TyKind rt, int cid, const char *sym, Buf *b) {
+  int val = comp_ty_value_obj(c, rt);
+  int kind = val ? 2 : ivar_set_kind(c, cid, sym);
+  if (kind != 1 && kind != 3) {
+    buf_puts(b, "("); emit_expr(c, recv, b);
+    buf_printf(b, ")%siv_%s", val ? "." : "->", iv_c(sym + 1));
+    return;
+  }
+  TyKind t = c->classes[cid].ivar_types[comp_ivar_index(&c->classes[cid], sym)];
+  const char *nilv = nil_value(t) ? nil_value(t) : default_value_from_compiler(c, t);
+  int tr = ++g_tmp, tv = ++g_tmp;
+  char obj[32], ex[160], tb[256];
+  snprintf(obj, sizeof obj, "_t%d", tr);
+  snprintf(ex, sizeof ex, "_t%d->iv_%s", tr, iv_c(sym + 1));
+  buf_printf(b, "({ sp_%s *_t%d = ", c->classes[cid].c_name, tr); emit_expr(c, recv, b); buf_puts(b, "; ");
+  emit_frozen_obj_guard(c, cid, obj, b);
+  buf_printf(b, "if (!%s) sp_raise_cls(\"NameError\", \"instance variable %s not defined\"); ",
+             ivar_set_test(c, cid, sym, ex, tb, sizeof tb), sym);
+  emit_ctype(c, t, b);
+  buf_printf(b, " _t%d = %s; %s = %s; ", tv, ex, ex, nilv);
+  if (kind == 3) buf_printf(b, "_t%d->_sp_set_%s = FALSE; ", tr, iv_c(sym + 1));
+  buf_printf(b, "_t%d; })", tv);
 }
 
 static int emit_data_ivar_set(Compiler *c, int id, int recv, int value, int cid, Buf *b) {
