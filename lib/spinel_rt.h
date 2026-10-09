@@ -14084,6 +14084,21 @@ void sp_cext_handled_restore(int mark) { sp_rescue_sp = mark; }
 /* SP_CLEANUP target: an ensure body that pushed the exception in flight
    as $! gives the handler stack back however it is left */
 static inline void sp_rescue_sp_restore(int *p) { sp_rescue_sp = *p; }
+/* The exception an ensure catches to raise again once its body has run. A
+   String raise carries no object until a rescue makes one, and the cause it
+   was raised with (an explicit `cause:`, or the one in flight) waits in
+   sp_pending_cause, which the raise again replaces: such an exception gets
+   its object here, holding that cause (#8272). */
+static SP_NOINLINE SP_COLD void *sp_exc_caught_obj_make(void) {
+  sp_Exception *e = sp_exc_new_for_catch(sp_exc_cls[sp_exc_top], sp_exc_msg[sp_exc_top]);
+  sp_gc_wb((void *)e); e->cause = (sp_Exception *)sp_pending_cause;
+  sp_exc_obj[sp_exc_top] = e;
+  return e;
+}
+static inline void *sp_exc_caught_obj(void) {
+  void *o = sp_exc_obj[sp_exc_top];
+  return o || !sp_pending_cause ? o : sp_exc_caught_obj_make();
+}
 /* Each of the fixed-depth handler stacks below fails the same way when a
    program nests deeper than its array holds: CRuby's SystemStackError words,
    on stderr, and out. One copy of them, called from each stack's check. Not a
