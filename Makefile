@@ -1327,7 +1327,7 @@ decisions-test: $(SPINEL) $(SPINEL_TIMEOUT)
 	$(SPINEL) --decisions="$$t.allow" --decisions-log="$$t.log1" $$f -c -o "$$t.c" >/dev/null 2>&1; \
 	[ "$$(cat "$$t.log1")" = 'root-frame@Sprites#place' ] && [ "$$(grep -c 'SP_GC_ROOT_FRAME(_gcf)' "$$t.c")" = 1 ] || \
 	  { echo "decisions-test: FAIL (an allow-list of one method's root frame gave: $$(tr '\n' ' ' < "$$t.log1"))"; ok=0; }; \
-	t=$$tmp/nil_narrowing; f=test/nil_narrowing.rb; k='nn-read@test/nil_narrowing.rb:39:8:v'; \
+	t=$$tmp/nil_narrowing; f=test/nil_narrowing.rb; k='nn-read@test/nil_narrowing.rb:40:8:v'; \
 	grep -vxF "$$k" "$$t.log" > "$$t.allow"; \
 	$(SPINEL) --decisions="$$t.allow" $$f -c -o "$$t.c" >/dev/null 2>&1; \
 	[ "$$(grep -o SP_INT_NIL_CMP_CK "$$t.c" | wc -l)" -eq $$(( $$(grep -o SP_INT_NIL_CMP_CK "$$t.plain" | wc -l) + 1 )) ] || \
