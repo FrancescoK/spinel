@@ -61,6 +61,32 @@ static inline SIGNED_VALUE sp_cext_fix2long(VALUE v) {
 #define SYM2ID(v) ((ID)((VALUE)(v) >> RUBY_SPECIAL_SHIFT))
 #define RB_GC_GUARD(v) (v)
 
+void rb_gc_mark(VALUE);
+void rb_gc_mark_movable(VALUE);
+VALUE rb_gc_location(VALUE);
+void rb_gc_register_address(VALUE *);
+void rb_gc_unregister_address(VALUE *);
+void rb_global_variable(VALUE *);
+
+typedef void (*RUBY_DATA_FUNC)(void *);
+typedef struct rb_data_type_struct {
+    const char *wrap_struct_name;
+    struct {
+        RUBY_DATA_FUNC dmark;
+        RUBY_DATA_FUNC dfree;
+        size_t (*dsize)(const void *);
+        RUBY_DATA_FUNC dcompact;
+        void *reserved[1];
+    } function;
+    const struct rb_data_type_struct *parent;
+    void *data;
+    VALUE flags;
+} rb_data_type_t;
+#define RUBY_TYPED_DEFAULT_FREE ((RUBY_DATA_FUNC)-1)
+#define RUBY_TYPED_NEVER_FREE ((RUBY_DATA_FUNC)0)
+#define RUBY_TYPED_FREE_IMMEDIATELY ((VALUE)1)
+#define RUBY_TYPED_WB_PROTECTED ((VALUE)32)
+
 /* APIs requiring CRuby's layout or VM are deliberately diagnosed at the
  * call site. No dummy layout or unresolved linker symbol is supplied. */
 #if defined(__GNUC__) || defined(__clang__)
