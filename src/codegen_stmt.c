@@ -15056,6 +15056,15 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
   if (sp_streq(ty, "BeginNode")) {
     /* begin/rescue value -> a temp, assigned in both branches, then tail */
     TyKind rt = repr_of(c, id).as_ty;
+    /* --share-strings: a String value whose class the rule shares, tailing
+       into a box (a boxed return, a proc's value): a String temp would box
+       a copy of a handle arm. The temp is the box, each arm boxed into it
+       as its handle where it has one, and a plain String's box is lifted
+       into a new handle (sp_poly_strbuf_lift) for the box the caller keeps.
+       Lift at the arms, so a frozen literal keeps its own identity. */
+    int share_box = repr_share_rule(c) && (rt == TY_STRING || rt == TY_STRBUF) &&
+                    (g_result_var ? g_result_poly : g_ret_type == TY_POLY) && share_node_shares(c, id);
+    if (share_box) rt = TY_POLY;
     if (is_scalar_ret(rt)) {
       int t = ++g_tmp;
       char rv[32]; snprintf(rv, sizeof rv, "_t%d", t);
