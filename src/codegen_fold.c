@@ -9323,6 +9323,49 @@ int subtree_reads_local(const NodeTable *nt, int id, const char *name) {
   return 0;
 }
 
+/* Parameter i of m bound ahead of the call from `val` (its C text), for a
+   method whose default reads an earlier parameter: into `_pd<uid>_<i>`, and
+   renamed to it, AFTER the binding, so only a later default reads it. What
+   the call passes for it goes to `name`. */
+void emit_pd_param_bind(Compiler *c, Scope *m, int i, int uid, const char *val, char *name, size_t cap) {
+  LocalVar *plv = m->pnames[i] ? scope_local(m, m->pnames[i]) : NULL;
+  TyKind pt = plv ? plv->type : TY_POLY;
+  int byref = plv && plv->byref_out;
+  char uniq[48];
+  snprintf(uniq, sizeof uniq, "_pd%d_%d", uid, i);
+  emit_indent(g_pre, g_indent);
+  /* A lent parameter's hoist is the LENT ADDRESS, not a copy of the
+     string. emit_arg_or_default has already produced whichever of the
+     four call-site forms this argument takes (`&lv_x`, `_cell_x`, a
+     capture slot, `&_tN` for a default), all borrowing a String slot,
+     so declaring it with the parameter's plain type gave
+     `const char *lv__pdN_0 = &lv_s;`. And a sibling default that READS
+     the parameter emits the cell spelling through the same rename map,
+     `(*_cell__pdN_0)`, which nothing declared. Naming the hoist
+     `_cell_<uniq>` makes the two meet, and it needs no root of its own:
+     it points at a slot the caller already roots. */
+  if (byref) {
+    buf_printf(g_pre, "%s *_cell_%s = %s;\n", borrowed_string_type(plv), uniq, val ? val : "NULL");
+  }
+  else {
+    emit_ctype(c, pt, g_pre);
+    buf_printf(g_pre, " lv_%s = %s;\n", uniq, val ? val : default_value_from_compiler(c, pt));
+    if (needs_root(pt)) {
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, pt == TY_POLY ? "SP_GC_ROOT_RBVAL(lv_%s);\n" : "SP_GC_ROOT(lv_%s);\n", uniq);
+    }
+    emit_pd_cell_alias(c, plv, uniq);
+  }
+  /* Register the rename AFTER emitting temp i so param i+1's default reads
+     it (rename_local rewrites the callee param name to the temp). */
+  if (m->pnames[i] && g_nren < MAX_RENAME) {
+    snprintf(g_ren_from[g_nren], sizeof g_ren_from[0], "%s", m->pnames[i]);
+    snprintf(g_ren_to[g_nren], sizeof g_ren_to[0], "%s", uniq);
+    g_nren++;
+  }
+  snprintf(name, cap, byref ? "_cell_%s" : "lv_%s", uniq);
+}
+
 /* True if some parameter's default expression references an EARLIER parameter.
    Ruby evaluates defaults left-to-right in the callee where earlier params are
    already bound; spinel fills defaults at the call site, where those bindings
@@ -10644,7 +10687,6 @@ void emit_args_filled_argv(Compiler *c, int callee_idx, const int *argv, int arg
     for (int i = 0; i < m->nparams; i++) {
       LocalVar *plv = m->pnames[i] ? scope_local(m, m->pnames[i]) : NULL;
       TyKind pt = plv ? plv->type : TY_POLY;
-      int byref = plv && plv->byref_out;
       int is_rest = L.from[i] == ARG_REST, is_kwrest = i == m->kwrest_idx;
       int from_gather = L.from[i] == ARG_GATHERED || L.from[i] == ARG_ELEM;
       int provided = L.from[i] == ARG_NODE ? argv[L.arg[i]] : L.from[i] == ARG_KWH ? kwh : -1;
@@ -10678,40 +10720,8 @@ void emit_args_filled_argv(Compiler *c, int callee_idx, const int *argv, int arg
         emit_ds_param_extract(c, m, i, ds_hash_tmp, ds_hash_type, &vb);
       else emit_arg_or_default(c, m, i, provided, &vb);
       g_nren = active_nren;
-      char uniq[48];
-      snprintf(uniq, sizeof uniq, "_pd%d_%d", uid, i);
-      emit_indent(g_pre, g_indent);
-      /* A lent parameter's hoist is the LENT ADDRESS, not a copy of the
-         string. emit_arg_or_default has already produced whichever of the
-         four call-site forms this argument takes (`&lv_x`, `_cell_x`, a
-         capture slot, `&_tN` for a default), all borrowing a String slot,
-         so declaring it with the parameter's plain type gave
-         `const char *lv__pdN_0 = &lv_s;`. And a sibling default that READS
-         the parameter emits the cell spelling through the same rename map,
-         `(*_cell__pdN_0)`, which nothing declared. Naming the hoist
-         `_cell_<uniq>` makes the two meet, and it needs no root of its own:
-         it points at a slot the caller already roots. */
-      if (byref) {
-        buf_printf(g_pre, "%s *_cell_%s = %s;\n", borrowed_string_type(plv), uniq, vb.p ? vb.p : "NULL");
-      }
-      else {
-        emit_ctype(c, pt, g_pre);
-        buf_printf(g_pre, " lv_%s = %s;\n", uniq, vb.p ? vb.p : default_value_from_compiler(c, pt));
-        if (needs_root(pt)) {
-          emit_indent(g_pre, g_indent);
-          buf_printf(g_pre, pt == TY_POLY ? "SP_GC_ROOT_RBVAL(lv_%s);\n" : "SP_GC_ROOT(lv_%s);\n", uniq);
-        }
-        emit_pd_cell_alias(c, plv, uniq);
-      }
+      emit_pd_param_bind(c, m, i, uid, vb.p, tmpnames[i], sizeof tmpnames[0]);
       free(vb.p);
-      /* Register the rename AFTER emitting temp i so param i+1's default reads
-         it (rename_local rewrites the callee param name to the temp). */
-      if (m->pnames[i] && g_nren < MAX_RENAME) {
-        snprintf(g_ren_from[g_nren], sizeof g_ren_from[0], "%s", m->pnames[i]);
-        snprintf(g_ren_to[g_nren], sizeof g_ren_to[0], "%s", uniq);
-        g_nren++;
-      }
-      snprintf(tmpnames[i], sizeof tmpnames[0], byref ? "_cell_%s" : "lv_%s", uniq);
     }
     g_nren = ren_base;  /* pop the renames before emitting the call args */
     for (int i = 0; i < m->nparams; i++) {

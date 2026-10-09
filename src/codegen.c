@@ -11283,13 +11283,44 @@ static void emit_zsuper_param(Compiler *c, Scope *s, Scope *pm, const ZSuper *z,
   g_nren = sv;
 }
 
+/* Can the bare super fill a parameter of pm from its default: one this
+   method's like-named keyword, or its positional by the static layout, does
+   not supply? */
+static int zsuper_may_default(Compiler *c, Scope *s, Scope *pm, const ZSuper *z) {
+  for (int i = 0; i < pm->nparams; i++) {
+    if (!pm->pdefault || pm->pdefault[i] < 0 || !pm->pnames[i]) continue;
+    int kw = callee_param_is_declared_kwarg(c, pm, pm->pnames[i]);
+    if (kw && callee_param_is_declared_kwarg(c, s, pm->pnames[i])) continue;
+    if (!kw && z->gather < 0 && z->L.from[i] == ARG_NODE) continue;
+    return 1;
+  }
+  return 0;
+}
+
 static void emit_zsuper_args(Compiler *c, Scope *s, Scope *pm, const char *sep0, Buf *b) {
   ZSuper z;
   zsuper_begin(c, s, pm, &z);
+  /* A parent default reading an earlier parameter (`def m(a, b = a)`)
+     reads the parent's binding of it, bound ahead of the call as a call's
+     is (#4431): spelled at the super, it named this method's variable, of
+     this method's type, which a parameter of the parent's type then boxed
+     wrongly. */
+  int pd = pm->nparams <= 64 && default_refs_earlier_param(c, pm) && zsuper_may_default(c, s, pm, &z);
+  int uid = pd ? ++g_tmp : 0, ren_base = g_nren;
   for (int i = 0; i < pm->nparams; i++) {
     buf_puts(b, i == 0 ? sep0 : ", ");
-    emit_zsuper_param(c, s, pm, &z, i, g_nren, g_nren, b);
+    if (!pd) {
+      emit_zsuper_param(c, s, pm, &z, i, g_nren, g_nren, b);
+      continue;
+    }
+    Buf vb; memset(&vb, 0, sizeof vb);
+    char name[64];
+    emit_zsuper_param(c, s, pm, &z, i, ren_base, g_nren, &vb);
+    emit_pd_param_bind(c, pm, i, uid, vb.p, name, sizeof name);
+    free(vb.p);
+    buf_puts(b, name);
   }
+  g_nren = ren_base;
   zsuper_end(&z);
 }
 
