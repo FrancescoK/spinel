@@ -1,0 +1,9 @@
+[:other, [1, 2]]
+[:kw, {a: 1}]
+nil
+5
+"wrong number of arguments (given 2, expected 0..1)"
+[]
+[nil, nil]
+[:z, :z]
+"wrong number of arguments (given 3, expected 0..2)"
