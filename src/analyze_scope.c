@@ -8423,7 +8423,7 @@ int pivs_settle_hash_stores(Compiler *c) {
 int pivs_hash_stores_widened(Compiler *c) {
   return c->pivs ? c->pivs->stores_widened : 0;
 }
-
+/** @brief Infer ivar types, including writes through uniquely resolved boxed attr-writer families. */
 int infer_ivar_types(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -8668,18 +8668,37 @@ int infer_ivar_types(Compiler *c) {
       else {
         /* Poly/unknown receiver -- e.g. `cell` read from a poly array/hash
            (`@cells.each_value { |cell| cell.neighbours = ... }`). The static
-           class is unknown, but if exactly ONE class defines this attr-writer
-           with a matching ivar, the runtime object must be of that class, so
-           attribute the write to it. (Skip when ambiguous: zero or several
-           classes share the attr name -- over-widening an unrelated same-named
-           ivar would be unsound to attribute.) ty_unify only widens. */
+           class is unknown, but if exactly ONE effective attr-writer family
+           owns a matching ivar, attribute the write to that family. Inherited
+           writers are copied onto every subclass, so count the highest class
+           whose effective writer is still an attribute, not each copy. An
+           explicit writer method breaks the family: comp_resolve_member keeps
+           that override out of the synthesized-attribute candidates. (Skip
+           when unrelated families remain ambiguous; widening a same-named
+           ivar there would be unsound to attribute.) ty_unify only widens. */
         int only = -1;
         for (int ci2 = 0; ci2 < c->nclasses; ci2++) {
-          if (comp_is_writer(&c->classes[ci2], base) &&
-              comp_ivar_index(&c->classes[ci2], ivname) >= 0) {
-            if (only >= 0) { only = -2; break; }   /* ambiguous */
-            only = ci2;
+          ClassInfo *candidate = &c->classes[ci2];
+          if (comp_class_is_module(c, candidate) ||
+              comp_resolve_member(c, ci2, base, 1, NULL, NULL) != SP_MEMBER_ATTR ||
+              comp_ivar_index(candidate, ivname) < 0)
+            continue;
+
+          /* inherit_members copies the parent's writer onto each child. Walk
+             the effective chain to its highest attribute owner so siblings
+             and deeper descendants count as one family. A method override
+             stops the walk; a later attr declaration below it starts a new
+             family. */
+          int family = ci2;
+          for (int parent = candidate->parent; parent >= 0;
+               parent = c->classes[parent].parent) {
+            if (comp_resolve_member(c, parent, base, 1, NULL, NULL) != SP_MEMBER_ATTR)
+              break;
+            family = parent;
           }
+
+          if (only >= 0 && only != family) { only = -2; break; } /* ambiguous */
+          only = family;
         }
         if (only < 0) continue;
         ClassInfo *ci = &c->classes[only];
