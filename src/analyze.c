@@ -17858,7 +17858,7 @@ static int share_lift_value(Compiler *c, int v) {
       k == NK_ClassVariableReadNode || k == NK_ConstantReadNode || k == NK_ConstantPathNode)
     return 0;
   /* a String-typed value, a conditional's included, is boxed whole */
-  if (infer_type(c, v) == TY_STRING) {
+  if (k != NK_BeginNode && infer_type(c, v) == TY_STRING) {
     if (c->poly_strbuf_lift[v]) return 0;
     c->poly_strbuf_lift[v] = 1;
     return 1;
@@ -17882,6 +17882,12 @@ static int share_lift_value(Compiler *c, int v) {
     case NK_BeginNode: {
       int els = nt_ref(nt, v, "else_clause");
       int changed = share_lift_arms(c, els >= 0 ? els : nt_ref(nt, v, "statements"));
+      /* Expression-position begins still box their String result whole;
+         boxed tails use the arm flags instead. Keep both facts. */
+      if (infer_type(c, v) == TY_STRING && !c->poly_strbuf_lift[v]) {
+        c->poly_strbuf_lift[v] = 1;
+        changed = 1;
+      }
       for (int r = nt_ref(nt, v, "rescue_clause"); r >= 0; r = nt_ref(nt, r, "subsequent"))
         changed |= share_lift_arms(c, nt_ref(nt, r, "statements"));
       return changed;
