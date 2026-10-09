@@ -18072,9 +18072,11 @@ static int share_demand_rest_args(Compiler *c, int mi, const int *argv, int argc
 }
 /* An element read can itself be the container whose String elements are
    shared: [[s]][0][0] must demand s at the inner store. The existing
-   container-source walk carries the extra element depth back to it. */
+   container-source walk carries the extra element depth back to it.
+   A temporary map's elements likewise come from its block's tail. */
 static int share_demand_nested_read(Compiler *c, int call, int recv) {
-  if (!container_elem_read_p(c->nt, recv) || nt_ref(c->nt, call, "block") >= 0) return 0;
+  if (nt_ref(c->nt, call, "block") >= 0 ||
+      (!container_elem_read_p(c->nt, recv) && strbuf_map_block_tail(c, recv) < 0)) return 0;
   TyKind rt = comp_ntype(c, recv);
   if (rt == TY_POLY && container_elem_read_p(c->nt, call) && share_node_elems_share(c, recv))
     return strbuf_container_source_walk(c, recv, 0, SB_DEMAND_NAMED);
@@ -34201,6 +34203,19 @@ static int sa_read_elsewhere(Compiler *c, const SaName *a, int except) {
   for (int e = sa_site_first(c, a, VS_READ); e >= 0; e = sa_site_next(c, a, e))
     if (comp_vsite_node(c, e) != except) return 1;
   return 0;
+}
+/* A local's only read, with no parameter or captured slot behind it and
+   only fresh values written to it. The indexed sites check exact names. */
+int an_local_read_once(Compiler *c, int n) {
+  SaName a;
+  if (nt_kind(c->nt, n) != NK_LocalVariableReadNode || !sa_name(c, n, &a)) return 0;
+  LocalVar *lv = scope_local(a.scope, a.name);
+  if (!lv || lv->is_param || lv->is_block_param || lv->is_cell || sa_read_elsewhere(c, &a, n)) return 0;
+  for (int e = sa_site_first(c, &a, VS_WRITE); e >= 0; e = sa_site_next(c, &a, e)) {
+    int w = comp_vsite_node(c, e);
+    if (!share_value_fresh(c, nt_ref(c->nt, w, "value"), 0)) return 0;
+  }
+  return 1;
 }
 /* Can a copy between `to` and `from` (read at `from_read`) be seen: `to`
    mutated while `from` is read elsewhere, or `from` mutated while `to` is

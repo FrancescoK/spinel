@@ -1592,6 +1592,9 @@ static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int 
 /* A builtin call no row describes on a container: it may store any
    argument and answer anything the receiver holds. */
 static int sh_container_default(ShareFacts *F, Compiler *c, int n, int rv, int blk) {
+  /* A fresh receiver can still retain supplied arguments (ENV's
+     snapshot followed by assoc/rassoc); give those aliases a class. */
+  if (rv < 0) rv = sh_new(F, SHK_VALUE);
   int vals[64];
   int nv = sh_args_vals(F, c, n, vals, 64);
   for (int i = 0; i < nv; i++) {
@@ -2006,6 +2009,7 @@ static int sh_iter_drops_block(Compiler *c, int n, TyKind rt) {
          rt != TY_UNKNOWN && rt != TY_OPENSTRUCT && iter_keeps_no_block_value(sh_family(rt), name, call_plain_argc(c, n));
 }
 
+static int sh_builtin_fresh(Compiler *c, int call, int ostruct);
 static int sh_call(ShareFacts *F, Compiler *c, int n) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, n, "name");
@@ -2124,7 +2128,7 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
 
   /* ENV's rows, when the program defines no ENV of its own; an
      assignment whose value is taken answers the String it was handed,
-     as the store rows' BSH_FETCH now describes for statements and values. */
+     as the store rows' BSH_LAST describes for statements and values. */
   if (recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode && is_env_const(nt_str(nt, recv, "name")) &&
       !comp_const(c, "ENV")) {
     int es = bop_share_named(BOP_ENV, name);
@@ -2206,7 +2210,7 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
         sh_union(F, rv, F->unknown);
     }
     /* a poly receiver may be a builtin as well */
-    if (rt != TY_POLY && rt != TY_UNKNOWN) return r;
+    if ((rt != TY_POLY && rt != TY_UNKNOWN) || sh_builtin_fresh(c, n, F->ostruct)) return r;
     /* Exception#to_s hands on its stored message beside user returns. */
     if (is_to_s_name(name) && argc == 0 && blk < 0) r = sh_join(F, r, sh_exc(F));
     if (argc == 2 && nt_kind(nt, argv[1]) == NK_KeywordHashNode &&
@@ -2263,6 +2267,9 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
     return s ? sh_builtin(F, c, n, s, rv, blk, 0) : sh_unknown_call(F, c, n, blk);
   }
   if (rt == TY_POLY || rt == TY_UNKNOWN) {
+    /* String#to_s returns the receiver; Exception#to_s its message.
+       The Array and Hash rows below describe only their fresh text. */
+    if (is_to_s_name(name) && argc == 0 && blk < 0) return sh_join(F, rv, sh_exc(F));
     /* a proc or a Method in the box, where it may hold one: called with
        what it is handed; else a container's or a String's element, at any
        depth (the container default) */
@@ -3756,16 +3763,17 @@ int share_method_blocks(const Compiler *c, int mi, const int **blocks) {
 /* A boxed call's builtin arms answer a value of their own when the
    any-receiver row says so. String's receiver conversions are the
    exception to Object's row: to_s can hand its String back unchanged. */
-int share_builtin_fresh(Compiler *c, int call) {
+static int sh_builtin_fresh(Compiler *c, int call, int ostruct) {
   const char *name = nt_str(c->nt, call, "name");
-  if (bop_share_named(BOP_ANY_RECV, name) == BSH_PURE && !is_receiver_conversion(name)) return 1;
+  if (is_receiver_conversion(name)) return 0;
+  int share = bop_share_named(BOP_ANY_RECV, name);
+  if (share) return share == BSH_PURE;
   /* A name no builtin owns has only the user targets' answers; every
      other receiver raises. The arity tables already record that ownership.
      The dispatch plan must also exclude readers, native bindings and
      catch-all arms such as OpenStruct's member read. Object's public
      method table covers the names the arity tables omit. A user-defined
      method_missing can answer a name with no ordinary target too. */
-  int lo, hi;
   if (object_public_method_name(name)) return 0;
   if (comp_method_index(c, "method_missing") >= 0) return 0;
   int missing = 0;
@@ -3773,7 +3781,31 @@ int share_builtin_fresh(Compiler *c, int call) {
   if (missing) return 0;
   comp_cmethod_candidates(c, "method_missing", &missing);
   if (missing) return 0;
-  if (builtin_name_arity_span(name, nt_ref(c->nt, call, "block") >= 0, &lo, &hi)) return 0;
+  /* With no builtin face or dynamic fields, only the user methods can
+     answer. Their freshness is checked by the caller. */
+  if (!ostruct && !bop_name_has_reader(name, BOP_READ_NUMERIC | BOP_READ_CONTAINER | BOP_READ_STRING) &&
+      !ty_poly_face_owners(name, call_plain_argc(c, call), nt_ref(c->nt, call, "block") >= 0, 1, 1)) {
+    int n = 0;
+    const PolyCand *p = comp_poly_candidates(c, name, &n);
+    /* The walk has no settled dispatch plan yet. Its candidate index
+       still exposes aliases the same-named target set can miss. */
+    int tg[CPT_MAX], ntg = cplan_targets(c, call, tg, CPT_MAX);
+    int i = 0;
+    for (; i < n && p[i].mi >= 0 && !p[i].native; i++) {
+      int found = 0;
+      for (int j = 0; j < ntg; j++) if (tg[j] == p[i].mi) { found = 1; break; }
+      if (!found) return 0;
+    }
+    if (i == n && i > 0) return 1;
+  }
+  return 0;
+}
+int share_builtin_fresh(Compiler *c, int call) {
+  const char *name = nt_str(c->nt, call, "name");
+  if (bop_share_named(BOP_ANY_RECV, name) == BSH_PURE && !is_receiver_conversion(name)) return 1;
+  /* The share walk's builtin surfaces exclude typed-only methods such
+     as Thread#value; the settled plan below still checks every arm. */
+  if (!sh_builtin_fresh(c, call, !c->share || c->share->ostruct)) return 0;
   /* A scope-name lookup can miss an alias's method. Every returning user
      arm must occur in the target set whose return identities we check. */
   int tg[CPT_MAX], n = cplan_targets(c, call, tg, CPT_MAX);
@@ -4012,6 +4044,10 @@ int share_node_one_name(const Compiler *c, int n) {
   const ShareFacts *F = c->share;
   int r = sh_node_root(F, n, 0);
   return r >= 0 && sh_class_holders(F, r) <= 1 && !(F->flags[r] & (SHF_UNKNOWN | SHF_MULTI));
+}
+/* A fresh value, or a local's fresh value handed on at its only read. */
+int share_value_unobserved(Compiler *c, int n) {
+  return share_value_fresh(c, n, 0) || share_node_one_name(c, n) || an_local_read_once(c, n);
 }
 int share_node_shares(const Compiler *c, int n) {
   const ShareFacts *F = c->share;

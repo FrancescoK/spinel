@@ -2789,6 +2789,7 @@ static const BopShareRow bop_share_rows[] = {
 
   /* Kernel's functions. A name with no row (raise, throw, define_method,
      lambda, ...) is not followed. throw now has an argument-answer row. */
+  { BOP_KERNEL, "__env_to_h", BSH_PURE },
   { BOP_KERNEL, "puts",     BSH_PURE },
   { BOP_KERNEL, "print",    BSH_PURE },
   { BOP_KERNEL, "printf",   BSH_PURE },
@@ -2962,7 +2963,9 @@ static const BopShareRow bop_share_rows[] = {
   { BOP_FILETEST, "zero?",               BSH_PURE },
 
   /* ENV answers a new String for each read, and keeps a copy of what it
-     is handed (fetch answers its default when the name is unset) */
+     is handed (fetch answers its default when the name is unset).
+     Stores answer their value argument; delete's missing-key block has
+     fetch's argument and result flow. ENV has no retained elements. */
   { BOP_ENV,        "[]",          BSH_PURE },
   { BOP_ENV,        "[]=",         BSH_LAST },
   { BOP_ENV,        "store",       BSH_LAST },
