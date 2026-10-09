@@ -169,6 +169,10 @@ int blk_locals_have(const char *locals, const char *nm);
    id >= 0; id = an_calls_named_next(id)). Check each node as before. */
 int an_calls_named_first(Compiler *c, const char *name);
 int an_calls_named_next(int id);
+/* The calls that can name method m, ascending (the caller frees the list):
+   its own name, `new` for an initialize, and the alias names whose chain
+   leads to it. Each still has to be resolved; the list only narrows. */
+int *an_scope_call_candidates(Compiler *c, Scope *m, int *n);
 int is_arith_op(const char *op);
 int node_is_empty_container(const NodeTable *nt, int node);
 int bind_coerce_operator_params(Compiler *c);

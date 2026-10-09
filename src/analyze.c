@@ -16220,7 +16220,7 @@ static int sb_int_cmp(const void *a, const void *b) {
   int x = *(const int *)a, y = *(const int *)b;
   return (x > y) - (x < y);
 }
-static int *strbuf_scope_call_candidates(Compiler *c, Scope *m, int *n) {
+int *an_scope_call_candidates(Compiler *c, Scope *m, int *n) {
   int cap = 16, cnt = 0;
   int *v = malloc(sizeof(int) * (size_t)cap);
   if (!v) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
@@ -16282,7 +16282,7 @@ static int *strbuf_scope_callers(Compiler *c, int mi, Scope *m, int *n) {
     return cp;
   }
   int ncand = 0, k = 0;
-  int *cand = strbuf_scope_call_candidates(c, m, &ncand);
+  int *cand = an_scope_call_candidates(c, m, &ncand);
   for (int i = 0; i < ncand; i++) {
     int u = cand[i];
     if (nt_kind(nt, u) != NK_CallNode || !an_call_targets_scope(c, u, mi, m)) continue;
