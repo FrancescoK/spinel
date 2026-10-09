@@ -452,6 +452,29 @@ int is_ivar_set_name(const char *n) {
   return sp_streq(n, "instance_variable_set");
 }
 
+/* Object#inspect, the text p prints */
+int is_inspect_name(const char *n) {
+  return sp_streq(n, "inspect");
+}
+
+/* `Marshal.dump`, by its receiver's constant name and the method */
+int is_marshal_dump(const char *recv, const char *meth) {
+  return recv && meth && sp_streq(meth, "dump") && sp_streq(recv, "Marshal");
+}
+
+/* The reflective ivar removal */
+int is_ivar_remove_name(const char *n) {
+  return sp_streq(n, "remove_instance_variable");
+}
+
+/* A call that tells an ivar assigned from one never assigned: the
+   reflective readers and removal, and the default inspect (inspect, and p
+   and pp, which print it) */
+int is_ivar_presence_read(const char *n) {
+  return sp_streq(n, "instance_variables") || sp_streq(n, "instance_variable_defined?") ||
+         is_ivar_remove_name(n) || is_inspect_name(n) || is_inspect_print(n);
+}
+
 /* A builtin class whose values keep their ivars in the runtime's map
    (desugar_builtin_ivars), and one whose values are all frozen: an ivar
    of theirs reads nil and a write raises FrozenError */
@@ -766,6 +789,10 @@ int is_modulo_name(const char *n) {
 
 int is_mod_operator(const char *n) {
   return sp_streq(n, "%");
+}
+
+int is_initialize_name(const char *n) {
+  return sp_streq(n, "initialize");
 }
 
 int is_initialize_family(const char *n) {

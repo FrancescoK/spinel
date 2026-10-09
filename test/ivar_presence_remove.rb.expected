@@ -1,0 +1,18 @@
+instance variable @y not defined
+2
+[:@x]
+false
+nil
+[:@x, :@y]
+"ab"
+[]
+nil
+instance variable @s not defined
+[:@s]
+nil
+[]
+#<R:0x @s="zzz">
+nil
+:@nope
+"instance variable @nope not defined"
+:@s

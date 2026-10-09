@@ -274,6 +274,10 @@ void comp_free(Compiler *c) {
   free(c->hash_default_arg_memo);
   c->hash_default_arg_memo = NULL;
   free(c->blk_body_map);
+  for (int i = 0; i < c->npres; i++) free(c->pres_names[i]);
+  free(c->pres_names); free(c->pres_flags); free(c->pres_obs); free(c->pres_memo);
+  c->pres_obs = NULL; c->pres_obs_n = 0; c->pres_memo = NULL; c->pres_memo_n = 0;
+  c->pres_names = NULL; c->pres_flags = NULL; c->npres = c->cpres = 0;
   free(c->nil_fact);
   free(c->nil_elem_fact);
   free(c->node_ord); free(c->node_base);
@@ -2372,6 +2376,27 @@ int comp_ivarg_call(const Compiler *c, int e) {
 }
 int comp_ivarg_arg(const Compiler *c, int e) {
   return (e >= 0 && e < c->ivarg_count) ? c->ivarg_arg[e] : -1;
+}
+
+/* The PRES_* facts of ivar name `ivn` (c->pres_names); comp_pres_note adds
+   to them. */
+int comp_pres_flags(const Compiler *c, const char *ivn) {
+  for (int i = 0; ivn && i < c->npres; i++)
+    if (sp_streq(c->pres_names[i], ivn)) return c->pres_flags[i];
+  return 0;
+}
+void comp_pres_note(Compiler *c, const char *ivn, int flag) {
+  if (!ivn) return;
+  for (int i = 0; i < c->npres; i++)
+    if (sp_streq(c->pres_names[i], ivn)) { c->pres_flags[i] |= (unsigned char)flag; return; }
+  if (c->npres == c->cpres) {
+    c->cpres = c->cpres ? c->cpres * 2 : 8;
+    c->pres_names = realloc(c->pres_names, sizeof(char *) * (size_t)c->cpres);
+    c->pres_flags = realloc(c->pres_flags, (size_t)c->cpres);
+    if (!c->pres_names || !c->pres_flags) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  c->pres_names[c->npres] = strdup(ivn);
+  c->pres_flags[c->npres++] = (unsigned char)flag;
 }
 
 /* The owning class of an ivar READ/WRITE node under the same storage rules

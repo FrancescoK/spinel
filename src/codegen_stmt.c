@@ -10636,11 +10636,10 @@ void emit_boxed_writer_arms(Compiler *c, const char *base, const char *nm,
        NoMethodError for a writer the receiver has. */
     if (at != ivt && at != TY_POLY && ivt != TY_POLY && !slot_takes_subclass(c, ivt, at)) continue;
     buf_printf(b, " case %d: ", k);
-    { size_t on = strlen(c->classes[k].c_name) + strlen(objp) + 16;
-      char *opn = (char *)malloc(on);
-      snprintf(opn, on, "((sp_%s *)%s)", c->classes[k].c_name, objp);
-      emit_frozen_obj_guard(c, k, opn, b);
-      free(opn); }
+    size_t on = strlen(c->classes[k].c_name) + strlen(objp) + 16;
+    char *opn = (char *)malloc(on), mk[300];
+    snprintf(opn, on, "((sp_%s *)%s)", c->classes[k].c_name, objp);
+    emit_frozen_obj_guard(c, k, opn, b);
     buf_printf(b, "((sp_%s *)%s)->iv_%s = ", c->classes[k].c_name, objp, iv_c(base));
     if (ivt == TY_POLY && at != TY_POLY) {
       if (lift) buf_puts(b, "sp_poly_strbuf_lift(");
@@ -10649,7 +10648,11 @@ void emit_boxed_writer_arms(Compiler *c, const char *base, const char *nm,
     }
     else if (at == TY_POLY && ivt != TY_POLY) emit_unbox_text(c, ivt, src, b);
     else { emit_obj_upcast_prefix(c, ivt, at, b); buf_puts(b, src); }
-    buf_puts(b, "; break;");
+    /* and its assigned mark (ivar_set_mark) */
+    const char *m = iv >= 0 ? ivar_set_mark(c, k, ivn, opn, "->", mk, sizeof mk) : NULL;
+    if (m) buf_printf(b, "; %s break;", m);
+    else buf_puts(b, "; break;");
+    free(opn);
   }
   /* a real IO in the slot keeps its own writer beside the program's: a Log
      with `attr_accessor :sync` and $stdout in one slot, `x.sync = v` on the
@@ -11152,10 +11155,20 @@ static int masgn_store(Compiler *c, int id, int tgt, const char *val, TyKind vt,
       char base[256]; snprintf(base, sizeof base, "%.*s", (int)(snl - 1), nm);
       char ivn[260]; snprintf(ivn, sizeof ivn, "@%s", base);
       int ix = comp_ivar_index(&c->classes[crc], ivn);
-      buf_puts(b, "("); emit_node_or_tmp(c, crecv, recv_tmp, b);
+      /* the receiver is held once for the assigned mark */
+      int pk = ix >= 0 && ivar_set_kind(c, crc, ivn) == 3;
+      int th = pk && recv_tmp < 0 ? ++g_tmp : recv_tmp;
+      if (pk && recv_tmp < 0) {
+        buf_printf(b, "{ sp_%s *_t%d = ", c->classes[crc].c_name, th); emit_expr(c, crecv, b); buf_puts(b, "; ");
+      }
+      buf_puts(b, "("); emit_node_or_tmp(c, crecv, th, b);
       buf_printf(b, ")->iv_%s = ", iv_c(base));
       masgn_conv(c, id, ix >= 0 ? c->classes[crc].ivar_types[ix] : vt, vt, val, b);
-      buf_puts(b, ";\n");
+      char tn[32], mk[300];
+      snprintf(tn, sizeof tn, "_t%d", th);
+      const char *m = pk ? ivar_set_mark(c, crc, ivn, tn, "->", mk, sizeof mk) : NULL;
+      if (m) buf_printf(b, "; %s%s\n", m, recv_tmp < 0 ? " }" : "");
+      else buf_puts(b, ";\n");
     }
     return 1;
   }
@@ -12347,19 +12360,24 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
       int defc2 = -1; comp_writer_in_chain(c, rc2, base2, &defc2);
       int iv2 = comp_ivar_index(&c->classes[defc2 < 0 ? rc2 : defc2], ivn2);
       TyKind ivt2 = iv2 >= 0 ? c->classes[defc2 < 0 ? rc2 : defc2].ivar_types[iv2] : TY_UNKNOWN;
+      Buf rb; memset(&rb, 0, sizeof rb);
+      emit_node_or_tmp(c, recv_id2, ttr[i], &rb);
       {
-        Buf rb; memset(&rb, 0, sizeof rb);
-        emit_node_or_tmp(c, recv_id2, ttr[i], &rb);
         Buf fb; memset(&fb, 0, sizeof fb);
         emit_frozen_obj_guard(c, rc2, rb.p ? rb.p : "", &fb);
         masgn_guard_line(&fb, b, indent);
         emit_indent(b, indent);
-        buf_printf(b, "(%s)->iv_%s = ", rb.p ? rb.p : "", iv_c(base2)); free(rb.p);
+        buf_printf(b, "(%s)->iv_%s = ", rb.p ? rb.p : "", iv_c(base2));
       }
       /* a nil element lands the slot's own nil, not the boxed temp */
       char expr2[32]; snprintf(expr2, sizeof expr2, "_t%d", tmps[i]);
       masgn_conv(c, id, ivt2, tmpts[i], masgn_nil_el(c, els[i]) ? NULL : expr2, b);
-      buf_puts(b, ";\n");
+      char ro[300], mk[300];
+      snprintf(ro, sizeof ro, "(%s)", rb.p ? rb.p : "");
+      const char *m = iv2 >= 0 ? ivar_set_mark(c, defc2 < 0 ? rc2 : defc2, ivn2, ro, "->", mk, sizeof mk) : NULL;
+      if (m) buf_printf(b, "; %s\n", m);
+      else buf_puts(b, ";\n");
+      free(rb.p);
     }
     else if (lty && sp_streq(lty, "MultiTargetNode")) {
       /* nested (b, *c, d) = _t<i>: destructure the boxed element */
@@ -12791,6 +12809,9 @@ static int emit_call_stmt(Compiler *c, int id, Buf *b, int indent, const NodeTab
               emit_indent(b, indent);
               int fo = rc >= 0 && rc < c->nclasses &&
                        c->classes[rc].freeze_observed && !c->classes[rc].is_value_type;
+              /* the receiver is held once for the assigned mark too */
+              int ivc = defc < 0 ? rc : defc;
+              if (iv >= 0 && ivar_set_kind(c, ivc, ivn) == 3) fo = 1;
               int tw = fo ? ++g_tmp : -1;
               if (fo) {
                 char twn[32]; snprintf(twn, sizeof twn, "_t%d", tw);
@@ -12829,7 +12850,11 @@ static int emit_call_stmt(Compiler *c, int id, Buf *b, int indent, const NodeTab
               else if (ivt != TY_POLY && ivt != TY_UNKNOWN)
                 emit_coerce(c, argv[0], ivt, CO_HOLD, "an attribute writer", b);
               else emit_expr(c, argv[0], b);
-              buf_puts(b, fo ? "; }\n" : ";\n");
+              char twn[32], mk[300];
+              snprintf(twn, sizeof twn, "_t%d", tw);
+              const char *m = fo && iv >= 0 ? ivar_set_mark(c, ivc, ivn, twn, "->", mk, sizeof mk) : NULL;
+              if (m) buf_printf(b, "; %s }\n", m);
+              else buf_puts(b, fo ? "; }\n" : ";\n");
               return 1;
             }
           }
@@ -14149,7 +14174,36 @@ static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int in
   return 0;
 }
 
+/* The assigned marks (ivar_write_mark) an ivar write's statement leaves,
+   after its store: `=`, `||=` and `op=` leave the ivar assigned, as do a
+   multiple assignment's ivar targets; `&&=` stores only into an assigned
+   one. */
+static void emit_ivar_write_marks(Compiler *c, int t, Buf *b, int indent) {
+  const NodeTable *nt = c->nt;
+  if (t < 0) return;
+  NodeKind k = nt_kind(nt, t);
+  char mk[300];
+  const char *m = NULL;
+  if (k == NK_InstanceVariableWriteNode || k == NK_InstanceVariableOrWriteNode ||
+      k == NK_InstanceVariableOperatorWriteNode || k == NK_InstanceVariableTargetNode)
+    m = ivar_write_mark(c, t, mk, sizeof mk);
+  else if (k == NK_SplatNode) emit_ivar_write_marks(c, nt_ref(nt, t, "expression"), b, indent);
+  else if (k == NK_MultiWriteNode || k == NK_MultiTargetNode) {
+    int n = 0; const int *l = nt_arr(nt, t, "lefts", &n);
+    for (int i = 0; i < n; i++) emit_ivar_write_marks(c, l[i], b, indent);
+    emit_ivar_write_marks(c, nt_ref(nt, t, "rest"), b, indent);
+    l = nt_arr(nt, t, "rights", &n);
+    for (int i = 0; i < n; i++) emit_ivar_write_marks(c, l[i], b, indent);
+  }
+  if (m) { emit_indent(b, indent); buf_printf(b, "%s\n", m); }
+}
+
+static void emit_stmt_node(Compiler *c, int id, Buf *b, int indent);
 void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
+  emit_stmt_node(c, id, b, indent);
+  emit_ivar_write_marks(c, id, b, indent);
+}
+static void emit_stmt_node(Compiler *c, int id, Buf *b, int indent) {
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, id);
   if (!ty) unsupported(c, id, "statement (no type)");
@@ -14500,7 +14554,9 @@ void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
        was never assigned is NULL, not truthy (#5428). */
     char lhs[300]; snprintf(lhs, sizeof lhs, "_t%d->iv_%s", tr, iv_c(attr));
     buf_puts(b, "(void)");
-    emit_slot_orw_value(c, ivt, iidx >= 0 && repr_of_ivar(c, class_id, iidx).elems_handle, lhs, v, is_or, b);
+    char tn[32], mk[300]; snprintf(tn, sizeof tn, "_t%d", tr);
+    const char *m = iidx >= 0 ? ivar_set_mark(c, class_id, ivn, tn, "->", mk, sizeof mk) : NULL;
+    emit_slot_orw_value(c, ivt, iidx >= 0 && repr_of_ivar(c, class_id, iidx).elems_handle, lhs, v, is_or, m, b);
     buf_puts(b, "; }\n");
     return;
   }

@@ -39609,6 +39609,235 @@ static void mark_native_str_operands(Compiler *c) {
   }
 }
 
+/* ---- Reads that see whether an ivar was assigned ----
+   instance_variables, instance_variable_defined?, defined?(@x),
+   remove_instance_variable, the default inspect (p, pp, #inspect, a
+   container's inspect, a `super` in an inspect of the program's) and
+   Marshal.dump tell an ivar never assigned from one assigned nil. Each
+   marks the classes whose instances it can reach, from the settled types:
+   the receiver's class, the classes a boxed value can be (pivs), and for
+   inspect and dump the classes the object's ivars and a container's
+   elements hold in turn. An inspect of the program's own shows no ivar, so
+   a class that resolves one is passed over (its body's reads are sites of
+   their own). ivar_set_kind keeps an assigned flag only for ivars of a
+   marked class. */
+enum { OBS_SEEN = 1, OBS_INSPECT = 2, OBS_DUMP = 4 };
+static void an_presence_type(Compiler *c, TyKind t, int how, int depth);
+static void an_presence_poly_ivar(Compiler *c, int k, const char *ivn, int how, int depth);
+/* Class k and the classes below it, whose instances a value typed k can
+   be; how is 0 for a read of presence alone, else OBS_INSPECT or
+   OBS_DUMP, which reach the ivars' values as well. */
+static void an_presence_class(Compiler *c, int k, int how, int depth) {
+  if (k < 0 || k >= c->nclasses || depth > 16) return;
+  for (int d = 0; d < c->nclasses; d++) {
+    if (d != k && !is_descendant(c, d, k)) continue;
+    ClassInfo *ci = &c->classes[d];
+    /* `super` in the program's inspect runs the default one (depth -1) */
+    if (how == OBS_INSPECT && depth >= 0 && comp_method_in_chain(c, d, "inspect", NULL) >= 0) continue;
+    ci->presence_observed |= OBS_SEEN;
+    c->pres_seen = 1;
+    if (!how || (ci->presence_observed & how)) continue;
+    ci->presence_observed |= how;
+    for (int j = 0; j < ci->nivars; j++) {
+      if (ci->ivar_types[j] == TY_POLY) an_presence_poly_ivar(c, d, ci->ivars[j], how, depth + 1);
+      else an_presence_type(c, ci->ivar_types[j], how, depth + 1);
+    }
+  }
+}
+static void an_presence_type(Compiler *c, TyKind t, int how, int depth) {
+  if (ty_is_object(t)) an_presence_class(c, ty_object_class(t), how, depth);
+  else if (ty_is_obj_array(t)) an_presence_class(c, ty_obj_array_class(t), how, depth);
+  else if (ty_is_array(t) && ty_is_object(ty_array_elem(t))) an_presence_type(c, ty_array_elem(t), how, depth);
+  else if (ty_is_hash(t)) {
+    an_presence_type(c, ty_hash_key(t), how, depth);
+    an_presence_type(c, ty_hash_val(t), how, depth);
+  }
+}
+/* The boxed ivar ivn of class k holds what its stores put there: the
+   classes the receiver walk bounds them to (none when it cannot). */
+static void an_presence_poly_ivar(Compiler *c, int k, const char *ivn, int how, int depth) {
+  char *set = calloc((size_t)(c->nclasses > 0 ? c->nclasses : 1), 1);
+  if (!set) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  if (pivs_ivar_classes(c, k, ivn, set))
+    for (int i = 0; i < c->nclasses; i++) if (set[i]) an_presence_class(c, i, how, depth);
+  free(set);
+}
+/* What node v holds: a literal's elements one by one, a typed value by its
+   type, a boxed value or a general Array's elements or a Hash's boxed
+   values by the classes pivs bounds them to (none when it cannot). */
+static void an_presence_node(Compiler *c, int v, int how) {
+  const NodeTable *nt = c->nt;
+  if (v < 0) return;
+  NodeKind k = nt_kind(nt, v);
+  if (k == NK_ArrayNode || k == NK_HashNode || k == NK_KeywordHashNode) {
+    int n = 0; const int *el = nt_arr(nt, v, "elements", &n);
+    for (int i = 0; i < n; i++) {
+      if (nt_kind(nt, el[i]) == NK_AssocNode) {
+        an_presence_node(c, nt_ref(nt, el[i], "key"), how);
+        an_presence_node(c, nt_ref(nt, el[i], "value"), how);
+      }
+      else if (nt_kind(nt, el[i]) != NK_SplatNode) an_presence_node(c, el[i], how);
+    }
+    return;
+  }
+  TyKind t = comp_ntype(c, v);
+  int elems = t == TY_POLY_ARRAY || (ty_is_hash(t) && ty_hash_val(t) == TY_POLY);
+  if (t != TY_POLY && !elems) { an_presence_type(c, t, how, 0); return; }
+  char *set = calloc((size_t)(c->nclasses > 0 ? c->nclasses : 1), 1);
+  if (!set) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  if (pivs_value_classes(c, v, elems, set))
+    for (int i = 0; i < c->nclasses; i++) if (set[i]) an_presence_class(c, i, how, 0);
+  free(set);
+}
+/* The receiver of reflective call id: self's class, a typed object's, or
+   the classes a boxed one can be. */
+static void an_presence_recv(Compiler *c, int id, int how) {
+  int r = nt_ref(c->nt, id, "receiver");
+  Scope *s = comp_scope_of(c, id);
+  if (r < 0) {
+    if (s && !s->is_cmethod && s->class_id >= 0) an_presence_class(c, s->class_id, how, 0);
+    return;
+  }
+  if (comp_ntype(c, r) != TY_POLY) { an_presence_node(c, r, how); return; }
+  int n = 0; const int *ks = poly_recv_classes(c, id, &n);
+  for (int i = 0; ks && i < n; i++) an_presence_class(c, ks[i], how, 0);
+}
+/* Note every ivar the subtree under n writes as one whose writes no emitter
+   marks assigned. */
+static void an_presence_unmarked(Compiler *c, int n, int depth) {
+  const NodeTable *nt = c->nt;
+  if (n < 0 || depth > 200) return;
+  switch (nt_kind(nt, n)) {
+    case NK_InstanceVariableWriteNode: case NK_InstanceVariableOrWriteNode: case NK_InstanceVariableAndWriteNode:
+    case NK_InstanceVariableOperatorWriteNode: case NK_InstanceVariableTargetNode:
+      comp_pres_note(c, nt_str(nt, n, "name"), PRES_UNMARKED);
+      break;
+    default: break;
+  }
+  int nr = nt_num_refs(nt, n);
+  for (int i = 0; i < nr; i++) an_presence_unmarked(c, nt_ref_at(nt, n, i), depth + 1);
+  int na = nt_num_arrs(nt, n);
+  for (int i = 0; i < na; i++) {
+    int m = 0; const int *ids = nt_arr_at(nt, n, i, &m);
+    for (int j = 0; j < m; j++) an_presence_unmarked(c, ids[j], depth + 1);
+  }
+}
+/* The writes and removals the flag cannot follow (Compiler.pres_names): an
+   ivar target of a `for` or a `rescue`, a writer reached by its name, a
+   bitwise op-write through a writer (nil answers `|`), an
+   instance_variable_set of a computed name. */
+static void an_presence_writes(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  NodeKind k = nt_kind(nt, id);
+  if (k == NK_ForNode) an_presence_unmarked(c, nt_ref(nt, id, "index"), 0);
+  else if (k == NK_RescueNode) an_presence_unmarked(c, nt_ref(nt, id, "reference"), 0);
+  else if (k == NK_CallNode) {
+    const char *nm = nt_str(nt, id, "name");
+    int a = nt_ref(nt, id, "arguments"), ac = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+    NodeKind k0 = ac > 0 ? nt_kind(nt, av[0]) : NK_NONE;
+    if (!nm) return;
+    if (is_ivar_set(nm) && k0 != NK_SymbolNode && k0 != NK_StringNode) c->pres_any = 1;
+    else if (is_ivar_remove_name(nm) && (k0 == NK_SymbolNode || k0 == NK_StringNode))
+      comp_pres_note(c, nt_str(nt, av[0], k0 == NK_SymbolNode ? "value" : "content"), PRES_REMOVED);
+    else if ((is_send_family(nm) || is_method_ref_name(nm)) && k0 == NK_SymbolNode) {
+      const char *wn = nt_str(nt, av[0], "value");
+      size_t wl = wn ? strlen(wn) : 0;
+      char ivn[256];
+      if (wl > 1 && wl < sizeof ivn - 1 && wn[wl - 1] == '=') {
+        snprintf(ivn, sizeof ivn, "@%.*s", (int)(wl - 1), wn);
+        comp_pres_note(c, ivn, PRES_UNMARKED);
+      }
+    }
+  }
+  else if (sp_streq(nt_type(nt, id), "CallOperatorWriteNode")) {
+    const char *op = nt_str(nt, id, "binary_operator"), *rn = nt_str(nt, id, "read_name");
+    char ivn[256];
+    if (op && rn && is_bit_op(op)) {
+      snprintf(ivn, sizeof ivn, "@%s", rn);
+      comp_pres_note(c, ivn, PRES_UNMARKED);
+    }
+  }
+}
+/* presence_family: the classes linked by a parent or an included module,
+   joined (union-find on the class indexes) */
+static int an_family_root(int *up, int k) {
+  while (up[k] != k) { up[k] = up[up[k]]; k = up[k]; }
+  return k;
+}
+static void an_presence_families(Compiler *c) {
+  int n = c->nclasses;
+  int *up = malloc(sizeof(int) * (size_t)(n > 0 ? n : 1));
+  if (!up) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int k = 0; k < n; k++) up[k] = k;
+  for (int k = 0; k < n; k++) {
+    ClassInfo *ci = &c->classes[k];
+    if (ci->parent >= 0 && ci->parent < n) up[an_family_root(up, k)] = an_family_root(up, ci->parent);
+    for (int m = 0; m < ci->nincluded_mods; m++) {
+      int md = ci->included_mods[m];
+      if (md >= 0 && md < n) up[an_family_root(up, k)] = an_family_root(up, md);
+    }
+  }
+  for (int k = 0; k < n; k++) c->classes[k].presence_family = an_family_root(up, k) + 1;
+  /* a family Object's layout is part of is every class's */
+  for (int k = 0; k < n; k++) {
+    if (!is_object_root(c->classes[k].name)) continue;
+    int r = an_family_root(up, k) + 1;
+    for (int j = 0; j < n; j++) if (c->classes[j].presence_family == r) c->classes[j].presence_family = 0;
+  }
+  free(up);
+}
+static void an_presence_observe(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  NodeKind k = nt_kind(nt, id);
+  Scope *s = comp_scope_of(c, id);
+  int own = s && !s->is_cmethod && s->class_id >= 0 ? s->class_id : -1;
+  an_presence_writes(c, id);
+  if (k == NK_DefinedNode) {
+    if (nt_kind(nt, nt_ref(nt, id, "value")) == NK_InstanceVariableReadNode) an_presence_class(c, own, 0, 0);
+    return;
+  }
+  /* Object#inspect, through `super` in an inspect of the program's */
+  if (k == NK_SuperNode || k == NK_ForwardingSuperNode) {
+    /* only where no inspect of the program's sits above: that one runs */
+    int up = own >= 0 ? comp_super_parent(c, own, 0) : -1;
+    if (own >= 0 && s->name && is_inspect_name(s->name) && (up < 0 || comp_method_in_chain(c, up, s->name, NULL) < 0))
+      an_presence_class(c, own, OBS_INSPECT, -1);
+    return;
+  }
+  /* an interpolated Array or Hash is its inspect */
+  if (k == NK_EmbeddedStatementsNode) {
+    int st = nt_ref(nt, id, "statements"), n = 0;
+    const int *b = st >= 0 ? nt_arr(nt, st, "body", &n) : NULL;
+    TyKind t = n > 0 ? comp_ntype(c, b[n - 1]) : TY_UNKNOWN;
+    if (ty_is_array(t) || ty_is_hash(t)) an_presence_node(c, b[n - 1], OBS_INSPECT);
+    return;
+  }
+  if (k != NK_CallNode) return;
+  const char *nm = nt_str(nt, id, "name");
+  int r = nt_ref(nt, id, "receiver");
+  int a = nt_ref(nt, id, "arguments"), ac = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+  if (!nm) return;
+  if (is_ivar_presence_read(nm)) {
+    if (is_inspect_print(nm)) {
+      if (r < 0) for (int i = 0; i < ac; i++) an_presence_node(c, av[i], OBS_INSPECT);
+    }
+    /* inspect reaches the ivars' values, the readers of presence and the
+       removal do not */
+    else if (!is_inspect_name(nm)) an_presence_recv(c, id, 0);
+    else if (ac == 0) an_presence_recv(c, id, OBS_INSPECT);
+  }
+  /* an Array's or a Hash's to_s is its inspect; puts writes a Hash so */
+  else if (r >= 0 && is_to_s_name(nm) && (ty_is_array(comp_ntype(c, r)) || ty_is_hash(comp_ntype(c, r))))
+    an_presence_node(c, r, OBS_INSPECT);
+  else if (r < 0 && is_text_print(nm)) {
+    for (int i = 0; i < ac; i++) if (ty_is_hash(comp_ntype(c, av[i]))) an_presence_node(c, av[i], OBS_INSPECT);
+  }
+  else if (ac >= 1 && r >= 0 && nt_kind(nt, r) == NK_ConstantReadNode && is_marshal_dump(nt_str(nt, r, "name"), nm))
+    an_presence_node(c, av[0], OBS_DUMP);
+}
+
 static void an_phase_value_types(Compiler *c) {
   /* The nil fact (analyze_nil.c, #7444): whether each object-typed node and
      slot may hold nil, from the settled types, ahead of the layout choice
@@ -39661,9 +39890,11 @@ static void an_phase_value_types(Compiler *c) {
     vt_cand = calloc((size_t)c->nclasses + 1, 1);
     for (int i = 0; vt_cand && i < c->nclasses; i++) vt_cand[i] = c->classes[i].is_value_type ? 1 : 0;
   }
+  an_presence_families(c);
   for (int id = 0; id < c->nt->count; id++) {
     const char *ty = nt_type(c->nt, id);
     if (!ty) continue;
+    an_presence_observe(c, id);
     /* freeze/frozen? reaching a class's instances needs the GC-header frozen
        bit, which a by-value struct doesn't have: force heap representation
        and mark the class so codegen guards its ivar stores. A poly-receiver
