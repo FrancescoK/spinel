@@ -1,0 +1,15 @@
+false
+"source"
+"source (RuntimeError)!"
+"source (RuntimeError)!"
+"custom (FormattedMessage)"
+false
+"custom (FormattedMessage)"
+"unhandled exception"
+false
+false
+""
+"first (RuntimeError)\nsecond"
+false
+"first\nsecond"
+"own detail!"

@@ -2248,7 +2248,13 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
   }
   /* an exception's message: what it was handed (sh_exc). raise and fail
      hand it their arguments. */
-  if (is_exc_message_name(name)) return sh_exc(F);
+  if (is_exc_message_name(name)) {
+    /* Formatted exception text is a new String, not the stored message.
+       User targets above retain their own return facts. */
+    if (c->share_strings && argc == 0 && blk < 0 && bop_share_named(TY_EXCEPTION, name) == BSH_PURE &&
+        (rt == TY_EXCEPTION || (ty_is_object(rt) && class_is_exc_subclass(c, ty_object_class(rt))))) return -1;
+    return sh_exc(F);
+  }
   if (recv < 0 && is_raise_alias(name) && !sh_has_targets(c, n)) {
     sh_exc_args(F, c, n);
     return -1;
