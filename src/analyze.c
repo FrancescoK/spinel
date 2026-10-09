@@ -34839,7 +34839,10 @@ static void refuse_string_alias_copies(Compiler *c) {
          global does */
       if (plain && to.kind == NK_InstanceVariableReadNode && to.cid != comp_class_index(c, "Toplevel"))
         continue;
-      if (sa_mutated(c, &to) && sa_read_elsewhere(c, &from, b)) {
+      /* a local that shares its handle is read through the other name
+         (`t = s; r = t.strip!; r << x; p s`) */
+      int read = sa_read_elsewhere(c, &from, b) || (from.kind == NK_LocalVariableReadNode && sa_handle(c, &from, 0));
+      if (sa_mutated(c, &to) && read) {
         int route = plain ? 4 : 2;
         ShareRoute q = share_route(w, v, 0);
         q.to = w;
