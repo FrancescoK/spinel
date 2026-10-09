@@ -8638,6 +8638,17 @@ static int gvar_has_write(Compiler *c, const char *name) {
   return 0;
 }
 
+/* A reopening needs its empty receiver's kind during parameter binding and
+   proc-form selection, before the late empty-operand marking. */
+static TyKind infer_empty_array_reopen(Compiler *c, int id) {
+  if (comp_class_index(c, "Array") < 0) return TY_UNKNOWN;
+  int call = comp_recv_parent(c, id);
+  if (call >= 0 && !nt_int(c->nt, call, "builtin_only", 0) &&
+      comp_builtin_kind_reopen_mi(c, TY_POLY_ARRAY, nt_str(c->nt, call, "name")) >= 0)
+    return TY_POLY_ARRAY;
+  return TY_UNKNOWN;
+}
+
 TyKind infer_uncached(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, id);
@@ -9168,7 +9179,7 @@ TyKind infer_uncached(Compiler *c, int id) {
       /* kind fixed by the use context (mark_empty_array_operands) */
       if (c->arr_want && id < c->node_cap && ty_is_array(c->arr_want[id]))
         return c->arr_want[id];
-      return TY_UNKNOWN;  /* empty: element type comes from usage */
+      return infer_empty_array_reopen(c, id);  /* empty: element type comes from usage */
     }
     /* A callee stores elements of another kind into the literal it is
        passed (widen_arg_array). */
