@@ -616,7 +616,8 @@ no_gsub_enum:
         buf_printf(b, "; if (!_t%d) sp_nil_recv(\"%%\"); _t%d; })", fck, fck);
       }
       else { buf_puts(b, "sp_str_format_polyarr("); emit_expr(c, recv, b); }
-      buf_puts(b, ", sp_typed_to_poly((void *)("); emit_expr(c, argv[0], b);
+      buf_puts(b, typed_array_src_held(c, argv[0]) ? ", sp_typed_to_poly((void *)(" : ", sp_typed_to_poly_unheld((void *)(");
+      emit_expr(c, argv[0], b);
       buf_printf(b, "), %s))", kind);
       return 1;
     }

@@ -7422,7 +7422,8 @@ void emit_rest_pack_kwh(Compiler *c, int from, int pos_argc, const int *argv, in
         return;
       }
       if (ar.elem == TY_FLOAT) {
-        buf_puts(b, "sp_typed_to_poly("); emit_expr(c, inner, b); buf_puts(b, ", SP_BUILTIN_FLT_ARRAY)");
+        buf_puts(b, typed_array_src_held(c, inner) ? "sp_typed_to_poly(" : "sp_typed_to_poly_unheld(");
+        emit_expr(c, inner, b); buf_puts(b, ", SP_BUILTIN_FLT_ARRAY)");
         return;
       }
       if (ar.elem == TY_POLY) {
@@ -11091,7 +11092,7 @@ static void emit_dispatch_per_arm(Compiler *c, int cid, const char *name, const 
 /* Will a call `id` of `name` on a `cid` whose chain answers it with an attr
    reader (of type reader_ty) dispatch on the runtime class: some descendant
    overrides the reader with a def, and the arms agree on the call's type? */
-static int reader_override_arms(Compiler *c, int id, int cid, const char *name, TyKind reader_ty) {
+int reader_override_arms(Compiler *c, int id, int cid, const char *name, TyKind reader_ty) {
   const NodeTable *nt = c->nt;
   if (nt_ref(nt, id, "block") >= 0) return 0;
   int base_mi = comp_method_in_chain(c, cid, name, NULL);

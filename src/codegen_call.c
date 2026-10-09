@@ -22388,6 +22388,22 @@ static int implicit_self_reader_cid(Compiler *c, int id) {
   return dispatch_cid;
 }
 
+/* Is this receiverless call of a class's own attr reader the plain slot read
+   emit_implicit_self_member lowers it to (`self->iv_x`)? The tests are the
+   emitter's: a shared-mutable String slot reads out as a copy, and a def in
+   a subclass makes the read a dispatch on the runtime class. */
+int implicit_self_is_field_read(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  if (nt_ref(nt, id, "arguments") >= 0 || nt_ref(nt, id, "block") >= 0) return 0;
+  int cid = implicit_self_reader_cid(c, id);
+  if (cid < 0) return 0;
+  const char *name = nt_str(nt, id, "name");
+  char ivn[300]; snprintf(ivn, sizeof ivn, "@%s", comp_resolve_alias(c, cid, name));
+  int ivi = comp_ivar_index(&c->classes[cid], ivn);
+  TyKind rty = ivi >= 0 ? c->classes[cid].ivar_types[ivi] : TY_UNKNOWN;
+  return rty != TY_UNKNOWN && rty != TY_STRBUF && !reader_override_arms(c, id, cid, name, rty);
+}
+
 /* the user method a bare call reaches with self of class dispatch_cid, from
    the call's plan, or -1 */
 int implicit_self_plan_mi(Compiler *c, int id, int dispatch_cid) {
