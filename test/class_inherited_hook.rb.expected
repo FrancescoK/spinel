@@ -1,0 +1,14 @@
+inherited A into Base
+A's body
+inherited B into A
+inherited NS::C into Base
+inherited NS::A into Base
+T got U
+inherited Base2 into Base
+inherited V into Base2
+Base2 got V
+[A, B, NS::C, NS::A, Base2, V]
+["A", "B", "NS::C", "NS::A", "Base2", "V"]
+"hi"
+["alpha", "beta"]
+["Alpha runs", "beta!"]

@@ -584,6 +584,7 @@ int desugar_reader_aliases_before_redef(Compiler *c);
 int desugar_reassigned_block_params(Compiler *c);
 int desugar_class_new_blocks(Compiler *c);
 int desugar_included_hooks(Compiler *c);
+int desugar_inherited_hooks(Compiler *c);
 int desugar_self_const_get(Compiler *c);
 int desugar_dynamic_const_get(Compiler *c);
 TyKind return_node_type(Compiler *c, int id);
