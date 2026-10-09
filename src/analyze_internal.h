@@ -395,6 +395,7 @@ TyKind an_user_call(Compiler *c, int id, int mi, int via, int owner_ci);
 void an_user_call_record(Compiler *c, int id, int mi, int via, int owner_ci);
 int infer_numeric_call(Compiler *c, int id, TyKind rt, TyKind *out);
 /* The array a map-shaped call answers from its block's tail (analyze_infer_recv.c). */
+TyKind infer_sum_block_ty(Compiler *c, int block);
 TyKind infer_map_block_ty(Compiler *c, int id, int block);
 /* A call written `recv&.name` (analyze_infer_recv.c). */
 int call_is_safe_nav(const NodeTable *nt, int id);
@@ -589,7 +590,7 @@ int backprop_hash_return_types(Compiler *c);
 int backprop_call_target(Compiler *c, int call_id);
 int ivar_src_slot(Compiler *c, int v, const char **ivn);
 void cr_collect_calls(Compiler *c, const NodeTable *nt, int id, char ***out, int *n, int *cap);
-void compute_reachable(Compiler *c);
+void compute_reachable(Compiler *c, int typed);
 void refuse_native_singleton_reopen(Compiler *c, Scope *s);
 void compute_instantiated(Compiler *c, int early);
 int aname_has(ANameSet *s, const char *nm);

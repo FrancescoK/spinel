@@ -463,7 +463,21 @@ static int cn_live(const ANameHash *cn_set, const char *nm) {
   return anh_has(cn_set, nm) || anh_has(cn_set, ib);
 }
 
-void compute_reachable(Compiler *c) {
+/* The settled element kind already includes a literal block's next values.
+   Before inference, retain every possible coerce target as before. */
+static int an_sum_needs_coerce(Compiler *c, int id, int typed) {
+  if (!typed) return 1;
+  int blk = nt_ref(c->nt, id, "block"), recv = nt_ref(c->nt, id, "receiver");
+  TyKind rt = comp_ntype(c, recv), et;
+  if (blk >= 0) {
+    if (nt_kind(c->nt, blk) != NK_BlockNode) return 1;
+    et = infer_sum_block_ty(c, blk);
+  }
+  else et = rt == TY_RANGE ? TY_INT : ty_array_elem(rt);
+  return et == TY_UNKNOWN || et == TY_POLY || ty_is_object(et);
+}
+
+void compute_reachable(Compiler *c, int typed) {
   /* Build per-scope call sets (CallNode names, not entering nested DefNodes). */
   char ***scope_calls = calloc((size_t)c->nscopes, sizeof(char **));
   int   *sc_n        = calloc((size_t)c->nscopes, sizeof(int));
@@ -685,7 +699,9 @@ void compute_reachable(Compiler *c) {
         int an = 0; const int *av = args >= 0 ? nt_arr(c->nt, args, "arguments", &an) : NULL;
         /* A numeric seed can reach a user + through an element's coerce,
            including a block's value. Reuse the pass's indexed method names. */
-        if (SN_FIRST("coerce") >= 0) { MARK_NAME("coerce"); MARK_NAME("+"); break; }
+        if (SN_FIRST("coerce") >= 0 && an_sum_needs_coerce(c, id, typed)) {
+          MARK_NAME("coerce"); MARK_NAME("+"); break;
+        }
         if (an < 1 || !av) continue;
         if (an_seed_is_builtin(c->nt, av[0])) continue;
         MARK_NAME("+");
@@ -36026,7 +36042,7 @@ static void an_phase_pre_fixpoint(Compiler *c) {
      compute_instantiated): reachability is a matter of names and a
      construction site is a call node, so both are known now. Recomputed
      after the fixpoint, when a dynamic `.new` can be told from a static one. */
-  compute_reachable(c);
+  compute_reachable(c, 0);
   compute_instantiated(c, 1);
 }
 
@@ -37398,7 +37414,7 @@ static void an_phase_procs(Compiler *c) {
      literal (covering send/method/define_method). Names never mentioned
      are dead code; skipping them avoids type-checking uninvoked methods
      (e.g. a never-called method with an uninferrable param). */
-  compute_reachable(c);
+  compute_reachable(c, 1);
   /* a module method named by Mod.instance_method(:m) is referenced directly */
   unmark_referenced_module_sources(c);
   /* Which exact cls_ids can appear at runtime -- lets the poly-dispatch switch
