@@ -19434,7 +19434,7 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
      which is a worse order than the one C picked. Only a local read ahead of
      it that it can rebind runs first, with the operands before it
      (emit_operands_before_unbound). */
-  int node[MAX_ARG_OVERRIDE], fresh[MAX_ARG_OVERRIDE], copy[MAX_ARG_OVERRIDE], crb[MAX_ARG_OVERRIDE], nb = 0;
+  int node[MAX_ARG_OVERRIDE], fresh[MAX_ARG_OVERRIDE], copy[MAX_ARG_OVERRIDE], nb = 0;
   TyKind ty[MAX_ARG_OVERRIDE];
   int operand[MAX_ARG_OVERRIDE], nop = 0;
   if (recv >= 0) operand[nop++] = recv;
@@ -19547,20 +19547,27 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
      the String object, so the callee sees its bytes as they are at the
      call: the copy is taken after every other operand has run, last
      before the call (it runs no code, so taking it last moves nothing
-     else). Only where a later operand can rebind the slot itself
-     (read_rebound_by) is its handle taken in its place, and the copy read
-     from that handle. An arm that reads the operand some other way (the
+     else). An arm that reads the operand some other way (the
      handle, the slot) leaves the binding unread, and its line is left
      out; the other operands keep theirs. */
-  for (int i = 0; i < nb; i++) crb[i] = 0;
+  /* A slot read a later operand can rebind is no candidate: it is read
+     where it stands, and the arms reach a rebound slot's handle through
+     the node (the operand order above, emit_operands_before_unbound).
+     Nor are there candidates beside an operand handed over as a shared
+     handle (a marked read, a call a handle demand picks up): bound as its
+     value, it would lose that form. */
+  for (int i = 0; i < nop && ncand; i++)
+    for (int j = i + 1; j < nop && cand[i]; j++)
+      if (read_rebound_by(c, operand[i], operand[j])) { cand[i] = 0; ncand--; }
+  for (int i = 0; i < nop && ncand; i++)
+    if (obs[i]) { Repr hr = repr_of(c, operand[i]); if (hr.handle || hr.demand) ncand = 0; }
   if (ncand) {
     int n2[MAX_ARG_OVERRIDE], f2[MAX_ARG_OVERRIDE], k = 0, m = 0, obs0 = observable;
     TyKind t2[MAX_ARG_OVERRIDE];
     for (int i = 0; i < nop; i++) {
-      if (obs[i] == 1) { n2[m] = node[k]; t2[m] = ty[k]; f2[m] = fresh[k]; copy[m] = 0; crb[m] = 0; k++; m++; }
+      if (obs[i] == 1) { n2[m] = node[k]; t2[m] = ty[k]; f2[m] = fresh[k]; copy[m] = 0; k++; m++; }
       else if (cand[i] && operand_copy_at_risk(c, operand, nop, i, cand, obs, obs0)) {
-        n2[m] = operand[i]; t2[m] = TY_STRING; f2[m] = 0; copy[m] = 1; crb[m] = 0;
-        for (int j = i + 1; j < nop && !crb[m]; j++) crb[m] = read_rebound_by(c, operand[i], operand[j]);
+        n2[m] = operand[i]; t2[m] = TY_STRING; f2[m] = 0; copy[m] = 1;
         m++;
         observable++;
       }
@@ -19688,29 +19695,24 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
     if (!inl) { buf_puts(g_pre, opp[i].p); free(opp[i].p); opp[i].p = NULL; }
   }
   buf_puts(b, "({ ");
-  /* the operands in their order, a copy's handle among them where a later
-     operand can rebind its slot; then the copies, last before the call */
+  /* the operands in their order, then the copies, last before the call */
   for (int pass = 0; pass < 2; pass++)
   for (int i = 0; i < nb; i++) {
+    if (copy[i] != pass) continue;
     if (copy[i]) {
       char sref[192];
       strbuf_slot_ref(c, node[i], sref, sizeof sref);
-      if (pass == 0) {
-        if (crb[i] && used[i]) buf_printf(b, "sp_String * _t%d = %s; SP_GC_ROOT(_t%d); ", th[i], sref, th[i]);
-        continue;
-      }
       /* the handle's temp where the arm reads it (a parameter that shares
          the String); otherwise the copy reads the slot, which nothing runs
          between to rebind */
-      if ((used[i] & 2) && !crb[i]) buf_printf(b, "sp_String * _t%d = %s; SP_GC_ROOT(_t%d); ", th[i], sref, th[i]);
-      else if (!crb[i] && used[i]) {
+      if (used[i] & 2) buf_printf(b, "sp_String * _t%d = %s; SP_GC_ROOT(_t%d); ", th[i], sref, th[i]);
+      else if (used[i]) {
         free(opb[i].p);
         memset(&opb[i], 0, sizeof opb[i]);
         emit_strbuf_node_read(c, node[i], sref, &opb[i]);
       }
       if (!(used[i] & 1)) { free(opb[i].p); continue; }
     }
-    else if (pass == 1) continue;
     if (opp[i].p) buf_puts(b, opp[i].p);
     free(opp[i].p);
     emit_ctype(c, ty[i], b);
