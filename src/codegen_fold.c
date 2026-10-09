@@ -10218,8 +10218,15 @@ int zsuper_param_source(Compiler *c, Scope *s, Scope *pm, int j) {
   while (npos < s->nparams && npos != s->rest_idx && npos != s->kwrest_idx &&
          !callee_param_is_declared_kwarg(c, s, s->pnames[npos])) npos++;
   if (s->rest_idx >= 0) {
-    if (j < npos && j != pm->rest_idx && !(pm->rest_idx >= 0 && j > pm->rest_idx) &&
-        !(pm->rest_idx < 0 && opt_before_required(c, pm))) return j;
+    /* A parameter of pm ahead of its first optional takes element j
+       whatever the count, also where Ruby funds pm's posts ahead of its
+       optionals: `def m(a, b = 1, c)` binds a the first element. */
+    int lead = j;
+    if (pm->rest_idx < 0 && opt_before_required(c, pm))
+      for (int k = 0; k <= j && lead >= 0; k++)
+        if (pm->pdefault && pm->pdefault[k] >= 0) lead = -1;
+    if (j < npos && j != pm->rest_idx && !(pm->rest_idx >= 0 && j > pm->rest_idx) && lead >= 0)
+      return j;
     /* The gather ends with s's posts, and a parameter of pm taking an
        element as far from the end is one of them: `def m(a, *r, last) =
        super` into a parent's `m(a, *r, last)`. Not when s's keywords would
