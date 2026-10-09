@@ -18133,6 +18133,21 @@ static int share_lift_poly_returns(Compiler *c, int mi) {
   }
   return changed;
 }
+/* --share-strings: method mi answers Arrays whose elements the rule
+   shares: each String a `return a, b` gathers into its new Array is boxed
+   as its handle, as an element a literal stores is. */
+static int share_lift_multi_returns(Compiler *c, int mi) {
+  const NodeTable *nt = c->nt;
+  int changed = 0;
+  for (int u = comp_ret_first(c, mi); u >= 0; u = comp_ret_next(c, u)) {
+    if (nt_kind(nt, u) != NK_ReturnNode || comp_scope_of(c, u) != &c->scopes[mi]) continue;
+    int ra = nt_ref(nt, u, "arguments"), rn = 0;
+    const int *rv = ra >= 0 ? nt_arr(nt, ra, "arguments", &rn) : NULL;
+    for (int i = 0; rn > 1 && i < rn; i++)
+      if (nt_kind(nt, rv[i]) != NK_SplatNode && an_unparen(nt, rv[i]) >= 0) changed |= share_lift_value(c, an_unparen(nt, rv[i]));
+  }
+  return changed;
+}
 /* an instance method a pattern calls to read an object's parts */
 static int share_pattern_method(const Scope *m) {
   return m->class_id >= 0 && m->name && (sp_streq(m->name, "deconstruct") || sp_streq(m->name, "deconstruct_keys"));
@@ -18329,6 +18344,10 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
        boxed as handles (share_lift_poly_returns) */
     else if (sh->kind == SHK_RET && c->scopes[sh->scope].ret == TY_POLY && repr_str_shares(c, h))
       changed |= share_lift_poly_returns(c, sh->scope);
+    /* and one whose Arrays' elements it shares: what a multiple return
+       gathers (share_lift_multi_returns) */
+    else if (sh->kind == SHK_RET && repr_str_elems_share(c, h))
+      changed |= share_lift_multi_returns(c, sh->scope);
     /* a global or a constant holds the handle the way a top-level ivar's C
        global does */
     else if ((sh->kind == SHK_GVAR || sh->kind == SHK_CONST) && repr_str_shares(c, h)) {
