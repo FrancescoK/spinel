@@ -16651,6 +16651,10 @@ static int strbuf_container_source_walk_body(Compiler *c, int node, int depth, i
            handle, infer_call's Array.new arm) */
         int fa = nt_ref(nt, node, "arguments"), fn = 0;
         const int *fv = fa >= 0 ? nt_arr(nt, fa, "arguments", &fn) : NULL;
+        /* A shallow copy stores the source's elements, including fresh
+           Strings that have no holder of their own. */
+        if (c->share_strings && fn == 1 && blk < 0 && ty_is_array(infer_type(c, fv[0])))
+          return strbuf_container_source_walk(c, fv[0], depth + 1, mode);
         if (c->share_strings && fn == 2 && blk < 0) return strbuf_store_leaf(c, fv[1], depth, mode);
         if (SB_KIND(mode) == SB_HAS_NONSTRING || blk < 0 || nt_kind(nt, blk) != NK_BlockNode) return 0;
         int body = nt_ref(nt, blk, "body");

@@ -1298,11 +1298,12 @@ static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int 
   /* a String's (or Kernel's) builtin answering a new String Array without
      a block (`s.split`, `s.scan(re)`): its elements are new Strings, held
      as a local's Array holds them, in a class of its own */
-  if ((share == BSH_PURE || share == BSH_ITER_FRESH_RECV) && !container && blk < 0 &&
+  if ((share == BSH_PURE || share == BSH_ITER_FRESH_RECV || (share == BSH_LINE && argc == 0)) && !container && blk < 0 &&
       c->ntype[n] == TY_STR_ARRAY) {
     F->fresh_cont[n] = 1;
     return sh_new(F, SHK_VALUE);
   }
+  if (share == BSH_FILL) share = lit_blk ? BSH_ITER_MAP_BANG : BSH_STORE_ALL;
   switch (share) {
   case BSH_PACK:
     if (argc == 2 && nt_kind(nt, argv[1]) == NK_KeywordHashNode) {
@@ -1358,7 +1359,29 @@ static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int 
     if (nv >= 2) r = sh_join(F, r, vals[nv - 1]);
     return sh_join(F, r, bv);
   }
+  case BSH_SUBST: case BSH_SUBST_BANG:
+    if (lit_blk && nv) sh_block_params(F, c, blk, vals[0], 0);
+    if (blk < 0 && argc < 2) return sh_join(F, rv, nv ? vals[0] : -1);
+    return share == BSH_SUBST_BANG ? rv : -1;
+  case BSH_LINE:
+    if (lit_blk && nv) sh_block_params(F, c, blk, rv, 0);
+    return rv;
+  case BSH_BLOCK:
+    return bv;
+  case BSH_LAST:
+    return nv > 0 ? vals[nv - 1] : -1;
+  case BSH_SUM:
+    if (lit_blk) sh_iter_params(F, c, blk, sh_elem(F, rv), container == 2);
+    return sh_join(F, sh_join(F, nv ? vals[0] : -1, sh_elem(F, rv)), bv);
+  case BSH_QUERY:
+    if (lit_blk) sh_iter_params(F, c, blk, sh_elem(F, rv), container == 2);
+    return blk < 0 ? rv : -1;
   case BSH_STORE_LAST:
+    /* Hash copies String keys; a key of another kind retains its object. */
+    if (container == 2 && nv >= 2 && c->ntype[argv[0]] != TY_STRING && c->ntype[argv[0]] != TY_STRBUF) {
+      sh_union(F, sh_elem(F, rv), vals[0]);
+      sh_flow(F, SHFL_ELEM, nt_ref(nt, n, "receiver"), argv[0]);
+    }
     if (nv > 0) sh_union(F, sh_elem(F, rv), vals[nv - 1]);
     if (nv > 0 && argc > 0 && nt_kind(nt, argv[argc - 1]) != NK_KeywordHashNode)
       sh_flow(F, SHFL_ELEM, nt_ref(nt, n, "receiver"), argv[argc - 1]);
@@ -1382,7 +1405,11 @@ static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int 
       /* zip and product pair elements up: a tuple holds the elements */
       sh_union(F, sh_elem(F, rv), vals[i]);
     }
-    if (lit_blk) sh_block_params(F, c, blk, sh_elem(F, rv), 1);
+    if (lit_blk) {
+      sh_block_params(F, c, blk, sh_elem(F, rv), 1);
+      sh_union(F, sh_elem(F, rv), bv);
+      sh_block_flow(F, nt, n, blk);
+    }
     return rv;
   case BSH_ARGS: {
     if (lit_blk && container) sh_block_params(F, c, blk, sh_elem(F, rv), 1);
@@ -1498,9 +1525,13 @@ static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int 
     if (lit_blk) sh_flow(F, SHFL_PARAM, n, nt_ref(nt, n, "receiver"));
     return rv;
   case BSH_ITER_THEN:
+    if (blk < 0) return rv;  /* the Enumerator retains its receiver */
     if (lit_blk) sh_block_params(F, c, blk, rv, 0);
     if (lit_blk) sh_flow(F, SHFL_PARAM, n, nt_ref(nt, n, "receiver"));
     return bv;
+  case BSH_UNKNOWN:
+    sh_union(F, rv, F->unknown);
+    return sh_unknown_call(F, c, n, blk);
   case BSH_CALL:
     return sh_unknown_call(F, c, n, blk);
   case BSH_METHOD_REF:
@@ -1653,6 +1684,9 @@ static int sh_builtin_new(ShareFacts *F, Compiler *c, int n, int recv, int blk) 
     }
     /* Array.new(a), a copy of a's elements, is not followed: its answer
        holds a's Strings, which a literal handed to it does not make handles */
+    /* The observed copy now retains those elements in the share facts;
+       the existing route checks still guard transfers without handles. */
+    if (share == BSH_NEW_FILL && i == 0) sh_union(F, er, sh_elem(F, v));
   }
   if (!lit_blk) return r;
   if (share == BSH_NEW_DEFAULT) {
