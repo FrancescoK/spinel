@@ -3814,6 +3814,9 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
     int e  = nt_ref(nt, id, "expression");
     int r  = nt_ref(nt, id, "rescue_expression");
     TyKind rt = repr_of(c, id).as_ty;
+    /* a value-less modifier (`(raise "x" rescue (return :a if c))`) still
+       answers one, nil when the fallback falls through: held boxed */
+    if (rt == TY_VOID || rt == TY_UNKNOWN || rt == TY_NIL) rt = TY_POLY;
     int t = ++g_tmp;
     buf_puts(b, "({ ");
     emit_ctype(c, rt, b);
