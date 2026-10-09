@@ -30762,7 +30762,7 @@ static int splat_lit_len(Compiler *c, int ex) {
   const char *t = nt_type(nt, ex);
   if (!t || !sp_streq(t, "ArrayNode")) return -1;
   int n = 0; const int *el = nt_arr(nt, ex, "elements", &n);
-  if (!el) return -1;
+  if (n > 0 && !el) return -1;
   for (int i = 0; i < n; i++) {
     const char *et = nt_type(nt, el[i]);
     if (et && (sp_streq(et, "SplatNode") || sp_streq(et, "KeywordHashNode") ||
@@ -30926,6 +30926,17 @@ static int splat_user_method_rejects(Compiler *c, const char *name, int n) {
     if (n < s->nrequired || n > s->nparams) return 1;
   }
   return 0;
+}
+/* A default constructor consumes the expanded value, not the Array
+   enclosing it. Its share row identifies that argument flow in both builds,
+   independently of String sharing; its positional range is zero to one. */
+static int splat_constructor_arity(const NodeTable *nt, int id, const char *name) {
+  if (!is_new_name(name)) return -1;
+  int recv = nt_ref(nt, id, "receiver");
+  const char *cn = nt_kind(nt, recv) == NK_ConstantReadNode ? nt_str(nt, recv, "name") : NULL;
+  int sh = cn ? bop_share_named(BOP_CLASS_NEW, cn) : 0;
+  if (sh == BSH_NEW_DEFAULT) return 1;
+  return -1;
 }
 /* A literal receiver is the builtin's own, whatever user classes share the
    method name. */
@@ -31337,7 +31348,9 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
   /* a dynamic send's arm (`public_send(*args)`) takes its counts from
      CRuby's tables, the block-carrying call's where there is a block */
   int odyn = 0;
-  if (!splat_builtin_range(cnm, &lo, &hi, &variadic)) {
+  int ctor = splat_constructor_arity(nt, id, cnm);
+  if (ctor >= 0) { lo = 0; hi = ctor; variadic = 0; }
+  else if (!splat_builtin_range(cnm, &lo, &hi, &variadic)) {
     if (!splat_dyn_arm_range(c, id, cnm, blk >= 0, &lo, &hi, &variadic)) return 0;
     odyn = 1;
   }
@@ -31356,7 +31369,7 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
      subclass rewrites): a read of the block, which every arm shares */
   if (blk >= 0 && !subst && nt_kind(nt, blk) == NK_BlockArgumentNode && nt_int(nt, id, "builtin_only", 0))
     fwd_blk = 1;
-  if (blk >= 0 && !subst && !splat_binary_operator(cnm) && !odyn && !fwd_blk) return 0;
+  if (blk >= 0 && !subst && !splat_binary_operator(cnm) && !odyn && !fwd_blk && ctor < 0) return 0;
   if (blk >= 0 && subst) lo = 1;
   /* insert(i, *objs) spreads at run time (emit_array_splat_mutator) */
   if (sp_streq(cnm, "insert") && sp_at > 0) return 0;
@@ -31440,6 +31453,19 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
       continue;
     }
     if (k == sp_at || splat_leaf_node(nt, argv[k])) continue;
+    /* Hash.new's capacity lowering reads the keyword's key. Hold its value
+       once, but keep the explicit pair for that lowering in each arm. */
+    if (ctor == 1 && nt_kind(nt, argv[k]) == NK_KeywordHashNode) {
+      int nk = 0; const int *kv = nt_arr(nt, argv[k], "elements", &nk);
+      if (nk == 1 && nt_kind(nt, kv[0]) == NK_AssocNode) {
+        fargs[k] = nt_clone_subtree(nt, argv[k]);
+        int pair = nt_arr(nt, fargs[k], "elements", &nk)[0];
+        snprintf(tn, sizeof tn, "__spla%s_%d", comp_node_tag(c, id), k);
+        pre[npre++] = kwb_lv(nt, comp_scope_of(c, id), tn, nt_ref(nt, pair, "value"));
+        nt_node_set_ref(nt, pair, "value", kwb_lv(nt, comp_scope_of(c, id), tn, -1));
+        continue;
+      }
+    }
     snprintf(tn, sizeof tn, "__spla%s_%d", comp_node_tag(c, id), k);
     scope_local_intern(comp_scope_of(c, id), tn);
     int w = nt_new_node(nt, "LocalVariableWriteNode");
@@ -31452,7 +31478,7 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
     nt_node_set_int(nt, fargs[k], "depth", 0);
   }
   char knm[64];
-  if (!ukw && (nuser > 0 || !splat_builtin_keeps_kwsplat(cnm)) && argc > 1 &&
+  if (!ukw && (nuser > 0 || (ctor != 1 && !splat_builtin_keeps_kwsplat(cnm))) && argc > 1 &&
       nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode) {
     snprintf(knm, sizeof knm, "__splk%s", comp_node_tag(c, id));
     scope_local_intern(comp_scope_of(c, id), knm);
@@ -31475,6 +31501,7 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
   int krow = nuser ? -1 : kwb_row(cnm), orow = nuser ? -1 : kwo_row(cnm);
   for (int k = 0; k < argc; k++) {
     if (nt_kind(nt, argv[k]) != NK_KeywordHashNode) continue;
+    if (ctor == 1 && nt_kind(nt, fargs[k]) == NK_KeywordHashNode) continue;
     if (krow >= 0) { fargs[k] = kwb_explicit(nt, krow, fargs[k], comp_scope_of(c, id)); continue; }
     int as = nt_new_node(nt, "AssocSplatNode");
     nt_node_set_ref(nt, as, "value", fargs[k]);
@@ -31614,7 +31641,7 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
     nt_node_set_int(nt, cl, "dyn_arm", nt_int(nt, id, "dyn_arm", 0));
     nt_node_set_ref(nt, cl, "receiver", nt_clone_subtree(nt, recv));
     nt_node_set_ref(nt, cl, "block", fwd_blk ? nt_clone_subtree(nt, blk) :
-                                     blk >= 0 && (m == 1 || odyn) ? blk : -1);
+                                     blk >= 0 && (m == 1 || odyn || ctor >= 0) ? blk : -1);
     int an = -1;
     if (m > 0) {
       an = nt_new_node(nt, "ArgumentsNode");
@@ -31695,7 +31722,8 @@ void expand_static_splat_args(Compiler *c, int from, int count) {
     const char *cnm = nt_str(nt, id, "name");
     if (!cnm) continue;
     int listed = splat_builtin_arity(cnm) >= 0 || sp_streq(cnm, "slice") || sp_streq(cnm, "fill");
-    if (!listed && !splat_builtin_range(cnm, NULL, NULL, NULL) &&
+    if (!listed && splat_constructor_arity(nt, id, cnm) < 0 &&
+        !splat_builtin_range(cnm, NULL, NULL, NULL) &&
         !splat_dyn_arm_range(c, id, cnm, nt_ref(nt, id, "block") >= 0, NULL, NULL, NULL)) continue;
     /* ...but the name has to BE the builtin. A receiverless call to a
        top-level `def count(*args)` is the user's own variadic method, and
@@ -31721,7 +31749,7 @@ void expand_static_splat_args(Compiler *c, int from, int count) {
       n = splat_lit_len(c, ex);
       if (n < 0 || n > 24) continue;
       const int *el0 = nt_arr(nt, ex, "elements", &lit_n);
-      if (!el0 || lit_n != n) continue;
+      if ((n > 0 && !el0) || lit_n != n) continue;
       for (int i = 0; i < n; i++) lit_el[i] = el0[i];
     }
     else if (sp_streq(ext, "LocalVariableReadNode")) n = splat_local_len(c, ex, id);
