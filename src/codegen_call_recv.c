@@ -11933,6 +11933,14 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
       }
       else if (is_size_or_count(name))
         buf_printf(b, "sp_range_count_open(_t%d, %d)", t, sp_streq(name, "size"));
+      else if (is_sum_name(name) && g_promote_mode) {
+        if (repr_of(c, id).ty == TY_FLOAT) buf_puts(b, "sp_poly_Float(");
+        buf_printf(b, "sp_range_sum_seed(_t%d, ", t);
+        if (argc == 1) emit_boxed(c, argv[0], b);
+        else buf_puts(b, "sp_box_int(0)");
+        buf_puts(b, ")");
+        if (repr_of(c, id).ty == TY_FLOAT) buf_puts(b, ")");
+      }
       else if (sp_streq(name, "sum") && argc == 1 && comp_ntype(c, argv[0]) == TY_FLOAT) {
         buf_puts(b, "(("); emit_expr(c, argv[0], b);
         buf_printf(b, ") + (double)sp_IntArray_sum(sp_range_to_ia(_t%d), 0))", t);

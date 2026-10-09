@@ -12855,7 +12855,11 @@ static sp_RbVal sp_poly_sum(sp_RbVal v) {
     case SP_BUILTIN_RANGE: {
       sp_IntArray *ia = sp_range_to_ia(*(sp_Range *)v.v.p);
       SP_GC_ROOT(ia);
+#ifdef SP_INT_OVERFLOW_MODE_PROMOTE
+      return sp_IntArray_sum_promote(ia, 0);
+#else
       return sp_box_int(sp_IntArray_sum(ia, 0));
+#endif
     }
     /* an Enumerator's seedless sum is its sum(0), as in CRuby: from the
        first Float on, compensated */
@@ -12880,16 +12884,26 @@ static sp_PolyArray *sp_poly_to_a_arr(sp_RbVal v);  /* defined below; hash -> pa
    String seed raises ArgumentError from the conversion, not from the addition.
    An EMPTY range never touches the seed and answers it unchanged. */
 static sp_RbVal sp_range_sum_seed(sp_Range r, sp_RbVal seed) {
+  /* An empty Range still normalizes a Float zero seed, unlike an Array. */
+  if (seed.tag == SP_TAG_FLT && seed.v.f == 0.0) seed.v.f = 0.0;
   if (sp_range_count(r) <= 0) return seed;
   SP_GC_ROOT_RBVAL(seed);
   sp_IntArray *ia = sp_range_to_ia(r);
   SP_GC_ROOT(ia);
+#ifdef SP_INT_OVERFLOW_MODE_PROMOTE
+  sp_RbVal promoted = sp_IntArray_sum_promote(ia, 0);
+  SP_GC_ROOT_RBVAL(promoted);
+  if (seed.tag == SP_TAG_INT || seed.tag == SP_TAG_BIGINT)
+    return sp_poly_add(promoted, seed);
+  return sp_box_float(sp_poly_Float(seed) + sp_poly_Float(promoted));
+#else
   sp_int total = sp_IntArray_sum(ia, 0);
   /* through sp_poly_add so a Bignum seed keeps its digits instead of wrapping
      into the sp_int the typed emitter used to hand this path */
   if (seed.tag == SP_TAG_INT || seed.tag == SP_TAG_BIGINT)
     return sp_poly_add(sp_box_int(total), seed);
   return sp_box_float(sp_poly_Float(seed) + (sp_float)total);
+#endif
 }
 /* Is this a value CRuby's Array#sum keeps in its EXACT accumulation phase --
    the Integer/Rational family, which adds without dropping a digit? A Float is
