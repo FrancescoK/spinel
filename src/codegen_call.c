@@ -19133,6 +19133,13 @@ int strbuf_read_copies(Compiler *c, int v) {
    the live buffer (is_string_read_only_method). */
 static int operand_reads_copy(Compiler *c, int id, int v) {
   const char *nm = nt_str(c->nt, id, "name");
+  /* nor an operand of `equal?`, which compares the String objects (the arm
+     takes the handle), nor an argument of a call dispatched on a poly
+     receiver: an arm whose parameter is the handle reads it through the
+     node, after the operands bound ahead of it have run */
+  if (nm && sp_streq(nm, "equal?")) return 0;
+  int rv = nt_ref(c->nt, id, "receiver");
+  if (rv >= 0 && v != rv && comp_ntype(c, rv) == TY_POLY) return 0;
   return strbuf_read_copies(c, v) &&
          !(v == nt_ref(c->nt, id, "receiver") && nm &&
            (is_string_rebind_mutator(nm) || is_string_read_only_method(nm)));
