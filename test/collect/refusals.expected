@@ -1223,9 +1223,9 @@ spinel: test/reject/string_split_result_iterator_append.rb:5: a String returned 
 == test/reject/string_split_result_iterator_append.rb [promote] rc=1
 spinel: test/reject/string_split_result_iterator_append.rb:5: a String returned in a String Array is not yet shared by reference through a local Array into an appending iterator block
 == test/reject/string_split_select_mutation.rb [default] rc=1
-spinel: test/reject/string_split_select_mutation.rb:5: a String is not yet shared by reference through an ivar's or a call's Array into an appending iterator block
+spinel: test/reject/string_split_select_mutation.rb:6: a String is not yet shared by reference through an ivar's or a call's Array into an appending iterator block
 == test/reject/string_split_select_mutation.rb [promote] rc=1
-spinel: test/reject/string_split_select_mutation.rb:5: a String is not yet shared by reference through an ivar's or a call's Array into an appending iterator block
+spinel: test/reject/string_split_select_mutation.rb:6: a String is not yet shared by reference through an ivar's or a call's Array into an appending iterator block
 == test/reject/string_tap_fresh_append.rb [default] rc=1
 spinel: test/reject/string_tap_fresh_append.rb:3: a String is not yet shared by reference through tap on a fresh String
 spinel: 1 refusal, nothing written

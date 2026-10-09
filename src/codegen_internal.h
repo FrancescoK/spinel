@@ -1335,6 +1335,7 @@ int emit_str_append_chain_handle(Compiler *c, int id, Buf *b);
 int kwh_only_spreads(const NodeTable *nt, int kwh);
 void emit_str_array_handles(Compiler *c, int v, Buf *b);
 int iter_src_as_handles(Compiler *c, int n);
+int iter_filter_src_as_handles(Compiler *c, int id, int recv);
 void emit_boxed_iter_src(Compiler *c, int n, Buf *b);
 int elem_param_is_handle(const LocalVar *lv, TyKind et);
 const char *int_arith_fn(const char *op);
@@ -1992,6 +1993,8 @@ void emit_loop_body(Compiler *c, int body, Buf *b, int indent);
 int emit_iteration_stmt(Compiler *c, int id, Buf *b, int indent);
 int emit_array_filter_loop(Compiler *c, int recv, int block, TyKind rt, const char *name,
                            Buf *b, int indent, int *tr, int *torig, int *twp);
+int emit_array_filter_loop_handles(Compiler *c, int recv, int block, const char *name,
+                                   Buf *b, int indent, int *tr, int *torig, int *twp);
 void emit_synth_line_marker(Buf *b);
 /* --ext-init / --ext-entry (library emission, docs/internals/ext-design.md):
    when g_ext_init_name is set, codegen emits `void <name>(void)` in place of

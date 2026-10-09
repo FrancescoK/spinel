@@ -4324,6 +4324,13 @@ void emit_str_array_handles(Compiler *c, int v, Buf *b) {
 int iter_src_as_handles(Compiler *c, int n) {
   return c->share_strings && comp_ntype(c, n) == TY_STR_ARRAY && share_node_fresh_elems(c, n);
 }
+/* A retaining iterator call `id` (select, reject, find_all, the in-place
+   filters) over a fresh sharing String Array `recv`: the receiver is
+   consumed as the PolyArray of handles, and the answer is one too
+   (share_iter_answers_handles types it so). */
+int iter_filter_src_as_handles(Compiler *c, int id, int recv) {
+  return share_iter_answers_handles(c, id) && iter_src_as_handles(c, recv);
+}
 /* emit_boxed for an Enumerator's source, as iter_src_as_handles has it */
 void emit_boxed_iter_src(Compiler *c, int n, Buf *b) {
   if (!iter_src_as_handles(c, n)) { emit_boxed(c, n, b); return; }

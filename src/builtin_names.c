@@ -141,6 +141,15 @@ int is_select_bang(const char *n) {
          sp_streq(n, "reject!") || sp_streq(n, "delete_if");
 }
 
+int is_retaining_filter(const char *n) {
+  return is_select_bang(n) || sp_streq(n, "select") || sp_streq(n, "filter") ||
+         sp_streq(n, "find_all") || sp_streq(n, "reject");
+}
+
+int is_enum_partition_def(const char *n) {
+  return strncmp(n, "__enum_partition__", 18) == 0;
+}
+
 int is_each_walk(const char *n) {
   return sp_streq(n, "each") || sp_streq(n, "each_entry") || sp_streq(n, "reverse_each");
 }

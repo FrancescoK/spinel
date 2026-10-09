@@ -3739,6 +3739,37 @@ int share_node_fresh_elems(const Compiler *c, int n) {
   return F && n >= 0 && n < F->nnodes && F->fresh_cont[n] && share_node_elems_share(c, n);
 }
 
+/* The receiver of a retaining iterator call (select, reject, find_all and
+   the in-place filters, or partition, whose call is rewritten onto the
+   builtin definition __enum_partition__N(array)) with a literal block, or
+   -1. */
+static int sh_retaining_iter_recv(const Compiler *c, int call) {
+  const NodeTable *nt = c->nt;
+  if (call < 0 || nt_kind(nt, call) != NK_CallNode) return -1;
+  const char *nm = nt_str(nt, call, "name");
+  int blk = nt_ref(nt, call, "block"), recv = nt_ref(nt, call, "receiver");
+  if (!nm || blk < 0 || nt_kind(nt, blk) != NK_BlockNode) return -1;
+  if (recv < 0 && is_enum_partition_def(nm)) {
+    int args = nt_ref(nt, call, "arguments"), an = 0;
+    const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    return an >= 1 ? av[0] : -1;
+  }
+  return is_retaining_filter(nm) ? recv : -1;
+}
+/* Is `call` a retaining iterator over a fresh Array of new Strings (a
+   builtin's, as share_node_fresh_elems has it, before the rule is asked
+   whether the elements share)? Its answer keeps elements the block's
+   parameter names. */
+int share_iter_fresh_elems(const Compiler *c, int call) {
+  int recv = sh_retaining_iter_recv(c, call);
+  return recv >= 0 && c->share && recv < c->share->nnodes && c->share->fresh_cont[recv];
+}
+/* ... and the rule shares those elements: the answer holds the handles the
+   block saw, as a local's Array would. */
+int share_iter_answers_handles(const Compiler *c, int call) {
+  return share_iter_fresh_elems(c, call) && share_node_fresh_elems(c, sh_retaining_iter_recv(c, call));
+}
+
 int share_flow_count(const Compiler *c) { return c->share ? c->share->nfl + c->share->nlend : 0; }
 int share_flow_at(const Compiler *c, int i, int *site, int *value) {
   const ShareFacts *F = c->share;
@@ -4168,8 +4199,12 @@ static int sh_route_why(const Compiler *c, const ShareRoute *q) {
   if (!repr_str_class_shares(F->flags[v], sh_class_holders(F, v))) return SH_ROUTE_OK;
   /* a fresh Array's elements bound by an iterator that keeps them: the
      iterator's typed answer holds copies (only a dropped `each` hands each
-     one to its block alone) */
-  if (q->elems && !q->fresh_elems && share_node_fresh_elems(c, q->value)) return SH_ROUTE_COPIES;
+     one to its block alone, and a retaining iterator over a fresh Array
+     answers the handles instead, whatever round recorded the route:
+     share_iter_fresh_elems asks the final facts) */
+  if (q->elems && !q->fresh_elems && !share_iter_fresh_elems(c, q->site) &&
+      share_node_fresh_elems(c, q->value))
+    return SH_ROUTE_COPIES;
   if (q->carry == SHARE_CARRY_COPY) return SH_ROUTE_COPIES;
   return q->carry < 0 || sh_carries_handle(c, q->carry) ? SH_ROUTE_OK : SH_ROUTE_COPIES;
 }

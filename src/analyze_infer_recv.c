@@ -697,6 +697,16 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       *out = TY_ENUMERATOR;
       return 1;
     }
+    /* --share-strings: a retaining iterator over a fresh String Array whose
+       elements the rule shares answers the handles its block saw, the
+       PolyArray a local's Array of them would be (a temporary result has no
+       holder to select boxed element storage). The in-place filters answer
+       self or nil, boxed, and keep their type. */
+    if (c->share_strings && rt == TY_STR_ARRAY && !is_select_reject_bang(name) &&
+        share_iter_answers_handles(c, id)) {
+      *out = TY_POLY_ARRAY;
+      return 1;
+    }
     /* builtin-op rows (builtin_ops.c) */
     {
       const BuiltinOp *op = an_bop_find(c, id, BOP_ANY_ARRAY, name, argc, block >= 0);
