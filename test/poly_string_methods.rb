@@ -1,3 +1,4 @@
+# spinel: share
 # String methods on a poly receiver: a String that reached a slot the compiler
 # could only type as poly (a container read, a parameter two call sites
 # disagree about).

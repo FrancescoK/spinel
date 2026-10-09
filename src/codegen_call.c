@@ -19229,15 +19229,20 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
   Buf ob; memset(&ob, 0, sizeof ob);
   int tmp[MAX_ARG_OVERRIDE];
   if (ok) {
+    int held[MAX_ARG_OVERRIDE], nh = 0;
     for (int i = 0; i < nb; i++) {
       tmp[i] = ++g_tmp;
       view_bind(node[i], "_t%d", tmp[i]);
+      if (repr_share_rule(c) && ty[i] == TY_STRBUF) {
+        held[nh++] = view_push_repr(c, node[i], VR_HEAD_HELD, 1);
+      }
     }
     int saved_node = g_operand_order_node;
     g_operand_order_node = id;
     unsigned conv_mark = g_conv_emitted;
     emit_call(c, id, &ob);
     g_operand_order_node = saved_node;
+    while (nh > 0) view_pop(c, held[--nh]);
     view_unbind(g_n_argov - (nb));
     if (text_is_raise_token(ob.p)) ok = 0;
     /* a single observable operand was bound only so a conversion would run

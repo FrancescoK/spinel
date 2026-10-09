@@ -16,7 +16,7 @@ module BuiltinShareProbe
   FAMILIES = {
     "String" => "TY_STRING", "Integer" => "TY_INT", "Float" => "TY_FLOAT",
     "Symbol" => "TY_SYMBOL", "Array" => "BOP_ANY_ARRAY", "Hash" => "BOP_ANY_HASH",
-    "Range" => "TY_RANGE", "Time" => "TY_TIME", "NilClass" => "TY_NIL",
+    "Range" => "TY_RANGE", "StringRange" => "TY_STR_RANGE", "Time" => "TY_TIME", "NilClass" => "TY_NIL",
     "TrueClass" => "TY_BOOL", "Rational" => "TY_RATIONAL", "Complex" => "TY_COMPLEX",
     "Object" => "BOP_ANY_RECV", "File" => "TY_IO", "Regexp" => "TY_REGEX",
     "MatchData" => "TY_MATCHDATA", "Random" => "TY_RANDOM", "Class" => "TY_CLASS",
@@ -86,10 +86,11 @@ module BuiltinShareProbe
 
   def self.receiver(cls, factory, variant, element)
     case cls
-    when "String" then +"ab a\n"
+    when "String" then ["ab a\n", "", "AB", "abc", "aaab", "Ééあ", "\xffa".b][variant].dup
     when "Array" then variant == 0 ? [1, 2] : variant == 1 ? [] : [element, element]
     when "Hash" then variant == 0 ? {1 => 2} : variant == 1 ? {} : {:a => element}
     when "Range" then variant == 1 ? (2...2) : (1..2)
+    when "StringRange" then variant == 1 ? ("b"..."b") : variant == 2 ? (element..element) : ("a".."b")
     when "Set" then variant == 1 ? Set.new : Set.new([element])
     when "Queue" then Queue.new([element])
     when "SizedQueue" then q = SizedQueue.new(4); q << element; q
@@ -131,7 +132,8 @@ module BuiltinShareProbe
     receiver_return = false
     receiver_mutated = false
     modes = %w[String Object]
-    variants = !class_side && %w[Array Hash Range Set File].include?(cls) ? [0, 1, 2] : [0]
+    variants = !class_side && cls == "String" ? (0..6).to_a :
+               !class_side && %w[Array Hash Range StringRange Set File].include?(cls) ? [0, 1, 2] : [0]
     shapes(cls, name).each_with_index do |shape, si|
       ([-1] + (0...shape.length).to_a).each do |position|
         modes.each do |mode|
@@ -237,7 +239,7 @@ module BuiltinShareProbe
       .scan(/\{\s*(\w+),\s*"([^"]+)",\s*(BSH_\w+)/)
     targets = []
     (INSTANCE_RECEIVERS.merge("OpenStruct" => -> { OpenStruct.new(a: 1) },
-      "BigInteger" => -> { 1 << 70 }, "FloatRange" => -> { 1.0..2.0 }, "FalseClass" => -> { false })).each do |cls, factory|
+      "StringRange" => -> { "a".."b" }, "BigInteger" => -> { 1 << 70 }, "FloatRange" => -> { 1.0..2.0 }, "FalseClass" => -> { false })).each do |cls, factory|
       fam = FAMILIES[cls]
       names = factory.call.public_methods.map(&:to_s) - PROBE_ARTEFACTS.fetch(cls, [])
       names |= hand.select { |f, _, _| f == fam }.map { |_, n, _| n }.reject { |n| n == "*" }
@@ -331,15 +333,17 @@ module BuiltinShareProbe
     # These exact names replace the scalar/String/IO wildcards. Inherited
     # universal methods keep the existing any-receiver contract. A name is
     # emitted only when every successful marker shape kept no mutable marker.
+    hand = File.read(File.join(ROOT, "src/builtin_ops.c"))
+      .scan(/\{\s*(\w+),\s*"([^"]+)",\s*BSH_\w+/).map { |fam, name| [fam, name] }
     universal = File.read(File.join(ROOT, "src/builtin_ops.c"))
       .scan(/\{\s*BOP_ANY_RECV,\s*"([^"]+)"/).flatten
     families = %w[TY_STRING TY_IO TY_INT TY_BIGINT TY_FLOAT TY_SYMBOL TY_BOOL TY_NIL
                   TY_RANGE TY_FLOAT_RANGE TY_TIME TY_COMPLEX TY_RATIONAL TY_REGEX TY_MATCHDATA TY_RANDOM]
     pure = "/* Generated observed keeps-nothing names; see tools/builtin_share_spec.json. */\n"
     rows.group_by { |r| [r["family"], r["method"]] }.sort_by { |k, _| k.map(&:to_s) }.each do |(fam, name), observations|
-      next unless families.include?(fam) && !universal.include?(name)
+      next unless families.include?(fam) && !universal.include?(name) && !hand.include?([fam, name])
       next unless observations.all? { |r| r.fetch("ok", 0) > 0 && r["opaque_reads"].empty? && r["effects"][0, 3].all?(&:zero?) && r["effects"][3] & 28 == 0 }
-      pure += "  { #{fam}, #{name.dump}, BSH_PURE },\n"
+      pure += "  { #{fam}, #{name.dump}, BSH_PURE, 1 },\n"
     end
     table = +"class\tmethod\treturn\tstore\tyield\tmutate\tsuccesses\tstatus\n"
     rows.each do |r|

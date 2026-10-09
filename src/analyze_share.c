@@ -957,7 +957,7 @@ static void sh_block_flow(ShareFacts *F, const NodeTable *nt, int site, int blk)
   /* a container whose value is dropped (`h.map(&:upcase!)` as a statement)
      keeps its block's values for nobody; map! keeps them in its receiver */
   const char *sn = site >= 0 && site < F->nnodes && (F->unused[site] & SHU_STMT) ? nt_str(nt, site, "name") : NULL;
-  if (sn && !is_map_bang_alias(sn)) return;
+  if (sn && !is_map_bang_alias(sn) && bop_share_named(BOP_ANY_ARRAY, sn) != BSH_FILL) return;
   int body = blk >= 0 ? nt_ref(nt, blk, "body") : -1;
   int bn = 0; const int *bb = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &bn) : NULL;
   if (bn > 0) sh_flow(F, SHFL_BLOCK, site, bb[bn - 1]);
@@ -1327,7 +1327,7 @@ static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int 
     return -1;
   case BSH_ITER_FRESH: case BSH_FROZEN:
     return -1;
-  case BSH_RECV: case BSH_ITER_FRESH_RECV:
+  case BSH_RECV: case BSH_EMPTY_SELF: case BSH_ITER_FRESH_RECV:
     return rv;
   case BSH_CLAMP:
     /* A Range holds its endpoints in the existing element class. */
@@ -1364,7 +1364,8 @@ static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int 
     if (blk < 0 && argc < 2) return sh_join(F, rv, nv ? vals[0] : -1);
     return share == BSH_SUBST_BANG ? rv : -1;
   case BSH_LINE:
-    if (lit_blk && nv) sh_block_params(F, c, blk, rv, 0);
+    if (lit_blk && nv && (c->ntype[argv[0]] == TY_NIL || c->ntype[argv[0]] == TY_POLY ||
+                          c->ntype[argv[0]] == TY_UNKNOWN)) sh_block_params(F, c, blk, rv, 0);
     return rv;
   case BSH_BLOCK:
     return bv;
@@ -1372,6 +1373,7 @@ static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int 
     return nv > 0 ? vals[nv - 1] : -1;
   case BSH_SUM:
     if (lit_blk) sh_iter_params(F, c, blk, sh_elem(F, rv), container == 2);
+    if (nv && (c->ntype[argv[0]] == TY_STRING || c->ntype[argv[0]] == TY_STRBUF)) return vals[0];
     return sh_join(F, sh_join(F, nv ? vals[0] : -1, sh_elem(F, rv)), bv);
   case BSH_QUERY:
     if (lit_blk) sh_iter_params(F, c, blk, sh_elem(F, rv), container == 2);
@@ -1682,10 +1684,8 @@ static int sh_builtin_new(ShareFacts *F, Compiler *c, int n, int recv, int blk) 
       sh_union(F, er, v);
       if (ak != NK_SplatNode) sh_flow(F, SHFL_ELEM, n, argv[i]);
     }
-    /* Array.new(a), a copy of a's elements, is not followed: its answer
-       holds a's Strings, which a literal handed to it does not make handles */
-    /* The observed copy now retains those elements in the share facts;
-       the existing route checks still guard transfers without handles. */
+    /* Array.new(a) holds a's elements. The existing route checks guard
+       transfers of those Strings without handles. */
     if (share == BSH_NEW_FILL && i == 0) sh_union(F, er, sh_elem(F, v));
   }
   if (!lit_blk) return r;
@@ -2020,8 +2020,8 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
   /* an in-place String mutation of the receiver: through a boxed or an
      untyped receiver, only one a String can make, on a receiver that can
      be a String */
-  /* Encoding changes keep the bytes but are visible through every alias. */
-  if (maybe_str && (sp_str_mutator(name, 0) || (c->share_strings && is_encoding_mutator(name))) &&
+  /* Encoding and frozen-state changes are visible through every alias. */
+  if (maybe_str && bop_name_mutates(name, c->share_strings ? 0 : BOP_MUT_LOCAL) &&
       (rt == TY_STRING || rt == TY_STRBUF ||
        (!sh_args_refuse_string(c, n, name) && an_recv_may_be_string(c, recv, &(PolyLits){ sh_blk_bound, F })))) {
     int base = sh_self_chain_base(F, c, recv);
@@ -2035,7 +2035,7 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
     const char *sym = sh_lit_name(nt, bx);
     if (sym && bx >= 0 && nt_kind(nt, bx) == NK_SymbolNode) {
       /* `&:upcase!` runs the name on each element */
-      if (sp_str_mutator(sym, 0) || (c->share_strings && is_encoding_mutator(sym)))
+      if (bop_name_mutates(sym, c->share_strings ? 0 : BOP_MUT_LOCAL))
         sh_mark_at(F, sh_elem(F, rv), SHF_MUT | SHF_INDIRECT, n);
       sh_dyn_name(F, sym);
     }
@@ -2272,7 +2272,10 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
     }
     /* any receiver it may be: an Array's or a Hash's row (a String's keeps
        its arguments least), or the container default */
-    int s = bop_share_named(BOP_ANY_ARRAY, name);
+    /* The separator form is String's; Array partition takes a block. */
+    int s = argc == 1 && blk < 0 && is_partition_family(name)
+              ? bop_share_boxed(TY_STRING, name) : 0;
+    if (!s) s = bop_share_named(BOP_ANY_ARRAY, name);
     if (!s) s = bop_share_named(BOP_ANY_HASH, name);
     if (!s) s = bop_share_named(BOP_ANY_RECV, name);
     /* a Module's name (no OpenStruct field of the name in the program); a
@@ -2285,10 +2288,10 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
       if (ir && ir->nyield == 1 && ir->yield[0] == YS_FRESH && ir->answer == IA_RECV)
         return sh_builtin(F, c, n, BSH_PURE, rv, blk, 0);
     }
-    if (!s && !F->ostruct) s = bop_share_named(TY_STRING, name);
+    if (!s && !F->ostruct) s = bop_share_boxed(TY_STRING, name);
     /* Explicit IO rows describe the boxed arms too. User targets and
        OpenStruct fields stay above; an IO's wildcard cannot prove this. */
-    if (!s && !F->ostruct) s = bop_share_named(TY_IO, name);
+    if (!s && !F->ostruct) s = bop_share_boxed(TY_IO, name);
     if (s) return sh_builtin(F, c, n, s, rv, blk, 1);
     return sh_container_default(F, c, n, rv, blk);
   }

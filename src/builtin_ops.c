@@ -2555,11 +2555,10 @@ int bop_covers(TyKind rt) {
 
 /* ---- What a builtin call does with the Strings it is handed (#6765) ---- */
 
-typedef struct { TyKind fam; const char *name; unsigned char share; } BopShareRow;
+typedef struct { TyKind fam; const char *name; unsigned char share, generated; } BopShareRow;
 
 static const BopShareRow bop_share_rows[] = {
-  /* The historical family defaults described below are now exact names
-     from the CRuby observations; an unobserved name remains unknown. */
+  /* Exact names from CRuby observations leave unobserved names unknown. */
   /* A String method copies the bytes of a String argument and answers a
      String of its own, except the ones that answer the receiver itself
      (str_self_call names the rest of them). A block a String method runs
@@ -2980,7 +2979,7 @@ static const BopShareRow bop_share_rows[] = {
      its tag and the call answers the block's value (or a throw's), a
      shape no BSH_ITER_* answer has, so the row derives none. Read as
      fresh, the analysis never names the tag or the answer (#6765).
-     FETCH now records the tag and block result; lexical throw matching
+     FETCH records the tag and block result; lexical throw matching
      continues to supply the non-local result. */
   { BOP_KERNEL, "catch",    BSH_FETCH },
   /* CRuby identity observations replace open-ended keeps-nothing defaults.
@@ -2999,6 +2998,7 @@ static const BopShareRow bop_share_rows[] = {
   { TY_STRING, "sub!", BSH_SUBST_BANG },
   { TY_STRING, "match", BSH_BLOCK },
   { TY_STRING, "clear", BSH_RECV },
+  { TY_STRING, "capitalize", BSH_EMPTY_SELF },
   { TY_STRING, "to_s", BSH_RECV },
   { TY_STRING, "to_str", BSH_RECV },
   { TY_STRING, "force_encoding", BSH_RECV },
@@ -3426,6 +3426,14 @@ static int bop_share_find(TyKind fam, const char *name) {
   return s ? s : iter_share(fam, name);
 }
 
+int bop_share_boxed(TyKind fam, const char *name) {
+  if (!name) return 0;
+  for (int i = bop_share_chain(fam, name); i >= 0 && i < BOP_NSHARE; i = bop_share_next[i])
+    if (!bop_share_rows[i].generated && bop_share_rows[i].fam == fam && sp_streq(bop_share_rows[i].name, name))
+      return bop_share_rows[i].share;
+  return iter_share(fam, name);
+}
+
 int bop_share_named(TyKind fam, const char *name) {
   return name ? bop_share_find(fam, name) : 0;
 }
@@ -3443,7 +3451,7 @@ int bop_share_self_answer(const char *name, int has_block) {
 
 int bop_share(TyKind fam, const char *name) {
   if (!name) return 0;
-  /* "*" is an operator now; there is no unobserved default. */
+  /* "*" is an operator; there is no unobserved default. */
   return bop_share_find(fam, name);
 }
 
@@ -3544,6 +3552,7 @@ void iter_rows_check(void) {
   }
 }
 
+#ifdef SP_BOP_SHARE_CHECK
 /* The probe records identity edges, not Ruby value equality. These are the
    conservative projections of sh_builtin's existing share kinds. Receiver
    mutation is a separate fact (bop_name_mutates), not a promise of BSH_PURE.
@@ -3556,7 +3565,7 @@ static void bop_share_effects(int s, int container, int argc, int block, unsigne
   switch (s) {
   case BSH_PURE: out[2] = container ? e : 0; break;
   case BSH_FROZEN: out[3] = r; break;
-  case BSH_RECV: case BSH_ITER_FRESH_RECV: out[0] = r | e; break;
+  case BSH_RECV: case BSH_EMPTY_SELF: case BSH_ITER_FRESH_RECV: out[0] = r | e; break;
   case BSH_CLAMP: out[0] = r | e | a; break;
   case BSH_ELEM: case BSH_ELEM_N: case BSH_SUB: case BSH_FLATTEN:
     out[0] = e; break;
@@ -3577,6 +3586,8 @@ static void bop_share_effects(int s, int container, int argc, int block, unsigne
     out[0] = r | e | a; out[1] = s == BSH_STORE_TAIL ? a & ~4u : a; break;
   case BSH_MERGE: out[0] = r | e | a | b; out[1] = a | b; out[2] = e | a; break;
   case BSH_ARGS: case BSH_ARRAY_OF: out[0] = a; break;
+  /* The second argument holds the optional buffer keyword. */
+  case BSH_PACK: out[0] = out[3] = argc >= 2 ? 8 : 0; break;
   case BSH_FILL1: out[0] = out[3] = 8; break;
   case BSH_FILL2: out[0] = out[3] = 16; break;
   case BSH_ITER: case BSH_ITER_SEL: case BSH_ITER_FIND: case BSH_ITER_SUB:
@@ -3619,6 +3630,7 @@ static const char *bop_share_kind_name(int s) {
   case BSH_MERGE: return "BSH_MERGE";
   case BSH_ARGS: return "BSH_ARGS";
   case BSH_ARRAY_OF: return "BSH_ARRAY_OF";
+  case BSH_PACK: return "BSH_PACK";
   case BSH_FILL1: return "BSH_FILL1";
   case BSH_FILL2: return "BSH_FILL2";
   case BSH_ITER_THEN: return "BSH_ITER_THEN";
@@ -3654,6 +3666,7 @@ static const char *bop_share_kind_name(int s) {
   case BSH_SUBST_BANG: return "BSH_SUBST_BANG";
   case BSH_LINE: return "BSH_LINE";
   case BSH_BLOCK: return "BSH_BLOCK";
+  case BSH_EMPTY_SELF: return "BSH_EMPTY_SELF";
   case BSH_UNKNOWN: return "BSH_UNKNOWN";
   default: return "unknown";
   }
@@ -3683,11 +3696,11 @@ static int bop_share_spec_one(TyKind fam, const char *cls, const char *name,
     extra |= want[k] & origins & ~got[k];
   }
   missing |= (mut & 28) & ~want[3];
-  if (missing || extra) {
+  if (extra && !missing) (*more)++;
+  if (missing || (extra && getenv("SPINEL_SHARE_CHECK_VERBOSE"))) {
     printf("%s\t%s\t%s\t%s\t%d/%d/%s\t%u/%u/%u/%u\t%u/%u/%u/%u\n",
            missing ? "LESS" : "MORE", cls, name, bop_share_kind_name(s), argc, block, object ? "Object" : "String",
            got[0], got[1], got[2], got[3], want[0], want[1], want[2], want[3]);
-    if (!missing) (*more)++;
   }
   return missing != 0;
 }
@@ -3705,7 +3718,7 @@ int builtin_ops_share_check(void) {
   };
   int bad = 0, more = 0, unknown = 0;
   int count = (int)(sizeof specs / sizeof specs[0]);
-  puts("comparison\tclass\tmethod\tshare-kind\targc/block/marker\tobserved R/S/Y/M\tallowed R/S/Y/M");
+  if (getenv("SPINEL_SHARE_CHECK_VERBOSE")) puts("comparison\tclass\tmethod\tshare-kind\targc/block/marker\tobserved R/S/Y/M\tallowed R/S/Y/M");
   for (int i = 0; i < count; i++)
     bad += bop_share_spec_one(specs[i].fam, specs[i].cls, specs[i].name,
                              specs[i].argc, specs[i].block, specs[i].object, specs[i].origins, specs[i].wrapped,
@@ -3714,3 +3727,5 @@ int builtin_ops_share_check(void) {
          count, bad, more, unknown);
   return bad;
 }
+
+#endif

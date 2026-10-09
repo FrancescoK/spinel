@@ -1,0 +1,1 @@
+spinel: test/share/refuse/route_line_nil.rb:4: String line iteration with a nil separator cannot carry a shared receiver into its block; see docs/limitations.md

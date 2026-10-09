@@ -25,7 +25,8 @@ enum {
   BOP_MUT_LOCAL = 1u,
   BOP_MUT_CONTAINER = 2u,
   BOP_MUT_IVAR = 4u,
-  BOP_MUT_NARROW = 8u
+  BOP_MUT_NARROW = 8u,
+  BOP_MUT_STATE = 16u
 };
 int bop_name_has_reader(const char *name, unsigned surface);
 int bop_name_mutates(const char *name, unsigned sites);
@@ -303,11 +304,9 @@ int bop_args_as_builtin(TyKind rt, const char *name, int argc, int has_block);
 /* ---- What a builtin call does with the Strings it is handed (#6765) ----
    The facts --share-strings reads (analyze_share.c): which of the call's
    values the answer can be, and where the arguments can end up. One row per
-   receiver family and name. A name with no row on a family that has a
-   default row ("*") takes the default; one on a family without a default
-   is not followed (the analysis treats it as unknown). The former defaults
-   are now generated exact names: "*" denotes an operator, and an
-   unobserved name receives the unknown treatment. */
+   receiver family and name. Generated pure rows cover exact observed
+   names; "*" denotes an operator. A name without a row receives the
+   unknown treatment. */
 #define BOP_KERNEL   ((TyKind)-5)   /* a receiverless builtin (Kernel) */
 #define BOP_ANY_RECV ((TyKind)-6)   /* Object's methods, on any receiver */
 #define BOP_CALLABLE ((TyKind)-7)   /* a proc, a lambda or a Method */
@@ -385,6 +384,7 @@ typedef enum {
   BSH_SUBST_BANG, /* the same, answering the receiver */
   BSH_LINE,       /* line iteration may yield the receiver for a nil separator */
   BSH_BLOCK,      /* answers its block's value; yields a fresh value */
+  BSH_EMPTY_SELF, /* answers an empty receiver itself, otherwise a new String */
   BSH_UNKNOWN     /* a mixed identity contract, conservatively untracked */
 } BopShare;
 
@@ -394,8 +394,10 @@ typedef enum {
    no default either. */
 int bop_share(TyKind fam, const char *name);
 int builtin_ops_share_check(void);
-/* the name's own row only, without the family's default */
+/* Exact name lookup, including iterator contracts. */
 int bop_share_named(TyKind fam, const char *name);
+/* Hand and iterator contracts only: generated observations cover typed receivers. */
+int bop_share_boxed(TyKind fam, const char *name);
 /* A String method whose value is its receiver, or nil: a bang method that
    answers it, or nil when it changed nothing (`strip!`, `gsub!`), and,
    given a block, an iterator that answers it (`each_char`, `scan`, `tap`). */

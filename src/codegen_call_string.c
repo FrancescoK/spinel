@@ -973,6 +973,8 @@ int emit_call_symbol_bool_string_arms(Compiler *c, int id, Buf *b, const NodeTab
     int ts = ++g_tmp, ti = ++g_tmp;
     Buf rb = expr_buf(c, recv);
     int is_line = sp_streq(name, "each_line") || sp_streq(name, "lines");
+    if (is_line && argc >= 1 && repr_of(c, argv[0]).as_ty == TY_NIL && share_node_shares(c, recv))
+      unsupported_feature(c, id, "String line iteration with a nil separator cannot carry a shared receiver into its block; see docs/limitations.md");
     int is_byte = sp_streq(name, "each_byte") || sp_streq(name, "bytes");
     int is_cp = sp_streq(name, "codepoints");
     Scope *cs_ech = p0 ? comp_scope_of(c, id) : NULL;

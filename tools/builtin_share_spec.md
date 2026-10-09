@@ -3,7 +3,10 @@
 Run `ruby --enable-frozen-string-literal tools/gen_builtin_share_spec.rb --write
 -o classification.tsv` with CRuby 4.0. `make share-spec-check` regenerates the
 observations and detects drift. `make bop-share-check-test` uses only the
-committed C table and the built compiler: no reference Ruby is needed.
+committed C table and a separate `build/spinel-share-check` executable: no
+reference Ruby is needed. The observation table is absent from the compiler
+binary. Set `SPINEL_SHARE_CHECK_VERBOSE=1` to list conservative excess edges;
+the default check prints their count.
 `ruby --enable-frozen-string-literal tools/builtin_share_spec_test.rb` exercises
 the observer on retained arguments, mutation, blocks, and rejected calls.
 
@@ -11,10 +14,13 @@ The public instance surfaces come from the arity generator, including inherited
 methods. Its class targets are extended with the explicit share-row names and
 ENV's public methods. Both String and Object markers are tried separately at
 each positional argument (up to three), as receiver/element where applicable,
-and as the block's result. Empty and populated containers and IOs are separate probes.
+and as the block's result. Empty and populated containers and IOs are separate probes. String receivers
+include empty, uppercase, normalised, repeated, multibyte and binary contents.
+String-ended Ranges are recorded separately from numeric Ranges.
 Array and Hash argument shapes also contain markers, so typed container
 arguments are exercised. Inaccessible Enumerator reads disqualify a name from
-the keeps-nothing table. Target-dependent forwarding methods remain unprobed.
+the keeps-nothing table. Generated names with hand contracts are omitted, and
+generated contracts never establish boxed receiver behaviour. Target-dependent forwarding methods remain unprobed.
 Each method runs in a child with a three-second deadline and private files;
 process-control, destructive and blocking operations are explicitly skipped.
 The child has a fixed ENV. As in the arity probe, `pread` and

@@ -609,7 +609,9 @@ int main(int argc, char **argv) {
     else if (sp_streq(a, "--dump-repr"))   { g_dump_repr = 1; i++; }
     else if (sp_streq(a, "--nil-check"))   { g_nil_check = 1; i++; }
     else if (sp_streq(a, "--check-traits")) { g_check_traits = 1; i++; }
+#ifdef SP_BOP_SHARE_CHECK
     else if (sp_streq(a, "--check-bop-share")) return builtin_ops_share_check() ? 1 : 0;
+#endif
     else if (sp_streq(a, "--check-bop-arity")) return builtin_ops_arity_check() ? 1 : 0;
     else if (sp_streq(a, "--dump-traits"))  { g_dump_traits = 1; i++; }
     else if (sp_streq(a, "--emit-symbol-map")) { emit_symbol_map = 1; i++; }

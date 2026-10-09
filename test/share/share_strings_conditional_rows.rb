@@ -1,0 +1,21 @@
+# Empty capitalization retains the receiver; nonempty capitalization copies it.
+s = +""
+r = s.capitalize
+r << "x"
+p [s, r]
+s = +"ab"
+r = s.capitalize
+r << "!"
+p [s, r]
+s = +"AB"
+r = s.downcase!
+r << "!"
+p [s, r]
+s = +"aa"
+r = s.squeeze!
+r << "?"
+p [s, r]
+s = +"abc"
+r = s.delete_suffix!("c")
+r << "#"
+p [s, r]

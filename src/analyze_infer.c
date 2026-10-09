@@ -4041,6 +4041,9 @@ static int infer_range_lazy_call(Compiler *c, int id, const NodeTable *nt, const
 static int infer_string_recv_call(Compiler *c, int id, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, TyKind *out) {
   /* string receiver methods */
   if (recv >= 0 && rt == TY_STRING) {
+    if (c->share_strings && argc == 1 && is_partition_family(name) &&
+        (infer_type(c, argv[0]) == TY_STRING || infer_type(c, argv[0]) == TY_STRBUF || infer_type(c, argv[0]) == TY_REGEX) &&
+        share_node_elems_share(c, id)) { *out = TY_POLY_ARRAY; return 1; }
     /* promote mode: a String#to_i past sp_int is a Bignum (sp_str_to_i_promote).
        It reads the mode, so it sits ahead of the to_i row. */
     if (g_promote_mode && sp_streq(name, "to_i") && argc <= 1) { *out = TY_POLY; return 1; }

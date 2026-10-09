@@ -7,6 +7,11 @@ checks = 0
 Dir.mktmpdir("builtin-share-test") do |dir|
   Dir.chdir(dir) do
     tests = [
+      ["String", "capitalize", -> { +"ab" }, 0, 1],
+      ["String", "downcase!", -> { +"ab" }, 0, 1],
+      ["String", "squeeze!", -> { +"ab" }, 0, 1],
+      ["String", "delete_suffix!", -> { +"ab" }, 0, 1],
+      ["StringRange", "step", -> { "a".."b" }, 2, 2],
       ["String", "partition", -> { +"ab" }, 0, 4],
       ["String", "each_line", -> { +"ab" }, 2, 1],
       ["String", "[]=", -> { +"ab" }, 0, 8],
@@ -36,4 +41,9 @@ Dir.mktmpdir("builtin-share-test") do |dir|
     ENV.delete("SPINEL_SHARE_ORACLE")
   end
 end
+source = File.read(File.join(BuiltinShareProbe::ROOT, "src/builtin_ops.c"))
+hand = source.scan(/\{\s*(\w+),\s*"([^"]+)",\s*BSH_\w+/).map { |fam, name| [fam, name] }
+pure = File.read(BuiltinShareProbe::PURE).scan(/\{\s*(\w+),\s*"([^"]+)",\s*BSH_PURE/)
+abort "generated rows duplicate hand rows" unless (hand & pure).empty?
+checks += 1
 puts "builtin-share-spec-test: #{checks} checks passed"

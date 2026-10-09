@@ -1,3 +1,5 @@
+# spinel: share
+# spinel: gc-minor
 # A pattern read out of a mixed Array that is neither a Regexp nor a String:
 # split, partition and rpartition raise CRuby's "wrong argument type X
 # (expected Regexp)". They said "no implicit conversion of X into String".
