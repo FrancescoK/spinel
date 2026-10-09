@@ -1744,7 +1744,10 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
     view_pop(c, sd);
     return 1;
   }
-  if (strbuf_route_reader(c, v)) {
+  /* A marked implicit-self reader is already typed as the handle.
+     Ask the same predicate as the flow check before falling back to bytes. */
+  if (strbuf_route_reader(c, v) ||
+      (repr_share_rule(c) && nt_kind(nt, v) == NK_CallNode && strbuf_self_reader_handle(c, v))) {
     v = unwrap_parens(c, v);
     int sv = view_push_repr(c, v, VR_HANDLE_DEMAND, 1);
     emit_expr(c, v, b);

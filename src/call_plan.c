@@ -17,16 +17,8 @@ static int g_cp_cap = 0;
 static char **g_cp_name = NULL;
 
 /* a descendant of cid with its own `name`: the dispatch is a switch */
-static int cplan_overridden(Compiler *c, int cid, const char *name, int cmeth) {
-  int nd = 0;
-  const int *ds = comp_descendants(c, cid, &nd);
-  for (int i = 0; i < nd; i++) {
-    int k = ds[i];
-    if (k == cid) continue;
-    if ((cmeth ? comp_cmethod_in_class(c, k, name) : comp_method_in_class(c, k, name)) >= 0)
-      return 1;
-  }
-  return 0;
+int cplan_overridden(Compiler *c, int cid, const char *name, int cmeth) {
+  return comp_method_overridden(c, cid, name, cmeth);
 }
 
 int cplan_dispatch_form(Compiler *c, int cid, const char *name, int has_base) {

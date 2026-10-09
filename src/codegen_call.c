@@ -22877,18 +22877,27 @@ int implicit_self_plan_mi(Compiler *c, int id, int dispatch_cid) {
   return spl->chain && spl->via == UC_INST && spl->owner_ci == dispatch_cid ? spl->mi : -1;
 }
 
-/* Does receiverless call id read an attr reader's slot that holds a String
-   handle and hand that handle out (emit_implicit_self_member's slot read,
-   a call marked to keep it), not a copy? (The seal asks it too:
-   strbuf_flow_carries.) */
-int strbuf_self_reader_handle(Compiler *c, int id) {
+/* The slot test is separate so repr can classify the marked read without
+   asking for that read's representation recursively. */
+int strbuf_self_reader_slot(Compiler *c, int id) {
   int cid = implicit_self_reader_cid(c, id);
   if (cid < 0) return 0;
   char ivn[300];
   snprintf(ivn, sizeof ivn, "@%s", comp_resolve_alias(c, cid, nt_str(c->nt, id, "name")));
   int ivi = comp_ivar_index(&c->classes[cid], ivn);
+  if (ivi < 0 || repr_of_ivar(c, cid, ivi).as_ty != TY_STRBUF) return 0;
+  /* A descendant's method result is not this slot's handle, even when
+     inference gives it the same String type as the reader. */
+  return !cplan_overridden(c, cid, nt_str(c->nt, id, "name"), 0);
+}
+/* Does receiverless call id read an attr reader's slot that holds a String
+   handle and hand that handle out (emit_implicit_self_member's slot read,
+   a call marked to keep it), not a copy? (The seal asks it too:
+   strbuf_flow_carries.) */
+int strbuf_self_reader_handle(Compiler *c, int id) {
+  if (!strbuf_self_reader_slot(c, id)) return 0;
   Repr rp = repr_of(c, id);
-  return ivi >= 0 && c->classes[cid].ivar_types[ivi] == TY_STRBUF && (rp.handle || rp.demand);
+  return rp.handle || rp.demand;
 }
 
 int emit_implicit_self_member(Compiler *c, int id, Buf *b) {

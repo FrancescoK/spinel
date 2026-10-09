@@ -1190,6 +1190,10 @@ spinel: test/reject/string_returned_arg_stored_literal.rb:5: a String a method r
 spinel: test/reject/string_scan_block_kept_mutation.rb:5: a match `scan` hands its block is kept and mutated in place (a String is not yet shared by reference through `scan`'s block parameter). Mutate a copy (`m = +m.dup`) and keep that.
 == test/reject/string_scan_block_kept_mutation.rb [promote] rc=1
 spinel: test/reject/string_scan_block_kept_mutation.rb:5: a match `scan` hands its block is kept and mutated in place (a String is not yet shared by reference through `scan`'s block parameter). Mutate a copy (`m = +m.dup`) and keep that.
+== test/reject/string_self_reader_push.rb [default] rc=1
+spinel: test/reject/string_self_reader_push.rb:9: a String variable added to an Array by `insert`, `prepend`, `concat`, a chained push, a push into a global, or as the value of `<<`, unary `+` or a reader method is mutated in place through the Array or the variable (a String is not yet shared by reference through such an Array element). Push the variable itself into a local Array with `<<` or `push`.
+== test/reject/string_self_reader_push.rb [promote] rc=1
+spinel: test/reject/string_self_reader_push.rb:9: a String variable added to an Array by `insert`, `prepend`, `concat`, a chained push, a push into a global, or as the value of `<<`, unary `+` or a reader method is mutated in place through the Array or the variable (a String is not yet shared by reference through such an Array element). Push the variable itself into a local Array with `<<` or `push`.
 == test/reject/string_splat_changed_array.rb [default] rc=1
 spinel: test/reject/string_splat_changed_array.rb:11: a String is passed to a proc's parameter `y` through a splat of an Array the program changes, which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference through a splat of an Array that holds a copy). Return the String from the proc and assign it, or append to it in the caller.
 spinel: 1 refusal, nothing written

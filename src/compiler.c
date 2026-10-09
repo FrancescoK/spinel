@@ -1858,7 +1858,7 @@ int comp_writer_in_chain(Compiler *c, int class_id, const char *name, int *def_c
    conditions that vary per call (ctor_reachable, an_builtin_only, native arity)
    stay with the consumer. A native class is always listed: its answer depends
    on the call's arity, which the consumer checks. */
-struct pc_entry { char *name; PolyCand *cands; int n; struct pc_entry *next; };
+struct pc_entry { char *name; PolyCand *cands; unsigned char *overridden; int n; struct pc_entry *next; };
 #define PC_BUCKETS 4096
 static struct pc_entry *pc_tab[PC_BUCKETS];
 static struct pc_entry *cc_tab[PC_BUCKETS];   /* class methods: comp_cmethod_candidates */
@@ -1880,7 +1880,7 @@ void comp_poly_candidates_reset(void) {
     for (struct pc_entry *e = cc_tab[b]; e; ) { struct pc_entry *nx = e->next; e->next = pc_retired; pc_retired = e; e = nx; }
     cc_tab[b] = NULL;
   }
-  for (struct pc_entry *e = pc_retired; e; ) { struct pc_entry *nx = e->next; free(e->name); free(e->cands); free(e); e = nx; }
+  for (struct pc_entry *e = pc_retired; e; ) { struct pc_entry *nx = e->next; free(e->name); free(e->cands); free(e->overridden); free(e); e = nx; }
   pc_retired = NULL;
 }
 static void pc_build(Compiler *c, const char *name, PolyCand **out, int *n_out) {
@@ -1902,35 +1902,36 @@ static void pc_build(Compiler *c, const char *name, PolyCand **out, int *n_out) 
   }
   *out = v; *n_out = n;
 }
-const PolyCand *comp_poly_candidates(Compiler *c, const char *name, int *n) {
-  if (!name) { *n = 0; return NULL; }
-  if (!sm_frozen) {
-    /* scope shape may still change: answer fresh, and keep nothing */
-    struct pc_entry *e = calloc(1, sizeof *e);
-    pc_build(c, name, &e->cands, &e->n);
-    e->next = pc_retired; pc_retired = e;
-    *n = e->n; return e->cands;
-  }
+static struct pc_entry *pc_memo(Compiler *c, const char *name) {
+  if (!sm_frozen) return NULL;
   if (pc_gen_stamp != sm_gen || pc_nscopes_stamp != c->nscopes || pc_nclasses_stamp != c->nclasses || pc_table_stamp != comp_table_gen) {
     pc_clear(); pc_gen_stamp = sm_gen; pc_nscopes_stamp = c->nscopes; pc_nclasses_stamp = c->nclasses; pc_table_stamp = comp_table_gen;
   }
   unsigned b = sp_strhash(name) % PC_BUCKETS;
   for (struct pc_entry *e = pc_tab[b]; e; e = e->next)
-    if (sp_streq(e->name, name)) {
-      *n = e->n; return e->cands;
-    }
-  struct pc_entry *e = calloc(1, sizeof *e);
+    if (sp_streq(e->name, name)) return e;
   /* While a scope is moved for an instance_exec block (comp_scope_move_begin)
      the lookups leave the moved method out, so a list made then would miss
      it after the move: answer it, but keep it off the memo. */
-  if (mv_n) {
+  if (mv_n) return NULL;
+  struct pc_entry *e = calloc(1, sizeof *e);
+  if (!e) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  e->name = strdup(name);
+  if (!e->name) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  e->n = -1;  /* an override query need not build the candidate list */
+  e->next = pc_tab[b]; pc_tab[b] = e;
+  return e;
+}
+const PolyCand *comp_poly_candidates(Compiler *c, const char *name, int *n) {
+  if (!name) { *n = 0; return NULL; }
+  struct pc_entry *e = pc_memo(c, name);
+  if (!e || (mv_n && e->n < 0)) {
+    /* scope shape may still change: answer fresh, and keep nothing */
+    e = calloc(1, sizeof *e);
     pc_build(c, name, &e->cands, &e->n);
     e->next = pc_retired; pc_retired = e;
-    *n = e->n; return e->cands;
   }
-  e->name = strdup(name);
-  pc_build(c, name, &e->cands, &e->n);
-  e->next = pc_tab[b]; pc_tab[b] = e;
+  else if (e->n < 0) pc_build(c, name, &e->cands, &e->n);
   *n = e->n; return e->cands;
 }
 
@@ -1979,6 +1980,34 @@ const PolyCand *comp_cmethod_candidates(Compiler *c, const char *name, int *n) {
   cc_build(c, name, &e->cands, &e->n);
   e->next = cc_tab[b]; cc_tab[b] = e;
   *n = e->n; return e->cands;
+}
+
+/* The same name memo also holds whether each class has a descendant with
+   its own definition. Reader-slot queries need this fact across call sites,
+   not another descendant walk per representation query. The candidate memo's
+   stamps invalidate it too; a temporarily moved scope must answer fresh. */
+int comp_method_overridden(Compiler *c, int cid, const char *name, int cmeth) {
+  if (cid < 0 || cid >= c->nclasses || !name) return 0;
+  struct pc_entry *memo = !cmeth && !mv_n ? pc_memo(c, name) : NULL;
+  if (memo) {
+    if (!memo->overridden) {
+      memo->overridden = calloc((size_t)c->nclasses, sizeof *memo->overridden);
+      if (!memo->overridden) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    }
+    if (memo->overridden[cid]) return memo->overridden[cid] == 2;
+  }
+  int nd = 0, overridden = 0;
+  const int *ds = comp_descendants(c, cid, &nd);
+  for (int i = 0; i < nd; i++) {
+    int k = ds[i];
+    if (k == cid) continue;
+    if ((cmeth ? comp_cmethod_in_class(c, k, name) : comp_method_in_class(c, k, name)) >= 0) {
+      overridden = 1;
+      break;
+    }
+  }
+  if (memo) memo->overridden[cid] = overridden ? 2 : 1;
+  return overridden;
 }
 
 /* ---- Descendants of a class ----

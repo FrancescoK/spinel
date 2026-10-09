@@ -1388,6 +1388,7 @@ int        comp_byref_param(Compiler *c, Scope *m, int idx);
 void       propagate_borrowed_volatile(Compiler *c);
 /* Find the instance-method scope index for class_id + method name, or -1. */
 int        comp_method_in_class(Compiler *c, int class_id, const char *name);
+int        comp_method_overridden(Compiler *c, int cid, const char *name, int cmeth);
 /* The instance_exec emission runs a method's block as an instance method of
    the receiver's class by moving the method's scope there (class_id and
    is_cmethod) for the length of the block. begin records the scope's own
