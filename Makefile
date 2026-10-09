@@ -579,6 +579,26 @@ SP_RT_LIB = lib/libspinel_rt.a
 
 RT_MEMBERS = sp_bigint sp_crypto sp_pack sp_time sp_core sp_net sp_system sp_gc sp_slab sp_alloc sp_dtoa sp_marshal sp_format sp_string sp_inspect sp_poly_cold sp_array sp_str sp_str_crypt sp_hash sp_proc sp_exc sp_re sp_random sp_fiber sp_sched sp_io sp_iobuffer sp_cold sp_process sp_process_status
 
+# Opt-in runtime for carried C extensions. The regular archive has no hook
+# branches or extension state, preserving its instruction stream.
+.PHONY: cext-runtime cext-gc-test
+cext-runtime: lib/libspinel_cext_rt.a
+build/cext/sp_gc.o: lib/sp_gc.c $(RT_HDRS)
+	@mkdir -p $(@D)
+	$(CC) -c $(COPT) $(SEC_FLAGS) -DSP_CEXT -Ilib $< -o $@
+build/cext/sp_cext.o: lib/sp_cext.c lib/sp_cext.h include/ruby.h $(RT_HDRS)
+	@mkdir -p $(@D)
+	$(CC) -c $(COPT) $(SEC_FLAGS) -DSP_CEXT -Iinclude -Ilib $< -o $@
+lib/libspinel_cext_rt.a: $(RE_OBJ) $(addprefix build/,$(addsuffix .o,$(filter-out sp_gc,$(RT_MEMBERS)))) build/cext/sp_gc.o build/cext/sp_cext.o $(PLATFORM_OBJ)
+	ar rcs $@ $^
+cext-gc-test: lib/libspinel_cext_rt.a
+	$(CC) -O1 -g -DSP_CEXT -Iinclude -Ilib test/cext/handles.c $< $(LDFLAGS) -lm -o build/cext/handles-test
+	./build/cext/handles-test
+	SPINEL_GC_MINOR=1 SPINEL_GC_VERIFY_GEN=1 ./build/cext/handles-test
+	SPINEL_GC_SLAB=0 ./build/cext/handles-test
+	SPINEL_GC_STRESS=1 ./build/cext/handles-test
+
+
 $(SP_RT_LIB): $(RE_OBJ) $(addprefix build/,$(addsuffix .o,$(RT_MEMBERS))) $(PLATFORM_OBJ)
 	ar rcs $@ $^
 
