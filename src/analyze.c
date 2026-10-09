@@ -4976,14 +4976,18 @@ static void apply_inline_rbs(Compiler *c) {
         inline_warn(head, "the signature of `%s` is not applied: a later definition without an applied annotation, at %s, replaces this one", name, rw);
       }
       else {
-        int fam = method_in_override_family(c, ms->class_id, ms->name, ms->is_cmethod);
-        if (fam && ret && !sp_streq(ret, "-"))
-          inline_warn(head, "the return type of %s is not applied: the method is overridden in a related class, "
-                             "whose calls share one return representation (its parameter types are applied)%s", name, "");
         if (!inline_pin_agrees(c, ms, -1, NULL, ret, params, where, 0)) continue;
-        char *pcopy = params ? strdup(params) : NULL;
-        seed_method(c, ms, fam ? NULL : ret, pcopy, where, head, 0);
-        free(pcopy);
+        /* A replaced definition participates in signature agreement, but its
+           body must not pin a backing ivar that the live definition never reads. */
+        if (rep < 0) {
+          int fam = method_in_override_family(c, ms->class_id, ms->name, ms->is_cmethod);
+          if (fam && ret && !sp_streq(ret, "-"))
+            inline_warn(head, "the return type of %s is not applied: the method is overridden in a related class, "
+                               "whose calls share one return representation (its parameter types are applied)%s", name, "");
+          char *pcopy = params ? strdup(params) : NULL;
+          seed_method(c, ms, fam ? NULL : ret, pcopy, where, head, 0);
+          free(pcopy);
+        }
         inline_pin_record(ms, -1, NULL, ret, params, where, head);
       }
     }

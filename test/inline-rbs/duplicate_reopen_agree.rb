@@ -13,3 +13,25 @@ class K
 end
 
 p K.new.m(3)
+
+# Agreeing replacements retain the live reader's pin without pinning the
+# backing ivar of the body that no longer runs.
+class Box
+  def initialize
+    @old = "ok"
+    @new = [1]
+  end
+
+  #: () -> Array[Integer]
+  def values = @old
+end
+
+class Box
+  #: () -> Array[Integer]
+  def values = @new
+
+  def old = @old
+end
+
+box = Box.new
+p box.old, box.values

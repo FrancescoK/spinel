@@ -2882,7 +2882,7 @@ inline-rbs-test:
 	@echo "inline-rbs-test: parser-backed cases skipped (vendor/rbs not fetched; run 'make deps')"
 else
 INLINE_RBS_PARITY := methods attrs association identity_reopen identity_collide check_honest
-INLINE_RBS_CHECKS := false_positives ignored_symlink warnings syntax_error syntax_error_multiline syntax_error_rbs two_annotations precedence_agree precedence_disagree reader_pin_precedence reader_pin_conflicts stray_rb override_family check_false off_switch \
+INLINE_RBS_CHECKS := false_positives ignored_symlink ignored_errors warnings syntax_error syntax_error_multiline syntax_error_rbs two_annotations precedence_agree precedence_disagree reader_pin_precedence reader_pin_conflicts stray_rb override_family check_false off_switch \
                      placements duplicate_reopen_agree duplicate_reopen_disagree duplicate_nilable precedence_objarray duplicate_rbs_decl \
                      redefine_unannotated redefine_unannotated_req redefine_define_method redefine_class_eval redefine_ignored redefine_refused mixin_not_applied analyzer_warnings dump_ast_malformed \
                      contradiction_inline objarray_boxed
@@ -2948,6 +2948,21 @@ build/inline-rbs-results/%.res: FORCE | rbs-seed-extractor $(SP_RT_LIB) $(SPINEL
 	printf 'require_relative "%s"\np part_value\n' "$$tmp/outside/target.rb" > "$$tmp/outside/src/main.rb"; \
 	if tools/inline_rbs_ignored.sh $(SPINEL) "$$tmp/outside/src/main.rb" > "$$tmp/outside/check.log" 2>&1; then echo "inline-rbs-test: FAIL (an absolute required file outside the copy was accepted)"; ok=0; fi; \
 	grep -q 'outside the temporary copy' "$$tmp/outside/check.log" && cmp -s "$$tmp/before.rb" "$$tmp/outside/target.rb" || { echo "inline-rbs-test: FAIL (an absolute required file was not refused unchanged)"; cat "$$tmp/outside/check.log"; ok=0; }; \
+	;; \
+	ignored_errors) \
+	mkdir "$$tmp/src" "$$tmp/shims"; cp $(IRB)/warnings_part.rb "$$tmp/src/part.rb"; \
+	printf 'p 1\n' > "$$tmp/src/plain.rb"; \
+	tools/inline_rbs_ignored.sh $(SPINEL) "$$tmp/src/plain.rb" || { echo "inline-rbs-test: FAIL (no warnings were treated as an error)"; ok=0; }; \
+	for cmd in grep sed awk cat; do \
+	  if [ "$$cmd" = awk ]; then \
+	    real=$$(command -v awk); \
+	    printf '#!/bin/sh\ncase "$$2" in lines=*) exit 2 ;; esac\nexec "%s" "$$@"\n' "$$real" > "$$tmp/shims/$$cmd"; \
+	  else printf '%s\n' '#!/bin/sh' 'exit 2' > "$$tmp/shims/$$cmd"; fi; \
+	  chmod +x "$$tmp/shims/$$cmd"; rc=0; \
+	  PATH="$$tmp/shims:$$PATH" tools/inline_rbs_ignored.sh $(SPINEL) "$$tmp/src/part.rb" || rc=$$?; \
+	  [ $$rc -eq 2 ] || { echo "inline-rbs-test: FAIL ($$cmd failure was not propagated: $$rc)"; ok=0; }; \
+	  rm "$$tmp/shims/$$cmd"; \
+	done; \
 	;; \
 	warnings) \
 	for fl in "" --int-overflow=promote; do \

@@ -19,7 +19,7 @@
 # is the same in both. Exits 1, saying which lines, when the C differs or
 # either compile fails; prints nothing and exits 0 otherwise (a compile
 # with no inline RBS warning has nothing to prove and passes).
-set -u
+set -euo pipefail
 spinel=$1; prog=$2; shift 2
 case $spinel in /*) ;; *) spinel=$(cd "$(dirname "$spinel")" && pwd)/$(basename "$spinel") ;; esac
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/spinel-irbignored.XXXXXX") || exit 1
@@ -35,11 +35,17 @@ fi
 mv "$tmp/out.c" "$tmp/with.c"
 
 # FILE:LINE[:COL]: warning: inline RBS ...  ->  FILE LINE
-grep -oE '[^ :]+\.rb:[0-9]+(:[0-9]+)?: warning: inline RBS' "$tmp/with.err" \
-  | sed -E 's/^([^:]+):([0-9]+).*/\1 \2/' | sort -u > "$tmp/lines"
+if grep -oE '[^ :]+\.rb:[0-9]+(:[0-9]+)?: warning: inline RBS' "$tmp/with.err" > "$tmp/matches"; then
+  sed -E 's/^([^:]+):([0-9]+).*/\1 \2/' "$tmp/matches" | sort -u > "$tmp/lines"
+else
+  rc=$?
+  [ "$rc" -eq 1 ] && exit 0
+  exit "$rc"
+fi
 [ -s "$tmp/lines" ] || exit 0
 
-for f in $(cut -d' ' -f1 "$tmp/lines" | sort -u); do
+files=$(cut -d' ' -f1 "$tmp/lines" | sort -u)
+for f in $files; do
   [ -f "$f" ] || { echo "inline_rbs_ignored: FAIL ($name $*: a warning names $f, which is not a file of the program)"; exit 1; }
   fdir=$(cd "$(dirname "$f")" && pwd -P) || exit 1
   case "$fdir/" in "$srcdir/"*) ;; *) echo "inline_rbs_ignored: FAIL ($name $*: a warning names $f outside the temporary copy)"; exit 1 ;; esac
@@ -64,7 +70,8 @@ for f in $(cut -d' ' -f1 "$tmp/lines" | sort -u); do
       }
     }
     { cont = 0; print }
-  ' "$f" > "$tmp/stripped" && cat "$tmp/stripped" > "$f"
+  ' "$f" > "$tmp/stripped"
+  cat "$tmp/stripped" > "$f"
 done
 
 if ! "$spinel" "$name" "$@" -c --no-line-map -o "$tmp/out.c" 2>"$tmp/without.err"; then
