@@ -2662,6 +2662,8 @@ int desugar_env_enum(Compiler *c) {
         int ea[2] = { ecn, emn };
         int eargs = nt_new_node(nt, "ArgumentsNode");
         nt_node_set_arr(nt, eargs, "arguments", ea, 2);
+        nt_node_set_int(nt, id, "env_snapshot", 1);
+        nt_node_set_ref(nt, id, "env_arguments", qargs);
         nt_node_set_str(nt, id, "name", "raise");
         nt_node_set_ref(nt, id, "receiver", -1);
         nt_node_set_ref(nt, id, "arguments", eargs);

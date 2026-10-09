@@ -10326,7 +10326,9 @@ void emit_with_prelude(Compiler *c, int id, Buf *b, int indent,
   g_pre = &pre;
   g_indent = indent;
   int vs = view_push_stmt(id, &pre);
+  int env_args = emit_env_args_before(c, id);
   inner(c, id, &line, indent);
+  if (env_args >= 0) view_unbind(env_args);
   if (vs >= 0) view_pop(c, vs);
   g_pre = savePre;
   g_indent = saveIndent;
