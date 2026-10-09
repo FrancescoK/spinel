@@ -364,6 +364,11 @@ still works.
   to mutate; a construct would remove nothing. The call is reported rather than
   silently ignored. (A class that defines its own method by one of these names
   keeps it.)
+- **`String#then` / `#yield_self` with a callable block** -- a non-literal
+  `&proc` is refused in both builds: the builtin emitter cannot invoke it while
+  preserving its returned String's identity. Use a literal block. Literal blocks,
+  symbol-to-proc forms that desugar to one, and user-owned methods still compile.
+
 - **Frozen literals** -- explicit `.freeze` then mutation raises `FrozenError`,
   matching CRuby. String literals ARE frozen by default here
   (`frozen_string_literal: true` semantics, with no opt-out) -- see

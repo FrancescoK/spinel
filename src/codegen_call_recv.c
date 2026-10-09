@@ -7186,7 +7186,7 @@ static int str_partition_shared(Compiler *c, int id, Buf *b, const char *name, i
   tr = hold_operand(c, recv, TY_STRING, 0, tr, 1, " ", b);
   if (at == TY_STRING) ts = hold_operand(c, argv[0], TY_POLY, 1, ts, 1, " ", b);
   buf_printf(b, "sp_StrArray *_t%d = ", tp);
-  if (at == TY_STRING) buf_printf(b, "sp_str_%s(_t%d, sp_poly_to_s(_t%d))", name, tr, ts);
+  if (at == TY_STRING) buf_printf(b, "sp_str_%s(_t%d, sp_poly_arg_str_or_null(_t%d))", name, tr, ts);
   else {
     char r[24]; snprintf(r, sizeof r, "_t%d", tr);
     str_arms_case_search(c, b, c->nt, name, recv, argc, argv, r);
@@ -7195,7 +7195,7 @@ static int str_partition_shared(Compiler *c, int id, Buf *b, const char *name, i
                 "for (int i = 0; i < 3; i++) sp_PolyArray_push(_t%d, sp_box_obj(sp_String_new_shared(sp_StrArray_get(_t%d, i)), SP_BUILTIN_STRBUF)); ",
              tp, to, to, to, tp);
   if (at == TY_STRING)
-    buf_printf(b, "if (sp_str_byte_len(sp_poly_to_s(_t%d)) == 0 || sp_str_byte_len(sp_StrArray_get(_t%d, 1)) > 0) "
+    buf_printf(b, "if (sp_str_byte_len(sp_poly_arg_str_or_null(_t%d)) == 0 || sp_str_byte_len(sp_StrArray_get(_t%d, 1)) > 0) "
                   "sp_PolyArray_set(_t%d, 1, _t%d); ", ts, tp, to, ts);
   buf_printf(b, "_t%d; })", to);
   return 1;

@@ -584,6 +584,7 @@ sp_bool sp_str_end_with(const char*s,const char*suf){if(!suf)sp_raise_cls("TypeE
 /* partition: [before, sep, after] at the first sep; no match -> [s, "", ""]. */
 /* partition: [before, sep, after] at the first sep; no match -> [s, "", ""]. */
 sp_StrArray *sp_str_partition(const char *s, const char *sep) {
+  if (!sep) sp_raise_cls("TypeError", "wrong argument type nil (expected Regexp)");
   SP_GC_ROOT_STR(s); SP_GC_ROOT_STR(sep);
   sp_StrArray *r = sp_StrArray_new();
   SP_GC_ROOT(r);   /* keep r (and its pushed slices) live across the byteslice allocs */
@@ -601,6 +602,7 @@ sp_StrArray *sp_str_partition(const char *s, const char *sep) {
 /* rpartition: split at the last sep; no match -> ["", "", s]. */
 /* rpartition: split at the last sep; no match -> ["", "", s]. */
 sp_StrArray *sp_str_rpartition(const char *s, const char *sep) {
+  if (!sep) sp_raise_cls("TypeError", "wrong argument type nil (expected Regexp)");
   SP_GC_ROOT_STR(s); SP_GC_ROOT_STR(sep);
   sp_StrArray *r = sp_StrArray_new();
   SP_GC_ROOT(r);   /* keep r (and its pushed slices) live across the byteslice allocs */
