@@ -8160,9 +8160,10 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
            argument (`h.fetch(k, a: 1)` takes it as the default), through the
            temp atmp[argc - 1] that the positional loop above stopped short
            of: it read a temp nothing declared and the C did not build. Hold
-           the hash there, built once from the per-key temps, for the one
-           builtin that reads it. */
-        if (sp_streq(name, "fetch") && argc == 2) {
+           the hash there, built once from the per-key temps, for the
+           builtins that read it: fetch's default, and the index family's
+           value or offset (`o.index("a", k: 1)` beside a user `index`). */
+        if ((sp_streq(name, "fetch") && argc == 2) || ps.arr_index) {
           atmp[pos_argc] = ++g_tmp;
           atmp_ty[pos_argc] = TY_SYM_POLY_HASH;
           buf_printf(b, "sp_SymPolyHash *_t%d = ", atmp[pos_argc]);
