@@ -951,6 +951,10 @@ int is_builtin_reopen_name(const char *name) {
             typedef collision before any call was reached (activesupport's
             blank.rb reopens Range and Time) */
          sp_streq(name, "Range")     || sp_streq(name, "Time") ||
+         sp_streq(name, "Rational")  || sp_streq(name, "Proc") ||
+         sp_streq(name, "Enumerator") || sp_streq(name, "MatchData") ||
+         sp_streq(name, "Complex")   || sp_streq(name, "Regexp") ||
+         sp_streq(name, "Struct")    ||
          sp_streq(name, "File")      || sp_streq(name, "Class") ||
          sp_streq(name, "Hash")      ||
          /* a thread and a fiber are runtime handles too (activesupport's
@@ -1048,3 +1052,39 @@ int is_proc_conversion_name(const char *n) { return n && (sp_streq(n, "to_proc")
 int is_aref_name(const char *n) { return n && sp_streq(n, "[]"); }
 /* `<<` alone: String#<<'s append, a chain's link */
 int is_shovel_name(const char *n) { return n && sp_streq(n, "<<"); }
+
+/* Dir's surface rewrites keep the written name distinct from the builtin
+   operation it lowers to. The iterator aliases apply only without a block. */
+const char *dir_surface_alias(const char *n, int blockless_iter) {
+  if (blockless_iter) {
+    if (sp_streq(n, "foreach")) return "entries";
+    if (sp_streq(n, "each_child")) return "children";
+  }
+  else {
+    if (sp_streq(n, "getwd")) return "pwd";
+    if (sp_streq(n, "delete") || sp_streq(n, "unlink")) return "rmdir";
+    if (is_aref_name(n)) return "glob";
+  }
+  return NULL;
+}
+
+int is_kernel_module_name(const char *n) { return n && sp_streq(n, "Kernel"); }
+
+/* Kernel's module functions, by name. A whitelist rather than "anything with
+   the Kernel receiver": Kernel is also a VALUE, so `Kernel === 5` asks whether
+   5 is in the Object hierarchy, and `Kernel.name` / `.to_s` / `.freeze` /
+   `.instance_methods` are Module's own methods on it. Dropping the receiver for
+   those would change what they mean. Only names that Module does not also
+   answer belong here. */
+int is_kernel_module_function(const char *m) {
+  static const char *const K[] = {
+    "puts", "print", "p", "pp", "printf", "sprintf", "format",
+    "raise", "fail", "exit", "exit!", "abort", "at_exit",
+    "rand", "srand", "sleep", "gets", "loop", "lambda", "proc",
+    "block_given?", "catch", "throw", "caller", "binding", "__method__",
+    "require", "require_relative", "load", "warn", "system", "exec", "spawn",
+    "Integer", "Float", "String", "Array", "Hash", "Rational", "Complex",
+    NULL
+  };
+  return m && builtin_name_in(m, K);
+}

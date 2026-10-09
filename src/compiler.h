@@ -583,7 +583,8 @@ typedef struct {
                           once superclasses are wired can fill alias_cls */
   int   *alias_builtin; /* 1: the alias captured the builtin method of a
                            reopened primitive, which the class had not
-                           defined where the alias appeared */
+                           defined where the alias appeared.
+                           2: a captured builtin singleton method */
   int naliases, caliases;
   int enum_yield_arity; /* widest `yield` arity in this class's each, so the
                            Enumerable collector packs a multi-value yield into
@@ -615,6 +616,7 @@ typedef struct {
      struct name; free_sym its optional finalizer. Method bindings live in the
      compiler's native_methods registry, keyed by this class's index. */
   int is_native_class;
+  int is_builtin_const; /* builtin class/module name, classified at registration */
   /* --share-strings: a native class whose binding declares that its object
      keeps a String (`native_share ... "keeps"`): its objects are holders */
   int native_share_keeps;
