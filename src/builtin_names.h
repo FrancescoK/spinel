@@ -230,6 +230,9 @@ int is_string_append(const char *n); /* << concat: appends answering the receive
 int is_replace_name(const char *n); /* replace: a String's, Array's or Hash's contents swapped for another's, which ignores a block */
 
 int is_string_rebind_mutator(const char *n); /* mutators needing argument-rebind snapshots */
+/* String methods that only read the receiver's bytes and never retain the
+   pointer: a shared-mutable receiver hands them its live buffer. */
+int is_string_read_only_method(const char *name);
 int str_mutator_str_args(const char *n, int argc, int *int_ok); /* the arguments a String mutator takes as Strings */
 
 int builtin_module_owns(const char *cls, const char *name); /* included ahead of Object */
