@@ -1,0 +1,38 @@
+[]= name: bad environment variable name: contains null byte
+[]= value: bad environment variable value: contains null byte
+[]= boxed value: bad environment variable value: contains null byte
+[]= nil: bad environment variable name: contains null byte
+store name: bad environment variable name: contains null byte
+store value: bad environment variable value: contains null byte
+[] boxed name: bad environment variable name: contains null byte
+false
+[]: bad environment variable name: contains null byte
+fetch: bad environment variable name: contains null byte
+fetch default: default bad environment variable name: contains null byte
+fetch block: bad environment variable name: contains null byte
+key?: bad environment variable name: contains null byte
+include?: bad environment variable name: contains null byte
+has_key?: bad environment variable name: contains null byte
+member?: bad environment variable name: contains null byte
+delete: bad environment variable name: contains null byte
+assoc: bad environment variable name: contains null byte
+values_at: bad environment variable name: contains null byte
+values_at splat: bad environment variable name: contains null byte
+slice: bad environment variable name: contains null byte
+slice splat: bad environment variable name: contains null byte
+key: nil
+rassoc: nil
+except: false
+update name: bad environment variable name: contains null byte
+"1"
+update value: bad environment variable value: contains null byte
+update block: bad environment variable value: contains null byte
+"1"
+update boxed: bad environment variable name: contains null byte
+"3"
+replace: bad environment variable name: contains null byte
+["d", "keep"]
+replace value: bad environment variable value: contains null byte
+["e", nil, "keep"]
+["SPINEL_ENV_NUL_A", "SPINEL_ENV_NUL_D", "SPINEL_ENV_NUL_E", "SPINEL_ENV_NUL_KEEP"]
+[]

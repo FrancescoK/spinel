@@ -3516,17 +3516,27 @@ sp_StrStrHash *sp_env_clear(void) {
   }
   return sp_env_to_h();
 }
-/* ENV.update/merge!/replace with a string-pair hash */
+/* ENV.update/merge!/replace with a string-pair hash. The pairs are stored
+   in order, so the ones before a name or value CRuby rejects stay set;
+   replace then deletes every variable the hash does not name, as
+   sp_env_update_v does. */
 sp_StrStrHash *sp_env_update_h(sp_StrStrHash *h, int replace) {
-  if (replace) sp_env_clear();
   if (h) {
     SP_GC_ROOT(h);
     for (sp_int i = 0; i < h->len; i++) {
       const char *v = sp_StrStrHash_get(h, h->order[i]);
-      if (v) setenv(h->order[i], v, 1); else unsetenv(h->order[i]);
+      sp_env_chk(h->order[i], 0);
+      if (v) setenv(h->order[i], sp_env_chk(v, 1), 1); else unsetenv(h->order[i]);
     }
   }
-  return sp_env_to_h();
+  sp_StrStrHash *env = sp_env_to_h();
+  if (replace) {
+    SP_GC_ROOT(env);
+    for (sp_int i = 0; i < env->len; i++)
+      if (!h || !sp_StrStrHash_has_key(h, env->order[i])) unsetenv(env->order[i]);
+    env = sp_env_to_h();
+  }
+  return env;
 }
 /* Keys are spinel rodata literals (SPL: 0xff marker prefix) so the str-hash
    header cache's s[-1] read is in-bounds -- a bare C literal here would

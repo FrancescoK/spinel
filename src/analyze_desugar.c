@@ -2679,6 +2679,19 @@ int desugar_env_enum(Compiler *c) {
     nt_node_set_ref(nt, snap, "arguments", -1);
     nt_node_set_ref(nt, snap, "block", -1);
     nt_node_set_int(nt, id, "env_snapshot", 1);
+    /* the reads that take variable names check them as ENV[] does: an
+       embedded NUL raises (emit_hash_key reads the mark) */
+    if (sp_streq(nm, "assoc") || sp_streq(nm, "slice") || sp_streq(nm, "values_at") || sp_streq(nm, "fetch")) {
+      int qargs = nt_ref(nt, id, "arguments");
+      int qn = 0; const int *qav = qargs >= 0 ? nt_arr(nt, qargs, "arguments", &qn) : NULL;
+      for (int k = 0; k < qn && (k == 0 || !sp_streq(nm, "fetch")); k++) {
+        nt_node_set_int(nt, qav[k], "env_key", 1);
+        /* a splatted literal's members are the keys once spread */
+        int sx = nt_kind(nt, qav[k]) == NK_SplatNode ? nt_ref(nt, qav[k], "expression") : -1;
+        int sn = 0; const int *sv = sx >= 0 && nt_kind(nt, sx) == NK_ArrayNode ? nt_arr(nt, sx, "elements", &sn) : NULL;
+        for (int e = 0; e < sn; e++) nt_node_set_int(nt, sv[e], "env_key", 1);
+      }
+    }
     comp_grow_node_arrays(c);
     c->nscope[snap] = c->nscope[id];
     /* the plain-Enumerable names ride the pair ARRAY (the typed-hash surface

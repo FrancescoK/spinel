@@ -877,6 +877,9 @@ void emit_str_force_encoding(Compiler *c, const char *name, const char *r, const
 int rest_shortfall_required(Compiler *c, Scope *m);
 /* Emit a hash key, unboxing a poly value to the typed-hash's key type. */
 void emit_hash_key(Compiler *c, int key, TyKind kt, Buf *b);
+/* The ENV name check's text around a key desugar_env_enum marked. */
+const char *env_key_open(const NodeTable *nt, int n);
+const char *env_key_close(const NodeTable *nt, int n);
 int hash_key_misses(Compiler *c, int key, TyKind kt);
 int hash_nil_key_stored(Compiler *c, int key, TyKind kt);
 const char *conv_wrong_cls_name(TyKind t);

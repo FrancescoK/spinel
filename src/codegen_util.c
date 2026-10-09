@@ -4302,7 +4302,19 @@ void emit_boxed_iter_src(Compiler *c, int n, Buf *b) {
 int elem_param_is_handle(const LocalVar *lv, TyKind et) {
   return lv && lv->type == TY_STRBUF && et == TY_STRING;
 }
+/* A variable name an ENV snapshot read takes (desugar_env_enum marks it,
+   or its splat) raises CRuby's ArgumentError for an embedded NUL, as ENV[]
+   does: the check's text around the name. */
+const char *env_key_open(const NodeTable *nt, int n) { return nt_int(nt, n, "env_key", 0) ? "sp_env_chk(" : ""; }
+const char *env_key_close(const NodeTable *nt, int n) { return nt_int(nt, n, "env_key", 0) ? ", 0)" : ""; }
+static void emit_hash_key_value(Compiler *c, int key, TyKind kt, Buf *b);
 void emit_hash_key(Compiler *c, int key, TyKind kt, Buf *b) {
+  if (kt != TY_STRING) { emit_hash_key_value(c, key, kt, b); return; }
+  buf_puts(b, env_key_open(c->nt, key));
+  emit_hash_key_value(c, key, kt, b);
+  buf_puts(b, env_key_close(c->nt, key));
+}
+static void emit_hash_key_value(Compiler *c, int key, TyKind kt, Buf *b) {
   int kboxed = repr_of(c, key).kind == RK_BOXED;
   if (hash_key_misses(c, key, kt)) {
     /* evaluate the key for its effects, then answer the value no key equals */

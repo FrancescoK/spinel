@@ -2385,9 +2385,10 @@ SP_NORETURN SP_COLD static void sp_raise_no_str_conversion(sp_RbVal v) {
 static inline sp_RbVal sp_poly_strbuf_deref(sp_RbVal v);
 static const char *sp_env_aset(const char *k, sp_RbVal v) {
   v = sp_poly_strbuf_deref(v);
-  if (v.tag == SP_TAG_NIL) { unsetenv(k); return NULL; }
+  if (v.tag == SP_TAG_NIL) { unsetenv(sp_env_chk(k, 0)); return NULL; }
   if (v.tag != SP_TAG_STR) sp_raise_no_str_conversion(v);
-  if (v.v.s) setenv(k, v.v.s, 1); else unsetenv(k);
+  sp_env_chk(k, 0);
+  if (v.v.s) setenv(k, sp_env_chk(v.v.s, 1), 1); else unsetenv(k);
   return v.v.s;
 }
 static sp_bool sp_PolyArray_eq(sp_PolyArray *a, sp_PolyArray *b);
@@ -18453,7 +18454,8 @@ static sp_StrStrHash *sp_env_update_v(sp_RbVal hv, int replace) {
     v = sp_poly_strbuf_deref(v);
     if (k.tag != SP_TAG_STR) sp_raise_no_str_conversion(k);
     if (v.tag != SP_TAG_STR && v.tag != SP_TAG_NIL) sp_raise_no_str_conversion(v);
-    if (v.tag == SP_TAG_STR && v.v.s) setenv(k.v.s, v.v.s, 1); else unsetenv(k.v.s);
+    sp_env_chk(k.v.s, 0);
+    if (v.tag == SP_TAG_STR && v.v.s) setenv(k.v.s, sp_env_chk(v.v.s, 1), 1); else unsetenv(k.v.s);
   }
   sp_StrStrHash *env = sp_env_to_h();
   if (replace) {
@@ -18472,7 +18474,7 @@ static sp_StrStrHash *sp_env_update_h_blk(sp_StrStrHash *h, sp_Proc *p) { SP_GC_
     for (sp_int i = 0; i < h->len; i++) {
       const char *k = h->order[i];
       const char *nv = sp_StrStrHash_get(h, k);
-      const char *ov = getenv(k);
+      const char *ov = getenv(sp_env_chk(k, 0));
       if (ov && p) {
         const char *ovh = sp_str_dup_external(ov);  /* environ may move */
         ((unsigned char *)ovh)[-1] = 0xfa;
@@ -18486,9 +18488,9 @@ static sp_StrStrHash *sp_env_update_h_blk(sp_StrStrHash *h, sp_Proc *p) { SP_GC_
         sp_int r = sp_proc_call(p, 3, slots);
         const char *rv = (_sp_proc_poly_ret.tag != SP_TAG_NIL)
                            ? sp_poly_to_s(_sp_proc_poly_ret) : (const char *)(uintptr_t)r;
-        if (rv) setenv(k, rv, 1); else unsetenv(k);
+        if (rv) setenv(k, sp_env_chk(rv, 1), 1); else unsetenv(k);
       }
-      else if (nv) setenv(k, nv, 1);
+      else if (nv) setenv(k, sp_env_chk(nv, 1), 1);
       else unsetenv(k);
     }
   }
