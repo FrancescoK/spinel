@@ -2130,7 +2130,7 @@ static sp_bool sp_io_responds(sp_File *f, const char *m, int typed) {
     "ctime", "lstat", "mtime", NULL };
   static const char *const filem_b[] = { NULL };
   static const char *const basicm[] = { "do_not_reverse_lookup", "do_not_reverse_lookup=", NULL };
-  static const char *const basicm_t[] = { "getsockopt", "local_address", "recv",
+  static const char *const basicm_t[] = { "getpeername", "getsockname", "getsockopt", "local_address", "recv",
     "recv_nonblock", "remote_address", "setsockopt", "shutdown", NULL };
   static const char *const basicm_b[] = { NULL };
   static const char *const ipm[] = { "addr", "peeraddr", NULL };

@@ -171,6 +171,20 @@ int sp_net_sock_ip(int fd, int peer, char *ipbuf, int cap) {
     return -1;
 }
 
+/* The local/peer address of a socket fd as the packed sockaddr bytes, into
+   out: their length, or -1 with errno set. peer != 0 reads the remote end. */
+int sp_net_sock_name(int fd, int peer, void *out, int cap) {
+    struct sockaddr_storage ss;
+    socklen_t len = sizeof(ss);
+    int r = peer ? getpeername(fd, (struct sockaddr *)&ss, &len)
+                 : getsockname(fd, (struct sockaddr *)&ss, &len);
+    if (r != 0) return -1;
+    if (len > (socklen_t)sizeof(ss)) len = sizeof(ss);
+    if ((int)len > cap) len = (socklen_t)cap;
+    memcpy(out, &ss, len);
+    return (int)len;
+}
+
 /* The host name the local/peer address of a socket fd reverse-resolves to,
    into hostbuf: 0, or -1 when it has none (the caller then reports the
    numeric address, as CRuby does). A lookup may take seconds, so it runs
@@ -1012,6 +1026,23 @@ int sp_net_pack_sockaddr_un(const char *path, void *out, int cap) {
 
 /* Read a packed sockaddr back: the port is the return, the numeric address
  * goes into `ipbuf`. -1 when the buffer is not a sockaddr this understands. */
+/* The path a packed AF_UNIX sockaddr names, into pathbuf: its length, or -1
+   when the bytes are not an AF_UNIX sockaddr. */
+int sp_net_unpack_sockaddr_un(const void *sa, int salen, char *pathbuf, int cap) {
+    int off = (int)offsetof(struct sockaddr_un, sun_path);
+    if (!sa || salen < off || !pathbuf || cap <= 0) return -1;
+    if (((const struct sockaddr *)sa)->sa_family != AF_UNIX) return -1;
+    const char *p = (const char *)sa + off;
+    int max = salen - off;
+    if (max > (int)sizeof(((struct sockaddr_un *)0)->sun_path)) max = (int)sizeof(((struct sockaddr_un *)0)->sun_path);
+    int n = 0;
+    while (n < max && p[n]) n++;
+    if (n >= cap) n = cap - 1;
+    memcpy(pathbuf, p, (size_t)n);
+    pathbuf[n] = 0;
+    return n;
+}
+
 int sp_net_unpack_sockaddr_in(const void *sa, int salen, char *ipbuf, int cap) {
     if (!sa || salen < (int)sizeof(struct sockaddr) || !ipbuf || cap <= 0) return -1;
     const struct sockaddr *s = (const struct sockaddr *)sa;

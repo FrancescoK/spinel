@@ -56,6 +56,7 @@ int sp_net_listen_host(const char *host, int port, int backlog);
 int sp_net_local_port(int fd);
 int sp_net_sock_ip(int fd, int peer, char *ipbuf, int cap);
 int sp_net_sock_host(int fd, int peer, char *hostbuf, int cap);
+int sp_net_sock_name(int fd, int peer, void *out, int cap);
 int sp_net_accept(int sfd);
 int sp_net_accept_nb(int sfd);
 int sp_net_connect(const char *host, int port);
