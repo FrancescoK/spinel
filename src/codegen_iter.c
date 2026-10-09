@@ -2930,6 +2930,18 @@ void emit_block_binds(Compiler *c, int blk, const int *yargs, int yc,
   emit_block_binds_close(c, blk, ykw, bsc, rest_tmp, rest_lv, b, indent, as_expr, bi, al);
 }
 
+static int block_tail_lacks_value(Compiler *c, int id, int poly) {
+  if (id < 0 || nt_kind(c->nt, id) != NK_CallNode) return 0;
+  if (comp_ntype(c, id) != TY_VOID && comp_ntype(c, id) != TY_UNKNOWN) return 0;
+  const char *nm = nt_str(c->nt, id, "name");
+  int recv = nt_ref(c->nt, id, "receiver");
+  if (recv < 0 && nm && is_raise_alias(nm)) return 0;
+  if (call_never_returns(c, id)) return 1;
+  if (!poly || !nm || (recv >= 0 && nt_kind(c->nt, recv) != NK_SelfNode)) return 0;
+  int mi = comp_self_call_mi(c, id, nm);
+  return mi >= 0 && method_is_void(&c->scopes[mi]);
+}
+
 void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_expr,
                        TyKind want_ty) {
   /* want_ty: the consumer's slot type for the block's value (the YieldNode's
@@ -3339,6 +3351,9 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
       int bn4 = 0; const int *bd4 = nt_arr(c->nt, bbody, "body", &bn4);
       int rr4 = (bd4 && bn4 > 0) ? tail_iter_receiver(c, bd4[bn4 - 1]) : -1;
       if (rr4 >= 0) { emit_tail_recv_value(c, bd4[bn4 - 1], rr4, b); buf_puts(b, "; "); }
+      else if (bd4 && bn4 > 0 && (want_poly || (want_ty != TY_UNKNOWN && want_ty != TY_VOID && want_ty != TY_NIL)) &&
+               block_tail_lacks_value(c, unwrap_parens(c, bd4[bn4 - 1]), want_poly))
+        buf_printf(b, "%s; ", want_poly ? "sp_box_nil()" : default_value_from_compiler(c, want_ty));
     }
   }
   if (rd_lbl) g_redo_depth--;
