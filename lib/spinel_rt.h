@@ -1876,6 +1876,19 @@ static inline const char *sp_class_val_name(sp_RbVal v) {
   sp_Class _c = {v.v.i, NULL};
   return sp_class_to_s(_c);
 }
+/* The print form of a boxed class (to_s, inspect, error messages). A program
+   with Class.new classes installs the table that prints them (an unnamed one
+   prints CRuby's #<Class:0x...>), while sp_class_val_name stays the identity
+   key; any other program prints the name. */
+extern const char *(*sp_class_display_fn)(sp_Class);
+static inline const char *sp_class_val_display(sp_RbVal v) {
+  if (v.cls_id == SP_CLASS_BY_NAME) {   /* a name that is a Class.new class's key prints as that class */
+    sp_Class _n = {-1, v.v.s ? v.v.s : ""};
+    return sp_class_display_fn ? sp_class_display_fn(_n) : _n.name;
+  }
+  sp_Class _c = {v.v.i, NULL};
+  return sp_class_display_fn ? sp_class_display_fn(_c) : sp_class_to_s(_c);
+}
 /* Class identity: a name-backed class compares by its (complete) name, so it
    equals the id-backed class of the same name. */
 static inline sp_bool sp_class_eq(sp_Class a, sp_Class b) {
@@ -14930,6 +14943,9 @@ SP_NORETURN SP_COLD static void sp_raise_poly(sp_RbVal v) {
       /* the SystemCallError family's message is its errno text */
       if (sp_syserr_kind(cn, NULL) != SP_SYSERR_NONE)
         sp_raise_cls(cn, sp_syserr_build(cn, 0, NULL)->msg);
+      /* the message is the class's to_s: an unnamed Class.new class differs
+         from the name it raises under */
+      { const char *dn = sp_class_val_display(v); if (strcmp(dn, cn)) sp_raise_cls(cn, dn); }
       sp_raise_cls(cn, sp_str_empty);
     }
   }
@@ -14961,6 +14977,10 @@ SP_NORETURN SP_COLD static void sp_raise_poly_msg(sp_RbVal v, sp_RbVal m) {
            larger than the one built here */
         if (!(sp_user_exc_parent_fn && sp_user_exc_parent_fn(cn))) sp_raise_exc(se);
         sp_raise_cls(cn, se->msg);
+      }
+      if (!msg) {   /* as sp_raise_poly: the class's to_s, where it differs from its name */
+        const char *dn = sp_class_val_display(v);
+        if (strcmp(dn, cn)) msg = dn;
       }
       sp_raise_cls(cn, msg ? msg : sp_str_empty);
     }

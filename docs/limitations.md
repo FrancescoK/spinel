@@ -137,36 +137,31 @@ Each row below is a separate program; the blocks shown capture no outer locals.
 | Assignment | Compile | Run / subsequent use |
 |---|---|---|
 | `Foo = Class.new(Base) {}` | succeeds | works |
-| `foo = Class.new(Base) {}` | succeeds | works |
-| `Foo = Class.new(Base)` | succeeds | reading `Foo` raises `NameError` (`uninitialized constant Foo`) |
-| `foo = Class.new(Base)` | refused | no binary |
+| `foo = Class.new(Base) {}` | succeeds | `name` is nil until a constant assignment executes; `to_s`/`inspect` use the anonymous class address form |
+| `Foo = Class.new(Base)` | succeeds | works |
+| `foo = Class.new(Base)` | succeeds | same anonymous naming as the block form |
+| `Foo = Class.new(Mod)` or `foo = Class.new(Mod)` with `Mod` a module | succeeds | raises `TypeError` where the call runs, as CRuby does |
 | `Foo = Class.new(base) {}` | fails when compiling generated C | no binary |
 | `foo = Class.new(base) {}` | succeeds | construction raises `NotImplementedError` |
 | `Foo = Class.new(base)` | succeeds | reading `Foo` raises `NameError` (`uninitialized constant Foo`) |
 | `foo = Class.new(base)` | refused | no binary |
 
-An empty block therefore changes the result. Storing a class in a local does
-not make that local a supported superclass expression, even when its only
-assignment is a known class.
+An instance of an unnamed class inspects as `#<#<Class:0x...>:0x... @a=1>`,
+and as `#<Foo:0x... @a=1>` once a constant assignment names the class.
 
-For example, this chain is refused at the **first** assignment:
+At top level or in a class body outside a method, loop or block, omitting
+the block with a constant superclass is equivalent to an empty block.
+No-block calls in a method, loop or block retain their existing handling;
+this lowering does not give them fresh class identity on each evaluation. A local holding a class is still not a supported superclass expression.
+For example, the first assignment works, but the second is unsupported:
 
 ```ruby
 class Base; end
-foo = Class.new(Base)             # compile-time refusal
+foo = Class.new(Base)             # works
 bar = Class.new(foo)
 ```
 
-Adding blocks lets the first assignment work, but the second fails at runtime:
-
-```ruby
-class Base; end
-foo = Class.new(Base) {}          # works
-bar = Class.new(foo) {}           # NotImplementedError
-```
-
-Use constants for the superclass expressions and include the blocks to build
-the chain statically:
+Use constants for the superclass expressions to build the chain statically:
 
 ```ruby
 class Base; end
@@ -175,7 +170,7 @@ Bar = Class.new(Foo) {}
 p Bar.superclass == Foo           # true
 ```
 
-Spinel lowers these block forms to static class definitions when the superclass
+Spinel lowers the supported forms to static class definitions when the superclass
 is omitted or named by a constant and the block captures no outer locals. A
 constant assignment names the class; a local assignment or other expression
 uses a synthesized class. A method can return such a class too:
@@ -201,9 +196,8 @@ block spells the construct `Class.new(parent) { ... }` even though no block
 was supplied.
 
 Builtin parents can take separate paths: for example,
-`Err = Class.new(StandardError)` works without a block. This does not extend to
-the ordinary user-class forms in the table. The builtin-subclass restrictions
-above still apply.
+`Err = Class.new(StandardError)` works without a block. The builtin-subclass
+restrictions above still apply.
 
 ---
 

@@ -1741,10 +1741,15 @@ int emit_call_poly_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       int t = ++g_tmp;
       buf_printf(b, "({ sp_RbVal _t%d = ", t); emit_expr(c, recv, b);
       buf_printf(b, "; _t%d.cls_id == SP_BUILTIN_METHOD ? ", t);
+      /* a Class.new class has no name until a constant names it: nil */
+      char cls_arm[120];
+      snprintf(cls_arm, sizeof cls_arm, c->has_anonymous_classes
+               ? "sp_box_nullable_str(sp_class_name_or_nil(sp_unbox_class(_t%d)))"
+               : "sp_box_str(sp_class_val_name(_t%d))", t);
       if (sp_streq(name, "name"))
         buf_printf(b, "sp_box_sym(sp_sym_intern(((sp_BoundMethod *)_t%d.v.p)->name))"
-                      " : _t%d.tag == SP_TAG_CLASS ? sp_box_str(sp_class_val_name(_t%d))"
-                      " : _t%d.tag == SP_TAG_ENCODING ? sp_box_str(_t%d.v.s)", t, t, t, t, t);
+                      " : _t%d.tag == SP_TAG_CLASS ? %s"
+                      " : _t%d.tag == SP_TAG_ENCODING ? sp_box_str(_t%d.v.s)", t, t, cls_arm, t, t);
       else if (sp_streq(name, "owner"))
         buf_printf(b, "({ const char *_o = sp_bm_owner_name((sp_BoundMethod *)_t%d.v.p);"
                       " _o ? sp_box_class_name(_o) : sp_box_nil(); })", t);

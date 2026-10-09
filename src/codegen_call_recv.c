@@ -10279,14 +10279,15 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
     ClassInfo *ci2 = &c->classes[cid2];
     int want_ins = sp_streq(name, "inspect");
     if (ci2->is_value_type) {
-      const char *rn2 = class_ruby_name(c, cid2);
+      char rn2[512], rarg2[96];
+      obj_default_name(c, cid2, rn2, sizeof rn2, rarg2, sizeof rarg2);
       int tv2 = ++g_tmp;
       buf_printf(b, "({ sp_%s _t%d = ", ci2->c_name, tv2); emit_expr(c, recv, b);
-      buf_printf(b, "; sp_sprintf(\"#<%s:0x%%016llx", rn2 ? rn2 : ci2->name);
+      buf_printf(b, "; sp_sprintf(\"#<%s:0x%%016llx", rn2);
       if (want_ins)
         for (int vi = 0; vi < ci2->nivars; vi++)
           buf_printf(b, "%s %s=%%s", vi ? "," : "", ci2->ivars[vi]);
-      buf_printf(b, ">\", (unsigned long long)(uintptr_t)&_t%d", tv2);
+      buf_printf(b, ">\", %s(unsigned long long)(uintptr_t)&_t%d", rarg2, tv2);
       if (want_ins)
         for (int vi = 0; vi < ci2->nivars; vi++) {
           char fb2[300]; snprintf(fb2, sizeof fb2, "_t%d.iv_%s", tv2, iv_c(ci2->ivars[vi] + 1));
@@ -10468,9 +10469,12 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
     /* undef'd method: raise NoMethodError */
     if (comp_is_undeffed_in_chain(c, cid, name)) {
       TyKind ret_ty = repr_of(c, id).as_ty;
-      buf_printf(b, "(sp_raise_cls(\"NoMethodError\",\"undefined method '%s' for an instance of %s\"),%s)",
-                 name, c->classes[cid].name,
-                 ret_ty == TY_RANGE ? "(sp_Range){0}" : default_value_from_compiler(c, ret_ty));
+      {
+        char head[200]; snprintf(head, sizeof head, "undefined method '%s' for an instance of ", name);
+        buf_puts(b, "(sp_raise_cls(\"NoMethodError\",");
+        if (!anon_class_text(c, cid, head, b)) buf_printf(b, "\"%s%s\"", head, c->classes[cid].name);
+        buf_printf(b, "),%s)", ret_ty == TY_RANGE ? "(sp_Range){0}" : default_value_from_compiler(c, ret_ty));
+      }
       return 1;
     }
     /* instance_variable_get(:@x) / instance_variable_set(:@x, v) with a literal

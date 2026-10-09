@@ -8837,6 +8837,22 @@ int emit_exc_reopen_pick_head(Compiler *c, const int *xr, int xn, const char *cl
   return t;
 }
 
+/* The class name a default Object#to_s / #inspect of class `ci` prints, as the
+   two halves of a C format: `name` goes inside "#<...>" and `arg` leads the
+   call's arguments. A Class.new class prints at run time (a constant may
+   name it only after the program starts); any other class has its Ruby name
+   fixed here. */
+void obj_default_name(Compiler *c, int ci, char *name, size_t nn, char *arg, size_t na) {
+  if (comp_class_anonymous(c, ci)) {
+    snprintf(name, nn, "%%s");
+    snprintf(arg, na, "sp_class_display((sp_Class){%d}), ", ci);
+    return;
+  }
+  const char *rn = class_ruby_name(c, ci);
+  snprintf(name, nn, "%s", rn ? rn : c->classes[ci].name);
+  arg[0] = '\0';
+}
+
 /* Build the full Ruby-style qualified name ("ActiveRecord::RecordNotFound") for
    class index ci by walking enclosing_class up to the top level. */
 const char *class_ruby_name(Compiler *c, int ci) {
@@ -10835,13 +10851,15 @@ static void emit_obj_inspect_dispatch(Compiler *c, Buf *b) {
        walk below renders each ivar through the inspects that come back here.
        CRuby shows the repeated object as #<N:0x... ...>; an object with no
        ivars cannot be reached from inside itself and keeps its old body. */
+    char wname[512], warg[96];
+    obj_default_name(c, i, wname, sizeof wname, warg, sizeof warg);
     if (ci->nivars > 0)
       buf_printf(b, "      if (sp_poly_recur_seen(SP_POLY_RECUR_INSPECT, p, NULL))\n"
-                    "        return sp_sprintf(\"#<%s:0x%%016llx ...>\", (unsigned long long)(uintptr_t)p);\n"
+                    "        return sp_sprintf(\"#<%s:0x%%016llx ...>\", %s(unsigned long long)(uintptr_t)p);\n"
                     "      int _rcm = sp_poly_recur_push(SP_POLY_RECUR_INSPECT, p, NULL);\n",
-                 class_ruby_name(c, i) ? class_ruby_name(c, i) : ci->name);
-    buf_printf(b, "      sp_String *_s = sp_String_new(sp_sprintf(\"#<%s:0x%%016llx\", (unsigned long long)(uintptr_t)p));\n",
-               class_ruby_name(c, i) ? class_ruby_name(c, i) : ci->name);
+                 wname, warg);
+    buf_printf(b, "      sp_String *_s = sp_String_new(sp_sprintf(\"#<%s:0x%%016llx\", %s(unsigned long long)(uintptr_t)p));\n",
+               wname, warg);
     /* The builder is live across every allocation the ivar walk below makes --
        each element's own inspect, and the sp_sprintf that renders an ivar
        pointing back at this object. Unrooted, a collection mid-walk swept it
@@ -10916,7 +10934,15 @@ static void emit_marshal_dispatch(Compiler *c, Buf *b) {
     ClassInfo *ci = &c->classes[i];
     /* the class's Ruby name, qualified as CRuby writes it (`M::Page`) */
     const char *mname = class_ruby_name(c, i) ? class_ruby_name(c, i) : ci->name;
+    /* a Class.new class dumps under the constant that names it, and has no
+       name to dump under before one does (CRuby: can't dump anonymous class) */
+    char mnq[160];
+    if (comp_class_anonymous(c, i)) snprintf(mnq, sizeof mnq, "sp_class_assigned_name_%d", i);
+    else snprintf(mnq, sizeof mnq, "\"%s\"", mname);
     buf_printf(b, "    case %d: {\n", i);
+    if (comp_class_anonymous(c, i))
+      buf_printf(b, "      if (!sp_class_assigned_name_%d)\n"
+                    "        sp_raise_cls(\"TypeError\", sp_sprintf(\"can't dump anonymous class %%s\", sp_class_display((sp_Class){%d})));\n", i, i);
     buf_printf(b, "      sp_%s *o = (sp_%s *)p; (void)o;\n", ci->c_name, ci->c_name);
     /* an ivar nothing has set yet is not written, as CRuby leaves it out
        (ivar_set_test, the presence inspect and instance_variables read) */
@@ -10939,12 +10965,12 @@ static void emit_marshal_dispatch(Compiler *c, Buf *b) {
        `C`, its class, its elements as an Array's, and its ivars after them
        under `I` when it has any */
     if (ci->ary_root > 0) {
-      buf_printf(b, "      if (_niv) sp_mar_b(b, 'I');\n      sp_mar_b(b, 'C'); sp_mar_sym(b, \"%s\");\n"
-                    "      sp_mar_w_body(b, ", mname);
+      buf_printf(b, "      if (_niv) sp_mar_b(b, 'I');\n      sp_mar_b(b, 'C'); sp_mar_sym(b, %s);\n"
+                    "      sp_mar_w_body(b, ", mnq);
       emit_boxed_text(c, ty_object(i), "o", b);
       buf_puts(b, ");\n      if (_niv) sp_mar_long(b, _niv);\n");
     }
-    else buf_printf(b, "      sp_mar_b(b, 'o'); sp_mar_sym(b, \"%s\");\n      sp_mar_long(b, _niv);\n", mname);
+    else buf_printf(b, "      sp_mar_b(b, 'o'); sp_mar_sym(b, %s);\n      sp_mar_long(b, _niv);\n", mnq);
     for (int j = 0; j < ci->nivars; j++) {
       char expr[160]; snprintf(expr, sizeof expr, "o->iv_%s", iv_c(ci->ivars[j] + 1));
       const char *set = ivar_set_test(c, i, ci->ivars[j], expr, tb, sizeof tb);
@@ -10966,7 +10992,9 @@ static void emit_marshal_dispatch(Compiler *c, Buf *b) {
   for (int i = 0; i < c->nclasses; i++) {
     if (!class_marshalable(c, i)) continue;
     ClassInfo *ci = &c->classes[i];
-    buf_printf(b, "  if (!strcmp(name, \"%s\")) {\n", class_ruby_name(c, i) ? class_ruby_name(c, i) : ci->name);
+    if (comp_class_anonymous(c, i))
+      buf_printf(b, "  if (sp_class_assigned_name_%d && !strcmp(name, sp_class_assigned_name_%d)) {\n", i, i);
+    else buf_printf(b, "  if (!strcmp(name, \"%s\")) {\n", class_ruby_name(c, i) ? class_ruby_name(c, i) : ci->name);
     buf_printf(b, "    sp_%s *o = into.tag == SP_TAG_OBJ ? (sp_%s *)into.v.p : ", ci->c_name, ci->c_name);
     emit_obj_alloc_expr(c, i, b);
     buf_puts(b, ";\n");
@@ -13250,8 +13278,12 @@ void emit_regex_section(Compiler *c, Buf *b) {
   /* ... and the class-name table through sp_class_name_fn: lib/sp_poly_cold.c
      renders boxed classes, and a program with no poly rendering has no
      sp_class_to_s to hand over (SP_TU_NO_POLY_RENDER). */
-  if (g_emit_sym_rt)
+  if (g_emit_sym_rt) {
     buf_puts(b, "  sp_class_name_fn = sp_class_to_s;\n");
+    /* ... and, where a Class.new class exists, the table that prints it */
+    if (c->has_anonymous_classes)
+      buf_puts(b, "  sp_class_display_fn = sp_class_display;\n");
+  }
   /* A C stack that ran out becomes a catchable SystemStackError: the fault
      handler in the runtime archive cannot reach this TU's exception stack,
      so hand it the raise (see sp_raise_stack_overflow). */
@@ -16203,6 +16235,20 @@ static void emit_ffi_decls(Compiler *c, Buf *b) {
   }
 }
 
+/* Opens `switch(id){` over the class a sp_Class value stands for. A value that
+   carries its name (an exception's class, Range#class) keeps cls_id 0, which
+   must not read as the first class; it selects a Class.new class only when
+   the name is that class's identity key, and otherwise answers the name. */
+static void emit_anon_class_select(Compiler *c, Buf *b) {
+  buf_puts(b, "int id=c.cls_id;if(c.name){id=-1000;");
+  for (int i = 0; i < c->nclasses; i++)
+    if (comp_class_anonymous(c, i)) {
+      const char *kn = class_ruby_name(c, i) ? class_ruby_name(c, i) : c->classes[i].name;
+      buf_printf(b, "if(!strcmp(c.name,\"%s\"))id=%d;", kn, i);
+    }
+  buf_puts(b, "if(id==-1000)return c.name;}switch(id){");
+}
+
 /* The symbol table runtime (under g_emit_sym_rt) and sp_class_to_s, the class names the poly render arms print (under g_emit_class_names) (codegen_program's steps, in their order) */
 static void emit_sym_class_name_rt(Compiler *c, Buf *b) {
   if (g_emit_sym_rt) {
@@ -16353,6 +16399,9 @@ static void emit_sym_class_name_rt(Compiler *c, Buf *b) {
      program could reach those (user classes, class values, any poly-capable
      slot -- see the render-reach scan); a purely-scalar program skips it. */
   if (g_emit_class_names) {
+    for (int i = 0; i < c->nclasses; i++)
+      if (comp_class_anonymous(c, i))
+        buf_printf(b, "static const char *sp_class_assigned_name_%d;\n", i);
     buf_printf(b, "%s", g_ext_init_name ? "" : "static ");
     buf_puts(b, "const char *sp_class_to_s(sp_Class c){if(sp_class_nil_p(c))return SPL(\"nil\");if(c.name)return c.name;switch(c.cls_id){");
     for (int i = 0; i < c->nclasses; i++) {
@@ -16424,6 +16473,28 @@ static void emit_sym_class_name_rt(Compiler *c, Buf *b) {
     buf_puts(b, "case -178:return SPL(\"Thread::ConditionVariable\");case -179:return SPL(\"Fiber\");");
     buf_puts(b, "case -180:return SPL(\"MatchData\");");
     buf_puts(b, "default:return sp_str_empty;} }\n\n");
+    /* sp_class_to_s is the class's identity key (a Class.new class keeps the
+       compiler's name for it, which raise, rescue and sp_class_eq resolve by).
+       A Class.new class prints as its constant once one is assigned and as
+       CRuby's address form until then, so to_s, inspect and name read this. */
+    if (c->has_anonymous_classes) {
+      /* text kept for good (the 0xff marker is a literal's: the collector leaves
+         it alone), for a message staged before anything can root it */
+      buf_puts(b, "static const char *sp_anon_text(const char *head, const char *disp){"
+                  "size_t a=strlen(head),n=strlen(disp);char *m=(char *)malloc(a+n+2);"
+                  "if(!m)sp_raise_cls(\"NoMemoryError\",\"failed to allocate a message\");"
+                  "m[0]=(char)0xff;memcpy(m+1,head,a);memcpy(m+1+a,disp,n+1);return m+1;}\n\n");
+      /* the unnamed form is built once per class and kept, so its address is the
+         same on every call (the NoMethodError sites compare it) */
+      buf_puts(b, "static const char *sp_class_display(sp_Class c){");
+      emit_anon_class_select(c, b);
+      for (int i = 0; i < c->nclasses; i++)
+        if (comp_class_anonymous(c, i))
+          buf_printf(b, "case %d:if(sp_class_assigned_name_%d)return sp_class_assigned_name_%d;"
+                         "{static const char *t;if(!t)t=sp_anon_text(\"\",sp_sprintf(SPL(\"#<Class:0x%%016llx>\"),"
+                         "(unsigned long long)(uintptr_t)&sp_class_to_s+%d));return t;}", i, i, i, i);
+      buf_puts(b, "default:return sp_class_to_s(c);} }\n\n");
+    }
     /* CRuby INSPECTS a keyword-init Struct class as `K(keyword_init: true)`
        while its name and to_s stay the bare name, so the render arms need a
        second table rather than a suffixed sp_class_to_s (#3947). Emitted
@@ -16436,16 +16507,27 @@ static void emit_sym_class_name_rt(Compiler *c, Buf *b) {
       if (!qname) qname = c->classes[i].name;
       buf_printf(b, "case %d:return SPL(\"%s(keyword_init: true)\");", i, qname);
     }
-    buf_puts(b, "default:break;} return sp_class_to_s(c); }\n\n");
+    buf_printf(b, "default:break;} return %s(c); }\n\n", comp_class_display_fn(c));
     /* #name of an ANONYMOUS class is nil, where #to_s and #inspect are the
        address form sp_class_to_s renders. The static spelling
        (`Struct.new(:a).name`) has always answered nil; this is the same class
        reached through a value (`obj.class.name`) (#4031). */
-    buf_puts(b, "static const char *sp_class_name_or_nil(sp_Class c){switch(c.cls_id){");
+    buf_puts(b, "static const char *sp_class_name_or_nil(sp_Class c){");
+    if (c->has_anonymous_classes) emit_anon_class_select(c, b);
+    else buf_puts(b, "switch(c.cls_id){");
     for (int i = 0; i < c->nclasses; i++)
-      if (!is_builtin_reopen(c->classes[i].name) && c->classes[i].is_anon_struct)
+      if (comp_class_anonymous(c, i))
+        buf_printf(b, "case %d:return sp_class_assigned_name_%d;", i, i);
+      else if (!is_builtin_reopen(c->classes[i].name) && c->classes[i].is_anon_struct)
         buf_printf(b, "case %d:return NULL;", i);
     buf_puts(b, "default:break;} return sp_class_to_s(c); }\n\n");
+    if (c->has_anonymous_classes) {
+      buf_puts(b, "static void sp_class_assign_name(sp_Class c, const char *name){switch(c.cls_id){");
+      for (int i = 0; i < c->nclasses; i++)
+        if (comp_class_anonymous(c, i))
+          buf_printf(b, "case %d:if(!sp_class_assigned_name_%d)sp_class_assigned_name_%d=name;break;", i, i, i);
+      buf_puts(b, "default:break;}}\n");
+    }
     /* Inverse of the table above, for resolving a class carried by NAME back to
        its builtin id so the id-keyed hierarchy walks work on it (#3022). Cold
        path only (superclass/ancestors), so a linear scan is fine. */

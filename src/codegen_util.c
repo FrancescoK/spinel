@@ -2855,6 +2855,23 @@ __attribute__((noreturn)) void unsupported_feature(Compiler *c, int id, const ch
   unsup_leave(file, ln, msg);
 }
 
+/* A NoMethodError text that names a Class.new class `ci`: "<head><class>" as a C
+   expression, appended to b. The class prints at run time (its constant may be
+   assigned only after the program starts), so the text is built where it is
+   raised and kept per raise site as a persistent string, because the raise
+   stages it before anything roots it; it is rebuilt only when the class's
+   display changes. 0 (nothing appended) for any other class. */
+int anon_class_text(Compiler *c, int ci, const char *head, Buf *b) {
+  if (!comp_class_anonymous(c, ci)) return 0;
+  int t = ++g_tmp;
+  /* two workers may run this site at once: the message is stored before the
+     display it was built for, and an empty slot always rebuilds */
+  buf_printf(b, "({ static const char *_nd%d, *_nm%d; const char *_d%d = sp_class_display((sp_Class){%d}); "
+                "if (_d%d != _nd%d || !_nm%d) { const char *_m%d = sp_anon_text(\"%s\", _d%d); _nm%d = _m%d; _nd%d = _d%d; } _nm%d; })",
+             t, t, t, ci, t, t, t, t, head, t, t, t, t, t, t);
+  return 1;
+}
+
 /* The words `unsupported` refuses node id in, into msg; answers what the
    refusal says the call is (CplanRefuse). self_ci is the class whose body
    is being emitted (a bare name's NameError names it). Pure: the call plan

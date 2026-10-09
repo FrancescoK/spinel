@@ -1120,3 +1120,11 @@ int is_kernel_module_function(const char *m) {
   };
   return m && builtin_name_in(m, K);
 }
+
+/* the builtins whose subclass instance IS the builtin (#7449) */
+int is_embedding_builtin(const char *nm) {
+  return nm && (sp_streq(nm, "Array") || sp_streq(nm, "Hash"));
+}
+
+int is_class_name_name(const char *n) { return n && sp_streq(n, "name"); }
+int is_inspect_name(const char *n) { return n && sp_streq(n, "inspect"); }

@@ -17700,9 +17700,13 @@ static int emit_object_reopen_vis_refusal(Compiler *c, int id, int vrecv, TyKind
   if (boxed)
     buf_printf(b, "sp_raise_cls(\"NoMethodError\", sp_str_concat((&(\"\\xff\" \"%s method '%s' called for an instance of \")[1]), "
                   "sp_poly_class_name(_t%d))), %s; }))", kind, vnm, tv, default_value_from_compiler(c, repr_of(c, id).as_ty));
-  else
-    buf_printf(b, "sp_raise_cls(\"NoMethodError\", (&(\"\\xff\" \"%s method '%s' called for an instance of %s\")[1])), %s)",
-               kind, vnm, cname, default_value_from_compiler(c, repr_of(c, id).as_ty));
+  else {
+    char head[200]; snprintf(head, sizeof head, "%s method '%s' called for an instance of ", kind, vnm);
+    buf_puts(b, "sp_raise_cls(\"NoMethodError\", ");
+    if (vcid >= 0 && anon_class_text(c, vcid, head, b)) buf_puts(b, ")");
+    else buf_printf(b, "(&(\"\\xff\" \"%s method '%s' called for an instance of %s\")[1]))", kind, vnm, cname);
+    buf_printf(b, ", %s)", default_value_from_compiler(c, repr_of(c, id).as_ty));
+  }
   return 1;
 }
 /* --plan-check: a call refused for its visibility binds no method */
@@ -17763,9 +17767,15 @@ static int emit_vis_refusal_x(Compiler *c, int id, Buf *b) {
   { int vblk = nt_ref(nt, id, "block");
     int vbx = vblk >= 0 && nt_kind(nt, vblk) == NK_BlockArgumentNode ? nt_ref(nt, vblk, "expression") : -1;
     if (vbx >= 0 && nt_kind(nt, vbx) != NK_SymbolNode) { buf_puts(b, "(void)("); emit_expr(c, vbx, b); buf_puts(b, "), "); } }
-  buf_printf(b, "sp_raise_cls(\"NoMethodError\", (&(\"\\xff\" \"%s method '%s' called for %s%s\")[1])), %s)",
-             vis == SP_VIS_PRIVATE ? "private" : "protected", vnm, at_main ? "" : "an instance of ", vrn,
-             default_value_from_compiler(c, repr_of(c, id).as_ty));
+  {
+    char head[200]; snprintf(head, sizeof head, "%s method '%s' called for an instance of ",
+                             vis == SP_VIS_PRIVATE ? "private" : "protected", vnm);
+    buf_puts(b, "sp_raise_cls(\"NoMethodError\", ");
+    if (!at_main && anon_class_text(c, vcid, head, b)) buf_puts(b, ")");
+    else buf_printf(b, "(&(\"\\xff\" \"%s method '%s' called for %s%s\")[1]))",
+                    vis == SP_VIS_PRIVATE ? "private" : "protected", vnm, at_main ? "" : "an instance of ", vrn);
+    buf_printf(b, ", %s)", default_value_from_compiler(c, repr_of(c, id).as_ty));
+  }
   return 1;
 }
 
@@ -17828,9 +17838,14 @@ void emit_poly_vis_precheck(Compiler *c, int id, int tv, Buf *b) {
         is_descendant(c, caller, owner)) vis = SP_VIS_PUBLIC;
     if (vis == SP_VIS_PUBLIC) continue;
     const char *vrn = class_ruby_name(c, k) ? class_ruby_name(c, k) : c->classes[k].name;
-    buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == %d) { sp_exc_stage_recv(_t%d); "
-                  "sp_raise_cls(\"NoMethodError\", (&(\"\\xff\" \"%s method '%s' called for an instance of %s\")[1])); } ",
-               tv, tv, k, tv, vis == SP_VIS_PRIVATE ? "private" : "protected", vnm, vrn);
+    {
+      char head[200]; snprintf(head, sizeof head, "%s method '%s' called for an instance of ",
+                               vis == SP_VIS_PRIVATE ? "private" : "protected", vnm);
+      buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == %d) { sp_exc_stage_recv(_t%d); sp_raise_cls(\"NoMethodError\", ",
+                 tv, tv, k, tv);
+      if (!anon_class_text(c, k, head, b)) buf_printf(b, "(&(\"\\xff\" \"%s%s\")[1])", head, vrn);
+      buf_puts(b, "); } ");
+    }
   }
   /* a boxed IO handle, by the reopening its kind picks */
   int ks[16], n = io_reopen_defs(c, vnm, 0, ks, 16);
@@ -18086,8 +18101,13 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
       const char *vnm = nt_str(nt, id, "name");
       TyKind vret = repr_of(c, id).as_ty;
       const char *vcn = g_emitting_class_id >= 0 ? class_ruby_name(c, g_emitting_class_id) : NULL;
-      buf_printf(b, "(sp_raise_cls(\"NameError\", \"undefined local variable or method '%s' for %s%s\"), %s)",
-                 vnm ? vnm : "?", vcn ? "an instance of " : "main", vcn ? vcn : "",
+      char head[200];
+      snprintf(head, sizeof head, "undefined local variable or method '%s' for an instance of ", vnm ? vnm : "?");
+      buf_puts(b, "(sp_raise_cls(\"NameError\", ");
+      if (g_emitting_class_id >= 0 && anon_class_text(c, g_emitting_class_id, head, b)) buf_puts(b, ")");
+      else buf_printf(b, "\"undefined local variable or method '%s' for %s%s\")",
+                      vnm ? vnm : "?", vcn ? "an instance of " : "main", vcn ? vcn : "");
+      buf_printf(b, ", %s)",
                  (is_scalar_ret(vret) && vret != TY_UNKNOWN) ? default_value_from_compiler(c, vret) : "sp_box_nil()");
       return 1;
     }
@@ -18114,9 +18134,14 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
     TyKind uret = repr_of(c, id).as_ty;
     buf_puts(b, "(");
     for (int k = 0; k < argc; k++) { buf_puts(b, "(void)("); emit_expr(c, argv[k], b); buf_puts(b, "), "); }
-    buf_printf(b, "sp_raise_cls(\"NoMethodError\", (&(\"\\xff\" \"undefined method '%s' for an instance of %s\")[1])), %s)",
-               name, ucn ? ucn : "Object",
-               (is_scalar_ret(uret) && uret != TY_UNKNOWN) ? default_value_from_compiler(c, uret) : "sp_box_nil()");
+    {
+      char head[200]; snprintf(head, sizeof head, "undefined method '%s' for an instance of ", name);
+      buf_puts(b, "sp_raise_cls(\"NoMethodError\", ");
+      if (!anon_class_text(c, g_emitting_class_id, head, b))
+        buf_printf(b, "(&(\"\\xff\" \"undefined method '%s' for an instance of %s\")[1]))", name, ucn ? ucn : "Object");
+      else buf_puts(b, ")");
+      buf_printf(b, ", %s)", (is_scalar_ret(uret) && uret != TY_UNKNOWN) ? default_value_from_compiler(c, uret) : "sp_box_nil()");
+    }
     return 1;
   }
   if (recv >= 0) {
@@ -18631,6 +18656,7 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
            equivalent. TY_UNKNOWN keeps the old lattice name -- its receiver
            expression may not be independently emittable. */
         char rdesc[128];
+        int anon_ci = -1;   /* a Class.new receiver class names itself at run time */
         if (grt == TY_NIL) snprintf(rdesc, sizeof rdesc, "nil");
         else if (grt == TY_INT) snprintf(rdesc, sizeof rdesc, "an instance of Integer");
         else if (grt == TY_STRING) snprintf(rdesc, sizeof rdesc, "an instance of String");
@@ -18641,6 +18667,7 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
           const char *ocn = class_ruby_name(c, ty_object_class(grt));
           snprintf(rdesc, sizeof rdesc, "an instance of %s",
                    ocn ? ocn : c->classes[ty_object_class(grt)].name);
+          if (comp_class_anonymous(c, ty_object_class(grt))) anon_ci = ty_object_class(grt);
         }
         else if (ty_is_array(grt)) snprintf(rdesc, sizeof rdesc, "an instance of Array");
         else if (ty_is_hash(grt)) snprintf(rdesc, sizeof rdesc, "an instance of Hash");
@@ -18656,9 +18683,10 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
           /* and a module as a module ("for module Math") */
           int rci = rcn ? comp_class_index(c, rcn) : -1;
           if (rcn && (rci >= 0 || builtin_class_id(rcn) != 0))
-            snprintf(rdesc, sizeof rdesc, "%s %s",
+            { snprintf(rdesc, sizeof rdesc, "%s %s",
                      (rci >= 0 ? comp_class_is_module(c, &c->classes[rci]) : is_builtin_module_name(rcn))
                        ? "module" : "class", rcn);
+              anon_ci = -1; }
         }
         if (grt == TY_POLY || grt == TY_BOOL) {
           /* The RESULT slot is sized by the call's own type (ret), not the
@@ -18763,6 +18791,12 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
               char hd[96];
               snprintf(hd, sizeof hd, nomethod_head(nm), nm ? nm : "?");
               snprintf(gmsg, sizeof gmsg, "\"%s %s\"", hd, rdesc);
+              if (anon_ci >= 0) {
+                char head[160]; snprintf(head, sizeof head, "%s an instance of ", hd);
+                Buf ab; memset(&ab, 0, sizeof ab);
+                if (anon_class_text(c, anon_ci, head, &ab)) snprintf(gmsg, sizeof gmsg, "%s", ab.p);
+                free(ab.p);
+              }
             }
           }
           /* A receiver that is not side-effect-free still runs, first, as

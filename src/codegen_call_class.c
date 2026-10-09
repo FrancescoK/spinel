@@ -2490,8 +2490,8 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         }
       }
       buf_printf(b, "({ sp_Class _cl%d = ", _clt); emit_expr(c, recv, b);
-      buf_printf(b, "; sp_class_%s(_cl%d); })",
-                 sp_streq(name, "name") ? "name_or_nil" : "to_s", _clt);
+      buf_printf(b, "; %s(_cl%d); })",
+                 is_class_name_name(name) ? "sp_class_name_or_nil" : comp_class_display_fn(c), _clt);
       return 1;
     }
     if (sp_streq(name, "nil?")) {
@@ -2571,9 +2571,9 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
          sentinel there (#2654). A Module has no #superclass -> NoMethodError. */
       buf_printf(b, "({ sp_Class _cl%d = ", _clt); emit_expr(c, recv, b);
       buf_printf(b, "; sp_class_is_module_val(_cl%d) ? "
-                    "(sp_raise_cls(\"NoMethodError\", sp_sprintf(\"undefined method 'superclass' for module %%s\", sp_class_to_s(_cl%d))), (sp_Class){0}) : "
+                    "(sp_raise_cls(\"NoMethodError\", sp_sprintf(\"undefined method 'superclass' for module %%s\", %s(_cl%d))), (sp_Class){0}) : "
                     "(_cl%d.cls_id>=0?sp_class_superclass(_cl%d):sp_builtin_superclass(_cl%d)); })",
-                 _clt, _clt, _clt, _clt, _clt);
+                 _clt, comp_class_display_fn(c), _clt, _clt, _clt, _clt);
       return 1;
     }
     if (sp_streq(name, "ancestors") && argc == 0) {
@@ -3308,6 +3308,11 @@ int emit_call_class_method_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
   /* bare call to a class method of the enclosing module/class body */
   if (recv < 0 && g_class_body_id >= 0) {
     int smi = comp_cmethod_in_chain(c, g_class_body_id, name, NULL);
+    if (smi < 0 && argc == 0 && comp_class_anonymous(c, g_class_body_id) && is_name_reader(name)) {
+      buf_printf(b, "%s((sp_Class){%d})",
+                 is_class_name_name(name) ? "sp_class_name_or_nil" : comp_class_display_fn(c), g_class_body_id);
+      return 1;
+    }
     if (smi >= 0) {
       Scope *ms = &c->scopes[smi];
       if (g_plan_check) ucall_observe(c, id, smi, g_class_body_id, 0);
@@ -3387,9 +3392,9 @@ int emit_call_class_method_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
       buf_printf(b, "({ sp_Class _cl%d = ", _clt); emit_expr(c, recv, b);
       /* inspect carries a keyword-init Struct class's suffix; to_s stays the
          bare name (#3947), and name is nil for an anonymous class (#4031) */
-      buf_printf(b, "; sp_class_%s(_cl%d); })",
-                 sp_streq(name, "inspect") ? "inspect_name"
-                 : sp_streq(name, "name")  ? "name_or_nil" : "to_s", _clt);
+      buf_printf(b, "; %s(_cl%d); })",
+                 is_inspect_name(name) ? "sp_class_inspect_name"
+                 : is_class_name_name(name) ? "sp_class_name_or_nil" : comp_class_display_fn(c), _clt);
     }
     else emit_expr(c, recv, b);
     return 1;
@@ -3568,6 +3573,10 @@ int emit_call_class_method_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
       nt_str(nt, recv, "name") && comp_class_index(c, nt_str(nt, recv, "name")) >= 0 &&
       comp_cmethod_in_chain(c, comp_class_index(c, nt_str(nt, recv, "name")), name, NULL) < 0) {
     { int qci = comp_class_index(c, nt_str(nt, recv, "name"));
+      if (comp_class_anonymous(c, qci)) {
+        buf_printf(b, "%s((sp_Class){%d})", is_class_name_name(name) ? "sp_class_name_or_nil" : comp_class_display_fn(c), qci);
+        return 1;
+      }
       const char *qn8 = qci >= 0 ? class_ruby_name(c, qci) : NULL;
       /* A keyword-init Struct class INSPECTS as `K(keyword_init: true)`; its
          name and to_s stay the bare name, and a positional Struct or a Data
@@ -3590,7 +3599,10 @@ int emit_call_class_method_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
     if (encl && encl->is_cmethod && encl->class_id >= 0 &&
         comp_cmethod_in_chain(c, encl->class_id, name, NULL) < 0) {
       if (cmethod_takes_self_cls(c, (int)(encl - c->scopes)))
-        buf_printf(b, "sp_class_to_s(%s)", encl->yields && g_self ? g_self : "_sp_cls");
+        buf_printf(b, "%s(%s)", c->has_anonymous_classes && is_class_name_name(name) ? "sp_class_name_or_nil" : comp_class_display_fn(c),
+                   encl->yields && g_self ? g_self : "_sp_cls");
+      else if (comp_class_anonymous(c, encl->class_id))
+        buf_printf(b, "%s((sp_Class){%d})", is_class_name_name(name) ? "sp_class_name_or_nil" : comp_class_display_fn(c), encl->class_id);
       else {
         /* the Ruby-visible name: the enclosing path, with any collision
            qualification undone (`Brainfuck__Array` is `Brainfuck::Array`) */

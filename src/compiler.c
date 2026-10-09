@@ -564,6 +564,7 @@ ClassInfo *comp_class_new(Compiler *c, const char *name, int def_node) {
   ci->c_name = sp_class_c_name(name);
   ci->is_builtin_const = is_builtin_class_name(name) || is_builtin_module_const_name(name);
   ci->def_node = def_node;
+  if (nt_int(c->nt, def_node, "class_new_anonymous", 0)) c->has_anonymous_classes = 1;
   ci->parent = -1;
   ci->enclosing_class = -1;
   return ci;
@@ -3177,4 +3178,16 @@ int comp_class_extends_any(Compiler *c, int ci) {
   for (int k = ci, d = 0; k >= 0 && k < c->nclasses && d < 64; k = c->classes[k].parent, d++)
     if (c->classes[k].nextended_mods > 0) return 1;
   return 0;
+}
+
+/* Class.new identities acquire their public name only at an executed constant write. */
+int comp_class_anonymous(Compiler *c, int ci) {
+  return ci >= 0 && ci < c->nclasses &&
+         nt_int(c->nt, c->classes[ci].def_node, "class_new_anonymous", 0);
+}
+
+/* The table that prints a class value for to_s and inspect: a Class.new class
+   has a display form of its own, and every other program reads the one name table. */
+const char *comp_class_display_fn(Compiler *c) {
+  return c->has_anonymous_classes ? "sp_class_display" : "sp_class_to_s";
 }

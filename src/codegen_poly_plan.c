@@ -1597,8 +1597,16 @@ void emit_poly_prearms0(Compiler *c, int id, const char *name, const PolySpecial
        those), as the Encoding and Symbol arms below intern theirs; its
        to_s and inspect are not frozen */
     int fzn = sp_streq(name, "name");
-    buf_printf(b, "if (_t%d.tag == SP_TAG_CLASS) _t%d = %s%ssp_class_val_name(_t%d)%s%s; else ",
-               tv, tr, sbopen, fzn ? "sp_str_uminus_val(" : "", tv, fzn ? ")" : "", sbclose);
+    /* A Class.new class answers its name only once a constant names it: nil
+       before, its display form for to_s and inspect (sp_class_val_display). */
+    if (c->has_anonymous_classes && fzn)
+      buf_printf(b, "if (_t%d.tag == SP_TAG_CLASS) { const char *_cn%d = sp_class_name_or_nil(sp_unbox_class(_t%d)); "
+                    "_t%d = _cn%d ? %ssp_str_uminus_val(_cn%d)%s : %s; } else ",
+                 tv, tv, tv, tr, tv, sbopen, tv, sbclose, ret == TY_POLY ? "sp_box_nil()" : "NULL");
+    else
+      buf_printf(b, "if (_t%d.tag == SP_TAG_CLASS) _t%d = %s%s%s(_t%d)%s%s; else ",
+                 tv, tr, sbopen, fzn ? "sp_str_uminus_val(" : "",
+                 c->has_anonymous_classes ? "sp_class_val_display" : "sp_class_val_name", tv, fzn ? ")" : "", sbclose);
     /* `name` on an Encoding (always carried boxed) and on a Symbol: a
        frozen String, as CRuby answers and as the typed Symbol#name does */
     if (sp_streq(name, "name"))

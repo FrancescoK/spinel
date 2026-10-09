@@ -5008,10 +5008,6 @@ static const char *builtin_value_superclass(Compiler *c, int sc) {
   return nm;
 }
 
-/* the builtins whose subclass instance IS the builtin (#7449) */
-static int is_embedding_builtin(const char *nm) {
-  return nm && (sp_streq(nm, "Array") || sp_streq(nm, "Hash"));
-}
 static const char *refused_builtin_superclass(Compiler *c, int sc) {
   const char *nm = builtin_value_superclass(c, sc);
   return is_embedding_builtin(nm) ? NULL : nm;
