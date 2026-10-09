@@ -14733,6 +14733,7 @@ int stmts_diverge(Compiler *c, int stmts) {
   const char *lt = nt_type(nt, last);
   if (!lt) return 0;
   if (sp_streq(lt, "ReturnNode")) return 1;
+  if (sp_streq(lt, "ParenthesesNode")) return stmts_diverge(c, nt_ref(nt, last, "body"));
   if (sp_streq(lt, "CallNode") && nt_ref(nt, last, "receiver") < 0 &&
       !bare_call_class_owned(c, last)) {
     const char *nm = nt_str(nt, last, "name");

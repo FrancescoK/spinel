@@ -31243,6 +31243,39 @@ static void desugar_builtin_kwsplat(Compiler *c) {
   comp_grow_node_arrays(c);
 }
 
+static void desugar_diverging_args(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode || call_is_safe_nav(nt, id)) continue;
+    int an = nt_ref(nt, id, "arguments"), n = 0, k = -1;
+    const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &n) : NULL;
+    for (int i = 0; i < n && i < 64 && k < 0; i++) {
+      if (nt_kind(nt, av[i]) == NK_SplatNode) break;
+      const char *dn = nt_kind(nt, av[i]) == NK_CallNode && nt_ref(nt, av[i], "receiver") < 0 ? nt_str(nt, av[i], "name") : NULL;
+      if (dn && is_diverging_call(dn)) k = i;
+    }
+    int own = k < 0 || an_bare_call_class_owned(c, av[k]);
+    for (int i = 0; !own && i < c->nscopes; i++)
+      own = c->scopes[i].class_id < 0 && c->scopes[i].def_node >= 0 && c->scopes[i].name &&
+            sp_streq(c->scopes[i].name, nt_str(nt, av[k], "name"));
+    if (own) continue;
+    int st[66], ns = 0, recv = nt_ref(nt, id, "receiver");
+    if (recv >= 0 && subtree_has_side_effect(c, recv)) st[ns++] = recv;
+    for (int i = 0; i < k; i++) if (subtree_has_side_effect(c, av[i])) st[ns++] = av[i];
+    st[ns++] = av[k];
+    int s = nt_new_node(nt, "StatementsNode");
+    nt_node_set_arr(nt, s, "body", st, ns);
+    nt_node_set_type(nt, id, "ParenthesesNode");
+    nt_node_set_ref(nt, id, "body", s);
+    nt_node_set_ref(nt, id, "receiver", -1);
+    nt_node_set_ref(nt, id, "arguments", -1);
+    nt_node_set_ref(nt, id, "block", -1);
+    comp_grow_node_arrays(c);
+    c->nscope[s] = c->nscope[id];
+  }
+}
+
 /* `recv.m(pre, *a, post)` where a's length is only known at run time and m
    is a builtin taking lo..hi arguments. Expanding to the required count
    dropped every optional argument (`h.fetch(*[:k, 0])` ran fetch(:k) and
@@ -35169,6 +35202,7 @@ static void an_phase_class_structure(Compiler *c) {
 
 /* Explicit self receivers for implicit-self reads, then the block-forward inlining: a callee whose block is only called or forwarded is inlined at its call sites (analyze_program's steps, in their order) */
 static void an_phase_block_inline(Compiler *c) {
+  desugar_diverging_args(c);
   /* A bare identifier inside a class method that names a `class << self`
      attr reader is an implicit-self read of that singleton attribute; give it
      an explicit self receiver so it resolves like `self.reader` instead of

@@ -50,12 +50,18 @@ static int emit_init_copy_rest_args(Compiler *c, int id, Scope *m, const char *c
   return 1;
 }
 
+int str_cmp_bound_foreign(Compiler *c, int n) {
+  TyKind t = comp_ntype(c, n);
+  NodeKind k = nt_kind(c->nt, n);
+  return ty_is_object(t) || t == TY_INT || t == TY_FLOAT || t == TY_NIL || t == TY_BOOL || t == TY_SYMBOL ||
+         t == TY_BIGINT || t == TY_RANGE || ty_is_hash(t) || ty_is_array(t) || k == NK_ArrayNode || k == NK_HashNode;
+}
+
 /* between?, object_id / __id__, hash, nil? and === on a receiver whose kind decides them */
 int emit_call_identity_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt) {
   /* between?(lo, hi): lo <= self <= hi */
   if (sp_streq(name, "between?") && argc == 2) {
-    if (rt == TY_STRING &&
-        (ty_is_object(comp_ntype(c, argv[0])) || ty_is_object(comp_ntype(c, argv[1])))) {
+    if (rt == TY_STRING && (str_cmp_bound_foreign(c, argv[0]) || str_cmp_bound_foreign(c, argv[1]))) {
       /* Comparable#between? is two <=>s and it STOPS at the first: when
          `self >= lo` is false CRuby never asks hi for anything, so
          `"abc".between?(W.new("abd"), Plain.new)` is false rather than the
