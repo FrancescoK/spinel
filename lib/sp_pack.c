@@ -560,18 +560,24 @@ static void pk_str_spec(char spec, int64_t count, sp_RbVal e, int have,
    length. Both were dropped, so the packed bytes came out shifted (#3553).
    Shared by the four pack entry points, whose prologues are otherwise
    identical. Returns 1 when it handled the directive (caller should
-   `continue`), 0 for any other spec. */
-static int pk_cursor_directive(char spec, int64_t count, char **buf, size_t *len, size_t *cap) {
+   `continue`), 0 for any other spec. A star counts zero for X, @ and x;
+   none of them consumes an array element. */
+static inline int pk_cursor_directive(char spec, int64_t count, char **buf, size_t *len, size_t *cap) {
   if (spec == 'X') {
-    size_t back = count < 0 ? 1 : (size_t)count;
+    size_t back = count < 0 ? 0 : (size_t)count;
     if (back > *len) sp_raise_cls("ArgumentError", "X outside of string");
     *len -= back;
     return 1;
   }
   if (spec == '@') {
-    size_t abs = count < 0 ? *len : (size_t)count;
+    size_t abs = count < 0 ? 0 : (size_t)count;
     if (abs <= *len) *len = abs;
     else { char _z = 0; while (*len < abs) pk_append(buf, len, cap, &_z, 1); }
+    return 1;
+  }
+  if (spec == 'x') {
+    char z = 0;
+    for (int64_t i = 0; i < count; i++) pk_append(buf, len, cap, &z, 1);
     return 1;
   }
   return 0;
