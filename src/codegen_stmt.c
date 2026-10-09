@@ -9414,6 +9414,10 @@ void emit_return(Compiler *c, int id, Buf *b, int indent) {
     n = 0;
   }
   emit_frame_unwind(b, 0, NULL);
+  /* a bare return from a proc body leaves the poly slot a boxed caller reads
+     (Proc#===) nil, as the body's end does: a call inside the body had left
+     its own answer there (#8199) */
+  if (n == 0 && g_in_proc_body) buf_puts(b, "_sp_proc_poly_ret = sp_box_nil(); ");
   if (n > 1) {
     int ta = emit_return_values(c, a, n, "{ ", b);
     /* a method answering other values too returns the Array boxed */
@@ -11255,9 +11259,12 @@ static int emit_next_leaving_body(Compiler *c, int id, Buf *b, int indent) {
     /* untypable slot: evaluate for effects, return nil */
     emit_indent(b, indent); buf_puts(b, "(void)(");
     emit_expr(c, nv[0], b); buf_puts(b, ");\n");
-    emit_indent(b, indent); emit_frame_unwind(b, 0, NULL); buf_puts(b, "return 0;\n");
+    emit_indent(b, indent); emit_frame_unwind(b, 0, NULL); buf_puts(b, "_sp_proc_poly_ret = sp_box_nil(); return 0;\n");
   }
-  else { emit_indent(b, indent); emit_frame_unwind(b, 0, NULL); buf_puts(b, "return 0;\n"); }
+  /* the boxed answer a caller reading the poly slot sees (Proc#===, a
+     boxed call) is nil, as the body's end leaves it: a call inside the
+     body had left its own there (#8199) */
+  else { emit_indent(b, indent); emit_frame_unwind(b, 0, NULL); buf_puts(b, "_sp_proc_poly_ret = sp_box_nil(); return 0;\n"); }
   return 1;
 }
 
