@@ -1,0 +1,16 @@
+[97, 98, 97, 98]
+[97, 98]
+["a", "b"]
+"comparison of String with Hash failed"
+"comparison of String with Array failed"
+"comparison of String with Range failed"
+[1, 3, 5]
+[1, 3, 5]
+[1, 3, 5]
+[1, 4, 7, 10]
+"unknown keyword: :foo"
+Integer
+true
+[1, 2, 3]
+Integer
+NoMethodError

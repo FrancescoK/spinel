@@ -1408,6 +1408,13 @@ int call_is_safe_nav(const NodeTable *nt, int id) {
 }
 
 /* Boxed (poly) receivers: the run of poly-face arms of infer_call */
+static int block_yields_int_too(const NodeTable *nt, int blk) {
+  int n = 0;
+  const int *calls = nt_nodes_of_kind(nt, NK_CallNode, &n);
+  for (int i = 0; i < n; i++)
+    if (nt_ref(nt, calls[i], "block") == blk && is_byte_codepoint_each(nt_str(nt, calls[i], "name"))) return 1;
+  return 0;
+}
 int poly_lines_args(Compiler *c, int argc, const int *argv) {
   const NodeTable *nt = c->nt;
   int kw = argc >= 1 && nt_type(nt, argv[argc - 1]) &&
@@ -1774,7 +1781,17 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
     const char *ebp = block_param_name(c, eb, 0);
     Scope *ebs = ebp ? comp_scope_of(c, eb) : NULL;
     LocalVar *ebl = (ebs && ebp) ? scope_local(ebs, ebp) : NULL;
-    if (ebl && ebl->type != TY_STRING) ebl->type = TY_STRING;
+    if (ebl && ebl->type != TY_STRING)
+      ebl->type = ebl->type == TY_INT || (ebl->type == TY_POLY && block_yields_int_too(nt, eb)) ? TY_POLY : TY_STRING;
+    { *out = TY_STRING; return 1; }
+  }
+  if (recv >= 0 && rt == TY_POLY && argc == 0 && is_byte_codepoint_each(name) &&
+      nt_ref(nt, id, "block") >= 0 && !an_user_defines_or_reads(c, name)) {
+    int eb = nt_ref(nt, id, "block");
+    const char *ebp = block_param_name(c, eb, 0);
+    Scope *ebs = ebp ? comp_scope_of(c, eb) : NULL;
+    LocalVar *ebl = (ebs && ebp) ? scope_local(ebs, ebp) : NULL;
+    if (ebl && ebl->type != TY_INT && ebl->type != TY_POLY) ebl->type = ebl->type == TY_UNKNOWN ? TY_INT : TY_POLY;
     { *out = TY_STRING; return 1; }
   }
   /* `poly.empty?`: the dispatch carries builtin String / Array / Hash arms, so
