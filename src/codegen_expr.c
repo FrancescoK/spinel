@@ -53,6 +53,19 @@ static void interp_flatten(const NodeTable *nt, int id, int **out, int *n, int *
   }
 }
 
+/* Does the InterpolatedStringNode id fold to one literal: every leaf part of
+   its flattened tree a StringNode (`"a" "b"`, a squiggly heredoc whose lines
+   indent differently)? That is the condition emit_interp folds on
+   (ndyn_or_scalar == 0 below), asked of the node alone. */
+int interp_is_literal_fold(const NodeTable *nt, int id) {
+  int *flat = NULL, n = 0, cap = 0, fold = 1;
+  interp_flatten(nt, id, &flat, &n, &cap);
+  for (int k = 0; k < n && fold; k++)
+    if (nt_kind(nt, flat[k]) != NK_StringNode) fold = 0;
+  free(flat);
+  return fold;
+}
+
 /* Single-buffer construction: every part is either an escaped literal
    (compile-time length), a bounded-width scalar (int <= 21 digits, bool
    <= 5), or a dynamic part pre-evaluated -- in part order, preserving

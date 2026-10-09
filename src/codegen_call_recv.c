@@ -6914,19 +6914,29 @@ static int str_arms_convert(Compiler *c, int id, Buf *b, const NodeTable *nt, co
     if (eq_sblv) { /* emitted above */ }
     else if (eqa == TY_STRING) {
       /* string identity IS pointer identity (s.freeze.equal?(s) must be
-         true: freeze marks in place and returns the same pointer) */
-      buf_printf(b, "((const void *)(%s) == (const void *)(", r);
+         true: freeze marks in place and returns the same pointer). Under
+         --share-strings a side that is a handle answers its identity
+         (sp_String_identity): a frozen literal's handle is its bytes' */
+      int hr = repr_share_rule(c) && repr_of(c, recv).as_ty == TY_STRBUF;
+      int ha = repr_share_rule(c) && repr_of(c, argv[0]).as_ty == TY_STRBUF;
+      buf_printf(b, "((const void *)%s(%s) == (const void *)%s(", hr ? "sp_String_identity" : "", r,
+                 ha ? "sp_String_identity" : "");
       emit_expr(c, argv[0], b);
       buf_puts(b, "))");
     }
     else if (eqa == TY_POLY) {
       /* a boxed operand can hold this very String: its payload is the same
-         pointer, as an element read of it is (`[s, 1][0]`) */
+         pointer, as an element read of it is (`[s, 1][0]`). Under
+         --share-strings it can hold a frozen literal's handle, which the
+         boxed comparison reads as the literal's bytes. */
       int trq = ++g_tmp, teq = ++g_tmp;
       buf_printf(b, "({ const char *_t%d = %s; sp_RbVal _t%d = ", trq, r, teq);
       emit_boxed(c, argv[0], b);
-      buf_printf(b, "; (sp_bool)(_t%d.tag == SP_TAG_STR && (const void *)_t%d.v.s == (const void *)_t%d); })",
-                 teq, teq, trq);
+      if (repr_share_rule(c))
+        buf_printf(b, "; sp_poly_equal(sp_box_str(_t%d), _t%d); })", trq, teq);
+      else
+        buf_printf(b, "; (sp_bool)(_t%d.tag == SP_TAG_STR && (const void *)_t%d.v.s == (const void *)_t%d); })",
+                   teq, teq, trq);
     }
     else if (same_sefree_lvalue(c, recv, argv[0])) { buf_puts(b, "(("); emit_expr(c, argv[0], b); buf_puts(b, "), 1)"); }
     /* another kind is another object; the receiver and the argument
