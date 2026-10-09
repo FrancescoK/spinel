@@ -369,6 +369,9 @@ static int repr_strbuf_src(const Compiler *c, int node, TyKind t) {
     if (c->strbuf_handle_demand[node] && repr_call_returns_handle(mc, node)) return RS_DEMANDED;
     /* A container store can mark the reader itself as the handle too. */
     if (repr_boxed_reader_handle(mc, node)) return RS_DEMANDED;
+    /* The implicit-self reader boxes its slot too, not a fresh String. */
+    if (c->share_strings && (c->strbuf_box[node] || c->strbuf_handle_demand[node]) &&
+        strbuf_self_reader_slot(mc, node)) return RS_DEMANDED;
     int r = nt_ref(nt, node, "receiver");
     if (r >= 0 && ty_is_object(comp_ntype(c, r)) &&
         (strbuf_marked_yields_handle(mc, node) || c->strbuf_handle_demand[node]))

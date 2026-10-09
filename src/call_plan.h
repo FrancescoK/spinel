@@ -135,6 +135,8 @@ void cplan_served_report(void);
    than one (or any, without a base method: has_base 0), CP_PER_ARM for a
    switch whose arms disagree on the argument layout; CP_NONE for neither
    a base method nor a descendant's. */
+/* Whether a descendant defines its own method of this name. */
+int cplan_overridden(Compiler *c, int cid, const char *name, int cmeth);
 int cplan_dispatch_form(Compiler *c, int cid, const char *name, int has_base);
 
 /* whether mi is the plan's method or, for a switch, one of its arms */
