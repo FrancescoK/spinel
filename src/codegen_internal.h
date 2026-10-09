@@ -956,6 +956,7 @@ int seeded_array_kind_mismatch(TyKind slot, TyKind vt);
 void emit_array_store_value(Compiler *c, TyKind slot, int v, Buf *b);
 void emit_rbs_checked_text(Compiler *c, TyKind slot, const char *slotname,
                            const char *expr, Buf *b);
+void emit_block_param_share(Compiler *c, Scope *bs, LocalVar *lv, const char *name, Buf *pb, int rooted);
 void emit_proc_literal(Compiler *c, int create, Buf *b);
 int proc_slot_is_direct(TyKind t);
 const char *proc_rest_name(Compiler *c, int create);

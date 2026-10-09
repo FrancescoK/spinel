@@ -1,3 +1,4 @@
+# spinel: reject-share
 # A proc stores its parameter's String into the Array, and the element is
 # then appended to. No element iterator binds a proc's parameter, so the
 # element would stay a copy: refused, not compiled with ["a", 2].

@@ -16470,7 +16470,7 @@ static void refuse_callee_container_store(Compiler *c, int l, int a) {
   ShareRoute q = share_route(l, l, 0);
   q.to = a;
   q.to_elems = 1;
-  q.carry = SHARE_CARRY_COPY;
+  q.carry = l;
   if (!share_route_defer(c, &q, msg)) unsupported_feature(c, l, msg);
 }
 static void refuse_callee_container_stores(Compiler *c, const char *vn, Scope *vs) {

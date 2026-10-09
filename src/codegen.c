@@ -7351,13 +7351,59 @@ void emit_proc_literal(Compiler *c, int create, Buf *b) {
   sb_shim_drop(c, create);
 }
 
+/* A boxed parameter of a shared class may receive a fresh plain String.
+   Lift it once at binding, before aliases or stores read it; an incoming
+   handle and non-Strings pass through unchanged. Frozen plain Strings
+   keep their original box, including a literal's interned identity. */
+static void emit_param_string_lift(const char *prefix, const char *name, Buf *pb, int rooted) {
+  if (!rooted) buf_printf(pb, "    SP_GC_ROOT_RBVAL(%s%s);\n", prefix, name);
+  buf_printf(pb, "    if (%s%s.tag == SP_TAG_STR && %s%s.v.s && !sp_str_is_frozen_val(%s%s.v.s))\n"
+                 "      %s%s = sp_poly_strbuf_lift(%s%s);\n",
+             prefix, name, prefix, name, prefix, name, prefix, name, prefix, name);
+}
+void emit_block_param_share(Compiler *c, Scope *bs, LocalVar *lv, const char *name, Buf *pb, int rooted) {
+  if (!repr_share_rule(c)) return;
+  if (!lv || repr_of_slot(c, lv).kind != RK_BOXED ||
+      !repr_str_shares(c, share_local_holder(c, (int)(bs - c->scopes), (int)(lv - bs->locals)))) return;
+  emit_param_string_lift("lv_", name, pb, rooted);
+}
+/* A rest binds each argument into a fresh container. Its element holder,
+   rather than the Array holder itself, decides whether Strings share. */
+static void emit_proc_rest_bind(Compiler *c, Scope *bs, const char *name, int arity, Buf *pb) {
+  LocalVar *lv = scope_local(bs, name);
+  int lift = repr_share_rule(c) && lv &&
+             repr_str_elems_share(c, share_local_holder(c, (int)(bs - c->scopes), (int)(lv - bs->locals)));
+  buf_printf(pb, "    sp_PolyArray *lv_%s = sp_PolyArray_new(); SP_GC_ROOT(lv_%s);\n", name, name);
+  buf_printf(pb, "    { sp_int __k = %d + _sp_ot, __hi = _sp_ps; if (__hi > 16) __hi = 16;\n", arity);
+  if (lift) {
+    buf_puts(pb, "      sp_RbVal _sp_rest_value = sp_box_nil(); SP_GC_ROOT_RBVAL(_sp_rest_value);\n"
+                 "      for (; __k < __hi; __k++) { _sp_rest_value = _sp_proc_poly_args[__k];\n");
+    emit_param_string_lift("", "_sp_rest_value", pb, 1);
+    buf_printf(pb, "        sp_PolyArray_push(lv_%s, _sp_rest_value); } }\n", name);
+  }
+  else
+    buf_printf(pb, "      for (; __k < __hi; __k++) sp_PolyArray_push(lv_%s, _sp_proc_poly_args[__k]); }\n", name);
+}
+static void emit_proc_poly_arg(Compiler *c, Scope *bs, LocalVar *lv, const char *name, int k, Buf *pb) {
+  buf_printf(pb, "(argc > %d) ? _sp_proc_poly_args[%d] : sp_box_nil();\n", k, k);
+  emit_block_param_share(c, bs, lv, name, pb, 0);
+}
+static void emit_proc_poly_post(Compiler *c, Scope *bs, int create, LocalVar *lv,
+                                const char *name, int j, Buf *pb) {
+  buf_puts(pb, "    "); emit_local_ctype(c, TY_POLY, proc_local_needs_volatile(c, create, lv), pb);
+  buf_printf(pb, " lv_%s = ({ sp_int __i = _sp_ps + %d;\n", name, j);
+  buf_puts(pb, "      (__i < argc && __i < 16) ? _sp_proc_poly_args[__i] : sp_box_nil(); });\n");
+  buf_printf(pb, "    (void)lv_%s;\n", name);
+  emit_block_param_share(c, bs, lv, name, pb, 0);
+}
+
 /* Bind a proc parameter slot: `cond` true reads the argument `arg`, else the
    default node `dv` (or `fallback` when dv < 0) is evaluated. A default can
    need helper statements (an array or hash literal allocates into a temp), so
    they run in the else branch, and the slot is rooted: an allocated default
    has no other reference. A `nilable` Integer slot takes a nil, passed or
    defaulted, as its own nil (emit_unbox_nilable_text). */
-static void emit_proc_param_slot(Compiler *c, Buf *pb, const char *name, const char *cond,
+static void emit_proc_param_slot(Compiler *c, Scope *bs, LocalVar *lv, Buf *pb, const char *name, const char *cond,
                                  const char *arg, int dv, const char *fallback, TyKind lt,
                                  int nilable) {
   Buf dpre = {0}, dval = {0};
@@ -7377,6 +7423,7 @@ static void emit_proc_param_slot(Compiler *c, Buf *pb, const char *name, const c
   if (dpre.p) buf_puts(pb, dpre.p);
   buf_printf(pb, "      %s%s = %s;\n    }\n", slot, name, dval.p ? dval.p : "sp_box_nil()");
   buf_printf(pb, "    SP_GC_ROOT_RBVAL(%s%s); (void)%s%s;\n", slot, name, slot, name);
+  if (!typed) emit_block_param_share(c, bs, lv, name, pb, 1);
   if (typed) {
     char src[160];
     snprintf(src, sizeof src, "_pv_%s", name);
@@ -8171,7 +8218,7 @@ else if (orecv >= 0 && onm) {
         if (pt == TY_FLOAT)
           buf_printf(pb, "(argc > %d) ? sp_poly_to_f_or_nil(_sp_proc_poly_args[%d]) : sp_float_nil();\n", k, k);
         else
-          buf_printf(pb, "(argc > %d) ? _sp_proc_poly_args[%d] : sp_box_nil();\n", k, k);
+          emit_proc_poly_arg(c, bs, lv, p, k, pb);
       }
       else buf_puts(pb, pt == TY_FLOAT ? "sp_float_nil();\n" : "0;\n");
       /* either nil makes it nullable, as an Integer's below */
@@ -8350,15 +8397,10 @@ else if (orecv >= 0 && onm) {
       snprintf(cond, sizeof cond, "%d < _sp_ot && %d + %d < 16", j, arity, j);
       snprintf(arg, sizeof arg, "_sp_proc_poly_args[%d + %d]", arity, j);
       { LocalVar *olv = scope_local(bs, on);
-        emit_proc_param_slot(c, pb, on, cond, arg, proc_opt_value(c, create, j), "sp_box_nil()",
+        emit_proc_param_slot(c, bs, olv, pb, on, cond, arg, proc_opt_value(c, create, j), "sp_box_nil()",
                              olv ? olv->type : TY_POLY, olv && olv->nullable_int); }
     }
-    if (restn && restn[0]) {
-      buf_printf(pb, "    sp_PolyArray *lv_%s = sp_PolyArray_new(); SP_GC_ROOT(lv_%s);\n", restn, restn);
-      buf_printf(pb, "    { sp_int __k = %d + _sp_ot, __hi = _sp_ps; if (__hi > 16) __hi = 16;\n", arity);
-      buf_printf(pb, "      for (; __k < __hi; __k++) sp_PolyArray_push(lv_%s, _sp_proc_poly_args[__k]); }\n",
-                 restn);
-    }
+    if (restn && restn[0]) emit_proc_rest_bind(c, bs, restn, arity, pb);
     /* A post binds as an optional does: the boxed value, unboxed into the
        type the analysis gave the parameter. Declared boxed whatever that
        type, a post a lowered block's yields typed a String or an Integer
@@ -8371,9 +8413,7 @@ else if (orecv >= 0 && onm) {
       LocalVar *plv = scope_local(bs, pp);
       TyKind lt = plv ? plv->type : TY_POLY;
       if (lt == TY_POLY || lt == TY_UNKNOWN) {
-        buf_puts(pb, "    "); emit_local_ctype(c, TY_POLY, proc_local_needs_volatile(c, create, plv), pb); buf_printf(pb, " lv_%s = ({ sp_int __i = _sp_ps + %d;\n", pp, j);
-        buf_puts(pb, "      (__i < argc && __i < 16) ? _sp_proc_poly_args[__i] : sp_box_nil(); });\n");
-        buf_printf(pb, "    (void)lv_%s;\n", pp);
+        emit_proc_poly_post(c, bs, create, plv, pp, j, pb);
         continue;
       }
       buf_printf(pb, "    sp_RbVal _pv_%s = (_sp_ps + %d < argc && _sp_ps + %d < 16) ? _sp_proc_poly_args[_sp_ps + %d]"
@@ -8467,7 +8507,7 @@ else if (orecv >= 0 && onm) {
          method-keyword arm); an optional one falls back to its default. */
       snprintf(missing, sizeof missing, "(sp_raise_cls(\"ArgumentError\", \"missing keyword: :%s\"), sp_box_nil())", key);
       LocalVar *klv = scope_local(bs, kn);
-      emit_proc_param_slot(c, pb, kn, cond, arg, dv, missing, klv ? klv->type : TY_POLY, 0);
+      emit_proc_param_slot(c, bs, klv, pb, kn, cond, arg, dv, missing, klv ? klv->type : TY_POLY, 0);
     }
   }
   /* `**kw`: the whole trailing kwargs hash, or an empty hash when the caller

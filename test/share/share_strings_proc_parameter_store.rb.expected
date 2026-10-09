@@ -1,0 +1,14 @@
+["ab", 2]
+["shared!", "shared!", true]
+frozen
+true
+"allocated0?"
+["lambda:", 7]
+["default!", "provided?", 9]
+["post!", 8]
+["key shared.", "key shared.", true]
+["keyword!", "provided?", "key shared.", 6]
+["captured!", true]
+literal frozen
+true
+true
