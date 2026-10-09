@@ -51,9 +51,12 @@ p force_poly([:sym, 1], 0).respond_to?(:slice)
 # Proc
 p force_poly([proc {}, 1], 0).respond_to?(:source_location)
 
-# Negative controls: a real method name no class defines, and (importantly)
-# an Exception accessor that is real but gated to one subclass -- a generic
-# exception must NOT answer true for it just because the name exists
-# somewhere in bop_rows.
+# Negative controls: a real method name no class defines; an Exception
+# accessor that is real but gated to one subclass (a generic exception
+# must NOT answer true for it just because the name exists somewhere in
+# bop_rows); and format, a Kernel method (BOP_KERNEL in bop_rows), not a
+# String instance method -- "x".respond_to?(:format) is false in CRuby,
+# so it must not be read off bop_rows's TY_STRING rows either.
 p force_poly([[1, 2], "x"], 0).respond_to?(:not_a_real_method)
 p force_poly([RuntimeError.new, 1], 0).respond_to?(:errno)
+p force_poly(["abc", 1], 0).respond_to?(:format)

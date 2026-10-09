@@ -2230,7 +2230,7 @@ static sp_bool sp_poly_responds_builtin(sp_RbVal v, const char *m) {
     "next", "to_i", "to_f", "to_sym", "to_str", "center", "ljust", "rjust",
     "tr", "delete", "squeeze", "count", "each_char", "each_line", "slice",
     "unpack", "encoding", "force_encoding", "bytesize", "ord", "hex", "oct",
-    "match", "match?", "scan", "format", "freeze",
+    "match", "match?", "scan", "freeze",
     /* the rest of bop_rows's TY_STRING surface (same gap as arrm) */
     "+@", "-@", "append_as_bytes", "ascii_only?", "b", "between?",
     "byteindex", "byterindex", "byteslice", "bytesplice", "capitalize!",
