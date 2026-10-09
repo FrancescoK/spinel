@@ -3278,7 +3278,9 @@ check:
 # did before this target existed (tools/respond_to_audit.rb has the full
 # story and its scope's limits).
 respond-to-audit: $(SPINEL) $(SP_RT_LIB)
-	@SPINEL=$(SPINEL) ruby tools/respond_to_audit.rb
+	@ref_ruby="$(REF_RUBY)"; [ -n "$$ref_ruby" ] || ref_ruby=ruby; \
+	if ! command -v "$$ref_ruby" >/dev/null 2>&1; then echo "respond-to-audit: skipped (needs $$ref_ruby)"; exit 0; fi; \
+	SPINEL=$(SPINEL) ruby tools/respond_to_audit.rb --ref "$$ref_ruby"
 
 # SPINEL_ALLOC_REPORT / SPINEL_ALLOC_SITES (#1336): the site is an address, so
 # assert the line SHAPE rather than a snapshot -- per-type lines without the

@@ -74,7 +74,14 @@ if pairs.empty?
   exit 4
 end
 
-samples = SCOPE.to_h { |f| [f, BuiltinRowGen::FAMILIES.fetch(f).last.first.first] }
+samples = SCOPE.to_h do |f|
+  sample = BuiltinRowGen::FAMILIES.fetch(f).last&.first&.first
+  if sample.nil?
+    warn "respond_to_audit: no sample receiver for family #{f} -- FAMILIES shape changed?"
+    exit 4
+  end
+  [f, sample]
+end
 helpers = BuiltinRowGen::HELPERS.values_at("brp_key_error").compact.join("\n")
 
 lines = ["def force_poly(mixed, idx) = mixed[idx]", helpers]
