@@ -3748,7 +3748,7 @@ repr-check-test: $(SPINEL)
 
 # The sharing verifier has its own focused corpus and conflict ratchet.
 .PHONY: share-verify-test
-share-verify-test: $(SPINEL)
+share-verify-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS) $(BUNDLED_NATIVE_MT_OBJS)
 	@ruby tools/share_verify.rb
 
 # nil-check (#7444): the analysis's nil fact held against the answers the

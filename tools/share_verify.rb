@@ -16,7 +16,7 @@ OptionParser.new do |o|
   o.on("--ratchet FILE") { |f| options[:ratchet] = f }
 end.parse!
 focused = !ARGV.empty?
-files = focused ? ARGV : Dir.glob(["test/share/*.rb", "test/share/verify/conflicts/*.rb", "test/share_strings_*.rb"])
+files = focused ? ARGV : Dir.glob(["test/share/*.rb", "test/share/verify/**/*.rb", "test/share_strings_*.rb"])
 files += options[:extra].flat_map { |d| Dir.glob(File.join(d, "*.rb")) }
 files = files.uniq.sort
 abort "share-verify: no programs" if files.empty?
@@ -35,7 +35,7 @@ workers = [jobs, files.size].min.times.map do
     loop do
       file = queue.pop(true)
       Dir.mktmpdir("spinel-share-verify-") do |tmp|
-        env = { "SPINEL_SHARE_STRINGS" => "1", "TMPDIR" => tmp }
+        env = { "SPINEL_SHARE_STRINGS" => "1", "TMPDIR" => tmp, "SPINEL_GC_STRESS" => "0" }
         checked = File.join(tmp, "checked.c")
         plain = File.join(tmp, "plain.c")
         args = ["-c", "--no-line-map", file, "-o"]
@@ -49,6 +49,23 @@ workers = [jobs, files.size].min.times.map do
           failures << "generated C differs with the flags"
         end
         failures << "inference did not converge" if [err, off_err].any? { |s| s.include?("did not converge") }
+        unless file.start_with?("test/share/verify/conflicts/")
+          expected = "#{file}.expected"
+          executable = File.join(tmp, "program")
+          if !File.file?(expected)
+            failures << "missing .expected"
+          elsif failures.empty?
+            _, build_err, build_status = Open3.capture3(env, spinel, "--repr-check", "--plan-check", "--jobs=1", file, "-o", executable)
+            if build_status.success?
+              out, run_status = Open3.capture2e(env, executable)
+              failures << "program failed (#{run_status.exitstatus})" unless run_status.success?
+              failures << "output differs from .expected" unless out.b == File.binread(expected)
+            else
+              failures << "executable build failed (#{build_status.exitstatus})"
+              err += build_err
+            end
+          end
+        end
         results << [file, conflicts, diagnostics, failures, err]
       end
     rescue ThreadError

@@ -1,15 +1,19 @@
 # Sharing verification inputs
 
-The `test/share/verify_*.rb` files match CRuby 4.0 with
+The `test/share/verify/*.rb` files match CRuby 4.0 with
 `--enable-frozen-string-literal` on the recorded baseline. Their `.expected`
-files come from that run. `make share-strings-test` runs these regressions;
-`make share-verify-test` checks their analysis/emission diagnostics too.
+files come from that run. `make share-verify-test` compares generated C with
+checking on and off, then runs each executable once against its expected
+output, without GC stress. These files have no sharing markers and do not
+join `share-strings-test`. The directory keeps 811 of the original 814
+programs after normalized-shape deduplication, plus the fresh-argument
+checker regression and 11 former conflict examples fixed on master.
 
-`conflicts/` contains executable examples of existing compiler disagreements.
+`conflicts/` contains two executable examples of existing compiler disagreements.
 Their `.expected` files also contain CRuby's output, but master answers
 differently. They are compile-only inputs to `share-verify-test`, and are
 excluded from `share-strings-test`. Once a compiler fix makes one agree with
-CRuby, move it to `test/share/verify_<name>.rb`, add `# spinel: share`,
+CRuby, move it to `test/share/verify/<name>.rb` without a sharing marker,
 and remove its resolved entries from `../verify-conflicts.txt`.
 
 The ratchet records exact diagnostics, including the node and dispatch arm.
