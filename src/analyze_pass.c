@@ -1136,14 +1136,20 @@ static int infer_case_pattern_locals(Compiler *c) {
       /* Handle ArrayPatternNode requireds and rest splat */
       if (array_pat >= 0) {
         TyKind elem_t = ty_is_array(array_scrutinee) ? ty_array_elem(array_scrutinee) : TY_UNKNOWN;
+        int np = 0; const int *posts = nt_arr(nt, array_pat, "posts", &np);
+        for (int k = 0; k < np; k++) {
+          int p = nt_kind(nt, posts[k]) == NK_CapturePatternNode ? nt_ref(nt, posts[k], "value") : posts[k];
+          if (pm_is_container_pat(nt, p)) changed |= pm_seed_locals_poly(c, ms, posts[k]);
+        }
         int apn = 0;
         const int *reqs = nt_arr(nt, array_pat, "requireds", &apn);
         for (int k = 0; k < apn; k++) {
           const char *lty2 = nt_type(nt, reqs[k]);
           if (!lty2) continue;
-          /* a hash/find element pattern ([{name:}]) delivers its inner
-             bindings boxed; nested array elements keep their own typing */
-          if (sp_streq(lty2, "HashPatternNode") || sp_streq(lty2, "FindPatternNode")) {
+          /* Nested Arrays use the same boxed binder. Seed their leaves
+             before a use such as `t << s` can guess that t is an Array. */
+          int p = nt_kind(nt, reqs[k]) == NK_CapturePatternNode ? nt_ref(nt, reqs[k], "value") : reqs[k];
+          if (pm_is_container_pat(nt, p)) {
             changed |= pm_seed_locals_poly(c, ms, reqs[k]);
             continue;
           }
