@@ -1425,7 +1425,7 @@ static int str_self_chain_root(Compiler *c, int n) {
    method that answers a String of its own (no SELF-like flag on its row,
    the String family's BSH_PURE share)? A mutator's change of it is seen by
    nobody. */
-static int str_fresh_value(Compiler *c, int n) {
+int str_fresh_value(Compiler *c, int n) {
   const NodeTable *nt = c->nt;
   n = an_unparen(nt, n);
   if (nt_kind(nt, n) == NK_InterpolatedStringNode) return 1;

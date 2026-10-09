@@ -213,6 +213,221 @@ void anh_add(ANameHash *st, const char *nm) {
 }
 void anh_free(ANameHash *st) { free(st->key); free(st->next); free(st->head); }
 
+/* The program as written, read ahead of every desugar (analyze_program's
+   first step). It notes each name the program gives a method by a def or may
+   give one by a Symbol (an attr, a Struct member, a name handed to a call),
+   and whether it holds a site where a method is named, made or loaded by
+   something the text does not spell:
+   (1) a call that takes a method's name (an_by_name below) where the name
+       is no Symbol literal, or where it calls, reads or renames another
+       such word by its Symbol; an alias or an undef likewise;
+   (2) a block-pass of anything but a Symbol literal that is no such word
+       (the parser spells most of those as a block and marks it), a literal
+       lambda, or the block parameter of its own def, which that def only
+       reads;
+   (3) text evaluated: an eval with an argument or with no literal block, an
+       exec, a trap or a trace_var with no literal block, `binding`, ERB;
+   (4) a file not read: a require left standing in the table (the parser
+       splices away each one it resolves), or g_require_unread, which stays
+       clear only where the program's text proves every file it loads was
+       read (spinel_parse.c);
+   (5) a module mixed in: an include, a prepend or an extend with an
+       argument that is no literal (`s.prepend("x")` is String's), a hook
+       beneath them called by hand, or one of those six words as a def or
+       as a Symbol. A module's methods run ahead of a class's own
+       (prepend), of its parent's (include) or of an object's class's
+       (extend), and a core module's are no text of the program's; that a
+       constant names a module of the program's own is not proved here.
+   The desugars rewrite such calls away, so the table cannot be asked later.
+   A key is a copy: a node's strings do not outlive its rewrite. */
+enum { AN_CALLS = 1, AN_LAST, AN_RECV, AN_GIVES, AN_GIVES_ALL, AN_RENAMES, AN_VIS, AN_EVAL, AN_EXEC, AN_SITE, AN_WORD, AN_MIX, AN_MIX_HOOK };
+static const struct { const char *nm; int how; } an_by_name[] = {
+  /* its first argument names what it calls or reads */
+  { "send", AN_CALLS }, { "__send__", AN_CALLS }, { "public_send", AN_CALLS }, { "method", AN_CALLS },
+  { "public_method", AN_CALLS }, { "singleton_method", AN_CALLS }, { "instance_method", AN_CALLS },
+  { "public_instance_method", AN_CALLS }, { "enum_for", AN_CALLS }, { "to_enum", AN_CALLS },
+  { "const_get", AN_CALLS },
+  /* its last argument does, or its receiver */
+  { "inject", AN_LAST }, { "reduce", AN_LAST }, { "to_proc", AN_RECV },
+  /* its arguments name what it gives, takes away or hides */
+  { "define_method", AN_GIVES }, { "define_singleton_method", AN_GIVES },
+  { "undef_method", AN_GIVES_ALL }, { "remove_method", AN_GIVES_ALL }, { "attr", AN_GIVES_ALL },
+  { "attr_reader", AN_GIVES_ALL }, { "attr_writer", AN_GIVES_ALL }, { "attr_accessor", AN_GIVES_ALL },
+  { "private", AN_VIS }, { "protected", AN_VIS }, { "public", AN_VIS }, { "module_function", AN_VIS },
+  { "private_class_method", AN_VIS }, { "public_class_method", AN_VIS },
+  /* it gives one method another's name: a word under a new name is a word no more */
+  { "alias_method", AN_RENAMES }, { "delegate", AN_RENAMES }, { "instance_delegate", AN_RENAMES },
+  { "single_delegate", AN_RENAMES }, { "def_delegator", AN_RENAMES }, { "def_delegators", AN_RENAMES },
+  { "def_instance_delegator", AN_RENAMES }, { "def_instance_delegators", AN_RENAMES },
+  { "def_single_delegator", AN_RENAMES }, { "def_single_delegators", AN_RENAMES },
+  /* text evaluated, and a file */
+  { "eval", AN_EVAL }, { "instance_eval", AN_EVAL }, { "class_eval", AN_EVAL }, { "module_eval", AN_EVAL },
+  { "instance_exec", AN_EXEC }, { "class_exec", AN_EXEC }, { "module_exec", AN_EXEC },
+  { "trap", AN_EXEC }, { "trace_var", AN_EXEC },
+  { "binding", AN_SITE }, { "require", AN_SITE }, { "require_relative", AN_SITE },
+  /* it mixes a module in */
+  { "include", AN_MIX }, { "prepend", AN_MIX }, { "extend", AN_MIX },
+  { "append_features", AN_MIX_HOOK }, { "prepend_features", AN_MIX_HOOK }, { "extend_object", AN_MIX_HOOK },
+  { "load", AN_WORD }, { "autoload", AN_WORD }, { "ERB", AN_WORD }, { NULL, 0 } };
+static ANameHash g_written, g_written_twice, g_by_name_words;
+static int g_written_by_value;
+static void an_written_add(ANameHash *st, const char *nm) {
+  if (nm && !anh_has(st, nm)) anh_add(st, strdup(nm));
+}
+static int an_by_name_how(const char *nm) {
+  if (!nm || !anh_has(&g_by_name_words, nm)) return 0;
+  for (int k = 0; an_by_name[k].nm; k++) if (sp_streq(nm, an_by_name[k].nm)) return an_by_name[k].how;
+  return 0;
+}
+/* Is `n` a name the text spells: a Symbol literal that is none of the words? */
+static int an_name_spelled(const NodeTable *nt, int n) {
+  return nt_kind(nt, n) == NK_SymbolNode && !an_by_name_how(nt_str(nt, n, "value"));
+}
+static int an_mixes(const char *nm) {
+  int how = an_by_name_how(nm);
+  return how == AN_MIX || how == AN_MIX_HOOK;
+}
+/* A literal, which is no module. */
+static int an_mix_literal(const NodeTable *nt, int n) {
+  switch (nt_kind(nt, n)) {
+    case NK_StringNode: case NK_InterpolatedStringNode: case NK_SymbolNode:
+    case NK_IntegerNode: case NK_FloatNode: case NK_NilNode: case NK_TrueNode: case NK_FalseNode:
+      return 1;
+    default: return 0;
+  }
+}
+/* The block-passes of the block parameter `bp` under `n`, a def's body; -1
+   where the body does more with that name than read it (a write, a
+   parameter of a block inside). A def inside is another scope. */
+static int an_own_block_passes(const NodeTable *nt, int n, const char *bp) {
+  if (n < 0) return 0;
+  NodeKind k = nt_kind(nt, n);
+  if (k == NK_DefNode) return 0;
+  if (k == NK_BlockArgumentNode) {
+    int e = nt_ref(nt, n, "expression");
+    const char *en = nt_kind(nt, e) == NK_LocalVariableReadNode ? nt_str(nt, e, "name") : NULL;
+    if (en && sp_streq(en, bp)) return 1;
+  }
+  else if (k != NK_LocalVariableReadNode && k != NK_CallNode) {
+    const char *nm = nt_str(nt, n, "name");
+    if (nm && sp_streq(nm, bp)) return -1;
+  }
+  int cnt = 0, nr = nt_num_refs(nt, n), na = nt_num_arrs(nt, n);
+  for (int i = 0; i < nr; i++) {
+    int r = an_own_block_passes(nt, nt_ref_at(nt, n, i), bp);
+    if (r < 0) return -1;
+    cnt += r;
+  }
+  for (int i = 0; i < na; i++) {
+    int m = 0;
+    const int *ids = nt_arr_at(nt, n, i, &m);
+    for (int j = 0; j < m; j++) {
+      int r = an_own_block_passes(nt, ids[j], bp);
+      if (r < 0) return -1;
+      cnt += r;
+    }
+  }
+  return cnt;
+}
+static void an_note_written_names(const NodeTable *nt) {
+  int by_value = g_require_unread, passes = 0, own_passes = 0, erb = 0;
+  for (int k = 0; an_by_name[k].nm; k++)
+    if (!anh_has(&g_by_name_words, an_by_name[k].nm)) anh_add(&g_by_name_words, an_by_name[k].nm);
+  for (int id = 0; id < nt->count; id++) {
+    switch (nt_kind(nt, id)) {
+      case NK_AliasMethodNode:
+        if (nt_kind(nt, nt_ref(nt, id, "new_name")) != NK_SymbolNode || !an_name_spelled(nt, nt_ref(nt, id, "old_name")))
+          by_value = 1;
+        break;
+      case NK_UndefNode: {
+        int n = 0;
+        const int *v = nt_arr(nt, id, "names", &n);
+        for (int i = 0; i < n; i++) if (nt_kind(nt, v[i]) != NK_SymbolNode) by_value = 1;
+        break;
+      }
+      case NK_SymbolNode: {
+        const char *nm = nt_str(nt, id, "value");
+        an_written_add(&g_written, nm);
+        an_written_add(&g_written_twice, nm);
+        if (an_mixes(nm)) by_value = 1;
+        break;
+      }
+      case NK_DefNode: {
+        const char *nm = nt_str(nt, id, "name");
+        if (nm && anh_has(&g_written, nm)) an_written_add(&g_written_twice, nm);
+        an_written_add(&g_written, nm);
+        if (an_mixes(nm)) by_value = 1;
+        const char *bp = nt_str(nt, nt_ref(nt, nt_ref(nt, id, "parameters"), "block"), "name");
+        int own = bp ? an_own_block_passes(nt, nt_ref(nt, id, "body"), bp) : 0;
+        if (own > 0) own_passes += own;
+        break;
+      }
+      case NK_BlockArgumentNode: {
+        int e = nt_ref(nt, id, "expression");
+        NodeKind ek = nt_kind(nt, e);
+        if (ek == NK_LocalVariableReadNode) passes++;
+        else if (e >= 0 && ek != NK_LambdaNode && !an_name_spelled(nt, e)) by_value = 1;
+        break;
+      }
+      case NK_BlockNode: {
+        /* the parser spells `m(&:sym)` as `m { |_spx| _spx.sym }` and marks the block */
+        if (!nt_int(nt, id, "sym_proc_block", 0)) break;
+        int n = 0;
+        const int *v = nt_arr(nt, nt_ref(nt, id, "body"), "body", &n);
+        if (n != 1 || nt_kind(nt, v[0]) != NK_CallNode || an_by_name_how(nt_str(nt, v[0], "name"))) by_value = 1;
+        break;
+      }
+      case NK_ConstantReadNode: case NK_ConstantPathNode:
+        if (sp_streq(nt_str(nt, id, "name") ? nt_str(nt, id, "name") : "", "ERB")) erb++;
+        break;
+      case NK_ClassNode: case NK_ModuleNode: {
+        const char *cn = nt_str(nt, nt_ref(nt, id, "constant_path"), "name");
+        if (cn && sp_streq(cn, "ERB")) erb--;
+        break;
+      }
+      case NK_CallNode: {
+        int how = an_by_name_how(nt_str(nt, id, "name"));
+        if (!how || how == AN_WORD) break;
+        int an = 0, blk = nt_ref(nt, id, "block");
+        const int *av = nt_arr(nt, nt_ref(nt, id, "arguments"), "arguments", &an);
+        int lit_blk = nt_kind(nt, blk) == NK_BlockNode;
+        if (how == AN_SITE || how == AN_MIX_HOOK) by_value = 1;
+        else if (how == AN_MIX) { for (int i = 0; i < an; i++) if (!an_mix_literal(nt, av[i])) by_value = 1; }
+        else if (how == AN_EVAL) { if (an > 0 || !lit_blk) by_value = 1; }
+        else if (how == AN_EXEC) { if (!lit_blk) by_value = 1; }
+        else if (how == AN_RECV) { if (!an_name_spelled(nt, nt_ref(nt, id, "receiver"))) by_value = 1; }
+        else if (how == AN_CALLS) { if (an > 0 && !an_name_spelled(nt, av[0])) by_value = 1; }
+        else if (how == AN_GIVES) { if (an > 0 && nt_kind(nt, av[0]) != NK_SymbolNode) by_value = 1; }
+        else if (how == AN_LAST) {
+          /* one operand beside a literal block is the first value, not a name;
+             beside a block-pass it is the name whenever no block was given */
+          if (an > 0 && !(an == 1 && lit_blk) && !an_name_spelled(nt, av[an - 1])) by_value = 1;
+        }
+        else {
+          for (int i = 0; i < an; i++) {
+            NodeKind ak = nt_kind(nt, av[i]);
+            /* `private def m` and `private attr_reader :m` name what they wrap */
+            if (how == AN_VIS && (ak == NK_DefNode || (ak == NK_CallNode && an_by_name_how(nt_str(nt, av[i], "name")) == AN_GIVES_ALL)))
+              continue;
+            if (ak != NK_SymbolNode || (how == AN_RENAMES && i > 0 && !an_name_spelled(nt, av[i]))) by_value = 1;
+          }
+        }
+        break;
+      }
+      default: break;
+    }
+  }
+  if (by_value || passes > own_passes || erb > 0) g_written_by_value = 1;
+}
+/* Does the program, as written, give no class or module a method named
+   `nm`, beyond `defs` (0 or 1) defs of that name? Proved by what it does not
+   hold and by nothing cleverer: no other def of that name, no Symbol of that
+   name, and nowhere a site that names, makes or loads a method by something
+   the text does not spell. */
+int an_prog_never_gives(const char *nm, int defs) {
+  return !g_written_by_value && !anh_has(defs ? &g_written_twice : &g_written, nm);
+}
+
 static int cr_class_is_ancestor(Compiler *c, int sup, int cls) {
   for (int k = cls, hops = 0; k >= 0 && k < c->nclasses && hops < c->nclasses; k = c->classes[k].parent, hops++)
     if (k == sup) return 1;
@@ -39550,6 +39765,7 @@ static void an_phase_reconcile_check(Compiler *c) {
 #define AN_PHASE(nm, call) do { double _ph0 = sp_timing_now(); call; sp_timing_end(_ph0, "an_" nm, ""); } while (0)
 void analyze_program(Compiler *c) {
   double tm_an = sp_timing_now();
+  an_note_written_names(c->nt);
   AN_PHASE("desugar_register", an_phase_desugar_register(c));
   AN_PHASE("class_structure", an_phase_class_structure(c));
   AN_PHASE("block_inline", an_phase_block_inline(c));
