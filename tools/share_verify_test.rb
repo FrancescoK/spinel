@@ -48,7 +48,10 @@ Dir.mktmpdir("share-verify-tool-") do |tmp|
   ]
   cases.each do |mode, entries, success, message|
     File.write(ratchet, entries)
-    env = { "SPINEL" => compiler, "VERIFY_TEST_MODE" => mode, "SHARE_VERIFY_JOBS" => "2" }
+    # no gems: some 60 Ruby processes start here, and RubyGems' load was
+    # most of the time, past the corpus's 10 s under the gate's load
+    env = { "SPINEL" => compiler, "VERIFY_TEST_MODE" => mode, "SHARE_VERIFY_JOBS" => "2",
+            "RUBYOPT" => "--disable-gems" }
     out, err, status = Open3.capture3(env, RbConfig.ruby, File.join(root, "tools/share_verify.rb"),
                                     "--ratchet", ratchet, file)
     unless status.success? == success && (!message || (out + err).include?(message))
@@ -64,7 +67,8 @@ Dir.mktmpdir("share-verify-tool-") do |tmp|
   File.write(File.join(tmp, "test/share/verify/one.rb.expected"), "1 😀\n")
   File.write(File.join(tmp, "test/share/verify/conflicts/one.rb"), "puts 2\n")
   File.write(ratchet, "test/share/deleted.rb\trepr-check: channel-conflict: node 1: missing clear\n")
-  out, err, status = Open3.capture3({ "SPINEL" => compiler, "VERIFY_TEST_MODE" => "clean" },
+  out, err, status = Open3.capture3({ "SPINEL" => compiler, "VERIFY_TEST_MODE" => "clean",
+                                    "RUBYOPT" => "--disable-gems" },
                                   RbConfig.ruby, runner, "--ratchet", ratchet)
   abort "share-verify tool: deleted entry failed: #{out}#{err}" unless status.success? && err.include?("STALE (remove fixed entry)")
   puts "share-verify tool: #{cases.size + 1} checks pass"
