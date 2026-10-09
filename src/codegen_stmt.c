@@ -1457,6 +1457,10 @@ static int strbuf_stmts_tail_plain(Compiler *c, int st) {
   int n = 0;
   const int *b = st >= 0 && nt_kind(c->nt, st) == NK_StatementsNode ? nt_arr(c->nt, st, "body", &n) : NULL;
   if (n == 0) return 0;
+  /* A fresh arm needs no incoming handle; the demanded tail wraps its
+     own String, beside borrowed arms that keep their existing handle. */
+  TyKind t = comp_ntype(c, b[n - 1]);
+  if ((t == TY_STRING || t == TY_STRBUF) && share_value_fresh(c, b[n - 1], 0)) return 1;
   if (strbuf_native_answer(c, b[n - 1])) return 1;
   /* A shared reader's demanded value is its slot's handle too. */
   if (strbuf_route_reader(c, b[n - 1])) return 1;
