@@ -1242,6 +1242,10 @@ int emit_poly_user_arm_n(Compiler *c, int id, int k, const char *call, TyKind mr
   buf_printf(b, " case %d: ", k);
   if (is_setter_val || mret == TY_VOID || mret == TY_NIL || method_is_void(ms)) {
     buf_puts(b, call);  /* no usable value */
+    /* ...but nil is its value: the result temp may start as a builtin
+       arm's answer (Hash#fetch's default), which a user `fetch` returning
+       nil left in place (#8200). A setter's value is its argument. */
+    if (!is_setter_val && ret == TY_POLY) buf_printf(b, "; _t%d = sp_box_nil()", tr);
     conv = PC_VOID;
   }
   else {
