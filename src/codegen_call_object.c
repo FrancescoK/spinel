@@ -1401,7 +1401,7 @@ int emit_call_safe_nav_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
       TyKind rrt = rrr.as_ty;
       if (rrt == TY_NIL) {
         /* nil&.foo always returns nil */
-        TyKind ret = repr_of(c, id).as_ty;
+        TyKind ret = repr_share_rule(c) && repr_of(c, id).demand ? TY_STRBUF : repr_of(c, id).as_ty;
         const char *dv = default_value_from_compiler(c, ret);
         buf_puts(b, dv ? dv : "0");
         return 1;
@@ -1465,7 +1465,7 @@ int emit_call_safe_nav_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
            result is inferred poly, force the call boxed; for a concretely-typed
            result, emit the natural form and default the nil arm to match. */
         int tsn = ++g_tmp;
-        TyKind ret2 = repr_of(c, id).as_ty;
+        TyKind ret2 = repr_share_rule(c) && repr_of(c, id).demand ? TY_STRBUF : repr_of(c, id).as_ty;
         Buf rsn = expr_buf(c, recv);
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "sp_RbVal _sn%d = %s; SP_GC_ROOT_RBVAL(_sn%d);\n",
@@ -1591,7 +1591,7 @@ int emit_call_safe_nav_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
       int sn_cont = needs_root(rrt) && rrt != TY_POLY && rrt != TY_STRING && !ty_is_object(rrt);
       if ((sn_obj || rrt == TY_STRING || sn_scalar || sn_cont) && g_sn_skip != id) {
         int tsn2 = ++g_tmp;
-        TyKind ret2 = repr_of(c, id).as_ty;
+        TyKind ret2 = repr_share_rule(c) && repr_of(c, id).demand ? TY_STRBUF : repr_of(c, id).as_ty;
         /* The temp lives in g_pre (statement scope), not an inline ({ }):
            the re-entered dispatch hoists its (substituted) receiver into
            g_pre too, which lands before the statement and must still see

@@ -1,3 +1,4 @@
+# spinel: share
 # A `tap` block parameter that is CELLED, and the cell nobody filled.
 #
 # `StringIO.new.tap { |body| ... }` crashed with SIGSEGV, and only when three

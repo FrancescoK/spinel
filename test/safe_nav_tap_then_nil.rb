@@ -1,3 +1,4 @@
+# spinel: share
 # `v&.then { }` (and tap, yield_self) on a receiver that may be nil skips the
 # block when it is nil, as CRuby's &. does. On an Integer, Float, String,
 # Array or object that can hold its own nil, the block was inlined ahead of

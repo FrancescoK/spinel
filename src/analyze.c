@@ -18645,7 +18645,7 @@ static int an_tail_is_shared_handle(Compiler *c, int node, int nil_ok, TailCount
   }
   if (!c->share_strings || (k != NK_IfNode && k != NK_UnlessNode)) {
     if (R && R->fresh) return share_value_fresh(c, node, 0);
-    int ok = an_arg_is_shared_handle(c, node);
+    int ok = an_arg_is_shared_handle(c, node) || strbuf_builtin_tail(c, node);
     tc->reads += ok;
     if (!ok && tc->fresh_ok && share_node_fresh(c, node)) { tc->fresh++; ok = 1; }
     return ok;
