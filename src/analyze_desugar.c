@@ -8154,10 +8154,17 @@ static int fwd_rest_callee_pass(Compiler *c, int wait) {
         }
       }
       int recv = is_super ? -1 : nt_ref(nt, id, "receiver");
+      /* A class value's `new` passing keywords has no arm for a Struct or
+         Data class: the call is refused where it is emitted
+         (refuse_prepass_at_emit), so --defer-refusals defers it to the
+         method holding it, and the forward is rewritten with both channels
+         meanwhile. Refused here, it stopped the build of a program that
+         never runs the line (activerecord's Relation.create). */
       if (is_new && sh == -2 && recv >= 0 && !fwd_node_is(nt, recv, "SelfNode") &&
-          !fwd_node_is(nt, recv, "ConstantReadNode") && !fwd_node_is(nt, recv, "ConstantPathNode"))
-        unsupported_feature(c, id, "`...` forwarded to `new` on a class value, where an initialize "
-                                   "takes keywords and a Struct or Data class could be constructed");
+          !fwd_node_is(nt, recv, "ConstantReadNode") && !fwd_node_is(nt, recv, "ConstantPathNode")) {
+        nt_node_set_int(nt, id, "fwd_new_class_value", 1);
+        sh = 3 | (any_call_passes_block(nt, dname) ? 4 : 0);
+      }
       /* A yielding initialize or parent keeps the __fwd_N model, which
          forwards only a `super(...)` that passes nothing before the `...` */
       if (is_zsuper && nlead < 0) { ok = 0; break; }
