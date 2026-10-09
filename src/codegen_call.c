@@ -8742,7 +8742,246 @@ static void emit_reopen_recv(Compiler *c, int mi, int recv, int boxed, const cha
   else if (boxed) emit_boxed(c, recv, b);
   else emit_expr(c, recv, b);
 }
-void emit_reopen_recv_args(Compiler *c, int id, int mi, int recv, int boxed, const char *box_fn, Buf *b) {
+static int body_has_return(const NodeTable *nt, int id) {
+  if (id < 0) return 0;
+  if (nt_kind(nt, id) == NK_ReturnNode) return 1;
+  int nr = nt_num_refs(nt, id), na = nt_num_arrs(nt, id);
+  for (int i = 0; i < nr; i++) if (body_has_return(nt, nt_ref_at(nt, id, i))) return 1;
+  for (int i = 0; i < na; i++) {
+    int n = 0;
+    const int *ids = nt_arr_at(nt, id, i, &n);
+    for (int j = 0; j < n; j++) if (body_has_return(nt, ids[j])) return 1;
+  }
+  return 0;
+}
+/* Does CRuby make a new String for the interpolation `n`? Proved where a
+   plain String literal that is not empty stands among its parts, or where
+   it has one part and that part is embedded: `"#{s}#{""}"` answers s
+   itself (CRuby 3.1 to 3.3). */
+static int interp_makes_new(const NodeTable *nt, int n) {
+  int pn = 0;
+  const int *pv = nt_arr(nt, n, "parts", &pn);
+  if (pn == 1) return nt_kind(nt, pv[0]) == NK_EmbeddedStatementsNode;
+  for (int i = 0; i < pn; i++)
+    if (nt_kind(nt, pv[i]) == NK_StringNode && nt_str_len(nt, pv[i], "content") > 0) return 1;
+  return 0;
+}
+/* Is the String `n` answers one no other name holds? An interpolation is
+   where CRuby makes a new one for it (interp_makes_new). A call's is where
+   the program gives no class a method of that name (an_prog_never_gives)
+   and the call is a String builtin that always makes its own String (a
+   name of the list below that str_fresh_value agrees with: `clamp` answers
+   its receiver, and so may a name neither knows) or an Integer's or a
+   Float's to_s or inspect; or where it reaches the one def of that name,
+   whose body ends in such a String and has no `return` (a setter's call
+   answers its argument, not that body). */
+static int recv_new_string(Compiler *c, int n, int depth) {
+  static const char *const makes[] = {
+    "+", "*", "%", "upcase", "downcase", "capitalize", "swapcase", "reverse", "strip", "lstrip", "rstrip",
+    "chomp", "chop", "chr", "succ", "next", "center", "ljust", "rjust", "tr", "tr_s", "delete", "squeeze",
+    "sub", "gsub", "delete_prefix", "delete_suffix", "dup", "inspect", "dump", NULL };
+  const NodeTable *nt = c->nt;
+  n = unwrap_parens(c, n);
+  if (n < 0 || comp_ntype(c, n) != TY_STRING) return 0;
+  if (nt_kind(nt, n) == NK_InterpolatedStringNode) return interp_makes_new(nt, n);
+  if (nt_kind(nt, n) != NK_CallNode || nt_ref(nt, n, "block") >= 0) return 0;
+  const char *nm = nt_str(nt, n, "name");
+  int r = nt_ref(nt, n, "receiver");
+  TyKind rt = r >= 0 ? comp_ntype(c, r) : TY_UNKNOWN;
+  const CallPlan *pl = cplan_user(c, n);
+  if (!nm || !*nm) return 0;
+  if (pl->mi < 0) {
+    int made = 0;
+    if (rt == TY_INT || rt == TY_FLOAT)
+      made = (sp_streq(nm, "to_s") || sp_streq(nm, "inspect")) && comp_builtin_kind_reopen_mi(c, rt, nm) < 0;
+    else
+      for (int k = 0; !made && makes[k]; k++) made = sp_streq(nm, makes[k]) && str_fresh_value(c, n);
+    return made && an_prog_never_gives(nm, 0);
+  }
+  if (depth >= 3 || pl->dispatch != CP_DIRECT || nm[strlen(nm) - 1] == '=' ||
+      body_has_return(nt, c->scopes[pl->mi].body)) return 0;
+  return recv_new_string(c, scope_body_last(c, pl->mi), depth + 1) && an_prog_never_gives(nm, 1);
+}
+/* Does evaluating `n` run none of the program's code and store nothing? A
+   pure read, a global, a String literal, and an Array, a Hash, a Range or an
+   interpolation made of those. A call among them is a pure read whose name
+   the program has not given the builtin (`[]` on an Array may be its own),
+   and an operator is one of Integers and Floats, for `5 == o` runs o's ==;
+   a Hash key is a String, a Symbol or an Integer, for any other key's hash
+   may be the program's; what an interpolation embeds is a String or a
+   scalar with the builtin's to_s, for any other value's to_s may be the
+   program's. A whitelist, as subtree_is_pure_read is. */
+static int arg_runs_nothing(Compiler *c, int n) {
+  const NodeTable *nt = c->nt;
+  if (n < 0) return 1;
+  switch (nt_kind(nt, n)) {
+    case NK_GlobalVariableReadNode: case NK_StringNode: return 1;
+    case NK_CallNode: {
+      int r = nt_ref(nt, n, "receiver");
+      const char *nm = nt_str(nt, n, "name");
+      if (!subtree_is_pure_read(c, n) ||
+          (r >= 0 && nm && comp_builtin_kind_reopen_mi(c, comp_ntype(c, r), nm) >= 0)) return 0;
+      if (call_is_scalar_op(c, n)) {
+        int a = nt_ref(nt, n, "arguments"), ac = 0;
+        const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+        if (comp_ntype(c, r) == TY_BOOL) return 0;
+        for (int i = 0; i < ac; i++)
+          if (comp_ntype(c, av[i]) != TY_INT && comp_ntype(c, av[i]) != TY_FLOAT) return 0;
+      }
+      break;
+    }
+    case NK_AssocNode: {
+      TyKind kt = comp_ntype(c, nt_ref(nt, n, "key"));
+      if (kt != TY_STRING && kt != TY_SYMBOL && kt != TY_INT) return 0;
+      break;
+    }
+    case NK_EmbeddedStatementsNode: {
+      int st = nt_ref(nt, n, "statements"), bn = 0;
+      const int *bv = st >= 0 ? nt_arr(nt, st, "body", &bn) : NULL;
+      TyKind t = bn > 0 ? comp_ntype(c, bv[bn - 1]) : TY_STRING;
+      if (t != TY_STRING && ((t != TY_INT && t != TY_FLOAT && t != TY_BOOL && t != TY_SYMBOL) ||
+                             comp_builtin_kind_reopen_mi(c, t, "to_s") >= 0)) return 0;
+      break;
+    }
+    case NK_ParenthesesNode: case NK_StatementsNode: case NK_ArrayNode: case NK_HashNode:
+    case NK_KeywordHashNode: case NK_RangeNode: case NK_InterpolatedStringNode:
+      break;
+    default: {
+      /* a call's argument list has no kind of its own */
+      const char *ty = nt_type(nt, n);
+      if (!ty || !sp_streq(ty, "ArgumentsNode")) return subtree_is_pure_read(c, n);
+      break;
+    }
+  }
+  int nr = nt_num_refs(nt, n), na = nt_num_arrs(nt, n);
+  for (int i = 0; i < nr; i++) if (!arg_runs_nothing(c, nt_ref_at(nt, n, i))) return 0;
+  for (int i = 0; i < na; i++) {
+    int k = 0;
+    const int *ids = nt_arr_at(nt, n, i, &k);
+    for (int j = 0; j < k; j++) if (!arg_runs_nothing(c, ids[j])) return 0;
+  }
+  return 1;
+}
+/* Is that receiver, held in a temp ahead of the arguments, what the call
+   would read after them? A scalar, a Range, and the pointer of an Array, a
+   Hash or an object are; a String is where no other name holds it
+   (recv_new_string). A boxed value may hold a String. */
+static int recv_held_as_read(Compiler *c, int recv) {
+  TyKind rt = comp_ntype(c, recv);
+  if (rt == TY_INT || rt == TY_FLOAT || rt == TY_BOOL || rt == TY_SYMBOL || rt == TY_RANGE ||
+      ty_is_array(rt) || ty_is_hash(rt) || ty_is_object(rt)) return 1;
+  return recv_new_string(c, recv, 0);
+}
+/* Must that receiver run ahead of the rest of its call? It is emitted in
+   place, one C argument beside the others, while emit_args_filled runs an
+   argument that allocates ahead of the statement and makes a rest, or a
+   default the call leaves out, in place. So an argument with an effect ran
+   before a receiver with one (`recv.m(arg)` ran arg first), and a receiver
+   that allocates stood beside a rest or a default no root held: C orders the
+   two as it likes, gcc made the Array first and the receiver's allocation
+   collected it, clang the receiver first and the Array's collected that.
+   An argument, or such a default, that only reads reads what the receiver
+   left where the receiver can change it (read_rebound_by): `setg.pair($g)`
+   passed the old $g. `n` positionals are given. A receiver the operand
+   order has bound is a temp already.
+   A String held ahead of the arguments is the String as it was. Read after
+   them, as it is in place, it is the one an argument changed (`recv.m(arg)`
+   where arg appends to the String recv answered: the call ran arg first
+   and answered as CRuby does). So beside an argument or such a default
+   that can run the program's code (arg_runs_nothing) the receiver runs
+   first only where the two cannot differ (recv_held_as_read). */
+static int reopen_recv_runs_first(Compiler *c, Scope *m, int recv, const int *argv, int argc, int n) {
+  for (int i = 0; i < g_n_argov; i++) if (g_argov_node[i] == recv) return 0;
+  int eff = subtree_has_side_effect(c, recv), alloc = subtree_allocates(c->nt, recv);
+  int quiet = 1;
+  for (int i = 0; quiet && i < argc; i++) quiet = arg_runs_nothing(c, argv[i]);
+  for (int i = 0; quiet && m->pdefault && i < m->nparams; i++) {
+    int d = m->pdefault[i];
+    if (d < 0 || (!callee_param_is_declared_kwarg(c, m, m->pnames[i]) && arg_slot_for_param(c, m, i, n) >= 0)) continue;
+    quiet = arg_runs_nothing(c, d);
+  }
+  if (!quiet && !recv_held_as_read(c, recv)) return 0;
+  if (alloc && m->rest_idx >= 0) return 1;
+  for (int i = 0; i < argc; i++)
+    if ((eff && subtree_has_side_effect(c, argv[i])) || read_rebound_by(c, argv[i], recv)) return 1;
+  for (int i = 0; m->pdefault && i < m->nparams; i++) {
+    int d = m->pdefault[i];
+    if (d < 0 || (!callee_param_is_declared_kwarg(c, m, m->pnames[i]) && arg_slot_for_param(c, m, i, n) >= 0)) continue;
+    if ((eff && subtree_has_side_effect(c, d)) || (alloc && subtree_allocates(c->nt, d)) ||
+        read_rebound_by(c, d, recv)) return 1;
+  }
+  return 0;
+}
+/* Is `s` the box of an Array, a Hash or an object,
+   `sp_box_nullable_obj((void *)(E), K)`? Answers where E ends. */
+static size_t boxed_pointer_end(const char *s) {
+  static const char open[] = "sp_box_nullable_obj((void *)(";
+  if (strncmp(s, open, sizeof open - 1)) return 0;
+  size_t i = sizeof open - 1;
+  for (int depth = 1; s[i]; i++) {
+    if (s[i] == '"' || s[i] == '\'') {
+      char q = s[i];
+      for (i++; s[i] && s[i] != q; i++) if (s[i] == '\\' && s[i + 1]) i++;
+      if (!s[i]) return 0;
+    }
+    else if (s[i] == '(') depth++;
+    else if (s[i] == ')' && --depth == 0) break;
+  }
+  if (s[i] != ')' || s[i + 1] != ',' || s[i + 2] != ' ') return 0;
+  size_t k = i + 3;
+  while (s[k] == '_' || (s[k] >= '0' && s[k] <= '9') || (s[k] >= 'A' && s[k] <= 'Z') || (s[k] >= 'a' && s[k] <= 'z')) k++;
+  return k > i + 3 && s[k] == ')' && !s[k + 1] ? i : 0;
+}
+/* The receiver and the arguments of a call into a builtin reopening's
+   method, whose text starts at `at` in b with the callee's name and its
+   parenthesis. When the receiver must run first the call is opened as a
+   statement expression that binds the receiver to a rooted temp, then runs
+   what the arguments hoist, then calls: nothing of it goes ahead of the
+   statement the call stands in. Answers 1 for that, and the caller closes
+   with "; })" after its own ")"; otherwise the receiver is emitted in
+   place, as it always was. */
+int emit_reopen_recv_in_order(Compiler *c, int id, int mi, int recv, int boxed, const char *box_fn, size_t at, Buf *b) {
+  const NodeTable *nt = c->nt;
+  Scope *m = &c->scopes[mi];
+  int args = nt_ref(nt, id, "arguments"), argc = 0;
+  const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+  int n = call_has_splat_arg(nt, argv, argc) ? 0
+        : argc - (argc > 0 && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode);
+  if (!reopen_recv_runs_first(c, m, recv, argv, argc, n)) {
+    emit_reopen_recv(c, mi, recv, boxed, box_fn, b);
+    emit_args_filled(c, mi, args, ", ", b);
+    return 0;
+  }
+  Buf pre, rx, ab, *sv_pre = g_pre;
+  memset(&pre, 0, sizeof pre); memset(&rx, 0, sizeof rx); memset(&ab, 0, sizeof ab);
+  g_pre = &pre;
+  TyKind rt = boxed ? TY_POLY : comp_ntype(c, recv);
+  int t = ++g_tmp;
+  emit_reopen_recv(c, mi, recv, boxed, box_fn, &rx);
+  /* The box of a pointer is held as the pointer, and boxed where the call
+     takes it: a pointer's root is a push and a pop, a boxed value's a slot
+     of a frame the function may not have had. */
+  size_t pe = boxed && rx.p ? boxed_pointer_end(rx.p) : 0;
+  if (pe) {
+    size_t e0 = strlen("sp_box_nullable_obj((void *)(");
+    buf_printf(g_pre, "void *_t%d = %.*s; SP_GC_ROOT(_t%d); ", t, (int)(pe - e0), rx.p + e0, t);
+    buf_printf(&ab, "sp_box_nullable_obj(_t%d%s", t, rx.p + pe + 1);
+  }
+  else {
+    buf_printf(g_pre, "%s _t%d = %s; ", boxed ? "sp_RbVal" : c_type_name(rt), t, rx.p ? rx.p : "");
+    if (boxed || rt == TY_POLY) buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_t%d); ", t);
+    else if (needs_root(rt)) buf_printf(g_pre, "SP_GC_ROOT(_t%d); ", t);
+    buf_printf(&ab, "_t%d", t);
+  }
+  emit_args_filled(c, mi, args, ", ", &ab);
+  g_pre = sv_pre;
+  char *callee = strdup(b->p + at);
+  b->len = at; b->p[at] = '\0';
+  buf_printf(b, "({ %s%s%s", pre.p, callee, ab.p);
+  free(callee); free(pre.p); free(rx.p); free(ab.p);
+  return 1;
+}
+int emit_reopen_recv_args(Compiler *c, int id, int mi, int recv, int boxed, const char *box_fn, size_t at, Buf *b) {
   const NodeTable *nt = c->nt;
   Scope *m = &c->scopes[mi];
   int args = nt_ref(nt, id, "arguments"), argc = 0;
@@ -8756,11 +8995,7 @@ void emit_reopen_recv_args(Compiler *c, int id, int mi, int recv, int boxed, con
            (callee_param_is_declared_kwarg(c, m, m->pnames[i]) || arg_slot_for_param(c, m, i, n) < 0) &&
            ctor_default_reads_self(c, m, m->pdefault[i], 0);
   if (repr_self_handle(c, mi)) hold = 1;
-  if (!hold) {
-    emit_reopen_recv(c, mi, recv, boxed, box_fn, b);
-    emit_args_filled(c, mi, args, ", ", b);
-    return;
-  }
+  if (!hold) return emit_reopen_recv_in_order(c, id, mi, recv, boxed, box_fn, at, b);
   TyKind rt = repr_self_handle(c, mi) ? TY_STRBUF : boxed ? TY_POLY : comp_ntype(c, recv);
   int t = ++g_tmp;
   char self[32]; snprintf(self, sizeof self, "_t%d", t);
@@ -8776,20 +9011,24 @@ void emit_reopen_recv_args(Compiler *c, int id, int mi, int recv, int boxed, con
   g_arm_self = self; g_arm_scope = m; g_arm_depth = g_expr_depth;
   emit_args_filled(c, mi, args, ", ", b);
   g_arm_self = sv_arm_self; g_arm_scope = sv_arm_scope; g_arm_depth = sv_arm_depth;
+  return 0;
 }
 
 static void emit_reopen_primitive_call(Compiler *c, int id, int ci, int mi, int recv, const char *name, Buf *b) {
   if (repr_self_handle(c, mi) && c->scopes[mi].yields && emit_inline_expr(c, id, b)) return;
   if (ci == comp_class_index(c, "String") && emit_reopen_block_call(c, id, recv, mi, NULL, b)) return;
   if (g_plan_check) ucall_observe(c, id, mi, ci, 0);
+  size_t at = b->len;
+  int open = 0;
   buf_printf(b, "sp_%s_%s(", mc_reopen_cls(c, ci, name), mc(name));
-  if (repr_self_handle(c, mi)) emit_reopen_recv_args(c, id, mi, recv, 0, NULL, b);
-  else {
-    if (comp_ntype(c, recv) != TY_STRBUF || !emit_strbuf_read_ref(c, recv, b)) emit_expr(c, recv, b);
+  if (repr_self_handle(c, mi)) open = emit_reopen_recv_args(c, id, mi, recv, 0, NULL, at, b);
+  else if (comp_ntype(c, recv) == TY_STRBUF) {
+    if (!emit_strbuf_read_ref(c, recv, b)) emit_expr(c, recv, b);
     emit_args_filled(c, mi, nt_ref(c->nt, id, "arguments"), ", ", b);
   }
+  else open = emit_reopen_recv_in_order(c, id, mi, recv, 0, NULL, at, b);
   emit_callee_block_arg(c, id, &c->scopes[mi], b);
-  buf_puts(b, ")");
+  buf_puts(b, open ? "); })" : ")");
 }
 
 /* An implicit call can cross the selected receiver ABI in either direction. */
@@ -25377,10 +25616,11 @@ static int emit_array_hash_reopen_call(Compiler *c, int id, int recv, TyKind rt,
   if (ami < 0 || adc != aci || !c->scopes[ami].name || !sp_streq(c->scopes[ami].name, nm)) return 0;
   if (c->scopes[ami].yields && emit_reopen_block_call(c, id, recv, ami, NULL, b)) return 1;
   if (g_plan_check) ucall_observe(c, id, ami, aci, 0);
+  size_t at = b->len;
   buf_printf(b, "sp_%s_%s(", acn, mc(c->scopes[ami].name));
-  emit_reopen_recv_args(c, id, ami, recv, 1, NULL, b);
+  int open = emit_reopen_recv_args(c, id, ami, recv, 1, NULL, at, b);
   emit_trailing_blk_arg(c, &c->scopes[ami], id, -1, b);
-  buf_puts(b, ")");
+  buf_puts(b, open ? "); })" : ")");
   return 1;
 }
 

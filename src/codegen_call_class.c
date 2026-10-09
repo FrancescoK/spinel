@@ -3614,11 +3614,12 @@ int emit_call_reopen_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
           pl->owner_ci == comp_class_index(c, "Random")) {
         int mi = pl->mi, ci = pl->owner_ci;
         if (g_plan_check) ucall_observe(c, id, mi, ci, 0);
+        size_t at = b->len;
         emit_method_cname(c, &c->scopes[mi], b);
         buf_puts(b, "(");
-        emit_reopen_recv_args(c, id, mi, recv, 0, NULL, b);
+        int open = emit_reopen_recv_args(c, id, mi, recv, 0, NULL, at, b);
         emit_trailing_blk_arg(c, &c->scopes[mi], id, -1, b);
-        buf_puts(b, ")");
+        buf_puts(b, open ? "); })" : ")");
         return 1;
       }
     }
@@ -3644,11 +3645,12 @@ int emit_call_reopen_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
         if (oc_mi >= 0) {
           if ((rt == TY_STRING || rt == TY_STRBUF) && emit_reopen_block_call(c, id, recv, oc_mi, NULL, b)) return 1;
           if (g_plan_check) ucall_observe(c, id, oc_mi, oc_ci, 0);
+          size_t at = b->len;
           buf_printf(b, "sp_%s_%s(", mc_reopen_cls(c, oc_ci, name), mc(name));
-          emit_reopen_recv_args(c, id, oc_mi, recv, 0, NULL, b);
+          int open = emit_reopen_recv_args(c, id, oc_mi, recv, 0, NULL, at, b);
           /* a method taking `&block` takes the call's block, or NULL (#7200) */
           emit_callee_block_arg(c, id, &c->scopes[oc_mi], b);
-          buf_puts(b, ")");
+          buf_puts(b, open ? "); })" : ")");
           return 1;
         }
       }
@@ -3704,10 +3706,11 @@ int emit_call_reopen_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
       if (hc_mi >= 0 && emit_reopen_block_call(c, id, recv, hc_mi, NULL, b)) return 1;
       if (hc_mi >= 0) {
         if (g_plan_check) ucall_observe(c, id, hc_mi, hc_ci, 0);
+        size_t at = b->len;
         buf_printf(b, "sp_Hash_%s(", mc(c->scopes[hc_mi].name));
-        emit_reopen_recv_args(c, id, hc_mi, recv, 1, NULL, b);
+        int open = emit_reopen_recv_args(c, id, hc_mi, recv, 1, NULL, at, b);
         emit_trailing_blk_arg(c, &c->scopes[hc_mi], id, -1, b);
-        buf_puts(b, ")");
+        buf_puts(b, open ? "); })" : ")");
         return 1;
       }
     }
@@ -3733,10 +3736,10 @@ int emit_call_reopen_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
       if (nm_mi >= 0 && emit_reopen_block_call(c, id, recv, nm_mi, NULL, b)) return 1;
       if (nm_mi >= 0) {
         if (g_plan_check) ucall_observe(c, id, nm_mi, nm_ci, 0);
+        size_t at = b->len;
         buf_printf(b, "sp_Numeric_%s(", mc(c->scopes[nm_mi].name));
-        emit_boxed(c, recv, b);
-        emit_args_filled(c, nm_mi, nt_ref(nt, id, "arguments"), ", ", b);
-        buf_puts(b, ")");
+        int open = emit_reopen_recv_in_order(c, id, nm_mi, recv, 1, NULL, at, b);
+        buf_puts(b, open ? "); })" : ")");
         return 1;
       }
     }
@@ -3750,10 +3753,11 @@ int emit_call_reopen_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
                                (rt == TY_STR_ARRAY) ? "sp_box_str_array" :
                                (rt == TY_FLOAT_ARRAY) ? "sp_box_float_array" : "sp_box_poly_array";
           if (emit_reopen_block_call(c, id, recv, oc_mi2, box_fn, b)) return 1;
+          size_t at = b->len;
           buf_printf(b, "sp_Array_%s(", mc(c->scopes[oc_mi2].name));
-          emit_reopen_recv_args(c, id, oc_mi2, recv, 1, box_fn, b);
+          int open = emit_reopen_recv_args(c, id, oc_mi2, recv, 1, box_fn, at, b);
           emit_trailing_blk_arg(c, &c->scopes[oc_mi2], id, -1, b);
-          buf_puts(b, ")");
+          buf_puts(b, open ? "); })" : ")");
           return 1;
         }
       }
@@ -3775,10 +3779,11 @@ int emit_call_reopen_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
                       want3 != TY_UNKNOWN && want3 != TY_NIL;
           if (g_plan_check) ucall_observe(c, id, oc_mi3, oc_ci3, 0);
           if (void3) buf_puts(b, "(");
+          size_t at = b->len;
           buf_printf(b, "sp_Object_%s(", mc(c->scopes[oc_mi3].name));
-          emit_reopen_recv_args(c, id, oc_mi3, recv, 1, NULL, b);
+          int open = emit_reopen_recv_args(c, id, oc_mi3, recv, 1, NULL, at, b);
           emit_trailing_blk_arg(c, &c->scopes[oc_mi3], id, -1, b);
-          buf_puts(b, ")");
+          buf_puts(b, open ? "); })" : ")");
           if (void3) buf_printf(b, ", %s)", want3 == TY_POLY ? "sp_box_nil()" : default_value_from_compiler(c, want3));
           return 1;
         }
