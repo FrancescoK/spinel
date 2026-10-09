@@ -15518,6 +15518,9 @@ static int strbuf_map_block_tail(Compiler *c, int val) {
   if (!mn || !(is_map_alias(mn))) return -1;
   int blk = nt_ref(nt, val, "block");
   if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode) return -1;
+  /* A user method of the name that answers every receiver the call can
+     have (CP_DIRECT) returns what it returns, not its block's values. */
+  if (cplan_user_fresh(c, val)->dispatch == CP_DIRECT) return -1;
   int body = nt_ref(nt, blk, "body");
   if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) return -1;
   int bn = 0; const int *bb = nt_arr(nt, body, "body", &bn);
