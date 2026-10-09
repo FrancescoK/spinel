@@ -560,21 +560,18 @@ module Net
     end
 
     def get(path, headers = nil)
-      req = HTTPRequest.new("GET", path)
-      headers.each { |k, v| req[k] = v } unless headers.nil?
+      req = HTTPRequest.new("GET", path, headers)
       request(req)
     end
 
     def head(path, headers = nil)
-      req = HTTPRequest.new("HEAD", path)
-      headers.each { |k, v| req[k] = v } unless headers.nil?
+      req = HTTPRequest.new("HEAD", path, headers)
       request(req)
     end
 
     def post(path, body, headers = nil)
-      req = HTTPRequest.new("POST", path)
+      req = HTTPRequest.new("POST", path, headers)
       req.body = body
-      headers.each { |k, v| req[k] = v } unless headers.nil?
       request(req)
     end
 
