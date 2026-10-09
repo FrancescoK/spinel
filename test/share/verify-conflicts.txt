@@ -2,7 +2,6 @@
 # A * key is only the program-independent iterator-table diagnostic.
 test/share/share_strings_boxed_class_include_mutator.rb	plan-check: channel-box-conflict: node 60 include? arm 8192 method include?: emitted sp_box_str, predicted published handle
 test/share/share_strings_boxed_class_include_mutator.rb	plan-check: channel-box-conflict: node 60 include? arm 8193 method include?: emitted sp_box_str, predicted published handle
-test/share/share_strings_pass_returns.rb	repr-check: channel-conflict: node 1873 CallNode method decode_entity: emitted clear, predicted publish
 test/share/verify/conflicts/poly_class_value_return.rb	plan-check: channel-box-conflict: node 59 include? arm 8192 method include?: emitted sp_box_str, predicted published handle
 test/share/verify/conflicts/poly_class_value_return.rb	plan-check: channel-box-conflict: node 59 include? arm 8193 method include?: emitted sp_box_str, predicted published handle
 test/share_strings_class_value_parameter.rb	plan-check: channel-box-conflict: node 184 consume arm 8192 method consume: emitted sp_box_str, predicted published handle
