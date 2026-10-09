@@ -16818,6 +16818,11 @@ extern const Compiler *g_tmc_c;
 
 static void emit_runtime_include(Compiler *c, Buf *b, int blank) {
   if (repr_share_rule(c)) buf_puts(b, "#define SP_SHARE_STRING_LITERALS 1\n");
+  /* sp_feature_required, not the require gate: without SPINEL_REQUIRE_GATE,
+     respond_to?'s io/console answer must still follow the program's require,
+     as CRuby's does. */
+  if (sp_feature_required("io/console"))
+    buf_puts(b, "#define SP_FEATURE_IO_CONSOLE 1\n");
   buf_puts(b, "#include \"spinel_rt.h\"\n");
   if (blank) buf_puts(b, "\n");
 }

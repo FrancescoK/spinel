@@ -2173,6 +2173,13 @@ static sp_bool sp_io_responds(sp_File *f, const char *m, int typed) {
   if (f->mode && (strcmp(f->mode, "stat") == 0 || strcmp(f->mode, "lstat") == 0))
     return sp_io_in_lists(m, statm, statm_t, statm_b, typed);
   if (sp_io_in_lists(m, iom, iom_t, iom_b, typed)) return 1;
+  /* Not in iom: CRuby answers false for both until io/console is required. */
+#ifdef SP_FEATURE_IO_CONSOLE
+  {
+    static const char *const consolem[] = { "winsize", "winsize=", NULL };
+    if (sp_str_in_list(m, consolem)) return 1;
+  }
+#endif
   k = sp_io_kind_name(f);
   if (!f->is_sock) return strcmp(k, "File") == 0 && sp_io_in_lists(m, filem, filem_t, filem_b, typed);
   if (sp_io_in_lists(m, basicm, basicm_t, basicm_b, typed)) return 1;
