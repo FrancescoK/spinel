@@ -4289,9 +4289,9 @@ void emit_poly_defaults_n(Compiler *c, int id, int recv, const char *name, const
     /* delete(key) { |k| }: the block answers a key that was not there */
     int dblk = is_pdelete && nt_ref(nt, id, "block") >= 0 ? poly_call_blk_proc(c, id, blk_tmp2) : -1;
     if (is_pdelete && dblk >= 0)
-      snprintf(gen, sizeof gen, "sp_poly_delete_key_blk(_t%d, %s, _t%d)", tv, ab.p ? ab.p : "sp_box_nil()", dblk);
+      snprintf(gen, sizeof gen, "sp_poly_delete_key_blk_bytes(_t%d, %s, _t%d)", tv, ab.p ? ab.p : "sp_box_nil()", dblk);
     else if (is_pdelete)
-      snprintf(gen, sizeof gen, "sp_poly_delete_key(_t%d, %s)", tv, ab.p ? ab.p : "sp_box_nil()");
+      snprintf(gen, sizeof gen, "sp_poly_delete_key_bytes(_t%d, %s)", tv, ab.p ? ab.p : "sp_box_nil()");
     else if (tkl >= 0)
       snprintf(gen, sizeof gen, "sp_poly_%s(_t%d, _t%d->len, _t%d->data)",
                is_pdig ? "dig_n" : "values_at_n", tv, tkl, tkl);

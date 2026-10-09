@@ -22446,6 +22446,23 @@ void emit_poly_enum_for(Compiler *c, const char *val, Buf *b) {
       buf_printf(b, " || _e%d.cls_id == %d", t, k);
   buf_printf(b, ")) ? sp_Enumerator_new_from(_e%d) : sp_poly_enum_for_each(_e%d); })", t, t);
 }
+/* ENV's synthetic receiver is a snapshot taken by the call, after its
+   arguments have run. Bind the original arguments before any Hash or
+   Enumerable arm reads or checks them, including a statement iterator. */
+int emit_env_args_before(Compiler *c, int id) {
+  if (!nt_int(c->nt, id, "env_snapshot", 0)) return -1;
+  int argc = 0, args = nt_ref(c->nt, id, "env_arguments");
+  const int *argv = args >= 0 ? nt_arr(c->nt, args, "arguments", &argc) : call_args(c->nt, id, &argc);
+  /* Enumerable lowering moves the snapshot to a synthetic first argument. */
+  if (args < 0 && nt_ref(c->nt, id, "receiver") < 0 && argc > 0) { argv++; argc--; }
+  int saved = g_n_argov;
+  int blk = nt_ref(c->nt, id, "block");
+  int bp = nt_kind(c->nt, blk) == NK_BlockArgumentNode ? nt_ref(c->nt, blk, "expression") : -1;
+  emit_args_before(c, argv, argc, bp >= 0 ? &bp : NULL, bp >= 0, g_pre);
+  if (bp >= 0) emit_args_in_source_order(c, &bp, 1, g_pre);
+  return saved;
+}
+
 void emit_call(Compiler *c, int id, Buf *b) {
   if (g_plan_check) ucall_emitted(id);
   if (g_repr_check) repr_check_ask(c, id);
@@ -22482,7 +22499,9 @@ void emit_call(Compiler *c, int id, Buf *b) {
   if (emit_hash_new_capacity_wrap(c, id, b, 0)) return;
   /* a copy of a value whose ivars live in the runtime's map */
   if (emit_bivar_copy_wrap(c, id, b)) return;
+  int env_args = emit_env_args_before(c, id);
   emit_call_unwrapped(c, id, b);
+  if (env_args >= 0) view_unbind(env_args);
 }
 
 /* emit_call past its wraps: the copy wrap emits its own call through here */

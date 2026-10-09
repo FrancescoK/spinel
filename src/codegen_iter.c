@@ -4749,7 +4749,7 @@ int emit_hash_filter_loop(Compiler *c, int recv, int block, TyKind rt, const cha
   buf_printf(b, " if (_t%d->len > _t%d) sp_raise_cls(\"RuntimeError\","
                 " \"can't add a new key into hash during iteration\");", t, tn);
   buf_printf(b, " if (_t%d < 0) _t%d = %ssp_poly_truthy(_t%d);", tk, tk, is_rej ? "!" : "", tnv);
-  buf_printf(b, " if (!_t%d) sp_%sHash_delete(_t%d, _t%d);", tk, hn, t, tkey);
+  buf_printf(b, " if (!_t%d) sp_%sHash_delete%s(_t%d, _t%d);", tk, hn, rt == TY_STR_POLY_HASH ? "_bytes" : "", t, tkey);
   buf_printf(b, " else if (_t%d < _t%d->len && ", ti, t);
   if (hkt == TY_POLY) buf_printf(b, "sp_rbval_eql_key(_t%d->keys[_t%d->order[_t%d]], _t%d)", t, t, ti, tkey);
   else if (hkt == TY_STRING) buf_printf(b, "sp_str_eq(_t%d->order[_t%d], _t%d)", t, ti, tkey);

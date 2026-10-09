@@ -1,0 +1,25 @@
+["one"]
+["SPINEL_ENV_SNAPSHOT_ORDER_8D91", "two"]
+["SPINEL_ENV_SNAPSHOT_ORDER_8D91", "spinel snapshot 8d91"]
+{"SPINEL_ENV_SNAPSHOT_ORDER_8D91" => "three"}
+"four"
+["six", "six"]
+{"SPINEL_ENV_SNAPSHOT_ORDER_8D91" => "seven", "SPINEL_ENV_SNAPSHOT_OTHER_8D91" => "eight"}
+["nine", "ten"]
+"bad environment variable name: contains null byte"
+"after NUL"
+"bad environment variable name: contains null byte"
+"after slice NUL"
+"no implicit conversion of Integer into String"
+"after type error"
+"argument stops call"
+"after type error"
+["SPINEL_ENV_SNAPSHOT_ORDER_8D91", "allocated"]
+"bad environment variable name: contains null byte"
+"after splat NUL"
+"SPINEL_ENV_SNAPSHOT_ORDER_8D91: missing"
+["seeded"]
+"statement"
+"statement!"
+"statement"
+["statement"]

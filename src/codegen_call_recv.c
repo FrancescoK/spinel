@@ -6344,7 +6344,7 @@ else {
             if (sx >= 0) emit_boxed(c, sx, b); else buf_puts(b, "sp_box_nil()");
             buf_printf(b, "); SP_GC_ROOT(_t%d);", tsa);
             buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_PolyArray_length(_t%d); _t%d++)"
-                          " sp_%sHash_delete(_t%d, ", tsi, tsi, tsa, tsi, hn, t);
+                          " sp_%sHash_delete%s(_t%d, ", tsi, tsi, tsa, tsi, hn, rt == TY_STR_POLY_HASH ? "_bytes" : "", t);
             {
               char el[64]; snprintf(el, sizeof el, "sp_PolyArray_get(_t%d, _t%d)", tsa, tsi);
               TyKind kt2 = ty_hash_key(rt);
@@ -6356,7 +6356,7 @@ else {
             buf_puts(b, ");");
             continue;
           }
-          buf_printf(b, " sp_%sHash_delete(_t%d, ", hn, t);
+          buf_printf(b, " sp_%sHash_delete%s(_t%d, ", hn, rt == TY_STR_POLY_HASH ? "_bytes" : "", t);
           if (rt == TY_POLY_POLY_HASH) emit_boxed(c, argv[i], b); else emit_hash_key(c, argv[i], ty_hash_key(rt), b);
           buf_puts(b, ");");
         }
@@ -6391,7 +6391,7 @@ else {
         { char getx[96]; snprintf(getx, sizeof getx, "sp_%sHash_get(_t%d, _t%d)", hn, th, tk);
           if (vt == TY_POLY) buf_puts(b, getx);
           else emit_boxed_text(c, vt, getx, b); }
-        buf_printf(b, "; sp_%sHash_delete(_t%d, _t%d); }\nelse {", hn, th, tk);
+        buf_printf(b, "; sp_%sHash_delete%s(_t%d, _t%d); }\nelse {", hn, rt == TY_STR_POLY_HASH ? "_bytes" : "", th, tk);
         Buf dbind; memset(&dbind, 0, sizeof dbind);
         if (dp0) {
           char keytmp[32]; snprintf(keytmp, sizeof keytmp, "_t%d", tk);
