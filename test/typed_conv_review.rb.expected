@@ -1,0 +1,14 @@
+["e0e0", "e1e1", "e2e2", "e0e0", "e1e1", "e2e2"]
+[0, 7, 14, 21, 0, 7, 14, 21, 0, 7, 14, 21]
+21
+6
+{a: 1, b: 7}
+"can't convert Maybe to Hash (Maybe#to_hash gives NilClass)"
+"can't convert MaybeSub to Hash (MaybeSub#to_hash gives NilClass)"
+"can't convert Maybe to Hash (Maybe#to_hash gives NilClass)"
+{a: 1, c: 3}
+{a: 1, e: 1}
+"can't convert Either to Hash (Either#to_hash gives NilClass)"
+{a: 1, b: 2, seen: true}
+FrozenError
+{s: 0, a1: 1, a2: 1, a3: 1, a4: 1, a5: 1, a6: 1, a7: 1, a8: 1, a9: 1, a10: 1}
