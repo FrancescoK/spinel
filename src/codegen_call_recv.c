@@ -7635,6 +7635,7 @@ static int str_arms_pattern(Compiler *c, int id, Buf *b, const NodeTable *nt, co
         emit_coerce_text(c, id, TY_POLY, lv ? repr_of_slot(c, lv).as_ty : TY_POLY,
                          CO_HOLD, value, "a runtime scan parameter", g_pre);
         buf_puts(g_pre, ";\n");
+        emit_block_param_share(c, sc, lv, rename_local(pn), g_pre, 1);
       }
     }
     else if (has_cap && np >= 2) {
@@ -7653,6 +7654,7 @@ static int str_arms_pattern(Compiler *c, int id, Buf *b, const NodeTable *nt, co
         emit_coerce_text(c, id, TY_STRING, lv ? repr_of_slot(c, lv).as_ty : TY_STRING,
                          CO_HOLD, value, "a scan capture parameter", g_pre);
         buf_puts(g_pre, ";\n");
+        emit_block_param_share(c, sc, lv, pn, g_pre, 1);
       }
     }
     else if (block_param_name(c, blk, 0)) {
@@ -7667,8 +7669,16 @@ static int str_arms_pattern(Compiler *c, int id, Buf *b, const NodeTable *nt, co
                          CO_HOLD, value, "a scan capture row", g_pre);
         buf_puts(g_pre, ";\n");
       }
-      else
-        buf_printf(g_pre, "lv_%s = _t%d->data[_t%d];\n", p0r, tm, ti);
+      else {
+        /* --share-strings: a parameter that is the shared handle takes the
+           match, a fresh String, as a handle of its own */
+        Scope *sc = comp_scope_of(c, blk);
+        LocalVar *lv = sc ? scope_local(sc, block_param_name(c, blk, 0)) : NULL;
+        char value[64]; snprintf(value, sizeof value, "_t%d->data[_t%d]", tm, ti);
+        buf_printf(g_pre, "lv_%s = ", p0r);
+        emit_strbuf_param_bind(c, lv, TY_STRING, value, g_pre);
+        buf_puts(g_pre, ";\n");
+      }
     }
     int svind = g_indent; g_indent++;
     for (int j = 0; j < bn; j++) emit_stmt(c, bb[j], g_pre, g_indent);
@@ -14392,8 +14402,16 @@ static int emit_poly_scan_block(Compiler *c, int id, Buf *b, const NodeTable *nt
     if (sp0r) {
       Scope *sbs = comp_scope_of(c, sblk);
       LocalVar *sblv = sbs ? scope_local(sbs, sp0r) : NULL;
-      if (sblv && sblv->type == TY_POLY)
+      LocalVar *shlv = sbs ? scope_local(sbs, sp0) : NULL;
+      if (sblv && sblv->type == TY_POLY) {
         buf_printf(b, " sp_RbVal lv_%s = sp_box_str(sp_StrArray_get(_t%d, _t%d));", sp0r, tm, ti);
+        /* --share-strings: a boxed parameter of a shared class takes the match
+           as a handle of its own, as the typed arms bind it */
+        Buf lb; memset(&lb, 0, sizeof lb);
+        emit_block_param_share(c, sbs, shlv, sp0r, &lb, 0);
+        if (lb.p && lb.p[0]) buf_printf(b, "\n%s", lb.p);
+        free(lb.p);
+      }
       else
         buf_printf(b, " const char *lv_%s = sp_StrArray_get(_t%d, _t%d);", sp0r, tm, ti);
     }
