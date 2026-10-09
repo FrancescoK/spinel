@@ -50,6 +50,60 @@ spinel: 1 refusal, nothing written
 == test/reject/builtin_ivar_string_write.rb [promote] rc=1
 spinel: test/reject/builtin_ivar_string_write.rb:7: an instance variable set on a String (`@x = v` in a String method, or instance_variable_set): a String is copied, not shared, so it keeps no identity for the variable yet (waits on #6765); see docs/limitations.md
 spinel: 1 refusal, nothing written
+== test/reject/builtin_singleton_alias_call.rb [default] rc=1
+spinel: test/reject/builtin_singleton_alias_call.rb:8: File.basename: calling an alias of a builtin singleton method is not supported; see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/builtin_singleton_alias_call.rb [promote] rc=1
+spinel: test/reject/builtin_singleton_alias_call.rb:8: File.basename: calling an alias of a builtin singleton method is not supported; see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/builtin_singleton_alias_chain.rb [default] rc=1
+spinel: test/reject/builtin_singleton_alias_chain.rb:7: Time.at: rebinding a builtin singleton method captured by an alias is not supported; see docs/limitations.md
+== test/reject/builtin_singleton_alias_chain.rb [promote] rc=1
+spinel: test/reject/builtin_singleton_alias_chain.rb:7: Time.at: rebinding a builtin singleton method captured by an alias is not supported; see docs/limitations.md
+== test/reject/builtin_singleton_alias_method_redefine.rb [default] rc=1
+spinel: test/reject/builtin_singleton_alias_method_redefine.rb:4: File.basename: alias of a builtin singleton method that is later overridden is not supported; see docs/limitations.md
+== test/reject/builtin_singleton_alias_method_redefine.rb [promote] rc=1
+spinel: test/reject/builtin_singleton_alias_method_redefine.rb:4: File.basename: alias of a builtin singleton method that is later overridden is not supported; see docs/limitations.md
+== test/reject/builtin_singleton_alias_redefine.rb [default] rc=1
+spinel: test/reject/builtin_singleton_alias_redefine.rb:5: File.basename: alias of a builtin singleton method that is later overridden is not supported; see docs/limitations.md
+== test/reject/builtin_singleton_alias_redefine.rb [promote] rc=1
+spinel: test/reject/builtin_singleton_alias_redefine.rb:5: File.basename: alias of a builtin singleton method that is later overridden is not supported; see docs/limitations.md
+== test/reject/builtin_singleton_kernel_alias.rb [default] rc=1
+spinel: test/reject/builtin_singleton_kernel_alias.rb:5: Kernel.sleep: alias of a builtin singleton method that is later overridden is not supported; see docs/limitations.md
+== test/reject/builtin_singleton_kernel_alias.rb [promote] rc=1
+spinel: test/reject/builtin_singleton_kernel_alias.rb:5: Kernel.sleep: alias of a builtin singleton method that is later overridden is not supported; see docs/limitations.md
+== test/reject/builtin_singleton_kernel_super.rb [default] rc=1
+spinel: test/reject/builtin_singleton_kernel_super.rb:4: Kernel.puts: super to an inherited builtin singleton method is not supported; see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/builtin_singleton_kernel_super.rb [promote] rc=1
+spinel: test/reject/builtin_singleton_kernel_super.rb:4: Kernel.puts: super to an inherited builtin singleton method is not supported; see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/builtin_singleton_native_class_reopen.rb [default] rc=1
+spinel: test/reject/builtin_singleton_native_class_reopen.rb:4: reopening the builtin class ConditionVariable is not supported
+== test/reject/builtin_singleton_native_class_reopen.rb [promote] rc=1
+spinel: test/reject/builtin_singleton_native_class_reopen.rb:4: reopening the builtin class ConditionVariable is not supported
+== test/reject/builtin_singleton_native_reopen.rb [default] rc=1
+spinel: test/reject/builtin_singleton_native_reopen.rb:3: reopening the builtin class Queue is not supported
+== test/reject/builtin_singleton_native_reopen.rb [promote] rc=1
+spinel: test/reject/builtin_singleton_native_reopen.rb:3: reopening the builtin class Queue is not supported
+== test/reject/builtin_singleton_super.rb [default] rc=1
+spinel: test/reject/builtin_singleton_super.rb:5: File.read: super to an inherited builtin singleton method is not supported; see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/builtin_singleton_super.rb [promote] rc=1
+spinel: test/reject/builtin_singleton_super.rb:5: File.read: super to an inherited builtin singleton method is not supported; see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/builtin_singleton_super_forward.rb [default] rc=1
+spinel: test/reject/builtin_singleton_super_forward.rb:5: File.open: super to an inherited builtin singleton method is not supported; see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/builtin_singleton_super_forward.rb [promote] rc=1
+spinel: test/reject/builtin_singleton_super_forward.rb:5: File.open: super to an inherited builtin singleton method is not supported; see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/builtin_singleton_super_new.rb [default] rc=1
+spinel: test/reject/builtin_singleton_super_new.rb:4: File.new: super to an inherited builtin singleton method is not supported; see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/builtin_singleton_super_new.rb [promote] rc=1
+spinel: test/reject/builtin_singleton_super_new.rb:4: File.new: super to an inherited builtin singleton method is not supported; see docs/limitations.md
+spinel: 1 refusal, nothing written
 == test/reject/builtin_value_ivar_set.rb [default] rc=1
 spinel: test/reject/builtin_value_ivar_set.rb:6: an instance variable set on a String (`@x = v` in a String method, or instance_variable_set): a String is copied, not shared, so it keeps no identity for the variable yet (waits on #6765); see docs/limitations.md
 spinel: 1 refusal, nothing written

@@ -9180,6 +9180,7 @@ static void emit_ivar_nil_inits(Buf *b, ClassInfo *ci, const char *lv,
 /* Was this "class" written as `module`? Module-ness lives in the AST node
    kind, not in ClassInfo, and two emitters need the same answer. */
 int comp_class_is_module(Compiler *c, ClassInfo *ci) {
+  if (ci && ci->def_node < 0) return is_builtin_module_const_name(ci->name);
   const char *dt = ci ? nt_type(c->nt, ci->def_node) : NULL;
   return dt && sp_streq(dt, "ModuleNode");
 }
@@ -11739,6 +11740,7 @@ static void emit_reopen_self_boxed(Compiler *c, Scope *s, Buf *b) {
 
 
 void emit_super(Compiler *c, int id, Buf *b) {
+  refuse_from_plan(c, id, CRF_LIMIT, "super-refusal");
   if (repr_of(c, id).demand && repr_call_returns_handle(c, id) && emit_strbuf_route(c, id, b)) return;
   if (g_plan_check) ucall_emitted(id);
   { Scope *ss = comp_scope_of(c, id);
