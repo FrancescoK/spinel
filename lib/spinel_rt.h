@@ -10937,6 +10937,11 @@ static sp_RbVal sp_poly_index_poly(sp_RbVal recv, sp_RbVal idx) {
   if (SP_UNLIKELY(sp_poly_is_user_obj(recv))) {
     sp_RbVal _u;
     if (sp_poly_user_cmp("[]", recv, idx, &_u)) return _u;
+    /* ...and one that has none is CRuby's NoMethodError, which `r[k] ||= v`
+       raises before it stores: the reads below answered nil, and the store
+       ran. A Struct's or a Data's members are read below. */
+    if (!(sp_obj_to_h_fn && sp_obj_to_h_fn(recv).tag == SP_TAG_OBJ))
+      sp_raise_nomethod(sp_nomethod_msg("[]", recv));
   }
   /* A shared String key reads as its live value. The callable, object and
      heterogeneous Hash arms above keep the original argument; the typed

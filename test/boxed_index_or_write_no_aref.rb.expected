@@ -1,0 +1,7 @@
+"undefined method '[]' for an instance of C"
+nil
+1
+2
+1
+#<struct S a=1, b=2>
+6
