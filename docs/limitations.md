@@ -25,18 +25,15 @@ fails once with the count and writes no binary. `--emit-types` carries the same
 refusals in its `diagnostics` array with `"severity":"error"`.
 
 Some unsupported constructs compile and fail only when reached at runtime.
-For example, a class-body `define_method("get_" + (ARGV[0] || "a")) { 1 }`
-does not define `get_a`, so a later call raises `NoMethodError`; a computed
-`instance_variable_get("@" + (ARGV[0] || "x"))` on a user-class instance also
-raises `NoMethodError`. A `Class.new` block assigned to a local or returned
-from a method raises `NotImplementedError` if it uses a superclass held in a
-variable (see the cases below). `Class.new` and `Module.new` blocks that
-capture outer locals are refused at compile time unless `--defer-refusals` is
-supplied.
-The dynamic-name and variable-superclass cases can still compile without a
-refusal or warning. A successful compile does not establish CRuby-compatible
-behavior. Separately, `--defer-refusals`
-explicitly turns compile-time refusals into runtime `NotImplementedError`s.
+For example, a computed `instance_variable_get` or `instance_variable_set`
+on a user-class instance can raise `NoMethodError`. `define_method` with a
+non-literal name, in a class body or a method body, and `Class.new` with a
+non-constant superclass are refused at compile time. `Class.new` and `Module.new`
+blocks that capture outer locals are refused at compile time unless
+`--defer-refusals` is supplied.
+A successful compile does not establish CRuby-compatible behavior.
+Separately, `--defer-refusals` explicitly turns eligible compile-time
+refusals into runtime `NotImplementedError`s.
 
 ---
 
@@ -49,13 +46,13 @@ registry, or stack reification -- none of which exist in a flat compiled binary.
 |---|---|---|
 | `eval` / `instance_eval("str")` / `class_eval("str")` | unsupported | needs a runtime parser + type system. (Block forms -- `instance_eval { }` -- DO work; the block is compiled.) Code in a branch a `RUBY_ENGINE == "..."` check rules out (`if RUBY_ENGINE == "spinel" ... else eval(...) end`) is dropped before analysis, so a library can keep an eval backend for other engines. |
 | `method_missing` | not dispatched (defining it warns at compile time) | every call site is a direct C call; an undefined-method call can't fall back to a per-receiver hook. The method is still callable explicitly. |
-| `define_method` with a runtime-computed name/body | unsupported; a class-body call with a computed name can compile without defining the method, so calling it raises `NoMethodError` at runtime | the compiled method table cannot acquire a runtime-built method |
+| `define_method` with a runtime-computed name/body | calls with a non-literal name, in a class body or in a method body (instance or class method), are refused in reachable code, even when the defined method is never called; an unreachable method and pruned code are not refused. A program that defines or aliases its own `define_method` keeps those calls as ordinary calls; that check is program-wide, so a `def define_method` in an unrelated class turns the refusal off everywhere, and a computed-name class-building call then raises `NoMethodError` at run time as it always did. `send(:define_method, name)` is not refused either. Literal Symbol/String names and existing literal-list unrolling work. A constant holding a Symbol or String name is not supported yet | the compiled method table cannot acquire a runtime-built method |
 | `ObjectSpace` (`each_object`, `count_objects`) | unsupported | no class-keyed allocation registry; the GC tracks bytes, not a live-object index. `define_finalizer` / `undefine_finalizer` *are* supported (the collector watches the object; the callable runs at the first safe point after the collection that frees it -- a method entry, a loop back-edge, `GC.start` -- or at exit) |
 | `TracePoint` / `set_trace_func` | unsupported | require an interpreter loop to hook |
 | `binding` as an object | unsupported | reifying the local scope needs a runtime name->slot table; locals are C stack slots. `binding.local_variable_get(:x)` with a **literal** name *is* supported -- it resolves to the known slot at compile time |
 | Refinements (`refine` / `using`) | no-op / unresolved | scope-keyed dispatch is incompatible with direct C calls |
 | `callcc` / `Continuation` | unsupported | multi-shot full-stack capture has no flat-C analogue |
-| `Class.new(parent)` with or without a block | static forms work; other forms fail during compilation or at runtime, depending on the assignment target, superclass expression and block | the class graph is baked at compile time; see [Class.new cases](#classnew-cases) below |
+| `Class.new(parent)` with or without a block | static forms work; non-constant superclass expressions are refused at compile time | the class graph is baked at compile time; see [Class.new cases](#classnew-cases) below |
 | An instance variable of a String (`@x = v` in a method added to String, `s.instance_variable_set(:@x, v)`) | refused at compile time, until Strings are shared rather than copied (#6765); one reached through an untyped value raises NotImplementedError when it runs, as does one on a Time | a String is copied between its representations and across calls, so it has no one identity yet; under #6765's share-by-default model it keeps one and takes the same map as an Array. A Time is copied by value. An Array, a Hash, a Random, a Proc, an exception and a class value keep their instance variables, in a table keyed by the object (as CRuby's); a class value's own class-level slots stay where its class methods read them, and its `instance_variables` lists those only its class methods wrote after the reflective sets. An Integer, a Float, a Symbol, nil, true, false and a Range read nil and raise FrozenError on a write, as in CRuby. An ivar of a builtin value as a multiple-assignment target (`@a, @b = x, y` in an Array method) is refused: assign each on its own |
 | A subclass of a builtin value class: `class Name < String`, and likewise Range, Proc, Method, UnboundMethod, Integer, Float, Symbol, Rational, Complex, NilClass, TrueClass, FalseClass, Regexp, MatchData, Time, Random, Enumerator, IO, File, Dir, Thread, Fiber, Mutex, Queue, SizedQueue, ConditionVariable, OpenStruct, or a class a package binds to C (StringIO); also `Thread::Queue` | refused at compile time, naming the class | the subclass would be built as a plain object: none of the parent's methods reach it, its constructor takes none of the parent's arguments, and `p`, `to_s`, `==` and `respond_to?` answer as for an Object. Supporting it needs an instance that IS a String (Range, ...) with the subclass's methods dispatched on it, as an Array or a Hash subclass's is (below); until then, keep the value in an instance variable of a class of your own. A subclass of Object, BasicObject, an exception, Struct / Data, Numeric, or a package class written in Ruby (Set, Date, BigDecimal) works, as does a class of the program's own that shares a builtin's name under a namespace (`Jobs::Queue`) |
 | A subclass of Array (`class Page < Array`, `::Array`, `Class.new(Array) do ... end`) | supported (#7449), except the shapes in the next column, which are refused at compile time | its instance IS its Array: the struct starts with the Array, so Array's methods run on it, a boxed one is an Array to the runtime, and its class is read back off its own GC scan function. Refused: `Class.new(Array)` without a block (no class of the program's own stands for it; write `class Name < Array`), and a bare `super` into Array from a method with keyword, post-rest or destructured parameters (pass the arguments explicitly). `Marshal.dump` writes an instance as CRuby does (`C` with the class, the elements, and its ivars under `I`), and `Marshal.load` reads that back as an instance of the class, whether Spinel or CRuby wrote it |
@@ -144,9 +141,9 @@ Each row below is a separate program; the blocks shown capture no outer locals.
 | `Foo = Class.new(Base)` | succeeds | works |
 | `foo = Class.new(Base)` | succeeds | same anonymous naming as the block form |
 | `Foo = Class.new(Mod)` or `foo = Class.new(Mod)` with `Mod` a module | succeeds | raises `TypeError` where the call runs, as CRuby does |
-| `Foo = Class.new(base) {}` | fails when compiling generated C | no binary |
-| `foo = Class.new(base) {}` | succeeds | construction raises `NotImplementedError` |
-| `Foo = Class.new(base)` | succeeds | reading `Foo` raises `NameError` (`uninitialized constant Foo`) |
+| `Foo = Class.new(base) {}` | refused | no binary |
+| `foo = Class.new(base) {}` | refused | no binary |
+| `Foo = Class.new(base)` | refused | no binary |
 | `foo = Class.new(base)` | refused | no binary |
 
 An instance of an unnamed class inspects as `#<#<Class:0x...>:0x... @a=1>`,
@@ -203,14 +200,16 @@ still refused. With `--defer-refusals`,
 it retains the runtime `NotImplementedError` instead. Locals defined inside
 the class-building block are not outer captures.
 
-A local assignment or method return using a variable superclass still compiles
-to a runtime `NotImplementedError` naming the variable superclass. The
-compile-time refusal for a local assignment without a block names
-`Class.new(parent)` without claiming that a block was supplied.
+A non-constant superclass expression is refused in reachable code, with or
+without a block and regardless of the assignment target. Pruned scopes are
+not refused. Even `base = Base`
+aliases are not supported yet; use `Class.new(Base)` instead. A constant alias
+of a class (`S = Base; Class.new(S)`) is accepted but loses Base's methods, as
+it did before.
 
-Builtin parents can take separate paths: for example,
-`Err = Class.new(StandardError)` works without a block. The builtin-subclass
-restrictions above still apply.
+Constant builtin parents use the same lowering where supported; for example,
+`Err = Class.new(StandardError)` works without a block. Array and Hash retain
+the no-block refusals described above.
 
 ---
 

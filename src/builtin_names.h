@@ -284,4 +284,7 @@ int is_kernel_module_name(const char *n);
 int is_kernel_module_function(const char *n);
 int is_builtin_module_const_name(const char *n);
 
+int is_define_method_name(const char *n); /* define_method */
+int is_alias_method_name(const char *n);  /* alias_method */
+
 #endif

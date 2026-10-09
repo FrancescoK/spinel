@@ -915,6 +915,7 @@ typedef struct {
   int *anon_struct_ids;
   int n_anon_struct_ids, anon_struct_ids_valid;
   int has_anonymous_classes; /* Class.new identities with execution-time names */
+  int user_define_method;    /* 0 not asked yet, 1 none, 2 the program defines or aliases its own define_method */
 
   /* local-write-by-name index; see comp_lvw_first */
   int *lvw_head;        /* [lvw_nbuckets] first write id in each name bucket */

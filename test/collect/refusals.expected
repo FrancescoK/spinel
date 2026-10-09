@@ -244,6 +244,42 @@ spinel: 1 refusal, nothing written
 == test/reject/class_new_captured_path.rb [promote] rc=1
 spinel: test/reject/class_new_captured_path.rb:5: Class.new or Module.new with a block that captures outer locals is not supported; see docs/limitations.md
 spinel: 1 refusal, nothing written
+== test/reject/class_new_variable_block_argument.rb [default] rc=1
+spinel: test/reject/class_new_variable_block_argument.rb:5: Class.new with a non-constant superclass is not supported; use a constant superclass (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/class_new_variable_block_argument.rb [promote] rc=1
+spinel: test/reject/class_new_variable_block_argument.rb:5: Class.new with a non-constant superclass is not supported; use a constant superclass (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/class_new_variable_called_constant.rb [default] rc=1
+spinel: test/reject/class_new_variable_called_constant.rb:4: Class.new with a non-constant superclass is not supported; use a constant superclass (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/class_new_variable_called_constant.rb [promote] rc=1
+spinel: test/reject/class_new_variable_called_constant.rb:4: Class.new with a non-constant superclass is not supported; use a constant superclass (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/class_new_variable_constant.rb [default] rc=1
+spinel: test/reject/class_new_variable_constant.rb:4: Class.new with a non-constant superclass is not supported; use a constant superclass (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/class_new_variable_constant.rb [promote] rc=1
+spinel: test/reject/class_new_variable_constant.rb:4: Class.new with a non-constant superclass is not supported; use a constant superclass (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/class_new_variable_constant_block.rb [default] rc=1
+spinel: test/reject/class_new_variable_constant_block.rb:4: Class.new with a non-constant superclass is not supported; use a constant superclass (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/class_new_variable_constant_block.rb [promote] rc=1
+spinel: test/reject/class_new_variable_constant_block.rb:4: Class.new with a non-constant superclass is not supported; use a constant superclass (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/class_new_variable_local.rb [default] rc=1
+spinel: test/reject/class_new_variable_local.rb:4: Class.new with a non-constant superclass is not supported; use a constant superclass (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/class_new_variable_local.rb [promote] rc=1
+spinel: test/reject/class_new_variable_local.rb:4: Class.new with a non-constant superclass is not supported; use a constant superclass (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/class_new_variable_local_block.rb [default] rc=1
+spinel: test/reject/class_new_variable_local_block.rb:4: Class.new with a non-constant superclass is not supported; use a constant superclass (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/class_new_variable_local_block.rb [promote] rc=1
+spinel: test/reject/class_new_variable_local_block.rb:4: Class.new with a non-constant superclass is not supported; use a constant superclass (see docs/limitations.md)
+spinel: 1 refusal, nothing written
 == test/reject/class_new_without_block_iterator.rb [default] rc=1
 spinel: test/reject/class_new_without_block_iterator.rb:5: Class.new(parent) is not supported by AOT compilation: the class graph, ancestor chain, and method/ivar layout are baked at compile time. Declare the class with `class ... end` instead (see docs/limitations.md)
 spinel: 1 refusal, nothing written
@@ -394,6 +430,36 @@ spinel: test/reject/const_value_not_a_module.rb:4: B is not a module: it is assi
 spinel: test/reject/def_delegators_splat.rb:10: def_delegators with arguments other than a literal symbol list is not supported (write the names as symbols: `def_delegators :@target, :name, ...`)
 == test/reject/def_delegators_splat.rb [promote] rc=1
 spinel: test/reject/def_delegators_splat.rb:10: def_delegators with arguments other than a literal symbol list is not supported (write the names as symbols: `def_delegators :@target, :name, ...`)
+== test/reject/define_method_name_class_method.rb [default] rc=1
+spinel: test/reject/define_method_name_class_method.rb:4: Module#define_method with a non-literal name is not supported; use a literal Symbol or String (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/define_method_name_class_method.rb [promote] rc=1
+spinel: test/reject/define_method_name_class_method.rb:4: Module#define_method with a non-literal name is not supported; use a literal Symbol or String (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/define_method_name_constant.rb [default] rc=1
+spinel: test/reject/define_method_name_constant.rb:4: Module#define_method with a non-literal name is not supported; use a literal Symbol or String (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/define_method_name_constant.rb [promote] rc=1
+spinel: test/reject/define_method_name_constant.rb:4: Module#define_method with a non-literal name is not supported; use a literal Symbol or String (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/define_method_name_instance_method.rb [default] rc=1
+spinel: test/reject/define_method_name_instance_method.rb:4: Module#define_method with a non-literal name is not supported; use a literal Symbol or String (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/define_method_name_instance_method.rb [promote] rc=1
+spinel: test/reject/define_method_name_instance_method.rb:4: Module#define_method with a non-literal name is not supported; use a literal Symbol or String (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/define_method_name_local.rb [default] rc=1
+spinel: test/reject/define_method_name_local.rb:4: Module#define_method with a non-literal name is not supported; use a literal Symbol or String (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/define_method_name_local.rb [promote] rc=1
+spinel: test/reject/define_method_name_local.rb:4: Module#define_method with a non-literal name is not supported; use a literal Symbol or String (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/define_method_name_self.rb [default] rc=1
+spinel: test/reject/define_method_name_self.rb:4: Module#define_method with a non-literal name is not supported; use a literal Symbol or String (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/define_method_name_self.rb [promote] rc=1
+spinel: test/reject/define_method_name_self.rb:4: Module#define_method with a non-literal name is not supported; use a literal Symbol or String (see docs/limitations.md)
+spinel: 1 refusal, nothing written
 == test/reject/dynamic_send_then_refusal.rb [default] rc=1
 spinel: test/reject/dynamic_send_then_refusal.rb:15: String#unicode_normalize is not supported: Unicode normalization requires shipping the Unicode decomposition/composition tables, which spinel deliberately does not carry -- the same limit as String#grapheme_clusters (see docs/limitations.md)
 spinel: 1 refusal, nothing written
