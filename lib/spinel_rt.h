@@ -1550,6 +1550,9 @@ extern SP_TLS sp_RbVal _sp_proc_poly_ret;
    sp_proc_call and proc bodies must meet in the same slot. */
 extern SP_TLS sp_Proc *_sp_proc_blk;
 static void sp_re_mark_globals(void) {
+#ifdef SP_SHARE_STRING_LITERALS
+  sp_String_mark_literals();
+#endif
   /* The sub-markers below are static and inline away, so a fault in one of
      them reports as this frame with nothing to distinguish them. Under verify,
      name the group being walked: `phase=globals` alone cannot say whether the
@@ -2796,6 +2799,9 @@ static inline sp_String *sp_poly_as_strbuf(sp_RbVal v) {
    handle carries (`inject(s)` over a frozen s answered a String `<<`
    changed). */
 SP_COLD static const char *sp_strbuf_read_frozen(sp_String *h) {
+#ifdef SP_SHARE_STRING_LITERALS
+  if (sp_String_literal_slot(sp_String_cstr(h))) return sp_String_cstr(h);
+#endif
   char *r = (char *)sp_str_from_bytes(sp_String_cstr(h), (size_t)sp_String_length(h));
   if (h->binary) sp_str_mark_binary(r);
   ((unsigned char *)r)[-1] = 0xfa;
@@ -2821,6 +2827,17 @@ static inline const char *sp_strbuf_read_pub(sp_String *h) {
 }
 static inline sp_bool sp_poly_is_strbuf(sp_RbVal v) {
   return v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_STRBUF;
+}
+/* A literal's byte and handle faces name the same static object. */
+static inline sp_RbVal sp_poly_literal_identity(sp_RbVal v) {
+  if (sp_poly_is_strbuf(v) && v.v.p) {
+    sp_String *h = (sp_String *)v.v.p;
+    if (sp_String_literal_slot(h->data)) return sp_box_str(h->data);
+  }
+  return v;
+}
+static inline const void *sp_poly_identity_ptr(sp_RbVal v) {
+  return sp_poly_literal_identity(v).v.p;
 }
 /* A POLY variable's value as it is handed to a parameter the callee appends
    to in place: a plain String becomes the shared handle, boxed, and the
@@ -11832,6 +11849,10 @@ static SP_NOINLINE sp_bool sp_poly_eql_strict_slow(sp_RbVal a, sp_RbVal b) {
    bool, flonum) are their own identity by value; everything heap-backed
    (string buffer, boxed object, bignum) compares by pointer. */
 static sp_bool sp_poly_equal(sp_RbVal a, sp_RbVal b) {
+#ifdef SP_SHARE_STRING_LITERALS
+  a = sp_poly_literal_identity(a);
+  b = sp_poly_literal_identity(b);
+#endif
   if (a.tag != b.tag) return FALSE;
   switch (a.tag) {
     case SP_TAG_INT: return a.v.i == b.v.i;
@@ -15049,8 +15070,21 @@ static void sp_throw_boxed(sp_RbVal tagv, sp_RbVal val) {
   sp_throw(tag, kind, val);
 }
 static void sp_throw(const char *tag, int kind, sp_RbVal val) {
+#ifdef SP_SHARE_STRING_LITERALS
+  if (kind == 3 && tag && sp_String_literal_slot(((sp_String *)tag)->data)) {
+    tag = ((sp_String *)tag)->data;
+    kind = 2;
+  }
+#endif
   int i = sp_catch_top - 1;
   while (i >= 0) {
+#ifdef SP_SHARE_STRING_LITERALS
+    if (sp_catch_tag_kind[i] == 3 && sp_catch_tag[i] &&
+        sp_String_literal_slot(((sp_String *)sp_catch_tag[i])->data)) {
+      sp_catch_tag[i] = ((sp_String *)sp_catch_tag[i])->data;
+      sp_catch_tag_kind[i] = 2;
+    }
+#endif
     if (sp_catch_tag_kind[i] == kind &&
         (kind ? sp_catch_tag[i] == tag : strcmp(sp_catch_tag[i], tag) == 0)) {
       sp_catch_val[i] = val; sp_catch_top = i + 1;

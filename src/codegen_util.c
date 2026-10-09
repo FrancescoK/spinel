@@ -2523,7 +2523,8 @@ static int strbuf_box_ref_as(Compiler *c, int recv, const char *fmt, Buf *b) {
    expression reads the bytes without allocating a handle first. */
 int emit_strbuf_read_ref(Compiler *c, int recv, Buf *b) { return strbuf_box_ref_as(c, recv, "sp_String_cstr(%s)", b); }
 /* The object_id of a String held as a shared sp_String: the handle's address,
-   which is what a box of it carries. 0 when `recv` is not one. */
+   which is what a box of it carries. 0 when `recv` is not one.
+   A frozen literal's handle keeps the identity of its static bytes. */
 int strbuf_object_ref(Compiler *c, int recv, Buf *b) {
   /* A receiver-returning route has the same identity as its slot. */
   char ref[1024];
@@ -2532,28 +2533,31 @@ int strbuf_object_ref(Compiler *c, int recv, Buf *b) {
   if (route && !up) {
     if (repr_of(c, route - 1).may_nil) {
       int t = ++g_tmp;
-      buf_printf(b, "({ sp_String *_t%d = %s; _t%d ? (sp_int)(uintptr_t)_t%d : %s; })",
+      buf_printf(b, repr_share_rule(c) ? "({ sp_String *_t%d = %s; _t%d ? (sp_int)(uintptr_t)sp_String_identity(_t%d) : %s; })"
+                                     : "({ sp_String *_t%d = %s; _t%d ? (sp_int)(uintptr_t)_t%d : %s; })",
                  t, ref, t, t, repr_of(c, recv).may_nil ? "SP_NIL_OBJECT_ID" : "(sp_int)(uintptr_t)sp_str_frozen_empty");
     }
-    else buf_printf(b, "((sp_int)(uintptr_t)(%s))", ref);
+    else buf_printf(b, (repr_share_rule(c) ? "((sp_int)(uintptr_t)sp_String_identity(%s))" : "((sp_int)(uintptr_t)(%s))"), ref);
     return 1;
   }
   if (repr_of(c, recv).may_nil) {
     Buf rb; memset(&rb, 0, sizeof rb);
     if (!strbuf_box_ref_as(c, recv, "%s", &rb)) return 0;
     int t = ++g_tmp;
-    buf_printf(b, "({ sp_String *_t%d = %s; _t%d ? (sp_int)(uintptr_t)_t%d : SP_NIL_OBJECT_ID; })", t, rb.p, t, t);
+    buf_printf(b, repr_share_rule(c) ? "({ sp_String *_t%d = %s; _t%d ? (sp_int)(uintptr_t)sp_String_identity(_t%d) : SP_NIL_OBJECT_ID; })"
+                                   : "({ sp_String *_t%d = %s; _t%d ? (sp_int)(uintptr_t)_t%d : SP_NIL_OBJECT_ID; })", t, rb.p, t, t);
     free(rb.p);
     return 1;
   }
-  /* The box's payload is already its identity, with or without a handle. */
+  /* The box's payload is already its identity, with or without a handle.
+     A frozen literal's handle resolves to the same identity as its bytes. */
   if (repr_share_rule(c) && recv >= 0 && repr_of(c, recv).strbuf_src == RS_SLOT_POLY) {
-    buf_puts(b, "((sp_int)(uintptr_t)(");
+    buf_puts(b, "((sp_int)(uintptr_t)sp_poly_identity_ptr(");
     emit_local_ref(c, recv, nt_str(c->nt, recv, "name"), b);
-    buf_puts(b, ").v.p)");
+    buf_puts(b, "))");
     return 1;
   }
-  return strbuf_box_ref_as(c, recv, "((sp_int)(uintptr_t)(%s))", b);
+  return strbuf_box_ref_as(c, recv, (repr_share_rule(c) ? "((sp_int)(uintptr_t)sp_String_identity(%s))" : "((sp_int)(uintptr_t)(%s))"), b);
 }
 /* `cont[k]` where the container hands its elements out BOXED (a poly array, a
    hash): the read is an sp_RbVal, so a shared-handle destination has to unbox
@@ -4001,7 +4005,7 @@ void emit_frozen_literal(Buf *b, const char *esc, size_t esc_len, size_t raw_len
 /* The definitions of the literals the unit `t` names, in the order they were
    first met. A literal only a discarded emission named (a speculative arm, an
    abandoned unit) is left out. Resets the table for the next unit. */
-void fzl_emit_defs(const char *t, Buf *out) {
+void fzl_emit_defs(const char *t, Buf *out, int handles) {
   char *used = calloc((size_t)g_fzl_n + 1, 1);
   for (const char *p = t; p && (p = strstr(p, "_fzl_")); ) {
     p += 5;
@@ -4012,7 +4016,13 @@ void fzl_emit_defs(const char *t, Buf *out) {
   }
   for (int k = 0; k < g_fzl_n; k++) {
     FzlLit *f = &g_fzl[k];
-    if (used[k])
+    if (used[k] && handles)
+      buf_printf(out, "static struct { sp_str_hdr h; unsigned char m; char d[%zu]; sp_StringLiteral literal; } _fzl_%d = "
+                      "{ { (sp_str_hdr *)((char *)&_fzl_%d.literal + 1), %zu%s, %zu, 0 }, 0xf1, \"%s\", { NULL, NULL } };\n",
+                 f->raw_len + 1, k, k, f->raw_len + 1,
+                 fzl_esc_ascii7(f->esc, f->esc_len) ? " | SP_STR_SIZE_ASCII7" : "",
+                 f->raw_len, f->esc);
+    else if (used[k])
       buf_printf(out, "static struct { sp_str_hdr h; unsigned char m; char d[%zu]; } _fzl_%d = "
                       "{ { NULL, %zu%s, %zu, 0 }, 0xf1, \"%s\" };\n",
                  f->raw_len + 1, k, f->raw_len + 1,
@@ -4133,7 +4143,8 @@ void emit_str_literal_n(Buf *b, const char *content, size_t len, int frozen) {
      were built at runtime (#1749; ASAN: global-buffer-overflow). Emit a
      static header+marker+data object instead: the layout matches a heap
      string exactly (hdr | marker | bytes), the hash cache write hits our
-     own static storage, and next=NULL keeps it off the sweep list. */
+     own static storage, and next=NULL keeps it off the sweep list.
+     Shared literal definitions use a tagged link to their handle slot. */
   if (frozen) {
     Buf e; memset(&e, 0, sizeof e);
     if (content && len) emit_c_escaped_n(&e, content, len);
