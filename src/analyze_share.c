@@ -1653,6 +1653,10 @@ static int sh_builtin_new(ShareFacts *F, Compiler *c, int n, int recv, int blk) 
     }
     /* Array.new(a), a copy of a's elements, is not followed: its answer
        holds a's Strings, which a literal handed to it does not make handles */
+    /* Under --share-strings join the containers as BSH_SUB does: the copy
+       also retains a literal source's elements, including fresh Strings. */
+    if (c->share_strings && share == BSH_NEW_FILL && argc == 1 && blk < 0)
+      sh_union(F, r, v);
   }
   if (!lit_blk) return r;
   if (share == BSH_NEW_DEFAULT) {
