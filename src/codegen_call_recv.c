@@ -13437,6 +13437,8 @@ static int emit_poly_index_call(Compiler *c, int id, Buf *b, const NodeTable *nt
       free(call.p);
     }
     else { buf_printf(b, "sp_RbVal _t%d = ", tv); emit_boxed(c, argv[2], b); buf_puts(b, "; "); }
+    /* the value is held across the index operands, which may allocate */
+    buf_printf(b, "SP_GC_ROOT_RBVAL(_t%d); ", tv);
     /* Store the possibly-promoted array back into the receiver so a typed->poly
        promotion survives: assign to a local/ivar lvalue, or write to outer's slot
        for a computed `outer[idx]` receiver; otherwise splice in place. */
