@@ -35124,6 +35124,64 @@ static int rd_read_dropped_for_copy(Compiler *c, int w, const char *wn) {
   }
   return 0;
 }
+/* A scan block's matches are new Strings, but CRuby raises "string modified"
+   when the String the scan walks changes under it, and the compiled loop,
+   walking rows taken before the first turn, would carry on. Whether a block
+   reaches the subject cannot be proved from the block (an alias, a helper, a
+   constant, an implicit call, a buffer a builtin writes), so the refusal is
+   lifted only for a subject nothing can name: a fresh literal (a string
+   literal, an interpolation, `+"lit"`), or a plain local that the block does
+   not mention and whose String has no other name (the route's `sole`, asked of
+   the final facts). Every other subject keeps the refusal. */
+static int scan_fresh_string(const NodeTable *nt, int r) {
+  r = an_unparen(nt, r);
+  if (r < 0) return 0;
+  if (nt_kind(nt, r) == NK_StringNode || nt_kind(nt, r) == NK_InterpolatedStringNode) return 1;
+  return nt_kind(nt, r) == NK_CallNode && nt_str(nt, r, "name") && sp_streq(nt_str(nt, r, "name"), "+@") &&
+         nt_ref(nt, r, "receiver") >= 0 && nt_kind(nt, nt_ref(nt, r, "receiver")) == NK_StringNode;
+}
+/* Is every write of local `name` under `node` a fresh literal form? A call's
+   answer can be a String another name holds in CRuby (an exception's `to_s`
+   is its message, `gets` sets `$_`), which no share fact knows. A method,
+   class or module body has locals of its own. */
+static int scan_local_fresh_writes(Compiler *c, int node, const char *name) {
+  const NodeTable *nt = c->nt;
+  if (node < 0) return 1;
+  NodeKind k = nt_kind(nt, node);
+  if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode) return 1;
+  if (a_is_write_node(nt_type(nt, node))) {
+    const char *wn = nt_str(nt, node, "name");
+    if (wn && sp_streq(wn, name) &&
+        (k != NK_LocalVariableWriteNode || !scan_fresh_string(nt, nt_ref(nt, node, "value")))) return 0;
+  }
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++)
+    if (!scan_local_fresh_writes(c, nt_ref_at(nt, node, i), name)) return 0;
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *a = nt_arr_at(nt, node, i, &n);
+    for (int j = 0; j < n; j++)
+      if (!scan_local_fresh_writes(c, a[j], name)) return 0;
+  }
+  return 1;
+}
+static int scan_subject_trusted(Compiler *c, int blk, int subj, ShareRoute *q) {
+  const NodeTable *nt = c->nt;
+  if (subj < 0) return 0;
+  if (scan_fresh_string(nt, subj)) return 1;
+  const char *name = nt_kind(nt, subj) == NK_LocalVariableReadNode ? nt_str(nt, subj, "name") : NULL;
+  if (!name) return 0;
+  ANameSet used = {0};
+  a_collect_used(c, nt_ref(nt, blk, "body"), &used);
+  int hit = aname_has(&used, name);
+  free(used.v);
+  if (hit) return 0;
+  Scope *ss = comp_scope_of(c, subj);
+  int root = ss ? (ss->body >= 0 ? ss->body : c->nt->root_id) : -1;
+  if (root < 0 || !scan_local_fresh_writes(c, root, name)) return 0;
+  q->sole = subj;
+  return 1;
+}
 /* String routes the settled types show copying where CRuby hands over the
    one object (#6765), refused rather than compiled with the change lost:
    - `t = obj.text; t << x` on a boxed obj: the reader's dispatch answers a
@@ -35165,14 +35223,28 @@ static void refuse_string_read_copies(Compiler *c) {
     int blk = nt_ref(nt, u, "block"), r = nt_ref(nt, u, "receiver");
     if (!un) continue;
     if (is_scan_name(un) && blk >= 0 && nt_kind(nt, blk) == NK_BlockNode && r >= 0 &&
-        (comp_ntype(c, r) == TY_STRING || comp_ntype(c, r) == TY_STRBUF))
+        (comp_ntype(c, r) == TY_STRING || comp_ntype(c, r) == TY_STRBUF ||
+         (c->share_strings && comp_ntype(c, r) == TY_POLY)))
       for (int k = 0; k < 4; k++) {
         const char *bp = block_param_name(c, blk, k);
         LocalVar *bv = bp ? scope_local(comp_scope_of(c, blk), bp) : NULL;
-        if (bv && (bv->type == TY_STRBUF || (bv->type == TY_POLY && strbuf_any_str_mut(c, bp, comp_scope_of(c, blk)))))
-          unsupported_feature(c, u, "a match `scan` hands its block is kept and mutated in place (a String "
-                              "is not yet shared by reference through `scan`'s block parameter). Mutate a "
-                              "copy (`m = +m.dup`) and keep that.");
+        if (bv && (bv->type == TY_STRBUF || (bv->type == TY_POLY && strbuf_any_str_mut(c, bp, comp_scope_of(c, blk))))) {
+          const char *sc_msg =
+            "a match `scan` hands its block is kept and mutated in place (a String "
+            "is not yet shared by reference through `scan`'s block parameter). Mutate a "
+            "copy (`m = +m.dup`) and keep that.";
+          /* the matches the call iterates are new Strings no other name
+             holds, so each reaches only the parameter */
+          ShareRoute q = share_route(u, u, 1);
+          q.fresh_elems = 1;
+          q.to = blk;
+          q.to_name = bp;
+          /* the matches are new, but a subject the block could change under
+             the scan keeps the refusal (scan_subject_trusted) */
+          if (!scan_subject_trusted(c, blk, an_unparen(nt, r), &q) ||
+              !share_route_defer(c, &q, sc_msg))
+            unsupported_feature(c, u, sc_msg);
+        }
       }
     /* `kept[0] << "b"`: a String mutation through an element read of a
        local container */

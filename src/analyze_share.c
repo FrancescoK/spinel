@@ -4071,6 +4071,7 @@ ShareRoute share_route(int site, int value, int elems) {
   r.elems = elems;
   r.to = -1;
   r.carry = -1;
+  r.sole = -1;
   return r;
 }
 
@@ -4148,6 +4149,15 @@ static int sh_route_to_root(const Compiler *c, const ShareRoute *q) {
 enum { SH_ROUTE_OK, SH_ROUTE_UNSEEN, SH_ROUTE_COPIES };
 static int sh_route_why(const Compiler *c, const ShareRoute *q) {
   const ShareFacts *F = c->share;
+  /* a route that vouches for a local by its being the only name its String
+     has: the final facts have to show a plain local that no other holder,
+     no capture and nothing the walk does not follow reaches */
+  if (q->sole >= 0) {
+    Scope *ss = comp_scope_of((Compiler *)c, q->sole);
+    LocalVar *sl = ss ? scope_local(ss, nt_str(c->nt, q->sole, "name")) : NULL;
+    if (!sl || sl->is_param || sl->is_block_param || sl->is_cell || sl->cell_outlives ||
+        !share_node_one_name(c, q->sole)) return SH_ROUTE_UNSEEN;
+  }
   int v = sh_node_root(F, q->value, q->elems);
   /* a value the walk reached and found no String identity in (`"a#{i}"`,
      a builtin's fresh answer) is a String no other name holds: its class
@@ -4184,6 +4194,7 @@ int share_route_defer(Compiler *c, const ShareRoute *q, const char *msg) {
     const ShareRoute *r = &c->share_route[i];
     if (r->site == q->site && r->value == q->value && r->elems == q->elems && r->to == q->to &&
         r->to_elems == q->to_elems && r->carry == q->carry && r->fresh_elems == q->fresh_elems &&
+        r->sole == q->sole &&
         (r->to_name == q->to_name || (r->to_name && q->to_name && sp_streq(r->to_name, q->to_name))))
       return 1;
   }

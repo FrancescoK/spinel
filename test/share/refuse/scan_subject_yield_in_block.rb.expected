@@ -1,0 +1,1 @@
+spinel: test/share/refuse/scan_subject_yield_in_block.rb:4: under --share-strings, the share analysis does not follow this route, so it cannot prove that no other name sees the copy: a match `scan` hands its block is kept and mutated in place (a String is not yet shared by reference through `scan`'s block parameter). Mutate a copy (`m = +m.dup`) and keep that.

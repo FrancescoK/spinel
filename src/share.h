@@ -129,6 +129,10 @@ typedef struct ShareRoute {
   int carry;           /* the node that hands the String along, or -1
                           (SHARE_CARRY_NONE); SHARE_CARRY_COPY when the
                           route hands over a copy whatever it reads */
+  int sole;            /* a local's read node whose String must have no other
+                          name, or -1: a plain local (no parameter, no
+                          capture) whose class holds one name at most
+                          (share_node_one_name), asked of the final facts */
   int fresh_elems;     /* (with elems) the container's elements reach only the
                           route's holder: an element iterator answering its
                           receiver whose value is dropped, so a container
