@@ -17678,7 +17678,10 @@ static int an_subtree_hands_walk(Compiler *c, int node, const char *vn, int dept
           if (an < 0 || nt_kind(nt, an) != NK_LocalVariableReadNode || !nt_str(nt, an, "name") ||
               !sp_streq(nt_str(nt, an, "name"), vn)) continue;
           LocalVar *q2 = pm->pnames[j] ? scope_local(pm, pm->pnames[j]) : NULL;
+          /* an RBS `untyped` parameter stays boxed: what it was handed and
+             goes on to append is marked as its lift (#8235) */
           if (q2 && (q2->byref_out || (q2->type == TY_STRBUF && q2->str_shared) ||
+                     (q2->type == TY_POLY && (q2->poly_lift & POLY_LIFT_APPENDED)) ||
                      an_param_mutated_in_place(c, pc[q].mi, j)))
             return 1;
         }
@@ -17690,7 +17693,8 @@ static int an_subtree_hands_walk(Compiler *c, int node, const char *vn, int dept
       if (an < 0 || nt_kind(nt, an) != NK_LocalVariableReadNode || !nt_str(nt, an, "name") ||
           !sp_streq(nt_str(nt, an, "name"), vn)) continue;
       LocalVar *q = m->pnames[j] ? scope_local(m, m->pnames[j]) : NULL;
-      if (q && (q->byref_out || (q->type == TY_STRBUF && q->str_shared) || an_param_mutated_in_place(c, mi, j)))
+      if (q && (q->byref_out || (q->type == TY_STRBUF && q->str_shared) ||
+                (q->type == TY_POLY && (q->poly_lift & POLY_LIFT_APPENDED)) || an_param_mutated_in_place(c, mi, j)))
         return 1;
       /* or hands its parameter on to one that does, a few levels deep */
       if (q && q->is_param && m->body >= 0) {

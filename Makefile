@@ -2396,6 +2396,11 @@ rbs-seed-extractor: $(SPINEL) $(RBS_EXTRACT_BIN)
 build/rbs-seed-results/%.res: FORCE | rbs-seed-extractor $(SP_RT_LIB) $(SPINEL_TIMEOUT)
 	@mkdir -p $(@D); tmp=$$(mktemp -d /tmp/spinel-rbsseed.XXXXXX); ok=1; \
 	{ case $* in \
+	hash_each_untyped_appending_writer) \
+	if $(SPINEL) test/rbs-seed/hash_each_untyped_appending_writer.rb --rbs test/rbs-seed/sig -o "$$tmp/heuw" >/dev/null 2>"$$tmp/heuw.err" || \
+	   ! grep -q 'passed to an appending value block' "$$tmp/heuw.err"; then \
+	  echo "rbs-seed-test: FAIL (#8235 a Hash#each value into an untyped appending writer was not refused)"; ok=0; fi; \
+	;; \
 	attr_writer_poly_value) \
 	$(SPINEL) test/rbs-seed/attr_writer_poly_value.rb --rbs test/rbs-seed/sig -o "$$tmp/awp" >/dev/null 2>&1 && \
 	  "$$tmp/awp" > "$$tmp/awp.out" 2>/dev/null && cmp -s "$$tmp/awp.out" test/rbs-seed/attr_writer_poly_value.expected || { echo "rbs-seed-test: FAIL (#4856 a boxed value into an --rbs Integer attr as a method's value)"; ok=0; }; \
