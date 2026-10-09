@@ -1992,6 +1992,10 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
   }
   /* the reflective names */
   if (is_send_family(name)) {
+    /* Reachability is known before the share walk. A dead send cannot
+       make every method's parameters and returns meet UNKNOWN. */
+    Scope *sc = comp_scope_of(c, n);
+    if (c->share_strings && sc && !sc->reachable) return -1;
     const char *lit = argc >= 1 ? sh_lit_name(nt, argv[0]) : NULL;
     sh_dyn_name(F, lit);
     return sh_unknown_call(F, c, n, blk);
