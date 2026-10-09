@@ -147,6 +147,16 @@ int share_node_elems_share(const Compiler *c, int n);
    the rule shares? Its one evaluation is the only source of those Strings,
    so where it is consumed each can be wrapped as a handle of its own. */
 int share_node_fresh_elems(const Compiler *c, int n);
+/* Is call node `call` a retaining iterator (select, reject, find_all, the
+   in-place filters, partition) with a literal block over a fresh Array of
+   new Strings (as share_node_fresh_elems has it, before the rule is asked
+   whether they share)? Its answer keeps elements the block's parameter
+   names. */
+int share_iter_fresh_elems(const Compiler *c, int call);
+/* ... and the rule shares those elements: the answer holds the handles its
+   block saw, so the receiver is consumed as the PolyArray of handles a
+   local's would be and the answer is one too. */
+int share_iter_answers_handles(const Compiler *c, int call);
 /* Can node n's value (a container) be reached again once its expression
    is done: a holder keeps it, it leaves a call to be read after, or it
    meets what the walk does not follow? */

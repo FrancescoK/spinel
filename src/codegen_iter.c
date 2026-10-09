@@ -727,6 +727,18 @@ void emit_inline_alias_arg(Compiler *c, int av, Buf *b) {
     buf_printf(b, "; sp_gc_pin_remembered((void *)_cell_%s)", rename_local(avn));
 }
 
+/* --share-strings: partition's definition (__enum_partition__N) takes a
+   fresh String Array whose elements the rule shares as the boxed PolyArray
+   of handles a local's would be, so the two Arrays it answers hold the
+   handles its block saw. 1 when the argument was bound so. */
+static int emit_inline_partition_src(Compiler *c, Scope *m, int i, int arg, Buf *b) {
+  if (i != 0 || !m->name || !is_enum_partition_def(m->name) || !iter_src_as_handles(c, arg))
+    return 0;
+  LocalVar *pl = scope_local(m, m->pnames[0]);
+  if (!pl || pl->type != TY_POLY) return 0;
+  emit_boxed_iter_src(c, arg, b);
+  return 1;
+}
 /* Bind an inlined yielding method's parameters from a call's arguments:
    a splat spread at run time, a keyword hash by name, a rest and its posts
    packed, as the ordinary call paths bind them. The expansion's renames
@@ -838,8 +850,10 @@ void emit_inline_bind_params(Compiler *c, Scope *m, int args, const int *argv, i
     /* a keyword or **kwrest param never takes a positional: a surplus one
        (refused above) bound `ykw(1, 2)`'s 2 into the kwrest's hash slot, a
        C type error */
-    else if (L->from[i] == ARG_NODE)
-      emit_arg_or_default(c, m, i, argv[L->arg[i]], b);
+    else if (L->from[i] == ARG_NODE) {
+      if (!emit_inline_partition_src(c, m, i, argv[L->arg[i]], b))
+        emit_arg_or_default(c, m, i, argv[L->arg[i]], b);
+    }
     else if (L->from[i] == ARG_KWH)
       emit_arg_or_default(c, m, i, kwh, b);
     else {
@@ -4934,6 +4948,10 @@ int emit_array_filter_loop(Compiler *c, int recv, int block, TyKind rt, const ch
      the first name alone, `|*qs|` was never bound and read nil, and
      `|a, b|` took the whole element. */
   char es[32]; snprintf(es, sizeof es, "_t%d", te);
+  /* --share-strings: the elements of a PolyArray of handles (a fresh String
+     Array's, emit_array_filter_loop_handles) are Strings, not tuples to
+     spread, bound to a parameter the scope holds as the handle */
+  int handle_param = et == TY_POLY && c->share_strings && (fsaved == TY_STRBUF || fsaved == TY_STRING);
   if (block_binds_gathered(c, block)) {
     Buf eb; memset(&eb, 0, sizeof eb);
     if (et == TY_POLY) buf_puts(&eb, es);
@@ -4943,7 +4961,7 @@ int emit_array_filter_loop(Compiler *c, int recv, int block, TyKind rt, const ch
     emit_boxed_step_binds(c, block, vals.p, b, li + 1, 0);
     free(eb.p); free(vals.p);
   }
-  else if (et == TY_POLY && block_lead_only(c, block) && !block_param_is_multi(c, block, 0)) {
+  else if (et == TY_POLY && block_lead_only(c, block) && !block_param_is_multi(c, block, 0) && !handle_param) {
     Buf pb; memset(&pb, 0, sizeof pb);
     emit_tuple_block_params(c, block, block, es, &pb);
     if (pb.p) { emit_indent(b, li + 1); buf_printf(b, "%s\n", pb.p + (pb.p[0] == ' ')); }
@@ -4953,9 +4971,14 @@ int emit_array_filter_loop(Compiler *c, int recv, int block, TyKind rt, const ch
     /* a poly parameter is the hoisted local, rooted where it is declared; a
        typed one shadows it at the element type, and a String is rooted */
     emit_indent(b, li + 1);
-    if (et != TY_POLY) { emit_ctype(c, et, b); buf_puts(b, " "); }
+    /* under --share-strings a parameter the scope holds as the handle over
+       a PolyArray of handles (emit_array_filter_loop_handles) is shadowed
+       boxed, as a typed one is */
+    int boxed_shadow = handle_param;
+    if (et != TY_POLY || boxed_shadow) { emit_ctype(c, et, b); buf_puts(b, " "); }
     buf_printf(b, "lv_%s = _t%d;", bp, te);
     if (et == TY_STRING) buf_printf(b, " SP_GC_ROOT_STR(lv_%s);", bp);
+    else if (boxed_shadow) buf_printf(b, " SP_GC_ROOT_RBVAL(lv_%s);", bp);
     buf_puts(b, "\n");
   }
   emit_filter_body(c, body, tnv, tk, is_rej, b, li);
@@ -5021,6 +5044,32 @@ int emit_array_filter_loop(Compiler *c, int recv, int block, TyKind rt, const ch
   if (flv) flv->type = fsaved;
   *tr = t; *torig = to; *twp = tw;
   return 1;
+}
+
+/* --share-strings: the in-place filter loop over a fresh String Array
+   whose elements the rule shares (iter_filter_src_as_handles). The array is
+   hoisted as the PolyArray of handles a local's would be, the receiver reads
+   as it, and the loop is the PolyArray one: the block's parameter names the
+   handle that stays in the array. Answers 0, having emitted nothing, for a
+   block with no body. */
+int emit_array_filter_loop_handles(Compiler *c, int recv, int block, const char *name,
+                                   Buf *b, int indent, int *tr, int *torig, int *twp) {
+  const NodeTable *nt = c->nt;
+  int body = nt_ref(nt, block, "body"), bn = 0;
+  if (body >= 0) nt_arr(nt, body, "body", &bn);
+  if (bn < 1) return 0;
+  Buf hb; memset(&hb, 0, sizeof hb);
+  emit_str_array_handles(c, recv, &hb);
+  int th = ++g_tmp;
+  emit_indent(b, indent);
+  buf_printf(b, "sp_PolyArray *_t%d = %s; SP_GC_ROOT(_t%d);\n", th, hb.p ? hb.p : "NULL", th);
+  free(hb.p);
+  int slot = view_bind(recv, "_t%d", th);
+  int v = view_push(c, recv, TY_POLY_ARRAY);
+  int done = emit_array_filter_loop(c, recv, block, TY_POLY_ARRAY, name, b, indent, tr, torig, twp);
+  view_pop(c, v);
+  view_unbind(slot);
+  return done;
 }
 
 /* Bind one zip block param. A poly slot takes a boxed source; a concrete

@@ -34,6 +34,8 @@ int is_set_op(const char *n);         /* & intersection | union - difference */
 int is_combination_family(const char *n);  /* combination permutation repeated_combination repeated_permutation */
 int is_visibility_name(const char *n);     /* private protected public */
 int is_select_bang(const char *n);    /* select! filter! keep_if reject! delete_if: the in-place filters */
+int is_retaining_filter(const char *n); /* select filter find_all reject, and the in-place filters: the iterators answering some of their elements */
+int is_enum_partition_def(const char *n); /* __enum_partition__N: partition's builtin definition, per call site */
 int is_each_walk(const char *n);      /* each each_entry reverse_each */
 int is_index_query(const char *n);    /* find_index index rindex */
 int is_self_copy(const char *n);      /* freeze dup clone itself: the receiver, or a copy of it */

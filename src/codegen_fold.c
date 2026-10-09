@@ -5256,6 +5256,10 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
     return 1;
   }
   if (!ty_is_array(rt) && !ty_is_ptr_array(rt) && !range_recv) return 0;
+  /* a retaining iterator over a fresh sharing String Array walks the
+     PolyArray of handles a local's would be, and answers one */
+  int as_handles = iter_filter_src_as_handles(c, id, recv);
+  if (as_handles) { rt = TY_POLY_ARRAY; rr.elem = TY_POLY; }
   const char *k = range_recv ? "Int" : array_iter_kind(rt);
   if (!k) return 0;
 
@@ -5328,6 +5332,7 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
     rt = TY_INT_ARRAY;
     rr.elem = TY_INT;
   }
+  else if (as_handles) emit_str_array_handles(c, recv, &rb);
   else emit_expr(c, recv, &rb);
   emit_indent(g_pre, g_indent);
   emit_ctype(c, rt, g_pre);
@@ -5349,9 +5354,11 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
   /* 2-param auto-splat: |a, b| over a poly array whose elements are sub-arrays
      binds each param to a positional element of the sub-array, matching CRuby's
      proc auto-splat. The per-param types were pinned by infer_block_params, so
-     bind directly (no shadow). select/reject still push the whole element. */
+     bind directly (no shadow). select/reject still push the whole element.
+     The handles of a fresh String Array are Strings, not sub-arrays: the
+     first parameter binds one and the others stay nil. */
   int np_cl = 0; while (block_param_name(c, block, np_cl)) np_cl++;
-  int autosplat = (np_cl >= 2 && rr.elem == TY_POLY && !block_param_is_multi(c, block, 0));
+  int autosplat = (np_cl >= 2 && rr.elem == TY_POLY && !block_param_is_multi(c, block, 0) && !as_handles);
 
   /* If the block param's scope type was widened (e.g. TY_POLY), pin it to
      the element type and use a C shadow declaration so body emission sees the
@@ -5395,7 +5402,9 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
   if (!autosplat && block_rest_name(c, block)) {
     char es_r[256];
     snprintf(es_r, sizeof es_r, "sp_%sArray_get(_t%d, _t%d)", k, trecv, ti);
-    if (emit_iter_bind_rest(c, block, np_cl, et_elem, es_r, g_pre,
+    /* the handles of a fresh String Array are Strings, which never spread:
+       a rest beside a required parameter binds empty */
+    if (emit_iter_bind_rest(c, block, np_cl, as_handles && np_cl >= 1 ? TY_STRING : et_elem, es_r, g_pre,
                             use_shadow ? innerIndent : bodyIndent) < 0) {
       unsupported(c, id, "block splat parameter alongside required params over a poly element");
       return 1;

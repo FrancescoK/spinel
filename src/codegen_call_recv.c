@@ -1619,6 +1619,13 @@ static int emit_kind_array_iter_call(Compiler *c, int id, Buf *b, const NodeTabl
   if (is_select_bang(name) && block >= 0) {
     const char *kk = (rt == TY_POLY_ARRAY) ? "Poly" : k;
     int trecv, torig, twp;
+    /* --share-strings: over a fresh sharing String Array, the PolyArray of handles */
+    if (iter_filter_src_as_handles(c, id, recv) &&
+        emit_array_filter_loop_handles(c, recv, block, name, g_pre, g_indent, &trecv, &torig, &twp)) {
+      char box[64]; snprintf(box, sizeof box, "sp_box_poly_array(_t%d)", trecv);
+      emit_filter_bang_result(name, trecv, torig, twp, box, b);
+      { *out = 1; return 1; }
+    }
     if (kk && emit_array_filter_loop(c, recv, block, rt, name, g_pre, g_indent, &trecv, &torig, &twp)) {
       char box[64]; snprintf(box, sizeof box, "%s(_t%d)", array_box_fn(kk), trecv);
       emit_filter_bang_result(name, trecv, torig, twp, box, b);
