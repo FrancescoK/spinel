@@ -22382,6 +22382,13 @@ static int convert_byref_handle_params(Compiler *c,
                alv0->type == TY_STRBUF) &&
               an_local_has_alias(c, &aliases, avn, avs))
             saw_handle = 1;
+          /* A growable buffer that is not (yet) the shared handle -- an
+             append accumulator, or a parameter inference typed from a
+             handle argument -- is an sp_String * all the same: it has no
+             const char * slot to lend, so the call lent a temp of its bytes
+             and the callee's append stayed there. */
+          else if (alv0 && !alv0->is_block_param && alv0->type == TY_STRBUF)
+            saw_handle = 1;
         }
       }
       if (!saw_handle) continue;
