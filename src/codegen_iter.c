@@ -1854,6 +1854,9 @@ static int block_tail_needs_value_form(Compiler *c, int id) {
      whose value it is must take the expression form (`wrap { M.build(n) {
      ... } }` assigned a void ({...}) to wrap's slot). */
   if (call_targets_yielding_method(c, id)) return 1;
+  /* and a `scan` with a block on a subject that is not a plain read answers
+     that subject, which the statement form leaves out */
+  if (is_scan_name(nm) && tail_iter_receiver(c, id) < 0) return 1;
   return iter_value_answers_recv(c, id) && tail_iter_receiver(c, id) < 0;
 }
 
