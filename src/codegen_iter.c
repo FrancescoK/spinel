@@ -2092,6 +2092,7 @@ void emit_block_kw_binds(Compiler *c, int blk, int ykw, Scope *bsc, Buf *b, int 
     else if (dv >= 0) { bi_block_side(bi); emit_block_arg_coerced(c, dv, kt, b); bi_method_side(bi); }
     else buf_puts(b, kt == TY_RANGE ? "(sp_Range){0}" : default_value_from_compiler(c, kt));
     buf_puts(b, as_expr ? "; " : ";\n");
+    emit_block_param_share(c, bsc, kl, kpr, b, 1);
   }
   /* `**kw` keyword-rest: the remaining pairs of the trailing yielded kwargs
      hash (those no named keyword param consumed), or a fresh empty hash --
@@ -2325,6 +2326,7 @@ static void emit_block_binds_gathered(Compiler *c, int blk, int t, TyKind at, in
     if (!sure) buf_printf(b, " : %s)", bt == TY_RANGE ? "(sp_Range){0}" : default_value_from_compiler(c, bt));
     free(eb.p);
     buf_puts(b, as_expr ? "; " : ";\n");
+    emit_block_param_share(c, bsc, bl, bprbuf, b, 1);
   }
   /* Distribution counts: the array's length is the run time's, so the
      optional-take count and the post start index are runtime temps
@@ -2366,6 +2368,7 @@ static void emit_block_binds_gathered(Compiler *c, int blk, int t, TyKind at, in
     buf_puts(b, ")");
     free(eb.p);
     buf_puts(b, as_expr ? "; " : ";\n");
+    emit_block_param_share(c, bsc, ol, oprbuf, b, 1);
   }
   /* A trailing rest parameter (`|*a|`) collects the leftover middle, past
      the pre-requireds and the taken optionals, up to the first post's
@@ -2420,6 +2423,7 @@ static void emit_block_binds_gathered(Compiler *c, int blk, int t, TyKind at, in
     else buf_puts(b, acc);
     buf_printf(b, " : %s); })", qdflt);
     buf_puts(b, as_expr ? "; " : ";\n");
+    emit_block_param_share(c, bsc, ql, qprbuf, b, 1);
   }
   emit_block_binds_close(c, blk, ykw, bsc, rest_tmp, rest_lv, b, indent, as_expr, bi, al);
 }
@@ -2776,6 +2780,7 @@ void emit_block_binds(Compiler *c, int blk, const int *yargs, int yc,
       buf_puts(b, bt == TY_RANGE ? "(sp_Range){0}" : default_value_from_compiler(c, bt));
     }
     buf_puts(b, as_expr ? "; " : ";\n");
+    emit_block_param_share(c, bsc, bsc ? scope_local(bsc, bp) : NULL, bpr, b, 1);
   }
   /* Distribution counts: the yields are direct, so they resolve statically
      from yc (a splat's gather binds by emit_block_binds_gathered). */
@@ -2842,6 +2847,7 @@ void emit_block_binds(Compiler *c, int blk, const int *yargs, int yc,
       buf_puts(b, odflt);
     }
     buf_puts(b, as_expr ? "; " : ";\n");
+    emit_block_param_share(c, bsc, ol, opr, b, 1);
   }
   /* A trailing rest parameter (`|*a|`) collects the yielded arguments past the
      requireds into a fresh array. */
@@ -2908,6 +2914,7 @@ void emit_block_binds(Compiler *c, int blk, const int *yargs, int yc,
       else if (idx < yc) emit_block_arg_coerced(c, yargs[idx], qt, b);
       else buf_puts(b, qdflt);
       buf_puts(b, as_expr ? "; " : ";\n");
+      emit_block_param_share(c, bsc, ql, qpr, b, 1);
     }
   }
   /* Ruby evaluates every yielded argument for its side effects, even ones no
