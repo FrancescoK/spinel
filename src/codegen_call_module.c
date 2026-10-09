@@ -581,6 +581,17 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
         nt_str(nt, argv[1], "name") && sp_streq(nt_str(nt, argv[1], "name"), "FNM_DOTMATCH")) {
       buf_puts(b, "sp_dir_glob_dot("); emit_path_expr(c, argv[0], b); buf_puts(b, ")"); return 1;
     }
+    /* Dir.glob(pattern, base: dir): a lone base: keyword; nil is the current directory */
+    if (sp_streq(name, "glob") && argc == 2 && nt_kind(nt, argv[1]) == NK_KeywordHashNode &&
+        !ty_is_array(comp_ntype(c, argv[0]))) {
+      int en = 0; (void)nt_arr(nt, argv[1], "elements", &en);
+      int bv = kwh_lookup(nt, argv[1], "base");
+      if (en == 1 && bv >= 0) {
+        buf_puts(b, "sp_dir_glob_base("); emit_path_expr(c, argv[0], b); buf_puts(b, ", ");
+        if (comp_ntype(c, bv) == TY_NIL) buf_puts(b, "NULL"); else emit_path_expr(c, bv, b);
+        buf_puts(b, ")"); return 1;
+      }
+    }
     if (sp_streq(name, "glob") && argc == 1 && ty_is_array(comp_ntype(c, argv[0]))) {
       buf_puts(b, "sp_dir_glob_multi("); emit_boxed(c, argv[0], b); buf_puts(b, ")"); return 1;
     }
