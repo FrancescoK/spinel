@@ -774,15 +774,18 @@ void repr_channel_end(Compiler *c, int frame) {
   ChannelLeaf *l = &q->leaf[f.node];
   if (q->clearing) f.form = RCH_CLEAR;
   /* The early pickup walk can precede the owned-return proof. Its local
-     read still publishes, but the settled ownership fact permits clearing. */
-  int owned = share_return_owned(c, f.node, l->mi);
-  int want = owned ? RCH_CLEAR : l->want;
+     read still publishes, but the settled ownership fact permits clearing.
+     A call returning a fresh bound argument has the same permission once
+     its parameter-return fact has settled. */
+  int fresh = share_return_owned(c, f.node, l->mi) ||
+              share_node_fresh(c, f.node) || share_call_fresh(c, f.node);
+  int want = fresh ? RCH_CLEAR : l->want;
   l->seen = 1;
   q->checked++;
   /* nil is decided by the returned bytes, before any pickup reads the
      channel. A handle-valued view/boxed return carries the value itself. */
   if (want != RCH_NIL && f.form != RCH_HANDLE && f.form != RCH_BOXED && f.form != want &&
-      !(owned && f.form == RCH_PUBLISH)) {
+      !(fresh && f.form == RCH_PUBLISH)) {
     int conflict = want == RCH_CLEAR || f.form != RCH_NONE;
     const char *cls = conflict ? "channel-conflict" : "channel-unobserved";
     if (conflict) q->conflicts++;
