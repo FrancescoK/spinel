@@ -6222,6 +6222,10 @@ int desugar_value_callable_forwards(Compiler *c) {
     if (!name) continue;
     int encl = c->nscope[id];
     TyKind rt = infer_type(c, recv);
+    /* an Array or Hash subclass instance's call the builtin answers is the
+       call on its Array or Hash */
+    { TyKind sk = TY_UNKNOWN;
+      if (ty_is_object(rt) && comp_arysub_call(c, id, rt, &sk) && sk != TY_UNKNOWN) rt = sk; }
     /* Hash `each`/`each_pair` yields the [k,v] pair, forwarded as a single array
        argument `c.call([k, v])` (built below) -- correct for every arity: a
        1-param callable gets the pair, a 2-param proc auto-splats it, a 2-param

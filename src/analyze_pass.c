@@ -2604,9 +2604,11 @@ static int table_row_alias(Compiler *c, const LWIndex *lw, const char *nm, Scope
    raises, so an element store reads as a push of its value; a fold that
    would leave no Array kind the instance can embed widens to boxed elements.
    A store the class's own method takes is no evidence about the Array.
+   A Hash subclass's store is the key and value evidence a Hash local's is,
+   and a fold that leaves no Hash kind widens to boxed keys and values.
    Answers whether the receiver was such an instance. */
 static int arysub_container_evidence(Compiler *c, int id, int recv, int is_push, int is_splice,
-                                     TyKind vt, int *changed) {
+                                     TyKind kt, TyKind vt, int *changed) {
   TyKind rt = infer_type(c, recv), k;
   int root = comp_ty_ary_root(c, rt);
   if (root < 0) return 0;
@@ -2614,6 +2616,14 @@ static int arysub_container_evidence(Compiler *c, int id, int recv, int is_push,
                                         : comp_method_in_chain(c, ty_object_class(rt), "[]=", NULL) >= 0)
     return 1;
   TyKind *slot = &c->classes[root].ary_kind, was = *slot, now = was;
+  if (c->classes[root].ary_hash) {
+    if (is_push || is_splice) return 1;
+    if (now == TY_UNKNOWN && kt == TY_UNKNOWN) return 1;
+    fold_container_evidence(&now, 0, 0, kt, vt);
+    if (now != was && !ty_is_hash(now)) now = TY_POLY_POLY_HASH;
+    if (now != was) { *slot = now; *changed = 1; }
+    return 1;
+  }
   fold_container_evidence(&now, is_push || !is_splice, is_splice && !is_push, TY_INT, vt);
   if (now != was && !array_new_copies(now)) now = TY_POLY_ARRAY;
   if (now != was) { *slot = now; *changed = 1; }
@@ -2818,10 +2828,15 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
         /* merging hashes into an empty-{} local writes their keys/values:
            key+value evidence exactly like []= (#2434) */
         TyKind mat = infer_type(c, argv[0]);
+        /* into a Hash subclass instance, a Hash only the run time knows
+           brings keys and values of any kind: the instance's Hash boxes both */
+        int bsub_recv = recv >= 0 && comp_ty_ary_root(c, infer_type(c, recv)) >= 0;
+        if (bsub_recv && mat == TY_POLY) mat = TY_POLY_POLY_HASH;
         if (!ty_is_hash(mat)) continue;
         is_idx_write = 1; kt = ty_hash_key(mat); vt = ty_hash_val(mat);
         for (int ai = 1; ai < an; ai++) {
           TyKind mai = infer_type(c, argv[ai]);
+          if (bsub_recv && mai == TY_POLY) mai = TY_POLY_POLY_HASH;
           if (!ty_is_hash(mai)) { is_idx_write = 0; break; }
           kt = ty_unify(kt, ty_hash_key(mai));
           vt = ty_unify(vt, ty_hash_val(mai));
@@ -2975,7 +2990,7 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
     if (elem_splat_index && nt_kind(nt, recv) != NK_LocalVariableReadNode) continue;
     const char *rty = nt_type(nt, recv);
     if ((is_push || is_idx_write) && !elem_splat_index &&
-        arysub_container_evidence(c, id, recv, is_push, is_splice, (TyKind)vt, &changed)) continue;
+        arysub_container_evidence(c, id, recv, is_push, is_splice, (TyKind)kt, (TyKind)vt, &changed)) continue;
     /* `(@h ||= {})[k] = v` fills @h exactly as `@h ||= {}; @h[k] = v` does,
        and so does a write through a getter whose value is that or-write.
        Without this the write was no evidence, the empty literal left @h

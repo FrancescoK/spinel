@@ -42,6 +42,11 @@ void an_face_push(int node, TyKind kind) {
   an_pin[an_npin].node = node; an_pin[an_npin].kind = kind; an_npin++;
 }
 void an_face_pop(void) { if (an_npin > 0) an_npin--; }
+/* node is pinned anywhere in the inference's own stack */
+int an_face_pinned(int node) {
+  for (int i = 0; i < an_npin; i++) if (an_pin[i].node == node) return 1;
+  return 0;
+}
 TyKind face_of(int node) {
   int fn; TyKind fk;
   if (view_face_top(&fn, &fk)) return fn == node ? fk : TY_UNKNOWN;

@@ -24618,8 +24618,9 @@ int respond_to_static_answer(Compiler *c, int id, int recv, TyKind rt, const cha
     resolved = 1; yes = include_all;
   }
   for (int u = 0; !resolved && uni[u]; u++) if (sp_streq(qm, uni[u])) { yes = resolved = 1; break; }
-  /* an Array subclass instance answers Array's names (#7449) */
-  if (!resolved && recv >= 0 && comp_ty_ary_root(c, rt) >= 0 && comp_array_method_name(qm))
+  /* an Array (Hash) subclass instance answers Array's (Hash's) names (#7449) */
+  if (!resolved && recv >= 0 && comp_ty_ary_root(c, rt) >= 0 &&
+      comp_arysub_builtin_name(c, ty_object_class(rt), qm))
     { yes = resolved = 1; }
   /* A top-level def (a hoisted `module Kernel` method among them) is a
      private method of Object, so every receiver answers it to include_all:

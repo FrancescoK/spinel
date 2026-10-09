@@ -623,9 +623,14 @@ typedef struct {
      and Array's methods dispatch on them. ary_root is the class right below
      Array in the chain, plus one (0: not an Array subclass); ary_kind, read
      on that root (comp_ary_kind), is the kind of the Array every instance of
-     the chain embeds, folded from the elements the program puts in. */
+     the chain embeds, folded from the elements the program puts in.
+     A Hash subclass is the same with its Hash: ary_root names the class
+     right below Hash, ary_kind is a Hash kind, and ary_hash is set on every
+     class of the chain. The comp_ary_* / comp_arysub_* functions answer for
+     both; the Array-only ones say so. */
   int ary_root;
   TyKind ary_kind;
+  int ary_hash;
   char *c_struct;      /* e.g. "sp_StringIO", or NULL */
   char *native_free;   /* finalizer C symbol, or NULL */
   int freeze_observed; /* freeze/frozen? reaches instances of this class: codegen
@@ -980,7 +985,7 @@ typedef struct {
 
   ClassInfo *classes;
   int nclasses, cclasses;
-  int has_arysub;      /* some class is an Array subclass (ClassInfo.ary_root, #7449) */
+  int has_arysub;      /* some class is an Array or Hash subclass (ClassInfo.ary_root, #7449) */
   /* the nodes infer_type answered as an Array subclass instance's Array
      (ary_operand, an_ary_viewed_mark), indexed by node; NULL until one is */
   unsigned char *ary_viewed;
@@ -1427,11 +1432,16 @@ int        comp_arysub_name_is_array(Compiler *c, int cid, const char *n);
    BOPF_SELF_OR_NIL where it can be nil); and whether the call reads an
    Array argument as an Array (BOPF_ARGS_BUILTIN). */
 int        comp_arysub_call(Compiler *c, int id, TyKind rt, TyKind *kind);
-int        comp_arysub_answer(Compiler *c, int id);
-int        comp_arysub_self_result(Compiler *c, int id);
+int        comp_arysub_answer(Compiler *c, int id, int hash);
+int        comp_arysub_self_result(Compiler *c, int id, int hash);
 int        comp_arysub_args_viewed(Compiler *c, int id, TyKind rt);
 int        comp_arysub_kernel_array(Compiler *c, int id);
 int        comp_array_method_name(const char *n);
+/* the class chain of cid embeds a Hash, not an Array */
+int        comp_ary_is_hash(Compiler *c, int cid);
+/* a name the builtin cid's chain embeds answers (comp_array_method_name, or Hash's) */
+int        comp_arysub_builtin_name(Compiler *c, int cid, const char *n);
+int        comp_arysub_reopen(Compiler *c, int cid);
 int        comp_builtin_kind_reopen_mi(Compiler *c, TyKind t, const char *name);
 int        comp_builtin_name_reopened(Compiler *c, const char *name);
 int        comp_yield_chain_reopened(Compiler *c, int call);

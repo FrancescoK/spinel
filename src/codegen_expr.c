@@ -1418,7 +1418,7 @@ void emit_expr(Compiler *c, int id, Buf *b) {
      destructuring, a `for` collection, an element write that is no call --
      is typed as its Array (an_ary_viewed): the same pointer, cast to the
      Array it starts with (#7449) */
-  if (an_ary_viewed(c, id) && array_new_copies(comp_ntype(c, id))) {
+  if (an_ary_viewed(c, id) && (array_new_copies(comp_ntype(c, id)) || ty_is_hash(comp_ntype(c, id)))) {
     buf_printf(b, "((%s)(", c_type_name(comp_ntype(c, id)));
     emit_expr_node(c, id, b);
     buf_puts(b, "))");

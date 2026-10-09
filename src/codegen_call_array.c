@@ -2153,7 +2153,7 @@ int emit_scalar_array_transpose(Compiler *c, int id, int recv, TyKind rt,
    under the kind the inference pinned it to (infer_arysub_call), as a boxed
    receiver's face does (emit_face_arm). A call whose answer is its receiver
    answers the instance. */
-typedef struct { int bound, vr, vf, vi, nv, views[16]; TyKind nat; int copy; } ArysubView;
+typedef struct { int bound, vr, vf, vi, nv, views[16]; TyKind nat; int copy, copy_class; } ArysubView;
 
 /* Bind node n, an Array subclass instance, to its Array -- the same pointer
    cast -- evaluating anything but a variable once, ahead of the call. */
@@ -2184,8 +2184,9 @@ static int arysub_view_open(Compiler *c, int id, ArysubView *v) {
   const NodeTable *nt = c->nt;
   int recv = nt_ref(nt, id, "receiver");
   TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN, k = TY_UNKNOWN;
-  v->bound = -1; v->vr = v->vf = v->vi = -1; v->nv = 0; v->nat = TY_UNKNOWN; v->copy = 0;
-  if (comp_arysub_call(c, id, rt, &k) && array_new_copies(k)) {
+  v->bound = -1; v->vr = v->vf = v->vi = -1; v->nv = 0; v->nat = TY_UNKNOWN; v->copy = 0; v->copy_class = 0;
+  if (comp_arysub_call(c, id, rt, &k) && (array_new_copies(k) || ty_is_hash(k))) {
+    int hash = ty_is_hash(k);
     v->bound = arysub_bind(c, recv);
     v->vr = view_push(c, recv, k);
     v->vf = view_push_face(recv, k);
@@ -2193,15 +2194,19 @@ static int arysub_view_open(Compiler *c, int id, ArysubView *v) {
        Array itself, or boxed where a `!` method answers nil when it
        changed nothing (BOPF_SELF_OR_NIL) -- is turned back into the
        instance below */
-    if (comp_arysub_self_result(c, id)) {
-      v->nat = comp_arysub_answer(c, id) & BOPF_SELF_OR_NIL ? TY_POLY : k;
+    if (comp_arysub_self_result(c, id, hash)) {
+      v->nat = comp_arysub_answer(c, id, hash) & BOPF_SELF_OR_NIL ? TY_POLY : k;
       v->vi = view_push(c, id, v->nat);
     }
     /* a conversion answering its receiver only when the receiver's class
        is exactly Array (to_a, BOPF_SELF_EXACT) answers a new plain Array
        of the elements: the Array emitter's answer is the instance's own
        Array, copied below */
-    else if (comp_arysub_answer(c, id) & BOPF_SELF_EXACT) v->copy = 1;
+    else if (comp_arysub_answer(c, id, hash) & BOPF_SELF_EXACT) v->copy = 1;
+    /* a Hash method answering a copy of the receiver (merge, compact:
+       BOPF_COPY_CLASS) answers an instance of the receiver's class, with its
+       instance variables: the Hash emitter's answer is put into a dup */
+    else if (hash && (comp_arysub_answer(c, id, hash) & BOPF_COPY_CLASS)) v->copy_class = 1;
     rt = k;
   }
   int args = nt_ref(nt, id, "arguments"), an = 0;
@@ -2246,6 +2251,15 @@ int emit_arysub_call(Compiler *c, int id, Buf *b) {
     buf_printf(b, "%s_dup(", arysub_array_ctype(c, ty_object_class(rt)));
     emit_call(c, id, b);
     buf_puts(b, ")");
+  }
+  else if (v.copy_class) {
+    const char *at = arysub_array_ctype(c, ty_object_class(rt));
+    int t = ++g_tmp, d = ++g_tmp;
+    buf_printf(b, "({ %s *_t%d = ", at, t);
+    emit_call(c, id, b);
+    buf_printf(b, "; SP_GC_ROOT(_t%d); sp_%s *_t%d = (sp_%s *)sp_%s__dup((void *)%s, 0); SP_GC_ROOT(_t%d); "
+                  "%s_replace(&_t%d->ary, _t%d); _t%d; })",
+               t, cn, d, cn, cn, g_argov_text[v.bound], d, at, d, t, d);
   }
   else {
     if (v.vi >= 0) buf_printf(b, "((sp_%s *)(", cn);

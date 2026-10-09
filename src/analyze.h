@@ -294,6 +294,7 @@ TyKind face_of(int node);
 int face_active(void);
 void an_face_push(int node, TyKind kind);
 void an_face_pop(void);
+int an_face_pinned(int node);
 int view_face_top(int *node, TyKind *kind);   /* codegen_view.c */
 /* Name of a block's idx-th required parameter, or NULL. */
 const char *block_param_name(Compiler *c, int block, int idx);

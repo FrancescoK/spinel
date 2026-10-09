@@ -890,7 +890,11 @@ TyKind comp_ary_kind(Compiler *c, int cid) {
   int r = comp_ary_root(c, cid);
   if (r < 0) return TY_UNKNOWN;
   TyKind k = c->classes[r].ary_kind;
-  return k == TY_UNKNOWN && !g_infer_optimistic ? TY_POLY_ARRAY : k;
+  if (k != TY_UNKNOWN || g_infer_optimistic) return k;
+  return c->classes[r].ary_hash ? TY_POLY_POLY_HASH : TY_POLY_ARRAY;
+}
+int comp_ary_is_hash(Compiler *c, int cid) {
+  return comp_ary_root(c, cid) >= 0 && c->classes[cid].ary_hash;
 }
 
 int builtin_instance_method_known(const char *cls, const char *m);
@@ -899,13 +903,32 @@ int builtin_instance_method_known(const char *cls, const char *m);
 int comp_array_method_name(const char *n) {
   return builtin_instance_method_known("Array", n) || is_arysub_kernel_name(n);
 }
+/* The same for the builtin class cid's chain embeds, Array or Hash, and a
+   method the program's reopen of that builtin adds (`class Hash; def
+   symbolize_keys`): the builtin's dispatch takes it with self boxed. */
+int comp_arysub_builtin_name(Compiler *c, int cid, const char *n) {
+  int hash = comp_ary_is_hash(c, cid);
+  if (comp_builtin_kind_reopen_mi(c, hash ? TY_POLY_POLY_HASH : TY_POLY_ARRAY, n) >= 0) return 1;
+  if (!hash) return comp_array_method_name(n);
+  return builtin_instance_method_known("Hash", n) || is_arysub_kernel_name(n);
+}
+/* The program's reopen of the builtin cid's chain embeds, the class right
+   above the chain's root, or -1 */
+int comp_arysub_reopen(Compiler *c, int cid) {
+  int r = comp_ary_root(c, cid);
+  int p = r >= 0 ? c->classes[r].parent : -1;
+  return p >= 0 && p != r && p == comp_class_index(c, comp_ary_is_hash(c, cid) ? "Hash" : "Array") ? p : -1;
+}
 /* Whether a call named n on an instance of Array subclass cid is Array's:
    no method, reader or writer of the class chain takes the name, it asks
    nothing about the object itself, and Array (or Enumerable, which Array
    includes) has it. */
 int comp_arysub_name_is_array(Compiler *c, int cid, const char *n) {
   if (comp_ary_root(c, cid) < 0 || !n) return 0;
-  if (comp_method_in_chain(c, cid, n, NULL) >= 0 || comp_reader_in_chain(c, cid, n, NULL)) return 0;
+  /* a method of the builtin's reopen is the builtin's */
+  int dc = -1, ro = comp_arysub_reopen(c, cid);
+  if ((comp_method_in_chain(c, cid, n, &dc) >= 0 && (ro < 0 || dc != ro)) ||
+      comp_reader_in_chain(c, cid, n, NULL)) return 0;
   size_t l = strlen(n);
   if (l > 1 && n[l - 1] == '=' && n[l - 2] != '=' && n[l - 2] != '!' && n[l - 2] != '<' &&
       n[l - 2] != '>' && n[l - 2] != '[') {
@@ -913,7 +936,7 @@ int comp_arysub_name_is_array(Compiler *c, int cid, const char *n) {
     snprintf(base, sizeof base, "%.*s", (int)(l - 1), n);
     if (comp_writer_in_chain(c, cid, base, NULL)) return 0;
   }
-  return !is_arysub_object_name(n) && comp_array_method_name(n);
+  return !is_arysub_object_name(n) && comp_arysub_builtin_name(c, cid, n);
 }
 /* Whether call `id` on a receiver of type rt, an Array subclass instance, is
    Array's (comp_arysub_name_is_array), or a `super` into Array was rewritten
@@ -931,21 +954,23 @@ int comp_arysub_call(Compiler *c, int id, TyKind rt, TyKind *kind) {
    (bop_answers_self) or, with args_builtin, whether it reads an Array
    argument as an Array (bop_args_as_builtin). Every Array kind reads the
    same family rows. */
-static int arysub_call_flags(Compiler *c, int id, int args_builtin) {
+static int arysub_call_flags(Compiler *c, int id, int hash, int args_builtin) {
   const char *n = nt_str(c->nt, id, "name");
   int args = nt_ref(c->nt, id, "arguments"), argc = 0;
   if (!n) return 0;
   if (args >= 0) nt_arr(c->nt, args, "arguments", &argc);
   int blk = nt_ref(c->nt, id, "block") >= 0;
-  return args_builtin ? bop_args_as_builtin(TY_POLY_ARRAY, n, argc, blk)
-                      : bop_answers_self(TY_POLY_ARRAY, n, argc, blk);
+  /* and every Hash kind the Hash family's */
+  TyKind fam = hash ? TY_POLY_POLY_HASH : TY_POLY_ARRAY;
+  return args_builtin ? bop_args_as_builtin(fam, n, argc, blk)
+                      : bop_answers_self(fam, n, argc, blk);
 }
-int comp_arysub_answer(Compiler *c, int id) { return arysub_call_flags(c, id, 0); }
+int comp_arysub_answer(Compiler *c, int id, int hash) { return arysub_call_flags(c, id, hash, 0); }
 /* Array's answer to call `id` is its receiver -- always (BOPF_SELF) or when
    it changed it (BOPF_SELF_OR_NIL) -- so on an Array subclass instance it
    is the instance (#7449). */
-int comp_arysub_self_result(Compiler *c, int id) {
-  return (comp_arysub_answer(c, id) & (BOPF_SELF | BOPF_SELF_OR_NIL)) != 0;
+int comp_arysub_self_result(Compiler *c, int id, int hash) {
+  return (comp_arysub_answer(c, id, hash) & (BOPF_SELF | BOPF_SELF_OR_NIL)) != 0;
 }
 
 /* Whether the arguments of call `id`, on a receiver of type rt (-1: none),
@@ -960,7 +985,7 @@ int comp_arysub_args_viewed(Compiler *c, int id, TyKind rt) {
   if (!n || nt_kind(nt, id) != NK_CallNode) return 0;
   if (nt_ref(nt, id, "receiver") < 0)
     return sp_streq(n, "puts") && comp_method_index(c, n) < 0;
-  return array_new_copies(rt) && arysub_call_flags(c, id, 1);
+  return (array_new_copies(rt) || ty_is_hash(rt)) && arysub_call_flags(c, id, ty_is_hash(rt), 1);
 }
 
 /* `Array(x)`: of an Array subclass instance x it is x itself (Kernel#Array

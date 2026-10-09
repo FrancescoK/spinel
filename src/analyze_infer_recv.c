@@ -1170,10 +1170,15 @@ int infer_arysub_call(Compiler *c, int id, TyKind *out) {
      included */
   int an = comp_arysub_kernel_array(c, id);
   if (an >= 0 && comp_ty_ary_root(c, infer_type(c, an)) >= 0) { *out = infer_type(c, an); return 1; }
-  if (recv < 0 || face_of(recv) != TY_UNKNOWN) return 0;
+  /* already re-inferring this receiver as its builtin: under a codegen view
+     face face_of reads only the view's, so ask the inference's own pins */
+  if (recv < 0 || face_of(recv) != TY_UNKNOWN || an_face_pinned(recv)) return 0;
   TyKind rt = infer_type(c, recv), k = TY_UNKNOWN;
   if (!comp_arysub_call(c, id, rt, &k)) return infer_arysub_arg_call(c, id, rt, out);
-  int self = comp_arysub_self_result(c, id);
+  int hash = comp_ary_is_hash(c, ty_object_class(rt));
+  /* a Hash method answering a copy of its receiver answers one of its class */
+  int self = comp_arysub_self_result(c, id, hash) ||
+             (hash && (comp_arysub_answer(c, id, hash) & BOPF_COPY_CLASS));
   TyKind r = TY_UNKNOWN;
   if (k != TY_UNKNOWN) {
     an_face_push(recv, k);

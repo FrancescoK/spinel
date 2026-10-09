@@ -2236,6 +2236,9 @@ static sp_bool sp_poly_responds_builtin(sp_RbVal v, const char *m) {
      (#7449); its class's own are the caller's */
   if (sp_bsub_cls_fn && v.tag == SP_TAG_OBJ && sp_poly_is_array_kind(v.cls_id) && sp_bsub_cls_fn(v) >= 0)
     cn = "Array";
+  /* and a Hash subclass instance boxed as its Hash, Hash's */
+  if (sp_bsub_cls_fn && v.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(v.cls_id) && sp_bsub_cls_fn(v) >= 0)
+    cn = "Hash";
   if (strcmp(cn, "Array") == 0)
     return sp_str_in_list(m, enumm) || sp_str_in_list(m, arrm);
   if (strcmp(cn, "Hash") == 0)

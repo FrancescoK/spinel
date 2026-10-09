@@ -752,6 +752,34 @@ int emit_transform_hash_expr(Compiler *c, int id, Buf *b) {
   /* desugar_reduce_proc_arg gives a Proc, lambda or Method block argument a
      block that calls it; any other `&expr` has no body to inline, and read
      as an empty block every value became nil */
+  /* A proc handed on that no literal stands for -- a method's own `&block`
+     whose caller is not known here (super into Hash#transform_keys from a
+     Hash subclass's override) -- is called per pair at run time, into a Hash
+     of any keys and values; nil, it is the enumerator form, which the call's
+     type does not take, so it raises as a missing block does */
+  if (nt_kind(nt, block) == NK_BlockArgumentNode && nt_ref(nt, block, "expression") >= 0 &&
+      comp_ntype(c, nt_ref(nt, block, "expression")) == TY_PROC) {
+    Repr pdr = repr_of(c, id);
+    if (pdr.as_ty == TY_POLY_POLY_HASH || pdr.kind == RK_BOXED) {
+      int th = ++g_tmp, tp = ++g_tmp, tr = ++g_tmp, tn = ++g_tmp, ti = ++g_tmp, tk = ++g_tmp, tv = ++g_tmp;
+      buf_printf(b, "({ sp_RbVal _t%d = ", th); emit_boxed(c, recv, b);
+      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_RbVal _t%d = ", th, tp);
+      emit_boxed(c, nt_ref(nt, block, "expression"), b);
+      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);", tp);
+      buf_printf(b, " if (_t%d.tag == SP_TAG_NIL) sp_raise_cls(\"LocalJumpError\", \"no block given (yield)\");", tp);
+      buf_printf(b, " sp_PolyPolyHash *_t%d = sp_PolyPolyHash_new(); SP_GC_ROOT(_t%d);", tr, tr);
+      buf_printf(b, " sp_int _t%d = sp_poly_length(_t%d);", tn, th);
+      buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) {", ti, ti, tn, ti);
+      buf_printf(b, " sp_RbVal _t%d, _t%d; sp_poly_hash_pair(_t%d, _t%d, &_t%d, &_t%d);", tk, tv, th, ti, tk, tv);
+      buf_printf(b, " _sp_proc_poly_args[0] = _t%d; sp_int _sl[1] = { sp_poly_slot_i(_t%d) };", keys ? tk : tv, keys ? tk : tv);
+      buf_printf(b, " sp_RbVal _nx = sp_poly_callable_call(_t%d, 1, _sl);", tp);
+      if (keys) buf_printf(b, " sp_PolyPolyHash_set(_t%d, _nx, _t%d); }", tr, tv);
+      else buf_printf(b, " sp_PolyPolyHash_set(_t%d, _t%d, _nx); }", tr, tk);
+      if (pdr.as_ty == TY_POLY_POLY_HASH) buf_printf(b, " _t%d; })", tr);
+      else buf_printf(b, " sp_box_obj(_t%d, SP_BUILTIN_POLY_POLY_HASH); })", tr);
+      return 1;
+    }
+  }
   if (nt_kind(nt, block) == NK_BlockArgumentNode) {
     char msg[256];
     snprintf(msg, sizeof msg, "%s with this block argument (pass a block, or a Proc, lambda or Method held in a variable)",

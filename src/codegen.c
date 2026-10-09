@@ -8860,6 +8860,8 @@ static void check_class_layout_prefix(Compiler *c) {
 void arysub_box_id(Compiler *c, TyKind t, Buf *b) {
   int oc = ty_object_class(t);
   if (c->classes[oc].ary_root <= 0) { buf_printf(b, "%d", oc); return; }
+  /* a Hash subclass instance is boxed as its Hash */
+  if (comp_ary_is_hash(c, oc)) { buf_puts(b, hash_box_cls(comp_ary_kind(c, oc))); return; }
   switch (comp_ary_kind(c, oc)) {
     case TY_INT_ARRAY:   buf_puts(b, "SP_BUILTIN_INT_ARRAY"); break;
     case TY_FLOAT_ARRAY: buf_puts(b, "SP_BUILTIN_FLT_ARRAY"); break;
@@ -8869,6 +8871,10 @@ void arysub_box_id(Compiler *c, TyKind t, Buf *b) {
 }
 
 int program_has_arysub(Compiler *c) { return c->has_arysub; }
+static int program_has_hashsub(Compiler *c) {
+  for (int k = 0; k < c->nclasses; k++) if (c->classes[k].ary_root > 0 && c->classes[k].ary_hash) return 1;
+  return 0;
+}
 
 /* A boxed Array subclass instance is boxed as its Array (arysub_box_id);
    sp_bsub_cls_of reads its class back off the scan every such class has of
@@ -8880,9 +8886,11 @@ void emit_arysub_machinery(Compiler *c, Buf *b) {
   if (!program_has_arysub(c)) return;
   for (int k = 0; k < c->nclasses; k++)
     if (c->classes[k].ary_root > 0) buf_printf(b, "static void sp_%s__gc_scan(void *p);\n", c->classes[k].c_name);
-  buf_puts(b, "static int sp_bsub_cls_of(sp_RbVal v){\n"
-              "  if(v.tag!=SP_TAG_OBJ||!v.v.p||!sp_poly_is_array_kind(v.cls_id))return -1;\n"
-              "  void(*s)(void*)=((sp_gc_hdr*)((char*)v.v.p-sizeof(sp_gc_hdr)))->scan;\n");
+  buf_puts(b, "static int sp_bsub_cls_of(sp_RbVal v){\n");
+  buf_puts(b, program_has_hashsub(c)
+              ? "  if(v.tag!=SP_TAG_OBJ||!v.v.p||!(sp_poly_is_array_kind(v.cls_id)||sp_poly_is_hash_kind(v.cls_id)))return -1;\n"
+              : "  if(v.tag!=SP_TAG_OBJ||!v.v.p||!sp_poly_is_array_kind(v.cls_id))return -1;\n");
+  buf_puts(b, "  void(*s)(void*)=((sp_gc_hdr*)((char*)v.v.p-sizeof(sp_gc_hdr)))->scan;\n");
   for (int k = 0; k < c->nclasses; k++)
     if (c->classes[k].ary_root > 0)
       buf_printf(b, "  if(s==sp_%s__gc_scan)return %d;\n", c->classes[k].c_name, k);
@@ -8895,8 +8903,14 @@ void emit_arysub_machinery(Compiler *c, Buf *b) {
               "  return NULL;\n}\n");
 }
 
-/* The C struct of the Array an Array subclass instance embeds (#7449). */
+/* The C struct of the Array an Array subclass instance embeds (#7449), or
+   of the Hash a Hash subclass instance embeds. */
 const char *arysub_array_ctype(Compiler *c, int cid) {
+  if (comp_ary_is_hash(c, cid)) {
+    static char hb[32];
+    snprintf(hb, sizeof hb, "sp_%sHash", ty_hash_cname(comp_ary_kind(c, cid)));
+    return hb;
+  }
   switch (comp_ary_kind(c, cid)) {
     case TY_INT_ARRAY:   return "sp_IntArray";
     case TY_FLOAT_ARRAY: return "sp_FloatArray";
@@ -8917,6 +8931,7 @@ void emit_arysub_alloc(Compiler *c, ClassInfo *ci, Buf *b) {
   if (ci->ary_root <= 0 || cid < 0) return;
   const char *at = arysub_array_ctype(c, cid), *cn = ci->c_name;
   buf_printf(b, "SP_UNUSED static sp_%s *sp_%s__alloc(void) {\n", cn, cn);
+  int hash = comp_ary_is_hash(c, cid);
   buf_printf(b, "  sp_%s *self = (sp_%s *)sp_gc_alloc(sizeof(sp_%s), ", cn, cn, cn);
   if (sp_streq(at, "sp_PolyArray")) buf_puts(b, "NULL");
   else buf_printf(b, "%s_fin", at);
@@ -8934,7 +8949,16 @@ void emit_arysub_alloc(Compiler *c, ClassInfo *ci, Buf *b) {
   buf_printf(b, "  sp_%s *d = sp_%s__alloc(); SP_GC_ROOT(d);\n", cn, cn);
   buf_printf(b, "  { %s a = d->ary; *d = *o; d->ary = a; }\n", at);
   buf_printf(b, "  %s_replace(&d->ary, &o->ary);\n", at);
-  buf_puts(b, "  if (mode) d->ary.frozen = mode == 1 ? o->ary.frozen : mode == 3;\n");
+  if (hash) {
+    /* a Hash's copy keeps its default and default proc; its frozen state is
+       the object's header bit, the instance being its Hash */
+    buf_puts(b, "  d->ary.default_v = o->ary.default_v;\n");
+    if (ty_hash_val(comp_ary_kind(c, cid)) == TY_POLY)
+      buf_puts(b, "  d->ary.dproc = o->ary.dproc; d->ary.dproc_self = o->ary.dproc_self;\n");
+    buf_puts(b, "  if (mode == 1 ? sp_gc_is_frozen(o) : mode == 3) sp_gc_freeze(d);\n");
+  }
+  else
+    buf_puts(b, "  if (mode) d->ary.frozen = mode == 1 ? o->ary.frozen : mode == 3;\n");
   buf_puts(b, "  return d;\n}\n");
 }
 
@@ -9033,7 +9057,9 @@ void emit_class_scan(Compiler *c, ClassInfo *ci, Buf *b) {
   /* the embedded Array's elements, as its own kind's scan marks them */
   if (ci->ary_root > 0) {
     const char *at = arysub_array_ctype(c, cid);
-    if (sp_streq(at, "sp_PolyArray") || sp_streq(at, "sp_StrArray")) buf_printf(b, "  %s_scan(p);\n", at);
+    if (sp_streq(at, "sp_PolyArray") || sp_streq(at, "sp_StrArray") ||
+        (comp_ary_is_hash(c, cid) && !sp_streq(at, "sp_IntIntHash")))
+      buf_printf(b, "  %s_scan(p);\n", at);
   }
   if (is_exc_iv) {
     buf_puts(b, "  sp_mark_string(o->msg);\n");

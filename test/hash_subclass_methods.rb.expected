@@ -1,0 +1,39 @@
+1
+1
+2
+true
+1
+9
+"zzzz"
+Opts
+2
+{"a" => 1, "b" => 2}
+Opts
+{"a" => 1, "b" => 2, "c" => 3}
+Hash
+{"b" => 2}
+Opts
+Hash
+{"a" => 1, "b" => 2}
+Opts
+3
+2
+Opts
+true
+false
+true
+true
+a=1
+b=2
+{"q" => 5}
+Opts
+FrozenError
+true
+true
+false
+{x: 2, y: 1}
+0
+0
+"abab"
+{ab: "abab"}
+Proc

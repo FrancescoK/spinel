@@ -3072,6 +3072,17 @@ static void alias_refuse_early_call(Compiler *c, ClassInfo *cls, const char *nw,
   }
 }
 
+static const char *builtin_value_superclass(Compiler *c, int sc);
+int builtin_instance_method_known(const char *cls, const char *m);
+/* The builtin an Array or Hash subclass declares as its superclass
+   (`class X < Hash`), or NULL: the alias pass runs before the class chains
+   are resolved, so it reads the declaration */
+static const char *alias_embedding_parent(Compiler *c, ClassInfo *cls) {
+  int dn = cls->def_node;
+  if (dn < 0 || nt_kind(c->nt, dn) != NK_ClassNode) return NULL;
+  const char *par = builtin_value_superclass(c, nt_ref(c->nt, dn, "superclass"));
+  return par && (sp_streq(par, "Array") || sp_streq(par, "Hash")) ? par : NULL;
+}
 static void alias_register(Compiler *c, ClassInfo *cls, const char *nw, const char *od, int s) {
   alias_refuse_early_call(c, cls, nw, s);
   if (alias_capture_earlier_def(c, cls, nw, od, s)) return;
@@ -3080,8 +3091,13 @@ static void alias_register(Compiler *c, ClassInfo *cls, const char *nw, const ch
      there yet names the builtin method: it keeps naming it when the class
      later defines or re-aliases that name (`alias_method :plus_without, :+`
      ahead of `alias_method :+, :plus_with`). */
+  /* So in an Array or Hash subclass, of a method of the builtin: its
+     instance is the builtin's (`alias_method :regular_writer, :[]=` ahead of
+     its own `def []=`, as activesupport's HashWithIndifferentAccess has) */
   int cid = cls->name ? comp_class_index(c, cls->name) : -1;
-  if (s >= 0 && cid >= 0 && alias_prim_class(cls->name) &&
+  const char *ep = alias_embedding_parent(c, cls);
+  if (s >= 0 && cid >= 0 &&
+      (alias_prim_class(cls->name) || (ep && builtin_instance_method_known(ep, od))) &&
       !alias_target_defined_before(c, cls, cid, od, s)) {
     for (int i = cls->naliases - 1; i >= 0; i--)
       if (cls->alias_node[i] == s && sp_streq(cls->alias_new[i], nw)) { cls->alias_builtin[i] = 1; break; }
@@ -4918,9 +4934,13 @@ static const char *builtin_value_superclass(Compiler *c, int sc) {
   return nm;
 }
 
+/* the builtins whose subclass instance IS the builtin (#7449) */
+static int is_embedding_builtin(const char *nm) {
+  return nm && (sp_streq(nm, "Array") || sp_streq(nm, "Hash"));
+}
 static const char *refused_builtin_superclass(Compiler *c, int sc) {
   const char *nm = builtin_value_superclass(c, sc);
-  return nm && sp_streq(nm, "Array") ? NULL : nm;
+  return is_embedding_builtin(nm) ? NULL : nm;
 }
 
 /* A program class whose superclass is a builtin of that kind, or a class a
@@ -4951,13 +4971,15 @@ static void check_builtin_subclasses(Compiler *c) {
     int cp = nt_ref(nt, id, "constant_path");
     const char *cn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
     const char *par = refused_builtin_superclass(c, sc);
-    /* a program that reopens Array has a class of its own named Array, which
-       resolve_parents would take for the superclass */
+    /* a program that reopens Array (Hash) has a class of its own named so,
+       which resolve_parents would take for the superclass */
     if (!par && (par = builtin_value_superclass(c, sc)) != NULL) {
-      if (comp_class_index(c, "Array") >= 0) {
+      /* a Hash subclass beside a reopen of Hash takes the reopen's methods
+         as Hash's (comp_arysub_reopen); an Array one does not yet */
+      if (comp_class_index(c, par) >= 0 && !sp_streq(par, "Hash")) {
         char msg[400];
-        snprintf(msg, sizeof msg, "class %s < Array: subclassing Array in a program that "
-                 "also reopens Array is not supported yet", cn ? cn : "?");
+        snprintf(msg, sizeof msg, "class %s < %s: subclassing %s in a program that "
+                 "also reopens %s is not supported yet", cn ? cn : "?", par, par, par);
         unsupported_feature(c, sc, msg);
       }
       continue;
@@ -4986,11 +5008,13 @@ static void check_builtin_subclasses(Compiler *c) {
     const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
     if (!av || ac != 1) continue;
     const char *par = builtin_value_superclass(c, av[0]);
-    if (par && sp_streq(par, "Array"))
+    if (is_embedding_builtin(par)) {
       /* no class of the program's own stands for a class made by the call */
-      unsupported_feature(c, id, "Class.new(Array) without a block is not supported yet "
-                                 "(the call makes its class at run time); declare it as "
-                                 "`class Name < Array`");
+      char msg[300];
+      snprintf(msg, sizeof msg, "Class.new(%s) without a block is not supported yet "
+               "(the call makes its class at run time); declare it as `class Name < %s`", par, par);
+      unsupported_feature(c, id, msg);
+    }
     else if (par) {
       char what[64];
       snprintf(what, sizeof what, "Class.new(%s)", par);
@@ -5061,20 +5085,26 @@ static void refuse_anon_superclass_reflection(Compiler *c) {
   }
 }
 
-/* The classes whose chain reaches the builtin Array (#7449): each records the
-   root of its chain, the class right below Array, whose instances and its
-   descendants' share one embedded Array kind. A program that reopens Array
-   was refused above. */
+/* The classes whose chain reaches the builtin Array or Hash (#7449): each
+   records the root of its chain, the class right below the builtin, whose
+   instances and its descendants' share one embedded kind. A program that
+   reopens the builtin was refused above. */
 static void mark_array_subclasses(Compiler *c) {
+  /* the program's reopen of Hash, which a Hash subclass's chain reaches
+     above its root */
+  int hro = comp_class_index(c, "Hash");
   for (int i = 0; i < c->nclasses; i++) {
     int r = i;
-    for (int g = 0; c->classes[r].parent >= 0 && c->classes[r].parent != r && g < 256; g++)
+    for (int g = 0; c->classes[r].parent >= 0 && c->classes[r].parent != r &&
+                    c->classes[r].parent != hro && g < 256; g++)
       r = c->classes[r].parent;
+    if (r == hro) continue;
     int dn = c->classes[r].def_node;
     if (dn < 0 || nt_kind(c->nt, dn) != NK_ClassNode) continue;
     const char *par = builtin_value_superclass(c, nt_ref(c->nt, dn, "superclass"));
-    if (par && sp_streq(par, "Array") && comp_class_index(c, "Array") < 0) {
+    if (is_embedding_builtin(par) && (comp_class_index(c, par) < 0 || sp_streq(par, "Hash"))) {
       c->classes[i].ary_root = r + 1;
+      c->classes[i].ary_hash = sp_streq(par, "Hash");
       c->has_arysub = 1;
     }
   }

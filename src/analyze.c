@@ -31230,6 +31230,10 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
      (`{ |x| yield x }`, desugar_value_callable_forwards): its parameters
      live in the method's scope, so every arm takes a copy of it */
   int fwd_blk = blk >= 0 && !subst && nt_kind(nt, blk) == NK_BlockNode && nt_int(nt, blk, "fwd_yield", 0);
+  /* ...and the `&blk` a super into Array or Hash hands on (builtin_only, the
+     subclass rewrites): a read of the block, which every arm shares */
+  if (blk >= 0 && !subst && nt_kind(nt, blk) == NK_BlockArgumentNode && nt_int(nt, id, "builtin_only", 0))
+    fwd_blk = 1;
   if (blk >= 0 && !subst && !splat_binary_operator(cnm) && !odyn && !fwd_blk) return 0;
   if (blk >= 0 && subst) lo = 1;
   /* insert(i, *objs) spreads at run time (emit_array_splat_mutator) */
@@ -31256,7 +31260,9 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
      count, which no range covers. A variadic-2 name (slice) needs no
      widening: its other counts keep the splat call, which reaches the user
      method as any splat call does. */
-  if (variadic != 2 && !splat_recv_is_builtin_literal(nt, id)) {
+  /* a call marked as the builtin's (a super into Array or Hash) is never a
+     user method's */
+  if (variadic != 2 && !splat_recv_is_builtin_literal(nt, id) && !nt_int(nt, id, "builtin_only", 0)) {
     for (int si = 0; si < c->nscopes; si++) {
       Scope *s = &c->scopes[si];
       if (!s->name || !sp_streq(s->name, cnm)) continue;
@@ -33021,12 +33027,13 @@ static int arysub_args(Compiler *c, int at, const int *ids, int n) {
   if (a >= 0) nt_node_set_arr((NodeTable *)c->nt, a, "arguments", ids, n);
   return a;
 }
-/* `Array.new(args) { blk }` for node `at`, or -1 */
-static int arysub_array_new(Compiler *c, int at, int args, int blk) {
+/* `Array.new(args) { blk }` for node `at`, or -1; `Hash.new(...)` and
+   `Hash[...]` (name "[]") for a Hash subclass's */
+static int arysub_builtin_call(Compiler *c, int at, int hash, const char *name, int args, int blk) {
   int k = arysub_node(c, "ConstantReadNode", at);
   if (k < 0) return -1;
-  nt_node_set_str((NodeTable *)c->nt, k, "name", "Array");
-  return arysub_new_call(c, at, k, "new", args, blk);
+  nt_node_set_str((NodeTable *)c->nt, k, "name", hash ? "Hash" : "Array");
+  return arysub_new_call(c, at, k, name, args, blk);
 }
 
 /* The arguments a bare `super` in the method of scope s passes on: its
@@ -33065,6 +33072,8 @@ static int arysub_zsuper_args(Compiler *c, int at, Scope *s) {
    override does not take it, or in initialize `self.clear` for no arguments
    and no block, else `self.replace(Array.new(args) { blk })`. */
 static void arysub_super_into(Compiler *c, int at, int n, const char *mname, int init, int args, int blk) {
+  Scope *s = comp_scope_of(c, at);
+  int hash = s && comp_ary_is_hash(c, s->class_id);
   int an = 0;
   if (args >= 0) nt_arr(c->nt, args, "arguments", &an);
   int self = arysub_node(c, "SelfNode", at);
@@ -33076,7 +33085,7 @@ static void arysub_super_into(Compiler *c, int at, int n, const char *mname, int
   }
   else if (an == 0 && blk < 0) arysub_set_call(c, n, self, "clear", -1, -1);
   else {
-    int an_call = arysub_array_new(c, at, an ? args : -1, blk);
+    int an_call = arysub_builtin_call(c, at, hash, "new", an ? args : -1, blk);
     if (an_call >= 0) arysub_set_call(c, n, self, "replace", arysub_args(c, at, &an_call, 1), -1);
   }
   free(mn);
@@ -33087,7 +33096,9 @@ static void arysub_super_into(Compiler *c, int at, int n, const char *mname, int
    from the same arguments: `self.replace(Array.new(args) { blk })`, and
    `super()` the empty Array, `self.clear`. Anywhere else it is Array's
    method of the same name on self, marked builtin_only so the class's own
-   override does not take it. */
+   override does not take it. A Hash subclass's is the same with Hash:
+   Hash#replace takes the default and the default proc along, so
+   `self.replace(Hash.new(default) { blk })` is Hash#initialize's. */
 static void rewrite_array_subclass_super(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   Scope *s = comp_scope_of(c, id);
@@ -33104,14 +33115,16 @@ static void rewrite_array_subclass_super(Compiler *c, int id) {
     if (self >= 0) { arysub_set_call(c, id, self, "itself", -1, -1); }
     return;
   }
-  if (!init && !comp_array_method_name(mname)) return;
+  if (!init && !comp_arysub_builtin_name(c, s->class_id, mname)) return;
   int args = nt_ref(nt, id, "arguments"), blk = nt_ref(nt, id, "block");
   if (nt_kind(nt, id) == NK_ForwardingSuperNode) {
     args = arysub_zsuper_args(c, id, s);
     if (args < 0) {
-      unsupported_feature(c, id, "a bare `super` into Array from a method with keyword, "
-                                 "post-rest or destructured parameters is not supported yet; "
-                                 "pass the arguments explicitly");
+      char msg[256];
+      snprintf(msg, sizeof msg, "a bare `super` into %s from a method with keyword, "
+               "post-rest or destructured parameters is not supported yet; "
+               "pass the arguments explicitly", comp_ary_is_hash(c, s->class_id) ? "Hash" : "Array");
+      unsupported_feature(c, id, msg);
       return;
     }
   }
@@ -33174,7 +33187,7 @@ static void rewrite_array_subclass_self_call(Compiler *c, int id) {
   if (!s || !s->name || s->is_cmethod || !nm || comp_ary_root(c, s->class_id) < 0) return;
   int k = s->class_id;
   if (comp_method_in_chain(c, k, nm, NULL) >= 0 || comp_reader_in_chain(c, k, nm, NULL)) return;
-  if (!comp_array_method_name(nm)) return;
+  if (!comp_arysub_builtin_name(c, k, nm)) return;
   int self = arysub_node(c, "SelfNode", id);
   if (self >= 0) nt_node_set_ref((NodeTable *)c->nt, id, "receiver", self);
 }
@@ -33208,14 +33221,74 @@ static void rewrite_array_subclass_new(Compiler *c, int id) {
   if (!brackets && an == 0 && blk < 0) { arysub_set_call(c, id, recv, "allocate", -1, -1); return; }
   int alloc = arysub_new_call(c, id, recv, "allocate", -1, -1);
   int src = -1;
-  if (brackets) {
+  int hash = comp_ary_is_hash(c, k);
+  if (brackets && hash) src = arysub_builtin_call(c, id, 1, "[]", args, -1);
+  else if (brackets) {
     const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
     src = arysub_node(c, "ArrayNode", id);
     if (src >= 0) nt_node_set_arr((NodeTable *)nt, src, "elements", av, an);
   }
-  else src = arysub_array_new(c, id, args, blk);
+  else src = arysub_builtin_call(c, id, hash, "new", args, blk);
   if (alloc < 0 || src < 0) return;
   arysub_set_call(c, id, alloc, "replace", arysub_args(c, id, &src, 1), -1);
+}
+
+/* The calls a splat's length dispatch built from nodes m0 on, of a call into
+   the builtin (`self.slice(*keys)`, builtin_only): each is that call, so it
+   is the builtin's too -- unmarked, the class's own override took it and
+   called itself. `name` limits it to one name; NULL takes any call on self
+   whose name is the builtin's. */
+static void arysub_keep_builtin_only(Compiler *c, int m0, const char *name) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  for (int n = m0; n < nt->count; n++) {
+    if (nt_kind(nt, n) != NK_CallNode) continue;
+    int r = nt_ref(nt, n, "receiver");
+    const char *nm = nt_str(nt, n, "name");
+    if (r < 0 || nt_kind(nt, r) != NK_SelfNode || !nm) continue;
+    if (name ? !sp_streq(nm, name) : 0) continue;
+    if (!name) {
+      Scope *s = comp_scope_of(c, n);
+      if (!s || comp_ary_root(c, s->class_id) < 0 || !comp_arysub_builtin_name(c, s->class_id, nm)) continue;
+    }
+    nt_node_set_int(nt, n, "builtin_only", 1);
+  }
+}
+
+/* A call with a receiver of an alias that captured the builtin's method in
+   an Array or Hash subclass (`alias_method :raw_push, :push` ahead of the
+   class's own `push`): on self it is the builtin's call, as the receiverless
+   one is (rewrite_builtin_alias_self_calls); on any other receiver the alias
+   resolves by name to the class's own method and would run that, so it is
+   refused until the alias is a method of its own. */
+static void arysub_builtin_alias_recv_call(Compiler *c, int id) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  const char *nm = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver");
+  if (!nm || recv < 0) return;
+  if (nt_kind(nt, recv) == NK_SelfNode) {
+    Scope *s = comp_scope_of(c, id);
+    int k = s && !s->is_cmethod ? s->class_id : -1;
+    int bi = 0;
+    const char *rn = k >= 0 && comp_ary_root(c, k) >= 0 ? comp_resolve_alias_ex(c, k, nm, NULL, &bi) : NULL;
+    if (!bi || !rn) return;
+    char *target = strdup(rn);
+    nt_node_set_str(nt, id, "name", target);
+    nt_node_set_int(nt, id, "builtin_only", 1);
+    free(target);
+    return;
+  }
+  for (int k = 0; k < c->nclasses; k++) {
+    if (comp_ary_root(c, k) < 0 || c->classes[k].naliases == 0) continue;
+    int bi = 0;
+    const char *rn = comp_resolve_alias_ex(c, k, nm, NULL, &bi);
+    if (!bi || !rn) continue;
+    char msg[400];
+    snprintf(msg, sizeof msg, "calling `%s`, an alias of %s#%s in %s, on a receiver is not supported "
+             "yet (it would run the class's own `%s`); call it without a receiver inside the class",
+             nm, comp_ary_is_hash(c, k) ? "Hash" : "Array", rn, c->classes[k].name, rn);
+    unsupported_feature(c, id, msg);
+    return;
+  }
 }
 
 static void rewrite_array_subclass_calls(Compiler *c) {
@@ -33224,6 +33297,7 @@ static void rewrite_array_subclass_calls(Compiler *c) {
   int n0 = nt->count;
   for (int id = 0; id < n0; id++) {
     NodeKind k = nt_kind(nt, id);
+    if (k == NK_CallNode) arysub_builtin_alias_recv_call(c, id);
     /* where an Array is wanted, an Array subclass instance is read as its
        Array (infer_type, emit_expr): a splat's operand, a destructured value,
        the collection a `for` walks */
@@ -33245,12 +33319,28 @@ static void rewrite_array_subclass_calls(Compiler *c) {
       int ir = nt_ref(nt, id, "receiver");
       if (ir >= 0) nt_node_set_int((NodeTable *)nt, ir, "ary_operand", 2);
     }
-    if (k == NK_SuperNode || k == NK_ForwardingSuperNode) rewrite_array_subclass_super(c, id);
+    if (k == NK_SuperNode || k == NK_ForwardingSuperNode) {
+      rewrite_array_subclass_super(c, id);
+      /* the call it became spreads a splat by its length as any builtin
+         call's does (expand_static_splat_args ran before it existed); the
+         calls the length dispatch builds stay the builtin's */
+      if (nt_kind(nt, id) == NK_CallNode && nt_int(nt, id, "builtin_only", 0)) {
+        int m0 = nt->count;
+        expand_static_splat_args(c, id, id + 1);
+        arysub_keep_builtin_only(c, m0, nt_str(nt, id, "name"));
+      }
+      else if (nt_kind(nt, id) == NK_CallNode) expand_static_splat_args(c, id, id + 1);
+    }
     else if (k == NK_CallNode && nt_ref(nt, id, "receiver") < 0) {
       rewrite_array_subclass_new(c, id);
       if (nt_ref(nt, id, "receiver") < 0) rewrite_array_subclass_self_call(c, id);
     }
     else if (k == NK_CallNode) rewrite_array_subclass_new(c, id);
+  }
+  if (nt->count > n0) {
+    int m0 = nt->count;
+    expand_static_splat_args(c, n0, nt->count);
+    arysub_keep_builtin_only(c, m0, NULL);
   }
 }
 
