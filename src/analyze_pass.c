@@ -11256,6 +11256,7 @@ int desugar_dir_surface(Compiler *c) {
       if (fr2 >= 0) {
         nt_node_set_str(nt, fr2, "name", "File");
         nt_node_set_ref(nt, id, "receiver", fr2);
+        nt_node_set_int(nt, id, "builtin_only", 1);
         comp_grow_node_arrays(c);
         c->nscope[fr2] = c->nscope[id];
         changed = 1;
@@ -11265,11 +11266,14 @@ int desugar_dir_surface(Compiler *c) {
     if (!nm || recv < 0 || nt_kind(nt, recv) != NK_ConstantReadNode) continue;
     const char *rn = nt_str(nt, recv, "name");
     if (!rn) continue;
+    /* A resolved user singleton is not a builtin rewrite. */
+    if (cplan_const_user(c, id, rn, 1)) continue;
     /* IO.read/write/readlines/binread/foreach are the File forms (#2793) */
     if (sp_streq(rn, "IO") &&
         (sp_streq(nm, "read") || sp_streq(nm, "write") || sp_streq(nm, "binread") ||
          sp_streq(nm, "binwrite") || sp_streq(nm, "readlines") || sp_streq(nm, "foreach"))) {
       nt_node_set_str(nt, recv, "name", "File");
+      nt_node_set_int(nt, id, "builtin_only", 1);
       rn = "File";
       changed = 1;
     }
@@ -11340,6 +11344,7 @@ int desugar_dir_surface(Compiler *c) {
       if (rargs >= 0) nt_node_set_arr(nt, rargs, "arguments", hargs + 1, fac - 1);
       nt_node_set_str(nt, fread, "name", fnm);
       nt_node_set_str(nt, each, "name", "each_line");
+      nt_node_set_int(nt, each, "builtin_only", 1);
       nt_node_set_ref(nt, each, "receiver", fread);
       nt_node_set_ref(nt, each, "arguments", rargs);
       nt_node_set_ref(nt, each, "block", fblk);
@@ -11350,6 +11355,7 @@ int desugar_dir_surface(Compiler *c) {
       nt_node_set_ref(nt, oblk, "parameters", fbparams);
       nt_node_set_ref(nt, oblk, "body", ebody);
       nt_node_set_str(nt, open, "name", "open");
+      nt_node_set_int(nt, open, "builtin_only", 1);
       nt_node_set_ref(nt, open, "receiver", recv);
       nt_node_set_ref(nt, open, "arguments", oargs);
       nt_node_set_ref(nt, open, "block", oblk);
@@ -11375,6 +11381,7 @@ int desugar_dir_surface(Compiler *c) {
       int ic = nt_new_node(nt, "CallNode");
       if (ic < 0) continue;
       nt_node_set_str(nt, ic, "name", "readlines");
+      nt_node_set_int(nt, ic, "builtin_only", 1);
       nt_node_set_ref(nt, ic, "receiver", recv);
       nt_node_set_ref(nt, ic, "arguments", nt_ref(nt, id, "arguments"));
       nt_node_set_ref(nt, ic, "block", -1);
@@ -11413,11 +11420,11 @@ int desugar_dir_surface(Compiler *c) {
     int an = 0; nt_arr(nt, args >= 0 ? args : -1, "arguments", &an);
 
     /* plain aliases */
-    if (sp_streq(nm, "getwd")) { nt_node_set_str(nt, id, "name", "pwd"); changed = 1; continue; }
-    if (sp_streq(nm, "delete") || sp_streq(nm, "unlink")) {
-      nt_node_set_str(nt, id, "name", "rmdir"); changed = 1; continue;
+    const char *alias = dir_surface_alias(nm, 0);
+    if (alias) {
+      nt_node_set_str(nt, id, "name", alias);
+      nt_node_set_int(nt, id, "builtin_only", 1); changed = 1; continue;
     }
-    if (sp_streq(nm, "[]")) { nt_node_set_str(nt, id, "name", "glob"); changed = 1; continue; }
 
     /* bare chdir goes home */
     if (sp_streq(nm, "chdir") && an == 0 && blk < 0) {
@@ -11427,6 +11434,7 @@ int desugar_dir_surface(Compiler *c) {
       if (hc < 0 || hr < 0 || na < 0) continue;
       nt_node_set_str(nt, hr, "name", "Dir");
       nt_node_set_str(nt, hc, "name", "home");
+      nt_node_set_int(nt, hc, "builtin_only", 1);
       nt_node_set_ref(nt, hc, "receiver", hr);
       nt_node_set_ref(nt, hc, "arguments", -1);
       nt_node_set_ref(nt, hc, "block", -1);
@@ -11449,6 +11457,7 @@ int desugar_dir_surface(Compiler *c) {
       int ic = nt_new_node(nt, "CallNode");
       if (ic < 0) continue;
       nt_node_set_str(nt, ic, "name", inner);
+      nt_node_set_int(nt, ic, "builtin_only", 1);
       nt_node_set_ref(nt, ic, "receiver", recv);
       nt_node_set_ref(nt, ic, "arguments", args);
       nt_node_set_ref(nt, ic, "block", -1);
@@ -11460,8 +11469,11 @@ int desugar_dir_surface(Compiler *c) {
       changed = 1; continue;
     }
     /* blockless foreach/each_child still enumerate */
-    if (sp_streq(nm, "foreach")) { nt_node_set_str(nt, id, "name", "entries"); changed = 1; continue; }
-    if (sp_streq(nm, "each_child")) { nt_node_set_str(nt, id, "name", "children"); changed = 1; continue; }
+    alias = dir_surface_alias(nm, 1);
+    if (alias) {
+      nt_node_set_str(nt, id, "name", alias);
+      nt_node_set_int(nt, id, "builtin_only", 1); changed = 1; continue;
+    }
 
     /* chdir(d, &b): the block a method forwards by name. Only a literal
        block reached the save/restore splice below, so a forwarded one was
@@ -11584,6 +11596,7 @@ int desugar_dir_surface(Compiler *c) {
       }
       nt_node_set_str(nt, pwdr, "name", "Dir");
       nt_node_set_str(nt, pwdc, "name", "pwd");
+      nt_node_set_int(nt, pwdc, "builtin_only", 1);
       nt_node_set_ref(nt, pwdc, "receiver", pwdr);
       nt_node_set_ref(nt, pwdc, "arguments", -1);
       nt_node_set_ref(nt, pwdc, "block", -1);
@@ -11591,6 +11604,7 @@ int desugar_dir_surface(Compiler *c) {
       nt_node_set_ref(nt, wsav, "value", pwdc);
       nt_node_set_str(nt, cd1r, "name", "Dir");
       nt_node_set_str(nt, cd1, "name", "chdir");
+      nt_node_set_int(nt, cd1, "builtin_only", 1);
       nt_node_set_str(nt, cd1, "chdir_label", "dir_chdir0");  /* CRuby's block-form label */
       nt_node_set_ref(nt, cd1, "receiver", cd1r);
       { int a0 = rdir; nt_node_set_arr(nt, cd1a, "arguments", &a0, 1); }
@@ -11605,6 +11619,7 @@ int desugar_dir_surface(Compiler *c) {
       nt_node_set_ref(nt, wval, "value", paren);
       nt_node_set_str(nt, cd2r, "name", "Dir");
       nt_node_set_str(nt, cd2, "name", "chdir");
+      nt_node_set_int(nt, cd2, "builtin_only", 1);
       nt_node_set_str(nt, cd2, "chdir_label", "dir_chdir0");
       nt_node_set_ref(nt, cd2, "receiver", cd2r);
       nt_node_set_str(nt, rsav, "name", sav);
@@ -14194,7 +14209,8 @@ static int infer_block_params_call_arms(Compiler *c, const NodeTable *nt, int id
   if (recv >= 0 && sp_streq(name, "open") && nt_type(nt, recv) &&
       sp_streq(nt_type(nt, recv), "ConstantReadNode") && nt_str(nt, recv, "name") &&
       (sp_streq(nt_str(nt, recv, "name"), "File") ||
-       sp_streq(nt_str(nt, recv, "name"), "IO"))) {
+       sp_streq(nt_str(nt, recv, "name"), "IO")) &&
+      !cplan_const_user(c, id, nt_str(nt, recv, "name"), 1)) {
     const char *p0 = block_param_name(c, block, 0);
     if (p0) { LocalVar *l = scope_local_intern(comp_scope_of(c, block), p0); l->is_block_param = 1;
               if (l->type != TY_IO) { l->type = TY_IO; changed = 1; } }

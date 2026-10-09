@@ -1,0 +1,13 @@
+3
+true
+[3, 4]
+"b"
+(3+3i)
+"04"
+:locked
+"UTF-8"
+1
+2
+Thread::ConditionVariable
+3
+:monitored

@@ -115,6 +115,7 @@ static void cplan_resolve_super(Compiler *c, int id, CallPlan *p) {
 
 static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
   const NodeTable *nt = c->nt;
+  if (nt_int(nt, id, "builtin_only", 0)) return;
   const char *name = nt_str(nt, id, "name");
   if (!name) return;
   int recv = nt_ref(nt, id, "receiver");
@@ -304,6 +305,24 @@ static void cplan_resolve(Compiler *c, int id, CallPlan *p) {
       if (mi >= 0 && !c->scopes[mi].yields) p->send_fallback = mi;
     }
   }
+}
+
+/* A constant call's user singleton target, shared by inference, rewrites
+   and builtin emitters. Unregistered constants need no target lookup.
+   Ordinary user classes never need this precedence decision; native package
+   bindings supply their own builtin names. The caller supplies the constant
+   receiver name, or NULL for any other receiver. */
+const CallPlan *cplan_const_user(Compiler *c, int id, const char *cn, int fresh) {
+  if (!cn || c->nclasses == 0) return NULL;
+  const NodeTable *nt = c->nt;
+  int ci = comp_class_index(c, cn);
+  if (ci < 0) return NULL;
+  if (!c->classes[ci].is_native_class && !c->classes[ci].is_builtin_const &&
+      (c->n_native_funcs == 0 || comp_native_find(c, cn, nt_str(nt, id, "name")) < 0) &&
+      (c->n_ffi_funcs == 0 || ffi_find_func(c, cn, nt_str(nt, id, "name")) < 0)) return NULL;
+  if (nt_int(nt, id, "builtin_only", 0)) return NULL;
+  const CallPlan *p = fresh ? cplan_user_fresh(c, id) : cplan_user(c, id);
+  return p->mi >= 0 && p->via == UC_CMETH && p->dispatch == CP_DIRECT ? p : NULL;
 }
 
 int cplan_virtual_member(Compiler *c, int id, const CallPlan *p, int mi) {
@@ -626,13 +645,24 @@ static int cplan_str_method_mutator(Compiler *c, int id) {
   return sym && an_str_mutator_name(sym);
 }
 
-const char *cplan_feature_why(Compiler *c, int id, int *stop) {
+const char *cplan_feature_why(Compiler *c, int id, int *stop, char *buf, size_t cap) {
   *stop = 1;
   const NodeTable *nt = c->nt;
   const char *nty = nt_type(nt, id);
   if (!nty || !sp_streq(nty, "CallNode")) return NULL;
   const char *name = nt_str(nt, id, "name");
   if (!name) return NULL;
+  int recv = nt_ref(nt, id, "receiver");
+  if ((nt_kind(nt, recv) == NK_ConstantReadNode || nt_kind(nt, recv) == NK_ConstantPathNode) &&
+      !nt_int(nt, id, "builtin_only", 0)) {
+    int ci = comp_class_index(c, nt_str(nt, recv, "name")), builtin = 0;
+    const char *target = ci >= 0 && c->classes[ci].naliases > 0
+                           ? comp_resolve_alias_ex(c, ci, name, NULL, &builtin) : NULL;
+    if (builtin == 2) {
+      snprintf(buf, cap, "%s.%s: calling an alias of a builtin singleton method is not supported; see docs/limitations.md", c->classes[ci].name, target);
+      return buf;
+    }
+  }
   static const struct { const char *m; const char *why; } tbl[] = {
     { "define_singleton_method",
       "Object#define_singleton_method is not supported by AOT compilation: a per-object "
@@ -705,7 +735,6 @@ const char *cplan_feature_why(Compiler *c, int id, int *stop) {
   for (int k = 0; tbl[k].m; k++) if (sp_streq(name, tbl[k].m)) { hit = k; break; }
 
   /* The receiver's constant name, for the limits that are keyed on it. */
-  int recv = nt_ref(nt, id, "receiver");
   const char *rty = recv >= 0 ? nt_type(nt, recv) : NULL;
   const char *rcn = (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode")))
                     ? nt_str(nt, recv, "name") : NULL;
@@ -946,7 +975,8 @@ static void cplan_refuse_resolve(Compiler *c, int id, CallPlan *p, char *buf, si
   else if ((what = cplan_binding_what(c, id))) from = CRF_BINDING;
   if (!what) {
     int stop;
-    const char *why = cplan_feature_why(c, id, &stop);
+    char why_buf[512];
+    const char *why = cplan_feature_why(c, id, &stop, why_buf, sizeof why_buf);
     /* an object's singleton support (extend_module_is_a, singleton_dsm_local)
        answers these first; the limit is the refusal only once it declines,
        which codegen alone knows */

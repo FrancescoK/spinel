@@ -74,6 +74,7 @@ const CallPlan *cplan_user(Compiler *c, int id);
    analyze_nil.c): it answers from the types as they stand. The answer
    lasts until the next call. */
 const CallPlan *cplan_user_fresh(Compiler *c, int id);
+const CallPlan *cplan_const_user(Compiler *c, int id, const char *cn, int fresh);
 /* A constant receiver's builtin new reaches this initialize, or -1. */
 int cplan_initialize(Compiler *c, int id);
 /* Every user method the call node id may reach, into out (at most cap):
@@ -111,7 +112,7 @@ int cplan_exc_object_method(Compiler *c, const char *name);
 const CallPlan *cplan_refuse(Compiler *c, int id);
 /* the documented-limit family: the node's message or NULL; *stop 0 when
    a limit down the receiver chain is the one to report */
-const char *cplan_feature_why(Compiler *c, int id, int *stop);
+const char *cplan_feature_why(Compiler *c, int id, int *stop, char *buf, size_t cap);
 
 /* The plan of the same call read in a context the node does not carry
    itself: its self, or its receiver, is an instance of self_ci. That is an

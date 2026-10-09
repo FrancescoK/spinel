@@ -1,0 +1,19 @@
+"user-read"
+"one\ntwo\n"
+"user-open"
+"one\ntwo\n"
+"one"
+"two"
+["one\n", "two\n"]
+8
+"user-stat"
+"user-writable"
+["user-glob"]
+1
+false
+5
+0
+false
+14
+10
+12
