@@ -121,6 +121,8 @@ void *sp_exc_apply_staged(const char *cls, const char *msg, void *obj);
 int sp_exc_exit_status(void *obj);
 sp_Exception *sp_exc_exception(sp_Exception *e, const char *msg);
 const char *sp_exc_class_name(volatile sp_Exception *ve);
+const char *sp_exc_cls_display(const char *cn);   /* how class `cn` prints (a Class.new class: #<Class:0x...>) */
+sp_bool sp_exc_cls_unnamed(const char *shown);   /* an unnamed Class.new class's address form */
 const char *sp_exc_message(volatile sp_Exception *ve);
 /* the message's text now, not to be kept (a handle's live buffer) */
 const char *sp_exc_msg_text(volatile sp_Exception *ve);

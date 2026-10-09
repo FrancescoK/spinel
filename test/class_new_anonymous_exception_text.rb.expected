@@ -1,0 +1,29 @@
+"#<#<Class:0xX>: boom>"
+"[#<#<Class:0xX>: boom>]"
+"boom"
+"[#<Class:0xX>]"
+"{#<Class:0xX> => 1}"
+"#<Class:0xX>"
+"#<Class:0xX>"
+nil
+"#<Class:0xX>"
+"#<#<Class:0xX>: m>"
+"#<Plain: named>"
+"named (Plain)"
+[Plain]
+"#<Foo: later>"
+"[#<Foo: later>]"
+"later (Foo)"
+[Foo]
+"later"
+LateData
+[LateData]
+"LateData"
+undefined method 'nope' for an instance of #<Class:0xX>
+undefined method 'nope' for an instance of #<Class:0xX>
+private method 'hidden' called for an instance of #<Class:0xX>
+protected method 'prot' called for an instance of #<Class:0xX>
+undefined method 'nope' for an instance of LateJ
+private method 'hidden' called for an instance of LateJ
+undefined local variable or method 'nope4' for an instance of #<Class:0xX>
+undefined local variable or method 'nope4' for an instance of VNamed

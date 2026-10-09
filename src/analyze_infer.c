@@ -4960,6 +4960,8 @@ static int infer_receiverless_call(Compiler *c, int id, const NodeTable *nt, con
     if (cbody >= 0) {
       int smi = comp_cmethod_in_chain(c, cbody, name, NULL);
       if (smi >= 0) { *out = an_user_call(c, id, smi, UC_CMETH, cbody); return 1; }
+      if (argc == 0 && comp_class_anonymous(c, cbody) && is_name_reader(name))
+        { *out = TY_STRING; return 1; }
     }
   }
   /* bare call inside an instance_eval/exec block: dispatch on receiver class */

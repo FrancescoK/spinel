@@ -22,6 +22,7 @@
 #include "spinel_rt.h"
 
 const char *(*sp_class_name_fn)(sp_Class);
+const char *(*sp_class_display_fn)(sp_Class);
 /* the hooks the generated unit installs for this unit (SP_INSTALL_HOOK) */
 sp_user_binop_fn sp_user_binop_hook_lib;
 sp_obj_eq_fn sp_obj_eq_hook_lib;
@@ -36,6 +37,15 @@ const char *sp_poly_cold_sym_to_s(sp_sym id) { return sp_sym_name_fn ? sp_sym_na
 const char *sp_poly_cold_class_to_s(sp_Class c) {
   if (c.name) return c.name;
   return sp_class_name_fn ? sp_class_name_fn(c) : sp_str_empty;
+}
+/* The class name a default #to_s / #inspect prints for a user object: the
+   display form of a Class.new class when the program installed one, else its name. */
+static const char *sp_poly_obj_class_display(sp_RbVal v) {
+  if (sp_class_display_fn && v.cls_id >= 0) {
+    sp_Class c = {v.cls_id, NULL};
+    return sp_class_display_fn(c);
+  }
+  return sp_poly_class_name(v);
 }
 
 const char *sp_sym_inspect(sp_sym id)
@@ -56,7 +66,7 @@ void sp_poly_puts(sp_RbVal v)
     case SP_TAG_NIL: putchar('\n'); break;
     case SP_TAG_SYM: { const char *_ss = sp_sym_to_s((sp_sym)v.v.i); fputs(_ss, stdout); putchar('\n'); break; }
     case SP_TAG_ENCODING: { const char *_es = v.v.s ? v.v.s : sp_str_empty; fputs(_es, stdout); putchar('\n'); break; }
-    case SP_TAG_CLASS: { fputs(sp_class_val_name(v), stdout); putchar('\n'); break; }
+    case SP_TAG_CLASS: { fputs(sp_class_val_display(v), stdout); putchar('\n'); break; }
     case SP_TAG_BIGINT: { const char *_bs = sp_bigint_to_s((sp_Bigint *)v.v.p); if (_bs) fputs(_bs, stdout); putchar('\n'); break; }
     case SP_TAG_OBJ: {
       /* MRI's `puts arr` iterates an Array, printing one element per
@@ -144,7 +154,7 @@ const char *sp_poly_to_s(sp_RbVal v)
     case SP_TAG_BOOL: return v.v.b ? sp_str_frozen_true : sp_str_frozen_false;
     case SP_TAG_NIL: return sp_str_frozen_empty;
     case SP_TAG_SYM: return sp_sym_to_s_chilled((sp_sym)v.v.i);
-    case SP_TAG_CLASS: return sp_class_val_name(v);
+    case SP_TAG_CLASS: return sp_class_val_display(v);
     case SP_TAG_ENCODING: return v.v.s ? v.v.s : sp_str_empty;
     case SP_TAG_BIGINT: return sp_bigint_to_s((sp_Bigint *)v.v.p);
     case SP_TAG_OBJ:
@@ -195,7 +205,7 @@ const char *sp_poly_to_s(sp_RbVal v)
             if (sp_is_exc_subclass_cls(v.cls_id))
               return sp_exc_message((volatile struct sp_Exception_s *)v.v.p);
             if (v.v.p == sp_main_obj) return SPL("main");
-            return sp_sprintf("#<%s:0x%016llx>", sp_poly_class_name(v),
+            return sp_sprintf("#<%s:0x%016llx>", sp_poly_obj_class_display(v),
                               (unsigned long long)(uintptr_t)v.v.p);
           }
           /* a builtin container kind with no explicit arm above (the hash
@@ -431,7 +441,7 @@ const char *sp_poly_inspect(sp_RbVal v)
     case SP_TAG_NIL:  return SPL("nil");
     case SP_TAG_SYM:  return sp_sym_inspect((sp_sym)v.v.i);
     case SP_TAG_ENCODING: return sp_encoding_inspect_name(v.v.s ? v.v.s : "");
-    case SP_TAG_CLASS: return sp_class_val_name(v);
+    case SP_TAG_CLASS: return sp_class_val_display(v);
     case SP_TAG_BIGINT: return sp_bigint_to_s((sp_Bigint *)v.v.p);
     case SP_TAG_OBJ:
  /* Built-in container / value-type tags get their typed inspect
@@ -488,7 +498,7 @@ const char *sp_poly_inspect(sp_RbVal v)
           }
           if (v.cls_id == SP_BUILTIN_OBJECT && v.v.p && v.v.p == sp_main_obj) return SPL("main");
           if ((v.cls_id >= 0 || v.cls_id == SP_BUILTIN_OBJECT) && v.v.p)
-            return sp_sprintf("#<%s:0x%016llx>", sp_poly_class_name(v),
+            return sp_sprintf("#<%s:0x%016llx>", sp_poly_obj_class_display(v),
                               (unsigned long long)(uintptr_t)v.v.p);
           /* a builtin handle with no inspect of its own (a Fiber, a Queue, a
              Mutex): name it rather than answering the useless "#<Object>" --

@@ -177,7 +177,7 @@ void emit_puts_one(Compiler *c, int arg, Buf *b, int indent) {
   else if (t == TY_CLASS) {
     int _tc = ++g_tmp;
     buf_printf(b, "{ sp_Class _cl%d = ", _tc); emit_expr(c, arg, b);
-    buf_printf(b, "; puts(sp_class_to_s(_cl%d)); }\n", _tc);
+    buf_printf(b, "; puts(%s(_cl%d)); }\n", comp_class_display_fn(c), _tc);
   }
   else if (t == TY_POLY) {
     buf_puts(b, "sp_poly_puts("); emit_expr(c, arg, b); buf_puts(b, ");\n");
@@ -229,9 +229,10 @@ void emit_puts_one(Compiler *c, int arg, Buf *b, int indent) {
   else if (ty_is_object(t)) {
     /* default Object#to_s: #<Name:0xADDR>, like CRuby (no ivars) */
     int cid = ty_object_class(t);
-    const char *rn = class_ruby_name(c, cid) ? class_ruby_name(c, cid) : c->classes[cid].name;
+    char rn[512], rarg[96];
+    obj_default_name(c, cid, rn, sizeof rn, rarg, sizeof rarg);
     buf_printf(b, "{ void *_po = (void *)("); emit_expr(c, arg, b);
-    buf_printf(b, "); sp_puts_line(_po ? sp_sprintf(\"#<%s:0x%%016llx>\", (unsigned long long)(uintptr_t)_po) : \"\"); }\n", rn);
+    buf_printf(b, "); sp_puts_line(_po ? sp_sprintf(\"#<%s:0x%%016llx>\", %s(unsigned long long)(uintptr_t)_po) : \"\"); }\n", rn, rarg);
   }
   else if (nt_type(c->nt, arg) && sp_streq(nt_type(c->nt, arg), "ArrayNode") &&
            ({ int _n = 0; nt_arr(c->nt, arg, "elements", &_n); _n == 0; })) {
@@ -13592,6 +13593,31 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
 }
 
 /* Call-operator, global-variable and constant writes: o.x += v, $g = v and its operator and or/and forms, C = v, A::B = v and their operator and or/and forms (emit_stmt_inner's arms, in their order) */
+static void emit_class_assign_name(Compiler *c, int ci, const char *name, Buf *b, int indent) {
+  if (!comp_class_anonymous(c, ci) || !name) return;
+  emit_indent(b, indent);
+  buf_printf(b, "sp_class_assign_name((sp_Class){%d}, SPL(\"%s\"));\n", ci, name);
+}
+
+static void emit_class_const_name(Compiler *c, const char *key, const char *name,
+                                  int owner, Buf *b, int indent) {
+  if (!c->has_anonymous_classes) return;
+  const char *prefix = owner >= 0 ? class_ruby_name(c, owner) : NULL;
+  emit_indent(b, indent);
+  buf_printf(b, "sp_class_assign_name(cst_%s, SPL(\"%s%s%s\"));\n",
+             key, prefix ? prefix : "", prefix ? "::" : "", name);
+}
+
+static void emit_class_definition(Compiler *c, int id, Buf *b, int indent) {
+  const NodeTable *nt = c->nt;
+  int cp = nt_ref(nt, id, "constant_path");
+  const char *name = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+  int ci = name ? comp_class_index(c, name) : g_class_body_id;
+  emit_class_body_stmts(c, ci, nt_ref(nt, id, "body"), b, indent);
+  if (nt_int(nt, id, "class_new_anonymous", 0) == 1)
+    emit_class_assign_name(c, ci, class_ruby_name(c, ci), b, indent);
+}
+
 static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int indent, const NodeTable *nt, const char *ty) {
   if (sp_streq(ty, "CallOperatorWriteNode")) {
     /* `recv.attr op= value` (e.g. doom's `sector.ceiling_height -=
@@ -14005,6 +14031,8 @@ static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int in
     if (!isg && lv->init_guarded) {
       emit_indent(b, indent); buf_printf(b, "sp_init_in_progress_%s = 0;\n", key);
     }
+    if (!isg && lv->type == TY_CLASS)
+      emit_class_const_name(c, key, nm, g_class_body_id, b, indent);
     return 1;
   }
   if (sp_streq(ty, "ConstantPathWriteNode")) {
@@ -14054,6 +14082,8 @@ static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int in
     else if (cv->type == TY_POLY && repr_of(c, v).kind != RK_BOXED) emit_boxed(c, v, b);
     else emit_expr(c, v, b);
     buf_puts(b, ";\n");
+    if (cv->type == TY_CLASS)
+      emit_class_const_name(c, nm, nm, class_recv_static_ci(c, nt_ref(nt, tgt, "parent")), b, indent);
     return 1;
   }
   if (sp_streq(ty, "ConstantPathOperatorWriteNode") || sp_streq(ty, "ConstantOperatorWriteNode")) {
@@ -14638,9 +14668,7 @@ static void emit_stmt_node(Compiler *c, int id, Buf *b, int indent) {
     unsupported(c, id, "singleton class on arbitrary object");
   }
   if (sp_streq(ty, "ClassNode") || sp_streq(ty, "ModuleNode")) {
-    int cp = nt_ref(nt, id, "constant_path");
-    const char *cname = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
-    emit_class_body_stmts(c, cname ? comp_class_index(c, cname) : g_class_body_id, nt_ref(nt, id, "body"), b, indent);
+    emit_class_definition(c, id, b, indent);
     return;
   }
   if (sp_streq(ty, "SuperNode") || sp_streq(ty, "ForwardingSuperNode")) {

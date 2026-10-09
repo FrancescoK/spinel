@@ -751,6 +751,8 @@ int exc_has_user_msg_override(Compiler *c);
 int exc_has_nonstring_msg_override(Compiler *c);
 int fi_fiber_stack_risk(Compiler *c);
 const char *class_ruby_name(Compiler *c, int ci);
+void obj_default_name(Compiler *c, int ci, char *name, size_t nn, char *arg, size_t na);
+int anon_class_text(Compiler *c, int ci, const char *head, Buf *b);
 int scope_def_line(Compiler *c, Scope *s);
 const char *scope_def_file(Compiler *c, Scope *s);
 const char *obj_str_cname(Compiler *c, int cid, int want_inspect);

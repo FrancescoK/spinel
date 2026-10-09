@@ -321,7 +321,7 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
         free(ivb.p);
       }
       else if (t == TY_CLASS) {
-        buf_puts(&conv, "sp_class_to_s(");
+        buf_printf(&conv, "%s(", comp_class_display_fn(c));
         EMIT_IV(); buf_puts(&conv, ")");
       }
       else if (t == TY_BIGINT) {

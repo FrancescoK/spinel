@@ -1977,9 +1977,12 @@ int emit_call_object_override_arms(Compiler *c, int id, Buf *b, const NodeTable 
           !comp_writer_in_chain(c, bsci, bsnm, NULL)) {
         const char *bscn = class_ruby_name(c, bsci) ? class_ruby_name(c, bsci) : c->classes[bsci].name;
         buf_printf(b, "({ (void)("); emit_expr(c, bsrecv, b);
-        buf_printf(b, "); sp_raise_cls(\"NoMethodError\", "
-                      "(&(\"\\xff\" \"undefined method '%s' for an instance of %s\")[1])); %s; })",
-                   bsnm, bscn, default_value_from_compiler(c, repr_of(c, id).as_ty));
+        {
+          char head[200]; snprintf(head, sizeof head, "undefined method '%s' for an instance of ", bsnm);
+          buf_puts(b, "); sp_raise_cls(\"NoMethodError\", ");
+          if (!anon_class_text(c, bsci, head, b)) buf_printf(b, "(&(\"\\xff\" \"%s%s\")[1])", head, bscn);
+          buf_printf(b, "); %s; })", default_value_from_compiler(c, repr_of(c, id).as_ty));
+        }
         return 1;
       }
     }
@@ -2147,8 +2150,9 @@ int emit_call_print_arms(Compiler *c, Buf *b, const NodeTable *nt, const char *n
       !comp_ty_value_obj(c, rt)) {
     /* default Object#to_s: #<Name:0xADDR> */
     int dcid = ty_object_class(rt);
-    const char *drn = class_ruby_name(c, dcid) ? class_ruby_name(c, dcid) : c->classes[dcid].name;
-    buf_printf(b, "sp_sprintf(\"#<%s:0x%%016llx>\", (unsigned long long)(uintptr_t)(", drn);
+    char drn[512], darg[96];
+    obj_default_name(c, dcid, drn, sizeof drn, darg, sizeof darg);
+    buf_printf(b, "sp_sprintf(\"#<%s:0x%%016llx>\", %s(unsigned long long)(uintptr_t)(", drn, darg);
     emit_expr(c, recv, b); buf_puts(b, "))");
     return 1;
   }

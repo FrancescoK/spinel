@@ -923,6 +923,7 @@ typedef struct {
      is_anon_struct is set */
   int *anon_struct_ids;
   int n_anon_struct_ids, anon_struct_ids_valid;
+  int has_anonymous_classes; /* Class.new identities with execution-time names */
 
   /* local-write-by-name index; see comp_lvw_first */
   int *lvw_head;        /* [lvw_nbuckets] first write id in each name bucket */
@@ -1357,6 +1358,8 @@ static inline int singleton_visible_ci(Compiler *c, int ci) {
   if (ci < 0 || ci >= c->nclasses) return ci;
   return c->classes[ci].is_singleton_of ? c->classes[ci].is_singleton_of - 1 : ci;
 }
+int        comp_class_anonymous(Compiler *c, int ci);
+const char *comp_class_display_fn(Compiler *c);
 int        class_var_static_ci(Compiler *c, int node);  /* local holding one class const */
 int        class_recv_static_ci(Compiler *c, int node); /* constant or local naming one class */
 int        dynamic_new_may_reach(Compiler *c, int call_id, int cid);  /* k.new can build cid */
