@@ -17651,6 +17651,26 @@ static int an_subtree_hands_walk(Compiler *c, int node, const char *vn, int dept
   if (nk == NK_DefNode || nk == NK_ClassNode || nk == NK_ModuleNode) return 0;
   if (nk == NK_CallNode) {
     int mi = an_call_target_mi(c, node);
+    /* a poly receiver (`(c ? Writer.new : {})[k] = v`) has no one target:
+       any user method of the name may take the argument (#8216) */
+    int rv = nt_ref(nt, node, "receiver");
+    if (mi < 0 && rv >= 0 && infer_type(c, rv) == TY_POLY) {
+      int npc = 0;
+      const PolyCand *pc = comp_poly_candidates(c, nt_str(nt, node, "name"), &npc);
+      for (int q = 0; q < npc; q++) {
+        if (pc[q].mi < 0 || pc[q].native) continue;
+        Scope *pm = &c->scopes[pc[q].mi];
+        for (int j = 0; j < pm->nparams && j < 32; j++) {
+          int an = arg_layout_param_node(c, pm, node, j, NULL);
+          if (an < 0 || nt_kind(nt, an) != NK_LocalVariableReadNode || !nt_str(nt, an, "name") ||
+              !sp_streq(nt_str(nt, an, "name"), vn)) continue;
+          LocalVar *q2 = pm->pnames[j] ? scope_local(pm, pm->pnames[j]) : NULL;
+          if (q2 && (q2->byref_out || (q2->type == TY_STRBUF && q2->str_shared) ||
+                     an_param_mutated_in_place(c, pc[q].mi, j)))
+            return 1;
+        }
+      }
+    }
     Scope *m = mi >= 0 ? &c->scopes[mi] : NULL;
     for (int j = 0; m && j < m->nparams && j < 32; j++) {
       int an = arg_layout_param_node(c, m, node, j, NULL);
