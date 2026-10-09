@@ -22237,6 +22237,27 @@ static int an_unlend_local(Compiler *c, const char *vn, Scope *vs) {
   }
   return changed;
 }
+/* Plain local `vn` of scope `vs` handed to a parameter that is the shared
+   handle: the local takes the handle too, so the callee's appends are its
+   String's. Answers 1 when it changed anything. */
+static int pull_local_into_handle(Compiler *c, LocalVar *alv, const char *vn, Scope *vs) {
+  int changed = 0;
+  /* already the handle: nothing below changes, and the shape check
+     walks the scope's calls, once per call site and per round */
+  if (!alv || (alv->type == TY_STRBUF && alv->str_shared)) return 0;
+  /* Also lent to a byref slot (`app(s)` beside this call): a slot
+     cannot carry the handle, so that parameter takes the handle
+     instead, with its whole name group (an_unlend_local), as at a
+     dynamic call (dyn_pull_arg). Left lent, the local stayed a plain
+     String, which this call took a copy of. */
+  if (!strbuf_slot_eligible_shape(c, vn, vs, alv) && an_unlend_local(c, vn, vs)) changed = 1;
+  if (!strbuf_slot_eligible_shape(c, vn, vs, alv)) return changed;
+  if (alv->type != TY_UNKNOWN && alv->type != TY_STRING &&
+      alv->type != TY_STRBUF && alv->type != TY_POLY) return changed;
+  if (alv->type != TY_POLY && (alv->type != TY_STRBUF || !alv->str_shared))
+    {  alv->type = TY_STRBUF; alv->str_shared = 1; changed = 1;  }
+  return changed;
+}
 static int convert_byref_handle_params(Compiler *c,
                                        const HandleArgTab *hat) {
   const NodeTable *nt = c->nt;
@@ -22381,20 +22402,7 @@ static int convert_byref_handle_params(Compiler *c,
             }
             continue;
           }
-          /* already the handle: nothing below changes, and the shape check
-             walks the scope's calls, once per call site and per round */
-          if (!alv || (alv->type == TY_STRBUF && alv->str_shared)) continue;
-          /* Also lent to a byref slot (`app(s)` beside this call): a slot
-             cannot carry the handle, so that parameter takes the handle
-             instead, with its whole name group (an_unlend_local), as at a
-             dynamic call (dyn_pull_arg). Left lent, the local stayed a plain
-             String, which this call took a copy of. */
-          if (!strbuf_slot_eligible_shape(c, vn2, vs2, alv) && an_unlend_local(c, vn2, vs2)) changed = 1;
-          if (!strbuf_slot_eligible_shape(c, vn2, vs2, alv)) continue;
-          if (alv->type != TY_UNKNOWN && alv->type != TY_STRING &&
-              alv->type != TY_STRBUF && alv->type != TY_POLY) continue;
-          if (alv->type != TY_POLY && (alv->type != TY_STRBUF || !alv->str_shared))
-            {  alv->type = TY_STRBUF; alv->str_shared = 1; changed = 1;  }
+          if (pull_local_into_handle(c, alv, vn2, vs2)) changed = 1;
         }
         else if (nt_kind(nt, an2) == NK_InstanceVariableReadNode && comp_ntype(c, an2) == TY_POLY) {
           /* a POLY ivar boxes a plain String as a copy too: its read is
@@ -22495,6 +22503,15 @@ static int convert_byref_handle_params(Compiler *c,
               v3->poly_lift |= POLY_LIFT_APPENDED; changed = 1;
             }
           }
+        }
+        /* a plain local `super(v)` hands the parent's handle parameter is
+           pulled in as a call's argument is */
+        if (pi < 0 && an >= 0 && pdst && pdst->is_param && pdst->type == TY_STRBUF && pdst->str_shared &&
+            !pdst->byref_out) {
+          const char *vn3 = nt_str(nt, an, "name");
+          Scope *vs3 = comp_scope_of(c, an);
+          LocalVar *v3 = vs3 ? scope_local(vs3, vn3) : NULL;
+          if (v3 && !v3->is_param && !v3->is_block_param && pull_local_into_handle(c, v3, vn3, vs3)) changed = 1;
         }
         if (pi < 0) continue;
         LocalVar *dst = scope_local(pm, pm->pnames[j]), *src = scope_local(s, s->pnames[pi]);
