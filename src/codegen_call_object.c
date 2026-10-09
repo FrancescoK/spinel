@@ -10,6 +10,46 @@
 #include "call_plan.h"
 #include "codegen_call_arms.h"
 
+/* The parameters of an initialize_copy hook after the original it is handed
+   (`def initialize_copy(o, opts = nil)`): each optional one its default,
+   run with the copy as self as a dispatch arm runs it, a rest an empty
+   Array. A required one is CRuby's ArgumentError from dup itself, refused.
+   A default may read the first parameter, bound to arg0 (the original as
+   that parameter takes it) around it. Writes ", <arg>" per parameter; 0
+   when refused. */
+static int emit_init_copy_rest_args(Compiler *c, int id, Scope *m, const char *copyself,
+                                    const char *arg0, Buf *b) {
+  LocalVar *p0 = m->nparams >= 1 ? scope_local(m, m->pnames[0]) : NULL;
+  for (int k = 1; k < m->nparams; k++) {
+    if (k == m->kwrest_idx) continue;
+    if (k != m->rest_idx && (!m->pdefault || m->pdefault[k] < 0)) {
+      unsupported_feature(c, id, "an initialize_copy with a second required parameter (dup and clone "
+                                 "hand it one argument: CRuby raises ArgumentError)");
+      return 0;
+    }
+    const char *sv_arm_self = g_arm_self; const Scope *sv_arm_scope = g_arm_scope;
+    int sv_arm_depth = g_arm_depth;
+    g_arm_self = copyself; g_arm_scope = m; g_arm_depth = g_expr_depth;
+    Buf pre; memset(&pre, 0, sizeof pre);
+    Buf val; memset(&val, 0, sizeof val);
+    Buf *sv_pre = g_pre; int sv_ind = g_indent;
+    g_pre = &pre; g_indent = 0;
+    emit_arg_or_default(c, m, k, -1, &val);
+    g_pre = sv_pre; g_indent = sv_ind;
+    g_arm_self = sv_arm_self; g_arm_scope = sv_arm_scope; g_arm_depth = sv_arm_depth;
+    buf_puts(b, ", ({ ");
+    if (p0 && m->pnames[0]) {
+      const char *ln = rename_local(m->pnames[0]);
+      emit_ctype(c, p0->type, b);
+      buf_printf(b, " lv_%s = %s; (void)lv_%s; ", ln, arg0, ln);
+    }
+    if (pre.p) buf_puts(b, pre.p);
+    buf_printf(b, "%s; })", val.p ? val.p : "0");
+    free(pre.p); free(val.p);
+  }
+  return 1;
+}
+
 /* between?, object_id / __id__, hash, nil? and === on a receiver whose kind decides them */
 int emit_call_identity_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt) {
   /* between?(lo, hi): lo <= self <= hi */
@@ -1032,17 +1072,34 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
          super into Array is a replace, which the copy has already done */
       int defcls = -1;
       int ic = comp_method_in_chain(c, cid, "initialize_copy", &defcls);
-      LocalVar *icp = ic >= 0 && c->scopes[ic].nparams == 1 && !c->scopes[ic].yields
+      /* the original handed as the parameter's class, or boxed -- as its
+         Array or Hash, its class read back off its scan -- to a parameter
+         the program also hands other values; the parameters after it take
+         their defaults (emit_init_copy_rest_args) */
+      LocalVar *icp = ic >= 0 && c->scopes[ic].nparams >= 1 && !c->scopes[ic].yields
         ? scope_local(&c->scopes[ic], c->scopes[ic].pnames[0]) : NULL;
-      if (ic >= 0 && (!icp || !ty_is_object(icp->type)))
-        unsupported_feature(c, id, "an initialize_copy of an Array subclass whose parameter is not "
-                                   "typed as the class is not supported yet");
+      TyKind ictp = icp ? icp->type : TY_UNKNOWN;
+      if (ic >= 0 && !ty_is_object(ictp) && ictp != TY_POLY)
+        unsupported_feature(c, id, "an initialize_copy of an Array or Hash subclass whose parameter "
+                                   "is not typed as the class is not supported yet");
       else if (ic >= 0) {
         const char *nb = c->scopes[ic].blk_param && c->scopes[ic].blk_param[0] ? ", NULL" : "";
-        buf_printf(b, "if (_t%d) ", d);
-        emit_method_cname(c, &c->scopes[ic], b);
-        buf_printf(b, "((sp_%s *)_t%d, (sp_%s *)_t%d%s); ", c->classes[defcls].c_name, d,
-                   c->classes[ty_object_class(icp->type)].c_name, t, nb);
+        char copyself[64];
+        snprintf(copyself, sizeof copyself, "((sp_%s *)_t%d)", c->classes[defcls].c_name, d);
+        Buf a0; memset(&a0, 0, sizeof a0);
+        if (ictp == TY_POLY) {
+          buf_printf(&a0, "sp_box_obj(_t%d, ", t);
+          arysub_box_id(c, drt, &a0);
+          buf_puts(&a0, ")");
+        }
+        else buf_printf(&a0, "(sp_%s *)_t%d", c->classes[ty_object_class(ictp)].c_name, t);
+        Buf rest; memset(&rest, 0, sizeof rest);
+        if (emit_init_copy_rest_args(c, id, &c->scopes[ic], copyself, a0.p, &rest)) {
+          buf_printf(b, "if (_t%d) ", d);
+          emit_method_cname(c, &c->scopes[ic], b);
+          buf_printf(b, "(%s, %s%s%s); ", copyself, a0.p, rest.p ? rest.p : "", nb);
+        }
+        free(rest.p); free(a0.p);
       }
       buf_printf(b, "_t%d; })", d);
       return 1;
@@ -1102,13 +1159,17 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
           const char *nb = c->scopes[ic].blk_param && c->scopes[ic].blk_param[0] && !c->scopes[ic].yields ? ", NULL" : "";
           emit_method_cname(c, &c->scopes[ic], b); buf_puts(b, "(");
           if (defcls != cid) buf_printf(b, "(sp_%s *)", c->classes[defcls].c_name);
-          if (ictp == TY_POLY) { buf_printf(b, "_t%d, sp_box_obj(_t%d, %d)%s); ", td, to, cid, nb); }
-          else {
-            int icid = ty_object_class(ictp);
-            buf_printf(b, "_t%d, ", td);
-            if (icid != cid) buf_printf(b, "(sp_%s *)", c->classes[icid].c_name);
-            buf_printf(b, "_t%d%s); ", to, nb);
-          }
+          char copyself[64];
+          snprintf(copyself, sizeof copyself, "((sp_%s *)_t%d)", c->classes[defcls].c_name, td);
+          char a0[96];
+          if (ictp == TY_POLY) snprintf(a0, sizeof a0, "sp_box_obj(_t%d, %d)", to, cid);
+          else if (ty_object_class(ictp) != cid)
+            snprintf(a0, sizeof a0, "(sp_%s *)_t%d", c->classes[ty_object_class(ictp)].c_name, to);
+          else snprintf(a0, sizeof a0, "_t%d", to);
+          Buf rest; memset(&rest, 0, sizeof rest);
+          emit_init_copy_rest_args(c, id, &c->scopes[ic], copyself, a0, &rest);
+          buf_printf(b, "_t%d, %s%s%s); ", td, a0, rest.p ? rest.p : "", nb);
+          free(rest.p);
         }
         /* clone copies the receiver's frozen state (dup never does); an
            explicit `freeze:` overrides (#2625, #2626). A Data instance is
