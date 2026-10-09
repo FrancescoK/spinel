@@ -25750,6 +25750,10 @@ static int emit_const_user_call(Compiler *c, int id, Buf *b) {
   if (emit_vis_refusal(c, id, b) || emit_operands_in_order(c, id, b)) return 1;
   /* Yielding wrappers, including blockless calls, use the inline path below;
      they have no standalone C function. */
+  if (id != g_brk_skip_id && call_breaks(c, id)) {
+    emit_brk_wrapped_call(c, id, b);
+    return 1;
+  }
   if (yields) return emit_inline_expr(c, id, b);
   return emit_call_const_cmethod_arms(c, id, b, nt, nt_str(nt, id, "name"),
                                     recv);
