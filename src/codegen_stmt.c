@@ -1585,7 +1585,7 @@ static int strbuf_inline_mi(Compiler *c, int v) {
    (`def f = yield`, `r = f { s }`), and that leaves by no `return` or
    `break`: its result slot is the handle under the demand, and each value
    that reaches it one (emit_stmt_tail_inner, emit_block_invoke). */
-static int strbuf_route_inline_call(Compiler *c, int v) {
+int strbuf_route_inline_call(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
   v = unwrap_parens(c, v);
   if (!repr_share_rule(c) || v < 0 || nt_kind(nt, v) != NK_CallNode) return 0;

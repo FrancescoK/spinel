@@ -1198,6 +1198,10 @@ spinel: test/reject/string_hash_value_variable.rb:5: a String stored in a Hash i
 spinel: test/reject/string_hash_values_variable.rb:5: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
 == test/reject/string_hash_values_variable.rb [promote] rc=1
 spinel: test/reject/string_hash_values_variable.rb:5: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
+== test/reject/string_identity_default_self.rb [default] rc=1
+spinel: test/reject/string_identity_default_self.rb:7: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
+== test/reject/string_identity_default_self.rb [promote] rc=1
+spinel: test/reject/string_identity_default_self.rb:7: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
 == test/reject/string_identity_return_appended.rb [default] rc=1
 spinel: test/reject/string_identity_return_appended.rb:11: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
 == test/reject/string_identity_return_appended.rb [promote] rc=1

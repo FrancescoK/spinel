@@ -1120,6 +1120,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   }
   Scope *m = &c->scopes[mi];
   if (!m->yields) return 0;
+  if (reopen_self_defaults(c, mi) && !repr_self_handle(c, mi)) return 0;
   /* A subclass overriding the method takes its own arm of the cls_id switch;
      splicing this body answered for every class with the base's method. The
      switch reaches this one through its proc-form clone. */

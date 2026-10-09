@@ -8776,7 +8776,8 @@ static int ctor_default_reads_self(Compiler *c, Scope *m, int node, int depth) {
   if (sp_streq(ty, "CallNode") && nt_ref(nt, node, "receiver") < 0 && m->class_id >= 0) {
     const char *cn = nt_str(nt, node, "name");
     if (cn && (comp_method_in_chain(c, m->class_id, cn, NULL) >= 0 ||
-               comp_reader_in_chain(c, m->class_id, cn, NULL))) return 1;
+               comp_reader_in_chain(c, m->class_id, cn, NULL) ||
+               builtin_instance_method_known(c->classes[m->class_id].name, cn))) return 1;
   }
   const SpNode *nd = &nt->nodes[node];
   for (int i = 0; i < nd->nr; i++)
@@ -8941,6 +8942,63 @@ static int arg_runs_nothing(Compiler *c, int n) {
   }
   return 1;
 }
+/* Defaults that only read a String value need no receiver identity. Keep
+   the byte ABI off routes that can expose or mutate that receiver, and in
+   the default build off any that hand the receiver's String on (returned,
+   in an Array): a later mutation of it through another method's parameter or
+   a block parameter reaches the receiver in CRuby and is lost here. */
+int reopen_self_defaults(Compiler *c, int mi) {
+  if (mi < 0) return 0;
+  int pf = scope_proc_form_of(c, mi);
+  if (!ctor_needs_self_defaults(c, pf >= 0 ? pf : mi, 0)) return 0;
+  Scope *m = &c->scopes[mi];
+  if (reopen_yields_container(c, m)) return 0;
+  /* A String default on a receiver that is not one is yielded from the proc
+     form's boxed parameter, which a block typed for a String reads back as an
+     integer slot (nil, or a frozen String once mutated). */
+  if (m->class_id != comp_class_index(c, "String"))
+    for (int i = 0; i < m->nparams; i++) {
+      int d = m->pdefault[i];
+      if (d < 0 || !ctor_default_reads_self(c, m, d, 0)) continue;
+      TyKind t = comp_ntype(c, d);
+      if (t == TY_STRING || t == TY_STRBUF) return 0;
+    }
+  if (c->share_strings || m->class_id != comp_class_index(c, "String")) return 1;
+  int uses_self = fiber_body_uses_self(c, m->body), bn = 0;
+  int pure = !uses_self && subtree_is_pure_read(c, m->body) && arg_runs_nothing(c, m->body);
+  const int *bv = nt_arr(c->nt, m->body, "body", &bn);
+  int v = bn == 1 ? unwrap_parens(c, bv[0]) : -1;
+  const char *nm = nt_kind(c->nt, v) == NK_CallNode ? nt_str(c->nt, v, "name") : NULL;
+  int r = nm ? nt_ref(c->nt, v, "receiver") : -1;
+  TyKind vt = v >= 0 ? comp_ntype(c, v) : TY_UNKNOWN;
+  const BuiltinOp *op = nm ? bop_find(TY_STRING, nm, 0, 0) : NULL;
+  int fresh = op && !(op->flags & BOPF_COPY_CLASS) &&
+      (ty_is_numeric(vt) || vt == TY_STRING || vt == TY_STRBUF || vt == TY_BOOL || vt == TY_SYMBOL) && r >= 0 && comp_recv_type(c, r) == TY_STRING &&
+      call_plain_argc(c, v) == 0 && nt_ref(c->nt, v, "block") < 0 &&
+      arg_runs_nothing(c, r) && cplan_user_fresh(c, v)->dispatch == CP_NONE &&
+      !is_identity_query(nm) && !bop_name_mutates(nm, 0) && bop_share(TY_STRING, nm) == BSH_PURE;
+  if (!pure && fresh) pure = 1;
+  if (uses_self && !pure) return 0;
+  TyKind rt = (TyKind)m->ret;
+  int scalar_ret = ty_is_numeric(rt) || rt == TY_BOOL || rt == TY_SYMBOL || rt == TY_NIL || rt == TY_VOID;
+  for (int i = 0; i < m->nparams; i++) {
+    int d = m->pdefault[i];
+    if (d < 0 || !ctor_default_reads_self(c, m, d, 0)) continue;
+    TyKind t = comp_ntype(c, d);
+    int read = nt_kind(c->nt, unwrap_parens(c, d)) == NK_SelfNode;
+    if (!read && (ty_is_numeric(t) || t == TY_BOOL || t == TY_SYMBOL) &&
+        nt_kind(c->nt, d) == NK_CallNode &&
+        nt_ref(c->nt, d, "receiver") < 0 && call_plain_argc(c, d) == 0 &&
+        nt_ref(c->nt, d, "block") < 0 && cplan_user_fresh(c, d)->dispatch == CP_NONE)
+      read = !is_identity_query(nt_str(c->nt, d, "name")) &&
+             bop_share(TY_STRING, nt_str(c->nt, d, "name")) == BSH_PURE;
+    if (!read && !(operand_is_held_read(c, d) &&
+                   cplan_user_fresh(c, d)->dispatch == CP_NONE)) return 0;
+    if ((t == TY_STRING || t == TY_STRBUF || t == TY_POLY || t == TY_UNKNOWN) &&
+        (!pure || !(fresh || scalar_ret))) return 0;
+  }
+  return 1;
+}
 /* Is that receiver, held in a temp ahead of the arguments, what the call
    would read after them? A scalar, a Range, and the pointer of an Array, a
    Hash or an object are; a String is where no other name holds it
@@ -9069,7 +9127,8 @@ int emit_reopen_recv_args(Compiler *c, int id, int mi, int recv, int boxed, cons
      leave is held for (only a temp too many if it does bind one) */
   int n = call_has_splat_arg(nt, argv, argc) ? 0
         : argc - (argc > 0 && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode), hold = 0;
-  for (int i = 0; i < m->nparams && !hold; i++)
+  int container = reopen_yields_container(c, m);
+  for (int i = 0; i < m->nparams && !hold && !container; i++)
     hold = m->pdefault && m->pdefault[i] >= 0 &&
            (callee_param_is_declared_kwarg(c, m, m->pnames[i]) || arg_slot_for_param(c, m, i, n) < 0) &&
            ctor_default_reads_self(c, m, m->pdefault[i], 0);
@@ -9078,10 +9137,13 @@ int emit_reopen_recv_args(Compiler *c, int id, int mi, int recv, int boxed, cons
   TyKind rt = repr_self_handle(c, mi) ? TY_STRBUF : boxed ? TY_POLY : comp_ntype(c, recv);
   int t = ++g_tmp;
   char self[32]; snprintf(self, sizeof self, "_t%d", t);
+  /* The receiver's own prelude (an element read of a literal) goes ahead of
+     this statement, so it is rendered before the statement starts. */
+  Buf rx; memset(&rx, 0, sizeof rx);
+  emit_reopen_recv(c, mi, recv, boxed, box_fn, &rx);
   emit_indent(g_pre, g_indent);
-  buf_printf(g_pre, "%s _t%d = ", boxed ? "sp_RbVal" : c_type_name(rt), t);
-  emit_reopen_recv(c, mi, recv, boxed, box_fn, g_pre);
-  buf_puts(g_pre, ";\n");
+  buf_printf(g_pre, "%s _t%d = %s;\n", boxed ? "sp_RbVal" : c_type_name(rt), t, rx.p ? rx.p : "");
+  free(rx.p);
   if (boxed || rt == TY_POLY) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_t%d);\n", t); }
   else if (needs_root(rt)) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", t); }
   buf_puts(b, self);
@@ -9100,7 +9162,7 @@ static void emit_reopen_primitive_call(Compiler *c, int id, int ci, int mi, int 
   size_t at = b->len;
   int open = 0;
   buf_printf(b, "sp_%s_%s(", mc_reopen_cls(c, ci, name), mc(name));
-  if (repr_self_handle(c, mi)) open = emit_reopen_recv_args(c, id, mi, recv, 0, NULL, at, b);
+  if (repr_self_handle(c, mi) || reopen_self_defaults(c, mi)) open = emit_reopen_recv_args(c, id, mi, recv, 0, NULL, at, b);
   else if (comp_ntype(c, recv) == TY_STRBUF) {
     if (!emit_strbuf_read_ref(c, recv, b)) emit_expr(c, recv, b);
     emit_args_filled(c, mi, nt_ref(c->nt, id, "arguments"), ", ", b);
@@ -26400,26 +26462,27 @@ int emit_reopen_block_call(Compiler *c, int id, int recv, int mi, const char *bo
   int cblk = nt_ref(nt, id, "block") >= 0 ? resolve_forwarded_block(c, nt_ref(nt, id, "block")) : -1;
   /* a forwarded `&blk` resolves below 0 when the caller passed no block:
      the clone's block parameter is then NULL (block_given? is false) */
-  if (c->scopes[mi].class_id == comp_class_index(c, "Random") && ctor_needs_self_defaults(c, pf, 0) &&
-      !reopen_yields_container(c, &c->scopes[mi])) {
+  if (reopen_self_defaults(c, mi)) {
     emit_reopen_pf_call(c, id, pf, cblk, NULL, b);
     return 1;
   }
   Buf rb; memset(&rb, 0, sizeof rb);
   if (repr_self_handle(c, mi)) {
     int t = ++g_tmp;
+    Buf rx; memset(&rx, 0, sizeof rx);
+    emit_strbuf_handle_of(c, recv, &rx);
     emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "sp_String *_t%d = ", t);
-    emit_strbuf_handle_of(c, recv, g_pre);
-    buf_printf(g_pre, "; SP_GC_ROOT(_t%d);\n", t);
+    buf_printf(g_pre, "sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n", t, rx.p ? rx.p : "", t);
+    free(rx.p);
     buf_printf(&rb, "_t%d", t);
   }
   else if (c->scopes[mi].class_id == comp_class_index(c, "String")) {
     int t = ++g_tmp;
+    Buf rx; memset(&rx, 0, sizeof rx);
+    emit_expr(c, recv, &rx);
     emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "const char *_t%d = ", t);
-    emit_expr(c, recv, g_pre);
-    buf_printf(g_pre, "; SP_GC_ROOT(_t%d);\n", t);
+    buf_printf(g_pre, "const char *_t%d = %s; SP_GC_ROOT(_t%d);\n", t, rx.p ? rx.p : "", t);
+    free(rx.p);
     buf_printf(&rb, "_t%d", t);
   }
   else if (reopen_pf_raw_self(c, c->scopes[mi].class_id)) emit_expr(c, recv, &rb);

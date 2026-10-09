@@ -374,7 +374,8 @@ static int repr_strbuf_src(const Compiler *c, int node, TyKind t) {
       return RS_DEMANDED;
     /* A boxed return pickup keeps its published handle too. A demanded
        reader above already emits the handle, including from a held temp. */
-    if (c->strbuf_box[node] && repr_call_returns_handle(mc, node)) return RS_HANDLE;
+    if (c->strbuf_box[node] &&
+        (repr_call_returns_handle(mc, node) || strbuf_route_inline_call(mc, node))) return RS_HANDLE;
   }
   /* a String value stored where a handle is demanded: a fresh one */
   return RS_FRESH;
@@ -947,6 +948,7 @@ int repr_static_share(const Compiler *c, int node) {
 }
 
 int repr_str_class_shares(unsigned flags, int holders) {
+  if (flags & SHF_IDENTITY) return 1;
   if (!(flags & SHF_MUT)) return 0;
   return holders >= 2 || (flags & (SHF_UNKNOWN | SHF_INDIRECT | SHF_MULTI)) != 0;
 }

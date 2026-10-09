@@ -7826,6 +7826,14 @@ static void emit_arg_rooted(Compiler *c, Scope *m, int idx, int provided, int he
   }
   Buf ab; memset(&ab, 0, sizeof ab);
   emit_arg_or_default(c, m, idx, provided, &ab);
+  /* A String default that is the receiver an arm holds (`b = self`) is that
+     temp itself, rooted already: no alias of it is needed. */
+  if (provided < 0 && (pt == TY_STRING || pt == TY_STRBUF) && g_arm_self && g_arm_scope == m &&
+      g_arm_depth == g_expr_depth && ab.p && sp_streq(ab.p, g_arm_self)) {
+    buf_puts(out, ab.p);
+    free(ab.p);
+    return;
+  }
   char ht[24] = "";
   if (held > 0) snprintf(ht, sizeof ht, "_t%d", held);
   if (held > 0 && provided >= 0 && ab.p && sp_streq(ab.p, ht)) {

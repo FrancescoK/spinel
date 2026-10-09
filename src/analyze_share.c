@@ -31,8 +31,10 @@
 #include "repr.h"
 #include "codegen_internal.h"
 
-/* element-own flags (not merged by a union) */
-enum { SHE_WRITTEN = 1, SHE_IDENTITY = 2 };
+/* element-own flags (not merged by a union). SHE_COMPARED: the value is
+   compared by identity, or handed to a consumer that keeps or mutates it
+   (sh_finalize reads it for a String reopening's receiver) */
+enum { SHE_WRITTEN = 1, SHE_IDENTITY = 2, SHE_COMPARED = 4 };
 /* a class flag beside share.h's SHF_*: a value of the class leaves a call
    to be read after it (`p(lit.each { |x| x << y })`, `lit.map { }.first`),
    so a container of the class can be reached again (sh_finalize) */
@@ -1617,7 +1619,7 @@ static int sh_unknown_call(ShareFacts *F, Compiler *c, int n, int blk) {
   int nv = sh_args_vals(F, c, n, vals, 64);
   for (int i = 0; i < nv; i++) {
     /* A proc handed self can keep or mutate that receiver. */
-    if (vals[i] >= 0 && F->kind[vals[i]] == SHK_SELF) F->own[vals[i]] |= SHE_IDENTITY;
+    if (vals[i] >= 0 && F->kind[vals[i]] == SHK_SELF) F->own[vals[i]] |= SHE_IDENTITY | SHE_COMPARED;
     sh_union(F, vals[i], F->unknown);
   }
   if (blk >= 0 && nt_kind(c->nt, blk) == NK_BlockNode) {
@@ -2023,10 +2025,10 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
   int maybe_str = recv >= 0 && (rt == TY_STRING || rt == TY_STRBUF || rt == TY_POLY || rt == TY_UNKNOWN);
   if (c->share_strings && is_identity_query(name)) {
     int identity = recv < 0 ? sh_self(F, c, sh_method_index(c, n)) : rv;
-    if (identity >= 0) F->own[identity] |= SHE_IDENTITY;
+    if (identity >= 0) F->own[identity] |= SHE_IDENTITY | SHE_COMPARED;
     if (argc == 1 && is_equality_name(name)) {
       int other = sh_val(F, c, argv[0]);
-      if (other >= 0) F->own[other] |= SHE_IDENTITY;
+      if (other >= 0) F->own[other] |= SHE_IDENTITY | SHE_COMPARED;
     }
   }
 
@@ -2930,8 +2932,18 @@ static void sh_finalize(ShareFacts *F) {
       if (anchored[o] && !anchored[r]) { anchored[r] = 1; changed = 1; }
     }
   }
+  /* A String reopening's receiver that its class compares by identity, or
+     hands to a consumer that keeps or mutates it, has to be the shared
+     object; one that is only returned, yielded or captured is not. */
+  unsigned char *compared = calloc((size_t)(n > 0 ? n : 1), 1);
   for (int e = 0; e < n; e++)
+    if (F->own[e] & SHE_COMPARED) compared[sh_root(F, e)] = 1;
+  for (int e = 0; e < n; e++) {
+    if (F->kind[e] == SHK_SELF && compared[sh_root(F, e)])
+      F->flags[sh_root(F, e)] |= SHF_IDENTITY;
     if (F->parent[e] == e) F->hcount[e] = F->nhold[e] - F->nelem[e];
+  }
+  free(compared);
   for (int e = 0; e < n; e++) {
     if (F->kind[e] != SHK_ELEM || F->owner[e] < 0) continue;
     int o = sh_root(F, F->owner[e]), r = sh_root(F, e);
@@ -3601,7 +3613,7 @@ void share_facts_build(Compiler *c) {
      other flows already mark direct identity uses of self. */
   for (int i = 0; i < F->nfl; i++) {
     int v = F->nval[F->fl_val[i]];
-    if (F->fl_kind[i] != SHFL_ARG || v < 0 || F->kind[v] != SHK_SELF || (F->own[v] & SHE_IDENTITY)) continue;
+    if (F->fl_kind[i] != SHFL_ARG || v < 0 || F->kind[v] != SHK_SELF || (F->own[v] & SHE_COMPARED)) continue;
     int tg[64], n = F->fl_site[i];
     int ntg = sh_targets(c, n, tg, 64), used = ntg <= 0;
     for (int t = 0; t < ntg && !used; t++) {
@@ -3618,7 +3630,7 @@ void share_facts_build(Compiler *c) {
       }
       if (!bound) used = 1;
     }
-    if (used) F->own[v] |= SHE_IDENTITY;
+    if (used) F->own[v] |= SHE_IDENTITY | SHE_COMPARED;
   }
   /* Forwarding self needs identity only when the callee does. Settle the
      existing per-method bit over the walk's call sites, including cycles:
@@ -3629,11 +3641,11 @@ void share_facts_build(Compiler *c) {
       int n = F->rsite[i], recv = nt_ref(c->nt, n, "receiver");
       int h = recv >= 0 ? -1 : share_self_holder(c, sh_method_index(c, n));
       int v = recv >= 0 ? F->nval[recv] : h >= 0 ? F->helem[h] : -1;
-      if (v < 0 || F->kind[v] != SHK_SELF || (F->own[v] & SHE_IDENTITY)) continue;
+      if (v < 0 || F->kind[v] != SHK_SELF || (F->own[v] & SHE_COMPARED)) continue;
       int tg[64], ntg = sh_targets(c, n, tg, 64);
       for (int t = 0; t < ntg; t++) {
         if (!repr_self_handle(c, tg[t])) continue;
-        F->own[v] |= SHE_IDENTITY;
+        F->own[v] |= SHE_IDENTITY | SHE_COMPARED;
         changed = 1;
         break;
       }

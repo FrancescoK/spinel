@@ -29,15 +29,31 @@ static void emit_int_bit_recv(Compiler *c, int recv, TyKind rt, const char *conv
   buf_printf(b, "; if (SP_UNLIKELY(_t%d == SP_INT_NIL)) sp_nil_recv(\"%s\"); _t%d; })", tn, name, tn);
 }
 
+/* Is `v` an operand of a String identity comparison that is a handle where
+   `other` is one too? A yielding call spliced in with its literal block
+   answers the handle only for a value that is one; against a literal or a
+   plain String it answers the bytes the other operand names, and wrapping
+   them in a new handle would lose their identity. */
+static int string_identity_handle_operand(Compiler *c, int v, int other) {
+  HolderRef h;
+  if (holder_of_node(c, v, &h) && h.r.share) return 1;
+  if (!strbuf_route_inline_call(c, v)) return 0;
+  return (holder_of_node(c, other, &h) && h.r.share) || strbuf_route_inline_call(c, other) ||
+         repr_call_returns_handle(c, other);
+}
+int string_identity_inline(Compiler *c, int recv, int arg) {
+  return (strbuf_route_inline_call(c, recv) && string_identity_handle_operand(c, recv, arg)) ||
+         (strbuf_route_inline_call(c, arg) && string_identity_handle_operand(c, arg, recv));
+}
+
 /* Compare String identities through their boxes, retaining shared handles
    and evaluating the receiver before an allocating argument. */
-static void emit_string_identity(Compiler *c, int recv, int arg, Buf *b) {
+void emit_string_identity(Compiler *c, int recv, int arg, Buf *b) {
   int operand[2] = { recv, arg }, t[2];
   buf_puts(b, "({ ");
   for (int i = 0; i < 2; i++) {
-    HolderRef h;
     int sv = -1;
-    if (holder_of_node(c, operand[i], &h) && h.r.share) {
+    if (string_identity_handle_operand(c, operand[i], operand[1 - i])) {
       sv = view_push(c, operand[i], TY_STRBUF);
       view_push_repr(c, operand[i], VR_STRBUF_BOX, 1);
     }
