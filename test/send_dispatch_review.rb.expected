@@ -1,0 +1,29 @@
+nil
+nil
+nil
+eval sample_some
+7
+eval shuffle_some
+[7]
+eval step_some
+[1, 3, 5]
+nil
+eval lines_some
+["a", "b"]
+comparison of String with Array failed
+comparison of String with Hash failed
+comparison of String with Array failed
+comparison of String with Hash failed
+comparison of String with Hash failed
+comparison of String with Array failed
+< comparison of String with Array failed
+< comparison of String with Hash failed
+<= comparison of String with Array failed
+<= comparison of String with Hash failed
+> comparison of String with Array failed
+> comparison of String with Hash failed
+>= comparison of String with Array failed
+>= comparison of String with Hash failed
+comparison of String with Array failed
+comparison of String with Hash failed
+true

@@ -31146,10 +31146,16 @@ static void kwb_optional_split(NodeTable *nt, int call, int row, Scope *sc) {
   const int *el = nt_arr(nt, av[n - 1], "elements", &en);
   int h = en == 1 && nt_kind(nt, el[0]) == NK_AssocSplatNode ? nt_ref(nt, el[0], "value") : -1;
   if (h < 0) return;
-  char hn[32], vn[32], xn[32];
+  char hn[32], vn[32], xn[32], rn[32];
   snprintf(hn, sizeof hn, "__kwoh%d", nt->count);
   snprintf(vn, sizeof vn, "__kwov%d", nt->count);
   snprintf(xn, sizeof xn, "__kwox%d", nt->count);
+  snprintf(rn, sizeof rn, "__kwor%d", nt->count);
+  int sn = call_is_safe_nav(nt, call), rw = -1;
+  if (sn) {
+    rw = kwb_lv(nt, sc, rn, nt_clone_subtree(nt, nt_ref(nt, call, "receiver")));
+    nt_node_set_ref(nt, call, "receiver", kwb_lv(nt, sc, rn, -1));
+  }
   int ks[2], nk = 0;
   for (int i = 1; i < 3 && kwo_rows[row][i]; i++) ks[nk++] = kwo_sym(nt, kwo_rows[row][i]);
   int ka = nt_new_node(nt, "ArrayNode");
@@ -31157,7 +31163,12 @@ static void kwb_optional_split(NodeTable *nt, int call, int row, Scope *sc) {
   int st[5] = { kwb_lv(nt, sc, hn, nt_clone_subtree(nt, h)), kwb_lv(nt, sc, vn, kwb_conv(nt, sc, hn)),
                 kwb_lv(nt, sc, xn, sd_call(nt, "-", sd_call(nt, "keys", kwb_lv(nt, sc, vn, -1), NULL, 0), &ka, 1)),
                 kwb_reject(nt, sc, xn), kwo_tree(nt, call, row, 0, 0, vn, sc) };
-  nt_swap_nodes(nt, call, kwb_seq(nt, st, 5));
+  int seq = kwb_seq(nt, st, 5);
+  if (sn) {
+    int g[2] = { rw, sd_if(nt, sd_call(nt, "nil?", kwb_lv(nt, sc, rn, -1), NULL, 0), nt_new_node(nt, "NilNode"), seq) };
+    seq = kwb_seq(nt, g, 2);
+  }
+  nt_swap_nodes(nt, call, seq);
 }
 static int kwo_leaves(NodeTable *nt, int call) {
   int an = nt_ref(nt, call, "arguments"), n = 0, r = nt_ref(nt, call, "receiver");
