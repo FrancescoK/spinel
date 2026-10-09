@@ -2147,6 +2147,14 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
   int ntg = sh_targets_in(F, c, n, tg, 64);
   if (ntg != 0) sh_read_site(F, n);
   if (ntg < 0) return sh_unknown_call(F, c, n, blk);
+  /* a bare `new` in a class method builds the class it runs for: its initialize
+     (cplan_initialize), as for a constant receiver */
+  int own_init = ntg == 0 && recv < 0 && bop_share_named(BOP_ANY_RECV, name) == BSH_NEW ? cplan_initialize(c, n) : -1;
+  if (own_init >= 0) {
+    sh_bind(F, c, n, own_init);
+    if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode) sh_block_to_method(F, c, blk, own_init);
+    return -1;
+  }
   if (ntg == 0 && recv >= 0 && bop_share_named(BOP_ANY_RECV, name) == BSH_NEW) {
     int r = sh_new_call(F, c, n, recv, blk);
     if (r != -2) return r;

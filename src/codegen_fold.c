@@ -8221,6 +8221,10 @@ static void emit_arg_temp(Compiler *c, int v) {
   /* A builtin to_s keeps the receiver's String too. Capture its handle
      before later arguments can replace the receiver. */
   int conversion = at == TY_STRING && strbuf_poly_to_s(c, v);
+  /* So does a call result lifted into the handle for a boxed parameter: the
+     handle its method publishes is taken where the call runs. */
+  if (!conversion && at == TY_STRING && repr_share_rule(c) && c->poly_strbuf_lift[v] && strbuf_value_carries(c, v))
+    conversion = 1;
   Buf hw; memset(&hw, 0, sizeof hw);
   if (conversion) emit_strbuf_handle_of(c, v, &hw);
   else if (wshare) emit_strbuf_write_handle(c, v, &hw);
@@ -10879,7 +10883,8 @@ void emit_args_filled_argv(Compiler *c, int callee_idx, const int *argv, int arg
       /* --share-strings: a value that hands on a shared String's handle (a
          route, `s << x`) into a parameter that is the handle runs as that
          handle, which the binding takes (ran_first_handle) */
-      if (repr_of_slot(c, hp).kind == RK_STRBUF && at == TY_STRING && strbuf_value_carries(c, argv[k])) {
+      if ((repr_of_slot(c, hp).kind == RK_STRBUF || (repr_of_slot(c, hp).kind == RK_BOXED && c->poly_strbuf_lift[argv[k]])) &&
+          at == TY_STRING && strbuf_value_carries(c, argv[k])) {
         emit_strbuf_handle_of(c, argv[k], &hb);
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n", ht, hb.p, ht);

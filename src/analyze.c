@@ -16170,7 +16170,7 @@ static int strbuf_demand_local_container(Compiler *c, const char *vn, Scope *vs,
    edges on the compiler: a parameter query visits its sources, not every
    call with the same name. A bare super carries a source parameter instead
    of an argument node. Before storage the existing per-pass walk is used. */
-typedef struct { int next, node, scope, param; } SbArgEdge;
+typedef struct { int next, node, scope, param, loose; } SbArgEdge;
 typedef struct SbArgIndex {
   int *off, *head;
   SbArgEdge *edges;
@@ -16333,6 +16333,7 @@ static int strbuf_demand_param_container_stores_walk(Compiler *c, const char *pn
     if (x) {
       SbArgEdge *a = &x->edges[e];
       e = a->next;
+      if (a->loose) continue;
       if (a->scope >= 0) {
         Scope *s = &c->scopes[a->scope];
         changed |= strbuf_demand_local_container(c, s->pnames[a->param], s, depth + 1, mode);
@@ -17940,11 +17941,39 @@ static int share_lift_jumps(Compiler *c, int n, NodeKind k) {
   }
   return changed;
 }
+/* A parameter is stored to by its call sites: each argument bound to it is
+   boxed as the handle too (the settled argument index), and its default. An
+   argument that is a parameter handed on is a read, which its own holder
+   covers. The index is built at storage, so the rule's later applications
+   lift them; resolving the callers of every sharing parameter in each
+   fixpoint round would scan every `new` for every class. The lift marks no
+   type, so storage is soon enough. */
+/* A literal String is frozen and static, so no name can change it; boxed
+   as it is, every site of the literal stays the one object (equal?). */
+static int share_lift_arg(Compiler *c, int v) {
+  return v >= 0 && nt_kind(c->nt, v) != NK_StringNode ? share_lift_value(c, v) : 0;
+}
+static int share_lift_param_args(Compiler *c, int mi, int pj) {
+  const NodeTable *nt = c->nt;
+  Scope *ps = &c->scopes[mi];
+  int changed = 0;
+  SbArgIndex *x = c->sb_args;
+  if (!x) return 0;
+  for (int e = x->head[x->off[mi] + pj]; e >= 0; e = x->edges[e].next)
+    if (x->edges[e].scope < 0) changed |= share_lift_arg(c, an_unparen(nt, x->edges[e].node));
+  /* and the default a call that omits the argument takes */
+  if (ps->pdefault && ps->pdefault[pj] >= 0) changed |= share_lift_arg(c, an_unparen(nt, ps->pdefault[pj]));
+  return changed;
+}
 /* The same for local `name` of scope `scope`: its `=`, `||=` and `&&=`
-   (comp_lvw_first_sc, the local write index). */
+   (comp_lvw_first_sc, the local write index), and for a parameter the
+   arguments of its calls. */
 static int share_lift_poly_local_stores(Compiler *c, int scope, const char *name) {
   const NodeTable *nt = c->nt;
   int changed = 0;
+  LocalVar *plv = scope_local(&c->scopes[scope], name);
+  int pj = plv && plv->is_param && !plv->is_block_param ? an_param_idx(&c->scopes[scope], name) : -1;
+  if (pj >= 0) changed |= share_lift_param_args(c, scope, pj);
   for (int w = comp_lvw_first_sc(c, scope, name); w >= 0; w = comp_lvw_next_sc(c, w)) {
     NodeKind k = nt_kind(nt, w);
     if ((k != NK_LocalVariableWriteNode && k != NK_LocalVariableOrWriteNode && k != NK_LocalVariableAndWriteNode) ||
@@ -20784,6 +20813,16 @@ static void an_call_targets_of(Compiler *c, int u, ACallTargets *t) {
   act_add(t, mi);
 }
 
+static void strbuf_arg_index_edge(SbArgIndex *x, int h, int a, int scope, int p, int loose) {
+  if (x->n == x->cap) {
+    if (x->cap > INT_MAX / 2) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    x->cap = x->cap ? x->cap * 2 : 64;
+    x->edges = realloc(x->edges, sizeof *x->edges * (size_t)x->cap);
+    if (!x->edges) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  x->edges[x->n] = (SbArgEdge){ x->head[h], a, scope, p, loose };
+  x->head[h] = x->n++;
+}
 static void strbuf_arg_index_call(Compiler *c, SbArgIndex *x, int u, int mi) {
   Scope *m = &c->scopes[mi];
   Scope *s = nt_kind(c->nt, u) == NK_ForwardingSuperNode ? comp_scope_of(c, u) : NULL;
@@ -20791,16 +20830,96 @@ static void strbuf_arg_index_call(Compiler *c, SbArgIndex *x, int u, int mi) {
     int p = s ? zsuper_param_source(c, s, m, j) : -1;
     int a = s ? -1 : arg_layout_param_node(c, m, u, j, NULL);
     if (a < 0 && p < 0) continue;
-    if (x->n == x->cap) {
-      if (x->cap > INT_MAX / 2) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-      x->cap = x->cap ? x->cap * 2 : 64;
-      x->edges = realloc(x->edges, sizeof *x->edges * (size_t)x->cap);
-      if (!x->edges) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-    }
-    int h = x->off[mi] + j;
-    x->edges[x->n] = (SbArgEdge){ x->head[h], a, s ? (int)(s - c->scopes) : -1, p };
-    x->head[h] = x->n++;
+    strbuf_arg_index_edge(x, x->off[mi] + j, a, s ? (int)(s - c->scopes) : -1, p, 0);
   }
+}
+/* The same for the positional arguments of call u from index `shift` on
+   (`bind_call` takes its receiver first). `loose`: the call may not reach
+   mi at all, so only the lift of the argument reads the edge. */
+static void strbuf_arg_index_positional(Compiler *c, SbArgIndex *x, int u, int mi, int shift, int loose) {
+  const NodeTable *nt = c->nt;
+  int ac = 0, args = nt_ref(nt, u, "arguments");
+  const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
+  for (int j = 0; j < c->scopes[mi].nparams && j + shift < ac; j++) {
+    NodeKind ak = nt_kind(nt, av[j + shift]);
+    if (ak == NK_SplatNode || ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode) break;
+    strbuf_arg_index_edge(x, x->off[mi] + j, av[j + shift], -1, -1, loose);
+  }
+}
+/* A call through a Method object: `m.call(v)` (`m.(v)`, `m[v]`, `m === v`)
+   on a Method, on the Proc its to_proc made, or on a curried one, and
+   `bind_call(obj, v)` on an UnboundMethod. It is the only site of a method
+   reached that way, so it binds each method the receiver may hold, as
+   dyn_reach_method_node reads them (a bound builtin's wrapper takes its
+   receiver first and is left alone). A typed receiver that names none (one
+   handed in as an argument, kept in an instance variable; not a Proc built
+   only from literal blocks, which holds none) may hold any
+   method the program names with `method` or `instance_method`: they take
+   the arguments too, for the lift alone, which only costs a lift where it
+   was not needed. One kept in an Array or a Hash is a boxed receiver, whose
+   dispatch publishes its arguments as the argument types state, not as
+   lifted. */
+static int dyn_is_proc_literal(Compiler *c, int n);
+/* Is Proc-valued expression v built only from literal blocks and lambdas
+   (through `curry` or `to_proc`, a local's every write)? Then it holds no method. */
+static int sb_proc_only_literal(Compiler *c, int v, int depth) {
+  const NodeTable *nt = c->nt;
+  if (v < 0 || depth > 4) return 0;
+  NodeKind vk = nt_kind(nt, v);
+  if (dyn_is_proc_literal(c, v) || vk == NK_BlockNode) return 1;
+  if (vk == NK_CallNode) {
+    const char *nm = nt_str(nt, v, "name");
+    return is_proc_conversion_name(nm) && sb_proc_only_literal(c, nt_ref(nt, v, "receiver"), depth + 1);
+  }
+  if (vk != NK_LocalVariableReadNode) return 0;
+  const char *vn = nt_str(nt, v, "name");
+  Scope *vs = vn ? comp_scope_of(c, v) : NULL;
+  int saw = 0;
+  for (int w = vs ? comp_lvw_first_sc(c, (int)(vs - c->scopes), vn) : -1; w >= 0; w = comp_lvw_next_sc(c, w)) {
+    if (comp_scope_of(c, w) != vs || !nt_str(nt, w, "name") || !sp_streq(nt_str(nt, w, "name"), vn)) continue;
+    if (nt_kind(nt, w) != NK_LocalVariableWriteNode || !sb_proc_only_literal(c, nt_ref(nt, w, "value"), depth + 1)) return 0;
+    saw = 1;
+  }
+  return saw;
+}
+static void strbuf_arg_index_method_call(Compiler *c, SbArgIndex *x, int u, int **all, int *nall) {
+  const NodeTable *nt = c->nt;
+  int recv = nt_ref(nt, u, "receiver");
+  const char *cn = nt_str(nt, u, "name");
+  if (recv < 0 || !cn) return;
+  TyKind rt = comp_ntype(c, recv);
+  int bind = is_bind_call(cn);
+  if (bind ? rt != TY_METHOD
+           : !(is_method_invoke(cn) && (rt == TY_METHOD || rt == TY_PROC || rt == TY_CURRY)))
+    return;
+  int *mns = NULL, nmn = rt == TY_METHOD ? method_recv_nodes(c, recv, &mns)
+                       : rt == TY_PROC ? proc_to_proc_method_nodes(c, recv, &mns) : 0;
+  for (int i = 0; i < nmn; i++) {
+    int tmi = method_obj_target_mi(c, mns[i]);
+    if (tmi < 0 || method_call_param_shift(c, mns[i], tmi)) continue;
+    if (bind) strbuf_arg_index_positional(c, x, u, tmi, 1, 0);
+    else strbuf_arg_index_call(c, x, u, tmi);
+  }
+  free(mns);
+  if (nmn > 0 || (rt != TY_METHOD && sb_proc_only_literal(c, recv, 0))) return;
+  if (!*all) {
+    int cap = 0;
+    *all = NULL;
+    NT_FOREACH_KIND(nt, NK_CallNode, n) {
+      int tmi = method_obj_target_mi(c, n), dup = 0;
+      if (tmi < 0 || method_call_param_shift(c, n, tmi)) continue;
+      for (int j = 0; j < *nall; j++) dup |= (*all)[j] == tmi;
+      if (dup) continue;
+      if (*nall == cap) {
+        cap = cap ? cap * 2 : 8;
+        *all = realloc(*all, sizeof **all * (size_t)cap);
+        if (!*all) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      }
+      (*all)[(*nall)++] = tmi;
+    }
+    if (!*all) *all = malloc(sizeof **all);
+  }
+  for (int i = 0; i < *nall; i++) strbuf_arg_index_positional(c, x, u, (*all)[i], bind ? 1 : 0, 1);
 }
 /* Built once at storage, after desugaring and target inference. The later
    String representation changes leave these argument bindings intact.
@@ -20821,14 +20940,17 @@ static void strbuf_arg_index_build(Compiler *c) {
   if (!x->head) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   for (int i = 0; i < x->off[c->nscopes]; i++) x->head[i] = -1;
   ACallTargets t = {0};
+  int *allm = NULL, nallm = 0;
   const NodeTable *nt = c->nt;
   for (int u = nt->count - 1; u >= 0; u--) {
     NodeKind k = nt_kind(nt, u);
     if (k == NK_CallNode) {
       if (is_new_name(nt_str(nt, u, "name"))) {
-        int mi = cplan_initialize(c, u);
-        if (mi >= 0) { strbuf_arg_index_call(c, x, u, mi); continue; }
+        int mis[CPT_MAX], nmi = cplan_initializers(c, u, mis, CPT_MAX);
+        for (int i = 0; i < nmi; i++) strbuf_arg_index_call(c, x, u, mis[i]);
+        if (nmi > 0) continue;
       }
+      strbuf_arg_index_method_call(c, x, u, &allm, &nallm);
       an_call_targets_of(c, u, &t);
       for (int i = 0; i < t.n; i++) strbuf_arg_index_call(c, x, u, t.v[i]);
     }
@@ -20838,6 +20960,7 @@ static void strbuf_arg_index_build(Compiler *c) {
     }
   }
   free(t.v);
+  free(allm);
   c->sb_args = x;
 }
 
