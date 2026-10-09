@@ -15641,6 +15641,7 @@ static int sa_copy_defer(Compiler *c, int site, int v, int reader, const char *m
   return share_route_defer(c, &q, msg);
 }
 static const char *sa_msg(int route);
+static void sa_refuse_stored_call(Compiler *c, int call);
 /* A String a block parameter holds that no element iterator binds (a
    proc's, a lambda's, the block of a method that yields, `each_char`'s):
    stored into a container whose elements are then mutated, the element
@@ -15698,7 +15699,9 @@ static int strbuf_demand_store_leaf(Compiler *c, int sn, int depth) {
   if (sn < 0 || c->strbuf_box[sn]) return 0;
   /* `a << (s << "y")`, `a << +s`, `a << sb` with `def sb = @s`: the
      element would be a fresh handle over a copy of s's or @s's String
-     (sa_refuse); `+s` is s itself unless s is frozen */
+     (sa_refuse); `+s` is s itself unless s is frozen. So would `a << id(s)`
+     with `def id(x) = x` (sa_refuse_stored_call; not under --share-strings,
+     where the form with a local between compiles) */
   int snu = an_unparen(nt, sn);
   TyKind snt = snu >= 0 && nt_kind(nt, snu) == NK_CallNode ? infer_type(c, snu) : TY_UNKNOWN;
   if (snt == TY_STRING || snt == TY_STRBUF) {
@@ -15709,6 +15712,7 @@ static int strbuf_demand_store_leaf(Compiler *c, int sn, int depth) {
     if (((as >= 0 && as != snu) || reader) &&
         !sa_copy_defer(c, snu, snu, reader, sa_msg(3)))
       sa_refuse(c, snu, 3);
+    if (!c->share_strings) sa_refuse_stored_call(c, snu);
   }
   if (nt_kind(nt, sn) == NK_LocalVariableReadNode) {
     const char *snm = nt_str(nt, sn, "name");
@@ -33997,6 +34001,37 @@ static void sa_refuse_element(Compiler *c, int e, int u) {
   q.to_elems = 1;
   if (!share_route_defer(c, &q, sa_msg(3))) sa_refuse(c, e, 3);
 }
+/* Route 1 for call `call` stored into a container whose elements are
+   mutated in place (`a << id(s)`, then `a[0] << x`): the element is a fresh
+   handle over a copy of the String the method answers, so the argument's
+   variable may not be read again. */
+static void sa_refuse_stored_call(Compiler *c, int call) {
+  SaName from;
+  int ra[16], nra = sa_returned_args(c, call, ra, 16);
+  for (int i = 0; i < nra; i++)
+    if (sa_name(c, ra[i], &from) && sa_read_elsewhere(c, &from, ra[i])) sa_refuse(c, call, 1);
+}
+/* The k-th value node `u` stores into an Array or a Hash: an element of an
+   Array literal, a value of a Hash literal, an argument of a push or the
+   value of `[]=` on one. -2 past the last value or for another node. */
+static int sa_stored_value(Compiler *c, int u, int k) {
+  const NodeTable *nt = c->nt;
+  int n = 0;
+  NodeKind kind = nt_kind(nt, u);
+  if (kind == NK_ArrayNode || kind == NK_HashNode) {
+    const int *el = nt_arr(nt, u, "elements", &n);
+    if (k >= n) return -2;
+    return kind == NK_ArrayNode ? el[k] : nt_kind(nt, el[k]) == NK_AssocNode ? nt_ref(nt, el[k], "value") : -1;
+  }
+  const char *nm = nt_str(nt, u, "name");
+  int r = an_unparen(nt, nt_ref(nt, u, "receiver"));
+  TyKind rt = r >= 0 ? comp_ntype(c, r) : TY_UNKNOWN;
+  int a = nt_ref(nt, u, "arguments");
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &n) : NULL;
+  if (!nm || k >= n) return -2;
+  if (sp_streq(nm, "[]=")) return (ty_is_array(rt) || ty_is_hash(rt)) && n >= 2 && k == 0 ? av[n - 1] : -2;
+  return ty_is_array(rt) && is_push_unshift(nm) ? av[k] : -2;
+}
 /* A String variable a call adds to an Array without the element store
    (strbuf_container_store_values) seeing it: through `insert`, `prepend`
    or a `concat` of a literal on any Array, or through a push or `<<` whose
@@ -34219,6 +34254,28 @@ static void refuse_string_alias_copies(Compiler *c) {
         q.to = w;
         q.carry = v;
         if (!share_route_defer(c, &q, sa_msg(2))) sa_refuse(c, w, 2);
+      }
+    }
+  /* `a << id(s)`, `a[0] = id(s)`, `a = [id(s)]`, `h = { k: id(s) }`, then
+     `s << x` where the container is read: the element is a copy of the
+     String the method answers. Under --share-strings a local that shares
+     its handle through the method's parameter counts as mutated, and the
+     form with a local between compiles: the stored call is left as it is. */
+  for (int k = 0; k < 4 && !c->share_strings; k++)
+    NT_FOREACH_KIND(nt, k == 0 ? NK_CallNode : k == 1 ? NK_LocalVariableWriteNode
+                               : k == 2 ? NK_InstanceVariableWriteNode : NK_GlobalVariableWriteNode, u) {
+      SaName to, from;
+      int st = k == 0 ? u : an_unparen(nt, nt_ref(nt, u, "value"));
+      if (k > 0 && (st < 0 || (nt_kind(nt, st) != NK_ArrayNode && nt_kind(nt, st) != NK_HashNode) || !sa_name(c, u, &to)))
+        continue;
+      for (int j = 0, e; (e = sa_stored_value(c, st, j)) != -2; j++) {
+        TyKind et = e >= 0 ? comp_ntype(c, e) : TY_UNKNOWN;
+        if (et != TY_STRING && et != TY_STRBUF) continue;
+        int ra[16], nra = sa_returned_args(c, e, ra, 16);
+        for (int i = 0; i < nra; i++)
+          if (sa_name(c, ra[i], &from) && sa_mutated(c, &from) &&
+              (k == 0 ? sa_array_observed(c, &arr_ix, u) : sa_read_elsewhere(c, &to, -1)))
+            sa_refuse(c, e, 1);
       }
     }
   NT_FOREACH_KIND(nt, NK_CallNode, u) {
