@@ -18391,6 +18391,25 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
               buf_printf(b, "(_t%d.cls_id == %d || (_t%d.cls_id == SP_CLASS_BY_NAME && _t%d.v.s && "
                             "strcmp(_t%d.v.s, \"%s\") == 0)) ? ", tv, ccls[k], tv, tv, tv, crn);
             }
+            /* a class whose method is private (private_class_method, or
+               `class << self; private`) refuses it here as a direct `C.foo`
+               does: the value only names the class at run time (#8202) */
+            {
+              int vowner = -1;
+              int vis = comp_cmethod_vis_declared(c, ccls[k], nm, &vowner);
+              if (vis == SP_VIS_PROTECTED) {
+                Scope *cs = comp_scope_of(c, id);
+                int caller = (cs && cs->is_cmethod) ? cs->class_id : -1;
+                if (caller >= 0 && vowner >= 0 && is_descendant(c, caller, vowner)) vis = SP_VIS_PUBLIC;
+              }
+              if (vis != SP_VIS_PUBLIC) {
+                const char *vrn = class_ruby_name(c, ccls[k]) ? class_ruby_name(c, ccls[k]) : c->classes[ccls[k]].name;
+                int is_mod = nt_kind(nt, c->classes[ccls[k]].def_node) == NK_ModuleNode;
+                buf_printf(b, "(sp_raise_cls(\"NoMethodError\", (&(\"\\xff\" \"%s method '%s' called for %s %s\")[1])), sp_box_nil()) : ",
+                           vis == SP_VIS_PRIVATE ? "private" : "protected", nm, is_mod ? "module" : "class", vrn);
+                continue;
+              }
+            }
             Buf cb; memset(&cb, 0, sizeof cb);
             int ksym = cpf[k] >= 0 ? cpf[k] : cmi[k];
             buf_printf(&cb, "sp_%s_s_%s(", c->classes[cdef[k]].c_name, mc(c->scopes[ksym].name));
