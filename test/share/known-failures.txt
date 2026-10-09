@@ -1,11 +1,3 @@
 # SPINEL_SHARE_STRINGS=1, OPT=-O1, macOS, Apple clang 21.
 # Names are those printed by make test; remove an entry when it passes.
-# Observed at master 84f5b5020 on Linux x86_64 (the fork's CI).
-pkg.net.net_http_client
-pkg.net.net_http_default_headers
-pkg.net.net_http_finish_not_started
-pkg.net.net_http_header_crlf
-pkg.net.net_http_request_host
-pkg.net.net_http_response_value
-pkg.net.net_http_rest_verbs
-pkg.net.net_http_start_block
+# Every corpus program passes with sharing on master; add an entry only for a known failure.
