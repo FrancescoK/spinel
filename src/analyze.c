@@ -35769,8 +35769,72 @@ static void an_pass_note(const char *name, double t0, int changed) {
   g_an_pass[i].ms += ms; g_an_pass[i].calls++;
   if (changed) g_an_pass[i].changed++;
 }
-#define AN_PASS(nm, call) (!sp_timing_on() ? (call) : \
-  ({ double _pt0 = sp_timing_now(); int _pr = (call); an_pass_note((nm), _pt0, _pr != 0); _pr; }))
+/* The shadow schedule of #7237 (SP_SHADOW_GEN, a measurement only): a
+   desugar pass rewrites the tree, so one that ran since the node table last
+   changed (NodeTable.version) can find nothing new -- unless it also reads
+   inferred types. Every pass still runs; a call that would have been
+   skipped is counted with its time, and one that changed anything all the
+   same is reported as a violation. */
+static int an_shadow_on(void) {
+  static int on = -1;
+  if (on < 0) on = getenv("SP_SHADOW_GEN") != NULL;
+  return on;
+}
+#define AN_SHADOW_MAX 256
+static struct { const char *name; unsigned after; int ran, skippable, violations; double skip_ms; } g_an_sh[AN_SHADOW_MAX];
+static int g_an_nsh;
+static int an_shadow_slot(const char *name) {
+  int i = 0;
+  while (i < g_an_nsh && g_an_sh[i].name != name && strcmp(g_an_sh[i].name, name) != 0) i++;
+  if (i == g_an_nsh) {
+    if (g_an_nsh == AN_SHADOW_MAX) return -1;
+    memset(&g_an_sh[i], 0, sizeof g_an_sh[i]);
+    g_an_sh[i].name = name; g_an_nsh++;
+  }
+  return i;
+}
+/* around one pass call (AN_PASS calls do not nest): -1 for a pass not
+   shadowed */
+static unsigned g_an_sh_v0; static int g_an_sh_stale; static struct timespec g_an_sh_t0;
+static int an_shadow_begin(Compiler *c, const char *name) {
+  int i = strncmp(name, "desugar_", 8) == 0 ? an_shadow_slot(name) : -1;
+  if (i < 0) return -1;
+  g_an_sh_v0 = c->nt->version;
+  g_an_sh_stale = g_an_sh[i].ran && g_an_sh[i].after == g_an_sh_v0;
+  clock_gettime(CLOCK_MONOTONIC, &g_an_sh_t0);
+  return i;
+}
+static void an_shadow_end(Compiler *c, int i, int r) {
+  if (i < 0) return;
+  struct timespec ts1;
+  clock_gettime(CLOCK_MONOTONIC, &ts1);
+  if (g_an_sh_stale) {
+    g_an_sh[i].skippable++;
+    g_an_sh[i].skip_ms += (double)(ts1.tv_sec - g_an_sh_t0.tv_sec) * 1000.0 +
+                          (double)(ts1.tv_nsec - g_an_sh_t0.tv_nsec) / 1e6;
+    if (r || c->nt->version != g_an_sh_v0) {
+      g_an_sh[i].violations++;
+      fprintf(stderr, "spinel-shadow: violation pass=%s round=%d%s\n", g_an_sh[i].name, g_infer_round,
+              c->nt->version != g_an_sh_v0 ? " tree" : " result");
+    }
+  }
+  g_an_sh[i].ran = 1;
+  g_an_sh[i].after = c->nt->version;
+}
+static void an_shadow_report(void) {
+  if (!an_shadow_on()) return;
+  int calls = 0, viol = 0; double ms = 0;
+  for (int i = 0; i < g_an_nsh; i++) { calls += g_an_sh[i].skippable; viol += g_an_sh[i].violations; ms += g_an_sh[i].skip_ms; }
+  fprintf(stderr, "spinel-shadow: passes=%d skippable_calls=%d skippable_ms=%.1f violations=%d\n",
+          g_an_nsh, calls, ms, viol);
+  for (int i = 0; i < g_an_nsh; i++)
+    fprintf(stderr, "spinel-shadow: pass=%s skippable=%d skippable_ms=%.2f violations=%d\n",
+            g_an_sh[i].name, g_an_sh[i].skippable, g_an_sh[i].skip_ms, g_an_sh[i].violations);
+}
+#define AN_SHADOWED(nm, call) (!an_shadow_on() ? (call) : \
+  ({ int _si = an_shadow_begin(c, (nm)); int _sr = (call); an_shadow_end(c, _si, _sr); _sr; }))
+#define AN_PASS(nm, call) (!sp_timing_on() ? AN_SHADOWED(nm, call) : \
+  ({ double _pt0 = sp_timing_now(); int _pr = AN_SHADOWED(nm, call); an_pass_note((nm), _pt0, _pr != 0); _pr; }))
 #define AN_PASS_V(nm, call) do { if (!sp_timing_on()) { call; } else { \
   double _pt0 = sp_timing_now(); call; an_pass_note((nm), _pt0, 0); } } while (0)
 static int an_pass_cmp(const void *a, const void *b) {
@@ -39419,6 +39483,7 @@ void analyze_program(Compiler *c) {
   an_phase_infer_fixpoint(c);
   { char ex[64]; snprintf(ex, sizeof ex, " rounds=%d%s", g_fixpoint_rounds, g_fixpoint_capped ? " capped=1" : ""); sp_timing_end(tm_fp, "analysis_fixpoint", ex); }
   an_pass_report();
+  an_shadow_report();
   AN_PHASE("post_fixpoint", an_phase_post_fixpoint(c));
   AN_PHASE("procs", an_phase_procs(c));
   AN_PHASE("method_backstops", an_phase_method_backstops(c));
