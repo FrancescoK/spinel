@@ -685,11 +685,12 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
       /* Comparable's relational operators are built on <=>, which answers nil
          against a non-String: that is an ArgumentError, not a comparison
          against the operand reinterpreted as a char pointer (#3592) */
+      int cls = ty_is_hash(sat) || ty_is_array(sat) || sat == TY_RANGE;
       if (sat == TY_INT || sat == TY_FLOAT || sat == TY_NIL || sat == TY_BOOL ||
-          sat == TY_SYMBOL) {
+          sat == TY_SYMBOL || cls) {
         buf_puts(b, "((void)("); emit_expr(c, recv, b);
-        buf_puts(b, "), sp_raise_cls(\"ArgumentError\", sp_sprintf("
-                    "\"comparison of String with %s failed\", sp_poly_inspect(");
+        buf_printf(b, "), sp_raise_cls(\"ArgumentError\", sp_sprintf("
+                      "\"comparison of String with %%s failed\", %s(", cls ? "sp_cmperr_desc" : "sp_poly_inspect");
         emit_boxed(c, argv[0], b);
         buf_puts(b, "))), FALSE)");
         return 1;

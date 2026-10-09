@@ -1939,7 +1939,8 @@ int emit_array_random_kw(Compiler *c, int id, Buf *b, const NodeTable *nt, const
   if (rt == TY_POLY && poly_name_user_claimed(c, name, argc)) return 0;
   int g = struct_kwarg_value(c, kw, "random");
   int nel = 0; nt_arr(nt, kw, "elements", &nel);
-  if (g < 0 || nel != 1 || comp_ntype(c, g) != TY_RANDOM) return 0;
+  TyKind gt = g >= 0 ? comp_ntype(c, g) : TY_UNKNOWN;
+  if (g < 0 || nel != 1 || (gt != TY_RANDOM && gt != TY_POLY)) return 0;
   /* a boxed receiver answers in the slot the call was given */
   TyKind et = rt == TY_POLY ? repr_of(c, id).as_ty : rt;
   int ta = ++g_tmp, tg = ++g_tmp;
@@ -1947,8 +1948,8 @@ int emit_array_random_kw(Compiler *c, int id, Buf *b, const NodeTable *nt, const
   if (rt == TY_POLY) buf_printf(b, "sp_poly_ary_chk(_t%d, \"%s\", 0); ", ta, name);
   int tn = -1;
   if (argc == 2) { tn = ++g_tmp; buf_printf(b, "sp_int _t%d = ", tn); emit_int_expr(c, argv[0], b); buf_puts(b, "; "); }
-  buf_printf(b, "sp_Random *_t%d = ", tg); emit_expr(c, g, b);
-  buf_puts(b, "; ");
+  buf_printf(b, "sp_Random *_t%d = %s", tg, gt == TY_POLY ? "sp_poly_random_recv(" : ""); emit_expr(c, g, b);
+  buf_puts(b, gt == TY_POLY ? ", \"rand\"); " : "; ");
   char call[96];
   if (sp_streq(name, "shuffle!")) {
     buf_printf(b, "sp_poly_shuffle_bang_r(_t%d, _t%d); ", ta, tg);

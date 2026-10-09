@@ -13218,7 +13218,7 @@ static int emit_poly_call0_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
     buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_IntArray_length(_t%d); _t%d++) {", ti, ti, ta, ti);
     if (ebpn) {
       Scope *ebs = comp_scope_of(c, eblk);
-      LocalVar *eblv = ebs ? scope_local(ebs, ebpn) : NULL;
+      LocalVar *eblv = ebs ? scope_local(ebs, ebp) : NULL;
       if (eblv && eblv->type == TY_POLY)
         buf_printf(b, " sp_RbVal lv_%s = sp_box_int(sp_IntArray_get(_t%d, _t%d));", ebpn, ta, ti);
       else

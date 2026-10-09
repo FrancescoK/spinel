@@ -30904,7 +30904,7 @@ static int splat_builtin_range(const char *name, int *lo, int *hi, int *variadic
 static int splat_builtin_keeps_kwsplat(const char *name) {
   static const char *const kw[] = { "round", "encode", "encode!", "each_line", "lines", "readlines", "readline",
                                     "gets", "unpack", "unpack1", "clone", "Integer", "Float", "Rational", "Complex",
-                                    "update", "merge!", NULL };
+                                    "update", "merge!", "sample", "shuffle", "shuffle!", "step", NULL };
   for (int i = 0; kw[i]; i++) if (sp_streq(name, kw[i])) return 1;
   return 0;
 }
@@ -31009,20 +31009,15 @@ static int kwb_seq(NodeTable *nt, const int *st, int n) {
   nt_node_set_ref(nt, p, "body", s);
   return p;
 }
-static int kwb_explicit(NodeTable *nt, int row, int h, Scope *sc) {
-  char hn[32], vn[32], xn[32];
-  snprintf(hn, sizeof hn, "__kwbh%d", nt->count);
-  snprintf(vn, sizeof vn, "__kwbv%d", nt->count);
-  snprintf(xn, sizeof xn, "__kwbx%d", nt->count);
-  int key = nt_new_node(nt, "SymbolNode");
-  nt_node_set_str(nt, key, "value", kwb_rows[row][1]);
+static int kwb_conv(NodeTable *nt, Scope *sc, const char *hn) {
   int hc = kwb_const(nt, "Hash"), eh = nt_new_node(nt, "HashNode");
   nt_node_set_arr(nt, eh, "elements", NULL, 0);
-  int conv = sd_if(nt, sd_call(nt, "nil?", kwb_lv(nt, sc, hn, -1), NULL, 0), eh,
-                   sd_if(nt, sd_call(nt, "is_a?", kwb_lv(nt, sc, hn, -1), &hc, 1), kwb_lv(nt, sc, hn, -1),
-                         sd_call(nt, "to_hash", kwb_lv(nt, sc, hn, -1), NULL, 0)));
-  int ka = nt_new_node(nt, "ArrayNode"), kc = nt_clone_subtree(nt, key), one = nt_new_node(nt, "IntegerNode");
-  nt_node_set_arr(nt, ka, "elements", &kc, 1);
+  return sd_if(nt, sd_call(nt, "nil?", kwb_lv(nt, sc, hn, -1), NULL, 0), eh,
+               sd_if(nt, sd_call(nt, "is_a?", kwb_lv(nt, sc, hn, -1), &hc, 1), kwb_lv(nt, sc, hn, -1),
+                     sd_call(nt, "to_hash", kwb_lv(nt, sc, hn, -1), NULL, 0)));
+}
+static int kwb_reject(NodeTable *nt, Scope *sc, const char *xn) {
+  int one = nt_new_node(nt, "IntegerNode");
   nt_node_set_int(nt, one, "value", 1);
   int pl = sd_if(nt, sd_call(nt, ">", sd_call(nt, "size", kwb_lv(nt, sc, xn, -1), NULL, 0), &one, 1),
                  sd_str(nt, "s"), sd_str(nt, ""));
@@ -31032,13 +31027,24 @@ static int kwb_explicit(NodeTable *nt, int row, int h, Scope *sc) {
   int ra[2] = { kwb_const(nt, "ArgumentError"),
                 sd_call(nt, "+", sd_call(nt, "+", sd_call(nt, "+", sd_str(nt, "unknown keyword"), &pl, 1), &co, 1),
                         &ls, 1) };
+  return sd_if(nt, sd_call(nt, "empty?", kwb_lv(nt, sc, xn, -1), NULL, 0), nt_new_node(nt, "NilNode"),
+               sd_call(nt, "raise", -1, ra, 2));
+}
+static int kwb_explicit(NodeTable *nt, int row, int h, Scope *sc) {
+  char hn[32], vn[32], xn[32];
+  snprintf(hn, sizeof hn, "__kwbh%d", nt->count);
+  snprintf(vn, sizeof vn, "__kwbv%d", nt->count);
+  snprintf(xn, sizeof xn, "__kwbx%d", nt->count);
+  int key = nt_new_node(nt, "SymbolNode");
+  nt_node_set_str(nt, key, "value", kwb_rows[row][1]);
+  int conv = kwb_conv(nt, sc, hn);
+  int ka = nt_new_node(nt, "ArrayNode"), kc = nt_clone_subtree(nt, key);
+  nt_node_set_arr(nt, ka, "elements", &kc, 1);
   int fa[2] = { nt_clone_subtree(nt, key), nt_new_node(nt, kwb_rows[row][2]) };
   if (nt_kind(nt, fa[1]) == NK_IntegerNode) nt_node_set_int(nt, fa[1], "value", 0);
   int st[5] = { kwb_lv(nt, sc, hn, nt_clone_subtree(nt, h)), kwb_lv(nt, sc, vn, conv),
                 kwb_lv(nt, sc, xn, sd_call(nt, "-", sd_call(nt, "keys", kwb_lv(nt, sc, vn, -1), NULL, 0), &ka, 1)),
-                sd_if(nt, sd_call(nt, "empty?", kwb_lv(nt, sc, xn, -1), NULL, 0), nt_new_node(nt, "NilNode"),
-                      sd_call(nt, "raise", -1, ra, 2)),
-                sd_call(nt, "fetch", kwb_lv(nt, sc, vn, -1), fa, 2) };
+                kwb_reject(nt, sc, xn), sd_call(nt, "fetch", kwb_lv(nt, sc, vn, -1), fa, 2) };
   int as = nt_new_node(nt, "AssocNode");
   nt_node_set_ref(nt, as, "key", key);
   nt_node_set_ref(nt, as, "value", kwb_seq(nt, st, 5));
@@ -31095,6 +31101,66 @@ static void kwb_clone_split(Compiler *c, int call, Scope *sc) {
   st[ns++] = ch;
   nt_swap_nodes(nt, call, kwb_seq(nt, st, ns));
 }
+static const char *const kwo_rows[][3] = {
+  { "step", "by", "to" }, { "sample", "random", NULL }, { "shuffle", "random", NULL },
+  { "shuffle!", "random", NULL }, { NULL, NULL, NULL } };
+static int kwo_row(const char *name) {
+  for (int i = 0; name && kwo_rows[i][0]; i++) if (sp_streq(name, kwo_rows[i][0])) return i;
+  return -1;
+}
+static int kwo_sym(NodeTable *nt, const char *s) {
+  int k = nt_new_node(nt, "SymbolNode");
+  nt_node_set_str(nt, k, "value", s);
+  return k;
+}
+static int kwo_tree(NodeTable *nt, int call, int row, int i, int mask, const char *vn, Scope *sc) {
+  if (i < 2 && kwo_rows[row][i + 1]) {
+    int k = kwo_sym(nt, kwo_rows[row][i + 1]);
+    return sd_if(nt, sd_call(nt, "key?", kwb_lv(nt, sc, vn, -1), &k, 1),
+                 kwo_tree(nt, call, row, i + 1, mask | 1 << i, vn, sc), kwo_tree(nt, call, row, i + 1, mask, vn, sc));
+  }
+  int cl = nt_clone_subtree(nt, call), an = nt_ref(nt, cl, "arguments"), n = 0, m = 0, ne = 0, args[16], el[2];
+  const int *av = nt_arr(nt, an, "arguments", &n);
+  for (int j = 0; j + 1 < n; j++) args[m++] = av[j];
+  for (int j = 0; j < 2; j++) {
+    if (!(mask & 1 << j)) continue;
+    int ix = kwo_sym(nt, kwo_rows[row][j + 1]);
+    el[ne] = nt_new_node(nt, "AssocNode");
+    nt_node_set_ref(nt, el[ne], "key", kwo_sym(nt, kwo_rows[row][j + 1]));
+    nt_node_set_ref(nt, el[ne++], "value", sd_call(nt, "[]", kwb_lv(nt, sc, vn, -1), &ix, 1));
+  }
+  if (ne) { args[m] = nt_new_node(nt, "KeywordHashNode"); nt_node_set_arr(nt, args[m++], "elements", el, ne); }
+  if (m) nt_node_set_arr(nt, an, "arguments", args, m);
+  else nt_node_set_ref(nt, cl, "arguments", -1);
+  return cl;
+}
+static void kwb_optional_split(NodeTable *nt, int call, int row, Scope *sc) {
+  int an = nt_ref(nt, call, "arguments"), n = 0, en = 0;
+  const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &n) : NULL;
+  if (n < 1 || n > 16 || nt_kind(nt, av[n - 1]) != NK_KeywordHashNode) return;
+  const int *el = nt_arr(nt, av[n - 1], "elements", &en);
+  int h = en == 1 && nt_kind(nt, el[0]) == NK_AssocSplatNode ? nt_ref(nt, el[0], "value") : -1;
+  if (h < 0) return;
+  char hn[32], vn[32], xn[32];
+  snprintf(hn, sizeof hn, "__kwoh%d", nt->count);
+  snprintf(vn, sizeof vn, "__kwov%d", nt->count);
+  snprintf(xn, sizeof xn, "__kwox%d", nt->count);
+  int ks[2], nk = 0;
+  for (int i = 1; i < 3 && kwo_rows[row][i]; i++) ks[nk++] = kwo_sym(nt, kwo_rows[row][i]);
+  int ka = nt_new_node(nt, "ArrayNode");
+  nt_node_set_arr(nt, ka, "elements", ks, nk);
+  int st[5] = { kwb_lv(nt, sc, hn, nt_clone_subtree(nt, h)), kwb_lv(nt, sc, vn, kwb_conv(nt, sc, hn)),
+                kwb_lv(nt, sc, xn, sd_call(nt, "-", sd_call(nt, "keys", kwb_lv(nt, sc, vn, -1), NULL, 0), &ka, 1)),
+                kwb_reject(nt, sc, xn), kwo_tree(nt, call, row, 0, 0, vn, sc) };
+  nt_swap_nodes(nt, call, kwb_seq(nt, st, 5));
+}
+static int kwo_leaves(NodeTable *nt, int call) {
+  int an = nt_ref(nt, call, "arguments"), n = 0, r = nt_ref(nt, call, "receiver");
+  const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &n) : NULL;
+  if (r < 0 || !splat_leaf_node(nt, r)) return 0;
+  for (int i = 0; i + 1 < n; i++) if (!splat_leaf_node(nt, av[i])) return 0;
+  return 1;
+}
 static void desugar_builtin_kwsplat(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count, nd = 0;
@@ -31102,6 +31168,9 @@ static void desugar_builtin_kwsplat(Compiler *c) {
   int dn[4096], ndn = 0;
   for (int i = 0; i < nd && ndn < 4096; i++) dn[ndn++] = defs[i];
   for (int id = 0; id < n0; id++) {
+    int orow = nt_kind(nt, id) == NK_CallNode ? kwo_row(nt_str(nt, id, "name")) : -1;
+    for (int i = 0; orow >= 0 && i < ndn; i++) if (kwb_is(nt_str(nt, dn[i], "name"), kwo_rows[orow][0])) orow = -1;
+    if (orow >= 0 && kwo_leaves(nt, id)) kwb_optional_split(nt, id, orow, NULL);
     int row = nt_kind(nt, id) == NK_CallNode ? kwb_row(nt_str(nt, id, "name")) : -1;
     for (int i = 0; row >= 0 && i < ndn; i++) if (kwb_is(nt_str(nt, dn[i], "name"), kwb_rows[row][0])) row = -1;
     int an = row >= 0 ? nt_ref(nt, id, "arguments") : -1, n = 0, en = 0, args[16];
@@ -31270,7 +31339,7 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
     adepth = 0;
     argc--;
   }
-  int krow = nuser ? -1 : kwb_row(cnm);
+  int krow = nuser ? -1 : kwb_row(cnm), orow = nuser ? -1 : kwo_row(cnm);
   for (int k = 0; k < argc; k++) {
     if (nt_kind(nt, argv[k]) != NK_KeywordHashNode) continue;
     if (krow >= 0) { fargs[k] = kwb_explicit(nt, krow, fargs[k], comp_scope_of(c, id)); continue; }
@@ -31420,6 +31489,7 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
     }
     nt_node_set_ref(nt, cl, "arguments", an);
     if (krow >= 0) kwb_clone_split(c, cl, comp_scope_of(c, id));
+    if (orow >= 0) kwb_optional_split(nt, cl, orow, comp_scope_of(c, id));
     int ard = nt_new_node(nt, "LocalVariableReadNode");
     nt_node_set_str(nt, ard, "name", anm);
     nt_node_set_int(nt, ard, "depth", adepth);
