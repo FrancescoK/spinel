@@ -1,0 +1,23 @@
+[:r, :a]
+"s1"
+"s1"
+"s1"
+"s1!"
+"s1!"
+"s1!?"
+"s1!?"
+{k: 1}
+true
+[:r, :a, :gh, :a]
+[:r, :a, :gh, :a, :r, :a]
+"s1!?Z"
+true
+true
+"source!"
+"source!"
+[:receiver, :value]
+true
+true
+true
+"source!?"
+[:receiver, :value, :receiver, :value, :receiver, :value]

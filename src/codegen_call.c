@@ -19737,12 +19737,13 @@ static int operand_fresh_str(Compiler *c, int node) {
    its left included (`new(a: r.int, b: f(NAMES.fetch(r.int)))` read the
    second int first), so they are placed before this operand's binding. A
    fresh String (operand_fresh_str) is rendered as the String. */
-static void render_operand(Compiler *c, int node, int fresh, Buf *out, Buf *pre) {
+static void render_operand(Compiler *c, int node, int fresh, int handle, Buf *out, Buf *pre) {
   memset(out, 0, sizeof *out);
   memset(pre, 0, sizeof *pre);
   Buf *sv = g_pre;
   g_pre = pre;
-  if (fresh) {
+  if (handle) emit_strbuf_handle_of(c, node, out);
+  else if (fresh) {
     int v = view_push_repr(c, node, VR_STRBUF_BOX, 0);
     emit_str_expr(c, node, out);
     view_pop(c, v);
@@ -19829,7 +19830,8 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
      may replace, before it checks or converts any of them. */
   if (emit_io_read_nonblock_outbuf(c, id, b)) return 1;
   /* The default setter holds its receiver and String handle in order. */
-  if (strbuf_hash_default_arg(c, id) >= 0) return 0;
+  int harg = strbuf_hash_default_arg(c, id);
+  if (harg >= 0 && ty_is_hash(repr_of(c, nt_ref(c->nt, id, "receiver")).as_ty)) return 0;
   if (emit_or_take_back(c, id, b, emit_str_append_chain_handle)) return 1;
   const NodeTable *nt = c->nt;
   if (id == g_operand_order_node) return 0;
@@ -19953,8 +19955,8 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
       continue;
     }
     if (!bindable && unb < 0) unb = i;
-    int fr = operand[i] != recv && operand_fresh_str(c, operand[i]);
-    TyKind t = fr ? TY_STRING : repr_of(c, operand[i]).as_ty;
+    int fr = operand[i] != harg && operand[i] != recv && operand_fresh_str(c, operand[i]);
+    TyKind t = operand[i] == harg ? TY_STRBUF : fr ? TY_STRING : repr_of(c, operand[i]).as_ty;
     if (t == TY_UNKNOWN || t == TY_VOID || t == TY_NIL) {
       if (unb < 0) return 0;
       unb_lit = 1;
@@ -20044,7 +20046,7 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
     if (copy[i]) { memset(&opb[i], 0, sizeof opb[i]); memset(&opp[i], 0, sizeof opp[i]); }
   for (; !operands_last && rendered < nb && ok; rendered++) {
     if (copy[rendered]) continue;
-    render_operand(c, node[rendered], fresh[rendered], &opb[rendered], &opp[rendered]);
+    render_operand(c, node[rendered], fresh[rendered], node[rendered] == harg, &opb[rendered], &opp[rendered]);
     if (text_is_raise_token(opb[rendered].p)) ok = 0;
   }
   Buf ob; memset(&ob, 0, sizeof ob);
@@ -20062,7 +20064,8 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
         continue;
       }
       tmp[i] = ++g_tmp;
-      view_bind(node[i], "_t%d", tmp[i]);
+      if (node[i] == harg) ran_first_bind(node[i], tmp[i], tmp[i]);
+      else view_bind(node[i], "_t%d", tmp[i]);
       if (repr_share_rule(c) && ty[i] == TY_STRBUF) {
         held[nh++] = view_push_repr(c, node[i], VR_HEAD_HELD, 1);
       }
@@ -20100,7 +20103,7 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
     if (observable < 2 && g_conv_emitted == conv_mark) ok = 0;
     for (; operands_last && rendered < nb && ok; rendered++) {
       if (copy[rendered]) continue;
-      render_operand(c, node[rendered], fresh[rendered], &opb[rendered], &opp[rendered]);
+      render_operand(c, node[rendered], fresh[rendered], node[rendered] == harg, &opb[rendered], &opp[rendered]);
       if (text_is_raise_token(opb[rendered].p)) ok = 0;
     }
   }
@@ -20524,13 +20527,15 @@ static int nil_target_operands(Compiler *c, int id, int boxed, int *node, TyKind
    handle beside it (ran_first_bind), which a mutator changes
    (strbuf_recv_handle). Answers the read's temp, or -1 with nothing
    emitted. */
-static int emit_nil_target_route(Compiler *c, int r, Buf *b, const char *lead) {
+static int emit_nil_target_route(Compiler *c, int r, int handle, Buf *b, const char *lead) {
   Buf hb, op;
   memset(&hb, 0, sizeof hb);
   memset(&op, 0, sizeof op);
   Buf *sv = g_pre;
   g_pre = &op;
-  int ok = emit_strbuf_route(c, r, &hb);
+  int ok = 1;
+  if (handle) emit_strbuf_handle_of(c, r, &hb);
+  else ok = emit_strbuf_route(c, r, &hb);
   g_pre = sv;
   int t = -1;
   if (ok) {
@@ -20570,7 +20575,7 @@ static void emit_nil_target_rest(Compiler *c, int v, const int *node, int n, Buf
   if (k == NK_AssocSplatNode) { emit_nil_target_rest(c, nt_ref(nt, v, "value"), node, n, b); return; }
   if (k == NK_SplatNode) { emit_nil_target_rest(c, nt_ref(nt, v, "expression"), node, n, b); return; }
   Buf ob, op;
-  render_operand(c, v, 0, &ob, &op);
+  render_operand(c, v, 0, 0, &ob, &op);
   if (op.p) buf_puts(b, op.p);
   buf_printf(b, "(void)(%s); ", ob.p ? ob.p : "0");
   free(ob.p); free(op.p);
@@ -20627,18 +20632,22 @@ static void emit_nil_target_head(Compiler *c, int id, Buf *b, const char *lead, 
   const int *la_av = la_a >= 0 ? nt_arr(nt, la_a, "arguments", &la_an) : NULL;
   for (int i = 0; i < la_an && !later_alloc; i++) later_alloc = operand_may_allocate(c, la_av[i]);
   *held = -1;
+  int harg = strbuf_hash_default_arg(c, id);
   for (int i = 0; i < n; i++) {
     Buf ob, op;
     /* --share-strings: a receiver that is a route over a shared String
        (emit_strbuf_route) is held as the handle it hands on, which the
        mutator then changes (strbuf_recv_handle reads it) */
     if (node[i] == r && repr_share_rule(c) && (ty[i] == TY_STRING || ty[i] == TY_STRBUF)) {
-      int t = emit_nil_target_route(c, r, b, lead);
+      int t = emit_nil_target_route(c, r, 0, b, lead);
       if (t >= 0) { snprintf(rtext, sizeof rtext, "_t%d", t); continue; }
     }
+    /* A retained argument's handle is taken at this first evaluation,
+       before another operand can overwrite the return channel. */
+    if (node[i] == harg && emit_nil_target_route(c, node[i], 1, b, lead) >= 0) continue;
     /* not fresh: ty[i] declares the temp, and a fresh String (#7580) renders as the String
        where its stored type is the handle */
-    render_operand(c, node[i], 0, &ob, &op);
+    render_operand(c, node[i], 0, 0, &ob, &op);
     if (op.p) buf_puts(b, op.p);
     buf_puts(b, lead);
     if (ty[i] == TY_NIL) {
