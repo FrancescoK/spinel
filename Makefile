@@ -3255,6 +3255,10 @@ optcarrot: $(SPINEL) $(SP_RT_LIB) $(SPINEL_TIMEOUT)
 	fi
 
 # ---- Developer gates ----
+.PHONY: cext-header-test
+cext-header-test:
+	@CC="$(CC)" sh test/cext/header-test.sh
+
 #
 # `test`, `bench` and `optcarrot` only READ the compiler binaries and
 # write to disjoint build/ dirs, so they run concurrently as parallel
