@@ -18,6 +18,20 @@ static const rb_data_type_t data_type = {
     .parent = &parent_type
 };
 int main(void) {
+    void *early = sp_gc_alloc(sizeof(long), NULL, NULL);
+    sp_RbVal early_value = {SP_TAG_OBJ, 123, {.p = early}};
+    (void)sp_cext_value(early_value); /* no arena: must still install weak-table hooks */
+    sp_gc_collect();
+    assert(sp_cext_handle_count() == 0);
+    VALUE registered = Qnil;
+    rb_gc_register_address(&registered);
+    early = sp_gc_alloc(sizeof(long), NULL, NULL); early_value.v.p = early;
+    registered = sp_cext_value(early_value);
+    sp_gc_collect();
+    assert(sp_cext_handle_count() == 1 && sp_cext_rbval(registered).v.p == early);
+    rb_gc_unregister_address(&registered);
+    for (int i = 0; i < 256 && sp_cext_handle_count(); ++i) sp_gc_collect();
+    assert(sp_cext_handle_count() == 0);
     sp_cext_arena_mark outer = sp_cext_arena_enter();
     long *object = sp_gc_alloc(sizeof(long), finalize, NULL);
     *object = 42;
