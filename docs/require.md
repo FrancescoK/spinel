@@ -57,7 +57,7 @@ These are provided by Spinel but, like CRuby, only after their `require`:
 | `require "csv"` | `CSV` (with `CSV::Row` / `CSV::Table`) | uninitialized constant |
 | `require "monitor"` | `Monitor` (`#synchronize`) | `NameError` (uninitialized constant) |
 | `require "socket"` | `TCPServer`, `TCPSocket`, `UDPSocket`, `UNIXServer`, `UNIXSocket`, `Socket`, `Addrinfo` | `NameError` (uninitialized constant) |
-| `require "pathname"` | `Pathname` | uninitialized constant |
+| `require "pathname"` | `Pathname`, `Pathname()` | uninitialized constant |
 | `require "io/console"` | `IO#winsize` | `NoMethodError` |
 | `require "time"` | `Time#iso8601` | `NoMethodError` |
 | `require "bigdecimal"` | `BigDecimal`, `BigDecimal()` (a minimal subset: see `packages/bigdecimal/bigdecimal.rb`) | `NoMethodError` (`BigDecimal()`) |
