@@ -6287,6 +6287,27 @@ static int infer_nil_chain_call(Compiler *c, int id, const NodeTable *nt, const 
   return 0;
 }
 
+/* Is node `id` the value scope `mi` returns by falling off its end: its
+   body's last statement, through parentheses, statement lists and a begin
+   without a rescue? */
+int node_is_scope_tail(Compiler *c, int mi, int id) {
+  const NodeTable *nt = c->nt;
+  if (mi < 0 || mi >= c->nscopes) return 0;
+  int n = c->scopes[mi].body;
+  for (int depth = 0; n >= 0 && depth < 16; depth++) {
+    if (n == id) return 1;
+    NodeKind k = nt_kind(nt, n);
+    if (k == NK_StatementsNode) {
+      int bn = 0; const int *bb = nt_arr(nt, n, "body", &bn);
+      n = bn > 0 ? bb[bn - 1] : -1;
+    }
+    else if (k == NK_ParenthesesNode) n = nt_ref(nt, n, "body");
+    else if (k == NK_BeginNode && nt_ref(nt, n, "rescue_clause") < 0) n = nt_ref(nt, n, "statements");
+    else return 0;
+  }
+  return 0;
+}
+
 /* A Kernel method that runs its block: loop, catch and throw, instance_eval and instance_exec, a trampoline's block (infer_call_inner's rules, in their order) */
 static int infer_block_kernel_call(Compiler *c, int id, const NodeTable *nt, const char *name, int recv, TyKind rt, TyKind *out) {
   if (recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode &&
@@ -6373,6 +6394,12 @@ static int infer_block_kernel_call(Compiler *c, int id, const NodeTable *nt, con
         Scope *encl = comp_scope_of(c, id);
         int emi = encl && call_forwards_own_block(c, id) ? (int)(encl - c->scopes) : -1;
         if (emi >= 0) {
+          /* sites whose blocks answer different kinds: one node serves them
+             all, so the value is boxed, as a yield's is (infer_yield_node);
+             the first site's type held the others' values in its slot. As
+             the method's own tail it keeps the first site's type, as a bare
+             yield tail does: each inlined site returns its own value */
+          if (yield_value_diverges(c, emi) && !node_is_scope_tail(c, emi, id)) { *out = TY_POLY; return 1; }
           TyKind ft = yield_value_type(c, emi);
           if (ft != TY_UNKNOWN && ft != TY_VOID) { *out = ft; return 1; }
         }

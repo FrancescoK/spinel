@@ -1648,6 +1648,8 @@ void emit_block_param_from_boxed(Compiler *c, const char *pname, TyKind pt, cons
 void emit_rest_pack_kwh(Compiler *c, int from, int pos_argc, const int *argv, int kwh, Buf *b);
 int rest_kwh_tail(Compiler *c, Scope *m, int kwh, int pos_argc);
 int rest_bind_argc(Compiler *c, Scope *m, int kwh, int pos_argc);
+int yield_value_diverges(Compiler *c, int mi);
+int node_is_scope_tail(Compiler *c, int mi, int id);
 int kwh_gathers(Compiler *c, Scope *m, int kwh, const int *argv, int pos_argc);
 int emit_kwh_spread_arg(Compiler *c, int kwh, Buf *b);
 int kwh_positional_slot(Compiler *c, Scope *m, int kwh, int pos_argc);

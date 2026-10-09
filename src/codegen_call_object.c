@@ -683,6 +683,16 @@ int emit_call_instance_eval_arms(Compiler *c, int id, Buf *b, const NodeTable *n
   }
   if (ie_direct || ie_tramp) {
     int blk = nt_ref(nt, id, "block");
+    /* the block forwarded is the enclosing method's own, whose sites' blocks
+       answer different kinds, on a receiver not dispatched by class: the
+       call is boxed (infer_call's instance_exec arm), so is this site's value */
+    int ie_fwd_boxed = 0;
+    if (blk >= 0 && nt_kind(nt, blk) == NK_BlockArgumentNode && call_forwards_own_block(c, id) &&
+        (recv < 0 || comp_ntype(c, recv) != TY_POLY)) {
+      Scope *fsc = comp_scope_of(c, id);
+      int fmi = fsc ? (int)(fsc - c->scopes) : -1;
+      ie_fwd_boxed = fmi >= 0 && yield_value_diverges(c, fmi) && !node_is_scope_tail(c, fmi, id);
+    }
     /* `instance_exec(args, &b)` forwarding the enclosing (now-inlined) method's
        block param: the real block is the literal active at the inline splice,
        so resolve the BlockArgumentNode to it (as `inner(&block)` does). */
@@ -916,7 +926,16 @@ int emit_call_instance_eval_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       if (ie_flip) { ie_sc->is_cmethod = ie_sv_cm; ie_sc->class_id = ie_sv_cls; comp_scope_move_end(); }
       g_self = saved_self2;
       g_self_deref = saved_deref2;
-      if (scalar_res) buf_printf(b, "_t%d", tres);
+      /* The call boxed for a forwarded block whose sites answer different
+         kinds (ie_fwd_boxed) takes this site's value boxed, a nil block's as
+         nil */
+      TyKind ie_call_ty = ie_fwd_boxed ? repr_of(c, id).as_ty : TY_UNKNOWN;
+      if (scalar_res && ie_call_ty == TY_POLY && body_ty != TY_POLY) {
+        char tv[32]; snprintf(tv, sizeof tv, "_t%d", tres);
+        emit_boxed_text(c, body_ty, tv, b);
+      }
+      else if (scalar_res) buf_printf(b, "_t%d", tres);
+      else if (ie_call_ty == TY_POLY && (body_ty == TY_NIL || body_ty == TY_VOID)) buf_puts(b, "sp_box_nil()");
       else buf_printf(b, "_t%d", tr);  /* statement use: value is the receiver */
       return 1;
     }
