@@ -8225,6 +8225,14 @@ static SP_NORETURN void sp_scan_bad_pattern(sp_RbVal pat) {
                 : sp_poly_class_name(pat);
   sp_raise_cls("TypeError", sp_sprintf("wrong argument type %s (expected Regexp)", n));
 }
+/* A boxed split/partition pattern that is neither a Regexp nor a String:
+   CRuby names the Regexp it wanted. nil is split's whitespace mode, and a
+   user object goes on to its #to_str. */
+static sp_RbVal sp_poly_pattern_chk(sp_RbVal v, int nil_ok) {
+  if (v.tag == SP_TAG_NIL ? !nil_ok : v.tag != SP_TAG_OBJ || (v.cls_id < 0 && !sp_poly_is_strbuf(v)))
+    sp_scan_bad_pattern(v);
+  return v;
+}
 /* match? / match on a boxed operand, ahead of the poly match helpers,
    which answered no match whatever the operands were. The call's n
    arguments are at args, the pattern first: a receiver other than a

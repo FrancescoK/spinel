@@ -8073,7 +8073,10 @@ static int str_arms_poly_pattern(Compiler *c, int id, Buf *b, const NodeTable *n
   view_pop(c, v);
   view_unbind(bind);
   buf_puts(&eb, ") : (");
-  bind = view_bind(argv[0], "_t%d", tp);
+  /* anything else: split and partition say CRuby's "expected Regexp" */
+  if (sp_streq(name, "split") || is_partition_family(name))
+    bind = view_bind(argv[0], sp_streq(name, "split") ? "sp_poly_pattern_chk(_t%d, 1)" : "sp_poly_pattern_chk(_t%d, 0)", tp);
+  else bind = view_bind(argv[0], "_t%d", tp);
   g_poly_pattern_open = 1;
   ok = ok && str_arms_text(c, id, &eb, nt, name, recv, argc, argv, rs);
   /* only ever entered closed, so closing is restoring */

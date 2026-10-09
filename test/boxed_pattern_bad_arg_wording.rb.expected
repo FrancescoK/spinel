@@ -1,0 +1,36 @@
+1 0: wrong argument type Integer (expected Regexp)
+1 1: wrong argument type Integer (expected Regexp)
+1 2: wrong argument type Integer (expected Regexp)
+1 3: wrong argument type Integer (expected Regexp)
+2.5 0: wrong argument type Float (expected Regexp)
+2.5 1: wrong argument type Float (expected Regexp)
+2.5 2: wrong argument type Float (expected Regexp)
+2.5 3: wrong argument type Float (expected Regexp)
+:sym 0: wrong argument type Symbol (expected Regexp)
+:sym 1: wrong argument type Symbol (expected Regexp)
+:sym 2: wrong argument type Symbol (expected Regexp)
+:sym 3: wrong argument type Symbol (expected Regexp)
+nil 0: ["abc", "d"]
+nil 1: ["abc", "d"]
+nil 2: wrong argument type nil (expected Regexp)
+nil 3: wrong argument type nil (expected Regexp)
+true 0: wrong argument type true (expected Regexp)
+true 1: wrong argument type true (expected Regexp)
+true 2: wrong argument type true (expected Regexp)
+true 3: wrong argument type true (expected Regexp)
+1..2 0: wrong argument type Range (expected Regexp)
+1..2 1: wrong argument type Range (expected Regexp)
+1..2 2: wrong argument type Range (expected Regexp)
+1..2 3: wrong argument type Range (expected Regexp)
+#<Se 0: ["a", "c d"]
+#<Se 1: ["a", "c d"]
+#<Se 2: ["a", "b", "c d"]
+#<Se 3: ["a", "b", "c d"]
+"b" 0: ["a", "c d"]
+"b" 1: ["a", "c d"]
+"b" 2: ["a", "b", "c d"]
+"b" 3: ["a", "b", "c d"]
+/b/ 0: ["a", "c d"]
+/b/ 1: ["a", "c d"]
+/b/ 2: ["a", "b", "c d"]
+/b/ 3: ["a", "b", "c d"]
