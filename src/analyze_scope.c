@@ -5761,10 +5761,17 @@ static void specialize_cmethod_for(Compiler *c, int mi, int def_cls, int ci);
 /* attr_reader/attr_accessor/attr_writer and alias_method in a MODULE body
    belong to every class that includes it, just like a plain def. The transplant
    copies method scopes only, so carry the declarative surface across too: the
-   reader/writer names (with their backing ivars) and the alias table (#3774). */
+   reader/writer names (with their backing ivars) and the alias table (#3774).
+   A module takes its own includes' surface in the same walk, and one can come
+   after a class that includes it (a module nested in its includer), so the
+   walk repeats until no class gains a name. */
 void register_include_attrs(Compiler *c) {
+  int grew = 1;
+  while (grew) {
+  grew = 0;
   for (int ci = 0; ci < c->nclasses; ci++) {
     ClassInfo *cls = &c->classes[ci];
+    int n0 = cls->nreaders + cls->nwriters + cls->naliases;
     for (int k = 0; k < cls->nincluded_mods; k++) {
       int mi = cls->included_mods[k];
       if (mi < 0 || mi >= c->nclasses || mi == ci) continue;
@@ -5784,6 +5791,8 @@ void register_include_attrs(Compiler *c) {
       for (int a = 0; a < mod->naliases; a++)
         comp_add_alias(cls, mod->alias_new[a], mod->alias_old[a]);
     }
+    if (cls->nreaders + cls->nwriters + cls->naliases != n0) grew = 1;
+  }
   }
 }
 
