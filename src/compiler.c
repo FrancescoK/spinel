@@ -1940,7 +1940,7 @@ static struct pc_entry *pc_memo(Compiler *c, const char *name) {
 const PolyCand *comp_poly_candidates(Compiler *c, const char *name, int *n) {
   if (!name) { *n = 0; return NULL; }
   struct pc_entry *e = pc_memo(c, name);
-  if (!e || (mv_n && e->n < 0)) {
+  if (!e || mv_n) {
     /* scope shape may still change: answer fresh, and keep nothing */
     e = calloc(1, sizeof *e);
     pc_build(c, name, &e->cands, &e->n);
