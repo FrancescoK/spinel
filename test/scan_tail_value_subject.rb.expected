@@ -1,0 +1,27 @@
+"cd"
+[String, true]
+"ab"
+[String, true]
+"ef"
+"ghi"
+true
+"jk"
+true
+"lm"
+"a.b.c"
+"a1b2"
+["xyz", ["X", "Y", "Z"]]
+"a1"
+"on"
+"off"
+"abc"
+"var"
+"UV"
+["ab", "ab"]
+"k9"
+"yv"
+true
+["ghi", true]
+"pc"
+"cd cd"
+3

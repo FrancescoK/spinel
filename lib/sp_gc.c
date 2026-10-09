@@ -65,6 +65,10 @@ size_t sp_gc_old_bytes = 0;
 int sp_gc_cycle = 0;
 void (*sp_gc_mark_suspended_fibers_hook)(void) = NULL;
 void (*sp_gc_mark_globals_hook)(void) = NULL;
+#ifdef SP_CEXT
+void (*sp_gc_mark_cext_hook)(void) = NULL;
+void (*sp_gc_sweep_cext_hook)(int full) = NULL;
+#endif
 void (*sp_gc_str_sweep_hook)(void) = NULL;
 int (*sp_gc_str_major_due_hook)(void) = NULL;
 int sp_gc_root_phase = 0;   /* the mark is walking the C roots (see sp_gc_mark_all) */
@@ -584,6 +588,9 @@ else{void*obj=*e;if(obj)sp_gc_mark(obj);}}
   sp_gc_root_phase=0;
   SP_GC_MK_PH(sp_gc_ph_mk_fibers);
   if(vd)sp_gc_dbg_phase="globals";if(sp_gc_mark_globals_hook)sp_gc_mark_globals_hook();
+#ifdef SP_CEXT
+  if(sp_gc_mark_cext_hook)sp_gc_mark_cext_hook();
+#endif
   SP_GC_MK_PH(sp_gc_ph_mk_globals);
   sp_gc_mark_drain_all();
   sp_gc_mkl_fold();
@@ -1467,6 +1474,9 @@ void sp_gc_collect(void){
     if (sp_gc_pin_overflow && keep < SP_GC_PINNED_MAX) sp_gc_pin_overflow = 0; }
   if (sp_fin_n) sp_fin_after_mark(full);
   if (sp_ivt_n) sp_ivt_after_mark(full);
+#ifdef SP_CEXT
+  if (sp_gc_sweep_cext_hook) sp_gc_sweep_cext_hook(full);
+#endif
   SP_GC_PH(sp_gc_ph_mark);
   sp_str_mark_settle(full);
   if(full){

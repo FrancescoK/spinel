@@ -51,6 +51,9 @@ static int sp_exc_level_matches(const char *cls, const char *target) {
    byte happened to read as an unmarked heap string. */
 int sp_exc_cls_matches(const char *raised, const char *target) {
   if (!raised || !target) return 0;
+#ifdef SP_CEXT
+  if (!strcmp(raised, "fatal")) return 0; /* rb_fatal runs ensures, bypasses rescues */
+#endif
   raised = sp_exc_canonical_name(raised);
   target = sp_exc_canonical_name(target);
   /* The builtin hierarchy lives in sp_exc_parent_of_name -- there used to be a
@@ -165,6 +168,30 @@ const char *sp_exc_msg_counted_frozen(const char *m, size_t n) {
   r[5] = 0x02;
   return r;
 }
+/* How an exception's class prints. A Class.new class is keyed by the name the
+   compiler gave it, which is not the name Ruby shows (#<Class:0x...> until a
+   constant names it); a program that has one installs sp_class_display_fn, and
+   every other program prints the key. */
+extern const char *(*sp_class_display_fn)(sp_Class);
+const char *sp_exc_cls_display(const char *cn) {
+  if (!sp_class_display_fn || !cn) return cn;
+  sp_Class c = {-1, cn};
+  const char *d = sp_class_display_fn(c);
+  return d ? d : cn;
+}
+/* An unnamed Class.new class prints in the address form, and CRuby adds no
+   "(Class)" suffix for it. */
+sp_bool sp_exc_cls_unnamed(const char *shown) {
+  return shown && strncmp(shown, "#<Class:", 8) == 0;
+}
+/* The default message text of class `cn` when its display differs from the key,
+   as a string on the heap the caller roots; sp_str_empty when it does not. */
+static const char *sp_exc_disp_heap(const char *cn) {
+  if (!sp_class_display_fn) return sp_str_empty;
+  const char *d = sp_exc_cls_display(cn);
+  if (d == cn || strcmp(d, cn) == 0) return sp_str_empty;
+  return sp_msg_heapify(d);
+}
 static const char *sp_exc_msg_copy(const char *m) {
   if (sp_cmsg_p(m)) {   /* the counted message decodes to its payload, a NUL kept */
     size_t cn = sp_cmsg_len(m);
@@ -236,9 +263,10 @@ void *sp_exc_new_sub_sized(size_t sz, const char *cls_name, const char *msg) {if
   /* heap-launder the message (see sp_exc_new); memset left msg NULL, so a GC
      during the copy scans a consistent struct */
   SP_GC_ROOT(e);
+  const char *dm = sp_exc_disp_heap(e->cls_name); SP_GC_ROOT_STR(dm);
   /* an explicitly given message stays, even empty (#3713) */
   e->msg = sp_exc_msg_copy((msg && msg[0]) ? msg
-                            : (sp_exc_msg_empty_given(msg) ? "" : e->cls_name));
+                            : (sp_exc_msg_empty_given(msg) ? "" : (dm[0] ? dm : e->cls_name)));
   if (msg == sp_exc_no_msg_frozen) ((unsigned char *)e->msg)[-1] = 0xfa;   /* `raise C, ""` */
   /* The copy can collect, and a collection promotes the rooted object it
      is filling: an old holder then receives a young string. Recorded after
@@ -323,9 +351,10 @@ sp_Exception *sp_exc_new(const char *cls_name, const char *msg) {if (!sp_exc_msg
      the tag byte at msg[-1], which only heap strings carry -- keeping a
      raise site's rodata literal would under-read one byte before it. */
   SP_GC_ROOT(e);
+  const char *dm = sp_exc_disp_heap(e->cls_name); SP_GC_ROOT_STR(dm);
   e->msg = sp_exc_msg_copy((msg && msg[0]) ? msg
                             : (sp_exc_msg_empty_given(msg) ? ""
-                                                    : (cls_name ? cls_name : "RuntimeError")));
+                                                    : (dm[0] ? dm : (cls_name ? cls_name : "RuntimeError"))));
   if (msg == sp_exc_no_msg_frozen) ((unsigned char *)e->msg)[-1] = 0xfa;   /* `raise C, ""` */
   sp_gc_wb((void *)e);   /* same reason as sp_exc_new_sub_sized */
   return e;
@@ -391,10 +420,11 @@ int sp_exc_exit_status(void *obj) {
 sp_Exception *sp_exc_exception(sp_Exception *e, const char *msg) {SP_GC_ROOT(e);if (!sp_exc_msg_empty_given(msg)) msg = sp_msg_heapify(msg); SP_GC_ROOT_STR(msg);
   sp_Exception *n = sp_exc_dup(e);
   SP_GC_ROOT(n);
+  const char *dm = sp_exc_disp_heap(n->cls_name); SP_GC_ROOT_STR(dm);
   /* an explicitly given empty message stays empty, frozen for a literal's,
      as sp_exc_new keeps it */
   n->msg = sp_exc_msg_copy((msg && msg[0]) ? msg
-                           : (sp_exc_msg_empty_given(msg) ? "" : (n->cls_name ? n->cls_name : "RuntimeError")));
+                           : (sp_exc_msg_empty_given(msg) ? "" : (dm[0] ? dm : (n->cls_name ? n->cls_name : "RuntimeError"))));
   if (msg == sp_exc_no_msg_frozen) ((unsigned char *)n->msg)[-1] = 0xfa;
   n->msg_h = NULL;   /* the new message, not the receiver's handle */
   sp_gc_wb((void *)n);   /* same reason as sp_exc_new_sub_sized */
@@ -1061,7 +1091,7 @@ const char *sp_exc_cat(int n, ...) {
    copy runs with no collection, so no argument needs a root. */
 const char *sp_exc_full_text(volatile sp_Exception *ve, const char *msg) {
   sp_Exception *e = (sp_Exception *)ve;
-  const char *cn = e && e->cls_name ? e->cls_name : "RuntimeError";
+  const char *cn = sp_exc_cls_display(e && e->cls_name ? e->cls_name : "RuntimeError");
   size_t lc = strlen(cn), lm = sp_str_byte_len(msg);
   char *r = sp_str_alloc_nogc(lc + 2 + lm);
   memcpy(r, cn, lc); memcpy(r + lc, ": ", 2); memcpy(r + lc + 2, msg, lm);
@@ -1069,10 +1099,31 @@ const char *sp_exc_full_text(volatile sp_Exception *ve, const char *msg) {
 }
 const char *sp_exc_detailed_text(volatile sp_Exception *ve, const char *msg) {
   sp_Exception *e = (sp_Exception *)ve;
-  const char *cn = e && e->cls_name ? e->cls_name : "RuntimeError";
+  const char *cn = sp_exc_cls_display(e && e->cls_name ? e->cls_name : "RuntimeError");
   size_t lc = strlen(cn), lm = sp_str_byte_len(msg);
-  char *r = sp_str_alloc_nogc(lm + 2 + lc + 1);
-  memcpy(r, msg, lm); memcpy(r + lm, " (", 2); memcpy(r + lm + 2, cn, lc); r[lm + 2 + lc] = ')';
+  /* An empty message names the class, except RuntimeError's default text.
+     The class annotation belongs on the first line; a lone final newline
+     is replaced by it, while subsequent lines keep their bytes. */
+  if (!lm) {
+    const char *text = strcmp(cn, "RuntimeError") == 0 ? "unhandled exception" : cn;
+    size_t len = strlen(text);
+    char *r = sp_str_alloc_nogc(len);
+    memcpy(r, text, len);
+    return r;
+  }
+  /* no class annotation for an unnamed Class.new class */
+  if (sp_exc_cls_unnamed(cn)) {
+    char *r = sp_str_alloc_nogc(lm);
+    memcpy(r, msg, lm);
+    return r;
+  }
+  const char *nl = memchr(msg, '\n', lm);
+  size_t first = nl ? (size_t)(nl - msg) : lm;
+  size_t tail = lm - first;
+  if (tail == 1) tail = 0;
+  char *r = sp_str_alloc_nogc(first + 2 + lc + 1 + tail);
+  memcpy(r, msg, first); memcpy(r + first, " (", 2); memcpy(r + first + 2, cn, lc); r[first + 2 + lc] = ')';
+  if (tail) memcpy(r + first + 2 + lc + 1, msg + first, tail);
   return r;
 }
 const char *sp_exc_inspect(void *p) {
@@ -1082,6 +1133,8 @@ const char *sp_exc_inspect(void *p) {
   const char *msg = sp_exc_to_s_text(e);
   SP_GC_ROOT(msg);
   const char *cn = sp_exc_class_name(e);
+  SP_GC_ROOT(cn);
+  cn = sp_exc_cls_display(cn);
   SP_GC_ROOT(cn);
   return (!msg || !sp_str_byte_len(msg)) ? cn : sp_exc_cat(5, SPL("#<"), cn, SPL(": "), msg, SPL(">"));
 }
@@ -1162,10 +1215,23 @@ SP_NORETURN SP_COLD void sp_stack_too_deep(void) {
 
 /* The per-fiber handler context (lib/sp_exc_ctx.h): the operations that touch
    only the context itself. */
-void *sp_exc_ctx_new(void) { return calloc(1, sizeof(sp_exc_ctx_t)); }
+void *sp_exc_ctx_new(void) {
+#ifdef SP_CEXT
+  sp_exc_ctx_t *ctx = calloc(1, sizeof(sp_exc_ctx_t));
+  if (ctx) ctx->cext_errinfo = Qnil;
+  return ctx;
+#else
+  return calloc(1, sizeof(sp_exc_ctx_t));
+#endif
+}
 void sp_exc_ctx_free(void *p) {
   sp_exc_ctx_t *x = (sp_exc_ctx_t *)p;
   if (!x) return;
+#ifdef SP_CEXT
+  rb_gc_unregister_address(&x->cext_errinfo);
+  sp_cext_arena_context_dispose(&x->cext_arena);
+  free(x->cext_marks);
+#endif
   free(x->es); free(x->em); free(x->ec); free(x->eo);
   free(x->cs); free(x->ct); free(x->ctk); free(x->cv); free(x->cet);
   free(x->bs); free(x->bv); free(x->bser); free(x->bet); free(x->shand);

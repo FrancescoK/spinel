@@ -1,3 +1,4 @@
+# spinel: reject-share
 # A String read through a reader on a boxed receiver is changed before the
 # local is rebound to a copy, so the change is the member's own in CRuby
 # and would be lost to a copy here: refused. Rebound before the change, it

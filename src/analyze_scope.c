@@ -1126,10 +1126,46 @@ void refuse_native_singleton_reopen(Compiler *c, Scope *s) {
   refuse_native_class_reopen(c, s->def_node, recv, ci, nt_str(c->nt, recv, "name"));
 }
 
-void walk_scope(Compiler *c, int id, int scope_idx, int class_id) {
+static int alias_pred_const(const NodeTable *nt, int pred);
+
+/* Whether the program defines or aliases a define_method of its own (a def,
+   a singleton def, `alias` or `alias_method`), whose call with a computed name
+   is then an ordinary call. Asked once per compile: the first computed-name
+   call scans the node table and the answer is kept on the Compiler. */
+static int user_define_method(Compiler *c) {
+  if (c->user_define_method) return c->user_define_method == 2;
+  const NodeTable *nt = c->nt;
+  int found = 0;
+  NT_FOREACH_KIND(nt, NK_DefNode, d)
+    if (is_define_method_name(nt_str(nt, d, "name"))) found = 1;
+  NT_FOREACH_KIND(nt, NK_AliasMethodNode, a) {
+    int nn = nt_ref(nt, a, "new_name");
+    if (nn >= 0 && is_define_method_name(nt_str(nt, nn, "value"))) found = 1;
+  }
+  NT_FOREACH_KIND(nt, NK_CallNode, k) {
+    int an = nt_ref(nt, k, "arguments"), ac = 0;
+    const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
+    if (ac > 0 && is_alias_method_name(nt_str(nt, k, "name")) &&
+        is_define_method_name(nt_str(nt, av[0], "value"))) found = 1;
+  }
+  c->user_define_method = found ? 2 : 1;
+  return found;
+}
+
+static void walk_scope_in(Compiler *c, int id, int scope_idx, int class_id, int proc, int dead) {
   if (id < 0 || id >= c->nt->count) return;
   c->nscope[id] = scope_idx;
   c->node_cbody[id] = g_cbody_class_id;
+  if (proc >= 0 && nt_kind(c->nt, id) == NK_CallNode &&
+      (nt_int(c->nt, id, "class_new_capture", 0) || nt_int(c->nt, id, "class_new_superclass", 0) ||
+       is_ivar_access(nt_str(c->nt, id, "name"))))
+    nt_node_set_int((NodeTable *)c->nt, id, "refusal_proc", proc);
+  if (dead && nt_kind(c->nt, id) == NK_CallNode &&
+      (nt_int(c->nt, id, "class_new_capture", 0) || nt_int(c->nt, id, "class_new_superclass", 0) ||
+       is_define_method_name(nt_str(c->nt, id, "name")) || is_ivar_access(nt_str(c->nt, id, "name"))))
+    nt_node_set_int((NodeTable *)c->nt, id, "refusal_dead", 1);
+  if (nt_kind(c->nt, id) == NK_DefNode) proc = -1;
+  else if (is_proc_create(c, id)) proc = id;
   const char *ty = nt_type(c->nt, id);
   int child = scope_idx;
   int child_class = class_id;
@@ -1308,6 +1344,21 @@ void walk_scope(Compiler *c, int id, int scope_idx, int class_id) {
        function (class_id stays -1), matching `def`. */
     const char *dm_cn = nt_str(c->nt, id, "name");
     int dm_recv = nt_ref(c->nt, id, "receiver");
+    if (is_define_method_name(dm_cn) && (scope_idx > 0 || g_cbody_direct >= 0) &&
+        (dm_recv < 0 || nt_kind(c->nt, dm_recv) == NK_SelfNode)) {
+      int an = nt_ref(c->nt, id, "arguments"), ac = 0;
+      const int *av = an >= 0 ? nt_arr(c->nt, an, "arguments", &ac) : NULL;
+      if (ac > 0 && nt_kind(c->nt, av[0]) != NK_SymbolNode && nt_kind(c->nt, av[0]) != NK_StringNode &&
+          !user_define_method(c)) {
+        NodeTable *nt = (NodeTable *)c->nt;
+        nt_node_set_int(nt, id, "define_method_name", 1);
+        nt_node_set_str(nt, id, "name", "raise");
+        nt_node_set_ref(nt, id, "receiver", -1);
+        nt_node_set_ref(nt, id, "block", -1);
+        nt_node_set_ref(nt, id, "arguments", -1);
+        dm_cn = nt_str(nt, id, "name");
+      }
+    }
     int dm_is_dm  = dm_cn && sp_streq(dm_cn, "define_method") && dm_recv < 0;
     int dm_is_dsm = dm_cn && sp_streq(dm_cn, "define_singleton_method");
     /* define_singleton_method registers a class method on the resolved target:
@@ -1396,20 +1447,33 @@ void walk_scope(Compiler *c, int id, int scope_idx, int class_id) {
   if (child != scope_idx) g_cbody_direct = -1;
   else if (child_class >= 0) g_cbody_direct = child_class;
 
+  int pred = -1, then_body = -1, else_body = -1;
+  NodeKind kind = nt_kind(c->nt, id);
+  if (kind == NK_IfNode || kind == NK_UnlessNode) {
+    pred = alias_pred_const(c->nt, nt_ref(c->nt, id, "predicate"));
+    if (pred >= 0 && kind == NK_UnlessNode) pred = !pred;
+    then_body = nt_ref(c->nt, id, "statements");
+    else_body = nt_ref(c->nt, id, kind == NK_UnlessNode ? "else_clause" : "subsequent");
+  }
   int nr = nt_num_refs(c->nt, id);
   for (int i = 0; i < nr; i++) {
     int r = nt_ref_at(c->nt, id, i);
-    if (r >= 0) walk_scope(c, r, child, child_class);
+    int arm_dead = dead || (pred == 0 && r == then_body) || (pred == 1 && r == else_body);
+    if (r >= 0) walk_scope_in(c, r, child, child_class, proc, arm_dead);
   }
   int na = nt_num_arrs(c->nt, id);
   for (int i = 0; i < na; i++) {
     int n = 0;
     const int *ids = nt_arr_at(c->nt, id, i, &n);
     for (int j = 0; j < n; j++)
-      if (ids[j] >= 0) walk_scope(c, ids[j], child, child_class);
+      if (ids[j] >= 0) walk_scope_in(c, ids[j], child, child_class, proc, dead);
   }
   g_cbody_class_id = saved_cbody;
   g_cbody_direct = saved_direct;
+}
+
+void walk_scope(Compiler *c, int id, int scope_idx, int class_id) {
+  walk_scope_in(c, id, scope_idx, class_id, -1, 0);
 }
 
 /* A `module_function` call of module `ci`'s body: bare, it turns on the mode
@@ -5008,10 +5072,6 @@ static const char *builtin_value_superclass(Compiler *c, int sc) {
   return nm;
 }
 
-/* the builtins whose subclass instance IS the builtin (#7449) */
-static int is_embedding_builtin(const char *nm) {
-  return nm && (sp_streq(nm, "Array") || sp_streq(nm, "Hash"));
-}
 static const char *refused_builtin_superclass(Compiler *c, int sc) {
   const char *nm = builtin_value_superclass(c, sc);
   return is_embedding_builtin(nm) ? NULL : nm;
@@ -5701,10 +5761,17 @@ static void specialize_cmethod_for(Compiler *c, int mi, int def_cls, int ci);
 /* attr_reader/attr_accessor/attr_writer and alias_method in a MODULE body
    belong to every class that includes it, just like a plain def. The transplant
    copies method scopes only, so carry the declarative surface across too: the
-   reader/writer names (with their backing ivars) and the alias table (#3774). */
+   reader/writer names (with their backing ivars) and the alias table (#3774).
+   A module takes its own includes' surface in the same walk, and one can come
+   after a class that includes it (a module nested in its includer), so the
+   walk repeats until no class gains a name. */
 void register_include_attrs(Compiler *c) {
+  int grew = 1;
+  while (grew) {
+  grew = 0;
   for (int ci = 0; ci < c->nclasses; ci++) {
     ClassInfo *cls = &c->classes[ci];
+    int n0 = cls->nreaders + cls->nwriters + cls->naliases;
     for (int k = 0; k < cls->nincluded_mods; k++) {
       int mi = cls->included_mods[k];
       if (mi < 0 || mi >= c->nclasses || mi == ci) continue;
@@ -5724,6 +5791,8 @@ void register_include_attrs(Compiler *c) {
       for (int a = 0; a < mod->naliases; a++)
         comp_add_alias(cls, mod->alias_new[a], mod->alias_old[a]);
     }
+    if (cls->nreaders + cls->nwriters + cls->naliases != n0) grew = 1;
+  }
   }
 }
 
@@ -7338,6 +7407,8 @@ typedef struct PivsFacts {
   unsigned memo_ver;
   int query, sweep, active;
   int hash_mode;            /* the query's: 0 classes, 1 Hash origins, 2 callables */
+  int init_args;            /* the query follows an initialize parameter through the arguments
+                               of the `K.new` calls that reach it (presence queries) */
   int stores_settled, stores_held, stores_widened;
   const NodeTable *ix_nt;
   unsigned ix_ver;
@@ -7489,7 +7560,11 @@ static int pivs_param(Compiler *c, Scope *s, const char *pn, char *set, int dept
                                        "to_json", "succ", "size", "length", "marshal_load", "marshal_dump",
                                        "inherited", "included", "extended", "prepended", "method_added",
                                        "const_missing", "deconstruct", "deconstruct_keys", "===", NULL };
-  for (int k = 0; PROTO[k]; k++) if (sp_streq(mn, PROTO[k])) return 0;
+  /* An initialize parameter is bound by the arguments of the `K.new` calls
+     whose class resolves to this initialize, in a query that asks for it. */
+  int init = pn && c->pivs->init_args && is_initialize_name(mn) && !s->is_cmethod && s->class_id >= 0 &&
+             !class_is_exc_subclass(c, s->class_id);
+  if (!init) for (int k = 0; PROTO[k]; k++) if (sp_streq(mn, PROTO[k])) return 0;
   if (!(isalpha((unsigned char)mn[0]) || mn[0] == '_')) return 0;
   for (const char *q = mn; *q; q++)
     if (!(isalnum((unsigned char)*q) || *q == '_' || ((*q == '?' || *q == '!' || (!pn && *q == '=')) && !q[1]))) return 0;
@@ -7519,9 +7594,25 @@ static int pivs_param(Compiler *c, Scope *s, const char *pn, char *set, int dept
   }
   for (int y = pivs_ix_first(c, PX_SYMBOL, mn); y >= 0; y = c->pivs->next[y])
     if (sp_streq(nt_str(nt, y, nt_kind(nt, y) == NK_SymbolNode ? "value" : "content"), mn)) return 0;
+  /* ... nor can a `new` be reached by its name */
+  if (init) for (int y = pivs_ix_first(c, PX_SYMBOL, "new"); y >= 0; y = c->pivs->next[y])
+    if (sp_streq(nt_str(nt, y, nt_kind(nt, y) == NK_SymbolNode ? "value" : "content"), "new")) return 0;
   int ncalls = 0;
-  for (int u = an_calls_named_first(c, mn); u >= 0; u = an_calls_named_next(u)) {
-    if (nt_kind(nt, u) != NK_CallNode || !sp_streq(nt_str(nt, u, "name"), mn)) continue;
+  for (int u = an_calls_named_first(c, init ? "new" : mn); u >= 0; u = an_calls_named_next(u)) {
+    if (nt_kind(nt, u) != NK_CallNode || !sp_streq(nt_str(nt, u, "name"), init ? "new" : mn)) continue;
+    if (init) {
+      /* the class a constant receiver names: a call of another class's
+         initialize is none of ours; a receiver that is no constant (a
+         variable, an implicit self) or a `new` of the program's own cannot
+         be followed */
+      int r = nt_ref(nt, u, "receiver");
+      if (r < 0 || (nt_kind(nt, r) != NK_ConstantReadNode && nt_kind(nt, r) != NK_ConstantPathNode)) return 0;
+      const char *rn = nt_str(nt, r, "name");
+      int rc = rn ? comp_class_index(c, rn) : -1;
+      if (rc < 0) { if (rn && is_builtin_class_name(rn)) continue; return 0; }
+      if (comp_cmethod_in_chain(c, rc, "new", NULL) >= 0) return 0;
+      if (comp_method_in_chain(c, rc, "initialize", NULL) != (int)(s - c->scopes)) continue;
+    }
     if (!pn) {
       int r = nt_ref(nt, u, "receiver");
       Scope *us = comp_scope_of(c, u);
@@ -7917,8 +8008,9 @@ static int pivs_elems_uncached(Compiler *c, int arr, char *set, int depth) {
    (mode 2, pivs_callables).
    Only answers that read inferred call targets expire each inference sweep;
    their targets can change as the receiver types converge. */
-static const char *pivs_call_set(Compiler *c, int call, const int **cls, int *n, int hashes) {
-  /* hashes: the query's mode (hash_mode) */
+/* The facts, their memo and visit tables sized for the tree and the class
+   table as they are now (dropped when either changed). */
+static PivsFacts *pivs_ready(Compiler *c) {
   PivsFacts *f = pivs_facts(c);
   if (f->memo_n != c->nclasses || f->memo_count != c->nt->count ||
       f->memo_ver != c->nt->version) {
@@ -7930,6 +8022,11 @@ static const char *pivs_call_set(Compiler *c, int call, const int **cls, int *n,
     f->seen = calloc((size_t)(f->memo_count > 0 ? f->memo_count : 1), sizeof *f->seen);
     if (!f->memo_at || !f->seen) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   }
+  return f;
+}
+static const char *pivs_call_set(Compiler *c, int call, const int **cls, int *n, int hashes) {
+  /* hashes: the query's mode (hash_mode) */
+  PivsFacts *f = pivs_ready(c);
   if (cls) { *cls = NULL; *n = 0; }
   if (call < 0 || call >= f->memo_count) return NULL;
   int m = f->memo_at[(size_t)call * 3 + hashes] - 1;
@@ -8003,6 +8100,29 @@ int poly_ivar_set_reaches(Compiler *c, int call, int k) {
 const int *poly_recv_classes(Compiler *c, int call, int *n) {
   const int *cls;
   return pivs_call_set(c, call, &cls, n, 0) ? cls : NULL;
+}
+/* See analyze.h. */
+int pivs_value_classes(Compiler *c, int v, int elems, char *set) {
+  PivsFacts *f = pivs_ready(c);
+  if (v < 0 || v >= f->memo_count) return 0;
+  f->hash_mode = 0; f->query++;
+  f->init_args = 1;
+  int ok = elems ? pivs_elems(c, v, set, 0) : pivs_value(c, v, set, 0);
+  f->init_args = 0;
+  return ok;
+}
+/* See analyze.h. The ivar read walk's own conditions (pivs_branches): no
+   attribute writer, no Symbol-keyed hash index to reach it by name. */
+int pivs_ivar_classes(Compiler *c, int cid, const char *ivn, char *set) {
+  PivsFacts *f = pivs_ready(c);
+  if (cid < 0 || cid >= c->nclasses || !ivn || ivn[0] != '@') return 0;
+  if (pivs_ix_first(c, PX_SYMBOL, ivn) >= 0) return 0;
+  if (comp_is_writer(&c->classes[cid], ivn + 1) || comp_is_sg_writer(&c->classes[cid], ivn + 1)) return 0;
+  f->hash_mode = 0; f->query++;
+  f->init_args = 1;
+  int ok = pivs_var_stores(c, NK_InstanceVariableReadNode, ivn, cid, set, 0);
+  f->init_args = 0;
+  return ok;
 }
 static void nil_write_note(NilWrites *w, int cls, const char *nm) {
   if (cls < 0 || !nm) return;
@@ -8423,7 +8543,7 @@ int pivs_settle_hash_stores(Compiler *c) {
 int pivs_hash_stores_widened(Compiler *c) {
   return c->pivs ? c->pivs->stores_widened : 0;
 }
-
+/** @brief Infer ivar types, including writes through uniquely resolved boxed attr-writer families. */
 int infer_ivar_types(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -8668,18 +8788,37 @@ int infer_ivar_types(Compiler *c) {
       else {
         /* Poly/unknown receiver -- e.g. `cell` read from a poly array/hash
            (`@cells.each_value { |cell| cell.neighbours = ... }`). The static
-           class is unknown, but if exactly ONE class defines this attr-writer
-           with a matching ivar, the runtime object must be of that class, so
-           attribute the write to it. (Skip when ambiguous: zero or several
-           classes share the attr name -- over-widening an unrelated same-named
-           ivar would be unsound to attribute.) ty_unify only widens. */
+           class is unknown, but if exactly ONE effective attr-writer family
+           owns a matching ivar, attribute the write to that family. Inherited
+           writers are copied onto every subclass, so count the highest class
+           whose effective writer is still an attribute, not each copy. An
+           explicit writer method breaks the family: comp_resolve_member keeps
+           that override out of the synthesized-attribute candidates. (Skip
+           when unrelated families remain ambiguous; widening a same-named
+           ivar there would be unsound to attribute.) ty_unify only widens. */
         int only = -1;
         for (int ci2 = 0; ci2 < c->nclasses; ci2++) {
-          if (comp_is_writer(&c->classes[ci2], base) &&
-              comp_ivar_index(&c->classes[ci2], ivname) >= 0) {
-            if (only >= 0) { only = -2; break; }   /* ambiguous */
-            only = ci2;
+          ClassInfo *candidate = &c->classes[ci2];
+          if (comp_class_is_module(c, candidate) ||
+              comp_resolve_member(c, ci2, base, 1, NULL, NULL) != SP_MEMBER_ATTR ||
+              comp_ivar_index(candidate, ivname) < 0)
+            continue;
+
+          /* inherit_members copies the parent's writer onto each child. Walk
+             the effective chain to its highest attribute owner so siblings
+             and deeper descendants count as one family. A method override
+             stops the walk; a later attr declaration below it starts a new
+             family. */
+          int family = ci2;
+          for (int parent = candidate->parent; parent >= 0;
+               parent = c->classes[parent].parent) {
+            if (comp_resolve_member(c, parent, base, 1, NULL, NULL) != SP_MEMBER_ATTR)
+              break;
+            family = parent;
           }
+
+          if (only >= 0 && only != family) { only = -2; break; } /* ambiguous */
+          only = family;
         }
         if (only < 0) continue;
         ClassInfo *ci = &c->classes[only];

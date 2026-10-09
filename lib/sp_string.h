@@ -26,6 +26,23 @@ typedef struct { char *data; int64_t len; int64_t cap; unsigned binary; unsigned
 _Static_assert(offsetof(sp_String, chilled) == offsetof(sp_String, binary) + 4 && sizeof(unsigned) == 4,
                "sp_String.binary and .chilled are adjacent 32-bit fields");
 
+/* A generated frozen literal owns its handle slot. The tagged header link
+   distinguishes that slot from the aligned links in the string heap. */
+typedef struct sp_StringLiteral {
+  sp_String *value;
+  struct sp_StringLiteral *next;
+} sp_StringLiteral;
+static inline sp_StringLiteral *sp_String_literal_slot(const char *s) {
+  if (!s || ((const unsigned char *)s)[-1] != 0xf1) return NULL;
+  uintptr_t p = (uintptr_t)(((const sp_str_hdr *)(s - 1)) - 1)->next;
+  return p & 1 ? (sp_StringLiteral *)(p - 1) : NULL;
+}
+sp_String *sp_String_literal_handle(sp_StringLiteral *slot, const char *s);
+void sp_String_mark_literals(void);
+static inline const void *sp_String_identity(sp_String *h) {
+  return h && sp_String_literal_slot(h->data) ? (const void *)h->data : (const void *)h;
+}
+
 /* Per-mutable-string freeze flag rides in the GC header alongside `marked`. */
 static inline sp_bool sp_String_is_frozen(sp_String*s){if(!s)return TRUE;sp_gc_hdr*h=(sp_gc_hdr*)((char*)s-sizeof(sp_gc_hdr));return h->frozen;}
 static inline sp_String*sp_String_freeze(sp_String*s){if(s){sp_gc_hdr*h=(sp_gc_hdr*)((char*)s-sizeof(sp_gc_hdr));h->frozen=1;}return s;}
@@ -193,6 +210,10 @@ static inline sp_String*sp_String_new_shared(const char*s){
   int bin=sp_str_is_binary(s);
   int frozen=sp_str_is_frozen_val(s);
   int mk=((const unsigned char*)s)[-1];
+#ifdef SP_SHARE_STRING_LITERALS
+  sp_StringLiteral *literal = sp_String_literal_slot(s);
+  if (literal) return sp_String_literal_handle(literal, s);
+#endif
   int64_t len=(int64_t)sp_str_byte_len(s);
   sp_String*r=sp_String_new_len(s,len);
   if(bin){r->binary=1;sp_fd_publish(r);}
@@ -214,6 +235,10 @@ static inline sp_String*sp_String_new_fresh(const char*s){
   int bin=sp_str_is_binary(s);
   int frozen=sp_str_is_frozen_val(s);
   int mk=((const unsigned char*)s)[-1];
+#ifdef SP_SHARE_STRING_LITERALS
+  sp_StringLiteral *literal = sp_String_literal_slot(s);
+  if (literal) return sp_String_literal_handle(literal, s);
+#endif
   int64_t len=(int64_t)sp_str_byte_len(s);
   sp_String*r=sp_String_new_inline_len(s,len);
   if(bin){r->binary=1;sp_fd_publish(r);}

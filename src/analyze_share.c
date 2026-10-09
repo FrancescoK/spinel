@@ -2147,6 +2147,14 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
   int ntg = sh_targets_in(F, c, n, tg, 64);
   if (ntg != 0) sh_read_site(F, n);
   if (ntg < 0) return sh_unknown_call(F, c, n, blk);
+  /* a bare `new` in a class method builds the class it runs for: its initialize
+     (cplan_initialize), as for a constant receiver */
+  int own_init = ntg == 0 && recv < 0 && bop_share_named(BOP_ANY_RECV, name) == BSH_NEW ? cplan_initialize(c, n) : -1;
+  if (own_init >= 0) {
+    sh_bind(F, c, n, own_init);
+    if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode) sh_block_to_method(F, c, blk, own_init);
+    return -1;
+  }
   if (ntg == 0 && recv >= 0 && bop_share_named(BOP_ANY_RECV, name) == BSH_NEW) {
     int r = sh_new_call(F, c, n, recv, blk);
     if (r != -2) return r;
@@ -2248,7 +2256,13 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
   }
   /* an exception's message: what it was handed (sh_exc). raise and fail
      hand it their arguments. */
-  if (is_exc_message_name(name)) return sh_exc(F);
+  if (is_exc_message_name(name)) {
+    /* Formatted exception text is a new String, not the stored message.
+       User targets above retain their own return facts. */
+    if (c->share_strings && argc == 0 && blk < 0 && bop_share_named(TY_EXCEPTION, name) == BSH_PURE &&
+        (rt == TY_EXCEPTION || (ty_is_object(rt) && class_is_exc_subclass(c, ty_object_class(rt))))) return -1;
+    return sh_exc(F);
+  }
   if (recv < 0 && is_raise_alias(name) && !sh_has_targets(c, n)) {
     sh_exc_args(F, c, n);
     return -1;
@@ -3733,6 +3747,37 @@ int share_node_fresh_elems(const Compiler *c, int n) {
   return F && n >= 0 && n < F->nnodes && F->fresh_cont[n] && share_node_elems_share(c, n);
 }
 
+/* The receiver of a retaining iterator call (select, reject, find_all and
+   the in-place filters, or partition, whose call is rewritten onto the
+   builtin definition __enum_partition__N(array)) with a literal block, or
+   -1. */
+static int sh_retaining_iter_recv(const Compiler *c, int call) {
+  const NodeTable *nt = c->nt;
+  if (call < 0 || nt_kind(nt, call) != NK_CallNode) return -1;
+  const char *nm = nt_str(nt, call, "name");
+  int blk = nt_ref(nt, call, "block"), recv = nt_ref(nt, call, "receiver");
+  if (!nm || blk < 0 || nt_kind(nt, blk) != NK_BlockNode) return -1;
+  if (recv < 0 && is_enum_partition_def(nm)) {
+    int args = nt_ref(nt, call, "arguments"), an = 0;
+    const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    return an >= 1 ? av[0] : -1;
+  }
+  return is_retaining_filter(nm) ? recv : -1;
+}
+/* Is `call` a retaining iterator over a fresh Array of new Strings (a
+   builtin's, as share_node_fresh_elems has it, before the rule is asked
+   whether the elements share)? Its answer keeps elements the block's
+   parameter names. */
+int share_iter_fresh_elems(const Compiler *c, int call) {
+  int recv = sh_retaining_iter_recv(c, call);
+  return recv >= 0 && c->share && recv < c->share->nnodes && c->share->fresh_cont[recv];
+}
+/* ... and the rule shares those elements: the answer holds the handles the
+   block saw, as a local's Array would. */
+int share_iter_answers_handles(const Compiler *c, int call) {
+  return share_iter_fresh_elems(c, call) && share_node_fresh_elems(c, sh_retaining_iter_recv(c, call));
+}
+
 int share_flow_count(const Compiler *c) { return c->share ? c->share->nfl + c->share->nlend : 0; }
 int share_flow_at(const Compiler *c, int i, int *site, int *value) {
   const ShareFacts *F = c->share;
@@ -3976,6 +4021,26 @@ static int sh_arm_fresh(Compiler *c, int a, int depth) {
   default: return share_value_fresh(c, a, depth);
   }
 }
+/* Is node n the frozen String literal itself: a literal of a file whose
+   literals are frozen (`fzl`), or a `freeze`, `-@` or `dedup` of one, which
+   answer their receiver? Every evaluation answers the one object the
+   literal names, so the handle a shared slot takes for it is that
+   literal's own (sp_String_literal_handle), never a new one. Adjacent
+   literals (`"a" "b"`) and a squiggly heredoc of mixed indents parse as an
+   interpolated String that emit_interp folds into one literal: that is one
+   too (interp_is_literal_fold). A `+"lit"` is a call that copies, and a
+   String with a part to evaluate is built each time: neither is one. */
+int share_frozen_literal(Compiler *c, int n) {
+  const NodeTable *nt = c->nt;
+  n = an_unparen(nt, n);
+  if (n < 0) return 0;
+  NodeKind k = nt_kind(nt, n);
+  if (k == NK_StringNode) return nt_int(nt, n, "fzl", 0) != 0;
+  if (k == NK_InterpolatedStringNode) return nt_int(nt, n, "fzl", 0) != 0 && interp_is_literal_fold(nt, n);
+  if (k != NK_CallNode || nt_ref(nt, n, "arguments") >= 0 || nt_ref(nt, n, "block") >= 0 ||
+      bop_share_named(TY_STRING, nt_str(nt, n, "name")) != BSH_FROZEN) return 0;
+  return share_frozen_literal(c, nt_ref(nt, n, "receiver"));
+}
 int share_value_fresh(Compiler *c, int n, int depth) {
   const NodeTable *nt = c->nt;
   n = an_unparen(nt, n);
@@ -4065,6 +4130,7 @@ ShareRoute share_route(int site, int value, int elems) {
   r.elems = elems;
   r.to = -1;
   r.carry = -1;
+  r.sole = -1;
   return r;
 }
 
@@ -4142,6 +4208,15 @@ static int sh_route_to_root(const Compiler *c, const ShareRoute *q) {
 enum { SH_ROUTE_OK, SH_ROUTE_UNSEEN, SH_ROUTE_COPIES };
 static int sh_route_why(const Compiler *c, const ShareRoute *q) {
   const ShareFacts *F = c->share;
+  /* a route that vouches for a local by its being the only name its String
+     has: the final facts have to show a plain local that no other holder,
+     no capture and nothing the walk does not follow reaches */
+  if (q->sole >= 0) {
+    Scope *ss = comp_scope_of((Compiler *)c, q->sole);
+    LocalVar *sl = ss ? scope_local(ss, nt_str(c->nt, q->sole, "name")) : NULL;
+    if (!sl || sl->is_param || sl->is_block_param || sl->is_cell || sl->cell_outlives ||
+        !share_node_one_name(c, q->sole)) return SH_ROUTE_UNSEEN;
+  }
   int v = sh_node_root(F, q->value, q->elems);
   /* a value the walk reached and found no String identity in (`"a#{i}"`,
      a builtin's fresh answer) is a String no other name holds: its class
@@ -4162,8 +4237,12 @@ static int sh_route_why(const Compiler *c, const ShareRoute *q) {
   if (!repr_str_class_shares(F->flags[v], sh_class_holders(F, v))) return SH_ROUTE_OK;
   /* a fresh Array's elements bound by an iterator that keeps them: the
      iterator's typed answer holds copies (only a dropped `each` hands each
-     one to its block alone) */
-  if (q->elems && !q->fresh_elems && share_node_fresh_elems(c, q->value)) return SH_ROUTE_COPIES;
+     one to its block alone, and a retaining iterator over a fresh Array
+     answers the handles instead, whatever round recorded the route:
+     share_iter_fresh_elems asks the final facts) */
+  if (q->elems && !q->fresh_elems && !share_iter_fresh_elems(c, q->site) &&
+      share_node_fresh_elems(c, q->value))
+    return SH_ROUTE_COPIES;
   if (q->carry == SHARE_CARRY_COPY) return SH_ROUTE_COPIES;
   return q->carry < 0 || sh_carries_handle(c, q->carry) ? SH_ROUTE_OK : SH_ROUTE_COPIES;
 }
@@ -4178,6 +4257,7 @@ int share_route_defer(Compiler *c, const ShareRoute *q, const char *msg) {
     const ShareRoute *r = &c->share_route[i];
     if (r->site == q->site && r->value == q->value && r->elems == q->elems && r->to == q->to &&
         r->to_elems == q->to_elems && r->carry == q->carry && r->fresh_elems == q->fresh_elems &&
+        r->sole == q->sole &&
         (r->to_name == q->to_name || (r->to_name && q->to_name && sp_streq(r->to_name, q->to_name))))
       return 1;
   }

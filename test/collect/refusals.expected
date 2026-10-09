@@ -202,6 +202,102 @@ spinel: test/reject/class_named_like_monitor_path.rb:4: unsupported class name '
 spinel: test/reject/class_named_like_open_struct.rb:8: unsupported class name 'OpenStruct': collides with the builtin class of that name
 == test/reject/class_named_like_open_struct.rb [promote] rc=1
 spinel: test/reject/class_named_like_open_struct.rb:8: unsupported class name 'OpenStruct': collides with the builtin class of that name
+== test/reject/class_new_captured_attr_reader.rb [default] rc=1
+spinel: test/reject/class_new_captured_attr_reader.rb:6: Class.new or Module.new with a block that captures outer locals is not supported; see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/class_new_captured_attr_reader.rb [promote] rc=1
+spinel: test/reject/class_new_captured_attr_reader.rb:6: Class.new or Module.new with a block that captures outer locals is not supported; see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/class_new_captured_called_constant.rb [default] rc=1
+spinel: test/reject/class_new_captured_called_constant.rb:4: Class.new or Module.new with a block that captures outer locals is not supported; see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/class_new_captured_called_constant.rb [promote] rc=1
+spinel: test/reject/class_new_captured_called_constant.rb:4: Class.new or Module.new with a block that captures outer locals is not supported; see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/class_new_captured_constant.rb [default] rc=1
+spinel: test/reject/class_new_captured_constant.rb:4: Class.new or Module.new with a block that captures outer locals is not supported; see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/class_new_captured_constant.rb [promote] rc=1
+spinel: test/reject/class_new_captured_constant.rb:4: Class.new or Module.new with a block that captures outer locals is not supported; see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/class_new_captured_default.rb [default] rc=1
+spinel: test/reject/class_new_captured_default.rb:4: Class.new or Module.new with a block that captures outer locals is not supported; see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/class_new_captured_default.rb [promote] rc=1
+spinel: test/reject/class_new_captured_default.rb:4: Class.new or Module.new with a block that captures outer locals is not supported; see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/class_new_captured_local.rb [default] rc=1
+spinel: test/reject/class_new_captured_local.rb:5: Class.new or Module.new with a block that captures outer locals is not supported; see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/class_new_captured_local.rb [promote] rc=1
+spinel: test/reject/class_new_captured_local.rb:5: Class.new or Module.new with a block that captures outer locals is not supported; see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/class_new_captured_method.rb [default] rc=1
+spinel: test/reject/class_new_captured_method.rb:5: Class.new or Module.new with a block that captures outer locals is not supported; see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/class_new_captured_method.rb [promote] rc=1
+spinel: test/reject/class_new_captured_method.rb:5: Class.new or Module.new with a block that captures outer locals is not supported; see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/class_new_captured_path.rb [default] rc=1
+spinel: test/reject/class_new_captured_path.rb:5: Class.new or Module.new with a block that captures outer locals is not supported; see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/class_new_captured_path.rb [promote] rc=1
+spinel: test/reject/class_new_captured_path.rb:5: Class.new or Module.new with a block that captures outer locals is not supported; see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/class_new_variable_block_argument.rb [default] rc=1
+spinel: test/reject/class_new_variable_block_argument.rb:5: Class.new with a non-constant superclass is not supported; use a constant superclass (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/class_new_variable_block_argument.rb [promote] rc=1
+spinel: test/reject/class_new_variable_block_argument.rb:5: Class.new with a non-constant superclass is not supported; use a constant superclass (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/class_new_variable_called_constant.rb [default] rc=1
+spinel: test/reject/class_new_variable_called_constant.rb:4: Class.new with a non-constant superclass is not supported; use a constant superclass (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/class_new_variable_called_constant.rb [promote] rc=1
+spinel: test/reject/class_new_variable_called_constant.rb:4: Class.new with a non-constant superclass is not supported; use a constant superclass (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/class_new_variable_constant.rb [default] rc=1
+spinel: test/reject/class_new_variable_constant.rb:4: Class.new with a non-constant superclass is not supported; use a constant superclass (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/class_new_variable_constant.rb [promote] rc=1
+spinel: test/reject/class_new_variable_constant.rb:4: Class.new with a non-constant superclass is not supported; use a constant superclass (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/class_new_variable_constant_block.rb [default] rc=1
+spinel: test/reject/class_new_variable_constant_block.rb:4: Class.new with a non-constant superclass is not supported; use a constant superclass (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/class_new_variable_constant_block.rb [promote] rc=1
+spinel: test/reject/class_new_variable_constant_block.rb:4: Class.new with a non-constant superclass is not supported; use a constant superclass (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/class_new_variable_local.rb [default] rc=1
+spinel: test/reject/class_new_variable_local.rb:4: Class.new with a non-constant superclass is not supported; use a constant superclass (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/class_new_variable_local.rb [promote] rc=1
+spinel: test/reject/class_new_variable_local.rb:4: Class.new with a non-constant superclass is not supported; use a constant superclass (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/class_new_variable_local_block.rb [default] rc=1
+spinel: test/reject/class_new_variable_local_block.rb:4: Class.new with a non-constant superclass is not supported; use a constant superclass (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/class_new_variable_local_block.rb [promote] rc=1
+spinel: test/reject/class_new_variable_local_block.rb:4: Class.new with a non-constant superclass is not supported; use a constant superclass (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/class_new_without_block_iterator.rb [default] rc=1
+spinel: test/reject/class_new_without_block_iterator.rb:5: Class.new(parent) is not supported by AOT compilation: the class graph, ancestor chain, and method/ivar layout are baked at compile time. Declare the class with `class ... end` instead (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/class_new_without_block_iterator.rb [promote] rc=1
+spinel: test/reject/class_new_without_block_iterator.rb:5: Class.new(parent) is not supported by AOT compilation: the class graph, ancestor chain, and method/ivar layout are baked at compile time. Declare the class with `class ... end` instead (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/class_new_without_block_loop.rb [default] rc=1
+spinel: test/reject/class_new_without_block_loop.rb:6: Class.new(parent) is not supported by AOT compilation: the class graph, ancestor chain, and method/ivar layout are baked at compile time. Declare the class with `class ... end` instead (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/class_new_without_block_loop.rb [promote] rc=1
+spinel: test/reject/class_new_without_block_loop.rb:6: Class.new(parent) is not supported by AOT compilation: the class graph, ancestor chain, and method/ivar layout are baked at compile time. Declare the class with `class ... end` instead (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/class_new_without_block_repeated.rb [default] rc=1
+spinel: test/reject/class_new_without_block_repeated.rb:4: Class.new(parent) is not supported by AOT compilation: the class graph, ancestor chain, and method/ivar layout are baked at compile time. Declare the class with `class ... end` instead (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/class_new_without_block_repeated.rb [promote] rc=1
+spinel: test/reject/class_new_without_block_repeated.rb:4: Class.new(parent) is not supported by AOT compilation: the class graph, ancestor chain, and method/ivar layout are baked at compile time. Declare the class with `class ... end` instead (see docs/limitations.md)
+spinel: 1 refusal, nothing written
 == test/reject/class_paren_superclass_rescue.rb [default] rc=1
 spinel: test/reject/class_paren_superclass_rescue.rb:8: unsupported superclass expression (RescueModifierNode): write the superclass as a constant
 == test/reject/class_paren_superclass_rescue.rb [promote] rc=1
@@ -318,6 +414,24 @@ spinel: 1 refusal, nothing written
 == test/reject/complex_bignum_component.rb [promote] rc=1
 spinel: test/reject/complex_bignum_component.rb:7: a Complex component given an Integer past 64 bits, which no conversion keeps in its sp_float slot
 spinel: 1 refusal, nothing written
+== test/reject/computed_ivar_get_direct.rb [default] rc=1
+spinel: test/reject/computed_ivar_get_direct.rb:6: Object#instance_variable_get with a non-literal name on a user-class instance is not supported; use a literal Symbol or String (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/computed_ivar_get_direct.rb [promote] rc=1
+spinel: test/reject/computed_ivar_get_direct.rb:6: Object#instance_variable_get with a non-literal name on a user-class instance is not supported; use a literal Symbol or String (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/computed_ivar_get_poly.rb [default] rc=1
+spinel: test/reject/computed_ivar_get_poly.rb:6: Object#instance_variable_get with a non-literal name on a user-class instance is not supported; use a literal Symbol or String (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/computed_ivar_get_poly.rb [promote] rc=1
+spinel: test/reject/computed_ivar_get_poly.rb:6: Object#instance_variable_get with a non-literal name on a user-class instance is not supported; use a literal Symbol or String (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/computed_ivar_get_self.rb [default] rc=1
+spinel: test/reject/computed_ivar_get_self.rb:4: Object#instance_variable_get with a non-literal name on a user-class instance is not supported; use a literal Symbol or String (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/computed_ivar_get_self.rb [promote] rc=1
+spinel: test/reject/computed_ivar_get_self.rb:4: Object#instance_variable_get with a non-literal name on a user-class instance is not supported; use a literal Symbol or String (see docs/limitations.md)
+spinel: 1 refusal, nothing written
 == test/reject/const_get_runtime_name.rb [default] rc=1
 spinel: test/reject/const_get_runtime_name.rb:7: unsupported const_get with a name known only at run time and no class or module receiver (an instance has no const_get; constants are resolved at compile time): node N (CallNode `const_get`) recv=-/ty-1 argc=1 arg0ty6
 == test/reject/const_get_runtime_name.rb [promote] rc=1
@@ -334,6 +448,36 @@ spinel: test/reject/const_value_not_a_module.rb:4: B is not a module: it is assi
 spinel: test/reject/def_delegators_splat.rb:10: def_delegators with arguments other than a literal symbol list is not supported (write the names as symbols: `def_delegators :@target, :name, ...`)
 == test/reject/def_delegators_splat.rb [promote] rc=1
 spinel: test/reject/def_delegators_splat.rb:10: def_delegators with arguments other than a literal symbol list is not supported (write the names as symbols: `def_delegators :@target, :name, ...`)
+== test/reject/define_method_name_class_method.rb [default] rc=1
+spinel: test/reject/define_method_name_class_method.rb:4: Module#define_method with a non-literal name is not supported; use a literal Symbol or String (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/define_method_name_class_method.rb [promote] rc=1
+spinel: test/reject/define_method_name_class_method.rb:4: Module#define_method with a non-literal name is not supported; use a literal Symbol or String (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/define_method_name_constant.rb [default] rc=1
+spinel: test/reject/define_method_name_constant.rb:4: Module#define_method with a non-literal name is not supported; use a literal Symbol or String (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/define_method_name_constant.rb [promote] rc=1
+spinel: test/reject/define_method_name_constant.rb:4: Module#define_method with a non-literal name is not supported; use a literal Symbol or String (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/define_method_name_instance_method.rb [default] rc=1
+spinel: test/reject/define_method_name_instance_method.rb:4: Module#define_method with a non-literal name is not supported; use a literal Symbol or String (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/define_method_name_instance_method.rb [promote] rc=1
+spinel: test/reject/define_method_name_instance_method.rb:4: Module#define_method with a non-literal name is not supported; use a literal Symbol or String (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/define_method_name_local.rb [default] rc=1
+spinel: test/reject/define_method_name_local.rb:4: Module#define_method with a non-literal name is not supported; use a literal Symbol or String (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/define_method_name_local.rb [promote] rc=1
+spinel: test/reject/define_method_name_local.rb:4: Module#define_method with a non-literal name is not supported; use a literal Symbol or String (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/define_method_name_self.rb [default] rc=1
+spinel: test/reject/define_method_name_self.rb:4: Module#define_method with a non-literal name is not supported; use a literal Symbol or String (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/define_method_name_self.rb [promote] rc=1
+spinel: test/reject/define_method_name_self.rb:4: Module#define_method with a non-literal name is not supported; use a literal Symbol or String (see docs/limitations.md)
+spinel: 1 refusal, nothing written
 == test/reject/dynamic_send_then_refusal.rb [default] rc=1
 spinel: test/reject/dynamic_send_then_refusal.rb:15: String#unicode_normalize is not supported: Unicode normalization requires shipping the Unicode decomposition/composition tables, which spinel deliberately does not carry -- the same limit as String#grapheme_clusters (see docs/limitations.md)
 spinel: 1 refusal, nothing written
@@ -360,6 +504,10 @@ spinel: 1 refusal, nothing written
 spinel: test/reject/hash_pair_string_mutation.rb:6: a String read out of a Hash through its [key, value] pairs is mutated: a String is not yet shared by reference through a Hash's pairs. Mutate it through the Hash (h[k] << x)
 == test/reject/hash_pair_string_mutation.rb [promote] rc=1
 spinel: test/reject/hash_pair_string_mutation.rb:6: a String read out of a Hash through its [key, value] pairs is mutated: a String is not yet shared by reference through a Hash's pairs. Mutate it through the Hash (h[k] << x)
+== test/reject/hash_value_method_answer_appending_writer.rb [default] rc=1
+spinel: test/reject/hash_value_method_answer_appending_writer.rb:20: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
+== test/reject/hash_value_method_answer_appending_writer.rb [promote] rc=1
+spinel: test/reject/hash_value_method_answer_appending_writer.rb:20: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
 == test/reject/hash_value_poly_appending_writer.rb [default] rc=1
 spinel: test/reject/hash_value_poly_appending_writer.rb:16: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
 == test/reject/hash_value_poly_appending_writer.rb [promote] rc=1
@@ -714,6 +862,18 @@ spinel: test/reject/module_named_like_monitor.rb:3: Monitor is not a module (Typ
 spinel: test/reject/module_named_like_open_struct.rb:6: OpenStruct is not a module (TypeError)
 == test/reject/module_named_like_open_struct.rb [promote] rc=1
 spinel: test/reject/module_named_like_open_struct.rb:6: OpenStruct is not a module (TypeError)
+== test/reject/module_new_captured_constant.rb [default] rc=1
+spinel: test/reject/module_new_captured_constant.rb:4: Class.new or Module.new with a block that captures outer locals is not supported; see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/module_new_captured_constant.rb [promote] rc=1
+spinel: test/reject/module_new_captured_constant.rb:4: Class.new or Module.new with a block that captures outer locals is not supported; see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/module_new_captured_local.rb [default] rc=1
+spinel: test/reject/module_new_captured_local.rb:4: Class.new or Module.new with a block that captures outer locals is not supported; see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/module_new_captured_local.rb [promote] rc=1
+spinel: test/reject/module_new_captured_local.rb:4: Class.new or Module.new with a block that captures outer locals is not supported; see docs/limitations.md
+spinel: 1 refusal, nothing written
 == test/reject/new_receiver_class_chain_still_reached.rb [default] rc=1
 spinel: test/reject/new_receiver_class_chain_still_reached.rb:5: undefined method '[]=' for a Class: no class in the program defines a class method '[]=' (NoMethodError)
 spinel: 1 refusal, nothing written
@@ -847,21 +1007,21 @@ spinel: test/reject/string_boxed_local_iterator_element.rb:7: a String a boxed l
 == test/reject/string_boxed_local_iterator_element.rb [promote] rc=1
 spinel: test/reject/string_boxed_local_iterator_element.rb:7: a String a boxed local holds is stored into a container and mutated in place through it (a String is not yet shared by reference through a boxed local's container element). Mutate the String through the local itself.
 == test/reject/string_boxed_reader_copied_too_late.rb [default] rc=1
-spinel: test/reject/string_boxed_reader_copied_too_late.rb:12: a String read through a reader on a boxed receiver (a Struct or Data member, an attr_reader, `def m = @iv`) is mutated in place (a String is not yet shared by reference through a reader on a boxed receiver). Assign the changed String back to the member.
+spinel: test/reject/string_boxed_reader_copied_too_late.rb:13: a String read through a reader on a boxed receiver (a Struct or Data member, an attr_reader, `def m = @iv`) is mutated in place (a String is not yet shared by reference through a reader on a boxed receiver). Assign the changed String back to the member.
 == test/reject/string_boxed_reader_copied_too_late.rb [promote] rc=1
-spinel: test/reject/string_boxed_reader_copied_too_late.rb:12: a String read through a reader on a boxed receiver (a Struct or Data member, an attr_reader, `def m = @iv`) is mutated in place (a String is not yet shared by reference through a reader on a boxed receiver). Assign the changed String back to the member.
+spinel: test/reject/string_boxed_reader_copied_too_late.rb:13: a String read through a reader on a boxed receiver (a Struct or Data member, an attr_reader, `def m = @iv`) is mutated in place (a String is not yet shared by reference through a reader on a boxed receiver). Assign the changed String back to the member.
 == test/reject/string_boxed_reader_copy_reopened_dup.rb [default] rc=1
-spinel: test/reject/string_boxed_reader_copy_reopened_dup.rb:16: a String read through a reader on a boxed receiver (a Struct or Data member, an attr_reader, `def m = @iv`) is mutated in place (a String is not yet shared by reference through a reader on a boxed receiver). Assign the changed String back to the member.
+spinel: test/reject/string_boxed_reader_copy_reopened_dup.rb:17: a String read through a reader on a boxed receiver (a Struct or Data member, an attr_reader, `def m = @iv`) is mutated in place (a String is not yet shared by reference through a reader on a boxed receiver). Assign the changed String back to the member.
 == test/reject/string_boxed_reader_copy_reopened_dup.rb [promote] rc=1
-spinel: test/reject/string_boxed_reader_copy_reopened_dup.rb:16: a String read through a reader on a boxed receiver (a Struct or Data member, an attr_reader, `def m = @iv`) is mutated in place (a String is not yet shared by reference through a reader on a boxed receiver). Assign the changed String back to the member.
+spinel: test/reject/string_boxed_reader_copy_reopened_dup.rb:17: a String read through a reader on a boxed receiver (a Struct or Data member, an attr_reader, `def m = @iv`) is mutated in place (a String is not yet shared by reference through a reader on a boxed receiver). Assign the changed String back to the member.
 == test/reject/string_boxed_reader_mutation.rb [default] rc=1
 spinel: test/reject/string_boxed_reader_mutation.rb:6: a String read through a reader on a boxed receiver (a Struct or Data member, an attr_reader, `def m = @iv`) is mutated in place (a String is not yet shared by reference through a reader on a boxed receiver). Assign the changed String back to the member.
 == test/reject/string_boxed_reader_mutation.rb [promote] rc=1
 spinel: test/reject/string_boxed_reader_mutation.rb:6: a String read through a reader on a boxed receiver (a Struct or Data member, an attr_reader, `def m = @iv`) is mutated in place (a String is not yet shared by reference through a reader on a boxed receiver). Assign the changed String back to the member.
 == test/reject/string_boxed_reader_query_reopened.rb [default] rc=1
-spinel: test/reject/string_boxed_reader_query_reopened.rb:16: a String read through a reader on a boxed receiver (a Struct or Data member, an attr_reader, `def m = @iv`) is mutated in place (a String is not yet shared by reference through a reader on a boxed receiver). Assign the changed String back to the member.
+spinel: test/reject/string_boxed_reader_query_reopened.rb:17: a String read through a reader on a boxed receiver (a Struct or Data member, an attr_reader, `def m = @iv`) is mutated in place (a String is not yet shared by reference through a reader on a boxed receiver). Assign the changed String back to the member.
 == test/reject/string_boxed_reader_query_reopened.rb [promote] rc=1
-spinel: test/reject/string_boxed_reader_query_reopened.rb:16: a String read through a reader on a boxed receiver (a Struct or Data member, an attr_reader, `def m = @iv`) is mutated in place (a String is not yet shared by reference through a reader on a boxed receiver). Assign the changed String back to the member.
+spinel: test/reject/string_boxed_reader_query_reopened.rb:17: a String read through a reader on a boxed receiver (a Struct or Data member, an attr_reader, `def m = @iv`) is mutated in place (a String is not yet shared by reference through a reader on a boxed receiver). Assign the changed String back to the member.
 == test/reject/string_callee_reader_store.rb [default] rc=1
 spinel: test/reject/string_callee_reader_store.rb:9: a String a method stores into an Array or Hash its caller passed it is mutated in place through the caller's container (a String is not yet shared by reference through a store into a parameter's container). Store the String in the caller, or mutate it in the method.
 == test/reject/string_callee_reader_store.rb [promote] rc=1
@@ -1191,9 +1351,9 @@ spinel: test/reject/string_returned_arg_stored_literal.rb:5: a String a method r
 == test/reject/string_returned_arg_stored_literal.rb [promote] rc=1
 spinel: test/reject/string_returned_arg_stored_literal.rb:5: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
 == test/reject/string_scan_block_kept_mutation.rb [default] rc=1
-spinel: test/reject/string_scan_block_kept_mutation.rb:5: a match `scan` hands its block is kept and mutated in place (a String is not yet shared by reference through `scan`'s block parameter). Mutate a copy (`m = +m.dup`) and keep that.
+spinel: test/reject/string_scan_block_kept_mutation.rb:6: a match `scan` hands its block is kept and mutated in place (a String is not yet shared by reference through `scan`'s block parameter). Mutate a copy (`m = +m.dup`) and keep that.
 == test/reject/string_scan_block_kept_mutation.rb [promote] rc=1
-spinel: test/reject/string_scan_block_kept_mutation.rb:5: a match `scan` hands its block is kept and mutated in place (a String is not yet shared by reference through `scan`'s block parameter). Mutate a copy (`m = +m.dup`) and keep that.
+spinel: test/reject/string_scan_block_kept_mutation.rb:6: a match `scan` hands its block is kept and mutated in place (a String is not yet shared by reference through `scan`'s block parameter). Mutate a copy (`m = +m.dup`) and keep that.
 == test/reject/string_self_reader_push.rb [default] rc=1
 spinel: test/reject/string_self_reader_push.rb:9: a String variable added to an Array by `insert`, `prepend`, `concat`, a chained push, a push into a global, or as the value of `<<`, unary `+` or a reader method is mutated in place through the Array or the variable (a String is not yet shared by reference through such an Array element). Push the variable itself into a local Array with `<<` or `push`.
 == test/reject/string_self_reader_push.rb [promote] rc=1
@@ -1223,9 +1383,9 @@ spinel: test/reject/string_split_result_iterator_append.rb:5: a String returned 
 == test/reject/string_split_result_iterator_append.rb [promote] rc=1
 spinel: test/reject/string_split_result_iterator_append.rb:5: a String returned in a String Array is not yet shared by reference through a local Array into an appending iterator block
 == test/reject/string_split_select_mutation.rb [default] rc=1
-spinel: test/reject/string_split_select_mutation.rb:5: a String is not yet shared by reference through an ivar's or a call's Array into an appending iterator block
+spinel: test/reject/string_split_select_mutation.rb:6: a String is not yet shared by reference through an ivar's or a call's Array into an appending iterator block
 == test/reject/string_split_select_mutation.rb [promote] rc=1
-spinel: test/reject/string_split_select_mutation.rb:5: a String is not yet shared by reference through an ivar's or a call's Array into an appending iterator block
+spinel: test/reject/string_split_select_mutation.rb:6: a String is not yet shared by reference through an ivar's or a call's Array into an appending iterator block
 == test/reject/string_tap_fresh_append.rb [default] rc=1
 spinel: test/reject/string_tap_fresh_append.rb:3: a String is not yet shared by reference through tap on a fresh String
 spinel: 1 refusal, nothing written

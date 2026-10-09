@@ -39,6 +39,8 @@ int is_method_invoke(const char *n) {
   return is_call_alias(n) || sp_streq(n, "===");
 }
 
+int is_bind_call(const char *n) { return n && sp_streq(n, "bind_call"); }
+
 int is_kind_query(const char *n) {
   return sp_streq(n, "is_a?") || sp_streq(n, "kind_of?") || sp_streq(n, "instance_of?");
 }
@@ -139,6 +141,15 @@ int is_visibility_name(const char *n) {
 int is_select_bang(const char *n) {
   return sp_streq(n, "select!") || sp_streq(n, "filter!") || sp_streq(n, "keep_if") ||
          sp_streq(n, "reject!") || sp_streq(n, "delete_if");
+}
+
+int is_retaining_filter(const char *n) {
+  return is_select_bang(n) || sp_streq(n, "select") || sp_streq(n, "filter") ||
+         sp_streq(n, "find_all") || sp_streq(n, "reject");
+}
+
+int is_enum_partition_def(const char *n) {
+  return strncmp(n, "__enum_partition__", 18) == 0;
 }
 
 int is_each_walk(const char *n) {
@@ -441,6 +452,29 @@ int is_object_copy(const char *n) {
 /* The reflective ivar write */
 int is_ivar_set_name(const char *n) {
   return sp_streq(n, "instance_variable_set");
+}
+
+/* Object#inspect, the text p prints */
+int is_inspect_name(const char *n) {
+  return n && sp_streq(n, "inspect");
+}
+
+/* `Marshal.dump`, by its receiver's constant name and the method */
+int is_marshal_dump(const char *recv, const char *meth) {
+  return recv && meth && sp_streq(meth, "dump") && sp_streq(recv, "Marshal");
+}
+
+/* The reflective ivar removal */
+int is_ivar_remove_name(const char *n) {
+  return sp_streq(n, "remove_instance_variable");
+}
+
+/* A call that tells an ivar assigned from one never assigned: the
+   reflective readers and removal, and the default inspect (inspect, and p
+   and pp, which print it) */
+int is_ivar_presence_read(const char *n) {
+  return sp_streq(n, "instance_variables") || sp_streq(n, "instance_variable_defined?") ||
+         is_ivar_remove_name(n) || is_inspect_name(n) || is_inspect_print(n);
 }
 
 /* A builtin class whose values keep their ivars in the runtime's map
@@ -757,6 +791,10 @@ int is_modulo_name(const char *n) {
 
 int is_mod_operator(const char *n) {
   return sp_streq(n, "%");
+}
+
+int is_initialize_name(const char *n) {
+  return sp_streq(n, "initialize");
 }
 
 int is_initialize_family(const char *n) {
@@ -1110,4 +1148,17 @@ int is_kernel_module_function(const char *m) {
     NULL
   };
   return m && builtin_name_in(m, K);
+}
+
+/* the builtins whose subclass instance IS the builtin (#7449) */
+int is_embedding_builtin(const char *nm) {
+  return nm && (sp_streq(nm, "Array") || sp_streq(nm, "Hash"));
+}
+
+int is_class_name_name(const char *n) { return n && sp_streq(n, "name"); }
+
+int is_alias_method_name(const char *n) { return n && sp_streq(n, "alias_method"); }
+
+int is_define_method_name(const char *n) {
+  return n && sp_streq(n, "define_method");
 }

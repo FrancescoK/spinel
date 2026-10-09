@@ -1,0 +1,1 @@
+spinel: test/share/refuse/scan_subject_written_in_block.rb:5: a match `scan` hands its block is kept and mutated in place (a String is not yet shared by reference through `scan`'s block parameter). Mutate a copy (`m = +m.dup`) and keep that.

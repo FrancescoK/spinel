@@ -28,3 +28,9 @@ boundary. An unobserved publication is reported separately from an observed
 raw-byte return or a missing fresh-tail clear. Writes in an ensure body
 also report a coverage gap: proving which saved return survives that body
 requires control-flow information the current shadow does not keep.
+
+A frozen literal is turned into a handle only by `sp_String_new_shared`, which
+answers the literal's own handle. Checking reports a `repr-check: conflict:
+frozen literal ... is built into a new handle` for any other `sp_String_new*`
+constructor given a literal's object (`sp_String_new_unfrozen`, the copy of
+`+"lit"`, is allowed), and a conflict fails the target.

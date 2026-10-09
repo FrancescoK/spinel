@@ -1619,6 +1619,13 @@ static int emit_kind_array_iter_call(Compiler *c, int id, Buf *b, const NodeTabl
   if (is_select_bang(name) && block >= 0) {
     const char *kk = (rt == TY_POLY_ARRAY) ? "Poly" : k;
     int trecv, torig, twp;
+    /* --share-strings: over a fresh sharing String Array, the PolyArray of handles */
+    if (iter_filter_src_as_handles(c, id, recv) &&
+        emit_array_filter_loop_handles(c, recv, block, name, g_pre, g_indent, &trecv, &torig, &twp)) {
+      char box[64]; snprintf(box, sizeof box, "sp_box_poly_array(_t%d)", trecv);
+      emit_filter_bang_result(name, trecv, torig, twp, box, b);
+      { *out = 1; return 1; }
+    }
     if (kk && emit_array_filter_loop(c, recv, block, rt, name, g_pre, g_indent, &trecv, &torig, &twp)) {
       char box[64]; snprintf(box, sizeof box, "%s(_t%d)", array_box_fn(kk), trecv);
       emit_filter_bang_result(name, trecv, torig, twp, box, b);
@@ -6835,9 +6842,12 @@ static int str_arms_convert(Compiler *c, int id, Buf *b, const NodeTable *nt, co
         int teq3 = ++g_tmp;
         buf_printf(b, "({ sp_RbVal _t%d = ", teq3);
         emit_boxed(c, argv[0], b);
-        buf_printf(b, "; (sp_bool)(_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_STRBUF"
-                      " && (sp_String *)_t%d.v.p == %s); })",
-                   teq3, teq3, teq3, rrefE3);
+        if (repr_share_rule(c))
+          buf_printf(b, "; sp_poly_equal(sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF), _t%d); })", rrefE3, teq3);
+        else
+          buf_printf(b, "; (sp_bool)(_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_STRBUF"
+                        " && (sp_String *)_t%d.v.p == %s); })",
+                     teq3, teq3, teq3, rrefE3);
         eq_sblv = 1;
       }
     }
@@ -6904,19 +6914,29 @@ static int str_arms_convert(Compiler *c, int id, Buf *b, const NodeTable *nt, co
     if (eq_sblv) { /* emitted above */ }
     else if (eqa == TY_STRING) {
       /* string identity IS pointer identity (s.freeze.equal?(s) must be
-         true: freeze marks in place and returns the same pointer) */
-      buf_printf(b, "((const void *)(%s) == (const void *)(", r);
+         true: freeze marks in place and returns the same pointer). Under
+         --share-strings a side that is a handle answers its identity
+         (sp_String_identity): a frozen literal's handle is its bytes' */
+      int hr = repr_share_rule(c) && repr_of(c, recv).as_ty == TY_STRBUF;
+      int ha = repr_share_rule(c) && repr_of(c, argv[0]).as_ty == TY_STRBUF;
+      buf_printf(b, "((const void *)%s(%s) == (const void *)%s(", hr ? "sp_String_identity" : "", r,
+                 ha ? "sp_String_identity" : "");
       emit_expr(c, argv[0], b);
       buf_puts(b, "))");
     }
     else if (eqa == TY_POLY) {
       /* a boxed operand can hold this very String: its payload is the same
-         pointer, as an element read of it is (`[s, 1][0]`) */
+         pointer, as an element read of it is (`[s, 1][0]`). Under
+         --share-strings it can hold a frozen literal's handle, which the
+         boxed comparison reads as the literal's bytes. */
       int trq = ++g_tmp, teq = ++g_tmp;
       buf_printf(b, "({ const char *_t%d = %s; sp_RbVal _t%d = ", trq, r, teq);
       emit_boxed(c, argv[0], b);
-      buf_printf(b, "; (sp_bool)(_t%d.tag == SP_TAG_STR && (const void *)_t%d.v.s == (const void *)_t%d); })",
-                 teq, teq, trq);
+      if (repr_share_rule(c))
+        buf_printf(b, "; sp_poly_equal(sp_box_str(_t%d), _t%d); })", trq, teq);
+      else
+        buf_printf(b, "; (sp_bool)(_t%d.tag == SP_TAG_STR && (const void *)_t%d.v.s == (const void *)_t%d); })",
+                   teq, teq, trq);
     }
     else if (same_sefree_lvalue(c, recv, argv[0])) { buf_puts(b, "(("); emit_expr(c, argv[0], b); buf_puts(b, "), 1)"); }
     /* another kind is another object; the receiver and the argument
@@ -7615,6 +7635,7 @@ static int str_arms_pattern(Compiler *c, int id, Buf *b, const NodeTable *nt, co
         emit_coerce_text(c, id, TY_POLY, lv ? repr_of_slot(c, lv).as_ty : TY_POLY,
                          CO_HOLD, value, "a runtime scan parameter", g_pre);
         buf_puts(g_pre, ";\n");
+        emit_block_param_share(c, sc, lv, rename_local(pn), g_pre, 1);
       }
     }
     else if (has_cap && np >= 2) {
@@ -7633,6 +7654,7 @@ static int str_arms_pattern(Compiler *c, int id, Buf *b, const NodeTable *nt, co
         emit_coerce_text(c, id, TY_STRING, lv ? repr_of_slot(c, lv).as_ty : TY_STRING,
                          CO_HOLD, value, "a scan capture parameter", g_pre);
         buf_puts(g_pre, ";\n");
+        emit_block_param_share(c, sc, lv, pn, g_pre, 1);
       }
     }
     else if (block_param_name(c, blk, 0)) {
@@ -7647,8 +7669,16 @@ static int str_arms_pattern(Compiler *c, int id, Buf *b, const NodeTable *nt, co
                          CO_HOLD, value, "a scan capture row", g_pre);
         buf_puts(g_pre, ";\n");
       }
-      else
-        buf_printf(g_pre, "lv_%s = _t%d->data[_t%d];\n", p0r, tm, ti);
+      else {
+        /* --share-strings: a parameter that is the shared handle takes the
+           match, a fresh String, as a handle of its own */
+        Scope *sc = comp_scope_of(c, blk);
+        LocalVar *lv = sc ? scope_local(sc, block_param_name(c, blk, 0)) : NULL;
+        char value[64]; snprintf(value, sizeof value, "_t%d->data[_t%d]", tm, ti);
+        buf_printf(g_pre, "lv_%s = ", p0r);
+        emit_strbuf_param_bind(c, lv, TY_STRING, value, g_pre);
+        buf_puts(g_pre, ";\n");
+      }
     }
     int svind = g_indent; g_indent++;
     for (int j = 0; j < bn; j++) emit_stmt(c, bb[j], g_pre, g_indent);
@@ -10259,14 +10289,15 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
     ClassInfo *ci2 = &c->classes[cid2];
     int want_ins = sp_streq(name, "inspect");
     if (ci2->is_value_type) {
-      const char *rn2 = class_ruby_name(c, cid2);
+      char rn2[512], rarg2[96];
+      obj_default_name(c, cid2, rn2, sizeof rn2, rarg2, sizeof rarg2);
       int tv2 = ++g_tmp;
       buf_printf(b, "({ sp_%s _t%d = ", ci2->c_name, tv2); emit_expr(c, recv, b);
-      buf_printf(b, "; sp_sprintf(\"#<%s:0x%%016llx", rn2 ? rn2 : ci2->name);
+      buf_printf(b, "; sp_sprintf(\"#<%s:0x%%016llx", rn2);
       if (want_ins)
         for (int vi = 0; vi < ci2->nivars; vi++)
           buf_printf(b, "%s %s=%%s", vi ? "," : "", ci2->ivars[vi]);
-      buf_printf(b, ">\", (unsigned long long)(uintptr_t)&_t%d", tv2);
+      buf_printf(b, ">\", %s(unsigned long long)(uintptr_t)&_t%d", rarg2, tv2);
       if (want_ins)
         for (int vi = 0; vi < ci2->nivars; vi++) {
           char fb2[300]; snprintf(fb2, sizeof fb2, "_t%d.iv_%s", tv2, iv_c(ci2->ivars[vi] + 1));
@@ -10448,9 +10479,12 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
     /* undef'd method: raise NoMethodError */
     if (comp_is_undeffed_in_chain(c, cid, name)) {
       TyKind ret_ty = repr_of(c, id).as_ty;
-      buf_printf(b, "(sp_raise_cls(\"NoMethodError\",\"undefined method '%s' for an instance of %s\"),%s)",
-                 name, c->classes[cid].name,
-                 ret_ty == TY_RANGE ? "(sp_Range){0}" : default_value_from_compiler(c, ret_ty));
+      {
+        char head[200]; snprintf(head, sizeof head, "undefined method '%s' for an instance of ", name);
+        buf_puts(b, "(sp_raise_cls(\"NoMethodError\",");
+        if (!anon_class_text(c, cid, head, b)) buf_printf(b, "\"%s%s\"", head, c->classes[cid].name);
+        buf_printf(b, "),%s)", ret_ty == TY_RANGE ? "(sp_Range){0}" : default_value_from_compiler(c, ret_ty));
+      }
       return 1;
     }
     /* instance_variable_get(:@x) / instance_variable_set(:@x, v) with a literal
@@ -10488,11 +10522,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
       if (sym && sym[0] == '@')
         for (int i = c->classes[cid].is_struct ? c->classes[cid].nmembers : 0; i < c->classes[cid].nivars; i++)
           if (sp_streq(c->classes[cid].ivars[i], sym)) { mi = i; break; }
-      if (mi >= 0) {
-        const char *acc = comp_ty_value_obj(c, rt) ? "." : "->";
-        buf_puts(b, "("); emit_expr(c, recv, b);
-        buf_printf(b, ")%siv_%s", acc, iv_c(sym + 1));
-      }
+      if (mi >= 0) emit_object_ivar_remove(c, recv, rt, cid, sym, b);
       else {
         if (recv >= 0) { buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, "), "); }
         else buf_puts(b, "(");
@@ -12330,6 +12360,7 @@ static TyKind emit_face_arm(Compiler *c, int id, unsigned kind, unsigned flags, 
   int v = view_push(c, recv, as);
   int fv = view_push_face(recv, as);
   TyKind nat = infer_uncached(c, id);
+  if (kind == PF_HASH && repr_of(c, id).demand && strbuf_hash_default_arg(c, id) >= 0) nat = TY_STRBUF;
   /* A numeric iterator with a block answers its receiver, and the arm's
      expression bridge renders exactly that, in the owner's own kind -- but
      a `break v` in the block makes the pinned inference say poly for the
@@ -12636,7 +12667,9 @@ static int emit_face_reentry(Compiler *c, int id, unsigned kind, unsigned flags,
     free(rb.p);
   }
   if (pre.p) buf_puts(g_pre, pre.p);
-  emit_face_value(c, repr_of(c, id).as_ty, nat, val.p ? val.p : "0", b);
+  TyKind slot = repr_of(c, id).as_ty;
+  if (repr_of(c, id).demand && strbuf_hash_default_arg(c, id) >= 0) slot = TY_STRBUF;
+  emit_face_value(c, slot, nat, val.p ? val.p : "0", b);
   free(pre.p); free(val.p);
   return 1;
 }
@@ -13310,6 +13343,16 @@ static int emit_poly_call0_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
      String has to answer it: sp_poly_recv_s raises for anything else, which
      is what a non-String must do here. */
   if (sp_streq(name, "to_str") && argc == 0) {
+    /* --share-strings: a String's to_str is the String itself, so a box
+       holding one answers that box, as to_s does (sp_poly_to_s_box). */
+    if (repr_share_rule(c)) {
+      int t = ++g_tmp;
+      buf_printf(b, "({ sp_RbVal _t%d = ", t); emit_expr(c, recv, b);
+      buf_printf(b, "; const char *_s%d = sp_poly_recv_s(_t%d, \"to_str\"); "
+                    "(_t%d.tag == SP_TAG_STR && _t%d.v.s) || sp_poly_is_strbuf(_t%d) ? _t%d : sp_box_str(_s%d); })",
+                 t, t, t, t, t, t, t);
+      { *out = 1; return 1; }
+    }
     buf_puts(b, "sp_box_str(sp_poly_recv_s("); emit_expr(c, recv, b); buf_puts(b, ", \"to_str\"))"); { *out = 1; return 1; }
   }
   if (sp_streq(name, "ascii_only?") && argc == 0) {
@@ -14369,8 +14412,16 @@ static int emit_poly_scan_block(Compiler *c, int id, Buf *b, const NodeTable *nt
     if (sp0r) {
       Scope *sbs = comp_scope_of(c, sblk);
       LocalVar *sblv = sbs ? scope_local(sbs, sp0r) : NULL;
-      if (sblv && sblv->type == TY_POLY)
+      LocalVar *shlv = sbs ? scope_local(sbs, sp0) : NULL;
+      if (sblv && sblv->type == TY_POLY) {
         buf_printf(b, " sp_RbVal lv_%s = sp_box_str(sp_StrArray_get(_t%d, _t%d));", sp0r, tm, ti);
+        /* --share-strings: a boxed parameter of a shared class takes the match
+           as a handle of its own, as the typed arms bind it */
+        Buf lb; memset(&lb, 0, sizeof lb);
+        emit_block_param_share(c, sbs, shlv, sp0r, &lb, 0);
+        if (lb.p && lb.p[0]) buf_printf(b, "\n%s", lb.p);
+        free(lb.p);
+      }
       else
         buf_printf(b, " const char *lv_%s = sp_StrArray_get(_t%d, _t%d);", sp0r, tm, ti);
     }

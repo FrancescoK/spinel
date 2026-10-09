@@ -1,0 +1,4 @@
+[true, nil]
+[true, :first, nil]
+[false, "outer"]
+[false, :first, "outer2"]

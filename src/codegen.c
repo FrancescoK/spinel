@@ -1681,11 +1681,15 @@ static void emit_boxed_cond_body(Compiler *c, int st, Buf *b, void *ctx) {
     st = n > 0 ? bb[n - 1] : -1;
   }
   buf_printf(b, "_t%d = ", a->dst);
-  if (a->lift) buf_puts(b, "sp_poly_strbuf_lift(");
+  /* (a variable's handle arm is boxed as that handle: nothing to lift) */
+  char ref[1024];
+  int lift = a->lift && st >= 0 && nt_kind(c->nt, st) != NK_StringNode &&
+             !strbuf_var_handle(c, st, ref, sizeof ref);
+  if (lift) buf_puts(b, "sp_poly_strbuf_lift(");
   if (st < 0) buf_puts(b, "sp_box_nil()");
   /* An arm can hand on a route's handle as well as a variable's. */
   else emit_boxed_next_value(c, st, b);
-  if (a->lift) buf_puts(b, ")");
+  if (lift) buf_puts(b, ")");
   buf_puts(b, ";");
 }
 
@@ -2044,7 +2048,18 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
     if (t == TY_STRING && strbuf_poly_to_s(c, node)) {
       int r = nt_ref(c->nt, node, "receiver");
       char hr[1024];
-      if (strbuf_var_handle(c, r, hr, sizeof hr)) buf_printf(b, "sp_strbuf_to_s_box(%s)", hr);
+      /* `s&.to_s` answers nil for a nil s, where `s.to_s` answers "". */
+      int sn = call_is_safe_nav(c->nt, node) && g_sn_skip != node;
+      if (strbuf_var_handle(c, r, hr, sizeof hr)) {
+        if (sn) buf_printf(b, "(%s ? sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF) : sp_box_nil())", hr, hr);
+        else buf_printf(b, "sp_strbuf_to_s_box(%s)", hr);
+      }
+      else if (sn) {
+        int t2 = ++g_tmp;
+        buf_printf(b, "({ sp_RbVal _t%d = ", t2);
+        emit_boxed(c, r, b);
+        buf_printf(b, "; _t%d.tag == SP_TAG_NIL ? _t%d : sp_poly_to_s_box(_t%d); })", t2, t2, t2);
+      }
       else {
         buf_puts(b, "sp_poly_to_s_box(");
         emit_boxed(c, r, b);
@@ -2198,6 +2213,12 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
      emit_strbuf_route): that handle's box, not a new handle around a copy */
   /* A shared field's boxed value carries its handle even without a
      container-store lift, including defaults, throw and break values. */
+  /* an argument that ran ahead as the handle it hands on (a lifted call result) */
+  if (lift && ran_first_handle(node) >= 0) {
+    buf_printf(b, "sp_box_nullable_obj(_t%d, SP_BUILTIN_STRBUF)", ran_first_handle(node));
+    if (g_repr_check) repr_channel_boxed(c, node, frame);
+    return;
+  }
   if (lift || (!arg_ran_first(node, 0) && strbuf_route_reader(c, node))) {
     Buf hb; memset(&hb, 0, sizeof hb);
     if (emit_strbuf_route(c, node, &hb)) {
@@ -8833,6 +8854,22 @@ int emit_exc_reopen_pick_head(Compiler *c, const int *xr, int xn, const char *cl
   return t;
 }
 
+/* The class name a default Object#to_s / #inspect of class `ci` prints, as the
+   two halves of a C format: `name` goes inside "#<...>" and `arg` leads the
+   call's arguments. A Class.new class prints at run time (a constant may
+   name it only after the program starts); any other class has its Ruby name
+   fixed here. */
+void obj_default_name(Compiler *c, int ci, char *name, size_t nn, char *arg, size_t na) {
+  if (comp_class_anonymous(c, ci)) {
+    snprintf(name, nn, "%%s");
+    snprintf(arg, na, "sp_class_display((sp_Class){%d}), ", ci);
+    return;
+  }
+  const char *rn = class_ruby_name(c, ci);
+  snprintf(name, nn, "%s", rn ? rn : c->classes[ci].name);
+  arg[0] = '\0';
+}
+
 /* Build the full Ruby-style qualified name ("ActiveRecord::RecordNotFound") for
    class index ci by walking enclosing_class up to the top level. */
 const char *class_ruby_name(Compiler *c, int ci) {
@@ -10831,13 +10868,15 @@ static void emit_obj_inspect_dispatch(Compiler *c, Buf *b) {
        walk below renders each ivar through the inspects that come back here.
        CRuby shows the repeated object as #<N:0x... ...>; an object with no
        ivars cannot be reached from inside itself and keeps its old body. */
+    char wname[512], warg[96];
+    obj_default_name(c, i, wname, sizeof wname, warg, sizeof warg);
     if (ci->nivars > 0)
       buf_printf(b, "      if (sp_poly_recur_seen(SP_POLY_RECUR_INSPECT, p, NULL))\n"
-                    "        return sp_sprintf(\"#<%s:0x%%016llx ...>\", (unsigned long long)(uintptr_t)p);\n"
+                    "        return sp_sprintf(\"#<%s:0x%%016llx ...>\", %s(unsigned long long)(uintptr_t)p);\n"
                     "      int _rcm = sp_poly_recur_push(SP_POLY_RECUR_INSPECT, p, NULL);\n",
-                 class_ruby_name(c, i) ? class_ruby_name(c, i) : ci->name);
-    buf_printf(b, "      sp_String *_s = sp_String_new(sp_sprintf(\"#<%s:0x%%016llx\", (unsigned long long)(uintptr_t)p));\n",
-               class_ruby_name(c, i) ? class_ruby_name(c, i) : ci->name);
+                 wname, warg);
+    buf_printf(b, "      sp_String *_s = sp_String_new(sp_sprintf(\"#<%s:0x%%016llx\", %s(unsigned long long)(uintptr_t)p));\n",
+               wname, warg);
     /* The builder is live across every allocation the ivar walk below makes --
        each element's own inspect, and the sp_sprintf that renders an ivar
        pointing back at this object. Unrooted, a collection mid-walk swept it
@@ -10912,7 +10951,15 @@ static void emit_marshal_dispatch(Compiler *c, Buf *b) {
     ClassInfo *ci = &c->classes[i];
     /* the class's Ruby name, qualified as CRuby writes it (`M::Page`) */
     const char *mname = class_ruby_name(c, i) ? class_ruby_name(c, i) : ci->name;
+    /* a Class.new class dumps under the constant that names it, and has no
+       name to dump under before one does (CRuby: can't dump anonymous class) */
+    char mnq[160];
+    if (comp_class_anonymous(c, i)) snprintf(mnq, sizeof mnq, "sp_class_assigned_name_%d", i);
+    else snprintf(mnq, sizeof mnq, "\"%s\"", mname);
     buf_printf(b, "    case %d: {\n", i);
+    if (comp_class_anonymous(c, i))
+      buf_printf(b, "      if (!sp_class_assigned_name_%d)\n"
+                    "        sp_raise_cls(\"TypeError\", sp_sprintf(\"can't dump anonymous class %%s\", sp_class_display((sp_Class){%d})));\n", i, i);
     buf_printf(b, "      sp_%s *o = (sp_%s *)p; (void)o;\n", ci->c_name, ci->c_name);
     /* an ivar nothing has set yet is not written, as CRuby leaves it out
        (ivar_set_test, the presence inspect and instance_variables read) */
@@ -10935,12 +10982,12 @@ static void emit_marshal_dispatch(Compiler *c, Buf *b) {
        `C`, its class, its elements as an Array's, and its ivars after them
        under `I` when it has any */
     if (ci->ary_root > 0) {
-      buf_printf(b, "      if (_niv) sp_mar_b(b, 'I');\n      sp_mar_b(b, 'C'); sp_mar_sym(b, \"%s\");\n"
-                    "      sp_mar_w_body(b, ", mname);
+      buf_printf(b, "      if (_niv) sp_mar_b(b, 'I');\n      sp_mar_b(b, 'C'); sp_mar_sym(b, %s);\n"
+                    "      sp_mar_w_body(b, ", mnq);
       emit_boxed_text(c, ty_object(i), "o", b);
       buf_puts(b, ");\n      if (_niv) sp_mar_long(b, _niv);\n");
     }
-    else buf_printf(b, "      sp_mar_b(b, 'o'); sp_mar_sym(b, \"%s\");\n      sp_mar_long(b, _niv);\n", mname);
+    else buf_printf(b, "      sp_mar_b(b, 'o'); sp_mar_sym(b, %s);\n      sp_mar_long(b, _niv);\n", mnq);
     for (int j = 0; j < ci->nivars; j++) {
       char expr[160]; snprintf(expr, sizeof expr, "o->iv_%s", iv_c(ci->ivars[j] + 1));
       const char *set = ivar_set_test(c, i, ci->ivars[j], expr, tb, sizeof tb);
@@ -10962,7 +11009,9 @@ static void emit_marshal_dispatch(Compiler *c, Buf *b) {
   for (int i = 0; i < c->nclasses; i++) {
     if (!class_marshalable(c, i)) continue;
     ClassInfo *ci = &c->classes[i];
-    buf_printf(b, "  if (!strcmp(name, \"%s\")) {\n", class_ruby_name(c, i) ? class_ruby_name(c, i) : ci->name);
+    if (comp_class_anonymous(c, i))
+      buf_printf(b, "  if (sp_class_assigned_name_%d && !strcmp(name, sp_class_assigned_name_%d)) {\n", i, i);
+    else buf_printf(b, "  if (!strcmp(name, \"%s\")) {\n", class_ruby_name(c, i) ? class_ruby_name(c, i) : ci->name);
     buf_printf(b, "    sp_%s *o = into.tag == SP_TAG_OBJ ? (sp_%s *)into.v.p : ", ci->c_name, ci->c_name);
     emit_obj_alloc_expr(c, i, b);
     buf_puts(b, ";\n");
@@ -11523,6 +11572,7 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   int saved_nren = g_nren, saved_block = g_block_id;
   int saved_bnren = g_block_nren, saved_yfbn = g_yield_block_fallback_nren;
   const char *saved_bpn = g_block_param_name;
+  const char *saved_bown = g_block_owner_param_name, *saved_yfbpn = g_yield_block_fallback_param_name;
   int saved_yfb = g_yield_block_fallback;
   const char *saved_bbv = g_block_brk_var, *saved_yfbv = g_yield_blk_brk_fallback;
   const char *saved_ser = g_brk_ser_var;
@@ -11533,8 +11583,21 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
 
   g_yield_block_fallback = saved_block;
   g_yield_block_fallback_nren = saved_bnren;
+  /* the &block names, as emit_inline_call_x keeps them: the super's literal
+     block is the overriding method's own code, so a `b.call(..)` in it, b
+     that method's &block, still expands as a yield to the block one level
+     out. Unset, it read an undeclared C local (`def e(&b) = super { |v|
+     b.call(v) }`). */
+  g_yield_block_fallback_param_name = saved_bown;
+  g_block_owner_param_name = (block == saved_block) ? saved_yfbpn : saved_bpn;
   g_yield_blk_brk_fallback = saved_bbv;
   g_yield_blk_brk_efallback = saved_bbe;
+  /* the super's literal block yields to the block current here, as an
+     inlined call's does: without the entry, a block that yields on from a
+     super two levels down (`super { |v| yield v }` in C over the same in B)
+     found no block when spliced and raised LocalJumpError */
+  int saved_ytgt_cur = yield_target_cur();
+  int pushed_ytgt = yield_target_push(block, saved_block, saved_bpn, saved_nren, saved_ser, saved_ebase);
   g_block_id = block;
   g_block_nren = (block == saved_block) ? saved_bnren : saved_nren;
   /* same break-context rules as emit_inline_call_x */
@@ -11665,6 +11728,9 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   g_yield_block_fallback_nren = saved_yfbn;
   g_block_param_name = saved_bpn;
   g_yield_block_fallback = saved_yfb;
+  yield_target_pop(pushed_ytgt, saved_ytgt_cur);
+  g_block_owner_param_name = saved_bown;
+  g_yield_block_fallback_param_name = saved_yfbpn;
   g_block_brk_var = saved_bbv; g_yield_blk_brk_fallback = saved_yfbv;
   g_block_brk_ebase = saved_bbe; g_yield_blk_brk_efallback = saved_yfbe;
   g_block_brk_exc_base = saved_bbexc; g_brk_exc_base = saved_bexc;
@@ -13229,8 +13295,12 @@ void emit_regex_section(Compiler *c, Buf *b) {
   /* ... and the class-name table through sp_class_name_fn: lib/sp_poly_cold.c
      renders boxed classes, and a program with no poly rendering has no
      sp_class_to_s to hand over (SP_TU_NO_POLY_RENDER). */
-  if (g_emit_sym_rt)
+  if (g_emit_sym_rt) {
     buf_puts(b, "  sp_class_name_fn = sp_class_to_s;\n");
+    /* ... and, where a Class.new class exists, the table that prints it */
+    if (c->has_anonymous_classes)
+      buf_puts(b, "  sp_class_display_fn = sp_class_display;\n");
+  }
   /* A C stack that ran out becomes a catchable SystemStackError: the fault
      handler in the runtime archive cannot reach this TU's exception stack,
      so hand it the raise (see sp_raise_stack_overflow). */
@@ -16182,6 +16252,20 @@ static void emit_ffi_decls(Compiler *c, Buf *b) {
   }
 }
 
+/* Opens `switch(id){` over the class a sp_Class value stands for. A value that
+   carries its name (an exception's class, Range#class) keeps cls_id 0, which
+   must not read as the first class; it selects a Class.new class only when
+   the name is that class's identity key, and otherwise answers the name. */
+static void emit_anon_class_select(Compiler *c, Buf *b) {
+  buf_puts(b, "int id=c.cls_id;if(c.name){id=-1000;");
+  for (int i = 0; i < c->nclasses; i++)
+    if (comp_class_anonymous(c, i)) {
+      const char *kn = class_ruby_name(c, i) ? class_ruby_name(c, i) : c->classes[i].name;
+      buf_printf(b, "if(!strcmp(c.name,\"%s\"))id=%d;", kn, i);
+    }
+  buf_puts(b, "if(id==-1000)return c.name;}switch(id){");
+}
+
 /* The symbol table runtime (under g_emit_sym_rt) and sp_class_to_s, the class names the poly render arms print (under g_emit_class_names) (codegen_program's steps, in their order) */
 static void emit_sym_class_name_rt(Compiler *c, Buf *b) {
   if (g_emit_sym_rt) {
@@ -16222,12 +16306,33 @@ static void emit_sym_class_name_rt(Compiler *c, Buf *b) {
        name made two Symbols one. The block it leaves is kept: a Thread that
        read the pool's address before the move still finds its Symbol's name
        there, and the heap blocks left behind sum to less than the one in use. */
-    buf_puts(b, "static SP_NOINLINE SP_COLD void sp_dyn_syms_grow(void){"
-                "int nc=sp_dyn_cap>0?sp_dyn_cap*2:64;"
-                "const char **np=(const char **)malloc(sizeof(*np)*(size_t)nc);"
-                "if(!np)sp_raise_cls(\"NoMemoryError\",\"failed to grow the symbol table\");"
-                "memcpy(np,sp_dyn_syms,sizeof(*np)*(size_t)sp_ndyn);"
-                "sp_dyn_syms=np;sp_dyn_cap=nc;}\n");
+    /* Threads run on several OS workers, and two that make a new Symbol at
+       once both stored it in the slot at sp_ndyn and both counted it: the
+       slot after it stayed NULL and the next lookup read through it. In a
+       program that uses Threads a miss takes this lock to add its entry.
+       Nothing allocates and nothing polls a safepoint while it is held, so a
+       collection never waits on a worker that waits for the lock. A lookup
+       takes no lock: it reads the count, then the pool's address, and an
+       entry is stored before the count that covers it. */
+    int mt = g_uses_threads;
+    if (mt)
+      buf_puts(b, "#ifdef SP_THREADS\n"
+                  "static pthread_mutex_t sp_dyn_syms_mu = PTHREAD_MUTEX_INITIALIZER;\n"
+                  "#define SP_DYN_SYMS_LOCK() pthread_mutex_lock(&sp_dyn_syms_mu)\n"
+                  "#define SP_DYN_SYMS_UNLOCK() pthread_mutex_unlock(&sp_dyn_syms_mu)\n"
+                  "#else\n"
+                  "#define SP_DYN_SYMS_LOCK() ((void)0)\n"
+                  "#define SP_DYN_SYMS_UNLOCK() ((void)0)\n"
+                  "#endif\n");
+    buf_printf(b, "static SP_NOINLINE SP_COLD void sp_dyn_syms_grow(void){"
+                  "int nc=sp_dyn_cap>0?sp_dyn_cap*2:64;"
+                  "const char **np=(const char **)malloc(sizeof(*np)*(size_t)nc);"
+                  "if(!np)%s"
+                  "memcpy(np,sp_dyn_syms,sizeof(*np)*(size_t)sp_ndyn);"
+                  "%s;sp_dyn_cap=nc;}\n",
+               mt ? "{SP_DYN_SYMS_UNLOCK();sp_raise_cls(\"NoMemoryError\",\"failed to grow the symbol table\");}"
+                  : "sp_raise_cls(\"NoMemoryError\",\"failed to grow the symbol table\");",
+               mt ? "SP_ATOMIC_STORE(&sp_dyn_syms,np,__ATOMIC_RELEASE)" : "sp_dyn_syms=np");
     /* Those entries are string-heap strings (sp_str_dup_external) held only by
        this static array, which the collector does not walk: the string sweep
        freed them and the next intern compared against a corpse. Emitted here,
@@ -16243,11 +16348,19 @@ static void emit_sym_class_name_rt(Compiler *c, Buf *b) {
        out-of-range arm (id -1), so this was reachable from ordinary
        Ruby. sp_str_empty is the marked empty string. */
     buf_printf(b, "%s", g_ext_init_name ? "" : "static ");
-    buf_printf(b, "const char *sp_sym_to_s(sp_sym id){"
-                   "if(id>=0&&id<%d)return %s;"
-                   "if(id>=%d&&id<%d+sp_ndyn)return sp_dyn_syms[id-%d];"
-                   "return sp_str_empty;}\n",
-                   ns, ns > 0 ? "sp_sym_names[id]" : "sp_str_empty", ns, ns, ns);
+    if (mt)
+      buf_printf(b, "const char *sp_sym_to_s(sp_sym id){"
+                     "if(id>=0&&id<%d)return %s;"
+                     "int _k=SP_ATOMIC_LOAD(&sp_ndyn,__ATOMIC_ACQUIRE);const char **_p=SP_ATOMIC_LOAD(&sp_dyn_syms,__ATOMIC_ACQUIRE);"
+                     "if(id>=%d&&id<%d+_k)return _p[id-%d];"
+                     "return sp_str_empty;}\n",
+                     ns, ns > 0 ? "sp_sym_names[id]" : "sp_str_empty", ns, ns, ns);
+    else
+      buf_printf(b, "const char *sp_sym_to_s(sp_sym id){"
+                     "if(id>=0&&id<%d)return %s;"
+                     "if(id>=%d&&id<%d+sp_ndyn)return sp_dyn_syms[id-%d];"
+                     "return sp_str_empty;}\n",
+                     ns, ns > 0 ? "sp_sym_names[id]" : "sp_str_empty", ns, ns, ns);
     /* Byte-exact interning: a name may hold a NUL, which strcmp cannot see
        past. The stored entries carry their length (a 0xf1 struct entry in its
        header, a 0xff literal through strlen, a dyn entry through its heap
@@ -16266,13 +16379,35 @@ static void emit_sym_class_name_rt(Compiler *c, Buf *b) {
        of those bare literals, and a root's mark reads the byte in front of
        its string. So the pool's String is allocated by sp_str_alloc_nogc,
        which is for a pointer that cannot be rooted. */
+    /* With Threads a miss is added by sp_dyn_syms_add. The pool's String is
+       made before the lock is taken, and under the lock the entries added
+       since the lookup are compared with it: another Thread may have made
+       the same name meanwhile, and one name is one Symbol. The lookup counts
+       up to the end of the entries it read: written so, gcc and clang both
+       compile it to the loop a program without Threads has. */
+    if (mt)
+      buf_printf(b, "static SP_NOINLINE sp_sym sp_dyn_syms_add(const char *s, size_t n, int _k){"
+                     "char *_e=sp_str_alloc_nogc(n);if(n)memcpy(_e,s,n);"
+                     "SP_DYN_SYMS_LOCK();"
+                     "for(int i=_k;i<sp_ndyn;i++){const char*_c=sp_dyn_syms[i];if(_c[0]==_e[0]&&sp_str_byte_len(_c)==n&&memcmp(_c,_e,n)==0){SP_DYN_SYMS_UNLOCK();return (sp_sym)(%d+i);}}"
+                     "if(sp_ndyn>=sp_dyn_cap)sp_dyn_syms_grow();"
+                     "int _id=sp_ndyn;sp_dyn_syms[_id]=_e;SP_ATOMIC_STORE(&sp_ndyn,_id+1,__ATOMIC_RELEASE);"
+                     "SP_DYN_SYMS_UNLOCK();return (sp_sym)(%d+_id);}\n", ns, ns);
     buf_printf(b, "%s", g_ext_init_name ? "" : "static ");
-    buf_printf(b, "sp_sym sp_sym_intern_n(const char *s, size_t n){"
-                   "for(int i=0;i<%d;i++){const char*_c=%s;if(_c[0]==s[0]&&sp_str_byte_len(_c)==n&&memcmp(_c,s,n)==0)return (sp_sym)i;}"
-                   "for(int i=0;i<sp_ndyn;i++){const char*_c=sp_dyn_syms[i];if(_c[0]==s[0]&&sp_str_byte_len(_c)==n&&memcmp(_c,s,n)==0)return (sp_sym)(%d+i);}"
-                   "if(sp_ndyn>=sp_dyn_cap)sp_dyn_syms_grow();"
-                   "char *_d=sp_str_alloc_nogc(n);if(n)memcpy(_d,s,n);sp_dyn_syms[sp_ndyn]=_d;return (sp_sym)(%d+sp_ndyn++);}\n",
-                   ns, ns > 0 ? "sp_sym_names[i]" : "sp_str_empty", ns, ns);
+    if (mt)
+      buf_printf(b, "sp_sym sp_sym_intern_n(const char *s, size_t n){"
+                     "for(int i=0;i<%d;i++){const char*_c=%s;if(_c[0]==s[0]&&sp_str_byte_len(_c)==n&&memcmp(_c,s,n)==0)return (sp_sym)i;}"
+                     "int _k=SP_ATOMIC_LOAD(&sp_ndyn,__ATOMIC_ACQUIRE);const char **_pe=SP_ATOMIC_LOAD(&sp_dyn_syms,__ATOMIC_ACQUIRE)+_k;"
+                     "for(long i=-(long)_k;i<0;i++){const char*_c=_pe[i];if(_c[0]==s[0]&&sp_str_byte_len(_c)==n&&memcmp(_c,s,n)==0)return (sp_sym)(%d+_k+(int)i);}"
+                     "return sp_dyn_syms_add(s,n,_k);}\n",
+                     ns, ns > 0 ? "sp_sym_names[i]" : "sp_str_empty", ns);
+    else
+      buf_printf(b, "sp_sym sp_sym_intern_n(const char *s, size_t n){"
+                     "for(int i=0;i<%d;i++){const char*_c=%s;if(_c[0]==s[0]&&sp_str_byte_len(_c)==n&&memcmp(_c,s,n)==0)return (sp_sym)i;}"
+                     "for(int i=0;i<sp_ndyn;i++){const char*_c=sp_dyn_syms[i];if(_c[0]==s[0]&&sp_str_byte_len(_c)==n&&memcmp(_c,s,n)==0)return (sp_sym)(%d+i);}"
+                     "if(sp_ndyn>=sp_dyn_cap)sp_dyn_syms_grow();"
+                     "char *_d=sp_str_alloc_nogc(n);if(n)memcpy(_d,s,n);sp_dyn_syms[sp_ndyn]=_d;return (sp_sym)(%d+sp_ndyn++);}\n",
+                     ns, ns > 0 ? "sp_sym_names[i]" : "sp_str_empty", ns, ns);
     buf_printf(b, "%ssp_sym sp_sym_intern(const char *s){return sp_sym_intern_n(s,s?strlen(s):0);}\n\n",
                g_ext_init_name ? "" : "static ");
   }
@@ -16281,6 +16416,9 @@ static void emit_sym_class_name_rt(Compiler *c, Buf *b) {
      program could reach those (user classes, class values, any poly-capable
      slot -- see the render-reach scan); a purely-scalar program skips it. */
   if (g_emit_class_names) {
+    for (int i = 0; i < c->nclasses; i++)
+      if (comp_class_anonymous(c, i))
+        buf_printf(b, "static const char *sp_class_assigned_name_%d;\n", i);
     buf_printf(b, "%s", g_ext_init_name ? "" : "static ");
     buf_puts(b, "const char *sp_class_to_s(sp_Class c){if(sp_class_nil_p(c))return SPL(\"nil\");if(c.name)return c.name;switch(c.cls_id){");
     for (int i = 0; i < c->nclasses; i++) {
@@ -16352,6 +16490,28 @@ static void emit_sym_class_name_rt(Compiler *c, Buf *b) {
     buf_puts(b, "case -178:return SPL(\"Thread::ConditionVariable\");case -179:return SPL(\"Fiber\");");
     buf_puts(b, "case -180:return SPL(\"MatchData\");");
     buf_puts(b, "default:return sp_str_empty;} }\n\n");
+    /* sp_class_to_s is the class's identity key (a Class.new class keeps the
+       compiler's name for it, which raise, rescue and sp_class_eq resolve by).
+       A Class.new class prints as its constant once one is assigned and as
+       CRuby's address form until then, so to_s, inspect and name read this. */
+    if (c->has_anonymous_classes) {
+      /* text kept for good (the 0xff marker is a literal's: the collector leaves
+         it alone), for a message staged before anything can root it */
+      buf_puts(b, "static const char *sp_anon_text(const char *head, const char *disp){"
+                  "size_t a=strlen(head),n=strlen(disp);char *m=(char *)malloc(a+n+2);"
+                  "if(!m)sp_raise_cls(\"NoMemoryError\",\"failed to allocate a message\");"
+                  "m[0]=(char)0xff;memcpy(m+1,head,a);memcpy(m+1+a,disp,n+1);return m+1;}\n\n");
+      /* the unnamed form is built once per class and kept, so its address is the
+         same on every call (the NoMethodError sites compare it) */
+      buf_puts(b, "static const char *sp_class_display(sp_Class c){");
+      emit_anon_class_select(c, b);
+      for (int i = 0; i < c->nclasses; i++)
+        if (comp_class_anonymous(c, i))
+          buf_printf(b, "case %d:if(sp_class_assigned_name_%d)return sp_class_assigned_name_%d;"
+                         "{static const char *t;if(!t)t=sp_anon_text(\"\",sp_sprintf(SPL(\"#<Class:0x%%016llx>\"),"
+                         "(unsigned long long)(uintptr_t)&sp_class_to_s+%d));return t;}", i, i, i, i);
+      buf_puts(b, "default:return sp_class_to_s(c);} }\n\n");
+    }
     /* CRuby INSPECTS a keyword-init Struct class as `K(keyword_init: true)`
        while its name and to_s stay the bare name, so the render arms need a
        second table rather than a suffixed sp_class_to_s (#3947). Emitted
@@ -16364,16 +16524,27 @@ static void emit_sym_class_name_rt(Compiler *c, Buf *b) {
       if (!qname) qname = c->classes[i].name;
       buf_printf(b, "case %d:return SPL(\"%s(keyword_init: true)\");", i, qname);
     }
-    buf_puts(b, "default:break;} return sp_class_to_s(c); }\n\n");
+    buf_printf(b, "default:break;} return %s(c); }\n\n", comp_class_display_fn(c));
     /* #name of an ANONYMOUS class is nil, where #to_s and #inspect are the
        address form sp_class_to_s renders. The static spelling
        (`Struct.new(:a).name`) has always answered nil; this is the same class
        reached through a value (`obj.class.name`) (#4031). */
-    buf_puts(b, "static const char *sp_class_name_or_nil(sp_Class c){switch(c.cls_id){");
+    buf_puts(b, "static const char *sp_class_name_or_nil(sp_Class c){");
+    if (c->has_anonymous_classes) emit_anon_class_select(c, b);
+    else buf_puts(b, "switch(c.cls_id){");
     for (int i = 0; i < c->nclasses; i++)
-      if (!is_builtin_reopen(c->classes[i].name) && c->classes[i].is_anon_struct)
+      if (comp_class_anonymous(c, i))
+        buf_printf(b, "case %d:return sp_class_assigned_name_%d;", i, i);
+      else if (!is_builtin_reopen(c->classes[i].name) && c->classes[i].is_anon_struct)
         buf_printf(b, "case %d:return NULL;", i);
     buf_puts(b, "default:break;} return sp_class_to_s(c); }\n\n");
+    if (c->has_anonymous_classes) {
+      buf_puts(b, "static void sp_class_assign_name(sp_Class c, const char *name){switch(c.cls_id){");
+      for (int i = 0; i < c->nclasses; i++)
+        if (comp_class_anonymous(c, i))
+          buf_printf(b, "case %d:if(!sp_class_assigned_name_%d)sp_class_assigned_name_%d=name;break;", i, i, i);
+      buf_puts(b, "default:break;}}\n");
+    }
     /* Inverse of the table above, for resolving a class carried by NAME back to
        its builtin id so the id-keyed hierarchy walks work on it (#3022). Cold
        path only (superclass/ancestors), so a linear scan is fine. */
@@ -16538,6 +16709,13 @@ static void emit_user_exc_dispatch(Compiler *c, Buf *b) {
 }
 
 extern const Compiler *g_tmc_c;
+
+static void emit_runtime_include(Compiler *c, Buf *b, int blank) {
+  if (repr_share_rule(c)) buf_puts(b, "#define SP_SHARE_STRING_LITERALS 1\n");
+  buf_puts(b, "#include \"spinel_rt.h\"\n");
+  if (blank) buf_puts(b, "\n");
+}
+
 char *codegen_program(const NodeTable *nt) {
   char *isa_ext = NULL;  /* sp_poly_is_a's class-value arms, and where they go */
   size_t isa_ext_at = 0;
@@ -16661,7 +16839,7 @@ char *codegen_program(const NodeTable *nt) {
      this TU deliberately omits). */
   if (!g_emit_sym_rt)
     buf_puts(&b, "#define SP_TU_NO_POLY_RENDER 1\n");
-  buf_puts(&b, "#include \"spinel_rt.h\"\n");
+  emit_runtime_include(c, &b, 0);
   /* the frozen literals' file-scope objects go here, once the unit is done */
   size_t fzl_at = b.len;
   emit_ffi_decls(c, &b);
@@ -17433,7 +17611,7 @@ char *codegen_program(const NodeTable *nt) {
      at a time left a quarter of the stores bare. */
   gc_wb_insert(c, &b, 0);
   { Buf fz; memset(&fz, 0, sizeof fz);
-    fzl_emit_defs(b.p ? b.p : "", &fz);
+    fzl_emit_defs(b.p ? b.p : "", &fz, repr_share_rule(c));
     if (fz.len) buf_splice(&b, fzl_at, fz.p);
     free(fz.p); }
   if (g_line_map) line_map_reanchor(&b);
@@ -17457,7 +17635,7 @@ char *codegen_program(const NodeTable *nt) {
                g_ext_init_name, g_ext_init_name, g_ext_init_name);
     buf_puts(&hb, "#ifndef SPINEL_EXT_H\n#define SPINEL_EXT_H\n");
     buf_puts(&hb, "#define SPINEL_EXT_HOST 1  /* runtime globals resolve to the kernel TU */\n");
-    buf_puts(&hb, "#include \"spinel_rt.h\"\n\n");
+    emit_runtime_include(c, &hb, 1);
     buf_printf(&hb, "void %s(void);\n", g_ext_init_name);
     buf_printf(&hb, "int %s_try(void (*fn)(void *), void *ctx, const char **cls, const char **msg);\n\n",
                g_ext_init_name);

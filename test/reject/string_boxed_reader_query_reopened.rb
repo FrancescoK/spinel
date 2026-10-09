@@ -1,3 +1,4 @@
+# spinel: reject-share
 # A String read through a reader on a boxed receiver, then asked a method
 # the program adds to String that appends to self before the copy: the
 # change is the member's own in CRuby, so only String's built-in queries

@@ -1,0 +1,6 @@
+[:reject!, 2, [1, 2, 3]]
+[:delete_if, 30, [2, 3]]
+after
+ensure ran
+ensure ran
+300

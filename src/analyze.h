@@ -19,6 +19,14 @@ int poly_ivar_set_reaches(Compiler *c, int call, int k);
    of them, or NULL when the analysis cannot bound them (analyze_scope.c) */
 /* Kernel#String uses its argument as the conversion's implicit receiver. */
 const int *poly_recv_classes(Compiler *c, int call, int *n);
+/* The same walk for a value no call takes as its receiver (an argument of
+   `p`): the classes node v, or with elems one of its elements, can be an
+   instance of, marked in set (c->nclasses entries); 0 when it cannot bound
+   them. */
+int pivs_value_classes(Compiler *c, int v, int elems, char *set);
+/* The same for the boxed ivar ivn of class cid: the classes its stores can
+   put there, marked in set; 0 when it cannot bound them. */
+int pivs_ivar_classes(Compiler *c, int cid, const char *ivn, char *set);
 /* --share-strings: the callable literals (a lambda, a proc's literal
    block, a top-level method's `method(:name)`) the receiver of call `call`
    can be, by the same walk: into out (at most cap), their count, or -1

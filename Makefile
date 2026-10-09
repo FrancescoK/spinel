@@ -345,7 +345,7 @@ build/csrc/sp_rt_names.h: $(SP_RT_NAME_SRC) | build/csrc
 	{ echo "/* generated from the runtime sources; see the Makefile rule */"; \
 	  echo "static const char *const SP_RT_PREFIXES[] = {"; \
 	  { grep -hoE '\bsp_[a-z][a-z0-9_]*' $(SP_RT_NAME_SRC) 2>/dev/null \
-	    | sed 's/^sp_//' | cut -d_ -f1; echo rb; } \
+    | sed 's/^sp_//' | cut -d_ -f1 | grep -v '^cext$$'; echo rb; } \
 	    | sort -u | sed 's/.*/  "&",/'; \
 	  echo "  NULL"; echo "};"; } > $$t; \
 	if cmp -s $$t $@; then rm -f $$t; else mv $$t $@; fi
@@ -578,6 +578,45 @@ build/sp_cold.o: lib/sp_cold.c $(RT_HDRS)
 SP_RT_LIB = lib/libspinel_rt.a
 
 RT_MEMBERS = sp_bigint sp_crypto sp_pack sp_time sp_core sp_net sp_system sp_gc sp_slab sp_alloc sp_dtoa sp_marshal sp_format sp_string sp_inspect sp_poly_cold sp_array sp_str sp_str_crypt sp_hash sp_proc sp_exc sp_re sp_random sp_fiber sp_sched sp_io sp_iobuffer sp_cold sp_process sp_process_status
+
+# Opt-in runtime for carried C extensions. The regular archive has no hook
+# branches or extension state, preserving its instruction stream.
+.PHONY: cext-runtime cext-gc-test
+cext-runtime: lib/libspinel_cext_rt.a
+build/cext/sp_gc.o: lib/sp_gc.c $(RT_HDRS)
+	@mkdir -p $(@D)
+	$(CC) -c $(COPT) $(SEC_FLAGS) -DSP_CEXT -Ilib $< -o $@
+build/cext/sp_cext.o: lib/sp_cext.c lib/sp_cext.h include/ruby.h $(RT_HDRS)
+	@mkdir -p $(@D)
+	$(CC) -c $(COPT) $(SEC_FLAGS) -DSP_CEXT -Iinclude -Ilib $< -o $@
+build/cext/sp_cext_exc.o: lib/sp_cext_exc.c lib/sp_cext.h include/ruby.h $(RT_HDRS)
+	@mkdir -p $(@D)
+	$(CC) -c $(COPT) $(SEC_FLAGS) -DSP_CEXT -Iinclude -Ilib $< -o $@
+build/cext/sp_exc.o: lib/sp_exc.c $(RT_HDRS) include/ruby.h
+	@mkdir -p $(@D)
+	$(CC) -c $(COPT) $(SEC_FLAGS) -DSP_CEXT -Iinclude -Ilib $< -o $@
+lib/libspinel_cext_rt.a: $(RE_OBJ) $(addprefix build/,$(addsuffix .o,$(filter-out sp_gc sp_exc,$(RT_MEMBERS)))) build/cext/sp_gc.o build/cext/sp_exc.o build/cext/sp_cext.o build/cext/sp_cext_exc.o $(PLATFORM_OBJ)
+	@rm -f $@
+	ar rcs $@ $^
+cext-gc-test: lib/libspinel_cext_rt.a
+	$(CC) -O1 -g -DSP_CEXT -Iinclude -Ilib test/cext/handles.c $< $(LDFLAGS) -lm -o build/cext/handles-test
+	./build/cext/handles-test
+	SPINEL_GC_MINOR=1 SPINEL_GC_VERIFY_GEN=1 ./build/cext/handles-test
+	SPINEL_GC_SLAB=0 ./build/cext/handles-test
+	SPINEL_GC_STRESS=1 ./build/cext/handles-test
+.PHONY: cext-exceptions-test cext-exceptions-oracle
+cext-exceptions-oracle:
+	@sh test/cext/exception-oracle.sh
+build/cext/host.c: test/cext/host.rb $(SPINEL)
+	@mkdir -p $(@D)
+	$(SPINEL) -c --no-line-map $< -o $@
+cext-exceptions-test: lib/libspinel_cext_rt.a build/cext/host.c
+	$(CC) $(CFLAGS) -O1 -g -DSP_CEXT -Iinclude -Ilib test/cext/exceptions.c lib/libspinel_cext_rt.a $(LDFLAGS) -lm $(GC_FLAGS) -o build/cext/exceptions-test
+	./build/cext/exceptions-test
+	SPINEL_GC_STRESS=1 ./build/cext/exceptions-test
+	@status=0; ./build/cext/exceptions-test fatal > build/cext/fatal.out 2> build/cext/fatal.err || status=$$?; \
+	  test $$status = 1 && grep -qx 'fatal ensured' build/cext/fatal.out && grep -q 'fatal test' build/cext/fatal.err
+
 
 $(SP_RT_LIB): $(RE_OBJ) $(addprefix build/,$(addsuffix .o,$(RT_MEMBERS))) $(PLATFORM_OBJ)
 	ar rcs $@ $^
@@ -1073,6 +1112,10 @@ share-strings-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS
 	   ! grep -q 'sp_String_self_handle_argument(sp_String \*self)' "$$tmp/forward.c"; then \
 	  echo "share-strings-test: FAIL (String self forwarding does not select the callee ABI)"; ok=0; \
 	fi; \
+	if ! SPINEL_SHARE_STATS=3 $(SPINEL) --share-strings test/share/share_strings_dead_send.rb -c --no-line-map -o "$$tmp/dead.c" >"$$tmp/out" 2>&1 || \
+	   grep -q '^share-unknown-mut:' "$$tmp/out"; then \
+	  echo "share-strings-test: FAIL (a send in an uncalled method widens the sharing facts)"; ok=0; \
+	fi; \
 	t=test/share_strings_copy_beside_alloc.rb; \
 	if ! $(SPINEL) --share-strings "$$t" -o "$$tmp/cba" >"$$tmp/out" 2>&1 || \
 	   ! SPINEL_GC_STRESS=2 "$$tmp/cba" 2>&1 | cmp -s - "$$t.expected"; then \
@@ -1090,7 +1133,7 @@ share-strings-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS
 # `make test` always runs fresh: it wipes the prior `.ok` stamps first,
 # then runs the suite. (The old incremental `test` + `retest` split is
 # gone -- a stale `.ok` reading PASS was a recurring foot-gun.)
-test: $(SPINEL_TIMEOUT)
+test: $(SPINEL_TIMEOUT) cext-header-test cext-gc-test cext-exceptions-test
 	@if [ -z "$(TIMEOUT_BIN)" ]; then \
 	  echo "WARNING: no 'timeout'/'gtimeout' on PATH -- tests run with NO time limit."; \
 	  echo "         A hanging test will hang this run until the CI job's own limit."; \
@@ -2396,6 +2439,11 @@ rbs-seed-extractor: $(SPINEL) $(RBS_EXTRACT_BIN)
 build/rbs-seed-results/%.res: FORCE | rbs-seed-extractor $(SP_RT_LIB) $(SPINEL_TIMEOUT)
 	@mkdir -p $(@D); tmp=$$(mktemp -d /tmp/spinel-rbsseed.XXXXXX); ok=1; \
 	{ case $* in \
+	hash_each_untyped_appending_writer) \
+	if $(SPINEL) test/rbs-seed/hash_each_untyped_appending_writer.rb --rbs test/rbs-seed/sig -o "$$tmp/heuw" >/dev/null 2>"$$tmp/heuw.err" || \
+	   ! grep -q 'passed to an appending value block' "$$tmp/heuw.err"; then \
+	  echo "rbs-seed-test: FAIL (#8235 a Hash#each value into an untyped appending writer was not refused)"; ok=0; fi; \
+	;; \
 	attr_writer_poly_value) \
 	$(SPINEL) test/rbs-seed/attr_writer_poly_value.rb --rbs test/rbs-seed/sig -o "$$tmp/awp" >/dev/null 2>&1 && \
 	  "$$tmp/awp" > "$$tmp/awp.out" 2>/dev/null && cmp -s "$$tmp/awp.out" test/rbs-seed/attr_writer_poly_value.expected || { echo "rbs-seed-test: FAIL (#4856 a boxed value into an --rbs Integer attr as a method's value)"; ok=0; }; \
@@ -3255,6 +3303,10 @@ optcarrot: $(SPINEL) $(SP_RT_LIB) $(SPINEL_TIMEOUT)
 	fi
 
 # ---- Developer gates ----
+.PHONY: cext-header-test
+cext-header-test:
+	@CC="$(CC)" sh test/cext/header-test.sh
+
 #
 # `test`, `bench` and `optcarrot` only READ the compiler binaries and
 # write to disjoint build/ dirs, so they run concurrently as parallel
@@ -3352,8 +3404,8 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	grep -q 'sp_push_other(sp_PolyArray \* lv_a)' "$$tmp/ead.c" && grep -q 'sp_untouched(sp_PolyArray \* lv_xs)' "$$tmp/ead.c" || { echo "infer-test: FAIL (an empty [] default no longer widens, or lost its poly-array default)"; ok=0; }; \
 	$(SPINEL) test/frozen_literal_warning_op_write.rb -c --no-line-map -o "$$tmp/flw.c" 2> "$$tmp/flw.err" >/dev/null || { echo "infer-test: FAIL (frozen_literal_warning_op_write: -c)"; ok=0; }; \
 	grep -q '`text` only ever holds frozen string literals' "$$tmp/flw.err" && ! grep -Eq '`(s|m)` only ever holds frozen string literals' "$$tmp/flw.err" || { echo "infer-test: FAIL (the frozen-literal << warning is wrong about a local an op-write or and-write assigns)"; ok=0; }; \
-	$(SPINEL) test/infer/define_method_runtime_name_next.rb -c --no-line-map -o "$$tmp/dmr.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (define_method_runtime_name_next: -c)"; ok=0; }; \
-	grep -q 'sp_sym sp_Maker_s_make(' "$$tmp/dmr.c" && grep -q 'sp_int sp_Maker_s_count(' "$$tmp/dmr.c" && grep -q 'sp_sym sp_Maker_s_mixed(' "$$tmp/dmr.c" || { echo "infer-test: FAIL (a next in a define_method block with a run-time name is read as the enclosing method's return)"; ok=0; }; \
+	$(SPINEL) test/infer/define_method_literal_names_next.rb -c --no-line-map -o "$$tmp/dmr.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (define_method_literal_names_next: -c)"; ok=0; }; \
+	grep -q 'sp_sym sp_Maker_s_make(' "$$tmp/dmr.c" && grep -q 'sp_int sp_Maker_s_count(' "$$tmp/dmr.c" && grep -q 'sp_sym sp_Maker_s_mixed(' "$$tmp/dmr.c" || { echo "infer-test: FAIL (a next in a define_method block is read as the enclosing method's return)"; ok=0; }; \
 	$(SPINEL) test/string_append_interp_int.rb -c --no-line-map -o "$$tmp/sai.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (string_append_interp_int: -c)"; ok=0; }; \
 	grep -q 'sp_String_append_n(lv_out, _d[0-9]* + 1, (size_t)(sp_w_int(_d[0-9]* + 1, _t[0-9]*)' "$$tmp/sai.c" && ! grep -q 'sp_int_to_s(' "$$tmp/sai.c" || { echo "infer-test: FAIL (an appended interpolation builds a String for each Integer part)"; ok=0; }; \
 	SPINEL_SPLIT_STRICT=1 $(SPINEL) --jobs=3 test/dispatch_override_param_list.rb -o "$$tmp/split" >/dev/null 2>&1 && "$$tmp/split" | cmp -s - test/dispatch_override_param_list.rb.expected || { echo "infer-test: FAIL (#4847 --jobs=3 split build)"; ok=0; }; \
@@ -3455,6 +3507,9 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	grep -q '"line":16,"col":4,.*"kind":"CallNode","name":"widen","dispatch":"direct"' "$$tmp/et.json" || { echo "infer-test: FAIL (--emit-types: a direct call is reported as one)"; ok=0; }; \
 	grep -q '"line":6,"col":12,"end_line":6,"end_col":13,"kind":"RequiredParameterNode","name":"o","type":"poly","rbs":"untyped"' "$$tmp/et.json" || { echo "infer-test: FAIL (--emit-types: a parameter has a record carrying the slot type)"; ok=0; }; \
 	grep -q '"line":4,"col":17,.*"kind":"RequiredParameterNode","name":"x","type":"int","rbs":"Integer"' "$$tmp/et.json" || { echo "infer-test: FAIL (--emit-types: a typed parameter record)"; ok=0; }; \
+	$(SPINEL) test/poly_attr_writer_distinct_family_override.rb --emit-types -o "$$tmp/paf.json" >/dev/null 2>&1 || { echo "infer-test: FAIL (--emit-types on distinct poly attr-writer families)"; ok=0; }; \
+	grep -q '"line":17,"col":4,.*"kind":"InstanceVariableReadNode","name":"@params","type":"str_str_hash"' "$$tmp/paf.json" && \
+	grep -q '"line":35,"col":4,.*"kind":"InstanceVariableReadNode","name":"@params","type":"str_str_hash"' "$$tmp/paf.json" || { echo "infer-test: FAIL (an unknown writer merged distinct @params families)"; ok=0; }; \
 	grep -q '"line":16,"col":4,.*"kind":"CallNode","name":"widen","dispatch":"direct","callee":"widen"' "$$tmp/et.json" || { echo "infer-test: FAIL (--emit-types: a direct call names its callee)"; ok=0; }; \
 	grep -q '"line":13,"col":19,.*"kind":"CallNode","name":"dist2","dispatch":"switch","candidates":\["Point#dist2"\]' "$$tmp/et.json" || { echo "infer-test: FAIL (--emit-types: a switch lists its candidate defs)"; ok=0; }; \
 	grep -q '"kind":"DefNode","name":"dist2",.*"owner":"Point","signature":"(untyped) -> Integer","widened":true' "$$tmp/et.json" || { echo "infer-test: FAIL (--emit-types: a def carries its owner and signature)"; ok=0; }; \

@@ -2249,6 +2249,8 @@ static TyKind proc_arg_ty(Compiler *c, int a) {
   if (repr_share_rule(c) && r.strbuf_src == RS_HANDLE) return TY_STRBUF;
   /* A value route publishes the same handle its boxed emission carries. */
   if (r.as_ty == TY_STRING && strbuf_value_carries(c, a)) return TY_STRBUF;
+  /* a fresh String lifted into the handle for a boxed parameter it reaches */
+  if (repr_share_rule(c) && r.as_ty == TY_STRING && c->poly_strbuf_lift[a]) return TY_STRBUF;
   TyKind t = r.as_ty;
   if (t == TY_UNKNOWN && nt_kind(c->nt, a) == NK_ArrayNode && node_is_empty_container(c->nt, a))
     return TY_INT_ARRAY;
@@ -8033,7 +8035,7 @@ static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
     /* see the zero-argument gate's own note: the emitters stand down by
        name, so the dispatch has to open by name too */
     int name_taken2 = user_defines_or_reads(c, name) || poly_cmethod_collision(c, id, name);
-    if (ncand > 0 || name_taken2 || is_index || is_pdelete || is_pdig || is_pvalues_at || is_pfirstn || is_include || is_fetch || is_push || is_unshift || is_pjoin || is_ppack || is_pred || is_strftime || is_intersect || is_arr_index || is_cover || is_gcdlcm || is_pmerge || is_ctryconv) {
+    if (ncand > 0 || name_taken2 || is_index || is_pdelete || is_pdig || is_pvalues_at || is_pfirstn || is_include || is_fetch || is_push || is_unshift || is_pjoin || is_ppack || is_pred || is_strftime || is_intersect || is_arr_index || is_cover || is_gcdlcm || is_pmerge || is_ctryconv || is_strsetop_n) {
       /* A splatted argument spreads across each arm's own parameters: its
          temp holds the array, and every arm gathers the call's positionals
          from the temps, judges the count they give and binds each parameter
@@ -17700,9 +17702,13 @@ static int emit_object_reopen_vis_refusal(Compiler *c, int id, int vrecv, TyKind
   if (boxed)
     buf_printf(b, "sp_raise_cls(\"NoMethodError\", sp_str_concat((&(\"\\xff\" \"%s method '%s' called for an instance of \")[1]), "
                   "sp_poly_class_name(_t%d))), %s; }))", kind, vnm, tv, default_value_from_compiler(c, repr_of(c, id).as_ty));
-  else
-    buf_printf(b, "sp_raise_cls(\"NoMethodError\", (&(\"\\xff\" \"%s method '%s' called for an instance of %s\")[1])), %s)",
-               kind, vnm, cname, default_value_from_compiler(c, repr_of(c, id).as_ty));
+  else {
+    char head[200]; snprintf(head, sizeof head, "%s method '%s' called for an instance of ", kind, vnm);
+    buf_puts(b, "sp_raise_cls(\"NoMethodError\", ");
+    if (vcid >= 0 && anon_class_text(c, vcid, head, b)) buf_puts(b, ")");
+    else buf_printf(b, "(&(\"\\xff\" \"%s method '%s' called for an instance of %s\")[1]))", kind, vnm, cname);
+    buf_printf(b, ", %s)", default_value_from_compiler(c, repr_of(c, id).as_ty));
+  }
   return 1;
 }
 /* --plan-check: a call refused for its visibility binds no method */
@@ -17763,9 +17769,15 @@ static int emit_vis_refusal_x(Compiler *c, int id, Buf *b) {
   { int vblk = nt_ref(nt, id, "block");
     int vbx = vblk >= 0 && nt_kind(nt, vblk) == NK_BlockArgumentNode ? nt_ref(nt, vblk, "expression") : -1;
     if (vbx >= 0 && nt_kind(nt, vbx) != NK_SymbolNode) { buf_puts(b, "(void)("); emit_expr(c, vbx, b); buf_puts(b, "), "); } }
-  buf_printf(b, "sp_raise_cls(\"NoMethodError\", (&(\"\\xff\" \"%s method '%s' called for %s%s\")[1])), %s)",
-             vis == SP_VIS_PRIVATE ? "private" : "protected", vnm, at_main ? "" : "an instance of ", vrn,
-             default_value_from_compiler(c, repr_of(c, id).as_ty));
+  {
+    char head[200]; snprintf(head, sizeof head, "%s method '%s' called for an instance of ",
+                             vis == SP_VIS_PRIVATE ? "private" : "protected", vnm);
+    buf_puts(b, "sp_raise_cls(\"NoMethodError\", ");
+    if (!at_main && anon_class_text(c, vcid, head, b)) buf_puts(b, ")");
+    else buf_printf(b, "(&(\"\\xff\" \"%s method '%s' called for %s%s\")[1]))",
+                    vis == SP_VIS_PRIVATE ? "private" : "protected", vnm, at_main ? "" : "an instance of ", vrn);
+    buf_printf(b, ", %s)", default_value_from_compiler(c, repr_of(c, id).as_ty));
+  }
   return 1;
 }
 
@@ -17828,9 +17840,14 @@ void emit_poly_vis_precheck(Compiler *c, int id, int tv, Buf *b) {
         is_descendant(c, caller, owner)) vis = SP_VIS_PUBLIC;
     if (vis == SP_VIS_PUBLIC) continue;
     const char *vrn = class_ruby_name(c, k) ? class_ruby_name(c, k) : c->classes[k].name;
-    buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == %d) { sp_exc_stage_recv(_t%d); "
-                  "sp_raise_cls(\"NoMethodError\", (&(\"\\xff\" \"%s method '%s' called for an instance of %s\")[1])); } ",
-               tv, tv, k, tv, vis == SP_VIS_PRIVATE ? "private" : "protected", vnm, vrn);
+    {
+      char head[200]; snprintf(head, sizeof head, "%s method '%s' called for an instance of ",
+                               vis == SP_VIS_PRIVATE ? "private" : "protected", vnm);
+      buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == %d) { sp_exc_stage_recv(_t%d); sp_raise_cls(\"NoMethodError\", ",
+                 tv, tv, k, tv);
+      if (!anon_class_text(c, k, head, b)) buf_printf(b, "(&(\"\\xff\" \"%s%s\")[1])", head, vrn);
+      buf_puts(b, "); } ");
+    }
   }
   /* a boxed IO handle, by the reopening its kind picks */
   int ks[16], n = io_reopen_defs(c, vnm, 0, ks, 16);
@@ -18086,8 +18103,13 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
       const char *vnm = nt_str(nt, id, "name");
       TyKind vret = repr_of(c, id).as_ty;
       const char *vcn = g_emitting_class_id >= 0 ? class_ruby_name(c, g_emitting_class_id) : NULL;
-      buf_printf(b, "(sp_raise_cls(\"NameError\", \"undefined local variable or method '%s' for %s%s\"), %s)",
-                 vnm ? vnm : "?", vcn ? "an instance of " : "main", vcn ? vcn : "",
+      char head[200];
+      snprintf(head, sizeof head, "undefined local variable or method '%s' for an instance of ", vnm ? vnm : "?");
+      buf_puts(b, "(sp_raise_cls(\"NameError\", ");
+      if (g_emitting_class_id >= 0 && anon_class_text(c, g_emitting_class_id, head, b)) buf_puts(b, ")");
+      else buf_printf(b, "\"undefined local variable or method '%s' for %s%s\")",
+                      vnm ? vnm : "?", vcn ? "an instance of " : "main", vcn ? vcn : "");
+      buf_printf(b, ", %s)",
                  (is_scalar_ret(vret) && vret != TY_UNKNOWN) ? default_value_from_compiler(c, vret) : "sp_box_nil()");
       return 1;
     }
@@ -18114,9 +18136,14 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
     TyKind uret = repr_of(c, id).as_ty;
     buf_puts(b, "(");
     for (int k = 0; k < argc; k++) { buf_puts(b, "(void)("); emit_expr(c, argv[k], b); buf_puts(b, "), "); }
-    buf_printf(b, "sp_raise_cls(\"NoMethodError\", (&(\"\\xff\" \"undefined method '%s' for an instance of %s\")[1])), %s)",
-               name, ucn ? ucn : "Object",
-               (is_scalar_ret(uret) && uret != TY_UNKNOWN) ? default_value_from_compiler(c, uret) : "sp_box_nil()");
+    {
+      char head[200]; snprintf(head, sizeof head, "undefined method '%s' for an instance of ", name);
+      buf_puts(b, "sp_raise_cls(\"NoMethodError\", ");
+      if (!anon_class_text(c, g_emitting_class_id, head, b))
+        buf_printf(b, "(&(\"\\xff\" \"undefined method '%s' for an instance of %s\")[1]))", name, ucn ? ucn : "Object");
+      else buf_puts(b, ")");
+      buf_printf(b, ", %s)", (is_scalar_ret(uret) && uret != TY_UNKNOWN) ? default_value_from_compiler(c, uret) : "sp_box_nil()");
+    }
     return 1;
   }
   if (recv >= 0) {
@@ -18631,6 +18658,7 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
            equivalent. TY_UNKNOWN keeps the old lattice name -- its receiver
            expression may not be independently emittable. */
         char rdesc[128];
+        int anon_ci = -1;   /* a Class.new receiver class names itself at run time */
         if (grt == TY_NIL) snprintf(rdesc, sizeof rdesc, "nil");
         else if (grt == TY_INT) snprintf(rdesc, sizeof rdesc, "an instance of Integer");
         else if (grt == TY_STRING) snprintf(rdesc, sizeof rdesc, "an instance of String");
@@ -18641,6 +18669,7 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
           const char *ocn = class_ruby_name(c, ty_object_class(grt));
           snprintf(rdesc, sizeof rdesc, "an instance of %s",
                    ocn ? ocn : c->classes[ty_object_class(grt)].name);
+          if (comp_class_anonymous(c, ty_object_class(grt))) anon_ci = ty_object_class(grt);
         }
         else if (ty_is_array(grt)) snprintf(rdesc, sizeof rdesc, "an instance of Array");
         else if (ty_is_hash(grt)) snprintf(rdesc, sizeof rdesc, "an instance of Hash");
@@ -18656,9 +18685,10 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
           /* and a module as a module ("for module Math") */
           int rci = rcn ? comp_class_index(c, rcn) : -1;
           if (rcn && (rci >= 0 || builtin_class_id(rcn) != 0))
-            snprintf(rdesc, sizeof rdesc, "%s %s",
+            { snprintf(rdesc, sizeof rdesc, "%s %s",
                      (rci >= 0 ? comp_class_is_module(c, &c->classes[rci]) : is_builtin_module_name(rcn))
                        ? "module" : "class", rcn);
+              anon_ci = -1; }
         }
         if (grt == TY_POLY || grt == TY_BOOL) {
           /* The RESULT slot is sized by the call's own type (ret), not the
@@ -18763,6 +18793,12 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
               char hd[96];
               snprintf(hd, sizeof hd, nomethod_head(nm), nm ? nm : "?");
               snprintf(gmsg, sizeof gmsg, "\"%s %s\"", hd, rdesc);
+              if (anon_ci >= 0) {
+                char head[160]; snprintf(head, sizeof head, "%s an instance of ", hd);
+                Buf ab; memset(&ab, 0, sizeof ab);
+                if (anon_class_text(c, anon_ci, head, &ab)) snprintf(gmsg, sizeof gmsg, "%s", ab.p);
+                free(ab.p);
+              }
             }
           }
           /* A receiver that is not side-effect-free still runs, first, as
@@ -19737,12 +19773,13 @@ static int operand_fresh_str(Compiler *c, int node) {
    its left included (`new(a: r.int, b: f(NAMES.fetch(r.int)))` read the
    second int first), so they are placed before this operand's binding. A
    fresh String (operand_fresh_str) is rendered as the String. */
-static void render_operand(Compiler *c, int node, int fresh, Buf *out, Buf *pre) {
+static void render_operand(Compiler *c, int node, int fresh, int handle, Buf *out, Buf *pre) {
   memset(out, 0, sizeof *out);
   memset(pre, 0, sizeof *pre);
   Buf *sv = g_pre;
   g_pre = pre;
-  if (fresh) {
+  if (handle) emit_strbuf_handle_of(c, node, out);
+  else if (fresh) {
     int v = view_push_repr(c, node, VR_STRBUF_BOX, 0);
     emit_str_expr(c, node, out);
     view_pop(c, v);
@@ -19829,7 +19866,8 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
      may replace, before it checks or converts any of them. */
   if (emit_io_read_nonblock_outbuf(c, id, b)) return 1;
   /* The default setter holds its receiver and String handle in order. */
-  if (strbuf_hash_default_arg(c, id) >= 0) return 0;
+  int harg = strbuf_hash_default_arg(c, id);
+  if (harg >= 0 && ty_is_hash(repr_of(c, nt_ref(c->nt, id, "receiver")).as_ty)) return 0;
   if (emit_or_take_back(c, id, b, emit_str_append_chain_handle)) return 1;
   const NodeTable *nt = c->nt;
   if (id == g_operand_order_node) return 0;
@@ -19953,8 +19991,8 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
       continue;
     }
     if (!bindable && unb < 0) unb = i;
-    int fr = operand[i] != recv && operand_fresh_str(c, operand[i]);
-    TyKind t = fr ? TY_STRING : repr_of(c, operand[i]).as_ty;
+    int fr = operand[i] != harg && operand[i] != recv && operand_fresh_str(c, operand[i]);
+    TyKind t = operand[i] == harg ? TY_STRBUF : fr ? TY_STRING : repr_of(c, operand[i]).as_ty;
     if (t == TY_UNKNOWN || t == TY_VOID || t == TY_NIL) {
       if (unb < 0) return 0;
       unb_lit = 1;
@@ -20044,7 +20082,7 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
     if (copy[i]) { memset(&opb[i], 0, sizeof opb[i]); memset(&opp[i], 0, sizeof opp[i]); }
   for (; !operands_last && rendered < nb && ok; rendered++) {
     if (copy[rendered]) continue;
-    render_operand(c, node[rendered], fresh[rendered], &opb[rendered], &opp[rendered]);
+    render_operand(c, node[rendered], fresh[rendered], node[rendered] == harg, &opb[rendered], &opp[rendered]);
     if (text_is_raise_token(opb[rendered].p)) ok = 0;
   }
   Buf ob; memset(&ob, 0, sizeof ob);
@@ -20062,7 +20100,8 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
         continue;
       }
       tmp[i] = ++g_tmp;
-      view_bind(node[i], "_t%d", tmp[i]);
+      if (node[i] == harg) ran_first_bind(node[i], tmp[i], tmp[i]);
+      else view_bind(node[i], "_t%d", tmp[i]);
       if (repr_share_rule(c) && ty[i] == TY_STRBUF) {
         held[nh++] = view_push_repr(c, node[i], VR_HEAD_HELD, 1);
       }
@@ -20100,7 +20139,7 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
     if (observable < 2 && g_conv_emitted == conv_mark) ok = 0;
     for (; operands_last && rendered < nb && ok; rendered++) {
       if (copy[rendered]) continue;
-      render_operand(c, node[rendered], fresh[rendered], &opb[rendered], &opp[rendered]);
+      render_operand(c, node[rendered], fresh[rendered], node[rendered] == harg, &opb[rendered], &opp[rendered]);
       if (text_is_raise_token(opb[rendered].p)) ok = 0;
     }
   }
@@ -20524,13 +20563,15 @@ static int nil_target_operands(Compiler *c, int id, int boxed, int *node, TyKind
    handle beside it (ran_first_bind), which a mutator changes
    (strbuf_recv_handle). Answers the read's temp, or -1 with nothing
    emitted. */
-static int emit_nil_target_route(Compiler *c, int r, Buf *b, const char *lead) {
+static int emit_nil_target_route(Compiler *c, int r, int handle, Buf *b, const char *lead) {
   Buf hb, op;
   memset(&hb, 0, sizeof hb);
   memset(&op, 0, sizeof op);
   Buf *sv = g_pre;
   g_pre = &op;
-  int ok = emit_strbuf_route(c, r, &hb);
+  int ok = 1;
+  if (handle) emit_strbuf_handle_of(c, r, &hb);
+  else ok = emit_strbuf_route(c, r, &hb);
   g_pre = sv;
   int t = -1;
   if (ok) {
@@ -20570,7 +20611,7 @@ static void emit_nil_target_rest(Compiler *c, int v, const int *node, int n, Buf
   if (k == NK_AssocSplatNode) { emit_nil_target_rest(c, nt_ref(nt, v, "value"), node, n, b); return; }
   if (k == NK_SplatNode) { emit_nil_target_rest(c, nt_ref(nt, v, "expression"), node, n, b); return; }
   Buf ob, op;
-  render_operand(c, v, 0, &ob, &op);
+  render_operand(c, v, 0, 0, &ob, &op);
   if (op.p) buf_puts(b, op.p);
   buf_printf(b, "(void)(%s); ", ob.p ? ob.p : "0");
   free(ob.p); free(op.p);
@@ -20627,18 +20668,22 @@ static void emit_nil_target_head(Compiler *c, int id, Buf *b, const char *lead, 
   const int *la_av = la_a >= 0 ? nt_arr(nt, la_a, "arguments", &la_an) : NULL;
   for (int i = 0; i < la_an && !later_alloc; i++) later_alloc = operand_may_allocate(c, la_av[i]);
   *held = -1;
+  int harg = strbuf_hash_default_arg(c, id);
   for (int i = 0; i < n; i++) {
     Buf ob, op;
     /* --share-strings: a receiver that is a route over a shared String
        (emit_strbuf_route) is held as the handle it hands on, which the
        mutator then changes (strbuf_recv_handle reads it) */
     if (node[i] == r && repr_share_rule(c) && (ty[i] == TY_STRING || ty[i] == TY_STRBUF)) {
-      int t = emit_nil_target_route(c, r, b, lead);
+      int t = emit_nil_target_route(c, r, 0, b, lead);
       if (t >= 0) { snprintf(rtext, sizeof rtext, "_t%d", t); continue; }
     }
+    /* A retained argument's handle is taken at this first evaluation,
+       before another operand can overwrite the return channel. */
+    if (node[i] == harg && emit_nil_target_route(c, node[i], 1, b, lead) >= 0) continue;
     /* not fresh: ty[i] declares the temp, and a fresh String (#7580) renders as the String
        where its stored type is the handle */
-    render_operand(c, node[i], 0, &ob, &op);
+    render_operand(c, node[i], 0, 0, &ob, &op);
     if (op.p) buf_puts(b, op.p);
     buf_puts(b, lead);
     if (ty[i] == TY_NIL) {
@@ -26176,7 +26221,9 @@ static int emit_deep_return_pickup(Compiler *c, int id, Buf *b) {
     return emit_strbuf_route(c, id, b);
   /* An identity read demands the handle without changing String dispatch.
      The return route lifts that demand while it runs the ordinary call. */
-  if (repr_share_rule(c) && repr_of(c, id).demand && repr_call_returns_handle(c, id))
+  /* A boxed conversion carries each arm directly under that demand. */
+  if (repr_share_rule(c) && repr_of(c, id).demand && repr_call_returns_handle(c, id) &&
+      repr_boxed_to_s_operand(c, id) < 0)
     return emit_strbuf_route(c, id, b);
   if (!strbuf_call_picks_up(c, id)) return 0;
   int tvD = ++g_tmp;

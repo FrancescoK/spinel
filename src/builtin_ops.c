@@ -2856,7 +2856,7 @@ static const BopShareRow bop_share_rows[] = {
   { BOP_ANY_RECV, "<=>",         BSH_PURE },
   { BOP_ANY_RECV, "freeze",      BSH_RECV },
   { BOP_ANY_RECV, "itself",      BSH_RECV },
-  { BOP_ANY_RECV, "clamp",       BSH_ARGS },
+  { BOP_ANY_RECV, "clamp",       BSH_CLAMP }, /* the receiver or a bound */
   { BOP_ANY_RECV, "sum",         BSH_ARGS }, /* an empty fold keeps its seed */
   { BOP_ANY_RECV, "zip",         BSH_MERGE },
   { BOP_ANY_RECV, "dup",         BSH_RECV },
@@ -2876,6 +2876,9 @@ static const BopShareRow bop_share_rows[] = {
   { BOP_ANY_RECV, "module_exec", BSH_EXEC },
   { BOP_ANY_RECV, "module_eval", BSH_EXEC },
   { BOP_ANY_RECV, "new",         BSH_NEW },
+
+  /* Formatting an exception makes text of its own. */
+  { TY_EXCEPTION, "detailed_message", BSH_PURE },
 
   /* A builtin class's constructor keeps what it is handed in the container
      it answers. (An exception keeps its message, which #message hands back

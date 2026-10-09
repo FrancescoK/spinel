@@ -274,6 +274,10 @@ void comp_free(Compiler *c) {
   free(c->hash_default_arg_memo);
   c->hash_default_arg_memo = NULL;
   free(c->blk_body_map);
+  for (int i = 0; i < c->npres; i++) free(c->pres_names[i]);
+  free(c->pres_names); free(c->pres_flags); free(c->pres_obs); free(c->pres_memo);
+  c->pres_obs = NULL; c->pres_obs_n = 0; c->pres_memo = NULL; c->pres_memo_n = 0;
+  c->pres_names = NULL; c->pres_flags = NULL; c->npres = c->cpres = 0;
   free(c->nil_fact);
   free(c->nil_elem_fact);
   free(c->node_ord); free(c->node_base);
@@ -564,6 +568,7 @@ ClassInfo *comp_class_new(Compiler *c, const char *name, int def_node) {
   ci->c_name = sp_class_c_name(name);
   ci->is_builtin_const = is_builtin_class_name(name) || is_builtin_module_const_name(name);
   ci->def_node = def_node;
+  if (nt_int(c->nt, def_node, "class_new_anonymous", 0)) c->has_anonymous_classes = 1;
   ci->parent = -1;
   ci->enclosing_class = -1;
   return ci;
@@ -2374,6 +2379,27 @@ int comp_ivarg_arg(const Compiler *c, int e) {
   return (e >= 0 && e < c->ivarg_count) ? c->ivarg_arg[e] : -1;
 }
 
+/* The PRES_* facts of ivar name `ivn` (c->pres_names); comp_pres_note adds
+   to them. */
+int comp_pres_flags(const Compiler *c, const char *ivn) {
+  for (int i = 0; ivn && i < c->npres; i++)
+    if (sp_streq(c->pres_names[i], ivn)) return c->pres_flags[i];
+  return 0;
+}
+void comp_pres_note(Compiler *c, const char *ivn, int flag) {
+  if (!ivn) return;
+  for (int i = 0; i < c->npres; i++)
+    if (sp_streq(c->pres_names[i], ivn)) { c->pres_flags[i] |= (unsigned char)flag; return; }
+  if (c->npres == c->cpres) {
+    c->cpres = c->cpres ? c->cpres * 2 : 8;
+    c->pres_names = realloc(c->pres_names, sizeof(char *) * (size_t)c->cpres);
+    c->pres_flags = realloc(c->pres_flags, (size_t)c->cpres);
+    if (!c->pres_names || !c->pres_flags) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  c->pres_names[c->npres] = strdup(ivn);
+  c->pres_flags[c->npres++] = (unsigned char)flag;
+}
+
 /* The owning class of an ivar READ/WRITE node under the same storage rules
    the emitters use (instance method -> class, top-level -> Toplevel; class
    methods / instance_eval contexts return -1). */
@@ -3177,4 +3203,16 @@ int comp_class_extends_any(Compiler *c, int ci) {
   for (int k = ci, d = 0; k >= 0 && k < c->nclasses && d < 64; k = c->classes[k].parent, d++)
     if (c->classes[k].nextended_mods > 0) return 1;
   return 0;
+}
+
+/* Class.new identities acquire their public name only at an executed constant write. */
+int comp_class_anonymous(Compiler *c, int ci) {
+  return ci >= 0 && ci < c->nclasses &&
+         nt_int(c->nt, c->classes[ci].def_node, "class_new_anonymous", 0);
+}
+
+/* The table that prints a class value for to_s and inspect: a Class.new class
+   has a display form of its own, and every other program reads the one name table. */
+const char *comp_class_display_fn(Compiler *c) {
+  return c->has_anonymous_classes ? "sp_class_display" : "sp_class_to_s";
 }

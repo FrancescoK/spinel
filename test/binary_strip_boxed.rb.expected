@@ -1,0 +1,56 @@
+typed strip ASCII-8BIT [97, 66, 255, 99] 4
+typed lstrip ASCII-8BIT [97, 66, 255, 99, 10, 32, 32] 7
+typed rstrip ASCII-8BIT [32, 32, 97, 66, 255, 99] 6
+typed chomp ASCII-8BIT [32, 32, 97, 66, 255, 99, 10, 32, 32] 9
+typed chomp_c ASCII-8BIT [32, 32, 97, 66, 255, 99, 10, 32, 32] 9
+typed chop ASCII-8BIT [32, 32, 97, 66, 255, 99, 10, 32] 8
+typed squeeze ASCII-8BIT [32, 97, 66, 255, 99, 10, 32] 7
+typed squeeze_a ASCII-8BIT [32, 32, 97, 66, 255, 99, 10, 32, 32] 9
+typed delete ASCII-8BIT [32, 32, 66, 255, 99, 10, 32, 32] 8
+typed tr ASCII-8BIT [32, 32, 98, 66, 255, 99, 10, 32, 32] 9
+typed tr_s ASCII-8BIT [32, 32, 98, 66, 255, 99, 10, 32, 32] 9
+typed sub ASCII-8BIT [32, 32, 120, 66, 255, 99, 10, 32, 32] 9
+typed gsub ASCII-8BIT [32, 32, 120, 66, 255, 99, 10, 32, 32] 9
+typed reverse ASCII-8BIT [32, 32, 10, 99, 255, 66, 97, 32, 32] 9
+typed upcase ASCII-8BIT [32, 32, 65, 66, 255, 67, 10, 32, 32] 9
+typed downcase ASCII-8BIT [32, 32, 97, 98, 255, 99, 10, 32, 32] 9
+typed capitalize ASCII-8BIT [32, 32, 97, 98, 255, 99, 10, 32, 32] 9
+typed swapcase ASCII-8BIT [32, 32, 65, 98, 255, 67, 10, 32, 32] 9
+typed center ASCII-8BIT [32, 32, 32, 97, 66, 255, 99, 10, 32, 32, 32, 32] 12
+typed ljust ASCII-8BIT [32, 32, 97, 66, 255, 99, 10, 32, 32, 32, 32, 32] 12
+typed rjust ASCII-8BIT [32, 32, 32, 32, 32, 97, 66, 255, 99, 10, 32, 32] 12
+typed delete_prefix ASCII-8BIT [32, 97, 66, 255, 99, 10, 32, 32] 8
+typed delete_suffix ASCII-8BIT [32, 32, 97, 66, 255, 99, 10] 7
+typed succ ASCII-8BIT [32, 32, 97, 66, 255, 100, 10, 32, 32] 9
+boxed strip ASCII-8BIT [97, 66, 255, 99] 4
+boxed lstrip ASCII-8BIT [97, 66, 255, 99, 10, 32, 32] 7
+boxed rstrip ASCII-8BIT [32, 32, 97, 66, 255, 99] 6
+boxed chomp ASCII-8BIT [32, 32, 97, 66, 255, 99, 10, 32, 32] 9
+boxed chomp_c ASCII-8BIT [32, 32, 97, 66, 255, 99, 10, 32, 32] 9
+boxed chop ASCII-8BIT [32, 32, 97, 66, 255, 99, 10, 32] 8
+boxed squeeze ASCII-8BIT [32, 97, 66, 255, 99, 10, 32] 7
+boxed squeeze_a ASCII-8BIT [32, 32, 97, 66, 255, 99, 10, 32, 32] 9
+boxed delete ASCII-8BIT [32, 32, 66, 255, 99, 10, 32, 32] 8
+boxed tr ASCII-8BIT [32, 32, 98, 66, 255, 99, 10, 32, 32] 9
+boxed tr_s ASCII-8BIT [32, 32, 98, 66, 255, 99, 10, 32, 32] 9
+boxed sub ASCII-8BIT [32, 32, 120, 66, 255, 99, 10, 32, 32] 9
+boxed gsub ASCII-8BIT [32, 32, 120, 66, 255, 99, 10, 32, 32] 9
+boxed reverse ASCII-8BIT [32, 32, 10, 99, 255, 66, 97, 32, 32] 9
+boxed upcase ASCII-8BIT [32, 32, 65, 66, 255, 67, 10, 32, 32] 9
+boxed downcase ASCII-8BIT [32, 32, 97, 98, 255, 99, 10, 32, 32] 9
+boxed capitalize ASCII-8BIT [32, 32, 97, 98, 255, 99, 10, 32, 32] 9
+boxed swapcase ASCII-8BIT [32, 32, 65, 98, 255, 67, 10, 32, 32] 9
+boxed center ASCII-8BIT [32, 32, 32, 97, 66, 255, 99, 10, 32, 32, 32, 32] 12
+boxed ljust ASCII-8BIT [32, 32, 97, 66, 255, 99, 10, 32, 32, 32, 32, 32] 12
+boxed rjust ASCII-8BIT [32, 32, 32, 32, 32, 97, 66, 255, 99, 10, 32, 32] 12
+boxed delete_prefix ASCII-8BIT [32, 97, 66, 255, 99, 10, 32, 32] 8
+boxed delete_suffix ASCII-8BIT [32, 32, 97, 66, 255, 99, 10] 7
+boxed succ ASCII-8BIT [32, 32, 97, 66, 255, 100, 10, 32, 32] 9
+upcase! ASCII-8BIT [32, 32, 65, 66, 255, 67, 10, 32, 32]
+strip! ASCII-8BIT [97, 66, 255, 99]
+"hi"
+"hixx"
+"xxhi"
+"hi"
+"Ÿ"
+"Ÿ"

@@ -1,0 +1,9 @@
+"A"
+"C"
+[:pack, "undefined method 'pack' for an instance of NoPack"]
+[:pack, "undefined method 'pack' for an instance of Object"]
+"own:C*:nil"
+[:pack, "undefined method 'pack' for nil"]
+[:pack, "undefined method 'pack' for an instance of String"]
+[:pack, "undefined method 'pack' for an instance of Range"]
+"prefixB"
