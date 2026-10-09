@@ -45,3 +45,26 @@ class lookup, allocation macros, send dispatch or threaded extension access.
 registered-address deduplication/unregistration, weak reclamation, strings,
 `TypedData` children and finalization. It repeats under generational verification,
 the list allocator and allocation stress.
+
+The third stage adds exception APIs over the real generated-runtime handler
+stack: `rb_raise`, exception construction/re-raise, `rb_protect`, `rb_ensure`,
+`rb_rescue{,2}`, `rb_jump_tag`, error state, and errno failures. Call
+`sp_cext_exceptions_init()` before extension initialization. Exception-frame
+checkpoints restore skipped arenas even when a C raise lands in a normal Ruby
+handler. The opt-in fiber context carries its arena, error state and handler
+checkpoints; pinned handles in suspended contexts remain GC roots.
+
+The future compiler bridge must install `sp_cext_exception_new_fn` to allocate
+the full struct and scanner for a user exception class. Without it subclass
+construction reports the missing allocator, instead of treating a base
+exception allocation as a struct with additional Ruby ivars. The host test
+uses an actual generated subclass to check the contract and object identity.
+
+`make cext-exceptions-test cext-exceptions-oracle` runs the shared C API checks
+against both runtimes, plus Spinel-specific tests for C/Ruby raises, nested
+arena unwind, cause/backtrace capture, subclass layout, saved fiber contexts,
+GC stress and fatal termination. Unlike `rb_bug`, `rb_fatal` runs ensures
+while bypassing rescues, as documented in
+[CRuby's extension guide](https://docs.ruby-lang.org/en/master/extension_rdoc.html).
+The compiler/recorder, literal eval, VALUE-aware formatting, send dispatch and
+threaded extension execution remain for the later steps.

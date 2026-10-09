@@ -51,6 +51,9 @@ static int sp_exc_level_matches(const char *cls, const char *target) {
    byte happened to read as an unmarked heap string. */
 int sp_exc_cls_matches(const char *raised, const char *target) {
   if (!raised || !target) return 0;
+#ifdef SP_CEXT
+  if (!strcmp(raised, "fatal")) return 0; /* rb_fatal runs ensures, bypasses rescues */
+#endif
   raised = sp_exc_canonical_name(raised);
   target = sp_exc_canonical_name(target);
   /* The builtin hierarchy lives in sp_exc_parent_of_name -- there used to be a
@@ -1162,10 +1165,23 @@ SP_NORETURN SP_COLD void sp_stack_too_deep(void) {
 
 /* The per-fiber handler context (lib/sp_exc_ctx.h): the operations that touch
    only the context itself. */
-void *sp_exc_ctx_new(void) { return calloc(1, sizeof(sp_exc_ctx_t)); }
+void *sp_exc_ctx_new(void) {
+#ifdef SP_CEXT
+  sp_exc_ctx_t *ctx = calloc(1, sizeof(sp_exc_ctx_t));
+  if (ctx) ctx->cext_errinfo = Qnil;
+  return ctx;
+#else
+  return calloc(1, sizeof(sp_exc_ctx_t));
+#endif
+}
 void sp_exc_ctx_free(void *p) {
   sp_exc_ctx_t *x = (sp_exc_ctx_t *)p;
   if (!x) return;
+#ifdef SP_CEXT
+  rb_gc_unregister_address(&x->cext_errinfo);
+  sp_cext_arena_context_dispose(&x->cext_arena);
+  free(x->cext_marks);
+#endif
   free(x->es); free(x->em); free(x->ec); free(x->eo);
   free(x->cs); free(x->ct); free(x->ctk); free(x->cv); free(x->cet);
   free(x->bs); free(x->bv); free(x->bser); free(x->bet); free(x->shand);

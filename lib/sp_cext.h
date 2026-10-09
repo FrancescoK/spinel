@@ -8,6 +8,10 @@
 VALUE sp_cext_value(sp_RbVal value);
 sp_RbVal sp_cext_rbval(VALUE value);
 typedef struct { size_t handles, depth; } sp_cext_arena_mark;
+typedef struct { void *entries; size_t length, capacity, depth; } sp_cext_arena_context;
+void sp_cext_arena_context_save(sp_cext_arena_context *);
+void sp_cext_arena_context_load(const sp_cext_arena_context *);
+void sp_cext_arena_context_dispose(sp_cext_arena_context *);
 sp_cext_arena_mark sp_cext_arena_enter(void);
 sp_cext_arena_mark sp_cext_arena_snapshot(void);
 void sp_cext_arena_restore(sp_cext_arena_mark mark);
@@ -27,6 +31,11 @@ void sp_cext_data_scan(void *object);
 void sp_cext_data_finalize(void *object);
 sp_cext_data *sp_cext_data_new(int cls_id, void *data, const rb_data_type_t *type);
 int sp_cext_data_is_kind_of(const sp_cext_data *object, const rb_data_type_t *type);
+
+void sp_cext_exceptions_init(void);
+/* Installed by the future compiler bridge for exception classes carrying
+ * Ruby ivars. It must allocate the complete generated struct and scan it. */
+extern sp_RbVal (*sp_cext_exception_new_fn)(const char *, const char *);
 
 
 #endif

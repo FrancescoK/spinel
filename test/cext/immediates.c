@@ -29,6 +29,10 @@ int main(void) {
     assert(!FLONUM_P(aligned_handle));
     int calls = 0;
     assert(!RTEST(once(&calls)) && calls == 1);
+    calls = 0;
+    assert(SPECIAL_CONST_P(once(&calls)) && calls == 1);
+    calls = 0;
+    assert(!FLONUM_P(once(&calls)) && calls == 1);
     rb_io_t io = {42, 0};
     assert(FPTR_TO_FD(&io) == 42);
     return 0;

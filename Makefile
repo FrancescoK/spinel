@@ -589,7 +589,14 @@ build/cext/sp_gc.o: lib/sp_gc.c $(RT_HDRS)
 build/cext/sp_cext.o: lib/sp_cext.c lib/sp_cext.h include/ruby.h $(RT_HDRS)
 	@mkdir -p $(@D)
 	$(CC) -c $(COPT) $(SEC_FLAGS) -DSP_CEXT -Iinclude -Ilib $< -o $@
-lib/libspinel_cext_rt.a: $(RE_OBJ) $(addprefix build/,$(addsuffix .o,$(filter-out sp_gc,$(RT_MEMBERS)))) build/cext/sp_gc.o build/cext/sp_cext.o $(PLATFORM_OBJ)
+build/cext/sp_cext_exc.o: lib/sp_cext_exc.c lib/sp_cext.h include/ruby.h $(RT_HDRS)
+	@mkdir -p $(@D)
+	$(CC) -c $(COPT) $(SEC_FLAGS) -DSP_CEXT -Iinclude -Ilib $< -o $@
+build/cext/sp_exc.o: lib/sp_exc.c $(RT_HDRS) include/ruby.h
+	@mkdir -p $(@D)
+	$(CC) -c $(COPT) $(SEC_FLAGS) -DSP_CEXT -Iinclude -Ilib $< -o $@
+lib/libspinel_cext_rt.a: $(RE_OBJ) $(addprefix build/,$(addsuffix .o,$(filter-out sp_gc sp_exc,$(RT_MEMBERS)))) build/cext/sp_gc.o build/cext/sp_exc.o build/cext/sp_cext.o build/cext/sp_cext_exc.o $(PLATFORM_OBJ)
+	@rm -f $@
 	ar rcs $@ $^
 cext-gc-test: lib/libspinel_cext_rt.a
 	$(CC) -O1 -g -DSP_CEXT -Iinclude -Ilib test/cext/handles.c $< $(LDFLAGS) -lm -o build/cext/handles-test
@@ -597,6 +604,18 @@ cext-gc-test: lib/libspinel_cext_rt.a
 	SPINEL_GC_MINOR=1 SPINEL_GC_VERIFY_GEN=1 ./build/cext/handles-test
 	SPINEL_GC_SLAB=0 ./build/cext/handles-test
 	SPINEL_GC_STRESS=1 ./build/cext/handles-test
+.PHONY: cext-exceptions-test cext-exceptions-oracle
+cext-exceptions-oracle:
+	@sh test/cext/exception-oracle.sh
+build/cext/host.c: test/cext/host.rb $(SPINEL)
+	@mkdir -p $(@D)
+	$(SPINEL) -c --no-line-map $< -o $@
+cext-exceptions-test: lib/libspinel_cext_rt.a build/cext/host.c
+	$(CC) $(CFLAGS) -O1 -g -DSP_CEXT -Iinclude -Ilib test/cext/exceptions.c lib/libspinel_cext_rt.a $(LDFLAGS) -lm $(GC_FLAGS) -o build/cext/exceptions-test
+	./build/cext/exceptions-test
+	SPINEL_GC_STRESS=1 ./build/cext/exceptions-test
+	@status=0; ./build/cext/exceptions-test fatal > build/cext/fatal.out 2> build/cext/fatal.err || status=$$?; \
+	  test $$status = 1 && grep -qx 'fatal ensured' build/cext/fatal.out && grep -q 'fatal test' build/cext/fatal.err
 
 
 $(SP_RT_LIB): $(RE_OBJ) $(addprefix build/,$(addsuffix .o,$(RT_MEMBERS))) $(PLATFORM_OBJ)
@@ -1110,7 +1129,7 @@ share-strings-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS
 # `make test` always runs fresh: it wipes the prior `.ok` stamps first,
 # then runs the suite. (The old incremental `test` + `retest` split is
 # gone -- a stale `.ok` reading PASS was a recurring foot-gun.)
-test: $(SPINEL_TIMEOUT) cext-header-test cext-gc-test
+test: $(SPINEL_TIMEOUT) cext-header-test cext-gc-test cext-exceptions-test
 	@if [ -z "$(TIMEOUT_BIN)" ]; then \
 	  echo "WARNING: no 'timeout'/'gtimeout' on PATH -- tests run with NO time limit."; \
 	  echo "         A hanging test will hang this run until the CI job's own limit."; \

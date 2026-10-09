@@ -33,8 +33,12 @@ typedef intptr_t SIGNED_VALUE;
 #define RTEST(v) (((VALUE)(v) & ~(VALUE)Qnil) != Qfalse)
 #define FIXNUM_P(v) (((VALUE)(v) & RUBY_FIXNUM_FLAG) != 0)
 #define SYMBOL_P(v) (((VALUE)(v) & (VALUE)0xff) == RUBY_SYMBOL_FLAG)
-#define FLONUM_P(v) 0
-#define SPECIAL_CONST_P(v) (FIXNUM_P(v) || SYMBOL_P(v) || (VALUE)(v) == Qfalse || (VALUE)(v) == Qnil || (VALUE)(v) == Qtrue || (VALUE)(v) == Qundef)
+static inline int sp_cext_flonum_p(VALUE v) { (void)v; return 0; }
+static inline int sp_cext_special_const_p(VALUE v) {
+    return FIXNUM_P(v) || SYMBOL_P(v) || v == Qfalse || v == Qnil || v == Qtrue || v == Qundef;
+}
+#define FLONUM_P(v) sp_cext_flonum_p((VALUE)(v))
+#define SPECIAL_CONST_P(v) sp_cext_special_const_p((VALUE)(v))
 #define RB_NIL_P NIL_P
 #define RB_TEST RTEST
 #define RB_FIXNUM_P FIXNUM_P
@@ -86,6 +90,29 @@ typedef struct rb_data_type_struct {
 #define RUBY_TYPED_NEVER_FREE ((RUBY_DATA_FUNC)0)
 #define RUBY_TYPED_FREE_IMMEDIATELY ((VALUE)1)
 #define RUBY_TYPED_WB_PROTECTED ((VALUE)32)
+
+extern VALUE rb_eException, rb_eStandardError, rb_eRuntimeError, rb_eTypeError;
+extern VALUE rb_eArgError, rb_eRangeError, rb_eNoMemError, rb_eSystemCallError;
+VALUE rb_protect(VALUE (*)(VALUE), VALUE, int *);
+VALUE rb_ensure(VALUE (*)(VALUE), VALUE, VALUE (*)(VALUE), VALUE);
+VALUE rb_rescue(VALUE (*)(VALUE), VALUE, VALUE (*)(VALUE, VALUE), VALUE);
+VALUE rb_rescue2(VALUE (*)(VALUE), VALUE, VALUE (*)(VALUE, VALUE), VALUE, ...);
+VALUE rb_exc_new(VALUE, const char *, long);
+VALUE rb_exc_new_cstr(VALUE, const char *);
+#define rb_exc_new2 rb_exc_new_cstr
+VALUE rb_errinfo(void);
+void rb_set_errinfo(VALUE);
+#if defined(__GNUC__) || defined(__clang__)
+#define SP_CEXT_NORETURN __attribute__((noreturn))
+#else
+#define SP_CEXT_NORETURN
+#endif
+void rb_raise(VALUE, const char *, ...) SP_CEXT_NORETURN;
+void rb_exc_raise(VALUE) SP_CEXT_NORETURN;
+void rb_jump_tag(int);
+void rb_sys_fail(const char *) SP_CEXT_NORETURN;
+void rb_bug(const char *, ...) SP_CEXT_NORETURN;
+void rb_fatal(const char *, ...) SP_CEXT_NORETURN;
 
 /* APIs requiring CRuby's layout or VM are deliberately diagnosed at the
  * call site. No dummy layout or unresolved linker symbol is supplied. */

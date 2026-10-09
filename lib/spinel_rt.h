@@ -6,6 +6,9 @@
    of sp_types.h so every translation unit that includes it defines them before
    the first system header. Must precede <stdio.h>. */
 #include "sp_types.h"
+#ifdef SP_CEXT
+#include "sp_cext.h"
+#endif
 #include "sp_alloc.h"   /* shared string-heap state + allocators (extern; see sp_alloc.c) */
 #include "sp_marshal.h" /* Marshal.dump/load (lib/sp_marshal.c) + the sp_marshal_v vtable */
 #include "sp_format.h"  /* cold value-type display helpers (lib/sp_format.c) */
@@ -13966,6 +13969,9 @@ static SP_TLS const char *sp_exc_msg[SP_EXC_STACK_MAX];
    (not a per-region C local) so protected regions add no stack locals --
    an extra local per region measurably shifts hot-function frames. */
 static SP_TLS int sp_exc_rootmark[SP_EXC_STACK_MAX];
+#ifdef SP_CEXT
+static SP_TLS sp_cext_arena_mark sp_exc_cextmark[SP_EXC_STACK_MAX];
+#endif
 static SP_TLS volatile int sp_exc_top = 0;
 static SP_TLS const char *sp_exc_cls[SP_EXC_STACK_MAX];
 static SP_TLS volatile const char *sp_last_exc_cls = sp_str_empty;
@@ -14031,6 +14037,9 @@ static SP_TLS int sp_poly_recur_mark[SP_EXC_STACK_MAX];
    is the one on top, and the walk frames pushed since it armed are about to be
    jumped over, so give the path back the depth that frame recorded. */
 static inline void sp_poly_recur_unwind(void) {
+#ifdef SP_CEXT
+  if (sp_exc_top > 0) sp_cext_arena_restore(sp_exc_cextmark[sp_exc_top - 1]);
+#endif
   if (sp_exc_top > 0) sp_poly_recur_pop(sp_poly_recur_mark[sp_exc_top - 1]);
 }
 #define sp_cur_handled() (sp_rescue_sp > 0 ? sp_exc_handling[sp_rescue_sp-1] : NULL)
@@ -14045,6 +14054,12 @@ static void sp_rescue_push(void *e) {
   }
   sp_exc_handling[sp_rescue_sp++] = e;
 }
+#ifdef SP_CEXT
+int sp_cext_handled_push(void *e) {
+  int mark = sp_rescue_sp; sp_rescue_push(e); return mark;
+}
+void sp_cext_handled_restore(int mark) { sp_rescue_sp = mark; }
+#endif
 /* SP_CLEANUP target: an ensure body that pushed the exception in flight
    as $! gives the handler stack back however it is left */
 static inline void sp_rescue_sp_restore(int *p) { sp_rescue_sp = *p; }
@@ -14066,6 +14081,9 @@ SP_NORETURN SP_COLD void sp_stack_too_deep(void);   /* lib/sp_exc.c */
    (sp_exc_arm below), so 63 of the body's own is the last that fits. */
 static inline void sp_exc_check_depth(void) {
   if (SP_UNLIKELY(sp_exc_top >= SP_EXC_STACK_MAX)) sp_stack_too_deep();
+#ifdef SP_CEXT
+  sp_exc_cextmark[sp_exc_top] = sp_cext_arena_snapshot();
+#endif
   sp_poly_recur_mark[sp_exc_top] = sp_poly_recur_top;
 }
 /* ---- Native backtrace formatting (spinel --debug) ---------------------- */
@@ -15352,6 +15370,14 @@ void sp_exc_ctx_save(void *p) {            /* current globals -> ctx */
     x->rrem = (int *)realloc(x->rrem, sizeof(int) * n);
     x->erm = (int *)realloc(x->erm, sizeof(int) * n);
     x->ersm = (int *)realloc(x->ersm, sizeof(int) * n); }
+#ifdef SP_CEXT
+  x->cext_marks = (sp_cext_arena_mark *)realloc(x->cext_marks, sizeof(sp_cext_arena_mark) * n);
+  if (n && !x->cext_marks) sp_oom_die();
+  for (int i = 0; i < n; ++i) x->cext_marks[i] = sp_exc_cextmark[i];
+  sp_cext_arena_context_save(&x->cext_arena);
+  x->cext_errinfo = rb_errinfo();
+  rb_gc_register_address(&x->cext_errinfo);
+#endif
   for (int i = 0; i < n; i++) { memcpy(x->es[i], sp_exc_stack[i], sizeof(jmp_buf));
     x->em[i] = sp_exc_msg[i]; x->ec[i] = sp_exc_cls[i]; x->eo[i] = sp_exc_obj[i];
     x->erm[i] = sp_exc_rootmark[i]; x->ersm[i] = sp_rescue_mark[i];
@@ -15413,6 +15439,11 @@ void sp_exc_ctx_load(void *p);
 #else
 void sp_exc_ctx_load(void *p) {            /* ctx -> current globals */
   sp_exc_ctx_t *x = (sp_exc_ctx_t *)p;
+#ifdef SP_CEXT
+  for (int i = 0; i < x->en; ++i) sp_exc_cextmark[i] = x->cext_marks[i];
+  sp_cext_arena_context_load(&x->cext_arena);
+  rb_set_errinfo(x->cext_errinfo);
+#endif
   for (int i = 0; i < x->en; i++) { memcpy(sp_exc_stack[i], x->es[i], sizeof(jmp_buf));
     sp_exc_msg[i] = x->em[i]; sp_exc_cls[i] = x->ec[i]; sp_exc_obj[i] = x->eo[i];
     sp_poly_recur_mark[i] = x->rrem[i];
@@ -15447,12 +15478,40 @@ void sp_exc_ctx_load(void *p) {            /* ctx -> current globals */
 #ifdef SPINEL_EXT_HOST
 void sp_exc_arm(jmp_buf b);
 #else
-void sp_exc_arm(jmp_buf b)     { sp_exc_check_depth(); memcpy(sp_exc_stack[sp_exc_top], b, sizeof(jmp_buf)); sp_exc_msg[sp_exc_top] = 0; sp_exc_obj[sp_exc_top] = 0; sp_exc_top++; }
+void sp_exc_arm(jmp_buf b)     { sp_exc_check_depth();
+#ifdef SP_CEXT
+  sp_exc_rootmark[sp_exc_top] = sp_gc_nroots; sp_rescue_mark[sp_exc_top] = sp_rescue_sp;
+#endif
+  memcpy(sp_exc_stack[sp_exc_top], b, sizeof(jmp_buf)); sp_exc_msg[sp_exc_top] = 0; sp_exc_obj[sp_exc_top] = 0; sp_exc_top++; }
 #endif
 #ifdef SPINEL_EXT_HOST
 void sp_exc_disarm(void);
 #else
 void sp_exc_disarm(void)       { if (sp_exc_top > 0) sp_exc_top--; }
+#endif
+#ifdef SP_CEXT
+int sp_cext_exception_p(sp_RbVal v) {
+  return v.tag == SP_TAG_OBJ && v.v.p &&
+    (v.cls_id == SP_BUILTIN_EXCEPTION || sp_is_exc_subclass_cls(v.cls_id));
+}
+sp_RbVal sp_cext_box_exception(void *object) {
+  sp_Exception *e = (sp_Exception *)object;
+  if (sp_obj_cls_name_fn) for (sp_int i = 0; i < sp_exc_subclass_count; ++i) {
+    int id = (int)sp_exc_subclass_ids[i];
+    const char *name = sp_obj_cls_name_fn(id);
+    if (name && !strcmp(name, e->cls_name)) return sp_box_obj(object, id);
+  }
+  return sp_box_obj(object, SP_BUILTIN_EXCEPTION);
+}
+void sp_cext_exception_caught(void *object) {
+  sp_Exception *e = (sp_Exception *)object;
+  if (!e->cause) { sp_gc_wb(e); e->cause = (sp_Exception *)sp_pending_cause; }
+  sp_pending_cause = NULL;
+  if (!e->backtrace) {
+    sp_StrArray *trace = sp_backtrace_captured();
+    sp_gc_wb(e); e->backtrace = trace;
+  }
+}
 #endif
 #ifdef SPINEL_EXT_HOST
 const char *sp_exc_cur_cls(void);
