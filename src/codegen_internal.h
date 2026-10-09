@@ -121,6 +121,12 @@ void refuse_lent_global_rebound(Compiler *c, int arg, const char *slot, const ch
 int strbuf_ivar_owner(Compiler *c, int node);
 /* Is an object's ivar set: 0 always, 1 when not nil, 2 cannot tell, 3 explicit flag (codegen_util.c) */
 int ivar_set_kind(Compiler *c, int cid, const char *ivn);
+/* ... and whether the family keeps the rank of each ivar's first assignment in place of the flag (codegen_util.c) */
+int ivar_ranked(Compiler *c, int cid);
+int *ivar_listing_order_new(Compiler *c, int cid); /* malloc'd; the caller frees */
+void emit_ivar_order_open(Compiler *c, int cid, const char *obj, Buf *b);
+void emit_ivar_order_close(Buf *b);
+void emit_ivar_list_fill(Compiler *c, int k, const char *obj, const char *arr, int create, Buf *b);
 const char *ivar_set_test(Compiler *c, int cid, const char *ivn, const char *expr, char *buf, size_t cap);
 /* ... and the statement that marks one of kind 3 assigned after a store */
 const char *ivar_set_mark(Compiler *c, int cid, const char *ivn, const char *obj, const char *acc,

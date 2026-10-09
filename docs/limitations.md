@@ -1427,8 +1427,34 @@ op-write through a writer (`o.x |= v`) assigns, or that a class whose ivars
 the compiler writes itself holds; nor any ivar once the program calls
 `instance_variable_set` with a computed name. Such an ivar, and one whose reads reach it only
 through a boxed value the analysis cannot bound, is reported as assigned
-from the start, as before. `instance_variables` lists the ivars in the
-order the class lays them out, not in the order they were first assigned.
+from the start, as before.
+
+CRuby lists an object's ivars in the order they were first assigned, which
+differs between the objects of a class that assigns some of them on some
+paths only. In a class such a read reaches, whose ivars `initialize` does
+not all assign unconditionally, every ivar keeps beside it the rank of its
+first assignment (a store to an assigned ivar keeps its rank, a removal
+clears it and a later assignment ranks it last), and `instance_variables`,
+the default `inspect` and `Marshal.dump` list by it; `dup` and `clone` copy
+the ranks and `Marshal.load` assigns in the order the stream gives.
+
+A class whose `initialize` assigns every ivar unconditionally lists them in
+the order it does (a `super` standing for the parent's own, or for an included
+module's `initialize` where the class has one), provided nothing before the
+last of those assignments could assign an ivar first: the statements up to it
+must be plain ivar assignments, multiple assignments or a `super` without a
+block, whose values and arguments (and the defaults of the optional parameters
+and keywords) call nothing of the object's own (no call on self or without a
+receiver, no block, `yield`, `super` or ivar write), and not inside a `begin`
+with a `rescue` or `ensure`. This order also applies to exception classes and
+value types, which the ranking leaves out. Otherwise, for a class with an ivar
+the flag cannot follow, for a Struct, and in a program that calls `allocate` or
+`Marshal.load` (their objects run no `initialize`), the ivars list in the order
+the class lays them out, which differs from CRuby's when a method names one
+before `initialize` assigns it, `initialize` calls a method that assigns one,
+or it assigns one conditionally first. A listing through a receiver typed as a
+class whose subclasses list other ivars, or the same in another order, lists
+as the object's own class does.
 
 #### `Hash#compare_by_identity`
 

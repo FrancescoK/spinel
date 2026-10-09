@@ -12591,6 +12591,33 @@ static const char *sp_poly_to_name(sp_RbVal k) {
   if (!n) sp_raise_cls("TypeError", sp_sprintf("%s is not a symbol nor a string", sp_poly_inspect(k)));
   return n;
 }
+/* The order an object's ivars were first assigned in. A class whose
+   assignment order can differ between its objects keeps, beside each ivar,
+   the rank it took when it was first assigned (0 while unassigned) and,
+   in the object, the last rank given. A store to an assigned ivar keeps
+   its rank; a removal clears it, and a later assignment takes a new last
+   one. When the last rank is the greatest there is, renumber(cls, obj)
+   (generated, by the object's class) gives the ivars assigned 1..n in
+   their rank order and sets the last rank to n first. */
+typedef uint16_t sp_ivrank;
+static inline void sp_ivar_rank(sp_ivrank *slot, sp_ivrank *last, void (*renumber)(int, void *), int cls,
+                                void *obj) {
+  if (*slot) return;
+  if (*last == UINT16_MAX) renumber(cls, obj);
+  if (*last < UINT16_MAX) (*last)++;
+  *slot = *last;
+}
+/* ix[0..n) are ivar indexes whose ranks are rk[0..n): put both in rank
+   order (stable), answering n */
+static inline int sp_ivar_sort(int *ix, sp_ivrank *rk, int n) {
+  for (int i = 1; i < n; i++) {
+    int x = ix[i]; sp_ivrank r = rk[i];
+    int j = i - 1;
+    while (j >= 0 && rk[j] > r) { ix[j + 1] = ix[j]; rk[j + 1] = rk[j]; j--; }
+    ix[j + 1] = x; rk[j + 1] = r;
+  }
+  return n;
+}
 /* Builtin values have no ivar slots, but reflection still validates a
    dynamic name before answering nil/false or raising for a frozen set. */
 static void sp_ivar_name_check(sp_RbVal value) {

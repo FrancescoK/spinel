@@ -14027,7 +14027,9 @@ static int emit_poly_ivar_call(Compiler *c, int id, Buf *b, const NodeTable *nt,
         }
         else emit_unbox_text(c, t, val, b);
         buf_puts(b, ";");
-        if (ivar_set_kind(c, k, sym) == 3) buf_printf(b, " %s->_sp_set_%s = TRUE;", obj, iv_c(sym + 1));
+        char mk[300];
+        const char *mark = ivar_set_mark(c, k, sym, obj, "->", mk, sizeof mk);
+        if (mark) buf_printf(b, " %s", mark);
         free(obj);
         buf_puts(b, " break;");
       }
@@ -14165,15 +14167,11 @@ static int emit_poly_ivar_call(Compiler *c, int id, Buf *b, const NodeTable *nt,
     for (int k = 0; k < c->nclasses; k++) {
       ClassInfo *ivc = &c->classes[k];
       if (!ivc->instantiated) continue;
-      buf_printf(b, " case %d: _ivl%d = sp_PolyArray_new();", k, tv);
-      /* Data/Struct members are NOT @-instance variables in CRuby (#2849) */
-      for (int ji = ivc->is_struct ? ivc->nmembers : 0; ji < ivc->nivars; ji++) {
-        char ex[200], tb[300];
-        snprintf(ex, sizeof ex, "((sp_%s *)_t%d.v.p)->iv_%s", ivc->c_name, tv, iv_c(ivc->ivars[ji] + 1));
-        const char *set = ivar_set_test(c, k, ivc->ivars[ji], ex, tb, sizeof tb);
-        if (set) buf_printf(b, " if %s", set);
-        buf_printf(b, " sp_PolyArray_push(_ivl%d, sp_box_sym(sp_sym_intern(\"%s\")));", tv, ivc->ivars[ji]);
-      }
+      buf_printf(b, " case %d:", k);
+      char ob[96], an[32];
+      snprintf(ob, sizeof ob, "((sp_%s *)_t%d.v.p)", ivc->c_name, tv);
+      snprintf(an, sizeof an, "_ivl%d", tv);
+      emit_ivar_list_fill(c, k, ob, an, 1, b);
       buf_puts(b, " break;");
     }
     buf_printf(b, " case SP_BUILTIN_OBJECT: _ivl%d = sp_Object_ivars((sp_Object *)_t%d.v.p); break;", tv, tv);

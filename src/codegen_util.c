@@ -2147,6 +2147,99 @@ static int ivs_writes_toplevel(Compiler *c, int body, const char *ivn, int cid, 
   }
   return 0;
 }
+/* The order initialize first assigns the ivars in, for the listings: the
+   top-level writes of the initialize class cid runs, a `super` there
+   standing for the parent's own, as ivs_writes_toplevel reads them. Each
+   ivar of class leaf is entered once, by its index there. It is exact only
+   while nothing else could assign one first, so the walk gives up (answers
+   0) at a statement before the last first write that is no plain ivar
+   write, multiple assignment or super, and at a value, a super's argument
+   or a target that could run code of the object's own or write an ivar. */
+static int ivs_order_walk(Compiler *c, int body, int cid, int leaf, int *ord, int *n, int depth);
+static int ivs_order_runs_self(Compiler *c, int v, int depth);
+static int ivs_order_method(Compiler *c, int mi, int leaf, int *ord, int *n, int depth) {
+  if (mi == -1) return 1;
+  if (mi < 0 || depth > 16) return 0;
+  Scope *m = &c->scopes[mi];
+  if (m->def_node < 0 || nt_kind(c->nt, m->def_node) != NK_DefNode) return 0;
+  /* the defaults of optional parameters and keywords run before the body */
+  int ps = nt_ref(c->nt, m->def_node, "parameters");
+  for (int a = 0; a < 2 && ps >= 0; a++) {
+    int dn = 0; const int *ds = nt_arr(c->nt, ps, a ? "keywords" : "optionals", &dn);
+    for (int i = 0; i < dn; i++)
+      if (ivs_order_runs_self(c, nt_ref(c->nt, ds[i], "value"), 0)) return 0;
+  }
+  return ivs_order_walk(c, nt_ref(c->nt, m->def_node, "body"), m->class_id, leaf, ord, n, depth);
+}
+static int ivs_order_init(Compiler *c, int cid, int leaf, int *ord, int *n, int depth) {
+  if (cid < 0) return 1;
+  return ivs_order_method(c, comp_method_in_chain(c, cid, "initialize", NULL), leaf, ord, n, depth);
+}
+static void ivs_order_add(Compiler *c, int leaf, const char *ivn, int *ord, int *n) {
+  int ix = comp_ivar_index(&c->classes[leaf], ivn);
+  for (int i = 0; ix >= 0 && i < *n; i++) if (ord[i] == ix) return;
+  if (ix >= 0) ord[(*n)++] = ix;
+}
+/* Can the code under v run the object's own code or assign an ivar: self
+   or a call on it (or none), a block, a yield, a super, an ivar write? */
+static int ivs_order_runs_self(Compiler *c, int v, int depth) {
+  const NodeTable *nt = c->nt;
+  if (v < 0) return 0;
+  if (depth > 200) return 1;
+  switch (nt_kind(nt, v)) {
+    case NK_SelfNode: case NK_BlockNode: case NK_LambdaNode: case NK_YieldNode:
+    case NK_SuperNode: case NK_ForwardingSuperNode:
+    case NK_InstanceVariableWriteNode: case NK_InstanceVariableOrWriteNode: case NK_InstanceVariableAndWriteNode:
+    case NK_InstanceVariableOperatorWriteNode: case NK_InstanceVariableTargetNode:
+      return 1;
+    case NK_CallNode: if (nt_ref(nt, v, "receiver") < 0) return 1; break;
+    default: break;
+  }
+  int nr = nt_num_refs(nt, v);
+  for (int i = 0; i < nr; i++) if (ivs_order_runs_self(c, nt_ref_at(nt, v, i), depth + 1)) return 1;
+  int na = nt_num_arrs(nt, v);
+  for (int i = 0; i < na; i++) {
+    int m = 0; const int *ids = nt_arr_at(nt, v, i, &m);
+    for (int j = 0; j < m; j++) if (ivs_order_runs_self(c, ids[j], depth + 1)) return 1;
+  }
+  return 0;
+}
+static int ivs_order_walk(Compiler *c, int body, int cid, int leaf, int *ord, int *n, int depth) {
+  const NodeTable *nt = c->nt;
+  if (body < 0) return 1;
+  NodeKind k = nt_kind(nt, body);
+  if (k == NK_StatementsNode) {
+    int cnt = 0; const int *st = nt_arr(nt, body, "body", &cnt);
+    /* once every ivar has been entered, the rest cannot change the order */
+    for (int i = 0; i < cnt && *n < c->classes[leaf].nivars; i++)
+      if (!ivs_order_walk(c, st[i], cid, leaf, ord, n, depth)) return 0;
+    return 1;
+  }
+  if (k == NK_ParenthesesNode ||
+      (k == NK_BeginNode && nt_ref(nt, body, "rescue_clause") < 0 && nt_ref(nt, body, "ensure_clause") < 0))
+    return ivs_order_walk(c, nt_ref(nt, body, k == NK_BeginNode ? "statements" : "body"), cid, leaf, ord, n, depth);
+  if (k == NK_InstanceVariableWriteNode || k == NK_InstanceVariableOrWriteNode) {
+    if (ivs_order_runs_self(c, nt_ref(nt, body, "value"), 0)) return 0;
+    ivs_order_add(c, leaf, nt_str(nt, body, "name"), ord, n);
+    return 1;
+  }
+  if (k == NK_MultiWriteNode) {
+    int ln = 0; const int *l = nt_arr(nt, body, "lefts", &ln);
+    if (nt_ref(nt, body, "rest") >= 0 || ivs_order_runs_self(c, nt_ref(nt, body, "value"), 0)) return 0;
+    for (int i = 0; i < ln; i++) {
+      if (nt_kind(nt, l[i]) != NK_InstanceVariableTargetNode && nt_kind(nt, l[i]) != NK_LocalVariableTargetNode) return 0;
+    }
+    int rn = 0; nt_arr(nt, body, "rights", &rn);
+    if (rn > 0) return 0;
+    for (int i = 0; i < ln; i++)
+      if (nt_kind(nt, l[i]) == NK_InstanceVariableTargetNode) ivs_order_add(c, leaf, nt_str(nt, l[i], "name"), ord, n);
+    return 1;
+  }
+  if (k == NK_SuperNode || k == NK_ForwardingSuperNode)
+    return nt_ref(nt, body, "block") < 0 && !ivs_order_runs_self(c, nt_ref(nt, body, "arguments"), 0) &&
+           ivs_order_method(c, ivs_super_method(c, body, cid, "initialize"), leaf, ord, n, depth + 1);
+  return 0;
+}
 /* A value that is never nil: a literal, a constructor of a class with no
    `new` of its own, an interpolation, an operator on a builtin number or
    String (which answers one or raises). */
@@ -2387,7 +2480,7 @@ static int ivs_tracked(Compiler *c, int cid, const char *ivn, int *memo, int *bm
   }
   return tracked;
 }
-int ivar_set_kind(Compiler *c, int cid, const char *ivn) {
+static int ivs_kind(Compiler *c, int cid, const char *ivn) {
   if (cid < 0 || cid >= c->nclasses || !ivn) return 2;
   ClassInfo *ci = &c->classes[cid];
   int iv = comp_ivar_index(ci, ivn);
@@ -2407,6 +2500,102 @@ int ivar_set_kind(Compiler *c, int cid, const char *ivn) {
   if (c->pres_seen && ivs_tracked(c, cid, ivn, memo, memo + n)) kind = 3;
   if (slot >= 0) memo[slot] = kind;
   return kind;
+}
+/* ---- The order ivars were first assigned in ----
+   CRuby lists an object's ivars in the order they were first assigned,
+   which differs between objects of a class that assigns some of them on
+   some paths only. A family a read of presence reaches (presence_observed)
+   whose ivars are not all assigned by initialize unconditionally therefore
+   keeps, for every one of its ivars, the rank of its first assignment in
+   place of the flag (a store sets it through ivar_set_mark, a removal
+   clears it), and the reflective listings sort by it. Every ivar of such a
+   family has the rank, so they order all of them; a family one of whose
+   ivars a write no emitter marks reaches, or that holds an exception class
+   (its layout is the runtime's), a value type or a Struct, lists in layout
+   order as before. Answers one family at a time (Compiler.pres_rank). */
+int ivar_ranked(Compiler *c, int cid) {
+  /* a class with no ivars has no rank to keep, nor a counter */
+  if (!c->pres_seen || cid < 0 || cid >= c->nclasses || c->classes[cid].presence_family <= 0 ||
+      c->classes[cid].nivars == 0) return 0;
+  int fam = c->classes[cid].presence_family;
+  if (c->pres_rank_n != c->nclasses) {
+    free(c->pres_rank);
+    c->pres_rank = (unsigned char *)calloc((size_t)(c->nclasses + 1), 1);
+    if (!c->pres_rank) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    c->pres_rank_n = c->nclasses;
+  }
+  unsigned char *m = &c->pres_rank[fam - 1];
+  if (*m) return *m == 2;
+  *m = 1;
+  int seen = 0, varies = 0, ok = 1;
+  for (int k = 0; k < c->nclasses && ok; k++) {
+    ClassInfo *ki = &c->classes[k];
+    if (ki->presence_family != fam) continue;
+    seen |= ki->presence_observed != 0;
+    ok = !ki->is_value_type && !class_is_exc_subclass(c, k);
+    int late = 0;
+    for (int j = 0; j < ki->nivars && ok; j++) {
+      ok = !ivs_unmarked_write(c, k, ki->ivars[j]);
+      late |= ivs_kind(c, k, ki->ivars[j]) != 0;
+    }
+    /* an object whose ivars all initialize assigns, unconditionally and
+       first, has its class's order; one with a single ivar has no order */
+    varies |= late && ki->nivars > 1;
+  }
+  *m = seen && varies && ok ? 2 : 1;
+  return *m == 2;
+}
+int ivar_set_kind(Compiler *c, int cid, const char *ivn) {
+  int kind = ivs_kind(c, cid, ivn);
+  if (kind == 3 || cid < 0 || cid >= c->nclasses || comp_ivar_index(&c->classes[cid], ivn) < 0) return kind;
+  return ivar_ranked(c, cid) ? 3 : kind;
+}
+/* A listing of a ranked class's ivars (ivar_ranked) walks those assigned in
+   the order they were first: `case <index>:` per ivar between these, with
+   _ixk the position in the walk (0 for the first). obj is the object. */
+void emit_ivar_order_open(Compiler *c, int cid, const char *obj, Buf *b) {
+  ClassInfo *ci = &c->classes[cid];
+  buf_printf(b, "{ int _ixv[%d]; int _ixn = sp_%s_ivar_order(%s, _ixv); "
+                "for (int _ixk = 0; _ixk < _ixn; _ixk++) switch (_ixv[_ixk]) { ",
+             ci->nivars > 0 ? ci->nivars : 1, ci->c_name, obj);
+}
+void emit_ivar_order_close(Buf *b) {
+  buf_puts(b, "} }");
+}
+/* The order the listings of class cid walk its ivars in, ord[0..nivars):
+   the order initialize assigns them in where it assigns every one
+   unconditionally (kind 0 all), else the layout's. A family that keeps the
+   rank of each first assignment (ivar_ranked) sorts at run time instead. */
+/* ... cached per class (Compiler.pres_ord), the walk being initialize's size.
+   Objects made without initialize (allocate, Marshal.load) have no such
+   order: the program that makes any lists in the layout's. */
+/* ... the order class cid lists its ivars in, from initialize's, when it has one */
+static int ivs_static_order(Compiler *c, int cid, int *ord) {
+  ClassInfo *ci = &c->classes[cid];
+  int n = 0, ok = ci->nivars > 1 && !ci->is_struct && !ci->is_data && !c->pres_noinit && !ivar_ranked(c, cid);
+  for (int j = 0; j < ci->nivars && ok; j++) ok = ivar_set_kind(c, cid, ci->ivars[j]) == 0;
+  return ok && ivs_order_init(c, cid, cid, ord, &n, 0) && n == ci->nivars;
+}
+int *ivar_listing_order_new(Compiler *c, int cid) {
+  ClassInfo *ci = &c->classes[cid];
+  size_t sz = sizeof(int) * (size_t)(ci->nivars > 0 ? ci->nivars : 1);
+  if (c->pres_ord_n != c->nclasses) {
+    for (int i = 0; i < c->pres_ord_n; i++) free(c->pres_ord[i]);
+    free(c->pres_ord);
+    c->pres_ord = (int **)calloc((size_t)(c->nclasses > 0 ? c->nclasses : 1), sizeof(int *));
+    if (!c->pres_ord) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    c->pres_ord_n = c->nclasses;
+  }
+  if (!c->pres_ord[cid]) {
+    int *ord = (int *)malloc(sz);
+    if (!ord) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    if (!ivs_static_order(c, cid, ord)) for (int j = 0; j < ci->nivars; j++) ord[j] = j;
+    c->pres_ord[cid] = ord;
+  }
+  int *copy = (int *)malloc(sz);
+  if (!copy) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  memcpy(copy, c->pres_ord[cid], sz);
+  return copy;
 }
 /* The C test that ivar `ivn` (of class `cid`, read as `expr`) is set, for
    an ivar of kind 1 or 3; NULL when it is always reported as set. */
@@ -2431,7 +2620,10 @@ const char *ivar_set_test(Compiler *c, int cid, const char *ivn, const char *exp
 const char *ivar_set_mark(Compiler *c, int cid, const char *ivn, const char *obj, const char *acc,
                           char *buf, size_t cap) {
   if (ivar_set_kind(c, cid, ivn) != 3) return NULL;
-  snprintf(buf, cap, "%s%s_sp_set_%s = TRUE;", obj, acc, iv_c(ivn + 1));
+  if (ivar_ranked(c, cid))
+    snprintf(buf, cap, "sp_ivar_rank(&%s%s_sp_set_%s, &%s%s_sp_ord, sp_ivar_renumber, %s%scls_id, %s);",
+             obj, acc, iv_c(ivn + 1), obj, acc, obj, acc, obj);
+  else snprintf(buf, cap, "%s%s_sp_set_%s = TRUE;", obj, acc, iv_c(ivn + 1));
   return buf;
 }
 /* The same for ivar write node `w`, which stores into self: an instance
