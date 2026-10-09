@@ -5045,6 +5045,11 @@ static int infer_receiverless_call(Compiler *c, int id, const NodeTable *nt, con
       }
       if (at == TY_INT)    { *out = TY_INT_ARRAY; return 1; }    /* Array(int)   -> [int]   */
       if (at == TY_FLOAT)  { *out = TY_FLOAT_ARRAY; return 1; }  /* Array(float) -> [float] */
+      /* The scalar String is one fill element, with Array.new's layout. */
+      if (at == TY_STRING && c->share_strings) {
+        *out = share_node_elems_share(c, id) ? TY_POLY_ARRAY : infer_array_new_fill(c, argv[0]);
+        return 1;
+      }
       if (at == TY_STRING) { *out = TY_STR_ARRAY; return 1; }    /* Array(str)   -> [str]   */
       if (at == TY_RANGE)  { *out = TY_INT_ARRAY; return 1; }    /* Array(range) enumerates */
       { *out = TY_POLY_ARRAY; return 1; }
