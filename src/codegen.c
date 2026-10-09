@@ -11527,6 +11527,7 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   int saved_nren = g_nren, saved_block = g_block_id;
   int saved_bnren = g_block_nren, saved_yfbn = g_yield_block_fallback_nren;
   const char *saved_bpn = g_block_param_name;
+  const char *saved_bown = g_block_owner_param_name, *saved_yfbpn = g_yield_block_fallback_param_name;
   int saved_yfb = g_yield_block_fallback;
   const char *saved_bbv = g_block_brk_var, *saved_yfbv = g_yield_blk_brk_fallback;
   const char *saved_ser = g_brk_ser_var;
@@ -11537,8 +11538,21 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
 
   g_yield_block_fallback = saved_block;
   g_yield_block_fallback_nren = saved_bnren;
+  /* the &block names, as emit_inline_call_x keeps them: the super's literal
+     block is the overriding method's own code, so a `b.call(..)` in it, b
+     that method's &block, still expands as a yield to the block one level
+     out. Unset, it read an undeclared C local (`def e(&b) = super { |v|
+     b.call(v) }`). */
+  g_yield_block_fallback_param_name = saved_bown;
+  g_block_owner_param_name = (block == saved_block) ? saved_yfbpn : saved_bpn;
   g_yield_blk_brk_fallback = saved_bbv;
   g_yield_blk_brk_efallback = saved_bbe;
+  /* the super's literal block yields to the block current here, as an
+     inlined call's does: without the entry, a block that yields on from a
+     super two levels down (`super { |v| yield v }` in C over the same in B)
+     found no block when spliced and raised LocalJumpError */
+  int saved_ytgt_cur = yield_target_cur();
+  int pushed_ytgt = yield_target_push(block, saved_block, saved_bpn, saved_nren, saved_ser, saved_ebase);
   g_block_id = block;
   g_block_nren = (block == saved_block) ? saved_bnren : saved_nren;
   /* same break-context rules as emit_inline_call_x */
@@ -11669,6 +11683,9 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   g_yield_block_fallback_nren = saved_yfbn;
   g_block_param_name = saved_bpn;
   g_yield_block_fallback = saved_yfb;
+  yield_target_pop(pushed_ytgt, saved_ytgt_cur);
+  g_block_owner_param_name = saved_bown;
+  g_yield_block_fallback_param_name = saved_yfbpn;
   g_block_brk_var = saved_bbv; g_yield_blk_brk_fallback = saved_yfbv;
   g_block_brk_ebase = saved_bbe; g_yield_blk_brk_efallback = saved_yfbe;
   g_block_brk_exc_base = saved_bbexc; g_brk_exc_base = saved_bexc;
