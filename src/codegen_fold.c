@@ -1797,28 +1797,25 @@ int emit_sum_block_expr(Compiler *c, int id, Buf *b) {
   if (argc > 1) return 0;
   /* A String accumulator needs a String seed -- without one the sum starts at
      the Integer 0 and CRuby raises "String can't be coerced into Integer". */
-  if (acct == TY_STRING && !(argc == 1 && argv && comp_ntype(c, argv[0]) == TY_STRING))
-    acct = TY_POLY;
   /* Every other block value accumulates BOXED rather than bailing out. The
      answer CRuby gives for `[1, 2].sum { true }` is a TypeError from `0 + true`,
      and only sp_poly_add can raise it: declining the fold left the call to the
      generic dispatch, which answered NoMethodError instead (#4327). TY_NIL was
      already routed this way for exactly that reason. */
-  if (acct != TY_INT && acct != TY_FLOAT && acct != TY_STRING) acct = TY_POLY;
   /* So does a block with a `next` or a `redo` of its own, whose step answers
      through a slot (emit_iter_step_value): a bare `next` answers nil, which
      only the boxed add refuses as CRuby does. */
-  if (iter_step_needs_frame(c, block)) acct = TY_POLY;
   /* And so does a seed of another class than the block's values, other
      than a number: CRuby's accumulator is the seed, so `sum({}) { |x| x }`
      raises from the Hash's missing `+` (fold_seed_typed, as the blockless
      sum decides it), where the typed accumulator took the Hash as an sp_int
      and did not build. */
-  if (argc == 1 && acct != TY_POLY) {
-    TyKind st = fold_seed_ntype(c, argv[0]);
-    if (st != TY_INT && st != TY_FLOAT && st != TY_POLY && st != TY_UNKNOWN && !fold_seed_typed(st, acct))
-      acct = TY_POLY;
-  }
+  /* A boxed seed keeps its run-time class even with a typed block. */
+  /* A String seed keeps its handle until the first addition. */
+  TyKind seedt = argc == 1 ? fold_seed_ntype(c, argv[0]) : TY_INT;
+  int float_int_seed = acct == TY_FLOAT && seedt == TY_INT && !iter_step_needs_frame(c, block);
+  acct = float_int_seed ? TY_FLOAT : fold_sum_type(seedt, acct, g_promote_mode);
+  if (iter_step_needs_frame(c, block)) acct = TY_POLY;
   /* A poly block value (e.g. a product of values read out of poly containers,
      as in a range sum redispatched over an int array) accumulates into a boxed
      sp_RbVal via sp_poly_add, like the poly-receiver sum path. An empty range
@@ -1866,7 +1863,7 @@ int emit_sum_block_expr(Compiler *c, int id, Buf *b) {
       buf_printf(b, "sp_sum_step(&_t%dS, %s); }", tacc, valb.p ? valb.p : "sp_box_nil()");
       free(inner.p); free(valb.p);
     }
-    buf_printf(b, " _t%d = sp_sum_result(&_t%dS);", tacc, tacc);
+    buf_printf(b, " _t%d = _t%d ? sp_sum_result(&_t%dS) : _t%d;", tacc, tn, tacc, tacc);
     /* The call's own type may be a scalar the inference settled on (an int
        array's `sum {}` is an Integer where it answers at all), so hand back
        what the caller's slot holds; a nil term raises inside the loop before
@@ -1888,20 +1885,27 @@ int emit_sum_block_expr(Compiler *c, int id, Buf *b) {
   int ta = ++g_tmp, tacc = ++g_tmp, ti = ++g_tmp, tn = ++g_tmp;
   /* Float accumulation uses Kahan-Babuska-Neumaier compensation (matches
      CRuby's Array#sum), so it needs a running compensation temp plus
-     per-iteration x/t temps. Integer sums use none of them. */
-  int tc = -1, tx = -1, tt = -1;
-  if (acct == TY_FLOAT) { tc = ++g_tmp; tx = ++g_tmp; tt = ++g_tmp; }
+     per-iteration x/t temps. Integer sums use none of them. The shared step
+     now owns the per-iteration temporaries and the non-finite branches. */
+  int tc = -1;
+  if (acct == TY_FLOAT) tc = ++g_tmp;
   buf_printf(b, "({ sp_%sArray *_t%d = ", k, ta); emit_expr(c, recv, b);
   /* rooted the way the poly-accumulator arm above roots its receiver: the
      element is taken out of this temp on every turn and the block allocates
      in between */
   buf_printf(b, "; SP_GC_ROOT(_t%d); sp_int _t%d = sp_%sArray_length(_t%d); ", ta, tn, k, ta);
+  int tseed = -1;
+  if (float_int_seed && argc == 1) {
+    tseed = ++g_tmp;
+    buf_printf(b, "sp_int _t%d = ", tseed); emit_expr(c, argv[0], b); buf_puts(b, "; ");
+  }
   emit_ctype(c, acct, b); buf_printf(b, " _t%d = ", tacc);
   if (argc == 1) {
     Repr init_r = repr_of(c, argv[0]);
     TyKind init_t = init_r.as_ty;
     if (acct == TY_FLOAT && init_t == TY_INT) {
-      buf_puts(b, "(sp_float)("); emit_expr(c, argv[0], b); buf_puts(b, ")");
+      if (tseed >= 0) buf_printf(b, "(sp_float)_t%d", tseed);
+      else { buf_puts(b, "(sp_float)("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
     }
     else if (acct == TY_FLOAT && init_r.kind == RK_BOXED) {
       buf_puts(b, "sp_poly_to_f_or_nil("); emit_expr(c, argv[0], b); buf_puts(b, ")");
@@ -1971,7 +1975,7 @@ int emit_sum_block_expr(Compiler *c, int id, Buf *b) {
     g_pre = saved_pre;
     if (inner.p) buf_puts(b, inner.p);
     if (acct == TY_INT) {
-      buf_printf(b, "_t%d = sp_int_add(_t%d, %s)", tacc, tacc, valb.p ? valb.p : "0");
+      buf_printf(b, "_t%d = sp_int_add%s(_t%d, %s)", tacc, bn > 0 && nullable_int_value(c, bb[bn - 1]) ? "" : "_nn", tacc, valb.p ? valb.p : "0");
     }
     else if (acct == TY_STRING) {
       buf_printf(b, "_t%d = sp_str_concat(_t%d, %s)", tacc, tacc, valb.p ? valb.p : "\"\"");
@@ -1992,13 +1996,9 @@ int emit_sum_block_expr(Compiler *c, int id, Buf *b) {
         free(valb.p); memset(&valb, 0, sizeof valb);
         buf_printf(&valb, "_t%d", tv);
       }
-      /* KBN step: fold the low-order bits dropped by _tacc + _tx into _tc. */
-      buf_printf(b, "sp_float _t%d = %s; sp_float _t%d = _t%d + _t%d; "
-                    "if (fabs(_t%d) >= fabs(_t%d)) _t%d += (_t%d - _t%d) + _t%d; "
-                    "else _t%d += (_t%d - _t%d) + _t%d; _t%d = _t%d",
-                 tx, valb.p ? valb.p : "0.0", tt, tacc, tx,
-                 tacc, tx, tc, tacc, tt, tx,
-                 tc, tx, tt, tacc, tacc, tt);
+      /* Compensate finite additions and preserve Infinity and NaN. */
+      buf_printf(b, "sp_float_sum_step(&_t%d, &_t%d, %s)",
+                 tacc, tc, valb.p ? valb.p : "0.0");
     }
     free(inner.p); free(valb.p);
   }
@@ -2009,11 +2009,16 @@ int emit_sum_block_expr(Compiler *c, int id, Buf *b) {
      the concrete accumulator went into the boxed slot the method's return
      type declared (#3916). */
   {
-    char accn[48];
-    if (acct == TY_FLOAT) snprintf(accn, sizeof accn, "_t%d + _t%d", tacc, tc);
+    char accn[96];
+    if (acct == TY_FLOAT) snprintf(accn, sizeof accn, "(_t%d ? _t%d + _t%d : _t%d)", tn, tacc, tc, tacc);
     else snprintf(accn, sizeof accn, "_t%d", tacc);
     buf_puts(b, "; } ");
-    if (repr_of(c, id).kind == RK_BOXED) emit_boxed_text(c, acct, accn, b);
+    if (float_int_seed && repr_of(c, id).kind == RK_BOXED) {
+      buf_printf(b, "_t%d == 0 ? sp_box_int(", tn);
+      if (tseed >= 0) buf_printf(b, "_t%d", tseed); else buf_puts(b, "0");
+      buf_puts(b, ") : "); emit_boxed_text(c, acct, accn, b);
+    }
+    else if (repr_of(c, id).kind == RK_BOXED) emit_boxed_text(c, acct, accn, b);
     else buf_puts(b, accn);
     buf_puts(b, "; })");
   }
@@ -3132,8 +3137,13 @@ int emit_inject_expr(Compiler *c, int id, Buf *b) {
     buf_printf(b, "_t%d > 0 ? sp_%sArray_get(_t%d, 0) : %s", tn, k, ta, mt); start = 1;
   }
   buf_printf(b, "; for (sp_int _t%d = %d; _t%d < _t%d; _t%d++) _t%d = ", ti, start, ti, tn, ti, tacc);
-  if (ifn)
-    buf_printf(b, "%s(_t%d, sp_%sArray_get(_t%d, _t%d))", ifn, tacc, k, ta, ti);
+  if (ifn) {
+    if (is_add_sub_mul(op) &&
+        (init < 0 || int_value_plain(c, init)))
+      buf_printf(b, "(SP_MAY_NIL(_t%d) ? %s(_t%d, sp_%sArray_get(_t%d, _t%d)) : %s_nn(_t%d, sp_%sArray_get(_t%d, _t%d)))",
+                 ta, ifn, tacc, k, ta, ti, ifn, tacc, k, ta, ti);
+    else buf_printf(b, "%s(_t%d, sp_%sArray_get(_t%d, _t%d))", ifn, tacc, k, ta, ti);
+  }
   /* String#+'s nil checks, inline: a nil accumulator raises NoMethodError
      and a nil element TypeError, as CRuby's do, where sp_str_concat reads a
      nil as "" */
@@ -8474,7 +8484,39 @@ static int default_rebound_by(Compiler *c, int d, int after) {
   }
 }
 
-/* See codegen_internal.h. */
+/* Does argument argv[k] of a call into m read a shared String slot as a
+   fresh copy (strbuf_read_copies) that its parameter takes as a value, a
+   String's bytes? Asked of plain positional arguments into requireds and
+   optionals in order, which fill the k-th parameter; a parameter that is
+   the handle takes the slot, a boxed one the handle's box, and an
+   initialize that only reads it the live bytes. */
+static int arg_reads_copy(Compiler *c, Scope *m, const int *argv, int argc, int k) {
+  const NodeTable *nt = c->nt;
+  if (!m || m->rest_idx >= 0 || argc > m->nparams || !strbuf_read_copies(c, argv[k])) return 0;
+  for (int i = 0; i < argc; i++) {
+    NodeKind ak = nt_kind(nt, argv[i]);
+    if (ak == NK_SplatNode || ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode) return 0;
+  }
+  for (int i = 0; i < m->nrequired; i++) if (m->pdefault && m->pdefault[i] >= 0) return 0;
+  if (callee_has_kwarg(c, m, m->pnames[k])) return 0;
+  LocalVar *p = scope_local(m, m->pnames[k]);
+  Repr pr = repr_of_slot(c, p);
+  if (!p || p->byref_out || pr.kind != RK_PTR || pr.as_ty != TY_STRING || pr.handle) return 0;
+  return !(m->name && sp_streq(m->name, "initialize") &&
+           ctor_param_reads_only(c, (int)(m - c->scopes), k));
+}
+
+static void emit_args_before_forced(Compiler *c, const int *argv, int argc, const int *after, int nafter,
+                                    const char *force, Buf *b);
+
+/* See codegen_internal.h. A copy an argument reads (arg_reads_copy) beside
+   another argument that allocates in the call -- another such copy, or an
+   effect the call runs in place -- is at risk the same way as an operand
+   of a builtin's call (operand_copy_at_risk): nothing holds it until the
+   call takes it, and a collection the other one runs frees it. It runs
+   first, into its rooted temp, with the arguments. An effect that runs
+   first itself is bound ahead of the call, and a value with no effect (an
+   interpolation) is built ahead of it by its own emission. */
 int emit_args_before_binding(Compiler *c, Scope *m, const int *argv, int argc, Buf *b) {
   const NodeTable *nt = c->nt;
   int kwh = argc > 0 && argv && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode ? argv[argc - 1] : -1;
@@ -8488,20 +8530,46 @@ int emit_args_before_binding(Compiler *c, Scope *m, const int *argv, int argc, B
   }
   for (int i = 0; i < nd; i++) ed += subtree_has_side_effect(c, dfl[i]);
   if ((ev && ed) || (kwh >= 0 && ev > 1) || kwh_out_of_order(c, m, kwh)) run = 1;
-  if (run) emit_args_before(c, argv, argc, dfl, nd, b);
-  free(vals); free(ds); free(dfl);
+  /* plain positional arguments only (arg_reads_copy): vals[] is argv[] */
+  char *cp = argc > 0 ? calloc((size_t)argc * 2, 1) : NULL, *force = cp ? cp + argc : NULL;
+  if (argc > 0 && !cp) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  int ncopy = 0;
+  for (int k = 0; k < argc; k++) ncopy += cp[k] = (char)arg_reads_copy(c, m, argv, argc, k);
+  for (int k = 0; k < argc && ncopy; k++) {
+    for (int j = 0; j < argc && cp[k] && !force[k]; j++)
+      force[k] = j != k && !arg_ran_first(argv[j], 0) &&
+                 (cp[j] || (!run && subtree_has_side_effect(c, argv[j]) && operand_allocates_beside(c, argv[j])));
+    run |= force[k];
+  }
+  if (run) emit_args_before_forced(c, argv, argc, dfl, nd, ncopy ? force : NULL, b);
+  free(vals); free(ds); free(dfl); free(cp);
   return run;
+}
+
+/* emit_args_before, each value `force` marks run first too: after every
+   other argument, last before the call. CRuby hands the callee the String
+   object, so the bytes it sees are the String's at the call, after a
+   later argument has appended to it; a copy runs no code, so taking it
+   last moves nothing else. A value a later argument can rebind is read
+   in its place, as before. */
+static void emit_args_before_forced(Compiler *c, const int *argv, int argc, const int *after, int nafter,
+                                    const char *force, Buf *b) {
+  int nv = 0; char *ds = NULL;
+  int *vals = source_values(c->nt, argv, argc, &nv, &ds);
+  Buf *sv_pre = g_pre; g_pre = b;
+  for (int pass = 0; pass < 2; pass++)
+    for (int i = 0; i < nv; i++) {
+      int rb = value_rebound(c, vals, nv, i, after, nafter);
+      int late = force && force[i] && !rb;
+      if (late == pass) emit_arg_first(c, vals[i], rb || late, b);
+    }
+  g_pre = sv_pre;
+  free(vals); free(ds);
 }
 
 /* See codegen_internal.h. */
 void emit_args_before(Compiler *c, const int *argv, int argc, const int *after, int nafter, Buf *b) {
-  int nv = 0; char *ds = NULL;
-  int *vals = source_values(c->nt, argv, argc, &nv, &ds);
-  Buf *sv_pre = g_pre; g_pre = b;
-  for (int i = 0; i < nv; i++)
-    emit_arg_first(c, vals[i], value_rebound(c, vals, nv, i, after, nafter), b);
-  g_pre = sv_pre;
-  free(vals); free(ds);
+  emit_args_before_forced(c, argv, argc, after, nafter, NULL, b);
 }
 
 /* See codegen_internal.h. */

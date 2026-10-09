@@ -1,0 +1,160 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="870" viewBox="0 0 1600 870" role="img" aria-labelledby="title desc">
+<title id="title">Inline RBS in the Spinel pipeline</title>
+<desc id="desc">Ruby source is parsed with Prism. Inline RBS annotations attach to exact AST nodes, declarations are registered, then annotation types and independent external RBS seeds enter existing type pin helpers before the inference fixpoint. Spinel generates C, compiles it, and produces a native executable. Unsupported annotations warn and are ignored individually; malformed or conflicting annotations stop compilation. The global opt-out and missing-parser build skip inline annotations while leaving external RBS independent.</desc>
+<defs>
+<marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L9,4.5 L0,9 Z" fill="#8c9aaa"/></marker>
+<marker id="purple-arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto" markerUnits="userSpaceOnUse"><path d="M0,0 L9,4.5 L0,9 Z" fill="#7760a8"/></marker>
+</defs>
+<rect width="1600" height="870" fill="#f7f8fa"/>
+<text x="64" y="74" fill="#172334" font-family="Arial, Helvetica, sans-serif" font-size="36" font-weight="700" text-anchor="start">
+<tspan x="64" dy="0">Inline RBS in the Spinel pipeline</tspan>
+</text>
+<text x="64" y="115" fill="#5c6b7d" font-family="Arial, Helvetica, sans-serif" font-size="21" font-weight="400" text-anchor="start">
+<tspan x="64" dy="0">Inline comments attach to Ruby nodes, then reuse RBS pins before inference.</tspan>
+</text>
+<rect x="1268" y="50" width="268" height="34" rx="17" fill="#e9f7f0" stroke="none" stroke-width="1.5"/>
+<text x="1402" y="73" fill="#116148" font-family="Arial, Helvetica, sans-serif" font-size="15" font-weight="600" text-anchor="middle">
+<tspan x="1402" dy="0">1 + 2  New inline RBS steps</tspan>
+</text>
+<rect x="620" y="176" width="180" height="96" rx="12" fill="#f3effa" stroke="#7760a8" stroke-width="1.5"/>
+<text x="710" y="205" fill="#7760a8" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="600" text-anchor="middle">
+<tspan x="710" dy="0">.rbs files</tspan>
+</text>
+<text x="710" y="231" fill="#7760a8" font-family="Menlo, Consolas, monospace" font-size="15" font-weight="400" text-anchor="middle">
+<tspan x="710" dy="0">--rbs DIR</tspan>
+</text>
+<text x="710" y="253" fill="#5c6b7d" font-family="Arial, Helvetica, sans-serif" font-size="14" font-weight="400" text-anchor="middle">
+<tspan x="710" dy="0">Existing extractor</tspan>
+</text>
+<path d="M 710,272 L 710,322" fill="none" stroke="#7760a8" stroke-width="1.8" stroke-linejoin="round"  marker-end="url(#purple-arrow)"/>
+<text x="725" y="302" fill="#7760a8" font-family="Arial, Helvetica, sans-serif" font-size="14" font-weight="400" text-anchor="start">
+<tspan x="725" dy="0">type seeds</tspan>
+</text>
+<rect x="64" y="322" width="174" height="214" rx="12" fill="#ffffff" stroke="#cbd4df" stroke-width="1.5"/>
+<text x="84" y="353" fill="#5c6b7d" font-family="Arial, Helvetica, sans-serif" font-size="13" font-weight="600" text-anchor="start">
+<tspan x="84" dy="0">01</tspan>
+</text>
+<text x="84" y="383" fill="#172334" font-family="Arial, Helvetica, sans-serif" font-size="22" font-weight="600" text-anchor="start">
+<tspan x="84" dy="0">Ruby source</tspan>
+</text>
+<rect x="280" y="322" width="268" height="214" rx="12" fill="#ffffff" stroke="#cbd4df" stroke-width="1.5"/>
+<text x="300" y="353" fill="#5c6b7d" font-family="Arial, Helvetica, sans-serif" font-size="13" font-weight="600" text-anchor="start">
+<tspan x="300" dy="0">02</tspan>
+</text>
+<text x="300" y="383" fill="#172334" font-family="Arial, Helvetica, sans-serif" font-size="22" font-weight="600" text-anchor="start">
+<tspan x="300" dy="0">Parse + register</tspan>
+</text>
+<rect x="590" y="322" width="240" height="214" rx="12" fill="#ffffff" stroke="#cbd4df" stroke-width="1.5"/>
+<text x="610" y="353" fill="#5c6b7d" font-family="Arial, Helvetica, sans-serif" font-size="13" font-weight="600" text-anchor="start">
+<tspan x="610" dy="0">03</tspan>
+</text>
+<text x="610" y="383" fill="#172334" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="600" text-anchor="start">
+<tspan x="610" dy="0">Apply declarations</tspan>
+</text>
+<rect x="872" y="322" width="202" height="214" rx="12" fill="#ffffff" stroke="#cbd4df" stroke-width="1.5"/>
+<text x="892" y="353" fill="#5c6b7d" font-family="Arial, Helvetica, sans-serif" font-size="13" font-weight="600" text-anchor="start">
+<tspan x="892" dy="0">04</tspan>
+</text>
+<text x="892" y="383" fill="#172334" font-family="Arial, Helvetica, sans-serif" font-size="22" font-weight="600" text-anchor="start">
+<tspan x="892" dy="0">Infer types</tspan>
+</text>
+<rect x="1116" y="322" width="220" height="214" rx="12" fill="#ffffff" stroke="#cbd4df" stroke-width="1.5"/>
+<text x="1136" y="353" fill="#5c6b7d" font-family="Arial, Helvetica, sans-serif" font-size="13" font-weight="600" text-anchor="start">
+<tspan x="1136" dy="0">05</tspan>
+</text>
+<text x="1136" y="383" fill="#172334" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="600" text-anchor="start">
+<tspan x="1136" dy="0">Generate + compile</tspan>
+</text>
+<rect x="1378" y="322" width="158" height="214" rx="12" fill="#ffffff" stroke="#cbd4df" stroke-width="1.5"/>
+<text x="1398" y="353" fill="#5c6b7d" font-family="Arial, Helvetica, sans-serif" font-size="13" font-weight="600" text-anchor="start">
+<tspan x="1398" dy="0">06</tspan>
+</text>
+<text x="1398" y="383" fill="#172334" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="600" text-anchor="start">
+<tspan x="1398" dy="0">Executable</tspan>
+</text>
+<text x="84" y="427" fill="#5c6b7d" font-family="Arial, Helvetica, sans-serif" font-size="17" font-weight="400" text-anchor="start">
+<tspan x="84" dy="0">Ruby code</tspan>
+</text>
+<text x="84" y="455" fill="#116148" font-family="Menlo, Consolas, monospace" font-size="16" font-weight="400" text-anchor="start">
+<tspan x="84" dy="0">#: / # @rbs</tspan>
+</text>
+<text x="84" y="483" fill="#5c6b7d" font-family="Arial, Helvetica, sans-serif" font-size="15" font-weight="400" text-anchor="start">
+<tspan x="84" dy="0">Inline comments</tspan>
+</text>
+<text x="300" y="412" fill="#5c6b7d" font-family="Arial, Helvetica, sans-serif" font-size="16" font-weight="400" text-anchor="start">
+<tspan x="300" dy="0">Prism parses Ruby</tspan>
+</text>
+<rect x="298" y="429" width="232" height="53" rx="7" fill="#e9f7f0" stroke="#148361" stroke-width="1.5"/>
+<text x="310" y="450" fill="#116148" font-family="Arial, Helvetica, sans-serif" font-size="16" font-weight="600" text-anchor="start">
+<tspan x="310" dy="0">1  Attach annotations</tspan>
+<tspan x="310" dy="22.4">    to exact AST nodes</tspan>
+</text>
+<text x="300" y="511" fill="#5c6b7d" font-family="Arial, Helvetica, sans-serif" font-size="14" font-weight="400" text-anchor="start">
+<tspan x="300" dy="0">Load AST + register declarations</tspan>
+</text>
+<text x="610" y="412" fill="#5c6b7d" font-family="Arial, Helvetica, sans-serif" font-size="16" font-weight="400" text-anchor="start">
+<tspan x="610" dy="0">Before inference begins</tspan>
+</text>
+<rect x="608" y="429" width="204" height="53" rx="7" fill="#e9f7f0" stroke="#148361" stroke-width="1.5"/>
+<text x="620" y="450" fill="#116148" font-family="Arial, Helvetica, sans-serif" font-size="16" font-weight="600" text-anchor="start">
+<tspan x="620" dy="0">2  Reuse existing</tspan>
+<tspan x="620" dy="22.4">    RBS pin helpers</tspan>
+</text>
+<text x="610" y="511" fill="#5c6b7d" font-family="Arial, Helvetica, sans-serif" font-size="15" font-weight="400" text-anchor="start">
+<tspan x="610" dy="0">Params · returns · ivars</tspan>
+</text>
+<text x="892" y="433" fill="#5c6b7d" font-family="Arial, Helvetica, sans-serif" font-size="16" font-weight="400" text-anchor="start">
+<tspan x="892" dy="0">Use pins + Ruby code</tspan>
+<tspan x="892" dy="22.4">to infer other types</tspan>
+</text>
+<text x="892" y="505" fill="#5c6b7d" font-family="Arial, Helvetica, sans-serif" font-size="14" font-weight="400" text-anchor="start">
+<tspan x="892" dy="0">Pins constrain inference</tspan>
+</text>
+<text x="1136" y="433" fill="#5c6b7d" font-family="Arial, Helvetica, sans-serif" font-size="16" font-weight="400" text-anchor="start">
+<tspan x="1136" dy="0">Generate typed C</tspan>
+<tspan x="1136" dy="22.4">Compile with host cc</tspan>
+</text>
+<text x="1398" y="433" fill="#5c6b7d" font-family="Arial, Helvetica, sans-serif" font-size="17" font-weight="400" text-anchor="start">
+<tspan x="1398" dy="0">Native</tspan>
+<tspan x="1398" dy="23.8">program</tspan>
+</text>
+<path d="M 240,429 L 278,429" fill="none" stroke="#8c9aaa" stroke-width="1.8" stroke-linejoin="round"  marker-end="url(#arrow)"/>
+<path d="M 550,429 L 588,429" fill="none" stroke="#8c9aaa" stroke-width="1.8" stroke-linejoin="round"  marker-end="url(#arrow)"/>
+<path d="M 832,429 L 870,429" fill="none" stroke="#8c9aaa" stroke-width="1.8" stroke-linejoin="round"  marker-end="url(#arrow)"/>
+<path d="M 1076,429 L 1114,429" fill="none" stroke="#8c9aaa" stroke-width="1.8" stroke-linejoin="round"  marker-end="url(#arrow)"/>
+<path d="M 1338,429 L 1376,429" fill="none" stroke="#8c9aaa" stroke-width="1.8" stroke-linejoin="round"  marker-end="url(#arrow)"/>
+<path d="M 1010,536 L 1010,560 L 936,560 L 936,536" fill="none" stroke="#8c9aaa" stroke-width="1.8" stroke-linejoin="round"  marker-end="url(#arrow)"/>
+<text x="973" y="587" fill="#5c6b7d" font-family="Arial, Helvetica, sans-serif" font-size="14" font-weight="400" text-anchor="middle">
+<tspan x="973" dy="0">Repeat until stable</tspan>
+</text>
+<path d="M 64,623 L 1536,623" fill="none" stroke="#cbd4df" stroke-width="1.8" stroke-linejoin="round"  />
+<text x="64" y="654" fill="#172334" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="600" text-anchor="start">
+<tspan x="64" dy="0">Each annotation is handled separately</tspan>
+</text>
+<text x="64" y="689" fill="#116148" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="600" text-anchor="start">
+<tspan x="64" dy="0">Supported</tspan>
+</text>
+<text x="64" y="717" fill="#5c6b7d" font-family="Arial, Helvetica, sans-serif" font-size="17" font-weight="400" text-anchor="start">
+<tspan x="64" dy="0">Apply its type pins.</tspan>
+</text>
+<text x="557" y="689" fill="#996d21" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="600" text-anchor="start">
+<tspan x="557" dy="0">Unsupported</tspan>
+</text>
+<text x="557" y="717" fill="#5c6b7d" font-family="Arial, Helvetica, sans-serif" font-size="17" font-weight="400" text-anchor="start">
+<tspan x="557" dy="0">Warn; ignore that annotation.</tspan>
+<tspan x="557" dy="23.8">Other annotations still apply.</tspan>
+</text>
+<text x="1050" y="689" fill="#ac4960" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="600" text-anchor="start">
+<tspan x="1050" dy="0">Malformed or conflicting</tspan>
+</text>
+<text x="1050" y="717" fill="#5c6b7d" font-family="Arial, Helvetica, sans-serif" font-size="17" font-weight="400" text-anchor="start">
+<tspan x="1050" dy="0">Stop with a located compile error.</tspan>
+</text>
+<path d="M 516,675 L 516,746" fill="none" stroke="#cbd4df" stroke-width="1.8" stroke-linejoin="round"  />
+<path d="M 1009,675 L 1009,746" fill="none" stroke="#cbd4df" stroke-width="1.8" stroke-linejoin="round"  />
+<rect x="64" y="786" width="1472" height="61" rx="8" fill="#edf0f5" stroke="none" stroke-width="1.5"/>
+<text x="84" y="811" fill="#5c6b7d" font-family="Arial, Helvetica, sans-serif" font-size="16" font-weight="400" text-anchor="start">
+<tspan x="84" dy="0">Global skip: --no-inline-rbs skips inline processing. A build without the RBS parser warns once and skips inline annotations.</tspan>
+<tspan x="84" dy="22.4">External --rbs remains independent. The compiler still infers types and generates a native program.</tspan>
+</text>
+</svg>

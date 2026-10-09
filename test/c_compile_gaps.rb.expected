@@ -1,0 +1,36 @@
+[RuntimeError, "lone"]
+[ArgumentError, "second"]
+[ArgumentError, "bang"]
+[RuntimeError, "as value"]
+[RuntimeError, "arm"]
+[RuntimeError, "order"]
+[[1], 2]
+9
+7
+[RuntimeError, "push"]
+[RuntimeError, "plus"]
+1
+[RuntimeError, "seq"]
+{a: 1}
+{a: 1, b: "own x"}
+nil
+[ArgumentError, "comparison of String with 99 failed"]
+[ArgumentError, "comparison of String with 99 failed"]
+[ArgumentError, "comparison of String with nil failed"]
+[ArgumentError, "comparison of String with :z failed"]
+[ArgumentError, "comparison of String with 2.5 failed"]
+[ArgumentError, "comparison of String with Array failed"]
+[ArgumentError, "comparison of String with Hash failed"]
+true
+[ArgumentError, "comparison of String with 99 failed"]
+[ArgumentError, "comparison of String with 1 failed"]
+[ArgumentError, "min argument must be less than or equal to max argument"]
+"12"
+[ArgumentError, "comparison of String with 99 failed"]
+[ArgumentError, "comparison of String with 1 failed"]
+"12"
+[ArgumentError, "comparison of String with 99 failed"]
+[ArgumentError, "comparison of String with 99 failed"]
+[ArgumentError, "wrong number of arguments (given 2, expected 0..1)"]
+[ArgumentError, "wrong number of arguments (given 2, expected 0..1)"]
+[ArgumentError, "wrong number of arguments (given 2, expected 1)"]

@@ -144,6 +144,7 @@ static int ucall_respec_ctx(Compiler *c, int id) {
 }
 
 void ucall_observe(Compiler *c, int id, int mi, int owner_ci, int add) {
+  if (g_repr_check) repr_channel_call(c, id, mi);
   if (id < 0 || id >= c->node_cap || mi < 0 || mi >= c->nscopes) return;
   if (id >= g_ucobs_cap) {
     int ncap = g_ucobs_cap ? g_ucobs_cap : 1024;
@@ -617,16 +618,18 @@ int subtree_may_allocate(const NodeTable *nt, int id) {
 }
 /* subtree_may_allocate, plus the one allocation the node table cannot show:
    an ordinary read of a shared-mutable String slot (a TY_STRBUF local or
-   ivar) renders as a fresh copy of the live buffer, not as the slot itself.
-   A read marked to hand out the handle (strbuf_box) copies nothing. The
-   checks are strbuf_slot_ref's, without the emission it does, on the read
-   inside any parentheses (`(a) == b`). */
+   ivar, or a global, a constant or a class variable the --share-strings
+   rule made the handle) renders as a fresh copy of the live buffer, not as
+   the slot itself. A read marked to hand out the handle (strbuf_box)
+   copies nothing. The checks are strbuf_slot_ref's, without the emission
+   it does, on the read inside any parentheses (`(a) == b`). */
 int operand_may_allocate(Compiler *c, int id) {
   if (subtree_may_allocate(c->nt, id)) return 1;
   id = unwrap_parens(c, id);
   if (id < 0 || repr_of(c, id).handle) return 0;
   if (strbuf_local_name(c, id)) return 1;
   if (repr_self_shared(c, id)) return 1;
+  if (repr_static_read_kind(nt_kind(c->nt, id)) && repr_of(c, id).share) return 1;
   if (nt_kind(c->nt, id) != NK_InstanceVariableReadNode) return 0;
   const char *nm = nt_str(c->nt, id, "name");
   int cid = nm ? strbuf_ivar_owner(c, id) : -1;
@@ -1529,6 +1532,7 @@ int g_uses_regex = 0;
 int g_uses_argv = 0;
 int g_uses_threads = 0;
 int g_uses_finalizers = 0;   /* ObjectSpace.define_finalizer: SP_FIN_POLL at safe points */
+int g_uses_ensure = 0;       /* an ensure clause: the landings that give sp_inflight_cause back */
 int g_has_user_cmp = 0;
 int g_has_user_binop = 0;
 int g_has_user_aset = 0;
@@ -3549,6 +3553,9 @@ static int plain_expr(Compiler *c, int n, int depth) {
   case NK_CallNode: {
     const char *nm = nt_str(nt, n, "name");
     int recv = nt_ref(nt, n, "receiver");
+    /* An Integer sum either returns a number or raises, even at INTPTR_MIN. */
+    if (nm && recv >= 0 && is_sum_name(nm) && ty_is_array(repr_of(c, recv).as_ty) &&
+        !call_is_safe_nav(nt, n) && cplan_user(c, n)->dispatch == CP_NONE) return 1;
     if (!nm || recv < 0 || nt_ref(nt, n, "block") >= 0) return 0;
     if (call_is_safe_nav(nt, n)) return 0;   /* nil&.+(1) is nil */
     int args = nt_ref(nt, n, "arguments"), argc = 0;
@@ -3808,7 +3815,8 @@ void emit_poly_sum_seed(Compiler *c, int recv, int seed, Buf *b) {
   int tr = ++g_tmp, ts = ++g_tmp;
   buf_puts(b, "({ ");
   tr = hold_operand(c, recv, TY_POLY, 1, tr, 1, " ", b);
-  ts = hold_operand(c, seed, TY_POLY, 1, ts, 1, " ", b);
+  if (seed >= 0) ts = hold_operand(c, seed, TY_POLY, 1, ts, 1, " ", b);
+  else buf_printf(b, "sp_RbVal _t%d = sp_box_int(0); ", ts);
   buf_printf(b, "sp_poly_sum_seed(_t%d, _t%d); })", tr, ts);
 }
 /* A call that never hands back a value: a receiverless raise or fail, or a

@@ -2534,7 +2534,7 @@ TyKind bop_result(const BuiltinOp *op, TyKind rt) {
   case (int)BOPR_ELEM:      return ty_array_elem(rt);
   case (int)BOPR_HASH_KEY_OF: return rt == TY_SYM_POLY_HASH ? TY_SYMBOL : TY_POLY;
   case (int)BOPR_HASH_INVERT: return rt == TY_STR_STR_HASH ? TY_STR_STR_HASH : TY_POLY_POLY_HASH;
-  case (int)BOPR_ARRAY_SUM: return rt == TY_STR_ARRAY ? TY_POLY : ty_array_elem(rt);
+  case (int)BOPR_ARRAY_SUM: return rt == TY_INT_ARRAY ? TY_UNKNOWN : fold_sum_type(TY_INT, ty_array_elem(rt), 0);
   case (int)BOPR_ARRAY_INDEX:
     return rt == TY_INT_ARRAY || rt == TY_STR_ARRAY || rt == TY_FLOAT_ARRAY ? TY_POLY : TY_INT;
   case (int)BOPR_ARRAY_TUPLES: return rt == TY_POLY_ARRAY ? TY_POLY_ARRAY : TY_ENUMERATOR;
@@ -3480,10 +3480,11 @@ void iter_rows_check(void) {
   }
   /* a hand row with an iterator's answer overrides its row's: one with no
      row to override is no iterator, and one that repeats the derived
-     answer is stale */
+     answer is stale. Families not read by iter_share keep independent
+     hand rows rather than overriding iterator rows. */
   for (int i = 0; i < BOP_NSHARE; i++) {
     const BopShareRow *h = &bop_share_rows[i];
-    if (h->share < BSH_ITER || h->share > BSH_ITER_THEN) continue;
+    if (!iter_share_family(h->fam) || h->share < BSH_ITER || h->share > BSH_ITER_THEN) continue;
     const char *why = !iter_row(h->fam, h->name, -1, IRF_GAP_SHARE) ? "names no iterator row"
                     : h->share == iter_share(h->fam, h->name) ? "repeats the answer its iterator row derives"
                     : NULL;

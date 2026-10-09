@@ -1362,7 +1362,9 @@ static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int 
     if (nv > 0) sh_union(F, sh_elem(F, rv), vals[nv - 1]);
     if (nv > 0 && argc > 0 && nt_kind(nt, argv[argc - 1]) != NK_KeywordHashNode)
       sh_flow(F, SHFL_ELEM, nt_ref(nt, n, "receiver"), argv[argc - 1]);
-    return nv > 0 ? vals[nv - 1] : rv;
+    /* A used setter result names the stored element, even when the
+       argument was fresh and therefore had no holder of its own. */
+    return nv > 0 ? (container && !(F->unused[n] & SHU_STMT) ? sh_elem(F, rv) : vals[nv - 1]) : rv;
   case BSH_STORE_ALL:
     for (int i = 0; i < nv; i++) sh_union(F, sh_elem(F, rv), vals[i]);
     sh_args_flows(F, c, SHFL_ELEM, n, nt_ref(nt, n, "receiver"));
@@ -1389,6 +1391,9 @@ static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int 
     /* one argument is the answer; several, an Array of them, which joins
        them only where something takes it (`p a, b` as a statement keeps
        neither) */
+    /* An empty sum can answer its seed; its block still reads the elements. */
+    if (lit_blk && container) sh_block_params(F, c, blk, sh_elem(F, rv), 1);
+    if (container && nv == 0) return -1;
     sh_peek_args(F, n, 1);
     if (nv == 1) return vals[0];
     if (F->unused[n] & SHU_STMT) return -1;
@@ -1653,6 +1658,10 @@ static int sh_builtin_new(ShareFacts *F, Compiler *c, int n, int recv, int blk) 
     }
     /* Array.new(a), a copy of a's elements, is not followed: its answer
        holds a's Strings, which a literal handed to it does not make handles */
+    /* Under --share-strings join the containers as BSH_SUB does: the copy
+       also retains a literal source's elements, including fresh Strings. */
+    if (c->share_strings && share == BSH_NEW_FILL && argc == 1 && blk < 0)
+      sh_union(F, r, v);
   }
   if (!lit_blk) return r;
   if (share == BSH_NEW_DEFAULT) {

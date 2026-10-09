@@ -20,6 +20,9 @@
    require-gated stdlib (stringio, io/console, ...) so they match CRuby's
    uninitialized-constant / NoMethodError when the require is absent. */
 extern int g_require_gate;
+/* the program may load a file the compiler did not read (spinel_parse.c,
+   above resolve_requires): what that file would define is not in the node table */
+extern int g_require_unread;
 /* SPINEL_SHARE_STRINGS is on: set, not empty and not "0" (spinel_parse.c) */
 int sp_share_strings_env(void);
 void sp_feature_mark(const char *name);
@@ -413,6 +416,7 @@ typedef struct {
                                String's handle, which the callee's tail read
                                publishes (_sp_ret_strbuf); set once the
                                analysis settles (an_mark_handle_returns) */
+  unsigned char ret_channel_check; /* --repr-check: the earlier pickup proof succeeded */
   unsigned char ret_fresh; /* the same return-tail walk proves a new String
                               (or nil) on every path; no incoming handle */
   int ret_param;       /* --share-strings: every non-fresh return reads this
@@ -583,7 +587,8 @@ typedef struct {
                           once superclasses are wired can fill alias_cls */
   int   *alias_builtin; /* 1: the alias captured the builtin method of a
                            reopened primitive, which the class had not
-                           defined where the alias appeared */
+                           defined where the alias appeared.
+                           2: a captured builtin singleton method */
   int naliases, caliases;
   int enum_yield_arity; /* widest `yield` arity in this class's each, so the
                            Enumerable collector packs a multi-value yield into
@@ -615,6 +620,7 @@ typedef struct {
      struct name; free_sym its optional finalizer. Method bindings live in the
      compiler's native_methods registry, keyed by this class's index. */
   int is_native_class;
+  int is_builtin_const; /* builtin class/module name, classified at registration */
   /* --share-strings: a native class whose binding declares that its object
      keeps a String (`native_share ... "keeps"`): its objects are holders */
   int native_share_keeps;
@@ -973,6 +979,7 @@ typedef struct {
   int *vs_next;         /* [vs_count] the next entry sharing the bucket */
   unsigned char *vs_kind; /* [vs_count] an entry's site kind (VsKind) */
   int *vs_rparent;      /* [vs_nodes] the call whose receiver a node is, or -1 */
+  int *vs_whead, *vs_wnext; /* [vs_nodes] the local writes whose value a node is, in node order */
   unsigned char *vs_dropped; /* [vs_nodes] a statement the next statement follows */
   int vs_nbuckets, vs_count, vs_cap, vs_nodes, vs_toplevel;
   unsigned vs_version, vs_gen;
@@ -1072,6 +1079,7 @@ typedef struct {
   /* body-node id -> enclosing BlockNode id (lazy; emit_stmts block-local
      resets). Sized nt->count; -1 = not a block body. */
   int *blk_body_map;
+  struct ReprChannelCheck *repr_channel_check; /* --repr-check return-channel shadow */
   /* node id -> the number a name invented from the node carries
      (comp_node_ord), bit 0 set for a builtin's. Extended over appended
      nodes, never refilled. A builtin node counts within its base, the
@@ -1207,6 +1215,10 @@ int comp_vsite_var(const Compiler *c, int e);
    whether it is a statement the next statement follows, so its value is
    dropped. */
 int comp_recv_parent(Compiler *c, int n);
+/* The local-variable writes whose value is node n, ascending: for (w =
+   comp_lwrite_of_value(c, n); w >= 0; w = comp_lwrite_next(c, w)). */
+int comp_lwrite_of_value(Compiler *c, int n);
+int comp_lwrite_next(const Compiler *c, int w);
 int comp_value_dropped(Compiler *c, int n);
 int comp_kind_first(Compiler *c, int kind);
 int comp_kind_next(const Compiler *c, int id);

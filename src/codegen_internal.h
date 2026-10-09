@@ -194,6 +194,8 @@ int strbuf_var_handle(Compiler *c, int n, char *out, size_t cap);
 /* --share-strings: does value v hand over a shared String as its handle
    (a variable, a route, a conditional with such an arm)? (codegen_stmt.c) */
 int strbuf_value_carries(Compiler *c, int v);
+int strbuf_builtin_tail(Compiler *c, int v);
+int strbuf_hash_default_arg(Compiler *c, int v);
 /* A builtin String clamp's receiver and two bounds, or absent endpoints. */
 int strbuf_route_clamp(Compiler *c, int v, int *ops);
 /* `String(x)` or `+x` over a variable whose slot holds the handle: that
@@ -220,6 +222,17 @@ int emit_strbuf_ivar_write_handle(Compiler *c, int v, Buf *b);
    taken: the write, valued as that handle (codegen_expr.c) */
 int emit_strbuf_write_handle(Compiler *c, int v, Buf *b);
 int operand_may_allocate(Compiler *c, int id);
+/* Can operand `v` allocate where it stands? operand_may_allocate, less
+   what builds nothing: a pure read (subtree_is_pure_read: a typed Array's
+   element, a plain field), and a shared String slot's read that hands its
+   consumer the live buffer (strbuf_read_raw). */
+int operand_allocates_beside(Compiler *c, int v);
+/* Is `v` a read of a shared String slot (a local's, an ivar's, a global's
+   or a constant's) whose value form is a fresh copy of its bytes
+   (sp_strbuf_read_pub), held by nothing until its consumer takes it? A
+   read that hands out the handle or the live buffer copies nothing, and
+   one that ran already is its temp. */
+int strbuf_read_copies(Compiler *c, int v);
 /* The same shim over a READER call that hands out the handle
    (`obj.name[0] = "X"`): no name to rename and no ivar node, so the call node
    itself reads as the shadow through the argument-override table. */
@@ -249,6 +262,8 @@ extern const char *g_yield_block_fallback_param_name;
 extern int  g_nren;
 extern int  g_block_id;
 int builtin_method_known(const char *cls, const char *m);
+int builtin_cmethod_known(const char *cls, const char *name);
+int builtin_super_cmethod_known(const char *cls, const char *name);
 int builtin_instance_name_known(const char *m);
 int builtin_arity_violation(Compiler *c, int id);
 int builtin_object_method_known(const char *m);
@@ -652,6 +667,7 @@ extern int g_uses_regex;
 extern int g_uses_argv;
 extern int g_uses_threads;
 extern int g_uses_finalizers;
+extern int g_uses_ensure;   /* the program holds an ensure clause: only then is an exception ever in flight (sp_inflight_cause) */
 extern int g_has_user_cmp;
 extern int g_has_user_binop;
 extern int g_has_user_aset;
@@ -1116,6 +1132,7 @@ int obj_conv_method(Compiler *c, TyKind t, const char *conv, TyKind want, int *d
    arms ask, the conversion emitted on a spilled temp, and the prologue the
    arms share. See codegen.c. */
 int str_cmp_conv_shape(Compiler *c, int node);
+int str_cmp_bound_foreign(Compiler *c, int n);
 void emit_str_cmp_conv(Compiler *c, int node, int tmp, Buf *b);
 void emit_str_cmp_prologue(Compiler *c, const char *rtxt, int operand,
                            int *tr, int *to, int *ts, Buf *b);
@@ -1236,7 +1253,8 @@ int call_never_returns(Compiler *c, int id);
    its container kind rather than left TY_UNKNOWN (see types.c). */
 TyKind fold_seed_ntype(Compiler *c, int node);
 /* `sum(seed)` through sp_poly_sum_seed, with both operands boxed into rooted
-   temporaries in receiver-then-seed order (see codegen_util.c). */
+   temporaries in receiver-then-seed order (see codegen_util.c). A negative
+   seed denotes the implicit Integer zero. */
 void emit_poly_sum_seed(Compiler *c, int recv, int seed, Buf *b);
 void emit_c_escaped_n(Buf *b, const char *s, size_t len);
 void emit_c_escaped(Buf *b, const char *s);

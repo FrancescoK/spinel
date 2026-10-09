@@ -662,14 +662,18 @@ static void emit_poly_push_elem(Buf *b, int tpair, TyKind ty, int t, int ti, con
 
 /* Materialize each zip argument into a rooted array temp _t<tb[j]>, and
    rewrite at[j] to the array type the slot ended up holding. */
-static void emit_zip_args(Compiler *c, const int *argv, int nargs, const int *tb, TyKind *at, Buf *b) {
+/* `rlen`: the receiver's length, as C; a Range argument materializes only
+   that many elements */
+static void emit_zip_args(Compiler *c, const int *argv, int nargs, const int *tb, TyKind *at,
+                          const char *rlen, Buf *b) {
   for (int j = 0; j < nargs; j++) {
-    /* a Range argument materializes to its int array */
+    /* a Range argument materializes to its int array, as far as the
+       receiver reaches: `[1, 2].zip(10.upto(Float::INFINITY))` */
     if (at[j] == TY_RANGE) {
       int trj = ++g_tmp;
       buf_printf(b, " sp_IntArray *_t%d = ({ sp_Range _t%d = ", tb[j], trj);
       emit_expr(c, argv[j], b);
-      buf_printf(b, "; sp_range_to_ia(_t%d); }); SP_GC_ROOT(_t%d);", trj, tb[j]);
+      buf_printf(b, "; sp_range_to_ia_first(_t%d, %s); }); SP_GC_ROOT(_t%d);", trj, rlen, tb[j]);
       at[j] = TY_INT_ARRAY;
       continue;
     }
@@ -1292,7 +1296,8 @@ static int emit_poly_array_call(Compiler *c, int id, Buf *b, const NodeTable *nt
     Buf ra = expr_buf(c, recv);
     buf_printf(b, "({ sp_PolyArray *_t%d = %s;", ta, ra.p ? ra.p : "NULL"); free(ra.p);
     buf_printf(b, " SP_GC_ROOT(_t%d);", ta);   /* see the typed arm; the loop re-reads this length every turn and allocates inside it */
-    emit_zip_args(c, argv, nargs, tb, at, b);
+    char rlen[64]; snprintf(rlen, sizeof rlen, "sp_PolyArray_length(_t%d)", ta);
+    emit_zip_args(c, argv, nargs, tb, at, rlen, b);
     buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", tr, tr);
     buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_PolyArray_length(_t%d); _t%d++) {", ti, ti, ta, ti);
     buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new();", tpair);
@@ -1782,20 +1787,28 @@ static int emit_kind_array_iter_call(Compiler *c, int id, Buf *b, const NodeTabl
     TyKind init_t = fold_seed_ntype(c, argv[0]);
     /* a String initial value concatenates (["a","b"].sum("") == "ab") */
     if (rt == TY_STR_ARRAY && init_t == TY_STRING) {
-      Buf rss;
-      int css = hold_recv_open(c, recv, 0, "sp_StrArray *", "SP_GC_ROOT", b, &rss);
-      buf_printf(b, "sp_StrArray_sum_str(%s, ", rss.p);
-      emit_expr(c, argv[0], b); buf_puts(b, ")");
-      free(rss.p);
-      if (css) buf_puts(b, "; })");
+      emit_poly_sum_seed(c, recv, argv[0], b);
       { *out = 1; return 1; }
     }
     /* a float initial value promotes an integer-array sum to Float: add the
        float init to the integer total in floating point (sp_IntArray_sum
        returns sp_int, so accumulating the init through it would truncate). */
     if (rt == TY_INT_ARRAY && init_t == TY_FLOAT) {
-      buf_puts(b, "((sp_float)("); emit_expr(c, argv[0], b);
-      buf_puts(b, ") + (sp_float)sp_IntArray_sum("); emit_nil_ck_recv(c, recv, rt, "sum", 1, b); buf_puts(b, ", 0))");
+      int tr = ++g_tmp, ts = ++g_tmp;
+      buf_puts(b, "({ ");
+      tr = hold_operand(c, recv, TY_INT_ARRAY, 0, tr, 1, " ", b);
+      ts = hold_operand(c, argv[0], TY_FLOAT, 0, ts, 1, " ", b);
+      char rn[32]; snprintf(rn, sizeof rn, "_t%d", tr);
+      Buf ck; memset(&ck, 0, sizeof ck);
+      const char *ar = nil_sum_ck_text(c, recv, rt, 1, rn, &ck);
+      /* The empty sum keeps signed zero. An exact prefix may need a Bignum
+         before conversion to Float, just as an Integer-seeded sum does. */
+      buf_printf(b, "sp_IntArray_length(_t%d) == 0 ? _t%d : _t%d + ", tr, ts, ts);
+      if (g_promote_mode)
+        buf_printf(b, "sp_poly_to_f(sp_IntArray_sum_promote(%s, 0))", ar);
+      else buf_printf(b, "(sp_float)sp_IntArray_sum(%s, 0)", ar);
+      free(ck.p);
+      buf_puts(b, "; })");
       { *out = 1; return 1; }
     }
     /* Any other seed keeps its OWN class for the whole fold: CRuby's
@@ -1805,7 +1818,7 @@ static int emit_kind_array_iter_call(Compiler *c, int id, Buf *b, const NodeTabl
        that operator itself produces -- worded for the ELEMENT's class, which
        the hard-coded String-seed raise that used to stand here could only
        get right over Integers. sp_poly_sum_seed runs CRuby's own phases. */
-    if (rt == TY_STR_ARRAY || !fold_seed_typed(init_t, ty_array_elem(rt))) {
+    if (rt == TY_STR_ARRAY || fold_sum_type(init_t, ty_array_elem(rt), g_promote_mode) == TY_POLY) {
       emit_poly_sum_seed(c, recv, argv[0], b);
       { *out = 1; return 1; }
     }
@@ -2162,7 +2175,8 @@ else {
        argument, materialized here and read on every row. Same rule the
        builtin loops follow (#4367, #4369, #4370). */
     buf_printf(b, " SP_GC_ROOT(_t%d);", ta);
-    emit_zip_args(c, argv, nargs, tb, at, b);
+    char rlen[64]; snprintf(rlen, sizeof rlen, "sp_%sArray_length(_t%d)", ka, ta);
+    emit_zip_args(c, argv, nargs, tb, at, rlen, b);
     int tnf; const char *rbox = typed_elem_box_or_null(c, recv, rt, ta, &tnf, b);
     buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", tr, tr);
     buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) {",
@@ -6451,23 +6465,6 @@ int subtree_reads_match_globals(Compiler *c, int root) {
   return 0;
 }
 
-/* String methods that only read the receiver's bytes: they answer a scalar or
-   build a new string, and never retain the pointer they were handed. A
-   shared-mutable receiver can hand them its live buffer instead of a copy. */
-static int str_recv_reads_only(const char *name) {
-  static const char *const ro[] = {
-    "[]", "slice", "byteslice", "getbyte", "ord", "chr",
-    "index", "rindex", "include?", "start_with?", "end_with?",
-    "count", "length", "size", "bytesize", "empty?",
-    "to_i", "to_f", "hex", "oct", "match?", "casecmp", "casecmp?",
-    "upcase", "downcase", "capitalize", "swapcase", "reverse",
-    "strip", "lstrip", "rstrip", "chomp", "chop", "center", "ljust", "rjust",
-    "each_char", "each_byte", "each_line", "chars", "bytes", "lines", "split",
-    "sum", "hash", "unpack", "unpack1", "codepoints", "scan", NULL };
-  for (int i = 0; ro[i]; i++) if (sp_streq(name, ro[i])) return 1;
-  return 0;
-}
-
 /* A byte-offset search takes a String needle. A poly one is a String at run
    time, or the conversion protocol's TypeError -- either way emit_str_expr
    makes it a `const char *` -- so it belongs on the same arm as a static
@@ -7058,6 +7055,20 @@ static int str_arms_slice_encode(Compiler *c, int id, Buf *b, const char *name, 
   }
   else if (sp_streq(name, "split") && argc == 2) {
     buf_printf(b, "sp_str_split_limit(%s, ", r); emit_str_pattern_expr(c, argv[0], b); buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")");
+  }
+  else if (sp_streq(name, "clamp") && argc == 2 &&
+           ((str_cmp_bound_foreign(c, argv[0]) && comp_ntype(c, argv[0]) != TY_NIL && !ty_is_object(comp_ntype(c, argv[0]))) ||
+            (str_cmp_bound_foreign(c, argv[1]) && comp_ntype(c, argv[1]) != TY_NIL && !ty_is_object(comp_ntype(c, argv[1]))))) {
+    int tc = ++g_tmp, tlo = ++g_tmp, thi = ++g_tmp;
+    buf_printf(b, "({ const char *_t%d = %s; SP_GC_ROOT_STR(_t%d); sp_RbVal _t%d = ", tc, r, tc, tlo);
+    emit_boxed(c, argv[0], b);
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_RbVal _t%d = ", tlo, thi);
+    emit_boxed(c, argv[1], b);
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); if (_t%d.tag != SP_TAG_NIL && _t%d.tag != SP_TAG_NIL && !sp_poly_cmp_le0(_t%d, _t%d))"
+                  " sp_raise_cls(\"ArgumentError\", \"min argument must be less than or equal to max argument\");"
+                  " if (_t%d.tag != SP_TAG_NIL) (void)sp_poly_cmp_ge0(sp_box_str(_t%d), _t%d);"
+                  " if (_t%d.tag != SP_TAG_NIL) (void)sp_poly_cmp_le0(sp_box_str(_t%d), _t%d); _t%d; })",
+               thi, tlo, thi, tlo, thi, tlo, tc, tlo, thi, tc, thi, tc);
   }
   else if (sp_streq(name, "clamp") && (argc == 2 ||
            (argc == 1 && nt_type(c->nt, argv[0]) && sp_streq(nt_type(c->nt, argv[0]), "RangeNode")))) {
@@ -8235,7 +8246,7 @@ static int emit_scalar_recv_arms(Compiler *c, int id, Buf *b, const NodeTable *n
      the bytes and answers a scalar or a freshly built string keeps nothing,
      so it can read the live buffer instead -- `text[i]` in a scan loop was
      copying the whole subject on every character. */
-  if (rt == TY_STRING && name && str_recv_reads_only(name))
+  if (rt == TY_STRING && name && is_string_read_only_method(name))
     emit_strbuf_read_ref(c, recv, &rs);
   if (!rs.p) emit_expr(c, recv, &rs);
   const char *r = rs.p ? rs.p : "";
@@ -13426,6 +13437,8 @@ static int emit_poly_index_call(Compiler *c, int id, Buf *b, const NodeTable *nt
       free(call.p);
     }
     else { buf_printf(b, "sp_RbVal _t%d = ", tv); emit_boxed(c, argv[2], b); buf_puts(b, "; "); }
+    /* the value is held across the index operands, which may allocate */
+    buf_printf(b, "SP_GC_ROOT_RBVAL(_t%d); ", tv);
     /* Store the possibly-promoted array back into the receiver so a typed->poly
        promotion survives: assign to a local/ivar lvalue, or write to outer's slot
        for a computed `outer[idx]` receiver; otherwise splice in place. */

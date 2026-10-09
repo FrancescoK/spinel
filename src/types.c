@@ -493,6 +493,18 @@ int fold_seed_typed(TyKind seed, TyKind elem) {
   return elem == TY_FLOAT && seed == TY_INT;
 }
 
+/* A sum can return the untouched seed when empty. Keep that class as well as
+   the block's values; nonnumeric accumulators use the boxed Ruby operator. */
+TyKind fold_sum_type(TyKind seed, TyKind elem, int promote) {
+  if (elem != TY_INT && elem != TY_FLOAT) return TY_POLY;
+  if (seed == TY_POLY || seed == TY_STRING ||
+      (seed != TY_INT && seed != TY_FLOAT && seed != TY_UNKNOWN &&
+       !fold_seed_typed(seed, elem))) return TY_POLY;
+  if (elem == TY_FLOAT && seed != TY_FLOAT) return TY_POLY;
+  if (promote && elem == TY_INT && seed != TY_FLOAT) return TY_POLY;
+  return seed == TY_FLOAT ? TY_FLOAT : elem;
+}
+
 TyIterShape ty_iter_shape(const char *name) {
   if (!name) return TY_ITER_NONE;
   if (is_map_alias(name)) return TY_ITER_MAP;

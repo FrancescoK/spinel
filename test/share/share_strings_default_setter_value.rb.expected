@@ -1,0 +1,20 @@
+true
+true
+"a\u0000bc"
+"a\u0000bc"
+"a\u0000bcd"
+"a\u0000bcd"
+"method!"
+"method!?"
+true
+"block!"
+"block!"
+"block!?"
+"fresh!"
+"fresh!?"
+true
+"frozen"
+"ordered!"
+"ordered!"
+[:receiver, :argument]
+[:receiver, :argument, :receiver, :argument]

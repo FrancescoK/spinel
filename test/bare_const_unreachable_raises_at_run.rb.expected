@@ -1,0 +1,6 @@
+:ok
+NameError
+"uninitialized constant X"
+"uninitialized constant B::X"
+nil
+"A::X"

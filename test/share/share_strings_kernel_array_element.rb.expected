@@ -1,0 +1,16 @@
+true
+"a\u0000b!"
+["a\u0000b!?"]
+"method!"
+"method!?"
+"block!"
+"block!?"
+true
+true
+"existing!"
+["fresh!"]
+true
+"frozen"
+[]
+[2]
+[1.5]

@@ -1,0 +1,17 @@
+"top!"
+["top!"]
+["top!"]
+["top!"]
+["top!", "other"]
+["reverse?"]
+"method!"
+["method-reverse?"]
+"block!"
+["block-reverse?"]
+"direct!"
+"nested!"
+"distinct"
+["distinct", "distinct!"]
+frozen
+[nil, nil]
+[0, 1]

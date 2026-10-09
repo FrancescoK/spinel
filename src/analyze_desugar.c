@@ -6493,6 +6493,8 @@ int desugar_block_implicit_rest(Compiler *c) {
    value consumer sees one argument. The per-jump builders pushed each
    argument boxed, a splat as one nested array, and `next` kept only the
    first argument. A splat-free `return` / `break` keeps its own path.
+   Multiple `break` values also use the Array path: the loop's type and
+   its result slot must consume the whole value, not its first argument.
    `yield a, *b` and `blk.call(a, *b)` become `yield(*[a, *b])`, which the
    block binder already spreads; it bound each argument to one parameter,
    the splat's whole array included. */
@@ -6515,7 +6517,7 @@ int desugar_multi_value_jump(Compiler *c) {
       else if (ak == NK_SplatNode) splat = 1;
       else if (ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode) other = 1;
     }
-    if (other || (!splat && k != NK_NextNode)) continue;
+    if (other || (!splat && k != NK_NextNode && k != NK_BreakNode)) continue;
     int arr = nt_new_node(nt, "ArrayNode");
     int wrap = (k == NK_YieldNode || is_call) ? nt_new_node(nt, "SplatNode") : arr;
     if (arr < 0 || wrap < 0) continue;
@@ -7556,6 +7558,53 @@ static void dmc_walk(NodeTable *nt, int id, int lvl, int in_dm, const char *cls,
     int n = 0; const int *v = nt_arr_at(nt, id, i, &n);
     for (int j = 0; j < n; j++) dmc_walk(nt, v[j], lvl, in_dm, cls, s, rewrite);
   }
+}
+
+/* Rename every reference in a body's lexical scope (blocks included, defs
+   and nested classes not) to a local the body owns: depth equal to the
+   blocks entered. */
+static void bls_walk(NodeTable *nt, int id, int lvl, const char *tag) {
+  if (id < 0) return;
+  NodeKind k = nt_kind(nt, id);
+  if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode ||
+      k == NK_SingletonClassNode) return;
+  const char *nm = dmc_local_kind(k) >= 0 ? nt_str(nt, id, "name") : NULL;
+  if (nm && nt_int(nt, id, "depth", 0) == lvl) {
+    char buf[256];
+    snprintf(buf, sizeof buf, "%s__cb%s", nm, tag);
+    nt_node_set_str(nt, id, "name", buf);
+  }
+  if (k == NK_BlockNode || k == NK_LambdaNode) lvl++;
+  int nr = nt_num_refs(nt, id);
+  for (int i = 0; i < nr; i++) bls_walk(nt, nt_ref_at(nt, id, i), lvl, tag);
+  int na = nt_num_arrs(nt, id);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *v = nt_arr_at(nt, id, i, &n);
+    for (int j = 0; j < n; j++) bls_walk(nt, v[j], lvl, tag);
+  }
+}
+
+/* `module M; a = 5; end; a ||= 10`: a class, module or singleton class body
+   is a local scope of its own, but its statements are emitted into the
+   top level's C function, where a local of the same name shared one C
+   variable with the top level's (and with every other body's). Each body's
+   locals take a name private to the body. Runs before any pass turns a
+   block into a class body (Class.new do..end), whose locals are the
+   block's and may read the enclosing scope's. */
+int desugar_body_local_scopes(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  int n0 = nt->count;
+  for (int cls = 0; cls < n0; cls++) {
+    NodeKind ck = nt_kind(nt, cls);
+    if (ck != NK_ClassNode && ck != NK_ModuleNode && ck != NK_SingletonClassNode) continue;
+    int body = nt_ref(nt, cls, "body");
+    if (body < 0) continue;
+    char tag[64]; snprintf(tag, sizeof tag, "%s", comp_node_tag(c, cls));
+    bls_walk(nt, body, 0, tag);
+    changed = 1;
+  }
+  return changed;
 }
 
 /* `singleton_class.define_method(:m) { }` (or `self.singleton_class.`) in a

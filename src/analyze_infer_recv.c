@@ -10,6 +10,7 @@
    "declined". */
 #include "analyze_internal.h"
 #include "builtin_ops.h"
+#include "share.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -428,6 +429,9 @@ TyKind infer_map_block_ty(Compiler *c, int id, int block) {
      in only to unbox it again on each read. */
   if (c->arr_want && id < c->node_cap && ty_is_ptr_array(c->arr_want[id]))
     return c->arr_want[id];
+  /* A temporary result has no holder to select boxed element storage.
+     Its shared block values need the same layout as a stored result. */
+  if (c->share_strings && share_node_elems_share(c, id)) return TY_POLY_ARRAY;
   return ty_array_of(bt);
 }
 
@@ -638,6 +642,26 @@ static int fill_value_fits(Compiler *c, int call, TyKind rt) {
 }
 
 
+/* A Float consumer accepts either result of a seedless Float Array sum:
+   Integer zero when empty, Float otherwise. Ask the builtin row so an
+   overridden sum keeps its ordinary boxed-result promotion. */
+TyKind infer_op_assign_type(Compiler *c, TyKind lhs, int value) {
+  TyKind rhs = infer_type(c, value);
+  if (lhs == TY_FLOAT && rhs == TY_POLY && nt_kind(c->nt, value) == NK_CallNode) {
+    int recv = nt_ref(c->nt, value, "receiver");
+    if (recv >= 0 && infer_type(c, recv) == TY_FLOAT_ARRAY) {
+      int argc = 0;
+      int args = nt_ref(c->nt, value, "arguments");
+      if (args >= 0) nt_arr(c->nt, args, "arguments", &argc);
+      const BuiltinOp *op = bop_find(BOP_ANY_ARRAY,
+        nt_str(c->nt, value, "name"), argc, nt_ref(c->nt, value, "block") >= 0);
+      if (op && op->result == BOPR_ARRAY_SUM &&
+          !an_user_defines_or_reads(c, nt_str(c->nt, value, "name"))) return TY_FLOAT;
+    }
+  }
+  return ty_promote_numeric(lhs, rhs);
+}
+
 /* Array receivers: the array face of infer_call */
 int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
   const NodeTable *nt = c->nt;
@@ -664,7 +688,7 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
     /* builtin-op rows (builtin_ops.c) */
     {
       const BuiltinOp *op = an_bop_find(c, id, BOP_ANY_ARRAY, name, argc, block >= 0);
-      if (op && op->result != TY_UNKNOWN) { *out = bop_result(op, rt); return 1; }
+      if (op && (*out = bop_result(op, rt)) != TY_UNKNOWN) return 1;
     }
     /* a blockless map/collect is a usable Enumerator too (size/class/next);
        chained block forms (map.with_index { }) are typed by their own arms
@@ -782,9 +806,10 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
         TyKind st = fold_seed_infer_ty(c, argv[0]);
         TyKind et = ty_array_elem(rt);
         /* the String-seed concatenation; the rule above took every other seed */
-        if (rt == TY_STR_ARRAY) { *out = TY_STRING; return 1; }
+        /* The empty fold can keep a shared seed handle, so it stays boxed. */
+        if (rt == TY_STR_ARRAY) { *out = TY_POLY; return 1; }
         if (et == TY_INT && st == TY_FLOAT) { *out = TY_FLOAT; return 1; }
-        *out = fold_seed_typed(st, et) ? et : TY_POLY;
+        *out = fold_sum_type(st, et, g_promote_mode);
         return 1;
       }
       /* A boxed array summed from a Float seed is a Float unless an element
@@ -793,6 +818,31 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
          live in the slot. */
       if (argc == 1 && blk < 0 && rt == TY_POLY_ARRAY && infer_type(c, argv[0]) == TY_FLOAT)
         { *out = TY_POLY; return 1; }
+      /* Concatenation also uses the boxed seeded fold: an empty receiver
+         keeps the seed itself, including its Array kind or String handle. */
+      if (argc == 1 && blk < 0 && rt == TY_POLY_ARRAY &&
+          (a0 == TY_STRING || ty_is_array(fold_seed_infer_ty(c, argv[0]))))
+        { *out = TY_POLY; return 1; }
+      /* A boxed seed can have a different class from the block's values,
+         and an empty receiver returns it without any conversion. */
+      /* A String block seed can carry the same shared handle. */
+      if (blk >= 0) {
+        int body = nt_ref(nt, blk, "body");
+        int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+        TyKind et = bn > 0 ? infer_type(c, bb[bn - 1]) : TY_POLY;
+        TyKind st = argc == 1 ? fold_seed_infer_ty(c, argv[0]) : TY_INT;
+        /* A block whose value is nil accumulates BOXED: the sum is the init
+           (0) for an empty receiver and a TypeError for a non-empty one --
+           never nil. Typing it nil let the call constant-fold away, so
+           `[].sum {}` printed "nil" instead of 0 (#4006). */
+        /* A block value that has no `+` at all -- true, a Symbol -- can only
+           raise: CRuby answers TypeError from `0 + true`. The sum still folds,
+           boxed, so that the raise happens; typing the CALL as the block's kind
+           put the sp_RbVal accumulator in a Boolean slot and the C compiler
+           refused it (#4327). */
+        *out = fold_sum_type(st, et, g_promote_mode);
+        return 1;
+      }
       /* a float initial value promotes the whole sum to Float (e.g.
          ints.sum(0.0) or ints.sum(0.0) { |x| x }), regardless of the block. */
       if (argc == 1 && infer_type(c, argv[0]) == TY_FLOAT) { *out = TY_FLOAT; return 1; }
@@ -805,24 +855,7 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
             (sit == TY_UNKNOWN && nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "ArrayNode")))
           { *out = TY_POLY_ARRAY; return 1; }
       }
-      if (blk >= 0) {
-        int body = nt_ref(nt, blk, "body");
-        int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
-        TyKind st = bn > 0 ? infer_type(c, bb[bn - 1]) : ty_array_elem(rt);
-        /* A block whose value is nil accumulates BOXED: the sum is the init
-           (0) for an empty receiver and a TypeError for a non-empty one --
-           never nil. Typing it nil let the call constant-fold away, so
-           `[].sum {}` printed "nil" instead of 0 (#4006). */
-        if (st == TY_NIL || st == TY_VOID) st = TY_POLY;
-        /* A block value that has no `+` at all -- true, a Symbol -- can only
-           raise: CRuby answers TypeError from `0 + true`. The sum still folds,
-           boxed, so that the raise happens; typing the CALL as the block's kind
-           put the sp_RbVal accumulator in a Boolean slot and the C compiler
-           refused it (#4327). */
-        if (st == TY_BOOL || st == TY_SYMBOL) st = TY_POLY;
-        { *out = st; return 1; }
-      }
-      { *out = ty_array_elem(rt); return 1; }
+      { *out = fold_sum_type(TY_INT, ty_array_elem(rt), g_promote_mode); return 1; }
     }
     if (is_reduce_alias(name)) {
       /* inject(&:&|:||:-) over a literal array of int arrays: set operation

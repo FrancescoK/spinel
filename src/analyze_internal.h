@@ -116,6 +116,8 @@ int is_builtin_exception_name(const char *n);
 const char *superclass_builtin_exc_name(const NodeTable *nt, int sc);   /* analyze_util.c */
 int is_syserr_family_name(const char *n);           /* analyze_util.c */
 int builtin_method_known(const char *cls, const char *m);
+int builtin_cmethod_known(const char *cls, const char *name);
+int builtin_super_cmethod_known(const char *cls, const char *name);
 int builtin_method_names(const char *cls, const char **out, int cap);
 int builtin_name_arity_span(const char *name, int with_block, int *lo, int *hi);
 int builtin_kernel_fn_span(const char *name, int with_block, int *lo, int *hi);
@@ -378,6 +380,7 @@ int range_object_face(const char *name);  /* Object's face of a Float / String r
 int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out);
 int infer_object_call(Compiler *c, int id, TyKind rt, TyKind *out);
 int infer_arysub_call(Compiler *c, int id, TyKind *out);
+TyKind infer_op_assign_type(Compiler *c, TyKind lhs, int value);
 int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out);
 int infer_hash_call(Compiler *c, int id, TyKind rt, TyKind *out);
 /* bop_find for the call `id`, recording the row under --plan-check */
@@ -471,6 +474,7 @@ int desugar_singleton_class_define_method(Compiler *c);
 int desugar_define_method_proc_arg(Compiler *c);
 int method_body_next_to_return(NodeTable *nt, int id);
 int desugar_define_method_captures(Compiler *c);
+int desugar_body_local_scopes(Compiler *c);
 int desugar_define_method_keywords(Compiler *c);
 void desugar_extended_module_attrs(Compiler *c);
 int desugar_recursive_param_defaults(Compiler *c);
@@ -586,6 +590,7 @@ int backprop_call_target(Compiler *c, int call_id);
 int ivar_src_slot(Compiler *c, int v, const char **ivn);
 void cr_collect_calls(Compiler *c, const NodeTable *nt, int id, char ***out, int *n, int *cap);
 void compute_reachable(Compiler *c);
+void refuse_native_singleton_reopen(Compiler *c, Scope *s);
 void compute_instantiated(Compiler *c, int early);
 int aname_has(ANameSet *s, const char *nm);
 void aname_add(ANameSet *s, const char *nm);

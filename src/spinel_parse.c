@@ -3037,8 +3037,9 @@ static char *sp_rewrite_computed_requires(const char *source, const char *dir) {
    compiled, so the file is loaded eagerly. In the entry file the call becomes
    the require in place; in a required file it answers nil there, and the
    requires go at the end of the file -- after the module body the autoload
-   sits in, which the loaded file usually reopens. A receiver form
-   (`Mod.autoload`) or a computed path is left as it was. */
+   sits in, which the loaded file usually reopens. A path that starts with
+   `#{__dir__}/` is literal enough: it is a require_relative. A receiver
+   form (`Mod.autoload`) or any other computed path is left as it was. */
 static int sp_autoload_is_main = 0;
 /* the autoload's file beside the one naming it (lib/foo.rb autoloading
    "foo/bar" is lib/foo/bar.rb, the gem layout): reached without a load path */
@@ -3094,6 +3095,14 @@ static char *sp_rewrite_autoloads(const char *source, const char *dir) {
             while (*q == ' ' || *q == '\t') q++;
             if (*q == '"' || *q == '\'') {
               char qq = *q++;
+              /* `"#{__dir__}/path"` (the gem layout: lib/rdoc.rb autoloading
+                 "#{__dir__}/rdoc/x"): the one interpolation a path can carry
+                 and still name a file known at compile time. It is the
+                 requiring file's own directory, so the call is
+                 `require_relative "path"`. Any other `#{` is a computed path
+                 and leaves the call as it was. */
+              int dir_rel = 0;
+              if (qq == '"' && strncmp(q, "#{__dir__}/", 11) == 0) { q += 11; dir_rel = 1; }
               const char *fs = q;
               while (*q && *q != qq && *q != '\n' && *q != '#' ) q++;
               if (*q == qq) {
@@ -3102,7 +3111,7 @@ static char *sp_rewrite_autoloads(const char *source, const char *dir) {
                 while (*q == ' ' || *q == '\t') q++;
                 if (!paren || *q == ')') {
                   if (paren) q++;
-                  const char *kw = sp_autoload_beside(dir, fs, flen) ? "require_relative" : "require";
+                  const char *kw = (dir_rel || sp_autoload_beside(dir, fs, flen)) ? "require_relative" : "require";
                   if (sp_autoload_is_main) {
                     o += (size_t)sprintf(out + o, "%s \"%.*s\"", kw, (int)flen, fs);
                   }
@@ -3307,8 +3316,49 @@ static char *sp_rewrite_dead_requires(const char *source) {
   return result;
 }
 
+/* g_require_unread: may the program load a file this compiler did not read?
+   Such a file can define or reopen anything, so a pass that asks what the
+   program gives a class has to take the answer as unknown where this is set.
+   It stays clear only where the text proves there is no such file, read as
+   written (ahead of every rewrite below) in each file handed to
+   resolve_requires:
+     - none of $LOAD_PATH, $:, $-I, $LOADED_FEATURES, $" is written, so a
+       name is looked up where this compiler looks;
+     - nothing named load or autoload is written;
+     - every require and require_relative written was resolved: a file read,
+       one read before, or a feature the runtime provides. One left as a
+       raise or a warning, blanked as unreachable, or past where the scan
+       gave up counts as written and not resolved; one a rewrite made sets
+       the flag itself.
+   Text the class macros write (sp_expand_class_macros) is read once they
+   have, for the words that set the flag: the parts a macro joins need not
+   spell one. The flag is final when the parser returns.
+   The words are counted, not parsed, and no character of the text is passed
+   over: one in a string or in a comment sets the flag, and all that gives up
+   is an optimisation. Declared extern in compiler.h. */
+int g_require_unread = 0;
+static int sp_req_written = 0, sp_req_resolved = 0;
+
+static int sp_req_word_at(const char *p, const char *w, size_t n) {
+  return strncmp(p, w, n) == 0 && !sp_req_ident_char(p[n]);
+}
+
+static void sp_require_note_text(const char *text) {
+  for (const char *p = text; *p; p++) {
+    if (*p == '$') {
+      if (p[1] == ':' || p[1] == '"' || strncmp(p + 1, "-I", 2) == 0 || strncmp(p + 1, "LOAD_PATH", 9) == 0 ||
+          strncmp(p + 1, "LOADED_FEATURES", 15) == 0) g_require_unread = 1;
+      continue;
+    }
+    if ((*p != 'r' && *p != 'l' && *p != 'a') || (p > text && sp_req_ident_char(p[-1]))) continue;
+    if (sp_req_word_at(p, "require", 7) || sp_req_word_at(p, "require_relative", 16)) sp_req_written++;
+    else if (sp_req_word_at(p, "load", 4) || sp_req_word_at(p, "autoload", 8)) g_require_unread = 1;
+  }
+}
+
 static char *resolve_requires(const char *source, const char *source_path,
                               unsigned char **fsl_out, size_t *fsl_n_out) {
+  sp_require_note_text(source);
   /* Get base directory */
   char *path_copy = strdup(source_path);
   char *dir = strdup(path_copy);
@@ -3322,8 +3372,9 @@ static char *resolve_requires(const char *source, const char *source_path,
      a literal path (#5696): each answers a fresh copy of what it reads */
   char *reachable = sp_rewrite_dead_requires(source);
   char *pre_auto = sp_rewrite_computed_requires(reachable, dir);
-  free(reachable);
   char *result = sp_rewrite_autoloads(pre_auto, dir);
+  if (strcmp(reachable, result) != 0) g_require_unread = 1;   /* a require the two made */
+  free(reachable);
   free(pre_auto);
   sp_autoload_is_main = 0;
   /* One pragma flag per line of `result`, kept in lockstep with every text
@@ -3383,6 +3434,7 @@ static char *resolve_requires(const char *source, const char *source_path,
       cfsl = sp_fsl_make(content, 0, &cfsl_n);
       free(canonical);
       req_val = "false";
+      sp_req_resolved++;
     }
 else {
       sp_mark_path_included(canonical);
@@ -3404,6 +3456,7 @@ else {
         char *resolved = resolve_requires(content, full_path, &cfsl, &cfsl_n);
         free(content);
         content = resolved;
+        sp_req_resolved++;
       }
       free(canonical);
     }
@@ -3711,6 +3764,7 @@ static char *sp_prepend_require(char *source, const char *exe_path, const char *
   char *ns = (char *)malloc(sl + hl + 1);
   if (!ns) return source;
   memcpy(ns, head, hl); memcpy(ns + hl, source, sl + 1);
+  sp_require_note_text(head);
   sp_src_lex_drop();
   free(source);
   ns = resolve_plain_requires(ns, exe_path, fsl, fsl_n);
@@ -4039,6 +4093,7 @@ static char *resolve_plain_requires(char *source, const char *exe_path,
       content = strdup("# require skipped (already included)");
       free(canonical);
       req_val = "false";
+      sp_req_resolved++;
     }
 else {
       sp_mark_path_included(canonical);
@@ -4170,6 +4225,7 @@ else {
           sp_feature_mark(lib_name);
           content = strdup("# require provided by Spinel runtime");
           req_val = "false";   /* already there: nothing was loaded */
+          sp_req_resolved++;
         }
 else if (sp_require_tolerated(lib_name)) {
           /* A core capability Spinel provides without a file (Thread,
@@ -4177,6 +4233,7 @@ else if (sp_require_tolerated(lib_name)) {
              no-op, like modern CRuby -- gate or no gate. */
           content = strdup("# require no-op (core feature)");
           req_val = "false";   /* already there: nothing was loaded */
+          sp_req_resolved++;
         }
 else if (g_require_gate) {
           /* Whole-program AOT: an unsatisfiable require can never be provided, so
@@ -4202,6 +4259,7 @@ else {
         char *resolved = resolve_requires(content, lib_path, &cfsl, &cfsl_n);
         free(content);
         content = resolved;
+        sp_req_resolved++;
       }
     }
     /* Stub arms above leave cfsl NULL: their content is a one-line comment. */
@@ -5201,11 +5259,20 @@ static int sp_parse_emit(const char *source_file, const char *argv0, SpStrBuf *o
   source = sp_splice_builtin_extras(source, argv0, &fsl, &fsl_n);
   source = sp_splice_builtin_enumerator(source, argv0, &fsl, &fsl_n);
   sp_src_lex_drop();
+  if (sp_req_written != sp_req_resolved) g_require_unread = 1;
 
   /* class-body macro calls (module_eval'd templates, computed
      attach_function / const_set names) expanded in place; line count kept */
   { char *mx = sp_expand_class_macros(source);
-    if (mx) { free(source); source = mx; } }
+    if (mx) {
+      /* what a macro wrote was in no file's text. A require it wrote is a
+         call in the node table, where the analyzer finds it; a load-path
+         statement is dropped ahead of the table, so g_require_unread reads
+         the text here, past the count (the resolver's own stubs hold the
+         word require) */
+      sp_require_note_text(mx);
+      free(source); source = mx;
+    } }
 
   /* Debug: build the buffer-line -> (file, original line) map from the
      marker-annotated buffer *before* syntax-sugar rewriting (which could

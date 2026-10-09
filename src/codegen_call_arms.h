@@ -258,10 +258,14 @@ void emit_int_recv_named(Compiler *c, int recv, const char *name, Buf *b);
 void emit_upto_recv(Compiler *c, int recv, int lim, Buf *b);
 int emit_implicit_self_member(Compiler *c, int id, Buf *b);
 int emit_reopen_own_call(Compiler *c, int id, int dispatch_cid, Buf *b);
-void emit_reopen_recv_args(Compiler *c, int id, int mi, int recv, int boxed, const char *box_fn, Buf *b);
+int emit_reopen_recv_args(Compiler *c, int id, int mi, int recv, int boxed, const char *box_fn, size_t at, Buf *b);
+int emit_reopen_recv_in_order(Compiler *c, int id, int mi, int recv, int boxed, const char *box_fn, size_t at, Buf *b);
 void emit_reopen_self_arg(Compiler *c, int id, int mi, Buf *b);
+int str_fresh_value(Compiler *c, int n);
 int implicit_self_plan_mi(Compiler *c, int id, int dispatch_cid);
 
 int emit_send_blind(Compiler *c, int id, Buf *b);
+
+int emit_call_const_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv);
 
 #endif

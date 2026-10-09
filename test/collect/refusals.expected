@@ -28,14 +28,10 @@ spinel: 1 refusal, nothing written
 == test/reject/attr_assign_value_shared_string.rb [promote] rc=1
 spinel: test/reject/attr_assign_value_shared_string.rb:6: an attribute assignment in value position (kept, passed on, or a method's last expression, which the method answers) stores into an instance variable that is mutated in place through another name, and its value would be a copy (a String is not yet shared by reference through an assignment's value). Make the assignment a statement of its own, or read the String back through the reader.
 spinel: 1 refusal, nothing written
-== test/reject/bare_const_compact_class_path.rb [default] rc=1
-spinel: test/reject/bare_const_compact_class_path.rb:7: uninitialized constant A::B::LIMIT (NameError): the program defines it only as A::LIMIT, which CRuby's lookup from A::B (its lexical scope, then its ancestors) does not reach
-== test/reject/bare_const_compact_class_path.rb [promote] rc=1
-spinel: test/reject/bare_const_compact_class_path.rb:7: uninitialized constant A::B::LIMIT (NameError): the program defines it only as A::LIMIT, which CRuby's lookup from A::B (its lexical scope, then its ancestors) does not reach
-== test/reject/bare_const_nested_unreachable.rb [default] rc=1
-spinel: test/reject/bare_const_nested_unreachable.rb:7: uninitialized constant X (NameError): the program defines it only as A::X, which CRuby's lookup from the top level does not reach
-== test/reject/bare_const_nested_unreachable.rb [promote] rc=1
-spinel: test/reject/bare_const_nested_unreachable.rb:7: uninitialized constant X (NameError): the program defines it only as A::X, which CRuby's lookup from the top level does not reach
+== test/reject/bare_const_unreachable_const_missing.rb [default] rc=1
+spinel: test/reject/bare_const_unreachable_const_missing.rb:9: uninitialized constant B::X (NameError): the program defines it only as A::X, which CRuby's lookup from B (its lexical scope, then its ancestors) does not reach; CRuby then calls const_missing (or raises NameError), which spinel does not follow here
+== test/reject/bare_const_unreachable_const_missing.rb [promote] rc=1
+spinel: test/reject/bare_const_unreachable_const_missing.rb:9: uninitialized constant B::X (NameError): the program defines it only as A::X, which CRuby's lookup from B (its lexical scope, then its ancestors) does not reach; CRuby then calls const_missing (or raises NameError), which spinel does not follow here
 == test/reject/basicobject_toplevel_include_call.rb [default] rc=1
 spinel: test/reject/basicobject_toplevel_include_call.rb:18: unsupported call: node N (CallNode `hello`) recv=-/ty-1 argc=0
 spinel: 1 refusal, nothing written
@@ -53,6 +49,60 @@ spinel: test/reject/builtin_ivar_string_write.rb:7: an instance variable set on 
 spinel: 1 refusal, nothing written
 == test/reject/builtin_ivar_string_write.rb [promote] rc=1
 spinel: test/reject/builtin_ivar_string_write.rb:7: an instance variable set on a String (`@x = v` in a String method, or instance_variable_set): a String is copied, not shared, so it keeps no identity for the variable yet (waits on #6765); see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/builtin_singleton_alias_call.rb [default] rc=1
+spinel: test/reject/builtin_singleton_alias_call.rb:8: File.basename: calling an alias of a builtin singleton method is not supported; see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/builtin_singleton_alias_call.rb [promote] rc=1
+spinel: test/reject/builtin_singleton_alias_call.rb:8: File.basename: calling an alias of a builtin singleton method is not supported; see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/builtin_singleton_alias_chain.rb [default] rc=1
+spinel: test/reject/builtin_singleton_alias_chain.rb:7: Time.at: rebinding a builtin singleton method captured by an alias is not supported; see docs/limitations.md
+== test/reject/builtin_singleton_alias_chain.rb [promote] rc=1
+spinel: test/reject/builtin_singleton_alias_chain.rb:7: Time.at: rebinding a builtin singleton method captured by an alias is not supported; see docs/limitations.md
+== test/reject/builtin_singleton_alias_method_redefine.rb [default] rc=1
+spinel: test/reject/builtin_singleton_alias_method_redefine.rb:4: File.basename: alias of a builtin singleton method that is later overridden is not supported; see docs/limitations.md
+== test/reject/builtin_singleton_alias_method_redefine.rb [promote] rc=1
+spinel: test/reject/builtin_singleton_alias_method_redefine.rb:4: File.basename: alias of a builtin singleton method that is later overridden is not supported; see docs/limitations.md
+== test/reject/builtin_singleton_alias_redefine.rb [default] rc=1
+spinel: test/reject/builtin_singleton_alias_redefine.rb:5: File.basename: alias of a builtin singleton method that is later overridden is not supported; see docs/limitations.md
+== test/reject/builtin_singleton_alias_redefine.rb [promote] rc=1
+spinel: test/reject/builtin_singleton_alias_redefine.rb:5: File.basename: alias of a builtin singleton method that is later overridden is not supported; see docs/limitations.md
+== test/reject/builtin_singleton_kernel_alias.rb [default] rc=1
+spinel: test/reject/builtin_singleton_kernel_alias.rb:5: Kernel.sleep: alias of a builtin singleton method that is later overridden is not supported; see docs/limitations.md
+== test/reject/builtin_singleton_kernel_alias.rb [promote] rc=1
+spinel: test/reject/builtin_singleton_kernel_alias.rb:5: Kernel.sleep: alias of a builtin singleton method that is later overridden is not supported; see docs/limitations.md
+== test/reject/builtin_singleton_kernel_super.rb [default] rc=1
+spinel: test/reject/builtin_singleton_kernel_super.rb:4: Kernel.puts: super to an inherited builtin singleton method is not supported; see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/builtin_singleton_kernel_super.rb [promote] rc=1
+spinel: test/reject/builtin_singleton_kernel_super.rb:4: Kernel.puts: super to an inherited builtin singleton method is not supported; see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/builtin_singleton_native_class_reopen.rb [default] rc=1
+spinel: test/reject/builtin_singleton_native_class_reopen.rb:4: reopening the builtin class ConditionVariable is not supported
+== test/reject/builtin_singleton_native_class_reopen.rb [promote] rc=1
+spinel: test/reject/builtin_singleton_native_class_reopen.rb:4: reopening the builtin class ConditionVariable is not supported
+== test/reject/builtin_singleton_native_reopen.rb [default] rc=1
+spinel: test/reject/builtin_singleton_native_reopen.rb:3: reopening the builtin class Queue is not supported
+== test/reject/builtin_singleton_native_reopen.rb [promote] rc=1
+spinel: test/reject/builtin_singleton_native_reopen.rb:3: reopening the builtin class Queue is not supported
+== test/reject/builtin_singleton_super.rb [default] rc=1
+spinel: test/reject/builtin_singleton_super.rb:5: File.read: super to an inherited builtin singleton method is not supported; see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/builtin_singleton_super.rb [promote] rc=1
+spinel: test/reject/builtin_singleton_super.rb:5: File.read: super to an inherited builtin singleton method is not supported; see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/builtin_singleton_super_forward.rb [default] rc=1
+spinel: test/reject/builtin_singleton_super_forward.rb:5: File.open: super to an inherited builtin singleton method is not supported; see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/builtin_singleton_super_forward.rb [promote] rc=1
+spinel: test/reject/builtin_singleton_super_forward.rb:5: File.open: super to an inherited builtin singleton method is not supported; see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/builtin_singleton_super_new.rb [default] rc=1
+spinel: test/reject/builtin_singleton_super_new.rb:4: File.new: super to an inherited builtin singleton method is not supported; see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/builtin_singleton_super_new.rb [promote] rc=1
+spinel: test/reject/builtin_singleton_super_new.rb:4: File.new: super to an inherited builtin singleton method is not supported; see docs/limitations.md
 spinel: 1 refusal, nothing written
 == test/reject/builtin_value_ivar_set.rb [default] rc=1
 spinel: test/reject/builtin_value_ivar_set.rb:6: an instance variable set on a String (`@x = v` in a String method, or instance_variable_set): a String is copied, not shared, so it keeps no identity for the variable yet (waits on #6765); see docs/limitations.md
@@ -1078,6 +1128,14 @@ spinel: test/reject/string_nested_masgn_deep.rb:4: a nested multiple-assignment 
 spinel: test/reject/string_nested_masgn_target.rb:4: a nested multiple-assignment target appends to a String variable from an Array literal (a String is not yet shared by reference through a nested multiple-assignment target). Append to the source String instead.
 == test/reject/string_nested_masgn_target.rb [promote] rc=1
 spinel: test/reject/string_nested_masgn_target.rb:4: a nested multiple-assignment target appends to a String variable from an Array literal (a String is not yet shared by reference through a nested multiple-assignment target). Append to the source String instead.
+== test/reject/string_plain_mutator_result_mutation.rb [default] rc=1
+spinel: test/reject/string_plain_mutator_result_mutation.rb:6: the result of `bytesplice`, `append_as_bytes`, or `concat` or `prepend` with other than one argument, which is its receiver, is mutated in place (a String is not yet shared by reference through such a result). Mutate the receiver instead.
+== test/reject/string_plain_mutator_result_mutation.rb [promote] rc=1
+spinel: test/reject/string_plain_mutator_result_mutation.rb:6: the result of `bytesplice`, `append_as_bytes`, or `concat` or `prepend` with other than one argument, which is its receiver, is mutated in place (a String is not yet shared by reference through such a result). Mutate the receiver instead.
+== test/reject/string_plain_mutator_result_toplevel_ivar.rb [default] rc=1
+spinel: test/reject/string_plain_mutator_result_toplevel_ivar.rb:6: the result of `bytesplice`, `append_as_bytes`, or `concat` or `prepend` with other than one argument, which is its receiver, is mutated in place (a String is not yet shared by reference through such a result). Mutate the receiver instead.
+== test/reject/string_plain_mutator_result_toplevel_ivar.rb [promote] rc=1
+spinel: test/reject/string_plain_mutator_result_toplevel_ivar.rb:6: the result of `bytesplice`, `append_as_bytes`, or `concat` or `prepend` with other than one argument, which is its receiver, is mutated in place (a String is not yet shared by reference through such a result). Mutate the receiver instead.
 == test/reject/string_proc_param_store.rb [default] rc=1
 spinel: test/reject/string_proc_param_store.rb:5: a String held by a block parameter no element iterator binds (a proc's, a lambda's, a yielding method's block, `each_char`'s) is stored into a container and mutated in place through it (a String is not yet shared by reference through a stored block parameter). Mutate the String before storing it, or store it where the caller holds it.
 == test/reject/string_proc_param_store.rb [promote] rc=1
@@ -1100,6 +1158,14 @@ spinel: 1 refusal, nothing written
 == test/reject/string_rest_splat_yield.rb [promote] rc=1
 spinel: test/reject/string_rest_splat_yield.rb:7: a String is passed to a block's parameter `b` through a splat into a yield, which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference through a splat into a yield). Return the String from the proc and assign it, or append to it in the caller.
 spinel: 1 refusal, nothing written
+== test/reject/string_returned_arg_plain_mutator.rb [default] rc=1
+spinel: test/reject/string_returned_arg_plain_mutator.rb:7: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
+== test/reject/string_returned_arg_plain_mutator.rb [promote] rc=1
+spinel: test/reject/string_returned_arg_plain_mutator.rb:7: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
+== test/reject/string_returned_arg_plain_mutator_caller.rb [default] rc=1
+spinel: test/reject/string_returned_arg_plain_mutator_caller.rb:7: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
+== test/reject/string_returned_arg_plain_mutator_caller.rb [promote] rc=1
+spinel: test/reject/string_returned_arg_plain_mutator_caller.rb:7: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
 == test/reject/string_returned_arg_second.rb [default] rc=1
 spinel: test/reject/string_returned_arg_second.rb:7: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
 == test/reject/string_returned_arg_second.rb [promote] rc=1
@@ -1108,6 +1174,18 @@ spinel: test/reject/string_returned_arg_second.rb:7: a String a method returns a
 spinel: test/reject/string_returned_arg_second_append.rb:6: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
 == test/reject/string_returned_arg_second_append.rb [promote] rc=1
 spinel: test/reject/string_returned_arg_second_append.rb:6: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
+== test/reject/string_returned_arg_stored.rb [default] rc=1
+spinel: test/reject/string_returned_arg_stored.rb:7: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
+== test/reject/string_returned_arg_stored.rb [promote] rc=1
+spinel: test/reject/string_returned_arg_stored.rb:7: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
+== test/reject/string_returned_arg_stored_element.rb [default] rc=1
+spinel: test/reject/string_returned_arg_stored_element.rb:6: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
+== test/reject/string_returned_arg_stored_element.rb [promote] rc=1
+spinel: test/reject/string_returned_arg_stored_element.rb:6: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
+== test/reject/string_returned_arg_stored_literal.rb [default] rc=1
+spinel: test/reject/string_returned_arg_stored_literal.rb:5: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
+== test/reject/string_returned_arg_stored_literal.rb [promote] rc=1
+spinel: test/reject/string_returned_arg_stored_literal.rb:5: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
 == test/reject/string_scan_block_kept_mutation.rb [default] rc=1
 spinel: test/reject/string_scan_block_kept_mutation.rb:5: a match `scan` hands its block is kept and mutated in place (a String is not yet shared by reference through `scan`'s block parameter). Mutate a copy (`m = +m.dup`) and keep that.
 == test/reject/string_scan_block_kept_mutation.rb [promote] rc=1

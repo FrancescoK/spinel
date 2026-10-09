@@ -1,5 +1,6 @@
 #include "compiler.h"
 #include "share.h"
+#include "repr.h"
 #include "analyze.h"
 #include "builtin_names.h"
 
@@ -256,6 +257,7 @@ void comp_grow_node_arrays(Compiler *c) {
 void comp_free(Compiler *c) {
   if (!c) return;
   share_facts_free(c);
+  if (g_repr_check) repr_channel_free(c);
   share_routes_free(c);
   free(c->byref_elig);
   c->byref_elig = NULL;
@@ -263,8 +265,9 @@ void comp_free(Compiler *c) {
   pivs_facts_free(c);
   strbuf_arg_index_free(c);
   free(c->vs_head); free(c->vs_site); free(c->vs_var); free(c->vs_next); free(c->vs_kind);
-  free(c->vs_rparent); free(c->vs_dropped);
+  free(c->vs_rparent); free(c->vs_dropped); free(c->vs_whead); free(c->vs_wnext);
   c->vs_head = c->vs_site = c->vs_var = c->vs_next = c->vs_rparent = NULL;
+  c->vs_whead = c->vs_wnext = NULL;
   c->vs_dropped = c->vs_kind = NULL;
   c->vs_count = c->vs_cap = 0;
   c->vs_built = 0;
@@ -559,6 +562,7 @@ ClassInfo *comp_class_new(Compiler *c, const char *name, int def_node) {
   ci->ctor_reachable = 1;   /* conservatively, until compute_instantiated's early pass has looked */
   ci->name = name ? strdup(name) : NULL;
   ci->c_name = sp_class_c_name(name);
+  ci->is_builtin_const = is_builtin_class_name(name) || is_builtin_module_const_name(name);
   ci->def_node = def_node;
   ci->parent = -1;
   ci->enclosing_class = -1;
@@ -1659,7 +1663,7 @@ const char *comp_resolve_alias_ex(Compiler *c, int class_id, const char *name, i
           lim_cls = cid; lim = i;
           /* it captured a primitive's builtin: that is where it ends */
           if (ci->alias_builtin && ci->alias_builtin[i]) {
-            if (builtin) *builtin = 1;
+            if (builtin) *builtin = ci->alias_builtin[i];
             return next;
           }
           break;
@@ -2432,11 +2436,13 @@ static void vsite_build(Compiler *c, int toplevel) {
   int nb = 16;
   while (nb < n && nb < (1 << 22)) nb <<= 1;
   size_t sz = (size_t)(n > 0 ? n : 1);
-  free(c->vs_head); free(c->vs_rparent); free(c->vs_dropped);
+  free(c->vs_head); free(c->vs_rparent); free(c->vs_dropped); free(c->vs_whead); free(c->vs_wnext);
   c->vs_head = malloc(sizeof(int) * (size_t)nb);
   c->vs_rparent = malloc(sz * sizeof(int));
   c->vs_dropped = calloc(sz, 1);
-  if (!c->vs_head || !c->vs_rparent || !c->vs_dropped) {
+  c->vs_whead = malloc(sz * sizeof(int));
+  c->vs_wnext = malloc(sz * sizeof(int));
+  if (!c->vs_head || !c->vs_rparent || !c->vs_dropped || !c->vs_whead || !c->vs_wnext) {
     fprintf(stderr, "spinel: out of memory\n");
     exit(1);
   }
@@ -2444,12 +2450,16 @@ static void vsite_build(Compiler *c, int toplevel) {
   c->vs_count = 0;
   c->vs_nodes = n;
   for (int b = 0; b < nb; b++) c->vs_head[b] = -1;
-  for (int i = 0; i < n; i++) c->vs_rparent[i] = -1;
+  for (int i = 0; i < n; i++) c->vs_rparent[i] = c->vs_whead[i] = c->vs_wnext[i] = -1;
   for (int u = n - 1; u >= 0; u--) {   /* reverse: chains run in node order */
     NodeKind k = nt_kind(nt, u);
     /* every store into a variable, its `||=` and `&&=` and a class
        variable's included (VS_STORE) */
     if (vsite_is_store(k)) vsite_add(c, VS_STORE, u, u);
+    if (k == NK_LocalVariableWriteNode) {
+      int v = nt_ref(nt, u, "value");
+      if (v >= 0 && v < n) { c->vs_wnext[u] = c->vs_whead[v]; c->vs_whead[v] = u; }
+    }
     if (vsite_is_read(nt, u)) vsite_add(c, VS_READ, u, u);
     else if (k == NK_LocalVariableWriteNode || k == NK_InstanceVariableWriteNode || k == NK_GlobalVariableWriteNode)
       vsite_add(c, VS_WRITE, u, u);
@@ -2510,6 +2520,13 @@ int comp_recv_parent(Compiler *c, int n) {
   vsite_sync(c);
   n = an_unparen(c->nt, n);
   return n >= 0 && n < c->vs_nodes ? c->vs_rparent[n] : -1;
+}
+int comp_lwrite_of_value(Compiler *c, int n) {
+  vsite_sync(c);
+  return n >= 0 && n < c->vs_nodes ? c->vs_whead[n] : -1;
+}
+int comp_lwrite_next(const Compiler *c, int w) {
+  return w >= 0 && w < c->vs_nodes ? c->vs_wnext[w] : -1;
 }
 int comp_value_dropped(Compiler *c, int n) {
   vsite_sync(c);

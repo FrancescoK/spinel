@@ -941,6 +941,17 @@ int emit_op_array_sum0(Compiler *c, const BopCtx *x, Buf *b) {
     }
     return 0;
   }
+  if (rt == TY_FLOAT_ARRAY) {
+    int t = ++g_tmp;
+    buf_printf(b, "({ sp_FloatArray *_t%d = ", t);
+    emit_nil_ck_recv(c, recv, rt, "sum", 0, b);
+    buf_printf(b, "; _t%d->len == 0 ? sp_box_int(0) : sp_box_float(sp_FloatArray_sum(_t%d, 0.0)); })", t, t);
+    return 1;
+  }
+  if (rt == TY_INT_ARRAY && g_promote_mode) {
+    buf_puts(b, "sp_IntArray_sum_promote("); emit_nil_ck_recv(c, recv, rt, "sum", 0, b); buf_puts(b, ", 0)");
+    return 1;
+  }
   /* A blockless SEEDLESS sum over Strings adds each element to the implied
      Integer 0, which CRuby rejects with "String can't be coerced into
      Integer". There is no sp_StrArray_sum, so the generic arms emitted a
@@ -1457,14 +1468,12 @@ int emit_op_array_sum1(Compiler *c, const BopCtx *x, Buf *b) {
     TyKind init_t = comp_ntype(c, argv[0]);
     /* an Array initial value concatenates one level ([[1],[2]].sum([])) */
     if (ty_is_array(init_t)) {
-      buf_puts(b, "sp_PolyArray_sum_concat("); emit_expr(c, recv, b); buf_puts(b, ", ");
-      emit_boxed(c, argv[0], b); buf_puts(b, ")");
+      emit_poly_sum_seed(c, recv, argv[0], b);
       return 1;
     }
     /* a String initial value folds by concatenation ([str].sum("")) */
     if (init_t == TY_STRING) {
-      buf_puts(b, "sp_PolyArray_sum_str("); emit_expr(c, recv, b); buf_puts(b, ", ");
-      emit_expr(c, argv[0], b); buf_puts(b, ")");
+      emit_poly_sum_seed(c, recv, argv[0], b);
       return 1;
     }
     /* a Float initial value folds to a Float (bare sp_float, not boxed),
@@ -1482,11 +1491,10 @@ int emit_op_array_sum1(Compiler *c, const BopCtx *x, Buf *b) {
     }
     /* an Integer (or poly) seed folds via sp_poly_add so Float/Rational/
        Bignum elements promote the result instead of being dropped by the
-       int-only sum (matches the no-arg poly fold above) (#2959) */
-    buf_puts(b, "sp_poly_add(");
-    if (init_t == TY_POLY) emit_expr(c, argv[0], b);
-    else emit_boxed(c, argv[0], b);
-    buf_puts(b, ", sp_PolyArray_sum_poly("); emit_expr(c, recv, b); buf_puts(b, "))");
+       int-only sum (matches the no-arg poly fold above) (#2959).
+       The seed starts that fold: an empty array returns it untouched, and
+       every element is added to the running total in order. */
+    emit_poly_sum_seed(c, recv, argv[0], b);
     return 1;
   }
   return 0;
@@ -1940,7 +1948,7 @@ int emit_call_store_value_arms(Compiler *c, Buf *b, const NodeTable *nt, const c
           buf_printf(b, "%s _t%d = ", c_type_name(rt), tr); emit_expr(c, recv, b); buf_puts(b, "; ");
           if (subtree_may_allocate(c->nt, recv) || subtree_has_side_effect(c, argv[0]) || subtree_has_side_effect(c, argv[1])) { emit_gc_root_tmp(c, rt, tr, b); buf_puts(b, " "); }
           buf_printf(b, "%s _t%d = ", c_type_name(kt), tk); emit_hash_store_key(c, argv[0], rt, b); buf_puts(b, "; ");
-          if (subtree_may_allocate(c->nt, argv[0]) && needs_root(kt)) { emit_gc_root_tmp(c, kt, tk, b); buf_puts(b, " "); }
+          if (operand_may_allocate(c, argv[0]) && needs_root(kt)) { emit_gc_root_tmp(c, kt, tk, b); buf_puts(b, " "); }
         }
         /* For poly hashes with scalar values, store the scalar and box it for the hash call.
            A nil/void rhs (`return @cache[k] = nil`) has no C storage type --
@@ -1965,6 +1973,11 @@ int emit_call_store_value_arms(Compiler *c, Buf *b, const NodeTable *nt, const c
         else if (coerce_unknown_val) emit_unresolved_coerced(c, argv[1], hvt, b);
         else if (decl_type == TY_POLY) emit_boxed(c, argv[1], b);
         else emit_expr(c, argv[1], b);
+        /* a key that is a shared String slot's read is a fresh copy, read
+           in the set after the value: the value is held across it */
+        if (tk < 0 && strbuf_read_copies(c, argv[0]) && operand_may_allocate(c, argv[1])) {
+          buf_puts(b, "; "); emit_gc_root_tmp(c, decl_type, tv, b);
+        }
         buf_puts(b, "; if (sp_gc_is_frozen("); emit_node_or_tmp(c, recv, tr, b);
         buf_puts(b, ")) sp_raise_frozen_hash_at("); emit_node_or_tmp(c, recv, tr, b); buf_printf(b, ", %s); ", hash_box_cls(rt));
         buf_printf(b, "sp_%sHash_set(", hn); emit_node_or_tmp(c, recv, tr, b); buf_puts(b, ", ");

@@ -85,6 +85,11 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
   int nwp = 0, ndyn_or_scalar = 0;
   Buf lits; memset(&lits, 0, sizeof lits);
   Buf decls; memset(&decls, 0, sizeof decls);
+  /* a part that is a shared String slot's read is a fresh copy of its
+     bytes; CRuby interpolates the String as it is when the whole string
+     is built, so beside a later part that runs code (`"#{a}#{a << "x"}"`)
+     the copy is read after every part, here */
+  Buf late; memset(&late, 0, sizeof late);
   long fixed_cap = 0;
 
   for (int k = 0; k < n; k++) {
@@ -343,7 +348,7 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
         EMIT_IV(); buf_puts(&conv, ")");
       }
       else {
-        free(conv.p); free(lits.p); free(decls.p); free(wp); free(flat);
+        free(conv.p); free(lits.p); free(decls.p); free(late.p); free(wp); free(flat);
         unsupported(c, pid, "interpolation value");
       }
       iv_done:
@@ -379,7 +384,11 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
         tv2 = -1;
       }
       else {
-        buf_printf(&decls, "const char *_t%d = %s; SP_GC_ROOT(_t%d); size_t _l%d = sp_str_byte_len(_t%d); ",
+        int defer = 0;
+        if (bn == 1 && t == TY_STRING && !vexpr[0] && strbuf_read_copies(c, expr))
+          for (int k2 = k + 1; k2 < n && !defer; k2++)
+            defer = nt_kind(nt, parts[k2]) == NK_EmbeddedStatementsNode && subtree_has_side_effect(c, parts[k2]);
+        buf_printf(defer ? &late : &decls, "const char *_t%d = %s; SP_GC_ROOT(_t%d); size_t _l%d = sp_str_byte_len(_t%d); ",
                    tv2, conv.p ? conv.p : "sp_str_empty", tv2, tv2, tv2);
       }
       free(conv.p);
@@ -390,10 +399,12 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
       ndyn_or_scalar++;
     }
     else {
-      free(lits.p); free(decls.p); free(wp); free(flat);
+      free(lits.p); free(decls.p); free(late.p); free(wp); free(flat);
       unsupported(c, pid, "interpolation part");
     }
   }
+  if (late.p) buf_puts(&decls, late.p);
+  free(late.p);
   pl->wp = wp; pl->nwp = nwp; pl->ndyn_or_scalar = ndyn_or_scalar;
   pl->lits = lits; pl->decls = decls; pl->fixed_cap = fixed_cap; pl->flat = flat;
 }
@@ -1413,6 +1424,7 @@ void emit_expr(Compiler *c, int id, Buf *b) {
     return;
   }
   if (g_repr_check) repr_check_ask(c, id);
+  int frame = g_repr_check ? repr_channel_begin(c, id) : -1;
   g_expr_depth++;
   /* an Array subclass instance read where an Array is wanted -- a splat, a
      destructuring, a `for` collection, an element write that is no call --
@@ -1425,6 +1437,7 @@ void emit_expr(Compiler *c, int id, Buf *b) {
   }
   else emit_expr_node(c, id, b);
   g_expr_depth--;
+  if (g_repr_check) repr_channel_end(c, frame);
 }
 
 /* `_tN = v` inside the guard of an `a[i] ||= v` / `&&= v` value, with v's
@@ -1591,12 +1604,14 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
       /* A container-store / equal?-arg read of a shared-mutable string yields
          the live HANDLE, not a copy (#3227 phase 3). */
       if (rp.handle) {
+        if (g_repr_check) repr_channel_note(c, id, RCH_HANDLE);
         emit_local_ref(c, id, lrn, b);
         return 1;
       }
       /* a parameter that only reads the bytes for the length of the call
          takes the live buffer: the copy below is O(len) per call (#7482) */
       if (rp.read_raw && decide_node(c->nt, id, "strbuf-raw", NULL)) {
+        if (g_repr_check) repr_channel_note(c, id, RCH_BYTES);
         buf_puts(b, "(");
         emit_local_ref(c, id, lrn, b);
         buf_puts(b, " ? sp_String_cstr(");
@@ -1617,6 +1632,7 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
          `q = nil; q = +"x" if c`), and keeps a frozen handle's mark on the
          copy it answers. */
       buf_puts(b, "sp_strbuf_read_pub(");
+      if (g_repr_check) repr_channel_note(c, id, RCH_PUBLISH);
       emit_local_ref(c, id, lrn, b);
       buf_puts(b, ")");
       return 1;
@@ -1673,6 +1689,7 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
       /* a nil write leaves the handle NULL: the value is nil, not a read
          through it (CodeRabbit on #4990) */
       buf_puts(b, " sp_strbuf_read_pub(");
+      if (g_repr_check) repr_channel_note(c, id, RCH_PUBLISH);
       emit_local_ref(c, id, nm, b);
       buf_puts(b, "); })");
       return 1;
@@ -1755,6 +1772,7 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
     if (olv && repr_of_slot(c, olv).handle && repr_of_slot(c, olv).kind == RK_STRBUF &&
         !(repr_of(c, id).handle && repr_write_share(c, id))) {
       buf_puts(b, "sp_strbuf_read_pub(");
+      if (g_repr_check) repr_channel_note(c, id, RCH_PUBLISH);
       emit_local_ref(c, id, nm, b);
       buf_puts(b, ")");
     }
@@ -1867,10 +1885,14 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
       /* under the handle mark, the handle itself, as the local's twin; and
          where the write is typed as the handle (a value a handle is asked
          of, as #3993's box asks it), whose read face did not build */
-      if ((repr_of(c, id).handle && repr_write_share(c, id)) || repr_of(c, id).ty == TY_STRBUF)
+      if ((repr_of(c, id).handle && repr_write_share(c, id)) || repr_of(c, id).ty == TY_STRBUF) {
         buf_printf(b, "; %s; })", ref2e);
-      else
+        if (g_repr_check) repr_channel_note(c, id, RCH_HANDLE);
+      }
+      else {
         buf_printf(b, "; sp_strbuf_read_pub(%s); })", ref2e);
+        if (g_repr_check) repr_channel_note(c, id, RCH_PUBLISH);
+      }
       return 1;
     }
     else if (ivt2 == TY_POLY && rp.kind != RK_BOXED) emit_boxed(c, v, b);
@@ -2038,12 +2060,20 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
    a marked read yields the live HANDLE, an ordinary read a GC copy of the
    current contents (NULL stays nil) (#3227). */
 static void emit_strbuf_slot_read(Compiler *c, int id, Repr rp, const char *sref, Buf *b) {
-  if (rp.handle) buf_printf(b, "%s", sref);
+  if (rp.handle) {
+    buf_printf(b, "%s", sref);
+    if (g_repr_check) repr_channel_note(c, id, RCH_HANDLE);
+  }
   /* a parameter that only reads the bytes for the length of the call
      takes the live buffer (#7482) */
-  else if (rp.read_raw && decide_node(c->nt, id, "strbuf-raw", NULL))
+  else if (rp.read_raw && decide_node(c->nt, id, "strbuf-raw", NULL)) {
     buf_printf(b, "(%s ? sp_String_cstr(%s) : NULL)", sref, sref);
-  else buf_printf(b, "sp_strbuf_read_pub(%s)", sref);
+    if (g_repr_check) repr_channel_note(c, id, RCH_BYTES);
+  }
+  else {
+    buf_printf(b, "sp_strbuf_read_pub(%s)", sref);
+    if (g_repr_check) repr_channel_note(c, id, RCH_PUBLISH);
+  }
 }
 
 /* The same for a slot read at node `id` that is not a variable's (a Struct
@@ -3246,10 +3276,21 @@ else {
         buf_printf(g_pre, "{ %s _t%d = %s; ", c_type_name(kt), tk, kb.p ? kb.p : "");
         if (needs_root(kt)) { emit_gc_root_tmp(c, kt, tk, g_pre); buf_puts(g_pre, " "); }
       }
+      /* a key that is a shared String slot's read is a fresh copy: beside
+         a value that allocates, the value is built first, into a rooted
+         temp, and the key read last, in the set itself */
+      int tv = -1;
+      if (tk < 0 && ty_is_hash(ht) && strbuf_read_copies(c, key) && operand_may_allocate(c, val)) {
+        TyKind vt = (sym_poly || poly_poly) ? TY_POLY : ty_hash_val(ht);
+        tv = ++g_tmp;
+        buf_printf(g_pre, "{ %s _t%d = %s; ", vt == TY_POLY ? "sp_RbVal" : c_type_name(vt), tv, vb.p ? vb.p : "");
+        emit_gc_root_tmp(c, vt, tv, g_pre); buf_puts(g_pre, " ");
+      }
       buf_printf(g_pre, "sp_%sHash_set(_t%d, ", hn, t);
       if (tk >= 0) buf_printf(g_pre, "_t%d", tk); else buf_puts(g_pre, kb.p ? kb.p : "");
-      buf_puts(g_pre, ", "); buf_puts(g_pre, vb.p ? vb.p : "");
-      buf_puts(g_pre, tk >= 0 ? "); }\n" : ");\n");
+      buf_puts(g_pre, ", ");
+      if (tv >= 0) buf_printf(g_pre, "_t%d", tv); else buf_puts(g_pre, vb.p ? vb.p : "");
+      buf_puts(g_pre, (tk >= 0 || tv >= 0) ? "); }\n" : ");\n");
       free(kb.p); free(vb.p);
     }
     buf_printf(b, "_t%d", t);
@@ -4425,7 +4466,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
       buf_printf(b, "({ %s _t%d = ", c_type_name(irt), ta2); emit_expr(c, ir, b); buf_puts(b, "; ");
       if (subtree_may_allocate(c->nt, ir) || drops) { emit_gc_root_tmp(c, irt, ta2, b); buf_puts(b, " "); }
       buf_printf(b, "%s _t%d = ", c_type_name(kt), tb2); emit_hash_key(c, iav[0], kt, b); buf_puts(b, "; ");
-      if (subtree_may_allocate(c->nt, iav[0]) && needs_root(kt)) { emit_gc_root_tmp(c, kt, tb2, b); buf_puts(b, " "); }
+      if (operand_may_allocate(c, iav[0]) && needs_root(kt)) { emit_gc_root_tmp(c, kt, tb2, b); buf_puts(b, " "); }
       if (vt == TY_POLY) {
         buf_printf(b, "sp_RbVal _t%d = sp_%sHash_get(_t%d, _t%d);", tc2, hn, ta2, tb2);
         buf_printf(b, " if (%ssp_poly_truthy(_t%d)) { ", is_or2 ? "!" : "", tc2);

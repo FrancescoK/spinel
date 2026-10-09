@@ -272,6 +272,8 @@ int is_each_window(const char *n) {
   return sp_streq(n, "each_cons") || sp_streq(n, "each_slice");
 }
 
+int is_sum_name(const char *n) { return n && sp_streq(n, "sum"); }
+
 int is_reduce_alias(const char *n) {
   return sp_streq(n, "inject") || sp_streq(n, "reduce");
 }
@@ -884,6 +886,23 @@ int str_mutator_str_args(const char *n, int argc, int *int_ok) {
   return argc;
 }
 
+/* String methods that only read the receiver's bytes: they answer a scalar or
+   build a new string, and never retain the pointer they were handed. A
+   shared-mutable receiver can hand them its live buffer instead of a copy. */
+int is_string_read_only_method(const char *name) {
+  static const char *const ro[] = {
+    "[]", "slice", "byteslice", "getbyte", "ord", "chr",
+    "index", "rindex", "include?", "start_with?", "end_with?",
+    "count", "length", "size", "bytesize", "empty?",
+    "to_i", "to_f", "hex", "oct", "match?", "casecmp", "casecmp?",
+    "upcase", "downcase", "capitalize", "swapcase", "reverse",
+    "strip", "lstrip", "rstrip", "chomp", "chop", "center", "ljust", "rjust",
+    "each_char", "each_byte", "each_line", "chars", "bytes", "lines", "split",
+    "sum", "hash", "unpack", "unpack1", "codepoints", "scan", NULL };
+  for (int i = 0; ro[i]; i++) if (sp_streq(name, ro[i])) return 1;
+  return 0;
+}
+
 int is_string_rebind_mutator(const char *n) {
   static const char *const MUT[] = {
     "<<", "concat", "prepend", "insert", "replace", "[]=", "slice!", "setbyte", "bytesplice",
@@ -955,6 +974,10 @@ int is_builtin_reopen_name(const char *name) {
             typedef collision before any call was reached (activesupport's
             blank.rb reopens Range and Time) */
          sp_streq(name, "Range")     || sp_streq(name, "Time") ||
+         sp_streq(name, "Rational")  || sp_streq(name, "Proc") ||
+         sp_streq(name, "Enumerator") || sp_streq(name, "MatchData") ||
+         sp_streq(name, "Complex")   || sp_streq(name, "Regexp") ||
+         sp_streq(name, "Struct")    ||
          sp_streq(name, "File")      || sp_streq(name, "Class") ||
          sp_streq(name, "Hash")      ||
          /* a thread and a fiber are runtime handles too (activesupport's
@@ -1052,3 +1075,39 @@ int is_proc_conversion_name(const char *n) { return n && (sp_streq(n, "to_proc")
 int is_aref_name(const char *n) { return n && sp_streq(n, "[]"); }
 /* `<<` alone: String#<<'s append, a chain's link */
 int is_shovel_name(const char *n) { return n && sp_streq(n, "<<"); }
+
+/* Dir's surface rewrites keep the written name distinct from the builtin
+   operation it lowers to. The iterator aliases apply only without a block. */
+const char *dir_surface_alias(const char *n, int blockless_iter) {
+  if (blockless_iter) {
+    if (sp_streq(n, "foreach")) return "entries";
+    if (sp_streq(n, "each_child")) return "children";
+  }
+  else {
+    if (sp_streq(n, "getwd")) return "pwd";
+    if (sp_streq(n, "delete") || sp_streq(n, "unlink")) return "rmdir";
+    if (is_aref_name(n)) return "glob";
+  }
+  return NULL;
+}
+
+int is_kernel_module_name(const char *n) { return n && sp_streq(n, "Kernel"); }
+
+/* Kernel's module functions, by name. A whitelist rather than "anything with
+   the Kernel receiver": Kernel is also a VALUE, so `Kernel === 5` asks whether
+   5 is in the Object hierarchy, and `Kernel.name` / `.to_s` / `.freeze` /
+   `.instance_methods` are Module's own methods on it. Dropping the receiver for
+   those would change what they mean. Only names that Module does not also
+   answer belong here. */
+int is_kernel_module_function(const char *m) {
+  static const char *const K[] = {
+    "puts", "print", "p", "pp", "printf", "sprintf", "format",
+    "raise", "fail", "exit", "exit!", "abort", "at_exit",
+    "rand", "srand", "sleep", "gets", "loop", "lambda", "proc",
+    "block_given?", "catch", "throw", "caller", "binding", "__method__",
+    "require", "require_relative", "load", "warn", "system", "exec", "spawn",
+    "Integer", "Float", "String", "Array", "Hash", "Rational", "Complex",
+    NULL
+  };
+  return m && builtin_name_in(m, K);
+}

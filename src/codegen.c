@@ -151,6 +151,7 @@ static void rc_note(Compiler *c, int node, int form, int why, int from_text) {
    A kind whose row has no box_text cannot be boxed, and stops the compile
    rather than fall back to an int box (the poly-box bug family). */
 void emit_boxed_text(Compiler *c, TyKind t, const char *expr, Buf *b) {
+  if (g_plan_check) pa_box_text(t);
   if (g_repr_check) { rc_text_form = -1; rc_text_ty = t; }
   const TyTraits *tr = ty_traits_of(t);
   if (tr) {
@@ -1464,7 +1465,7 @@ static int emit_boxed_bang_self(Compiler *c, int node, Buf *b) {
     view_pop(c, sv_b);
     if (ok) buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", hb.p);
     free(hb.p);
-    if (ok) RC(RF_STRBUF_HANDLE, RW_NONE);
+    if (ok) RC(RF_STRBUF_HANDLE, RW_HANDLE_ROUTE);
     return ok;
   }
   int tb = ++g_tmp;
@@ -1473,7 +1474,7 @@ static int emit_boxed_bang_self(Compiler *c, int node, Buf *b) {
   emit_expr(c, node, b);
   view_pop(c, sv_b);
   buf_printf(b, "; _t%d ? sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF) : sp_box_nil(); })", tb, srefB);
-  RC(RF_STRBUF_HANDLE, RW_NONE);
+  RC(RF_STRBUF_HANDLE, RW_HANDLE_ROUTE);
   return 1;
 }
 
@@ -1612,7 +1613,7 @@ static void emit_boxed_strbuf(Compiler *c, int node, TyKind t, const Repr *rp, B
     if (emit_strbuf_route(c, node, &hb)) {
       buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", hb.p);
       free(hb.p);
-      RC(RF_STRBUF_HANDLE, RW_NONE);
+      RC(RF_STRBUF_HANDLE, RW_HANDLE_ROUTE);
       return;
     } }
   /* a demanded literal / expression store: wrap a FRESH handle so the
@@ -1716,7 +1717,7 @@ static int emit_boxed_sequence(Compiler *c, int node, Buf *b) {
   buf_printf(b, "({ sp_RbVal _t%d; ", dst);
   emit_cond_arm(c, node, b, emit_boxed_cond_body, &a);
   buf_printf(b, " _t%d; })", dst);
-  RC(RF_SPECIAL, RW_NONE);
+  RC(RF_SPECIAL, RW_HANDLE_ROUTE);
   return 1;
 }
 
@@ -1801,7 +1802,7 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
        the value at THIS site is what the block one level out answers, the
        one the splice will run (#4495), and a tail yield there answers what
        the block a level further out does (yield_block_out). */
-    int tblk = g_block_id;
+    int tblk = g_block_id, plain = 0;
     TyKind bt = TY_NIL;
     for (int depth = 0; tblk >= 0; depth++) {
       int bbody = nt_ref(c->nt, tblk, "body");
@@ -1824,10 +1825,12 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
          splice; counting it widened blocks that carry one and put an sp_int
          where the slot was an sp_RbVal. */
       { TyKind nx = block_next_value_ty(c, bbody);
-        if (nx != TY_UNKNOWN) bt = (bt == TY_UNKNOWN) ? nx : ty_unify(bt, nx); }
+        if (nx != TY_UNKNOWN) bt = (bt == TY_UNKNOWN) ? nx : ty_unify(bt, nx);
+        else plain = bt == TY_INT && int_value_plain(c, tail); }
       break;
     }
-    if (bt != t && bt != TY_UNKNOWN) {
+    /* The same Integer type can still differ in whether INTPTR_MIN is nil. */
+    if ((bt != t || plain) && bt != TY_UNKNOWN) {
       if (bt == TY_POLY) { emit_expr(c, node, b); RC(RF_PASS, RW_YIELD); return; }
       Buf yb; memset(&yb, 0, sizeof yb);
       emit_expr(c, node, &yb);
@@ -1843,6 +1846,10 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
       else if (pre_boxed) {
         buf_puts(b, yt);
         RC(RF_PASS, RW_YIELD);
+      }
+      else if (plain) {
+        buf_printf(b, "sp_box_int_nn(%s)", yt);
+        RC(RF_INT, RW_YIELD);
       }
       else {
         emit_boxed_text(c, bt, yt, b);
@@ -2003,7 +2010,7 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
        is_a? guard narrows a boxed a) answers that box, read as one */
     if (t == TY_STRING && strbuf_narrowed_box_mutator(c, node)) {
       emit_narrowed_box_mutator(c, node, b);
-      RC(RF_PASS, RW_NONE);
+      RC(RF_PASS, RW_HANDLE_ROUTE);
       return;
     }
     /* --share-strings: a box's to_s is the box's own String
@@ -2017,7 +2024,7 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
         emit_boxed(c, r, b);
         buf_puts(b, ")");
       }
-      RC(RF_PASS, RW_NONE);
+      RC(RF_PASS, RW_HANDLE_ROUTE);
       return;
     }
     /* --share-strings: a String value that hands on a variable's handle (an
@@ -2027,7 +2034,7 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
       buf_puts(b, "sp_box_nullable_obj(");
       emit_strbuf_handle_of(c, node, b);
       buf_puts(b, ", SP_BUILTIN_STRBUF)");
-      RC(RF_STRBUF_HANDLE, RW_NONE);
+      RC(RF_STRBUF_HANDLE, RW_HANDLE_ROUTE);
       return;
     }
     break;
@@ -2105,6 +2112,17 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
                     : tr.elem == TY_STRING ? "SP_BUILTIN_STR_ARRAY" : tr.elem == TY_POLY ? "SP_BUILTIN_POLY_ARRAY"
                     : t == TY_OPENSTRUCT ? "SP_BUILTIN_OPENSTRUCT" : NULL;
     if (aid) {
+      /* A box loses the static element-nil fact. Carry that fact in the
+         existing array flag so boxed sums distinguish nil from INTPTR_MIN. */
+      if (tr.elem_nil_marked && (t == TY_INT_ARRAY || t == TY_FLOAT_ARRAY)) {
+        const char *k = t == TY_INT_ARRAY ? "Int" : "Float";
+        int ta = ++g_tmp;
+        buf_printf(b, "({ sp_%sArray *_t%d = ", k, ta); emit_expr(c, node, b);
+        buf_printf(b, "; sp_%sArray_note_nil(_t%d); sp_box_nullable_obj(_t%d, %s); })",
+                   k, ta, ta, aid);
+        RC(RF_NULLABLE, RW_NONE);
+        return;
+      }
       buf_puts(b, "sp_box_nullable_obj((void *)("); emit_expr(c, node, b);
       buf_printf(b, "), %s)", aid);
       RC(RF_NULLABLE, RW_NONE);
@@ -2125,6 +2143,7 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
    --repr-check it keeps the nesting the recorder reads */
 void emit_boxed(Compiler *c, int node, Buf *b) {
   if (b == g_pre) { emit_into_pre_line(c, emit_boxed, node); return; }
+  int frame = g_repr_check ? repr_channel_begin(c, node) : -1;
   /* --share-strings: a String stored into a boxed slot the rule shares (an
      ivar that also holds nil) is boxed as its handle, which a later `<<`
      on the slot's box appends to in place (share_lift_poly_ivar_stores) */
@@ -2136,11 +2155,18 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
     TyKind at = na == 1 ? comp_ntype(c, av[0]) : TY_UNKNOWN;
     if ((at == TY_STRING || at == TY_STRBUF) && strbuf_value_carries(c, av[0])) {
       emit_boxed_next_value(c, av[0], b);
+      if (g_repr_check) repr_channel_boxed(c, node, frame);
       return;
     }
   }
-  if (emit_boxed_cond_arms(c, node, b)) return;
-  if (emit_boxed_sequence(c, node, b)) return;
+  if (emit_boxed_cond_arms(c, node, b)) {
+    if (g_repr_check) repr_channel_boxed(c, node, frame);
+    return;
+  }
+  if (emit_boxed_sequence(c, node, b)) {
+    if (g_repr_check) repr_channel_boxed(c, node, frame);
+    return;
+  }
   int lift = repr_share_rule(c) && node >= 0 && c->poly_strbuf_lift[node] && comp_ntype(c, node) == TY_STRING;
   /* a route that hands on a handle (`q ||= s.then { |v| v }`,
      emit_strbuf_route): that handle's box, not a new handle around a copy */
@@ -2151,6 +2177,7 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
     if (emit_strbuf_route(c, node, &hb)) {
       buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", hb.p);
       free(hb.p);
+      if (g_repr_check) repr_channel_boxed(c, node, frame);
       return;
     }
   }
@@ -2159,6 +2186,7 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
   emit_boxed_impl(c, node, b);
   rc_depth--;
   if (lift) buf_puts(b, ")");
+  if (g_repr_check) repr_channel_boxed(c, node, frame);
 }
 
 /* `vol` makes the local volatile (required for locals live across a setjmp
@@ -5468,6 +5496,10 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
     buf_puts(b, "    _h.exc_top = sp_exc_top; _h.catch_top = sp_catch_top;\n");
     buf_puts(b, "    _h.recur_mark = sp_poly_recur_save();\n");
     buf_puts(b, "    _h.prev = sp_proc_ret_head; sp_proc_ret_head = &_h;\n");
+    /* a proc's return out of an ensure body drops the exception that body
+       had in flight: the landing gives back the one in flight at the call */
+    const char *hic = g_uses_ensure ? " sp_inflight_cause = _hic;" : "";
+    if (*hic) buf_puts(b, "    void *_hic = sp_inflight_cause;\n");
     if (!is_void) {
       buf_puts(b, "    "); emit_ctype(c, s->ret, b); buf_puts(b, " _prret = ");
       if (ty_is_object(s->ret) && !comp_ty_value_obj(c, s->ret)) buf_puts(b, "NULL");
@@ -5475,7 +5507,7 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
       buf_puts(b, ";\n");
       /* the longjmp-home delivery also restores sp_catch_top: a return out of a
          catch block inside the home (or a callee) must not leak its catch slot. */
-      buf_puts(b, "    if (setjmp(_h.jb)) { sp_proc_ret_head = _h.prev; sp_catch_top = _h.catch_top; return ");
+      buf_printf(b, "    if (setjmp(_h.jb)) { sp_proc_ret_head = _h.prev; sp_catch_top = _h.catch_top;%s return ", hic);
       /* The box is the selected return, even if its evaluation or an
          intervening ensure published a different String. */
       int pub = repr_share_rule(c) && s->ret == TY_STRING && (s->ret_handle || s->ret_pub_fresh);
@@ -5485,7 +5517,7 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
       buf_puts(b, "; }\n");
     }
     else {
-      buf_puts(b, "    if (setjmp(_h.jb)) { sp_proc_ret_head = _h.prev; sp_catch_top = _h.catch_top; return; }\n");
+      buf_printf(b, "    if (setjmp(_h.jb)) { sp_proc_ret_head = _h.prev; sp_catch_top = _h.catch_top;%s return; }\n", hic);
     }
     buf_puts(b, "    {\n");
     g_method_pr_label = "_pr_done"; g_method_pr_var = is_void ? NULL : "_prret";
@@ -9176,6 +9208,7 @@ static void emit_ivar_nil_inits(Buf *b, ClassInfo *ci, const char *lv,
 /* Was this "class" written as `module`? Module-ness lives in the AST node
    kind, not in ClassInfo, and two emitters need the same answer. */
 int comp_class_is_module(Compiler *c, ClassInfo *ci) {
+  if (ci && ci->def_node < 0) return is_builtin_module_const_name(ci->name);
   const char *dt = ci ? nt_type(c->nt, ci->def_node) : NULL;
   return dt && sp_streq(dt, "ModuleNode");
 }
@@ -11735,6 +11768,7 @@ static void emit_reopen_self_boxed(Compiler *c, Scope *s, Buf *b) {
 
 
 void emit_super(Compiler *c, int id, Buf *b) {
+  refuse_from_plan(c, id, CRF_LIMIT, "super-refusal");
   if (repr_of(c, id).demand && repr_call_returns_handle(c, id) && emit_strbuf_route(c, id, b)) return;
   if (g_plan_check) ucall_emitted(id);
   { Scope *ss = comp_scope_of(c, id);
@@ -14215,6 +14249,7 @@ static void scan_prologue_features(Compiler *c) {
   g_uses_symbols = (c->nsymbols > 0);
   g_uses_marshal = 0;
   g_uses_regex = 0; g_uses_argv = 0; g_uses_threads = 0; g_uses_finalizers = 0;
+  g_uses_ensure = 0;
   g_uses_program_name = 0;
   g_reads_match_regs = 0;
   for (int i = 0; i < nt->count; i++) {
@@ -14222,6 +14257,11 @@ static void scan_prologue_features(Compiler *c) {
     if (!ty) continue;
     if (sp_streq(ty, "BackReferenceReadNode") || sp_streq(ty, "NumberedReferenceReadNode"))
       g_reads_match_regs = 1;
+    /* An exception is in flight (sp_inflight_cause) only while the body of
+       an ensure clause runs. The landings that give it back (a catch, a
+       wrapped break, a proc's home) are emitted only in a program that
+       holds one with a body: elsewhere there is nothing to give back. */
+    if (sp_streq(ty, "EnsureNode") && nt_ref(nt, i, "statements") >= 0) g_uses_ensure = 1;
     if (sp_streq(ty, "RegularExpressionNode") || sp_streq(ty, "InterpolatedRegularExpressionNode"))
       g_uses_regex = 1;
     else if (sp_streq(ty, "SymbolNode") || sp_streq(ty, "InterpolatedSymbolNode"))
@@ -16056,7 +16096,20 @@ static void emit_sym_class_name_rt(Compiler *c, Buf *b) {
     }
     /* dynamic intern pool: symbols minted at runtime (Symbol#upcase,
        :"interp", String#to_sym) get ids >= the static count. */
-    buf_puts(b, "static const char *sp_dyn_syms[SP_DYN_SYMS_MAX]; static int sp_ndyn = 0;\n");
+    buf_puts(b, "static const char *sp_dyn_syms0[SP_DYN_SYMS_MAX]; static const char **sp_dyn_syms = sp_dyn_syms0;"
+                " static int sp_dyn_cap = SP_DYN_SYMS_MAX; static int sp_ndyn = 0;\n");
+    /* The static array is the pool's first block, so -DSP_DYN_SYMS_MAX=<n>
+       still sizes what a program that interns little pays for. A full pool
+       moves to a heap block twice the size: answering an existing id for a new
+       name made two Symbols one. The block it leaves is kept: a Thread that
+       read the pool's address before the move still finds its Symbol's name
+       there, and the heap blocks left behind sum to less than the one in use. */
+    buf_puts(b, "static SP_NOINLINE SP_COLD void sp_dyn_syms_grow(void){"
+                "int nc=sp_dyn_cap>0?sp_dyn_cap*2:64;"
+                "const char **np=(const char **)malloc(sizeof(*np)*(size_t)nc);"
+                "if(!np)sp_raise_cls(\"NoMemoryError\",\"failed to grow the symbol table\");"
+                "memcpy(np,sp_dyn_syms,sizeof(*np)*(size_t)sp_ndyn);"
+                "sp_dyn_syms=np;sp_dyn_cap=nc;}\n");
     /* Those entries are string-heap strings (sp_str_dup_external) held only by
        this static array, which the collector does not walk: the string sweep
        freed them and the next intern compared against a corpse. Emitted here,
@@ -16099,8 +16152,9 @@ static void emit_sym_class_name_rt(Compiler *c, Buf *b) {
     buf_printf(b, "sp_sym sp_sym_intern_n(const char *s, size_t n){"
                    "for(int i=0;i<%d;i++){const char*_c=%s;if(_c[0]==s[0]&&sp_str_byte_len(_c)==n&&memcmp(_c,s,n)==0)return (sp_sym)i;}"
                    "for(int i=0;i<sp_ndyn;i++){const char*_c=sp_dyn_syms[i];if(_c[0]==s[0]&&sp_str_byte_len(_c)==n&&memcmp(_c,s,n)==0)return (sp_sym)(%d+i);}"
-                   "if(sp_ndyn<SP_DYN_SYMS_MAX){char *_d=sp_str_alloc_nogc(n);if(n)memcpy(_d,s,n);sp_dyn_syms[sp_ndyn]=_d;return (sp_sym)(%d+sp_ndyn++);}"
-                   "return (sp_sym)0;}\n", ns, ns > 0 ? "sp_sym_names[i]" : "sp_str_empty", ns, ns);
+                   "if(sp_ndyn>=sp_dyn_cap)sp_dyn_syms_grow();"
+                   "char *_d=sp_str_alloc_nogc(n);if(n)memcpy(_d,s,n);sp_dyn_syms[sp_ndyn]=_d;return (sp_sym)(%d+sp_ndyn++);}\n",
+                   ns, ns > 0 ? "sp_sym_names[i]" : "sp_str_empty", ns, ns);
     buf_printf(b, "%ssp_sym sp_sym_intern(const char *s){return sp_sym_intern_n(s,s?strlen(s):0);}\n\n",
                g_ext_init_name ? "" : "static ");
   }
@@ -17321,6 +17375,7 @@ char *codegen_program(const NodeTable *nt) {
   }
   if (repr_text) { fputs(repr_text, stdout); exit(0); }
   if (g_plan_check) ucall_report(c);
+  if (g_repr_check) repr_channel_report(c);
   if (g_nil_check) nil_check_report(c);
   comp_free(c);
   { const char *keep = getenv("SPINEL_EMIT_TYPES_KEEP_C");

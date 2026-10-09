@@ -168,9 +168,10 @@ sp_bool sp_warning_aref(const char *cat);
 void sp_warning_aset(const char *cat, sp_bool v);
 sp_bool sp_warning_enabled(const char *cat);
 void sp_warning_warn(const char *msg);
-/* Capacity of the runtime symbol-intern pool the generated TU declares
-   (sp_dyn_syms). 8 bytes/entry, so the default is a 64 KB static buffer holding
-   symbols minted at runtime (String#to_sym, :"#{interp}"). Embedded targets that
+/* Size of the first block of the runtime symbol-intern pool the generated TU
+   declares (sp_dyn_syms0). 8 bytes/entry, so the default is a 64 KB static
+   buffer holding symbols minted at runtime (String#to_sym, :"#{interp}"); a
+   program that mints more moves the pool to the heap. Embedded targets that
    intern few or no symbols at runtime can shrink it with -DSP_DYN_SYMS_MAX=<n>. */
 #ifndef SP_DYN_SYMS_MAX
 #define SP_DYN_SYMS_MAX 8192
@@ -1995,6 +1996,7 @@ static sp_RbVal sp_poly_bitop(sp_RbVal a, sp_RbVal b, int op) {  /* 0:& 1:| 2:^ 
 static const char *sp_class_to_s(sp_Class c);
 #endif
 const char *sp_poly_class_name(sp_RbVal v);  /* fwd: user-object to_s default */
+extern const char *(*sp_user_exc_parent_fn)(const char *);  /* fwd: the program's exception parent table (defined ~line 14477) */
 static const char *sp_convert_src_name(sp_RbVal v);  /* fwd: nil/true/false spell themselves */
 static sp_int sp_poly_Integer_ex(sp_RbVal v, sp_int base, int raise);  /* fwd: Kernel#Integer / #Float on a user object */
 static sp_float sp_poly_Float_ex(sp_RbVal v, int raise);
@@ -2186,12 +2188,41 @@ static sp_bool sp_poly_responds_builtin(sp_RbVal v, const char *m) {
     "flatten", "compact", "uniq", "reverse", "last", "index", "delete",
     "delete_at", "delete_if", "insert", "fetch", "sample", "shuffle",
     "rotate", "slice", "fill", "dig", "values_at", "+", "-", "*", "&", "|",
-    "to_ary", NULL };
+    "to_ary",
+    /* the rest of bop_rows's BOP_ANY_ARRAY surface (#8140-class gap: a
+       widened Array parameter's respond_to?(:uniq!) answered false and
+       jaccard's Jaccard.coefficient silently stopped deduping its union) */
+    "append", "assoc", "at", "bsearch", "bsearch_index", "chain",
+    "chunk", "chunk_while", "clear", "collect!", "collect_concat",
+    "combination", "compact!", "cycle", "deconstruct", "difference",
+    "drop_while", "each_entry", "each_index", "entries", "fetch_values",
+    "filter!", "filter_map", "find_all", "find_index", "flatten!",
+    "grep", "grep_v", "intersect?", "intersection", "keep_if", "lazy",
+    "map!", "max_by", "member?", "min_by", "minmax", "minmax_by", "pack",
+    "permutation", "prepend", "product", "rassoc", "reject!",
+    "repeated_combination", "repeated_permutation", "replace",
+    "reverse!", "reverse_each", "rfind", "rindex", "rotate!", "select!",
+    "shuffle!", "slice!", "slice_after", "slice_before", "slice_when",
+    "sort!", "sort_by!", "take_while", "tally", "to_h", "to_set",
+    "transpose", "union", "uniq!", NULL };
   static const char *const hashm[] = {
     "empty?", "[]", "[]=", "keys", "values", "fetch", "store", "delete", "key?",
     "has_key?", "member?", "value?", "has_value?", "each_pair", "each_key",
     "each_value", "merge", "merge!", "update", "to_h", "invert", "dig",
-    "default", "key", "transform_keys", "transform_values", "to_hash", NULL };
+    "default", "key", "transform_keys", "transform_values", "to_hash",
+    /* the rest of bop_rows's BOP_ANY_HASH surface (same gap as arrm) */
+    "<", "<=", ">", ">=", "assoc", "chain", "chunk", "chunk_while",
+    "clear", "collect_concat", "compact", "compact!",
+    "compare_by_identity", "compare_by_identity?", "cycle",
+    "deconstruct_keys", "default=", "default_proc", "default_proc=",
+    "delete_if", "drop_while", "each_entry", "entries", "except",
+    "fetch_values", "filter!", "filter_map", "find_all", "find_index",
+    "flatten", "grep", "grep_v", "keep_if", "lazy", "max_by", "min_by",
+    "minmax", "minmax_by", "rassoc", "rehash", "reject!", "replace",
+    "reverse_each", "select!", "shift", "slice", "slice_after",
+    "slice_before", "slice_when", "take_while", "tally", "to_proc",
+    "to_set", "transform_keys!", "transform_values!", "uniq",
+    "values_at", NULL };
   static const char *const strm[] = {
     "[]", "[]=", "+", "*", "%", "<=>", "<", ">", "<=", ">=", "=~", "length",
     "size", "empty?", "upcase", "downcase", "capitalize", "swapcase", "strip",
@@ -2201,32 +2232,65 @@ static sp_bool sp_poly_responds_builtin(sp_RbVal v, const char *m) {
     "next", "to_i", "to_f", "to_sym", "to_str", "center", "ljust", "rjust",
     "tr", "delete", "squeeze", "count", "each_char", "each_line", "slice",
     "unpack", "encoding", "force_encoding", "bytesize", "ord", "hex", "oct",
-    "match", "match?", "scan", "format", "freeze", NULL };
+    "match", "match?", "scan", "freeze",
+    /* the rest of bop_rows's TY_STRING surface (same gap as arrm) */
+    "+@", "-@", "append_as_bytes", "ascii_only?", "b", "between?",
+    "byteindex", "byterindex", "byteslice", "bytesplice", "capitalize!",
+    "casecmp", "casecmp?", "chomp!", "chop!", "chr", "clamp", "clear",
+    "codepoints", "crypt", "dedup", "delete!", "delete_prefix",
+    "delete_prefix!", "delete_suffix", "delete_suffix!", "downcase!",
+    "dump", "each_byte", "each_codepoint", "each_grapheme_cluster",
+    "encode", "encode!", "getbyte", "grapheme_clusters", "insert",
+    "intern", "lstrip!", "next!", "partition", "prepend", "reverse!",
+    "rpartition", "rstrip!", "scrub", "scrub!", "setbyte", "slice!",
+    "squeeze!", "strip!", "succ!", "sum", "swapcase!", "to_c", "to_r",
+    "tr!", "tr_s", "tr_s!", "undump", "unicode_normalize",
+    "unicode_normalize!", "unicode_normalized?", "unpack1", "upcase!",
+    "upto", "valid_encoding?", NULL };
   static const char *const numm[] = {
     "+", "-", "*", "/", "%", "**", "<=>", "<", ">", "<=", ">=", "abs",
     "to_i", "to_int", "to_f", "to_r", "to_c", "zero?", "positive?",
     "negative?", "coerce", "divmod", "fdiv", "round", "ceil", "floor",
-    "truncate", "between?", "clamp", "step", NULL };
+    "truncate", "between?", "clamp", "step",
+    /* the rest of bop_rows's Numeric surface shared by Integer and Float
+       (same gap as arrm) */
+    "abs2", "angle", "arg", "conj", "conjugate", "denominator", "div",
+    "i", "imag", "imaginary", "magnitude", "modulo", "nonzero?",
+    "numerator", "phase", "polar", "rationalize", "real", "real?",
+    "rect", "rectangular", "remainder", NULL };
   static const char *const intm[] = {
     "times", "upto", "downto", "succ", "next", "pred", "even?", "odd?",
     "gcd", "lcm", "digits", "bit_length", "chr", "ord", "pow", "&", "|",
     "^", "<<", ">>", "~", "integer?", "allbits?", "anybits?", "nobits?",
-    "size", NULL };
+    "size",
+    "[]", "ceildiv", "finite?", "gcdlcm", "infinite?", NULL };
   static const char *const fltm[] = {
-    "nan?", "infinite?", "finite?", "integer?", NULL };
+    "nan?", "infinite?", "finite?", "integer?",
+    "next_float", "prev_float", NULL };
   static const char *const rngm[] = {
     "begin", "end", "first", "last", "min", "max", "step", "cover?",
-    "exclude_end?", "to_a", "each", "size", "sum", "include?", "===", NULL };
+    "exclude_end?", "to_a", "each", "size", "sum", "include?", "===",
+    /* the rest of its Enumerable surface, desugared rather than a
+       bop_rows row, so verified by direct execution (same gap as arrm) */
+    "collect_concat", "drop_while", "each_entry", "filter_map",
+    "find_all", "find_index", "max_by", "min_by", "reverse_each",
+    "take_while", "to_h", NULL };
   static const char *const symm[] = {
     "to_proc", "to_sym", "id2name", "name", "length", "size", "succ", "next",
     "upcase", "downcase", "capitalize", "swapcase", "empty?", "start_with?",
-    "end_with?", "<=>", "[]", NULL };
+    "end_with?", "<=>", "[]",
+    "casecmp", "casecmp?", "clamp", "intern", "match?", "slice", NULL };
   static const char *const procm[] = {
     "call", "()", "[]", "yield", "arity", "lambda?", "curry", "to_proc",
-    "parameters", "<<", ">>", NULL };
+    "parameters", "<<", ">>", "source_location", NULL };
+  /* "name" (NameError), "key"/"receiver" (KeyError/NameError) and
+     "result" (UncaughtThrowError) are real but gated to one subclass each
+     -- a generic RuntimeError does not respond_to?(:key) in CRuby, and
+     bop_rows has no owning-subclass field to gate them by (same class of
+     gap as sp_poly_responds_builtin's own Exception exclusion above:
+     found by tools/respond_to_audit.rb, which this answers for). */
   static const char *const excm[] = {
-    "message", "to_s", "full_message", "backtrace", "cause", "exception",
-    "name", "key", "receiver", "result", NULL };
+    "message", "to_s", "full_message", "backtrace", "cause", "exception", NULL };
   const char *cn;
   if (!m) return 0;
   if (sp_str_in_list(m, uni)) return 1;
@@ -2271,8 +2335,43 @@ static sp_bool sp_poly_responds_builtin(sp_RbVal v, const char *m) {
      by its kind */
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_IO && v.v.p)
     return sp_io_responds((sp_File *)v.v.p, m, 0);
-  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_EXCEPTION)
-    return sp_str_in_list(m, excm);
+  if (v.tag == SP_TAG_OBJ && v.v.p &&
+      (v.cls_id == SP_BUILTIN_EXCEPTION ||
+       /* A user exception boxes under its own class id, not
+          SP_BUILTIN_EXCEPTION, once it has anything of its own (a method,
+          an ivar) that needs separate storage -- a trivial `class
+          MyKeyError < KeyError; end` happens to share the builtin's cls_id
+          and was never actually exercising this arm. Without this check, a
+          non-trivial subclass fell through to `return 0` below and every
+          accessor answered false, even though is_a?(KeyError) (which
+          already handles this case two arms below) answered true for the
+          same value. Mirrors the is_a? arm's own user-subclass check. */
+       (v.cls_id >= 0 && sp_user_exc_parent_fn && sp_user_exc_parent_fn(sp_poly_class_name(v))))) {
+    if (sp_str_in_list(m, excm)) return 1;
+    /* bop_rows registers these accessors for ANY exception (no
+       owning-subclass field), but CRuby gates each to the subclass that
+       actually defines it: a plain RuntimeError does not respond_to?
+       (:key), only KeyError (and NoMatchingPatternKeyError) do. The
+       mapping below is CRuby's own (ClassName.instance_method(:m).owner
+       for each name, run against every Exception descendant), and
+       sp_exc_is_a walks the boxed exception's real ancestor chain the
+       same way its own is_a? does (#3096), so a user subclass of e.g.
+       KeyError answers true here too, not just the exact builtin class. */
+    volatile struct sp_Exception_s *ve = (volatile struct sp_Exception_s *)v.v.p;
+    if (strcmp(m, "key") == 0)
+      return sp_exc_is_a(ve, "KeyError") || sp_exc_is_a(ve, "NoMatchingPatternKeyError");
+    if (strcmp(m, "receiver") == 0)
+      return sp_exc_is_a(ve, "NameError") || sp_exc_is_a(ve, "FrozenError") || sp_exc_is_a(ve, "KeyError");
+    if (strcmp(m, "name") == 0) return sp_exc_is_a(ve, "NameError");
+    if (strcmp(m, "args") == 0 || strcmp(m, "private_call?") == 0) return sp_exc_is_a(ve, "NoMethodError");
+    if (strcmp(m, "errno") == 0) return sp_exc_is_a(ve, "SystemCallError");
+    if (strcmp(m, "status") == 0 || strcmp(m, "success?") == 0) return sp_exc_is_a(ve, "SystemExit");
+    if (strcmp(m, "signo") == 0 || strcmp(m, "signm") == 0) return sp_exc_is_a(ve, "SignalException");
+    if (strcmp(m, "tag") == 0 || strcmp(m, "value") == 0) return sp_exc_is_a(ve, "UncaughtThrowError");
+    if (strcmp(m, "result") == 0) return sp_exc_is_a(ve, "StopIteration");
+    if (strcmp(m, "reason") == 0 || strcmp(m, "exit_value") == 0) return sp_exc_is_a(ve, "LocalJumpError");
+    return 0;
+  }
   return 0;
 }
 /* respond_to? on a typed IO handle: the names its typed emitters call, and
@@ -2827,6 +2926,8 @@ static inline sp_bool sp_poly_tower_arm_p(sp_RbVal v) {
    Bignum's side, "no implicit conversion of Integer into String" from the
    String's. Asked once at the head of each of the six arithmetic ops. */
 static inline sp_bool sp_poly_tower_mismatch(sp_RbVal a, sp_RbVal b) {
+  /* A scalar numeric receiver also needs a numeric operand before conversion. */
+  if (sp_poly_numeric_p(a) && !sp_poly_tower_p(b)) return TRUE;
   return (sp_poly_tower_arm_p(a) || sp_poly_tower_arm_p(b)) &&
          (!sp_poly_tower_p(a) || !sp_poly_tower_p(b));
 }
@@ -8185,6 +8286,28 @@ static sp_int sp_PolyArray_sum_int(sp_PolyArray *a) { if (!a) return 0; sp_int s
    compensation, so `[3, 0.1, 0.2].sum` was 3.3000000000000003 where CRuby,
    and this array's own `.sum(0)` through sp_poly_sum_seed, answer 3.3. */
 static sp_RbVal sp_poly_sum_seed(sp_RbVal v, sp_RbVal seed);
+/* The typed sum observes the translation unit's overflow policy, just like
+   an Integer block sum. The cold library's unchecked += cannot do that. */
+static sp_int sp_IntArray_sum_checked(sp_IntArray *a, sp_int seed) {
+  sp_int sum;
+  if (sp_IntArray_sum_prefix(a, seed, &sum) != a->len)
+    sp_raise_cls("RangeError", "integer overflow in +");
+  return sum;
+}
+#ifndef SP_INT_OVERFLOW_MODE_WRAP
+#define sp_IntArray_sum sp_IntArray_sum_checked
+#endif
+static sp_RbVal sp_IntArray_sum_promote(sp_IntArray *a, sp_int seed) {
+  sp_int sum;
+  sp_int i = sp_IntArray_sum_prefix(a, seed, &sum);
+  if (i == a->len) return sp_box_int_nn(sum);
+  /* An overflowing prefix still needs the Array after boxing can allocate. */
+  SP_GC_ROOT(a);
+  sp_RbVal acc = sp_box_int_nn(sum);
+  SP_GC_ROOT_RBVAL(acc);
+  for (; i < a->len; i++) acc = sp_poly_add(acc, sp_box_int(a->data[a->start + i]));
+  return acc;
+}
 static sp_RbVal sp_PolyArray_sum_poly(sp_PolyArray *a) {
   if (!a) return sp_box_int(0);
   return sp_poly_sum_seed(sp_box_poly_array(a), sp_box_int(0));
@@ -8214,6 +8337,20 @@ static sp_PolyArray *sp_PolyArray_sum_concat(sp_PolyArray *a, sp_RbVal init) {
   if (a) for (sp_int i = 0; i < a->len; i++) sp_PolyArray_flatten_into_n(r, a->data[i], 1);
   return r;
 }
+/* Check each addend as it is appended. A non-Array still goes through
+   Array#+, including its to_ary conversion and TypeError wording. */
+static sp_PolyArray *sp_PolyArray_sum_concat_checked(sp_PolyArray *a, sp_RbVal init) {
+  SP_GC_ROOT(a);
+  sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r);
+  sp_PolyArray_flatten_into_n(r, init, 1);
+  if (a) for (sp_int i = 0; i < a->len; i++) {
+    sp_RbVal e = a->data[i];
+    if (e.tag != SP_TAG_OBJ || !sp_poly_is_array_kind(e.cls_id))
+      r = sp_poly_to_poly_array(sp_poly_add(sp_box_poly_array(r), e));
+    else sp_PolyArray_flatten_into_n(r, e, 1);
+  }
+  return r;
+}
 /* A widened copy is still the same Ruby object, so it carries the frozen bit:
    without it `a = [1, 2].freeze` followed by any call that widens a -- push of
    a String, replace by another kind -- quietly mutated a frozen array. The
@@ -8236,6 +8373,13 @@ static SP_NORETURN void sp_scan_bad_pattern(sp_RbVal pat) {
 static sp_RbVal sp_poly_pattern_chk(sp_RbVal v, int nil_ok) {
   if (v.tag == SP_TAG_NIL ? !nil_ok : v.tag != SP_TAG_OBJ || (v.cls_id < 0 && !sp_poly_is_strbuf(v)))
     sp_scan_bad_pattern(v);
+  /* a user object without #to_str is no pattern either */
+  if (v.tag == SP_TAG_OBJ && v.cls_id >= 0) {
+    SP_GC_ROOT_RBVAL(v);
+    const char *r = v.v.p && sp_obj_to_str_fn ? sp_obj_to_str_fn((int)v.cls_id, v.v.p) : NULL;
+    if (!r) sp_scan_bad_pattern(v);
+    return sp_box_str(r);
+  }
   return v;
 }
 /* match? / match on a boxed operand, ahead of the poly match helpers,
@@ -12691,6 +12835,8 @@ static sp_RbVal sp_poly_sum(sp_RbVal v) {
   /* a Symbol (or any other value that is no collection) has no sum: it
      answered 0 */
   if (v.tag != SP_TAG_OBJ) { sp_raise_poly_nomethod("sum", v); return sp_box_nil(); }
+  /* The native Integer path needs the caller's overflow policy and nil flag. */
+  if (v.cls_id == SP_BUILTIN_INT_ARRAY) return sp_poly_sum_seed(v, sp_box_int(0));
   switch (v.cls_id) {
     /* a nil element (the sentinel) raises CRuby's TypeError, as the typed sum
        does for a marked array */
@@ -12797,6 +12943,34 @@ static sp_RbVal sp_poly_sum_seed(sp_RbVal v, sp_RbVal seed) {
     n = items->len;
   }
   else return seed;
+  if (n == 0) return seed;
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_INT_ARRAY && seed.tag == SP_TAG_INT) {
+    sp_IntArray *a = sp_IntArray_nil_sum_if_flagged((sp_IntArray *)v.v.p, 0);
+#ifdef SP_INT_OVERFLOW_MODE_PROMOTE
+    return sp_IntArray_sum_promote(a, seed.v.i);
+#else
+    return sp_box_int_nn(sp_IntArray_sum(a, seed.v.i));
+#endif
+  }
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_FLT_ARRAY &&
+      (seed.tag == SP_TAG_INT || seed.tag == SP_TAG_FLT)) {
+    sp_FloatArray *a = sp_FloatArray_nil_sum_if_flagged((sp_FloatArray *)v.v.p, seed.tag == SP_TAG_FLT);
+    return sp_box_float(sp_FloatArray_sum(a, seed.tag == SP_TAG_FLT ? seed.v.f : (sp_float)seed.v.i));
+  }
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_STR_ARRAY &&
+      (seed.tag == SP_TAG_STR || sp_poly_is_strbuf(seed))) {
+    sp_StrArray *a = (sp_StrArray *)v.v.p;
+    sp_int j = 0;
+    while (j < n && a->data[j]) j++;
+    if (j == n) return sp_box_str(sp_StrArray_sum_str(a, sp_poly_strbuf_deref(seed).v.s));
+  }
+  /* Concatenation is linear when every addend is an Array. Check first so an
+     invalid addend still reaches its ordinary + at the correct fold step.
+     The concatenator now performs that check while appending each addend. */
+  if (v.tag == SP_TAG_OBJ && sp_poly_is_array_kind(v.cls_id) &&
+      seed.tag == SP_TAG_OBJ && sp_poly_is_array_kind(seed.cls_id)) {
+    return sp_box_poly_array(sp_PolyArray_sum_concat_checked(sp_poly_to_poly_array(v), seed));
+  }
   sp_RbVal acc = seed;
   SP_GC_ROOT_RBVAL(acc);
   sp_int i = 0;
@@ -12838,6 +13012,8 @@ static sp_RbVal sp_poly_sum_seed(sp_RbVal v, sp_RbVal seed) {
     }
   }
   for (; i < n; i++) acc = sp_poly_add(acc, sp_poly_sum_item(v, items, i));
+  /* The numeric result owns the full word; legacy nullable slots do not. */
+  if (acc.tag == SP_TAG_INT && acc.v.i == SP_INT_NIL) return sp_box_i64(acc.v.i);
   return acc;
 }
 /* The same fold one value at a time, for a sum with a block: the block's
@@ -12871,6 +13047,8 @@ static void sp_sum_step(sp_SumState *s, sp_RbVal e) {
 }
 static sp_RbVal sp_sum_result(sp_SumState *s) SP_UNUSED;
 static sp_RbVal sp_sum_result(sp_SumState *s) {
+  if (s->phase != 1 && s->acc.tag == SP_TAG_INT && s->acc.v.i == SP_INT_NIL)
+    return sp_box_i64(s->acc.v.i);
   return s->phase == 1 ? sp_box_float(s->f + s->c) : s->acc;
 }
 static sp_PolyArray *sp_enum_to_a_boxed(sp_RbVal v);  /* defined below, after sp_enum.h */
@@ -13731,6 +13909,7 @@ static SP_TLS void *sp_pending_cause = NULL;
 /* The exception unwinding through an `ensure` body: a raise from inside that
    body takes it as its cause, the way a raise inside a rescue takes $! (#3745). */
 static SP_TLS void *sp_inflight_cause = NULL;
+static inline void sp_inflight_restore(void **p) { sp_inflight_cause = *p; }
 /* A bare `raise` re-raises the handled exception itself, keeping the cause it
    already carries rather than becoming its own cause (#3745). */
 static SP_TLS int sp_reraise_current = 0;

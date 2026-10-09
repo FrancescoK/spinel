@@ -1033,6 +1033,8 @@ re-lit-test: $(SPINEL)
 SHARE_TESTS = $(wildcard test/share/*.rb test/share_strings_*.rb) \
                $(shell grep -l '^\# spinel: share$$' test/*.rb packages/*/test/*.rb) \
                $(shell grep -l '^\# spinel: reject-share$$' test/reject/*.rb)
+# test/share_strings_copy_beside_alloc.rb runs at SPINEL_GC_STRESS=2 as
+# well: a copy its roots lost can still read right at level 1.
 ifneq ($(FFI_AVAILABLE),yes)
 SHARE_SKIP = test/share/share_strings_fiddle.rb packages/ffi/test/%.rb packages/fiddle/test/%.rb
 endif
@@ -1088,6 +1090,11 @@ share-strings-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS
 	   ! grep -q 'sp_String_self_bytes_argument(const char \*self)' "$$tmp/forward.c" || \
 	   ! grep -q 'sp_String_self_handle_argument(sp_String \*self)' "$$tmp/forward.c"; then \
 	  echo "share-strings-test: FAIL (String self forwarding does not select the callee ABI)"; ok=0; \
+	fi; \
+	t=test/share_strings_copy_beside_alloc.rb; \
+	if ! $(SPINEL) --share-strings "$$t" -o "$$tmp/cba" >"$$tmp/out" 2>&1 || \
+	   ! SPINEL_GC_STRESS=2 "$$tmp/cba" 2>&1 | cmp -s - "$$t.expected"; then \
+	  echo "share-strings-test: FAIL (a shared String's copy beside an allocating operand is not rooted, GC stress 2)"; ok=0; \
 	fi; \
 	for t in test/share/refuse/*.rb; do \
 	  if $(SPINEL) --share-strings "$$t" -c -o "$$tmp/r.c" >"$$tmp/out" 2>&1; then \
@@ -1811,16 +1818,11 @@ reject-test: $(SPINEL)
 	      { echo "reject-test: FAIL ($$t refused without saying why)"; cat "$$tmp/ivp.out"; ok=0; }; fi; \
 	  done; \
 	done; \
-	t=test/reject/bare_const_nested_unreachable.rb; \
+	t=test/reject/bare_const_unreachable_const_missing.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/bcn.c" >"$$tmp/bcn.out" 2>&1; then \
-	  echo "reject-test: FAIL (a bare constant CRuby's lookup cannot reach compiled, bound to a nested one)"; ok=0; \
-	else grep -q "uninitialized constant X (NameError): the program defines it only as A::X" "$$tmp/bcn.out" || \
+	  echo "reject-test: FAIL (an unreachable bare constant compiled beside a const_missing that would take the miss)"; ok=0; \
+	else grep -q "uninitialized constant B::X (NameError): the program defines it only as A::X" "$$tmp/bcn.out" || \
 	  { echo "reject-test: FAIL (an unreachable bare constant refused without saying why)"; sed -n 1,5p "$$tmp/bcn.out"; ok=0; }; fi; \
-	t=test/reject/bare_const_compact_class_path.rb; \
-	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/bcp.c" >"$$tmp/bcp.out" 2>&1; then \
-	  echo "reject-test: FAIL (a constant of A read bare from a class A::B body compiled)"; ok=0; \
-	else grep -q "uninitialized constant A::B::LIMIT (NameError)" "$$tmp/bcp.out" || \
-	  { echo "reject-test: FAIL (a constant of A read bare from class A::B refused without saying why)"; sed -n 1,5p "$$tmp/bcp.out"; ok=0; }; fi; \
 	for t in test/reject/systemcallerror_subclass_errno_const*.rb; do \
 	  if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/sce.c" >"$$tmp/sce.out" 2>&1; then \
 	    echo "reject-test: FAIL ($$t: an Errno constant in a subclass of SystemCallError compiled)"; ok=0; \
@@ -3667,7 +3669,18 @@ check:
 	+@$(MAKE) --no-print-directory test OPT=-O1
 	+@$(MAKE) --no-print-directory alloc-report-test
 	+@$(MAKE) --no-print-directory infer-test
+	+@$(MAKE) --no-print-directory respond-to-audit
 	+@$(MAKE) --no-print-directory spin-check
+
+# Cross-checks sp_poly_responds_builtin's per-class method tables
+# (lib/spinel_rt.h) against src/builtin_ops.c's bop_rows, the actual
+# dispatch registry, so the two cannot drift silently again the way they
+# did before this target existed (tools/respond_to_audit.rb has the full
+# story and its scope's limits).
+respond-to-audit: $(SPINEL) $(SP_RT_LIB)
+	@ref_ruby="$(REF_RUBY)"; [ -n "$$ref_ruby" ] || ref_ruby=ruby; \
+	if ! command -v "$$ref_ruby" >/dev/null 2>&1; then echo "respond-to-audit: skipped (needs $$ref_ruby)"; exit 0; fi; \
+	SPINEL=$(SPINEL) "$$ref_ruby" tools/respond_to_audit.rb --ref "$$ref_ruby"
 
 # SPINEL_ALLOC_REPORT / SPINEL_ALLOC_SITES (#1336): the site is an address, so
 # assert the line SHAPE rather than a snapshot -- per-type lines without the
@@ -4143,6 +4156,11 @@ plan-check-test: $(SPINEL)
 
 repr-check-test: $(SPINEL)
 	@tools/repr_check.sh
+
+# The sharing verifier has its own focused corpus and conflict ratchet.
+.PHONY: share-verify-test
+share-verify-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS) $(BUNDLED_NATIVE_MT_OBJS)
+	@ruby tools/share_verify.rb
 
 # nil-check (#7444): the analysis's nil fact held against the answers the
 # codegen helpers give today. #7444's shapes (test/nil_check/) must report

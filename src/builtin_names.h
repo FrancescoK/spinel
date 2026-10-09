@@ -64,6 +64,7 @@ int is_diverging_call(const char *n); /* raise fail throw exit exit! abort: a Ke
 int is_block_loop_method(const char *n); /* times each upto downto step loop each_with_index: a block run an unbounded number of times */
 
 int is_each_window(const char *n); /* each_cons each_slice: consecutive or disjoint element windows */
+int is_sum_name(const char *n);
 int is_reduce_alias(const char *n); /* inject reduce: Enumerable reduction aliases */
 int is_minmax_query(const char *n); /* min max: extrema queries */
 int is_endpoint_query(const char *n); /* first last: collection or Range endpoints */
@@ -230,6 +231,9 @@ int is_string_append(const char *n); /* << concat: appends answering the receive
 int is_replace_name(const char *n); /* replace: a String's, Array's or Hash's contents swapped for another's, which ignores a block */
 
 int is_string_rebind_mutator(const char *n); /* mutators needing argument-rebind snapshots */
+/* String methods that only read the receiver's bytes and never retain the
+   pointer: a shared-mutable receiver hands them its live buffer. */
+int is_string_read_only_method(const char *name);
 int str_mutator_str_args(const char *n, int argc, int *int_ok); /* the arguments a String mutator takes as Strings */
 
 int builtin_module_owns(const char *cls, const char *name); /* included ahead of Object */
@@ -268,5 +272,11 @@ int is_argv_const(const char *n);        /* ARGV */
 int is_proc_conversion_name(const char *n); /* to_proc curry: makes a proc */
 int is_aref_name(const char *n);         /* []: an element read */
 int is_shovel_name(const char *n);       /* <<: an append, a chain's link */
+
+const char *dir_surface_alias(const char *n, int blockless_iter);
+
+int is_kernel_module_name(const char *n);
+int is_kernel_module_function(const char *n);
+int is_builtin_module_const_name(const char *n);
 
 #endif
