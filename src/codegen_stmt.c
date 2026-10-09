@@ -9568,6 +9568,23 @@ int rescue_is_catchall_name(const char *n) {
   return n && sp_streq(n, "Exception");
 }
 
+/* Whether rescue operand `op` is matched by the class's name. A constant is a
+   value like any other operand when the program itself defines it as no class
+   (`XN = nil`, `XI = 5`, an alias `XA = ArgumentError`, `Config::NONE`): it is
+   evaluated in its place, a TypeError when it is not a class. Every other
+   constant keeps the match by name: a class or module of the program or the
+   runtime, a library's (`SocketError`, a package's exception), or a name no
+   program constant holds. A path is looked up by its last name, as the
+   constant read finds it. */
+static int rescue_operand_is_class_name(Compiler *c, int op) {
+  NodeKind k = nt_kind(c->nt, op);
+  if (k != NK_ConstantReadNode && k != NK_ConstantPathNode) return 0;
+  const char *n = nt_str(c->nt, op, "name");
+  if (!n || !comp_const(c, n)) return 1;
+  return comp_class_index(c, n) >= 0 || is_builtin_class_name(n) || is_builtin_module_name(n) ||
+         is_builtin_exception_name(n);
+}
+
 /* exception frames a retry leaves on its way back to the body: the frame
    the rescue clauses of a begin with an ensure run in */
 static int g_retry_pops;
@@ -9623,9 +9640,14 @@ void emit_rescue(Compiler *c, int id, Buf *b, int indent, int fr, const char *re
   int bare = (nexc == 0);
   int catchall = 0;
   for (int i = 0; i < nexc; i++) {
-    const char *en = nt_type(nt, exc[i]);
-    if (en && sp_streq(en, "ConstantReadNode") && rescue_is_catchall_name(nt_str(nt, exc[i], "name")))
+    if (nt_kind(nt, exc[i]) == NK_ConstantReadNode && rescue_is_catchall_name(nt_str(nt, exc[i], "name"))) {
       catchall = 1;
+      break;
+    }
+    /* `rescue nil, Exception` raises TypeError for the nil, and a call or a
+       splat before Exception runs: only class names may come before the
+       catchall, else the ordered matcher below keeps their order */
+    if (!rescue_operand_is_class_name(c, exc[i])) break;
   }
 
   const char *save_cls = g_rescue_cls, *save_msg = g_rescue_msg;
@@ -9667,7 +9689,7 @@ void emit_rescue(Compiler *c, int id, Buf *b, int indent, int fr, const char *re
          matches by the class value's identity at run time, and a value that is
          not a class or module is a TypeError, as in CRuby, not a clause that
          matches everything (#3712) */
-      if (nt_kind(nt, exc[i]) != NK_ConstantReadNode && nt_kind(nt, exc[i]) != NK_ConstantPathNode) {
+      if (!rescue_operand_is_class_name(c, exc[i])) {
         if (!first) buf_puts(b, " || ");
         first = 0;
         buf_printf(b, "sp_exc_matches_operand(_rcls_%d, ", rc);
