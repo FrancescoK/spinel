@@ -922,6 +922,9 @@ PCH_PLAIN  := $(PCH_ROOT)/plain/spinel_rt.h.gch
 PCH_NOPOLY := $(PCH_ROOT)/nopoly/spinel_rt.h.gch
 SP_LIB_HDRS := $(wildcard lib/*.h) $(PLATFORM_HDRS)
 
+.PHONY: test-pch
+test-pch: $(PCH_PLAIN) $(PCH_NOPOLY)
+
 $(PCH_PLAIN): $(SP_LIB_HDRS)
 	@mkdir -p $(@D)
 	@cp lib/spinel_rt.h $(@D)/spinel_rt.h
@@ -3781,6 +3784,13 @@ gate-full:
 	+@$(MAKE) --no-print-directory gate GATE_CACHE=0
 
 gate-legs: gate-test gate-test-shared gate-bench gate-optcarrot gate-rubyspec gate-props
+# Both corpus sub-makes use the same -O1 PCH files. Build them once before
+# either leg starts so one cannot read a PCH while the other writes it.
+.PHONY: gate-pch
+gate-pch:
+	+@$(MAKE) --no-print-directory test-pch OPT=-O1
+gate-test gate-test-shared: gate-pch
+
 gate-test:
 	+@$(MAKE) --no-print-directory test OPT=-O1
 # The same corpus, including packages, with String sharing. Separate verdicts

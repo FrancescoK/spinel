@@ -1,6 +1,6 @@
 # SPINEL_SHARE_STRINGS=1, OPT=-O1, macOS, Apple clang 21.
 # Names are those printed by make test; remove an entry when it passes.
-# Observed at master 74fa6d7c2 on Linux x86_64 (the fork's CI).
+# Observed at master 84f5b5020 on Linux x86_64 (the fork's CI).
 pkg.net.net_http_client
 pkg.net.net_http_default_headers
 pkg.net.net_http_finish_not_started
