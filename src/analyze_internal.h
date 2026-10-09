@@ -15,6 +15,7 @@
    no analyzer TU calls it undeclared (an implicit `int` prototype, which a
    wasm link reports as a signature mismatch and an LP64 link hides) */
 __attribute__((noreturn)) void unsupported_feature(Compiler *c, int id, const char *msg);
+int defer_refusals(void); /* codegen_util.c: explicit opt-in to runtime refusals */
 int ie_class_of(Compiler *c, int node);
 int attr_reader_ty(Compiler *c, int cid, const char *name, TyKind *out);
 int ie_poly_classes_at(Compiler *c, int node, int *out, int max);
@@ -248,6 +249,7 @@ int object_reopen_answers(Compiler *c, const char *cls, int call_id, TyKind *out
 int is_proc_create(Compiler *c, int id);
 int local_proc_literal_param_of(Compiler *c, Scope *sc, const char *nm);
 int proc_literal_calls_in_sight(Compiler *c, int lit);
+int proc_literal_uncalled(Compiler *c, int lit);
 int proc_lit_carrier(Compiler *c, int v, int lit);
 int widen_hash_arg_for_store(Compiler *c, int arg, TyKind hk, TyKind hv);
 int pivs_settle_hash_stores(Compiler *c);

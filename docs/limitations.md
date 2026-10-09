@@ -29,10 +29,13 @@ For example, a class-body `define_method("get_" + (ARGV[0] || "a")) { 1 }`
 does not define `get_a`, so a later call raises `NoMethodError`; a computed
 `instance_variable_get("@" + (ARGV[0] || "x"))` on a user-class instance also
 raises `NoMethodError`. A `Class.new` block assigned to a local or returned
-from a method raises `NotImplementedError` if it captures outer locals or uses
-a superclass held in a variable (see the cases below).
-These cases can compile without a refusal or warning. A successful compile
-does not establish CRuby-compatible behavior. Separately, `--defer-refusals`
+from a method raises `NotImplementedError` if it uses a superclass held in a
+variable (see the cases below). `Class.new` and `Module.new` blocks that
+capture outer locals are refused at compile time unless `--defer-refusals` is
+supplied.
+The dynamic-name and variable-superclass cases can still compile without a
+refusal or warning. A successful compile does not establish CRuby-compatible
+behavior. Separately, `--defer-refusals`
 explicitly turns compile-time refusals into runtime `NotImplementedError`s.
 
 ---
@@ -188,12 +191,22 @@ p make == make                              # true (CRuby: false)
 Each such expression refers to one compiled class, so repeated calls reuse
 that class. It does not create a fresh class on each evaluation as CRuby does.
 
-A local assignment or method return whose block captures outer locals or uses
-a variable superclass compiles to a runtime `NotImplementedError`. The message
-mentions a block reading outer locals even when the variable superclass alone
-caused the failure. The compile-time refusal for a local assignment without a
-block spells the construct `Class.new(parent) { ... }` even though no block
-was supplied.
+A `Class.new` or `Module.new` block that captures outer locals is refused at
+compile time for constant assignments, local assignments and reachable method
+returns. An unreachable method remains pruned, including any captured
+class-building block in its body. A Proc or lambda that nothing reads, whether
+held by a local, a constant, an instance variable or a global, does not consume
+the capture refusal either. Reachability is approximate in the other
+direction: a Proc passed to a method that never calls it, and a method called
+only from an uncalled lambda, count as reachable, so a capture inside them is
+still refused. With `--defer-refusals`,
+it retains the runtime `NotImplementedError` instead. Locals defined inside
+the class-building block are not outer captures.
+
+A local assignment or method return using a variable superclass still compiles
+to a runtime `NotImplementedError` naming the variable superclass. The
+compile-time refusal for a local assignment without a block names
+`Class.new(parent)` without claiming that a block was supplied.
 
 Builtin parents can take separate paths: for example,
 `Err = Class.new(StandardError)` works without a block. The builtin-subclass

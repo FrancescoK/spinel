@@ -642,6 +642,8 @@ static int cplan_str_method_mutator(Compiler *c, int id) {
   return sym && an_str_mutator_name(sym);
 }
 
+static int cplan_reachable(Compiler *c, int id);
+
 const char *cplan_feature_why(Compiler *c, int id, int *stop, char *buf, size_t cap) {
   *stop = 1;
   const NodeTable *nt = c->nt;
@@ -649,6 +651,8 @@ const char *cplan_feature_why(Compiler *c, int id, int *stop, char *buf, size_t 
   if (!nty || !sp_streq(nty, "CallNode")) return NULL;
   const char *name = nt_str(nt, id, "name");
   if (!name) return NULL;
+  if (is_raise_alias(name) && nt_int(nt, id, "class_new_capture", 0) && cplan_reachable(c, id))
+    return "Class.new or Module.new with a block that captures outer locals is not supported; see docs/limitations.md";
   int recv = nt_ref(nt, id, "receiver");
   if ((nt_kind(nt, recv) == NK_ConstantReadNode || nt_kind(nt, recv) == NK_ConstantPathNode) &&
       !nt_int(nt, id, "builtin_only", 0)) {
@@ -774,7 +778,7 @@ const char *cplan_feature_why(Compiler *c, int id, int *stop, char *buf, size_t 
        and is left to the normal path. */
     else if (sp_streq(rcn, "Class") && sp_streq(name, "new") &&
              (nt_ref(nt, id, "block") >= 0 || cplan_argc(nt, id) > 0))
-      why = "Class.new(parent) { ... } is not supported by AOT compilation: the class "
+      why = "Class.new(parent) is not supported by AOT compilation: the class "
             "graph, ancestor chain, and method/ivar layout are baked at compile time. "
             "Declare the class with `class ... end` instead (see docs/limitations.md)";
   }
@@ -828,6 +832,8 @@ static int cplan_user_names(Compiler *c, const char *name) {
    enclosing method's scope, and the emit loop emits a scope's body only when
    it is reachable */
 static int cplan_reachable(Compiler *c, int id) {
+  int proc = nt_int(c->nt, id, "refusal_proc", -1);
+  if (proc >= 0 && proc_literal_uncalled(c, proc)) return 0;
   int sc = c->nscope[id];
   return sc >= 0 && sc < c->nscopes && c->scopes[sc].reachable;
 }

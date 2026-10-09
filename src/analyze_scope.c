@@ -1126,10 +1126,15 @@ void refuse_native_singleton_reopen(Compiler *c, Scope *s) {
   refuse_native_class_reopen(c, s->def_node, recv, ci, nt_str(c->nt, recv, "name"));
 }
 
-void walk_scope(Compiler *c, int id, int scope_idx, int class_id) {
+static void walk_scope_in(Compiler *c, int id, int scope_idx, int class_id, int proc) {
   if (id < 0 || id >= c->nt->count) return;
   c->nscope[id] = scope_idx;
   c->node_cbody[id] = g_cbody_class_id;
+  if (proc >= 0 && nt_kind(c->nt, id) == NK_CallNode &&
+      (nt_int(c->nt, id, "class_new_capture", 0) || nt_int(c->nt, id, "class_new_superclass", 0)))
+    nt_node_set_int((NodeTable *)c->nt, id, "refusal_proc", proc);
+  if (nt_kind(c->nt, id) == NK_DefNode) proc = -1;
+  else if (is_proc_create(c, id)) proc = id;
   const char *ty = nt_type(c->nt, id);
   int child = scope_idx;
   int child_class = class_id;
@@ -1399,17 +1404,21 @@ void walk_scope(Compiler *c, int id, int scope_idx, int class_id) {
   int nr = nt_num_refs(c->nt, id);
   for (int i = 0; i < nr; i++) {
     int r = nt_ref_at(c->nt, id, i);
-    if (r >= 0) walk_scope(c, r, child, child_class);
+    if (r >= 0) walk_scope_in(c, r, child, child_class, proc);
   }
   int na = nt_num_arrs(c->nt, id);
   for (int i = 0; i < na; i++) {
     int n = 0;
     const int *ids = nt_arr_at(c->nt, id, i, &n);
     for (int j = 0; j < n; j++)
-      if (ids[j] >= 0) walk_scope(c, ids[j], child, child_class);
+      if (ids[j] >= 0) walk_scope_in(c, ids[j], child, child_class, proc);
   }
   g_cbody_class_id = saved_cbody;
   g_cbody_direct = saved_direct;
+}
+
+void walk_scope(Compiler *c, int id, int scope_idx, int class_id) {
+  walk_scope_in(c, id, scope_idx, class_id, -1);
 }
 
 /* A `module_function` call of module `ci`'s body: bare, it turns on the mode

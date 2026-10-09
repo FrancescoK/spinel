@@ -202,23 +202,65 @@ spinel: test/reject/class_named_like_monitor_path.rb:4: unsupported class name '
 spinel: test/reject/class_named_like_open_struct.rb:8: unsupported class name 'OpenStruct': collides with the builtin class of that name
 == test/reject/class_named_like_open_struct.rb [promote] rc=1
 spinel: test/reject/class_named_like_open_struct.rb:8: unsupported class name 'OpenStruct': collides with the builtin class of that name
+== test/reject/class_new_captured_attr_reader.rb [default] rc=1
+spinel: test/reject/class_new_captured_attr_reader.rb:6: Class.new or Module.new with a block that captures outer locals is not supported; see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/class_new_captured_attr_reader.rb [promote] rc=1
+spinel: test/reject/class_new_captured_attr_reader.rb:6: Class.new or Module.new with a block that captures outer locals is not supported; see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/class_new_captured_called_constant.rb [default] rc=1
+spinel: test/reject/class_new_captured_called_constant.rb:4: Class.new or Module.new with a block that captures outer locals is not supported; see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/class_new_captured_called_constant.rb [promote] rc=1
+spinel: test/reject/class_new_captured_called_constant.rb:4: Class.new or Module.new with a block that captures outer locals is not supported; see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/class_new_captured_constant.rb [default] rc=1
+spinel: test/reject/class_new_captured_constant.rb:4: Class.new or Module.new with a block that captures outer locals is not supported; see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/class_new_captured_constant.rb [promote] rc=1
+spinel: test/reject/class_new_captured_constant.rb:4: Class.new or Module.new with a block that captures outer locals is not supported; see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/class_new_captured_default.rb [default] rc=1
+spinel: test/reject/class_new_captured_default.rb:4: Class.new or Module.new with a block that captures outer locals is not supported; see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/class_new_captured_default.rb [promote] rc=1
+spinel: test/reject/class_new_captured_default.rb:4: Class.new or Module.new with a block that captures outer locals is not supported; see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/class_new_captured_local.rb [default] rc=1
+spinel: test/reject/class_new_captured_local.rb:5: Class.new or Module.new with a block that captures outer locals is not supported; see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/class_new_captured_local.rb [promote] rc=1
+spinel: test/reject/class_new_captured_local.rb:5: Class.new or Module.new with a block that captures outer locals is not supported; see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/class_new_captured_method.rb [default] rc=1
+spinel: test/reject/class_new_captured_method.rb:5: Class.new or Module.new with a block that captures outer locals is not supported; see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/class_new_captured_method.rb [promote] rc=1
+spinel: test/reject/class_new_captured_method.rb:5: Class.new or Module.new with a block that captures outer locals is not supported; see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/class_new_captured_path.rb [default] rc=1
+spinel: test/reject/class_new_captured_path.rb:5: Class.new or Module.new with a block that captures outer locals is not supported; see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/class_new_captured_path.rb [promote] rc=1
+spinel: test/reject/class_new_captured_path.rb:5: Class.new or Module.new with a block that captures outer locals is not supported; see docs/limitations.md
+spinel: 1 refusal, nothing written
 == test/reject/class_new_without_block_iterator.rb [default] rc=1
-spinel: test/reject/class_new_without_block_iterator.rb:5: Class.new(parent) { ... } is not supported by AOT compilation: the class graph, ancestor chain, and method/ivar layout are baked at compile time. Declare the class with `class ... end` instead (see docs/limitations.md)
+spinel: test/reject/class_new_without_block_iterator.rb:5: Class.new(parent) is not supported by AOT compilation: the class graph, ancestor chain, and method/ivar layout are baked at compile time. Declare the class with `class ... end` instead (see docs/limitations.md)
 spinel: 1 refusal, nothing written
 == test/reject/class_new_without_block_iterator.rb [promote] rc=1
-spinel: test/reject/class_new_without_block_iterator.rb:5: Class.new(parent) { ... } is not supported by AOT compilation: the class graph, ancestor chain, and method/ivar layout are baked at compile time. Declare the class with `class ... end` instead (see docs/limitations.md)
+spinel: test/reject/class_new_without_block_iterator.rb:5: Class.new(parent) is not supported by AOT compilation: the class graph, ancestor chain, and method/ivar layout are baked at compile time. Declare the class with `class ... end` instead (see docs/limitations.md)
 spinel: 1 refusal, nothing written
 == test/reject/class_new_without_block_loop.rb [default] rc=1
-spinel: test/reject/class_new_without_block_loop.rb:6: Class.new(parent) { ... } is not supported by AOT compilation: the class graph, ancestor chain, and method/ivar layout are baked at compile time. Declare the class with `class ... end` instead (see docs/limitations.md)
+spinel: test/reject/class_new_without_block_loop.rb:6: Class.new(parent) is not supported by AOT compilation: the class graph, ancestor chain, and method/ivar layout are baked at compile time. Declare the class with `class ... end` instead (see docs/limitations.md)
 spinel: 1 refusal, nothing written
 == test/reject/class_new_without_block_loop.rb [promote] rc=1
-spinel: test/reject/class_new_without_block_loop.rb:6: Class.new(parent) { ... } is not supported by AOT compilation: the class graph, ancestor chain, and method/ivar layout are baked at compile time. Declare the class with `class ... end` instead (see docs/limitations.md)
+spinel: test/reject/class_new_without_block_loop.rb:6: Class.new(parent) is not supported by AOT compilation: the class graph, ancestor chain, and method/ivar layout are baked at compile time. Declare the class with `class ... end` instead (see docs/limitations.md)
 spinel: 1 refusal, nothing written
 == test/reject/class_new_without_block_repeated.rb [default] rc=1
-spinel: test/reject/class_new_without_block_repeated.rb:4: Class.new(parent) { ... } is not supported by AOT compilation: the class graph, ancestor chain, and method/ivar layout are baked at compile time. Declare the class with `class ... end` instead (see docs/limitations.md)
+spinel: test/reject/class_new_without_block_repeated.rb:4: Class.new(parent) is not supported by AOT compilation: the class graph, ancestor chain, and method/ivar layout are baked at compile time. Declare the class with `class ... end` instead (see docs/limitations.md)
 spinel: 1 refusal, nothing written
 == test/reject/class_new_without_block_repeated.rb [promote] rc=1
-spinel: test/reject/class_new_without_block_repeated.rb:4: Class.new(parent) { ... } is not supported by AOT compilation: the class graph, ancestor chain, and method/ivar layout are baked at compile time. Declare the class with `class ... end` instead (see docs/limitations.md)
+spinel: test/reject/class_new_without_block_repeated.rb:4: Class.new(parent) is not supported by AOT compilation: the class graph, ancestor chain, and method/ivar layout are baked at compile time. Declare the class with `class ... end` instead (see docs/limitations.md)
 spinel: 1 refusal, nothing written
 == test/reject/class_paren_superclass_rescue.rb [default] rc=1
 spinel: test/reject/class_paren_superclass_rescue.rb:8: unsupported superclass expression (RescueModifierNode): write the superclass as a constant
@@ -736,6 +778,18 @@ spinel: test/reject/module_named_like_monitor.rb:3: Monitor is not a module (Typ
 spinel: test/reject/module_named_like_open_struct.rb:6: OpenStruct is not a module (TypeError)
 == test/reject/module_named_like_open_struct.rb [promote] rc=1
 spinel: test/reject/module_named_like_open_struct.rb:6: OpenStruct is not a module (TypeError)
+== test/reject/module_new_captured_constant.rb [default] rc=1
+spinel: test/reject/module_new_captured_constant.rb:4: Class.new or Module.new with a block that captures outer locals is not supported; see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/module_new_captured_constant.rb [promote] rc=1
+spinel: test/reject/module_new_captured_constant.rb:4: Class.new or Module.new with a block that captures outer locals is not supported; see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/module_new_captured_local.rb [default] rc=1
+spinel: test/reject/module_new_captured_local.rb:4: Class.new or Module.new with a block that captures outer locals is not supported; see docs/limitations.md
+spinel: 1 refusal, nothing written
+== test/reject/module_new_captured_local.rb [promote] rc=1
+spinel: test/reject/module_new_captured_local.rb:4: Class.new or Module.new with a block that captures outer locals is not supported; see docs/limitations.md
+spinel: 1 refusal, nothing written
 == test/reject/new_receiver_class_chain_still_reached.rb [default] rc=1
 spinel: test/reject/new_receiver_class_chain_still_reached.rb:5: undefined method '[]=' for a Class: no class in the program defines a class method '[]=' (NoMethodError)
 spinel: 1 refusal, nothing written
