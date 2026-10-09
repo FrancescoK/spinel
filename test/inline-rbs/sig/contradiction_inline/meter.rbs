@@ -1,0 +1,5 @@
+class Meter
+  @reading: Integer
+  def label: () -> Integer
+  def scale: (Integer) -> Integer
+end

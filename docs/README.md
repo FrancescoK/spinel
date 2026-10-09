@@ -19,6 +19,10 @@ Start here, then open the topic you need.
 - **[rbs-extract.md](rbs-extract.md)** -- seed the type inferencer with `.rbs`
   signatures via `spinel --rbs DIR`: the supported RBS subset, what a seed buys,
   and why a seed is an assertion you are trusted to get right rather than a hint.
+- **[inline-rbs.md](inline-rbs.md)** -- the same signatures written as RBS
+  comments in the Ruby source (`#: (Integer) -> String`, `# @rbs x: Integer`):
+  the supported forms, where an annotation attaches, and what Spinel says about
+  one it does not apply.
 - **[float-rounding.md](float-rounding.md)** -- the return type of
   `Float#ceil`/`#floor`/`#round`/`#truncate`, where Spinel's static typing meets
   CRuby's value-dependent rule.

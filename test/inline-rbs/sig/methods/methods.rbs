@@ -1,0 +1,14 @@
+class Calc
+  def m1: (untyped) -> untyped
+  def m2: () -> void
+  def m3: (untyped) -> untyped
+  def m7: (untyped, untyped) -> untyped
+  def m8: (untyped, untyped) -> untyped
+  def m9: (untyped, untyped) -> untyped
+  def m9k: (untyped, k: untyped) -> untyped
+  def m11: (untyped) -> untyped
+  def m12: (untyped) -> untyped
+  def adjacent_signature: (untyped) -> untyped
+  def priv: (untyped) -> untyped
+  def self.m13: (untyped) -> untyped
+end

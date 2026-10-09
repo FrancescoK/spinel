@@ -1,0 +1,5 @@
+class Row
+  attr_accessor s: String?
+  @n: Integer?
+  def take: (Integer) -> Integer
+end

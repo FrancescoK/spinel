@@ -162,6 +162,11 @@ turns out wrong at run time, narrowed out of a box into the slot, is
 reinterpreted rather than widened. See
 [docs/rbs-extract.md](docs/rbs-extract.md) for the supported subset.
 
+The same signatures can be written inline, as RBS comments in the Ruby
+source (`#: (Integer) -> String` above a `def`, `attr_reader :name #:
+String`); Spinel applies them on every compile, the same way. See
+[docs/inline-rbs.md](docs/inline-rbs.md).
+
 ## Benchmarks
 
 3,651 tests pass. 62 benchmarks pass.

@@ -1,0 +1,6 @@
+class Label
+  attr_reader trailing: String?
+  attr_accessor editable: String?
+  @declared: String?
+  @assigned: String?
+end

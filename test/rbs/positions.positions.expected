@@ -1,0 +1,13 @@
+class Outer
+src positions.rbs:6
+ivar after float
+src positions.rbs:7
+meth both int string
+cmeth both int string
+src positions.rbs:8
+meth first int -
+src positions.rbs:8
+meth second string -
+class Outer_Inner
+src positions.rbs:4
+meth nested string -

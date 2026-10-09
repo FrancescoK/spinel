@@ -339,6 +339,12 @@ static size_t prism_kind_to_pascal(const char *raw, char *out, size_t out_size) 
 
 /* ---- Forward ---- */
 static int flatten(pm_node_t *node);
+/* inline RBS (inline_rbs.c): the facts of a node, written by flatten */
+static void sp_inline_rbs_emit(const pm_node_t *node, int id);
+/* --no-inline-rbs: the driver clears it, and comments are only comments */
+int sp_inline_rbs_enabled = 1;
+/* set when an inline RBS error, already reported, stopped the parse */
+int sp_inline_rbs_failed = 0;
 static int sp_in_builtin(const uint8_t *at);   /* a builtins/ splice (below) */
 
 /* ---- Emit helpers ---- */
@@ -564,6 +570,8 @@ static int g_bi_base = -1;
 static int flatten_node(pm_node_t *node);
 static int flatten(pm_node_t *node) {
   int saved = g_bi_base;
+  /* the node's inline RBS facts, under the id flatten_node gives it next */
+  if (node) sp_inline_rbs_emit(node, node_counter);
   int id = flatten_node(node);
   g_bi_base = saved;
   return id;
@@ -5115,6 +5123,87 @@ else {
    invoking program path (used to locate the stdlib for plain `require`s).
    Returns 0 on success, 1 on read/parse error. This is the library copy
    (the in-process lib API; no standalone CLI main). */
+/* ---- recognising an inline RBS comment (docs/inline-rbs.md) ---- */
+
+/* RDoc's directives are spelled `:name:` and none of them is a valid RBS
+ * annotation, so `#:nodoc:` and its kind are documentation, not types
+ * (RDoc 7.0: rdoc/markup/pre_process.rb, rdoc/parser/ruby.rb). */
+static int ir_rdoc_directive(const char *s, size_t n) {
+    static const char *names[] = {
+        "arg", "args", "attr", "attr_accessor", "attr_reader", "attr_writer",
+        "call-seq", "category", "doc", "enddoc", "include", "main", "method",
+        "nodoc", "notnew", "not_new", "not-new", "section", "singleton-method",
+        "startdoc", "stopdoc", "title", "yield", "yields", NULL
+    };
+    /* s points just past "#:" */
+    size_t i = 0;
+    while (i < n && (s[i] == '-' || s[i] == '_' || (s[i] >= 'a' && s[i] <= 'z'))) i++;
+    if (i == 0 || i >= n || s[i] != ':') return 0;
+    for (int k = 0; names[k]; k++)
+        if (strlen(names[k]) == i && memcmp(names[k], s, i) == 0) return 1;
+    return 0;
+}
+
+/* What kind of line a comment is, for the block grouping below. */
+typedef enum { CL_PROSE, CL_COLON, CL_RBS } ir_cline;
+
+static ir_cline ir_classify(const char *s, size_t n) {
+    if (n >= 2 && s[1] == ':') return ir_rdoc_directive(s + 2, n - 2) ? CL_PROSE : CL_COLON;
+    size_t i = 1;
+    if (i < n && s[i] == ' ') i++;
+    if (n - i >= 4 && memcmp(s + i, "@rbs", 4) == 0 &&
+        (n - i == 4 || !((s[i + 4] >= 'a' && s[i + 4] <= 'z') || (s[i + 4] >= 'A' && s[i + 4] <= 'Z') ||
+                         (s[i + 4] >= '0' && s[i + 4] <= '9') || s[i + 4] == '_')))
+        return CL_RBS;
+    return CL_PROSE;
+}
+
+#ifdef SPINEL_INLINE_RBS
+#include "rbs_map.h"
+#include "inline_rbs.c"
+#else
+/* Built without the rbs C parser (no `make deps`): an annotation cannot be
+   read, and is not applied -- which is said once, at the first one, rather
+   than nothing at all. */
+static int sp_inline_rbs_run(pm_parser_t *parser, pm_node_t *root, const char *source, size_t len) {
+  (void)root; (void)len;
+  if (!sp_inline_rbs_enabled) return 0;
+  int previous_line = 0, previous_col = -1, block_leading = 1;
+  for (const pm_comment_t *c = (const pm_comment_t *)parser->comment_list.head; c; c = (const pm_comment_t *)c->node.next) {
+    const uint8_t *s = c->location.start;
+    size_t n = (size_t)(c->location.end - s);
+    if (c->type != PM_COMMENT_INLINE || sp_in_builtin(s)) continue;
+    const uint8_t *line_start = s;
+    while (line_start > (const uint8_t *)source && line_start[-1] != '\n') line_start--;
+    int leading = 1;
+    for (const uint8_t *p = line_start; p < s; p++)
+      if (*p != ' ' && *p != '\t') { leading = 0; break; }
+    int bl = pm_newline_list_line(&parser->newline_list, s, parser->start_line);
+    int col = (int)(s - line_start);
+    int continued = leading && bl == previous_line + 1 && col == previous_col;
+    if (!continued) block_leading = leading;
+    previous_line = bl;
+    previous_col = col;
+    /* A trailing block is recognized by its first comment only. Leading
+       @rbs lines and trailing #[...] applications have distinct placements. */
+    if (n < 2 || (continued && !block_leading)) continue;
+    ir_cline kind = ir_classify((const char *)s, n);
+    if (kind == CL_COLON || (block_leading && kind == CL_RBS) || (!block_leading && s[1] == '[')) {
+      const char *file = g_source_file;
+      int line = bl;
+      if (sp_line_map_n > 0 && bl >= 1 && bl <= sp_line_map_n && sp_line_orig[bl] > 0) { file = sp_file_table[sp_line_file[bl]]; line = sp_line_orig[bl]; }
+      fprintf(stderr, "spinel: %s:%d: warning: inline RBS comments are not applied: this spinel was "
+                      "built without the rbs parser (run `make deps` and rebuild, or pass --no-inline-rbs)\n", file, line);
+      return 0;
+    }
+  }
+  return 0;
+}
+static void sp_inline_rbs_emit(const pm_node_t *node, int id) { (void)node; (void)id; }
+static void sp_inline_rbs_done(void) {}
+static void sp_inline_rbs_free(void) {}
+#endif
+
 static int sp_parse_emit(const char *source_file, const char *argv0, SpStrBuf *out) {
   char *source = read_file(source_file);
   if (!source) {
@@ -5307,6 +5396,20 @@ else {
   g_source_file = source_file;
   g_source_file_escaped = escape_str((const uint8_t *)g_source_file, strlen(g_source_file));
 
+  /* Inline RBS: the comment list and the tree are alive together only here. */
+  if (sp_inline_rbs_run(&parser, root, source, source_len) > 0) {
+    sp_inline_rbs_failed = 1;
+    sp_inline_rbs_free();
+    pm_node_destroy(&parser, root);
+    pm_parser_free(&parser);
+    free(source);
+    free(g_fsl_lines); g_fsl_lines = NULL; g_fsl_nlines = 0;
+    free(g_source_file_escaped);
+    g_source_file_escaped = NULL;
+    sp_includes_free();
+    return 2;
+  }
+
   /* Flatten AST to text */
   lines = NULL;
   line_count = 0;
@@ -5336,6 +5439,8 @@ else {
   }
   free(lines);
 
+  sp_inline_rbs_done();
+  sp_inline_rbs_free();
   pm_node_destroy(&parser, root);
   pm_parser_free(&parser);
   free(source);

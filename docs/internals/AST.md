@@ -310,6 +310,29 @@ Decimal integer, possibly signed. Used for `IntegerNode.value` (the
 parsed literal), `flags` bitfields, and Prism's `NumberedParametersNode`
 arity.
 
+### Inline RBS facts
+
+An applied inline RBS comment ([inline-rbs.md](../inline-rbs.md)) is
+written onto the node it describes, and only onto that node:
+
+- `S <def> rbs_ret <tag>`, `S <def> rbs_params <tag>,<tag>,...` -- a
+  method's signature, as seed-file tags (`int`, `string?`, `obj_Foo`, ...;
+  see [rbs-extract.md](../rbs-extract.md#seed-file-format)), one parameter
+  field per parameter in the def's order, empty where unsaid, `-` for none.
+- `S <attr_* call> rbs_ivar <tag>` -- the type of each attribute the call
+  declares.
+- `S <class body StatementsNode> rbs_ivars @x=<tag>@<line>@<file>@<col>,...` --
+  the class body's `# @rbs @x: T` declarations, each with its position.
+- `I <node> rbs_line <line>`, `I <node> rbs_col <col>`, `I <node> rbs_file
+  <file id>` -- the original position of the comment (its `#`), for anything
+  reported about it later.
+- `S <node> rbs_names <tag>=<type>...` -- each tag above beside the type the
+  comment wrote (`obj_Time=Time`), one per line (escaped), so a type the
+  analyzer cannot pin is reported as written.
+- `I <program> rbs_any 1` -- present when any of the above is.
+
+`apply_inline_rbs` (src/analyze.c) reads them.
+
 ### `F <id> <field> <float>`
 
 Float literal in `printf("%.17g")` form, always with a decimal point.

@@ -1,0 +1,3 @@
+class K
+  def m: (String) -> String
+end

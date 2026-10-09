@@ -1,0 +1,12 @@
+class ExplicitReader
+  def items: () -> Array[Integer]
+end
+
+class ImplicitReader
+  @items: Array[Integer]
+  def items: () -> Array[Integer]
+end
+
+class MemoReader
+  def self.items: () -> Array[Integer]
+end

@@ -1,0 +1,9 @@
+# UTF-8 before declaration offsets: 日本語 λ
+module Outer
+  class Inner
+    def nested: () -> String
+  end
+  attr_accessor after: Float
+  def self?.both: (String) -> Integer
+  def first: () -> Integer def second: () -> String
+end

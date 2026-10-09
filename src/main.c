@@ -454,6 +454,8 @@ static void usage(void) {
     "              and Fiber, Thread, processes and sockets are not available there\n"
     "  -e STR      Inline Ruby source (repeatable; joined with newlines)\n"
     "  --rbs DIR   Seed analyzer with RBS signatures from DIR (advisory)\n"
+    "  --no-inline-rbs  Ignore inline RBS comments (`#: ...`, `# @rbs ...`)\n"
+    "              in the program (default: apply them; docs/inline-rbs.md)\n"
     "  --int-overflow=MODE  Int +/-/* overflow handling (default: raise)\n"
     "  --dump-ast  Print the text AST and exit (debug)\n");
 }
@@ -502,6 +504,7 @@ int main(int argc, char **argv) {
   int target_wasi = 0;
   const char *int_overflow = "raise";
   const char *rbs_dir = NULL;
+  extern int sp_inline_rbs_enabled, sp_inline_rbs_failed;
   int c_only = 0, stdout_mode = 0, run_mode = 0, dump_ast = 0;
   int print_build = 0;   /* --print-build: emit the build ingredients, run nothing */
   int cc_jobs = 0;       /* --jobs=N: compile the C as N units in parallel (#4847); 0 = auto */
@@ -529,6 +532,7 @@ int main(int argc, char **argv) {
     }
     else if (!strncmp(a, "--rbs=", 6))    { rbs_dir = a + 6; i++; }
     else if (sp_streq(a, "--rbs"))         { if (++i < argc) rbs_dir = argv[i]; i++; }
+    else if (sp_streq(a, "--no-inline-rbs")) { sp_inline_rbs_enabled = 0; i++; }
     else if (sp_streq(a, "--disable=frozen-string-literal") ||
              sp_streq(a, "--disable-frozen-string-literal")) {
       fprintf(stderr, "spinel: --disable=frozen-string-literal is not "
@@ -786,6 +790,9 @@ int main(int argc, char **argv) {
       make_temp_path(seed_path, sizeof seed_path, "seed", 0, ".txt");
       Str cmd = {0};
       s_add_arg(&cmd, extractor);
+      /* each seed preceded by its .rbs position, which a disagreement with
+         an inline RBS annotation names */
+      if (sp_inline_rbs_enabled) s_add_arg(&cmd, "--positions");
       s_add_arg(&cmd, rbs_dir);
       s_add(&cmd, "> ");
       s_add_arg(&cmd, seed_path);
@@ -910,7 +917,12 @@ int main(int argc, char **argv) {
   double tm_front = sp_timing_now();
   char *text = sp_parse_file_to_text(source, argv[0]);
   if (eval_path[0]) remove(eval_path);
-  if (!text) { fprintf(stderr, "spinel: parse failed for '%s'\n", source); if (seed_path[0]) remove(seed_path); return 1; }
+  if (!text) {
+    /* an inline RBS error has been reported at the annotation */
+    if (!sp_inline_rbs_failed) fprintf(stderr, "spinel: parse failed for '%s'\n", source);
+    if (seed_path[0]) remove(seed_path);
+    return 1;
+  }
 
   if (dump_ast) { fputs(text, stdout); free(text); if (seed_path[0]) remove(seed_path); return 0; }
 

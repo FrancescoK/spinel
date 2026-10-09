@@ -1,0 +1,6 @@
+module Left
+  class Item
+    attr_reader name: String?
+    def weigh: (untyped) -> untyped
+  end
+end

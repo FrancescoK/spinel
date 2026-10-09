@@ -1,0 +1,5 @@
+class Shelf
+  def put: (untyped) -> untyped
+  def take: (untyped) -> untyped
+  attr_reader tag: String?
+end

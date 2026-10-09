@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="590" viewBox="0 0 1600 590" role="img" aria-labelledby="title desc">
+<title id="title">RBS declarations in the Spinel compiler</title>
+<desc id="desc">Ruby source is parsed and registered. Inline declarations and external RBS signatures supply pins before inference. The compiler emits C and builds a native executable.</desc>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#66778b"/></marker><marker id="rbs-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" fill="#7760a8"/></marker></defs>
+<rect width="1600" height="590" fill="#f7f8fa"/>
+<text x="64" y="72" fill="#172334" font-family="Arial, sans-serif" font-size="34" font-weight="700">
+<tspan x="64" dy="0">RBS declarations in the Spinel compiler</tspan>
+</text>
+<text x="64" y="113" fill="#5c6b7d" font-family="Arial, sans-serif" font-size="20" font-weight="400">
+<tspan x="64" dy="0">Inline comments and external signatures supply declared types before inference.</tspan>
+</text>
+<rect x="580" y="158" width="260" height="108" rx="12" fill="#f3effa" stroke="#7760a8" stroke-width="1.5"/>
+<text x="602" y="190" fill="#7760a8" font-family="Arial, sans-serif" font-size="20" font-weight="700">
+<tspan x="602" dy="0">External .rbs signatures</tspan>
+</text>
+<text x="602" y="221" fill="#5c6b7d" font-family="Arial, sans-serif" font-size="16" font-weight="400">
+<tspan x="602" dy="0">--rbs DIR</tspan>
+<tspan x="602" dy="24.0">Parse declarations into seeds.</tspan>
+</text>
+<rect x="64" y="314" width="174" height="180" rx="12" fill="#ffffff" stroke="#cbd4df" stroke-width="1.5"/>
+<text x="82" y="351" fill="#172334" font-family="Arial, sans-serif" font-size="20" font-weight="700">
+<tspan x="82" dy="0">Ruby source</tspan>
+</text>
+<text x="82" y="392" fill="#5c6b7d" font-family="Arial, sans-serif" font-size="16" font-weight="400">
+<tspan x="82" dy="0">Entry file and</tspan>
+<tspan x="82" dy="24.0">required files.</tspan>
+</text>
+<rect x="280" y="314" width="268" height="180" rx="12" fill="#ffffff" stroke="#cbd4df" stroke-width="1.5"/>
+<text x="298" y="351" fill="#172334" font-family="Arial, sans-serif" font-size="20" font-weight="700">
+<tspan x="298" dy="0">Parse + register</tspan>
+</text>
+<text x="298" y="392" fill="#5c6b7d" font-family="Arial, sans-serif" font-size="16" font-weight="400">
+<tspan x="298" dy="0">Prism builds the AST.</tspan>
+<tspan x="298" dy="24.0">Inline types attach to nodes.</tspan>
+<tspan x="298" dy="24.0">Analyzer registers definitions.</tspan>
+</text>
+<path d="M 244 404 L 271 404" fill="none" stroke="#66778b" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="590" y="314" width="240" height="180" rx="12" fill="#ffffff" stroke="#cbd4df" stroke-width="1.5"/>
+<text x="608" y="351" fill="#172334" font-family="Arial, sans-serif" font-size="20" font-weight="700">
+<tspan x="608" dy="0">Apply declarations</tspan>
+</text>
+<text x="608" y="392" fill="#5c6b7d" font-family="Arial, sans-serif" font-size="16" font-weight="400">
+<tspan x="608" dy="0">Map supported RBS types.</tspan>
+<tspan x="608" dy="24.0">Pin parameter, return,</tspan>
+<tspan x="608" dy="24.0">and ivar slots.</tspan>
+</text>
+<path d="M 554 404 L 581 404" fill="none" stroke="#66778b" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="872" y="314" width="202" height="180" rx="12" fill="#ffffff" stroke="#cbd4df" stroke-width="1.5"/>
+<text x="890" y="351" fill="#172334" font-family="Arial, sans-serif" font-size="20" font-weight="700">
+<tspan x="890" dy="0">Infer + finalize</tspan>
+</text>
+<text x="890" y="392" fill="#5c6b7d" font-family="Arial, sans-serif" font-size="16" font-weight="400">
+<tspan x="890" dy="0">Infer remaining types.</tspan>
+<tspan x="890" dy="24.0">Finalize storage.</tspan>
+<tspan x="890" dy="24.0">Preserve type pins.</tspan>
+</text>
+<path d="M 836 404 L 863 404" fill="none" stroke="#66778b" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="1116" y="314" width="216" height="180" rx="12" fill="#ffffff" stroke="#cbd4df" stroke-width="1.5"/>
+<text x="1134" y="351" fill="#172334" font-family="Arial, sans-serif" font-size="20" font-weight="700">
+<tspan x="1134" dy="0">Generate C</tspan>
+</text>
+<text x="1134" y="392" fill="#5c6b7d" font-family="Arial, sans-serif" font-size="16" font-weight="400">
+<tspan x="1134" dy="0">Emit typed operations</tspan>
+<tspan x="1134" dy="24.0">and runtime calls.</tspan>
+</text>
+<path d="M 1080 404 L 1107 404" fill="none" stroke="#66778b" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="1374" y="314" width="162" height="180" rx="12" fill="#ffffff" stroke="#cbd4df" stroke-width="1.5"/>
+<text x="1392" y="351" fill="#172334" font-family="Arial, sans-serif" font-size="20" font-weight="700">
+<tspan x="1392" dy="0">Build binary</tspan>
+</text>
+<text x="1392" y="392" fill="#5c6b7d" font-family="Arial, sans-serif" font-size="16" font-weight="400">
+<tspan x="1392" dy="0">The C compiler</tspan>
+<tspan x="1392" dy="24.0">links the</tspan>
+<tspan x="1392" dy="24.0">Spinel runtime.</tspan>
+</text>
+<path d="M 1338 404 L 1365 404" fill="none" stroke="#66778b" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M 710 266 L 710 305" fill="none" stroke="#7760a8" stroke-width="2" marker-end="url(#rbs-arrow)"/>
+<text x="64" y="550" fill="#5c6b7d" font-family="Arial, sans-serif" font-size="18" font-weight="400">
+<tspan x="64" dy="0">Inline and external declarations share the RBS trust model. Unannotated slots remain inferred.</tspan>
+</text>
+</svg>
