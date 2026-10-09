@@ -16589,10 +16589,16 @@ static int strbuf_demand_local_container(Compiler *c, const char *vn, Scope *vs,
    call with the same name. A bare super carries a source parameter instead
    of an argument node. Before storage the existing per-pass walk is used. */
 typedef struct { int next, node, scope, param, loose; } SbArgEdge;
+/* Plain argument lists of up to SB_PLAIN_MAX - 1 arguments, bound to a method
+   by its layout, give the same parameter -> argument-index map whatever the
+   call: `plain` holds it per (method, count), built when first asked, only
+   while the index is being built (strbuf_arg_index_build). */
+enum { SB_PLAIN_MAX = 8 };
 typedef struct SbArgIndex {
   int *off, *head;
   SbArgEdge *edges;
   int n, cap, changed;
+  int **plain;
 } SbArgIndex;
 void strbuf_arg_index_free(Compiler *c) {
   SbArgIndex *x = c->sb_args;
@@ -21278,25 +21284,67 @@ static void strbuf_arg_index_edge(SbArgIndex *x, int h, int a, int scope, int p,
 static void strbuf_arg_index_call(Compiler *c, SbArgIndex *x, int u, int mi) {
   Scope *m = &c->scopes[mi];
   Scope *s = nt_kind(c->nt, u) == NK_ForwardingSuperNode ? comp_scope_of(c, u) : NULL;
+  int *map = NULL;
+  if (!s && m->nparams > 0) {
+    int ac = 0, args = nt_ref(c->nt, u, "arguments");
+    const int *av = args >= 0 ? nt_arr(c->nt, args, "arguments", &ac) : NULL;
+    map = malloc(sizeof *map * (size_t)m->nparams);
+    if (!map) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    arg_layout_param_map(c, m, av, ac, map);
+  }
   for (int j = 0; j < m->nparams; j++) {
     int p = s ? zsuper_param_source(c, s, m, j) : -1;
-    int a = s ? -1 : arg_layout_param_node(c, m, u, j, NULL);
+    int a = map ? map[j] : -1;
     if (a < 0 && p < 0) continue;
     strbuf_arg_index_edge(x, x->off[mi] + j, a, s ? (int)(s - c->scopes) : -1, p, 0);
   }
+  free(map);
 }
-/* The same for the positional arguments of call u from index `shift` on
-   (`bind_call` takes its receiver first). `loose`: the call may not reach
-   mi at all, so only the lift of the argument reads the edge. */
-static void strbuf_arg_index_positional(Compiler *c, SbArgIndex *x, int u, int mi, int shift, int loose) {
+/* The same for the arguments of call u from index `shift` on (`bind_call`
+   takes its receiver first), bound through the method's own layout: an
+   optional before a required one, a post and a keyword take the argument the
+   call gives them, not the one at their position. `loose`: the call may not
+   reach mi at all, so only the lift of the argument reads the edge. */
+static void strbuf_arg_index_args(Compiler *c, SbArgIndex *x, int u, int mi, int shift, int loose) {
   const NodeTable *nt = c->nt;
   int ac = 0, args = nt_ref(nt, u, "arguments");
   const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
-  for (int j = 0; j < c->scopes[mi].nparams && j + shift < ac; j++) {
-    NodeKind ak = nt_kind(nt, av[j + shift]);
-    if (ak == NK_SplatNode || ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode) break;
-    strbuf_arg_index_edge(x, x->off[mi] + j, av[j + shift], -1, -1, loose);
+  int np = c->scopes[mi].nparams, n = ac - shift;
+  if (n < 0 || np <= 0) return;
+  int plain = n < SB_PLAIN_MAX;
+  for (int k = shift; k < ac && plain; k++) {
+    NodeKind ak = nt_kind(nt, av[k]);
+    plain = ak != NK_SplatNode && ak != NK_KeywordHashNode && ak != NK_BlockArgumentNode &&
+            ak != NK_ForwardingArgumentsNode;
   }
+  int *map = NULL, **memo = NULL;
+  if (plain) {
+    if (!x->plain) {
+      x->plain = calloc((size_t)c->nscopes * SB_PLAIN_MAX, sizeof *x->plain);
+      if (!x->plain) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    }
+    memo = &x->plain[mi * SB_PLAIN_MAX + n];
+    map = *memo;
+  }
+  int fresh = !map;
+  if (fresh) {
+    map = malloc(sizeof *map * (size_t)np);
+    if (!map) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    arg_layout_param_map(c, &c->scopes[mi], av + shift, n, map);
+    /* a plain list is the same nodes at the same places for every call */
+    if (plain)
+      for (int j = 0; j < np; j++) {
+        int at = -1;
+        for (int k = 0; k < n && map[j] >= 0; k++) if (av[shift + k] == map[j]) at = k;
+        map[j] = at;
+      }
+    if (memo) *memo = map;
+  }
+  for (int j = 0; j < np; j++) {
+    int a = plain ? (map[j] >= 0 ? av[shift + map[j]] : -1) : map[j];
+    if (a >= 0) strbuf_arg_index_edge(x, x->off[mi] + j, a, -1, -1, loose);
+  }
+  if (!memo) free(map);
 }
 /* A call through a Method object: `m.call(v)` (`m.(v)`, `m[v]`, `m === v`)
    on a Method, on the Proc its to_proc made, or on a curried one, and
@@ -21349,7 +21397,7 @@ static void strbuf_arg_index_method_call(Compiler *c, SbArgIndex *x, int u, int 
   for (int i = 0; i < nmn; i++) {
     int tmi = method_obj_target_mi(c, mns[i]);
     if (tmi < 0 || method_call_param_shift(c, mns[i], tmi)) continue;
-    if (bind) strbuf_arg_index_positional(c, x, u, tmi, 1, 0);
+    if (bind) strbuf_arg_index_args(c, x, u, tmi, 1, 0);
     else strbuf_arg_index_call(c, x, u, tmi);
   }
   free(mns);
@@ -21371,7 +21419,7 @@ static void strbuf_arg_index_method_call(Compiler *c, SbArgIndex *x, int u, int 
     }
     if (!*all) *all = malloc(sizeof **all);
   }
-  for (int i = 0; i < *nall; i++) strbuf_arg_index_positional(c, x, u, (*all)[i], bind ? 1 : 0, 1);
+  for (int i = 0; i < *nall; i++) strbuf_arg_index_args(c, x, u, (*all)[i], bind ? 1 : 0, 1);
 }
 /* Built once at storage, after desugaring and target inference. The later
    String representation changes leave these argument bindings intact.
@@ -21413,6 +21461,10 @@ static void strbuf_arg_index_build(Compiler *c) {
   }
   free(t.v);
   free(allm);
+  if (x->plain)
+    for (int i = 0; i < c->nscopes * SB_PLAIN_MAX; i++) free(x->plain[i]);
+  free(x->plain);
+  x->plain = NULL;
   c->sb_args = x;
 }
 

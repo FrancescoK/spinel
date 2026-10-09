@@ -10153,49 +10153,64 @@ static int emit_gather_lead_lent(Compiler *c, Scope *m, int i, const int *argv, 
   return 1;
 }
 
-/* The argument node call `call` binds parameter i of m to, by the layout the
-   binders follow: the positional placed there, or the value of the keyword
-   naming it (the last one written). -1 when no one node is the parameter's
-   value -- a default, a splat's element, a value out of a `**` or a merged
-   hash; `*spread` (when asked) then names the splat's or the `**`'s operand
-   the value comes out of, or -1. What the analysis reads to follow a String
-   into the parameter that mutates it: indexing the call's arguments by the
-   parameter's position read a keyword hash, or the argument beside a rest,
-   for a keyword or a post. */
-static int arg_layout_param_node_inner(Compiler *c, Scope *m, int call, int i, int *spread, int defaults) {
+/* The argument list of a call as the binders see it, worked out once for
+   every parameter of the method it is bound to: the keyword hash and the
+   splats it holds, and the layout (arg_layout) a static binding follows.
+   `state` is 0 when no parameter has an argument node (a `...` forwarded),
+   1 for plain arguments into required positionals alone, whose layout is
+   the argument at the parameter's index, and 2 when `L` holds the layout. */
+typedef struct {
+  const int *argv;
+  int argc, kwh, pos_argc, nsplat, splat, state;
+  ArgLayout L;
+} ArgBind;
+
+static void arg_bind_begin(Compiler *c, Scope *m, const int *argv, int argc, ArgBind *B) {
   const NodeTable *nt = c->nt;
-  if (spread) *spread = -1;
-  if (!m || i < 0 || i >= m->nparams) return -1;
-  int args = nt_ref(nt, call, "arguments");
-  int argc = 0;
-  const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
-  int kwh = -1, pos_argc = argc, nsplat = 0, splat = -1;
-  if (argc > 0 && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode) { kwh = argv[argc - 1]; pos_argc--; }
-  for (int k = 0; k < pos_argc; k++) {
+  memset(B, 0, sizeof *B);
+  B->argv = argv; B->argc = argc; B->pos_argc = argc; B->kwh = -1; B->splat = -1;
+  if (!m) return;
+  if (argc > 0 && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode) { B->kwh = argv[argc - 1]; B->pos_argc--; }
+  for (int k = 0; k < B->pos_argc; k++) {
     NodeKind ak = nt_kind(nt, argv[k]);
-    if (ak == NK_ForwardingArgumentsNode) return -1;
-    if (ak == NK_SplatNode) { nsplat++; splat = argv[k]; }
+    if (ak == NK_ForwardingArgumentsNode) return;
+    if (ak == NK_SplatNode) { B->nsplat++; B->splat = argv[k]; }
   }
   /* plain arguments into required positionals alone: the one layout there is */
-  if (kwh < 0 && !nsplat && m->rest_idx < 0 && m->kwrest_idx < 0) {
+  if (B->kwh < 0 && !B->nsplat && m->rest_idx < 0 && m->kwrest_idx < 0) {
     int plain = 1;
     for (int k = 0; k < m->nparams && plain; k++)
       if ((m->pdefault && m->pdefault[k] >= 0) ||
           (m->pnames[k] && callee_param_is_declared_kwarg(c, m, m->pnames[k]))) plain = 0;
-    if (plain) return i < argc ? argv[i] : -1;
+    if (plain) { B->state = 1; return; }
   }
-  ArgLayout L;
-  arg_layout(c, m, argv, pos_argc, kwh, 0, &L);
+  arg_layout(c, m, argv, B->pos_argc, B->kwh, 0, &B->L);
+  B->state = 2;
+}
+static void arg_bind_end(ArgBind *B) {
+  if (B->state == 2) arg_layout_free(&B->L);
+}
+
+/* The argument node parameter i of m is bound to by `B`, or -1: see
+   arg_layout_param_node. */
+static int arg_bind_param(Compiler *c, Scope *m, ArgBind *B, int i, int *spread, int defaults) {
+  const NodeTable *nt = c->nt;
+  const int *argv = B->argv;
+  int argc = B->argc, kwh = B->kwh, pos_argc = B->pos_argc, nsplat = B->nsplat, splat = B->splat;
+  if (spread) *spread = -1;
+  if (!m || i < 0 || i >= m->nparams || B->state == 0) return -1;
+  if (B->state == 1) return i < argc ? argv[i] : -1;
+  ArgLayout *L = &B->L;
   int a = -1;
   const char *pn = m->pnames[i];
-  int lead = L.gather ? gather_lead_arg(c, m, argv, argc, i) : -1;
-  if (L.from[i] == ARG_NODE) a = argv[L.arg[i]];
+  int lead = L->gather ? gather_lead_arg(c, m, argv, argc, i) : -1;
+  if (L->from[i] == ARG_NODE) a = argv[L->arg[i]];
   /* A braceless Hash bound as a positional is the container itself.
      The sharing source walk must reach its original element stores. */
-  else if (c->share_strings && L.from[i] == ARG_KWH) a = kwh;
-  else if (defaults && L.from[i] == ARG_DEFAULT && m->pdefault) a = m->pdefault[i];
+  else if (c->share_strings && L->from[i] == ARG_KWH) a = kwh;
+  else if (defaults && L->from[i] == ARG_DEFAULT && m->pdefault) a = m->pdefault[i];
   else if (lead >= 0) a = argv[lead];
-  else if (L.from[i] == ARG_ELEM || L.from[i] == ARG_GATHERED) {
+  else if (L->from[i] == ARG_ELEM || L->from[i] == ARG_GATHERED) {
     if (nsplat == 1 && spread) *spread = nt_ref(nt, splat, "expression");
     /* Splats of array literals alone (`m(*[], s)`, `m(*[s])`) have a count
        the program states: the arguments they spread are the elements, laid
@@ -10224,7 +10239,7 @@ static int arg_layout_param_node_inner(Compiler *c, Scope *m, int call, int i, i
       free(flat);
     }
   }
-  else if (L.from[i] == ARG_BY_NAME && i != m->kwrest_idx && pn &&
+  else if (L->from[i] == ARG_BY_NAME && i != m->kwrest_idx && pn &&
            callee_has_kwarg(c, m, pn)) {
     int en = 0; const int *el = kwh >= 0 ? nt_arr(nt, kwh, "elements", &en) : NULL;
     int nds = 0, ds = -1;
@@ -10237,16 +10252,55 @@ static int arg_layout_param_node_inner(Compiler *c, Scope *m, int call, int i, i
     }
     if (a < 0 && nds == 1 && spread) *spread = nt_ref(nt, ds, "value");
   }
-  arg_layout_free(&L);
   return a;
 }
 
+static const int *call_arg_list(Compiler *c, int call, int *argc) {
+  int args = nt_ref(c->nt, call, "arguments");
+  *argc = 0;
+  return args >= 0 ? nt_arr(c->nt, args, "arguments", argc) : NULL;
+}
+
+static int arg_bind_one(Compiler *c, Scope *m, const int *argv, int argc, int i, int *spread, int defaults) {
+  if (spread) *spread = -1;
+  if (!m || i < 0 || i >= m->nparams) return -1;
+  ArgBind B;
+  arg_bind_begin(c, m, argv, argc, &B);
+  int a = arg_bind_param(c, m, &B, i, spread, defaults);
+  arg_bind_end(&B);
+  return a;
+}
+
+/* The argument node call `call` binds parameter i of m to, by the layout the
+   binders follow: the positional placed there, or the value of the keyword
+   naming it (the last one written). -1 when no one node is the parameter's
+   value -- a default, a splat's element, a value out of a `**` or a merged
+   hash; `*spread` (when asked) then names the splat's or the `**`'s operand
+   the value comes out of, or -1. What the analysis reads to follow a String
+   into the parameter that mutates it: indexing the call's arguments by the
+   parameter's position read a keyword hash, or the argument beside a rest,
+   for a keyword or a post. */
 int arg_layout_param_node(Compiler *c, Scope *m, int call, int i, int *spread) {
-  return arg_layout_param_node_inner(c, m, call, i, spread, 0);
+  int argc = 0;
+  const int *argv = call_arg_list(c, call, &argc);
+  return arg_bind_one(c, m, argv, argc, i, spread, 0);
+}
+/* Every parameter of m at once, for an argument list that is not necessarily
+   a call's own (`bind_call`'s, after its receiver; `argv` holds all `argc`
+   arguments, the keyword hash included): out[j] is arg_layout_param_node's
+   answer for parameter j, the layout worked out once for the list instead of
+   once per parameter. `out` holds m->nparams entries. */
+void arg_layout_param_map(Compiler *c, Scope *m, const int *argv, int argc, int *out) {
+  ArgBind B;
+  arg_bind_begin(c, m, argv, argc, &B);
+  for (int j = 0; m && j < m->nparams; j++) out[j] = arg_bind_param(c, m, &B, j, NULL, 0);
+  arg_bind_end(&B);
 }
 /* The value binding a parameter, including an omitted optional's default. */
 int arg_layout_param_source(Compiler *c, Scope *m, int call, int i, int *spread) {
-  return arg_layout_param_node_inner(c, m, call, i, spread, 1);
+  int argc = 0;
+  const int *argv = call_arg_list(c, call, &argc);
+  return arg_bind_one(c, m, argv, argc, i, spread, 1);
 }
 
 /* How far from the end of the positionals parameter j of m takes its value,
