@@ -1110,6 +1110,10 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
       emit_indent(g_pre, g_indent); buf_puts(g_pre, "sp_catch_exc_top[sp_catch_top] = sp_exc_top;\n");
       emit_indent(g_pre, g_indent); buf_puts(g_pre, "sp_catch_rootmark[sp_catch_top] = sp_gc_nroots;\n");
       emit_indent(g_pre, g_indent); buf_puts(g_pre, "sp_catch_top++;\n");
+      /* a throw out of an ensure body drops the exception that body had in
+         flight: the landing gives back the one in flight here */
+      int cic = g_uses_ensure ? ++g_tmp : 0;
+      if (cic) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "void *_cic%d = sp_inflight_cause;\n", cic); }
       emit_indent(g_pre, g_indent);
       buf_puts(g_pre, "if (setjmp(sp_catch_stack[sp_catch_top-1]) == 0) {\n");
       /* a bare break in a catch body keeps today's C-break behavior */
@@ -1150,6 +1154,7 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
       emit_indent(g_pre, g_indent); buf_puts(g_pre, "else {\n");
       emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "sp_catch_top--;\n");
       emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "sp_gc_nroots = sp_catch_rootmark[sp_catch_top];\n");
+      if (cic) { emit_indent(g_pre, g_indent + 1); buf_printf(g_pre, "sp_inflight_cause = _cic%d;\n", cic); }
       emit_indent(g_pre, g_indent + 1);
       /* a kind with an unbox of its own reads through it (emit_unbox_text): a
          String thrown as a mutable String's box carries the handle, not the

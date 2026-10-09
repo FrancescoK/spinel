@@ -1529,6 +1529,7 @@ int g_uses_regex = 0;
 int g_uses_argv = 0;
 int g_uses_threads = 0;
 int g_uses_finalizers = 0;   /* ObjectSpace.define_finalizer: SP_FIN_POLL at safe points */
+int g_uses_ensure = 0;       /* an ensure clause: the landings that give sp_inflight_cause back */
 int g_has_user_cmp = 0;
 int g_has_user_binop = 0;
 int g_has_user_aset = 0;

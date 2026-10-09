@@ -1,0 +1,14 @@
+return: nil
+break: nil
+next: nil
+next in a while: nil
+throw: nil
+return from a block: nil
+a proc's return: nil
+break out of a yield: nil
+two deep: from the outer ensure, cause #<RuntimeError: outer>
+two deep, a throw: from the outer ensure, cause #<RuntimeError: outer>
+not left: second, cause #<RuntimeError: first>
+ended: first, cause nil
+after it: nil
+200

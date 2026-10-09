@@ -13738,6 +13738,7 @@ static SP_TLS void *sp_pending_cause = NULL;
 /* The exception unwinding through an `ensure` body: a raise from inside that
    body takes it as its cause, the way a raise inside a rescue takes $! (#3745). */
 static SP_TLS void *sp_inflight_cause = NULL;
+static inline void sp_inflight_restore(void **p) { sp_inflight_cause = *p; }
 /* A bare `raise` re-raises the handled exception itself, keeping the cause it
    already carries rather than becoming its own cause (#3745). */
 static SP_TLS int sp_reraise_current = 0;

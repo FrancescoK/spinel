@@ -5468,6 +5468,10 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
     buf_puts(b, "    _h.exc_top = sp_exc_top; _h.catch_top = sp_catch_top;\n");
     buf_puts(b, "    _h.recur_mark = sp_poly_recur_save();\n");
     buf_puts(b, "    _h.prev = sp_proc_ret_head; sp_proc_ret_head = &_h;\n");
+    /* a proc's return out of an ensure body drops the exception that body
+       had in flight: the landing gives back the one in flight at the call */
+    const char *hic = g_uses_ensure ? " sp_inflight_cause = _hic;" : "";
+    if (*hic) buf_puts(b, "    void *_hic = sp_inflight_cause;\n");
     if (!is_void) {
       buf_puts(b, "    "); emit_ctype(c, s->ret, b); buf_puts(b, " _prret = ");
       if (ty_is_object(s->ret) && !comp_ty_value_obj(c, s->ret)) buf_puts(b, "NULL");
@@ -5475,7 +5479,7 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
       buf_puts(b, ";\n");
       /* the longjmp-home delivery also restores sp_catch_top: a return out of a
          catch block inside the home (or a callee) must not leak its catch slot. */
-      buf_puts(b, "    if (setjmp(_h.jb)) { sp_proc_ret_head = _h.prev; sp_catch_top = _h.catch_top; return ");
+      buf_printf(b, "    if (setjmp(_h.jb)) { sp_proc_ret_head = _h.prev; sp_catch_top = _h.catch_top;%s return ", hic);
       /* The box is the selected return, even if its evaluation or an
          intervening ensure published a different String. */
       int pub = repr_share_rule(c) && s->ret == TY_STRING && (s->ret_handle || s->ret_pub_fresh);
@@ -5485,7 +5489,7 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
       buf_puts(b, "; }\n");
     }
     else {
-      buf_puts(b, "    if (setjmp(_h.jb)) { sp_proc_ret_head = _h.prev; sp_catch_top = _h.catch_top; return; }\n");
+      buf_printf(b, "    if (setjmp(_h.jb)) { sp_proc_ret_head = _h.prev; sp_catch_top = _h.catch_top;%s return; }\n", hic);
     }
     buf_puts(b, "    {\n");
     g_method_pr_label = "_pr_done"; g_method_pr_var = is_void ? NULL : "_prret";
@@ -14215,6 +14219,7 @@ static void scan_prologue_features(Compiler *c) {
   g_uses_symbols = (c->nsymbols > 0);
   g_uses_marshal = 0;
   g_uses_regex = 0; g_uses_argv = 0; g_uses_threads = 0; g_uses_finalizers = 0;
+  g_uses_ensure = 0;
   g_uses_program_name = 0;
   g_reads_match_regs = 0;
   for (int i = 0; i < nt->count; i++) {
@@ -14222,6 +14227,11 @@ static void scan_prologue_features(Compiler *c) {
     if (!ty) continue;
     if (sp_streq(ty, "BackReferenceReadNode") || sp_streq(ty, "NumberedReferenceReadNode"))
       g_reads_match_regs = 1;
+    /* An exception is in flight (sp_inflight_cause) only while the body of
+       an ensure clause runs. The landings that give it back (a catch, a
+       wrapped break, a proc's home) are emitted only in a program that
+       holds one with a body: elsewhere there is nothing to give back. */
+    if (sp_streq(ty, "EnsureNode") && nt_ref(nt, i, "statements") >= 0) g_uses_ensure = 1;
     if (sp_streq(ty, "RegularExpressionNode") || sp_streq(ty, "InterpolatedRegularExpressionNode"))
       g_uses_regex = 1;
     else if (sp_streq(ty, "SymbolNode") || sp_streq(ty, "InterpolatedSymbolNode"))
