@@ -12050,6 +12050,17 @@ static int str_node_like(NodeTable *nt, int like, const char *s) {
   return n;
 }
 
+/* Turns node `id` into a bare CallNode (a reset drops its position, which a
+   refusal naming the construct prints as FILE:LINE). */
+static void cn_reset_call(NodeTable *nt, int id) {
+  long long line = nt_int(nt, id, "node_line", 0), file = nt_int(nt, id, "node_file", 0),
+            col = nt_int(nt, id, "node_col", 0);
+  nt_node_reset(nt, id, "CallNode");
+  nt_node_set_int(nt, id, "node_line", line);
+  nt_node_set_int(nt, id, "node_file", file);
+  nt_node_set_int(nt, id, "node_col", col);
+}
+
 static int cn_reads_outer_local(const NodeTable *nt, int node, int level) {
   if (node < 0) return 0;
   NodeKind k = nt_kind(nt, node);
@@ -12289,7 +12300,9 @@ int desugar_class_new_blocks(Compiler *c) {
     int par = parent[id];
     /* a class body opens a scope of its own, a block does not: a body reading
        the surrounding locals stays a block */
-    int reads_outer = cn_reads_outer_local(nt, body, 0);
+    int reads_outer = cn_reads_outer_local(nt, body, 0) ||
+                      cn_reads_outer_local(nt, nt_ref(nt, blk, "parameters"), 0);
+    int capture_refusal = reads_outer && !defer_refusals();
     if (static_super && !reads_outer && par >= 0 && nt_kind(nt, par) == NK_ConstantWriteNode &&
         nt_ref(nt, par, "value") == id) {
       /* Name = Class.new(...) do ... end  ->  class Name < ...; ...; end */
@@ -12340,16 +12353,29 @@ int desugar_class_new_blocks(Compiler *c) {
        whole table by node kind would otherwise still find its defs and
        ivar writes and give them to the top level. */
     cn_neutralize(nt, blk);
-    nt_node_reset(nt, id, "CallNode");
+    cn_reset_call(nt, id);
     nt_node_set_str(nt, id, "name", "raise");
+    /* A pruned method need not compile its class-building call. */
+    if (capture_refusal) nt_node_set_int(nt, id, "class_new_capture", 1);
     int args = fwd_new_node_like(nt, id, "ArgumentsNode");
     int ex = fwd_new_node_like(nt, id, "ConstantReadNode");
     nt_node_set_str(nt, ex, "name", "NotImplementedError");
-    int msg = str_node_like(nt, id, "spinel: a class built at run time (Class.new with a block that reads the "
-                             "surrounding method's locals) is not supported");
+    int msg = str_node_like(nt, id, static_super
+                             ? "spinel: Class.new or Module.new with a block that captures outer locals is not supported"
+                             : "spinel: Class.new with a non-constant superclass is not supported");
     int av2[2] = { ex, msg };
     nt_node_set_arr(nt, args, "arguments", av2, 2);
     nt_node_set_ref(nt, id, "arguments", args);
+    /* A deferred capture always raises, so its constant assignment never
+       completes and needs no (untypable) constant storage. */
+    if (reads_outer && par >= 0 &&
+        (nt_kind(nt, par) == NK_ConstantWriteNode || nt_kind(nt, par) == NK_ConstantPathWriteNode) &&
+        nt_ref(nt, par, "value") == id) {
+      cn_reset_call(nt, par);
+      nt_node_set_str(nt, par, "name", "raise");
+      nt_node_set_ref(nt, par, "arguments", args);
+      if (capture_refusal) nt_node_set_int(nt, par, "class_new_capture", 1);
+    }
     changed = 1;
   }
   free(parent);
