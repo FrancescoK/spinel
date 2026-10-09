@@ -8037,6 +8037,26 @@ int hc_recv_cached(Compiler *c, int recv) {
    for a loop that needs to see what ran just ahead of it (hc_bounded_index). */
 int g_stmt_cur = -1, g_stmt_prev = -1;
 
+/* Is `id`, a begin or a catch whose value goes ahead into a temp, the statement
+   being emitted, or all that its local, ivar or global write stores, or the
+   one value its `return` hands back? Then the temp is read as soon as it is
+   written, with nothing run in between: a return copies it at once, ahead of
+   any ensure body around it. */
+int hoisted_value_is_stmt(Compiler *c, int id) {
+  int s = g_stmt_cur;
+  if (s < 0) return 0;
+  if (unwrap_parens(c, s) == id) return 1;
+  NodeKind k = nt_kind(c->nt, s);
+  if (k == NK_ReturnNode) {
+    int n = 0, ra = nt_ref(c->nt, s, "arguments");
+    const int *rv = ra >= 0 ? nt_arr(c->nt, ra, "arguments", &n) : NULL;
+    return n == 1 && unwrap_parens(c, rv[0]) == id;
+  }
+  return (k == NK_LocalVariableWriteNode || k == NK_InstanceVariableWriteNode ||
+          k == NK_GlobalVariableWriteNode) &&
+         unwrap_parens(c, nt_ref(c->nt, s, "value")) == id;
+}
+
 /* A loop of the shape
      i = <a literal >= 0>
      while i < a.length      # or a.size

@@ -1047,6 +1047,12 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
       int t = ++g_tmp;
       emit_indent(g_pre, g_indent); emit_ctype(c, bt, g_pre);
       buf_printf(g_pre, " _t%d = %s;\n", t, default_value_from_compiler(c, bt));
+      /* the temp holds the value until the surrounding expression reads it,
+         past whatever an operand after this one hoists (the begin value's
+         temp, emit_expr); in front of the catch, so the landing's watermark
+         restore keeps the root. A catch that is its statement, all that a write
+         stores or a return's one value is read at once and takes none. */
+      if (ty_gc_holds_refs(c, bt) && !hoisted_value_is_stmt(c, id)) { emit_indent(g_pre, g_indent); emit_gc_root_tmp_refs(c, bt, t, g_pre); buf_puts(g_pre, "\n"); }
       emit_indent(g_pre, g_indent); buf_puts(g_pre, "sp_catch_check_depth();\n");
       int tag_kind = 0;
       if (argc == 1) {

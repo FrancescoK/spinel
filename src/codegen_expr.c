@@ -3841,9 +3841,19 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
     int ec = nt_ref(c->nt, id, "ensure_clause");
     int hold = ec >= 0 && nt_ref(c->nt, ec, "statements") >= 0 && ty_gc_rootable(c, rt);
     if (g_pre) {
+      /* Hoisted, the temp holds the value past the begin as well, until the
+         surrounding expression reads it, and what an operand after this one
+         hoists runs in between: in `(begin; a; rescue; b; end) + (begin; c;
+         ensure; d; end)` the second begin runs with the first one's value in
+         a temp nothing else knows. So here the temp is rooted with or
+         without an ensure body, and so are the Strings a by-value kind
+         carries. Not where the begin is its statement, all that a write
+         stores or a return's one value (hoisted_value_is_stmt): the temp is
+         read at once, and it keeps the root it had. */
       emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
       buf_printf(g_pre, " _t%d = %s;", t, slot_zero(c, rt));
-      if (hold) { buf_puts(g_pre, " "); emit_gc_root_tmp(c, rt, t, g_pre); }
+      if (hoisted_value_is_stmt(c, id)) { if (hold) { buf_puts(g_pre, " "); emit_gc_root_tmp(c, rt, t, g_pre); } }
+      else if (ty_gc_holds_refs(c, rt)) { buf_puts(g_pre, " "); emit_gc_root_tmp_refs(c, rt, t, g_pre); }
       buf_puts(g_pre, "\n");
       emit_begin(c, id, g_pre, g_indent, rv);
     }
