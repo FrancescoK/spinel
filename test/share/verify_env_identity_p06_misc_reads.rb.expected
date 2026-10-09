@@ -1,0 +1,10 @@
+"RVENV_M1"
+["RVENV_M1", "v1"]
+["RVENV_M2", "v2"]
+["v1", "v2", nil]
+"v1"
+{"RVENV_M1" => "v1", "RVENV_M2" => "v2"}
+[["RVENV_M1", "v1"], ["RVENV_M2", "v2"]]
+["v1", "v2"]
+true
+false
