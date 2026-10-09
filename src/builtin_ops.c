@@ -3449,10 +3449,40 @@ int bop_share_self_answer(const char *name, int has_block) {
   return s == BSH_ITER_FRESH_RECV || s == BSH_ITER_SELF || s == BSH_LINE || s == BSH_SUBST_BANG;
 }
 
+/* A family whose builtin methods keep no String they are handed and answer
+   none the receiver holds, unless a row says otherwise: the scalars, a
+   String (its methods copy their arguments' bytes), and IO (it writes them
+   out). An unobserved name there is one the CRuby observations do not
+   list: a method of a class they do not cover (Socket's connect), or no
+   method at all, which raises NoMethodError and hands nothing on. */
+static int bop_share_pure_family(TyKind fam) {
+  switch (fam) {
+  case TY_STRING: case TY_IO: case TY_INT: case TY_BIGINT: case TY_FLOAT: case TY_SYMBOL:
+  case TY_BOOL: case TY_NIL: case TY_RANGE: case TY_FLOAT_RANGE: case TY_TIME: case TY_COMPLEX:
+  case TY_RATIONAL: case TY_REGEX: case TY_MATCHDATA: case TY_RANDOM:
+    return 1;
+  default:
+    return 0;
+  }
+}
+/* ...except the reflective names, which run any method, or code, on the
+   receiver: what those hand on is unknown */
+static int bop_share_reflective(const char *name) {
+  static const char *const names[] = {
+    "send", "__send__", "public_send", "instance_eval", "instance_exec", "extend",
+    "instance_variable_get", "instance_variable_set", "remove_instance_variable",
+    "method", "public_method", "singleton_method", "define_singleton_method",
+    "tap", "then", "yield_self", NULL };
+  for (int i = 0; names[i]; i++) if (sp_streq(name, names[i])) return 1;
+  return 0;
+}
+
 int bop_share(TyKind fam, const char *name) {
   if (!name) return 0;
-  /* "*" is an operator; there is no unobserved default. */
-  return bop_share_find(fam, name);
+  /* "*" is an operator; the family default is bop_share_pure_family's */
+  int s = bop_share_find(fam, name);
+  if (!s && bop_share_pure_family(fam) && !bop_share_reflective(name)) s = BSH_PURE;
+  return s;
 }
 
 TyKind iter_yield_kind(const IterRow *r, int k, TyKind rt) {
