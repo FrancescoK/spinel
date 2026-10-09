@@ -3900,9 +3900,13 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
       Buf *sv_pre = g_pre; int sv_ind = g_indent;
       g_pre = &rpre; g_indent = 1;
       Buf rv; memset(&rv, 0, sizeof rv);
+      /* a return or retry out of the fallback pops the exception pushed
+         above, as one out of a rescue clause does (#8273) */
+      g_rescue_save_stack[g_rescue_save_depth++] = (RescueSave){ g_exc_frame_depth };
       if (rt == TY_POLY && repr_of(c, r).kind != RK_BOXED) emit_boxed(c, r, &rv);
       else if (rt == TY_STRING && comp_scope_of(c, id)->ret_pub_fresh) emit_tail_value(c, r, &rv);
       else emit_expr_slot(c, r, rt, &rv);
+      g_rescue_save_depth--;
       g_pre = sv_pre; g_indent = sv_ind;
       if (rpre.p) buf_puts(b, rpre.p);
       free(rpre.p);
@@ -5062,8 +5066,9 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
          the same group (e.g. `(c = false; retry)`) must run first. GCC/clang
          permit a goto out of a statement expression; the dead 0 satisfies the
          value slot. */
-      buf_printf(b, "({ %sgoto %s; 0; })",
-                 g_rescue_save_depth > 0 ? "sp_rescue_sp--; " : "", g_retry_label);
+      buf_puts(b, "({ ");
+      emit_retry_unwind(b);
+      buf_printf(b, "goto %s; 0; })", g_retry_label);
     }
     else unsupported(c, id, "retry (outside rescue)");
     return;

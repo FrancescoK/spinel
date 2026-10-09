@@ -597,6 +597,8 @@ extern int        g_rescue_save_depth;
    (deferred return), both are wrapped in `if (guard) { ... }`. Returns 1 if it
    emitted anything. */
 void emit_rescue_pops_to(Buf *b, int rescue_base);
+/* A retry's pops back to the body of the begin it restarts (codegen_stmt.c) */
+void emit_retry_unwind(Buf *b);
 void emit_loop_unwind(Buf *b);
 int emit_frame_unwind(Buf *b, int pop_base, const char *guard);
 int rescues_crossed(int pop_base);

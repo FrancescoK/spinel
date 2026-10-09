@@ -9554,6 +9554,16 @@ int rescue_is_catchall_name(const char *n) {
 /* exception frames a retry leaves on its way back to the body: the frame
    the rescue clauses of a begin with an ensure run in */
 static int g_retry_pops;
+/* the frame and rescue-handler depths the rescue clauses of the begin a
+   retry restarts start at: what a retry crosses beyond them (a modifier
+   rescue's guard or fallback, an inner begin) is left too (#8274) */
+static int g_retry_frame_base, g_retry_rescue_base;
+void emit_retry_unwind(Buf *b) {
+  int pops = g_retry_pops + g_exc_frame_depth - g_retry_frame_base;
+  if (g_rescue_save_depth > g_retry_rescue_base) emit_rescue_pops_to(b, g_retry_rescue_base);
+  else if (g_rescue_save_depth > 0) buf_puts(b, "sp_rescue_sp--; ");
+  if (pops > 0) buf_printf(b, "sp_exc_top -= %d; ", pops);
+}
 
 /* Return 1 if the subtree at id contains a RetryNode (not crossing DefNode). */
 int subtree_has_retry(const NodeTable *nt, int id) {
@@ -10130,7 +10140,10 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
       g_exc_frame_depth++;
       int sv_retry_pops = g_retry_pops;
       if (ens_has_retry) g_retry_pops++;
-      emit_rescue(c, rescue, b, indent + 4, fr, resultvar);
+      { int sv_rfb = g_retry_frame_base, sv_rrb = g_retry_rescue_base;
+        g_retry_frame_base = g_exc_frame_depth; g_retry_rescue_base = g_rescue_save_depth;
+        emit_rescue(c, rescue, b, indent + 4, fr, resultvar);
+        g_retry_frame_base = sv_rfb; g_retry_rescue_base = sv_rrb; }
       g_retry_pops = sv_retry_pops;
       g_exc_frame_depth--;
       emit_indent(b, indent + 4); buf_puts(b, "sp_exc_top--;\n");
@@ -10349,7 +10362,10 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
     emit_indent(b, indent + 2);
     buf_puts(b, "if (strcmp((const char *)sp_last_exc_cls, \"FiberKillSignal\") == 0) sp_raise_cls(\"FiberKillSignal\", sp_exc_msg[sp_exc_top]);\n");
     emit_indent(b, indent + 2); buf_puts(b, "else {\n");
-    emit_rescue(c, rescue, b, indent + 3, fr, resultvar);
+    { int sv_rfb = g_retry_frame_base, sv_rrb = g_retry_rescue_base;
+      g_retry_frame_base = g_exc_frame_depth; g_retry_rescue_base = g_rescue_save_depth;
+      emit_rescue(c, rescue, b, indent + 3, fr, resultvar);
+      g_retry_frame_base = sv_rfb; g_retry_rescue_base = sv_rrb; }
     emit_indent(b, indent + 2); buf_puts(b, "}\n");
     emit_indent(b, indent + 1); buf_puts(b, "}\n");
   }
@@ -14856,10 +14872,7 @@ static void emit_stmt_node(Compiler *c, int id, Buf *b, int indent) {
       emit_indent(b, indent);
       /* leaving this rescue body back to its begin: pop its handler (exactly the
          innermost rescue save). */
-      if (g_rescue_save_depth > 0)
-        buf_puts(b, "sp_rescue_sp--; ");
-      /* and the frame the rescue clauses run in under an ensure */
-      if (g_retry_pops > 0) buf_printf(b, "sp_exc_top -= %d; ", g_retry_pops);
+      emit_retry_unwind(b);
       buf_printf(b, "goto %s;\n", g_retry_label);
     }
     else unsupported(c, id, "retry (outside rescue)");
@@ -14910,7 +14923,11 @@ static void emit_stmt_node(Compiler *c, int id, Buf *b, int indent) {
       emit_indent(b, indent + 1);
       buf_printf(b, "sp_rescue_push((void *)_t%d);\n", tce);
     }
+    /* the fallback runs with the exception pushed: a return, break or
+       retry out of it pops it as one out of a rescue clause does (#8273) */
+    g_rescue_save_stack[g_rescue_save_depth++] = (RescueSave){ g_exc_frame_depth };
     if (r >= 0) emit_stmt(c, r, b, indent + 1);
+    g_rescue_save_depth--;
     emit_indent(b, indent + 1); buf_puts(b, "sp_rescue_sp--;\n");
     emit_indent(b, indent); buf_puts(b, "}\n");
     return;
