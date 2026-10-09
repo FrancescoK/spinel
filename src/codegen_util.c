@@ -617,16 +617,18 @@ int subtree_may_allocate(const NodeTable *nt, int id) {
 }
 /* subtree_may_allocate, plus the one allocation the node table cannot show:
    an ordinary read of a shared-mutable String slot (a TY_STRBUF local or
-   ivar) renders as a fresh copy of the live buffer, not as the slot itself.
-   A read marked to hand out the handle (strbuf_box) copies nothing. The
-   checks are strbuf_slot_ref's, without the emission it does, on the read
-   inside any parentheses (`(a) == b`). */
+   ivar, or a global, a constant or a class variable the --share-strings
+   rule made the handle) renders as a fresh copy of the live buffer, not as
+   the slot itself. A read marked to hand out the handle (strbuf_box)
+   copies nothing. The checks are strbuf_slot_ref's, without the emission
+   it does, on the read inside any parentheses (`(a) == b`). */
 int operand_may_allocate(Compiler *c, int id) {
   if (subtree_may_allocate(c->nt, id)) return 1;
   id = unwrap_parens(c, id);
   if (id < 0 || repr_of(c, id).handle) return 0;
   if (strbuf_local_name(c, id)) return 1;
   if (repr_self_shared(c, id)) return 1;
+  if (repr_static_read_kind(nt_kind(c->nt, id)) && repr_of(c, id).share) return 1;
   if (nt_kind(c->nt, id) != NK_InstanceVariableReadNode) return 0;
   const char *nm = nt_str(c->nt, id, "name");
   int cid = nm ? strbuf_ivar_owner(c, id) : -1;

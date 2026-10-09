@@ -8484,7 +8484,39 @@ static int default_rebound_by(Compiler *c, int d, int after) {
   }
 }
 
-/* See codegen_internal.h. */
+/* Does argument argv[k] of a call into m read a shared String slot as a
+   fresh copy (strbuf_read_copies) that its parameter takes as a value, a
+   String's bytes? Asked of plain positional arguments into requireds and
+   optionals in order, which fill the k-th parameter; a parameter that is
+   the handle takes the slot, a boxed one the handle's box, and an
+   initialize that only reads it the live bytes. */
+static int arg_reads_copy(Compiler *c, Scope *m, const int *argv, int argc, int k) {
+  const NodeTable *nt = c->nt;
+  if (!m || m->rest_idx >= 0 || argc > m->nparams || !strbuf_read_copies(c, argv[k])) return 0;
+  for (int i = 0; i < argc; i++) {
+    NodeKind ak = nt_kind(nt, argv[i]);
+    if (ak == NK_SplatNode || ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode) return 0;
+  }
+  for (int i = 0; i < m->nrequired; i++) if (m->pdefault && m->pdefault[i] >= 0) return 0;
+  if (callee_has_kwarg(c, m, m->pnames[k])) return 0;
+  LocalVar *p = scope_local(m, m->pnames[k]);
+  Repr pr = repr_of_slot(c, p);
+  if (!p || p->byref_out || pr.kind != RK_PTR || pr.as_ty != TY_STRING || pr.handle) return 0;
+  return !(m->name && sp_streq(m->name, "initialize") &&
+           ctor_param_reads_only(c, (int)(m - c->scopes), k));
+}
+
+static void emit_args_before_forced(Compiler *c, const int *argv, int argc, const int *after, int nafter,
+                                    const char *force, Buf *b);
+
+/* See codegen_internal.h. A copy an argument reads (arg_reads_copy) beside
+   another argument that allocates in the call -- another such copy, or an
+   effect the call runs in place -- is at risk the same way as an operand
+   of a builtin's call (operand_copy_at_risk): nothing holds it until the
+   call takes it, and a collection the other one runs frees it. It runs
+   first, into its rooted temp, with the arguments. An effect that runs
+   first itself is bound ahead of the call, and a value with no effect (an
+   interpolation) is built ahead of it by its own emission. */
 int emit_args_before_binding(Compiler *c, Scope *m, const int *argv, int argc, Buf *b) {
   const NodeTable *nt = c->nt;
   int kwh = argc > 0 && argv && nt_kind(nt, argv[argc - 1]) == NK_KeywordHashNode ? argv[argc - 1] : -1;
@@ -8498,20 +8530,46 @@ int emit_args_before_binding(Compiler *c, Scope *m, const int *argv, int argc, B
   }
   for (int i = 0; i < nd; i++) ed += subtree_has_side_effect(c, dfl[i]);
   if ((ev && ed) || (kwh >= 0 && ev > 1) || kwh_out_of_order(c, m, kwh)) run = 1;
-  if (run) emit_args_before(c, argv, argc, dfl, nd, b);
-  free(vals); free(ds); free(dfl);
+  /* plain positional arguments only (arg_reads_copy): vals[] is argv[] */
+  char *cp = argc > 0 ? calloc((size_t)argc * 2, 1) : NULL, *force = cp ? cp + argc : NULL;
+  if (argc > 0 && !cp) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  int ncopy = 0;
+  for (int k = 0; k < argc; k++) ncopy += cp[k] = (char)arg_reads_copy(c, m, argv, argc, k);
+  for (int k = 0; k < argc && ncopy; k++) {
+    for (int j = 0; j < argc && cp[k] && !force[k]; j++)
+      force[k] = j != k && !arg_ran_first(argv[j], 0) &&
+                 (cp[j] || (!run && subtree_has_side_effect(c, argv[j]) && operand_allocates_beside(c, argv[j])));
+    run |= force[k];
+  }
+  if (run) emit_args_before_forced(c, argv, argc, dfl, nd, ncopy ? force : NULL, b);
+  free(vals); free(ds); free(dfl); free(cp);
   return run;
+}
+
+/* emit_args_before, each value `force` marks run first too: after every
+   other argument, last before the call. CRuby hands the callee the String
+   object, so the bytes it sees are the String's at the call, after a
+   later argument has appended to it; a copy runs no code, so taking it
+   last moves nothing else. A value a later argument can rebind is read
+   in its place, as before. */
+static void emit_args_before_forced(Compiler *c, const int *argv, int argc, const int *after, int nafter,
+                                    const char *force, Buf *b) {
+  int nv = 0; char *ds = NULL;
+  int *vals = source_values(c->nt, argv, argc, &nv, &ds);
+  Buf *sv_pre = g_pre; g_pre = b;
+  for (int pass = 0; pass < 2; pass++)
+    for (int i = 0; i < nv; i++) {
+      int rb = value_rebound(c, vals, nv, i, after, nafter);
+      int late = force && force[i] && !rb;
+      if (late == pass) emit_arg_first(c, vals[i], rb || late, b);
+    }
+  g_pre = sv_pre;
+  free(vals); free(ds);
 }
 
 /* See codegen_internal.h. */
 void emit_args_before(Compiler *c, const int *argv, int argc, const int *after, int nafter, Buf *b) {
-  int nv = 0; char *ds = NULL;
-  int *vals = source_values(c->nt, argv, argc, &nv, &ds);
-  Buf *sv_pre = g_pre; g_pre = b;
-  for (int i = 0; i < nv; i++)
-    emit_arg_first(c, vals[i], value_rebound(c, vals, nv, i, after, nafter), b);
-  g_pre = sv_pre;
-  free(vals); free(ds);
+  emit_args_before_forced(c, argv, argc, after, nafter, NULL, b);
 }
 
 /* See codegen_internal.h. */

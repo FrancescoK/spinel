@@ -886,6 +886,23 @@ int str_mutator_str_args(const char *n, int argc, int *int_ok) {
   return argc;
 }
 
+/* String methods that only read the receiver's bytes: they answer a scalar or
+   build a new string, and never retain the pointer they were handed. A
+   shared-mutable receiver can hand them its live buffer instead of a copy. */
+int is_string_read_only_method(const char *name) {
+  static const char *const ro[] = {
+    "[]", "slice", "byteslice", "getbyte", "ord", "chr",
+    "index", "rindex", "include?", "start_with?", "end_with?",
+    "count", "length", "size", "bytesize", "empty?",
+    "to_i", "to_f", "hex", "oct", "match?", "casecmp", "casecmp?",
+    "upcase", "downcase", "capitalize", "swapcase", "reverse",
+    "strip", "lstrip", "rstrip", "chomp", "chop", "center", "ljust", "rjust",
+    "each_char", "each_byte", "each_line", "chars", "bytes", "lines", "split",
+    "sum", "hash", "unpack", "unpack1", "codepoints", "scan", NULL };
+  for (int i = 0; ro[i]; i++) if (sp_streq(name, ro[i])) return 1;
+  return 0;
+}
+
 int is_string_rebind_mutator(const char *n) {
   static const char *const MUT[] = {
     "<<", "concat", "prepend", "insert", "replace", "[]=", "slice!", "setbyte", "bytesplice",

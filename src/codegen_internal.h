@@ -222,6 +222,17 @@ int emit_strbuf_ivar_write_handle(Compiler *c, int v, Buf *b);
    taken: the write, valued as that handle (codegen_expr.c) */
 int emit_strbuf_write_handle(Compiler *c, int v, Buf *b);
 int operand_may_allocate(Compiler *c, int id);
+/* Can operand `v` allocate where it stands? operand_may_allocate, less
+   what builds nothing: a pure read (subtree_is_pure_read: a typed Array's
+   element, a plain field), and a shared String slot's read that hands its
+   consumer the live buffer (strbuf_read_raw). */
+int operand_allocates_beside(Compiler *c, int v);
+/* Is `v` a read of a shared String slot (a local's, an ivar's, a global's
+   or a constant's) whose value form is a fresh copy of its bytes
+   (sp_strbuf_read_pub), held by nothing until its consumer takes it? A
+   read that hands out the handle or the live buffer copies nothing, and
+   one that ran already is its temp. */
+int strbuf_read_copies(Compiler *c, int v);
 /* The same shim over a READER call that hands out the handle
    (`obj.name[0] = "X"`): no name to rename and no ivar node, so the call node
    itself reads as the shadow through the argument-override table. */

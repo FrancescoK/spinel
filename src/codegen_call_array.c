@@ -1948,7 +1948,7 @@ int emit_call_store_value_arms(Compiler *c, Buf *b, const NodeTable *nt, const c
           buf_printf(b, "%s _t%d = ", c_type_name(rt), tr); emit_expr(c, recv, b); buf_puts(b, "; ");
           if (subtree_may_allocate(c->nt, recv) || subtree_has_side_effect(c, argv[0]) || subtree_has_side_effect(c, argv[1])) { emit_gc_root_tmp(c, rt, tr, b); buf_puts(b, " "); }
           buf_printf(b, "%s _t%d = ", c_type_name(kt), tk); emit_hash_store_key(c, argv[0], rt, b); buf_puts(b, "; ");
-          if (subtree_may_allocate(c->nt, argv[0]) && needs_root(kt)) { emit_gc_root_tmp(c, kt, tk, b); buf_puts(b, " "); }
+          if (operand_may_allocate(c, argv[0]) && needs_root(kt)) { emit_gc_root_tmp(c, kt, tk, b); buf_puts(b, " "); }
         }
         /* For poly hashes with scalar values, store the scalar and box it for the hash call.
            A nil/void rhs (`return @cache[k] = nil`) has no C storage type --
@@ -1973,6 +1973,11 @@ int emit_call_store_value_arms(Compiler *c, Buf *b, const NodeTable *nt, const c
         else if (coerce_unknown_val) emit_unresolved_coerced(c, argv[1], hvt, b);
         else if (decl_type == TY_POLY) emit_boxed(c, argv[1], b);
         else emit_expr(c, argv[1], b);
+        /* a key that is a shared String slot's read is a fresh copy, read
+           in the set after the value: the value is held across it */
+        if (tk < 0 && strbuf_read_copies(c, argv[0]) && operand_may_allocate(c, argv[1])) {
+          buf_puts(b, "; "); emit_gc_root_tmp(c, decl_type, tv, b);
+        }
         buf_puts(b, "; if (sp_gc_is_frozen("); emit_node_or_tmp(c, recv, tr, b);
         buf_puts(b, ")) sp_raise_frozen_hash_at("); emit_node_or_tmp(c, recv, tr, b); buf_printf(b, ", %s); ", hash_box_cls(rt));
         buf_printf(b, "sp_%sHash_set(", hn); emit_node_or_tmp(c, recv, tr, b); buf_puts(b, ", ");

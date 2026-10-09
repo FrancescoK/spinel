@@ -6465,23 +6465,6 @@ int subtree_reads_match_globals(Compiler *c, int root) {
   return 0;
 }
 
-/* String methods that only read the receiver's bytes: they answer a scalar or
-   build a new string, and never retain the pointer they were handed. A
-   shared-mutable receiver can hand them its live buffer instead of a copy. */
-static int str_recv_reads_only(const char *name) {
-  static const char *const ro[] = {
-    "[]", "slice", "byteslice", "getbyte", "ord", "chr",
-    "index", "rindex", "include?", "start_with?", "end_with?",
-    "count", "length", "size", "bytesize", "empty?",
-    "to_i", "to_f", "hex", "oct", "match?", "casecmp", "casecmp?",
-    "upcase", "downcase", "capitalize", "swapcase", "reverse",
-    "strip", "lstrip", "rstrip", "chomp", "chop", "center", "ljust", "rjust",
-    "each_char", "each_byte", "each_line", "chars", "bytes", "lines", "split",
-    "sum", "hash", "unpack", "unpack1", "codepoints", "scan", NULL };
-  for (int i = 0; ro[i]; i++) if (sp_streq(name, ro[i])) return 1;
-  return 0;
-}
-
 /* A byte-offset search takes a String needle. A poly one is a String at run
    time, or the conversion protocol's TypeError -- either way emit_str_expr
    makes it a `const char *` -- so it belongs on the same arm as a static
@@ -8263,7 +8246,7 @@ static int emit_scalar_recv_arms(Compiler *c, int id, Buf *b, const NodeTable *n
      the bytes and answers a scalar or a freshly built string keeps nothing,
      so it can read the live buffer instead -- `text[i]` in a scan loop was
      copying the whole subject on every character. */
-  if (rt == TY_STRING && name && str_recv_reads_only(name))
+  if (rt == TY_STRING && name && is_string_read_only_method(name))
     emit_strbuf_read_ref(c, recv, &rs);
   if (!rs.p) emit_expr(c, recv, &rs);
   const char *r = rs.p ? rs.p : "";
