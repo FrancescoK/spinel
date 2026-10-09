@@ -757,8 +757,8 @@ defined_spec__175	HARNESS-SKEW
 defined_spec__176	PASS
 defined_spec__177	HARNESS-SKEW
 defined_spec__178	PASS
-defined_spec__179	FAIL
-defined_spec__180	FAIL
+defined_spec__179	PASS
+defined_spec__180	PASS
 defined_spec__181	PASS
 defined_spec__182	PASS
 defined_spec__183	PASS
@@ -1312,7 +1312,7 @@ numbers_spec__019	REJECT-BYDESIGN
 numbers_spec__020	REJECT-BYDESIGN
 numbers_spec__021	REJECT-BYDESIGN
 numbers_spec__022	REJECT-BYDESIGN
-optional_assignments_spec__001	FAIL
+optional_assignments_spec__001	PASS
 optional_assignments_spec__002	PASS
 optional_assignments_spec__003	PASS
 optional_assignments_spec__004	PASS
@@ -1339,7 +1339,7 @@ optional_assignments_spec__024	HARNESS-SKEW
 optional_assignments_spec__025	HARNESS-SKEW
 optional_assignments_spec__026	HARNESS-SKEW
 optional_assignments_spec__027	REJECT
-optional_assignments_spec__028	FAIL
+optional_assignments_spec__028	PASS
 optional_assignments_spec__029	PASS
 optional_assignments_spec__030	PASS
 optional_assignments_spec__031	PASS
