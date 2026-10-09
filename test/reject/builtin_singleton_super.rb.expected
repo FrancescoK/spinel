@@ -1,0 +1,1 @@
+"# Explicit singleton super needs the inherited builtin implementation."
