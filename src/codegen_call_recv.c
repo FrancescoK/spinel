@@ -7073,6 +7073,20 @@ static int str_arms_slice_encode(Compiler *c, int id, Buf *b, const char *name, 
   else if (sp_streq(name, "split") && argc == 2) {
     buf_printf(b, "sp_str_split_limit(%s, ", r); emit_str_pattern_expr(c, argv[0], b); buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")");
   }
+  else if (sp_streq(name, "clamp") && argc == 2 &&
+           ((str_cmp_bound_foreign(c, argv[0]) && comp_ntype(c, argv[0]) != TY_NIL && !ty_is_object(comp_ntype(c, argv[0]))) ||
+            (str_cmp_bound_foreign(c, argv[1]) && comp_ntype(c, argv[1]) != TY_NIL && !ty_is_object(comp_ntype(c, argv[1]))))) {
+    int tc = ++g_tmp, tlo = ++g_tmp, thi = ++g_tmp;
+    buf_printf(b, "({ const char *_t%d = %s; SP_GC_ROOT_STR(_t%d); sp_RbVal _t%d = ", tc, r, tc, tlo);
+    emit_boxed(c, argv[0], b);
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_RbVal _t%d = ", tlo, thi);
+    emit_boxed(c, argv[1], b);
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); if (_t%d.tag != SP_TAG_NIL && _t%d.tag != SP_TAG_NIL && !sp_poly_cmp_le0(_t%d, _t%d))"
+                  " sp_raise_cls(\"ArgumentError\", \"min argument must be less than or equal to max argument\");"
+                  " if (_t%d.tag != SP_TAG_NIL) (void)sp_poly_cmp_ge0(sp_box_str(_t%d), _t%d);"
+                  " if (_t%d.tag != SP_TAG_NIL) (void)sp_poly_cmp_le0(sp_box_str(_t%d), _t%d); _t%d; })",
+               thi, tlo, thi, tlo, thi, tlo, tc, tlo, thi, tc, thi, tc);
+  }
   else if (sp_streq(name, "clamp") && (argc == 2 ||
            (argc == 1 && nt_type(c->nt, argv[0]) && sp_streq(nt_type(c->nt, argv[0]), "RangeNode")))) {
     int ops[3];

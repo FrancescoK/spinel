@@ -1119,6 +1119,7 @@ int obj_conv_method(Compiler *c, TyKind t, const char *conv, TyKind want, int *d
    arms ask, the conversion emitted on a spilled temp, and the prologue the
    arms share. See codegen.c. */
 int str_cmp_conv_shape(Compiler *c, int node);
+int str_cmp_bound_foreign(Compiler *c, int n);
 void emit_str_cmp_conv(Compiler *c, int node, int tmp, Buf *b);
 void emit_str_cmp_prologue(Compiler *c, const char *rtxt, int operand,
                            int *tr, int *to, int *ts, Buf *b);
