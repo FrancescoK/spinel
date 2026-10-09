@@ -19200,7 +19200,8 @@ static void an_mark_handle_returns(Compiler *c) {
 }
 static int promote_shared_stored_strings_pass(Compiler *c);
 /* A String builtin answering a new Array of new Strings nothing else holds
-   (`s.split(",")`, `s.scan(re)`, `s.lines`, `s.chars`). */
+   (`s.split(",")`, `s.scan(re)`, `s.lines`, `s.chars`), or Dir's listing
+   of a directory (`Dir.entries(d)`, `Dir.children(d)`, `Dir.glob(p)`). */
 static int sb_fresh_string_array_call(Compiler *c, int n) {
   const NodeTable *nt = c->nt;
   n = an_unparen(nt, n);
@@ -19208,6 +19209,10 @@ static int sb_fresh_string_array_call(Compiler *c, int n) {
   const char *mn = nt_str(nt, n, "name");
   int r = nt_ref(nt, n, "receiver");
   if (!mn || r < 0) return 0;
+  if (nt_kind(nt, r) == NK_ConstantReadNode && sp_streq(nt_str(nt, r, "name"), "Dir") &&
+      comp_class_index(c, "Dir") < 0 &&
+      (sp_streq(mn, "entries") || sp_streq(mn, "children") || sp_streq(mn, "glob")))
+    return infer_type(c, n) == TY_STR_ARRAY;
   if (!sp_streq(mn, "split") && !sp_streq(mn, "scan") && !sp_streq(mn, "lines") && !sp_streq(mn, "chars"))
     return 0;
   TyKind rt = infer_type(c, r);
