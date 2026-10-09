@@ -14497,8 +14497,20 @@ static void compute_byref_out_params(Compiler *c) {
   unsigned *blocked = calloc((size_t)n, sizeof(unsigned));  /* per-scope param bitmask */
   char *polyr = calloc((size_t)n, 1);   /* a POLY receiver reaches the name */
   unsigned *cellh = calloc((size_t)n, sizeof(unsigned));  /* a proc captures the param */
-  if (!elig || !blocked || !polyr || !cellh) { free(elig); free(blocked); free(polyr); free(cellh); return; }
+  /* the calls of a scope that lends: an eligible one, or a yielder the
+     lowering turns into a proc call, whose group takes the shared handle
+     instead (an_byref_group_takes_ref). Its own appends were followed, the
+     parameter it hands on to a byref slot was not, and that append landed in
+     its copy. Asked once per scope: the lowering's test walks the program. */
+  char *lends = calloc((size_t)n, 1);
+  if (!elig || !blocked || !polyr || !cellh || !lends) {
+    fprintf(stderr, "spinel: out of memory\n");
+    exit(1);
+  }
   an_byref_eligible_scopes(c, elig);
+  for (int si = 1; si < n; si++)
+    lends[si] = elig[si] || ((c->scopes[si].yields || c->scopes[si].is_lowered_yield) &&
+                             yield_lowers_block(c, si));
 
   for (int id = 0; id < nt->count; id++) {
     const char *ty = nt_type(nt, id);
@@ -14554,7 +14566,7 @@ static void compute_byref_out_params(Compiler *c) {
            the child kept the value ABI the lent slot came back through. */
         Scope *s = comp_scope_of(c, id);
         int si = s ? (int)(s - c->scopes) : -1;
-        if (si <= 0 || si >= n || !elig[si] || s->class_id < 0) continue;
+        if (si <= 0 || si >= n || !lends[si] || s->class_id < 0) continue;
         int mi = a_super_target(c, s);
         if (mi < 0) continue;
         Scope *m = &c->scopes[mi];
@@ -14578,7 +14590,7 @@ static void compute_byref_out_params(Compiler *c) {
       if (!ty || !sp_streq(ty, "CallNode")) continue;
       Scope *s = comp_scope_of(c, id);
       int si = s ? (int)(s - c->scopes) : -1;
-      if (si <= 0 || si >= n || !elig[si]) continue;
+      if (si <= 0 || si >= n || !lends[si]) continue;
       const char *nm = nt_str(nt, id, "name");
       int recv = nt_ref(nt, id, "receiver");
       const char *rty = recv >= 0 ? nt_type(nt, recv) : NULL;
@@ -14674,6 +14686,7 @@ static void compute_byref_out_params(Compiler *c) {
   free(blocked);
   free(polyr);
   free(cellh);
+  free(lends);
 }
 
 /* Does scope mi's body contain a call to its own method name on implicit or
