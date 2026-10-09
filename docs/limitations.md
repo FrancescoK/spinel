@@ -17,12 +17,23 @@ This document is the honest catalogue. It is organized by *kind* of limit:
 - **Now supported** -- things that are *not* limits (corrects older write-ups
   that described an earlier version of the compiler).
 
-A limit the compiler meets is a *refusal*: a `spinel: FILE:LINE: ...` line on
-stderr naming the construct. One run reports every refusal in the program
+A construct rejected at compile time is a *refusal*: a
+`spinel: FILE:LINE: ...` line on stderr naming the construct. By default, one
+run reports every refusal it encounters in the program
 (each abandons the method it is in and the compile goes on to the next), then
-fails once with the count and writes nothing, so a program brought over from
-CRuby learns its whole list in one compile. `--emit-types` carries the same
+fails once with the count and writes no binary. `--emit-types` carries the same
 refusals in its `diagnostics` array with `"severity":"error"`.
+
+Some unsupported constructs compile and fail only when reached at runtime.
+For example, a class-body `define_method("get_" + (ARGV[0] || "a")) { 1 }`
+does not define `get_a`, so a later call raises `NoMethodError`; a computed
+`instance_variable_get("@" + (ARGV[0] || "x"))` on a user-class instance also
+raises `NoMethodError`. A `Class.new` block assigned to a local or returned
+from a method raises `NotImplementedError` if it captures outer locals or uses
+a superclass held in a variable (see the cases below).
+These cases can compile without a refusal or warning. A successful compile
+does not establish CRuby-compatible behavior. Separately, `--defer-refusals`
+explicitly turns compile-time refusals into runtime `NotImplementedError`s.
 
 ---
 
@@ -35,13 +46,13 @@ registry, or stack reification -- none of which exist in a flat compiled binary.
 |---|---|---|
 | `eval` / `instance_eval("str")` / `class_eval("str")` | unsupported | needs a runtime parser + type system. (Block forms -- `instance_eval { }` -- DO work; the block is compiled.) Code in a branch a `RUBY_ENGINE == "..."` check rules out (`if RUBY_ENGINE == "spinel" ... else eval(...) end`) is dropped before analysis, so a library can keep an eval backend for other engines. |
 | `method_missing` | not dispatched (defining it warns at compile time) | every call site is a direct C call; an undefined-method call can't fall back to a per-receiver hook. The method is still callable explicitly. |
-| `define_method` with a runtime-computed name/body | only literal names work | a runtime-built method has no compiled body |
+| `define_method` with a runtime-computed name/body | unsupported; a class-body call with a computed name can compile without defining the method, so calling it raises `NoMethodError` at runtime | the compiled method table cannot acquire a runtime-built method |
 | `ObjectSpace` (`each_object`, `count_objects`) | unsupported | no class-keyed allocation registry; the GC tracks bytes, not a live-object index. `define_finalizer` / `undefine_finalizer` *are* supported (the collector watches the object; the callable runs at the first safe point after the collection that frees it -- a method entry, a loop back-edge, `GC.start` -- or at exit) |
 | `TracePoint` / `set_trace_func` | unsupported | require an interpreter loop to hook |
 | `binding` as an object | unsupported | reifying the local scope needs a runtime name->slot table; locals are C stack slots. `binding.local_variable_get(:x)` with a **literal** name *is* supported -- it resolves to the known slot at compile time |
 | Refinements (`refine` / `using`) | no-op / unresolved | scope-keyed dispatch is incompatible with direct C calls |
 | `callcc` / `Continuation` | unsupported | multi-shot full-stack capture has no flat-C analogue |
-| `Class.new(parent) { ... }` (runtime class) | unsupported | the class graph is baked at compile time |
+| `Class.new(parent)` with or without a block | static forms work; other forms fail during compilation or at runtime, depending on the assignment target, superclass expression and block | the class graph is baked at compile time; see [Class.new cases](#classnew-cases) below |
 | An instance variable of a String (`@x = v` in a method added to String, `s.instance_variable_set(:@x, v)`) | refused at compile time, until Strings are shared rather than copied (#6765); one reached through an untyped value raises NotImplementedError when it runs, as does one on a Time | a String is copied between its representations and across calls, so it has no one identity yet; under #6765's share-by-default model it keeps one and takes the same map as an Array. A Time is copied by value. An Array, a Hash, a Random, a Proc, an exception and a class value keep their instance variables, in a table keyed by the object (as CRuby's); a class value's own class-level slots stay where its class methods read them, and its `instance_variables` lists those only its class methods wrote after the reflective sets. An Integer, a Float, a Symbol, nil, true, false and a Range read nil and raise FrozenError on a write, as in CRuby. An ivar of a builtin value as a multiple-assignment target (`@a, @b = x, y` in an Array method) is refused: assign each on its own |
 | A subclass of a builtin value class: `class Name < String`, and likewise Range, Proc, Method, UnboundMethod, Integer, Float, Symbol, Rational, Complex, NilClass, TrueClass, FalseClass, Regexp, MatchData, Time, Random, Enumerator, IO, File, Dir, Thread, Fiber, Mutex, Queue, SizedQueue, ConditionVariable, OpenStruct, or a class a package binds to C (StringIO); also `Thread::Queue` | refused at compile time, naming the class | the subclass would be built as a plain object: none of the parent's methods reach it, its constructor takes none of the parent's arguments, and `p`, `to_s`, `==` and `respond_to?` answer as for an Object. Supporting it needs an instance that IS a String (Range, ...) with the subclass's methods dispatched on it, as an Array or a Hash subclass's is (below); until then, keep the value in an instance variable of a class of your own. A subclass of Object, BasicObject, an exception, Struct / Data, Numeric, or a package class written in Ruby (Set, Date, BigDecimal) works, as does a class of the program's own that shares a builtin's name under a namespace (`Jobs::Queue`) |
 | A subclass of Array (`class Page < Array`, `::Array`, `Class.new(Array) do ... end`) | supported (#7449), except the shapes in the next column, which are refused at compile time | its instance IS its Array: the struct starts with the Array, so Array's methods run on it, a boxed one is an Array to the runtime, and its class is read back off its own GC scan function. Refused: `Class.new(Array)` without a block (no class of the program's own stands for it; write `class Name < Array`), and a bare `super` into Array from a method with keyword, post-rest or destructured parameters (pass the arguments explicitly). `Marshal.dump` writes an instance as CRuby does (`C` with the class, the elements, and its ivars under `I`), and `Marshal.load` reads that back as an instance of the class, whether Spinel or CRuby wrote it |
@@ -55,7 +66,7 @@ registry, or stack reification -- none of which exist in a flat compiled binary.
 | A call through an `@ivar` before the method that assigns it has run (`@store[k] = v` ahead of a `reset` that sets `@store = {}`) | a release build dereferences the unset slot and crashes (SIGSEGV); a `-g` / `--debug` build raises CRuby's `NoMethodError` (`undefined method '[]=' for nil`) | the test would stand in front of every call through such an ivar, and state a `reset` or `setup` method assigns is often the hottest there is (optcarrot lost 10-20% to it), so only the debug build carries it. An ivar the program fills only by memoization (`@c ||= {}`) is guarded in both builds |
 | An ivar write in an Object or Kernel method with boxed `self` | uses the existing reflective setter; refused if a possible receiver has no writable slot, or the default build encounters a shared String handle slot; `--share-strings` carries the handle through the setter | ordinary user-class slots are registered by the existing boxed-receiver analysis, including a class that starts with no ivars; its indexed call sites bound the receiver layouts, while calls it cannot follow remain conservative; an unused setter adds no instance slots; no write is silently dropped |
 | `defined?(@x)` in an Object or Kernel method whose receiver is boxed | refused when the existing layout facts cannot track whether a possible receiver's slot has been assigned | an initialized slot, a slot whose value distinguishes unset, or a slot with an explicit presence bit is supported; a slot introduced by a root setter keeps its presence bit even if an unrelated class writes an ivar of the same name; mixed ordinary/reflective nil writes to related layouts can leave presence untracked |
-| General reflection (`methods`, `instance_variables`) and `instance_variable_get`/`set` with a **non-literal** name | unsupported | ivars are C struct offsets with no name→offset table; DCE strips method names. A **literal** `instance_variable_get(:@x)` / `instance_variable_set(:@x, v)` *is* supported -- it resolves to the known struct offset, like `send(:literal)` below. |
+| General reflection (`methods`, `instance_variables`) and `instance_variable_get`/`set` with a **non-literal** name | limited; a computed `instance_variable_get` on a user-class instance compiles but raises `NoMethodError` at runtime | user-class ivars are C struct offsets; literal access resolves to the known offset. `instance_variables` can list these known fields. A **literal** `instance_variable_get(:@x)` / `instance_variable_set(:@x, v)` *is* supported, like `send(:literal)` below. |
 | User-defined `#hash` / `#eql?` for hash *keys* | not dispatched (identity probe) | the hash machinery can't call back into a user method per key |
 | A method that **uses its block** (`yield` or `block.call`) **and recurses into itself** (`def rec(n, &b); ...; rec(n-1, &b); yield n; end`) | compile error (loud, was a hang / undefined-symbol) | a block-using method is inlined at each call site (there is no standalone function that takes the block), so a self-call inlines its own body unboundedly -- the runtime base case is invisible at compile time. Recursion *through a yielded block* (`with_state { with_state { } }`, finite source nesting) does work |
 | `Monitor#class` | reports `Thread::Mutex` | a Monitor IS a mutex here, with reentrancy switched on per object, and the class name for a `TY_MUTEX` value is decided at compile time from the type rather than read off the object. `#synchronize` (including reentrant use), `#try_enter` and mutual exclusion across threads all behave as CRuby's do; only the name differs. `Monitor#new_cond` / the `MonitorMixin` module are not modelled. |
@@ -117,6 +128,83 @@ variable (activesupport's `Object#try`) dispatches too: the arms take
 in a method is the `self.` form. `respond_to?(name)` with a runtime name is
 answered over the same closed set (false outside it).
 
+### `Class.new` cases
+
+The assignment target, superclass expression and presence of a block all
+matter. Assume an ordinary user-defined `class Base; end` and `base = Base`.
+Each row below is a separate program; the blocks shown capture no outer locals.
+
+| Assignment | Compile | Run / subsequent use |
+|---|---|---|
+| `Foo = Class.new(Base) {}` | succeeds | works |
+| `foo = Class.new(Base) {}` | succeeds | works |
+| `Foo = Class.new(Base)` | succeeds | reading `Foo` raises `NameError` (`uninitialized constant Foo`) |
+| `foo = Class.new(Base)` | refused | no binary |
+| `Foo = Class.new(base) {}` | fails when compiling generated C | no binary |
+| `foo = Class.new(base) {}` | succeeds | construction raises `NotImplementedError` |
+| `Foo = Class.new(base)` | succeeds | reading `Foo` raises `NameError` (`uninitialized constant Foo`) |
+| `foo = Class.new(base)` | refused | no binary |
+
+An empty block therefore changes the result. Storing a class in a local does
+not make that local a supported superclass expression, even when its only
+assignment is a known class.
+
+For example, this chain is refused at the **first** assignment:
+
+```ruby
+class Base; end
+foo = Class.new(Base)             # compile-time refusal
+bar = Class.new(foo)
+```
+
+Adding blocks lets the first assignment work, but the second fails at runtime:
+
+```ruby
+class Base; end
+foo = Class.new(Base) {}          # works
+bar = Class.new(foo) {}           # NotImplementedError
+```
+
+Use constants for the superclass expressions and include the blocks to build
+the chain statically:
+
+```ruby
+class Base; end
+Foo = Class.new(Base) {}
+Bar = Class.new(Foo) {}
+p Bar.superclass == Foo           # true
+```
+
+Spinel lowers these block forms to static class definitions when the superclass
+is omitted or named by a constant and the block captures no outer locals. A
+constant assignment names the class; a local assignment or other expression
+uses a synthesized class. A method can return such a class too:
+
+```ruby
+class Base; end
+k = Class.new(Base) { def hi = 1 }
+p k.new.hi                                  # 1
+
+def make = Class.new(Base) { def hi = 1 }
+p make.new.hi                               # 1
+p make == make                              # true (CRuby: false)
+```
+
+Each such expression refers to one compiled class, so repeated calls reuse
+that class. It does not create a fresh class on each evaluation as CRuby does.
+
+A local assignment or method return whose block captures outer locals or uses
+a variable superclass compiles to a runtime `NotImplementedError`. The message
+mentions a block reading outer locals even when the variable superclass alone
+caused the failure. The compile-time refusal for a local assignment without a
+block spells the construct `Class.new(parent) { ... }` even though no block
+was supplied.
+
+Builtin parents can take separate paths: for example,
+`Err = Class.new(StandardError)` works without a block. This does not extend to
+the ordinary user-class forms in the table. The builtin-subclass restrictions
+above still apply.
+
 ---
 
 ## Partial / relaxable limits
@@ -130,7 +218,8 @@ Limited today, but additively fixable; listed roughly easiest-first.
 | `class Thread` / `class Fiber` reopenings, `Thread.attr_accessor :x` / `Fiber.attr_accessor :x` (activesupport's IsolatedExecutionState) | supported | a reopening's instance methods take the runtime handle as self, and `Thread.current` / `Fiber.current` reach them (also through a class value or a class held in a poly slot). A thread's attribute lives in its thread-local table under a private key; a fiber's in a table of the fiber's own that a new fiber does not inherit (an attribute on a fresh fiber is nil). `thread_variable_get` / `_set` / `?` share the store `Thread#[]` / `[]=` / `key?` keep: one table per thread for both, where CRuby's `[]` is fiber-local |
 | `Thread` real parallelism | implemented as a true M:N runtime (no GVL): N OS workers (`min(online cores, SPINEL_WORKERS)`) run green threads in parallel over a stop-the-world GC, with real `Mutex`/`Queue`/`SizedQueue`/`ConditionVariable`. A monitor thread timeslices CPU-bound threads (~10ms quantum) so a thread looping without yielding cannot starve its siblings (it signals the worker with `SIGURG`, overridable via `SPINEL_PREEMPT_SIGNAL`). The single-threaded archive is unchanged (a non-`Thread` program is byte-identical) | the N workers run per-worker run queues with work stealing, and `Kernel#sleep` and blocking I/O are scheduler-aware (a sleeping / I/O-blocked thread frees its OS worker). preemption is taken at safepoint polls (loop back-edges), so a thread spending a long time inside a single runtime call with no poll yields only when that call returns; concurrent allocation is thread-safe (heap-lock-protected allocators, atomic heap byte counters, per-worker object pools) but every allocation still crosses one global heap lock; remaining work: fully async (signal-interrupted) preemption of such regions, and per-worker allocation buffers (TLAB) to make allocation-heavy parallel code scale. See [docs/thread.md](thread.md) |
 | `Marshal` of user objects with container-typed ivars | primitives + Array + Hash + Bignum + Complex + Rational + plain user objects work, including cyclic and shared references (`Marshal.dump`/`load`, CRuby 4.8 wire format, byte-compatible for the supported subset); an object whose ivar is a *statically typed* Array/Hash (not a poly ivar) is not yet dumpable | a user object dumps/loads through a compile-time-generated per-class dispatcher. Supported ivar types: scalars (Integer/Float/String/true/false/Symbol/Bignum), `poly` (mixed) ivars, and nested user objects. A typed-container ivar would mismatch the loader's always-poly containers, so such a class raises `TypeError` on dump; value-type and Exception-subclass objects are also out of scope. Complex's components are float-only, so they round-trip as Floats |
-| Mixin/inheritance lifecycle hooks (`included` / `inherited` / `extended`) | defined but not fired | emit a startup call with the literal class arg (the include/inherit graph is known at compile time) |
+| Mixin lifecycle hooks (`def self.included(base)` / `def self.extended(base)` with one required parameter) | fired for `include M` in a class body and `extend M` in a class or module body, with a literal module name | the compiler splices the hook body after the declaration and substitutes the receiving class/module for `base`; this is static expansion, not general runtime hook dispatch |
+| Inheritance lifecycle hook (`inherited`) | defined but not fired automatically | would need a startup call with the literal subclass arg (the inheritance graph is known at compile time) |
 | Methods added to `Class` (`class Class; include M; end`, `Class.class_eval { include M }`, a `def` in either) | a class method of every class: `Klass.m`, `String.m`, and a bare `m` in any class body. Refused at compile time, naming the line: `Class.class_eval` anywhere but a top-level statement, and `class Class < ...`. On a builtin class a class-level `@ivar` of such a method is one slot shared by every builtin class | a nested or conditional addition would need the methods to exist only once it has run; a builtin class has no class-ivar storage of its own |
 | External `Enumerator` -- `.each` with no block is only an Enumerator on `Array` / `Range`, not on an arbitrary user method | mostly supported | `Array#each` / `Range#each` with no block return a working external Enumerator (`#next` / `#peek` / `#rewind` / `#size`, `loop` stops on `StopIteration`). `Enumerator.new { \|y\| ... }` is a fiber-backed generator (`y << v`, `y.yield(v)`, and the bare `y.yield v` without parentheses, plus `#next` / `#peek` / `#rewind` / `#take` / `#first`, infinite generators work). `Enumerator::Lazy` over an int range (incl. endless) or int array fuses map/select/reject/filter/take_while chains terminated by `first(n)` / `to_a` / `force`. Chained block→`.to_a` forms (`each_slice(n).to_a`, `filter_map`, `map{}.to_a`) also work. |
 | `Enumerable#each_entry` on a user class whose `#each` yields MULTIPLE values | yields them spread, as `#each` does, rather than packed into an array | on every builtin enumerable (Array/Hash/Range/Enumerator/Dir) `#each` yields one value per element, so `each_entry` is compiled as `each` and matches CRuby exactly. The difference only shows for a user `#each` that does `yield a, b`, where CRuby's `each_entry` hands the block `[a, b]`. Packing needs the yield arity of the user's `#each`, which is a static property of its body |
@@ -1286,33 +1375,65 @@ not matched and raises. The call needs a class or module receiver, explicit
 or the implicit self of a class method or class body; in an instance method
 an instance has no `const_get`, and the call is refused where it is written.
 
-#### `defined?(@ivar)` is answered at compile time
+#### `defined?(@ivar)` has static and runtime paths
 
 CRuby answers `defined?(@ivar)` from the object's runtime state: `nil` until
 the instance variable is first assigned, `"instance-variable"` after -- which
 is what makes it usable as a memoization guard for falsy values
 (`return @x if defined?(@x)`).
 
-Spinel's instance variables are C struct fields. Every ivar the program
-mentions exists in the object's layout from allocation, pre-filled with its
-type's nil representation; there is no per-object "has been assigned" record
-to consult. `defined?(@ivar)` therefore folds at compile time: it is truthy
-iff the program contains an assignment to that ivar anywhere, regardless of
-whether *this* object has been assigned yet at run time. The falsy-value
-memoization pattern silently reads the unassigned slot on the first call:
+Spinel's instance variables are C struct fields, pre-filled with their type's
+nil representation. In an instance method, the compiler can emit a runtime
+presence check when it can use the field's nil representation to identify an
+unset slot: the field has a suitable representation, `initialize` does not
+unconditionally assign it, and every relevant write is proven to store a
+non-nil value. Some fields created only through reflection instead have an
+explicit presence flag. For example, this guard works as in CRuby:
 
 ```ruby
-def foo
-  return @foo if defined?(@foo)   # compile-time truthy: an @foo= exists below
-  @foo = compute                  # never reached -- foo returns nil forever
+class Foo
+  def foo
+    return @foo if defined?(@foo)
+    @foo = 42
+  end
 end
+f = Foo.new
+p f.foo, f.foo                    # 42, 42
 ```
 
-Tracking runtime assignment would need a shadow presence bit per ivar written
-on every assignment -- cost on every object and every ivar write to serve a
-rare pattern. Use a nil check (`@foo = compute if @foo.nil?`, i.e. `||=`) when
-`compute` never yields nil/false, or an explicit sentinel/flag ivar when it
-can:
+Otherwise, `defined?(@ivar)` folds to `"instance-variable"` if the program
+contains a plain assignment to that ivar name anywhere, or `nil` if it does
+not. This does not track whether the particular object has received a write.
+The presence analysis does not prove a user method call non-nil merely from
+its inferred return type, so replacing the literal with `compute` changes the
+guard's behavior:
+
+```ruby
+class Foo
+  def compute = 42
+  def foo
+    return @foo if defined?(@foo)  # compile-time truthy
+    @foo = compute                # never reached
+  end
+end
+f = Foo.new
+p f.foo, f.foo                    # nil, nil
+```
+
+A conditional assignment from a potentially nil value can also report a field
+as defined before it has been written:
+
+```ruby
+class Foo
+  def initialize(v) = (@v = v if v)
+  def has? = defined?(@v)
+end
+p Foo.new(nil).has?               # "instance-variable" (CRuby: nil)
+```
+
+Use `@foo ||= compute` when `compute` never yields nil/false, or an explicit
+flag when it can. The `defined?` guard is not a general falsy-value memoization
+mechanism in Spinel:
 
 ```ruby
 def foo
@@ -1346,41 +1467,32 @@ distinct-valued strings compare `false`.
 
 #### `defined?`
 
-`defined?` is resolved **statically at compile time** from the operand's
-syntactic form and whole-program symbol presence, not from the runtime state of
-the actual receiver or binding. It returns a fixed label string (or `nil`),
-which matches CRuby for the common forms but differs in several cases. A full
-runtime-accurate `defined?` would require carrying per-object/per-binding
-definedness into the generated code; that cost is deliberately not paid.
+`defined?` combines compile-time resolution with runtime checks. Local
+variables, known constants, implicit method calls, assignments and literals
+usually resolve to a fixed label. Global-variable presence is inferred from
+writes in the program. Class variables use a runtime assignment flag, and
+calls with a receiver can check its value and whether it answers the method.
+Instance variables use the static or runtime paths described above.
 
-Forms that match CRuby: a local variable (`"local-variable"`), a set/unset
-instance variable, a set/unset global variable, a user or built-in constant
-name (`"constant"`), a no-receiver call to a **user-defined** method
-(`"method"`), `self`, `nil`/`true`/`false`, and the int/float/string/symbol/array
-literals that report `"expression"`.
-
-Where Spinel returns `nil` but CRuby returns a label:
+Examples compared with CRuby, with the referenced constant and method defined
+and a block supplied for `yield`:
 
 | Operand | CRuby | Spinel |
 | --- | --- | --- |
-| `Foo::Bar` (constant path) | `"constant"` | `nil` |
-| `puts` (built-in / Kernel method) | `"method"` | `nil` |
-| `obj.meth` (call with a receiver) | `"method"` | `nil` |
-| `1 + 1` (operator = method call) | `"method"` | `nil` |
-| `{a: 1}`, `1..3` (hash/range and other general expressions) | `"expression"` | `nil` |
-| `x = 1` (assignment) | `"assignment"` | `nil` |
-| `yield`, `super` | `"yield"` / `"super"` | `nil` |
+| `Foo::Bar` (constant path) | `"constant"` | `"constant"` |
+| `puts` (built-in / Kernel method) | `"method"` | `"method"` |
+| `obj.meth` (public method with a receiver) | `"method"` | `"method"` |
+| `1 + 1` (operator = method call) | `"method"` | `"method"` |
+| `{a: 1}`, `1..3` (hash/range expressions) | `"expression"` | `"expression"` |
+| `x = 1` (assignment) | `"assignment"` | `"assignment"` |
+| `yield` | `"yield"` | `"yield"` |
+| `super` in a subclass method with a parent implementation | `"super"` | `nil` |
 | Multi-encoding strings | Strings are UTF-8 or ASCII-8BIT, and one rule says which: a string is ASCII-8BIT when the program ASKED FOR BYTES (`pack`, `String#b`, `Marshal.dump`, `Random#bytes`, `binread`, `unpack`'s byte directives, `force_encoding` naming it). Everything else is UTF-8, including what CRuby calls US-ASCII (see below). A string carries one bit, not an encoding object; `#length`, `#[]`, `#inspect`, `#encoding` and the comparisons read it. A compiled binary's string paths (indexing, regexp, hashing) assume the two share a byte representation, and that assumption is load-bearing for their performance | write UTF-8; transcode at the boundary before the data enters the program |
 
-Two forms report a label where CRuby would report `nil`, because the check is
-syntactic rather than runtime:
-
-- An instance variable reports `"instance-variable"` when **any** code in the
-  program assigns that ivar name -- not whether it is set on the specific
-  receiver at that point.
-- A class variable read always reports `"class variable"`, with no
-  definedness check, so `defined?(@@undefined)` is `"class variable"` in Spinel
-  versus `nil` in CRuby.
+The static instance-variable path can report `"instance-variable"` before a
+write on the particular receiver; see the memoization examples above. A class
+variable instead reports `nil` before assignment and `"class variable"` after
+assignment, including when the assigned value is nil.
 
 #### `String#grapheme_clusters`
 
