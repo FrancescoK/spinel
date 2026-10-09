@@ -1,0 +1,6 @@
+[ArgumentError, "wrong number of arguments (given 2, expected 0..1)"]
+[TypeError, "no implicit conversion of String into Integer"]
+7
+[ArgumentError, "wrong number of arguments (given 0, expected 1..2)"]
+5
+5

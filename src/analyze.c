@@ -31224,16 +31224,29 @@ static int splat_lit_len(Compiler *c, int ex) {
 }
 /* A local qualifies when its scope assigns it an array literal exactly once
    and never touches it again: no second write, no operator write, no use as a
-   receiver (any call on it could be a push, which changes the length). */
+   receiver (any call on it could be a push, which changes the length). Every
+   read is an index (`a[i]`) or a splat: a read handed on (`b = a`, `f(a)`,
+   `[a]`) is an alias a push through changes the length too. */
 static int splat_local_len(Compiler *c, int ex, int callid) {
   NodeTable *nt = (NodeTable *)c->nt;
   const char *nm = nt_str(nt, ex, "name");
   if (!nm || callid >= c->node_cap) return -1;
   int sc = c->nscope[callid];
-  int len = -1, writes = 0;
+  int len = -1, writes = 0, reads = 0, seen = 0;
   for (int id = 0; id < nt->count && id < c->node_cap; id++) {
     const char *ty = nt_type(nt, id);
     if (!ty || c->nscope[id] != sc) continue;
+    if (nt_kind(nt, id) == NK_LocalVariableReadNode) {
+      const char *rn = nt_str(nt, id, "name");
+      if (rn && sp_streq(rn, nm)) reads++;
+      continue;
+    }
+    if (nt_kind(nt, id) == NK_SplatNode) {
+      int e = nt_ref(nt, id, "expression");
+      const char *en = e >= 0 && nt_kind(nt, e) == NK_LocalVariableReadNode ? nt_str(nt, e, "name") : NULL;
+      if (en && sp_streq(en, nm)) seen++;
+      continue;
+    }
     if (sp_streq(ty, "LocalVariableWriteNode")) {
       const char *wn = nt_str(nt, id, "name");
       if (!wn || !sp_streq(wn, nm)) continue;
@@ -31261,11 +31274,11 @@ static int splat_local_len(Compiler *c, int ex, int callid) {
          without this the first expansion disqualifies every later one in the
          same scope. */
       const char *cn = nt_str(nt, id, "name");
-      if (cn && sp_streq(cn, "[]")) continue;
+      if (is_aref_name(cn)) { seen++; continue; }
       return -1;
     }
   }
-  return writes == 1 ? len : -1;
+  return writes == 1 && reads == seen ? len : -1;
 }
 /* The array literal a splat of local `x` spreads, when its length is sure:
    the method's own body assigns it that literal once, in a statement ahead
