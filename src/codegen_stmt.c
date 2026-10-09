@@ -1318,9 +1318,11 @@ void emit_strbuf_handle_of(Compiler *c, int v, Buf *b) {
   emit_strbuf_value(c, &slot, v, b);
 }
 /* A proven fresh value can keep a small payload inside its new handle.
-   The runtime copies before collection and falls back for larger payloads. */
+   The runtime copies before collection and falls back for larger payloads.
+   A frozen literal is no new String: sp_String_new_shared answers its own
+   handle, which a payload copy must never replace. */
 const char *strbuf_new_func(Compiler *c, int v) {
-  return repr_share_rule(c) && share_value_fresh(c, v, 0)
+  return repr_share_rule(c) && share_value_fresh(c, v, 0) && !share_frozen_literal(c, v)
     ? "sp_String_new_fresh" : "sp_String_new_shared";
 }
 /* --share-strings: put the handle demand on each `next` (k NK_NextNode) or
@@ -1381,7 +1383,7 @@ int strbuf_hash_default_arg(Compiler *c, int v) {
   if ((rt != TY_POLY && (!ty_is_hash(rt) || ty_hash_val(rt) != TY_POLY)) || argc != 1 ||
       cplan_user_fresh(c, v)->dispatch != CP_NONE) return -1;
   /* A dropped frozen literal already keeps its frozen mark in the box. */
-  if (nt_kind(c->nt, unwrap_parens(c, argv[0])) == NK_StringNode && share_node_transient(c, v)) return -1;
+  if (share_frozen_literal(c, argv[0]) && share_node_transient(c, v)) return -1;
   if (share_value_fresh(c, argv[0], 0) && !share_node_shares(c, v) &&
       !share_node_elems_share(c, recv)) return -1;
   TyKind at = repr_of(c, argv[0]).ty;

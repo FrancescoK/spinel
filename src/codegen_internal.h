@@ -1063,6 +1063,7 @@ void cg_memo_put(CgMemo *m, const char *key, int tag, int val);
    capture detection). Returns NULL when nid is not a resolvable regex. */
 const char *re_lit_src(Compiler *c, int nid);
 void emit_interp(Compiler *c, int id, Buf *b);
+int interp_is_literal_fold(const NodeTable *nt, int id);
 int emit_regex_pat_to_buf(Compiler *c, int nid, Buf *b);
 int nameset_has(NameSet *s, const char *nm);
 void nameset_add(NameSet *s, const char *nm);

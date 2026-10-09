@@ -187,6 +187,9 @@ int share_builtin_fresh(Compiler *c, int call);
    element read of a temporary container of new Strings (an Array literal of
    them, `map(&:to_s)` over Symbols)? depth: 0 from a caller. */
 int share_value_fresh(Compiler *c, int n, int depth);
+/* Is node n the frozen String literal itself (a literal, or a freeze, -@ or
+   dedup of one)? Its handle is the literal's own, never a new one. */
+int share_frozen_literal(Compiler *c, int n);
 int share_return_owned(const Compiler *c, int n, int mi);
 /* Is node n a container literal a builtin only reads and keeps none of
    (`puts [a, b]`)? */

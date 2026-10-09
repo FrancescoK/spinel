@@ -3982,6 +3982,26 @@ static int sh_arm_fresh(Compiler *c, int a, int depth) {
   default: return share_value_fresh(c, a, depth);
   }
 }
+/* Is node n the frozen String literal itself: a literal of a file whose
+   literals are frozen (`fzl`), or a `freeze`, `-@` or `dedup` of one, which
+   answer their receiver? Every evaluation answers the one object the
+   literal names, so the handle a shared slot takes for it is that
+   literal's own (sp_String_literal_handle), never a new one. Adjacent
+   literals (`"a" "b"`) and a squiggly heredoc of mixed indents parse as an
+   interpolated String that emit_interp folds into one literal: that is one
+   too (interp_is_literal_fold). A `+"lit"` is a call that copies, and a
+   String with a part to evaluate is built each time: neither is one. */
+int share_frozen_literal(Compiler *c, int n) {
+  const NodeTable *nt = c->nt;
+  n = an_unparen(nt, n);
+  if (n < 0) return 0;
+  NodeKind k = nt_kind(nt, n);
+  if (k == NK_StringNode) return nt_int(nt, n, "fzl", 0) != 0;
+  if (k == NK_InterpolatedStringNode) return nt_int(nt, n, "fzl", 0) != 0 && interp_is_literal_fold(nt, n);
+  if (k != NK_CallNode || nt_ref(nt, n, "arguments") >= 0 || nt_ref(nt, n, "block") >= 0 ||
+      bop_share_named(TY_STRING, nt_str(nt, n, "name")) != BSH_FROZEN) return 0;
+  return share_frozen_literal(c, nt_ref(nt, n, "receiver"));
+}
 int share_value_fresh(Compiler *c, int n, int depth) {
   const NodeTable *nt = c->nt;
   n = an_unparen(nt, n);
