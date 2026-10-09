@@ -1,0 +1,7 @@
+# spinel: share
+s = +"abc"
+u = s
+u << "x"
+t = s.center(0)
+t << "!"
+p s, t, t.equal?(s)
