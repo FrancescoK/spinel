@@ -4265,10 +4265,16 @@ static int seed_ret_contradicts_class_body(Compiler *c, Scope *s, TyKind rt) {
   return ty_is_object(rt);
 }
 
+static int inline_pin_agrees(Compiler *c, Scope *s, int ci, const char *ivar, const char *ret,
+                             const char *params, const char *where, int from_rbs);
+static void inline_pin_record(Scope *s, int ci, const char *ivar, const char *ret,
+                              const char *params, const char *where, const char *head);
+
 /* Pin scope `s`'s return and each named parameter to its seeded type. ptypes
    is a comma-separated, param-index-aligned list (empty fields preserved so a
    skipped middle param doesn't shift the rest). */
-static void seed_method(Compiler *c, Scope *s, const char *ret_tok, char *ptypes) {
+static void seed_method(Compiler *c, Scope *s, const char *ret_tok, char *ptypes,
+                         const char *where, const char *head, int from_rbs) {
   if (!s) return;
   TyKind rt = parse_seed_type(c, ret_tok);
   int nilable_seed = g_seed_nilable;
@@ -4297,10 +4303,15 @@ static void seed_method(Compiler *c, Scope *s, const char *ret_tok, char *ptypes
         if (lk == NK_InstanceVariableOrWriteNode || lk == NK_InstanceVariableReadNode) {
           const char *ivn = nt_str(nt, last, "name");
           if (ivn && ivn[0] == '@') {
+            /* The return also declares this ivar's representation: check it
+               before replacing a pin and retain an inline origin for later
+               ivar declarations, other readers and contradiction checks. */
+            if (!inline_pin_agrees(c, NULL, s->class_id, ivn, ret_tok, NULL, where, from_rbs)) return;
             ClassInfo *ci = &c->classes[s->class_id];
             int idx = comp_ivar_intern(ci, ivn);
             ci->ivar_types[idx] = rt;
             class_pin_ivar(ci, ivn);
+            if (!from_rbs) inline_pin_record(NULL, s->class_id, ivn, ret_tok, NULL, where, head);
           }
         }
       }
@@ -4726,7 +4737,7 @@ static void apply_inline_rbs(Compiler *c) {
                              "whose calls share one return representation (its parameter types are applied)%s", name, "");
         if (!inline_pin_agrees(c, ms, -1, NULL, ret, params, where, 0)) continue;
         char *pcopy = params ? strdup(params) : NULL;
-        seed_method(c, ms, fam ? NULL : ret, pcopy);
+        seed_method(c, ms, fam ? NULL : ret, pcopy, where, head, 0);
         free(pcopy);
         inline_pin_record(ms, -1, NULL, ret, params, where, head);
       }
@@ -4838,14 +4849,14 @@ static void apply_rbs_seeds(Compiler *c, const char *path) {
       if (cur_ci == -2 || cur_ci >= 0) {
         Scope *ms = find_method_scope(c, class_id, a1, 0);
         if (ms && !inline_pin_agrees(c, ms, -1, NULL, a2, a3, src, 1)) continue;
-        seed_method(c, ms, method_in_override_family(c, class_id, a1, 0) ? NULL : a2, a3);
+        seed_method(c, ms, method_in_override_family(c, class_id, a1, 0) ? NULL : a2, a3, src, NULL, 1);
       }
     }
     else if (sp_streq(kw, "cmeth") && a1 && a2 && cur_ci >= 0) {
       seed_decl_note(&decls, &ndecls, &capdecls, "cmeth", cur_cname, a1, a2, a3);
       Scope *ms = find_method_scope(c, cur_ci, a1, 1);
       if (ms && !inline_pin_agrees(c, ms, -1, NULL, a2, a3, src, 1)) continue;
-      seed_method(c, ms, method_in_override_family(c, cur_ci, a1, 1) ? NULL : a2, a3);
+      seed_method(c, ms, method_in_override_family(c, cur_ci, a1, 1) ? NULL : a2, a3, src, NULL, 1);
     }
     else if (sp_streq(kw, "src") && a1) {
       snprintf(src, sizeof src, "%s", a1);   /* --positions: the .rbs line the next seed is from */

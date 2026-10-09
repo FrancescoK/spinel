@@ -2880,7 +2880,7 @@ inline-rbs-test:
 	@echo "inline-rbs-test: parser-backed cases skipped (vendor/rbs not fetched; run 'make deps')"
 else
 INLINE_RBS_PARITY := methods attrs identity_reopen identity_collide identity_struct identity_class_new identity_data check_honest
-INLINE_RBS_CHECKS := false_positives warnings syntax_error syntax_error_multiline syntax_error_rbs two_annotations precedence_agree precedence_disagree stray_rb override_family check_false off_switch \
+INLINE_RBS_CHECKS := false_positives ignored_symlink warnings syntax_error syntax_error_multiline syntax_error_rbs two_annotations precedence_agree precedence_disagree reader_pin_precedence reader_pin_conflicts stray_rb override_family check_false off_switch \
                      toplevel_def_self identity_block_forms duplicate_reopen_agree duplicate_reopen_disagree duplicate_nilable precedence_objarray duplicate_rbs_decl \
                      redefine_unannotated redefine_unannotated_req redefine_define_method redefine_class_eval redefine_ignored redefine_refused mixin_not_applied analyzer_warnings dump_ast_malformed \
                      contradiction_inline objarray_boxed
@@ -2928,6 +2928,24 @@ build/inline-rbs-results/%.res: FORCE | rbs-seed-extractor $(SP_RT_LIB) $(SPINEL
 	cmp -s "$$tmp/a.c" "$$tmp/b.c" || { echo "inline-rbs-test: FAIL (an ordinary comment was read as inline RBS)"; diff "$$tmp/b.c" "$$tmp/a.c" | head -10; ok=0; }; \
 	if grep -v '^Wrote ' "$$tmp/a.err" | grep -q .; then echo "inline-rbs-test: FAIL (an ordinary comment drew a diagnostic)"; sed -n 1,5p "$$tmp/a.err"; ok=0; fi; \
 	;; \
+	ignored_symlink) \
+	cp $(IRB)/warnings_part.rb "$$tmp/before.rb"; \
+	printf '%s\n' '#!/bin/sh' 'if [ -f "$$IRB_SYMLINK_CHECK/before" ]; then stage=after; else stage=before; fi' 'cp part.rb "$$IRB_SYMLINK_CHECK/$$stage" || exit 1' 'exec "$$IRB_SYMLINK_COMPILER" "$$@"' > "$$tmp/compiler"; chmod +x "$$tmp/compiler"; \
+	for route in entry required; do \
+	  mkdir "$$tmp/$$route" "$$tmp/$$route/check"; \
+	  cp "$$tmp/before.rb" "$$tmp/$$route/target.rb"; \
+	  mkdir "$$tmp/$$route/src"; ln -s "$$tmp/$$route/target.rb" "$$tmp/$$route/src/part.rb"; \
+	  prog="$$tmp/$$route/src/part.rb"; \
+	  if [ $$route = required ]; then printf '%s\n' 'require_relative "part"' 'p part_value' > "$$tmp/$$route/src/main.rb"; prog="$$tmp/$$route/src/main.rb"; fi; \
+	  IRB_SYMLINK_CHECK="$$tmp/$$route/check" IRB_SYMLINK_COMPILER="$(abspath $(SPINEL))" tools/inline_rbs_ignored.sh "$$tmp/compiler" "$$prog" || { echo "inline-rbs-test: FAIL ($$route symlink: ignored-annotation check failed)"; ok=0; }; \
+	  cmp -s "$$tmp/before.rb" "$$tmp/$$route/target.rb" || { echo "inline-rbs-test: FAIL ($$route symlink: the original target changed)"; ok=0; }; \
+	  cmp -s "$$tmp/before.rb" "$$tmp/$$route/check/before" && [ -f "$$tmp/$$route/check/after" ] && ! grep -q '^#:' "$$tmp/$$route/check/after" || { echo "inline-rbs-test: FAIL ($$route symlink: no annotation was removed from the copy)"; ok=0; }; \
+	done; \
+	mkdir "$$tmp/outside" "$$tmp/outside/src"; cp "$$tmp/before.rb" "$$tmp/outside/target.rb"; \
+	printf 'require_relative "%s"\np part_value\n' "$$tmp/outside/target.rb" > "$$tmp/outside/src/main.rb"; \
+	if tools/inline_rbs_ignored.sh $(SPINEL) "$$tmp/outside/src/main.rb" > "$$tmp/outside/check.log" 2>&1; then echo "inline-rbs-test: FAIL (an absolute required file outside the copy was accepted)"; ok=0; fi; \
+	grep -q 'outside the temporary copy' "$$tmp/outside/check.log" && cmp -s "$$tmp/before.rb" "$$tmp/outside/target.rb" || { echo "inline-rbs-test: FAIL (an absolute required file was not refused unchanged)"; cat "$$tmp/outside/check.log"; ok=0; }; \
+	;; \
 	warnings) \
 	for fl in "" --int-overflow=promote; do \
 	ovdef=""; [ "$$fl" != --int-overflow=promote ] || ovdef=-DSP_INT_OVERFLOW_MODE_PROMOTE; \
@@ -2972,6 +2990,37 @@ build/inline-rbs-results/%.res: FORCE | rbs-seed-extractor $(SP_RT_LIB) $(SPINEL
 	precedence_disagree) \
 	if $(SPINEL) $(IRB)/precedence.rb --rbs $(IRB)/sig/precedence_disagree -c --no-line-map -o "$$tmp/d.c" >"$$tmp/d.err" 2>&1; then echo "inline-rbs-test: FAIL (inline RBS disagreeing with --rbs compiled)"; ok=0; \
 	else grep -q 'precedence.rb:5:.*meter.rbs:2' "$$tmp/d.err" || { echo "inline-rbs-test: FAIL (a disagreement with --rbs was refused without naming both)"; sed -n 1,5p "$$tmp/d.err"; ok=0; }; fi; \
+	;; \
+	reader_pin_precedence) \
+	for fl in "" --int-overflow=promote; do \
+	  ovdef=""; [ "$$fl" != --int-overflow=promote ] || ovdef=-DSP_INT_OVERFLOW_MODE_PROMOTE; \
+	  for mode in inline both; do \
+	    rbs=""; [ $$mode != both ] || rbs="--rbs $(IRB)/sig/reader_pin_agree"; \
+	    $(SPINEL) $(IRB)/reader_pin_precedence.rb $$fl $$rbs -c --no-line-map -o "$$tmp/$$mode.c" 2>"$$tmp/$$mode.err" || { echo "inline-rbs-test: FAIL (reader_pin_precedence $$mode $$fl: the compile failed)"; cat "$$tmp/$$mode.err"; ok=0; }; \
+	    if grep -v '^Wrote ' "$$tmp/$$mode.err" | grep -q .; then echo "inline-rbs-test: FAIL (reader_pin_precedence $$mode $$fl: unexpected diagnostics)"; cat "$$tmp/$$mode.err"; ok=0; fi; \
+	  done; \
+	  cmp -s "$$tmp/inline.c" "$$tmp/both.c" || { echo "inline-rbs-test: FAIL (agreeing reader pins changed the C $$fl)"; ok=0; }; \
+	  if $(CC) -O0 -Ilib $(RBS_SEED_STRICT) $$ovdef "$$tmp/inline.c" $(SP_RT_LIB) $(LDFLAGS) -lm -o "$$tmp/x" 2>"$$tmp/cc.err"; then \
+	    "$$tmp/x" > "$$tmp/x.out" 2>"$$tmp/x.err"; rc=$$?; \
+	    [ $$rc -eq 0 ] && [ ! -s "$$tmp/x.err" ] && cmp -s "$$tmp/x.out" $(IRB)/reader_pin_precedence.expected || { echo "inline-rbs-test: FAIL (reader_pin_precedence $$fl: runtime status, stderr or output differs from CRuby)"; ok=0; }; \
+	  else echo "inline-rbs-test: FAIL (reader_pin_precedence $$fl: C did not compile)"; sed -n 1,10p "$$tmp/cc.err"; ok=0; fi; \
+	  if $(SPINEL) $(IRB)/reader_pin_precedence.rb $$fl --rbs $(IRB)/sig/reader_pin_disagree -c --no-line-map -o "$$tmp/d.c" >"$$tmp/d.err" 2>&1; then echo "inline-rbs-test: FAIL (conflicting external reader pins compiled $$fl)"; ok=0; fi; \
+	  [ "$$(grep -c 'disagrees with the .rbs signature' "$$tmp/d.err")" = 4 ] || { echo "inline-rbs-test: FAIL (expected four external reader-pin disagreements $$fl)"; cat "$$tmp/d.err"; ok=0; }; \
+	  for at in 5:2:ExplicitReader 18:6:ImplicitReader 18:7:ImplicitReader 25:11:MemoReader; do \
+	    ln=$${at%%:*}; rest=$${at#*:}; rln=$${rest%%:*}; cn=$${rest#*:}; \
+	    grep -q "reader_pin_precedence.rb:$$ln: inline RBS: the type of $$cn @items disagrees with the .rbs signature at .*readers.rbs:$$rln$$" "$$tmp/d.err" || { echo "inline-rbs-test: FAIL (external reader-pin disagreement omitted $$at $$fl)"; cat "$$tmp/d.err"; ok=0; }; \
+	  done; \
+	done; \
+	;; \
+	reader_pin_conflicts) \
+	for fl in "" --int-overflow=promote; do \
+	  if $(SPINEL) $(IRB)/reader_pin_conflicts.rb $$fl -c --no-line-map -o "$$tmp/d.c" >"$$tmp/d.err" 2>&1; then echo "inline-rbs-test: FAIL (conflicting inline reader pins compiled $$fl)"; ok=0; fi; \
+	  [ "$$(grep -c 'disagrees with another annotation' "$$tmp/d.err")" = 4 ] || { echo "inline-rbs-test: FAIL (expected four inline reader-pin disagreements $$fl)"; cat "$$tmp/d.err"; ok=0; }; \
+	  for at in 8:5:IvarFirst 17:13:ReaderFirst 29:26:StringsFirst 41:38:IntegersFirst; do \
+	    ln=$${at%%:*}; rest=$${at#*:}; prev=$${rest%%:*}; cn=$${rest#*:}; \
+	    grep -q "reader_pin_conflicts.rb:$$ln: inline RBS: the type of $$cn @items disagrees with another annotation at .*reader_pin_conflicts.rb:$$prev$$" "$$tmp/d.err" || { echo "inline-rbs-test: FAIL (inline reader-pin disagreement omitted $$at $$fl)"; cat "$$tmp/d.err"; ok=0; }; \
+	  done; \
+	done; \
 	;; \
 	stray_rb) \
 	$(SPINEL) $(IRB)/precedence.rb --no-inline-rbs --rbs $(IRB)/sig/stray -c --no-line-map -o "$$tmp/s.c" >/dev/null 2>&1; \

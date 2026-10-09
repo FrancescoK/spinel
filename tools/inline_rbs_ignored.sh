@@ -13,7 +13,8 @@
 # program compiled again. The two C files must be identical byte for byte.
 #
 # The program's directory is copied whole, so `require_relative` finds the
-# same files and a warning in a required file is stripped there. Both
+# same files and a warning in a required file is stripped there. Relative
+# flag paths, such as --rbs, resolve from that copied directory. Both
 # compiles run from the copy with the same output name, so a path in the C
 # is the same in both. Exits 1, saying which lines, when the C differs or
 # either compile fails; prints nothing and exits 0 otherwise (a compile
@@ -23,9 +24,10 @@ spinel=$1; prog=$2; shift 2
 case $spinel in /*) ;; *) spinel=$(cd "$(dirname "$spinel")" && pwd)/$(basename "$spinel") ;; esac
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/spinel-irbignored.XXXXXX") || exit 1
 trap 'rm -rf "$tmp"' EXIT
-mkdir "$tmp/src" && cp -R "$(dirname "$prog")/." "$tmp/src/" || exit 1
+mkdir "$tmp/src" && cp -RL "$(dirname "$prog")/." "$tmp/src/" || exit 1
 name=$(basename "$prog")
 cd "$tmp/src" || exit 1
+srcdir=$(pwd -P) || exit 1
 
 if ! "$spinel" "$name" "$@" -c --no-line-map -o "$tmp/out.c" 2>"$tmp/with.err"; then
   echo "inline_rbs_ignored: FAIL ($name $*: the compile failed)"; sed -n 1,5p "$tmp/with.err"; exit 1
@@ -39,6 +41,8 @@ grep -oE '[^ :]+\.rb:[0-9]+(:[0-9]+)?: warning: inline RBS' "$tmp/with.err" \
 
 for f in $(cut -d' ' -f1 "$tmp/lines" | sort -u); do
   [ -f "$f" ] || { echo "inline_rbs_ignored: FAIL ($name $*: a warning names $f, which is not a file of the program)"; exit 1; }
+  fdir=$(cd "$(dirname "$f")" && pwd -P) || exit 1
+  case "$fdir/" in "$srcdir/"*) ;; *) echo "inline_rbs_ignored: FAIL ($name $*: a warning names $f outside the temporary copy)"; exit 1 ;; esac
   lines=$(awk -v f="$f" '$1 == f { printf "%s ", $2 }' "$tmp/lines")
   awk -v lines="$lines" '
     BEGIN { n = split(lines, a, " "); for (i = 1; i <= n; i++) strip[a[i]] = 1 }
