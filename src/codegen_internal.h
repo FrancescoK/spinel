@@ -879,6 +879,8 @@ int hash_nil_key_stored(Compiler *c, int key, TyKind kt);
 const char *conv_wrong_cls_name(TyKind t);
 const char *conv_cls_name_of(Compiler *c, TyKind t);
 TyKind obj_container_conv(Compiler *c, TyKind t, const char *conv, int *def);
+int conv_takes_no_args(Compiler *c, int mi);
+void emit_conv_dflt_args(Compiler *c, int mi, Buf *b);
 void emit_str_pattern_expr(Compiler *c, int node, Buf *b);
 void emit_boxed_text(Compiler *c, TyKind t, const char *expr, Buf *b);
 /* the form --repr-check records when emit_boxed_text boxes a kind t (RF_*) */
