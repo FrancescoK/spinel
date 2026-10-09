@@ -14278,7 +14278,10 @@ static int sp_exc_cause_chain_reaches(sp_Exception *c, void *obj) {
    ring, or make it its own cause. Every raise passes here, so the raised
    object comes in as a local and `c` is tested first: a raise made with
    nothing handled and nothing in flight goes on at that test. */
+/* A frozen exception takes no implicit cause, as in CRuby: one first raised
+   with `cause: nil` kept nil when raised again inside a rescue (#8276) */
 static SP_INLINE void *sp_exc_implicit_cause(void *c, void *obj) {
+  if (obj && sp_gc_is_frozen(obj)) return ((sp_Exception *)obj)->cause;
   if (c && obj && sp_exc_cause_chain_reaches((sp_Exception *)c, obj)) return ((sp_Exception *)obj)->cause;
   return c;
 }
