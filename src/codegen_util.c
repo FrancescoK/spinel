@@ -1131,9 +1131,12 @@ int g_proc_toplevel_return = 0;
    funnel gotos pop only the frames they actually exit. */
 int g_exc_frame_depth = 0;
 int g_loop_exc_base = 0;        /* frame depth at the innermost C-loop entry */
+int g_loop_rescue_base = 0;     /* rescue bodies open at that entry (g_rescue_save_depth) */
 int g_loop_ensure_base = 0;     /* ensure depth at the innermost C-loop entry */
 int g_brk_exc_base = 0;         /* frame depth at the valued-break wrapper */
 int g_block_brk_exc_base = 0;   /* ... for yield-block re-entry (mirrors g_block_brk_ebase) */
+int g_brk_rescue_base = 0;      /* rescue bodies open at the valued-break wrapper */
+int g_block_brk_rescue_base = 0;
 int g_method_pr_exc_depth = 0;
 /* ... and the ENSURE depth at that target. A `return` inside a yielding
    method's body inlined under a caller's begin..ensure was routed through
@@ -1238,6 +1241,21 @@ int rescues_crossed(int pop_base) {
 void emit_cur_exc_restore(Buf *b, int pop_base) {
   int k = rescues_crossed(pop_base);
   if (k > 0) buf_printf(b, "sp_rescue_sp -= %d; ", k);
+}
+/* Pop the handlers of the rescue bodies entered since `rescue_base` (the
+   g_rescue_save_depth an ensure or a loop recorded on entry). The frame
+   depth alone cannot tell them from one entered before at the same depth:
+   a `next` in a block inside a rescue cleared that rescue's $! (#8208). */
+void emit_rescue_pops_to(Buf *b, int rescue_base) {
+  int k = g_rescue_save_depth - rescue_base;
+  if (k > 0) buf_printf(b, "sp_rescue_sp -= %d; ", k);
+}
+/* A break or next leaving the innermost C loop: the frames and the rescue
+   handlers opened inside its body. */
+void emit_loop_unwind(Buf *b) {
+  int pops = g_exc_frame_depth - g_loop_exc_base;
+  if (pops > 0) buf_printf(b, "sp_exc_top -= %d; ", pops);
+  emit_rescue_pops_to(b, g_loop_rescue_base);
 }
 int emit_frame_unwind(Buf *b, int pop_base, const char *guard) {
   int pops = g_exc_frame_depth - pop_base;
@@ -4310,7 +4328,19 @@ void emit_boxed_iter_src(Compiler *c, int n, Buf *b) {
 int elem_param_is_handle(const LocalVar *lv, TyKind et) {
   return lv && lv->type == TY_STRBUF && et == TY_STRING;
 }
+/* A variable name an ENV snapshot read takes (desugar_env_enum marks it,
+   or its splat) raises CRuby's ArgumentError for an embedded NUL, as ENV[]
+   does: the check's text around the name. */
+const char *env_key_open(const NodeTable *nt, int n) { return nt_int(nt, n, "env_key", 0) ? "sp_env_chk(" : ""; }
+const char *env_key_close(const NodeTable *nt, int n) { return nt_int(nt, n, "env_key", 0) ? ", 0)" : ""; }
+static void emit_hash_key_value(Compiler *c, int key, TyKind kt, Buf *b);
 void emit_hash_key(Compiler *c, int key, TyKind kt, Buf *b) {
+  if (kt != TY_STRING) { emit_hash_key_value(c, key, kt, b); return; }
+  buf_puts(b, env_key_open(c->nt, key));
+  emit_hash_key_value(c, key, kt, b);
+  buf_puts(b, env_key_close(c->nt, key));
+}
+static void emit_hash_key_value(Compiler *c, int key, TyKind kt, Buf *b) {
   int kboxed = repr_of(c, key).kind == RK_BOXED;
   if (hash_key_misses(c, key, kt)) {
     /* evaluate the key for its effects, then answer the value no key equals */

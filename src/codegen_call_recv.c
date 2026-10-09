@@ -5503,7 +5503,7 @@ int emit_hash_call(Compiler *c, int id, Buf *b) {
             buf_printf(b, " { sp_PolyArray *_t%d = ", ts); emit_expr(c, argv[a], b);
             buf_printf(b, "; for (sp_int _t%d = 0; _t%d < sp_PolyArray_length(_t%d); _t%d++) {", ti, ti, ts, ti);
             buf_printf(b, " %s _t%d = ", c_type_name(kt), tk);
-            if (kt == TY_STRING) buf_printf(b, "sp_poly_to_s(sp_PolyArray_get(_t%d, _t%d));", ts, ti);
+            if (kt == TY_STRING) buf_printf(b, "%ssp_poly_to_s(sp_PolyArray_get(_t%d, _t%d))%s;", env_key_open(nt, argv[a]), ts, ti, env_key_close(nt, argv[a]));
             /* a poly-keyed table takes the element boxed, as it is (#7051) */
             else if (kt == TY_POLY) buf_printf(b, "sp_PolyArray_get(_t%d, _t%d);", ts, ti);
             else buf_printf(b, "(%s)%s(sp_PolyArray_get(_t%d, _t%d));", c_type_name(kt), kt == TY_INT ? "sp_poly_to_i_or_nil" : "sp_poly_to_i", ts, ti);
@@ -6294,7 +6294,7 @@ else {
               if (rt == TY_POLY_POLY_HASH) buf_printf(b, " sp_RbVal _t%d = %s;", tsk, el);
               else if (skt == TY_SYMBOL) buf_printf(b, " sp_sym _t%d = (sp_sym)sp_poly_to_i(%s);", tsk, el);
               else if (skt == TY_INT) buf_printf(b, " sp_int _t%d = sp_poly_to_i_or_nil(%s);", tsk, el);
-              else buf_printf(b, " const char *_t%d = sp_poly_to_s(%s);", tsk, el);
+              else buf_printf(b, " const char *_t%d = %ssp_poly_to_s(%s)%s;", tsk, env_key_open(nt, argv[i]), el, env_key_close(nt, argv[i]));
               buf_printf(b, " if (sp_%sHash_has_key(_t%d, _t%d)) sp_%sHash_set(_t%d, _t%d, sp_%sHash_get(_t%d, _t%d)); }",
                          hn, th, tsk, hn, tr, tsk, hn, th, tsk);
             }
@@ -7785,7 +7785,7 @@ static int int_arms_clamp_pow(Compiler *c, Buf *b, const NodeTable *nt, const ch
     buf_printf(b, " sp_IntArray *_t%d = sp_IntArray_new(); SP_GC_ROOT(_t%d);", tdb, tdb);
     buf_printf(b, " sp_IntArray_push(_t%d, %s); _t%d; })", tdb, r, tdb);
   }
-  else if (sp_streq(name, "digits") && argc == 1) { buf_printf(b, "sp_int_digits(%s, ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
+  else if (sp_streq(name, "digits") && argc == 1) { buf_printf(b, "sp_int_digits(%s, ", r); emit_to_int_expr(c, argv[0], b); buf_puts(b, ")"); }
   else if (is_bits_query(name) &&
            argc == 1 && repr_of(c, argv[0]).big) {
     /* A Bignum mask exceeds int64, so an int receiver can never cover all
@@ -8028,14 +8028,22 @@ static int int_arms_round_divide(Compiler *c, int id, Buf *b, const NodeTable *n
       buf_puts(b, "({ (void)("); emit_expr(c, argv[0], b);
       buf_printf(b, "); (sp_int)((%s) < 0 ? 1 : 0); })", r);
     }
-    else { buf_printf(b, "sp_int_bit((%s), ", r); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
+    else {
+      buf_printf(b, "sp_int_bit((%s), ", r);
+      Repr ar = repr_of(c, argv[0]);
+      if (ar.as_ty == TY_FLOAT || ar.kind == RK_BOXED) {
+        buf_puts(b, "sp_poly_bit_index_arg("); emit_boxed(c, argv[0], b); buf_puts(b, ")");
+      }
+      else emit_to_int_expr(c, argv[0], b);
+      buf_puts(b, ")");
+    }
   }
   else if (sp_streq(name, "[]") && argc == 2) {
     /* n[start, len]: the len-bit field starting at bit `start`. Routed
        through a runtime helper that clamps an out-of-range start/len so
        the shift never goes undefined. */
-    buf_printf(b, "sp_int_bit_range((%s), ", r); emit_int_expr(c, argv[0], b);
-    buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")");
+    buf_printf(b, "sp_int_bit_range((%s), ", r); emit_to_int_expr(c, argv[0], b);
+    buf_puts(b, ", "); emit_to_int_expr(c, argv[1], b); buf_puts(b, ")");
   }
   else if (sp_streq(name, "divmod") && argc == 1 && comp_ntype(c, argv[0]) == TY_FLOAT) {
     /* a Float divisor divides as floats, CRuby's flodivmod (sp_flo_divmod):
@@ -11516,12 +11524,12 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
         if (lv7 && lv7->type == TY_POLY) buf_printf(g_pre, "lv_%s = sp_box_int(_t%d);\n", bpr7, ti7);
         else buf_printf(g_pre, "lv_%s = _t%d;\n", bpr7, ti7);
         /* a real C loop, so a `break` in the body lowers to a C break */
-        int sv_lexc7 = g_loop_exc_base, sv_lens7 = g_loop_ensure_base;
-        g_loop_exc_base = g_exc_frame_depth; g_loop_ensure_base = g_ensure_depth;
+        int sv_lexc7 = g_loop_exc_base, sv_lexc7_rb = g_loop_rescue_base, sv_lens7 = g_loop_ensure_base;
+        g_loop_exc_base = g_exc_frame_depth; g_loop_rescue_base = g_rescue_save_depth; g_loop_ensure_base = g_ensure_depth;
         g_c_loop_depth++;
         for (int j = 0; j < bn7; j++) emit_stmt(c, bb7[j], g_pre, g_indent + 1);
         g_c_loop_depth--;
-        g_loop_exc_base = sv_lexc7; g_loop_ensure_base = sv_lens7;
+        g_loop_exc_base = sv_lexc7; g_loop_rescue_base = sv_lexc7_rb; g_loop_ensure_base = sv_lens7;
         emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
         /* #reverse_each answers its receiver */
         buf_printf(b, "_t%d", tr7);
@@ -14571,7 +14579,7 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
       }
       else if (sp_streq(name, "digits")) {
         buf_puts(b, "sp_poly_int_digits("); emit_boxed(c, recv, b); buf_puts(b, ", ");
-        if (argc == 1) emit_int_expr_conv(c, argv[0], b); else buf_puts(b, "10");
+        if (argc == 1) emit_to_int_expr(c, argv[0], b); else buf_puts(b, "10");
         buf_puts(b, ")");
       }
       else if (argc == 0) { buf_printf(b, "sp_poly_int_%s(", name); emit_boxed(c, recv, b); buf_puts(b, ")"); }

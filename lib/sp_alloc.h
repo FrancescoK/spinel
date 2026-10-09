@@ -543,6 +543,13 @@ static inline const char *sp_str_dup_external(const char *s) {
   return r;
 }
 
+/* ENV copies are frozen but remain collectible, like frozen Hash keys. */
+static inline const char *sp_env_str(const char *s) {
+  char *r = (char *)sp_str_dup_external(s);
+  if (r) ((unsigned char *)r)[-1] = 0xfa;
+  return r;
+}
+
 /* Integer / Float -> decimal string. Shared here (over the string heap) so cold
    readers such as lib/sp_json.c can format numbers without spinel_rt.h. */
 /* Interpolation writers: append one part into a caller-provided buffer and
@@ -840,6 +847,14 @@ SP_NORETURN void sp_raise_frozen_str(const char *s);              /* lib/sp_str.
    marked by the GC (sp_mark_string reads s[-1]), so a bare literal -- whose
    [-1] is out of bounds -- would be UB when it lands at a section edge. */
 static SP_NOINLINE SP_COLD void sp_raise_frozen_array(void) { sp_raise_cls("FrozenError", (&("\xff" "can't modify frozen Array")[1])); }
+/* An ENV name or value (value != 0) with an embedded NUL cannot reach the
+   C environment: CRuby raises ArgumentError rather than cut it short. */
+static inline const char *sp_env_chk(const char *s, int value) {
+  if (s && memchr(s, 0, sp_str_byte_len(s)))
+    sp_raise_cls("ArgumentError", value ? (&("\xff" "bad environment variable value: contains null byte")[1])
+                                        : (&("\xff" "bad environment variable name: contains null byte")[1]));
+  return s;
+}
 /* Same, but stages the receiver so FrozenError#receiver answers the frozen
    object itself (identity-preserving boxing of the mutation target) (#3002).
    sp_exc_stage_recv lives in the generated TU; the ctor transfers the staged
@@ -1012,6 +1027,17 @@ sp_int sp_float_to_i_checked_slow(sp_float f);
 static inline sp_int sp_float_to_i_checked(sp_float f) {
   if (SP_LIKELY(f >= (sp_float)INTPTR_MIN && f < -(sp_float)INTPTR_MIN)) return (sp_int)f;
   return sp_float_to_i_checked_slow(f);
+}
+
+/* Machine-integer arguments use NUM2LONG's RangeError, unlike Float#to_i. */
+SP_NORETURN SP_COLD void sp_float_arg_range_error(sp_float f);
+static inline void sp_float_arg_check(sp_float f) {
+  if (SP_UNLIKELY(!(f >= (sp_float)INTPTR_MIN && f < -(sp_float)INTPTR_MIN)))
+    sp_float_arg_range_error(f);
+}
+static inline sp_int sp_float_arg_i(sp_float f) {
+  sp_float_arg_check(f);
+  return (sp_int)f;
 }
 
 /* ---- forward declarations for pointer-only box params (full types stay

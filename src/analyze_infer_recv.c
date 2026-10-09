@@ -1154,22 +1154,33 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
         { *out = TY_POLY; return 1; }
     }
     if (sp_streq(name, "to_h") && argc == 0 && block < 0) {
-      /* Infer hash type from the first pair element of an array literal */
+      /* Infer the hash type from the pairs of an array literal: every pair,
+         not the first alone -- `[["a", "b"], ["c", 1]].to_h` (and Hash[...],
+         which desugars to it) typed the values from "b" and stored the 1
+         raw in a String slot (#8187). A key or value that differs between
+         pairs is boxed. */
       if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ArrayNode")) {
         int en = 0; const int *els = nt_arr(nt, recv, "elements", &en);
-        if (en > 0 && nt_type(nt, els[0]) && sp_streq(nt_type(nt, els[0]), "ArrayNode")) {
-          int en2 = 0; const int *els2 = nt_arr(nt, els[0], "elements", &en2);
-          if (en2 >= 2) {
-            TyKind kt = infer_type(c, els2[0]);
-            TyKind vt = infer_type(c, els2[1]);
-            if (kt == TY_SYMBOL) { *out = TY_SYM_POLY_HASH; return 1; }
-            if (kt == TY_STRING) {
-              TyKind h = ty_hash_of(TY_STRING, vt);
-              { *out = h != TY_UNKNOWN ? h : TY_STR_POLY_HASH; return 1; }
-            }
-            TyKind h = ty_hash_of(kt, vt);
-            if (h != TY_UNKNOWN) { *out = h; return 1; }
+        TyKind kt = TY_UNKNOWN, vt = TY_UNKNOWN;
+        int ok = en > 0;
+        for (int e = 0; e < en && ok; e++) {
+          int en2 = 0;
+          const int *els2 = nt_kind(nt, els[e]) == NK_ArrayNode ? nt_arr(nt, els[e], "elements", &en2) : NULL;
+          if (en2 != 2) { ok = 0; break; }
+          TyKind k2 = infer_type(c, els2[0]), v2 = infer_type(c, els2[1]);
+          if (e == 0) { kt = k2; vt = v2; continue; }
+          if (k2 != kt) kt = TY_POLY;
+          if (v2 != vt) vt = TY_POLY;
+        }
+        if (ok && kt == TY_POLY) { *out = TY_POLY_POLY_HASH; return 1; }
+        if (ok) {
+          if (kt == TY_SYMBOL) { *out = TY_SYM_POLY_HASH; return 1; }
+          if (kt == TY_STRING) {
+            TyKind h = ty_hash_of(TY_STRING, vt);
+            { *out = h != TY_UNKNOWN ? h : TY_STR_POLY_HASH; return 1; }
           }
+          TyKind h = ty_hash_of(kt, vt);
+          if (h != TY_UNKNOWN) { *out = h; return 1; }
         }
       }
       /* Non-literal receiver: the pair element types are not statically known

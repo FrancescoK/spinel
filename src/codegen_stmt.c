@@ -958,7 +958,7 @@ else {
   if (sp_streq(name, "srand")) {
     emit_indent(b, indent);
     if (argc == 0) buf_puts(b, "(void)sp_kernel_srand((sp_int)time(NULL));\n");
-    else { buf_puts(b, "(void)sp_kernel_srand("); emit_int_expr_conv(c, argv[0], b); buf_puts(b, ");\n"); }
+    else { buf_puts(b, "(void)sp_kernel_srand("); emit_to_int_expr(c, argv[0], b); buf_puts(b, ");\n"); }
     return 1;
   }
   if (sp_streq(name, "rand") && argc >= 1) {
@@ -1422,6 +1422,7 @@ static int strbuf_route_operand(Compiler *c, int v) {
   int recv = nt_ref(nt, v, "receiver"), blk = nt_ref(nt, v, "block"), argc = 0;
   const int *argv = call_args(nt, v, &argc);
   if (!nm) return -1;
+  if (repr_env_store_operand(c, v) >= 0) return v;
   if (is_then_alias(nm) && recv >= 0 && argc == 0 && blk >= 0 && nt_kind(nt, blk) == NK_BlockNode &&
       !call_breaks(c, v))
     return v;
@@ -1838,6 +1839,38 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
     return 1;
   }
   if (x == v) {
+    if (is_store_alias(nt_str(nt, v, "name"))) {
+      int argc = 0; const int *argv = call_args(nt, v, &argc);
+      int tk = ++g_tmp, tv = ++g_tmp;
+      Buf key; memset(&key, 0, sizeof key);
+      Repr vr = repr_of(c, argv[1]);
+      buf_puts(b, "({ ");
+      if (nt_kind(nt, argv[0]) != NK_StringNode &&
+          (subtree_has_side_effect(c, argv[0]) || subtree_has_side_effect(c, argv[1]))) {
+        tk = hold_operand(c, argv[0], TY_POLY, 1, tk,
+                          operand_may_allocate(c, argv[1]) || vr.kind != RK_STRBUF, " ", b);
+        buf_printf(&key, "_t%d", tk);
+      }
+      else emit_boxed(c, argv[0], &key);
+      if (vr.as_ty == TY_STRING || vr.as_ty == TY_STRBUF || strbuf_boxed_local(c, argv[1])) {
+        buf_printf(b, "sp_String *_t%d = ", tv);
+        if (strbuf_boxed_local(c, argv[1])) {
+          Buf value; memset(&value, 0, sizeof value);
+          emit_local_ref(c, argv[1], nt_str(nt, argv[1], "name"), &value);
+          buf_printf(b, "sp_poly_as_strbuf((%s = sp_poly_strbuf_lift(%s)))", value.p, value.p);
+          free(value.p);
+        }
+        else emit_strbuf_handle_of(c, argv[1], b);
+        buf_printf(b, "; SP_GC_ROOT(_t%d); sp_env_aset(sp_poly_arg_str_chk(%s), "
+                      "sp_box_nullable_obj(_t%d, SP_BUILTIN_STRBUF)); _t%d; })", tv, key.p, tv, tv);
+        free(key.p);
+        return 1;
+      }
+      tv = hold_operand(c, argv[1], TY_POLY, 1, tv, 1, " ", b);
+      buf_printf(b, "sp_env_aset(sp_poly_arg_str_chk(%s), _t%d); sp_poly_as_strbuf(_t%d); })", key.p, tv, tv);
+      free(key.p);
+      return 1;
+    }
     /* `then` answers its block's value, or a `next`'s: read as the handle
        under the demand. `tap` answers its receiver's handle, and its
        block's value is dropped. */
@@ -9218,7 +9251,7 @@ static void emit_return_deferred(Compiler *c, const int *a, int n, Buf *b, int i
      0 is a valid count; popping one anyway takes a caller's handler */
   int pops = g_exc_frame_depth - ctx->exc_base;
   if (pops < 0) pops = 0;
-  emit_cur_exc_restore(b, ctx->exc_base);
+  emit_rescue_pops_to(b, ctx->rescue_base);
   buf_printf(b, "_retf%d = 1; sp_exc_top -= %d; goto _ensure%d; }\n",
              ctx->lid, pops, ctx->lid);
 }
@@ -9381,6 +9414,10 @@ void emit_return(Compiler *c, int id, Buf *b, int indent) {
     n = 0;
   }
   emit_frame_unwind(b, 0, NULL);
+  /* a bare return from a proc body leaves the poly slot a boxed caller reads
+     (Proc#===) nil, as the body's end does: a call inside the body had left
+     its own answer there (#8199) */
+  if (n == 0 && g_in_proc_body) buf_puts(b, "_sp_proc_poly_ret = sp_box_nil(); ");
   if (n > 1) {
     int ta = emit_return_values(c, a, n, "{ ", b);
     /* a method answering other values too returns the Array boxed */
@@ -9971,7 +10008,7 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
       }
       buf_puts(b, "\n");
     }
-    g_ensure_stack[g_ensure_depth++] = (EnsureCtx){ eid, has_retval, g_exc_frame_depth, g_ret_type };
+    g_ensure_stack[g_ensure_depth++] = (EnsureCtx){ eid, has_retval, g_exc_frame_depth, g_ret_type, g_rescue_save_depth };
 
     /* retry in the rescue restarts the body; the ensure runs only when the
        begin finally exits (matching CRuby, where an aborted attempt does not
@@ -10142,12 +10179,20 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
     if (g_ensure_depth > g_loop_ensure_base) {
       EnsureCtx *outer2 = &g_ensure_stack[g_ensure_depth - 1];
       emit_indent(b, indent);
-      buf_printf(b, "if (_nxtf%d) { _nxtf%d = 1; sp_exc_top--; goto _ensure%d; }\n",
-                 eid, outer2->lid, outer2->lid);
+      /* down to the enclosing ensure's frames, as the deferred break below
+         does: one pop fell short when a begin stood between the two, and a
+         loop of such nexts overflowed the frame stack (#8207) */
+      int fp2 = g_exc_frame_depth - outer2->exc_base;
+      buf_printf(b, "if (_nxtf%d) { _nxtf%d = 1; ", eid, outer2->lid);
+      if (fp2 > 0) buf_printf(b, "sp_exc_top -= %d; ", fp2);
+      emit_rescue_pops_to(b, outer2->rescue_base);
+      buf_printf(b, "goto _ensure%d; }\n", outer2->lid);
     }
     else if (g_c_loop_depth > 0) {
       emit_indent(b, indent);
-      buf_printf(b, "if (_nxtf%d) continue;\n", eid);
+      buf_printf(b, "if (_nxtf%d) { ", eid);
+      emit_loop_unwind(b);
+      buf_puts(b, "continue; }\n");
     }
     /* a deferred `break`, the same way, popping the frames it leaves: down
        to the enclosing ensure's, or down to the loop's for the C break, which
@@ -11184,7 +11229,7 @@ static int emit_next_leaving_body(Compiler *c, int id, Buf *b, int indent) {
       EnsureCtx *ctx = &g_ensure_stack[g_ensure_depth - 1];
       int pops = g_exc_frame_depth - ctx->exc_base;
       if (pops < 0) pops = 0;   /* see emit_return */
-      emit_cur_exc_restore(b, ctx->exc_base);
+      emit_rescue_pops_to(b, ctx->rescue_base);
       buf_printf(b, "_retf%d = 1; sp_exc_top -= %d; goto _ensure%d; }\n", ctx->lid, pops, ctx->lid);
       return 1;
     }
@@ -11214,9 +11259,12 @@ static int emit_next_leaving_body(Compiler *c, int id, Buf *b, int indent) {
     /* untypable slot: evaluate for effects, return nil */
     emit_indent(b, indent); buf_puts(b, "(void)(");
     emit_expr(c, nv[0], b); buf_puts(b, ");\n");
-    emit_indent(b, indent); emit_frame_unwind(b, 0, NULL); buf_puts(b, "return 0;\n");
+    emit_indent(b, indent); emit_frame_unwind(b, 0, NULL); buf_puts(b, "_sp_proc_poly_ret = sp_box_nil(); return 0;\n");
   }
-  else { emit_indent(b, indent); emit_frame_unwind(b, 0, NULL); buf_puts(b, "return 0;\n"); }
+  /* the boxed answer a caller reading the poly slot sees (Proc#===, a
+     boxed call) is nil, as the body's end leaves it: a call inside the
+     body had left its own there (#8199) */
+  else { emit_indent(b, indent); emit_frame_unwind(b, 0, NULL); buf_puts(b, "_sp_proc_poly_ret = sp_box_nil(); return 0;\n"); }
   return 1;
 }
 
@@ -14500,7 +14548,7 @@ void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
       emit_indent(b, indent);
       /* leaving the block pops the handler for every rescue body opened inside
          it; the throw longjmps, so pop before it (the value persists). */
-      if (!brk_goto) emit_cur_exc_restore(b, g_brk_exc_base);
+      if (!brk_goto) emit_rescue_pops_to(b, g_brk_rescue_base);
       /* a light wrapper (no serial-addressed scope) takes the value in its
          own temp; a throw has no scope to address there, which is what the
          wrapper's gate guarantees cannot be needed */
@@ -14508,7 +14556,7 @@ void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
       else if (brk_goto) buf_printf(b, "sp_brk_val[_brkslot%s - 1] = ", sfx);
       else buf_printf(b, "sp_brk_throw(%s, ", g_brk_ser_var);
       emit_break_value(c, id, b);
-      if (brk_goto) { buf_puts(b, "; "); emit_cur_exc_restore(b, g_brk_exc_base); buf_printf(b, "goto _brklbl%s;\n", sfx); }
+      if (brk_goto) { buf_puts(b, "; "); emit_rescue_pops_to(b, g_brk_rescue_base); buf_printf(b, "goto _brklbl%s;\n", sfx); }
       else buf_puts(b, ");\n");
       return;
     }
@@ -14574,11 +14622,11 @@ void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
       if (bpops < 0) bpops = 0;
       /* the rescue handlers between here and the innermost ensure pop now,
          as next's do; the flag carries the ones left for the loop exit */
-      int bleft = rescues_crossed(g_loop_exc_base) - rescues_crossed(bctx->exc_base);
+      int bleft = bctx->rescue_base - g_loop_rescue_base;
       if (bleft < 0) bleft = 0;
       emit_indent(b, indent);
       buf_puts(b, "{ ");
-      emit_cur_exc_restore(b, bctx->exc_base);
+      emit_rescue_pops_to(b, bctx->rescue_base);
       buf_printf(b, "_brkf%d = %d; sp_exc_top -= %d; goto _ensure%d; }\n",
                  bctx->lid, 1 + bleft, bpops, bctx->lid);
       return;
@@ -14586,7 +14634,7 @@ void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
     emit_indent(b, indent);
     /* leaving through live begin/rescue frames opened inside the loop body:
        pop them, or their jmp_bufs dangle (same accounting as emit_return) */
-    emit_frame_unwind(b, g_loop_exc_base, NULL);
+    emit_loop_unwind(b);
     buf_puts(b, "break;\n"); return;
   }
   if (sp_streq(ty, "NextNode")) {
@@ -14662,13 +14710,13 @@ void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent) {
       if (npops < 0) npops = 0;   /* see emit_return */
       emit_indent(b, indent);
       buf_puts(b, "{ ");
-      emit_cur_exc_restore(b, nctx->exc_base);
+      emit_rescue_pops_to(b, nctx->rescue_base);
       buf_printf(b, "_nxtf%d = 1; sp_exc_top -= %d; goto _ensure%d; }\n",
                  nctx->lid, npops, nctx->lid);
       return;
     }
     emit_indent(b, indent);
-    emit_frame_unwind(b, g_loop_exc_base, NULL);
+    emit_loop_unwind(b);
     buf_puts(b, "continue;\n"); return;
   }
   if (sp_streq(ty, "RedoNode"))   {
@@ -18056,7 +18104,8 @@ static int strbuf_flow_unseen(Compiler *c, int v) {
   if (!share_node_shares(c, v) || share_value_fresh(c, v, 0) || share_node_one_name(c, v)) return 1;
   int recv = nt_kind(nt, v) == NK_CallNode ? nt_ref(nt, v, "receiver") : -1;
   const char *rname = recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode ? nt_str(nt, recv, "name") : NULL;
-  return is_argv_const(rname) || is_env_const(rname);
+  return is_argv_const(rname) || (is_env_const(rname) &&
+         bop_share_named(BOP_ENV, nt_str(nt, v, "name")) == BSH_PURE);
 }
 
 static int strbuf_flow_value(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, int depth) {
@@ -18228,6 +18277,9 @@ int strbuf_flow_carries(Compiler *c, StrbufFlowMemo *fm, int kind, int site, int
     break;
   case SHFL_ARG: ctx = SFC_ARG; break;
   case SHFL_YIELD: {
+    /* A receiver conversion keeps its handle in both the boxed yield
+       and the typed block-parameter binder. */
+    if (strbuf_poly_to_s(c, v)) return 1;
     /* a yield takes a variable's handle only from its bare read:
        `yield((s))` hands on a copy */
     int u = unwrap_parens(c, v);

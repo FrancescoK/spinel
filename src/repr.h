@@ -139,6 +139,8 @@ typedef enum {
 int repr_call_returns_handle(Compiler *c, int v);
 /* A builtin receiver conversion's String operand, or -1. */
 int repr_string_conversion_operand(Compiler *c, int v);
+/* An ENV store's value operand whose identity the result can keep, or -1. */
+int repr_env_store_operand(Compiler *c, int v);
 /* A boxed to_s that keeps its String receiver beside fresh user returns. */
 int repr_boxed_to_s_operand(Compiler *c, int v);
 /* A boxed call whose reader arms all hold shared String handles. */

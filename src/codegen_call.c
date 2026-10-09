@@ -12114,7 +12114,7 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
         else {
           buf_puts(b, "sp_Random_new(");
           if (is_big) { buf_puts(b, "sp_bigint_to_int("); emit_expr(c, argv[0], b); buf_puts(b, ")"); }
-          else emit_int_expr_conv(c, argv[0], b);
+          else emit_to_int_expr(c, argv[0], b);
           buf_puts(b, ")");
         }
       }
@@ -14720,6 +14720,7 @@ void emit_brk_wrapped_call(Compiler *c, int id, Buf *b) {
   const char *sv_ser = g_brk_ser_var; g_brk_ser_var = servar;
   int sv_ebase = g_brk_ensure_base; g_brk_ensure_base = g_ensure_depth;
   int sv_bexc = g_brk_exc_base; g_brk_exc_base = g_exc_frame_depth;
+  int sv_bres = g_brk_rescue_base; g_brk_rescue_base = g_rescue_save_depth;
   int sv_skip = g_brk_skip_id; g_brk_skip_id = id;
   Buf inner; memset(&inner, 0, sizeof inner);
   Buf body; memset(&body, 0, sizeof body);
@@ -14751,7 +14752,7 @@ void emit_brk_wrapped_call(Compiler *c, int id, Buf *b) {
   }
   g_indent--;
   g_pre = sv_pre;
-  g_brk_ser_var = sv_ser; g_brk_ensure_base = sv_ebase; g_brk_exc_base = sv_bexc; g_brk_skip_id = sv_skip;
+  g_brk_ser_var = sv_ser; g_brk_ensure_base = sv_ebase; g_brk_exc_base = sv_bexc; g_brk_rescue_base = sv_bres; g_brk_skip_id = sv_skip;
   view_pop(c, vw);
   if (spilled_argov) view_unbind(g_n_argov - 1);
   free(inner.p); free(boxed.p);
@@ -19517,8 +19518,14 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
     obs[i] = 1;
     /* a conditional's value is bound as a call's is: `f(a: r.int, b: c ? r.int : 0)`
        declined whole and left every keyword to C's order */
+    /* a parenthesized String stays where it is: bound, it is a copy, and a
+       shared handle written inside it (`h[:k] = (o = +"d")`) no longer is
+       the value the call stores */
+    TyKind pty = k == NK_ParenthesesNode ? repr_of(c, operand[i]).as_ty : TY_UNKNOWN;
     int bindable = (k == NK_CallNode || k == NK_SuperNode || k == NK_IfNode || k == NK_UnlessNode ||
-                    k == NK_ForwardingSuperNode || k == NK_YieldNode || state_read || local_read);
+                    k == NK_ForwardingSuperNode || k == NK_YieldNode ||
+                    (k == NK_ParenthesesNode && pty != TY_STRING && pty != TY_STRBUF) ||
+                    state_read || local_read);
     /* ...and any other value (a parenthesized statement, a write, a
        begin) when a copy beside it is at risk, decided below: a copy is
        taken last, so it can only follow an operand that is bound */

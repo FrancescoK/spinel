@@ -2040,6 +2040,17 @@ static void reject_env_value_uses(Compiler *c) {
     int v = nt_ref(nt, id, "value");
     if (v >= 0) ok[v] = 1;
   }
+  /* `ENV[k] op= v` with one plain key: desugar_index_assign_user_recv
+     writes it as the [] and []= calls (when ENV is the environment's) */
+  static const NodeKind opw[] = { NK_IndexOperatorWriteNode, NK_IndexOrWriteNode, NK_IndexAndWriteNode };
+  for (size_t w = 0; w < sizeof opw / sizeof *opw && !comp_const(c, "ENV"); w++)
+  NT_FOREACH_KIND(nt, opw[w], id) {
+    int r = nt_ref(nt, id, "receiver"), args = nt_ref(nt, id, "arguments"), an = 0;
+    const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    NodeKind ak = an == 1 ? nt_kind(nt, av[0]) : NK_SplatNode;
+    if (r >= 0 && nt_ref(nt, id, "block") < 0 && ak != NK_SplatNode && ak != NK_BlockArgumentNode &&
+        ak != NK_KeywordHashNode) ok[r] = 1;
+  }
   NT_FOREACH_KIND(nt, NK_ConstantReadNode, id) {
     const char *nm = nt_str(nt, id, "name");
     if (!nm || !sp_streq(nm, "ENV") || ok[id]) continue;
@@ -5624,6 +5635,14 @@ static void desugar_data_positional_new(Compiler *c) {
   }
 }
 
+/* Does Struct class `cls` have a member named `nm`? Its accessor is the
+   class's own and answers in place of Struct's iterator of that name. */
+static int struct_has_member(const ClassInfo *cls, const char *nm) {
+  for (int j = 0; j < cls->nmembers; j++)
+    if (cls->ivars[j] && sp_streq(cls->ivars[j] + 1, nm)) return 1;
+  return 0;
+}
+
 static void synth_struct_each(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int ncls0 = c->nclasses;
@@ -5632,6 +5651,9 @@ static void synth_struct_each(Compiler *c) {
     /* Data is not Enumerable: each/each_pair/each_with_index are Struct's */
     if (!cls->is_struct || cls->is_data || cls->nmembers == 0) continue;
     if (comp_method_in_class(c, ci, "each") >= 0) continue;
+    /* a member of an iterator's name is read by its accessor, which the
+       struct defines over the one it inherits (#8203) */
+    if (!struct_has_member(cls, "each")) {
     int stmts[65]; int nst = 0;
     for (int j = 0; j < cls->nmembers && nst < 64; j++) {
       int ivr = nt_new_node(nt, "InstanceVariableReadNode");
@@ -5659,8 +5681,9 @@ static void synth_struct_each(Compiler *c) {
     ms->yields = 1;
     comp_grow_node_arrays(c);
     walk_scope(c, body, c->nscopes - 1, ci);
+    }
     /* def each_pair; yield :m1, @m1; ...; self; end */
-    if (comp_method_in_class(c, ci, "each_pair") < 0) {
+    if (comp_method_in_class(c, ci, "each_pair") < 0 && !struct_has_member(cls, "each_pair")) {
       int pst[65]; int pn = 0;
       for (int j = 0; j < cls->nmembers && pn < 64; j++) {
         int sy = nt_new_node(nt, "SymbolNode");
@@ -5697,7 +5720,7 @@ static void synth_struct_each(Compiler *c) {
     /* def each_with_index; yield @m1, 0; yield @m2, 1; ...; self; end
        (returns the receiver, unlike the __enum_to_a redirect which would
        return the flat member array). The index is a literal per member. */
-    if (comp_method_in_class(c, ci, "each_with_index") < 0) {
+    if (comp_method_in_class(c, ci, "each_with_index") < 0 && !struct_has_member(cls, "each_with_index")) {
       int wst[65]; int wn = 0;
       for (int j = 0; j < cls->nmembers && wn < 64; j++) {
         int ivr = nt_new_node(nt, "InstanceVariableReadNode");
@@ -8878,7 +8901,8 @@ static int desugar_enum_named_call(Compiler *c, int id, NodeTable *nt, const cha
     int okc = pcid >= 0 && pcid < c->nclasses;
     int smi = wix && okc ? comp_method_in_chain(c, pcid, nm, NULL) : -1;
     int cmi = wix && okc ? comp_method_in_chain(c, pcid, "to_a", NULL) : -1;
-    int own = (smi >= 0 && !scope_is_struct_synth(c, smi)) || cmi >= 0;
+    int own = (smi >= 0 && !scope_is_struct_synth(c, smi)) || cmi >= 0 ||
+              (okc && c->classes[pcid].is_struct && struct_has_member(&c->classes[pcid], nm));
     if (okc && c->classes[pcid].is_struct && !c->classes[pcid].is_data && !own) {
       int wrap = nt_new_node(nt, "CallNode");
       if (wrap >= 0) {
@@ -18486,9 +18510,11 @@ static int share_demand_rest_args(Compiler *c, int mi, const int *argv, int argc
 }
 /* An element read can itself be the container whose String elements are
    shared: [[s]][0][0] must demand s at the inner store. The existing
-   container-source walk carries the extra element depth back to it. */
+   container-source walk carries the extra element depth back to it.
+   A temporary map's elements likewise come from its block's tail. */
 static int share_demand_nested_read(Compiler *c, int call, int recv) {
-  if (!container_elem_read_p(c->nt, recv) || nt_ref(c->nt, call, "block") >= 0) return 0;
+  if (nt_ref(c->nt, call, "block") >= 0 ||
+      (!container_elem_read_p(c->nt, recv) && strbuf_map_block_tail(c, recv) < 0)) return 0;
   TyKind rt = comp_ntype(c, recv);
   if (rt == TY_POLY && container_elem_read_p(c->nt, call) && share_node_elems_share(c, recv))
     return strbuf_container_source_walk(c, recv, 0, SB_DEMAND_NAMED);
@@ -34665,6 +34691,19 @@ static int sa_read_elsewhere(Compiler *c, const SaName *a, int except) {
   for (int e = sa_site_first(c, a, VS_READ); e >= 0; e = sa_site_next(c, a, e))
     if (comp_vsite_node(c, e) != except) return 1;
   return 0;
+}
+/* A local's only read, with no parameter or captured slot behind it and
+   only fresh values written to it. The indexed sites check exact names. */
+int an_local_read_once(Compiler *c, int n) {
+  SaName a;
+  if (nt_kind(c->nt, n) != NK_LocalVariableReadNode || !sa_name(c, n, &a)) return 0;
+  LocalVar *lv = scope_local(a.scope, a.name);
+  if (!lv || lv->is_param || lv->is_block_param || lv->is_cell || sa_read_elsewhere(c, &a, n)) return 0;
+  for (int e = sa_site_first(c, &a, VS_WRITE); e >= 0; e = sa_site_next(c, &a, e)) {
+    int w = comp_vsite_node(c, e);
+    if (!share_value_fresh(c, nt_ref(c->nt, w, "value"), 0)) return 0;
+  }
+  return 1;
 }
 /* Can a copy between `to` and `from` (read at `from_read`) be seen: `to`
    mutated while `from` is read elsewhere, or `from` mutated while `to` is

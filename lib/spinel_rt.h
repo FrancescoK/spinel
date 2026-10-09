@@ -1765,6 +1765,7 @@ sp_Bigint *sp_bigint_remainder(sp_Bigint *a, sp_Bigint *b);
 static sp_Bigint *sp_poly_as_bigint(sp_RbVal v) {
   if (v.tag == SP_TAG_BIGINT) return (sp_Bigint *)v.v.p;
   if (v.tag == SP_TAG_INT) return sp_bigint_new_int(v.v.i);
+  if (v.tag == SP_TAG_FLT) (void)sp_float_to_i_checked(v.v.f);
   if (v.tag == SP_TAG_FLT) return sp_bigint_new_int((int64_t)v.v.f);
   return sp_bigint_new_int(0);
 }
@@ -2484,9 +2485,10 @@ SP_NORETURN SP_COLD static void sp_raise_no_str_conversion(sp_RbVal v) {
 static inline sp_RbVal sp_poly_strbuf_deref(sp_RbVal v);
 static const char *sp_env_aset(const char *k, sp_RbVal v) {
   v = sp_poly_strbuf_deref(v);
-  if (v.tag == SP_TAG_NIL) { unsetenv(k); return NULL; }
+  if (v.tag == SP_TAG_NIL) { unsetenv(sp_env_chk(k, 0)); return NULL; }
   if (v.tag != SP_TAG_STR) sp_raise_no_str_conversion(v);
-  if (v.v.s) setenv(k, v.v.s, 1); else unsetenv(k);
+  sp_env_chk(k, 0);
+  if (v.v.s) setenv(k, sp_env_chk(v.v.s, 1), 1); else unsetenv(k);
   return v.v.s;
 }
 static sp_bool sp_PolyArray_eq(sp_PolyArray *a, sp_PolyArray *b);
@@ -3284,6 +3286,7 @@ static SP_NOINLINE sp_int sp_complex_to_int(sp_Complex c) {
   return (sp_int)c.re;
 }
 static SP_NOINLINE sp_int sp_poly_arg_int_chk_slow(sp_RbVal v) {
+  if (v.tag == SP_TAG_FLT) return sp_float_arg_i(v.v.f);
   /* a boxed int slot's nil sentinel is nil, not a number */
   if (v.tag == SP_TAG_INT && v.v.i == SP_INT_NIL)
     sp_raise_cls("TypeError", "no implicit conversion from nil to integer");
@@ -3854,6 +3857,7 @@ static SP_UNUSED sp_RbVal sp_rand_poly(sp_Random *g, sp_RbVal v, int kernel) {
 }
 /* Random#bytes names nil like its typed argument conversion does. */
 static SP_UNUSED sp_int sp_random_bytes_count(sp_RbVal v) {
+  if (v.tag == SP_TAG_FLT) return sp_float_to_i_checked(v.v.f);
   if (v.tag == SP_TAG_NIL) sp_raise_cls("TypeError", "no implicit conversion of nil into Integer");
   return sp_poly_arg_int_chk(v);
 }
@@ -4531,6 +4535,7 @@ static sp_RbVal sp_poly_succ_m(sp_RbVal v, sp_bool allow_enum) {
    case. A class that does define #to_i never reaches here (poly dispatch gives
    it its own arm), and a builtin receiver carries a negative cls_id. */
 static sp_int sp_poly_to_i_meth(sp_RbVal v) {
+  if (v.tag == SP_TAG_FLT) return sp_float_to_i_checked(v.v.f);
   /* a shared String handle converts as the String it holds (#7263) */
   if (SP_UNLIKELY(sp_poly_is_strbuf(v))) v = sp_poly_strbuf_deref(v);
   if (v.tag == SP_TAG_OBJ && v.cls_id >= 0) sp_raise_nomethod(sp_nomethod_msg("to_i", v));
@@ -4636,6 +4641,7 @@ static sp_RbVal sp_poly_to_i_meth_v(sp_RbVal v) {
   return sp_box_int(sp_poly_to_i(v));
 }
 static inline sp_int sp_float_fit_i(sp_float v) {
+  if (!isfinite(v)) sp_float_arg_check(v);
   /* (double)INTPTR_MIN is exact at either width: -2^63 on 64-bit, -2^31 on
      the 32-bit build, so the same test bounds whichever sp_int this is. */
   if (v >= -(sp_float)INTPTR_MIN || v < (sp_float)INTPTR_MIN)
@@ -4907,6 +4913,22 @@ static sp_PolyArray *sp_poly_int_gcdlcm(sp_RbVal v, sp_RbVal o) {
   sp_PolyArray *r = sp_PolyArray_new(); SP_GC_ROOT(r);
   sp_PolyArray_push(r, g); sp_PolyArray_push(r, l);
   return r;
+}
+/* rb_to_int uses Float#to_int, which reports FloatDomainError. */
+static sp_int sp_poly_to_int_arg(sp_RbVal v) {
+  if (v.tag == SP_TAG_FLT) return sp_float_to_i_checked(v.v.f);
+  return sp_poly_arg_int_chk_w(v, 1);
+}
+/* A word-sized receiver's single bit index may itself be a Bignum.
+   Clamp finite Floats to the same sign-bit/negative-index cases. */
+static sp_int sp_poly_bit_index_arg(sp_RbVal v) {
+  if (v.tag == SP_TAG_FLT) {
+    sp_poly_flo_domain_ck(v.v.f);
+    if (v.v.f >= -(sp_float)INTPTR_MIN) return INTPTR_MAX;
+    if (v.v.f <= (sp_float)INTPTR_MIN) return INTPTR_MIN + 1;
+    return (sp_int)v.v.f;
+  }
+  return sp_poly_to_int_arg(v);
 }
 static sp_IntArray *sp_poly_int_digits(sp_RbVal v, sp_int base) {
   if (v.tag == SP_TAG_INT) return sp_int_digits(v.v.i, base);
@@ -5429,6 +5451,7 @@ static inline sp_int sp_poly_bit_operand(sp_RbVal v, int shift) SP_UNUSED;
 static inline sp_int sp_poly_bit_operand(sp_RbVal v, int shift) {
   if (SP_LIKELY(v.tag == SP_TAG_INT)) return v.v.i;
   if (sp_int_operand_bad(v, shift)) sp_int_operand_fail(v, shift);
+  if (v.tag == SP_TAG_FLT) return sp_float_to_i_checked(v.v.f);
   return sp_poly_to_i(v);
 }
 /* rb_cmpint-checked comparison: an incomparable pair (nil `<=>`) raises the
@@ -7932,6 +7955,9 @@ static const char *sp_str_format_polyarr(const char *fmt, sp_PolyArray *a) {
            number (a negative width left-justifies, like printf) */
         if (idx >= a->len) { free(buf); sp_raise_cls("ArgumentError", "too few arguments"); }
         sp_RbVal wv = a->data[idx]; idx++;
+        if (wv.tag == SP_TAG_FLT && !(wv.v.f >= (sp_float)INTPTR_MIN && wv.v.f < -(sp_float)INTPTR_MIN)) {
+          free(buf); sp_float_arg_check(wv.v.f);
+        }
         long long wnum = (wv.tag == SP_TAG_INT) ? (long long)wv.v.i
                        : (wv.tag == SP_TAG_FLT) ? (long long)wv.v.f : 0;
         /* an Integer past what a C int holds is CRuby's RangeError, not a size */
@@ -8045,6 +8071,9 @@ else {
         if (conv == 'X') for (char *q = wide ? wide : tmp; *q; q++) if (*q >= 'a' && *q <= 'f') *q -= 32;
       }
       else {
+      if (v.tag == SP_TAG_FLT && !(v.v.f >= (sp_float)INTPTR_MIN && v.v.f < -(sp_float)INTPTR_MIN)) {
+        free(buf); (void)sp_float_to_i_checked(v.v.f);
+      }
       if (v.tag == SP_TAG_INT) lv = (long long)v.v.i;
       else if (v.tag == SP_TAG_FLT) lv = (long long)v.v.f;
       /* a String argument converts the way Integer() does, so unparseable text
@@ -10678,6 +10707,7 @@ static sp_PolyPolyHash *sp_poly_as_poly_poly_hash(sp_RbVal v) {
 static SP_UNUSED sp_int sp_fill_offset_arg(sp_RbVal v, int range_alone) {
   if (v.tag == SP_TAG_NIL) return SP_INT_NIL;
   if (v.tag == SP_TAG_INT) return v.v.i;
+  if (v.tag == SP_TAG_FLT) sp_float_arg_check(v.v.f);
   if (v.tag == SP_TAG_FLT) return (sp_int)v.v.f;
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_RANGE && range_alone)
     sp_raise_cls("NotImplementedError", "Array#fill with a Range held in an untyped slot");
@@ -11081,6 +11111,7 @@ static sp_RbVal sp_poly_index_poly(sp_RbVal recv, sp_RbVal idx) {
     sp_raise_cls("TypeError", "no implicit conversion from nil to integer");
   if (recv.tag == SP_TAG_OBJ && sp_poly_is_array_kind(recv.cls_id) && idx.tag != SP_TAG_BIGINT &&
       !(idx.tag == SP_TAG_OBJ && idx.cls_id == SP_BUILTIN_RANGE)) {
+    if (idx.tag == SP_TAG_FLT) sp_float_arg_check(idx.v.f);
     if (idx.tag == SP_TAG_FLT) return sp_poly_arr_get_hash(recv, (sp_int)idx.v.f);
     sp_raise_cls("TypeError", sp_sprintf("no implicit conversion of %s into Integer", sp_poly_class_name(idx)));
   }
@@ -11158,6 +11189,8 @@ static sp_RbVal sp_poly_index_poly(sp_RbVal recv, sp_RbVal idx) {
   }
   /* a Float index into a boxed Struct (or another object read by member
      index) is cut to the Integer it converts to, as a typed read cuts it */
+  if (idx.tag == SP_TAG_FLT && recv.tag == SP_TAG_OBJ && recv.cls_id >= 0 && sp_obj_to_h_fn)
+    sp_float_arg_check(idx.v.f);
   if (idx.tag == SP_TAG_FLT && recv.tag == SP_TAG_OBJ && recv.cls_id >= 0 && sp_obj_to_h_fn &&
       idx.v.f > -2147483649.0 && idx.v.f < 2147483648.0)
     idx = sp_box_int((sp_int)idx.v.f);
@@ -11190,6 +11223,9 @@ static sp_RbVal sp_poly_index_poly(sp_RbVal recv, sp_RbVal idx) {
     return sp_poly_hash_foreign_miss(recv, idx);
   }
   /* Integer#[]: one bit of the receiver, a Bignum's included (#4665) */
+  if (idx.tag == SP_TAG_FLT && (recv.tag == SP_TAG_INT || recv.tag == SP_TAG_BIGINT))
+    return sp_box_int(sp_poly_int_bit(recv, recv.tag == SP_TAG_BIGINT
+                       ? sp_float_arg_i(idx.v.f) : sp_poly_bit_index_arg(idx)));
   if (idx.tag == SP_TAG_INT && (recv.tag == SP_TAG_INT || recv.tag == SP_TAG_BIGINT))
     return sp_box_int(sp_poly_int_bit(recv, idx.v.i));
   /* any other kind of key (a Float, nil, an Array, ...) is no key of a String-,
@@ -12221,6 +12257,7 @@ static sp_RbVal sp_poly_set_poly(sp_RbVal v, sp_RbVal key, sp_RbVal val) {
      #to_int, and anything else is the TypeError the static path raises rather
      than a write to drop on the floor (#3926). */
   if (sp_poly_is_array_kind(v.cls_id)) {
+    if (key.tag == SP_TAG_FLT) sp_float_arg_check(key.v.f);
     if (key.tag == SP_TAG_FLT) key = sp_box_int((sp_int)key.v.f);
     else if (key.tag != SP_TAG_INT)
       sp_raise_cls("TypeError", key.tag == SP_TAG_NIL
@@ -12401,6 +12438,7 @@ static sp_RbVal sp_poly_slot_set_key(sp_RbVal outer, sp_int oidx, sp_RbVal key, 
   if (inner.tag == SP_TAG_STR || sp_poly_is_strbuf(inner)) {
     /* the index of a character assignment is an Integer, and anything else is
        the TypeError the typed path raises rather than a write to drop */
+    if (key.tag == SP_TAG_FLT) sp_float_arg_check(key.v.f);
     if (key.tag == SP_TAG_FLT) key = sp_box_int((sp_int)key.v.f);
     else if (key.tag != SP_TAG_INT)
       sp_raise_cls("TypeError", key.tag == SP_TAG_NIL
@@ -18661,7 +18699,8 @@ static sp_StrStrHash *sp_env_update_v(sp_RbVal hv, int replace) {
     v = sp_poly_strbuf_deref(v);
     if (k.tag != SP_TAG_STR) sp_raise_no_str_conversion(k);
     if (v.tag != SP_TAG_STR && v.tag != SP_TAG_NIL) sp_raise_no_str_conversion(v);
-    if (v.tag == SP_TAG_STR && v.v.s) setenv(k.v.s, v.v.s, 1); else unsetenv(k.v.s);
+    sp_env_chk(k.v.s, 0);
+    if (v.tag == SP_TAG_STR && v.v.s) setenv(k.v.s, sp_env_chk(v.v.s, 1), 1); else unsetenv(k.v.s);
   }
   sp_StrStrHash *env = sp_env_to_h();
   if (replace) {
@@ -18680,9 +18719,10 @@ static sp_StrStrHash *sp_env_update_h_blk(sp_StrStrHash *h, sp_Proc *p) { SP_GC_
     for (sp_int i = 0; i < h->len; i++) {
       const char *k = h->order[i];
       const char *nv = sp_StrStrHash_get(h, k);
-      const char *ov = getenv(k);
+      const char *ov = getenv(sp_env_chk(k, 0));
       if (ov && p) {
         const char *ovh = sp_str_dup_external(ov);  /* environ may move */
+        ((unsigned char *)ovh)[-1] = 0xfa;
         SP_GC_ROOT(ovh);
         _sp_proc_poly_args[0] = sp_box_str(k);
         _sp_proc_poly_args[1] = sp_box_str(ovh);
@@ -18693,9 +18733,9 @@ static sp_StrStrHash *sp_env_update_h_blk(sp_StrStrHash *h, sp_Proc *p) { SP_GC_
         sp_int r = sp_proc_call(p, 3, slots);
         const char *rv = (_sp_proc_poly_ret.tag != SP_TAG_NIL)
                            ? sp_poly_to_s(_sp_proc_poly_ret) : (const char *)(uintptr_t)r;
-        if (rv) setenv(k, rv, 1); else unsetenv(k);
+        if (rv) setenv(k, sp_env_chk(rv, 1), 1); else unsetenv(k);
       }
-      else if (nv) setenv(k, nv, 1);
+      else if (nv) setenv(k, sp_env_chk(nv, 1), 1);
       else unsetenv(k);
     }
   }

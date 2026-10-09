@@ -39,6 +39,8 @@ class Integer
     # (NoMethodError / a comparison-failed ArgumentError). Written out
     # explicitly so the two match (test/numeric_nil_argument.rb,
     # test/numeric_string_argument.rb, test/strict_arg_conversion.rb).
+    # Float bases truncate through their own to_int before this check.
+    base = base.to_int if base.is_a?(Float)
     unless base.is_a?(Integer)
       raise TypeError, "no implicit conversion of #{base.nil? ? "nil" : base.class} into Integer"
     end

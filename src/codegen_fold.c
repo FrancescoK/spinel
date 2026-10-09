@@ -3497,8 +3497,8 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
   char nx_acc[24]; snprintf(nx_acc, sizeof nx_acc, "_t%d", tacc);
   const char *sv_nxv = g_ie_next_var; int sv_nxp = g_ie_res_poly;
   int sv_cld = g_c_loop_depth;
-  int sv_lexcf = g_loop_exc_base, sv_lensf = g_loop_ensure_base;
-  g_loop_exc_base = g_exc_frame_depth; g_loop_ensure_base = g_ensure_depth;
+  int sv_lexcf = g_loop_exc_base, sv_lexcf_rb = g_loop_rescue_base, sv_lensf = g_loop_ensure_base;
+  g_loop_exc_base = g_exc_frame_depth; g_loop_rescue_base = g_rescue_save_depth; g_loop_ensure_base = g_ensure_depth;
   g_ie_next_var = nx_acc; g_ie_res_poly = (acc_ty == TY_POLY);
   g_c_loop_depth++;
   /* block locals are fresh for every step, and a redo re-runs the step
@@ -3550,7 +3550,7 @@ int emit_reduce_block_expr(Compiler *c, int id, Buf *b) {
   }
   if (rd_lbl) g_redo_depth--;
   g_c_loop_depth = sv_cld;
-  g_loop_exc_base = sv_lexcf; g_loop_ensure_base = sv_lensf;
+  g_loop_exc_base = sv_lexcf; g_loop_rescue_base = sv_lexcf_rb; g_loop_ensure_base = sv_lensf;
   g_ie_next_var = sv_nxv; g_ie_res_poly = sv_nxp;
   /* the expression must carry the INFERRED type: a poly-typed reduce
      (e.g. a dyn-send body) boxes its scalar accumulator */
@@ -4618,7 +4618,7 @@ void emit_block_value_into(Compiler *c, int block, const char *dest,
   int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
   const char *sv_nx = g_ie_next_var; int sv_poly = g_ie_res_poly;
   TyKind sv_nty = g_ie_next_ty;
-  int sv_lexc = g_loop_exc_base; g_loop_exc_base = g_exc_frame_depth;
+  int sv_lexc = g_loop_exc_base, sv_lexc_rb = g_loop_rescue_base; g_loop_exc_base = g_exc_frame_depth; g_loop_rescue_base = g_rescue_save_depth;
   g_ie_next_var = dest; g_ie_res_poly = want_poly;
   /* The destination holds whatever the block answers, and the TAIL is what the
      inference typed for that -- so an empty `[]` reached through `next` is
@@ -4678,7 +4678,7 @@ void emit_block_value_into(Compiler *c, int block, const char *dest,
   g_indent = sd;
   emit_indent(g_pre, indent); buf_puts(g_pre, "} while (0);\n");
   g_c_loop_depth--;
-  g_ie_next_var = sv_nx; g_ie_res_poly = sv_poly; g_loop_exc_base = sv_lexc;
+  g_ie_next_var = sv_nx; g_ie_res_poly = sv_poly; g_loop_exc_base = sv_lexc; g_loop_rescue_base = sv_lexc_rb;
   g_loop_ensure_base = sv_lensd;
   g_ie_next_ty = sv_nty;
 }
@@ -8207,8 +8207,13 @@ static void emit_arg_temp(Compiler *c, int v) {
      (emit_strbuf_write_handle): it runs here, its handle taken, and the
      value is the slot's read of that handle. */
   int wshare = repr_write_share(c, unwrap_parens(c, v));
+  /* A builtin to_s keeps the receiver's String too. Capture its handle
+     before later arguments can replace the receiver. */
+  int conversion = at == TY_STRING && strbuf_poly_to_s(c, v);
   Buf hw; memset(&hw, 0, sizeof hw);
-  if (wshare) emit_strbuf_write_handle(c, v, &hw);
+  if (conversion) emit_strbuf_handle_of(c, v, &hw);
+  else if (wshare) emit_strbuf_write_handle(c, v, &hw);
+  wshare |= conversion;
   if (wshare || ((vk == NK_LocalVariableReadNode || vk == NK_InstanceVariableReadNode ||
                   repr_static_read_kind(vk)) &&
                  strbuf_slot_ref(c, v, sref, sizeof sref))) {

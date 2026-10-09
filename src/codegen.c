@@ -776,7 +776,8 @@ static void emit_int_expr_ex(Compiler *c, int node, int strict, Buf *b) {
      deliberately carried on the integer representation) truncates; say so, or
      clang warns that the literal changes value and the build reads as broken. */
   if (comp_ntype(c, node) == TY_FLOAT) {
-    buf_puts(b, "(sp_int)("); emit_scalar_operand(c, node, "0", b); buf_puts(b, ")");
+    /* Non-finite arguments raise before C truncates them. */
+    buf_puts(b, "sp_float_arg_i("); emit_scalar_operand(c, node, "0", b); buf_puts(b, ")");
     return;
   }
   /* A Rational or a Complex converts through #to_int too, which the struct
@@ -889,6 +890,18 @@ void emit_range_endpoint(Compiler *c, int node, const char *none, Buf *b) {
    Random.srand's seed, Dir.mkdir's mode, Random#bytes' size. */
 void emit_int_expr_conv(Compiler *c, int node, Buf *b) {
   emit_int_expr_ex(c, node, 2, b);
+}
+
+/* rb_to_int preserves Float#to_int's domain error rather than NUM2LONG's. */
+void emit_to_int_expr(Compiler *c, int node, Buf *b) {
+  Repr r = repr_of(c, node);
+  if (r.kind == RK_BOXED) {
+    buf_puts(b, "sp_poly_to_int_arg("); emit_boxed(c, node, b); buf_puts(b, ")");
+  }
+  else if (r.as_ty == TY_FLOAT) {
+    buf_puts(b, "sp_float_to_i_checked("); emit_scalar_operand(c, node, "0", b); buf_puts(b, ")");
+  }
+  else emit_int_expr_conv(c, node, b);
 }
 
 /* Strict, with NUM2OFFT's wording ("from nil"): an IO offset -- seek,
@@ -11440,6 +11453,7 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   const char *saved_ser = g_brk_ser_var;
   int saved_bbe = g_block_brk_ebase, saved_yfbe = g_yield_blk_brk_efallback;
   int saved_bbexc = g_block_brk_exc_base, saved_bexc = g_brk_exc_base;
+  int saved_bbres = g_block_brk_rescue_base, saved_bres = g_brk_rescue_base;
   int saved_ebase = g_brk_ensure_base;
 
   g_yield_block_fallback = saved_block;
@@ -11452,6 +11466,7 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   g_block_brk_var = (block == saved_block) ? saved_bbv : saved_ser;
   g_block_brk_ebase = (block == saved_block) ? saved_bbe : saved_ebase;
   g_block_brk_exc_base = (block == saved_block) ? saved_bbexc : saved_bexc;
+  g_block_brk_rescue_base = (block == saved_block) ? saved_bbres : saved_bres;
   g_brk_ser_var = NULL;
   g_block_param_name = m->blk_param;
   const char *saved_ypr = g_yield_proc_ref;
@@ -11578,6 +11593,7 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   g_block_brk_var = saved_bbv; g_yield_blk_brk_fallback = saved_yfbv;
   g_block_brk_ebase = saved_bbe; g_yield_blk_brk_efallback = saved_yfbe;
   g_block_brk_exc_base = saved_bbexc; g_brk_exc_base = saved_bexc;
+  g_block_brk_rescue_base = saved_bbres; g_brk_rescue_base = saved_bres;
   g_brk_ser_var = saved_ser; g_brk_ensure_base = saved_ebase;
   g_yield_proc_ref = saved_ypr; g_yield_slot_ty = saved_yslot;
   g_current_scope_is_lowered = saved_low;
@@ -14549,7 +14565,7 @@ typedef struct EmitUnitState {
   int indent, nren, block_nren, block_id, c_loop_depth, ensure_depth;
   int emitting_class_id, inline_recv_class, ie_class_id, dm_subst_node, exc_frame_depth;
   int open_defaults;
-  int loop_exc_base, loop_ensure_base, redo_depth;
+  int loop_exc_base, loop_rescue_base, loop_ensure_base, redo_depth;
   /* whether the unit's block is a lowered method's proc parameter */
   int current_scope_is_lowered, yield_lowered_fallback;
   TyKind ie_next_ty;
@@ -14567,7 +14583,7 @@ void emit_unit_state_save(EmitUnitState *s) {
   s->c_loop_depth = g_c_loop_depth; s->ensure_depth = g_ensure_depth;
   s->emitting_class_id = g_emitting_class_id; s->inline_recv_class = g_inline_recv_class;
   s->ie_class_id = g_ie_class_id; s->dm_subst_node = g_dm_subst_node; s->exc_frame_depth = g_exc_frame_depth;
-  s->loop_exc_base = g_loop_exc_base; s->loop_ensure_base = g_loop_ensure_base; s->redo_depth = g_redo_depth;
+  s->loop_exc_base = g_loop_exc_base; s->loop_rescue_base = g_loop_rescue_base; s->loop_ensure_base = g_loop_ensure_base; s->redo_depth = g_redo_depth;
   s->ie_next_ty = g_ie_next_ty;
   s->open_defaults = g_open_defaults;
   s->pre = g_pre;
@@ -14620,7 +14636,7 @@ void emit_unit_state_restore(const EmitUnitState *s) {
   g_c_loop_depth = s->c_loop_depth; g_ensure_depth = s->ensure_depth;
   g_emitting_class_id = s->emitting_class_id; g_inline_recv_class = s->inline_recv_class;
   g_ie_class_id = s->ie_class_id; g_dm_subst_node = s->dm_subst_node; g_exc_frame_depth = s->exc_frame_depth;
-  g_loop_exc_base = s->loop_exc_base; g_loop_ensure_base = s->loop_ensure_base; g_redo_depth = s->redo_depth;
+  g_loop_exc_base = s->loop_exc_base; g_loop_rescue_base = s->loop_rescue_base; g_loop_ensure_base = s->loop_ensure_base; g_redo_depth = s->redo_depth;
   g_ie_next_ty = s->ie_next_ty;
   g_open_defaults = s->open_defaults;
   g_pre = s->pre;
