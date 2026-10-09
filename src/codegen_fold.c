@@ -9362,6 +9362,12 @@ void emit_pd_param_bind(Compiler *c, Scope *m, int i, int uid, const char *val, 
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, pt == TY_POLY ? "SP_GC_ROOT_RBVAL(lv_%s);\n" : "SP_GC_ROOT(lv_%s);\n", uniq);
     }
+    /* A String Range is a by-value pair of Strings. A later argument or
+       default can collect while this named copy is their only root. */
+    else if (pt == TY_STR_RANGE) {
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "SP_GC_ROOT_STR(lv_%s.first); SP_GC_ROOT_STR(lv_%s.last);\n", uniq, uniq);
+    }
     emit_pd_cell_alias(c, plv, uniq);
   }
   /* Register the rename AFTER emitting temp i so param i+1's default reads
