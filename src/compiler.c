@@ -1,5 +1,6 @@
 #include "compiler.h"
 #include "share.h"
+#include "repr.h"
 #include "analyze.h"
 #include "builtin_names.h"
 
@@ -256,6 +257,7 @@ void comp_grow_node_arrays(Compiler *c) {
 void comp_free(Compiler *c) {
   if (!c) return;
   share_facts_free(c);
+  if (g_repr_check) repr_channel_free(c);
   share_routes_free(c);
   free(c->byref_elig);
   c->byref_elig = NULL;

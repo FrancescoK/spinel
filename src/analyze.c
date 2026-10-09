@@ -18612,7 +18612,10 @@ static int an_tail_is_shared_handle(Compiler *c, int node, int nil_ok, TailCount
   const NodeTable *nt = c->nt;
   NodeKind k = node >= 0 ? nt_kind(nt, node) : NK_NONE;
   if (c->share_strings && an_call_raises(c, node)) return 1;
-  if (c->share_strings && k == NK_NilNode) { tc->nils += nil_ok; return nil_ok; }
+  if (c->share_strings && k == NK_NilNode) {
+    if (g_repr_check && tc->mi > 0 && (!R || !R->fresh)) repr_channel_predict(c, node, tc->mi, RCH_NIL);
+    tc->nils += nil_ok; return nil_ok;
+  }
   if (c->share_strings && k == NK_ParenthesesNode) return an_stmts_tail_shared(c, nt_ref(nt, node, "body"), nil_ok, tc, R);
   if (c->share_strings && k == NK_BeginNode) {
     /* the body's value is the begin's only when no else follows it */
@@ -18647,7 +18650,11 @@ static int an_tail_is_shared_handle(Compiler *c, int node, int nil_ok, TailCount
     if (R && R->fresh) return share_value_fresh(c, node, 0);
     int ok = an_arg_is_shared_handle(c, node);
     tc->reads += ok;
-    if (!ok && tc->fresh_ok && share_node_fresh(c, node)) { tc->fresh++; ok = 1; }
+    if (g_repr_check && tc->mi > 0 && ok) repr_channel_predict(c, node, tc->mi, RCH_PUBLISH);
+    if (!ok && tc->fresh_ok && share_node_fresh(c, node)) {
+      if (g_repr_check && tc->mi > 0) repr_channel_predict(c, node, tc->mi, RCH_CLEAR);
+      tc->fresh++; ok = 1;
+    }
     return ok;
   }
   int el = nt_ref(nt, node, k == NK_IfNode ? "subsequent" : "else_clause");
@@ -18675,7 +18682,7 @@ static int an_returns_shared_handles(Compiler *c, int mi3, const int *ret_start,
                                      int *fresh) {
   const NodeTable *nt = c->nt;
   int ok = 1;
-  TailCount tc = { 0, 0, c->share_strings, 0 };
+  TailCount tc = { .fresh_ok = c->share_strings, .mi = mi3 };
   int lastT = scope_body_last(c, mi3);
   if (lastT >= 0) {
     *saw = 1;
@@ -18698,6 +18705,7 @@ static int an_returns_shared_handles(Compiler *c, int mi3, const int *ret_start,
      channel there (ret_pub_fresh) once a pickup takes its value, which
      it answers as a String (emit_tail_value's const char *) */
   if (ok && tc.fresh && c->scopes[mi3].ret != TY_STRING) ok = 0;
+  if (g_repr_check && ok && *saw) c->scopes[mi3].ret_channel_check = 1;
   if (fresh) *fresh = ok && tc.fresh;
   return ok;
 }
@@ -18795,7 +18803,10 @@ static int an_tail_param_arg(Compiler *c, RetHandles *R, int call, int mi, TailC
    the return channel. Count it with the pickup's own tail predicate. */
 static int an_tail_handle(Compiler *c, RetHandles *R, int n, TailCount *tc) {
   const NodeTable *nt = c->nt;
-  if (share_return_owned(c, n, tc->mi)) { tc->fresh++; return 1; }
+  if (share_return_owned(c, n, tc->mi)) {
+    if (g_repr_check && !R->fresh) repr_channel_predict(c, n, tc->mi, RCH_CLEAR);
+    tc->fresh++; return 1;
+  }
   if (an_tail_is_shared_handle(c, n, 1, tc, R)) return 1;
   if (R->fresh && an_tail_param(c, n, tc)) return 1;
   NodeKind k = n >= 0 ? nt_kind(nt, n) : NK_NONE;
@@ -18804,6 +18815,7 @@ static int an_tail_handle(Compiler *c, RetHandles *R, int n, TailCount *tc) {
     const CallPlan *p = cplan_user_fresh(c, n);
     int mi = p->mi;
     if (p->dispatch != CP_DIRECT || mi <= 0 || !an_ret_handle(c, R, mi)) return 0;
+    if (g_repr_check && !R->fresh) repr_channel_predict(c, n, tc->mi, RCH_PUBLISH);
     tc->reads++;
     if (!R->fresh || c->scopes[mi].ret_fresh) return 1;
     return k == NK_SuperNode && an_tail_param_arg(c, R, n, mi, tc);
@@ -18811,7 +18823,10 @@ static int an_tail_handle(Compiler *c, RetHandles *R, int n, TailCount *tc) {
   if (k != NK_CallNode || (!R->fresh && c->ntype[n] != TY_STRING)) return 0;
   /* A returning override can answer its own fresh String beside a handle.
      The existing pickup clears that tail's return channel before wrapping. */
-  if (share_call_fresh(c, n)) { tc->fresh++; return 1; }
+  if (share_call_fresh(c, n)) {
+    if (g_repr_check && !R->fresh) repr_channel_predict(c, n, tc->mi, RCH_CLEAR);
+    tc->fresh++; return 1;
+  }
   if (R->fresh && cplan_user_fresh(c, n)->via == UC_POLY && !share_builtin_fresh(c, n)) return 0;
   int mis[CPT_MAX];
   int cnt = cplan_targets(c, n, mis, CPT_MAX);
@@ -18824,6 +18839,7 @@ static int an_tail_handle(Compiler *c, RetHandles *R, int n, TailCount *tc) {
     if (R->fresh && !m->ret_fresh && !an_tail_param_arg(c, R, n, mis[i], tc)) return 0;
   }
   tc->reads++;
+  if (g_repr_check && !R->fresh) repr_channel_predict(c, n, tc->mi, RCH_PUBLISH);
   return 1;
 }
 /* Is body tail n an append chain over a shared handle's read (`buf << a <<

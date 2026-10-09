@@ -1413,6 +1413,7 @@ void emit_expr(Compiler *c, int id, Buf *b) {
     return;
   }
   if (g_repr_check) repr_check_ask(c, id);
+  int frame = g_repr_check ? repr_channel_begin(c, id) : -1;
   g_expr_depth++;
   /* an Array subclass instance read where an Array is wanted -- a splat, a
      destructuring, a `for` collection, an element write that is no call --
@@ -1425,6 +1426,7 @@ void emit_expr(Compiler *c, int id, Buf *b) {
   }
   else emit_expr_node(c, id, b);
   g_expr_depth--;
+  if (g_repr_check) repr_channel_end(c, frame);
 }
 
 /* `_tN = v` inside the guard of an `a[i] ||= v` / `&&= v` value, with v's
@@ -1591,12 +1593,14 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
       /* A container-store / equal?-arg read of a shared-mutable string yields
          the live HANDLE, not a copy (#3227 phase 3). */
       if (rp.handle) {
+        if (g_repr_check) repr_channel_note(c, id, RCH_HANDLE);
         emit_local_ref(c, id, lrn, b);
         return 1;
       }
       /* a parameter that only reads the bytes for the length of the call
          takes the live buffer: the copy below is O(len) per call (#7482) */
       if (rp.read_raw && decide_node(c->nt, id, "strbuf-raw", NULL)) {
+        if (g_repr_check) repr_channel_note(c, id, RCH_BYTES);
         buf_puts(b, "(");
         emit_local_ref(c, id, lrn, b);
         buf_puts(b, " ? sp_String_cstr(");
@@ -1617,6 +1621,7 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
          `q = nil; q = +"x" if c`), and keeps a frozen handle's mark on the
          copy it answers. */
       buf_puts(b, "sp_strbuf_read_pub(");
+      if (g_repr_check) repr_channel_note(c, id, RCH_PUBLISH);
       emit_local_ref(c, id, lrn, b);
       buf_puts(b, ")");
       return 1;
@@ -1673,6 +1678,7 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
       /* a nil write leaves the handle NULL: the value is nil, not a read
          through it (CodeRabbit on #4990) */
       buf_puts(b, " sp_strbuf_read_pub(");
+      if (g_repr_check) repr_channel_note(c, id, RCH_PUBLISH);
       emit_local_ref(c, id, nm, b);
       buf_puts(b, "); })");
       return 1;
@@ -1755,6 +1761,7 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
     if (olv && repr_of_slot(c, olv).handle && repr_of_slot(c, olv).kind == RK_STRBUF &&
         !(repr_of(c, id).handle && repr_write_share(c, id))) {
       buf_puts(b, "sp_strbuf_read_pub(");
+      if (g_repr_check) repr_channel_note(c, id, RCH_PUBLISH);
       emit_local_ref(c, id, nm, b);
       buf_puts(b, ")");
     }
@@ -1867,10 +1874,14 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
       /* under the handle mark, the handle itself, as the local's twin; and
          where the write is typed as the handle (a value a handle is asked
          of, as #3993's box asks it), whose read face did not build */
-      if ((repr_of(c, id).handle && repr_write_share(c, id)) || repr_of(c, id).ty == TY_STRBUF)
+      if ((repr_of(c, id).handle && repr_write_share(c, id)) || repr_of(c, id).ty == TY_STRBUF) {
         buf_printf(b, "; %s; })", ref2e);
-      else
+        if (g_repr_check) repr_channel_note(c, id, RCH_HANDLE);
+      }
+      else {
         buf_printf(b, "; sp_strbuf_read_pub(%s); })", ref2e);
+        if (g_repr_check) repr_channel_note(c, id, RCH_PUBLISH);
+      }
       return 1;
     }
     else if (ivt2 == TY_POLY && rp.kind != RK_BOXED) emit_boxed(c, v, b);
@@ -2038,12 +2049,20 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
    a marked read yields the live HANDLE, an ordinary read a GC copy of the
    current contents (NULL stays nil) (#3227). */
 static void emit_strbuf_slot_read(Compiler *c, int id, Repr rp, const char *sref, Buf *b) {
-  if (rp.handle) buf_printf(b, "%s", sref);
+  if (rp.handle) {
+    buf_printf(b, "%s", sref);
+    if (g_repr_check) repr_channel_note(c, id, RCH_HANDLE);
+  }
   /* a parameter that only reads the bytes for the length of the call
      takes the live buffer (#7482) */
-  else if (rp.read_raw && decide_node(c->nt, id, "strbuf-raw", NULL))
+  else if (rp.read_raw && decide_node(c->nt, id, "strbuf-raw", NULL)) {
     buf_printf(b, "(%s ? sp_String_cstr(%s) : NULL)", sref, sref);
-  else buf_printf(b, "sp_strbuf_read_pub(%s)", sref);
+    if (g_repr_check) repr_channel_note(c, id, RCH_BYTES);
+  }
+  else {
+    buf_printf(b, "sp_strbuf_read_pub(%s)", sref);
+    if (g_repr_check) repr_channel_note(c, id, RCH_PUBLISH);
+  }
 }
 
 /* The same for a slot read at node `id` that is not a variable's (a Struct

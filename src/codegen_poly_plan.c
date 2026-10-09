@@ -118,6 +118,19 @@ void pa_end(Compiler *c, int frame, const PolyPlan *p) {
   if (frame < 0 || frame >= g_pa_n) return;
   PaFrame *f = &g_pa[frame];
   const char *nm = nt_str(c->nt, f->id, "name");
+  /* PC_BOX of a String writes sp_box_str. A method promising a shared
+     return must retain its published handle across this boxing boundary. */
+  if (c->share_strings) for (int a = 0; a < f->n; a++) {
+    const PolyArm *o = &f->arm[a];
+    if (o->mi <= 0 || o->mi >= c->nscopes || o->vty != TY_STRING) continue;
+    int mi = o->kind == PA_PROC_FORM ? scope_proc_form_of(c, o->mi) : o->mi;
+    if (mi < 0) continue;
+    if (o->conv == PC_BOX && c->scopes[mi].ret_handle)
+      fprintf(stderr, "plan-check: channel-box-conflict: node %d %s arm %d method %s: "
+              "emitted sp_box_str, predicted published handle\n",
+              f->id, nm ? nm : "?", o->key, c->scopes[mi].name);
+    if (g_repr_check && o->conv == PC_SAME) repr_channel_call(c, f->id, mi);
+  }
   char pt[400], ct[400];
   g_pa_compared++;
   g_pa_arms += f->n;
@@ -1148,7 +1161,21 @@ static int poly_user_arm_n_decide(Compiler *c, const char *name, const PolyUserA
   PolyArgs pargs = { U->argv, U->pos_argc, U->atmp, U->atmp_ty, U->kw, U->htmp };
   ArgLayout L;
   poly_arm_layout(c, ks, &pargs, &L);
-  int fits = cplan_arm_args_fit(c, ks, &L, U->pos_argc, U->atmp_ty, U->kwall_any);
+  /* The shadow sees the held temps, whereas the plan sees the source
+     expressions. emit_poly_temp_as reads a held handle into a String
+     parameter; compare the binding's representation after that read. */
+  int n = U->pos_argc;
+  TyKind *bound = malloc((size_t)(n > 0 ? n : 1) * sizeof *bound);
+  if (!bound) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  if (n > 0) memcpy(bound, U->atmp_ty, (size_t)n * sizeof *bound);
+  for (int p = 0; p < ks->nparams; p++) {
+    if (L.from[p] != ARG_NODE || L.arg[p] >= n) continue;
+    LocalVar *lv = ks->pnames && ks->pnames[p] ? scope_local(ks, ks->pnames[p]) : NULL;
+    if (bound[L.arg[p]] == TY_STRBUF && repr_of_slot(c, lv).as_ty == TY_STRING)
+      bound[L.arg[p]] = TY_STRING;
+  }
+  int fits = cplan_arm_args_fit(c, ks, &L, n, bound, U->kwall_any);
+  free(bound);
   arg_layout_free(&L);
   if (!fits) return 0;
   TyKind mret = ks->ret;
