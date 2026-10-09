@@ -9,12 +9,119 @@
 
 #include "codegen_internal.h"
 #include "repr.h"
+#include "holder.h"
+#include "codegen_poly.h"
 #include "builtin_ops.h"
 #include "codegen_call_arms.h"
 
 /* the element-kind name of the receiver: "Poly" or array_kind's */
 static const char *arr_kind(TyKind rt) {
   return rt == TY_POLY_ARRAY ? "Poly" : array_kind(rt);
+}
+
+/* A merged keyword hash copies its entries. The last source of buffer:
+   still owns a value-form String's write-back. The ordinary argument
+   bindings keep every source at the value it had when evaluated. */
+static void emit_pack_kw_writeback(Compiler *c, int kwh, int tr, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int en = 0, close = 0;
+  const int *el = nt_arr(nt, kwh, "elements", &en);
+  int sym = comp_sym_intern(c, "buffer");
+  for (int e = en - 1; e >= 0; e--) {
+    int v = nt_ref(nt, el[e], "value"), key = nt_ref(nt, el[e], "key");
+    if (nt_kind(nt, el[e]) == NK_AssocSplatNode) {
+      int th = hold_operand(c, v, TY_POLY, 1, ++g_tmp, 1, " ", b);
+      buf_printf(b, "if (!sp_poly_nil_p(_t%d) && sp_poly_has_key(_t%d, sp_box_sym((sp_sym)%d))) { sp_poly_set_sym(_t%d, (sp_sym)%d, _t%d); }\nelse { ", th, th, sym, th, sym, tr);
+      close++;
+      continue;
+    }
+    if (nt_kind(nt, key) == NK_SymbolNode && !sp_streq(nt_str(nt, key, "value"), "buffer")) continue;
+    if (nt_kind(nt, key) == NK_StringNode) continue;
+    int dynamic = nt_kind(nt, key) != NK_SymbolNode;
+    if (dynamic) {
+      buf_puts(b, "if (sp_poly_eq("); emit_boxed(c, key, b);
+      buf_printf(b, ", sp_box_sym((sp_sym)%d))) { ", sym);
+    }
+    HolderRef h; char ref[1024], val[32];
+    int vslot = unwrap_parens(c, v), rebound = 0;
+    for (int j = e + 1; j < en; j++)
+      rebound |= read_rebound_by(c, v, nt_ref(nt, el[j], "value"));
+    if (!rebound && holder_of_node(c, vslot, &h) && holder_slot_text(c, &h, ref, sizeof ref) &&
+        (h.r.kind == RK_BOXED || h.r.as_ty == TY_STRING)) {
+      snprintf(val, sizeof val, "_t%d", tr);
+      buf_printf(b, "%s = ", ref); emit_unbox_text(c, h.r.as_ty, val, b); buf_puts(b, "; ");
+    }
+    if (!dynamic) break;
+    buf_puts(b, "}\nelse { "); close++;
+  }
+  while (close-- > 0) buf_puts(b, "} ");
+}
+
+/* A keyword buffer is an operand, then the destination and the answer.
+   Keep a carried handle; value slots take the packed bytes back. */
+int emit_op_array_pack_buffer(Compiler *c, const BopCtx *x, Buf *b) {
+  int argc, en = 0;
+  const int *argv = call_args(c->nt, x->id, &argc);
+  if (nt_kind(c->nt, argv[1]) != NK_KeywordHashNode) return 0;
+  int ob = struct_kwarg_value(c, argv[1], "buffer");
+  const int *el = nt_arr(c->nt, argv[1], "elements", &en);
+  if (x->rt == TY_POLY && poly_name_user_claimed(c, x->name, argc)) return 0;
+  buf_puts(b, "({ ");
+  int ta = hold_operand(c, x->recv, TY_POLY, 1, ++g_tmp, 1, " ", b);
+  TyKind ft = arg_ran_first(argv[0], 0) && repr_of(c, argv[0]).as_ty == TY_STRBUF ? TY_STRBUF : TY_POLY;
+  int tf = hold_operand(c, argv[0], ft, ft == TY_POLY, ++g_tmp, 1, " ", b);
+  int tb = ++g_tmp, tr = ++g_tmp;
+  int kh = -1, kwmark = g_n_argov;
+  if (ob < 0 || en != 1) {
+    kh = ++g_tmp;
+    if (en == 1 && nt_kind(c->nt, el[0]) == NK_AssocSplatNode) {
+      int src = nt_ref(c->nt, el[0], "value");
+      kh = hold_operand(c, src, TY_POLY, 1, kh, 1, " ", b);
+      char hash[32]; snprintf(hash, sizeof hash, "_t%d", kh);
+      Buf *save = g_pre; g_pre = b;
+      emit_kw_splat_conv_temp(c, hash);
+      g_pre = save;
+    }
+    else {
+      emit_args_in_source_order(c, &argv[1], 1, b);
+      int th = ++g_tmp;
+      emit_poly_kw_all(c, argv[1], th, 1, 1, b);
+      buf_printf(b, "sp_RbVal _t%d = sp_box_obj(_t%d, SP_BUILTIN_POLY_POLY_HASH); SP_GC_ROOT_RBVAL(_t%d); ", kh, th, kh);
+    }
+    buf_printf(b, "sp_poly_ary_chk(_t%d, \"pack\", 0); sp_kwargs_verify(_t%d, (const char *const[]){\"buffer\", NULL}, (const char *const[]){NULL}, (const char *const[]){NULL}, 1); ", ta, kh);
+    int sym = comp_sym_intern(c, "buffer");
+    buf_printf(b, "sp_RbVal _t%d = sp_poly_nil_p(_t%d) || !sp_poly_has_key(_t%d, sp_box_sym((sp_sym)%d)) ? sp_box_nil() : sp_poly_get_sym(_t%d, (sp_sym)%d); SP_GC_ROOT_RBVAL(_t%d); ", tb, kh, kh, sym, kh, sym, tb);
+  }
+  char ref[1024];
+  HolderRef h;
+  int source = unwrap_parens(c, ob), slot = kh < 0 && holder_of_node(c, source, &h);
+  int handle = kh < 0 && strbuf_slot_ref(c, slot ? source : ob, ref, sizeof ref);
+  slot = !handle && slot && holder_slot_text(c, &h, ref, sizeof ref);
+  if (handle)
+    buf_printf(b, "sp_RbVal _t%d = sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF); SP_GC_ROOT_RBVAL(_t%d); ", tb, ref, tb);
+  else if (kh < 0) tb = hold_operand(c, ob, TY_POLY, 1, tb, 1, " ", b);
+  if (repr_share_rule(c) && slot && h.r.kind == RK_BOXED)
+    buf_printf(b, "_t%d = sp_poly_strbuf_lift(_t%d); %s = _t%d; ", tb, tb, ref, tb);
+  buf_printf(b, "sp_RbVal _t%d = sp_poly_pack_buffer(_t%d, ", tr, ta);
+  char fmt[32]; snprintf(fmt, sizeof fmt, "_t%d", tf);
+  emit_boxed_text(c, ft, fmt, b);
+  buf_printf(b, ", _t%d); ", tb);
+  if (kh >= 0) {
+    buf_printf(b, "if (!sp_poly_nil_p(_t%d) && !sp_poly_is_strbuf(_t%d)) { SP_GC_ROOT_RBVAL(_t%d); ", tb, tb, tr);
+    if (en == 1 && nt_kind(c->nt, el[0]) == NK_AssocSplatNode)
+      buf_printf(b, "sp_poly_set_sym(_t%d, (sp_sym)%d, _t%d); ", kh, comp_sym_intern(c, "buffer"), tr);
+    else emit_pack_kw_writeback(c, argv[1], tr, b);
+    buf_puts(b, "} ");
+  }
+  view_unbind(kwmark);
+  if (slot && (h.r.kind == RK_BOXED || h.r.as_ty == TY_STRING)) {
+    char val[32]; snprintf(val, sizeof val, "_t%d", tr);
+    buf_printf(b, "if (!sp_poly_nil_p(_t%d)) %s = ", tb, ref);
+    emit_unbox_text(c, h.r.as_ty, val, b);
+    buf_puts(b, "; ");
+  }
+  buf_printf(b, "_t%d; })", tr);
+  return 1;
 }
 
 /* Array.new's poly fill keeps an existing shared slot's handle. Static

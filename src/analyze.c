@@ -14616,7 +14616,8 @@ static int strbuf_ivar_any_str_mut(Compiler *c, int cid, const char *nm) {
    cannot rename an ivar, so []=/insert/slice!/setbyte disqualify. */
 /* True if ivar `nm` of class `cid` is handed to a method as an argument
    anywhere in that class's own scopes. Such a call may take the slot by
-   reference, which only works when the receiver itself is a heap object. */
+   reference, which only works when the receiver itself is a heap object.
+   A keyword hands over its value just as a positional argument does. */
 static int an_ivar_passed_as_arg(Compiler *c, int cid, const char *nm) {
   const NodeTable *nt = c->nt;
   for (int id = 0; id < nt->count; id++) {
@@ -14625,11 +14626,18 @@ static int an_ivar_passed_as_arg(Compiler *c, int cid, const char *nm) {
     if (args < 0) continue;
     int an = 0; const int *av = nt_arr(nt, args, "arguments", &an);
     for (int k = 0; k < an; k++) {
-      if (nt_kind(nt, av[k]) != NK_InstanceVariableReadNode) continue;
-      const char *ivn = nt_str(nt, av[k], "name");
-      if (!ivn || !nm || !sp_streq(ivn, nm)) continue;
-      Scope *sc = comp_scope_of(c, av[k]);
-      if (sc && sc->class_id == cid) return 1;
+      int en = 1;
+      const int *el = &av[k];
+      int kw = nt_kind(nt, av[k]) == NK_KeywordHashNode;
+      if (kw) el = nt_arr(nt, av[k], "elements", &en);
+      for (int e = 0; e < en; e++) {
+        int v = kw ? nt_ref(nt, el[e], "value") : el[e];
+        if (nt_kind(nt, v) != NK_InstanceVariableReadNode) continue;
+        const char *ivn = nt_str(nt, v, "name");
+        if (!ivn || !nm || !sp_streq(ivn, nm)) continue;
+        Scope *sc = comp_scope_of(c, v);
+        if (sc && sc->class_id == cid) return 1;
+      }
     }
   }
   return 0;

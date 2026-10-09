@@ -275,6 +275,7 @@ static int (*const bop_emitters[BOPE__COUNT])(Compiler *, const BopCtx *, Buf *)
   [BOPE_ARRAY_CYCLE_N] = emit_op_array_cycle_n,
   [BOPE_ARRAY_LAST] = emit_op_array_last,
   [BOPE_ARRAY_JOIN] = emit_op_array_join,
+  [BOPE_ARRAY_PACK_BUFFER] = emit_op_array_pack_buffer,
   [BOPE_ARRAY_SORT_BANG] = emit_op_array_sort_bang,
   [BOPE_ARRAY_SLICE_BANG_RANGE] = emit_op_array_slice_bang_range,
   [BOPE_ARRAY_PLUS] = emit_op_array_plus,

@@ -1304,6 +1304,21 @@ static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int 
     return sh_new(F, SHK_VALUE);
   }
   switch (share) {
+  case BSH_PACK:
+    if (argc == 2 && nt_kind(nt, argv[1]) == NK_KeywordHashNode) {
+      int en = 0, r = -1;
+      const int *el = nt_arr(nt, argv[1], "elements", &en);
+      for (int e = 0; e < en; e++) {
+        int key = nt_ref(nt, el[e], "key");
+        if (nt_kind(nt, key) == NK_SymbolNode && !sp_streq(nt_str(nt, key, "value"), "buffer")) continue;
+        int v = nt_kind(nt, el[e]) == NK_AssocSplatNode ? sh_arg_val(F, c, el[e]) : sh_val(F, c, nt_ref(nt, el[e], "value"));
+        sh_mark_at(F, v, SHF_MUT | SHF_INDIRECT, n);
+        r = sh_join(F, r, v);
+      }
+      return r;
+    }
+    /* Without a buffer, pack only reads its arguments. */
+    /* fall through */
   case BSH_PURE:
     sh_peek_args(F, n, 0);
     /* a container's block is handed its elements, whatever it answers */
@@ -2151,6 +2166,9 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
     if (rt != TY_POLY && rt != TY_UNKNOWN) return r;
     /* Exception#to_s hands on its stored message beside user returns. */
     if (is_to_s_name(name) && argc == 0 && blk < 0) r = sh_join(F, r, sh_exc(F));
+    if (argc == 2 && nt_kind(nt, argv[1]) == NK_KeywordHashNode &&
+        bop_share_named(BOP_ANY_ARRAY, name) == BSH_PACK)
+      r = sh_join(F, r, sh_builtin(F, c, n, BSH_PACK, rv, blk, 1));
     return sh_join(F, r, sh_container_default(F, c, n, rv, blk));
   }
 

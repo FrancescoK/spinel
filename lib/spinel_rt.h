@@ -18995,9 +18995,35 @@ sp_Bigint *sp_bigint_not(sp_Bigint *a);
 const char *sp_IntArray_pack(sp_IntArray *arr, const char *fmt);
 const char *sp_FloatArray_pack(sp_FloatArray *arr, const char *fmt);
 const char *sp_PolyArray_pack(sp_PolyArray *arr, const char *fmt);
+const char *sp_PolyArray_pack_buffer(sp_PolyArray *arr, const char *fmt, const char *initial);
 const char *sp_StrArray_pack(sp_StrArray *arr, const char *fmt);
 sp_PolyArray *sp_str_unpack(const char *str, const char *fmt);
 sp_PolyArray *sp_str_unpack_off(const char *str, const char *fmt, sp_int byteoff);
+
+/* The keyword form starts its cursor after the buffer's existing bytes.
+   A nil buffer asks for a fresh String; every other buffer must be a String. */
+static sp_RbVal sp_poly_pack_buffer(sp_RbVal recv, sp_RbVal format, sp_RbVal buffer) {
+  SP_GC_ROOT_RBVAL(recv); SP_GC_ROOT_RBVAL(format); SP_GC_ROOT_RBVAL(buffer);
+  sp_poly_ary_chk(recv, "pack", 0);
+  const char *fmt = sp_poly_arg_str_chk(format); SP_GC_ROOT_STR(fmt);
+  const char *initial = NULL;
+  if (!sp_poly_nil_p(buffer)) {
+    if (buffer.tag != SP_TAG_STR && !sp_poly_is_strbuf(buffer))
+      sp_raise_cls("TypeError", sp_sprintf("buffer must be String, not %s", sp_poly_class_name(buffer)));
+    initial = sp_poly_to_s(buffer);
+    if (sp_poly_is_strbuf(buffer) && sp_String_is_frozen((sp_String *)buffer.v.p)) sp_raise_frozen_str(initial);
+    sp_str_check_mutable(initial);
+  }
+  SP_GC_ROOT_STR(initial);
+  const char *r = sp_PolyArray_pack_buffer(sp_poly_to_poly_array(recv), fmt, initial);
+  SP_GC_ROOT_STR(r);
+  if (sp_poly_is_strbuf(buffer)) {
+    sp_String_set_bin((sp_String *)buffer.v.p, r);
+    sp_String_force_encoding((sp_String *)buffer.v.p, sp_str_is_binary(r));
+    return buffer;
+  }
+  return sp_poly_nil_p(buffer) ? sp_box_str(r) : sp_poly_str_become(buffer, r);
+}
 
 /* Array#pack on a poly (nullable-array) receiver: dispatch on the runtime tag.
    A nil/non-array recv packs to the empty string. */
