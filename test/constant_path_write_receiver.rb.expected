@@ -1,0 +1,49 @@
+M::X
+"M::X"
+N::Y
+ns called
+M::Z
+"M::Z"
+ns called
+1
+Deep::Inner::Q
+"Deep::V"
+receiver
+value
+7
+receiver
+elt 3
+elt 1
+elt 2
+2
+receiver
+then
+"ABC"
+receiver
+in begin
+M::Built
+Fork::Pick
+Deep::Made
+5
+M::Elem
+Deep::Val
+"M::Same"
+value in play
+5 is not a class/module
+value in play
+nil is not a class/module
+value in play
+"str" is not a class/module
+value in play
+[1, 2] is not a class/module
+value in play
+:sym is not a class/module
+five called
+value
+5 is not a class/module
+value
+5 is not a class/module
+"M::ViaAlias"
+"Math::Extra"
+"#<Class:XX>::Nested"
+main is not a class/module
