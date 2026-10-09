@@ -195,6 +195,7 @@ int strbuf_var_handle(Compiler *c, int n, char *out, size_t cap);
    (a variable, a route, a conditional with such an arm)? (codegen_stmt.c) */
 int strbuf_value_carries(Compiler *c, int v);
 int strbuf_builtin_tail(Compiler *c, int v);
+int strbuf_hash_default_arg(Compiler *c, int v);
 /* A builtin String clamp's receiver and two bounds, or absent endpoints. */
 int strbuf_route_clamp(Compiler *c, int v, int *ops);
 /* `String(x)` or `+x` over a variable whose slot holds the handle: that

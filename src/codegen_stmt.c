@@ -1365,6 +1365,25 @@ static int strbuf_route_tap(Compiler *c, int v) {
   Scope *bsc = p0 ? comp_scope_of(c, blk) : NULL;
   return rt == TY_STRING && bsc && repr_of_slot(c, scope_local(bsc, rename_local(p0))).handle;
 }
+/* A shared Hash default setter stores and answers the same argument.
+   Its boxed value slot can keep the argument's String handle. */
+int strbuf_hash_default_arg(Compiler *c, int v) {
+  if (!repr_share_rule(c) || !c->share) return -1;
+  v = unwrap_parens(c, v);
+  if (v < 0 || nt_kind(c->nt, v) != NK_CallNode ||
+      !is_hash_default_setter(nt_str(c->nt, v, "name"))) return -1;
+  int recv = nt_ref(c->nt, v, "receiver"), argc = 0;
+  const int *argv = call_args(c->nt, v, &argc);
+  TyKind rt = recv >= 0 ? repr_of(c, recv).as_ty : TY_UNKNOWN;
+  if (!ty_is_hash(rt) || ty_hash_val(rt) != TY_POLY || argc != 1 ||
+      cplan_user_fresh(c, v)->dispatch != CP_NONE) return -1;
+  /* A dropped frozen literal already keeps its frozen mark in the box. */
+  if (nt_kind(c->nt, unwrap_parens(c, argv[0])) == NK_StringNode && share_node_transient(c, v)) return -1;
+  if (share_value_fresh(c, argv[0], 0) && !share_node_shares(c, v) &&
+      !share_node_elems_share(c, recv)) return -1;
+  TyKind at = repr_of(c, argv[0]).ty;
+  return at == TY_STRING || at == TY_STRBUF ? argv[0] : -1;
+}
 /* --share-strings: `a.inject(s) { |m, x| ... }` over an Array with a
    String seed carried as the handle, whose accumulator parameter is the
    handle, and that leaves by no `break`: inject answers the block's last
@@ -1466,6 +1485,7 @@ static int strbuf_stmts_tail_plain(Compiler *c, int st) {
   if (strbuf_native_answer(c, b[n - 1])) return 1;
   /* A shared reader's demanded value is its slot's handle too. */
   if (strbuf_route_reader(c, b[n - 1])) return 1;
+  if (strbuf_hash_default_arg(c, b[n - 1]) >= 0) return 1;
   /* A receiver conversion's demanded value keeps its operand's handle. */
   if (repr_string_conversion_operand(c, b[n - 1]) >= 0 || repr_boxed_to_s_operand(c, b[n - 1]) >= 0) return 1;
   NodeKind k = nt_kind(c->nt, b[n - 1]);
@@ -1651,6 +1671,7 @@ static int strbuf_route_carries(Compiler *c, int v, int depth) {
   char ref[1024];
   int ops[3];
   if (strbuf_route_clamp(c, v, ops)) return 1;
+  if (strbuf_hash_default_arg(c, v) >= 0) return 1;
   if (strbuf_route_proc_call(c, v) || strbuf_route_ivar_get(c, v) || strbuf_route_begin(c, v) || strbuf_route_yield(c, v) ||
       strbuf_route_inline_call(c, v) || strbuf_route_loop(c, v) || repr_call_returns_handle(c, v) ||
       strbuf_route_exc_message(c, v) || strbuf_route_reader(c, v)) return 1;
@@ -1778,7 +1799,7 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
     strbuf_jump_views_pop(c, tok, ntok);
     return 1;
   }
-  if (strbuf_route_begin(c, v) || strbuf_route_ivar_get(c, v)) {
+  if (strbuf_route_begin(c, v) || strbuf_route_ivar_get(c, v) || strbuf_hash_default_arg(c, v) >= 0) {
     /* its result slot is the handle under the demand */
     v = unwrap_parens(c, v);
     int sv = view_push_repr(c, v, VR_HANDLE_DEMAND, 1);
@@ -17764,6 +17785,7 @@ static int strbuf_flow_begin(Compiler *c, StrbufFlowMemo *fm, int v, int depth) 
 static int strbuf_flow_route(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, int depth) {
   const NodeTable *nt = c->nt;
   int ops[3];
+  if (strbuf_hash_default_arg(c, v) >= 0) return 1;
   if (strbuf_route_clamp(c, v, ops)) {
     for (int i = 0; i < 3; i++)
       if (!strbuf_flow_value(c, fm, SFC_ALIAS, ops[i], depth + 1)) return 0;
@@ -17969,6 +17991,7 @@ static int strbuf_flow_value(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, in
       !bare_call_class_owned(c, v) && comp_method_index(c, nt_str(nt, v, "name")) < 0)
     return 1;
   if (ctx == SFC_TAIL && strbuf_route_reader(c, v)) return 1;
+  if (ctx == SFC_TAIL && strbuf_hash_default_arg(c, v) >= 0) return 1;
   if (ctx == SFC_TAIL && (repr_string_conversion_operand(c, v) >= 0 || repr_boxed_to_s_operand(c, v) >= 0))
     return strbuf_flow_route(c, fm, SFC_ALIAS, v, depth);
   if (ctx == SFC_TAIL)

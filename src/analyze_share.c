@@ -1362,7 +1362,9 @@ static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int 
     if (nv > 0) sh_union(F, sh_elem(F, rv), vals[nv - 1]);
     if (nv > 0 && argc > 0 && nt_kind(nt, argv[argc - 1]) != NK_KeywordHashNode)
       sh_flow(F, SHFL_ELEM, nt_ref(nt, n, "receiver"), argv[argc - 1]);
-    return nv > 0 ? vals[nv - 1] : rv;
+    /* A used setter result names the stored element, even when the
+       argument was fresh and therefore had no holder of its own. */
+    return nv > 0 ? (container && !(F->unused[n] & SHU_STMT) ? sh_elem(F, rv) : vals[nv - 1]) : rv;
   case BSH_STORE_ALL:
     for (int i = 0; i < nv; i++) sh_union(F, sh_elem(F, rv), vals[i]);
     sh_args_flows(F, c, SHFL_ELEM, n, nt_ref(nt, n, "receiver"));
