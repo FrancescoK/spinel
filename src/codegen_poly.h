@@ -7,6 +7,7 @@
 
 #include "codegen_internal.h"
 
+void emit_poly_user_box(Compiler *c, int id, Scope *m, const char *call, Buf *b);
 int  class_is_prim_reopen(Compiler *c, int k);
 int  exc_arm_definer(Compiler *c, int k, const char *name);
 int  poly_arm_refuses_none(Compiler *c, int mi, char *exp, size_t n);

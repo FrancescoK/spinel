@@ -1552,7 +1552,7 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
               emit_args_filled(c, mi, nt_ref(nt, id, "arguments"), leadb, &cb); }
             emit_cmethod_block_arg(c, id, &c->scopes[mi], blk_tmp, &cb);
             buf_puts(&cb, ")");
-            emit_boxed_text(c, c->scopes[mi].ret, cb.p ? cb.p : "0", b);
+            emit_poly_user_box(c, id, &c->scopes[mi], cb.p ? cb.p : "0", b);
             free(cb.p);
           }
           else {
@@ -3055,7 +3055,7 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
             buf_puts(&cb9, ")");
             if (apre9.p && apre9.p[0]) { buf_puts(b, "{ "); buf_puts(b, apre9.p); }
             buf_printf(b, "_t%d = ", tr9);
-            if (slot9 == TY_POLY && kr != TY_POLY) emit_boxed_text(c, kr, cb9.p ? cb9.p : "", b);
+            if (slot9 == TY_POLY && kr != TY_POLY) emit_poly_user_box(c, id, &c->scopes[kmi], cb9.p ? cb9.p : "", b);
             else if (slot9 != TY_POLY && kr == TY_POLY) emit_unbox_text(c, slot9, cb9.p ? cb9.p : "", b);
             else buf_puts(b, cb9.p ? cb9.p : "");
             if (apre9.p && apre9.p[0]) buf_puts(b, "; }");
@@ -3289,7 +3289,7 @@ int emit_call_class_method_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
         TyKind kr = (TyKind)ms->ret;
         if (slot_t == TY_POLY && kr != TY_POLY && kr != TY_UNKNOWN && kr != TY_VOID &&
             !method_is_void(ms))
-          emit_boxed_text(c, kr, cb.p ? cb.p : "", b);
+          emit_poly_user_box(c, id, ms, cb.p ? cb.p : "", b);
         /* ...and the other way: a user `self.new` answers a boxed object
            where the site is typed as the class it builds (#5409) */
         else if (kr == TY_POLY && slot_t != TY_POLY && slot_t != TY_UNKNOWN &&
@@ -3462,7 +3462,7 @@ int emit_call_class_method_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
           const char *dc = dcb.p ? dcb.p : "";
           if (want == TY_POLY && cret != TY_POLY && cret != TY_UNKNOWN &&
               cret != TY_VOID && cret != TY_NIL)
-            emit_boxed_text(c, cret, dc, b);
+            emit_poly_user_box(c, id, &c->scopes[defmi], dc, b);
           else if (cret == TY_POLY && want != TY_POLY && want != TY_UNKNOWN &&
                    is_scalar_ret(want) && want != TY_VOID && want != TY_NIL)
             emit_unbox_text(c, want, dc, b);
@@ -3513,7 +3513,7 @@ int emit_call_class_method_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
               buf_puts(&ab, ")");
               buf_printf(b, "_t%d = ", rtmp);
               if (unified == TY_POLY && kr != TY_POLY)
-                emit_boxed_text(c, kr, ab.p ? ab.p : "0", b);
+                emit_poly_user_box(c, id, &c->scopes[kmi], ab.p ? ab.p : "0", b);
               else buf_puts(b, ab.p ? ab.p : "0");
               free(ab.p);
               buf_puts(b, "; break;");
@@ -3538,7 +3538,7 @@ int emit_call_class_method_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
               buf_puts(&db, ")");
               buf_printf(b, "_t%d = ", rtmp);
               if (unified == TY_POLY && dr != TY_POLY)
-                emit_boxed_text(c, dr, db.p ? db.p : "0", b);
+                emit_poly_user_box(c, id, &c->scopes[defmi], db.p ? db.p : "0", b);
               else buf_puts(b, db.p ? db.p : "0");
               free(db.p);
               buf_printf(b, "; break;");

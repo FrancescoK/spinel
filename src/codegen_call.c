@@ -1652,7 +1652,7 @@ int emit_poly_cls_value_prearm(Compiler *c, int id, const char *name, int argc,
     if (tr < 0 || method_is_void(ks)) { buf_puts(b, cb.p ? cb.p : ""); pconv = PC_VOID; }
     else {
       buf_printf(b, "_t%d = ", tr);
-      if (ret == TY_POLY && kr != TY_POLY) { emit_boxed_text(c, kr, cb.p ? cb.p : "", b); pconv = PC_BOX; }
+      if (ret == TY_POLY && kr != TY_POLY) { emit_poly_user_box(c, id, ks, cb.p ? cb.p : "", b); pconv = PC_BOX; }
       else if (ret != TY_POLY && kr == TY_POLY) { emit_unbox_text(c, ret, cb.p ? cb.p : "", b); pconv = PC_UNBOX; }
       else buf_puts(b, cb.p ? cb.p : "");
     }
@@ -18167,7 +18167,7 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
             TyKind mret = (TyKind)c->scopes[ksym].ret;
             if (apre.p && apre.p[0]) { buf_puts(b, "({ "); buf_puts(b, apre.p); }
             if (mret == TY_POLY) buf_puts(b, cb.p ? cb.p : "sp_box_nil()");
-            else emit_boxed_text(c, mret, cb.p ? cb.p : "0", b);
+            else emit_poly_user_box(c, id, &c->scopes[ksym], cb.p ? cb.p : "0", b);
             if (g_plan_check) {
               pa_resume(pa_frame);
               pa_observe(cpf[k] >= 0 ? PA_PROC_FORM : PA_USER, ccls[k], cmi[k], mret,
