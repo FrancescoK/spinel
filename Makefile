@@ -3398,6 +3398,7 @@ $(SPINEL) "$<" $(SP_OV_FLAG) -c --no-line-map -o "$$cfile" 2>/dev/null && \
 { pchuse="$(PCH_USE_PLAIN)"; pchf="$(PCH_PLAIN)"; \
   if head -2 "$$cfile" | grep -q SP_TU_NO_POLY_RENDER; then pchuse="$(PCH_USE_NOPOLY)"; pchf="$(PCH_NOPOLY)"; fi; \
   [ -f "$$pchf" ] || pchuse=""; \
+  if sed -n '1,/^#include "spinel_rt.h"/p' "$$cfile" | grep '^#define' | grep -qv SP_TU_NO_POLY_RENDER; then pchuse=""; fi; \
   xlibs=$$(sed -n 's|^/\* SPINEL_LINK: \(.*\) \*/$$|\1|p' "$$cfile" | tr '\n' ' '); \
   bigopt=""; \
   if [ "$$(wc -l < "$$cfile")" -ge 2000 ]; then bigopt="-O0"; pchuse=""; fi; \
