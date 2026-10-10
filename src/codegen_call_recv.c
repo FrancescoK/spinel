@@ -13717,6 +13717,18 @@ static int emit_poly_index_call(Compiler *c, int id, Buf *b, const NodeTable *nt
       buf_puts(b, ", "); emit_expr(c, argv[0], b);
     }
     else if (at == TY_INT) {
+      /* a key that may be nil holds the sentinel: a nil one goes to the
+         runtime as nil (sp_poly_set_poly: a nil receiver's NoMethodError, an
+         Array's TypeError, a Hash's nil key); any other is the index below,
+         read through the held key */
+      int nkey = nullable_int_value(c, argv[0]), kmark = -1;
+      if (nkey) {
+        int tk = ++g_tmp;
+        buf_printf(b, "sp_int _t%d = ", tk); emit_expr(c, argv[0], b);
+        buf_printf(b, "; if (SP_UNLIKELY(_t%d == SP_INT_NIL)) (void)sp_poly_set_poly(", tk); emit_expr(c, recv, b);
+        buf_printf(b, ", sp_box_nil(), _t%d);\nelse ", tv);
+        kmark = view_bind(argv[0], "_t%d", tk);
+      }
       /* widen_and_set returns a *different* boxed value when a typed array is
          promoted to a PolyArray (element-kind mismatch); otherwise it mutates in
          place. Store the result back so promotion survives: assign to a
@@ -13739,6 +13751,7 @@ static int emit_poly_index_call(Compiler *c, int id, Buf *b, const NodeTable *nt
         buf_puts(b, "sp_poly_arr_widen_and_set("); emit_expr(c, recv, b);
         buf_puts(b, ", "); emit_int_expr(c, argv[0], b);
       }
+      if (kmark >= 0) view_unbind(kmark);
     }
     else {
       /* A computed `outer[idx]` receiver needs the store-back form even for a
@@ -13817,6 +13830,24 @@ static int emit_poly_index_call(Compiler *c, int id, Buf *b, const NodeTable *nt
       if (at == TY_STRING) {
         buf_puts(b, "sp_poly_get_str("); emit_expr(c, recv, b);
         buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
+        { *out = 1; return 1; }
+      }
+      /* An Integer key that may be nil holds the sentinel then: the receiver
+         is read before the key, and a nil key goes to the runtime as nil,
+         so a nil receiver raises NoMethodError, an Array's TypeError comes
+         from the runtime, and a Hash finds its nil key. Passed raw, the
+         sentinel read as a negative index (nil from an Array) or as the key
+         INT64_MIN (a miss in a Hash). Any other key reads as before. */
+      if (at == TY_INT && nullable_int_value(c, argv[0])) {
+        int tr = ++g_tmp, tk = ++g_tmp;
+        int uns = nullable_int_elem_read(c, id);
+        const char *fn = expr_is_arr_or_nil(c, recv) && decide_node(c->nt, recv, "aon-get", NULL)
+                           ? "sp_poly_arr_get_aon" : "sp_poly_arr_get_hash";
+        buf_printf(b, "({ sp_RbVal _t%d = ", tr); emit_expr(c, recv, b); buf_puts(b, "; ");
+        if (subtree_may_allocate(c->nt, argv[0])) buf_printf(b, "SP_GC_ROOT_RBVAL(_t%d); ", tr);
+        buf_printf(b, "sp_int _t%d = ", tk); emit_expr(c, argv[0], b);
+        buf_printf(b, "; SP_UNLIKELY(_t%d == SP_INT_NIL) ? sp_poly_index_poly(_t%d, sp_box_nil()) : %s%s(_t%d, _t%d)%s; })",
+                   tk, tr, uns ? "sp_unsentinel(" : "", fn, tr, tk, uns ? ")" : "");
         { *out = 1; return 1; }
       }
       if (at == TY_INT || at == TY_POLY) {

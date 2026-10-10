@@ -862,6 +862,7 @@ static void emit_index_get(Compiler *c, int recv, int key, Buf *b) {
   }
   /* TY_POLY receiver: dispatch by key type, mirroring emit_index_op_write */
   TyKind kt = comp_ntype(c, key);
+  if (kt == TY_INT && nullable_int_value(c, key)) kt = TY_POLY;   /* its nil a nil, boxed */
   /* A receiver proved to hold only a poly array or nil needs none of the
      dispatch: analyze established that for the root elision, and the read is
      hot enough in optcarrot's per-pixel path to be worth spending it on. */
@@ -4596,6 +4597,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     else if (irt == TY_POLY) {
       /* TY_POLY receiver: dispatch via sp_poly_get/set based on key type */
       TyKind kt2 = comp_ntype(c, iav[0]);
+      if (kt2 == TY_INT && nullable_int_value(c, iav[0])) kt2 = TY_POLY;   /* its nil a nil, boxed */
       buf_printf(b, "({ sp_RbVal _t%d = ", ta2); emit_expr(c, ir, b);
       buf_puts(b, "; ");
       if (kt2 == TY_INT) {

@@ -17959,7 +17959,7 @@ int emit_index_opw_hoist(Compiler *c, int id, Buf *pre, int indent) {
     TyKind kt = comp_ntype(c, argv[0]);
     if (kt == TY_SYMBOL)      { ktype = "sp_sym";      emit_expr(c, argv[0], &kb); }
     else if (kt == TY_STRING) { ktype = "const char *"; key_is_ptr = 1; emit_expr(c, argv[0], &kb); }
-    else if (kt == TY_INT)    { ktype = "sp_int";     emit_int_expr(c, argv[0], &kb); }
+    else if (kt == TY_INT && !nullable_int_value(c, argv[0])) { ktype = "sp_int"; emit_int_expr(c, argv[0], &kb); }
     else                      { ktype = "sp_RbVal";    key_is_ptr = 1; emit_boxed(c, argv[0], &kb); }
   }
   else { free(kb.p); return 0; }
@@ -18293,6 +18293,8 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
   if (rt == TY_POLY) {
     /* poly receiver: dispatch get/op/set based on key type */
     TyKind kt = comp_ntype(c, argv[0]);
+    /* an Integer key that may be nil goes boxed, its nil a nil */
+    if (kt == TY_INT && nullable_int_value(c, argv[0])) kt = TY_POLY;
     emit_indent(b, indent);
     /* read the slot polymorphically, fold via the tag-dispatching
        sp_poly_<op> (handles int/float/bigint/str), and store back through
