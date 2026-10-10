@@ -6149,14 +6149,20 @@ static int widen_proc_call_args_m(Compiler *c, int lit, const char *pn, TyKind e
     for (int i = 0; ms && ms->name && i < ms->nparams && pj < 0; i++)
       if (ms->pnames[i] && sp_streq(ms->pnames[i], rnm)) pj = i;
     if (pj < 0) continue;
-    int hands = 0;
-    NT_FOREACH_KIND(nt, NK_CallNode, u2) {
-      if (hands || backprop_call_target(c, u2) != (int)(ms - c->scopes)) continue;
+    /* the method's callers, among the calls that can name it: resolving
+       every call of the program, for each `.call` on a parameter at every
+       depth of the walk, was most of a fixpoint round on a large program */
+    int hands = 0, nc2 = 0;
+    int *c2 = an_scope_call_candidates(c, ms, &nc2);
+    for (int i = 0; i < nc2 && !hands; i++) {
+      int u2 = c2[i];
+      if (nt_kind(nt, u2) != NK_CallNode || backprop_call_target(c, u2) != (int)(ms - c->scopes)) continue;
       int a2 = nt_ref(nt, u2, "arguments"), ac2 = 0;
       const int *av2 = a2 >= 0 ? nt_arr(nt, a2, "arguments", &ac2) : NULL;
       int arg = call_param_arg(c, ms, av2, ac2, pj);
       hands = arg >= 0 && proc_lit_carrier(c, arg, lit);
     }
+    free(c2);
     if (hands)
       ch |= hash ? widen_hash_arg_for_store(c, av[k], hk, hv) : widen_boxed_array_sources(c, av[k], elem, depth + 1);
   }
