@@ -9444,21 +9444,19 @@ void emit_for(Compiler *c, int id, Buf *b, int indent) {
     return;
   }
   /* `for s in "a".."e"`: a String range has no int representation, so walk
-     its succ-sequence materialized as a StrArray. */
+     its succ-sequence materialized as a StrArray. An endless one (last NULL)
+     follows by succ without end (emit_srange_walk_open). */
   if (ct == TY_STR_RANGE && (vn || multi)) {
-    int ta = ++g_tmp, ti = ++g_tmp;
-    emit_indent(b, indent);
-    buf_printf(b, "{ sp_StrArray *_t%d = sp_srange_to_a(", ta); emit_expr(c, coll, b); buf_puts(b, ");\n");
-    emit_indent(b, indent + 1); buf_printf(b, "SP_GC_ROOT(_t%d);\n", ta);
-    emit_indent(b, indent + 1);
-    buf_printf(b, "for (sp_int _t%d = 0; _t%d < sp_StrArray_length(_t%d); _t%d++) {\n", ti, ti, ta, ti);
-    char el[64]; snprintf(el, sizeof el, "sp_StrArray_get(_t%d, _t%d)", ta, ti);
+    char el[96];
+    emit_indent(b, indent); buf_puts(b, "{\n");
+    emit_srange_walk_open(c, coll, -1, el, sizeof el, b, indent + 1);
     if (multi) emit_for_multi_scalar(c, idx, TY_STRING, el, b, indent + 2);
     else {
       LocalVar *slv = scope_local(comp_scope_of(c, idx), rename_local(vn));
       emit_indent(b, indent + 2);
       emit_local_ref(c, idx, vn, b); buf_puts(b, " = ");
       if (slv && slv->type == TY_POLY) emit_boxed_text(c, TY_STRING, el, b);
+      else if (elem_param_is_handle(slv, TY_STRING)) buf_printf(b, "sp_String_new_shared(%s)", el);
       else buf_puts(b, el);
       buf_puts(b, ";\n");
     }

@@ -7010,6 +7010,7 @@ int desugar_enumerable_via_to_a(Compiler *c) {
        yield the original Hash / Range (#3842). A `to_a` the program wrote
        itself carries no mark and keeps answering its array. */
     if (how == 2) nt_node_set_str(nt, toa, "enum_recv", "1");
+    nt_node_set_int(nt, toa, "range_hop", 1);   /* srange_member_hop */
     nt_node_set_ref(nt, id, "receiver", toa);
     comp_grow_node_arrays(c);
     for (int j = base; j < nt->count; j++) c->nscope[j] = c->nscope[id];

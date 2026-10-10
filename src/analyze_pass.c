@@ -15123,6 +15123,10 @@ int infer_block_params(Compiler *c) {
       }
       pt = isf ? TY_FLOAT : TY_INT;
     }
+    /* a String Range's each and step bind each member as a String, whatever
+       its begin was when the walk was first typed (a parameter, a call) */
+    else if (rt == TY_STR_RANGE && is_range_member_walk(name))
+      pt = TY_STRING;
     else if (sp_streq(name, "step") && (rt == TY_RATIONAL || rt == TY_BIGINT))
       pt = TY_POLY;  /* yields boxed Rational/Integer values (#2566); a Bignum receiver walks boxed too (#4779) */
     else if (is_int_step(name) && rt == TY_INT)

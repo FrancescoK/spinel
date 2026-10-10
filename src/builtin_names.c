@@ -165,6 +165,26 @@ int is_enum_partition_def(const char *n) {
   return strncmp(n, "__enum_partition__", 18) == 0;
 }
 
+int is_stop_walk(const char *n) {
+  return is_find_or_take_while(n) || sp_streq(n, "find_index") || sp_streq(n, "each_with_index");
+}
+
+int is_range_member_walk(const char *n) {
+  return sp_streq(n, "each") || sp_streq(n, "each_entry") || sp_streq(n, "step");
+}
+
+int is_find_index(const char *n) {
+  return sp_streq(n, "find_index");
+}
+
+int is_each_entry(const char *n) {
+  return sp_streq(n, "each_entry");
+}
+
+int is_each_name(const char *n) {
+  return sp_streq(n, "each");
+}
+
 int is_each_walk(const char *n) {
   return sp_streq(n, "each") || sp_streq(n, "each_entry") || sp_streq(n, "reverse_each");
 }

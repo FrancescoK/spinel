@@ -734,7 +734,11 @@ static const BuiltinOp bop_rows[] = {
   { TY_STR_RANGE, "max",          1, 127, BF_ANY,      TY_STR_ARRAY,   BOPE_NONE },
   { TY_STR_RANGE, "to_s",         1, 127, BF_ANY,      TY_STR_ARRAY,   BOPE_NONE },
   { TY_STR_RANGE, "inspect",      1, 127, BF_ANY,      TY_STR_ARRAY,   BOPE_NONE },
+  /* the first n members stop at n, so an endless range answers (first and take with an Integer count) */
+  { TY_STR_RANGE, "first",        1,   1, BF_ANY,      TY_STR_ARRAY,   BOPE_TEMPLATE, "({ sp_RbVal _t$y = sp_box_srange($r); SP_GC_ROOT_RBVAL(_t$y); sp_int _t$u = $i0; sp_srange_first_n(_t$y, _t$u, 0); })", BOP_K(TY_INT) },
+  { TY_STR_RANGE, "take",         1,   1, BF_ANY,      TY_STR_ARRAY,   BOPE_TEMPLATE, "({ sp_RbVal _t$y = sp_box_srange($r); SP_GC_ROOT_RBVAL(_t$y); sp_int _t$u = $i0; sp_srange_first_n(_t$y, _t$u, 1); })", BOP_K(TY_INT) },
   { TY_STR_RANGE, "first",        1, 127, BF_ANY,      TY_STR_ARRAY,   BOPE_NONE },
+  { TY_STR_RANGE, "take",         1, 127, BF_ANY,      TY_STR_ARRAY,   BOPE_NONE },
   { TY_STR_RANGE, "last",         1, 127, BF_ANY,      TY_STR_ARRAY,   BOPE_NONE },
   { TY_STR_RANGE, "cover?",       0, 127, BF_ANY,      TY_BOOL,        BOPE_NONE },
   { TY_STR_RANGE, "include?",     0, 127, BF_ANY,      TY_BOOL,        BOPE_NONE },
@@ -752,8 +756,16 @@ static const BuiltinOp bop_rows[] = {
   { TY_STR_RANGE, "equal?",       0, 127, BF_ANY,      TY_BOOL,        BOPE_NONE },
   { TY_STR_RANGE, "respond_to?",  0, 127, BF_ANY,      TY_BOOL,        BOPE_NONE },
   { TY_STR_RANGE, "step",         0,   1, BF_REQUIRED, TY_STR_RANGE,   BOPE_NONE },  /* with a block: the receiver, as CRuby */
-  { TY_STR_RANGE, "step",         1,   1, BF_NONE,     TY_ENUMERATOR,  BOPE_TEMPLATE, "({ sp_StrRange _t$T = $r; sp_RbVal _t$y = sp_box_srange(_t$T); SP_GC_ROOT_RBVAL(_t$y); sp_srange_step_enum(_t$T, _t$y, $b0, SPL(\"step\")); })" },
-  { TY_STR_RANGE, "%",            1,   1, BF_NONE,     TY_ENUMERATOR,  BOPE_TEMPLATE, "({ sp_StrRange _t$T = $r; sp_RbVal _t$y = sp_box_srange(_t$T); SP_GC_ROOT_RBVAL(_t$y); sp_srange_step_enum(_t$T, _t$y, $b0, SPL(\"%\")); })" },
+  { TY_STR_RANGE, "each",         0,   0, BF_REQUIRED, TY_STR_RANGE,   BOPE_NONE },  /* with a block: the receiver, as CRuby */
+  { TY_STR_RANGE, "each",         0,   0, BF_NONE,     TY_ENUMERATOR,  BOPE_TEMPLATE, "sp_srange_each(sp_box_srange($r))" },
+  { TY_STR_RANGE, "each_entry",   0,   0, BF_REQUIRED, TY_STR_RANGE,   BOPE_NONE },  /* with a block: the receiver, as CRuby */
+  { TY_STR_RANGE, "each_entry",   0,   0, BF_NONE,     TY_ENUMERATOR,  BOPE_TEMPLATE, "({ sp_Enumerator *_t$t = sp_enum_size_nil(sp_Enumerator_new_from(sp_box_srange($r))); _t$t->meth = SPL(\"each_entry\"); _t$t; })" },
+  { TY_STR_RANGE, "each_with_index", 0, 0, BF_NONE,    TY_ENUMERATOR,  BOPE_TEMPLATE, "sp_srange_ewi(sp_box_srange($r))" },
+  { TY_STR_RANGE, "each_slice",   1,   1, BF_NONE,     TY_ENUMERATOR,  BOPE_TEMPLATE, "({ sp_RbVal _t$y = sp_box_srange($r); SP_GC_ROOT_RBVAL(_t$y); sp_int _t$u = $i0; sp_srange_regroup(_t$y, _t$u, 0); })" },
+  { TY_STR_RANGE, "each_cons",    1,   1, BF_NONE,     TY_ENUMERATOR,  BOPE_TEMPLATE, "({ sp_RbVal _t$y = sp_box_srange($r); SP_GC_ROOT_RBVAL(_t$y); sp_int _t$u = $i0; sp_srange_regroup(_t$y, _t$u, 1); })" },
+  { TY_STR_RANGE, "find_index",   1,   1, BF_NONE,     TY_POLY,        BOPE_TEMPLATE, "({ sp_RbVal _t$y = sp_box_srange($r); SP_GC_ROOT_RBVAL(_t$y); sp_RbVal _t$u = $b0; SP_GC_ROOT_RBVAL(_t$u); sp_box_oint(sp_srange_find_index(_t$y, _t$u)); })" },
+  { TY_STR_RANGE, "step",         1,   1, BF_NONE,     TY_ENUMERATOR,  BOPE_TEMPLATE, "({ sp_RbVal _t$y = sp_box_srange($r); SP_GC_ROOT_RBVAL(_t$y); sp_srange_step_enum(_t$y, $b0, SPL(\"step\")); })" },
+  { TY_STR_RANGE, "%",            1,   1, BF_NONE,     TY_ENUMERATOR,  BOPE_TEMPLATE, "({ sp_RbVal _t$y = sp_box_srange($r); SP_GC_ROOT_RBVAL(_t$y); sp_srange_step_enum(_t$y, $b0, SPL(\"%\")); })" },
   { TY_STR_RANGE, "class",        0, 127, BF_ANY,      TY_CLASS,       BOPE_NONE },
   { TY_STR_RANGE, "hash",         0, 127, BF_ANY,      TY_INT,         BOPE_NONE },
   { TY_STR_RANGE, "size",         0,   0, BF_ANY,      TY_NIL,         BOPE_TEMPLATE, "((void)($r), $<sp_oint_nil()$>)" },  /* nil: an sp_oint where the consumer takes one */

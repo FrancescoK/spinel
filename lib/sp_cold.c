@@ -4034,6 +4034,37 @@ sp_StrArray *sp_srange_to_a(sp_StrRange r) {
   if (!r.last) sp_raise_cls("RangeError", "cannot convert endless range to an array");
   return sp_StrArray_from_string_range(r.first, r.last, r.excl);
 }
+/* Range#first(n) and Range#take(n) on a String Range: the first n members,
+   walked by succ and stopped at n, so an endless range (last NULL) answers
+   without being converted to an array. first of a beginless range is the
+   RangeError CRuby names; take, which iterates, the TypeError of the walk. */
+typedef struct { sp_StrArray *a; sp_int n; } sp_srange_take_st;
+static int sp_srange_take_push(const char *m, void *arg) {
+  sp_srange_take_st *st = (sp_srange_take_st *)arg;
+  sp_StrArray_push(st->a, m);
+  return st->a->len >= st->n;
+}
+sp_StrArray *sp_srange_first_n(sp_RbVal box, sp_int n, int take) {
+  SP_GC_ROOT_RBVAL(box);
+  sp_StrRange r = sp_srange_live(*(sp_StrRange *)box.v.p);
+  const char *cur = r.first, *last = r.last;
+  SP_GC_ROOT_STR(cur); SP_GC_ROOT_STR(last);
+  if (n < 0) sp_raise_cls("ArgumentError", take ? "attempt to take negative size" : "negative array size (or size too big)");
+  if (!cur) {
+    if (take) sp_raise_cls("TypeError", "can't iterate from NilClass");
+    sp_raise_cls("RangeError", "cannot get the first element of beginless range");
+  }
+  sp_StrArray *a = sp_StrArray_new();
+  SP_GC_ROOT(a);
+  if (n == 0) return a;
+  if (last) {
+    sp_srange_take_st st = { a, n };
+    sp_str_upto_each(cur, last, r.excl, sp_srange_take_push, &st);
+    return a;
+  }
+  for (; a->len < n; cur = sp_str_succ(cur)) sp_StrArray_push(a, sp_str_from_bytes(cur, sp_str_byte_len(cur)));
+  return a;
+}
 sp_bool sp_srange_eq(sp_StrRange a, sp_StrRange b) {
   a = sp_srange_live(a); b = sp_srange_live(b);
   return a.excl == b.excl && sp_str_eq(a.first, b.first) && sp_str_eq(a.last, b.last);
@@ -4139,6 +4170,74 @@ sp_RbVal sp_box_srange(sp_StrRange v) {
   sp_StrRange *p = (sp_StrRange *)sp_gc_alloc(sizeof(sp_StrRange), NULL, sp_srange_scan);
   *p = v;
   return sp_box_obj(p, SP_BUILTIN_STR_RANGE);
+}
+
+/* An endless String Range (last NULL) walked as it is read: String#succ from
+   the begin, stepping `step` successors at a time, one fresh String per value,
+   through the fiber-generator path (the String Range's mirror of
+   sp_endless_range_gen), so #next, #first(n) and a lazy chain over it need no
+   member Array, which an endless range cannot make. The capture holds the
+   begin, which its scan marks. */
+typedef struct { const char *first; sp_int step; } sp_endless_srange_cap;
+static void sp_endless_srange_cap_scan(void *p) {
+  sp_endless_srange_cap *cap = (sp_endless_srange_cap *)p;
+  if (cap->first) sp_mark_string(cap->first);
+}
+static void sp_endless_srange_gen(sp_Fiber *f) {
+  sp_endless_srange_cap *cap = (sp_endless_srange_cap *)f->user_data;
+  const char *cur = cap->first;
+  SP_GC_ROOT_STR(cur);
+  for (;;) {
+    sp_Fiber_yield(sp_box_str(sp_str_from_bytes(cur, sp_str_byte_len(cur))));
+    cur = sp_str_succ_n(cur, cap->step);
+  }
+}
+/* The Enumerator over the boxed endless String Range `box`, stepping `step`
+   members at a time; it reports `box` as its source. */
+sp_Enumerator *sp_srange_endless_enum(sp_RbVal box, sp_int step) {
+  SP_GC_ROOT_RBVAL(box);
+  /* the begin as it is now (a copy, under --share-strings: the walk outlives
+     the handle's bytes) is held across the capture's allocation */
+  const char *first = sp_srange_held(*(sp_StrRange *)box.v.p).first;
+  SP_GC_ROOT_STR(first);
+  if (!first) sp_raise_cls("TypeError", "can't iterate from NilClass");
+  sp_endless_srange_cap *cap = (sp_endless_srange_cap *)sp_gc_alloc(sizeof *cap, NULL, sp_endless_srange_cap_scan);
+  SP_GC_ROOT(cap);
+  cap->first = first; cap->step = step;
+  sp_Enumerator *e = sp_Enumerator_new_gen(sp_endless_srange_gen, cap, sp_box_nil());
+  e->source = box; e->has_src = TRUE;   /* it inspects as the Range's own */
+  e->size_nil = TRUE;   /* and has no size, as a String Range's own is nil */
+  return e;
+}
+/* Range#step(n) and Range#%(n) on a String Range without a block: an
+   Enumerator over every n-th member. A bounded range's stepped members are
+   materialized; an endless one's follow by succ (sp_srange_endless_enum).
+   `label` is the name the Enumerator inspects with ("step" or "%"). The Range
+   is boxed first and held, for the Enumerator to report as its source. */
+sp_Enumerator *sp_srange_stepped_enum(sp_RbVal src, sp_int n, const char *label) {
+  SP_GC_ROOT_STR(label);
+  SP_GC_ROOT_RBVAL(src);
+  sp_StrRange r = sp_srange_held(*(sp_StrRange *)src.v.p);
+  SP_GC_ROOT_STR(r.first); SP_GC_ROOT_STR(r.last);
+  if (n <= 0 && r.last) {
+    sp_srange_to_a(r);   /* a beginless range raises its TypeError first */
+    sp_raise_cls("ArgumentError", "step can't be 0");
+  }
+  sp_Enumerator *e;
+  if (r.last) {
+    sp_StrArray *all = sp_srange_to_a(r);
+    SP_GC_ROOT(all);
+    sp_StrArray *v = sp_StrArray_new();
+    SP_GC_ROOT(v);
+    for (sp_int i = 0; i < sp_StrArray_length(all); i += n) sp_StrArray_push(v, sp_StrArray_get(all, i));
+    e = sp_Enumerator_new_from_items(sp_StrArray_to_poly_fmt(v));
+  }
+  else {
+    if (n <= 0) sp_raise_cls("ArgumentError", "step can't be 0");
+    e = sp_srange_endless_enum(src, n);
+  }
+  SP_GC_ROOT(e);
+  return sp_enum_with_src(e, src, sp_sprintf("%s(%lld)", label, (long long)n));
 }
 
 /* ---- Float leaf ops (opt_inspect/opt_to_s/denominator/numerator/

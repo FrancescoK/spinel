@@ -17151,6 +17151,10 @@ static sp_RbVal sp_poly_range_endless_step(sp_RbVal v, sp_RbVal step) {
 /* Blockless Kernel#loop: an infinite Enumerator yielding nil forever (#3236).
    Defined out-of-line in sp_cold.c (one linked copy, not per generated TU). */
 sp_Enumerator *sp_loop_enum(void);
+/* The Enumerators of a String Range without a block (sp_cold.c): an endless
+   one streams by succ, a bounded one's step members are materialized. */
+sp_Enumerator *sp_srange_endless_enum(sp_RbVal box, sp_int step);
+sp_Enumerator *sp_srange_stepped_enum(sp_RbVal src, sp_int n, const char *label);
 static sp_Enumerator *sp_Enumerator_new_from(sp_RbVal arr) {
   /* The receiver is the caller's temporary -- `(11..55).each` passes it straight
      in, unreachable from anywhere else -- and BOTH arms below allocate before
@@ -17171,6 +17175,10 @@ static sp_Enumerator *sp_Enumerator_new_from(sp_RbVal arr) {
     e->source = arr; e->meth = SPL("each");
     return e;
   }
+  /* ...and an endless String Range streams by succ the same way */
+  if (arr.tag == SP_TAG_OBJ && arr.cls_id == SP_BUILTIN_STR_RANGE && arr.v.p &&
+      !((sp_StrRange *)arr.v.p)->last)
+    return sp_srange_endless_enum(arr, 1);
   sp_PolyArray *items = sp_enum_items_from(arr);
   SP_GC_ROOT(items);
   sp_Enumerator *e = (sp_Enumerator *)sp_gc_alloc(sizeof(sp_Enumerator), NULL, sp_Enumerator_scan);
@@ -17182,30 +17190,20 @@ static sp_Enumerator *sp_Enumerator_new_from(sp_RbVal arr) {
    labeled with the call as written. A Float stride is only that label: CRuby
    builds the Enumerator without looking at the stride, and the first member
    its walk reads adds the stride to a String, a TypeError. So a Float stride
-   gets a generator that raises it, and a size of nil. `src` is `r` boxed. */
+   gets a generator that raises it, and a size of nil. `src` is the Range boxed. */
 static void sp_srange_float_step_gen(sp_Fiber *f) {
   (void)f;
   sp_raise_cls("TypeError", "no implicit conversion of Float into String");
 }
-static sp_Enumerator *sp_srange_step_enum(sp_StrRange r, sp_RbVal src, sp_RbVal stride, const char *op) SP_UNUSED;
-static sp_Enumerator *sp_srange_step_enum(sp_StrRange r, sp_RbVal src, sp_RbVal stride, const char *op) {
+static sp_Enumerator *sp_srange_step_enum(sp_RbVal src, sp_RbVal stride, const char *op) SP_UNUSED;
+static sp_Enumerator *sp_srange_step_enum(sp_RbVal src, sp_RbVal stride, const char *op) {
   SP_GC_ROOT_RBVAL(src); SP_GC_ROOT_RBVAL(stride);
-  sp_Enumerator *e;
-  const char *arg = NULL; SP_GC_ROOT_STR(arg);
-  if (stride.tag == SP_TAG_FLT) {
-    e = sp_Enumerator_new_gen(sp_srange_float_step_gen, NULL, sp_box_nil());
-    arg = sp_float_to_s(stride.v.f);
-  }
-  else {
-    sp_StrArray *all = sp_srange_to_a(r); SP_GC_ROOT(all);
-    sp_int n = sp_poly_arg_int_chk(stride);
-    if (n <= 0) sp_raise_cls("ArgumentError", "step can't be 0");
-    sp_StrArray *out = sp_StrArray_new(); SP_GC_ROOT(out);
-    for (sp_int i = 0; i < sp_StrArray_length(all); i += n) sp_StrArray_push(out, sp_StrArray_get(all, i));
-    e = sp_Enumerator_new_from(sp_box_str_array(out));
-    arg = sp_int_to_s(n);
-  }
+  /* an Integer stride: a bounded Range's stepped members are materialized,
+     an endless one's follow by succ (sp_cold.c) */
+  if (stride.tag != SP_TAG_FLT) return sp_srange_stepped_enum(src, sp_poly_arg_int_chk(stride), op);
+  sp_Enumerator *e = sp_Enumerator_new_gen(sp_srange_float_step_gen, NULL, sp_box_nil());
   SP_GC_ROOT(e);
+  const char *arg = sp_float_to_s(stride.v.f); SP_GC_ROOT_STR(arg);
   return sp_enum_with_src(e, src, sp_str_concat(sp_str_concat(sp_str_concat(op, SPL("(")), arg), SPL(")")));
 }
 /* The source of `o.lazy...` where o is a boxed value: an Enumerator is
@@ -17518,6 +17516,13 @@ static sp_Enumerator *sp_Enumerator_new_ewi(sp_RbVal arr, sp_int off) {
     r->meth = SPL("each_with_index");
     return r;
   }
+  /* ...and so is an endless String Range, which streams by succ */
+  if (arr.tag == SP_TAG_OBJ && arr.cls_id == SP_BUILTIN_STR_RANGE && arr.v.p &&
+      !((sp_StrRange *)arr.v.p)->last) {
+    sp_Enumerator *r = sp_Enumerator_with_index(sp_Enumerator_new_from(arr), off);
+    r->meth = SPL("each_with_index");
+    return r;
+  }
   SP_GC_ROOT_RBVAL(arr);   /* published into the enumerator below, after several allocations */
   sp_PolyArray *items = sp_enum_items_from(arr);
   SP_GC_ROOT(items);
@@ -17816,6 +17821,37 @@ static sp_Enumerator *sp_Enumerator_ewi(sp_Enumerator *e) {
   SP_GC_ROOT(e);
   return sp_enum_inherit_size(sp_Enumerator_new_ewi(sp_box_poly_array(sp_Enumerator_to_a(e)), 0), e);
 }
+/* The blockless walks of a String Range (the rows of builtin_ops.c). The Range
+   arrives boxed and held, its operands already evaluated. A bounded range's
+   members are materialized as ever; an endless one's (last NULL) stream by
+   succ, as sp_Enumerator_new_from builds them. */
+static sp_Enumerator *sp_srange_each(sp_RbVal box) SP_UNUSED;
+static sp_Enumerator *sp_srange_each(sp_RbVal box) {
+  SP_GC_ROOT_RBVAL(box);
+  sp_StrRange r = SP_SRANGE_OF(box.v.p);
+  if (!r.last) return sp_enum_size_nil(sp_Enumerator_new_from(box));
+  SP_GC_ROOT_STR(r.first); SP_GC_ROOT_STR(r.last);
+  sp_StrArray *a = sp_srange_to_a(r); SP_GC_ROOT(a);
+  return sp_enum_size_nil(sp_Enumerator_new_from(sp_box_str_array(a)));
+}
+static sp_Enumerator *sp_srange_ewi(sp_RbVal box) SP_UNUSED;
+static sp_Enumerator *sp_srange_ewi(sp_RbVal box) {
+  SP_GC_ROOT_RBVAL(box);
+  sp_StrRange r = SP_SRANGE_OF(box.v.p);
+  if (!r.last) return sp_enum_size_nil(sp_Enumerator_ewi(sp_Enumerator_new_from(box)));
+  SP_GC_ROOT_STR(r.first); SP_GC_ROOT_STR(r.last);
+  sp_StrArray *a = sp_srange_to_a(r); SP_GC_ROOT(a);
+  return sp_enum_size_nil(sp_Enumerator_new_ewi(sp_box_str_array(a), 0));
+}
+static sp_Enumerator *sp_srange_regroup(sp_RbVal box, sp_int n, sp_bool cons) SP_UNUSED;
+static sp_Enumerator *sp_srange_regroup(sp_RbVal box, sp_int n, sp_bool cons) {
+  SP_GC_ROOT_RBVAL(box);
+  sp_StrRange r = SP_SRANGE_OF(box.v.p);
+  if (!r.last) return sp_enum_size_nil(sp_Enumerator_regroup(sp_Enumerator_new_from(box), n, cons));
+  SP_GC_ROOT_STR(r.first); SP_GC_ROOT_STR(r.last);
+  sp_StrArray *a = sp_srange_to_a(r); SP_GC_ROOT(a);
+  return sp_enum_size_nil(cons ? sp_Enumerator_new_cons(sp_box_str_array(a), n) : sp_Enumerator_new_slices(sp_box_str_array(a), n));
+}
 /* A string's characters as a fresh poly array of one-char Strings, built
    directly. Used by a blockless String#each_char enumerator, avoiding the
    intermediate sp_StrArray that sp_str_chars + sp_enum_items_from would
@@ -17831,7 +17867,8 @@ static const char *sp_enum_inspect(sp_Enumerator *e) {
   if (!e) return SPL("nil");
   SP_GC_ROOT(e);   /* the source's inspect allocates; e->meth is read after it */
   /* a generator Enumerator whose creator recorded its receiver (a String
-     Range's step with a Float stride) prints that receiver */
+     Range's step with a Float stride, an endless String Range's each) prints
+     that receiver */
   if ((e->gen && !e->has_src) || e->gen_label)
     return sp_sprintf("#<Enumerator: #<Enumerator::Generator:0x%016llx>:each>",
                       (unsigned long long)(uintptr_t)e);
@@ -18054,6 +18091,13 @@ static sp_oint sp_enum_find_index_val(sp_RbVal recv, sp_RbVal x) {
   for (sp_int i = 0; e->items && i < e->items->len; i++)
     if (sp_poly_rb_equal(e->items->data[i], x)) return sp_oint_of(i);
   return sp_oint_nil();
+}
+/* Range#find_index(value) of a boxed String Range: walked only as far as the hit */
+static sp_oint sp_srange_find_index(sp_RbVal box, sp_RbVal x) {
+  SP_GC_ROOT_RBVAL(box); SP_GC_ROOT_RBVAL(x);
+  sp_Enumerator *e = sp_Enumerator_new_from(box);
+  SP_GC_ROOT(e);
+  return sp_enum_find_index_val(sp_box_obj(e, SP_BUILTIN_ENUMERATOR), x);
 }
 static sp_PolyArray *sp_enum_take_boxed(sp_RbVal v, sp_int n) {
   return sp_Enumerator_take((sp_Enumerator *)v.v.p, n);
