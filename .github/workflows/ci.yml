@@ -81,7 +81,11 @@ jobs:
       # Keep the server alive across steps. See the pre-start step below.
       SCCACHE_IDLE_TIMEOUT: "0"
     steps:
+      # Two commits deep: a pull request's checkout is its merge commit, and
+      # the pre-commit check below compares it with its first parent.
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
 
       - name: Set up sccache
         uses: mozilla-actions/sccache-action@v0.0.10
@@ -105,6 +109,15 @@ jobs:
         uses: ruby/setup-ruby@v1
         with:
           ruby-version: "4.0"
+
+      # The pre-commit hook's checks (tools/gate.rb check) on what the pull
+      # request changes: the merge commit against its first parent, the base
+      # it merges into. A commit made without the hook reached master past
+      # them, and the next contributor's hook then refused a merge of master
+      # it did not write. It needs no build, so it runs first and fails fast.
+      - name: Check the change as the pre-commit hook does
+        if: github.event_name == 'pull_request'
+        run: ruby tools/gate.rb check-range HEAD^1 HEAD
 
       # coreutils is NOT preinstalled on the macOS runners, so `timeout` and
       # `gtimeout` were both absent and the whole suite ran with no time limit:
