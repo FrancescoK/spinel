@@ -696,8 +696,9 @@ static int cplan_argc(const NodeTable *nt, int id) {
    it the call falls through to the generic diagnostic, which dumps node ids
    and argument types rather than naming the feature -- or, for a name the
    runtime happens to reach, to a NoMethodError that reads like an
-   implementation gap instead of a documented limit. Names a user class
-   defines are left alone: they are that method, not the builtin. *stop is
+   implementation gap instead of a documented limit. A call that reaches a
+   method the program defines is left alone: it is that method, not the
+   builtin, and each limit names how that is told (limit_exempt). *stop is
    0 when the node names no limit at all, so a limit further down its
    receiver chain is the one to report (diagnose_unsupported_call), and 1
    when the node itself settles it. The message may be a static buffer the
@@ -753,8 +754,37 @@ static int cplan_computed_ivar_get(Compiler *c, int id, const char *name) {
   return 0;
 }
 
-const char *cplan_feature_why(Compiler *c, int id, int *stop, char *buf, size_t cap) {
+/* How a documented limit tells a call that reaches a method the program
+   defines (which answers it, not the builtin) from one that reaches the
+   builtin it limits. Each limit names one, and limit_exempt applies it. */
+enum {
+  LX_NONE,          /* the call is the builtin's, whatever the program defines */
+  LX_NAME,          /* a method of the name anywhere in the program */
+  LX_RECV_CMETHOD,  /* a class method of the name in the constant receiver's chain */
+  LX_BINDING,       /* the call plan binds the call to a user method */
+};
+
+static int limit_exempt(Compiler *c, int id, int lx) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  switch (lx) {
+  case LX_NAME: return diag_user_defines(c, name);
+  case LX_RECV_CMETHOD: {
+    int recv = nt_ref(nt, id, "receiver");
+    NodeKind rk = nt_kind(nt, recv);
+    int ci = rk == NK_ConstantReadNode || rk == NK_ConstantPathNode
+               ? comp_class_index(c, nt_str(nt, recv, "name")) : -1;
+    return ci >= 0 && comp_cmethod_in_chain(c, ci, name, NULL) >= 0;
+  }
+  case LX_BINDING: return cplan_user_fresh(c, id)->dispatch != CP_NONE;
+  }
+  return 0;
+}
+
+/* the limit the call's shape names, and in *lx how a user method exempts it */
+static const char *feature_limit(Compiler *c, int id, int *stop, int *lx, char *buf, size_t cap) {
   *stop = 1;
+  *lx = LX_NONE;
   const NodeTable *nt = c->nt;
   const char *nty = nt_type(nt, id);
   if (!nty || !sp_streq(nty, "CallNode")) return NULL;
@@ -768,6 +798,15 @@ const char *cplan_feature_why(Compiler *c, int id, int *stop, char *buf, size_t 
   if (nt_int(nt, id, "define_method_name", 0) && cplan_reachable(c, id))
     return "Module#define_method with a non-literal name is not supported; "
            "use a literal Symbol or String (see docs/limitations.md)";
+  /* marked by mark_anon_superclass_reflection: no class object stands for
+     the anonymous class that CRuby's answer names */
+  int anon_reflect = (int)nt_int(nt, id, "anon_reflect", 0);
+  if (anon_reflect && cplan_reachable(c, id)) {
+    snprintf(buf, cap, "unsupported `%s` that can reach a class whose superclass is an anonymous "
+             "class (Class.new, Struct.new or Data.define as the superclass): spinel has no class "
+             "object for the anonymous class", anon_reflect == 1 ? "superclass" : "ancestors");
+    return buf;
+  }
 
   if (cplan_computed_ivar_get(c, id, name))
     return "Object#instance_variable_get with a non-literal name on a user-class instance "
@@ -787,10 +826,11 @@ const char *cplan_feature_why(Compiler *c, int id, int *stop, char *buf, size_t 
     int blk = nt_ref(nt, id, "block"), recv = nt_ref(nt, id, "receiver");
     TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
     /* A callable block has no inline body or returned-String identity fact. */
-    if (blk >= 0 && nt_kind(nt, blk) != NK_BlockNode &&
-        (rt == TY_STRING || rt == TY_STRBUF) && cplan_user_fresh(c, id)->dispatch == CP_NONE)
+    if (blk >= 0 && nt_kind(nt, blk) != NK_BlockNode && (rt == TY_STRING || rt == TY_STRBUF)) {
+      *lx = LX_BINDING;
       return "String#then / #yield_self with a callable block is not supported; "
              "use a literal block to preserve its result identity (see docs/limitations.md)";
+    }
   }
   static const struct { const char *m; const char *why; } tbl[] = {
     { "define_singleton_method",
@@ -868,6 +908,7 @@ const char *cplan_feature_why(Compiler *c, int id, int *stop, char *buf, size_t 
   const char *rcn = (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode")))
                     ? nt_str(nt, recv, "name") : NULL;
   const char *why = hit >= 0 ? tbl[hit].why : NULL;
+  if (why) *lx = LX_NAME;
   /* resolved to String#method's own wrapper, so a user `method` elsewhere
      (`def method` in some Foo) is not what the call reaches */
   int str_mutator = !why && cplan_str_method_mutator(c, id);
@@ -900,6 +941,7 @@ const char *cplan_feature_why(Compiler *c, int id, int *stop, char *buf, size_t 
       why = "Class.new(parent) is not supported by AOT compilation: the class "
             "graph, ancestor chain, and method/ivar layout are baked at compile time. "
             "Declare the class with `class ... end` instead (see docs/limitations.md)";
+    if (why) *lx = LX_NAME;
   }
 
   /* Structural mutation of a class through an explicit receiver: the same
@@ -907,7 +949,6 @@ const char *cplan_feature_why(Compiler *c, int id, int *stop, char *buf, size_t 
      Object counts though a program that never reopens it has no class entry
      for it: `Object.include M` (or through `O = Object`) otherwise compiled
      to a NoMethodError at run time. */
-  int restructure = 0;
   if (!why && rcn && (comp_class_index(c, rcn) >= 0 || sp_streq(rcn, "Object")) &&
       (sp_streq(name, "include") || sp_streq(name, "prepend") ||
        sp_streq(name, "attr_accessor") || sp_streq(name, "attr_reader") ||
@@ -915,9 +956,7 @@ const char *cplan_feature_why(Compiler *c, int id, int *stop, char *buf, size_t 
     /* only the receiver's own class method of the name answers instead:
        a method of that name in an unrelated class (`def include` in some
        Foo) does not */
-    int rci = comp_class_index(c, rcn);
-    if (rci >= 0 && comp_cmethod_in_chain(c, rci, name, NULL) >= 0) return NULL;
-    restructure = 1;
+    *lx = LX_RECV_CMETHOD;
     static char buf[512];
     snprintf(buf, sizeof buf,
              "%s.%s(...) is not supported by AOT compilation: the class graph, ancestor "
@@ -928,8 +967,13 @@ const char *cplan_feature_why(Compiler *c, int id, int *stop, char *buf, size_t 
   }
 
   if (!why) { *stop = 0; return NULL; }
-  if (!restructure && !str_mutator && diag_user_defines(c, name)) return NULL;
   return why;
+}
+
+const char *cplan_feature_why(Compiler *c, int id, int *stop, char *buf, size_t cap) {
+  int lx;
+  const char *why = feature_limit(c, id, stop, &lx, buf, cap);
+  return why && limit_exempt(c, id, lx) ? NULL : why;
 }
 
 
