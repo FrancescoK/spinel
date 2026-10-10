@@ -950,6 +950,10 @@ spinel: 1 refusal, nothing written
 == test/reject/redo_unlabeled_iterator.rb [promote] rc=1
 spinel: test/reject/redo_unlabeled_iterator.rb:9: redo in this block (its iterator cannot re-run the body)
 spinel: 1 refusal, nothing written
+== test/reject/retry_in_ensure.rb [default] rc=1
+spinel: test/reject/retry_in_ensure.rb:12: Invalid retry (SyntaxError)
+== test/reject/retry_in_ensure.rb [promote] rc=1
+spinel: test/reject/retry_in_ensure.rb:12: Invalid retry (SyntaxError)
 == test/reject/scrub_bang_block.rb [default] rc=1
 spinel: test/reject/scrub_bang_block.rb:2: String#scrub! with a block is not yet supported: the block would be ignored
 spinel: 1 refusal, nothing written
