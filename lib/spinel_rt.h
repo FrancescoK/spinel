@@ -12338,6 +12338,8 @@ static sp_RbVal sp_poly_arr_widen_and_set(sp_RbVal v, sp_int idx, sp_RbVal val) 
    store back; a shared one absorbs the splice and is answered itself. Any
    other receiver, or key, stores as before and is answered unchanged. */
 static sp_RbVal sp_poly_str_aset_key(sp_RbVal v, sp_RbVal key, sp_RbVal val) {
+  /* a shared String key is its contents, as the typed stores read it */
+  if (sp_poly_is_strbuf(key)) key = sp_poly_strbuf_deref(key);
   int re = key.tag == SP_TAG_OBJ && key.cls_id == SP_BUILTIN_REGEX && key.v.p;
   int rng = key.tag == SP_TAG_OBJ && key.cls_id == SP_BUILTIN_RANGE && key.v.p;
   if (!(v.tag == SP_TAG_STR || sp_poly_is_strbuf(v)) || !(key.tag == SP_TAG_STR || key.tag == SP_TAG_INT || re || rng)) {
