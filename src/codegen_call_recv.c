@@ -1605,9 +1605,14 @@ static int emit_kind_array_iter_call(Compiler *c, int id, Buf *b, const NodeTabl
       int sv = g_indent; g_indent++;
       Buf vb; memset(&vb, 0, sizeof vb); emit_iter_step_tail(c, &st, &vb); g_indent = sv;
       emit_indent(g_pre, g_indent + 1);
+      size_t store_at = g_pre->len;
       buf_printf(g_pre, "sp_%sArray_set%s(_t%d, _t%d, ", k, nil_store_sfx(c, k, bb[bn - 1]), trecv, ti);
       emit_typed_sink_text(c, bb[bn - 1], et, vb.p ? vb.p : "0", g_pre);
       buf_puts(g_pre, ");\n");
+      /* the block's answer is stored over the element it was bound to: the bytes
+         that answer reads and rebuilds of its parameter are written back (a
+         read of the parameter elsewhere in the block is its own) */
+      if (g_share_check && et == TY_STRING) share_check_declare_local_reads(c, g_pre, store_at, bp);
       free(vb.p);
       emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
       if (mlv) mlv->type = msaved;
@@ -3853,6 +3858,10 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
           int sv_sbB = g_sub_bang_id;
           g_sub_bang_id = subm && sub_bang_reenters(c, id, recv, argc, argv) ? id : -1; g_sub_bang_tm = 0;
           emit_expr(c, id, &nbB);
+          /* the plain form read the handle's bytes, and the set_bin below
+             writes its answer back into the handle (the bang's own answer,
+             when it is used, is the bytes: only a dropped one is declared) */
+          if (g_share_check && share_node_transient(c, id)) share_check_declare_reads(&nbB, 0, recv);
           int tsmB = g_sub_bang_tm; g_sub_bang_id = sv_sbB; g_sub_bang_tm = 0;
           char smB[40] = "";
           if (tsmB) snprintf(smB, sizeof smB, " || _t%d", tsmB);
@@ -12462,6 +12471,10 @@ static TyKind emit_face_arm(Compiler *c, int id, unsigned kind, unsigned flags, 
   }
   Buf cb; memset(&cb, 0, sizeof cb);
   emit_call(c, id, &cb);
+  /* the typed emitter worked on the bytes of a String box, which the
+     write-back below hands to the box's handle: the receiver's reads are
+     no copy */
+  if (g_share_check && kind == PF_STRING && (flags & PF_MUT) && box) share_check_declare_reads(&cb, 0, recv);
   view_pop(c, fv);
   view_pop(c, v);
   view_unbind(g_n_argov - 1);
@@ -12920,6 +12933,11 @@ static void emit_face_str_bang(Compiler *c, int id, unsigned own, Buf *b) {
   int v = view_push(c, recv, TY_STRING);
   nt_node_set_str((NodeTable *)nt, id, "name", plain);
   Buf nbb; memset(&nbb, 0, sizeof nbb); emit_call(c, id, &nbb);
+  /* the transform read the receiver's bytes and sp_poly_str_become hands the
+     result to its handle below: those reads are no copy. The answer of a bang
+     used as a value (`x.strip! || x`) is the transformed bytes, which boxing
+     makes a new String: only a dropped answer is declared. */
+  if (g_share_check && share_node_transient(c, id)) share_check_declare_reads(&nbb, 0, recv);
   nt_node_set_str((NodeTable *)nt, id, "name", bang);
   view_pop(c, v);
   view_unbind(g_n_argov - 1);

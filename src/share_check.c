@@ -54,11 +54,15 @@ int g_share_check = 0;
 struct ShareAgree {
   unsigned char *seen;          /* per node: reported already */
   int nseen;
-  unsigned long marks, copies;
+  unsigned long marks, declared, copies;
   char **line;                  /* the reports, written sorted at the end */
   int nline, cline;
   /* the classifier's answers beside its return value */
   char via[64], helper[64], consumer[64];
+  /* the marks of the emit_expr calls still open: the node, the buffer its
+     mark went to and where (share_check_declare_value) */
+  struct { int node, depth; Buf *b; size_t off; } *open;
+  int nopen, copen;
   int by_call;                  /* it ended at a call that took the bytes, with
                                    no write-back of what it answers */
 };
@@ -92,6 +96,7 @@ void share_check_free(Compiler *c) {
   if (!A) return;
   for (int i = 0; i < A->nline; i++) free(A->line[i]);
   free(A->line);
+  free(A->open);
   free(A->seen);
   free(A);
   c->share_agree = NULL;
@@ -100,14 +105,37 @@ void share_check_free(Compiler *c) {
 /* Mark the value of node v, which the emitter is about to write into b.
    face: 'x' the emitter's own face (what the node is as emitted), 'B' a
    box, 'H' a handle for a shared slot. */
-void share_check_mark(Compiler *c, int v, char face, Buf *b) {
+int share_check_mark(Compiler *c, int v, char face, Buf *b) {
   int need = b ? share_value_needs_handle(c, v) : SHN_NO;
-  if (need == SHN_NO) return;
+  if (need == SHN_NO) return 0;
+  int pushed = face == 'x';   /* (only emit_expr's marks stay open) */
   if (face == 'x') {
     TyKind t = repr_of(c, v).as_ty;
     face = t == TY_STRBUF ? 'h' : t == TY_POLY ? 'p' : 'b';
   }
+  size_t off = b->len;
   buf_printf(b, "%csk%d%c%s%c", SK_OPEN, v, face, need == SHN_FRESH ? "f" : "", SK_CLOSE);
+  if (!pushed) return 0;
+  struct ShareAgree *A = sk_state(c);
+  /* an emit_expr that a refusal unwound never ended: its entries, and its
+     buffers, are gone */
+  while (A->nopen > 0 && A->open[A->nopen - 1].depth >= g_expr_depth) A->nopen--;
+  if (A->nopen >= A->copen) {
+    A->copen = A->copen ? A->copen * 2 : 64;
+    A->open = realloc(A->open, sizeof *A->open * (size_t)A->copen);
+    if (!A->open) sk_oom();
+  }
+  A->open[A->nopen].node = v;
+  A->open[A->nopen].depth = g_expr_depth;
+  A->open[A->nopen].b = b;
+  A->open[A->nopen++].off = off;
+  return 1;
+}
+
+/* emit_expr is done with the node whose mark share_check_mark kept open. */
+void share_check_mark_end(Compiler *c) {
+  struct ShareAgree *A = c->share_agree;
+  if (A && A->nopen > 0 && A->open[A->nopen - 1].depth == g_expr_depth) A->nopen--;
 }
 
 /* The mark that starts at p: its end, with the node, the face and whether
@@ -123,7 +151,7 @@ static const char *sk_mark_at(const char *p, long *node, char *face, int *fresh)
     if (v > 1000000000L) return NULL;
   }
   char f = *q;
-  if (f != 'b' && f != 'h' && f != 'p' && f != 'B' && f != 'H') return NULL;
+  if (f != 'b' && f != 'h' && f != 'p' && f != 'B' && f != 'H' && f != 'e') return NULL;
   int fr = *++q == 'f';
   if (fr) q++;
   if (*q != SK_CLOSE) return NULL;
@@ -138,6 +166,61 @@ static const char *sk_next(const char *p) {
   for (p = strchr(p, SK_OPEN); p; p = strchr(p + 1, SK_OPEN))
     if (sk_mark_at(p, NULL, NULL, NULL)) return p;
   return NULL;
+}
+
+/* ---- declarations ----
+   An emitter that knows a value it wrote is no copy of a String the facts
+   call shared says so, and the mark is made exempt: face 'e'. The declared
+   cases are that the arm is taken only for what is no String (a runtime
+   guard's else arm), that the value is never produced (an arm that raises),
+   and that the bytes are a shadow the emitter writes back into the handle
+   (the shared-handle shim), the answer being dropped or stored over the
+   slot the bytes came from. A mark is exempt, not removed, so the text the
+   emitters read is the same. */
+
+/* Make the mark that ends at e exempt, if it is not already. */
+static void sk_exempt_mark(const char *e) {
+  char *face = (char *)e - 2;   /* before SK_CLOSE; an `f` may sit between */
+  if (*face == 'f') face--;
+  if (*face != 'e') *face = 'e';
+}
+
+/* Declare the value node's emit_expr is still writing no copy: the mark it
+   began with, kept open on the stack. */
+void share_check_declare_value(Compiler *c, int node) {
+  struct ShareAgree *A = c->share_agree;
+  for (int i = A ? A->nopen - 1 : -1; i >= 0; i--) {
+    if (A->open[i].node != node || A->open[i].depth != g_expr_depth - 1) continue;
+    Buf *mb = A->open[i].b;
+    size_t off = A->open[i].off;
+    long n;
+    const char *e = mb->p && off < mb->len ? sk_mark_at(mb->p + off, &n, NULL, NULL) : NULL;
+    if (e && n == node) sk_exempt_mark(e);   /* (else the text moved: the report stays) */
+    return;
+  }
+}
+
+/* Declare every mark of node v in b[from..] exempt. */
+void share_check_declare_reads(Buf *b, size_t from, int node) {
+  if (!b || !b->p || from >= b->len) return;
+  for (const char *p = sk_next(b->p + from); p; p = sk_next(p + 1)) {
+    long n;
+    const char *e = sk_mark_at(p, &n, NULL, NULL);
+    if (n == node) sk_exempt_mark(e);
+  }
+}
+
+/* Declare the marks in b[from..] that are reads of the local `name` exempt
+   (a block parameter the emitter stores the block's answer back over). */
+void share_check_declare_local_reads(Compiler *c, Buf *b, size_t from, const char *name) {
+  if (!b || !b->p || from >= b->len || !name) return;
+  for (const char *p = sk_next(b->p + from); p; p = sk_next(p + 1)) {
+    long node;
+    const char *e = sk_mark_at(p, &node, NULL, NULL);
+    if (node >= c->nt->count || nt_kind(c->nt, (int)node) != NK_LocalVariableReadNode) continue;
+    const char *nm = nt_str(c->nt, (int)node, "name");
+    if (nm && sp_streq(nm, name)) sk_exempt_mark(e);
+  }
 }
 
 /* ---- reading the text around a mark ---- */
@@ -345,6 +428,7 @@ static void sk_read_mark(Compiler *c, struct ShareAgree *A, Buf *b, const char *
   const char *end = sk_mark_at(p, &v, &face, &fresh);
   if (!end || v >= c->nt->count) return;
   A->marks++;
+  if (face == 'e') { A->declared++; return; }
   char tmp[32], what[256];
   /* a deep-return pickup (`_sp_ret_strbuf = NULL; const char *_vN = X;
      _sp_ret_strbuf ? that handle : a new one`) over X that is no call (an
@@ -441,5 +525,5 @@ void share_check_report(Compiler *c) {
   struct ShareAgree *A = sk_state(c);
   qsort(A->line, (size_t)A->nline, sizeof(char *), sk_cmp_line);
   for (int i = 0; i < A->nline; i++) fprintf(stderr, "%s\n", A->line[i]);
-  fprintf(stderr, "share-check: %lu marks, %lu copies\n", A->marks, A->copies);
+  fprintf(stderr, "share-check: %lu marks, %lu declared, %lu copies\n", A->marks, A->declared, A->copies);
 }

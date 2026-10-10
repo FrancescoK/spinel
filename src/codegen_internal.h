@@ -2271,11 +2271,18 @@ int strbuf_flow_unseen(Compiler *c, int v);
    strip them, where a function's text is final and before any pass reads
    it as text (and over the whole unit, for what is left); once the unit is
    written, write the reports. */
-void share_check_mark(Compiler *c, int v, char face, Buf *b);
+int share_check_mark(Compiler *c, int v, char face, Buf *b);
+void share_check_mark_end(Compiler *c);
 void share_check_harvest(Compiler *c, Buf *b, size_t from);
 void share_check_report(Compiler *c);
 /* The text without the marks that lead it, for an emitter that reads an
    operand's text as a temp or compares it with one. */
 const char *share_check_unmarked(const char *t);
 size_t share_check_strip(char *s, size_t len);
+/* Declarations (share_check.c): the emitter says the value it wrote for
+   `node` is no copy of a shared String -- the mark of the emit_expr still
+   open for the node, or every mark of the node in b[from..]. */
+void share_check_declare_value(Compiler *c, int node);
+void share_check_declare_reads(Buf *b, size_t from, int node);
+void share_check_declare_local_reads(Compiler *c, Buf *b, size_t from, const char *name);
 #endif

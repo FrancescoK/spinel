@@ -16470,6 +16470,8 @@ void emit_wrong_count(Compiler *c, int id, const char *exp, int eval_recv, int g
   buf_printf(b, "sp_raise_cls(\"ArgumentError\","
                 " \"wrong number of arguments (given %d, expected %s)\"); %s; })",
              given, exp, dv ? dv : "0");
+  /* the call never answers, so its value is no copy of anything */
+  if (g_share_check) share_check_declare_value(c, id);
 }
 
 /* One binding's call over the gathered arguments `_t<ta>`: each fixed slot
@@ -16679,6 +16681,7 @@ int emit_native_count_mismatch(Compiler *c, int id, int cid, const char *name, i
   buf_printf(b, "sp_raise_cls(\"ArgumentError\","
                 " \"wrong number of arguments (given %d, expected %s)\"); %s; })",
              argc, exp, dv ? dv : "0");
+  if (g_share_check) share_check_declare_value(c, id);   /* (it never answers) */
   return 1;
 }
 

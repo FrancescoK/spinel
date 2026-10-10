@@ -2085,6 +2085,7 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
   }
   if (repr_of(c, x).kind == RK_BOXED) {
     int t = ++g_tmp;
+    size_t guard_at = b->len;
     buf_puts(b, "({ ");
     t = hold_operand(c, x, TY_POLY, 0, t, 1, " ", b);
     int pickup = repr_call_returns_handle(c, v);
@@ -2103,7 +2104,13 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
     int mark = view_bind(x, "_t%d", t);
     int sv = view_push_repr(c, v, VR_STRBUF_BOX, 0), sd = view_push_repr(c, v, VR_HANDLE_DEMAND, 0);
     if (sn) g_sn_skip = v;
+    size_t arm_at = b->len;
     emit_expr(c, v, b);
+    /* this arm runs for a box that holds no shared handle: what it converts
+       is no String the rule shares, and the new one it wraps is its own. (A
+       pickup arm takes the handle the callee published, so a String the
+       rule shares does reach it: its reports stand.) */
+    if (g_share_check && !pickup) { share_check_declare_reads(b, arm_at, v); share_check_declare_reads(b, guard_at, x); }
     g_sn_skip = sn_skip;
     view_pop(c, sd); view_pop(c, sv);
     view_unbind(mark);
@@ -2609,7 +2616,7 @@ static int strbuf_gvar_write_handle(Compiler *c, int v, char *out, size_t cap) {
    as an sp_String *: the receiver's handle where the call answered it, NULL
    for nil. A reader call is read once, ahead of the bang, which takes that
    handle (ran_first_bind). 0 with nothing emitted for any other node. */
-int emit_bang_self_handle(Compiler *c, int v, Buf *b) {
+static int emit_bang_self_handle_1(Compiler *c, int v, Buf *b) {
   if (!repr_share_rule(c) || !strbuf_bang_self_local(c, v)) return 0;
   int r = nt_ref(c->nt, v, "receiver");
   char sref[1024];
@@ -2669,6 +2676,20 @@ int emit_bang_self_handle(Compiler *c, int v, Buf *b) {
   view_unbind(mark);
   buf_printf(b, "; _t%d ? _t%d : (sp_String *)NULL; })", tr, th);
   return 1;
+}
+
+int emit_bang_self_handle(Compiler *c, int v, Buf *b) {
+  size_t at = b->len;
+  int done = emit_bang_self_handle_1(c, v, b);
+  /* the answer is the receiver's handle (the bang's own bytes only say
+     whether it answered nil): what the receiver's reads fed is written back
+     into it, and they are no copy */
+  if (done && g_share_check) {
+    int r = nt_ref(c->nt, v, "receiver");
+    share_check_declare_reads(b, at, r);
+    if (r >= 0 && unwrap_parens(c, r) != r) share_check_declare_reads(b, at, unwrap_parens(c, r));
+  }
+  return done;
 }
 
 /* The value a write hands a mutable-String slot `lv` (TY_STRBUF), as an
@@ -17330,7 +17351,10 @@ static int str_mutate_append_bang_arms(Compiler *c, int id, Buf *b, int indent, 
         emit_indent(b, indent);
         buf_printf(b, "{ sp_String *_t%d = %s; sp_String_set_bin(_t%d, ",
                    tbA, srefA, tbA);
+        size_t wb_at = b->len;
         emit_expr(c, id, b);
+        /* the transform reads the handle's bytes; set_bin takes its answer back */
+        if (g_share_check) share_check_declare_reads(b, wb_at, recv);
         buf_puts(b, "); }\n");
         nt_node_set_str((NodeTable *)nt, id, "name", abang);
         return 1;

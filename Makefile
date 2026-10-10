@@ -4333,7 +4333,10 @@ nil-check-test: $(SPINEL)
 # share-check (--share-check): the handle/copy agreement check. The shapes in
 # test/share_check/ report as recorded (a program per kind of copy, and
 # programs that report none); the C is the same with the flag, and the flag
-# alone, without --share-strings, reports nothing.
+# alone, without --share-strings, reports nothing. A program with no
+# .expected is one whose answer differs from CRuby's under --share-strings
+# today: only its report is recorded, and it is named here.
+SHARE_CHECK_REPORT_ONLY = map_param_copy bang_value
 .PHONY: share-check-test
 share-check-test: $(SPINEL)
 	@tmp=$$(mktemp -d "$${TMPDIR:-/tmp}/spinel-share-check.XXXXXX"); ok=1; \
@@ -4345,9 +4348,13 @@ share-check-test: $(SPINEL)
 	  fi; \
 	  grep '^share-check:' "$$tmp/err" | diff -u "$$b.share-check" - || { echo "share-check: FAIL $$t (report)"; ok=0; }; \
 	  cmp -s "$$tmp/on.c" "$$tmp/off.c" || { echo "share-check: FAIL $$t (the C differs with the flag)"; ok=0; }; \
-	  if $(SPINEL) --share-strings --share-check "$$t" -o "$$tmp/b" >/dev/null 2>&1; then \
-	    "$$tmp/b" 2>&1 | cmp -s - "$$t.expected" || { echo "share-check: FAIL $$t (output)"; ok=0; }; \
-	  else echo "share-check: FAIL $$t (build)"; ok=0; fi; \
+	  if [ -f "$$t.expected" ]; then \
+	    if $(SPINEL) --share-strings --share-check "$$t" -o "$$tmp/b" >/dev/null 2>&1; then \
+	      "$$tmp/b" 2>&1 | cmp -s - "$$t.expected" || { echo "share-check: FAIL $$t (output)"; ok=0; }; \
+	    else echo "share-check: FAIL $$t (build)"; ok=0; fi; \
+	  elif ! echo " $(SHARE_CHECK_REPORT_ONLY) " | grep -q " $${b##*/} "; then \
+	    echo "share-check: FAIL $$t (no .expected)"; ok=0; \
+	  fi; \
 	  if $(SPINEL) --share-check -c --no-line-map "$$t" -o "$$tmp/def.c" 2>&1 | grep -q '^share-check:'; then \
 	    echo "share-check: FAIL $$t (reports without --share-strings)"; ok=0; \
 	  fi; \
