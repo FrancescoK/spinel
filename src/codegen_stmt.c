@@ -15556,13 +15556,14 @@ static int str_alias_chain_base(Compiler *c, int id) {
   for (;;) {
     cur = str_append_chain_base(c, cur);
     /* Under the sharing rule, prepend's zero- and multi-argument forms
-       answer the same receiver as its one-argument form. Read the row's
-       arity and answer rather than changing the default alias walk. */
+       answer the same receiver as its one-argument form, and so do concat's
+       and bytesplice and append_as_bytes. Read the row's arity and answer
+       rather than changing the default alias walk. */
     if (repr_share_rule(c) && nt_kind(c->nt, cur) == NK_CallNode) {
       const char *nm = nt_str(c->nt, cur, "name");
       int r = nt_ref(c->nt, cur, "receiver");
       TyKind rt = r >= 0 ? comp_ntype(c, r) : TY_UNKNOWN;
-      if (nm && is_prepend_alias(nm) && (rt == TY_STRING || rt == TY_STRBUF) &&
+      if (nm && (rt == TY_STRING || rt == TY_STRBUF) && bop_share_named(TY_STRING, nm) == BSH_RECV &&
           nt_ref(c->nt, cur, "block") < 0) {
         int ac, targets[CPT_MAX];
         call_args(c->nt, cur, &ac);
