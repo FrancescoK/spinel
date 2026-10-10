@@ -1,6 +1,7 @@
 #ifndef SP_STR_H
 #define SP_STR_H
-/* sp_str.h -- cold String transforms compiled once in lib/sp_str.c.
+/* sp_str.h -- cold String transforms compiled once in lib/sp_str.c and
+ * lib/sp_str_cold.c.
  *
  * These are leaf `const char*` operations (case, strip, split-family,
  * partition, dump/undump, concat, repeat, ...) that depend only on the
@@ -64,6 +65,7 @@ static inline void sp_str_split_push(sp_StrArray*a,const char*p,size_t n){
   sp_StrArray_push(a,r);
 }
 
+const char *sp_bytestr(const char *hay, size_t hn, const char *need, size_t nn);   /* byte-wise substring search; lib/sp_str.c, also used by lib/sp_str_cold.c */
 int sp_utf8_set_has(const uint32_t*cps,size_t n,uint32_t cp);
 uint32_t sp_uc_toupper(uint32_t cp);
 uint32_t sp_uc_tolower(uint32_t cp);
@@ -135,7 +137,7 @@ const char *sp_plain_char(unsigned char c);
 const char *sp_bin_char(unsigned char c);
 const char*sp_str_b(const char*s);
 
-/* ---- utf8-dependent cold transforms (lib/sp_str.c) ---- */
+/* ---- utf8-dependent cold transforms (lib/sp_str.c, lib/sp_str_cold.c) ---- */
 /* nil-receiver raise: a nullable string carries nil as NULL, and CRuby
    answers NoMethodError. The bare primitives below stay total over NULL
    (runtime internals pass legitimately-nil elements); the _m/_p variants

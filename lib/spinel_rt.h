@@ -998,7 +998,7 @@ static inline sp_int sp_int_clamp_range_ck(sp_int v, sp_Range r) {
   return sp_int_clamp_ck(v, r.first, r.last);
 }
 /* `:name`, or `:"name"` when the name needs quoting -- shares the
-   name-string predicates in lib/sp_str.c with the hash-key short form. */
+   name-string predicates in lib/sp_str_cold.c with the hash-key short form. */
 const char *sp_sym_inspect(sp_sym id);
 static const char*sp_gets(void){char buf[4096];if(!fgets(buf,sizeof(buf),stdin))return NULL;size_t l=strlen(buf);char*r=sp_str_alloc_raw(l+1);memcpy(r,buf,l+1);return r;}
 static sp_StrArray*sp_readlines(void){sp_StrArray*a=sp_StrArray_new();SP_GC_ROOT(a);char buf[4096];while(fgets(buf,sizeof(buf),stdin)){size_t l=strlen(buf);char*r=sp_str_alloc_raw(l+1);memcpy(r,buf,l+1);sp_StrArray_push(a,r);}return a;}
