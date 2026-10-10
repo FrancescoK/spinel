@@ -6976,7 +6976,8 @@ static int desugar_builtin_method_obj(Compiler *c) {
        def __bam_<id>(__bam_r, __bam_a, __bam_a1, ...) = __bam_r.<sym>(__bam_a, ...),
        or when they disagree def __bam_<id>(__bam_r, *__bam_a) = __bam_r.<sym>(*__bam_a) */
     int passed = 0;
-    int nfwd = binop ? 1 : bam_call_argc(c, id, &passed);
+    int nfwd = bam_call_argc(c, id, &passed);
+    if (binop) nfwd = 1;
     /* A Method passed as a block is called by the block's yield, which no
        site above counts, so a wrapper of the sites' count (none: no
        argument) dropped what the yield passed and the builtin raised
@@ -6986,6 +6987,12 @@ static int desugar_builtin_method_obj(Compiler *c) {
       int f = have_arity && sym_arity >= 0 ? sym_arity : BAM_VARIADIC;
       nfwd = nfwd == -1 || nfwd == f ? f : BAM_VARIADIC;
     }
+    /* An Array's or a String's [] takes an index or a start and a length
+       (arity -1): passed as a block, it takes the two values a yield like
+       each_with_index's hands it, where the operand wrapper dropped the
+       second. A Hash's takes its one key. */
+    if (passed && binop && sp_streq(sym, "[]") && !poly_self && (ty_is_array(rt) || rt == TY_STRING))
+      nfwd = BAM_VARIADIC;
     if (nfwd > 8) nfwd = BAM_VARIADIC;
     if (nfwd != BAM_VARIADIC && nfwd < 0) nfwd = 0;
     int params, cargs;
