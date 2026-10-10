@@ -2431,7 +2431,7 @@ static int emit_ivar_cvar_gvar_expr(Compiler *c, int id, Buf *b, const NodeTable
     if (nm && sp_streq(nm, "$?")) { buf_puts(b, "sp_last_process_status()"); return 1; }
     if (nm && sp_streq(nm, "$$")) { buf_puts(b, "((sp_int)getpid())"); return 1; }
     if (nm && (is_program_name_global(nm))) { buf_puts(b, "sp_program_name"); return 1; }
-    if (nm && sp_streq(nm, "$!")) { buf_puts(b, "((sp_Exception *)sp_cur_handled())"); return 1; }
+    if (nm && sp_streq(nm, "$!")) { buf_puts(b, "((sp_Exception *)sp_errinfo())"); return 1; }
     if (nm && (sp_streq(nm, "$;") || sp_streq(nm, "$,"))) { buf_puts(b, "0"); return 1; }
     /* regex match globals that Prism may emit as GlobalVariableReadNode */
     if (nm && sp_streq(nm, "$~")) { buf_puts(b, "sp_re_last_matchdata()"); return 1; }

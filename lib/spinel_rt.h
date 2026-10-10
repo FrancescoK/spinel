@@ -14236,6 +14236,13 @@ static inline void sp_poly_recur_unwind(void) {
   if (sp_exc_top > 0) sp_poly_recur_pop(sp_poly_recur_mark[sp_exc_top - 1]);
 }
 #define sp_cur_handled() (sp_rescue_sp > 0 ? sp_exc_handling[sp_rescue_sp-1] : NULL)
+/* `$!`: the exception being handled. A thread or fiber being killed
+   unwinds through its ensures by the kill signal, which is no exception to
+   the program: CRuby's $! is nil there (#8378). */
+static SP_INLINE void *sp_errinfo(void) {
+  void *h = sp_cur_handled();
+  return h && strcmp(((sp_Exception *)h)->cls_name, "FiberKillSignal") == 0 ? NULL : h;
+}
 /* Push a handled exception. sp_rescue_sp grows with recursion *through* rescue
    bodies (the handler stays pushed across the recursive call it makes, unlike a
    begin frame which is popped first), so a fixed SP_EXC_STACK_MAX can be reached;
