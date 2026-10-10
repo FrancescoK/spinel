@@ -1,0 +1,5 @@
+30
+["r0", :sent]
+["r1", :sent]
+["r2"]
+["connect", "begin GET", "begin GET", "connect", "connect", "begin GET"]
