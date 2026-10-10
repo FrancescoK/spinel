@@ -20142,6 +20142,34 @@ static int desugar_fresh_array_each_writeback(Compiler *c) {
   }
   return changed;
 }
+/* Defined in analyze_pass.c. */
+int is_fresh_array(Compiler *c, int v);
+/* map!/collect! over an Array nothing else holds (a literal, or the fresh
+   result of split, scan, map, ...) whose block answers another kind than the
+   Array's elements: the loop stored each value back into the typed receiver
+   (`sp_StrArray_set(a, i, <an Integer>)`) and the C did not build. No one can
+   see the receiver change, so map, which builds an Array of the block's kind,
+   is the same program. A local receiver widens instead
+   (widen_arrays_from_map_bang). */
+static int desugar_fresh_array_map_bang(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  for (int w = comp_kind_first(c, NK_CallNode); w >= 0; w = comp_kind_next(c, w)) {
+    if (nt_kind(nt, w) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, w, "name");
+    if (!nm || (!sp_streq(nm, "map!") && !sp_streq(nm, "collect!"))) continue;
+    int blk = nt_ref(nt, w, "block"), recv = nt_ref(nt, w, "receiver");
+    if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode || nt_ref(nt, w, "arguments") >= 0) continue;
+    int body = nt_ref(nt, blk, "body");
+    int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+    if (bn <= 0 || !is_fresh_array(c, recv)) continue;
+    TyKind rt = infer_type(c, recv), tt = infer_type(c, bb[bn - 1]);
+    if (tt == TY_UNKNOWN || !ty_is_array(rt) || rt == TY_POLY_ARRAY || tt == ty_array_elem(rt)) continue;
+    nt_set_str(nt, w, "name", sp_streq(nm, "map!") ? "map" : "collect");
+    changed = 1;
+  }
+  return changed;
+}
 static int promote_shared_stored_strings(Compiler *c) {
   sb_targets_gen++; sb_targets_on = 1;
   int r = promote_shared_stored_strings_pass(c);
@@ -32831,9 +32859,11 @@ static void desugar_begin_args(Compiler *c) {
       nt_node_set_ref(nt, p, "body", s);
       comp_grow_node_arrays(c);
       c->nscope[s] = c->nscope[p] = c->nscope[av[i]];
-      int args[64], m = n < 64 ? n : 64;
-      for (int j = 0; j < m; j++) args[j] = j == i ? p : av[j];
-      nt_node_set_arr(nt, an, "arguments", args, m);
+      int *args = malloc(sizeof(int) * (size_t)n);
+      if (!args) continue;
+      for (int j = 0; j < n; j++) args[j] = j == i ? p : av[j];
+      nt_node_set_arr(nt, an, "arguments", args, n);
+      free(args);
       av = nt_arr(nt, an, "arguments", &n);
     }
   }
@@ -37925,6 +37955,7 @@ static void an_phase_infer_fixpoint(Compiler *c) {
     ch |= AN_PASS("desugar_enum_pair_lone_param", desugar_enum_pair_lone_param(c));     /* a.each_with_index.map { |x| } -> { |x, i| } */
     ch |= AN_PASS("desugar_builtin_iter_block_shapes", desugar_builtin_iter_block_shapes(c));  /* [1].each { |c, a = 10| } -> { |v| c = v; a = 10 } */
     ch |= AN_PASS("desugar_fresh_array_each_writeback", desugar_fresh_array_each_writeback(c)); /* s.scan(re).each { |x| x.gsub!(..) }.join -> map! { |x| ..; x } */
+    ch |= AN_PASS("desugar_fresh_array_map_bang", desugar_fresh_array_map_bang(c));  /* "1 2".split.map! { |s| s.to_i } -> map */
     ch |= AN_PASS("desugar_multi_yield_map_param", desugar_multi_yield_map_param(c));    /* multi-yield each: map's |x| takes the 1st */
     ch |= AN_PASS("desugar_ewi_pack_values", desugar_ewi_pack_values(c));          /* multi-yield each: each_with_index packs */
     ch |= AN_PASS("desugar_enum_walk_calls", desugar_enum_walk_calls(c));          /* enum.map { break } -> __enumw_map(enum) { } */
