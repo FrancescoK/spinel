@@ -34,6 +34,7 @@ source and every generated program sees it.
 | `SP_ATOMIC_*` | the `__atomic` builtins | the plain operation: only the single-threaded runtime can use it |
 | `SP_THREAD_LOCAL` | `__thread` | C11 `_Thread_local` |
 | `SP_WEAK` | `__attribute__((weak))` | none; the jemalloc probe that uses it is compiled out |
+| `SP_HAVE_X86_SHA`, `SP_TARGET_X86_SHA` | on x86-64, `__attribute__((target("sha,sse4.1")))` for a function its caller reaches only after asking the CPU | 0: the function is not compiled, and SHA-256 stays the portable C |
 
 ## `PORTABLE=1`: take every fallback
 
