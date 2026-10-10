@@ -5171,11 +5171,13 @@ static int anon_super_class(Compiler *c, int k) {
 static int is_anon_reflect_name(const char *n) {
   return n && (sp_streq(n, "superclass") || sp_streq(n, "ancestors"));
 }
-/* Refuse `superclass` / `ancestors` that can reach such a class: on a
+/* Mark `superclass` / `ancestors` that can reach such a class: on a
    constant naming one, on self inside one, and on any receiver the program
-   does not name statically while one exists. */
-static void refuse_anon_superclass_reflection(Compiler *c) {
-  const NodeTable *nt = c->nt;
+   does not name statically while one exists. The mark is 1 for
+   `superclass` and 2 for `ancestors`; the call plan refuses a marked call
+   that codegen emits (cplan_feature_why). */
+static void mark_anon_superclass_reflection(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
   int any = 0;
   for (int k = 0; k < c->nclasses && !any; k++) any = anon_super_class(c, k);
   if (!any) return;
@@ -5203,14 +5205,7 @@ static void refuse_anon_superclass_reflection(Compiler *c) {
       else if (c->node_cbody[id] >= 0 && (!s || !s->name)) { k = c->node_cbody[id]; known = 1; }
     }
     if (known && (k < 0 || !anon_super_class(c, k))) continue;
-    int ln = (int)nt_int(nt, id, "node_line", 0);
-    const char *file = nt_file_path(nt, (int)nt_int(nt, id, "node_file", 0));
-    if (!file || !*file) file = nt->source_file;
-    if (!file || !*file) file = "source.rb";
-    fprintf(stderr, "spinel: %s:%d: unsupported `%s` that can reach a class whose superclass is an "
-                    "anonymous class (Class.new, Struct.new or Data.define as the superclass): "
-                    "spinel has no class object for the anonymous class\n", file, ln, what);
-    exit(1);
+    nt_node_set_int(nt, id, "anon_reflect", sp_streq(what, "superclass") ? 1 : 2);
   }
 }
 
@@ -5292,7 +5287,7 @@ void resolve_parents(Compiler *c) {
     }
   }
   resolve_inherited_aliases(c);
-  refuse_anon_superclass_reflection(c);
+  mark_anon_superclass_reflection(c);
 }
 
 /* An alias of a method this class only INHERITS names the ancestor's body: a

@@ -10,12 +10,16 @@ spinel: test/reject/alias_rebinds_after_class_body_call.rb:8: `a` is called in t
 spinel: test/reject/alias_rebinds_after_class_body_call.rb:8: `a` is called in the class body before an alias rebinds it: an alias binds for the whole program here, so the call would run the aliased body, not the `def a` Ruby runs at that point. Call it after the alias, or give the alias another name
 == test/reject/anon_superclass_reflection.rb [default] rc=1
 spinel: test/reject/anon_superclass_reflection.rb:11: unsupported `superclass` that can reach a class whose superclass is an anonymous class (Class.new, Struct.new or Data.define as the superclass): spinel has no class object for the anonymous class
+spinel: 1 refusal, nothing written
 == test/reject/anon_superclass_reflection.rb [promote] rc=1
 spinel: test/reject/anon_superclass_reflection.rb:11: unsupported `superclass` that can reach a class whose superclass is an anonymous class (Class.new, Struct.new or Data.define as the superclass): spinel has no class object for the anonymous class
+spinel: 1 refusal, nothing written
 == test/reject/anon_superclass_struct_ancestors.rb [default] rc=1
 spinel: test/reject/anon_superclass_struct_ancestors.rb:6: unsupported `ancestors` that can reach a class whose superclass is an anonymous class (Class.new, Struct.new or Data.define as the superclass): spinel has no class object for the anonymous class
+spinel: 1 refusal, nothing written
 == test/reject/anon_superclass_struct_ancestors.rb [promote] rc=1
 spinel: test/reject/anon_superclass_struct_ancestors.rb:6: unsupported `ancestors` that can reach a class whose superclass is an anonymous class (Class.new, Struct.new or Data.define as the superclass): spinel has no class object for the anonymous class
+spinel: 1 refusal, nothing written
 == test/reject/array_push_other_class_temporary.rb [default] rc=1
 spinel: test/reject/array_push_other_class_temporary.rb:6: an Array push given a String, which no conversion keeps in its sp_int slot
 spinel: 1 refusal, nothing written

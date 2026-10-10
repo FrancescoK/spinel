@@ -753,6 +753,15 @@ static const char *feature_limit(Compiler *c, int id, int *stop, int *lx, char *
   if (nt_int(nt, id, "define_method_name", 0) && cplan_reachable(c, id))
     return "Module#define_method with a non-literal name is not supported; "
            "use a literal Symbol or String (see docs/limitations.md)";
+  /* marked by mark_anon_superclass_reflection: no class object stands for
+     the anonymous class that CRuby's answer names */
+  int anon_reflect = (int)nt_int(nt, id, "anon_reflect", 0);
+  if (anon_reflect && cplan_reachable(c, id)) {
+    snprintf(buf, cap, "unsupported `%s` that can reach a class whose superclass is an anonymous "
+             "class (Class.new, Struct.new or Data.define as the superclass): spinel has no class "
+             "object for the anonymous class", anon_reflect == 1 ? "superclass" : "ancestors");
+    return buf;
+  }
 
   if (cplan_computed_ivar_get(c, id, name))
     return "Object#instance_variable_get with a non-literal name on a user-class instance "
