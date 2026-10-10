@@ -32831,9 +32831,11 @@ static void desugar_begin_args(Compiler *c) {
       nt_node_set_ref(nt, p, "body", s);
       comp_grow_node_arrays(c);
       c->nscope[s] = c->nscope[p] = c->nscope[av[i]];
-      int args[64], m = n < 64 ? n : 64;
-      for (int j = 0; j < m; j++) args[j] = j == i ? p : av[j];
-      nt_node_set_arr(nt, an, "arguments", args, m);
+      int *args = malloc(sizeof(int) * (size_t)n);
+      if (!args) continue;
+      for (int j = 0; j < n; j++) args[j] = j == i ? p : av[j];
+      nt_node_set_arr(nt, an, "arguments", args, n);
+      free(args);
       av = nt_arr(nt, an, "arguments", &n);
     }
   }
