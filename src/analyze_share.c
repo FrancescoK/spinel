@@ -49,6 +49,8 @@ enum { SHF_OUT = 8 };
    It also marks transient arguments and receivers whose builtin keeps
    none of their value, including fresh call results needing no handle. */
 enum { SHU_STMT = 1, SHU_TAIL = 2, SHU_SPLIT = 4, SHU_PEEK = 8 };
+/* per-node answers built from the flows (ShareFacts.into) */
+enum { SHI_INTO = 1, SHI_MUTATED = 2, SHI_LITOUT = 4 };
 
 typedef struct ShareFacts {
   int n, cap;
@@ -107,6 +109,16 @@ typedef struct ShareFacts {
      the node whose value it takes, and the kind (ShareFlowKind) */
   int *fl_site, *fl_val, nfl, cfl;
   unsigned char *fl_kind;
+  /* per flow, the union-find element that takes the value -- the holder of
+     a variable, a parameter, an ivar or a block parameter, or the elements
+     of a container -- or -1 when the walk made none (sh_flow) */
+  int *fl_dest;
+  /* per node, once asked (sh_into_build): SHI_INTO when a flow takes its
+     value into a holder whose class the rule shares, SHI_MUTATED when it is
+     the receiver of an in-place String change, SHI_LITOUT when it is an
+     element of a container literal whose Strings the rule does not hand
+     out; NULL until then */
+  unsigned char *into;
   /* the calls sh_peek_args recorded: n for one that only reads its
      arguments, -n-1 for one that answers them */
   int *pk, npk, cpk;
@@ -296,6 +308,13 @@ static int sh_elem(ShareFacts *F, int x) {
   return F->elem[r];
 }
 
+/* The same element when x's class has one already, else -1: a flow's
+   destination, which the walk must not make (a class that gained an element
+   here would change what the seal sees). */
+static int sh_elem_peek(ShareFacts *F, int x) {
+  return x < 0 ? -1 : F->elem[sh_find(F, x)];
+}
+
 /* The keys x's Hashes' default procs are handed, made by a Hash.new block
    that takes one (sh_builtin_new) */
 static int sh_key(ShareFacts *F, int x) {
@@ -341,8 +360,11 @@ static void sh_mark_at(ShareFacts *F, int x, unsigned fl, int node) {
 /* A flow (share.h): node `site` takes the value of node v into a holder,
    a container's elements, a method's or a block's value, or changes it in
    place. Recorded for every value; the seal reads only those that are no
-   holder's read and whose class the rule shares (share_flow_*). */
-static void sh_flow(ShareFacts *F, int kind, int site, int v) {
+   holder's read and whose class the rule shares (share_flow_*). dest is
+   the element that takes the value, which the class of a value no holder
+   names (a new String joins none) cannot say: the walk joins a value to its
+   destination only when the value has a class of its own. */
+static void sh_flow(ShareFacts *F, int kind, int site, int v, int dest) {
   if (v < 0 || site < 0) return;
   /* The jump walk also reaches every emitted subtree. Desugaring leaves
      detached nodes behind, including an expanded literal splat's Array. */
@@ -354,10 +376,12 @@ static void sh_flow(ShareFacts *F, int kind, int site, int v) {
     F->fl_site = realloc(F->fl_site, sizeof(int) * (size_t)F->cfl);
     F->fl_val = realloc(F->fl_val, sizeof(int) * (size_t)F->cfl);
     F->fl_kind = realloc(F->fl_kind, (size_t)F->cfl);
-    if (!F->fl_site || !F->fl_val || !F->fl_kind) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    F->fl_dest = realloc(F->fl_dest, sizeof(int) * (size_t)F->cfl);
+    if (!F->fl_site || !F->fl_val || !F->fl_kind || !F->fl_dest) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   }
   F->fl_site[F->nfl] = site;
   F->fl_val[F->nfl] = v;
+  F->fl_dest[F->nfl] = dest;
   F->fl_kind[F->nfl++] = (unsigned char)kind;
 }
 
@@ -694,8 +718,8 @@ static int sh_args_vals(ShareFacts *F, Compiler *c, int call, int *out, int cap)
 
 /* Each value a call's arguments hand over, keyword values included (not a
    splat's elements, which a container holds), as a flow of kind k at
-   site. */
-static void sh_args_flows(ShareFacts *F, Compiler *c, int kind, int call, int site) {
+   site, into the element dest. */
+static void sh_args_flows(ShareFacts *F, Compiler *c, int kind, int call, int site, int dest) {
   const NodeTable *nt = c->nt;
   int args = nt_ref(nt, call, "arguments");
   int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
@@ -704,10 +728,10 @@ static void sh_args_flows(ShareFacts *F, Compiler *c, int kind, int call, int si
     if (k == NK_KeywordHashNode) {
       int en = 0; const int *el = nt_arr(nt, argv[i], "elements", &en);
       for (int e = 0; e < en; e++)
-        if (nt_kind(nt, el[e]) == NK_AssocNode) sh_flow(F, kind, site, nt_ref(nt, el[e], "value"));
+        if (nt_kind(nt, el[e]) == NK_AssocNode) sh_flow(F, kind, site, nt_ref(nt, el[e], "value"), dest);
       continue;
     }
-    if (k != NK_BlockArgumentNode && k != NK_SplatNode) sh_flow(F, kind, site, argv[i]);
+    if (k != NK_BlockArgumentNode && k != NK_SplatNode) sh_flow(F, kind, site, argv[i], dest);
   }
 }
 
@@ -770,6 +794,22 @@ static void sh_target(ShareFacts *F, Compiler *c, int t, int v) {
     /* a call target (`o.x, y = ...`) or anything else: not followed */
     sh_union(F, v, F->unknown);
     return;
+  }
+}
+
+/* The holder a plain multiple-write target stores into (the kinds sh_target
+   binds to a holder of their own), made as sh_target makes it; -1 for any
+   other. */
+static int sh_target_holder(ShareFacts *F, Compiler *c, int t) {
+  const NodeTable *nt = c->nt;
+  if (t < 0) return -1;
+  switch (nt_kind(nt, t)) {
+  case NK_LocalVariableTargetNode: return sh_local_at(F, c, t);
+  case NK_InstanceVariableTargetNode: return sh_ivar_at(F, c, t);
+  case NK_GlobalVariableTargetNode: return sh_gvar(F, c, nt_str(nt, t, "name"), t);
+  case NK_ClassVariableTargetNode: return sh_holder(F, SHK_CVAR, 0, -1, nt_str(nt, t, "name"), t);
+  case NK_ConstantTargetNode: return sh_holder(F, SHK_CONST, 0, -1, nt_str(nt, t, "name"), t);
+  default: return -1;
   }
 }
 
@@ -935,8 +975,9 @@ static int sh_block_val(ShareFacts *F, Compiler *c, int blk) {
 /* The values block blk answers -- its body's last statement's, and each
    `next v`'s that leaves it (not one in a nested block, lambda, method or
    loop) -- as flows at site, the call that stores them in a container
-   (map, map!, Array.new and Hash.new blocks), or at the next itself. */
-static void sh_block_nexts(ShareFacts *F, const NodeTable *nt, int site, int n) {
+   (map, map!, Array.new and Hash.new blocks), or at the next itself, into
+   the container's elements dest. */
+static void sh_block_nexts(ShareFacts *F, const NodeTable *nt, int site, int n, int dest) {
   if (n < 0) return;
   NodeKind k = nt_kind(nt, n);
   if (k == NK_BlockNode || k == NK_LambdaNode || k == NK_DefNode || k == NK_WhileNode || k == NK_UntilNode ||
@@ -945,23 +986,23 @@ static void sh_block_nexts(ShareFacts *F, const NodeTable *nt, int site, int n) 
   if (k == NK_NextNode) {
     int args = nt_ref(nt, n, "arguments");
     int argc = 0; const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
-    if (argc == 1 && nt_kind(nt, argv[0]) != NK_SplatNode) sh_flow(F, SHFL_BLOCK, n, argv[0]);
+    if (argc == 1 && nt_kind(nt, argv[0]) != NK_SplatNode) sh_flow(F, SHFL_BLOCK, n, argv[0], dest);
   }
-  for (int i = 0; i < nt_num_refs(nt, n); i++) sh_block_nexts(F, nt, site, nt_ref_at(nt, n, i));
+  for (int i = 0; i < nt_num_refs(nt, n); i++) sh_block_nexts(F, nt, site, nt_ref_at(nt, n, i), dest);
   for (int i = 0; i < nt_num_arrs(nt, n); i++) {
     int m = 0; const int *ids = nt_arr_at(nt, n, i, &m);
-    for (int j = 0; j < m; j++) sh_block_nexts(F, nt, site, ids[j]);
+    for (int j = 0; j < m; j++) sh_block_nexts(F, nt, site, ids[j], dest);
   }
 }
-static void sh_block_flow(ShareFacts *F, const NodeTable *nt, int site, int blk) {
+static void sh_block_flow(ShareFacts *F, const NodeTable *nt, int site, int blk, int dest) {
   /* a container whose value is dropped (`h.map(&:upcase!)` as a statement)
      keeps its block's values for nobody; map! keeps them in its receiver */
   const char *sn = site >= 0 && site < F->nnodes && (F->unused[site] & SHU_STMT) ? nt_str(nt, site, "name") : NULL;
   if (sn && !is_map_bang_alias(sn) && bop_share_named(BOP_ANY_ARRAY, sn) != BSH_FILL) return;
   int body = blk >= 0 ? nt_ref(nt, blk, "body") : -1;
   int bn = 0; const int *bb = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &bn) : NULL;
-  if (bn > 0) sh_flow(F, SHFL_BLOCK, site, bb[bn - 1]);
-  sh_block_nexts(F, nt, site, body);
+  if (bn > 0) sh_flow(F, SHFL_BLOCK, site, bb[bn - 1], dest);
+  sh_block_nexts(F, nt, site, body, dest);
 }
 
 /* the literal name a `send`, `method` or `instance_variable_*` names */
@@ -1031,7 +1072,7 @@ static void sh_bind(ShareFacts *F, Compiler *c, int call, int mi) {
     if (p < 0) continue;
     if (a >= 0) {
       int v = sh_val(F, c, a);
-      sh_flow(F, SHFL_ARG, call, a);
+      sh_flow(F, SHFL_ARG, call, a, j == m->rest_idx || j == m->kwrest_idx ? sh_elem(F, p) : p);
       if (j == m->rest_idx || j == m->kwrest_idx) sh_union(F, sh_elem(F, p), v);
       /* self has no lendable byte slot: a callee must keep its identity. */
       /* A byte-only parameter can still borrow it; sh_settle_lends joins
@@ -1066,12 +1107,16 @@ static void sh_bind(ShareFacts *F, Compiler *c, int call, int mi) {
       int placed = 0;
       for (int w = 0; w < nclaimed && !placed; w++) placed = claimed[w] == nodes[q];
       if (placed || vals[q] < 0) continue;
-      sh_flow(F, SHFL_ARG, call, nodes[q]);
+      /* the value joins every parameter: the first names the class */
+      int dest = -1;
       for (int j = 0; j < m->nparams; j++) {
         int p = m->pnames[j] ? sh_local_of(F, c, m, m->pnames[j], m->def_node) : -1;
         if (p < 0) continue;
-        sh_union(F, j == m->rest_idx || j == m->kwrest_idx ? sh_elem(F, p) : p, vals[q]);
+        int pe = j == m->rest_idx || j == m->kwrest_idx ? sh_elem(F, p) : p;
+        if (dest < 0) dest = pe;
+        sh_union(F, pe, vals[q]);
       }
+      sh_flow(F, SHFL_ARG, call, nodes[q], dest);
     }
   }
 }
@@ -1382,23 +1427,23 @@ static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int 
     /* Hash copies String keys; a key of another kind retains its object. */
     if (container == 2 && nv >= 2 && c->ntype[argv[0]] != TY_STRING && c->ntype[argv[0]] != TY_STRBUF) {
       sh_union(F, sh_elem(F, rv), vals[0]);
-      sh_flow(F, SHFL_ELEM, nt_ref(nt, n, "receiver"), argv[0]);
+      sh_flow(F, SHFL_ELEM, nt_ref(nt, n, "receiver"), argv[0], sh_elem_peek(F, rv));
     }
     if (nv > 0) sh_union(F, sh_elem(F, rv), vals[nv - 1]);
     if (nv > 0 && argc > 0 && nt_kind(nt, argv[argc - 1]) != NK_KeywordHashNode)
-      sh_flow(F, SHFL_ELEM, nt_ref(nt, n, "receiver"), argv[argc - 1]);
+      sh_flow(F, SHFL_ELEM, nt_ref(nt, n, "receiver"), argv[argc - 1], sh_elem_peek(F, rv));
     /* A used setter result names the stored element, even when the
        argument was fresh and therefore had no holder of its own. */
     return nv > 0 ? (container && !(F->unused[n] & SHU_STMT) ? sh_elem(F, rv) : vals[nv - 1]) : rv;
   case BSH_STORE_ALL:
     for (int i = 0; i < nv; i++) sh_union(F, sh_elem(F, rv), vals[i]);
-    sh_args_flows(F, c, SHFL_ELEM, n, nt_ref(nt, n, "receiver"));
+    sh_args_flows(F, c, SHFL_ELEM, n, nt_ref(nt, n, "receiver"), sh_elem_peek(F, rv));
     return rv;
   case BSH_STORE_TAIL:
     for (int i = 1; i < nv; i++) sh_union(F, sh_elem(F, rv), vals[i]);
     for (int i = 1; i < argc; i++)
       if (nt_kind(nt, argv[i]) != NK_SplatNode && nt_kind(nt, argv[i]) != NK_KeywordHashNode)
-        sh_flow(F, SHFL_ELEM, nt_ref(nt, n, "receiver"), argv[i]);
+        sh_flow(F, SHFL_ELEM, nt_ref(nt, n, "receiver"), argv[i], sh_elem_peek(F, rv));
     return rv;
   case BSH_MERGE:
     /* a receiver that holds no String (`[1].zip([s])`) still answers a
@@ -1412,7 +1457,7 @@ static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int 
     if (lit_blk) {
       sh_block_params(F, c, blk, sh_elem(F, rv), 1);
       sh_union(F, sh_elem(F, rv), bv);
-      sh_block_flow(F, nt, n, blk);
+      sh_block_flow(F, nt, n, blk, sh_elem_peek(F, rv));
     }
     return rv;
   case BSH_ARGS: {
@@ -1428,7 +1473,7 @@ static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int 
     if (F->unused[n] & SHU_STMT) return -1;
     int r = sh_new(F, SHK_VALUE);
     for (int i = 0; i < nv; i++) sh_union(F, sh_elem(F, r), vals[i]);
-    sh_args_flows(F, c, SHFL_ELEM, n, n);
+    sh_args_flows(F, c, SHFL_ELEM, n, n, sh_elem_peek(F, r));
     return r;
   }
   case BSH_ARRAY_OF: {
@@ -1438,7 +1483,7 @@ static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int 
     if (ty_is_array(at) || at == TY_POLY || at == TY_UNKNOWN) return sh_join(F, vals[0], -1);
     int r = sh_new(F, SHK_VALUE);
     sh_union(F, sh_elem(F, r), vals[0]);
-    sh_flow(F, SHFL_ELEM, n, argv[0]);
+    sh_flow(F, SHFL_ELEM, n, argv[0], sh_elem_peek(F, r));
     return r;
   }
   case BSH_FILL1:
@@ -1462,7 +1507,7 @@ static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int 
     if (lit_blk) {
       sh_iter_params(F, c, blk, sh_elem(F, rv), container == 2);
       sh_union(F, sh_elem(F, rv), bv);
-      sh_block_flow(F, nt, n, blk);
+      sh_block_flow(F, nt, n, blk, sh_elem_peek(F, rv));
     }
     return rv;
   case BSH_ITER_MAP: {
@@ -1485,7 +1530,7 @@ static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int 
     int r = sh_new(F, SHK_VALUE);
     sh_union(F, sh_elem(F, r), bv);
     sh_union(F, sh_elem(F, r), sh_elem(F, bv));
-    sh_block_flow(F, nt, n, blk);
+    sh_block_flow(F, nt, n, blk, sh_elem_peek(F, r));
     return r;
   }
   case BSH_ITER_SUB:
@@ -1529,12 +1574,12 @@ static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int 
       F->nhold[rv] = 1;
     }
     if (lit_blk) sh_block_params(F, c, blk, rv, 0);
-    if (lit_blk) sh_flow(F, SHFL_PARAM, n, nt_ref(nt, n, "receiver"));
+    if (lit_blk) sh_flow(F, SHFL_PARAM, n, nt_ref(nt, n, "receiver"), rv);
     return rv;
   case BSH_ITER_THEN:
     if (blk < 0) return rv;  /* the Enumerator retains its receiver */
     if (lit_blk) sh_block_params(F, c, blk, rv, 0);
-    if (lit_blk) sh_flow(F, SHFL_PARAM, n, nt_ref(nt, n, "receiver"));
+    if (lit_blk) sh_flow(F, SHFL_PARAM, n, nt_ref(nt, n, "receiver"), rv);
     return bv;
   case BSH_UNKNOWN:
     sh_union(F, rv, F->unknown);
@@ -1551,8 +1596,9 @@ static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int 
         int p = sh_local_of(F, c, m, m->pnames[0], m->def_node);
         /* The wrapper's first parameter is the captured receiver, not
            an independent argument. A boxed capture holds it in an Array. */
-        sh_union(F, nt_int(nt, m->def_node, "bam_poly", 0) ? sh_elem(F, p) : p, rv);
-        sh_flow(F, SHFL_ARG, n, nt_ref(nt, n, "receiver"));
+        int pd = nt_int(nt, m->def_node, "bam_poly", 0) ? sh_elem(F, p) : p;
+        sh_union(F, pd, rv);
+        sh_flow(F, SHFL_ARG, n, nt_ref(nt, n, "receiver"), pd);
       }
     }
     sh_dyn_name(F, argc >= 1 ? sh_lit_name(nt, argv[0]) : NULL);
@@ -1572,10 +1618,10 @@ static int sh_builtin(ShareFacts *F, Compiler *c, int n, int share, int rv, int 
     /* A lowered ivar read must carry the handle through its reflective
        result too, even when the caller only reads the method's answer. */
     if (share == BSH_IVAR_GET && nt_int(nt, n, "builtin_only", 0))
-      sh_flow(F, SHFL_WRITE, n, n);
+      sh_flow(F, SHFL_WRITE, n, n, -1);
     if (share == BSH_IVAR_SET && nv >= 2) {
       sh_ivar_store(F, c, iv, argc >= 2 ? argv[1] : -1, vals[1]);
-      if (argc >= 2) sh_flow(F, SHFL_MEMBER, n, argv[1]);
+      if (argc >= 2) sh_flow(F, SHFL_MEMBER, n, argv[1], iv);
     }
     return iv;
   }
@@ -1601,7 +1647,7 @@ static int sh_container_default(ShareFacts *F, Compiler *c, int n, int rv, int b
     sh_union(F, sh_elem(F, rv), vals[i]);
     sh_union(F, sh_elem(F, rv), sh_elem(F, vals[i]));
   }
-  sh_args_flows(F, c, SHFL_ELEM, n, nt_ref(c->nt, n, "receiver"));
+  sh_args_flows(F, c, SHFL_ELEM, n, nt_ref(c->nt, n, "receiver"), sh_elem_peek(F, rv));
   if (blk >= 0 && nt_kind(c->nt, blk) == NK_BlockNode) {
     sh_union(F, rv, sh_elem(F, rv));
     sh_block_params(F, c, blk, rv, 1);
@@ -1690,7 +1736,7 @@ static int sh_builtin_new(ShareFacts *F, Compiler *c, int n, int recv, int blk) 
     else if (ak == NK_KeywordHashNode) continue;
     else if ((share == BSH_NEW_FILL && i == 1) || (share == BSH_NEW_DEFAULT && i == 0)) {
       sh_union(F, er, v);
-      if (ak != NK_SplatNode) sh_flow(F, SHFL_ELEM, n, argv[i]);
+      if (ak != NK_SplatNode) sh_flow(F, SHFL_ELEM, n, argv[i], er);
     }
     /* Array.new(a) holds a's elements. Under --share-strings the containers
        join as BSH_SUB's do: the copy also retains a literal source's
@@ -1713,7 +1759,7 @@ static int sh_builtin_new(ShareFacts *F, Compiler *c, int n, int recv, int blk) 
   }
   if (share == BSH_NEW_FILL || share == BSH_NEW_DEFAULT) {
     sh_union(F, er, sh_block_val(F, c, blk));
-    sh_block_flow(F, nt, n, blk);
+    sh_block_flow(F, nt, n, blk, er);
   }
   return r;
 }
@@ -1780,7 +1826,7 @@ static int sh_new_call(ShareFacts *F, Compiler *c, int n, int recv, int blk) {
       int iv = sh_ivar(F, c, cid, ci->ivars[i], n);
       for (int k = 0; k < nv; k++) {
         sh_ivar_store(F, c, iv, argc == nv ? argv[k] : -1, vals[k]);
-        if (argc == nv) sh_flow(F, SHFL_MEMBER, n, argv[k]);
+        if (argc == nv) sh_flow(F, SHFL_MEMBER, n, argv[k], iv);
       }
     }
     return -1;
@@ -2039,7 +2085,7 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
        (!sh_args_refuse_string(c, n, name) && an_recv_may_be_string(c, recv, &(PolyLits){ sh_blk_bound, F })))) {
     int base = sh_self_chain_base(F, c, recv);
     sh_mark_at(F, rv, SHF_MUT | (sh_holder_read(nt, base) ? 0 : SHF_INDIRECT), n);
-    sh_flow(F, SHFL_MUTATE, n, base);
+    sh_flow(F, SHFL_MUTATE, n, base, -1);
   }
 
   /* a block passed as a value: a proc or a Method, called from wherever */
@@ -2101,7 +2147,11 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
     int vals[64];
     int nv = sh_args_vals(F, c, n, vals, 64), a = -1;
     for (int i = 0; i < nv; i++) a = sh_join(F, a, vals[i]);
-    sh_args_flows(F, c, SHFL_ARG, n, n);
+    /* the block's first parameter takes them (a new String joins none, so
+       the holder is made here, not left to sh_block_params) */
+    int bp0 = sh_block_param(nt, tb, 0);
+    int bdest = bp0 >= 0 ? sh_local_at(F, c, bp0) : a;
+    sh_args_flows(F, c, SHFL_ARG, n, n, bdest);
     sh_block_params(F, c, tb, a, 1);
     /* Thread.new (a constant receiver; Fiber#resume's is the fiber) */
     if (nt_kind(nt, nt_ref(nt, n, "receiver")) == NK_ConstantReadNode) {
@@ -2169,7 +2219,7 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
          each such call to every initialize was a pass over every method
          per call. */
       F->any_new_used = 1;
-      sh_args_flows(F, c, SHFL_ARG, n, n);
+      sh_args_flows(F, c, SHFL_ARG, n, n, -1);
       for (int i = 0, pos = 0; i < argc; i++) {
         NodeKind ak = nt_kind(nt, argv[i]);
         if (ak == NK_BlockArgumentNode) continue;
@@ -2241,7 +2291,7 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
         int vals[1];
         int nv = sh_args_vals(F, c, n, vals, 1);
         if (nv == 1) sh_ivar_store(F, c, iv, argc == 1 ? argv[0] : -1, vals[0]);
-        if (nv == 1 && argc == 1) sh_flow(F, SHFL_MEMBER, n, argv[0]);
+        if (nv == 1 && argc == 1) sh_flow(F, SHFL_MEMBER, n, argv[0], iv);
         r = nv == 1 ? vals[0] : -1;
       }
       if (rt != TY_POLY && rt != TY_UNKNOWN) return r;
@@ -2382,7 +2432,14 @@ static int sh_super(ShareFacts *F, Compiler *c, int n) {
     else {
       int vals[64];
       int nv = sh_args_vals(F, c, n, vals, 64);
-      sh_args_flows(F, c, SHFL_ARG, n, n);
+      /* the values bind to m's parameters (made below for any value): the
+         first one names the class, as in sh_bind */
+      int dest = -1;
+      for (int k = 0; k < m->nparams && nv > 0 && dest < 0; k++) {
+        int p = m->pnames[k] ? sh_local_of(F, c, m, m->pnames[k], n) : -1;
+        if (p >= 0) dest = k == m->rest_idx || k == m->kwrest_idx ? sh_elem(F, p) : p;
+      }
+      sh_args_flows(F, c, SHFL_ARG, n, n, dest);
       for (int q = 0; q < nv; q++)
         for (int k = 0; k < m->nparams; k++) {
           int p = m->pnames[k] ? sh_local_of(F, c, m, m->pnames[k], n) : -1;
@@ -2432,7 +2489,7 @@ static int sh_val_compute(ShareFacts *F, Compiler *c, int n) {
     int v = sh_val(F, c, nt_ref(nt, n, "value"));
     if (nt_kind(nt, n) != NK_LocalVariableOperatorWriteNode) {
       sh_union(F, l, v);
-      sh_flow(F, SHFL_WRITE, n, nt_ref(nt, n, "value"));
+      sh_flow(F, SHFL_WRITE, n, nt_ref(nt, n, "value"), l);
     }
     return l;
   }
@@ -2444,7 +2501,7 @@ static int sh_val_compute(ShareFacts *F, Compiler *c, int n) {
     int v = sh_val(F, c, nt_ref(nt, n, "value"));
     if (nt_kind(nt, n) != NK_InstanceVariableOperatorWriteNode) {
       sh_ivar_store(F, c, l, nt_ref(nt, n, "value"), v);
-      sh_flow(F, SHFL_WRITE, n, nt_ref(nt, n, "value"));
+      sh_flow(F, SHFL_WRITE, n, nt_ref(nt, n, "value"), l);
     }
     return l;
   }
@@ -2456,7 +2513,7 @@ static int sh_val_compute(ShareFacts *F, Compiler *c, int n) {
     int v = sh_val(F, c, nt_ref(nt, n, "value"));
     if (nt_kind(nt, n) != NK_GlobalVariableOperatorWriteNode) {
       sh_union(F, l, v);
-      sh_flow(F, SHFL_WRITE, n, nt_ref(nt, n, "value"));
+      sh_flow(F, SHFL_WRITE, n, nt_ref(nt, n, "value"), l);
     }
     return l;
   }
@@ -2469,7 +2526,7 @@ static int sh_val_compute(ShareFacts *F, Compiler *c, int n) {
     int v = sh_val(F, c, nt_ref(nt, n, "value"));
     if (nt_kind(nt, n) != NK_ClassVariableOperatorWriteNode) {
       sh_union(F, l, v);
-      sh_flow(F, SHFL_WRITE, n, nt_ref(nt, n, "value"));
+      sh_flow(F, SHFL_WRITE, n, nt_ref(nt, n, "value"), l);
     }
     return l;
   }
@@ -2480,7 +2537,7 @@ static int sh_val_compute(ShareFacts *F, Compiler *c, int n) {
     if (v < 0) return -1;
     int l = sh_holder(F, SHK_CONST, 0, -1, nt_str(nt, n, "name"), n);
     sh_union(F, l, v);
-    sh_flow(F, SHFL_WRITE, n, nt_ref(nt, n, "value"));
+    sh_flow(F, SHFL_WRITE, n, nt_ref(nt, n, "value"), l);
     return l;
   }
   case NK_ConstantPathWriteNode: {
@@ -2489,7 +2546,7 @@ static int sh_val_compute(ShareFacts *F, Compiler *c, int n) {
     if (v < 0 || t < 0) return -1;
     int l = sh_holder(F, SHK_CONST, 0, -1, nt_str(nt, t, "name"), n);
     sh_union(F, l, v);
-    sh_flow(F, SHFL_WRITE, n, nt_ref(nt, n, "value"));
+    sh_flow(F, SHFL_WRITE, n, nt_ref(nt, n, "value"), l);
     return l;
   }
   case NK_ParenthesesNode:
@@ -2541,7 +2598,7 @@ static int sh_val_compute(ShareFacts *F, Compiler *c, int n) {
       /* a literal a builtin only prints keeps no element for anyone */
       if (F->unused[n] & SHU_PEEK) continue;
       sh_union(F, sh_elem(F, r), v);
-      if (nt_kind(nt, el[i]) != NK_SplatNode && !(F->unused[n] & SHU_SPLIT)) sh_flow(F, SHFL_ELEM, n, el[i]);
+      if (nt_kind(nt, el[i]) != NK_SplatNode && !(F->unused[n] & SHU_SPLIT)) sh_flow(F, SHFL_ELEM, n, el[i], sh_elem_peek(F, r));
     }
     return r;
   }
@@ -2554,7 +2611,7 @@ static int sh_val_compute(ShareFacts *F, Compiler *c, int n) {
                                                  : sh_arg_val(F, c, el[i]);
       if (F->unused[n] & SHU_PEEK) continue;
       sh_union(F, sh_elem(F, r), v);
-      if (nt_kind(nt, el[i]) == NK_AssocNode) sh_flow(F, SHFL_ELEM, n, nt_ref(nt, el[i], "value"));
+      if (nt_kind(nt, el[i]) == NK_AssocNode) sh_flow(F, SHFL_ELEM, n, nt_ref(nt, el[i], "value"), sh_elem_peek(F, r));
     }
     return r;
   }
@@ -2576,7 +2633,7 @@ static int sh_val_compute(ShareFacts *F, Compiler *c, int n) {
       /* `a, b = x, y`: each target takes its own value */
       for (int i = 0; i < nl; i++) {
         int src = i < en ? sh_val(F, c, el[i]) : -1;
-        if (i < en) sh_flow(F, SHFL_MULTI, n, el[i]);
+        if (i < en) sh_flow(F, SHFL_MULTI, n, el[i], sh_target_holder(F, c, lefts[i]));
         if (nt_kind(nt, lefts[i]) == NK_MultiTargetNode && i < en && nt_kind(nt, el[i]) == NK_ArrayNode)
           sh_targets_of(F, c, lefts[i], src);
         else sh_target(F, c, lefts[i], src);
@@ -2595,7 +2652,7 @@ static int sh_val_compute(ShareFacts *F, Compiler *c, int n) {
   case NK_IndexOperatorWriteNode: case NK_IndexOrWriteNode: case NK_IndexAndWriteNode: {
     int e = sh_elem(F, sh_val(F, c, nt_ref(nt, n, "receiver")));
     sh_union(F, e, sh_val(F, c, nt_ref(nt, n, "value")));
-    if (nt_kind(nt, n) != NK_IndexOperatorWriteNode) sh_flow(F, SHFL_ELEM, nt_ref(nt, n, "receiver"), nt_ref(nt, n, "value"));
+    if (nt_kind(nt, n) != NK_IndexOperatorWriteNode) sh_flow(F, SHFL_ELEM, nt_ref(nt, n, "receiver"), nt_ref(nt, n, "value"), e);
     return e;
   }
   case NK_OperatorWriteNode: case NK_CallOrWriteNode: case NK_CallAndWriteNode: {
@@ -2608,7 +2665,7 @@ static int sh_val_compute(ShareFacts *F, Compiler *c, int n) {
     int iv = rn ? sh_attr_ivars(F, c, rn, n, &writer) : -1;
     if (iv < 0) { sh_union(F, v, F->unknown); return F->unknown; }
     sh_ivar_store(F, c, iv, nt_ref(nt, n, "value"), v);
-    sh_flow(F, SHFL_MEMBER, n, nt_ref(nt, n, "value"));
+    sh_flow(F, SHFL_MEMBER, n, nt_ref(nt, n, "value"), iv);
     return iv;
   }
   case NK_ForNode:
@@ -2620,7 +2677,7 @@ static int sh_val_compute(ShareFacts *F, Compiler *c, int n) {
     int vals[64];
     int nv = sh_args_vals(F, c, n, vals, 64);
     for (int i = 0; i < nv; i++) sh_union(F, y, vals[i]);
-    sh_args_flows(F, c, SHFL_YIELD, n, n);
+    sh_args_flows(F, c, SHFL_YIELD, n, n, y);
     return mi >= 0 ? sh_scope_holder(F, SHK_BLKRET, mi) : F->unknown;
   }
   case NK_ReturnNode: {
@@ -3044,7 +3101,7 @@ static void sh_free(ShareFacts *F) {
   free(F->parent); free(F->elem); free(F->nhold); free(F->nmem); free(F->nelem); free(F->hidx);
   free(F->owner); free(F->hcount); free(F->anchored); free(F->mconst);
   free(F->mut_n); free(F->mut_v);
-  free(F->fl_site); free(F->fl_val); free(F->fl_kind); free(F->pk); free(F->lam);
+  free(F->fl_site); free(F->fl_val); free(F->fl_kind); free(F->fl_dest); free(F->into); free(F->pk); free(F->lam);
   free(F->lsc); free(F->ret_m); free(F->ret_v); free(F->ret_done); free(F->unused); free(F->fresh_cont);
   if (F->own_elig) free(F->byref_elig);
   free(F->byval); free(F->byval_done);
@@ -3552,7 +3609,7 @@ static ShareFacts *sh_build(Compiler *c, int closed) {
       int p = sh_local_of(F, c, m, m->pnames[j], m->def_node);
       if (p >= 0) F->own[p] |= SHE_WRITTEN;
       sh_union(F, p, sh_val(F, c, m->pdefault[j]));
-      sh_flow(F, SHFL_WRITE, m->def_node, m->pdefault[j]);
+      sh_flow(F, SHFL_WRITE, m->def_node, m->pdefault[j], p);
     }
   }
   /* what a Method, a `send` or define_method can reach is called with what
@@ -4133,6 +4190,99 @@ int share_node_shares(const Compiler *c, int n) {
   const ShareFacts *F = c->share;
   int r = sh_node_root(F, n, 0);
   return r >= 0 && repr_str_class_shares(F->flags[r], sh_class_holders(F, r));
+}
+
+/* Does the rule share the class of element e (a flow's destination)? */
+static int sh_elem_shares(const ShareFacts *F, int e) {
+  int r = sh_root(F, e);
+  return repr_str_class_shares(F->flags[r], sh_class_holders(F, r));
+}
+int share_flow_dest_shares(const Compiler *c, int i) {
+  const ShareFacts *F = c->share;
+  int d = i >= F->nfl ? F->lend_par[i - F->nfl] : F->fl_dest[i];
+  return d < 0 ? -1 : sh_elem_shares(F, d);
+}
+
+/* Mark node n and the nodes inside the parentheses around it, which are the
+   ones a flow's value or an emitter's value can name. */
+static void sh_into_mark(const NodeTable *nt, ShareFacts *F, int n, unsigned char bit) {
+  for (; n >= 0 && n < F->nnodes; ) {
+    F->into[n] |= bit;
+    if (nt_kind(nt, n) != NK_ParenthesesNode) break;
+    int pb = nt_ref(nt, n, "body"), pn = 0;
+    const int *pd = pb >= 0 ? nt_arr(nt, pb, "body", &pn) : NULL;
+    n = pn == 1 ? pd[0] : -1;
+  }
+}
+
+/* Build ShareFacts.into from the flows, once the facts are final: a node
+   that is the value of a flow into a holder whose class the rule shares
+   (its own class may not: a new String joins none), the receiver chain of
+   an in-place change, and an element of a container literal whose Strings
+   the rule does not hand out. */
+static void sh_into_build(const Compiler *c) {
+  ShareFacts *F = c->share;
+  const NodeTable *nt = c->nt;
+  F->into = calloc((size_t)F->nnodes + 1, 1);
+  if (!F->into) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int i = 0, nf = share_flow_count(c); i < nf; i++) {
+    int site, v;
+    int kind = share_flow_at(c, i, &site, &v);
+    if (v < 0) continue;
+    if (kind == SHFL_MUTATE) {
+      /* the call's receiver, and each link of the chain of self-answering
+         calls down to the base the flow names (sh_self_chain_base) */
+      for (int r = nt_ref(nt, site, "receiver"); r >= 0; ) {
+        sh_into_mark(nt, F, r, SHI_MUTATED);
+        int u = an_unparen(nt, r);
+        if (u == v || u < 0 || nt_kind(nt, u) != NK_CallNode) break;
+        r = nt_ref(nt, u, "receiver");
+      }
+    }
+    if (share_flow_dest_shares(c, i) > 0) sh_into_mark(nt, F, v, SHI_INTO);
+  }
+  static const NodeKind lits[] = { NK_ArrayNode, NK_HashNode };
+  for (int k = 0; k < 2; k++)
+    NT_FOREACH_KIND(nt, lits[k], lit) {
+      if (lit >= F->nnodes || (share_node_elems_share(c, lit) && share_node_anchored(c, lit))) continue;
+      int en = 0; const int *el = nt_arr(nt, lit, "elements", &en);
+      for (int e = 0; e < en; e++) {
+        if (nt_kind(nt, el[e]) != NK_AssocNode) { sh_into_mark(nt, F, el[e], SHI_LITOUT); continue; }
+        sh_into_mark(nt, F, nt_ref(nt, el[e], "key"), SHI_LITOUT);
+        sh_into_mark(nt, F, nt_ref(nt, el[e], "value"), SHI_LITOUT);
+      }
+    }
+}
+
+/* Does the String (or a box that may hold one) node v evaluates to have to
+   be the shared handle where it is emitted -- stored, boxed, mutated -- and
+   not a copy of its bytes? The checks, in order: it is reachable, its type
+   can hold a String, the rule shares its class (or a flow takes it into a
+   holder whose class the rule shares, which a new String's own class never
+   is), it is no frozen literal (that is the literal's own handle), it is no
+   transient read (except an in-place change's receiver, whatever the use
+   marks say), and a container literal's element only if the literal's
+   elements are shared and the literal can be reached again. A String no
+   other name can see may be copied, but where a box keeps it, the box has
+   to be the handle's: SHN_FRESH. */
+int share_value_needs_handle(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  ShareFacts *F = c->share;
+  if (!c->share_strings || !F || v < 0 || v >= F->nnodes) return SHN_NO;
+  NodeKind k = nt_kind(nt, v);
+  if (k == NK_NilNode || k == NK_StringNode || k == NK_ArrayNode || k == NK_HashNode ||
+      k == NK_RangeNode || k == NK_SymbolNode)
+    return SHN_NO;
+  TyKind t = c->ntype[v];
+  if (t != TY_STRING && t != TY_STRBUF && t != TY_POLY) return SHN_NO;
+  Scope *sc = comp_scope_of(c, v);
+  if (!sc || !sc->reachable || share_frozen_literal(c, v)) return SHN_NO;
+  if (!F->into) sh_into_build(c);
+  unsigned char bits = F->into[v];
+  if (!share_node_shares(c, v) && !(bits & SHI_INTO)) return SHN_NO;
+  if (bits & SHI_LITOUT) return SHN_NO;
+  if (share_node_transient(c, v) && !(bits & SHI_MUTATED)) return SHN_NO;
+  return strbuf_flow_unseen(c, v) || share_node_fresh(c, v) ? SHN_FRESH : SHN_YES;
 }
 
 /* ---- master's route refusals under the flag (share.h) ---- */

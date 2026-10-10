@@ -18343,7 +18343,6 @@ void emit_index_and_or_write(Compiler *c, int id, Buf *b, int indent, int is_or)
 enum { SFC_ALIAS, SFC_SLOT, SFC_ELEM, SFC_TAIL, SFC_BOX, SFC_SPLICE, SFC_ARG, SFC_ELEM_ARMS };
 
 static int strbuf_flow_value(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, int depth);
-static int strbuf_flow_unseen(Compiler *c, int v);
 static int strbuf_flow_route(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, int depth);
 static int strbuf_flow_has_leaf(Compiler *c, StrbufFlowMemo *fm, int v, int depth);
 
@@ -18532,7 +18531,7 @@ static int strbuf_flow_has_leaf(Compiler *c, StrbufFlowMemo *fm, int v, int dept
    (the rule shares it for a change through a transient), a new String by
    where it comes from (share_value_fresh), an element of ARGV, whose Strings
    CRuby freezes, or of ENV, which answers a new String each read? */
-static int strbuf_flow_unseen(Compiler *c, int v) {
+int strbuf_flow_unseen(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
   if (!share_node_shares(c, v) || share_value_fresh(c, v, 0) || share_node_one_name(c, v)) return 1;
   int recv = nt_kind(nt, v) == NK_CallNode ? nt_ref(nt, v, "receiver") : -1;
