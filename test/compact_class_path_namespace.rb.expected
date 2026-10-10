@@ -1,0 +1,14 @@
+:webpush
+:other
+:inner
+"WebPush::Connections"
+"Other::Connections"
+"WebPush::Connections::Inner"
+:abc
+"A::B::C"
+:webpush
+"WebPush::Connections::HTTP"
+nil
+true
+"WebPush::Connections::HTTPX"
+"Net::HTTP"

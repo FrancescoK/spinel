@@ -1280,6 +1280,14 @@ static void walk_scope_in(Compiler *c, int id, int scope_idx, int class_id, int 
       comp_class_new(c, cname, id);
       child_class = c->nclasses - 1;
       c->classes[child_class].enclosing_class = class_id;
+      /* `class A::B` names B in A wherever it is written: A encloses it, as
+         `module A; class B` does, and its name is A::B (#8369) */
+      int par = cp >= 0 && nt_kind(c->nt, cp) == NK_ConstantPathNode ? nt_ref(c->nt, cp, "parent") : -1;
+      if (par >= 0 && (nt_kind(c->nt, par) == NK_ConstantReadNode || nt_kind(c->nt, par) == NK_ConstantPathNode)) {
+        int pc = comp_class_index(c, nt_str(c->nt, par, "name"));
+        if (pc >= 0 && pc != child_class && !c->classes[pc].is_builtin_const)
+          c->classes[child_class].enclosing_class = pc;
+      }
     }
     else if (cname) {
       child_class = comp_class_index(c, cname);  /* reopened class/module */
