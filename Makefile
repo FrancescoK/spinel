@@ -1925,6 +1925,13 @@ reject-test: $(SPINEL)
 	$(SPINEL) "$$t" -c --no-line-map -o "$$tmp/ds.c" >"$$tmp/ds.out" 2>&1; st=$$?; \
 	if [ $$st -ne 1 ] || ! grep -q "1 refusal," "$$tmp/ds.out"; then \
 	  echo "reject-test: FAIL (a refusal after a dynamic send's probed arms did not report cleanly, exit $$st)"; sed -n 1,5p "$$tmp/ds.out"; ok=0; fi; \
+	for t in $(shell grep -l '^\# spinel: reject-syntax: ' test/reject/*.rb); do \
+	  why=$$(sed -n 's/^# spinel: reject-syntax: //p' "$$t"); \
+	  if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/sy.c" >"$$tmp/sy.out" 2>&1; then \
+	    echo "reject-test: FAIL ($$t compiled: CRuby rejects it as a SyntaxError)"; ok=0; \
+	  else grep -qF "$$why" "$$tmp/sy.out" || \
+	    { echo "reject-test: FAIL ($$t refused without saying why)"; sed -n 1,5p "$$tmp/sy.out"; ok=0; }; fi; \
+	done; \
 	for t in $(shell grep -l '^\# spinel: reject-conversion: ' test/reject/*.rb); do \
 	  why=$$(sed -n 's/^# spinel: reject-conversion: //p' "$$t"); \
 	  if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/co.c" >"$$tmp/co.out" 2>&1; then \

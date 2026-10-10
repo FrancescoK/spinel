@@ -36456,6 +36456,38 @@ static void poly_ivar_set_reference(Compiler *c, int id, int recv) {
 }
 
 /* Setup, the AST desugarings and the registration passes: scopes, locals, attrs, aliases, globals and constants, FFI declarations (analyze_program's steps, in their order) */
+/* `retry` restarts a begin from its rescue clause only: CRuby's compiler
+   rejects one in an ensure clause ("Invalid retry", a SyntaxError), where
+   Prism, which checks for an enclosing rescue, lets it through (#8377).
+   ctx: 1 in a rescue clause, 2 in an ensure clause; a method, class or
+   block body starts over. */
+static void reject_retry_in_ensure(Compiler *c, int id, int ctx, int depth) {
+  const NodeTable *nt = c->nt;
+  if (id < 0 || id >= nt->count || depth > 4000) return;
+  NodeKind k = nt_kind(nt, id);
+  if (k == NK_RetryNode && ctx == 2) {
+    int ln = (int)nt_int(nt, id, "node_line", 0);
+    const char *file = nt_file_path(nt, (int)nt_int(nt, id, "node_file", 0));
+    if (!file || !*file) file = nt->source_file ? nt->source_file : "source.rb";
+    fprintf(stderr, "spinel: %s:%d: Invalid retry (SyntaxError)\n", file, ln);
+    exit(1);
+  }
+  if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode ||
+      k == NK_BlockNode || k == NK_LambdaNode)
+    ctx = 0;
+  int in_rescue = k == NK_RescueNode ? nt_ref(nt, id, "statements") : -1;
+  const char *ty = nt_type(nt, id);
+  int in_ensure = ty && sp_streq(ty, "EnsureNode") ? nt_ref(nt, id, "statements") : -1;
+  const SpNode *nd = &nt->nodes[id];
+  for (int i = 0; i < nd->nr; i++) {
+    int ch = nd->r[i].ref;
+    reject_retry_in_ensure(c, ch, ch >= 0 && ch == in_rescue ? 1 : ch >= 0 && ch == in_ensure ? 2 : ctx, depth + 1);
+  }
+  for (int i = 0; i < nd->na; i++)
+    for (int j = 0; j < nd->a[i].n; j++)
+      reject_retry_in_ensure(c, nd->a[i].ids[j], ctx, depth + 1);
+}
+
 static void an_phase_desugar_register(Compiler *c) {
   comp_poly_candidates_reset();
   comp_descendants_reset();
@@ -36463,6 +36495,7 @@ static void an_phase_desugar_register(Compiler *c) {
   /* scope 0 = top level */
   Scope *top = comp_scope_new(c, NULL, -1);
   top->body = nt_ref(c->nt, c->nt->root_id, "statements");
+  reject_retry_in_ensure(c, c->nt->root_id, 0, 0);
   /* class_eval "<text known now>" -> that code, grafted into the body. First,
      so every pass below reads the grafted code as it reads the program's */
   desugar_static_class_eval(c);
