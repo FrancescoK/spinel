@@ -69,7 +69,8 @@ rest_kw_toproc: ArgumentError: missing keyword: :c
 rest_kw_toproc_short: ArgumentError: missing keyword: :c
 rest_post_toproc: no raise
 rest_kwrest_toproc: no raise
-iarr_get_over: 1
+iarr_get_over: ArgumentError
+iarr_get_slice: [2, 3]
 iarr_set_over: 9 [9, 2, 3]
 iarr_poly_push_multi: NoMethodError
 [1, 2]

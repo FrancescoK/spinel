@@ -1,0 +1,19 @@
+plus_over: wrong number of arguments (given 2, expected 1)
+plus_splat_long: wrong number of arguments (given 2, expected 1)
+plus_splat_empty: wrong number of arguments (given 2, expected 1)
+6
+plus_splat_none: wrong number of arguments (given 0, expected 1)
+plus_splat_first: wrong number of arguments (given 2, expected 1)
+15
+"abcd"
+3.5
+hash_index_splat_long: wrong number of arguments (given 2, expected 1)
+hash_index_splat_empty: wrong number of arguments (given 2, expected 1)
+1
+array_index_over: wrong number of arguments (given 3, expected 1..2)
+array_index_splat_empty: wrong number of arguments (given 3, expected 1..2)
+array_index_splat_long: wrong number of arguments (given 3, expected 1..2)
+2
+[1, 2]
+[2, 3]
+string_index_over: wrong number of arguments (given 3, expected 1..2)
