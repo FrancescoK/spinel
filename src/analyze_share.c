@@ -3849,6 +3849,17 @@ static int sh_builtin_fresh(Compiler *c, int call, int ostruct) {
   }
   return 0;
 }
+/* Is poly arm a of call an IO's read with no buffer to fill (BSH_FILL1's
+   row with one argument at most): a new String? The generic default arm
+   and its tail read the box as an IO for such a name. */
+static int sh_arm_io_read_fresh(Compiler *c, int call, const PolyArm *a) {
+  if (call_plain_argc(c, call) >= 2 || bop_share_boxed(TY_IO, nt_str(c->nt, call, "name")) != BSH_FILL1) return 0;
+  if (a->kind == PA_TRIAL) return a->key == PA_KEY_TRIAL + PT_GENERIC_TAIL;
+  if (a->kind != PA_BUILTIN) return 0;
+  int fam = a->key - PA_KEY_BUILTIN;
+  return fam == PB_N_IO_READ || fam == PB_IO_SEEK_READ || fam == PB_IO_READ_NB || fam == PB_IO_READPARTIAL ||
+         fam == PB_ND_GENERIC;
+}
 int share_builtin_fresh(Compiler *c, int call) {
   const char *name = nt_str(c->nt, call, "name");
   if (bop_share_named(BOP_ANY_RECV, name) == BSH_PURE && !is_receiver_conversion(name)) return 1;
@@ -3868,7 +3879,7 @@ int share_builtin_fresh(Compiler *c, int call) {
   }
   for (int i = 0; i < p->n; i++) {
     const PolyArm *a = &p->arm[i];
-    if (a->kind == PA_USER || a->kind == PA_ARITY) continue;
+    if (a->kind == PA_USER || a->kind == PA_ARITY || sh_arm_io_read_fresh(c, call, a)) continue;
     if (a->kind == PA_TRIAL && (a->key == PA_KEY_TRIAL + PT_DEFAULT0 ||
                                a->key == PA_KEY_TRIAL + PT_DEFAULT_N)) continue;
     return 0;

@@ -19736,6 +19736,19 @@ static int an_tail_param_arg(Compiler *c, RetHandles *R, int call, int mi, TailC
   tc->arg_depth--;
   return ok;
 }
+/* A conditional's arm a in the fresh walk: what its statements end in, a
+   nested conditional's arms, or nil when it is empty or missing. */
+static int an_tail_arm(Compiler *c, RetHandles *R, int a, TailCount *tc) {
+  const NodeTable *nt = c->nt;
+  a = an_unparen(nt, a);
+  if (a >= 0 && nt_kind(nt, a) == NK_ElseNode) a = nt_ref(nt, a, "statements");
+  if (a >= 0 && nt_kind(nt, a) == NK_StatementsNode) {
+    int n = 0; const int *bb = nt_arr(nt, a, "body", &n);
+    a = n > 0 ? bb[n - 1] : -1;
+  }
+  if (a < 0 || nt_kind(nt, a) == NK_NilNode) { tc->nils++; return 1; }
+  return an_tail_handle(c, R, a, tc);
+}
 /* Does tail node n answer a shared handle it publishes last: a handle's
    read, or a call or `super` whose every target method does? A nullable
    tail can also answer nil, which the existing pickup tests before using
@@ -19749,6 +19762,12 @@ static int an_tail_handle(Compiler *c, RetHandles *R, int n, TailCount *tc) {
   if (an_tail_is_shared_handle(c, n, 1, tc, R)) return 1;
   if (R->fresh && an_tail_param(c, n, tc)) return 1;
   NodeKind k = n >= 0 ? nt_kind(nt, n) : NK_NONE;
+  /* the fresh walk: a conditional answers what each arm ends in (a
+     missing arm, nil); a builtin's new String, as the share walk found */
+  if (R->fresh && (k == NK_IfNode || k == NK_UnlessNode))
+    return an_tail_arm(c, R, nt_ref(nt, n, "statements"), tc) &&
+           an_tail_arm(c, R, nt_ref(nt, n, k == NK_IfNode ? "subsequent" : "else_clause"), tc);
+  if (R->fresh && k == NK_CallNode && share_node_fresh(c, n)) { tc->fresh++; return 1; }
   if (k == NK_CallNode && c->ntype[n] == TY_NIL) { tc->nils++; return 1; }
   if (k == NK_SuperNode || k == NK_ForwardingSuperNode) {
     const CallPlan *p = cplan_user_fresh(c, n);
