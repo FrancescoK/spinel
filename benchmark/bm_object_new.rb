@@ -2,8 +2,8 @@
 # Ported from https://github.com/Shopify/yjit-bench
 
 class SimpleObj
-  def initialize
-    @x = 0
+  def initialize(x)
+    @x = x
   end
 
   def x
@@ -13,9 +13,10 @@ end
 
 sum = 0
 i = 0
-while i < 1000000
-  obj = SimpleObj.new
-  sum = sum + obj.x
+n = (ARGV[0] || 1000000).to_i
+while i < n
+  obj = SimpleObj.new(i)
+  sum = (sum ^ obj.x) + 1
   i = i + 1
 end
 puts sum

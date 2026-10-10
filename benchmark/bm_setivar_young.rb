@@ -13,19 +13,19 @@ class TheClass
     0
   end
 
-  def set_value_loop
+  def set_value_loop(n)
     i = 0
-    while i < 1000000
-      @levar = i
-      @levar = i
-      @levar = i
-      @levar = i
-      @levar = i
-      @levar = i
-      @levar = i
-      @levar = i
-      @levar = i
-      @levar = i
+    while i < n
+      @levar = (@levar ^ i) + 1
+      @levar = (@levar ^ i) + 1
+      @levar = (@levar ^ i) + 1
+      @levar = (@levar ^ i) + 1
+      @levar = (@levar ^ i) + 1
+      @levar = (@levar ^ i) + 1
+      @levar = (@levar ^ i) + 1
+      @levar = (@levar ^ i) + 1
+      @levar = (@levar ^ i) + 1
+      @levar = (@levar ^ i) + 1
       i = i + 1
     end
     @levar
@@ -33,5 +33,5 @@ class TheClass
 end
 
 tc = TheClass.new
-puts tc.set_value_loop
+puts tc.set_value_loop((ARGV[0] || 1000000).to_i)
 puts "done"
