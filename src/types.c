@@ -45,6 +45,8 @@ static const PolyFace ty_poly_face_tbl[] = {
      disagree, so `.to_a` / `.map` read it as the Enumerator's answer (#4779);
      an Integer or Float Range's step(n) materializes the same way */
   {"step", PF_INT | PF_FLOAT | PF_RANGE | PF_FRANGE, 1, 2, 0},
+  /* with no argument at all, a number's endless walk by 1 */
+  {"step", PF_INT | PF_FLOAT, 0, 0, 0},
   /* A Range of each kind owns step and bsearch with a block: unboxed to its
      own by-value struct, the typed emitter walks it. A blockless step(n)
      takes the row above; blockless bsearch answers an Enumerator no typed
