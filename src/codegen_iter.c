@@ -5058,7 +5058,7 @@ int emit_array_filter_loop(Compiler *c, int recv, int block, TyKind rt, const ch
        begin..ensure epilogue in codegen_stmt.c does. Handed straight to the
        enclosing ensure, the rescue never ran and the ensure ran twice. */
     if (g_exc_frame_depth > outer->exc_base + 1)
-      buf_printf(b, "if (_excf%d) { sp_pending_exc_obj = _excobj%d; sp_raise_cls(_exccls%d, _excmsg%d); }\n",
+      buf_printf(b, "if (_excf%d) { sp_pending_exc_obj = _excobj%d; sp_reraise_continues = 1; sp_raise_cls(_exccls%d, _excmsg%d); }\n",
                  eid, eid, eid, eid);
     else
       buf_printf(b, "if (_excf%d) { _excf%d = 1; _excmsg%d = _excmsg%d; _exccls%d = _exccls%d; _excobj%d = _excobj%d; sp_exc_top--; goto _ensure%d; }\n",
@@ -5073,7 +5073,7 @@ int emit_array_filter_loop(Compiler *c, int recv, int block, TyKind rt, const ch
       buf_printf(b, "if (_retf%d) { %s = _retv%d; return 0; }\n", eid, proc_ret_slot(), eid);
     else emit_retf_return(eid, has_retval, b);
     emit_indent(b, indent);
-    buf_printf(b, "if (_excf%d) { sp_pending_exc_obj = _excobj%d; sp_raise_cls(_exccls%d, _excmsg%d); }\n", eid, eid, eid, eid);
+    buf_printf(b, "if (_excf%d) { sp_pending_exc_obj = _excobj%d; sp_reraise_continues = 1; sp_raise_cls(_exccls%d, _excmsg%d); }\n", eid, eid, eid, eid);
   }
   if (flv) flv->type = fsaved;
   *tr = t; *torig = to; *twp = tw;

@@ -14194,6 +14194,11 @@ static SP_TLS int sp_bt_keep = 0;
    rather than reading as "no cause given" (#2990). */
 static SP_TLS void *sp_explicit_cause = NULL;
 static SP_TLS int sp_explicit_cause_set = 0;
+/* Set by an ensure that resumes an exception it ran for: the propagation
+   goes on, not a new raise, so the exception keeps the cause it was raised
+   with, nil among them, where a raise in a rescue clause takes the handled
+   one (#8375). */
+static SP_TLS int sp_reraise_continues = 0;
 /* The exception handled at each active rescue-body depth (CRuby's per-rescue
    errinfo). The "currently handled" exception -- what Exception#cause threads --
    is the innermost: sp_rescue_sp>0 ? sp_exc_handling[sp_rescue_sp-1] : NULL. A
@@ -14481,6 +14486,8 @@ SP_NORETURN SP_COLD void sp_raise_cls(const char *cls, const char *msg) {
      recorded before its own setjmp (sp_exc_rootmark, or a C local in the
      Kernel#loop and enumerator landings), which discards this entry, and a
      fiber's trampoline hands the whole root stack back to its resumer. */
+  int cont = sp_reraise_continues;   /* an ensure resuming its exception (see there) */
+  sp_reraise_continues = 0;
   if (!sp_exc_msg_empty_given(msg)) msg = sp_msg_heapify(msg);
   /* a frozen message (a literal's) as frozen text (sp_exc_msg_plain) */
   if (!sp_exc_msg_empty_given(msg)) msg = sp_exc_msg_plain(msg);
@@ -14554,7 +14561,7 @@ SP_NORETURN SP_COLD void sp_raise_cls(const char *cls, const char *msg) {
      `raise e`, or through an ensure), it keeps the cause it had instead of
      becoming its own -- the pending cause is that cause, so a rescue that
      stores the pending cause outright (a modifier rescue) keeps it too. */
-  if (sp_exc_top > 0) { sp_exc_msg[sp_exc_top-1] = msg; sp_exc_cls[sp_exc_top-1] = cls; void *raised = sp_pending_exc_obj; sp_exc_obj[sp_exc_top-1] = raised; sp_pending_exc_obj = NULL; sp_pending_cause = sp_explicit_cause_set ? sp_explicit_cause : sp_cur_handled() ? (sp_cur_handled() == raised ? (void *)((sp_Exception *)raised)->cause : sp_exc_implicit_cause(sp_cur_handled(), raised)) : sp_exc_implicit_cause(sp_inflight_cause, raised); sp_inflight_cause = NULL; sp_explicit_cause = NULL; sp_explicit_cause_set = 0; sp_last_exc_cls = cls; sp_handler_stacks_unwind(); sp_poly_recur_unwind(); longjmp(sp_exc_stack[sp_exc_top-1], 1); }
+  if (sp_exc_top > 0) { sp_exc_msg[sp_exc_top-1] = msg; sp_exc_cls[sp_exc_top-1] = cls; void *raised = sp_pending_exc_obj; sp_exc_obj[sp_exc_top-1] = raised; sp_pending_exc_obj = NULL; sp_pending_cause = cont && raised ? (void *)((sp_Exception *)raised)->cause : sp_explicit_cause_set ? sp_explicit_cause : sp_cur_handled() ? (sp_cur_handled() == raised ? (void *)((sp_Exception *)raised)->cause : sp_exc_implicit_cause(sp_cur_handled(), raised)) : sp_exc_implicit_cause(sp_inflight_cause, raised); sp_inflight_cause = NULL; sp_explicit_cause = NULL; sp_explicit_cause_set = 0; sp_last_exc_cls = cls; sp_handler_stacks_unwind(); sp_poly_recur_unwind(); longjmp(sp_exc_stack[sp_exc_top-1], 1); }
   /* Uncaught SystemExit terminates silently with its status (Kernel#exit).
      Read the status BEFORE the hooks run: it lives in the pending exception
      object, which nothing roots once the hooks start allocating. */

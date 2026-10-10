@@ -10501,7 +10501,7 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
          match; with no such frame, propagate to the outer ensure as before. */
       emit_indent(b, indent);
       if (g_exc_frame_depth > outer->exc_base + 1) {
-        buf_printf(b, "if (_excf%d) { sp_pending_exc_obj = _excobj%d; sp_raise_cls(_exccls%d, _excmsg%d); }\n",
+        buf_printf(b, "if (_excf%d) { sp_pending_exc_obj = _excobj%d; sp_reraise_continues = 1; sp_raise_cls(_exccls%d, _excmsg%d); }\n",
                    eid, eid, eid, eid);
       }
       else {
@@ -10512,7 +10512,7 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
     else {
       /* Unhandled exception: re-raise using the saved class/message. */
       emit_indent(b, indent);
-      buf_printf(b, "if (_excf%d) { sp_pending_exc_obj = _excobj%d; sp_raise_cls(_exccls%d, _excmsg%d); }\n", eid, eid, eid, eid);
+      buf_printf(b, "if (_excf%d) { sp_pending_exc_obj = _excobj%d; sp_reraise_continues = 1; sp_raise_cls(_exccls%d, _excmsg%d); }\n", eid, eid, eid, eid);
     }
     g_retry_label = ens_saved_retry;
     g_retry_pops = ens_saved_retry_pops;

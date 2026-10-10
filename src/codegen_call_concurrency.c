@@ -432,7 +432,7 @@ int emit_call_synchronize_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
            in the begin..ensure epilogue. Its still-live frame distinguishes
            it from a direct handoff to the enclosing ensure. */
         if (g_exc_frame_depth > outer->exc_base + 1)
-          buf_printf(b, "if (_excf%d) { sp_pending_exc_obj = _excobj%d; sp_raise_cls(_exccls%d, _excmsg%d); } ",
+          buf_printf(b, "if (_excf%d) { sp_pending_exc_obj = _excobj%d; sp_reraise_continues = 1; sp_raise_cls(_exccls%d, _excmsg%d); } ",
                      eid, eid, eid, eid);
         else
           buf_printf(b, "if (_excf%d) { _excf%d = 1; _excmsg%d = _excmsg%d; _exccls%d = _exccls%d; _excobj%d = _excobj%d; sp_exc_top--; goto _ensure%d; } ",
@@ -463,7 +463,7 @@ int emit_call_synchronize_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         /* a proc body returns sp_int: see the sibling in codegen_iter.c */
         else if (g_in_proc_body) buf_printf(b, "if (_retf%d) return 0; ", eid);
         else buf_printf(b, "if (_retf%d) return; ", eid);
-        buf_printf(b, "if (_excf%d) { sp_pending_exc_obj = _excobj%d; sp_raise_cls(_exccls%d, _excmsg%d); } ", eid, eid, eid, eid);
+        buf_printf(b, "if (_excf%d) { sp_pending_exc_obj = _excobj%d; sp_reraise_continues = 1; sp_raise_cls(_exccls%d, _excmsg%d); } ", eid, eid, eid, eid);
       }
     }
     if (scalar) buf_printf(b, "_t%d; })", rv);
