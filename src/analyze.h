@@ -163,6 +163,8 @@ void dyn_yield_reach(Compiler *c, int y, int k, DynReach *r);
 void dyn_blk_reach(Compiler *c, int mi, int k, DynReach *r);
 int dyn_yield_param_appends(Compiler *c, int mi, int j);
 int dyn_yield_live(Compiler *c, int mi, int k);
+typedef struct { int unknown, app, keeps, n; TyKind ty[4]; } DynParams;
+void dyn_blk_params(Compiler *c, int mi, int k, DynParams *out);
 int dyn_open_site(Compiler *c, int n, int *shift);
 void dyn_open_reach(Compiler *c, int n, int k, DynReach *r);
 int dyn_method_appends(Compiler *c, int mi, int j);

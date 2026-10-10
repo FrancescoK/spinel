@@ -23690,8 +23690,11 @@ static int dyn_cap_wrapper(Compiler *c, int n) {
    receiver: a parameter only ever the receiver of these (or printed, or
    interpolated) is read for its bytes alone, so the caller may hand it the
    live bytes of a handle rather than a copy. Anything not listed counts as
-   keeping it (`to_s`, `itself` and `freeze` answer the receiver itself). */
-static int dyn_pure_read_name(const char *n) {
+   keeping it (`to_s`, `itself` and `freeze` answer the receiver itself). With
+   a Regexp argument (rx) all but `match?` leave the receiver's bytes in the
+   match globals (`$~`, the captures), which read them after the String grows:
+   such a call keeps its receiver. */
+static int dyn_pure_read_name(const char *n, int rx) {
   static const char *const R[] = {
     "size", "length", "bytesize", "empty?", "==", "!=", "eql?", "<=>", "=~", "match?",
     "start_with?", "end_with?", "include?", "index", "rindex", "count", "getbyte", "ord",
@@ -23700,7 +23703,12 @@ static int dyn_pure_read_name(const char *n) {
     "inspect", "+", "*", "%", "[]", "slice", "center", "ljust", "rjust", "tr", "delete",
     "squeeze", "sub", "gsub", "scan", "unpack", "unpack1", "sum", "casecmp", "casecmp?",
     "ascii_only?", "valid_encoding?", "each_char", "each_byte", "each_line", "hex", "oct", NULL };
-  for (int i = 0; n && R[i]; i++) if (sp_streq(n, R[i])) return 1;
+  static const char *const NOGLOBALS[] = { "match?", NULL };
+  for (int i = 0; n && R[i]; i++) {
+    if (!sp_streq(n, R[i])) continue;
+    for (int g = 0; rx && NOGLOBALS[g]; g++) if (sp_streq(n, NOGLOBALS[g])) rx = 0;
+    return !rx;
+  }
   return 0;
 }
 
@@ -23849,13 +23857,25 @@ static void dyn_body_scan(Compiler *c, int node, const char **pn, int np, unsign
   if (k == NK_CallNode) {
     const char *un = nt_str(nt, node, "name");
     int ur = nt_ref(nt, node, "receiver");
+    /* `(+t) << x` appends to t: unary plus answers the receiver itself unless frozen */
+    int up = an_unparen(nt, ur);
+    if (up >= 0 && up != ur && nt_kind(nt, up) == NK_CallNode && nt_str(nt, up, "name") &&
+        sp_streq(nt_str(nt, up, "name"), "+@") && nt_ref(nt, up, "receiver") >= 0)
+      ur = nt_ref(nt, up, "receiver");
+    else if (ur >= 0 && nt_kind(nt, ur) == NK_CallNode && nt_str(nt, ur, "name") &&
+             sp_streq(nt_str(nt, ur, "name"), "+@") && nt_ref(nt, ur, "receiver") >= 0)
+      ur = nt_ref(nt, ur, "receiver");
     int j = ur >= 0 && nt_kind(nt, ur) == NK_LocalVariableReadNode
               ? dyn_name_at(pn, np, nt_str(nt, ur, "name")) : -1;
     if (j >= 0 && un && sp_streq(un, "[]=") && dyn_index_write_not_string(c, node)) skip_recv = ur;
     else if (j >= 0 && un && an_str_mutator_name(un)) { *app |= 1u << j; skip_recv = ur; }
-    else if (j >= 0 && dyn_pure_read_name(un)) skip_recv = ur;
     int a = nt_ref(nt, node, "arguments"), ac = 0;
     const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+    int rx = 0;
+    for (int i = 0; i < ac; i++)
+      rx |= nt_kind(nt, av[i]) == NK_RegularExpressionNode || nt_kind(nt, av[i]) == NK_InterpolatedRegularExpressionNode ||
+            comp_ntype(c, av[i]) == TY_REGEX;
+    if (j >= 0 && dyn_pure_read_name(un, rx)) skip_recv = ur;
     for (int i = 0; i < ac; i++) {
       if (nt_kind(nt, av[i]) != NK_LocalVariableReadNode) continue;
       int ji = dyn_name_at(pn, np, nt_str(nt, av[i], "name"));
@@ -25091,6 +25111,48 @@ void dyn_blk_reach(Compiler *c, int mi, int k, DynReach *r) {
   if (bits & DYN_OPEN) r->unknown = 1;
   dyn_fold(r, bits, k, 1, 0, TY_UNKNOWN);
   if (r->unknown && !r->app && dyn_any_appender(c)) r->app = 1;
+}
+/* The types position k's parameter has in the blocks method mi's call sites
+   pass (mi a proc form: the method it copies), into out: the distinct ones,
+   as many as DynParams holds; unknown when a call site that may be a call of
+   mi passes no literal block or one without a plain parameter there, or when
+   there are more types than that. app: a block appends to the parameter;
+   keeps: one may keep what it reads.
+   A boxed argument is handed to a pointer-typed parameter as that pointer
+   (emit_proc_call_args). A call the plan does not resolve is of mi when its
+   receiver is a builtin value of mi's class, and of another method of the
+   name (a Hash's `pm` beside a String's) when it is of another class. */
+void dyn_blk_params(Compiler *c, int mi, int k, DynParams *out) {
+  const NodeTable *nt = c->nt;
+  memset(out, 0, sizeof *out);
+  if (mi >= 0 && mi < c->nscopes && c->scopes[mi].is_proc_form) mi = proc_form_source(c, mi);
+  if (mi < 0 || mi >= c->nscopes || !c->scopes[mi].name || k < 0 || k >= DYN_ARGS) { out->unknown = 1; return; }
+  if (!g_dyn.fresh) dyn_memo_reset(c);
+  dyn_blk_index(c);
+  int h = anh_find(&g_dyn.bnames, c->scopes[mi].name);
+  for (int e = h >= 0 ? g_dyn.bhead[h] : -1; e >= 0; e = g_dyn.bnext[e]) {
+    int n = g_dyn.bnode[e], b = nt_ref(nt, n, "block");
+    const CallPlan *p = cplan_user_fresh(c, n);
+    if (p->mi >= 0 && p->mi != mi) continue;
+    int hit = p->mi == mi;
+    if (p->mi < 0) {
+      int rv = nt_ref(nt, n, "receiver");
+      const char *bn = rv >= 0 ? builtin_class_of_type(comp_ntype(c, rv)) : NULL;
+      int ci = c->scopes[mi].class_id;
+      if (bn && ci >= 0) { if (!sp_streq(bn, c->classes[ci].name)) continue; hit = 1; }
+    }
+    const char *pn = hit && nt_kind(nt, b) == NK_BlockNode ? dyn_lit_param_name(c, b, k) : NULL;
+    Scope *bs = pn ? comp_scope_of(c, b) : NULL;
+    LocalVar *q = bs ? scope_local(bs, pn) : NULL;
+    if (!q) { out->unknown = 1; return; }
+    if (dyn_lit_bits(c, b) & (1u << k)) out->app = 1;
+    if (k >= 14 || (dyn_lit_bits(c, b) & (1u << (16 + k)))) out->keeps = 1;
+    int seen = 0;
+    for (int t = 0; t < out->n; t++) if (out->ty[t] == q->type) seen = 1;
+    if (seen) continue;
+    if (out->n == (int)(sizeof out->ty / sizeof out->ty[0])) { out->unknown = 1; return; }
+    out->ty[out->n++] = q->type;
+  }
 }
 /* What the blocks such a yield reaches do with its argument at position k. */
 void dyn_yield_reach(Compiler *c, int y, int k, DynReach *r) {

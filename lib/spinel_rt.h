@@ -3134,6 +3134,41 @@ static sp_int sp_poly_slot_i(sp_RbVal v) {
   return sp_poly_to_i(v);
 }
 
+/* The sp_int slot a proc argument held boxed takes. A block parameter typed
+   as a pointer reads it from that slot, so the pointer rides it, as the
+   parameter's type reads it (sp_poly_slot_kinds), and only when the box is of
+   that kind. Any other box, or a parameter whose type is not known, takes
+   sp_poly_slot_arg: sp_poly_slot_i, but a Float's slot is dead (a Float
+   parameter reads the boxed side channel), so Infinity and NaN do not raise
+   here. */
+static sp_int sp_poly_slot_arg(sp_RbVal v) {
+  if (v.tag == SP_TAG_FLT) return 0;
+  return sp_poly_slot_i(v);
+}
+/* A box's pointer, for the blocks that read their parameter from the slot:
+   strs says a block reads a plain String (1: its bytes, a handle box's live
+   bytes included) or the handle (2); c0..c3 are the classes of the objects
+   and collections the others are typed as. A box of no such kind, or a
+   handle box with blocks of both String kinds to feed, takes sp_poly_slot_arg. */
+static sp_int sp_poly_slot_kinds(sp_RbVal v, int strs, int c0, int c1, int c2, int c3) {
+  if (v.tag == SP_TAG_STR && (strs & 1)) return (sp_int)(uintptr_t)v.v.s;
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_STRBUF && v.v.p) {
+    if (strs == 1) return (sp_int)(uintptr_t)sp_String_cstr((sp_String *)v.v.p);
+    if (strs == 2) return (sp_int)(uintptr_t)v.v.p;
+  }
+  else if (v.tag == SP_TAG_OBJ && (v.cls_id == c0 || v.cls_id == c1 || v.cls_id == c2 || v.cls_id == c3))
+    return (sp_int)(uintptr_t)v.v.p;
+  return sp_poly_slot_arg(v);
+}
+
+/* The bytes of a handle box copied for a block that may keep what it reads:
+   the live bytes move on the handle's next growing append. NULL for any
+   other box. The caller roots the copy across the block. */
+static const char *sp_poly_strbuf_copy(sp_RbVal v) {
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_STRBUF && v.v.p) return sp_strbuf_read((sp_String *)v.v.p);
+  return NULL;
+}
+
 /* CRuby's implicit conversion protocol on a BOXED user object: it converts
    through the class's compiled #to_int / #to_str (the generated bridge), and a
    class defining neither is CRuby's TypeError -- where the object read as 0 or

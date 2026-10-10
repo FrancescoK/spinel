@@ -1119,6 +1119,9 @@ typedef struct {
   struct ShareRoute *share_route;
   int nshare_route, cshare_route;
   int share_strings;
+  /* the scope + 1 whose block a yield under emit_proc_yield hands its
+     arguments to (a proc form, or a method with a `&blk` it calls), or 0 */
+  int proc_arg_src;
   struct ShareFacts *share;
   struct HandleArgTab *share_args; /* final callers, while sealing share facts */
   struct SbArgIndex *sb_args; /* settled parameter sources, built once for storage */
