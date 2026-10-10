@@ -5681,9 +5681,21 @@ static int iter_range_upto_arms(Compiler *c, int id, Buf *b, int indent, const N
       buf_printf(&hi, "_t%d", th);
     }
     emit_indent(b, indent);
-    buf_printf(b, "for (sp_int _t%d = ", ti); buf_puts(b, lo.p);
-    buf_printf(b, "; _t%d %s ", ti, up ? "<=" : ">="); buf_puts(b, hi.p);
-    buf_printf(b, "; _t%d%s) {\n", ti, up ? "++" : "--");
+    if (comp_ntype(c, argv[0]) == TY_FLOAT) {
+      buf_printf(b, "for (sp_int _t%d = ", ti); buf_puts(b, lo.p);
+      buf_printf(b, "; _t%d %s ", ti, up ? "<=" : ">="); buf_puts(b, hi.p);
+      buf_printf(b, "; _t%d%s) {\n", ti, up ? "++" : "--");
+    }
+    else {
+      /* an Integer limit is the counter's last value: the loop steps only
+         while the next one is within it, so a limit of 2**63-1 ends the
+         loop where `_t <= limit; _t++` went past it and round forever */
+      int tg = ++g_tmp;
+      buf_printf(b, "for (sp_int _t%d = ", ti); buf_puts(b, lo.p);
+      buf_printf(b, ", _t%d = _t%d %s ", tg, ti, up ? "<=" : ">="); buf_puts(b, hi.p);
+      buf_printf(b, "; _t%d; _t%d = sp_int_loop_next(&_t%d, ", tg, tg, ti); buf_puts(b, hi.p);
+      buf_printf(b, ", %s)) {\n", up ? "1" : "-1");
+    }
     if (p0) { char ts[32]; snprintf(ts, sizeof ts, "_t%d", ti); emit_iter_param_assign(c, block, p0_orig, p0, TY_INT, ts, b, indent + 1); }
     { char rs_es[32]; snprintf(rs_es, sizeof rs_es, "_t%d", ti);
       int rs_np = 0; while (block_param_name(c, block, rs_np)) rs_np++;
@@ -7287,11 +7299,17 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
       emit_indent(b, indent);
       buf_printf(b, "if (_t%d == 0) sp_raise_cls(\"ArgumentError\", \"step can't be 0\");\n", ts);
       emit_indent(b, indent);
+      /* the limit is the counter's last value: it steps only while the
+         next one is within it (sp_int_loop_next), so a limit near 2**63-1
+         ends the loop where `_t += step` went past it and round forever;
+         a nil limit has no last value and steps on */
+      int tg = ++g_tmp;
       buf_printf(b, "for (sp_int _t%d = ", t); if (tr) buf_printf(b, "_t%d", tr); else emit_expr(c, recv, b);
-      if (tv) buf_printf(b, "; _t%d.tag == SP_TAG_NIL || (_t%d >= 0 ? _t%d <= _t%d : _t%d >= _t%d); _t%d += _t%d) {\n",
-                         tv, ts, t, tl, t, tl, t, ts);
-      else buf_printf(b, "; _t%d >= 0 ? _t%d <= _t%d : _t%d >= _t%d; _t%d += _t%d) {\n",
-                      ts, t, tl, t, tl, t, ts);
+      if (tv) buf_printf(b, ", _t%d = _t%d.tag == SP_TAG_NIL || (_t%d >= 0 ? _t%d <= _t%d : _t%d >= _t%d);"
+                            " _t%d; _t%d = _t%d.tag == SP_TAG_NIL ? (_t%d += _t%d, 1) : sp_int_loop_next(&_t%d, _t%d, _t%d)) {\n",
+                         tg, tv, ts, t, tl, t, tl, tg, tg, tv, t, ts, t, tl, ts);
+      else buf_printf(b, ", _t%d = _t%d >= 0 ? _t%d <= _t%d : _t%d >= _t%d; _t%d; _t%d = sp_int_loop_next(&_t%d, _t%d, _t%d)) {\n",
+                      tg, ts, t, tl, t, tl, tg, tg, t, tl, ts);
       if (p0) { char ts2[32]; snprintf(ts2, sizeof ts2, "_t%d", t); emit_iter_param_assign(c, block, p0_orig, p0, TY_INT, ts2, b, indent + 1); }
     { char rs_es[32]; snprintf(rs_es, sizeof rs_es, "_t%d", t);
       int rs_np = 0; while (block_param_name(c, block, rs_np)) rs_np++;

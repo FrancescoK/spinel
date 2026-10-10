@@ -2909,9 +2909,14 @@ int emit_step_array_expr(Compiler *c, int id, Buf *b) {
     if (sc >= 2) emit_int_expr(c, sv[1], b); else buf_puts(b, "1");
     /* a zero step never advances, so CRuby rejects it outright (#3648) */
     buf_printf(b, "; if (_t%d == 0) sp_raise_cls(\"ArgumentError\", \"step can't be 0\");", ts);
+    /* the limit is the last value: step only while the next one is within
+       it (sp_int_loop_next), so a limit near 2**63-1 ends the array where
+       `_t += step` went past it and round forever */
+    int tg = ++g_tmp;
     buf_printf(b, " for (sp_int _t%d = ", ti); emit_expr(c, recv, b);
-    buf_printf(b, "; _t%d >= 0 ? _t%d <= _t%d : _t%d >= _t%d; _t%d += _t%d) sp_IntArray_push(_t%d, _t%d); _t%d; })",
-               ts, ti, tl, ti, tl, ti, ts, tr, ti, tr);
+    buf_printf(b, ", _t%d = _t%d >= 0 ? _t%d <= _t%d : _t%d >= _t%d; _t%d; _t%d = sp_int_loop_next(&_t%d, _t%d, _t%d))"
+                  " sp_IntArray_push(_t%d, _t%d); _t%d; })",
+               tg, ts, ti, tl, ti, tl, tg, tg, ti, tl, ts, tr, ti, tr);
     return 1;
   }
   int tb = ++g_tmp, tn = ++g_tmp;

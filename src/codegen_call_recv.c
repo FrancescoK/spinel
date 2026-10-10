@@ -12714,8 +12714,11 @@ static int emit_poly_str_upto(Compiler *c, int id, Buf *b) {
   buf_printf(g_pre, "if (_t%d == 1) { if (_t%d >= _t%d->len) break; _t%d = sp_box_str(_t%d->data[_t%d]); }\n",
              tx, ti, ts, te, ts, ti);
   emit_indent(g_pre, g_indent + 1);
-  buf_printf(g_pre, "else if (_t%d == 2) { if (_t%d.v.i + _t%d > _t%d) break; _t%d = sp_box_int(_t%d.v.i + _t%d); }\n",
-             tx, tr, ti, th, te, tr, ti);
+  /* the count past the start is checked against the room left (exact in
+     unsigned once start <= limit), so a limit of 2**63-1 ends the loop where
+     `start + count > limit` overflowed and went round again */
+  buf_printf(g_pre, "else if (_t%d == 2) { if (_t%d.v.i > _t%d || (uintptr_t)_t%d > (uintptr_t)_t%d - (uintptr_t)_t%d.v.i) break; _t%d = sp_box_int(_t%d.v.i + _t%d); }\n",
+             tx, tr, th, ti, th, tr, te, tr, ti);
   emit_indent(g_pre, g_indent + 1);
   buf_printf(g_pre, "else { if (sp_poly_cmp_ck(_t%d, _t%d[0]) > 0) break; _t%d = _t%d; _t%d = sp_poly_add(_t%d, sp_box_int(1)); }\n",
              tc, tl, te, tc, tc, tc);
