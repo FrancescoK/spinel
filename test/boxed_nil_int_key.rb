@@ -5,7 +5,7 @@
 # as a key. The nil key reached the runtime as its sentinel: an Array read
 # answered nil, a Hash read missed the nil key, and a write or an
 # op-assign raised the key's TypeError ahead of the receiver's
-# NoMethodError.
+# NoMethodError. A String raises TypeError for a nil index, frozen or not.
 def show(tag)
   r = yield
   puts "#{tag} #{r.inspect}"
@@ -23,6 +23,14 @@ end
 def bump(a, s)
   a[s.index("b")] += 1
   a
+end
+
+# The value rebinds the receiver's variable: the store goes to the receiver
+# read first, with the key held as above.
+def put_rebind(h, s, v)
+  h0 = h
+  h[s.index("b")] = (h = nil; v)
+  [h0, h]
 end
 
 def memo(a, s)
@@ -50,6 +58,14 @@ show("put hash nil key") { put({1 => :one}, "xyz", :n) }
 show("put array") { put([1, 2, 3], "abc", 9) }
 show("put array nil key") { put([1, 2, 3], "xyz", 9) }
 show("put nil receiver, nil key") { put(nil, "xyz", 9) }
+show("put string") { put(+"abc", "abc", "Q") }
+show("put string nil key") { put(+"abc", "xyz", "Q") }
+show("put frozen string nil key") { put("abc".freeze, "xyz", "Q") }
+show("rebind string nil key") { put_rebind(+"abc", "xyz", "Q") }
+show("rebind hash key") { put_rebind({}, "abc", :k) }
+show("rebind hash nil key") { put_rebind({1 => :one}, "xyz", :n) }
+show("rebind array") { put_rebind([1, 2, 3], "abc", 9) }
+show("rebind array nil key") { put_rebind([1, 2, 3], "xyz", 9) }
 show("bump") { bump([1, 2, 3], "abc") }
 show("bump nil key") { bump([1, 2, 3], "xyz") }
 show("bump nil receiver, nil key") { bump(nil, "xyz") }

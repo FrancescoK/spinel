@@ -12244,11 +12244,15 @@ int emit_aset_recv_read(Compiler *c, int recv, Buf *b) {
    stores in place. */
 static void emit_poly_aset_rebound(Compiler *c, int recv, const int *argv, Buf *b) {
   TyKind at = comp_ntype(c, argv[0]);
+  /* an Integer key that may be nil holds the sentinel, and a nil one goes to
+     the runtime as nil, as in the store below */
+  int nkey = at == TY_INT && nullable_int_value(c, argv[0]);
   int tr = ++g_tmp, tk = ++g_tmp, tv = ++g_tmp, to = ++g_tmp;
   buf_printf(b, "({ sp_RbVal _t%d = ", tr);
   if (emit_aset_recv_read(c, recv, b)) buf_puts(b, "; ");
   else buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", tr);
-  if (at == TY_INT) { buf_printf(b, "sp_int _t%d = ", tk); emit_int_expr(c, argv[0], b); buf_puts(b, "; "); }
+  if (nkey) { buf_printf(b, "sp_int _t%d = ", tk); emit_expr(c, argv[0], b); buf_puts(b, "; "); }
+  else if (at == TY_INT) { buf_printf(b, "sp_int _t%d = ", tk); emit_int_expr(c, argv[0], b); buf_puts(b, "; "); }
   else if (at == TY_RANGE) { buf_printf(b, "sp_Range _t%d = ", tk); emit_expr(c, argv[0], b); buf_puts(b, "; "); }
   else if (at == TY_SYMBOL) { buf_printf(b, "sp_sym _t%d = ", tk); emit_expr(c, argv[0], b); buf_puts(b, "; "); }
   else {
@@ -12265,7 +12269,11 @@ static void emit_poly_aset_rebound(Compiler *c, int recv, const int *argv, Buf *
                                   : "sp_poly_set_poly(_t%d, _t%d, _t%d); _t%d; })", tr, tk, tv, tv);
     return;
   }
-  buf_printf(b, "sp_RbVal _t%d = %s(_t%d, _t%d, _t%d); if (", to, store, tr, tk, tv);
+  if (nkey)
+    buf_printf(b, "sp_RbVal _t%d = SP_UNLIKELY(_t%d == SP_INT_NIL) ? (sp_poly_set_poly(_t%d, sp_box_nil(), _t%d), _t%d) : ",
+               to, tk, tr, tv, tr);
+  else buf_printf(b, "sp_RbVal _t%d = ", to);
+  buf_printf(b, "%s(_t%d, _t%d, _t%d); if (", store, tr, tk, tv);
   emit_expr(c, recv, b); buf_printf(b, ".tag == _t%d.tag && ", tr);
   emit_expr(c, recv, b); buf_printf(b, ".v.p == _t%d.v.p) ", tr);
   emit_expr(c, recv, b); buf_printf(b, " = _t%d; _t%d; })", to, tv);
