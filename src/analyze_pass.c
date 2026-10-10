@@ -6744,6 +6744,39 @@ static TyKind bound_source_type(Compiler *c, int src, const LocalVar *p) {
   return t;
 }
 
+/* Whether method `m` can take call `call_id`'s arguments. A dispatch on a
+   receiver of unknown class reaches only the methods of the name that accept
+   the call's count -- any other raises ArgumentError -- so those are not its
+   callees, and their parameters are not bound from it. A splat, a `...` or a
+   keyword hash a method without keywords takes as a positional leave the
+   count open, and a method that may take it is kept. */
+static int method_takes_call_args(Compiler *c, Scope *m, int call_id) {
+  const NodeTable *nt = c->nt;
+  int args = nt_ref(nt, call_id, "arguments");
+  int n = 0;
+  const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &n) : NULL;
+  int pos = 0, splat = 0, kwh = 0;
+  for (int i = 0; i < n; i++) {
+    NodeKind k = nt_kind(nt, av[i]);
+    if (k == NK_ForwardingArgumentsNode) return 1;
+    if (k == NK_BlockArgumentNode) continue;
+    if (k == NK_KeywordHashNode) { kwh = 1; continue; }
+    if (k == NK_SplatNode) splat++;
+    pos++;
+  }
+  int req = 0, max = 0;
+  for (int k = 0; k < m->nparams; k++) {
+    if (k == m->rest_idx || k == m->kwrest_idx || !m->pnames[k] ||
+        callee_has_kwarg(c, m, m->pnames[k])) continue;
+    max++;
+    if (!m->pdefault || m->pdefault[k] < 0) req++;
+  }
+  if (m->rest_idx >= 0) max = INT_MAX;
+  if (splat) return pos - splat <= max;
+  if (pos >= req && pos <= max) return 1;
+  return kwh && pos + 1 >= req && pos + 1 <= max;
+}
+
 /* Type method mi's parameters from the arguments `argv` of call_id. */
 /* A module method an include copied away never runs as itself: each copy
    binds its own calls, typed against its class. The original, whose ivars
@@ -8917,6 +8950,7 @@ static int infer_param_types_ex(Compiler *c, int settle) {
           int umi = comp_method_in_chain(c, k4, name, NULL);
           if (umi < 0) continue;
           Scope *um = &c->scopes[umi];
+          if (!method_takes_call_args(c, um, id)) continue;
           /* the parameter the call's layout hands the argument */
           ArgLayout L;
           call_layout(c, um, uav, uac, &L);
@@ -9004,7 +9038,8 @@ static int infer_param_types_ex(Compiler *c, int settle) {
         int npc = 0;
         const PolyCand *pcs = comp_poly_candidates(c, name, &npc);
         for (int pi = 0; pi < npc; pi++)
-          changed |= bind_call_params(c, id, pcs[pi].mi);
+          if (pcs[pi].mi < 0 || method_takes_call_args(c, &c->scopes[pcs[pi].mi], id))
+            changed |= bind_call_params(c, id, pcs[pi].mi);
         pcs = comp_cmethod_candidates(c, name, &npc);
         for (int pi = 0; pi < npc; pi++)
           changed |= bind_call_params(c, id, pcs[pi].mi);

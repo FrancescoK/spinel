@@ -4052,6 +4052,8 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	esac; \
 	$(SPINEL) test/infer/module_source_call_binds_nothing.rb -c --no-line-map -o "$$tmp/msc.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (compile module_source_call_binds_nothing)"; exit 1; }; \
 	grep -Eq 'sp_int sp_Seq_output\(sp_Seq \*self, sp_int lv_col, sp_int lv_shift\)' "$$tmp/msc.c" && grep -Eq 'sp_int sp_Port_output\(sp_Port \*self, sp_int lv_port, sp_int lv_value\)' "$$tmp/msc.c" || { echo "infer-test: FAIL (a call in a module method an include copied away boxed the parameters of every method of its name)"; grep -E 'sp_(Seq|Port)_output\(' "$$tmp/msc.c" | head -2; ok=0; }; \
+	$(SPINEL) test/infer/poly_candidate_arity.rb -c --no-line-map -o "$$tmp/pca.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (compile poly_candidate_arity)"; exit 1; }; \
+	grep -Eq 'sp_int sp_Seq_output\(sp_Seq \*self, sp_int lv_col, sp_int lv_shift\)' "$$tmp/pca.c" || { echo "infer-test: FAIL (a call on an untyped receiver bound a method of its name that cannot take its argument count)"; grep -E 'sp_Seq_output\(' "$$tmp/pca.c" | head -1; ok=0; }; \
 	$(SPINEL) test/infer/inline_force_fanout.rb -c --no-line-map -o "$$tmp/iff.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (compile inline_force_fanout)"; exit 1; }; \
 	grep -q 'SP_ALWAYS_INLINE [^(]* sp_f4(' "$$tmp/iff.c" && { echo "infer-test: FAIL (forced inlining copied a small-method chain past the size budget)"; ok=0; }; \
 	$(SPINEL) test/infer/block_kept_through_or.rb -c --no-line-map -o "$$tmp/bko.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (compile block_kept_through_or)"; exit 1; }; \
