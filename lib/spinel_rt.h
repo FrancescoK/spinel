@@ -17054,6 +17054,37 @@ static sp_Enumerator *sp_Enumerator_new_from(sp_RbVal arr) {
   e->items = items; e->cursor = 0; e->gen = NULL; e->gen_cap = NULL; e->fib = NULL; e->peeked = FALSE; e->size = sp_box_nil(); e->feed = sp_box_nil(); e->has_feed = FALSE; e->gen_result = sp_box_nil(); e->source = arr; e->meth = SPL("each");
   return e;
 }
+/* Range#step / Range#% without a block on a String Range (the rows of both
+   names; `op` is "step" or "%"): an Enumerator over the stepped members,
+   labeled with the call as written. A Float stride is only that label: CRuby
+   builds the Enumerator without looking at the stride, and the first member
+   its walk reads adds the stride to a String, a TypeError. So a Float stride
+   gets a generator that raises it, and a size of nil. `src` is `r` boxed. */
+static void sp_srange_float_step_gen(sp_Fiber *f) {
+  (void)f;
+  sp_raise_cls("TypeError", "no implicit conversion of Float into String");
+}
+static sp_Enumerator *sp_srange_step_enum(sp_StrRange r, sp_RbVal src, sp_RbVal stride, const char *op) SP_UNUSED;
+static sp_Enumerator *sp_srange_step_enum(sp_StrRange r, sp_RbVal src, sp_RbVal stride, const char *op) {
+  SP_GC_ROOT_RBVAL(src); SP_GC_ROOT_RBVAL(stride);
+  sp_Enumerator *e;
+  const char *arg = NULL; SP_GC_ROOT_STR(arg);
+  if (stride.tag == SP_TAG_FLT) {
+    e = sp_Enumerator_new_gen(sp_srange_float_step_gen, NULL, sp_box_nil());
+    arg = sp_float_to_s(stride.v.f);
+  }
+  else {
+    sp_StrArray *all = sp_srange_to_a(r); SP_GC_ROOT(all);
+    sp_int n = sp_poly_arg_int_chk(stride);
+    if (n <= 0) sp_raise_cls("ArgumentError", "step can't be 0");
+    sp_StrArray *out = sp_StrArray_new(); SP_GC_ROOT(out);
+    for (sp_int i = 0; i < sp_StrArray_length(all); i += n) sp_StrArray_push(out, sp_StrArray_get(all, i));
+    e = sp_Enumerator_new_from(sp_box_str_array(out));
+    arg = sp_int_to_s(n);
+  }
+  SP_GC_ROOT(e);
+  return sp_enum_with_src(e, src, sp_str_concat(sp_str_concat(sp_str_concat(op, SPL("(")), arg), SPL(")")));
+}
 /* The source of `o.lazy...` where o is a boxed value: an Enumerator is
    read as it is (a generator one step at a time), any other collection
    through an Enumerator over it, and a value that is none raises
@@ -17676,7 +17707,9 @@ sp_Enumerator *sp_Enumerator_new_gen(void (*gen)(sp_Fiber *), void *cap, sp_RbVa
 static const char *sp_enum_inspect(sp_Enumerator *e) {
   if (!e) return SPL("nil");
   SP_GC_ROOT(e);   /* the source's inspect allocates; e->meth is read after it */
-  if (e->gen || e->gen_label)
+  /* a generator Enumerator whose creator recorded its receiver (a String
+     Range's step with a Float stride) prints that receiver */
+  if ((e->gen && !e->has_src) || e->gen_label)
     return sp_sprintf("#<Enumerator: #<Enumerator::Generator:0x%016llx>:each>",
                       (unsigned long long)(uintptr_t)e);
   /* a product shows its factors, as CRuby's Enumerator::Product does */

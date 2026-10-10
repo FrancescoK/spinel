@@ -1,0 +1,30 @@
+#<Enumerator: "a".."e":%(2)>
+#<Enumerator: "a".."e":%(2)>
+#<Enumerator: "a".."e":step(2)>
+#<Enumerator: "a"..."e":%(2)>
+#<Enumerator: "a".."e":%(3)>
+["a", "d"]
+["A", "C", "E"]
+["a", "c"]
+"a"
+"f"
+ace
+ace
+ace
+#<Enumerator: "a".."e":%(2)>
+["x", "y", "z"]
+#<Enumerator: "a".."e":%(1.5)>
+#<Enumerator: "a".."e":%(2.0)>
+#<Enumerator: "a".."e":step(0.5)>
+#<Enumerator: "a"..."e":%(-1.5)>
+nil
+TypeError: no implicit conversion of Float into String
+TypeError: no implicit conversion of Float into String
+TypeError: no implicit conversion of Float into String
+TypeError: no implicit conversion of Float into String
+TypeError: no implicit conversion of Float into String
+TypeError: no implicit conversion of Float into String
+TypeError: no implicit conversion of Float into String
+["a", "c", "e"]
+#<Enumerator: "a".."e":%(1.5)>
+TypeError: no implicit conversion of Float into String

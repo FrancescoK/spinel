@@ -14318,6 +14318,10 @@ static int emit_array_arith_call(Compiler *c, int id, Buf *b) {
     if (re || ae) return 0;
   }
 
+  /* A String Range's % is its step: the row labels the Enumerator `%(n)`. Ahead
+     of the numeric arms, which would read a Float stride as Float arithmetic. */
+  if (rt == TY_STR_RANGE && recv >= 0 && emit_builtin_op_tmp(c, id, recv, rt, name, ++g_tmp, b)) return 1;
+
   if (recv >= 0 && argc == 1 && !ty_is_object(rt) && !ty_is_array(rt) &&
       int_arith_fn(name)) {
     /* An Integer/Bignum arith op coerces its argument via coerce/to_int; a

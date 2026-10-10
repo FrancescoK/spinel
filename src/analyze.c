@@ -7194,8 +7194,10 @@ static int desugar_str_range_methods(Compiler *c) {
     int recv = nt_ref(nt, id, "receiver");
     if (!nm || recv < 0) continue;
     if (infer_type(c, recv) != TY_STR_RANGE) continue;
-    /* `range % n` is `range.step(n)`; the arithmetic emitter has no arm for a
-       string range, so name it what it is (#3671) */
+    /* `range % n { }` is `range.step(n) { }` (#3671): the walk has no row of
+       its own under the `%` name, so name it what it is. The blockless form is
+       the `%` row's, whose Enumerator inspects as `%(n)`. */
+    if (is_mod_operator(nm) && nt_ref(nt, id, "block") < 0) continue;
     if (sp_streq(nm, "%")) { nt_node_set_str(nt, id, "name", "step"); changed = 1; continue; }
     int argn = nt_ref(nt, id, "arguments");
     int an = 0;

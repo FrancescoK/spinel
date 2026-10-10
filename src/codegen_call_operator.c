@@ -1495,6 +1495,7 @@ int emit_call_operator_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
      arithmetic, so let them fall through. */
   if (recv >= 0 && argc == 1 && (rt == TY_POLY || a0 == TY_POLY) &&
       rt != TY_TIME &&  /* Time +/- a poly is Time arithmetic (emit_array_arith_call, #2456) */
+      rt != TY_STR_RANGE &&  /* a String Range % is its step, whatever the stride's type */
       !(rt == TY_STRING && (is_add_or_mul(name))) &&
       !((ty_is_array(rt) || rt == TY_POLY_ARRAY) && sp_streq(name, "*")) &&
       /* `arr - x` is a set difference, served by the set-op arms with their
