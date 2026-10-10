@@ -853,6 +853,11 @@ static int sp_zlib_dist_sym(size_t d) {
 #define SP_Z_MIN_MATCH 3
 #define SP_Z_MAX_MATCH 258
 #define SP_Z_WINDOW    32768
+/* The length of the chain table for a long input. Twice the window: the
+   entry a position takes over is then never one the search can still
+   reach, whichever of search and insert comes first, and the index is the
+   low 16 bits of the position. */
+#define SP_Z_RING      (2 * SP_Z_WINDOW)
 
 static unsigned sp_zlib_hash3(const unsigned char *p) {
   return (unsigned)(((uint32_t)p[0] << 10) ^ ((uint32_t)p[1] << 5) ^ (uint32_t)p[2])
@@ -861,8 +866,18 @@ static unsigned sp_zlib_hash3(const unsigned char *p) {
 
 /* Greedy LZ77 over a hash chain, emitted as one fixed-Huffman block. The
    chain depth is what `level` buys: more candidates examined per position,
-   the same output format either way. */
-static void sp_zlib_deflate_body(sp_zlib_bw *w, const unsigned char *p, size_t n, int level) {
+   the same output format either way.
+
+   `prev` is a ring of SP_Z_RING entries, not an entry per input byte, and
+   `mask` turns a position into its entry. The search follows a chain only
+   from a position at most SP_Z_WINDOW behind the one it is at, and the
+   position that takes over that entry is SP_Z_RING further on, which the
+   search has not reached: an entry is never read once it has been
+   overwritten. An input that fits the ring has an entry per byte as it
+   always had, and its mask is all ones. The function is inlined into each
+   of its two calls so that this mask folds away there, and such an input is
+   searched by the code that searched it before. */
+static SP_INLINE void sp_zlib_deflate_body(sp_zlib_bw *w, const unsigned char *p, size_t n, int level, size_t mask) {
   /* Z_DEFAULT_COMPRESSION is -1 and means level 6, which is the value nearly
      every caller passes without knowing it: `Zlib.deflate(s)` takes the
      default, and reading -1 as "below 0, so no matching" made the default the
@@ -871,8 +886,9 @@ static void sp_zlib_deflate_body(sp_zlib_bw *w, const unsigned char *p, size_t n
   int depth = level == 0 ? 0 : (level <= 3 ? 16 : (level <= 6 ? 64 : 256));
   int32_t *head = NULL, *prev = NULL;
   if (depth > 0 && n >= SP_Z_MIN_MATCH) {
+    size_t ring = n < SP_Z_RING ? n : SP_Z_RING;
     head = (int32_t *)malloc(sizeof(int32_t) * SP_Z_HASH_SIZE);
-    prev = (int32_t *)malloc(sizeof(int32_t) * n);
+    prev = (int32_t *)malloc(sizeof(int32_t) * ring);
     if (!head || !prev) { free(head); free(prev); head = NULL; prev = NULL; depth = 0; }
   }
   if (head) for (size_t i = 0; i < SP_Z_HASH_SIZE; i++) head[i] = -1;
@@ -894,12 +910,12 @@ static void sp_zlib_deflate_body(sp_zlib_bw *w, const unsigned char *p, size_t n
            has to agree with the input one byte past the best match: at the
            very first byte when there is none yet. That byte is inside the
            input, since a match of `limit` bytes ends the search. */
-        if (a[best_len] != b[best_len]) { cand = prev[cand]; continue; }
+        if (a[best_len] != b[best_len]) { cand = prev[cand & mask]; continue; }
         size_t l = 0;
         while (l + 8 <= limit && memcmp(a + l, b + l, 8) == 0) l += 8;
         while (l < limit && a[l] == b[l]) l++;
         if (l > best_len) { best_len = l; best_dist = d; if (l == limit) break; }
-        cand = prev[cand];
+        cand = prev[cand & mask];
       }
       if (best_len < SP_Z_MIN_MATCH) { best_len = 0; best_dist = 0; }
     }
@@ -923,7 +939,7 @@ static void sp_zlib_deflate_body(sp_zlib_bw *w, const unsigned char *p, size_t n
     if (head)
       for (size_t k = i; k < i + advance && k + SP_Z_MIN_MATCH <= n; k++) {
         unsigned h = sp_zlib_hash3(p + k);
-        prev[k] = head[h];
+        prev[k & mask] = head[h];
         head[h] = (int32_t)k;
       }
     i += advance;
@@ -933,6 +949,9 @@ static void sp_zlib_deflate_body(sp_zlib_bw *w, const unsigned char *p, size_t n
   free(prev);
 }
 
+/* The whole of `src` as one fixed-Huffman block, in the wrapper that
+   `window_bits` names: a zlib stream, a gzip member, or raw deflate. NULL,
+   with the error message set, when the output cannot be allocated. */
 const char *sp_zlib_deflate(const char *src, sp_int level, sp_int window_bits) {SP_GC_ROOT_STR(src);
   sp_zlib_err = NULL;
   size_t n = src ? sp_str_byte_len(src) : 0;
@@ -957,7 +976,9 @@ const char *sp_zlib_deflate(const char *src, sp_int level, sp_int window_bits) {
   w.o = &o; w.buf = 0; w.cnt = 0;
   sp_zlib_bw_put(&w, 1, 1);   /* BFINAL: one block for the whole input */
   sp_zlib_bw_put(&w, 1, 2);   /* BTYPE 01: fixed Huffman */
-  sp_zlib_deflate_body(&w, p, n, (int)level);
+  /* two calls, two inlined bodies: the mask is a constant in each */
+  if (n <= SP_Z_RING) sp_zlib_deflate_body(&w, p, n, (int)level, ~(size_t)0);
+  else                sp_zlib_deflate_body(&w, p, n, (int)level, SP_Z_RING - 1);
   sp_zlib_bw_flush(&w);
 
   if (kind == SP_Z_ZLIB) {

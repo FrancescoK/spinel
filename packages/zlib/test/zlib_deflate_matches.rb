@@ -114,3 +114,39 @@ head = noise(200, 21)
   s = head + noise(dist - 200, 23) + head + "z"
   p Zlib.inflate(Zlib.deflate(s)).bytes == s.bytes
 end
+
+# Past 65,536 bytes the chain entries are a ring, and an entry is taken over
+# by the position a ring's length after it. Twelve 40-byte strings, each
+# followed by its own first five bytes, come round again almost a window
+# later, all of it past the ring's first lap. The search meets the five-byte
+# copy first and gets to the whole string only through that copy's entry,
+# written almost a window before: a ring half the window long has lost it by
+# then, and the search stops at five bytes. The filler is a count in base
+# 64, three digits a number and each digit in a range of its own, so no three
+# bytes of it come twice; the strings are bytes from 192 up, which it has
+# none of. The pairs are 16 bits (five bytes at distance 41) and 28 (forty
+# bytes, 13 extra bits of distance).
+def counting(from, count)
+  out = []
+  count.times do |j|
+    c = from + j
+    out << (c / 4096).chr
+    out << (64 + c / 64 % 64).chr
+    out << (128 + c % 64).chr
+  end
+  out.join
+end
+
+before = counting(0, 22_000)
+between = counting(22_000, 10_633)
+s = "." + before
+unmatched = "." + before
+again = ""
+12.times do |j|
+  t = ""
+  noise(40, 101 + j).each_byte { |b| t += (b | 192).chr }
+  s += t + "|" + t[0, 5] + "~"
+  unmatched += t + "|~"
+  again += t + "!"
+end
+p tight?(s + between + again, unmatched + between + "!" * 12, (16 + 28) * 12)
