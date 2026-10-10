@@ -1535,6 +1535,11 @@ int emit_call_method_obj_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
                          : ty_is_array(mrt) ? "Array" : ty_is_hash(mrt) ? "Hash"
                          : mrt == TY_RANGE ? "Range" : mrt == TY_TIME ? "Time" : NULL;
         if (mcls) {
+          /* a Comparable method the class does not define itself is the
+             module's: String#between?, Integer#clamp */
+          const char *osym = is_bam ? bam_builtin_sym(c, target, NULL) : method_sym_arg(c, mn);
+          if (osym && builtin_comparable_owns(mcls, osym) && !builtin_method_known(mcls, osym))
+            mcls = "Comparable";
           buf_printf(b, "((void)("); emit_expr(c, recv, b);
           buf_printf(b, "), ((sp_Class){(sp_int)-1, SPL(\"%s\")}))", mcls);
           return 1;
@@ -1615,6 +1620,11 @@ int emit_call_method_obj_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
                        : mrt == TY_RANGE ? "Range" : mrt == TY_TIME ? "Time" : NULL;
       int ba = 0, have_ba = 0;
       if (msym && mcls && builtin_method_arity(mcls, msym, &ba)) have_ba = 1;
+      /* Comparable's methods, which the class's own table leaves out */
+      else if (msym && mcls && builtin_comparable_owns(mcls, msym)) {
+        ba = builtin_comparable_arity(msym);
+        have_ba = 1;
+      }
       /* A receiverless Kernel wrapper (`method(:String)`) has no receiver
          class; the builtin's real arity is keyed under "Kernel" (#4395). */
       else if (is_bam && mrecv < 0 && msym && builtin_method_arity("Kernel", msym, &ba)) have_ba = 1;

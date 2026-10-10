@@ -1853,6 +1853,10 @@ int method_scope_arity(Compiler *c, int target, int *out) {
       int ka;
       if (kn && builtin_method_arity("Kernel", kn, &ka)) { *out = ka; return 1; }
     }
+    /* a Comparable method's wrapper forwards the arguments its call sites
+       pass, which is not the method's arity (clamp takes one or two) */
+    const char *cs = nt_str(nt, c->scopes[target].def_node, "bam_sym");
+    if (cs && nt_int(nt, c->scopes[target].def_node, "bam_cmp", 0)) { *out = builtin_comparable_arity(cs); return 1; }
   }
   int pn = nt_ref(nt, c->scopes[target].def_node, "parameters");
   int n_req = 0, n_opt = 0, n_post = 0;

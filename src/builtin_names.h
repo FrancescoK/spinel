@@ -259,6 +259,8 @@ int is_string_read_only_method(const char *name);
 int str_mutator_str_args(const char *n, int argc, int *int_ok); /* the arguments a String mutator takes as Strings */
 
 int builtin_module_owns(const char *cls, const char *name); /* included ahead of Object */
+int builtin_comparable_owns(const char *cls, const char *name); /* Comparable's, on a class including it */
+int builtin_comparable_arity(const char *name);
 
 int is_gated_exception_accessor(const char *n); /* accessors owned by specific exception classes */
 int is_symbol_exception_accessor(const char *n); /* exception accessors that can return a Symbol */
