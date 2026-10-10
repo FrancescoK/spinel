@@ -1,0 +1,11 @@
+own help
+[]
+own help
+[]
+[OptionParser::MissingArgument, "missing argument: --h", []]
+[OptionParser::AmbiguousOption, "ambiguous option: --h", []]
+[OptionParser::NeedlessArgument, "needless argument: --help=1", []]
+["--help"]
+verbose
+Usage: t
+    -v, --verbose                    Be loud

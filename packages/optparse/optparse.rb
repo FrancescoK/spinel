@@ -22,6 +22,8 @@
 #   - String refuses an empty value with OptionParser::InvalidArgument, and
 #     Array passes nil for an empty item ("a,,b"); without a type an empty
 #     value passes as it is
+#   - --help prints the help and exits, as CRuby's built-in switch does,
+#     unless the program declares its own --help
 #   - OptionParser::InvalidOption, OptionParser::AmbiguousOption,
 #     OptionParser::MissingArgument, OptionParser::NeedlessArgument and
 #     OptionParser::InvalidArgument, all subclasses of OptionParser::ParseError
@@ -158,6 +160,7 @@ class OptionParser
     @summary_indent = indent
     @entries = []
     @tail = []
+    @help = Switch.new([], ["--help"], "", [], proc { |_| puts to_s; exit }, Object)
     block.call(self) if block
   end
 
@@ -305,7 +308,15 @@ class OptionParser
   end
 
   def find_switch(name)
-    (@entries + @tail).find { |e| e.matches?(name) }
+    (@entries + base_switches).find { |e| e.matches?(name) }
+  end
+
+  # CRuby's base list: the on_tail switches and its built-in --help, which
+  # prints the help and exits. A --help of the program's own wins, and the
+  # help text does not list the built-in one.
+  def base_switches
+    return @tail if @tail.any? { |sw| sw.matches?("--help") }
+    @tail + [@help]
   end
 
   # Passes the value to the block in the switch's type. An empty String or
@@ -425,14 +436,14 @@ class OptionParser
   # may be cut ("--d-r" is "--dry-run") and case is ignored; an exact name
   # wins. When names of several switches match, the shortest wins if it
   # starts all the others ("--lis" is "--list" beside "--listen"), else
-  # raises AmbiguousOption. Switches from on come before on_tail ones, and
-  # a bare "--" matches nothing.
+  # raises AmbiguousOption. Switches from on come before on_tail ones and
+  # the built-in --help, and a bare "--" matches nothing.
   def complete_long(name)
     return name if find_switch(name)
     return nil if name == "--"
     words = Regexp.quote(name[2..]).gsub(/\w+\b/, "\\&\\w*")
     pattern = Regexp.new("\\A" + words, Regexp::IGNORECASE)
-    complete_in(@entries, name, pattern) || complete_in(@tail, name, pattern)
+    complete_in(@entries, name, pattern) || complete_in(base_switches, name, pattern)
   end
 
   # complete_long within one list; nil when nothing matches.
