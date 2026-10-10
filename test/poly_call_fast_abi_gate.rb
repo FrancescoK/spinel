@@ -1,3 +1,5 @@
+# spinel: not-cruby -- typed-slot refusals (a String into an Integer array, a
+# false into an Integer parameter) raise here where CRuby takes the value.
 # Regression: the NO-user-`call` poly `.call` fast path and the poly `[]`
 # runtime arms must apply the same per-position legacy sp_int ABI gate as the
 # shadowed pre-arm.
