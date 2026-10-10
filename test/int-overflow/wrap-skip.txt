@@ -20,6 +20,7 @@ test/int_unbox_nil_ops.rb
 test/int_unbox_nil_sentinel.rb
 test/nil_from_int_container_arithmetic.rb
 test/nil_narrowing.rb
+test/nil_narrowing_operands.rb
 test/nullable_scalar_carriers.rb
 test/scalar_local_read_before_write.rb
 test/stack_overflow_rescued.rb
