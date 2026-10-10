@@ -39747,6 +39747,29 @@ static void an_phase_proc_returns(Compiler *c) {
           TyKind cur = c->classes[cid].ivar_types[iv], nw = PW_JOIN(cur, TY_POLY_ARRAY);
           if (nw != cur) { c->classes[cid].ivar_types[iv] = nw; changed = 1; }
         }
+        /* (6c) an attribute writer's argument (`o.s = [o.a]`): the
+           attribute's ivar in the receiver's class, or in every class with
+           such an ivar when the receiver is boxed */
+        for (int id = 0; id < nt->count; id++) {
+          if (!nt_type(nt, id) || !sp_streq(nt_type(nt, id), "CallNode")) continue;
+          const char *nm = nt_str(nt, id, "name");
+          size_t nl = nm ? strlen(nm) : 0;
+          if (nl < 2 || nm[nl - 1] != '=' || nm[nl - 2] == '=' || nm[nl - 2] == '!' || nm[nl - 2] == '<' ||
+              nm[nl - 2] == '>' || nm[0] == '[') continue;
+          int recv = nt_ref(nt, id, "receiver");
+          int aa = nt_ref(nt, id, "arguments"), argc = 0;
+          const int *argv = aa >= 0 ? nt_arr(nt, aa, "arguments", &argc) : NULL;
+          if (recv < 0 || argc != 1 || infer_type(c, argv[0]) != TY_POLY_ARRAY) continue;
+          char ivn[300]; snprintf(ivn, sizeof ivn, "@%.*s", (int)(nl - 1), nm);
+          TyKind rt = infer_type(c, recv);
+          for (int k = 0; k < c->nclasses; k++) {
+            if (ty_is_object(rt) ? k != ty_object_class(rt) : (rt != TY_POLY && rt != TY_UNKNOWN)) continue;
+            int iv = comp_ivar_index(&c->classes[k], ivn);
+            if (iv < 0) continue;
+            TyKind cur = c->classes[k].ivar_types[iv], nw = PW_JOIN(cur, TY_POLY_ARRAY);
+            if (nw != cur) { c->classes[k].ivar_types[iv] = nw; changed = 1; }
+          }
+        }
         /* (6b) ...and the same field in every class that shares it through
            inheritance. (6) widens the class whose method writes the ivar, but
            a subclass holds a copy of the slot (inherit_members) and an
