@@ -1485,6 +1485,7 @@ void emit_arg_or_default(Compiler *c, Scope *m, int idx, int provided, Buf *out)
 int declare_default_locals(Compiler *c, Scope *m, int dnode);
 int arg_wants_root(Compiler *c, TyKind pt, int provided);
 int emit_nilfree_operand(Compiler *c, int v, const char *op, int left, const char *lhs, Buf *b);
+int emit_nilfree_cmp_operand(Compiler *c, int v, const char *op, int left, const char *lhs, Buf *b);
 void emit_rooted_operand(Compiler *c, TyKind pt, int provided, const char *expr, Buf *out);
 int arg_read_converts(Compiler *c, TyKind pt, int provided);
 void emit_rooted_conversion(Compiler *c, TyKind pt, const char *expr, Buf *out);

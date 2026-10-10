@@ -1,0 +1,21 @@
+22
+22
+2
+2
+3
+ArgumentError: comparison of Float with nil failed
+NoMethodError: undefined method '<=' for nil
+NoMethodError: undefined method '>' for nil
+ArgumentError: comparison of Float with nil failed
+NoMethodError: undefined method '<' for nil
+ArgumentError: comparison of Float with nil failed
+NoMethodError: undefined method '<=' for nil
+0
+NoMethodError: undefined method '[]' for nil
+1
+ArgumentError: comparison of Float with nil failed
+1
+NoMethodError: undefined method '<' for nil
+NoMethodError: undefined method '<' for nil
+1
+NoMethodError: undefined method '[]' for nil
