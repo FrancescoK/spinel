@@ -60,6 +60,10 @@ typedef struct {
   sp_bool is_product;                    /* built by Enumerator.product / Enumerator::Product.new:
                                              the items are the tuples, `source` the factors, and
                                              #class reports Enumerator::Product (zero-filled) */
+  sp_bool size_nil;                      /* #size is nil, whatever the items: the source is a String
+                                             Range (a Range of Strings counts no members without
+                                             walking them), and what is built on such an
+                                             Enumerator inherits it (sp_gc_alloc zero-fills) */
   sp_bool endless;                       /* an argless #cycle: the items are one round, and
                                              #next / #peek start over at their end, so the
                                              enumerator never stops (sp_gc_alloc zero-fills) */
@@ -82,5 +86,19 @@ typedef struct {
   sp_int walk_next;                      /* the walk's next index: how far it has read */
   sp_bool walk_done;                     /* the source has no more items */
 } sp_Enumerator;
+
+/* A blockless call on a String Range's member Array stands for the Range's own
+   (desugar_str_range_methods); the Enumerator it answers has no size. */
+static inline sp_Enumerator *sp_enum_size_nil(sp_Enumerator *e) {
+  if (e) e->size_nil = TRUE;
+  return e;
+}
+
+/* An Enumerator built on `e` (with_index, each_slice, cycle, ...) has the size
+   its source has: unknown, when the source's is. */
+static inline sp_Enumerator *sp_enum_inherit_size(sp_Enumerator *r, const sp_Enumerator *e) {
+  if (e && e->size_nil) r->size_nil = TRUE;
+  return r;
+}
 
 #endif

@@ -16982,6 +16982,20 @@ static int emit_bivar_copy_wrap(Compiler *c, int id, Buf *b) {
   return 1;
 }
 
+/* A blockless call on a String Range that desugar_str_range_methods lowered to
+   the same call on the Range's member Array (srange_enum): when it answers an
+   Enumerator, that Enumerator has no size, as the Range's own is nil. The
+   Enumerators built on it inherit that (sp_enum_inherit_size). */
+static int emit_srange_enum_wrap(Compiler *c, int id, Buf *b) {
+  if (!nt_int(c->nt, id, "srange_enum", 0) || comp_ntype(c, id) != TY_ENUMERATOR ||
+      repr_of(c, id).kind == RK_BOXED) return 0;
+  Buf nb; memset(&nb, 0, sizeof nb);
+  emit_call_unwrapped(c, id, &nb);
+  buf_printf(b, "sp_enum_size_nil(%s)", nb.p ? nb.p : "NULL");
+  free(nb.p);
+  return 1;
+}
+
 /* `Hash.new(capacity: e)` whose `e` has something to run: desugar_hash_new_capacity
    took the keyword off the call and left `e` as its `hash_capacity`. The call
    is emitted as without it, then `e` runs (after the default, as in CRuby)
@@ -23266,6 +23280,8 @@ void emit_call(Compiler *c, int id, Buf *b) {
   if (emit_hash_new_capacity_wrap(c, id, b, 0)) return;
   /* a copy of a value whose ivars live in the runtime's map */
   if (emit_bivar_copy_wrap(c, id, b)) return;
+  /* an Enumerator over a String Range's members has no size */
+  if (emit_srange_enum_wrap(c, id, b)) return;
   /* a flagged constant read through a receiver that runs: once, whatever the lowering does with it */
   if (emit_const_recv_wrap(c, id, b)) return;
   int env_args = emit_env_args_before(c, id);

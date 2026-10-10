@@ -7256,6 +7256,8 @@ static int desugar_str_range_methods(Compiler *c) {
           ((an == 0 && is_each_walk_or_with_index(nm)) || (an == 1 && is_each_window(nm))))
         nt_node_set_str(nt, toa, "enum_recv", "1"); }
     nt_node_set_ref(nt, id, "receiver", toa);
+    /* an Enumerator the blockless call answers has no size (emit_call) */
+    if (nt_ref(nt, id, "block") < 0) nt_node_set_int(nt, id, "srange_enum", 1);
     comp_grow_node_arrays(c);
     c->nscope[toa] = c->nscope[id];
     changed = 1;

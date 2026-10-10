@@ -17636,7 +17636,7 @@ static sp_Enumerator *sp_Enumerator_regroup(sp_Enumerator *e, sp_int n, sp_bool 
   if (e && (e->gen || e->endless)) return sp_Enumerator_regroup_gen(e, n, cons);
   SP_GC_ROOT(e);
   sp_RbVal a = sp_box_poly_array(sp_Enumerator_to_a(e));
-  return cons ? sp_Enumerator_new_cons(a, n) : sp_Enumerator_new_slices(a, n);
+  return sp_enum_inherit_size(cons ? sp_Enumerator_new_cons(a, n) : sp_Enumerator_new_slices(a, n), e);
 }
 /* The same on a boxed receiver: a boxed generator or endless Enumerator
    regroups as it is pulled, anything else through its elements. */
@@ -17660,7 +17660,7 @@ static sp_Enumerator *sp_Enumerator_ewi(sp_Enumerator *e) {
     return r;
   }
   SP_GC_ROOT(e);
-  return sp_Enumerator_new_ewi(sp_box_poly_array(sp_Enumerator_to_a(e)), 0);
+  return sp_enum_inherit_size(sp_Enumerator_new_ewi(sp_box_poly_array(sp_Enumerator_to_a(e)), 0), e);
 }
 /* A string's characters as a fresh poly array of one-char Strings, built
    directly. Used by a blockless String#each_char enumerator, avoiding the
