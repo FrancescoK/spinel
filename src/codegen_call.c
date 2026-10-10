@@ -8069,13 +8069,23 @@ void emit_builtin_len_cases(Buf *b, int tr, int tv, const char *open, const char
 /* The dispatch default's block arms: sum(init) { } beside a class's own
    sum (an Array, Hash or Range adds the block's answers to init),
    fetch(key) { } and merge!/update(other, ...) { }, the block (a proc
-   argument too) through a runtime arm. Answers 1 when it wrote the arm. */
+   argument too) through a runtime arm. sum(init) without a block takes the
+   seeded fold (it raised NoMethodError for an Array or a Range). Answers 1
+   when it wrote the arm. */
 int emit_poly_default_blk_arm(Compiler *c, int id, const char *name, int argc, const int *argv,
                                      const int *atmp, const TyKind *atmp_ty, int tv, int tr,
                                      int blk_tmp2, Buf *b) {
   const NodeTable *nt = c->nt;
-  if (nt_ref(nt, id, "block") < 0) return 0;
   for (int a = 0; a < argc; a++) if (nt_kind(nt, argv[a]) == NK_SplatNode) return 0;
+  if (nt_ref(nt, id, "block") < 0) {
+    if (!(is_sum_name(name) && argc == 1)) return 0;
+    char tn[32]; snprintf(tn, sizeof tn, "_t%d", atmp[0]);
+    buf_printf(b, " _t%d = sp_poly_sum_seed(_t%d, ", tr, tv);
+    if (atmp_ty[0] == TY_POLY) buf_puts(b, tn);
+    else emit_boxed_text(c, atmp_ty[0], tn, b);
+    buf_puts(b, "); break;");
+    return 1;
+  }
   if (sp_streq(name, "sum") && argc == 1) {
     int sblk = poly_call_blk_proc(c, id, blk_tmp2);
     if (sblk < 0) return 0;

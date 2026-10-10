@@ -1812,7 +1812,7 @@ void emit_poly_prearms0(Compiler *c, int id, const char *name, const PolySpecial
          always did; min/max/first/last since #4192's follow-up), so it
          must not fall into the user switch either. */
       char tg[128];
-      int tn = snprintf(tg, sizeof tg, " || _t%d.cls_id == SP_BUILTIN_RANGE", tv);
+      int tn = snprintf(tg, sizeof tg, " || _t%d.cls_id == SP_BUILTIN_RANGE || _t%d.cls_id == SP_BUILTIN_STR_RANGE", tv, tv);
       if (sp_streq(name, "min"))
         snprintf(tg + tn, sizeof tg - (size_t)tn,
                  " || _t%d.cls_id == SP_BUILTIN_TIME", tv);
@@ -1944,8 +1944,9 @@ int emit_poly_prearms0_blk(Compiler *c, int id, const char *name, const PolySpec
       snprintf(pcall, sizeof pcall, "sp_poly_enum_proc(_t%d, %s, _t%d)", tv, pen_op, blk_tmp0);
       /* an Integer Range walks through the same helper (its length and
          members are known to it); without it a boxed Range fell to the
-         user-class switch's NoMethodError (#4840) */
-      buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && (sp_poly_is_array_kind(_t%d.cls_id) || sp_poly_is_hash_kind(_t%d.cls_id) || _t%d.cls_id == SP_BUILTIN_RANGE || _t%d.cls_id == SP_BUILTIN_ENUMERATOR)) { _t%d = ", tv, tv, tv, tv, tv, tr);
+         user-class switch's NoMethodError (#4840). So does a String Range
+         (a Range of Symbols too), over its members. */
+      buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && (sp_poly_is_array_kind(_t%d.cls_id) || sp_poly_is_hash_kind(_t%d.cls_id) || _t%d.cls_id == SP_BUILTIN_RANGE || _t%d.cls_id == SP_BUILTIN_STR_RANGE || _t%d.cls_id == SP_BUILTIN_ENUMERATOR)) { _t%d = ", tv, tv, tv, tv, tv, tv, tr);
       if (ret == TY_POLY) buf_puts(b, pcall);
       else emit_unbox_text(c, ret, pcall, b);
       buf_puts(b, "; }\nelse ");
@@ -2923,7 +2924,7 @@ void emit_poly_prearms_n(Compiler *c, const char *name, const PolySpecialsN *ps,
                  ret == TY_POLY ? ")" : "");
     /* ...and a boxed one, which sp_range_cover_poly (include?'s too) does
        not read as a Range */
-    else if (atmp_ty[0] == TY_POLY)
+    else if (atmp_ty[0] == TY_POLY) {
       buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_RANGE)"
                     " { _t%d = %s(_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_RANGE && _t%d.v.p"
                     " ? sp_range_cover_rng(*(sp_Range *)_t%d.v.p, *(sp_Range *)_t%d.v.p)"
@@ -2931,6 +2932,12 @@ void emit_poly_prearms_n(Compiler *c, const char *name, const PolySpecialsN *ps,
                  tv, tv, tr, ret == TY_POLY ? "sp_box_bool(" : "",
                  atmp[0], atmp[0], atmp[0], tv, atmp[0], tv, atmp[0],
                  ret == TY_POLY ? ")" : "");
+      /* a boxed String Range: a String by comparison, a String Range by its
+         ends (sp_srange_cover_poly); it answered false */
+      buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_STR_RANGE && _t%d.v.p)"
+                    " { _t%d = %ssp_srange_cover_poly(_t%d, _t%d)%s; }\nelse ",
+                 tv, tv, tv, tr, ret == TY_POLY ? "sp_box_bool(" : "", tv, atmp[0], ret == TY_POLY ? ")" : "");
+    }
     /* an argument of another class (a String, an Array, nil) compares
        boxed, as a boxed one does: it went into sp_range_include's sp_int
        slot raw, and did not build */
@@ -2941,9 +2948,10 @@ void emit_poly_prearms_n(Compiler *c, const char *name, const PolySpecialsN *ps,
                     " { _t%d = %ssp_range_cover_poly((sp_Range *)_t%d.v.p, %s)%s; }\nelse ",
                  tv, tv, tr, ret == TY_POLY ? "sp_box_bool(" : "", tv, ab7.p ? ab7.p : "sp_box_nil()",
                  ret == TY_POLY ? ")" : "");
-      /* a String Range covers by string comparison, as its === does */
+      /* a String Range covers by string comparison, as its === does, and a
+         String Range by its ends (sp_srange_cover_poly) */
       buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_STR_RANGE)"
-                    " { _t%d = %ssp_poly_case_eq(_t%d, %s)%s; }\nelse ",
+                    " { _t%d = %ssp_srange_cover_poly(_t%d, %s)%s; }\nelse ",
                  tv, tv, tr, ret == TY_POLY ? "sp_box_bool(" : "", tv, ab7.p ? ab7.p : "sp_box_nil()",
                  ret == TY_POLY ? ")" : "");
       free(ab7.p);
@@ -3770,14 +3778,17 @@ void emit_poly_cases_n(Compiler *c, int id, const char *name, const PolySpecials
     }
     /* A String Range: a String argument is a member by succession, anything
        else is not one, and an open Range raises CRuby's TypeError either way
-       (sp_srange_include_poly). It fell to the default arm's false. */
-    { Buf ab7; memset(&ab7, 0, sizeof ab7);
+       (sp_srange_include_poly). It fell to the default arm's false. key? and
+       has_key? are no Range methods. */
+    if (is_membership_alias(name)) {
+      Buf ab7; memset(&ab7, 0, sizeof ab7);
       char tn7[24]; snprintf(tn7, sizeof tn7, "_t%d", atmp[0]);
       if (atmp_ty[0] == TY_POLY) buf_puts(&ab7, tn7);
       else emit_boxed_text(c, atmp_ty[0], tn7, &ab7);
       buf_printf(b, " case SP_BUILTIN_STR_RANGE: _t%d = %ssp_srange_include_poly(SP_SRANGE_OF(_t%d.v.p), %s)%s; break;",
                  tr, ibo, tv, ab7.p ? ab7.p : "sp_box_nil()", ibc);
       free(ab7.p); }
+    else buf_printf(b, " case SP_BUILTIN_STR_RANGE: sp_raise_poly_nomethod(\"%s\", _t%d); break;", name, tv);
     /* PolyArray: box the arg for runtime comparison */
     {
       int tbox = ++g_tmp;
