@@ -1952,6 +1952,18 @@ void block_aliases_release(BlockAliases *al) {
   }
 }
 
+/* The default dv of block parameter pl (of type pt), on the block side.
+   Under --share-strings a parameter that is the shared handle takes the
+   handle a default reads off a variable (`|v = s|`, `|v: s|`), as it takes
+   a yielded one: coerced, the default bound a copy of s. The default build
+   coerces it as before. */
+static void emit_block_default(Compiler *c, LocalVar *pl, int dv, TyKind pt, BiRen *bi, Buf *b) {
+  bi_block_side(bi);
+  if (!(repr_share_rule(c) && repr_of_slot(c, pl).handle && emit_handle_var_ref(c, dv, b)))
+    emit_block_arg_coerced(c, dv, pt, b);
+  bi_method_side(bi);
+}
+
 /* Bind block `blk`'s keyword parameters and **kwrest from a call's trailing
    keyword hash `ykw` (-1: the call passes none), for a yield or block.call
    and for instance_exec. `bsc` holds the parameters' slots. */
@@ -2127,12 +2139,12 @@ void emit_block_kw_binds(Compiler *c, int blk, int ykw, Scope *bsc, Buf *b, int 
       if (kt == TY_POLY || kt == TY_UNKNOWN) buf_puts(b, "_v");
       else emit_unbox_text(c, kt, "_v", b);
       buf_puts(b, " : ");
-      if (dv >= 0) { bi_block_side(bi); emit_block_arg_coerced(c, dv, kt, b); bi_method_side(bi); }
+      if (dv >= 0) emit_block_default(c, kl, dv, kt, bi, b);
       else buf_puts(b, kt == TY_RANGE ? "(sp_Range){0}" : default_value_from_compiler(c, kt));
       buf_puts(b, "; })");
     }
     else if (vn >= 0) emit_block_arg_coerced(c, vn, kt, b);
-    else if (dv >= 0) { bi_block_side(bi); emit_block_arg_coerced(c, dv, kt, b); bi_method_side(bi); }
+    else if (dv >= 0) emit_block_default(c, kl, dv, kt, bi, b);
     else buf_puts(b, kt == TY_RANGE ? "(sp_Range){0}" : default_value_from_compiler(c, kt));
     buf_puts(b, as_expr ? "; " : ";\n");
     emit_block_param_share(c, bsc, kl, kpr, b, 1);
@@ -2884,7 +2896,7 @@ void emit_block_binds(Compiler *c, int blk, const int *yargs, int yc,
         emit_block_arg_coerced(c, yargs[yi], ot, b);
     }
     else if (dv >= 0) {
-      bi_block_side(bi); emit_block_arg_coerced(c, dv, ot, b); bi_method_side(bi);
+      emit_block_default(c, ol, dv, ot, bi, b);
     }
     else {
       buf_puts(b, odflt);

@@ -963,6 +963,29 @@ static void sh_block_params(ShareFacts *F, Compiler *c, int blk, int v, int deep
   if (kwr >= 0) sh_target(F, c, kwr, v);
 }
 
+/* The defaults of lambda n's optional and keyword parameters, each joined
+   with its parameter as sh_target joins a block's. A lambda's parameters
+   are its ParametersNode itself, not the BlockParametersNode
+   sh_block_params reads, so a default reading a variable (`->(v = s) { v }`)
+   joined no class with it, and the parameter's binding lifted a copy of s
+   into a handle of its own. */
+static void sh_lambda_defaults(ShareFacts *F, Compiler *c, int n) {
+  const NodeTable *nt = c->nt;
+  int pn = nt_ref(nt, n, "parameters");
+  if (pn < 0 || nt_kind(nt, pn) != NK_ParametersNode) return;
+  static const char *const lists[] = { "optionals", "keywords" };
+  for (int f = 0; f < 2; f++) {
+    int np = 0; const int *ps = nt_arr(nt, pn, lists[f], &np);
+    for (int i = 0; i < np; i++) {
+      int dv = nt_ref(nt, ps[i], "value");
+      if (dv < 0) continue;
+      int l = sh_local_at(F, c, ps[i]);
+      if (l >= 0) F->own[l] |= SHE_WRITTEN;
+      sh_union(F, l, sh_val(F, c, dv));
+    }
+  }
+}
+
 /* n's value joined with what the breaks or nexts that leave it hand it
    (sh_jumps) */
 static int sh_jumped(ShareFacts *F, int n, int v) {
@@ -2715,6 +2738,7 @@ static int sh_val_compute(ShareFacts *F, Compiler *c, int n) {
     return sh_jumped(F, n, -1);
   case NK_LambdaNode:
     sh_block_params(F, c, n, F->unknown, 1);
+    sh_lambda_defaults(F, c, n);
     sh_union(F, sh_block_val(F, c, n), F->unknown);
     return -1;
   case NK_CallNode:
