@@ -3464,22 +3464,23 @@ void qc_collect_class_writes(Compiler *c, int node, char (*path)[64], int depth,
     }
     if (mn) {
       /* `class A::B`: B is defined in A, and its body's lexical path is
-         A::B, as for `module A; class B` (#8369): the path's own segments
-         go on the path first. Only a path of plain constant names. */
-      if (nt_kind(nt, cp) == NK_ConstantPathNode) {
-        const char *segs[QC_MAXDEPTH]; int ns = 0, plain = 1;
-        for (int q = nt_ref(nt, cp, "parent"); q >= 0 && plain; ) {
-          NodeKind qk = nt_kind(nt, q);
-          if ((qk != NK_ConstantReadNode && qk != NK_ConstantPathNode) || ns >= QC_MAXDEPTH) { plain = 0; break; }
-          segs[ns++] = nt_str(nt, q, "name");
-          if (!segs[ns - 1]) plain = 0;
-          if (qk == NK_ConstantReadNode) break;
-          if (nt_ref(nt, q, "parent") < 0) { plain = 0; break; }
-          q = nt_ref(nt, q, "parent");
-        }
-        if (plain && depth + ns < QC_MAXDEPTH)
-          for (int i = ns - 1; i >= 0; i--) snprintf(path[depth++], 64, "%s", segs[i]);
+         A::B, as for `module A; class B` (#8369): the classes in the body
+         go under the path's own segments. B's own definition stays where
+         it is written. Only a path of plain constant names, outside a
+         builtin's namespace (`class IO::Buffer`), whose runtime and package
+         classes are registered by the leaf. */
+      const char *segs[QC_MAXDEPTH]; int ns = 0, plain = nt_kind(nt, cp) == NK_ConstantPathNode;
+      for (int q = plain ? nt_ref(nt, cp, "parent") : -1; q >= 0 && plain; ) {
+        NodeKind qk = nt_kind(nt, q);
+        if ((qk != NK_ConstantReadNode && qk != NK_ConstantPathNode) || ns >= QC_MAXDEPTH) { plain = 0; break; }
+        segs[ns++] = nt_str(nt, q, "name");
+        if (!segs[ns - 1] || is_builtin_class_name(segs[ns - 1]) || is_builtin_module_name(segs[ns - 1]))
+          plain = 0;
+        if (qk == NK_ConstantReadNode) break;
+        if (nt_ref(nt, q, "parent") < 0) { plain = 0; break; }
+        q = nt_ref(nt, q, "parent");
       }
+      if (plain && depth + ns + 1 >= QC_MAXDEPTH) plain = 0;
       /* record this class/module definition as a "write" at the current
          (pre-push) depth -- ws[i].node is the constant_path node whose name
          the write-rewrite pass will qualify. */
@@ -3488,6 +3489,8 @@ void qc_collect_class_writes(Compiler *c, int node, char (*path)[64], int depth,
       w->node = cp; w->depth = depth;
       for (int i = 0; i < depth; i++) snprintf(w->path[i], 64, "%s", path[i]);
       snprintf(w->name, sizeof w->name, "%s", mn);
+      if (plain)
+        for (int i = ns - 1; i >= 0; i--) snprintf(path[depth++], 64, "%s", segs[i]);
       snprintf(path[depth], 64, "%s", mn);
       depth++;
     }
