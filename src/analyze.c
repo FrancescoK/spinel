@@ -6900,8 +6900,10 @@ static int desugar_builtin_method_obj(Compiler *c) {
        goes through the poly dispatch (codegen boxes the self, bam_poly).
        Under promote an Integer, a Bignum's too, may be boxed though it
        infers as Integer here: a plain wrapper had no self slot for it, and
-       binding raised NoMethodError naming the wrapper. */
-    int poly_self = rt == TY_POLY || (g_promote_mode && (rt == TY_INT || rt == TY_BIGINT));
+       binding raised NoMethodError naming the wrapper. A Float takes the
+       same shape: the self slot is a pointer, and a double cast to one did
+       not compile. */
+    int poly_self = rt == TY_POLY || rt == TY_FLOAT || (g_promote_mode && (rt == TY_INT || rt == TY_BIGINT));
     /* the typed-array (kind, op) trampoline path owns these */
     if (ty_is_array(rt) && sp_streq(sym, "push")) continue;
     if (comp_method_index(c, sym) >= 0) continue;     /* a same-named top-level def wins */
