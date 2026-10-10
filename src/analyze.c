@@ -12270,12 +12270,20 @@ static const char *nng_guard_param(Compiler *c, Scope *s, int st) {
    narrowed to K's concrete type (unboxed at the read site, the same machinery
    `return .. if p.nil?` uses). The runtime is_a? check makes the unbox sound. */
 
-/* Map a guard class name to the concrete narrowed type, or TY_UNKNOWN. */
-static TyKind isa_narrow_type(const char *cn) {
+/* Map a guard class name to the concrete narrowed type, or TY_UNKNOWN.
+   is_a?(Integer) holds for a Bignum too, which TY_INT (one machine word)
+   cannot carry: a narrowed read unboxed a Bignum's pointer for its value.
+   An Integer method's body (builtins/integer.rb, desugared under the
+   "__int_" prefix) is written for both representations and narrows to
+   TY_BIGINT, which holds every Integer, so gcd's and lcm's arithmetic stays
+   exact; elsewhere the reads stay boxed, where the boxed dispatch answers
+   for both. */
+static TyKind isa_narrow_type(const char *cn, const Scope *s) {
   if (!cn) return TY_UNKNOWN;
   if (sp_streq(cn, "Array")) return TY_POLY_ARRAY;
   if (sp_streq(cn, "String")) return TY_STRING;
-  if (is_integer_class_name(cn)) return TY_INT;
+  if (is_integer_class_name(cn))
+    return s->name && strncmp(s->name, "__int_", 6) == 0 ? TY_BIGINT : TY_UNKNOWN;
   if (sp_streq(cn, "Float")) return TY_FLOAT;
   if (sp_streq(cn, "Symbol")) return TY_SYMBOL;
   return TY_UNKNOWN;
@@ -12297,7 +12305,7 @@ static const char *isa_guard_local(Compiler *c, int pred, Scope *s, TyKind *out_
   int args = nt_ref(nt, pred, "arguments");
   int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
   if (an != 1 || !av || !nt_type(nt, av[0]) || !sp_streq(nt_type(nt, av[0]), "ConstantReadNode")) return NULL;
-  TyKind t = isa_narrow_type(nt_str(nt, av[0], "name"));
+  TyKind t = isa_narrow_type(nt_str(nt, av[0], "name"), s);
   if (t == TY_UNKNOWN) return NULL;
   *out_t = t;
   return pn;
