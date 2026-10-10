@@ -406,13 +406,17 @@ static inline sp_int sp_iremainder(sp_int a, sp_int b) {
    below are only reached on the few residual sites that stay int
    even in promote mode (FFI argument coercion, etc.). */
 #ifdef SP_INT_OVERFLOW_MODE_WRAP
-#  define sp_int_add(a, b) ((a) + (b))
-#  define sp_int_sub(a, b) ((a) - (b))
-#  define sp_int_mul(a, b) ((a) * (b))
-#  define sp_int_neg(a)    (-(a))
-#  define sp_int_add_nn(a, b) ((a) + (b))
-#  define sp_int_sub_nn(a, b) ((a) - (b))
-#  define sp_int_mul_nn(a, b) ((a) * (b))
+/* computed in the unsigned counterpart, as sp_int_c_add and the rest below:
+   signed overflow is undefined behaviour, which an optimizing C compiler
+   may assume never happens, and wrap mode is a promise about exactly that
+   overflow (gcc -O1 and up answered -2**63 * 2 as -2**63, not 0) */
+#  define sp_int_add(a, b) ((sp_int)((uintptr_t)(a) + (uintptr_t)(b)))
+#  define sp_int_sub(a, b) ((sp_int)((uintptr_t)(a) - (uintptr_t)(b)))
+#  define sp_int_mul(a, b) ((sp_int)((uintptr_t)(a) * (uintptr_t)(b)))
+#  define sp_int_neg(a)    ((sp_int)((uintptr_t)0 - (uintptr_t)(a)))
+#  define sp_int_add_nn(a, b) sp_int_add(a, b)
+#  define sp_int_sub_nn(a, b) sp_int_sub(a, b)
+#  define sp_int_mul_nn(a, b) sp_int_mul(a, b)
 #else
 #  define sp_int_add_nn(a, b) ({ sp_int _sp_a = (a), _sp_b = (b), _sp_r; \
     if (sp_int_add_overflow_p(_sp_a, _sp_b, &_sp_r)) sp_raise_cls("RangeError", "integer overflow in +"); \
