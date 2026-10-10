@@ -6732,13 +6732,25 @@ static void desugar_enum_chain_shapes(Compiler *c) {
    target, and is a signature-mismatch trap on wasm32). A variadic one takes
    a rest and splats it into the builtin: with a fixed count,
    `pm = method(:puts); pm.call(*[1, 2])` printed only 1 and
-   `m.call(*[6])` on `"ab".method(:center)` passed center nothing. */
+   `m.call(*[6])` on `"ab".method(:center)` passed center nothing.
+   *passed is set when the program also passes the Method as a block
+   (`a.map(&4.method(:fdiv))`, or `&m` on a local holding it): the block's
+   call is no site here. */
 enum { BAM_VARIADIC = -2 };
 static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int argc,
                                     int sp_at, int ex);
-static int bam_call_argc(Compiler *c, int mnode) {
+static int bam_call_argc(Compiler *c, int mnode, int *passed) {
   const NodeTable *nt = c->nt;
   int n = -1, vary = 0;
+  *passed = 0;
+  NT_FOREACH_KIND(nt, NK_BlockArgumentNode, ba) {
+    int ex = nt_ref(nt, ba, "expression");
+    if (ex < 0) continue;
+    int *mns, nmn = method_recv_nodes(c, ex, &mns), holds = ex == mnode;
+    for (int j = 0; j < nmn && !holds; j++) holds = mns[j] == mnode;
+    free(mns);
+    if (holds) { *passed = 1; break; }
+  }
   NT_FOREACH_KIND(nt, NK_CallNode, id) {
     const char *nm = nt_str(nt, id, "name");
     if (!nm || !(sp_streq(nm, "call") || sp_streq(nm, "[]") || sp_streq(nm, "==="))) continue;
@@ -6844,7 +6856,8 @@ static int desugar_builtin_method_obj(Compiler *c) {
          `def __bam_N(__bam_r, __bam_a, ...) = Integer(__bam_r, __bam_a, ...)`,
          or `def __bam_N(*__bam_r) = puts(*__bam_r)` when they disagree; one
          parameter when there are none */
-      int knf = bam_call_argc(c, id);
+      int kpassed;
+      int knf = bam_call_argc(c, id, &kpassed);
       if (knf > 8) knf = BAM_VARIADIC;
       if (knf != BAM_VARIADIC && knf < 1) knf = 1;
       int kparams, kargs;
@@ -6932,6 +6945,7 @@ static int desugar_builtin_method_obj(Compiler *c) {
     if (comp_method_index(c, sym) >= 0) continue;     /* a same-named top-level def wins */
     int cmp_only = 0;   /* a Comparable method the class does not define itself */
     int num_only = 0;   /* a Numeric method Integer or Float inherits */
+    int sym_arity = 0, have_arity = 0;   /* the builtin's Method#arity */
     /* an undefined name must reach codegen's immediate NameError, not become
        a wrapper whose body call aborts the build (#2752) */
     {
@@ -6952,6 +6966,9 @@ static int desugar_builtin_method_obj(Compiler *c) {
         continue;
       cmp_only = bcls && !builtin_method_known(bcls, sym) && builtin_comparable_owns(bcls, sym);
       num_only = bcls && !builtin_method_known(bcls, sym) && builtin_numeric_owns(bcls, sym);
+      if (bcls && builtin_method_arity(bcls, sym, &sym_arity)) have_arity = 1;
+      else if (cmp_only) { sym_arity = builtin_comparable_arity(sym); have_arity = 1; }
+      else if (num_only && builtin_numeric_arity(sym, &sym_arity)) have_arity = 1;
     }
     char wname[48];
     snprintf(wname, sizeof wname, "__bam_%s", comp_node_tag(c, id));
@@ -6961,7 +6978,17 @@ static int desugar_builtin_method_obj(Compiler *c) {
        method whose call sites pass N arguments
        def __bam_<id>(__bam_r, __bam_a, __bam_a1, ...) = __bam_r.<sym>(__bam_a, ...),
        or when they disagree def __bam_<id>(__bam_r, *__bam_a) = __bam_r.<sym>(*__bam_a) */
-    int nfwd = binop ? 1 : bam_call_argc(c, id);
+    int passed = 0;
+    int nfwd = binop ? 1 : bam_call_argc(c, id, &passed);
+    /* A Method passed as a block is called by the block's yield, which no
+       site above counts, so a wrapper of the sites' count (none: no
+       argument) dropped what the yield passed and the builtin raised
+       ArgumentError. Such a Method is a lambda of the builtin's arity: it
+       takes that many, or any number for a negative arity. */
+    if (passed && !binop) {
+      int f = have_arity && sym_arity >= 0 ? sym_arity : BAM_VARIADIC;
+      nfwd = nfwd == -1 || nfwd == f ? f : BAM_VARIADIC;
+    }
     if (nfwd > 8) nfwd = BAM_VARIADIC;
     if (nfwd != BAM_VARIADIC && nfwd < 0) nfwd = 0;
     int params, cargs;
