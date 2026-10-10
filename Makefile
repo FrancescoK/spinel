@@ -4443,6 +4443,19 @@ share-check-test: $(SPINEL)
 	rm -rf "$$tmp"; \
 	if [ $$ok = 1 ]; then echo "share-check: pass"; else exit 1; fi
 
+# share-check-ratchet: the sites --share-check reports over the sharing
+# corpus (test/share/*.rb, test/share/verify/*.rb,
+# test/share/verify/conflicts/*.rb and test/share_strings_*.rb), compared line
+# by line with test/share_check/ratchet.txt (tools/share_check_ratchet.sh has
+# the line format and how to update the list). A site the list lacks fails,
+# and so does a listed line no site matches, so the list only shrinks. It is
+# report-only (Matz, #8328): the compiler refuses at no flagged site yet, and
+# the target is not part of `make test` or `make gate`. It is proposed for
+# `make gate` once the list is empty.
+.PHONY: share-check-ratchet
+share-check-ratchet: $(SPINEL)
+	@tools/share_check_ratchet.sh
+
 cident: $(SPINEL)
 	@tools/cident.sh $(REF)
 
