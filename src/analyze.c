@@ -36347,6 +36347,36 @@ static void an_phase_desugar_register(Compiler *c) {
      `Class.new` / `Class.new(Base)` without a block, whose anonymous class
      adds nothing, so the class inherits Base directly. Any other call
      (`class A < f`) was Object as well. */
+  /* `class Inner < self` written in a class's body: self is that class,
+     so the superclass names it (activerecord's Promise::Complete <
+     Promise). Classes are registered under their last name, and the name
+     resolves to the class inside its own body. In a module's body, or in
+     `class << self`, self is no superclass and is refused below. */
+  {
+    NodeTable *ntc = (NodeTable *)c->nt;
+    int n0 = ntc->count;
+    for (int p = 0; p < n0; p++) {
+      if (nt_kind(ntc, p) != NK_ClassNode) continue;
+      int cp = nt_ref(ntc, p, "constant_path");
+      const char *pn = cp >= 0 ? nt_str(ntc, cp, "name") : NULL;
+      int body = nt_ref(ntc, p, "body");
+      if (!pn || body < 0 || nt_kind(ntc, body) != NK_StatementsNode) continue;
+      int bn = 0; const int *bb = nt_arr(ntc, body, "body", &bn);
+      for (int k = 0; k < bn; k++) {
+        int st = bb[k];
+        if (nt_kind(ntc, st) != NK_ClassNode) continue;
+        int sc = nt_ref(ntc, st, "superclass");
+        if (sc < 0 || nt_kind(ntc, sc) != NK_SelfNode) continue;
+        int cr = nt_new_node(ntc, "ConstantReadNode");
+        if (cr < 0) continue;
+        nt_node_set_str(ntc, cr, "name", pn);
+        comp_grow_node_arrays(c);
+        c->nscope[cr] = c->nscope[sc];
+        nt_node_set_ref(ntc, st, "superclass", cr);
+        bb = nt_arr(ntc, body, "body", &bn);   /* the table may have moved */
+      }
+    }
+  }
   {
     NodeTable *ntc = (NodeTable *)c->nt;
     for (int id = 0; id < ntc->count; id++) {
