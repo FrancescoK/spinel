@@ -1,0 +1,15 @@
+Base
+:hi
+Outer2::Base2
+:hey
+Other::Mixin
+:mix
+:plain
+superclass must be an instance of Class (given an instance of Module)
+superclass must be an instance of Class (given an instance of Module)
+superclass must be an instance of Class (given an instance of Module)
+superclass must be an instance of Class (given an instance of Module)
+Base
+:hi
+superclass must be an instance of Class (given an instance of Module)
+superclass must be an instance of Class (given an instance of Module)

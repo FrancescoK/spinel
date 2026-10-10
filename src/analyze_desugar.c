@@ -7087,9 +7087,17 @@ static void fwd_ns_key(const NodeTable *nt, int id, char *key, size_t cap) {
    qualifier of its path, in ctx and then each enclosing namespace out to the
    top. A name the lexical walk does not reach (a class an enclosing module
    includes, `module N; include Lib; class C < Base`) is the one class of that
-   name when there is exactly one. 0 when no class is found. */
-static int fwd_resolve_class(const NodeTable *nt, const char *ctx, int ref, const char *refname,
-                             char *out, size_t cap) {
+   name when there is exactly one. 0 when no class is found. With
+   FWD_MODULES the walk matches `module` definitions as well and reports
+   in *is_module which kind it found; FWD_EXACT leaves out that one-definition
+   rule, so only a name Ruby's lexical lookup and the top level reach is
+   answered. */
+enum { FWD_MODULES = 1, FWD_EXACT = 2 };
+static int fwd_resolve_const(const NodeTable *nt, const char *ctx, int ref, const char *refname,
+                             int flags, char *out, size_t cap, int *is_module) {
+  int with_modules = flags & FWD_MODULES, ncls = 0, nmod = 0;
+  const int *cls_ids = nt_nodes_of_kind(nt, NK_ClassNode, &ncls);
+  const int *mod_ids = with_modules ? nt_nodes_of_kind(nt, NK_ModuleNode, &nmod) : NULL;
   const char *cls = ref >= 0 ? nt_str(nt, ref, "name") : refname;
   if (!cls) return 0;
   if (ref >= 0 && !fwd_node_is(nt, ref, "ConstantReadNode") &&
@@ -7099,31 +7107,42 @@ static int fwd_resolve_class(const NodeTable *nt, const char *ctx, int ref, cons
   snprintf(prefix, sizeof prefix, "%s", ctx);
   for (;;) {
     snprintf(cand, sizeof cand, "%s%s", prefix, qual);
-    for (int id = 0; id < nt->count; id++) {
-      if (!fwd_node_is(nt, id, "ClassNode")) continue;
+    for (int q = 0; q < ncls + nmod; q++) {
+      int mod = q >= ncls, id = mod ? mod_ids[q - ncls] : cls_ids[q];
       const char *cn = nt_str(nt, nt_ref(nt, id, "constant_path"), "name");
       if (!cn || !sp_streq(cn, cls)) continue;
       key[0] = '\0';
       fwd_ns_key(nt, id, key, sizeof key);
-      if (sp_streq(key, cand)) { snprintf(out, cap, "%s", key); return 1; }
+      if (sp_streq(key, cand)) {
+        snprintf(out, cap, "%s", key);
+        if (is_module) *is_module = mod;
+        return 1;
+      }
     }
     if (!prefix[0]) break;
     size_t n = strlen(prefix) - 2;
     while (n >= 2 && !(prefix[n - 1] == ':' && prefix[n - 2] == ':')) n--;
     prefix[n >= 2 ? n : 0] = '\0';
   }
-  int only = -1;
-  for (int id = 0; id < nt->count; id++) {
-    if (!fwd_node_is(nt, id, "ClassNode")) continue;
+  if (flags & FWD_EXACT) return 0;
+  int only = -1, only_mod = 0;
+  for (int q = 0; q < ncls + nmod; q++) {
+    int mod = q >= ncls, id = mod ? mod_ids[q - ncls] : cls_ids[q];
     const char *cn = nt_str(nt, nt_ref(nt, id, "constant_path"), "name");
     if (!cn || !sp_streq(cn, cls)) continue;
     key[0] = '\0';
     fwd_ns_key(nt, id, key, sizeof key);
     if (only >= 0 && !sp_streq(out, key)) return 0;   /* two classes of that name */
     only = id;
+    only_mod = mod;
     snprintf(out, cap, "%s", key);
   }
+  if (only >= 0 && is_module) *is_module = only_mod;
   return only >= 0;
+}
+static int fwd_resolve_class(const NodeTable *nt, const char *ctx, int ref, const char *refname,
+                             char *out, size_t cap) {
+  return fwd_resolve_const(nt, ctx, ref, refname, 0, out, cap, NULL);
 }
 /* The shape of instance method `name` as the class `ref` names from
    namespace `ctx` (or its nearest superclass defining it) has it. Classes
@@ -12176,17 +12195,88 @@ static void cn_neutralize(NodeTable *nt, int node) {
   nt_node_reset(nt, node, "NilNode");
 }
 
-/* Whether constant `k` names a module: a builtin one, or a `module` the program declares. */
-static int cn_names_module(const NodeTable *nt, int k) {
-  const char *nm = nt_kind(nt, k) == NK_ConstantReadNode ? nt_str(nt, k, "name") : NULL;
+/* Could an ancestor of the class or module whose own key is `own` hold a
+   constant: has any of its bodies an include or a prepend, or does it have a
+   superclass the program defines? */
+static int cn_has_ancestors(const NodeTable *nt, const char *own) {
+  char mk[512], sk[512];
+  int ncls = 0, nmod = 0;
+  const int *cls_ids = nt_nodes_of_kind(nt, NK_ClassNode, &ncls);
+  const int *mod_ids = nt_nodes_of_kind(nt, NK_ModuleNode, &nmod);
+  for (int q = 0; q < ncls + nmod; q++) {
+    int id = q < ncls ? cls_ids[q] : mod_ids[q - ncls];
+    xs_module_key(nt, id, mk, sizeof mk);
+    if (!sp_streq(mk, own)) continue;
+    int sup = nt_ref(nt, id, "superclass"), bn = 0;
+    char lex[512] = "";
+    fwd_lex_ctx(nt, id, lex, sizeof lex);
+    if (sup >= 0 && fwd_resolve_class(nt, lex, sup, NULL, sk, sizeof sk)) return 1;
+    const int *bv = nt_arr(nt, nt_ref(nt, id, "body"), "body", &bn);
+    for (int k = 0; k < bn; k++) {
+      const char *nm = nt_kind(nt, bv[k]) == NK_CallNode && nt_ref(nt, bv[k], "receiver") < 0
+                       ? nt_str(nt, bv[k], "name") : NULL;
+      if (xs_is_include(nt, bv[k]) || (nm && is_prepend_alias(nm))) return 1;
+    }
+  }
+  return 0;
+}
+
+/* Is the class `leaf` of namespace `ns` defined before node `id`? */
+static int cn_class_before(const NodeTable *nt, const char *ns, const char *leaf, int id) {
+  char key[512];
+  int ncls = 0;
+  const int *cls_ids = nt_nodes_of_kind(nt, NK_ClassNode, &ncls);
+  for (int q = 0; q < ncls && cls_ids[q] < id; q++) {
+    int c = cls_ids[q];
+    const char *cn = nt_str(nt, nt_ref(nt, c, "constant_path"), "name");
+    if (!cn || !sp_streq(cn, leaf)) continue;
+    key[0] = '\0';
+    fwd_ns_key(nt, c, key, sizeof key);
+    if (sp_streq(key, ns)) return 1;
+  }
+  return 0;
+}
+
+/* Whether constant `k`, written inside the call `id`, names a module: a
+   builtin one, or the `module` the name resolves to from where it is written
+   (fwd_resolve_const: the enclosing namespaces outward, then the top level,
+   with any qualifier of its path). A module of the same leaf name in another
+   namespace is not it. The answer "class" is given only where the class
+   header the call becomes binds that class too: the class is defined before
+   the call, no namespace the call sits in is
+   opened by a compact `class A::B` header, and the innermost one has no
+   include, prepend or defined superclass to hold the name ahead of it. In
+   any other case the name counts as a module when a module of that name
+   exists. */
+static int cn_names_module(const NodeTable *nt, const int *parent, int id, int k) {
+  NodeKind kk = nt_kind(nt, k);
+  const char *nm = kk == NK_ConstantReadNode || kk == NK_ConstantPathNode ? nt_str(nt, k, "name") : NULL;
   if (!nm) return 0;
-  if (is_builtin_module_const_name(nm)) return 1;
+  if (kk == NK_ConstantReadNode && is_builtin_module_const_name(nm)) return 1;
+  if (kk == NK_ConstantPathNode && nt_ref(nt, k, "parent") < 0) return 0;
+  int any = 0;
   NT_FOREACH_KIND(nt, NK_ModuleNode, m) {
     int cp = nt_ref(nt, m, "constant_path");
     const char *mn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
-    if (mn && sp_streq(mn, nm)) return 1;
+    if (mn && sp_streq(mn, nm)) { any = 1; break; }
   }
-  return 0;
+  if (!any) return 0;
+  /* the namespace the call is written in: the nearest class or module whose
+     body holds it (a superclass or a name in a header is the outer one's) */
+  char ctx[512] = "", found[512];
+  int is_module = 0, compact = 0, inner = 1;
+  for (int ch = id, p = parent[id]; p >= 0; ch = p, p = parent[p]) {
+    if ((nt_kind(nt, p) != NK_ClassNode && nt_kind(nt, p) != NK_ModuleNode) ||
+        nt_ref(nt, p, "body") != ch) continue;
+    if (inner) {
+      xs_module_key(nt, p, ctx, sizeof ctx);
+      inner = 0;
+    }
+    if (nt_kind(nt, nt_ref(nt, p, "constant_path")) == NK_ConstantPathNode) compact = 1;
+  }
+  if (!fwd_resolve_const(nt, ctx, k, NULL, FWD_MODULES | FWD_EXACT, found, sizeof found, &is_module) || is_module)
+    return 1;
+  return compact || cn_has_ancestors(nt, ctx) || !cn_class_before(nt, found, nm, id);
 }
 
 /* `Class.new(M)` with M a module: CRuby raises this TypeError as the call
@@ -12310,7 +12400,7 @@ int desugar_class_new_blocks(Compiler *c) {
       changed = 1;
       continue;
     }
-    if (super_node >= 0 && cn_names_module(nt, super_node)) {
+    if (super_node >= 0 && cn_names_module(nt, parent, id, super_node)) {
       cn_neutralize(nt, blk);
       cn_raise_module_super(nt, id, parent[id]);
       changed = 1;

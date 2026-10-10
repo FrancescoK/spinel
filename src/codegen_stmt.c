@@ -13988,6 +13988,61 @@ static void emit_class_const_name(Compiler *c, const char *key, const char *name
              key, prefix ? prefix : "", prefix ? "::" : "", name);
 }
 
+/* Is the write `id` inside the body of a `class << self`? Its `self` is the
+   singleton class, which no class of the program stands for. */
+static int cpath_in_singleton(Compiler *c, int id) {
+  NT_FOREACH_KIND(c->nt, NK_SingletonClassNode, sc)
+    if (cg_subtree_contains(c->nt, sc, id, 0)) return 1;
+  return 0;
+}
+
+/* The receiver of `recv::X = v` that no compile-time fact names. A constant
+   that resolves to a class or module the program defines is read flat, by its
+   leaf, and so is a local holding one named class (class_recv_static_ci).
+   `self` in a class body names its class (g_class_body_id), and in the body
+   of a `class << self` keeps the flat name of a write with no namespace.
+   Any other receiver, a builtin module, an alias constant, an anonymous
+   class, `self` at the top level or a value, runs once, before the value as
+   CRuby runs it, and must be a Class or Module when the write is made. A
+   receiver typed a Class or Module with no effect of its own, given a value
+   that is no class, has nothing to check or name: the flat write is all of
+   it. */
+static int cpath_recv_dynamic(Compiler *c, int recv, int value_is_class) {
+  if (recv < 0) return 0;
+  if (nt_kind(c->nt, recv) == NK_SelfNode) return g_class_body_id < 0;
+  int ci = class_recv_static_ci(c, recv);
+  if (ci >= 0 && !comp_class_anonymous(c, ci)) return 0;
+  if (ci < 0 && comp_ntype(c, recv) == TY_CLASS && !subtree_has_side_effect(c, recv) && !value_is_class)
+    return 0;
+  return 1;
+}
+
+/* The dynamic receiver's value, boxed and rooted in a temp of the statement's
+   prelude (hold_operand_pre), ahead of any prelude the value leaves there. */
+static int emit_cpath_recv_hold(Compiler *c, int recv) {
+  return hold_operand_pre(c, recv, TY_POLY, 1, ++g_tmp, 1);
+}
+
+/* After the value is evaluated, before it is stored: a receiver that is not a
+   Class or Module raises CRuby's TypeError. */
+static void emit_cpath_recv_check(int t, Buf *b, int indent) {
+  emit_indent(b, indent);
+  buf_printf(b, "if (_t%d.tag != SP_TAG_CLASS) sp_raise_cls(\"TypeError\", "
+                "sp_sprintf(\"%%s is not a class/module\", sp_poly_inspect(_t%d)));\n", t, t);
+}
+
+/* After the store: a class value still unnamed takes the receiver's name
+   before `::X`. A class that has a name keeps it (sp_class_assign_name keeps
+   the first), so the text is built only for an unnamed one, once per class,
+   from the receiver this evaluation saw. */
+static void emit_cpath_recv_name(Compiler *c, const char *name, int t, Buf *b, int indent) {
+  if (!c->has_anonymous_classes) return;
+  emit_indent(b, indent);
+  buf_printf(b, "if (!sp_class_name_or_nil(cst_%s)) "
+                "sp_class_assign_name(cst_%s, sp_anon_text(sp_class_val_display(_t%d), \"::%s\"));\n",
+             name, name, t, name);
+}
+
 static void emit_class_definition(Compiler *c, int id, Buf *b, int indent) {
   const NodeTable *nt = c->nt;
   int cp = nt_ref(nt, id, "constant_path");
@@ -14438,8 +14493,13 @@ static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int in
     if (vty && (sp_streq(vty, "HashNode") || sp_streq(vty, "KeywordHashNode"))) {
       int hec = 0; nt_arr(nt, vlit, "elements", &hec); v_empty_hash = (hec == 0);
     }
+    int crecv = nt_ref(nt, tgt, "parent");
+    int recv_t = cpath_recv_dynamic(c, crecv, cv->type == TY_CLASS) ? emit_cpath_recv_hold(c, crecv) : -1;
+    /* with a receiver to check, the value waits in a temp until it has been */
+    int val_t = recv_t >= 0 ? ++g_tmp : -1;
     emit_indent(b, indent);
-    buf_printf(b, "cst_%s = ", nm);
+    if (val_t >= 0) { emit_ctype(c, cv->type, b); buf_printf(b, " _t%d = ", val_t); }
+    else buf_printf(b, "cst_%s = ", nm);
     if (vty && sp_streq(vty, "NilNode"))
       buf_puts(b, cv->type == TY_RANGE ? "(sp_Range){0}" : default_value_from_compiler(c, cv->type));
     else if (v_empty_arr && cv->type == TY_POLY_ARRAY) {
@@ -14464,9 +14524,19 @@ static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int in
     else if (cv->type == TY_POLY && repr_of(c, v).kind != RK_BOXED) emit_boxed(c, v, b);
     else emit_expr(c, v, b);
     buf_puts(b, ";\n");
+    if (recv_t >= 0) {
+      emit_cpath_recv_check(recv_t, b, indent);
+      emit_indent(b, indent);
+      buf_printf(b, "cst_%s = _t%d;\n", nm, val_t);
+      if (cv->type == TY_CLASS) emit_cpath_recv_name(c, nm, recv_t, b, indent);
+    }
+    else if (cv->type == TY_CLASS) {
+      int owner = class_recv_static_ci(c, crecv);
+      if (crecv >= 0 && nt_kind(nt, crecv) == NK_SelfNode)
+        owner = cpath_in_singleton(c, id) ? -1 : g_class_body_id;
+      emit_class_const_name(c, nm, nm, owner, b, indent);
+    }
     emit_const_flag_set(cv, nm, b, indent);
-    if (cv->type == TY_CLASS)
-      emit_class_const_name(c, nm, nm, class_recv_static_ci(c, nt_ref(nt, tgt, "parent")), b, indent);
     return 1;
   }
   if (sp_streq(ty, "ConstantPathOperatorWriteNode") || sp_streq(ty, "ConstantOperatorWriteNode")) {
