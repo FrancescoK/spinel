@@ -3726,11 +3726,20 @@ static SP_NOINLINE SP_COLD SP_UNUSED void sp_frange_minn_raise(sp_FloatRange r, 
   if (n < 0) sp_raise_cls("ArgumentError", "negative array size (or size too big)");
   sp_frange_iter_raise(r, 0);
 }
+/* A boxed end of a Range whose other end is a number: a String, a Symbol
+   or true/false cannot be compared with it, which CRuby's Range.new says
+   with an ArgumentError. Converted as a number, "a" was 0 and "5" was 5. */
+static SP_UNUSED sp_RbVal sp_range_num_end(sp_RbVal v) {
+  if (SP_UNLIKELY(v.tag == SP_TAG_STR || v.tag == SP_TAG_SYM || v.tag == SP_TAG_BOOL || sp_poly_is_strbuf(v)))
+    sp_raise_cls("ArgumentError", "bad value for range");
+  return v;
+}
 /* The boxed begin of an Integer-represented Range whose end is a Float
    (`x..2.5`): nil would make it beginless with the Float end, which the
    integer representation holds truncated. Refuse that one loudly; any other
    begin converts as a Range endpoint does. */
 static SP_UNUSED sp_int sp_range_lo_float_end(sp_RbVal v) {
+  v = sp_range_num_end(v);
   if (SP_UNLIKELY(v.tag == SP_TAG_NIL))
     sp_raise_cls("NotImplementedError", "a beginless Range with a Float end decided at run time is not supported by spinel");
   if (SP_UNLIKELY(v.tag == SP_TAG_FLT))
@@ -3864,6 +3873,7 @@ static SP_UNUSED sp_PolyArray *sp_range_minmax_poly(sp_Range r) {
    is kept as written (sp_range_new_fend), anything else converts as an
    Integer bound does. */
 static SP_UNUSED sp_Range sp_range_new_pend(sp_oint f, sp_RbVal e, sp_int x) {
+  e = sp_range_num_end(e);
   if (e.tag == SP_TAG_FLT) { sp_Range r = sp_range_new_fend(f.nil ? SP_RANGE_NO_BEGIN : f.v, e.v.f, x); r.nobeg = f.nil; return r; }
   return sp_range_new_o(f, e.tag == SP_TAG_NIL ? sp_oint_nil() : sp_oint_of(sp_poly_to_i(e)), x);
 }
@@ -3871,9 +3881,60 @@ static SP_UNUSED sp_Range sp_range_new_pend(sp_oint f, sp_RbVal e, sp_int x) {
    a Float range, which this representation cannot hold. Say so; nil is the
    absent begin. */
 static SP_UNUSED sp_oint sp_range_lo_bound(sp_RbVal v) {
+  v = sp_range_num_end(v);
   if (SP_UNLIKELY(v.tag == SP_TAG_FLT))
     sp_raise_cls("NotImplementedError", "a Range with a Float begin decided at run time is not supported by spinel");
   return v.tag == SP_TAG_NIL ? sp_oint_nil() : sp_oint_of(sp_poly_to_i(v));
+}
+/* The String end of a Range read out of a box: nil is the absent end, a
+   String the end (a shared String's handle is kept, its bytes read now:
+   sp_srange_new_h), and anything else cannot be compared with a String,
+   CRuby's ArgumentError (`"a"..1`). */
+static SP_UNUSED const char *sp_srange_bound(sp_RbVal v, sp_String **h) {
+  *h = NULL;
+  if (v.tag == SP_TAG_NIL) return NULL;
+  if (sp_poly_is_strbuf(v) && v.v.p) { *h = (sp_String *)v.v.p; return sp_strbuf_read(*h); }
+  if (v.tag == SP_TAG_STR) return v.v.s ? v.v.s : sp_str_empty;
+  sp_raise_cls("ArgumentError", "bad value for range");
+  return NULL;
+}
+/* A String Range with a boxed end (`s..a[0]`), or two (sp_range_new_box) */
+static SP_UNUSED sp_StrRange sp_srange_new_box(sp_RbVal f, sp_RbVal l, sp_int x) {
+  SP_GC_ROOT_RBVAL(f); SP_GC_ROOT_RBVAL(l);
+  sp_String *hf, *hl;
+  const char *a = sp_srange_bound(f, &hf); SP_GC_ROOT_STR(a);
+  const char *z = sp_srange_bound(l, &hl);
+  return sp_srange_new_h(a, z, x, hf, hl);
+}
+/* Range#include? / #member? of a boxed String Range: a String is a member
+   by succession, anything else is not one (CRuby's false), and an open
+   Range raises its TypeError first either way (sp_srange_include). */
+static SP_UNUSED sp_bool sp_srange_include_poly(sp_StrRange r, sp_RbVal x) {
+  const char *s = x.tag == SP_TAG_STR ? (x.v.s ? x.v.s : sp_str_empty)
+                : sp_poly_is_strbuf(x) && x.v.p ? sp_String_cstr((sp_String *)x.v.p) : NULL;
+  return sp_srange_include(r, s);
+}
+static SP_UNUSED sp_float sp_poly_frange_bound(sp_RbVal v, sp_float none);
+static SP_UNUSED sp_int sp_poly_frange_bits(sp_RbVal v, sp_int nil_bit, sp_int int_bit);
+/* A Range whose begin is decided at run time (`a[0]..a[1]` over a mixed
+   Array, `x..3`), or whose end is beside an absent begin: the ends pick the
+   Range as CRuby's do. nil is an absent end; Integers make an Integer Range (a Float
+   end kept as written, sp_range_new_fend), a Float begin or a Float beside
+   an absent begin a Float Range, Strings a String Range. A String beside
+   anything else cannot be compared with it (CRuby's ArgumentError). spinel
+   has no Range of Symbols: a Symbol pair says so rather than read as
+   numbers. Any other end converts as an Integer bound does. */
+static SP_UNUSED sp_RbVal sp_range_new_box(sp_RbVal f, sp_RbVal l, sp_int x) {
+  int fn = f.tag == SP_TAG_NIL, ln = l.tag == SP_TAG_NIL;
+  int fs = f.tag == SP_TAG_STR || sp_poly_is_strbuf(f), ls = l.tag == SP_TAG_STR || sp_poly_is_strbuf(l);
+  if ((fs || ls) && (fs || fn) && (ls || ln)) return sp_box_srange(sp_srange_new_box(f, l, x));
+  if (fs || ls) sp_raise_cls("ArgumentError", "bad value for range");
+  if ((f.tag == SP_TAG_SYM || fn) && (l.tag == SP_TAG_SYM || ln) && !(fn && ln))
+    sp_raise_cls("NotImplementedError", "a Range of Symbols decided at run time is not supported by spinel");
+  if (f.tag == SP_TAG_FLT || (fn && l.tag == SP_TAG_FLT))
+    return sp_box_frange(sp_frange_new_o(sp_poly_frange_bound(f, -HUGE_VAL), sp_poly_frange_bound(l, HUGE_VAL), x,
+                                         sp_poly_frange_bits(f, 1, 4) | sp_poly_frange_bits(l, 2, 8)));
+  return sp_box_range(sp_range_new_pend(sp_range_lo_bound(f), l, x));
 }
 /* Kernel#rand / Random#rand over a Range known only at run time (a parameter,
    a boxed value), as CRuby's: an open side is Errno::EDOM, an empty range nil
@@ -4043,7 +4104,7 @@ static SP_UNUSED sp_int sp_frange_poly_count(sp_FloatRange r) {
    where it is open). The sp_int forms below cannot hold the Float one. */
 static SP_UNUSED sp_RbVal sp_poly_range_begin_v(sp_RbVal v);
 static SP_UNUSED sp_RbVal sp_poly_range_end_v(sp_RbVal v);
-static SP_UNUSED sp_float sp_poly_frange_bound(sp_RbVal v, sp_float none) { return v.tag == SP_TAG_NIL ? none : sp_poly_to_f(v); }
+static SP_UNUSED sp_float sp_poly_frange_bound(sp_RbVal v, sp_float none) { v = sp_range_num_end(v); return v.tag == SP_TAG_NIL ? none : sp_poly_to_f(v); }
 static SP_UNUSED sp_int sp_poly_frange_bits(sp_RbVal v, sp_int nil_bit, sp_int int_bit) { return v.tag == SP_TAG_NIL ? nil_bit : v.tag == SP_TAG_INT ? (int_bit | (int_bit << 2)) : 0; }
 static SP_UNUSED sp_int sp_for_hi_i(sp_oint v) { return v.nil ? (sp_int)INTPTR_MAX : v.v; }
 static SP_UNUSED sp_int sp_for_lo_i(sp_oint v) { if (SP_UNLIKELY(v.nil)) sp_raise_cls("TypeError", "can't iterate from NilClass"); return v.v; }
@@ -4275,6 +4336,16 @@ static sp_RbVal sp_poly_md_group(sp_MatchData *m, sp_RbVal k) {
   else g = sp_MatchData_aref(m, sp_poly_to_i(k));
   return g ? sp_box_str(g) : sp_box_nil();
 }
+/* A boxed Integer Range's size or count as an Integer: a beginless one
+   cannot be iterated (CRuby's TypeError), and an endless one's is Infinity,
+   which an Integer answer cannot hold: said so, where its open bound
+   read as a count. */
+static sp_int sp_poly_range_count_ck(sp_Range r, const char *m) {
+  if (r.nobeg) sp_raise_cls("TypeError", "can't iterate from NilClass");
+  if (r.noend)
+    sp_raise_cls("NotImplementedError", sp_sprintf("Range#%s of an endless Range is Infinity, which spinel answers only where the range's kind is known", m));
+  return sp_range_count(r);
+}
 /* #size on a boxed receiver: a count, or nil for the receivers whose size is
    none (an Enumerator without one, a String Range) */
 static sp_int sp_poly_size_n(sp_RbVal v, sp_bool *none);
@@ -4298,7 +4369,7 @@ static sp_int sp_poly_size_n(sp_RbVal v, sp_bool *none) {
   /* an Integer Range's size is its member count, which sp_poly_length has no
      arm for (a Range has no #length) and answered 0; a String Range's is nil */
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_RANGE && v.v.p)
-    return sp_range_count(*(sp_Range *)v.v.p);
+    return sp_poly_range_count_ck(*(sp_Range *)v.v.p, "size");
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_STR_RANGE) { *none = TRUE; return 0; }
   if (v.tag == SP_TAG_BIGINT) return sp_bigint_int_size((sp_Bigint *)v.v.p);
   /* an Enumerator's size is its own (#size), not a length: a boxed
@@ -10639,11 +10710,21 @@ static sp_bool sp_enum_is_walker(sp_RbVal v);
 static sp_int sp_enum_walk_len(sp_RbVal v);
 static sp_RbVal sp_enum_walk_at(sp_RbVal v, sp_int i);
 static sp_PolyArray *sp_enum_finite_items(sp_RbVal v);   /* fwd: a finite materialized one's items */
+/* An Integer Range in a box is walked by index (sp_poly_arr_len_ex,
+   sp_poly_each_elem) rather than as its materialized items: an endless one
+   stops where a block breaks out, and a long one takes no Array. One with
+   a step or a Float end is walked as its items. */
+static sp_bool sp_poly_range_walks(sp_RbVal v) {
+  if (!(v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_RANGE && v.v.p)) return 0;
+  sp_Range *r = (sp_Range *)v.v.p;
+  return !r->nobeg && r->step == 0 && !r->fe;
+}
 static sp_RbVal sp_poly_iter_walk(sp_RbVal v) {
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_ENUMERATOR && v.v.p) {
     sp_RbVal w = sp_enum_walker_boxed(v);
     if (w.tag != SP_TAG_NIL) return w;
   }
+  if (sp_poly_range_walks(v)) return v;
   return sp_poly_iter_subject(v);
 }
 static void sp_poly_iter_check(sp_RbVal v, const char *m) {
@@ -10665,6 +10746,40 @@ static void sp_poly_iter_check(sp_RbVal v, const char *m) {
     return;
   sp_raise_poly_nomethod(m, v);
 }
+/* What `for x in v` walks for a boxed v: its items as an Array, but an
+   Integer Range itself, read by index (sp_poly_range_walks). A
+   Range that cannot be walked (from a Float, from nil) raises as `each`
+   does (sp_poly_iter_check). */
+static sp_PolyArray *sp_poly_to_a_arr(sp_RbVal v);
+static sp_RbVal sp_poly_for_subject(sp_RbVal v) {
+  if (v.tag == SP_TAG_OBJ && (v.cls_id == SP_BUILTIN_RANGE || v.cls_id == SP_BUILTIN_FLOAT_RANGE))
+    sp_poly_iter_check(v, "each");
+  if (sp_poly_range_walks(v)) return v;
+  return sp_box_poly_array(sp_poly_to_a_arr(v));
+}
+/* ... the Range it walks, by value (a beginless one when it is none) ... */
+static SP_INLINE sp_Range sp_poly_for_range(sp_RbVal v) {
+  return sp_poly_range_walks(v) ? *(sp_Range *)v.v.p : sp_range_new_o(sp_oint_nil(), sp_oint_of(0), 0);
+}
+/* ... and the Array the loop reads: the items, or for the Range a chunk of
+   its members that sp_poly_for_next refills */
+static SP_INLINE sp_PolyArray *sp_poly_for_items(sp_RbVal v) {
+  return v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_POLY_ARRAY ? (sp_PolyArray *)v.v.p : sp_PolyArray_new();
+}
+/* The loop has read chunk `a` to its end: for the Range `r`, refill it with
+   the next members from *base on and answer 0, the index the loop restarts
+   at; -1 when there are none, or when the loop reads an Array. */
+static SP_NOINLINE sp_int sp_poly_for_next(const sp_Range *r, sp_PolyArray *a, sp_int *base) {
+  if (r->nobeg) return -1;
+  *base += a->len;
+  a->len = 0;
+  for (sp_int k = 0; k < 64; k++) {
+    sp_int v = r->first + *base + k;
+    if (!r->noend && (r->excl ? v >= r->last : v > r->last)) break;
+    sp_PolyArray_push(a, sp_box_int(v));
+  }
+  return a->len > 0 ? 0 : -1;
+}
 static sp_int sp_poly_arr_len_ex(sp_RbVal a) {
   if (a.tag != SP_TAG_OBJ) return 0;
   if (sp_enum_is_walker(a)) return sp_enum_walk_len(a);
@@ -10672,7 +10787,7 @@ static sp_int sp_poly_arr_len_ex(sp_RbVal a) {
      none? and one? on a boxed one counted nothing and answered as if empty */
   { sp_PolyArray *fi = sp_enum_finite_items(a); if (fi) return fi->len; }
   switch (a.cls_id) {
-    case SP_BUILTIN_RANGE: { sp_Range *r = (sp_Range *)a.v.p; sp_int n = r->last - r->first + (r->excl ? 0 : 1); return n > 0 ? n : 0; }
+    case SP_BUILTIN_RANGE: { sp_Range *r = (sp_Range *)a.v.p; if (r->noend) return INTPTR_MAX; sp_int n = r->last - r->first + (r->excl ? 0 : 1); return n > 0 ? n : 0; }
     default:
       /* EVERY hash kind, not just the poly-valued three. sp_poly_each_elem
          renders a pair for all of them, and this length gated the loop: a
@@ -13459,7 +13574,7 @@ static sp_int sp_poly_count(sp_RbVal v) {
   if (v.tag == SP_TAG_STR || sp_poly_is_strbuf(v))
     sp_raise_cls("ArgumentError", "wrong number of arguments (given 0, expected 1+)");
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_RANGE && v.v.p)
-    return sp_range_count(*(sp_Range *)v.v.p);
+    return sp_poly_range_count_ck(*(sp_Range *)v.v.p, "count");
   /* a Symbol has a length but no count, and a user object counts its
      elements or is count's NoMethodError (it answered its length, or 0) */
   if (v.tag == SP_TAG_SYM) { sp_raise_poly_nomethod("count", v); return 0; }
@@ -13686,6 +13801,7 @@ static sp_RbVal sp_poly_last(sp_RbVal v) {
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_RANGE) {
     sp_Range *rg = (sp_Range *)v.v.p;
     if (rg->fe) return sp_box_float(rg->fend);   /* (1..2.5).last is 2.5 */
+    if (rg->noend) sp_raise_cls("RangeError", "cannot get the last element of endless range");
     if (rg->step == 0 || rg->step == 1) return sp_box_int(rg->last);
     sp_IntArray *ia = sp_range_to_ia(*rg);
     SP_GC_ROOT(ia);

@@ -4342,6 +4342,25 @@ static int srange_end_is_plain(Compiler *c, int id) {
          subtree_is_pure_read(c, id);
 }
 
+/* A Range whose kind only the values at run time decide: a boxed Range
+   built by sp_range_new_box, or a String Range with a boxed end checked by
+   sp_srange_new_box. The begin runs first, rooted while the end runs. 0 for
+   any other Range. */
+static int emit_range_boxed_ends(Compiler *c, int id, int left, int right, int excl, Buf *b) {
+  const char *ctor;
+  if (repr_of(c, id).kind == RK_BOXED) ctor = "sp_range_new_box";
+  else if (repr_of(c, id).range == TY_STRING &&
+           ((left >= 0 && repr_of(c, left).kind == RK_BOXED) ||
+            (right >= 0 && repr_of(c, right).kind == RK_BOXED))) ctor = "sp_srange_new_box";
+  else return 0;
+  int t = ++g_tmp;
+  buf_printf(b, "({ sp_RbVal _t%d = ", t);
+  if (left >= 0) emit_boxed(c, left, b); else buf_puts(b, "sp_box_nil()");
+  buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); %s(_t%d, ", t, ctor, t);
+  if (right >= 0) emit_boxed(c, right, b); else buf_puts(b, "sp_box_nil()");
+  buf_printf(b, ", %d); })", excl);
+  return 1;
+}
 /* A Range literal in value position (a..b, a...b, endless and beginless) (emit_expr_node's arms, in their order) */
 static int emit_range_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *ty) {
   if (!(sp_streq(ty, "RangeNode"))) return 0;
@@ -4374,6 +4393,8 @@ static int emit_range_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, con
                ta);
     return 1;
   }
+  /* ends decided at run time (`a[0]..a[1]` over a mixed Array) */
+  if (emit_range_boxed_ends(c, id, left, right, excl, b)) return 1;
   /* (1.0..3.0): the distinct float range, endpoints kept as sp_float.
      A missing bound uses -/+HUGE_VAL as the beginless/endless sentinel. */
   if (repr_of(c, id).range == TY_FLOAT) {

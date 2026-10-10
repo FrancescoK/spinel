@@ -3762,6 +3762,16 @@ void emit_poly_cases_n(Compiler *c, int id, const char *name, const PolySpecials
       break;
     default: break;
     }
+    /* A String Range: a String argument is a member by succession, anything
+       else is not one, and an open Range raises CRuby's TypeError either way
+       (sp_srange_include_poly). It fell to the default arm's false. */
+    { Buf ab7; memset(&ab7, 0, sizeof ab7);
+      char tn7[24]; snprintf(tn7, sizeof tn7, "_t%d", atmp[0]);
+      if (atmp_ty[0] == TY_POLY) buf_puts(&ab7, tn7);
+      else emit_boxed_text(c, atmp_ty[0], tn7, &ab7);
+      buf_printf(b, " case SP_BUILTIN_STR_RANGE: _t%d = %ssp_srange_include_poly(SP_SRANGE_OF(_t%d.v.p), %s)%s; break;",
+                 tr, ibo, tv, ab7.p ? ab7.p : "sp_box_nil()", ibc);
+      free(ab7.p); }
     /* PolyArray: box the arg for runtime comparison */
     {
       int tbox = ++g_tmp;
