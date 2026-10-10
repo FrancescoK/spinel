@@ -135,3 +135,31 @@ fr.instance_variable_set(:@text, "lit")
 p fr.text.equal?(alias_of)
 f.instance_variable_set(:@text, "lit") rescue p $!.class
 p f.text
+
+# a receiver nothing else holds, the value dropped: the receiver is held
+# while the value and the handle around it are built, which can collect
+$held = []
+def held_text(i)
+  8.times { $held << Seeded.new }
+  "h" + i.to_s
+end
+40.times do |i|
+  (Seeded.new || q).instance_variable_set(:@text, held_text(i))
+  (Plain.new || u).instance_variable_set(:@text, held_text(i))
+  case i % 2 when 0 then Seeded.new else g end.instance_variable_set(:@text, held_text(i))
+end
+p $held.map(&:text).uniq, g.text
+
+# a long ivar name, read back as a String after a frozen-checked store
+class LongName
+  def initialize = (@an_instance_variable_with_a_rather_longer_name_than_most = +"seed")
+  def name = @an_instance_variable_with_a_rather_longer_name_than_most
+  def add(x) = (@an_instance_variable_with_a_rather_longer_name_than_most << x)
+end
+LongName.new.freeze
+ln = LongName.new
+lv = +"l"
+puts(ln.instance_variable_set(:@an_instance_variable_with_a_rather_longer_name_than_most, lv))
+lv << "!"
+ln.add("?")
+p ln.name
