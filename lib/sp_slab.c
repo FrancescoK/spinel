@@ -257,8 +257,20 @@ static void sp_slab_reserve(void) {
 #ifdef __wasi__
   /* wasm has one linear memory that only grows: nothing to reserve, trim or
      give back. 64 MB is taken as one aligned block (an engine commits its
-     pages as they are touched); past it every block is a malloc. */
+     pages as they are touched); past it every block is a malloc.
+     SPINEL_GC_SLAB_MB=N takes N MB instead, rounded down to the 4 MB arena:
+     a host may count the whole memory, touched or not, against a limit, and
+     a small program needs little of the 64. Below one arena the slab is
+     off, as with SPINEL_GC_SLAB=0. */
   { size_t want = (size_t)64 << 20; void *m = NULL;
+    const char *e = getenv("SPINEL_GC_SLAB_MB");
+    if (e && *e) {
+      long mb = atol(e);
+      if (mb < 0) mb = 0;
+      if (mb > 2048) mb = 2048;   /* half the 4 GB a wasm32 memory can reach */
+      want = ((size_t)mb << 20) & ~(SP_SLAB_ARENA - 1);
+      if (want == 0) { sp_slab_on = 0; return; }
+    }
     if (posix_memalign(&m, SP_SLAB_ARENA, want) == 0) { sp_slab_base = sp_slab_brk = (uintptr_t)m; sp_slab_cap = want; }
     else sp_slab_on = 0;
     return; }
