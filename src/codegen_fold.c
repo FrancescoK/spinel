@@ -2858,7 +2858,12 @@ int emit_step_array_expr(Compiler *c, int id, Buf *b) {
   if (rt != TY_INT && rt != TY_FLOAT && rt != TY_RATIONAL) return 0;
   int args = nt_ref(nt, id, "arguments");
   int sc = 0; const int *sv = args >= 0 ? nt_arr(nt, args, "arguments", &sc) : NULL;
-  if (comp_ntype(c, id) == TY_ENUMERATOR && (sc == 0 || nt_kind(nt, sv[0]) == NK_NilNode)) {
+  /* no limit, or a nil one, is no end: an Enumerator, decided from the
+     receiver and the limit as analyze_infer types it, not from the call's
+     own type -- an arm of a boxed receiver's dispatch reads the receiver
+     as an Integer or Float while the call itself is boxed, and built the
+     eager Array, converting the nil limit */
+  if ((rt == TY_INT || rt == TY_FLOAT) && (sc == 0 || nt_kind(nt, sv[0]) == NK_NilNode)) {
     int t = ++g_tmp;
     buf_printf(b, "({ sp_RbVal _er%d = ", t); emit_boxed(c, recv, b);
     buf_printf(b, "; SP_GC_ROOT_RBVAL(_er%d); sp_RbVal _es%d = ", t, t);
