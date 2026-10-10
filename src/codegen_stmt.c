@@ -1312,6 +1312,9 @@ void emit_strbuf_handle_of(Compiler *c, int v, Buf *b) {
   if (held < 0 && repr_share_rule(c)) held = ran_first_handle(unwrap_parens(c, v));
   if (held >= 0) { buf_printf(b, "_t%d", held); return; }
   if (v >= 0 && nt_kind(c->nt, v) == NK_NilNode) { buf_puts(b, "(sp_String *)NULL"); return; }
+  /* --share-strings: a call without a bang that answers its receiver is
+     that receiver's handle; its demand-marked read would wrap a copy. */
+  if (repr_share_rule(c) && strbuf_plain_self_call(c, v) && emit_bang_self_handle(c, v, b)) return;
   LocalVar slot;
   memset(&slot, 0, sizeof slot);
   slot.type = TY_STRBUF;
@@ -2470,6 +2473,13 @@ static void emit_strbuf_cond_value(Compiler *c, LocalVar *lv, int v, const char 
       return;
     default:
       buf_printf(b, "%s = ", dst);
+      /* --share-strings: a call without a bang that answers its receiver
+         is the receiver's handle; emit_strbuf_value would wrap the demand
+         marked read of it as a new String, a copy. */
+      if (repr_share_rule(c) && strbuf_plain_self_call(c, v) && emit_bang_self_handle(c, v, b)) {
+        buf_puts(b, ";");
+        return;
+      }
       emit_strbuf_value(c, lv, v, b);
       buf_puts(b, ";");
       return;
@@ -2611,6 +2621,30 @@ static int strbuf_gvar_write_handle(Compiler *c, int v, char *out, size_t cap) {
   return holder_static_handle_text(c, v, out, cap);
 }
 
+/* The call's own emission as a String's bytes, which the answer above
+   wraps: a call without a bang that answers its receiver is emitted the
+   same whether or not the analysis marked it as the handle. */
+static void emit_self_call_char(Compiler *c, int v, Buf *b) {
+  if (!strbuf_plain_self_call(c, v)) { emit_expr(c, v, b); return; }
+  int sv = view_push_repr(c, v, VR_STRBUF_BOX, 0), sd = view_push_repr(c, v, VR_HANDLE_DEMAND, 0);
+  emit_expr(c, v, b);
+  view_pop(c, sd);
+  view_pop(c, sv);
+}
+/* A String position mutator without a bang that answers its receiver
+   (`@s.insert(0, x.upcase)`) in its statement form, the handle having been
+   taken ahead of it: the form mutates the handle in place. The value form
+   re-runs the call over a copy of the bytes that the slot's own read feeds,
+   and the handle bound ahead is no such read. 0 with nothing emitted for
+   any other call. */
+static int emit_self_mutator_stmt(Compiler *c, int v, Buf *b) {
+  if (!strbuf_plain_self_call(c, v) || !is_string_position_mutator(nt_str(c->nt, v, "name"))) return 0;
+  Buf st; memset(&st, 0, sizeof st);
+  if (!emit_array_mutate_stmt(c, v, &st, g_indent)) { free(st.p); return 0; }
+  buf_puts(b, st.p ? st.p : "");
+  free(st.p);
+  return 1;
+}
 /* --share-strings: a bang method (or an iterator given a block) on a
    variable's handle, or on a reader call read as one (strbuf_bang_self_local),
    as an sp_String *: the receiver's handle where the call answered it, NULL
@@ -2637,7 +2671,7 @@ static int emit_bang_self_handle_1(Compiler *c, int v, Buf *b) {
     int sv = view_push_repr(c, r, VR_STRBUF_BOX, 1);
     int st = view_push(c, r, TY_STRBUF);
     ran_first_bind(r, th, th);
-    emit_expr(c, v, b);
+    emit_self_call_char(c, v, b);
     view_unbind(mark);
     view_pop(c, st);
     view_pop(c, sv);
@@ -2651,16 +2685,21 @@ static int emit_bang_self_handle_1(Compiler *c, int v, Buf *b) {
   int args = nt_ref(c->nt, v, "arguments");
   if (args >= 0 && read_rebound_by(c, r, args)) {
     int th = ++g_tmp, mark = g_n_argov;
-    buf_printf(b, "({ sp_String *_t%d = %s; SP_GC_ROOT(_t%d); const char *_t%d = ", th, sref, th, tr);
+    buf_printf(b, "({ sp_String *_t%d = %s; SP_GC_ROOT(_t%d); ", th, sref, th);
+    if (emit_self_mutator_stmt(c, v, b)) {
+      buf_printf(b, "_t%d; })", th);
+      return 1;
+    }
+    buf_printf(b, "const char *_t%d = ", tr);
     ran_first_bind(r, th, th);
-    emit_expr(c, v, b);
+    emit_self_call_char(c, v, b);
     view_unbind(mark);
     buf_printf(b, "; _t%d ? _t%d : (sp_String *)NULL; })", tr, th);
     return 1;
   }
   if (nt_kind(c->nt, r) != NK_CallNode) {
     buf_printf(b, "({ const char *_t%d = ", tr);
-    emit_expr(c, v, b);
+    emit_self_call_char(c, v, b);
     buf_printf(b, "; _t%d ? %s : (sp_String *)NULL; })", tr, sref);
     return 1;
   }
@@ -2672,7 +2711,7 @@ static int emit_bang_self_handle_1(Compiler *c, int v, Buf *b) {
   buf_printf(b, "const char *_t%d = ", tr);
   int mark = g_n_argov;
   ran_first_bind(r, th, th);
-  emit_expr(c, v, b);
+  emit_self_call_char(c, v, b);
   view_unbind(mark);
   buf_printf(b, "; _t%d ? _t%d : (sp_String *)NULL; })", tr, th);
   return 1;
@@ -2846,6 +2885,76 @@ void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
     }
   }
 }
+/* Does call v take a splat argument (`s.concat(*a)`)? Its emission does not
+   build with one, so the --share-strings routes below leave such a call to
+   the refusal it had. */
+static int call_takes_splat(const NodeTable *nt, int v) {
+  if (v < 0 || nt_kind(nt, v) != NK_CallNode) return 0;
+  int argc = 0;
+  const int *argv = call_args(nt, v, &argc);
+  return call_has_splat_arg(nt, argv, argc);
+}
+/* --share-strings: is v a String call without a bang that answers its
+   receiver (`s.concat(x, y)`, `s.insert(i, x)`), called on a variable that
+   holds the handle, with no splat argument and no append chain over it
+   (strbuf_chain_over_handle)? A bang method can answer nil, which
+   strbuf_bang_self_local takes under its own arm. */
+int strbuf_plain_self_call(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  return v >= 0 && nt_kind(nt, v) == NK_CallNode && strbuf_bang_self_local(c, v) &&
+         !call_takes_splat(nt, v) && !bop_share_self_answer(nt_str(nt, v, "name"), nt_ref(nt, v, "block") >= 0) &&
+         !strbuf_chain_over_handle(c, v);
+}
+/* --share-strings: does an instance variable's write take value v as a
+   handle emit_strbuf_value hands over: a conditional with a handle arm, an
+   append chain over a variable's handle (`@r = @s << x`), or a call without
+   a bang that answers its receiver (`@r = @s.concat(x, y)`)? A call with a
+   splat argument is none of the last two. */
+int strbuf_ivar_store_aliases(Compiler *c, int v) {
+  return strbuf_cond_has_handle_leaf(c, v, 0) ||
+         (!call_takes_splat(c->nt, v) && (strbuf_chain_over_handle(c, v) || strbuf_plain_self_call(c, v)));
+}
+/* --share-strings: does an instance variable's write take value v by a
+   route of its own, though a demand-marked read of v (strbuf_slot_ref's call
+   arm) is taken as the handle first: a call without a bang that answers its
+   receiver or a receiver conversion (`@r = @s.itself`)? Their plain emission
+   is the String's bytes. */
+int strbuf_ivar_store_routes(Compiler *c, int v) {
+  return repr_share_rule(c) && (strbuf_plain_self_call(c, v) || repr_string_conversion_operand(c, v) >= 0);
+}
+
+/* The last statement of a parenthesized sequence (through nested ones), or
+   v itself; -1 for an empty one. */
+static int paren_tail(const NodeTable *nt, int v) {
+  while (v >= 0 && nt_kind(nt, v) == NK_ParenthesesNode) {
+    int body = nt_ref(nt, v, "body");
+    int n = 0; const int *st = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &n) : NULL;
+    v = n >= 1 ? st[n - 1] : -1;
+  }
+  return v;
+}
+/* Is v a parenthesized sequence whose value is nil (`(puts "side"; nil)`)?
+   A String slot takes NULL for it, after the statements before the nil. */
+int strbuf_seq_nil_tail(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  int t = v >= 0 && nt_kind(nt, v) == NK_ParenthesesNode ? paren_tail(nt, v) : -1;
+  return t >= 0 && nt_kind(nt, t) == NK_NilNode;
+}
+/* The slot's nil for sequence v (strbuf_seq_nil_tail): the statements
+   before the nil run first, in order, as an expression. */
+static void emit_strbuf_seq_nil(Compiler *c, int v, Buf *b) {
+  const NodeTable *nt = c->nt;
+  Buf pre; memset(&pre, 0, sizeof pre);
+  for (int u = v; u >= 0 && nt_kind(nt, u) == NK_ParenthesesNode;) {
+    int body = nt_ref(nt, u, "body");
+    int n = 0; const int *st = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &n) : NULL;
+    for (int i = 0; i < n - 1; i++) emit_stmt(c, st[i], &pre, 0);
+    u = n >= 1 ? st[n - 1] : -1;
+  }
+  if (pre.p && pre.p[0]) buf_printf(b, "({ %s(sp_String *)NULL; })", pre.p);
+  else buf_puts(b, "(sp_String *)NULL");
+  free(pre.p);
+}
 /* The value a generated Struct or Data constructor or an attribute writer
    stores into a String ivar slot (TY_STRBUF), which no `@iv = v` of the
    program writes: what a write into a slot of that kind hands it
@@ -2859,11 +2968,15 @@ void emit_strbuf_ivar_store(Compiler *c, int shared, int v, Buf *b) {
   memset(&slot, 0, sizeof slot);
   slot.type = TY_STRBUF;
   slot.str_shared = shared ? 1 : 0;
+  if (strbuf_seq_nil_tail(c, v)) { emit_strbuf_seq_nil(c, v, b); return; }
   int u = v;
+  /* The value of a parenthesized sequence is its last statement, and the
+     ones before it run in emit_strbuf_value. Taken as nil, `(@q = 1; @s)`
+     stored NULL and dropped its statements. */
   while (u >= 0 && nt_kind(nt, u) == NK_ParenthesesNode) {
     int body = nt_ref(nt, u, "body");
     int n = 0; const int *st = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &n) : NULL;
-    u = n == 1 ? st[0] : -1;
+    u = n >= 1 ? st[n - 1] : -1;
   }
   NodeKind k = u >= 0 ? nt_kind(nt, u) : NK_NilNode;
   if (k == NK_NilNode) { buf_puts(b, "NULL"); return; }
@@ -2875,6 +2988,11 @@ void emit_strbuf_ivar_store(Compiler *c, int shared, int v, Buf *b) {
                         "writer into an instance variable that is mutated in place through another name "
                         "(a String is not yet shared by reference through this variable). Store a String "
                         "no variable keeps, or mutate it through the variable.");
+  /* --share-strings: a call without a bang that answers its receiver
+     (`@r = @s.concat(x, y)`) is that receiver's handle. A demand-marked
+     read of it would be taken as the handle, and the new String the demand
+     wraps is a copy. */
+  if (shared && repr_share_rule(c) && strbuf_plain_self_call(c, v) && emit_bang_self_handle(c, v, b)) return;
   emit_strbuf_value(c, &slot, v, b);
 }
 /* Does storing node v into an Integer slot that can also hold nil need the
@@ -13613,9 +13731,12 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
          source's frozen state (#3227 P4) */
       char srefW[1024];
       if (vty && sp_streq(vty, "NilNode")) buf_puts(b, "NULL");
-      else if (strbuf_slot_ref(c, v, srefW, sizeof srefW)) buf_puts(b, srefW);
+      /* a sequence that ends in nil: its statements, then the slot's nil */
+      else if (strbuf_seq_nil_tail(c, v)) emit_strbuf_ivar_store(c, 0, v, b);
+      else if (!strbuf_ivar_store_routes(c, v) && strbuf_slot_ref(c, v, srefW, sizeof srefW))
+        buf_puts(b, srefW);
       /* A conditional into the shared slot takes each arm's handle. */
-      else if (repr_share_rule(c) && strbuf_cond_has_handle_leaf(c, v, 0))
+      else if (repr_share_rule(c) && strbuf_ivar_store_aliases(c, v))
         emit_strbuf_ivar_store(c, 1, v, b);
       /* a write whose slot holds the rule's handle: that handle */
       else if (emit_strbuf_write_handle(c, v, b)) { }
@@ -15582,13 +15703,14 @@ static int str_alias_chain_base(Compiler *c, int id) {
   for (;;) {
     cur = str_append_chain_base(c, cur);
     /* Under the sharing rule, prepend's zero- and multi-argument forms
-       answer the same receiver as its one-argument form. Read the row's
-       arity and answer rather than changing the default alias walk. */
+       answer the same receiver as its one-argument form, and so do concat's
+       and bytesplice and append_as_bytes. Read the row's arity and answer
+       rather than changing the default alias walk. */
     if (repr_share_rule(c) && nt_kind(c->nt, cur) == NK_CallNode) {
       const char *nm = nt_str(c->nt, cur, "name");
       int r = nt_ref(c->nt, cur, "receiver");
       TyKind rt = r >= 0 ? comp_ntype(c, r) : TY_UNKNOWN;
-      if (nm && is_prepend_alias(nm) && (rt == TY_STRING || rt == TY_STRBUF) &&
+      if (nm && (rt == TY_STRING || rt == TY_STRBUF) && bop_share_named(TY_STRING, nm) == BSH_RECV &&
           nt_ref(c->nt, cur, "block") < 0) {
         int ac, targets[CPT_MAX];
         call_args(c->nt, cur, &ac);
@@ -19043,7 +19165,7 @@ int strbuf_flow_carries(Compiler *c, StrbufFlowMemo *fm, int kind, int site, int
     HolderRef h;
     if (holder_of_node(c, site, &h) && h.r.kind == RK_BOXED) ctx = SFC_ELEM;
     else if (sk == NK_InstanceVariableWriteNode && repr_write_share(c, site) &&
-             strbuf_cond_has_handle_leaf(c, v, 0)) ctx = SFC_ALIAS;
+             strbuf_ivar_store_aliases(c, v)) ctx = SFC_ALIAS;
     else ctx = sk == NK_LocalVariableWriteNode || sk == NK_GlobalVariableWriteNode || sk == NK_ClassVariableWriteNode ||
                sk == NK_ConstantWriteNode || sk == NK_ConstantPathWriteNode ? SFC_ALIAS : SFC_SLOT;
     break;
