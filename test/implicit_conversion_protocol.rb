@@ -6,6 +6,10 @@
 require "pathname"
 require "stringio"
 
+# a nil perm below creates a file with the default mode, 0666 less the umask:
+# fix the umask, so the expected mode does not depend on who runs the test
+File.umask(022)
+
 dir = "/tmp/spinel_implicit_conversion_protocol_#{Process.pid}"
 if Dir.exist?(dir)
   Dir.children(dir).each { |e| File.delete("#{dir}/#{e}") }

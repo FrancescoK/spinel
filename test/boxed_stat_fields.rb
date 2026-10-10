@@ -2,6 +2,7 @@
 # and zero? as a typed File::Stat does, where each raised NoMethodError.
 path = "/tmp/spinel_boxed_stat_#{Process.pid}"
 File.write(path, "hello")
+File.chmod(0644, path)   # the mode printed below, whatever the umask
 st = [File.stat(path), 0][0]
 p st.size
 p st.nlink
