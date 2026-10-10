@@ -8,6 +8,12 @@ spinel: 1 refusal, nothing written
 spinel: test/reject/alias_rebinds_after_class_body_call.rb:8: `a` is called in the class body before an alias rebinds it: an alias binds for the whole program here, so the call would run the aliased body, not the `def a` Ruby runs at that point. Call it after the alias, or give the alias another name
 == test/reject/alias_rebinds_after_class_body_call.rb [promote] rc=1
 spinel: test/reject/alias_rebinds_after_class_body_call.rb:8: `a` is called in the class body before an alias rebinds it: an alias binds for the whole program here, so the call would run the aliased body, not the `def a` Ruby runs at that point. Call it after the alias, or give the alias another name
+== test/reject/anon_superclass_instance_eval_self.rb [default] rc=1
+spinel: test/reject/anon_superclass_instance_eval_self.rb:9: unsupported `superclass` that can reach a class whose superclass is an anonymous class (Class.new, Struct.new or Data.define as the superclass): spinel has no class object for the anonymous class
+spinel: 1 refusal, nothing written
+== test/reject/anon_superclass_instance_eval_self.rb [promote] rc=1
+spinel: test/reject/anon_superclass_instance_eval_self.rb:9: unsupported `superclass` that can reach a class whose superclass is an anonymous class (Class.new, Struct.new or Data.define as the superclass): spinel has no class object for the anonymous class
+spinel: 1 refusal, nothing written
 == test/reject/anon_superclass_reflection.rb [default] rc=1
 spinel: test/reject/anon_superclass_reflection.rb:11: unsupported `superclass` that can reach a class whose superclass is an anonymous class (Class.new, Struct.new or Data.define as the superclass): spinel has no class object for the anonymous class
 spinel: 1 refusal, nothing written

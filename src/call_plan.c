@@ -754,9 +754,12 @@ static const char *feature_limit(Compiler *c, int id, int *stop, int *lx, char *
     return "Module#define_method with a non-literal name is not supported; "
            "use a literal Symbol or String (see docs/limitations.md)";
   /* marked by mark_anon_superclass_reflection: no class object stands for
-     the anonymous class that CRuby's answer names */
+     the anonymous class that CRuby's answer names. A call the plan binds to
+     a user method is that method's, not Class#superclass (RDoc's
+     ClassModule#superclass beside `class Rule < Struct.new(:weight)`). */
   int anon_reflect = (int)nt_int(nt, id, "anon_reflect", 0);
   if (anon_reflect && cplan_reachable(c, id)) {
+    *lx = LX_BINDING;
     snprintf(buf, cap, "unsupported `%s` that can reach a class whose superclass is an anonymous "
              "class (Class.new, Struct.new or Data.define as the superclass): spinel has no class "
              "object for the anonymous class", anon_reflect == 1 ? "superclass" : "ancestors");
