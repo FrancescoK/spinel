@@ -2147,12 +2147,16 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
   int ntg = sh_targets_in(F, c, n, tg, 64);
   if (ntg != 0) sh_read_site(F, n);
   if (ntg < 0) return sh_unknown_call(F, c, n, blk);
-  /* a bare `new` in a class method builds the class it runs for: its initialize
-     (cplan_initialize), as for a constant receiver */
-  int own_init = ntg == 0 && recv < 0 && bop_share_named(BOP_ANY_RECV, name) == BSH_NEW ? cplan_initialize(c, n) : -1;
-  if (own_init >= 0) {
-    sh_bind(F, c, n, own_init);
-    if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode) sh_block_to_method(F, c, blk, own_init);
+  /* a bare `new` in a class method builds the class it runs for, or a subclass
+     of it: every initialize cplan_initializers names, as for a constant receiver */
+  int own_inits[CPT_MAX];
+  int nown = ntg == 0 && recv < 0 && bop_share_named(BOP_ANY_RECV, name) == BSH_NEW
+             ? cplan_initializers(c, n, own_inits, CPT_MAX) : 0;
+  if (nown > 0) {
+    for (int i = 0; i < nown; i++) {
+      sh_bind(F, c, n, own_inits[i]);
+      if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode) sh_block_to_method(F, c, blk, own_inits[i]);
+    }
     return -1;
   }
   if (ntg == 0 && recv >= 0 && bop_share_named(BOP_ANY_RECV, name) == BSH_NEW) {
