@@ -1361,6 +1361,11 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
       buf_printf(b, "sp_sock_address(%s, %d)", r, sp_streq(name, "remote_address") ? 1 : 0);
       free(rb.p); return 1;
     }
+    if (sp_feature_required("socket") && argc == 0 &&
+        (sp_streq(name, "getsockname") || sp_streq(name, "getpeername"))) {
+      buf_printf(b, "sp_sock_getname(%s, %d)", r, sp_streq(name, "getpeername") ? 1 : 0);
+      free(rb.p); return 1;
+    }
     if (sp_feature_required("socket")) {
       /* the address-taking pair; UDPSocket#send's 3-arg form carries the
          destination, the 2-arg form goes to the connected peer */

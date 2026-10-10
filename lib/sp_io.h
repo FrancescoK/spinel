@@ -147,6 +147,7 @@ const char *sp_sock_gethostname(void);
 sp_int sp_sock_addrinfo_hint(sp_RbVal v, sp_int is_family);
 sp_PolyArray *sp_sock_getaddrinfo(const char *host, sp_int port, sp_int family, sp_int socktype);
 sp_Addrinfo *sp_sock_address(sp_File *f, sp_int peer);
+const char *sp_sock_getname(sp_File *f, sp_int peer);
 /* BasicSocket.do_not_reverse_lookup (shared by every socket class) and the
    per-socket flag a new socket takes from it */
 extern sp_bool sp_sock_dnrl_default;
@@ -159,6 +160,7 @@ const char *sp_sock_pack_sockaddr_in(sp_int port, const char *host);
 const char *sp_sock_pack_sockaddr_un(const char *path);
 const char *sp_addrinfo_to_sockaddr(sp_Addrinfo *a);
 sp_PolyArray *sp_sock_unpack_sockaddr_in(const char *sa);
+const char *sp_sock_unpack_sockaddr_un(const char *sa);
 sp_File *sp_sock_new(sp_int domain, sp_int type, sp_int proto);
 sp_File *sp_sock_pair_end(sp_int domain, sp_int type, sp_int proto, sp_int which);
 sp_File *sp_sock_unix_server(const char *path);

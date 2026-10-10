@@ -1,0 +1,12 @@
+true
+true
+Errno::ENOTCONN
+true
+true
+true
+true
+true
+true
+true
+NoMethodError
+"not an AF_UNIX sockaddr"

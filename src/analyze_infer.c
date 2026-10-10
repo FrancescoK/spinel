@@ -3511,6 +3511,7 @@ static int infer_builtin_cmethod_call(Compiler *c, int id, const NodeTable *nt, 
       if ((sp_streq(name, "sockaddr_in") || sp_streq(name, "pack_sockaddr_in")) && argc == 2) { *out = TY_STRING; return 1; }
       if ((sp_streq(name, "sockaddr_un") || sp_streq(name, "pack_sockaddr_un")) && argc == 1) { *out = TY_STRING; return 1; }
       if (sp_streq(name, "unpack_sockaddr_in") && argc == 1) { *out = TY_POLY_ARRAY; return 1; }
+      if (sp_streq(name, "unpack_sockaddr_un") && argc == 1) { *out = TY_STRING; return 1; }
     }
     if (rty && sp_streq(rty, "ConstantReadNode") &&
         nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "IO")) {
@@ -3680,6 +3681,8 @@ static int infer_handle_call(Compiler *c, int id, const NodeTable *nt, const cha
       if (sp_streq(name, "do_not_reverse_lookup=") && argc == 1) { *out = infer_type(c, argv[0]); return 1; }
       if ((sp_streq(name, "local_address") || sp_streq(name, "remote_address")) && argc == 0)
         { *out = TY_ADDRINFO; return 1; }
+      if ((sp_streq(name, "getsockname") || sp_streq(name, "getpeername")) && argc == 0)
+        { *out = TY_STRING; return 1; }
       /* the non-blocking family: the handle / the bytes / the byte count, each
          nullable so `exception: false` can answer nil */
       if (sp_streq(name, "accept_nonblock") || sp_streq(name, "recv_nonblock") ||

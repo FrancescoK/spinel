@@ -414,8 +414,6 @@ still works.
   `exception: false` forms) is supported.
 - `SOCKSSocket` does not exist (CRuby only defines it when built with the
   SOCKS library, so a program cannot rely on it either).
-- Missing instance methods: `#getsockname`, `#getpeername`,
-  `#do_not_reverse_lookup`.
 - Missing class methods: `.open`, `.gethostbyname`, `IPSocket.getaddress`.
 - `TCPServer.new` takes no backlog argument (the listen backlog is fixed);
   `TCPSocket.new` has no four-argument local-address form.

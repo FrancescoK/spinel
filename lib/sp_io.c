@@ -917,6 +917,16 @@ sp_PolyArray *sp_sock_unpack_sockaddr_in(const char *sa) {SP_GC_ROOT_STR(sa);
   return out;
 }
 
+/* Socket.unpack_sockaddr_un -> the path, the inverse of sockaddr_un. */
+const char *sp_sock_unpack_sockaddr_un(const char *sa) {SP_GC_ROOT_STR(sa);
+  extern int sp_net_unpack_sockaddr_un(const void *sa, int salen, char *pathbuf, int cap);
+  char path[256];
+  int len = sa ? (int)sp_str_byte_len(sa) : 0;
+  int n = sp_net_unpack_sockaddr_un(sa, len, path, (int)sizeof path);
+  if (n < 0) sp_raise_cls("ArgumentError", "not an AF_UNIX sockaddr");
+  return sp_str_from_bytes(path, (size_t)n);
+}
+
 /* #local_address / #remote_address -> Addrinfo for this end / the peer. */
 sp_Addrinfo *sp_sock_address(sp_File *f, sp_int peer) {SP_GC_ROOT(f);
   extern sp_Addrinfo *sp_addrinfo_new(const char *ip, sp_int port, sp_int stype, sp_int is_unix);
@@ -940,6 +950,26 @@ sp_Addrinfo *sp_sock_address(sp_File *f, sp_int peer) {SP_GC_ROOT(f);
   if (port < 0) { buf[0] = '\0'; port = 0; }
   int stype = (strcmp(k, "UDPSocket") == 0) ? SOCK_DGRAM : SOCK_STREAM;
   return sp_addrinfo_new(buf, (sp_int)port, stype, 0);
+}
+
+/* #getsockname / #getpeername -> the packed sockaddr of this end / the peer,
+   as a binary String (what Socket.unpack_sockaddr_in and Addrinfo take). */
+const char *sp_sock_getname(sp_File *f, sp_int peer) {SP_GC_ROOT(f);
+  extern int sp_net_sock_name(int fd, int peer, void *out, int cap);
+  const char *m = peer ? "getpeername" : "getsockname";
+  if (!f || !f->is_sock)
+    sp_raise_cls("NoMethodError",
+                 sp_sprintf("undefined method '%s' for an instance of %s", m, sp_io_kind_name(f)));
+  SP_IO_OPEN(f);
+  char buf[256];
+  int n = sp_net_sock_name(fileno(f->fp), (int)peer, buf, (int)sizeof buf);
+  if (n < 0) {
+    int e = errno;
+    sp_raise_cls(sp_errno_class_name(e), sp_sprintf("%s - %s(2)", strerror(e), m));
+  }
+  char *s = (char *)sp_str_from_bytes(buf, (size_t)n);
+  sp_str_mark_binary(s);
+  return s;
 }
 
 /* Only a socket answers the socket-specific methods; say which class the

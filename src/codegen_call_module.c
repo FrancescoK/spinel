@@ -1328,6 +1328,12 @@ int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable 
         buf_puts(b, ")");
         return 1;
       }
+      if (sp_streq(name, "unpack_sockaddr_un") && argc == 1) {
+        buf_puts(b, "sp_sock_unpack_sockaddr_un(");
+        emit_str_expr(c, argv[0], b);
+        buf_puts(b, ")");
+        return 1;
+      }
       if (sp_streq(name, "getaddrinfo") && argc >= 2) {
         buf_puts(b, "sp_sock_getaddrinfo(");
         emit_str_expr(c, argv[0], b);
