@@ -5085,8 +5085,11 @@ static int wb_header_has_param(const Buf *b, size_t h, const char *nm, size_t nn
   }
   return 0;
 }
-static size_t wb_stmt_end(const Buf *b, size_t q) {
-  size_t k = q + 1, d = 0, send = 0;
+/* Where the expression that starts after `q` ends: the `;` that closes it, or
+   the unmatched closer of the group it sits in, at depth 0 and outside string
+   and character literals. b->len when neither is found. */
+static size_t wb_expr_end(const Buf *b, size_t q) {
+  size_t k = q + 1, d = 0;
   int str = 0, ch = 0;
   for (; k < b->len; k++) {
     char x = b->p[k];
@@ -5096,14 +5099,105 @@ static size_t wb_stmt_end(const Buf *b, size_t q) {
     if (x == '\'') { ch = 1; continue; }
     if (x == '(' || x == '[' || x == '{') d++;
     else if (x == ')' || x == ']' || x == '}') { if (!d) break; d--; }
-    else if (x == ';' && !d) { send = k; break; }
+    else if (x == ';' && !d) break;
   }
-  if (send) {                       /* not when it is a statement expression's value */
-    size_t k2 = send + 1;
-    while (k2 < b->len && (b->p[k2] == ' ' || b->p[k2] == '\n' || b->p[k2] == '\t')) k2++;
-    if (k2 + 1 < b->len && b->p[k2] == '}' && b->p[k2+1] == ')') send = 0;
+  return k;
+}
+/* Whether the `;` at `send` ends a statement expression's value (`; })`),
+   which a block around the statement would make void. */
+static int wb_ends_value(const Buf *b, size_t send) {
+  size_t k2 = send + 1;
+  while (k2 < b->len && (b->p[k2] == ' ' || b->p[k2] == '\n' || b->p[k2] == '\t')) k2++;
+  return k2 + 1 < b->len && b->p[k2] == '}' && b->p[k2+1] == ')';
+}
+static size_t wb_stmt_end(const Buf *b, size_t q) {
+  size_t send = wb_expr_end(b, q);
+  if (send >= b->len || b->p[send] != ';') return 0;
+  return wb_ends_value(b, send) ? 0 : send;   /* not when it is a statement expression's value */
+}
+/* A store written as a parenthesised statement: `((o)->f = v);`, which is what
+   an expression-valued emitter (instance_variable_set) writes when its value
+   is dropped. `st` is the start of the lvalue and `bol` the start of its
+   statement; the text between them must be blanks and `(` only. Answers the
+   position of the first `(` and sets *npar to how many there are, or answers
+   (size_t)-1 when the store is part of anything else. */
+static size_t wb_paren_stmt_start(const Buf *b, size_t bol, size_t st, size_t *npar) {
+  size_t first = (size_t)-1;
+  *npar = 0;
+  for (size_t k = bol; k < st; k++) {
+    if (b->p[k] == '(') { if (first == (size_t)-1) first = k; (*npar)++; }
+    else if (b->p[k] != ' ' && b->p[k] != '\t') return (size_t)-1;
   }
-  return send;
+  return first;
+}
+/* Whether every store to an `->iv_` field between `from` and `to` names the
+   object `[st, i)` does: a statement that stores into one object takes one
+   barrier on it, after its last store. */
+static int wb_stores_one_object(const Buf *b, size_t st, size_t i, size_t from, size_t to) {
+  for (size_t k = from; k + 5 < to; k++) {
+    if (b->p[k] != '-' || b->p[k+1] != '>' || strncmp(b->p + k + 2, "iv_", 3)) continue;
+    size_t e = k + 5;
+    while (e < to && (isalnum((unsigned char)b->p[e]) || b->p[e] == '_')) e++;
+    size_t q = e;
+    while (q < to && b->p[q] == ' ') q++;
+    if (q >= to || b->p[q] != '=' || b->p[q+1] == '=') continue;   /* a read, or == */
+    size_t lv = wb_lvalue_start(b->p, k);
+    if (k - lv != i - st || strncmp(b->p + lv, b->p + st, i - st)) return 0;
+  }
+  return 1;
+}
+/* The `;` that ends the parenthesised statement whose store (the lvalue
+   `[st, i)`) has its `=` at `q`, when exactly the `npar` opening parentheses
+   close right after the stored value and nothing else does. A comma sequence
+   of stores (`((o)->a = x, (o)->b = y, 0);`) qualifies when all of them name
+   the one object, as a constructor's field stores do. *val_end is where the
+   value ends (the first closer). 0 for no. */
+static size_t wb_paren_stmt_end(const Buf *b, size_t st, size_t i, size_t q, size_t npar,
+                                size_t *val_end) {
+  size_t k = wb_expr_end(b, q);
+  if (k >= b->len || b->p[k] != ')') return 0;
+  if (!wb_stores_one_object(b, st, i, q + 1, k)) return 0;
+  *val_end = k;
+  for (size_t n = 0; n < npar; n++, k++) {
+    while (k < b->len && b->p[k] == ' ') k++;
+    if (k >= b->len || b->p[k] != ')') return 0;
+  }
+  while (k < b->len && b->p[k] == ' ') k++;
+  if (k >= b->len || b->p[k] != ';') return 0;
+  return wb_ends_value(b, k) ? 0 : k;
+}
+/* The text of a parenthesised statement's stores, `[from, to)`, with a barrier
+   after each store (`o->a = x, sp_gc_wb(o), o->b = y, sp_gc_wb(o), 0`). Every
+   value can allocate and collect, so each store has to be recorded before the
+   next value is built: one barrier after the last would leave the earlier
+   young values unrecorded while a later value's collection runs. */
+static void wb_put_stores_barriered(Buf *ins, const Buf *b, size_t from, size_t to, int wid) {
+  size_t seg = from;
+  size_t k = from;
+  size_t d = 0;
+  int str = 0, ch = 0;
+  for (;; k++) {
+    int end = k >= to;
+    if (!end) {
+      char x = b->p[k];
+      if (str) { if (x == '\\') k++; else if (x == '"') str = 0; continue; }
+      if (ch) { if (x == '\\') k++; else if (x == '\'') ch = 0; continue; }
+      if (x == '"') { str = 1; continue; }
+      if (x == '\'') { ch = 1; continue; }
+      if (x == '(' || x == '[' || x == '{') d++;
+      else if (x == ')' || x == ']' || x == '}') d--;
+      if (!(x == ',' && !d)) continue;
+    }
+    size_t e = k < to ? k : to;
+    int store = 0;
+    for (size_t j = seg; j + 5 < e && !store; j++)
+      if (b->p[j] == '-' && b->p[j+1] == '>' && !strncmp(b->p + j + 2, "iv_", 3)) store = 1;
+    buf_putn(ins, b->p + seg, e - seg);
+    if (store) buf_printf(ins, ", sp_gc_wb((void *)_wb%d)", wid);
+    if (end) break;
+    buf_putn(ins, ",", 1);
+    seg = k + 1;
+  }
 }
 /* `(*X) = v` where X names a reference cell: wrap X so the barrier lands on the
    cell, which is the object the collector reaches the stored value through.
@@ -5351,13 +5445,40 @@ static void gc_wb_insert_seg(Compiler *c, Buf *b, size_t fn_off) {
        Statement position takes the object into a temp so a non-trivial lvalue
        is evaluated once; an assignment inside a larger expression still uses
        the wrapper, which has the same hazard and no room for a second
-       statement. */
+       statement. A statement the emitter wrapped whole in parentheses
+       (`((o)->f = v);`, wb_paren_stmt_start) is statement position too. */
     /* Not when this store is the last statement of a statement expression:
        that position IS the expression's value, and wrapping it in a block
        makes the value void. Detected by what follows the statement -- `})`
        closes a statement expression. */
     size_t stmt_end = at_stmt ? wb_stmt_end(b, q) : 0;
+    /* A statement the emitter wrapped in parentheses is a statement all the
+       same (`((o)->f = v);`): the barrier follows its store too. */
+    size_t pst = (size_t)-1, pval = 0, npar = 0;
+    if (!at_stmt) {
+      pst = wb_paren_stmt_start(b, bol, st, &npar);
+      if (pst != (size_t)-1) stmt_end = wb_paren_stmt_end(b, st, i, q, npar, &pval);
+    }
     Buf ins; memset(&ins, 0, sizeof ins);
+    if (pst != (size_t)-1 && stmt_end) {
+      int wid = ++g_tmp;
+      buf_printf(&ins, "{ __typeof__(");
+      buf_putn(&ins, b->p + st, i - st);
+      buf_printf(&ins, ") _wb%d = ", wid);
+      buf_putn(&ins, b->p + st, i - st);
+      buf_printf(&ins, "; _wb%d", wid);
+      wb_put_stores_barriered(&ins, b, i, pval, wid);
+      buf_puts(&ins, "; }");
+      size_t grew2 = ins.len - (stmt_end + 1 - pst);
+      size_t tail2 = b->len - (stmt_end + 1);
+      for (size_t g = 0; g < grew2; g++) buf_putn(b, "\0", 1);
+      memmove(b->p + pst + ins.len, b->p + stmt_end + 1, tail2);
+      memcpy(b->p + pst, ins.p, ins.len);
+      b->p[b->len] = '\0';
+      i = pst + ins.len;
+      free(ins.p);
+      continue;
+    }
     if (at_stmt && stmt_end) {
       /* rewrite the whole statement: { typeof(obj) _wb = obj; _wb->f = rhs; wb(_wb); } */
       int wid = ++g_tmp;
