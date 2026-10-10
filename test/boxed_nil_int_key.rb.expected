@@ -7,6 +7,10 @@ put hash nil key {1 => :one, nil => :n}
 put array [1, 9, 3]
 put array nil key TypeError: no implicit conversion from nil to integer
 put nil receiver, nil key NoMethodError: undefined method '[]=' for nil
+put string "aQc"
+put string nil key TypeError: no implicit conversion from nil to integer
+put frozen string nil key TypeError: no implicit conversion from nil to integer
+rebind string nil key TypeError: no implicit conversion from nil to integer
 rebind hash key [{1 => :k}, nil]
 rebind hash nil key [{1 => :one, nil => :n}, nil]
 rebind array [[1, 9, 3], nil]

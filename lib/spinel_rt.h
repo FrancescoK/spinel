@@ -12384,6 +12384,10 @@ static sp_RbVal sp_poly_str_aset_key(sp_RbVal v, sp_RbVal key, sp_RbVal val) {
 static sp_RbVal sp_poly_set_poly(sp_RbVal v, sp_RbVal key, sp_RbVal val) {
   sp_poly_coll_chk(v, "[]=");
   if (v.tag == SP_TAG_SYM) sp_raise_poly_nomethod("[]=", v);   /* as sp_poly_arr_set */
+  /* String#[]= takes no nil index, frozen or not; the store below has no
+     String arm, and a nil key passed through as a write that never happened */
+  if (key.tag == SP_TAG_NIL && (v.tag == SP_TAG_STR || sp_poly_is_strbuf(v)))
+    sp_raise_cls("TypeError", SPL("no implicit conversion from nil to integer"));
   if (v.tag != SP_TAG_OBJ) return val;
   /* a user object's own []= */
   if (SP_UNLIKELY(sp_poly_is_user_obj(v) && sp_user_aset_hook)) {
