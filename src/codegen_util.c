@@ -3388,6 +3388,12 @@ void refuse_from_plan(Compiler *c, int id, int from, const char *site) {
    Under the flag those passes step aside and the same refusal, with the
    same words, is raised here, where the call is emitted. */
 void refuse_prepass_at_emit(Compiler *c, int id) {
+  /* `...` forwarded to `new` on a class value that could be a Struct or
+     Data class while an initialize takes keywords: left to be refused here
+     by the `...` desugar, with or without the flag */
+  if (nt_int(c->nt, id, "fwd_new_class_value", 0))
+    unsupported_feature(c, id, "`...` forwarded to `new` on a class value, where an initialize "
+                               "takes keywords and a Struct or Data class could be constructed");
   if (!defer_refusals()) return;
   refuse_from_plan(c, id, CRF_SEND, "refuse-send");
   refuse_from_plan(c, id, CRF_CONST_GET, "refuse-const-get");
