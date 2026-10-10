@@ -1,0 +1,29 @@
+[:nil, :type_error, "class or module required for rescue clause"]
+[:int, :type_error, "class or module required for rescue clause"]
+[:cls, :caught]
+[:mod, :caught]
+side evaluated
+:caught2
+:caught3
+[:splat, :type_error]
+:caught5
+[:caught6, SystemExit]
+:next_clause
+[:nil_const, :type_error, "class or module required for rescue clause"]
+[:int_const, :type_error, "class or module required for rescue clause"]
+[:alias, :caught, ArgumentError]
+[:module, :caught, ArgumentError]
+[:user, :caught, MyErr]
+[:path, :caught, ArgumentError]
+[:nil_alone, :type_error, "class or module required for rescue clause"]
+[:alias_alone, :caught, ArgumentError]
+:key_error
+[:path_nil, :type_error, "class or module required for rescue clause"]
+[:path_nil_alone, :type_error, "class or module required for rescue clause"]
+[:path_int, :type_error, "class or module required for rescue clause"]
+[:path_class, :caught, Config::Fail]
+:argument_error
+[:socket_error, :caught, ArgumentError]
+[:socket_error_raised, :caught, SocketError]
+[:errno, :caught, ArgumentError]
+[:marshal, :caught, ArgumentError]
