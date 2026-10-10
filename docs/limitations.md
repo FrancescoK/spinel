@@ -866,6 +866,17 @@ String-keyed, String-valued type. The promotion preserves the Hash and stored
 String identities through callers and ivars. RBS-pinned returns and methods
 with nonempty or alternate Hash producers keep their existing inferred types.
 
+With `--share-strings`, a boxed call may also compose an exact String builtin
+row with same-named user-method returns when the settled dispatch plan accounts
+for both. For example, a blockless two-argument `String#sub` can return a fresh
+String through its String arm while a same-named user method returns `nil`;
+matched and unmatched substitutions both keep their String result separate
+from the receiver. A builtin row's argument peeks also cannot discard values
+retained by its same-named user arm. The analysis still joins every reachable
+user return, so a user arm that returns an existing String retains that alias
+and any required mutation refusal. Ambiguous builtin or dynamic dispatch
+remains conservative.
+
 Not yet shared:
 
 - String `self` handed to a mutating block through `yield` or `block.call` in the default build. Build with `--share-strings` to keep receiver mutations through this route. Read-only blocks and fresh String returns work in both builds;
