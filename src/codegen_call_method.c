@@ -1834,7 +1834,7 @@ int emit_call_poly_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *n
   if (recv >= 0 && argc == 0 && sp_streq(name, "arity") && repr_of(c, recv).kind == RK_BOXED) {
     int has_user_arity = 0;
     for (int _k = 0; _k < c->nclasses && !has_user_arity; _k++)
-      if (comp_method_in_class(c, _k, name) >= 0) has_user_arity = 1;
+      if (comp_resolve_member(c, _k, name, 0, NULL, NULL)) has_user_arity = 1;
     if (!has_user_arity) {
       int t = ++g_tmp;
       buf_printf(b, "({ sp_RbVal _t%d = ", t); emit_expr(c, recv, b);
@@ -1865,7 +1865,8 @@ int emit_call_poly_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *n
     int has_user_call = 0;
     for (int _k = 0; _k < c->nclasses && !has_user_call; _k++) {
       int umi = comp_method_in_class(c, _k, name);
-      if (umi >= 0 && argc >= c->scopes[umi].nrequired) has_user_call = 1;
+      if ((umi >= 0 && argc >= c->scopes[umi].nrequired) || (argc == 0 && comp_reader_in_chain(c, _k, name, NULL)))
+        has_user_call = 1;
     }
     /* The callable ABI packs at most 16 positional args into sp_int[16];
        beyond that the publish loop writes _sp_proc_poly_args[16] out of
