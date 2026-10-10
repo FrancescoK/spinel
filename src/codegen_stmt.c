@@ -4546,8 +4546,9 @@ int emit_poly_class_when(Compiler *c, int cond_id, const char *tmp, Buf *b) {
   { const char *q = isa_match_name(nt, cond_id, qbuf, sizeof qbuf); if (q) cn = q; }
   /* a class-aliasing constant (Alias = SomeClass) tests the aliased class */
   { const char *_ra = resolve_class_alias(c, cn); if (_ra) cn = _ra; }
+  /* a Bignum is an Integer too */
   if (is_integer_class_name(cn))
-    buf_printf(b, "%s.tag == SP_TAG_INT", tmp);
+    buf_printf(b, "(%s.tag == SP_TAG_INT || %s.tag == SP_TAG_BIGINT)", tmp, tmp);
   /* a mutable String boxes as its handle; a box with no handle is not one */
   else if (sp_streq(cn, "String"))
     buf_printf(b, "(%s.tag == SP_TAG_STR || (sp_poly_is_strbuf(%s) && %s.v.p))", tmp, tmp, tmp);
