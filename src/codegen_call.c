@@ -25043,6 +25043,9 @@ void gets_sep_arg_texts(Compiler *c, const int *argv, int argc, int strict, Buf 
     else if (!strict && pos == 1) glim = argv[k];
     else if (!strict) gsep = argv[k];
     else if (pos == 0 && (at == TY_STRING || at == TY_NIL)) gsep = argv[k];   /* a nil after it is no limit */
+    /* a boxed limit after the separator (an Integer under
+       --int-overflow=promote): it was dropped, and the line read whole */
+    else if (pos == 1 && at == TY_POLY) glim = argv[k];
     pos++;
   }
   if (gpoly >= 0) {
@@ -25053,7 +25056,14 @@ void gets_sep_arg_texts(Compiler *c, const int *argv, int argc, int strict, Buf 
     buf_puts(lim, "sp_poly_gets_lim("); emit_expr(c, gpoly, lim); buf_puts(lim, ")");
   }
   else if (gsep >= 0) emit_str_expr_sep(c, gsep, sep); else buf_puts(sep, "\"\\n\"");
-  if (glim >= 0) {
+  if (glim >= 0 && comp_ntype(c, glim) == TY_POLY) {
+    /* a boxed limit: nil is no limit, anything else an Integer argument */
+    int tl = ++g_tmp;
+    buf_printf(lim, "({ sp_RbVal _t%d = ", tl);
+    emit_expr(c, glim, lim);
+    buf_printf(lim, "; _t%d.tag == SP_TAG_NIL ? 0 : sp_poly_arg_int_chk(_t%d); })", tl, tl);
+  }
+  else if (glim >= 0) {
     /* the block form never raised for a nil limit, and keeps not raising */
     if (strict) emit_int_expr_nilable(c, glim, lim); else emit_int_expr(c, glim, lim);
   }

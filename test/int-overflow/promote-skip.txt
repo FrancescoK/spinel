@@ -3,7 +3,6 @@
 #
 # Gaps found when the lane began, at bcce09575: a wrong answer or C that
 # does not build. A gap leaves this list with its fix.
-test/file_foreach_arg_exprs.rb
 test/gc_alloc_front_sizes.rb
 test/io_each_line_splat_args.rb
 test/safe_nav_reopened_builtin.rb
