@@ -3234,6 +3234,32 @@ const char *rename_local_cell(const char *nm) {
     if (sp_streq(g_ren_from[i], nm) && !sb_shim_shadow(nm, g_ren_to[i])) return g_ren_to[i];
   return nm;
 }
+/* Hide the renames from `base` up while a caller's expression is emitted
+   (a provided argument reads none of the callee's parameters). A call in
+   that expression pushes renames of its own into the same slots, so the
+   hidden ones are kept aside and put back: truncating g_nren alone left an
+   inner call's `r` where the outer default read its own (#8319). */
+void ren_hide(RenHide *h, int base) {
+  h->base = base; h->top = g_nren; h->from = NULL; h->to = NULL;
+  int n = h->top - base;
+  if (n > 0) {
+    h->from = malloc(sizeof *h->from * (size_t)n);
+    h->to = malloc(sizeof *h->to * (size_t)n);
+    if (!h->from || !h->to) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    memcpy(h->from, g_ren_from[base], sizeof *h->from * (size_t)n);
+    memcpy(h->to, g_ren_to[base], sizeof *h->to * (size_t)n);
+  }
+  g_nren = base;
+}
+void ren_unhide(RenHide *h) {
+  int n = h->top - h->base;
+  if (n > 0) {
+    memcpy(g_ren_from[h->base], h->from, sizeof *h->from * (size_t)n);
+    memcpy(g_ren_to[h->base], h->to, sizeof *h->to * (size_t)n);
+  }
+  free(h->from); free(h->to);
+  g_nren = h->top;
+}
 const char *rename_local(const char *nm) {
   /* Innermost first. A nested inline pushes its own locals above the caller's,
      and a same-named local belongs to the inner one -- scanning forward gave

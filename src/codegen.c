@@ -7373,8 +7373,11 @@ void emit_proc_literal(Compiler *c, int create, Buf *b) {
   g_self = g_yield_self_fallback;
   g_self_deref = g_yield_self_deref_fallback;
   g_emitting_class_id = g_yield_emitting_class_fallback;
-  if (g_block_nren < g_nren) g_nren = g_block_nren;
+  RenHide bh;
+  int hid = g_block_nren < g_nren;
+  if (hid) ren_hide(&bh, g_block_nren);
   emit_proc_literal_here(c, create, b);
+  if (hid) ren_unhide(&bh);
   g_self = sv_self; g_self_deref = sv_deref;
   g_emitting_class_id = sv_emcls; g_nren = sv_nren;
   sb_shim_drop(c, create);
@@ -11746,9 +11749,10 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   }
   ZSuper z;
   if (is_forwarding) {
-    int sv = g_nren; g_nren = saved_nren;
+    RenHide zh;
+    ren_hide(&zh, saved_nren);
     zsuper_begin(c, s, m, &z);
-    g_nren = sv;
+    ren_unhide(&zh);
   }
   for (int i = 0; is_forwarding && i < m->nparams; i++) {
     emit_indent(b, din);

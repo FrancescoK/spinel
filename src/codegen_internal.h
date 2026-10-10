@@ -272,6 +272,10 @@ extern int g_yield_block_fallback_nren;
 extern const char *g_block_owner_param_name;
 extern const char *g_yield_block_fallback_param_name;
 extern int  g_nren;
+/* hide the renames from base up and put them back (codegen_util.c) */
+typedef struct { int base, top; char (*from)[96]; char (*to)[112]; } RenHide;
+void ren_hide(RenHide *h, int base);
+void ren_unhide(RenHide *h);
 extern int  g_block_id;
 int builtin_method_known(const char *cls, const char *m);
 int builtin_cmethod_known(const char *cls, const char *name);

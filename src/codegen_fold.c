@@ -6400,7 +6400,10 @@ static void emit_inlined_default(Compiler *c, Scope *m, int idx, Buf *out) {
   int sv_nren = g_nren, sv_indent = g_indent, sv_cls = g_emitting_class_id;
   const char *sv_self = g_self, *sv_deref = g_self_deref;
   Buf *sv_pre = g_pre;
-  g_nren = g_inl_dflt_nren;
+  RenHide dh;
+  int hid = g_inl_dflt_nren <= g_nren;
+  if (hid) ren_hide(&dh, g_inl_dflt_nren);
+  else g_nren = g_inl_dflt_nren;
   if (g_inl_dflt_self) { g_self = g_inl_dflt_self; g_self_deref = g_inl_dflt_deref; }
   if (g_inl_dflt_class >= 0) g_emitting_class_id = g_inl_dflt_class;
   g_inl_dflt_scope = NULL;
@@ -6417,6 +6420,7 @@ static void emit_inlined_default(Compiler *c, Scope *m, int idx, Buf *out) {
   g_inl_dflt_on_recv = sv_on_recv;
   g_pre = sv_pre; g_indent = sv_indent;
   g_inl_dflt_scope = m;
+  if (hid) ren_unhide(&dh);
   g_nren = sv_nren; g_self = sv_self; g_self_deref = sv_deref; g_emitting_class_id = sv_cls;
   if (pre.len) buf_printf(out, "({\n%s%s; })", pre.p, val.p ? val.p : "");
   else buf_puts(out, val.p ? val.p : "");
@@ -10833,14 +10837,15 @@ void emit_args_filled_argv(Compiler *c, int callee_idx, const int *argv, int arg
       /* A provided (caller) argument is emitted with the sibling-param renames
          OFF -- only a callee default expression should resolve param references
          to the hoisted temps. */
-      int active_nren = g_nren;
-      if (!from_gather && (provided >= 0 || is_rest || is_kwrest)) g_nren = ren_base;
+      RenHide act;
+      int hid = !from_gather && (provided >= 0 || is_rest || is_kwrest);
+      if (hid) ren_hide(&act, ren_base);
       if (from_gather) {
         /* a lent leading argument is the caller's, read without the renames */
-        int sv_lead = g_nren;
-        g_nren = ren_base;
+        RenHide lead;
+        ren_hide(&lead, ren_base);
         int lent = L.gather && emit_gather_lead_lent(c, m, i, argv, argc, &vb);
-        g_nren = sv_lead;
+        ren_unhide(&lead);
         if (!lent) emit_gathered_param(c, m, i, splat_tmp, &vb);
       }
       else if (is_rest)
@@ -10853,7 +10858,7 @@ void emit_args_filled_argv(Compiler *c, int callee_idx, const int *argv, int arg
       else if (provided < 0 && ds_hash_tmp >= 0 && m->pnames[i] && callee_has_kwarg(c, m, m->pnames[i]))
         emit_ds_param_extract(c, m, i, ds_hash_tmp, ds_hash_type, &vb);
       else emit_arg_or_default(c, m, i, provided, &vb);
-      g_nren = active_nren;
+      if (hid) ren_unhide(&act);
       emit_pd_param_bind(c, m, i, uid, vb.p, tmpnames[i], sizeof tmpnames[0]);
       free(vb.p);
     }
@@ -11755,8 +11760,8 @@ void emit_dispatch(Compiler *c, int cid, const char *name,
          posts. */
       int rest_end_d = L.rest_argc - pm->npost_rest;
       /* the packed arguments are the caller's: no parameter renames */
-      int rest_nren_sv = g_nren;
-      g_nren = pd_ren_base;
+      RenHide rest_h;
+      ren_hide(&rest_h, pd_ren_base);
       if (L.from[k] == ARG_GATHERED)
         emit_gathered_param(c, pm, k, splat_tmp_d, &ab);
       else if (L.splat >= 0)
@@ -11764,7 +11769,7 @@ void emit_dispatch(Compiler *c, int cid, const char *name,
                                       c, L.splat + 1, rest_end_d, argv, &ab);
       else
         emit_rest_pack_kwh(c, k, rest_end_d, argv, L.rest_kwh, &ab);
-      g_nren = rest_nren_sv;
+      ren_unhide(&rest_h);
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "sp_PolyArray *_t%d = %s;\n", atmp[k], ab.p ? ab.p : "sp_PolyArray_new()");
       /* The packed rest is a fresh array in a plain C temporary: a splat's
@@ -11823,10 +11828,10 @@ else {
       if (pm && pm->kwrest_idx >= 0 && k == pm->kwrest_idx) {
         /* `**kwrest` callee param: collect the call's unbound keywords --
            the caller's expressions, so with no parameter renames */
-        int kr_nren_sv = g_nren;
-        g_nren = pd_ren_base;
+        RenHide kr_h;
+        ren_hide(&kr_h, pd_ren_base);
         int krhash = emit_kwrest_collect(c, pm, kwh_d, ds_tmp_d, ds_type_d, argsNode);
-        g_nren = kr_nren_sv;
+        ren_unhide(&kr_h);
         buf_printf(&ab, "_t%d", krhash);
       }
       else if (!by_splat && kv < 0 && ds_tmp_d >= 0 && is_kwp_d) {
@@ -11846,10 +11851,10 @@ else {
       }
       else if (by_splat) {
         /* a lent leading argument is the caller's: its self, no renames */
-        int lead_nren_sv = g_nren;
-        g_nren = pd_ren_base;
+        RenHide lead_h;
+        ren_hide(&lead_h, pd_ren_base);
         int lent = L.gather && emit_gather_lead_lent(c, pm, k, argv, argc, &ab);
-        g_nren = lead_nren_sv;
+        ren_unhide(&lead_h);
         /* from the gather or the splat spread in place; a default past its
            end reads the callee's self, as the defaults below do: `def m(a =
            @x, c)` read the caller's */
@@ -11881,14 +11886,14 @@ else {
         }
         /* a provided argument is the caller's expression: a caller local that
            happens to share a parameter's name must not resolve to the temp */
-        int pd_nren_sv = g_nren;
-        if (provided >= 0) g_nren = pd_ren_base;
+        RenHide pd_h;
+        if (provided >= 0) ren_hide(&pd_h, pd_ren_base);
         /* no implementation: there is no parameter list to read a default
            or a coercion from, so the argument is the caller's expression as
            written (#4514) */
         if (!pm) { if (provided >= 0) emit_expr(c, provided, &ab); else buf_puts(&ab, "0"); }
         else emit_arg_or_default(c, pm, k, provided, &ab);
-        g_nren = pd_nren_sv;
+        if (provided >= 0) ren_unhide(&pd_h);
         g_self = saved_self;
         g_self_deref = saved_deref3;
         g_emitting_class_id = saved_emcls2;
