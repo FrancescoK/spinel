@@ -13700,7 +13700,11 @@ static int emit_poly_index_call(Compiler *c, int id, Buf *b, const NodeTable *nt
       emit_expr(c, recv, b);
       buf_puts(b, " = sp_poly_str_aset_key("); emit_expr(c, recv, b);
       buf_printf(b, at == TY_STRING ? ", sp_box_str(_t%d), _t%d);\nelse " : ", _t%d, _t%d);\nelse ", tk, tv);
-      buf_printf(b, at == TY_STRING ? "sp_poly_set_str(" : "sp_poly_set_poly("); emit_expr(c, recv, b);
+      /* a boxed key that is an Integer at run time widens a typed Array
+         as the Integer index does (sp_poly_aset_back), stored back */
+      if (at == TY_STRING) buf_puts(b, "sp_poly_set_str(");
+      else { emit_expr(c, recv, b); buf_puts(b, " = sp_poly_aset_back("); }
+      emit_expr(c, recv, b);
       buf_printf(b, ", _t%d", tk);
     }
     else if (at == TY_STRING || pkey || (at == TY_REGEX && !splice_recv_index_slot(c, recv, &skey_outer, &skey_oidx))) {
