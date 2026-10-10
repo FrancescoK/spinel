@@ -111,3 +111,15 @@ def fp_link2(addr, opts = {})
   opts
 end
 p fp_link("a@b"), fp_link2("5")
+
+# A send whose name is interpolated around a fixed part, where the only
+# methods of that shape cannot take the call's arguments (activerecord's
+# `public_send(:"clear_#{attribute}_change")` beside activemodel's
+# clear_attribute_change(attr_name)): the lowering found no arm for it and
+# reported a change all the same, every round. (Nothing calls it here: a
+# call reaching it is refused, as a send no method can serve.)
+class FpDirty
+  def clear_attribute_change(n) = n
+  def clear(a) = public_send(:"clear_#{a}_change")
+end
+p FpDirty.new.clear_attribute_change(1)

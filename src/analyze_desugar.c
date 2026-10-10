@@ -4227,7 +4227,12 @@ int desugar_dynamic_send(Compiler *c) {
     int encl = c->nscope[id];
     for (int j = base; j < nt->count; j++) c->nscope[j] = encl;
     expand_static_splat_args(c, base, nt->count);
-    changed = 1;
+    /* A send no candidate can serve (a computed name whose only methods of
+       that shape take other counts: activerecord's
+       `public_send(:"clear_#{attribute}_change")`) keeps no arms, so the
+       next round asks it again; it changes nothing, and saying it did held
+       the fixpoint to its cap. */
+    if (narm > 0) changed = 1;
   }
   free(picked);
   free(lits);
