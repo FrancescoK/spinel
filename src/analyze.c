@@ -17187,6 +17187,12 @@ static int hash_element_no_string(Compiler *c, int er, int cont) {
   LocalVar *lv = cs ? scope_local(cs, cn) : NULL;
   return lv && ty_is_hash(lv->type) && hash_local_key_no_string(c, cn, cs, key, 0);
 }
+/* A mutator through element read `er` of local container `cont` (contn,
+   conts): every String stored into the container is demanded, but none for
+   a Hash element under a key that never holds one (`h[:dirs] << d`). */
+static int strbuf_demand_elem_read_stores(Compiler *c, int er, int cont, const char *contn, Scope *conts) {
+  return hash_element_no_string(c, er, cont) ? 0 : strbuf_demand_container_stores(c, contn, conts);
+}
 
 /* The values stored into container ivar (cid, ivn): what is written to it,
    and what is pushed or []='d into it. */
@@ -20517,9 +20523,7 @@ static int promote_shared_stored_strings_pass(Compiler *c) {
        stores are walked to the container they name */
     if (!contv || (!ty_is_array(contv->type) && !ty_is_hash(contv->type) &&
                    contv->type != TY_UNKNOWN && contv->type != TY_POLY)) continue;
-    /* `h[:dirs] << d` where h holds no String under :dirs: no String to share */
-    if (hash_element_no_string(c, mrecv, cont)) continue;
-    changed |= strbuf_demand_container_stores(c, contn, conts);
+    changed |= strbuf_demand_elem_read_stores(c, mrecv, cont, contn, conts);
   }
 
   /* External reader mutation (`expr.reader << x`): the mutator reaches the
