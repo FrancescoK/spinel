@@ -10235,9 +10235,8 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
        through it as its cause (#3745) */
     emit_indent(b, indent);
     buf_printf(b, "void *_ic%d = sp_inflight_cause;"
-                  " if (_excf%d) sp_inflight_cause = _excobj%d ? _excobj%d"
-                  " : (void *)sp_exc_new_for_catch(_exccls%d, _excmsg%d);\n",
-               eid, eid, eid, eid, eid, eid);
+                  " if (_excf%d) sp_inflight_cause = sp_exc_ensure_obj(&_excobj%d, &_excmsg%d, _exccls%d);\n",
+               eid, eid, eid, eid, eid);
     /* The ensure's reads are not the method's return. Keep both a
        published handle and a fresh tail's cleared channel across them. */
     Scope *sc = comp_scope_of(c, id);

@@ -1,0 +1,4 @@
+"bad"
+"plain!"
+[ArgumentError, "arg"]
+[RuntimeError, ""]

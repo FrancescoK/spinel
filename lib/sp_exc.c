@@ -230,6 +230,9 @@ sp_Exception *sp_exc_new_for_catch(const char *cls, const char *msg) {
      handler stack, or sp_exc_msg_given's): a frozen one stays frozen */
   int fz = msg && msg != sp_exc_no_msg && !sp_cmsg_p(msg) &&
            (((const unsigned char *)msg)[-1] == 0xfa || ((const unsigned char *)msg)[-1] == 0xf8);
+  /* the caller's message may be held by nothing else: rooted before the
+     copy allocates (#8323) */
+  const char *msg0 = msg; SP_GC_ROOT_STR(msg0);
   if (!sp_exc_msg_empty_given(msg)) msg = sp_msg_heapify(msg); SP_GC_ROOT_STR(msg);
   sp_Exception *e = sp_exc_new(cls, msg);
   if (fz && e->msg) ((unsigned char *)e->msg)[-1] = 0xfa;
@@ -243,6 +246,19 @@ sp_Exception *sp_exc_new_for_catch(const char *cls, const char *msg) {
       e->has_key = 0; e->has_recv = 0;
     }
   }
+  return e;
+}
+
+/* An ensure that an exception passes through makes it its in-flight cause.
+   A raise of a String carries no object, only its message in the ensure's C
+   local, which nothing roots: the object made here holds the message, and
+   the local is pointed at the object's copy, so the re-raise after the
+   ensure body (which may collect) reads a live String (#8323). */
+void *sp_exc_ensure_obj(void **obj, const char **msg, const char *cls) {
+  if (*obj) return *obj;
+  sp_Exception *e = sp_exc_new_for_catch(cls, *msg);
+  *obj = e;
+  if (*msg && !sp_exc_msg_empty_given(*msg) && e->msg) *msg = e->msg;
   return e;
 }
 /* Allocate a zeroed exception-subclass struct of `sz` bytes with the base

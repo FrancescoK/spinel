@@ -74,6 +74,8 @@ int sp_exc_nearest_cls(const char *raised, const char *const *targets, int n);
 SP_COLD void sp_exc_acc_gate(sp_Exception *e, const char *cls, const char *acc);
 int sp_exc_is_standard_error(const char *raised);
 sp_Exception *sp_exc_new_for_catch(const char *cls, const char *msg);
+/* the object an ensure holds for the exception passing through it */
+void *sp_exc_ensure_obj(void **obj, const char **msg, const char *cls);
 /* The message a bare `raise` carries: empty, and distinct from "no message
    given" (which falls back to the class name, as Exception.new does) (#3711). */
 extern const char *const sp_exc_no_msg;
