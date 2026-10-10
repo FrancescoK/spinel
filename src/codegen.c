@@ -4910,6 +4910,9 @@ static int wb_field_is_ref_in(Compiler *c, int only, const char *fld, size_t n) 
       if (ci->is_value_type) continue;
       TyKind t = ci->ivar_types[i];
       if (needs_root(t) && !comp_ty_value_obj(c, t)) return 1;
+      /* a String Range by value holds two strings (and, built
+         --share-strings, their handles) the holder's scan marks */
+      if (t == TY_STR_RANGE) return 1;
     }
   }
   return 0;
