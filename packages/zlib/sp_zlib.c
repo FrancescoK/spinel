@@ -889,8 +889,15 @@ static void sp_zlib_deflate_body(sp_zlib_bw *w, const unsigned char *p, size_t n
       while (cand >= 0 && tries-- > 0) {
         size_t d = i - (size_t)cand;
         if (d > SP_Z_WINDOW) break;              /* chains are newest first */
+        const unsigned char *a = p + (size_t)cand, *b = p + i;
+        /* A candidate replaces the best match only by being longer, so it
+           has to agree with the input one byte past the best match: at the
+           very first byte when there is none yet. That byte is inside the
+           input, since a match of `limit` bytes ends the search. */
+        if (a[best_len] != b[best_len]) { cand = prev[cand]; continue; }
         size_t l = 0;
-        while (l < limit && p[(size_t)cand + l] == p[i + l]) l++;
+        while (l + 8 <= limit && memcmp(a + l, b + l, 8) == 0) l += 8;
+        while (l < limit && a[l] == b[l]) l++;
         if (l > best_len) { best_len = l; best_dist = d; if (l == limit) break; }
         cand = prev[cand];
       }
