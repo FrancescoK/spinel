@@ -54,7 +54,7 @@ static int sp_cp_inspect_escapes(uint32_t cp) {
 static int _sp_hexval(unsigned char d){return (d<='9')?(d-'0'):(tolower(d)-'a'+10);}
 
 /* gsub/sub replacement backslash expansion (defined near sp_str_gsub). */
-static char *sp_str_rep_expand(const char *rep, const char *match, size_t mlen);
+static char *sp_str_rep_expand(const char *rep, const char *match, size_t mlen, size_t *olen);
 /* String#inspect: wrap in double quotes and escape \, ", \n, \t, \r,
    plus any non-printable byte as \xNN. Output is always ASCII-safe. */
 const char*sp_str_inspect(const char*s){SP_GC_ROOT_STR(s);if(!s){char*r=sp_str_alloc_raw(4);r[0]='n';r[1]='i';r[2]='l';r[3]=0;return r;}size_t sl=sp_str_byte_len(s);size_t cap=(sl*6)+3;char*r=sp_str_alloc_raw(cap);size_t o=0;r[o++]='"';for(size_t i=0;i<sl;i++){unsigned char c=(unsigned char)s[i];if(c=='\\'||c=='"'){r[o++]='\\';r[o++]=c;}
@@ -191,10 +191,10 @@ else if(lo!=cp){/* cp is uppercase -> lowercase */oi+=(size_t)sp_utf8_encode(lo,
 else oi+=(size_t)sp_utf8_encode(cp,r+oi);}r[oi]=0;sp_str_set_len(r,oi);return r;}
 /* The `:ascii` option (upcase(:ascii)) restricts folding to A-Z/a-z and leaves
    every non-ASCII byte untouched, so these copy byte-for-byte. */
-const char*sp_str_upcase_ascii(const char*s){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("upcase");size_t l=strlen(s);char*r=sp_str_alloc_raw(l+1);for(size_t i=0;i<l;i++){unsigned char ch=(unsigned char)s[i];r[i]=(ch>='a'&&ch<='z')?(char)(ch-32):(char)ch;}r[l]=0;sp_str_set_len(r,l);return r;}
-const char*sp_str_downcase_ascii(const char*s){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("downcase");size_t l=strlen(s);char*r=sp_str_alloc_raw(l+1);for(size_t i=0;i<l;i++){unsigned char ch=(unsigned char)s[i];r[i]=(ch>='A'&&ch<='Z')?(char)(ch+32):(char)ch;}r[l]=0;sp_str_set_len(r,l);return r;}
-const char*sp_str_swapcase_ascii(const char*s){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("swapcase");size_t l=strlen(s);char*r=sp_str_alloc_raw(l+1);for(size_t i=0;i<l;i++){unsigned char ch=(unsigned char)s[i];if(ch>='a'&&ch<='z')r[i]=(char)(ch-32);else if(ch>='A'&&ch<='Z')r[i]=(char)(ch+32);else r[i]=(char)ch;}r[l]=0;sp_str_set_len(r,l);return r;}
-const char*sp_str_capitalize_ascii(const char*s){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("capitalize");size_t l=strlen(s);char*r=sp_str_alloc_raw(l+1);for(size_t i=0;i<l;i++){unsigned char ch=(unsigned char)s[i];if(i==0)r[i]=(ch>='a'&&ch<='z')?(char)(ch-32):(char)ch;else r[i]=(ch>='A'&&ch<='Z')?(char)(ch+32):(char)ch;}r[l]=0;sp_str_set_len(r,l);return r;}
+const char*sp_str_upcase_ascii(const char*s){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("upcase");size_t l=sp_str_byte_len(s);char*r=sp_str_alloc_raw(l+1);for(size_t i=0;i<l;i++){unsigned char ch=(unsigned char)s[i];r[i]=(ch>='a'&&ch<='z')?(char)(ch-32):(char)ch;}r[l]=0;sp_str_set_len(r,l);return sp_str_bin_like(s,r);}
+const char*sp_str_downcase_ascii(const char*s){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("downcase");size_t l=sp_str_byte_len(s);char*r=sp_str_alloc_raw(l+1);for(size_t i=0;i<l;i++){unsigned char ch=(unsigned char)s[i];r[i]=(ch>='A'&&ch<='Z')?(char)(ch+32):(char)ch;}r[l]=0;sp_str_set_len(r,l);return sp_str_bin_like(s,r);}
+const char*sp_str_swapcase_ascii(const char*s){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("swapcase");size_t l=sp_str_byte_len(s);char*r=sp_str_alloc_raw(l+1);for(size_t i=0;i<l;i++){unsigned char ch=(unsigned char)s[i];if(ch>='a'&&ch<='z')r[i]=(char)(ch-32);else if(ch>='A'&&ch<='Z')r[i]=(char)(ch+32);else r[i]=(char)ch;}r[l]=0;sp_str_set_len(r,l);return sp_str_bin_like(s,r);}
+const char*sp_str_capitalize_ascii(const char*s){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("capitalize");size_t l=sp_str_byte_len(s);char*r=sp_str_alloc_raw(l+1);for(size_t i=0;i<l;i++){unsigned char ch=(unsigned char)s[i];if(i==0)r[i]=(ch>='a'&&ch<='z')?(char)(ch-32):(char)ch;else r[i]=(ch>='A'&&ch<='Z')?(char)(ch+32):(char)ch;}r[l]=0;sp_str_set_len(r,l);return sp_str_bin_like(s,r);}
 /* String#dump: a double-quoted, escaped form that sp_str_undump reverses.
    UTF-8 high bytes pass through literally (undump copies them back), so a
    dump/undump round-trip is byte-identical. */
@@ -238,7 +238,7 @@ const char*sp_str_dump(const char*s){SP_GC_ROOT_STR(s);
   }
   out[oi++]='"';out[oi]=0;sp_str_set_len(out,oi);return out;
 }
-const char*sp_str_delete_prefix(const char*s,const char*p){SP_GC_ROOT_STR(s);SP_GC_ROOT_STR(p);if(!s)sp_nil_recv("delete_prefix");if(!p)return s;size_t sl=strlen(s),pl=strlen(p);if(pl<=sl&&memcmp(s,p,pl)==0){char*r=sp_str_alloc_raw(sl-pl+1);memcpy(r,s+pl,sl-pl+1);sp_str_set_len(r,sl-pl);return sp_str_bin_like(s,r);}char*r=sp_str_alloc_raw(sl+1);memcpy(r,s,sl+1);sp_str_set_len(r,sl);return sp_str_bin_like(s,r);}
+const char*sp_str_delete_prefix(const char*s,const char*p){SP_GC_ROOT_STR(s);SP_GC_ROOT_STR(p);if(!s)sp_nil_recv("delete_prefix");if(!p)return s;size_t sl=sp_str_byte_len(s),pl=sp_str_byte_len(p);if(pl<=sl&&memcmp(s,p,pl)==0){char*r=sp_str_alloc_raw(sl-pl+1);memcpy(r,s+pl,sl-pl+1);sp_str_set_len(r,sl-pl);return sp_str_bin_like(s,r);}char*r=sp_str_alloc_raw(sl+1);memcpy(r,s,sl+1);sp_str_set_len(r,sl);return sp_str_bin_like(s,r);}
 const char*sp_str_delete_suffix(const char*s,const char*p){SP_GC_ROOT_STR(s);SP_GC_ROOT_STR(p);if(!s)sp_nil_recv("delete_suffix");if(!p)return s;size_t sl=sp_str_byte_len(s),pl=sp_str_byte_len(p);if(pl<=sl&&memcmp(s+sl-pl,p,pl)==0){char*r=sp_str_alloc_raw(sl-pl+1);memcpy(r,s,sl-pl);r[sl-pl]=0;sp_str_set_len(r,sl-pl);return sp_str_bin_like(s,r);}char*r=sp_str_alloc_raw(sl+1);memcpy(r,s,sl+1);sp_str_set_len(r,sl);return sp_str_bin_like(s,r);}
 /* strip / lstrip / rstrip. CRuby strips the set "\0\t\n\v\f\r " from the
    ends -- i.e. isspace() plus the NUL byte. Use sp_str_byte_len (not
@@ -258,7 +258,7 @@ const char *sp_str_chomp_sep(const char *s, const char *sep) {SP_GC_ROOT_STR(s);
   size_t l = sp_str_byte_len(s);   /* byte-exact (#4527) */
   /* "\n" is the record separator's own case: it also takes a trailing "\r\n" or "\r" */
   if (sep && sep[0] == '\n' && sp_str_byte_len(sep) == 1) return sp_str_chomp(s);
-  if (!sep || !*sep) {
+  if (!sep || !sp_str_byte_len(sep)) {
     /* Empty sep = paragraph mode: strip trailing \r\n pairs and
        standalone \n's, but NOT standalone \r's. A trailing \r that
        is not part of a \r\n pair stops the stripping. */
@@ -285,7 +285,7 @@ const char*sp_str_chop(const char*s){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("chop")
 /* slice!(str): s without the first occurrence of pat, or s itself when there
    is none. Unlike sub it sets no `$~`, as CRuby's slice! sets none. */
 const char*sp_str_remove_first(const char*s,const char*pat){SP_GC_ROOT_STR(s);SP_GC_ROOT_STR(pat);if(!s||!pat)return s;size_t pl=sp_str_byte_len(pat),sl=sp_str_byte_len(s);const char*f=sp_bytestr(s,sl,pat,pl);if(!f)return s;size_t n=(size_t)(f-s);char*r=sp_str_alloc_raw(sl-pl+1);memcpy(r,s,n);memcpy(r+n,f+pl,sl-n-pl);r[sl-pl]=0;sp_str_set_len(r,sl-pl);return r;}
-const char*sp_str_sub(const char*s,const char*pat,const char*rep){SP_GC_ROOT_STR(s);SP_GC_ROOT_STR(pat);SP_GC_ROOT_STR(rep);if(!s)sp_nil_recv("sub");if(!pat||!rep)return s;size_t pl0=sp_str_byte_len(pat),sl0=sp_str_byte_len(s);const char*f=sp_bytestr(s,sl0,pat,pl0);if(!f){if(sp_re_track_last)sp_re_clear_last_match();return sp_str_dup(s);}sp_re_sub_matched=1;if(sp_re_track_last)sp_re_set_lit_match(s,(sp_int)(f-s),(sp_int)(f-s+pl0));char*rep_exp=sp_str_rep_expand(rep,pat,pl0);if(rep_exp)rep=rep_exp;size_t pl=pl0,rl=rep_exp?strlen(rep):sp_str_byte_len(rep),sl=sl0;char*r=sp_str_alloc_raw(sl-pl+rl+1);size_t n=f-s;memcpy(r,s,n);memcpy(r+n,rep,rl);memcpy(r+n+rl,f+pl,sl-n-pl);r[sl-pl+rl]=0;sp_str_set_len(r,sl-pl+rl);if(rep_exp)free(rep_exp);return sp_str_bin_like(s,r);}
+const char*sp_str_sub(const char*s,const char*pat,const char*rep){SP_GC_ROOT_STR(s);SP_GC_ROOT_STR(pat);SP_GC_ROOT_STR(rep);if(!s)sp_nil_recv("sub");if(!pat||!rep)return s;size_t pl0=sp_str_byte_len(pat),sl0=sp_str_byte_len(s);const char*f=sp_bytestr(s,sl0,pat,pl0);if(!f){if(sp_re_track_last)sp_re_clear_last_match();return sp_str_dup(s);}sp_re_sub_matched=1;if(sp_re_track_last)sp_re_set_lit_match(s,(sp_int)(f-s),(sp_int)(f-s+pl0));size_t el=0;char*rep_exp=sp_str_rep_expand(rep,pat,pl0,&el);if(rep_exp)rep=rep_exp;size_t pl=pl0,rl=rep_exp?el:sp_str_byte_len(rep),sl=sl0;char*r=sp_str_alloc_raw(sl-pl+rl+1);size_t n=f-s;memcpy(r,s,n);memcpy(r+n,rep,rl);memcpy(r+n+rl,f+pl,sl-n-pl);r[sl-pl+rl]=0;sp_str_set_len(r,sl-pl+rl);if(rep_exp)free(rep_exp);return sp_str_bin_like(s,r);}
 const char*sp_str_capitalize(const char*s){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("capitalize");if(sp_str_is_binary(s))return sp_str_case_bin(s,3);size_t l=sp_str_byte_len(s);char*r=sp_str_alloc_raw(l*3+1);size_t oi=0;int first=1;for(size_t i=0;i<l;){uint32_t cp;int n=sp_utf8_decode(s+i,&cp);i+=(size_t)n;if(first){uint32_t u=sp_uc_toupper(cp);if(cp==0xDF){r[oi++]='S';r[oi++]='S';}
 else oi+=(size_t)sp_utf8_encode(u,r+oi);first=0;}
 else oi+=(size_t)sp_utf8_encode(sp_uc_tolower(cp),r+oi);}r[oi]=0;sp_str_set_len(r,oi);return r;}
@@ -363,9 +363,9 @@ const char*sp_str_succ_n(const char*s,sp_int n){SP_GC_ROOT_STR(s);for(sp_int i=0
    so \1-\9 expand to nothing; \\ -> \, \& and \0 -> the whole match; any other
    \c keeps both characters. Returns a malloc'd C string the caller frees.
    Returns NULL when the replacement has no backslash (caller uses rep as-is). */
-static char *sp_str_rep_expand(const char *rep, const char *match, size_t mlen) {
-  if (!rep || !strchr(rep, '\\')) return NULL;
-  size_t rl = strlen(rep);
+static char *sp_str_rep_expand(const char *rep, const char *match, size_t mlen, size_t *olen) {
+  size_t rl = sp_str_byte_len(rep);
+  if (!rep || !memchr(rep, '\\', rl)) return NULL;
   size_t cap = rl + mlen + 1, ol = 0;
   char *out = (char *)malloc(cap);
   for (size_t i = 0; i < rl; i++) {
@@ -382,6 +382,7 @@ static char *sp_str_rep_expand(const char *rep, const char *match, size_t mlen) 
     }
   }
   out[ol] = 0;
+  *olen = ol;
   return out;
 }
 const char*sp_str_gsub(const char*s,const char*pat,const char*rep){SP_GC_ROOT_STR(s);SP_GC_ROOT_STR(pat);SP_GC_ROOT_STR(rep);
@@ -391,9 +392,9 @@ const char*sp_str_gsub(const char*s,const char*pat,const char*rep){SP_GC_ROOT_ST
      embedded NUL, so a subject or pattern holding one was cut short (the
      opportunistic NUL policy). */
   size_t pl0=sp_str_byte_len(pat);
-  char*rep_exp=sp_str_rep_expand(rep,pat,pl0);
+  size_t el=0;char*rep_exp=sp_str_rep_expand(rep,pat,pl0,&el);
   if(rep_exp)rep=rep_exp;
-  size_t pl=pl0,rl=rep_exp?strlen(rep):sp_str_byte_len(rep),sl=sp_str_byte_len(s);
+  size_t pl=pl0,rl=rep_exp?el:sp_str_byte_len(rep),sl=sp_str_byte_len(s);
   if(pl==0){
     sp_re_sub_matched=1;
     /* Empty pattern: insert rep between every codepoint + at start/end.

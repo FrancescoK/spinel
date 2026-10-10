@@ -1993,7 +1993,7 @@ const char *sp_File_gets_sep(sp_File *f, const char *sep, sp_int limit, sp_bool 
      a separator that starts with a NUL byte is not empty (strlen cannot tell) */
   int para = sep && sep[0] == '\0' && sp_str_byte_len(sep) == 0;
   if (para) sep = "\n\n";
-  size_t sl = sep ? strlen(sep) : 0;
+  size_t sl = para ? 2 : sp_str_byte_len(sep);
   /* fast path: the default "\n" separator with no limit reads via getline
      (the byte-wise loop below costs a call per character). getline answers
      the line whole, however long, with its byte count, so a NUL inside it
@@ -4319,20 +4319,21 @@ sp_bool sp_str_re_match_p_at(mrb_regexp_pattern *pat, const char *str, sp_int cp
    with a hash replacement. Replaces only the first match. */
 const char *sp_str_sub_str_str_hash(const char *str, const char *pat, sp_StrStrHash *h) {SP_GC_ROOT_STR(pat);SP_GC_ROOT(h);SP_GC_ROOT_STR(str);
   if (!str || !pat) return str;
-  const char *found = strstr(str, pat);
+  size_t slen = sp_str_byte_len(str), plen = sp_str_byte_len(pat);
+  const char *found = sp_bytestr(str, slen, pat, plen);
   if (!found) { if (sp_re_track_last) sp_re_clear_last_match(); return str; }
   size_t before = (size_t)(found - str);
-  size_t plen = strlen(pat);
   if (sp_re_track_last) sp_re_set_lit_match(str, (sp_int)before, (sp_int)(before + plen));
-  const char *rep = (h && sp_StrStrHash_has_key(h, pat)) ? sp_StrStrHash_get(h, pat) : "";
-  size_t rlen = strlen(rep);
-  size_t rest = strlen(str) - before - plen;
+  const char *rep = (h && sp_StrStrHash_has_key(h, pat)) ? sp_StrStrHash_get(h, pat) : &("\xff" "")[1];
+  size_t rlen = sp_str_byte_len(rep);
+  size_t rest = slen - before - plen;
   size_t total = before + rlen + rest;
   char *out = sp_str_alloc_raw(total + 1);
   memcpy(out, str, before);
   memcpy(out + before, rep, rlen);
   memcpy(out + before + rlen, found + plen, rest);
   out[total] = 0;
+  sp_str_set_len(out, total);
   return out;
 }
 /* gsub(string, hash): every occurrence of the literal pattern replaced by
@@ -4341,14 +4342,14 @@ const char *sp_str_sub_str_str_hash(const char *str, const char *pat, sp_StrStrH
    binary String -- as CRuby's does. */
 const char *sp_str_gsub_str_str_hash(const char *str, const char *pat, sp_StrStrHash *h) {SP_GC_ROOT_STR(pat);SP_GC_ROOT(h);SP_GC_ROOT_STR(str);
   if (!str || !pat) return str;
-  size_t slen = strlen(str), plen = strlen(pat);
-  const char *rep = (h && sp_StrStrHash_has_key(h, pat)) ? sp_StrStrHash_get(h, pat) : "";
-  if (!rep) rep = "";
+  size_t slen = sp_str_byte_len(str), plen = sp_str_byte_len(pat);
+  const char *rep = (h && sp_StrStrHash_has_key(h, pat)) ? sp_StrStrHash_get(h, pat) : &("\xff" "")[1];
+  if (!rep) rep = &("\xff" "")[1];
   SP_GC_ROOT_STR(rep);
-  size_t rlen = strlen(rep), n = 0;
+  size_t rlen = sp_str_byte_len(rep), n = 0;
   int bin = sp_str_is_binary(str);
   if (plen == 0) { for (size_t i = 0; i < slen; i++) if (bin || ((unsigned char)str[i] & 0xC0) != 0x80) n++; n++; }
-  else for (const char *q = strstr(str, pat); q; q = strstr(q + plen, pat)) n++;
+  else for (const char *q = sp_bytestr(str, slen, pat, plen); q; q = sp_bytestr(q + plen, slen - (size_t)(q + plen - str), pat, plen)) n++;
   if (n == 0) { if (sp_re_track_last) sp_re_clear_last_match(); return str; }
   size_t total = slen + n * rlen - (plen ? n * plen : 0);
   char *out = sp_str_alloc_raw(total + 1);
@@ -4362,7 +4363,7 @@ const char *sp_str_gsub_str_str_hash(const char *str, const char *pat, sp_StrStr
   }
   else {
     const char *p = str;
-    for (const char *q = strstr(p, pat); q; q = strstr(p, pat)) {
+    for (const char *q = sp_bytestr(p, slen, pat, plen); q; q = sp_bytestr(p, slen - (size_t)(p - str), pat, plen)) {
       memcpy(out + o, p, (size_t)(q - p)); o += (size_t)(q - p);
       memcpy(out + o, rep, rlen); o += rlen;
       last = (size_t)(q - str);
@@ -4371,6 +4372,7 @@ const char *sp_str_gsub_str_str_hash(const char *str, const char *pat, sp_StrStr
     memcpy(out + o, p, slen - (size_t)(p - str)); o += slen - (size_t)(p - str);
   }
   out[o] = 0;
+  sp_str_set_len(out, o);
   if (sp_re_track_last) sp_re_set_lit_match(str, (sp_int)last, (sp_int)(last + plen));
   return out;
 }
@@ -4966,7 +4968,7 @@ void sp_marv_raise(const char *cls, const char *msg) {SP_GC_ROOT_STR(msg); sp_ra
  * matched substring is dropped (CRuby returns "", not the match).
  * Used by html_escape / json_escape idioms (gsub(/[&<>]/, ESCAPES)). */
 const char *sp_re_gsub_str_str_hash(mrb_regexp_pattern *pat, const char *str, sp_StrStrHash *h) {SP_GC_ROOT_STR(str);SP_GC_ROOT(h);
-  int64_t slen = (int64_t)strlen(str);
+  int64_t slen = (int64_t)sp_str_byte_len(str);
  /* malloc scratch (realloc-safe); exact-sized string emitted below. */
   /* a short subject (an attribute being escaped, the common call) builds on
      the stack: the malloc was one of the two a page render made per escape */
@@ -4996,9 +4998,9 @@ const char *sp_re_gsub_str_str_hash(mrb_regexp_pattern *pat, const char *str, sp
     /* A miss takes the hash's DEFAULT, not the empty string: CRuby looks the
        match up with #[], so `Hash.new("?")` substitutes "?" (#3555). The
        default is nil for a plain hash, which renders empty as before. */
-    const char *rep = sp_StrStrHash_get(h, key);
-    if (!rep) rep = "";
-    size_t rlen = strlen(rep);
+    const char *rep = sp_StrStrHash_get(h, memchr(key, 0, (size_t)mlen) ? sp_str_from_bytes(key, (size_t)mlen) : key);
+    if (!rep) rep = &("\xff" "")[1];
+    size_t rlen = sp_str_byte_len(rep);
     if (olen + before + rlen >= cap) GSH_GROW(((olen + before + rlen) * 2) + 64);
     memcpy(out + olen, str + pos, before); olen += before;
     memcpy(out + olen, rep, rlen); olen += rlen;
@@ -5031,7 +5033,7 @@ else {
 /* Issue #910: sub(regex, hash) -- same lookup semantics as
    sp_re_gsub_str_str_hash but only the first match. */
 const char *sp_re_sub_str_str_hash(mrb_regexp_pattern *pat, const char *str, sp_StrStrHash *h) {SP_GC_ROOT(h);SP_GC_ROOT_STR(str);
-  int64_t slen = (int64_t)strlen(str);
+  int64_t slen = (int64_t)sp_str_byte_len(str);
   int caps[64];
   int n = re_exec(pat, str, slen, 0, caps, 64, 0);
   if (n <= 0 || caps[0] < 0) { if (sp_re_track_last) sp_re_clear_last_match(); return str; }
@@ -5046,9 +5048,9 @@ const char *sp_re_sub_str_str_hash(mrb_regexp_pattern *pat, const char *str, sp_
   key[mlen] = 0;
   /* a missing key answers the hash's DEFAULT, which is what Hash.new("?")
      exists for; hard-coding "" dropped it (#3824) */
-  const char *rep = h ? sp_StrStrHash_get(h, key) : "";
-  if (!rep) rep = "";
-  size_t rlen = strlen(rep);
+  const char *rep = h ? sp_StrStrHash_get(h, memchr(key, 0, (size_t)mlen) ? sp_str_from_bytes(key, (size_t)mlen) : key) : &("\xff" "")[1];
+  if (!rep) rep = &("\xff" "")[1];
+  size_t rlen = sp_str_byte_len(rep);
   size_t rest = slen - caps[1];
   size_t total = caps[0] + rlen + rest;
   if (sp_re_track_last) sp_re_set_last_match(pat, str, caps, n);
@@ -5057,6 +5059,7 @@ const char *sp_re_sub_str_str_hash(mrb_regexp_pattern *pat, const char *str, sp_
   memcpy(out + caps[0], rep, rlen);
   memcpy(out + caps[0] + rlen, str + caps[1], rest);
   out[total] = 0;
+  sp_str_set_len(out, total);
   if (kbuf != keybuf) free(kbuf);
   return out;
 }
@@ -5257,7 +5260,7 @@ const char *sp_str_encode(const char *s, sp_RbVal dst, sp_RbVal src,
   int undef_replace = sp_enc_kw_replace(undef);
   const char *dflt = to == 1 ? "\xEF\xBF\xBD" : "?";
   const char *r = repl ? repl : dflt;
-  size_t rl = strlen(r);
+  size_t rl = repl ? sp_str_byte_len(repl) : strlen(r);
   size_t cap = bl + 1, o = 0;
   char *out = (char *)malloc(cap);
   if (!out) sp_oom_die();

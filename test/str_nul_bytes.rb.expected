@@ -1,0 +1,57 @@
+delete_prefix: "\u0000b" [0, 98] 2
+delete_prefix nul: "b" [98] 1
+delete_prefix miss: "a\u0000b" [97, 0, 98] 3
+start_with? false true false true
+upcase ascii: "\u0000\u0000XA" [0, 0, 88, 65] 4
+downcase ascii: "\u0000\u0000xa" [0, 0, 120, 97] 4
+swapcase ascii: "\u0000\u0000Xa" [0, 0, 88, 97] 4
+capitalize ascii: "\u0000\u0000xa" [0, 0, 120, 97] 4
+upcase ascii bin: "\x00\xFFXA" [0, 255, 88, 65] 4
+chomp nul: "xa" [120, 97] 2
+chomp paragraph: "xa" [120, 97] 2
+lines nul: ["\u0000", "\u0000", "xa"] [[0], [0], [120, 97]] 3
+lines nul chomp: ["a", "b"] [[97], [98]] 2
+each_line nul: ["a\u0000", "b\u0000", "c"] [[97, 0], [98, 0], [99]] 3
+lines paragraph: ["a\n\n", "b\nc\n\n"] [[97, 10, 10], [98, 10, 99, 10, 10]] 2
+lines bin: ["\x00", "\xFF\x00", "x"] [[0], [255, 0], [120]] 3
+split limit nul: ["", "\u0000xa"] [[], [0, 120, 97]] 2
+split limit a: ["\u0000\u0000x", ""] [[0, 0, 120], []] 2
+split limit empty: ["a", "\u0000", "bc"] [[97], [0], [98, 99]] 3
+split limit plain: ["a", "b,c"] [[97], [98, 44, 99]] 2
+scan nul: ["\u0000", "\u0000"] [[0], [0]] 2
+scan a: ["a"] [[97]] 1
+scan empty: ["", "", "", ""] [[], [], [], []] 4
+1,3,
+tr_s: "xybbyc" [120, 121, 98, 98, 121, 99] 6
+tr_s utf8: "hé*  wör*d" [104, 195, 169, 42, 32, 32, 119, 195, 182, 114, 42, 100] 10
+tr_s bin: "zab" [122, 97, 98] 3
+tr_s bin to: "\xFEb" [254, 98] 2
+tr_s bin byte: "x\xA9x\xA9" [120, 169, 120, 169] 4
+tr bin byte: "x\xA9x\xA9" [120, 169, 120, 169] 4
+sub amp: "xa\u0000yz" [120, 97, 0, 121, 122] 5
+gsub amp: "xy\u0000bz" [120, 121, 0, 98, 122] 5
+gsub nul match: "x[\u0000]z" [120, 91, 0, 93, 122] 5
+scrub nul: "a\u0000b" [97, 0, 98] 3
+sub hash nul: "aNb\u0000" [97, 78, 98, 0] 4
+sub hash: "a\u0000B\u0000\u0000b" [97, 0, 66, 0, 0, 98] 6
+gsub hash: "a\u0000B\u0000\u0000B\u0000" [97, 0, 66, 0, 0, 66, 0] 7
+gsub hash empty: "a\u0000b" [97, 0, 98] 3
+re gsub hash: "a\u0000B\u0000\u0000B\u0000" [97, 0, 66, 0, 0, 66, 0] 7
+re gsub hash nul key: "aNbNb" [97, 78, 98, 78, 98] 5
+re sub hash: "\u0000\u0000B\u0000" [0, 0, 66, 0] 4
+encode replace nul: "a\u0000b" [97, 0, 98] 3
+boxed delete_prefix: "b" [98] 1
+boxed start_with? false
+boxed upcase ascii: "\u0000\u0000XA" [0, 0, 88, 65] 4
+boxed chomp nul: "xa" [120, 97] 2
+boxed lines nul: ["\u0000", "\u0000", "xa"] [[0], [0], [120, 97]] 3
+boxed split limit: ["\u0000\u0000x", ""] [[0, 0, 120], []] 2
+boxed scan: ["a"] [[97]] 1
+boxed tr_s: "xybbyc" [120, 121, 98, 98, 121, 99] 6
+boxed tr_s bin: "x\xA9x\xA9" [120, 169, 120, 169] 4
+boxed sub amp: "xa\u0000yz" [120, 97, 0, 121, 122] 5
+boxed scrub nul: "a\u0000b" [97, 0, 98] 3
+gets nul: "x\u0000" [120, 0] 2
+gets nul 2: "y\u0000" [121, 0] 2
+readlines nul: ["x\u0000", "y\u0000", "z"] [[120, 0], [121, 0], [122]] 3
+readlines nul chomp: ["x", "y", "z"] [[120], [121], [122]] 3
