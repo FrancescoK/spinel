@@ -381,14 +381,33 @@ int emit_call_exception_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
      parameter it is passed to): the call re-enters with the receiver boxed
      as the exception it is, and the poly dispatch keys it by its user class,
      raising NoMethodError for any exception whose class lacks the method */
-  if (recv >= 0 && comp_ntype(c, recv) == TY_EXCEPTION && exc_user_method_name(c, name, argc)) {
+  static int exc_um_skip = -1;   /* the call being re-entered below */
+  if (recv >= 0 && exc_um_skip != id && comp_ntype(c, recv) == TY_EXCEPTION && exc_user_method_name(c, name, argc)) {
     int tv = ++g_tmp;
     buf_printf(b, "({ sp_RbVal _t%d = sp_box_nullable_obj((void *)(", tv);
     emit_expr(c, recv, b);
     buf_printf(b, "), SP_BUILTIN_EXCEPTION); SP_GC_ROOT_RBVAL(_t%d); ", tv);
     int slot = view_bind(recv, "_t%d", tv);
     int vw = view_push(c, recv, TY_POLY);
+    int sv_skip = exc_um_skip; exc_um_skip = id;
+    /* `e.cause&.m`: the nil test is taken here, and the re-entry is past
+       it, as the safe-navigation guard's own second pass is; that guard
+       narrowed the boxed receiver back to the exception it had been */
+    const char *sop = nt_str(c->nt, id, "call_operator");
+    int sn = sop && sp_streq(sop, "&.");
+    int sv_sn = g_sn_skip;
+    if (sn) {
+      TyKind at = repr_of(c, id).as_ty;
+      const char *nv = nil_value(at);
+      buf_printf(b, "_t%d.tag == SP_TAG_NIL ? %s : ", tv, nv ? nv : default_value_from_compiler(c, at));
+      g_sn_skip = id;
+      /* past the test the call is a plain one on the boxed exception */
+      nt_node_set_str((NodeTable *)c->nt, id, "call_operator", ".");
+    }
     emit_expr(c, id, b);
+    if (sn) nt_node_set_str((NodeTable *)c->nt, id, "call_operator", "&.");
+    g_sn_skip = sv_sn;
+    exc_um_skip = sv_skip;
     view_pop(c, vw);
     view_unbind(slot);
     buf_puts(b, "; })");

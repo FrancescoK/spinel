@@ -2061,13 +2061,16 @@ int poly_name_user_claimed(Compiler *c, const char *name, int argc) {
   return 0;
 }
 
-/* 1 iff a user class that descends from an exception class defines `name`:
-   a rescued value is typed TY_EXCEPTION rather than as its user class, so
-   the ordinary user-method routing never sees such a definition and the
-   builtin arms must stand down for it themselves. */
+/* 1 iff a user class that descends from an exception class defines `name`,
+   as a method or an attr_reader (#8376): a rescued value is typed
+   TY_EXCEPTION rather than as its user class, so the ordinary user-method
+   routing never sees such a definition and the builtin arms must stand
+   down for it themselves. */
 int exc_subclass_defines(Compiler *c, const char *name) {
   for (int k = 0; k < c->nclasses; k++)
-    if (class_is_exc_subclass(c, k) && comp_method_in_chain(c, k, name, NULL) >= 0) return 1;
+    if (class_is_exc_subclass(c, k) &&
+        (comp_method_in_chain(c, k, name, NULL) >= 0 || comp_reader_in_chain(c, k, name, NULL)))
+      return 1;
   return 0;
 }
 
