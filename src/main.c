@@ -22,6 +22,7 @@
 #include "codegen.h"
 #include "analyze.h"
 #include "repr.h"
+#include "share.h"
 #include "csplit.h"
 #include "decide.h"
 
@@ -610,6 +611,7 @@ int main(int argc, char **argv) {
     else if (sp_streq(a, "--emit-types"))  { emit_types = 1; i++; }
     else if (sp_streq(a, "--plan-check"))  { g_plan_check = 1; i++; }
     else if (sp_streq(a, "--repr-check"))  { g_repr_check = 1; i++; }
+    else if (sp_streq(a, "--share-check")) { g_share_check = 1; i++; }
     else if (sp_streq(a, "--dump-repr"))   { g_dump_repr = 1; i++; }
     else if (sp_streq(a, "--nil-check"))   { g_nil_check = 1; i++; }
     else if (sp_streq(a, "--check-traits")) { g_check_traits = 1; i++; }

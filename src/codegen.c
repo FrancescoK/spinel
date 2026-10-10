@@ -2,6 +2,7 @@
 #include "codegen_internal.h"
 #include "call_plan.h"
 #include "repr.h"
+#include "share.h"
 
 /* classes whose pool a proc or fiber body has declared, per program */
 static unsigned char *g_pool_fwd = NULL;
@@ -1033,7 +1034,8 @@ void emit_split_pre(Compiler *c, int node, void (*emit)(Compiler *, int, Buf *),
    has to look past any leading ones or the coercion silently does not fire and
    the sp_RbVal lands in the typed slot raw. */
 const char *past_open_parens(const char *s) {
-  while (*s == '(') s++;
+  /* (--share-check's marks lead the text of a value; see share_check_unmarked) */
+  for (s = share_check_unmarked(s); *s == '('; s = share_check_unmarked(s + 1)) { }
   return s;
 }
 
@@ -2184,6 +2186,7 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
    --repr-check it keeps the nesting the recorder reads */
 void emit_boxed(Compiler *c, int node, Buf *b) {
   if (b == g_pre) { emit_into_pre_line(c, emit_boxed, node); return; }
+  if (g_share_check) share_check_mark(c, node, 'B', b);
   int frame = g_repr_check ? repr_channel_begin(c, node) : -1;
   /* --share-strings: a String stored into a boxed slot the rule shares (an
      ivar that also holds nil) is boxed as its handle, which a later `<<`
@@ -4558,7 +4561,9 @@ static void line_map_reanchor(Buf *b) {
   *b = o;
 }
 
-static int gc_frame_build(Buf *b, size_t ins, const char *site) {
+static int gc_frame_build(Compiler *c, Buf *b, size_t ins, const char *site) {
+  /* the frame is decided by the function's text: its marks go first */
+  if (g_share_check) share_check_harvest(c, b, ins);
   if (ins >= b->len) return 0;
   const char *p = b->p;
   size_t end = b->len;
@@ -4832,7 +4837,7 @@ static int main_body_split(Compiler *c, Buf *body, size_t open, size_t *frame_in
       buf_putn(&part, p + from, to - from);
       if (part.len && part.p[part.len - 1] != '\n') buf_puts(&part, "\n");
       buf_puts(&part, "}\n");
-      if (!g_no_root_frame) gc_frame_build(&part, ins, "main");
+      if (!g_no_root_frame) gc_frame_build(c, &part, ins, "main");
       buf_putn(&out, part.p, part.len);
       free(part.p);
       from = to;
@@ -5629,9 +5634,10 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
   g_brk_ser_var = saved_bser; g_brk_skip_id = saved_bskip;
   g_yield_proc_ref = sv_ypr9; g_yield_slot_ty = sv_yst9;
   buf_puts(b, "}\n");
+  if (g_share_check) share_check_harvest(c, b, gc_save_off);
   if (!g_no_root_elision) gc_roots_take_back(c, s, b, gc_save_off);
   const char *site = decide_method_site(c, s);
-  if (!g_no_root_frame) gc_frame_build(b, gc_save_off + gc_save_len, site);
+  if (!g_no_root_frame) gc_frame_build(c, b, gc_save_off + gc_save_len, site);
   gc_save_take_back(b, gc_save_off, gc_save_len, site);
 }
 
@@ -6918,7 +6924,7 @@ static void emit_fiber_new_here(Compiler *c, int id, Buf *b, int as_gen, int siz
   }
 
   buf_puts(pb, "}\n");
-  if (!g_no_root_frame) gc_frame_build(pb, fib_frame_ins, decide_node_site(c->nt, id));
+  if (!g_no_root_frame) gc_frame_build(c, pb, fib_frame_ins, decide_node_site(c->nt, id));
   g_c_loop_depth = sv_fib_loopd;
   g_ensure_depth = sv_fib_ensd; g_loop_ensure_base = sv_fib_lensb;
   memcpy(g_ensure_stack, sv_fib_estk, sizeof sv_fib_estk);
@@ -8684,7 +8690,7 @@ else if (orecv >= 0 && onm) {
     buf_puts(pb, "  return 0;\n");
   }
   buf_puts(pb, "}\n");
-  if (!g_no_root_frame) gc_frame_build(pb, proc_frame_ins, decide_node_site(c->nt, create));
+  if (!g_no_root_frame) gc_frame_build(c, pb, proc_frame_ins, decide_node_site(c->nt, create));
   buf_puts(&g_procs, proc_body_buf.p ? proc_body_buf.p : "");
   free(proc_body_buf.p);
   g_c_loop_depth = sv_loopd; g_in_proc_body = sv_inproc; g_c_ret_void = sv_cv;
@@ -17524,7 +17530,7 @@ char *codegen_program(const NodeTable *nt) {
         size_t end_frame_ins = body->len;
         EMIT_COLLECT_UNIT(emit_stmts(c, stmts, body, 1));
         buf_puts(body, "}\n");
-        if (!g_no_root_frame) gc_frame_build(body, end_frame_ins, decide_node_site(c->nt, tbody[k]));
+        if (!g_no_root_frame) gc_frame_build(c, body, end_frame_ins, decide_node_site(c->nt, tbody[k]));
       }
     }
   }
@@ -17646,7 +17652,9 @@ char *codegen_program(const NodeTable *nt) {
         const char *sty = nt_type(c->nt, tbody[k]);
         if (!sty || !sp_streq(sty, "PreExecutionNode")) continue;
         int stmts = nt_ref(c->nt, tbody[k], "statements");
+        size_t begin_at = body->len;
         EMIT_COLLECT_UNIT(emit_stmts(c, stmts, body, 1));
+        if (g_share_check) share_check_harvest(c, body, begin_at);   /* (before main_body_split) */
       }
     }
   }
@@ -17706,7 +17714,7 @@ char *codegen_program(const NodeTable *nt) {
     buf_puts(body, "  sp_main_stack_run(_sp_main_body);\n"
                    "  return _sp_main_rc;\n}\n");
   }
-  if (!g_no_root_frame) gc_frame_build(body, main_frame_ins, "main");
+  if (!g_no_root_frame) gc_frame_build(c, body, main_frame_ins, "main");
 
   emit_regex_section(c, &b);
   { const char *pdt[3] = { g_procs.p, body->p, b.p };
@@ -17728,6 +17736,7 @@ char *codegen_program(const NodeTable *nt) {
   /* Over the whole program, not per function: methods, procs, block bodies,
      constructors and main are emitted by different paths, and hooking them one
      at a time left a quarter of the stores bare. */
+  if (g_share_check) share_check_harvest(c, &b, 0);
   gc_wb_insert(c, &b, 0);
   { Buf fz; memset(&fz, 0, sizeof fz);
     fzl_emit_defs(b.p ? b.p : "", &fz, repr_share_rule(c));
@@ -17793,6 +17802,7 @@ char *codegen_program(const NodeTable *nt) {
   if (g_plan_check) ucall_report(c);
   if (g_repr_check) repr_channel_report(c);
   if (g_nil_check) nil_check_report(c);
+  if (g_share_check) share_check_report(c);
   comp_free(c);
   { const char *keep = getenv("SPINEL_EMIT_TYPES_KEEP_C");
     if (types_out && !(keep && *keep)) return strdup(""); }

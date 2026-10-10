@@ -7828,7 +7828,7 @@ static void emit_arg_rooted(Compiler *c, Scope *m, int idx, int provided, int he
   emit_arg_or_default(c, m, idx, provided, &ab);
   char ht[24] = "";
   if (held > 0) snprintf(ht, sizeof ht, "_t%d", held);
-  if (held > 0 && provided >= 0 && ab.p && sp_streq(ab.p, ht)) {
+  if (held > 0 && provided >= 0 && ab.p && sp_streq(share_check_unmarked(ab.p), ht)) {
     emit_obj_upcast_prefix(c, pt, comp_ntype(c, provided), out);
     buf_puts(out, ht);
   }
@@ -8279,6 +8279,7 @@ int arg_ran_first(int node, int from) {
    `from`th override on, when `text` is its slot's rendering of it, the temp
    unconverted; -1 otherwise. */
 static int ran_first_temp(int node, int from, const char *text) {
+  text = share_check_unmarked(text);
   for (int i = from; text && i < g_n_argov; i++) {
     int t;
     if (g_argov_node[i] == node && sp_streq(g_argov_text[i], text) && sscanf(text, "_t%d", &t) == 1) return t;
@@ -8307,7 +8308,7 @@ int head_held_read(Compiler *c, int node, const char *text) {
   char ht[24];
   if (h < 0 || !text) return -1;
   snprintf(ht, sizeof ht, "_t%d", h);
-  return sp_streq(text, ht) ? h : -1;
+  return sp_streq(share_check_unmarked(text), ht) ? h : -1;
 }
 
 /* A box that only wraps what its operand holds (an immediate, or a pointer

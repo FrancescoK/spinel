@@ -48,6 +48,7 @@
    view of a node: it counts toward neither view_depth nor view_epoch. */
 
 #include "codegen_internal.h"
+#include "share.h"
 #include <stdarg.h>
 
 #define VIEW_MAX 256
@@ -92,7 +93,17 @@ int view_bind(int node, const char *fmt, ...) {
   int slot = g_n_argov++;
   g_argov_node[slot] = node;
   va_list ap; va_start(ap, fmt);
-  int n = vsnprintf(g_argov_text[slot], sizeof g_argov_text[0], fmt, ap);
+  int n;
+  if (g_share_check) {
+    /* a bound text is what the emitters compare and print: --share-check's
+       marks in it would be neither, and could outgrow the slot */
+    char text[8 * ARGOV_TEXT_LEN];
+    n = vsnprintf(text, sizeof text, fmt, ap);
+    if (n >= 0 && (size_t)n < sizeof text) n = (int)share_check_strip(text, (size_t)n);
+    if (n >= 0 && (size_t)n < sizeof g_argov_text[0]) memcpy(g_argov_text[slot], text, (size_t)n + 1);
+    else snprintf(g_argov_text[slot], sizeof g_argov_text[0], "%s", text);
+  }
+  else n = vsnprintf(g_argov_text[slot], sizeof g_argov_text[0], fmt, ap);
   va_end(ap);
   if (n < 0 || (size_t)n >= sizeof g_argov_text[0]) {
     fprintf(stderr, "spinel: internal error: a bound node's text is %d bytes, over the %d a slot holds (ARGOV_TEXT_LEN): %.40s...\n",

@@ -8374,12 +8374,12 @@ static int emit_scalar_recv_arms(Compiler *c, int id, Buf *b, const NodeTable *n
      unresolvable chain like `Rails.application.class.to_s` in a method that
      is compiled but never called -- emits sp_box_nil(); coerce it to a
      const char* (yields "" at runtime) so the string ops below type-check. */
-  if (rt == TY_STRING && sp_streq(r, "sp_box_nil()")) r = "sp_poly_to_s(sp_box_nil())";
+  if (rt == TY_STRING && sp_streq(share_check_unmarked(r), "sp_box_nil()")) r = "sp_poly_to_s(sp_box_nil())";
   /* Same shape, but the unresolved-call gate raised (SPINEL_GATE_RAISE): its
      sp_raise_nomethod(...) is a side-effecting poly value, so coerce it (the
      raise diverges before the result is read) rather than feed the raw
      sp_RbVal into a const char* string op. */
-  else if (rt == TY_STRING && strncmp(r, "sp_raise_nomethod(", 18) == 0) {
+  else if (rt == TY_STRING && strncmp(share_check_unmarked(r), "sp_raise_nomethod(", 18) == 0) {
     Buf cb; memset(&cb, 0, sizeof cb); buf_printf(&cb, "sp_poly_to_s(%s)", r); r = cb.p ? cb.p : r;
   }
   /* A receiver that can carry the nil sentinel IS nil, and CRuby's nil
@@ -12395,9 +12395,9 @@ static TyKind emit_face_arm(Compiler *c, int id, unsigned kind, unsigned flags, 
      sp_box_nil(); })`): its value is the node's own default, boxed here since
      the node is poly, whatever kind the arm was pinned to (#4779) */
   size_t cl = strlen(call);
-  int val_tok = strncmp(call, "({ (void)(", 10) == 0 && strstr(call, "sp_raise_cls(") != NULL &&
+  int val_tok = strncmp(share_check_unmarked(call), "({ (void)(", 10) == 0 && strstr(call, "sp_raise_cls(") != NULL &&
                 cl > 18 && strcmp(call + cl - 18, "; sp_box_nil(); })") == 0;
-  if (strncmp(call, "sp_raise_nomethod(", 18) == 0 || val_tok) {
+  if (strncmp(share_check_unmarked(call), "sp_raise_nomethod(", 18) == 0 || val_tok) {
     TyKind slot = repr_of(c, id).as_ty;
     if (slot == TY_POLY || slot == TY_UNKNOWN || slot == TY_VOID) { buf_puts(val, call); slot = TY_POLY; }
     else emit_unbox_text(c, slot, call, val);   /* the token is an sp_RbVal; the slot is not */

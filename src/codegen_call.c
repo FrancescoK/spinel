@@ -6344,8 +6344,8 @@ static int emit_poly_str_prearm(Compiler *c, int id, int recv, const char *name,
   char *arm_pre = poly_arm_take_pre(sv_pre);
   /* an emission that fell through to the raise token adds nothing: leave the
      String tag on the switch's own default so the message is the same */
-  if (!ib.p || strncmp(ib.p, "sp_raise_nomethod(", 18) == 0 ||
-      strncmp(ib.p, "sp_raise_poly_nomethod(", 23) == 0) {
+  if (!ib.p || strncmp(share_check_unmarked(ib.p), "sp_raise_nomethod(", 18) == 0 ||
+      strncmp(share_check_unmarked(ib.p), "sp_raise_poly_nomethod(", 23) == 0) {
     free(ib.p); free(arm_pre);
     if (g_plan_check) pa_observe_at(id, PA_TRIAL, PA_KEY_TRIAL + PT_STR, -1, TY_UNKNOWN, pa_kept);
     return 0;
@@ -6581,8 +6581,8 @@ static int emit_poly_builtin_default_at(Compiler *c, int id, int recv, const cha
   char *arm_pre = ok && pb->p && pb->len ? pb->p : NULL;
   if (!arm_pre) free(pb->p);
   free(pb);
-  if (!ib.p || strncmp(ib.p, "sp_raise_nomethod(", 18) == 0 ||
-      strncmp(ib.p, "sp_raise_poly_nomethod(", 23) == 0 ||
+  if (!ib.p || strncmp(share_check_unmarked(ib.p), "sp_raise_nomethod(", 18) == 0 ||
+      strncmp(share_check_unmarked(ib.p), "sp_raise_poly_nomethod(", 23) == 0 ||
       strstr(ib.p, "sp_raise_cls(\"NoMethodError\"") != NULL) {
     free(ib.p); free(arm_pre); return 0;
   }
@@ -6591,7 +6591,7 @@ static int emit_poly_builtin_default_at(Compiler *c, int id, int recv, const cha
   int void_obj = 0;
   { int oci = comp_class_index(c, "Object");
     int omi = oci >= 0 ? comp_method_in_chain(c, oci, name, NULL) : -1;
-    void_obj = omi >= 0 && method_is_void(&c->scopes[omi]) && strncmp(ib.p, "sp_Object_", 10) == 0; }
+    void_obj = omi >= 0 && method_is_void(&c->scopes[omi]) && strncmp(share_check_unmarked(ib.p), "sp_Object_", 10) == 0; }
   const char *lb = label ? " default:" : "";
   if (arm_pre) buf_printf(b, "%s { %s", lb, arm_pre);
   else buf_puts(b, lb);
@@ -6713,6 +6713,8 @@ static int pd_lookup_or_add(const char *key, int *is_new) {
 static int pd_hoist(Compiler *c, int id, const char *name, Buf *b, size_t from, int tr, TyKind rct,
                     const int *pid, const TyKind *pty, int np) {
   if (pd_disabled() || !b->p || b->len <= from) return 0;
+  /* the region is keyed by its text, and a mark would lengthen it */
+  if (g_share_check) share_check_harvest(c, b, from);
   const char *r = b->p + from;
   size_t rn = b->len - from;
   if (rn < 320) return 0;
@@ -12955,7 +12957,7 @@ static void emit_cmp_derived_eq(Compiler *c, int id, int recv, int arg, int ecid
   int rt0 = -1;
   if (((rk == NK_InstanceVariableReadNode && subtree_may_reassign_state(c, arg)) ||
        (rk == NK_LocalVariableReadNode && operand_local_rebound_by(c, recv, arg))) &&
-      sscanf(selfb.p, "_t%d", &rt0) != 1) {
+      sscanf(share_check_unmarked(selfb.p), "_t%d", &rt0) != 1) {
     int ts = ++g_tmp;
     emit_indent(g_pre, g_indent);
     emit_ctype(c, rt, g_pre);
@@ -12969,7 +12971,7 @@ static void emit_cmp_derived_eq(Compiler *c, int id, int recv, int arg, int ecid
      evaluates into a fresh `_tN`, which the dispatch then reads */
   int t0 = g_tmp, tn = -1;
   Buf argb = emit_cmp_self(c, arg, at);
-  int mark = sscanf(argb.p, "_t%d", &tn) == 1 && tn > t0 ? view_bind(arg, "_t%d", tn) : -1;
+  int mark = sscanf(share_check_unmarked(argb.p), "_t%d", &tn) == 1 && tn > t0 ? view_bind(arg, "_t%d", tn) : -1;
   buf_puts(b, eq ? "(" : "(!(");
   if (at == TY_POLY)
     buf_printf(b, "((%s).tag == SP_TAG_OBJ && (void *)(%s).v.p == (void *)(%s))", argb.p, argb.p, selfb.p);
@@ -19117,7 +19119,7 @@ static int g_operand_order_node = -1;
    inside the text (`Array#fetch`'s IndexError arm) is no such token. */
 static int text_is_raise_token(const char *txt) {
   if (!txt) return 0;
-  while (*txt == '(' || *txt == ' ') txt++;
+  for (txt = share_check_unmarked(txt); *txt == '(' || *txt == ' '; txt = share_check_unmarked(txt + 1)) { }
   return strncmp(txt, "sp_raise_nomethod", 17) == 0 || strncmp(txt, "sp_raise_cls(", 13) == 0;
 }
 
@@ -20874,7 +20876,7 @@ static void emit_nil_target_head(Compiler *c, int id, Buf *b, const char *lead, 
        Array.new's fill) is that temp: no copy into a second rooted slot */
     int t = -1, n2 = 0;
     char rk[48];
-    if (ob.p && sscanf(ob.p, "_t%d%n", &t, &n2) == 1 && !ob.p[n2] && op.p &&
+    if (ob.p && sscanf(share_check_unmarked(ob.p), "_t%d%n", &t, &n2) == 1 && !share_check_unmarked(ob.p)[n2] && op.p &&
         snprintf(rk, sizeof rk, ty[i] == TY_POLY ? "SP_GC_ROOT_RBVAL(_t%d)" : "SP_GC_ROOT(_t%d)", t) > 0 &&
         strstr(op.p, rk))
       buf_puts(b, *lead ? "" : " ");
@@ -21083,7 +21085,7 @@ static int emit_nil_target_call(Compiler *c, int id, Buf *b) {
     free(rest.p);
     buf_puts(b, cb.p ? cb.p : "");
   }
-  else if (cb.p && strncmp(cb.p, "sp_raise_nomethod(", 18) == 0 &&
+  else if (cb.p && strncmp(share_check_unmarked(cb.p), "sp_raise_nomethod(", 18) == 0 &&
            whole_call_text(cb.p + 17)) {
     /* The call raises NoMethodError whatever the receiver holds (a method
        its class lacks). The raise stays outermost, with the nil test ahead
@@ -23415,8 +23417,7 @@ static void emit_call_held(Compiler *c, int id, Buf *b) {
   /* the token is matched at the head of the text, where the slot's coercion
      looks for it; a raise anywhere inside -- a block body's index check --
      is not this call's value */
-  const char *head = ob.p ? ob.p : "";
-  while (*head == '(') head++;
+  const char *head = past_open_parens(ob.p ? ob.p : "");
   int ok = hold.n > 0 && !hold.guarded && strncmp(head, "sp_raise_nomethod(", 18) != 0 &&
            strncmp(head, "sp_raise_cls(", 13) != 0;
   for (int i = 0; i < hold.n && ok; i++)

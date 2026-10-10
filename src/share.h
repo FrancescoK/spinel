@@ -226,6 +226,14 @@ int share_node_one_name(const Compiler *c, int n);
 int share_value_unobserved(Compiler *c, int n);
 /* Does the rule share the class of node n's value? */
 int share_node_shares(const Compiler *c, int n);
+/* --share-check (share_check.c): the flag, and the compiler's state freed
+   with it. */
+extern int g_share_check;
+void share_check_free(Compiler *c);
+/* Is node v the receiver of an in-place String change the walk recorded, or
+   a link of the chain of self-answering calls down to it? */
+int share_node_mutated(Compiler *c, int v);
+
 /* Must the String node v evaluates to be the shared handle where it is
    emitted, and not a copy of its bytes: SHN_YES, or SHN_FRESH when no other
    name sees it, so a copy is fine unless a box keeps it (the box has to be

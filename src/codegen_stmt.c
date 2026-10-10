@@ -2549,6 +2549,7 @@ int emit_bang_self_handle(Compiler *c, int v, Buf *b) {
 /* The value a write hands a mutable-String slot `lv` (TY_STRBUF), as an
    sp_String *. */
 void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
+  if (g_share_check && repr_of_slot(c, lv).handle) share_check_mark(c, v, 'H', b);
   /* A shared-mutable alias (`s2 = s1`, both str_shared) copies the sp_String
      HANDLE, not the buffer, so the two names denote one object: a later
      `s1 << x` shows through s2 and `s1.equal?(s2)` is true (#3227). */
@@ -9218,14 +9219,16 @@ static void emit_tail_value_1(Compiler *c, int node, Buf *b) {
   }
   Buf tmp; memset(&tmp, 0, sizeof tmp);
   emit_expr(c, node, &tmp);
-  const char *txt = tmp.p ? tmp.p : "";
+  /* (txt is what the tests read, past --share-check's marks; full is written) */
+  const char *full = tmp.p ? tmp.p : "";
+  const char *txt = share_check_unmarked(full);
   /* A conditional whose condition folds is its live arm alone, in that arm's
      own C: a raise there is no box to open, and is run as any raising tail */
   int raises = strncmp(txt, "(sp_raise_cls(", 14) == 0 ||
                strncmp(txt, "(sp_exc_stage_key(", 18) == 0 ||
                /* a call on such a raising receiver, `((void)(<raise>), nil)` (#7164) */
                (strncmp(txt, "((void)(", 8) == 0 && text_diverges(txt));
-  if (boxed && !raises) emit_unbox_text(c, g_ret_type, tmp.p ? txt : "sp_box_nil()", b);
+  if (boxed && !raises) emit_unbox_text(c, g_ret_type, tmp.p ? full : "sp_box_nil()", b);
   else if (sp_streq(txt, "sp_box_nil()")) emit_ret_nil(c, g_ret_type, b);
   /* The unresolved-call gate's sp_raise_nomethod(...) is a side-effecting poly
      value (it raises): coerce it to the non-poly slot, keeping the call, rather
@@ -9233,14 +9236,14 @@ static void emit_tail_value_1(Compiler *c, int node, Buf *b) {
      is reliable where comp_ntype is not (it can diverge from the emitted C). */
   else if (strncmp(txt, "sp_raise_nomethod(", 18) == 0 &&
            g_ret_type != TY_POLY && g_ret_type != TY_UNKNOWN)
-    emit_unbox_text(c, g_ret_type, txt, b);
+    emit_unbox_text(c, g_ret_type, full, b);
   /* A NameError-raising constant read is a comma expression whose dummy value
      (e.g. ((sp_Class){-1})) need not match the slot: the raise longjmps first.
      Evaluate it for the raise and yield the slot's default instead of letting
      the mismatched C type flow into the return. */
   else if (raises && g_ret_type != TY_POLY && g_ret_type != TY_UNKNOWN)
-    buf_printf(b, "({ (void)%s; %s; })", txt, default_value_from_compiler(c, g_ret_type));
-  else buf_puts(b, txt);
+    buf_printf(b, "({ (void)%s; %s; })", full, default_value_from_compiler(c, g_ret_type));
+  else buf_puts(b, full);
   free(tmp.p);
 }
 
@@ -16082,7 +16085,11 @@ int emit_top_stmts(Compiler *c, int id, Buf *b, int indent, size_t *cuts) {
   const int *body = nt_arr(c->nt, id, "body", &n);
   for (int k = 0; k < n; k++) {
     g_stmt_cur = body[k]; g_stmt_prev = k ? body[k - 1] : -1;
+    size_t from = b->len;
     emit_stmt_or_defer(c, body[k], b, indent);
+    /* main_body_split cuts by these offsets and sizes the parts by them: a
+       statement's marks go before its end is noted */
+    if (g_share_check) share_check_harvest(c, b, from);
     cuts[k] = b->len;
     if (stmt_is_folded_return(c, body[k])) return k + 1;
   }

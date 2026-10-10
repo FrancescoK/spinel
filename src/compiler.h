@@ -1118,6 +1118,7 @@ typedef struct {
   int nshare_route, cshare_route;
   int share_strings;
   struct ShareFacts *share;
+  struct ShareAgree *share_agree;   /* --share-check's state (share_check.c) */
   struct HandleArgTab *share_args; /* final callers, while sealing share facts */
   struct SbArgIndex *sb_args; /* settled parameter sources, built once for storage */
   unsigned share_sig;   /* the types the facts were last applied over */
