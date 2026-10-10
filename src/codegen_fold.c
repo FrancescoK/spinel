@@ -5871,7 +5871,8 @@ int emit_enum_with_index_expr(Compiler *c, int id, Buf *b) {
   {
     int tv = ++g_tmp;
     emit_indent(g_pre, g_indent + 1);
-    buf_printf(g_pre, "sp_RbVal _t%d;\n", tv);
+    /* nil until the block assigns it, so a bare `next` collects nil */
+    buf_printf(g_pre, "sp_RbVal _t%d = sp_box_nil();\n", tv);
     char dv[24]; snprintf(dv, sizeof dv, "_t%d", tv);
     emit_block_value_into(c, block, dv, 1, g_indent + 1);
     emit_indent(g_pre, g_indent + 1);
