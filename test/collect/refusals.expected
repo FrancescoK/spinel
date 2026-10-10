@@ -1323,9 +1323,9 @@ spinel: test/reject/string_plain_mutator_result_mutation.rb:7: the result of `by
 == test/reject/string_plain_mutator_result_mutation.rb [promote] rc=1
 spinel: test/reject/string_plain_mutator_result_mutation.rb:7: the result of `bytesplice`, `append_as_bytes`, or `concat` or `prepend` with other than one argument, which is its receiver, is mutated in place (a String is not yet shared by reference through such a result). Mutate the receiver instead.
 == test/reject/string_plain_mutator_result_toplevel_ivar.rb [default] rc=1
-spinel: test/reject/string_plain_mutator_result_toplevel_ivar.rb:6: the result of `bytesplice`, `append_as_bytes`, or `concat` or `prepend` with other than one argument, which is its receiver, is mutated in place (a String is not yet shared by reference through such a result). Mutate the receiver instead.
+spinel: test/reject/string_plain_mutator_result_toplevel_ivar.rb:7: the result of `bytesplice`, `append_as_bytes`, or `concat` or `prepend` with other than one argument, which is its receiver, is mutated in place (a String is not yet shared by reference through such a result). Mutate the receiver instead.
 == test/reject/string_plain_mutator_result_toplevel_ivar.rb [promote] rc=1
-spinel: test/reject/string_plain_mutator_result_toplevel_ivar.rb:6: the result of `bytesplice`, `append_as_bytes`, or `concat` or `prepend` with other than one argument, which is its receiver, is mutated in place (a String is not yet shared by reference through such a result). Mutate the receiver instead.
+spinel: test/reject/string_plain_mutator_result_toplevel_ivar.rb:7: the result of `bytesplice`, `append_as_bytes`, or `concat` or `prepend` with other than one argument, which is its receiver, is mutated in place (a String is not yet shared by reference through such a result). Mutate the receiver instead.
 == test/reject/string_proc_param_store.rb [default] rc=1
 spinel: test/reject/string_proc_param_store.rb:6: a String held by a block parameter no element iterator binds (a proc's, a lambda's, a yielding method's block, `each_char`'s) is stored into a container and mutated in place through it (a String is not yet shared by reference through a stored block parameter). Mutate the String before storing it, or store it where the caller holds it.
 == test/reject/string_proc_param_store.rb [promote] rc=1

@@ -1943,9 +1943,10 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
          the expression is the slot's ordinary read face below. */
       char srefW2[1024];
       if (strbuf_seq_nil_tail(c, v)) emit_strbuf_ivar_store(c, 0, v, b);
-      else if (strbuf_slot_ref(c, v, srefW2, sizeof srefW2)) buf_puts(b, srefW2);
+      else if (!strbuf_ivar_store_routes(c, v) && strbuf_slot_ref(c, v, srefW2, sizeof srefW2))
+        buf_puts(b, srefW2);
       /* The statement form takes a conditional arm by arm too. */
-      else if (repr_share_rule(c) && strbuf_cond_has_handle_leaf(c, v, 0))
+      else if (repr_share_rule(c) && strbuf_ivar_store_aliases(c, v))
         emit_strbuf_ivar_store(c, 1, v, b);
       else if (emit_strbuf_write_handle(c, v, b)) { }
       /* a route that hands on the handle (`@a = yield`, emit_strbuf_route) */
