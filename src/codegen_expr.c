@@ -5098,6 +5098,11 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
          declined outright, which is what `v[s.tag] += 1` as a block's last
          expression hit (#3417). */
       int cheap = idx_opw_node_is_cheap(nt, ir) && idx_opw_node_is_cheap(nt, iav[0]);
+      /* a boxed receiver's store answers the stored value into a temp of its
+         own (emit_index_opw_value_into): a String's slot read back after the
+         splice is one character of it */
+      int tv = comp_ntype(c, ir) == TY_POLY && comp_ntype(c, id) == TY_POLY ? ++g_tmp : 0;
+      char tvn[24]; snprintf(tvn, sizeof tvn, "_t%d", tv);
       if (g_pre) {
         int hoisted = cheap ? 0 : emit_index_opw_hoist(c, id, g_pre, g_indent);
         if (cheap || hoisted) {
@@ -5112,6 +5117,11 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
           Buf *sv_pre = g_pre;
           Buf pre; memset(&pre, 0, sizeof pre);
           Buf stmt; memset(&stmt, 0, sizeof stmt);
+          if (tv) {
+            emit_indent(g_pre, g_indent);
+            buf_printf(g_pre, "sp_RbVal %s = sp_box_nil(); SP_GC_ROOT_RBVAL(%s);\n", tvn, tvn);
+            emit_index_opw_value_into(tvn);
+          }
           g_pre = &pre;
           emit_index_op_write(c, id, &stmt, g_indent);
           g_pre = sv_pre;
@@ -5120,7 +5130,8 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
           free(pre.p); free(stmt.p);
           /* the read-back runs after the mutation, so its own prelude (if any)
              belongs at the end of g_pre -- where it now lands naturally. */
-          emit_index_get(c, ir, iav[0], b);
+          if (tv && emit_index_opw_value_taken()) buf_puts(b, tvn);
+          else emit_index_get(c, ir, iav[0], b);
           if (hoisted) emit_index_opw_unhoist();
           return;
         }
@@ -5136,12 +5147,17 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
         g_pre = &pre; g_indent = 0;
         int hoisted = cheap ? 0 : emit_index_opw_hoist(c, id, &pre, 0);
         if (cheap || hoisted) {
+          if (tv) {
+            buf_printf(&stmt, "sp_RbVal %s = sp_box_nil(); SP_GC_ROOT_RBVAL(%s);\n", tvn, tvn);
+            emit_index_opw_value_into(tvn);
+          }
           emit_index_op_write(c, id, &stmt, 0);
           g_pre = NULL; g_indent = sv_ind;
           buf_puts(b, "({ ");
           if (pre.p) buf_puts(b, pre.p);
           if (stmt.p) buf_puts(b, stmt.p);
-          emit_index_get(c, ir, iav[0], b);
+          if (tv && emit_index_opw_value_taken()) buf_puts(b, tvn);
+          else emit_index_get(c, ir, iav[0], b);
           buf_puts(b, "; })");
           free(pre.p); free(stmt.p);
           if (hoisted) emit_index_opw_unhoist();

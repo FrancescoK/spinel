@@ -18158,7 +18158,20 @@ static void iow_guard_close(char *rhs, int open, Buf *b) {
   free(rhs);
 }
 
+/* The value form of a boxed receiver's `x[k] op= v` answers the value it
+   stored rather than a read of the slot after the store: a String receiver's
+   slot reads back one character of the splice (`(s[0] += "x")` is "ax", where
+   s[0] then reads "a"). The value form names its temp just ahead of
+   emit_index_op_write, which takes it at the top so that an op-assign nested
+   in the operands does not see it, and says whether the store wrote it. */
+static const char *g_iow_val_next = NULL;
+static int g_iow_val_taken = 0;
+void emit_index_opw_value_into(const char *tmp) { g_iow_val_next = tmp; g_iow_val_taken = 0; }
+int emit_index_opw_value_taken(void) { return g_iow_val_taken; }
+
 void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
+  const char *val_ref = g_iow_val_next;
+  g_iow_val_next = NULL;
   const NodeTable *nt = c->nt;
   int recv = nt_ref(nt, id, "receiver");
   const char *op = nt_str(nt, id, "binary_operator");
@@ -18427,8 +18440,27 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
     }
     if (eff) buf_printf(b, " SP_GC_ROOT_RBVAL(_t%d);", tc);
     char *rhs = iow_rhs(c, v, IOW_RHS_BOXED, eff ? b : NULL);
-    buf_printf(b, " %s(_t%d, _t%d, %s(_t%d, %s)); }\n",
-               kt == TY_INT ? "sp_poly_arr_set_hash" : "sp_poly_set_poly", ta, tb, pf, tc, rhs);
+    /* A String receiver splices into a fresh buffer, and a typed Array given
+       an element of another kind widens to a general one: either store
+       answers a new value, which a local or instance variable receiver gets
+       written back, as `x[i] = v` writes it. The in-place store had no String
+       arm, and `s[0] += "x"` was dropped. */
+    Buf nvb; memset(&nvb, 0, sizeof nvb);
+    if (val_ref) buf_printf(&nvb, "(%s = %s(_t%d, %s))", val_ref, pf, tc, rhs);
+    else buf_printf(&nvb, "%s(_t%d, %s)", pf, tc, rhs);
+    const char *nv = nvb.p;
+    NodeKind rk = nt_kind(nt, recv);
+    if (rk == NK_LocalVariableReadNode || rk == NK_InstanceVariableReadNode) {
+      buf_puts(b, " ");
+      emit_expr(c, recv, b);
+      buf_printf(b, " = %s(_t%d, _t%d, %s); }\n",
+                 kt == TY_INT ? "sp_poly_arr_widen_and_set" : "sp_poly_aset_back", ta, tb, nv);
+    }
+    else
+      buf_printf(b, " %s(_t%d, _t%d, %s); }\n",
+                 kt == TY_INT ? "sp_poly_arr_set_hash" : "sp_poly_set_poly", ta, tb, nv);
+    if (val_ref) g_iow_val_taken = 1;
+    free(nvb.p);
     free(rhs);
     return;
   }

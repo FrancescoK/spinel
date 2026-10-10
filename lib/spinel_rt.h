@@ -12477,10 +12477,12 @@ static sp_RbVal sp_poly_set_poly(sp_RbVal v, sp_RbVal key, sp_RbVal val) {
 /* `v[key] = val` for a boxed key, answering the receiver to store back: an
    Integer key on a typed Array widens it to a general one when val is of
    another kind, as the Integer index's store does (sp_poly_arr_widen_and_set);
-   any other key stores in place. */
+   a String receiver takes String#[]='s key and answers its spliced self
+   (sp_poly_str_aset_key); any other key stores in place. */
 static SP_UNUSED sp_RbVal sp_poly_aset_back(sp_RbVal v, sp_RbVal key, sp_RbVal val) {
   if (key.tag == SP_TAG_INT && v.tag == SP_TAG_OBJ && sp_poly_is_array_kind(v.cls_id))
     return sp_poly_arr_widen_and_set(v, key.v.i, val);
+  if (v.tag == SP_TAG_STR || sp_poly_is_strbuf(v)) return sp_poly_str_aset_key(v, key, val);
   sp_poly_set_poly(v, key, val);
   return v;
 }
