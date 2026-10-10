@@ -1,3 +1,4 @@
+# spinel: int64 -- 2**40 and counts of 62 and 63 assume a 64-bit Integer
 # `>>=` on a boxed Integer: a count of the word size or more leaves only the
 # sign (0 or -1), and a negative count shifts left. C leaves a shift by 64 or
 # more undefined, and x86 takes the count modulo 64, so 5 >> 64 answered 5.
