@@ -12237,15 +12237,12 @@ static const char *nng_guard_param(Compiler *c, Scope *s, int st) {
    narrowed to K's concrete type (unboxed at the read site, the same machinery
    `return .. if p.nil?` uses). The runtime is_a? check makes the unbox sound. */
 
-/* Map a guard class name to the concrete narrowed type, or TY_UNKNOWN.
-   Integer is not narrowed: is_a?(Integer) holds for a Bignum too, which
-   TY_INT (one machine word) cannot carry, so a narrowed read of a boxed
-   Bignum took its pointer for the value. Its reads stay boxed, where the
-   boxed dispatch answers for both. */
+/* Map a guard class name to the concrete narrowed type, or TY_UNKNOWN. */
 static TyKind isa_narrow_type(const char *cn) {
   if (!cn) return TY_UNKNOWN;
   if (sp_streq(cn, "Array")) return TY_POLY_ARRAY;
   if (sp_streq(cn, "String")) return TY_STRING;
+  if (is_integer_class_name(cn)) return TY_INT;
   if (sp_streq(cn, "Float")) return TY_FLOAT;
   if (sp_streq(cn, "Symbol")) return TY_SYMBOL;
   return TY_UNKNOWN;
