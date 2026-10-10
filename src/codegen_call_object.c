@@ -50,10 +50,13 @@ static int emit_init_copy_rest_args(Compiler *c, int id, Scope *m, const char *c
   return 1;
 }
 
+/* a bound String#between? / #clamp cannot hand sp_str_cmp_bytes as is; a
+   boxed one (an Integer local under --int-overflow=promote) is converted at
+   run time like the rest */
 int str_cmp_bound_foreign(Compiler *c, int n) {
   TyKind t = comp_ntype(c, n);
   NodeKind k = nt_kind(c->nt, n);
-  return ty_is_object(t) || t == TY_INT || t == TY_FLOAT || t == TY_NIL || t == TY_BOOL || t == TY_SYMBOL ||
+  return ty_is_object(t) || t == TY_POLY || t == TY_INT|| t == TY_FLOAT || t == TY_NIL || t == TY_BOOL || t == TY_SYMBOL ||
          t == TY_BIGINT || t == TY_RANGE || ty_is_hash(t) || ty_is_array(t) || k == NK_ArrayNode || k == NK_HashNode;
 }
 

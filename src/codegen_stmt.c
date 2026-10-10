@@ -3941,9 +3941,12 @@ static void emit_op_assign_lv(Compiler *c, int id, Buf *b, int indent,
   if (t == TY_TIME && (is_add_sub(op))) {
     TyKind vt = comp_ntype(c, v);
     int neg = sp_streq(op, "-");
-    if (vt == TY_INT) {
+    /* a boxed operand (an Integer slot under --int-overflow=promote) reads
+       as the Integer the binary `t + n` reads it as */
+    if (vt == TY_INT || (g_promote_mode && vt == TY_POLY)) {
       buf_printf(b, "%s = %s(%s, ", lval, neg ? "sp_time_sub_i" : "sp_time_add_i", lval);
-      emit_expr(c, v, b); buf_puts(b, ");\n");
+      if (vt == TY_POLY) emit_int_expr(c, v, b); else emit_expr(c, v, b);
+      buf_puts(b, ");\n");
       return;
     }
     if (vt == TY_FLOAT) {
@@ -13756,12 +13759,17 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
        takes (a Time is a struct; the raw C operator below cannot add to it) */
     else if (vt == TY_TIME && op && (is_add_sub(op)) &&
              (comp_ntype(c, nt_ref(nt, id, "value")) == TY_INT ||
+              (g_promote_mode && comp_ntype(c, nt_ref(nt, id, "value")) == TY_POLY) ||
               comp_ntype(c, nt_ref(nt, id, "value")) == TY_FLOAT)) {
       int ival = nt_ref(nt, id, "value");
       int neg = sp_streq(op, "-");
       if (comp_ntype(c, ival) == TY_INT) {
         buf_printf(b, "%s = %s(%s, ", ref, neg ? "sp_time_sub_i" : "sp_time_add_i", ref);
         emit_expr(c, ival, b); buf_puts(b, ");\n");
+      }
+      else if (comp_ntype(c, ival) == TY_POLY) {   /* as the local form */
+        buf_printf(b, "%s = %s(%s, ", ref, neg ? "sp_time_sub_i" : "sp_time_add_i", ref);
+        emit_int_expr(c, ival, b); buf_puts(b, ");\n");
       }
       else {
         buf_printf(b, "%s = sp_time_add_f(%s, %s(", ref, ref, neg ? "-" : "");

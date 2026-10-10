@@ -3360,7 +3360,7 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
     buf_puts(b, "; ");
   }
   else if (as_expr && !nx_own && bn3 > 0 &&
-           want_ty != TY_POLY && want_ty != TY_UNKNOWN && want_ty != TY_VOID && want_ty != TY_NIL &&
+           (want_ty != TY_POLY || g_promote_mode) && want_ty != TY_UNKNOWN && want_ty != TY_VOID && want_ty != TY_NIL &&
            nt_kind(nt, unwrap_parens(c, bd3[bn3 - 1])) == NK_CallNode &&
            comp_ntype(c, unwrap_parens(c, bd3[bn3 - 1])) == TY_UNKNOWN) {
     /* An untyped call tail (a method no class answers) lowers to the gate's
@@ -3370,6 +3370,9 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
        `try { obj.missing }`). The raise never returns, so coerce it to the
        slot as emit_unresolved_coerced does for any typed store; the `next`
        arm above drops the same tail for the same reason. */
+    /* Under --int-overflow=promote the slot is poly where it was an
+       Integer, and a raise arm of no type answers a placeholder of its own
+       (`nil.at(0)`'s 0): evaluated for the raise, the slot gets its nil. */
     if (block_of_body(c, bbody) >= 0) emit_block_locals_reset(c, block_of_body(c, bbody), b, 0);
     for (int k3 = 0; k3 < bn3 - 1; k3++) {
       if (rd_lbl && k3 == rd_head) buf_printf(b, "_redo_%d: ; ", rd_lbl);
@@ -3378,7 +3381,12 @@ void emit_block_invoke(Compiler *c, int args_node, Buf *b, int indent, int as_ex
     if (rd_lbl && rd_head >= bn3 - 1) buf_printf(b, "_redo_%d: ; ", rd_lbl);
     { Buf tb; memset(&tb, 0, sizeof tb);
       Buf *svp3 = g_pre; int svi3 = g_indent; g_pre = b; g_indent = 0;
-      emit_unresolved_coerced(c, bd3[bn3 - 1], want_ty, &tb);
+      if (want_ty == TY_POLY) {
+        buf_puts(&tb, "((void)(");
+        emit_expr(c, bd3[bn3 - 1], &tb);
+        buf_puts(&tb, "), sp_box_nil())");
+      }
+      else emit_unresolved_coerced(c, bd3[bn3 - 1], want_ty, &tb);
       g_pre = svp3; g_indent = svi3;
       if (tb.p) buf_puts(b, tb.p);
       free(tb.p); }
@@ -4309,6 +4317,12 @@ int emit_tap_then_expr(Compiler *c, int id, Buf *b) {
   const char *unbox = NULL;
   if (use_shadow && et == TY_POLY && tsaved0 == TY_INT) unbox = "sp_poly_to_i_or_nil";
   else if (use_shadow && et == TY_POLY && tsaved0 == TY_FLOAT) unbox = "sp_poly_to_f_or_nil";
+  /* A parameter default filled in at the call site binds the parameter
+     under its declare_default_locals spelling, declared from the slot the
+     Ruby name finds */
+  LocalVar *dlv0 = (!tlv0 && tsc && p0) ? scope_local(tsc, block_param_name(c, block, 0)) : NULL;
+  if (dlv0 && et == TY_POLY && dlv0->type == TY_INT) unbox = "sp_poly_to_i_or_nil";
+  else if (dlv0 && et == TY_POLY && dlv0->type == TY_FLOAT) unbox = "sp_poly_to_f_or_nil";
   if (unbox) use_shadow = 0;
   int din = g_indent;
   if (use_shadow) {

@@ -23090,7 +23090,19 @@ void emit_call(Compiler *c, int id, Buf *b) {
     if (br >= 0 && nt_int(c->nt, id, "builtin_only", 0) && !g_poly_builtin_arm &&
         comp_ntype(c, br) == TY_POLY) {
       int va = view_push_arm(id, g_prbd_skip, 1);
-      emit_call(c, id, b);
+      /* --int-overflow=promote boxed the prepended method's own Integer
+         answer, so the call is poly while the builtin's stays scalar: the
+         builtin's answer is emitted as its own type, then boxed */
+      TyKind bt = g_promote_mode && comp_ntype(c, id) == TY_POLY ? an_builtin_answer(c, id) : TY_UNKNOWN;
+      if (bt != TY_UNKNOWN && bt != TY_POLY) {
+        int vw = view_push(c, id, bt);
+        Buf nb; memset(&nb, 0, sizeof nb);
+        emit_call(c, id, &nb);
+        emit_boxed_text(c, bt, nb.p ? nb.p : "0", b);
+        free(nb.p);
+        view_pop(c, vw);
+      }
+      else emit_call(c, id, b);
       view_pop(c, va);
       return;
     } }

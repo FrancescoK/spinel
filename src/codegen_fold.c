@@ -4693,6 +4693,20 @@ void emit_block_value_into(Compiler *c, int block, const char *dest,
   g_ie_next_ty = sv_nty;
 }
 
+/* `acc`, an element of a fused each_slice / each_cons chain's row of kind k,
+   as block parameter pn takes it. A boxed row into a scalar parameter is
+   unboxed, nil kept as the sentinel: under --int-overflow=promote the row is
+   boxed while the parameter keeps its element type, and the plain
+   assignment did not build (as emit_row_param_bind). */
+static void row_elem_for_param(Compiler *c, int block, const char *pn, const char *k,
+                               const char *acc, Buf *out) {
+  Scope *sc = comp_scope_of(c, block);
+  LocalVar *lv = sc ? scope_local(sc, pn) : NULL;
+  if (lv && sp_streq(k, "Poly") && (lv->type == TY_INT || lv->type == TY_FLOAT))
+    flatmap_coerce_from_poly(lv->type, acc, out);
+  else buf_puts(out, acc);
+}
+
 /* map/select/reject/filter as an expression: build a result array via a
    loop emitted into the statement prelude; the expression value is the
    temp array. Returns 1 if handled. */
@@ -4877,9 +4891,11 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
               for (int li = 0; li < lc_ec; li++) {
                 const char *ln = block_param_multi_leaf(c, block, 0, li);
                 if (!ln) continue;
+                char acc[80]; snprintf(acc, sizeof acc, "sp_%sArray_get(_t%d, _t%d + %d)", kec, ta_ec, ti_ec, li);
+                Buf eb; memset(&eb, 0, sizeof eb); row_elem_for_param(c, block, ln, kec, acc, &eb);
                 emit_indent(g_pre, g_indent + 1);
-                buf_printf(g_pre, "lv_%s = sp_%sArray_get(_t%d, _t%d + %d);\n",
-                           rename_local(ln), kec, ta_ec, ti_ec, li);
+                buf_printf(g_pre, "lv_%s = %s;\n", rename_local(ln), eb.p);
+                free(eb.p);
               }
             }
             else if (np_ec > 1) {
@@ -4898,7 +4914,7 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
                 if (ppt == TY_POLY && et_ec == TY_INT) buf_printf(g_pre, "sp_box_int(%s)", acc);
                 else if (ppt == TY_POLY && et_ec == TY_FLOAT) buf_printf(g_pre, "sp_box_float(%s)", acc);
                 else if (ppt == TY_POLY && et_ec == TY_STRING) buf_printf(g_pre, "sp_box_str(%s)", acc);
-                else buf_puts(g_pre, acc);
+                else row_elem_for_param(c, block, pn, kec, acc, g_pre);
                 buf_puts(g_pre, ";\n");
               }
             }
@@ -5013,8 +5029,10 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
                     buf_printf(g_pre, "lv_%s = %s;\n", lnr, bxw.p ? bxw.p : esw); free(bxw.p);
                   }
                   else {
-                    buf_printf(g_pre, "lv_%s = sp_%sArray_get(_t%d, _t%d + %d);\n",
-                               lnr, kwi, ta_wi, ti_wi, li);
+                    char acc[80]; snprintf(acc, sizeof acc, "sp_%sArray_get(_t%d, _t%d + %d)", kwi, ta_wi, ti_wi, li);
+                    Buf eb; memset(&eb, 0, sizeof eb); row_elem_for_param(c, block, ln, kwi, acc, &eb);
+                    buf_printf(g_pre, "lv_%s = %s;\n", lnr, eb.p);
+                    free(eb.p);
                   }
                 }
               }
@@ -5031,9 +5049,9 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
                      the pair param is declared poly; box the typed slice so the
                      assignment types match (a desugared |(x,y), i| destructure
                      over a receiver like `n.times.map { ... }`). */
-                  if (lvp_wi && lvp_wi->type == TY_POLY && !sp_streq(kwi, "Poly")) {
+                  if (lvp_wi && lvp_wi->type == TY_POLY) {
                     Buf bxs; memset(&bxs, 0, sizeof bxs);
-                    emit_boxed_text(c, arr_wi, slice_wi, &bxs);
+                    emit_boxed_text(c, sp_streq(kwi, "Poly") ? TY_POLY_ARRAY : arr_wi, slice_wi, &bxs);
                     buf_printf(g_pre, "lv_%s = %s;\n", rename_local(pair_p_wi), bxs.p ? bxs.p : slice_wi);
                     free(bxs.p);
                   }
