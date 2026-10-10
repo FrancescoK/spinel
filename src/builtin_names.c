@@ -402,6 +402,9 @@ int is_each_or_pair(const char *n) {
 int is_slice_alias(const char *n) {
   return sp_streq(n, "[]") || sp_streq(n, "slice");
 }
+int is_seq_index_call(const char *n) {
+  return is_slice_alias(n) || sp_streq(n, "[]=") || sp_streq(n, "slice!") || sp_streq(n, "byteslice");
+}
 
 int is_element_pick(const char *n) {
   return sp_streq(n, "first") || sp_streq(n, "last") || sp_streq(n, "sample");

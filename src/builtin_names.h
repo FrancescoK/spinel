@@ -82,6 +82,7 @@ int is_find_alias(const char *n); /* find detect: Enumerable search aliases */
 
 int is_text_conversion(const char *n); /* inspect to_s */
 int is_slice_alias(const char *n); /* [] slice */
+int is_seq_index_call(const char *n); /* [] []= slice slice! byteslice: an Array or String index */
 int is_shift_op(const char *n); /* << >> */
 int is_copy_alias(const char *n); /* clone dup */
 int is_hash_merge_bang(const char *n); /* merge! update */

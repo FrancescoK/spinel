@@ -654,6 +654,15 @@ rng = (lo..hi)      # compile error: a Range of Ver objects cannot be built
 rng = (0..2**70)    # compile error: a Bignum bound does not fit sp_int
 ```
 
+There is no Range of Symbols either. A literal one (`:a..:e`) is built as
+its Array of Symbols, so it enumerates and answers `include?` as CRuby's
+does but is an Array (`p` prints `[:a, :b, ...]`); one whose ends are only
+known at run time (`a[0]..a[1]` over a mixed Array holding Symbols) raises
+NotImplementedError when it is built. Ends known only at run time otherwise
+pick the Range's kind from their values: Integers an Integer Range, a Float
+begin a Float Range, Strings a String Range, and ends that cannot be compared
+CRuby's ArgumentError.
+
 #### A String Range keeps copies of its endpoints in the default build
 
 In the default build a Range of Strings holds its two endpoints by value, as

@@ -8837,7 +8837,6 @@ static TyKind infer_empty_array_reopen(Compiler *c, int id) {
   return TY_UNKNOWN;
 }
 
-
 /* Is this BeginNode a method's body (a `def` with rescue/ensure at its own
    level)? Asked per BeginNode while typing; the table is rebuilt when the
    nodes or the scopes grow. */
@@ -8861,6 +8860,17 @@ static int begin_is_def_body(Compiler *c, int id) {
     }
   }
   return id >= 0 && id < built_n && mark && mark[id];
+}
+
+/* Is Range literal `id` the index of an Array or a String (`a[x..y]`,
+   `s[x..] = v`, slice!, byteslice; marked by mark_match_ranges)? */
+static int range_indexes_seq(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  int call = (int)nt_int(nt, id, "index_of", 0) - 1;
+  int recv = call >= 0 ? nt_ref(nt, call, "receiver") : -1;
+  if (recv < 0) return 0;
+  TyKind rt = infer_type(c, recv);
+  return ty_is_array(rt) || rt == TY_STRING || rt == TY_STRBUF;
 }
 
 TyKind infer_uncached(Compiler *c, int id) {
@@ -8987,6 +8997,31 @@ TyKind infer_uncached(Compiler *c, int id) {
        is a String range too, its missing bound a nil (NULL) endpoint. */
     if ((lo >= 0 || hi >= 0) && (lo < 0 || lt == TY_STRING) && (hi < 0 || ht == TY_STRING))
       return TY_STR_RANGE;
+    /* A String beside a boxed end is a String range too: the boxed end can
+       only be a String or nil in CRuby, anything else being its ArgumentError
+       (sp_srange_new_box checks it at run time). */
+    if ((lt == TY_STRING && ht == TY_POLY) || (lt == TY_POLY && ht == TY_STRING))
+      return TY_STR_RANGE;
+    /* Ends that are both boxed, or one boxed beside an absent or nil one
+       (`a[0]..a[1]` over a mixed Array): only the values at run time tell an
+       Integer, Float or String range apart. The integer representation read
+       a String as a number ("a" as 0), so the Range is boxed and
+       sp_range_new_box picks its kind. A boxed end beside an Integer or
+       Float one keeps the Integer representation: every end CRuby accepts
+       there is a number or nil, and a String is its ArgumentError
+       (sp_range_num_end). So do one that indexes an Array or a String
+       (index_of, mark_match_ranges), whose ends must be Integers, an
+       endless one asked its size (size_recv), Infinity, and every one under
+       --int-overflow=promote, where every Integer slot is boxed and the
+       Integer representation is what keeps a Range of them fast. */
+    {
+      int lo_open = lo < 0 || lt == TY_NIL;
+      int hi_open = hi < 0 || ht == TY_NIL;
+      if (((lt == TY_POLY && (hi_open || ht == TY_POLY)) || (ht == TY_POLY && lo_open)) &&
+          !g_promote_mode && !range_indexes_seq(c, id) &&
+          !(hi < 0 && nt_int(nt, id, "size_recv", 0)))
+        return TY_POLY;
+    }
     return TY_RANGE;
   }
   /* A splat inside an array literal (`[*0..10]`, `[*arr]`) contributes the

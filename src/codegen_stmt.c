@@ -9532,23 +9532,31 @@ void emit_for(Compiler *c, int id, Buf *b, int indent) {
      no-op (#4184). */
   if (ct == TY_POLY || ct == TY_UNKNOWN) {
     int ta = ++g_tmp, ti = ++g_tmp, tv = ++g_tmp;
+    /* A boxed collection is walked as its items (sp_poly_for_subject), but
+       an Integer Range -- one whose ends were decided at run time,
+       sp_range_new_box -- in chunks of its members (sp_poly_for_next) read
+       off a copy of the Range, so a `break` stops an endless one, where its
+       items cannot be materialized. An Array is read directly. */
+    int tw = ++g_tmp, tb = ++g_tmp, tr = ++g_tmp;
+    char el[64]; snprintf(el, sizeof el, "sp_PolyArray_get(_t%d, _t%d)", ta, ti);
     emit_indent(b, indent);
-    buf_printf(b, "{ sp_PolyArray *_t%d = sp_poly_to_a_arr(", ta);
+    buf_printf(b, "{ sp_RbVal _t%d = sp_poly_for_subject(", tw);
     emit_boxed(c, coll, b);
     buf_puts(b, ");\n");
-    emit_indent(b, indent + 1); buf_printf(b, "SP_GC_ROOT(_t%d);\n", ta);
     emit_indent(b, indent + 1);
-    buf_printf(b, "for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti, ti, ta, ti);
+    buf_printf(b, "sp_Range _t%d = sp_poly_for_range(_t%d); sp_PolyArray *_t%d = sp_poly_for_items(_t%d); SP_GC_ROOT(_t%d); sp_int _t%d = 0, _t%d = 0;\n",
+               tr, tw, ta, tw, ta, tb, ti);
+    emit_indent(b, indent + 1);
+    buf_printf(b, "do for (_t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti, ti, ta, ti);
     const char *idx_ty3 = nt_type(nt, idx);
     if (idx_ty3 && sp_streq(idx_ty3, "MultiTargetNode")) {
       emit_indent(b, indent + 2);
-      buf_printf(b, "sp_RbVal _t%d = sp_PolyArray_get(_t%d, _t%d);\n", tv, ta, ti);
+      buf_printf(b, "sp_RbVal _t%d = %s;\n", tv, el);
       emit_for_poly_lefts(c, idx, tv, indent + 2, b);
     }
     else if (vn) {
       LocalVar *ilv = scope_local(comp_scope_of(c, idx), vn);
       TyKind ivt = ilv ? ilv->type : TY_POLY;
-      char el[64]; snprintf(el, sizeof el, "sp_PolyArray_get(_t%d, _t%d)", ta, ti);
       emit_indent(b, indent + 2);
       emit_local_ref(c, idx, vn, b); buf_puts(b, " = ");
       if (ivt == TY_POLY || ivt == TY_UNKNOWN) buf_puts(b, el);
@@ -9556,7 +9564,9 @@ void emit_for(Compiler *c, int id, Buf *b, int indent) {
       buf_puts(b, ";\n");
     }
     emit_loop_body(c, body, b, indent + 2);
-    emit_indent(b, indent + 1); buf_puts(b, "}\n");
+    /* a `break` leaves the chunk early, and the walk with it */
+    emit_indent(b, indent + 1);
+    buf_printf(b, "} while (_t%d >= _t%d->len && sp_poly_for_next(&_t%d, _t%d, &_t%d) == 0);\n", ti, ta, tr, ta, tb);
     emit_indent(b, indent); buf_puts(b, "}\n");
     return;
   }
