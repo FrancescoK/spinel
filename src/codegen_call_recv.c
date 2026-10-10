@@ -10739,8 +10739,10 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
           int t = ++g_tmp;
           Buf rb = expr_buf(c, recv);
           emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
-          buf_printf(g_pre, " _t%d = ", t); buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
-          buf_printf(&selfv, "_t%d", t);
+          buf_printf(g_pre, " _t%d = ", t); buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";"); free(rb.p);
+          /* The rest of the statement may collect before it reads self. */
+          if (ty_gc_holds_refs(c, rt)) { buf_puts(g_pre, " "); emit_gc_root_tmp_refs(c, rt, t, g_pre); }
+          buf_puts(g_pre, "\n"); buf_printf(&selfv, "_t%d", t);
         }
         TyKind svt = TY_UNKNOWN;
         int sv = setter_value_open(c, id, b, &svt);
