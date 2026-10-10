@@ -22,6 +22,8 @@ try { "12".between?("z", hi) }
 try { "12".between?(log("0"), log(hi)) }
 p "12".between?("3", log("4"))
 p "12".between?(log("0"), log("2"))
+p log("12").between?(log("0"), log("2"))
+p log("12").between?(log("3"), log(nil))
 s = nb(1)
 p "b".between?(s, "c"), "b".between?("0", s)
 x = nb(0)

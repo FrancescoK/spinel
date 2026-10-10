@@ -9,6 +9,14 @@ false
 eval "0"
 eval "2"
 true
+eval "12"
+eval "0"
+eval "2"
+true
+eval "12"
+eval "3"
+eval nil
+false
 true
 false
 "comparison of String with nil failed"

@@ -132,10 +132,10 @@ int emit_call_identity_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
     /* The bounds are evaluated up front, in order, as the arm above does:
        Ruby evaluates the arguments before between? runs, and only the
        compares stop at the first false. A value is rooted while a later
-       operand can allocate. */
+       operand can allocate, a shared String's read among them (a copy). */
     if (rt == TY_STRING) {
       int tv = ++g_tmp, tlo = ++g_tmp, thi = ++g_tmp;
-      int alo = subtree_may_allocate(nt, argv[0]), ahi = subtree_may_allocate(nt, argv[1]);
+      int alo = operand_may_allocate(c, argv[0]), ahi = operand_may_allocate(c, argv[1]);
       buf_printf(b, "({ const char *_t%d = ", tv); emit_expr(c, recv, b);
       buf_puts(b, "; ");
       if (alo || ahi) buf_printf(b, "SP_GC_ROOT_STR(_t%d); ", tv);
