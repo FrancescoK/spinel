@@ -1690,7 +1690,10 @@ TyKind ffi_spec_to_ty(const char *spec);
 int local_sole_range_node(Compiler *c, int recv);
 int range_float_begin(Compiler *c, int recv);
 void emit_block_param_from_boxed(Compiler *c, const char *pname, TyKind pt, const char *src, Buf *b);
-void emit_rest_pack_kwh(Compiler *c, int from, int pos_argc, const int *argv, int kwh, Buf *b);
+int emit_rest_pack_kwh(Compiler *c, int from, int pos_argc, const int *argv, int kwh, Buf *b);
+/* Hold a call's fresh rest array `text` in a temp declared and rooted in the
+   enclosing frame (g_pre), assigned in place; `boxed` for a poly slot. */
+void emit_rest_held(int boxed, const char *text, Buf *out);
 int rest_kwh_tail(Compiler *c, Scope *m, int kwh, int pos_argc);
 int rest_bind_argc(Compiler *c, Scope *m, int kwh, int pos_argc);
 int yield_value_diverges(Compiler *c, int mi);
