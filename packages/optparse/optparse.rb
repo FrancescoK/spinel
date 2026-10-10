@@ -34,9 +34,16 @@
 #     case matters. Any other word raises InvalidArgument, an empty one
 #     AmbiguousArgument (a subclass of it). Without a value ("--force[=YES]")
 #     TrueClass passes true and FalseClass false
+#   - an Array of String or Symbol names, an Array of [name, value] pairs or
+#     a Hash accepts only those names, each word cut as far as it stays
+#     unique ("d-r" is "dry-run"); case matters. A name passes itself, a
+#     pair or a Hash entry its value. Any other word raises InvalidArgument,
+#     one several names share AmbiguousArgument. A type after the enum
+#     converts the word instead
 #
 # Not supported: other value types than String, Array, Integer, Float,
-# DecimalInteger, OctalInteger, DecimalNumeric, TrueClass and FalseClass.
+# DecimalInteger, OctalInteger, DecimalNumeric, TrueClass and FalseClass,
+# and an Array of allowed values that are not names ([1, 2]).
 
 class OptionParser
   class ParseError < StandardError
@@ -77,17 +84,31 @@ class OptionParser
   OctalInteger = /\A[-+]?(?:[0-7]+(?:_[0-7]+)*|0(?:#{binary}|#{hex}))\z/io
   DecimalNumeric = FLOAT_VALUE
 
+  # One name an enum switch accepts and the value it passes.
+  class Choice
+    attr_reader :name, :value, :string_key
+
+    def initialize(name, value, string_key)
+      @name = name
+      @value = value
+      @string_key = string_key
+    end
+  end
+
   # One entry of the help text: a switch, or a separator line (no names).
   class Switch
-    attr_reader :shorts, :longs, :arg, :descriptions, :handler, :type
+    attr_reader :shorts, :longs, :arg, :descriptions, :handler, :type,
+                :choices, :choice_value
 
-    def initialize(shorts, longs, arg, descriptions, handler, type)
+    def initialize(shorts, longs, arg, descriptions, handler, type, choices = nil, choice_value = true)
       @shorts = shorts
       @longs = longs
       @arg = arg
       @descriptions = descriptions
       @handler = handler
       @type = type
+      @choices = choices
+      @choice_value = choice_value
     end
 
     def takes_value
@@ -205,6 +226,8 @@ class OptionParser
     arg_text = ""
     descriptions = []
     type = Object
+    choices = nil
+    choice_value = true
     args.each do |a|
       if a.is_a?(String) && a.length > 1 && a[0] == "-"
         # a "[" opens an optional value ("--name[=VALUE]"), but the "[no-]" of
@@ -219,13 +242,52 @@ class OptionParser
       elsif a == String || a == Array || a == Integer || a == Float || a == TrueClass || a == FalseClass ||
             a == DecimalInteger || a == OctalInteger || a == DecimalNumeric
         type = a
+        choice_value = false
+      elsif enum?(a)
+        # only the first enum takes the conversion back from a type
+        choice_value = true if choices.nil?
+        choices ||= []
+        add_choices(choices, a)
       elsif a.is_a?(Module) && a != Object && a != NilClass && a != Numeric && a != Regexp
         # CRuby has no converter for it either. Numeric and Regexp are
         # CRuby value types that still pass the word as it is.
         raise ArgumentError, "unsupported argument type: #{a}"
       end
     end
-    Switch.new(shorts, longs, arg_text, descriptions, block, type)
+    # A boolean type after the enum still passes the enum's value, as in
+    # CRuby, where its converter keeps the value the Hash matched.
+    choice_value = true if type == TrueClass || type == FalseClass
+    Switch.new(shorts, longs, arg_text, descriptions, block, type, choices, choice_value)
+  end
+
+  def enum?(a)
+    return true if a.is_a?(Hash)
+    return false unless a.is_a?(Array) && !a.empty?
+    a.all? do |item|
+      first = item.is_a?(Array) ? item[0] : item
+      first.is_a?(String) || first.is_a?(Symbol)
+    end
+  end
+
+  # An Array value passes its first item, as CRuby splats it.
+  def add_choices(choices, enum)
+    enum.each do |item|
+      if enum.is_a?(Hash)
+        name, value = item
+      elsif item.is_a?(Array)
+        name = item[0]
+        value = item.length > 1 ? item[1] : name
+      else
+        name = item
+        value = item
+      end
+      value = value[0] if value.is_a?(Array)
+      if name.is_a?(String)
+        choices.push(Choice.new(name, value, true))
+      elsif name.is_a?(Symbol)
+        choices.push(Choice.new(name.to_s, value, false))
+      end
+    end
   end
 
   def help_line(sw)
@@ -252,6 +314,14 @@ class OptionParser
   def invoke(sw, value, shown)
     handler = sw.handler
     type = sw.type
+    choices = sw.choices
+    if choices && !value.nil?
+      choice = choose(choices, value, shown)
+      if sw.choice_value
+        handler.call(choice.value) if handler
+        return
+      end
+    end
     if value.nil? && (type == TrueClass || type == FalseClass)
       handler.call(type == TrueClass) if handler
     elsif value.nil? || type == Object
@@ -302,6 +372,29 @@ class OptionParser
     return true if word == "+" || "yes".start_with?(word) || "true".start_with?(word)
     return false if word == "-" || "no".start_with?(word) || "false".start_with?(word) || "nil".start_with?(word)
     raise invalid_argument(shown)
+  end
+
+  # Completes the word as complete_long does, but case matters and two
+  # names with the same value are not ambiguous. Only a String key matches
+  # the word exactly, as CRuby's Hash#fetch does.
+  def choose(choices, word, shown)
+    exact = choices.find { |c| c.string_key && c.name == word }
+    return exact if exact
+    words = Regexp.quote(word).gsub(/\w+\b/, "\\&\\w*")
+    pattern = Regexp.new("\\A" + words)
+    found = choices.select { |c| c.name.match?(pattern) }.sort_by { |c| c.name.length }
+    raise invalid_argument(shown) if found.empty?
+    best = found[0]
+    found[1..].each do |c|
+      next if c.value == best.value
+      if c.name == best.name
+        best = c
+        next
+      end
+      next if c.name.start_with?(best.name)
+      raise AmbiguousArgument.new("ambiguous argument: " + shown)
+    end
+    best
   end
 
   def invalid_argument(shown)
