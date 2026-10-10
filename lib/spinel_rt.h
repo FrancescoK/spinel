@@ -6287,7 +6287,12 @@ static sp_RbVal sp_poly_shr(sp_RbVal a, sp_RbVal b) {
   if (sp_poly_is_user_obj(a)) return sp_poly_binop_bad(">>", a, b);
   /* Integer#>> is Integer's alone (see sp_poly_bitop) */
   if (a.tag != SP_TAG_INT) return sp_poly_binop_bad(">>", a, b);
-  return sp_box_int(sp_poly_to_i(a) >> sp_poly_bit_operand(b, 1));
+  sp_int v = sp_poly_to_i(a), s = sp_poly_bit_operand(b, 1);
+  /* a shift by the word or more is all sign bits (C leaves it undefined:
+     the hardware takes the count mod 64, so `5 >> 64` answered 5); a
+     negative count shifts left */
+  if (s < 0) return sp_poly_shl(a, sp_box_int(s == INT64_MIN ? INT64_MAX : -s));
+  return sp_box_int(s >= 64 ? (v < 0 ? -1 : 0) : v >> s);
 }
 /* & | ^ are boolean operators on a nil/boolean receiver (NilClass#& is
    always false, | and ^ test the operand's truthiness) and bitwise on an
