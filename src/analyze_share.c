@@ -1765,10 +1765,11 @@ static int sh_new_call(ShareFacts *F, Compiler *c, int n, int recv, int blk) {
   if (cid < 0) return sh_builtin_new(F, c, n, recv, blk);
   ClassInfo *ci = &c->classes[cid];
   /* an exception keeps its message, which #message hands back */
-  if (class_is_exc_subclass(c, cid)) {
+  if (class_is_exc_subclass(c, cid) && (!c->share_strings || cplan_initialize(c, n) < 0)) {
     int vals[64];
     int nv = sh_args_vals(F, c, n, vals, 64);
-    for (int k = 0; k < nv; k++) sh_union(F, vals[k], F->unknown);
+    if (!c->share_strings)
+      for (int k = 0; k < nv; k++) sh_union(F, vals[k], F->unknown);
     sh_exc_args(F, c, n);
   }
   if (ci->is_struct) {
@@ -2222,6 +2223,8 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
         sh_union(F, rv, F->unknown);
     }
     /* a poly receiver may be a builtin as well */
+    if (c->share_strings && rt == TY_EXCEPTION && is_exception_message(name))
+      return sh_join(F, r, sh_exc(F));
     if ((rt != TY_POLY && rt != TY_UNKNOWN) || sh_builtin_fresh(c, n, F->ostruct)) return r;
     /* Exception#to_s hands on its stored message beside user returns. */
     if (is_to_s_name(name) && argc == 0 && blk < 0) r = sh_join(F, r, sh_exc(F));
@@ -2260,6 +2263,11 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
   }
   /* an exception's message: what it was handed (sh_exc). raise and fail
      hand it their arguments. */
+  /* Exception#to_s with no user target hands on the stored message, as
+     #message does (the shared route answers the stored handle). */
+  if (c->share_strings && is_to_s_name(name) && argc == 0 && blk < 0 &&
+      (rt == TY_EXCEPTION || (ty_is_object(rt) && class_is_exc_subclass(c, ty_object_class(rt)))))
+    return sh_exc(F);
   if (is_exc_message_name(name)) {
     /* Formatted exception text is a new String, not the stored message.
        User targets above retain their own return facts. */
@@ -2403,6 +2411,7 @@ static int sh_super(ShareFacts *F, Compiler *c, int n) {
         for (int j = 0; j < cs->nparams; j++)
           sh_union(F, cs->pnames[j] ? sh_local_of(F, c, cs, cs->pnames[j], n) : -1, sh_exc(F));
       else sh_exc_args(F, c, n);
+      if (c->share_strings && is_initialize_family(cs->name)) return -1;
     }
     return sh_unknown_call(F, c, n, blk);
   }

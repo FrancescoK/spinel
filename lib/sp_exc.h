@@ -53,6 +53,9 @@ typedef struct sp_Exception_s {
                                  (sp_exc_attach_msg). Read the message
                                  through sp_exc_message / sp_exc_msg_text. */
 } sp_Exception;
+/* No message was given: msg is NULL (a constructor given none, or super(nil)).
+   #message then answers the class name, read when it is asked. */
+static inline int sp_exc_msg_absent(const sp_Exception *e) { return !e->msg; }
 
 extern const char *(*sp_user_exc_parent_fn)(const char *);   /* set by the generated main() */
 /* The modules a class includes, NULL-terminated, or NULL for none. Ruby's type

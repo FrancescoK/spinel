@@ -14302,20 +14302,30 @@ void sp_exc_resignal(const char *cls, const char *msg);   /* lib/sp_cold.c */
    build). Without it there is no location to print, and an uncaught raise in a
    multi-file program said only what went wrong, never where (#3974). Frames
    are method-granularity, so there is no `:line:`. */
+/* The text of the report: the message (the class's name when it has none) and
+   the class in parentheses. The class is shown as it prints: an unnamed
+   Class.new class prints its #<Class:0x...> form, and CRuby adds no
+   "(Class)" suffix for it. */
+static void sp_exc_print_uncaught_text(const char *cls, const char *msg) {
+  const char *shown = sp_exc_cls_display(cls);
+  const char *text = (msg && *msg) ? msg : shown;
+  if (sp_exc_cls_unnamed(shown)) fprintf(stderr, "%s\n", text);
+  else fprintf(stderr, "%s (%s)\n", text, shown);
+}
 static void sp_exc_print_uncaught(const char *cls, const char *msg) {
 #if SP_BT_AVAILABLE
   if (sp_bt_enabled && sp_bt_n > 0) {
     sp_StrArray *bt = sp_bt_format(sp_bt_buf, sp_bt_n);
     if (bt && bt->len > 0) {
-      fprintf(stderr, "%s: %s (%s)\n", sp_StrArray_get(bt, 0),
-              (msg && *msg) ? msg : cls, cls);
+      fprintf(stderr, "%s: ", sp_StrArray_get(bt, 0));
+      sp_exc_print_uncaught_text(cls, msg);
       for (sp_int _i = 1; _i < bt->len; _i++)
         fprintf(stderr, "\tfrom %s\n", sp_StrArray_get(bt, _i));
       return;
     }
   }
 #endif
-  fprintf(stderr, "%s (%s)\n", (msg && *msg) ? msg : cls, cls);
+  sp_exc_print_uncaught_text(cls, msg);
 }
 #ifdef SPINEL_EXT_HOST
 SP_NORETURN SP_COLD void sp_raise_cls(const char *cls, const char *msg);
@@ -14904,7 +14914,8 @@ static void sp_raise_exc(volatile sp_Exception *ve) {
   /* Carry the object so a user subclass keeps its ivars across the
      longjmp; sp_raise_cls moves it into the current frame's slot. */
   sp_pending_exc_obj = (void *)e;
-  sp_raise_cls(e->cls_name, e->msg_h ? sp_exc_message(e) : e->msg);
+  /* a message never given is the class name, as #message answers it */
+  sp_raise_cls(e->cls_name, (e->msg && !e->msg_h) ? e->msg : sp_exc_message(e));
 }
 /* e.message as the String handle it holds (sp_Exception.msg_h), for a
    change through it (--share-strings). A message held as bytes becomes the
@@ -14922,6 +14933,45 @@ static inline sp_String *sp_exc_message_handle(sp_Exception *e) {
   sp_String *h = sp_String_new_fresh(m);
   if (fz) sp_String_freeze(h);
   if (!e->cls_name || strcmp(sp_String_cstr(h), e->cls_name) != 0) sp_exc_attach_msg((void *)e, (void *)h);
+  return h;
+}
+
+/* The same for the shared dispatch's stored message, which tells a message
+   given from one never given (sp_exc_msg_absent). A message given is kept as
+   the exception's handle, even one that spells the class name; the class name
+   answered for none is a new String each time, as in CRuby, and is not kept. */
+static inline sp_String *sp_exc_kept_message_handle(sp_Exception *e) {
+  if (!e) return sp_String_new_fresh(sp_str_empty);
+  if (e->msg_h) return (sp_String *)e->msg_h;
+  SP_GC_ROOT(e);
+  const char *m = sp_exc_message(e);
+  int fz = sp_str_is_frozen_val(m);
+  sp_String *h = sp_String_new_fresh(m);
+  if (fz) sp_String_freeze(h);
+  if (!sp_exc_msg_absent(e)) sp_exc_attach_msg((void *)e, (void *)h);
+  return h;
+}
+
+/* The identity of what #message answers for the stored message, as the box
+   an identity compare reads (sp_poly_equal, sp_poly_identity_ptr), read
+   without attaching a handle: the handle's box once one is attached, else the
+   stored bytes, which every plain read answers until then. A message never
+   given answers a new String on each read, so each ask is a new identity. */
+static inline sp_RbVal sp_exc_message_idbox(sp_Exception *e) {
+  if (!e) return sp_box_str(sp_str_frozen_empty);
+  if (e->msg_h) return sp_box_obj(e->msg_h, SP_BUILTIN_STRBUF);
+  if (!sp_exc_msg_absent(e)) return sp_box_str(e->msg);
+  return sp_box_str(sp_exc_message(e));
+}
+
+/* A shared dispatch returns the stored message object without a byte copy.
+   An absent message still answers a fresh class-name String each time. */
+static inline sp_String *sp_exc_stored_message_handle(sp_Exception *e) {
+  if (!e || sp_exc_msg_absent(e)) return sp_exc_kept_message_handle(e);
+  if (e->msg_h) return (sp_String *)e->msg_h;
+  SP_GC_ROOT(e);
+  sp_String *h = sp_String_new_shared(e->msg);
+  sp_exc_attach_msg(e, h);
   return h;
 }
 
@@ -15047,9 +15097,8 @@ SP_NORETURN SP_COLD static void sp_raise_poly(sp_RbVal v) {
       /* the SystemCallError family's message is its errno text */
       if (sp_syserr_kind(cn, NULL) != SP_SYSERR_NONE)
         sp_raise_cls(cn, sp_syserr_build(cn, 0, NULL)->msg);
-      /* the message is the class's to_s: an unnamed Class.new class differs
-         from the name it raises under */
-      { const char *dn = sp_class_val_display(v); if (strcmp(dn, cn)) sp_raise_cls(cn, dn); }
+      /* no message: #message answers the class's name when it is asked, which
+         for an unnamed Class.new class is not the name it raises under */
       sp_raise_cls(cn, sp_str_empty);
     }
   }
@@ -15063,7 +15112,8 @@ SP_NORETURN SP_COLD static void sp_raise_poly_msg(sp_RbVal v, sp_RbVal m) {
                   : sp_exc_msg_given(m.tag == SP_TAG_STR ? m.v.s : sp_poly_to_s(m));
   if (v.tag == SP_TAG_OBJ && v.v.p &&
       (v.cls_id == SP_BUILTIN_EXCEPTION || sp_is_exc_subclass_cls(v.cls_id))) {
-    if (!msg) sp_raise_exc((volatile sp_Exception *)v.v.p);
+    /* a nil message runs exception(nil), which clears the message */
+    if (!msg) sp_raise_exc((volatile sp_Exception *)sp_exc_exception((sp_Exception *)v.v.p, NULL));
     sp_raise_exc((volatile sp_Exception *)sp_exc_exception((sp_Exception *)v.v.p, msg));
   }
   if (v.tag == SP_TAG_CLASS) {
@@ -15081,10 +15131,6 @@ SP_NORETURN SP_COLD static void sp_raise_poly_msg(sp_RbVal v, sp_RbVal m) {
            larger than the one built here */
         if (!(sp_user_exc_parent_fn && sp_user_exc_parent_fn(cn))) sp_raise_exc(se);
         sp_raise_cls(cn, se->msg);
-      }
-      if (!msg) {   /* as sp_raise_poly: the class's to_s, where it differs from its name */
-        const char *dn = sp_class_val_display(v);
-        if (strcmp(dn, cn)) msg = dn;
       }
       sp_raise_cls(cn, msg ? msg : sp_str_empty);
     }

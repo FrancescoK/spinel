@@ -9722,7 +9722,7 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
                  ci->c_name, ci->c_name, ci->c_name, ci->c_name);
       buf_printf(b, "  self->cls_name = \"%s\";\n", cn2);
       buf_printf(b, "  self->parent_cls_name = \"%s\";\n", par);
-      buf_puts(b, "  self->msg = (&(\"\\xff\")[1]);\n");
+      buf_puts(b, "  self->msg = NULL;\n");
       buf_puts(b, "  self->result = sp_box_nil();\n");  /* memset left tag 0 (int 0); #result wants nil */
       buf_puts(b, "  self->xname = sp_box_nil();\n");
       buf_puts(b, "  self->xkey = sp_box_nil();\n");
@@ -9873,7 +9873,7 @@ void emit_obj_alloc_expr(Compiler *c, int cid, Buf *b) {
     }
     buf_printf(b, "({ sp_%s *_t%d = (sp_%s *)sp_gc_alloc(sizeof(sp_%s), NULL, sp_%s__gc_scan);"
                   " _t%d->cls_name = \"%s\"; _t%d->parent_cls_name = \"%s\";"
-                  " _t%d->msg = (&(\"\\xff\")[1]); _t%d->result = sp_box_nil();"
+                  " _t%d->msg = NULL; _t%d->result = sp_box_nil();"
                   " _t%d->xname = sp_box_nil(); _t%d->xkey = sp_box_nil(); _t%d->xrecv = sp_box_nil();",
                ci->c_name, t, ci->c_name, ci->c_name, ci->c_name, t, cn2, t, par, t, t, t, t, t);
     char lv[32]; snprintf(lv, sizeof lv, "_t%d->", t);
@@ -12224,8 +12224,12 @@ void emit_super(Compiler *c, int id, Buf *b) {
            can't see. */
         buf_printf(b, "(%s->msg = ", g_self);
         /* nilable: Exception#initialize STRINGIFIES its message (super(nil)
-           keeps the class-name default in CRuby), it never type-checks it */
-        emit_str_expr_nilable(c, argv2[0], b);
+           keeps the class-name default in CRuby), it never type-checks it.
+           A boxed nil stays NULL (no message given): emit_str_expr_nilable
+           reads it as an empty String, and the separator form
+           (sp_poly_sep_str, made for a line reader) is the existing read
+           that keeps nil. */
+        emit_str_expr_sep(c, argv2[0], b);
         /* The message is made after self, and a collection inside its
            making can promote self: the store is recorded (sp_gc_wb), or a
            minor collection frees the young message self still names. */
@@ -12244,7 +12248,8 @@ void emit_super(Compiler *c, int id, Buf *b) {
         TyKind pt = (p0 && p0->type != TY_UNKNOWN) ? p0->type : TY_POLY;
         /* recorded, as the explicit super(msg) store above */
         if (pt == TY_POLY)
-          buf_printf(b, "(%s->msg = sp_poly_to_s(%s), sp_gc_wb((void *)%s), %s->msg)", g_self, rn.p, g_self, g_self);
+          buf_printf(b, "(%s->msg = %s.tag == SP_TAG_NIL ? NULL : sp_poly_to_s(%s), sp_gc_wb((void *)%s), %s->msg)",
+                     g_self, rn.p, rn.p, g_self, g_self);
         else
           buf_printf(b, "(%s->msg = %s, sp_gc_wb((void *)%s), %s->msg)", g_self, rn.p, g_self, g_self);
         free(rn.p);
@@ -16689,6 +16694,91 @@ static void emit_sym_class_name_rt(Compiler *c, Buf *b) {
   }
 }
 
+/* An override publishes only its own answer. Fresh and borrowed byte
+   results clear publications made by calls inside the override. Mode 2
+   answers the identity of that result instead of its bytes: the handle it
+   published, else the bytes themselves. */
+static void emit_exc_text_return(Compiler *c, int mi, const char *call, int mode, Buf *b) {
+  if (!mode) { buf_printf(b, "return %s;", call); return; }
+  buf_printf(b, "{ _sp_ret_strbuf = NULL; const char *_v = %s; ", call);
+  if (!c->scopes[mi].ret_handle) buf_puts(b, "_sp_ret_strbuf = NULL; ");
+  if (mode == 2) buf_puts(b, "return _sp_ret_strbuf ? sp_box_obj(_sp_ret_strbuf, SP_BUILTIN_STRBUF) : _v ? sp_box_str(_v) : sp_box_nil(); }");
+  else buf_puts(b, "return _v; }");
+}
+
+/* mode 0: the plain dispatchers; 1: the route's (_shared), which answer the
+   result and its handle; 2: the identity reads' (_id), which answer the
+   result as the box an identity compare reads and never attach a handle
+   to the stored message */
+static void emit_exc_text_dispatch(Compiler *c, Buf *b, int mode) {
+  if (exc_has_user_msg_override(c)) {
+    for (int pass = 0; pass < 2; pass++) {
+      if (mode && !(c->uses_exc_text_handle & ((mode == 2 ? 4 : 1) << pass))) continue;
+      int want_message = pass;  /* 0 = to_s dispatcher, 1 = message dispatcher */
+      if (mode == 2) buf_printf(b, "SP_UNUSED static sp_RbVal %s_id(sp_Exception *e){\n",
+                                want_message ? "sp_user_exc_message" : "sp_user_exc_to_s");
+      else buf_printf(b, "SP_UNUSED static const char *%s%s(sp_Exception *e){\n",
+                      want_message ? "sp_user_exc_message" : "sp_user_exc_to_s", mode ? "_shared" : "");
+      if (mode == 2)
+        buf_puts(b, "  if(!e)return sp_box_str(sp_str_frozen_empty);\n  const char *cls=e->cls_name;\n");
+      else if (mode)
+        buf_puts(b, "  if(!e){ _sp_ret_strbuf = NULL; return sp_str_frozen_empty; }\n  const char *cls=e->cls_name;\n");
+      else buf_puts(b, "  if(!e)return (&(\"\\xff\")[1]);\n  const char *cls=e->cls_name;\n");
+      for (int i = 0; i < c->nclasses; i++) {
+        if (!class_is_exc_subclass(c, i)) continue;
+        int dcls = -1; const char *fn = NULL;
+        int mi = exc_text_method(c, i, want_message, &dcls, &fn);
+        if (mi < 0) continue;
+        if ((TyKind)c->scopes[mi].ret != TY_STRING) continue;  /* string-returning only */
+        /* a reopening's method is picked by the runtime class below */
+        if (class_is_exc_reopen(c, dcls)) continue;
+        const char *dcn = c->classes[dcls].c_name;
+        const char *cn0 = class_ruby_name(c, i);
+        if (!cn0) cn0 = c->classes[i].name;
+        if (!cn0) continue;
+        Buf call = {0};
+        buf_printf(&call, "(const char*)sp_%s_%s((sp_%s*)e)", dcn, fn, dcn);
+        buf_printf(b, "  if(!strcmp(cls,\"%s\"))", cn0);
+        emit_exc_text_return(c, mi, call.p, mode, b); buf_puts(b, "\n");
+        if (c->classes[i].name && !sp_streq(cn0, c->classes[i].name)) {
+          buf_printf(b, "  if(!strcmp(cls,\"%s\"))", c->classes[i].name);
+          emit_exc_text_return(c, mi, call.p, mode, b); buf_puts(b, "\n");
+        }
+        free(call.p);
+      }
+      /* a builtin exception's reopening: #message is the nearest reopening's
+         #message, else (Exception#message calls #to_s) the nearest #to_s,
+         else the stored message */
+      for (int f = want_message ? 0 : 1; f < 2; f++) {
+        const char *fn = f ? "to_s" : "message";
+        int xr0[8], xr[8], xn = 0;
+        int xn0 = exc_reopen_definers(c, fn, xr0, 8);
+        for (int q = 0; q < xn0; q++) {
+          int mi = comp_method_in_chain(c, xr0[q], fn, NULL);
+          if ((TyKind)c->scopes[mi].ret == TY_STRING) xr[xn++] = xr0[q];
+        }
+        if (xn == 0) continue;
+        buf_puts(b, "  { ");
+        int pk = emit_exc_reopen_pick_head(c, xr, xn, "cls", b);
+        buf_puts(b, "\n");
+        for (int q = 0; q < xn; q++) {
+          Buf call = {0};
+          buf_printf(&call, "sp_%s_%s(e)", mc_reopen_cls(c, xr[q], fn), mc(fn));
+          buf_printf(b, "    if (_xi%d == %d) ", pk, q);
+          emit_exc_text_return(c, comp_method_in_chain(c, xr[q], fn, NULL), call.p, mode, b);
+          buf_puts(b, "\n"); free(call.p);
+        }
+        buf_puts(b, "  }\n");
+      }
+      if (mode == 2) buf_puts(b, "  return sp_exc_message_idbox(e);\n}\n");
+      else if (mode)
+        buf_puts(b, "  sp_String *_h = sp_exc_stored_message_handle(e); SP_GC_ROOT(_h);\n"
+                    "  _sp_ret_strbuf = _h; return sp_String_cstr(_h);\n}\n");
+      else buf_puts(b, "  return sp_exc_message(e);\n}\n");
+    }
+  }
+}
+
 /* User exception classes: the class-name to index map a poly dispatch keys them by, and the #message / #to_s override dispatchers (const char * and boxed) (codegen_program's steps, in their order) */
 static void emit_user_exc_dispatch(Compiler *c, Buf *b) {
   /* A boxed exception carries SP_BUILTIN_EXCEPTION, not its user class's
@@ -16754,52 +16844,7 @@ static void emit_user_exc_dispatch(Compiler *c, Buf *b) {
                               "a builtin exception reopening's #message / #to_s that answers a non-String");
       }
     }
-  if (exc_has_user_msg_override(c)) {
-    for (int pass = 0; pass < 2; pass++) {
-      int want_message = pass;  /* 0 = to_s dispatcher, 1 = message dispatcher */
-      buf_printf(b, "SP_UNUSED static const char *%s(sp_Exception *e){\n",
-                 want_message ? "sp_user_exc_message" : "sp_user_exc_to_s");
-      buf_puts(b, "  if(!e)return (&(\"\\xff\")[1]);\n  const char *cls=e->cls_name;\n");
-      for (int i = 0; i < c->nclasses; i++) {
-        if (!class_is_exc_subclass(c, i)) continue;
-        int dcls = -1; const char *fn = NULL;
-        int mi = exc_text_method(c, i, want_message, &dcls, &fn);
-        if (mi < 0) continue;
-        if ((TyKind)c->scopes[mi].ret != TY_STRING) continue;  /* string-returning only */
-        /* a reopening's method is picked by the runtime class below */
-        if (class_is_exc_reopen(c, dcls)) continue;
-        const char *dcn = c->classes[dcls].c_name;
-        const char *cn0 = class_ruby_name(c, i);
-        if (!cn0) cn0 = c->classes[i].name;
-        if (!cn0) continue;
-        buf_printf(b, "  if(!strcmp(cls,\"%s\"))return (const char*)sp_%s_%s((sp_%s*)e);\n",
-                   cn0, dcn, fn, dcn);
-        if (c->classes[i].name && !sp_streq(cn0, c->classes[i].name))
-          buf_printf(b, "  if(!strcmp(cls,\"%s\"))return (const char*)sp_%s_%s((sp_%s*)e);\n",
-                     c->classes[i].name, dcn, fn, dcn);
-      }
-      /* a builtin exception's reopening: #message is the nearest reopening's
-         #message, else (Exception#message calls #to_s) the nearest #to_s,
-         else the stored message */
-      for (int f = want_message ? 0 : 1; f < 2; f++) {
-        const char *fn = f ? "to_s" : "message";
-        int xr0[8], xr[8], xn = 0;
-        int xn0 = exc_reopen_definers(c, fn, xr0, 8);
-        for (int q = 0; q < xn0; q++) {
-          int mi = comp_method_in_chain(c, xr0[q], fn, NULL);
-          if ((TyKind)c->scopes[mi].ret == TY_STRING) xr[xn++] = xr0[q];
-        }
-        if (xn == 0) continue;
-        buf_puts(b, "  { ");
-        int pk = emit_exc_reopen_pick_head(c, xr, xn, "cls", b);
-        buf_puts(b, "\n");
-        for (int q = 0; q < xn; q++)
-          buf_printf(b, "    if (_xi%d == %d) return sp_%s_%s(e);\n", pk, q, mc_reopen_cls(c, xr[q], fn), mc(fn));
-        buf_puts(b, "  }\n");
-      }
-      buf_puts(b, "  return sp_exc_message(e);\n}\n");
-    }
-  }
+  emit_exc_text_dispatch(c, b, 0);
   /* The boxed pair: an override answering something other than a String cannot
      be represented by the const char * dispatchers above, so #message on an
      exception whose class is only known at run time reported the stored message
@@ -17732,6 +17777,7 @@ char *codegen_program(const NodeTable *nt) {
       buf_splice(&b, isa_ext_at, isa_ext);
     free(isa_ext);
   }
+  if (c->uses_exc_text_handle) { emit_exc_text_dispatch(c, &b, 1); emit_exc_text_dispatch(c, &b, 2); }
   if (g_proc_protos.len) { buf_puts(&b, g_proc_protos.p); buf_puts(&b, "\n"); }
   if (g_pd_protos.len) { buf_puts(&b, g_pd_protos.p); buf_puts(&b, "\n"); }
   if (g_procs.len) { buf_puts(&b, g_procs.p); buf_puts(&b, "\n"); }

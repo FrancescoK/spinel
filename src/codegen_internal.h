@@ -219,7 +219,9 @@ int strbuf_self_route_slot(Compiler *c, int v, int *uplus, char *out, size_t cap
    (codegen_call_exception.c) */
 int exc_msg_handle(Compiler *c, int arg, char *href, size_t cap);
 /* --share-strings: `e.message` over a variable's exception (codegen_stmt.c) */
-int strbuf_exc_message_of_var(Compiler *c, int v);
+int exc_message_identity_operand(Compiler *c, int v);
+void emit_exc_message_idbox(Compiler *c, int v, Buf *b);
+int emit_exc_message_equal(Compiler *c, int recv, int arg, Buf *b);
 int strbuf_route_exc_message(Compiler *c, int v);
 int strbuf_route_srange_end(Compiler *c, int v);
 void emit_slot_expr(Compiler *c, int id, Buf *b);
@@ -760,6 +762,8 @@ int exc_reopen_definers(Compiler *c, const char *mname, int *out, int max);
 int emit_exc_reopen_pick_head(Compiler *c, const int *xr, int xn, const char *cls_expr, Buf *b);
 int class_has_subclass(Compiler *c, int ocid);
 int exc_has_user_msg_override(Compiler *c);
+int exc_text_override_calls_super(Compiler *c);
+int scope_calls_super(Compiler *c, int s);
 int exc_has_nonstring_msg_override(Compiler *c);
 int fi_fiber_stack_risk(Compiler *c);
 const char *class_ruby_name(Compiler *c, int ci);

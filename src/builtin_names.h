@@ -85,6 +85,7 @@ int is_copy_alias(const char *n); /* clone dup */
 int is_hash_merge_bang(const char *n); /* merge! update */
 int is_membership_alias(const char *n); /* include? member? */
 int is_eql_or_equal(const char *n); /* eql? equal? */
+int is_equal_name(const char *n);   /* equal? */
 int is_substitution(const char *n); /* gsub sub */
 int is_element_at_alias(const char *n); /* [] at */
 int is_map_bang_alias(const char *n); /* collect! map! */
