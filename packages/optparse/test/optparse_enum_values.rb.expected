@@ -1,0 +1,81 @@
+:fast
+["b"]
+:fast
+["b"]
+:fast
+["b"]
+:fastest
+["b"]
+[OptionParser::InvalidArgument, "invalid argument: --mode=x", ["b"]]
+[OptionParser::AmbiguousArgument, "ambiguous argument: --mode=", ["b"]]
+[OptionParser::InvalidArgument, "invalid argument: --mode=FAST", ["b"]]
+:slow
+["b"]
+[OptionParser::InvalidArgument, "invalid argument: -mx", ["b"]]
+:slow
+["b"]
+[OptionParser::InvalidArgument, "invalid argument: --mode x", ["b"]]
+"dry-run"
+[]
+"dry-walk"
+[]
+"wet"
+[]
+[OptionParser::AmbiguousArgument, "ambiguous argument: --level=d", []]
+[OptionParser::AmbiguousArgument, "ambiguous argument: --level=dry", []]
+"dry-run"
+[]
+1
+[]
+2
+[]
+[OptionParser::InvalidArgument, "invalid argument: --size=m", []]
+"#0f0"
+[]
+"#f00"
+[]
+9
+[]
+"a"
+[]
+"ab"
+[]
+[OptionParser::AmbiguousArgument, "ambiguous argument: --c=a", []]
+1
+[]
+"a-b"
+[]
+[OptionParser::AmbiguousArgument, "ambiguous argument: --f=a-b", []]
+1
+[]
+[OptionParser::InvalidArgument, "invalid argument: --h=f", []]
+[OptionParser::InvalidArgument, "invalid argument: --h=Fastx", []]
+nil
+[]
+"fast"
+[]
+false
+[]
+"fast"
+[]
+"fast"
+[]
+2
+[]
+"a"
+[]
+[OptionParser::InvalidArgument, "invalid argument: --none=a", []]
+1
+[]
+"fast"
+[]
+"f"
+[]
+[OptionParser::InvalidArgument, "invalid argument: --last=x", []]
+1
+[]
+[OptionParser::InvalidArgument, "invalid argument: --word=o", []]
+"yes"
+[]
+"s"
+[]
