@@ -4,7 +4,8 @@
 #   - OptionParser.new(banner, width, indent) { |opts| ... }
 #   - on / on_tail with any number of switch names ("-nNAME" declares -n with
 #     a value), any number of description lines and an optional value type
-#     (String, Array, Integer, Float, TrueClass or FalseClass), in any order
+#     (String, Array, Integer, Float, DecimalInteger, OctalInteger,
+#     DecimalNumeric, TrueClass or FalseClass), in any order
 #   - separator, banner=, summary_width, summary_indent, to_s (help text)
 #   - parse! with --long=VALUE, --long VALUE, -s VALUE, -sVALUE, clustered
 #     short switches (-vq, -vuNAME) and "--"
@@ -25,14 +26,17 @@
 #     OptionParser::MissingArgument, OptionParser::NeedlessArgument and
 #     OptionParser::InvalidArgument, all subclasses of OptionParser::ParseError
 #
+#   - DecimalInteger reads only decimal digits (010 is 10), OctalInteger
+#     octal digits (10 is 8), and DecimalNumeric an Integer or, when a "." or
+#     an exponent follows the digits, a Float
 #   - TrueClass and FalseClass read yes, true and + as true and no, false, - and
 #     nil as false, each cut short as far as it stays a prefix ("y", "fa");
 #     case matters. Any other word raises InvalidArgument, an empty one
 #     AmbiguousArgument (a subclass of it). Without a value ("--force[=YES]")
 #     TrueClass passes true and FalseClass false
 #
-# Not supported: other value types than String, Array, Integer, Float, TrueClass
-# and FalseClass.
+# Not supported: other value types than String, Array, Integer, Float,
+# DecimalInteger, OctalInteger, DecimalNumeric, TrueClass and FalseClass.
 
 class OptionParser
   class ParseError < StandardError
@@ -57,12 +61,21 @@ class OptionParser
   end
 
   # The words an Integer or a Float switch accepts. radix is a leading 0
-  # with an octal, binary (0b) or hexadecimal (0x) number.
+  # with an octal, binary (0b) or hexadecimal (0x) number. The lookahead
+  # group captures what follows the leading digits: DecimalNumeric reads
+  # the word as a Float when it is there, and as an Integer when not.
   digits = '\d+(?:_\d+)*'
-  radix = '0(?:[0-7]+(?:_[0-7]+)*|b[01]+(?:_[01]+)*|x[\da-f]+(?:_[\da-f]+)*)?'
+  binary = 'b[01]+(?:_[01]+)*'
+  hex = 'x[\da-f]+(?:_[\da-f]+)*'
+  radix = "0(?:[0-7]+(?:_[0-7]+)*|#{binary}|#{hex})?"
   INTEGER_VALUE = /\A[-+]?(?:#{radix}|#{digits})\z/io
-  FLOAT_VALUE = /\A[-+]?(?:#{digits}(?:\.(?:#{digits})?)?|\.#{digits})
+  FLOAT_VALUE = /\A[-+]?(?:#{digits}(?=(.)?)(?:\.(?:#{digits})?)?|\.#{digits})
                  (?:E[-+]?#{digits})?\z/iox
+
+  # The value types CRuby names by their pattern, as it defines them.
+  DecimalInteger = /\A[-+]?#{digits}\z/io
+  OctalInteger = /\A[-+]?(?:[0-7]+(?:_[0-7]+)*|0(?:#{binary}|#{hex}))\z/io
+  DecimalNumeric = FLOAT_VALUE
 
   # One entry of the help text: a switch, or a separator line (no names).
   class Switch
@@ -203,7 +216,8 @@ class OptionParser
         (a[1] == "-" ? longs : shorts).push(a[0, cut])
       elsif a.is_a?(String)
         descriptions.push(a)
-      elsif a == String || a == Array || a == Integer || a == Float || a == TrueClass || a == FalseClass
+      elsif a == String || a == Array || a == Integer || a == Float || a == TrueClass || a == FalseClass ||
+            a == DecimalInteger || a == OctalInteger || a == DecimalNumeric
         type = a
       end
     end
@@ -249,6 +263,23 @@ class OptionParser
       raise invalid_argument(shown) unless value.match?(INTEGER_VALUE)
       begin
         number = Integer(value)
+      rescue ArgumentError
+        raise invalid_argument(shown)
+      end
+      handler.call(number) if handler
+    elsif type == DecimalInteger || type == OctalInteger
+      raise invalid_argument(shown) unless value.match?(type)
+      begin
+        number = Integer(value, type == DecimalInteger ? 10 : 8)
+      rescue ArgumentError
+        raise invalid_argument(shown)
+      end
+      handler.call(number) if handler
+    elsif type == DecimalNumeric
+      match = DecimalNumeric.match(value)
+      raise invalid_argument(shown) unless match
+      begin
+        number = match[1] ? Float(value) : Integer(value)
       rescue ArgumentError
         raise invalid_argument(shown)
       end
