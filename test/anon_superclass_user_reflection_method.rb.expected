@@ -1,0 +1,8 @@
+["Base"]
+["Kid", "Base"]
+Kid < Base
+Base < none
+3
+["Base"]
+"other's"
+nil
