@@ -1,0 +1,89 @@
+NameError: uninitialized constant Named::ONLY
+uninitialized constant #<Class:0xADDR>::ONLY2
+3
+4
+NameError: uninitialized constant Counted::CNT
+1
+5
+2
+6
+3
+NameError: uninitialized constant Mut::MBUF
+NameError: uninitialized constant Mut::MBUF
+NameError: uninitialized constant Mut::MAPP
+2
+"ay"
+"B"
+"33"
+"Dd"
+"E"
+"f!?"
+4
+NameError: uninitialized constant LATE
+nil
+false
+NameError: uninitialized constant LATE
+nil
+NameError: uninitialized constant LATE
+:fallback
+"constant"
+ArgumentError
+ArgumentError
+true
+ArgumentError
+NameError: uninitialized constant COUNT
+NameError: uninitialized constant NAMES
+NameError: uninitialized constant RATIO
+NameError: uninitialized constant FLAG
+NameError: uninitialized constant LOG
+42
+2
+3.0
+nil
+"start-more"
+NameError: uninitialized constant Cfg::LIMIT
+NameError: uninitialized constant Cfg::LIMIT
+NameError: uninitialized constant Cfg::DEPTH
+nil
+NameError: uninitialized constant Cfg::TITLE
+nil
+false
+false
+"cfg!"
+10
+10
+3
+"constant"
+true
+true
+"constant"
+NameError: uninitialized constant AND1
+NameError: uninitialized constant PLUS1
+NameError: uninitialized constant Cfg::PAND
+NameError: uninitialized constant Cfg::PPLUS
+5
+nil
+6
+9
+7
+NameError: uninitialized constant APPENDED
+"s"
+NameError: uninitialized constant Left::SW
+1
+NameError: uninitialized constant Box::SIZE
+NameError: uninitialized constant Box::SIZE
+4
+4
+NameError: uninitialized constant WARM
+:warm
+14
+7
+6
+"constant"
+true
+NameError: uninitialized constant GONE
+NameError: uninitialized constant GONE2
+"rescued"
+"rescued"
+1
+2

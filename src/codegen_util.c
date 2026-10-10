@@ -3000,6 +3000,9 @@ int str_mut_var_recv(Compiler *c, int recv) {
     return cv && cv->type != TY_UNKNOWN && !cv->init_guarded;
   }
   case NK_ConstantPathNode: {
+    /* a call on the slot of a constant read through a receiver that runs: the
+       slot's pointer is held (emit_const_recv_wrap), and the node reads it */
+    if (nt_int(nt, recv, "const_ptr", 0)) return 1;
     /* the path's read resolves through several tables; ask it for its text */
     if (comp_ntype(c, recv) != TY_STRING) return 0;
     int save = g_tmp;
@@ -3009,6 +3012,8 @@ int str_mut_var_recv(Compiler *c, int recv) {
     int ok = strncmp(t, "cst_", 4) == 0 && t[4];
     for (const char *q = t + 4; ok && *q; q++)
       if (!(isalnum((unsigned char)*q) || *q == '_')) ok = 0;
+    /* a constant with a presence flag reads as `*(test, &cst_NAME)`: still the slot */
+    if (!ok && strncmp(t, "(*((cst_", 8) == 0) ok = 1;
     free(rb.p);
     return ok;
   }
@@ -3469,6 +3474,156 @@ int is_scalar_ret(TyKind t) {
      object array are pointers a method can return */
   const TyTraits *tr = ty_traits_of(t);
   return tr ? tr->scalar_ret : (ty_is_object(t) || ty_is_obj_array(t));
+}
+int const_has_flag(const LocalVar *lv) {
+  return lv && lv->const_early && (lv->type == TY_NIL || is_scalar_ret(lv->type));
+}
+void emit_const_flag_set(const LocalVar *lv, const char *key, Buf *b, int indent) {
+  if (!const_has_flag(lv)) return;
+  emit_indent(b, indent);
+  buf_printf(b, "cst_%s__set = 1;\n", key);
+}
+/* The name CRuby shows for the constant node id reads: a path as written, a
+   bare name qualified by the class it is written in. A collision-qualified
+   key (Outer__Inner) shows its leaf. */
+static void const_read_name(Compiler *c, int id, char *out, size_t cap) {
+  const NodeTable *nt = c->nt;
+  const char *segs[16]; int n = 0;
+  for (int k = id; k >= 0 && n < 16; k = nt_kind(nt, k) == NK_ConstantPathNode ? nt_ref(nt, k, "parent") : -1) {
+    /* a receiver that is no constant (a class held in a variable) has no name here */
+    const char *nm = k == id || nt_kind(nt, k) == NK_ConstantReadNode || nt_kind(nt, k) == NK_ConstantPathNode
+                     ? nt_str(nt, k, "name") : NULL;
+    const char *us = nm ? strstr(nm, "__") : NULL;
+    while (us && strstr(us + 2, "__")) us = strstr(us + 2, "__");
+    if (nm) segs[n++] = us ? us + 2 : nm;
+  }
+  out[0] = 0;
+  const char *cref = nt_kind(nt, id) == NK_ConstantReadNode ? nt_str(nt, id, "const_cref") : NULL;
+  if (cref) {
+    /* the class the analysis found it written in; "" at the top level */
+    if (*cref) snprintf(out, cap, "%s::", cref);
+  }
+  else if (n == 1 && nt_kind(nt, id) != NK_ConstantPathNode) {
+    Scope *s = comp_scope_of(c, id);
+    int cls = s && s->class_id >= 0 ? s->class_id : g_class_body_id;
+    if (cls >= 0 && cls < c->nclasses && class_ruby_name(c, cls)) snprintf(out, cap, "%s::", class_ruby_name(c, cls));
+  }
+  for (int i = n - 1; i >= 0; i--) {
+    size_t l = strlen(out);
+    snprintf(out + l, cap - l, "%s%s", segs[i], i ? "::" : "");
+  }
+}
+/* The receiver of constant path node id when it is a value (a class held in
+   a variable, a call): -1 for a constant or no receiver. */
+static int const_value_recv(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  int par = nt_kind(nt, id) == NK_ConstantPathNode ? nt_ref(nt, id, "parent") : -1;
+  if (par < 0 || nt_kind(nt, par) == NK_ConstantReadNode || nt_kind(nt, par) == NK_ConstantPathNode) return -1;
+  return comp_ntype(c, par) == TY_CLASS || comp_ntype(c, par) == TY_POLY ? par : -1;
+}
+/* ... and one whose evaluation is more than a read (a call): the read then
+   evaluates it once, into a temp, and names the class in its error by that
+   value. A read receiver (a variable, self) is named where the error is raised. */
+static int const_recv_held(Compiler *c, int id) {
+  int par = const_value_recv(c, id);
+  return par >= 0 && !subtree_is_pure_read(c, par) ? par : -1;
+}
+static void emit_const_recv_class(Compiler *c, int par, Buf *b) {
+  if (comp_ntype(c, par) == TY_POLY) { buf_puts(b, "sp_unbox_class("); emit_boxed(c, par, b); buf_puts(b, ")"); }
+  else emit_expr(c, par, b);
+}
+void emit_const_check_open(Compiler *c, int id, const LocalVar *lv, Buf *b) {
+  if (!const_has_flag(lv)) return;
+  int par = const_value_recv(c, id);
+  if (par >= 0) {
+    const NodeTable *nt = c->nt;
+    const char *leaf = nt_str(nt, id, "name");
+    const char *us = leaf ? strstr(leaf, "__") : NULL;
+    while (us && strstr(us + 2, "__")) us = strstr(us + 2, "__");
+    int t = const_recv_held(c, id) >= 0 ? ++g_tmp : -1;
+    if (t >= 0) { buf_printf(b, "({ sp_Class _t%d = ", t); emit_const_recv_class(c, par, b); buf_puts(b, "; "); }
+    else buf_puts(b, "(");
+    buf_printf(b, "(cst_%s__set ? (void)0 : sp_raise_cls(\"NameError\", sp_sprintf(\"uninitialized constant %%s::%s\", %s(",
+               lv->name, us ? us + 2 : leaf, comp_class_display_fn(c));
+    if (t >= 0) buf_printf(b, "_t%d", t);
+    else emit_const_recv_class(c, par, b);
+    buf_puts(b, ")))), ");
+    return;
+  }
+  char nm[256];
+  const_read_name(c, id, nm, sizeof nm);
+  buf_printf(b, "((cst_%s__set ? (void)0 : sp_raise_cls(\"NameError\", \"uninitialized constant %s\")), ", lv->name, nm);
+}
+void emit_const_check_close(Compiler *c, int id, const LocalVar *lv, Buf *b) {
+  if (!const_has_flag(lv)) return;
+  buf_puts(b, const_recv_held(c, id) >= 0 ? "; })" : ")");
+}
+/* A call on a flagged constant read through a receiver that runs (`pick::BUF
+   << "y"`): the receiver and the flag test run once, into a pointer to the
+   slot, and the call reads and writes through it (the lowering of a String
+   mutator names its receiver twice). Declares the pointer in b and marks the
+   receiver node with its temp; the caller emits the call and unmarks. -1
+   when the call is no such one. */
+static int const_recv_hold(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int r = nt_kind(nt, id) == NK_CallNode ? nt_ref(nt, id, "receiver") : -1;
+  if (r < 0 || nt_kind(nt, r) != NK_ConstantPathNode || nt_int(nt, r, "const_ptr", 0)) return -1;
+  const char *nm = nt_str(nt, r, "name");
+  LocalVar *lv = nm ? comp_const(c, nm) : NULL;
+  if (!const_has_flag(lv) || const_recv_held(c, r) < 0) return -1;
+  int t = ++g_tmp;
+  emit_ctype(c, lv->type, b);
+  buf_printf(b, " *_p%d = ", t);
+  emit_constant_slot(c, r, b);
+  buf_puts(b, "; ");
+  nt_node_set_int((NodeTable *)nt, r, "const_ptr", t);
+  return r;
+}
+int emit_const_recv_wrap(Compiler *c, int id, Buf *b) {
+  Buf pre; memset(&pre, 0, sizeof pre);
+  int r = const_recv_hold(c, id, &pre);
+  if (r < 0) { free(pre.p); return 0; }
+  buf_puts(b, "({ "); buf_puts(b, pre.p ? pre.p : ""); free(pre.p);
+  emit_call(c, id, b);
+  nt_node_set_int((NodeTable *)c->nt, r, "const_ptr", 0);
+  buf_puts(b, "; })");
+  return 1;
+}
+/* The same for a call that is a statement: the pointer is held in a block of its own. */
+int emit_const_recv_stmt_wrap(Compiler *c, int id, Buf *b, int indent, int tail) {
+  Buf pre; memset(&pre, 0, sizeof pre);
+  int r = const_recv_hold(c, id, &pre);
+  if (r < 0) { free(pre.p); return 0; }
+  emit_indent(b, indent);
+  buf_puts(b, "{ "); buf_puts(b, pre.p ? pre.p : ""); buf_puts(b, "\n"); free(pre.p);
+  if (tail) emit_stmt_tail(c, id, b, indent + 1);
+  else emit_stmt(c, id, b, indent + 1);
+  nt_node_set_int((NodeTable *)c->nt, r, "const_ptr", 0);
+  emit_indent(b, indent);
+  buf_puts(b, "}\n");
+  return 1;
+}
+/* The plain read of a constant's slot, or its address: behind its test the
+   read stays an lvalue (a String mutator assigns to it), `*(test, &cst_NAME)`.
+   The text may be emitted again by a caller that repeats it (the holder's), so
+   asking it for no receiver (own 0) leaves a variable receiver unevaluated and
+   unnamed. */
+void emit_const_slot_read(Compiler *c, int id, const LocalVar *lv, const char *key, int slot, int own, Buf *b) {
+  if (!const_has_flag(lv)) { buf_printf(b, "%scst_%s", slot ? "&" : "", key); return; }
+  int again = !own && const_recv_held(c, id) >= 0;
+  if (again) {
+    /* the name alone: the receiver is not this text's to run */
+    buf_puts(b, slot ? "(" : "(*(");
+    buf_printf(b, "(cst_%s__set ? (void)0 : sp_raise_cls(\"NameError\", \"uninitialized constant %s\")), &cst_%s)",
+               lv->name, key, key);
+    buf_puts(b, slot ? "" : ")");
+    return;
+  }
+  buf_puts(b, slot ? "" : "(*");
+  emit_const_check_open(c, id, lv, b);
+  buf_printf(b, "&cst_%s", key);
+  emit_const_check_close(c, id, lv, b);
+  buf_puts(b, slot ? "" : ")");
 }
 /* native binding (Path B): map a spinel type spec to the C type at the ABI
    boundary. any -> the boxed value; string -> the runtime string; scalars

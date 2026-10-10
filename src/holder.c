@@ -157,9 +157,16 @@ int holder_slot_text(Compiler *c, const HolderRef *h, char *out, size_t cap) {
   case HK_GVAR:
     snprintf(out, cap, "gv_%s", h->lv->name);
     return 1;
-  case HK_CONST:
-    snprintf(out, cap, "cst_%s", h->lv->name);
+  case HK_CONST: {
+    /* a constant not assigned yet is a NameError at the read; the text stays an lvalue */
+    Buf rb; memset(&rb, 0, sizeof rb);
+    int cptr = (int)nt_int(c->nt, h->node, "const_ptr", 0);   /* its slot, held by emit_const_recv_wrap */
+    if (cptr) buf_printf(&rb, "(*_p%d)", cptr);
+    else emit_const_slot_read(c, h->node, h->lv, h->lv->name, 0, 0, &rb);
+    snprintf(out, cap, "%s", rb.p ? rb.p : "");
+    free(rb.p);
     return 1;
+  }
   case HK_CVAR:
     snprintf(out, cap, "cvar_%s_%s", c->classes[h->cid].name, h->name + 2);
     return 1;

@@ -112,6 +112,8 @@ int is_indexed_each(const char *n); /* each_index each_with_index */
 int is_to_array_alias(const char *n); /* entries to_a */
 int is_match_p_name(const char *n);   /* match? */
 int is_record_class_builder(const char *recv, const char *meth); /* Struct.new, Data.define */
+int is_class_builder(const char *recv, const char *meth); /* Struct.new, Data.define, Class.new, Module.new */
+int is_value_constructor(const char *recv, const char *meth); /* Hash.new, Array.new, String.new, Object.new */
 int is_array_new(const char *recv, const char *meth); /* Array.new */
 int is_array_class_name(const char *n); /* Array */
 int is_string_index(const char *n); /* index rindex */
@@ -214,6 +216,13 @@ int is_io_wait(const char *n); /* wait_priority wait_readable wait_writable */
 int is_match_family(const char *n); /* !~ =~ match match? */
 int is_integer_iteration(const char *n); /* downto step times upto */
 int is_visibility_or_module_function(const char *n); /* module_function private protected public */
+int is_mixin_call(const char *n); /* include extend prepend */
+int is_const_set_name(const char *n); /* const_set */
+int is_const_query_name(const char *n); /* const_get const_defined? const_source_location */
+int is_constants_list_name(const char *n); /* constants */
+int is_definition_hook_name(const char *n); /* inherited included extended prepended method_added singleton_method_added const_added */
+int is_const_missing_name(const char *n); /* const_missing */
+int is_const_table_def_name(const char *n); /* __const_get__ __const_defined__ */
 int is_string_position_mutator(const char *n); /* []= clear insert setbyte slice! */
 int is_array_push_family(const char *n); /* << append prepend push unshift */
 

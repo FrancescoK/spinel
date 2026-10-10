@@ -19299,11 +19299,12 @@ int subtree_is_pure_read(Compiler *c, int id) {
     /* a constant the program defines reads its static (`cst_NAME`, see
        emit_constant_expr), as an ivar or class variable read does; one read
        during its own Class.new init can raise, and any other spelling (a
-       class value, an engine constant, an undefined name) is left out */
+       class value, an engine constant, an undefined name) is left out, as is
+       one that raises while it is unset */
     case NK_ConstantReadNode: {
       const char *cn = nt_str(nt, id, "name");
       LocalVar *cv = cn ? comp_const(c, cn) : NULL;
-      return cv && cv->type != TY_UNKNOWN && !cv->init_guarded;
+      return cv && cv->type != TY_UNKNOWN && !cv->init_guarded && !const_has_flag(cv);
     }
     case NK_ParenthesesNode: case NK_StatementsNode:
       break;
@@ -23253,6 +23254,8 @@ void emit_call(Compiler *c, int id, Buf *b) {
   if (emit_hash_new_capacity_wrap(c, id, b, 0)) return;
   /* a copy of a value whose ivars live in the runtime's map */
   if (emit_bivar_copy_wrap(c, id, b)) return;
+  /* a flagged constant read through a receiver that runs: once, whatever the lowering does with it */
+  if (emit_const_recv_wrap(c, id, b)) return;
   int env_args = emit_env_args_before(c, id);
   emit_call_unwrapped(c, id, b);
   if (env_args >= 0) view_unbind(env_args);

@@ -391,6 +391,7 @@ int emit_call_reflection_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       if (cv && cv->type != TY_UNKNOWN && repr_of(c, argv[1]).as_ty == cv->type) {
         buf_printf(b, "(cst_%s = ", cs_qm);
         emit_expr(c, argv[1], b);
+        if (const_has_flag(cv)) buf_printf(b, ", cst_%s__set = 1", cs_qm);
         buf_printf(b, ", cst_%s)", cs_qm);
         return 1;
       }
@@ -429,7 +430,19 @@ int emit_call_reflection_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
     }
     if (cg_qm && !cg_own) {
       /* the value or the class of that leaf, as the typing chose */
-      if (const_get_takes_value(c, cg_rnm, cg_qm)) { buf_printf(b, "cst_%s", cg_qm); return 1; }
+      if (const_get_takes_value(c, cg_rnm, cg_qm)) {
+        LocalVar *cgv = comp_const(c, cg_qm);
+        if (const_has_flag(cgv)) {
+          /* a constant not assigned yet is a NameError, qualified by a named receiver as below */
+          int cgk = cg_rnm ? comp_class_index(c, cg_rnm) : -1;
+          const char *cgq = cgk >= 0 && !is_object_root(cg_rnm) ? class_ruby_name(c, cgk) : NULL;
+          buf_printf(b, "((cst_%s__set ? (void)0 : sp_raise_cls(\"NameError\", \"uninitialized constant %s%s%s\")), ",
+                     cg_qm, cgq ? cgq : "", cgq ? "::" : "", cg_qm);
+        }
+        buf_printf(b, "cst_%s", cg_qm);
+        if (const_has_flag(cgv)) buf_puts(b, ")");
+        return 1;
+      }
       /* A CLASS or module name: const_get answers the class object. The lookup
          above knows only VALUE constants, so `Object.const_get(:Foo)` on a
          class the program defines fell through to the NameError below (#3969). */
@@ -534,7 +547,9 @@ int emit_call_reflection_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
         const char *cd_rnm = nt_str(nt, recv, "name");
         if (cd_rnm && !const_owned_by_class(c, cd_rnm, qm)) yes = 0;
       }
-      buf_printf(b, "%d", yes);
+      /* a constant not assigned yet is not defined: asked at run time */
+      if (yes && const_has_flag(comp_const(c, qm))) buf_printf(b, "cst_%s__set", qm);
+      else buf_printf(b, "%d", yes);
       return 1;
     }
   }
@@ -2562,7 +2577,10 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
           return 1;
         }
         int yes = (comp_const(c, cn0) != NULL) || comp_class_index(c, cn0) >= 0 || comp_is_wellknown_const(cn0);
-        buf_printf(b, "((void)("); emit_expr(c, recv, b); buf_printf(b, "), %d)", yes);
+        buf_printf(b, "((void)("); emit_expr(c, recv, b);
+        /* a constant not assigned yet is not defined: asked at run time */
+        if (yes && const_has_flag(comp_const(c, cn0))) buf_printf(b, "), cst_%s__set)", cn0);
+        else buf_printf(b, "), %d)", yes);
         return 1;
       }
     }
@@ -2624,6 +2642,8 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
            program, so comp_sym_intern here would come too late for the
            generated name table and the symbol would render empty */
         for (int k = 0; k < n; k++) {
+          /* a constant not assigned yet is not listed */
+          if (const_has_flag(comp_const(c, names[k]))) buf_printf(b, " if (cst_%s__set)", names[k]);
           buf_printf(b, " sp_PolyArray_push(_t%d, sp_box_sym(sp_sym_intern(", ta);
           emit_str_literal(b, names[k]);
           buf_puts(b, ")));");

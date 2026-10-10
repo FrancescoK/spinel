@@ -1254,6 +1254,19 @@ static inline const char *isa_match_name(const NodeTable *nt, int arg, char *buf
 }
 const char *c_type_name(TyKind t);
 int is_scalar_ret(TyKind t);
+/* A constant whose slot has a presence flag, cst_NAME__set (LocalVar.const_early):
+   every assignment sets it (emit_const_flag_set) and the reads that see
+   whether the constant exists test it. */
+int const_has_flag(const LocalVar *lv);
+void emit_const_flag_set(const LocalVar *lv, const char *key, Buf *b, int indent);
+/* The test of a read of node id that raises NameError while the constant is
+   unset, as a `(test, ...)` prefix around the read: open before it, close
+   after. They emit nothing for a constant with no flag. */
+void emit_const_check_open(Compiler *c, int id, const LocalVar *lv, Buf *b);
+void emit_const_check_close(Compiler *c, int id, const LocalVar *lv, Buf *b);
+int emit_const_recv_wrap(Compiler *c, int id, Buf *b);
+int emit_const_recv_stmt_wrap(Compiler *c, int id, Buf *b, int indent, int tail);
+void emit_const_slot_read(Compiler *c, int id, const LocalVar *lv, const char *key, int slot, int own, Buf *b);
 const char *ffi_c_type(const char *spec);
 /* Map an FFI type spec string to the C type used in extern prototypes.
    Uses standard C types to avoid conflicting with system headers. */

@@ -17306,6 +17306,7 @@ char *codegen_program(const NodeTable *nt) {
     if (lv->type == TY_NIL) {
       buf_printf(&b, "static sp_int cst_%s = SP_INT_NIL;\n", lv->name);
       if (lv->init_guarded) buf_printf(&b, "static int sp_init_in_progress_%s;\n", lv->name);
+      if (const_has_flag(lv)) buf_printf(&b, "static int cst_%s__set;\n", lv->name);
       continue;
     }
     if (!is_scalar_ret(lv->type)) continue;
@@ -17317,6 +17318,7 @@ char *codegen_program(const NodeTable *nt) {
                lv->type == TY_FLOAT ? "SP_FLOAT_NIL_CONST" :   /* the constant spelling of the float sentinel */
                default_value(lv->type));
     if (lv->init_guarded) buf_printf(&b, "static int sp_init_in_progress_%s;\n", lv->name);
+    if (const_has_flag(lv)) buf_printf(&b, "static int cst_%s__set;\n", lv->name);
   }
   if (c->ngvars || c->nconsts) buf_puts(&b, "\n");
 

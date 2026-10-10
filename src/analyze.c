@@ -36715,6 +36715,7 @@ static void an_phase_desugar_register(Compiler *c) {
   rewrite_const_alias_receivers(c);
   reject_env_value_uses(c);
   register_ffi_decls(c);
+  an_const_presence(c);
 }
 
 /* Rescue-variable typing, class parents, inheritance and mixins, the block-aware marks, the synthesized enumeration helpers and the empty-literal marks (analyze_program's steps, in their order) */

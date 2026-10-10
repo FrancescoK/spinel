@@ -22,6 +22,19 @@ int is_record_class_builder(const char *recv, const char *meth) {
                           (sp_streq(recv, "Data") && sp_streq(meth, "define")));
 }
 
+/* Struct.new, Data.define, Class.new, Module.new: the builders of a class or a
+   module, whose block runs as its body */
+int is_class_builder(const char *recv, const char *meth) {
+  return is_record_class_builder(recv, meth) ||
+         (recv && meth && sp_streq(meth, "new") && (sp_streq(recv, "Class") || sp_streq(recv, "Module")));
+}
+
+/* Hash.new, Array.new, String.new, Object.new: a builtin's own constructor */
+int is_value_constructor(const char *recv, const char *meth) {
+  return recv && meth && sp_streq(meth, "new") &&
+         (sp_streq(recv, "Hash") || sp_streq(recv, "Array") || sp_streq(recv, "String") || sp_streq(recv, "Object"));
+}
+
 /* the Array class's own name, exactly */
 int is_array_class_name(const char *n) {
   return n && sp_streq(n, "Array");
@@ -445,6 +458,40 @@ int is_attr_writer_family(const char *n) {
 
 int is_visibility_or_module_function(const char *n) {
   return sp_streq(n, "private") || sp_streq(n, "protected") || sp_streq(n, "public") || sp_streq(n, "module_function");
+}
+
+int is_mixin_call(const char *n) {
+  return sp_streq(n, "include") || sp_streq(n, "extend") || sp_streq(n, "prepend");
+}
+
+int is_const_set_name(const char *n) {
+  return sp_streq(n, "const_set");
+}
+
+int is_const_query_name(const char *n) {
+  return sp_streq(n, "const_get") || sp_streq(n, "const_defined?") || sp_streq(n, "const_source_location");
+}
+
+int is_constants_list_name(const char *n) {
+  return sp_streq(n, "constants");
+}
+
+/* the methods a definition runs when the program defines them: inherited
+   (class), included, extended, prepended, method_added and its singleton
+   kin, const_added */
+int is_definition_hook_name(const char *n) {
+  return sp_streq(n, "inherited") || sp_streq(n, "included") || sp_streq(n, "extended") ||
+         sp_streq(n, "prepended") || sp_streq(n, "method_added") ||
+         sp_streq(n, "singleton_method_added") || sp_streq(n, "const_added");
+}
+
+int is_const_missing_name(const char *n) {
+  return sp_streq(n, "const_missing");
+}
+
+/* the tables a const_get or const_defined? with a computed name becomes */
+int is_const_table_def_name(const char *n) {
+  return n && (sp_streq(n, "__const_get__") || sp_streq(n, "__const_defined__"));
 }
 
 /* Kernel#dup and #clone, which copy any object with its ivars */
