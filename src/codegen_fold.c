@@ -9353,6 +9353,21 @@ int subtree_reads_local(const NodeTable *nt, int id, const char *name) {
    method whose default reads an earlier parameter: into `_pd<uid>_<i>`, and
    renamed to it, AFTER the binding, so only a later default reads it. What
    the call passes for it goes to `name`. */
+/* Does subtree n set up a rescue (a begin with a rescue or an ensure, a
+   modifier rescue), whose setjmp a local written in it has to survive? */
+static int pd_subtree_rescues(const NodeTable *nt, int n, int depth) {
+  if (n < 0 || depth > 64) return 0;
+  NodeKind k = nt_kind(nt, n);
+  if (k == NK_RescueModifierNode) return 1;
+  if (k == NK_BeginNode && (nt_ref(nt, n, "rescue_clause") >= 0 || nt_ref(nt, n, "ensure_clause") >= 0)) return 1;
+  for (int i = 0; i < nt_num_refs(nt, n); i++)
+    if (pd_subtree_rescues(nt, nt_ref_at(nt, n, i), depth + 1)) return 1;
+  for (int i = 0; i < nt_num_arrs(nt, n); i++) {
+    int cnt = 0; const int *ids = nt_arr_at(nt, n, i, &cnt);
+    for (int j = 0; j < cnt; j++) if (pd_subtree_rescues(nt, ids[j], depth + 1)) return 1;
+  }
+  return 0;
+}
 void emit_pd_param_bind(Compiler *c, Scope *m, int i, int uid, const char *val, char *name, size_t cap) {
   LocalVar *plv = m->pnames[i] ? scope_local(m, m->pnames[i]) : NULL;
   TyKind pt = plv ? plv->type : TY_POLY;
@@ -9374,7 +9389,14 @@ void emit_pd_param_bind(Compiler *c, Scope *m, int i, int uid, const char *val, 
     buf_printf(g_pre, "%s *_cell_%s = %s;\n", borrowed_string_type(plv), uniq, val ? val : "NULL");
   }
   else {
-    emit_ctype(c, pt, g_pre);
+    /* a later default with a rescue writes this temp under its setjmp
+       (`v = begin n += 1; ...; rescue; retry; end`): a plain local reads
+       back its value from before the raise, and the retry never ends
+       (#8320) */
+    int vol = 0;
+    for (int j = i + 1; j < m->nparams && !vol; j++)
+      vol = m->pdefault && pd_subtree_rescues(c->nt, m->pdefault[j], 0);
+    emit_local_ctype(c, pt, vol, g_pre);
     buf_printf(g_pre, " lv_%s = %s;\n", uniq, val ? val : default_value_from_compiler(c, pt));
     if (needs_root(pt)) {
       emit_indent(g_pre, g_indent);

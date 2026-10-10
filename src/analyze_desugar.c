@@ -14532,6 +14532,14 @@ int desugar_param_default_assigns_local(Compiler *c) {
       BsB b = { nt, 1 };
       long long line = nt_int(nt, ps[i], "node_line", 0);
       for (int k = 0; k < nn && npro < 60; k++) {
+        /* a parameter the default writes (`v = (n += 1)`) is bound already:
+           declaring it nil threw away the argument (#8320) */
+        int is_param = 0;
+        for (int j = 0; j < np && !is_param; j++) {
+          const char *pj = nt_str(nt, ps[j], "name");
+          is_param = pj && sp_streq(pj, names[k]);
+        }
+        if (is_param) continue;
         int w = bs_write(&b, names[k], bs_new(&b, "NilNode"));
         if (w >= 0) nt_node_set_int(nt, w, "node_line", line);
         pro[npro++] = w;

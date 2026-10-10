@@ -7308,7 +7308,7 @@ int inlined_local_needs_volatile(Compiler *c, LocalVar *lv) {
 
 /* The C type of a local declared outside emit_scope_decls (an inlined
    method's, a proc body's own parameter), volatile when `vol`. */
-static void emit_local_ctype(Compiler *c, TyKind ty, int vol, Buf *b) {
+void emit_local_ctype(Compiler *c, TyKind ty, int vol, Buf *b) {
   if (!vol) { emit_ctype(c, ty, b); return; }
   Buf ct; memset(&ct, 0, sizeof ct);
   emit_ctype(c, ty, &ct);
