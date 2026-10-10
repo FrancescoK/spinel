@@ -8141,10 +8141,14 @@ static int fwd_rest_callee_pass(Compiler *c, int wait) {
       if (sh == FWD_BUILTIN) {
         int arity = fwd_fixed_call_arity(nt, dname);
         int via = cn && (sp_streq(cn, "__send__") || sp_streq(cn, "send") ||
-                         sp_streq(cn, "public_send") || sp_streq(cn, "call"));
+                         sp_streq(cn, "public_send") || sp_streq(cn, "call") ||
+                         /* hands whatever it is given to its block */
+                         sp_streq(cn, "instance_exec"));
         if (arity < 0 && via) {
           /* A callee that takes anything and sorts it out itself -- a proc's
-             `.call`, a `__send__` (the deprecation proxy's method_missing) --
+             `.call`, a `__send__` (the deprecation proxy's method_missing),
+             an instance_exec handing it to its block (activerecord's
+             Relation#_exec_scope) --
              whose callers disagree on their count or do not exist: it has no
              parameter list to read the channels from, so they are the ones
              this method's callers use, forwarded anonymously (the positional
