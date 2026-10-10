@@ -23,4 +23,4 @@ share-check: copy: ?:0 node 83 CallNode (chop!): boxed as bytes by sp_box_str (b
 share-check: copy: ?:0 node 87 CallNode (clear): boxed as bytes by sp_box_str (sp_String_cstr)
 share-check: copy: ?:0 node 91 CallNode (concat): boxed as bytes by sp_box_str (bytes face)
 share-check: copy: test/share_check/send_arms.rb:8 node 13 LocalVariableReadNode (s): boxed as bytes by sp_box_str (sp_strbuf_read_pub)
-share-check: 160 marks, 15 declared, 25 copies
+share-check: 159 marks, 15 declared, 25 copies
