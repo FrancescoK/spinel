@@ -156,6 +156,25 @@
 # define SP_CPU_RELAX() ((void)0)
 #endif
 
+/* ---- instruction-set extensions ----
+   A function compiled for instructions the rest of the build does not assume
+   carries the target attribute, and its caller asks the CPU before calling
+   it. Where the macro is 0 the function is not compiled and the caller keeps
+   its portable C; SP_PORTABLE takes that side everywhere. */
+
+/* The x86-64 SHA extensions, with the SSSE3 and SSE4.1 their block function
+   shuffles and blends with. <immintrin.h> has the intrinsics, <cpuid.h> the
+   question. */
+#if !defined(SP_PORTABLE) && defined(__x86_64__) && SP_HAS_ATTRIBUTE(target) && defined(__has_include)
+# if __has_include(<immintrin.h>) && __has_include(<cpuid.h>)
+#  define SP_HAVE_X86_SHA 1
+#  define SP_TARGET_X86_SHA __attribute__((target("sha,sse4.1")))
+# endif
+#endif
+#if !defined(SP_HAVE_X86_SHA)
+# define SP_HAVE_X86_SHA 0
+#endif
+
 /* ---- attributes with a meaning: no silent fallback ---- */
 
 /* Run before main. There is no standard spelling; a compiler without it

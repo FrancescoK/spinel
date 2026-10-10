@@ -10,7 +10,9 @@
  * ---------------
  * - SHA-256: compact public-domain implementation; the canonical
  *   FIPS-180-4 reference (Wikipedia pseudocode + Go's crypto/sha256
- *   match this byte-for-byte on the standard test vectors).
+ *   match this byte-for-byte on the standard test vectors). An x86-64
+ *   CPU with the SHA extensions runs the same compression on them, asked
+ *   at run time; every other CPU and build runs the C.
  * - HMAC-SHA256: RFC 2104 / RFC 4231 on top of the SHA-256 above.
  * - PBKDF2-HMAC-SHA256: RFC 8018, dkLen fixed at 32 (one block).
  * - Base64URL: RFC 4648 §5 (URL/filename-safe alphabet), no padding.
@@ -45,6 +47,10 @@
 #if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
 #  include <stdlib.h>  /* arc4random_buf */
 #endif
+#if SP_HAVE_X86_SHA
+#include <immintrin.h>    /* SHA-256 on the x86 SHA extensions */
+#include <cpuid.h>        /* ... where the CPU says it has them */
+#endif
 
 /* ---------- SHA-256 ----------
  * FIPS-180-4. Compact reference implementation -- public domain.
@@ -69,7 +75,10 @@ static const uint32_t sp_crypto_sha256_k[64] = {
 #define SPC_CH(x,y,z)  (((x) & (y)) ^ (~(x) & (z)))
 #define SPC_MAJ(x,y,z) (((x) & (y)) ^ ((x) & (z)) ^ ((y) & (z)))
 
-static void sp_crypto_sha256_block(uint32_t H[8], const uint8_t b[64]) {
+/* One block in portable C. Kept a function of its own: where the CPU lacks
+ * the SHA extensions below, a build runs this as it did before they were
+ * here, behind one test a call. */
+static SP_NOINLINE void sp_crypto_sha256_block(uint32_t H[8], const uint8_t b[64]) {
     uint32_t w[64], sa, sb, sc, sd, se, sf, sg, sh, t1, t2;
     int i;
     for (i = 0; i < 16; i++) {
@@ -90,6 +99,102 @@ static void sp_crypto_sha256_block(uint32_t H[8], const uint8_t b[64]) {
     H[4]+=se; H[5]+=sf; H[6]+=sg; H[7]+=sh;
 }
 
+#if SP_HAVE_X86_SHA
+/* The same compression on the x86 SHA extensions (FIPS-180-4 unchanged: one
+ * instruction runs two rounds, two more extend the message schedule). The
+ * state is kept as the two halves the round instruction takes, ABEF and
+ * CDGH, and the schedule as four registers of four words. */
+
+/* Four rounds: words w plus their four constants, two rounds a half. */
+SP_TARGET_X86_SHA static SP_INLINE void sp_crypto_sha256_ni_rounds(__m128i *abef, __m128i *cdgh, __m128i w, int i) {
+    __m128i k = _mm_add_epi32(w, _mm_loadu_si128((const __m128i *)&sp_crypto_sha256_k[4 * i]));
+    *cdgh = _mm_sha256rnds2_epu32(*cdgh, *abef, k);
+    *abef = _mm_sha256rnds2_epu32(*abef, *cdgh, _mm_shuffle_epi32(k, 0x0E));
+}
+
+/* The next four schedule words from the sixteen before them, oldest first. */
+SP_TARGET_X86_SHA static SP_INLINE __m128i sp_crypto_sha256_ni_next(__m128i w4, __m128i w3, __m128i w2, __m128i w1) {
+    __m128i w = _mm_add_epi32(_mm_sha256msg1_epu32(w4, w3), _mm_alignr_epi8(w1, w2, 4));
+    return _mm_sha256msg2_epu32(w, w1);
+}
+
+/* n blocks at p into H. The state stays in its two registers from the first
+ * block to the last. */
+SP_TARGET_X86_SHA static void sp_crypto_sha256_blocks_ni(uint32_t H[8], const uint8_t *p, size_t n) {
+    const __m128i be = _mm_set_epi64x(0x0c0d0e0f08090a0bLL, 0x0405060700010203LL);  /* big-endian words */
+    __m128i t = _mm_shuffle_epi32(_mm_loadu_si128((const __m128i *)&H[0]), 0xB1);     /* CDAB */
+    __m128i cdgh = _mm_shuffle_epi32(_mm_loadu_si128((const __m128i *)&H[4]), 0x1B);  /* EFGH */
+    __m128i abef = _mm_alignr_epi8(t, cdgh, 8);
+    cdgh = _mm_blend_epi16(cdgh, t, 0xF0);
+    for (; n > 0; n--, p += 64) {
+        __m128i abef0 = abef, cdgh0 = cdgh;
+        __m128i w0 = _mm_shuffle_epi8(_mm_loadu_si128((const __m128i *)p), be);
+        __m128i w1 = _mm_shuffle_epi8(_mm_loadu_si128((const __m128i *)(p + 16)), be);
+        __m128i w2 = _mm_shuffle_epi8(_mm_loadu_si128((const __m128i *)(p + 32)), be);
+        __m128i w3 = _mm_shuffle_epi8(_mm_loadu_si128((const __m128i *)(p + 48)), be);
+        sp_crypto_sha256_ni_rounds(&abef, &cdgh, w0, 0);
+        sp_crypto_sha256_ni_rounds(&abef, &cdgh, w1, 1);
+        sp_crypto_sha256_ni_rounds(&abef, &cdgh, w2, 2);
+        sp_crypto_sha256_ni_rounds(&abef, &cdgh, w3, 3);
+        for (int i = 4; i < 16; i += 4) {
+            w0 = sp_crypto_sha256_ni_next(w0, w1, w2, w3);
+            sp_crypto_sha256_ni_rounds(&abef, &cdgh, w0, i);
+            w1 = sp_crypto_sha256_ni_next(w1, w2, w3, w0);
+            sp_crypto_sha256_ni_rounds(&abef, &cdgh, w1, i + 1);
+            w2 = sp_crypto_sha256_ni_next(w2, w3, w0, w1);
+            sp_crypto_sha256_ni_rounds(&abef, &cdgh, w2, i + 2);
+            w3 = sp_crypto_sha256_ni_next(w3, w0, w1, w2);
+            sp_crypto_sha256_ni_rounds(&abef, &cdgh, w3, i + 3);
+        }
+        abef = _mm_add_epi32(abef, abef0);
+        cdgh = _mm_add_epi32(cdgh, cdgh0);
+    }
+    t = _mm_shuffle_epi32(abef, 0x1B);        /* FEBA */
+    cdgh = _mm_shuffle_epi32(cdgh, 0xB1);     /* DCHG */
+    _mm_storeu_si128((__m128i *)&H[0], _mm_blend_epi16(t, cdgh, 0xF0));
+    _mm_storeu_si128((__m128i *)&H[4], _mm_alignr_epi8(cdgh, t, 8));
+}
+
+/* Whether this CPU has the SHA extensions, and the SSSE3 and SSE4.1 the
+ * function above is compiled with: CPUID leaf 7 EBX bit 29, leaf 1 ECX bits
+ * 9 and 19. They use the SSE registers, which every x86-64 system saves, so
+ * there is no operating-system side to ask. */
+static SP_NOINLINE SP_COLD int sp_crypto_sha256_ni_probe(void) {
+    unsigned int a, b, c, d;
+    if (__get_cpuid_max(0, 0) < 7) return 0;
+    __cpuid(1, a, b, c, d);
+    if ((c & (1u << 9)) == 0 || (c & (1u << 19)) == 0) return 0;
+    __cpuid_count(7, 0, a, b, c, d);
+    return (int)((b >> 29) & 1);
+}
+
+/* The answer, asked once a process: 0 not asked yet, 1 yes, -1 no. */
+static int sp_crypto_sha256_ni_state;
+
+/* Whether to take the function above. Threads that ask at the same moment
+ * store the same value. */
+static SP_INLINE int sp_crypto_sha256_ni(void) {
+    int s = SP_ATOMIC_LOAD(&sp_crypto_sha256_ni_state, __ATOMIC_RELAXED);
+    if (SP_UNLIKELY(s == 0)) {
+        s = sp_crypto_sha256_ni_probe() ? 1 : -1;
+        SP_ATOMIC_STORE(&sp_crypto_sha256_ni_state, s, __ATOMIC_RELAXED);
+    }
+    return s > 0;
+}
+#endif
+
+/* n whole blocks at p into H: on the SHA extensions where the CPU has them,
+ * by the C above everywhere else. */
+static void sp_crypto_sha256_blocks(uint32_t H[8], const uint8_t *p, size_t n) {
+#if SP_HAVE_X86_SHA
+    if (sp_crypto_sha256_ni()) {
+        sp_crypto_sha256_blocks_ni(H, p, n);
+        return;
+    }
+#endif
+    for (; n > 0; n--, p += 64) sp_crypto_sha256_block(H, p);
+}
+
 static void sp_crypto_store_be32(uint8_t *out, const uint32_t *H, int n) {
     for (int i = 0; i < n; i++) {
         out[i*4]   = (uint8_t)(H[i] >> 24);
@@ -99,6 +204,8 @@ static void sp_crypto_store_be32(uint8_t *out, const uint32_t *H, int n) {
     }
 }
 
+/* SHA-256 of len bytes: the whole blocks straight from msg, then the padded
+ * tail (one block, or two when the length field does not fit beside it). */
 static void sp_crypto_sha256(const uint8_t *msg, size_t len, uint8_t out[32]) {
     uint32_t H[8] = {
         0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,
@@ -106,13 +213,13 @@ static void sp_crypto_sha256(const uint8_t *msg, size_t len, uint8_t out[32]) {
     };
     uint8_t buf[64];
     size_t i, full = len & ~((size_t)63);
-    for (i = 0; i < full; i += 64) sp_crypto_sha256_block(H, msg + i);
+    if (full) sp_crypto_sha256_blocks(H, msg, full / 64);
     size_t rem = len - full;
     for (i = 0; i < rem; i++) buf[i] = msg[full + i];
     buf[rem] = 0x80;
     if (rem >= 56) {
         for (i = rem + 1; i < 64; i++) buf[i] = 0;
-        sp_crypto_sha256_block(H, buf);
+        sp_crypto_sha256_blocks(H, buf, 1);
         for (i = 0; i < 56; i++) buf[i] = 0;
     }
 else {
@@ -120,7 +227,7 @@ else {
     }
     uint64_t bits = (uint64_t)len * 8;
     for (i = 0; i < 8; i++) buf[56 + i] = (uint8_t)(bits >> (56 - 8*i));
-    sp_crypto_sha256_block(H, buf);
+    sp_crypto_sha256_blocks(H, buf, 1);
     sp_crypto_store_be32(out, H, 8);
 }
 
@@ -414,6 +521,8 @@ const char *sp_crypto_sha256_b64(const char *msg) {SP_GC_ROOT_STR(msg);
 
 /* ---------- HMAC-SHA256 (RFC 2104) ---------- */
 
+/* HMAC-SHA256 of msg under key: the inner hash over the padded key and the
+ * message, the outer one over the padded key and that digest. */
 static void sp_crypto_hmac_sha256(const uint8_t *key, size_t klen,
                                   const uint8_t *msg, size_t mlen,
                                   uint8_t out[32]) {
@@ -438,16 +547,16 @@ else {
             0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,
             0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19
         };
-        sp_crypto_sha256_block(H, ipad);
+        sp_crypto_sha256_blocks(H, ipad, 1);
         uint8_t buf[64];
         size_t full = mlen & ~((size_t)63);
-        for (i = 0; i < full; i += 64) sp_crypto_sha256_block(H, msg + i);
+        if (full) sp_crypto_sha256_blocks(H, msg, full / 64);
         size_t rem = mlen - full;
         for (i = 0; i < rem; i++) buf[i] = msg[full + i];
         buf[rem] = 0x80;
         if (rem >= 56) {
             for (i = rem + 1; i < 64; i++) buf[i] = 0;
-            sp_crypto_sha256_block(H, buf);
+            sp_crypto_sha256_blocks(H, buf, 1);
             for (i = 0; i < 56; i++) buf[i] = 0;
         }
 else {
@@ -455,7 +564,7 @@ else {
         }
         uint64_t bits = (uint64_t)(64 + mlen) * 8;
         for (i = 0; i < 8; i++) buf[56 + i] = (uint8_t)(bits >> (56 - 8*i));
-        sp_crypto_sha256_block(H, buf);
+        sp_crypto_sha256_blocks(H, buf, 1);
         for (i = 0; i < 8; i++) {
             inner[i*4]   = (uint8_t)(H[i] >> 24);
             inner[i*4+1] = (uint8_t)(H[i] >> 16);
@@ -469,14 +578,14 @@ else {
             0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,
             0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19
         };
-        sp_crypto_sha256_block(H, opad);
+        sp_crypto_sha256_blocks(H, opad, 1);
         uint8_t buf[64];
         for (i = 0; i < 32; i++) buf[i] = inner[i];
         buf[32] = 0x80;
         for (i = 33; i < 56; i++) buf[i] = 0;
         uint64_t bits = (uint64_t)(64 + 32) * 8;
         for (i = 0; i < 8; i++) buf[56 + i] = (uint8_t)(bits >> (56 - 8*i));
-        sp_crypto_sha256_block(H, buf);
+        sp_crypto_sha256_blocks(H, buf, 1);
         sp_crypto_store_be32(out, H, 8);
     }
 }
