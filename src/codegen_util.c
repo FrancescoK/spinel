@@ -5836,9 +5836,16 @@ int ty_gc_holds_refs(Compiler *c, TyKind t) {
 /* Root a temp of a kind ty_gc_holds_refs answers: as emit_gc_root_tmp, or
    each String a by-value kind carries, the way declare_local_named roots
    a local of that kind. */
+/* The roots a String Range by value adds, built --share-strings, beyond its
+   two endpoint strings: the handles it keeps (#8321). `ref` is the struct. */
+void emit_srange_handle_roots(Compiler *c, const char *ref, Buf *b) {
+  if (repr_share_rule(c)) buf_printf(b, " SP_GC_ROOT(%s.hf); SP_GC_ROOT(%s.hl);", ref, ref);
+}
 void emit_gc_root_tmp_refs(Compiler *c, TyKind t, int tmp, Buf *b) {
   if (t == TY_STR_RANGE) {
     buf_printf(b, "SP_GC_ROOT_STR(_t%d.first); SP_GC_ROOT_STR(_t%d.last);", tmp, tmp);
+    char ref[32]; snprintf(ref, sizeof ref, "_t%d", tmp);
+    emit_srange_handle_roots(c, ref, b);
     return;
   }
   if (!comp_ty_value_obj(c, t)) { emit_gc_root_tmp(c, t, tmp, b); return; }

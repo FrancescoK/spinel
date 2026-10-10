@@ -221,6 +221,7 @@ int exc_msg_handle(Compiler *c, int arg, char *href, size_t cap);
 /* --share-strings: `e.message` over a variable's exception (codegen_stmt.c) */
 int strbuf_exc_message_of_var(Compiler *c, int v);
 int strbuf_route_exc_message(Compiler *c, int v);
+int strbuf_route_srange_end(Compiler *c, int v);
 /* A `next` value a block's boxed answer slot takes: a shared String as its
    handle's box under --share-strings (codegen_stmt.c) */
 void emit_boxed_next_value(Compiler *c, int v, Buf *b);
@@ -2103,6 +2104,7 @@ void emit_gc_root_var(Compiler *c, TyKind t, const char *name, Buf *b);
 void emit_gc_root_tmp(Compiler *c, TyKind t, int tmp, Buf *b);
 int ty_gc_holds_refs(Compiler *c, TyKind t);
 void emit_gc_root_tmp_refs(Compiler *c, TyKind t, int tmp, Buf *b);
+void emit_srange_handle_roots(Compiler *c, const char *ref, Buf *b);
 /* `_t<tmp>` when the node was already evaluated into that temp, else the node */
 void emit_node_or_tmp(Compiler *c, int node, int tmp, Buf *b);
 /* the key of a hash store, as the kind's set takes it (codegen_stmt.c) */

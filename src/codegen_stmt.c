@@ -1647,6 +1647,21 @@ int strbuf_route_exc_message(Compiler *c, int v) {
          comp_method_in_chain(c, ty_object_class(rt), "to_s", NULL) < 0 &&
          comp_method_in_chain(c, ty_object_class(rt), "message", NULL) < 0;
 }
+/* --share-strings: a String Range's begin / first (1) or end / last (2),
+   with no argument and no override of the program's own: the endpoint's
+   String, which the Range keeps as a handle when it is shared (#8321) */
+int strbuf_route_srange_end(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  v = unwrap_parens(c, v);
+  if (!repr_share_rule(c) || v < 0 || nt_kind(nt, v) != NK_CallNode) return 0;
+  const char *nm = nt_str(nt, v, "name");
+  int recv = nt_ref(nt, v, "receiver");
+  if (!nm || recv < 0 || nt_ref(nt, v, "arguments") >= 0 || nt_ref(nt, v, "block") >= 0 ||
+      comp_ntype(c, recv) != TY_STR_RANGE || cplan_user(c, v)->dispatch != CP_NONE) return 0;
+  if (sp_streq(nm, "begin") || sp_streq(nm, "first")) return 1;
+  if (sp_streq(nm, "end") || sp_streq(nm, "last")) return 2;
+  return 0;
+}
 /* --share-strings: `e.message` (strbuf_route_exc_message) on a variable's
    exception: its handle reads that variable and runs nothing else, so it
    may be emitted beside a text that already read it */
@@ -1710,7 +1725,7 @@ static int strbuf_route_carries(Compiler *c, int v, int depth) {
   if (strbuf_hash_default_arg(c, v) >= 0) return 1;
   if (strbuf_route_proc_call(c, v) || strbuf_route_ivar_get(c, v) || strbuf_route_begin(c, v) || strbuf_route_yield(c, v) ||
       strbuf_route_inline_call(c, v) || strbuf_route_loop(c, v) || repr_call_returns_handle(c, v) ||
-      strbuf_route_exc_message(c, v) || strbuf_route_reader(c, v)) return 1;
+      strbuf_route_exc_message(c, v) || strbuf_route_reader(c, v) || strbuf_route_srange_end(c, v)) return 1;
   int x = strbuf_route_operand(c, v);
   if (x == unwrap_parens(c, v)) return 1;
   if (x >= 0 && repr_of(c, x).kind == RK_BOXED) return 1;
@@ -1781,6 +1796,17 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
     buf_puts(b, "sp_exc_message_handle((sp_Exception *)(");
     emit_expr(c, nt_ref(nt, v, "receiver"), b);
     buf_puts(b, "))");
+    return 1;
+  }
+  int se = strbuf_route_srange_end(c, v);
+  if (se) {
+    /* the handle the Range keeps, or a new one for an endpoint it does not */
+    v = unwrap_parens(c, v);
+    int t = ++g_tmp;
+    const char *h = se == 1 ? "hf" : "hl", *e = se == 1 ? "first" : "last";
+    buf_printf(b, "({ sp_StrRange _t%d = ", t);
+    emit_expr(c, nt_ref(nt, v, "receiver"), b);
+    buf_printf(b, "; _t%d.%s ? (sp_String *)_t%d.%s : sp_String_new_shared(_t%d.%s); })", t, h, t, h, t, e);
     return 1;
   }
   if (strbuf_route_proc_call(c, v)) {
@@ -18399,7 +18425,7 @@ static int strbuf_flow_route(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, in
     return 1;
   }
   if (strbuf_route_proc_call(c, v) || strbuf_route_ivar_get(c, v) || repr_call_returns_handle(c, v) ||
-      strbuf_route_exc_message(c, v) || strbuf_route_reader(c, v))
+      strbuf_route_exc_message(c, v) || strbuf_route_reader(c, v) || strbuf_route_srange_end(c, v))
     return 1;
   if (nt_kind(nt, v) == NK_BeginNode) return strbuf_flow_begin(c, fm, v, depth);
   if (strbuf_route_inline_call(c, v)) {
@@ -18615,7 +18641,7 @@ static int strbuf_flow_value(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, in
     return strbuf_flow_route(c, fm, SFC_ALIAS, v, depth);
   if (ctx == SFC_TAIL)
     return (k == NK_BeginNode && strbuf_flow_begin(c, fm, v, depth)) || repr_call_returns_handle(c, v) ||
-           strbuf_route_exc_message(c, v) ||
+           strbuf_route_exc_message(c, v) || strbuf_route_srange_end(c, v) ||
            (is_unary_plus(nt_str(nt, v, "name")) && strbuf_flow_route(c, fm, ctx, v, depth));
   /* an append chain over a variable's handle, boxed as that handle; a
      mutator on a narrowed box, which answers the box */

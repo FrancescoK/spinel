@@ -2318,6 +2318,10 @@ void declare_local_named(Compiler *c, Buf *b, LocalVar *lv, const char *name, in
   else if (t == TY_STR_RANGE) {
     buf_printf(b, "    SP_GC_ROOT_STR(lv_%s.first);\n", name);
     buf_printf(b, "    SP_GC_ROOT_STR(lv_%s.last);\n", name);
+    if (repr_share_rule(c)) {
+      buf_printf(b, "    SP_GC_ROOT(lv_%s.hf);\n", name);
+      buf_printf(b, "    SP_GC_ROOT(lv_%s.hl);\n", name);
+    }
   }
   /* A String slot takes the STRING root form, not the object one. Both reach
      an ordinary heap string, but a mutable String's PAYLOAD (marker 0xfd) is
@@ -2750,6 +2754,10 @@ void emit_scope_decls_ends(Compiler *c, Scope *s, Buf *b, size_t *ends) {
       case TY_STR_RANGE:   /* two GC strings by value; see emit_local_decl */
         buf_printf(b, "    SP_GC_ROOT_STR(lv_%s.first);\n", lv->name);
         buf_printf(b, "    SP_GC_ROOT_STR(lv_%s.last);\n", lv->name);
+        if (repr_share_rule(c)) {
+          buf_printf(b, "    SP_GC_ROOT(lv_%s.hf);\n", lv->name);
+          buf_printf(b, "    SP_GC_ROOT(lv_%s.hl);\n", lv->name);
+        }
         break;
       case TY_STRING: buf_printf(b, "    SP_GC_ROOT_STR(lv_%s);\n", lv->name); break;   /* see emit_local_decl */
       default:
@@ -7332,7 +7340,10 @@ void emit_inlined_local_decl(Compiler *c, LocalVar *lv, const char *rn, Buf *b, 
     }
     /* two GC strings by value; see emit_local_decl */
     else if (lv->type == TY_STR_RANGE) {
-      emit_indent(b, din); buf_printf(b, "SP_GC_ROOT_STR(lv_%s.first); SP_GC_ROOT_STR(lv_%s.last);\n", rn, rn);
+      emit_indent(b, din); buf_printf(b, "SP_GC_ROOT_STR(lv_%s.first); SP_GC_ROOT_STR(lv_%s.last);", rn, rn);
+      char ref[160]; snprintf(ref, sizeof ref, "lv_%s", rn);
+      emit_srange_handle_roots(c, ref, b);
+      buf_puts(b, "\n");
     }
     return;
   }
@@ -9311,6 +9322,7 @@ void emit_class_scan(Compiler *c, ClassInfo *ci, Buf *b) {
     case TY_STR_RANGE:
       buf_printf(b, "  sp_mark_string(o->iv_%s.first);\n", iv);
       buf_printf(b, "  sp_mark_string(o->iv_%s.last);\n", iv);
+      if (repr_share_rule(c)) buf_printf(b, "  sp_gc_mark(o->iv_%s.hf);\n  sp_gc_mark(o->iv_%s.hl);\n", iv, iv);
       break;
     default:
       if (needs_root(t))

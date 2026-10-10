@@ -1441,6 +1441,13 @@ static int emit_next_expr(Compiler *c, int id, Buf *b) {
    argument sits deeper than the call that takes the argument. */
 int g_expr_depth = 0;
 
+/* Is node id a read of a variable or a constant (what holds a String Range
+   by value)? */
+static int srange_var_read(const NodeTable *nt, int id) {
+  NodeKind k = nt_kind(nt, id);
+  return k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode || k == NK_GlobalVariableReadNode ||
+         k == NK_ClassVariableReadNode || k == NK_ConstantReadNode || k == NK_ConstantPathNode;
+}
 void emit_expr(Compiler *c, int id, Buf *b) {
   if (b == g_pre && g_pre) { emit_into_pre_line(c, emit_expr, id); return; }
   /* an argument of a call re-emitted as its builtin sees the reopenings */
@@ -1461,6 +1468,13 @@ void emit_expr(Compiler *c, int id, Buf *b) {
     buf_printf(b, "((%s)(", c_type_name(comp_ntype(c, id)));
     emit_expr_node(c, id, b);
     buf_puts(b, "))");
+  }
+  /* --share-strings: a String Range a variable holds reads its endpoints'
+     handles as they are now (#8321) */
+  else if (repr_share_rule(c) && comp_ntype(c, id) == TY_STR_RANGE && srange_var_read(c->nt, id)) {
+    buf_puts(b, "sp_srange_live(");
+    emit_expr_node(c, id, b);
+    buf_puts(b, ")");
   }
   else emit_expr_node(c, id, b);
   g_expr_depth--;
@@ -4092,6 +4106,27 @@ static int emit_range_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, con
                   !subtree_writes_local(c, left, rn) && !subtree_may_run_proc(c, left);
       if (!lran && !lcon && !lkept && (rrun || (lmk && rmk))) lt = ++g_tmp;
       if (!rran && !rcon && !rkept && (lrun || (lmk && rmk))) rt = ++g_tmp;
+    }
+    /* --share-strings: an endpoint the rule shares is kept as its handle,
+       and its bytes are read from it (#8321) */
+    int lsh = repr_share_rule(c) && left >= 0 && share_node_shares(c, left);
+    int rsh = repr_share_rule(c) && right >= 0 && share_node_shares(c, right);
+    if (lsh || rsh) {
+      int hl = ++g_tmp, hr = ++g_tmp, tl = ++g_tmp;
+      buf_printf(b, "({ sp_String *_t%d = ", hl);
+      if (lsh) emit_strbuf_handle_of(c, left, b); else buf_puts(b, "NULL");
+      buf_printf(b, "; SP_GC_ROOT(_t%d); const char *_t%d = ", hl, tl);
+      if (lsh) buf_printf(b, "sp_strbuf_read(_t%d)", hl);
+      else if (left >= 0) emit_str_expr_nilable(c, left, b);
+      else buf_puts(b, "NULL");
+      buf_printf(b, "; SP_GC_ROOT_STR(_t%d); sp_String *_t%d = ", tl, hr);
+      if (rsh) emit_strbuf_handle_of(c, right, b); else buf_puts(b, "NULL");
+      buf_printf(b, "; SP_GC_ROOT(_t%d); sp_srange_new_h(_t%d, ", hr, tl);
+      if (rsh) buf_printf(b, "sp_strbuf_read(_t%d)", hr);
+      else if (right >= 0) emit_str_expr_nilable(c, right, b);
+      else buf_puts(b, "NULL");
+      buf_printf(b, ", %d, _t%d, _t%d); })", excl, hl, hr);
+      return 1;
     }
     int bt = bind ? ++g_tmp : 0;
     if (bind) {

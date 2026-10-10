@@ -3643,7 +3643,7 @@ sp_RbVal sp_range_dup(sp_RbVal v, int keep_frozen) {
       return sp_box_frange(r);
     }
     case SP_BUILTIN_STR_RANGE: {
-      sp_StrRange r = *(sp_StrRange *)v.v.p;
+      sp_StrRange r = SP_SRANGE_OF(v.v.p);
       if (!keep_frozen) r.unfrozen = 1;
       return sp_box_srange(r);
     }
@@ -3993,8 +3993,22 @@ sp_float sp_frange_max(sp_FloatRange r) {
    materializes the element array, which is how a string range behaved before
    it became a value of its own (#3064). A NULL endpoint is a nil bound: the
    range is beginless or endless. */
+/* --share-strings (#8321): the Range read with each handle it keeps taken
+   as its bytes are now (a copy of them), so a change in place to the
+   endpoint's String shows through the Range. A Range without handles is
+   answered as it is. */
+sp_StrRange sp_srange_live(sp_StrRange r) {
+  void *hf = r.hf, *hl = r.hl;
+  if (!hf && !hl) return r;
+  SP_GC_ROOT(hf); SP_GC_ROOT(hl);
+  const char *f = hf ? sp_str_from_bytes(sp_String_cstr((sp_String *)hf), (size_t)sp_String_length((sp_String *)hf)) : r.first;
+  SP_GC_ROOT_STR(f);
+  if (hl) r.last = sp_str_from_bytes(sp_String_cstr((sp_String *)hl), (size_t)sp_String_length((sp_String *)hl));
+  r.first = f;
+  return r;
+}
 sp_StrRange sp_srange_new(const char *f, const char *l, sp_int e) {
-  sp_StrRange r; r.first = f; r.last = l; r.excl = e; r.unfrozen = 0; return r;
+  sp_StrRange r; r.first = f; r.last = l; r.excl = e; r.unfrozen = 0; r.hf = NULL; r.hl = NULL; return r;
 }
 sp_StrArray *sp_srange_to_a(sp_StrRange r) {
   if (!r.first) sp_raise_cls("TypeError", "can't iterate from NilClass");
@@ -4086,10 +4100,13 @@ static void sp_srange_scan(void *p) {
   sp_StrRange *r = (sp_StrRange *)p;
   if (r->first) sp_mark_string(r->first);
   if (r->last) sp_mark_string(r->last);
+  if (r->hf) sp_gc_mark(r->hf);
+  if (r->hl) sp_gc_mark(r->hl);
 }
 sp_RbVal sp_box_srange(sp_StrRange v) {
   const char *f = v.first, *l = v.last;
-  SP_GC_ROOT_STR(f); SP_GC_ROOT_STR(l);
+  void *hf = v.hf, *hl = v.hl;
+  SP_GC_ROOT_STR(f); SP_GC_ROOT_STR(l); SP_GC_ROOT(hf); SP_GC_ROOT(hl);
   sp_StrRange *p = (sp_StrRange *)sp_gc_alloc(sizeof(sp_StrRange), NULL, sp_srange_scan);
   *p = v;
   return sp_box_obj(p, SP_BUILTIN_STR_RANGE);

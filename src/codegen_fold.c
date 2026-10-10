@@ -9406,7 +9406,9 @@ void emit_pd_param_bind(Compiler *c, Scope *m, int i, int uid, const char *val, 
        default can collect while this named copy is their only root. */
     else if (pt == TY_STR_RANGE) {
       emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "SP_GC_ROOT_STR(lv_%s.first); SP_GC_ROOT_STR(lv_%s.last);\n", uniq, uniq);
+      buf_printf(g_pre, "SP_GC_ROOT_STR(lv_%s.first); SP_GC_ROOT_STR(lv_%s.last);", uniq, uniq);
+      { char ref[64]; snprintf(ref, sizeof ref, "lv_%s", uniq); emit_srange_handle_roots(c, ref, g_pre); }
+      buf_puts(g_pre, "\n");
     }
     emit_pd_cell_alias(c, plv, uniq);
   }

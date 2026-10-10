@@ -186,7 +186,11 @@ typedef struct{sp_float first;sp_float last;sp_int excl;unsigned char omitted;un
    include?/...) materializes the element array through
    sp_StrArray_from_string_range, which is how the range behaved before it was
    a value of its own. */
-typedef struct{const char *first;const char *last;unsigned char excl;unsigned char unfrozen;}sp_StrRange;
+/* hf / hl (--share-strings, #8321): the shared handles (sp_String *) the
+   endpoints were made from, or NULL. A Range keeps the String object, so a
+   change in place to it shows through #begin; sp_srange_live reads each
+   handle's bytes as they are now. */
+typedef struct{const char *first;const char *last;unsigned char excl;unsigned char unfrozen;void *hf;void *hl;}sp_StrRange;
 /* A class value. `name`, when non-NULL, is a rodata class name carried by a
    class whose cls_id table entry may not exist (an exception's class -- the
    Errno:: family and many builtin error classes have no assigned cls_id). It

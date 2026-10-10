@@ -6892,6 +6892,20 @@ static int str_arms_convert(Compiler *c, int id, Buf *b, const NodeTable *nt, co
         eq_sblv = 1;
       }
     }
+    /* --share-strings: a String Range's endpoint (strbuf_route_srange_end)
+       against a handle: the handle the Range keeps is compared (#8321) */
+    if (!eq_sblv) {
+      char sx[192];
+      int rse = strbuf_route_srange_end(c, recv) && strbuf_slot_ref(c, argv[0], sx, sizeof sx);
+      int ase = !rse && strbuf_route_srange_end(c, argv[0]) && strbuf_slot_ref(c, recv, sx, sizeof sx);
+      if (rse || ase) {
+        int th = ++g_tmp;
+        buf_printf(b, "({ sp_String *_t%d = ", th);
+        emit_strbuf_route(c, rse ? recv : argv[0], b);
+        buf_printf(b, "; SP_GC_ROOT(_t%d); (sp_bool)(_t%d == %s); })", th, th, sx);
+        eq_sblv = 1;
+      }
+    }
     if (!eq_sblv) {
       char arefE[192];
       if (strbuf_slot_ref(c, argv[0], arefE, sizeof arefE)) {

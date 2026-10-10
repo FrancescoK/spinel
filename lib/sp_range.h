@@ -154,6 +154,10 @@ const char *sp_frange_inspect(sp_FloatRange r);
 sp_RbVal sp_box_frange(sp_FloatRange v);
 sp_float sp_frange_max(sp_FloatRange r);
 sp_StrRange sp_srange_new(const char *f, const char *l, sp_int e);
+/* a Range read with the handles it keeps as they are now (#8321) */
+sp_StrRange sp_srange_live(sp_StrRange r);
+/* a boxed String Range read so */
+#define SP_SRANGE_OF(p) sp_srange_live(*(sp_StrRange *)(p))
 sp_StrArray *sp_srange_to_a(sp_StrRange r);
 sp_bool sp_srange_eq(sp_StrRange a, sp_StrRange b);
 sp_bool sp_srange_cover(sp_StrRange r, const char *x);

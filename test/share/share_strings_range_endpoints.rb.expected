@@ -1,0 +1,15 @@
+"aab"
+"aab".."ad"
+["aab"]
+false
+"aab!"
+true
+"cz"
+"cz"
+"a"..."cz"
+"czq"
+"mn"
+"mn".."mn"
+["k1+", "k2+", "k3+"]
+["k1+".."z", "k2+".."z", "k3+".."z"]
+"aab!?".."aab!?"
