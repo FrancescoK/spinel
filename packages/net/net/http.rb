@@ -368,6 +368,14 @@ module Net
     # connect path's own timeouts, as before.
     attr_accessor :ssl_timeout
 
+    # CRuby's keep_alive_timeout is how long an idle connection may be reused
+    # before `begin_transport` opens a new one. Every request here goes out
+    # with `Connection: close`, so no connection is ever idle-reused and there
+    # is nothing for it to govern; it is held so a program that sets it (a
+    # connection pool does) compiles and reads back what it wrote. CRuby's
+    # default is 2.
+    attr_accessor :keep_alive_timeout
+
     # The address to CONNECT to, when it differs from the address the request
     # is addressed to. An application that resolves a hostname itself and then
     # pins the result -- which is how a Rails app defends against DNS
@@ -397,6 +405,7 @@ module Net
       @open_timeout = 60
       @read_timeout = 60
       @ssl_timeout = nil
+      @keep_alive_timeout = 2
       @socket = nil
       @tls = nil
       @fresh = false
@@ -453,20 +462,27 @@ module Net
     def start
       if block_given?
         begin
-          open_connection
+          connect
           @started = true
           yield self
         ensure
           do_finish
         end
       else
-        open_connection
+        connect
         @started = true
         self
       end
     end
 
-    def open_connection
+    # CRuby's names for the connection lifecycle, and private as they are
+    # there: `connect` opens the socket (and the TLS session), and
+    # `begin_transport(req)` runs before each request is written, connecting
+    # again when the last one was closed. A subclass -- or a module included
+    # into one -- may override either and call super to follow a connection
+    # through its stages; a pool does, to tell a dead idle connection (a
+    # failure before the write) from a request the server may have.
+    def connect
       @socket = connect_with_timeout
       if @use_ssl
         begin
@@ -603,7 +619,7 @@ module Net
       # where the request is sent. Doing that here rather than raising keeps
       # the two spellings interchangeable, as they are there.
       unless @started
-        # `start` is INSIDE the begin: `open_connection` assigns @socket and
+        # `start` is INSIDE the begin: `connect` assigns @socket and
         # only then completes the TLS handshake, so a handshake failure raises
         # with a live socket that nothing else will close. `do_finish` is a
         # no-op when there is nothing open, which is the other way start can
@@ -621,19 +637,23 @@ module Net
       # `start { |http| http.get("/a"); http.get("/b") }` -- which is the
       # idiom -- has no reason to know. This is one connection per request
       # rather than keep-alive; what it is not is a failure on the second one.
-      reconnect unless @fresh
-      @fresh = false
+      begin_transport(req)
       write_request(req)
       read_response(req.method)
     end
 
-    def reconnect
-      @tls.sysclose unless @tls.nil?
-      @socket.close unless @socket.nil?
-      @tls = nil
-      @socket = nil
-      open_connection
+    def begin_transport(req)
+      unless @fresh
+        @tls.sysclose unless @tls.nil?
+        @socket.close unless @socket.nil?
+        @tls = nil
+        @socket = nil
+        connect
+      end
+      @fresh = false
+      nil
     end
+    private :connect, :begin_transport
 
     # ---- the wire ----
 
