@@ -194,6 +194,8 @@ typedef struct ShareFacts {
   int exc;
   int ostruct;         /* the program names OpenStruct, whose fields a poly
                           receiver's call may read */
+  int singleton_accessors; /* some class has singleton readers/writers whose
+                               class-side holder edges are not in this graph */
   int closed;          /* unions with UNKNOWN are dropped (the stats' second build) */
   int union_stack_cap;
   int *union_stack;
@@ -1783,7 +1785,9 @@ static int sh_boxed_string_row_composable(ShareFacts *F, Compiler *c, int n,
   int blk = nt_ref(nt, n, "block");
   int argc = 0, args = nt_ref(nt, n, "arguments");
   const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
-  if (!name || family != TY_STRING || F->ostruct || blk >= 0 ||
+  /* A user arm may reach a helper that reads a published singleton-accessor
+     value even when that accessor is not in this call's dispatch plan. */
+  if (!name || family != TY_STRING || F->ostruct || F->singleton_accessors || blk >= 0 ||
       !poly_string_read_p(name) ||
       container != 1 || share != bop_share_boxed(TY_STRING, name) ||
       !nt_call_args_plain(nt, n)) return 0;
@@ -1821,7 +1825,7 @@ static int sh_boxed_string_row_composable(ShareFacts *F, Compiler *c, int n,
   for (int i = 0; ok && i < p->n; i++) {
     const PolyArm *a = &p->arm[i];
     if (a->kind == PA_USER || a->kind == PA_PROC_FORM) {
-      if (a->mi < 0 || !sh_plan_target_has(tg, ntg, a->mi)) ok = 0;
+      if (a->mi < 0 || a->mi >= c->nscopes || !sh_plan_target_has(tg, ntg, a->mi)) ok = 0;
     }
     else if (a->kind == PA_ARITY) {
       /* The arm raises ArgumentError and has no return value to join. */
@@ -1891,8 +1895,8 @@ static void sh_record_boxed_fresh(ShareFacts *F, Compiler *c, int n,
   F->boxed_fresh_index[n] = at + 1;
 }
 
-/* Revalidate the complete row/plan proof against the exact effect signature
-   captured by sh_builtin in the sharing walk. */
+/* Revalidate the selected builtin row and dispatch shape against the exact
+   effect signature captured by sh_builtin in the sharing walk. */
 static int sh_boxed_fresh_recorded(Compiler *c, int n) {
   ShareFacts *F = c->share;
   if (!F) return 0;
@@ -2554,6 +2558,8 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
         sh_boxed_string_row_composable(F, c, n, ntg, tg, share, family, container,
                                        &row, &plan_ret)) {
       int builtin = sh_builtin(F, c, n, share, rv, blk, container);
+      /* This records only the builtin arm's lack of carried identity; r
+         still contains every reachable user arm's return holder. */
       if (builtin == -1)
         sh_record_boxed_fresh(F, c, n, share, family, container, row, plan_ret, ntg, tg);
       return sh_join(F, r, builtin);
@@ -3823,6 +3829,14 @@ static ShareFacts *sh_build(Compiler *c, int closed) {
   F->closed = closed;
   F->unknown = sh_new(F, SHK_UNKNOWN);
   F->exc = -1;
+  for (int ci = 0; ci < c->nclasses; ci++)
+    if (c->classes[ci].nsg_readers || c->classes[ci].nsg_writers) {
+      /* Singleton accessors can publish values through class-side storage
+         that the share holder graph does not connect to those readers. Keep
+         the previous boxed-container effects for this program. */
+      F->singleton_accessors = 1;
+      break;
+    }
   NT_FOREACH_KIND(nt, NK_ConstantReadNode, cr)
     if (!F->ostruct && nt_str(nt, cr, "name") && sp_streq(nt_str(nt, cr, "name"), "OpenStruct")) F->ostruct = 1;
   F->flags[F->unknown] = SHF_UNKNOWN;

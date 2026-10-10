@@ -875,7 +875,11 @@ from the receiver. A builtin row's argument peeks also cannot discard values
 retained by its same-named user arm. The analysis still joins every reachable
 user return, so a user arm that returns an existing String retains that alias
 and any required mutation refusal. Ambiguous builtin or dynamic dispatch
-remains conservative.
+remains conservative. If the program declares singleton readers or writers,
+this composition precision is also disabled: a user method can reach class-side
+publication through a helper even when that accessor is absent from the call's
+dispatch plan, and those holder edges are not fully represented here. Such
+programs retain the previous boxed-container effects.
 
 Not yet shared:
 
