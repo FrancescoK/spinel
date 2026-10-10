@@ -3974,9 +3974,12 @@ const char *sp_frange_inspect(sp_FloatRange r) {
   const char *lo = (r.omitted & SP_FRANGE_NO_BEGIN) ? ""
                  : (r.omitted & SP_FRANGE_INT_BEGIN) ? sp_sprintf("%lld", (long long)r.first)
                  : sp_float_to_s(r.first);
+  /* the begin's text is a new String the end's can collect */
+  SP_GC_ROOT_STR(lo);
   const char *hi = (r.omitted & SP_FRANGE_NO_END) ? ""
                  : (r.omitted & SP_FRANGE_INT_END) ? sp_sprintf("%lld", (long long)r.last)
                  : sp_float_to_s(r.last);
+  SP_GC_ROOT_STR(hi);
   return sp_sprintf("%s%s%s", lo, r.excl ? "..." : "..", hi);
 }
 sp_RbVal sp_box_frange(sp_FloatRange v) {
