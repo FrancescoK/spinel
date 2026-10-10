@@ -10304,6 +10304,7 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
     emit_indent(b, indent); buf_puts(b, "sp_exc_msg[sp_exc_top] = 0; sp_exc_obj[sp_exc_top] = 0; sp_exc_top++;\n");
     emit_indent(b, indent); buf_puts(b, "if (setjmp(sp_exc_stack[sp_exc_top-1]) == 0) {\n");
     g_exc_frame_depth++;
+    g_ensure_stack[g_ensure_depth - 1].catches = rescue >= 0;
     if (resultvar && else_stmts < 0) {
       const char *sv = g_result_var; g_result_var = resultvar;
       emit_stmts_tail(c, body, b, indent + 1);
@@ -10312,6 +10313,7 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
     else {
       emit_stmts(c, body, b, indent + 1);
     }
+    g_ensure_stack[g_ensure_depth - 1].catches = 0;
     g_exc_frame_depth--;
     emit_indent(b, indent + 1); buf_puts(b, "sp_exc_top--;\n");
     if (else_stmts >= 0)
@@ -10355,6 +10357,7 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
       emit_indent(b, indent + 3); buf_puts(b, "sp_exc_msg[sp_exc_top] = 0; sp_exc_obj[sp_exc_top] = 0; sp_exc_top++;\n");
       emit_indent(b, indent + 3); buf_puts(b, "if (setjmp(sp_exc_stack[sp_exc_top-1]) == 0) {\n");
       g_exc_frame_depth++;
+      g_ensure_stack[g_ensure_depth - 1].catches = 1;
       int sv_retry_pops = g_retry_pops;
       if (ens_has_retry) g_retry_pops++;
       { int sv_rfb = g_retry_frame_base, sv_rrb = g_retry_rescue_base;
@@ -10362,6 +10365,7 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
         emit_rescue(c, rescue, b, indent + 4, fr, resultvar);
         g_retry_frame_base = sv_rfb; g_retry_rescue_base = sv_rrb; }
       g_retry_pops = sv_retry_pops;
+      g_ensure_stack[g_ensure_depth - 1].catches = 0;
       g_exc_frame_depth--;
       emit_indent(b, indent + 4); buf_puts(b, "sp_exc_top--;\n");
       emit_indent(b, indent + 3); buf_puts(b, "}\n");
@@ -10497,10 +10501,11 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
          `Dir.chdir(a) { begin; Dir.chdir(b) { raise }; rescue; end }` does,
          and any value-position begin/ensure nested the same way. An
          intervening rescue shows up as an exception frame between this level
-         and the outer ensure's own, so re-raise there and let that handler
-         match; with no such frame, propagate to the outer ensure as before. */
+         and the outer ensure's own, or the outer frame itself catches:
+         the body's rescue, or the frame around its rescue clauses. Raise
+         into that live frame; otherwise hand off directly to its ensure. */
       emit_indent(b, indent);
-      if (g_exc_frame_depth > outer->exc_base + 1) {
+      if (g_exc_frame_depth > outer->exc_base + 1 || outer->catches) {
         buf_printf(b, "if (_excf%d) { sp_pending_exc_obj = _excobj%d; sp_reraise_continues = 1; sp_raise_cls(_exccls%d, _excmsg%d); }\n",
                    eid, eid, eid, eid);
       }

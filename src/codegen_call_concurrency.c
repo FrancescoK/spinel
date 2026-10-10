@@ -431,7 +431,7 @@ int emit_call_synchronize_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         /* An intervening rescue owns the exception after the unlock, as
            in the begin..ensure epilogue. Its still-live frame distinguishes
            it from a direct handoff to the enclosing ensure. */
-        if (g_exc_frame_depth > outer->exc_base + 1)
+        if (g_exc_frame_depth > outer->exc_base + 1 || outer->catches)
           buf_printf(b, "if (_excf%d) { sp_pending_exc_obj = _excobj%d; sp_reraise_continues = 1; sp_raise_cls(_exccls%d, _excmsg%d); } ",
                      eid, eid, eid, eid);
         else
