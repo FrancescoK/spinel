@@ -740,7 +740,11 @@ int emit_call_raise_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const
     if (ac == 0) {
       /* a bare re-raise keeps the handled exception's own cause (#3745) */
       if (g_rescue_cls) buf_printf(b, "(sp_reraise_current = 1, sp_raise_cls(%s, %s))", g_rescue_cls, g_rescue_msg);
-      else buf_puts(b, "sp_raise(sp_exc_no_msg)");   /* a bare raise's message is "" (#3711) */
+      /* outside a rescue the exception in flight is still re-raised: an ensure
+         reached while unwinding carries one (#8374). Without one the message
+         is "" (#3711). */
+      else buf_puts(b, "(sp_cur_handled() ? sp_raise_exc((volatile sp_Exception *)sp_cur_handled())"
+                       " : sp_raise(sp_exc_no_msg))");
     }
     else if (ac == 1 && nt_type(nt, av[0]) &&
              (sp_streq(nt_type(nt, av[0]), "ConstantReadNode") || sp_streq(nt_type(nt, av[0]), "ConstantPathNode")) &&
