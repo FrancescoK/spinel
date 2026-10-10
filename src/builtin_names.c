@@ -965,6 +965,10 @@ int is_string_append(const char *n) {
   return sp_streq(n, "<<") || sp_streq(n, "concat");
 }
 
+int is_string_byte_mutator(const char *n) {
+  return sp_streq(n, "bytesplice") || sp_streq(n, "append_as_bytes");
+}
+
 int is_replace_name(const char *n) {
   return sp_streq(n, "replace");
 }

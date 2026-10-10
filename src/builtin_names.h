@@ -250,6 +250,7 @@ int is_ivar_set(const char *n);      /* instance_variable_set */
 int is_string_append_or_prepend(const char *n); /* << concat prepend */
 
 int is_string_append(const char *n); /* << concat: appends answering the receiver */
+int is_string_byte_mutator(const char *n); /* bytesplice append_as_bytes: byte-level mutators answering the receiver */
 int is_replace_name(const char *n); /* replace: a String's, Array's or Hash's contents swapped for another's, which ignores a block */
 
 int is_string_rebind_mutator(const char *n); /* mutators needing argument-rebind snapshots */
