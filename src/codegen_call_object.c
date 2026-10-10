@@ -60,6 +60,16 @@ int str_cmp_bound_foreign(Compiler *c, int n) {
          t == TY_BIGINT || t == TY_RANGE || ty_is_hash(t) || ty_is_array(t) || k == NK_ArrayNode || k == NK_HashNode;
 }
 
+/* String#between?'s compare of the receiver _t<tv> with a String bound
+   _t<tbnd>, which is NULL when the bound is nil: that is CRuby's comparison
+   error, where the byte compare read it as "" and answered as if the bound
+   were the empty String. */
+static void emit_str_between_cmp(int tv, int tbnd, const char *op, Buf *b) {
+  buf_printf(b, "(_t%d ? sp_str_cmp_bytes(_t%d, _t%d) %s 0"
+                " : (sp_raise_cls(\"ArgumentError\", \"comparison of String with nil failed\"), FALSE))",
+             tbnd, tv, tbnd, op);
+}
+
 /* between?, object_id / __id__, hash, nil? and === on a receiver whose kind decides them */
 int emit_call_identity_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt) {
   /* between?(lo, hi): lo <= self <= hi */
@@ -107,7 +117,7 @@ int emit_call_identity_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
       for (int i = 0; i < 2; i++) {
         const char *op = i == 0 ? ">=" : "<=";
         if (i) buf_puts(b, " && ");
-        if (isstr[i]) { buf_printf(b, "sp_str_cmp_bytes(_t%d, _t%d) %s 0", tv, tb[i], op); continue; }
+        if (isstr[i]) { emit_str_between_cmp(tv, tb[i], op, b); continue; }
         buf_printf(b, "({ const char *_t%d = ", tc[i]);
         emit_str_cmp_conv(c, argv[i], tb[i], b);
         buf_printf(b, "; _t%d ? sp_str_cmp_bytes(_t%d, _t%d) %s 0"
@@ -119,11 +129,25 @@ int emit_call_identity_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
       buf_puts(b, "); })");
       return 1;
     }
+    /* The bounds are evaluated up front, in order, as the arm above does:
+       Ruby evaluates the arguments before between? runs, and only the
+       compares stop at the first false. A value is rooted while a later
+       operand can allocate, a shared String's read among them (a copy). */
     if (rt == TY_STRING) {
-      int tv = ++g_tmp;
+      int tv = ++g_tmp, tlo = ++g_tmp, thi = ++g_tmp;
+      int alo = operand_may_allocate(c, argv[0]), ahi = operand_may_allocate(c, argv[1]);
       buf_printf(b, "({ const char *_t%d = ", tv); emit_expr(c, recv, b);
-      buf_printf(b, "; (sp_str_cmp_bytes(_t%d, ", tv); emit_expr(c, argv[0], b);
-      buf_printf(b, ") >= 0 && sp_str_cmp_bytes(_t%d, ", tv); emit_expr(c, argv[1], b); buf_puts(b, ") <= 0); })");
+      buf_puts(b, "; ");
+      if (alo || ahi) buf_printf(b, "SP_GC_ROOT_STR(_t%d); ", tv);
+      buf_printf(b, "const char *_t%d = ", tlo); emit_expr(c, argv[0], b);
+      buf_puts(b, "; ");
+      if (ahi) buf_printf(b, "SP_GC_ROOT_STR(_t%d); ", tlo);
+      buf_printf(b, "const char *_t%d = ", thi); emit_expr(c, argv[1], b);
+      buf_puts(b, "; (");
+      emit_str_between_cmp(tv, tlo, ">=", b);
+      buf_puts(b, " && ");
+      emit_str_between_cmp(tv, thi, "<=", b);
+      buf_puts(b, "); })");
       return 1;
     }
     /* A Bignum receiver: sp_Bigint* can't be compared with >=/<= (that is a
