@@ -654,22 +654,27 @@ rng = (lo..hi)      # compile error: a Range of Ver objects cannot be built
 rng = (0..2**70)    # compile error: a Bignum bound does not fit sp_int
 ```
 
-#### A String Range keeps copies of its endpoints
+#### A String Range keeps copies of its endpoints in the default build
 
-A Range of Strings holds its two endpoints by value, as copies. A change in
-place to the String an endpoint was made from (`<<`, a `!` method) is not
-seen through `begin`, `end`, `first` or `last`, in the default build and
-under `--share-strings` alike:
+In the default build a Range of Strings holds its two endpoints by value, as
+copies. A change in place to the String an endpoint was made from (`<<`, a
+`!` method) is not seen through the Range, and `begin` / `end` answer a copy
+of the endpoint rather than the String itself:
 
 ```ruby
 first = String.new("aa")
 r = (first.."zz")
 first << "x"
-p r.begin       # "aax" in CRuby, "aa" in Spinel
+p r.begin       # "aax" in CRuby and under --share-strings, "aa" in the default build
 ```
 
-Sharing it needs a Range whose endpoints are shared String handles; that is
-part of the `--share-strings` work (#7721).
+Built with `--share-strings`, a String Range keeps the String objects its
+endpoints were made from, wherever the Range is held (a local, an instance
+variable, a Struct or Data member, an Array or Hash element, a global, a
+constant, a class variable): every read of the Range sees each endpoint as
+it is now, and `begin` / `first` / `end` / `last` answer that String itself,
+so a change through `r.begin` changes the endpoint's String. A frozen
+literal endpoint stays the frozen literal.
 
 #### A call that cannot exist is refused at compile time, not raised at run time
 

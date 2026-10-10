@@ -3007,6 +3007,17 @@ int strbuf_object_ref(Compiler *c, int recv, Buf *b) {
     buf_puts(b, "))");
     return 1;
   }
+  /* --share-strings: a String Range's begin / end is the String it holds,
+     a kept endpoint's handle included (sp_srange_end_id, #8321) */
+  int se = strbuf_route_srange_end(c, recv);
+  if (se) {
+    int t = ++g_tmp;
+    buf_printf(b, "({ sp_StrRange _t%d = ", t);
+    emit_expr(c, nt_ref(c->nt, unwrap_parens(c, recv), "receiver"), b);
+    buf_printf(b, "; const void *_i%d = sp_srange_end_id(_t%d, %d); _i%d ? (sp_int)(uintptr_t)_i%d : SP_NIL_OBJECT_ID; })",
+               t, t, se == 2, t, t);
+    return 1;
+  }
   /* an attribute assignment on a handle, freeze or a chain over one: that handle's */
   if (strbuf_assign_route(c, recv)) {
     buf_puts(b, "((sp_int)(uintptr_t)sp_String_identity(");

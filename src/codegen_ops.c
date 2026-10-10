@@ -50,6 +50,8 @@ static char *op_recv_text(Compiler *c, const BopCtx *x) {
      $A   an Array receiver's element-kind name, for sp_<A>Array_* ("Poly"
           for a poly array, else array_kind)
      $eN  argument N by emit_expr
+     $B / $E  a String Range's begin / end in _t$T, through its handle
+          under --share-strings (sp_srange_first / sp_srange_last)
      $bN  argument N boxed (emit_boxed)
      $fN  argument N as a double (emit_float_expr)
      $FN  argument N as an arithmetic method's Float operand: any other
@@ -198,6 +200,15 @@ static int emit_op_template(Compiler *c, const BopCtx *x, Buf *b) {
     }
     else if (p[0] == '$' && p[1] == 'T') {
       buf_printf(b, "%d", x->t0);
+      p++;
+    }
+    /* a String Range's begin / end held in _t$T: the field, or under
+       --share-strings the endpoint read off the handle it may keep
+       (sp_srange_first / sp_srange_last, #8321) */
+    else if (p[0] == '$' && (p[1] == 'B' || p[1] == 'E')) {
+      int beg = p[1] == 'B';
+      if (repr_share_rule(c)) buf_printf(b, "sp_srange_%s(_t%d)", beg ? "first" : "last", x->t0);
+      else buf_printf(b, "_t%d.%s", x->t0, beg ? "first" : "last");
       p++;
     }
     else if (p[0] == '$' && p[1] == 'R') {

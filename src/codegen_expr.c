@@ -1539,16 +1539,11 @@ static int emit_next_expr(Compiler *c, int id, Buf *b) {
 int g_expr_depth = 0;
 
 /* A variable's read as the slot itself, to assign to: no sp_srange_live
-   around a String Range's (#8321) */
+   around a String Range's (#8321). A read of a String Range takes no wrapper
+   now either: its kept endpoints stay handles, read where they are used
+   (sp_srange_first / sp_srange_last), so the slot form is the read. */
 void emit_slot_expr(Compiler *c, int id, Buf *b) {
   emit_expr_node(c, id, b);
-}
-/* Is node id a read of a variable or a constant (what holds a String Range
-   by value)? */
-static int srange_var_read(const NodeTable *nt, int id) {
-  NodeKind k = nt_kind(nt, id);
-  return k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode || k == NK_GlobalVariableReadNode ||
-         k == NK_ClassVariableReadNode || k == NK_ConstantReadNode || k == NK_ConstantPathNode;
 }
 void emit_expr(Compiler *c, int id, Buf *b) {
   if (b == g_pre && g_pre) { emit_into_pre_line(c, emit_expr, id); return; }
@@ -1594,13 +1589,6 @@ void emit_expr(Compiler *c, int id, Buf *b) {
     buf_printf(ob, "((%s)(", c_type_name(comp_ntype(c, id)));
     emit_expr_node(c, id, ob);
     buf_puts(ob, "))");
-  }
-  /* --share-strings: a String Range a variable holds reads its endpoints'
-     handles as they are now (#8321) */
-  else if (repr_share_rule(c) && comp_ntype(c, id) == TY_STR_RANGE && srange_var_read(c->nt, id)) {
-    buf_puts(ob, "sp_srange_live(");
-    emit_expr_node(c, id, ob);
-    buf_puts(ob, ")");
   }
   else {
     /* a plain consumer of an element read: the read may unwrap itself */
@@ -4334,6 +4322,33 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
   return 0;
 }
 
+/* --share-strings: does String Range `range` keep endpoint `end` as its
+   handle? One the rule shares, one that is a handle already (a String
+   changed in place: its own handle), and any endpoint of a Range whose
+   endpoints' class the rule shares (a change through #begin reaches it,
+   a new String's included). A frozen literal never changes, and a String
+   nothing changes in place stays the bytes it is, so its identity is the
+   String's own (#8321). */
+static int srange_end_keeps(Compiler *c, int range, int end) {
+  if (end < 0 || comp_ntype(c, end) == TY_NIL || share_frozen_literal(c, end)) return 0;
+  Repr r = repr_of(c, end);
+  return r.kind == RK_STRBUF || r.handle || share_node_shares(c, end) || share_node_elems_share(c, range);
+}
+/* ...one end into rooted temps: the handle `_t<ht>` and a NULL byte field
+   `_t<st>` for an end kept so, else no handle and the end's bytes (NULL for
+   a nil or an absent end). */
+static void emit_srange_end_h(Compiler *c, int end, int keep, int ht, int st, Buf *b) {
+  if (keep) {
+    buf_printf(b, "sp_String *_t%d = ", ht);
+    emit_strbuf_handle_of(c, end, b);
+    buf_printf(b, "; SP_GC_ROOT(_t%d); const char *_t%d = NULL; ", ht, st);
+    return;
+  }
+  buf_printf(b, "sp_String *_t%d = NULL; const char *_t%d = ", ht, st);
+  if (end >= 0) emit_str_expr_nilable(c, end, b); else buf_puts(b, "NULL");
+  buf_printf(b, "; SP_GC_ROOT_STR(_t%d); ", st);
+}
+
 /* An end of a String Range that makes nothing and runs nothing: a literal,
    or a read of a variable or a constant. */
 static int srange_end_is_plain(Compiler *c, int id) {
@@ -4452,25 +4467,19 @@ static int emit_range_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, con
       if (!lran && !lcon && !lkept && (rrun || (lmk && rmk))) lt = ++g_tmp;
       if (!rran && !rcon && !rkept && (lrun || (lmk && rmk))) rt = ++g_tmp;
     }
-    /* --share-strings: an endpoint the rule shares is kept as its handle,
-       and its bytes are read from it (#8321) */
-    int lsh = repr_share_rule(c) && left >= 0 && share_node_shares(c, left);
-    int rsh = repr_share_rule(c) && right >= 0 && share_node_shares(c, right);
+    /* --share-strings: an endpoint the Range keeps as its handle holds NULL
+       in its byte field, the handle its only holder: a reader takes the
+       bytes off the handle where it uses them (sp_srange_first /
+       sp_srange_last), so a change in place to the endpoint's String shows
+       through the Range (#8321) */
+    int lsh = repr_share_rule(c) && srange_end_keeps(c, id, left);
+    int rsh = repr_share_rule(c) && srange_end_keeps(c, id, right);
     if (lsh || rsh) {
-      int hl = ++g_tmp, hr = ++g_tmp, tl = ++g_tmp;
-      buf_printf(b, "({ sp_String *_t%d = ", hl);
-      if (lsh) emit_strbuf_handle_of(c, left, b); else buf_puts(b, "NULL");
-      buf_printf(b, "; SP_GC_ROOT(_t%d); const char *_t%d = ", hl, tl);
-      if (lsh) buf_printf(b, "sp_strbuf_read(_t%d)", hl);
-      else if (left >= 0) emit_str_expr_nilable(c, left, b);
-      else buf_puts(b, "NULL");
-      buf_printf(b, "; SP_GC_ROOT_STR(_t%d); sp_String *_t%d = ", tl, hr);
-      if (rsh) emit_strbuf_handle_of(c, right, b); else buf_puts(b, "NULL");
-      buf_printf(b, "; SP_GC_ROOT(_t%d); sp_srange_new_h(_t%d, ", hr, tl);
-      if (rsh) buf_printf(b, "sp_strbuf_read(_t%d)", hr);
-      else if (right >= 0) emit_str_expr_nilable(c, right, b);
-      else buf_puts(b, "NULL");
-      buf_printf(b, ", %d, _t%d, _t%d); })", excl, hl, hr);
+      int hl = ++g_tmp, hr = ++g_tmp, tl = ++g_tmp, tr = ++g_tmp;
+      buf_puts(b, "({ ");
+      emit_srange_end_h(c, left, lsh, hl, tl, b);
+      emit_srange_end_h(c, right, rsh, hr, tr, b);
+      buf_printf(b, "sp_srange_new_h(_t%d, _t%d, %d, _t%d, _t%d); })", tl, tr, excl, hl, hr);
       return 1;
     }
     int bt = bind ? ++g_tmp : 0;

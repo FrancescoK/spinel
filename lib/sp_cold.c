@@ -3641,7 +3641,7 @@ sp_RbVal sp_range_dup(sp_RbVal v, int keep_frozen) {
       return sp_box_frange(r);
     }
     case SP_BUILTIN_STR_RANGE: {
-      sp_StrRange r = SP_SRANGE_OF(v.v.p);
+      sp_StrRange r = *(sp_StrRange *)v.v.p;   /* the handles as kept: a copy shares the endpoints */
       if (!keep_frozen) r.unfrozen = 1;
       return sp_box_srange(r);
     }
@@ -3994,28 +3994,43 @@ sp_float sp_frange_max(sp_FloatRange r) {
    it became a value of its own (#3064). A NULL endpoint is a nil bound: the
    range is beginless or endless. */
 /* --share-strings (#8321): the Range read with each handle it keeps taken
-   as its bytes are now (a copy of them), so a change in place to the
-   endpoint's String shows through the Range. A Range without handles is
-   answered as it is. */
+   as its bytes are now, so a change in place to the endpoint's String
+   shows through the Range. A Range without handles is answered as it is.
+   An endpoint the Range keeps as a handle holds NULL in its byte field (the
+   handle is its only holder, so no stale pointer is ever kept or marked);
+   this fills that field with the handle's own bytes, uncopied, for a read
+   that compares or formats them and keeps nothing: they are good only
+   until the next change to that String. sp_srange_held is the form whose
+   endpoints may be kept. */
 sp_StrRange sp_srange_live(sp_StrRange r) {
-  void *hf = r.hf, *hl = r.hl;
-  if (!hf && !hl) return r;
+  if (r.hf) r.first = sp_String_cstr((sp_String *)r.hf);
+  if (r.hl) r.last = sp_String_cstr((sp_String *)r.hl);
+  return r;
+}
+/* ...the Range with each kept endpoint read as a String of its own (a
+   copy of the handle's bytes): for an answer that may keep an endpoint, an
+   element of #to_a or the String #min / #max answer. */
+static sp_StrRange sp_srange_held(sp_StrRange r) {
+  sp_String *hf = (sp_String *)r.hf, *hl = (sp_String *)r.hl;
   SP_GC_ROOT(hf); SP_GC_ROOT(hl);
-  const char *f = hf ? sp_str_from_bytes(sp_String_cstr((sp_String *)hf), (size_t)sp_String_length((sp_String *)hf)) : r.first;
+  if (hf) r.first = sp_str_from_bytes(sp_String_cstr(hf), (size_t)sp_String_length(hf));
+  const char *f = r.first;
   SP_GC_ROOT_STR(f);
-  if (hl) r.last = sp_str_from_bytes(sp_String_cstr((sp_String *)hl), (size_t)sp_String_length((sp_String *)hl));
-  r.first = f;
+  if (hl) r.last = sp_str_from_bytes(sp_String_cstr(hl), (size_t)sp_String_length(hl));
   return r;
 }
 sp_StrRange sp_srange_new(const char *f, const char *l, sp_int e) {
   sp_StrRange r; r.first = f; r.last = l; r.excl = e; r.unfrozen = 0; r.hf = NULL; r.hl = NULL; return r;
 }
 sp_StrArray *sp_srange_to_a(sp_StrRange r) {
+  r = sp_srange_held(r);
+  SP_GC_ROOT_SRANGE(r);
   if (!r.first) sp_raise_cls("TypeError", "can't iterate from NilClass");
   if (!r.last) sp_raise_cls("RangeError", "cannot convert endless range to an array");
   return sp_StrArray_from_string_range(r.first, r.last, r.excl);
 }
 sp_bool sp_srange_eq(sp_StrRange a, sp_StrRange b) {
+  a = sp_srange_live(a); b = sp_srange_live(b);
   return a.excl == b.excl && sp_str_eq(a.first, b.first) && sp_str_eq(a.last, b.last);
 }
 /* #include? / #member?: whether the walk String#upto takes meets x, as
@@ -4028,6 +4043,8 @@ static int sp_srange_include_i(const char *m, void *arg) {
   return 1;
 }
 sp_bool sp_srange_include(sp_StrRange r, const char *x) {
+  r = sp_srange_live(r);
+  SP_GC_ROOT_SRANGE(r);
   if (!r.first || !r.last)
     sp_raise_cls("TypeError", "cannot determine inclusion in beginless/endless ranges");
   if (!x) return 0;
@@ -4038,6 +4055,7 @@ sp_bool sp_srange_include(sp_StrRange r, const char *x) {
 }
 /* #cover? / #=== compare lexicographically, no materialization. */
 sp_bool sp_srange_cover(sp_StrRange r, const char *x) {
+  r = sp_srange_live(r);
   if (!x) return 0;
   if (r.first && strcmp(x, r.first) < 0) return 0;
   if (r.last) { int d = strcmp(x, r.last); if (r.excl ? d >= 0 : d > 0) return 0; }
@@ -4058,6 +4076,7 @@ static const char *sp_srange_walk_extreme(sp_StrRange r, int greatest) {
   return best;
 }
 const char *sp_srange_min_v(sp_StrRange r) {
+  r = sp_srange_held(r);
   if (!r.first) sp_raise_cls("RangeError", "cannot get the minimum of beginless range");
   if (r.excl) {
     if (!r.last) sp_raise_cls("RangeError", "cannot get the minimum of endless range with custom comparison method");
@@ -4067,6 +4086,7 @@ const char *sp_srange_min_v(sp_StrRange r) {
   return r.first;
 }
 const char *sp_srange_max_v(sp_StrRange r) {
+  r = sp_srange_held(r);
   if (!r.last) sp_raise_cls("RangeError", "cannot get the maximum of endless range");
   if (r.excl) {
     if (!r.first) sp_raise_cls("RangeError", "cannot get the maximum of beginless range with custom comparison method");
@@ -4076,6 +4096,8 @@ const char *sp_srange_max_v(sp_StrRange r) {
   return r.last;
 }
 const char *sp_srange_to_s(sp_StrRange r) {
+  r = sp_srange_live(r);
+  SP_GC_ROOT_SRANGE(r);
   return sp_sprintf("%s%s%s", r.first ? r.first : sp_str_empty,
                     r.excl ? "..." : "..", r.last ? r.last : sp_str_empty);
 }
@@ -4083,6 +4105,8 @@ const char *sp_srange_to_s(sp_StrRange r) {
    the caller's range is a by-value pair nothing may root (#8322): both
    ends and the first answer are held here. */
 const char *sp_srange_inspect(sp_StrRange r) {
+  r = sp_srange_live(r);
+  SP_GC_ROOT(r.hf); SP_GC_ROOT(r.hl);
   const char *f = r.first, *l = r.last;
   SP_GC_ROOT_STR(f); SP_GC_ROOT_STR(l);
   const char *lo = f ? sp_str_inspect(f) : sp_str_empty;
