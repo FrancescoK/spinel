@@ -3643,6 +3643,7 @@ static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *n
    link raises on; so what a mutator computes from the chain's value is the
    variable's new value. */
 static int str_self_mutator_name(const char *n) {
+  if (n && is_string_byte_mutator(n)) return 1;   /* bytesplice, append_as_bytes answer their receiver too */
   return n && (sp_streq(n, "insert") || sp_streq(n, "prepend") || sp_streq(n, "concat") ||
                sp_streq(n, "replace") || sp_streq(n, "<<"));
 }
@@ -3758,6 +3759,24 @@ static int sub_bang_reenters(Compiler *c, int id, int recv, int argc, const int 
   for (int k = 0; k < sn; k++) if (sub_bang_operand_runs(c, sb[k], 0)) return 1;
   return 0;
 }
+/* A mutator whose receiver is not a variable (`s.concat("x").append_as_bytes("y")`)
+   takes it once, into a rooted temp that the arm's other reads of the receiver
+   are bound to (view_bind), as the concat arm does: the receiver is a call with
+   effects of its own, and reading it again for the mutability check, the
+   mutation and the write-back ran it two or three times. A variable receiver
+   returns -1 and is read again, harmlessly, and so does a receiver the
+   operand-order rewrite has already taken into a temp (arg_ran_first): it
+   runs once there, and binding it again would only alias that temp. The
+   caller view_unbinds the result when it is not -1, once its last read of the
+   receiver is emitted. */
+static int emit_str_mut_recv_once(Compiler *c, int recv, int lvw, Buf *b) {
+  if (lvw || arg_ran_first(recv, 0)) return -1;
+  int t = ++g_tmp;
+  buf_printf(b, "const char *_t%d = ", t);
+  emit_recv_rooted(c, recv, t, "SP_GC_ROOT_STR", b);
+  return view_bind(recv, "_t%d", t);
+}
+
 /* A String mutator: the value-form bangs, the in-place mutators, append_as_bytes, bytesplice (emit_array_call's arms, in their order) */
 static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, int *out) {
   /* String value-form mutators: the expression yields the post-mutation
@@ -4075,14 +4094,18 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
       } }
     int lvw9 = str_mut_var_recv(c, recv);
     int tr9 = ++g_tmp, tn9 = ++g_tmp;
-    buf_puts(b, "({ sp_str_check_mutable("); emit_expr(c, recv, b); buf_puts(b, "); ");
+    buf_puts(b, "({ ");
+    int rh9 = emit_str_mut_recv_once(c, recv, lvw9, b);
+    buf_puts(b, "sp_str_check_mutable("); emit_expr(c, recv, b); buf_puts(b, "); ");
     buf_printf(b, "sp_Range _t%d = sp_range_ix(", tr9); emit_expr(c, argv[0], b); buf_puts(b, ")");
     buf_printf(b, "; const char *_t%d = sp_str_bytesplice(", tn9);
     emit_expr(c, recv, b);
     buf_printf(b, ", _t%d.first, _t%d.last - _t%d.first + (_t%d.excl ? 0 : 1), ", tr9, tr9, tr9, tr9);
     emit_str_expr(c, argv[1], b); buf_puts(b, ")");
-    if (lvw9) { buf_puts(b, "; "); emit_expr(c, recv, b); buf_printf(b, " = _t%d", tn9); }
-    buf_printf(b, "; _t%d; })", tn9);
+    buf_puts(b, "; ");
+    emit_str_mut_writeback(c, recv, lvw9, tn9, b);
+    if (rh9 >= 0) view_unbind(rh9);
+    buf_printf(b, "_t%d; })", tn9);
     { *out = 1; return 1; }
   }
   /* append_as_bytes copies bytes without negotiating the receiver's encoding. */
@@ -4107,7 +4130,9 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
     /* append_as_bytes accepts String AND Integer arguments; an Integer is the
        raw byte value (100 -> "d"), materialized via sp_int_chr (#2463). A
        frozen receiver raises first, like every other in-place append (#3333). */
-    buf_puts(b, "({ sp_str_check_mutable("); emit_expr(c, recv, b); buf_puts(b, "); ");
+    buf_puts(b, "({ ");
+    int rh9 = emit_str_mut_recv_once(c, recv, lvw9, b);
+    buf_puts(b, "sp_str_check_mutable("); emit_expr(c, recv, b); buf_puts(b, "); ");
     buf_printf(b, "const char *_t%d = sp_str_append_bytes(", tn9);
     emit_expr(c, recv, b); buf_puts(b, ", ");
     if (comp_ntype(c, argv[0]) == TY_INT) { buf_puts(b, "sp_int_chr("); emit_int_expr(c, argv[0], b); buf_puts(b, ")"); }
@@ -4119,8 +4144,10 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
       else emit_str_expr(c, argv[a9], b);
       buf_puts(b, ")");
     }
-    if (lvw9) { buf_puts(b, "; "); emit_expr(c, recv, b); buf_printf(b, " = _t%d", tn9); }
-    buf_printf(b, "; _t%d; })", tn9);
+    buf_puts(b, "; ");
+    emit_str_mut_writeback(c, recv, lvw9, tn9, b);
+    if (rh9 >= 0) view_unbind(rh9);
+    buf_printf(b, "_t%d; })", tn9);
     { *out = 1; return 1; }
   }
   if (rt == TY_STRING && sp_streq(name, "bytesplice") && argc == 3 && recv >= 0) {
@@ -4141,14 +4168,18 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
     int lvw = str_mut_var_recv(c, recv) || sb_shadowed_reader(recv);
     int tn2 = ++g_tmp;
     /* in-place mutator: a frozen receiver raises before the splice (#3333) */
-    buf_puts(b, "({ sp_str_check_mutable("); emit_expr(c, recv, b); buf_puts(b, "); ");
+    buf_puts(b, "({ ");
+    int rh2 = emit_str_mut_recv_once(c, recv, lvw, b);
+    buf_puts(b, "sp_str_check_mutable("); emit_expr(c, recv, b); buf_puts(b, "); ");
     buf_printf(b, "const char *_t%d = sp_str_bytesplice(", tn2);
     emit_expr(c, recv, b);
     buf_puts(b, ", "); emit_int_expr(c, argv[0], b);
     buf_puts(b, ", "); emit_int_expr(c, argv[1], b);
     buf_puts(b, ", "); emit_str_expr(c, argv[2], b); buf_puts(b, ")");
-    if (lvw) { buf_puts(b, "; "); emit_expr(c, recv, b); buf_printf(b, " = _t%d", tn2); }
-    buf_printf(b, "; _t%d; })", tn2);
+    buf_puts(b, "; ");
+    emit_str_mut_writeback(c, recv, lvw, tn2, b);
+    if (rh2 >= 0) view_unbind(rh2);
+    buf_printf(b, "_t%d; })", tn2);
     { *out = 1; return 1; }
   }
   return 0;
