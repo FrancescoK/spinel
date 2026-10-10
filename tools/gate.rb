@@ -169,38 +169,67 @@ module Gate
     end
   end
 
-  def check
+  # The change check judges: the staged one (the index against HEAD, the
+  # pre-commit hook's), or a commit range's (head against its merge base
+  # with base, CI's view of a pull request). `before` and `after` prefix a
+  # path to name its blob, `diff` selects the change for git diff, and
+  # `tree` is what the working tree must match for CRuby to run a test there.
+  Change = Struct.new(:before, :after, :diff, :tree)
+
+  def staged = Change.new("HEAD:", ":", ["--cached"], [])
+
+  def range(base, head)
+    b = git("rev-parse", "-q", "--verify", "#{base}^{commit}") or return
+    h = git("rev-parse", "-q", "--verify", "#{head}^{commit}") or return
+    mb = git("merge-base", b, h) or return
+    Change.new("#{mb}:", "#{h}:", [mb, h], [h])
+  end
+
+  # The test harness (RUN_ONE_TEST) reads test/foo.rb.expected and, without
+  # one, runs CRuby for the expected output; a test/foo.expected is never read.
+  def no_expected_error(t, changed)
+    alt = t.sub(/\.rb\z/, ".expected")
+    hint = changed.include?(alt) || File.exist?(alt) ? "; rename #{alt}: the harness reads only #{t}.expected" : ""
+    "#{t}: no #{t}.expected#{hint}"
+  end
+
+  def check(change = staged)
     errors = []
-    staged = git("diff", "--cached", "--name-only", "--diff-filter=ACMR").to_s.split("\n")
-    staged.grep(%r{\Asrc/.*\.c\z}).each do |f|
-      before = functions(show("HEAD:#{f}"))
-      functions(show(":#{f}")).each do |fn, n|
+    changed = git("diff", *change.diff, "--name-only", "--diff-filter=ACMR").to_s.split("\n")
+    changed.grep(%r{\Asrc/.*\.c\z}).each do |f|
+      before = functions(show("#{change.before}#{f}"))
+      functions(show("#{change.after}#{f}")).each do |fn, n|
         e = function_size_error(fn, before[fn], n) and errors << "#{f}: #{e}"
       end
     end
-    added = git("diff", "--cached", "--name-only", "--diff-filter=A", "--", "test/*.rb").to_s.split("\n")
+    added = git("diff", *change.diff, "--name-only", "--diff-filter=A", "--", "test/*.rb").to_s.split("\n")
       .reject { |t| t.count("/") > 1 }
     ruby = reference_ruby unless added.empty?
     added.each do |t|
-      src = show(":#{t}")
+      src = show("#{change.after}#{t}")
       errors << "#{t}: use Dir.tmpdir, not a fixed /tmp path" if src.match?(%r{["']/tmp/})
       if !src.include?("# spinel: int64") && src.scan(/(?<![\w.])\d[\d_]{9,}/).any? { |n| n.delete("_").to_i >= 2**31 }
         warn "gate: #{t} has literals past 2^31 but no `# spinel: int64` marker"
       end
-      next errors << "#{t}: no #{t}.expected" unless staged.include?("#{t}.expected")
+      next errors << no_expected_error(t, changed) unless changed.include?("#{t}.expected")
       next if !ruby || not_cruby?(src)
 
-      unless git("diff", "--quiet", "--", t, "#{t}.args", "#{t}.stdin")
-        next warn("gate: #{t} has unstaged changes; .expected not checked")
+      unless git("diff", "--quiet", *change.tree, "--", t, "#{t}.args", "#{t}.stdin")
+        next warn("gate: #{t} differs in the working tree; .expected not checked")
       end
 
       out = cruby(ruby, t, File.exist?("#{t}.args") ? File.binread("#{t}.args").split : [])
       next warn("gate: #{t} ran over 20s under CRuby; .expected not checked") unless out
 
-      errors << "#{t}: .expected differs from `#{ruby} --enable-frozen-string-literal #{t}`" if out.b != show(":#{t}.expected")
+      errors << "#{t}: .expected differs from `#{ruby} --enable-frozen-string-literal #{t}`" if out.b != show("#{change.after}#{t}.expected")
     end
     errors.each { |e| warn "gate: #{e}" }
     errors.empty? ? 0 : 1
+  end
+
+  def check_range(base, head)
+    change = range(base, head) or return warn("gate: no merge base for #{base} and #{head}; fetch them") || 2
+    check(change)
   end
 
   def linux
@@ -231,7 +260,8 @@ if $PROGRAM_NAME == __FILE__
   when "trailer" then Gate.trailer(ARGV.fetch(0))
   when "verify" then exit Gate.verify(ARGV[0] || "HEAD")
   when "check" then exit Gate.check
+  when "check-range" then exit Gate.check_range(ARGV.fetch(0), ARGV.fetch(1))
   when "linux" then Gate.linux
-  else abort "usage: ruby tools/gate.rb start | stamp | trailer MSG | verify [COMMIT] | check | linux"
+  else abort "usage: ruby tools/gate.rb start | stamp | trailer MSG | verify [COMMIT] | check | check-range BASE HEAD | linux"
   end
 end

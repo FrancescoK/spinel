@@ -116,6 +116,57 @@ Dir.mktmpdir("gate-tool-test") do |dir|
   ok(v == 0 && err.lines.size == 1 && err.include?("not checked"), "an older Ruby skips the .expected check with one warning")
   ENV["GATE_RUBY"] = ruby
 
+  # check-range: the same checks on a range's change, as CI runs them on a
+  # pull request's merge commit (HEAD^1 HEAD).
+  add_commit = lambda do |files, msg|
+    files.each { |f, body| File.write(f, body) }
+    sh("git", "add", *files.keys)
+    commit(msg)
+  end
+  sh("git", "switch", "-q", "-c", "range")
+  base = Gate.git("rev-parse", "HEAD")
+  add_commit.({ "test/r_ok.rb" => "puts 1\n", "test/r_ok.rb.expected" => "1\n" }, "a test")
+  v, _, err = capture { Gate.check_range(base, "HEAD") }
+  ok(v == 0 && err.empty?, "check-range passes a test whose .expected CRuby agrees with")
+  add_commit.({ "test/r_old.rb" => "puts 1\n", "test/r_old.expected" => "1\n" }, "a test under the old name")
+  v, _, err = capture { Gate.check_range(base, "HEAD") }
+  ok(v == 1 && err.include?("no test/r_old.rb.expected; rename test/r_old.expected"),
+     "check-range refuses an .expected the harness does not read, naming the rename")
+  sh("git", "reset", "-q", "--hard", "HEAD^")
+  add_commit.({ "test/r_bad.rb" => "puts 1\n", "test/r_bad.rb.expected" => "2\n" }, "a wrong .expected")
+  v, _, err = capture { Gate.check_range(base, "HEAD") }
+  ok(v == 1 && err.include?("test/r_bad.rb: .expected differs"), "check-range refuses an .expected CRuby disagrees with")
+  sh("git", "reset", "-q", "--hard", "HEAD^")
+  Dir.mkdir("src") unless Dir.exist?("src")
+  add_commit.({ "src/grown.c" => "static int grown(void) {\n#{"  x++;\n" * Gate::FUNCTION_LIMIT}}\n" }, "a big function")
+  v, _, err = capture { Gate.check_range(base, "HEAD") }
+  ok(v == 1 && err.include?("new function grown"), "check-range refuses a new function past FUNCTION_LIMIT lines")
+  sh("git", "reset", "-q", "--hard", "HEAD^")
+  # What the base gained after the branch point is not the range's change.
+  sh("git", "switch", "-q", "master")
+  add_commit.({ "test/m_only.rb" => "puts 1\n" }, "master gains a test without .expected")
+  # (master is checked out, so range's test is not in the working tree and
+  # CRuby does not judge it: one warning)
+  v, _, err = capture { Gate.check_range("master", "range") }
+  ok(v == 0 && !err.include?("m_only") && err.include?("r_ok.rb differs in the working tree"),
+     "check-range judges the change since the merge base, not the base's own commits")
+  # CI's form: a merge commit against its first parent.
+  sh("git", "merge", "-q", "--no-ff", "-m", "merge range", "range")
+  v, _, err = capture { Gate.check_range("HEAD^1", "HEAD") }
+  ok(v == 0 && err.empty?, "check-range HEAD^1 HEAD passes a merge whose side is clean")
+  sh("git", "reset", "-q", "--hard", "HEAD^")
+  sh("git", "switch", "-q", "range")
+  add_commit.({ "test/r_bad.rb" => "puts 1\n", "test/r_bad.rb.expected" => "2\n" }, "a wrong .expected")
+  sh("git", "switch", "-q", "master")
+  sh("git", "merge", "-q", "--no-ff", "-m", "merge range", "range")
+  v, _, err = capture { Gate.check_range("HEAD^1", "HEAD") }
+  ok(v == 1 && err.include?("test/r_bad.rb: .expected differs"), "check-range HEAD^1 HEAD refuses what the merged side brings")
+  v, _, err = capture { Gate.check_range("no-such-ref", "HEAD") }
+  ok(v == 2 && err.include?("no merge base"), "check-range names a range it cannot resolve")
+  sh("git", "reset", "-q", "--hard", "HEAD~2")
+  sh("git", "switch", "-q", "work")
+  Dir.rmdir("src") if Dir.exist?("src") && Dir.empty?("src")
+
   # The platform names the compiler behind a launcher given by its path.
   if Gate.run("cc", "-dumpversion")
     ENV["CC"] = "/no/such/dir/ccache cc"
