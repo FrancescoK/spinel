@@ -810,9 +810,12 @@ int block_has_top_break(Compiler *c, int node) {
 
 /* A call is a break-wrapped iterator when it takes a literal block whose body
    has a top-level break and is either a receiver-bearing builtin iterator or
-   a call resolving to an inline-able yielding user method (whose body -- and
-   so the block, at its yield sites -- is spliced at this call site, putting
-   the wrapper's setjmp in exactly the right C scope). Receiverless
+   a receiverless call resolving to a method of the program (an inline-able
+   yielding method's body -- and so the block, at its yield sites -- is
+   spliced at this call site, putting the wrapper's setjmp in exactly the
+   right C scope). Not only inline-able yielding methods: a block given to any
+   other method of the program runs as a proc in its own C function, where a
+   bare C `break` does not compile, so it needs the wrapper too. Receiverless
    NON-methods (loop / catch / proc / lambda literals) run their own scopes
    and stay excluded, as does instance_exec/eval (handled inline). */
 /* `poly.upto(lim [, exclusive])` whose receiver may be a String at run
@@ -846,7 +849,7 @@ int call_breaks(Compiler *c, int id) {
   if (!bty || !sp_streq(bty, "BlockNode")) return 0;   /* not &proc / &:sym */
   const char *name = nt_str(nt, id, "name");
   if (name && (is_instance_eval_family(name))) return 0;
-  if (nt_ref(nt, id, "receiver") < 0 && call_user_yield_mi(c, id) < 0) return 0;
+  if (nt_ref(nt, id, "receiver") < 0 && comp_self_call_mi(c, id, name) < 0) return 0;
   /* an inner step of a folded `h.merge(a, b) { break ... }` (analyze.c):
      its break leaves the outer call, whose wrapper it runs inside */
   if (nt_str(nt, id, "merge_fold_step")) return 0;
