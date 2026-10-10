@@ -58,6 +58,7 @@ typedef struct {
   int dynamic;            /* -1 unknown, 0 no, 1 yes */
   int expanded;           /* call sites replaced by their expansion */
   int writer;             /* may write an instance variable (computed once) */
+  int self_def;           /* a `def self.m` of the class whose path `module` keys (mx_self_key) */
   char **wv; int wn; int wall;   /* ... which ones, however it is called (a fixed point); wall: one named at run time */
   char **rv; int rn; int rall;   /* ... which ones when its body is followed (the arguments of the calls in it known) */
   const pm_node_t *sites[512]; /* (debug) the expanded calls */
@@ -450,6 +451,61 @@ static MxMacro *mx_nested_macro(const char *modpath, const char *name) {
 static MxMacro *mx_class_macro(const char *name) {
   if (!mx_name_unique(name)) return NULL;
   return mx_first_named(name);
+}
+
+/* A class's own `def self.m` is a macro too when its body calls it: the
+   module key is the class's path with a suffix, so a call inside the macro
+   reaches the class's other class methods, not a module's instance methods
+   at the same path. */
+static char *mx_self_key(const char *path) {
+  char *k = malloc(strlen(path) + 8);
+  sprintf(k, "%s.self", path);
+  return k;
+}
+
+static int mx_is_attr(const char *n);
+
+/* `(class << self; self; end)` or `singleton_class`: self's singleton class.
+   `strict`: singleton_class is Module's own (the tables are complete). */
+static int mx_self_sclass(const pm_node_t *r, int strict) {
+  if (!r) return 0;
+  if (PM_NODE_TYPE(r) == PM_PARENTHESES_NODE) {
+    const pm_node_t *b = ((const pm_parentheses_node_t *)r)->body;
+    if (!b || PM_NODE_TYPE(b) != PM_STATEMENTS_NODE || ((const pm_statements_node_t *)b)->body.size != 1) return 0;
+    const pm_node_t *sc = ((const pm_statements_node_t *)b)->body.nodes[0];
+    if (PM_NODE_TYPE(sc) != PM_SINGLETON_CLASS_NODE) return 0;
+    const pm_singleton_class_node_t *scn = (const pm_singleton_class_node_t *)sc;
+    const pm_node_t *sb = scn->body;
+    return scn->expression && PM_NODE_TYPE(scn->expression) == PM_SELF_NODE &&
+           sb && PM_NODE_TYPE(sb) == PM_STATEMENTS_NODE && ((const pm_statements_node_t *)sb)->body.size == 1 &&
+           PM_NODE_TYPE(((const pm_statements_node_t *)sb)->body.nodes[0]) == PM_SELF_NODE;
+  }
+  if (PM_NODE_TYPE(r) == PM_CALL_NODE) {
+    const pm_call_node_t *cn = (const pm_call_node_t *)r;
+    if (cn->arguments || cn->block || (cn->receiver && PM_NODE_TYPE(cn->receiver) != PM_SELF_NODE)) return 0;
+    char *nm = mx_name(cn->name);
+    int ok = strcmp(nm, "singleton_class") == 0 && (!strict || mx_prim_builtin(nm));
+    free(nm);
+    return ok;
+  }
+  return 0;
+}
+
+/* attr_accessor and its kin naming what they define only at run time (a
+   computed argument), or called on self's singleton class: macro code, which
+   leaves a plain attr_* call once the names are known */
+static int mx_attr_dyn(const pm_call_node_t *cn, int strict) {
+  if (cn->block || !cn->arguments) return 0;
+  char *nm = mx_name(cn->name);
+  int attr = mx_is_attr(nm);
+  free(nm);
+  if (!attr) return 0;
+  if (cn->receiver && PM_NODE_TYPE(cn->receiver) != PM_SELF_NODE) return mx_self_sclass(cn->receiver, strict);
+  for (size_t i = 0; i < cn->arguments->arguments.size; i++) {
+    pm_node_type_t t = PM_NODE_TYPE(cn->arguments->arguments.nodes[i]);
+    if (t != PM_SYMBOL_NODE && t != PM_STRING_NODE && t != PM_TRUE_NODE && t != PM_FALSE_NODE) return 1;
+  }
+  return 0;
 }
 
 static int mx_eval(MxCtx *c, pm_node_t *n, Mv *out);
@@ -1023,7 +1079,19 @@ static int mx_exec(MxCtx *c, pm_node_t *n) {
       }
       ok = 1;
       c->ret = mv_undef();   /* its value is the run time's */
-      if (o) {
+      if (o && !self_recv && mx_attr_dyn(cn, 1)) {
+        /* `singleton_class.attr_accessor name`: the same call in the
+           singleton class's body, the names substituted */
+        mxb_puts(o, "class << self; ");
+        mxb_puts(o, name);
+        mxb_puts(o, " ");
+        for (size_t i = 0; i < argc && ok; i++) {
+          if (i) mxb_puts(o, ", ");
+          ok = mx_residual(c, args->nodes[i], o);
+        }
+        mxb_puts(o, "; end\n");
+      }
+      else if (o) {
         if (self_recv && !cn->receiver && !cn->block && argc > 0 && strcmp(name, "public_send") != 0 &&
             strcmp(name, "send") != 0) {
           /* keep the call's shape, arguments substituted one by one */
@@ -1187,6 +1255,7 @@ static bool mx_dyn_visit(const pm_node_t *n, void *data) {
     pm_call_node_t *cn = (pm_call_node_t *)n;
     char *nm = mx_name(cn->name);
     int self_recv = !cn->receiver || PM_NODE_TYPE(cn->receiver) == PM_SELF_NODE;
+    if (mx_attr_dyn(cn, 1)) d->found = 1;
     if (self_recv) {
       static const char *const DYN[] = { "module_eval", "class_eval", "instance_eval",
         "const_set", "define_method", "define_singleton_method", "public_send", "send",
@@ -1262,6 +1331,53 @@ static int mx_is_attr(const char *n) {
          strcmp(n, "attr_accessor") == 0 || strcmp(n, "attr") == 0;
 }
 
+static void mx_add_macro(const char *module, char *name, pm_def_node_t *d, int self_def) {
+  if (g_mx_nmacros == g_mx_cmacros) {
+    g_mx_cmacros = g_mx_cmacros ? g_mx_cmacros * 2 : 64;
+    g_mx_macros = realloc(g_mx_macros, sizeof(MxMacro) * (size_t)g_mx_cmacros);
+  }
+  MxMacro *m = &g_mx_macros[g_mx_nmacros++];
+  memset(m, 0, sizeof *m);
+  m->module = strdup(module);
+  m->name = name;
+  m->next_same = -1;
+  m->def = d;
+  m->dynamic = -1;
+  m->self_def = self_def;
+}
+
+static bool mx_attr_dyn_visit(const pm_node_t *n, void *data) {
+  int *found = data;
+  if (PM_NODE_TYPE(n) == PM_CALL_NODE && mx_attr_dyn((const pm_call_node_t *)n, 0)) *found = 1;
+  return !*found;
+}
+
+/* The `def self.m`s of a class or module body that define accessors by names
+   their arguments give: macros of the class itself, for the calls of its body. */
+static void mx_collect_self_defs(pm_statements_node_t *st, const char *path) {
+  char *key = NULL;
+  for (size_t i = 0; i < st->body.size; i++) {
+    pm_node_t *s = st->body.nodes[i];
+    if (PM_NODE_TYPE(s) != PM_DEF_NODE) continue;
+    pm_def_node_t *d = (pm_def_node_t *)s;
+    if (!d->receiver || PM_NODE_TYPE(d->receiver) != PM_SELF_NODE || !d->body) continue;
+    int found = 0;
+    pm_visit_node(d->body, mx_attr_dyn_visit, &found);
+    if (!found) continue;
+    if (!key) key = mx_self_key(path);
+    char *dn = mx_name(d->name);
+    mx_note_def(dn);
+    mx_add_macro(key, dn, d, 1);
+  }
+  free(key);
+}
+
+/* the macro a `def self.m` is, or NULL */
+static int mx_is_self_macro_def(const pm_node_t *d) {
+  for (int i = 0; i < g_mx_nmacros; i++) if (g_mx_macros[i].self_def && (const pm_node_t *)g_mx_macros[i].def == d) return 1;
+  return 0;
+}
+
 /* The statements of a module body: every instance method it gives counts as
    a definition of that name, and the plain `def`s are the macros. */
 static void mx_collect_module(pm_statements_node_t *st, const char *path, int ffi) {
@@ -1272,20 +1388,7 @@ static void mx_collect_module(pm_statements_node_t *st, const char *path, int ff
       char *dn = mx_name(d->name);
       mx_note_def(dn);
       if (ffi) { free(dn); continue; }
-      if (g_mx_nmacros == g_mx_cmacros) {
-        g_mx_cmacros = g_mx_cmacros ? g_mx_cmacros * 2 : 64;
-        g_mx_macros = realloc(g_mx_macros, sizeof(MxMacro) * (size_t)g_mx_cmacros);
-      }
-      g_mx_macros[g_mx_nmacros].module = strdup(path);
-      g_mx_macros[g_mx_nmacros].name = dn;
-      g_mx_macros[g_mx_nmacros].next_same = -1;
-      g_mx_macros[g_mx_nmacros].def = d;
-      g_mx_macros[g_mx_nmacros].dynamic = -1;
-      g_mx_macros[g_mx_nmacros].expanded = 0;
-  g_mx_macros[g_mx_nmacros].writer = 0;
-  g_mx_macros[g_mx_nmacros].wv = NULL; g_mx_macros[g_mx_nmacros].wn = 0; g_mx_macros[g_mx_nmacros].wall = 0;
-  g_mx_macros[g_mx_nmacros].rv = NULL; g_mx_macros[g_mx_nmacros].rn = 0; g_mx_macros[g_mx_nmacros].rall = 0;
-      g_mx_nmacros++;
+      mx_add_macro(path, dn, d, 0);
     }
     else if (PM_NODE_TYPE(s) == PM_ALIAS_METHOD_NODE) {
       char *an = mx_sym_or_str(((pm_alias_method_node_t *)s)->new_name);
@@ -1338,6 +1441,8 @@ static bool mx_collect_visit(const pm_node_t *n, void *data) {
   if (ffi) g_mx_in_ffi++;
   if (is_mod && body && PM_NODE_TYPE(body) == PM_STATEMENTS_NODE)
     mx_collect_module((pm_statements_node_t *)body, full, g_mx_in_ffi > 0);
+  if (body && PM_NODE_TYPE(body) == PM_STATEMENTS_NODE && !g_mx_in_ffi)
+    mx_collect_self_defs((pm_statements_node_t *)body, full);
   if (body) pm_visit_node(body, mx_collect_visit, full);
   if (ffi) g_mx_in_ffi--;
   free(full);
@@ -1397,7 +1502,7 @@ static bool mx_hide_visit(const pm_node_t *n, void *data) {
         if (PM_NODE_TYPE(s) == PM_DEF_NODE) {
           MxHideScan in = { 1 };
           pm_def_node_t *d = (pm_def_node_t *)s;
-          if (d->receiver) { char *dn = mx_name(d->name); mx_names_add(&g_mx_hidden, dn); free(dn); }
+          if (d->receiver && !mx_is_self_macro_def(s)) { char *dn = mx_name(d->name); mx_names_add(&g_mx_hidden, dn); free(dn); }
           if (d->body) pm_visit_node(d->body, mx_hide_visit, &in);
         }
         else pm_visit_node(s, mx_hide_visit, hs);
@@ -1407,7 +1512,7 @@ static bool mx_hide_visit(const pm_node_t *n, void *data) {
   }
   case PM_DEF_NODE: {
     const pm_def_node_t *d = (const pm_def_node_t *)n;
-    if (d->receiver) { char *dn = mx_name(d->name); mx_names_add(&g_mx_hidden, dn); free(dn); }
+    if (d->receiver && !mx_is_self_macro_def(n)) { char *dn = mx_name(d->name); mx_names_add(&g_mx_hidden, dn); free(dn); }
     return true;
   }
   case PM_SINGLETON_CLASS_NODE:
@@ -1456,6 +1561,21 @@ static bool mx_gen_visit(const pm_node_t *n, void *data) {
       for (size_t i = 0; i < ((const pm_statements_node_t *)b)->body.size; i++) {
         pm_node_t *s = ((const pm_statements_node_t *)b)->body.nodes[i];
         if (PM_NODE_TYPE(s) == PM_DEF_NODE) { char *dn = mx_name(((pm_def_node_t *)s)->name); mx_names_add(out, dn); free(dn); }
+        else if (PM_NODE_TYPE(s) == PM_CALL_NODE && !((pm_call_node_t *)s)->receiver && ((pm_call_node_t *)s)->arguments) {
+          pm_call_node_t *cn = (pm_call_node_t *)s;
+          char *nm = mx_name(cn->name);
+          if (mx_is_attr(nm)) {
+            int setter = strcmp(nm, "attr_reader") != 0 && strcmp(nm, "attr") != 0;
+            for (size_t j = 0; j < cn->arguments->arguments.size; j++) {
+              char *a = mx_sym_or_str(cn->arguments->arguments.nodes[j]);
+              if (!a) continue;
+              mx_names_add(out, a);
+              if (setter) { char *w = malloc(strlen(a) + 2); sprintf(w, "%s=", a); mx_names_add(out, w); free(w); }
+              free(a);
+            }
+          }
+          free(nm);
+        }
       }
   }
   else if (PM_NODE_TYPE(n) == PM_CALL_NODE) {
@@ -2064,6 +2184,7 @@ typedef struct {
   int vis;                      /* a bare private/protected/public/module_function came */
   int unknown;                  /* a call was left as written that may define methods or write state */
   MxNames gen;                  /* class methods its expansions define */
+  MxNames selfdefs;             /* the `def self.m`s its body gave so far, at its top level */
   int noiv;                     /* this body may run out of order, or be another class's: no state */
   MxVar iv[64]; int niv;        /* the ivars its macros keep, as the evaluator follows them */
 } MxClass;
@@ -2306,6 +2427,13 @@ static void mx_class_body(pm_statements_node_t *st, MxEdits *ed, MxClass *k, int
       s = gs->body.nodes[0];
     }
     pm_node_t *whole = guard ? st->body.nodes[i] : s;
+    if (PM_NODE_TYPE(s) == PM_DEF_NODE && top && !guard && ((pm_def_node_t *)s)->receiver &&
+        PM_NODE_TYPE(((pm_def_node_t *)s)->receiver) == PM_SELF_NODE) {
+      char *dn = mx_name(((pm_def_node_t *)s)->name);
+      mx_names_add(&k->selfdefs, dn);
+      free(dn);
+      continue;
+    }
     if (PM_NODE_TYPE(s) != PM_CALL_NODE) continue;
     pm_call_node_t *cn = (pm_call_node_t *)s;
     if (cn->receiver || cn->block) continue;
@@ -2343,7 +2471,13 @@ static void mx_class_body(pm_statements_node_t *st, MxEdits *ed, MxClass *k, int
     int dyn = mx_macro_dynamic(m, 0);
     if (!dyn && !m->writer) { free(name); continue; }   /* neither defines nor writes: stays as it is */
     int extended = 0;
-    for (int q = 0; q < k->next; q++) if (strcmp(k->ext[q], m->module) == 0) extended = 1;
+    if (m->self_def) {
+      /* a class method of this class, defined before the call */
+      char *key = mx_self_key(k->path);
+      extended = strcmp(key, m->module) == 0 && mx_names_has(&k->selfdefs, name);
+      free(key);
+    }
+    else for (int q = 0; q < k->next; q++) if (strcmp(k->ext[q], m->module) == 0) extended = 1;
     free(name);
     /* a heredoc argument's body lies outside the call's range */
     int hd = 0;
@@ -2470,15 +2604,33 @@ static int mx_edit_cmp(const void *a, const void *b) {
   return x->start < y->start ? -1 : x->start > y->start;
 }
 
+/* Text that may hold an attr_* call on a receiver (`singleton_class.attr_accessor`)
+   or with a computed first argument (`attr_accessor name`) */
+static int mx_source_attr_dyn(const char *src) {
+  for (const char *p = strstr(src, "attr"); p; p = strstr(p + 4, "attr")) {
+    if (p > src && (isalnum((unsigned char)p[-1]) || p[-1] == '_')) continue;
+    const char *q = p + 4;
+    if (strncmp(q, "_accessor", 9) == 0) q += 9;
+    else if (strncmp(q, "_reader", 7) == 0 || strncmp(q, "_writer", 7) == 0) q += 7;
+    if (isalnum((unsigned char)*q) || *q == '_') continue;
+    if (p > src && p[-1] == '.') return 1;
+    while (*q == ' ' || *q == '(') q++;
+    if (isalpha((unsigned char)*q) || *q == '_' || *q == '*' || *q == '@') return 1;
+  }
+  return 0;
+}
+
 /* Expand the class-body macro calls of `source` (the whole program). Returns
    a new buffer, or NULL when nothing was expanded. */
 
 static char *sp_expand_class_macros(const char *source) {
-  /* cheap gate: a module_eval / const_set / public_send somewhere */
-  if (!strstr(source, "extend")) return NULL;
-  if (!strstr(source, "module_eval") && !strstr(source, "class_eval") &&
-      !strstr(source, "const_set") && !strstr(source, "public_send") &&
-      !strstr(source, "define_singleton_method") && !strstr(source, "define_method"))
+  /* cheap gate: a module_eval / const_set / public_send somewhere, or an
+     attr_* call that names what it defines at run time */
+  if ((!strstr(source, "extend") ||
+       (!strstr(source, "module_eval") && !strstr(source, "class_eval") &&
+        !strstr(source, "const_set") && !strstr(source, "public_send") &&
+        !strstr(source, "define_singleton_method") && !strstr(source, "define_method"))) &&
+      !mx_source_attr_dyn(source))
     return NULL;
   size_t len = strlen(source);
   if (getenv("SPINEL_MACRO_DUMP")) {
@@ -2519,6 +2671,7 @@ static char *sp_expand_class_macros(const char *source) {
       for (int i = 0; i < g_mx_nclasses; i++) {
         free(g_mx_classes[i].ext);
         mx_names_free(&g_mx_classes[i].gen);
+        mx_names_free(&g_mx_classes[i].selfdefs);
         free(g_mx_classes[i].path);
       }
       g_mx_nclasses = 0;
