@@ -76,7 +76,9 @@ int interp_is_literal_fold(const NodeTable *nt, int id) {
    The plan is shared with the append form (`s << "..#{x}.."`), which
    writes the same parts into the receiver instead of a fresh string. */
 enum { WK_LIT, WK_INT, WK_BOOL, WK_NIL, WK_DYN };
-typedef struct { int kind; int tmp; int lit_off; int lit_esc_len; long lit_len; int plain; } WPart;
+/* neutral: the temp of a boxed part's flag, set when its value was no
+   String, or -1; such a part takes no part in the result's encoding */
+typedef struct { int kind; int tmp; int lit_off; int lit_esc_len; long lit_len; int plain; int neutral; } WPart;
 typedef struct {
   WPart *wp; int nwp; int ndyn_or_scalar;
   Buf lits;      /* escaped literal texts, concatenated */
@@ -126,7 +128,7 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
         else if (ch >= 0x20 && ch < 0x7f) buf_printf(&lits, "%c", ch);
         else buf_printf(&lits, "\\%03o", ch);
       }
-      wp[nwp].kind = WK_LIT; wp[nwp].tmp = -1; wp[nwp].plain = 0;
+      wp[nwp].kind = WK_LIT; wp[nwp].tmp = -1; wp[nwp].plain = 0; wp[nwp].neutral = -1;
       wp[nwp].lit_off = off; wp[nwp].lit_esc_len = lits.len - off;
       wp[nwp].lit_len = blen;
       nwp++;
@@ -181,7 +183,7 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
          native C type (written digit-by-digit later); everything else
          converts to a marker-carrying string whose byte length is summed. */
       Buf conv; memset(&conv, 0, sizeof conv);
-      int wkind = WK_DYN;
+      int wkind = WK_DYN, neutral = -1;
       char *iv_pre = NULL;   /* the value's text, emitted once by the probe below */
       #define EMIT_IV() do { if (vexpr[0]) buf_puts(&conv, vexpr); \
                              else if (iv_pre) buf_puts(&conv, iv_pre); \
@@ -233,8 +235,16 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
         EMIT_IV(); buf_puts(&conv, ")");
       }
       else if (t == TY_POLY) {
-        buf_puts(&conv, "sp_poly_to_s(");
-        EMIT_IV(); buf_puts(&conv, ")");
+        /* a boxed value that is no String (an Integer, nil, ...) reads as
+           US-ASCII text, which takes no part in the encoding as a String part
+           does: "#{1}#{b}" with a binary b is binary */
+        neutral = ++g_tmp;
+        int tvp = ++g_tmp;
+        buf_printf(&decls, "int _t%d = 0; ", neutral);
+        buf_printf(&conv, "({ sp_RbVal _t%d = ", tvp);
+        EMIT_IV();
+        buf_printf(&conv, "; _t%d = !(sp_poly_is_strbuf(_t%d) || _t%d.tag == SP_TAG_STR); sp_poly_to_s(_t%d); })",
+                   neutral, tvp, tvp, tvp);
       }
       else if (t == TY_EXCEPTION) {
         buf_puts(&conv, "sp_exc_message(");
@@ -407,6 +417,7 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
       free(conv.p);
       wp[nwp].kind = wkind; wp[nwp].tmp = tv2;
       wp[nwp].plain = wkind == WK_INT && int_value_plain(c, expr);   /* never the nil sentinel (#7612) */
+      wp[nwp].neutral = neutral;
       wp[nwp].lit_off = 0; wp[nwp].lit_esc_len = 0; wp[nwp].lit_len = 0;
       nwp++;
       ndyn_or_scalar++;
@@ -480,9 +491,11 @@ void emit_interp(Compiler *c, int id, Buf *b) {
       buf_printf(b, "_e%d = sp_str_enc_step_i(_e%d, _t%d, (size_t)(_t%d - _t%d), \"%.*s\", %ld, 0); ",
                  eid, eid, rid, wpid, rid, wp[k].lit_esc_len, (lits.p ? lits.p : "") + wp[k].lit_off,
                  wp[k].lit_len);
-    else if (eid >= 0 && wp[k].kind == WK_DYN)
+    else if (eid >= 0 && wp[k].kind == WK_DYN) {
+      if (wp[k].neutral >= 0) buf_printf(b, "if (!_t%d) ", wp[k].neutral);
       buf_printf(b, "_e%d = sp_str_enc_step_i(_e%d, _t%d, (size_t)(_t%d - _t%d), _t%d, _l%d, sp_str_is_binary(_t%d)); ",
                  eid, eid, rid, wpid, rid, wp[k].tmp, wp[k].tmp, wp[k].tmp);
+    }
     switch (wp[k].kind) {
       case WK_LIT:
         if (wp[k].lit_len > 0)

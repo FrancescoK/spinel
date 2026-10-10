@@ -4,5 +4,4 @@
 # Gaps found when the lane began, at bcce09575: a wrong answer or C that
 # does not build. A gap leaves this list with its fix.
 test/safe_nav_reopened_builtin.rb
-test/string_interp_join_encoding.rb
 test/super_param_poly_widen_retract.rb
