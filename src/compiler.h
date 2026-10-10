@@ -1154,6 +1154,16 @@ typedef struct {
      base kinds (ivs_base_kind); pres_memo_n counts both, -1 before the first */
   int *pres_memo;
   int pres_memo_n;
+  /* per presence family (1 + its index): whether its ivars keep the rank of
+     their first assignment (ivar_ranked); 0 not yet asked, 1 no, 2 yes */
+  unsigned char *pres_rank;
+  int pres_rank_n;
+  /* the program makes objects without initialize (allocate, Marshal.load),
+     so the order initialize assigns the ivars in says nothing of theirs; and
+     the listing order of each class (ivar_listing_order_new) */
+  int pres_noinit;
+  int **pres_ord;
+  int pres_ord_n;
 } Compiler;
 enum { PRES_UNMARKED = 1, PRES_REMOVED = 2 };
 

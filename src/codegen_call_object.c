@@ -2344,6 +2344,60 @@ int emit_call_display_ivar_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
   return 0;
 }
 
+/* The statements that put the names of the ivars of class k's object obj
+   that are assigned into the Array arr (made here when create), in the
+   order the class lists them: its rank order, or its static order. */
+void emit_ivar_list_fill(Compiler *c, int k, const char *obj, const char *arr, int create, Buf *b) {
+  ClassInfo *ivc = &c->classes[k];
+  if (create) buf_printf(b, " %s = sp_PolyArray_new();", arr);
+  /* a ranked class lists them in the order they were first assigned */
+  int ranked = ivar_ranked(c, k);
+  if (ranked) {
+    buf_puts(b, " ");
+    emit_ivar_order_open(c, k, obj, b);
+  }
+  int *ord = ivar_listing_order_new(c, k);
+  /* Data/Struct members are NOT @-instance variables in CRuby (#2849) */
+  for (int jj = ivc->is_struct ? ivc->nmembers : 0; jj < ivc->nivars; jj++) {
+    int ji = ord[jj];
+    char ex[200], tb[300];
+    snprintf(ex, sizeof ex, "%s->iv_%s", obj, iv_c(ivc->ivars[ji] + 1));
+    const char *set = ranked ? NULL : ivar_set_test(c, k, ivc->ivars[ji], ex, tb, sizeof tb);
+    if (ranked) buf_printf(b, "case %d:", ji);
+    if (set) buf_printf(b, " if %s", set);
+    buf_printf(b, " sp_PolyArray_push(%s, sp_box_sym(sp_sym_intern(\"%s\")));", arr, ivc->ivars[ji]);
+    if (ranked) buf_puts(b, " break; ");
+  }
+  free(ord);
+  if (ranked) emit_ivar_order_close(b);
+}
+
+/* A receiver typed as class cid may be an instance of a class below it, which
+   lists its own ivars, in an order of its own: does one below list more of
+   them than cid, or those of cid's in another order (a rank-ordered family
+   lists by rank in every class)? A `K.new` is an instance of K itself. */
+static int ivar_list_mixed(Compiler *c, int recv, int cid) {
+  ClassInfo *ci = &c->classes[cid];
+  if (ci->is_value_type || ci->is_struct || class_is_exc_subclass(c, cid)) return 0;
+  if (recv >= 0 && nt_kind(c->nt, recv) == NK_CallNode && is_new_name(nt_str(c->nt, recv, "name"))) {
+    int r = nt_ref(c->nt, recv, "receiver");
+    if (r >= 0 && nt_kind(c->nt, r) == NK_ConstantReadNode && comp_class_index(c, nt_str(c->nt, r, "name")) == cid &&
+        comp_cmethod_in_chain(c, cid, "new", NULL) < 0) return 0;
+  }
+  int ranked = ivar_ranked(c, cid);
+  int *base = ivar_listing_order_new(c, cid), mixed = 0;
+  for (int d = 0; d < c->nclasses && !mixed; d++) {
+    if (d == cid || !is_descendant(c, d, cid) || !c->classes[d].instantiated) continue;
+    if (c->classes[d].nivars != ci->nivars) { mixed = 1; break; }
+    if (ranked) continue;
+    int *od = ivar_listing_order_new(c, d);
+    for (int i = 0; i < ci->nivars && !mixed; i++) mixed = base[i] != od[i];
+    free(od);
+  }
+  free(base);
+  return mixed;
+}
+
 /* A presence flag is read after allocating the result Array, so its receiver
    must stay live across that allocation. */
 int emit_object_ivar_list(Compiler *c, int recv, int ivcid, Buf *b) {
@@ -2358,6 +2412,32 @@ int emit_object_ivar_list(Compiler *c, int recv, int ivcid, Buf *b) {
     tracked |= kind == 3;
   }
   int tro = any1 ? ++g_tmp : -1;
+  /* A class below lists in an order of its own: the object's class decides */
+  if (ivar_list_mixed(c, recv, ivcid)) {
+    tro = ++g_tmp;
+    /* the class is read before the Array is allocated; the object only after,
+       so it is rooted only if an arm tests the assignment of an ivar */
+    int reads = 0;
+    for (int d = 0; d < c->nclasses; d++) {
+      if (d != ivcid && (!is_descendant(c, d, ivcid) || !c->classes[d].instantiated)) continue;
+      reads |= ivar_ranked(c, d);
+      for (int j = 0; j < c->classes[d].nivars; j++) reads |= ivar_set_kind(c, d, c->classes[d].ivars[j]) & 1;
+    }
+    buf_printf(b, "({ sp_%s *_t%d = ", ivc->c_name, tro); emit_expr(c, recv, b);
+    buf_printf(b, "; int _t%dc = _t%d->cls_id;", tro, tro);
+    if (reads) buf_printf(b, " SP_GC_ROOT(_t%d);", tro);
+    buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); switch (_t%dc) {", tia, tia, tro);
+    char an[32]; snprintf(an, sizeof an, "_t%d", tia);
+    for (int d = 0; d < c->nclasses; d++) {
+      if (d != ivcid && (!is_descendant(c, d, ivcid) || !c->classes[d].instantiated)) continue;
+      char ob[64]; snprintf(ob, sizeof ob, "((sp_%s *)_t%d)", c->classes[d].c_name, tro);
+      buf_printf(b, d == ivcid ? " default:" : " case %d:", d);
+      emit_ivar_list_fill(c, d, ob, an, 0, b);
+      buf_puts(b, " break;");
+    }
+    buf_printf(b, " } _t%d; })", tia);
+    return 1;
+  }
   /* A by-value object's tests read a local copy; self is one only outside
      initialize, where it is passed by address. */
   int self_ptr = recv >= 0 && nt_kind(c->nt, recv) == NK_SelfNode && g_self_deref && !strcmp(g_self_deref, "->");
@@ -2370,14 +2450,26 @@ int emit_object_ivar_list(Compiler *c, int recv, int ivcid, Buf *b) {
   else { buf_printf(b, "({ (void)("); emit_expr(c, recv, b); buf_puts(b, ");"); }
   if (tracked) buf_printf(b, " SP_GC_ROOT(_t%d);", tro);
   buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ", tia, tia);
+  /* a ranked class lists them in the order they were first assigned */
+  int ranked = ivar_ranked(c, ivcid);
+  if (ranked) {
+    char ob[32]; snprintf(ob, sizeof ob, "_t%d", tro);
+    emit_ivar_order_open(c, ivcid, ob, b);
+  }
+  int *ord = ivar_listing_order_new(c, ivcid);
   /* Data/Struct members are NOT @-instance variables in CRuby (#2849) */
-  for (int ji = ivc->is_struct ? ivc->nmembers : 0; ji < ivc->nivars; ji++) {
+  for (int jj = ivc->is_struct ? ivc->nmembers : 0; jj < ivc->nivars; jj++) {
+    int ji = ord[jj];
     char ex[160], tb[256];
     snprintf(ex, sizeof ex, "_t%d->iv_%s", tro, iv_c(ivc->ivars[ji] + 1));
-    const char *set = any1 ? ivar_set_test(c, ivcid, ivc->ivars[ji], ex, tb, sizeof tb) : NULL;
+    const char *set = any1 && !ranked ? ivar_set_test(c, ivcid, ivc->ivars[ji], ex, tb, sizeof tb) : NULL;
+    if (ranked) buf_printf(b, "case %d: ", ji);
     if (set) buf_printf(b, "if %s ", set);
     buf_printf(b, "sp_PolyArray_push(_t%d, sp_box_sym(sp_sym_intern(\"%s\"))); ", tia, ivc->ivars[ji]);
+    if (ranked) buf_puts(b, "break; ");
   }
+  free(ord);
+  if (ranked) { emit_ivar_order_close(b); buf_puts(b, " "); }
   buf_printf(b, "_t%d; })", tia);
   return 1;
 }
@@ -2444,7 +2536,9 @@ static void emit_reflect_ivar_set(Compiler *c, int id, int recv, int value, int 
   snprintf(val, sizeof val, "_t%d", tv);
   emit_gc_root_var(c, mt, val, b);
   emit_frozen_obj_guard(c, cid, obj, b);
-  buf_printf(b, "%s->iv_%s = %s; %s->_sp_set_%s = TRUE; ", obj, iv_c(sym + 1), val, obj, iv_c(sym + 1));
+  char mk[300];
+  const char *mark = ivar_set_mark(c, cid, sym, obj, "->", mk, sizeof mk);
+  buf_printf(b, "%s->iv_%s = %s; %s ", obj, iv_c(sym + 1), val, mark ? mark : "");
   Repr rp = repr_of(c, id);
   emit_coerce_text(c, id, mt, rp.as_ty, CO_HOLD, val, "an instance variable write result", b);
   buf_puts(b, "; })");
