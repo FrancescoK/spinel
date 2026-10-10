@@ -14908,6 +14908,11 @@ int infer_block_params(Compiler *c) {
   NT_FOREACH_KIND(nt, NK_LambdaNode, id) {
     int pn = nt_ref(nt, id, "parameters");
     if (pn < 0) continue;
+    /* A capture wrapper is called where it is made, with the block's own
+       parameter, which a later arm of this pass may not have typed yet (a
+       boxed receiver's scan or each_char block): its parameter takes that
+       type from the call, never the arithmetic default */
+    if (nt_int(nt, id, "cap_iife", 0)) continue;
     int rn = 0; const int *reqs = nt_arr(nt, pn, "requireds", &rn);
     Scope *bs = comp_scope_of(c, id);
     TyKind deflt = proc_literal_escapes_as_arg(c, id) ? TY_POLY : TY_INT;
@@ -15017,6 +15022,10 @@ int infer_block_params(Compiler *c) {
       pt = TY_STRING;
     else if (rt == TY_STRING && (sp_streq(name, "each_byte") || sp_streq(name, "bytes") || sp_streq(name, "codepoints")))
       pt = TY_INT;
+    /* a boxed receiver's scan block binds each match boxed (the emitter's
+       sp_box_str), as infer_call has the call answer its checked receiver */
+    else if (rt == TY_POLY && is_scan_name(name) && !an_user_defines_or_reads(c, name))
+      pt = TY_POLY;
     else if (rt == TY_STRING && sp_streq(name, "scan")) {
       TyKind scan_pt = scan_block_param_type(c, id);
       int has_cap = scan_pt == TY_POLY_ARRAY;

@@ -38,3 +38,38 @@ def run4(boxed)
   yield n, bm
 end
 run4([+"abc", 1].first) { |n, x| p n, x }
+
+# a lambda made in the block captures the parameter: the captured copy is boxed
+# too, inside the inlined method and outside it, and for each_char as well
+def closure(boxed)
+  procs = []
+  boxed.scan(/./) { |ch| procs << -> { ch * 2 } }
+  yield procs.map(&:call)
+end
+closure([+"hi", 1].first) { |r| p r }
+def closure_plain(boxed)
+  procs = []
+  boxed.scan(/./) { |ch| procs << -> { ch * 2 } }
+  procs.map(&:call)
+end
+p closure_plain([+"hi", 1].first)
+def closure_chars(boxed)
+  procs = []
+  boxed.each_char { |ch| procs << -> { ch * 2 } }
+  procs.map(&:call)
+end
+p closure_chars([+"hi", 1].first)
+
+# the parameter reassigned to an Integer: what is stored from it is boxed
+def reassigned(boxed)
+  out = []
+  boxed.scan(/./) { |q| q = q.ord if q == "b"; out << q }
+  yield out
+end
+reassigned([+"abc", nil].first) { |o| p o }
+def reassigned_plain(boxed)
+  out = []
+  boxed.scan(/./) { |q| q = q.ord if q == "b"; out << q }
+  out
+end
+p reassigned_plain([+"abc", nil].first)
