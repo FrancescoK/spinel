@@ -12869,6 +12869,7 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
 
 /* A CallNode statement: the statement-level fast paths ahead of emit_expr (emit_stmt_inner's arms, in their order) */
 static int emit_call_stmt(Compiler *c, int id, Buf *b, int indent, const NodeTable *nt, const char *ty) {
+  refuse_prepass_at_emit(c, id);
   if (!(sp_streq(ty, "CallNode"))) return 0;
   if (emit_arysub_call_stmt(c, id, b, indent)) return 1;   /* #7449 */
   /* Reflection-mutation calls (remove_method/undef_method/remove_class_variable)

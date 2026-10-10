@@ -3380,6 +3380,20 @@ void refuse_from_plan(Compiler *c, int id, int from, const char *site) {
   unsupported_feature(c, id, p->msg);
 }
 
+/* A send with a runtime name, a runtime const_get and a binding call are
+   refused by passes that run ahead of emission (reject_runtime_send and
+   its kin), outside the per-method probe --defer-refusals defers refusals
+   in: so the flag still stopped the build of a program that only names one
+   (actionpack's polymorphic route helpers), though it never runs the line.
+   Under the flag those passes step aside and the same refusal, with the
+   same words, is raised here, where the call is emitted. */
+void refuse_prepass_at_emit(Compiler *c, int id) {
+  if (!defer_refusals()) return;
+  refuse_from_plan(c, id, CRF_SEND, "refuse-send");
+  refuse_from_plan(c, id, CRF_CONST_GET, "refuse-const-get");
+  refuse_from_plan(c, id, CRF_BINDING, "refuse-binding");
+}
+
 __attribute__((noreturn)) void unsupported(Compiler *c, int id, const char *what) {
   /* Silent emittability probe (dynamic-send arm selection): unwind without a
      diagnostic, the caller just drops this arm. */

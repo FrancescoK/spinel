@@ -15012,6 +15012,7 @@ static int scope_is_orphan_method(Compiler *c, int s) {
    name that is not in scope, a bare `binding` value, ...) has no static answer,
    so reject it loudly at build time instead of aborting at runtime. */
 static void reject_binding(Compiler *c) {
+  if (defer_refusals()) return;   /* refused where it is emitted (refuse_prepass_at_emit) */
   NT_FOREACH_KIND(c->nt, NK_CallNode, id) refuse_from_plan(c, id, CRF_BINDING, "refuse-binding");
 }
 
@@ -15022,10 +15023,12 @@ static void reject_binding(Compiler *c) {
    "unknown" (#4843); refuse it where it is written instead. The explicit
    and class-method forms lower to a static dispatch (desugar_dynamic_const_get). */
 static void reject_runtime_const_get(Compiler *c) {
+  if (defer_refusals()) return;   /* refused where it is emitted (refuse_prepass_at_emit) */
   NT_FOREACH_KIND(c->nt, NK_CallNode, id) refuse_from_plan(c, id, CRF_CONST_GET, "refuse-const-get");
 }
 
 static void reject_runtime_send(Compiler *c) {
+  if (defer_refusals()) return;   /* refused where it is emitted (refuse_prepass_at_emit) */
   NT_FOREACH_KIND(c->nt, NK_CallNode, id) refuse_from_plan(c, id, CRF_SEND, "refuse-send");
 }
 

@@ -1186,6 +1186,9 @@ int prog_has_conv_method(Compiler *c, const char *conv, TyKind want);
 __attribute__((noreturn)) void unsupported(Compiler *c, int id, const char *what);
 int unsup_message(Compiler *c, int id, const char *what, int self_ci, char *msg, size_t cap);
 void refuse_from_plan(Compiler *c, int id, int from, const char *site);
+/* --defer-refusals: the plan refusals the passes ahead of emission make
+   otherwise, raised where call `id` is emitted */
+void refuse_prepass_at_emit(Compiler *c, int id);
 __attribute__((noreturn)) void unsupported_feature(Compiler *c, int id, const char *msg);
 
 /* Compile a regexp literal with the engine and throw the result away, to
