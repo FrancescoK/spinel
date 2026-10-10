@@ -1844,6 +1844,14 @@ static int block_tail_needs_value_form(Compiler *c, int id) {
      `with_retries { system(cmd) }` did not build (#4802). The expression
      form is the same compound as a statement expression. */
   if (nt_ref(nt, id, "receiver") < 0 && sp_streq(nm, "system")) return 1;
+  /* a String mutator that answers its receiver (concat, replace, insert,
+     prepend): the statement form changes the String and has no value,
+     and the block answers the String (#8400) */
+  if ((sp_streq(nm, "concat") || sp_streq(nm, "replace") || sp_streq(nm, "insert") ||
+       sp_streq(nm, "prepend")) && nt_ref(nt, id, "receiver") >= 0) {
+    TyKind rt = comp_ntype(c, nt_ref(nt, id, "receiver"));
+    if (rt == TY_STRING || rt == TY_STRBUF) return 1;
+  }
   /* a call desugar_builtin_enum_calls made of an Enumerable name (`v.minmax`
      on a boxed v is `__enum_minmax(v)`) is spliced, and its statement form
      ends in the definition's tail `if`, whose value is void

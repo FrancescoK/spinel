@@ -16072,7 +16072,14 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
     /* (--share-strings: a receiver that may be nil, a shared parameter an
        argument binds nil, runs behind its nil test, as the statement form
        does) */
-    if (_srecv >= 0 && _snm && sp_streq(_snm, "<<") &&
+    /* concat, replace, insert and prepend answer the receiver too: a
+       block ending in one hands on the String it changed, where the
+       statement form left the splice no value to take (#8400). Those read
+       a plain local as the base again. */
+    int _sself = _snm && (sp_streq(_snm, "concat") || sp_streq(_snm, "replace") ||
+                          sp_streq(_snm, "insert") || sp_streq(_snm, "prepend")) &&
+                 _srecv >= 0 && nt_kind(nt, _srecv) == NK_LocalVariableReadNode;
+    if (_srecv >= 0 && _snm && (sp_streq(_snm, "<<") || _sself) &&
         comp_ntype(c, _srecv) == TY_STRING &&
         ((repr_share_rule(c) && emit_nil_target_stmt(c, id, b, indent)) ||
          emit_array_mutate_stmt(c, id, b, indent))) {
@@ -16080,7 +16087,7 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
          receiver is the inner `<<` call, and re-emitting it would run the
          inner links a second time (doubling the appended text -- and writing
          the doubled string back through a byref param) */
-      int _sbase = str_append_chain_base(c, id);
+      int _sbase = sp_streq(_snm, "<<") ? str_append_chain_base(c, id) : _srecv;
       emit_indent(b, indent); emit_tail_lead(b);
       int _wp = g_result_var ? g_result_poly : (g_ret_type == TY_POLY);
       if (_wp) emit_boxed(c, _sbase, b);
