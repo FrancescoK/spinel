@@ -6875,16 +6875,19 @@ static int desugar_builtin_method_obj(Compiler *c) {
     }
     const char *sym = method_sym_arg(c, id);
     if (!sym || !sym[0] || sym[0] == '_') continue;   /* already rewritten / internal */
-    /* a binary operator method (5.method(:+)) gets a 2-param wrapper below;
-       other non-letter syms have no wrapper shape */
+    /* a binary operator method (5.method(:+)) gets a 2-param wrapper below,
+       a unary one (5.method(:-@)) the 1-param wrapper of a method that takes
+       no argument; other non-letter syms have no wrapper shape */
     static const char *const BAM_BINOPS[] = { "+", "-", "*", "/", "%", "**",
                                               "&", "|", "^", "<<", ">>", "<=>",
                                               "==", "!=", "<", "<=", ">", ">=",
                                               "=~", "[]", NULL };
-    int binop = 0;
+    static const char *const BAM_UNOPS[] = { "+@", "-@", "~", NULL };
+    int binop = 0, unop = 0;
     if (!(sym[0] >= 'a' && sym[0] <= 'z')) {
       for (int k = 0; BAM_BINOPS[k]; k++) if (sp_streq(sym, BAM_BINOPS[k])) { binop = 1; break; }
-      if (!binop) continue;
+      for (int k = 0; !binop && BAM_UNOPS[k]; k++) if (sp_streq(sym, BAM_UNOPS[k])) { unop = 1; break; }
+      if (!binop && !unop) continue;
     }
     TyKind rt = infer_type(c, recv);
     /* A user-object receiver whose sym is an attr/struct accessor with NO real
