@@ -2542,10 +2542,14 @@ void register_singleton_defs(Compiler *c) {
          its `@ivars` read as the enclosing class's. Say so here rather than
          letting the C compiler report it against generated code (#4169).
          extend / define_singleton_method keep their own fallbacks. */
+      /* Refused where it is emitted -- the def statement and the method's
+         own body (sg_refused_def) -- so --defer-refusals defers it to the
+         method that defines it: refused here, ahead of emission, it stopped
+         the build of a program that never runs the line (activerecord's
+         Explain#exec_explain, `def str.inspect; self; end`). */
       if (idk == NK_DefNode && !is_extend && !is_dsm && !is_scls &&
           sg_def_needs_self(c, id))
-        unsupported_feature(c, id, "singleton method that needs a self, on a "
-                                   "receiver that is not one user-class instance");
+        nt_node_set_int(nt, id, "sg_needs_self_refused", 1);
       continue;   /* not statically traceable: leave as today */
     }
     /* `def @a.m` / `def @@a.m`: the receiver is read where the def stands,

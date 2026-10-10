@@ -3373,6 +3373,11 @@ int unsup_message(Compiler *c, int id, const char *what, int self_ci, char *msg,
 /* A reader of the call plan's refusal (CP_REFUSE): the plan refuses node id
    by the decision `from`, so codegen raises it in the plan's words (site: the
    --plan-check reader name). Returns when the plan does not. */
+void sg_refused_def(Compiler *c, int def) {
+  if (def >= 0 && def < c->nt->count && nt_int(c->nt, def, "sg_needs_self_refused", 0))
+    unsupported_feature(c, def, "singleton method that needs a self, on a receiver that is not one user-class instance");
+}
+
 void refuse_from_plan(Compiler *c, int id, int from, const char *site) {
   const CallPlan *p = cplan_refuse(c, id);
   if (p->dispatch != CP_REFUSE || p->rfrom != from) return;

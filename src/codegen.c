@@ -5390,10 +5390,18 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
   }
 
   if (s->cs_synth) { emit_compiler_state_method(c, s, b); return; }
-  if (s->class_id >= 0 && !s->is_cmethod && s->name && c->classes[s->class_id].is_value_type &&
-      comp_trampoline_kind(c, s->class_id, s->name, NULL)) {
+  /* a `def recv.m` reading self on a receiver no user class's instance
+     holds: refused at the def statement (sg_refused_def), which is where
+     the program would define it; its body, which has no self to read, is a
+     stub, as an unsupported trampoline's is below */
+  int sg_refused = s->def_node >= 0 && nt_int(c->nt, s->def_node, "sg_needs_self_refused", 0);
+  if (sg_refused ||
+      (s->class_id >= 0 && !s->is_cmethod && s->name && c->classes[s->class_id].is_value_type &&
+       comp_trampoline_kind(c, s->class_id, s->name, NULL))) {
     emit_method_signature(c, s, b);
-    buf_puts(b, " {\n  sp_raise_cls(\"NotImplementedError\", \"instance_eval of a proc on a by-value object\");\n");
+    buf_printf(b, " {\n  sp_raise_cls(\"NotImplementedError\", \"%s\");\n",
+               sg_refused ? "singleton method that needs a self, on a receiver that is not one user-class instance"
+                          : "instance_eval of a proc on a by-value object");
     if (method_is_void(s)) {
       /* A `return <value>;` in a void function is a constraint violation that
          MinGW gcc flags under -Werror (-Wno-all doesn't cover -Wreturn-type

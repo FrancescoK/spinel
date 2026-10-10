@@ -1189,6 +1189,9 @@ void refuse_from_plan(Compiler *c, int id, int from, const char *site);
 /* --defer-refusals: the plan refusals the passes ahead of emission make
    otherwise, raised where call `id` is emitted */
 void refuse_prepass_at_emit(Compiler *c, int id);
+/* a `def recv.m` reading self on a receiver no user class's instance holds
+   (analyze_scope marks it): refused where the def or its body is emitted */
+void sg_refused_def(Compiler *c, int def);
 __attribute__((noreturn)) void unsupported_feature(Compiler *c, int id, const char *msg);
 
 /* Compile a regexp literal with the engine and throw the result away, to
