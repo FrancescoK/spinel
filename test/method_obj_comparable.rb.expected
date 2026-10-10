@@ -1,0 +1,21 @@
+true
+false
+2
+:between?
+Comparable
+3
+7
+-1
+true
+false
+true
+"n"
+true
+true
+[9, 5]
+"wrong number of arguments (given 1, expected 2)"
+Comparable
+1
+Integer
+Comparable
+-1

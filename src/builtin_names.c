@@ -1021,8 +1021,21 @@ static int builtin_name_in(const char *name, const char *const *names) {
    public methods as CRuby 4.0 lists them: Integer and Float are Numeric and
    Comparable, String and Symbol Comparable, Array, Hash and Range
    Enumerable. The builtin table holds each class's own methods only. */
-int builtin_module_owns(const char *cls, const char *m) {
+/* Comparable's own methods on a builtin class that includes it: Integer,
+   Float, String and Symbol. */
+int builtin_comparable_owns(const char *cls, const char *m) {
   static const char *const cmp[] = { "<", "<=", "==", ">", ">=", "between?", "clamp", NULL };
+  return (is_numeric_class_name(cls) || sp_streq(cls, "String") || sp_streq(cls, "Symbol")) &&
+         builtin_name_in(m, cmp);
+}
+
+/* Method#arity of a Comparable method: between?(min, max), clamp(min, max)
+   or clamp(range), and the one-operand comparisons. */
+int builtin_comparable_arity(const char *m) {
+  return sp_streq(m, "between?") ? 2 : sp_streq(m, "clamp") ? -1 : 1;
+}
+
+int builtin_module_owns(const char *cls, const char *m) {
   static const char *const num[] = {
     "%", "+@", "-@", "<=>", "abs", "abs2", "angle", "arg", "ceil", "clone", "coerce", "conj",
     "conjugate", "denominator", "div", "divmod", "dup", "eql?", "fdiv", "finite?", "floor", "i",
@@ -1039,7 +1052,7 @@ int builtin_module_owns(const char *cls, const char *m) {
     "slice_when", "sort", "sort_by", "sum", "take", "take_while", "tally", "to_a", "to_h", "to_set",
     "uniq", "zip", NULL };
   int numeric = is_numeric_class_name(cls);
-  if ((numeric || sp_streq(cls, "String") || sp_streq(cls, "Symbol")) && builtin_name_in(m, cmp)) return 1;
+  if (builtin_comparable_owns(cls, m)) return 1;
   if (numeric && builtin_name_in(m, num)) return 1;
   if ((sp_streq(cls, "Array") || sp_streq(cls, "Hash") || sp_streq(cls, "Range")) && builtin_name_in(m, enm)) return 1;
   return 0;
