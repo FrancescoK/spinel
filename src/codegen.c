@@ -11430,6 +11430,15 @@ static void emit_zsuper_param(Compiler *c, Scope *s, Scope *pm, const ZSuper *z,
       g_nren = own_nren;
       emit_zsuper_arg(c, s, dst, dt, s->pnames[own], b);
     }
+    else if (i == pm->rest_idx) {
+      /* the parent's rest, sliced fresh out of the gather, is held for the
+         call as the call paths hold one (emit_rest_held) */
+      g_nren = parent_nren;
+      Buf rb; memset(&rb, 0, sizeof rb);
+      emit_gathered_param(c, pm, i, z->gather, &rb);
+      emit_rest_held(dt == TY_POLY, rb.p, b);
+      free(rb.p);
+    }
     else {
       g_nren = parent_nren;
       emit_gathered_param(c, pm, i, z->gather, b);
