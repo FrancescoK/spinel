@@ -236,6 +236,8 @@ TyKind yield_value_type_via_super(Compiler *c, int mi);
    (`...`, `&` of the block parameter) rather than a proc value of its own. */
 int call_forwards_own_block(Compiler *c, int cid);
 int yield_value_diverges(Compiler *c, int mi);
+/* Is node `id` the value scope `mi` returns by falling off its end? */
+int node_is_scope_tail(Compiler *c, int mi, int id);
 TyKind yield_aware_elem_ty(Compiler *c, int node);
 int an_user_defines_method(Compiler *c, const char *name);
 int an_user_recv_defines_method(Compiler *c, const char *name);
