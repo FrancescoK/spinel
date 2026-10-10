@@ -6033,6 +6033,15 @@ int ty_gc_holds_refs(Compiler *c, TyKind t) {
 void emit_srange_handle_roots(Compiler *c, const char *ref, Buf *b) {
   if (repr_share_rule(c)) buf_printf(b, " SP_GC_ROOT(%s.hf); SP_GC_ROOT(%s.hl);", ref, ref);
 }
+/* The mark lines of a String Range slot by value (`ref` the slot: an
+   object's ivar, a global, a constant, a class variable), which the walker
+   cannot follow: its two endpoint strings and, built --share-strings, the
+   handles it keeps (#8321). */
+void emit_srange_marks(Compiler *c, const char *ref, Buf *b) {
+  buf_printf(b, "  sp_mark_string(%s.first);\n", ref);
+  buf_printf(b, "  sp_mark_string(%s.last);\n", ref);
+  if (repr_share_rule(c)) buf_printf(b, "  sp_gc_mark(%s.hf);\n  sp_gc_mark(%s.hl);\n", ref, ref);
+}
 void emit_gc_root_tmp_refs(Compiler *c, TyKind t, int tmp, Buf *b) {
   if (t == TY_STR_RANGE) {
     buf_printf(b, "SP_GC_ROOT_STR(_t%d.first); SP_GC_ROOT_STR(_t%d.last);", tmp, tmp);
