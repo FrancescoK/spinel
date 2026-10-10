@@ -1,0 +1,8 @@
+ArgumentError: comparison of String with 99 failed
+ArgumentError: comparison of String with 99 failed
+true
+false
+ArgumentError: comparison of String with 99 failed
+"12"
+"9"
+"1"

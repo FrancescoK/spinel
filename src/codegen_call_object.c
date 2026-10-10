@@ -61,7 +61,11 @@ int str_cmp_bound_foreign(Compiler *c, int n) {
 int emit_call_identity_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt) {
   /* between?(lo, hi): lo <= self <= hi */
   if (sp_streq(name, "between?") && argc == 2) {
-    if (rt == TY_STRING && (str_cmp_bound_foreign(c, argv[0]) || str_cmp_bound_foreign(c, argv[1]))) {
+    /* a boxed bound (TY_POLY) takes this arm too: it may hold a String or
+       anything else, which the conversion below tells apart at run time;
+       the plain arm after it would hand the box to the byte compare */
+    if (rt == TY_STRING && (str_cmp_bound_foreign(c, argv[0]) || str_cmp_bound_foreign(c, argv[1]) ||
+                            comp_ntype(c, argv[0]) == TY_POLY || comp_ntype(c, argv[1]) == TY_POLY)) {
       /* Comparable#between? is two <=>s and it STOPS at the first: when
          `self >= lo` is false CRuby never asks hi for anything, so
          `"abc".between?(W.new("abd"), Plain.new)` is false rather than the
