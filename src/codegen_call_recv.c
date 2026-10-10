@@ -6821,6 +6821,10 @@ static int str_arms_convert(Compiler *c, int id, Buf *b, const NodeTable *nt, co
      argument for its side effects. */
   else if (sp_streq(name, "equal?") && argc == 1) {
     TyKind eqa = comp_ntype(c, argv[0]);
+    if (string_identity_inline(c, recv, argv[0])) {
+      emit_string_identity(c, recv, argv[0], b);
+      return 1;
+    }
     /* A narrowed box keeps its identity in the original box, whether the
        payload is a plain String or a shared handle. */
     if (repr_share_rule(c) && (repr_of(c, recv).strbuf_src == RS_SLOT_POLY ||

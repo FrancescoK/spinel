@@ -35495,6 +35495,10 @@ static int sa_returned_args_t(Compiler *c, int call, int *out, int cap, int poly
   call = an_unparen(nt, call);
   if (call < 0 || nt_kind(nt, call) != NK_CallNode || c->strbuf_box[call]) return 0;
   int mi = an_call_target_mi(c, call);
+  if (mi <= 0) {
+    const CallPlan *p = cplan_user_fresh(c, call);
+    if (p->dispatch == CP_DIRECT && p->via == UC_REOPEN) mi = p->mi;
+  }
   if (mi <= 0) return 0;
   Scope *m = &c->scopes[mi];
   int lv[16];
@@ -35516,7 +35520,8 @@ static int sa_returned_args_t(Compiler *c, int call, int *out, int cap, int poly
     if (rebound) continue;
     for (int j = 0; j < m->nparams; j++) {
       if (!m->pnames[j] || !sp_streq(m->pnames[j], pn)) continue;
-      int a = arg_layout_param_node(c, m, call, j, NULL);
+      int a = arg_layout_param_source(c, m, call, j, NULL);
+      if (nt_kind(nt, an_unparen(nt, a)) == NK_SelfNode) a = nt_ref(nt, call, "receiver");
       TyKind at = a >= 0 ? comp_ntype(c, a) : TY_UNKNOWN;
       if ((at == TY_STRING || at == TY_STRBUF || (poly_args && at == TY_POLY)) && got < cap) out[got++] = a;
     }

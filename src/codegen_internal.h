@@ -203,6 +203,12 @@ int strbuf_pickup_answers_nil(Compiler *c, int id);
 /* --share-strings: the handle slot a variable's read names, 0 for any
    other node (codegen_stmt.c) */
 int strbuf_var_handle(Compiler *c, int n, char *out, size_t cap);
+/* --share-strings: the String identity comparison of two operands through
+   their boxes (codegen_call_operator.c), and an inline-spliced call whose
+   result is the handle itself (codegen_stmt.c) */
+void emit_string_identity(Compiler *c, int recv, int arg, Buf *b);
+int string_identity_inline(Compiler *c, int recv, int arg);
+int strbuf_route_inline_call(Compiler *c, int v);
 /* --share-strings: does value v hand over a shared String as its handle
    (a variable, a route, a conditional with such an arm)? (codegen_stmt.c) */
 int strbuf_value_carries(Compiler *c, int v);
@@ -497,6 +503,7 @@ extern const char *g_method_pr_var;
 extern const char *g_proc_return_home;
 int cmethod_takes_self_cls(Compiler *c, int si);
 const char *emit_cmethod_self_cls_arg(Compiler *c, int mi, int recv_cls, Buf *b);
+int reopen_self_defaults(Compiler *c, int mi);
 int ctor_needs_self_defaults(Compiler *c, int initm, int argc);
 void emit_ctor_alloc_init(Compiler *c, int cid, int initm, int argsNode, int call_id, Buf *b);
 void emit_ctor_alloc_init_argv(Compiler *c, int cid, int initm, const int *argv, int argc, int argsNode,

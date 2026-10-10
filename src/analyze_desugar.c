@@ -9796,8 +9796,7 @@ int desugar_builtin_scalar_defs(Compiler *c) {
         if (!nr) continue;
         nr[0] = spself; for (int j = 0; j < rn; j++) nr[j + 1] = reqs[j];
         nt_node_set_arr(nt, pn, "requireds", nr, rn + 1); free(nr); }
-      int dbody = nt_ref(nt, clone, "body");
-      int lo = dbody >= 0 ? dbody : clone;
+      int lo = clone;
       bi_self_to_local(nt, lo, hi);
       { char gn[256]; snprintf(gn, sizeof gn, "%s%s", sp_bx_prefix[bx], name); nt_node_set_str(nt, clone, "name", gn); }
       int bi = sp_builtin_extra_name_index(bx, name);
@@ -13446,8 +13445,10 @@ static void rbself_defs(NodeTable *nt, int node, char **defs, int nd, int *chang
   NodeKind k = nt_kind(nt, node);
   if (k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode) return;
   if (k == NK_DefNode) {
-    if (nt_ref(nt, node, "receiver") < 0)
+    if (nt_ref(nt, node, "receiver") < 0) {
       rbself_walk(nt, nt_ref(nt, node, "body"), defs, nd, changed, is_array);
+      rbself_walk(nt, nt_ref(nt, node, "parameters"), defs, nd, changed, is_array);
+    }
     return;
   }
   /* define_method(:name) { ... }: its block is an instance method's body */
