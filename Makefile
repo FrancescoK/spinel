@@ -446,7 +446,10 @@ san-check: $(SPINEL_SAN)
 # Wrapper around the system `timeout` that always returns GNU coreutils'
 # exit code (124 on timeout), regardless of which `timeout` is on PATH.
 # The bench target keys on 124 to mark a run as SKIP; busybox uses 143
-# and BSDs use 399, which would be misclassified. Built once from C.
+# and BSDs use 399, which would be misclassified. Built once from C. The
+# limit counts the command's CPU time, with a backstop on the clock six times
+# longer: a loaded machine slows a correct program down without making it a
+# runaway (scripts/spinel-timeout.c has the reasoning).
 SPINEL_TIMEOUT_SRC ?= scripts/spinel-timeout.c
 # Parallel sub-makes can both rebuild it while another leg runs it. Link to
 # a PID-specific name, then rename: a reader always gets a complete binary.
@@ -1970,8 +1973,9 @@ reject-test: $(SPINEL)
 gc-phases-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SPINEL_TIMEOUT)
 	@tmp=$$(mktemp -d /tmp/spinel-gcph.XXXXXX); ok=1; \
 	src=test/gc_minor_thread_local_slot.rb; \
-	$(SPINEL) "$$src" -o "$$tmp/m" >/dev/null 2>&1 || \
-	  { echo "gc-phases-test: FAIL (compile)"; rm -rf "$$tmp"; exit 1; }; \
+	$(SPINEL) "$$src" -o "$$tmp/m" >"$$tmp/cc.out" 2>&1; rc=$$?; \
+	[ $$rc -eq 0 ] || \
+	  { echo "gc-phases-test: FAIL (compile, exit $$rc)"; tail -5 "$$tmp/cc.out"; rm -rf "$$tmp"; exit 1; }; \
 	$(TIMEOUT60) "$$tmp/m" > "$$tmp/off.out" 2> "$$tmp/off.err"; \
 	SPINEL_GC_PHASES=1 $(TIMEOUT60) "$$tmp/m" > "$$tmp/on.out" 2> "$$tmp/on.err"; \
 	if ! cmp -s "$$tmp/off.out" "$$tmp/on.out"; then \
@@ -2017,8 +2021,9 @@ gc-stress-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SPINEL_TIMEOUT)
 	else echo "gc-stress-test: FAIL (host C did not compile)"; sed -n 1,6p "$$tmp/cc.err"; ok=0; fi; \
 	for src in $(GC_STRESS_TESTS); do \
 	  bn=$$(basename "$$src" .rb); \
-	  if ! $(SPINEL) "$$src" -o "$$tmp/$$bn" >/dev/null 2>&1; then \
-	    echo "gc-stress-test: FAIL ($$bn: compile)"; ok=0; continue; fi; \
+	  $(SPINEL) "$$src" -o "$$tmp/$$bn" >"$$tmp/cc.out" 2>&1; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then \
+	    echo "gc-stress-test: FAIL ($$bn: compile, exit $$rc)"; tail -5 "$$tmp/cc.out"; ok=0; continue; fi; \
 	  for v in 0 1; do \
 	    SPINEL_GC_STRESS=2 SPINEL_GC_VERIFY=$$v $(TIMEOUT60) "$$tmp/$$bn" > "$$tmp/out" 2> "$$tmp/err"; rc=$$?; \
 	    if [ $$rc -ne 0 ] || ! cmp -s "$$tmp/out" "$$src.expected"; then \
@@ -2036,8 +2041,9 @@ gc-stress-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SPINEL_TIMEOUT)
 gc-threshold-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SPINEL_TIMEOUT)
 	@tmp=$$(mktemp -d /tmp/spinel-gcthr.XXXXXX); ok=1; \
 	src=test/gc_threshold_per_heap.rb; \
-	$(SPINEL) "$$src" -o "$$tmp/t" >/dev/null 2>&1 || \
-	  { echo "gc-threshold-test: FAIL (compile)"; rm -rf "$$tmp"; exit 1; }; \
+	$(SPINEL) "$$src" -o "$$tmp/t" >"$$tmp/cc.out" 2>&1; rc=$$?; \
+	[ $$rc -eq 0 ] || \
+	  { echo "gc-threshold-test: FAIL (compile, exit $$rc)"; tail -5 "$$tmp/cc.out"; rm -rf "$$tmp"; exit 1; }; \
 	SPINEL_GC_STATS=1 $(TIMEOUT60) "$$tmp/t" >/dev/null 2> "$$tmp/base.err"; \
 	SPINEL_GC_THRESHOLD_OBJ_KB=16384 SPINEL_GC_STATS=1 $(TIMEOUT60) "$$tmp/t" >/dev/null 2> "$$tmp/obj.err"; \
 	SPINEL_GC_THRESHOLD_STR_KB=16384 SPINEL_GC_STATS=1 $(TIMEOUT60) "$$tmp/t" >/dev/null 2> "$$tmp/str.err"; \
@@ -2071,8 +2077,9 @@ gc-threshold-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SPINEL_TIMEOUT)
 gc-str-major-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SPINEL_TIMEOUT)
 	@tmp=$$(mktemp -d /tmp/spinel-gcstrmaj.XXXXXX); ok=1; \
 	src=test/gc_str_major_interval.rb; \
-	$(SPINEL) "$$src" -o "$$tmp/t" >/dev/null 2>&1 || \
-	  { echo "gc-str-major-test: FAIL (compile)"; rm -rf "$$tmp"; exit 1; }; \
+	$(SPINEL) "$$src" -o "$$tmp/t" >"$$tmp/cc.out" 2>&1; rc=$$?; \
+	[ $$rc -eq 0 ] || \
+	  { echo "gc-str-major-test: FAIL (compile, exit $$rc)"; tail -5 "$$tmp/cc.out"; rm -rf "$$tmp"; exit 1; }; \
 	run() { SPINEL_GC_STR_BUDGET=fixed SPINEL_GC_THRESHOLD_STR_KB=4096 \
 	        SPINEL_GC_PHASES=1 $(TIMEOUT60) "$$tmp/t" > "$$tmp/$$1.out" 2> "$$tmp/$$1.err"; }; \
 	run default; \
@@ -2111,8 +2118,9 @@ gc-obj-budget-test: $(SPINEL) $(SP_RT_LIB) $(SPINEL_TIMEOUT)
 	str_of() { sed -n 's/.*+ \([0-9.]*\) MB str; trigger.*/\1/p' "$$1" | tail -1; }; \
 	trg_of() { sed -n 's/.*trigger \([0-9.]*\) MB obj.*/\1/p' "$$1" | tail -1; }; \
 	for prog in gc_obj_budget_walk gc_obj_budget_mark; do \
-	  $(SPINEL) test/$$prog.rb -o "$$tmp/$$prog" >/dev/null 2>&1 || \
-	    { echo "gc-obj-budget-test: FAIL ($$prog: compile)"; ok=0; continue; }; \
+	  $(SPINEL) test/$$prog.rb -o "$$tmp/$$prog" >"$$tmp/cc.out" 2>&1; rc=$$?; \
+	  [ $$rc -eq 0 ] || \
+	    { echo "gc-obj-budget-test: FAIL ($$prog: compile, exit $$rc)"; tail -5 "$$tmp/cc.out"; ok=0; continue; }; \
 	  for mode in default walk obj; do \
 	    if [ "$$mode" = default ]; then unset SPINEL_GC_OBJ_BUDGET; \
 	    else SPINEL_GC_OBJ_BUDGET=$$mode; export SPINEL_GC_OBJ_BUDGET; fi; \
@@ -2155,21 +2163,24 @@ gc-obj-budget-test: $(SPINEL) $(SP_RT_LIB) $(SPINEL_TIMEOUT)
 # vary, so the check is by shape: every line is W/I and there are 8 x 300.
 thread-puts-test: $(SPINEL) $(SP_RT_LIB) $(SPINEL_TIMEOUT)
 	@tmp=$$(mktemp -d /tmp/spinel-tputs.XXXXXX); ok=1; \
-	$(SPINEL) test/threads/puts_lines_atomic.rb -o "$$tmp/p" >/dev/null 2>&1 || \
-	  { echo "thread-puts-test: FAIL (compile)"; rm -rf "$$tmp"; exit 1; }; \
+	$(SPINEL) test/threads/puts_lines_atomic.rb -o "$$tmp/p" >"$$tmp/cc.out" 2>&1; rc=$$?; \
+	[ $$rc -eq 0 ] || \
+	  { echo "thread-puts-test: FAIL (compile, exit $$rc)"; tail -5 "$$tmp/cc.out"; rm -rf "$$tmp"; exit 1; }; \
 	for r in 1 2 3; do \
 	  $(TIMEOUT60) "$$tmp/p" > "$$tmp/out" 2>/dev/null || { echo "thread-puts-test: FAIL (crashed or timed out)"; ok=0; }; \
 	  n=$$(wc -l < "$$tmp/out"); bad=$$(grep -vcE '^[0-7]/[0-9]+$$' "$$tmp/out"); \
 	  [ "$$n" -eq 2400 ] && [ "$$bad" -eq 0 ] || { echo "thread-puts-test: FAIL (run $$r: $$n lines, $$bad malformed)"; grep -vE '^[0-7]/[0-9]+$$' "$$tmp/out" | head -3; ok=0; }; \
 	done; \
-	$(SPINEL) test/threads/ffi_blocking_under_gc.rb -o "$$tmp/f" >/dev/null 2>&1 || \
-	  { echo "thread-puts-test: FAIL (ffi blocking: compile)"; rm -rf "$$tmp"; exit 1; }; \
+	$(SPINEL) test/threads/ffi_blocking_under_gc.rb -o "$$tmp/f" >"$$tmp/cc.out" 2>&1; rc=$$?; \
+	[ $$rc -eq 0 ] || \
+	  { echo "thread-puts-test: FAIL (ffi blocking: compile, exit $$rc)"; tail -5 "$$tmp/cc.out"; rm -rf "$$tmp"; exit 1; }; \
 	for r in 1 2; do \
 	  SPINEL_GC_STRESS=1 $(TIMEOUT60) "$$tmp/f" > "$$tmp/fout" 2>/dev/null || { echo "thread-puts-test: FAIL (ffi blocking: crashed or timed out under GC stress)"; ok=0; }; \
 	  grep -q '^\[177, 177, 177, 177, 177, 177\]$$' "$$tmp/fout" || { echo "thread-puts-test: FAIL (ffi blocking: a value held across the call was lost)"; head -3 "$$tmp/fout"; ok=0; }; \
 	done; \
-	$(SPINEL) test/threads/fiber_stack_overflow.rb -o "$$tmp/s" >/dev/null 2>&1 || \
-	  { echo "thread-puts-test: FAIL (fiber stack overflow: compile)"; rm -rf "$$tmp"; exit 1; }; \
+	$(SPINEL) test/threads/fiber_stack_overflow.rb -o "$$tmp/s" >"$$tmp/cc.out" 2>&1; rc=$$?; \
+	[ $$rc -eq 0 ] || \
+	  { echo "thread-puts-test: FAIL (fiber stack overflow: compile, exit $$rc)"; tail -5 "$$tmp/cc.out"; rm -rf "$$tmp"; exit 1; }; \
 	$(TIMEOUT60) "$$tmp/s" > "$$tmp/sout" 2> "$$tmp/serr"; rc=$$?; \
 	[ $$rc -ne 0 ] && [ $$rc -ne 124 ] || { echo "thread-puts-test: FAIL (fiber stack overflow: the program did not die, rc=$$rc)"; ok=0; }; \
 	grep -q 'fiber stack overflow' "$$tmp/serr" || { echo "thread-puts-test: FAIL (fiber stack overflow: the fault was not reported as one)"; head -3 "$$tmp/serr"; ok=0; }; \
@@ -2178,8 +2189,9 @@ thread-puts-test: $(SPINEL) $(SP_RT_LIB) $(SPINEL_TIMEOUT)
 
 byref-capture-test: $(SPINEL) $(RBS_EXTRACT_BIN) $(SP_RT_LIB) $(SPINEL_TIMEOUT)
 	@tmp=$$(mktemp -d /tmp/spinel-byrefcap.XXXXXX); ok=1; \
-	$(SPINEL) test/rbs-seed/byref_capture_scan.rb --rbs test/rbs-seed/sig -o "$$tmp/b" >/dev/null 2>&1 || \
-	  { echo "byref-capture-test: FAIL (compile)"; rm -rf "$$tmp"; exit 1; }; \
+	$(SPINEL) test/rbs-seed/byref_capture_scan.rb --rbs test/rbs-seed/sig -o "$$tmp/b" >"$$tmp/cc.out" 2>&1; rc=$$?; \
+	[ $$rc -eq 0 ] || \
+	  { echo "byref-capture-test: FAIL (compile, exit $$rc)"; tail -5 "$$tmp/cc.out"; rm -rf "$$tmp"; exit 1; }; \
 	SPINEL_GC_STRESS=1 $(TIMEOUT60) "$$tmp/b" > "$$tmp/out" 2>/dev/null || \
 	  { echo "byref-capture-test: FAIL (crashed or timed out under GC stress)"; ok=0; }; \
 	cmp -s "$$tmp/out" test/rbs-seed/byref_capture_scan.expected || \
@@ -2222,8 +2234,9 @@ GC_LOCALITY_SRC := test/gc_locality_build.rb
 
 gc-locality-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SPINEL_TIMEOUT)
 	@tmp=$$(mktemp -d /tmp/spinel-gcloc.XXXXXX); ok=1; \
-	$(SPINEL) $(GC_LOCALITY_SRC) -o "$$tmp/l" >/dev/null 2>&1 || \
-	  { echo "gc-locality-test: FAIL (compile)"; rm -rf "$$tmp"; exit 1; }; \
+	$(SPINEL) $(GC_LOCALITY_SRC) -o "$$tmp/l" >"$$tmp/cc.out" 2>&1; rc=$$?; \
+	[ $$rc -eq 0 ] || \
+	  { echo "gc-locality-test: FAIL (compile, exit $$rc)"; tail -5 "$$tmp/cc.out"; rm -rf "$$tmp"; exit 1; }; \
 	for b in 1 2 4; do \
 	  for w in 1 8; do \
 	    LOCALITY_BUILD=$$b SPINEL_WORKERS=$$w $(TIMEOUT60) "$$tmp/l" > "$$tmp/out.$$b.$$w" 2>/dev/null || \
@@ -2273,8 +2286,9 @@ THREADED_RENDER_SRC := benchmark/bm_threaded_render.rb
 
 threaded-render-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(SPINEL_TIMEOUT)
 	@tmp=$$(mktemp -d /tmp/spinel-thrender.XXXXXX); ok=1; \
-	$(SPINEL) $(THREADED_RENDER_SRC) -o "$$tmp/r" >/dev/null 2>&1 || \
-	  { echo "threaded-render-test: FAIL (compile)"; rm -rf "$$tmp"; exit 1; }; \
+	$(SPINEL) $(THREADED_RENDER_SRC) -o "$$tmp/r" >"$$tmp/cc.out" 2>&1; rc=$$?; \
+	[ $$rc -eq 0 ] || \
+	  { echo "threaded-render-test: FAIL (compile, exit $$rc)"; tail -5 "$$tmp/cc.out"; rm -rf "$$tmp"; exit 1; }; \
 	for w in 1 2 8; do \
 	  for mode in default obj walk; do \
 	    if [ "$$mode" = default ]; then unset SPINEL_GC_OBJ_BUDGET; \
@@ -2326,8 +2340,9 @@ build/gc-minor-results/%.res: test/%.rb FORCE | $(SPINEL) $(SP_RT_LIB) $(SP_RT_M
 	@mkdir -p $(@D); tmp=$$(mktemp -d /tmp/spinel-gcminor.XXXXXX); ok=1; src=$<; \
 	{ \
 	  bn=$$(basename "$$src" .rb); \
-	  if ! $(SPINEL) $(GC_MINOR_FLAGS) "$$src" -o "$$tmp/$$bn" >/dev/null 2>&1; then \
-	    echo "gc-minor-test: FAIL ($$bn: compile)"; ok=0; \
+	  $(SPINEL) $(GC_MINOR_FLAGS) "$$src" -o "$$tmp/$$bn" >"$$tmp/cc.out" 2>&1; rc=$$?; \
+	  if [ $$rc -ne 0 ]; then \
+	    echo "gc-minor-test: FAIL ($$bn: compile, exit $$rc)"; tail -5 "$$tmp/cc.out"; ok=0; \
 	  else \
 	  for mode in 0 1; do \
 	    SPINEL_GC_MINOR=$$mode $(TIMEOUT60) "$$tmp/$$bn" > "$$tmp/$$bn.$$mode" 2>&1; \
@@ -3467,7 +3482,7 @@ elif [ $$built -eq 0 ]; then \
     if [ -t 1 ]; then printf .; fi; \
   else \
     echo FAIL > "$@"; \
-    { if [ "$$run_rc" -eq 124 ]; then echo "=== timed out after 10s (the output below is partial) ==="; fi; \
+    { if [ "$$run_rc" -eq 124 ]; then echo "=== timed out: 10 s of CPU, or the clock backstop of 60 s (the output below is partial) ==="; fi; \
       echo "=== stdout diff (expected vs actual) ==="; diff -u "$$exp.n" "$$act.n" || true; \
       echo "=== stderr diff (expected vs actual) ==="; diff -u "$$experr.n" "$$acterr.n" || true; } > "$@.diff" 2>&1; \
     if [ -t 1 ]; then printf F; fi; \
@@ -3647,7 +3662,7 @@ $(RUBYSPEC_DIR)/.pinned:
 # extract as HARNESS-SKEW, leaving nothing to defend.)
 RUBYSPEC_SUITES := language core/array core/string core/hash core/integer core/range
 
-rubyspec: $(SPINEL) $(RUBYSPEC_DIR)/.pinned
+rubyspec: $(SPINEL) $(RUBYSPEC_DIR)/.pinned | $(SPINEL_TIMEOUT)
 	@for d in $(RUBYSPEC_SUITES); do \
 	  nm=$$(echo $$d | tr / -); \
 	  echo "=== ruby/spec $$d ==="; \
@@ -3672,7 +3687,7 @@ rubyspec: $(SPINEL) $(RUBYSPEC_DIR)/.pinned
 # list exactly once, so the shards' combined result is the same gate the
 # unsharded target runs. Unset (the default), the whole list runs, byte-for-byte
 # as before.
-rubyspec-gate: $(SPINEL) $(RUBYSPEC_DIR)/.pinned
+rubyspec-gate: $(SPINEL) $(RUBYSPEC_DIR)/.pinned | $(SPINEL_TIMEOUT)
 	@ok=1; for d in $(RUBYSPEC_SUITES); do \
 	  nm=$$(echo $$d | tr / -); \
 	  rm -rf build/rubyspec-ex-$$nm build/rubyspec-gate-$$nm.tsv; \

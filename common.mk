@@ -86,7 +86,9 @@ endif
 # Wrapper around the system `timeout` that always returns GNU coreutils'
 # exit code (124 on timeout), regardless of which `timeout` is on PATH.
 # The bench target keys on 124 to mark a run as SKIP; busybox uses 143
-# and BSDs use 399, which would be misclassified. Built once from C.
+# and BSDs use 399, which would be misclassified. Built once from C. The
+# seconds it takes are CPU seconds of the command, with a backstop on the clock
+# of six times as many (scripts/spinel-timeout.c).
 # It is a build ARTEFACT, so it belongs under build/ with the rest of them --
 # not beside its source in scripts/, where it would need its own ignore rule
 # and would survive `make clean`.

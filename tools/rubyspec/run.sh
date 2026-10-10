@@ -35,6 +35,12 @@ JOBS="${RUBYSPEC_JOBS:-}"
 if [ -z "$JOBS" ]; then
   JOBS=$(( $(nproc 2>/dev/null || echo 4) - 2 )); [ "$JOBS" -lt 1 ] && JOBS=1
 fi
+# The per-example limit: 10 s of the example's CPU time with a backstop on the
+# clock (scripts/spinel-timeout.c), so a loaded machine does not turn a slow
+# example into an ERROR. The helper is built beside the spinel being run; with
+# none there (a standalone run), the system `timeout` limits the clock.
+TO="$(cd "$(dirname "$SPINEL")/.." && pwd)/build/spinel-timeout"
+[ -x "$TO" ] || TO=timeout
 TDIR=$(mktemp -d /tmp/rubyspec-run.XXXXXX)
 trap 'rm -rf "$TDIR"' EXIT
 
@@ -64,7 +70,7 @@ classify_one() {
     # CRuby oracle first: a skewed extraction must not count against spinel.
     # REF_RUBY names the reference Ruby (CRuby 4.0): under an older one an example 4.0 passes is
     # called skewed and drops out of the manifest. Unset, the first `ruby` on PATH.
-    local cr; cr=$(timeout 10 ${REF_RUBY:-ruby} "$f" 2>/dev/null | tail -1)
+    local cr; cr=$("$TO" 10 ${REF_RUBY:-ruby} "$f" 2>/dev/null | tail -1)
     if ! grep -q "fail=0" <<<"$cr"; then
       echo -e "$bn\tHARNESS-SKEW\t${cr:-crash}" > "$row"; return
     fi
@@ -103,7 +109,7 @@ classify_one() {
   # run output goes to a file, NOT a shell variable: an example that prints
   # unboundedly (1.upto(Infinity)) would otherwise balloon the worker
   local run_out="$TDIR/out-$bn"
-  timeout 10 "$bin" > "$run_out" 2>&1; rc=$?
+  "$TO" 10 "$bin" > "$run_out" 2>&1; rc=$?
   last=$(tail -c 4096 "$run_out" | tail -1)
   rm -f "$bin" "$run_out"
   if [ $rc -ne 0 ] || ! grep -q "MSPEC-DONE" <<<"$last"; then

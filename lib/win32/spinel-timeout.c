@@ -6,7 +6,8 @@
  * The command runs on this process's standard handles; one that runs past
  * SECONDS is terminated and the wrapper answers 124, as GNU timeout does,
  * otherwise the command's own exit status. win32.mk builds this in place of
- * scripts/spinel-timeout.c. */
+ * scripts/spinel-timeout.c. SECONDS is a limit on the clock here; the POSIX
+ * helper limits CPU time and keeps a clock limit only as a backstop. */
 /* Arguments are re-quoted the way the MSVC runtime splits a command line,
    and a program named without an extension is the .exe beside the name
    (MSYS hands over a path the C compiler gave a .exe to without one). */
