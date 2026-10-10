@@ -9,3 +9,4 @@
 # a Range of them fast (infer_type's RangeNode arm): String and Symbol ends
 # out of a mixed container read as numbers there, as they did everywhere.
 test/range_boxed_endpoints.rb
+test/range_symbol_endpoints.rb

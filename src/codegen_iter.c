@@ -7371,7 +7371,15 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
                   " _t%d += _t%d > 0 ? _t%d : 1, _t%d = _t%d ? _t%d : sp_str_succ_n(_t%d, _t%d)) {\n",
                ti, tk, ti, ta, ti, ta, ti, tk, tk, tx, ta, tx, tx, tk);
     char elem[96]; snprintf(elem, sizeof elem, "(_t%d ? sp_StrArray_get(_t%d, _t%d) : _t%d)", ta, ta, ti, tx);
-    if (p0) emit_iter_param_assign(c, block, p0_orig, p0, TY_STRING, elem, b, indent + 1);
+    /* reached through a boxed receiver's face, the Range may be one of
+       Symbols, and a boxed parameter takes the member as it answers it */
+    int fnode = -1; TyKind fkind = TY_UNKNOWN;
+    int faced = view_face_top(&fnode, &fkind) && fnode == recv && fkind == TY_STR_RANGE;
+    Scope *ps = p0 && faced ? comp_scope_of(c, block) : NULL;
+    LocalVar *pl = ps ? scope_local(ps, p0_orig) : NULL;
+    char belem[160]; snprintf(belem, sizeof belem, "sp_srange_box_end(_t%d, %s)", tr, elem);
+    if (p0 && pl && pl->type == TY_POLY) emit_iter_param_assign(c, block, p0_orig, p0, TY_POLY, belem, b, indent + 1);
+    else if (p0) emit_iter_param_assign(c, block, p0_orig, p0, TY_STRING, elem, b, indent + 1);
     emit_loop_body(c, body, b, indent + 1);
     emit_indent(b, indent); buf_puts(b, "}\n");
     return 1;

@@ -9009,6 +9009,11 @@ TyKind infer_uncached(Compiler *c, int id) {
     {
       int lo_open = lo < 0 || lt == TY_NIL;
       int hi_open = hi < 0 || ht == TY_NIL;
+      /* (:a..), (x..:e): a Range of Symbols, which sp_range_new_box builds
+         as a String Range of their names (sym); a Symbol beside anything but
+         a Symbol or nil is its ArgumentError. A literal (:a..:e) keeps its
+         Array form above. */
+      if (lt == TY_SYMBOL || ht == TY_SYMBOL) return TY_POLY;
       if (((lt == TY_POLY && (hi_open || ht == TY_POLY)) || (ht == TY_POLY && lo_open)) &&
           !g_promote_mode && !range_indexes_seq(c, id) &&
           !(hi < 0 && nt_int(nt, id, "size_recv", 0)))

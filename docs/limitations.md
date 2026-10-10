@@ -654,14 +654,15 @@ rng = (lo..hi)      # compile error: a Range of Ver objects cannot be built
 rng = (0..2**70)    # compile error: a Bignum bound does not fit sp_int
 ```
 
-There is no Range of Symbols either. A literal one (`:a..:e`) is built as
-its Array of Symbols, so it enumerates and answers `include?` as CRuby's
-does but is an Array (`p` prints `[:a, :b, ...]`); one whose ends are only
-known at run time (`a[0]..a[1]` over a mixed Array holding Symbols) raises
-NotImplementedError when it is built. Ends known only at run time otherwise
-pick the Range's kind from their values: Integers an Integer Range, a Float
-begin a Float Range, Strings a String Range, and ends that cannot be compared
-CRuby's ArgumentError.
+Ends known only at run time (`a[0]..a[1]` over a mixed Array) pick the
+Range's kind from their values: Integers an Integer Range, a Float begin a
+Float Range, Strings a String Range, Symbols a Range of Symbols, and ends that
+cannot be compared CRuby's ArgumentError. Such a Range is a boxed value, so
+its methods dispatch at run time. Under `--int-overflow=promote`, where every
+Integer is boxed, a Range of boxed ends keeps the Integer Range, and String or
+Symbol ends there read as numbers. A literal Range of Symbols (`:a..:e`) is
+built as its Array of Symbols: it enumerates and answers `include?` as CRuby's
+does, but `p` prints the Array and `size` counts it.
 
 #### A String Range keeps copies of its endpoints
 
