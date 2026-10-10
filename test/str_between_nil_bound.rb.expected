@@ -1,0 +1,14 @@
+"comparison of String with nil failed"
+"comparison of String with nil failed"
+false
+eval "0"
+eval nil
+"comparison of String with nil failed"
+eval "4"
+false
+eval "0"
+eval "2"
+true
+true
+false
+"comparison of String with nil failed"
