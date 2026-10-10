@@ -2014,6 +2014,15 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
             buf_printf(b, " if (_t%d == 0) sp_raise_cls(\"ArgumentError\", \"invalid limit: 0 for each_line\");", ll);
             break;
           }
+          /* a boxed variable read is the limit when it holds an Integer (an
+             Integer local under --int-overflow=promote): its 0 raises too */
+          else if (comp_ntype(c, argv[k]) == TY_POLY && nt_kind(c->nt, argv[k]) == NK_LocalVariableReadNode) {
+            int tz = ++g_tmp;
+            buf_printf(b, " { sp_RbVal _t%d = ", tz);
+            emit_expr(c, argv[k], b);
+            buf_printf(b, "; if (_t%d.tag == SP_TAG_INT && _t%d.v.i == 0) sp_raise_cls(\"ArgumentError\", \"invalid limit: 0 for each_line\"); }", tz, tz);
+            break;
+          }
       }
       buf_printf(b, "const char *_t%d = NULL; SP_GC_ROOT_STR(_t%d);"
                     " while ((_t%d = sp_File_gets_sep(_t%d, _t%d, _t%d, _t%d)) != NULL) {",
