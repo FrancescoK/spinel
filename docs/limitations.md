@@ -858,6 +858,13 @@ It is shared as well through an UnboundMethod (`bind_call`,
 curried proc, and a proc or `Method` read out of a slot that holds other
 values too.
 
+With `--share-strings`, a method that returns a fresh empty Hash directly
+(`{}` or a blockless `Hash.new` with no default or a String/nil default) can
+carry shared String values even when inference otherwise gives the return a
+String-keyed, String-valued type. The promotion preserves the Hash and stored
+String identities through callers and ivars. RBS-pinned returns and methods
+with nonempty or alternate Hash producers keep their existing inferred types.
+
 Not yet shared:
 
 - String `self` handed to a mutating block through `yield` or `block.call` in the default build. Build with `--share-strings` to keep receiver mutations through this route. Read-only blocks and fresh String returns work in both builds;

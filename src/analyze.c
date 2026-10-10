@@ -18577,6 +18577,55 @@ static int share_ret_typed_str_literal(Compiler *c, int mi) {
       return 1;
   return 0;
 }
+/* A share-demanded return may be widened at its construction site when its
+   only producer is an empty Hash literal or a blockless Hash.new. These
+   shapes use the return slot's Hash layout in codegen, so no already-published
+   StrStrHash has to be converted. Keep every other producer on its existing
+   inference and emission path. */
+static int share_ret_empty_hash_factory(Compiler *c, int mi) {
+  const NodeTable *nt = c->nt;
+  Scope *m = &c->scopes[mi];
+  if (an_empty_container_kind(c, m->body) != 2) return 0;
+  int body = m->body;
+  if (nt_kind(nt, body) == NK_StatementsNode) {
+    int bn = 0; const int *bb = nt_arr(nt, body, "body", &bn);
+    if (bn <= 0) return 0;
+    body = bb[bn - 1];
+  }
+  int last = an_unparen(nt, body);
+  if (last < 0) return 0;
+  NodeKind k = nt_kind(nt, last);
+  if (k == NK_HashNode) {
+    int en = 0; nt_arr(nt, last, "elements", &en);
+    if (en != 0) return 0;
+  }
+  else if (k == NK_CallNode) {
+    const char *name = nt_str(nt, last, "name");
+    int recv = nt_ref(nt, last, "receiver");
+    if (!name || !sp_streq(name, "new") || recv < 0 ||
+        nt_kind(nt, recv) != NK_ConstantReadNode ||
+        !sp_streq(nt_str(nt, recv, "name"), "Hash") ||
+        nt_ref(nt, last, "block") >= 0) return 0;
+    /* The spelling alone does not guarantee the builtin constructor: a
+       program can reopen Hash and define its singleton `new`. */
+    int hci = comp_class_index(c, "Hash");
+    if (hci >= 0 && comp_cmethod_in_chain(c, hci, "new", NULL) >= 0) return 0;
+    int args = nt_ref(nt, last, "arguments"), an = 0;
+    const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    if (an > 1 || (an == 1 && (nt_kind(nt, av[0]) == NK_KeywordHashNode ||
+                               nt_kind(nt, av[0]) == NK_SplatNode))) return 0;
+    if (an == 1) {
+      TyKind dt = infer_type(c, av[0]);
+      if (dt != TY_STRING && dt != TY_STRBUF && dt != TY_NIL) return 0;
+    }
+  }
+  else return 0;
+  /* A tail-only test is not enough for `return other if cond; Hash.new`.
+     Every explicit ReturnNode must be absent before the ret ABI changes. */
+  for (int u = comp_ret_first(c, mi); u >= 0; u = comp_ret_next(c, u))
+    if (nt_kind(nt, u) == NK_ReturnNode && comp_scope_of(c, u) == m) return 0;
+  return 1;
+}
 /* --share-strings: method mi answers a box whose class the rule shares:
    each String it answers (its last value, a `begin` body's arms, each
    `return`'s) is boxed as its handle, as a boxed local's stores are
@@ -18801,6 +18850,18 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
        (repr_share_seal), and a deconstruct's, whose parts a pattern binds
        (its boxes hold what each element boxes as). The containers it
        answers hold the handles, as a local's do. */
+    /* An empty Hash factory return can follow its construction context into
+       the boxed-value variant. Other return producer shapes keep their
+       existing inferred layout and downstream sharing behavior. */
+    else if (sh->kind == SHK_RET && repr_str_elems_share(c, h) &&
+             !c->scopes[sh->scope].ret_rbs_seeded &&
+             (c->scopes[sh->scope].ret == TY_STR_STR_HASH ||
+              c->scopes[sh->scope].ret == TY_STR_POLY_HASH) &&
+             share_ret_empty_hash_factory(c, sh->scope)) {
+      Scope *m = &c->scopes[sh->scope];
+      if (m->ret == TY_STR_STR_HASH) { m->ret = TY_STR_POLY_HASH; changed = 1; }
+      changed |= strbuf_method_ret_source_walk(c, sh->scope, -1, 0, SB_DEMAND);
+    }
     else if (sh->kind == SHK_RET && repr_str_elems_share(c, h) &&
              (share_ret_typed_str_literal(c, sh->scope) || share_pattern_method(&c->scopes[sh->scope])))
       changed |= strbuf_method_ret_source_walk(c, sh->scope, -1, 0, SB_DEMAND);
