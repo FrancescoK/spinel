@@ -9322,11 +9322,11 @@ void emit_class_scan(Compiler *c, ClassInfo *ci, Buf *b) {
     case TY_STRING: buf_printf(b, "  sp_mark_string(o->iv_%s);\n", iv); break;
     case TY_POLY: buf_printf(b, "  sp_mark_rbval(o->iv_%s);\n", iv); break;
     /* a by-value struct the walker cannot follow: mark what it carries */
-    case TY_STR_RANGE:
-      buf_printf(b, "  sp_mark_string(o->iv_%s.first);\n", iv);
-      buf_printf(b, "  sp_mark_string(o->iv_%s.last);\n", iv);
-      if (repr_share_rule(c)) buf_printf(b, "  sp_gc_mark(o->iv_%s.hf);\n  sp_gc_mark(o->iv_%s.hl);\n", iv, iv);
+    case TY_STR_RANGE: {
+      char ref[160]; snprintf(ref, sizeof ref, "o->iv_%s", iv);
+      emit_srange_marks(c, ref, b);
       break;
+    }
     default:
       if (needs_root(t))
         buf_printf(b, "  if (o->iv_%s) sp_gc_mark((void *)o->iv_%s);\n", iv, iv);
@@ -17289,6 +17289,8 @@ char *codegen_program(const NodeTable *nt) {
       if (!is_scalar_ret(lv->type)) continue;
       if (lv->type == TY_STRING) buf_printf(&mk, "  sp_mark_string(gv_%s);\n", lv->name);
       else if (lv->type == TY_POLY) buf_printf(&mk, "  sp_mark_rbval(gv_%s);\n", lv->name);
+      /* a String Range by value: what it carries (it held freed endpoints) */
+      else if (lv->type == TY_STR_RANGE) { char ref[160]; snprintf(ref, sizeof ref, "gv_%s", lv->name); emit_srange_marks(c, ref, &mk); }
       else if (needs_root(lv->type)) buf_printf(&mk, "  if (gv_%s) sp_gc_mark((void *)gv_%s);\n", lv->name, lv->name);
     }
     for (int i = 0; i < c->nconsts; i++) {
@@ -17296,6 +17298,7 @@ char *codegen_program(const NodeTable *nt) {
       if (!is_scalar_ret(lv->type)) continue;
       if (lv->type == TY_STRING) buf_printf(&mk, "  sp_mark_string(cst_%s);\n", lv->name);
       else if (lv->type == TY_POLY) buf_printf(&mk, "  sp_mark_rbval(cst_%s);\n", lv->name);
+      else if (lv->type == TY_STR_RANGE) { char ref[160]; snprintf(ref, sizeof ref, "cst_%s", lv->name); emit_srange_marks(c, ref, &mk); }
       else if (needs_root(lv->type)) buf_printf(&mk, "  if (cst_%s) sp_gc_mark((void *)cst_%s);\n", lv->name, lv->name);
     }
     for (int i = 0; i < c->nclasses; i++) {
@@ -17305,6 +17308,7 @@ char *codegen_program(const NodeTable *nt) {
         const char *iv = iv_c(ci->ivars[j] + 1);
         if (t == TY_STRING) buf_printf(&mk, "  sp_mark_string(civ_%s_%s);\n", ci->name, iv);
         else if (t == TY_POLY) buf_printf(&mk, "  sp_mark_rbval(civ_%s_%s);\n", ci->name, iv);
+        else if (t == TY_STR_RANGE) { char ref[200]; snprintf(ref, sizeof ref, "civ_%s_%s", ci->name, iv); emit_srange_marks(c, ref, &mk); }
         else if (needs_root(t)) buf_printf(&mk, "  if (civ_%s_%s) sp_gc_mark((void *)civ_%s_%s);\n", ci->name, iv, ci->name, iv);
       }
       for (int j = 0; j < ci->nsg_readers; j++)
@@ -17319,6 +17323,7 @@ char *codegen_program(const NodeTable *nt) {
         const char *cv = ci->cvars[j] + 2;
         if (t == TY_STRING) buf_printf(&mk, "  sp_mark_string(cvar_%s_%s);\n", ci->name, cv);
         else if (t == TY_POLY) buf_printf(&mk, "  sp_mark_rbval(cvar_%s_%s);\n", ci->name, cv);
+        else if (t == TY_STR_RANGE) { char ref[200]; snprintf(ref, sizeof ref, "cvar_%s_%s", ci->name, cv); emit_srange_marks(c, ref, &mk); }
         else if (needs_root(t)) buf_printf(&mk, "  if (cvar_%s_%s) sp_gc_mark((void *)cvar_%s_%s);\n", ci->name, cv, ci->name, cv);
       }
     }
