@@ -38147,6 +38147,7 @@ static void an_phase_infer_fixpoint(Compiler *c) {
       char *rsrec = (char *)calloc((size_t)rsn + 1, 1);
       TyKind *rssnap = (TyKind *)malloc(sizeof(TyKind) * (size_t)(rsn + 1));
       TyKind *rprevd = (TyKind *)malloc(sizeof(TyKind) * (nrrec > 0 ? nrrec : 1));
+      int have_rprevd = 0;
       for (int k = 0; k < nrrec; k++) rsrec[recRs[k]] = 1;
       AnRoundCap rc = { 128, 0, 0, NULL, 0 };
       unsettled = 1;
@@ -38218,10 +38219,12 @@ static void an_phase_infer_fixpoint(Compiler *c) {
         int rssame = c->nscopes == rsn;
         for (int q = 0; rssame && q < rsn; q++) rssnap[q] = c->scopes[q].ret;
         if (infer_return_types(c)) {
-          ch = 1;
-          if (!rssame || c->nscopes != rsn) ch_other = 1;
+          if (!rssame || c->nscopes != rsn) ch = ch_other = 1;
           for (int q = 0; q < rsn && !ch_other; q++)
-            if (!rsrec[q] && c->scopes[q].ret != rssnap[q]) ch_other = 1;
+            if (!rsrec[q] && c->scopes[q].ret != rssnap[q]) ch = ch_other = 1;
+          if (!have_rprevd) ch = 1;
+          for (int k = 0; k < nrrec && !ch; k++)
+            if (c->scopes[recRs[k]].ret != rprevd[k]) ch = 1;
         }
         /* a Hash store widened this iteration, or one widened this round and
            its readers still moved */
@@ -38265,10 +38268,11 @@ static void an_phase_infer_fixpoint(Compiler *c) {
           }
           for (int k = 0; k < nrec; k++) prevd[k] = c->classes[recCi[k]].ivar_types[recIv[k]];
           for (int k = 0; k < nlrec; k++) lprevd[k] = c->scopes[recLs[k]].locals[recLi[k]].type;
-          for (int k = 0; k < nrrec; k++) rprevd[k] = c->scopes[recRs[k]].ret;
           have_prevd = 1;
         }
         else if (!ch) { unsettled = 0; break; }
+        for (int k = 0; k < nrrec; k++) rprevd[k] = c->scopes[recRs[k]].ret;
+        have_rprevd = 1;
         /* a return whose parameter was reset loses its type for a round,
            and so in turn does each caller's up a chain */
         an_round_cap_step(c, &rc, iter);
