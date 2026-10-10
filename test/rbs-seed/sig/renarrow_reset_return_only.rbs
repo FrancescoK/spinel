@@ -1,0 +1,3 @@
+class RnrCpu
+  @a: Integer
+end

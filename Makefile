@@ -4062,6 +4062,10 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	case "$$calls" in ''|*[!0-9]*) echo "infer-test: FAIL (no infer_param_types call count for renarrow_reset_return_cycle)"; ok=0;; \
 	  *) [ "$$calls" -lt 32 ] || { echo "infer-test: FAIL (the re-narrow loop ran $$calls binds: a reset return re-derived every iteration kept its fixed-cycle exit from firing)"; ok=0; };; \
 	esac; \
+	calls=$$($(SPINEL) test/rbs-seed/renarrow_reset_return_only.rb --rbs test/rbs-seed/sig --timing -c --no-line-map -o "$$tmp/rro.c" 2>&1 | sed -n 's/^spinel-timing: pass=infer_param_types ms=[0-9.]* calls=\([0-9]*\).*/\1/p'); \
+	case "$$calls" in ''|*[!0-9]*) echo "infer-test: FAIL (no infer_param_types call count for renarrow_reset_return_only)"; ok=0;; \
+	  *) [ "$$calls" -lt 32 ] || { echo "infer-test: FAIL (the re-narrow loop ran $$calls binds: with only a return reset, its re-derivation kept the no-change exit from firing)"; ok=0; };; \
+	esac; \
 	$(SPINEL) test/infer/inline_force_fanout.rb -c --no-line-map -o "$$tmp/iff.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (compile inline_force_fanout)"; exit 1; }; \
 	grep -q 'SP_ALWAYS_INLINE [^(]* sp_f4(' "$$tmp/iff.c" && { echo "infer-test: FAIL (forced inlining copied a small-method chain past the size budget)"; ok=0; }; \
 	$(SPINEL) test/infer/block_kept_through_or.rb -c --no-line-map -o "$$tmp/bko.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (compile block_kept_through_or)"; exit 1; }; \
