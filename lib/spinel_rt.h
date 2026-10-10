@@ -12349,6 +12349,8 @@ static sp_RbVal sp_poly_arr_widen_and_set(sp_RbVal v, sp_int idx, sp_RbVal val) 
    store back; a shared one absorbs the splice and is answered itself. Any
    other receiver, or key, stores as before and is answered unchanged. */
 static sp_RbVal sp_poly_str_aset_key(sp_RbVal v, sp_RbVal key, sp_RbVal val) {
+  /* a shared String key is its contents, as the typed stores read it */
+  if (sp_poly_is_strbuf(key)) key = sp_poly_strbuf_deref(key);
   int re = key.tag == SP_TAG_OBJ && key.cls_id == SP_BUILTIN_REGEX && key.v.p;
   int rng = key.tag == SP_TAG_OBJ && key.cls_id == SP_BUILTIN_RANGE && key.v.p;
   if (!(v.tag == SP_TAG_STR || sp_poly_is_strbuf(v)) || !(key.tag == SP_TAG_STR || key.tag == SP_TAG_INT || re || rng)) {
@@ -12492,10 +12494,12 @@ static sp_RbVal sp_poly_set_poly(sp_RbVal v, sp_RbVal key, sp_RbVal val) {
 /* `v[key] = val` for a boxed key, answering the receiver to store back: an
    Integer key on a typed Array widens it to a general one when val is of
    another kind, as the Integer index's store does (sp_poly_arr_widen_and_set);
-   any other key stores in place. */
+   a String receiver takes String#[]='s key and answers its spliced self
+   (sp_poly_str_aset_key); any other key stores in place. */
 static SP_UNUSED sp_RbVal sp_poly_aset_back(sp_RbVal v, sp_RbVal key, sp_RbVal val) {
   if (key.tag == SP_TAG_INT && v.tag == SP_TAG_OBJ && sp_poly_is_array_kind(v.cls_id))
     return sp_poly_arr_widen_and_set(v, key.v.i, val);
+  if (v.tag == SP_TAG_STR || sp_poly_is_strbuf(v)) return sp_poly_str_aset_key(v, key, val);
   sp_poly_set_poly(v, key, val);
   return v;
 }

@@ -2253,6 +2253,8 @@ void emit_regex_section(Compiler *c, Buf *b);
    them (#3417). Returns 0 when nothing was hoisted. */
 int emit_index_opw_hoist(Compiler *c, int id, Buf *pre, int indent);
 void emit_index_opw_unhoist(void);
+void emit_index_opw_value_into(const char *tmp);
+int emit_index_opw_value_taken(void);
 extern const char *g_iow_recv_ref;
 extern const char *g_iow_key_ref;
 
