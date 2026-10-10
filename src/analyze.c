@@ -35520,8 +35520,7 @@ static int sa_returned_args_t(Compiler *c, int call, int *out, int cap, int poly
     if (rebound) continue;
     for (int j = 0; j < m->nparams; j++) {
       if (!m->pnames[j] || !sp_streq(m->pnames[j], pn)) continue;
-      int a = arg_layout_param_source(c, m, call, j, NULL);
-      if (nt_kind(nt, an_unparen(nt, a)) == NK_SelfNode) a = nt_ref(nt, call, "receiver");
+      int a = arg_layout_param_node(c, m, call, j, NULL);
       TyKind at = a >= 0 ? comp_ntype(c, a) : TY_UNKNOWN;
       if ((at == TY_STRING || at == TY_STRBUF || (poly_args && at == TY_POLY)) && got < cap) out[got++] = a;
     }

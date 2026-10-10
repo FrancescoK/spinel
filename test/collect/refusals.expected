@@ -1028,18 +1028,6 @@ spinel: test/reject/string_boxed_reader_mutation.rb:6: a String read through a r
 spinel: test/reject/string_boxed_reader_query_reopened.rb:17: a String read through a reader on a boxed receiver (a Struct or Data member, an attr_reader, `def m = @iv`) is mutated in place (a String is not yet shared by reference through a reader on a boxed receiver). Assign the changed String back to the member.
 == test/reject/string_boxed_reader_query_reopened.rb [promote] rc=1
 spinel: test/reject/string_boxed_reader_query_reopened.rb:17: a String read through a reader on a boxed receiver (a Struct or Data member, an attr_reader, `def m = @iv`) is mutated in place (a String is not yet shared by reference through a reader on a boxed receiver). Assign the changed String back to the member.
-== test/reject/string_boxed_yield_append.rb [default] rc=1
-spinel: test/reject/string_boxed_yield_append.rb:4: a String is passed through a boxed argument of a yield or a block call, and a proc or Method it can reach appends to the String it is handed: this call hands it a copy, so the append would not reach the caller's String (a String is not yet shared by reference through a boxed argument of a `yield` or a block call). Return the String from the proc or Method and assign it, or append to it in the caller.
-spinel: 1 refusal, nothing written
-== test/reject/string_boxed_yield_append.rb [promote] rc=1
-spinel: test/reject/string_boxed_yield_append.rb:4: a String is passed through a boxed argument of a yield or a block call, and a proc or Method it can reach appends to the String it is handed: this call hands it a copy, so the append would not reach the caller's String (a String is not yet shared by reference through a boxed argument of a `yield` or a block call). Return the String from the proc or Method and assign it, or append to it in the caller.
-spinel: 1 refusal, nothing written
-== test/reject/string_boxed_yield_plus_append.rb [default] rc=1
-spinel: test/reject/string_boxed_yield_plus_append.rb:5: a String is passed through a boxed argument of a yield or a block call, and a proc or Method it can reach appends to the String it is handed: this call hands it a copy, so the append would not reach the caller's String (a String is not yet shared by reference through a boxed argument of a `yield` or a block call). Return the String from the proc or Method and assign it, or append to it in the caller.
-spinel: 1 refusal, nothing written
-== test/reject/string_boxed_yield_plus_append.rb [promote] rc=1
-spinel: test/reject/string_boxed_yield_plus_append.rb:5: a String is passed through a boxed argument of a yield or a block call, and a proc or Method it can reach appends to the String it is handed: this call hands it a copy, so the append would not reach the caller's String (a String is not yet shared by reference through a boxed argument of a `yield` or a block call). Return the String from the proc or Method and assign it, or append to it in the caller.
-spinel: 1 refusal, nothing written
 == test/reject/string_callee_reader_store.rb [default] rc=1
 spinel: test/reject/string_callee_reader_store.rb:9: a String a method stores into an Array or Hash its caller passed it is mutated in place through the caller's container (a String is not yet shared by reference through a store into a parameter's container). Store the String in the caller, or mutate it in the method.
 == test/reject/string_callee_reader_store.rb [promote] rc=1
@@ -1198,10 +1186,6 @@ spinel: test/reject/string_hash_value_variable.rb:5: a String stored in a Hash i
 spinel: test/reject/string_hash_values_variable.rb:5: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
 == test/reject/string_hash_values_variable.rb [promote] rc=1
 spinel: test/reject/string_hash_values_variable.rb:5: a String stored in a Hash is passed to an appending value block: a String is not yet shared by reference through a Hash's values. Append to the String before storing it in the Hash.
-== test/reject/string_identity_default_self.rb [default] rc=1
-spinel: test/reject/string_identity_default_self.rb:7: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
-== test/reject/string_identity_default_self.rb [promote] rc=1
-spinel: test/reject/string_identity_default_self.rb:7: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
 == test/reject/string_identity_return_appended.rb [default] rc=1
 spinel: test/reject/string_identity_return_appended.rb:11: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
 == test/reject/string_identity_return_appended.rb [promote] rc=1

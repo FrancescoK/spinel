@@ -2266,8 +2266,6 @@ static TyKind proc_arg_ty(Compiler *c, int a) {
    that is called, is passed (dyn_blk_params; `src` is that scope or -1);
    what no block reads from the slot (a boxed or scalar parameter) is not
    asked. Otherwise, or when the blocks are not known, sp_poly_slot_arg. */
-static void refuse_string_copy(Compiler *c, int arg, const char *target, const char *pname,
-                               const char *through, const char *why);
 static void emit_poly_slot_text(Compiler *c, int src, int k, int arg, const char *tn, Buf *b) {
   DynParams dp;
   if (src >= 0) dyn_blk_params(c, src, k, &dp); else { memset(&dp, 0, sizeof dp); dp.unknown = 1; }
@@ -2290,10 +2288,9 @@ static void emit_poly_slot_text(Compiler *c, int src, int k, int arg, const char
     }
   }
   /* the default build hands a plain String parameter a copy, so an append
-     to it would not reach the String the boxed argument came from */
-  if ((strs & 1) && dp.app && !c->share_strings)
-    refuse_string_copy(c, arg, NULL, NULL, "a boxed argument of a yield or a block call",
-                       "through a boxed argument of a `yield` or a block call");
+     to it does not reach the String the boxed argument came from; it is not
+     refused, as no String sharing route is in the default build (#7721):
+     --share-strings carries the handle */
   if (dp.unknown || (!strs && !nid)) { buf_printf(b, "sp_poly_slot_arg(%s)", tn); return; }
   /* a handle box's live bytes move on its next growing append, so a block that
      may keep what it reads (returns it, stores it, captures it) gets a copy,
@@ -8943,10 +8940,10 @@ static int arg_runs_nothing(Compiler *c, int n) {
   return 1;
 }
 /* Defaults that only read a String value need no receiver identity. Keep
-   the byte ABI off routes that can expose or mutate that receiver, and in
-   the default build off any that hand the receiver's String on (returned,
-   in an Array): a later mutation of it through another method's parameter or
-   a block parameter reaches the receiver in CRuby and is lost here. */
+   the byte ABI off routes that can expose or mutate that receiver. One that
+   hands the receiver's String on (returned, in an Array) takes it too: in
+   the default build a later mutation through another name is lost, as on
+   the other String sharing routes until they are shared (#6765). */
 int reopen_self_defaults(Compiler *c, int mi) {
   if (mi < 0) return 0;
   int pf = scope_proc_form_of(c, mi);
@@ -8979,8 +8976,6 @@ int reopen_self_defaults(Compiler *c, int mi) {
       !is_identity_query(nm) && !bop_name_mutates(nm, 0) && bop_share(TY_STRING, nm) == BSH_PURE;
   if (!pure && fresh) pure = 1;
   if (uses_self && !pure) return 0;
-  TyKind rt = (TyKind)m->ret;
-  int scalar_ret = ty_is_numeric(rt) || rt == TY_BOOL || rt == TY_SYMBOL || rt == TY_NIL || rt == TY_VOID;
   for (int i = 0; i < m->nparams; i++) {
     int d = m->pdefault[i];
     if (d < 0 || !ctor_default_reads_self(c, m, d, 0)) continue;
@@ -8994,8 +8989,9 @@ int reopen_self_defaults(Compiler *c, int mi) {
              bop_share(TY_STRING, nt_str(c->nt, d, "name")) == BSH_PURE;
     if (!read && !(operand_is_held_read(c, d) &&
                    cplan_user_fresh(c, d)->dispatch == CP_NONE)) return 0;
-    if ((t == TY_STRING || t == TY_STRBUF || t == TY_POLY || t == TY_UNKNOWN) &&
-        (!pure || !(fresh || scalar_ret))) return 0;
+    /* a default handing the receiver's String on (returned, in an Array) is
+       a copy in the default build, as on the other String sharing routes
+       (#7721): it is not refused, and it reads the receiver all the same */
   }
   return 1;
 }
