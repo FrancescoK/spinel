@@ -3383,6 +3383,14 @@ void qc_rewrite_reads(Compiler *c, int node, char (*mods)[64], int mdepth,
   for (int i = 0; i < na; i++) { int m = 0; const int *ids = nt_arr_at(nt, node, i, &m); for (int k = 0; k < m; k++) qc_rewrite_reads(c, ids[k], path, depth, ws, wn); }
 }
 
+/* The qualified names qualify_colliding_consts gave a constant written under
+   a module path, for qualify_colliding_classes. */
+static char **qc_const_quals; static int qc_nconst_quals;
+static int qc_const_qualified(const char *qn) {
+  for (int i = 0; i < qc_nconst_quals; i++) if (sp_streq(qc_const_quals[i], qn)) return 1;
+  return 0;
+}
+
 void qualify_colliding_consts(Compiler *c) {
   const NodeTable *nt = c->nt;
   QCWrite *ws = NULL; int wn = 0, wcap = 0;
@@ -3414,6 +3422,8 @@ void qualify_colliding_consts(Compiler *c) {
       if (ws[i].depth == 0) continue;
       char qn[512]; qc_qualified_name(qn, sizeof qn, &ws[i]);
       nt_set_str((NodeTable *)nt, ws[i].node, "name", qn);
+      qc_const_quals = realloc(qc_const_quals, sizeof(char *) * (size_t)(qc_nconst_quals + 1));
+      qc_const_quals[qc_nconst_quals++] = strdup(qn);
     }
   }
   free(ws);
@@ -3579,6 +3589,14 @@ void qualify_colliding_classes(Compiler *c) {
        a top-level `rescue LoadError` named Gem's class (and, once a builtin
        exception's reopening adds to the runtime's class, lost its C type). */
     if (!collide && ws[i].depth > 0 && is_builtin_exception_name(ws[i].name)) collide = 1;
+    /* ... and a body reopening a constant the constant pass qualified --
+       `C64 = Data.define(...)` then `class C64` in the same module, with
+       another module's C64 beside it -- or the body becomes a class of its
+       own under the bare leaf and the Data class never gets its methods. */
+    if (!collide && ws[i].depth > 0) {
+      char qn[512]; qc_qualified_name(qn, sizeof qn, &ws[i]);
+      if (qc_const_qualified(qn)) collide = 1;
+    }
     if (!collide) { ws[i] = ws[--wn]; i--; continue; }
     any = 1;
   }
