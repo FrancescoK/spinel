@@ -7116,7 +7116,8 @@ static int str_arms_slice_encode(Compiler *c, int id, Buf *b, const char *name, 
                thi, tlo, thi, tlo, thi, tlo, tc, tlo, thi, tc, thi, tc);
   }
   else if (sp_streq(name, "clamp") && (argc == 2 ||
-           (argc == 1 && nt_type(c->nt, argv[0]) && sp_streq(nt_type(c->nt, argv[0]), "RangeNode")))) {
+           (argc == 1 && nt_type(c->nt, argv[0]) && sp_streq(nt_type(c->nt, argv[0]), "RangeNode")) ||
+           (argc == 1 && comp_ntype(c, argv[0]) == TY_STR_RANGE))) {
     int ops[3];
     if (strbuf_route_clamp(c, id, ops)) {
       /* Publish the selected handle for a method's return pickup too. */
@@ -7126,20 +7127,33 @@ static int str_arms_slice_encode(Compiler *c, int id, Buf *b, const char *name, 
       if (!demand) buf_puts(b, ")");
       return 1;
     }
-    int lo_n, hi_n;
+    /* a Range held in a variable (or any other String Range value) reads
+       its endpoints off the value, where only a literal's were taken */
+    int rvar = argc == 1 && !sp_streq(nt_type(c->nt, argv[0]), "RangeNode");
+    int lo_n = -1, hi_n = -1;
     if (argc == 2) { lo_n = argv[0]; hi_n = argv[1]; }
-    else { int rn = argv[0]; lo_n = nt_ref(c->nt, rn, "left"); hi_n = nt_ref(c->nt, rn, "right"); }
-    /* an exclusive Range has no greatest member to clamp to, and a
-       two-argument min above max is out of order: both raise (#3593) */
-    int excl_r = (argc == 1 && (nt_int(c->nt, argv[0], "flags", 0) & 4)) ? 1 : 0;
-    int tc = ++g_tmp, tlo = ++g_tmp, thi = ++g_tmp;
-    buf_printf(b, "({ const char *_t%d = %s; const char *_t%d = ", tc, r, tlo);
-    if (lo_n >= 0) emit_expr(c, lo_n, b); else buf_puts(b, "NULL");
-    buf_printf(b, "; const char *_t%d = ", thi);
-    if (hi_n >= 0) emit_expr(c, hi_n, b); else buf_puts(b, "NULL");
-    buf_puts(b, ";");
-    if (excl_r)
+    else if (!rvar) { int rn = argv[0]; lo_n = nt_ref(c->nt, rn, "left"); hi_n = nt_ref(c->nt, rn, "right"); }
+    /* an exclusive Range with an end has no greatest member to clamp to,
+       and a two-argument min above max is out of order: both raise (#3593).
+       An endless one clamps from below, exclusive or not. */
+    int excl_r = (argc == 1 && !rvar && (nt_int(c->nt, argv[0], "flags", 0) & 4)) ? 1 : 0;
+    int tc = ++g_tmp, tlo = ++g_tmp, thi = ++g_tmp, trg = rvar ? ++g_tmp : 0;
+    buf_printf(b, "({ const char *_t%d = %s; ", tc, r);
+    if (rvar) {
+      buf_printf(b, "SP_GC_ROOT_STR(_t%d); sp_StrRange _t%d = ", tc, trg); emit_expr(c, argv[0], b);
+      buf_printf(b, "; const char *_t%d = _t%d.first; const char *_t%d = _t%d.last;", tlo, trg, thi, trg);
+      buf_printf(b, " if (_t%d.excl && _t%d)", trg, thi);
       buf_puts(b, " sp_raise_cls(\"ArgumentError\", \"cannot clamp with an exclusive range\");");
+    }
+    else {
+      buf_printf(b, "const char *_t%d = ", tlo);
+      if (lo_n >= 0) emit_expr(c, lo_n, b); else buf_puts(b, "NULL");
+      buf_printf(b, "; const char *_t%d = ", thi);
+      if (hi_n >= 0) emit_expr(c, hi_n, b); else buf_puts(b, "NULL");
+      buf_puts(b, ";");
+      if (excl_r)
+        buf_printf(b, " if (_t%d) sp_raise_cls(\"ArgumentError\", \"cannot clamp with an exclusive range\");", thi);
+    }
     buf_printf(b, " if (_t%d && _t%d && sp_str_cmp_bytes(_t%d, _t%d) > 0)"
                   " sp_raise_cls(\"ArgumentError\", \"min argument must be less than or equal to max argument\");",
                tlo, thi, tlo, thi);
