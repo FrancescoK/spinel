@@ -4052,6 +4052,10 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	esac; \
 	$(SPINEL) test/infer/module_source_call_binds_nothing.rb -c --no-line-map -o "$$tmp/msc.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (compile module_source_call_binds_nothing)"; exit 1; }; \
 	grep -Eq 'sp_int sp_Seq_output\(sp_Seq \*self, sp_int lv_col, sp_int lv_shift\)' "$$tmp/msc.c" && grep -Eq 'sp_int sp_Port_output\(sp_Port \*self, sp_int lv_port, sp_int lv_value\)' "$$tmp/msc.c" || { echo "infer-test: FAIL (a call in a module method an include copied away boxed the parameters of every method of its name)"; grep -E 'sp_(Seq|Port)_output\(' "$$tmp/msc.c" | head -2; ok=0; }; \
+	calls=$$($(SPINEL) test/infer/renarrow_reset_return_cycle.rb --timing -c --no-line-map -o "$$tmp/rrc.c" 2>&1 | sed -n 's/^spinel-timing: pass=infer_param_types ms=[0-9.]* calls=\([0-9]*\).*/\1/p'); \
+	case "$$calls" in ''|*[!0-9]*) echo "infer-test: FAIL (no infer_param_types call count for renarrow_reset_return_cycle)"; ok=0;; \
+	  *) [ "$$calls" -lt 32 ] || { echo "infer-test: FAIL (the re-narrow loop ran $$calls binds: a reset return re-derived every iteration kept its fixed-cycle exit from firing)"; ok=0; };; \
+	esac; \
 	$(SPINEL) test/infer/inline_force_fanout.rb -c --no-line-map -o "$$tmp/iff.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (compile inline_force_fanout)"; exit 1; }; \
 	grep -q 'SP_ALWAYS_INLINE [^(]* sp_f4(' "$$tmp/iff.c" && { echo "infer-test: FAIL (forced inlining copied a small-method chain past the size budget)"; ok=0; }; \
 	$(SPINEL) test/infer/block_kept_through_or.rb -c --no-line-map -o "$$tmp/bko.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (compile block_kept_through_or)"; exit 1; }; \

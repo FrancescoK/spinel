@@ -37935,6 +37935,14 @@ static void an_phase_infer_fixpoint(Compiler *c) {
       char *ivrec = (char *)calloc((size_t)ivoff[ivncls] + 1, 1);
       TyKind *ivsnap = (TyKind *)malloc(sizeof(TyKind) * (size_t)(ivoff[ivncls] + 1));
       for (int k = 0; k < nrec; k++) ivrec[ivoff[recCi[k]] + recIv[k]] = 1;
+      /* The same for returns: infer_return_types re-fills a return the loop
+         reset every round, so only a change to one it did not reset counts,
+         and the reset ones join the fixed-cycle test. */
+      int rsn = c->nscopes;
+      char *rsrec = (char *)calloc((size_t)rsn + 1, 1);
+      TyKind *rssnap = (TyKind *)malloc(sizeof(TyKind) * (size_t)(rsn + 1));
+      TyKind *rprevd = (TyKind *)malloc(sizeof(TyKind) * (nrrec > 0 ? nrrec : 1));
+      for (int k = 0; k < nrrec; k++) rsrec[recRs[k]] = 1;
       AnRoundCap rc = { 128, 0, 0, NULL, 0 };
       unsettled = 1;
       for (int iter = 0; iter < rc.cap; iter++) {
@@ -38002,7 +38010,14 @@ static void an_phase_infer_fixpoint(Compiler *c) {
               if (!ivrec[ivoff[ci] + iv] && c->classes[ci].ivar_types[iv] != ivsnap[ivoff[ci] + iv]) { ch_other = 1; break; }
           }
         }
-        { int _w = infer_return_types(c); ch |= _w; ch_other |= _w; }
+        int rssame = c->nscopes == rsn;
+        for (int q = 0; rssame && q < rsn; q++) rssnap[q] = c->scopes[q].ret;
+        if (infer_return_types(c)) {
+          ch = 1;
+          if (!rssame || c->nscopes != rsn) ch_other = 1;
+          for (int q = 0; q < rsn && !ch_other; q++)
+            if (!rsrec[q] && c->scopes[q].ret != rssnap[q]) ch_other = 1;
+        }
         /* a Hash store widened this iteration, or one widened this round and
            its readers still moved */
         int spreading = pivs_hash_stores_widened(c) != widened || (widened != widened0 && ch_other);
@@ -38039,10 +38054,13 @@ static void an_phase_infer_fixpoint(Compiler *c) {
               if (c->classes[recCi[k]].ivar_types[recIv[k]] != prevd[k]) cyc = 0;
             for (int k = 0; k < nlrec && cyc; k++)
               if (c->scopes[recLs[k]].locals[recLi[k]].type != lprevd[k]) cyc = 0;
+            for (int k = 0; k < nrrec && cyc; k++)
+              if (c->scopes[recRs[k]].ret != rprevd[k]) cyc = 0;
             if (cyc) break;
           }
           for (int k = 0; k < nrec; k++) prevd[k] = c->classes[recCi[k]].ivar_types[recIv[k]];
           for (int k = 0; k < nlrec; k++) lprevd[k] = c->scopes[recLs[k]].locals[recLi[k]].type;
+          for (int k = 0; k < nrrec; k++) rprevd[k] = c->scopes[recRs[k]].ret;
           have_prevd = 1;
         }
         else if (!ch) { unsettled = 0; break; }
@@ -38053,7 +38071,7 @@ static void an_phase_infer_fixpoint(Compiler *c) {
       free(rc.seen);
       /* the bind lags one iteration; take the settled state once more */
       AN_PASS_V("infer_param_types", infer_param_types(c));
-      free(prev); free(lprev); free(prevd); free(lprevd); free(ivoff); free(ivrec); free(ivsnap);
+      free(prev); free(lprev); free(prevd); free(lprevd); free(ivoff); free(ivrec); free(ivsnap); free(rsrec); free(rssnap); free(rprevd);
     }
     free(recCi); free(recIv); free(recLs); free(recLi); free(recRs); free(nsoff); free(nsbad);
     if (AN_PASS("pivs_hash_stores_widened", pivs_hash_stores_widened(c)) == widened0) break;
