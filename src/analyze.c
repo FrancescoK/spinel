@@ -15480,15 +15480,34 @@ static int strbuf_promote_ivar(Compiler *c, int cid, const char *nm) {
   if (iv < 0) return 0;
   if (ci->ivar_types[iv] != TY_STRING && ci->ivar_types[iv] != TY_STRBUF) return 0;
   if (ci->ivar_types[iv] == TY_STRBUF && ci->ivar_str_shared[iv]) return 0;
+  /* An inherited slot has one representation in the whole family: an
+     ancestor's methods reach it through their own struct. So the
+     promotion starts at the topmost ancestor holding the String slot, and
+     a class pinned below one that is not (an --rbs seed on a subclass's
+     writer) no longer leaves the two apart (#8390). */
+  int top = cid;
+  for (int p = c->classes[cid].parent; p >= 0; p = c->classes[p].parent) {
+    int pi = comp_ivar_index(&c->classes[p], nm);
+    if (pi < 0) break;
+    TyKind pt = c->classes[p].ivar_types[pi];
+    if (pt != TY_STRING && pt != TY_STRBUF) break;
+    top = p;
+  }
+  ClassInfo *tc = &c->classes[top];
+  int ti = comp_ivar_index(tc, nm);
+  tc->ivar_types[ti] = TY_STRBUF;
+  tc->ivar_str_shared[ti] = 1;
   ci->ivar_types[iv] = TY_STRBUF;
   ci->ivar_str_shared[iv] = 1;
   /* Under the share rule the inherited field has this representation in
      every descendant, including one with no ivar node of its own (and so
      no share holder). sh_ivar already joins a child's holder to its
-     ancestor's; carry the promotion to the passive copies of that slot. */
-  if (c->share_strings) {
+     ancestor's; carry the promotion to the passive copies of that slot.
+     Below an ancestor the promotion reached, every build does: the
+     classes beside cid inherit the ancestor's layout. */
+  if (c->share_strings || top != cid) {
     int nk = 0;
-    const int *ks = comp_descendants(c, cid, &nk);
+    const int *ks = comp_descendants(c, top, &nk);
     for (int k = 0; k < nk; k++) {
       ClassInfo *sc = &c->classes[ks[k]];
       int si = comp_ivar_index(sc, nm);

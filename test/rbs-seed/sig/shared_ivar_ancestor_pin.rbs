@@ -1,0 +1,3 @@
+class PinWidget < PinBase
+  attr_writer id: String
+end
