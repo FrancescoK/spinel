@@ -6897,8 +6897,10 @@ static int desugar_builtin_method_obj(Compiler *c) {
     /* A boxed receiver is not a C pointer the Method's self slot can carry:
        the wrapper takes it inside a one-element array instead,
        `def __bam_<id>(__bam_r, ...) = __bam_r[0].<sym>(...)`, and the call
-       goes through the poly dispatch (codegen boxes the self, bam_poly). */
-    int poly_self = rt == TY_POLY;
+       goes through the poly dispatch (codegen boxes the self, bam_poly).
+       A Float takes the same shape: the self slot is a pointer, and a double
+       cast to one did not compile. */
+    int poly_self = rt == TY_POLY || rt == TY_FLOAT;
     /* the typed-array (kind, op) trampoline path owns these */
     if (ty_is_array(rt) && sp_streq(sym, "push")) continue;
     if (comp_method_index(c, sym) >= 0) continue;     /* a same-named top-level def wins */
