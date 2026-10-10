@@ -14996,6 +14996,7 @@ static void emit_stmt_node(Compiler *c, int id, Buf *b, int indent) {
        override from here rather than from the object's construction (#4084).
        The object carries its parent's cls_id until this line runs. */
     if (getenv("SP_DBG_SG")) { emit_indent(b, indent); buf_printf(b, "/* dbg DefNode recv=%d */\n", nt_ref(c->nt, id, "receiver")); }
+    sg_refused_def(c, id);
     emit_sg_activate(c, id, nt_ref(c->nt, id, "receiver"), b, indent);
     return;
   }

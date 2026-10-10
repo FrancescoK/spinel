@@ -946,8 +946,10 @@ spinel: test/reject/scrub_bang_retained_append.rb:3: a String is not yet shared 
 spinel: test/reject/scrub_bang_retained_append.rb:3: a String is not yet shared by reference through a retained scrub! result that is appended to
 == test/reject/singleton_on_untraceable_recv.rb [default] rc=1
 spinel: test/reject/singleton_on_untraceable_recv.rb:10: singleton method that needs a self, on a receiver that is not one user-class instance
+spinel: 1 refusal, nothing written
 == test/reject/singleton_on_untraceable_recv.rb [promote] rc=1
 spinel: test/reject/singleton_on_untraceable_recv.rb:10: singleton method that needs a self, on a receiver that is not one user-class instance
+spinel: 1 refusal, nothing written
 == test/reject/string_append_through_kept_block_index.rb [default] rc=1
 spinel: test/reject/string_append_through_kept_block_index.rb:11: a String is passed through `b[]`, and a proc or Method it can reach appends to the String it is handed: this call hands it a copy, so the append would not reach the caller's String (a String is not yet shared by reference from a block's parameter). Return the String from the proc or Method and assign it, or append to it in the caller.
 spinel: 1 refusal, nothing written
