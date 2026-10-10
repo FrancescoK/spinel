@@ -10997,6 +10997,15 @@ static void emit_obj_inspect_dispatch(Compiler *c, Buf *b) {
   buf_puts(b, "    default: return \"#<Object>\";\n  }\n}\n");
 }
 
+/* The C expression that reads the name assigned to the Class.new class `ci`
+   (sp_class_assigned_name_N). In a program that uses Threads a worker may
+   assign it while another reads it, so it is read with an acquire load, and
+   sp_class_assign_name publishes it with a compare-and-swap. */
+static void anon_name_expr(char *out, size_t cap, int ci) {
+  if (g_uses_threads) snprintf(out, cap, "SP_ATOMIC_LOAD(&sp_class_assigned_name_%d,__ATOMIC_ACQUIRE)", ci);
+  else snprintf(out, cap, "sp_class_assigned_name_%d", ci);
+}
+
 static void emit_marshal_dispatch(Compiler *c, Buf *b) {
   buf_puts(b, "static int sp_marshal_obj_dump(sp_mar_buf *b, int cls_id, void *p) {\n");
   buf_puts(b, "  switch (cls_id) {\n");
@@ -11008,12 +11017,12 @@ static void emit_marshal_dispatch(Compiler *c, Buf *b) {
     /* a Class.new class dumps under the constant that names it, and has no
        name to dump under before one does (CRuby: can't dump anonymous class) */
     char mnq[160];
-    if (comp_class_anonymous(c, i)) snprintf(mnq, sizeof mnq, "sp_class_assigned_name_%d", i);
+    if (comp_class_anonymous(c, i)) anon_name_expr(mnq, sizeof mnq, i);
     else snprintf(mnq, sizeof mnq, "\"%s\"", mname);
     buf_printf(b, "    case %d: {\n", i);
     if (comp_class_anonymous(c, i))
-      buf_printf(b, "      if (!sp_class_assigned_name_%d)\n"
-                    "        sp_raise_cls(\"TypeError\", sp_sprintf(\"can't dump anonymous class %%s\", sp_class_display((sp_Class){%d})));\n", i, i);
+      buf_printf(b, "      if (!%s)\n"
+                    "        sp_raise_cls(\"TypeError\", sp_sprintf(\"can't dump anonymous class %%s\", sp_class_display((sp_Class){%d})));\n", mnq, i);
     buf_printf(b, "      sp_%s *o = (sp_%s *)p; (void)o;\n", ci->c_name, ci->c_name);
     /* an ivar nothing has set yet is not written, as CRuby leaves it out
        (ivar_set_test, the presence inspect and instance_variables read) */
@@ -11079,8 +11088,10 @@ static void emit_marshal_dispatch(Compiler *c, Buf *b) {
   for (int i = 0; i < c->nclasses; i++) {
     if (!class_marshalable(c, i)) continue;
     ClassInfo *ci = &c->classes[i];
-    if (comp_class_anonymous(c, i))
-      buf_printf(b, "  if (sp_class_assigned_name_%d && !strcmp(name, sp_class_assigned_name_%d)) {\n", i, i);
+    if (comp_class_anonymous(c, i)) {
+      char nx[96]; anon_name_expr(nx, sizeof nx, i);
+      buf_printf(b, "  if (%s && !strcmp(name, %s)) {\n", nx, nx);
+    }
     else buf_printf(b, "  if (!strcmp(name, \"%s\")) {\n", class_ruby_name(c, i) ? class_ruby_name(c, i) : ci->name);
     buf_printf(b, "    sp_%s *o = into.tag == SP_TAG_OBJ ? (sp_%s *)into.v.p : ", ci->c_name, ci->c_name);
     emit_obj_alloc_expr(c, i, b);
@@ -16573,14 +16584,28 @@ static void emit_sym_class_name_rt(Compiler *c, Buf *b) {
                   "if(!m)sp_raise_cls(\"NoMemoryError\",\"failed to allocate a message\");"
                   "m[0]=(char)0xff;memcpy(m+1,head,a);memcpy(m+1+a,disp,n+1);return m+1;}\n\n");
       /* the unnamed form is built once per class and kept, so its address is the
-         same on every call (the NoMethodError sites compare it) */
+         same on every call (the NoMethodError sites compare it). In a program
+         that uses Threads two workers may build it at once: the first to
+         publish it with a compare-and-swap wins, and the other frees its copy
+         (the text starts one byte into its allocation, after the marker) and
+         answers the published one. */
       buf_puts(b, "static const char *sp_class_display(sp_Class c){");
       emit_anon_class_select(c, b);
       for (int i = 0; i < c->nclasses; i++)
-        if (comp_class_anonymous(c, i))
-          buf_printf(b, "case %d:if(sp_class_assigned_name_%d)return sp_class_assigned_name_%d;"
-                         "{static const char *t;if(!t)t=sp_anon_text(\"\",sp_sprintf(SPL(\"#<Class:0x%%016llx>\"),"
-                         "(unsigned long long)(uintptr_t)&sp_class_to_s+%d));return t;}", i, i, i, i);
+        if (comp_class_anonymous(c, i)) {
+          char mk[192];
+          snprintf(mk, sizeof mk, "sp_anon_text(\"\",sp_sprintf(SPL(\"#<Class:0x%%016llx>\"),"
+                                  "(unsigned long long)(uintptr_t)&sp_class_to_s+%d))", i);
+          char nx[96]; anon_name_expr(nx, sizeof nx, i);
+          buf_printf(b, "case %d:if(%s)return %s;{static const char *t;", i, nx, nx);
+          if (g_uses_threads)
+            buf_printf(b, "const char *_t=SP_ATOMIC_LOAD(&t,__ATOMIC_ACQUIRE);"
+                           "if(!_t){const char *_n=%s;const char *_e=NULL;"
+                           "if(!SP_ATOMIC_CAS(&t,&_e,_n,0,__ATOMIC_ACQ_REL,__ATOMIC_ACQUIRE)){free((char *)_n-1);_n=_e;}"
+                           "_t=_n;}return _t;}", mk);
+          else
+            buf_printf(b, "if(!t)t=%s;return t;}", mk);
+        }
       buf_puts(b, "default:return sp_class_to_s(c);} }\n\n");
     }
     /* CRuby INSPECTS a keyword-init Struct class as `K(keyword_init: true)`
@@ -16604,16 +16629,23 @@ static void emit_sym_class_name_rt(Compiler *c, Buf *b) {
     if (c->has_anonymous_classes) emit_anon_class_select(c, b);
     else buf_puts(b, "switch(c.cls_id){");
     for (int i = 0; i < c->nclasses; i++)
-      if (comp_class_anonymous(c, i))
-        buf_printf(b, "case %d:return sp_class_assigned_name_%d;", i, i);
+      if (comp_class_anonymous(c, i)) {
+        char nx[96]; anon_name_expr(nx, sizeof nx, i);
+        buf_printf(b, "case %d:return %s;", i, nx);
+      }
       else if (!is_builtin_reopen(c->classes[i].name) && c->classes[i].is_anon_struct)
         buf_printf(b, "case %d:return NULL;", i);
     buf_puts(b, "default:break;} return sp_class_to_s(c); }\n\n");
     if (c->has_anonymous_classes) {
       buf_puts(b, "static void sp_class_assign_name(sp_Class c, const char *name){switch(c.cls_id){");
       for (int i = 0; i < c->nclasses; i++)
-        if (comp_class_anonymous(c, i))
-          buf_printf(b, "case %d:if(!sp_class_assigned_name_%d)sp_class_assigned_name_%d=name;break;", i, i, i);
+        if (comp_class_anonymous(c, i)) {
+          /* the first name stays; with Threads two workers may assign at once */
+          if (g_uses_threads)
+            buf_printf(b, "case %d:{const char *_e=NULL;SP_ATOMIC_CAS(&sp_class_assigned_name_%d,&_e,name,0,__ATOMIC_RELEASE,__ATOMIC_RELAXED);}break;", i, i);
+          else
+            buf_printf(b, "case %d:if(!sp_class_assigned_name_%d)sp_class_assigned_name_%d=name;break;", i, i, i);
+        }
       buf_puts(b, "default:break;}}\n");
     }
     /* Inverse of the table above, for resolving a class carried by NAME back to

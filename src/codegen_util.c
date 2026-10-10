@@ -3260,15 +3260,17 @@ __attribute__((noreturn)) void unsupported_feature(Compiler *c, int id, const ch
    assigned only after the program starts), so the text is built where it is
    raised and kept per raise site as a persistent string, because the raise
    stages it before anything roots it; it is rebuilt only when the class's
-   display changes. 0 (nothing appended) for any other class. */
+   display changes. In a program that uses Threads the site's cache is per
+   worker, so no two workers read or write it at once. 0 (nothing appended)
+   for any other class. */
 int anon_class_text(Compiler *c, int ci, const char *head, Buf *b) {
   if (!comp_class_anonymous(c, ci)) return 0;
   int t = ++g_tmp;
-  /* two workers may run this site at once: the message is stored before the
-     display it was built for, and an empty slot always rebuilds */
-  buf_printf(b, "({ static const char *_nd%d, *_nm%d; const char *_d%d = sp_class_display((sp_Class){%d}); "
+  /* in a program that uses Threads each worker keeps its own pair (SP_TLS), so
+     two workers running this site never share it */
+  buf_printf(b, "({ static %sconst char *_nd%d, *_nm%d; const char *_d%d = sp_class_display((sp_Class){%d}); "
                 "if (_d%d != _nd%d || !_nm%d) { const char *_m%d = sp_anon_text(\"%s\", _d%d); _nm%d = _m%d; _nd%d = _d%d; } _nm%d; })",
-             t, t, t, ci, t, t, t, t, head, t, t, t, t, t, t);
+             g_uses_threads ? "SP_TLS " : "", t, t, t, ci, t, t, t, t, head, t, t, t, t, t, t);
   return 1;
 }
 
