@@ -1164,6 +1164,11 @@ share-strings-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS
 	   grep -q '^share-unknown-mut:' "$$tmp/out"; then \
 	  echo "share-strings-test: FAIL (a send in an uncalled method widens the sharing facts)"; ok=0; \
 	fi; \
+	t=test/share/share_strings_flow_destinations; \
+	if ! SPINEL_SHARE_STATS=2 $(SPINEL) --share-strings "$$t.rb" -c --no-line-map -o "$$tmp/dest.c" >"$$tmp/out" 2>&1 || \
+	   ! grep '^share-flow-need:' "$$tmp/out" | cmp -s - "$$t.flows"; then \
+	  echo "share-strings-test: FAIL (a flow's destination, or the handle a stored value needs, changed)"; ok=0; \
+	fi; \
 	t=test/share_strings_copy_beside_alloc.rb; \
 	if ! $(SPINEL) --share-strings "$$t" -o "$$tmp/cba" >"$$tmp/out" 2>&1 || \
 	   ! SPINEL_GC_STRESS=2 "$$tmp/cba" 2>&1 | cmp -s - "$$t.expected"; then \

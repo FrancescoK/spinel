@@ -186,6 +186,12 @@ void share_routes_free(Compiler *c);
    0..share_flow_count-1: the kind, the site and the value node. */
 int share_flow_count(const Compiler *c);
 int share_flow_at(const Compiler *c, int i, int *site, int *value);
+/* Does the rule share the class of flow i's destination: the holder of the
+   variable, parameter, ivar or block parameter, or the elements of the
+   container, that takes the value (-1 when the walk made none)? A new
+   String joins no class, so its own class never says whether the holder it
+   is stored into shares. */
+int share_flow_dest_shares(const Compiler *c, int i);
 /* The literal blocks method scope mi yields to, as a list in *blocks:
    their count, or -1 when a block the walk does not list reaches its
    yields (a block passed as a value, a zsuper's, a dynamic call's). */
@@ -222,6 +228,13 @@ int share_node_one_name(const Compiler *c, int n);
 int share_value_unobserved(Compiler *c, int n);
 /* Does the rule share the class of node n's value? */
 int share_node_shares(const Compiler *c, int n);
+/* Must the String node v evaluates to be the shared handle where it is
+   emitted, and not a copy of its bytes: SHN_YES, or SHN_FRESH when no other
+   name sees it, so a copy is fine unless a box keeps it (the box has to be
+   the handle's, or no change shows through the box's other names). A pure
+   query, answered from the final facts. */
+enum { SHN_NO, SHN_YES, SHN_FRESH };
+int share_value_needs_handle(Compiler *c, int v);
 
 /* SPINEL_SHARE_STATS=3: name the mutations that reach UNKNOWN's class */
 void share_dump_unknown_mutations(Compiler *c);

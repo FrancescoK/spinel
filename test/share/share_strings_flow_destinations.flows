@@ -1,0 +1,23 @@
+share-flow-need: test/share/share_strings_flow_destinations.rb:7 node 11 into a variable's write dest-shares=1 needs-handle=2
+share-flow-need: test/share/share_strings_flow_destinations.rb:11 node 18 into a variable's write dest-shares=1 needs-handle=1
+share-flow-need: test/share/share_strings_flow_destinations.rb:15 node 24 into an in-place change dest-shares=-1 needs-handle=1
+share-flow-need: test/share/share_strings_flow_destinations.rb:20 node 33 into a method's argument dest-shares=1 needs-handle=2
+share-flow-need: test/share/share_strings_flow_destinations.rb:21 node 38 into an attribute or member store dest-shares=1 needs-handle=2
+share-flow-need: test/share/share_strings_flow_destinations.rb:25 node 49 into a variable's write dest-shares=1 needs-handle=2
+share-flow-need: test/share/share_strings_flow_destinations.rb:26 node 52 into a variable's write dest-shares=1 needs-handle=1
+share-flow-need: test/share/share_strings_flow_destinations.rb:27 node 54 into an in-place change dest-shares=-1 needs-handle=1
+share-flow-need: test/share/share_strings_flow_destinations.rb:31 node 65 into a container's element dest-shares=1 needs-handle=2
+share-flow-need: test/share/share_strings_flow_destinations.rb:32 node 68 into an in-place change dest-shares=-1 needs-handle=2
+share-flow-need: test/share/share_strings_flow_destinations.rb:34 node 77 into an in-place change dest-shares=-1 needs-handle=2
+share-flow-need: test/share/share_strings_flow_destinations.rb:38 node 95 into an in-place change dest-shares=-1 needs-handle=1
+share-flow-need: test/share/share_strings_flow_destinations.rb:39 node 99 into a variable's write dest-shares=1 needs-handle=1
+share-flow-need: test/share/share_strings_flow_destinations.rb:40 node 101 into an in-place change dest-shares=-1 needs-handle=1
+share-flow-need: test/share/share_strings_flow_destinations.rb:43 node 118 into a block's value a container keeps dest-shares=1 needs-handle=2
+share-flow-need: test/share/share_strings_flow_destinations.rb:44 node 125 into an in-place change dest-shares=-1 needs-handle=2
+share-flow-need: test/share/share_strings_flow_destinations.rb:46 node 134 into an in-place change dest-shares=-1 needs-handle=2
+share-flow-need: test/share/share_strings_flow_destinations.rb:56 node 170 into a variable's write dest-shares=1 needs-handle=1
+share-flow-need: test/share/share_strings_flow_destinations.rb:60 node 174 into an in-place change dest-shares=-1 needs-handle=1
+share-flow-need: test/share/share_strings_flow_destinations.rb:68 node 188 into a method's argument dest-shares=1 needs-handle=2
+share-flow-need: test/share/share_strings_flow_destinations.rb:75 node 203 into a method's argument dest-shares=1 needs-handle=2
+share-flow-need: test/share/share_strings_flow_destinations.rb:75 node 211 into a variable's write dest-shares=1 needs-handle=1
+share-flow-need: test/share/share_strings_flow_destinations.rb:75 node 213 into an in-place change dest-shares=-1 needs-handle=1

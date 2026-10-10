@@ -1158,6 +1158,14 @@ static void repr_share_flows_check(Compiler *c, const char *stats) {
   for (int i = 0; i < nf; i++) {
     int site, v;
     int kind = share_flow_at(c, i, &site, &v);
+    /* the String a flow stores that must be the handle where it is emitted
+       (share_value_needs_handle), and whether its destination shares */
+    if (stats && stats[0] == '2' && v >= 0 && share_value_needs_handle(c, v)) {
+      const char *fp = nt_file_path(c->nt, (int)nt_int(c->nt, v, "node_file", -1));
+      fprintf(stderr, "share-flow-need: %s:%d node %d into %s dest-shares=%d needs-handle=%d\n", fp ? fp : "?",
+              (int)nt_int(c->nt, v, "node_line", 0), v, repr_flow_kind_name(kind), share_flow_dest_shares(c, i),
+              share_value_needs_handle(c, v));
+    }
     /* a flow in an unreachable scope is never emitted (bad_lit's rule) */
     if (v < 0 || !comp_scope_of(c, v)->reachable || !repr_flow_checked(c, v)) continue;
     int u = unwrap_parens(c, v);

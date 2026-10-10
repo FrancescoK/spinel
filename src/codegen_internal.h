@@ -2257,4 +2257,7 @@ extern const char *g_iow_key_ref;
 
 void refuse_yield_capwrap(Compiler *c, int blk, int yc, const int *yv);
 int emit_ptr_array_build(Compiler *c, int v, TyKind want, Buf *b);
+/* Is value v's String one no other name can see a copy of (codegen_stmt.c)?
+   share_value_needs_handle asks it. */
+int strbuf_flow_unseen(Compiler *c, int v);
 #endif
