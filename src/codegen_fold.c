@@ -7709,9 +7709,13 @@ else {
    line is flushed at the statement boundary, capturing the value ABOVE that
    in-sequence assignment (`a = {...}; foo(a)` as an operand passed a stale `a`).
    That matches the g_argov skip in emit_args_filled. A param default like `{}`
-   (provided < 0) is a fresh allocation and does want the root -- #1445. */
+   (provided < 0) is a fresh allocation and does want the root -- #1445.
+   A String Range is no pointer, but it carries two Strings by value (and,
+   built --share-strings, their handles): one made in the list is held by
+   nothing once its own expression ends, and a later argument that
+   allocates (`T.new(a.to_s..b.to_s, :"k#{i}")`) collected its ends. */
 int arg_wants_root(Compiler *c, TyKind pt, int provided) {
-  if (pt != TY_POLY && !needs_root(pt)) return 0;
+  if (pt != TY_POLY && pt != TY_STR_RANGE && !needs_root(pt)) return 0;
   if (provided < 0) return 1;
   const char *aty = nt_type(c->nt, provided);
   return !(aty && (sp_streq(aty, "LocalVariableReadNode") ||
@@ -7737,6 +7741,7 @@ void emit_rooted_operand(Compiler *c, TyKind pt, int provided, const char *expr,
   buf_printf(g_pre, "%s;\n", expr);
   emit_indent(g_pre, g_indent);
   if (pt == TY_POLY) buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_t%d);\n", t);
+  else if (pt == TY_STR_RANGE) { emit_gc_root_tmp_refs(c, pt, t, g_pre); buf_puts(g_pre, "\n"); }
   else buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", t);
   buf_printf(out, "_t%d", t);
 }

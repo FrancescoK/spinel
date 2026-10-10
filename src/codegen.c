@@ -9453,6 +9453,27 @@ static void emit_ctor_params(Compiler *c, int init, int init_has_blk, Buf *b) {
   else buf_puts(b, "void");
 }
 
+/* A String Range parameter of a constructor, held by value: its endpoint
+   strings and, built --share-strings, the handles it keeps, rooted before
+   the object is allocated. The argument is often a Range literal whose own
+   roots ended with the expression that made it, and nothing else holds an
+   endpoint made on the spot until the object stores it. */
+static void emit_srange_param_root(Compiler *c, const char *name, Buf *b) {
+  buf_printf(b, "  SP_GC_ROOT_STR(%s.first); SP_GC_ROOT_STR(%s.last);", name, name);
+  emit_srange_handle_roots(c, name, b);
+  buf_puts(b, "\n");
+}
+/* ...each String Range parameter of the initialize the constructor takes */
+static void emit_ctor_srange_roots(Compiler *c, int init, Buf *b) {
+  if (init < 0) return;
+  Scope *s = &c->scopes[init];
+  for (int i = 0; i < s->nparams; i++) {
+    if (scope_param_type(s, i) != TY_STR_RANGE) continue;
+    char name[160]; snprintf(name, sizeof name, "lv_%s", s->pnames[i]);
+    emit_srange_param_root(c, name, b);
+  }
+}
+
 /* --share-strings: an exception class's constructor allocates the
    exception before its initialize roots the parameters, and an argument
    can be a fresh String handle no one else holds (`raise E, "lit"` into a
@@ -9511,6 +9532,7 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
         else if (pt == TY_POLY)  buf_printf(b, "  SP_GC_ROOT_RBVAL(lv_%s);\n", si->pnames[i]);
         else if (needs_root(pt)) buf_printf(b, "  SP_GC_ROOT(lv_%s);\n", si->pnames[i]);
       }
+      emit_ctor_srange_roots(c, sinit, b);
       buf_printf(b, "  sp_%s *self = SP_POOL_NEW(%s, %s%s%s);\n",
                 ci->c_name, ci->c_name,
                 class_needs_scan(ci) ? "sp_" : "", class_needs_scan(ci) ? ci->c_name : "NULL",
@@ -9563,6 +9585,8 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
          temporary is just as sweepable across SP_POOL_NEW's GC as a string. */
       if (mt == TY_STRING)      buf_printf(b, "  SP_GC_ROOT_STR(a%d);\n", i);
       else if (mt == TY_POLY)   buf_printf(b, "  SP_GC_ROOT_RBVAL(a%d);\n", i);
+      /* a String Range by value: what it carries (emit_srange_param_root) */
+      else if (mt == TY_STR_RANGE) { char name[32]; snprintf(name, sizeof name, "a%d", i); emit_srange_param_root(c, name, b); }
       else if (needs_root(mt))  buf_printf(b, "  SP_GC_ROOT(a%d);\n", i);
     }
     buf_printf(b, "  sp_%s *self = SP_POOL_NEW(%s, %s%s%s);\n",
@@ -9734,6 +9758,7 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
     const char *par = exc_builtin_parent(c, cid);
     buf_puts(b, ") {\n");
     emit_ctor_param_roots(c, init, b);
+    emit_ctor_srange_roots(c, init, b);
     if (ci->nivars == 0) {
       buf_printf(b, "  sp_%s *self = sp_exc_new_sub(\"%s\", \"%s\", (&(\"\\xff\")[1]));\n",
                  ci->c_name, cn2, par);
@@ -9764,10 +9789,15 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
       else buf_puts(b, "  sp_syserr_super((sp_Exception *)self, 0, NULL);\n");
     }
   }
-  else if (ci->ary_root > 0)
-    buf_printf(b, ") {\n  sp_%s *self = sp_%s__alloc();\n  SP_GC_ROOT(self);\n", ci->c_name, ci->c_name);
+  else if (ci->ary_root > 0) {
+    buf_puts(b, ") {\n");
+    emit_ctor_srange_roots(c, init, b);
+    buf_printf(b, "  sp_%s *self = sp_%s__alloc();\n  SP_GC_ROOT(self);\n", ci->c_name, ci->c_name);
+  }
   else {
-  buf_printf(b, ") {\n  sp_%s *self = SP_POOL_NEW(%s, %s%s%s);\n",
+  buf_puts(b, ") {\n");
+  emit_ctor_srange_roots(c, init, b);
+  buf_printf(b, "  sp_%s *self = SP_POOL_NEW(%s, %s%s%s);\n",
             ci->c_name, ci->c_name,
             class_needs_scan(ci) ? "sp_" : "", class_needs_scan(ci) ? ci->c_name : "NULL",
             class_needs_scan(ci) ? "__gc_scan" : "");
