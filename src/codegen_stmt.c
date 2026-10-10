@@ -10176,6 +10176,33 @@ static void emit_ensure_return(Compiler *c, int eid, int has_retval, Buf *b, int
   else emit_retf_return(eid, has_retval, b);
 }
 
+/* The else clause starts after the body's handler was popped. Keep
+   a frame around it so its raises and non-local exits still run ensure. */
+static void emit_ensure_else(Compiler *c, int stmts, const char *resultvar,
+                             int eid, Buf *b, int indent) {
+  emit_indent(b, indent); buf_puts(b, "sp_exc_check_depth();\n");
+  emit_indent(b, indent); buf_puts(b, "sp_exc_rootmark[sp_exc_top] = sp_gc_nroots; sp_rescue_mark[sp_exc_top] = sp_rescue_sp;\n");
+  emit_indent(b, indent); buf_puts(b, "sp_exc_msg[sp_exc_top] = 0; sp_exc_obj[sp_exc_top] = 0; sp_exc_top++;\n");
+  emit_indent(b, indent); buf_puts(b, "if (setjmp(sp_exc_stack[sp_exc_top-1]) == 0) {\n");
+  g_exc_frame_depth++;
+  if (resultvar) {
+    const char *saved = g_result_var; g_result_var = resultvar;
+    emit_stmts_tail(c, stmts, b, indent + 1);
+    g_result_var = saved;
+  }
+  else emit_stmts(c, stmts, b, indent + 1);
+  g_exc_frame_depth--;
+  emit_indent(b, indent + 1); buf_puts(b, "sp_exc_top--;\n");
+  emit_indent(b, indent); buf_puts(b, "}\n");
+  emit_indent(b, indent); buf_puts(b, "else {\n");
+  emit_indent(b, indent + 1); buf_puts(b, "sp_exc_top--;\n");
+  emit_indent(b, indent + 1); buf_puts(b, "sp_gc_nroots = sp_exc_rootmark[sp_exc_top]; sp_rescue_sp = sp_rescue_mark[sp_exc_top];\n");
+  emit_indent(b, indent + 1);
+  buf_printf(b, "if (sp_unwind_kind == SP_UNWIND_NONE) { _excf%d = 1; _excmsg%d = sp_exc_msg[sp_exc_top]; _exccls%d = sp_exc_cls[sp_exc_top]; _excobj%d = sp_exc_caught_obj(); }\n",
+             eid, eid, eid, eid);
+  emit_indent(b, indent); buf_puts(b, "}\n");
+}
+
 /* begin/body/rescue (ensure/else deferred) via the setjmp exception model.
    When resultvar != NULL, the body's and rescue handlers' values are
    assigned to it (begin/rescue as an expression). */
@@ -10286,14 +10313,8 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
     }
     g_exc_frame_depth--;
     emit_indent(b, indent + 1); buf_puts(b, "sp_exc_top--;\n");
-    if (else_stmts >= 0) {
-      if (resultvar) {
-        const char *sv = g_result_var; g_result_var = resultvar;
-        emit_stmts_tail(c, else_stmts, b, indent + 1);
-        g_result_var = sv;
-      }
-      else emit_stmts(c, else_stmts, b, indent + 1);
-    }
+    if (else_stmts >= 0)
+      emit_ensure_else(c, else_stmts, resultvar, eid, b, indent + 1);
     else if (else_c >= 0 && resultvar) {
       /* an empty else clause is still the begin's value: nil */
       TyKind bt = repr_of(c, id).as_ty;
