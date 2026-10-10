@@ -7244,7 +7244,8 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
     int is_float = (rt == TY_FLOAT) || comp_ntype(c, sargv[0]) == TY_FLOAT ||
                    (sargc >= 2 && comp_ntype(c, sargv[1]) == TY_FLOAT);
     if (!is_float) {
-      int t = ++g_tmp, tl = ++g_tmp, ts = ++g_tmp, tv = 0;
+      int t = ++g_tmp, tl = ++g_tmp, ts = ++g_tmp, tv = 0, tr = nt_kind(nt, recv) == NK_IntegerNode ? 0 : ++g_tmp;
+      if (tr) { emit_indent(b, indent); buf_printf(b, "sp_int _t%d = ", tr); emit_expr(c, recv, b); buf_puts(b, ";\n"); }
       if (comp_ntype(c, sargv[0]) == TY_POLY) {
         char tvs[32]; tv = ++g_tmp; snprintf(tvs, sizeof tvs, "_t%d", tv);
         emit_indent(b, indent); buf_printf(b, "sp_RbVal _t%d = ", tv); emit_boxed(c, sargv[0], b);
@@ -7259,7 +7260,7 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
       emit_indent(b, indent);
       buf_printf(b, "if (_t%d == 0) sp_raise_cls(\"ArgumentError\", \"step can't be 0\");\n", ts);
       emit_indent(b, indent);
-      buf_printf(b, "for (sp_int _t%d = ", t); emit_expr(c, recv, b);
+      buf_printf(b, "for (sp_int _t%d = ", t); if (tr) buf_printf(b, "_t%d", tr); else emit_expr(c, recv, b);
       if (tv) buf_printf(b, "; _t%d.tag == SP_TAG_NIL || (_t%d >= 0 ? _t%d <= _t%d : _t%d >= _t%d); _t%d += _t%d) {\n",
                          tv, ts, t, tl, t, tl, t, ts);
       else buf_printf(b, "; _t%d >= 0 ? _t%d <= _t%d : _t%d >= _t%d; _t%d += _t%d) {\n",
