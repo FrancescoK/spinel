@@ -815,7 +815,16 @@ static void emit_int_expr_ex(Compiler *c, int node, int strict, Buf *b) {
   }
   Buf tmp; memset(&tmp, 0, sizeof tmp);
   emit_expr(c, node, &tmp);
-  if (!coerce_const_raise(tmp.p ? tmp.p : "", "0", b))
+  /* a boxed value (an Integer under --int-overflow=promote): an Integer
+     argument's checked conversion, its TypeError for any other class */
+  int unboxed = tmp.p && !strncmp(tmp.p, "sp_poly_arg_int_chk(", 20);
+  if (comp_ntype(c, node) == TY_POLY && !unboxed)
+    buf_printf(b, "sp_poly_arg_int_chk(%s)", tmp.p ? tmp.p : "sp_box_nil()");
+  /* ...which an arm's operand override already read as the Integer it
+     checked, or its view as the Integer it unboxed */
+  else if (unboxed || (store_value_kind(c, node) == TY_POLY && comp_ntype(c, node) == TY_INT))
+    buf_puts(b, tmp.p ? tmp.p : "0");
+  else if (!coerce_const_raise(tmp.p ? tmp.p : "", "0", b))
     emit_coerce_text(c, node, store_value_kind(c, node), TY_INT, CO_CONVERT, tmp.p ? tmp.p : "",
                      "an Integer operand", b);
   free(tmp.p);

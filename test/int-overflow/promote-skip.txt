@@ -8,5 +8,4 @@ test/gc_alloc_front_sizes.rb
 test/io_each_line_splat_args.rb
 test/safe_nav_reopened_builtin.rb
 test/string_interp_join_encoding.rb
-test/string_slice_bang_computed_index.rb
 test/super_param_poly_widen_retract.rb
