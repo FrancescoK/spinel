@@ -9,7 +9,6 @@ test/at_receiver_without_at.rb
 test/boxed_flatten_depth.rb
 test/boxed_io_to_i.rb
 test/boxed_to_i_nomethod.rb
-test/builtin_arg_errors.rb
 test/builtin_reopen_super_reaches_builtin.rb
 test/c_compile_gaps.rb
 test/case_eq_int_float_exact.rb
