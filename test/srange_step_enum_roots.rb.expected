@@ -1,0 +1,13 @@
+["aa", "ac"]
+["aa", "ac"]
+#<Enumerator: "aa".."ad":step(3)>
+"aa"
+["a", "c", "e"]
+["xa", "xc"]
+"ac"
+["aa", "ab", "ac"]
+"#<Enumerator: \"aa\"...\"ad\":step(1)>"
+3
+3
+#<Enumerator: "abcabcabc":gsub(/b/)>
+"b"

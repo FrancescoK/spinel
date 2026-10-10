@@ -166,17 +166,21 @@ int emit_call_regexp_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
     Repr pr = repr_of(c, argv[0]);
     TyKind pt = pr.as_ty;
     if (gre < 0 && pt != TY_REGEX && pt != TY_STRING && pr.kind != RK_BOXED) goto no_gsub_enum;
-    int tsg = ++g_tmp, tpat = ++g_tmp;
+    int tsg = ++g_tmp, tpat = ++g_tmp, ten = ++g_tmp;
     buf_printf(b, "({ const char *_t%d = ", tsg);
     emit_expr(c, recv, b);
     buf_printf(b, "; SP_GC_ROOT(_t%d); sp_RbVal _t%d = ", tsg, tpat);
     emit_boxed(c, argv[0], b);
+    /* The Enumerator is held in a rooted temporary: the label sp_sprintf
+       builds in the same call allocates while it is otherwise held by
+       nothing, and a collection there frees it. */
     buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); "
-                  "sp_enum_with_src(sp_Enumerator_new_from(sp_box_str_array(", tpat);
+                  "sp_Enumerator *_t%d = sp_Enumerator_new_from(sp_box_str_array(", tpat, ten);
     if (gre >= 0) buf_printf(b, "sp_re_scan(sp_re_pat_%d, _t%d)", gre, tsg);
     else buf_printf(b, "sp_scan_boxed(_t%d, _t%d)", tsg, tpat);
-    buf_printf(b, ")), sp_box_str(_t%d), sp_sprintf(\"%s(%%s)\", sp_poly_inspect(_t%d))); })",
-               tsg, name, tpat);
+    buf_printf(b, ")); SP_GC_ROOT(_t%d); sp_enum_with_src(_t%d, sp_box_str(_t%d), "
+                  "sp_sprintf(\"%s(%%s)\", sp_poly_inspect(_t%d))); })",
+               ten, ten, tsg, name, tpat);
     return 1;
   }
 no_gsub_enum:
