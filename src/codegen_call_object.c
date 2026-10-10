@@ -2683,12 +2683,17 @@ int emit_object_ivar_call(Compiler *c, int id, const char *name, int recv, TyKin
           int rdf = ivar_set_slot_read(c, id, mt);
           if (rdf) buf_printf(b, "SP_GC_ROOT(_t%d); ", tf9);
           emit_frozen_obj_guard(c, cid, selft, b);
-          buf_printf(b, "_t%d->iv_%s = ", tf9, iv_c(sym + 1));
+          /* the value is built before the store: the barrier the
+             write-barrier pass puts on the store goes ahead of it, and a
+             collection the value's allocation runs would clear that record
+             before the young value lands in the old holder */
+          int tv9 = ++g_tmp;
+          buf_printf(b, "__typeof__(_t%d->iv_%s) _t%d = ", tf9, iv_c(sym + 1), tv9);
           if (mt == TY_POLY) emit_boxed(c, argv[1], b);
           else if (nt_kind(nt, argv[1]) == NK_NilNode && nil_value(mt)) buf_puts(b, nil_value(mt));
           else if (emit_array_into_poly_slot(c, mt, argv[1], b)) { }
           else emit_coerce(c, argv[1], mt, CO_HOLD, "an instance variable write", b);
-          buf_puts(b, "; ");
+          buf_printf(b, "; _t%d->iv_%s = _t%d; ", tf9, iv_c(sym + 1), tv9);
           if (rdf) {
             char ivt[48]; snprintf(ivt, sizeof ivt, "_t%d->iv_%s", tf9, iv_c(sym + 1));
             emit_strbuf_node_read(c, id, ivt, b);
