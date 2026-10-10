@@ -101,6 +101,19 @@ int emit_call_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
       emit_wrong_count(c, id, "1", 1, 0, b);
       return 1;
     }
+    /* More arguments than the wrapper's operands went to its C function as
+       extra arguments, which wasm traps on (a native build ignored them).
+       CRuby refuses the count: an operator takes one operand, an Array's or
+       a String's [] one or two. */
+    if (tm && bam_binop_wrapper(tm) && argc > tm->nparams - shift && !call_has_splat_arg(nt, argv, argc)) {
+      LocalVar *rlv = scope_local(tm, "__bam_r");
+      char exp[16];
+      if (sp_streq(bam_builtin_sym(c, target, ""), "[]") && rlv && (ty_is_array(rlv->type) || rlv->type == TY_STRING))
+        snprintf(exp, sizeof exp, "1..2");
+      else snprintf(exp, sizeof exp, "%d", tm->nparams - shift);
+      emit_wrong_count(c, id, exp, 1, -1, b);
+      return 1;
+    }
     /* When the target is unresolved under promote, fall back to the poly ABI
        (sp_RbVal self/args/return) rather than the legacy sp_int ABI: every
        method is poly-signatured in promote, so a `(void*, sp_int)->sp_int`

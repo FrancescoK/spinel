@@ -6979,8 +6979,14 @@ static int desugar_builtin_method_obj(Compiler *c) {
        def __bam_<id>(__bam_r, __bam_a, __bam_a1, ...) = __bam_r.<sym>(__bam_a, ...),
        or when they disagree def __bam_<id>(__bam_r, *__bam_a) = __bam_r.<sym>(*__bam_a) */
     int passed = 0;
-    int nfwd = bam_call_argc(c, id, &passed);
+    int sites = bam_call_argc(c, id, &passed);
+    int nfwd = sites;
     if (binop) nfwd = 1;
+    /* an Array's or a String's [] also takes a start and a length: its
+       wrapper forwards the two when its call sites pass them */
+    if (binop && sp_streq(sym, "[]") && !poly_self && (ty_is_array(rt) || rt == TY_STRING) &&
+        (sites == 2 || sites == BAM_VARIADIC))
+      nfwd = sites;
     /* A Method passed as a block is called by the block's yield, which no
        site above counts, so a wrapper of the sites' count (none: no
        argument) dropped what the yield passed and the builtin raised

@@ -302,12 +302,14 @@ class RestKwrest
 end
 expect_nome("rest_kwrest_toproc") { RestKwrest.new.method(:m).to_proc.call(1, 2, 3) }
 
-# Over-arity on a bound array operator is not modeled: the wrapper/adapter C
-# cast has no slot for extra operands, so they are ignored where CRuby raises
-# ArgumentError (`[]` takes 1..2, `[]=` takes 2..3); the in-range slice forms
-# are ignored the same way.
+# A bound `[]` takes CRuby's counts: a start and a length slice, and a third
+# operand is CRuby's ArgumentError, where the wrapper's C function was called
+# with more arguments than it takes. Over-arity on a bound `[]=` adapter is
+# not modeled: its C cast has no slot for extra operands, so they are ignored
+# where CRuby assigns the slice (`[]=` takes 2..3).
 ia7 = [1, 2, 3]
-puts "iarr_get_over: #{ia7.method(:[]).call(0, 2, 3)}"
+expect_raise("iarr_get_over") { ia7.method(:[]).call(0, 2, 3) }
+puts "iarr_get_slice: #{ia7.method(:[]).call(1, 2).inspect}"
 ia8 = [1, 2, 3]
 puts "iarr_set_over: #{ia8.method(:[]=).call(0, 9, 8).inspect} #{ia8.inspect}"
 # A multi-value `push` through a poly slot declines where the static route
