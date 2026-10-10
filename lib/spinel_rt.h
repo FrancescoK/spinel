@@ -4688,14 +4688,15 @@ static inline sp_RbVal sp_float_div_v(sp_float x, sp_float y) {
    too wide for sp_int is the answer rather than an error, and a Bignum
    receiver is already one (#4688). */
 static sp_RbVal sp_poly_to_i_meth_v(sp_RbVal v) {
-  if (v.tag == SP_TAG_OBJ && v.cls_id >= 0) sp_raise_nomethod(sp_nomethod_msg("to_i", v));
   if (v.tag == SP_TAG_BIGINT || v.tag == SP_TAG_INT) return v;
   if (v.tag == SP_TAG_FLT) { sp_poly_flo_domain_ck(v.v.f); return sp_box_f_to_int(v.v.f); }
   /* a Bignum-numerator Rational's quotient is itself a Bignum, and this slot
      holds one (#4688) */
   if (sp_poly_is_brat(v) && v.v.p)
     return sp_box_bigint(sp_brat_trunc_b((sp_BigRational *)v.v.p));
-  return sp_box_int(sp_poly_to_i(v));
+  /* the rest -- an IO's descriptor, the kinds with no #to_i -- as the
+     sp_int call answers them */
+  return sp_box_int(sp_poly_to_i_meth(v));
 }
 static inline sp_int sp_float_fit_i(sp_float v) {
   if (!isfinite(v)) sp_float_arg_check(v);

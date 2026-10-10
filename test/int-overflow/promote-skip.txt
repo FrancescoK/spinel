@@ -4,14 +4,8 @@
 # Gaps found when the lane began, at bcce09575: a wrong answer or C that
 # does not build. A gap leaves this list with its fix.
 test/array_push_stmt_operand_order.rb
-test/boxed_flatten_depth.rb
-test/boxed_io_to_i.rb
-test/boxed_to_i_nomethod.rb
-test/case_eq_int_float_exact.rb
-test/expr_retry_equal_curry_methodobj.rb
 test/file_foreach_arg_exprs.rb
 test/gc_alloc_front_sizes.rb
-test/int_float_exact_compare.rb
 test/int_min_nullable_slot_raises.rb
 test/int_min_plain_locals.rb
 test/int_pow_nil.rb

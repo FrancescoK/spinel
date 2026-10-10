@@ -10,6 +10,39 @@
 #include "call_plan.h"
 #include "codegen_call_arms.h"
 
+/* The legacy sp_int casts of the Method in _t<tr>, over the BOXED argument
+   temps a promote call site holds, each unboxed to the kind call_arg_sig
+   classified it as (a pointer laundered through the slot, as the legacy
+   sites pass it), dispatched on the stamped return kind. */
+static void emit_bm_legacy_casts_boxed(Compiler *c, int tr, int eargc, const int *argv, const int *atmp, Buf *b) {
+  static const char *const rk[3] = { "sp_RbVal", "void", "sp_int" };
+  buf_printf(b, "_t%d->legacy_ret == SP_BM_RET_POLY ? (", tr);
+  for (int pass = 0; pass < 3; pass++) {
+    if (pass == 1) buf_printf(b, ") : _t%d->legacy_ret == SP_BM_RET_NIL ? ((", tr);
+    if (pass == 2) buf_printf(b, "), sp_box_nil()) : sp_bm_box_ret(_t%d, ", tr);
+    buf_printf(b, "_t%d->recv_bound ? ", tr);
+    for (int arm = 0; arm < 2; arm++) {
+      if (arm) buf_puts(b, " : ");
+      buf_printf(b, "((%s (*)(%s", rk[pass], arm == 0 ? "void *" : "");
+      for (int k = 0; k < eargc; k++) buf_puts(b, arm == 0 || k ? ", sp_int" : "sp_int");
+      if (arm != 0 && eargc == 0) buf_puts(b, "void");
+      buf_printf(b, "))(uintptr_t)_t%d->fn)(", tr);
+      if (arm == 0) buf_printf(b, "(void *)(uintptr_t)_t%d->self", tr);
+      for (int k = 0; k < eargc; k++) {
+        if (arm == 0 || k) buf_puts(b, ", ");
+        TyKind pk = repr_of(c, argv[k]).as_ty;
+        char tn[24]; snprintf(tn, sizeof tn, "_t%d", atmp[k]);
+        if (pk == TY_NIL) { buf_puts(b, "0"); continue; }
+        buf_puts(b, proc_slot_is_ptr(pk) ? "(sp_int)(uintptr_t)(" : "(sp_int)(");
+        emit_unbox_text(c, pk, tn, b);
+        buf_puts(b, ")");
+      }
+      buf_puts(b, ")");
+    }
+  }
+  buf_puts(b, ")");
+}
+
 /* calling a Method or a Proc (call / () / [] / ===), composing Procs (<< >>), and a Proc's
    own methods (its builtin-op rows, parameters, source_location) */
 int emit_call_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv) {
@@ -416,6 +449,16 @@ int emit_call_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
          Method's own thunk, which raises itself when nothing fits (a local
          re-written to a Method of another signature reaches this) */
       buf_printf(b, "!sp_bm_poly_abi_ok(_t%d, %d) ? (", tr, eargc);
+      /* a target stamped only with the legacy ABI and no thunk (a bound
+         builtin's __bam_ wrapper: `method(:puts)` in a local also written
+         another Method) takes the legacy cast its stamp names, as the
+         default build's gate does */
+      int bm_leg = !tm && adapter_argc < 0 && call_arg_sig(c, argv, eargc, bm_sig, sizeof bm_sig);
+      if (bm_leg) {
+        buf_printf(b, "sp_bm_legacy_abi_ok(_t%d, %d, \"%s\") ? (", tr, eargc, bm_sig);
+        emit_bm_legacy_casts_boxed(c, tr, eargc, argv, atmp, b);
+        buf_puts(b, ") : (");
+      }
       if (eargc <= 16 && !(tm == NULL && adapter_argc >= 0)) {
         for (int k = 0; k < eargc; k++) buf_printf(b, "_sp_proc_poly_args[%d] = _t%d, ", k, atmp[k]);
         /* an unresolved target's call is plain positionals here (the rest
@@ -424,6 +467,7 @@ int emit_call_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
         else buf_printf(b, "sp_bm_call_boxed(_t%d, %d)", tr, eargc);
       }
       else buf_printf(b, "sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_obj(_t%d, SP_BUILTIN_METHOD))), sp_box_nil()", name, tr);
+      if (bm_leg) buf_puts(b, ")");
       buf_puts(b, ") : (");
       /* the poly ABI shares the legacy stamps' ret kinds: dispatch the same
          three casts (poly / nil / int-boxed) over sp_RbVal argument slots */

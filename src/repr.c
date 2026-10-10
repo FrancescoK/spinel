@@ -108,12 +108,26 @@ int repr_dyn_cls(const Compiler *c, TyKind t) {
    nullable_int_value re-derives a receiver's type (infer_type), so the
    questions are asked as a pure read (an_pure_read_begin): nothing derived
    is recorded, and asking changes nothing codegen reads next. */
+/* An Integer literal, or an Integer operator's answer, is never nil: its
+   box does not test for the sentinel, which is -2^63 and so an Integer
+   promote mode answers (`-9223372036854775807 - 1` boxed as nil). */
+static int int_never_nil(const Compiler *c, int node) {
+  const NodeTable *nt = c->nt;
+  NodeKind k = nt_kind(nt, node);
+  if (k == NK_IntegerNode) return 1;
+  if (k != NK_CallNode || nt_ref(nt, node, "receiver") < 0) return 0;
+  const char *nm = nt_str(nt, node, "name");
+  int argc = 0;
+  call_args(nt, node, &argc);
+  return nm && argc == 1 && (is_int_arith_op(nm) || is_int_bit_op(nm));
+}
+
 int repr_nil_scalar(const Compiler *c, int node, TyKind t) {
   Compiler *mc = (Compiler *)c;
   int r = 0;
   an_pure_read_begin();
   if (t == TY_INT)
-    r = g_promote_mode || call_returns_nullable_int(mc, node) ||
+    r = (g_promote_mode && !int_never_nil(c, node)) || call_returns_nullable_int(mc, node) ||
         nt_kind(c->nt, node) == NK_InstanceVariableReadNode ||
         box_nullable_arg(mc, node) || enum_builtin_node(mc, node);
   else if (t == TY_FLOAT)

@@ -4659,6 +4659,18 @@ static int emit_array_call_arms(Compiler *c, int id, Buf *b) {
     buf_puts(b, ", "); emit_int_expr(c, argv[0], b); buf_puts(b, ", 1)");
     return 1;
   }
+  /* a boxed depth (an Integer local in promote mode): nil is no depth, as
+     Array#flatten(nil) is the full flatten */
+  if (recv >= 0 && rt == TY_POLY && argc == 1 && nt_ref(nt, id, "block") < 0 &&
+      sp_streq(name, "flatten") && comp_ntype(c, argv[0]) == TY_POLY &&
+      !recv_user_defines(c, name)) {
+    int tr = ++g_tmp, td = ++g_tmp;
+    buf_printf(b, "({ sp_RbVal _t%d = ", tr); emit_expr(c, recv, b);
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_RbVal _t%d = ", tr, td); emit_expr(c, argv[0], b);
+    buf_printf(b, "; sp_poly_flatten_d(_t%d, _t%d.tag == SP_TAG_NIL ? 0 : sp_poly_arg_int_chk(_t%d), _t%d.tag != SP_TAG_NIL); })",
+               tr, td, td, td);
+    return 1;
+  }
   /* `enum.drop(n)` / `enum.reject|select|filter { }` on an each_with_index-style
      Enumerator: materialize its pairs to a poly array and re-dispatch as the
      array form (drop returns a slice; the block forms run the block over each

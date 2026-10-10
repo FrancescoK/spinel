@@ -4664,6 +4664,13 @@ void emit_pm_eq(Compiler *c, int t, TyKind pt, int valnode, Buf *b) {
     emit_int_flt_rel(b, pt == TY_INT ? sv : cv, pt == TY_INT ? cv : sv, 1, "==");
     buf_puts(b, "; })");
   }
+  /* a Float scrutinee against a boxed value (an Integer pin promote mode
+     boxed): unboxed as a Float, the Integer was no Float and never equal */
+  else if (pt == TY_FLOAT && repr_of(c, valnode).kind == RK_BOXED) {
+    buf_printf(b, "sp_poly_eq(sp_box_float(_t%d), ", t);
+    emit_expr(c, valnode, b);
+    buf_puts(b, ")");
+  }
   else {
     buf_printf(b, "(_t%d == ", t);
     if (repr_of(c, valnode).kind == RK_BOXED) {
