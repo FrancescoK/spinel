@@ -7040,6 +7040,9 @@ static int desugar_builtin_method_obj(Compiler *c) {
        Method at run time (method_scope_arity) */
     if (cmp_only) nt_node_set_int(nt, def, "bam_cmp", 1);
     if (num_only) nt_node_set_int(nt, def, "bam_num", 1);
+    /* passed as a block, it is a lambda of the count it takes: a yield of
+       another count raises (fwd_bam_lambda_count) */
+    if (passed && nfwd != BAM_VARIADIC) nt_node_set_int(nt, def, "bam_lambda", 1);
     Scope *ws = comp_scope_new(c, wname, def);
     ws->class_id = -1;
     ws->body = body;
