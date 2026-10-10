@@ -3334,8 +3334,10 @@ static int iow_scalar_fold(Compiler *c, TyKind et, const char *op, TyKind vt, in
    for a right operand whose left one may be nil (an element op-assign's
    slot), is read there before a nil element raises, so a nil on the left
    raises first, as CRuby's operator does; NULL when the left cannot be nil.
+   `cmp` is set for a comparison, whose nil on the right is the Comparable
+   ArgumentError rather than the coercion TypeError (sp_raise_nil_cmp).
    Answers 1 when it emitted the read. */
-int emit_nilfree_operand(Compiler *c, int v, const char *op, int left, const char *lhs, Buf *b) {
+static int nilfree_operand(Compiler *c, int v, const char *op, int left, const char *lhs, int cmp, Buf *b) {
   const NodeTable *nt = c->nt;
   if (nt_kind(nt, v) != NK_CallNode) return 0;
   const char *vn = nt_str(nt, v, "name");
@@ -3362,16 +3364,30 @@ int emit_nilfree_operand(Compiler *c, int v, const char *op, int left, const cha
     int te = ++g_tmp;
     buf_printf(b, "({ sp_float _t%d = sp_FloatArray_get(", te);
     emit_expr(c, vr, b);
-    buf_printf(b, ", _t%d); if (SP_UNLIKELY(sp_float_is_nil(_t%d))) sp_raise_nil_float_op(sp_float_is_nil(%s), \"%s\"); _t%d; })",
-               tk, te, lhs, op, te);
+    if (cmp)
+      buf_printf(b, ", _t%d); if (SP_UNLIKELY(sp_float_is_nil(_t%d))) sp_raise_nil_cmp(sp_float_is_nil(%s), \"%s\", \"Float\"); _t%d; })",
+                 tk, te, lhs, op, te);
+    else
+      buf_printf(b, ", _t%d); if (SP_UNLIKELY(sp_float_is_nil(_t%d))) sp_raise_nil_float_op(sp_float_is_nil(%s), \"%s\"); _t%d; })",
+                 tk, te, lhs, op, te);
   }
   else {
-    buf_printf(b, "sp_FloatArray_get_%s(", left ? "recv" : "operand");
+    /* a nil on the left has no method, under an operator or a comparison */
+    buf_printf(b, "sp_FloatArray_get_%s(", left ? "recv" : cmp ? "cmp_operand" : "operand");
     emit_expr(c, vr, b);
     buf_printf(b, ", _t%d, \"%s\")", tk, op);
   }
   buf_printf(b, "%s; })", nilr || ck ? "; })" : "");
   return 1;
+}
+
+int emit_nilfree_operand(Compiler *c, int v, const char *op, int left, const char *lhs, Buf *b) {
+  return nilfree_operand(c, v, op, left, lhs, 0, b);
+}
+
+/* The same read for an operand of a Float `< <= > >=`. */
+int emit_nilfree_cmp_operand(Compiler *c, int v, const char *op, int left, const char *lhs, Buf *b) {
+  return nilfree_operand(c, v, op, left, lhs, 1, b);
 }
 
 /* The scalar arms of `x OP= v` -- Integer, Bignum, Float -- on any slot a

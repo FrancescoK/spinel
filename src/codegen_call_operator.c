@@ -48,6 +48,70 @@ static void emit_string_identity(Compiler *c, int recv, int arg, Buf *b) {
   buf_printf(b, "sp_poly_equal(_t%d, _t%d); })", t[0], t[1]);
 }
 
+/* An operand whose evaluation cannot raise: a variable read, a literal, a
+   constant the program defines. */
+static int cmp_operand_cannot_raise(Compiler *c, int id) {
+  switch (nt_kind(c->nt, id)) {
+    case NK_LocalVariableReadNode: case NK_InstanceVariableReadNode:
+    case NK_IntegerNode: case NK_FloatNode:
+      return 1;
+    case NK_ConstantReadNode:
+      return subtree_is_pure_read(c, id);
+    default:
+      return 0;
+  }
+}
+
+/* `recv OP arg` on two Integer or two Float values, at least one of which can
+   carry its nil sentinel: each side that can is tested before the compare,
+   unless the nil narrowing proved it non-nil (narl/narr).
+
+   A Float element of an array the loop holds the header of reads nil-free in
+   range instead, as under `+ - * /` (emit_nilfree_cmp_operand), and drops
+   its half of the test: only its out-of-range read raises, with the
+   comparison's error. The left one raises before the right one is
+   evaluated, so only against a right operand that cannot raise. The right
+   one tests a left that may be nil first, so a nil on the left raises
+   NoMethodError, as CRuby's dispatch does. */
+static void emit_guarded_cmp(Compiler *c, int recv, int arg, const char *name, TyKind rt, TyKind cat,
+                             int rawl, int rawr, int narl, int narr, Buf *b) {
+  int tg = ++g_tmp;
+  TyKind rht = (rt == TY_FLOAT || rt == TY_RATIONAL) ? TY_FLOAT : TY_INT;
+  Buf lnf; memset(&lnf, 0, sizeof lnf);
+  Buf rnf; memset(&rnf, 0, sizeof rnf);
+  int fl = 0, fr = 0;
+  if (rt == TY_FLOAT && cat == TY_FLOAT) {
+    char lhs[32];
+    snprintf(lhs, sizeof lhs, "_t%d", tg);
+    if (rawl && !narl && cmp_operand_cannot_raise(c, arg) && emit_nilfree_cmp_operand(c, recv, name, 1, NULL, &lnf))
+      fl = 1;
+    if (rawr && !narr && emit_nilfree_cmp_operand(c, arg, name, 0, rawl && !narl && !fl ? lhs : NULL, &rnf))
+      fr = 1;
+  }
+  buf_printf(b, "({ %s _t%d = ", rt == TY_FLOAT ? "sp_float" : "sp_int", tg);
+  if (fl) buf_puts(b, lnf.p);
+  else emit_expr(c, recv, b);
+  buf_printf(b, ", _t%d_r = ", tg);
+  if (fr) buf_puts(b, rnf.p);
+  else if (cat == TY_POLY) {
+    buf_printf(b, "%s(", rht == TY_FLOAT ? "sp_poly_to_f" : "sp_poly_to_i");
+    emit_expr(c, arg, b); buf_puts(b, ")");
+  }
+  else emit_expr(c, arg, b);
+  free(lnf.p);
+  free(rnf.p);
+  int dl = narl || fl, dr = narr || fr;
+  if (dl && dr) {
+    buf_printf(b, "; _t%d %s _t%d_r; })", tg, name, tg);
+    return;
+  }
+  char l[32], r[32];
+  if (dl) snprintf(l, sizeof l, "%s", rt == TY_FLOAT ? "0.0" : "0"); else snprintf(l, sizeof l, "_t%d", tg);
+  if (dr) snprintf(r, sizeof r, "%s", rt == TY_FLOAT ? "0.0" : "0"); else snprintf(r, sizeof r, "_t%d_r", tg);
+  buf_printf(b, "; %s(%s, %s, \"%s\"); _t%d %s _t%d_r; })",
+             rt == TY_FLOAT ? "SP_FLOAT_NIL_CMP_CK" : "SP_INT_NIL_CMP_CK", l, r, name, tg, name, tg);
+}
+
 /* Integer shifts, <=>, the comparison and equality operators, and is_a? on a poly receiver */
 int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt) {
   /* A nullable String's NULL is nil, whether held as text or a handle.
@@ -646,20 +710,7 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
         return 1;
       }
       if (guard9) {
-        int tg = ++g_tmp;
-        buf_printf(b, "({ %s _t%d = ", rt == TY_FLOAT ? "sp_float" : "sp_int", tg);
-        emit_expr(c, recv, b);
-        buf_printf(b, ", _t%d_r = ", tg);
-        if (cat == TY_POLY) {
-          buf_printf(b, "%s(", rht9 == TY_FLOAT ? "sp_poly_to_f" : "sp_poly_to_i");
-          emit_expr(c, argv[0], b); buf_puts(b, ")");
-        }
-        else emit_expr(c, argv[0], b);
-        char l9[32], r9[32];
-        if (narl9) snprintf(l9, sizeof l9, "%s", rt == TY_FLOAT ? "0.0" : "0"); else snprintf(l9, sizeof l9, "_t%d", tg);
-        if (narr9) snprintf(r9, sizeof r9, "%s", rt == TY_FLOAT ? "0.0" : "0"); else snprintf(r9, sizeof r9, "_t%d_r", tg);
-        buf_printf(b, "; %s(%s, %s, \"%s\"); _t%d %s _t%d_r; })",
-                   rt == TY_FLOAT ? "SP_FLOAT_NIL_CMP_CK" : "SP_INT_NIL_CMP_CK", l9, r9, name, tg, name, tg);
+        emit_guarded_cmp(c, recv, argv[0], name, rt, cat, rawl9, rawr9, narl9, narr9, b);
         return 1;
       }
       if (mixed9 && emit_int_float_cmp(c, recv, argv[0], name, b)) return 1;

@@ -273,6 +273,15 @@ static SP_NOINLINE SP_COLD sp_float sp_FloatArray_get_operand(sp_FloatArray *a, 
   if (sp_float_is_nil(v)) sp_raise_nil_float_op(0, op);
   return v;
 }
+/* ... the right operand of a Float comparison: a nil there is the
+   Comparable ArgumentError, as SP_FLOAT_NIL_CMP_CK reports it (the left
+   operand takes sp_FloatArray_get_recv below: no method on nil). */
+static sp_float sp_FloatArray_get_cmp_operand(sp_FloatArray *a, sp_int i, const char *op) SP_UNUSED;
+static SP_NOINLINE SP_COLD sp_float sp_FloatArray_get_cmp_operand(sp_FloatArray *a, sp_int i, const char *op) {
+  sp_float v = sp_FloatArray_get(a, i);
+  if (sp_float_is_nil(v)) sp_raise_nil_cmp(0, op, "Float");
+  return v;
+}
 /* ... and the LEFT operand of a binary `+ - * /`: a nil there has no
    operator (NoMethodError), as SP_FLOAT_NIL_CK reports it. */
 static sp_float sp_FloatArray_get_recv(sp_FloatArray *a, sp_int i, const char *op) SP_UNUSED;
