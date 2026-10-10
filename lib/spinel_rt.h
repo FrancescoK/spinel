@@ -3253,6 +3253,8 @@ static SP_NOINLINE const char *sp_poly_check_str_obj(sp_RbVal v) {
    the bridge a boxed-answer entry is its own change. */
 static SP_INLINE const char *sp_poly_check_str(sp_RbVal v) {
   if (v.tag == SP_TAG_STR) return v.v.s;
+  /* a shared String (--share-strings) is a String: its bytes as they are now */
+  if (sp_poly_is_strbuf(v)) return sp_String_cstr((sp_String *)v.v.p);
   if (v.tag == SP_TAG_OBJ && v.cls_id >= 0 && v.v.p && sp_obj_to_str_fn)
     return sp_poly_check_str_obj(v);
   return NULL;
