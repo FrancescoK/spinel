@@ -26321,6 +26321,70 @@ void emit_unbox_or_keep(Compiler *c, TyKind want, int t, Buf *b) {
   else emit_unbox_text(c, want, tn, b);
 }
 
+/* Does the call or yield under `id` hand its block, or the method's block
+   parameter, a container or a value that may be one (an Array, a Hash, a
+   splat, an Array or Hash literal, a boxed or untyped value)? A call that
+   passes the method's block parameter on (`g(x, &blk)`, `g(x, &)`) is taken
+   to do so. A parameter with a default is read as its default's type where
+   the parameter itself is boxed. */
+static int hands_block_container(Compiler *c, const Scope *m, int id, int strict) {
+  const char *blk = m->blk_param && m->blk_param[0] ? m->blk_param : NULL;
+  const NodeTable *nt = c->nt;
+  if (id < 0) return 0;
+  int recv = nt_kind(nt, id) == NK_CallNode ? nt_ref(nt, id, "receiver") : -1;
+  const char *nm = recv >= 0 ? nt_str(nt, id, "name") : NULL;
+  if (nt_kind(nt, id) == NK_CallNode && m->blk_param) {
+    int ba = nt_ref(nt, id, "block");
+    if (ba >= 0 && nt_kind(nt, ba) == NK_BlockArgumentNode) {
+      int e = nt_ref(nt, ba, "expression");
+      if (e < 0 || (blk && nt_kind(nt, e) == NK_LocalVariableReadNode &&
+                    sp_streq(nt_str(nt, e, "name"), blk))) return 1;
+    }
+  }
+  if (nt_kind(nt, id) == NK_YieldNode ||
+      (nm && blk && is_call_or_yield(nm) && nt_kind(nt, recv) == NK_LocalVariableReadNode &&
+       sp_streq(nt_str(nt, recv, "name"), blk))) {
+    int a = nt_ref(nt, id, "arguments"), an = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+    for (int i = 0; i < an; i++) {
+      TyKind t = comp_ntype(c, av[i]);
+      if (nt_kind(nt, av[i]) == NK_LocalVariableReadNode && (t == TY_POLY || t == TY_UNKNOWN))
+        for (int j = 0; j < m->nparams; j++)
+          if (m->pnames[j] && m->pdefault[j] >= 0 && sp_streq(m->pnames[j], nt_str(nt, av[i], "name")))
+            t = comp_ntype(c, m->pdefault[j]);
+      if (nt_kind(nt, av[i]) == NK_SplatNode || nt_kind(nt, av[i]) == NK_ArrayNode ||
+          nt_kind(nt, av[i]) == NK_HashNode || ty_is_array(t) || ty_is_hash(t) ||
+          (!strict && (t == TY_POLY || t == TY_UNKNOWN))) return 1;
+    }
+  }
+  int nr = nt_num_refs(nt, id), na = nt_num_arrs(nt, id);
+  for (int i = 0; i < nr; i++) if (hands_block_container(c, m, nt_ref_at(nt, id, i), strict)) return 1;
+  for (int i = 0; i < na; i++) {
+    int n = 0;
+    const int *ids = nt_arr_at(nt, id, i, &n);
+    for (int j = 0; j < n; j++) if (hands_block_container(c, m, ids[j], strict)) return 1;
+  }
+  return 0;
+}
+/* A method that hands its block a container stays off the receiver-default
+   route, whatever its defaults are: the proc form takes its arguments boxed
+   and yields the container as a boxed value, which a block typed for the
+   container reads back as an integer slot (also with explicit arguments). */
+int reopen_yields_container(Compiler *c, Scope *m) {
+  if (!m->yields && !m->blk_param) return 0;
+  return hands_block_container(c, m, m->body, 0);
+}
+/* The same for the analysis, where a type may not be settled yet: only a
+   value known to be a container counts. */
+int reopen_yields_known_container(Compiler *c, Scope *m) {
+  if (!m->yields && !m->blk_param) return 0;
+  return hands_block_container(c, m, m->body, 1);
+}
+/* Random, Float and Symbol proc forms take their receiver as the raw value. */
+static int reopen_pf_raw_self(Compiler *c, int ci) {
+  return ci == comp_class_index(c, "Random") || ci == comp_class_index(c, "Float") ||
+         ci == comp_class_index(c, "Symbol");
+}
 /* A reopened builtin's yielding method reached with the call's block: it
    has no symbol of its own, being spliced where it can, so the call goes to
    its proc form with the block as a proc (#5779). `recv_text` is the
@@ -26341,10 +26405,21 @@ void emit_reopen_pf_call(Compiler *c, int id, int pf, int cblk, const char *recv
   Buf oc; memset(&oc, 0, sizeof oc);
   if (g_plan_check) ucall_observe(c, id, pf, c->scopes[pf].class_id, 0);
   emit_method_cname(c, &c->scopes[pf], &oc);
-  buf_printf(&oc, "(%s", recv_text);
-  emit_args_filled(c, pf, nt_ref(nt, id, "arguments"), ", ", &oc);
+  int open = 0;
+  if (recv_text) {
+    buf_printf(&oc, "(%s", recv_text);
+    emit_args_filled(c, pf, nt_ref(nt, id, "arguments"), ", ", &oc);
+  }
+  else {
+    /* Defaults are callee code, with the held receiver as self. */
+    int ci = c->scopes[pf].class_id;
+    int boxed = ci != comp_class_index(c, "String") && !reopen_pf_raw_self(c, ci);
+    buf_puts(&oc, "(");
+    open = emit_reopen_recv_args(c, id, pf, nt_ref(nt, id, "receiver"), boxed, NULL, 0, &oc);
+  }
   if (tp >= 0) buf_printf(&oc, ", _t%d)", tp);
   else buf_puts(&oc, ", NULL)");
+  if (open) buf_puts(&oc, "; })");
   TyKind want = repr_of(c, id).as_ty, pr = (TyKind)c->scopes[pf].ret;
   if (method_is_void(&c->scopes[pf]))
     buf_printf(b, "(%s, %s)", oc.p, want == TY_POLY ? "sp_box_nil()" : default_value_from_compiler(c, want));
@@ -26363,9 +26438,19 @@ int emit_reopen_block_call(Compiler *c, int id, int recv, int mi, const char *bo
   const NodeTable *nt = c->nt;
   int pf = c->scopes[mi].yields ? scope_proc_form_of(c, mi) : -1;
   if (pf < 0) return 0;
+  /* A Random's, Float's or Symbol's method that yields a container stays
+     uncalled: a block that widens the container's element kind reads the
+     boxed one as garbage (the same widening is wrong for a top-level
+     method). */
+  if (reopen_pf_raw_self(c, c->scopes[mi].class_id) && reopen_yields_container(c, &c->scopes[mi])) return 0;
   int cblk = nt_ref(nt, id, "block") >= 0 ? resolve_forwarded_block(c, nt_ref(nt, id, "block")) : -1;
   /* a forwarded `&blk` resolves below 0 when the caller passed no block:
      the clone's block parameter is then NULL (block_given? is false) */
+  if (c->scopes[mi].class_id == comp_class_index(c, "Random") && ctor_needs_self_defaults(c, pf, 0) &&
+      !reopen_yields_container(c, &c->scopes[mi])) {
+    emit_reopen_pf_call(c, id, pf, cblk, NULL, b);
+    return 1;
+  }
   Buf rb; memset(&rb, 0, sizeof rb);
   if (repr_self_handle(c, mi)) {
     int t = ++g_tmp;
@@ -26383,6 +26468,7 @@ int emit_reopen_block_call(Compiler *c, int id, int recv, int mi, const char *bo
     buf_printf(g_pre, "; SP_GC_ROOT(_t%d);\n", t);
     buf_printf(&rb, "_t%d", t);
   }
+  else if (reopen_pf_raw_self(c, c->scopes[mi].class_id)) emit_expr(c, recv, &rb);
   else if (box_fn) { buf_printf(&rb, "%s(", box_fn); emit_expr(c, recv, &rb); buf_puts(&rb, ")"); }
   else emit_boxed(c, recv, &rb);
   emit_reopen_pf_call(c, id, pf, cblk, rb.p ? rb.p : "sp_box_nil()", b);

@@ -14406,7 +14406,12 @@ static int infer_block_params_call_arms(Compiler *c, const NodeTable *nt, int id
     }
     else {
       TyKind rt0 = infer_type(c, recv);
-      if (rt0 == TY_STRING || rt0 == TY_STRBUF) mi = cplan_user_fresh(c, id)->mi;
+      if (rt0 == TY_STRING || rt0 == TY_STRBUF || rt0 == TY_RANDOM || rt0 == TY_FLOAT || rt0 == TY_SYMBOL) {
+        mi = cplan_user_fresh(c, id)->mi;
+        /* a Random, Float or Symbol method that hands its block a container is
+           not called through its proc form either (reopen_yields_known_container) */
+        if (mi > 0 && rt0 != TY_STRING && rt0 != TY_STRBUF && reopen_yields_known_container(c, &c->scopes[mi])) mi = -1;
+      }
       if (ty_is_object(rt0)) mi = comp_method_in_chain(c, ty_object_class(rt0), name, NULL);
       /* Class.new { |...| }: the yielding method is Class#initialize.
          A ConstantPATH receiver counts: `N::Conn` names a class as much as
