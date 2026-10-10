@@ -53,6 +53,10 @@ int sp_gc_obj_budget_mode = 2;
 /* The last gate decision, in 1024ths, so the stats line can report it and a
    test can read it. 1024 is `walk`, 0 is `obj`. */
 size_t sp_gc_obj_alpha1024 = 1024;
+/* The MEASUREMENT that decision starts from -- the mark's share of the last
+   collection -- before SPINEL_GC_OBJ_BUDGET has pinned it at either end. The
+   string budget's gate reads this one: its own knob is what pins it. */
+static size_t sp_gc_mark_share1024 = 1024;
 /* SPINEL_GC_OBJ_BUDGET=fixed / SPINEL_GC_STR_BUDGET=fixed: hold that heap's
    budget at its floor instead of re-aiming it after every collection. Read
    once beside the other boot-time GC modes; see the comment there. */
@@ -67,7 +71,8 @@ int sp_gc_str_budget_mode = 2;
 /* That share: one part in this many. An ORDER, like the gate's coefficients. */
 #define SP_STR_BUDGET_OBJ_DIV 8
 /* What the last string retune put into the per-worker trigger for the object
-   old generation, so the stats line can report it and a test can read it. */
+   old generation, so the stats line can report it and a test can read it.
+   Zero after a retune that put none in. */
 static size_t sp_str_budget_obj_bytes = 0;
 /* SPINEL_GC_STR_MAJOR=fixed: hold the string old generation's gate at its floor
    instead of re-aiming it, adapting nothing. */
@@ -489,9 +494,12 @@ static void sp_gc_stats_emit(void) {
           sp_gc_ph_mk_globals, sp_gc_ph_mk_scan);
 }
 
+/* Re-aim the object trigger from what a collection left, and take the
+   measurement both budgets' gates start from: the mark's share of that
+   collection. The reasoning is inline, beside each step. */
 void sp_gc_retune_object(size_t before) {
   sp_gc_stats_report();
-  if (sp_gc_stress_pin || sp_gc_obj_budget_fixed) { sp_gc_threshold = sp_gc_threshold_init; return; }
+  if (sp_gc_stress_pin) { sp_gc_threshold = sp_gc_threshold_init; return; }
   size_t live = sp_gc_bytes;
   /* The budget is what may be ALLOCATED before the next collection, and what
      pays for it is what that collection COSTS. A collection marks BOTH heaps,
@@ -563,6 +571,12 @@ void sp_gc_retune_object(size_t before) {
       if (alpha > 1024) alpha = 1024;
     }
   }
+  /* What was measured, kept before the knobs below decide what the OBJECT
+     budget makes of it. `fixed` leaves here and not at the top for the same
+     reason: a budget held at its floor still has a collection to measure, and
+     the string budget's gate (sp_str_retune) reads the measurement. */
+  sp_gc_mark_share1024 = alpha;
+  if (sp_gc_obj_budget_fixed) { sp_gc_threshold = sp_gc_threshold_init; return; }
   if (sp_gc_obj_budget_mode == 0) alpha = 0;
   else if (sp_gc_obj_budget_mode == 1) alpha = 1024;
   sp_gc_obj_alpha1024 = alpha;
@@ -644,6 +658,9 @@ static void sp_str_retune(size_t before, size_t promoted) {
      serially, before the slab promotions are folded in when the workers sweep
      (so one cycle behind there), at the next barrier for the concurrent sweep.
      alpha is one cycle behind everywhere -- the object retune runs after this.
+     It is the share that retune MEASURED, not what SPINEL_GC_OBJ_BUDGET made
+     of it: `obj`, `walk` and `fixed` pin the object budget, and this budget
+     has its own knob for the same three ends.
 
      One part in SP_STR_BUDGET_OBJ_DIV, and not the whole of it, because the
      whole is mostly memory. Measured from 1 to 1/32: on the Array above and
@@ -661,7 +678,7 @@ static void sp_str_retune(size_t before, size_t promoted) {
   size_t share = 0;
   if (sp_gc_str_budget_mode) {
     size_t obj = sp_gc_old_bytes;
-    size_t alpha = sp_gc_str_budget_mode == 1 ? 1024 : sp_gc_obj_alpha1024;
+    size_t alpha = sp_gc_str_budget_mode == 1 ? 1024 : sp_gc_mark_share1024;
     share = (obj / 1024) * alpha + ((obj % 1024) * alpha) / 1024;
 #ifdef SP_THREADS
     share /= (size_t)nw;   /* per worker, as `after` is */
@@ -672,7 +689,7 @@ static void sp_str_retune(size_t before, size_t promoted) {
      keeps the collections it buys from piling up: the share goes into the
      other case only. That case is also the empty heap now -- no live string
      and no share reads as zero and takes the floor. */
-  if (freed < before / 4) { sp_str_threshold = sp_gc_sat_mul(before, 2); }
+  if (freed < before / 4) { sp_str_threshold = sp_gc_sat_mul(before, 2); sp_str_budget_obj_bytes = 0; }
   else {
     sp_str_threshold = sp_gc_sat_mul(after + share, 2);
     if (sp_str_threshold < sp_str_threshold_init) sp_str_threshold = sp_str_threshold_init;
