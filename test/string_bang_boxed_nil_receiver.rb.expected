@@ -1,0 +1,6 @@
+"e1"
+Array element strip!.concat: NoMethodError: undefined method 'concat' for nil
+Array element strip!.concat stmt: NoMethodError: undefined method 'concat' for nil
+Hash value strip!.prepend: NoMethodError: undefined method 'prepend' for nil
+Hash value strip!.prepend stmt: NoMethodError: undefined method 'prepend' for nil
+Hash value strip!.insert: NoMethodError: undefined method 'insert' for nil
