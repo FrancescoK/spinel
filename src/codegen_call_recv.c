@@ -7072,6 +7072,19 @@ static int str_arms_slice_encode(Compiler *c, int id, Buf *b, const char *name, 
   else if (sp_streq(name, "split") && argc == 2) {
     buf_printf(b, "sp_str_split_limit(%s, ", r); emit_str_pattern_expr(c, argv[0], b); buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")");
   }
+  /* a bound of run-time type (boxed) is compared by the runtime's <=>: a
+     String one by bytes, anything else is CRuby's comparison error. The
+     plain arm below declared it a C string, and it did not compile. */
+  else if (sp_streq(name, "clamp") && argc == 2 &&
+           (comp_ntype(c, argv[0]) == TY_POLY || comp_ntype(c, argv[1]) == TY_POLY)) {
+    Buf cb; memset(&cb, 0, sizeof cb);
+    buf_printf(&cb, "sp_obj_clamp(sp_box_str(%s), ", r);
+    emit_boxed(c, argv[0], &cb); buf_puts(&cb, ", ");
+    emit_boxed(c, argv[1], &cb); buf_puts(&cb, ")");
+    if (repr_of(c, id).kind == RK_BOXED) buf_puts(b, cb.p);
+    else emit_unbox_text(c, TY_STRING, cb.p, b);
+    free(cb.p);
+  }
   else if (sp_streq(name, "clamp") && argc == 2 &&
            ((str_cmp_bound_foreign(c, argv[0]) && comp_ntype(c, argv[0]) != TY_NIL && !ty_is_object(comp_ntype(c, argv[0]))) ||
             (str_cmp_bound_foreign(c, argv[1]) && comp_ntype(c, argv[1]) != TY_NIL && !ty_is_object(comp_ntype(c, argv[1]))))) {
