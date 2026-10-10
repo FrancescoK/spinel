@@ -65,6 +65,11 @@ extern int g_nil_check;
    Scope.ret_obj_may_nil. repr_of and repr_of_slot read them into may_nil. */
 enum { NF_UNKNOWN, NF_NOT_NIL, NF_MAY_NIL, NF_GUARDED /* not nil past a guard */ };
 void an_nil_facts(Compiler *c);
+/* Which constants a read can reach before their assignment: sets
+   LocalVar.const_early on each one whose assignment is not settled
+   (analyze_const.c). Runs once the constants are registered, ahead of the
+   folds that decide `defined?(K)`. */
+void an_const_presence(Compiler *c);
 int nil_fact_node(const Compiler *c, int node);
 int nil_fact_ivar(const Compiler *c, int cid, const char *ivn);
 /* where a nil comes from: a node's (nil_fact_why), a slot's flag itself.

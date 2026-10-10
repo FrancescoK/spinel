@@ -1,0 +1,11 @@
+uninitialized constant S
+uninitialized constant S
+true
+true
+"s!"
+"s!"
+"uninitialized constant Foo::BUF"
+"uninitialized constant Foo::BUF"
+1
+"ayz"
+2

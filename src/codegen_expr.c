@@ -2452,17 +2452,21 @@ static int emit_constant_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, 
     /* --share-strings: a constant holding the shared handle (#6765) */
     if (cv && !slot && repr_of_slot(c, cv).kind == RK_STRBUF && !cv->init_guarded) {
       char sref[256]; snprintf(sref, sizeof sref, "cst_%s", nm);
+      emit_const_check_open(c, id, cv, b);
       emit_strbuf_slot_read(c, id, repr_of(c, id), sref, b);
+      emit_const_check_close(c, id, cv, b);
       return 1;
     }
     if (cv && cv->type != TY_UNKNOWN) {
       if (cv->init_guarded) {
         /* a read during the const's own Class.new init raises NameError */
+        emit_const_check_open(c, id, cv, b);
         buf_printf(b, "(sp_init_in_progress_%s ? (sp_raise_cls(\"NameError\","
                       " \"uninitialized constant %s\"), %scst_%s) : %scst_%s)",
                    nm, nm, slot ? "&" : "", nm, slot ? "&" : "", nm);
+        emit_const_check_close(c, id, cv, b);
       }
-      else buf_printf(b, "%scst_%s", slot ? "&" : "", nm);
+      else emit_const_slot_read(c, id, cv, nm, slot, 1, b);
       return 1;
     }
     /* `include Math` exposes the module's bare constants (#2600) */
@@ -2638,8 +2642,15 @@ static int emit_constant_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, 
         emit_ctype(c, ct, b);
         buf_printf(b, " %s_t%d = %s; switch (_t%d.cls_id) {", slot ? "*" : "", tr,
                    slot ? "NULL" : default_value_from_compiler(c, ct), tk);
-        for (int i = 0; i < nc; i++)
-          buf_printf(b, " case %d: _t%d = %scst_%s; break;", ccls[i], tr, slot ? "&" : "", ckey[i]);
+        for (int i = 0; i < nc; i++) {
+          /* a constant not assigned yet is as missing as one the class lacks */
+          if (const_has_flag(comp_const(c, ckey[i])))
+            buf_printf(b, " case %d: if (!cst_%s__set) sp_raise_cls(\"NameError\", sp_sprintf("
+                          "\"uninitialized constant %%s::%s\", %s(_t%d)));"
+                          " _t%d = %scst_%s; break;", ccls[i], ckey[i], nm, comp_class_display_fn(c), tk, tr, slot ? "&" : "", ckey[i]);
+          else
+            buf_printf(b, " case %d: _t%d = %scst_%s; break;", ccls[i], tr, slot ? "&" : "", ckey[i]);
+        }
         /* A class with no such constant is CRuby's NameError, not the
            leaf-named constant of some unrelated scope. */
         buf_printf(b, " default: sp_raise_cls(\"NameError\", sp_sprintf("
@@ -2650,13 +2661,24 @@ static int emit_constant_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       }
     } }
     LocalVar *cpcv = nm ? comp_const(c, nm) : NULL;
+    /* the slot of a flagged constant already read through its receiver (emit_const_recv_wrap) */
+    int cptr = cpcv ? (int)nt_int(nt, id, "const_ptr", 0) : 0;
+    if (cptr) {
+      char sref[40]; snprintf(sref, sizeof sref, "(*_p%d)", cptr);
+      if (slot) buf_printf(b, "_p%d", cptr);
+      else if (repr_of_slot(c, cpcv).kind == RK_STRBUF) emit_strbuf_slot_read(c, id, repr_of(c, id), sref, b);
+      else buf_puts(b, sref);
+      return 1;
+    }
     /* --share-strings: a constant holding the shared handle (#6765) */
     if (cpcv && !slot && repr_of_slot(c, cpcv).kind == RK_STRBUF) {
       char sref[256]; snprintf(sref, sizeof sref, "cst_%s", nm);
+      emit_const_check_open(c, id, cpcv, b);
       emit_strbuf_slot_read(c, id, repr_of(c, id), sref, b);
+      emit_const_check_close(c, id, cpcv, b);
       return 1;
     }
-    if (cpcv && cpcv->type != TY_UNKNOWN) { buf_printf(b, "%scst_%s", slot ? "&" : "", nm); return 1; }
+    if (cpcv && cpcv->type != TY_UNKNOWN) { emit_const_slot_read(c, id, cpcv, nm, slot, 1, b); return 1; }
     if (nm && sp_streq(nm, "ARGV")) { buf_puts(b, "sp_get_ARGV()"); return 1; }
     if (nm && sp_streq(nm, "ARGF")) { buf_puts(b, "(&sp_argf_obj)"); return 1; }
     /* well-known module constants */
@@ -2912,6 +2934,11 @@ static int emit_defined_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, c
     }
     else if (sp_streq(vt, "ConstantReadNode")) {
       const char *cn = nt_str(nt, v, "name");
+      /* a constant not assigned yet is not defined: asked at run time */
+      if (cn && const_has_flag(comp_const(c, cn))) {
+        buf_printf(b, "(cst_%s__set ? SPL(\"constant\") : NULL)", cn);
+        return 1;
+      }
       if (cn) {
         if (comp_const(c, cn) || comp_class_index(c, cn) >= 0) res = "constant";
         if (!res && comp_is_wellknown_const(cn)) res = "constant";
@@ -2922,8 +2949,19 @@ static int emit_defined_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, c
     }
     else if (sp_streq(vt, "ConstantPathNode")) {
       /* a fully-resolved qualified path answers "constant"; any unresolved
-         segment leaves nil (the segment walk lives in the guard helpers) */
-      if (comp_defined_guard_true(c, id)) res = "constant";
+         segment leaves nil (the segment walk lives in the guard helpers). A
+         segment not assigned yet is not defined: asked at run time */
+      const char *early[8];
+      int ne = comp_defined_early(c, id, early, 8), nf = 0;
+      for (int k = 0; k < ne; k++) if (const_has_flag(comp_const(c, early[k]))) nf++;
+      if (nf > 0) {
+        buf_puts(b, "(");
+        for (int k = 0; k < ne; k++)
+          if (const_has_flag(comp_const(c, early[k]))) buf_printf(b, "cst_%s__set && ", early[k]);
+        buf_puts(b, "1 ? SPL(\"constant\") : NULL)");
+        return 1;
+      }
+      if (ne >= 0) res = "constant";
     }
     /* `sym.to_proc` was lowered to a lambda before this point (the
        "stp_arity" mark): it is still the Symbol's method, not an iterator */

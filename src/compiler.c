@@ -1424,37 +1424,62 @@ int comp_defined_guard_false(Compiler *c, int pred) {
   return 0;
 }
 
+/* Do the segments of the constant / constant path under defined? node `pred`
+   all resolve at compile time? Those with a presence flag (a segment whose
+   assignment a read can precede, LocalVar.const_early, is defined only once
+   it has run) have their keys put in early (at most cap), in the order the
+   path is walked, and are counted in the answer; -1 when a segment does not
+   resolve, more have a flag than fit, or the path is no plain one. */
+static int defined_path_keys(Compiler *c, int pred, const char **early, int cap) {
+  const NodeTable *nt = c->nt;
+  int ne = 0;
+  if (pred < 0 || nt_kind(nt, pred) != NK_DefinedNode) return -1;
+  int v = nt_ref(nt, pred, "value");
+  if (v < 0) return -1;
+  NodeKind vk = nt_kind(nt, v);
+  if (vk != NK_ConstantReadNode && vk != NK_ConstantPathNode) return -1;
+  for (int seg = v; ; ) {
+    const char *nm = nt_str(nt, seg, "name");
+    if (!const_name_resolves(c, nm)) return -1;
+    LocalVar *lv = comp_const(c, nm);
+    if (lv && lv->const_early && ne < cap) early[ne++] = lv->name;
+    else if (lv && lv->const_early) return -1;
+    if (vk != NK_ConstantPathNode) return ne;
+    int par = nt_ref(nt, seg, "parent");
+    /* `::Root` anchor: the root must be defined at the TOP level, not
+       through a same-named nested module (#3320) */
+    if (par < 0) return const_name_resolves_top_level(c, nm) ? ne : -1;
+    if (nt_kind(nt, par) == NK_ConstantPathNode) { seg = par; continue; }
+    if (nt_kind(nt, par) == NK_ConstantReadNode) {
+      const char *pn = nt_str(nt, par, "name");
+      if (!const_name_resolves(c, pn)) return -1;
+      LocalVar *plv = comp_const(c, pn);
+      if (plv && plv->const_early && ne < cap) early[ne++] = plv->name;
+      else if (plv && plv->const_early) return -1;
+      return ne;
+    }
+    return -1;                                  /* dynamic parent: no fold */
+  }
+}
+
 /* The dual: a defined? guard that is statically TRUE -- every segment of the
    constant / constant path resolves at compile time. Lets value-position
    `defined?(K) ? K : fallback` drop its dead fallback arm (which may not
    type-unify with the live one). Deliberately narrow like
    comp_defined_guard_false: plain constants / constant paths only, no `&&`
-   chains (a truthy left arm doesn't decide the conjunction). */
+   chains (a truthy left arm doesn't decide the conjunction). A segment a
+   read can precede the assignment of is not defined yet, so no guard on one
+   is static. */
 int comp_defined_guard_true(Compiler *c, int pred) {
-  const NodeTable *nt = c->nt;
-  if (pred < 0) return 0;
-  const char *pt = nt_type(nt, pred);
-  if (!pt || !sp_streq(pt, "DefinedNode")) return 0;
-  int v = nt_ref(nt, pred, "value");
-  if (v < 0) return 0;
-  const char *vt = nt_type(nt, v);
-  if (vt && sp_streq(vt, "ConstantReadNode"))
-    return const_name_resolves(c, nt_str(nt, v, "name"));
-  if (vt && sp_streq(vt, "ConstantPathNode")) {
-    for (int seg = v; ; ) {
-      if (!const_name_resolves(c, nt_str(nt, seg, "name"))) return 0;
-      int par = nt_ref(nt, seg, "parent");
-      /* `::Root` anchor: the root must be defined at the TOP level, not
-         through a same-named nested module (#3320) */
-      if (par < 0) return const_name_resolves_top_level(c, nt_str(nt, seg, "name"));
-      const char *pty = nt_type(nt, par);
-      if (pty && sp_streq(pty, "ConstantPathNode")) { seg = par; continue; }
-      if (pty && sp_streq(pty, "ConstantReadNode"))
-        return const_name_resolves(c, nt_str(nt, par, "name"));
-      return 0;                                  /* dynamic parent: no fold */
-    }
-  }
-  return 0;
+  const char *early[1];
+  return defined_path_keys(c, pred, early, 0) == 0;
+}
+
+/* The constants a statically resolved defined? path holds a presence flag
+   for, whose flags say whether it is defined now (the count, their keys in
+   early); -1 when the path is not one that resolves at compile time. */
+int comp_defined_early(Compiler *c, int pred, const char **early, int cap) {
+  return defined_path_keys(c, pred, early, cap);
 }
 
 /* A literal ArrayNode that is built as an sp_IntArray: one element at least,

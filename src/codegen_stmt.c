@@ -10534,6 +10534,7 @@ void emit_synth_line_marker(Buf *b) {
 void emit_stmt(Compiler *c, int id, Buf *b, int indent) {
   if (g_repr_check) repr_check_ask(c, id);
   emit_line_directive(c, id, b);
+  if (emit_const_recv_stmt_wrap(c, id, b, indent, 0)) return;
   /* A constant's visibility is not enforced (constants are resolved at
      compile time), so the class body skips these declarations -- also where
      one stands inside a conditional or a block of the body, which reaches
@@ -10563,6 +10564,7 @@ void emit_stmt(Compiler *c, int id, Buf *b, int indent) {
 void emit_stmt_tail(Compiler *c, int id, Buf *b, int indent) {
   int frame = g_repr_check ? repr_channel_begin(c, id) : -1;
   emit_line_directive(c, id, b);
+  if (emit_const_recv_stmt_wrap(c, id, b, indent, 1)) { if (g_repr_check) repr_channel_end(c, frame); return; }
   emit_with_prelude(c, id, b, indent, emit_stmt_tail_inner);
   if (g_repr_check) repr_channel_end(c, frame);
 }
@@ -11113,6 +11115,7 @@ static int masgn_store(Compiler *c, int id, int tgt, const char *val, TyKind vt,
     buf_printf(b, "cst_%s = ", nm);
     masgn_conv(c, id, cv->type, vt, val, b);
     buf_puts(b, ";\n");
+    emit_const_flag_set(cv, nm, b, indent);
     return 1;
   }
   if (sp_streq(ty, "IndexTargetNode")) {
@@ -11735,6 +11738,7 @@ static int emit_multi_write_scalar(Compiler *c, int id, Buf *b, int indent, cons
         else
           buf_puts(b, cgx);
         buf_puts(b, ";\n");
+        emit_const_flag_set(cv_rt, cnm_rt, b, indent);
       }
       else {
         char gx[80]; snprintf(gx, sizeof gx, "sp_%sArray_get(_t%d, %dLL)", k, tarr, i);
@@ -12546,6 +12550,7 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
       if (comp_const(c, cnm_l)->type == TY_POLY && valt != TY_POLY) emit_boxed_tmp(c, valt, tmps[i], b);
       else buf_printf(b, "_t%d", tmps[i]);
       buf_puts(b, ";\n");
+      emit_const_flag_set(comp_const(c, cnm_l), cnm_l, b, indent);
     }
     else if (lty && sp_streq(lty, "InstanceVariableTargetNode")) {
       const char *ivnm = nt_str(nt, lefts[i], "name");
@@ -14164,6 +14169,7 @@ static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int in
       if (!isg && lv->init_guarded) {
         emit_indent(b, indent); buf_printf(b, "sp_init_in_progress_%s = 0;\n", key);
       }
+      if (!isg) emit_const_flag_set(lv, key, b, indent);
       return 1;
     }
     int vlit = empty_literal_node(c, v);
@@ -14266,6 +14272,7 @@ static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int in
     if (!isg && lv->init_guarded) {
       emit_indent(b, indent); buf_printf(b, "sp_init_in_progress_%s = 0;\n", key);
     }
+    if (!isg) emit_const_flag_set(lv, key, b, indent);
     if (!isg && lv->type == TY_CLASS)
       emit_class_const_name(c, key, nm, g_class_body_id, b, indent);
     return 1;
@@ -14317,6 +14324,7 @@ static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int in
     else if (cv->type == TY_POLY && repr_of(c, v).kind != RK_BOXED) emit_boxed(c, v, b);
     else emit_expr(c, v, b);
     buf_puts(b, ";\n");
+    emit_const_flag_set(cv, nm, b, indent);
     if (cv->type == TY_CLASS)
       emit_class_const_name(c, nm, nm, class_recv_static_ci(c, nt_ref(nt, tgt, "parent")), b, indent);
     return 1;
@@ -14329,6 +14337,11 @@ static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int in
     if (!cv) { if (path) unsupported(c, id, "constant path operator write"); return 1; }
     const char *op = nt_str(nt, id, "binary_operator");
     int v = nt_ref(nt, id, "value");
+    /* the read it starts with raises while the constant is unset */
+    if (const_has_flag(cv)) {
+      emit_indent(b, indent);
+      emit_const_check_open(c, tgt, cv, b); buf_puts(b, "0"); emit_const_check_close(c, tgt, cv, b); buf_puts(b, ";\n");
+    }
     emit_indent(b, indent);
     if (cv->type == TY_STRING && op && sp_streq(op, "+")) {
       buf_printf(b, "cst_%s = sp_str_concat(cst_%s, ", nm, nm); emit_expr(c, v, b); buf_puts(b, ");\n");
@@ -14337,6 +14350,7 @@ static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int in
       buf_printf(b, "cst_%s %s= ", nm, op ? op : "+");
       emit_coerce(c, v, cv->type, CO_HOLD, "the operand of an `op=`", b); buf_puts(b, ";\n");
     }
+    emit_const_flag_set(cv, nm, b, indent);
     return 1;
   }
   if (sp_streq(ty, "ConstantPathOrWriteNode") || sp_streq(ty, "ConstantPathAndWriteNode")) {
@@ -14346,6 +14360,11 @@ static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int in
     LocalVar *cv = nm ? comp_const(c, nm) : NULL;
     if (!cv) { unsupported(c, id, "constant path or/and write"); return 1; }
     int v = nt_ref(nt, id, "value");
+    /* `&&=` reads the constant first: an unset one raises */
+    if (!is_or && const_has_flag(cv)) {
+      emit_indent(b, indent);
+      emit_const_check_open(c, tgt, cv, b); buf_puts(b, "0"); emit_const_check_close(c, tgt, cv, b); buf_puts(b, ";\n");
+    }
     if (cv->type == TY_POLY) {
       emit_indent(b, indent);
       buf_printf(b, "if (%ssp_poly_truthy(cst_%s)) cst_%s = ", is_or ? "!" : "", nm, nm);
@@ -14355,11 +14374,14 @@ static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int in
       emit_indent(b, indent);
       buf_printf(b, "if (%scst_%s) cst_%s = ", is_or ? "!" : "", nm, nm); emit_expr(c, v, b); buf_puts(b, ";\n");
     }
-    else if (!is_or) {  /* &&= on an always-truthy constant: always assign */
+    else if (!is_or || const_has_flag(cv)) {  /* &&= on an always-truthy constant: always assign */
       emit_indent(b, indent);
+      /* ||= on one that is not assigned yet assigns */
+      if (is_or) buf_printf(b, "if (!cst_%s__set) ", nm);
       buf_printf(b, "cst_%s = ", nm); emit_expr(c, v, b); buf_puts(b, ";\n");
     }
     /* ||= on an always-truthy constant: no-op */
+    emit_const_flag_set(cv, nm, b, indent);
     return 1;
   }
   if (sp_streq(ty, "ConstantOrWriteNode") || sp_streq(ty, "ConstantAndWriteNode")) {
@@ -14368,6 +14390,11 @@ static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int in
     LocalVar *cv = nm ? comp_const(c, nm) : NULL;
     if (!cv) return 1;
     int v = nt_ref(nt, id, "value");
+    /* `&&=` reads the constant first: an unset one raises */
+    if (!is_or && const_has_flag(cv)) {
+      emit_indent(b, indent);
+      emit_const_check_open(c, id, cv, b); buf_puts(b, "0"); emit_const_check_close(c, id, cv, b); buf_puts(b, ";\n");
+    }
     if (cv->type == TY_POLY) {
       emit_indent(b, indent);
       buf_printf(b, "if (%ssp_poly_truthy(cst_%s)) { cst_%s = ", is_or ? "!" : "", nm, nm);
@@ -14378,12 +14405,15 @@ static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int in
       buf_printf(b, "if (%scst_%s) { cst_%s = ", is_or ? "!" : "", nm, nm);
       emit_coerce(c, v, cv->type, CO_HOLD, "a constant's `||=` or `&&=`", b); buf_puts(b, "; }\n");
     }
-    else if (!is_or) {  /* &&= on an always-truthy constant: always assign */
+    else if (!is_or || const_has_flag(cv)) {  /* &&= on an always-truthy constant: always assign */
       emit_indent(b, indent);
+      /* ||= on one that is not assigned yet assigns */
+      if (is_or) buf_printf(b, "if (!cst_%s__set) ", nm);
       buf_printf(b, "cst_%s = ", nm);
       emit_coerce(c, v, cv->type, CO_HOLD, "a constant's `||=` or `&&=`", b); buf_puts(b, ";\n");
     }
     /* ||= on an always-truthy constant: no-op */
+    emit_const_flag_set(cv, nm, b, indent);
     return 1;
   }
   if (sp_streq(ty, "GlobalVariableOperatorWriteNode")) {

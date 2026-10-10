@@ -200,6 +200,10 @@ typedef struct {
   int const_def_write; /* (consts) has a definite (non-or/and) assignment; an
                           or/and-write-only const is nil-defaulted (poly) so its
                           `||=` truthiness check fires on first use */
+  int const_early; /* (consts) some read can run before an assignment of it: the
+                      slot has a presence flag (cst_NAME__set) that every
+                      assignment sets and every read, defined?, const_defined?
+                      and const_get tests (analyze_const.c) */
   int or_written; /* some write to this local is a `||=`, which can run before
                      any definite assignment (`v ||= 5; v += 2`, a definite
                      write in one branch only, a block local reset each
@@ -1357,6 +1361,7 @@ LocalVar *comp_const_intern(Compiler *c, const char *name);
 int comp_defined_guard_false(Compiler *c, int pred);
 /* the dual: statically-true defined?(Const / Const::Path) guard */
 int comp_defined_guard_true(Compiler *c, int pred);
+int comp_defined_early(Compiler *c, int pred, const char **early, int cap);
 
 /* Classes. */
 ClassInfo *comp_class_new(Compiler *c, const char *name, int def_node);
