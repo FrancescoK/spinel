@@ -2094,7 +2094,7 @@ int emit_poly_defaults0(Compiler *c, int id, int recv, const char *name, const P
       buf_printf(b, "sp_poly_is_strbuf(_t%d) ? (sp_String *)_t%d.v.p : "
                     "(_t%d.tag == SP_TAG_OBJ && (_t%d.cls_id == SP_BUILTIN_EXCEPTION || "
                     "sp_is_exc_subclass_cls(_t%d.cls_id))) ? "
-                    "sp_exc_message_handle((sp_Exception *)_t%d.v.p) : "
+                    "sp_exc_kept_message_handle((sp_Exception *)_t%d.v.p) : "
                     "sp_String_new_shared(%s(_t%d))", tv, tv, tv, tv, tv, tv, pfn, tv);
     /* A boxed to_s answers a String receiver itself: with sharing, the
        box it holds is the answer, not a copy of its bytes. */

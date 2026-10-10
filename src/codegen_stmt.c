@@ -1656,7 +1656,9 @@ static int exc_text_call_on(Compiler *c, int v, int boxed) {
 static int exc_text_call(Compiler *c, int v) { return exc_text_call_on(c, v, 0); }
 /* --share-strings: an exception's #message or #to_s with no override of
    the program's own: the String the exception was raised with, which it
-   holds as a handle when the String is shared (sp_exc_message_handle).
+   holds as a handle when the String is shared (sp_exc_kept_message_handle,
+   which keeps a message that was given and builds the class name of one
+   that was not afresh each time).
    An override dispatch publishes its own answer through the return channel.
    The read is that handle only where the share facts say the message is
    shared or changed in place (share_node_shares); anywhere else it is the
@@ -1871,7 +1873,7 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
       buf_printf(b, "!_v%d ? NULL : _sp_ret_strbuf ? (sp_String *)_sp_ret_strbuf : sp_String_new_shared(_v%d); })", t, t);
       return 1;
     }
-    buf_puts(b, "sp_exc_message_handle((sp_Exception *)(");
+    buf_puts(b, "sp_exc_kept_message_handle((sp_Exception *)(");
     emit_expr(c, nt_ref(nt, v, "receiver"), b);
     buf_puts(b, "))");
     return 1;
@@ -2063,7 +2065,7 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
     if (sn) buf_printf(b, "_t%d.tag == SP_TAG_NIL ? (sp_String *)NULL : ", t);
     if (repr_boxed_to_s_operand(c, v) >= 0)
       buf_printf(b, "(_t%d.tag == SP_TAG_OBJ && (_t%d.cls_id == SP_BUILTIN_EXCEPTION || "
-                    "sp_is_exc_subclass_cls(_t%d.cls_id))) ? sp_exc_message_handle((sp_Exception *)_t%d.v.p) : ",
+                    "sp_is_exc_subclass_cls(_t%d.cls_id))) ? sp_exc_kept_message_handle((sp_Exception *)_t%d.v.p) : ",
                  t, t, t, t);
     if (g_repr_check && pickup) repr_channel_pickup(c, v, 1);
     if (pickup) buf_printf(b, "({ _sp_ret_strbuf = NULL; const char *_v%d = ", t);

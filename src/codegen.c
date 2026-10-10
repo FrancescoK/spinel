@@ -9707,7 +9707,7 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
                  ci->c_name, ci->c_name, ci->c_name, ci->c_name);
       buf_printf(b, "  self->cls_name = \"%s\";\n", cn2);
       buf_printf(b, "  self->parent_cls_name = \"%s\";\n", par);
-      buf_puts(b, "  self->msg = (&(\"\\xff\")[1]);\n");
+      buf_puts(b, "  self->msg = NULL;\n");
       buf_puts(b, "  self->result = sp_box_nil();\n");  /* memset left tag 0 (int 0); #result wants nil */
       buf_puts(b, "  self->xname = sp_box_nil();\n");
       buf_puts(b, "  self->xkey = sp_box_nil();\n");
@@ -9858,7 +9858,7 @@ void emit_obj_alloc_expr(Compiler *c, int cid, Buf *b) {
     }
     buf_printf(b, "({ sp_%s *_t%d = (sp_%s *)sp_gc_alloc(sizeof(sp_%s), NULL, sp_%s__gc_scan);"
                   " _t%d->cls_name = \"%s\"; _t%d->parent_cls_name = \"%s\";"
-                  " _t%d->msg = (&(\"\\xff\")[1]); _t%d->result = sp_box_nil();"
+                  " _t%d->msg = NULL; _t%d->result = sp_box_nil();"
                   " _t%d->xname = sp_box_nil(); _t%d->xkey = sp_box_nil(); _t%d->xrecv = sp_box_nil();",
                ci->c_name, t, ci->c_name, ci->c_name, ci->c_name, t, cn2, t, par, t, t, t, t, t);
     char lv[32]; snprintf(lv, sizeof lv, "_t%d->", t);
@@ -12209,8 +12209,12 @@ void emit_super(Compiler *c, int id, Buf *b) {
            can't see. */
         buf_printf(b, "(%s->msg = ", g_self);
         /* nilable: Exception#initialize STRINGIFIES its message (super(nil)
-           keeps the class-name default in CRuby), it never type-checks it */
-        emit_str_expr_nilable(c, argv2[0], b);
+           keeps the class-name default in CRuby), it never type-checks it.
+           A boxed nil stays NULL (no message given): emit_str_expr_nilable
+           reads it as an empty String, and the separator form
+           (sp_poly_sep_str, made for a line reader) is the existing read
+           that keeps nil. */
+        emit_str_expr_sep(c, argv2[0], b);
         /* The message is made after self, and a collection inside its
            making can promote self: the store is recorded (sp_gc_wb), or a
            minor collection frees the young message self still names. */
@@ -12229,7 +12233,8 @@ void emit_super(Compiler *c, int id, Buf *b) {
         TyKind pt = (p0 && p0->type != TY_UNKNOWN) ? p0->type : TY_POLY;
         /* recorded, as the explicit super(msg) store above */
         if (pt == TY_POLY)
-          buf_printf(b, "(%s->msg = sp_poly_to_s(%s), sp_gc_wb((void *)%s), %s->msg)", g_self, rn.p, g_self, g_self);
+          buf_printf(b, "(%s->msg = %s.tag == SP_TAG_NIL ? NULL : sp_poly_to_s(%s), sp_gc_wb((void *)%s), %s->msg)",
+                     g_self, rn.p, rn.p, g_self, g_self);
         else
           buf_printf(b, "(%s->msg = %s, sp_gc_wb((void *)%s), %s->msg)", g_self, rn.p, g_self, g_self);
         free(rn.p);
