@@ -2971,7 +2971,13 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
            write site in its scope. Pure block params have no write site and
            get their type from infer_block_params; promoting them here to
            TY_STR_POLY_HASH before is_block_param is set creates a TY_POLY
-           that ty_unify can never narrow back to the yield arg type. */
+           that ty_unify can never narrow back to the yield arg type. A
+           reassigned block parameter's rebinding (`a = a__bpin`) is no such
+           site, and neither is a write of a call on the local itself
+           (`a = a.keys`): counting them, a block parameter nothing types was
+           promoted to the hash, typed by its own call from that hash the
+           next round, which the read does not promote, and unknown again the
+           round after -- the fixpoint ran to its cap. */
         if (rrty && sp_streq(rrty, "LocalVariableReadNode") && rnm2) {
           Scope *recv_scope = comp_scope_of(c, recv);
           int recv_sid = (int)(recv_scope - c->scopes);
@@ -2980,7 +2986,12 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
             int _wi = lw_ix.node[_r];
             if (comp_scope_of(c, _wi) != recv_scope) continue;
             const char *_wnm = nt_str(nt, _wi, "name");
-            if (_wnm && sp_streq(_wnm, rnm2)) has_write = 1;
+            if (!_wnm || !sp_streq(_wnm, rnm2) || nt_int(nt, _wi, "bp_rebind", 0)) continue;
+            int _wv = nt_ref(nt, _wi, "value");
+            int _wr = _wv >= 0 && nt_kind(nt, _wv) == NK_CallNode ? nt_ref(nt, _wv, "receiver") : -1;
+            if (_wr >= 0 && nt_kind(nt, _wr) == NK_LocalVariableReadNode &&
+                nt_str(nt, _wr, "name") && sp_streq(nt_str(nt, _wr, "name"), rnm2)) continue;
+            has_write = 1;
           }
           if (!has_write) continue;
         }

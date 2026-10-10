@@ -123,3 +123,18 @@ class FpDirty
   def clear(a) = public_send(:"clear_#{a}_change")
 end
 p FpDirty.new.clear_attribute_change(1)
+
+# A block parameter nothing types, reassigned from a call on itself and then
+# read with a String key (activerecord's nested attributes: `attributes =
+# attributes.with_indifferent_access; attributes["id"]`): with every write
+# still unknown, the key read promoted it to a String-keyed hash; the next
+# round its own call read that hash and typed it an Array, which the key
+# read does not promote, and the round after it was unknown again. (Nothing
+# calls it here: a caller would type the parameter.)
+def fp_ids(coll)
+  coll.each do |a|
+    a = a.keys
+    a["id"]
+  end
+end
+p 1
