@@ -12,4 +12,7 @@ end
   p [62, 63, 64, 65, 1000].map { |n| shifted(v, n) }
   p [-1, -3].map { |n| shifted(v, n) }
 end
+# a Bignum count is past any width too, for an Integer and a Bignum receiver
+p [shifted(5, 2**64), shifted(-5, 2**64), shifted(5, 2**100), shifted(-5, 2**100)]
+p [shifted(2**100, 2**64), shifted(-(2**100), 2**64), shifted(-(2**100), 2**100)]
 p shifted(:pad, 1) rescue p $!.class

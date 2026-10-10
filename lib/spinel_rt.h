@@ -6279,6 +6279,12 @@ static sp_RbVal sp_poly_shr(sp_RbVal a, sp_RbVal b) {
   if (a.tag == SP_TAG_OBJ && a.cls_id == SP_BUILTIN_PROC &&
       b.tag == SP_TAG_OBJ && b.cls_id == SP_BUILTIN_PROC)
     return sp_box_proc(sp_proc_compose_v(b.v.p, a.v.p));
+  /* a positive Bignum count is past any width: only the sign is left, of an
+     Integer or a Bignum alike. Narrowed through sp_poly_to_i it kept its low
+     word, so `5 >> 2**64` shifted by 0 and answered 5. */
+  if (b.tag == SP_TAG_BIGINT && (a.tag == SP_TAG_INT || a.tag == SP_TAG_BIGINT) &&
+      sp_bigint_sign((sp_Bigint *)b.v.p) > 0)
+    return sp_box_int(sp_poly_negative_p(a) ? -1 : 0);
   /* a bignum shifts in bignum space: truncating to int64 first turned a
      positive value past 2^63 negative, so the shift became arithmetic and a
      masked xorshift diverged from CRuby (#3371) */
