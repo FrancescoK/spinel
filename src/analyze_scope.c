@@ -1152,6 +1152,29 @@ static int user_define_method(Compiler *c) {
   return found;
 }
 
+/* Does nothing in the program name the method `name`: no call of it, and no
+   Symbol or String spelling it (send, method, respond_to?, alias)? Then a
+   method of that name never runs, and what its body would do at run time
+   never happens. */
+static int method_never_named(Compiler *c, const char *name) {
+  if (!name || sp_streq(name, "initialize") || method_name_implicitly_invoked(name)) return 0;
+  if (g_ext_entries && strstr(g_ext_entries, name)) return 0;
+  const NodeTable *nt = c->nt;
+  NT_FOREACH_KIND(nt, NK_CallNode, k) {
+    const char *nm = nt_str(nt, k, "name");
+    if (nm && sp_streq(nm, name)) return 0;
+  }
+  NT_FOREACH_KIND(nt, NK_SymbolNode, k) {
+    const char *v = nt_str(nt, k, "value");
+    if (v && sp_streq(v, name)) return 0;
+  }
+  NT_FOREACH_KIND(nt, NK_StringNode, k) {
+    const char *v = nt_str(nt, k, "content");
+    if (v && sp_streq(v, name)) return 0;
+  }
+  return 1;
+}
+
 static void walk_scope_in(Compiler *c, int id, int scope_idx, int class_id, int proc, int dead) {
   if (id < 0 || id >= c->nt->count) return;
   c->nscope[id] = scope_idx;
@@ -1398,6 +1421,15 @@ static void walk_scope_in(Compiler *c, int id, int scope_idx, int class_id, int 
         dm_ok = 1; dm_defer = 1; dm_cmethod = 0; dm_cls = -1;
       }
     }
+    /* A define_method in a method's body defines its method when that method
+       runs. When nothing in the program calls the method (minitest's
+       `make_my_diffs_pretty!` replaces `mu_pp` this way), the method it
+       would define does not exist: registering it would answer every call
+       of that name from the start, in place of the method that does. */
+    if (dm_ok && dm_is_dm && scope_idx > 0 &&
+        c->scopes[scope_idx].def_node >= 0 && nt_kind(c->nt, c->scopes[scope_idx].def_node) == NK_DefNode &&
+        method_never_named(c, c->scopes[scope_idx].name))
+      dm_ok = 0;
     if (dm_ok) {
       int dm_args = nt_ref(c->nt, id, "arguments");
       int dm_na = 0;
