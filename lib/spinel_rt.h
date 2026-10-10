@@ -13022,6 +13022,12 @@ static sp_PolyArray *sp_poly_to_a_arr(sp_RbVal v);  /* defined below; hash -> pa
 static sp_RbVal sp_range_sum_seed(sp_Range r, sp_RbVal seed) {
   /* An empty Range still normalizes a Float zero seed, unlike an Array. */
   if (seed.tag == SP_TAG_FLT && seed.v.f == 0.0) seed.v.f = 0.0;
+  /* a beginless or endless Range raises as its materialization does, ahead
+     of the count: the count's subtraction overflows on the sentinel bound,
+     and clang answered no elements, so `(nil..3).sum` was 0 (#8331's promote
+     lane) */
+  if (r.last == INTPTR_MAX) sp_raise_cls("RangeError", "cannot convert endless range to an array");
+  if (r.first == INTPTR_MIN) sp_raise_cls("TypeError", "can't iterate from NilClass");
   if (sp_range_count(r) <= 0) return seed;
   SP_GC_ROOT_RBVAL(seed);
   sp_IntArray *ia = sp_range_to_ia(r);
