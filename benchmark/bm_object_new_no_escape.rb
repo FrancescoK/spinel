@@ -8,9 +8,9 @@ class Point
   end
 end
 
-def test
-  a = Point.new(1, 2)
-  b = Point.new(1, 2)
+def test(i)
+  a = Point.new(i, 2)
+  b = Point.new(i | 1, 2)
   if a.x == b.x && a.y == b.y
     1
   else
@@ -20,8 +20,9 @@ end
 
 total = 0
 i = 0
-while i < 1000000
-  total = total + test
+n = (ARGV[0] || 1000000).to_i
+while i < n
+  total = total + test(i)
   i = i + 1
 end
 puts total

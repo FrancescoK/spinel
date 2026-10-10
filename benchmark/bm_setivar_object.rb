@@ -9,19 +9,19 @@ class TheClass
     @tag = "obj"
   end
 
-  def set_value_loop(val)
+  def set_value_loop(val, n)
     i = 0
-    while i < 1000000
-      @levar = val
-      @levar = val
-      @levar = val
-      @levar = val
-      @levar = val
-      @levar = val
-      @levar = val
-      @levar = val
-      @levar = val
-      @levar = val
+    while i < n
+      @levar = (@levar ^ val) + i
+      @levar = (@levar ^ val) + i
+      @levar = (@levar ^ val) + i
+      @levar = (@levar ^ val) + i
+      @levar = (@levar ^ val) + i
+      @levar = (@levar ^ val) + i
+      @levar = (@levar ^ val) + i
+      @levar = (@levar ^ val) + i
+      @levar = (@levar ^ val) + i
+      @levar = (@levar ^ val) + i
       i = i + 1
     end
     @levar
@@ -29,5 +29,5 @@ class TheClass
 end
 
 tc = TheClass.new
-puts tc.set_value_loop(999)
+puts tc.set_value_loop(999, (ARGV[0] || 1000000).to_i)
 puts "done"
