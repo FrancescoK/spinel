@@ -13225,6 +13225,9 @@ static int emit_call_stmt(Compiler *c, int id, Buf *b, int indent, const NodeTab
                 emit_strbuf_ivar_store(c, c->classes[defc < 0 ? rc : defc].ivar_str_shared[iv], argv[0], b);
               else if (ivt != TY_POLY && ivt != TY_UNKNOWN && comp_ntype(c, argv[0]) == TY_UNKNOWN)
                 emit_unresolved_coerced(c, argv[0], ivt, b);
+              /* a typed array into a general Array field, as an ivar write
+                 rebuilds it (a promote join widens the field so) */
+              else if (emit_array_into_poly_slot(c, ivt, argv[0], b)) { }
               else if (ivt != TY_POLY && ivt != TY_UNKNOWN)
                 emit_coerce(c, argv[0], ivt, CO_HOLD, "an attribute writer", b);
               else emit_expr(c, argv[0], b);

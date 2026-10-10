@@ -39690,9 +39690,12 @@ static void an_phase_proc_returns(Compiler *c) {
         /* (6) an ivar / cvar written a poly array or a boxed element */
         for (int id = 0; id < nt->count; id++) {
           NodeKind k = nt_kind(nt, id);
+          /* an operator write (`@a |= [x]`) stores its operator's answer,
+             which an Integer array meets a poly array operand as */
           int iv_write = k == NK_InstanceVariableWriteNode || k == NK_InstanceVariableOrWriteNode ||
-                         k == NK_InstanceVariableAndWriteNode;
-          int cv_write = k == NK_ClassVariableWriteNode || k == NK_ClassVariableOrWriteNode;
+                         k == NK_InstanceVariableAndWriteNode || k == NK_InstanceVariableOperatorWriteNode;
+          int cv_write = k == NK_ClassVariableWriteNode || k == NK_ClassVariableOrWriteNode ||
+                         k == NK_ClassVariableOperatorWriteNode;
           if (!iv_write && !cv_write) continue;
           int vnode = nt_ref(nt, id, "value");
           if (vnode < 0) continue;
@@ -39719,6 +39722,22 @@ static void an_phase_proc_returns(Compiler *c) {
             }
           }
         }
+        /* (6a) an attribute's operator write (`box.items |= [x]`): the
+           attribute's ivar in the receiver's class takes the answer */
+        for (int id = 0; id < nt->count; id++) {
+          if (!nt_type(nt, id) || !sp_streq(nt_type(nt, id), "CallOperatorWriteNode")) continue;
+          int vnode = nt_ref(nt, id, "value"), recv = nt_ref(nt, id, "receiver");
+          const char *nm = nt_str(nt, id, "name");
+          if (vnode < 0 || recv < 0 || !nm || infer_type(c, vnode) != TY_POLY_ARRAY) continue;
+          TyKind rt = infer_type(c, recv);
+          if (!ty_is_object(rt)) continue;
+          int cid = ty_object_class(rt);
+          char ivn[300]; snprintf(ivn, sizeof ivn, "@%s", nm);
+          int iv = cid >= 0 && cid < c->nclasses ? comp_ivar_index(&c->classes[cid], ivn) : -1;
+          if (iv < 0) continue;
+          TyKind cur = c->classes[cid].ivar_types[iv], nw = PW_JOIN(cur, TY_POLY_ARRAY);
+          if (nw != cur) { c->classes[cid].ivar_types[iv] = nw; changed = 1; }
+        }
         /* (6b) ...and the same field in every class that shares it through
            inheritance. (6) widens the class whose method writes the ivar, but
            a subclass holds a copy of the slot (inherit_members) and an
@@ -39741,7 +39760,8 @@ static void an_phase_proc_returns(Compiler *c) {
         }
         /* (7) a global written a poly array or a boxed element */
         for (int id = 0; id < nt->count; id++) {
-          if (nt_kind(nt, id) != NK_GlobalVariableWriteNode && nt_kind(nt, id) != NK_GlobalVariableOrWriteNode) continue;
+          if (nt_kind(nt, id) != NK_GlobalVariableWriteNode && nt_kind(nt, id) != NK_GlobalVariableOrWriteNode &&
+              nt_kind(nt, id) != NK_GlobalVariableOperatorWriteNode) continue;
           int vnode = nt_ref(nt, id, "value");
           const char *nm = nt_str(nt, id, "name");
           if (vnode < 0 || !nm) continue;
@@ -39826,6 +39846,21 @@ static void an_phase_proc_returns(Compiler *c) {
               if (pw_scope_mutates_param(c, s, sc->pnames[j])) continue;
               pv->type = TY_POLY_ARRAY; changed = 1;
             }
+          }
+        }
+        /* (9c) a parameter whose default is such a value (`b: [a, r.size]`
+           over widened slots): the default is filled at the call site into
+           the parameter's slot */
+        for (int s = 1; s < c->nscopes; s++) {
+          Scope *sc = &c->scopes[s];
+          if (!sc->pdefault) continue;
+          for (int j = 0; j < sc->nparams; j++) {
+            int d = sc->pdefault[j];
+            if (d < 0 || !sc->pnames[j]) continue;
+            LocalVar *pv = scope_local(sc, sc->pnames[j]);
+            if (!pv || !PW_TYPED_ARR(pv->type) || infer_type(c, d) != TY_POLY_ARRAY) continue;
+            if (pw_scope_mutates_param(c, s, sc->pnames[j])) continue;
+            pv->type = TY_POLY_ARRAY; changed = 1;
           }
         }
         /* (9b) a block's parameter bound from such a value: the sites that

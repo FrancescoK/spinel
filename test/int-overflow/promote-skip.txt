@@ -3,7 +3,6 @@
 #
 # Gaps found when the lane began, at bcce09575: a wrong answer or C that
 # does not build. A gap leaves this list with its fix.
-test/array_op_assign_reads_slot_first.rb
 test/array_push_stmt_operand_order.rb
 test/at_receiver_without_at.rb
 test/boxed_flatten_depth.rb
@@ -11,8 +10,6 @@ test/boxed_io_to_i.rb
 test/boxed_to_i_nomethod.rb
 test/builtin_reopen_super_reaches_builtin.rb
 test/case_eq_int_float_exact.rb
-test/cvar_gc_root.rb
-test/cvar_gvar_array_op_assign_value.rb
 test/default_reading_param_block_locals.rb
 test/expr_retry_equal_curry_methodobj.rb
 test/file_foreach_arg_exprs.rb
@@ -25,12 +22,10 @@ test/int_min_plain_locals.rb
 test/int_pow_nil.rb
 test/io_each_line_splat_args.rb
 test/io_lines_chomp_paragraph.rb
-test/ivar_array_op_assign.rb
 test/masgn_boxed_ivar_slot_mismatch.rb
 test/multi_assign_string_element_appended.rb
 test/next_in_run_once_block.rb
 test/nullable_int_arg.rb
-test/poly_dispatch_default_reads_param.rb
 test/range_cover_clamp_exact.rb
 test/reader_override_through_self.rb
 test/safe_nav_builtin_scalar.rb
