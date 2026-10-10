@@ -1441,6 +1441,11 @@ static int emit_next_expr(Compiler *c, int id, Buf *b) {
    argument sits deeper than the call that takes the argument. */
 int g_expr_depth = 0;
 
+/* A variable's read as the slot itself, to assign to: no sp_srange_live
+   around a String Range's (#8321) */
+void emit_slot_expr(Compiler *c, int id, Buf *b) {
+  emit_expr_node(c, id, b);
+}
 /* Is node id a read of a variable or a constant (what holds a String Range
    by value)? */
 static int srange_var_read(const NodeTable *nt, int id) {

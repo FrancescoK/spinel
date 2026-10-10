@@ -222,6 +222,7 @@ int exc_msg_handle(Compiler *c, int arg, char *href, size_t cap);
 int strbuf_exc_message_of_var(Compiler *c, int v);
 int strbuf_route_exc_message(Compiler *c, int v);
 int strbuf_route_srange_end(Compiler *c, int v);
+void emit_slot_expr(Compiler *c, int id, Buf *b);
 /* A `next` value a block's boxed answer slot takes: a shared String as its
    handle's box under --share-strings (codegen_stmt.c) */
 void emit_boxed_next_value(Compiler *c, int v, Buf *b);

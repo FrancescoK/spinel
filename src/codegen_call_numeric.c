@@ -680,7 +680,7 @@ int emit_op_range_freeze(Compiler *c, const BopCtx *x, Buf *b) {
   buf_printf(b, "; _t%d.unfrozen = 0; ", t);
   if (rk == NK_LocalVariableReadNode || rk == NK_InstanceVariableReadNode ||
       rk == NK_ClassVariableReadNode || rk == NK_GlobalVariableReadNode) {
-    emit_expr(c, x->recv, b); buf_printf(b, " = _t%d; ", t);
+    emit_slot_expr(c, x->recv, b); buf_printf(b, " = _t%d; ", t);
   }
   buf_printf(b, "_t%d; })", t);
   return 1;
