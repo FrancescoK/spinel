@@ -39345,6 +39345,8 @@ static void an_phase_late_widen(Compiler *c) {
            while `x*2` sees the retyped int). Method params still widen. */
         if (sc->locals[i].is_block_param) continue;
         if (is_bam_recv && sc->locals[i].name && sp_streq(sc->locals[i].name, "__bam_r")) continue;
+        /* an unrolled define_method's loop var is its literal, emitted raw */
+        if (sc->dm_subst_name && sc->locals[i].name && sp_streq(sc->locals[i].name, sc->dm_subst_name)) continue;
         if (sc->locals[i].type == TY_INT) sc->locals[i].type = TY_POLY;
       }
     }
@@ -39621,7 +39623,10 @@ static void an_phase_proc_returns(Compiler *c) {
       for (int s = 0; s < c->nscopes; s++) {
         Scope *sc = &c->scopes[s];
         TyKind r = (TyKind)sc->ret;
-        if (r != TY_INT_ARRAY && r != TY_STR_ARRAY && r != TY_FLOAT_ARRAY) continue;
+        /* promote: so does an Integer-valued hash, whose literal builds its
+           poly-valued form once the values widened */
+        int ihash = g_promote_mode && ty_is_hash(r) && ty_hash_val(r) == TY_INT;
+        if (r != TY_INT_ARRAY && r != TY_STR_ARRAY && r != TY_FLOAT_ARRAY && !ihash) continue;
         TyKind br = TY_UNKNOWN;
         /* infer_type, not the cache: a local the steps below widened in this
            same pass reads as its new kind only through a fresh inference. A
@@ -39640,6 +39645,10 @@ static void an_phase_proc_returns(Compiler *c) {
             tail = sn > 0 ? sb[sn - 1] : -1;
           }
           if (tail >= 0) br = infer_type(c, tail);
+        }
+        if (ihash) {
+          if (ty_is_hash(br) && ty_hash_val(br) == TY_POLY) { sc->ret = br; changed = 1; }
+          continue;
         }
         /* the ReturnNodes, not every node: this ran per scope (roundhouse#72) */
         for (int id = comp_kind_first(c, NK_ReturnNode); id >= 0 && br != TY_POLY_ARRAY; id = comp_kind_next(c, id)) {

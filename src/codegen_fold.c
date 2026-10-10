@@ -2618,6 +2618,9 @@ static int emit_chunk_family_runs(Compiler *c, int ck) {
      int/str receiver keeps the pass-assigned param types -- the snapshot's
      boxed elements unbox into them below. */
   int pin_poly = prr.elem == TY_POLY || prr.kind == RK_BOXED;
+  /* promote boxes a Struct's int members but not the block params, which
+     keep their sp_int declaration: unbox into them as a typed receiver does */
+  if (g_promote_mode && pin_poly && pta == TY_INT && (!p1n || ptb == TY_INT)) pin_poly = 0;
   if (pin_poly && lva) lva->type = TY_POLY;
   if (pin_poly && lvb) lvb->type = TY_POLY;
   TyKind at0 = (!pin_poly && lva && lva->type != TY_UNKNOWN) ? lva->type : TY_POLY;

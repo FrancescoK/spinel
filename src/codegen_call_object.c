@@ -1454,6 +1454,8 @@ int emit_call_safe_nav_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
                      !ty_is_array(nat) && nat != TY_STRING);
         if (boxit && !user_defines_or_reads(c, name)) {
           int tsn = ++g_tmp;
+          size_t b0 = b->len;
+          int hoisted = 0;
           buf_printf(b, "({ sp_RbVal _sn_%d = ", tsn); emit_expr(c, recv, b);
           buf_printf(b, "; _sn_%d.tag == SP_TAG_NIL ? sp_box_nil() : ", tsn);
           if (g_n_argov < MAX_ARG_OVERRIDE) {
@@ -1465,16 +1467,26 @@ int emit_call_safe_nav_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
                below expects, instead of an sp_RbVal the arms assign bools to. */
             int vw = view_push(c, id, nat);
             Buf vb; memset(&vb, 0, sizeof vb);
+            /* A value arm that hoists statements names `_sn_` ahead of the
+               expression declaring it: the statement guard below serves it. */
+            Buf *sv_pre3 = g_pre; Buf pb; memset(&pb, 0, sizeof pb); g_pre = &pb;
             emit_expr(c, id, &vb);
+            g_pre = sv_pre3;
+            hoisted = pb.len > 0;
+            free(pb.p);
             view_pop(c, vw);
             g_sn_skip = sv_skip3;
             view_unbind(g_n_argov - 1);
-            emit_boxed_text(c, nat, vb.p ? vb.p : "", b);
+            if (!hoisted) emit_boxed_text(c, nat, vb.p ? vb.p : "", b);
             free(vb.p);
           }
           else emit_expr(c, id, b);
-          buf_puts(b, "; })");
-          return 1;
+          if (!hoisted) {
+            buf_puts(b, "; })");
+            return 1;
+          }
+          b->len = b0;
+          if (b->p) b->p[b0] = '\0';
         }
       }
       if (rrr.kind == RK_BOXED && is_len_alias(name) &&

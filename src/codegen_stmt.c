@@ -12244,7 +12244,8 @@ static int masgn_plain_element_target(Compiler *c, int t) {
   NodeKind k = nt_kind(nt, av[0]);
   if (k != NK_IntegerNode && k != NK_SymbolNode && k != NK_StringNode && k != NK_LocalVariableReadNode) return 0;
   TyKind kt = comp_ntype(c, av[0]);
-  if (repr_of(c, av[0]).may_nil) return 0;
+  /* promote has every Integer test for nil when boxed, a literal included */
+  if (repr_of(c, av[0]).may_nil && !(g_promote_mode && k == NK_IntegerNode)) return 0;
   if (k == NK_LocalVariableReadNode) {
     Scope *ks = comp_scope_of(c, av[0]);
     const char *kn = nt_str(nt, av[0], "name");

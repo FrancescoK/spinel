@@ -15346,6 +15346,20 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
       nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "RangeNode")) {
     /* raises on an exclusive range with a real end; routes a user-object
        receiver through the `<=>` hook (sp_obj_clamp_range) */
+    /* a Float Range (promote boxes an Integer receiver) clamps on its boxed
+       bounds, an omitted side open, as the Range form does */
+    if (comp_ntype(c, argv[0]) == TY_FLOAT_RANGE) {
+      int tv = ++g_tmp, tf = ++g_tmp;
+      buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_boxed(c, recv, b);
+      buf_printf(b, "; sp_FloatRange _t%d = ", tf); emit_expr(c, argv[0], b);
+      buf_printf(b, "; sp_poly_recv_ck(_t%d, \"clamp\");"
+                    " if (_t%d.excl && !(_t%d.omitted & SP_FRANGE_NO_END))"
+                    " sp_raise_cls(\"ArgumentError\", \"cannot clamp with an exclusive range\");"
+                    " sp_num_clamp_open(_t%d, (_t%d.omitted & SP_FRANGE_NO_BEGIN) ? sp_box_nil() : sp_box_float(_t%d.first),"
+                    " (_t%d.omitted & SP_FRANGE_NO_END) ? sp_box_nil() : sp_box_float(_t%d.last)); })",
+                 tv, tf, tf, tv, tf, tf, tf, tf);
+      return 1;
+    }
     buf_puts(b, "sp_poly_clamp_range("); emit_boxed(c, recv, b);
     buf_puts(b, ", "); emit_expr(c, argv[0], b); buf_puts(b, ")");
     return 1;

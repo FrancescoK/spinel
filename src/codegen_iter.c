@@ -6987,6 +6987,13 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
     int args = nt_ref(nt, id, "arguments"); int sargc = 0;
     const int *sargv = args >= 0 ? nt_arr(nt, args, "arguments", &sargc) : NULL;
     if (sargc > 1 || (sargc == 1 && comp_ntype(c, sargv[0]) != TY_INT)) return 0;
+    /* promote's boxed Integer receiver reaches here as the face's String
+       Range arm, its block param still the sp_int the widen skipped */
+    if (g_promote_mode && p0) {
+      Scope *bs = comp_scope_of(c, block);
+      LocalVar *bl = bs ? scope_local(bs, p0_orig) : NULL;
+      if (bl && bl->type == TY_INT) return 0;
+    }
     int tr = ++g_tmp, tk = ++g_tmp, ta = ++g_tmp, tx = ++g_tmp, ti = ++g_tmp;
     emit_indent(b, indent);
     buf_printf(b, "sp_StrRange _t%d = ", tr); emit_expr(c, recv, b); buf_puts(b, ";\n");
