@@ -622,6 +622,19 @@ cext-gc-test: lib/libspinel_cext_rt.a
 	SPINEL_GC_MINOR=1 SPINEL_GC_VERIFY_GEN=1 ./build/cext/handles-test
 	SPINEL_GC_SLAB=0 ./build/cext/handles-test
 	SPINEL_GC_STRESS=1 ./build/cext/handles-test
+# Step 4: standalone build-time recorder; no regular-runtime source changes.
+.PHONY: cext-recorder cext-recorder-test cext-recorder-oracle
+cext-recorder: lib/libspinel_cext_rec.a
+build/cext/recorder.o: tools/cext/recorder.c tools/cext/recorder.h include/ruby.h include/ruby/spinel_record.h
+	@mkdir -p build/cext
+	$(CC) -std=c11 -O0 -DSP_CEXT_RECORDER -Iinclude -Itools/cext -c $< -o $@
+lib/libspinel_cext_rec.a: build/cext/recorder.o
+	$(AR) rcs $@ $<
+cext-recorder-test:
+	@CC="$(CC)" ruby test/cext/recorder-test.rb
+cext-recorder-oracle:
+	@CC="$(CC)" sh test/cext/recorder-oracle.sh
+
 .PHONY: cext-exceptions-test cext-exceptions-oracle
 cext-exceptions-oracle:
 	@sh test/cext/exception-oracle.sh
@@ -1165,7 +1178,7 @@ share-strings-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS
 # `make test` always runs fresh: it wipes the prior `.ok` stamps first,
 # then runs the suite. (The old incremental `test` + `retest` split is
 # gone -- a stale `.ok` reading PASS was a recurring foot-gun.)
-test: $(SPINEL_TIMEOUT) cext-header-test cext-gc-test cext-exceptions-test
+test: $(SPINEL_TIMEOUT) cext-header-test cext-gc-test cext-exceptions-test cext-recorder-test
 	@if [ -z "$(TIMEOUT_BIN)" ]; then \
 	  echo "WARNING: no 'timeout'/'gtimeout' on PATH -- tests run with NO time limit."; \
 	  echo "         A hanging test will hang this run until the CI job's own limit."; \

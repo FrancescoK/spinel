@@ -125,7 +125,11 @@ void *sp_cext_no_layout(VALUE) SP_CEXT_REFUSED("CRuby object layout is not provi
 #define RBASIC(v) sp_cext_no_layout(v)
 #define ROBJECT(v) sp_cext_no_layout(v)
 #define RSTRUCT(v) sp_cext_no_layout(v)
+#ifdef SP_CEXT_RECORDER
+#include "ruby/spinel_record.h"
+#else
 VALUE rb_eval_string(const char *) SP_CEXT_REFUSED("Ruby eval requires the C extension literal scanner");
+#endif
 
 #ifdef __cplusplus
 }
