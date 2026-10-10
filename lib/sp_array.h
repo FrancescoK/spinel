@@ -161,7 +161,7 @@ static inline sp_float sp_FloatArray_shift(sp_FloatArray*a){if(!a||a->len==0)ret
 static inline sp_float sp_FloatArray_delete_at(sp_FloatArray*a,sp_int i){if(!a)return sp_float_nil();if(a->frozen){sp_raise_frozen_array_at(a, SP_BUILTIN_FLT_ARRAY);return sp_float_nil();}if(i<0)i+=a->len;if(i<0||i>=a->len)return sp_float_nil();sp_float v=a->data[i];for(sp_int j=i;j+1<a->len;j++)a->data[j]=a->data[j+1];a->len--;return v;}
 static inline sp_int sp_FloatArray_length(sp_FloatArray*a){return a->len;}
 static inline sp_bool sp_FloatArray_empty(sp_FloatArray*a){return a->len==0;}
-static inline sp_float sp_FloatArray_get(sp_FloatArray*a,sp_int i){if(!a)return sp_float_nil();if((unsigned long long)i<(unsigned long long)a->len)return a->data[i];if(i<0)i+=a->len;if(i<0||i>=a->len)return sp_float_nil();return a->data[i];}
+static inline sp_float sp_FloatArray_get(sp_FloatArray*a,sp_int i){if(!a)return sp_float_nil();if((unsigned long long)i<(unsigned long long)a->len)return a->data[i];if(i<0&&i+a->len>=0)return a->data[i+a->len];return sp_float_nil();}
 /* first/last as float? : nil (sentinel) when empty, else the element.
    `[i]` stays non-nullable (0.0 for OOB) -- only first/last produce nil. */
 static inline sp_float sp_FloatArray_first_opt(sp_FloatArray*a){return (!a||a->len<=0)?sp_float_nil():sp_FloatArray_get(a,0);}
