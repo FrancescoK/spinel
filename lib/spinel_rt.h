@@ -2718,6 +2718,18 @@ static const char *sp_poly_join(sp_RbVal a, const char *sep);             /* def
 static inline sp_int sp_int_c_add(sp_int x, sp_int y) { return (sp_int)((uintptr_t)x + (uintptr_t)y); }
 static inline sp_int sp_int_c_sub(sp_int x, sp_int y) { return (sp_int)((uintptr_t)x - (uintptr_t)y); }
 static inline sp_int sp_int_c_mul(sp_int x, sp_int y) { return (sp_int)((uintptr_t)x * (uintptr_t)y); }
+/* The step of a counted Integer loop (upto, downto, step) that runs while
+   *i has not passed `last`: whether *i + step is still within it, and if so
+   *i moves there. The room left is measured in unsigned, where it is exact
+   while *i has not passed `last`, so a loop that ends at INTPTR_MAX stops
+   there instead of overflowing past it and going round again. */
+static inline int sp_int_loop_next(sp_int *i, sp_int last, sp_int step) {
+  uintptr_t room = step > 0 ? (uintptr_t)last - (uintptr_t)*i : (uintptr_t)*i - (uintptr_t)last;
+  uintptr_t by = step > 0 ? (uintptr_t)step : (uintptr_t)0 - (uintptr_t)step;
+  if (room < by) return 0;
+  *i = sp_int_c_add(*i, step);
+  return 1;
+}
 /* big Rational arithmetic (#2469): coerce every numeric operand to a num/den
    sp_Bigint* pair, run the cross-multiplied formula, and reduce via sp_box_brat.
    Used when one operand is already a big Rational. */
