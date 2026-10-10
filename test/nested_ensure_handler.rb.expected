@@ -1,0 +1,15 @@
+inner
+outer
+value
+:done
+["locked", false]
+lock ensure
+"filter 1"
+filter ensure
+direct inner
+"direct 1"
+direct outer
+pass inner
+pass outer
+pass rescued
+nil
