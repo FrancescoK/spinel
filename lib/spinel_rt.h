@@ -6928,6 +6928,17 @@ static sp_PolyArray *sp_poly_to_poly_array(sp_RbVal v) {
   return r;
 }
 
+/* A boxed value an --rbs `Array[untyped]` seed reads as the poly array: an
+   Array of another kind (an Integer array passed on through an `untyped`
+   parameter) is copied into one, where reading its header as a poly array's
+   saw an empty Array (#8452). nil stays NULL. */
+static SP_UNUSED sp_PolyArray *sp_poly_as_poly_array(sp_RbVal v) {
+  if (v.tag == SP_TAG_NIL) return NULL;
+  if (v.tag == SP_TAG_OBJ && v.cls_id != SP_BUILTIN_POLY_ARRAY && sp_poly_is_array_kind(v.cls_id))
+    return sp_poly_to_poly_array(v);
+  return (sp_PolyArray *)v.v.p;
+}
+
 /* The ARGUMENT of an Array set operation (`&` `|` `-`), arriving through a poly
    slot: an Array at run time becomes the poly array the set-op primitives take,
    anything else raises CRuby's TypeError. A statically poly argument had no

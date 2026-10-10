@@ -7156,7 +7156,9 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
           if (p && p->rbs_seeded)
             emit_rbs_checked_text(c, pt, m->pnames[idx], ub.p ? ub.p : "sp_box_nil()", &uck);
           else buf_puts(&uck, ub.p ? ub.p : "sp_box_nil()");
-          emit_unbox_text(c, pt, uck.p ? uck.p : "", out);
+          /* a seeded Array[untyped] takes an Array of any kind (#8452) */
+          if (p && p->rbs_seeded && pt == TY_POLY_ARRAY) buf_printf(out, "sp_poly_as_poly_array(%s)", uck.p ? uck.p : "");
+          else emit_unbox_text(c, pt, uck.p ? uck.p : "", out);
           free(uck.p);
           free(ub.p);
         }

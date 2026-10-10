@@ -1,0 +1,4 @@
+class PassFinder
+  def find: (untyped ids) -> untyped
+  def find_ids: (Array[untyped] ids) -> untyped
+end
