@@ -8851,9 +8851,11 @@ TyKind infer_uncached(Compiler *c, int id) {
        slot, and inference must match to keep `@x = @a = expr` boxing consistent. */
     const char *nm = nt_str(nt, id, "name");
     Scope *s = comp_scope_of(c, id);
-    /* inside an instance_eval/exec splice the block scope has no class_id; the
-       ivar belongs to the rebound receiver class (an_ie_class_id). */
-    int wcls = s->class_id >= 0 ? s->class_id : an_ie_class_id;
+    /* inside an instance_eval/exec splice the ivar belongs to the rebound
+       receiver class: the block's own (ie_class_of), whose slot the store
+       writes (emit_expr's write takes it first), else an_ie_class_id where
+       the block scope has no class_id */
+    int wcls = ie_class_of(c, id) >= 0 ? ie_class_of(c, id) : s->class_id >= 0 ? s->class_id : an_ie_class_id;
     /* a toplevel method's `@x ||= v` / `@x &&= v` / `@x += v` answers the
        Toplevel slot, which the value alone does not type (`(@a ||= []) << 1`,
        a boxed `@i += 1` read back as the slot); so does a plain write of an

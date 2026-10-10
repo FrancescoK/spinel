@@ -39848,6 +39848,34 @@ static void an_phase_proc_returns(Compiler *c) {
             }
           }
         }
+        /* (9a) a parameter the callee answers as it is (`def ia(a) = a`)
+           hands the caller its argument back, which the caller may change
+           in place: a typed-array local passed to it widens with it, so the
+           call passes the array itself rather than a poly copy of it */
+        for (int s = 1; s < c->nscopes; s++) {
+          Scope *sc = &c->scopes[s];
+          if (!sc->name || sc->nparams <= 0) continue;
+          int last = scope_body_last(c, s);
+          const char *rn = last >= 0 && nt_kind(nt, last) == NK_LocalVariableReadNode ? nt_str(nt, last, "name") : NULL;
+          int rj = -1;
+          for (int j = 0; rn && j < sc->nparams; j++)
+            if (sc->pnames[j] && sp_streq(sc->pnames[j], rn)) rj = j;
+          if (rj < 0) continue;
+          LocalVar *pv = scope_local(sc, sc->pnames[rj]);
+          if (!pv || pv->type != TY_POLY_ARRAY) continue;
+          int nk = prci_calls_for(&ix, sc->name);
+          for (int q = 0; q < nk; q++) {
+            int u = ix.calls[ix.buf[q]];
+            if (!an_call_targets_scope(c, u, s, sc)) continue;
+            int a = nt_ref(nt, u, "arguments"); int an = 0;
+            const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+            int aj = call_param_arg(c, sc, av, an, rj);
+            if (aj < 0 || nt_kind(nt, aj) != NK_LocalVariableReadNode) continue;
+            Scope *cs = comp_scope_of(c, aj);
+            LocalVar *alv = cs ? scope_local(cs, nt_str(nt, aj, "name")) : NULL;
+            if (alv && PW_TYPED_ARR(alv->type)) { alv->type = TY_POLY_ARRAY; changed = 1; }
+          }
+        }
         /* (9c) a parameter whose default is such a value (`b: [a, r.size]`
            over widened slots): the default is filled at the call site into
            the parameter's slot */
