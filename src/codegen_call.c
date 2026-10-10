@@ -11648,7 +11648,7 @@ static int emit_array_new_from_value(Compiler *c, int arg, Buf *b) {
   buf_printf(g_pre, "if (_t%d.tag == SP_TAG_OBJ && sp_poly_is_array_kind(_t%d.cls_id)) _t%d = sp_PolyArray_dup(sp_poly_to_poly_array(_t%d));\n",
              tv, tv, tr, tv);
   emit_indent(g_pre, g_indent);
-  buf_printf(g_pre, "else { sp_int _t%d = sp_poly_to_i(_t%d); if (_t%d < 0) sp_raise_cls(\"ArgumentError\", \"negative array size\");"
+  buf_printf(g_pre, "else { sp_int _t%d = sp_poly_arg_int_chk(_t%d); if (_t%d < 0) sp_raise_cls(\"ArgumentError\", \"negative array size\");"
                     " _t%d = sp_PolyArray_new(); for (sp_int _i = 0; _i < _t%d; _i++) sp_PolyArray_push(_t%d, sp_box_nil()); }\n",
              ti, tv, ti, tr, ti, tr);
   buf_printf(b, "_t%d", tr);
@@ -14358,9 +14358,10 @@ static int emit_array_arith_call(Compiler *c, int id, Buf *b) {
        exact is typed TY_POLY (the `<<` rule): sp_poly_pow promotes past the
        word and boxes the rest. Keyed on the cached node type, as `<<` is, so
        the two halves of the compiler cannot drift; the re-derivation below
-       would otherwise hand the pair back to the raising int helper. */
+       would otherwise hand the pair back to the raising int helper. The
+       receiver boxes its nil sentinel as nil, which has no `**`. */
     if (g_promote_mode && sp_streq(name, "**") && rt == TY_INT && res == TY_POLY) {
-      buf_puts(b, "sp_poly_pow("); emit_boxed(c, recv, b);
+      buf_puts(b, "sp_poly_pow_recv("); emit_boxed(c, recv, b);
       buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, ")");
       return 1;
     }
@@ -25021,7 +25022,7 @@ int emit_spread_args_into(Compiler *c, const int *argv, int argc, const char *kw
    separator and leaves any other alone, as that form always did. */
 void gets_sep_arg_texts(Compiler *c, const int *argv, int argc, int strict, Buf *sep, Buf *lim, Buf *chomp) {
   const NodeTable *nt = c->nt;
-  int gsep = -1, glim = -1;
+  int gsep = -1, glim = -1, gpoly = -1;
   Buf gchomp; memset(&gchomp, 0, sizeof gchomp);   /* the C truth of `chomp:` */
   int pos = 0;   /* position among the positional arguments */
   for (int k = 0; k < argc; k++) {
@@ -25033,6 +25034,9 @@ void gets_sep_arg_texts(Compiler *c, const int *argv, int argc, int strict, Buf 
     }
     TyKind at = comp_ntype(c, argv[k]);
     if (at == TY_INT) glim = argv[k];
+    /* a lone boxed variable is the limit or the separator as its value is
+       an Integer or not (an Integer parameter under --int-overflow=promote) */
+    else if (at == TY_POLY && pos == 0 && argc == 1 && nt_kind(nt, argv[k]) == NK_LocalVariableReadNode) gpoly = argv[k];
     /* a second positional argument is the limit, whatever its static type:
        `gets(sep, limit)` forwarded through a splat reads both boxed, and
        taking the second for the separator read to the end */
@@ -25041,12 +25045,19 @@ void gets_sep_arg_texts(Compiler *c, const int *argv, int argc, int strict, Buf 
     else if (pos == 0 && (at == TY_STRING || at == TY_NIL)) gsep = argv[k];   /* a nil after it is no limit */
     pos++;
   }
-  if (gsep >= 0) emit_str_expr_sep(c, gsep, sep); else buf_puts(sep, "\"\\n\"");
+  if (gpoly >= 0) {
+    int tmp; Buf *hb = conv_hold_begin(sep, &tmp);
+    Buf *ob = hb ? hb : sep;
+    buf_puts(ob, "sp_poly_gets_sep("); emit_expr(c, gpoly, ob); buf_puts(ob, ")");
+    if (hb) conv_hold_end(tmp);
+    buf_puts(lim, "sp_poly_gets_lim("); emit_expr(c, gpoly, lim); buf_puts(lim, ")");
+  }
+  else if (gsep >= 0) emit_str_expr_sep(c, gsep, sep); else buf_puts(sep, "\"\\n\"");
   if (glim >= 0) {
     /* the block form never raised for a nil limit, and keeps not raising */
     if (strict) emit_int_expr_nilable(c, glim, lim); else emit_int_expr(c, glim, lim);
   }
-  else buf_puts(lim, "0");
+  else if (gpoly < 0) buf_puts(lim, "0");
   buf_puts(chomp, gchomp.p ? gchomp.p : "0");
   free(gchomp.p);
 }

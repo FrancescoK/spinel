@@ -1408,7 +1408,19 @@ int infer_object_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       }
     }
     /* attr reader (resolve alias so `alias v access_token` returns @access_token type) */
-    if (attr_reader_ty(c, cid, name, out)) return 1;
+    if (attr_reader_ty(c, cid, name, out)) {
+      /* a def in a subclass overrides the reader for that subclass, as on
+         self (infer_call): the call answers what either may */
+      int base_mi = comp_method_in_chain(c, cid, name, NULL);
+      for (int k = 0; k < c->nclasses; k++) {
+        if (k == cid || !is_descendant(c, k, cid)) continue;
+        int kmi = comp_method_in_chain(c, k, name, NULL);
+        if (kmi < 0 || kmi == base_mi) continue;
+        TyKind kr = (TyKind)c->scopes[kmi].ret;
+        if (kr != TY_UNKNOWN && kr != *out) *out = ty_unify(*out, kr);
+      }
+      return 1;
+    }
     /* attr writer: obj.x= returns the assigned value */
     size_t ln = strlen(name);
     if (ln >= 2 && name[ln - 1] == '=') {

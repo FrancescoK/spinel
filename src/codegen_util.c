@@ -4069,7 +4069,10 @@ static int plain_expr(Compiler *c, int n, int depth) {
       int ci = comp_class_index(c, cn);
       return ci < 0 || comp_method_in_chain(c, ci, nm, NULL) < 0;
     }
-    if (comp_ntype(c, recv) != TY_INT) return 0;
+    /* under promote the receiver of an Integer ~ is boxed, and ~ still
+       answers a number */
+    if (comp_ntype(c, recv) != TY_INT &&
+        !(g_promote_mode && argc == 0 && !strcmp(nm, "~") && comp_ntype(c, n) == TY_INT)) return 0;
     if (argc == 0 && (!strcmp(nm, "~") || !strcmp(nm, "-@") || !strcmp(nm, "+@"))) {
       int ci = comp_class_index(c, "Integer");
       if (ci >= 0 && comp_method_in_chain(c, ci, nm, NULL) >= 0) return 0;
@@ -4100,6 +4103,11 @@ int int_local_plain(Compiler *c, LocalVar *lv, const char *name) {
 int int_value_plain(Compiler *c, int node) {
   if (g_promote_mode) return 0;
   return plain_expr(c, node, 0);
+}
+/* the shape alone under --int-overflow=promote, where every Integer slot is
+   boxed: a plain value boxed into one is the number even at INTPTR_MIN */
+int int_value_plain_promote(Compiler *c, int node) {
+  return g_promote_mode && plain_expr(c, node, 0);
 }
 /* Ruby truthiness of a slot `ref` of type `t`, as a C condition: the scalar
    kinds hold nil as a sentinel (default_value), which C reads as true. */

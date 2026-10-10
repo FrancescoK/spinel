@@ -863,6 +863,15 @@ void emit_int_expr_bound(Compiler *c, int node, const char *none, Buf *b) {
     buf_printf(b, "; _t%d == SP_INT_NIL ? (sp_int)(%s) : _t%d; })", tn, none, tn);
     return;
   }
+  /* a boxed endpoint (an Integer local under --int-overflow=promote): its
+     nil is the absent bound, anything else converts strictly */
+  if (comp_ntype(c, node) == TY_POLY) {
+    int tn = ++g_tmp;
+    buf_printf(b, "({ sp_RbVal _t%d = ", tn);
+    emit_expr(c, node, b);
+    buf_printf(b, "; _t%d.tag == SP_TAG_NIL ? (sp_int)(%s) : sp_poly_arg_int_chk(_t%d); })", tn, none, tn);
+    return;
+  }
   emit_int_expr_ex(c, node, 1, b);
 }
 
@@ -1989,8 +1998,10 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
        a local assigned one, a Ruby-defined builtin, every Integer under
        --int-overflow=promote), so boxing it has to yield nil (#3493,
        #5085). Elsewhere a real number is never the sentinel and the plain
-       box is the hot path (every Integer into a poly slot). */
-    buf_printf(b, "%s(", ty_box_nil_fn(t == TY_FLOAT ? TY_FLOAT : TY_INT));
+       box is the hot path (every Integer into a poly slot). A plain Integer
+       under promote is the number even at INTPTR_MIN (sp_box_int_nn). */
+    if (t == TY_INT && int_value_plain_promote(c, node)) buf_puts(b, "sp_box_int_nn(");
+    else buf_printf(b, "%s(", ty_box_nil_fn(t == TY_FLOAT ? TY_FLOAT : TY_INT));
     emit_expr(c, node, b);
     buf_puts(b, ")");
     RC(t == TY_FLOAT ? RF_FLT_NIL : RF_INT_NIL, RW_NONE);

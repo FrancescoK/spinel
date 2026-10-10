@@ -2699,7 +2699,7 @@ static const char *sp_poly_join(sp_RbVal a, const char *sep);             /* def
 #define SP_POLY_OP_SYM_mul "*"
 #ifdef SP_INT_OVERFLOW_MODE_PROMOTE
 #  define SP_POLY_INT_OP(op, x, y) ({ sp_int _r; sp_int_##op##_overflow_p((x), (y), &_r) \
-     ? sp_box_bigint(sp_bigint_##op(sp_bigint_new_int(x), sp_bigint_new_int(y))) : sp_box_int(_r); })
+     ? sp_box_bigint(sp_bigint_##op(sp_bigint_new_int(x), sp_bigint_new_int(y))) : sp_box_int_nn(_r); })
 #elif defined(SP_INT_OVERFLOW_MODE_WRAP)
 #  define SP_POLY_INT_OP(op, x, y) sp_box_int(sp_int_c_##op((x), (y)))
 #else
@@ -3186,6 +3186,10 @@ static SP_INLINE const char *sp_poly_sep_str(sp_RbVal v) {
   if (v.tag == SP_TAG_NIL) return NULL;
   return sp_poly_arg_str(v);
 }
+/* a line reader's lone boxed argument: an Integer is the limit with the
+   default separator, anything else the separator with no limit */
+static SP_INLINE const char *sp_poly_gets_sep(sp_RbVal v) { return v.tag == SP_TAG_INT ? "\n" : sp_poly_sep_str(v); }
+static SP_INLINE sp_int sp_poly_gets_lim(sp_RbVal v) { return v.tag == SP_TAG_INT ? v.v.i : 0; }
 /* The object half of the check below, split out and kept off the inlined path
    for the reason sp_poly_arg_str_obj is: the object case is the rare one.
 

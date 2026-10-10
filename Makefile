@@ -829,8 +829,11 @@ endif
 # by promote_poly_slot_method_call instead. poly_method_return_kinds
 # additionally trips a typed `.to_proc`-with-defaults promote gap (an IntArray
 # default in a poly-widened callee), unrelated to the dispatch these pin.
+# int_min_nullable_slot_raises and masgn_boxed_ivar_slot_mismatch pin the
+# RangeError and TypeError a typed Integer slot raises where CRuby stores
+# the value; promote boxes those slots and answers CRuby's line.
 ifeq ($(SPINEL_INT_OVERFLOW),promote)
-TESTS := $(filter-out test/int_overflow_raises.rb test/int_overflow_op_assign.rb test/poly_int_overflow_raises.rb test/str_to_i_overflow.rb test/string_to_i_overflow_raises.rb test/integer_argument_error.rb test/bounded_counter_unchecked_add.rb test/float_to_int_out_of_range.rb test/bigrational_to_i_out_of_range.rb test/float_to_int_boundary.rb test/poly_call_legacy_abi_gate.rb test/poly_call_fast_abi_gate.rb test/poly_method_return_kinds.rb,$(TESTS))
+TESTS := $(filter-out test/int_min_nullable_slot_raises.rb test/masgn_boxed_ivar_slot_mismatch.rb test/int_overflow_raises.rb test/int_overflow_op_assign.rb test/poly_int_overflow_raises.rb test/str_to_i_overflow.rb test/string_to_i_overflow_raises.rb test/integer_argument_error.rb test/bounded_counter_unchecked_add.rb test/float_to_int_out_of_range.rb test/bigrational_to_i_out_of_range.rb test/float_to_int_boundary.rb test/poly_call_legacy_abi_gate.rb test/poly_call_fast_abi_gate.rb test/poly_method_return_kinds.rb,$(TESTS))
 # Drive the spinel front-end and the C compile in promote mode so the test
 # rule actually exercises the auto-promotion path end to end.
 SP_OV_FLAG := --int-overflow=promote

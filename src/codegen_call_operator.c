@@ -559,7 +559,7 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
        promote mode): tag-dispatch via sp_poly_cmp rather than falling through
        to the object-receiver path, which would misread a boxed int's payload
        as a user-class pointer and recurse into this same `<=>`. */
-    if (lrt == TY_POLY || lat == TY_POLY) {
+    if ((lrt == TY_POLY && (g_poly_builtin_arm || !comp_builtin_name_reopened(c, "<=>"))) || (lrt != TY_POLY && lat == TY_POLY)) {
       /* sp_poly_spaceship answers nil for incomparable runtime operands (the
          int-nil sentinel) but 0 for identical singletons -- `nil <=> nil` is 0
          even though the two are not "comparable" in the Comparable sense. */
