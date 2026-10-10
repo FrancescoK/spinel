@@ -1,0 +1,8 @@
+[ArgumentError, "unsupported argument type: Color"]
+[ArgumentError, "unsupported argument type: Hash"]
+[ArgumentError, "unsupported argument type: Comparable"]
+[ArgumentError, "unsupported argument type: Color"]
+[:o, "1"]
+[:n, "two"]
+["rest"]
+[OptionParser::InvalidOption, "invalid option: --x"]

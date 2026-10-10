@@ -219,6 +219,10 @@ class OptionParser
       elsif a == String || a == Array || a == Integer || a == Float || a == TrueClass || a == FalseClass ||
             a == DecimalInteger || a == OctalInteger || a == DecimalNumeric
         type = a
+      elsif a.is_a?(Module) && a != Object && a != NilClass && a != Numeric && a != Regexp
+        # CRuby has no converter for it either. Numeric and Regexp are
+        # CRuby value types that still pass the word as it is.
+        raise ArgumentError, "unsupported argument type: #{a}"
       end
     end
     Switch.new(shorts, longs, arg_text, descriptions, block, type)
