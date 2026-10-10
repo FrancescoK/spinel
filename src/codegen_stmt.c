@@ -1310,6 +1310,8 @@ static int emit_strbuf_route_chain(Compiler *c, int v, int base, Buf *b);
 static int strbuf_chain_plain(Compiler *c, int v, int cb);
 static int strbuf_chain_all_safe(Compiler *c, int v, int cb);
 static int strbuf_chain_links(Compiler *c, int v, int base, int *args);
+static int strbuf_tail_self_mutator(Compiler *c, int v);
+static int strbuf_chain_user_target(Compiler *c, int v, int base, int splat);
 void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b);
 /* The operand of a `+s` value (`+@` with no argument), -1 for any other. */
 static int strbuf_uplus_operand(Compiler *c, int v) {
@@ -1582,6 +1584,9 @@ static int strbuf_stmts_tail_plain(Compiler *c, int st) {
   if (nm && is_raise_alias(nm) && nt_ref(c->nt, b[n - 1], "receiver") < 0 &&
       !bare_call_class_owned(c, b[n - 1]) && comp_method_index(c, nm) < 0)
     return 1;
+  /* a String mutator that answers its receiver hands on that receiver's
+     handle (strbuf_tail_self_mutator) */
+  if (strbuf_tail_self_mutator(c, b[n - 1])) return 1;
   /* an exception's #message hands on the handle it holds too
      (strbuf_route_exc_message): `begin; raise s; rescue => e; e.message; end` */
   return k == NK_NilNode || k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode ||
@@ -3012,6 +3017,35 @@ int strbuf_plain_self_call(Compiler *c, int v) {
   return v >= 0 && nt_kind(nt, v) == NK_CallNode && strbuf_bang_self_local(c, v) &&
          !call_takes_splat(nt, v) && !bop_share_self_answer(nt_str(nt, v, "name"), nt_ref(nt, v, "block") >= 0) &&
          !strbuf_chain_over_handle(c, v);
+}
+/* Does a link of the chain from call v down to (not including) its base
+   reach a method of the program's own (`class String; def concat`), which
+   answers what it answers, not its receiver, or (with splat) take a splat
+   argument? */
+static int strbuf_chain_user_target(Compiler *c, int v, int base, int splat) {
+  const NodeTable *nt = c->nt;
+  int tg[CPT_MAX];
+  base = unwrap_parens(c, base);
+  for (int cur = unwrap_parens(c, v); cur >= 0 && cur != base; cur = unwrap_parens(c, nt_ref(nt, cur, "receiver")))
+    if (nt_kind(nt, cur) != NK_CallNode || (splat && call_takes_splat(nt, cur)) || cplan_targets(c, cur, tg, CPT_MAX) != 0)
+      return 1;
+  return 0;
+}
+/* --share-strings: is tail v a String method that always answers its
+   receiver, over a variable holding the handle: an append chain (`buf <<
+   x`, strbuf_chain_over_handle) or a call without a bang (`buf.concat(x)`,
+   `buf.replace(x)`, strbuf_plain_self_call), with no splat argument and no
+   method of the program's own on any link (`class String; def concat`,
+   which answers what it answers)? A demanded tail (emit_strbuf_handle_of)
+   answers that variable's handle, as a tail kept in a result variable
+   takes the receiver after the statement (#8400). A bang method, which can
+   answer nil, is not one. */
+static int strbuf_tail_self_mutator(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  if (v < 0 || nt_kind(nt, v) != NK_CallNode || call_takes_splat(nt, v) ||
+      (!strbuf_chain_over_handle(c, v) && !strbuf_plain_self_call(c, v)))
+    return 0;
+  return !strbuf_chain_user_target(c, v, str_alias_chain_base(c, v), 1);
 }
 /* --share-strings: does an instance variable's write take value v as a
    handle emit_strbuf_value hands over: a conditional with a handle arm, an
@@ -16361,7 +16395,7 @@ static int str_append_chain_base(Compiler *c, int id) {
    steps through a String call whose value is its receiver (str_self_call), as
    the analysis's an_strbuf_alias_source does, so the local the write shares
    with is the one the chain ran on. */
-static int str_alias_chain_base(Compiler *c, int id) {
+static int str_alias_chain_walk(Compiler *c, int id) {
   int cur = id;
   for (;;) {
     cur = str_append_chain_base(c, cur);
@@ -16386,6 +16420,13 @@ static int str_alias_chain_base(Compiler *c, int id) {
     if (!str_self_call(c->nt, cur)) return cur;
     cur = nt_ref(c->nt, cur, "receiver");
   }
+}
+static int str_alias_chain_base(Compiler *c, int id) {
+  int base = str_alias_chain_walk(c, id);
+  /* (--share-strings: a link that reaches a method of the program's own,
+     `class String; def concat`, answers what that method answers, so the
+     chain names no variable's String) */
+  return repr_share_rule(c) && base != id && strbuf_chain_user_target(c, id, base, 0) ? id : base;
 }
 
 /* Tail position: the value of this statement is the method's return value. */
@@ -16965,8 +17006,12 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
     int _sself = _snm && (sp_streq(_snm, "concat") || sp_streq(_snm, "replace") ||
                           sp_streq(_snm, "insert") || sp_streq(_snm, "prepend")) &&
                  _srecv >= 0 && nt_kind(nt, _srecv) == NK_LocalVariableReadNode;
+    /* (--share-strings: a link that reaches a method of the program's own
+       answers what that method answers, through the value path below) */
     if (_srecv >= 0 && _snm && (sp_streq(_snm, "<<") || _sself) &&
         comp_ntype(c, _srecv) == TY_STRING &&
+        !(repr_share_rule(c) && (strbuf_chain_user_target(c, id, _srecv, 0) ||
+                                 strbuf_chain_user_target(c, _srecv, str_append_chain_base(c, _srecv), 0))) &&
         ((repr_share_rule(c) && emit_nil_target_stmt(c, id, b, indent)) ||
          emit_array_mutate_stmt(c, id, b, indent))) {
       /* return the chain's BASE receiver: for `buf << a << b` the immediate
@@ -16977,6 +17022,9 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
       emit_indent(b, indent); emit_tail_lead(b);
       int _wp = g_result_var ? g_result_poly : (g_ret_type == TY_POLY);
       if (_wp) emit_boxed(c, _sbase, b);
+      /* (--share-strings: a result variable read as the handle, a begin's
+         under the demand, takes the receiver's handle) */
+      else if (g_result_var && g_result_ty == TY_STRBUF && repr_share_rule(c)) emit_strbuf_handle_of(c, _sbase, b);
       else emit_expr(c, _sbase, b);
       buf_puts(b, ";\n");
       return;
@@ -19930,6 +19978,10 @@ static int strbuf_flow_value(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, in
   if (ctx == SFC_TAIL && strbuf_hash_default_arg(c, v) >= 0) return 1;
   if (ctx == SFC_TAIL && (repr_string_conversion_operand(c, v) >= 0 || repr_boxed_to_s_operand(c, v) >= 0))
     return strbuf_flow_route(c, fm, SFC_ALIAS, v, depth);
+  /* a String mutator that answers its receiver, over a variable holding
+     the handle (`keep { buf.concat("a") }`): that variable's handle
+     (strbuf_stmts_tail_plain asks the same) */
+  if (ctx == SFC_TAIL && strbuf_tail_self_mutator(c, v)) return 1;
   if (ctx == SFC_TAIL)
     return (k == NK_BeginNode && strbuf_flow_begin(c, fm, v, depth)) || repr_call_returns_handle(c, v) ||
            strbuf_route_exc_message(c, v) || strbuf_route_srange_end(c, v) ||
