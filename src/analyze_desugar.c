@@ -12726,26 +12726,61 @@ static int inh_hook_in(const NodeTable *nt, int id) {
   return inh_hook_in_body(nt, nt_ref(nt, id, "body"));
 }
 
-/* The instance-method `def inherited` module `mname` defines, or -1: the hook
+/* The instance-method `def inherited` module node `m` defines, or -1: the hook
    a class that extends the module answers. */
-static int inh_module_hook(const NodeTable *nt, const char *mname, int n0) {
-  for (int m = 0; mname && m < n0; m++) {
-    if (nt_kind(nt, m) != NK_ModuleNode) continue;
-    const char *nm = nt_str(nt, nt_ref(nt, m, "constant_path"), "name");
-    if (!nm || !sp_streq(nm, mname)) continue;
-    int bn = 0; const int *bv = nt_arr(nt, nt_ref(nt, m, "body"), "body", &bn);
-    for (int k = 0; k < bn; k++) {
-      int d = fwd_body_def(nt, bv[k]);
-      const char *dn = d >= 0 ? nt_str(nt, d, "name") : NULL;
-      if (dn && sp_streq(dn, "inherited") && nt_ref(nt, d, "receiver") < 0) return d;
-    }
+static int inh_module_def_hook(const NodeTable *nt, int m) {
+  int bn = 0; const int *bv = nt_arr(nt, nt_ref(nt, m, "body"), "body", &bn);
+  for (int k = 0; k < bn; k++) {
+    int d = fwd_body_def(nt, bv[k]);
+    const char *dn = d >= 0 ? nt_str(nt, d, "name") : NULL;
+    if (dn && sp_streq(dn, "inherited") && nt_ref(nt, d, "receiver") < 0) return d;
   }
   return -1;
 }
 
-/* The hook a class body takes from a module it extends (`extend Tracking`),
-   or -1. */
-static int inh_extended_hook(const NodeTable *nt, int body, int n0) {
+/* What the hook questions ask about a name, found once per pass instead of by
+   a scan of every node per ask. A name a class or a Struct constant is
+   written under holds `has_hook` (a body of it defines the hook or extends a
+   module that does) and `super`, the superclass name the first `class` of it
+   to give one gives. A module name holds `hook_def`, the `def inherited` of
+   the first module of that name that has one (or -1), and, once the
+   extenders are counted, how many bodies extend it and whether one of them
+   sits below a class with a hook. */
+typedef struct {
+  const char *super;
+  int has_hook, hook_def, extenders, above;
+} InhName;
+typedef struct {
+  ANameHash cls, mod;
+  InhName *c, *m;
+  int ccap, mcap;
+  int any_hook, any_mod_hook;
+} InhIndex;
+
+static void inh_index_free(InhIndex *ix) {
+  anh_free(&ix->cls); anh_free(&ix->mod);
+  free(ix->c); free(ix->m);
+}
+
+/* The entry of `nm` in `h`, added when it is new. */
+static int inh_name_slot(ANameHash *h, InhName **ents, int *cap, const char *nm) {
+  int e = anh_find(h, nm);
+  if (e >= 0) return e;
+  if (h->n == *cap) {
+    *cap = *cap ? *cap * 2 : 64;
+    *ents = realloc(*ents, sizeof(InhName) * (size_t)*cap);
+    if (!*ents) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  anh_add(h, nm);
+  memset(&(*ents)[h->n - 1], 0, sizeof(InhName));
+  (*ents)[h->n - 1].hook_def = -1;
+  return h->n - 1;
+}
+
+/* The module entry whose hook a class body takes from a module it extends
+   (`extend Tracking`), or -1: the first module in the body's `extend`s that
+   has one. */
+static int inh_extended_entry(const InhIndex *ix, const NodeTable *nt, int body) {
   int bn = 0; const int *bv = nt_arr(nt, body, "body", &bn);
   for (int k = 0; k < bn; k++) {
     if (!fwd_node_is(nt, bv[k], "CallNode") || nt_ref(nt, bv[k], "receiver") >= 0) continue;
@@ -12755,8 +12790,9 @@ static int inh_extended_hook(const NodeTable *nt, int body, int n0) {
     for (int j = 0; j < an; j++) {
       NodeKind ak = nt_kind(nt, av[j]);
       if (ak != NK_ConstantReadNode && ak != NK_ConstantPathNode) continue;
-      int d = inh_module_hook(nt, nt_str(nt, av[j], "name"), n0);
-      if (d >= 0) return d;
+      const char *mn = nt_str(nt, av[j], "name");
+      int e = mn ? anh_find(&ix->mod, mn) : -1;
+      if (e >= 0 && ix->m[e].hook_def >= 0) return e;
     }
   }
   return -1;
@@ -12772,32 +12808,72 @@ static int inh_struct_body(Compiler *c, int id) {
 }
 
 /* Does class `cname` or an ancestor of it define an inherited hook, its own
-   or one from a module it extends? */
-static int inh_chain_has_hook(Compiler *c, const char *cname, int n0) {
-  const NodeTable *nt = c->nt;
+   or one from a module it extends? The walk follows the first superclass each
+   name gives, at most 64 links. */
+static int inh_chain_has_hook(const InhIndex *ix, const char *cname) {
   for (int depth = 0; cname && depth < 64; depth++) {
-    const char *super_name = NULL;
-    for (int id = 0; id < n0; id++) {
-      int sbody = inh_struct_body(c, id);
-      if (sbody >= 0) {
-        const char *wn = nt_str(nt, id, "name");
-        if (wn && sp_streq(wn, cname) &&
-            (inh_hook_in_body(nt, sbody) >= 0 || inh_extended_hook(nt, sbody, n0) >= 0)) return 1;
-        continue;
-      }
-      if (nt_kind(nt, id) != NK_ClassNode) continue;
-      const char *cn = nt_str(nt, nt_ref(nt, id, "constant_path"), "name");
-      if (!cn || !sp_streq(cn, cname)) continue;
-      if (inh_hook_in(nt, id) >= 0 || inh_extended_hook(nt, nt_ref(nt, id, "body"), n0) >= 0) return 1;
-      int sc = nt_ref(nt, id, "superclass");
-      if (!super_name && sc >= 0 &&
-          (nt_kind(nt, sc) == NK_ConstantReadNode || nt_kind(nt, sc) == NK_ConstantPathNode))
-        super_name = nt_str(nt, sc, "name");
-    }
+    int e = anh_find(&ix->cls, cname);
+    if (e < 0) return 0;
+    if (ix->c[e].has_hook) return 1;
+    const char *super_name = ix->c[e].super;
     if (super_name && sp_streq(super_name, cname)) break;
     cname = super_name;
   }
   return 0;
+}
+
+/* Index the program's modules, then its classes and Struct constants (a hook
+   through `extend` needs the modules), and count the extenders of the modules
+   that have a hook (which needs the chains). */
+static void inh_index_build(Compiler *c, InhIndex *ix, int n0) {
+  const NodeTable *nt = c->nt;
+  memset(ix, 0, sizeof *ix);
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_ModuleNode) continue;
+    const char *nm = nt_str(nt, nt_ref(nt, id, "constant_path"), "name");
+    if (!nm) continue;
+    int e = inh_name_slot(&ix->mod, &ix->m, &ix->mcap, nm);
+    if (ix->m[e].hook_def < 0) {
+      ix->m[e].hook_def = inh_module_def_hook(nt, id);
+      if (ix->m[e].hook_def >= 0) ix->any_mod_hook = 1;
+    }
+  }
+  for (int id = 0; id < n0; id++) {
+    int sbody = inh_struct_body(c, id);
+    if (sbody >= 0) {
+      const char *wn = nt_str(nt, id, "name");
+      if (!wn) continue;
+      int e = inh_name_slot(&ix->cls, &ix->c, &ix->ccap, wn);
+      if (!ix->c[e].has_hook &&
+          (inh_hook_in_body(nt, sbody) >= 0 || inh_extended_entry(ix, nt, sbody) >= 0))
+        ix->c[e].has_hook = ix->any_hook = 1;
+      continue;
+    }
+    if (nt_kind(nt, id) != NK_ClassNode) continue;
+    const char *cn = nt_str(nt, nt_ref(nt, id, "constant_path"), "name");
+    if (!cn) continue;
+    int e = inh_name_slot(&ix->cls, &ix->c, &ix->ccap, cn);
+    if (!ix->c[e].has_hook &&
+        (inh_hook_in(nt, id) >= 0 || inh_extended_entry(ix, nt, nt_ref(nt, id, "body")) >= 0))
+      ix->c[e].has_hook = ix->any_hook = 1;
+    int sc = nt_ref(nt, id, "superclass");
+    if (!ix->c[e].super && sc >= 0 &&
+        (nt_kind(nt, sc) == NK_ConstantReadNode || nt_kind(nt, sc) == NK_ConstantPathNode))
+      ix->c[e].super = nt_str(nt, sc, "name");
+  }
+  if (!ix->any_mod_hook) return;
+  for (int id = 0; id < n0; id++) {
+    int sbody = inh_struct_body(c, id);
+    int body = sbody >= 0 ? sbody : nt_kind(nt, id) == NK_ClassNode ? nt_ref(nt, id, "body") : -1;
+    if (body < 0) continue;
+    int e = inh_extended_entry(ix, nt, body);
+    if (e < 0) continue;
+    ix->m[e].extenders++;
+    if (ix->m[e].above) continue;
+    int sc = sbody >= 0 ? -1 : nt_ref(nt, id, "superclass");
+    const char *sn = sc >= 0 ? nt_str(nt, sc, "name") : NULL;
+    if (sn && inh_chain_has_hook(ix, sn)) ix->m[e].above = 1;
+  }
 }
 
 /* `super` in a hook that reaches Class#inherited -> nil */
@@ -12832,8 +12908,13 @@ static void inh_qualified_name(const NodeTable *nt, const int *parent, int cls, 
 int desugar_inherited_hooks(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count, changed = 0;
+  InhIndex ix;
+  inh_index_build(c, &ix, n0);
+  /* no class or Struct has a hook, its own or through `extend`: nothing
+     below has a `super` to drop or a call to place */
+  if (!ix.any_hook) { inh_index_free(&ix); return 0; }
   int *parent = malloc(sizeof(int) * (size_t)(n0 > 0 ? n0 : 1));
-  if (!parent) return 0;
+  if (!parent) { inh_index_free(&ix); return 0; }
   for (int i = 0; i < n0; i++) parent[i] = -1;
   for (int p = 0; p < n0; p++) {
     int nr = nt_num_refs(nt, p);
@@ -12850,7 +12931,7 @@ int desugar_inherited_hooks(Compiler *c) {
     int sbody = inh_struct_body(c, id);
     if (sbody >= 0) {
       int d = inh_hook_in_body(nt, sbody);
-      if (d >= 0 && inh_extended_hook(nt, sbody, n0) < 0) inh_drop_super(nt, nt_ref(nt, d, "body"));
+      if (d >= 0 && inh_extended_entry(&ix, nt, sbody) < 0) inh_drop_super(nt, nt_ref(nt, d, "body"));
       continue;
     }
     if (nt_kind(nt, id) != NK_ClassNode) continue;
@@ -12858,7 +12939,7 @@ int desugar_inherited_hooks(Compiler *c) {
     if (d < 0) continue;
     int sc = nt_ref(nt, id, "superclass");
     const char *sn = sc >= 0 ? nt_str(nt, sc, "name") : NULL;
-    if (inh_extended_hook(nt, nt_ref(nt, id, "body"), n0) < 0 && (!sn || !inh_chain_has_hook(c, sn, n0)))
+    if (inh_extended_entry(&ix, nt, nt_ref(nt, id, "body")) < 0 && (!sn || !inh_chain_has_hook(&ix, sn)))
       inh_drop_super(nt, nt_ref(nt, d, "body"));
   }
   /* a module's hook goes on to the hooks above the classes that extend it;
@@ -12866,37 +12947,24 @@ int desugar_inherited_hooks(Compiler *c) {
   for (int m = 0; m < n0; m++) {
     if (nt_kind(nt, m) != NK_ModuleNode) continue;
     const char *mn = nt_str(nt, nt_ref(nt, m, "constant_path"), "name");
-    int d = inh_module_hook(nt, mn, n0);
-    if (d < 0 || !sp_streq(nt_str(nt, nt_ref(nt, m, "constant_path"), "name"), mn)) continue;
-    int extenders = 0, above = 0;
-    for (int id = 0; id < n0 && !above; id++) {
-      int sbody = inh_struct_body(c, id);
-      int body = sbody >= 0 ? sbody : nt_kind(nt, id) == NK_ClassNode ? nt_ref(nt, id, "body") : -1;
-      if (body < 0 || inh_extended_hook(nt, body, n0) != d) continue;
-      extenders++;
-      int sc = sbody >= 0 ? -1 : nt_ref(nt, id, "superclass");
-      const char *sn = sc >= 0 ? nt_str(nt, sc, "name") : NULL;
-      if (sn && inh_chain_has_hook(c, sn, n0)) above = 1;
-    }
-    if (extenders > 0 && !above) inh_drop_super(nt, nt_ref(nt, d, "body"));
+    int e = mn ? anh_find(&ix.mod, mn) : -1;
+    if (e < 0 || ix.m[e].hook_def < 0) continue;
+    if (ix.m[e].extenders > 0 && !ix.m[e].above) inh_drop_super(nt, nt_ref(nt, ix.m[e].hook_def, "body"));
   }
   /* then the call, once per class: a reopening does not create it again */
-  char **seen = NULL; int nseen = 0;
+  ANameHash seen; memset(&seen, 0, sizeof seen);
   for (int id = 0; id < n0; id++) {
     if (nt_kind(nt, id) != NK_ClassNode) continue;
     int sc = nt_ref(nt, id, "superclass");
     if (sc < 0 || (nt_kind(nt, sc) != NK_ConstantReadNode && nt_kind(nt, sc) != NK_ConstantPathNode)) continue;
     const char *sn = nt_str(nt, sc, "name");
-    if (!sn || !inh_chain_has_hook(c, sn, n0)) continue;
+    if (!sn || !inh_chain_has_hook(&ix, sn)) continue;
     char qn[512];
     inh_qualified_name(nt, parent, id, qn, sizeof qn);
-    int dup = 0;
-    for (int k = 0; k < nseen && !dup; k++) dup = sp_streq(seen[k], qn);
-    if (dup) continue;
-    char **ns = realloc(seen, sizeof(char *) * (size_t)(nseen + 1));
-    if (!ns) break;
-    seen = ns;
-    seen[nseen++] = strdup(qn);
+    if (anh_has(&seen, qn)) continue;
+    char *qd = strdup(qn);
+    if (!qd) break;
+    anh_add(&seen, qd);
     int recv = nt_clone_subtree(nt, sc);
     int call = fwd_new_node_like(nt, id, "CallNode");
     int args = fwd_new_node_like(nt, id, "ArgumentsNode");
@@ -12928,8 +12996,9 @@ int desugar_inherited_hooks(Compiler *c) {
     else continue;
     changed = 1;
   }
-  for (int k = 0; k < nseen; k++) free(seen[k]);
-  free(seen);
+  for (int k = 0; k < seen.n; k++) free((char *)seen.key[k]);
+  anh_free(&seen);
+  inh_index_free(&ix);
   free(parent);
   if (changed) comp_grow_node_arrays(c);
   return changed;
