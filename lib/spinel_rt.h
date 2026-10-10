@@ -14899,6 +14899,45 @@ static inline sp_String *sp_exc_message_handle(sp_Exception *e) {
   return h;
 }
 
+/* The same for the shared dispatch's stored message, which tells a message
+   given from one never given (sp_exc_msg_absent). A message given is kept as
+   the exception's handle, even one that spells the class name; the class name
+   answered for none is a new String each time, as in CRuby, and is not kept. */
+static inline sp_String *sp_exc_kept_message_handle(sp_Exception *e) {
+  if (!e) return sp_String_new_fresh(sp_str_empty);
+  if (e->msg_h) return (sp_String *)e->msg_h;
+  SP_GC_ROOT(e);
+  const char *m = sp_exc_message(e);
+  int fz = sp_str_is_frozen_val(m);
+  sp_String *h = sp_String_new_fresh(m);
+  if (fz) sp_String_freeze(h);
+  if (!sp_exc_msg_absent(e)) sp_exc_attach_msg((void *)e, (void *)h);
+  return h;
+}
+
+/* The identity of what #message answers for the stored message, as the box
+   an identity compare reads (sp_poly_equal, sp_poly_identity_ptr), read
+   without attaching a handle: the handle's box once one is attached, else the
+   stored bytes, which every plain read answers until then. A message never
+   given answers a new String on each read, so each ask is a new identity. */
+static inline sp_RbVal sp_exc_message_idbox(sp_Exception *e) {
+  if (!e) return sp_box_str(sp_str_frozen_empty);
+  if (e->msg_h) return sp_box_obj(e->msg_h, SP_BUILTIN_STRBUF);
+  if (!sp_exc_msg_absent(e)) return sp_box_str(e->msg);
+  return sp_box_str(sp_exc_message(e));
+}
+
+/* A shared dispatch returns the stored message object without a byte copy.
+   An absent message still answers a fresh class-name String each time. */
+static inline sp_String *sp_exc_stored_message_handle(sp_Exception *e) {
+  if (!e || sp_exc_msg_absent(e)) return sp_exc_kept_message_handle(e);
+  if (e->msg_h) return (sp_String *)e->msg_h;
+  SP_GC_ROOT(e);
+  sp_String *h = sp_String_new_shared(e->msg);
+  sp_exc_attach_msg(e, h);
+  return h;
+}
+
 /* SystemCallError#initialize, as CRuby's syserr_initialize runs it for an
    exception of class `cls` below SystemCallError, taking (msg = nil, func =
    nil): the Errno number is read through the class first -- a class of the

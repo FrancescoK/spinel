@@ -320,9 +320,16 @@ int emit_call_exception_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
         buf_printf(b, "; (_t%d.tag == SP_TAG_OBJ && _t%d.v.p && (_t%d.cls_id == SP_BUILTIN_EXCEPTION"
                    " || sp_is_exc_subclass_cls(_t%d.cls_id))) ? ", t, t, t, t);
         int boxed = repr_of(c, id).kind == RK_BOXED;
+        /* a dispatch whose call reads the handle its arms publish: an
+           exception no override owns publishes the handle it holds too, so
+           each read of it answers the same String */
+        int pub = g_poly_builtin_arm && !boxed && !exc_has_nonstring_msg_override(c) &&
+                  repr_call_returns_handle(c, id);
+        if (pub) c->uses_exc_text_handle |= 2;
         const char *arm = exc_has_nonstring_msg_override(c)
           ? (boxed ? "sp_user_exc_message_v(%s)" : "sp_poly_to_s(sp_user_exc_message_v(%s))")
-          : (boxed ? "sp_box_str(sp_user_exc_message(%s))" : "sp_user_exc_message(%s)");
+          : (boxed ? "sp_box_str(sp_user_exc_message(%s))"
+                   : pub ? "sp_user_exc_message_shared(%s)" : "sp_user_exc_message(%s)");
         char ep[64];
         snprintf(ep, sizeof ep, "(sp_Exception *)_t%d.v.p", t);
         buf_printf(b, arm, ep);

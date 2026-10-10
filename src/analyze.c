@@ -454,6 +454,9 @@ static int cr_scope_has_super(Compiler *c, int s) {
   return cr_has_super(c->nt, sc->body) ||
          (sc->def_node >= 0 && cr_has_super(c->nt, nt_ref(c->nt, sc->def_node, "parameters")));
 }
+/* Does scope s call `super` (cr_scope_has_super) -- the exception text
+   dispatch asks it of a #message / #to_s override */
+int scope_calls_super(Compiler *c, int s) { return cr_scope_has_super(c, s); }
 
 /* Is `nm` called: by bare name, or on a known instance (`K.new.nm`, marked
    "\x03nm" by compute_reachable)? */

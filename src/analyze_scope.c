@@ -7661,6 +7661,17 @@ static int pivs_proc_param(Compiler *c, int lit, const char *pn, char *set, int 
   }
   return calls > 0;
 }
+/* A builtin iterator moved onto its copy, `__enum_each_with_index__3(recv) { }`
+   (desugar_builtin_enum_calls), iterates its first argument as `recv.each_with_index { }`
+   does: the iterator's name in buf, 1 for such a call name. */
+static int pivs_enum_iter(const char *name, char *buf, size_t n) {
+  if (strncmp(name, "__enum_", 7) != 0) return 0;
+  const char *sep = strstr(name + 7, "__");
+  if (!sep || (size_t)(sep - name - 7) >= n) return 0;
+  memcpy(buf, name + 7, (size_t)(sep - name - 7));
+  buf[sep - name - 7] = 0;
+  return 1;
+}
 static int pivs_local(Compiler *c, int v, char *set, int depth, int elems) {
   const NodeTable *nt = c->nt;
   const char *vn = nt_str(nt, v, "name");
@@ -7692,6 +7703,14 @@ static int pivs_local(Compiler *c, int v, char *set, int depth, int elems) {
           sp_streq(nt_str(nt, rq[i], "name"), vn)) at = i;
     if (at < 0) continue;
     const char *un = nt_str(nt, u, "name");
+    int ur = nt_ref(nt, u, "receiver");
+    char enb[64];
+    if (un && ur < 0 && pivs_enum_iter(un, enb, sizeof enb)) {
+      int ua = nt_ref(nt, u, "arguments"), uac = 0;
+      const int *uav = ua >= 0 ? nt_arr(nt, ua, "arguments", &uac) : NULL;
+      if (uac < 1) return 0;
+      un = enb; ur = uav[0];
+    }
     int known = 0;
     for (int j = 0; IT[j] && un && !known; j++) known = sp_streq(un, IT[j]);
     if (!known || at != 0 || elems ||
@@ -7699,7 +7718,7 @@ static int pivs_local(Compiler *c, int v, char *set, int depth, int elems) {
     /* reassigned, it is not only the element */
     for (int w = comp_lvw_first_sc(c, si, vn); w >= 0; w = comp_lvw_next_sc(c, w))
       if (c->nscope[w] == si && sp_streq(nt_str(nt, w, "name"), vn)) return 0;
-    return pivs_elems(c, nt_ref(nt, u, "receiver"), set, depth + 1);
+    return pivs_elems(c, ur, set, depth + 1);
   }
   for (int i = 0; i < s->nparams; i++)
     if (s->pnames[i] && sp_streq(s->pnames[i], vn))
@@ -7737,10 +7756,15 @@ static int pivs_local(Compiler *c, int v, char *set, int depth, int elems) {
       const char *cn = nt_str(nt, u, "name");
       if (r < 0 && cn && (sp_streq(cn, "p") || sp_streq(cn, "puts") || sp_streq(cn, "print") || sp_streq(cn, "pp")))
         continue;
+      /* an iterator's copy reads its first argument; it keeps and grows nothing */
+      char eit[64];
+      int itfirst = 0;
+      if (r < 0 && cn && pivs_enum_iter(cn, eit, sizeof eit))
+        for (int j = 0; IT[j] && !itfirst; j++) itfirst = sp_streq(eit, IT[j]);
       for (int k = 0; k < ac; k++) {
         int x = av[k];
         if (nt_kind(nt, x) == NK_SplatNode) continue;
-        if (pivs_is_read_of(nt, x, vn) && !(pivs_is_read_of(nt, r, vn))) return 0;
+        if (pivs_is_read_of(nt, x, vn) && !(pivs_is_read_of(nt, r, vn)) && !(itfirst && k == 0)) return 0;
       }
     }
     for (int w = 0; w < nt->count; w++) {

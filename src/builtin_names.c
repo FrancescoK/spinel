@@ -391,6 +391,9 @@ int is_element_pick(const char *n) {
   return sp_streq(n, "first") || sp_streq(n, "last") || sp_streq(n, "sample");
 }
 
+int is_equal_name(const char *n) {
+  return sp_streq(n, "equal?");
+}
 int is_eql_or_equal(const char *n) {
   return sp_streq(n, "equal?") || sp_streq(n, "eql?");
 }

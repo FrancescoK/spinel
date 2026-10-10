@@ -551,7 +551,52 @@ static void ct_index_build(Compiler *c) {
   qsort(g_ct_idx, (size_t)g_ct_nidx, sizeof *g_ct_idx, ct_idx_cmp);
 }
 
+/* Exception#message invokes #to_s when the class has no message override.
+   Use the existing class candidates for both names so the share walk binds
+   that implicit edge just as it binds an explicit call. */
+static int ct_exception_text(Compiler *c, int id, int *out) {
+  const char *name = nt_str(c->nt, id, "name");
+  if (!c->share_strings || !name || nt_int(c->nt, id, "builtin_only", 0) ||
+      !is_exception_message(name) || call_plain_argc(c, id) != 0 ||
+      nt_ref(c->nt, id, "block") >= 0) return -2;
+  int recv = nt_ref(c->nt, id, "receiver");
+  TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
+  int cid = ty_is_object(rt) ? ty_object_class(rt) : -1;
+  if (rt != TY_EXCEPTION && (cid < 0 || !class_is_exc_subclass(c, cid))) return -2;
+  if (cid >= 0) {
+    int nd = 0;
+    comp_descendants(c, cid, &nd);
+    if (nd == 1) {
+      int mi = is_to_s_name(name) ? -1 : comp_method_in_chain(c, cid, "message", NULL);
+      if (mi < 0) mi = comp_method_in_chain(c, cid, "to_s", NULL);
+      if (mi >= 0) out[0] = mi;
+      return mi >= 0;
+    }
+  }
+  int n = 0;
+  for (int pass = is_to_s_name(name) ? 1 : 0; pass < 2; pass++) {
+    int nc = 0;
+    const PolyCand *cs = comp_poly_candidates(c, pass ? "to_s" : "message", &nc);
+    for (int i = 0; i < nc; i++) {
+      int k = cs[i].cls;
+      if (!class_is_exc_subclass(c, k) && !class_is_exc_reopen(c, k)) continue;
+      if (cid >= 0 && k != cid && !is_descendant(c, k, cid)) continue;
+      int mi = is_to_s_name(name) ? -1 : comp_method_in_chain(c, k, "message", NULL);
+      if (mi < 0) mi = comp_method_in_chain(c, k, "to_s", NULL);
+      if (mi < 0) continue;
+      int j = 0;
+      while (j < n && out[j] != mi) j++;
+      if (j < n) continue;
+      if (n == CPT_MAX) return CPT_UNKNOWN;
+      out[n++] = mi;
+    }
+  }
+  return n;
+}
+
 static int ct_resolve(Compiler *c, int id, int *out) {
+  int text = ct_exception_text(c, id, out);
+  if (text != -2) return text;
   const CallPlan *p = cplan_user_fresh(c, id);
   if (p->mi < 0 || p->dispatch == CP_REFUSE) {
     int recv = nt_ref(c->nt, id, "receiver");

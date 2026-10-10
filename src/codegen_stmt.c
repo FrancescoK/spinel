@@ -1630,30 +1630,108 @@ static int strbuf_route_ivar_get(Compiler *c, int v) {
   Repr r = repr_of(c, v);
   return (r.ty == TY_STRING || r.ty == TY_STRBUF) && cplan_user(c, v)->dispatch == CP_NONE;
 }
-/* --share-strings: an exception's #message or #to_s with no override of
-   the program's own: the String the exception was raised with, which it
-   holds as a handle when the String is shared (sp_exc_message_handle) */
-int strbuf_route_exc_message(Compiler *c, int v) {
+/* --share-strings: v is an exception's #message or #to_s, read off a receiver
+   typed as an exception, answering a String */
+static int exc_text_call_on(Compiler *c, int v, int boxed) {
   const NodeTable *nt = c->nt;
+  if (!repr_share_rule(c)) return 0;
   v = unwrap_parens(c, v);
-  if (!repr_share_rule(c) || v < 0 || nt_kind(nt, v) != NK_CallNode) return 0;
+  if (v < 0 || nt_kind(nt, v) != NK_CallNode) return 0;
   const char *nm = nt_str(nt, v, "name");
   int recv = nt_ref(nt, v, "receiver");
   if (!nm || recv < 0 || !is_exception_message(nm) ||
-      nt_ref(nt, v, "arguments") >= 0 || nt_ref(nt, v, "block") >= 0 || exc_has_user_msg_override(c)) return 0;
+      nt_ref(nt, v, "arguments") >= 0 || nt_ref(nt, v, "block") >= 0) return 0;
   TyKind rt = comp_ntype(c, recv);
-  if (rt == TY_EXCEPTION) return 1;
-  return ty_is_object(rt) && class_is_exc_subclass(c, ty_object_class(rt)) &&
-         comp_method_in_chain(c, ty_object_class(rt), "to_s", NULL) < 0 &&
-         comp_method_in_chain(c, ty_object_class(rt), "message", NULL) < 0;
+  if (comp_ntype(c, v) != TY_STRING && comp_ntype(c, v) != TY_STRBUF) return 0;
+  if (!boxed) return rt == TY_EXCEPTION || (ty_is_object(rt) && class_is_exc_subclass(c, ty_object_class(rt)));
+  if (rt != TY_POLY) return 0;
+  /* a boxed receiver is claimed only where the classes it can hold (the
+     boxed-receiver walk) include an exception class */
+  int nk = 0;
+  const int *ks = poly_recv_classes(c, v, &nk);
+  for (int i = 0; ks && i < nk; i++)
+    if (class_is_exc_subclass(c, ks[i])) return 1;
+  return 0;
 }
-/* --share-strings: `e.message` (strbuf_route_exc_message) on a variable's
-   exception: its handle reads that variable and runs nothing else, so it
-   may be emitted beside a text that already read it */
-int strbuf_exc_message_of_var(Compiler *c, int v) {
-  if (!strbuf_route_exc_message(c, v)) return 0;
-  NodeKind rk = nt_kind(c->nt, nt_ref(c->nt, unwrap_parens(c, v), "receiver"));
-  return rk == NK_LocalVariableReadNode || rk == NK_InstanceVariableReadNode;
+static int exc_text_call(Compiler *c, int v) { return exc_text_call_on(c, v, 0); }
+/* --share-strings: an exception's #message or #to_s with no override of
+   the program's own: the String the exception was raised with, which it
+   holds as a handle when the String is shared (sp_exc_message_handle).
+   An override dispatch publishes its own answer through the return channel.
+   The read is that handle only where the share facts say the message is
+   shared or changed in place (share_node_shares); anywhere else it is the
+   plain read, which every other read of the same message agrees with. */
+int strbuf_route_exc_message(Compiler *c, int v) {
+  return exc_text_call(c, v) && !exc_text_override_calls_super(c) && share_node_shares(c, unwrap_parens(c, v));
+}
+/* --share-strings: `e.message` / `e.to_s` as an operand compared by identity
+   (equal?, object_id). Its identity is the box sp_poly_equal and
+   sp_poly_identity_ptr read: asked of the dispatcher's _id form when the
+   program overrides the text, else of the stored message
+   (sp_exc_message_idbox). Neither attaches a handle: a handle attached by
+   the read would turn every later plain read of the same message into a copy
+   of it. */
+int exc_message_identity_operand(Compiler *c, int v) {
+  return exc_text_call(c, v) || exc_text_call_on(c, v, 1);
+}
+/* The identity box of exception message operand v (exc_message_identity_operand);
+   the receiver and the text are each evaluated once. */
+void emit_exc_message_idbox(Compiler *c, int v, Buf *b) {
+  const NodeTable *nt = c->nt;
+  v = unwrap_parens(c, v);
+  int t = ++g_tmp, recv = nt_ref(nt, v, "receiver");
+  int message = !is_to_s_name(nt_str(nt, v, "name"));
+  int overridden = exc_has_user_msg_override(c);
+  if (overridden) c->uses_exc_text_handle |= 4 << message;
+  char ask[96];
+  if (overridden) snprintf(ask, sizeof ask, "sp_user_exc_%s_id", message ? "message" : "to_s");
+  else snprintf(ask, sizeof ask, "sp_exc_message_idbox");
+  if (exc_text_call_on(c, v, 1)) {
+    /* a boxed receiver: an exception in the box is asked its identity, as a
+       typed receiver is; a String's to_s is the String itself, and any other
+       value keeps the read the call makes */
+    buf_printf(b, "({ sp_RbVal _b%d = ", t);
+    emit_expr(c, recv, b);
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_b%d); (_b%d.tag == SP_TAG_OBJ && _b%d.v.p && "
+                  "(_b%d.cls_id == SP_BUILTIN_EXCEPTION || sp_is_exc_subclass_cls(_b%d.cls_id))) ? "
+                  "%s((sp_Exception *)_b%d.v.p) : ", t, t, t, t, t, ask, t);
+    if (!message) buf_printf(b, "(sp_poly_is_strbuf(_b%d) || _b%d.tag == SP_TAG_STR) ? _b%d : ", t, t, t);
+    int mark = view_bind(recv, "_b%d", t);
+    /* the read is this arm's alone: a conversion in it is not hoisted ahead
+       of the call, where it would run beside the identity ask */
+    ConvHold *hold = g_conv_hold;
+    g_conv_hold = NULL;
+    emit_boxed(c, v, b);
+    g_conv_hold = hold;
+    view_unbind(mark);
+    buf_puts(b, "; })");
+    return;
+  }
+  buf_printf(b, "({ sp_Exception *_e%d = (sp_Exception *)(", t);
+  emit_expr(c, recv, b);
+  buf_printf(b, "); SP_GC_ROOT(_e%d); ", t);
+  int mark = view_bind(recv, "_e%d", t);
+  if (cplan_nil(c, v) == CN_RAISE) emit_nil_cold_test(c, v, recv, b);
+  view_unbind(mark);
+  buf_printf(b, "%s(_e%d); })", ask, t);
+}
+/* equal? with an exception's message on a side (exc_message_identity_operand):
+   the two identity boxes compared, the other side as the box it is held in.
+   0, with nothing emitted, when neither side is one. */
+int emit_exc_message_equal(Compiler *c, int recv, int arg, Buf *b) {
+  if (!repr_share_rule(c) || !(exc_message_identity_operand(c, recv) || exc_message_identity_operand(c, arg))) return 0;
+  /* a receiver that is not the message may be an object of a class that
+     defines #equal? itself, which answers the call */
+  if (!exc_message_identity_operand(c, recv))
+    for (int k = 0; k < c->nclasses; k++)
+      if (comp_method_in_class(c, k, "equal?") >= 0) return 0;
+  int th = ++g_tmp;
+  buf_printf(b, "({ sp_RbVal _t%d = ", th);
+  if (exc_message_identity_operand(c, recv)) emit_exc_message_idbox(c, recv, b); else emit_boxed(c, recv, b);
+  buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); (sp_bool)sp_poly_equal(_t%d, ", th, th);
+  if (exc_message_identity_operand(c, arg)) emit_exc_message_idbox(c, arg, b); else emit_boxed(c, arg, b);
+  buf_puts(b, "); })");
+  return 1;
 }
 /* A plain reader of a shared String slot normally answers a snapshot.
    Its field-read arm can hand on the handle under a demand instead, as
@@ -1778,6 +1856,21 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
   }
   if (strbuf_route_exc_message(c, v)) {
     v = unwrap_parens(c, v);
+    if (exc_has_user_msg_override(c)) {
+      int t = ++g_tmp, recv = nt_ref(nt, v, "receiver");
+      int message = !is_to_s_name(nt_str(nt, v, "name"));
+      c->uses_exc_text_handle |= 1 << message;
+      buf_printf(b, "({ sp_Exception *_e%d = (sp_Exception *)(", t);
+      emit_expr(c, recv, b);
+      buf_printf(b, "); SP_GC_ROOT(_e%d); ", t);
+      int mark = view_bind(recv, "_e%d", t);
+      if (cplan_nil(c, v) == CN_RAISE) emit_nil_cold_test(c, v, recv, b);
+      view_unbind(mark);
+      buf_printf(b, "const char *_v%d = sp_user_exc_%s_shared(_e%d); ",
+                 t, message ? "message" : "to_s", t);
+      buf_printf(b, "!_v%d ? NULL : _sp_ret_strbuf ? (sp_String *)_sp_ret_strbuf : sp_String_new_shared(_v%d); })", t, t);
+      return 1;
+    }
     buf_puts(b, "sp_exc_message_handle((sp_Exception *)(");
     emit_expr(c, nt_ref(nt, v, "receiver"), b);
     buf_puts(b, "))");

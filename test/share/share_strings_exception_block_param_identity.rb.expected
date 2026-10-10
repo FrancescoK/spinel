@@ -1,0 +1,20 @@
+[0, true]
+[1, true]
+[:lit, 0, true]
+[:lit, 1, true]
+[0, true, true]
+[1, true, true]
+[2, false, false]
+[3, true, false]
+[:lit, 0, true, true]
+[:lit, 1, true, true]
+[:lit, 2, false, false]
+[:lit, 3, true, false]
+true
+true
+false
+true
+[true, true, false, true]
+"tm!"
+true
+true
