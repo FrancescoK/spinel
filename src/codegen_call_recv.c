@@ -14409,9 +14409,8 @@ static int emit_poly_scan_block(Compiler *c, int id, Buf *b, const NodeTable *nt
                  re_i, ts, tw, tw);
     if (sp0r) {
       Scope *sbs = comp_scope_of(c, sblk);
-      LocalVar *sblv = sbs ? scope_local(sbs, sp0r) : NULL;
       LocalVar *shlv = sbs ? scope_local(sbs, sp0) : NULL;
-      if (sblv && sblv->type == TY_POLY) {
+      if (shlv && shlv->type == TY_POLY) {
         buf_printf(b, " sp_RbVal lv_%s = sp_box_str(sp_StrArray_get(_t%d, _t%d));", sp0r, tm, ti);
         /* --share-strings: a boxed parameter of a shared class takes the match
            as a handle of its own, as the typed arms bind it */
