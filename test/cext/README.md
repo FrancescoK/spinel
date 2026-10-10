@@ -66,5 +66,11 @@ arena unwind, cause/backtrace capture, subclass layout, saved fiber contexts,
 GC stress and fatal termination. Unlike `rb_bug`, `rb_fatal` runs ensures
 while bypassing rescues, as documented in
 [CRuby's extension guide](https://docs.ruby-lang.org/en/master/extension_rdoc.html).
-The compiler/recorder, literal eval, VALUE-aware formatting, send dispatch and
+The compiler bridge, literal eval, VALUE-aware formatting, send dispatch and
 threaded extension execution remain for the later steps.
+
+Step 4 adds a standalone definition recorder and a versioned manifest plus
+literal Ruby declaration artifacts. See [the recorder contract](../../docs/internals/cext-recorder.md)
+for its restricted initialization API, build command, import/literal checks
+and the later compiler bridge. `make cext-recorder-test cext-recorder-oracle`
+checks deterministic output and compares the same C fixture against CRuby.
