@@ -7942,7 +7942,8 @@ static int subtree_changes_local(Compiler *c, int root, const char *name) {
    writes to locals and ivars, scalar arithmetic, typed-array reads and element
    writes, `getbyte`, `length`/`size`, plain field reads, the pure scalar
    methods and Math functions, class tests and `!` on a scalar, and control
-   flow. A call to anything else, a block, a nested loop or a rescue leaves
+   flow (a `return` only leaves the loop; through an ensure it is a goto to
+   the ensure, outside the loop). A call to anything else, a block, a nested loop or a rescue leaves
    the loop as it was. An array is cached when it is read through a local, an
    ivar, or a field read of a local, where the loop assigns neither the local
    nor the ivar. */
@@ -8037,7 +8038,7 @@ static int hc_node_ok(Compiler *c, int id, int stmt, HcRegion *r) {
       }
       if (sp_streq(ty, "IfNode") || sp_streq(ty, "UnlessNode") || sp_streq(ty, "ElseNode") ||
           sp_streq(ty, "AndNode") || sp_streq(ty, "OrNode") || sp_streq(ty, "BreakNode") ||
-          sp_streq(ty, "NextNode") || sp_streq(ty, "ArgumentsNode"))
+          sp_streq(ty, "NextNode") || sp_streq(ty, "ReturnNode") || sp_streq(ty, "ArgumentsNode"))
         break;
       return 0;
     }
