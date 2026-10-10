@@ -36356,6 +36356,7 @@ static void an_phase_desugar_register(Compiler *c) {
   desugar_class_reopen(c);               /* class Class / Class.class_eval -> a module */
   desugar_class_new_blocks(c);           /* X = Class.new(B) do..end -> class X < B; ..; end */
   desugar_included_hooks(c);             /* include M / extend M -> M.included/extended(base)'s body */
+  desugar_inherited_hooks(c);            /* class A < B -> B.inherited(A) first in A's body */
   /* a hook body spliced into its includer can carry a class_eval "<text>"
      of its own (`base.class_eval do class_eval "..." end`): graft it as the
      first pass did the includer's own */

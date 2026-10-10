@@ -12575,6 +12575,170 @@ int desugar_included_hooks(Compiler *c) {
   return changed;
 }
 
+/* ---- Class.inherited hooks ----
+ *
+ * `class A < Base` calls Base.inherited(A) as the class is created, before
+ * its body runs. The inheritance graph is static, so the call is placed as
+ * the first statement of the first body that names the superclass:
+ *
+ *   class A < Base; BODY; end  ->  class A < Base; Base.__send__(:inherited, self); BODY; end
+ *
+ * (__send__, as the hook is often private.) Dispatch then finds the hook on Base or the nearest ancestor that defines
+ * it, as a call would. A `super` in a hook that no ancestor's hook answers
+ * reaches Class#inherited, which does nothing: it becomes nil. Classes are
+ * matched by their last name segment, as the superclass links are followed. */
+
+/* The `def inherited` class `id`'s body defines on the class itself
+   (`def self.inherited(sub)`, or `def inherited` in its `class << self`), or -1. */
+static int inh_hook_in(const NodeTable *nt, int id) {
+  int bn = 0; const int *bv = nt_arr(nt, nt_ref(nt, id, "body"), "body", &bn);
+  for (int k = 0; k < bn; k++) {
+    int d = fwd_body_def(nt, bv[k]);
+    if (d >= 0) {
+      const char *dn = nt_str(nt, d, "name");
+      if (dn && sp_streq(dn, "inherited") && fwd_node_is(nt, nt_ref(nt, d, "receiver"), "SelfNode")) return d;
+      continue;
+    }
+    if (!fwd_node_is(nt, bv[k], "SingletonClassNode") ||
+        !fwd_node_is(nt, nt_ref(nt, bv[k], "expression"), "SelfNode")) continue;
+    int sn = 0; const int *sv = nt_arr(nt, nt_ref(nt, bv[k], "body"), "body", &sn);
+    for (int j = 0; j < sn; j++) {
+      int sd = fwd_body_def(nt, sv[j]);
+      const char *dn = sd >= 0 ? nt_str(nt, sd, "name") : NULL;
+      if (dn && sp_streq(dn, "inherited") && nt_ref(nt, sd, "receiver") < 0) return sd;
+    }
+  }
+  return -1;
+}
+
+/* Does class `cname` or an ancestor of it define an inherited hook? */
+static int inh_chain_has_hook(const NodeTable *nt, const char *cname, int n0) {
+  for (int depth = 0; cname && depth < 64; depth++) {
+    const char *super_name = NULL;
+    for (int id = 0; id < n0; id++) {
+      if (nt_kind(nt, id) != NK_ClassNode) continue;
+      const char *cn = nt_str(nt, nt_ref(nt, id, "constant_path"), "name");
+      if (!cn || !sp_streq(cn, cname)) continue;
+      if (inh_hook_in(nt, id) >= 0) return 1;
+      int sc = nt_ref(nt, id, "superclass");
+      if (!super_name && sc >= 0 &&
+          (nt_kind(nt, sc) == NK_ConstantReadNode || nt_kind(nt, sc) == NK_ConstantPathNode))
+        super_name = nt_str(nt, sc, "name");
+    }
+    if (super_name && sp_streq(super_name, cname)) break;
+    cname = super_name;
+  }
+  return 0;
+}
+
+/* `super` in a hook that reaches Class#inherited -> nil */
+static void inh_drop_super(NodeTable *nt, int node) {
+  if (node < 0) return;
+  NodeKind k = nt_kind(nt, node);
+  if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode) return;
+  if (k == NK_SuperNode || k == NK_ForwardingSuperNode) { nt_node_reset(nt, node, "NilNode"); return; }
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++) inh_drop_super(nt, nt_ref_at(nt, node, i));
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) {
+    int cnt = 0; const int *ids = nt_arr_at(nt, node, i, &cnt);
+    for (int j = 0; j < cnt; j++) inh_drop_super(nt, ids[j]);
+  }
+}
+
+/* The name `cls` is defined under: its own path, prefixed by the classes and
+   modules around it. */
+static void inh_qualified_name(const NodeTable *nt, const int *parent, int cls, char *buf, size_t n) {
+  buf[0] = 0;
+  for (int a = cls; a >= 0; a = parent[a]) {
+    NodeKind k = nt_kind(nt, a);
+    if (k != NK_ClassNode && k != NK_ModuleNode) continue;
+    const char *nm = nt_str(nt, nt_ref(nt, a, "constant_path"), "name");
+    char tmp[512];
+    snprintf(tmp, sizeof tmp, "%s%s%s", nm ? nm : "?", buf[0] ? "::" : "", buf);
+    snprintf(buf, n, "%s", tmp);
+  }
+}
+
+int desugar_inherited_hooks(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, changed = 0;
+  int *parent = malloc(sizeof(int) * (size_t)(n0 > 0 ? n0 : 1));
+  if (!parent) return 0;
+  for (int i = 0; i < n0; i++) parent[i] = -1;
+  for (int p = 0; p < n0; p++) {
+    int nr = nt_num_refs(nt, p);
+    for (int i = 0; i < nr; i++) { int ch = nt_ref_at(nt, p, i); if (ch >= 0 && ch < n0) parent[ch] = p; }
+    int na = nt_num_arrs(nt, p);
+    for (int i = 0; i < na; i++) {
+      int cnt = 0; const int *ids = nt_arr_at(nt, p, i, &cnt);
+      for (int j = 0; j < cnt; j++) if (ids[j] >= 0 && ids[j] < n0) parent[ids[j]] = p;
+    }
+  }
+  /* the hooks first: a `super` that finds no ancestor's hook */
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_ClassNode) continue;
+    int d = inh_hook_in(nt, id);
+    if (d < 0) continue;
+    int sc = nt_ref(nt, id, "superclass");
+    const char *sn = sc >= 0 ? nt_str(nt, sc, "name") : NULL;
+    if (!sn || !inh_chain_has_hook(nt, sn, n0)) inh_drop_super(nt, nt_ref(nt, d, "body"));
+  }
+  /* then the call, once per class: a reopening does not create it again */
+  char **seen = NULL; int nseen = 0;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_ClassNode) continue;
+    int sc = nt_ref(nt, id, "superclass");
+    if (sc < 0 || (nt_kind(nt, sc) != NK_ConstantReadNode && nt_kind(nt, sc) != NK_ConstantPathNode)) continue;
+    const char *sn = nt_str(nt, sc, "name");
+    if (!sn || !inh_chain_has_hook(nt, sn, n0)) continue;
+    char qn[512];
+    inh_qualified_name(nt, parent, id, qn, sizeof qn);
+    int dup = 0;
+    for (int k = 0; k < nseen && !dup; k++) dup = sp_streq(seen[k], qn);
+    if (dup) continue;
+    char **ns = realloc(seen, sizeof(char *) * (size_t)(nseen + 1));
+    if (!ns) break;
+    seen = ns;
+    seen[nseen++] = strdup(qn);
+    int recv = nt_clone_subtree(nt, sc);
+    int call = fwd_new_node_like(nt, id, "CallNode");
+    int args = fwd_new_node_like(nt, id, "ArgumentsNode");
+    int sym = fwd_new_node_like(nt, id, "SymbolNode");
+    int self = fwd_new_node_like(nt, id, "SelfNode");
+    if (recv < 0 || call < 0 || args < 0 || sym < 0 || self < 0) continue;
+    nt_node_set_str(nt, sym, "value", "inherited");
+    nt_node_set_str(nt, call, "name", "__send__");
+    nt_node_set_ref(nt, call, "receiver", recv);
+    int av[2] = { sym, self };
+    nt_node_set_arr(nt, args, "arguments", av, 2);
+    nt_node_set_ref(nt, call, "arguments", args);
+    int body = nt_ref(nt, id, "body");
+    if (body < 0) {
+      body = fwd_new_node_like(nt, id, "StatementsNode");
+      if (body < 0) continue;
+      nt_node_set_arr(nt, body, "body", &call, 1);
+      nt_node_set_ref(nt, id, "body", body);
+    }
+    else if (nt_kind(nt, body) == NK_StatementsNode) {
+      int bn = 0; const int *bv = nt_arr(nt, body, "body", &bn);
+      int *out = malloc(sizeof(int) * (size_t)(bn + 1));
+      if (!out) continue;
+      out[0] = call;
+      if (bn > 0) memcpy(out + 1, bv, sizeof(int) * (size_t)bn);
+      nt_node_set_arr(nt, body, "body", out, bn + 1);
+      free(out);
+    }
+    else continue;
+    changed = 1;
+  }
+  for (int k = 0; k < nseen; k++) free(seen[k]);
+  free(seen);
+  free(parent);
+  if (changed) comp_grow_node_arrays(c);
+  return changed;
+}
+
 /* ---- `const_get :Name` on self in a class method ----------------------------
  *
  *   class GObject
