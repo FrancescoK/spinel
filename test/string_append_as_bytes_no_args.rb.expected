@@ -1,0 +1,18 @@
+"ab"
+"ab"
+"ab"
+"ab"
+"ab"
+"ab!"
+"x"
+["x"]
+#<Encoding:UTF-8>
+[195, 169]
+"ab"
+"ab!"
+"ab!"
+FrozenError
+FrozenError
+"can't modify frozen String: \"ab\""
+"qw"
+"uv"

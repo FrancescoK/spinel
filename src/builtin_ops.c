@@ -1628,6 +1628,9 @@ static const BuiltinOp bop_rows[] = {
   { TY_STRING, "byteslice",       1,   1, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_byteslice1($r, $i0)", 0 },
   { TY_STRING, "byteslice",       0, 127, BF_ANY,      TY_STRING,     BOPE_NONE },
   { TY_STRING, "bytesplice",      0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF },
+  /* append_as_bytes() appends nothing and answers its receiver, which it
+     checks is not frozen (emit_str_mutator_call's stage 6, as concat() does) */
+  { TY_STRING, "append_as_bytes", 0,   0, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "({ const char *_t$t = $r; sp_str_check_mutable(_t$t); _t$t; })", 0, 0, BOPF_SELF, 6 },
   { TY_STRING, "append_as_bytes", 0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF },
   { TY_STRING, "force_encoding",  0, 127, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF },
   { TY_STRING, "b",               0,   0, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_b($r)", 0 },
