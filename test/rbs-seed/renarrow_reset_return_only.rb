@@ -1,4 +1,5 @@
 # spinel: rbs-seed-run
+# spinel: rbs-seed-check
 # The re-narrow loop resets a boxed return that feeds the ivar its call
 # reads, and with that ivar seeded it resets nothing else. Its plain
 # no-change exit then saw infer_return_types re-derive the return every
