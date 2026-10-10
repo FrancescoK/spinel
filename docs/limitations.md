@@ -664,6 +664,23 @@ rng = (lo..hi)      # compile error: a Range of Ver objects cannot be built
 rng = (0..2**70)    # compile error: a Bignum bound does not fit sp_int
 ```
 
+#### A String Range keeps copies of its endpoints
+
+A Range of Strings holds its two endpoints by value, as copies. A change in
+place to the String an endpoint was made from (`<<`, a `!` method) is not
+seen through `begin`, `end`, `first` or `last`, in the default build and
+under `--share-strings` alike:
+
+```ruby
+first = String.new("aa")
+r = (first.."zz")
+first << "x"
+p r.begin       # "aax" in CRuby, "aa" in Spinel
+```
+
+Sharing it needs a Range whose endpoints are shared String handles; that is
+part of the `--share-strings` work (#7721).
+
 #### A call that cannot exist is refused at compile time, not raised at run time
 
 Spinel resolves what it can resolve at compile time -- that is the point of the
