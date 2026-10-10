@@ -2620,10 +2620,25 @@ const char *ivar_set_test(Compiler *c, int cid, const char *ivn, const char *exp
 const char *ivar_set_mark(Compiler *c, int cid, const char *ivn, const char *obj, const char *acc,
                           char *buf, size_t cap) {
   if (ivar_set_kind(c, cid, ivn) != 3) return NULL;
-  if (ivar_ranked(c, cid))
+  /* The ranked form names the object four times, and a boxed receiver's
+     is a cast spelling the class: a long class name outgrew the caller's
+     buffer, and the cut text went into the C (#8406). A mark that does not
+     fit is made on the heap, whole. */
+  const char *iv = iv_c(ivn + 1);
+  int rk = ivar_ranked(c, cid);
+  int need = rk ? snprintf(NULL, 0, "sp_ivar_rank(&%s%s_sp_set_%s, &%s%s_sp_ord, sp_ivar_renumber, %s%scls_id, %s);",
+                           obj, acc, iv, obj, acc, obj, acc, obj)
+                : snprintf(NULL, 0, "%s%s_sp_set_%s = TRUE;", obj, acc, iv);
+  if (need < 0) return NULL;
+  if ((size_t)need >= cap) {
+    cap = (size_t)need + 1;
+    buf = malloc(cap);
+    if (!buf) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  if (rk)
     snprintf(buf, cap, "sp_ivar_rank(&%s%s_sp_set_%s, &%s%s_sp_ord, sp_ivar_renumber, %s%scls_id, %s);",
-             obj, acc, iv_c(ivn + 1), obj, acc, obj, acc, obj);
-  else snprintf(buf, cap, "%s%s_sp_set_%s = TRUE;", obj, acc, iv_c(ivn + 1));
+             obj, acc, iv, obj, acc, obj, acc, obj);
+  else snprintf(buf, cap, "%s%s_sp_set_%s = TRUE;", obj, acc, iv);
   return buf;
 }
 /* The same for ivar write node `w`, which stores into self: an instance

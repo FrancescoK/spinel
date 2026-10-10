@@ -1690,7 +1690,10 @@ TyKind ffi_spec_to_ty(const char *spec);
 int local_sole_range_node(Compiler *c, int recv);
 int range_float_begin(Compiler *c, int recv);
 void emit_block_param_from_boxed(Compiler *c, const char *pname, TyKind pt, const char *src, Buf *b);
-void emit_rest_pack_kwh(Compiler *c, int from, int pos_argc, const int *argv, int kwh, Buf *b);
+int emit_rest_pack_kwh(Compiler *c, int from, int pos_argc, const int *argv, int kwh, Buf *b);
+/* Hold a call's fresh rest array `text` in a temp declared and rooted in the
+   enclosing frame (g_pre), assigned in place; `boxed` for a poly slot. */
+void emit_rest_held(int boxed, const char *text, Buf *out);
 int rest_kwh_tail(Compiler *c, Scope *m, int kwh, int pos_argc);
 int rest_bind_argc(Compiler *c, Scope *m, int kwh, int pos_argc);
 int yield_value_diverges(Compiler *c, int mi);
@@ -2271,11 +2274,18 @@ int strbuf_flow_unseen(Compiler *c, int v);
    strip them, where a function's text is final and before any pass reads
    it as text (and over the whole unit, for what is left); once the unit is
    written, write the reports. */
-void share_check_mark(Compiler *c, int v, char face, Buf *b);
+int share_check_mark(Compiler *c, int v, char face, Buf *b);
+void share_check_mark_end(Compiler *c);
 void share_check_harvest(Compiler *c, Buf *b, size_t from);
 void share_check_report(Compiler *c);
 /* The text without the marks that lead it, for an emitter that reads an
    operand's text as a temp or compares it with one. */
 const char *share_check_unmarked(const char *t);
 size_t share_check_strip(char *s, size_t len);
+/* Declarations (share_check.c): the emitter says the value it wrote for
+   `node` is no copy of a shared String -- the mark of the emit_expr still
+   open for the node, or every mark of the node in b[from..]. */
+void share_check_declare_value(Compiler *c, int node);
+void share_check_declare_reads(Buf *b, size_t from, int node);
+void share_check_declare_local_reads(Compiler *c, Buf *b, size_t from, const char *name);
 #endif

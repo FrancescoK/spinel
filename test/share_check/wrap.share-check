@@ -1,3 +1,0 @@
-share-check: copy: test/share_check/wrap.rb:3 node 6 CallNode (to_s): bytes wrapped into a new handle by sp_String_new_shared (sp_poly_to_s)
-share-check: copy: test/share_check/wrap.rb:3 node 7 LocalVariableReadNode (s): bytes wrapped into a new handle by sp_String_new_shared (sp_poly_to_s)
-share-check: 9 marks, 2 copies

@@ -1478,7 +1478,7 @@ void emit_expr(Compiler *c, int id, Buf *b) {
     return;
   }
   if (g_repr_check) repr_check_ask(c, id);
-  if (g_share_check) share_check_mark(c, id, 'x', b);
+  int sk_open = g_share_check ? share_check_mark(c, id, 'x', b) : 0;
   int frame = g_repr_check ? repr_channel_begin(c, id) : -1;
   g_expr_depth++;
   /* an Array subclass instance read where an Array is wanted -- a splat, a
@@ -1499,6 +1499,7 @@ void emit_expr(Compiler *c, int id, Buf *b) {
   }
   else emit_expr_node(c, id, b);
   g_expr_depth--;
+  if (sk_open) share_check_mark_end(c);
   if (g_repr_check) repr_channel_end(c, frame);
 }
 
@@ -1606,6 +1607,9 @@ static void emit_local_orw_result(Compiler *c, int id, LocalVar *lv, const char 
 static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *ty) {
   if (sp_streq(ty, "LocalVariableReadNode")) {
     const char *lrn = nt_str(nt, id, "name");
+    /* a local a shared-handle shim reads through its shadow, which the shim
+       writes back into the handle: no copy of the String */
+    if (g_share_check && lrn && sb_shim_shadow(lrn, rename_local(lrn))) share_check_declare_value(c, id);
     /* compile-time define_method substitution: the loop var IS the literal */
     if (g_dm_subst_name && lrn && sp_streq(lrn, g_dm_subst_name) && g_dm_subst_node >= 0) {
       emit_expr(c, g_dm_subst_node, b); return 1;
@@ -2184,6 +2188,7 @@ static int emit_ivar_cvar_gvar_expr(Compiler *c, int id, Buf *b, const NodeTable
     if (g_sb_iv_name && nm && sp_streq(nm, g_sb_iv_name) &&
         strbuf_ivar_owner(c, id) == g_sb_iv_cid) {
       buf_printf(b, "%s", g_sb_iv_repl);
+      if (g_share_check) share_check_declare_value(c, id);   /* (the shim writes the shadow back) */
       return 1;
     }
     /* a shared-mutable string slot: a marked read yields the live HANDLE, an
@@ -4349,7 +4354,12 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
 
   /* Hoisted call argument: substitute the rooted temp (see emit_args_filled). */
   for (int i = g_n_argov - 1; i >= 0; i--)
-    if (g_argov_node[i] == id) { buf_puts(b, g_argov_text[i]); return; }
+    if (g_argov_node[i] == id) {
+      buf_puts(b, g_argov_text[i]);
+      /* a reader call the shim has substituted with its shadow, written back */
+      if (g_share_check && sb_shadowed_reader(id)) share_check_declare_value(c, id);
+      return;
+    }
 
   if (sp_streq(ty, "IntegerNode")) {
     const char *bigval = nt_str(nt, id, "bigval");

@@ -1,0 +1,2 @@
+share-check: copy: test/share_check/bang_value.rb:6 node 22 LocalVariableReadNode (x): changed in place as bytes by sp_box_nullable_str (bytes face)
+share-check: 16 marks, 0 declared, 1 copies

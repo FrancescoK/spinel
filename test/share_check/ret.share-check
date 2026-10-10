@@ -1,2 +1,2 @@
 share-check: copy: test/share_check/ret.rb:13 node 68 CallNode (gsub!): answered as bytes publishing no handle by return (bytes face)
-share-check: 11 marks, 1 copies
+share-check: 11 marks, 0 declared, 1 copies

@@ -151,6 +151,23 @@ static int ctor_new_on_cycle(Compiler *c, int id, int ci, int initm) {
   return ctor_site_on_cycle(c, id, initm) && ctor_init_proc_form(c, ci) >= 0;
 }
 
+/* Is the proc the call hands its block slot one made at the call, which
+   nothing but the call holds? A literal block (here or forwarded from the site
+   a body was spliced at) is. A `&expr` is, unless emit_block_arg_proc passes
+   a Proc value on as it is and the expression does not allocate (a read of a
+   slot that holds the proc): a Method, a Symbol or a boxed value is converted
+   into a new proc (sp_method_to_proc, sp_poly_to_block), and `&-> { }` makes
+   one. An anonymous `&` and `&nil` pass the enclosing proc or none. */
+static int ctor_block_fresh(Compiler *c, int id) {
+  int blk = resolve_forwarded_block(c, nt_ref(c->nt, id, "block"));
+  NodeKind bk = nt_kind(c->nt, blk);
+  if (bk == NK_BlockNode) return 1;
+  if (bk != NK_BlockArgumentNode) return 0;
+  int e = nt_ref(c->nt, blk, "expression");
+  if (e < 0 || nt_kind(c->nt, e) == NK_NilNode) return 0;
+  return repr_of(c, e).as_ty != TY_PROC || subtree_allocates(c->nt, e);
+}
+
 /* `new(..., &pr)` into a yielding initialize, the proc known only at run time
    (emit_ctor_yield_inline declined it): the constructor that hands it to the
    initialize's proc-form clone. A literal block at a `new` on a cycle of
@@ -165,10 +182,12 @@ int emit_ctor_new_with_proc(Compiler *c, int id, int ci, Buf *b) {
       !(nt_kind(c->nt, blk) == NK_BlockNode && ctor_new_on_cycle(c, id, ci, initm))) return 0;
   if (ctor_init_proc_form(c, ci) < 0) return 0;
   /* A literal block, here or forwarded from the site a body was spliced
-     at, is a new proc nothing else holds, and the constructor allocates
-     the object before the clone roots its block: it is held in a rooted
-     temp across the call, as hoist_ctor_block holds one. */
-  int held = g_ctor_blk_tmp < 0 && nt_kind(c->nt, resolve_forwarded_block(c, blk)) == NK_BlockNode;
+     at, or a `&` the call turns into a proc or makes one with
+     (ctor_block_fresh), is a new proc nothing else holds, and the
+     constructor allocates the object before the clone roots its block: it
+     is held in a rooted temp across the call, as hoist_ctor_block holds
+     one. */
+  int held = g_ctor_blk_tmp < 0 && ctor_block_fresh(c, id);
   int t = held ? ++g_tmp : -1;
   if (held) {
     buf_printf(b, "({ sp_Proc *_t%d = ", t);
@@ -7535,24 +7554,25 @@ void emit_poly_arm_args(Compiler *c, Scope *m, Scope *ms, const ArgLayout *L,
   for (int a = 0; a < ms->nparams; a++) {
     buf_puts(cb, a ? ", " : lead);
     Buf pa; memset(&pa, 0, sizeof pa);
-    if (pav) {
-      pa = pav[a];
-      if (nfresh > 1 && pa.p && strstr(pa.p, "SP_GC_ROOT(")) {
-        const char *pnm = ms->pnames ? ms->pnames[a] : NULL;
-        LocalVar *pv = pnm ? scope_local(ms, pnm) : NULL;
-        TyKind pt = pv ? pv->type : TY_POLY;
-        if (pt == TY_UNKNOWN) pt = TY_POLY;
-        int tf = ++g_tmp;
-        emit_ctype(c, pt, pre);
-        buf_printf(pre, " _t%d = %s; ", tf, pa.p);
-        if (needs_root(pt))
-          buf_printf(pre, pt == TY_POLY ? "SP_GC_ROOT_RBVAL(_t%d); " : "SP_GC_ROOT(_t%d); ", tf);
-        buf_printf(cb, "_t%d", tf);
-        free(pa.p);
-        continue;
-      }
-    }
+    if (pav) pa = pav[a];
     else emit_poly_arm_param(c, ms, a, L, A, ct, selfd, a < last_read, &pa);
+    /* A rest's slice is bound so as well when it is the only one: the
+       callee need not root it before it allocates (a method capturing its
+       rest allocates the cell first), as emit_rest_held holds it. */
+    if (!pd_arm && pa.p && strstr(pa.p, "SP_GC_ROOT(") && (nfresh > 1 || a == ms->rest_idx)) {
+      const char *pnm = ms->pnames ? ms->pnames[a] : NULL;
+      LocalVar *pv = pnm ? scope_local(ms, pnm) : NULL;
+      TyKind pt = pv ? pv->type : TY_POLY;
+      if (pt == TY_UNKNOWN) pt = TY_POLY;
+      int tf = ++g_tmp;
+      emit_ctype(c, pt, pre);
+      buf_printf(pre, " _t%d = %s; ", tf, pa.p);
+      if (needs_root(pt))
+        buf_printf(pre, pt == TY_POLY ? "SP_GC_ROOT_RBVAL(_t%d); " : "SP_GC_ROOT(_t%d); ", tf);
+      buf_printf(cb, "_t%d", tf);
+      free(pa.p);
+      continue;
+    }
     const char *pnm = ms->pnames ? ms->pnames[a] : NULL;
     if (pd_arm && pnm && g_nren < MAX_RENAME) {
       LocalVar *pv = scope_local(ms, pnm);
@@ -10020,8 +10040,24 @@ const char *ctor_blk_lead(const Buf *b) {
 void emit_ctor_block_slot(Compiler *c, int id, int initm, const char *lead, Buf *b) {
   if (!ctor_init_takes_block(c, initm)) return;
   buf_puts(b, lead);
-  if (ctor_init_uses_block(c, initm)) emit_ctor_block_value(c, id, b);
-  else buf_puts(b, "NULL");
+  if (!ctor_init_uses_block(c, initm)) { buf_puts(b, "NULL"); return; }
+  /* A proc made at the call is held by nothing until initialize roots its
+     `&blk`, and sp_X_new allocates the object first: it goes into a temp
+     declared and rooted in the enclosing frame, assigned in place, as a
+     dispatch's hoist_ctor_block holds it. */
+  if (g_ctor_blk_tmp < 0 && g_pre && ctor_block_fresh(c, id)) {
+    Buf pb; memset(&pb, 0, sizeof pb);
+    emit_ctor_block_value(c, id, &pb);
+    int t = ++g_tmp;
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "sp_Proc *_t%d = NULL;\n", t);
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", t);
+    buf_printf(b, "(_t%d = %s)", t, pb.p ? pb.p : "NULL");
+    free(pb.p);
+    return;
+  }
+  emit_ctor_block_value(c, id, b);
 }
 
 int emit_ctor_splice_arm(Compiler *c, int id, int ci, int initm, int rt2, Buf *b) {
@@ -16470,6 +16506,8 @@ void emit_wrong_count(Compiler *c, int id, const char *exp, int eval_recv, int g
   buf_printf(b, "sp_raise_cls(\"ArgumentError\","
                 " \"wrong number of arguments (given %d, expected %s)\"); %s; })",
              given, exp, dv ? dv : "0");
+  /* the call never answers, so its value is no copy of anything */
+  if (g_share_check) share_check_declare_value(c, id);
 }
 
 /* One binding's call over the gathered arguments `_t<ta>`: each fixed slot
@@ -16679,6 +16717,7 @@ int emit_native_count_mismatch(Compiler *c, int id, int cid, const char *name, i
   buf_printf(b, "sp_raise_cls(\"ArgumentError\","
                 " \"wrong number of arguments (given %d, expected %s)\"); %s; })",
              argc, exp, dv ? dv : "0");
+  if (g_share_check) share_check_declare_value(c, id);   /* (it never answers) */
   return 1;
 }
 

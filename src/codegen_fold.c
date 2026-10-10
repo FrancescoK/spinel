@@ -7489,8 +7489,10 @@ static int kwh_consumed_by_kwparam(Compiler *c, Scope *m, int kwh) {
 
 /* Pack argv[from..pos_argc) into a rest Array, with `kwh` (an unconsumed
    keyword hash that degrades to one positional hash argument) as the
-   trailing element; a negative `kwh` appends none. */
-void emit_rest_pack_kwh(Compiler *c, int from, int pos_argc, const int *argv, int kwh, Buf *b) {
+   trailing element; a negative `kwh` appends none. Returns 1 when the
+   array is held by a temp rooted in the enclosing frame (the general case),
+   0 when the rendering hands back an allocation nothing roots. */
+int emit_rest_pack_kwh(Compiler *c, int from, int pos_argc, const int *argv, int kwh, Buf *b) {
   const NodeTable *nt = c->nt;
   /* Optimize: single pure-splat → direct conversion */
   if (kwh < 0 && pos_argc == from + 1) {
@@ -7500,27 +7502,27 @@ void emit_rest_pack_kwh(Compiler *c, int from, int pos_argc, const int *argv, in
       Repr ar = repr_of(c, inner);
       if (ar.elem == TY_INT) {
         buf_puts(b, "sp_IntArray_to_poly("); emit_expr(c, inner, b); buf_puts(b, ")");
-        return;
+        return 0;
       }
       if (ar.elem == TY_STRING) {
         buf_puts(b, "sp_StrArray_to_poly_fmt("); emit_expr(c, inner, b); buf_puts(b, ")");
-        return;
+        return 0;
       }
       if (ar.elem == TY_FLOAT) {
         buf_puts(b, typed_array_src_held(c, inner) ? "sp_typed_to_poly(" : "sp_typed_to_poly_unheld(");
         emit_expr(c, inner, b); buf_puts(b, ", SP_BUILTIN_FLT_ARRAY)");
-        return;
+        return 0;
       }
       if (ar.elem == TY_POLY) {
         buf_puts(b, "sp_PolyArray_dup("); emit_expr(c, inner, b); buf_puts(b, ")");
-        return;
+        return 0;
       }
     }
   }
   /* Empty rest */
   if (kwh < 0 && (!argv || pos_argc <= from)) {
     buf_puts(b, "sp_PolyArray_new()");
-    return;
+    return 0;
   }
   /* General case: build PolyArray as statement expression. The temp is
      DECLARED and rooted in the enclosing frame rather than inside the
@@ -7625,6 +7627,7 @@ else {
   }
   free(kel.p);
   buf_printf(b, " _t%d; })", t);
+  return 1;
 }
 
 /* Emit the element at index `elem_idx` from a typed array temp `tmp`. */
@@ -7855,7 +7858,7 @@ static void emit_arg_rooted(Compiler *c, Scope *m, int idx, int provided, int he
   /* A String default that is the receiver an arm holds (`b = self`) is that
      temp itself, rooted already: no alias of it is needed. */
   if (provided < 0 && (pt == TY_STRING || pt == TY_STRBUF) && g_arm_self && g_arm_scope == m &&
-      g_arm_depth == g_expr_depth && ab.p && sp_streq(ab.p, g_arm_self)) {
+      g_arm_depth == g_expr_depth && ab.p && sp_streq(share_check_unmarked(ab.p), g_arm_self)) {
     buf_puts(out, ab.p);
     free(ab.p);
     return;
@@ -10745,6 +10748,27 @@ void emit_args_filled(Compiler *c, int callee_idx, int argsNode, const char *lea
   emit_args_filled_argv(c, callee_idx, argv, argc, argsNode, lead, out);
 }
 
+/* The rest array a call binds, held in a temp declared and rooted in the
+   enclosing frame and assigned in place, so the arguments still run in the
+   call's order. It is a fresh array nothing else holds, and the callee is not
+   bound to root it before it allocates: sp_X_new allocates the object before
+   initialize roots its parameters, a method that captures its rest in a block
+   or a Thread allocates the cell first, and the call's later arguments (a
+   keyword value, a block's proc) allocate before either runs. It is held as
+   arg_wants_root holds any fresh argument. A root the rendering takes inside
+   its own statement expression pops when that expression ends, and a
+   converted or empty rest has none; emit_rest_pack_kwh's general case already
+   holds its array this way. `boxed` when the rendering boxes the array for a
+   poly slot. See codegen_internal.h. */
+void emit_rest_held(int boxed, const char *text, Buf *out) {
+  int t = ++g_tmp;
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, boxed ? "sp_RbVal _t%d = sp_box_nil();\n" : "sp_PolyArray *_t%d = NULL;\n", t);
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, boxed ? "SP_GC_ROOT_RBVAL(_t%d);\n" : "SP_GC_ROOT(_t%d);\n", t);
+  buf_printf(out, "(_t%d = %s)", t, text ? text : (boxed ? "sp_box_nil()" : "sp_PolyArray_new()"));
+}
+
 /* See codegen_internal.h. */
 void emit_args_filled_argv(Compiler *c, int callee_idx, const int *argv, int argc, int argsNode,
                            const char *lead, Buf *out) {
@@ -11045,18 +11069,30 @@ else {
   for (int i = 0; i < m->nparams; i++) {
     buf_puts(out, i == 0 ? lead : ", ");
     if (L.gather && emit_gather_lead_lent(c, m, i, argv, argc, out)) {}
+    else if (L.from[i] == ARG_GATHERED && i == m->rest_idx) {
+      Buf rb; memset(&rb, 0, sizeof rb);
+      emit_gathered_param(c, m, i, splat_tmp, &rb);
+      LocalVar *rp = m->pnames[i] ? scope_local(m, m->pnames[i]) : NULL;
+      emit_rest_held(rp && rp->type == TY_POLY, rb.p, out);
+      free(rb.p);
+    }
     else if (L.from[i] == ARG_GATHERED)
       emit_gathered_param(c, m, i, splat_tmp, out);
     else if (L.from[i] == ARG_REST) {
       /* rest collects middle args; stop before post-splat params */
       int rest_end = rest_argc - m->npost_rest;
+      Buf rb; memset(&rb, 0, sizeof rb);
+      int framed = 0;
       if (splat_tmp >= 0) {
         emit_rest_from_splat_and_argv(splat_tmp, splat_at, i - splat_idx,
-                                      c, splat_idx + 1, rest_end, argv, out);
+                                      c, splat_idx + 1, rest_end, argv, &rb);
       }
 else {
-        emit_rest_pack_kwh(c, i, rest_end, argv, L.rest_kwh, out);
+        framed = emit_rest_pack_kwh(c, i, rest_end, argv, L.rest_kwh, &rb);
       }
+      if (framed) buf_puts(out, rb.p ? rb.p : "sp_PolyArray_new()");
+      else emit_rest_held(0, rb.p, out);
+      free(rb.p);
     }
 else if (L.from[i] == ARG_ELEM)
       emit_elem_param(c, m, i, L.arg[i], splat_tmp, splat_at, splat_all,
@@ -11821,24 +11857,27 @@ void emit_dispatch(Compiler *c, int cid, const char *name,
       /* the packed arguments are the caller's: no parameter renames */
       RenHide rest_h;
       ren_hide(&rest_h, pd_ren_base);
+      int framed_d = 0;
       if (L.from[k] == ARG_GATHERED)
         emit_gathered_param(c, pm, k, splat_tmp_d, &ab);
       else if (L.splat >= 0)
         emit_rest_from_splat_and_argv(splat_tmp_d, splat_at_d, k - L.splat,
                                       c, L.splat + 1, rest_end_d, argv, &ab);
       else
-        emit_rest_pack_kwh(c, k, rest_end_d, argv, L.rest_kwh, &ab);
+        framed_d = emit_rest_pack_kwh(c, k, rest_end_d, argv, L.rest_kwh, &ab);
       ren_unhide(&rest_h);
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "sp_PolyArray *_t%d = %s;\n", atmp[k], ab.p ? ab.p : "sp_PolyArray_new()");
       /* The packed rest is a fresh array in a plain C temporary: a splat's
          packing roots its accumulator only while it builds it, and the other
          packing's shortcuts (a lone typed splat converted whole, an empty
-         rest) hand back an allocation with no root at all. Root it whenever
-         the call still has something to evaluate -- a parameter after the
-         rest, or a block literal -- because each of those allocates, and a
-         collected rest is recycled straight into the next array. */
-      if (k < np - 1 || blk_node >= 0) {
+         rest) hand back an allocation with no root at all. Root it unless
+         the packing holds it in the frame already (emit_rest_pack_kwh's
+         general case): a parameter after the rest or a block literal
+         allocates, and the callee need not root it before it allocates
+         either (a method that captures its rest allocates the cell first),
+         as emit_rest_held holds it. */
+      if (!framed_d) {
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", atmp[k]);
       }

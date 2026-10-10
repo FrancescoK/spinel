@@ -1,5 +1,6 @@
-# The handle a call publishes is taken after the call ran: an argument that
-# ran first must not move the pickup in front of the call.
+# A bang on a call's answer, used as a value in a position that is only
+# tested for nil: the emitter answers the receiver's handle, and the bytes
+# the bang read and wrote back are no copy (the check reports nothing).
 def pick(value, missing)
   return nil if missing
   value

@@ -1652,6 +1652,21 @@ int emit_call_const_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *n
   return 0;
 }
 
+/* Does the box of argument `node` hold a heap value nothing else holds? Not
+   when it boxes an immediate (an Integer, a Float, true or false, nil, a
+   Symbol, a Class), nor a bare read of a slot that holds the pointer it boxes
+   (arg_wants_root's reads). A by-value object or a struct-valued kind (a
+   Range, a String Range) is copied into a new box, and --share-strings may
+   box a String as a new handle. */
+static int boxed_arg_wants_root(Compiler *c, int node) {
+  TyKind t = repr_of(c, node).as_ty;
+  if (t == TY_INT || t == TY_FLOAT || t == TY_BOOL || t == TY_NIL || t == TY_SYMBOL || t == TY_CLASS)
+    return 0;
+  if (comp_ty_value_obj(c, t) || ty_is_struct_valued(t)) return 1;
+  if (repr_share_rule(c) && (t == TY_STRING || t == TY_STRBUF)) return 1;
+  return !((t == TY_POLY || needs_root(t)) && !arg_wants_root(c, t, node));
+}
+
 /* new and allocate on a Class value, a poly receiver, self's class or a constant, and Cls.exception */
 int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv) {
   /* .new WITH arguments on a Class value whose class is only known at run time.
@@ -1946,7 +1961,12 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
     int sv_cbt = hoist_ctor_block(c, id, b);
     for (int a = 0; a < argc; a++) {
       atmp[a] = ++g_tmp;
-      buf_printf(b, "sp_RbVal _t%d = ", atmp[a]); emit_boxed(c, argv[a], b); buf_puts(b, "; ");
+      buf_printf(b, "sp_RbVal _t%d = ", atmp[a]); emit_boxed(c, argv[a], b);
+      /* the arguments after it and the constructor allocate before
+         initialize holds it: a box of a heap value nothing else holds is
+         rooted, as the Class-valued form above roots its temps */
+      if (boxed_arg_wants_root(c, argv[a])) buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", atmp[a]);
+      else buf_puts(b, "; ");
     }
     buf_printf(b, "sp_RbVal _t%d = sp_box_nil(); switch(_t%d.cls_id){", rt2, kt);
     CtorArityArms aerr = {0};

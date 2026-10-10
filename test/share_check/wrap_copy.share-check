@@ -1,0 +1,2 @@
+share-check: copy: test/share_check/wrap_copy.rb:10 node 30 LocalVariableReadNode (x): bytes wrapped into a new handle by sp_String_new_shared (sp_poly_to_s)
+share-check: 5 marks, 0 declared, 1 copies

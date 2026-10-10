@@ -1,2 +1,0 @@
-share-check: copy: test/share_check/mutcopy.rb:5 node 8 LocalVariableReadNode (s): changed in place as bytes by sp_str_succ (sp_strbuf_read_pub)
-share-check: 4 marks, 1 copies

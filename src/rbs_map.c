@@ -265,6 +265,16 @@ static bool map_class_instance(rbs_parser_t *p, rbs_types_class_instance_t *ci,
 
     size_t argc = ci->args != NULL ? ci->args->length : 0;
 
+    /* `Object` and `BasicObject` take any value, as `untyped` does: a
+     * program that reopens `class Object` made the name a class of its
+     * own, and the seed pinned the slot to that object, which a Float or
+     * a String cannot be stored in (#8407). */
+    if (argc == 0 && (strcmp(name.buf, "Object") == 0 || strcmp(name.buf, "BasicObject") == 0)) {
+        sbuf_set(out, "poly", 4);
+        sbuf_free(&name);
+        return true;
+    }
+
     if (primitive != NULL && argc == 0) {
         sbuf_set(out, primitive, strlen(primitive));
         sbuf_free(&name);

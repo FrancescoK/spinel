@@ -719,7 +719,7 @@ int emit_call_instance_eval_arms(Compiler *c, int id, Buf *b, const NodeTable *n
        call is boxed (infer_call's instance_exec arm), so is this site's value */
     int ie_fwd_boxed = 0;
     if (blk >= 0 && nt_kind(nt, blk) == NK_BlockArgumentNode && call_forwards_own_block(c, id) &&
-        (recv < 0 || comp_ntype(c, recv) != TY_POLY)) {
+        g_ie_poly_node != id && (recv < 0 || comp_ntype(c, recv) != TY_POLY)) {
       Scope *fsc = comp_scope_of(c, id);
       int fmi = fsc ? (int)(fsc - c->scopes) : -1;
       ie_fwd_boxed = fmi >= 0 && yield_value_diverges(c, fmi) && !node_is_scope_tail(c, fmi, id);
