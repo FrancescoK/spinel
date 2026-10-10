@@ -4065,9 +4065,16 @@ const char *sp_srange_to_s(sp_StrRange r) {
   return sp_sprintf("%s%s%s", r.first ? r.first : sp_str_empty,
                     r.excl ? "..." : "..", r.last ? r.last : sp_str_empty);
 }
+/* The begin's inspect is a new String the end's inspect can collect, and
+   the caller's range is a by-value pair nothing may root (#8322): both
+   ends and the first answer are held here. */
 const char *sp_srange_inspect(sp_StrRange r) {
-  const char *lo = r.first ? sp_str_inspect(r.first) : sp_str_empty;
-  const char *hi = r.last ? sp_str_inspect(r.last) : sp_str_empty;
+  const char *f = r.first, *l = r.last;
+  SP_GC_ROOT_STR(f); SP_GC_ROOT_STR(l);
+  const char *lo = f ? sp_str_inspect(f) : sp_str_empty;
+  SP_GC_ROOT_STR(lo);
+  const char *hi = l ? sp_str_inspect(l) : sp_str_empty;
+  SP_GC_ROOT_STR(hi);
   return sp_sprintf("%s%s%s", lo, r.excl ? "..." : "..", hi);
 }
 /* A boxed String range holds its two endpoint strings: the box marks them,
