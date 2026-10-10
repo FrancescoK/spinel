@@ -367,8 +367,12 @@ class OptionParser
     arg = argv[index]
     eq = arg.index("=")
     name = eq ? arg[0, eq] : arg
-    full = complete_long(name)
-    raise InvalidOption.new("invalid option: " + name) if full.nil?
+    begin
+      full = complete_long(name)
+    rescue AmbiguousOption
+      raise AmbiguousOption.new("ambiguous option: " + arg)
+    end
+    raise InvalidOption.new("invalid option: " + arg) if full.nil?
     sw = find_switch(full)
     is_enabled = !sw.negated?(full)
     if sw.takes_value && is_enabled
