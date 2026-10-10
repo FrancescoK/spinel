@@ -178,6 +178,7 @@ int emit_strbuf_io_read(Compiler *c, int id, Buf *b);
 void emit_str_concat_handle(Compiler *c, const char *sref, int argc, const int *argv, Buf *b, int indent);
 int emit_bang_self_handle(Compiler *c, int v, Buf *b);
 int strbuf_chain_over_handle(Compiler *c, int v);
+int strbuf_seq_nil_tail(Compiler *c, int v);
 int strbuf_narrowed_box_mutator(Compiler *c, int id);
 void emit_narrowed_box_mutator(Compiler *c, int id, Buf *b);
 int strbuf_opwrite_handle(Compiler *c, int v, char *out, size_t cap);

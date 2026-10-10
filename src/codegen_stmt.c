@@ -2846,6 +2846,38 @@ void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
     }
   }
 }
+/* The last statement of a parenthesized sequence (through nested ones), or
+   v itself; -1 for an empty one. */
+static int paren_tail(const NodeTable *nt, int v) {
+  while (v >= 0 && nt_kind(nt, v) == NK_ParenthesesNode) {
+    int body = nt_ref(nt, v, "body");
+    int n = 0; const int *st = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &n) : NULL;
+    v = n >= 1 ? st[n - 1] : -1;
+  }
+  return v;
+}
+/* Is v a parenthesized sequence whose value is nil (`(puts "side"; nil)`)?
+   A String slot takes NULL for it, after the statements before the nil. */
+int strbuf_seq_nil_tail(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  int t = v >= 0 && nt_kind(nt, v) == NK_ParenthesesNode ? paren_tail(nt, v) : -1;
+  return t >= 0 && nt_kind(nt, t) == NK_NilNode;
+}
+/* The slot's nil for sequence v (strbuf_seq_nil_tail): the statements
+   before the nil run first, in order, as an expression. */
+static void emit_strbuf_seq_nil(Compiler *c, int v, Buf *b) {
+  const NodeTable *nt = c->nt;
+  Buf pre; memset(&pre, 0, sizeof pre);
+  for (int u = v; u >= 0 && nt_kind(nt, u) == NK_ParenthesesNode;) {
+    int body = nt_ref(nt, u, "body");
+    int n = 0; const int *st = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &n) : NULL;
+    for (int i = 0; i < n - 1; i++) emit_stmt(c, st[i], &pre, 0);
+    u = n >= 1 ? st[n - 1] : -1;
+  }
+  if (pre.p && pre.p[0]) buf_printf(b, "({ %s(sp_String *)NULL; })", pre.p);
+  else buf_puts(b, "(sp_String *)NULL");
+  free(pre.p);
+}
 /* The value a generated Struct or Data constructor or an attribute writer
    stores into a String ivar slot (TY_STRBUF), which no `@iv = v` of the
    program writes: what a write into a slot of that kind hands it
@@ -2859,11 +2891,15 @@ void emit_strbuf_ivar_store(Compiler *c, int shared, int v, Buf *b) {
   memset(&slot, 0, sizeof slot);
   slot.type = TY_STRBUF;
   slot.str_shared = shared ? 1 : 0;
+  if (strbuf_seq_nil_tail(c, v)) { emit_strbuf_seq_nil(c, v, b); return; }
   int u = v;
+  /* The value of a parenthesized sequence is its last statement, and the
+     ones before it run in emit_strbuf_value. Taken as nil, `(@q = 1; @s)`
+     stored NULL and dropped its statements. */
   while (u >= 0 && nt_kind(nt, u) == NK_ParenthesesNode) {
     int body = nt_ref(nt, u, "body");
     int n = 0; const int *st = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &n) : NULL;
-    u = n == 1 ? st[0] : -1;
+    u = n >= 1 ? st[n - 1] : -1;
   }
   NodeKind k = u >= 0 ? nt_kind(nt, u) : NK_NilNode;
   if (k == NK_NilNode) { buf_puts(b, "NULL"); return; }
@@ -13587,6 +13623,8 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
          source's frozen state (#3227 P4) */
       char srefW[1024];
       if (vty && sp_streq(vty, "NilNode")) buf_puts(b, "NULL");
+      /* a sequence that ends in nil: its statements, then the slot's nil */
+      else if (strbuf_seq_nil_tail(c, v)) emit_strbuf_ivar_store(c, 0, v, b);
       else if (strbuf_slot_ref(c, v, srefW, sizeof srefW)) buf_puts(b, srefW);
       /* A conditional into the shared slot takes each arm's handle. */
       else if (repr_share_rule(c) && strbuf_cond_has_handle_leaf(c, v, 0))
