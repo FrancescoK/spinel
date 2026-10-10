@@ -4078,11 +4078,15 @@ void emit_poly_defaults_n(Compiler *c, int id, int recv, const char *name, const
     else if (is_round_family(name) && argc == 1 && splat_a < 0) {
       if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_ND_ROUND, -1, TY_UNKNOWN, PC_SAME);
       char nd9[64];
+      /* a Float count is range-checked where the receiver is a number: the
+         _fdigits helpers, whose call is as long as the cast it replaces */
+      int fd9 = atmp_ty[0] == TY_FLOAT;
       if (atmp_ty[0] == TY_POLY) snprintf(nd9, sizeof nd9, "sp_poly_arg_int_chk(_t%d)", atmp[0]);
+      else if (fd9) snprintf(nd9, sizeof nd9, "_t%d", atmp[0]);
       else snprintf(nd9, sizeof nd9, "(sp_int)_t%d", atmp[0]);
       Buf nv9; memset(&nv9, 0, sizeof nv9);
-      if (sp_streq(name, "round")) buf_printf(&nv9, "sp_poly_round_n(_t%d, %s)", tv, nd9);
-      else buf_printf(&nv9, "sp_poly_prec_n(_t%d, %s, %s)", tv, nd9,
+      if (sp_streq(name, "round")) buf_printf(&nv9, fd9 ? "sp_poly_round_n_fdigits(_t%d, %s)" : "sp_poly_round_n(_t%d, %s)", tv, nd9);
+      else buf_printf(&nv9, fd9 ? "sp_poly_prec_n_fdigits(_t%d, %s, %s)" : "sp_poly_prec_n(_t%d, %s, %s)", tv, nd9,
                       name[0] == 'c' ? "SP_PREC_CEIL" : name[0] == 'f' ? "SP_PREC_FLOOR" : "SP_PREC_TRUNC");
       buf_printf(b, " _t%d = ", tr);
       if (ret == TY_POLY) buf_puts(b, nv9.p ? nv9.p : "");
