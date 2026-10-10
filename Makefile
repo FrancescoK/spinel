@@ -839,6 +839,20 @@ else
 # `promote_*` tests overflow on purpose and only have defined output under
 # --int-overflow=promote; in raise/wrap mode they would (correctly) raise.
 TESTS := $(filter-out test/promote_%.rb,$(TESTS))
+ifeq ($(SPINEL_INT_OVERFLOW),wrap)
+# Drive the front-end and the C compile in wrap mode (#8331), as promote is
+# driven above.
+SP_OV_FLAG := --int-overflow=wrap
+SP_OV_DEFINE := -DSP_INT_OVERFLOW_MODE_WRAP
+endif
+endif
+# The tests a mode answers otherwise than its .expected: those that pin
+# raise mode's overflow answers, which wrap gives as wrapped values, and the
+# gaps found when the mode lanes began (#8331). A gap is taken off its list
+# with its fix.
+ifneq ($(filter wrap promote,$(SPINEL_INT_OVERFLOW)),)
+INT_OV_SKIP := $(shell grep -v '^\#' test/int-overflow/$(SPINEL_INT_OVERFLOW)-skip.txt 2>/dev/null)
+TESTS := $(filter-out $(INT_OV_SKIP),$(TESTS))
 endif
 # A 32-bit target has a 32-bit Integer (lib/sp_types.h): a test that assumes
 # the 64-bit one (values or arithmetic past 2^31, `Integer#size == 8`, a
@@ -973,7 +987,7 @@ CC_KIND  := $(if $(findstring clang,$(shell $(CC) --version 2>/dev/null | head -
 sp_empty :=
 sp_space := $(sp_empty) $(sp_empty)
 sp_pathify = $(subst =,,$(subst /,,$(subst $(sp_space),,$(subst -,,$(1)))))
-PCH_ROOT := build/pch/$(CC_KIND)$(call sp_pathify,$(OPT))$(if $(SP_OV_DEFINE),promote)
+PCH_ROOT := build/pch/$(CC_KIND)$(call sp_pathify,$(OPT))$(if $(SP_OV_DEFINE),$(SPINEL_INT_OVERFLOW))
 PCH_FLAGS = $(CFLAGS) $(SP_OV_DEFINE) -Werror $(TEST_WARN_SUPPRESS) $(SEC_FLAGS)
 PCH_PLAIN  := $(PCH_ROOT)/plain/spinel_rt.h.gch
 PCH_NOPOLY := $(PCH_ROOT)/nopoly/spinel_rt.h.gch

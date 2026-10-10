@@ -317,6 +317,61 @@ jobs:
         if: always()
         run: sccache --show-stats
 
+  # The other two Integer overflow modes. The corpus ran only under the
+  # default raise mode, so a change that broke wrap or promote was found
+  # from outside the repo, if at all (#8331). Master pushes only, as the
+  # 32-bit and macOS lanes: a pull request keeps its one job. The tests a
+  # mode answers otherwise today are listed in test/int-overflow/<mode>-skip.txt,
+  # and a gap leaves its list with its fix. clang -O0, as the 32-bit lane:
+  # the lane checks what the mode answers, not what an optimizer makes of it.
+  int-overflow:
+    name: ubuntu-latest / --int-overflow=${{ matrix.mode }}
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [wrap, promote]
+    env:
+      CC: sccache clang
+      SCCACHE_DIR: ${{ github.workspace }}/.sccache
+      SCCACHE_STARTUP_TIMEOUT: "30"
+      SCCACHE_IDLE_TIMEOUT: "0"
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@v0.0.10
+
+      - name: Restore the sccache store
+        uses: actions/cache@v6
+        with:
+          path: .sccache
+          key: sccache-ubuntu-latest-clang-${{ matrix.mode }}-${{ github.run_id }}
+          restore-keys: sccache-ubuntu-latest-clang-${{ matrix.mode }}-
+
+      - name: Pre-start sccache server
+        run: sccache --start-server
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "4.0"
+
+      - name: Fetch libprism sources
+        run: make deps
+
+      - name: Build (parse + regexp + spinelc)
+        run: make -j$(getconf _NPROCESSORS_ONLN) all
+
+      - name: Run the test corpus under --int-overflow=${{ matrix.mode }}
+        run: make -j$(getconf _NPROCESSORS_ONLN) test-corpus OPT=-O0 SPINEL_INT_OVERFLOW=${{ matrix.mode }}
+
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats
+
   # wasm32-wasi. Two commits in eight days left `--target=wasm32-wasi` unable
   # to link any program (64cd200e's execv, 9d8f098f's getrlimit), and both
   # were reported from outside the repo a day after the merge, because no lane

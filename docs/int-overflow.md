@@ -86,6 +86,11 @@ host the compiler runs on:
   `INT32_MIN` is the sentinel an `Integer | nil` slot uses for `nil`, as
   `INT64_MIN` is on 64-bit.
 
+For the developer: `make test-corpus SPINEL_INT_OVERFLOW=wrap` (or `promote`)
+runs the test corpus under that mode, and CI runs both on every push to
+master. The tests a mode answers otherwise today are listed in
+`test/int-overflow/<mode>-skip.txt`; a fix takes its test off the list.
+
 For the developer: `make test-corpus CC='cc -m32'` runs the test corpus as
 32-bit programs. Use a separate work tree, or `make clean` first: the runtime
 objects and the precompiled header are built for one width. A test that
