@@ -2466,6 +2466,10 @@ rbs-seed-extractor: $(SPINEL) $(RBS_EXTRACT_BIN)
 build/rbs-seed-results/%.res: FORCE | rbs-seed-extractor $(SP_RT_LIB) $(SPINEL_TIMEOUT)
 	@mkdir -p $(@D); tmp=$$(mktemp -d /tmp/spinel-rbsseed.XXXXXX); ok=1; \
 	{ case $* in \
+	rbs_pinned_str_hash_demand) \
+	$(SPINEL) test/rbs-seed/rbs_pinned_str_hash_demand.rb --rbs test/rbs-seed/sig -c -o "$$tmp/psh.c" >/dev/null 2>"$$tmp/psh.err" || \
+	  { echo "rbs-seed-test: FAIL (#8302 a store into an --rbs Hash[String, String] ivar was refused)"; sed -n 1,3p "$$tmp/psh.err"; ok=0; }; \
+	;; \
 	hash_each_untyped_appending_writer) \
 	if $(SPINEL) test/rbs-seed/hash_each_untyped_appending_writer.rb --rbs test/rbs-seed/sig -o "$$tmp/heuw" >/dev/null 2>"$$tmp/heuw.err" || \
 	   ! grep -q 'passed to an appending value block' "$$tmp/heuw.err"; then \

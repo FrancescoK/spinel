@@ -16969,6 +16969,14 @@ static int strbuf_ivar_source_walk(Compiler *c, int cid, const char *ivn, int de
 static int strbuf_ivar_source_walk_body(Compiler *c, int cid, const char *ivn, int depth, int mode) {
   const NodeTable *nt = c->nt;
   int changed = 0;
+  /* An ivar an --rbs seed pins to a typed String container (`@out:
+     Hash[String, String]`) keeps plain Strings in its slots: a demand that
+     its stores become handles cannot be met there, and only left a store's
+     value a handle its slot has no conversion for (#8302) */
+  if (SB_KIND(mode) == SB_DEMAND && class_ivar_pinned(&c->classes[cid], ivn)) {
+    int iv = comp_ivar_index(&c->classes[cid], ivn);
+    if (iv >= 0 && repr_typed_str_container(c->classes[cid].ivar_types[iv])) return 0;
+  }
   /* its `=`, `||=` and `&&=` (VS_STORE) */
   for (int e = comp_vsite_first(c, VS_STORE, NK_InstanceVariableReadNode, ivn, cid); e >= 0;
        e = comp_vsite_next(c, e)) {

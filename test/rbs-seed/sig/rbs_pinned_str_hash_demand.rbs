@@ -1,0 +1,6 @@
+module ActionController
+  class CookieJar
+    @out: Hash[String, String]
+    def []: (untyped key) -> String
+  end
+end
