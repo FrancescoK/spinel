@@ -104,13 +104,20 @@ int emit_call_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
     /* More arguments than the wrapper's operands went to its C function as
        extra arguments, which wasm traps on (a native build ignored them).
        CRuby refuses the count: an operator takes one operand, an Array's or
-       a String's [] one or two. */
-    if (tm && bam_binop_wrapper(tm) && argc > tm->nparams - shift && !call_has_splat_arg(nt, argv, argc)) {
+       a String's [] one or two. A call with a splat is counted once the
+       splat is spread (bop_flat below). */
+    int bop_ops = 0, bop_min = 0, bop_max = 0;
+    if (tm && bam_binop_wrapper(tm)) {
       LocalVar *rlv = scope_local(tm, "__bam_r");
+      bop_ops = bop_min = bop_max = tm->nparams - shift;
+      if (sp_streq(bam_builtin_sym(c, target, ""), "[]") && rlv && (ty_is_array(rlv->type) || rlv->type == TY_STRING)) {
+        bop_min = 1; bop_max = 2;
+      }
+    }
+    int bop_flat = tm && bam_binop_wrapper(tm) && call_has_splat_arg(nt, argv, argc);
+    if (tm && bam_binop_wrapper(tm) && argc > bop_ops && !bop_flat) {
       char exp[16];
-      if (sp_streq(bam_builtin_sym(c, target, ""), "[]") && rlv && (ty_is_array(rlv->type) || rlv->type == TY_STRING))
-        snprintf(exp, sizeof exp, "1..2");
-      else snprintf(exp, sizeof exp, "%d", tm->nparams - shift);
+      arity_expected(exp, sizeof exp, bop_min, bop_max);
       emit_wrong_count(c, id, exp, 1, -1, b);
       return 1;
     }
@@ -174,7 +181,11 @@ int emit_call_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
     }
     int bam_rest = tm && tm->rest_idx >= 0;
     int eargc = argc, tsplat = 0;
-    if (!bam_rest && splat_at2 >= 0 && splat_at2 == argc - 1 && (tm || adapter_argc >= 0)) {
+    /* a splat anywhere in a call to an operator's wrapper: every argument
+       is spread into one array, whose length is the count CRuby checks,
+       and the operands are read from it */
+    if (bop_flat) { eargc = bop_ops; splat_at2 = 0; }
+    else if (!bam_rest && splat_at2 >= 0 && splat_at2 == argc - 1 && (tm || adapter_argc >= 0)) {
       eargc = tm ? (tm->nparams - shift) : adapter_argc;
       if (eargc < splat_at2) eargc = splat_at2;
     }
@@ -250,7 +261,12 @@ int emit_call_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
       eargc = 1;
       goto bm_emit_call;
     }
-    if (splat_at2 >= 0) {
+    if (bop_flat) {
+      tsplat = emit_bm_flat_args(c, argv, argc, b);
+      buf_printf(b, "if (_t%d->len != %d) sp_raise_arity(_t%d->len, %d, %d, NULL); ",
+                 tsplat, bop_ops, tsplat, bop_min, bop_max);
+    }
+    else if (splat_at2 >= 0) {
       tsplat = ++g_tmp;
       buf_printf(b, "sp_PolyArray *_t%d = ", tsplat);
       emit_expr(c, argv[splat_at2], b);
