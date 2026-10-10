@@ -4496,7 +4496,10 @@ static void fzl_check_handles(const char *t) {
 }
 /* The definitions of the literals the unit `t` names, in the order they were
    first met. A literal only a discarded emission named (a speculative arm, an
-   abandoned unit) is left out. Resets the table for the next unit. */
+   abandoned unit) is left out. Resets the table for the next unit. With
+   handles, the slot the header links to is a static of its own: the header
+   taking the address of its own object would stop the C compiler from reading
+   the bytes as constant (a `putc "|"` was no longer folded). */
 void fzl_emit_defs(const char *t, Buf *out, int handles) {
   if (handles && g_repr_check) fzl_check_handles(t);
   char *used = calloc((size_t)g_fzl_n + 1, 1);
@@ -4510,9 +4513,10 @@ void fzl_emit_defs(const char *t, Buf *out, int handles) {
   for (int k = 0; k < g_fzl_n; k++) {
     FzlLit *f = &g_fzl[k];
     if (used[k] && handles)
-      buf_printf(out, "static struct { sp_str_hdr h; unsigned char m; char d[%zu]; sp_StringLiteral literal; } _fzl_%d = "
-                      "{ { (sp_str_hdr *)((char *)&_fzl_%d.literal + 1), %zu%s, %zu, 0 }, 0xf1, \"%s\", { NULL, NULL } };\n",
-                 f->raw_len + 1, k, k, f->raw_len + 1,
+      buf_printf(out, "static sp_StringLiteral _fzl_%d_slot = { NULL, NULL };\n"
+                      "static struct { sp_str_hdr h; unsigned char m; char d[%zu]; } _fzl_%d = "
+                      "{ { (sp_str_hdr *)((char *)&_fzl_%d_slot + 1), %zu%s, %zu, 0 }, 0xf1, \"%s\" };\n",
+                 k, f->raw_len + 1, k, k, f->raw_len + 1,
                  fzl_esc_ascii7(f->esc, f->esc_len) ? " | SP_STR_SIZE_ASCII7" : "",
                  f->raw_len, f->esc);
     else if (used[k])
