@@ -287,7 +287,7 @@ SPINEL_OBJ  = build/csrc/node_table.o build/csrc/types.o build/csrc/compiler.o \
                build/csrc/ffi_spec.o \
                build/csrc/analyze.o build/csrc/analyze_util.o build/csrc/analyze_infer.o build/csrc/analyze_infer_recv.o \
                build/csrc/analyze_scope.o build/csrc/analyze_pass.o build/csrc/analyze_desugar.o build/csrc/analyze_nil.o build/csrc/analyze_const.o build/csrc/analyze_share.o build/csrc/repr.o build/csrc/holder.o build/csrc/codegen.o build/csrc/codegen_util.o build/csrc/ty_traits_check.o \
-               build/csrc/codegen_fold.o build/csrc/codegen_call.o build/csrc/codegen_call_poly.o build/csrc/codegen_call_method.o build/csrc/codegen_call_io.o build/csrc/codegen_call_kernel.o build/csrc/codegen_call_exception.o build/csrc/codegen_call_module.o build/csrc/codegen_call_string.o build/csrc/codegen_call_class.o build/csrc/codegen_call_operator.o build/csrc/codegen_call_object.o build/csrc/codegen_ops.o build/csrc/codegen_call_concurrency.o build/csrc/codegen_call_numeric.o build/csrc/codegen_call_hash.o build/csrc/codegen_call_array.o build/csrc/codegen_view.o build/csrc/builtin_ops.o build/csrc/builtin_names.o build/csrc/codegen_call_recv.o build/csrc/codegen_iter.o build/csrc/call_plan.o build/csrc/codegen_poly_plan.o \
+               build/csrc/codegen_fold.o build/csrc/codegen_call.o build/csrc/codegen_call_poly.o build/csrc/codegen_call_method.o build/csrc/codegen_call_io.o build/csrc/codegen_call_kernel.o build/csrc/codegen_call_exception.o build/csrc/codegen_call_module.o build/csrc/codegen_call_string.o build/csrc/codegen_call_class.o build/csrc/codegen_call_operator.o build/csrc/codegen_call_object.o build/csrc/codegen_ops.o build/csrc/codegen_call_concurrency.o build/csrc/codegen_call_numeric.o build/csrc/codegen_call_hash.o build/csrc/codegen_call_array.o build/csrc/codegen_view.o build/csrc/builtin_ops.o build/csrc/builtin_names.o build/csrc/codegen_call_recv.o build/csrc/codegen_iter.o build/csrc/call_plan.o build/csrc/codegen_poly_plan.o build/csrc/share_check.o \
                build/csrc/codegen_expr.o build/csrc/codegen_stmt.o build/csrc/csplit.o build/csrc/main.o
 # The decision registry (--decisions, --decisions-log; `make decisions-test`).
 SPINEL_HDRS += src/decide.h
@@ -4300,6 +4300,31 @@ nil-check-test: $(SPINEL)
 	else echo "nil-check: shapes FAIL"; rm -rf "$$tmp"; exit 1; fi; \
 	rm -rf "$$tmp"
 	@tools/nil_check.sh
+
+# share-check (--share-check): the handle/copy agreement check. The shapes in
+# test/share_check/ report as recorded (a program per kind of copy, and
+# programs that report none); the C is the same with the flag, and the flag
+# alone, without --share-strings, reports nothing.
+.PHONY: share-check-test
+share-check-test: $(SPINEL)
+	@tmp=$$(mktemp -d "$${TMPDIR:-/tmp}/spinel-share-check.XXXXXX"); ok=1; \
+	for t in test/share_check/*.rb; do \
+	  b=$${t%.rb}; \
+	  if ! $(SPINEL) --share-strings --share-check -c --no-line-map "$$t" -o "$$tmp/on.c" >/dev/null 2>"$$tmp/err" || \
+	     ! $(SPINEL) --share-strings -c --no-line-map "$$t" -o "$$tmp/off.c" >/dev/null 2>&1; then \
+	    echo "share-check: FAIL $$t (compile)"; ok=0; continue; \
+	  fi; \
+	  grep '^share-check:' "$$tmp/err" | diff -u "$$b.share-check" - || { echo "share-check: FAIL $$t (report)"; ok=0; }; \
+	  cmp -s "$$tmp/on.c" "$$tmp/off.c" || { echo "share-check: FAIL $$t (the C differs with the flag)"; ok=0; }; \
+	  if $(SPINEL) --share-strings --share-check "$$t" -o "$$tmp/b" >/dev/null 2>&1; then \
+	    "$$tmp/b" 2>&1 | cmp -s - "$$t.expected" || { echo "share-check: FAIL $$t (output)"; ok=0; }; \
+	  else echo "share-check: FAIL $$t (build)"; ok=0; fi; \
+	  if $(SPINEL) --share-check -c --no-line-map "$$t" -o "$$tmp/def.c" 2>&1 | grep -q '^share-check:'; then \
+	    echo "share-check: FAIL $$t (reports without --share-strings)"; ok=0; \
+	  fi; \
+	done; \
+	rm -rf "$$tmp"; \
+	if [ $$ok = 1 ]; then echo "share-check: pass"; else exit 1; fi
 
 cident: $(SPINEL)
 	@tools/cident.sh $(REF)

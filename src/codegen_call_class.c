@@ -979,8 +979,8 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
               Buf fb; memset(&fb, 0, sizeof fb);
               emit_expr(c, argv[ai], &fb);
               const char *ft = fb.p ? fb.p : "";
-              if (strncmp(ft, "sp_raise_nomethod(", 18) == 0 ||
-                  strncmp(ft, "(sp_raise_cls(", 14) == 0)
+              if (strncmp(share_check_unmarked(ft), "sp_raise_nomethod(", 18) == 0 ||
+                  strncmp(share_check_unmarked(ft), "(sp_raise_cls(", 14) == 0)
                 buf_printf(&call_buf, "((void)(%s), (const char *)0)", ft);
               else buf_puts(&call_buf, ft);
               free(fb.p);

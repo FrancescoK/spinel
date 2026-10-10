@@ -4275,6 +4275,13 @@ static void sh_into_build(const Compiler *c) {
     }
 }
 
+int share_node_mutated(Compiler *c, int v) {
+  ShareFacts *F = c->share;
+  if (!F || v < 0 || v >= F->nnodes) return 0;
+  if (!F->into) sh_into_build(c);
+  return (F->into[v] & SHI_MUTATED) != 0;
+}
+
 /* Does the String (or a box that may hold one) node v evaluates to have to
    be the shared handle where it is emitted -- stored, boxed, mutated -- and
    not a copy of its bytes? The checks, in order: it is reachable, its type

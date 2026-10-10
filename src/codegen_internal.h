@@ -2260,4 +2260,19 @@ int emit_ptr_array_build(Compiler *c, int v, TyKind want, Buf *b);
 /* Is value v's String one no other name can see a copy of (codegen_stmt.c)?
    share_value_needs_handle asks it. */
 int strbuf_flow_unseen(Compiler *c, int v);
+
+/* --share-check (share_check.c): mark the value of node v, about to be
+   written into b, when it has to be the shared handle (face: 'x' as the
+   emitter has it, 'B' a box, 'H' a handle for a shared slot); read the
+   marks in b[from..] against the text around them, record the copies and
+   strip them, where a function's text is final and before any pass reads
+   it as text (and over the whole unit, for what is left); once the unit is
+   written, write the reports. */
+void share_check_mark(Compiler *c, int v, char face, Buf *b);
+void share_check_harvest(Compiler *c, Buf *b, size_t from);
+void share_check_report(Compiler *c);
+/* The text without the marks that lead it, for an emitter that reads an
+   operand's text as a temp or compares it with one. */
+const char *share_check_unmarked(const char *t);
+size_t share_check_strip(char *s, size_t len);
 #endif

@@ -1,0 +1,445 @@
+/* share_check.c -- --share-check: do the share facts and the emitted C agree?
+
+   Under --share-strings a String the rule shares has to reach every
+   consumer that keeps it, changes it or asks for its identity as the one
+   sp_String * handle. The facts (share.h) say which Strings those are; the
+   emitters decide on their own, in about two hundred places that write a
+   copy helper as literal text, whether they hand the handle or a copy of
+   its bytes. Nothing compared the two: a route the seal let through that
+   an emitter still copied was a wrong answer found by hand.
+
+   With the flag on, each value choke point (emit_expr, emit_boxed,
+   emit_strbuf_value) writes an in-band mark before the text of a String
+   value that share_value_needs_handle says has to be the handle. A mark is
+   the control byte SK_OPEN, "sk", the node, the face and an optional "f",
+   and the control byte SK_CLOSE. Every emitter that writes program text
+   into the C escapes a control byte, so the text of a program cannot spell
+   a mark; one that does not parse as a mark whole is none. The face is what
+   the emitter asked for: bytes (b), handle (h), box (B) or a poly (p); an
+   `f` says the value is a new String, which may be copied unless a box
+   keeps it.
+
+   When a function's text is final -- before the passes that read it as
+   text (gc_frame_build, pd_hoist's dispatch helpers) -- share_check_harvest
+   reads each mark against the conversion around it, reports a copy, and
+   strips the mark, so the C is the one the compile writes without the
+   flag. Only text that reaches the function counts: a trial emission that
+   was thrown away took its marks with it. (A dispatch helper's region is
+   read apart from the function around it, so a conversion that lies
+   outside the region is not seen.)
+
+   A mark is a copy when the value's bytes reach:
+     WRAP    a new handle (sp_String_new_shared, SP_AS_STRING_HANDLE,
+             sp_poly_as_strbuf ...), directly or after an unwrap; a new
+             String boxed and lifted into the handle is none;
+     BOX     sp_box_str: the box has the bytes, not the handle, even for a
+             new String;
+     MUTCOPY an in-place change, through bytes and with no write-back of
+             the changed copy around it;
+     RET     a `return` of bytes an unwrap made that publishes no handle;
+     PICKUP  a deep-return pickup over a temp that ran before the pickup's
+             reset of the side channel: it always wraps a copy.
+   The state lives in Compiler.share_agree and goes with the compiler; the
+   only global is the flag (g_share_check). */
+
+#include <ctype.h>
+#include <stdlib.h>
+#include <string.h>
+#include "codegen_internal.h"
+#include "repr.h"
+#include "share.h"
+
+int g_share_check = 0;
+
+struct ShareAgree {
+  unsigned char *seen;          /* per node: reported already */
+  int nseen;
+  unsigned long marks, copies;
+  char **line;                  /* the reports, written sorted at the end */
+  int nline, cline;
+  /* the classifier's answers beside its return value */
+  char via[64], helper[64], consumer[64];
+  int by_call;                  /* it ended at a call that took the bytes, with
+                                   no write-back of what it answers */
+};
+
+enum { SKC_NONE, SKC_WRAP, SKC_BOX, SKC_MUT, SKC_RET };
+/* the control bytes that open and close a mark */
+enum { SK_OPEN = 1, SK_CLOSE = 2 };
+
+static void sk_oom(void) {
+  fprintf(stderr, "spinel: out of memory\n");
+  exit(1);
+}
+
+static struct ShareAgree *sk_state(Compiler *c) {
+  if (!c->share_agree) {
+    c->share_agree = calloc(1, sizeof *c->share_agree);
+    if (!c->share_agree) sk_oom();
+  }
+  struct ShareAgree *A = c->share_agree;
+  if (A->nseen < c->nt->count) {
+    A->seen = realloc(A->seen, (size_t)c->nt->count + 1);
+    if (!A->seen) sk_oom();
+    memset(A->seen + A->nseen, 0, (size_t)(c->nt->count + 1 - A->nseen));
+    A->nseen = c->nt->count;
+  }
+  return A;
+}
+
+void share_check_free(Compiler *c) {
+  struct ShareAgree *A = c->share_agree;
+  if (!A) return;
+  for (int i = 0; i < A->nline; i++) free(A->line[i]);
+  free(A->line);
+  free(A->seen);
+  free(A);
+  c->share_agree = NULL;
+}
+
+/* Mark the value of node v, which the emitter is about to write into b.
+   face: 'x' the emitter's own face (what the node is as emitted), 'B' a
+   box, 'H' a handle for a shared slot. */
+void share_check_mark(Compiler *c, int v, char face, Buf *b) {
+  int need = b ? share_value_needs_handle(c, v) : SHN_NO;
+  if (need == SHN_NO) return;
+  if (face == 'x') {
+    TyKind t = repr_of(c, v).as_ty;
+    face = t == TY_STRBUF ? 'h' : t == TY_POLY ? 'p' : 'b';
+  }
+  buf_printf(b, "%csk%d%c%s%c", SK_OPEN, v, face, need == SHN_FRESH ? "f" : "", SK_CLOSE);
+}
+
+/* The mark that starts at p: its end, with the node, the face and whether
+   the value is new; NULL when p starts no mark (whole: a lone SK_OPEN, or
+   one with no end, is program text). */
+static const char *sk_mark_at(const char *p, long *node, char *face, int *fresh) {
+  if (p[0] != SK_OPEN || p[1] != 's' || p[2] != 'k') return NULL;
+  const char *q = p + 3;
+  long v = 0;
+  if (!isdigit((unsigned char)*q)) return NULL;
+  for (; isdigit((unsigned char)*q); q++) {
+    v = v * 10 + (*q - '0');
+    if (v > 1000000000L) return NULL;
+  }
+  char f = *q;
+  if (f != 'b' && f != 'h' && f != 'p' && f != 'B' && f != 'H') return NULL;
+  int fr = *++q == 'f';
+  if (fr) q++;
+  if (*q != SK_CLOSE) return NULL;
+  if (node) *node = v;
+  if (face) *face = f;
+  if (fresh) *fresh = fr;
+  return q + 1;
+}
+
+/* The first mark at or after p, or NULL. */
+static const char *sk_next(const char *p) {
+  for (p = strchr(p, SK_OPEN); p; p = strchr(p + 1, SK_OPEN))
+    if (sk_mark_at(p, NULL, NULL, NULL)) return p;
+  return NULL;
+}
+
+/* ---- reading the text around a mark ---- */
+
+static int sk_in(const char *name, const char *const *set) {
+  for (int i = 0; set[i]; i++) if (sp_streq(name, set[i])) return 1;
+  return 0;
+}
+
+/* The unwraps: the calls that read a handle's or a box's bytes, and how
+   (a copy that publishes the handle (2), a view of its live buffer (3), a
+   copy that publishes none (4)). The longer name of a prefix pair first. */
+typedef struct { const char *name; int how; } SkUnwrap;
+static const SkUnwrap *sk_unwraps(void) {
+  static const SkUnwrap t[] = { { "sp_strbuf_read_pub", 2 }, { "sp_strbuf_read_frozen", 4 },
+    { "sp_strbuf_read", 4 }, { "sp_String_cstr", 3 }, { "sp_poly_unbox_s", 3 }, { "sp_poly_to_s", 3 },
+    { NULL, 0 } };
+  return t;
+}
+static int sk_unwrap_how(const char *name) {
+  const SkUnwrap *u = sk_unwraps();
+  for (int i = 0; u[i].name; i++)
+    if (sp_streq(name, u[i].name)) return u[i].how;
+  return 0;
+}
+
+/* The calls around position m of t (from lo), innermost first, up to the
+   statement boundary; *bound is set to the boundary, *outer to the start of
+   the outermost enclosing call. */
+static int sk_chain(const char *t, const char *lo, size_t m, char names[][64], int cap, size_t *bound,
+                    size_t *outer) {
+  int depth = 0, n = 0;
+  size_t i = m, floor = (size_t)(lo - t);
+  *outer = m;
+  while (i > floor) {
+    char ch = t[--i];
+    if (ch == ')' || ch == ']') depth++;
+    else if (ch == '(' || ch == '[') {
+      if (depth > 0) { depth--; continue; }
+      size_t e = i, s = i;
+      while (s > floor && (isalnum((unsigned char)t[s - 1]) || t[s - 1] == '_')) s--;
+      if (n < cap) {
+        size_t l = e - s < 63 ? e - s : 63;
+        memcpy(names[n], t + s, l);
+        names[n][l] = 0;
+        n++;
+      }
+      *outer = s;
+    }
+    else if (depth == 0 && (ch == ';' || ch == '{' || ch == '}')) break;
+  }
+  *bound = i;
+  return n;
+}
+
+/* Skip the marks (and spaces) at q. */
+static const char *sk_skip_marks(const char *q) {
+  for (;;) {
+    while (*q == ' ') q++;
+    const char *e = sk_mark_at(q, NULL, NULL, NULL);
+    if (!e) return q;
+    q = e;
+  }
+}
+
+/* Does the text at q start with an unwrap call? Its how, else 0; *name is
+   the call. */
+static int sk_starts_unwrap(const char *q, const char **name) {
+  const SkUnwrap *u = sk_unwraps();
+  for (q = sk_skip_marks(q); *q == ' ' || *q == '('; q = sk_skip_marks(q + 1)) { }
+  for (int i = 0; u[i].name; i++) {
+    size_t l = strlen(u[i].name);
+    if (!strncmp(q, u[i].name, l) && q[l] == '(') { if (name) *name = u[i].name; return u[i].how; }
+  }
+  return 0;
+}
+
+/* Does the text after the mark (ending at e) read bytes out of a handle or
+   a box at its top: an unwrap call, or a statement expression whose last
+   statement is one? Its how, else 0; *name is the call. */
+static int sk_text_bytes(const char *t, size_t e, const char **name) {
+  const char *q = sk_skip_marks(t + e);
+  if (sk_starts_unwrap(q, name)) return sk_starts_unwrap(q, name);
+  while (q[0] == '(' && sk_skip_marks(q + 1)[0] == '(') q = sk_skip_marks(q + 1);
+  if (q[0] != '(' || q[1] != '{') return 0;
+  int depth = 0;
+  const char *last = NULL;
+  for (const char *r = q; *r; r++) {
+    if (*r == '(' || *r == '{' || *r == '[') depth++;
+    else if (*r == ')' || *r == '}' || *r == ']') { depth--; if (depth == 0) break; }
+    else if (*r == ';' && depth == 2) {
+      const char *x = r + 1;
+      while (*x == ' ') x++;
+      if (!(x[0] == '}' && x[1] == ')')) last = x;
+    }
+  }
+  return last ? sk_starts_unwrap(last, name) : 0;
+}
+
+/* Classify the mark at position m: which copy it is, if any. bytes: the
+   value is bytes at the mark (0 no, else its unwrap's how). tmp: the temp
+   the value is assigned to whole, if it is one. */
+static int sk_classify_at(struct ShareAgree *A, const char *t, const char *lo, size_t m, int bytes, char *tmp,
+                          size_t tcap) {
+  static const char *const wraps[] = { "sp_String_new_shared", "sp_String_new_fresh", "sp_String_new",
+    "sp_String_new_len", "SP_AS_STRING_HANDLE", "sp_poly_as_strbuf", "sp_poly_strbuf_lift", NULL };
+  static const char *const transparent[] = { "", "sp_str_uplus", "SP_GC_ROOT_VAL", NULL };
+  char names[24][64];
+  size_t bound, outer;
+  int n = sk_chain(t, lo, m, names, 24, &bound, &outer);
+  A->by_call = 0;
+  A->via[0] = A->helper[0] = A->consumer[0] = 0;
+  if (bytes) snprintf(A->via, sizeof A->via, "bytes face");
+  /* how the bytes were read: unknown (1), publishing the handle (2), a view
+     of the live buffer (3), or through a copy that publishes none (4) */
+  int how = bytes;
+  for (int i = 0; i < n; i++) {
+    int uh = sk_unwrap_how(names[i]);
+    if (uh) {
+      how = uh;
+      bytes = 1;
+      snprintf(A->via, sizeof A->via, "%s", names[i]);
+      continue;
+    }
+    if (sk_in(names[i], wraps)) {
+      if (bytes) { snprintf(A->helper, sizeof A->helper, "%s", names[i]); return SKC_WRAP; }
+      continue;
+    }
+    if (sp_streq(names[i], "sp_box_str")) {
+      if (!bytes) continue;
+      /* a box lifted into the handle (sp_poly_strbuf_lift) is a wrap: for a
+         new String no copy at all */
+      if (i + 1 < n && sk_in(names[i + 1], wraps)) {
+        snprintf(A->helper, sizeof A->helper, "%s", names[i + 1]);
+        return SKC_WRAP;
+      }
+      snprintf(A->helper, sizeof A->helper, "sp_box_str");
+      return SKC_BOX;
+    }
+    if (sk_in(names[i], transparent)) continue;
+    /* bytes a call consumes, unless the call or one around it writes what
+       it answers back into the handle (sp_String_set_bin(h, f(bytes of h)),
+       or into a box that holds it, sp_poly_str_become) */
+    A->by_call = 1;
+    snprintf(A->consumer, sizeof A->consumer, "%s", names[i]);
+    for (int j = i; j < n && A->by_call; j++)
+      if (!strncmp(names[j], "sp_String_set", 13) || !strncmp(names[j], "sp_poly_str_become", 18)) A->by_call = 0;
+    return SKC_NONE;
+  }
+  /* a method's tail answered as bytes that publish no handle: the caller's
+     pickup wraps them into a new one */
+  {
+    size_t h = bound + 1;
+    for (;;) {
+      while (h < outer && isspace((unsigned char)t[h])) h++;
+      if (h >= outer || t[h] != '#') break;
+      while (h < outer && t[h] != '\n') h++;   /* a #line directive */
+    }
+    if ((how == 3 || how == 4) && outer - h >= 6 && !strncmp(t + h, "return", 6)) {
+      snprintf(A->helper, sizeof A->helper, "return");
+      return SKC_RET;
+    }
+  }
+  /* a temp the value is assigned to whole: its uses decide */
+  if (tmp) {
+    tmp[0] = 0;
+    size_t j = outer;
+    while (j > bound && t[j - 1] == ' ') j--;
+    if (j > bound && t[j - 1] == '=' && (j < 2 || t[j - 2] != '=')) {
+      j--;
+      while (j > bound && t[j - 1] == ' ') j--;
+      size_t e = j;
+      while (j > bound && (isalnum((unsigned char)t[j - 1]) || t[j - 1] == '_')) j--;
+      if (e > j && e - j < tcap && t[j] == '_' && t[j + 1] == 't') { memcpy(tmp, t + j, e - j); tmp[e - j] = 0; }
+    }
+  }
+  return SKC_NONE;
+}
+
+/* Record one report; the lines are written sorted, so the output does not
+   depend on the order functions were emitted in. */
+static void sk_report(Compiler *c, struct ShareAgree *A, int v, const char *what) {
+  int fid = (int)nt_int(c->nt, v, "node_file", -1);
+  const char *fp = nt_file_path(c->nt, fid);
+  const char *nm = nt_str(c->nt, v, "name");
+  Buf l;
+  memset(&l, 0, sizeof l);
+  buf_printf(&l, "share-check: copy: %s:%d node %d %s (%s): %s", fp ? fp : "?", (int)nt_int(c->nt, v, "node_line", 0),
+             v, nt_type(c->nt, v), nm ? nm : "-", what);
+  if (A->nline >= A->cline) {
+    A->cline = A->cline ? A->cline * 2 : 32;
+    A->line = realloc(A->line, sizeof(char *) * (size_t)A->cline);
+    if (!A->line) sk_oom();
+  }
+  A->line[A->nline++] = l.p;
+  A->copies++;
+}
+
+/* Read the mark at p (b->p + off) against its surroundings. */
+static void sk_read_mark(Compiler *c, struct ShareAgree *A, Buf *b, const char *lo, size_t off) {
+  const char *t = b->p, *p = t + off;
+  long v;
+  char face;
+  int fresh;
+  const char *end = sk_mark_at(p, &v, &face, &fresh);
+  if (!end || v >= c->nt->count) return;
+  A->marks++;
+  char tmp[32], what[256];
+  /* a deep-return pickup (`_sp_ret_strbuf = NULL; const char *_vN = X;
+     _sp_ret_strbuf ? that handle : a new one`) over X that is no call (an
+     argument that ran first, held in a temp): nothing can publish the
+     handle between the reset and the read, so it always wraps a copy */
+  {
+    const char *x = sk_skip_marks(end);
+    const char *lb = p;
+    while (lb > lo && lb[-1] != '{' && lb[-1] != '\n') lb--;
+    int bare = x[0] == '_' && (x[1] == 't' || x[1] == 'v') && isdigit((unsigned char)x[2]);
+    if (bare) { const char *y = x + 2; while (isdigit((unsigned char)*y)) y++; bare = *y == ';'; }
+    const char *reset = strstr(lb, "_sp_ret_strbuf = NULL;");
+    if (bare && face == 'b' && (size_t)(p - lb) < 200 && reset && reset < p && !fresh) {
+      if (!A->seen[v]) {
+        A->seen[v] = 1;
+        sk_report(c, A, (int)v, "picked up after the call ran (always a new handle)");
+      }
+      return;
+    }
+  }
+  const char *unwrap = NULL;
+  int tf = sk_text_bytes(t, (size_t)(end - t), &unwrap);
+  if (tf) face = 'b';
+  int bytes = face == 'b' ? (tf ? tf : 1) : 0;
+  int kind = sk_classify_at(A, t, lo, (size_t)(p - t), bytes, tmp, sizeof tmp);
+  /* the call that made the bytes, when the text after the mark is one */
+  if (tf && unwrap && !strcmp(A->via, "bytes face")) snprintf(A->via, sizeof A->via, "%s", unwrap);
+  if (kind == SKC_NONE && tmp[0]) {
+    /* follow the temp to its uses in the same function */
+    size_t tl = strlen(tmp);
+    char *fn_end = strstr((char *)p, "\n}\n");
+    for (char *u = strstr((char *)p + 1, tmp); u && (!fn_end || u < fn_end) && kind == SKC_NONE;
+         u = strstr(u + tl, tmp)) {
+      if (isalnum((unsigned char)u[tl]) || u[tl] == '_' || isalnum((unsigned char)u[-1]) || u[-1] == '_') continue;
+      kind = sk_classify_at(A, t, lo, (size_t)(u - t), bytes, NULL, 0);
+    }
+  }
+  if (kind == SKC_NONE && bytes && A->by_call && share_node_mutated(c, (int)v)) {
+    kind = SKC_MUT;
+    snprintf(A->helper, sizeof A->helper, "%s", A->consumer);
+  }
+  if (fresh && kind != SKC_BOX) kind = SKC_NONE;
+  if (kind == SKC_NONE || A->seen[v]) return;
+  A->seen[v] = 1;
+  static const char *const kn[] = { "", "bytes wrapped into a new handle", "boxed as bytes",
+                                    "changed in place as bytes", "answered as bytes publishing no handle" };
+  snprintf(what, sizeof what, "%s by %s (%s)", kn[kind], A->helper[0] ? A->helper : "?",
+           A->via[0] ? A->via : face == 'B' ? "box" : face == 'h' || face == 'H' ? "handle" : "?");
+  sk_report(c, A, (int)v, what);
+}
+
+/* The text without the marks that lead it. The emitters that take an
+   operand's text for a temp (`_t12`) or compare it with one must not be
+   told apart by a mark in front of it. */
+const char *share_check_unmarked(const char *t) {
+  for (const char *e; t && (e = sk_mark_at(t, NULL, NULL, NULL)); ) t = e;
+  return t;
+}
+
+/* Strip every mark out of the len bytes at s, in place (s[len] is NUL);
+   the new length. */
+size_t share_check_strip(char *s, size_t len) {
+  size_t w = 0;
+  for (size_t r = 0; r < len; ) {
+    const char *e = s[r] == SK_OPEN ? sk_mark_at(s + r, NULL, NULL, NULL) : NULL;
+    if (e) r = (size_t)(e - s);
+    else s[w++] = s[r++];
+  }
+  s[w] = 0;
+  return w;
+}
+
+/* Read every mark in b[from..] and strip them: the text is the one the
+   compile writes without the flag. */
+void share_check_harvest(Compiler *c, Buf *b, size_t from) {
+  if (!b->p || from >= b->len) return;
+  const char *first = sk_next(b->p + from);
+  if (!first) return;
+  struct ShareAgree *A = sk_state(c);
+  for (const char *p = first; p; p = sk_next(p + 1))
+    sk_read_mark(c, A, b, b->p + from, (size_t)(p - b->p));
+  size_t at = (size_t)(first - b->p);
+  b->len = at + share_check_strip(b->p + at, b->len - at);
+}
+
+static int sk_cmp_line(const void *a, const void *b) {
+  return strcmp(*(char *const *)a, *(char *const *)b);
+}
+
+/* The unit is written (a refused one never gets here): the reports sorted,
+   and a summary. */
+void share_check_report(Compiler *c) {
+  if (!c->share_strings) return;
+  struct ShareAgree *A = sk_state(c);
+  qsort(A->line, (size_t)A->nline, sizeof(char *), sk_cmp_line);
+  for (int i = 0; i < A->nline; i++) fprintf(stderr, "%s\n", A->line[i]);
+  fprintf(stderr, "share-check: %lu marks, %lu copies\n", A->marks, A->copies);
+}

@@ -1,5 +1,6 @@
 #include "codegen_internal.h"
 #include "repr.h"
+#include "share.h"
 #include "holder.h"
 
 /* defined? support: does this subtree reference a constant the compiler
@@ -1240,8 +1241,8 @@ void emit_slot_orw_value(Compiler *c, TyKind t, int elems_handle, const char *re
          assignment compiles -- the raise aborts before the NULL is reached
          (#2457). */
       const char *ivtxt = vval.p ? vval.p : "";
-      if (strncmp(ivtxt, "sp_raise_nomethod(", 18) == 0 ||
-          strncmp(ivtxt, "(sp_raise_cls(", 14) == 0) {
+      if (strncmp(share_check_unmarked(ivtxt), "sp_raise_nomethod(", 18) == 0 ||
+          strncmp(share_check_unmarked(ivtxt), "(sp_raise_cls(", 14) == 0) {
         Buf w; memset(&w, 0, sizeof w);
         buf_printf(&w, "(%s, %s)", ivtxt, default_value_from_compiler(c, t));
         free(vval.p); vval = w;
@@ -1477,6 +1478,7 @@ void emit_expr(Compiler *c, int id, Buf *b) {
     return;
   }
   if (g_repr_check) repr_check_ask(c, id);
+  if (g_share_check) share_check_mark(c, id, 'x', b);
   int frame = g_repr_check ? repr_channel_begin(c, id) : -1;
   g_expr_depth++;
   /* an Array subclass instance read where an Array is wanted -- a splat, a

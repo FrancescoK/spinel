@@ -1127,6 +1127,7 @@ typedef struct {
      arguments to (a proc form, or a method with a `&blk` it calls), or 0 */
   int proc_arg_src;
   struct ShareFacts *share;
+  struct ShareAgree *share_agree;   /* --share-check's state (share_check.c) */
   struct HandleArgTab *share_args; /* final callers, while sealing share facts */
   struct SbArgIndex *sb_args; /* settled parameter sources, built once for storage */
   unsigned share_sig;   /* the types the facts were last applied over */
