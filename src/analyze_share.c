@@ -4274,7 +4274,10 @@ static void sh_into_build(const Compiler *c) {
     int site, v;
     int kind = share_flow_at(c, i, &site, &v);
     if (v < 0) continue;
-    if (kind == SHFL_MUTATE) {
+    /* (a bang method the program defines on String is a call of its own, not
+       the builtin's change in place: the walk records the flow by the name,
+       which the seal keeps; this query does not take it for one) */
+    if (kind == SHFL_MUTATE && cplan_user((Compiler *)c, site)->mi < 0) {
       /* the call's receiver, and each link of the chain of self-answering
          calls down to the base the flow names (sh_self_chain_base) */
       for (int r = nt_ref(nt, site, "receiver"); r >= 0; ) {

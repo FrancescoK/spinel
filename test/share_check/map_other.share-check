@@ -1,0 +1,2 @@
+share-check: copy: test/share_check/map_other.rb:9 node 34 LocalVariableReadNode (keep): changed in place as bytes by sp_str_freeze_val (sp_strbuf_read_pub)
+share-check: 4 marks, 0 declared, 1 copies

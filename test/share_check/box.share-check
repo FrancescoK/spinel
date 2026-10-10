@@ -1,2 +1,2 @@
 share-check: copy: test/share_check/box.rb:11 node 39 CallNode (+@): boxed as bytes by sp_box_str (bytes face)
-share-check: 4 marks, 1 copies
+share-check: 4 marks, 0 declared, 1 copies

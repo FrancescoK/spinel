@@ -1,2 +1,0 @@
-share-check: copy: test/share_check/pickup.rb:11 node 34 CallNode (pick): picked up after the call ran (always a new handle)
-share-check: 10 marks, 1 copies
