@@ -4445,7 +4445,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     emit_indent(g_pre, g_indent);
     emit_ctype(c, rt, g_pre);
     buf_printf(g_pre, " _t%d = %s;\n", cr, rt == TY_RANGE ? "(sp_Range){0}" : default_value_from_compiler(c, rt));
-    if (needs_root(rt)) { emit_indent(g_pre, g_indent); emit_gc_root_tmp(c, rt, cr, g_pre); buf_puts(g_pre, "\n"); }
+    if (ty_gc_holds_refs(c, rt)) { emit_indent(g_pre, g_indent); emit_gc_root_tmp_refs(c, rt, cr, g_pre); buf_puts(g_pre, "\n"); }
     emit_case_match(c, id, g_pre, g_indent, 0, cr);
     buf_printf(b, "_t%d", cr);
     return;
