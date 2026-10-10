@@ -1,0 +1,5 @@
+module GaugeSeed
+  def self.text?: (String text) -> bool
+  def self.valid?: (Object value) -> bool
+  def self.wrap: (BasicObject value) -> Array[untyped]
+end
