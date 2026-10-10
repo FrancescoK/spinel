@@ -7834,7 +7834,7 @@ int emit_poly_default_blk_arm(Compiler *c, int id, const char *name, int argc, c
   return 1;
 }
 
-static int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
+int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
   /* Re-entered from this very dispatch's builtin-container arm: decline, so
      the call falls through to the builtin emitters the arm is there to
      reach. Without this the arm rebuilt the same switch (#3459). */

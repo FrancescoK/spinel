@@ -1181,6 +1181,8 @@ int obj_conv_method(Compiler *c, TyKind t, const char *conv, TyKind want, int *d
    arms share. See codegen.c. */
 int str_cmp_conv_shape(Compiler *c, int node);
 int str_cmp_bound_foreign(Compiler *c, int n);
+/* a call on a boxed receiver dispatched by the receiver's class (codegen_call.c) */
+int emit_poly_method_dispatch(Compiler *c, int id, Buf *b);
 void emit_str_cmp_conv(Compiler *c, int node, int tmp, Buf *b);
 void emit_str_cmp_prologue(Compiler *c, const char *rtxt, int operand,
                            int *tr, int *to, int *ts, Buf *b);

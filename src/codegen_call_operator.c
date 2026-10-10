@@ -112,6 +112,31 @@ static void emit_guarded_cmp(Compiler *c, int recv, int arg, const char *name, T
              rt == TY_FLOAT ? "SP_FLOAT_NIL_CMP_CK" : "SP_INT_NIL_CMP_CK", l, r, name, tg, name, tg);
 }
 
+/* The C test that boxed value `v` belongs to a builtin class on which the
+   program defines its own <=> (`class Integer; def <=>(o) = ...; end`), or
+   0 when it defines none: such a value takes the program's method through
+   the boxed method dispatch, any other the runtime's compare
+   (sp_poly_spaceship), which knows only the builtin one. */
+static int poly_cmp_reopen_test(Compiler *c, const char *v, char *out, size_t cap) {
+  static const struct { const char *cls; const char *tags; } owners[] = {
+    { "Integer", "%s.tag == SP_TAG_INT || %s.tag == SP_TAG_BIGINT" },
+    { "Float",   "%s.tag == SP_TAG_FLT" },
+    { "Numeric", "%s.tag == SP_TAG_INT || %s.tag == SP_TAG_BIGINT || %s.tag == SP_TAG_FLT" },
+    { "String",  "%s.tag == SP_TAG_STR" },
+    { "Symbol",  "%s.tag == SP_TAG_SYM" },
+  };
+  size_t n = 0; out[0] = '\0';
+  for (size_t i = 0; i < sizeof owners / sizeof owners[0]; i++) {
+    int k = comp_class_index(c, owners[i].cls);
+    if (k < 0 || comp_method_in_chain(c, k, "<=>", NULL) < 0) continue;
+    char one[200];
+    snprintf(one, sizeof one, owners[i].tags, v, v, v);
+    n += (size_t)snprintf(out + n, n < cap ? cap - n : 0, "%s(%s)", n ? " || " : "", one);
+  }
+  return out[0] != '\0';
+}
+static int g_cmp_reopen_id = -1;
+
 /* Integer shifts, <=>, the comparison and equality operators, and is_a? on a poly receiver */
 int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt) {
   /* A nullable String's NULL is nil, whether held as text or a handle.
@@ -559,6 +584,39 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
        promote mode): tag-dispatch via sp_poly_cmp rather than falling through
        to the object-receiver path, which would misread a boxed int's payload
        as a user-class pointer and recurse into this same `<=>`. */
+    /* a boxed receiver of a class whose <=> the program defines takes the
+       program's method (poly_cmp_reopen_test); the call is emitted again
+       for that arm with this one skipped (g_cmp_reopen_id), which reaches
+       the boxed method dispatch */
+    char rtest[640], rv[32];
+    int rt0 = ++g_tmp;
+    snprintf(rv, sizeof rv, "_t%d", rt0);
+    if (lrt == TY_POLY && g_cmp_reopen_id != id && g_n_argov < MAX_ARG_OVERRIDE &&
+        poly_cmp_reopen_test(c, rv, rtest, sizeof rtest)) {
+      /* the dispatch first, with the receiver bound to the held box: where
+         it declines (no program method takes this argument), the runtime's
+         compare below stands, as before */
+      int mk = view_bind(recv, "%s", rv);
+      int sv = g_cmp_reopen_id; g_cmp_reopen_id = id;
+      Buf db; memset(&db, 0, sizeof db);
+      Buf *svp = g_pre; Buf dpre; memset(&dpre, 0, sizeof dpre); g_pre = &dpre;
+      int ok = emit_poly_method_dispatch(c, id, &db);
+      g_pre = svp;
+      g_cmp_reopen_id = sv;
+      view_unbind(mk);
+      if (ok && !(dpre.p && dpre.p[0])) {
+        int cmp_poly = repr_of(c, id).kind == RK_BOXED;
+        buf_printf(b, "({ sp_RbVal %s = ", rv); emit_boxed(c, recv, b);
+        buf_printf(b, "; SP_GC_ROOT_RBVAL(%s); (%s) ? (%s) : ", rv, rtest, db.p ? db.p : "0");
+        if (cmp_poly) buf_puts(b, "sp_box_int_or_nil(");
+        buf_printf(b, "sp_poly_spaceship(%s, ", rv); emit_boxed(c, argv[0], b); buf_puts(b, ")");
+        if (cmp_poly) buf_puts(b, ")");
+        buf_puts(b, "; })");
+        free(db.p); free(dpre.p);
+        return 1;
+      }
+      free(db.p); free(dpre.p);
+    }
     if (lrt == TY_POLY || lat == TY_POLY) {
       /* sp_poly_spaceship answers nil for incomparable runtime operands (the
          int-nil sentinel) but 0 for identical singletons -- `nil <=> nil` is 0

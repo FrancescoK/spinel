@@ -36,7 +36,6 @@ test/poly_dispatch_default_reads_param.rb
 test/range_cover_clamp_exact.rb
 test/reader_override_through_self.rb
 test/safe_nav_builtin_scalar.rb
-test/safe_nav_reopened_builtin.rb
 test/step_remaining_forms.rb
 test/string_interp_join_encoding.rb
 test/string_slice_bang_computed_index.rb
