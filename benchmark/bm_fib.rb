@@ -6,4 +6,5 @@ def fib(n)
   end
 end
 
-puts fib(34)
+n = (ARGV[0] || 34).to_i
+puts fib(n)
