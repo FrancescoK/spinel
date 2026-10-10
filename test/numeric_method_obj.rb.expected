@@ -22,3 +22,12 @@ Numeric
 0.5
 false
 "wrong number of arguments (given 0, expected 1)"
+Numeric
+-1
+5
+Numeric
+0
+2.5
+Numeric
+1
+true

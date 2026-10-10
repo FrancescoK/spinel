@@ -15911,6 +15911,9 @@ sp_builtin_arity_spec_tbl[] = {
    two classes agree on every name both have. */
 int builtin_numeric_arity(const char *m, int *out) {
   if (!builtin_numeric_owns("Integer", m)) return 0;
+  /* clone and dup have no row for either class: clone takes only the
+     keyword `freeze:`, so CRuby gives it -1, and dup takes nothing */
+  if (sp_streq(m, "clone") || sp_streq(m, "dup")) { *out = sp_streq(m, "clone") ? -1 : 0; return 1; }
   for (const SpAritySpec *r = sp_builtin_arity_spec_tbl; r->cls; r++)
     if (is_numeric_class_name(r->cls) && sp_streq(r->m, m) && r->min >= 0) {
       *out = r->max == r->min ? r->min : -(r->min + 1);

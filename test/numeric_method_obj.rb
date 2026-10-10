@@ -20,3 +20,9 @@ begin
 rescue ArgumentError => e
   p e.message
 end
+# clone and dup are Numeric's too: clone takes only `freeze:`, arity -1
+c = 5.method(:clone)
+p c.owner, c.arity, c.call
+d = 2.5.method(:dup)
+p d.owner, d.arity, d.call
+p 5.method(:eql?).owner, 5.method(:eql?).arity, 5.method(:eql?).call(5)
