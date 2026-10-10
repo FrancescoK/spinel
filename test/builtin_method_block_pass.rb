@@ -15,3 +15,10 @@ p ["b", "c"].map(&"abc".method(:index))
 p [1, 4].select(&[1, 2, 3].method(:include?))
 p [0, 2].map(&[7, 8, 9].method(:fetch))
 p [1.5, 2.5].map(&2.0.method(:fdiv))
+# An Array's or a String's [] takes an index, or a start and a length
+arr = [10, 20, 30, 40]
+p [1, 2].each_with_index.map(&arr.method(:[])), [0, 3].map(&arr.method(:[]))
+s = "hello"
+p [1, 3].each_with_index.map(&s.method(:[])), [0, 4].map(&s.method(:[]))
+h = {1 => :a, 2 => :b}
+p [1, 2].map(&h.method(:[]))
