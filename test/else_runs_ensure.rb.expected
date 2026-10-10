@@ -1,0 +1,16 @@
+ensure 0
+ensure 1
+:else
+:rescued
+ensure 2
+"else"
+:done
+body
+inner
+outer
+"nested"
+"value"
+[:ensure, :ensure, 2, :ensure]
+throw ensure
+:thrown
+nil
