@@ -40691,6 +40691,37 @@ static void an_phase_storage(Compiler *c) {
   }
 }
 
+/* A conditional arm answers nil when its tail is nil or absent. */
+static int vt_arm_nil(Compiler *c, int arm) {
+  const NodeTable *nt = c->nt;
+  if (arm >= 0 && nt_kind(nt, arm) == NK_ElseNode) arm = nt_ref(nt, arm, "statements");
+  if (arm >= 0 && nt_kind(nt, arm) == NK_StatementsNode) {
+    int n = 0;
+    const int *body = nt_arr(nt, arm, "body", &n);
+    arm = n > 0 ? body[n - 1] : -1;
+  }
+  return arm < 0 || nt_kind(nt, arm) == NK_NilNode;
+}
+
+/* A missing else answers nil in case/when, but raises in case/in.
+   An elsif is visited as its own conditional. */
+static int vt_cond_answers_nil(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  NodeKind k = nt_kind(nt, id);
+  if (k == NK_IfNode || k == NK_UnlessNode) {
+    int alt = nt_ref(nt, id, k == NK_IfNode ? "subsequent" : "else_clause");
+    return alt < 0 || vt_arm_nil(c, nt_ref(nt, id, "statements")) ||
+           (nt_kind(nt, alt) != NK_IfNode && vt_arm_nil(c, alt));
+  }
+  if (k != NK_CaseNode && k != NK_CaseMatchNode) return 0;
+  int n = 0;
+  const int *arms = nt_arr(nt, id, "conditions", &n);
+  for (int i = 0; arms && i < n; i++)
+    if (vt_arm_nil(c, nt_ref(nt, arms[i], "statements"))) return 1;
+  int alt = nt_ref(nt, id, "else_clause");
+  return alt < 0 ? k == NK_CaseNode : vt_arm_nil(c, alt);
+}
+
 /* The nil witness (#1686): the class whose instances node id shows may be
    nil, which a by-value struct has no representation for, or -1. A slot
    holding `nil | W` encodes nil as the heap pointer's NULL; the pointer
@@ -40734,34 +40765,8 @@ static int vt_nil_witness(Compiler *c, int id, const char *ty) {
     TyKind it2 = ix >= 0 ? c->classes[cid2].ivar_types[ix] : TY_UNKNOWN;
     return ty_is_object(it2) ? ty_object_class(it2) : -1;
   }
-  if (sp_streq(ty, "IfNode") || sp_streq(ty, "UnlessNode")) {
-    TyKind t2 = comp_ntype(c, id);
-    if (!ty_is_object(t2)) return -1;
-    /* a W-valued conditional with a nil arm (x = cond ? W.new : nil):
-       if either arm's tail is nil -- or the else arm is absent -- the
-       expression carries nil */
-    int nil_arm = 0;
-    int arms[2];
-    arms[0] = nt_ref(nt, id, "statements");
-    arms[1] = nt_ref(nt, id, sp_streq(ty, "IfNode") ? "subsequent" : "else_clause");
-    if (arms[1] < 0) nil_arm = 1;
-    for (int ai = 0; ai < 2 && !nil_arm; ai++) {
-      int an3 = arms[ai];
-      if (an3 < 0) continue;
-      const char *aty = nt_type(nt, an3);
-      if (aty && sp_streq(aty, "ElseNode")) an3 = nt_ref(nt, an3, "statements");
-      const char *aty2 = an3 >= 0 ? nt_type(nt, an3) : NULL;
-      if (aty2 && sp_streq(aty2, "StatementsNode")) {
-        int bn3 = 0;
-        const int *bb3 = nt_arr(nt, an3, "body", &bn3);
-        an3 = bn3 > 0 ? bb3[bn3 - 1] : -1;
-      }
-      if (an3 < 0) { nil_arm = 1; break; }
-      const char *lty = nt_type(nt, an3);
-      if (lty && sp_streq(lty, "NilNode")) nil_arm = 1;
-    }
-    return nil_arm ? ty_object_class(t2) : -1;
-  }
+  if (vt_cond_answers_nil(c, id) && ty_is_object(comp_ntype(c, id)))
+    return ty_object_class(comp_ntype(c, id));
   return -1;
 }
 
