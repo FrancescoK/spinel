@@ -126,7 +126,7 @@ classify_one() {
   fi
 }
 export -f classify_one
-export TDIR SPINEL GATE RC RC_FP
+export TDIR SPINEL GATE RC RC_FP TO
 
 mkdir -p "$TDIR/rows"
 if [ -n "$ONLY" ]; then
