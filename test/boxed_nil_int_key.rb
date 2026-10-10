@@ -25,6 +25,14 @@ def bump(a, s)
   a
 end
 
+# The value rebinds the receiver's variable: the store goes to the receiver
+# read first, with the key held as above.
+def put_rebind(h, s, v)
+  h0 = h
+  h[s.index("b")] = (h = nil; v)
+  [h0, h]
+end
+
 def memo(a, s)
   a[s.index("b")] ||= 7
 end
@@ -50,6 +58,10 @@ show("put hash nil key") { put({1 => :one}, "xyz", :n) }
 show("put array") { put([1, 2, 3], "abc", 9) }
 show("put array nil key") { put([1, 2, 3], "xyz", 9) }
 show("put nil receiver, nil key") { put(nil, "xyz", 9) }
+show("rebind hash key") { put_rebind({}, "abc", :k) }
+show("rebind hash nil key") { put_rebind({1 => :one}, "xyz", :n) }
+show("rebind array") { put_rebind([1, 2, 3], "abc", 9) }
+show("rebind array nil key") { put_rebind([1, 2, 3], "xyz", 9) }
 show("bump") { bump([1, 2, 3], "abc") }
 show("bump nil key") { bump([1, 2, 3], "xyz") }
 show("bump nil receiver, nil key") { bump(nil, "xyz") }
