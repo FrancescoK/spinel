@@ -3920,16 +3920,18 @@ static void dsend_param_literals(Compiler *c, int name, ANameHash *out) {
   const char *vn = nt_kind(nt, name) == NK_LocalVariableReadNode ? nt_str(nt, name, "name") : NULL;
   Scope *sc = comp_scope_of(c, name);
   int pi = -1;
-  for (int k = 0; vn && sc->name && k < sc->nparams && (sc->rest_idx < 0 || k < sc->rest_idx); k++)
-    if (sc->pnames[k] && sp_streq(sc->pnames[k], vn)) pi = k;
-  if (pi < 0) return;
+  for (int k = 0; vn && sc->name && k < sc->nparams; k++)
+    if (k != sc->rest_idx && sc->pnames[k] && sp_streq(sc->pnames[k], vn)) pi = k;
+  int post = sc->rest_idx >= 0 && pi > sc->rest_idx ? pi - sc->rest_idx : 0;
+  if (pi < 0 || post > sc->npost_rest) return;
   NT_FOREACH_KIND(nt, NK_CallNode, id) {
     const char *cn = nt_str(nt, id, "name");
     if (!cn || !sp_streq(cn, sc->name)) continue;
     int a = nt_ref(nt, id, "arguments");
     int ac = 0; const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
-    NodeKind k = pi < ac ? nt_kind(nt, av[pi]) : NK_NONE;
-    const char *v = k == NK_SymbolNode ? nt_str(nt, av[pi], "value") : k == NK_StringNode ? nt_str(nt, av[pi], "content") : NULL;
+    int ai = post ? ac - sc->npost_rest + post - 1 : pi;
+    NodeKind k = ai >= 0 && ai < ac ? nt_kind(nt, av[ai]) : NK_NONE;
+    const char *v = k == NK_SymbolNode ? nt_str(nt, av[ai], "value") : k == NK_StringNode ? nt_str(nt, av[ai], "content") : NULL;
     if (v && !anh_has(out, v)) anh_add(out, strdup(v));
   }
 }
