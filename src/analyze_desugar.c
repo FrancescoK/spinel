@@ -12611,10 +12611,10 @@ int desugar_included_hooks(Compiler *c) {
  * reaches Class#inherited, which does nothing: it becomes nil. Classes are
  * matched by their last name segment, as the superclass links are followed. */
 
-/* The `def inherited` class `id`'s body defines on the class itself
+/* The `def inherited` a class body defines on the class itself
    (`def self.inherited(sub)`, or `def inherited` in its `class << self`), or -1. */
-static int inh_hook_in(const NodeTable *nt, int id) {
-  int bn = 0; const int *bv = nt_arr(nt, nt_ref(nt, id, "body"), "body", &bn);
+static int inh_hook_in_body(const NodeTable *nt, int body) {
+  int bn = 0; const int *bv = nt_arr(nt, body, "body", &bn);
   for (int k = 0; k < bn; k++) {
     int d = fwd_body_def(nt, bv[k]);
     if (d >= 0) {
@@ -12633,16 +12633,73 @@ static int inh_hook_in(const NodeTable *nt, int id) {
   }
   return -1;
 }
+static int inh_hook_in(const NodeTable *nt, int id) {
+  return inh_hook_in_body(nt, nt_ref(nt, id, "body"));
+}
 
-/* Does class `cname` or an ancestor of it define an inherited hook? */
-static int inh_chain_has_hook(const NodeTable *nt, const char *cname, int n0) {
+/* The instance-method `def inherited` module `mname` defines, or -1: the hook
+   a class that extends the module answers. */
+static int inh_module_hook(const NodeTable *nt, const char *mname, int n0) {
+  for (int m = 0; mname && m < n0; m++) {
+    if (nt_kind(nt, m) != NK_ModuleNode) continue;
+    const char *nm = nt_str(nt, nt_ref(nt, m, "constant_path"), "name");
+    if (!nm || !sp_streq(nm, mname)) continue;
+    int bn = 0; const int *bv = nt_arr(nt, nt_ref(nt, m, "body"), "body", &bn);
+    for (int k = 0; k < bn; k++) {
+      int d = fwd_body_def(nt, bv[k]);
+      const char *dn = d >= 0 ? nt_str(nt, d, "name") : NULL;
+      if (dn && sp_streq(dn, "inherited") && nt_ref(nt, d, "receiver") < 0) return d;
+    }
+  }
+  return -1;
+}
+
+/* The hook a class body takes from a module it extends (`extend Tracking`),
+   or -1. */
+static int inh_extended_hook(const NodeTable *nt, int body, int n0) {
+  int bn = 0; const int *bv = nt_arr(nt, body, "body", &bn);
+  for (int k = 0; k < bn; k++) {
+    if (!fwd_node_is(nt, bv[k], "CallNode") || nt_ref(nt, bv[k], "receiver") >= 0) continue;
+    const char *nm = nt_str(nt, bv[k], "name");
+    if (!nm || !sp_streq(nm, "extend")) continue;
+    int an = 0; const int *av = nt_arr(nt, nt_ref(nt, bv[k], "arguments"), "arguments", &an);
+    for (int j = 0; j < an; j++) {
+      NodeKind ak = nt_kind(nt, av[j]);
+      if (ak != NK_ConstantReadNode && ak != NK_ConstantPathNode) continue;
+      int d = inh_module_hook(nt, nt_str(nt, av[j], "name"), n0);
+      if (d >= 0) return d;
+    }
+  }
+  return -1;
+}
+
+/* The body of a class `Name = Struct.new(...) do ... end` (or Data.define)
+   builds, when `id` is that constant write, or -1. */
+static int inh_struct_body(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  if (nt_kind(nt, id) != NK_ConstantWriteNode) return -1;
+  int body = class_def_body(c, id);
+  return body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? body : -1;
+}
+
+/* Does class `cname` or an ancestor of it define an inherited hook, its own
+   or one from a module it extends? */
+static int inh_chain_has_hook(Compiler *c, const char *cname, int n0) {
+  const NodeTable *nt = c->nt;
   for (int depth = 0; cname && depth < 64; depth++) {
     const char *super_name = NULL;
     for (int id = 0; id < n0; id++) {
+      int sbody = inh_struct_body(c, id);
+      if (sbody >= 0) {
+        const char *wn = nt_str(nt, id, "name");
+        if (wn && sp_streq(wn, cname) &&
+            (inh_hook_in_body(nt, sbody) >= 0 || inh_extended_hook(nt, sbody, n0) >= 0)) return 1;
+        continue;
+      }
       if (nt_kind(nt, id) != NK_ClassNode) continue;
       const char *cn = nt_str(nt, nt_ref(nt, id, "constant_path"), "name");
       if (!cn || !sp_streq(cn, cname)) continue;
-      if (inh_hook_in(nt, id) >= 0) return 1;
+      if (inh_hook_in(nt, id) >= 0 || inh_extended_hook(nt, nt_ref(nt, id, "body"), n0) >= 0) return 1;
       int sc = nt_ref(nt, id, "superclass");
       if (!super_name && sc >= 0 &&
           (nt_kind(nt, sc) == NK_ConstantReadNode || nt_kind(nt, sc) == NK_ConstantPathNode))
@@ -12698,14 +12755,41 @@ int desugar_inherited_hooks(Compiler *c) {
       for (int j = 0; j < cnt; j++) if (ids[j] >= 0 && ids[j] < n0) parent[ids[j]] = p;
     }
   }
-  /* the hooks first: a `super` that finds no ancestor's hook */
+  /* the hooks first: a `super` that finds no ancestor's hook. A class's own
+     hook reaches a module it extends next; a Struct's reaches Struct's. */
   for (int id = 0; id < n0; id++) {
+    int sbody = inh_struct_body(c, id);
+    if (sbody >= 0) {
+      int d = inh_hook_in_body(nt, sbody);
+      if (d >= 0 && inh_extended_hook(nt, sbody, n0) < 0) inh_drop_super(nt, nt_ref(nt, d, "body"));
+      continue;
+    }
     if (nt_kind(nt, id) != NK_ClassNode) continue;
     int d = inh_hook_in(nt, id);
     if (d < 0) continue;
     int sc = nt_ref(nt, id, "superclass");
     const char *sn = sc >= 0 ? nt_str(nt, sc, "name") : NULL;
-    if (!sn || !inh_chain_has_hook(nt, sn, n0)) inh_drop_super(nt, nt_ref(nt, d, "body"));
+    if (inh_extended_hook(nt, nt_ref(nt, id, "body"), n0) < 0 && (!sn || !inh_chain_has_hook(c, sn, n0)))
+      inh_drop_super(nt, nt_ref(nt, d, "body"));
+  }
+  /* a module's hook goes on to the hooks above the classes that extend it;
+     when none of them has one, its `super` reaches Class#inherited too */
+  for (int m = 0; m < n0; m++) {
+    if (nt_kind(nt, m) != NK_ModuleNode) continue;
+    const char *mn = nt_str(nt, nt_ref(nt, m, "constant_path"), "name");
+    int d = inh_module_hook(nt, mn, n0);
+    if (d < 0 || !sp_streq(nt_str(nt, nt_ref(nt, m, "constant_path"), "name"), mn)) continue;
+    int extenders = 0, above = 0;
+    for (int id = 0; id < n0 && !above; id++) {
+      int sbody = inh_struct_body(c, id);
+      int body = sbody >= 0 ? sbody : nt_kind(nt, id) == NK_ClassNode ? nt_ref(nt, id, "body") : -1;
+      if (body < 0 || inh_extended_hook(nt, body, n0) != d) continue;
+      extenders++;
+      int sc = sbody >= 0 ? -1 : nt_ref(nt, id, "superclass");
+      const char *sn = sc >= 0 ? nt_str(nt, sc, "name") : NULL;
+      if (sn && inh_chain_has_hook(c, sn, n0)) above = 1;
+    }
+    if (extenders > 0 && !above) inh_drop_super(nt, nt_ref(nt, d, "body"));
   }
   /* then the call, once per class: a reopening does not create it again */
   char **seen = NULL; int nseen = 0;
@@ -12714,7 +12798,7 @@ int desugar_inherited_hooks(Compiler *c) {
     int sc = nt_ref(nt, id, "superclass");
     if (sc < 0 || (nt_kind(nt, sc) != NK_ConstantReadNode && nt_kind(nt, sc) != NK_ConstantPathNode)) continue;
     const char *sn = nt_str(nt, sc, "name");
-    if (!sn || !inh_chain_has_hook(nt, sn, n0)) continue;
+    if (!sn || !inh_chain_has_hook(c, sn, n0)) continue;
     char qn[512];
     inh_qualified_name(nt, parent, id, qn, sizeof qn);
     int dup = 0;
