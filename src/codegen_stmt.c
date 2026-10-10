@@ -1910,7 +1910,11 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
     v = unwrap_parens(c, v);
     int t = ++g_tmp, sv = view_push(c, v, TY_POLY);
     buf_printf(b, "({ sp_RbVal _t%d = ", t);
-    emit_expr(c, v, b);
+    /* a block literal the call splices answers its tail boxed: asked as
+       the call's own type, a tail that is a shared String came out as its
+       bytes (#8399) */
+    if (is_block_call(c, v)) emit_block_invoke(c, nt_ref(c->nt, v, "arguments"), b, 0, 1, TY_POLY);
+    else emit_expr(c, v, b);
     buf_printf(b, "; _t%d.tag == SP_TAG_NIL ? (sp_String *)NULL : sp_poly_as_strbuf(_t%d); })", t, t);
     view_pop(c, sv);
     return 1;
