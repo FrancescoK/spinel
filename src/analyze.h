@@ -235,6 +235,10 @@ int poly_blockless_enum_name(const char *name);
    asks this before choosing between sp_box_int and sp_box_oint at a poly
    boundary. Valid only after analyze_program has settled the marking. */
 int nullable_int_value(Compiler *c, int id);
+/* The call node nullable_int_value is asked of for its builtin answer
+   alone (a poly dispatch's builtin arm re-entering it): the program's
+   methods and readers of the name are no targets there. -1 when none. */
+extern int g_nn_builtin_call;
 /* 1: the typed Integer-valued Hash `node` evaluates to (TY_STR_INT_HASH /
    TY_INT_INT_HASH) may hold a nil VALUE; 0 for every other kind and for
    node < 0 (DESIGN.md D3b-ii) */

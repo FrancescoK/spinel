@@ -2280,7 +2280,7 @@ int emit_poly_defaults0(Compiler *c, int id, int recv, const char *name, const P
     snprintf(cv, sizeof cv, "%s(_t%d)", sp_streq(name, "to_i") ? "sp_poly_to_i_meth" : "sp_poly_to_f_meth", tv);
     buf_printf(b, " default: _t%d = ", tr);
     if (ret == TY_POLY) emit_boxed_text(c, sp_streq(name, "to_i") ? TY_INT : TY_FLOAT, cv, b);
-    else buf_puts(b, cv);
+    else plan_put_plain(plan_slot_oint(c, id, ret), ret, cv, b);
     buf_puts(b, "; break;");
     obj_default_done = 1;
   }

@@ -29259,6 +29259,9 @@ static int poly_dispatch_nullable(Compiler *c, int v, const char *cn) {
     int iv = comp_ivar_index(&c->classes[ci], ivb);
     if (iv >= 0 && (c->classes[ci].ivar_types[iv] == TY_INT ||
                     c->classes[ci].ivar_types[iv] == TY_FLOAT)) return 1;
+    /* a boxed one (every Integer slot under --int-overflow=promote) starts
+       nil too, and its nil rides in a scalar call's slot the same way */
+    if (iv >= 0 && nil_rides && c->classes[ci].ivar_types[iv] == TY_POLY) return 1;
   }
   return 0;
 }
@@ -31785,6 +31788,7 @@ int native_call_ret_plain_num(Compiler *c, int v) {
   return sp_streq(c->native_methods[nmi].ret, "int") || sp_streq(c->native_methods[nmi].ret, "float");
 }
 
+int g_nn_builtin_call = -1;
 int nullable_int_value(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
   if (v < 0) return 0;
@@ -32054,6 +32058,8 @@ int nullable_int_value(Compiler *c, int v) {
     /* a receiverless call resolves as emission does: the class-method chain
        in a class method, then the instance chain, a top-level def last */
     int mi = cn && rcv < 0 ? comp_self_call_mi(c, v, cn) : (cn ? comp_method_index(c, cn) : -1);
+    /* the builtin's own answer: no method of the program is a target */
+    if (v == g_nn_builtin_call) return 0;
     if (mi < 0 && cn) {
       if (rcv >= 0) {
         TyKind rt = infer_type(c, rcv);

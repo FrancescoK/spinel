@@ -7110,7 +7110,15 @@ static int node_is_oint_asked(Compiler *c, int node) {
        safe-navigation re-entry (g_sn_skip), where the analysis mark belongs
        to the `&.` as a whole and the inner emitter's own form decides */
     if ((rt == TY_POLY || (r < 0 && !ty_is_object(rt))) && g_sn_skip != node) {
-      if (nullable_int_value(c, node)) return 1;
+      /* in the call's own builtin arm (a dispatch re-entering it with
+         g_poly_builtin_arm) the program's methods of the name are no
+         targets: the builtin's own answer, which the arm lifts to the
+         dispatch's oint (emit_oint_expr) when it is plain */
+      int sv_bc = g_nn_builtin_call;
+      if (g_poly_builtin_arm && g_pd_skip == node) g_nn_builtin_call = node;
+      int nn = nullable_int_value(c, node);
+      g_nn_builtin_call = sv_bc;
+      if (nn) return 1;
     }
     /* `Integer(x, exception: false)` / `Float(x, exception: false)`: nil on
        a failed conversion */
