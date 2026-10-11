@@ -5,6 +5,24 @@
 #include "share.h"
 #include "repr.h"
 #include "call_plan.h"
+#include <errno.h>
+
+/* Is `s` the C text of an integer literal (`589LL`, `-8LL`, `(-8LL)`)? Its
+   value in *v. */
+static int c_int_literal_text(const char *s, long long *v) {
+  if (!s) return 0;
+  while (*s == '(') s++;
+  char *end = NULL;
+  errno = 0;
+  long long x = strtoll(s, &end, 10);
+  if (end == s || errno) return 0;
+  if (*end == 'L') end++;
+  if (*end == 'L') end++;
+  while (*end == ')') end++;
+  if (*end) return 0;
+  *v = x;
+  return 1;
+}
 
 /* A fused loop names the receiver expression twice: once in the bound check
    (re-run on every iteration) and once in each element read. That is only
@@ -7595,9 +7613,22 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
         emit_indent(b, indent); buf_printf(b, "sp_int _t%d = _t%d.tag == SP_TAG_NIL ? 0 : ", tl, tv);
         emit_unbox_text(c, TY_INT, tvs, b); buf_puts(b, ";\n");
       }
-      else { emit_indent(b, indent); buf_printf(b, "sp_int _t%d = ", tl); emit_int_expr(c, sargv[0], b); buf_puts(b, ";\n"); }
+      long long lit_l = 0, lit_s = 1;
+      int lit_l_ok = 0, lit_s_ok = sargc < 2;
+      if (!tv) {
+        Buf lb; memset(&lb, 0, sizeof lb); emit_int_expr(c, sargv[0], &lb);
+        lit_l_ok = c_int_literal_text(lb.p, &lit_l);
+        emit_indent(b, indent); buf_printf(b, "sp_int _t%d = %s;\n", tl, lb.p ? lb.p : "0");
+        free(lb.p);
+      }
       emit_indent(b, indent); buf_printf(b, "sp_int _t%d = ", ts);
-      if (sargc >= 2) emit_int_expr(c, sargv[1], b); else buf_puts(b, "1");
+      if (sargc >= 2) {
+        Buf sbf; memset(&sbf, 0, sizeof sbf); emit_int_expr(c, sargv[1], &sbf);
+        lit_s_ok = c_int_literal_text(sbf.p, &lit_s);
+        buf_puts(b, sbf.p ? sbf.p : "0");
+        free(sbf.p);
+      }
+      else buf_puts(b, "1");
       buf_puts(b, ";\n");
       emit_indent(b, indent);
       buf_printf(b, "if (_t%d == 0) sp_raise_cls(\"ArgumentError\", \"step can't be 0\");\n", ts);
@@ -7611,6 +7642,14 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
       if (tv) buf_printf(b, ", _t%d = _t%d.tag == SP_TAG_NIL || (_t%d >= 0 ? _t%d <= _t%d : _t%d >= _t%d);"
                             " _t%d; _t%d = _t%d.tag == SP_TAG_NIL ? (_t%d += _t%d, 1) : sp_int_loop_next(&_t%d, _t%d, _t%d)) {\n",
                          tg, tv, ts, t, tl, t, tl, tg, tg, tv, t, ts, t, tl, ts);
+      /* a literal last value and step whose sum is an sp_int on every target,
+         32-bit ones too (`341.step(589, 8)`): the counter cannot pass the last
+         value by wrapping, so it steps by `+=` and is tested against it, as
+         before sp_int_loop_next, which cost a hot loop (optcarrot's PPU main
+         loop) its folded test */
+      else if (lit_l_ok && lit_s_ok && lit_s != 0 &&
+               lit_l > -(1LL << 30) && lit_l < (1LL << 30) && lit_s > -(1LL << 30) && lit_s < (1LL << 30))
+        buf_printf(b, "; _t%d %s _t%d; _t%d += _t%d) {\n", t, lit_s > 0 ? "<=" : ">=", tl, t, ts);
       else buf_printf(b, ", _t%d = _t%d >= 0 ? _t%d <= _t%d : _t%d >= _t%d; _t%d; _t%d = sp_int_loop_next(&_t%d, _t%d, _t%d)) {\n",
                       tg, ts, t, tl, t, tl, tg, tg, t, tl, ts);
       if (p0) { char ts2[32]; snprintf(ts2, sizeof ts2, "_t%d", t); emit_iter_param_assign(c, block, p0_orig, p0, TY_INT, ts2, b, indent + 1); }
