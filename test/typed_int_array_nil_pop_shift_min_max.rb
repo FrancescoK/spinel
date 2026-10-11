@@ -7,7 +7,8 @@ def t(label)
   print label, ": "
   p yield
 rescue => e
-  puts "#{e.class}: #{e.message}"
+  # which pair a sort meets first is its algorithm's; CRuby names that pair
+  puts "#{e.class}: #{e.message.sub(/\Acomparison of .+ with .+ failed\z/, "comparison of two elements failed")}"
 end
 n = ARGV.size
 m = -9223372036854775807 - (n + 1)

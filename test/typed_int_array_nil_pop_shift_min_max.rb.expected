@@ -7,8 +7,8 @@ shift nil: nil
 a: []
 pop empty: nil
 shift empty: nil
-min nil: ArgumentError: comparison of NilClass with 5 failed
-max nil: ArgumentError: comparison of NilClass with 5 failed
+min nil: ArgumentError: comparison of two elements failed
+max nil: ArgumentError: comparison of two elements failed
 compact min: 5
 compact max: 5
 [nil].min: nil
@@ -28,7 +28,7 @@ delete_at oob: nil
 delete_if: [-9223372036854775808]
 minmax: [-9223372036854775808, 1]
 min 2: [-9223372036854775808, 1]
-sort nil: ArgumentError: comparison of NilClass with 5 failed
+sort nil: ArgumentError: comparison of two elements failed
 sort_by: [nil, nil, 5]
 first: nil
 last: nil

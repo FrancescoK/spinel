@@ -5,6 +5,6 @@ float past end [nil, 0]
 int [1, 0]
 int nil [nil, 0]
 sort float [1, 2, 0]
-sort float nil ArgumentError: comparison of Integer with 1 failed
+sort float nil ArgumentError: comparison of two elements failed
 sort int [1, 2, 0]
-sort int nil ArgumentError: comparison of Integer with 1 failed
+sort int nil ArgumentError: comparison of two elements failed

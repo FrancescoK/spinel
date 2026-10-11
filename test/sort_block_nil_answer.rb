@@ -6,7 +6,8 @@ def show(tag)
   r = yield
   puts "#{tag} #{r.inspect}"
 rescue => e
-  puts "#{tag} #{e.class}: #{e.message}"
+  # which pair a sort meets first is its algorithm's; CRuby names that pair
+  puts "#{tag} #{e.class}: #{e.message.sub(/\Acomparison of .+ with .+ failed\z/, "comparison of two elements failed")}"
 end
 
 def by_key(keys, a, b)
