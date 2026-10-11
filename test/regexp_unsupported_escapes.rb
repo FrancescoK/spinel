@@ -1,4 +1,4 @@
-# `\K`, `\R`, `\X` and `\p{...}` each mean something here that the engine does
+# `\R`, `\X` and `\p{...}` each meant something here that the engine did
 # not do, and as unknown escapes each was its own letter: /\R/ matched an R
 # rather than a newline, and /\p{Alpha}/ answered a pattern that asked for a
 # letter with the text of the request. Ported from mruby-regexp 2e7e38a80 and
@@ -13,7 +13,6 @@ def t(label)
   puts label + " | " + r
 end
 
-t("bs-K")      { Regexp.new("a\\Kb") =~ "ab" }
 t("bs-R")      { Regexp.new("\\R") =~ "\n" }
 t("bs-X")      { Regexp.new("\\X") =~ "a" }
 
@@ -22,6 +21,11 @@ t("bs-G")      { Regexp.new("\\Ga") =~ "a" }
 t("bs-G-mid")  { Regexp.new("a\\Gb") =~ "ab" }
 t("bs-g-name") { Regexp.new("(?<x>a|b)\\g<x>").match("ab")[0] }
 t("bs-g-quote"){ Regexp.new("(?<x>a|b)\\g'x'").match("ab")[0] }
+
+# so is \K (test/regexp_keep.rb), but inside a lookaround, where CRuby's
+# reading of it is not one the engine follows, it is still refused
+t("bs-K")      { Regexp.new("a\\Kb") =~ "ab" }
+t("bs-K-look") { Regexp.new("(?=a\\K)") =~ "ab" }
 t("prop-p")    { Regexp.new("\\p{Alpha}") =~ "a" }
 t("prop-P")    { Regexp.new("\\P{Alpha}") =~ "1" }
 t("prop-unknown") { Regexp.new("\\p{Hiragana}") =~ "a" }

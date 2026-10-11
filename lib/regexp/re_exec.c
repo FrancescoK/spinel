@@ -644,6 +644,21 @@ leave:
   s->pend_top = 0;
 }
 
+/* spinel: a pattern with a \K reports its match from where the \K last
+   stood, so group 0 takes that start, and the start of the attempt itself,
+   which `=~` answers and a search anchored at a position tests, goes into
+   the \K's own pair in exchange: re_exec_attempt() reads it there. A \K
+   the match never passed leaves group 0 where the attempt began. */
+static void
+keep_apply(const mrb_regexp_pattern *pat, int *caps)
+{
+  int k = pat->keep_slot;
+  if (!k) return;
+  int attempt = caps[0];
+  if (caps[k] >= 0) caps[0] = caps[k];
+  caps[k] = attempt;
+}
+
 static int
 pike_vm(mrb_state *mrb, const mrb_regexp_pattern *pat,
         const char *str, mrb_int len, mrb_int start, mrb_int start_limit,
@@ -657,6 +672,8 @@ pike_vm(mrb_state *mrb, const mrb_regexp_pattern *pat,
   if (pat->anchor == RE_ANCHOR_BOT) start_cap = str;
   int ncap = pat->num_captures * 2;
   if (ncap == 0) ncap = 2;
+  int nvis = ncap;  /* the slots the caller is answered; a \K's pair is past them */
+  if (pat->keep_slot) ncap += 2;
 
   int list_capa = RE_LIST_CAPA(pat->code_len, pat->loop_depth);
 
@@ -962,10 +979,11 @@ pike_vm(mrb_state *mrb, const mrb_regexp_pattern *pat,
   }
   else if (s.matched) {
     if (captures && s.result_caps) {
+      keep_apply(pat, s.result_caps);
       int copy = ncap < captures_size ? ncap : captures_size;
       memcpy(captures, s.result_caps, sizeof(int) * copy);
     }
-    ret = ncap > 0 ? ncap : 1;
+    ret = nvis;
   }
 
   if (use_cache) {
@@ -1933,6 +1951,8 @@ backtrack_exec(mrb_state *mrb, const mrb_regexp_pattern *pat,
   if (pat->anchor == RE_ANCHOR_BOT) start_cap = str;
   int ncap = pat->num_captures * 2;
   if (ncap == 0) ncap = 2;
+  int nvis = ncap;  /* the slots the caller is answered; a \K's pair is past them */
+  if (pat->keep_slot) ncap += 2;
 
   /* One block: the capture slots, then an entry record per pc and the pass
      that wrote it. The arrays are filled once here and put back to what they
@@ -2012,10 +2032,11 @@ backtrack_exec(mrb_state *mrb, const mrb_regexp_pattern *pat,
     int r = bt_match(&m, sp, 0);
     if (r == BT_MATCH) {
       if (captures) {
+        keep_apply(pat, caps);
         int copy = ncap < captures_size ? ncap : captures_size;
         memcpy(captures, caps, sizeof(int) * copy);
       }
-      ret = ncap > 0 ? ncap : 1;
+      ret = nvis;
       break;
     }
     if (r == BT_NOMEM) {

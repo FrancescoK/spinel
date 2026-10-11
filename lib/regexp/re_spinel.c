@@ -268,6 +268,25 @@ int re_exec(const mrb_regexp_pattern *pat, const char *str, mrb_int len, mrb_int
   re_raise_msg(m, strlen(m));
 }
 
+/* re_exec, answering besides where the attempt that matched began: group
+   0's start, unless a \K moved that later. `=~` answers the attempt, and a
+   search tied to a position (rindex, a scanner's scan) tests it. The engine
+   leaves it in the \K's own pair (keep_apply()), which a caller's array may
+   be too short to hold, so the search is made into one that is not. */
+int re_exec_attempt(const mrb_regexp_pattern *pat, const char *str, mrb_int len, mrb_int start,
+                    int *captures, int captures_size, int binary, int *attempt) {
+  if (!pat->keep_slot) {
+    int n = re_exec(pat, str, len, start, captures, captures_size, binary);
+    *attempt = n > 0 && captures_size > 0 ? captures[0] : -1;
+    return n;
+  }
+  int full[RE_MAX_CAPTURES * 2 + 2];
+  int n = re_exec(pat, str, len, start, full, pat->keep_slot + 2, binary);
+  *attempt = n > 0 ? full[pat->keep_slot] : -1;
+  if (n > 0) memcpy(captures, full, sizeof(int) * (size_t)(n < captures_size ? n : captures_size));
+  return n;
+}
+
 /* ---- named captures ---- */
 
 int re_num_named(const mrb_regexp_pattern *pat) {
