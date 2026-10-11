@@ -1,0 +1,8 @@
+ok foo
+rescued no foo
+ensure num
+"num else"
+ensure num
+"num bad"
+after done
+body done

@@ -957,14 +957,21 @@ static bool mx_subst_visit(const pm_node_t *n, void *data) {
 /* `scope`: the depth of the macro's own locals as seen from `n` (1 in a
    lambda body the macro passes on). */
 
+/* The source from `from` to `to`, with n's macro locals substituted; `self`
+   also visits n itself, not only its children. */
+static int mx_subst_span(MxCtx *c, pm_node_t *n, const uint8_t *from, const uint8_t *to,
+                         MxBuf *b, uint32_t scope, int self) {
+  MxSubst s = { c, from, b, 0, scope };
+  if (!self || mx_subst_visit(n, &s)) pm_visit_child_nodes(n, mx_subst_visit, &s);
+  if (s.bad || s.from > to) return 0;
+  mxb_putn(b, (const char *)s.from, (size_t)(to - s.from));
+  return 1;
+}
+
 static int mx_subst_text_at(MxCtx *c, pm_node_t *n, MxBuf *b, uint32_t scope) {
-  MxSubst s = { c, n->location.start, b, 0, scope };
   /* `n` itself too: a read, a write of a macro local, or a block or lambda
      handed over whole (whose body is one scope further in) */
-  if (mx_subst_visit(n, &s)) pm_visit_child_nodes(n, mx_subst_visit, &s);
-  if (s.bad || s.from > n->location.end) return 0;
-  mxb_putn(b, (const char *)s.from, (size_t)(n->location.end - s.from));
-  return 1;
+  return mx_subst_span(c, n, n->location.start, n->location.end, b, scope, 1);
 }
 
 static int mx_subst_text(MxCtx *c, pm_node_t *n, MxBuf *b) { return mx_subst_text_at(c, n, b, 0); }
@@ -973,6 +980,17 @@ static int mx_subst_text(MxCtx *c, pm_node_t *n, MxBuf *b) { return mx_subst_tex
    in from the macro's own locals, as the text of a def's body. */
 static int mx_subst_body(MxCtx *c, pm_node_t *body, MxBuf *o) {
   if (!body) return 1;
+  if (PM_NODE_TYPE(body) == PM_BEGIN_NODE && !((pm_begin_node_t *)body)->begin_keyword_loc.start) {
+    /* `do ... rescue ... end`: the implicit begin spans the block's `do`, its
+       parameters and its `end` -- the def's body is the clauses alone */
+    pm_begin_node_t *bn = (pm_begin_node_t *)body;
+    pm_node_t *first = bn->statements ? (pm_node_t *)bn->statements : bn->rescue_clause ? (pm_node_t *)bn->rescue_clause
+                     : bn->else_clause ? (pm_node_t *)bn->else_clause : (pm_node_t *)bn->ensure_clause;
+    if (!first || !bn->end_keyword_loc.start) return 0;
+    if (!mx_subst_span(c, body, first->location.start, bn->end_keyword_loc.start, o, 1, 0)) return 0;
+    mxb_puts(o, "\n");
+    return 1;
+  }
   if (PM_NODE_TYPE(body) != PM_STATEMENTS_NODE) {
     int ok = mx_subst_text_at(c, body, o, 1);
     mxb_puts(o, "\n");
