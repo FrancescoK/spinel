@@ -14912,7 +14912,24 @@ int class_builtin_parent(Compiler *c, int cid) {
    name (sp_raise_cls), and the builtins raise so. Its message is scanned as
    any other expression. */
 static int program_needs_class_machinery(Compiler *c) {
-  if (c->nclasses > 0) return 1;
+  /* A user exception class is matched by rescue through the bank's
+     sp_user_exc_parent; any other class needs it only for the
+     introspection the scan below looks for (#8401) */
+  /* ...and a class that mixes a module in: module-aware dispatch and
+     Module#include? / < walk the chain with the module (sp_class_le_mod) */
+  if (c->ntoplevel_includes > 0) return 1;
+  for (int k = 0; k < c->nclasses; k++)
+    if (class_is_exc_subclass(c, k) || class_is_exc_reopen(c, k) ||
+        c->classes[k].nincluded_mods > 0 || c->classes[k].nextended_mods > 0 ||
+        c->classes[k].nincluded_mod_names > 0) return 1;
+  /* a boxed value unboxed into a class's slot is checked against the class
+     chain (sp_poly_unbox_cls): a class beside any poly, Array or Hash type
+     keeps the bank */
+  if (c->nclasses > 0)
+    for (int i = 0; i < c->nt->count && i < c->node_cap; i++) {
+      TyKind t = c->ntype[i];
+      if (t == TY_POLY || ty_is_array(t) || ty_is_hash(t)) return 1;
+    }
   const NodeTable *nt = c->nt;
   unsigned char *raised = calloc((size_t)nt->count + 1, 1);
   for (int i = 0; raised && i < nt->count; i++) {
