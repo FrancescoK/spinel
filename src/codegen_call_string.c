@@ -689,8 +689,12 @@ no_gsub_enum:
       free(rew.p);
     }
     /* a poly RHS may hold an Array (spread across the directives) or a scalar
-       (a one-element list) -- the distinction is only known at runtime. */
-    if (at == TY_POLY) {
+       (a one-element list) -- the distinction is only known at runtime. An
+       object of a class of the program's that is no Array and has no to_ary
+       is one argument, whose %s is its to_s, as CRuby formats it boxed. */
+    int plain_obj = ty_is_object(at) && class_builtin_parent(c, ty_object_class(at)) == -116 &&
+                    comp_method_in_chain(c, ty_object_class(at), "to_ary", NULL) < 0;
+    if (at == TY_POLY || plain_obj) {
       const char *fend = emit_str_format_held(c, recv, argv[0], -1, b);
       if (!fend) { buf_puts(b, "sp_str_format_polyarr("); emit_expr(c, recv, b); }
       buf_puts(b, ", sp_format_args("); emit_boxed(c, argv[0], b); buf_printf(b, ")%s", fend ? fend : ")");

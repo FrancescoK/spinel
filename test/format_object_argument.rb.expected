@@ -1,0 +1,11 @@
+Reading index.js
+[index.js    ]
+[    index.js]
+as #<Path index.js>
+child base
+true
+maybe p1
+maybe []
+built tmp/out
+TypeError
+too few arguments
