@@ -157,7 +157,7 @@ These are deliberate consequences of real parallelism, listed in
 | `SPINEL_GC_THRESHOLD_OBJ_KB` | the same budget for the OBJECT heap alone, overriding the pair above |
 | `SPINEL_GC_THRESHOLD_STR_KB` | the same for the STRING heap alone |
 | `SPINEL_GC_OBJ_BUDGET` | the default GATES the widening on what the last collection cost. `obj` pins it off (the object heap alone, as spinel did before 2026-09-09), `walk` pins it on (everything a mark walks). `fixed` is a separate axis: it stops re-aiming the budget after each collection and holds it at its floor |
-| `SPINEL_GC_STR_BUDGET` | by default the string budget also carries a share of the object old generation, gated by the same `mark share`. `str` pins that off (the string heap alone, as spinel did before the share). `fixed` does for the STRING budget what it does for the object one |
+| `SPINEL_GC_STR_BUDGET` | by default the string budget also carries a share of the object old generation, gated by the same `mark share` as it was measured (`SPINEL_GC_OBJ_BUDGET` pins the object budget, not this one). `str` pins that off (the string heap alone, as spinel did before the share). `fixed` does for the STRING budget what it does for the object one |
 | `SPINEL_GC_SLAB` | `0` turns the slab allocator off: every object and heap string is then its own malloc, which is what ASAN needs to see a use-after-free (the slab hides one). On by default whatever the process's malloc. It used to default off under jemalloc (linked or preloaded), whose thread caches did what the slab's free lists did and beside which the free-list slab measured 8% slower; the bitmap sweep is what jemalloc's caches cannot do, and with it the slab under jemalloc answers the same requests a second on 17% less CPU and 13% less memory |
 | `SPINEL_GC_SLAB_MB` | wasm32-wasi only: the slab's size in MB, rounded down to 4 (default 64; below 4 the slab is off). See [wasm.md](wasm.md) |
 | `SPINEL_SLAB_HUGE` | `0` stops the slab asking for transparent huge pages on its arenas (`madvise(MADV_HUGEPAGE)`, effective where `transparent_hugepage` is `madvise` or `always`). On by default: an arena faults in as two 2 MB pages instead of a thousand 4 KB ones, and a list benchmark spent a third of its time in those faults |
@@ -287,9 +287,12 @@ the heap.
 
 So the string budget carries a share of the object OLD generation: one eighth
 of it, times the same `alpha`. `SPINEL_GC_STATS=1` reports what that put into
-the trigger as `old obj in str trigger` on the `[gc]` line.
+the trigger as `old obj in str trigger` on the `[gc]` line, zero after a sweep
+that reclaimed too little to carry it.
 `SPINEL_GC_STR_BUDGET=str` pins the share off and `walk` pins it on, the two
-ends `SPINEL_GC_OBJ_BUDGET` has.
+ends `SPINEL_GC_OBJ_BUDGET` has. Each knob pins its own budget: the string
+gate reads `alpha` as the last collection measured it, whatever
+`SPINEL_GC_OBJ_BUDGET` made of it for the object budget, `fixed` included.
 
 Wall time and peak resident set on one laptop core, the same binary with
 `str` and without:

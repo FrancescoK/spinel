@@ -2172,9 +2172,18 @@ gc-obj-budget-test: $(SPINEL) $(SP_RT_LIB) $(SPINEL_TIMEOUT)
 # gate has to decline, which is read against `walk`. The collection counts are
 # compared across arms: they are counts, so a busy machine gives the same
 # answer as an idle one.
+# The gate reads the mark share the last collection MEASURED, not what
+# SPINEL_GC_OBJ_BUDGET made of it for the object budget, and four more runs
+# hold that: `obj` there must not take the share off the first program, `walk`
+# must not put it on the second, and neither must `fixed` (with the object
+# floor raised, so that budget is held where the string trigger still decides
+# when to collect), read against `walk` under the same held budget.
+# gc_str_budget_kept is the reading itself: a sweep that reclaims nothing puts
+# no share in the trigger, so the last `[gc]` line has to say zero -- on a
+# program whose first half did carry it, which the count against `str` shows.
 gc-str-budget-test: $(SPINEL) $(SP_RT_LIB) $(SPINEL_TIMEOUT)
 	@tmp=$$(mktemp -d /tmp/spinel-gcstr.XXXXXX); ok=1; \
-	for prog in gc_str_budget_objects gc_str_budget_still; do \
+	for prog in gc_str_budget_objects gc_str_budget_still gc_str_budget_kept; do \
 	  $(SPINEL) test/$$prog.rb -o "$$tmp/$$prog" >"$$tmp/cc.out" 2>&1; rc=$$?; \
 	  [ $$rc -eq 0 ] || \
 	    { echo "gc-str-budget-test: FAIL ($$prog: compile, exit $$rc)"; tail -5 "$$tmp/cc.out"; ok=0; continue; }; \
@@ -2187,6 +2196,17 @@ gc-str-budget-test: $(SPINEL) $(SP_RT_LIB) $(SPINEL_TIMEOUT)
 	  done; \
 	  unset SPINEL_GC_STR_BUDGET; \
 	done; \
+	held="SPINEL_GC_OBJ_BUDGET=fixed SPINEL_GC_THRESHOLD_OBJ_KB=65536"; \
+	for arm in "gc_str_budget_objects objpin SPINEL_GC_OBJ_BUDGET=obj" \
+	           "gc_str_budget_still walkpin SPINEL_GC_OBJ_BUDGET=walk" \
+	           "gc_str_budget_still held $$held" \
+	           "gc_str_budget_still heldwalk $$held SPINEL_GC_STR_BUDGET=walk"; do \
+	  set -- $$arm; prog=$$1; tag=$$2; shift 2; \
+	  [ -x "$$tmp/$$prog" ] || continue; \
+	  env "$$@" SPINEL_GC_STATS=1 $(TIMEOUT60) "$$tmp/$$prog" > "$$tmp/$$prog.$$tag.out" 2> "$$tmp/$$prog.$$tag.err"; \
+	  cmp -s "$$tmp/$$prog.$$tag.out" test/$$prog.rb.expected || \
+	    { echo "gc-str-budget-test: FAIL ($$prog: $$* changed the answer)"; ok=0; }; \
+	done; \
 	n_of() { sed -n 's/^\[gc\] \([0-9]*\) collections.*/\1/p' "$$1" | tail -1; }; \
 	obj_of() { sed -n 's/.*live \([0-9.]*\) MB obj.*/\1/p' "$$1" | tail -1; }; \
 	share_of() { sed -n 's/.*old obj in str trigger \([0-9.]*\) MB.*/\1/p' "$$1" | tail -1; }; \
@@ -2198,7 +2218,15 @@ gc-str-budget-test: $(SPINEL) $(SP_RT_LIB) $(SPINEL_TIMEOUT)
 	sh=$$(share_of "$$tmp/gc_str_budget_objects.str.err"); \
 	gn=$$(n_of "$$tmp/gc_str_budget_still.default.err"); \
 	gw=$$(n_of "$$tmp/gc_str_budget_still.walk.err"); \
-	for v in "$$on" "$$ow" "$$os" "$$ol" "$$oh" "$$sh" "$$gn" "$$gw"; do \
+	pl=$$(obj_of "$$tmp/gc_str_budget_objects.objpin.err"); \
+	ph=$$(share_of "$$tmp/gc_str_budget_objects.objpin.err"); \
+	wn=$$(n_of "$$tmp/gc_str_budget_still.walkpin.err"); \
+	hn=$$(n_of "$$tmp/gc_str_budget_still.held.err"); \
+	hw=$$(n_of "$$tmp/gc_str_budget_still.heldwalk.err"); \
+	kn=$$(n_of "$$tmp/gc_str_budget_kept.default.err"); \
+	ks=$$(n_of "$$tmp/gc_str_budget_kept.str.err"); \
+	kh=$$(share_of "$$tmp/gc_str_budget_kept.default.err"); \
+	for v in "$$on" "$$ow" "$$os" "$$ol" "$$oh" "$$sh" "$$gn" "$$gw" "$$pl" "$$ph" "$$wn" "$$hn" "$$hw" "$$kn" "$$ks" "$$kh"; do \
 	  [ -n "$$v" ] || { echo "gc-str-budget-test: FAIL (no [gc] line with the share on it)"; ok=0; break; }; \
 	done; \
 	awk -v s="$$sh" 'BEGIN{exit !(s == 0)}' || \
@@ -2215,6 +2243,16 @@ gc-str-budget-test: $(SPINEL) $(SP_RT_LIB) $(SPINEL_TIMEOUT)
 	  { echo "gc-str-budget-test: FAIL (the gate fell short of walk on a mark-bound program: $$on collections vs walk $$ow)"; ok=0; }; \
 	awk -v d="$$gn" -v w="$$gw" 'BEGIN{exit !(d * 2 > w * 3)}' || \
 	  { echo "gc-str-budget-test: FAIL (the gate carried the share on a sweep-bound program: $$gn collections vs walk $$gw)"; ok=0; }; \
+	awk -v s="$$ph" -v o="$$pl" 'BEGIN{exit !(s > o / 8)}' || \
+	  { echo "gc-str-budget-test: FAIL (SPINEL_GC_OBJ_BUDGET=obj took the share off the string budget: $$ph MB against $$pl MB live)"; ok=0; }; \
+	awk -v d="$$wn" -v w="$$gw" 'BEGIN{exit !(d * 2 > w * 3)}' || \
+	  { echo "gc-str-budget-test: FAIL (SPINEL_GC_OBJ_BUDGET=walk opened the string budget's gate: $$wn collections vs walk $$gw)"; ok=0; }; \
+	awk -v d="$$hn" -v w="$$hw" 'BEGIN{exit !(d * 2 > w * 3)}' || \
+	  { echo "gc-str-budget-test: FAIL (SPINEL_GC_OBJ_BUDGET=fixed opened the string budget's gate: $$hn collections vs walk $$hw)"; ok=0; }; \
+	awk -v d="$$kn" -v s="$$ks" 'BEGIN{exit !(d * 2 < s)}' || \
+	  { echo "gc-str-budget-test: FAIL (gc_str_budget_kept never carried the share: $$ks -> $$kn collections)"; ok=0; }; \
+	awk -v s="$$kh" 'BEGIN{exit !(s == 0)}' || \
+	  { echo "gc-str-budget-test: FAIL (the reading kept a share the last retune did not put in: $$kh MB)"; ok=0; }; \
 	rm -rf "$$tmp"; \
 	if [ $$ok -eq 1 ]; then echo "gc-str-budget-test: pass"; else exit 1; fi
 
