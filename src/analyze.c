@@ -22043,8 +22043,16 @@ static int promote_params_stored_in_shared_ivars(Compiler *c,
                                                  const HandleArgTab *hat) {
   const NodeTable *nt = c->nt;
   int changed = 0;
-  /* --share-strings: the one rule decides first (#6765) */
+  /* --share-strings: the one rule decides first (#6765). The facts it
+     builds ask whether a boxed receiver of a String mutator can be a
+     String (an_recv_may_be_string): with the caller table in hand a
+     parameter is bounded by what its callers pass, as it is at the seal,
+     so an accumulator handed down a chain of writers (ffi's `keep`, an
+     Array at every call) is no String's mutation (#8500, #8501). */
+  struct HandleArgTab *sv_args = c->share_args;
+  if (hat && hat->ok) c->share_args = (struct HandleArgTab *)hat;
   changed |= share_default_apply(c, 0);
+  c->share_args = sv_args;
   for (int w = 0; w < nt->count; w++) {
     if (nt_kind(nt, w) != NK_InstanceVariableWriteNode) continue;
     int wv = nt_ref(nt, w, "value");
@@ -22974,10 +22982,12 @@ static int poly_var_may_hold_string(Compiler *c, const HandleArgTab *hat,
   if (!lv || (!lits && depth > 4) || lv->is_cell || (lv->is_block_param && bound != 1) || bound == 2) return 1;
   /* a variable already being asked about further up the chain (a method
      handing its parameter to itself) adds no value of its own */
-  static LocalVar *asking[6];
-  for (int k = 0; k < depth && k < 6; k++) if (asking[k] == lv) return 0;
-  /* With literals, recognize a cycle before the conservative depth limit. */
-  if (depth > 4) return 1;
+  static LocalVar *asking[10];
+  for (int k = 0; k < depth && k < 10; k++) if (asking[k] == lv) return 0;
+  /* With literals, recognize a cycle before the conservative depth limit,
+     which is deeper than the lifts': an accumulator handed down a chain of
+     writers (ffi's `keep`, through six methods) is still an Array at its end */
+  if (depth > 8) return 1;
   asking[depth] = lv;
   int si = (int)(vs - c->scopes);
   if (lv->is_param) {
