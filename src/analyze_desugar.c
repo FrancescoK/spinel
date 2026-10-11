@@ -9,6 +9,7 @@
 #include "analyze_internal.h"
 #include <stdio.h>
 #include <ctype.h>
+#include <limits.h>
 #include <stdlib.h>
 
 /* Required-param count of a forwarded callable expression `ex`, or -1 if it
@@ -12819,7 +12820,11 @@ int desugar_included_hooks(Compiler *c) {
  * (__send__, as the hook is often private.) Dispatch then finds the hook on Base or the nearest ancestor that defines
  * it, as a call would. A `super` in a hook that no ancestor's hook answers
  * reaches Class#inherited, which does nothing: it becomes nil. Classes are
- * matched by their last name segment, as the superclass links are followed. */
+ * matched by their last name segment, as the superclass links are followed.
+ * A class defined before any hook in its chain exists (the hook's `def`, or
+ * the `extend` that brings it, comes later in the program) fires nothing, as
+ * in CRuby: nodes are numbered in program order, required files spliced in
+ * where they are required. */
 
 /* The `def inherited` a class body defines on the class itself
    (`def self.inherited(sub)`, or `def inherited` in its `class << self`), or -1. */
@@ -12862,14 +12867,14 @@ static int inh_module_def_hook(const NodeTable *nt, int m) {
 /* What the hook questions ask about a name, found once per pass instead of by
    a scan of every node per ask. A name a class or a Struct constant is
    written under holds `has_hook` (a body of it defines the hook or extends a
-   module that does) and `super`, the superclass name the first `class` of it
+   module that does), `hook_at` (the node from which it has one) and `super`, the superclass name the first `class` of it
    to give one gives. A module name holds `hook_def`, the `def inherited` of
    the first module of that name that has one (or -1), and, once the
    extenders are counted, how many bodies extend it and whether one of them
    sits below a class with a hook. */
 typedef struct {
   const char *super;
-  int has_hook, hook_def, extenders, above;
+  int has_hook, hook_at, hook_def, extenders, above;
 } InhName;
 typedef struct {
   ANameHash cls, mod;
@@ -12895,13 +12900,15 @@ static int inh_name_slot(ANameHash *h, InhName **ents, int *cap, const char *nm)
   anh_add(h, nm);
   memset(&(*ents)[h->n - 1], 0, sizeof(InhName));
   (*ents)[h->n - 1].hook_def = -1;
+  (*ents)[h->n - 1].hook_at = INT_MAX;
   return h->n - 1;
 }
 
 /* The module entry whose hook a class body takes from a module it extends
    (`extend Tracking`), or -1: the first module in the body's `extend`s that
-   has one. */
-static int inh_extended_entry(const InhIndex *ix, const NodeTable *nt, int body) {
+   has one. `at`, when given, gets the node from which the class has it: the
+   `extend`, or the module's `def` when that comes later. */
+static int inh_extended_entry_at(const InhIndex *ix, const NodeTable *nt, int body, int *at) {
   int bn = 0; const int *bv = nt_arr(nt, body, "body", &bn);
   for (int k = 0; k < bn; k++) {
     if (!fwd_node_is(nt, bv[k], "CallNode") || nt_ref(nt, bv[k], "receiver") >= 0) continue;
@@ -12913,10 +12920,27 @@ static int inh_extended_entry(const InhIndex *ix, const NodeTable *nt, int body)
       if (ak != NK_ConstantReadNode && ak != NK_ConstantPathNode) continue;
       const char *mn = nt_str(nt, av[j], "name");
       int e = mn ? anh_find(&ix->mod, mn) : -1;
-      if (e >= 0 && ix->m[e].hook_def >= 0) return e;
+      if (e >= 0 && ix->m[e].hook_def >= 0) {
+        if (at) *at = bv[k] > ix->m[e].hook_def ? bv[k] : ix->m[e].hook_def;
+        return e;
+      }
     }
   }
   return -1;
+}
+static int inh_extended_entry(const InhIndex *ix, const NodeTable *nt, int body) {
+  return inh_extended_entry_at(ix, nt, body, NULL);
+}
+
+/* Mark the class entry `e` as having a hook when `body` defines one or
+   extends a module that does, keeping the earliest node it has one from. */
+static void inh_note_hook(InhIndex *ix, const NodeTable *nt, int e, int body) {
+  int at = inh_hook_in_body(nt, body), xat = INT_MAX;
+  if (inh_extended_entry_at(ix, nt, body, &xat) < 0) xat = INT_MAX;
+  if (at < 0 || xat < at) at = xat;
+  if (at == INT_MAX) return;
+  ix->c[e].has_hook = ix->any_hook = 1;
+  if (at < ix->c[e].hook_at) ix->c[e].hook_at = at;
 }
 
 /* The body of a class `Name = Struct.new(...) do ... end` (or Data.define)
@@ -12943,6 +12967,21 @@ static int inh_chain_has_hook(const InhIndex *ix, const char *cname) {
   return 0;
 }
 
+/* The earliest node from which class `cname` or an ancestor of it has an
+   inherited hook, or INT_MAX: a class defined before it fires none. */
+static int inh_chain_hook_at(const InhIndex *ix, const char *cname) {
+  int at = INT_MAX;
+  for (int depth = 0; cname && depth < 64; depth++) {
+    int e = anh_find(&ix->cls, cname);
+    if (e < 0) break;
+    if (ix->c[e].hook_at < at) at = ix->c[e].hook_at;
+    const char *super_name = ix->c[e].super;
+    if (super_name && sp_streq(super_name, cname)) break;
+    cname = super_name;
+  }
+  return at;
+}
+
 /* Index the program's modules, then its classes and Struct constants (a hook
    through `extend` needs the modules), and count the extenders of the modules
    that have a hook (which needs the chains). */
@@ -12965,18 +13004,14 @@ static void inh_index_build(Compiler *c, InhIndex *ix, int n0) {
       const char *wn = nt_str(nt, id, "name");
       if (!wn) continue;
       int e = inh_name_slot(&ix->cls, &ix->c, &ix->ccap, wn);
-      if (!ix->c[e].has_hook &&
-          (inh_hook_in_body(nt, sbody) >= 0 || inh_extended_entry(ix, nt, sbody) >= 0))
-        ix->c[e].has_hook = ix->any_hook = 1;
+      inh_note_hook(ix, nt, e, sbody);
       continue;
     }
     if (nt_kind(nt, id) != NK_ClassNode) continue;
     const char *cn = nt_str(nt, nt_ref(nt, id, "constant_path"), "name");
     if (!cn) continue;
     int e = inh_name_slot(&ix->cls, &ix->c, &ix->ccap, cn);
-    if (!ix->c[e].has_hook &&
-        (inh_hook_in(nt, id) >= 0 || inh_extended_entry(ix, nt, nt_ref(nt, id, "body")) >= 0))
-      ix->c[e].has_hook = ix->any_hook = 1;
+    inh_note_hook(ix, nt, e, nt_ref(nt, id, "body"));
     int sc = nt_ref(nt, id, "superclass");
     if (!ix->c[e].super && sc >= 0 &&
         (nt_kind(nt, sc) == NK_ConstantReadNode || nt_kind(nt, sc) == NK_ConstantPathNode))
@@ -13086,6 +13121,9 @@ int desugar_inherited_hooks(Compiler *c) {
     char *qd = strdup(qn);
     if (!qd) break;
     anh_add(&seen, qd);
+    /* defined before its superclass had the hook: nothing fires, nor on a
+       reopening */
+    if (inh_chain_hook_at(&ix, sn) > id) continue;
     int recv = nt_clone_subtree(nt, sc);
     int call = fwd_new_node_like(nt, id, "CallNode");
     int args = fwd_new_node_like(nt, id, "ArgumentsNode");
