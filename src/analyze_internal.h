@@ -365,6 +365,7 @@ void sp_narrow_memo_bump(void);
 int infer_write_types(Compiler *c);
 void seed_unsupplied_nil_defaults(Compiler *c);
 int infer_container_flow(Compiler *c);
+void an_cls_facts(Compiler *c);   /* analyze_cls.c (#8530) */
 int an_builtin_only_p(void);
 TyKind an_builtin_answer(Compiler *c, int id);
 int an_yield_site_builtin_answer(Compiler *c, int id, TyKind kind, TyKind *out);

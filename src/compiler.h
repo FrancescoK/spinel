@@ -40,6 +40,11 @@ enum { SP_VIS_PUBLIC = 0, SP_VIS_PRIVATE = 1, SP_VIS_PROTECTED = 2 };
    only inherits it (#4509), so the record is the NODE whose value made the
    slot degrade; the node's own origin (Compiler.norigin) leads on from there
    to the expression the poly was born at. */
+/* The user classes a value can hold (analyze_cls.c, #8530): `all` for every
+   class, else the class indices, sorted, at most CLS_SET_MAX of them. */
+#define CLS_SET_MAX 16
+typedef struct { unsigned char all, n; int cls[CLS_SET_MAX]; } ClsSet;
+
 typedef struct {
   int node;      /* the argument, written value or returned value whose type degraded the slot; -1 = untraced */
   int other;     /* the node whose value last gave the slot the concrete type it had before; -1 = none */
@@ -895,6 +900,10 @@ typedef struct {
                         (LocalVar.obj_elem_may_nil); read through repr_of's
                         elem_nil_marked */
   int nil_fact_n;
+  int *cls_fact;    /* [cls_fact_n] per node: the index in cls_pool of the
+                       set of user classes its value can hold (analyze_cls.c,
+                       #8530); 0 is every class. Read through cls_fact_node. */
+  ClsSet *cls_pool; int ncls_pool, cls_fact_n;
   int *nscope;      /* [node_cap] node id -> owning scope index */
   int *node_cbody;  /* [node_cap] node id -> enclosing class/module-body class id, or -1 */
   char *empty_arr_recv; /* [node_cap] empty `[]` used as a direct receiver/interpolation -> TY_POLY_ARRAY */
@@ -1564,6 +1573,19 @@ int        comp_is_nested_int_array_literal(Compiler *c, int node); /* `[[ints],
 /* One class that may answer a poly-dispatched `name`: a user class with the
    method (`mi`) or a reader (`rdcls`, the class holding the attr), or a native
    class (`native`, arity checked by the consumer). See comp_poly_candidates. */
+/* The classes node's value can hold, or NULL for every class (a node the
+   pass did not see, a value it cannot bound). A class the set leaves out
+   is one no instance of which reaches the node (analyze_cls.c, #8530). */
+const ClsSet *cls_fact_node(Compiler *c, int node);
+/* Is class k one the fact bounds: a class the program defines, whose
+   instances the pass follows from their construction? A reopened builtin's,
+   a native class's and a module's are not. */
+int cls_fact_bounded(Compiler *c, int k);
+/* Does the fact rule class k out as the class of recv's value: the set is
+   known, k is bounded, and k is not in it? A call on recv then never
+   reaches k's method, so the binding and the dispatch may leave it out. */
+int cls_fact_excludes(Compiler *c, int recv, int k);
+
 typedef struct { int cls; int mi; int rdcls; int native; } PolyCand;
 const PolyCand *comp_poly_candidates(Compiler *c, const char *name, int *n);
 extern unsigned comp_table_gen;

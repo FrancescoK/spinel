@@ -44499,6 +44499,9 @@ void analyze_program(Compiler *c) {
   AN_PHASE("class_structure", an_phase_class_structure(c));
   AN_PHASE("block_inline", an_phase_block_inline(c));
   AN_PHASE("pre_fixpoint", an_phase_pre_fixpoint(c));
+  /* the classes a value can hold, decided once from the program's shape
+     (#8530): the fixpoint's binding of a boxed receiver's call reads it */
+  AN_PHASE("cls_facts", an_cls_facts(c));
   double tm_fp = sp_timing_now();
   an_phase_infer_fixpoint(c);
   { char ex[64]; snprintf(ex, sizeof ex, " rounds=%d%s", g_fixpoint_rounds, g_fixpoint_capped ? " capped=1" : ""); sp_timing_end(tm_fp, "analysis_fixpoint", ex); }
