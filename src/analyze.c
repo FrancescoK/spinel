@@ -34595,7 +34595,8 @@ static void mark_nullable_int_locals(Compiler *c) {
         /* a call with no arguments hands no parameter a nil, and a name no
            instance method has reaches no arm */
         for (int k = kf; k < nimeth && sp_streq(imeth[k].name, cn); k++)
-          if (method_takes_call_args(c, &c->scopes[imeth[k].mi], id))   /* only a method that takes the call's arguments is its callee */
+          if (method_takes_call_args(c, &c->scopes[imeth[k].mi], id) &&   /* only a method that takes the call's arguments is its callee */
+              !cls_fact_excludes(c, recv, c->scopes[imeth[k].mi].class_id))   /* ... of a class the receiver can hold (#8530) */
             changed |= mark_nullable_params_of_call(c, id, imeth[k].mi);
       }
       else if (mi >= 0) changed |= mark_nullable_params_of_call(c, id, mi);

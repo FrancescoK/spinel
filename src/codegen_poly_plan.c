@@ -630,7 +630,8 @@ void emit_poly_user_arms0(Compiler *c, int id, const char *name, int argc, TyKin
     PolyArm *old = malloc(sizeof *old * (size_t)(c->nclasses > 0 ? c->nclasses : 1));
     int nold = 0;
     for (int k = 0; k < c->nclasses; k++)
-      if (poly_user_arm0_decide(c, id, name, argc, ret, k, &old[nold])) nold++;
+      if (!cls_fact_excludes(c, nt_ref(c->nt, id, "receiver"), k) &&   /* as the plan leaves them out (#8530) */
+          poly_user_arm0_decide(c, id, name, argc, ret, k, &old[nold])) nold++;
     if (served) poly_arms_assert(c, id, "poly-user0", arms, n, old, nold);
     else {
       if (g_plan_check) fprintf(stderr, "plan-check: cplan-fallback: poly-user0 node %d %s\n", id, name);
@@ -1246,14 +1247,16 @@ void emit_poly_user_arms_n(Compiler *c, int id, const char *name, const PolyUser
     PolyArm *old = malloc(sizeof *old * (size_t)(c->nclasses > 0 ? c->nclasses : 1));
     int nold = 0;
     for (int k = 0; k < c->nclasses; k++)
-      if (poly_user_arm_n_decide(c, name, U, k, &old[nold])) nold++;
+      if (!cls_fact_excludes(c, nt_ref(c->nt, id, "receiver"), k) &&   /* as the plan leaves them out (#8530) */
+          poly_user_arm_n_decide(c, name, U, k, &old[nold])) nold++;
     poly_arms_assert(c, id, "poly-user-n", arms, n, old, nold);
     free(old);
     cplan_served("poly-user-n");
   }
   if (!served && g_plan_check) fprintf(stderr, "plan-check: cplan-fallback: poly-user-n node %d %s\n", id, name);
-  int j = 0;
+  int j = 0, recv = nt_ref(c->nt, id, "receiver");
   for (int k = 0; k < c->nclasses; k++) {
+    if (cls_fact_excludes(c, recv, k)) continue;   /* a class the receiver never holds has no arm (#8530) */
     if (!served) { poly_user_arm_n_replay(c, id, name, U, k, b); continue; }
     if (j < n && arms[j].key == k) { emit_poly_user_arm_n_plan(c, id, name, U, &arms[j], b); j++; continue; }
     Buf scratch; memset(&scratch, 0, sizeof scratch);

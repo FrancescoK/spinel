@@ -9164,6 +9164,7 @@ static int infer_param_types_ex(Compiler *c, int settle) {
         TyKind uat = infer_type(c, uav[a4]);
         if (uat != TY_UNKNOWN && uat != TY_POLY) continue;
         for (int k4 = 0; k4 < c->nclasses; k4++) {
+          if (cls_fact_excludes(c, nt_ref(nt, id, "receiver"), k4)) continue;   /* (#8530) */
           int umi = comp_method_in_chain(c, k4, name, NULL);
           if (umi < 0) continue;
           Scope *um = &c->scopes[umi];
@@ -9268,7 +9269,11 @@ static int infer_param_types_ex(Compiler *c, int settle) {
       }
       if (!op_scalar) {
         int npc = 0;
-        const PolyCand *pcs = comp_poly_candidates(c, name, &npc);
+        /* less the classes the receiver never holds (#8530): their
+           parameters would take this call's arguments for nothing, and a
+           hot method's Integer parameter was boxed by a call that could
+           not reach it */
+        const PolyCand *pcs = comp_poly_candidates_at(c, id, name, &npc);
         for (int pi = 0; pi < npc; pi++)
           if (pcs[pi].mi < 0 || method_takes_call_args(c, &c->scopes[pcs[pi].mi], id))
             changed |= bind_call_params(c, id, pcs[pi].mi);

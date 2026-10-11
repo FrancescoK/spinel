@@ -72,6 +72,7 @@ typedef struct CF {
   int exc_set;                          /* every user exception class */
   int fiber_ch;                         /* what a Fiber.yield answers: a resume's arguments */
   unsigned char *yval_used;             /* per scope: a yield's value is read (else the blocks' values go nowhere) */
+  unsigned char *has_native;            /* per class: native bindings, made on first ask */
   CFByName *bn; int bn_cap, bn_n;
   int changed, round;
   int phase;              /* 0: only what the receivers' classes decide; 1: the builtin answers too */
@@ -84,26 +85,26 @@ static void cf_oom(void) { fprintf(stderr, "spinel: out of memory\n"); exit(1); 
 
 static int cf_set_cmp(const void *a, const void *b) { return *(const int *)a - *(const int *)b; }
 static unsigned cf_set_hash(const ClsSet *s) {
-  unsigned h = 2166136261u ^ (unsigned)s->all;
+  unsigned h = (2166136261u ^ (unsigned)s->all) * 16777619u ^ (unsigned)s->bv;
   for (int i = 0; i < s->n; i++) h = (h ^ (unsigned)s->cls[i]) * 16777619u;
   return h;
 }
 static int cf_set_eq(const ClsSet *a, const ClsSet *b) {
-  if (a->all != b->all || a->n != b->n) return 0;
+  if (a->all != b->all || a->n != b->n || a->bv != b->bv) return 0;
   for (int i = 0; i < a->n; i++) if (a->cls[i] != b->cls[i]) return 0;
   return 1;
 }
 /* the pool index of set s, normalized (sorted, no duplicate, every class
    past the cap) */
 static int cf_pool(CF *f, ClsSet *s) {
-  if (s->all) { s->n = 0; return CF_ALL; }
+  if (s->all) { s->n = 0; s->bv = 0; return CF_ALL; }
   if (s->n > 1) {
     qsort(s->cls, (size_t)s->n, sizeof s->cls[0], cf_set_cmp);
     int w = 0;
     for (int i = 0; i < s->n; i++) if (w == 0 || s->cls[w - 1] != s->cls[i]) s->cls[w++] = s->cls[i];
     s->n = (unsigned char)w;
   }
-  if (s->n == 0) return CF_EMPTY;
+  if (s->n == 0 && !s->bv) return CF_EMPTY;
   if (f->npool * 2 >= f->phcap) {
     int ncap = f->phcap ? f->phcap * 2 : 1024;
     int *nh = malloc(sizeof *nh * (size_t)ncap);
@@ -136,6 +137,7 @@ static int cf_union(CF *f, int a, int b) {
   if (a == CF_ALL || b == CF_ALL) return CF_ALL;
   const ClsSet *x = &f->pool[a], *y = &f->pool[b];
   ClsSet s; memset(&s, 0, sizeof s);
+  s.bv = (unsigned char)(x->bv | y->bv);
   if (x->n + y->n > CLS_SET_MAX) {
     /* the merge may still fit: count the distinct ones */
     int i = 0, j = 0, n = 0;
@@ -157,6 +159,26 @@ static int cf_union(CF *f, int a, int b) {
 static int cf_single(CF *f, int cls) {
   ClsSet s; memset(&s, 0, sizeof s);
   s.cls[0] = cls; s.n = 1;
+  return cf_pool(f, &s);
+}
+/* the set of a builtin value with no class of the program's */
+static int cf_bv_set(CF *f) {
+  ClsSet s; memset(&s, 0, sizeof s);
+  s.bv = 1;
+  return cf_pool(f, &s);
+}
+/* the Class object of k: a member past the classes */
+static int cf_classval(CF *f, int k) { return cf_single(f, k + f->c->nclasses); }
+/* the Class objects of the instance classes of set pidx */
+static int cf_classvals_of(CF *f, int pidx) {
+  if (pidx == CF_ALL) return CF_ALL;
+  const ClsSet *x = &f->pool[pidx];
+  ClsSet s; memset(&s, 0, sizeof s);
+  for (int i = 0; i < x->n; i++) {
+    if (x->cls[i] >= f->c->nclasses) continue;
+    if (s.n >= CLS_SET_MAX) { s.all = 1; break; }
+    s.cls[s.n++] = x->cls[i] + f->c->nclasses;
+  }
   return cf_pool(f, &s);
 }
 
@@ -277,6 +299,30 @@ static int cf_entry_has(CF *f, int cls, const char *name) {
 #define CF_K_CONST (-4)
 #define CF_K_CONSTW (-5)   /* a constant the program writes (by its last segment) */
 
+/* a method the compiler supplies (builtins/*.rb, spliced in and marked
+   node_bi; a desugar's synthesized def): calls the desugars make reach it
+   after this pass, so its parameters and its self take anything, and a
+   call that resolves to it is answered as the builtin it implements */
+static int cf_prelude_scope(CF *f, int mi) {
+  Scope *s = &f->c->scopes[mi];
+  if (s->def_node < 0) return 0;
+  return nt_int(f->nt, s->def_node, "node_bi", 0) != 0 || nt_int(f->nt, s->def_node, "node_line", 0) == 0;
+}
+/* does class k carry native bindings (ffi_func, a Fiddle extern): a call
+   on it the program's own methods do not answer may be one of those, whose
+   value is anything */
+static int cf_class_has_natives(CF *f, int k) {
+  if (k < 0 || k >= f->c->nclasses) return 0;
+  if (!f->has_native) {
+    f->has_native = calloc((size_t)f->c->nclasses + 1, 1);
+    if (!f->has_native) cf_oom();
+    for (int i = 0; i < f->c->n_native_methods; i++) {
+      int ck = f->c->native_methods[i].class_id;
+      if (ck >= 0 && ck < f->c->nclasses) f->has_native[ck] = 1;
+    }
+  }
+  return f->has_native[k] || f->c->classes[k].is_native_class;
+}
 /* a scope's instance class: the class whose instances run it, -1 for a
    class method, a class body or the top level */
 static int cf_inst_class(CF *f, int si) {
@@ -420,7 +466,8 @@ static int cf_opaque_name(const char *nm) {
     "class_exec", "module_eval", "module_exec", "const_get", "const_set", "eval", "binding",
     "catch", "throw", "method_missing", "remove_instance_variable", "singleton_class", "extend",
     "local_variable_get", "local_variable_set", "receiver", "owner", "unbind", "bind", "bind_call",
-    "__method__", "caller", "caller_locations", "ObjectSpace", NULL };
+    "__method__", "caller", "caller_locations", "ObjectSpace", "superclass", "subclasses", "ancestors",
+    "included_modules", "instance_methods", "public_instance_methods", "const_source_location", NULL };
   for (int i = 0; names[i]; i++) if (sp_streq(nm, names[i])) return 1;
   return 0;
 }
@@ -681,6 +728,8 @@ static void cf_bind_block(CF *f, int mi, int blk) {
 
 /* ---- calls ---- */
 
+static void cf_construct(CF *f, int v, int x, const int *argv, int argc, int blk, const char *nm);
+
 /* an iteration that drops its block's values */
 static int cf_drops_block_value(const char *nm) {
   static const char *const names[] = { "each", "each_pair", "each_with_index", "each_index", "each_key",
@@ -694,9 +743,35 @@ static int cf_drops_block_value(const char *nm) {
    iteration, a store, a pick, a copy, a conversion that hands on what it
    was given); an iteration that drops its block's values does not take
    them */
+/* the methods a builtin calls back on the objects it is handed, whose
+   values it may answer or build from (flatten's to_ary, sort's <=>) */
+static void cf_protocol_returns(CF *f, int v, int el) {
+  static const char *const names[] = { "to_ary", "to_a", "to_h", "to_hash", "to_s", "to_str", "to_proc",
+    "to_path", "to_io", "to_int", "to_i", "coerce", "<=>", "==", "call", "succ", "exception", "message",
+    "inspect", "hash", "eql?", "each", "dup", "clone", NULL };
+  if (el < 0) return;
+  int pidx = cf_set_of(f, el);
+  if (pidx == CF_ALL || pidx == CF_EMPTY) return;
+  const ClsSet *x = &f->pool[pidx];
+  for (int i = 0; i < x->n; i++) {
+    int k = x->cls[i];
+    if (k < 0 || k >= f->c->nclasses) continue;
+    for (int q = 0; names[q]; q++) {
+      int mi = comp_method_in_chain(f->c, k, names[q], NULL);
+      if (mi < 0 || cf_prelude_scope(f, mi)) continue;   /* the compiler's own answer as the builtin */
+      cf_unite(f, v, f->ret_el[mi]);
+      if (sp_streq(names[q], "each")) for (int y = 0; y < CF_YARGS; y++) cf_unite(f, v, f->yarg_el[mi][y]);
+    }
+  }
+}
 static void cf_builtin_rule(CF *f, int v, int recv_el, const int *argv, int argc, int blk, const char *nm) {
   const NodeTable *nt = f->nt;
   cf_unite(f, v, recv_el);
+  cf_add_set(f, v, cf_bv_set(f));
+  cf_protocol_returns(f, v, recv_el);
+  for (int i = 0; i < argc; i++)
+    if (nt_kind(nt, argv[i]) != NK_BlockArgumentNode && nt_kind(nt, argv[i]) != NK_SymbolNode)
+      cf_protocol_returns(f, v, nt_kind(nt, argv[i]) == NK_SplatNode ? nt_ref(nt, argv[i], "expression") : argv[i]);
   for (int i = 0; i < argc; i++) {
     NodeKind k = nt_kind(nt, argv[i]);
     if (k == NK_BlockArgumentNode) {
@@ -736,12 +811,15 @@ static void cf_builtin_rule(CF *f, int v, int recv_el, const int *argv, int argc
   (void)nm;
 }
 
-/* a user method target: its value, its parameters, its block */
-static void cf_user_target(CF *f, int v, int mi, const int *argv, int argc, int blk) {
-  if (mi < 0) return;
+/* a user method target: its value, its parameters, its block; 0 for a
+   method the compiler supplies, which answers as the builtin it is */
+static int cf_user_target(CF *f, int v, int mi, const int *argv, int argc, int blk) {
+  if (mi < 0) return 0;
+  if (cf_prelude_scope(f, mi)) return 0;
   if (v >= 0) cf_unite(f, v, f->ret_el[mi]);
   cf_bind_args(f, mi, argv, argc);
   cf_bind_block(f, mi, blk);
+  return 1;
 }
 
 /* `X.new(...)`: an instance of the user class X, initialized */
@@ -751,7 +829,7 @@ static void cf_construct(CF *f, int v, int x, const int *argv, int argc, int blk
   cf_add_set(f, v, f->own[x]);
   ClassInfo *k = &c->classes[x];
   int cn = sp_streq(nm, "new") ? comp_cmethod_in_chain(c, x, "new", NULL) : -1;
-  if (cn >= 0) { cf_user_target(f, v, cn, argv, argc, blk); return; }
+  if (cn >= 0 && cf_user_target(f, v, cn, argv, argc, blk)) return;
   if (sp_streq(nm, "allocate")) return;
   int init = comp_method_in_chain(c, x, "initialize", NULL);
   if (init >= 0) { cf_user_target(f, -1, init, argv, argc, blk); return; }
@@ -789,16 +867,32 @@ static void cf_construct(CF *f, int v, int x, const int *argv, int argc, int blk
 static void cf_call_known(CF *f, int v, int pidx, int recv_el, const char *nm, const int *argv, int argc, int blk) {
   Compiler *c = f->c;
   const ClsSet *s = &f->pool[pidx];
-  int builtin = pidx == CF_EMPTY;
+  int builtin = pidx == CF_EMPTY || s->bv;
   size_t ln = strlen(nm);
   int is_w = ln > 1 && nm[ln - 1] == '=' && nm[ln - 2] != '=' && nm[ln - 2] != '!' && nm[ln - 2] != '<' && nm[ln - 2] != '>';
   char base[256] = "";
   if (is_w && ln < sizeof base) { memcpy(base, nm, ln - 1); base[ln - 1] = 0; }
   for (int i = 0; i < s->n; i++) {
     int k = s->cls[i];
-    if (k < 0 || k >= c->nclasses) { builtin = 1; continue; }
+    if (k >= c->nclasses) {
+      /* the Class object: a construction, a class method, else Class's own */
+      int kc = k - c->nclasses;
+      if (kc < 0 || kc >= c->nclasses) { builtin = 1; continue; }
+      if (sp_streq(nm, "new") || sp_streq(nm, "allocate") ||
+          ((c->classes[kc].is_struct || c->classes[kc].is_data) && sp_streq(nm, "[]"))) {
+        cf_construct(f, v, kc, argv, argc, blk, nm);
+        continue;
+      }
+      int cm = comp_cmethod_in_chain(c, kc, nm, NULL);
+      if (cm >= 0 && cf_user_target(f, v, cm, argv, argc, blk)) continue;
+      if (cm < 0 && f->mod[kc]) { int mm = comp_method_in_chain(c, kc, nm, NULL); if (mm >= 0 && cf_user_target(f, v, mm, argv, argc, blk)) continue; }
+      if (cf_class_has_natives(f, kc)) { cf_all(f, v); continue; }
+      builtin = 1;
+      continue;
+    }
+    if (k < 0) { builtin = 1; continue; }
     int mi = comp_method_in_chain(c, k, nm, NULL);
-    if (mi >= 0) { cf_user_target(f, v, mi, argv, argc, blk); continue; }
+    if (mi >= 0) { if (!cf_user_target(f, v, mi, argv, argc, blk)) builtin = 1; continue; }
     if (comp_reader_in_chain(c, k, nm, NULL)) {
       char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", nm);
       cf_unite(f, v, cf_entry(f, f->fam[k], ivn));
@@ -810,10 +904,16 @@ static void cf_call_known(CF *f, int v, int pidx, int recv_el, const char *nm, c
       continue;
     }
     int tl = comp_method_index(c, nm);
-    if (tl >= 0) { cf_user_target(f, v, tl, argv, argc, blk); continue; }
+    if (tl >= 0 && cf_user_target(f, v, tl, argv, argc, blk)) continue;
     if (comp_method_in_chain(c, k, "method_missing", NULL) >= 0) {
       cf_all(f, v);
       for (int a = 0; a < argc; a++) cf_all(f, argv[a]);
+      if (blk >= 0 && nt_kind(f->nt, blk) == NK_BlockNode) cf_all_block_params(f, blk);
+      continue;
+    }
+    /* a native binding of the class: anything */
+    if (cf_class_has_natives(f, k)) {
+      cf_all(f, v);
       if (blk >= 0 && nt_kind(f->nt, blk) == NK_BlockNode) cf_all_block_params(f, blk);
       continue;
     }
@@ -840,6 +940,8 @@ static void cf_call_known(CF *f, int v, int pidx, int recv_el, const char *nm, c
       if (sp_streq(nm, "new")) { CFByName *b = cf_byname(f, "initialize"); for (int q = 0; q < b->n; q++) cf_bind_args(f, b->mi[q], argv, argc); }
       return;
     }
+    /* `.class`: the Class objects of the receiver's classes */
+    if (sp_streq(nm, "class") && argc == 0) cf_add_set(f, v, cf_classvals_of(f, pidx));
     cf_builtin_rule(f, v, recv_el, argv, argc, blk, nm);
   }
 }
@@ -892,18 +994,30 @@ static void cf_call(CF *f, int v) {
     if (s->def_node >= 0 && s->class_id >= 0) {
       const ClsSet *ds = &f->pool[f->desc[s->class_id]];
       if (ds->all) { cf_call_any(f, v, nm, argv, argc, blk); return; }
+      /* `new` or `allocate` in a class method: an instance of the class
+         the method runs for, which a subclass's call makes its own */
+      if (s->is_cmethod && (sp_streq(nm, "new") || sp_streq(nm, "allocate")) &&
+          comp_cmethod_in_chain(c, s->class_id, nm, NULL) < 0) {
+        cf_add_set(f, v, f->desc[s->class_id]);
+        if (sp_streq(nm, "new"))
+          for (int i = 0; i < ds->n; i++) {
+            int init = comp_method_in_chain(c, ds->cls[i], "initialize", NULL);
+            if (init >= 0) cf_user_target(f, -1, init, argv, argc, blk);
+          }
+        return;
+      }
       if (s->is_cmethod) {
         int cm = comp_cmethod_in_chain(c, s->class_id, nm, NULL);
-        if (cm >= 0) { cf_user_target(f, v, cm, argv, argc, blk); found = 1; }
+        if (cm >= 0 && cf_user_target(f, v, cm, argv, argc, blk)) found = 1;
         for (int i = 0; i < ds->n && !found; i++) {
           int cm2 = comp_cmethod_in_chain(c, ds->cls[i], nm, NULL);
-          if (cm2 >= 0) { cf_user_target(f, v, cm2, argv, argc, blk); found = 1; }
+          if (cm2 >= 0 && cf_user_target(f, v, cm2, argv, argc, blk)) found = 1;
         }
       }
       else {
         for (int i = 0; i < ds->n; i++) {
           int mi = comp_method_in_chain(c, ds->cls[i], nm, NULL);
-          if (mi >= 0) { cf_user_target(f, v, mi, argv, argc, blk); found = 1; continue; }
+          if (mi >= 0) { if (cf_user_target(f, v, mi, argv, argc, blk)) found = 1; continue; }
           if (comp_reader_in_chain(c, ds->cls[i], nm, NULL)) {
             char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", nm);
             cf_unite(f, v, cf_entry(f, f->fam[ds->cls[i]], ivn));
@@ -912,7 +1026,7 @@ static void cf_call(CF *f, int v) {
         }
         if (!found) {
           int mi = comp_method_in_chain(c, s->class_id, nm, NULL);
-          if (mi >= 0) { cf_user_target(f, v, mi, argv, argc, blk); found = 1; }
+          if (mi >= 0 && cf_user_target(f, v, mi, argv, argc, blk)) found = 1;
         }
         if (!found && f->has_mm) {
           for (int i = 0; i < ds->n && !found; i++)
@@ -922,15 +1036,28 @@ static void cf_call(CF *f, int v) {
     }
     else if (v < f->nnodes && c->node_cbody && c->node_cbody[v] >= 0) {
       /* a class body: the class's own class methods (`attr_accessor`,
-         `include` are builtins of Module) */
-      int cm = comp_cmethod_in_chain(c, c->node_cbody[v], nm, NULL);
-      if (cm >= 0) { cf_user_target(f, v, cm, argv, argc, blk); found = 1; }
+         `include` are builtins of Module); a bare `new` is the class's */
+      int cb = c->node_cbody[v];
+      if (sp_streq(nm, "new") || sp_streq(nm, "allocate")) { cf_construct(f, v, cb, argv, argc, blk, nm); return; }
+      int cm = comp_cmethod_in_chain(c, cb, nm, NULL);
+      if (cm >= 0 && cf_user_target(f, v, cm, argv, argc, blk)) found = 1;
     }
     if (!found) {
       int tl = comp_method_index(c, nm);
-      if (tl >= 0) { cf_user_target(f, v, tl, argv, argc, blk); found = 1; }
+      if (tl >= 0 && cf_user_target(f, v, tl, argv, argc, blk)) found = 1;
     }
     if (found) return;
+    /* a native binding of the class (an ffi_func): anything */
+    if (s->def_node >= 0 && s->class_id >= 0) {
+      const ClsSet *ds = &f->pool[f->desc[s->class_id]];
+      int nat = cf_class_has_natives(f, s->class_id);
+      for (int i = 0; i < ds->n && !nat; i++) nat = cf_class_has_natives(f, ds->cls[i]);
+      if (nat) {
+        cf_all(f, v);
+        if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode) cf_all_block_params(f, blk);
+        return;
+      }
+    }
     /* Kernel: a conversion, an iteration, `lambda`, `proc`, `loop`, `raise`
        hand on what they are given; `new` has no class here */
     if (sp_streq(nm, "lambda") || sp_streq(nm, "proc") || sp_streq(nm, "define_method")) {
@@ -947,11 +1074,18 @@ static void cf_call(CF *f, int v) {
       return;
     }
     int cm = comp_cmethod_in_chain(c, x, nm, NULL);
-    if (cm >= 0) { cf_user_target(f, v, cm, argv, argc, blk); return; }
-    if (f->mod[x]) {
+    if (cm >= 0 && cf_user_target(f, v, cm, argv, argc, blk)) return;
+    if (cm < 0 && f->mod[x]) {
       /* a module function */
       int mi = comp_method_in_chain(c, x, nm, NULL);
-      if (mi >= 0) { cf_user_target(f, v, mi, argv, argc, blk); return; }
+      if (mi >= 0 && cf_user_target(f, v, mi, argv, argc, blk)) return;
+    }
+    /* a native binding of the class or module (an ffi_func, a Fiddle
+       extern): its value is anything */
+    if (cf_class_has_natives(f, x)) {
+      cf_all(f, v);
+      if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode) cf_all_block_params(f, blk);
+      return;
     }
     /* a method of Class or Module: nothing of the program's own comes out,
        except through a block */
@@ -992,6 +1126,22 @@ static void cf_call(CF *f, int v) {
     if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode && sp_streq(nm, "new") && key && sp_streq(key, "Proc")) cf_all_block_params(f, blk);
     cf_builtin_rule(f, v, ce, argv, argc, blk, nm);
     return;
+  }
+  if (rk == NK_SelfNode && (sp_streq(nm, "new") || sp_streq(nm, "allocate"))) {
+    /* `self.new` in a class method: as the bare call above */
+    int si = cf_scope_of(f, v);
+    Scope *s = &c->scopes[si];
+    if (s->def_node >= 0 && s->is_cmethod && s->class_id >= 0 && comp_cmethod_in_chain(c, s->class_id, nm, NULL) < 0) {
+      const ClsSet *ds = &f->pool[f->desc[s->class_id]];
+      cf_add_set(f, v, f->desc[s->class_id]);
+      if (ds->all) { for (int i = 0; i < argc; i++) cf_all(f, argv[i]); return; }
+      if (sp_streq(nm, "new"))
+        for (int i = 0; i < ds->n; i++) {
+          int init = comp_method_in_chain(c, ds->cls[i], "initialize", NULL);
+          if (init >= 0) cf_user_target(f, -1, init, argv, argc, blk);
+        }
+      return;
+    }
   }
   int recv_el = r;
   int pidx = cf_set_of(f, recv_el);
@@ -1091,15 +1241,22 @@ static void cf_node(CF *f, int v) {
   case NK_SelfNode: {
     int si = cf_scope_of(f, v);
     int ik = cf_inst_class(f, si);
-    if (ik >= 0) cf_unite(f, v, f->self_el[ik]);
+    if (ik >= 0) { cf_unite(f, v, f->self_el[ik]); return; }
+    Scope *s = &c->scopes[si];
+    /* the Class object: of the class a class method runs for, or one below
+       it; the class whose body this is */
+    if (s->def_node >= 0 && s->is_cmethod && s->class_id >= 0) cf_add_set(f, v, cf_classvals_of(f, f->desc[s->class_id]));
+    else if (v < f->nnodes && c->node_cbody && c->node_cbody[v] >= 0) cf_add_set(f, v, cf_classval(f, c->node_cbody[v]));
     return;
   }
   case NK_ArrayNode: {
+    cf_add_set(f, v, cf_bv_set(f));
     int n = 0; const int *els = nt_arr(nt, v, "elements", &n);
     for (int i = 0; i < n; i++) cf_unite(f, v, nt_kind(nt, els[i]) == NK_SplatNode ? nt_ref(nt, els[i], "expression") : els[i]);
     return;
   }
   case NK_HashNode: case NK_KeywordHashNode: {
+    cf_add_set(f, v, cf_bv_set(f));
     int n = 0; const int *els = nt_arr(nt, v, "elements", &n);
     for (int i = 0; i < n; i++) {
       if (nt_kind(nt, els[i]) == NK_AssocNode) cf_unite(f, v, nt_ref(nt, els[i], "key"));
@@ -1110,7 +1267,7 @@ static void cf_node(CF *f, int v) {
   case NK_AssocNode: case NK_AssocSplatNode: return;
   case NK_SplatNode: cf_unite(f, v, nt_ref(nt, v, "expression")); return;
   case NK_BlockArgumentNode: return;
-  case NK_RangeNode: cf_unite(f, v, nt_ref(nt, v, "left")); cf_unite(f, v, nt_ref(nt, v, "right")); return;
+  case NK_RangeNode: cf_add_set(f, v, cf_bv_set(f)); cf_unite(f, v, nt_ref(nt, v, "left")); cf_unite(f, v, nt_ref(nt, v, "right")); return;
   case NK_ParenthesesNode: cf_unite(f, v, cf_tail(f, nt_ref(nt, v, "body"))); return;
   case NK_StatementsNode: cf_unite(f, v, cf_tail(f, v)); return;
   case NK_ElseNode: cf_unite(f, v, cf_tail(f, nt_ref(nt, v, "statements"))); return;
@@ -1243,7 +1400,8 @@ static void cf_node(CF *f, int v) {
   case NK_ConstantReadNode: case NK_ConstantPathNode: {
     const char *nm = nt_str(nt, v, "name");
     if (!nm) { cf_all(f, v); return; }
-    if (comp_class_index(c, nm) >= 0) return;   /* a class value */
+    int kc = comp_class_index(c, nm);
+    if (kc >= 0) { cf_add_set(f, v, cf_classval(f, kc)); return; }   /* the Class object */
     if (!cf_entry_has(f, CF_K_CONSTW, cf_const_key(nm))) return;   /* a builtin's: ARGV, Float::INFINITY */
     cf_unite(f, v, cf_entry(f, CF_K_CONST, cf_const_key(nm)));
     return;
@@ -1299,6 +1457,7 @@ static void cf_node(CF *f, int v) {
     return;
   }
   case NK_LambdaNode: {
+    cf_add_set(f, v, cf_bv_set(f));
     cf_unite(f, v, cf_tail(f, nt_ref(nt, v, "body")));
     cf_all_block_params(f, v);
     return;
@@ -1488,6 +1647,8 @@ void an_cls_facts(Compiler *c) {
     f.desc[k] = cf_pool(&f, &s);
     f.self_el[k] = cf_new_el(&f);
     f.set[f.self_el[k]] = f.desc[k];
+    /* a class or module the compiler supplies runs for any object */
+    if (c->classes[k].def_node >= 0 && nt_int(nt, c->classes[k].def_node, "node_bi", 0) != 0) f.set[f.self_el[k]] = CF_ALL;
   }
   {
     ClsSet s; memset(&s, 0, sizeof s);
@@ -1520,11 +1681,15 @@ void an_cls_facts(Compiler *c) {
     f.has_super[mi] = (unsigned char)cf_scope_has_super(&f, mi);
     if (!s->name) continue;
     if (cf_protocol_name(s->name) || cf_is_dyn(&f, s->name) || s->is_proc_form || s->is_lowered_yield ||
-        s->cs_synth || s->is_module_function) {
+        s->cs_synth || s->is_module_function || cf_prelude_scope(&f, mi)) {
       f.protocol[mi] = 1;
       cf_all_params(&f, mi);
     }
-    if (s->blk_param && s->blk_param[0]) cf_unite(&f, cf_lv_in(&f, mi, s->blk_param), f.yval_el[mi]);
+    if (s->blk_param && s->blk_param[0]) {
+      int be = cf_lv_in(&f, mi, s->blk_param);
+      cf_unite(&f, be, f.yval_el[mi]);
+      cf_add_set(&f, be, cf_bv_set(&f));   /* a Proc: its own methods answer */
+    }
   }
   /* Children first (a node's id is below its children's), so a receiver's
      read has met its slot when its call asks for the classes. The rounds
@@ -1560,7 +1725,11 @@ void an_cls_facts(Compiler *c) {
       fprintf(stderr, "cls-fact: line %d %s receiver:", (int)nt_int(nt, id, "node_line", 0), nt_str(nt, id, "name") ? nt_str(nt, id, "name") : "?");
       if (!s) fprintf(stderr, " ANY");
       else if (s->n == 0) fprintf(stderr, " none");
-      else for (int i = 0; i < s->n; i++) fprintf(stderr, " %s", c->classes[s->cls[i]].name ? c->classes[s->cls[i]].name : "?");
+      else for (int i = 0; i < s->n; i++) {
+        int k = s->cls[i] >= c->nclasses ? s->cls[i] - c->nclasses : s->cls[i];
+        fprintf(stderr, s->cls[i] >= c->nclasses ? " Class(%s)" : " %s", c->classes[k].name ? c->classes[k].name : "?");
+      }
+      if (s && s->bv) fprintf(stderr, " +builtin");
       fprintf(stderr, "\n");
     }
   }
@@ -1568,7 +1737,7 @@ void an_cls_facts(Compiler *c) {
   free(f.par); free(f.uf); free(f.set); free(f.ph);
   for (int mi = 0; mi < c->nscopes; mi++) { free(f.lv_el[mi]); free(f.yarg_el[mi]); }
   free(f.lv_el); free(f.nlv); free(f.ret_el); free(f.yval_el); free(f.yarg_el); free(f.has_super); free(f.protocol);
-  free(f.def_mi); free(f.self_el); free(f.own); free(f.desc); free(f.fam); free(f.mod); free(f.dyn); free(f.yval_used);
+  free(f.def_mi); free(f.self_el); free(f.own); free(f.desc); free(f.fam); free(f.mod); free(f.dyn); free(f.yval_used); free(f.has_native);
   for (int k = 0; k < f.ent_cap; k++) free((char *)f.ent[k].name);
   free(f.ent);
   for (int k = 0; k < f.bn_cap; k++) if (f.bn[k].name) { free((char *)f.bn[k].name); free(f.bn[k].mi); free(f.bn[k].cmi); free(f.bn[k].rd); free(f.bn[k].wr); }
@@ -1604,4 +1773,11 @@ int cls_fact_excludes(Compiler *c, int recv, int k) {
   if (!s || !cls_fact_bounded(c, k)) return 0;
   for (int i = 0; i < s->n; i++) if (s->cls[i] == k) return 0;
   return 1;
+}
+
+/* See compiler.h. */
+int cls_fact_idx(Compiler *c, int node) {
+  if (!c->cls_fact || node < 0 || node >= c->cls_fact_n) return -1;
+  int p = c->cls_fact[node];
+  return p <= 0 || p >= c->ncls_pool ? -1 : p;
 }

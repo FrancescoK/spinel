@@ -1247,14 +1247,18 @@ static void cpoly_add(PolyPlan *p, int *cap, int kind, int key, int mi, TyKind v
    whose chain has the method or a reader, and the native ones (the
    memoized candidates); every class while an exception reopening can lend
    its method to a class outside them. Into ks (sized nclasses). */
-static int cpoly_arm_classes(Compiler *c, const char *name, int *ks) {
-  int n = 0;
+/* ...less the classes the receiver never holds (cls_fact_excludes, #8530):
+   their arms could not run, and an arm's parameters, typed by the calls
+   that can reach it, need not take this call's arguments */
+static int cpoly_arm_classes(Compiler *c, int id, const char *name, int *ks) {
+  int n = 0, recv = nt_ref(c->nt, id, "receiver");
   if (any_exc_reopen(c) || (is_element_access(name) && is_store_alias(name))) {
-    for (int k = 0; k < c->nclasses; k++) ks[n++] = k;
+    for (int k = 0; k < c->nclasses; k++)
+      if (!cls_fact_excludes(c, recv, k)) ks[n++] = k;
     return n;
   }
   int npc = 0;
-  const PolyCand *pcs = comp_poly_candidates(c, name, &npc);
+  const PolyCand *pcs = comp_poly_candidates_at(c, id, name, &npc);
   for (int i = 0; i < npc; i++) ks[n++] = pcs[i].cls;
   return n;
 }
@@ -1271,7 +1275,7 @@ int cplan_struct_aset(Compiler *c, int cid, const char *name, int argc) {
 static void cpoly_user_arms0(Compiler *c, int id, const char *name, TyKind ret, PolyPlan *p) {
   int cap = 0;
   int *ks = malloc(sizeof(int) * (size_t)(c->nclasses > 0 ? c->nclasses : 1));
-  int nks = cpoly_arm_classes(c, name, ks);
+  int nks = cpoly_arm_classes(c, id, name, ks);
   for (int ki = 0; ki < nks; ki++) {
     int k = ks[ki];
     if (!c->classes[k].instantiated && !class_is_prim_reopen(c, k)) continue;
@@ -1550,7 +1554,7 @@ static void cpoly_user_arms_n(Compiler *c, int id, const char *name, int argc, c
   PolyArgs pargs = { argv, pos_argc, NULL, atmp_ty, &kw, NULL };
   if (full) cpoly_prearms_n(c, id, name, argc, argv, ret, atmp_ty, kwall_any, is_setter_val, p, &cap);
   int *ks = malloc(sizeof(int) * (size_t)(c->nclasses > 0 ? c->nclasses : 1));
-  int nks = cpoly_arm_classes(c, name, ks);
+  int nks = cpoly_arm_classes(c, id, name, ks);
   for (int ki = 0; ki < nks; ki++) {
     int k = ks[ki];
     if (!has_splat_arg && kwh < 0 && cplan_struct_aset(c, k, name, argc)) {

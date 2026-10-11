@@ -7434,6 +7434,13 @@ static int str_arms_convert(Compiler *c, int id, Buf *b, const NodeTable *nt, co
         char rrefE[192];
         if (strbuf_slot_ref(c, recv, rrefE, sizeof rrefE))
           buf_printf(b, "(%s == %s)", rrefE, arefE);
+        else if (strbuf_call_reads_handle(c, recv)) {
+          /* a reader call whose read is the handle, too long for the slot
+             text's buffer (a one-arm dispatch inlines where a shared one
+             was a call): the handle it answers, compared as above */
+          int teq = ++g_tmp;
+          buf_printf(b, "({ sp_String *_t%d = %s; (sp_bool)(_t%d == %s); })", teq, r, teq, arefE);
+        }
         else {
           int teq = ++g_tmp;
           buf_printf(b, "({ const char *_t%d = %s; "

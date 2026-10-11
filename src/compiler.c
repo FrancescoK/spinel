@@ -1940,10 +1940,11 @@ int comp_writer_in_chain(Compiler *c, int class_id, const char *name, int *def_c
    conditions that vary per call (ctor_reachable, an_builtin_only, native arity)
    stay with the consumer. A native class is always listed: its answer depends
    on the call's arity, which the consumer checks. */
-struct pc_entry { char *name; PolyCand *cands; unsigned char *overridden; int n; struct pc_entry *next; };
+struct pc_entry { char *name; PolyCand *cands; unsigned char *overridden; int n; int fi; struct pc_entry *next; };
 #define PC_BUCKETS 4096
 static struct pc_entry *pc_tab[PC_BUCKETS];
 static struct pc_entry *cc_tab[PC_BUCKETS];   /* class methods: comp_cmethod_candidates */
+static struct pc_entry *pf_tab[PC_BUCKETS];   /* per (name, receiver set): comp_poly_candidates_at */
 static unsigned pc_gen_stamp; static int pc_nscopes_stamp, pc_nclasses_stamp; static unsigned pc_table_stamp;
 /* Invalidation never frees: a consumer may be iterating a list when a nested
    inference call invalidates the memo (bind_call_params -> infer_type -> this).
@@ -1954,6 +1955,8 @@ static void pc_clear(void) {
   for (int b = 0; b < PC_BUCKETS; b++) {
     for (struct pc_entry *e = pc_tab[b]; e; ) { struct pc_entry *nx = e->next; e->next = pc_retired; pc_retired = e; e = nx; }
     pc_tab[b] = NULL;
+    for (struct pc_entry *e = pf_tab[b]; e; ) { struct pc_entry *nx = e->next; e->next = pc_retired; pc_retired = e; e = nx; }
+    pf_tab[b] = NULL;
   }
 }
 void comp_poly_candidates_reset(void) {
@@ -2014,6 +2017,45 @@ const PolyCand *comp_poly_candidates(Compiler *c, const char *name, int *n) {
     e->next = pc_retired; pc_retired = e;
   }
   else if (e->n < 0) pc_build(c, name, &e->cands, &e->n);
+  *n = e->n; return e->cands;
+}
+
+/* The candidates of `name` for the call `id`: comp_poly_candidates less the
+   classes the call's receiver never holds (cls_fact_excludes, #8530), in the
+   same order. Every place that counts, types, binds or emits a boxed call's
+   arms asks through here, so they agree on the arms. Memoized per (name,
+   receiver set) under comp_poly_candidates' stamps; a receiver with no fact
+   answers the full list itself. */
+const PolyCand *comp_poly_candidates_at(Compiler *c, int id, const char *name, int *n) {
+  int npc = 0;
+  const PolyCand *p = comp_poly_candidates(c, name, &npc);
+  int recv = id >= 0 ? nt_ref(c->nt, id, "receiver") : -1;
+  int fi = cls_fact_idx(c, recv);
+  if (fi <= 0) { *n = npc; return p; }
+  struct pc_entry *e = NULL;
+  int memo = sm_frozen && !mv_n;
+  if (memo) {
+    (void)pc_memo(c, name);   /* the stamps: a stale table is cleared with pc_tab's */
+    unsigned b = (sp_strhash(name) * 31u + (unsigned)fi) % PC_BUCKETS;
+    for (e = pf_tab[b]; e; e = e->next)
+      if (e->fi == fi && sp_streq(e->name, name)) { *n = e->n; return e->cands; }
+    e = calloc(1, sizeof *e);
+    if (!e) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    e->name = strdup(name);
+    if (!e->name) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    e->fi = fi;
+    e->next = pf_tab[b]; pf_tab[b] = e;
+  }
+  else {
+    e = calloc(1, sizeof *e);
+    if (!e) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    e->next = pc_retired; pc_retired = e;
+  }
+  e->cands = npc ? malloc(sizeof *e->cands * (size_t)npc) : NULL;
+  if (npc && !e->cands) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  e->n = 0;
+  for (int i = 0; i < npc; i++)
+    if (!cls_fact_excludes(c, recv, p[i].cls)) e->cands[e->n++] = p[i];
   *n = e->n; return e->cands;
 }
 

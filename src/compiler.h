@@ -41,9 +41,12 @@ enum { SP_VIS_PUBLIC = 0, SP_VIS_PRIVATE = 1, SP_VIS_PROTECTED = 2 };
    slot degrade; the node's own origin (Compiler.norigin) leads on from there
    to the expression the poly was born at. */
 /* The user classes a value can hold (analyze_cls.c, #8530): `all` for every
-   class, else the class indices, sorted, at most CLS_SET_MAX of them. */
+   class, else the class indices, sorted, at most CLS_SET_MAX of them. A
+   member at or past nclasses is the Class object of (member - nclasses),
+   which a call dispatches to class methods. `bv`: the value may also be a
+   builtin (a container, a Proc), whose own methods then answer too. */
 #define CLS_SET_MAX 16
-typedef struct { unsigned char all, n; int cls[CLS_SET_MAX]; } ClsSet;
+typedef struct { unsigned char all, n, bv; int cls[CLS_SET_MAX]; } ClsSet;
 
 typedef struct {
   int node;      /* the argument, written value or returned value whose type degraded the slot; -1 = untraced */
@@ -1585,9 +1588,15 @@ int cls_fact_bounded(Compiler *c, int k);
    known, k is bounded, and k is not in it? A call on recv then never
    reaches k's method, so the binding and the dispatch may leave it out. */
 int cls_fact_excludes(Compiler *c, int recv, int k);
+/* the fact's own index for recv's set, which names the set uniquely: 0 or -1
+   for every class (nothing to filter by) */
+int cls_fact_idx(Compiler *c, int node);
 
 typedef struct { int cls; int mi; int rdcls; int native; } PolyCand;
 const PolyCand *comp_poly_candidates(Compiler *c, const char *name, int *n);
+/* the same for the call `id`, less the classes its receiver never holds
+   (cls_fact_excludes, #8530): what its arms are counted, typed and emitted from */
+const PolyCand *comp_poly_candidates_at(Compiler *c, int id, const char *name, int *n);
 extern unsigned comp_table_gen;
 void comp_poly_candidates_reset(void);
 /* The classes answering class method `name` through their chain, ascending,
