@@ -14192,24 +14192,28 @@ static sp_RbVal sp_json_symbolize(sp_RbVal v) {
   }
   return v;
 }
+/* A program with no poly-renderable value (SP_TU_NO_POLY_RENDER: no poly,
+   Array or Hash type anywhere) holds no boxed Array or Hash for these hooks to
+   walk, and JSON.parse and Marshal.load, which build them, answer a poly
+   value; it installs none of them, so the walkers stay out of the link. */
+#ifndef SP_TU_NO_POLY_RENDER
 SP_CONSTRUCTOR static void sp_json_install_hooks(void) {
   sp_json_kind_fn = sp_json_kind;
   sp_json_len_fn = sp_poly_length;
   sp_json_aref_fn = sp_poly_arr_get;
   sp_json_hpair_fn = sp_poly_hash_pair;
   /* sp_poly_inspect renders symbols and class names, so taking its address
-     forces the generated TU to define sp_sym_to_s / sp_class_to_s. A program
-     with no poly-renderable value defines SP_TU_NO_POLY_RENDER before the
-     include and skips the hook (the archive-side consumers null-check it). */
-#ifndef SP_TU_NO_POLY_RENDER
+     forces the generated TU to define sp_sym_to_s / sp_class_to_s, which a
+     program under SP_TU_NO_POLY_RENDER does not (the archive-side consumers
+     null-check every hook here). */
   sp_poly_inspect_fn = sp_poly_inspect;
   sp_poly_to_s_fn = sp_poly_to_s;
-#endif
   /* JSON.parse builds objects as string-keyed hashes (CRuby returns String
      keys, and this matches a `{ "k" => v }` literal for equality). */
   sp_json_mk_hash_fn = sp_json_new_strhash;
   sp_json_hash_set_fn = sp_json_strhash_set;
 }
+#endif
 
 #include "sp_setjmp.h"
 /* Depth of the begin/rescue/ensure handler stack. Each entry holds a jmp_buf
