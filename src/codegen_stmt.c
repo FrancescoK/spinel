@@ -71,13 +71,12 @@ void emit_puts_one(Compiler *c, int arg, Buf *b, int indent) {
   TyKind t = comp_ntype(c, arg);
   emit_indent(b, indent);
   if (t == TY_INT) {
-    /* a nullable int at the sentinel prints as nil (an empty line) -- a value
-       position that reads the sentinel itself, not a strict Integer slot that
-       refuses it (#4896), so the nilable emitter is the right one here. */
+    /* a nullable int holding nil prints as nil (an empty line) -- a value
+       position that reads the nil itself, not a strict Integer slot that
+       refuses it (#4896), so the oint form is the right one here. */
     int tv = ++g_tmp;
-    buf_printf(b, "{ sp_int _t%d = ", tv); emit_int_expr_nilable(c, arg, b);
-    if (int_value_plain(c, arg)) buf_printf(b, "; printf(\"%%lld\\n\", (long long)_t%d); }\n", tv);
-    else buf_printf(b, "; if (_t%d == SP_INT_NIL) putchar('\\n'); else printf(\"%%lld\\n\", (long long)_t%d); }\n", tv, tv);
+    buf_printf(b, "{ sp_oint _t%d = ", tv); emit_oint_expr(c, arg, TY_INT, b);
+    buf_printf(b, "; if (_t%d.nil) putchar('\\n'); else printf(\"%%lld\\n\", (long long)_t%d.v); }\n", tv, tv);
   }
   else if (t == TY_BIGINT) {
     /* NULL is this slot's nil (nil_value), so it prints the empty line
@@ -106,7 +105,7 @@ void emit_puts_one(Compiler *c, int arg, Buf *b, int indent) {
     buf_puts(b, "));\n");
   }
   else if (t == TY_FLOAT) {
-    buf_puts(b, "{ const char *_fs = sp_float_opt_to_s("); emit_expr(c, arg, b);
+    buf_puts(b, "{ const char *_fs = sp_float_opt_to_s("); emit_oint_expr(c, arg, TY_FLOAT, b);
     buf_puts(b, "); sp_puts_line(_fs); }\n");
   }
   else if (t == TY_STRING) {
@@ -131,15 +130,15 @@ void emit_puts_one(Compiler *c, int arg, Buf *b, int indent) {
     buf_printf(b, "{ sp_%sArray *_t%d = %s; SP_GC_ROOT(_t%d);\n", k, ta, ab.p ? ab.p : "", ta);
     emit_indent(b, indent);
     buf_printf(b, "for (sp_int _t%d = 0; _t%d < sp_%sArray_length(_t%d); _t%d++) ", ti, ti, k, ta, ti);
-    /* an element that can be nil (the slot's sentinel) prints puts nil's
+    /* an element that can be nil (its nil bit) prints puts nil's
        empty line. Any Integer or Float array can hold one -- a write past
        the end fills its gap with nil where analyze cannot see it -- and the
        test is nothing beside the print. */
     if (t == TY_INT_ARRAY)
-      buf_printf(b, "{ sp_int _e = sp_IntArray_get(_t%d, _t%d); if (_e == SP_INT_NIL) putchar('\\n');"
-                    " else printf(\"%%lld\\n\", (long long)_e); } }\n", ta, ti);
+      buf_printf(b, "{ sp_oint _e = sp_IntArray_oget(_t%d, _t%d); if (_e.nil) putchar('\\n');"
+                    " else printf(\"%%lld\\n\", (long long)_e.v); } }\n", ta, ti);
     else if (t == TY_FLOAT_ARRAY)
-      buf_printf(b, "{ const char *_fs = sp_float_opt_to_s(sp_FloatArray_get(_t%d, _t%d)); sp_puts_line(_fs); } }\n",
+      buf_printf(b, "{ const char *_fs = sp_float_opt_to_s(sp_FloatArray_oget(_t%d, _t%d)); sp_puts_line(_fs); } }\n",
                  ta, ti);
     else /* str */
       buf_printf(b, "{ const char *_ps = sp_StrArray_get(_t%d, _t%d); sp_puts_str_line(_ps); } }\n", ta, ti);
@@ -286,14 +285,15 @@ void emit_print_one(Compiler *c, int arg, Buf *b, int indent) {
       }
     }
   }
-  /* a nullable Integer or Float holding its sentinel is nil, which prints
-     as nothing, as `print nil` does -- the sentinel went out as its number */
+  /* a nullable Integer or Float holding nil (its nil flag) prints as
+     nothing, as `print nil` does -- the nil went out as its number */
   if ((t == TY_INT || t == TY_FLOAT) && call_returns_nullable_int(c, arg)) {
     char ref[24];
     buf_puts(b, "{ "); emit_sentinel_bind(c, t, arg, ref, sizeof ref, b);
     buf_puts(b, "if "); emit_slot_truthy(t, ref, b);
-    if (t == TY_INT) buf_printf(b, " printf(\"%%lld\", (long long)%s); }\n", ref);
-    else buf_printf(b, " fputs(sp_float_to_s(%s), stdout); }\n", ref);
+    /* the bound ref is the oint (emit_sentinel_bind): its value prints */
+    if (t == TY_INT) buf_printf(b, " printf(\"%%lld\", (long long)(%s).v); }\n", ref);
+    else buf_printf(b, " fputs(sp_float_to_s((%s).v), stdout); }\n", ref);
   }
   else if (t == TY_INT) {
     buf_puts(b, "printf(\"%lld\", (long long)"); emit_expr(c, arg, b); buf_puts(b, ");\n");
@@ -424,16 +424,15 @@ void emit_p_one(Compiler *c, int arg, Buf *b, int indent) {
   }
   emit_indent(b, indent);
   if (t == TY_INT) {
-    /* p of a nullable int at the sentinel prints "nil" -- a value position
-       that reads the sentinel itself, not a strict Integer slot that refuses
-       it (#4896), so the nilable emitter is the right one here. */
+    /* p of a nullable int holding nil prints "nil" -- a value position
+       that reads the nil itself, not a strict Integer slot that refuses
+       it (#4896), so the oint form is the right one here. */
     int tv = ++g_tmp;
-    buf_printf(b, "{ sp_int _t%d = ", tv); emit_int_expr_nilable(c, arg, b);
-    if (int_value_plain(c, arg)) buf_printf(b, "; printf(\"%%lld\\n\", (long long)_t%d); }\n", tv);
-    else buf_printf(b, "; if (_t%d == SP_INT_NIL) fputs(\"nil\\n\", stdout); else printf(\"%%lld\\n\", (long long)_t%d); }\n", tv, tv);
+    buf_printf(b, "{ sp_oint _t%d = ", tv); emit_oint_expr(c, arg, TY_INT, b);
+    buf_printf(b, "; if (_t%d.nil) fputs(\"nil\\n\", stdout); else printf(\"%%lld\\n\", (long long)_t%d.v); }\n", tv, tv);
   }
   else if (t == TY_FLOAT) {
-    buf_puts(b, "{ const char *_fs = sp_float_opt_inspect("); emit_expr(c, arg, b);
+    buf_puts(b, "{ const char *_fs = sp_float_opt_inspect("); emit_oint_expr(c, arg, TY_FLOAT, b);
     buf_puts(b, "); sp_puts_line(_fs); }\n");
   }
   else if (t == TY_STRING) {
@@ -554,7 +553,12 @@ void emit_p_one(Compiler *c, int arg, Buf *b, int indent) {
     buf_printf(b, "; if (!_t%d) sp_puts_line(\"nil\"); else { const char *_bs = sp_bigint_to_s(_t%d); if (_bs) sp_puts_line(_bs); } }\n", bv3, bv3);
   }
   else if (t == TY_NIL || t == TY_VOID) {
-    buf_puts(b, "(void)("); emit_expr(c, arg, b); buf_puts(b, "); fputs(\"nil\\n\", stdout);\n");
+    int sv_vd = g_value_discarded; g_value_discarded = 1;
+    buf_puts(b, "(void)(");
+    /* a producer whose nil rides beside it is evaluated as that oint, never unwrapped */
+    if (node_has_oint_form(c, arg)) emit_oint_expr(c, arg, TY_INT, b); else emit_expr(c, arg, b);
+    buf_puts(b, "); fputs(\"nil\\n\", stdout);\n");
+    g_value_discarded = sv_vd;
   }
   else if (nt_type(c->nt, arg) && sp_streq(nt_type(c->nt, arg), "ArrayNode") &&
            ({ int _n = 0; nt_arr(c->nt, arg, "elements", &_n); _n == 0; })) {
@@ -1194,15 +1198,21 @@ else {
    (proc cell), 0 if the local is not a laundered proc cell and the caller
    should fall back to `emit_local_ref = value`. */
 /* The C expression for a slot of type `t` holding Ruby nil: the type's own nil
-   sentinel, or its default value otherwise. */
+   (an oint's for an Integer / Float), or its default value otherwise. */
 static const char *nil_sentinel(TyKind t) {
   switch (t) {
-    case TY_INT:    return "SP_INT_NIL";
-    case TY_FLOAT:  return "sp_float_nil()";
+    case TY_INT:    return "sp_oint_nil()";     /* a slot that takes nil is an sp_oint */
+    case TY_FLOAT:  return "sp_ofloat_nil()";
     case TY_POLY:   return "sp_box_nil()";
     case TY_STRING: return "NULL";
     default:        return default_value(t);
   }
+}
+/* the nil a local slot takes: its oint for an Integer / Float slot that
+   holds one, refused for a plain one (the backstop) */
+static const char *nil_for_local(Compiler *c, int node, const LocalVar *lv, TyKind t, const char *where) {
+  if (oint_kind(t) && !slot_is_oint(lv)) refuse_nil_store(c, node, t, where);
+  return nil_sentinel(t);
 }
 static int emit_proc_cell_lvalue(Compiler *c, int scope_node, const char *nm, Buf *b) {
   LocalVar *lv = nm ? scope_local(comp_scope_of(c, scope_node), nm) : NULL;
@@ -2995,55 +3005,6 @@ void emit_strbuf_ivar_store(Compiler *c, int shared, int v, Buf *b) {
   if (shared && repr_share_rule(c) && strbuf_plain_self_call(c, v) && emit_bang_self_handle(c, v, b)) return;
   emit_strbuf_value(c, &slot, v, b);
 }
-/* Does storing node v into an Integer slot that can also hold nil need the
-   -2^63 check (sp_int_slot_ck)? The slot's nil is the word INT64_MIN, so a
-   real -2^63 stored there reads back as nil. Only a value that cannot itself
-   be nil can be told apart (a nilable one may be the slot's own nil), and a
-   literal is known: -2^63 written out is a Bignum, never an sp_int. */
-static int program_names_big_int(Compiler *c) {
-  if (c->big_int_src) return c->big_int_src == 2;
-  const NodeTable *nt = c->nt;
-  int yes = 0;
-  for (int id = 0; id < nt->count && !yes; id++) {
-    NodeKind k = nt_kind(nt, id);
-    if (k == NK_IntegerNode) {
-      long long n = nt_int(nt, id, "value", 0);
-      if (nt_str(nt, id, "bigval") || n >= (1LL << 62) || n <= -(1LL << 62)) yes = 1;
-    }
-    else if (k == NK_CallNode) {
-      const char *nm = nt_str(nt, id, "name");
-      if (!nm || !(sp_streq(nm, "**") || sp_streq(nm, "<<"))) continue;
-      int an = nt_ref(nt, id, "arguments"), argc = 0;
-      const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &argc) : NULL;
-      if (argc == 1 && nt_kind(nt, av[0]) == NK_IntegerNode && nt_int(nt, av[0], "value", 0) >= 62) yes = 1;
-    }
-    else if (k == NK_StringNode) {
-      const char *s = nt_str(nt, id, "content");
-      int run = 0;
-      for (; s && *s; s++) {
-        run = (*s >= '0' && *s <= '9') ? run + 1 : 0;
-        if (run >= 19) { yes = 1; break; }
-      }
-    }
-  }
-  c->big_int_src = yes ? 2 : 1;
-  return yes;
-}
-int int_slot_store_needs_ck(Compiler *c, int v, TyKind slot_ty, int slot_nullable) {
-  if (!slot_nullable || slot_ty != TY_INT || v < 0) return 0;
-  if (!program_names_big_int(c)) return 0;
-  if (comp_ntype(c, v) != TY_INT || nullable_int_value(c, v)) return 0;
-  /* a chained write (`a = b = 7`) stores what its bottom stores */
-  int bot = v;
-  for (int d = 0; d < 64 && bot >= 0; d++) {
-    const char *ty = nt_type(c->nt, bot);
-    if (!ty || !(sp_streq(ty, "LocalVariableWriteNode") || sp_streq(ty, "InstanceVariableWriteNode") ||
-                 sp_streq(ty, "ClassVariableWriteNode") || sp_streq(ty, "GlobalVariableWriteNode"))) break;
-    bot = nt_ref(c->nt, bot, "value");
-  }
-  if (bot >= 0 && nt_kind(c->nt, bot) == NK_IntegerNode) return 0;
-  return 1;
-}
 void emit_assign(Compiler *c, int id, Buf *b, int indent) {
   const char *nm = nt_str(c->nt, id, "name");
   int v = nt_ref(c->nt, id, "value");
@@ -3155,10 +3116,10 @@ void emit_assign(Compiler *c, int id, Buf *b, int indent) {
   }
 
   if (vty && sp_streq(vty, "NilNode") && lv) {
-    /* an Integer / Float slot's nil is its sentinel (the nil join of
+    /* an Integer / Float slot's nil is its oint's nil (the nil join of
        ty_unify), not the truthy 0 default_value gives every other place */
     if (lv->type == TY_RANGE) buf_puts(b, "(sp_Range){0}");
-    else if (lv->type == TY_INT || lv->type == TY_FLOAT) buf_puts(b, nil_sentinel(lv->type));
+    else if (lv->type == TY_INT || lv->type == TY_FLOAT) buf_puts(b, nil_for_local(c, v, lv, lv->type, "a local variable write"));
     else buf_puts(b, default_value_from_compiler(c, lv->type));
   }
   else if (repr_of_slot(c, lv).kind == RK_STRBUF) {
@@ -3274,27 +3235,24 @@ void emit_assign(Compiler *c, int id, Buf *b, int indent) {
   else if (lv && lv->type == TY_POLY_ARRAY && repr_of(c, v).kind == RK_BOXED) {
     buf_puts(b, "sp_poly_to_poly_array("); emit_expr(c, v, b); buf_puts(b, ")");
   }
+  /* an Integer or Float slot that holds its nil takes the value's oint form
+     (a boxed value unboxed with its nil, a nil, a plain value wrapped) */
+  else if (lv && slot_is_oint(lv)) emit_oint_expr(c, v, lv->type, b);
   /* scalar/string slot with a poly RHS (`x = (a + b) * 2` over poly a/b, a
      string local read back from a poly call): unbox into the slot. */
   else if (lv && emit_poly_rhs_coerced(c, lv->type, v, b)) { }
-  /* nil into a scalar slot is the slot's own nil, the sentinel: the literal
-     read as 0 / 0.0 there, a truthy number (the nil join of an Integer or
-     Float local, see ty_unify). Any other nil-typed value is evaluated for
-     its effects and the sentinel stored. */
-  else if (lv && (lv->type == TY_INT || lv->type == TY_FLOAT) && comp_ntype(c, v) == TY_NIL) {
-    buf_puts(b, "({ (void)("); emit_expr(c, v, b); buf_printf(b, "); %s; })", nil_sentinel(lv->type));
-  }
+  /* nil into a scalar slot is the slot's own nil, which only an oint slot
+     holds (the arm above): the literal read as 0 / 0.0 there, a truthy
+     number (the nil join of an Integer or Float local, see ty_unify). A
+     plain slot refuses a value that can be nil. */
+  else if (lv && (lv->type == TY_INT || lv->type == TY_FLOAT) && node_may_be_nil(c, v))
+    refuse_nil_store(c, v, lv->type, "a local variable write");   /* the slot holding its nil took the arm above */
   else if (lv && lv->type != TY_POLY && lv->type != TY_UNKNOWN &&
            comp_ntype(c, v) == TY_UNKNOWN) {
     /* a typed local assigned an unresolved call (the gate's raise-all token):
        coerce the sp_RbVal token to the slot type (`k = yield rec` where the
        yield is unresolvable, into an sp_int k). A non-token RHS emits raw. */
     emit_unresolved_coerced(c, v, lv->type, b);
-  }
-  else if (lv && int_slot_store_needs_ck(c, v, lv->type, lv->nullable_int)) {
-    buf_puts(b, "sp_int_slot_ck(");
-    emit_coerce(c, v, lv->type, CO_HOLD, "a local variable write", b);
-    buf_puts(b, ")");
   }
   else if (lv) emit_coerce(c, v, lv->type, CO_HOLD, "a local variable write", b);
   else emit_expr(c, v, b);
@@ -3534,13 +3492,14 @@ int emit_array_op_assign(Compiler *c, const char *lval, TyKind t,
                   " for (sp_int _t%d = 0; _t%d < _t%d; _t%d++)"
                   " for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++)",
                tn, k, tr, k, tr, ti, ti, tn, ti, tj, tj, ta, tj);
+    /* the repeated elements carry the receiver's nils */
+    if (t == TY_INT_ARRAY || t == TY_FLOAT_ARRAY)
+      buf_printf(b, " sp_%sArray_push_o(_t%d, sp_%sArray_oget(_t%d, _t%d));", k, tr, k, ta, tj);
     /* only an IntArray carries a start offset */
-    if (t == TY_INT_ARRAY)
+    else if (t == TY_INT_ARRAY)
       buf_printf(b, " sp_%sArray_push(_t%d, _t%d->data[_t%d->start + _t%d]);", k, tr, ta, ta, tj);
     else
       buf_printf(b, " sp_%sArray_push(_t%d, _t%d->data[_t%d]);", k, tr, ta, tj);
-    /* the repeated elements carry the receiver's nils */
-    if (t == TY_INT_ARRAY || t == TY_FLOAT_ARRAY) buf_printf(b, " sp_%sArray_nil_from(_t%d, _t%d);", k, tr, ta);
     buf_printf(b, " %s = _t%d; }", lval, tr);
     op_assign_slot_end(src, lval, b);
     return 1;
@@ -3604,6 +3563,7 @@ static int iow_scalar_fold(Compiler *c, TyKind et, const char *op, TyKind vt, in
    Answers 1 when it emitted the read. */
 static int nilfree_operand(Compiler *c, int v, const char *op, int left, const char *lhs, int cmp, Buf *b) {
   const NodeTable *nt = c->nt;
+  (void)lhs;
   if (nt_kind(nt, v) != NK_CallNode) return 0;
   const char *vn = nt_str(nt, v, "name");
   int vr = nt_ref(nt, v, "receiver"), va = nt_ref(nt, v, "arguments"), vc = 0;
@@ -3617,32 +3577,20 @@ static int nilfree_operand(Compiler *c, int v, const char *op, int left, const c
   int nilr = cplan_nil(c, v) == CN_RAISE;
   int tk = ++g_tmp;
   buf_printf(b, "({ sp_int _t%d = ", tk);
-  int ck = emit_int_index_raw(c, vav[0], b);
-  buf_printf(b, "; (unsigned long long)_t%d < (unsigned long long)%s ? %s[_t%d] : ", tk, hn, hd, tk);
-  if (nilr || ck) {
-    buf_puts(b, "({ ");
-    if (nilr) emit_nil_cold_test(c, v, vr, b);
-    if (ck) buf_printf(b, " SP_INT_NIL_ARG_CK(_t%d);", tk);
-    buf_puts(b, " ");
-  }
-  if (lhs) {
-    int te = ++g_tmp;
-    buf_printf(b, "({ sp_float _t%d = sp_FloatArray_get(", te);
-    emit_expr(c, vr, b);
-    if (cmp)
-      buf_printf(b, ", _t%d); if (SP_UNLIKELY(sp_float_is_nil(_t%d))) sp_raise_nil_cmp(sp_float_is_nil(%s), \"%s\", \"Float\"); _t%d; })",
-                 tk, te, lhs, op, te);
-    else
-      buf_printf(b, ", _t%d); if (SP_UNLIKELY(sp_float_is_nil(_t%d))) sp_raise_nil_float_op(sp_float_is_nil(%s), \"%s\"); _t%d; })",
-                 tk, te, lhs, op, te);
-  }
-  else {
-    /* a nil on the left has no method, under an operator or a comparison */
-    buf_printf(b, "sp_FloatArray_get_%s(", left ? "recv" : cmp ? "cmp_operand" : "operand");
-    emit_expr(c, vr, b);
-    buf_printf(b, ", _t%d, \"%s\")", tk, op);
-  }
-  buf_printf(b, "%s; })", nilr || ck ? "; })" : "");
+  emit_int_expr(c, vav[0], b);
+  buf_printf(b, "; SP_LIKELY((unsigned long long)_t%d < (unsigned long long)%s) ? %s[_t%d] : ", tk, hn, hd, tk);
+  if (nilr) { buf_puts(b, "({ "); emit_nil_cold_test(c, v, vr, b); buf_puts(b, " "); }
+  /* out of the nil-free range the element is read with its nil: the
+     operator's receiver raises NoMethodError for it (a comparison's too),
+     an operator's operand the coercion TypeError, a comparison's operand
+     the Comparable ArgumentError */
+  if (left) buf_puts(b, "sp_ofloat_val(sp_FloatArray_oget(");
+  else buf_printf(b, "%s(sp_FloatArray_oget(", cmp ? "sp_ofloat_cmp_opnd" : "sp_ofloat_opnd");
+  emit_expr(c, vr, b);
+  if (left) buf_printf(b, ", _t%d), \"%s\")", tk, op);
+  else if (cmp) buf_printf(b, ", _t%d), \"%s\", \"Float\")", tk, op);
+  else buf_printf(b, ", _t%d))", tk);
+  buf_printf(b, "%s; })", nilr ? "; })" : "");
   return 1;
 }
 
@@ -3665,18 +3613,21 @@ int emit_nilfree_cmp_operand(Compiler *c, int v, const char *op, int left, const
    method may reassign a global, class variable or ivar before it returns,
    and CRuby has already read it. A local keeps its own spelling.
 
-   A Float slot's nil is a NaN payload every C operator carries through, so
-   `x += 1` on a nil Float answered nil where the binary `x + 1` raises
-   (SP_FLOAT_NIL_CK). `lhs_nil` says the slot can hold nil (its nullable
-   mark), and a rhs the marks call nilable is tested too: the same raise as
-   the binary form. Two Floats under + - * / test the result for NaN and
-   look at the operands only then (SP_FLOAT_NIL_CK_NAN); otherwise each side
-   that can be nil is tested. The caller has emitted the indent. Answers 1
-   when it emitted the write. */
+   `lhs_nil` says the slot can hold nil (its nullable mark): it is an
+   sp_oint / sp_ofloat, the operator's receiver is its value (NoMethodError
+   for nil, as the binary `nil + 1`), and the result goes back wrapped. A
+   rhs the marks call nilable is unwrapped as the binary form's operand is.
+   The caller has emitted the indent. Answers 1 when it emitted the write. */
+const char *g_opa_niltest = NULL, *g_opa_clear = NULL;
 int emit_scalar_op_assign(Compiler *c, const char *lval, TyKind t, const char *op,
                           int v, int capture, int lhs_nil, int lhs_plain, Buf *b) {
   const NodeTable *nt = c->nt;
   if (!op) return 0;
+  /* a field with a nil bit: the plain field, tested for its bit (the
+     operator's receiver is nil: NoMethodError) and the bit cleared after */
+  const char *bnil = g_opa_niltest, *bclr = g_opa_clear;
+  g_opa_niltest = g_opa_clear = NULL;
+  if (bnil) lhs_nil = 0;
   TyKind vt = comp_ntype(c, v);
   const char *fn = t == TY_INT ? int_arith_fn(op)
                  : t == TY_BIGINT ? bigint_arith_fn(op) : NULL;
@@ -3694,29 +3645,41 @@ int emit_scalar_op_assign(Compiler *c, const char *lval, TyKind t, const char *o
      a runtime count goes through sp_int_shl_ck / sp_int_shr_ck below. A bare
      C shift wrapped `x <<= n` to 0 at n = 70 where `x << n` raised. */
   int is_shift = bitop && (is_shift_op(op));
-  /* A slot that can hold nil is nil there, and nil has no << or >>: CRuby's
-     NoMethodError, where the shift read the nil sentinel as a number (the
-     arithmetic helpers test it; these shifts did not) */
-  int shk = 0;
-  if (is_shift && lhs_nil) shk = ++g_tmp;
+  /* An Integer or Float slot that holds its nil (lhs_nil) is an sp_oint:
+     the operator's receiver is its value -- NoMethodError for nil, as the
+     binary `nil + 1` -- and the result goes back wrapped (wo / wc). */
+  int onil = lhs_nil && oint_kind(t);
+  const char *wo = onil ? (t == TY_FLOAT ? "sp_ofloat_of(" : "sp_oint_of(") : "(", *wc = ")";
+  char srcbuf[320];
+  const char *src = lval;
+  size_t pre_mark = g_pre ? g_pre->len : 0;
+  char tn[32];
+  if (capture) {
+    char ct[48]; snprintf(ct, sizeof ct, "%s ", onil ? oint_ctype(t) : c_type_name(t));
+    src = op_assign_slot_src(c, lval, ct, t == TY_BIGINT, v, pre_mark, tn, sizeof tn, b);
+  }
+  const char *captured = src;
+  if (onil) { snprintf(srcbuf, sizeof srcbuf, "%s(%s, \"%s\")", oint_val(t), src, op); src = srcbuf; }
+  else if (bnil) { snprintf(srcbuf, sizeof srcbuf, "({ if (SP_UNLIKELY(%s)) sp_nil_recv(\"%s\"); %s; })", bnil, op, src); src = srcbuf; }
   if (is_shift && nt_kind(nt, v) == NK_IntegerNode) {
     long long vlit = nt_int(nt, v, "value", 0);
     if (sp_streq(op, "<<") || vlit < 0 || vlit >= 64) {
-      if (shk)
-        buf_printf(b, "%s = sp_int_%s(({ sp_int _t%d = %s; if (SP_UNLIKELY(_t%d == SP_INT_NIL)) sp_nil_recv(\"%s\"); _t%d; }), %lldLL);\n",
-                   lval, sp_streq(op, "<<") ? "shl" : "shr", shk, lval, shk, op, shk, vlit);
-      else
-        buf_printf(b, "%s = sp_int_%s(%s, %lldLL);\n", lval, sp_streq(op, "<<") ? "shl" : "shr", lval, vlit);
+      buf_printf(b, "%s = %ssp_int_%s(%s, %lldLL)%s;", lval, wo, sp_streq(op, "<<") ? "shl" : "shr", src, vlit, wc);
+      if (bclr) buf_printf(b, " %s;", bclr);
+      op_assign_slot_end(captured, lval, b);
       return 1;
     }
   }
-  size_t pre_mark = g_pre ? g_pre->len : 0;
   Buf rb; memset(&rb, 0, sizeof rb);
-  int nfread = 0;
-  if (fop && !lhs_nil && vt == TY_FLOAT && emit_nilfree_operand(c, v, op, 0, NULL, &rb)) nfread = 1;
+  /* a right-hand side that may be nil: CRuby's "nil can't be coerced into
+     Integer / Float" (sp_oint_opnd), where the C operator read the nil's
+     word as a number */
+  if (oint_kind(vt) && nullable_int_value(c, v)) {
+    if (t == TY_FLOAT && vt == TY_INT) buf_puts(&rb, "(sp_float)");
+    emit_oint_unwrap_ck(c, v, vt, g_ck_opnd, &rb);
+  }
+  else if (fop && vt == TY_FLOAT && emit_nilfree_operand(c, v, op, 0, NULL, &rb)) { }
   else if (t == TY_INT && fn && (is_div_or_mod(op))) emit_int_divisor(c, v, &rb);
-  /* a boxed rhs of a Float op is kept boxed for the nil test below */
-  else if (vt == TY_POLY && fop) emit_expr(c, v, &rb);
   else if (vt == TY_POLY) {
     buf_puts(&rb, t == TY_FLOAT ? "sp_poly_opnd_f(" : t == TY_BIGINT ? "sp_poly_as_bigint(" : op_assign_int_conv(t, op));
     emit_expr(c, v, &rb); buf_puts(&rb, ")");
@@ -3735,65 +3698,33 @@ int emit_scalar_op_assign(Compiler *c, const char *lval, TyKind t, const char *o
      sp_bigint_new_int). */
   else emit_coerce(c, v, t, t == TY_FLOAT ? CO_CONVERT : CO_HOLD, "the operand of an `op=`", &rb);
   const char *rhs = rb.p ? rb.p : "";
-  char tn[32];
-  const char *src = lval;
-  if (capture) {
-    char ct[48]; snprintf(ct, sizeof ct, "%s ", c_type_name(t));
-    src = op_assign_slot_src(c, lval, ct, t == TY_BIGINT, v, pre_mark, tn, sizeof tn, b);
-  }
   /* Int and Bignum arithmetic take the same overflow-checked helpers as the
      binary form: a raw C `lv_x *= y` silently wrapped where `x * y` raised.
      Bitwise ops map straight to the C operator (fixed-width wrap, same as the
      binary `x << y` path). */
-  int rnil = fop && !nfread && (vt == TY_POLY || ((vt == TY_FLOAT || vt == TY_INT) && nullable_int_value(c, v)));
-  /* + - * / of two Floats test the result for NaN first (SP_FLOAT_NIL_CK_NAN) */
-  if (fop && (lhs_nil || rnil) && vt == TY_FLOAT && !ffn) {
-    int k = ++g_tmp;
-    buf_printf(b, "{ sp_float _t%d = %s; sp_float _t%d_r = %s; sp_float _t%d_v = _t%d %s _t%d_r; ",
-               k, src, k, rhs, k, k, op, k);
-    if (lhs_nil) buf_printf(b, "SP_FLOAT_NIL_CK_NAN(_t%d_v, _t%d, _t%d_r, \"%s\"); ", k, k, k, op);
-    else buf_printf(b, "SP_FLOAT_NIL_CK_NAN_R(_t%d_v, _t%d_r, \"%s\"); ", k, k, op);
-    buf_printf(b, "%s = _t%d_v; }", lval, k);
-  }
-  else if (fop && (lhs_nil || rnil)) {
-    int k = ++g_tmp;
-    buf_printf(b, "{ sp_float _t%d = %s; %s _t%d_r = %s; ", k, src,
-               vt == TY_INT ? "sp_int" : vt == TY_POLY ? "sp_RbVal" : "sp_float", k, rhs);
-    buf_puts(b, "if (SP_UNLIKELY(");
-    if (lhs_nil) buf_printf(b, "sp_float_is_nil(_t%d) || ", k);
-    if (vt == TY_INT) buf_printf(b, "_t%d_r == SP_INT_NIL", k);
-    else if (vt == TY_POLY) buf_printf(b, "_t%d_r.tag == SP_TAG_NIL", k);
-    else buf_printf(b, "sp_float_is_nil(_t%d_r)", k);
-    buf_printf(b, ")) sp_raise_nil_float_op(sp_float_is_nil(_t%d), \"%s\"); ", k, op);
-    char rv[48];
-    snprintf(rv, sizeof rv, vt == TY_POLY ? "sp_poly_to_f(_t%d_r)" : "_t%d_r", k);
-    if (ffn) buf_printf(b, "%s = %s(_t%d, %s); }", lval, ffn, k, rv);
-    else buf_printf(b, "%s = _t%d %s %s; }", lval, k, op, rv);
-  }
-  else if (fn) {
-    /* a target and a value that are never the nil sentinel: the helper
-       without the test of it (-2**63 is that number there, #7612) */
-    char fn_nn[24];
-    if (t == TY_INT && lhs_plain && int_value_plain(c, v) && strcmp(fn, "sp_int_pow") &&
-        snprintf(fn_nn, sizeof fn_nn, "%s_nn", fn) < (int)sizeof fn_nn) fn = fn_nn;
-    buf_printf(b, "%s = %s(%s, %s);", lval, fn, src, rhs);
-  }
-  else if (is_shift) {
-    Buf sb; memset(&sb, 0, sizeof sb);
-    if (shk) buf_printf(&sb, "({ sp_int _t%d = %s; if (SP_UNLIKELY(_t%d == SP_INT_NIL)) sp_nil_recv(\"%s\"); _t%d; })",
-                        shk, src, shk, op, shk);
-    else buf_puts(&sb, src);
-    if (nt_kind(nt, v) != NK_IntegerNode)
-      buf_printf(b, "%s = sp_int_%s_ck(%s, (%s));", lval, sp_streq(op, "<<") ? "shl" : "shr", sb.p, rhs);
-    else buf_printf(b, "%s = (%s %s (%s));", lval, sb.p, op, rhs);
-    free(sb.p);
-  }
-  else if (bitop) buf_printf(b, "%s = (%s %s (%s));", lval, src, op, rhs);
-  else if (ffn) buf_printf(b, "%s = %s(%s, %s);", lval, ffn, src, rhs);
+  if (fn) buf_printf(b, "%s = %s%s(%s, %s)%s;", lval, wo, fn, src, rhs, wc);
+  else if (is_shift && nt_kind(nt, v) != NK_IntegerNode)
+    buf_printf(b, "%s = %ssp_int_%s_ck(%s, (%s))%s;", lval, wo, sp_streq(op, "<<") ? "shl" : "shr", src, rhs, wc);
+  else if (bitop) buf_printf(b, "%s = %s(%s %s (%s))%s;", lval, wo, src, op, rhs, wc);
+  else if (ffn) buf_printf(b, "%s = %s%s(%s, %s)%s;", lval, wo, ffn, src, rhs, wc);
   else if (src == lval) buf_printf(b, "%s %s= %s;", lval, op, rhs);
-  else buf_printf(b, "%s = %s %s (%s);", lval, src, op, rhs);
-  op_assign_slot_end(src, lval, b);
+  else buf_printf(b, "%s = %s%s %s (%s)%s;", lval, wo, src, op, rhs, wc);
+  if (bclr) buf_printf(b, " %s;", bclr);
+  op_assign_slot_end(captured, lval, b);
   free(rb.p);
+  return 1;
+}
+/* Arm emit_scalar_op_assign for ivar iv of class cid through receiver
+   prefix `obj` when the field has a nil bit; answers whether it did (the
+   call's lhs_nil is then 0), else whether the slot is an oint static. */
+int opa_arm_ivar(Compiler *c, int cid, int iv, const char *obj, char *nt, size_t ncap, char *cl, size_t ccap) {
+  static char dummy;
+  (void)dummy;
+  if (cid < 0 || iv < 0) return 0;
+  if (!ivar_has_nilbit(c, cid, iv)) return 0;
+  ivar_nilbit_test(c, cid, iv, obj, nt, ncap);
+  ivar_nilbit_clear(c, cid, iv, obj, cl, ccap);
+  g_opa_niltest = nt; g_opa_clear = cl;
   return 1;
 }
 
@@ -3977,7 +3908,7 @@ static void emit_op_assign_lv(Compiler *c, int id, Buf *b, int indent,
     buf_printf(b, "%s = %s %s ", lval, lval, op); emit_expr(c, v, b); buf_puts(b, ";\n");
     return;
   }
-  if (emit_scalar_op_assign(c, lval, t, op, v, cap, lv && lv->nullable_int, lv && t == TY_INT && int_local_plain(c, lv, nm), b)) return;
+  if (emit_scalar_op_assign(c, lval, t, op, v, cap, lv && slot_is_oint(lv), 0, b)) return;
   if (t == TY_COMPLEX && (is_add_or_mul(op))) {
     /* coerce the rhs like the binary path does: an Integer, a Float or a boxed
        value all have to reach sp_complex_* as an sp_Complex */
@@ -4232,7 +4163,7 @@ void emit_cond(Compiler *c, int id, Buf *b) {
   if (t == TY_POLY) { buf_puts(b, "sp_poly_truthy("); emit_expr(c, id, b); buf_puts(b, ")"); return; }
   if (t == TY_NIL)  { buf_puts(b, "(("); emit_expr(c, id, b); buf_puts(b, "), 0)"); return; }
   /* Ruby truthiness: only nil and false are falsy. A nullable scalar reads
-     falsy at its sentinel (NULL string / SP_INT_NIL / NaN float); a pointer
+     falsy at its nil (NULL string / the oint's flag); a pointer
      value is falsy when NULL. Every other concrete value is truthy. */
   /* a value-type object is never a NULL pointer -- it is always truthy */
   if (comp_ty_value_obj(c, t)) { buf_puts(b, "(("); emit_expr(c, id, b); buf_puts(b, "), 1)"); return; }
@@ -4242,9 +4173,7 @@ void emit_cond(Compiler *c, int id, Buf *b) {
       t == TY_METHOD || t == TY_IO || t == TY_ARGF || t == TY_ENUMERATOR || t == TY_OPENSTRUCT) {
     buf_puts(b, "(("); emit_expr(c, id, b); buf_puts(b, ") != 0)"); return;
   }
-  if (t == TY_INT && int_value_plain(c, id)) { buf_puts(b, "(("); emit_expr(c, id, b); buf_puts(b, "), 1)"); return; }   /* never the sentinel: always truthy */
-  if (t == TY_INT)   { buf_puts(b, "(("); emit_expr(c, id, b); buf_puts(b, ") != SP_INT_NIL)"); return; }
-  if (t == TY_FLOAT) { buf_puts(b, "(!sp_float_is_nil("); emit_expr(c, id, b); buf_puts(b, "))"); return; }
+  if (oint_kind(t)) { emit_oint_truthy(c, id, t, b); return; }
   /* a nilable symbol slot holds (sp_sym)-1 for nil (default_value), so
      truthiness must test the sentinel -- `if @exit_triggered` with
      `@exit_triggered = nil` read always-true and ended doom's level on
@@ -5066,18 +4995,91 @@ static int pm_hash_value_class(const NodeTable *nt, int vpat) {
    the helpers after the subject (#3185). */
 static Buf *g_pm_hash_sink = NULL;
 
-/* Is the subject a nullable Integer or Float, whose nil is its sentinel? A
+/* Is the subject a nullable Integer or Float, an oint holding its nil? A
    `when` chain or an `in` pattern decides a scalar subject from the slot's
    kind, so for such a subject `when nil` and `in NilClass` never matched,
    `when Integer` (or Float, Numeric, Comparable) always did, and a beginless
    range covered the sentinel as INT64_MIN. Both `when` emitters box the
    subject once, as nil where it is one, and test the box the way they test
-   any poly subject; the integer-literal switch runs before the box, since no
-   label is the sentinel. The pattern emitter keeps the typed subject, which
-   its bindings read, and asks the sentinel in the arms that test a class, nil
-   or a range (g_pm_sentinel_t). */
+   any poly subject -- except an Integer whose labels are all Integers, nil
+   or ranges of Integer literals: the integer-literal switch reads its value
+   (a nil one switches on a value no label has), and the chain tests the
+   typed value beside its flag (case_oint_label). The pattern emitter keeps
+   the typed subject, which its bindings read, and asks its nil flag in the
+   arms that test a class, nil or a range (g_pm_sentinel_t). */
 static int case_subject_boxes_sentinel(Compiler *c, int pred, TyKind pt) {
-  return pred >= 0 && (pt == TY_INT || pt == TY_FLOAT) && call_returns_nullable_int(c, pred);
+  return pred >= 0 && (pt == TY_INT || pt == TY_FLOAT) && node_is_oint(c, pred);
+}
+/* The case scrutinee temp `_tN` whose sp_oint sits beside it as `_oN`
+   (an Integer or Float scrutinee that can be nil), or -1: `when nil` tests
+   the oint's flag, and the plain `_tN` compares the value. */
+static int g_case_scrut_oint = -1;
+static void case_nil_test(int t, int want_nil, Buf *b) {
+  if (g_case_scrut_oint == t) buf_printf(b, "(%s_o%d.nil)", want_nil ? "" : "!", t);
+  else buf_puts(b, want_nil ? "0" : "1");
+}
+/* The least non-negative value no `when` label has: what a subject that
+   matches no label (a nil one) switches on, so it reaches the else arm.
+   There always is one, and no arithmetic on a label overflows into it (the
+   labels may take in INT64_MIN and INT64_MAX). */
+static long long case_switch_miss(const NodeTable *nt, const int *whens, int nw) {
+  long long miss = 0;
+  for (int again = 1; again; ) {
+    again = 0;
+    for (int w = 0; w < nw && !again; w++) {
+      int wc = 0; const int *conds = nt_arr(nt, whens[w], "conditions", &wc);
+      for (int j = 0; j < wc; j++)
+        if ((long long)nt_int(nt, conds[j], "value", 0) == miss) { miss++; again = 1; break; }
+    }
+  }
+  return miss;
+}
+/* An Integer label in range of the C type: no bignum (a literal past it,
+   INT64_MIN's spelling included, carries a placeholder `value`) */
+static int case_int_label(const NodeTable *nt, int n) {
+  return n >= 0 && nt_kind(nt, n) == NK_IntegerNode && !nt_str(nt, n, "bigval");
+}
+/* Does every `when` label of an Integer subject that can be nil decide it
+   from its flag and its value -- an Integer, nil, or a range of Integer
+   literals (either end may be left open) -- so the chain keeps the typed
+   subject (case_oint_label) instead of boxing it for sp_poly_eq? */
+static int case_oint_labels_typed(Compiler *c, const int *whens, int nw) {
+  const NodeTable *nt = c->nt;
+  for (int w = 0; w < nw; w++) {
+    int wc = 0; const int *conds = nt_arr(nt, whens[w], "conditions", &wc);
+    if (wc == 0) return 0;
+    for (int j = 0; j < wc; j++) {
+      int n = conds[j];
+      NodeKind k = nt_kind(nt, n);
+      if (k == NK_NilNode || case_int_label(nt, n)) continue;
+      if (k != NK_RangeNode || comp_ntype(c, n) != TY_RANGE) return 0;
+      int lo = nt_ref(nt, n, "left"), hi = nt_ref(nt, n, "right");
+      if ((lo >= 0 && !case_int_label(nt, lo)) || (hi >= 0 && !case_int_label(nt, hi))) return 0;
+    }
+  }
+  return 1;
+}
+static int emit_when_typed_test(Compiler *c, int cond, int t, TyKind pt, Buf *b);
+/* One such label against the typed subject `_tN` beside its flag `_oN` */
+static void case_oint_label(Compiler *c, int cond, int t, Buf *b) {
+  const NodeTable *nt = c->nt;
+  if (nt_kind(nt, cond) == NK_NilNode) { case_nil_test(t, 1, b); return; }
+  buf_printf(b, "(!_o%d.nil && ", t);
+  if (case_int_label(nt, cond)) buf_printf(b, "_t%d == %lldLL", t, (long long)nt_int(nt, cond, "value", 0));
+  else (void)emit_when_typed_test(c, cond, t, TY_INT, b);
+  buf_puts(b, ")");
+}
+/* the scrutinee's binding: `sp_oint _oN = <oint>; sp_int _tN = _oN.v;` for
+   one that can be nil, the plain value otherwise */
+static void emit_case_scrutinee(Compiler *c, int pred, TyKind pt, int t, const char *term, Buf *b) {
+  if (case_subject_boxes_sentinel(c, pred, pt)) {
+    buf_printf(b, "%s _o%d = ", oint_ctype(pt), t); emit_oint_expr(c, pred, pt, b);
+    buf_printf(b, "; %s _t%d = _o%d.v%s", c_type_name(pt), t, t, term);
+    g_case_scrut_oint = t;
+  }
+  else {
+    emit_ctype(c, pt, b); buf_printf(b, " _t%d = ", t); emit_expr(c, pred, b); buf_puts(b, term);
+  }
 }
 /* The subject temp of the enclosing `case/in` when it is such a scalar, or -1.
    Only the subject itself: a sub-pattern's element temp has its own number. */
@@ -5354,7 +5356,7 @@ int emit_pm_cond(Compiler *c, int pat, int t, TyKind pt, Buf *b) {
   if (sp_streq(pty, "NilNode")) {
     if (pt == TY_POLY) buf_printf(b, "(_t%d.tag == SP_TAG_NIL)", t);
     else if (t == g_pm_sentinel_t) {
-      char ref[24]; snprintf(ref, sizeof ref, "_t%d", t);
+      char ref[24]; snprintf(ref, sizeof ref, "_o%d", t);   /* the subject's oint (emit_case_match) */
       buf_puts(b, "!"); emit_slot_truthy(pt, ref, b);
     }
     /* a no-match MatchData is a NULL pointer, and a String slot holds nil
@@ -5413,12 +5415,13 @@ int emit_pm_cond(Compiler *c, int pat, int t, TyKind pt, Buf *b) {
       return 1;
     }
     int yes = ty_matches_class(pt, cn2, 0);
-    /* a scalar subject holding its nil sentinel is a NilClass, and is not
+    /* a scalar subject holding nil (its nil flag) is a NilClass, and is not
        the Integer or Float its slot is; Object and its ancestors hold for
        nil too, as in the is_a? fold. A String slot holds nil as NULL. */
     if ((t == g_pm_sentinel_t || pt == TY_STRING) && !is_object_root(cn2) &&
         (yes > 0 || sp_streq(cn2, "NilClass"))) {
-      char ref[24]; snprintf(ref, sizeof ref, "_t%d", t);
+      /* the nullable subject's oint (emit_case_match); a String subject is its pointer */
+      char ref[24]; snprintf(ref, sizeof ref, t == g_pm_sentinel_t ? "_o%d" : "_t%d", t);
       if (!sp_streq(cn2, "NilClass")) emit_slot_truthy(pt, ref, b);
       else { buf_puts(b, "!"); emit_slot_truthy(pt, ref, b); }
       return 1;
@@ -5468,9 +5471,9 @@ int emit_pm_cond(Compiler *c, int pat, int t, TyKind pt, Buf *b) {
     if (pt == TY_INT || pt == TY_FLOAT) {
       buf_puts(b, "(");
       int wrote = 0;
-      /* the sentinel is below every bound: a beginless range covered it */
+      /* a nil subject is in no range: its nil flag is tested before the bounds */
       if (t == g_pm_sentinel_t) {
-        char ref[24]; snprintf(ref, sizeof ref, "_t%d", t);
+        char ref[24]; snprintf(ref, sizeof ref, "_o%d", t);   /* the subject's oint (emit_case_match) */
         emit_slot_truthy(pt, ref, b); buf_puts(b, " && ");
       }
       if (lo >= 0) { buf_printf(b, "_t%d >= ", t); emit_expr(c, lo, b); wrote = 1; }
@@ -5812,9 +5815,28 @@ int emit_pm_cond(Compiler *c, int pat, int t, TyKind pt, Buf *b) {
    is captured into a local buffer first so any prelude it emits (e.g. an array
    literal's construction) lands in g_pre ahead of the assignment, not spliced
    into it. */
+/* A pattern binding of one array element `gx` (an `sp_<k>Array_get(..)`
+   text) into the local `plv`: a slot that holds its nil takes the element
+   with its nil (the `_oget` form, or the oint unbox of a poly element), a
+   poly slot takes it boxed. */
+static void emit_boxed_src(Compiler *c, TyKind t, const char *src, Buf *b);
+static void emit_pm_elem_bind(Compiler *c, LocalVar *plv, const char *k, TyKind elem,
+                              const char *gx, Buf *b) {
+  const char *g = strstr(gx, "Array_get(");
+  if (plv && oint_kind(plv->type) && slot_is_oint(plv)) {
+    if (sp_streq(k, "Poly") || !g) buf_printf(b, "%s(%s)", oint_unbox(plv->type), gx);
+    else buf_printf(b, "%.*sArray_oget(%s", (int)(g - gx), gx, g + 10);
+  }
+  else if (plv && plv->type == TY_POLY && !sp_streq(k, "Poly")) emit_boxed_src(c, elem, gx, b);
+  else buf_puts(b, gx);
+}
+
+/* the case/in value being emitted answers an oint (cond_res_oint) */
+static int g_pm_res_oint = 0;
 static void emit_pm_body_value(Compiler *c, int stmts, TyKind rt, int cr,
                                Buf *b, int indent) {
   const NodeTable *nt = c->nt;
+  int res_o = g_pm_res_oint && oint_kind(rt);
   int n = 0;
   const int *bb = stmts >= 0 ? nt_arr(nt, stmts, "body", &n) : NULL;
   for (int k = 0; k < n - 1; k++) emit_stmt(c, bb[k], b, indent);
@@ -5822,7 +5844,7 @@ static void emit_pm_body_value(Compiler *c, int stmts, TyKind rt, int cr,
      it is for a poly result and for a case whose only value is nil */
   if (n <= 0) {
     emit_indent(b, indent);
-    buf_printf(b, "_t%d = %s;\n", cr, rt == TY_POLY || rt == TY_NIL ? "sp_box_nil()" : default_value_from_compiler(c, rt));
+    buf_printf(b, "_t%d = %s;\n", cr, rt == TY_POLY || rt == TY_NIL ? "sp_box_nil()" : res_zero(c, rt, res_o));
     return;
   }
   int last = bb[n - 1];
@@ -5867,12 +5889,13 @@ static void emit_pm_body_value(Compiler *c, int stmts, TyKind rt, int cr,
        its side effect, then default the result, nil boxed as above */
     emit_stmt(c, last, b, indent);
     emit_indent(b, indent);
-    buf_printf(b, "_t%d = %s;\n", cr, rt == TY_POLY || rt == TY_NIL ? "sp_box_nil()" : default_value_from_compiler(c, rt));
+    buf_printf(b, "_t%d = %s;\n", cr, rt == TY_POLY || rt == TY_NIL ? "sp_box_nil()" : res_zero(c, rt, res_o));
     return;
   }
   Buf le; memset(&le, 0, sizeof le);
   int saved_gi = g_indent; g_indent = indent;
   if (rt == TY_POLY && lt != TY_POLY) emit_boxed(c, last, &le);
+  else if (res_o) emit_oint_expr(c, last, rt, &le);
   else emit_expr(c, last, &le);
   g_indent = saved_gi;
   emit_indent(b, indent);
@@ -5893,9 +5916,9 @@ static void emit_pm_typed_assign(Compiler *c, Scope *sc, const char *lnm,
   TyKind ty = lv ? lv->type : TY_POLY;
   emit_indent(b, indent); buf_printf(b, "lv_%s = ", rename_local(lnm));
   switch (ty) {
-  case TY_INT:                   buf_printf(b, "sp_poly_to_i_or_nil(%s)", boxed); break;   /* nil is the slot's sentinel */
+  case TY_INT: case TY_FLOAT:    /* a slot that holds its nil takes the oint */
+    buf_printf(b, "%s(%s)", slot_is_oint(lv) ? oint_unbox(ty) : ty == TY_INT ? "sp_poly_to_i" : "sp_poly_to_f", boxed); break;
   case TY_BOOL:                  buf_printf(b, "sp_poly_to_i(%s)", boxed); break;
-  case TY_FLOAT:                 buf_printf(b, "sp_poly_to_f_or_nil(%s)", boxed); break;
   case TY_INT_ARRAY:             buf_printf(b, "(sp_IntArray *)(%s).v.p", boxed); break;
   case TY_FLOAT_ARRAY:           buf_printf(b, "(sp_FloatArray *)(%s).v.p", boxed); break;
   case TY_STR_ARRAY:             buf_printf(b, "(sp_StrArray *)(%s).v.p", boxed); break;
@@ -6151,8 +6174,11 @@ static void emit_boxed_src(Compiler *c, TyKind t, const char *src, Buf *b) {
   buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
 }
 
+static int masgn_oint_temp(const char *val);
 static void emit_boxed_tmp(Compiler *c, TyKind t, int tmp, Buf *b) {
   char expr[32]; snprintf(expr, sizeof expr, "_t%d", tmp);
+  /* a multi-assign element held with its nil beside it boxes as that oint */
+  if (oint_kind(t) && masgn_oint_temp(expr) >= 0) { buf_printf(b, "%s(_t%do)", oint_box(t), tmp); return; }
   emit_boxed_src(c, t, expr, b);
 }
 
@@ -6186,13 +6212,28 @@ static void emit_pattern_bind(Compiler *c, int id, int subj, const char *lnm, Ty
   emit_indent(b, indent);
   buf_printf(b, "lv_%s = ", rename_local(lnm));
   LocalVar *plv = scope_local(comp_scope_of(c, id), lnm);
-  if (plv && plv->type == TY_POLY && pt != TY_POLY && pt != TY_UNKNOWN) emit_boxed_tmp(c, pt, t, b);
+  /* a local that holds its nil takes the subject with its nil: the
+     subject's own oint, or the value lifted / unboxed */
+  if (plv && oint_kind(plv->type) && slot_is_oint(plv) && pt != TY_UNKNOWN) {
+    if (t == g_pm_sentinel_t) buf_printf(b, "_o%d", t);
+    else if (pt == TY_POLY) buf_printf(b, "%s(_t%d)", oint_unbox(plv->type), t);
+    else if (pt == plv->type) buf_printf(b, "%s(_t%d)", oint_of(pt), t);
+    else buf_printf(b, "_t%d", t);
+  }
+  else if (plv && plv->type == TY_POLY && pt != TY_POLY && pt != TY_UNKNOWN) emit_boxed_tmp(c, pt, t, b);
   else if (plv && pt == TY_STRING && repr_of_slot(c, plv).handle) emit_pattern_bind_handle(c, subj, t, b);
   else buf_printf(b, "_t%d", t);
   buf_puts(b, ";\n");
 }
 
+static void emit_case_match_in(Compiler *c, int id, Buf *b, int indent, int tail, int value_cr);
 void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int value_cr) {
+  int sro = g_pm_res_oint;
+  g_pm_res_oint = value_cr >= 0 && cond_res_oint(c, id, repr_of(c, id).as_ty);
+  emit_case_match_in(c, id, b, indent, tail, value_cr);
+  g_pm_res_oint = sro;
+}
+static void emit_case_match_in(Compiler *c, int id, Buf *b, int indent, int tail, int value_cr) {
   const NodeTable *nt = c->nt;
   int pred = nt_ref(nt, id, "predicate");
   int cn = 0;
@@ -6207,6 +6248,16 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
   /* Evaluate the scrutinee first so its own prelude is flushed to g_pre before
      the `_tN =` initializer. In value position b IS g_pre, so emitting the
      scrutinee inline would splice its prelude into the middle of this line. */
+  /* an Integer or Float subject that can be nil: its oint `_oN` beside the
+     value `_tN`, which the arms testing nil, a class or a range ask */
+  if (case_subject_boxes_sentinel(c, pred, pt)) {
+    Buf ob; memset(&ob, 0, sizeof ob);
+    emit_oint_expr(c, pred, pt, &ob);   /* its prelude lands ahead of this line */
+    emit_indent(b, indent);
+    buf_printf(b, "%s _o%d = %s; %s _t%d = _o%d.v;\n", oint_ctype(pt), t, ob.p ? ob.p : oint_nil(pt), c_type_name(pt), t, t);
+    free(ob.p);
+  }
+  else {
   Buf sb; memset(&sb, 0, sizeof sb);
   if (pred >= 0) sb = expr_buf(c, pred);
   emit_indent(b, indent); emit_ctype(c, pt, b);
@@ -6219,6 +6270,7 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
   else buf_puts(b, sb.p ? sb.p : default_value_from_compiler(c, pt));
   free(sb.p);
   buf_puts(b, ";\n");
+  }
   if (needs_root(pt)) {
     emit_indent(b, indent);
     emit_gc_root_tmp(c, pt, t, b);
@@ -6349,7 +6401,10 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
           else     snprintf(fb, sizeof fb, "((sp_%s *)_t%d)->iv_%s", sc->c_name, t, iv_c(sc->ivars[i] + 1));
           emit_indent(b, indent + 1 + (live_subject >= 0));
           buf_printf(b, "sp_PolyArray_push(_t%d, ", arm_t);
-          emit_boxed_text(c, sc->ivar_types[i], fb, b);
+          /* a member with a nil bit boxes as nil when the bit is set */
+          char opfx[300];
+          if (isv) snprintf(opfx, sizeof opfx, "(_t%d).", t); else snprintf(opfx, sizeof opfx, "((sp_%s *)_t%d)->", sc->c_name, t);
+          emit_member_boxed_text(c, sc, i, opfx, fb, b);
           buf_puts(b, ");\n");
         }
         if (live_subject >= 0) { emit_indent(b, indent + 1); buf_puts(b, "}\n"); }
@@ -6886,8 +6941,7 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
         buf_printf(b, "lv_%s = ", rename_local(lnm));
         LocalVar *plv = scope_local(comp_scope_of(c, id), lnm);
         char gx[64]; snprintf(gx, sizeof gx, "sp_%sArray_get(_t%d, %dLL)", k, arm_t, i);
-        if (plv && plv->type == TY_POLY && !sp_streq(k, "Poly")) emit_boxed_src(c, ty_array_elem(arr_t), gx, b);
-        else buf_puts(b, gx);
+        emit_pm_elem_bind(c, plv, k, ty_array_elem(arr_t), gx, b);
         buf_puts(b, ";\n");
       }
       if (rest_nid >= 0 && nt_type(nt, rest_nid) &&
@@ -6920,8 +6974,7 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
         buf_printf(b, "lv_%s = ", rename_local(lnm));
         LocalVar *plv = scope_local(comp_scope_of(c, id), lnm);
         char gx[80]; snprintf(gx, sizeof gx, "sp_%sArray_get(_t%d, _t%d->len - %lldLL)", k, arm_t, arm_t, (long long)(npost - j));
-        if (plv && plv->type == TY_POLY && !sp_streq(k, "Poly")) emit_boxed_src(c, ty_array_elem(arr_t), gx, b);
-        else buf_puts(b, gx);
+        emit_pm_elem_bind(c, plv, k, ty_array_elem(arr_t), gx, b);
         buf_puts(b, ";\n");
       }
       }
@@ -6956,8 +7009,7 @@ void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int valu
           emit_indent(b, body_indent);
           buf_printf(b, "lv_%s = ", rename_local(lnm));
           LocalVar *plv = scope_local(comp_scope_of(c, id), lnm);
-          if (plv && plv->type == TY_POLY && !sp_streq(find_k, "Poly")) emit_boxed_src(c, ty_array_elem(pt), gx, b);
-          else buf_puts(b, gx);
+          emit_pm_elem_bind(c, plv, find_k, ty_array_elem(pt), gx, b);
           buf_puts(b, ";\n");
         }
         /* a nested container window element (`[*, [a, b], *]`, `[*, {k:}, *]`)
@@ -7324,7 +7376,7 @@ static void emit_when_splat_test(Compiler *c, int cond, int t, TyKind pt, Buf *b
 }
 
 /* `when Integer` / `when NilClass` on an Integer, Float or String
-   scrutinee: the slot holds nil as its sentinel (NULL for a String), which
+   scrutinee: the slot can hold nil (its nil flag, NULL for a String), which
    the static type cannot say, so the arm reads it as is_a? does (#7049). The
    universal classes hold for nil as well and keep the constant (answers 0,
    nothing emitted). */
@@ -7334,20 +7386,20 @@ static int emit_when_scalar_class(TyKind pt, const char *cn, int t, Buf *b) {
   int nilcls = sp_streq(cn, "NilClass");
   int univ = is_object_root(cn);
   if (yes < 0 || (!nilcls && (!yes || univ))) return 0;
-  if (pt == TY_INT) buf_printf(b, "(_t%d %s SP_INT_NIL)", t, nilcls ? "==" : "!=");
-  else if (pt == TY_FLOAT) buf_printf(b, "(%ssp_float_is_nil(_t%d))", nilcls ? "" : "!", t);
+  /* an Integer or Float scrutinee that can be nil has its sp_oint beside
+     the temp (emit_case_scrutinee); a plain one is never nil */
+  if (oint_kind(pt)) case_nil_test(t, nilcls, b);
   else buf_printf(b, "(_t%d %s NULL)", t, nilcls ? "==" : "!=");
   return 1;
 }
 
 static int emit_when_typed_test(Compiler *c, int cond, int t, TyKind pt, Buf *b) {
   int reidx = re_lit_index(c, cond);
-  /* `when nil` on an Integer or Float scrutinee matches its nil sentinel:
+  /* `when nil` on an Integer or Float scrutinee matches its nil flag:
      compared as a number, nil read as 0 and matched a 0. A String
      scrutinee holds nil as NULL. */
   if (nt_kind(c->nt, cond) == NK_NilNode && (pt == TY_INT || pt == TY_FLOAT || pt == TY_STRING)) {
-    if (pt == TY_INT) buf_printf(b, "(_t%d == SP_INT_NIL)", t);
-    else if (pt == TY_FLOAT) buf_printf(b, "sp_float_is_nil(_t%d)", t);
+    if (oint_kind(pt)) case_nil_test(t, 1, b);
     else buf_printf(b, "(_t%d == NULL)", t);
   }
   else if (reidx >= 0 && pt == TY_STRING) {
@@ -7526,12 +7578,7 @@ void emit_case(Compiler *c, int id, Buf *b, int indent) {
       emit_ctype(c, TY_POLY, b); buf_printf(b, " _t%d = ", t); emit_boxed(c, pred, b);
       buf_puts(b, ";\n"); pt = TY_POLY;
     }
-    else {
-      emit_ctype(c, pt, b);
-      buf_printf(b, " _t%d = ", t);
-      emit_expr(c, pred, b);
-      buf_puts(b, ";\n");
-    }
+    else emit_case_scrutinee(c, pred, pt, t, ";\n", b);
     if (case_subject_needs_root(c, pt, whens, nw)) {
       emit_indent(b, indent);
       emit_gc_root_tmp(c, pt, t, b);
@@ -7543,16 +7590,16 @@ void emit_case(Compiler *c, int id, Buf *b, int indent) {
      (jump table) instead of an O(n) sp_poly_eq / int-compare if-chain. This is
      the optcarrot CPU opcode dispatch (~256 whens); the poly if-chain made
      sp_poly_eq ~50% of runtime. */
-  if (pred >= 0 && (pt == TY_POLY || pt == TY_INT) && nw > 0) {
+  if (pred >= 0 && (pt == TY_POLY || pt == TY_INT) && nw > 0 && (g_case_scrut_oint != t || pt == TY_INT)) {
     int all_int = 1;
     for (int w = 0; w < nw && all_int; w++) {
       int wc = 0; const int *conds = nt_arr(nt, whens[w], "conditions", &wc);
       if (wc == 0) { all_int = 0; break; }
       for (int j = 0; j < wc; j++) {
         const char *cty = nt_type(nt, conds[j]);
-        /* a literal past the int range -- INT64_MIN included, the nil
-           sentinel's value, which the parser keeps as a bignum -- carries a
-           placeholder `value` and is no switch label */
+        /* a literal past the int range -- INT64_MIN included, which the
+           parser keeps as a bignum -- carries a placeholder `value` and is
+           no switch label */
         if (!cty || !sp_streq(cty, "IntegerNode") || nt_str(nt, conds[j], "bigval")) { all_int = 0; break; }
       }
     }
@@ -7571,15 +7618,7 @@ void emit_case(Compiler *c, int id, Buf *b, int indent) {
            the least non-negative one missing from the labels, which there
            always is and which no arithmetic on a label can overflow into
            (the labels may take in INT64_MIN and INT64_MAX). */
-        long long miss = 0;
-        for (int again = 1; again; ) {
-          again = 0;
-          for (int w = 0; w < nw && !again; w++) {
-            int wc = 0; const int *conds = nt_arr(nt, whens[w], "conditions", &wc);
-            for (int j = 0; j < wc; j++)
-              if ((long long)nt_int(nt, conds[j], "value", 0) == miss) { miss++; again = 1; break; }
-          }
-        }
+        long long miss = case_switch_miss(nt, whens, nw);
         buf_printf(b, "switch (_t%d.tag == SP_TAG_INT ? _t%d.v.i : sp_poly_case_int_key(_t%d, (const sp_int[]){", t, t, t);
         int nl = 0;
         for (int w = 0; w < nw; w++) {
@@ -7591,6 +7630,9 @@ void emit_case(Compiler *c, int id, Buf *b, int indent) {
         }
         buf_printf(b, "}, %d, %lldLL)) {\n", nl, miss);
       }
+      /* an Integer that can be nil: its nil matches no label */
+      else if (g_case_scrut_oint == t)
+        buf_printf(b, "switch (_o%d.nil ? %lldLL : _t%d) {\n", t, case_switch_miss(nt, whens, nw), t);
       else buf_printf(b, "switch (_t%d) {\n", t);
       for (int w = 0; w < nw; w++) {
         int wc = 0; const int *conds = nt_arr(nt, whens[w], "conditions", &wc);
@@ -7617,11 +7659,13 @@ void emit_case(Compiler *c, int id, Buf *b, int indent) {
   /* the lambda and proc arms bind the subject to a parameter of its own
      type, so they keep reading the typed temp */
   int typed_t = t; TyKind typed_pt = pt;
-  if (case_subject_boxes_sentinel(c, pred, pt)) {
+  /* an Integer that can be nil whose labels its flag and value decide
+     keeps the typed subject (case_oint_label) */
+  int oint_typed = g_case_scrut_oint == t && pt == TY_INT && case_oint_labels_typed(c, whens, nw);
+  if (case_subject_boxes_sentinel(c, pred, pt) && !oint_typed) {
     int bt = ++g_tmp;
     emit_indent(b, indent);
-    buf_printf(b, "sp_RbVal _t%d = %s(_t%d);\n", bt,
-               pt == TY_INT ? "sp_box_int_or_nil" : "sp_box_float_or_nil", t);
+    buf_printf(b, "sp_RbVal _t%d = %s(_o%d);\n", bt, oint_box(pt), t);
     t = bt; pt = TY_POLY;
   }
 
@@ -7633,6 +7677,7 @@ void emit_case(Compiler *c, int id, Buf *b, int indent) {
     buf_puts(b, w == 0 ? "if (" : "else if (");
     for (int j = 0; j < wc; j++) {
       if (j) buf_puts(b, " || ");
+      if (oint_typed) { case_oint_label(c, conds[j], t, b); continue; }
       if (pred >= 0) {
         /* `when *arr` -- array membership test */
         if (nt_type(nt, conds[j]) && sp_streq(nt_type(nt, conds[j]), "SplatNode")) {
@@ -7857,9 +7902,15 @@ static int emit_when_lambda_inline(Compiler *c, int cond, int t, TyKind pt, int 
         buf_puts(b, sref);
       else buf_printf(b, "sp_String_new_shared(%s)", tt);
     }
-    else if (pt == TY_POLY && lt == TY_INT) buf_printf(b, "sp_poly_to_i_or_nil(%s)", tt);
-    else if (pt == TY_POLY && lt == TY_FLOAT) buf_printf(b, "sp_poly_to_f_or_nil(%s)", tt);
+    else if (pt == TY_POLY && oint_kind(lt))
+      buf_printf(b, "%s(%s)", slot_is_oint(plv) ? oint_unbox(lt) : lt == TY_INT ? "sp_poly_to_i" : "sp_poly_to_f", tt);
     else if (pt != TY_POLY && pt != TY_UNKNOWN && lt == TY_POLY) emit_boxed_text(c, pt, tt, b);
+    /* a parameter slot holding its nil: the subject's oint (`_oN` beside a
+       scrutinee that can be nil), else the value wrapped */
+    else if (plv && oint_kind(lt) && slot_is_oint(plv) && oint_kind(pt)) {
+      if (g_case_scrut_oint == t && pt == lt) buf_printf(b, "_o%d", t);
+      else buf_printf(b, "%s((%s)%s)", oint_of(lt), c_type_name(lt), tt);
+    }
     else buf_puts(b, tt);
     buf_puts(b, "; ");
   }
@@ -7881,8 +7932,11 @@ static void emit_string_tail_into(Compiler *c, int node, const char *dst, Buf *b
 
 /* Emit `_crN = <branch's last value>` (boxed to the case's result type when
    that is poly), after the branch's leading statements. */
+/* the case expression being emitted answers an oint (cond_res_oint) */
+static int g_case_res_oint = 0;
 void emit_case_branch_value(Compiler *c, int stmts, TyKind rt, int cr, Buf *b) {
   const NodeTable *nt = c->nt;
+  int res_o = g_case_res_oint && oint_kind(rt);
   int n = 0;
   const int *bb = stmts >= 0 ? nt_arr(nt, stmts, "body", &n) : NULL;
   /* A String return channel follows each arm's tail, including nested
@@ -7943,7 +7997,7 @@ void emit_case_branch_value(Compiler *c, int stmts, TyKind rt, int cr, Buf *b) {
      through emit_expr, which has no expression form for it. */
   if (n > 0 && (lt == TY_NIL || lt == TY_VOID || lt == TY_UNKNOWN)) {
     emit_stmt(c, bb[n - 1], b, 0);
-    buf_printf(b, "_cr%d = %s; ", cr, rt == TY_POLY ? "sp_box_nil()" : default_value_from_compiler(c, rt));
+    buf_printf(b, "_cr%d = %s; ", cr, rt == TY_POLY ? "sp_box_nil()" : res_zero(c, rt, res_o));
     return;
   }
   /* Emit the tail value with a CAPTURED prelude: a tail whose lowering hoists
@@ -7961,8 +8015,8 @@ void emit_case_branch_value(Compiler *c, int stmts, TyKind rt, int cr, Buf *b) {
      temp, which is an integer reinterpreted as a pointer */
   if (n > 0 && rt == TY_BIGINT && comp_ntype(c, bb[n - 1]) != TY_BIGINT)
     emit_bigint_operand_ext(c, bb[n - 1], &val);
-  else if (n > 0) { if (rt == TY_POLY) emit_boxed(c, bb[n - 1], &val); else emit_expr(c, bb[n - 1], &val); }
-  else buf_puts(&val, rt == TY_POLY ? "sp_box_nil()" : default_value_from_compiler(c, rt));
+  else if (n > 0) { if (rt == TY_POLY) emit_boxed(c, bb[n - 1], &val); else if (res_o) emit_oint_expr(c, bb[n - 1], rt, &val); else emit_expr(c, bb[n - 1], &val); }
+  else buf_puts(&val, rt == TY_POLY ? "sp_box_nil()" : res_zero(c, rt, res_o));
   g_pre = sv_pre;
   if (pre.p) buf_puts(b, pre.p);
   buf_printf(b, "_cr%d = ", cr);
@@ -7973,7 +8027,14 @@ void emit_case_branch_value(Compiler *c, int stmts, TyKind rt, int cr, Buf *b) {
 
 /* `case` in expression position: a GCC statement-expression yielding the
    matched branch's value (or the result type's nil/default on no match). */
+void emit_case_expr(Compiler *c, int id, Buf *b);
+static void emit_case_expr_in(Compiler *c, int id, Buf *b);
 void emit_case_expr(Compiler *c, int id, Buf *b) {
+  int sro = g_case_res_oint, sso = g_case_scrut_oint;
+  emit_case_expr_in(c, id, b);
+  g_case_res_oint = sro; g_case_scrut_oint = sso;
+}
+static void emit_case_expr_in(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   TyKind rt = id == g_strbuf_case_node ? TY_STRBUF : repr_of(c, id).as_ty;
   /* a void/nil-typed case (arms are writer calls or nil) has no C storage
@@ -7986,9 +8047,11 @@ void emit_case_expr(Compiler *c, int id, Buf *b) {
   const int *whens = nt_arr(nt, id, "conditions", &nw);
   int else_c = nt_ref(nt, id, "else_clause");
   int cr = ++g_tmp;
+  int res_o = cond_res_oint(c, id, rt);
+  g_case_res_oint = res_o;
   buf_puts(b, "({ ");
-  emit_ctype(c, rt, b);
-  buf_printf(b, " _cr%d = %s; ", cr, rt == TY_RANGE ? "(sp_Range){0}" : default_value_from_compiler(c, rt));
+  emit_res_ctype(c, rt, res_o, b);
+  buf_printf(b, " _cr%d = %s; ", cr, res_zero(c, rt, res_o));
   int t = -1;
   TyKind pt = TY_UNKNOWN;
   if (pred >= 0) {
@@ -8001,7 +8064,7 @@ void emit_case_expr(Compiler *c, int id, Buf *b) {
       emit_ctype(c, TY_POLY, b); buf_printf(b, " _t%d = ", t); emit_boxed(c, pred, b); buf_puts(b, "; ");
       pt = TY_POLY;
     }
-    else { emit_ctype(c, pt, b); buf_printf(b, " _t%d = ", t); emit_expr(c, pred, b); buf_puts(b, "; "); }
+    else emit_case_scrutinee(c, pred, pt, t, "; ", b);
     if (case_subject_needs_root(c, pt, whens, nw)) { emit_gc_root_tmp(c, pt, t, b); buf_puts(b, " "); }
   }
 
@@ -8018,9 +8081,9 @@ void emit_case_expr(Compiler *c, int id, Buf *b) {
       if (wc == 0) { all_int = 0; break; }
       for (int j = 0; j < wc; j++) {
         const char *cty = nt_type(nt, conds[j]);
-        /* a literal past the int range -- INT64_MIN included, the nil
-           sentinel's value, which the parser keeps as a bignum -- carries a
-           placeholder `value` and is no switch label */
+        /* a literal past the int range -- INT64_MIN included, which the
+           parser keeps as a bignum -- carries a placeholder `value` and is
+           no switch label */
         if (!cty || !sp_streq(cty, "IntegerNode") || nt_str(nt, conds[j], "bigval")) { all_int = 0; break; }
         long long v = (long long)nt_int(nt, conds[j], "value", 0);
         for (int d = 0; d < ndup; d++) if (vals[d] == v) { all_int = 0; break; }  /* dup label -> bail */
@@ -8028,7 +8091,9 @@ void emit_case_expr(Compiler *c, int id, Buf *b) {
       }
     }
     if (all_int) {
-      buf_printf(b, "switch (_t%d) { ", t);
+      /* an Integer that can be nil: its nil matches no label */
+      if (g_case_scrut_oint == t) buf_printf(b, "switch (_o%d.nil ? %lldLL : _t%d) { ", t, case_switch_miss(nt, whens, nw), t);
+      else buf_printf(b, "switch (_t%d) { ", t);
       for (int w = 0; w < nw; w++) {
         int wc = 0; const int *conds = nt_arr(nt, whens[w], "conditions", &wc);
         for (int j = 0; j < wc; j++)
@@ -8048,10 +8113,10 @@ void emit_case_expr(Compiler *c, int id, Buf *b) {
   }
   /* the statement chain's box (see case_subject_boxes_sentinel) */
   int typed_t = t; TyKind typed_pt = pt;
-  if (case_subject_boxes_sentinel(c, pred, pt)) {
+  int oint_typed = g_case_scrut_oint == t && pt == TY_INT && case_oint_labels_typed(c, whens, nw);
+  if (case_subject_boxes_sentinel(c, pred, pt) && !oint_typed) {
     int bt = ++g_tmp;
-    buf_printf(b, "sp_RbVal _t%d = %s(_t%d); ", bt,
-               pt == TY_INT ? "sp_box_int_or_nil" : "sp_box_float_or_nil", t);
+    buf_printf(b, "sp_RbVal _t%d = %s(_o%d); ", bt, oint_box(pt), t);
     t = bt; pt = TY_POLY;
   }
 
@@ -8062,6 +8127,7 @@ void emit_case_expr(Compiler *c, int id, Buf *b) {
     buf_puts(b, w == 0 ? "if (" : "else if (");
     for (int j = 0; j < wc; j++) {
       if (j) buf_puts(b, " || ");
+      if (oint_typed) { case_oint_label(c, conds[j], t, b); continue; }
       if (pred >= 0) {
         /* when ClassName / Mod::Klass: Module#=== via is_a? semantics */
         const char *cty2 = nt_type(nt, conds[j]);
@@ -8235,7 +8301,8 @@ static int subtree_changes_local(Compiler *c, int root, const char *name) {
    writes, `getbyte`, `length`/`size`, plain field reads, the pure scalar
    methods and Math functions, class tests and `!` on a scalar, and control
    flow (a `return` only leaves the loop; through an ensure it is a goto to
-   the ensure, outside the loop). A call to anything else, a block, a nested loop or a rescue leaves
+   the ensure, outside the loop), a nested while (which takes this loop's
+   headers). A call to anything else, a block, another kind of loop or a rescue leaves
    the loop as it was. An array is cached when it is read through a local, an
    ivar, or a field read of a local, where the loop assigns neither the local
    nor the ivar. */
@@ -8248,6 +8315,172 @@ static HcRegion *g_hc = NULL;
 /* the loops' own numbering: drawn from g_tmp, it would renumber every temp
    after a loop that qualifies and then caches nothing */
 static int g_hc_seq = 0;
+
+/* ---- Under --int-overflow=promote: the Integers the header cache can see through ----
+
+   Promote boxes every Integer an operation can widen, so a loop's index and
+   counters are sp_RbVal values and their operators are sp_poly_* calls, and the
+   header cache above never took such a loop. An sp_poly_* operator over an
+   Integer and an Integer (or nil, which raises) runs no program code, takes no
+   poll, and moves no array: the one thing it can do is allocate a Bignum, and
+   an allocation's collection neither moves an object (the heap does not
+   compact) nor runs a finalizer (it queues it for the poll) nor lets another
+   green thread run on this worker (a stop-the-world collection parks on a
+   condition variable). So the cache can hold across one, as across C's
+   arithmetic, provided the program defines no operator a nil or an Integer
+   could reach instead (Integer, NilClass and their ancestors), and the value is
+   proven an Integer or nil.
+
+   That proof is hcp_compute: the greatest fixpoint over every local of
+   "each write stores an Integer or nil" -- an Integer literal, nil, a typed
+   Integer, a read of such a local, or one of the operators below over such
+   operands. A parameter takes it only from a method defined at the top level
+   whose every call names it receiverless with such arguments, in a program
+   that never calls a method by name at run time. Anything else (a block
+   parameter, a multiple assignment's target, a rescue binding) is unproven. */
+/* the operators that answer an Integer for Integer operands, and the
+   comparisons, which answer a bool */
+static const char *const HCP_ARITH[] = { "+", "-", "*", "|", "&", "^", "<<", ">>", NULL };
+static const char *const HCP_CMP[] = { "<", "<=", ">", ">=", "==", "!=", NULL };
+static int hcp_in(const char *const *l, const char *nm) {
+  for (int i = 0; nm && l[i]; i++) if (sp_streq(nm, l[i])) return 1;
+  return 0;
+}
+static int hcp_op(const char *nm) { return hcp_in(HCP_ARITH, nm) || hcp_in(HCP_CMP, nm); }
+static int g_hcp_state = 0;   /* 0 not computed, 1 on, -1 off for this program */
+static int hcp_val(Compiler *c, int n, int depth) {
+  const NodeTable *nt = c->nt;
+  if (n < 0 || depth > 32) return 0;
+  NodeKind k = nt_kind(nt, n);
+  if (k == NK_IntegerNode || k == NK_NilNode) return 1;
+  TyKind t = comp_ntype(c, n);
+  if (t == TY_INT) return 1;   /* a typed Integer, its nil beside it or not */
+  if (t != TY_POLY) return 0;
+  if (k == NK_ParenthesesNode) return hcp_val(c, nt_ref(nt, n, "body"), depth + 1);
+  if (k == NK_StatementsNode) {
+    int m = 0; const int *b = nt_arr(nt, n, "body", &m);
+    return m > 0 && hcp_val(c, b[m - 1], depth + 1);
+  }
+  if (k == NK_LocalVariableReadNode) {
+    const char *nm = nt_str(nt, n, "name");
+    Scope *s = nm ? comp_scope_of(c, n) : NULL;
+    LocalVar *lv = s ? scope_local(s, nm) : NULL;
+    return lv && lv->hcp_int >= 0;
+  }
+  if (k == NK_CallNode && nt_ref(nt, n, "block") < 0) {
+    const char *nm = nt_str(nt, n, "name");
+    int r = nt_ref(nt, n, "receiver"), a = nt_ref(nt, n, "arguments"), an = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+    if (r < 0) return 0;
+    if (an == 0 && nm && sp_streq(nm, "-@")) return hcp_val(c, r, depth + 1);
+    /* an arithmetic or bit operator answers an Integer (a comparison a bool) */
+    return an == 1 && hcp_in(HCP_ARITH, nm) && hcp_val(c, r, depth + 1) && hcp_val(c, av[0], depth + 1);
+  }
+  return 0;
+}
+/* No operator of the program's can stand in for the builtin one on an Integer
+   or a nil: none defined on Integer, NilClass or a class or module they reach,
+   nor at the top level (Object's) */
+static int hcp_program_ok(Compiler *c) {
+  static const char *const CLS[] = { "Integer", "NilClass", "Numeric", "Comparable", "Object", "Kernel",
+                                     "BasicObject", NULL };
+  for (int k = 0; k < c->nclasses; k++) {
+    if (!hcp_in(CLS, c->classes[k].name)) continue;
+    for (int i = 0; HCP_ARITH[i]; i++) if (comp_method_in_chain(c, k, HCP_ARITH[i], NULL) >= 0) return 0;
+    for (int i = 0; HCP_CMP[i]; i++) if (comp_method_in_chain(c, k, HCP_CMP[i], NULL) >= 0) return 0;
+    if (comp_method_in_chain(c, k, "-@", NULL) >= 0 || comp_method_in_chain(c, k, "coerce", NULL) >= 0) return 0;
+  }
+  for (int s = 1; s < c->nscopes; s++)
+    if (c->scopes[s].class_id < 0 && c->scopes[s].name && (hcp_op(c->scopes[s].name) || sp_streq(c->scopes[s].name, "-@")))
+      return 0;
+  return 1;
+}
+/* A method that takes its parameters' proof from its calls: defined at the top
+   level, no rest / keyword / forwarding parameter, and no other method of its
+   name anywhere (an override could be the one a call reaches) */
+static int hcp_param_method(Compiler *c, int mi) {
+  Scope *s = &c->scopes[mi];
+  if (!s->name || s->class_id >= 0 || s->is_cmethod || s->rest_idx >= 0 || s->kwrest_idx >= 0 || s->fwd_target1)
+    return 0;
+  for (int o = 1; o < c->nscopes; o++)
+    if (o != mi && c->scopes[o].name && sp_streq(c->scopes[o].name, s->name)) return 0;
+  return 1;
+}
+static LocalVar *hcp_write_lv(Compiler *c, int w) {
+  const char *nm = nt_str(c->nt, w, "name");
+  Scope *s = nm ? comp_scope_of(c, w) : NULL;
+  return s ? scope_local(s, nm) : NULL;
+}
+static void hcp_compute(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  g_hcp_state = hcp_program_ok(c) ? 1 : -1;
+  if (g_hcp_state < 0) return;
+  /* a method called by a name built at run time takes arguments no call shows */
+  static const char *const DYN[] = { "send", "__send__", "public_send", "method", "public_method",
+                                     "instance_method", "define_method", "method_missing", NULL };
+  int dyn = 0;
+  NT_FOREACH_KIND(nt, NK_CallNode, id) if (hcp_in(DYN, nt_str(nt, id, "name"))) dyn = 1;
+  for (int s = 0; s < c->nscopes; s++) {
+    Scope *sc = &c->scopes[s];
+    int pm = !dyn && hcp_param_method(c, s);
+    for (int j = 0; j < sc->nlocals; j++) {
+      LocalVar *lv = &sc->locals[j];
+      int ok = (lv->type == TY_POLY || lv->type == TY_INT) && !lv->is_block_param && (!lv->is_param || pm);
+      lv->hcp_int = ok ? 0 : -1;   /* 0: still a candidate */
+    }
+  }
+  static const NodeKind WK[] = { NK_LocalVariableWriteNode, NK_LocalVariableOrWriteNode, NK_LocalVariableAndWriteNode,
+                                 NK_LocalVariableOperatorWriteNode, NK_LocalVariableTargetNode };
+  for (int changed = 1; changed; ) {
+    changed = 0;
+    for (size_t q = 0; q < sizeof WK / sizeof WK[0]; q++) {
+      NT_FOREACH_KIND(nt, WK[q], w) {
+        LocalVar *lv = hcp_write_lv(c, w);
+        if (!lv || lv->hcp_int < 0) continue;
+        int good;
+        if (WK[q] == NK_LocalVariableTargetNode) good = 0;
+        else if (WK[q] == NK_LocalVariableOperatorWriteNode)
+          good = hcp_in(HCP_ARITH, nt_str(nt, w, "binary_operator")) && hcp_val(c, nt_ref(nt, w, "value"), 0);
+        else good = hcp_val(c, nt_ref(nt, w, "value"), 0);
+        if (!good) { lv->hcp_int = -1; changed = 1; }
+      }
+    }
+    /* a parameter: every call of its method passes such a value (or its default does) */
+    NT_FOREACH_KIND(nt, NK_CallNode, call) {
+      const char *nm = nt_str(nt, call, "name");
+      if (!nm) continue;
+      for (int mi = 1; mi < c->nscopes; mi++) {
+        Scope *ms = &c->scopes[mi];
+        if (!ms->name || !sp_streq(ms->name, nm) || ms->nparams == 0) continue;
+        int r = nt_ref(nt, call, "receiver");
+        int a = nt_ref(nt, call, "arguments"), an = 0;
+        const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+        int plain = (r < 0 || nt_kind(nt, r) == NK_SelfNode) && comp_self_call_mi(c, call, nm) == mi;
+        for (int i = 0; plain && i < an; i++) {
+          const char *at = nt_type(nt, av[i]);
+          if (!at || sp_streq(at, "SplatNode") || sp_streq(at, "KeywordHashNode") || sp_streq(at, "BlockArgumentNode"))
+            plain = 0;
+        }
+        for (int p = 0; p < ms->nparams; p++) {
+          LocalVar *lv = ms->pnames[p] ? scope_local(ms, ms->pnames[p]) : NULL;
+          if (!lv || lv->hcp_int < 0) continue;
+          int v = p < an ? av[p] : (ms->pdefault ? ms->pdefault[p] : -1);
+          if (!plain || v < 0 || !hcp_val(c, v, 0)) { lv->hcp_int = -1; changed = 1; }
+        }
+      }
+    }
+  }
+  for (int s = 0; s < c->nscopes; s++)
+    for (int j = 0; j < c->scopes[s].nlocals; j++)
+      if (c->scopes[s].locals[j].hcp_int == 0) c->scopes[s].locals[j].hcp_int = 1;
+}
+/* Is node n an Integer or nil the cache can see through under promote? Always
+   0 in the other modes, which leaves their loops exactly as they were. */
+int hc_promoted_int(Compiler *c, int n) {
+  if (!g_promote_mode) return 0;
+  if (!g_hcp_state) hcp_compute(c);
+  return g_hcp_state > 0 && hcp_val(c, n, 0);
+}
 
 static int hc_call_ok(Compiler *c, int id, int stmt) {
   const NodeTable *nt = c->nt;
@@ -8262,10 +8495,15 @@ static int hc_call_ok(Compiler *c, int id, int stmt) {
         sp_streq(at, "BlockArgumentNode")) return 0;
   }
   if (call_is_scalar_op(c, id)) return 1;
+  /* under promote, a boxed Integer's operator (hc_promoted_int) */
+  if (recv >= 0 && ((ac == 1 && hcp_op(nm) && hc_promoted_int(c, recv) && hc_promoted_int(c, av[0])) ||
+                    (ac == 0 && sp_streq(nm, "-@") && hc_promoted_int(c, recv))))
+    return 1;
   TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN;
-  if (sp_streq(nm, "[]") && ac == 1 && ty_is_array(rt) && comp_ntype(c, av[0]) == TY_INT) return 1;
-  if (sp_streq(nm, "[]=") && ac == 2 && stmt && (rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY) &&
-      comp_ntype(c, av[0]) == TY_INT && comp_ntype(c, av[1]) == ty_array_elem(rt)) return 1;
+  int ix_ok = ac >= 1 && (comp_ntype(c, av[0]) == TY_INT || hc_promoted_int(c, av[0]));
+  if (sp_streq(nm, "[]") && ac == 1 && ty_is_array(rt) && ix_ok) return 1;
+  if (sp_streq(nm, "[]=") && ac == 2 && stmt && (rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY) && ix_ok &&
+      (comp_ntype(c, av[1]) == ty_array_elem(rt) || (rt == TY_INT_ARRAY && hc_promoted_int(c, av[1])))) return 1;
   if (sp_streq(nm, "getbyte") && ac == 1 && rt == TY_STRING && comp_ntype(c, av[0]) == TY_INT) return 1;
   if (is_len_alias(nm) && ac == 0 && (ty_is_array(rt) || rt == TY_STRING))
     return 1;
@@ -8297,6 +8535,39 @@ static int hc_call_ok(Compiler *c, int id, int stmt) {
 /* Can the loop keep its arrays' headers across iterations? Collects the locals
    and ivars it assigns, which no cached expression may read. `stmt` is set for
    a node in statement position, where a write's value is unused. */
+static int hc_node_ok(Compiler *c, int id, int stmt, HcRegion *r);
+/* An Integer block loop the header cache covers as it does a while:
+   `n.times { }`, `a.upto(b) { }` / downto, `n.step(...) { }`, an Integer
+   Range's `each { }` -- each a plain C `for` around the block's body */
+static int hc_block_loop(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  if (id < 0 || nt_kind(nt, id) != NK_CallNode) return 0;
+  const char *nm = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver"), blk = nt_ref(nt, id, "block");
+  if (!nm || recv < 0 || blk < 0 || nt_kind(nt, blk) != NK_BlockNode) return 0;
+  TyKind rt = comp_ntype(c, recv);
+  if (rt == TY_INT && (sp_streq(nm, "times") || sp_streq(nm, "upto") || sp_streq(nm, "downto") || sp_streq(nm, "step")))
+    return 1;
+  return rt == TY_RANGE && sp_streq(nm, "each");
+}
+/* ...and can its region keep the headers: the receiver and arguments as
+   expressions, the body as statements, the block's parameters as locals
+   the loop writes */
+static int hc_block_loop_ok(Compiler *c, int id, HcRegion *r) {
+  const NodeTable *nt = c->nt;
+  int blk = nt_ref(nt, id, "block");
+  if (block_param_is_multi(c, blk, 0)) return 0;
+  for (int k = 0; ; k++) {
+    const char *pn = block_param_name(c, blk, k);
+    if (!pn) break;
+    nameset_add(&r->wl, pn);
+  }
+  if (!hc_node_ok(c, nt_ref(nt, id, "receiver"), 0, r)) return 0;
+  int a = nt_ref(nt, id, "arguments"), an = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+  for (int i = 0; i < an; i++) if (!hc_node_ok(c, av[i], 0, r)) return 0;
+  return hc_node_ok(c, nt_ref(nt, blk, "body"), 1, r);
+}
 static int hc_node_ok(Compiler *c, int id, int stmt, HcRegion *r) {
   const NodeTable *nt = c->nt;
   if (id < 0) return 1;
@@ -8310,7 +8581,12 @@ static int hc_node_ok(Compiler *c, int id, int stmt, HcRegion *r) {
       return 1;
     case NK_StatementsNode: kids_stmt = 1; break;
     case NK_ParenthesesNode: kids_stmt = stmt; break;
-    case NK_CallNode: if (!hc_call_ok(c, id, stmt)) return 0; break;
+    case NK_CallNode:
+      /* a nested Integer block loop runs inside this region, as a nested
+         while does */
+      if (stmt && hc_block_loop(c, id)) return hc_block_loop_ok(c, id, r);
+      if (!hc_call_ok(c, id, stmt)) return 0;
+      break;
     case NK_IndexOperatorWriteNode: {
       int rv = nt_ref(nt, id, "receiver");
       TyKind rt = rv >= 0 ? comp_ntype(c, rv) : TY_UNKNOWN;
@@ -8332,6 +8608,10 @@ static int hc_node_ok(Compiler *c, int id, int stmt, HcRegion *r) {
           sp_streq(ty, "AndNode") || sp_streq(ty, "OrNode") || sp_streq(ty, "BreakNode") ||
           sp_streq(ty, "NextNode") || sp_streq(ty, "ReturnNode") || sp_streq(ty, "ArgumentsNode"))
         break;
+      /* a nested while / until: it runs inside this loop's region (it opens
+         none of its own while g_hc is set), so its reads take this header
+         and its slow paths refresh it; its own nodes must qualify too */
+      if ((sp_streq(ty, "WhileNode") || sp_streq(ty, "UntilNode")) && stmt) break;
       return 0;
     }
   }
@@ -8429,6 +8709,13 @@ int hc_array(Compiler *c, int recv, int is_float, char *d, char *l, char *w, siz
   return 1;
 }
 
+/* The nil-free read length (_hcr) of the Int / Float cache entry whose
+   element pointer is `hd` (_hcdR_E -> _hcrR_E). */
+void hc_read_len(const char *hd, char *out, size_t cap) {
+  snprintf(out, cap, "%s", hd);
+  if (!strncmp(out, "_hcd", 4)) out[3] = 'r';
+}
+
 /* The same cache, with a length that is 0 when the array may hold nil
    (_hcn): an index below it reads an element that is no nil. `guard`, when
    it is a Float local the loop does not assign, zeroes that length while
@@ -8460,8 +8747,10 @@ int hc_array_nilfree(Compiler *c, int recv, int guard, char *d, char *n, size_t 
   snprintf(n, cap, "_hcn%d_%d", g_hc->id, e);
   if (!gt[0]) return 1;
   char cond[160];
-  /* a nil is a NaN: one compare for every number, the bits only for a NaN */
-  snprintf(cond, sizeof cond, " && (%s == %s || !sp_float_is_nil(%s))", gt, gt, gt);
+  /* the local holds its nil beside the value (an oint slot) or never */
+  { Scope *gsc = comp_scope_of(c, guard); LocalVar *glv = gsc ? scope_local(gsc, gn) : NULL;
+    if (!glv || !slot_is_oint(glv)) return 1; }
+  snprintf(cond, sizeof cond, " && !%s.nil", gt);
   char *gd = g_hc->e[e].guard;
   if (strstr(gd, cond)) return 2;
   if (strlen(gd) + strlen(cond) >= sizeof g_hc->e[0].guard) return 1;
@@ -8611,7 +8900,13 @@ static void hc_close(HcRegion *r, const char *loop, Buf *b, int indent) {
       const char *et = r->e[i].kind == HC_INT ? "sp_int" : r->e[i].kind == HC_FLOAT ? "sp_float" : "const char";
       emit_indent(b, indent + 1);
       buf_printf(b, "%s *_hcd%d_%d; sp_int _hcl%d_%d;", et, r->id, i, r->id, i);
-      if (r->e[i].kind != HC_STR) buf_printf(b, " int _hcw%d_%d;", r->id, i);
+      /* _hcw: a store may write the cached element -- not into a frozen
+         array. _hcr: the nil-free length, below the array's lowest possible
+         nil (SP_*_NILFREE_LEN, its nil_lo): a read below it meets no nil and
+         needs no test of its own, and a store below it has no bit to clear;
+         anything at or past it takes the slow path. An array with a nil far
+         out (a gap past its end) keeps the fast path below the gap */
+      if (r->e[i].kind != HC_STR) buf_printf(b, " int _hcw%d_%d; sp_int _hcr%d_%d;", r->id, i, r->id, i);
       if (r->e[i].nf) buf_printf(b, " sp_int _hcn%d_%d;", r->id, i);
       buf_puts(b, "\n");
     }
@@ -8622,11 +8917,13 @@ static void hc_close(HcRegion *r, const char *loop, Buf *b, int indent) {
         buf_printf(b, "{ const char *_s = %s; _hcd%d_%d = _s; _hcl%d_%d = _s ? (sp_int)sp_str_byte_len(_s) : 0; } ",
                    rv, r->id, i, r->id, i);
       else {
-        buf_printf(b, "{ sp_%sArray *_a = %s; _hcd%d_%d = _a ? _a->data%s : NULL; _hcl%d_%d = _a ? _a->len : 0; _hcw%d_%d = _a && !_a->frozen; ",
+        buf_printf(b, "{ sp_%sArray *_a = %s; _hcd%d_%d = _a ? _a->data%s : NULL; _hcl%d_%d = _a ? _a->len : 0; _hcw%d_%d = _a && !_a->frozen; _hcr%d_%d = _a ? SP_%s_NILFREE_LEN(_a) : 0; ",
                    r->e[i].kind == HC_INT ? "Int" : "Float", rv, r->id, i,
-                   r->e[i].kind == HC_INT ? " + _a->start" : "", r->id, i, r->id, i);
+                   r->e[i].kind == HC_INT ? " + _a->start" : "", r->id, i, r->id, i, r->id, i,
+                   r->e[i].kind == HC_INT ? "INT" : "FLOAT");
         if (r->e[i].nf)
-          buf_printf(b, "_hcn%d_%d = _a && !SP_MAY_NIL(_a)%s ? _a->len : 0; ", r->id, i, r->e[i].guard);
+          buf_printf(b, "_hcn%d_%d = _a%s ? SP_%s_NILFREE_LEN(_a) : 0; ", r->id, i, r->e[i].guard,
+                     r->e[i].kind == HC_INT ? "INT" : "FLOAT");
         buf_puts(b, "} ");
       }
     }
@@ -8779,6 +9076,33 @@ void emit_while(Compiler *c, int id, Buf *b, int indent, int is_until) {
   g_hoist_len_var = sv_hvar; g_hoist_len_recv = sv_hrecv;
 }
 
+/* An Integer block loop in statement position (emit_iteration_stmt) keeps
+   its arrays' headers as a while loop does: the loop is emitted into the
+   region's own buffer, and hc_iter_end puts the cache in front of it. NULL
+   when there is no region (one is open already, or the loop cannot keep
+   them); *bp then stays the caller's buffer. */
+typedef struct { HcRegion r; Buf buf; Buf *out; } HcIter;
+void *hc_iter_begin(Compiler *c, int id, Buf **bp) {
+  if (g_hc || !hc_block_loop(c, id)) return NULL;
+  HcIter *h = calloc(1, sizeof *h);
+  if (!h) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  if (!hc_block_loop_ok(c, id, &h->r)) { free(h->r.wl.v); free(h->r.wi.v); free(h); return NULL; }
+  h->r.id = ++g_hc_seq;
+  snprintf(h->r.mark, sizeof h->r.mark, "/*@HCR%d@*/", h->r.id);
+  h->out = *bp;
+  g_hc = &h->r; *bp = &h->buf;
+  return h;
+}
+/* `keep`: the loop was emitted (else what it wrote is dropped, as the
+   caller declined) */
+void hc_iter_end(void *hv, Buf **bp, int indent, int keep) {
+  if (!hv) return;
+  HcIter *h = hv;
+  g_hc = NULL; *bp = h->out;
+  if (keep) hc_close(&h->r, h->buf.p ? h->buf.p : "", *bp, indent);
+  free(h->buf.p); free(h->r.wl.v); free(h->r.wi.v); free(h);
+}
+
 static void emit_for_poly_lefts(Compiler *c, int idx, int tv, int indent, Buf *b) {
   int ln = 0;
   const int *lefts = nt_arr(c->nt, idx, "lefts", &ln);
@@ -8837,20 +9161,21 @@ void emit_for(Compiler *c, int id, Buf *b, int indent) {
     int cpoly = clv && clv->type == TY_POLY;
     /* A nil end makes an endless range and a nil beginning one that cannot
        be iterated: an end that may be nil (boxed, or an Integer slot holding
-       its sentinel) reads through sp_for_hi, a beginning through sp_for_lo.
+       nil) reads through sp_for_hi, a beginning through sp_for_lo.
        Read as a number, the nil end was 0 or INT64_MIN and the loop ran
        zero times. */
-    const char *lconv = lpoly ? "sp_for_lo(" : (lty == TY_INT && nullable_int_value(c, lref)) ? "sp_for_lo_i(" : NULL;
-    const char *rconv = rpoly ? (excl ? "sp_for_hi_x(" : "sp_for_hi(") : (rty == TY_INT && nullable_int_value(c, rref)) ? "sp_for_hi_i(" : NULL;
+    int lo_o = lty == TY_INT && node_has_oint_form(c, lref), hi_o = rty == TY_INT && node_has_oint_form(c, rref);
+    const char *lconv = lpoly ? "sp_for_lo(" : lo_o ? "sp_for_lo_i(" : NULL;
+    const char *rconv = rpoly ? (excl ? "sp_for_hi_x(" : "sp_for_hi(") : hi_o ? "sp_for_hi_i(" : NULL;
     int thi = ++g_tmp;
     /* a Float end keeps its value: `for i in 1...2.5` runs to 2 (the bound
        truncated to 2 and stopped at 1) */
     emit_indent(b, indent); buf_puts(b, rty == TY_FLOAT ? "{ sp_float " : "{ sp_int ");
     buf_printf(b, "_t%d = ", thi);
-    if (rty == TY_NIL) buf_puts(b, "(sp_int)INTPTR_MAX");   /* `lo..nil`: endless */
+    if (rty == TY_NIL) buf_puts(b, "SP_RANGE_NO_END");   /* `lo..nil`: endless */
     else {
       if (rconv) buf_puts(b, rconv);
-      emit_expr(c, rref, b);
+      if (hi_o) emit_oint_expr(c, rref, TY_INT, b); else emit_expr(c, rref, b);
       if (rconv) buf_puts(b, ")");
     }
     buf_puts(b, ";\n");
@@ -8858,10 +9183,10 @@ void emit_for(Compiler *c, int id, Buf *b, int indent) {
       int tc = ++g_tmp;
       emit_indent(b, indent + 1);
       buf_printf(b, "for (sp_int _t%d = ", tc);
-      if (lty == TY_NIL) buf_puts(b, "sp_for_lo_i(SP_INT_NIL)");   /* `nil..hi` */
+      if (lty == TY_NIL) buf_puts(b, "sp_for_lo_i(sp_oint_nil())");   /* `nil..hi` */
       else {
         if (lconv) buf_puts(b, lconv);
-        emit_expr(c, lref, b);
+        if (lo_o) emit_oint_expr(c, lref, TY_INT, b); else emit_expr(c, lref, b);
         if (lconv) buf_puts(b, ")");
       }
       buf_printf(b, "; _t%d %s _t%d; _t%d++) {\n", tc, excl ? "<" : "<=", thi, tc);
@@ -8877,10 +9202,10 @@ void emit_for(Compiler *c, int id, Buf *b, int indent) {
     int tc = ++g_tmp;
     emit_indent(b, indent + 1);
     buf_printf(b, "for (sp_int _t%d = ", tc);
-    if (lty == TY_NIL) buf_puts(b, "sp_for_lo_i(SP_INT_NIL)");   /* `nil..hi` */
+    if (lty == TY_NIL) buf_puts(b, "sp_for_lo_i(sp_oint_nil())");   /* `nil..hi` */
     else {
       if (lconv) buf_puts(b, lconv);
-      emit_expr(c, lref, b);
+      if (lo_o) emit_oint_expr(c, lref, TY_INT, b); else emit_expr(c, lref, b);
       if (lconv) buf_puts(b, ")");
     }
     buf_printf(b, "; _t%d %s _t%d; _t%d++) {\n", tc, excl ? "<" : "<=", thi, tc);
@@ -8904,13 +9229,15 @@ void emit_for(Compiler *c, int id, Buf *b, int indent) {
     emit_indent(b, indent);
     buf_printf(b, "{ sp_Range _t%d = ", tr); emit_expr(c, coll, b); buf_puts(b, ";\n");
     emit_indent(b, indent + 1);
-    buf_printf(b, "if (_t%d.first == INTPTR_MIN) sp_raise_cls(\"TypeError\", \"can't iterate from NilClass\");\n", tr);
+    buf_printf(b, "if (_t%d.nobeg) sp_raise_cls(\"TypeError\", \"can't iterate from NilClass\");\n", tr);
     emit_indent(b, indent + 1);
     buf_printf(b, "sp_int _t%d = sp_range_step(_t%d); sp_int _t%d = _t%d.last - (_t%d.excl ? (_t%d > 0 ? 1 : -1) : 0);\n",
                ts, tr, te, tr, tr, ts);
     emit_indent(b, indent + 1);
-    buf_printf(b, "for (sp_int _t%d = _t%d.first; _t%d > 0 ? _t%d <= _t%d : _t%d >= _t%d; _t%d += _t%d) {\n",
-               tc, tr, ts, tc, te, tc, te, tc, ts);
+    { char v[32], f[40], s[32], l[32];
+      snprintf(v, sizeof v, "_t%d", tc); snprintf(f, sizeof f, "_t%d.first", tr);
+      snprintf(s, sizeof s, "_t%d", ts); snprintf(l, sizeof l, "_t%d", te);
+      emit_range_walk_head(b, indent + 1, v, 1, f, s, l); }
     char el[32]; snprintf(el, sizeof el, "_t%d", tc);
     if (multi) emit_for_multi_scalar(c, idx, TY_INT, el, b, indent + 2);
     else {
@@ -9097,11 +9424,11 @@ static void emit_unbox_ret_text(Compiler *c, TyKind t, const char *expr, Buf *b)
   const char *v = val.p ? val.p : "";
   /* int and float keep nil distinguishable: the plain conversions answer the
      type's zero for a boxed nil, which in these two slots is a real value and
-     is what made a nullable return read back as 0 / 0.0. bool has no sentinel
-     to land on, so it keeps the plain conversion (#3458). */
+     is what made a nullable return read back as 0 / 0.0. bool has no nil of
+     its own to land on, so it keeps the plain conversion (#3458). */
   switch (t) {
-  case TY_INT:      buf_printf(b, "sp_poly_to_i_or_nil(%s)", v); break;
-  case TY_FLOAT:    buf_printf(b, "sp_poly_to_f_or_nil(%s)", v); break;
+  case TY_INT: case TY_FLOAT:   /* a slot that holds its nil takes the oint */
+    buf_printf(b, "%s(%s)", (g_result_var ? g_result_oint : g_ret_oint) ? oint_unbox(t) : t == TY_INT ? "sp_poly_to_i" : "sp_poly_to_f", v); break;
   case TY_BOOL:     buf_printf(b, "sp_poly_to_i(%s)", v); break;
   /* A Rational slot is a by-value struct, so it matched neither the scalar
      arms above nor the pointer test below and left with the box still on:
@@ -9182,8 +9509,11 @@ static int tail_needs_unbox(TyKind r0, TyKind ret) {
 
 /* The return slot's nil representation for a non-poly type. */
 static void emit_ret_nil(Compiler *c, TyKind t, Buf *b) {
-  if (t == TY_INT || t == TY_BOOL) buf_puts(b, "SP_INT_NIL");
-  else if (t == TY_FLOAT) buf_puts(b, "sp_float_nil()");
+  if (t == TY_BOOL) buf_puts(b, "0");
+  /* an Integer or Float return that answers nil is an sp_oint (g_ret_oint);
+     a plain one has no nil, and a nil there is the TypeError a nil raises
+     where an Integer is wanted */
+  else if (oint_kind(t)) buf_puts(b, (g_result_var ? g_result_oint : g_ret_oint) ? oint_nil(t) : "sp_oint_arg(sp_oint_nil())");
   else if (t == TY_STRING || ty_is_object(t)) buf_puts(b, "NULL");
   else {
     const char *cn = c_type_name(t);
@@ -9243,7 +9573,7 @@ static int self_call_only_void(Compiler *c, int node, const char *nm) {
   }
   return any;
 }
-static int call_names_only_void_methods(Compiler *c, int node) {
+int call_names_only_void_methods(Compiler *c, int node) {
   const char *nm = nt_str(c->nt, node, "name");
   if (!nm || sp_streq(nm, "initialize")) return 0;
   int own = self_call_only_void(c, node, nm);
@@ -9311,7 +9641,7 @@ static void emit_tail_value_1(Compiler *c, int node, Buf *b) {
   /* A poly tail slot (a poly return, or a poly result var -- e.g. an inlined
      method's result temp) takes the value as-is: do not rewrite a poly
      `sp_box_nil()` into the scalar emit_ret_nil(g_ret_type) form below. */
-  if (g_ret_type == TY_POLY || (g_result_var && g_result_poly)) { emit_expr(c, node, b); return; }
+  if (g_result_var ? g_result_poly : g_ret_type == TY_POLY) { emit_expr(c, node, b); return; }
   /* A call that answers no type -- a method whose value is a call on a
      constant defined nowhere, which raises NameError when it runs -- is a
      C void function: evaluate it, and give the slot its nil (never reached,
@@ -9463,16 +9793,18 @@ static void emit_tail_value_1(Compiler *c, int node, Buf *b) {
   /* A bare `nil` returned through an int or float slot. emit_expr renders
      NilNode as the numeric default 0, which in those two slots is a real
      value -- the caller reads 0 / 0.0 where the method said nil. Both have a
-     sentinel (SP_INT_NIL, the float NaN), and every consumer already tests
+     nil form (the oint's flag), and every consumer already tests
      for it: the same method returning nil through a String or bool slot is
      correct today because NULL and the poly box carry nil natively. So spell
-     the sentinel here rather than let the numeric default stand (#3458). */
+     the nil here rather than let the numeric default stand (#3458). */
   /* The begin/rescue result temp is such a slot too (g_result_ty), and so is
      a nil-typed EXPRESSION landing in either: `$stdout.puts(x)` as the else
      arm of an Integer-valued if answers nil in Ruby, while its emission is
-     the numeric 0 of a void call. Evaluate it, then spell the sentinel. */
+     the numeric 0 of a void call. Evaluate it, then spell the nil. */
   {
     TyKind slot = g_result_var ? g_result_ty : g_ret_type;
+    /* a slot that holds its nil takes the value's oint form, nil and all */
+    if (oint_kind(slot) && (g_result_var ? g_result_oint : g_ret_oint)) { emit_oint_expr(c, node, slot, b); return; }
     if (slot == TY_INT || slot == TY_FLOAT) {
       if (nt_kind(c->nt, node) == NK_NilNode) { emit_ret_nil(c, slot, b); return; }
       TyKind nvt = repr_of(c, node).as_ty;
@@ -9481,10 +9813,10 @@ static void emit_tail_value_1(Compiler *c, int node, Buf *b) {
         emit_ret_nil(c, slot, b); buf_puts(b, "; })");
         return;
       }
-      /* an Integer value answered through a Float slot: its nil is the
-         Integer sentinel, which has to become the Float one */
-      if (slot == TY_FLOAT && nvt == TY_INT && nullable_int_value(c, node)) {
-        buf_puts(b, "sp_int_to_f_or_nil("); emit_expr(c, node, b); buf_puts(b, ")");
+      /* an Integer value answered through a plain Float slot is converted
+         (a slot that holds its nil took the oint arm above) */
+      if (slot == TY_FLOAT && nvt == TY_INT) {
+        buf_puts(b, "(sp_float)("); emit_expr(c, node, b); buf_puts(b, ")");
         return;
       }
     }
@@ -9517,6 +9849,11 @@ static void emit_tail_value_1(Compiler *c, int node, Buf *b) {
       g_ret_type != TY_UNKNOWN && g_ret_type != TY_VOID) {
     TyKind ct = repr_of(c, un).as_ty;
     boxed = ct == TY_NIL || ct == TY_VOID || ct == TY_UNKNOWN;
+  }
+  /* a slot holding its nil beside the value takes the value's oint form */
+  if (g_result_var ? g_result_oint : g_ret_oint) {
+    emit_oint_expr(c, node, g_result_var ? g_result_ty : g_ret_type, b);
+    return;
   }
   Buf tmp; memset(&tmp, 0, sizeof tmp);
   emit_expr(c, node, &tmp);
@@ -9598,6 +9935,7 @@ static void emit_return_deferred(Compiler *c, const int *a, int n, Buf *b, int i
       buf_printf(b, "_retv%d = ", ctx->lid);
       /* the FRAME's slot type, not g_ret_type: see EnsureCtx.retv_ty */
       if (ctx->retv_ty == TY_POLY && repr_of(c, a[0]).kind != RK_BOXED) emit_boxed(c, a[0], b);
+      else if (oint_kind(ctx->retv_ty) && ctx->retv_o) emit_oint_expr(c, a[0], ctx->retv_ty, b);
       /* A deferred String return has the same publication rule as a
          direct tail, before ensure saves its selected handle. */
       else if (ctx->retv_ty == TY_STRING && comp_scope_of(c, a[0])->ret_pub_fresh) {
@@ -9690,11 +10028,10 @@ void emit_return(Compiler *c, int id, Buf *b, int indent) {
         buf_puts(b, "; ");
       }
       else {
-        const char *nilv = g_ret_type == TY_POLY ? "sp_box_nil()"
-                         : g_ret_type == TY_INT ? "SP_INT_NIL"
-                         : g_ret_type == TY_FLOAT ? "sp_float_nil()"
-                         : g_ret_type == TY_STRING ? "NULL" : default_value_from_compiler(c, g_ret_type);
-        buf_printf(b, "%s = %s; ", g_method_pr_var, nilv);
+        buf_printf(b, "%s = ", g_method_pr_var);
+        if (g_ret_type == TY_POLY) buf_puts(b, "sp_box_nil()");
+        else emit_ret_nil(c, g_ret_type, b);
+        buf_puts(b, "; ");
       }
     }
     else {
@@ -9773,9 +10110,13 @@ void emit_return(Compiler *c, int id, Buf *b, int indent) {
     }
     int tr = ++g_tmp;
     TyKind r0 = ret_arg_ntype(c, a[0]);
-    buf_puts(b, "{ "); emit_ctype(c, g_ret_type == TY_UNKNOWN ? TY_INT : g_ret_type, b);
+    buf_puts(b, "{ ");
+    /* a method answering an oint returns the value with its nil */
+    if (g_ret_oint && oint_kind(g_ret_type)) buf_puts(b, oint_ctype(g_ret_type));
+    else emit_ctype(c, g_ret_type == TY_UNKNOWN ? TY_INT : g_ret_type, b);
     buf_printf(b, " _t%d = ", tr);
-    if (g_ret_type == TY_POLY && r0 != TY_POLY) emit_boxed(c, a[0], b);
+    if (g_ret_oint && oint_kind(g_ret_type)) emit_oint_expr(c, a[0], g_ret_type, b);
+    else if (g_ret_type == TY_POLY && r0 != TY_POLY) emit_boxed(c, a[0], b);
         else if (emit_ret_hash_widen_conv(c, g_ret_type, r0, a[0], b)) { }
         else if (emit_ret_poly_array_conv(c, g_ret_type, r0, a[0], b)) { }
     else if (tail_needs_unbox(r0, g_ret_type)) emit_unbox_node(c, g_ret_type, a[0], b);
@@ -9852,10 +10193,7 @@ void emit_return(Compiler *c, int id, Buf *b, int indent) {
      bare `return;` (illegal in a non-void C function -- e.g. `Db.close` returns
      a nullable DbPool*, where nil is NULL). default_value already yields the
      by-value nil form for struct types (e.g. (sp_Range){0}). */
-  else if (g_ret_type == TY_INT) buf_puts(b, "return SP_INT_NIL;\n");
-  else if (g_ret_type == TY_FLOAT) buf_puts(b, "return sp_float_nil();\n");
-  else if (g_ret_type == TY_STRING) buf_puts(b, "return NULL;\n");
-  else buf_printf(b, "return %s;\n", default_value_from_compiler(c, g_ret_type));
+  else { buf_puts(b, "return "); emit_ret_nil(c, g_ret_type, b); buf_puts(b, ";\n"); }
 }
 
 /* An empty `[]` / `{}` literal, possibly wrapped in a freeze. Such a literal
@@ -10340,7 +10678,8 @@ static void emit_ensure_return(Compiler *c, int eid, int has_retval, Buf *b, int
   else if (has_retval && g_in_proc_body && !g_c_ret_void) {
     char rv[32]; snprintf(rv, sizeof rv, "_retv%d", eid);
     buf_printf(b, "if (_retf%d) { _sp_proc_poly_ret = ", eid);
-    emit_boxed_text(c, g_ret_type, rv, b);
+    if (oint_kind(g_ret_type) && g_ret_oint) buf_printf(b, "%s(%s)", oint_box(g_ret_type), rv);
+    else emit_boxed_text(c, g_ret_type, rv, b);
     buf_puts(b, "; return 0; }\n");
   }
   else emit_retf_return(eid, has_retval, b);
@@ -10438,13 +10777,18 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
     emit_indent(b, indent); buf_printf(b, "const char *_exccls%d = NULL;\n", eid);
     emit_indent(b, indent); buf_printf(b, "void *_excobj%d = NULL;\n", eid);
     if (has_retval) {
-      emit_indent(b, indent); emit_ctype(c, g_ret_type, b);
+      emit_indent(b, indent);
+      /* a number slot holding its nil beside the value is the oint */
+      if (oint_kind(g_ret_type) && g_ret_oint) buf_printf(b, "%s _retv%d = %s;", oint_ctype(g_ret_type), eid, oint_nil(g_ret_type));
+      else {
+      emit_ctype(c, g_ret_type, b);
       /* a by-value object class is a bare struct: default_value's NULL is
          ill-typed C there */
       if (ty_is_object(g_ret_type) && comp_ty_value_obj(c, g_ret_type))
         buf_printf(b, " _retv%d = (sp_%s){0};", eid, c->classes[ty_object_class(g_ret_type)].c_name);
       else
         buf_printf(b, " _retv%d = %s;", eid, default_value_from_compiler(c, g_ret_type));
+      }
       /* the deferred value waits in the slot while the ensure body runs,
          which may allocate */
       if (ty_gc_rootable(c, g_ret_type)) {
@@ -10453,7 +10797,9 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
       }
       buf_puts(b, "\n");
     }
-    g_ensure_stack[g_ensure_depth++] = (EnsureCtx){ eid, has_retval, g_exc_frame_depth, g_ret_type, g_rescue_save_depth };
+    g_ensure_stack[g_ensure_depth++] = (EnsureCtx){ .lid = eid, .has_retval = has_retval, .exc_base = g_exc_frame_depth,
+                                                    .retv_ty = g_ret_type, .rescue_base = g_rescue_save_depth,
+                                                    .retv_o = g_ret_oint };
 
     /* retry in the rescue restarts the body; the ensure runs only when the
        begin finally exits (matching CRuby, where an aborted attempt does not
@@ -10491,7 +10837,8 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
       /* an empty else clause is still the begin's value: nil */
       TyKind bt = repr_of(c, id).as_ty;
       emit_indent(b, indent + 1);
-      buf_printf(b, "%s = %s;\n", resultvar, bt == TY_POLY ? "sp_box_nil()" : default_value_from_compiler(c, bt));
+      if (oint_kind(bt) && !cond_res_oint(c, id, bt)) refuse_nil_store(c, id, bt, "an empty else clause");
+      buf_printf(b, "%s = %s;\n", resultvar, bt == TY_POLY ? "sp_box_nil()" : res_zero(c, bt, cond_res_oint(c, id, bt)));
     }
     emit_indent(b, indent); buf_puts(b, "}\n");
     emit_indent(b, indent); buf_puts(b, "else {\n");
@@ -10735,7 +11082,8 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
     /* an empty else clause is still the begin's value: nil */
     TyKind bt = repr_of(c, id).as_ty;
     emit_indent(b, indent + 1);
-    buf_printf(b, "%s = %s;\n", resultvar, bt == TY_POLY ? "sp_box_nil()" : default_value_from_compiler(c, bt));
+    if (oint_kind(bt) && !cond_res_oint(c, id, bt)) refuse_nil_store(c, id, bt, "an empty else clause");
+    buf_printf(b, "%s = %s;\n", resultvar, bt == TY_POLY ? "sp_box_nil()" : res_zero(c, bt, cond_res_oint(c, id, bt)));
   }
 
   if (ensure_stmts >= 0) emit_stmts(c, ensure_stmts, b, indent + 1);
@@ -10899,27 +11247,6 @@ void emit_stmt_tail(Compiler *c, int id, Buf *b, int indent) {
   if (g_repr_check) repr_channel_end(c, frame);
 }
 
-/* Emit a `cond ? nil : <int>` ivar-write RHS as a C `?:` in int context: the
-   literal-nil arm becomes the SP_INT_NIL sentinel (a bare NilNode would emit
-   `0`, colliding with a real 0), the int arm emits raw. Returns 1 if `v` is that
-   shape (exactly one literal-nil arm) and was emitted, else 0 (caller falls
-   back to the generic paths). Pairs with analyze's ivar_nullable_int_ternary. */
-static int emit_nullable_int_ternary(Compiler *c, int v, Buf *b) {
-  int tn, en;
-  if (!comp_ternary_arms(c->nt, v, &tn, &en)) return 0;
-  const char *tt = nt_type(c->nt, tn), *et = nt_type(c->nt, en);
-  int t_nil = tt && sp_streq(tt, "NilNode");
-  int e_nil = et && sp_streq(et, "NilNode");
-  if (t_nil == e_nil) return 0;  /* exactly one arm a literal nil */
-  buf_puts(b, "(");
-  emit_cond(c, nt_ref(c->nt, v, "predicate"), b);
-  buf_puts(b, " ? ");
-  if (t_nil) buf_puts(b, "SP_INT_NIL"); else emit_expr(c, tn, b);
-  buf_puts(b, " : ");
-  if (e_nil) buf_puts(b, "SP_INT_NIL"); else emit_expr(c, en, b);
-  buf_puts(b, ")");
-  return 1;
-}
 
 /* Emit the `switch` arms for `obj.x = v` where obj's class is only known at
    run time. A class answers the write either through an attribute or through
@@ -11049,7 +11376,17 @@ void emit_boxed_writer_arms(Compiler *c, const char *base, const char *nm,
     snprintf(opn, on, "((sp_%s *)%s)", c->classes[k].c_name, objp);
     emit_frozen_obj_guard(c, k, opn, b);
     buf_printf(b, "((sp_%s *)%s)->iv_%s = ", c->classes[k].c_name, objp, iv_c(base));
-    if (ivt == TY_POLY && at != TY_POLY) {
+    /* a field with a nil bit: the bit in step with the value written */
+    if (oint_kind(ivt) && iv >= 0 && ivar_has_nilbit(c, k, iv) &&
+        (at == ivt || at == TY_POLY || at == TY_NIL)) {
+      char ot[300], pfx[300];
+      if (at == TY_POLY) snprintf(ot, sizeof ot, "%s(%s)", oint_unbox(ivt), src);
+      else if (at == TY_NIL) snprintf(ot, sizeof ot, "%s", oint_nil(ivt));
+      else snprintf(ot, sizeof ot, "%s(%s)", oint_of(ivt), src);
+      snprintf(pfx, sizeof pfx, "((sp_%s *)%s)->", c->classes[k].c_name, objp);
+      emit_ivar_text_nilbit(c, k, iv, pfx, ot, b);
+    }
+    else if (ivt == TY_POLY && at != TY_POLY) {
       if (lift) buf_puts(b, "sp_poly_strbuf_lift(");
       emit_boxed_text(c, at, src, b);
       if (lift) buf_puts(b, ")");
@@ -11277,13 +11614,43 @@ static void masgn_guard_line(Buf *fb, Buf *b, int indent) {
 }
 /* `val`, a C value of type `vt`, as a slot of type `st` holds it; a NULL
    `val` is Ruby nil. */
+/* the same into an Integer / Float slot that holds its nil: its oint */
+/* The literal multi-assign's element temps whose value can be nil: `_tN`
+   holds the value and `_tNo` the oint beside it (emit_multi_write_stmt);
+   masgn_conv_o takes the oint for such a temp. */
+static int g_masgn_otmps[64], g_masgn_notmps;
+static int masgn_oint_temp(const char *val) {
+  int n = -1, len = 0;
+  if (!val || sscanf(val, "_t%d%n", &n, &len) != 1 || val[len] != '\0') return -1;
+  for (int i = 0; i < g_masgn_notmps; i++) if (g_masgn_otmps[i] == n) return n;
+  return -1;
+}
+static void masgn_conv_o(Compiler *c, TyKind st, TyKind vt, const char *val, Buf *b) {
+  int on = masgn_oint_temp(val);
+  if (on >= 0 && oint_kind(st)) {
+    if (vt == st || vt == TY_INT || vt == TY_FLOAT) {
+      if (vt == st) buf_printf(b, "_t%do", on);
+      else buf_printf(b, "(_t%do.nil ? %s : %s((%s)_t%do.v))", on, oint_nil(st), oint_of(st), c_type_name(st), on);
+      return;
+    }
+  }
+  if (!val) buf_puts(b, oint_nil(st));
+  else if (vt == TY_POLY || vt == TY_UNKNOWN) buf_printf(b, "%s(%s)", oint_unbox(st), val);
+  else if (vt == TY_NIL || vt == TY_VOID) buf_printf(b, "((void)(%s), %s)", val, oint_nil(st));
+  else if (st == TY_FLOAT && vt == TY_INT) buf_printf(b, "sp_ofloat_of((sp_float)(%s))", val);
+  else buf_printf(b, "%s(%s)", oint_of(st), val);
+  (void)c;
+}
 static void masgn_conv(Compiler *c, int id, TyKind st, TyKind vt, const char *val, Buf *b) {
-  if (!val) { buf_puts(b, nil_sentinel(st == TY_UNKNOWN ? TY_POLY : st)); return; }
+  if (!val) {
+    if (oint_kind(st)) refuse_nil_store(c, id, st, "a multiple assignment target");
+    buf_puts(b, nil_sentinel(st == TY_UNKNOWN ? TY_POLY : st)); return;
+  }
   if (st == TY_POLY && vt != TY_POLY) emit_boxed_src(c, vt, val, b);
   /* a boxed nil lands the slot's nil, not the type's zero, as a plain write
      unboxes it (#3458) */
-  else if (vt == TY_POLY && st == TY_INT) buf_printf(b, "sp_poly_to_i_or_nil(%s)", val);
-  else if (vt == TY_POLY && st == TY_FLOAT) buf_printf(b, "sp_poly_to_f_or_nil(%s)", val);
+  else if (vt == TY_POLY && st == TY_INT) buf_printf(b, "sp_poly_to_i(%s)", val);
+  else if (vt == TY_POLY && st == TY_FLOAT) buf_printf(b, "sp_poly_to_f(%s)", val);
   else if (vt == TY_POLY && st != TY_POLY && st != TY_UNKNOWN) emit_unbox_text(c, st, val, b);
   else emit_coerce_text(c, id, vt, st, CO_HOLD, val, "a multiple assignment's target", b);
 }
@@ -11409,9 +11776,20 @@ static int masgn_store(Compiler *c, int id, int tgt, const char *val, TyKind vt,
     int ix = comp_ivar_index(&c->classes[cid], nm);
     emit_indent(b, indent);
     buf_printf(b, "%s = ", lhs);
-    int sk = splice_store_open(c, tgt, b);   /* an open splice alias of it */
-    masgn_conv(c, id, ix >= 0 ? c->classes[cid].ivar_types[ix] : TY_UNKNOWN, vt, val, b);
-    splice_store_close(c, tgt, sk, b);
+    if (ix >= 0 && ivar_has_nilbit(c, cid, ix)) {
+      /* the field's nil bit kept in step with the element's nil */
+      Buf ot; memset(&ot, 0, sizeof ot);
+      masgn_conv_o(c, c->classes[cid].ivar_types[ix], vt, val, &ot);
+      size_t pn = strlen(lhs) - strlen(iv_c(nm + 1)) - 3;
+      char ipfx[320]; snprintf(ipfx, sizeof ipfx, "%.*s", (int)pn, lhs);
+      emit_ivar_text_nilbit(c, cid, ix, ipfx, ot.p ? ot.p : "", b);
+      free(ot.p);
+    }
+    else {
+      int sk = splice_store_open(c, tgt, b);   /* an open splice alias of it */
+      masgn_conv(c, id, ix >= 0 ? c->classes[cid].ivar_types[ix] : TY_UNKNOWN, vt, val, b);
+      splice_store_close(c, tgt, sk, b);
+    }
     buf_puts(b, ";\n");
     return 1;
   }
@@ -11421,7 +11799,8 @@ static int masgn_store(Compiler *c, int id, int tgt, const char *val, TyKind vt,
     if (!gv) { unsupported(c, id, "multiple assignment global target"); return 1; }
     emit_indent(b, indent);
     buf_printf(b, "gv_%s = ", gn);
-    masgn_conv(c, id, gv->type, vt, val, b);
+    if (gvar_is_oint(c, gv)) masgn_conv_o(c, gv->type, vt, val, b);
+    else masgn_conv(c, id, gv->type, vt, val, b);
     buf_puts(b, ";\n");
     return 1;
   }
@@ -11434,7 +11813,8 @@ static int masgn_store(Compiler *c, int id, int tgt, const char *val, TyKind vt,
     emit_indent(b, indent);
     emit_cvar_set_flag(c, cid, nm, 0, b);
     buf_printf(b, "cvar_%s_%s = ", c->classes[cid].name, nm + 2);
-    masgn_conv(c, id, c->classes[cid].cvar_types[cx], vt, val, b);
+    if (cvar_is_oint(c, cid, cx)) masgn_conv_o(c, c->classes[cid].cvar_types[cx], vt, val, b);
+    else masgn_conv(c, id, c->classes[cid].cvar_types[cx], vt, val, b);
     buf_puts(b, ";\n");
     return 1;
   }
@@ -11467,7 +11847,9 @@ static int masgn_store(Compiler *c, int id, int tgt, const char *val, TyKind vt,
       /* a boxed value a typed array cannot hold is refused, as the single
          store refuses it (#4481) */
       TyKind et = rt == TY_POLY_ARRAY ? TY_POLY : ty_array_elem(rt);
-      if (val && vt == TY_POLY && (et == TY_INT || et == TY_FLOAT || et == TY_STRING))
+      /* the _nilable store takes the element with its nil */
+      if (oint_kind(et) && nil_store_sfx(c, k, NIL_STORE_BOXED)[0]) masgn_conv_o(c, et, vt, val, b);
+      else if (val && vt == TY_POLY && (et == TY_INT || et == TY_FLOAT || et == TY_STRING))
         buf_printf(b, "sp_poly_elem_%c(%s)", et == TY_INT ? 'i' : et == TY_FLOAT ? 'f' : 's', val);
       else masgn_conv(c, id, et, vt, val, b);
       buf_puts(b, ");\n");
@@ -11563,16 +11945,29 @@ static int masgn_store(Compiler *c, int id, int tgt, const char *val, TyKind vt,
       /* attr_writer convention: name matches the backing ivar */
       char base[256]; snprintf(base, sizeof base, "%.*s", (int)(snl - 1), nm);
       char ivn[260]; snprintf(ivn, sizeof ivn, "@%s", base);
-      int ix = comp_ivar_index(&c->classes[crc], ivn);
+      int wdc = -1; comp_writer_in_chain(c, crc, base, &wdc);
+      int wcls = wdc >= 0 ? wdc : crc;
+      int ix = comp_ivar_index(&c->classes[wcls], ivn);
+      TyKind ivt = ix >= 0 ? c->classes[wcls].ivar_types[ix] : vt;
       /* the receiver is held once for the assigned mark */
-      int pk = ix >= 0 && ivar_set_kind(c, crc, ivn) == 3;
+      int pk = comp_ivar_index(&c->classes[crc], ivn) >= 0 && ivar_set_kind(c, crc, ivn) == 3;
       int th = pk && recv_tmp < 0 ? ++g_tmp : recv_tmp;
       if (pk && recv_tmp < 0) {
         buf_printf(b, "{ sp_%s *_t%d = ", c->classes[crc].c_name, th); emit_expr(c, crecv, b); buf_puts(b, "; ");
       }
-      buf_puts(b, "("); emit_node_or_tmp(c, crecv, th, b);
-      buf_printf(b, ")->iv_%s = ", iv_c(base));
-      masgn_conv(c, id, ix >= 0 ? c->classes[crc].ivar_types[ix] : vt, vt, val, b);
+      Buf rb; memset(&rb, 0, sizeof rb);
+      emit_node_or_tmp(c, crecv, th, &rb);
+      buf_printf(b, "(%s)->iv_%s = ", rb.p ? rb.p : "", iv_c(base));
+      /* a field with a nil bit takes the value with its nil, the bit kept in step */
+      if (ix >= 0 && oint_kind(ivt) && ivar_has_nilbit(c, wcls, ix)) {
+        char pfx[320]; snprintf(pfx, sizeof pfx, "(%s)->", rb.p ? rb.p : "");
+        Buf ob; memset(&ob, 0, sizeof ob);
+        masgn_conv_o(c, ivt, vt, val, &ob);
+        emit_ivar_text_nilbit(c, wcls, ix, pfx, ob.p ? ob.p : oint_nil(ivt), b);
+        free(ob.p);
+      }
+      else masgn_conv(c, id, ivt, vt, val, b);
+      free(rb.p);
       char tn[32], mk[300];
       snprintf(tn, sizeof tn, "_t%d", th);
       const char *m = pk ? ivar_set_mark(c, crc, ivn, tn, "->", mk, sizeof mk) : NULL;
@@ -11599,9 +11994,12 @@ static void emit_massign_poly_target(Compiler *c, int id, int tgt, const char *v
     LocalVar *lv = scope_local(comp_scope_of(c, tgt), lnm);
     emit_indent(b, indent);
     emit_local_ref(c, tgt, lnm, b); buf_puts(b, " = ");
-    int sk = splice_store_open(c, tgt, b);   /* an open splice alias of it */
-    masgn_conv(c, id, lv ? lv->type : TY_POLY, TY_POLY, val, b);
-    splice_store_close(c, tgt, sk, b);
+    if (lv && slot_is_oint(lv)) masgn_conv_o(c, lv->type, TY_POLY, val, b);
+    else {
+      int sk = splice_store_open(c, tgt, b);   /* an open splice alias of it */
+      masgn_conv(c, id, lv ? lv->type : TY_POLY, TY_POLY, val, b);
+      splice_store_close(c, tgt, sk, b);
+    }
     buf_puts(b, ";\n");
     return;
   }
@@ -11886,8 +12284,26 @@ static int emit_multi_write_scalar(Compiler *c, int id, Buf *b, int indent, cons
         TyKind ivt = ix >= 0 ? c->classes[iv_home_cid].ivar_types[ix] : TY_POLY;
         emit_indent(b, indent);
         buf_printf(b, "%s = ", iv_lhs);
-        if (i == 0) { if (ivt == TY_POLY && st != TY_POLY) emit_boxed(c, value, b); else emit_expr(c, value, b); }
+        if (i == 0) {
+          if (ivt == TY_POLY && st != TY_POLY) emit_boxed(c, value, b);
+          else if (oint_kind(ivt) && ix >= 0 && ivar_has_nilbit(c, iv_home_cid, ix)) {
+            const char *ivp = strstr(iv_lhs, "iv_");
+            char opfx[256]; snprintf(opfx, sizeof opfx, "%.*s", ivp ? (int)(ivp - iv_lhs) : 0, iv_lhs);
+            emit_ivar_value_nilbit(c, iv_home_cid, ix, opfx, value, b);
+          }
+          else if (oint_kind(ivt) && ix >= 0 && civ_is_oint(c, iv_home_cid, ix) && !strstr(iv_lhs, "->") && !strchr(iv_lhs, '.'))
+            emit_oint_expr(c, value, ivt, b);
+          else emit_expr(c, value, b);
+        }
         else if (ivt == TY_POLY) buf_puts(b, "sp_box_nil()");
+        else if (oint_kind(ivt) && ix >= 0 && ivar_has_nilbit(c, iv_home_cid, ix)) {
+          /* a field with a nil bit: the bit set, the value left */
+          const char *ivp = strstr(iv_lhs, "iv_");
+          char opfx[256]; snprintf(opfx, sizeof opfx, "%.*s", ivp ? (int)(ivp - iv_lhs) : 0, iv_lhs);
+          emit_ivar_text_nilbit(c, iv_home_cid, ix, opfx, oint_nil(ivt), b);
+        }
+        else if (oint_kind(ivt) && !(ix >= 0 && civ_is_oint(c, iv_home_cid, ix) && !strstr(iv_lhs, "->") && !strchr(iv_lhs, '.')))
+          refuse_nil_store(c, lefts[i], ivt, "a multiple assignment into an instance variable");
         else buf_puts(b, nil_sentinel(ivt));
         buf_puts(b, ";\n");
         continue;
@@ -11907,7 +12323,11 @@ static int emit_multi_write_scalar(Compiler *c, int id, Buf *b, int indent, cons
       int sk = splice_store_open(c, lefts[i], b);   /* an open splice alias of it */
       LocalVar *llv = lvn ? scope_local(comp_scope_of(c, id), lvn) : NULL;
       int lpoly = llv && llv->type == TY_POLY;
-      if (i == 0) { if (lpoly && st != TY_POLY) emit_boxed(c, value, b); else emit_expr(c, value, b); }
+      if (i == 0) {
+        if (lpoly && st != TY_POLY) emit_boxed(c, value, b);
+        else if (llv && slot_is_oint(llv)) emit_oint_expr(c, value, llv->type, b);   /* the slot's oint */
+        else emit_expr(c, value, b);
+      }
       else if (lpoly) {
         /* under-filled target under a scalar RHS is Ruby nil, not the
            typed zero (`a, b, c = 1` -> [1, nil, nil]). */
@@ -11915,9 +12335,9 @@ static int emit_multi_write_scalar(Compiler *c, int id, Buf *b, int indent, cons
       }
       else {
         /* the target NODE's type can read TY_UNKNOWN here; use the local's
-           DECLARED type so the nil sentinel matches its C slot. */
+           DECLARED type so the nil matches its C slot. */
         TyKind tt = llv ? llv->type : repr_of(c, lefts[i]).as_ty;
-        buf_puts(b, nil_sentinel(tt));
+        buf_puts(b, nil_for_local(c, lefts[i], llv, tt, "a multiple assignment target"));
       }
       splice_store_close(c, lefts[i], sk, b);
       buf_puts(b, ";\n");
@@ -11942,6 +12362,7 @@ static int emit_multi_write_scalar(Compiler *c, int id, Buf *b, int indent, cons
         emit_indent(b, indent);
         buf_printf(b, "sp_%sArray_push%s(_t%d, ", rk0, nil_store_sfx(c, rk0, value), tr0);
         if (rat0 == TY_POLY_ARRAY) emit_boxed(c, value, b);
+        else if (sp_streq(rk0, "Int") || sp_streq(rk0, "Float")) emit_elem_store_value(c, rk0, value, b);
         else emit_expr(c, value, b);
         buf_puts(b, ");\n");
       }
@@ -11978,10 +12399,12 @@ static int emit_multi_write_scalar(Compiler *c, int id, Buf *b, int indent, cons
       emit_local_ref(c, rights[j], rvn, b); buf_puts(b, " = ");
       int sk = splice_store_open(c, rights[j], b);   /* an open splice alias of it */
       if (j == 0 && ln == 0) {
-        if (rpoly && st != TY_POLY) emit_boxed(c, value, b); else emit_expr(c, value, b);
+        if (rpoly && st != TY_POLY) emit_boxed(c, value, b);
+        else if (rlv && slot_is_oint(rlv)) emit_oint_expr(c, value, rlv->type, b);
+        else emit_expr(c, value, b);
       }
       else if (rpoly) buf_puts(b, "sp_box_nil()");
-      else { TyKind tt = rlv ? rlv->type : repr_of(c, rights[j]).as_ty; buf_puts(b, nil_sentinel(tt)); }
+      else { TyKind tt = rlv ? rlv->type : repr_of(c, rights[j]).as_ty; buf_puts(b, nil_for_local(c, rights[j], rlv, tt, "a multiple assignment target")); }
       splice_store_close(c, rights[j], sk, b);
       buf_puts(b, ";\n");
     }
@@ -12025,7 +12448,16 @@ static int emit_multi_write_scalar(Compiler *c, int id, Buf *b, int indent, cons
         LocalVar *llv = lvn ? scope_local(rt_scope, lvn) : NULL;
         TyKind ltt = llv ? llv->type : repr_of(c, lefts[i]).as_ty;
         char gx[64]; snprintf(gx, sizeof gx, "sp_%sArray_get(_t%d, %dLL)", k, tarr, i);
-        if (ltt == TY_POLY && !sp_streq(k, "Poly")) emit_boxed_src(c, elem, gx, b);
+        /* a local that holds its nil takes the element with it */
+        if (oint_kind(ltt) && llv && slot_is_oint(llv)) {
+          if (sp_streq(k, "Poly")) buf_printf(b, "%s(%s)", oint_unbox(ltt), gx);
+          else buf_printf(b, "sp_%sArray_oget(_t%d, %dLL)", k, tarr, i);
+        }
+        /* a boxed target from a number array: past the end (or a nil
+           element) is nil, boxed with it */
+        else if (ltt == TY_POLY && oint_kind(elem) && !sp_streq(k, "Poly"))
+          buf_printf(b, "%s(sp_%sArray_oget(_t%d, %dLL))", oint_box(elem), k, tarr, i);
+        else if (ltt == TY_POLY && !sp_streq(k, "Poly")) emit_boxed_src(c, elem, gx, b);
         else if (sp_streq(k, "Poly") && ltt != TY_POLY && ltt != TY_UNKNOWN) {
           /* typed target from a poly tuple (known multi-value return) */
           emit_unbox_text(c, ltt, gx, b);
@@ -12047,7 +12479,20 @@ static int emit_multi_write_scalar(Compiler *c, int id, Buf *b, int indent, cons
         if (iv_rt >= 0) ivt = c->classes[iv_home_cid].ivar_types[iv_rt];
         buf_printf(b, "%s = ", iv_lhs);
         int sk = splice_store_open(c, lefts[i], b);   /* an open splice alias of it */
-        if (ivt == TY_POLY && elem != TY_POLY) emit_boxed_src(c, elem, get_expr, b);
+        if (oint_kind(ivt) && iv_rt >= 0 && ivar_has_nilbit(c, iv_home_cid, iv_rt)) {
+          /* the element with its nil into the field's nil bit */
+          char og[96];
+          if (sp_streq(k, "Poly")) snprintf(og, sizeof og, "%s(%s)", oint_unbox(ivt), get_expr);
+          else snprintf(og, sizeof og, "sp_%sArray_oget(_t%d, %dLL)", k, tarr, i);
+          size_t pn = strlen(iv_lhs) - strlen(iv_c(ivnm + 1)) - 3;
+          char ipfx[300]; snprintf(ipfx, sizeof ipfx, "%.*s", (int)pn, iv_lhs);
+          emit_ivar_text_nilbit(c, iv_home_cid, iv_rt, ipfx, og, b);
+        }
+        /* a boxed field from a number array: past the end (or a nil
+           element) is nil, boxed with it, as for a local */
+        else if (ivt == TY_POLY && oint_kind(elem) && !sp_streq(k, "Poly"))
+          buf_printf(b, "%s(sp_%sArray_oget(_t%d, %dLL))", oint_box(elem), k, tarr, i);
+        else if (ivt == TY_POLY && elem != TY_POLY) emit_boxed_src(c, elem, get_expr, b);
         else if (sp_streq(k, "Poly") && ivt != TY_POLY && ivt != TY_UNKNOWN) {
           /* typed target from a poly tuple (known multi-value return) */
           emit_unbox_text(c, ivt, get_expr, b);
@@ -12147,11 +12592,12 @@ static int emit_multi_write_scalar(Compiler *c, int id, Buf *b, int indent, cons
           buf_puts(b, bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
           buf_puts(b, ")");
         }
+        /* an Integer or Float element: with its nil (past the end, a nil
+           element) into a slot that holds one, the plain value otherwise */
+        else if (sp_streq(k, "Int") || sp_streq(k, "Float"))
+          buf_printf(b, "sp_%sArray_%s(_t%d, _t%d)", k, rllv && slot_is_oint(rllv) ? "oget" : "get", tarr, tix);
         else {
-          const char *nilv = sp_streq(k, "Poly") ? "sp_box_nil()"
-                           : sp_streq(k, "Int") ? "SP_INT_NIL"
-                           : sp_streq(k, "Float") ? "sp_float_nil()"
-                           : "NULL";
+          const char *nilv = sp_streq(k, "Poly") ? "sp_box_nil()" : "NULL";
           buf_printf(b, "(_t%d >= _t%d->len ? %s : %s)", tix, tarr, nilv, rgx);
         }
         splice_store_close(c, rights[j], sk, b);
@@ -12182,11 +12628,16 @@ static int emit_multi_write_scalar(Compiler *c, int id, Buf *b, int indent, cons
           buf_puts(b, bx2.p ? bx2.p : "sp_box_nil()"); free(bx2.p);
           buf_puts(b, ")");
         }
+        else if ((sp_streq(k, "Int") || sp_streq(k, "Float")) && iv_rt2 >= 0 && ivar_has_nilbit(c, iv_home_cid, iv_rt2)) {
+          /* the element with its nil into the field's nil bit */
+          char og2[160]; snprintf(og2, sizeof og2, "sp_%sArray_oget(_t%d, _t%d)", k, tarr, tix);
+          size_t pn = strlen(iv_lhs) - strlen(iv_c(ivnm2 + 1)) - 3;
+          char ipfx[300]; snprintf(ipfx, sizeof ipfx, "%.*s", (int)pn, iv_lhs);
+          emit_ivar_text_nilbit(c, iv_home_cid, iv_rt2, ipfx, og2, b);
+        }
+        else if (sp_streq(k, "Int") || sp_streq(k, "Float")) buf_puts(b, get_expr2);
         else {
-          const char *nilv = sp_streq(k, "Poly") ? "sp_box_nil()"
-                           : sp_streq(k, "Int") ? "SP_INT_NIL"
-                           : sp_streq(k, "Float") ? "sp_float_nil()"
-                           : "NULL";
+          const char *nilv = sp_streq(k, "Poly") ? "sp_box_nil()" : "NULL";
           buf_printf(b, "(_t%d >= _t%d->len ? %s : %s)", tix, tarr, nilv, get_expr2);
         }
         buf_puts(b, ";\n");
@@ -12196,9 +12647,11 @@ static int emit_multi_write_scalar(Compiler *c, int id, Buf *b, int indent, cons
         emit_indent(b, indent);
         buf_printf(b, "sp_int _t%d = (_t%d->len - %dLL + %dLL) > %dLL ? (_t%d->len - %dLL + %dLL) : %dLL;\n",
                    tix, tarr, rn, j, ln + j, tarr, rn, j, ln + j);
+        /* a plain Integer or Float target reads 0 past the end (a target
+           that can hold nil is marked and bound above) */
         const char *nilv = sp_streq(k, "Poly") ? "sp_box_nil()"
-                         : sp_streq(k, "Int") ? "SP_INT_NIL"
-                         : sp_streq(k, "Float") ? "sp_float_nil()"
+                         : sp_streq(k, "Int") ? "0"
+                         : sp_streq(k, "Float") ? "0.0"
                          : "NULL";
         if (sp_streq(lty, "MultiTargetNode")) {
           char gx[80]; snprintf(gx, sizeof gx, "sp_%sArray_get(_t%d, _t%d)", k, tarr, tix);
@@ -12265,10 +12718,19 @@ static int emit_multi_write_scalar(Compiler *c, int id, Buf *b, int indent, cons
         /* a scalar slot another write typed takes an element of its own
            kind (or nil) and refuses any other (sp_slot_*_ck), rather
            than reading the other kind's bits as its own */
-        const char *ck = ivt == TY_INT ? "sp_slot_int_ck" : ivt == TY_FLOAT ? "sp_slot_float_ck"
+        const char *ck = ivt == TY_INT ? "sp_slot_oint_ck" : ivt == TY_FLOAT ? "sp_slot_ofloat_ck"
                        : ivt == TY_STRING ? "sp_slot_str_ck" : ivt == TY_BOOL ? "sp_slot_bool_ck"
                        : ivt == TY_SYMBOL ? "sp_slot_sym_ck" : NULL;
-        if (ck) buf_printf(b, "%s(%s, \"%s\")", ck, get_expr, ivnm);
+        /* an Integer or Float element with its nil: into the field's bit,
+           or refused for a plain field */
+        if (ck && oint_kind(ivt) && ivar_has_nilbit(c, iv_home_cid, iv_rt)) {
+          char og[200], ipfx[300]; snprintf(og, sizeof og, "%s(%s, \"%s\")", ck, get_expr, ivnm);
+          size_t pn = strlen(iv_lhs) - strlen(iv_c(ivnm + 1)) - 3;
+          snprintf(ipfx, sizeof ipfx, "%.*s", (int)pn, iv_lhs);
+          emit_ivar_text_nilbit(c, iv_home_cid, iv_rt, ipfx, og, b);
+        }
+        else if (ck && oint_kind(ivt)) buf_printf(b, "%s(%s(%s, \"%s\"))", oint_arg(ivt), ck, get_expr, ivnm);
+        else if (ck) buf_printf(b, "%s(%s, \"%s\")", ck, get_expr, ivnm);
         else if (ivt != TY_POLY) {
           Buf bx; memset(&bx, 0, sizeof bx);
           emit_unbox_text(c, ivt, get_expr, &bx);
@@ -12508,6 +12970,7 @@ static int masgn_fresh_stmt(Compiler *c, int id, const int *lefts, int ln, const
 
 /* A MultiWriteNode statement (a, b = ...) (emit_stmt_inner's arms, in their order) */
 static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const NodeTable *nt, const char *ty) {
+  g_masgn_notmps = 0;   /* the oint temps are this assignment's (temp numbers restart per function) */
   if (!(sp_streq(ty, "MultiWriteNode"))) return 0;
   int ln = 0;
   const int *lefts = nt_arr(nt, id, "lefts", &ln);
@@ -12770,6 +13233,15 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
     else if (poly_empty_hash)
       buf_puts(b, "sp_box_obj(sp_PolyPolyHash_new(), SP_BUILTIN_POLY_POLY_HASH)");
     else if (boxed_el) emit_coerce(c, els[i], TY_POLY, CO_HOLD, "a multiple assignment's value", b);
+    /* a number that can be nil: its oint `_tNo` beside the value, which the
+       targets that hold a nil take (masgn_conv_o) and the others read */
+    else if (oint_kind(elt) && node_has_oint_form(c, els[i]) && g_masgn_notmps < 64) {
+      Buf vb; memset(&vb, 0, sizeof vb); emit_oint_expr(c, els[i], elt, &vb);
+      /* the declaration above reads `<ctype> _tN = `: finish it from the oint */
+      buf_printf(b, "0; %s _t%do = %s; _t%d = _t%do.v", oint_ctype(elt), tmps[i], vb.p ? vb.p : oint_nil(elt), tmps[i], tmps[i]);
+      free(vb.p);
+      g_masgn_otmps[g_masgn_notmps++] = tmps[i];
+    }
     /* held as the handle its target wraps it in, as a store wraps one
        (emit_boxed); handed over bare, the C did not build */
     else if (fresh_str) {
@@ -12806,9 +13278,9 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
         LocalVar *llv = lvn ? scope_local(comp_scope_of(c, id), lvn) : NULL;
         TyKind ltt = llv ? llv->type : repr_of(c, lefts[i]).as_ty;
         /* An under-filled massign target is Ruby `nil`, not the type's zero
-           value; emit the slot's nil sentinel (mirroring the typed-array
+           value; emit the slot's nil (mirroring the typed-array
            under-fill arm above) so `a, b, c = 1` yields [1, nil, nil]. */
-        const char *nilv = nil_sentinel(ltt);
+        const char *nilv = nil_for_local(c, lefts[i], llv, ltt, "a multiple assignment target");
         /* a captured TY_PROC cell needs the raw int-laundered lvalue rather
            than emit_local_ref's non-assignable cast form (see emit_assign). */
         if (emit_proc_cell_lvalue(c, id, lvn, b)) {
@@ -12863,6 +13335,11 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
       else if (ltt == TY_STRBUF && valt == TY_POLY) buf_printf(b, "sp_poly_as_strbuf(_t%d)", tmps[i]);
       /* a boxed element into a typed local: unboxed, as a plain write does
          (`mk, x = 0, nl` with nl only ever nil) */
+      else if (llv && slot_is_oint(llv)) {
+        /* a local that holds its nil takes the element as its oint */
+        char tv[24]; snprintf(tv, sizeof tv, "_t%d", tmps[i]);
+        masgn_conv_o(c, ltt, valt, tv, b);
+      }
       else if (valt == TY_POLY && ltt != TY_POLY && ltt != TY_UNKNOWN) {
         char tv[24]; snprintf(tv, sizeof tv, "_t%d", tmps[i]);
         masgn_conv(c, lefts[i], ltt, valt, tv, b);
@@ -12909,13 +13386,27 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
         masgn_guard_line(&fb, b, indent);
       }
       emit_indent(b, indent);
-      if (((iv_sc && iv_sc->is_cmethod) || iv_global) && iv_cid >= 0)
+      int iv_static = ((iv_sc && iv_sc->is_cmethod) || iv_global) && iv_cid >= 0;
+      if (iv_static)
         buf_printf(b, "civ_%s_%s = ", c->classes[iv_cid].name, iv_c(ivnm + 1));
       else
         buf_printf(b, "%s%siv_%s = ", g_self, g_self_deref, iv_c(ivnm + 1));
       int sk = splice_store_open(c, lefts[i], b);   /* an open splice alias of it */
       TyKind valt = tmpts ? tmpts[i] : repr_of(c, els[i]).as_ty;
+      int iv_ix = iv_cid >= 0 ? comp_ivar_index(&c->classes[iv_cid], ivnm) : -1;
+      char ivex[32]; snprintf(ivex, sizeof ivex, "_t%d", tmps[i]);
       if (ivt == TY_POLY && valt != TY_POLY) emit_boxed_tmp(c, valt, tmps[i], b);
+      /* an Integer or Float slot that holds its nil: the element with its
+         nil, into the field's bit or the oint static */
+      else if (oint_kind(ivt) && iv_ix >= 0 && !iv_static && ivar_has_nilbit(c, iv_cid, iv_ix)) {
+        char pfx[160]; snprintf(pfx, sizeof pfx, "%s%s", g_self, g_self_deref);
+        Buf ob; memset(&ob, 0, sizeof ob);
+        masgn_conv_o(c, ivt, valt, masgn_nil_el(c, els[i]) ? NULL : ivex, &ob);
+        emit_ivar_text_nilbit(c, iv_cid, iv_ix, pfx, ob.p ? ob.p : oint_nil(ivt), b);
+        free(ob.p);
+      }
+      else if (oint_kind(ivt) && iv_ix >= 0 && iv_static && civ_is_oint(c, iv_cid, iv_ix))
+        masgn_conv_o(c, ivt, valt, masgn_nil_el(c, els[i]) ? NULL : ivex, b);
       /* a mutable-String ivar holds an sp_String *: a String element is
          wrapped, as a local target's is */
       else if (ivt == TY_STRBUF && valt == TY_STRING) buf_printf(b, "sp_String_new_shared(_t%d)", tmps[i]);
@@ -12952,6 +13443,10 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
       int defc2 = -1; comp_writer_in_chain(c, rc2, base2, &defc2);
       int iv2 = comp_ivar_index(&c->classes[defc2 < 0 ? rc2 : defc2], ivn2);
       TyKind ivt2 = iv2 >= 0 ? c->classes[defc2 < 0 ? rc2 : defc2].ivar_types[iv2] : TY_UNKNOWN;
+      int wcls2 = defc2 < 0 ? rc2 : defc2;
+      /* a field with a nil bit takes the element with its nil, the bit kept in step */
+      int nb2 = iv2 >= 0 && oint_kind(ivt2) && ivar_has_nilbit(c, wcls2, iv2);
+      char expr2[32]; snprintf(expr2, sizeof expr2, "_t%d", tmps[i]);
       Buf rb; memset(&rb, 0, sizeof rb);
       emit_node_or_tmp(c, recv_id2, ttr[i], &rb);
       {
@@ -12960,10 +13455,16 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
         masgn_guard_line(&fb, b, indent);
         emit_indent(b, indent);
         buf_printf(b, "(%s)->iv_%s = ", rb.p ? rb.p : "", iv_c(base2));
+        if (nb2) {
+          char pfx2[320]; snprintf(pfx2, sizeof pfx2, "(%s)->", rb.p ? rb.p : "");
+          Buf ob; memset(&ob, 0, sizeof ob);
+          masgn_conv_o(c, ivt2, tmpts[i], masgn_nil_el(c, els[i]) ? NULL : expr2, &ob);
+          emit_ivar_text_nilbit(c, wcls2, iv2, pfx2, ob.p ? ob.p : oint_nil(ivt2), b);
+          free(ob.p);
+        }
       }
       /* a nil element lands the slot's own nil, not the boxed temp */
-      char expr2[32]; snprintf(expr2, sizeof expr2, "_t%d", tmps[i]);
-      masgn_conv(c, id, ivt2, tmpts[i], masgn_nil_el(c, els[i]) ? NULL : expr2, b);
+      if (!nb2) masgn_conv(c, id, ivt2, tmpts[i], masgn_nil_el(c, els[i]) ? NULL : expr2, b);
       char ro[300], mk[300];
       snprintf(ro, sizeof ro, "(%s)", rb.p ? rb.p : "");
       const char *m = iv2 >= 0 ? ivar_set_mark(c, defc2 < 0 ? rc2 : defc2, ivn2, ro, "->", mk, sizeof mk) : NULL;
@@ -12990,6 +13491,11 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
          typed element, as the ivar target above does */
       TyKind gvalt = tmpts ? tmpts[i] : repr_of(c, els[i]).as_ty;
       if (gv2->type == TY_POLY && gvalt != TY_POLY) emit_boxed_tmp(c, gvalt, tmps[i], b);
+      /* an oint static takes the element with its nil */
+      else if (gvar_is_oint(c, gv2)) {
+        char ex[32]; snprintf(ex, sizeof ex, "_t%d", tmps[i]);
+        masgn_conv_o(c, gv2->type, gvalt, masgn_nil_el(c, els[i]) ? NULL : ex, b);
+      }
       else buf_printf(b, "_t%d", tmps[i]);
       buf_puts(b, ";\n");
     }
@@ -13023,7 +13529,11 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
              the sink, as the single store does (#4733) */
           TyKind valt = tmpts ? tmpts[i] : repr_of(c, els[i]).as_ty;
           TyKind et = ty_array_elem(recv_t);
-          if (valt == TY_POLY && et == TY_INT) buf_printf(b, "sp_poly_elem_i(_t%d)", tmps[i]);
+          /* the _nilable store takes the element with its nil */
+          int nl = oint_kind(et) && nil_store_sfx(c, k, els[i])[0];
+          char nex[32]; snprintf(nex, sizeof nex, "_t%d", tmps[i]);
+          if (nl) masgn_conv_o(c, et, valt, masgn_nil_el(c, els[i]) ? NULL : nex, b);
+          else if (valt == TY_POLY && et == TY_INT) buf_printf(b, "sp_poly_elem_i(_t%d)", tmps[i]);
           else if (valt == TY_POLY && et == TY_FLOAT) buf_printf(b, "sp_poly_elem_f(_t%d)", tmps[i]);
           else if (valt == TY_POLY && et == TY_STRING) buf_printf(b, "sp_poly_elem_s(_t%d)", tmps[i]);
           else buf_printf(b, "_t%d", tmps[i]);
@@ -13071,8 +13581,8 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
              at the sink, as the single store does (#4733) */
           TyKind valt = tmpts ? tmpts[i] : repr_of(c, els[i]).as_ty;
           TyKind hv = ty_hash_val(recv_t);
-          if (valt == TY_POLY && hv == TY_INT) buf_printf(b, "sp_poly_to_i_or_nil(_t%d)", tmps[i]);
-          else if (valt == TY_POLY && hv == TY_FLOAT) buf_printf(b, "sp_poly_to_f_or_nil(_t%d)", tmps[i]);
+          if (valt == TY_POLY && hv == TY_INT) buf_printf(b, "sp_poly_to_i(_t%d)", tmps[i]);
+          else if (valt == TY_POLY && hv == TY_FLOAT) buf_printf(b, "sp_poly_to_f(_t%d)", tmps[i]);
           else buf_printf(b, "_t%d", tmps[i]);
         }
         buf_puts(b, ");\n");
@@ -13166,11 +13676,15 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
       emit_indent(b, indent);
       LocalVar *rjlv = rnm_j ? scope_local(comp_scope_of(c, id), rnm_j) : NULL;
       int rjpoly = rjlv && rjlv->type == TY_POLY;
+      /* a local that holds its nil takes the element's oint (or nil) */
+      int rjo = rjlv && oint_kind(rjlv->type) && slot_is_oint(rjlv);
       buf_printf(b, "lv_%s = ", rename_local(rnm_j));
       int sk = splice_store_open(c, rights[j], b);   /* an open splice alias of it */
       if (ridx >= 0 && ridx < en) {
         TyKind valt = repr_of(c, els[ridx]).as_ty;
+        char rex[32]; snprintf(rex, sizeof rex, "_t%d", tmps[ridx]);
         if (rjpoly && valt != TY_POLY) emit_boxed_tmp(c, valt, tmps[ridx], b);
+        else if (rjo) masgn_conv_o(c, rjlv->type, tmpts ? tmpts[ridx] : valt, masgn_nil_el(c, els[ridx]) ? NULL : rex, b);
         /* a mutable-String local holds an sp_String *: a String element is
            wrapped, as the targets before the splat are */
         else if (rjlv && rjlv->type == TY_STRBUF && valt == TY_STRING) buf_printf(b, "sp_String_new_shared(_t%d)", tmps[ridx]);
@@ -13179,6 +13693,7 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
       else {
         TyKind tt = repr_of(c, rights[j]).as_ty;
         if (rjpoly) emit_boxed_src(c, tt, default_value_from_compiler(c, tt), b);
+        else if (rjo) buf_puts(b, oint_nil(rjlv->type));
         else buf_puts(b, default_value_from_compiler(c, tt));
       }
       splice_store_close(c, rights[j], sk, b);
@@ -13417,9 +13932,12 @@ static int emit_call_stmt(Compiler *c, int id, Buf *b, int indent, const NodeTab
                 buf_puts(b, "("); emit_expr(c, recv, b); buf_printf(b, ")->iv_%s = ", iv_c(base));
               }
               if (ivt == TY_POLY && repr_of(c, argv[0]).kind != RK_BOXED) emit_boxed(c, argv[0], b);
-              /* nil into a scalar slot is that slot's sentinel, as `@x = nil` writes it */
-              else if (nt_kind(nt, argv[0]) == NK_NilNode && (ivt == TY_FLOAT || ivt == TY_INT))
-                buf_puts(b, ivt == TY_FLOAT ? "sp_float_nil()" : "SP_INT_NIL");
+              /* nil into a scalar field sets its nil bit, as `@x = nil` writes it */
+              else if (oint_kind(ivt) && iv >= 0 && ivar_has_nilbit(c, defc < 0 ? rc : defc, iv)) {
+                Buf spf; memset(&spf, 0, sizeof spf);   /* the field's nil bit, through the receiver's temp or its plain read */
+                if (fo) buf_printf(&spf, "_t%d->", tw); else { buf_puts(&spf, "("); emit_expr(c, recv, &spf); buf_puts(&spf, ")->"); }
+                emit_ivar_value_nilbit(c, defc < 0 ? rc : defc, iv, spf.p, argv[0], b); free(spf.p);
+              }
               /* A genuinely poly rhs narrowing into a concrete slot takes
                  the same unboxing the local-assignment path uses. The slot
                  is concrete because an --rbs signature said so while the
@@ -13603,7 +14121,10 @@ else {
       if (discard) {
         int sv = g_ie_discard_value; g_ie_discard_value = 1;
         emit_indent(b, indent);
-        emit_expr(c, id, b);
+        /* an answer whose nil rides beside it is left as that oint */
+        TyKind sct = comp_ntype(c, id);
+        if (oint_kind(sct) && node_is_oint(c, id)) emit_oint_expr(c, id, sct, b);
+        else emit_expr(c, id, b);
         buf_puts(b, ";\n");
         g_ie_discard_value = sv;
         return 1;
@@ -13611,7 +14132,11 @@ else {
     }
   }
   emit_indent(b, indent);
-  emit_expr(c, id, b);
+  /* a value nobody reads is never unwrapped: `a[-100]` alone must not raise
+     the TypeError sp_oint_arg carries for a plain read */
+  { TyKind dt = comp_ntype(c, id);
+    if (oint_kind(dt) && node_is_oint(c, id)) { buf_puts(b, "(void)("); emit_oint_expr(c, id, dt, b); buf_puts(b, ")"); }
+    else emit_expr(c, id, b); }
   buf_puts(b, ";\n");
   return 1;
   return 0;
@@ -13681,12 +14206,21 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
       if (sp_streq(vty, "HashNode") || sp_streq(vty, "KeywordHashNode"))
         v_empty_hash = (nt_arr(nt, v, "elements", &hen), hen == 0);
     }
+    int wcid, wiv, wk = ivar_node_slot(c, id, &wcid, &wiv);
+    /* an Integer or Float field with a nil bit takes the value and its nil
+       through the bit; an oint static (class-level, top-level) the oint */
+    if (wk == 1 && ivar_has_nilbit(c, wcid, wiv)) {
+      char wpfx[128]; snprintf(wpfx, sizeof wpfx, "%s%s", g_self, g_self_deref);
+      emit_ivar_write_nilbit(c, id, wcid, wiv, wpfx, v, b);
+    }
+    else if (wk == 2 && civ_is_oint(c, wcid, wiv)) emit_oint_expr(c, v, ivt, b);
+    else if (oint_kind(ivt) && node_may_be_nil(c, v)) refuse_nil_store(c, v, ivt, "an instance variable write");
     /* `@t = Array.new(n) { <int array> }` into a narrowed pointer-array ivar:
        the generator emits from the NODE's type, which the narrowing (a slot
        decision) does not change. Lend it the slot's type, exactly as the local
        write does, or the sp_PolyArray * it builds lands in an sp_PtrArray *
        field and every read of the table dereferences the wrong shape. */
-    if (ty_is_ptr_array(ivt) && vty && sp_streq(vty, "CallNode") &&
+    else if (ty_is_ptr_array(ivt) && vty && sp_streq(vty, "CallNode") &&
         nt_ref(nt, v, "block") >= 0 && nt_str(nt, v, "name") &&
         sp_streq(nt_str(nt, v, "name"), "new") && nt_ref(nt, v, "receiver") >= 0 &&
         nt_type(nt, nt_ref(nt, v, "receiver")) &&
@@ -13709,15 +14243,12 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
       }
       buf_printf(b, " _t%d; })", tpa);
     }
-    else if (ivt == TY_INT && emit_nullable_int_ternary(c, v, b)) {
-      /* `@iv = cond ? nil : <int>` emitted in int context (nil -> SP_INT_NIL) */
-    }
     else if (vty && sp_streq(vty, "NilNode")) {
       switch (ivt) {
       case TY_RANGE: buf_puts(b, "(sp_Range){0}"); break;
       case TY_POLY: buf_puts(b, "sp_box_nil()"); break;
-      case TY_INT: buf_puts(b, "SP_INT_NIL"); break;
-      case TY_FLOAT: buf_puts(b, "sp_float_nil()"); break;
+      case TY_INT: buf_puts(b, "sp_oint_nil()"); break;   /* an oint static (an object's field took the bit arm above) */
+      case TY_FLOAT: buf_puts(b, "sp_ofloat_nil()"); break;
       case TY_STRING: buf_puts(b, "NULL"); break;
       default: buf_puts(b, default_value_from_compiler(c, ivt)); break;
       }
@@ -13810,11 +14341,6 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
          coerce the token to the slot type, keeping the raise. */
       emit_unresolved_coerced(c, v, ivt, b);
     }
-    else if (int_slot_store_needs_ck(c, v, ivt, iv_nullable)) {
-      buf_puts(b, "sp_int_slot_ck(");
-      emit_coerce(c, v, ivt, CO_HOLD, "an instance variable write", b);
-      buf_puts(b, ")");
-    }
     else {
       /* a subclass instance stored into an ancestor-typed ivar slot (#3418) */
       emit_obj_upcast_prefix(c, ivt, comp_ntype(c, v), b);
@@ -13844,6 +14370,9 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
       if (nt_kind(nt, v) == NK_NilNode) buf_puts(b, "NULL");
       else emit_strbuf_value(c, &slot, v, b);
     }
+    /* an Integer or Float class variable some write leaves nil in: its oint */
+    else if (cvar_is_oint(c, sc, h.idx)) emit_oint_expr(c, v, ct, b);
+    else if (oint_kind(ct) && node_may_be_nil(c, v)) refuse_nil_store(c, v, ct, "a class variable write");
     else if (emit_empty_container_for_slot(c, v, ct, b)) { /* emitted at the slot's type */ }
     else if (ct == TY_POLY) emit_boxed(c, v, b);
     /* --share-strings: a String Array into one whose elements the rule
@@ -13881,8 +14410,7 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
     }
     else if (emit_array_op_assign(c, ref, ct, op, v, b)) { }
     else if (ct == TY_POLY && emit_poly_op_assign(c, ref, op, v, 1, b)) { }
-    else if (emit_scalar_op_assign(c, ref, ct, op, v, 1,
-                                   idx >= 0 && c->classes[sc].cvar_nullable_int[idx], 0, b)) { }
+    else if (emit_scalar_op_assign(c, ref, ct, op, v, 1, cvar_is_oint(c, sc, idx), 0, b)) { }
     else {
       buf_printf(b, "%s %s= ", ref, op ? op : "+");
       emit_coerce(c, v, ct, CO_HOLD, "the operand of an `op=`", b); buf_puts(b, ";\n");
@@ -13917,6 +14445,8 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
     emit_slot_truthy(ot, ref, b);
     buf_printf(b, is_or ? ") { %s = " : " { %s = ", ref);
     if (ot == TY_POLY) emit_boxed(c, v, b);
+    /* an oint static takes the value with its nil */
+    else if (oint_kind(ot) && cvar_is_oint(c, sc, h.idx)) emit_oint_expr(c, v, ot, b);
     /* --share-strings: as the plain write, each String as a handle */
     else if (h.r.elems_handle && comp_ntype(c, v) == TY_STR_ARRAY) emit_str_array_handles(c, v, b);
     else emit_coerce(c, v, ot, CO_HOLD, "a class variable's `||=` or `&&=`", b);
@@ -14156,7 +14686,11 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
       /* An int ivar op-assign takes the overflow-checked helpers like the
          binary form (raw `@x *= y` wrapped where `@x * y` raised), and reads
          the ivar before an effectful rhs, which may reassign it. */
-      if (emit_scalar_op_assign(c, ref, vt, op, ival, 1, vnil, 0, b)) return 1;
+      { int ocid, oiv, ok = ivar_node_slot(c, id, &ocid, &oiv);
+        char ont[200], ocl[200], opf[128]; snprintf(opf, sizeof opf, "%s%s", g_self, g_self_deref);
+        int armed = ok == 1 && opa_arm_ivar(c, ocid, oiv, opf, ont, sizeof ont, ocl, sizeof ocl);
+        int soint = ok == 2 && civ_is_oint(c, ocid, oiv);
+        if (emit_scalar_op_assign(c, ref, vt, op, ival, 1, armed ? 0 : soint, 0, b)) return 1; }
       buf_printf(b, "%s %s= ", ref, op ? op : "+");
       /* a poly RHS feeding an int/float ivar op-assign needs coercing to the
          scalar before the C operator (e.g. `@bg_pattern |= chr_mem[i] * 256`). */
@@ -14348,8 +14882,10 @@ static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int in
       }
       else {
         char lval[400]; snprintf(lval, sizeof lval, "_t%d%siv_%s", trecv, acc, iv_c(rn));
-        /* the backing ivar's nil, as `@x op= v` takes it */
-        if (emit_scalar_op_assign(c, lval, ivt, op, val, 1, c->classes[rdcls].ivar_nullable_int[ivx], 0, b)) return 1;
+        /* the backing ivar's nil bit, as `@x op= v` takes it */
+        { char ont[200], ocl[200], opf[64]; snprintf(opf, sizeof opf, "_t%d%s", trecv, acc);
+          opa_arm_ivar(c, rdcls, ivx, opf, ont, sizeof ont, ocl, sizeof ocl);
+          if (emit_scalar_op_assign(c, lval, ivt, op, val, 1, 0, 0, b)) return 1; }
         buf_printf(b, "_t%d%siv_%s = _t%d%siv_%s %s ", trecv, acc, iv_c(rn), trecv, acc, iv_c(rn), op ? op : "+");
         if (rhst == TY_POLY && (ivt == TY_INT || ivt == TY_BOOL)) {
           buf_puts(b, op_assign_int_conv(ivt, op)); emit_expr(c, val, b); buf_puts(b, ")");
@@ -14503,7 +15039,9 @@ static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int in
         }
         else {
           char lval[320]; snprintf(lval, sizeof lval, "_o->iv_%s", iv_c(rn));
-          if (emit_scalar_op_assign(c, lval, ivt, op, val, 0, c->classes[pdcls].ivar_nullable_int[ivx], 0, b)) {
+          char ont[200], ocl[200];
+          opa_arm_ivar(c, pdcls, ivx, "_o->", ont, sizeof ont, ocl, sizeof ocl);
+          if (emit_scalar_op_assign(c, lval, ivt, op, val, 0, 0, 0, b)) {
             emit_indent(b, indent + 1); buf_puts(b, "break; }\n");
             continue;
           }
@@ -14569,6 +15107,12 @@ static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int in
       if (!isg) emit_const_flag_set(lv, key, b, indent);
       return 1;
     }
+    /* a global that holds its nil takes the value's oint form */
+    if (isg && gvar_is_oint(c, lv)) {
+      emit_oint_expr(c, v, lv->type, b);
+      buf_puts(b, ";\n");
+      return 1;
+    }
     int vlit = empty_literal_node(c, v);
     /* `X = [].freeze`: the strip above found the literal so the slot's kind
        builds it; the freeze it stripped still has to happen (#3828). */
@@ -14614,14 +15158,18 @@ static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int in
       }
     }
     if (vty && sp_streq(vty, "NilNode"))
-      /* Every nullable kind has a sentinel that reads back as nil, and this
-         arm knew only the string one: an int-typed global assigned nil got
+      /* Every nullable kind has a nil of its own that reads back as nil (an
+         Integer / Float oint's flag, a String's NULL), and this arm knew only
+         the string one: an int-typed global assigned nil got
          default_value's 0, which is the zero a fresh slot starts at, not nil.
          `if $g` then took the truthy branch on a global whose only assignment
          was nil -- `Process.kill("KILL", -$pgid)` with $pgid nil signalled the
          caller's own process group (#4248). nil_sentinel is the same rule the
          ivar and local arms use. */
-      buf_puts(b, lv->type == TY_RANGE ? "(sp_Range){0}" : nil_sentinel(lv->type));
+      { if (oint_kind(lv->type) && !gvar_is_oint(c, lv)) refuse_nil_store(c, v, lv->type, "a global variable write");
+        buf_puts(b, lv->type == TY_RANGE ? "(sp_Range){0}" : nil_sentinel(lv->type)); }
+    else if (oint_kind(lv->type) && !gvar_is_oint(c, lv) && node_may_be_nil(c, v))
+      refuse_nil_store(c, v, lv->type, "a global variable write");
     else if (v_empty_arr && lv->type == TY_POLY_ARRAY) {
       if (v_lit_frozen) { int _ft = ++g_tmp;
         buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); _t%d->frozen = 1; _t%d; })", _ft, _ft, _ft); }
@@ -14848,7 +15396,7 @@ static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int in
     }
     else if (emit_array_op_assign(c, gref, lv->type, op, v, b)) { }
     else if (lv->type == TY_POLY && emit_poly_op_assign(c, gref, op, v, 1, b)) { }
-    else if (emit_scalar_op_assign(c, gref, lv->type, op, v, 1, lv->nullable_int, 0, b)) { }
+    else if (emit_scalar_op_assign(c, gref, lv->type, op, v, 1, gvar_is_oint(c, lv), 0, b)) { }
     else {
       buf_printf(b, "gv_%s %s= ", rn, op ? op : "+");
       emit_coerce(c, v, lv->type, CO_HOLD, "the operand of an `op=`", b); buf_puts(b, ";\n");
@@ -14863,11 +15411,10 @@ static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int in
     if (!lv) return 1;
     int v = nt_ref(nt, id, "value");
     /* The slot's own truthiness, not C's: an int-typed global holds nil as
-       SP_INT_NIL, which is a non-zero bit pattern, so a plain `if (!gv_x)`
-       read a never-assigned global as truthy and `$x ||= v` stopped firing
-       once the slot started at the sentinel (#4248). This is also closer to
-       Ruby than the zero test it replaces -- `$x = 0; $x ||= 5` leaves 0,
-       where the C test fired. */
+       its oint's flag, so a plain `if (!gv_x)` read a never-assigned global
+       as truthy and `$x ||= v` stopped firing once the slot started at nil
+       (#4248). This is also closer to Ruby than the zero test it replaces --
+       `$x = 0; $x ||= 5` leaves 0, where the C test fired. */
     if (repr_of_slot(c, lv).kind == RK_STRBUF) {
       /* a global holding the shared handle, as an ivar's slot (#6765) */
       char gref[256];
@@ -14884,8 +15431,8 @@ static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int in
       if (!is_or) { /* &&= runs when the slot is truthy */ }
       else buf_puts(b, "!(");
       switch (lv->type) {
-      case TY_INT:   buf_printf(b, "%s != SP_INT_NIL", gref); break;
-      case TY_FLOAT: buf_printf(b, "!sp_float_is_nil(%s)", gref); break;
+      /* an oint global is truthy when not nil; a plain one always */
+      case TY_INT: case TY_FLOAT: buf_printf(b, gvar_is_oint(c, lv) ? "!%s.nil" : "(%s, 1)", gref); break;
       case TY_POLY:  buf_printf(b, "sp_poly_truthy(%s)", gref); break;
       case TY_CLASS: buf_printf(b, "!sp_class_nil_p(%s)", gref); break;
       default:       buf_puts(b, gref); break;
@@ -14895,6 +15442,7 @@ static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int in
       /* a poly slot boxes the value, as the plain write does: `$g ||= nil`
          into a global that also holds a bool assigned the bare C 0 */
       if (lv->type == TY_POLY && repr_of(c, v).kind != RK_BOXED) emit_boxed(c, v, b);
+      else if (gvar_is_oint(c, lv)) emit_oint_expr(c, v, lv->type, b);
       else emit_coerce(c, v, lv->type, CO_HOLD, "a global variable's `||=` or `&&=`", b);
       buf_puts(b, "; }\n"); }
     return 1;
@@ -15121,13 +15669,13 @@ static void emit_stmt_node(Compiler *c, int id, Buf *b, int indent) {
     }
     else if (!is_or) {
       /* `x &&= v` assigns only when x is not nil: a slot that can hold nil
-         (a NULL pointer, a sentinel scalar) tests for it, one that cannot
+         (a NULL pointer, an oint scalar) tests for it, one that cannot
          is always truthy and always assigns */
       Buf rb; memset(&rb, 0, sizeof rb); emit_local_ref(c, id, nm, &rb);
       Buf nb; memset(&nb, 0, sizeof nb);
       if (rb.p && local_nil_test(c, lv, rb.p, &nb)) {
         /* through emit_assign, as `||=` below: a nil or boxed value takes
-           the coercion the plain `x = v` does (the sentinel, not 0) */
+           the coercion the plain `x = v` does (nil, not 0) */
         Buf apre, abody;
         memset(&apre, 0, sizeof apre); memset(&abody, 0, sizeof abody);
         Buf *sv_pre = g_pre; int sv_ind = g_indent;
@@ -15171,6 +15719,7 @@ static void emit_stmt_node(Compiler *c, int id, Buf *b, int indent) {
   }
   if (sp_streq(ty, "InstanceVariableOrWriteNode") || sp_streq(ty, "InstanceVariableAndWriteNode")) {
     int is_or = sp_streq(ty, "InstanceVariableOrWriteNode");
+    int onk = 0, ocid = -1, oiv = -1; char ont[300] = "", opfx[128] = "";   /* an Integer / Float slot's nil test */
     const char *nm = nt_str(nt, id, "name");
     int v = nt_ref(nt, id, "value");
     Scope *cws2 = comp_scope_of(c, id);
@@ -15231,16 +15780,24 @@ static void emit_stmt_node(Compiler *c, int id, Buf *b, int indent) {
       else if (ivt2 == TY_BIGINT && comp_ntype(c, v) != TY_BIGINT && ty_is_numeric(comp_ntype(c, v))) {
         buf_puts(&vval, "sp_bigint_new_int("); emit_int_expr(c, v, &vval); buf_puts(&vval, ")");
       }
+      /* an Integer or Float slot holding its nil: the bit kept in step, or the oint */
+      else if (oint_kind(ivt2) && (onk = ivar_orw_niltest(c, id, ref2, ont, sizeof ont, &ocid, &oiv, opfx, sizeof opfx)) == 1)
+        emit_ivar_value_nilbit(c, ocid, oiv, opfx, v, &vval);
+      else if (oint_kind(ivt2) && onk == 2) emit_oint_expr(c, v, ivt2, &vval);
       else emit_coerce(c, v, ivt2, CO_HOLD, "an instance variable's `||=` or `&&=`", &vval);
       g_pre = saved_pre;
     }
     switch (ivt2) {
     case TY_POLY: snprintf(cond2, sizeof cond2, "%ssp_poly_truthy(%s)", is_or ? "!" : "", ref2); break;
     case TY_BOOL: case TY_STRING: case TY_STRBUF: snprintf(cond2, sizeof cond2, "%s%s", is_or ? "!" : "", ref2); break;
-    case TY_INT: snprintf(cond2, sizeof cond2, "%s %s= SP_INT_NIL", ref2, is_or ? "=" : "!"); break;
+    /* an Integer or Float: its nil bit or oint flag; a plain one is never nil */
+    case TY_INT: case TY_FLOAT:
+      if (!onk) onk = ivar_orw_niltest(c, id, ref2, ont, sizeof ont, &ocid, &oiv, opfx, sizeof opfx);
+      if (onk) snprintf(cond2, sizeof cond2, "%s%s", is_or ? "" : "!", ont);
+      else snprintf(cond2, sizeof cond2, "%s", is_or ? "0" : "1");
+      break;
     case TY_SYMBOL: snprintf(cond2, sizeof cond2, "%s %s= (sp_sym)-1", ref2, is_or ? "=" : "!"); break;   /* nilable symbol: (sp_sym)-1 is the nil sentinel */
     case TY_CLASS: snprintf(cond2, sizeof cond2, "%ssp_class_nil_p(%s)", is_or ? "" : "!", ref2); break;
-    case TY_FLOAT: snprintf(cond2, sizeof cond2, "%ssp_float_is_nil(%s)", is_or ? "" : "!", ref2); break;   /* nil is SP_FLOAT_NIL */
     default: break;
     }
     /* a pointer-backed ivar (fiber/proc/object/array/hash/...) reads falsy
@@ -15296,11 +15853,10 @@ static void emit_stmt_node(Compiler *c, int id, Buf *b, int indent) {
        it, and the guard is the ivar's own: a pointer-backed attribute that
        was never assigned is NULL, not truthy (#5428). */
     char lhs[300]; snprintf(lhs, sizeof lhs, "_t%d->iv_%s", tr, iv_c(attr));
-    buf_puts(b, "(void)");
+    char apfx[32]; snprintf(apfx, sizeof apfx, "_t%d->", tr);
     char tn[32], mk[300]; snprintf(tn, sizeof tn, "_t%d", tr);
     const char *m = iidx >= 0 ? ivar_set_mark(c, class_id, ivn, tn, "->", mk, sizeof mk) : NULL;
-    emit_slot_orw_value(c, ivt, iidx >= 0 && repr_of_ivar(c, class_id, iidx).elems_handle, lhs, v, is_or, m, b);
-    buf_puts(b, "; }\n");
+    buf_puts(b, "(void)"); emit_attr_orw_value(c, class_id, iidx, apfx, ivt, iidx >= 0 && repr_of_ivar(c, class_id, iidx).elems_handle, lhs, v, is_or, m, b); buf_puts(b, "; }\n");
     return;
   }
   if (emit_ivar_cvar_write_stmt(c, id, b, indent, nt, ty)) return;
@@ -15531,7 +16087,12 @@ static void emit_stmt_node(Compiler *c, int id, Buf *b, int indent) {
         /* a next that leaves a block read as the handle (emit_strbuf_route) */
         if (repr_share_rule(c) && c->strbuf_handle_demand[id]) emit_strbuf_handle_of(c, nv[0], b);
         else if (g_ie_res_poly) emit_boxed(c, nv[0], b);
-        else if (g_ie_next_ty == TY_INT || g_ie_next_ty == TY_FLOAT) emit_expr_slot(c, nv[0], g_ie_next_ty, b);
+        else if (g_ie_next_oint && oint_kind(g_ie_next_ty)) emit_oint_expr(c, nv[0], g_ie_next_ty, b);
+        else if (g_ie_next_ty == TY_INT || g_ie_next_ty == TY_FLOAT) {
+          /* a plain slot never holds a nil: the backstop */
+          if (node_may_be_nil(c, nv[0])) refuse_nil_store(c, nv[0], g_ie_next_ty, "a `next` value into a plain slot");
+          emit_expr(c, nv[0], b);
+        }
         else if (apf9) { buf_printf(b, "%s(", apf9); emit_expr(c, nv[0], b); buf_puts(b, ")"); }
         else emit_expr(c, nv[0], b);
         buf_puts(b, ";\n");
@@ -15666,9 +16227,13 @@ static void emit_stmt_node(Compiler *c, int id, Buf *b, int indent) {
   if (sp_streq(ty, "PreExecutionNode") || sp_streq(ty, "PostExecutionNode")) { return; } /* hoisted separately */
 
   /* any remaining value expression as a bare statement (its value is used
-     only when this is the last statement of an inlined expr method) */
+     only when this is the last statement of an inlined expr method); a
+     number answered with its nil beside it is left as that oint, not
+     unwrapped (a nil would raise for a value nobody reads) */
   emit_indent(b, indent);
-  emit_expr(c, id, b);
+  { TyKind st = comp_ntype(c, id);
+    if (oint_kind(st) && node_is_oint(c, id)) emit_oint_expr(c, id, st, b);
+    else emit_expr(c, id, b); }
   buf_puts(b, ";\n");
 }
 
@@ -15917,14 +16482,18 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
     if (is_scalar_ret(rt)) {
       int t = ++g_tmp;
       char rv[32]; snprintf(rv, sizeof rv, "_t%d", t);
-      emit_indent(b, indent); emit_ctype(c, rt, b);
+      /* an Integer / Float begin some arm of which answers nil: the temp is
+         the oint (the arms store that form, g_result_oint) */
+      int bo = cond_res_oint(c, id, rt);
+      emit_indent(b, indent); emit_res_ctype(c, rt, bo, b);
       /* emit_ctype declares a BY-VALUE object class as a bare struct, and
          default_value cannot know that: it takes a TyKind, and the value-ness
          lives on the class. It answers NULL, which is not a struct, so a
          method returning such a class with an ensure in its body did not
          build (#4270). The ensure's own deferred-return slot makes the same
          distinction (#4268); this is that question for the begin's result. */
-      if (comp_ty_value_obj(c, rt))
+      if (bo) buf_printf(b, " _t%d = %s;", t, oint_nil(rt));
+      else if (comp_ty_value_obj(c, rt))
         buf_printf(b, " _t%d = (sp_%s){0};", t, c->classes[ty_object_class(rt)].c_name);
       else
         buf_printf(b, " _t%d = %s;", t, rt == TY_RANGE ? "(sp_Range){0}" : default_value_from_compiler(c, rt));
@@ -15936,14 +16505,21 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
       if (ec >= 0 && nt_ref(nt, ec, "statements") >= 0 && ty_gc_rootable(c, rt)) { buf_puts(b, " "); emit_gc_root_tmp(c, rt, t, b); }
       buf_puts(b, "\n");
       int sp = g_result_poly; g_result_poly = (rt == TY_POLY);
-      TyKind srt = g_result_ty; g_result_ty = rt;   /* the arms' nil is this slot's (a scalar's sentinel) */
+      TyKind srt = g_result_ty; g_result_ty = rt;   /* the arms' nil is this slot's */
+      int sro = g_result_oint; g_result_oint = cond_res_oint(c, id, rt);
       emit_begin(c, id, b, indent, rv);
-      g_result_poly = sp; g_result_ty = srt;
+      g_result_poly = sp; g_result_ty = srt; g_result_oint = sro;
       emit_indent(b, indent); emit_tail_lead(b);
       /* the begin's scalar result temp feeds a poly tail slot (return type or an
          outer poly result var widened under promote): box it to match. */
       int target_poly = g_result_var ? g_result_poly : (g_ret_type == TY_POLY);
-      if (target_poly && rt != TY_POLY) { emit_boxed_tmp(c, rt, t, b); buf_puts(b, ";\n"); }
+      int slot_o = g_result_var ? g_result_oint : g_ret_oint;
+      if (target_poly && rt != TY_POLY && bo) buf_printf(b, "%s(_t%d);\n", oint_box(rt), t);
+      else if (target_poly && rt != TY_POLY) { emit_boxed_tmp(c, rt, t, b); buf_puts(b, ";\n"); }
+      /* the oint temp into a plain slot is its value (TypeError for nil);
+         a plain temp into an oint slot is wrapped */
+      else if (bo && !slot_o) buf_printf(b, "%s(_t%d);\n", oint_arg(rt), t);
+      else if (!bo && slot_o && oint_kind(rt)) buf_printf(b, "%s(_t%d);\n", oint_of(rt), t);
       /* The mirror: a POLY begin value (its arms are a union -- a String and
          nil) tailing into a CONCRETE return slot. The slot is what the --rbs
          seed says, and `String?` is a NULL `const char *` here, so narrow the
@@ -16037,7 +16613,15 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
           snprintf(islot9, sizeof islot9, "sp_strbuf_read_pub(%s)", h8);
           if (g_repr_check) repr_channel_note(c, id, RCH_PUBLISH);
         }
-        emit_tail_slot(c, it9, islot9, b);
+        /* a class-level / toplevel static is an oint: boxed as one, read as
+           its value for a plain slot, handed over whole for an oint slot */
+        int civ8 = (cmeth9 || tl9 >= 0) && oint_kind(it9) && civ_is_oint(c, icls9, iidx9);
+        int slot_o8 = g_result_var ? g_result_oint : g_ret_oint;
+        int want_poly8 = g_result_var ? g_result_poly : ((g_result_var ? g_result_ty : g_ret_type) == TY_POLY);
+        if (want_poly8 && civ8) buf_printf(b, "%s(%s);\n", oint_box(it9), islot9);
+        else if (!want_poly8 && civ8 && !slot_o8) buf_printf(b, "%s.v;\n", islot9);
+        else if (!want_poly8 && !civ8 && oint_kind(it9) && slot_o8) buf_printf(b, "%s(%s);\n", oint_of(it9), islot9);
+        else emit_tail_slot(c, it9, islot9, b);
         return;
       }
     }
@@ -16062,7 +16646,18 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
     char lref9[1024];
     holder_slot_text(c, &h9, lref9, sizeof lref9);
     emit_indent(b, indent); emit_tail_lead(b);
-    emit_tail_slot(c, lt9, lref9, b);
+    int want_poly9 = g_result_var ? g_result_poly : ((g_result_var ? g_result_ty : g_ret_type) == TY_POLY);
+    int ores9 = g_result_var ? g_result_oint : g_ret_oint;
+    /* an Integer / Float slot holding its nil beside the value boxes as that
+       oint; against the result's form, an oint slot into a plain result
+       unwraps (a nil there is the analysis's miss, raised, not 0), a plain
+       slot into an oint result wraps */
+    if (want_poly9 && oint_kind(lt9) && lv9 && slot_is_oint(lv9)) buf_printf(b, "%s(%s);\n", oint_box(lt9), lref9);
+    else if (!want_poly9 && oint_kind(lt9) && lv9 && slot_is_oint(lv9) && !ores9)
+      buf_printf(b, "%s(%s);\n", oint_arg(lt9), lref9);
+    else if (!want_poly9 && oint_kind(lt9) && lv9 && !slot_is_oint(lv9) && ores9)
+      buf_printf(b, "%s(%s);\n", oint_of(lt9), lref9);
+    else emit_tail_slot(c, lt9, lref9, b);
     return;
   }
   /* A tail GLOBAL write answers the stored value too (`def m; $g = v; end`),
@@ -16088,7 +16683,16 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
     else snprintf(gref9, sizeof gref9, "%s", gslot9);
     if (g_repr_check && sb9 && h9.r.share) repr_channel_note(c, id, RCH_PUBLISH);
     emit_indent(b, indent); emit_tail_lead(b);
-    emit_tail_slot(c, gt9, gref9, b);
+    int want_poly9g = g_result_var ? g_result_poly : ((g_result_var ? g_result_ty : g_ret_type) == TY_POLY);
+    int ores9g = g_result_var ? g_result_oint : g_ret_oint;
+    /* an oint static boxes as that oint; against the result's form, as the
+       local arm above */
+    if (want_poly9g && oint_kind(gt9) && gvar_is_oint(c, h9.lv)) buf_printf(b, "%s(%s);\n", oint_box(gt9), gref9);
+    else if (!want_poly9g && oint_kind(gt9) && gvar_is_oint(c, h9.lv) && !ores9g)
+      buf_printf(b, "%s(%s);\n", oint_arg(gt9), gref9);
+    else if (!want_poly9g && oint_kind(gt9) && !gvar_is_oint(c, h9.lv) && ores9g)
+      buf_printf(b, "%s(%s);\n", oint_of(gt9), gref9);
+    else emit_tail_slot(c, gt9, gref9, b);
     return;
   }
   if ((sp_streq(ty, "InstanceVariableWriteNode") && !_iv_tail_val) ||
@@ -16126,11 +16730,17 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
         emit_indent(b, indent); buf_printf(b, "%s = ", g_result_var);
         if (g_result_poly && ct != TY_POLY) {
           Buf bx; memset(&bx, 0, sizeof bx);
-          emit_boxed_text(c, ct, rb.p ? rb.p : "0", &bx);
+          /* an oint cell boxes as that oint */
+          if (lv && oint_kind(ct) && slot_is_oint(lv)) buf_printf(&bx, "%s(%s)", oint_box(ct), rb.p ? rb.p : "");
+          else emit_boxed_text(c, ct, rb.p ? rb.p : "0", &bx);
           buf_printf(b, "%s;\n", bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
         }
         else {
-          buf_printf(b, "%s;\n", rb.p ? rb.p : "0");
+          /* the cell's form against the result's */
+          int co = lv && oint_kind(ct) && slot_is_oint(lv);
+          if (co && !g_result_oint) buf_printf(b, "%s.v;\n", rb.p ? rb.p : "0");
+          else if (!co && oint_kind(ct) && g_result_oint) buf_printf(b, "%s(%s);\n", oint_of(ct), rb.p ? rb.p : "0");
+          else buf_printf(b, "%s;\n", rb.p ? rb.p : "0");
         }
         free(rb.p);
         return;
@@ -16218,7 +16828,12 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
              comp_ntype(c, id) != TY_VOID && comp_ntype(c, id) != TY_UNKNOWN) {
       emit_indent(b, indent);
       emit_tail_lead(b);
-      emit_tail_recv_value(c, id, _rr, b);
+      /* a slot holding its nil (`def c(v) = v&.upto(3) { }`) takes the
+         receiver's oint */
+      TyKind tct = comp_ntype(c, id);
+      if (oint_kind(tct) && (g_result_var ? g_result_oint : g_ret_oint) && repr_of(c, _rr).kind != RK_BOXED)
+        emit_oint_expr(c, _rr, tct, b);
+      else emit_tail_recv_value(c, id, _rr, b);
       buf_puts(b, ";\n");
     }
     else if (_named) {
@@ -16283,13 +16898,15 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
   int want_poly = g_result_var ? g_result_poly : (g_ret_type == TY_POLY);
   TyKind tail_slot_ty = g_result_var ? g_result_ty : g_ret_type;
   /* A bare `nil` in tail position feeding a nullable Integer/Float slot is
-     that type's sentinel (the nil join of ty_unify), not the plain `0`
+     that type's oint nil (the nil join of ty_unify), not the plain `0`
      emit_expr gives nil in every other numeric context: an Enumerable
      method written `return i if match; ...; nil` (find_index) fell through
      this generic value path and answered 0 instead of nil for "not found"
      on a typed receiver. Mirrors the local-write carve-out above. */
   if (!want_poly && sp_streq(ty, "NilNode") &&
       (tail_slot_ty == TY_INT || tail_slot_ty == TY_FLOAT)) {
+    if (!(g_result_var ? g_result_oint : g_ret_oint))
+      refuse_nil_store(c, id, tail_slot_ty, "the value of a method answering a number");
     buf_puts(b, nil_sentinel(tail_slot_ty));
     buf_puts(b, ";\n");
     return;
@@ -16378,7 +16995,7 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
              default_value_from_compiler(c, g_result_ty) && default_value_from_compiler(c, g_result_ty)[0] == '(')
       buf_printf(b, ", %s)", default_value_from_compiler(c, g_result_ty));
     else if (g_result_ty == TY_INT || g_result_ty == TY_FLOAT)
-      buf_printf(b, ", %s)", default_value_from_compiler(c, g_result_ty));   /* the nil sentinel */
+      buf_printf(b, ", %s)", g_result_oint ? oint_nil(g_result_ty) : default_value_from_compiler(c, g_result_ty));
     else buf_printf(b, ", (__typeof__(%s))0)", g_result_var);
   }
   else {
@@ -16602,6 +17219,14 @@ const char *hash_order_val(TyKind t, int tr, int ti) {
   else snprintf(o, sizeof bufs[0], "sp_%sHash_get(_t%d, _t%d->order[_t%d])", ty_hash_cname(t), tr, tr, ti);
   return o;
 }
+/* The same value of an Integer-valued typed Hash that may hold a nil
+   (D3b-ii), as an sp_oint with that nil */
+const char *hash_order_oval(TyKind t, int tr, int ti) {
+  static char bufs[4][96]; static int n = 0;
+  char *o = bufs[n++ & 3];
+  snprintf(o, sizeof bufs[0], "sp_%sHash_vget(_t%d, _t%d->order[_t%d])", ty_hash_cname(t), tr, tr, ti);
+  return o;
+}
 
 
 /* ---- Index / element-assignment statements (a[i]=x, a[i] op= x, a[i]&&=/||=,
@@ -16621,9 +17246,22 @@ void emit_hash_store_key(Compiler *c, int key, TyKind rt, Buf *b) {
   }
   emit_hash_key(c, key, kt, b);
 }
-/* The value of a hash store, as the kind's set takes it. */
+/* A store into an Integer-valued typed Hash of a value that can be nil (a
+   nil, an oint, a boxed value): it goes through `_oset`, which keeps the nil
+   in the entry's bit (D3b-ii), with the value as its oint */
+static int hash_store_oset(Compiler *c, int val, TyKind rt) {
+  if (rt != TY_STR_INT_HASH && rt != TY_INT_INT_HASH) return 0;
+  return nt_kind(c->nt, val) == NK_NilNode || node_has_oint_form(c, val) || repr_of(c, val).kind == RK_BOXED;
+}
+/* The value of a hash store, as the kind's set takes it (as an oint for
+   hash_store_oset's `_oset`). */
 static void emit_hash_store_val(Compiler *c, int val, TyKind rt, Buf *b) {
   if (ty_hash_val(rt) == TY_POLY) { emit_boxed(c, val, b); return; }
+  if (hash_store_oset(c, val, rt)) {
+    if (repr_of(c, val).kind == RK_BOXED) { buf_puts(b, "sp_poly_hval_oi("); emit_expr(c, val, b); buf_puts(b, ")"); }
+    else emit_oint_expr(c, val, TY_INT, b);
+    return;
+  }
   /* A poly value (holds the hash's value type at runtime, e.g. a String?
      guarded non-nil) into a typed-value hash: unbox to its element
      representation, refusing one of another kind as the typed-array `[]=`
@@ -17082,11 +17720,11 @@ static int str_mutate_reassign_arms(Compiler *c, Buf *b, int indent, const NodeT
       char *v = emit_str_splice_value(c, recv, argv[1], 0, ti, b);
       buf_printf(b, " sp_int _len%d = (sp_int)sp_str_length(", ti); emit_expr(c, recv, b); buf_puts(b, ");");
       /* a beginless bound is 0 and an endless one is the last index, rather
-         than the SP_INT_NIL sentinel a negative-index fixup would fold into a
+         than the open-bound marker a negative-index fixup would fold into a
          wild offset (`s[..1] = x` raised RangeError) */
-      buf_printf(b, " sp_int _a%d = _t%d.first == SP_INT_NIL ? 0 :"
+      buf_printf(b, " sp_int _a%d = _t%d.nobeg ? 0 :"
                     " (_t%d.first < 0 ? _t%d.first + _len%d : _t%d.first);", ti, ti, ti, ti, ti, ti);
-      buf_printf(b, " int _oe%d = _t%d.last == SP_INT_NIL;", ti, ti);
+      buf_printf(b, " int _oe%d = _t%d.noend;", ti, ti);
       buf_printf(b, " sp_int _e%d = _oe%d ? _len%d - 1 :"
                     " (_t%d.last < 0 ? _t%d.last + _len%d : _t%d.last);", ti, ti, ti, ti, ti, ti, ti);
       buf_printf(b, " sp_int _n%d = _e%d - _a%d + ((_t%d.excl && !_oe%d) ? 0 : 1);", ti, ti, ti, ti, ti);
@@ -17121,11 +17759,11 @@ static int str_mutate_reassign_arms(Compiler *c, Buf *b, int indent, const NodeT
       buf_printf(b, "{ const char *_t%d = ", ti); emit_str_expr(c, argv[0], b); buf_puts(b, ";");
       if (nt_kind(nt, argv[0]) != NK_StringNode) buf_printf(b, " SP_GC_ROOT_STR(_t%d);", ti);
       char *v = emit_str_splice_value(c, recv, argv[1], 1, ti, b);
-      buf_printf(b, " sp_int _a%d = sp_str_index_opt(", ti); emit_expr(c, recv, b);
-      buf_printf(b, ", _t%d); if (_a%d == SP_INT_NIL) sp_raise_cls(\"IndexError\", \"string not matched\");", ti, ti);
+      buf_printf(b, " sp_oint _a%d = sp_str_index_opt(", ti); emit_expr(c, recv, b);
+      buf_printf(b, ", _t%d); if (_a%d.nil) sp_raise_cls(\"IndexError\", \"string not matched\");", ti, ti);
       buf_puts(b, " "); emit_expr(c, recv, b); buf_puts(b, " = sp_str_splice_at(");
       emit_expr(c, recv, b);
-      buf_printf(b, ", _a%d, (sp_int)sp_str_length(_t%d), %s, 0); }\n", ti, ti, v ? v : "NULL");
+      buf_printf(b, ", _a%d.v, (sp_int)sp_str_length(_t%d), %s, 0); }\n", ti, ti, v ? v : "NULL");
       free(v);
       return 1;
     }
@@ -17542,11 +18180,11 @@ static int str_mutate_append_bang_arms(Compiler *c, int id, Buf *b, int indent, 
           int tr2 = ++g_tmp;
           buf_printf(b, "{ sp_Range _t%d = sp_range_ix(", tr2); emit_expr(c, argv[0], b); buf_puts(b, ")");
           buf_printf(b, "; sp_int _t%d = (sp_int)sp_str_length(", tn2); emit_expr(c, recv, b);
-          /* a beginless Range (first INTPTR_MIN) starts at 0, and an endless
-             one (last INTPTR_MAX) runs to the end: `last + 1` overflowed */
-          buf_printf(b, "); sp_int _t%d = _t%d.first == INTPTR_MIN ? 0 : _t%d.first < 0 ? _t%d.first + _t%d : _t%d.first;",
+          /* a beginless Range starts at 0, and an endless one runs to the
+             end: `last + 1` overflowed */
+          buf_printf(b, "); sp_int _t%d = _t%d.nobeg ? 0 : _t%d.first < 0 ? _t%d.first + _t%d : _t%d.first;",
                      ti2, tr2, tr2, tr2, tn2, tr2);
-          buf_printf(b, " sp_int _t%d = _t%d.last == INTPTR_MAX ? _t%d - _t%d :"
+          buf_printf(b, " sp_int _t%d = _t%d.noend ? _t%d - _t%d :"
                         " (_t%d.last < 0 ? _t%d.last + _t%d : _t%d.last) - _t%d + (_t%d.excl ? 0 : 1);",
                      tl2, tr2, tn2, ti2, tr2, tr2, tn2, tr2, ti2, tr2);
           buf_printf(b, " if (_t%d < 0) _t%d = 0;", tl2, tl2);
@@ -17809,9 +18447,12 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
         if (subtree_may_allocate(nt, recv) || subtree_has_side_effect(c, argv[0]) || subtree_has_side_effect(c, argv[1])) { emit_gc_root_tmp(c, rt, tr, b); buf_puts(b, " "); }
         buf_printf(b, "%s _t%d = ", c_type_name(kt), tk); emit_hash_store_key(c, argv[0], rt, b); buf_puts(b, "; ");
         if (operand_may_allocate(c, argv[0]) && needs_root(kt)) { emit_gc_root_tmp(c, kt, tk, b); buf_puts(b, " "); }
-        buf_printf(b, "%s _t%d = ", c_type_name(ty_hash_val(rt)), tv); emit_hash_store_val(c, argv[1], rt, b);
-        buf_printf(b, "; if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s); ", tr, tr, hash_box_cls(rt));
-        buf_printf(b, "sp_%sHash_set(_t%d, _t%d, _t%d); }\n", hn, tr, tk, tv);
+        int vo = hash_store_oset(c, argv[1], rt);
+        const char *vct = vo ? "sp_oint" : c_type_name(ty_hash_val(rt));
+        buf_printf(b, "%s _t%d = ", vct ? vct : "sp_RbVal", tv); emit_hash_store_val(c, argv[1], rt, b);
+        const char *hbc = hash_box_cls(rt);
+        buf_printf(b, "; if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s); ", tr, tr, hbc ? hbc : "0");
+        buf_printf(b, "sp_%sHash_%s(_t%d, _t%d, _t%d); }\n", hn, vo ? "oset" : "set", tr, tk, tv);
         return 1;
       }
       /* A key that is a shared String slot's read is a fresh copy, held by
@@ -17828,7 +18469,7 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
       }
       buf_puts(b, "if (sp_gc_is_frozen("); emit_expr(c, recv, b); buf_puts(b, ")) sp_raise_frozen_hash_at("); emit_expr(c, recv, b); buf_printf(b, ", %s);\n", hash_box_cls(rt));
       emit_indent(b, indent);
-      buf_printf(b, "sp_%sHash_set(", hn); emit_expr(c, recv, b); buf_puts(b, ", ");
+      buf_printf(b, "sp_%sHash_%s(", hn, hash_store_oset(c, argv[1], rt) ? "oset" : "set"); emit_expr(c, recv, b); buf_puts(b, ", ");
       emit_hash_store_key(c, argv[0], rt, b); buf_puts(b, ", ");
       if (tv >= 0) buf_printf(b, "_t%d); }\n", tv);
       else { emit_hash_store_val(c, argv[1], rt, b); buf_puts(b, ");\n"); }
@@ -17982,43 +18623,70 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
     /* a value that can be nil sets the array's may_nil on its way in: the
        in-range store below tests it, the rest take the _nilable set */
     const char *nsfx = nil_store_sfx(c, k, argv[1]);
-    if ((rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY) && vt == et && comp_ntype(c, argv[0]) == TY_INT &&
+    /* under promote, a boxed Integer (hc_promoted_int) into an Integer array
+       a cached header holds: unboxed with its nil once; a non-nil value in
+       range below the nil-free length is stored in place (no nil bit there to
+       clear), anything else takes the _nilable set and the loop reads the
+       headers again */
+    if (rt == TY_INT_ARRAY && vt == TY_POLY && hc_promoted_int(c, argv[1]) &&
+        (comp_ntype(c, argv[0]) == TY_INT || hc_promoted_int(c, argv[0])) &&
+        hc_array(c, recv, 0, hd, hl, hw, sizeof hd)) {
+      int tk = ++g_tmp, tv = ++g_tmp;
+      char hr[48]; hc_read_len(hd, hr, sizeof hr);
+      buf_printf(b, "{ sp_int _t%d = ", tk); emit_int_expr(c, argv[0], b);
+      buf_printf(b, "; sp_oint _t%d = sp_poly_elem_i(", tv); emit_expr(c, argv[1], b);
+      buf_printf(b, "); if (SP_LIKELY(%s && !_t%d.nil && (unsigned long long)_t%d < (unsigned long long)%s)) %s[_t%d] = _t%d.v;",
+                 hw, tv, tk, hr, hd, tk, tv);
+      buf_puts(b, " else sp_IntArray_set_nilable("); emit_expr(c, recv, b);
+      buf_printf(b, ", _t%d, _t%d)%s; }\n", tk, tv, hc_mark());
+      return 1;
+    }
+    /* a value that can be nil into a cached header's array: a non-nil one
+       in range below the nil-free length is stored where it is (no nil bit
+       there to clear), and only the rest -- a nil, past the nil-free span,
+       a frozen array -- takes the _nilable set and the header reload */
+    if ((rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY) && *nsfx && vt == et &&
+        (comp_ntype(c, argv[0]) == TY_INT || hc_promoted_int(c, argv[0])) &&
+        hc_array(c, recv, rt == TY_FLOAT_ARRAY, hd, hl, hw, sizeof hd)) {
+      int tk = ++g_tmp, tv = ++g_tmp;
+      char hr[48]; hc_read_len(hd, hr, sizeof hr);
+      buf_printf(b, "{ sp_int _t%d = ", tk); emit_int_expr(c, argv[0], b);
+      buf_printf(b, "; %s _t%d = ", oint_ctype(et), tv); emit_elem_store_value(c, k, argv[1], b);
+      buf_printf(b, "; if (SP_LIKELY(%s && !_t%d.nil && (unsigned long long)_t%d < (unsigned long long)%s)) %s[_t%d] = _t%d.v;",
+                 hw, tv, tk, hr, hd, tk, tv);
+      buf_printf(b, " else sp_%sArray_set_nilable(", k); emit_expr(c, recv, b);
+      buf_printf(b, ", _t%d, _t%d)%s; }\n", tk, tv, hc_mark());
+      return 1;
+    }
+    /* a plain value in range of a cached header is stored where it is; a
+       value that can be nil takes the _nilable set below (the bit) */
+    if ((rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY) && vt == et && !*nsfx &&
+        (comp_ntype(c, argv[0]) == TY_INT || hc_promoted_int(c, argv[0])) &&
         hc_array(c, recv, rt == TY_FLOAT_ARRAY, hd, hl, hw, sizeof hd)) {
       int tk = ++g_tmp, tv = ++g_tmp;
       buf_printf(b, "{ sp_int _t%d = ", tk);
-      int ck = emit_int_index_raw(c, argv[0], b);
+      emit_int_expr(c, argv[0], b);
       buf_printf(b, "; %s _t%d = ", c_type_name(et), tv); emit_expr(c, argv[1], b);
-      buf_printf(b, "; if (SP_LIKELY(%s && (unsigned long long)_t%d < (unsigned long long)%s)) ", hw, tk, hl);
-      if (*nsfx) {
-        char nt[48];
-        if (et == TY_FLOAT) snprintf(nt, sizeof nt, "sp_float_is_nil(_t%d)", tv);
-        else snprintf(nt, sizeof nt, "_t%d == SP_INT_NIL", tv);
-        buf_printf(b, "{ %s[_t%d] = _t%d; if (SP_UNLIKELY(%s)) sp_%sArray_note_nil(", hd, tk, tv, nt, k);
-        emit_expr(c, recv, b);
-        buf_puts(b, "); }");
-      }
-      else buf_printf(b, "%s[_t%d] = _t%d;", hd, tk, tv);
+      /* below the nil-free length: no nil bit to clear */
+      char hr[48]; hc_read_len(hd, hr, sizeof hr);
+      buf_printf(b, "; if (SP_LIKELY(%s && (unsigned long long)_t%d < (unsigned long long)%s)) ", hw, tk, hr);
+      buf_printf(b, "%s[_t%d] = _t%d;", hd, tk, tv);
       buf_puts(b, " else ");
-      if (ck) buf_printf(b, "{ SP_INT_NIL_ARG_CK(_t%d); ", tk);
-      buf_printf(b, "sp_%sArray_set%s(", k, nsfx);
+      buf_printf(b, "sp_%sArray_set(", k);
       emit_expr(c, recv, b);
-      buf_printf(b, ", _t%d, _t%d)%s;%s }\n", tk, tv, hc_mark(), ck ? " }" : "");
+      buf_printf(b, ", _t%d, _t%d)%s; }\n", tk, tv, hc_mark());
       return 1;
     }
     buf_printf(b, "sp_%sArray_set%s(", k, nsfx);
     emit_expr(c, recv, b); buf_puts(b, ", ");
     emit_int_expr(c, argv[0], b); buf_puts(b, ", ");
-    /* coerce a poly RHS to the typed array's element representation */
-    if (vt == TY_POLY && et == TY_INT) { buf_puts(b, "sp_poly_elem_i("); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
+    /* a value that can be nil is stored with it (the _nilable set takes the
+       oint); a poly RHS converts to the element representation */
+    if (*nsfx) emit_elem_store_value(c, k, argv[1], b);
+    else if (vt == TY_POLY && et == TY_INT) { buf_puts(b, "sp_poly_elem_i("); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
     else if (vt == TY_POLY && et == TY_STRING) { buf_puts(b, "sp_poly_elem_s("); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
     else if (vt == TY_POLY && et == TY_FLOAT) { buf_puts(b, "sp_poly_elem_f("); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
     else if (vt == TY_UNKNOWN) emit_unresolved_coerced(c, argv[1], et, b);   /* a raise token, a void call */
-    else if (et == TY_INT && nullable_int_elem_array(c, recv) && int_slot_store_needs_ck(c, argv[1], TY_INT, 1)) {
-      /* an int array that holds nil elements: -2^63 would read back as nil */
-      buf_puts(b, "sp_int_slot_ck(");
-      emit_coerce(c, argv[1], et, CO_HOLD, "an Array element store", b);
-      buf_puts(b, ")");
-    }
     else emit_coerce(c, argv[1], et, CO_HOLD, "an Array element store", b);
     buf_printf(b, ")%s;\n", hc_mark());
     return 1;
@@ -18049,13 +18717,14 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
         int tsrc = ++g_tmp, tn = ++g_tmp, ti = ++g_tmp;
         emit_indent(b, indent + 1);
         if (ak && ty_is_array(at)) {
-          /* a boxed element converts its nil to the sentinel; a same-kind
-             source hands its may_nil on after the loop */
+          /* a boxed element converts its nil to the array's nil bit */
           const char *ssfx = sp_streq(ak, "Poly") ? nil_store_sfx(c, k, NIL_STORE_BOXED) : "";
           buf_printf(b, "{ sp_%sArray *_t%d = ", ak, tsrc); emit_expr(c, inner, b); buf_puts(b, "; ");
           buf_printf(b, "sp_int _t%d = sp_%sArray_length(_t%d); ", tn, ak, tsrc);
-          buf_printf(b, "for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) sp_%sArray_push%s(_t%d, ", ti, ti, tn, ti, k, ssfx, tr);
-          char getx[128]; snprintf(getx, sizeof getx, "sp_%sArray_get(_t%d, _t%d)", ak, tsrc, ti);
+          /* the same kind copies each element with its nil */
+          int same_o = sp_streq(ak, k) && (et == TY_INT || et == TY_FLOAT);
+          buf_printf(b, "for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) sp_%sArray_push%s(_t%d, ", ti, ti, tn, ti, k, same_o ? "_o" : ssfx, tr);
+          char getx[128]; snprintf(getx, sizeof getx, "sp_%sArray_%s(_t%d, _t%d)", ak, same_o ? "oget" : "get", tsrc, ti);
           TyKind selem = ty_array_elem(at);
           if (et == TY_POLY && !sp_streq(ak, "Poly")) { Buf bx; memset(&bx, 0, sizeof bx); emit_boxed_text(c, selem, getx, &bx); buf_puts(b, bx.p ? bx.p : getx); free(bx.p); }
           else if (sp_streq(ak, "Poly") && et == TY_STRING) buf_printf(b, "sp_poly_elem_s(%s)", getx);
@@ -18063,7 +18732,6 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
           else if (sp_streq(ak, "Poly") && et == TY_FLOAT) buf_printf(b, "sp_poly_elem_f(%s)", getx);
           else buf_puts(b, getx);
           buf_puts(b, ");");
-          if (sp_streq(ak, k) && (et == TY_INT || et == TY_FLOAT)) buf_printf(b, " sp_%sArray_nil_from(_t%d, _t%d);", k, tr, tsrc);
           buf_puts(b, " }\n");
         }
         else {
@@ -18092,6 +18760,9 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
       /* a poly-array element must be boxed; emit_boxed also fixes a yield whose
          node type widened to poly but whose per-site value is concrete (#2454). */
       if (et == TY_POLY) emit_boxed(c, argv[a], b);
+      /* an Integer or Float that can be nil is pushed with it (the _nilable
+         push takes the oint); a boxed value converts to the element */
+      else if (oint_kind(et) && *nil_store_sfx(c, k, argv[a])) emit_elem_store_value(c, k, argv[a], b);
       else if (vt == TY_POLY && et == TY_STRING) { buf_puts(b, "sp_poly_elem_s("); emit_expr(c, argv[a], b); buf_puts(b, ")"); }
       else if (vt == TY_POLY && et == TY_INT) { buf_puts(b, "sp_poly_elem_i("); emit_expr(c, argv[a], b); buf_puts(b, ")"); }
       else if (vt == TY_POLY && et == TY_FLOAT) { buf_puts(b, "sp_poly_elem_f("); emit_expr(c, argv[a], b); buf_puts(b, ")"); }
@@ -18131,8 +18802,8 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
        order, each over its argument's own snapshot length. */
     int tr = ++g_tmp;
     TyKind et = ty_array_elem(rt);
-    /* an Integer or Float receiver takes a boxed nil as its sentinel, and
-       the store notes it in may_nil (sp_array.h) */
+    /* an Integer or Float receiver takes a boxed nil as its nil bit, which
+       the _nilable store sets (sp_array.h) */
     const char *nilable = (rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY) ? "_nilable" : "";
     emit_indent(b, indent);
     buf_printf(b, "{ sp_%sArray *_t%d = ", k, tr); emit_expr(c, recv, b); buf_puts(b, ";\n");
@@ -18180,10 +18851,12 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
       emit_indent(&hd, indent + 1);
       buf_printf(&hd, "sp_int _t%d = sp_%sArray_length(_t%d);\n", tn, ak, ts);
       emit_indent(&lp, indent + 1);
+      /* the same number kind copies each element with its nil */
+      int same_o = *nilable && sp_streq(ak, k) && (sp_streq(k, "Int") || sp_streq(k, "Float"));
       buf_printf(&lp, "for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) sp_%sArray_push%s(_t%d, ",
-                 ti, ti, tn, ti, k, sp_streq(ak, "Poly") ? nilable : "", tr);
+                 ti, ti, tn, ti, k, same_o ? "_o" : sp_streq(ak, "Poly") ? nilable : "", tr);
       char getexpr[256];
-      snprintf(getexpr, sizeof getexpr, "sp_%sArray_get(_t%d, _t%d)", ak, ts, ti);
+      snprintf(getexpr, sizeof getexpr, "sp_%sArray_%s(_t%d, _t%d)", ak, same_o ? "oget" : "get", ts, ti);
       if (sp_streq(k, "Poly") && !sp_streq(ak, "Poly")) {
         /* box the source scalar into the poly receiver */
         emit_boxed_text(c, ty_array_elem(at), getexpr, &lp);
@@ -18197,8 +18870,6 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
       }
       else buf_puts(&lp, getexpr);
       buf_puts(&lp, ");");
-      /* the same kind copies the source's elements, nils and all */
-      if (*nilable && sp_streq(ak, k)) buf_printf(&lp, " sp_%sArray_nil_from(_t%d, _t%d);", k, tr, ts);
       buf_puts(&lp, "\n");
     }
     if (hd.p) buf_puts(b, hd.p);
@@ -18263,7 +18934,10 @@ int emit_index_opw_hoist(Compiler *c, int id, Buf *pre, int indent) {
   Buf kb; memset(&kb, 0, sizeof kb);
   const char *ktype = NULL;
   int key_is_ptr = 0;
-  if (ty_is_hash(rt) && ty_hash_cname(rt)) {
+  if (ty_is_hash(rt) && ty_hash_cname(rt) && hash_opw_okey(c, argv[0], rt)) {
+    ktype = "sp_RbVal"; key_is_ptr = 1; emit_boxed(c, argv[0], &kb);   /* held boxed (hash_opw_okey) */
+  }
+  else if (ty_is_hash(rt) && ty_hash_cname(rt)) {
     TyKind kt = ty_hash_key(rt);
     ktype = c_type_name(kt);
     key_is_ptr = (kt == TY_STRING || kt == TY_POLY);
@@ -18276,7 +18950,7 @@ int emit_index_opw_hoist(Compiler *c, int id, Buf *pre, int indent) {
     TyKind kt = comp_ntype(c, argv[0]);
     if (kt == TY_SYMBOL)      { ktype = "sp_sym";      emit_expr(c, argv[0], &kb); }
     else if (kt == TY_STRING) { ktype = "const char *"; key_is_ptr = 1; emit_expr(c, argv[0], &kb); }
-    else if (kt == TY_INT && !nullable_int_value(c, argv[0])) { ktype = "sp_int"; emit_int_expr(c, argv[0], &kb); }
+    else if (kt == TY_INT && !poly_int_key_boxed(c, argv[0])) { ktype = "sp_int"; emit_int_expr(c, argv[0], &kb); }
     else                      { ktype = "sp_RbVal";    key_is_ptr = 1; emit_boxed(c, argv[0], &kb); }
   }
   else { free(kb.p); return 0; }
@@ -18323,39 +18997,37 @@ static char *iow_rhs(Compiler *c, int v, int mode, Buf *pre) {
   return rb.p ? rb.p : strdup("");
 }
 
+/* `slot op rv` for an Integer / Float element: the scalar fold or the C
+   operator. `seq` reads the slot into a temp first, so a nil element's
+   NoMethodError comes before a nil right operand's TypeError (C leaves the
+   order of the two operands open) */
+static int iow_scalar_fold(Compiler *c, TyKind et, const char *op, TyKind vt, int v, const char *slot, const char *rhs, Buf *b);
+static void iow_combine(Compiler *c, TyKind et, const char *op, TyKind vt, int v, const char *slot, const char *rv, int seq, Buf *b) {
+  char ls[24];
+  if (seq) { int tl = ++g_tmp; buf_printf(b, "({ %s _t%d = %s; ", c_type_name(et), tl, slot); snprintf(ls, sizeof ls, "_t%d", tl); slot = ls; }
+  if (!iow_scalar_fold(c, et, op, vt, v, slot, rv, b)) buf_printf(b, "%s %s (%s)", slot, op, rv);
+  if (seq) buf_puts(b, "; })");
+}
+
 /* Read the slot `slot` names into a rooted temp of type `t` and point `slot`
    at the temp: Ruby reads the slot before an effectful right-hand side runs,
    and that right-hand side can replace the slot's value (#4875). */
-/* The nil test of a Float element about to take an op-assign's operator as
-   its receiver: a nil there has no operator (NoMethodError), as
-   SP_FLOAT_NIL_CK reports for the binary form. A statement, emitted where
-   both the element and the right-hand side are already in temps, so it
-   raises after a right-hand side with an effect has run, as CRuby does. */
-static void iow_nil_recv_ck(const char *elem, const char *op, Buf *b) {
-  buf_printf(b, "if (SP_UNLIKELY(sp_float_is_nil(%s))) sp_raise_nil_float_op(1, \"%s\"); ", elem, op);
-}
-
-/* ... and of its right-hand side, a Float or an Integer that may be nil
-   (the marks, as emit_scalar_op_assign reads them): nil can't be coerced
-   into Float, where the C operator stored the nil's NaN payload or the
-   Integer sentinel as a number. Emitted after the element's own test. */
-static void iow_nil_rhs_ck(const char *rhs, TyKind vt, const char *op, Buf *b) {
-  if (vt == TY_INT) buf_printf(b, "if (SP_UNLIKELY(%s == SP_INT_NIL)) ", rhs);
-  else buf_printf(b, "if (SP_UNLIKELY(sp_float_is_nil(%s))) ", rhs);
-  buf_printf(b, "sp_raise_nil_float_op(0, \"%s\"); ", op);
-}
-
-/* `elem OP rhs` for a Float rhs that may be nil under + - * /: a nil
-   operand makes the result NaN, so the result is tested first and the
-   operand only then (SP_FLOAT_NIL_CK_NAN_R), one test on the hot path */
-static void iow_nan_fold(const char *elem, const char *op, const char *rhs, Buf *b) {
-  int tr = ++g_tmp;
-  buf_printf(b, "({ sp_float _t%d = %s %s (%s); SP_FLOAT_NIL_CK_NAN_R(_t%d, %s, \"%s\"); _t%d; })",
-             tr, elem, op, rhs, tr, rhs, op, tr);
-}
-
 static void iow_capture_slot(Compiler *c, TyKind t, char *slot, size_t n, Buf *b) {
   int ts = ++g_tmp;
+  /* a nil-checked read (`sp_oint_val(<oint>, "op")`) keeps the oint: the
+     NoMethodError comes at the operator, after the right-hand side ran, as
+     CRuby reads the element, runs the operand, then calls the method */
+  { int fl = !strncmp(slot, "sp_ofloat_val(", 14), il = !strncmp(slot, "sp_oint_val(", 12);
+    const char *q = (fl || il) ? strstr(slot, ", \"") : NULL;
+    if (q) { const char *q2; while ((q2 = strstr(q + 1, ", \""))) q = q2; }
+    if (q) {
+      size_t pre = fl ? 14 : 12;
+      char op[64]; snprintf(op, sizeof op, "%s", q + 2);   /* "\"op\")" */
+      buf_printf(b, "%s _t%d = %.*s; ", fl ? "sp_ofloat" : "sp_oint", ts, (int)(q - slot - pre), slot + pre);
+      snprintf(slot, n, "%s(_t%d, %s", fl ? "sp_ofloat_val" : "sp_oint_val", ts, op);
+      return;
+    }
+  }
   buf_printf(b, "%s _t%d = %s; ", c_type_name(t), ts, slot);
   if (ty_gc_rootable(c, t)) { emit_gc_root_tmp(c, t, ts, b); buf_puts(b, " "); }
   snprintf(slot, n, "_t%d", ts);
@@ -18417,9 +19089,24 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
     buf_printf(b, "{ %s _t%d = ", c_type_name(rt), ta); iow_emit_recv(c, recv, b);
     buf_puts(b, "; ");
     if (!g_iow_recv_ref && (subtree_may_allocate(nt, recv) || drops)) { emit_gc_root_tmp(c, rt, ta, b); buf_puts(b, " "); }
-    buf_printf(b, "%s _t%d = ", c_type_name(kt), tb); iow_emit_key(c, argv[0], b, IOW_KEY_HASH, kt);
+    /* a key that may be nil or of another class: held boxed, the read
+       misses on it and the store converts it (hash_opw_okey) */
+    int ok = hash_opw_okey(c, argv[0], rt);
+    buf_printf(b, "%s _t%d = ", ok ? "sp_RbVal" : c_type_name(kt), tb);
+    iow_emit_key(c, argv[0], b, ok ? IOW_KEY_BOXED : IOW_KEY_HASH, kt);
     buf_puts(b, "; ");
-    if (!g_iow_key_ref && operand_may_allocate(c, argv[0]) && needs_root(kt)) { emit_gc_root_tmp(c, kt, tb, b); buf_puts(b, " "); }
+    if (!g_iow_key_ref && operand_may_allocate(c, argv[0]) && (ok || needs_root(kt))) {
+      emit_gc_root_tmp(c, ok ? TY_POLY : kt, tb, b); buf_puts(b, " ");
+    }
+    char rk[96], sk[64], tbn[24];
+    snprintf(tbn, sizeof tbn, "_t%d", tb);
+    if (ok) {
+      Buf okb; memset(&okb, 0, sizeof okb); emit_opw_okey_read(tbn, &okb);
+      snprintf(rk, sizeof rk, "%s", okb.p ? okb.p : "sp_oint_nil()"); free(okb.p);
+      snprintf(sk, sizeof sk, "sp_poly_hkey_i(_t%d)", tb);
+    }
+    else { snprintf(rk, sizeof rk, "_t%d", tb); snprintf(sk, sizeof sk, "_t%d", tb); }
+    const char *rs = ok ? "_okey" : "";
     /* Build the new value (which reads the slot and evaluates the RHS) BEFORE
        the frozen check: Ruby desugars `h[k] += v` to `h[k] = h[k] + v`, so the
        read and the RHS run before []= raises on a frozen hash. */
@@ -18432,8 +19119,13 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
          sp_streq(op, "&") ? "sp_poly_band" : sp_streq(op, "|") ? "sp_poly_bor" :
          sp_streq(op, "^") ? "sp_poly_bxor" : NULL) : NULL;
     int eff = g_pre && subtree_has_side_effect(c, v);
-    char slot[64];
-    snprintf(slot, sizeof slot, "sp_%sHash_get(_t%d, _t%d)", hn, ta, tb);
+    char slot[256];
+    /* an entry that may hold nil (D3b-ii) is read with it: `nil + 1` is
+       CRuby's NoMethodError, as a miss without a default is */
+    if ((rt == TY_STR_INT_HASH || rt == TY_INT_INT_HASH) && vt == TY_INT && (hash_vals_nullable(c, recv) || ok))
+      snprintf(slot, sizeof slot, "sp_oint_val(sp_%sHash_oget%s(_t%d, %s), \"%s\")", hn, rs, ta, rk, op);
+    else
+      snprintf(slot, sizeof slot, "sp_%sHash_get%s(_t%d, %s)", hn, rs, ta, rk);
     if (eff) iow_capture_slot(c, vt, slot, sizeof slot, b);
     char *rhs = iow_rhs(c, v, pf ? IOW_RHS_BOXED : IOW_RHS_EXPR, eff ? b : NULL);
     buf_printf(b, "%s _t%d = ", c_type_name(vt), tv);
@@ -18445,7 +19137,7 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
     free(rhs);
     buf_puts(b, "; ");
     buf_printf(b, "if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s); ", ta, ta, hash_box_cls(rt));
-    buf_printf(b, "sp_%sHash_set(_t%d, _t%d, _t%d); }\n", hn, ta, tb, tv);
+    buf_printf(b, "sp_%sHash_set(_t%d, %s, _t%d); }\n", hn, ta, sk, tv);
     return;
   }
 
@@ -18493,6 +19185,13 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
     buf_puts(b, "; ");
     char slot[192];
     snprintf(slot, sizeof slot, "sp_%sArray_get(_t%d, _t%d)", k, ta, tb);
+    /* a Float element that may be nil is the operator's receiver: read with
+       its nil and unwrapped (NoMethodError for nil, as `a[i] + x`) */
+    if (fnil) snprintf(slot, sizeof slot, "sp_ofloat_val(sp_FloatArray_oget(_t%d, _t%d), \"%s\")", ta, tb, op);
+    /* an Integer element read the long way (one past the end, a gap) is nil
+       for the operator too: `e[3] += 1` is nil + 1 */
+    else if (rt == TY_INT_ARRAY)
+      snprintf(slot, sizeof slot, "sp_oint_val(sp_IntArray_oget(_t%d, _t%d), \"%s\")", ta, tb, op);
     if (rt == TY_STR_ARRAY && (sp_streq(op, "+") || sp_streq(op, "<<"))) {
       /* String slots take String ops only: `+`/`<<` concatenate, `*` repeats
          (String#*). The native fallthrough (`char* << char*`, `char* * int`)
@@ -18516,8 +19215,7 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
        element is read, then the right-hand side runs, then the operator
        raises. Both go to temps first; in one C expression the test could
        run ahead of a right-hand side with an effect. */
-    int fseq = fnil && !fuse;
-    if (eff || fseq) iow_capture_slot(c, rt == TY_POLY_ARRAY ? TY_POLY : ty_array_elem(rt), slot, sizeof slot, b);
+    if (eff) iow_capture_slot(c, rt == TY_POLY_ARRAY ? TY_POLY : ty_array_elem(rt), slot, sizeof slot, b);
     int mode = rt == TY_STR_ARRAY ? IOW_RHS_INT : (rt == TY_POLY_ARRAY || vt == TY_POLY) ? IOW_RHS_BOXED : IOW_RHS_EXPR;
     /* A right-hand side that may be nil raises, after a nil element: an
        element of an array the loop caches through its nil-free read, whose
@@ -18525,23 +19223,37 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
        one pays nothing; any other the marks call nilable, tested in each arm
        below (iow_nil_rhs_ck). */
     Buf nfb; memset(&nfb, 0, sizeof nfb);
-    char *rhs = fnil && fuse && vt == TY_FLOAT && emit_nilfree_operand(c, v, op, 0, slot, &nfb)
+    /* a right operand that can be nil is held as its oint and unwrapped at
+       the operator: "nil can't be coerced into <the element's class>", after
+       a nil element's NoMethodError */
+    TyKind et0 = ty_array_elem(rt);
+    int ro = (rt == TY_FLOAT_ARRAY || rt == TY_INT_ARRAY) && is_arith_op(op) && mode == IOW_RHS_EXPR &&
+             oint_kind(vt) && (vt == et0 || (et0 == TY_FLOAT && vt == TY_INT)) && node_has_oint_form(c, v);
+    char *rhs;
+    if (ro) {
+      int tro = ++g_tmp;
+      Buf ob; memset(&ob, 0, sizeof ob);
+      Buf *sv_pre = g_pre; if (eff) g_pre = b;
+      emit_oint_expr(c, v, vt, &ob);
+      g_pre = sv_pre;
+      buf_printf(b, "%s _t%d = %s; ", oint_ctype(vt), tro, ob.p ? ob.p : oint_nil(vt));
+      free(ob.p);
+      char rb[96];
+      snprintf(rb, sizeof rb, "%s%s(_t%d, \"%s\")", et0 == TY_FLOAT && vt == TY_INT ? "(sp_float)" : "",
+               vt == TY_FLOAT ? "sp_ofloat_opnd_in" : "sp_oint_opnd_in", tro, et0 == TY_FLOAT ? "Float" : "Integer");
+      rhs = strdup(rb);
+    }
+    else rhs = fnil && fuse && vt == TY_FLOAT && emit_nilfree_operand(c, v, op, 0, slot, &nfb)
               ? nfb.p : iow_rhs(c, v, mode, eff ? b : NULL);
-    int rnil = fnil && !nfb.p && (vt == TY_FLOAT || vt == TY_INT) && nullable_int_value(c, v);
-    /* a Float under + - * / is tested through the result, as
-       emit_scalar_op_assign does: its NaN first, the operand only then */
-    int rnan = rnil && vt == TY_FLOAT && is_basic_arith(op);
-    int rfast = rnil;   /* the fold's fast arm tests it too */
-    if (fseq) {
-      int tr = ++g_tmp;
-      buf_printf(b, "__typeof__(%s) _t%d = %s; ", rhs, tr, rhs);
-      if (vt == TY_POLY) { emit_gc_root_tmp(c, TY_POLY, tr, b); buf_puts(b, " "); }
+    /* the captured slot unwraps at the operator: the right-hand side with
+       an effect runs ahead of it, into its own temp (C leaves the operand
+       order of `x + f()` open) */
+    if (eff && rhs && !ro && (!strncmp(slot, "sp_ofloat_val(", 14) || !strncmp(slot, "sp_oint_val(", 12))) {
+      int trh = ++g_tmp;
+      buf_printf(b, "__typeof__(%s) _t%d = %s; ", rhs, trh, rhs);
       free(rhs);
-      Buf rn; memset(&rn, 0, sizeof rn);
-      buf_printf(&rn, "_t%d", tr);
-      rhs = rn.p;
-      iow_nil_recv_ck(slot, op, b);
-      if (rnil) iow_nil_rhs_ck(rhs, vt, op, b);
+      char rbuf[24]; snprintf(rbuf, sizeof rbuf, "_t%d", trh);
+      rhs = strdup(rbuf);
     }
     /* An Integer or Float slot in range of a mutable array is folded where it
        is: one bounds check instead of the get's and then the set's. Anything
@@ -18553,10 +19265,12 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
     if (fuse) {
       TyKind et = ty_array_elem(rt);
       int tv = ++g_tmp, tp = ++g_tmp;
-      char fslot[32], rv[32];
+      char fslot[32], rv[96];
       snprintf(fslot, sizeof fslot, "(*_t%d)", tp);
       snprintf(rv, sizeof rv, "_t%d", tv);
-      buf_printf(b, "__typeof__(%s) _t%d = %s; ", rhs, tv, rhs);
+      /* (the held oint is already the temp: unwrapped in each arm) */
+      if (ro) snprintf(rv, sizeof rv, "%s", rhs);
+      else buf_printf(b, "__typeof__(%s) _t%d = %s; ", rhs, tv, rhs);
       /* a header the loop being emitted holds (hc_array) is the one read:
          the receiver's own would be read again at every iteration */
       char hd[48], hl[48], hw[48], hn[48], may_nil_ck[48];
@@ -18567,33 +19281,27 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
         /* a right-hand side that is a Float local the loop does not
            assign zeroes the nil-free length while it is nil: the fold
            below it then needs no test of its own */
-        if (fnil && hc_array_nilfree(c, recv, rnil ? v : -1, hd, hn, sizeof hd) == 2) rfast = 0;
-        buf_printf(b, "if (SP_LIKELY(%s && (unsigned long long)_t%d < (unsigned long long)%s)) { ", hw, tb, fnil ? hn : hl);
-        if (rfast && !rnan) iow_nil_rhs_ck(rv, vt, op, b);
+        if (fnil) hc_array_nilfree(c, recv, -1, hd, hn, sizeof hd);
+        char hr[48]; hc_read_len(hd, hr, sizeof hr);
+        buf_printf(b, "if (SP_LIKELY(%s && (unsigned long long)_t%d < (unsigned long long)%s)) { ", hw, tb, fnil ? hn : hr);
         buf_printf(b, "%s *_t%d = &%s[_t%d]; *_t%d = ", c_type_name(et), tp, hd, tb, tp);
       }
       else {
+        /* an element that holds its nil is no number to fold: the slot is
+           read in place only while the array has no nil bitmap, else the
+           get below raises the operator's error for it */
         buf_printf(b, "if (SP_LIKELY(_t%d && !_t%d->frozen && %s(unsigned long long)_t%d < (unsigned long long)_t%d->len)) { ",
-                   ta, ta, fnil ? may_nil_ck : "", tb, ta);
-        if (rnil && !rnan) iow_nil_rhs_ck(rv, vt, op, b);
+                   ta, ta, may_nil_ck, tb, ta);
         buf_printf(b, "%s *_t%d = &_t%d->data[", c_type_name(et), tp, ta);
         if (rt == TY_INT_ARRAY) buf_printf(b, "_t%d->start + ", ta);
         buf_printf(b, "_t%d]; *_t%d = ", tb, tp);
       }
-      if (rnan && rfast) iow_nan_fold(fslot, op, rv, b);
-      else if (!iow_scalar_fold(c, et, op, vt, v, fslot, rv, b)) buf_printf(b, "%s %s (%s)", fslot, op, rv);
+      if (!iow_scalar_fold(c, et, op, vt, v, fslot, rv, b)) buf_printf(b, "%s %s (%s)", fslot, op, rv);
       buf_printf(b, "; } else ");
-      if (fnil) {
-        buf_puts(b, "{ ");
-        iow_capture_slot(c, TY_FLOAT, slot, sizeof slot, b);
-        iow_nil_recv_ck(slot, op, b);
-        if (rnil && !rnan) iow_nil_rhs_ck(rv, vt, op, b);
-      }
       buf_printf(b, "sp_%sArray_set(_t%d, _t%d, ", k, ta, tb);
-      if (rnan) iow_nan_fold(slot, op, rv, b);
-      else if (!iow_scalar_fold(c, et, op, vt, v, slot, rv, b)) buf_printf(b, "%s %s (%s)", slot, op, rv);
+      iow_combine(c, et, op, vt, v, slot, rv, ro, b);
       free(rhs);
-      buf_printf(b, ")%s;%s }\n", hc_mark(), fnil ? " }" : "");
+      buf_printf(b, ")%s; }\n", hc_mark());
       return;
     }
     buf_printf(b, "sp_%sArray_set(_t%d, _t%d, ", k, ta, tb);
@@ -18614,8 +19322,7 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
     }
     /* shift/bitwise on an int slot with a poly RHS: unbox the RHS */
     else if (vt == TY_POLY) buf_printf(b, "%s %s %s%s)", slot, op, op_assign_int_conv(TY_INT, op), rhs);
-    else if (iow_scalar_fold(c, ty_array_elem(rt), op, vt, v, slot, rhs, b)) { }
-    else buf_printf(b, "%s %s (%s)", slot, op, rhs);
+    else iow_combine(c, ty_array_elem(rt), op, vt, v, slot, rhs, ro, b);
     free(rhs);
     buf_printf(b, ")%s; }\n", hc_mark());
     return;
@@ -18623,8 +19330,7 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
   if (rt == TY_POLY) {
     /* poly receiver: dispatch get/op/set based on key type */
     TyKind kt = comp_ntype(c, argv[0]);
-    /* an Integer key that may be nil goes boxed, its nil a nil */
-    if (kt == TY_INT && nullable_int_value(c, argv[0])) kt = TY_POLY;
+    if (kt == TY_INT && poly_int_key_boxed(c, argv[0])) kt = TY_POLY;   /* its nil rides boxed */
     emit_indent(b, indent);
     /* read the slot polymorphically, fold via the tag-dispatching
        sp_poly_<op> (handles int/float/bigint/str), and store back through
@@ -18712,9 +19418,25 @@ void emit_index_and_or_write(Compiler *c, int id, Buf *b, int indent, int is_or)
     buf_printf(b, "{ %s _t%d = ", c_type_name(rt), ta); emit_expr(c, recv, b);
     buf_puts(b, "; ");
     if (subtree_may_allocate(nt, recv) || drops) { emit_gc_root_tmp(c, rt, ta, b); buf_puts(b, " "); }
-    buf_printf(b, "%s _t%d = ", c_type_name(kt), tb); emit_hash_key(c, argv[0], kt, b);
-    buf_puts(b, "; ");
-    if (operand_may_allocate(c, argv[0]) && needs_root(kt)) { emit_gc_root_tmp(c, kt, tb, b); buf_puts(b, " "); }
+    /* a key that may be nil or of another class: held boxed, the read
+       misses on it and a store converts it (hash_opw_okey) */
+    int ok = hash_opw_okey(c, argv[0], rt);
+    char rk[96], sk[64], tbn[24];
+    snprintf(tbn, sizeof tbn, "_t%d", tb);
+    if (ok) {
+      buf_printf(b, "sp_RbVal _t%d = ", tb); emit_boxed(c, argv[0], b); buf_puts(b, "; ");
+      if (operand_may_allocate(c, argv[0])) { emit_gc_root_tmp(c, TY_POLY, tb, b); buf_puts(b, " "); }
+      Buf kb; memset(&kb, 0, sizeof kb); emit_opw_okey_read(tbn, &kb);
+      snprintf(rk, sizeof rk, "%s", kb.p ? kb.p : "sp_oint_nil()"); free(kb.p);
+      snprintf(sk, sizeof sk, "sp_poly_hkey_i(_t%d)", tb);
+    }
+    else {
+      buf_printf(b, "%s _t%d = ", c_type_name(kt), tb); emit_hash_key(c, argv[0], kt, b);
+      buf_puts(b, "; ");
+      if (operand_may_allocate(c, argv[0]) && needs_root(kt)) { emit_gc_root_tmp(c, kt, tb, b); buf_puts(b, " "); }
+      snprintf(rk, sizeof rk, "_t%d", tb); snprintf(sk, sizeof sk, "_t%d", tb);
+    }
+    const char *rs = ok ? "_okey" : "";
     if (vt == TY_POLY) {
       buf_printf(b, "if (%ssp_poly_truthy(sp_%sHash_get(_t%d, _t%d))) ", is_or ? "!" : "", hn, ta, tb);
       int open = 0;
@@ -18730,12 +19452,14 @@ void emit_index_and_or_write(Compiler *c, int id, Buf *b, int indent, int is_or)
          truthy default calls for. The expression form already read the slot
          and tested it for nil; this is the same test. */
       int tc = ++g_tmp;
-      buf_printf(b, "%s _t%d = sp_%sHash_get(_t%d, _t%d); if (", c_type_name(vt), tc, hn, ta, tb);
+      /* an Integer or Float value is read with its nil (a miss, a nil default) */
+      if (oint_kind(vt)) buf_printf(b, "%s _t%d = sp_%sHash_oget%s(_t%d, %s); if (", oint_ctype(vt), tc, hn, rs, ta, rk);
+      else buf_printf(b, "%s _t%d = sp_%sHash_get%s(_t%d, %s); if (", c_type_name(vt), tc, hn, rs, ta, rk);
       emit_slot_nil_test(c, vt, tc, is_or, b);
       buf_puts(b, ") ");
       int open = 0;
       char *rhs = iow_guarded_rhs(c, v, IOW_RHS_EXPR, b, &open);
-      buf_printf(b, "sp_%sHash_set(_t%d, _t%d, %s)", hn, ta, tb, rhs);
+      buf_printf(b, "sp_%sHash_set(_t%d, %s, %s)", hn, ta, sk, rhs);
       iow_guard_close(rhs, open, b);
     }
     buf_puts(b, "; }\n");
@@ -18753,10 +19477,8 @@ void emit_index_and_or_write(Compiler *c, int id, Buf *b, int indent, int is_or)
     /* int slots are nil only out of bounds (0 is truthy); ||= writes when
        nil, &&= when present. Compare with == / != to avoid `!x != NIL`. */
     switch (rt) {
-    case TY_INT_ARRAY:
-      buf_printf(b, "if (sp_IntArray_get(_t%d, _t%d) %s SP_INT_NIL) ", ta, tb, is_or ? "==" : "!="); break;
-    case TY_FLOAT_ARRAY:
-      buf_printf(b, "if (%ssp_float_is_nil(sp_FloatArray_get(_t%d, _t%d))) ", is_or ? "" : "!", ta, tb); break;
+    case TY_INT_ARRAY: case TY_FLOAT_ARRAY:
+      buf_printf(b, "if (%ssp_%sArray_oget(_t%d, _t%d).nil) ", is_or ? "" : "!", k, ta, tb); break;
     case TY_STR_ARRAY:
       buf_printf(b, "if (%ssp_StrArray_get(_t%d, _t%d)) ", is_or ? "!" : "", ta, tb); break;
     case TY_POLY_ARRAY:
@@ -18765,12 +19487,18 @@ void emit_index_and_or_write(Compiler *c, int id, Buf *b, int indent, int is_or)
       unsupported(c, id, "index and/or write (array type)"); return;
     }
     int open = 0;
-    char *rhs = iow_guarded_rhs(c, v, rt == TY_POLY_ARRAY ? IOW_RHS_BOXED : IOW_RHS_EXPR, b, &open);
-    buf_printf(b, "sp_%sArray_set%s(_t%d, _t%d, ", k, nil_store_sfx(c, k, v), ta, tb);
-    if (rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY)
-      emit_typed_sink_text(c, v, rt == TY_INT_ARRAY ? TY_INT : TY_FLOAT,
-                           rhs[0] ? rhs : (rt == TY_INT_ARRAY ? "0" : "0.0"), b);
-    else buf_puts(b, rhs);
+    /* a value that can be nil goes into an Integer or Float array with its
+       nil (oset), read boxed and unboxed with it */
+    int nilable = (rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY) && nil_store_sfx(c, k, v)[0];
+    char *rhs = iow_guarded_rhs(c, v, rt == TY_POLY_ARRAY || nilable ? IOW_RHS_BOXED : IOW_RHS_EXPR, b, &open);
+    if (nilable) buf_printf(b, "sp_%sArray_oset(_t%d, _t%d, %s(%s)", k, ta, tb, oint_unbox(ty_array_elem(rt)), rhs);
+    else {
+      buf_printf(b, "sp_%sArray_set(_t%d, _t%d, ", k, ta, tb);
+      if (rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY)
+        emit_typed_sink_text(c, v, rt == TY_INT_ARRAY ? TY_INT : TY_FLOAT,
+                             rhs[0] ? rhs : (rt == TY_INT_ARRAY ? "0" : "0.0"), b);
+      else buf_puts(b, rhs);
+    }
     buf_puts(b, ")");
     iow_guard_close(rhs, open, b);
     buf_puts(b, "; }\n");

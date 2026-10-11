@@ -1,0 +1,29 @@
+nil
+:ok
+NoMethodError: undefined method '+' for nil
+NoMethodError: undefined method '+' for nil
+{1 => 5}
+nil
+:ok
+NoMethodError: undefined method '+' for nil
+NoMethodError: undefined method '+' for nil
+{1 => 5}
+nil
+:ok
+NoMethodError: undefined method '+' for nil
+NoMethodError: undefined method '+' for nil
+{1 => 5}
+3
+4
+4
+:ok
+{1 => 5}
+nil
+NoMethodError: undefined method '+' for nil
+9
+:ok
+{1 => 5, 2 => 10}
+nil
+nil
+"z"
+{1 => "z"}
