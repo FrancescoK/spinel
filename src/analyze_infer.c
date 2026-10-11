@@ -879,10 +879,10 @@ static TyKind an_unpack1_lit_type(const NodeTable *nt, int arg) {
   if (*p == '*') p++;
   if (*p) return TY_POLY;  /* further directives: not this one's type */
   /* `Q` above 2**63-1 is a Bignum, which an sp_int slot cannot hold, so it
-     keeps the boxed answer the runtime hands back (#4588); `q` and the
-     narrower directives all fit (INT64_MIN included: no pattern of the word
-     is nil). */
-  if (strchr("cCsSlLnNvVq", d)) return TY_INT;
+     keeps the boxed answer the runtime hands back (#4588). So does `q`:
+     INT64_MIN is no nil any more, but a 32-bit target's sp_int holds
+     neither end of its range, and the C is the same for every target. */
+  if (strchr("cCsSlLnNvV", d)) return TY_INT;
   if (strchr("dDfFeEgG", d)) return TY_FLOAT;
   return TY_POLY;
 }
