@@ -7073,6 +7073,15 @@ static int infer_promote_reducer(Compiler *c, int id, TyKind rt, TyKind *out) {
   return 1;
 }
 
+/* A String mutator that answers its receiver: `<<`, concat and prepend with
+   any number of Strings, replace with one, insert with two, clear with none. */
+static int strbuf_mutator_answers_self(const char *name, int argc) {
+  if (is_string_append_or_prepend(name)) return 1;
+  if (argc == 1 && sp_streq(name, "replace")) return 1;
+  if (argc == 2 && sp_streq(name, "insert")) return 1;
+  return argc == 0 && sp_streq(name, "clear");
+}
+
 static TyKind infer_call_inner(Compiler *c, int id) {
   /* the call is inferred afresh: only the row this pass answers with counts */
   /* the builtin-only re-derivation (an_builtin_answer) asks what the call
@@ -7433,14 +7442,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
      out of the String rows by that exclusion, `obj.buf << x` in value position
      inferred TY_UNKNOWN and was boxed as `(expr, sp_box_nil())` -- the append
      ran and the method answered nil. */
-  if (rt == TY_STRBUF && recv >= 0 && name &&
-      ((argc == 1 && (sp_streq(name, "<<") || sp_streq(name, "concat") ||
-                      sp_streq(name, "prepend") || sp_streq(name, "replace"))) ||
-       /* concat and prepend take any number of Strings and answer the
-          receiver whatever their count */
-       is_string_append_or_prepend(name) ||
-       (argc == 2 && sp_streq(name, "insert")) ||
-       (argc == 0 && sp_streq(name, "clear"))))
+  if (rt == TY_STRBUF && recv >= 0 && name && strbuf_mutator_answers_self(name, argc))
     return TY_STRING;
   /* A program's own method on Range / Time / File / Class, ahead of the
      builtin rules for those receivers: the Time block below answers Integer
