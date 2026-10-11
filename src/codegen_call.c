@@ -27493,6 +27493,12 @@ static int emit_reopen_call_first(Compiler *c, int id, int recv, TyKind rt, cons
   free(rpre.p); free(pre.p); free(vb.p); free(val.p); free(rx.p);
   return 1;
 }
+/* A helper, not the usual `id != g_brk_skip_id && call_breaks` test inline:
+   emit_call_body may only shrink (tools/gate.rb check). */
+static int enum_own_outside_brk_wrapper(Compiler *c, int id) {
+  return nt_int(c->nt, id, "enum_own", 0) && (id == g_brk_skip_id || !call_breaks(c, id));
+}
+
 void emit_call_body(Compiler *c, int id, Buf *b) {
   /* the class's own method in a builtin's receiver test (`__r.is_a?(K) ?
      __r.m { } : __enum_m(__r) { }`): the test has decided the receiver is
@@ -27500,7 +27506,7 @@ void emit_call_body(Compiler *c, int id, Buf *b) {
      the builtin surface a boxed receiver otherwise reaches first. The
      Array fold took `__r.any? { }` and wrote its count into the boxed
      answer (#4937). */
-  if (nt_int(c->nt, id, "enum_own", 0) && emit_poly_method_dispatch(c, id, b)) {
+  if (enum_own_outside_brk_wrapper(c, id) && emit_poly_method_dispatch(c, id, b)) {
     nd_stamp(id, ND_SWITCH);
     return;
   }
