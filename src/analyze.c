@@ -24085,6 +24085,14 @@ static int mark_reader_identity_operands(Compiler *c) {
       if (!ivn || defc < 0) continue;
       int iv = comp_ivar_index(&c->classes[defc], ivn);
       if (iv < 0 || !c->classes[defc].ivar_str_shared[iv]) continue;
+      /* (not where the receiver's class answers the name with a def of a
+         class other than the reader's, a subclass's over the reader) */
+      { int orv = nt_ref(nt, opnd, "receiver"), mdc = -1;
+        TyKind ort = orv >= 0 ? comp_ntype(c, orv) : TY_UNKNOWN;
+        int ocid = ty_is_object(ort) ? ty_object_class(ort) : -1;
+        if (ocid >= 0 && ocid < c->nclasses &&
+            comp_resolve_member(c, ocid, nt_str(nt, opnd, "name"), 0, &mdc, NULL) == SP_MEMBER_METHOD && mdc != defc)
+          continue; }
       c->strbuf_handle_demand[opnd] = 1;
       changed = 1;
     }

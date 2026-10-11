@@ -1,4 +1,5 @@
-# An alias of an overridden reader cannot take the ancestor slot handle.
+# A local holding an overridden reader's value is each class's own String:
+# the field's for the ancestor, the override's new one for a descendant.
 class P
   attr_reader :n
   def initialize = (@n = +"n")

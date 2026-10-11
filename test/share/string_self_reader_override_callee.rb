@@ -1,4 +1,6 @@
-# A callee container store cannot bypass a descendant reader override.
+# A container store of a reader's value in an ancestor's method keeps each
+# class's own String: the field's for the ancestor, the override's for a
+# descendant.
 class P
   attr_reader :n
   def initialize = (@n = +"n")

@@ -1,4 +1,5 @@
-# An inherited method must account for overrides in sibling receiver classes.
+# An inherited method reads a reader a sibling class overrides through that
+# override: a frozen literal raises FrozenError when changed, as in CRuby.
 class P
   attr_reader :n
   def initialize = (@n = +"n")

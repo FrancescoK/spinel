@@ -1863,6 +1863,9 @@ int block_call_takes_class_dispatch(Compiler *c, int id);
 void emit_dispatch(Compiler *c, int cid, const char *name, const char *selfptr, int argsNode, int blk_node, Buf *b);
 int emit_reader_override_dispatch(Compiler *c, int id, int cid, const char *name, const char *selfptr, const char *reader, TyKind reader_ty, Buf *b);
 int reader_override_arms(Compiler *c, int id, int cid, const char *name, TyKind reader_ty);
+int reader_override_handle_arms(Compiler *c, int id, int cid, const char *name, int boxed);
+int emit_reader_override_handle(Compiler *c, int id, int cid, const char *name, const char *selfptr,
+                                const char *reader, int boxed, Buf *b);
 TyKind reader_override_ty(Compiler *c, int id, int cid, const char *name);
 int emit_tap_then_expr(Compiler *c, int id, Buf *b);
 int recv_is_const(const NodeTable *nt, int recv, const char *name);

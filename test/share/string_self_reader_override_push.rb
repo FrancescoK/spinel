@@ -1,4 +1,5 @@
-# A descendant method can return a different String from the reader slot.
+# A descendant method can return a different String from the reader slot:
+# the element an ancestor's method keeps is that String, not the field's.
 class P
   attr_reader :n
   def initialize = (@n = +"n")

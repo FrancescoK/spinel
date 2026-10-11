@@ -24782,8 +24782,11 @@ int strbuf_self_reader_slot(Compiler *c, int id) {
   int ivi = comp_ivar_index(&c->classes[cid], ivn);
   if (ivi < 0 || repr_of_ivar(c, cid, ivi).as_ty != TY_STRBUF) return 0;
   /* A descendant's method result is not this slot's handle, even when
-     inference gives it the same String type as the reader. */
-  return !cplan_overridden(c, cid, nt_str(c->nt, id, "name"), 0);
+     inference gives it the same String type as the reader: the read
+     dispatches on the runtime class, each override's arm answering its own
+     handle (emit_reader_override_handle). */
+  const char *name = nt_str(c->nt, id, "name");
+  return !cplan_overridden(c, cid, name, 0) || reader_override_handle_arms(c, id, cid, name, 0);
 }
 /* Does receiverless call id read an attr reader's slot that holds a String
    handle and hand that handle out (emit_implicit_self_member's slot read,
@@ -24815,6 +24818,13 @@ int emit_implicit_self_member(Compiler *c, int id, Buf *b) {
     Buf rb; memset(&rb, 0, sizeof rb);
     TyKind rty = ivi >= 0 ? c->classes[dispatch_cid].ivar_types[ivi] : TY_UNKNOWN;
     Repr rp = repr_of(c, id);
+    /* --share-strings: the read as a box, where a subclass overrides the
+       reader: each arm boxes its own String (emit_reader_override_handle) */
+    if (repr_share_rule(c) && rty == TY_STRBUF && rp.as_ty == TY_POLY && sp_streq(g_self_deref, "->")) {
+      char hb[400];
+      snprintf(hb, sizeof hb, "%s%siv_%s", g_self, g_self_deref, iv_c(rn));
+      if (emit_reader_override_handle(c, id, dispatch_cid, name, g_self, hb, 1, b)) return 1;
+    }
     if (rty == TY_STRBUF && !rp.handle && !rp.demand) {
       int tv = ++g_tmp;
       buf_printf(&rb, "({ sp_String *_t%d = %s%siv_%s; sp_strbuf_read(_t%d); })",
@@ -24831,6 +24841,13 @@ int emit_implicit_self_member(Compiler *c, int id, Buf *b) {
       buf_printf(&rb, "((%s){ %s%siv_%s, %s != 0 })", oint_ctype(rty), g_self, g_self_deref, iv_c(rn), bt);
     }
     else buf_printf(&rb, "%s%siv_%s", g_self, g_self_deref, iv_c(rn));
+    /* --share-strings: the handle read, where a subclass overrides the
+       reader, answers each arm's handle */
+    if (repr_share_rule(c) && rty == TY_STRBUF && sp_streq(g_self_deref, "->") &&
+        emit_reader_override_handle(c, id, dispatch_cid, name, g_self, rb.p, 0, b)) {
+      free(rb.p);
+      return 1;
+    }
     /* a def in a subclass overrides the reader for that subclass */
     if (!(rty != TY_UNKNOWN && sp_streq(g_self_deref, "->") &&
           emit_reader_override_dispatch(c, id, dispatch_cid, name, g_self, rb.p, rty, b)))

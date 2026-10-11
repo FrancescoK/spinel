@@ -11866,29 +11866,36 @@ static void emit_disp_arm_assign(Compiler *c, const Scope *s, const char *call, 
   buf_puts(b, "; ");
 }
 
-static void emit_dispatch_arm_call(Compiler *c, int kd, int kmi, const char *selfptr,
-                                   int argsNode, int blk_tmp, TyKind ret, TyKind disp_ret,
-                                   int rtmp, Buf *b) {
+/* The call of arm method kmi (of class kd) on selfptr, its argument
+   setup into apre and the call itself into call. */
+static void emit_dispatch_arm_text(Compiler *c, int kd, int kmi, const char *selfptr,
+                                   int argsNode, int blk_tmp, Buf *apre, Buf *call) {
   Scope *s = &c->scopes[kmi];
   const char *cn = c->classes[kd].c_name;
-  Buf apre; memset(&apre, 0, sizeof apre);
-  Buf call; memset(&call, 0, sizeof call);
   Buf *sv_pre = g_pre; int sv_ind = g_indent;
   const char *sv_arm_self = g_arm_self; const Scope *sv_arm_scope = g_arm_scope;
   int sv_arm_depth = g_arm_depth;
   char arm_self[160];
   snprintf(arm_self, sizeof arm_self, "((sp_%s *)%s)", cn, selfptr);
-  g_pre = &apre; g_indent = 0;
+  g_pre = apre; g_indent = 0;
   g_arm_self = arm_self; g_arm_scope = s; g_arm_depth = g_expr_depth;
-  buf_printf(&call, "sp_%s_%s((sp_%s *)%s", cn, mc(s->name), cn, selfptr);
-  emit_args_filled(c, kmi, argsNode, ", ", &call);
+  buf_printf(call, "sp_%s_%s((sp_%s *)%s", cn, mc(s->name), cn, selfptr);
+  emit_args_filled(c, kmi, argsNode, ", ", call);
   g_pre = sv_pre; g_indent = sv_ind;
   g_arm_self = sv_arm_self; g_arm_scope = sv_arm_scope; g_arm_depth = sv_arm_depth;
   if (arm_takes_blk(s)) {
-    if (blk_tmp >= 0) buf_printf(&call, ", _t%d", blk_tmp);
-    else buf_puts(&call, ", NULL");
+    if (blk_tmp >= 0) buf_printf(call, ", _t%d", blk_tmp);
+    else buf_puts(call, ", NULL");
   }
-  buf_puts(&call, ")");
+  buf_puts(call, ")");
+}
+static void emit_dispatch_arm_call(Compiler *c, int kd, int kmi, const char *selfptr,
+                                   int argsNode, int blk_tmp, TyKind ret, TyKind disp_ret,
+                                   int rtmp, Buf *b) {
+  Scope *s = &c->scopes[kmi];
+  Buf apre; memset(&apre, 0, sizeof apre);
+  Buf call; memset(&call, 0, sizeof call);
+  emit_dispatch_arm_text(c, kd, kmi, selfptr, argsNode, blk_tmp, &apre, &call);
   buf_puts(b, "{ ");
   if (apre.p) buf_puts(b, apre.p);
   emit_disp_arm_assign(c, s, call.p, ret, disp_ret, rtmp, b);
@@ -12033,7 +12040,10 @@ int reader_override_arms(Compiler *c, int id, int cid, const char *name, TyKind 
   if (!any) return 0;
   TyKind ret = repr_of(c, id).as_ty;
   if (ret == TY_UNKNOWN || ret == TY_VOID || ret == TY_NIL) return 0;
-  if (ret != reader_ty && ret != TY_POLY) return 0;
+  /* (a shared String slot's read is its copy where the call answers a
+     String) */
+  int copy = ret == TY_STRING && reader_ty == TY_STRBUF;
+  if (ret != reader_ty && ret != TY_POLY && !copy) return 0;
   for (int k = 0; k < c->nclasses; k++) {
     if (k == cid || !is_descendant(c, k, cid)) continue;
     int kmi = comp_method_in_chain(c, k, name, NULL);
@@ -12060,7 +12070,11 @@ TyKind reader_override_ty(Compiler *c, int id, int cid, const char *name) {
   char ivn[300]; snprintf(ivn, sizeof ivn, "@%s", comp_resolve_alias(c, cid, name));
   ClassInfo *owner = &c->classes[rdc >= 0 ? rdc : cid];
   int iv = comp_ivar_index(owner, ivn);
-  if (iv < 0 || owner->ivar_types[iv] == TY_UNKNOWN || owner->ivar_types[iv] == TY_STRBUF) return TY_UNKNOWN;
+  if (iv < 0 || owner->ivar_types[iv] == TY_UNKNOWN) return TY_UNKNOWN;
+  /* --share-strings: a shared String slot too, read as its copy or, where
+     the call answers a box, as its handle's box; a read under the handle
+     demand keeps the slot's route */
+  if (owner->ivar_types[iv] == TY_STRBUF && (!repr_share_rule(c) || repr_of(c, id).demand)) return TY_UNKNOWN;
   return reader_override_arms(c, id, cid, name, owner->ivar_types[iv]) ? owner->ivar_types[iv] : TY_UNKNOWN;
 }
 
@@ -12095,8 +12109,94 @@ int emit_reader_override_dispatch(Compiler *c, int id, int cid, const char *name
   }
   buf_printf(b, " default: _t%d = ", rtmp);
   if (ret == TY_POLY && reader_ty != TY_POLY) emit_boxed_text(c, reader_ty, reader, b);
+  else if (ret == TY_STRING && reader_ty == TY_STRBUF) buf_printf(b, "sp_strbuf_read(%s)", reader);
   else buf_puts(b, reader);
   buf_printf(b, "; break; } _t%d; })", rtmp);
+  return 1;
+}
+
+/* --share-strings: can a call `id` of reader `name` on cid, whose slot
+   holds a String handle and which a descendant overrides with a def, answer
+   a handle on every arm (emit_reader_override_handle)? Each override is a
+   method answering a String: the handle it publishes (Scope.ret_handle),
+   or a new String (ret_fresh). The share walk joins the overrides' answers
+   to the read's (sh_reader_overrides), so one that answers a String with an
+   identity (a variable's, a field's, an element) publishes it. */
+int reader_override_handle_arms(Compiler *c, int id, int cid, const char *name, int boxed) {
+  const NodeTable *nt = c->nt;
+  if (nt_ref(nt, id, "block") >= 0 || nt_ref(nt, id, "arguments") >= 0) return 0;
+  int base_mi = comp_method_in_chain(c, cid, name, NULL), any = 0;
+  for (int k = 0; k < c->nclasses; k++) {
+    if (k == cid || !is_descendant(c, k, cid)) continue;
+    int kmi = comp_method_in_chain(c, k, name, NULL);
+    if (kmi < 0 || kmi == base_mi) continue;
+    int arm = dispatch_arm_scope(c, kmi);
+    if (arm < 0) return 0;
+    /* (read as a box, an override answering a box hands on what it holds) */
+    if (boxed && (TyKind)c->scopes[kmi].ret == TY_POLY) { any = 1; continue; }
+    if ((TyKind)c->scopes[kmi].ret != TY_STRING || (!c->scopes[arm].ret_handle && !c->scopes[arm].ret_fresh))
+      return 0;
+    any = 1;
+  }
+  return any;
+}
+
+/* The handle such a call answers (reader_override_handle_arms): a switch
+   on the runtime class, an overriding descendant's arm taking the handle
+   its method publishes, or wrapping the new String it answers in a handle,
+   and
+   the rest the slot's handle (`reader`). A subclass's alias of another
+   method over the reader's name is such an override. 0 when none applies. */
+int emit_reader_override_handle(Compiler *c, int id, int cid, const char *name, const char *selfptr,
+                                const char *reader, int boxed, Buf *b) {
+  if (!reader_override_handle_arms(c, id, cid, name, boxed)) return 0;
+  int base_mi = comp_method_in_chain(c, cid, name, NULL);
+  int rtmp = ++g_tmp;
+  if (boxed) {
+    /* read as a box: each arm boxes its own answer (emit_poly_user_box: the
+       handle an override publishes, a new String's new one, a box as it
+       is), the reader's arm its field's handle */
+    buf_printf(b, "({ sp_RbVal _t%d; switch (", rtmp);
+    emit_obj_dispatch_key(c, cid, selfptr, b);
+    buf_puts(b, ") {");
+    for (int k = 0; k < c->nclasses; k++) {
+      if (k == cid || !is_descendant(c, k, cid)) continue;
+      int kd = -1;
+      int kmi0 = comp_method_in_chain(c, k, name, &kd);
+      if (kmi0 < 0 || kmi0 == base_mi) continue;
+      int arm = dispatch_arm_scope(c, kmi0);
+      nd_callee(c, g_nd_call_id, kmi0, kd, 1);
+      Buf apre; memset(&apre, 0, sizeof apre);
+      Buf call; memset(&call, 0, sizeof call);
+      emit_dispatch_arm_text(c, kd, arm, selfptr, -1, -1, &apre, &call);
+      buf_printf(b, " case %d: { %s_t%d = ", k, apre.p ? apre.p : "", rtmp);
+      emit_poly_user_box(c, id, &c->scopes[arm], call.p, b);
+      buf_puts(b, "; break; }");
+      free(apre.p); free(call.p);
+    }
+    buf_printf(b, " default: _t%d = sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF); break; } _t%d; })", rtmp, reader, rtmp);
+    return 1;
+  }
+  buf_printf(b, "({ sp_String *_t%d; switch (", rtmp);
+  emit_obj_dispatch_key(c, cid, selfptr, b);
+  buf_puts(b, ") {");
+  for (int k = 0; k < c->nclasses; k++) {
+    if (k == cid || !is_descendant(c, k, cid)) continue;
+    int kd = -1;
+    int kmi0 = comp_method_in_chain(c, k, name, &kd);
+    if (kmi0 < 0 || kmi0 == base_mi) continue;
+    int arm = dispatch_arm_scope(c, kmi0), pub = c->scopes[arm].ret_handle, tv = ++g_tmp;
+    nd_callee(c, g_nd_call_id, kmi0, kd, 1);
+    Buf apre; memset(&apre, 0, sizeof apre);
+    Buf call; memset(&call, 0, sizeof call);
+    emit_dispatch_arm_text(c, kd, arm, selfptr, -1, -1, &apre, &call);
+    buf_printf(b, " case %d: { %s%sconst char *_v%d = %s; _t%d = !_v%d ? NULL : ", k, apre.p ? apre.p : "",
+               pub ? "_sp_ret_strbuf = NULL; " : "", tv, call.p, rtmp, tv);
+    if (pub) buf_puts(b, "_sp_ret_strbuf ? (sp_String *)_sp_ret_strbuf : ");
+    buf_printf(b, "sp_String_new_shared(_v%d); break; }", tv);
+    free(apre.p); free(call.p);
+  }
+  buf_printf(b, " default: _t%d = %s; break; } _t%d; })", rtmp, reader, rtmp);
   return 1;
 }
 

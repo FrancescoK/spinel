@@ -1317,6 +1317,23 @@ static int sh_attr_ivars(ShareFacts *F, Compiler *c, const char *name, int node,
   return r;
 }
 
+/* --share-strings: the answers of the defs that override an attr reader of
+   the name in a class below it (a subclass's alias over the reader's name
+   included), joined; -1 when none does. A read of the reader dispatches on
+   the runtime class (emit_reader_override_handle) and answers theirs. */
+static int sh_reader_overrides(ShareFacts *F, Compiler *c, const char *name) {
+  int n = 0, r = -1;
+  const PolyCand *pc = comp_poly_candidates(c, name, &n);
+  for (int i = 0; i < n; i++)
+    if (pc[i].mi >= 0 && comp_reader_in_chain(c, pc[i].cls, name, NULL)) {
+      r = sh_join(F, r, sh_scope_holder(F, SHK_RET, pc[i].mi));
+      /* the read reads the override's value: its returns join its answer
+         (sh_settle_rets), though no call lists it as a target */
+      if (F->mread) F->mread[pc[i].mi] = 1;
+    }
+  return r;
+}
+
 static int sh_unknown_call(ShareFacts *F, Compiler *c, int n, int blk);
 
 /* The share-row semantics of builtin call n. Answers its value. */
@@ -2697,6 +2714,7 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
         /* the value is the String the slot holds now, a new one included */
         if (sh_assign_call(c, n)) r = iv;
       }
+      else if (c->share_strings) r = sh_join(F, r, sh_reader_overrides(F, c, name));
       if (rt != TY_POLY && rt != TY_UNKNOWN) return r;
       return sh_join(F, r, sh_container_default(F, c, n, rv, blk));
     }
