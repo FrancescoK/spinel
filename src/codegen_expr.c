@@ -961,6 +961,20 @@ static const char *slot_zero(Compiler *c, TyKind t) {
   return default_value_from_compiler(c, t);
 }
 
+/* The fallback of `x = expr rescue fallback` ends in a jump (`next`, or
+   `(n += 1; next)`): it leaves before x is written. */
+static int rescue_fallback_jumps(const NodeTable *nt, int r) {
+  while (r >= 0 && (nt_kind(nt, r) == NK_ParenthesesNode || nt_kind(nt, r) == NK_StatementsNode)) {
+    if (nt_kind(nt, r) == NK_ParenthesesNode) { r = nt_ref(nt, r, "body"); continue; }
+    int n = 0; const int *b = nt_arr(nt, r, "body", &n);
+    r = n > 0 ? b[n - 1] : -1;
+  }
+  if (r < 0) return 0;
+  NodeKind k = nt_kind(nt, r);
+  return k == NK_NextNode || k == NK_BreakNode || k == NK_RedoNode ||
+         k == NK_RetryNode || k == NK_ReturnNode;
+}
+
 /* Is `id` somewhere inside the subtree at `root`? */
 static int node_in_subtree(const NodeTable *nt, int root, int id) {
   if (root < 0) return 0;
@@ -4263,7 +4277,12 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
       /* a return or retry out of the fallback pops the exception pushed
          above, as one out of a rescue clause does (#8273) */
       g_rescue_save_stack[g_rescue_save_depth++] = (RescueSave){ g_exc_frame_depth };
-      if (rt == TY_POLY && repr_of(c, r).kind != RK_BOXED) emit_boxed(c, r, &rv);
+      /* a jump out of the fallback (`stat = File.stat(f) rescue next`)
+         leaves before the temp is written, and the placeholder its
+         expression form ends in is no value of the temp's type */
+      int r_jumps = rescue_fallback_jumps(nt, r);
+      if (r_jumps) emit_expr(c, r, &rv);
+      else if (rt == TY_POLY && repr_of(c, r).kind != RK_BOXED) emit_boxed(c, r, &rv);
       else if (res_o) emit_oint_expr(c, r, rt, &rv);
       else if (rt == TY_STRING && comp_scope_of(c, id)->ret_pub_fresh) emit_tail_value(c, r, &rv);
       else emit_expr_slot(c, r, rt, &rv);
@@ -4271,7 +4290,8 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
       g_pre = sv_pre; g_indent = sv_ind;
       if (rpre.p) buf_puts(b, rpre.p);
       free(rpre.p);
-      buf_printf(b, "_t%d = %s;", t, rv.p ? rv.p : "");
+      if (r_jumps) buf_printf(b, "(void)(%s);", rv.p ? rv.p : "0");
+      else buf_printf(b, "_t%d = %s;", t, rv.p ? rv.p : "");
       free(rv.p);
     }
     buf_puts(b, "\n  sp_rescue_sp--;");
