@@ -20644,9 +20644,12 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
      which is a worse order than the one C picked. Only a local read ahead of
      it that it can rebind runs first, with the operands before it
      (emit_operands_before_unbound). */
-  int node[MAX_ARG_OVERRIDE], fresh[MAX_ARG_OVERRIDE], oo[MAX_ARG_OVERRIDE], copy[MAX_ARG_OVERRIDE], nb = 0;
-  TyKind ty[MAX_ARG_OVERRIDE];
-  int operand[MAX_ARG_OVERRIDE], nop = 0;
+  int nmax = 1 + argc;
+  for (int i = 0; i < argc; i++)
+    if (nt_kind(nt, argv[i]) == NK_KeywordHashNode) { int nk = 0; nt_arr(nt, argv[i], "elements", &nk); nmax += nk; }
+  int node[nmax], fresh[nmax], oo[nmax], copy[nmax], nb = 0;
+  TyKind ty[nmax];
+  int operand[nmax], nop = 0;
   if (recv >= 0) operand[nop++] = recv;
   for (int i = 0; i < argc; i++) {
     /* keyword arguments are operands one value at a time, in the order
@@ -20659,14 +20662,12 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
     for (int k = 0; k < nk && plain; k++)
       plain = nt_kind(nt, els[k]) == NK_AssocNode && nt_kind(nt, nt_ref(nt, els[k], "key")) == NK_SymbolNode;
     if (!plain) {
-      if (nop >= MAX_ARG_OVERRIDE) return 0;
       operand[nop++] = argv[i];
       continue;
     }
     for (int k = 0; k < nk; k++) {
       int v = nt_ref(nt, els[k], "value");
       if (v < 0) continue;
-      if (nop >= MAX_ARG_OVERRIDE) return 0;
       operand[nop++] = v;
     }
   }
@@ -20685,7 +20686,7 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
   for (int i = 0; i < nop; i++)
     if (!repr_of(c, operand[i]).head_held && subtree_may_reassign_state(c, operand[i])) effects++;
   int observable = 0, converts = 0, ncand = 0, unb = -1, unb_lit = 0;
-  int cand[MAX_ARG_OVERRIDE], obs[MAX_ARG_OVERRIDE];
+  int cand[nmax], obs[nmax];
   for (int i = 0; i < nop; i++) {
     cand[i] = obs[i] = 0;
     /* an operand that may convert -- a user object, a boxed value -- is
@@ -20785,8 +20786,8 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
   for (int i = 0; i < nop && ncand; i++)
     if (obs[i]) { Repr hr = repr_of(c, operand[i]); if (hr.handle || hr.demand) ncand = 0; }
   if (ncand) {
-    int n2[MAX_ARG_OVERRIDE], f2[MAX_ARG_OVERRIDE], o2[MAX_ARG_OVERRIDE], k = 0, m = 0, obs0 = observable;
-    TyKind t2[MAX_ARG_OVERRIDE];
+    int n2[nmax], f2[nmax], o2[nmax], k = 0, m = 0, obs0 = observable;
+    TyKind t2[nmax];
     for (int i = 0; i < nop; i++) {
       if (obs[i] == 1) { n2[m] = node[k]; t2[m] = ty[k]; f2[m] = fresh[k]; o2[m] = oo[k]; copy[m] = 0; k++; m++; }
       else if (cand[i] && operand_copy_at_risk(c, operand, nop, i, cand, obs, obs0)) {

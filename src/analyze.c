@@ -35108,7 +35108,7 @@ static void desugar_diverging_args(Compiler *c) {
     if (nt_kind(nt, id) != NK_CallNode || call_is_safe_nav(nt, id)) continue;
     int an = nt_ref(nt, id, "arguments"), n = 0, k = -1;
     const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &n) : NULL;
-    for (int i = 0; i < n && i < 64 && k < 0; i++) {
+    for (int i = 0; i < n && k < 0; i++) {
       if (nt_kind(nt, av[i]) == NK_SplatNode) break;
       const char *dn = nt_kind(nt, av[i]) == NK_CallNode && nt_ref(nt, av[i], "receiver") < 0 ? nt_str(nt, av[i], "name") : NULL;
       if (dn && is_diverging_call(dn)) k = i;
@@ -35118,12 +35118,14 @@ static void desugar_diverging_args(Compiler *c) {
       own = c->scopes[i].class_id < 0 && c->scopes[i].def_node >= 0 && c->scopes[i].name &&
             sp_streq(c->scopes[i].name, nt_str(nt, av[k], "name"));
     if (own) continue;
-    int st[66], ns = 0, recv = nt_ref(nt, id, "receiver");
+    int *st = malloc(sizeof(int) * (size_t)(k + 2)), ns = 0, recv = nt_ref(nt, id, "receiver");
+    if (!st) continue;
     if (recv >= 0 && subtree_has_side_effect(c, recv)) st[ns++] = recv;
     for (int i = 0; i < k; i++) if (subtree_has_side_effect(c, av[i])) st[ns++] = av[i];
     st[ns++] = av[k];
     int s = nt_new_node(nt, "StatementsNode");
     nt_node_set_arr(nt, s, "body", st, ns);
+    free(st);
     nt_node_set_type(nt, id, "ParenthesesNode");
     nt_node_set_ref(nt, id, "body", s);
     nt_node_set_ref(nt, id, "receiver", -1);
