@@ -1859,6 +1859,19 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
         else plain = bt == TY_INT && int_value_plain(c, tail); }
       break;
     }
+    /* --share-strings: a block whose value is a String a holder keeps as
+       the handle answers that handle (strbuf_route_yield): boxed as its
+       bytes, the box held a copy */
+    if (repr_share_rule(c) && (bt == TY_STRING || bt == TY_STRBUF) && strbuf_yield_tail_held(c)) {
+      Buf hb; memset(&hb, 0, sizeof hb);
+      if (emit_strbuf_route(c, node, &hb)) {
+        buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", hb.p);
+        free(hb.p);
+        RC(RF_STRBUF_HANDLE, RW_YIELD);
+        return;
+      }
+      free(hb.p);
+    }
     /* The same Integer type can still differ in whether INTPTR_MIN is nil. */
     if ((bt != t || plain) && bt != TY_UNKNOWN) {
       if (bt == TY_POLY) { emit_expr(c, node, b); RC(RF_PASS, RW_YIELD); return; }

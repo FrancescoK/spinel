@@ -1672,6 +1672,7 @@ static int strbuf_route_begin(Compiler *c, int v) {
     ok = strbuf_stmts_tail_plain(c, nt_ref(nt, rc, "statements"));
   return ok && (el < 0 || strbuf_stmts_tail_plain(c, nt_ref(nt, el, "statements")));
 }
+int strbuf_yield_tail_held(Compiler *c);
 /* --share-strings: a `yield` to a literal block spliced in here whose
    value is a variable's String (`yield` under `o.set { s }`): the splice
    answers its handle (emit_block_invoke). */
@@ -1683,7 +1684,64 @@ static int strbuf_route_yield(Compiler *c, int v) {
   int body = nt_ref(nt, g_block_id, "body");
   int n = 0;
   const int *bb = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
-  return strbuf_stmts_tail_plain(c, body) || (n > 0 && nt_kind(nt, bb[n - 1]) == NK_NextNode);
+  return strbuf_stmts_tail_plain(c, body) || (n > 0 && nt_kind(nt, bb[n - 1]) == NK_NextNode) ||
+         /* (a tail that is itself a yield, whose block out answers a held
+            String: the splice hands that block's handle on) */
+         (n > 0 && nt_kind(nt, unwrap_parens(c, bb[n - 1])) == NK_YieldNode && strbuf_yield_tail_held(c));
+}
+/* The tail of the literal block spliced here, past each tail that is
+   itself a yield, or -1. */
+static int strbuf_site_tail(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int tail = -1;
+  /* a block whose tail is itself a yield (`inner { yield }`) answers what
+     the block one level out answers (yield_block_out), as
+     sp_yield_site_type reads it */
+  for (int k = 0; k < 8; k++) {
+    int blk = yield_block_out(k);
+    int body = blk >= 0 ? nt_ref(nt, blk, "body") : -1, n = 0;
+    const int *bb = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
+    if (n <= 0) return -1;
+    tail = unwrap_parens(c, bb[n - 1]);
+    if (nt_kind(nt, tail) != NK_YieldNode) return tail;
+  }
+  return -1;
+}
+static int strbuf_value_held(Compiler *c, int v) {
+  v = unwrap_parens(c, v);
+  return v >= 0 && share_node_shares(c, v) && !share_value_fresh(c, v, 0);
+}
+/* Does a `next v` that leaves block body n (not a nested block's, loop's
+   or method's) hand on a held String? */
+static int strbuf_next_held(Compiler *c, int n) {
+  const NodeTable *nt = c->nt;
+  if (n < 0) return 0;
+  NodeKind k = nt_kind(nt, n);
+  if (k == NK_BlockNode || k == NK_LambdaNode || k == NK_DefNode || k == NK_WhileNode ||
+      k == NK_UntilNode || k == NK_ForNode) return 0;
+  if (k == NK_NextNode) {
+    int argc = 0; const int *argv = call_args(nt, n, &argc);
+    if (argc == 1 && strbuf_value_held(c, argv[0])) return 1;
+  }
+  for (int i = 0; i < nt_num_refs(nt, n); i++)
+    if (strbuf_next_held(c, nt_ref_at(nt, n, i))) return 1;
+  for (int i = 0; i < nt_num_arrs(nt, n); i++) {
+    int m = 0; const int *ids = nt_arr_at(nt, n, i, &m);
+    for (int j = 0; j < m; j++) if (strbuf_next_held(c, ids[j])) return 1;
+  }
+  return 0;
+}
+/* --share-strings: is a value of the literal block spliced here (its
+   tail, or a next's) a String a holder keeps and the rule shares, rather
+   than a new one? Then the yield's handle (strbuf_route_yield) is what
+   identity and a box see; a new String needs no handle of its own there.
+   The tail's facts are this site's; the yield's own are the union of
+   every site. */
+int strbuf_yield_tail_held(Compiler *c) {
+  int tail = strbuf_site_tail(c);
+  if (tail >= 0 && strbuf_value_held(c, tail)) return 1;
+  /* or a `next v` of the block spliced here hands one on */
+  return g_block_id >= 0 && strbuf_next_held(c, nt_ref(c->nt, g_block_id, "body"));
 }
 /* --share-strings: Kernel#loop with a literal block, whose value is what a
    `break` leaves it with. */

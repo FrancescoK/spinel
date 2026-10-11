@@ -8527,6 +8527,10 @@ static int infer_constant_path(Compiler *c, int id, const NodeTable *nt, NodeKin
      the nil tail -- so the class id is emitted and then discarded by a
      comma expression. The bare form was already guarded; only the
      qualified path was not (#4271). */
+  /* (--share-strings: a constant whose slot is an sp_String * handle reads
+     as a String, as the bare ConstantReadNode does: `A::X`'s storage form
+     leaked into a yield's site type and a method's return) */
+  if (lv && c->share_strings && repr_slot_kind(c, lv) == RK_STRBUF) { *out = TY_STRING; return 1; }
   if (lv && lv->type != TY_UNKNOWN) { *out = lv->type; return 1; }
   /* A top-level scoped constant `::Name` (no parent) names the same thing as
      the bare constant `Name`; resolve it as a class when it is one so is_a?,

@@ -7479,6 +7479,24 @@ static int str_arms_convert(Compiler *c, int id, Buf *b, const NodeTable *nt, co
         eq_sblv = 1;
       }
     }
+    /* --share-strings: a spliced yield whose block answers a holder's
+       handle (strbuf_route_yield), on either side: that handle, boxed, is
+       compared with the other side's box (the yield's read face is a copy) */
+    if (!eq_sblv && repr_share_rule(c)) {
+      int ys = nt_kind(nt, unwrap_parens(c, recv)) == NK_YieldNode ? recv
+             : nt_kind(nt, unwrap_parens(c, argv[0])) == NK_YieldNode ? argv[0] : -1;
+      Buf yh; memset(&yh, 0, sizeof yh);
+      if (ys >= 0 && strbuf_yield_tail_held(c) &&
+          emit_strbuf_route(c, ys, &yh)) {
+        int th = ++g_tmp;
+        buf_printf(b, "({ sp_RbVal _t%d = sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF); SP_GC_ROOT_RBVAL(_t%d); "
+                      "(sp_bool)sp_poly_equal(_t%d, ", th, yh.p, th, th);
+        emit_boxed(c, ys == recv ? argv[0] : recv, b);
+        buf_puts(b, "); })");
+        eq_sblv = 1;
+      }
+      free(yh.p);
+    }
     /* --share-strings: a String Range's endpoint (strbuf_route_srange_end)
        against a handle: the handle the Range keeps is compared (#8321) */
     if (!eq_sblv) {
@@ -9143,7 +9161,12 @@ static int emit_scalar_recv_arms(Compiler *c, int id, Buf *b, const NodeTable *n
      allocate: the guard below is the only path that holds it (g_noguard:
      the hold without the nil test) */
   int g_noguard = 0;
-  if (rt == TY_STRING && name && recv >= 0 && operand_may_allocate(c, recv) &&
+  /* (--share-strings: `yield.equal?(x)` at a site whose block answers a
+     String a holder keeps reads the yield's handle once, in equal?'s own
+     arm (str_arms_convert): held here as its bytes, the handle was lost) */
+  int y_ident = repr_share_rule(c) && name && is_equal_name(name) && recv >= 0 &&
+                nt_kind(nt, unwrap_parens(c, recv)) == NK_YieldNode && strbuf_yield_tail_held(c);
+  if (rt == TY_STRING && name && recv >= 0 && operand_may_allocate(c, recv) && !y_ident &&
       repr_of(c, recv).as_ty != TY_STRBUF &&   /* a handle is no fresh copy, and no const char * */
       !((!nil_answers_name(name)) && recv_may_be_sentinel(c, recv))) {
     for (int ai = 0; ai < argc && !g_noguard; ai++) g_noguard = operand_may_allocate(c, argv[ai]);
@@ -9157,7 +9180,7 @@ static int emit_scalar_recv_arms(Compiler *c, int id, Buf *b, const NodeTable *n
     }
   }
   if (!g_noguard && (rt == TY_INT || rt == TY_STRING) && name && recv >= 0 && !nil_answers_name(name) &&
-      recv_may_be_sentinel(c, recv)) {
+      recv_may_be_sentinel(c, recv) && !y_ident) {
     const char *sop_g = nt_str(nt, id, "call_operator");
     if (!(sop_g && sp_streq(sop_g, "&."))) {
       /* Bind the receiver once and let every arm below read the temp: some
