@@ -241,9 +241,11 @@ const char *sp_re_post_match(void) {
 sp_int sp_re_match(mrb_regexp_pattern *pat, const char *str) {SP_GC_ROOT_STR(str);
   if (!str) return -1;
   int64_t slen = (int64_t)sp_str_byte_len(str);
-  int ncaps = 32;
-  int n = re_exec(pat, str, slen, 0, sp_re_caps, ncaps, sp_str_is_binary(str));
-  if (n > 0) { sp_re_last_pat = pat; sp_re_set_captures(str, sp_re_caps, n/2); return sp_re_caps[0]; }
+  int ncaps = 32, at;
+  /* the start of the attempt, which is group 0's but for a \K: `=~`
+     answers it, and `start_with?` asks it to be 0; `index` reads group 0 */
+  int n = re_exec_attempt(pat, str, slen, 0, sp_re_caps, ncaps, sp_str_is_binary(str), &at);
+  if (n > 0) { sp_re_last_pat = pat; sp_re_set_captures(str, sp_re_caps, n/2); return at; }
   /* Issue #848: clear backrefs on no-match so a subsequent `$1`
      reads as nil rather than the previous match's group. */
   for (int i = 0; i < 10; i++) sp_re_captures[i] = NULL;
@@ -343,17 +345,18 @@ const char *sp_str_slice_re(mrb_regexp_pattern *pat, const char *s, const char *
 }
 sp_int sp_re_rindex(mrb_regexp_pattern *pat, const char *str) {SP_GC_ROOT_STR(str);
   int64_t slen = (int64_t)sp_str_byte_len(str);
-  int caps[2];
+  int caps[2], at;
   int64_t pos = 0;
   sp_int last = -1;
   while (pos <= slen) {
-    int n = re_exec(pat, str, slen, pos, caps, 2, sp_str_is_binary(str));
+    int n = re_exec_attempt(pat, str, slen, pos, caps, 2, sp_str_is_binary(str), &at);
     if (n <= 0) break;
     last = caps[0];
     /* rindex keys on the rightmost match START (MRI reverse search): step
        one past this start so a later-starting shorter match wins ("aaa"
-       rindex /a+/ is 2, not 0). Advancing past the whole match skipped it. */
-    pos = caps[0] + 1;
+       rindex /a+/ is 2, not 0). Advancing past the whole match skipped it.
+       The start is the attempt's, which a \K leaves before group 0's. */
+    pos = at + 1;
   }
   /* the result is a character index; caps[] holds byte offsets */
   return last < 0 ? -1 : sp_str_count_chars(str, (size_t)last);
@@ -361,16 +364,16 @@ sp_int sp_re_rindex(mrb_regexp_pattern *pat, const char *str) {SP_GC_ROOT_STR(st
 sp_StrArray *sp_re_rpartition(mrb_regexp_pattern *pat, const char *str) {
   SP_GC_ROOT_STR(str);
   int64_t slen = (int64_t)sp_str_byte_len(str);
-  int caps[2];
+  int caps[2], at;
   int64_t pos = 0;
   sp_int ms = -1, me = -1;
   while (pos <= slen) {
-    int n = re_exec(pat, str, slen, pos, caps, 2, sp_str_is_binary(str));
+    int n = re_exec_attempt(pat, str, slen, pos, caps, 2, sp_str_is_binary(str), &at);
     if (n <= 0) break;
     ms = caps[0]; me = caps[1];
     /* rpartition keys on the rightmost match START (MRI reverse search),
        so step one past this start to look for a later-starting match. */
-    pos = caps[0] + 1;
+    pos = at + 1;
   }
   sp_StrArray *r = sp_StrArray_new();
   SP_GC_ROOT(r);
@@ -781,7 +784,7 @@ sp_StrArray *sp_re_split(mrb_regexp_pattern *pat, const char *str) {SP_GC_ROOT_S
 }
 sp_oint sp_re_rindex_opt(mrb_regexp_pattern *pat, const char *str) {SP_GC_ROOT_STR(str); sp_int n = sp_re_rindex(pat, str); return n < 0 ? sp_oint_nil() : sp_oint_of(n); }
 sp_RbVal sp_re_rindex_poly(mrb_regexp_pattern *pat, const char *str) {SP_GC_ROOT_STR(str); sp_int n = sp_re_rindex(pat, str); return n < 0 ? sp_box_nil() : sp_box_int(n); }
-sp_RbVal sp_re_index_poly(mrb_regexp_pattern *pat, const char *str) {SP_GC_ROOT_STR(str); sp_int n = sp_re_match(pat, str); return n < 0 ? sp_box_nil() : sp_box_int(sp_str_byte_to_char(str, n)); }  /* char offset (#3056) */
+sp_RbVal sp_re_index_poly(mrb_regexp_pattern *pat, const char *str) {SP_GC_ROOT_STR(str); sp_int n = sp_re_match(pat, str); return n < 0 ? sp_box_nil() : sp_box_int(sp_str_byte_to_char(str, sp_re_caps[0])); }  /* char offset (#3056) */
 /* String#index(regexp, start): first match at or after char position `start`,
    as a char index -- nil on miss / out-of-range (matching
    sp_str_index_from_opt's ABI). */
@@ -807,10 +810,10 @@ sp_oint sp_re_byterindex_opt(mrb_regexp_pattern *pat, const char *str, sp_int st
   if (start > bl) start = bl;
   /* the match STARTING latest wins (a match at 3 beats a longer one at 2),
      so probe each start position from `start` downward */
-  int caps[2];
+  int caps[2], at;
   for (sp_int p = start; p >= 0; p--) {
-    int n = re_exec(pat, str, (int64_t)bl, p, caps, 2, sp_str_is_binary(str));
-    if (n > 0 && caps[0] == (int)p) return sp_oint_of(p);
+    int n = re_exec_attempt(pat, str, (int64_t)bl, p, caps, 2, sp_str_is_binary(str), &at);
+    if (n > 0 && at == (int)p) return sp_oint_of(caps[0]);
   }
   return sp_oint_nil();
 }
@@ -835,14 +838,17 @@ sp_oint sp_re_rindex_from_opt(mrb_regexp_pattern *pat, const char *str, sp_int s
   if (start > cl) start = cl;
   size_t limit = sp_utf8_byte_offset(str, start);
   int64_t slen = (int64_t)sp_str_byte_len(str);
-  int caps[2];
+  int caps[2], at;
   int64_t pos = 0; sp_int last = -1;
   while (pos <= slen) {
-    int n = re_exec(pat, str, slen, pos, caps, 2, sp_str_is_binary(str));
+    int n = re_exec_attempt(pat, str, slen, pos, caps, 2, sp_str_is_binary(str), &at);
     if (n <= 0 || caps[0] < 0) break;
-    if ((size_t)caps[0] > limit) break;
+    if ((size_t)at > limit) break;
     last = caps[0];
-    int64_t next = caps[1]; if (next <= pos) next = pos + 1; pos = next;
+    /* step one past this attempt's start, as sp_re_rindex does: an
+       overlapping attempt can start before `limit` ("aaa" rindex /aa/, 2
+       is 1), and jumping to the match end skipped it */
+    pos = (int64_t)at + 1;
   }
   return last < 0 ? sp_oint_nil() : sp_oint_of(sp_str_count_chars(str, (size_t)last));
 }

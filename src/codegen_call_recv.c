@@ -7858,10 +7858,12 @@ static int str_arms_case_search(Compiler *c, Buf *b, const NodeTable *nt, const 
     /* an sp_oint (nil on a miss), matching the inferred type -- the
        poly-boxed form broke a variable-regexp argument */
     int tmi = ++g_tmp, tsi = ++g_tmp;
-    /* report the match position in characters, not bytes (#3056) */
+    /* report the match position in characters, not bytes (#3056); the
+       position is group 0's start, which a \K leaves past where the match
+       attempt began (what sp_re_match answers) */
     buf_printf(b, "({ const char *_t%d = %s; sp_int _t%d = sp_re_match(sp_re_pat_%d, _t%d);"
-                  " _t%d < 0 ? sp_oint_nil() : sp_oint_of(sp_str_byte_to_char(_t%d, _t%d)); })",
-               tsi, r, tmi, re_lit_index(c, argv[0]), tsi, tmi, tsi, tmi);
+                  " _t%d < 0 ? sp_oint_nil() : sp_oint_of(sp_str_byte_to_char(_t%d, sp_re_caps[0])); })",
+               tsi, r, tmi, re_lit_index(c, argv[0]), tsi, tmi, tsi);
   }
   /* a Regexp held in a variable or parameter rather than written inline */
   else if ((is_string_index(name)) && (argc == 1 || argc == 2) &&
