@@ -4605,6 +4605,21 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
     if (nmS && recvS >= 0 && repr_of(c, recvS).as_ty == TY_STRBUF &&
         (is_string_position_mutator(nmS)) &&
         sb_reader_expr_shim(c, id, recvS, b, emit_array_call)) return 1;
+    /* --share-strings: one answering its receiver (insert, clear) over a call
+       that answers a handle (`id(s).concat(x).insert(0, y)`) changes that
+       handle, held once (emit_bang_self_handle), and answers its read */
+    if (nmS && recvS >= 0 && is_string_position_mutator(nmS) && strbuf_self_route(c, recvS) &&
+        repr_of(c, recvS).as_ty != TY_STRBUF && (!arg_ran_first(recvS, 0) || ran_first_handle(recvS) >= 0) &&
+        strbuf_bang_self_local(c, id)) {
+      Buf hb; memset(&hb, 0, sizeof hb);
+      if (emit_bang_self_handle(c, id, &hb)) {
+        int t = ++g_tmp;
+        buf_printf(b, "({ sp_String *_t%d = %s; sp_strbuf_read_pub(_t%d); })", t, hb.p, t);
+        free(hb.p);
+        return 1;
+      }
+      free(hb.p);
+    }
     if (nmS && recvS >= 0 && comp_ntype(c, recvS) == TY_STRING &&
         (is_string_position_mutator(nmS))) {
       if (sb_iv_expr_shim(c, id, recvS, b, emit_array_call)) return 1;
@@ -8887,6 +8902,25 @@ static int emit_scalar_recv_arms(Compiler *c, int id, Buf *b, const NodeTable *n
      splice its text (so a literal/complex receiver isn't rebuilt). */
   if (!(recv >= 0 && (rt == TY_STRING || rt == TY_INT || rt == TY_FLOAT))) return 0;
   if (rt == TY_STRING && str_partition_shared(c, id, b, name, recv, argc, argv)) { *out = 1; return 1; }
+  /* --share-strings: an encoding mutator over a call that hands on a handle
+     takes that handle alone: the receiver's read made below first would run
+     the call a second time (the arm itself uses the handle) */
+  if (rt == TY_STRING && repr_share_rule(c) && name && is_encoding_mutator(name) && argc <= 2 &&
+      nt_kind(nt, unwrap_parens(c, recv)) == NK_CallNode) {
+    Buf *pre = g_pre;
+    size_t pre_mark = pre ? pre->len : 0;
+    char feref[1024];
+    Buf lb; memset(&lb, 0, sizeof lb);
+    int hr = strbuf_recv_handle(c, id, recv, feref, sizeof feref);
+    if (!hr && emit_recv_route_handle(c, id, recv, &lb)) hr = 2;
+    if (hr) {
+      emit_strbuf_force_encoding(c, name, lb.p ? lb.p : feref, hr, argv, argc, b);
+      free(lb.p);
+      *out = 1;
+      return 1;
+    }
+    if (pre && g_pre == pre && pre->len > pre_mark) { pre->len = pre_mark; pre->p[pre_mark] = '\0'; }
+  }
   Buf rs; memset(&rs, 0, sizeof rs);
   /* Reading a shared-mutable string as a value copies its whole buffer so
      the value cannot alias the handle (#3227). A method that only looks at

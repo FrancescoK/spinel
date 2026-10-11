@@ -3192,7 +3192,13 @@ int strbuf_marked_yields_handle(Compiler *c, int v) {
   }
   if (rt != TY_STRING && rt != TY_STRBUF) return 1;
   const char *nm = nt_str(nt, v, "name");
-  return nm && (is_append_concat(nm) || str_self_call(nt, v));
+  /* (--share-strings: so does any builtin answering its receiver, whatever
+     its count of arguments, `prepend(a, b)`, and a bang, whose nil the
+     reader of its handle has tested) */
+  return nm && (is_append_concat(nm) || str_self_call(nt, v) ||
+                (repr_share_rule(c) && nt_ref(nt, v, "block") < 0 &&
+                 (bop_answers_self(TY_STRING, nm, call_plain_argc(c, v), 0) == BOPF_SELF ||
+                  bop_share_self_answer(nm, 0))));
 }
 /* A String method answering its receiver or nil (bop_share_self_answer:
    a bang method, an iterator given a block) called on a local that holds
@@ -3232,10 +3238,10 @@ int strbuf_bang_self_local(const Compiler *c, int v) {
   /* The receiver can itself be a route over a handle, including an
      append chain followed by a prepend with several arguments. */
   if (strbuf_value_carries((Compiler *)c, r)) return 1;
-  /* freeze over a bang over a handle (`id(t).upcase!.freeze`): the bang
-     answers that handle or nil, and nil.freeze is nil */
-  if (is_freeze_name(nt_str(nt, v, "name")) && call_plain_argc((Compiler *)c, v) == 0 &&
-      nt_kind(nt, r) == NK_CallNode && bop_share_self_answer(nt_str(nt, r, "name"), nt_ref(nt, r, "block") >= 0) &&
+  /* a call over a bang over a handle (`id(t).upcase!.freeze`,
+     `id(t).upcase!&.concat(x)`): the bang answers that handle or nil, which
+     the call raises on (a `&.` skips, nil.freeze is nil) */
+  if (nt_kind(nt, r) == NK_CallNode && bop_share_self_answer(nt_str(nt, r, "name"), nt_ref(nt, r, "block") >= 0) &&
       strbuf_bang_self_local(c, r)) return 1;
   if (rk == NK_InstanceVariableReadNode || repr_static_read_kind(rk))
     return strbuf_var_handle((Compiler *)c, r, ref, sizeof ref);
@@ -3302,6 +3308,10 @@ int strbuf_slot_ref(Compiler *c, int recv, char *out, size_t cap) {
      moving the call off the surface that dispatches it (see compiler.h). */
   if (strbuf_call_reads_handle(c, recv)) {
     Buf rb2; memset(&rb2, 0, sizeof rb2);
+    /* (--share-strings: what the read put ahead of the statement goes with
+       a declined read, or the call runs there and again where it is read) */
+    Buf *pre = g_pre;
+    size_t pre_mark = pre ? pre->len : 0;
     emit_expr(c, recv, &rb2);
     /* A container ELEMENT read comes back BOXED (a poly array element, a hash
        value), so the handle has to come out of the box; a reader call already
@@ -3313,6 +3323,10 @@ int strbuf_slot_ref(Compiler *c, int recv, char *out, size_t cap) {
                 (er.kind == RK_BOXED || er.elem == TY_POLY || er.key != TY_UNKNOWN);
     int fit = rb2.p && strlen(rb2.p) + 24 <= cap;
     if (fit) snprintf(out, cap, boxed ? "sp_poly_as_strbuf(%s)" : "(%s)", rb2.p);
+    else if (repr_share_rule(c) && pre && g_pre == pre && pre->len > pre_mark) {
+      pre->len = pre_mark;
+      pre->p[pre_mark] = '\0';
+    }
     free(rb2.p);
     return fit;
   }

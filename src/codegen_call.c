@@ -19761,6 +19761,8 @@ static int text_assigns_tmp(const char *txt, int n) {
 
 /* the call node currently being rewritten for operand order (no re-entry) */
 static int g_operand_order_node = -1;
+/* See codegen_internal.h. */
+int operand_order_trial(int id) { return id >= 0 && id == g_operand_order_node; }
 
 /* Ruby evaluates a call's receiver first, then its arguments left to right, and
    every one of them stays alive until the call runs. Spinel handed them all to
@@ -21576,6 +21578,9 @@ static void emit_nil_target_head(Compiler *c, int id, Buf *b, const char *lead, 
        mutator then changes (strbuf_recv_handle reads it) */
     if (node[i] == r && repr_share_rule(c) && (ty[i] == TY_STRING || ty[i] == TY_STRBUF)) {
       int t = emit_nil_target_route(c, r, 0, b, lead);
+      /* (and so is a call answering its receiver over one, `id(s).upcase!`:
+         its handle, run once here, never again by the mutator) */
+      if (t < 0 && strbuf_self_route(c, r)) t = emit_nil_target_route(c, r, 1, b, lead);
       if (t >= 0) { snprintf(rtext, sizeof rtext, "_t%d", t); continue; }
     }
     /* A retained argument's handle is taken at this first evaluation,

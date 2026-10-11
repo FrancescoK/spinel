@@ -1338,15 +1338,7 @@ int emit_string_handle_append(Compiler *c, int id, Buf *b, const char *name, int
          receiver over one, `id(s).concat(x).insert(0, y) << z`) is emitted
          whole, where its text outgrows the slot buffer */
       Buf lb; memset(&lb, 0, sizeof lb);
-      if (!chain_handle && !hr0 && repr_share_rule(c) && sr >= 0 && nt_kind(nt, sr) == NK_CallNode &&
-          !strbuf_chain_over_handle(c, sr) && strbuf_bang_self_local(c, sr)) {
-        int tl = ++g_tmp;
-        buf_printf(&lb, "({ sp_String *_t%d = ", tl);
-        emit_strbuf_handle_of(c, sr, &lb);
-        buf_printf(&lb, "; if (SP_UNLIKELY(!_t%d)) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil())); _t%d; })",
-                   tl, name, tl);
-        hr0 = 2;
-      }
+      if (!chain_handle && !hr0 && emit_recv_route_handle(c, id, sr, &lb)) hr0 = 2;
       if (chain_handle || hr0) {
         int tb2 = ++g_tmp;
         buf_printf(b, "({ sp_String *_t%d = ", tb2);

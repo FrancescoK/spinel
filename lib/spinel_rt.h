@@ -2775,6 +2775,11 @@ static inline sp_String *sp_poly_as_strbuf(sp_RbVal v) {
 SP_COLD static const char *sp_strbuf_read_frozen(sp_String *h) {
 #ifdef SP_SHARE_STRING_LITERALS
   if (sp_String_literal_slot(sp_String_cstr(h))) return sp_String_cstr(h);
+  /* --share-strings: a frozen handle's payload, which nothing can change or
+     move any more, is its read face itself: it reads frozen through its
+     handle (sp_str_is_frozen_val), its mark reaches the handle, and the
+     bytes are that String's own, equal? to every name of it */
+  return sp_String_cstr(h);
 #endif
   char *r = (char *)sp_str_from_bytes(sp_String_cstr(h), (size_t)sp_String_length(h));
   if (h->binary) sp_str_mark_binary(r);
@@ -2815,6 +2820,11 @@ static inline sp_RbVal sp_poly_literal_identity(sp_RbVal v) {
   if (sp_poly_is_strbuf(v) && v.v.p) {
     sp_String *h = (sp_String *)v.v.p;
     if (sp_String_literal_slot(h->data)) return sp_box_str(h->data);
+#ifdef SP_SHARE_STRING_LITERALS
+    /* and so do a frozen handle's: its payload is its read face
+       (sp_strbuf_read_frozen) */
+    if (sp_String_is_frozen(h)) return sp_box_str(h->data);
+#endif
   }
   return v;
 }

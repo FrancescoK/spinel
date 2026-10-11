@@ -1144,6 +1144,31 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       emit_expr(c, recv, b); buf_puts(b, "); })");
       return 1;
     }
+    /* an append chain on a handle (`(s << x).freeze`, `(o.name << x).freeze`)
+       answers that String: the handle is taken once, ahead of the chain,
+       then frozen for every name of the String. A reader call's read is the
+       handle itself, which the chain takes from the temp; a variable's slot
+       is read again. */
+    int fzu = unwrap_parens(c, recv);
+    int fzb = !assignable_f && fzu >= 0 && nt_kind(nt, fzu) == NK_CallNode ? str_alias_chain_base(c, fzu) : fzu;
+    if (fzb != fzu && g_n_argov < MAX_ARG_OVERRIDE && strbuf_slot_ref(c, fzb, fzref, sizeof fzref)) {
+      int th = ++g_tmp;
+      char thr[24];
+      snprintf(thr, sizeof thr, "_t%d", th);
+      buf_printf(b, "({ sp_String *%s = %s; SP_GC_ROOT(%s); (void)(", thr, fzref, thr);
+      int fzcall = nt_kind(nt, fzb) == NK_CallNode;
+      int mk = fzcall ? view_bind(fzb, "%s", thr) : -1;
+      emit_expr(c, recv, b);
+      if (fzcall) view_unbind(mk);
+      buf_printf(b, "); sp_String_freeze(%s); sp_str_freeze_val(", thr);
+      /* (the default build answers the String's own bytes, as the chain's
+         read was; a reader call typed as the handle reads as the handle) */
+      if (!repr_share_rule(c)) buf_printf(b, "sp_String_cstr(%s)", thr);
+      else if (repr_of(c, fzb).as_ty == TY_STRBUF) buf_printf(b, "sp_strbuf_read_pub(%s)", thr);
+      else emit_strbuf_node_read(c, fzb, thr, b);
+      buf_puts(b, "); })");
+      return 1;
+    }
     if (assignable_f) {
       buf_puts(b, "({ ");
       emit_expr(c, recv, b); buf_puts(b, " = sp_str_freeze_val("); emit_expr(c, recv, b); buf_puts(b, "); ");
@@ -1526,7 +1551,6 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
   return 0;
 }
 
-/* safe navigation (&.): a nil receiver answers nil, any other the call, guarded by a nil test */
 /* --share-strings: `x&.freeze` over a receiver that hands on the shared
    handle (a variable's, a write's, an attribute assignment's): the guard
    holds that handle, not a copy of its bytes, so the freeze reaches every
@@ -1552,6 +1576,29 @@ static int emit_safe_nav_freeze_handle(Compiler *c, int id, const char *name, in
   return 1;
 }
 
+/* --share-strings: `x&.m` where m answers its receiver (a bang, an append,
+   insert, freeze) and x is a call answering its receiver over a handle: the
+   guard is the bang form's own (emit_bang_self_handle holds x's handle once
+   and skips the call on nil), and the call answers that handle, its read,
+   or nil. A guard holding x's bytes made every later link take the handle
+   by running x again. */
+static int emit_safe_nav_self_handle(Compiler *c, int id, int recv, Buf *b) {
+  if (!repr_share_rule(c) || g_sn_skip == id || !strbuf_self_route(c, recv) || !strbuf_bang_self_local(c, id))
+    return 0;
+  TyKind rt = repr_of(c, id).as_ty;
+  int hres = repr_of(c, id).demand || rt == TY_STRBUF;
+  if (!hres && rt != TY_STRING && repr_of(c, id).kind != RK_BOXED) return 0;
+  Buf hb; memset(&hb, 0, sizeof hb);
+  if (!emit_bang_self_handle(c, id, &hb)) { free(hb.p); return 0; }
+  int t = ++g_tmp;
+  if (hres) buf_puts(b, hb.p);
+  else if (repr_of(c, id).kind == RK_BOXED)
+    buf_printf(b, "({ sp_String *_t%d = %s; sp_box_nullable_obj(_t%d, SP_BUILTIN_STRBUF); })", t, hb.p, t);
+  else buf_printf(b, "({ sp_String *_t%d = %s; _t%d ? sp_strbuf_read_pub(_t%d) : (const char *)NULL; })", t, hb.p, t, t);
+  free(hb.p);
+  return 1;
+}
+/* safe navigation (&.): a nil receiver answers nil, any other the call, guarded by a nil test */
 int emit_call_safe_nav_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv) {
   /* Safe navigation &. : nil receiver -> return nil/0; non-nil -> emit conditional */
   {
@@ -1566,6 +1613,7 @@ int emit_call_safe_nav_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
         buf_puts(b, dv ? dv : "0");
         return 1;
       }
+      if (emit_safe_nav_self_handle(c, id, recv, b)) return 1;
       if (emit_safe_nav_freeze_handle(c, id, name, recv, b)) return 1;
       /* The poly builtins that answer an UNBOXED scalar: the safe-nav result is
          poly (it may be nil), so the value arm has to be boxed to agree with
