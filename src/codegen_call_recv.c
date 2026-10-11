@@ -16430,14 +16430,23 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
      engine, just like a TY_STRING receiver. */
   if (recv >= 0 && rt == TY_POLY && (is_substitution(name)) &&
       argc == 2 && re_lit_index(c, argv[0]) >= 0) {
-    const char *suf = repr_hash_is(repr_of(c, argv[1]), TY_STRING, TY_STRING) ? "_str_str_hash" : "";
+    /* the replacement as the TY_STRING receiver's arm takes it: a boxed one
+       (`String.new(s, encoding: e)` or a user object) converts as a String
+       argument does */
+    Repr hr = repr_of(c, argv[1]);
+    int str_pairs = repr_hash_is(hr, TY_STRING, TY_STRING);
+    const char *hconv = repl_hash_to_s_fn(hr);
+    const char *suf = (str_pairs || hconv) ? "_str_str_hash" : "";
     /* A user method sharing the name can type the call poly (#8102):
        the String answer is boxed for that slot. */
     int boxed = comp_ntype(c, id) == TY_POLY;
     if (boxed) buf_puts(b, "sp_box_str(");
     buf_printf(b, "sp_re_%s%s(sp_re_pat_%d, sp_poly_to_s(", name, suf, re_lit_index(c, argv[0]));
     emit_expr(c, recv, b); buf_puts(b, "), ");
-    emit_expr(c, argv[1], b); buf_puts(b, ")");
+    if (str_pairs) emit_expr(c, argv[1], b);
+    else if (hconv) { buf_printf(b, "%s(", hconv); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
+    else emit_str_expr(c, argv[1], b);
+    buf_puts(b, ")");
     if (boxed) buf_puts(b, ")");
     return 1;
   }
