@@ -9972,6 +9972,15 @@ int desugar_builtin_scalar_defs(Compiler *c) {
    the container's method serves: rewritten into the per-call-site copy,
    `<prefix>m__N(recv, args)`, once the receiver's type has settled. Runs
    in the fixpoint alongside desugar_builtin_enum_calls. */
+/* The concrete receiver kinds a call onto container bx's generic is
+   rewritten for (desugar_builtin_scalar_calls, which says why) */
+static int bx_recv_concrete(int bx, TyKind rt) {
+  if (bx == SP_BX_INTEGER) return rt == TY_INT || rt == TY_BIGINT;
+  if (bx == SP_BX_FLOAT) return rt == TY_FLOAT;
+  if (bx == SP_BX_COMPARABLE) return rt == TY_INT || rt == TY_BIGINT || rt == TY_FLOAT;
+  return 0;
+}
+
 int desugar_builtin_scalar_calls(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count;
@@ -9981,8 +9990,25 @@ int desugar_builtin_scalar_calls(Compiler *c) {
     int copy = (int)nt_int(nt, id, "bx_copy", -1);
     if (copy < 0 || copy >= nt->count) continue;
     int recv = nt_ref(nt, id, "receiver");
-    if (recv < 0) continue;   /* already rewritten in an earlier round */
     int bx = (int)nt_int(nt, id, "bx_container", -1);
+    if (recv < 0) {
+      /* Rewritten in an earlier round, while the receiver was concrete. A
+         parameter is typed by the calls the rounds have reached so far,
+         so it can widen after (`def f(m) = m.bit_length` called with 255,
+         then with an object whose class reads `bit_length`): the call
+         goes back onto the receiver's own dispatch, for good. */
+      if (!nt_int(nt, id, "bx_done", 0)) continue;
+      int ra = nt_ref(nt, id, "arguments");
+      int rn = 0; const int *rv = ra >= 0 ? nt_arr(nt, ra, "arguments", &rn) : NULL;
+      if (!rv || rn < 1 || bx_recv_concrete(bx, infer_type(c, rv[0]))) continue;
+      nt_node_set_ref(nt, id, "receiver", rv[0]);
+      nt_node_set_ref(nt, id, "arguments", (int)nt_int(nt, id, "bx_args", -1));
+      nt_node_set_str(nt, id, "name", nt_str(nt, id, "bx_name"));
+      nt_node_set_int(nt, id, "bx_done", 0);
+      nt_node_set_int(nt, id, "bx_copy", -1);
+      changed = 1;
+      continue;
+    }
     const char *name = nt_str(nt, id, "name");
     TyKind rt = infer_type(c, recv);
     /* Only a CONCRETE receiver is rewritten (Integer: TY_INT/TY_BIGINT,
@@ -10007,10 +10033,8 @@ int desugar_builtin_scalar_calls(Compiler *c) {
        the call keeps its `&.` and its typed emitter */
     { const char *cop = nt_str(nt, id, "call_operator");
       if (cop && sp_streq(cop, "&.")) continue; }
-    int ok = 0;
-    if (bx == SP_BX_INTEGER) ok = (rt == TY_INT || rt == TY_BIGINT);
-    else if (bx == SP_BX_FLOAT) ok = (rt == TY_FLOAT);
-    else if (bx == SP_BX_COMPARABLE) {
+    int ok = bx_recv_concrete(bx, rt);
+    if (bx == SP_BX_COMPARABLE) {
       /* Integer/Bignum/Float only, narrower than builtins/comparable.rb's
          own surface suggests. Two SEPARATE pre-existing gaps rule the
          other two receiver shapes out, both found writing that file and
@@ -10047,7 +10071,6 @@ int desugar_builtin_scalar_calls(Compiler *c) {
          Both are general method-typing gaps (a parameter's type has to
          account for every REACHABLE caller, hook-based ones included),
          not something one migration should paper over. */
-      ok = (rt == TY_INT || rt == TY_BIGINT || rt == TY_FLOAT);
     }
     if (!ok) continue;
     /* Comparable's names are the one CROSS-container case: they are
@@ -10087,6 +10110,10 @@ int desugar_builtin_scalar_calls(Compiler *c) {
     if (nargs < 0) { free(na); continue; }
     nt_node_set_arr(nt, nargs, "arguments", na, an + 1);
     free(na);
+    /* what the round above puts back if the receiver widens */
+    nt_node_set_int(nt, id, "bx_args", args);
+    nt_node_set_str(nt, id, "bx_name", name);
+    nt_node_set_int(nt, id, "bx_done", 1);
     nt_node_set_ref(nt, id, "arguments", nargs);
     nt_node_set_ref(nt, id, "receiver", -1);
     nt_node_set_str(nt, id, "name", gn);
