@@ -64,6 +64,9 @@ extern const char *(*sp_user_exc_parent_fn)(const char *);   /* set by the gener
    name), and the seeding of their unset state. */
 extern size_t (*sp_user_exc_layout_fn)(const char *, void (**)(void *));
 extern void (*sp_user_exc_ivinit_fn)(void *);
+/* Copies the ivars the runtime's map holds for one exception onto another
+   (Exception#exception(msg) is a copy), once the program can write one. */
+extern void (*sp_exc_bivar_copy_fn)(void *from, void *to);
 /* The modules a class includes, NULL-terminated, or NULL for none. Ruby's type
    hierarchy is not a chain -- `rescue IO::WaitReadable` and `e.is_a?(Retryable)`
    both ask about a MODULE, which a single-parent walk cannot answer. Same shape
@@ -128,6 +131,7 @@ sp_bool sp_exc_eq(sp_Exception *a, sp_Exception *b);
 sp_RbVal sp_Exception_set_backtrace(sp_Exception *e, sp_StrArray *bt);
 sp_Exception *sp_exc_new_sub(const char *cls_name, const char *parent_cls, const char *msg);
 sp_Exception *sp_exc_dup(sp_Exception *e);
+sp_Exception *sp_exc_clone(sp_Exception *e);
 void *sp_exc_apply_staged(const char *cls, const char *msg, void *obj);
 int sp_exc_exit_status(void *obj);
 sp_Exception *sp_exc_exception(sp_Exception *e, const char *msg);

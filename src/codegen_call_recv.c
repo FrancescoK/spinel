@@ -14914,11 +14914,32 @@ static void emit_class_ivar_list_arm(Compiler *c, int tv, Buf *b) {
    Array subclass instance, boxed as its Array, the class its scan names
    (sp_bsub_cls_of, #7449), whose struct holds them. */
 static void emit_ivar_switch_key(Compiler *c, int tv, Buf *b) {
-  if (!program_has_arysub(c)) { buf_printf(b, "_t%d.cls_id", tv); return; }
-  buf_printf(b, "({ int _ik%d = sp_bsub_cls_of(_t%d); _ik%d >= 0 ? _ik%d : _t%d.cls_id; })", tv, tv, tv, tv, tv);
+  int any_exc = 0;
+  for (int k = 0; k < c->nclasses && !any_exc; k++) any_exc = class_is_exc_subclass(c, k);
+  if (!program_has_arysub(c) && !any_exc) { buf_printf(b, "_t%d.cls_id", tv); return; }
+  if (program_has_arysub(c))
+    buf_printf(b, "({ int _ik%d = sp_bsub_cls_of(_t%d); if (_ik%d < 0) _ik%d = _t%d.cls_id; ", tv, tv, tv, tv, tv);
+  else buf_printf(b, "({ int _ik%d = _t%d.cls_id; ", tv, tv);
+  /* an exception boxes under the builtin's id whatever its class: one of
+     the program's exception classes keys to its own arm, whose struct holds
+     its ivars after the exception header; any other is the builtin's (the
+     runtime's map) */
+  if (any_exc) {
+    buf_printf(b, "if (_ik%d == SP_BUILTIN_EXCEPTION) { int _xk%d = sp_exc_user_cls_id(_t%d); if (", tv, tv, tv);
+    int first = 1;
+    for (int k = 0; k < c->nclasses; k++) {
+      if (!class_is_exc_subclass(c, k)) continue;
+      buf_printf(b, "%s_xk%d == %d", first ? "" : " || ", tv, k);
+      first = 0;
+    }
+    buf_printf(b, ") _ik%d = _xk%d; } ", tv, tv);
+  }
+  buf_printf(b, "_ik%d; })", tv);
 }
 
 static int emit_poly_ivar_call(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, int *out) {
+  /* an exception class of the program's that defines the method answers it */
+  if (rt == TY_EXCEPTION && exc_class_defines(c, name)) return 0;
   /* A class value reads the same static ivar slots as the boxed class arm. */
   if (recv >= 0 && rt == TY_CLASS && is_ivar_access(name) && !is_ivar_set(name) &&
       argc == 1 && nt_ref(nt, id, "block") < 0 &&
@@ -14948,7 +14969,7 @@ static int emit_poly_ivar_call(Compiler *c, int id, Buf *b, const NodeTable *nt,
      that class's slot type; a class without the slot takes no write (the
      inference registered the value's type on every class that has one). The
      call answers the value. */
-  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "instance_variable_set") &&
+  if (recv >= 0 && (rt == TY_POLY || rt == TY_EXCEPTION) && sp_streq(name, "instance_variable_set") &&
       argc == 2 && nt_ref(nt, id, "block") < 0 && nt_type(nt, argv[0]) &&
       (sp_streq(nt_type(nt, argv[0]), "SymbolNode") || sp_streq(nt_type(nt, argv[0]), "StringNode"))) {
     const char *a0ty = nt_type(nt, argv[0]);
@@ -14963,10 +14984,20 @@ static int emit_poly_ivar_call(Compiler *c, int id, Buf *b, const NodeTable *nt,
         if (miv >= 0 && miv < sk->nmembers && poly_ivar_set_reaches(c, id, k))
           unsupported(c, id, "instance_variable_set to an ivar absent from the fixed object layout");
       }
+      /* a nil into an exception class's Integer or Float slot, which keeps
+         no nil of its own */
+      if (rt == TY_EXCEPTION && (nt_kind(nt, argv[1]) == NK_NilNode || comp_ntype(c, argv[1]) == TY_NIL ||
+                                 nullable_int_value(c, argv[1]))) {
+        for (int k = 0; k < c->nclasses; k++) {
+          int eiv = class_is_exc_subclass(c, k) ? comp_ivar_index(&c->classes[k], sym) : -1;
+          if (eiv >= 0 && oint_kind(c->classes[k].ivar_types[eiv]) && !ivar_has_nilbit(c, k, eiv))
+            unsupported(c, id, "instance_variable_set of a value that may be nil into an exception's Integer or Float ivar");
+        }
+      }
       Repr rp = repr_of(c, id);
       TyKind res = rp.as_ty;
       int tv = ++g_tmp;
-      buf_puts(b, "({ "); tv = hold_operand(c, recv, TY_POLY, 0, tv, 1, " ", b);
+      buf_puts(b, "({ "); tv = hold_operand(c, recv, TY_POLY, rt == TY_EXCEPTION, tv, 1, " ", b);
       buf_printf(b, "sp_RbVal _ivs%d = ", tv);
       emit_boxed(c, argv[1], b);
       buf_printf(b, "; if (_t%d.tag == SP_TAG_OBJ) switch (", tv);
@@ -15056,7 +15087,7 @@ static int emit_poly_ivar_call(Compiler *c, int id, Buf *b, const NodeTable *nt,
      A receiver whose runtime class lacks the slot reads as nil, matching
      CRuby's unset-ivar behavior; the SP_TAG_OBJ guard keeps a boxed scalar
      (cls_id 0) from aliasing the user class at index 0 (cf. issue #1576). */
-  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "instance_variable_get") &&
+  if (recv >= 0 && (rt == TY_POLY || rt == TY_EXCEPTION) && sp_streq(name, "instance_variable_get") &&
       argc == 1 && nt_ref(nt, id, "block") < 0 && nt_type(nt, argv[0]) &&
       (sp_streq(nt_type(nt, argv[0]), "SymbolNode") || sp_streq(nt_type(nt, argv[0]), "StringNode"))) {
     const char *a0ty = nt_type(nt, argv[0]);
@@ -15067,7 +15098,7 @@ static int emit_poly_ivar_call(Compiler *c, int id, Buf *b, const NodeTable *nt,
       TyKind res = rp.as_ty;
       int tv = ++g_tmp;
       buf_printf(b, "({ sp_RbVal _t%d = ", tv);
-      emit_expr(c, recv, b);
+      if (rt == TY_EXCEPTION) emit_boxed(c, recv, b); else emit_expr(c, recv, b);
       buf_printf(b, "; sp_RbVal _ivg%d = sp_box_nil(); if (_t%d.tag == SP_TAG_OBJ) switch (", tv, tv);
       emit_ivar_switch_key(c, tv, b);
       buf_puts(b, ") {");
@@ -15125,7 +15156,7 @@ static int emit_poly_ivar_call(Compiler *c, int id, Buf *b, const NodeTable *nt,
      receiver: each instantiated class answers from its layout (as the typed
      forms do), a bare Object from its own table (sp_Object_ivar_defined,
      sp_Object_ivars), anything else has none. */
-  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "instance_variable_defined?") && argc == 1 &&
+  if (recv >= 0 && (rt == TY_POLY || rt == TY_EXCEPTION) && sp_streq(name, "instance_variable_defined?") && argc == 1 &&
       nt_ref(nt, id, "block") < 0 && nt_type(nt, argv[0]) &&
       (sp_streq(nt_type(nt, argv[0]), "SymbolNode") || sp_streq(nt_type(nt, argv[0]), "StringNode"))) {
     const char *sym = sp_streq(nt_type(nt, argv[0]), "SymbolNode")
@@ -15133,7 +15164,7 @@ static int emit_poly_ivar_call(Compiler *c, int id, Buf *b, const NodeTable *nt,
     if (sym && sym[0] == '@') {
       int tv = ++g_tmp;
       buf_printf(b, "({ sp_RbVal _t%d = ", tv);
-      emit_expr(c, recv, b);
+      if (rt == TY_EXCEPTION) emit_boxed(c, recv, b); else emit_expr(c, recv, b);
       buf_printf(b, "; sp_bool _ivd%d = FALSE; if (_t%d.tag == SP_TAG_OBJ) switch (", tv, tv);
       emit_ivar_switch_key(c, tv, b);
       buf_puts(b, ") {");
@@ -15161,10 +15192,10 @@ static int emit_poly_ivar_call(Compiler *c, int id, Buf *b, const NodeTable *nt,
       { *out = 1; return 1; }
     }
   }
-  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "instance_variables") && argc == 0 &&
+  if (recv >= 0 && (rt == TY_POLY || rt == TY_EXCEPTION) && sp_streq(name, "instance_variables") && argc == 0 &&
       nt_ref(nt, id, "block") < 0) {
     int tv = ++g_tmp;
-    buf_puts(b, "({ "); tv = hold_operand(c, recv, TY_POLY, 0, tv, 1, " ", b);
+    buf_puts(b, "({ "); tv = hold_operand(c, recv, TY_POLY, rt == TY_EXCEPTION, tv, 1, " ", b);
     buf_printf(b, "sp_PolyArray *_ivl%d = NULL; if (_t%d.tag == SP_TAG_OBJ) switch (", tv, tv);
     emit_ivar_switch_key(c, tv, b);
     buf_puts(b, ") {");
@@ -15188,6 +15219,16 @@ static int emit_poly_ivar_call(Compiler *c, int id, Buf *b, const NodeTable *nt,
     { *out = 1; return 1; }
   }
   return 0;
+}
+
+/* Ivar reflection with a literal name on an exception: the boxed arms
+   above, keyed by the runtime class (emit_ivar_switch_key), so one of the
+   program's exception classes reads and writes its own layout and a builtin
+   exception the runtime's map. */
+int emit_exc_ivar_call(Compiler *c, int id, const char *name, int recv, Buf *b) {
+  int argc, r;
+  const int *argv = call_args(c->nt, id, &argc);
+  return emit_poly_ivar_call(c, id, b, c->nt, name, recv, argc, argv, TY_EXCEPTION, &r) ? r : 0;
 }
 
 /* A numeric call on a boxed receiver: to_i with a base, count, round, floor and ceil with digits (emit_poly_call's arms, in their order) */

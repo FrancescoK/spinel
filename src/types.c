@@ -635,7 +635,11 @@ int ty_builtin_ivar_less(TyKind t) {
 }
 
 /* Of those, the values whose identity Spinel keeps, so the runtime's map can
-   hold their ivars (sp_bivar_*): an Array, a Hash, a Random. */
+   hold their ivars (sp_bivar_*): an Array, a Hash, a Random. An exception
+   is keyed too, though it is no ivar-less builtin: one of the program's
+   exception classes keeps its ivars in its own layout, so the reflection on
+   it dispatches by the runtime class (emit_exc_ivar_call), and only a copy
+   of it reads this predicate. */
 int ty_bivar_keyed(TyKind t) {
-  return t == TY_RANDOM || ty_is_array(t) || ty_is_hash(t);
+  return t == TY_RANDOM || t == TY_EXCEPTION || ty_is_array(t) || ty_is_hash(t);
 }

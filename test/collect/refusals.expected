@@ -494,6 +494,16 @@ spinel: 1 refusal, nothing written
 == test/reject/dynamic_send_then_refusal.rb [promote] rc=1
 spinel: test/reject/dynamic_send_then_refusal.rb:15: String#unicode_normalize is not supported: Unicode normalization requires shipping the Unicode decomposition/composition tables, which spinel deliberately does not carry -- the same limit as String#grapheme_clusters (see docs/limitations.md)
 spinel: 1 refusal, nothing written
+== test/reject/exception_ivar_set_nil_numeric_slot.rb [default] rc=1
+spinel: test/reject/exception_ivar_set_nil_numeric_slot.rb:10: unsupported instance_variable_set of a value that may be nil into an exception's Integer or Float ivar: node N (CallNode `instance_variable_set`) recv=LocalVariableReadNode/ty18 argc=2 arg0ty8
+spinel: 1 refusal, nothing written
+== test/reject/exception_ivar_set_nil_numeric_slot.rb [promote] rc=0
+== test/reject/exception_own_ivar_reflection.rb [default] rc=1
+spinel: test/reject/exception_own_ivar_reflection.rb:9: unsupported call: node N (CallNode `instance_variables`) recv=LocalVariableReadNode/ty18 argc=0
+spinel: 1 refusal, nothing written
+== test/reject/exception_own_ivar_reflection.rb [promote] rc=1
+spinel: test/reject/exception_own_ivar_reflection.rb:9: unsupported call: node N (CallNode `instance_variables`) recv=LocalVariableReadNode/ty18 argc=0
+spinel: 1 refusal, nothing written
 == test/reject/ffi_ptr_ruby_object.rb [default] rc=1
 spinel: test/reject/ffi_ptr_ruby_object.rb:11: unsupported ffi pointer argument (a Ruby object has no C address; pass an IO::Buffer, a String or a :ptr value): node 23 (CallNode `new`) recv=ConstantReadNode/ty49 argc=0
 spinel: 1 refusal, nothing written

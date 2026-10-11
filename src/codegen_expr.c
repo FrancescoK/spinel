@@ -3190,6 +3190,16 @@ static int emit_defined_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, c
         if (kt && sp_streq(kt, "InstanceVariableWriteNode") &&
             inm && nt_str(nt, kk, "name") && sp_streq(nt_str(nt, kk, "name"), inm))
           res = "instance-variable";
+        /* a reflective `instance_variable_set(:@x, v)` writes it too */
+        if (kt && sp_streq(kt, "CallNode") && inm && nt_str(nt, kk, "name") &&
+            sp_streq(nt_str(nt, kk, "name"), "instance_variable_set")) {
+          int sa = nt_ref(nt, kk, "arguments"), san = 0;
+          const int *sav = sa >= 0 ? nt_arr(nt, sa, "arguments", &san) : NULL;
+          const char *sn = NULL;
+          if (san == 2 && nt_kind(nt, sav[0]) == NK_SymbolNode) sn = nt_str(nt, sav[0], "value");
+          else if (san == 2 && nt_kind(nt, sav[0]) == NK_StringNode) sn = nt_str(nt, sav[0], "content");
+          if (sn && sp_streq(sn, inm)) res = "instance-variable";
+        }
       }
       /* in an instance method, a slot nothing has set yet is not defined
          (ivar_set_kind): asked of self at run time */

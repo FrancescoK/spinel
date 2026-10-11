@@ -8568,6 +8568,24 @@ static int infer_ivar_set_call(Compiler *c, int id, NilWrites *writes) {
         else {
           TyKind rt = comp_ntype(c, ivrecv);
           if (ty_is_object(rt)) tcid = ty_object_class(rt);
+          /* an exception may be any of the program's exception classes,
+             whose ivars live in its layout: each takes the slot, so the
+             write (keyed by the runtime class) has a field to land in */
+          else if (rt == TY_EXCEPTION && !exc_class_defines(c, "instance_variable_set")) {
+            TyKind evt = infer_type(c, sav[1]);
+            for (int k = 0; k < c->nclasses; k++) {
+              if (!class_is_exc_subclass(c, k)) continue;
+              ClassInfo *ek = &c->classes[k];
+              int old_en = ek->nivars;
+              int eiv = comp_ivar_intern(ek, sym);
+              if (ek->nivars != old_en) changed = 1;
+              if (evt == TY_NIL) nil_write_note(writes, k, sym);
+              else if (!class_ivar_pinned(ek, sym)) {
+                TyKind em = ivar_merge_with_write(ek->ivar_types[eiv], evt);
+                if (em != ek->ivar_types[eiv]) { ek->ivar_types[eiv] = em; changed = 1; }
+              }
+            }
+          }
           /* a poly receiver may be any class that has the slot: the
              value's type reaches each of them (the dispatch writes it) */
           else if (rt == TY_POLY) {

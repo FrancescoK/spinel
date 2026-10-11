@@ -782,6 +782,7 @@ int emit_bm_flat_args(Compiler *c, const int *argv, int argc, Buf *b);
 int is_builtin_reopen(const char *name);
 int is_exc_name(const char *n);
 int class_is_exc_subclass(Compiler *c, int ci);
+int exc_class_defines(Compiler *c, const char *name);
 int class_is_exc_reopen(Compiler *c, int ci);
 int class_has_exc_name(Compiler *c, int ci);
 int any_exc_reopen(Compiler *c);
@@ -1895,6 +1896,7 @@ int view_splice_next(int from, int *arg, int *tag, const char **pname);
 unsigned view_epoch(void);
 void view_unwind(int mark);   /* back to a view_mark(): views, arm contexts and bindings */
 int emit_op_ivar_reflection(Compiler *c, const BopCtx *x, Buf *b);
+int emit_exc_ivar_call(Compiler *c, int id, const char *name, int recv, Buf *b);
 /* The concurrency handles' row emitters (codegen_call_concurrency.c) */
 int emit_op_thread_set_report(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_thread_raise(Compiler *c, const BopCtx *x, Buf *b);
