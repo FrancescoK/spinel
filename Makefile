@@ -1047,14 +1047,14 @@ NPROC := $(shell nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
 # already inherits the jobserver (a -j is in MAKEFLAGS), so this stays empty and
 # there is no oversubscription; a bare `make test` / `make check` now fans the
 # per-test .ok builds across the cores (~5x). An explicit `make -jN test` wins.
-TEST_JOBS := $(if $(filter -j%,$(MAKEFLAGS)),,-j$(NPROC))
+TEST_JOBS = $(if $(filter -j%,$(MAKEFLAGS)),,-j$(NPROC))
 # `bench` is one monolithic recipe (a shell loop), so it can't fan out through
 # the .ok pattern the way `test` does. Parallelize its loop with `xargs -P`
 # instead -- but only when there is no jobserver to respect: under `make -j gate`
 # the leg runs alongside test/optcarrot on the shared jobserver, so keep it
 # serial (-P 1) there and let the jobserver schedule; a bare `make bench` uses
 # all cores.
-BENCH_PJOBS := $(if $(filter -j%,$(MAKEFLAGS)),1,$(NPROC))
+BENCH_PJOBS = $(if $(filter -j%,$(MAKEFLAGS)),1,$(NPROC))
 
 # A regexp literal is two constants, the pattern and its flags, so whether the
 # engine can read it is settled at compile time. It used to reach the engine
