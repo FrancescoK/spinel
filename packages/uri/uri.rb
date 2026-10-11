@@ -7,8 +7,11 @@
 #
 # * only http, https and a bare/relative form parse; there is no URI::FTP,
 #   URI::LDAP, URI::MailTo, URI::WS, or the scheme registry behind them
-# * userinfo, fragment and opaque are parsed and readable, but there is no
-#   #merge, #route_to, #normalize or #select
+# * userinfo, fragment and opaque are parsed and readable; #merge (and #+,
+#   URI.join) resolves a reference, but there is no #merge!, #route_to,
+#   #route_from, #normalize or #select
+# * an absent port reads as 0 when the scheme has no default, where CRuby
+#   answers nil; the other absent components are nil, as in CRuby
 # * URI.encode_www_form_component / .decode_www_form_component are here
 #   because a query builder needs them; the URI.escape family CRuby removed
 #   is not
@@ -17,6 +20,9 @@ module URI
   end
 
   class InvalidURIError < Error
+  end
+
+  class BadURIError < Error
   end
 
   # The regexp sources CRuby's RFC 2396 parser builds itself from, which a
@@ -85,6 +91,10 @@ module URI
     # bad one, which is absent here the way the rest of the subset is.
     attr_writer :scheme, :userinfo, :host, :port, :path, :query, :fragment
 
+    # What follows the scheme of a URI with no hierarchy ("isbn:1" in
+    # "urn:isbn:1"); nil for every other URI.
+    attr_accessor :opaque
+
     def hostname=(value)
       @host = value
     end
@@ -97,6 +107,7 @@ module URI
       @path = path
       @query = query
       @fragment = fragment
+      @opaque = nil
     end
 
     # true when the URI names a scheme -- a full URL rather than a bare
@@ -117,7 +128,7 @@ module URI
     # path is empty -- `URI("http://example.com").request_uri` is "/".
     def request_uri
       p = (@path.nil? || @path.empty?) ? "/" : @path
-      @query.nil? || @query.empty? ? p : "#{p}?#{@query}"
+      @query.nil? ? p : "#{p}?#{@query}"
     end
 
     # the host without the brackets an IPv6 address carries in a URI, as
@@ -129,16 +140,116 @@ module URI
 
     def to_s
       s = String.new
-      s << "#{@scheme}://" unless @scheme.nil? || @scheme.empty?
-      s << "#{@userinfo}@" unless @userinfo.nil? || @userinfo.empty?
-      s << @host.to_s
-      # A cleared port (`uri.port = nil`) is omitted, as CRuby omits it.
-      s << ":#{@port}" if !@port.nil? && @port != default_port && @port > 0
-      s << @path.to_s
-      s << "?#{@query}" unless @query.nil? || @query.empty?
-      s << "##{@fragment}" unless @fragment.nil? || @fragment.empty?
+      s << "#{@scheme}:" unless @scheme.nil? || @scheme.empty?
+      if @opaque.nil?
+        # The authority's "//" goes in whenever there is a host, so a
+        # network-path reference ("//host/x") keeps it; file URIs keep
+        # it with an empty host, as CRuby does ("file:///etc").
+        s << "//" if !@host.nil? || @scheme == "file" || @scheme == "postgres"
+        s << "#{@userinfo}@" unless @userinfo.nil?
+        s << @host.to_s
+        # A cleared port (`uri.port = nil`) is omitted, as CRuby omits it.
+        s << ":#{@port}" if !@port.nil? && @port != default_port && @port > 0
+        s << @path.to_s
+        s << "?#{@query}" unless @query.nil?
+      else
+        s << @opaque
+      end
+      s << "##{@fragment}" unless @fragment.nil?
       s
     end
+
+    # Resolves +oth+ (a URI or a String) against this URI, as CRuby's
+    # URI::Generic#merge does: an absolute reference is returned as it is,
+    # one with an authority ("//host/x") keeps only the scheme, an absolute
+    # path replaces the path, and a relative path is merged with this one's
+    # directory, "." and ".." segments removed. The query and fragment come
+    # from the reference. Raises BadURIError when both URIs are relative.
+    def merge(oth)
+      rel = URI.for_merge(oth)
+      return rel if rel.absolute?
+      raise BadURIError, "both URI are relative" unless absolute?
+
+      base = dup
+      authority = !rel.userinfo.nil? || !rel.host.nil? ||
+                  (!rel.port.nil? && rel.port > 0)
+
+      # Only a fragment (or nothing at all): this URI with that fragment.
+      if (rel.path.nil? || rel.path.empty?) && !authority && rel.query.nil?
+        base.fragment = rel.fragment unless rel.fragment.nil?
+        return base
+      end
+
+      base.query = nil
+      base.fragment = nil
+      if authority
+        # The reference's authority replaces the base's whole: a port it
+        # leaves out is the scheme's default, not the base's.
+        base.userinfo = rel.userinfo
+        base.host = rel.host
+        base.port = !rel.port.nil? && rel.port > 0 ? rel.port : base.default_port
+        base.path = rel.path.to_s
+      elsif base.opaque.nil?
+        base.path = merge_path(base.path.to_s, rel.path.to_s)
+      end
+      base.query = rel.query unless rel.query.nil?
+      base.fragment = rel.fragment unless rel.fragment.nil?
+      base
+    end
+
+    private
+
+    # The path of #merge for a relative-path reference: +rel+ appended to
+    # the directory of +base+, then its "." and ".." segments resolved; a
+    # ".." that would climb above the root is dropped.
+    def merge_path(base, rel)
+      base_path = base.split("/", -1)
+      rel_path = rel.split("/", -1)
+
+      base_path << "" if base_path.last == ".."
+      while (i = base_path.index(".."))
+        base_path.slice!(i - 1, 2)
+      end
+
+      first = rel_path.first
+      if first && first.empty?
+        base_path.clear
+        rel_path.shift
+      end
+
+      rel_path.push("") if rel_path.last == "." || rel_path.last == ".."
+      rel_path.delete(".")
+
+      tmp = []
+      rel_path.each do |x|
+        if x == ".." && !(tmp.empty? || tmp.last == "..")
+          tmp.pop
+        else
+          tmp << x
+        end
+      end
+
+      add_trailer_slash = !tmp.empty?
+      if base_path.empty?
+        base_path = [""]
+      elsif add_trailer_slash
+        base_path.pop
+      end
+      while (x = tmp.shift)
+        if x == ".."
+          base_path.pop if base_path.size > 1
+        else
+          base_path << x
+          tmp.each { |t| base_path << t }
+          add_trailer_slash = false
+          break
+        end
+      end
+      base_path.push("") if add_trailer_slash
+      base_path.join("/")
+    end
+
+    public
 
     def inspect
       "#<#{self.class}: #{self}>"
@@ -320,7 +431,9 @@ module URI
     fi = s.index("#")
     qi = nil if qi && fi && fi < qi          # `#a?b` is all fragment
     auth_end = -1
-    ai = s.index("://")
+    # the authority follows "scheme://", or the "//" that opens a
+    # network-path reference ("//[::1]:81/x")
+    ai = s.start_with?("//") ? -1 : s.index("://")
     if ai
       auth_end = s.length
       i = ai + 3
@@ -376,53 +489,70 @@ module URI
     false
   end
 
+  # Splits +str+ the RFC 3986 way: an optional "scheme:", then either an
+  # opaque part (a scheme followed by no "/", as in "urn:isbn:1") or a
+  # hierarchical part -- an optional "//authority", the path, "?query" --
+  # and "#fragment". With no scheme it is a relative reference: "c" and
+  # "../d" are paths, and only "//host/x" carries a host.
   def self.parse(str)
     s = str.to_s
     raise InvalidURIError, "bad URI (is not URI?): #{s.inspect}" if invalid_char?(s)
+
+    fragment = nil
+    fi = s.index("#")
+    if fi
+      fragment = s[(fi + 1)..-1].to_s
+      s = s[0, fi]
+    end
+
     scheme = ""
     rest = s
-    idx = s.index("://")
-    if idx
-      scheme = s[0, idx].downcase
-      rest = s[(idx + 3)..-1].to_s
+    ci = s.index(":")
+    if ci && ci > 0 && s[0, ci] =~ /\A[A-Za-z][A-Za-z0-9+\-.]*\z/
+      scheme = s[0, ci].downcase
+      rest = s[(ci + 1)..-1].to_s
     end
 
-    fragment = ""
-    fi = rest.index("#")
-    if fi
-      fragment = rest[(fi + 1)..-1].to_s
-      rest = rest[0, fi]
+    if !scheme.empty? && !rest.empty? && !rest.start_with?("/")
+      u = Generic.new(scheme, nil, nil, 0, "", nil, fragment)
+      u.opaque = rest
+      return u
     end
 
-    query = ""
+    query = nil
     qi = rest.index("?")
     if qi
       query = rest[(qi + 1)..-1].to_s
       rest = rest[0, qi]
     end
 
-    authority = rest
-    path = ""
-    pi = rest.index("/")
-    if pi
-      authority = rest[0, pi]
-      path = rest[pi..-1].to_s
+    authority = nil
+    path = rest
+    if rest.start_with?("//")
+      authority = rest[2..-1].to_s
+      path = ""
+      pi = authority.index("/")
+      if pi
+        path = authority[pi..-1].to_s
+        authority = authority[0, pi]
+      end
     end
 
-    userinfo = ""
-    ai = authority.index("@")
-    if ai
-      userinfo = authority[0, ai]
-      authority = authority[(ai + 1)..-1].to_s
-    end
-
-    host = authority
+    userinfo = nil
+    host = nil
     port = 0
-    ci = authority.rindex(":")
-    if ci && !authority[(ci + 1)..-1].to_s.empty? &&
-       authority[(ci + 1)..-1].to_s =~ /\A[0-9]+\z/
-      host = authority[0, ci]
-      port = authority[(ci + 1)..-1].to_i
+    if authority
+      ai = authority.index("@")
+      if ai
+        userinfo = authority[0, ai]
+        authority = authority[(ai + 1)..-1].to_s
+      end
+      host = authority
+      ci = authority.rindex(":")
+      if ci && authority[(ci + 1)..-1].to_s =~ /\A[0-9]*\z/
+        host = authority[0, ci]
+        port = authority[(ci + 1)..-1].to_i
+      end
     end
 
     if port == 0
@@ -436,6 +566,17 @@ module URI
       HTTP.new(scheme, userinfo, host, port, path, query, fragment)
     else
       Generic.new(scheme, userinfo, host, port, path, query, fragment)
+    end
+  end
+
+  # #merge's argument: a URI as it is, a String parsed.
+  def self.for_merge(oth)
+    if oth.is_a?(Generic)
+      oth
+    elsif oth.is_a?(String)
+      parse(oth)
+    else
+      raise ArgumentError, "bad argument (expected URI object or URI string)"
     end
   end
 
@@ -505,45 +646,12 @@ module URI
 
   RFC2396_PARSER = RFC2396_Parser.new
 
-  def self.normalize_path(path)
-    trailing_slash = path.end_with?("/") || path.end_with?("/.") || path.end_with?("/..")
-    parts = []
-    path.split("/").each do |part|
-      if part == ".."
-        parts.pop if parts.length > 1
-      elsif part != "."
-        parts << part
-      end
-    end
-    normalized = parts.join("/")
-    normalized << "/" if trailing_slash && !normalized.end_with?("/")
-    normalized
-  end
-
-  def self.join(base, rel)
-    b = parse(base.to_s)
-    r = rel.to_s
-    return parse(r) if r.include?("://")
-    q = ""
-    qi = r.index("?")
-    if qi
-      q = r[(qi + 1)..-1].to_s
-      r = r[0, qi]
-    end
-    if r.start_with?("/")
-      path = r
-    else
-      dir = b.path.to_s
-      cut = dir.rindex("/")
-      dir = cut ? dir[0, cut + 1] : "/"
-      path = dir + r
-    end
-    path = normalize_path(path)
-    if b.scheme == "https"
-      HTTPS.new(b.scheme, b.userinfo, b.host, b.port, path, q, "")
-    else
-      HTTP.new(b.scheme, b.userinfo, b.host, b.port, path, q, "")
-    end
+  # `URI.join("http://example.com/a/", "b", "../c")`: the first argument
+  # parsed, then each of the rest merged onto it in turn.
+  def self.join(base, *rels)
+    u = for_merge(base)
+    rels.each { |r| u = u.merge(r) }
+    u
   end
 end
 
