@@ -184,6 +184,7 @@ int emit_strbuf_io_read(Compiler *c, int id, Buf *b);
 void emit_str_concat_handle(Compiler *c, const char *sref, int argc, const int *argv, Buf *b, int indent);
 int emit_bang_self_handle(Compiler *c, int v, Buf *b);
 int face_str_bang_call(Compiler *c, int id);
+int sb_block_hoists(Compiler *c, int id);
 int strbuf_chain_over_handle(Compiler *c, int v);
 int strbuf_ivar_store_aliases(Compiler *c, int v);
 int strbuf_ivar_store_routes(Compiler *c, int v);

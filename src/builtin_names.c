@@ -616,6 +616,10 @@ int is_substitution(const char *n) {
   return sp_streq(n, "gsub") || sp_streq(n, "sub");
 }
 
+int is_substitution_bang(const char *n) {
+  return sp_streq(n, "gsub!") || sp_streq(n, "sub!");
+}
+
 int is_encoding_mutator(const char *n) {
   return sp_streq(n, "force_encoding") || sp_streq(n, "encode!");
 }

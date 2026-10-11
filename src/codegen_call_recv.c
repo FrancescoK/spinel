@@ -4063,9 +4063,20 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
              route over a handle (`(+s).upcase!`, --share-strings) */
           int rd_call = (nt_kind(nt, recv) == NK_CallNode || hrB == 2) && g_n_argov < MAX_ARG_OVERRIDE;
           int tsb = ++g_tmp, tob = ++g_tmp, tnb = ++g_tmp;
-          buf_printf(b, "({ sp_String *_t%d = %s;", tsb, srefB);
-          emit_route_recv_root(c, hrB, tsb, 0, NULL, TY_UNKNOWN, b);
-          buf_printf(b, " const char *_t%d = sp_String_cstr(_t%d); (void)_t%d; ", tob, tsb, tob);
+          /* --share-strings: gsub!/sub!'s block form runs its loop ahead of
+             the statement (g_pre), where it reads the contents bound below:
+             they are held there too, ahead of it, as the plain receiver's
+             are (held below) */
+          Buf *hb = repr_share_rule(c) && rd_call && sb_block_hoists(c, id) ? g_pre : b;
+          buf_puts(b, "({ ");
+          size_t hat = hb->len;
+          if (hb != b) emit_indent(hb, g_indent);
+          buf_printf(hb, "sp_String *_t%d = %s;", tsb, srefB);
+          emit_route_recv_root(c, hrB, tsb, 0, NULL, TY_UNKNOWN, hb);
+          buf_printf(hb, " const char *_t%d = sp_String_cstr(_t%d); (void)_t%d;%s", tob, tsb, tob, hb != b ? "\n" : " ");
+          /* (the handle read held ahead is the receiver's, written back
+             below, as the enclosing bang declares it in the statement) */
+          if (hb != b && g_share_check) share_check_declare_reads(hb, hat, recv);
           /* gsub!/sub! answer nil when no SUBSTITUTION was made, which the
              text comparison below cannot tell from a match that wrote the same
              bytes (`"cats".sub!(/s$/, "s")`): the runtime's matched flag says.
@@ -4138,7 +4149,7 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
          in the statement, not ahead of it. */
       int held = arg_ran_first(recv, 0);
       int hbind = -1;
-      if (!lvw && !held && sb_sub && g_pre && nt_ref(nt, id, "block") >= 0) {
+      if (!lvw && !held && sb_block_hoists(c, id)) {
         int th = ++g_tmp;
         Buf hb; memset(&hb, 0, sizeof hb); emit_expr(c, recv, &hb);
         emit_indent(g_pre, g_indent);
@@ -13578,6 +13589,14 @@ static int emit_face_switch(Compiler *c, int id, unsigned own, Buf *b) {
   buf_printf(b, "}\nelse sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d)); _t%d; })", name, box, tr);
   free(arms.p);
   return 1;
+}
+
+/* Is call id gsub!/sub!'s block form, whose plain form runs its loop
+   ahead of the statement (g_pre, emit_gsub_block_expr)? What the loop
+   reads is held there too. */
+int sb_block_hoists(Compiler *c, int id) {
+  const char *name = nt_str(c->nt, id, "name");
+  return g_pre && nt_ref(c->nt, id, "block") >= 0 && name && is_substitution_bang(name);
 }
 
 /* Does call id take the face table's String bang (emit_face_str_bang)?
