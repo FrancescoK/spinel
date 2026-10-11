@@ -3358,6 +3358,227 @@ static void sp_require_note_text(const char *text) {
   }
 }
 
+/* ---- a require that runs later than the program start ----
+ *
+ * A require inside a method or a block (minitest's `-W` option block requires
+ * minitest/error_on_warning) is hoisted: the file is spliced ahead of the
+ * top-level statement it sits in, so its classes and methods exist for the
+ * whole program. Its run-time statements would then run at startup, not when
+ * the require does: `::Warning.singleton_class.prepend ErrorOnWarning` in that
+ * file ran in every minitest binary. Such statements -- a call on a computed
+ * receiver, or one that prints -- are wrapped in place as methods of their own
+ * scope (`def self.__spinel_load_N_K; stmt; end`, top-level ones as private
+ * methods of main), and the require's value becomes a call that runs them the
+ * first time it is reached. Definitions and class macros stay where they are.
+ * A statement that reads the file's locals, `self` or an instance variable at
+ * the top level, or returns or yields, stays too: in a method it would mean
+ * something else. Every edit stays on its statement's lines. */
+typedef struct {
+  const pm_parser_t *parser;
+  const pm_constant_id_list_t *locals;
+  int top, bad;
+} SpDeferScan;
+
+static bool sp_defer_scan(const pm_node_t *node, void *data) {
+  SpDeferScan *s = data;
+  pm_constant_id_t name = 0;
+  switch (PM_NODE_TYPE(node)) {
+    case PM_RETURN_NODE: case PM_YIELD_NODE: case PM_FORWARDING_SUPER_NODE: case PM_SUPER_NODE:
+    case PM_DEF_NODE: case PM_CLASS_NODE: case PM_MODULE_NODE: case PM_SINGLETON_CLASS_NODE:
+      s->bad = 1; return false;
+    case PM_SELF_NODE: case PM_INSTANCE_VARIABLE_READ_NODE: case PM_INSTANCE_VARIABLE_WRITE_NODE:
+    case PM_INSTANCE_VARIABLE_OPERATOR_WRITE_NODE: case PM_INSTANCE_VARIABLE_OR_WRITE_NODE:
+    case PM_INSTANCE_VARIABLE_AND_WRITE_NODE: case PM_INSTANCE_VARIABLE_TARGET_NODE:
+      if (s->top) { s->bad = 1; return false; }
+      return true;
+    case PM_LOCAL_VARIABLE_READ_NODE: name = ((const pm_local_variable_read_node_t *)node)->name; break;
+    case PM_LOCAL_VARIABLE_WRITE_NODE: name = ((const pm_local_variable_write_node_t *)node)->name; break;
+    case PM_LOCAL_VARIABLE_TARGET_NODE: name = ((const pm_local_variable_target_node_t *)node)->name; break;
+    case PM_LOCAL_VARIABLE_OPERATOR_WRITE_NODE: name = ((const pm_local_variable_operator_write_node_t *)node)->name; break;
+    case PM_LOCAL_VARIABLE_OR_WRITE_NODE: name = ((const pm_local_variable_or_write_node_t *)node)->name; break;
+    case PM_LOCAL_VARIABLE_AND_WRITE_NODE: name = ((const pm_local_variable_and_write_node_t *)node)->name; break;
+    default: return true;
+  }
+  if (pm_constant_id_list_includes((pm_constant_id_list_t *)s->locals, name)) { s->bad = 1; return false; }
+  return true;
+}
+
+/* Does `stmt`, standing in a file's top level or a class body, only run code
+   (as opposed to defining something the program's shape depends on)? */
+static int sp_defer_stmt(const pm_parser_t *parser, const pm_node_t *stmt,
+                         const pm_constant_id_list_t *locals, int top) {
+  if (PM_NODE_TYPE(stmt) != PM_CALL_NODE) return 0;
+  const pm_call_node_t *call = (const pm_call_node_t *)stmt;
+  if (call->receiver) {
+    int recv_t = PM_NODE_TYPE(call->receiver);
+    if (recv_t == PM_SELF_NODE) return 0;
+    /* `Foo.include Bar` and the like on a named class shape that class */
+    static const char *const shape[] = {
+      "include", "extend", "prepend", "attr_reader", "attr_writer", "attr_accessor", "attr",
+      "private", "public", "protected", "module_function", "private_constant", "public_constant",
+      "define_method", "alias_method", "remove_method", "undef_method", "private_class_method",
+      "public_class_method", "const_set", "class_eval", "module_eval", "class_exec", "module_exec",
+      "instance_eval", "send", "__send__", "public_send", "freeze", NULL };
+    if (recv_t == PM_CONSTANT_READ_NODE || recv_t == PM_CONSTANT_PATH_NODE)
+      for (int i = 0; shape[i]; i++) if (sp_pm_name_is(parser, call->name, shape[i])) return 0;
+  }
+  else {
+    static const char *const out[] = { "puts", "print", "p", "pp", "printf", "putc", "warn", NULL };
+    int io = 0;
+    for (int i = 0; out[i]; i++) if (sp_pm_name_is(parser, call->name, out[i])) io = 1;
+    if (!io) return 0;
+  }
+  SpDeferScan s = { parser, locals, top, 0 };
+  pm_visit_node(stmt, sp_defer_scan, &s);
+  return !s.bad;
+}
+
+/* A `return` in the file's own top level (not in a method, block or lambda)
+   ends the load early: the statements after it must not become methods
+   whose definitions never run. */
+static bool sp_defer_top_return(const pm_node_t *node, void *data) {
+  int t = PM_NODE_TYPE(node);
+  if (t == PM_DEF_NODE || t == PM_BLOCK_NODE || t == PM_LAMBDA_NODE) return false;
+  if (t == PM_RETURN_NODE) { *(int *)data = 1; return false; }
+  return true;
+}
+
+typedef struct { size_t at; char *text; } SpDeferEdit;
+typedef struct {
+  const pm_parser_t *parser;
+  const char *source;
+  int file_no, n;
+  SpDeferEdit *edits; int edits_n, edits_cap;
+  char *calls; size_t calls_len, calls_cap;
+} SpDefer;
+
+static void sp_defer_edit(SpDefer *d, size_t at, const char *text) {
+  if (d->edits_n == d->edits_cap) {
+    d->edits_cap = d->edits_cap ? d->edits_cap * 2 : 8;
+    d->edits = realloc(d->edits, sizeof *d->edits * (size_t)d->edits_cap);
+    if (!d->edits) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+  }
+  d->edits[d->edits_n].at = at;
+  d->edits[d->edits_n].text = strdup(text);
+  d->edits_n++;
+}
+
+/* `scope` is the class path the body's methods are called through ("" at the
+   top level), or NULL where it is not known (no statement is wrapped). */
+static void sp_defer_body(SpDefer *d, const pm_node_t *body, const pm_constant_id_list_t *locals,
+                          const char *scope) {
+  if (!body || PM_NODE_TYPE(body) != PM_STATEMENTS_NODE) return;
+  const pm_node_list_t *list = &((const pm_statements_node_t *)body)->body;
+  for (size_t i = 0; i < list->size; i++) {
+    const pm_node_t *st = list->nodes[i];
+    int t = PM_NODE_TYPE(st);
+    if (t == PM_CLASS_NODE || t == PM_MODULE_NODE) {
+      const pm_node_t *cp = t == PM_CLASS_NODE ? ((const pm_class_node_t *)st)->constant_path
+                                               : ((const pm_module_node_t *)st)->constant_path;
+      const pm_node_t *inner = t == PM_CLASS_NODE ? ((const pm_class_node_t *)st)->body
+                                                  : ((const pm_module_node_t *)st)->body;
+      const pm_constant_id_list_t *il = t == PM_CLASS_NODE ? &((const pm_class_node_t *)st)->locals
+                                                           : &((const pm_module_node_t *)st)->locals;
+      /* `module A` nests under the enclosing path; `module A::B` is only
+         certain at the top level, where it is `::A::B` */
+      char path[512];
+      const char *sub = NULL;
+      size_t cl = (size_t)(cp->location.end - cp->location.start);
+      const char *ct = (const char *)cp->location.start;
+      if (scope && (PM_NODE_TYPE(cp) == PM_CONSTANT_READ_NODE || !*scope) && cl < 200 &&
+          strlen(scope) + cl + 4 < sizeof path) {
+        snprintf(path, sizeof path, "%s%s%.*s", scope, (cl >= 2 && ct[0] == ':') ? "" : "::", (int)cl, ct);
+        sub = path;
+      }
+      sp_defer_body(d, inner, il, sub);
+      continue;
+    }
+    if (!scope || !sp_defer_stmt(d->parser, st, locals, !*scope)) continue;
+    char head[600], call[600];
+    int k = d->n++;
+    if (*scope) {
+      snprintf(head, sizeof head, "def self.__spinel_load_%d_%d; ", d->file_no, k);
+      snprintf(call, sizeof call, "%s.__spinel_load_%d_%d; ", scope, d->file_no, k);
+    }
+    else {
+      snprintf(head, sizeof head, "def __spinel_load_%d_%d; ", d->file_no, k);
+      snprintf(call, sizeof call, "__spinel_load_%d_%d; ", d->file_no, k);
+    }
+    sp_defer_edit(d, (size_t)(st->location.start - (const uint8_t *)d->source), head);
+    sp_defer_edit(d, (size_t)(st->location.end - (const uint8_t *)d->source), "; end");
+    size_t cl = strlen(call);
+    if (d->calls_len + cl + 1 > d->calls_cap) {
+      d->calls_cap = (d->calls_len + cl + 1) * 2;
+      d->calls = realloc(d->calls, d->calls_cap);
+      if (!d->calls) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+    }
+    memcpy(d->calls + d->calls_len, call, cl + 1);
+    d->calls_len += cl;
+  }
+}
+
+/* The files a hoisted require deferred, by canonical path, with the
+   expression a require of each answers: a later require of the same file,
+   wherever it stands, runs what the first one held back. */
+static char **sp_defer_paths, **sp_defer_vals;
+static int sp_defer_count, sp_defer_cap;
+
+static const char *sp_defer_lookup(const char *canonical) {
+  for (int i = 0; canonical && i < sp_defer_count; i++)
+    if (strcmp(sp_defer_paths[i], canonical) == 0) return sp_defer_vals[i];
+  return NULL;
+}
+
+/* Wrap `*content`'s run-time statements (above) and answer the expression
+   the require's call becomes, recorded under `canonical`; NULL when the file
+   has none and the require's value stays as it was. */
+static const char *sp_defer_runtime(char **content, const char *canonical) {
+  static int file_no = 0;
+  const char *src = *content;
+  pm_parser_t parser;
+  pm_parser_init(&parser, (const uint8_t *)src, strlen(src), NULL);
+  pm_node_t *root = pm_parse(&parser);
+  SpDefer d;
+  memset(&d, 0, sizeof d);
+  d.parser = &parser; d.source = src; d.file_no = file_no;
+  if (parser.error_list.size == 0 && PM_NODE_TYPE(root) == PM_PROGRAM_NODE) {
+    const pm_program_node_t *prog = (const pm_program_node_t *)root;
+    int top_return = 0;
+    pm_visit_node(root, sp_defer_top_return, &top_return);
+    if (!top_return) sp_defer_body(&d, (const pm_node_t *)prog->statements, &prog->locals, "");
+  }
+  pm_node_destroy(&parser, root);
+  pm_parser_free(&parser);
+  if (!d.n) { free(d.edits); free(d.calls); return NULL; }
+  file_no++;
+  /* apply the edits, which are in source order */
+  size_t slen = strlen(src), add = 0;
+  for (int i = 0; i < d.edits_n; i++) add += strlen(d.edits[i].text);
+  char *out = malloc(slen + add + 1);
+  if (!out) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+  size_t o = 0, from = 0;
+  for (int i = 0; i < d.edits_n; i++) {
+    size_t at = d.edits[i].at, tl = strlen(d.edits[i].text);
+    memcpy(out + o, src + from, at - from); o += at - from; from = at;
+    memcpy(out + o, d.edits[i].text, tl); o += tl;
+    free(d.edits[i].text);
+  }
+  memcpy(out + o, src + from, slen - from + 1);
+  free(d.edits);
+  free(*content);
+  *content = out;
+  char val[4096];
+  snprintf(val, sizeof val, "($__spinel_loaded_%d ? false : ($__spinel_loaded_%d = true; %strue))",
+           d.file_no, d.file_no, d.calls);
+  free(d.calls);
+  sp_defer_paths = sp_grow_strs(sp_defer_paths, sp_defer_count, &sp_defer_cap, 8);
+  sp_defer_vals = realloc(sp_defer_vals, sizeof *sp_defer_vals * (size_t)sp_defer_cap);
+  if (!sp_defer_vals) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+  sp_defer_paths[sp_defer_count] = strdup(canonical);
+  sp_defer_vals[sp_defer_count] = strdup(val);
+  return sp_defer_vals[sp_defer_count++];
+}
+
 static char *resolve_requires(const char *source, const char *source_path,
                               unsigned char **fsl_out, size_t *fsl_n_out) {
   sp_require_note_text(source);
@@ -3428,14 +3649,18 @@ static char *resolve_requires(const char *source, const char *source_path,
     }
 
     char *canonical = sp_canonical_path(full_path);
+    char *canon_keep = strdup(canonical);
     char *content;
     unsigned char *cfsl = NULL; size_t cfsl_n = 0;   /* spliced content's flags */
+    /* the run-time part a hoisted require held back (sp_defer_runtime) */
+    const char *dval = NULL;
     if (sp_path_already_included(canonical)) {
       /* Already inlined once -- replace require with empty content */
       content = strdup("# require_relative skipped (already included)");
       cfsl = sp_fsl_make(content, 0, &cfsl_n);
+      dval = sp_defer_lookup(canonical);
       free(canonical);
-      req_val = "false";
+      req_val = dval ? dval : "false";
       sp_req_resolved++;
     }
 else {
@@ -3478,13 +3703,25 @@ else {
                           *trail != '\0' && *trail != '#');
       ml = sp_req_if_modifier(expr_end);
       cond_inline = !hit.margin || ml || sp_in_cond_region(result, hit.kw);
-      if ((!hit.margin && !sp_req_in_control_only(result, hit.kw)) || (has_modifier && !ml)) {
+      /* a later require of a file a hoisted one deferred stands where it
+         was, and runs what that one held back */
+      if (dval) {
+        free(content); content = strdup("");
+        free(cfsl); cfsl = sp_fsl_make(content, 0, &cfsl_n);
+      }
+      if (dval || (!hit.margin && !sp_req_in_control_only(result, hit.kw)) || (has_modifier && !ml)) {
+        if (!dval && strcmp(req_val, "true") == 0) {
+          const char *v = sp_defer_runtime(&content, canon_keep);
+          if (v) req_val = v;
+        }
         sp_req_hoist_splice(&result, &fsl, &fsl_n, &hit, content, cfsl, cfsl_n, req_val);
         free(cfsl);
         free(content);
+        free(canon_keep);
         continue;
       }
     }
+    free(canon_keep);
 
     /* a conditional inclusion is marked, so the requires inside it count as
        conditional too (the markers are comments: two lines, no flags) */
@@ -4089,12 +4326,16 @@ static char *resolve_plain_requires(char *source, const char *exe_path,
        already pulled it. Otherwise mixing the two forms for the same lib
        still produces struct-redefinition errors. */
     char *canonical = sp_canonical_path(lib_path);
+    char *canon_keep = strdup(canonical);
     char *content;
     unsigned char *cfsl = NULL; size_t cfsl_n = 0;   /* spliced content's flags */
+    /* the run-time part a hoisted require held back (sp_defer_runtime) */
+    const char *dval = NULL;
     if (sp_path_already_included(canonical)) {
       content = strdup("# require skipped (already included)");
+      dval = sp_defer_lookup(canonical);
       free(canonical);
-      req_val = "false";
+      req_val = dval ? dval : "false";
       sp_req_resolved++;
     }
 else {
@@ -4287,13 +4528,25 @@ else {
                           *trail != '\0' && *trail != '#');
       ml = sp_req_if_modifier(expr_end);
       cond_inline = !hit.margin || ml || sp_in_cond_region(result, hit.kw);
-      if ((!hit.margin && !sp_req_in_control_only(result, hit.kw)) || (has_modifier && !ml)) {
+      /* a later require of a file a hoisted one deferred stands where it
+         was, and runs what that one held back */
+      if (dval) {
+        free(content); content = strdup("");
+        free(cfsl); cfsl = sp_fsl_make(content, 0, &cfsl_n);
+      }
+      if (dval || (!hit.margin && !sp_req_in_control_only(result, hit.kw)) || (has_modifier && !ml)) {
+        if (!dval && strcmp(req_val, "true") == 0) {
+          const char *v = sp_defer_runtime(&content, canon_keep);
+          if (v) req_val = v;
+        }
         sp_req_hoist_splice(&result, fsl, fsl_n, &hit, content, cfsl, cfsl_n, req_val);
         free(cfsl);
         free(content);
+        free(canon_keep);
         continue;
       }
     }
+    free(canon_keep);
 
     /* a conditional inclusion is marked, so the requires inside it count as
        conditional too (the markers are comments: two lines, no flags) */
