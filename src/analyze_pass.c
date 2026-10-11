@@ -7387,11 +7387,12 @@ int infer_default_param_types(Compiler *c) {
       LocalVar *ep = edn == 0 && c->arr_want && dv < c->node_cap ? scope_local(sc, sc->pnames[i]) : NULL;
       if (ep && !ep->rbs_seeded) {
         TyKind w = c->arr_want[dv];
-        if (ty_is_array(ep->type) && ep->type != TY_POLY_ARRAY && (w == TY_UNKNOWN || w == ep->type)) {
+        if ((ty_is_array(ep->type) || ty_is_obj_array(ep->type)) && ep->type != TY_POLY_ARRAY &&
+            (w == TY_UNKNOWN || w == ep->type)) {
           if (w != ep->type) { c->arr_want[dv] = ep->type; changed = 1; }
           continue;
         }
-        if (ty_is_array(w) && w != TY_POLY_ARRAY) { c->arr_want[dv] = TY_POLY_ARRAY; changed = 1; }
+        if ((ty_is_array(w) || ty_is_obj_array(w)) && w != TY_POLY_ARRAY) { c->arr_want[dv] = TY_POLY_ARRAY; changed = 1; }
       }
       TyKind dt = infer_type(c, dv);
       /* An empty hash `{}` default returns TY_UNKNOWN from infer_type; treat
