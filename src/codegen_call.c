@@ -8624,7 +8624,18 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       }
       if (!pd_done) buf_puts(b, " }");
       if (kw_pos) emit_poly_str_aset_writeback(c, recv, &ps, &ptemps, b);
-      buf_printf(b, " _t%d; })", pd_done || !is_setter_val ? tr : atmp[0]);
+      /* A handle the call is typed a String for answers its bytes, as the
+         static receiver's setter does: the handle itself put an sp_String *
+         where a const char * is read (a safe-navigation nil arm's NULL). */
+      Repr svr = repr_of(c, id);
+      if (!pd_done && is_setter_val && atmp_ty[0] == TY_STRBUF && ret == TY_STRING &&
+          !(repr_share_rule(c) && (svr.demand || (svr.handle && repr_write_share(c, id))))) {
+        char sref[32]; snprintf(sref, sizeof sref, "_t%d", atmp[0]);
+        buf_puts(b, " ");
+        emit_strbuf_node_read(c, id, sref, b);
+        buf_puts(b, "; })");
+      }
+      else buf_printf(b, " _t%d; })", pd_done || !is_setter_val ? tr : atmp[0]);
       free(atmp);
       free(atmp_ty);
       free(htmp);
