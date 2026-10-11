@@ -20616,6 +20616,21 @@ static int operand_binds_as_value(NodeKind k) {
          k != NK_AssocSplatNode && k != NK_BlockArgumentNode && k != NK_RangeNode && k != NK_LambdaNode;
 }
 
+/* --share-strings: is operand `v` bound as the handle it hands on, not as
+   its bytes: the default setter's String (harg), or a conversion over a
+   String the rule shares (`h[k] = value.to_s` with value a parameter
+   holding one), whose String arm reads the bytes while its route answers
+   the receiver's handle (emit_strbuf_route)? Bound as the bytes, the store
+   wrapped a copy, and a mutation through the element missed the variable
+   (#8549's test under the flag). */
+static int operand_binds_handle(Compiler *c, int v, int harg) {
+  if (v == harg) return 1;
+  if (!repr_share_rule(c) || nt_kind(c->nt, v) != NK_CallNode) return 0;
+  Repr r = repr_of(c, v);
+  if (r.as_ty != TY_STRBUF || r.strbuf_src == RS_FRESH) return 0;
+  return strbuf_poly_to_s(c, v) || repr_string_conversion_operand(c, v) >= 0;
+}
+
 static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
   /* The buffer arm holds its operands, including the handle a keyword
      may replace, before it checks or converts any of them. */
@@ -20845,7 +20860,7 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
     if (copy[i]) { memset(&opb[i], 0, sizeof opb[i]); memset(&opp[i], 0, sizeof opp[i]); }
   for (; !operands_last && rendered < nb && ok; rendered++) {
     if (copy[rendered]) continue;
-    render_operand(c, node[rendered], fresh[rendered], node[rendered] == harg, oo[rendered], &opb[rendered], &opp[rendered]);
+    render_operand(c, node[rendered], fresh[rendered], operand_binds_handle(c, node[rendered], harg), oo[rendered], &opb[rendered], &opp[rendered]);
     if (text_is_raise_token(opb[rendered].p)) ok = 0;
   }
   Buf ob; memset(&ob, 0, sizeof ob);
@@ -20863,7 +20878,7 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
         continue;
       }
       tmp[i] = ++g_tmp;
-      if (node[i] == harg) ran_first_bind(node[i], tmp[i], tmp[i]);
+      if (operand_binds_handle(c, node[i], harg)) ran_first_bind(node[i], tmp[i], tmp[i]);
       else if (oo[i]) view_bind_o(node[i], "_t%d", tmp[i]);
       else view_bind(node[i], "_t%d", tmp[i]);
       if (repr_share_rule(c) && ty[i] == TY_STRBUF) {
@@ -20903,7 +20918,7 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
     if (observable < 2 && g_conv_emitted == conv_mark) ok = 0;
     for (; operands_last && rendered < nb && ok; rendered++) {
       if (copy[rendered]) continue;
-      render_operand(c, node[rendered], fresh[rendered], node[rendered] == harg, oo[rendered], &opb[rendered], &opp[rendered]);
+      render_operand(c, node[rendered], fresh[rendered], operand_binds_handle(c, node[rendered], harg), oo[rendered], &opb[rendered], &opp[rendered]);
       if (text_is_raise_token(opb[rendered].p)) ok = 0;
     }
   }

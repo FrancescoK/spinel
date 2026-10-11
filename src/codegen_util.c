@@ -3306,7 +3306,10 @@ int strbuf_slot_ref(Compiler *c, int recv, char *out, size_t cap) {
   /* strbuf_handle_demand is the same demand carried without the type: a mark
      made after the node-type cache is finalized cannot move the type without
      moving the call off the surface that dispatches it (see compiler.h). */
-  if (strbuf_call_reads_handle(c, recv)) {
+  /* (not a conversion over a String the rule shares: its String arm reads
+     the bytes, and its route answers the receiver's handle,
+     emit_strbuf_route) */
+  if (strbuf_call_reads_handle(c, recv) && !(repr_share_rule(c) && repr_string_conversion_operand(c, recv) >= 0)) {
     Buf rb2; memset(&rb2, 0, sizeof rb2);
     emit_expr(c, recv, &rb2);
     /* A container ELEMENT read comes back BOXED (a poly array element, a hash
