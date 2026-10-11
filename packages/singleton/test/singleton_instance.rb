@@ -10,6 +10,7 @@ class Counter
 
   def initialize
     @count = 0
+    @lock = Mutex.new
     puts "Counter#initialize"
   end
 
@@ -17,8 +18,10 @@ class Counter
     instance.bump
   end
 
+  # the threads' increments are serialized: the test is about the one
+  # instance they share, not about a racing `+=`
   def bump
-    @count += 1
+    @lock.synchronize { @count += 1 }
   end
 end
 
