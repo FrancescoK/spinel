@@ -321,8 +321,9 @@ int bop_args_as_builtin(TyKind rt, const char *name, int argc, int has_block);
 typedef enum {
   BSH_PURE = 1,   /* keeps none of its arguments; answers no value it was handed
                      (a block a container's runs is handed its elements) */
-  BSH_FROZEN,     /* answers its receiver frozen (or a frozen copy): nothing
-                     can change that String in place any more */
+  BSH_FROZEN,     /* answers a frozen String: its receiver if frozen, else a
+                     frozen copy (-@, dedup); nothing can change it in place
+                     any more. freeze answers its receiver (BSH_RECV) */
   BSH_RECV,       /* answers its receiver */
   BSH_CLAMP,      /* answers its receiver or one of its bounds */
   BSH_ELEM,       /* answers an element of the receiver (with a count: a SUB) */

@@ -157,6 +157,12 @@ int repr_call_returns_handle(Compiler *c, int v) {
     return p->dispatch == CP_DIRECT && repr_self_handle(c, p->mi) && c->scopes[p->mi].ret_handle;
   }
   if (!repr_share_rule(c) || v < 0 || nt_kind(nt, v) != NK_CallNode) return 0;
+  /* an attribute assignment answers its right-hand side, not what the
+     writer returns: where the facts keep its value apart from the
+     right-hand side's String (share_assign_unjoined), that value is the
+     right-hand side's own pointer, and a writer that dups publishes its
+     own copy */
+  if (share_assign_unjoined(c, v)) return 0;
   /* a String's value, or one the pickup marks to be stored as the handle */
   TyKind t = c->ntype[v];
   if (t != TY_STRING && !(t == TY_STRBUF && c->strbuf_box[v])) return 0;

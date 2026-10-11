@@ -1429,8 +1429,9 @@ static int emit_boxed_write_handle(Compiler *c, int node, Buf *b) {
 }
 
 /* --share-strings: a bang method on a variable's handle answers that
-   variable's String, or nil (strbuf_bang_self_local): box that handle. 0
-   for any other node, with nothing emitted. */
+   variable's String, or nil (strbuf_bang_self_local), and a call without a
+   bang that answers its receiver over a route's handle answers that
+   handle: box it. 0 for any other node, with nothing emitted. */
 static int emit_boxed_bang_self(Compiler *c, int node, Buf *b) {
   if (!repr_share_rule(c)) return 0;
   /* a bang on a boxed receiver: the box the write-back answers, the
@@ -1445,9 +1446,13 @@ static int emit_boxed_bang_self(Compiler *c, int node, Buf *b) {
   if (!strbuf_bang_self_local(c, node)) return 0;
   int r = nt_ref(c->nt, node, "receiver");
   char srefB[1024];
-  if (!strbuf_slot_ref(c, r, srefB, sizeof srefB)) return 0;
-  if (nt_kind(c->nt, r) == NK_CallNode) {
-    /* a reader call: read once (emit_bang_self_handle) */
+  int slot = strbuf_slot_ref(c, r, srefB, sizeof srefB);
+  /* (a bang over a route keeps its own arms below: a narrowed box's
+     mutator changes the box's String in place) */
+  if (!slot && !strbuf_plain_self_call(c, node)) return 0;
+  if (!slot || nt_kind(c->nt, r) == NK_CallNode) {
+    /* a reader call: read once (emit_bang_self_handle); so is a route
+       over a handle (`(s << x).freeze`), whose handle it takes once */
     Buf hb; memset(&hb, 0, sizeof hb);
     int sv_b = view_push_repr(c, node, VR_STRBUF_BOX, 0);
     int ok = emit_bang_self_handle(c, node, &hb);

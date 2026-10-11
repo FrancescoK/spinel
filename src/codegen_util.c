@@ -3232,6 +3232,11 @@ int strbuf_bang_self_local(const Compiler *c, int v) {
   /* The receiver can itself be a route over a handle, including an
      append chain followed by a prepend with several arguments. */
   if (strbuf_value_carries((Compiler *)c, r)) return 1;
+  /* freeze over a bang over a handle (`id(t).upcase!.freeze`): the bang
+     answers that handle or nil, and nil.freeze is nil */
+  if (is_freeze_name(nt_str(nt, v, "name")) && call_plain_argc((Compiler *)c, v) == 0 &&
+      nt_kind(nt, r) == NK_CallNode && bop_share_self_answer(nt_str(nt, r, "name"), nt_ref(nt, r, "block") >= 0) &&
+      strbuf_bang_self_local(c, r)) return 1;
   if (rk == NK_InstanceVariableReadNode || repr_static_read_kind(rk))
     return strbuf_var_handle((Compiler *)c, r, ref, sizeof ref);
   /* a reader call read as the handle on a variable or self (`o.s.strip!`),

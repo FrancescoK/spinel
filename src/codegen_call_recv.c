@@ -7378,13 +7378,16 @@ static int str_arms_convert(Compiler *c, int id, Buf *b, const NodeTable *nt, co
       }
     }
     /* an attribute assignment on a handle, or freeze over one, against a
-       handle: its own handle is compared (the read face is a copy) */
-    if (!eq_sblv && repr_share_rule(c) && strbuf_assign_route(c, recv)) {
+       handle: its own handle is compared (the read face is a copy); so is
+       a call answering its receiver over a handle (`s.freeze.freeze`),
+       which is that receiver's handle (emit_strbuf_handle_of) */
+    if (!eq_sblv && repr_share_rule(c) && (strbuf_assign_route(c, recv) || strbuf_plain_self_call(c, recv))) {
       char arefL[192];
       if (strbuf_slot_ref(c, argv[0], arefL, sizeof arefL)) {
         int thl = ++g_tmp;
         buf_printf(b, "({ sp_String *_t%d = ", thl);
-        emit_strbuf_route(c, recv, b);
+        if (strbuf_assign_route(c, recv)) emit_strbuf_route(c, recv, b);
+        else emit_strbuf_handle_of(c, recv, b);
         buf_printf(b, "; SP_GC_ROOT(_t%d); (sp_bool)(_t%d == %s); })", thl, thl, arefL);
         eq_sblv = 1;
       }

@@ -2584,7 +2584,7 @@ static const BopShareRow bop_share_rows[] = {
   { TY_STRING, "replace",    BSH_RECV },
   { TY_STRING, "[]=",        BSH_FETCH },
   { TY_STRING, "+@",         BSH_RECV },
-  { TY_STRING, "freeze",     BSH_FROZEN },
+  { TY_STRING, "freeze",     BSH_RECV },
   { TY_STRING, "-@",         BSH_FROZEN },
   { TY_STRING, "dedup",      BSH_FROZEN },
   { TY_STRING, "dup",        BSH_PURE },
