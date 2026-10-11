@@ -12657,7 +12657,9 @@ else {
       int tv = ++g_tmp;
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "%s _t%d = %s(_t%d, \"%s\");\n", c_type_name(pt), tv, fn, atmp[k], what ? what : "");
-      atmp[k] = tv;
+      /* the checked temp is the plain value: the arm takes it as such, not
+         unwrapped a second time (#8576) */
+      atmp[k] = tv; atmp_o[k] = 0;
     }
 
   /* a trailing splat's count, refused once every argument has run */
