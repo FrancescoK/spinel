@@ -1982,11 +1982,15 @@ const char *strbuf_local_name(Compiler *c, int recv) {
    holds it (strbuf_slot_ref); an instance_eval context returns -1 (its
    storage is not a per-instance field). */
 int strbuf_ivar_owner(Compiler *c, int node) {
+  /* (--share-strings: an ivar in an instance_eval/exec splice is the
+     rebound receiver's, as the ivar emitter takes it: `K.new(s).instance_exec
+     { @name }` read the surrounding scope's slot facts for K's @name) */
+  if (repr_share_rule(c) && ie_class_of(c, node) >= 0) return ie_class_of(c, node);
   Scope *cs = comp_scope_of(c, node);
   if (!cs) return -1;
   if (cs->is_cmethod) return cs->class_id;
   if (cs->class_id >= 0) return cs->class_id;
-  if (g_ie_class_id >= 0) return -1;
+  if (g_ie_class_id >= 0) return repr_share_rule(c) ? g_ie_class_id : -1;
   return comp_class_index(c, "Toplevel");
 }
 /* ---- Is an object's ivar set? ----

@@ -540,6 +540,25 @@ int emit_call_identity_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
   return 0;
 }
 
+/* Whether a block run on a value with no instance variable layout reads
+   its self: a `self` or a call with no receiver, which dispatches on it.
+   Its instance variables read nil there and do not read the value. */
+static int ie_value_body_reads_self(const NodeTable *nt, int id) {
+  if (id < 0) return 0;
+  NodeKind k = nt_kind(nt, id);
+  if (k == NK_SelfNode || (k == NK_CallNode && nt_ref(nt, id, "receiver") < 0)) return 1;
+  int nr = nt_num_refs(nt, id);
+  for (int i = 0; i < nr; i++)
+    if (ie_value_body_reads_self(nt, nt_ref_at(nt, id, i))) return 1;
+  int na = nt_num_arrs(nt, id);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *ids = nt_arr_at(nt, id, i, &n);
+    for (int j = 0; j < n; j++)
+      if (ie_value_body_reads_self(nt, ids[j])) return 1;
+  }
+  return 0;
+}
+
 /* instance_eval / instance_exec with a block, run with the receiver as self (direct, or through a trampoline) */
 int emit_call_instance_eval_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc) {
   int ie_direct = recv >= 0 && (is_instance_eval_family(name));
@@ -591,6 +610,15 @@ int emit_call_instance_eval_arms(Compiler *c, int id, Buf *b, const NodeTable *n
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "sp_RbVal _t%d = %s;\n", tself, rb.p ? rb.p : "sp_box_nil()");
         free(rb.p);
+        /* (--share-strings: a fresh receiver on the heap is rooted while a
+           body that reads self and can allocate runs, as the object
+           splice's receiver is; the dispatch over several classes roots
+           the value it switches on) */
+        if (repr_share_rule(c) && needs_root(nrt) && g_ie_poly_node != id &&
+            operand_may_allocate(c, recv) && !expr_is_held_ref(c, recv) &&
+            ie_value_body_reads_self(nt, nblk) && operand_may_allocate(c, nblk)) {
+          emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_t%d);\n", tself);
+        }
       }
       /* instance_exec binds its arguments as a yield binds them
          (emit_block_binds); instance_eval hands each parameter the receiver */
@@ -607,6 +635,10 @@ int emit_call_instance_eval_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       BlockAliases nal = { .n = 0 };
       int nal_tr = -1;
       TyKind nal_vt = TY_UNKNOWN;
+      /* --share-strings: the call read as the handle (strbuf_route_ie)
+         answers the tail's handle */
+      TyKind ntt = nbn > 0 ? repr_of(c, nbb[nbn - 1]).as_ty : TY_NIL;
+      int nhandle = repr_share_rule(c) && comp_ntype(c, id) == TY_STRBUF && (ntt == TY_STRING || ntt == TY_STRBUF);
       if (nexec) {
         /* into a side buffer: a value's own prelude drains into g_pre first */
         Buf bb; memset(&bb, 0, sizeof bb);
@@ -614,6 +646,7 @@ int emit_call_instance_eval_arms(Compiler *c, int id, Buf *b, const NodeTable *n
         if (nal.open && nbn > 0) {
           TyKind lt = repr_of(c, nbb[nbn - 1]).as_ty;
           nal_vt = repr_of(c, id).kind == RK_BOXED && lt != TY_POLY ? TY_POLY : lt;
+          if (nhandle) nal_vt = TY_STRBUF;
           if (nal_vt != TY_VOID && nal_vt != TY_NIL && nal_vt != TY_UNKNOWN &&
               (ty_is_object(nal_vt) || c_type_name(nal_vt))) {
             nal_tr = ++g_tmp;
@@ -654,7 +687,9 @@ int emit_call_instance_eval_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       int nbox = repr_of(c, id).kind == RK_BOXED && nbt != TY_POLY;
       if (nal.open) {
         Buf vb; memset(&vb, 0, sizeof vb);
-        if (nal_vt == TY_POLY && nbt != TY_POLY) emit_boxed(c, nbb[nbn - 1], &vb); else emit_expr(c, nbb[nbn - 1], &vb);
+        if (nal_vt == TY_POLY && nbt != TY_POLY) emit_boxed(c, nbb[nbn - 1], &vb);
+        else if (nhandle) emit_strbuf_handle_of(c, nbb[nbn - 1], &vb);
+        else emit_expr(c, nbb[nbn - 1], &vb);
         emit_indent(g_pre, g_indent);
         if (nal_tr >= 0) buf_printf(g_pre, "_t%d = %s;\n", nal_tr, vb.p ? vb.p : "0");
         else buf_printf(g_pre, "%s;\n", vb.p ? vb.p : "0");
@@ -668,9 +703,20 @@ int emit_call_instance_eval_arms(Compiler *c, int id, Buf *b, const NodeTable *n
         g_ie_nil_ivars = sv_nil_ie;
         return 1;
       }
+      if (nhandle) {
+        int tr = ++g_tmp;
+        Buf vb; memset(&vb, 0, sizeof vb);
+        emit_strbuf_handle_of(c, nbb[nbn - 1], &vb);
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n", tr, vb.p ? vb.p : "NULL", tr);
+        free(vb.p);
+        ie_body_restore(c, nsnap);
+        g_self = sv_self; g_self_deref = sv_deref;
+        buf_printf(b, "_t%d", tr);
+      }
       /* an Integer or Float tail the consumer takes with its nil (a
          receiver without the ivar reads it nil): held as the oint */
-      if (nscalar && oint_kind(nbt) && (node_is_oint(c, id) || nbox)) {
+      else if (nscalar && oint_kind(nbt) && (node_is_oint(c, id) || nbox)) {
         int tr = ++g_tmp;
         Buf vb; memset(&vb, 0, sizeof vb);
         emit_oint_expr(c, nbb[nbn - 1], nbt, &vb);
@@ -768,6 +814,11 @@ int emit_call_instance_eval_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       TyKind bn_ty = ie_splice_value_ty(c, blk_body);
       if (bn_ty != TY_UNKNOWN)
         body_ty = (body_ty == TY_NIL || body_ty == TY_UNKNOWN) ? bn_ty : ty_unify(body_ty, bn_ty);
+      /* --share-strings: the call read as the handle (strbuf_route_ie)
+         answers the tail's handle */
+      int ohandle = repr_share_rule(c) && comp_ntype(c, id) == TY_STRBUF &&
+                    (body_ty == TY_STRING || body_ty == TY_STRBUF);
+      if (ohandle) body_ty = TY_STRBUF;
       int scalar_res = is_scalar_ret(body_ty) && body_ty != TY_VOID && body_ty != TY_NIL && body_ty != TY_UNKNOWN;
       /* a number result that can be nil (the tail's own form: a nil-bit
          ivar write, a nullable read) is held as its oint, which the call
@@ -787,9 +838,23 @@ int emit_call_instance_eval_arms(Compiler *c, int id, Buf *b, const NodeTable *n
                  self_is_val ? "" : "*", tr,
                  rb.p ? rb.p : (self_is_val ? "{0}" : "NULL"));
       free(rb.p);
+      /* --share-strings: a fresh receiver no variable holds is rooted
+         while a body that reads self and can allocate runs: a nested
+         splice's `J.new` collected a fresh `K.new` receiver whose `@name`
+         the body read after it (the dispatch over several classes roots
+         the value it switches on) */
+      if (repr_share_rule(c) && !self_is_val && ie_self_cls < 0 && g_ie_poly_node != id &&
+          operand_may_allocate(c, recv) && !expr_is_held_ref(c, recv) &&
+          fiber_body_uses_self(c, blk) && operand_may_allocate(c, blk)) {
+        emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", tr);
+      }
       if (res_oint) {
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "%s _t%d = %s;\n", oint_ctype(body_ty), tres, oint_nil(body_ty));
+      }
+      else if (ohandle) {
+        emit_indent(g_pre, g_indent);
+        buf_printf(g_pre, "sp_String *_t%d = NULL; SP_GC_ROOT(_t%d);\n", tres, tres);
       }
       else if (scalar_res) {
         emit_indent(g_pre, g_indent); emit_ctype(c, body_ty, g_pre);
@@ -956,6 +1021,7 @@ int emit_call_instance_eval_arms(Compiler *c, int id, Buf *b, const NodeTable *n
              box it when the slot is poly but this expression is scalar. */
           if (scalar_res && body_ty == TY_POLY) emit_boxed(c, ie_bb[ie_bn - 1], &vb);
           else if (res_oint) emit_oint_expr(c, ie_bb[ie_bn - 1], body_ty, &vb);
+          else if (ohandle) emit_strbuf_handle_of(c, ie_bb[ie_bn - 1], &vb);
           else emit_expr(c, ie_bb[ie_bn - 1], &vb);
           emit_indent(g_pre, g_indent);
           if (!scalar_res) {
