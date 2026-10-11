@@ -10,6 +10,7 @@
 #   - top.long / top.short: the switches declared with on, by name without
 #     the dashes. A name added to either Hash (dict["n"] = dict["i"]) is
 #     accepted as that switch
+#   - program_name, version, release and ver, with their writers
 #   - parse! with --long=VALUE, --long VALUE, -s VALUE, -sVALUE, clustered
 #     short switches (-vq, -vuNAME) and "--"
 #   - --[no-]name switches: --name passes true, --no-name passes false;
@@ -174,6 +175,31 @@ class OptionParser
 
   attr_accessor :banner, :summary_width, :summary_indent
   attr_reader :top
+  attr_writer :program_name, :version, :release
+
+  # The program's name: as set, else its file's name (see the banner).
+  def program_name
+    @program_name || File.basename($0)
+  end
+
+  # The version and the release code, as set, else the program's top-level
+  # Version and Release (or RELEASE) constants, as in CRuby.
+  def version
+    @version || (defined?(::Version) ? ::Version : nil)
+  end
+
+  def release
+    @release || (defined?(::Release) ? ::Release : nil) || (defined?(::RELEASE) ? ::RELEASE : nil)
+  end
+
+  # "name version (release)", or nil without a version.
+  def ver
+    if v = version
+      str = +"#{program_name} #{[v].join('.')}"
+      str << " (#{v})" if v = release
+      str
+    end
+  end
 
   def initialize(banner = nil, width = 32, indent = "    ", &block)
     @banner = banner || "Usage: " + File.basename($0) + " [options]"
