@@ -1770,6 +1770,8 @@ static TyKind sh_bop_arg_type(const void *ud, int i) {
   return i >= 0 && i < a->argc ? a->c->ntype[a->argv[i]] : TY_UNKNOWN;
 }
 
+static int sh_has_method_missing_candidate(Compiler *c);
+
 /* A boxed String row can replace the container default only when the
    selected typed row describes this call shape and the dispatch plan and
    builtin ownership tables account for the other routes. The plan may offer
@@ -1813,9 +1815,8 @@ static int sh_boxed_string_row_composable(ShareFacts *F, Compiler *c, int n,
   /* Match the existing boxed-freshness exclusions for Object and dynamic
      lookup. These routes can answer without being an ordinary user target. */
   if (object_public_method_name(name) || comp_method_index(c, "method_missing") >= 0) return 0;
+  if (sh_has_method_missing_candidate(c)) return 0;
   int missing = 0;
-  comp_poly_candidates(c, "method_missing", &missing);
-  if (missing) return 0;
   comp_cmethod_candidates(c, "method_missing", &missing);
   if (missing) return 0;
 
@@ -4165,6 +4166,23 @@ int share_method_blocks(const Compiler *c, int mi, const int **blocks) {
   *blocks = F->mb_blk + F->mb_start[mi];
   return F->mb_start[mi + 1] - F->mb_start[mi];
 }
+/* Native classes can appear in comp_poly_candidates as placeholders even
+   when they have no binding. Skip only those empty native rows; preserve
+   every Ruby candidate and every real native binding conservatively. The
+   non-arity registry query keeps real bindings regardless of signature. */
+static int sh_native_placeholder(Compiler *c, const PolyCand *p, const char *name) {
+  if (!p->native || p->mi >= 0 || p->rdcls >= 0) return 0;
+  if (comp_reader_in_chain(c, p->cls, name, NULL)) return 0;
+  return !comp_poly_arm_defines(c, p->cls, name);
+}
+static int sh_has_method_missing_candidate(Compiler *c) {
+  int n = 0;
+  const PolyCand *p = comp_poly_candidates(c, "method_missing", &n);
+  for (int i = 0; i < n; i++)
+    if (!sh_native_placeholder(c, &p[i], "method_missing")) return 1;
+  return 0;
+}
+
 /* A boxed call's builtin arms answer a value of their own when the
    any-receiver row says so. String's receiver conversions are the
    exception to Object's row: to_s can hand its String back unchanged. */
@@ -4181,9 +4199,8 @@ static int sh_builtin_fresh(Compiler *c, int call, int ostruct) {
      method_missing can answer a name with no ordinary target too. */
   if (object_public_method_name(name)) return 0;
   if (comp_method_index(c, "method_missing") >= 0) return 0;
+  if (sh_has_method_missing_candidate(c)) return 0;
   int missing = 0;
-  comp_poly_candidates(c, "method_missing", &missing);
-  if (missing) return 0;
   comp_cmethod_candidates(c, "method_missing", &missing);
   if (missing) return 0;
   /* With no builtin face or dynamic fields, only the user methods can
@@ -4195,13 +4212,19 @@ static int sh_builtin_fresh(Compiler *c, int call, int ostruct) {
     /* The walk has no settled dispatch plan yet. Its candidate index
        still exposes aliases the same-named target set can miss. */
     int tg[CPT_MAX], ntg = cplan_targets(c, call, tg, CPT_MAX);
-    int i = 0;
-    for (; i < n && p[i].mi >= 0 && !p[i].native; i++) {
+    int user_methods = 0;
+    for (int i = 0; i < n; i++) {
+      if (p[i].native) {
+        if (!sh_native_placeholder(c, &p[i], name)) return 0;
+        continue;
+      }
+      if (p[i].mi < 0 || p[i].rdcls >= 0) return 0;
+      user_methods++;
       int found = 0;
       for (int j = 0; j < ntg; j++) if (tg[j] == p[i].mi) { found = 1; break; }
       if (!found) return 0;
     }
-    if (i == n && i > 0) return 1;
+    if (user_methods > 0) return 1;
   }
   return 0;
 }

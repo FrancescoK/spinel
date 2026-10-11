@@ -848,6 +848,13 @@ It is shared as well through an UnboundMethod (`bind_call`,
 curried proc, and a proc or `Method` read out of a slot that holds other
 values too.
 
+With `--share-strings`, loading a native class such as `StringIO` does not
+by itself invalidate a fresh String returned by a user method through a
+boxed receiver. Native candidate entries with no Ruby method, reader, or
+native binding for the called name or `method_missing` add no return path.
+Real native bindings and readers remain conservative, and the existing
+user-target and dynamic-hook checks still apply.
+
 With `--share-strings`, a method that returns a fresh empty Hash directly
 (`{}` or a blockless `Hash.new` with no default or a String/nil default) can
 carry shared String values even when inference otherwise gives the return a
