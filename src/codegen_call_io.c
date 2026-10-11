@@ -910,7 +910,11 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
          for a stat's handle only */
       else if (sp_streq(name, "mode")) {
         emit_stat_handle_only(tio2, name, b);
-        buf_printf(b, "sp_stat_mode(_t%d); })", tio2);
+        /* sp_stat_mode answers an sp_int; a call whose value is an oint
+           (a user class's nil-able `mode` in the same dispatch) takes it
+           wrapped, as sp_stat_field's answers already are */
+        if (node_is_oint(c, id)) buf_printf(b, "sp_oint_of(sp_stat_mode(_t%d)); })", tio2);
+        else buf_printf(b, "sp_stat_mode(_t%d); })", tio2);
       }
       else if (boxed_stat_name(name)) {
         int k = 0;
