@@ -32,3 +32,12 @@ require_relative "require_in_block_runs_later/late" if true
 p __LINE__
 p $log
 p late
+# a file whose statement raises loads again on the next require
+$tries = []
+def boom = require_relative("require_in_block_runs_later/boom")
+x = (boom rescue "raised")
+p x, $tries
+p boom, $tries
+# a statement that reads what a deferred one did keeps its order
+def reg = require_relative("require_in_block_runs_later/reg")
+p reg, ITEMS

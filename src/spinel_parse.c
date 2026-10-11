@@ -3404,6 +3404,18 @@ static bool sp_defer_scan(const pm_node_t *node, void *data) {
   return true;
 }
 
+/* `Foo.include Bar` and the like: on a named class, a call that shapes it */
+static int sp_defer_shape_call(const pm_parser_t *parser, const pm_call_node_t *call) {
+  static const char *const shape[] = {
+    "include", "extend", "prepend", "attr_reader", "attr_writer", "attr_accessor", "attr",
+    "private", "public", "protected", "module_function", "private_constant", "public_constant",
+    "define_method", "alias_method", "remove_method", "undef_method", "private_class_method",
+    "public_class_method", "const_set", "class_eval", "module_eval", "class_exec", "module_exec",
+    "instance_eval", "send", "__send__", "public_send", "freeze", NULL };
+  for (int i = 0; shape[i]; i++) if (sp_pm_name_is(parser, call->name, shape[i])) return 1;
+  return 0;
+}
+
 /* Does `stmt`, standing in a file's top level or a class body, only run code
    (as opposed to defining something the program's shape depends on)? */
 static int sp_defer_stmt(const pm_parser_t *parser, const pm_node_t *stmt,
@@ -3413,15 +3425,8 @@ static int sp_defer_stmt(const pm_parser_t *parser, const pm_node_t *stmt,
   if (call->receiver) {
     int recv_t = PM_NODE_TYPE(call->receiver);
     if (recv_t == PM_SELF_NODE) return 0;
-    /* `Foo.include Bar` and the like on a named class shape that class */
-    static const char *const shape[] = {
-      "include", "extend", "prepend", "attr_reader", "attr_writer", "attr_accessor", "attr",
-      "private", "public", "protected", "module_function", "private_constant", "public_constant",
-      "define_method", "alias_method", "remove_method", "undef_method", "private_class_method",
-      "public_class_method", "const_set", "class_eval", "module_eval", "class_exec", "module_exec",
-      "instance_eval", "send", "__send__", "public_send", "freeze", NULL };
-    if (recv_t == PM_CONSTANT_READ_NODE || recv_t == PM_CONSTANT_PATH_NODE)
-      for (int i = 0; shape[i]; i++) if (sp_pm_name_is(parser, call->name, shape[i])) return 0;
+    if ((recv_t == PM_CONSTANT_READ_NODE || recv_t == PM_CONSTANT_PATH_NODE) &&
+        sp_defer_shape_call(parser, call)) return 0;
   }
   else {
     static const char *const out[] = { "puts", "print", "p", "pp", "printf", "putc", "warn", NULL };
@@ -3449,6 +3454,7 @@ typedef struct {
   const pm_parser_t *parser;
   const char *source;
   int file_no, n;
+  int out_of_order;   /* a statement left in place runs after a wrapped one */
   SpDeferEdit *edits; int edits_n, edits_cap;
   char *calls; size_t calls_len, calls_cap;
 } SpDefer;
@@ -3464,8 +3470,29 @@ static void sp_defer_edit(SpDefer *d, size_t at, const char *text) {
   d->edits_n++;
 }
 
+/* Does a statement left in place only define something (a method, an alias,
+   a class macro), so that running it before a wrapped one changes nothing? */
+static int sp_defer_defines(const pm_parser_t *parser, const pm_node_t *st) {
+  switch (PM_NODE_TYPE(st)) {
+    case PM_DEF_NODE: case PM_ALIAS_METHOD_NODE: case PM_ALIAS_GLOBAL_VARIABLE_NODE:
+    case PM_UNDEF_NODE: case PM_SINGLETON_CLASS_NODE: case PM_CLASS_NODE: case PM_MODULE_NODE:
+      return 1;
+    case PM_CALL_NODE: {
+      const pm_call_node_t *call = (const pm_call_node_t *)st;
+      if (!call->receiver || PM_NODE_TYPE(call->receiver) == PM_SELF_NODE) return 1;
+      int rt = PM_NODE_TYPE(call->receiver);
+      return (rt == PM_CONSTANT_READ_NODE || rt == PM_CONSTANT_PATH_NODE) &&
+             sp_defer_shape_call(parser, call);
+    }
+    default: return 0;
+  }
+}
+
 /* `scope` is the class path the body's methods are called through ("" at the
-   top level), or NULL where it is not known (no statement is wrapped). */
+   top level), or NULL where it is not known (no statement is wrapped). Every
+   statement left in place must keep its order with the wrapped ones: the
+   file is not deferred when a run-time one (`ITEMS = Registry.all`) follows a
+   wrapped one (`Registry.register :a`). */
 static void sp_defer_body(SpDefer *d, const pm_node_t *body, const pm_constant_id_list_t *locals,
                           const char *scope) {
   if (!body || PM_NODE_TYPE(body) != PM_STATEMENTS_NODE) return;
@@ -3494,7 +3521,10 @@ static void sp_defer_body(SpDefer *d, const pm_node_t *body, const pm_constant_i
       sp_defer_body(d, inner, il, sub);
       continue;
     }
-    if (!scope || !sp_defer_stmt(d->parser, st, locals, !*scope)) continue;
+    if (!scope || !sp_defer_stmt(d->parser, st, locals, !*scope)) {
+      if (d->n && !sp_defer_defines(d->parser, st)) d->out_of_order = 1;
+      continue;
+    }
     char head[600], call[600];
     int k = d->n++;
     if (*scope) {
@@ -3530,11 +3560,31 @@ static const char *sp_defer_lookup(const char *canonical) {
   return NULL;
 }
 
+static void sp_defer_record(const char *canonical, const char *val) {
+  sp_defer_paths = sp_grow_strs(sp_defer_paths, sp_defer_count, &sp_defer_cap, 8);
+  sp_defer_vals = realloc(sp_defer_vals, sizeof(char *) * (size_t)sp_defer_cap);
+  if (!sp_defer_vals) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+  sp_defer_paths[sp_defer_count] = strdup(canonical);
+  sp_defer_vals[sp_defer_count++] = strdup(val);
+}
+
 /* Wrap `*content`'s run-time statements (above) and answer the expression
-   the require's call becomes, recorded under `canonical`; NULL when the file
-   has none and the require's value stays as it was. */
-static const char *sp_defer_runtime(char **content, const char *canonical) {
+   the require's call becomes, recorded under the file's names `canonical`
+   and `alt` (either may be NULL); NULL when the file has none and the
+   require's value stays as it was. The files this one inlined were marked
+   from `incl_from` on: one whose own statements were not deferred apart
+   (it stood at this file's margin) would be wrapped with this file and
+   answer nothing to a later require of its own, so such a file is left as
+   it was. The flag is cleared when a wrapped statement raises, so a later
+   require runs them again, as CRuby loads a file that failed again. */
+static const char *sp_defer_runtime(char **content, const char *canonical, const char *alt,
+                                    int incl_from) {
   static int file_no = 0;
+  for (int i = incl_from; i < sp_included_count; i++) {
+    const char *ip = sp_included_paths[i];
+    if (!ip || (canonical && strcmp(ip, canonical) == 0) || (alt && strcmp(ip, alt) == 0)) continue;
+    if (!sp_defer_lookup(ip)) return NULL;
+  }
   const char *src = *content;
   pm_parser_t parser;
   pm_parser_init(&parser, (const uint8_t *)src, strlen(src), NULL);
@@ -3550,7 +3600,11 @@ static const char *sp_defer_runtime(char **content, const char *canonical) {
   }
   pm_node_destroy(&parser, root);
   pm_parser_free(&parser);
-  if (!d.n) { free(d.edits); free(d.calls); return NULL; }
+  if (!d.n || d.out_of_order) {
+    for (int i = 0; i < d.edits_n; i++) free(d.edits[i].text);
+    free(d.edits); free(d.calls);
+    return NULL;
+  }
   file_no++;
   /* apply the edits, which are in source order */
   size_t slen = strlen(src), add = 0;
@@ -3568,16 +3622,21 @@ static const char *sp_defer_runtime(char **content, const char *canonical) {
   free(d.edits);
   free(*content);
   *content = out;
-  char val[4096];
-  snprintf(val, sizeof val, "($__spinel_loaded_%d ? false : ($__spinel_loaded_%d = true; %strue))",
-           d.file_no, d.file_no, d.calls);
+  size_t vcap = d.calls_len + 256;
+  char *val = malloc(vcap);
+  if (!val) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+  snprintf(val, vcap, "($__spinel_loaded_%d ? false : ($__spinel_loaded_%d = true; "
+           "begin; %srescue Exception; $__spinel_loaded_%d = nil; raise; end; true))",
+           d.file_no, d.file_no, d.calls, d.file_no);
   free(d.calls);
-  sp_defer_paths = sp_grow_strs(sp_defer_paths, sp_defer_count, &sp_defer_cap, 8);
-  sp_defer_vals = realloc(sp_defer_vals, sizeof *sp_defer_vals * (size_t)sp_defer_cap);
-  if (!sp_defer_vals) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
-  sp_defer_paths[sp_defer_count] = strdup(canonical);
-  sp_defer_vals[sp_defer_count] = strdup(val);
-  return sp_defer_vals[sp_defer_count++];
+  const char *ret = NULL;
+  if (canonical) { sp_defer_record(canonical, val); ret = sp_defer_vals[sp_defer_count - 1]; }
+  if (alt && (!canonical || strcmp(alt, canonical) != 0)) {
+    sp_defer_record(alt, val);
+    if (!ret) ret = sp_defer_vals[sp_defer_count - 1];
+  }
+  free(val);
+  return ret;
 }
 
 static char *resolve_requires(const char *source, const char *source_path,
@@ -3712,7 +3771,7 @@ else {
       }
       if (dval || (!hit.margin && !sp_req_in_control_only(result, hit.kw)) || (has_modifier && !ml)) {
         if (!dval && strcmp(req_val, "true") == 0) {
-          const char *v = sp_defer_runtime(&content, canon_keep);
+          const char *v = sp_defer_runtime(&content, canon_keep, NULL, incl_mark);
           if (v) req_val = v;
         }
         sp_req_hoist_splice(&result, &fsl, &fsl_n, &hit, content, cfsl, cfsl_n, req_val);
@@ -4375,7 +4434,10 @@ else {
         }
         char *rc = content ? sp_canonical_path(lib_path) : NULL;
         for (int i = sp_rr_included; rc && i < sp_included_count && !root_dup; i++) root_dup = sp_included_paths[i] && strcmp(sp_included_paths[i], rc) == 0;
-        if (root_dup) { free(content); content = strdup("# require skipped (already included)"); }
+        if (root_dup) {
+          free(content); content = strdup("# require skipped (already included)");
+          dval = sp_defer_lookup(rc);
+        }
         else if (rc) sp_mark_path_included(rc);
         free(rc);
       }
@@ -4499,7 +4561,7 @@ else {
         /* A bundled lib/<name>.rb was found and spliced; record the feature so
            the require-gate enables any C-native methods it stands in for. */
         sp_feature_mark(lib_name);
-        req_val = root_dup ? "false" : "true";   /* this require is what loaded it */
+        req_val = root_dup ? (dval ? dval : "false") : "true";   /* this require is what loaded it */
         char *resolved = resolve_requires(content, lib_path, &cfsl, &cfsl_n);
         free(content);
         content = resolved;
@@ -4537,7 +4599,11 @@ else {
       }
       if (dval || (!hit.margin && !sp_req_in_control_only(result, hit.kw)) || (has_modifier && !ml)) {
         if (!dval && strcmp(req_val, "true") == 0) {
-          const char *v = sp_defer_runtime(&content, canon_keep);
+          /* lib_path is the file found, which a later require of another
+             name for it reaches (root_dup below) */
+          char *found = sp_canonical_path(lib_path);
+          const char *v = sp_defer_runtime(&content, canon_keep, found, incl_mark);
+          free(found);
           if (v) req_val = v;
         }
         sp_req_hoist_splice(&result, fsl, fsl_n, &hit, content, cfsl, cfsl_n, req_val);

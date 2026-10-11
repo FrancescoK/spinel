@@ -9,3 +9,9 @@ false
 32
 [:main, :opt_module_body, :late_loaded]
 false
+"raised"
+[1]
+true
+[1, 1, :ok]
+true
+[:a]
