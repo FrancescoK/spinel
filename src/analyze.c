@@ -18501,6 +18501,31 @@ static void hands_memo_put(int mi, int j, int depth, int r) {
   e->gen = g_hands_memo_gen; e->mi = mi; e->j = j; e->depth = depth; e->r = r;
   g_hands_memo_n++;
 }
+/* Does method `m` store its parameter `pn` into an ivar of its class
+   (`@label = value`) that some method of the program appends to in place
+   (`@label << "!"`)? The String then has to be the caller's, which the
+   ivar's later promotion to a handle makes it in the method but not at a
+   caller that holds a copy (#8525). */
+static int param_stored_in_appended_ivar(Compiler *c, Scope *m, const char *pn) {
+  const NodeTable *nt = c->nt;
+  if (!pn || m->class_id < 0) return 0;
+  for (int w = comp_kind_first(c, NK_InstanceVariableWriteNode); w >= 0; w = comp_kind_next(c, w)) {
+    if (comp_scope_of(c, w) != m) continue;
+    int v = nt_ref(nt, w, "value");
+    const char *iv = nt_str(nt, w, "name");
+    if (!iv || v < 0 || nt_kind(nt, v) != NK_LocalVariableReadNode || !nt_str(nt, v, "name") ||
+        !sp_streq(nt_str(nt, v, "name"), pn)) continue;
+    for (int u = comp_kind_first(c, NK_CallNode); u >= 0; u = comp_kind_next(c, u)) {
+      const char *un = nt_str(nt, u, "name");
+      int r = nt_ref(nt, u, "receiver");
+      if (!un || r < 0 || nt_kind(nt, r) != NK_InstanceVariableReadNode || !sp_str_mutator(un, SP_MUT_IVAR)) continue;
+      const char *rn = nt_str(nt, r, "name");
+      Scope *us = comp_scope_of(c, u);
+      if (rn && sp_streq(rn, iv) && us && us->class_id == m->class_id) return 1;
+    }
+  }
+  return 0;
+}
 static int an_subtree_hands_walk(Compiler *c, int node, const char *vn, int depth) {
   const NodeTable *nt = c->nt;
   if (node < 0 || depth > 64) return 0;
@@ -18538,7 +18563,8 @@ static int an_subtree_hands_walk(Compiler *c, int node, const char *vn, int dept
           !sp_streq(nt_str(nt, an, "name"), vn)) continue;
       LocalVar *q = m->pnames[j] ? scope_local(m, m->pnames[j]) : NULL;
       if (q && (q->byref_out || (q->type == TY_STRBUF && q->str_shared) ||
-                (q->type == TY_POLY && (q->poly_lift & POLY_LIFT_APPENDED)) || an_param_mutated_in_place(c, mi, j)))
+                (q->type == TY_POLY && (q->poly_lift & POLY_LIFT_APPENDED)) || an_param_mutated_in_place(c, mi, j) ||
+                param_stored_in_appended_ivar(c, m, m->pnames[j])))
         return 1;
       /* or hands its parameter on to one that does, a few levels deep */
       if (q && q->is_param && m->body >= 0) {
