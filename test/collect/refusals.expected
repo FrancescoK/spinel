@@ -932,6 +932,12 @@ spinel: 1 refusal, nothing written
 == test/reject/object_receiver_include_unrelated_def.rb [promote] rc=1
 spinel: test/reject/object_receiver_include_unrelated_def.rb:7: Object.include(...) is not supported by AOT compilation: the class graph, ancestor chain, and method/ivar layout are baked at compile time, so a class cannot be restructured through an explicit receiver. Move the `include` inside `class Object ... end` (see docs/limitations.md)
 spinel: 1 refusal, nothing written
+== test/reject/range_time_bound.rb [default] rc=1
+spinel: test/reject/range_time_bound.rb:4: a Range of Time objects cannot be built: a Range is an unboxed value with sp_int bounds, so it has nowhere to hold them. Comparing against the bounds directly (`t >= lo && t < hi`) needs no Range and does work (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/range_time_bound.rb [promote] rc=1
+spinel: test/reject/range_time_bound.rb:4: a Range of Time objects cannot be built: a Range is an unboxed value with sp_int bounds, so it has nowhere to hold them. Comparing against the bounds directly (`t >= lo && t < hi`) needs no Range and does work (see docs/limitations.md)
+spinel: 1 refusal, nothing written
 == test/reject/rational_pow_bignum.rb [default] rc=1
 spinel: test/reject/rational_pow_bignum.rb:7: the receiver of a Float `**` given a Rational, which no conversion keeps in its sp_float slot
 spinel: 1 refusal, nothing written

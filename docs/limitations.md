@@ -652,7 +652,12 @@ x.clamp(..hi)       # works (one-sided)
 x.clamp(lo..)       # works
 rng = (lo..hi)      # compile error: a Range of Ver objects cannot be built
 rng = (0..2**70)    # compile error: a Bignum bound does not fit sp_int
+rng = (since..)     # compile error with a Time: a Range of Time objects cannot be built
 ```
+
+A one-sided Range with a `Time` bound (`since..`, `..till`, common in query
+code) is refused the same way; compare against the bound (`t >= since`)
+instead.
 
 #### A String Range keeps copies of its endpoints in the default build
 

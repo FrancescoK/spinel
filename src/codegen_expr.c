@@ -4545,6 +4545,20 @@ static int emit_range_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, con
         "does work (see docs/limitations.md)");
       return 1;
     }
+    /* A Time bound beside an open end is no Integer either: the one-sided
+       builder below took `(Time.at(0)..)` for an Integer Range and the C did
+       not compile (#8526). (Two Time bounds convert at run time, which
+       raises CRuby's TypeError where the Range is iterated.) */
+    int l_open = left < 0 || nt_kind(nt, left) == NK_NilNode;
+    int r_open = right < 0 || nt_kind(nt, right) == NK_NilNode;
+    if ((lt == TY_TIME && r_open) || (rt2 == TY_TIME && l_open)) {
+      unsupported_feature(c, id,
+        "a Range of Time objects cannot be built: a Range is an unboxed value "
+        "with sp_int bounds, so it has nowhere to hold them. Comparing against "
+        "the bounds directly (`t >= lo && t < hi`) needs no Range and does work "
+        "(see docs/limitations.md)");
+      return 1;
+    }
     if (ty_is_object(lt) || ty_is_object(rt2)) {
       const char *ocn = NULL;
       int oci = ty_is_object(lt) ? ty_object_class(lt) : ty_object_class(rt2);
