@@ -8347,6 +8347,10 @@ else if (orecv >= 0 && onm) {
      method's live entries: park them, not just the count (#3943) */
   RenPark ren_sv = ren_park(0);
   g_pre = NULL; g_indent = 0; g_block_id = -1; g_block_nren = 0; g_block_param_name = NULL;
+  /* the proc body is a function of its own: a conversion in it is held in
+     front of its own statement, not in the call whose operands were being
+     collected when the block met it (#8525) */
+  ConvHold *sv_conv_hold = g_conv_hold; g_conv_hold = NULL;
   g_self = "self"; g_result_var = NULL; g_ret_type = ret; g_ret_oint = 0; g_ensure_depth = 0; g_result_poly = 0;
   int sv_iec = g_ie_class_id, sv_bcls = bs ? bs->class_id : -1, sv_bcm = bs ? bs->is_cmethod : 0;
   /* a block written in a class method reads `self` as the class object, as
@@ -8955,6 +8959,7 @@ else if (orecv >= 0 && onm) {
   ren_unpark(&ren_sv);
   g_pre = sv_pre; g_indent = sv_indent; g_block_id = sv_block; g_block_nren = sv_bnren;
   g_block_param_name = sv_bpn; g_self = sv_self; g_result_var = sv_rv; g_ret_type = sv_rt; g_ret_oint = sv_rto;
+  g_conv_hold = sv_conv_hold;
   g_self_deref = sv_deref;
   g_ie_class_id = sv_iec;
   if (bs) { bs->class_id = sv_bcls; bs->is_cmethod = sv_bcm; }
