@@ -559,6 +559,18 @@ static int ie_value_body_reads_self(const NodeTable *nt, int id) {
   return 0;
 }
 
+/* Whether the boxed receiver of instance_exec's non-object splice is a
+   heap value nothing else holds: a value that boxes as an immediate (an
+   Integer, a Float, a Symbol, true/false, nil, a Class) is not; a by-value
+   kind (a Range, a Time) boxes into a new object; any other is fresh when
+   its expression can allocate and no variable holds it. */
+static int ie_value_box_fresh(Compiler *c, int recv, TyKind t) {
+  if (t == TY_UNKNOWN || t == TY_VOID || t == TY_NIL || t == TY_INT || t == TY_FLOAT ||
+      t == TY_SYMBOL || t == TY_BOOL || t == TY_CLASS) return 0;
+  if (!needs_root(t)) return 1;
+  return operand_may_allocate(c, recv) && !expr_is_held_ref(c, recv);
+}
+
 /* instance_eval / instance_exec with a block, run with the receiver as self (direct, or through a trampoline) */
 int emit_call_instance_eval_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc) {
   int ie_direct = recv >= 0 && (is_instance_eval_family(name));
@@ -610,12 +622,10 @@ int emit_call_instance_eval_arms(Compiler *c, int id, Buf *b, const NodeTable *n
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "sp_RbVal _t%d = %s;\n", tself, rb.p ? rb.p : "sp_box_nil()");
         free(rb.p);
-        /* (--share-strings: a fresh receiver on the heap is rooted while a
-           body that reads self and can allocate runs, as the object
-           splice's receiver is; the dispatch over several classes roots
-           the value it switches on) */
-        if (repr_share_rule(c) && needs_root(nrt) && g_ie_poly_node != id &&
-            operand_may_allocate(c, recv) && !expr_is_held_ref(c, recv) &&
+        /* a fresh boxed receiver is rooted while a body that reads self
+           and can allocate runs, as the object splice's receiver is; the
+           dispatch over several classes roots the value it switches on */
+        if (g_ie_poly_node != id && ie_value_box_fresh(c, recv, nrt) &&
             ie_value_body_reads_self(nt, nblk) && operand_may_allocate(c, nblk)) {
           emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_t%d);\n", tself);
         }
@@ -838,12 +848,12 @@ int emit_call_instance_eval_arms(Compiler *c, int id, Buf *b, const NodeTable *n
                  self_is_val ? "" : "*", tr,
                  rb.p ? rb.p : (self_is_val ? "{0}" : "NULL"));
       free(rb.p);
-      /* --share-strings: a fresh receiver no variable holds is rooted
-         while a body that reads self and can allocate runs: a nested
-         splice's `J.new` collected a fresh `K.new` receiver whose `@name`
-         the body read after it (the dispatch over several classes roots
-         the value it switches on) */
-      if (repr_share_rule(c) && !self_is_val && ie_self_cls < 0 && g_ie_poly_node != id &&
+      /* A fresh receiver no variable holds is rooted while a body that
+         reads self and can allocate runs: a nested splice's `J.new`
+         collected a fresh `K.new` receiver whose `@name` the body read
+         after it (the dispatch over several classes roots the value it
+         switches on) */
+      if (!self_is_val && ie_self_cls < 0 && g_ie_poly_node != id &&
           operand_may_allocate(c, recv) && !expr_is_held_ref(c, recv) &&
           fiber_body_uses_self(c, blk) && operand_may_allocate(c, blk)) {
         emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", tr);
