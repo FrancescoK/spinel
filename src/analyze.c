@@ -37777,6 +37777,12 @@ static void arysub_builtin_alias_recv_call(Compiler *c, int id) {
     int bi = 0;
     const char *rn = comp_resolve_alias_ex(c, k, nm, NULL, &bi);
     if (!bi || !rn) continue;
+    /* only a class with a method of that name of its own runs something
+       else than the builtin's: with none (activesupport's `blank?` over
+       Hash#empty?, which HashWithIndifferentAccess does not redefine) the
+       alias by name is the builtin's */
+    int dc = -1, ro = comp_arysub_reopen(c, k);
+    if (comp_method_in_chain(c, k, rn, &dc) < 0 || dc == ro) continue;
     char msg[400];
     snprintf(msg, sizeof msg, "calling `%s`, an alias of %s#%s in %s, on a receiver is not supported "
              "yet (it would run the class's own `%s`); call it without a receiver inside the class",
