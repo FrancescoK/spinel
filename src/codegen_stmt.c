@@ -4022,6 +4022,17 @@ static const char *lv_op_assign_src(Compiler *c, const char *lval, TyKind t,
   return tn;
 }
 
+/* `ref OP= v` on a slot a plain C lvalue names (a class variable, a
+   global, a constant), through the Array, poly and scalar arms. `oint`:
+   the slot is an sp_oint. Answers 0 when none applies; the caller then
+   emits its own fallback. */
+static int emit_slot_op_assign(Compiler *c, const char *ref, TyKind t, const char *op,
+                               int v, int oint, Buf *b) {
+  if (emit_array_op_assign(c, ref, t, op, v, b)) return 1;
+  if (t == TY_POLY && emit_poly_op_assign(c, ref, op, v, 1, b)) return 1;
+  return emit_scalar_op_assign(c, ref, t, op, v, 1, oint, 0, b);
+}
+
 /* The RHS of a String `+=`: a poly RHS (a destructured `[Int, String]`
    element bound poly) is an sp_RbVal, coerced to const char* for
    sp_str_concat (#2875). CRuby's String#+ raises TypeError on a non-string,
@@ -14649,9 +14660,7 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
       buf_printf(b, "%s = sp_str_concat(%s, ", ref, ref);
       emit_str_expr(c, v, b); buf_puts(b, ");\n");
     }
-    else if (emit_array_op_assign(c, ref, ct, op, v, b)) { }
-    else if (ct == TY_POLY && emit_poly_op_assign(c, ref, op, v, 1, b)) { }
-    else if (emit_scalar_op_assign(c, ref, ct, op, v, 1, cvar_is_oint(c, sc, idx), 0, b)) { }
+    else if (emit_slot_op_assign(c, ref, ct, op, v, cvar_is_oint(c, sc, idx), b)) { }
     else {
       buf_printf(b, "%s %s= ", ref, op ? op : "+");
       emit_coerce(c, v, ct, CO_HOLD, "the operand of an `op=`", b); buf_puts(b, ";\n");
@@ -15544,10 +15553,17 @@ static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int in
       emit_const_check_open(c, tgt, cv, b); buf_puts(b, "0"); emit_const_check_close(c, tgt, cv, b); buf_puts(b, ";\n");
     }
     emit_indent(b, indent);
+    char cslot[256]; snprintf(cslot, sizeof cslot, "cst_%s", nm);
     if (cv->type == TY_STRING && op && sp_streq(op, "+")) {
       char cref[256]; snprintf(cref, sizeof cref, "cst_%s", nm);
       buf_printf(b, "%s = ", cref);
       emit_str_op_assign_concat(c, cref, v, b); buf_puts(b, ";\n");
+    }
+    /* the other kinds take the arms a global's `op=` does */
+    else if (emit_slot_op_assign(c, cslot, cv->type, op, v, 0, b)) { }
+    /* the raw C operator below only fits a plain Integer */
+    else if (cv->type != TY_INT) {
+      unsupported(c, id, "constant op= on this kind of value");
     }
     else {
       buf_printf(b, "cst_%s %s= ", nm, op ? op : "+");
@@ -15637,9 +15653,7 @@ static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int in
       buf_printf(b, "gv_%s = sp_String_new_shared(sp_str_concat(sp_String_cstr(gv_%s), ", rn, rn);
       emit_str_expr(c, v, b); buf_puts(b, "));\n");
     }
-    else if (emit_array_op_assign(c, gref, lv->type, op, v, b)) { }
-    else if (lv->type == TY_POLY && emit_poly_op_assign(c, gref, op, v, 1, b)) { }
-    else if (emit_scalar_op_assign(c, gref, lv->type, op, v, 1, gvar_is_oint(c, lv), 0, b)) { }
+    else if (emit_slot_op_assign(c, gref, lv->type, op, v, gvar_is_oint(c, lv), b)) { }
     else {
       buf_printf(b, "gv_%s %s= ", rn, op ? op : "+");
       emit_coerce(c, v, lv->type, CO_HOLD, "the operand of an `op=`", b); buf_puts(b, ";\n");
