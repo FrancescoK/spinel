@@ -1,0 +1,9 @@
+[true, false, true]
+[false, true]
+[:css, :github, :notes]
+[true, false]
+:z
+[:color, [], true, nil]
+[1, [2], 3, 4]
+[true, false]
+"xx"

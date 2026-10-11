@@ -90,6 +90,7 @@ typedef struct {
   int in_ffi_rescue;      /* inside the rescue of a begin that attaches a function */
   int depth;
   const char *modname;    /* the path of the module whose macro runs */
+  const pm_node_t *mbody; /* the body of the macro that runs */
 } MxCtx;
 
 static Mv mv_nil(void) { Mv v; memset(&v, 0, sizeof v); v.k = MV_NIL; return v; }
@@ -850,6 +851,123 @@ static int mx_subst_text_at(MxCtx *c, pm_node_t *n, MxBuf *b, uint32_t scope) {
 
 static int mx_subst_text(MxCtx *c, pm_node_t *n, MxBuf *b) { return mx_subst_text_at(c, n, b, 0); }
 
+/* The body of a method a macro defines from a lambda or a block, one level
+   in from the macro's own locals, as the text of a def's body. */
+static int mx_subst_body(MxCtx *c, pm_node_t *body, MxBuf *o) {
+  if (!body) return 1;
+  if (PM_NODE_TYPE(body) != PM_STATEMENTS_NODE) {
+    int ok = mx_subst_text_at(c, body, o, 1);
+    mxb_puts(o, "\n");
+    return ok;
+  }
+  pm_statements_node_t *st = (pm_statements_node_t *)body;
+  for (size_t i = 0; i < st->body.size; i++) {
+    if (!mx_subst_text_at(c, st->body.nodes[i], o, 1)) return 0;
+    mxb_puts(o, "\n");
+  }
+  return 1;
+}
+
+/* Does the macro assign one of its locals that the define_method call `dm`
+   reads, after the call? The method sees the local when it runs, not when it
+   was defined, so the value substituted would be stale:
+     x = 1; define_method(name) { x }; x = 2   # the method answers 2
+   The evaluator runs no loop, so a later write is one later in the text. */
+typedef struct { const char *name; const uint8_t *after; int found; } MxLocScan;
+
+static bool mx_loc_write_visit(const pm_node_t *n, void *data) {
+  MxLocScan *l = (MxLocScan *)data;
+  pm_constant_id_t wn = 0;
+  switch (PM_NODE_TYPE(n)) {
+  case PM_LOCAL_VARIABLE_WRITE_NODE: wn = ((const pm_local_variable_write_node_t *)n)->name; break;
+  case PM_LOCAL_VARIABLE_OPERATOR_WRITE_NODE: wn = ((const pm_local_variable_operator_write_node_t *)n)->name; break;
+  case PM_LOCAL_VARIABLE_OR_WRITE_NODE: wn = ((const pm_local_variable_or_write_node_t *)n)->name; break;
+  case PM_LOCAL_VARIABLE_AND_WRITE_NODE: wn = ((const pm_local_variable_and_write_node_t *)n)->name; break;
+  case PM_LOCAL_VARIABLE_TARGET_NODE: wn = ((const pm_local_variable_target_node_t *)n)->name; break;
+  default: break;
+  }
+  if (wn && n->location.start >= l->after) {
+    char *w = mx_name(wn);
+    if (strcmp(w, l->name) == 0) l->found = 1;
+    free(w);
+  }
+  return !l->found;
+}
+
+static bool mx_loc_read_visit(const pm_node_t *n, void *data) {
+  MxLocScan *l = (MxLocScan *)data;
+  if (PM_NODE_TYPE(n) == PM_LOCAL_VARIABLE_READ_NODE) {
+    char *r = mx_name(((const pm_local_variable_read_node_t *)n)->name);
+    if (strcmp(r, l->name) == 0) l->found = 1;
+    free(r);
+  }
+  return !l->found;
+}
+
+static int mx_capture_rebound(MxCtx *c, const pm_node_t *dm) {
+  for (int i = 0; c->mbody && i < c->nloc; i++) {
+    MxLocScan r = { c->loc[i].name, NULL, 0 };
+    pm_visit_node(dm, mx_loc_read_visit, &r);
+    if (!r.found) continue;
+    MxLocScan w = { c->loc[i].name, dm->location.end, 0 };
+    pm_visit_node(c->mbody, mx_loc_write_visit, &w);
+    if (w.found) return 1;
+  }
+  return 0;
+}
+
+/* Does a block given define_method read as a def's body? Not when it yields
+   or asks for a block (the macro's, in the block; the method's own, in a
+   def), passes its arguments on with a bare `super`, or leaves the block
+   itself with `next`, `break` or `redo` (no def can); nor when it declares
+   block-local variables, destructures one, or takes numbered parameters. */
+typedef struct { int loop; int bad; } MxBodyScan;
+
+static bool mx_block_body_visit(const pm_node_t *n, void *data) {
+  MxBodyScan *b = (MxBodyScan *)data;
+  if (b->bad) return false;
+  switch (PM_NODE_TYPE(n)) {
+  case PM_DEF_NODE: return false;
+  case PM_BLOCK_NODE: case PM_LAMBDA_NODE: case PM_WHILE_NODE: case PM_UNTIL_NODE: case PM_FOR_NODE:
+    b->loop++;
+    pm_visit_child_nodes(n, mx_block_body_visit, b);
+    b->loop--;
+    return false;
+  case PM_YIELD_NODE: case PM_FORWARDING_SUPER_NODE: b->bad = 1; return false;
+  case PM_NEXT_NODE: case PM_BREAK_NODE: case PM_REDO_NODE:
+    if (!b->loop) b->bad = 1;
+    return true;
+  case PM_CALL_NODE: {
+    const pm_call_node_t *cn = (const pm_call_node_t *)n;
+    if (!cn->receiver) {
+      char *nm = mx_name(cn->name);
+      if (strcmp(nm, "block_given?") == 0 || strcmp(nm, "iterator?") == 0) b->bad = 1;
+      free(nm);
+    }
+    return !b->bad;
+  }
+  default: return true;
+  }
+}
+
+static int mx_block_is_method_body(const pm_block_node_t *blk) {
+  if (blk->parameters) {
+    if (PM_NODE_TYPE(blk->parameters) != PM_BLOCK_PARAMETERS_NODE) return 0;
+    const pm_block_parameters_node_t *bp = (const pm_block_parameters_node_t *)blk->parameters;
+    if (bp->locals.size) return 0;
+    /* `|(a, b)|` and `|a,|` have no def spelling */
+    const pm_parameters_node_t *ps = bp->parameters;
+    if (ps && ps->rest && PM_NODE_TYPE(ps->rest) == PM_IMPLICIT_REST_NODE) return 0;
+    for (size_t i = 0; ps && i < ps->requireds.size; i++)
+      if (PM_NODE_TYPE(ps->requireds.nodes[i]) == PM_MULTI_TARGET_NODE) return 0;
+    for (size_t i = 0; ps && i < ps->posts.size; i++)
+      if (PM_NODE_TYPE(ps->posts.nodes[i]) == PM_MULTI_TARGET_NODE) return 0;
+  }
+  MxBodyScan b = { 0, 0 };
+  if (blk->body) pm_visit_node(blk->body, mx_block_body_visit, &b);
+  return !b.bad;
+}
+
 /* a residual expression: its value when computable, else its text with the
    macro values substituted; `public_send(name, ...)` becomes a plain call */
 
@@ -1023,7 +1141,8 @@ static int mx_exec(MxCtx *c, pm_node_t *n) {
              PM_NODE_TYPE(args->nodes[1]) == PM_LAMBDA_NODE &&
              !((pm_lambda_node_t *)args->nodes[1])->parameters) {
       Mv mn;
-      if (mx_eval(c, args->nodes[0], &mn) && (mn.k == MV_STR || mn.k == MV_SYM) && mx_sym_plain(mn.s)) {
+      if (mx_eval(c, args->nodes[0], &mn) && (mn.k == MV_STR || mn.k == MV_SYM) && mx_sym_plain(mn.s) &&
+          !mx_capture_rebound(c, n)) {
         ok = 1;
         mx_poison_writes_in(((pm_lambda_node_t *)args->nodes[1])->body);
         if (o && c->in_ffi_rescue && name[7] == 's') {
@@ -1044,16 +1163,33 @@ static int mx_exec(MxCtx *c, pm_node_t *n) {
           mxb_puts(o, name[7] == 's' ? "def self." : "def ");
           mxb_puts(o, mn.s);
           mxb_puts(o, "\n");
-          if (lam->body) {
-            if (PM_NODE_TYPE(lam->body) == PM_STATEMENTS_NODE) {
-              pm_statements_node_t *st = (pm_statements_node_t *)lam->body;
-              for (size_t i = 0; i < st->body.size && ok; i++) {
-                ok = mx_subst_text_at(c, st->body.nodes[i], o, 1);
-                mxb_puts(o, "\n");
-              }
-            }
-            else { ok = mx_subst_text_at(c, lam->body, o, 1); mxb_puts(o, "\n"); }
+          ok = mx_subst_body(c, lam->body, o);
+          mxb_puts(o, "end\n");
+        }
+      }
+    }
+    else if (self_recv && argc == 1 && cn->block && PM_NODE_TYPE(cn->block) == PM_BLOCK_NODE &&
+             (strcmp(name, "define_singleton_method") == 0 || strcmp(name, "define_method") == 0) &&
+             mx_prim_builtin(name) && !c->in_ffi_rescue && mx_block_is_method_body((pm_block_node_t *)cn->block)) {
+      /* the block form: the block is the method's body and its parameters
+         the method's, so it is the same text as a def */
+      pm_block_node_t *blk = (pm_block_node_t *)cn->block;
+      Mv mn;
+      if (mx_eval(c, args->nodes[0], &mn) && (mn.k == MV_STR || mn.k == MV_SYM) && mx_sym_plain(mn.s) &&
+          !mx_capture_rebound(c, n)) {
+        ok = 1;
+        mx_poison_writes_in(blk->body);
+        if (o) {
+          pm_block_parameters_node_t *bp = (pm_block_parameters_node_t *)blk->parameters;
+          mxb_puts(o, name[7] == 's' ? "def self." : "def ");
+          mxb_puts(o, mn.s);
+          if (bp && bp->parameters) {
+            mxb_puts(o, "(");
+            ok = mx_subst_text_at(c, (pm_node_t *)bp->parameters, o, 1);
+            mxb_puts(o, ")");
           }
+          mxb_puts(o, "\n");
+          if (ok) ok = mx_subst_body(c, blk->body, o);
           mxb_puts(o, "end\n");
         }
       }
@@ -1232,6 +1368,7 @@ static int mx_call_macro(MxCtx *c, MxMacro *m, pm_arguments_node_t *argn, Mv *re
   sub.out = c->out; sub.depth = c->depth + 1;
   sub.iv = c->iv; sub.niv = c->niv; sub.unsure = c->unsure;
   sub.modname = m->module;
+  sub.mbody = m->def->body;
   if (!mx_bind_params(c, &sub, m, argn, 1)) return 0;
   sub.ret = mv_nil();
   pm_node_t *body = m->def->body;
@@ -1346,14 +1483,27 @@ static void mx_add_macro(const char *module, char *name, pm_def_node_t *d, int s
   m->self_def = self_def;
 }
 
+/* `define_method "#{name}?" do ... end`: a method given a name the macro
+   computes */
+static int mx_defm_dyn(const pm_call_node_t *cn) {
+  if (cn->receiver && PM_NODE_TYPE(cn->receiver) != PM_SELF_NODE) return 0;
+  if (!cn->arguments || !cn->arguments->arguments.size) return 0;
+  char *nm = mx_name(cn->name);
+  int dm = strcmp(nm, "define_method") == 0 || strcmp(nm, "define_singleton_method") == 0;
+  free(nm);
+  return dm && !mx_sym_or_str_is(cn->arguments->arguments.nodes[0]);
+}
+
 static bool mx_attr_dyn_visit(const pm_node_t *n, void *data) {
   int *found = data;
-  if (PM_NODE_TYPE(n) == PM_CALL_NODE && mx_attr_dyn((const pm_call_node_t *)n, 0)) *found = 1;
+  if (PM_NODE_TYPE(n) == PM_CALL_NODE &&
+      (mx_attr_dyn((const pm_call_node_t *)n, 0) || mx_defm_dyn((const pm_call_node_t *)n))) *found = 1;
   return !*found;
 }
 
-/* The `def self.m`s of a class or module body that define accessors by names
-   their arguments give: macros of the class itself, for the calls of its body. */
+/* The `def self.m`s of a class or module body that define accessors or
+   methods by names their arguments give: macros of the class itself, for the
+   calls of its body. */
 static void mx_collect_self_defs(pm_statements_node_t *st, const char *path) {
   char *key = NULL;
   for (size_t i = 0; i < st->body.size; i++) {
@@ -2552,6 +2702,11 @@ static bool mx_count_visit(const pm_node_t *n, void *data) {
     char *nm = mx_name(((pm_call_node_t *)n)->name);
     for (int i = 0; i < g_mx_nmacros; i++) {
       if (g_mx_macros[i].expanded == 0) continue;
+      /* a call in the macro's own body runs only when the macro does (the
+         instance method `extension` a `def self.extension` defines its
+         `#{name}=` with): dropped with it */
+      const pm_location_t *dl = &g_mx_macros[i].def->base.location;
+      if (n->location.start >= dl->start && n->location.end <= dl->end) continue;
       char *dn = mx_name(g_mx_macros[i].def->name);
       if (strcmp(dn, nm) == 0) {
         mc->counts[i]++;
@@ -2625,12 +2780,13 @@ static int mx_source_attr_dyn(const char *src) {
 
 static char *sp_expand_class_macros(const char *source) {
   /* cheap gate: a module_eval / const_set / public_send somewhere, or an
-     attr_* call that names what it defines at run time */
+     attr_* call or a class method's define_method that names what it
+     defines at run time */
   if ((!strstr(source, "extend") ||
        (!strstr(source, "module_eval") && !strstr(source, "class_eval") &&
         !strstr(source, "const_set") && !strstr(source, "public_send") &&
         !strstr(source, "define_singleton_method") && !strstr(source, "define_method"))) &&
-      !mx_source_attr_dyn(source))
+      !mx_source_attr_dyn(source) && !(strstr(source, "def self.") && strstr(source, "define_method")))
     return NULL;
   size_t len = strlen(source);
   if (getenv("SPINEL_MACRO_DUMP")) {
