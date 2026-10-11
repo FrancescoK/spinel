@@ -1279,6 +1279,21 @@ int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable 
         return 1;
       }
     }
+    /* TCPServer.for_fd(fd) and the other socket classes': the descriptor
+       wrapped as that class (BasicSocket.for_fd answers a Socket). */
+    if (tcn && sp_feature_required("socket") && io_family_name(tcn) && !is_io_class_name(tcn) &&
+        sp_streq(name, "for_fd") && argc == 1) {
+      int skc = comp_class_index(c, tcn);
+      if (skc < 0 || comp_cmethod_in_chain(c, skc, name, NULL) < 0) {
+        int kind = sp_streq(tcn, "TCPServer") ? 1 : sp_streq(tcn, "TCPSocket") ? 2 :
+                   sp_streq(tcn, "UDPSocket") ? 3 : sp_streq(tcn, "UNIXServer") ? 4 :
+                   sp_streq(tcn, "UNIXSocket") ? 5 : 0;
+        buf_puts(b, "sp_sock_for_fd(");
+        emit_int_expr(c, argv[0], b);
+        buf_printf(b, ", %d)", kind);
+        return 1;
+      }
+    }
     /* Socket class methods (#2922) */
     if (tcn && sp_streq(tcn, "Socket") && sp_feature_required("socket")) {
       if (sp_streq(name, "gethostname") && argc == 0) {
@@ -1331,6 +1346,22 @@ int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable 
       if (sp_streq(name, "unpack_sockaddr_un") && argc == 1) {
         buf_puts(b, "sp_sock_unpack_sockaddr_un(");
         emit_str_expr(c, argv[0], b);
+        buf_puts(b, ")");
+        return 1;
+      }
+      /* Socket.tcp_server_sockets([host,] port) -> [Socket, ...]. The block
+         form, which yields the Sockets and closes them after, is refused. */
+      if (sp_streq(name, "tcp_server_sockets") && (argc == 1 || argc == 2) &&
+          nt_ref(nt, id, "block") >= 0) {
+        unsupported_feature(c, id, "Socket.tcp_server_sockets with a block is not supported: call it without one and close the Sockets in an ensure");
+      }
+      if (sp_streq(name, "tcp_server_sockets") && (argc == 1 || argc == 2)) {
+        buf_puts(b, "sp_sock_tcp_server_sockets(");
+        if (argc == 2 && !(nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "NilNode")))
+          emit_str_expr(c, argv[0], b);
+        else buf_puts(b, "NULL");
+        buf_puts(b, ", ");
+        emit_int_expr(c, argv[argc - 1], b);
         buf_puts(b, ")");
         return 1;
       }

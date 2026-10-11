@@ -3004,6 +3004,9 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
         { *out = an_poly_concrete(c, name, TY_BOOL); return 1; }
       if (sp_streq(name, "do_not_reverse_lookup=") && argc == 1 && sp_feature_required("socket"))
         { *out = an_poly_concrete(c, name, infer_type(c, argv[0])); return 1; }
+      /* the descriptor flags' writers answer their argument too */
+      if ((sp_streq(name, "autoclose=") || sp_streq(name, "close_on_exec=")) && argc == 1)
+        { *out = an_poly_concrete(c, name, infer_type(c, argv[0])); return 1; }
       /* the non-blocking pair on a poly-carried handle, typed as the TY_IO arm
          types it: `exception: false` answers a wait symbol (read) or nil
          (write) as well as the ordinary result, so that shape is poly and a
@@ -3524,6 +3527,7 @@ static int infer_builtin_cmethod_call(Compiler *c, int id, const NodeTable *nt, 
       if (skc < 0 || comp_cmethod_in_chain(c, skc, name, NULL) < 0) {
         if (sp_streq(name, "do_not_reverse_lookup") && argc == 0) { *out = TY_BOOL; return 1; }
         if (sp_streq(name, "do_not_reverse_lookup=") && argc == 1) { *out = infer_type(c, argv[0]); return 1; }
+        if (sp_streq(name, "for_fd") && argc == 1) { *out = TY_IO; return 1; }
       }
     }
     if (rty && sp_streq(rty, "ConstantReadNode") && nt_str(nt, recv, "name") &&
@@ -3531,6 +3535,8 @@ static int infer_builtin_cmethod_call(Compiler *c, int id, const NodeTable *nt, 
       if (sp_streq(name, "gethostname") && argc == 0) { *out = TY_STRING; return 1; }
       if ((is_socket_pair_alias(name)) && argc >= 2) { *out = TY_POLY_ARRAY; return 1; }
       if (sp_streq(name, "getaddrinfo") && argc >= 2) { *out = TY_POLY_ARRAY; return 1; }
+      if (sp_streq(name, "tcp_server_sockets") && (argc == 1 || argc == 2) &&
+          nt_ref(nt, id, "block") < 0) { *out = TY_POLY_ARRAY; return 1; }
       /* The packed sockaddr is a byte String (it carries NUL), and
          unpack answers [port, host] (#4137). */
       if ((sp_streq(name, "sockaddr_in") || sp_streq(name, "pack_sockaddr_in")) && argc == 2) { *out = TY_STRING; return 1; }

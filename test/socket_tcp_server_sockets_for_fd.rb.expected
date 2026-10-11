@@ -1,0 +1,12 @@
+1
+Socket
+false
+TCPServer
+true
+"hello\n"
+Errno::EADDRINUSE
+true
+Errno::EBADF
+"integer 8589934592 too big to convert to 'int'"
+"integer 8589934593 too big to convert to 'int'"
+"integer -8589934592 too small to convert to 'int'"

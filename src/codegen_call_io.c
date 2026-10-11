@@ -556,6 +556,11 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
        (sp_feature_required("socket") &&
         ((sp_streq(name, "do_not_reverse_lookup") && argc == 0) ||
          (sp_streq(name, "do_not_reverse_lookup=") && argc == 1))) ||
+       /* the descriptor flags: a Socket out of Socket.tcp_server_sockets is
+          an Array element, and WEBrick sets autoclose = false on each before
+          wrapping its fd as a TCPServer */
+       ((sp_streq(name, "autoclose=") || sp_streq(name, "close_on_exec=")) && argc == 1 &&
+        !attr_writer_named(c, -1, name)) ||
        /* the descriptor controls, at CRuby's arities, unless a splat carries
           the arguments, the advice is not a Symbol, or a class method or an
           attribute writer of that name may be the receiver's */
@@ -903,6 +908,16 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
         buf_printf(b, "SP_GC_ROOT(_t%d); sp_RbVal _t%d = ", tio2, ts3);
         emit_boxed(c, argv[0], b);
         buf_printf(b, "; sp_sock_set_dnrl(_t%d, sp_poly_truthy(_t%d)); ", tio2, ts3);
+        emit_unbox_or_keep(c, repr_of(c, id).as_ty, ts3, b);
+        buf_puts(b, "; })");
+      }
+      else if (sp_streq(name, "autoclose=") || sp_streq(name, "close_on_exec=")) {
+        /* answers its argument; only its truth sets the flag */
+        int ts3 = ++g_tmp;
+        buf_printf(b, "SP_GC_ROOT(_t%d); sp_RbVal _t%d = ", tio2, ts3);
+        emit_boxed(c, argv[0], b);
+        buf_printf(b, "; sp_File_set_%s(_t%d, sp_poly_truthy(_t%d)); ",
+                   sp_streq(name, "autoclose=") ? "autoclose" : "close_on_exec", tio2, ts3);
         emit_unbox_or_keep(c, repr_of(c, id).as_ty, ts3, b);
         buf_puts(b, "; })");
       }
