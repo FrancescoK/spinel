@@ -1953,7 +1953,8 @@ int emit_call_object_override_arms(Compiler *c, int id, Buf *b, const NodeTable 
           buf_puts(&pb3, "({ "); buf_puts(&pb3, hb3.p);
           buf_printf(&pb3, "_t%d = ", th3); buf_puts(&pb3, ab3.p ? ab3.p : "sp_box_nil()");
           buf_printf(&pb3, "; sp_penum_call1((sp_Proc *)_t%d.v.p, _t%d); }", tp3, th3);
-        } else {
+        }
+        else {
           buf_printf(&pb3, "sp_penum_call1((sp_Proc *)_t%d.v.p, ", tp3);
           buf_puts(&pb3, ab3.p ? ab3.p : "sp_box_nil()");
         }

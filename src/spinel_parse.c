@@ -3252,7 +3252,8 @@ static bool sp_skip_dead_require(const pm_node_t *node, void *data) {
       const pm_unless_node_t *n = (const pm_unless_node_t *)node;
       predicate = n->predicate; body = (const pm_node_t *)n->statements;
       other = (const pm_node_t *)n->else_clause;
-    } else {
+    }
+    else {
       const pm_if_node_t *n = (const pm_if_node_t *)node;
       predicate = n->predicate; body = (const pm_node_t *)n->statements;
       other = n->subsequent;

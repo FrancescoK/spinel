@@ -16420,7 +16420,8 @@ int builtin_name_arity_span(const char *name, int with_block, int *lo, int *hi) 
         if (!r->m || !sp_streq(r->m, name)) continue;
         rl = with_block ? r->blk_min : r->min; rh = with_block ? r->blk_max : r->max;
         if (rl < 0) continue;
-      } else {
+      }
+      else {
         if (!sp_builtin_arity_tbl[i].m || !sp_streq(sp_builtin_arity_tbl[i].m, name)) continue;
         int proved = 0;
         for (const SpAritySpec *r = sp_builtin_arity_spec_tbl; r->cls && !proved; r++)

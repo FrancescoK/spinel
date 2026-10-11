@@ -145,7 +145,8 @@ static void add_platform_flags(Str *cmd, Str *bi, const char *flags, const char 
     else snprintf(tok, sizeof tok, "%s", t);
     if ((tok[0] == '-' && (tok[1] == 'I' || tok[1] == 'L')) && at) {
       char q[4300]; snprintf(q, sizeof q, "-%c\"%s\" ", tok[1], tok + 2); s_add(cmd, q);
-    } else { s_add(cmd, tok); s_add(cmd, " "); }
+    }
+    else { s_add(cmd, tok); s_add(cmd, " "); }
     bi_put(bi, tok[1] == 'I' ? "include" : tok[1] == 'D' ? "define" :
                (tok[1] == 'l' || tok[1] == 'L' || tok[1] == 'W' || !strcmp(tok, "-static")) ? "lib" : "cflag",
            tok[1] == 'I' ? tok + 2 : tok);

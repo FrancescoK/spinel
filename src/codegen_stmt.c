@@ -11268,7 +11268,8 @@ void emit_begin(Compiler *c, int id, Buf *b, int indent, const char *resultvar) 
     else {
       emit_stmts(c, else_stmts, b, indent + 1);
     }
-  }  else if (else_c >= 0 && resultvar) {
+  }
+  else if (else_c >= 0 && resultvar) {
     /* an empty else clause is still the begin's value: nil */
     TyKind bt = repr_of(c, id).as_ty;
     emit_indent(b, indent + 1);

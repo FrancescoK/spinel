@@ -30464,7 +30464,8 @@ static void nn_pre(Compiler *c, int id, int par, int ctx, int loopout, int dep) 
   if (k == NK_BlockNode || k == NK_LambdaNode) {
     nn_ctxpar[id] = ctx; nn_ctxdep[id] = dep + 1;
     cctx = id; cloop = -1; cdep = dep + 1;
-  } else if (nn_is_loop(k) && loopout < 0) cloop = id;
+  }
+  else if (nn_is_loop(k) && loopout < 0) cloop = id;
   if (k == NK_RetryNode || k == NK_RedoNode) nn_retry[ctx >= 0 ? ctx : nn_cur_frame] = 1;
   if ((k == NK_NextNode || k == NK_BreakNode) && ctx >= 0) nn_jump[ctx] = 1;
   /* a redo runs again the body of the loop or block it is in */
@@ -30828,7 +30829,8 @@ static void nn_cond(Compiler *c, int id, const NNF *in, NNF *t, NNF *e, int ctx)
     if (k == NK_AndNode) {
       nn_cond(c, nt_ref(nt, id, "right"), &lt, &rt, &re, ctx);
       *t = rt; *e = le; nn_meet(e, &re);
-    } else {
+    }
+    else {
       nn_cond(c, nt_ref(nt, id, "right"), &le, &rt, &re, ctx);
       *t = lt; nn_meet(t, &rt); *e = re;
     }
@@ -31068,7 +31070,8 @@ static void nn_visit(Compiler *c, int id, NNF *f, int ctx) {
       if (b.bot) b = in;
       nn_cond(c, nt_ref(nt, id, "predicate"), &b, &t, &e, ctx);
       if (k == NK_UntilNode) { NNF x = t; t = e; e = x; }
-    } else {
+    }
+    else {
       nn_cond(c, nt_ref(nt, id, "predicate"), &in, &t, &e, ctx);
       if (k == NK_UntilNode) { NNF x = t; t = e; e = x; }
       /* a redo runs the body again without the condition, so the body
@@ -31098,7 +31101,8 @@ static void nn_visit(Compiler *c, int id, NNF *f, int ctx) {
       NNF e; memset(&e, 0, sizeof e);
       nn_visit(c, nt_ref(nt, blk, "parameters"), &e, blk);
       nn_visit(c, nt_ref(nt, blk, "body"), &e, blk);
-    } else if (blk >= 0) nn_visit_children_generic(c, blk, f, ctx);
+    }
+    else if (blk >= 0) nn_visit_children_generic(c, blk, f, ctx);
     nn_operands_nonnil(c, id, f, ctx, amark);
     if (!nn_pure_call(c, id)) { nn_call_kill(f, ctx, 0); nn_logpush(NN_LOG_CALL, NULL, -1, 0); }
     else nn_used(c, id, f, ctx, amark);
@@ -40139,7 +40143,8 @@ static void an_tree_ran(Compiler *c, int slot) {
   ({ int _ts; int _tr = an_tree_skip(c, (nm), &_ts) ? 0 : (call); if (!_tr || _ts >= 0) an_tree_ran(c, _ts); _tr; })
 #define AN_PASS(nm, call) (!sp_timing_on() ? AN_SHADOWED(nm, call) : \
   ({ double _pt0 = sp_timing_now(); int _pr = AN_SHADOWED(nm, call); an_pass_note((nm), _pt0, _pr != 0); _pr; }))
-#define AN_PASS_V(nm, call) do { if (!sp_timing_on()) { call; } else { \
+#define AN_PASS_V(nm, call) do { if (!sp_timing_on()) { call; } \
+  else { \
   double _pt0 = sp_timing_now(); call; an_pass_note((nm), _pt0, 0); } } while (0)
 static int an_pass_cmp(const void *a, const void *b) {
   double x = ((const typeof(g_an_pass[0]) *)a)->ms, y = ((const typeof(g_an_pass[0]) *)b)->ms;

@@ -10176,7 +10176,8 @@ static sp_RbVal sp_poly_get_sym(sp_RbVal v, sp_sym key) {
     sp_RbVal h = sp_obj_to_h_fn(v);
     if (h.tag == SP_TAG_OBJ && h.cls_id == SP_BUILTIN_SYM_POLY_HASH)
       return sp_SymPolyHash_get((sp_SymPolyHash *)h.v.p, key);
-  } else if (sp_poly_is_array_kind(v.cls_id)) {
+  }
+  else if (sp_poly_is_array_kind(v.cls_id)) {
     /* An Array indexed by a Symbol is a TypeError, as the store raises it
        (sp_poly_set_sym): the read answered nil. */
     sp_raise_cls("TypeError", SPL("no implicit conversion of Symbol into Integer"));

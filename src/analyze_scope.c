@@ -1065,14 +1065,16 @@ static const char *reopened_native_class(Compiler *c, int cp, int class_id, cons
     if (class_id < 0 || (en && sp_streq(en, "Object"))) return leaf;
     if (!en || !sp_streq(en, "Thread")) return NULL;
     only_thread = 1;
-  } else if (k == NK_ConstantPathNode) {
+  }
+  else if (k == NK_ConstantPathNode) {
     int par = nt_ref(c->nt, cp, "parent");
     if (par >= 0) {
       const char *pn = nt_kind(c->nt, par) == NK_ConstantReadNode ? nt_str(c->nt, par, "name") : NULL;
       if (class_id >= 0 || !pn || !sp_streq(pn, "Thread")) return NULL;
       only_thread = 1;
     }
-  } else return NULL;
+  }
+  else return NULL;
   return only_thread && !is_thread_class_name(leaf) ? NULL : leaf;
 }
 

@@ -6535,7 +6535,8 @@ else {
           buf_printf(b, "; if (!_t%d) { const char *_cn%d = sp_poly_class_name(", to, to); emit_boxed_text(c, at, ob, b);
           buf_printf(b, "); sp_raise_cls(\"TypeError\", sp_sprintf(\"can't convert %%s to Hash (%%s#to_hash gives NilClass)\", _cn%d, _cn%d)); }"
                         " SP_GC_ROOT(_t%d)", to, to, to);
-        } else emit_expr(c, argv[0], b);
+        }
+        else emit_expr(c, argv[0], b);
         buf_puts(b, ";");
         buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {", ti, ti, to, ti);
         /* a PolyPoly hash's order[] holds slot indices: its keys are keys[] */
