@@ -12225,6 +12225,12 @@ void emit_exc_new_no_init(Compiler *c, int id, int ci, int argc, const int *argv
    when it is an Array, else x nils, as Array.new(n) builds. 0 for any other
    x, which the size arm takes. */
 static int emit_array_new_from_value(Compiler *c, int arg, Buf *b) {
+  /* an empty literal has no element kind to say it is an Array: its copy
+     is an empty Array, as Array.new with no argument builds */
+  if (is_empty_array_lit(c->nt, arg)) {
+    buf_puts(b, "sp_PolyArray_new()");
+    return 1;
+  }
   Repr ar = repr_of(c, arg);
   TyKind at = ar.as_ty;
   if (array_new_copies(at)) {
