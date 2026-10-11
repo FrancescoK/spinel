@@ -5531,6 +5531,21 @@ static int emit_merge_block_boxed(Compiler *c, int id, int recv, int arg, int mb
     if (mp[0]) buf_printf(b, " sp_RbVal lv_%s = _tk%d;", mp[0], tk);
     if (mp[1]) buf_printf(b, " sp_RbVal lv_%s = sp_PolyPolyHash_get(_t%d, _tk%d);", mp[1], tr, tk);
     if (mp[2]) buf_printf(b, " sp_RbVal lv_%s = _tv%d;", mp[2], tk);
+    /* a rest parameter takes the values the positional ones leave: `|*a|`
+       is [key, old, new], `|k, *a|` is [old, new] (#8506) */
+    { const char *rn = block_rest_name(c, mblk);
+      if (rn && *rn) {
+        int np = 0; while (np < 3 && block_param_name(c, mblk, np)) np++;
+        int ta2 = ++g_tmp;
+        buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", ta2, ta2);
+        if (np < 1) buf_printf(b, " sp_PolyArray_push(_t%d, _tk%d);", ta2, tk);
+        if (np < 2) buf_printf(b, " sp_PolyArray_push(_t%d, sp_PolyPolyHash_get(_t%d, _tk%d));", ta2, tr, tk);
+        if (np < 3) buf_printf(b, " sp_PolyArray_push(_t%d, _tv%d);", ta2, tk);
+        Scope *rs = comp_scope_of(c, mblk);
+        LocalVar *rlv = rs ? scope_local(rs, rn) : NULL;
+        if (rlv && rlv->type == TY_POLY) buf_printf(b, " lv_%s = sp_box_poly_array(_t%d);", rename_local(rn), ta2);
+        else buf_printf(b, " lv_%s = _t%d;", rename_local(rn), ta2);
+      } }
     Buf nv; memset(&nv, 0, sizeof nv);
     if (emit_blk_value_via_next(c, mblk, TY_POLY, &nv)) {
       buf_printf(b, " sp_PolyPolyHash_set(_t%d, _tk%d, %s); }", tr, tk, nv.p);
