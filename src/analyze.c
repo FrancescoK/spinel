@@ -20490,14 +20490,40 @@ static int sb_subtree_max(const NodeTable *nt, int n) {
     for (int j = 0; j < nd->a[i].n; j++) { int x = sb_subtree_max(nt, nd->a[i].ids[j]); if (x > m) m = x; }
   return m;
 }
+/* Can the statement holding w run again within one run of scope vs: a while,
+   until or for around it, a block around it inside vs (`loop do`, whose body
+   may be spliced into vs itself), or a begin around it whose rescue
+   retries? */
+static int sb_may_run_again(Compiler *c, int w, Scope *vs) {
+  const NodeTable *nt = c->nt;
+  NodeKind loops[] = { NK_WhileNode, NK_UntilNode, NK_ForNode, NK_BlockNode };
+  for (int k = 0; k < 4; k++)
+    for (int u = comp_kind_first(c, loops[k]); u >= 0; u = comp_kind_next(c, u))
+      if (nt_kind(nt, u) == loops[k] && an_subtree_has(nt, u, w) &&
+          (k < 3 || an_subtree_has(nt, vs->body, u))) return 1;
+  /* a retry re-enters the begin's body, which may raise into the rescue
+     again: both run again, wherever w is in them */
+  NodeKind rescuers[] = { NK_BeginNode, NK_RescueModifierNode };
+  const char *arm[] = { "rescue_clause", "rescue_expression" };
+  for (int r = comp_kind_first(c, NK_RetryNode); r >= 0; r = comp_kind_next(c, r)) {
+    if (nt_kind(nt, r) != NK_RetryNode) continue;
+    for (int k = 0; k < 2; k++)
+      for (int b = comp_kind_first(c, rescuers[k]); b >= 0; b = comp_kind_next(c, b)) {
+        if (nt_kind(nt, b) != rescuers[k]) continue;
+        int rc = nt_ref(nt, b, arm[k]);
+        if (rc >= 0 && an_subtree_has(nt, rc, r) && an_subtree_has(nt, b, w)) return 1;
+      }
+  }
+  return 0;
+}
 /* map!/collect! over local `vn` (call w) mutating each element it yields:
    the elements are replaced by the block's values, so a mutation of the
    yielded String is seen only where the block's value carries it -- unless
    the String is reachable some other way. It is not when the local is only
    ever bound to a fresh String Array (sb_fresh_string_array_call) ahead of
    w, every other read of it comes after w (none can hand an element out
-   before the replacement), and no loop around w runs it again over Strings
-   a later read may have handed out. */
+   before the replacement), and no loop or retry around w runs it again over
+   Strings a later read may have handed out (sb_may_run_again). */
 static int sb_map_bang_local_unobserved(Compiler *c, int w, int recv, const char *vn, Scope *vs) {
   const NodeTable *nt = c->nt;
   if (!vs || vs->body < 0 || !an_subtree_has(nt, vs->body, w)) return 0;
@@ -20519,10 +20545,7 @@ static int sb_map_bang_local_unobserved(Compiler *c, int w, int recv, const char
     if (u == recv || nt_kind(nt, u) != NK_LocalVariableReadNode || !sp_streq(nt_str(nt, u, "name"), vn)) continue;
     if (u <= wmax && an_subtree_has(nt, vs->body, u)) return 0;
   }
-  NodeKind loops[] = { NK_WhileNode, NK_UntilNode, NK_ForNode };
-  for (int k = 0; k < 3; k++)
-    for (int u = comp_kind_first(c, loops[k]); u >= 0; u = comp_kind_next(c, u))
-      if (nt_kind(nt, u) == loops[k] && an_subtree_has(nt, u, w)) return 0;
+  if (sb_may_run_again(c, w, vs)) return 0;
   /* w runs where the local lives, not in a block that may run it again */
   return comp_scope_of(c, w) == vs;
 }
@@ -20548,7 +20571,7 @@ static int sb_iter_fresh_source(Compiler *c, int n) {
    local is only ever bound to a fresh String Array (sb_iter_fresh_source)
    ahead of w and nothing else reads it -- before w only to take elements out
    (shift, pop), or to count them, which hands out no String w mutates.
-   No loop around w may run it again. The parameter then
+   No loop or retry around w may run it again. The parameter then
    binds each element as a copy, as for an iterator over the fresh call
    itself. */
 static int sb_iter_local_unobserved(Compiler *c, int w, int recv, const char *vn, Scope *vs) {
@@ -20584,10 +20607,7 @@ static int sb_iter_local_unobserved(Compiler *c, int w, int recv, const char *vn
     }
     if (!ok) return 0;
   }
-  NodeKind loops[] = { NK_WhileNode, NK_UntilNode, NK_ForNode };
-  for (int k = 0; k < 3; k++)
-    for (int u = comp_kind_first(c, loops[k]); u >= 0; u = comp_kind_next(c, u))
-      if (nt_kind(nt, u) == loops[k] && an_subtree_has(nt, u, w)) return 0;
+  if (sb_may_run_again(c, w, vs)) return 0;
   return comp_scope_of(c, w) == vs;
 }
 /* An element iterator w over String Array local `vn` whose block mutates
