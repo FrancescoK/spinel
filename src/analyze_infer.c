@@ -3378,6 +3378,11 @@ static int infer_builtin_cmethod_call(Compiler *c, int id, const NodeTable *nt, 
         nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Encoding") &&
         sp_streq(name, "find") && argc == 1)
       { *out = TY_POLY; return 1; }
+    /* Encoding.list: an Array of them */
+    if (rty && sp_streq(rty, "ConstantReadNode") &&
+        nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Encoding") &&
+        sp_streq(name, "list") && argc == 0)
+      { *out = TY_POLY_ARRAY; return 1; }
     /* Warning[] / Warning[]= / Warning.warn (codegen_call.c's arm) */
     if (rty && sp_streq(rty, "ConstantReadNode") &&
         nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Warning")) {

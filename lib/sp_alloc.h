@@ -1172,6 +1172,7 @@ static inline sp_RbVal sp_box_int_nn(sp_int v) { return sp_box_int(v); }
 int64_t sp_unbox_i64(sp_RbVal v);
 sp_RbVal sp_box_encoding(sp_Encoding e);
 sp_RbVal sp_encoding_find(sp_RbVal v);
+sp_PolyArray *sp_encoding_list(void);
 /* force_encoding's tag for an Encoding or a name known at run time */
 int sp_force_encoding_mode(sp_RbVal enc);
 sp_RbVal sp_box_nullable_str(const char *v);
