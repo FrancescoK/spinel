@@ -895,7 +895,7 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
     buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ", t, t);
     for (int k = 0; k < argc; k++) {
       buf_printf(b, "sp_PolyArray_push(_t%d, ", t);
-      emit_boxed(c, argv[k], b);
+      emit_boxed_operand(c, argv, argc, k, b);
       buf_puts(b, "); ");
     }
     buf_printf(b, "for (sp_int _i%d = 0; _i%d < _t%d->len; _i%d++) { "

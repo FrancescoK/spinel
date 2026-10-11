@@ -710,7 +710,7 @@ int emit_output_spilled(Compiler *c, const char *name, int argc, const int *argv
       buf_puts(&abody, "));\n");
     }
     else {
-      buf_printf(&abody, "sp_PolyArray_push(_t%d, ", t); emit_boxed(c, a, &abody); buf_puts(&abody, ");\n");
+      buf_printf(&abody, "sp_PolyArray_push(_t%d, ", t); emit_boxed_operand(c, argv, argc, k, &abody); buf_puts(&abody, ");\n");
     }
     g_pre = sv_pre; g_indent = sv_ind;
     if (apre.p) buf_puts(b, apre.p);
@@ -921,7 +921,7 @@ else {
         buf_printf(b, "{ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);\n", tpa, tpa);
         for (int k = 1; k < argc; k++) {
           Buf ab; memset(&ab, 0, sizeof ab);
-          emit_boxed(c, argv[k], &ab);
+          emit_boxed_operand(c, argv, argc, k, &ab);
           emit_indent(b, indent);
           /* a splat contributes its ELEMENTS, not one array argument (#3957) */
           if (nt_kind(nt, argv[k]) == NK_SplatNode)

@@ -2188,6 +2188,63 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
 }
 /* emit_boxed: the boxing of node `node`'s value (emit_boxed_impl); under
    --repr-check it keeps the nesting the recorder reads */
+/* Operand k of argv[0..argc), boxed for a builtin that reads the boxes
+   only once every operand ran (p, printf's arguments). --share-strings: a
+   call whose every target publishes the handle of a String the rule
+   shares, before a later operand that can change a String
+   (operand_may_change_string), is boxed as that handle,
+   which the later code's change reaches (`p get, (get << "!"; 1)`); its
+   bytes boxed, the box kept the String as it was. */
+/* --share-strings: can evaluating subtree n change a String in place: a
+   String mutator's call, a call that reaches a method of the program's own
+   (its body can), a block, a yield or a super? A builtin that only reads
+   cannot. */
+int operand_may_change_string(Compiler *c, int n) {
+  const NodeTable *nt = c->nt;
+  if (n < 0) return 0;
+  NodeKind k = nt_kind(nt, n);
+  if (k == NK_BlockNode || k == NK_LambdaNode || k == NK_YieldNode || k == NK_SuperNode ||
+      k == NK_ForwardingSuperNode || k == NK_BlockArgumentNode)
+    return 1;
+  if (k == NK_CallNode) {
+    const char *nm = nt_str(nt, n, "name");
+    const CallPlan *p = cplan_user(c, n);
+    if (!nm || sp_str_mutator(nm, 0) || bop_name_mutates(nm, 0) || p->mi >= 0 || p->dispatch != CP_NONE) return 1;
+  }
+  for (int i = 0; i < nt_num_refs(nt, n); i++)
+    if (operand_may_change_string(c, nt_ref_at(nt, n, i))) return 1;
+  for (int i = 0; i < nt_num_arrs(nt, n); i++) {
+    int m = 0; const int *ids = nt_arr_at(nt, n, i, &m);
+    for (int j = 0; j < m; j++) if (operand_may_change_string(c, ids[j])) return 1;
+  }
+  return 0;
+}
+
+/* --share-strings: is v (parentheses aside) a call, not run yet, whose
+   every target publishes the handle of a String the rule shares? */
+int call_publishes_shared_handle(Compiler *c, int v) {
+  int u = unwrap_parens(c, v);
+  return repr_share_rule(c) && u >= 0 && nt_kind(c->nt, u) == NK_CallNode && !arg_ran_first(v, 0) &&
+         !arg_ran_first(u, 0) && repr_of(c, u).strbuf_src == RS_NONE && repr_call_returns_handle(c, u) &&
+         share_node_shares(c, u);
+}
+
+void emit_boxed_operand(Compiler *c, const int *argv, int argc, int k, Buf *b) {
+  int later = 0;
+  if (call_publishes_shared_handle(c, argv[k]))
+    for (int j = k + 1; j < argc && !later; j++) later = operand_may_change_string(c, argv[j]);
+  if (later) {
+    Buf hb; memset(&hb, 0, sizeof hb);
+    if (emit_strbuf_route(c, argv[k], &hb)) {
+      buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", hb.p);
+      free(hb.p);
+      return;
+    }
+    free(hb.p);
+  }
+  emit_boxed(c, argv[k], b);
+}
+
 void emit_boxed(Compiler *c, int node, Buf *b) {
   if (b == g_pre) { emit_into_pre_line(c, emit_boxed, node); return; }
   if (g_share_check) share_check_mark(c, node, 'B', b);

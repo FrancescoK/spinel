@@ -1869,6 +1869,9 @@ int reader_override_handle_arms(Compiler *c, int id, int cid, const char *name, 
 int strbuf_poly_user_boxes(Compiler *c, int v);
 int exc_message_boxed_call(Compiler *c, int v);
 void emit_exc_text_handle(Compiler *c, int v, const char *e, Buf *b);
+void emit_boxed_operand(Compiler *c, const int *argv, int argc, int k, Buf *b);
+int operand_may_change_string(Compiler *c, int n);
+int call_publishes_shared_handle(Compiler *c, int v);
 int emit_reader_override_handle(Compiler *c, int id, int cid, const char *name, const char *selfptr,
                                 const char *reader, int boxed, Buf *b);
 TyKind reader_override_ty(Compiler *c, int id, int cid, const char *name);

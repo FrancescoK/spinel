@@ -20961,6 +20961,21 @@ static int operand_binds_handle(Compiler *c, int v, int harg) {
   return strbuf_poly_to_s(c, v) || repr_string_conversion_operand(c, v) >= 0;
 }
 
+/* --share-strings: is bound String operand v, among operand[0..nop), a
+   call publishing the handle of a String the rule shares
+   (call_publishes_shared_handle) before an operand that can change a
+   String in place (operand_may_change_string)? CRuby hands the call the
+   String object, so its bytes are read once every operand ran
+   (`ch(w) + ch(w)`): bound as its handle, it is read last, as a copy is. */
+static int operand_reads_handle_late(Compiler *c, int v, const int *operand, int nop) {
+  if (!call_publishes_shared_handle(c, v)) return 0;
+  int i = 0;
+  while (i < nop && operand[i] != v) i++;
+  for (int j = i + 1; j < nop; j++)
+    if (operand_may_change_string(c, operand[j])) return 1;
+  return 0;
+}
+
 static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
   /* The buffer arm holds its operands, including the handle a keyword
      may replace, before it checks or converts any of them. */
@@ -21199,7 +21214,10 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
   size_t pre_mark = g_pre->len;
   int saved_tmp = g_tmp;
   Buf opb[MAX_ARG_OVERRIDE], opp[MAX_ARG_OVERRIDE];
-  int th[MAX_ARG_OVERRIDE], used[MAX_ARG_OVERRIDE];
+  int th[MAX_ARG_OVERRIDE], used[MAX_ARG_OVERRIDE], late[MAX_ARG_OVERRIDE];
+  for (int i = 0; i < nb; i++)
+    late[i] = !copy[i] && !fresh[i] && !oo[i] && node[i] != harg && ty[i] == TY_STRING &&
+              operand_reads_handle_late(c, node[i], operand, nop);
   int rendered = 0, ok = 1;
   /* A lone observable operand is kept only when the call converts, which the
      call's own emission tells; render the operand after that, so a declined
@@ -21212,7 +21230,8 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
     if (copy[i]) { memset(&opb[i], 0, sizeof opb[i]); memset(&opp[i], 0, sizeof opp[i]); }
   for (; !operands_last && rendered < nb && ok; rendered++) {
     if (copy[rendered]) continue;
-    render_operand(c, node[rendered], fresh[rendered], operand_binds_handle(c, node[rendered], harg), oo[rendered], &opb[rendered], &opp[rendered]);
+    render_operand(c, node[rendered], fresh[rendered], operand_binds_handle(c, node[rendered], harg) || late[rendered],
+                   oo[rendered], &opb[rendered], &opp[rendered]);
     if (text_is_raise_token(opb[rendered].p)) ok = 0;
   }
   Buf ob; memset(&ob, 0, sizeof ob);
@@ -21270,7 +21289,8 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
     if (observable < 2 && g_conv_emitted == conv_mark) ok = 0;
     for (; operands_last && rendered < nb && ok; rendered++) {
       if (copy[rendered]) continue;
-      render_operand(c, node[rendered], fresh[rendered], operand_binds_handle(c, node[rendered], harg), oo[rendered], &opb[rendered], &opp[rendered]);
+      render_operand(c, node[rendered], fresh[rendered], operand_binds_handle(c, node[rendered], harg) || late[rendered],
+                     oo[rendered], &opb[rendered], &opp[rendered]);
       if (text_is_raise_token(opb[rendered].p)) ok = 0;
     }
   }
@@ -21293,9 +21313,22 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
     if (!inl) { buf_puts(g_pre, opp[i].p); free(opp[i].p); opp[i].p = NULL; }
   }
   buf_puts(b, "({ ");
-  /* the operands in their order, then the copies, last before the call */
+  /* the operands in their order, then the copies, last before the call;
+     an operand read late is its handle in its place and its bytes with
+     the copies */
   for (int pass = 0; pass < 2; pass++)
   for (int i = 0; i < nb; i++) {
+    if (late[i]) {
+      int lh = pass ? th[i] : (th[i] = ++g_tmp);
+      if (pass) buf_printf(b, "const char * _t%d = sp_strbuf_read(_t%d); SP_GC_ROOT(_t%d); ", tmp[i], lh, tmp[i]);
+      else {
+        if (opp[i].p) buf_puts(b, opp[i].p);
+        free(opp[i].p);
+        buf_printf(b, "sp_String * _t%d = %s; SP_GC_ROOT(_t%d); ", lh, opb[i].p ? opb[i].p : "NULL", lh);
+        free(opb[i].p);
+      }
+      continue;
+    }
     if (copy[i] != pass) continue;
     if (copy[i]) {
       char sref[192];

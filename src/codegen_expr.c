@@ -90,6 +90,19 @@ typedef struct {
 static void interp_plan_free(InterpPlan *pl) {
   free(pl->lits.p); free(pl->decls.p); free(pl->wp); free(pl->flat);
 }
+/* --share-strings: is part k of parts[0..n), whose value is expr, a call
+   publishing the handle of a String the rule shares
+   (call_publishes_shared_handle) before a later part that can change a String in place
+   (operand_may_change_string)? CRuby reads every part's String once all of
+   them ran (`"#{x.change} #{x.change}"`); its bytes taken as the part ran,
+   the result kept the String as it was then. */
+static int interp_part_reads_late(Compiler *c, const int *parts, int n, int k, int expr) {
+  if (!call_publishes_shared_handle(c, expr)) return 0;
+  for (int j = k + 1; j < n; j++)
+    if (operand_may_change_string(c, parts[j])) return 1;
+  return 0;
+}
+
 static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
   const NodeTable *nt = c->nt;
   int n = 0;
@@ -181,6 +194,22 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
         if (lvp && slot_is_oint(lvp)) buf_puts(&decls, ".v");   /* the written value, never nil */
         buf_puts(&decls, "; ");
         snprintf(vexpr, sizeof vexpr, "_t%d", tv);
+      }
+      /* --share-strings: such a part's handle is taken here, in order, and
+         read as the String it holds after every part ran (late) */
+      if (!vexpr[0] && bn == 1 && interp_part_reads_late(c, parts, n, k, expr)) {
+        Buf hb; memset(&hb, 0, sizeof hb);
+        emit_strbuf_handle_of(c, expr, &hb);
+        int hv = ++g_tmp, tv3 = ++g_tmp;
+        buf_printf(&decls, "sp_String *_t%d = %s; SP_GC_ROOT(_t%d); ", hv, hb.p ? hb.p : "NULL", hv);
+        buf_printf(&late, "const char *_t%d = sp_str_or_empty(sp_strbuf_read(_t%d)); SP_GC_ROOT(_t%d); "
+                   "size_t _l%d = sp_str_byte_len(_t%d); ", tv3, hv, tv3, tv3, tv3);
+        free(hb.p);
+        wp[nwp].kind = WK_DYN; wp[nwp].tmp = tv3; wp[nwp].plain = 0; wp[nwp].neutral = -1;
+        wp[nwp].lit_off = 0; wp[nwp].lit_esc_len = 0; wp[nwp].lit_len = 0;
+        nwp++;
+        ndyn_or_scalar++;
+        continue;
       }
       /* Build this part's conversion expression. Bounded scalars keep their
          native C type (written digit-by-digit later); everything else
@@ -3478,6 +3507,58 @@ static int emit_defined_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, c
   return 0;
 }
 
+/* --share-strings: does element v of a literal carry the handle of a String
+   the rule shares: a variable's that holds it, or a call's whose every
+   target publishes it? */
+static int lit_elem_carries_handle(Compiler *c, int v) {
+  char ref[1024];
+  v = unwrap_parens(c, v);
+  if (v < 0) return 0;
+  if (nt_kind(c->nt, v) == NK_CallNode) return repr_call_returns_handle(c, v) && share_node_shares(c, v);
+  return strbuf_var_handle(c, v, ref, sizeof ref);
+}
+/* --share-strings: is String Array literal els[0..n) one whose elements
+   are read only once all of them ran: an element carrying a handle
+   (lit_elem_carries_handle) before one that can change that String in place
+   (operand_may_change_string) before anything reads the Array? Its bytes taken
+   at the element, the Array kept the String as it was then. */
+static int str_lit_reads_late(Compiler *c, const int *els, int n) {
+  if (!repr_share_rule(c)) return 0;
+  int carried = 0;
+  for (int j = 0; j < n; j++) {
+    if (nt_kind(c->nt, els[j]) == NK_SplatNode || nil_store_sfx(c, "Str", els[j])[0]) return 0;
+    if (carried && operand_may_change_string(c, els[j])) return 1;
+    carried |= lit_elem_carries_handle(c, els[j]);
+  }
+  return 0;
+}
+/* The pushes of such a literal into String Array _t<t>: each element in
+   its order into a rooted temp, a handle-carrying one as its handle, then
+   each pushed, a handle read as the String it holds once all ran. */
+static void emit_str_lit_late(Compiler *c, const int *els, int n, int t) {
+  int *tmp = malloc(sizeof(int) * (size_t)(n > 0 ? n : 1));
+  char *hnd = malloc((size_t)(n > 0 ? n : 1));
+  if (!tmp || !hnd) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int j = 0; j < n; j++) {
+    Buf el; memset(&el, 0, sizeof el);
+    tmp[j] = ++g_tmp;
+    hnd[j] = (char)lit_elem_carries_handle(c, els[j]);
+    if (hnd[j]) emit_strbuf_handle_of(c, els[j], &el);
+    else emit_coerce(c, els[j], TY_STRING, CO_HOLD, "an Array literal's element", &el);
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "%s _t%d = %s; SP_GC_ROOT%s(_t%d);\n", hnd[j] ? "sp_String *" : "const char *", tmp[j],
+               el.p ? el.p : "NULL", hnd[j] ? "" : "_STR", tmp[j]);
+    free(el.p);
+  }
+  for (int j = 0; j < n; j++) {
+    emit_indent(g_pre, g_indent);
+    if (hnd[j]) buf_printf(g_pre, "sp_StrArray_push(_t%d, _t%d ? sp_String_cstr(_t%d) : NULL);\n", t, tmp[j], tmp[j]);
+    else buf_printf(g_pre, "sp_StrArray_push(_t%d, _t%d);\n", t, tmp[j]);
+  }
+  free(tmp);
+  free(hnd);
+}
+
 /* An Array or Hash literal ([...], {...}, a keyword hash) (emit_expr_node's arms, in their order) */
 static int emit_array_hash_literal_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *ty) {
   if (sp_streq(ty, "ArrayNode")) {
@@ -3573,7 +3654,9 @@ static int emit_array_hash_literal_expr(Compiler *c, int id, Buf *b, const NodeT
         }
 else {
           Buf el; memset(&el, 0, sizeof el);
-          emit_boxed(c, els[j], &el);
+          /* (a published String before an element that can change it is
+             boxed as its handle: emit_boxed_operand) */
+          emit_boxed_operand(c, els, n, j, &el);
           emit_indent(g_pre, g_indent);
           buf_printf(g_pre, "sp_PolyArray_push(_t%d, ", t);
           buf_puts(g_pre, el.p ? el.p : "");
@@ -3590,6 +3673,11 @@ else {
     buf_printf(g_pre, "sp_%sArray *_t%d = sp_%sArray_new();\n", k, t, k);
     emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", t);
+    if (sp_streq(k, "Str") && str_lit_reads_late(c, els, n)) {
+      emit_str_lit_late(c, els, n, t);
+      buf_printf(b, "_t%d", t);
+      return 1;
+    }
     for (int j = 0; j < n; j++) {
       const char *ety = nt_type(nt, els[j]);
       if (ety && sp_streq(ety, "SplatNode")) {
@@ -3743,7 +3831,16 @@ else {
       else if (ty_is_hash(ht)) emit_coerce(c, key, ty_hash_key(ht), CO_HOLD, "a Hash literal's key", &kb);
       else emit_expr(c, key, &kb);
       Buf vb; memset(&vb, 0, sizeof vb);
-      if (sym_poly || poly_poly) emit_boxed(c, val, &vb);
+      if (sym_poly || poly_poly) {
+        /* (a published String before a pair that can change it is boxed as
+           its handle: emit_boxed_operand over the value and the pairs after) */
+        int *ops = malloc(sizeof(int) * (size_t)(n - j));
+        if (!ops) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+        ops[0] = val;
+        for (int j2 = j + 1; j2 < n; j2++) ops[j2 - j] = els[j2];
+        emit_boxed_operand(c, ops, n - j, 0, &vb);
+        free(ops);
+      }
       else if (ty_is_hash(ht)) emit_coerce(c, val, ty_hash_val(ht), CO_HOLD, "a Hash literal's value", &vb);
       else emit_expr(c, val, &vb);
       emit_indent(g_pre, g_indent);
