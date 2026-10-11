@@ -7,6 +7,9 @@
 #     (String, Array, Integer, Float, DecimalInteger, OctalInteger,
 #     DecimalNumeric, TrueClass or FalseClass), in any order
 #   - separator, banner=, summary_width, summary_indent, to_s (help text)
+#   - top.long / top.short: the switches declared with on, by name without
+#     the dashes. A name added to either Hash (dict["n"] = dict["i"]) is
+#     accepted as that switch
 #   - parse! with --long=VALUE, --long VALUE, -s VALUE, -sVALUE, clustered
 #     short switches (-vq, -vuNAME) and "--"
 #   - --[no-]name switches: --name passes true, --no-name passes false;
@@ -152,13 +155,32 @@ class OptionParser
     end
   end
 
+  # The switches declared with on, by name without the dashes: long["name"]
+  # for --name, short["n"] for -n. A name added to either Hash ("alias" a
+  # switch, dict["to"] = dict["from"]) is accepted as that switch.
+  class List
+    attr_reader :long, :short
+
+    def initialize
+      @long = {}
+      @short = {}
+    end
+
+    def add(sw)
+      sw.shorts.each { |name| @short[name[1..]] = sw }
+      sw.longs.each { |name| @long[name.delete_prefix("--[no-]").delete_prefix("--")] = sw }
+    end
+  end
+
   attr_accessor :banner, :summary_width, :summary_indent
+  attr_reader :top
 
   def initialize(banner = nil, width = 32, indent = "    ", &block)
     @banner = banner || "Usage: " + File.basename($0) + " [options]"
     @summary_width = width
     @summary_indent = indent
     @entries = []
+    @top = List.new
     @tail = []
     @help = Switch.new([], ["--help"], "", [], proc { |_| puts to_s; exit }, Object)
     block.call(self) if block
@@ -169,7 +191,9 @@ class OptionParser
   end
 
   def on(*args, &block)
-    @entries.push(build_switch(args, block))
+    sw = build_switch(args, block)
+    @top.add(sw)
+    @entries.push(sw)
   end
 
   def on_tail(*args, &block)
@@ -308,7 +332,16 @@ class OptionParser
   end
 
   def find_switch(name)
-    (@entries + base_switches).find { |e| e.matches?(name) }
+    (@entries + base_switches).find { |e| e.matches?(name) } || added_name(name)
+  end
+
+  # A name added to top's long or short Hash.
+  def added_name(name)
+    if name.start_with?("--")
+      @top.long[name[2..]]
+    elsif name.length == 2 && name[0] == "-"
+      @top.short[name[1..]]
+    end
   end
 
   # CRuby's base list: the on_tail switches and its built-in --help, which
