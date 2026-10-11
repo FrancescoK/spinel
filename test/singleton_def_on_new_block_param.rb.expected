@@ -9,3 +9,4 @@ true
 1
 nil
 {"name" => 1, "alias" => 1, "other" => nil}
+false

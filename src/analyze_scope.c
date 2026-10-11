@@ -2284,17 +2284,23 @@ static int sg_single_new_write(Compiler *c, const char *name, int bk,
   return write;
 }
 
-/* Does the subtree rooted at `root` contain node `id`? */
-static int sg_contains(const NodeTable *nt, int root, int id, int depth) {
+/* Does the subtree rooted at `root` contain node `id`? With `skip_defs`, a
+   nested def's body is not searched. */
+static int sg_contains_in(const NodeTable *nt, int root, int id, int depth, int skip_defs) {
   if (root < 0 || root >= nt->count || depth > 300) return 0;
   if (root == id) return 1;
+  if (skip_defs && depth > 0 && nt_kind(nt, root) == NK_DefNode) return 0;
   const SpNode *nd = &nt->nodes[root];
   for (int i = 0; i < nd->nr; i++)
-    if (sg_contains(nt, nd->r[i].ref, id, depth + 1)) return 1;
+    if (sg_contains_in(nt, nd->r[i].ref, id, depth + 1, skip_defs)) return 1;
   for (int i = 0; i < nd->na; i++)
     for (int j = 0; j < nd->a[i].n; j++)
-      if (sg_contains(nt, nd->a[i].ids[j], id, depth + 1)) return 1;
+      if (sg_contains_in(nt, nd->a[i].ids[j], id, depth + 1, skip_defs)) return 1;
   return 0;
+}
+
+static int sg_contains(const NodeTable *nt, int root, int id, int depth) {
+  return sg_contains_in(nt, root, id, depth, 0);
 }
 
 /* Is `n` a hand-off to the method's block: a `yield`, or `blk.call` on its
@@ -2320,7 +2326,8 @@ static int sg_initialize_yields_self(Compiler *c, int ci) {
   if (blk && !blk[0]) blk = NULL;
   int body = c->scopes[mi].body, found = 0;
   for (int n = 0; n < nt->count; n++) {
-    if (!sg_block_handoff(nt, n, blk) || !sg_contains(nt, body, n, 0)) continue;
+    /* a def nested in initialize yields to its own caller's block */
+    if (!sg_block_handoff(nt, n, blk) || !sg_contains_in(nt, body, n, 0, 1)) continue;
     int an = nt_ref(nt, n, "arguments");
     int na = 0; const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &na) : NULL;
     if (na < 1 || nt_kind(nt, av[0]) != NK_SelfNode) return 0;
