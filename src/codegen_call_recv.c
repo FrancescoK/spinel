@@ -4685,9 +4685,12 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
     }
     /* --share-strings: one answering its receiver (insert, clear) over a call
        that answers a handle (`id(s).concat(x).insert(0, y)`) changes that
-       handle, held once (emit_bang_self_handle), and answers its read */
+       handle, held once (emit_bang_self_handle), and answers its read; a
+       receiver already read off that held handle (ran_first_read_handle)
+       is the shim's below */
     if (nmS && recvS >= 0 && is_string_position_mutator(nmS) && strbuf_self_route(c, recvS) &&
-        repr_of(c, recvS).as_ty != TY_STRBUF && (!arg_ran_first(recvS, 0) || ran_first_handle(recvS) >= 0) &&
+        repr_of(c, recvS).as_ty != TY_STRBUF && ran_first_read_handle(recvS) < 0 &&
+        (!arg_ran_first(recvS, 0) || ran_first_handle(recvS) >= 0) &&
         strbuf_bang_self_local(c, id)) {
       Buf hb; memset(&hb, 0, sizeof hb);
       if (emit_bang_self_handle(c, id, &hb)) {
@@ -4699,12 +4702,16 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
       free(hb.p);
     }
     /* --share-strings: any other (slice!, setbyte) over a call that hands
-       on a handle runs on that handle's shadow (`.insert(0, y).slice!(0)`) */
+       on a handle runs on that handle's shadow (`.insert(0, y).slice!(0)`);
+       one already read off the held handle takes the reader shim below */
     if (nmS && recvS >= 0 && is_string_position_mutator(nmS) && repr_of(c, recvS).as_ty != TY_STRBUF &&
-        sb_route_expr_shim(c, id, recvS, b, emit_array_call)) return 1;
+        ran_first_read_handle(recvS) < 0 && sb_route_expr_shim(c, id, recvS, b, emit_array_call)) return 1;
     if (nmS && recvS >= 0 && comp_ntype(c, recvS) == TY_STRING &&
         (is_string_position_mutator(nmS))) {
       if (sb_iv_expr_shim(c, id, recvS, b, emit_array_call)) return 1;
+      /* (--share-strings: a value route whose handle ran first, `(+s)`) */
+      if (repr_share_rule(c) && nt_kind(ntS, recvS) == NK_CallNode && ran_first_read_handle(recvS) >= 0 &&
+          sb_reader_expr_shim(c, id, recvS, b, emit_array_call)) return 1;
       /* a global holding the handle (--share-strings) */
       if (repr_static_read_kind(nt_kind(ntS, recvS)) &&
           sb_reader_expr_shim(c, id, recvS, b, emit_array_call)) return 1;
@@ -9763,6 +9770,9 @@ static int emit_scalar_call_arms(Compiler *c, int id, Buf *b) {
     if (nmS && recvS >= 0 && comp_ntype(c, recvS) == TY_STRING &&
         sp_streq(nmS, "setbyte")) {
       if (sb_iv_expr_shim(c, id, recvS, b, emit_scalar_call)) return 1;
+      /* (--share-strings: a value route whose handle ran first, `(+s)`) */
+      if (repr_share_rule(c) && nt_kind(ntS, recvS) == NK_CallNode && ran_first_read_handle(recvS) >= 0 &&
+          sb_reader_expr_shim(c, id, recvS, b, emit_scalar_call)) return 1;
       if (repr_static_read_kind(nt_kind(ntS, recvS)) &&
           sb_reader_expr_shim(c, id, recvS, b, emit_scalar_call)) return 1;
       const char *sbn = strbuf_local_name(c, recvS);

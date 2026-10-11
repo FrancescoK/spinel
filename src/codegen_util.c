@@ -3175,7 +3175,10 @@ int sb_reader_shim_open(Compiler *c, int recv, char *sref, size_t cap, SbReaderS
   int gv = repr_share_rule(c) && recv >= 0 && repr_static_read_kind(nt_kind(c->nt, recv)) && !sb_shadowed_reader(recv);
   if (recv < 0 || (nt_kind(c->nt, recv) != NK_CallNode && !gv)) return 0;
   Repr rp = repr_of(c, recv);
-  if (!gv && !rp.handle && !rp.demand) return 0;
+  /* (--share-strings: or a value route whose handle ran first, `(+s)`
+     under emit_bang_self_handle, whose temp strbuf_slot_ref answers) */
+  int ran = repr_share_rule(c) && nt_kind(c->nt, recv) == NK_CallNode && ran_first_read_handle(recv) >= 0;
+  if (!gv && !rp.handle && !rp.demand && !ran) return 0;
   if (g_n_argov >= MAX_ARG_OVERRIDE) return 0;
   if (!strbuf_slot_ref(c, recv, sref, cap)) return 0;
   int tH = ++g_tmp;
@@ -3388,6 +3391,13 @@ int strbuf_slot_ref(Compiler *c, int recv, char *out, size_t cap) {
     return 1;
   }
   if (native_share_answer_ref(c, recv, out, cap)) return 1;
+  /* (--share-strings: a value route over a handle, `(+s)`, whose handle
+     already ran into a temp (emit_bang_self_handle): that temp holds it,
+     as a variable's slot does) */
+  if (repr_share_rule(c) && recv >= 0 && nt_kind(c->nt, recv) == NK_CallNode && ran_first_read_handle(recv) >= 0) {
+    snprintf(out, cap, "_t%d", ran_first_read_handle(recv));
+    return 1;
+  }
   /* via emit_local_ref: a celled/captured local derefs its cell */
   if (strbuf_local_name(c, recv) && holder_of_node(c, recv, &h)) return holder_slot_text(c, &h, out, cap);
   /* a demand-marked reader call typed as the handle (external reader
