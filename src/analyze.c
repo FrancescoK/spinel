@@ -6774,9 +6774,31 @@ static int is_array_enum_method(const char *nm) {
      (the each.with_index chain machinery keys on the `each` shape)
    - enum_recv.each.with_object(x) { }  ->  enum_recv.each_with_object(x) { }
    Both rewrites produce constructs the existing emitters already serve. */
+/* --share-strings: is the blockless call id an Enumerator kept past the
+   expression it is made in (no call's receiver: held, handed on or
+   answered)? `s.each_char.with_index` kept so stays an Enumerator over
+   each_char's, which holds a String the rule shares and reads it when it is
+   walked (sp_enum_str_each_h); `chars` would read it here. */
+static int enum_chain_kept(const NodeTable *nt, int **par, int id) {
+  if (nt_ref(nt, id, "block") >= 0) return 0;
+  /* (the parent map, made at the first such call of the pass) */
+  if (!*par && !(*par = an_parent_map(nt))) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  int p = (*par)[id];
+  while (p >= 0 && nt_kind(nt, p) == NK_ParenthesesNode) p = (*par)[p];
+  if (p >= 0 && nt_kind(nt, p) == NK_StatementsNode) {
+    /* a parenthesized sequence ending in id */
+    int q = (*par)[p];
+    int bn = 0; const int *bb = nt_arr(nt, p, "body", &bn);
+    if (q >= 0 && nt_kind(nt, q) == NK_ParenthesesNode && bn > 0 && bb[bn - 1] == id) {
+      for (p = (*par)[q]; p >= 0 && nt_kind(nt, p) == NK_ParenthesesNode; p = (*par)[p]) {}
+    }
+  }
+  return !(p >= 0 && nt_kind(nt, p) == NK_CallNode && an_unparen(nt, nt_ref(nt, p, "receiver")) == id);
+}
 static void desugar_enum_chain_shapes(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count;
+  int *kept_par = NULL;   /* enum_chain_kept's parent map */
   /* A string-bounded range literal bound to a variable (`cr = ('a'..'e')`)
      has no sp_Range representation (int bounds only): materialize it into a
      string array at the assignment, like the literal-receiver interpose
@@ -7188,7 +7210,8 @@ static void desugar_enum_chain_shapes(Compiler *c) {
        boxed value met an sp_int parameter and the build failed (#3939). */
     if (sp_streq(nm, "with_index") && nt_ref(nt, recv, "arguments") < 0 &&
         (sp_streq(rn, "each_char") || sp_streq(rn, "each_line") || sp_streq(rn, "each_byte") ||
-         sp_streq(rn, "each_codepoint"))) {
+         sp_streq(rn, "each_codepoint")) &&
+        !(c->share_strings && enum_chain_kept(nt, &kept_par, id))) {
       nt_node_set_str(nt, recv, "name",
                       sp_streq(rn, "each_char") ? "chars" :
                       sp_streq(rn, "each_line") ? "lines" :
@@ -7264,6 +7287,7 @@ static void desugar_enum_chain_shapes(Compiler *c) {
       nt_node_set_ref(nt, id, "receiver", inner);
     }
   }
+  free(kept_par);
 }
 
 /* How many positional arguments the program passes a `method(:sym)` value
