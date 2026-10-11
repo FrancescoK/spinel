@@ -2228,6 +2228,13 @@ TyKind method_call_ret(Compiler *c, int mi, int call_id) {
       }
     }
   }
+  /* a pinned `return enum_for(:m) unless block_given?` method called with
+     a block of its own answers its `self` tail (Scope.ret_withblock) */
+  if (c->scopes[mi].ret_withblock != TY_UNKNOWN) {
+    int blk = nt_ref(c->nt, call_id, "block");
+    if (blk >= 0 && nt_kind(c->nt, blk) == NK_BlockNode && !nt_int(c->nt, blk, "fwd_yield", 0))
+      return c->scopes[mi].ret_withblock;
+  }
   /* `return x unless block_given?`: a blockless call site reads the value
      of that return, one with a block the value of the body proper */
   if (c->scopes[mi].yields && c->scopes[mi].ret_noblock != TY_UNKNOWN) {

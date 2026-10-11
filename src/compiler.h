@@ -411,6 +411,11 @@ typedef struct {
                           (which the inliner specializes, folding the guard
                           away) reads the value of the body proper. UNKNOWN
                           when the method has no such guard. */
+  TyKind ret_withblock; /* a method whose `ret` was pinned to the Enumerator
+                          its `return enum_for(:m) unless block_given?`
+                          answers, and whose body ends in `self`: the value
+                          of a call WITH a block, the receiver's class.
+                          UNKNOWN otherwise. */
   int is_ext_entry;    /* designated --ext-entry: emitted non-static, a DCE
                           root, declared in the emitted extension header (#M1
                           of docs/internals/ext-design.md) */
