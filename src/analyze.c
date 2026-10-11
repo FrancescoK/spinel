@@ -2046,13 +2046,14 @@ void mark_ie_subtree(Compiler *c, int node, int cls) {
 }
 
 /* `ENV` is compile-time modeled only as a call RECEIVER (`ENV[...]`,
-   `ENV.fetch`, ...). Flowing it as a VALUE -- an argument, a parameter
-   default, an assignment -- would smuggle a class-typed value into
-   hash-typed uses and mis-emit C. Reject loudly with the read-at-the-
-   use-site convention instead. defined?(ENV) evaluates nothing and is
-   exempt. */
-static void reject_env_value_uses(Compiler *c) {
-  const NodeTable *nt = c->nt;
+   `ENV.fetch`, ...). Flowing as a VALUE -- an argument, a parameter
+   default, an assignment, a Hash value (`params["e"] = ENV`) -- it is the
+   environment's StrStr-hash snapshot taken where ENV is read, the same
+   value the enumeration surface and ENV.update answer (#2742): reads see
+   the variables set at that point, and writing through it leaves the
+   environment alone. defined?(ENV) evaluates nothing and is exempt. */
+static void desugar_env_values(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
   char *ok = calloc((size_t)nt->count, 1);
   if (!ok) { perror("calloc"); exit(1); }
   NT_FOREACH_KIND(nt, NK_CallNode, id) {
@@ -2074,18 +2075,17 @@ static void reject_env_value_uses(Compiler *c) {
     if (r >= 0 && nt_ref(nt, id, "block") < 0 && ak != NK_SplatNode && ak != NK_BlockArgumentNode &&
         ak != NK_KeywordHashNode) ok[r] = 1;
   }
-  NT_FOREACH_KIND(nt, NK_ConstantReadNode, id) {
+  /* a program that assigns its own ENV constant reads that one */
+  int n0 = comp_const(c, "ENV") ? 0 : nt->count;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_ConstantReadNode || ok[id]) continue;
     const char *nm = nt_str(nt, id, "name");
-    if (!nm || !sp_streq(nm, "ENV") || ok[id]) continue;
-    int ln  = (int)nt_int(nt, id, "node_line", 0);
-    int fid = (int)nt_int(nt, id, "node_file", 0);
-    const char *file = nt_file_path(nt, fid);
-    if (!file || !*file) file = nt->source_file;
-    fprintf(stderr, "spinel: %s:%d: `ENV` cannot flow as a value (it is "
-                    "compile-time modeled as a call receiver only); read "
-                    "ENV[\"KEY\"] at the use site and pass the string\n",
-            file ? file : "source.rb", ln);
-    exit(1);
+    if (!nm || !sp_streq(nm, "ENV")) continue;
+    nt_node_set_type(nt, id, "CallNode");
+    nt_node_set_str(nt, id, "name", "__env_to_h");
+    nt_node_set_ref(nt, id, "receiver", -1);
+    nt_node_set_ref(nt, id, "arguments", -1);
+    nt_node_set_ref(nt, id, "block", -1);
   }
   free(ok);
 }
@@ -39262,7 +39262,7 @@ static void an_phase_desugar_register(Compiler *c) {
   register_undefs(c);
   register_globals_consts(c);
   rewrite_const_alias_receivers(c);
-  reject_env_value_uses(c);
+  desugar_env_values(c);
   register_ffi_decls(c);
   an_const_presence(c);
 }
