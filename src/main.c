@@ -1306,13 +1306,22 @@ int main(int argc, char **argv) {
      sp_format.o pulls in sqrt/sin/cos, so libm must follow libspinel_rt.a. */
   s_add(&cmd, "-lm ");
   bi_put(&bi, "lib", "-lm");
+#if defined(__OpenBSD__)
+  /* OpenBSD's backtrace(3), which the runtime archive calls, is
+     libexecinfo's rather than libc's */
+  if (!target_wasi) {
+    s_add(&cmd, "-lexecinfo ");
+    bi_put(&bi, "lib", "-lexecinfo");
+  }
+#endif
   if (target_wasi) {
     /* the emulations the defines above asked for, and sjlj's runtime */
     static const char *const wlibs[] = { "-lsetjmp", "-lwasi-emulated-signal", "-lwasi-emulated-process-clocks", "-lwasi-emulated-getpid", "-lwasi-emulated-mman" };
     for (size_t wi = 0; wi < sizeof wlibs / sizeof wlibs[0]; wi++) { s_add(&cmd, wlibs[wi]); s_add(&cmd, " "); bi_put(&bi, "lib", wlibs[wi]); }
   }
-#if !defined(__APPLE__)
-  /* String#crypt = libc crypt(3), linked only when the program calls it:
+#if !defined(__APPLE__) && !defined(__OpenBSD__)
+  /* String#crypt = libc crypt(3), linked only when the program calls it
+     (Darwin's and OpenBSD's libc have it, with no libcrypt):
      a linker without a default --as-needed (Fedora's) otherwise made
      libcrypt a dependency of every binary (#6674) */
   else if (uses_crypt) {
