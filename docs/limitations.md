@@ -111,7 +111,7 @@ The require-gated stdlib Spinel *does* provide (`StringIO`, `IO#winsize`,
 `require` is a compile error. This is opt-in today via `--require-gate` (or
 `SPINEL_REQUIRE_GATE=1`); `spin build` always compiles with it on.
 See [require.md](require.md) for which stdlib needs which `require`.
-| Mixed / non-UTF-8 encodings | UTF-8 / ASCII-8BIT only | one internal representation; transcoding tables are out of scope |
+| Mixed / non-UTF-8 encodings | UTF-8 / ASCII-8BIT only. `IO#set_encoding` picks between the two (US-ASCII counts as UTF-8) for what a read with no length and `getc` answer; a third encoding, an internal encoding that would convert reads, or `BOM\|` raises `NotImplementedError` at run time, and options (`invalid: :replace`, ...) are refused | one internal representation; transcoding tables are out of scope |
 | Embedded `NUL` in general binary strings | `char *` boundary assumption | most string ops are NUL-terminated at the C boundary |
 
 `send`/`public_send`/`__send__` with a **non-literal** name (`send(meth)`) is

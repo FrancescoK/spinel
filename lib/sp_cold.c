@@ -2077,11 +2077,11 @@ const char *sp_File_getc(sp_File *f) {SP_GC_ROOT(f);
   sp_io_wait_readable(f);
   int ch = fgetc(f->fp);
   if (ch == EOF) return NULL;
-  /* A binary handle (a socket, a File opened "rb", one put in binmode) has
-     one-byte characters: reading on after a byte that looks like a UTF-8
+  /* A binary handle (a socket, a File opened "rb", one put in binmode or
+     given ASCII-8BIT by set_encoding) has one-byte characters: reading on after a byte that looks like a UTF-8
      lead took the next bytes with it, and on a socket waited for bytes the
      peer had not sent (#7312). */
-  int bin = sp_File_binmode_p(f);
+  int bin = sp_File_reads_binary(f);
   int extra = bin ? 0 : ((ch & 0xE0) == 0xC0) ? 1 : ((ch & 0xF0) == 0xE0) ? 2 : ((ch & 0xF8) == 0xF0) ? 3 : 0;
   char *r = sp_str_alloc((size_t)(1 + extra));
   size_t n = 0;
@@ -4217,6 +4217,61 @@ int sp_force_encoding_mode(sp_RbVal enc) {
   if (!strcmp(n, "ASCII-8BIT")) return 1;
   if (!strcmp(n, "UTF-8") || !strcmp(n, "US-ASCII")) return 0;
   return -1;
+}
+/* The encoding a set_encoding argument names, of the two a String can
+   have: 1 UTF-8 (US-ASCII is UTF-8 here, and so is nil, the default
+   external), 2 ASCII-8BIT, -1 another encoding, -2 a "BOM|" one, 0 a name
+   no encoding has. `*nm` is the name. */
+static int sp_io_enc_side(sp_RbVal v, const char *s, const char **nm) {
+  const char *n = NULL;
+  if (s) {
+    if (!strncasecmp(s, "BOM|", 4)) { *nm = s; return -2; }
+    if (!strcasecmp(s, "external") || !strcasecmp(s, "locale") || !strcasecmp(s, "filesystem")) n = "UTF-8";
+    for (int i = 0; !n && sp_encoding_names[i][0]; i++)
+      if (!strcasecmp(s, sp_encoding_names[i][0])) n = sp_encoding_names[i][1];
+    if (!n) { *nm = s; return 0; }
+  }
+  else if (v.tag == SP_TAG_NIL) n = "UTF-8";
+  else if (v.tag == SP_TAG_STR) return sp_io_enc_side(v, v.v.s, nm);
+  else n = sp_encoding_find(v).v.s;   /* an Encoding, or CRuby's TypeError */
+  *nm = n;
+  if (!strcmp(n, "ASCII-8BIT")) return 2;
+  return !strcmp(n, "UTF-8") || !strcmp(n, "US-ASCII") ? 1 : -1;
+}
+/* IO#set_encoding(ext [, int]), or "ext:int". The external encoding is the
+   one a read with no length and getc answer (sp_File_reads_binary); a write
+   puts out the String's bytes as they are, which is CRuby's write too
+   unless the encoding is a third one. So UTF-8, US-ASCII and ASCII-8BIT
+   work, and an internal encoding that asks for no conversion: nil, the
+   external one, or any under ASCII-8BIT, which CRuby ignores. A third
+   encoding, a conversion or a "BOM|" one is NotImplementedError: spinel has
+   no third encoding to tag a read with or to transcode a write into, and
+   does not strip a byte order mark. A name no encoding has is CRuby's
+   warning, and that encoding is left as it was. */
+sp_File *sp_File_set_encoding(sp_File *f, sp_RbVal ext, sp_RbVal in) {
+  SP_GC_ROOT(f); SP_GC_ROOT_RBVAL(ext); SP_GC_ROOT_RBVAL(in);
+  SP_IO_OPEN(f);
+  char eb[64];
+  const char *es = NULL, *is = NULL, *en, *inn;
+  if (ext.tag == SP_TAG_STR && in.tag == SP_TAG_NIL && strchr(ext.v.s, ':')) {
+    const char *colon = strchr(ext.v.s, ':');
+    snprintf(eb, sizeof eb, "%.*s", (int)(colon - ext.v.s), ext.v.s);
+    es = eb; is = colon + 1;
+  }
+  int e = sp_io_enc_side(ext, es, &en);
+  if (e == 0) { fprintf(stderr, "warning: Unsupported encoding %s ignored\n", en); return f; }
+  if (e == -2)
+    sp_raise_cls("NotImplementedError", sp_sprintf("IO#set_encoding to %s: spinel does not strip a byte order mark", en));
+  if (e < 0)
+    sp_raise_cls("NotImplementedError", sp_sprintf("IO#set_encoding to %s: spinel's Strings are UTF-8 or ASCII-8BIT", en));
+  if (is || in.tag != SP_TAG_NIL) {
+    int i = sp_io_enc_side(in, is, &inn);
+    if (i == 0) fprintf(stderr, "warning: Unsupported encoding %s ignored\n", inn);
+    else if (e != 2 && strcmp(inn, en))
+      sp_raise_cls("NotImplementedError", sp_sprintf("IO#set_encoding converting reads from %s to %s: spinel does not transcode", en, inn));
+  }
+  f->ext_enc = (unsigned char)e;
+  return f;
 }
 sp_RbVal sp_box_nullable_str(const char *v) { return v ? sp_box_str(v) : sp_box_nil(); }
 /* An opaque foreign/FFI pointer: boxed with SP_BUILTIN_FOREIGN_PTR so the

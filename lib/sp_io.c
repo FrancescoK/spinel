@@ -1612,7 +1612,9 @@ sp_bool sp_File_binmode_p(sp_File *f) {
   if (f->bin_flag || f->is_sock) return 1;
   return f->mode && strchr(f->mode, 'b') != NULL;
 }
-void sp_File_set_binmode(sp_File *f) { SP_IO_OPEN(f); f->bin_flag = 1; }
+/* binmode makes the external encoding ASCII-8BIT again, whatever an earlier
+   #set_encoding chose */
+void sp_File_set_binmode(sp_File *f) { SP_IO_OPEN(f); f->bin_flag = 1; f->ext_enc = 0; }
 /* The handle flags codegen used to read straight off the struct (#2792,
    #3131): a closed handle answers IOError for them as for everything else.
    #sync= keeps the flush a truthy value implies (#4229). */

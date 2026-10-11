@@ -1288,6 +1288,7 @@ sp_RbVal sp_File_putc(sp_File *f, sp_RbVal v);
 /* IO.copy_stream(src_path, dst_path): defined out-of-line in sp_cold.c. */
 sp_int sp_io_copy_stream(const char *src, const char *dst);
 const char *sp_slurp_stream(FILE *fp);
+sp_File *sp_File_set_encoding(sp_File *f, sp_RbVal ext, sp_RbVal in);
 static inline const char *sp_File_read(sp_File *f) {
   SP_IO_OPEN(f);
   sp_io_wait_readable(f);
@@ -1299,7 +1300,7 @@ static inline const char *sp_File_read(sp_File *f) {
      This is the one read whose answer depends on the mode -- read(n), pread
      and readpartial are BINARY whatever the handle was opened as. */
   const char *r = (f->park == 2) ? sp_slurp_stream_parked(f) : sp_slurp_stream(f->fp);
-  if (r && sp_File_binmode_p(f)) sp_str_mark_binary((char *)r);
+  if (r && sp_File_reads_binary(f)) sp_str_mark_binary((char *)r);
   return r;
 }
 /* IO#read(n): read up to n bytes from the current position. Returns NULL

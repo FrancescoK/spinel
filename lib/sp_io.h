@@ -16,6 +16,9 @@
 typedef struct {
   FILE *fp; const char *path; const char *mode; sp_int lineno;
   unsigned char bin_flag;      /* #binmode was called (#3131) */
+  unsigned char ext_enc;       /* #set_encoding chose the encoding a read with
+                                  no length answers: 1 UTF-8, 2 ASCII-8BIT;
+                                  0, the handle's binmode decides */
   unsigned char no_autoclose;  /* #autoclose = false (#3131) */
   unsigned char is_sock;       /* a socket handle: writes bypass stdio (#2922) */
   unsigned char rev_lookup;    /* a socket's #do_not_reverse_lookup is false:
@@ -187,6 +190,10 @@ sp_int sp_File_readbyte(sp_File *f);
 void sp_File_ungetbyte(sp_File *f, sp_int byte);
 sp_bool sp_File_binmode_p(sp_File *f);
 void sp_File_set_binmode(sp_File *f);
+/* Does a read with no length (and getc) answer ASCII-8BIT? */
+static inline sp_bool sp_File_reads_binary(sp_File *f) {
+  return f->ext_enc ? f->ext_enc == 2 : sp_File_binmode_p(f);
+}
 sp_File *sp_File_reopen_io(sp_File *f, sp_File *other);
 sp_bool sp_File_close_on_exec_p(sp_File *f);
 void sp_File_set_close_on_exec(sp_File *f, sp_bool on);
