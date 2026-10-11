@@ -14740,6 +14740,14 @@ static int emit_poly_index_call(Compiler *c, int id, Buf *b, const NodeTable *nt
         if (vk != NK_LocalVariableReadNode && vk != NK_InstanceVariableReadNode && !repr_static_read_kind(vk))
           buf_printf(b, " SP_GC_ROOT(_t%d);", tval);
       }
+      /* --share-strings: a boxed value the rule shares (`r.a += "x"`, whose
+         value is a new String a variable keeps too) is lifted to its handle
+         once, so each writer stores and the call answers that one String */
+      else if (at == TY_POLY && repr_share_rule(c) && share_node_shares(c, argv[0])) {
+        buf_printf(b, "sp_RbVal _t%d = sp_poly_strbuf_lift(", tval);
+        emit_one_arg(c, argv[0], 0, b);
+        buf_puts(b, ");");
+      }
       else if (hs) {
         buf_printf(b, "sp_String *_t%d = ", tval);
         emit_strbuf_handle_of(c, argv[0], b);

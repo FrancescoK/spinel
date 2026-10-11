@@ -6956,6 +6956,10 @@ static int emit_poly_builtin_default_at(Compiler *c, int id, int recv, const cha
      any other value the answer the program would give without the override */
   if (bt == TY_UNKNOWN && argc >= 1 && argc <= 2 && sp_streq(name, "respond_to?")) bt = TY_BOOL;
   if (bt == TY_UNKNOWN) bt = an_builtin_answer(c, id);
+  /* a writer's arm run for its effect (tr < 0), whose value is its
+     argument's temp: the synthesized writers take the argument as it is,
+     whatever the analysis recorded for an answer nothing reads */
+  if (bt == TY_UNKNOWN && tr < 0 && argc == 1 && call_is_setter_assign(nt, id)) bt = atmp_ty[0];
   if (bt == TY_UNKNOWN) return 0;
   /* (--share-strings: an arm run for its effect, a setter's whose value is
      its argument's temp (tr < 0), answers into no slot of the call's type:
@@ -8640,7 +8644,14 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
             htmp[a] = ++g_tmp;
             emit_poly_route_arg(c, argv[a], at, htmp[a], atmp[a], ran, b);
           }
-          else atmp[a] = emit_poly_arg_temp(c, argv[a], at, repr_share_rule(c) && ar.narrowed == TY_STRBUF, atmp[a], ran, b);
+          else {
+            atmp[a] = emit_poly_arg_temp(c, argv[a], at, repr_share_rule(c) && ar.narrowed == TY_STRBUF, atmp[a], ran, b);
+            /* --share-strings: a setter's boxed value the rule shares is
+               lifted to its handle once, so each arm stores and the call
+               answers that one String (emit_poly_index_call's rule) */
+            if (is_setter_val && a == 0 && at == TY_POLY && repr_share_rule(c) && share_node_shares(c, argv[0]))
+              buf_printf(b, "_t%d = sp_poly_strbuf_lift(_t%d); ", atmp[a], atmp[a]);
+          }
         }
         ran |= subtree_has_side_effect(c, argv[a]);
         /* The temp holds the argument until an arm hands it on: past the

@@ -15471,6 +15471,11 @@ static int emit_call_stmt(Compiler *c, int id, Buf *b, int indent, const NodeTab
             else if (hs) {
               buf_printf(b, "sp_String *_t%d = ", tval); emit_strbuf_handle_of(c, argv[0], b); buf_puts(b, ";");
             }
+            /* (and a boxed value the rule shares is lifted to its handle
+               once, as the value form's is) */
+            else if (at == TY_POLY && repr_share_rule(c) && share_node_shares(c, argv[0])) {
+              buf_printf(b, "sp_RbVal _t%d = sp_poly_strbuf_lift(", tval); emit_expr(c, argv[0], b); buf_puts(b, ");");
+            }
             else {
               emit_ctype(c, at, b); buf_printf(b, " _t%d = ", tval); emit_expr(c, argv[0], b); buf_puts(b, ";");
             }
