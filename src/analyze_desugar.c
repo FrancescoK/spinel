@@ -6691,6 +6691,16 @@ int desugar_errno_aliases(Compiler *c) {
     const char *leaf = nt_str(nt, id, "name");
     if (par < 0 || !leaf || nt_kind(nt, par) != NK_ConstantReadNode) continue;
     const char *pn = nt_str(nt, par, "name");
+    /* IO::EWOULDBLOCKWaitReadable / Writable are IO::EAGAINWait* where
+       Errno::EWOULDBLOCK is Errno::EAGAIN: CRuby defines them from the
+       errno classes, so the pair folds with them */
+    if (pn && sp_streq(pn, "IO") &&
+        (sp_streq(leaf, "EWOULDBLOCKWaitReadable") || sp_streq(leaf, "EWOULDBLOCKWaitWritable"))) {
+      if (strcmp(errno_canonical_name("Errno::EWOULDBLOCK"), "Errno::EAGAIN") != 0) continue;
+      nt_node_set_str(nt, id, "name", sp_streq(leaf, "EWOULDBLOCKWaitReadable") ? "EAGAINWaitReadable" : "EAGAINWaitWritable");
+      changed = 1;
+      continue;
+    }
     if (!pn || !sp_streq(pn, "Errno")) continue;
     char q[96];
     snprintf(q, sizeof q, "Errno::%s", leaf);
