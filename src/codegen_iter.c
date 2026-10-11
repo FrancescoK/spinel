@@ -7431,7 +7431,9 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
   if (sp_streq(name, "step") && rt == TY_STR_RANGE) {
     int args = nt_ref(nt, id, "arguments"); int sargc = 0;
     const int *sargv = args >= 0 ? nt_arr(nt, args, "arguments", &sargc) : NULL;
-    if (sargc > 1 || (sargc == 1 && comp_ntype(c, sargv[0]) != TY_INT)) return 0;
+    /* a boxed stride (every Integer under --int-overflow=promote) is read as
+       the Integer it holds, as the walk's other strides are */
+    if (sargc > 1 || (sargc == 1 && comp_ntype(c, sargv[0]) != TY_INT && comp_ntype(c, sargv[0]) != TY_POLY)) return 0;
     /* promote's boxed Integer receiver reaches here as the face's String
        Range arm, its block param still the sp_int the widen skipped */
     if (g_promote_mode && p0) {
