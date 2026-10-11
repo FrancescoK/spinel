@@ -24571,6 +24571,15 @@ int emit_implicit_self_member(Compiler *c, int id, Buf *b) {
                  tv, g_self, g_self_deref, iv_c(rn), tv);
       rty = TY_STRING;
     }
+    else if (oint_kind(rty) && ivi >= 0 && ivar_has_nilbit(c, dispatch_cid, ivi) && node_is_oint(c, id)) {
+      /* an Integer field with a nil bit, read where its oint is wanted (an
+         operand of the class's own arithmetic, #8570): the value and the
+         bit together, as `@x` and `self.x` read it */
+      char pfx[64], bt[320];
+      snprintf(pfx, sizeof pfx, "%s%s", g_self, g_self_deref);
+      ivar_nilbit_test(c, dispatch_cid, ivi, pfx, bt, sizeof bt);
+      buf_printf(&rb, "((%s){ %s%siv_%s, %s != 0 })", oint_ctype(rty), g_self, g_self_deref, iv_c(rn), bt);
+    }
     else buf_printf(&rb, "%s%siv_%s", g_self, g_self_deref, iv_c(rn));
     /* a def in a subclass overrides the reader for that subclass */
     if (!(rty != TY_UNKNOWN && sp_streq(g_self_deref, "->") &&
