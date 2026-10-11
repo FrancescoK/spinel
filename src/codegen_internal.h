@@ -2082,6 +2082,9 @@ int emit_hash_new_capacity_wrap(Compiler *c, int id, Buf *b, int boxed);
 void emit_hash_new_capacity_check(Compiler *c, int cap, Buf *b);
 extern int g_hash_cap_inner;
 int emit_blockless_enumerator(Compiler *c, int id, Buf *b);
+int str_each_recv_shares(Compiler *c, int recv);
+int str_each_enum_keeps(Compiler *c, int id);   /* --share-strings: a String iterator's Enumerator holds the handle */
+int str_enum_h_made(Compiler *c);                   /* ...does the program make one anywhere */
 int emit_unresolved_call(Compiler *c, int id, Buf *b);
 int emit_array_call(Compiler *c, int id, Buf *b);
 int emit_array_splat_mutator(Compiler *c, int id, Buf *b);

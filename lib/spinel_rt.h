@@ -17874,7 +17874,8 @@ static sp_Enumerator *sp_Enumerator_new_ewi(sp_RbVal arr, sp_int off) {
      pulled */
   if (arr.tag == SP_TAG_OBJ && arr.v.p &&
       ((arr.cls_id == SP_BUILTIN_ENUMERATOR &&
-        (((sp_Enumerator *)arr.v.p)->gen || ((sp_Enumerator *)arr.v.p)->endless)) ||
+        (((sp_Enumerator *)arr.v.p)->gen || ((sp_Enumerator *)arr.v.p)->endless ||
+         sp_enum_live((sp_Enumerator *)arr.v.p))) ||
        (arr.cls_id == SP_BUILTIN_RANGE && ((sp_Range *)arr.v.p)->noend))) {
     sp_Enumerator *src = arr.cls_id == SP_BUILTIN_ENUMERATOR ? (sp_Enumerator *)arr.v.p
                                                              : sp_Enumerator_new_from(arr);
@@ -18009,7 +18010,8 @@ static sp_Enumerator *sp_poly_cycle(sp_RbVal v) {
   /* a generator or endless Enumerator is cycled as it is pulled: draining
      it first never returns for an endless one */
   if (v.cls_id == SP_BUILTIN_ENUMERATOR &&
-      (((sp_Enumerator *)v.v.p)->gen || ((sp_Enumerator *)v.v.p)->endless)) {
+      (((sp_Enumerator *)v.v.p)->gen || ((sp_Enumerator *)v.v.p)->endless ||
+       sp_enum_live((sp_Enumerator *)v.v.p))) {
     sp_Enumerator *g = sp_Enumerator_cycle_gen((sp_Enumerator *)v.v.p);
     g->meth = SPL("cycle");
     return g;
@@ -18161,6 +18163,8 @@ sp_Enumerator *sp_Enumerator_regroup_gen(sp_Enumerator *e, sp_int n, sp_bool con
 static sp_Enumerator *sp_Enumerator_regroup(sp_Enumerator *e, sp_int n, sp_bool cons) SP_UNUSED;
 static sp_Enumerator *sp_Enumerator_regroup(sp_Enumerator *e, sp_int n, sp_bool cons) {
   if (n < 1) sp_raise_cls("ArgumentError", cons ? "invalid size" : "invalid slice size");
+  /* (one over a String handle groups its items again at each walk) */
+  if (sp_enum_live(e)) return sp_enum_derive(e, cons ? SP_ENUM_DER_CONS : SP_ENUM_DER_SLICES, n);
   if (e && (e->gen || e->endless)) return sp_Enumerator_regroup_gen(e, n, cons);
   SP_GC_ROOT(e);
   sp_RbVal a = sp_box_poly_array(sp_Enumerator_to_a(e));
@@ -18182,7 +18186,7 @@ static sp_Enumerator *sp_poly_regroup(sp_RbVal v, sp_int n, sp_bool cons) {
 }
 static sp_Enumerator *sp_Enumerator_ewi(sp_Enumerator *e) SP_UNUSED;
 static sp_Enumerator *sp_Enumerator_ewi(sp_Enumerator *e) {
-  if (e && (e->gen || e->endless)) {
+  if (e && (e->gen || e->endless || sp_enum_live(e))) {
     sp_Enumerator *r = sp_Enumerator_with_index(e, 0);
     r->meth = SPL("each_with_index");
     return r;
@@ -18228,6 +18232,26 @@ static sp_Enumerator *sp_srange_regroup(sp_RbVal box, sp_int n, sp_bool cons) {
 /* sp_str_chars_poly: moved to lib/sp_cold.c */
 sp_PolyArray *sp_str_chars_poly(const char *s);
 sp_Enumerator *sp_Enumerator_new_gen(void (*gen)(sp_Fiber *), void *cap, sp_RbVal size);
+/* --share-strings: a blockless each_char / each_line / each_byte /
+   each_codepoint over a shared String's handle, read as it is walked
+   (lib/sp_cold.c) */
+sp_Enumerator *sp_enum_str_each_h(sp_String *h, const char *meth);
+/* A blockless each_char / each_line / each_byte / each_codepoint on a boxed
+   receiver: CRuby's Enumerator, as on a typed String. A box of a shared
+   String's handle (--share-strings) gives the Enumerator over that handle,
+   read as it is walked; a plain String's is made from its bytes. */
+static sp_Enumerator *sp_poly_str_each_enum(sp_RbVal v, const char *meth) {
+  SP_GC_ROOT_RBVAL(v);
+  if (sp_poly_is_strbuf(v) && v.v.p) return sp_enum_str_each_h((sp_String *)v.v.p, meth);
+  const char *s = sp_poly_recv_s(v, meth);
+  SP_GC_ROOT_STR(s);
+  int kind = strcmp(meth, "each_char") == 0 ? SP_ENUM_STR_CHAR : strcmp(meth, "each_line") == 0 ? SP_ENUM_STR_LINE
+           : strcmp(meth, "each_byte") == 0 ? SP_ENUM_STR_BYTE : SP_ENUM_STR_CODEPOINT;
+  sp_Enumerator *e = kind == SP_ENUM_STR_CHAR ? sp_Enumerator_new_from_items(sp_str_chars_poly(s))
+                   : kind == SP_ENUM_STR_LINE ? sp_Enumerator_new_from_items(sp_str_lines_poly(s))
+                   : sp_Enumerator_new_from(sp_box_int_array(kind == SP_ENUM_STR_BYTE ? sp_str_bytes(s) : sp_str_codepoints(s)));
+  return sp_enum_with_src(e, sp_box_str(s), meth);
+}
 
 /* Enumerator#inspect: the CRuby "#<Enumerator: <source>:<method>>" for a
    materialized enumerator with a known source; a generator has no printable
@@ -18374,6 +18398,8 @@ static sp_PolyArray *sp_enum_to_a_boxed(sp_RbVal v) {
 static sp_Enumerator *sp_enum_fresh_run(sp_Enumerator *e) SP_UNUSED;
 static sp_Enumerator *sp_enum_fresh_run(sp_Enumerator *e) {
   if (!e) return e;
+  /* (a live one's run is a walk copy, laid out from its String now) */
+  if (SP_UNLIKELY(e->live)) return sp_enum_walk_copy(e);
   sp_Enumerator *w = sp_Enumerator_dup(e);
   w->fib = NULL; w->cursor = 0; w->peeked = FALSE; w->has_feed = FALSE;
   w->walk_buf = NULL; w->walk_next = 0; w->walk_done = FALSE;
@@ -18386,6 +18412,8 @@ static sp_Enumerator *sp_enum_fresh_run(sp_Enumerator *e) {
    source, which is walked as its items. */
 static SP_COLD SP_NOINLINE sp_RbVal sp_enum_walker_boxed(sp_RbVal v) {
   sp_Enumerator *e = (sp_Enumerator *)v.v.p;
+  /* (a live one's walk reads a copy of its own: sp_enum_walk) */
+  if (sp_enum_live(e)) return sp_box_obj(sp_enum_walk_copy(e), SP_BUILTIN_ENUMERATOR);
   if (!e->gen && !e->endless) return sp_box_nil();
   sp_Enumerator *w = sp_enum_fresh_run(e);
   SP_GC_ROOT(w);
@@ -18457,6 +18485,8 @@ static sp_oint sp_enum_find_index_val(sp_RbVal recv, sp_RbVal x) {
     }
     return sp_oint_nil();
   }
+  e = sp_enum_walk(e);
+  SP_GC_ROOT(e);
   for (sp_int i = 0; e->items && i < e->items->len; i++)
     if (sp_poly_rb_equal(e->items->data[i], x)) return sp_oint_of(i);
   return sp_oint_nil();

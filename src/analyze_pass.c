@@ -11617,6 +11617,7 @@ int desugar_dir_surface(Compiler *c) {
         int toa2 = nt_new_node(nt, "CallNode");
         if (toa2 >= 0) {
           nt_node_set_str(nt, toa2, "name", "to_a");
+          nt_node_set_int(nt, toa2, "made_to_a", 1);
           nt_node_set_ref(nt, toa2, "receiver", recv);
           nt_node_set_ref(nt, toa2, "arguments", -1);
           nt_node_set_ref(nt, toa2, "block", -1);

@@ -7826,6 +7826,7 @@ static int desugar_str_range_methods(Compiler *c) {
     int toa = nt_new_node(nt, "CallNode");
     if (toa < 0) continue;
     nt_node_set_str(nt, toa, "name", "to_a");
+    nt_node_set_int(nt, toa, "made_to_a", 1);
     nt_node_set_ref(nt, toa, "receiver", recv);
     /* each, each_entry, reverse_each, each_with_index, each_slice and
        each_cons with a block walk the members but answer the RANGE: mark the
@@ -8884,6 +8885,7 @@ static int desugar_enum_named_call(Compiler *c, int id, NodeTable *nt, const cha
           int toa = nt_new_node(nt, "CallNode");
           if (toa >= 0) {
             nt_node_set_str(nt, toa, "name", "to_a");
+            nt_node_set_int(nt, toa, "made_to_a", 1);
             nt_node_set_ref(nt, toa, "receiver", hrecv);
             nt_node_set_ref(nt, wrecv, "receiver", toa);
             /* `h.each.with_index { }` answers h, not the pairs the walk
@@ -9146,6 +9148,7 @@ static int desugar_enum_named_call(Compiler *c, int id, NodeTable *nt, const cha
         int toa = nt_new_node(nt, "CallNode");
         if (cst >= 0 && one >= 0 && toa >= 0) {
           nt_node_set_str(nt, toa, "name", "to_a");
+          nt_node_set_int(nt, toa, "made_to_a", 1);
           nt_node_set_ref(nt, toa, "receiver", recv);
           nt_node_set_int(nt, toa, "to_set", 1);
           nt_node_set_str(nt, cst, "name", "Set");
@@ -9244,6 +9247,7 @@ static int desugar_enum_named_call(Compiler *c, int id, NodeTable *nt, const cha
            sp_streq(rrn, "each") || sp_streq(rrn, "each_entry"))) {
         int toa2 = nt_new_node(nt, "CallNode");
         nt_node_set_str(nt, toa2, "name", "to_a");
+        nt_node_set_int(nt, toa2, "made_to_a", 1);
         nt_node_set_ref(nt, toa2, "receiver", rr);
         /* The block form of reverse_each answers the RECEIVER, and after this
            hop that is the interposed array rather than the Enumerator the
@@ -9313,6 +9317,7 @@ static int desugar_enum_named_call(Compiler *c, int id, NodeTable *nt, const cha
           (is_indexed_each(frn))) {
         int toa3 = nt_new_node(nt, "CallNode");
         nt_node_set_str(nt, toa3, "name", "to_a");
+        nt_node_set_int(nt, toa3, "made_to_a", 1);
         nt_node_set_ref(nt, toa3, "receiver", fr);
         nt_node_set_ref(nt, id, "receiver", toa3);
         comp_grow_node_arrays(c);
@@ -9345,6 +9350,7 @@ static int desugar_enum_named_call(Compiler *c, int id, NodeTable *nt, const cha
         if (!open_ended) {
           int toa = nt_new_node(nt, "CallNode");
           nt_node_set_str(nt, toa, "name", "to_a");
+          nt_node_set_int(nt, toa, "made_to_a", 1);
           nt_node_set_ref(nt, toa, "receiver", rrecv);
           nt_node_set_int(nt, toa, "range_hop", 1);   /* srange_member_hop */
           nt_node_set_ref(nt, id, "receiver", toa);
@@ -9368,6 +9374,7 @@ static int desugar_enum_named_call(Compiler *c, int id, NodeTable *nt, const cha
     if (erecv >= 0 && eblk >= 0 && eac == 1 && infer_type(c, erecv) == TY_ENUMERATOR) {
       int toa = nt_new_node(nt, "CallNode");
       nt_node_set_str(nt, toa, "name", "to_a");
+      nt_node_set_int(nt, toa, "made_to_a", 1);
       nt_node_set_ref(nt, toa, "receiver", erecv);
       nt_node_set_str(nt, id, "name", "each_with_object");
       nt_node_set_ref(nt, id, "receiver", toa);
@@ -9565,6 +9572,7 @@ static int desugar_enum_named_call(Compiler *c, int id, NodeTable *nt, const cha
       int toa = nt_new_node(nt, "CallNode");
       if (toa >= 0) {
         nt_node_set_str(nt, toa, "name", "to_a");
+        nt_node_set_int(nt, toa, "made_to_a", 1);
         nt_node_set_ref(nt, toa, "receiver", hrc);
         nt_node_set_str(nt, toa, "enum_recv", "1");
         nt_node_set_ref(nt, id, "receiver", toa);
@@ -9904,6 +9912,7 @@ int desugar_enum_method_recv(Compiler *c) {
       int wrap3 = nt_new_node(nt, "CallNode");
       if (wrap3 >= 0) {
         nt_node_set_str(nt, wrap3, "name", "to_a");
+        nt_node_set_int(nt, wrap3, "made_to_a", 1);
         nt_node_set_ref(nt, wrap3, "receiver", recv);
         nt_node_set_ref(nt, id, "receiver", wrap3);
         comp_grow_node_arrays(c);
@@ -9917,6 +9926,7 @@ int desugar_enum_method_recv(Compiler *c) {
       int wrap2 = nt_new_node(nt, "CallNode");
       if (wrap2 >= 0) {
         nt_node_set_str(nt, wrap2, "name", "to_a");
+        nt_node_set_int(nt, wrap2, "made_to_a", 1);
         nt_node_set_ref(nt, wrap2, "receiver", recv);
         nt_node_set_ref(nt, id, "receiver", wrap2);
         comp_grow_node_arrays(c);
@@ -9956,6 +9966,7 @@ int desugar_enum_method_recv(Compiler *c) {
       /* the call still yields what the Enumerator yields (enum_pair_source_call) */
       nt_node_set_str(nt, wrap, "enum_hop", "1");
       nt_node_set_str(nt, wrap, "name", "to_a");
+      nt_node_set_int(nt, wrap, "made_to_a", 1);
       nt_node_set_ref(nt, wrap, "receiver", recv);
       nt_node_set_ref(nt, id, "receiver", wrap);
       comp_grow_node_arrays(c);
@@ -10509,6 +10520,7 @@ static int desugar_lazy_terminal(Compiler *c) {
     int wrap = nt_new_node(nt, "CallNode");
     if (wrap < 0) continue;
     nt_node_set_str(nt, wrap, "name", "to_a");
+    nt_node_set_int(nt, wrap, "made_to_a", 1);
     nt_node_set_ref(nt, wrap, "receiver", recv);
     nt_node_set_ref(nt, wrap, "arguments", -1);
     nt_node_set_ref(nt, wrap, "block", -1);

@@ -2718,6 +2718,7 @@ int desugar_env_enum(Compiler *c) {
         int toa = nt_new_node(nt, "CallNode");
         if (toa < 0) continue;
         nt_node_set_str(nt, toa, "name", "to_a");
+        nt_node_set_int(nt, toa, "made_to_a", 1);
         nt_node_set_ref(nt, toa, "receiver", snap);
         nt_node_set_ref(nt, toa, "arguments", -1);
         nt_node_set_ref(nt, toa, "block", -1);
@@ -2777,6 +2778,7 @@ static int chain_mk_to_a(Compiler *c, int n) {
   if (call < 0) return -1;
   nt_node_set_ref(nt, call, "receiver", n);
   nt_node_set_str(nt, call, "name", "to_a");
+  nt_node_set_int(nt, call, "made_to_a", 1);
   nt_node_set_ref(nt, call, "arguments", -1);
   nt_node_set_ref(nt, call, "block", -1);
   return call;
@@ -6083,6 +6085,7 @@ int desugar_splat_to_a(Compiler *c) {
     if (call < 0) continue;
     nt_node_set_ref(nt, call, "receiver", val);
     nt_node_set_str(nt, call, "name", "to_a");
+    nt_node_set_int(nt, call, "made_to_a", 1);
     nt_node_set_ref(nt, call, "arguments", -1);
     nt_node_set_ref(nt, call, "block", -1);
     nt_node_set_ref(nt, id, "expression", call);
@@ -7204,6 +7207,7 @@ int desugar_enumerable_via_to_a(Compiler *c) {
     if (toa < 0) continue;
     nt_node_set_ref(nt, toa, "receiver", recv);
     nt_node_set_str(nt, toa, "name", "to_a");
+    nt_node_set_int(nt, toa, "made_to_a", 1);
     nt_node_set_ref(nt, toa, "arguments", -1);
     nt_node_set_ref(nt, toa, "block", -1);
     /* The with-block group answers the RECEIVER, not the pairs it walked, so

@@ -1864,6 +1864,7 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
      enumerator stayed untyped and reduce/to_a/sum on it all failed. */
   if (recv >= 0 && rt == TY_POLY && argc == 0 && nt_ref(nt, id, "block") < 0 &&
       is_str_each_iter(name) && !an_user_defines_or_reads(c, name)) {
+    if (poly_str_iter_enum(c, id)) { *out = TY_ENUMERATOR; return 1; }
     if (is_byte_codepoint_each(name)) { *out = TY_INT_ARRAY; return 1; }
     { *out = TY_STR_ARRAY; return 1; }
   }
@@ -2180,4 +2181,22 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
     if (blk_ok) { *out = TY_POLY; return 1; }
   }
   return 0;
+}
+
+/* Does a blockless each_char / each_line / each_byte / each_codepoint on a
+   boxed receiver (call id) answer CRuby's Enumerator
+   (sp_poly_str_each_enum)? Where the Enumerator outlives the expression it
+   is made in (kept, handed on, or the source of a lazy chain), or is asked
+   what an Array does not answer (`next`, `with_index`). Walked where it is
+   made otherwise, it walks the Array chars, lines or bytes answers, the
+   same items read at the same point, and keeps their element types. */
+int poly_str_iter_enum(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  int q = comp_recv_parent(c, id);
+  if (q < 0) return 1;
+  const char *qn = nt_str(nt, q, "name");
+  if (is_lazy_name(qn)) return 1;
+  int qac = 0;
+  call_args(nt, q, &qac);
+  return qn && !bop_find(BOP_ANY_ARRAY, qn, qac, nt_ref(nt, q, "block") >= 0);
 }

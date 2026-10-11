@@ -3430,6 +3430,16 @@ int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
     else
       buf_printf(g_pre, "sp_Enumerator *_t%d = %s; SP_GC_ROOT(_t%d);\n", te, sb.p ? sb.p : "0", te);
     free(sb.p);
+    /* --share-strings: the walk starts here, where an Enumerator over a
+       String handle lays its items out from the String; the walk reads a
+       copy holding them, which a walk nested in it leaves as it is
+       (sp_enum_walk) */
+    int live_walk = str_enum_h_made(c);
+    int tbw = live_walk ? ++g_tmp : 0;
+    if (live_walk) {
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "_t%d = sp_enum_walk(_t%d); sp_bool _t%d = _t%d ? _t%d->str_bytewise : 0;\n", te, te, tbw, te, te);
+    }
     emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "sp_Fiber *_t%d = (_t%d && _t%d->gen) ? sp_Fiber_new(_t%d->gen) : NULL; SP_GC_ROOT(_t%d);\n", tf, te, te, te, tf);
     emit_indent(g_pre, g_indent);
@@ -3449,6 +3459,11 @@ int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
                tf, tf, tv, tf, tf);
     emit_indent(g_pre, g_indent + 1);
     /* an argless cycle's items are one round that starts over (endless) */
+    /* (a bytewise walk reads the String's byte at its cursor) */
+    if (live_walk) {
+      buf_printf(g_pre, "else if (SP_UNLIKELY(_t%d)) { if (!sp_enum_str_byte_at(_t%d, _t%d, &_t%d)) break; _t%d++; }\n", tbw, te, tidx, tv, tidx);
+      emit_indent(g_pre, g_indent + 1);
+    }
     buf_printf(g_pre, "else { if (_t%d && _t%d->endless && _t%d->items && _t%d->items->len > 0 && _t%d >= _t%d->items->len) _t%d = 0;"
                       " if (!_t%d || !_t%d->items || _t%d >= _t%d->items->len) break; _t%d = _t%d->items->data[_t%d++]; }\n",
                te, te, te, te, tidx, te, tidx, te, te, tidx, te, tv, te, tidx);
@@ -18261,6 +18276,69 @@ int emit_arg_type_guards(Compiler *c, int id, Buf *b) {
 }
 
 
+/* --share-strings: is recv a String the rule shares? The share row of a
+   blockless String iterator joins its Enumerator to the receiver, so a
+   change in place through another name is one the Enumerator sees; a
+   frozen literal changes through no name. */
+int str_each_recv_shares(Compiler *c, int recv) {
+  if (!repr_share_rule(c) || recv < 0 || share_frozen_literal(c, recv)) return 0;
+  Repr r = repr_of(c, recv);
+  return r.kind == RK_STRBUF || r.handle || share_node_shares(c, recv);
+}
+/* Does the Enumerator of call id outlive the expression it is made in:
+   kept, handed on, or built on by blockless calls answering Enumerators
+   (each_slice, with_index) that are, or the source of a lazy chain? One
+   walked where it is made (`s.each_char.to_a`, a block call on it) is
+   walked from what it is made from, as CRuby's walk starts there. The
+   `to_a` hop the analysis routes an Enumerator's call through (enum_hop)
+   is that call's own. */
+static int enum_outlives_expr(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  for (int q = comp_recv_parent(c, id); q >= 0; q = comp_recv_parent(c, q)) {
+    if (is_lazy_name(nt_str(nt, q, "name"))) return 1;
+    if (nt_str(nt, q, "enum_hop")) continue;
+    if (nt_ref(nt, q, "block") >= 0 || comp_ntype(c, q) != TY_ENUMERATOR) return 0;
+  }
+  return 1;
+}
+/* Is call id a blockless String iterator answering an Enumerator
+   (sp_enum_str_each_h's)? */
+static int str_each_enum_call(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  int recv = id >= 0 && nt_kind(nt, id) == NK_CallNode ? nt_ref(nt, id, "receiver") : -1;
+  return recv >= 0 && nt_ref(nt, id, "arguments") < 0 && nt_ref(nt, id, "block") < 0 &&
+         is_str_each_iter(nt_str(nt, id, "name")) &&
+         (comp_ntype(c, recv) == TY_STRING || comp_ntype(c, recv) == TY_STRBUF);
+}
+/* ...so the Enumerator of the blockless String iterator call id over a
+   String the rule shares holds its handle (sp_enum_str_each_h), where it
+   outlives the expression it is made in */
+int str_each_enum_keeps(Compiler *c, int id) {
+  return str_each_enum_call(c, id) && str_each_recv_shares(c, nt_ref(c->nt, id, "receiver")) &&
+         enum_outlives_expr(c, id);
+}
+/* Is call id a blockless String iterator on a boxed receiver answering an
+   Enumerator (poly_str_iter_enum), which is over the handle for a box of a
+   shared String's (sp_poly_str_each_enum)? */
+static int str_each_boxed_enum(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  int recv = nt_ref(nt, id, "receiver");
+  return recv >= 0 && nt_ref(nt, id, "arguments") < 0 && nt_ref(nt, id, "block") < 0 &&
+         is_str_each_iter(nt_str(nt, id, "name")) && comp_ntype(c, recv) == TY_POLY && poly_str_iter_enum(c, id);
+}
+/* --share-strings: does the program make an Enumerator over a String
+   handle anywhere? Each of its walks reads a copy laid out at the walk's
+   start (sp_enum_walk), and only Enumerators made from one are live, so a
+   program making none walks every Enumerator as before. Asked once. */
+int str_enum_h_made(Compiler *c) {
+  if (!repr_share_rule(c)) return 0;
+  if (!c->str_enum_h) {
+    c->str_enum_h = 1;
+    for (int k = comp_kind_first(c, NK_CallNode); k >= 0; k = comp_kind_next(c, k))
+      if (str_each_enum_keeps(c, k) || str_each_boxed_enum(c, k)) { c->str_enum_h = 2; break; }
+  }
+  return c->str_enum_h == 2;
+}
 /* A blockless iterator answers an external Enumerator rather than iterating:
    the wrappers for each, reverse_each, each_with_index, each_index, each_char,
    each_line, each_slice, each_cons, cycle, slice_before/after, the two hash
@@ -18383,6 +18461,16 @@ int emit_blockless_enumerator(Compiler *c, int id, Buf *b) {
      characters / lines. */
   if (recv >= 0 && comp_ntype(c, recv) == TY_STRING && argc == 0 &&
       nt_ref(nt, id, "block") < 0 && is_str_each_iter(name)) {
+    /* --share-strings: over a String the rule shares, the Enumerator holds
+       its handle and reads it as it is walked (sp_enum_str_each_h), as
+       CRuby's holds the String: one made from a copy of the bytes missed a
+       change in place made before its first step */
+    if (str_enum_h_made(c) && str_each_enum_keeps(c, id)) {
+      buf_puts(b, "sp_enum_str_each_h(");
+      emit_strbuf_handle_of(c, recv, b);
+      buf_printf(b, ", SPL(\"%s\"))", name);
+      return 1;
+    }
     /* spill the receiver once: it feeds both the snapshot and the
        inspect-visible source stamp */
     int tsrc = ++g_tmp;
