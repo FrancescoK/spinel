@@ -1,0 +1,16 @@
+["LOC1", true, "LOC1"]
+"zoc2"
+["LOC3", true]
+"PLAIN4"
+"plain4!"
+"<plain4>"
+["ELT5", true, ["ELT5"]]
+["RD6", true, "RD6"]
+"HV7"
+{k: "HV7"}
+"ST8"
+"ST8"
+["PV9", true, "PV9"]
+"plain4plain4"
+"1234567"
+["M10", "N10"]
