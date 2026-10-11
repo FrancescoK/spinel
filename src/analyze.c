@@ -39716,8 +39716,32 @@ static void an_phase_block_inline(Compiler *c) {
   free(blk_fwd_callee);
 }
 
+/* Is the value of the def `d` used, so that it is the Symbol it names? A
+   statement before its list's last, the program's last statement (its list
+   has no parent) and a class or module body's last when the class's value
+   is not used throw it away; anything else may hand it on. */
+int an_def_value_used(const NodeTable *nt, const int *par, int v) {
+  for (int p; (p = par[v]) >= 0; v = p) {
+    switch (nt_kind(nt, p)) {
+    case NK_StatementsNode: {
+      int n = 0;
+      const int *st = nt_arr(nt, p, "body", &n);
+      if (n == 0 || st[n - 1] != v) return 0;
+      break;
+    }
+    case NK_ClassNode: case NK_ModuleNode: case NK_SingletonClassNode:
+      if (nt_ref(nt, p, "body") != v) return 1;
+      break;
+    default:
+      return 1;
+    }
+  }
+  return 0;
+}
+
 /* Ahead of the fixpoint: intern the symbol literals and Proc#parameters names, apply the --rbs seeds, freeze the method-lookup index, compute the reachable and instantiated classes (analyze_program's steps, in their order) */
 static void an_phase_pre_fixpoint(Compiler *c) {
+  int *par = an_parent_map(c->nt);
   /* intern every symbol literal so codegen can emit the id table */
   for (int id = 0; id < c->nt->count; id++) {
     const char *ty = nt_type(c->nt, id);
@@ -39743,7 +39767,11 @@ static void an_phase_pre_fixpoint(Compiler *c) {
       const char *dn = nt_str(c->nt, id, "name");
       if (dn && strncmp(dn, "__enum_", 7) != 0 && strncmp(dn, "__int_", 6) != 0 &&
           strncmp(dn, "__flt_", 6) != 0 && strncmp(dn, "__cmp_", 6) != 0 &&
-          strncmp(dn, "__enumw_", 8) != 0)
+          strncmp(dn, "__enumw_", 8) != 0 &&
+          /* only where its value is used: a statement def's name alone made
+             every program with a method carry the symbol runtime and with it
+             the inspect and Bignum code it reaches (#8401) */
+          (!par || an_def_value_used(c->nt, par, id)))
         comp_sym_intern(c, dn);
     }
     /* __method__ / __callee__ yield the enclosing method's name as a symbol;
@@ -39756,6 +39784,7 @@ static void an_phase_pre_fixpoint(Compiler *c) {
       }
     }
   }
+  free(par);
   /* Proc#parameters reports param kinds (:req/:opt/:rest/:keyreq/:key/
      :keyrest/:block) and names as symbols; intern them now so they land in
      the table before the codegen prologue. Anonymous rest/kwrest/block use

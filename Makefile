@@ -4059,6 +4059,8 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	  ! grep -q 'sp_PolyPolyHash_new' "$$tmp/hbu.c" || { echo "infer-test: FAIL (an unbounded boxed store widened a known Hash)"; ok=0; }; \
 	  $(SPINEL) $$flags test/index_read_unsettled_local.rb -c --no-line-map -o "$$tmp/iru.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (index_read_unsettled_local: -c)"; ok=0; }; \
 	  ! grep -q 'sp_RbVal lv_line\b' "$$tmp/iru.c" || { echo "infer-test: FAIL (an index read guessed a settling local a Hash and boxed a block parameter)"; ok=0; }; \
+	  $(SPINEL) $$flags -e 'def run = 0' -e 'p run' -c --no-line-map -o "$$tmp/dfn.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (a statement def: -c)"; ok=0; }; \
+	  grep -q 'SP_TU_NO_POLY_RENDER' "$$tmp/dfn.c" || { echo "infer-test: FAIL (a statement def made its name a Symbol of the program)"; ok=0; }; \
 	  for t in $(patsubst test/%.rb,%,$(shell grep -l '^\# spinel: infer-ivar-get$$' test/*.rb)); do \
 	    $(SPINEL) $$flags test/$$t.rb -c --no-line-map -o "$$tmp/ivg.c" >/dev/null 2>&1 || { echo "infer-test: FAIL ($$t: -c)"; ok=0; }; \
 	    ! grep -Eq 'else if \(_t[0-9]+.tag == SP_TAG_CLASS\)' "$$tmp/ivg.c" || { echo "infer-test: FAIL ($$t: an instance-only getter boxes class ivars)"; ok=0; }; \

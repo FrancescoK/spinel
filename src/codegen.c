@@ -15084,7 +15084,14 @@ static void scan_prologue_features(Compiler *c) {
   {
     int polyish = 0, has_class = 0;
 #define SP_TT(t) do { TyKind _t = (t);       if (_t == TY_POLY || ty_is_array(_t) || ty_is_hash(_t)) polyish = 1;       else if (_t == TY_SYMBOL) g_emit_sym_rt = 1;       else if (_t == TY_CLASS) has_class = 1; } while (0)
-    for (int i = 0; i < nt->count && i < c->node_cap; i++) SP_TT(c->ntype[i]);
+    /* a def's Symbol where nothing uses it is no value of the program's
+       (an_phase_pre_fixpoint leaves its name out of the table too) */
+    int *par = an_parent_map(nt);
+    for (int i = 0; i < nt->count && i < c->node_cap; i++) {
+      if (par && nt_kind(nt, i) == NK_DefNode && !an_def_value_used(nt, par, i)) continue;
+      SP_TT(c->ntype[i]);
+    }
+    free(par);
     for (int sc = 0; sc < c->nscopes; sc++) {
       SP_TT(c->scopes[sc].ret);
       for (int l = 0; l < c->scopes[sc].nlocals; l++) SP_TT(c->scopes[sc].locals[l].type);
