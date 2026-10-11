@@ -400,6 +400,10 @@ spinel: test/reject/class_superclass_method_call.rb:10: unsupported superclass e
 spinel: test/reject/class_then_module.rb:6: Thing is not a module (the first declaration, at line 3, is a class)
 == test/reject/class_then_module.rb [promote] rc=1
 spinel: test/reject/class_then_module.rb:6: Thing is not a module (the first declaration, at line 3, is a class)
+== test/reject/compact_class_internal_name_clash.rb [default] rc=1
+spinel: test/reject/compact_class_internal_name_clash.rb:5: a class or module named Foo under a module path takes the internal name X__Foo, which the program's own class X__Foo already has, and a top-level Foo is defined too; rename one of them
+== test/reject/compact_class_internal_name_clash.rb [promote] rc=1
+spinel: test/reject/compact_class_internal_name_clash.rb:5: a class or module named Foo under a module path takes the internal name X__Foo, which the program's own class X__Foo already has, and a top-level Foo is defined too; rename one of them
 == test/reject/compare_by_identity_chained.rb [default] rc=1
 spinel: test/reject/compare_by_identity_chained.rb:8: unsupported Hash#compare_by_identity (identity-keyed hashing): node N (CallNode `compare_by_identity`) recv=LocalVariableReadNode/ty28 argc=0
 spinel: 1 refusal, nothing written
