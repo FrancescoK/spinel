@@ -838,6 +838,9 @@ typedef struct {
                           read yields the sp_String* HANDLE (typed TY_STRBUF,
                           boxed SP_BUILTIN_STRBUF), not the demoted cstr
                           (#3227 phase 3) */
+  /* --share-strings: the names of the calls whose answer is kept (not
+     dropped), sorted, built once on first ask (strbuf_tail_answer_kept) */
+  const char **kept_call_names; int nkept_call_names, kept_call_built;
   unsigned char *strbuf_handle_demand; /* [node_cap] the same demand -- hand out
                           the HANDLE, not a reading of it -- carried WITHOUT
                           moving the node's type. strbuf_box above is read as

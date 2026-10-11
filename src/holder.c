@@ -84,7 +84,10 @@ int holder_of_node_in(const Compiler *c, int node, int body, HolderRef *out) {
     int cid = strbuf_ivar_owner(mc, node);
     if (cid < 0) return 0;
     Scope *s = comp_scope_of(mc, node);
-    holder_ivar(c, node, cid, s->class_id < 0 || s->is_cmethod, out);
+    /* (--share-strings: an instance_eval/exec splice's ivar is its
+       receiver object's slot, whatever scope the block sits in) */
+    int ie = repr_share_rule(c) && (ie_class_of(mc, node) >= 0 || g_ie_class_id >= 0);
+    holder_ivar(c, node, cid, !ie && (s->class_id < 0 || s->is_cmethod), out);
     return 1;
   }
   out->kind = (unsigned char)hk;

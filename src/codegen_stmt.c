@@ -1827,6 +1827,25 @@ static int strbuf_route_reopen_pf(Compiler *c, int v) {
   return pf >= 0 && c->scopes[pf].ret == TY_POLY && last >= 0 && nt_kind(nt, last) == NK_YieldNode &&
          !strbuf_has_return(nt, c->scopes[mi].body) && strbuf_reopen_pf_tails_carry(c, v);
 }
+/* --share-strings: `o.instance_exec(a) { |v| ... }` (or instance_eval)
+   with a literal block on a receiver of its own, which the call splices
+   with the receiver as self (emit_call_instance_eval_arms) and no `break`
+   or `next` leaves: its value is the block's tail, which the splice reads
+   as the handle under the demand. Read as the call's String it was a copy
+   of the tail's bytes. */
+int strbuf_route_ie(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  v = unwrap_parens(c, v);
+  if (!repr_share_rule(c) || v < 0 || nt_kind(nt, v) != NK_CallNode) return 0;
+  int blk = nt_ref(nt, v, "block"), tg[CPT_MAX];
+  TyKind vt = comp_ntype(c, v);
+  if (!is_instance_eval_family(nt_str(nt, v, "name")) || nt_ref(nt, v, "receiver") < 0 || blk < 0 ||
+      nt_kind(nt, blk) != NK_BlockNode || (vt != TY_STRING && vt != TY_STRBUF) ||
+      cplan_targets(c, v, tg, CPT_MAX) != 0) return 0;
+  int body = nt_ref(nt, blk, "body"), n = 0;
+  return body >= 0 && nt_kind(nt, body) == NK_StatementsNode && nt_arr(nt, body, "body", &n) && n > 0 &&
+         !ie_body_has_break_next(c, body);
+}
 /* --share-strings: a proc's answer read as a String (`pr.call`, the
    BSH_CALL row's names). The proc hands it back boxed, a String the rule
    shares as its handle's box. A catch likewise keeps the thrown box and
@@ -2058,7 +2077,7 @@ static int strbuf_route_carries(Compiler *c, int v, int depth) {
   if (strbuf_route_clamp(c, v, ops)) return 1;
   if (strbuf_hash_default_arg(c, v) >= 0) return 1;
   if (strbuf_route_proc_call(c, v) || strbuf_route_ivar_get(c, v) || strbuf_route_begin(c, v) || strbuf_route_yield(c, v) ||
-      strbuf_route_inline_call(c, v) || strbuf_route_reopen_pf(c, v) || strbuf_route_loop(c, v) || repr_call_returns_handle(c, v) ||
+      strbuf_route_inline_call(c, v) || strbuf_route_reopen_pf(c, v) || strbuf_route_ie(c, v) || strbuf_route_loop(c, v) || repr_call_returns_handle(c, v) ||
       strbuf_route_exc_message(c, v) || strbuf_route_boxed_exc_message(c, v) || strbuf_route_reader(c, v) ||
       strbuf_route_srange_end(c, v)) return 1;
   if (strbuf_assign_leaf(c, v) || strbuf_bang_leaf(c, v)) return 1;
@@ -2076,7 +2095,11 @@ static int strbuf_route_carries(Compiler *c, int v, int depth) {
   int x = strbuf_route_operand(c, v);
   if (x == unwrap_parens(c, v)) return 1;
   if (x >= 0 && repr_of(c, x).kind == RK_BOXED) return 1;
-  if (x >= 0) return depth < 8 && strbuf_route_carries(c, x, depth + 1);
+  /* (an operand that is a conditional or a parenthesized sequence with a
+     handle arm hands on what it ends in, as emit_strbuf_handle_of takes
+     it: `(t = 5; s).itself`, the splice of a builtin receiver's
+     instance_exec) */
+  if (x >= 0) return depth < 8 && (strbuf_route_carries(c, x, depth + 1) || strbuf_cond_has_handle_leaf(c, x, 0));
   /* Ask the slot's call facts without rendering its receiver in analysis. */
   if (v >= 0 && nt_kind(c->nt, v) == NK_CallNode)
     return strbuf_native_answer(c, v) || strbuf_call_reads_handle(c, v);
@@ -2297,7 +2320,8 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
     strbuf_jump_views_pop(c, tok, ntok);
     return 1;
   }
-  if (strbuf_route_begin(c, v) || strbuf_route_ivar_get(c, v) || strbuf_hash_default_arg(c, v) >= 0) {
+  if (strbuf_route_begin(c, v) || strbuf_route_ivar_get(c, v) || strbuf_hash_default_arg(c, v) >= 0 ||
+      strbuf_route_ie(c, v)) {
     /* its result slot is the handle under the demand */
     v = unwrap_parens(c, v);
     int sv = view_push_repr(c, v, VR_HANDLE_DEMAND, 1);
@@ -2531,16 +2555,37 @@ int strbuf_value_carries(Compiler *c, int v) {
 static int self_call_answers_nil(Compiler *c, int v);
 /* Does a call of the method tail v ends keep its answer (a call of the
    method's name whose value is not dropped)? A String reopening's proc
-   form builds the handle it publishes; where every call drops the answer
-   nothing picks it up. */
+   form, an instance_exec splice and a conversion over a spliced sequence
+   build the handle they publish; where every call drops the answer nothing
+   picks it up. */
+static int strbuf_kept_name_cmp(const void *a, const void *b) {
+  return strcmp(*(const char *const *)a, *(const char *const *)b);
+}
 static int strbuf_tail_answer_kept(Compiler *c, int v) {
   Scope *s = comp_scope_of(c, v);
   if (!s || s->def_node < 0 || !s->name) return 1;
-  for (int u = comp_kind_first(c, NK_CallNode); u >= 0; u = comp_kind_next(c, u)) {
-    const char *nm = nt_str(c->nt, u, "name");
-    if (nm && sp_streq(nm, s->name) && !comp_value_dropped(c, u)) return 1;
+  if (!c->kept_call_built) {
+    /* every call's name, once, where its answer is used */
+    int cap = 0, n = 0;
+    const char **names = NULL;
+    for (int u = comp_kind_first(c, NK_CallNode); u >= 0; u = comp_kind_next(c, u)) {
+      const char *nm = nt_str(c->nt, u, "name");
+      if (!nm || comp_value_dropped(c, u)) continue;
+      if (n == cap) {
+        cap = cap ? cap * 2 : 64;
+        const char **nn = realloc(names, sizeof *names * (size_t)cap);
+        if (!nn) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+        names = nn;
+      }
+      names[n++] = nm;
+    }
+    if (n > 1) qsort(names, (size_t)n, sizeof *names, strbuf_kept_name_cmp);
+    c->kept_call_names = names; c->nkept_call_names = n; c->kept_call_built = 1;
   }
-  return 0;
+  const char *key = s->name;
+  return c->nkept_call_names > 0 &&
+         bsearch(&key, c->kept_call_names, (size_t)c->nkept_call_names, sizeof *c->kept_call_names,
+                 strbuf_kept_name_cmp) != NULL;
 }
 int strbuf_builtin_tail(Compiler *c, int v) {
   if (!repr_share_rule(c) || !c->share || v < 0 || nt_kind(c->nt, v) != NK_CallNode ||
@@ -2553,9 +2598,13 @@ int strbuf_builtin_tail(Compiler *c, int v) {
   if (sn_guard_pending(c, v) && strbuf_route_operand(c, v) != v && repr_string_conversion_operand(c, v) < 0 &&
       repr_boxed_to_s_operand(c, v) < 0 && !self_call_answers_nil(c, v) && !strbuf_bang_chain(c, v)) return 0;
   TyKind t = repr_of(c, v).ty;
-  /* (a String reopening's proc-form answer is such a route too; it
-     publishes only where a call keeps the answer) */
-  int built = strbuf_route_reopen_pf(c, v);
+  /* (a String reopening's proc-form answer is such a route too; it, an
+     instance_exec splice and a conversion over a spliced sequence, a
+     builtin receiver's instance_exec, publish only where a call keeps the
+     answer) */
+  int x = strbuf_route_operand(c, v);
+  int built = strbuf_route_reopen_pf(c, v) || strbuf_route_ie(c, v) ||
+              (x >= 0 && x != unwrap_parens(c, v) && nt_kind(c->nt, unwrap_parens(c, x)) == NK_ParenthesesNode);
   return (t == TY_STRING || t == TY_STRBUF) &&
          (cplan_user_fresh(c, v)->dispatch == CP_NONE || strbuf_route_reopen_pf(c, v)) &&
          !share_node_fresh(c, v) && strbuf_value_carries(c, v) && (!built || strbuf_tail_answer_kept(c, v));
@@ -20916,6 +20965,9 @@ static int strbuf_flow_route(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, in
   }
   /* (the proc-form clone's box: its block's values checked as boxed) */
   if (strbuf_route_reopen_pf(c, v)) return 1;
+  /* instance_exec's splice: the block's tail, read as the handle */
+  if (strbuf_route_ie(c, v))
+    return strbuf_flow_body(c, fm, SFC_TAIL, nt_ref(nt, nt_ref(nt, unwrap_parens(c, v), "block"), "body"), NK_NONE, depth);
   if (strbuf_route_loop(c, v)) return strbuf_flow_jumps(c, fm, SFC_TAIL, nt_ref(nt, nt_ref(nt, v, "block"), "body"), NK_BreakNode, depth);
   int x = strbuf_route_operand(c, v);
   if (x < 0) return 0;
@@ -21128,6 +21180,7 @@ static int strbuf_flow_value(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, in
   if (ctx == SFC_TAIL)
     return (k == NK_BeginNode && strbuf_flow_begin(c, fm, v, depth)) || repr_call_returns_handle(c, v) ||
            strbuf_route_exc_message(c, v) || strbuf_route_boxed_exc_message(c, v) || strbuf_route_srange_end(c, v) ||
+           (strbuf_route_ie(c, v) && strbuf_flow_route(c, fm, SFC_ALIAS, v, depth)) ||
            (is_unary_plus(nt_str(nt, v, "name")) && strbuf_flow_route(c, fm, ctx, v, depth));
   /* an append chain over a variable's handle, boxed as that handle; a
      mutator on a narrowed box, which answers the box */

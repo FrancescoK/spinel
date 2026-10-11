@@ -26049,6 +26049,9 @@ int emit_ie_poly(Compiler *c, int id, Buf *b) {
     emit_call(c, id, &vb);
     int arm_o = node_is_oint(c, id);   /* the form this arm's splice answered */
     TyKind vty = bn > 0 ? repr_of(c, bb[bn - 1]).as_ty : TY_NIL;
+    /* (--share-strings: a call read as the handle answers it, arm by arm:
+       strbuf_route_ie) */
+    if (ret == TY_STRBUF && vty == TY_STRING && repr_share_rule(c)) vty = TY_STRBUF;
     TyKind bnt = ie_splice_value_ty(c, body);
     if (bnt != TY_UNKNOWN) vty = (vty == TY_NIL || vty == TY_UNKNOWN) ? bnt : ty_unify(vty, bnt);
     ie_body_restore(c, snap);
@@ -26108,6 +26111,7 @@ int emit_ie_poly(Compiler *c, int id, Buf *b) {
     emit_call(c, id, &vb);
     int fb_o = node_is_oint(c, id);
     TyKind vty = bn > 0 ? repr_of(c, bb[bn - 1]).as_ty : TY_NIL;
+    if (ret == TY_STRBUF && vty == TY_STRING && repr_share_rule(c)) vty = TY_STRBUF;
     ie_body_restore(c, fsnap);
     view_unbind(g_n_argov - 1);
     g_ie_nil_ivars = sv_nil;
