@@ -13421,7 +13421,7 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
       buf_puts(b, "sp_box_nullable_obj((void *)sp_PolyArray_new(), SP_BUILTIN_POLY_ARRAY)");
     else if (poly_empty_hash)
       buf_puts(b, "sp_box_obj(sp_PolyPolyHash_new(), SP_BUILTIN_POLY_POLY_HASH)");
-    else if (boxed_el) emit_coerce(c, els[i], TY_POLY, CO_HOLD, "a multiple assignment's value", b);
+    else if (boxed_el) emit_boxed(c, els[i], b);
     /* a number that can be nil: its oint `_tNo` beside the value, which the
        targets that hold a nil take (masgn_conv_o) and the others read */
     else if (oint_kind(elt) && node_has_oint_form(c, els[i]) && g_masgn_notmps < 64) {
@@ -14213,9 +14213,9 @@ static int emit_call_stmt(Compiler *c, int id, Buf *b, int indent, const NodeTab
               buf_printf(b, "sp_RbVal _t%d = sp_box_nil();", tval);
             }
             else if (unk_rhs) {
-              buf_printf(b, "sp_RbVal _t%d = ", tval); emit_expr(c, argv[0], b); buf_puts(b, ";");
+              buf_printf(b, "sp_RbVal _t%d = ", tval); emit_boxed(c, argv[0], b); buf_puts(b, ";");
             }
-else {
+            else {
               emit_ctype(c, at, b); buf_printf(b, " _t%d = ", tval); emit_expr(c, argv[0], b); buf_puts(b, ";");
             }
             /* A boxed NIL carries cls_id 0, which is a real user class id:

@@ -14498,10 +14498,12 @@ static int emit_poly_index_call(Compiler *c, int id, Buf *b, const NodeTable *nt
     if (ncand > 0) {
       TyKind at = repr_of(c, argv[0]).as_ty;
       int nil_rhs = (at == TY_NIL || at == TY_VOID);
-      TyKind at_eff = nil_rhs ? TY_POLY : at;
+      int unk_rhs = at == TY_UNKNOWN;
+      TyKind at_eff = (nil_rhs || unk_rhs) ? TY_POLY : at;
       int tv = ++g_tmp, tval = ++g_tmp;
       buf_puts(b, "({ "); tv = hold_operand(c, recv, TY_POLY, 0, tv, 1, " ", b);
       if (nil_rhs) buf_printf(b, "sp_RbVal _t%d = sp_box_nil();", tval);
+      else if (unk_rhs) { buf_printf(b, "sp_RbVal _t%d = ", tval); emit_boxed(c, argv[0], b); buf_puts(b, ";"); }
       else { emit_ctype(c, at, b); buf_printf(b, " _t%d = ", tval); emit_one_arg(c, argv[0], 0, b); buf_puts(b, ";"); }
       buf_printf(b, " switch (_t%d.tag == SP_TAG_OBJ ? _t%d.cls_id : 0x7fffffff) {", tv, tv);
       char src[32]; snprintf(src, sizeof src, "_t%d", tval);
