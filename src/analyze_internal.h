@@ -657,6 +657,7 @@ void rename_shadowing_block_params(Compiler *c);
 void topup_forwarding_arity(Compiler *c);
 void expand_struct_forwarding_super(Compiler *c);
 void refuse_super_init_value(Compiler *c);
+void refuse_readonly_global_write(Compiler *c);
 /* Defined in codegen.c; the analyzer uses it to specialize/type a
    `rescue <UserExc> => e` binding (#1415). */
 int class_is_exc_subclass(Compiler *c, int ci);

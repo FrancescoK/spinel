@@ -2698,6 +2698,7 @@ static int emit_ivar_cvar_gvar_expr(Compiler *c, int id, Buf *b, const NodeTable
     if (nm && sp_streq(nm, "$$")) { buf_puts(b, "((sp_int)getpid())"); return 1; }
     if (nm && (is_program_name_global(nm))) { buf_puts(b, "sp_program_name"); return 1; }
     if (is_loaded_features_global(nm)) { buf_puts(b, "sp_get_loaded_features()"); return 1; }
+    if (is_load_path_global(nm)) { buf_puts(b, "sp_get_load_path()"); return 1; }
     if (nm && sp_streq(nm, "$!")) { buf_puts(b, "((sp_Exception *)sp_errinfo())"); return 1; }
     if (nm && (sp_streq(nm, "$;") || sp_streq(nm, "$,"))) { buf_puts(b, "0"); return 1; }
     /* regex match globals that Prism may emit as GlobalVariableReadNode */
@@ -3233,6 +3234,7 @@ static int emit_defined_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, c
           res = "global-variable";
         else if (gn[2]) res = "global-variable";
       }
+      if (is_load_path_global(gn) || is_loaded_features_global(gn)) res = "global-variable";
       for (int kk = 0; kk < nt->count && !res; kk++) {
         const char *kt = nt_type(nt, kk);
         if (kt && (sp_streq(kt, "GlobalVariableWriteNode") || sp_streq(kt, "GlobalVariableOperatorWriteNode")) &&

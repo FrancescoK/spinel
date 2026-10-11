@@ -22,9 +22,11 @@ They are different mechanisms and stay distinct:
 | `Kernel.require "name"` / `::Kernel.require "name"` | the same as the bare `require` | as above; any other receiver (`obj.require`) is an ordinary method call |
 
 `require` is *not* a runtime file load. Spinel is a whole-program
-ahead-of-time compiler, so every `require` is known at compile time and there is
-no `$LOAD_PATH` to mutate at runtime. A `require` that names something Spinel
-cannot provide is reported when you compile, not when you run.
+ahead-of-time compiler, so every `require` is known at compile time and no
+directory is searched at runtime. `$LOAD_PATH` (`$:`, `$-I`) is still an Array
+of Strings the program can read and change, but it starts empty and a change to
+it looks nothing up. A `require` that names something Spinel cannot provide is
+reported when you compile, not when you run.
 
 ## The require-gate
 

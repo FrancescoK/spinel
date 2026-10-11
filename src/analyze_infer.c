@@ -9194,6 +9194,7 @@ TyKind infer_uncached(Compiler *c, int id) {
     if (nm && sp_streq(nm, "$$")) return TY_INT;   /* the process id, Process.pid */
     if (nm && (is_program_name_global(nm))) return TY_STRING;
     if (is_loaded_features_global(nm)) return TY_STR_ARRAY;   /* sp_get_loaded_features() */
+    if (is_load_path_global(nm)) return TY_STR_ARRAY;         /* sp_get_load_path() */
     if (nm && sp_streq(nm, "$!")) return TY_EXCEPTION;  /* the exception being handled, or nil (NULL) outside a rescue */
     if (nm && (sp_streq(nm, "$;") || sp_streq(nm, "$,"))) return TY_NIL;
     /* regex match globals: $~ is the last MatchData (NULL = nil); the

@@ -31,6 +31,14 @@ sp_StrArray *sp_get_ARGV(void);
    globals, as ARGV's array is. */
 extern sp_StrArray *sp_loaded_features_cache;
 sp_StrArray *sp_get_loaded_features(void);
+
+/* $LOAD_PATH (`$:`, `$-I`): an Array of Strings the program reads and
+   changes. It starts empty: requires are resolved when the program is
+   compiled, so there is no directory to look in as it runs, and a change
+   the program makes to it looks nothing up. Allocated and marked as
+   $LOADED_FEATURES' array is. */
+extern sp_StrArray *sp_load_path_cache;
+sp_StrArray *sp_get_load_path(void);
 int sp_argf_ensure(void);
 const char *sp_argf_gets(void);
 const char *sp_argf_read(void);

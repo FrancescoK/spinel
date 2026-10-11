@@ -39735,6 +39735,7 @@ static void an_phase_class_structure(Compiler *c) {
   topup_forwarding_arity(c);
   expand_struct_forwarding_super(c);
   refuse_super_init_value(c);
+  refuse_readonly_global_write(c);
   inherit_members(c);
   reject_dynamic_mixin_args(c);
   desugar_module_prepends(c);

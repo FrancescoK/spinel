@@ -245,6 +245,7 @@ int is_numeric_literal_tag(const char *n); /* Float Int */
 int is_standard_output_global(const char *n); /* $stderr $stdout */
 int is_program_name_global(const char *n); /* $0 $PROGRAM_NAME */
 int is_loaded_features_global(const char *n); /* $" $LOADED_FEATURES */
+int is_load_path_global(const char *n); /* $: $-I $LOAD_PATH */
 int is_range_or_time_class(const char *n); /* Range Time */
 int is_numeric_class_name(const char *n); /* Float Integer */
 int is_queue_class_name(const char *n); /* Queue SizedQueue */
