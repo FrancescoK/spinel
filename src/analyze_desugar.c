@@ -4979,8 +4979,9 @@ int desugar_call_op_write(Compiler *c) {
    so it was refused. It is the two calls Ruby means, on the receiver
    evaluated once:
      (__cow_N = recv; __cow_N.attr || (__cow_N.attr = value))
-   A user-object receiver keeps the emitter's own pairing; a receiver of no
-   known kind keeps the poly path. */
+   A receiver that may be one of several kinds has no pairing in the
+   emitter either and takes the same two calls. A user-object receiver
+   keeps the emitter's own pairing. */
 int desugar_call_or_write_reopen(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
@@ -4996,9 +4997,12 @@ int desugar_call_or_write_reopen(Compiler *c) {
     if (rt == TY_UNKNOWN || rt == TY_VOID || rt == TY_NIL || ty_is_object(rt)) continue;
     char wname[300];
     snprintf(wname, sizeof wname, "%s=", attr);
-    /* both halves defined by a reopening of a builtin (a poly receiver
-       counts only for those: a user object's pairing stays the emitter's) */
+    /* both halves defined by a reopening of a builtin, or a receiver that
+       may be one of several kinds (`known.is_alias_for ||= x`, `known` read
+       out of a Hash of mixed values), which the two calls dispatch on as
+       any call does; a user object's pairing stays the emitter's */
     int has_def_writer = 0, has_def_reader = 0;
+    if (rt == TY_POLY) has_def_writer = has_def_reader = 1;
     for (int q = 0; q < c->nclasses && !(has_def_writer && has_def_reader); q++) {
       if (!c->classes[q].name || !is_builtin_reopen(c->classes[q].name)) continue;
       if (comp_method_in_chain(c, q, wname, NULL) >= 0) has_def_writer = 1;
