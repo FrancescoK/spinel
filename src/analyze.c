@@ -15412,6 +15412,7 @@ static void compute_byref_out_params(Compiler *c) {
           if (pi < 0 || pi >= 32) continue;
           LocalVar *p = scope_local(s, s->pnames[pi]);
           if (p && p->is_param && p->type == TY_STRING && !p->byref_out &&
+              !an_param_fresh_at(c, s, s->pnames[pi], id) &&
               an_byref_promote_group(c, s->name, pi, elig, blocked, n, cellh))
             changed = 1;
         }
@@ -15463,6 +15464,7 @@ static void compute_byref_out_params(Compiler *c) {
           if (pi < 0 || pi >= 32) continue;
           LocalVar *p = scope_local(s, vn);
           if (p && p->is_param && p->type == TY_STRING && !p->byref_out &&
+              !an_param_fresh_at(c, s, vn, id) &&
               an_byref_promote_group(c, s->name, pi, elig, blocked, n, cellh))
             changed = 1;
         } }
@@ -15483,6 +15485,7 @@ static void compute_byref_out_params(Compiler *c) {
           if (pi < 0 || pi >= 32) continue;
           LocalVar *p = scope_local(s, vn);
           if (p && p->is_param && p->type == TY_STRING && !p->byref_out &&
+              !an_param_fresh_at(c, s, vn, id) &&
               an_byref_promote_group(c, s->name, pi, elig, blocked, n, cellh))
             changed = 1;
         }

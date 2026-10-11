@@ -120,6 +120,10 @@ spinel: 1 refusal, nothing written
 == test/reject/builtin_value_ivar_set.rb [promote] rc=1
 spinel: test/reject/builtin_value_ivar_set.rb:6: an instance variable set on a String (`@x = v` in a String method, or instance_variable_set): a String is copied, not shared, so it keeps no identity for the variable yet (waits on #6765); see docs/limitations.md
 spinel: 1 refusal, nothing written
+== test/reject/byref_param_handed_on_before_fresh_rebind.rb [default] rc=1
+spinel: test/reject/byref_param_handed_on_before_fresh_rebind.rb:17: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
+== test/reject/byref_param_handed_on_before_fresh_rebind.rb [promote] rc=1
+spinel: test/reject/byref_param_handed_on_before_fresh_rebind.rb:17: a String a method returns as its parameter is mutated in place, or the variable passed in is (a String is not yet shared by reference through a method returning its parameter). Mutate and read the String through the variable passed in.
 == test/reject/class_body_block_next.rb [default] rc=1
 spinel: test/reject/class_body_block_next.rb:7: next in a block that is a class body (the block of Class.new, Module.new, Struct.new or Data.define): the definitions after it would be made or not at run time
 == test/reject/class_body_block_next.rb [promote] rc=1
