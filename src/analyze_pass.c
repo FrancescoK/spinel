@@ -2982,8 +2982,8 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
         if (rrty && sp_streq(rrty, "LocalVariableReadNode") && rnm2) {
           Scope *recv_scope = comp_scope_of(c, recv);
           int recv_sid = (int)(recv_scope - c->scopes);
-          int has_write = 0;
-          for (int _r = lw_index_first(&lw_ix, rnm2, recv_sid); _r >= 0 && !has_write; _r = lw_ix.next[_r]) {
+          int has_write = 0, unsettled = 0;
+          for (int _r = lw_index_first(&lw_ix, rnm2, recv_sid); _r >= 0 && !unsettled; _r = lw_ix.next[_r]) {
             int _wi = lw_ix.node[_r];
             if (comp_scope_of(c, _wi) != recv_scope) continue;
             const char *_wnm = nt_str(nt, _wi, "name");
@@ -2993,8 +2993,19 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
             if (_wr >= 0 && nt_kind(nt, _wr) == NK_LocalVariableReadNode &&
                 nt_str(nt, _wr, "name") && sp_streq(nt_str(nt, _wr, "name"), rnm2)) continue;
             has_write = 1;
+            if (_wv >= 0 && nt_kind(nt, _wv) == NK_CallNode && infer_type(c, _wv) == TY_UNKNOWN)
+              unsettled = 1;
           }
           if (!has_write) continue;
+          /* A call that has not answered yet this round (`input = root`
+             before root's return settles on a Box) leaves the slot UNKNOWN
+             only because it is still settling, and where a class of the
+             program owns the read too, the slot may well be one of its
+             objects: the Hash guessed from `input["k"]` lasted long enough to
+             type the block over `input["k"].each` boxed, which never narrows
+             back (#8401). As for the ivar reads above, wait for the second
+             stage. */
+          if (g_infer_optimistic && unsettled && an_user_defines_method(c, name)) continue;
         }
         kt = infer_type(c, argv[0]);
         if (kt == TY_SYMBOL) { vt = TY_INT; /* dummy: sym hash val is always poly */ }
