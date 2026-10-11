@@ -368,7 +368,7 @@ int an_user_defines_or_reads(Compiler *c, const char *name) {
        every caller stand its builtin arm down, and merely loading
        IO::Buffer turned `h.values` on a poly Hash into NoMethodError. */
     if (comp_poly_arm_defines(c, k, name)) ans = 1;
-    else if (!c->classes[k].is_native_class && comp_is_reader(&c->classes[k], name)) ans = 1;
+    else if (!c->classes[k].is_native_class && comp_reader_in_chain(c, k, name, NULL)) ans = 1;
   }
   /* A CLASS method of the same name is deliberately not consulted: it is only
      reachable through a Class-valued receiver, so it cannot be the answer to
