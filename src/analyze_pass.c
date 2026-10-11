@@ -4120,7 +4120,10 @@ static TyKind local_write_ty(Compiler *c, int id, int stashed) {
   if (k == NK_LocalVariableWriteNode) {
     nm = nt_str(nt, id, "name");
     int val_id = nt_ref(nt, id, "value");
+    LocalVar *self_prev = g_infer_self_write;
+    g_infer_self_write = nm ? scope_local(comp_scope_of(c, id), nm) : NULL;
     newt = infer_type(c, val_id);
+    g_infer_self_write = self_prev;
     /* a `x = nil` write doesn't pin the type: flow it as TY_NIL so ty_unify
        can narrow it against an object write (NULL encodes nil); a purely-nil
        local is mapped to poly by a post-fixpoint backstop. */
