@@ -5854,7 +5854,6 @@ int scope_proc_form_of(Compiler *c, int s) {
 int proc_form_live(Compiler *c, int s) {
   Scope *pf = &c->scopes[s];
   if (!pf->is_proc_form || pf->reachable) return 1;
-  if (pf->class_id < 0) return 1;
   int si = proc_form_source(c, s);
   return si < 0 || c->scopes[si].reachable;
 }
