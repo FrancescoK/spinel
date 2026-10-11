@@ -1928,11 +1928,12 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (an assignment to the read-only \$$LOAD_PATH compiled)"; ok=0; \
 	else grep -q "it is a read-only variable" "$$tmp/lp.out" || \
 	  { echo "reject-test: FAIL (an assignment to \$$LOAD_PATH refused without saying why)"; sed -n 1,5p "$$tmp/lp.out"; ok=0; }; fi; \
-	t=test/reject/load_path_alias.rb; \
+	for t in test/reject/load_path_alias.rb test/reject/load_path_alias_from.rb; do \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/la.c" >"$$tmp/la.out" 2>&1; then \
-	  echo "reject-test: FAIL (an alias of \$$LOAD_PATH to the program's own global compiled)"; ok=0; \
+	  echo "reject-test: FAIL ($$t: an alias between \$$LOAD_PATH and the program's own global compiled)"; ok=0; \
 	else grep -q "names the runtime's own Array" "$$tmp/la.out" || \
-	  { echo "reject-test: FAIL (an alias of \$$LOAD_PATH refused without saying why)"; sed -n 1,5p "$$tmp/la.out"; ok=0; }; fi; \
+	  { echo "reject-test: FAIL ($$t: an alias of \$$LOAD_PATH refused without saying why)"; sed -n 1,5p "$$tmp/la.out"; ok=0; }; fi; \
+	done; \
 	for t in test/reject/macro_*.rb; do \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/mc.c" >"$$tmp/mc.out" 2>&1; then \
 	  echo "reject-test: FAIL ($$t: a macro over state or a name it cannot compute was expanded)"; ok=0; \

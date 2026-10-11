@@ -409,8 +409,10 @@ static int super_value_used(const NodeTable *nt, const int *par, int v) {
    runtime holds, which the program changes in place. CRuby raises NameError
    for an assignment to one ("$: is a read-only variable"); here it would
    bind an ordinary global that no read of the name sees, so it is refused.
-   So is `alias $LOAD_PATH $mine`, after which CRuby reads the program's own
-   global through the name and the runtime's Array would answer instead. */
+   So is an alias with one of them on either side: after `alias $LOAD_PATH
+   $mine` CRuby reads the program's own global through the name, and after
+   `alias $mine $LOAD_PATH` the new name reads the runtime's Array, where
+   here either would bind an ordinary global instead. */
 void refuse_readonly_global_write(Compiler *c) {
   const NodeTable *nt = c->nt;
   static const NodeKind kinds[] = { NK_GlobalVariableWriteNode, NK_GlobalVariableOperatorWriteNode,
@@ -422,8 +424,10 @@ void refuse_readonly_global_write(Compiler *c) {
     for (int i = 0; i < cnt; i++) {
       const char *nm = nt_str(nt, ids[i], "name");
       if (kinds[k] == NK_AliasGlobalVariableNode) {
-        int nn = nt_ref(nt, ids[i], "new_name");
+        int nn = nt_ref(nt, ids[i], "new_name"), on = nt_ref(nt, ids[i], "old_name");
         nm = nn >= 0 ? nt_str(nt, nn, "name") : NULL;
+        const char *old = on >= 0 ? nt_str(nt, on, "name") : NULL;
+        if (!is_load_path_global(nm) && !is_loaded_features_global(nm)) nm = old;
       }
       if (!is_load_path_global(nm) && !is_loaded_features_global(nm)) continue;
       char msg[160];
