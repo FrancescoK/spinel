@@ -591,6 +591,10 @@ static void emit_poly_user_arm0(Compiler *c, int id, const char *name, TyKind re
                fld);
     pconv = PC_COPY;
   }
+  /* a plain String field (a Struct member) where the call answers a handle
+     (other classes' fields are handles): wrapped in a new one, as a String
+     argument to a handle parameter is; assigned bare, the C did not build */
+  else if (ivt == TY_STRING && ret == TY_STRBUF) buf_printf(b, "sp_String_new_shared(%s)", fld);
   else plan_put_plain(so, ret, fld, b);
   buf_puts(b, "; break;");
   if (g_plan_check) pa_observe(PA_READER, k, -1, ivt, pconv);
