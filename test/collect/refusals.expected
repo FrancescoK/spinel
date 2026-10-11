@@ -1472,6 +1472,12 @@ spinel: 1 refusal, nothing written
 == test/reject/string_yield_captured_param.rb [promote] rc=1
 spinel: test/reject/string_yield_captured_param.rb:4: a String is passed to a block's parameter `q` through `yield` into a capture-wrapper block, which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference through `yield` into a capture-wrapper block). Return the String from the proc and assign it, or append to it in the caller.
 spinel: 1 refusal, nothing written
+== test/reject/string_yield_line_read_after.rb [default] rc=1
+spinel: test/reject/string_yield_line_read_after.rb:7: a String is passed to a proc's parameter `s` through a yield into a block argument, which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference through a `yield` into a Method or proc passed with `&`). Return the String from the proc and assign it, or append to it in the caller.
+spinel: 1 refusal, nothing written
+== test/reject/string_yield_line_read_after.rb [promote] rc=1
+spinel: test/reject/string_yield_line_read_after.rb:7: a String is passed to a proc's parameter `s` through a yield into a block argument, which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference through a `yield` into a Method or proc passed with `&`). Return the String from the proc and assign it, or append to it in the caller.
+spinel: 1 refusal, nothing written
 == test/reject/string_yield_poly_param_global.rb [default] rc=1
 spinel: test/reject/string_yield_poly_param_global.rb:8: a String is passed to `w`'s parameter `x` through a yield into a block argument, which the method appends to: this call hands the method a copy, so the append would not reach the caller's String (a String is not yet shared by reference from a global variable). Return the String from the method and assign it, or append to it in the caller.
 spinel: 1 refusal, nothing written

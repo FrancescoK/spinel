@@ -848,6 +848,14 @@ It is shared as well through an UnboundMethod (`bind_call`,
 curried proc, and a proc or `Method` read out of a slot that holds other
 values too.
 
+A block parameter that a builtin iterator binds to a String of its own each
+turn (`File.foreach`, `IO#each_line`, `String#each_line`, `each_char`) and
+that the block hands only to a yield (`File.foreach(path) { |line| yield
+line }`) is never refused: nothing else can see that String grow, so the
+copy behaves as CRuby's String does. With any other read of it in the
+method, or a yield that is not a statement of the block's own body (one in
+a loop could hand the grown String over again), it is refused as above.
+
 With `--share-strings`, loading a native class such as `StringIO` does not
 by itself invalidate a fresh String returned by a user method through a
 boxed receiver. Native candidate entries with no Ruby method, reader, or

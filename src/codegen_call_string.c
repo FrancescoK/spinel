@@ -1029,7 +1029,9 @@ int emit_call_symbol_bool_string_arms(Compiler *c, int id, Buf *b, const NodeTab
     if (nt_kind(nt, block) == NK_BlockArgumentNode)
       unsupported(c, id, "a String iterator given its block as a block argument (&blk): write the block out, or use each_char / each_byte / each_line");
     int body = nt_ref(nt, block, "body");
-    const char *p0 = block_param_name(c, block, 0); if (p0) p0 = rename_local(p0);
+    /* the parameter's C name, which an inlined yield renames, and its own,
+       which the scope knows it by */
+    const char *p0n = block_param_name(c, block, 0), *p0 = p0n ? rename_local(p0n) : NULL;
     int ts = ++g_tmp, ti = ++g_tmp;
     Buf rb = expr_buf(c, recv);
     int is_line = sp_streq(name, "each_line") || sp_streq(name, "lines");
@@ -1038,7 +1040,7 @@ int emit_call_symbol_bool_string_arms(Compiler *c, int id, Buf *b, const NodeTab
     int is_byte = sp_streq(name, "each_byte") || sp_streq(name, "bytes");
     int is_cp = sp_streq(name, "codepoints");
     Scope *cs_ech = p0 ? comp_scope_of(c, id) : NULL;
-    LocalVar *clv_ech = (p0 && cs_ech) ? scope_local(cs_ech, p0) : NULL;
+    LocalVar *clv_ech = (p0 && cs_ech) ? scope_local(cs_ech, p0n) : NULL;
     int p0_box_poly_ech = clv_ech && clv_ech->type == TY_POLY;
     /* a parameter the analysis made a shared handle (the line is stored
        where an append reaches it): each line is a fresh String, so it is a
