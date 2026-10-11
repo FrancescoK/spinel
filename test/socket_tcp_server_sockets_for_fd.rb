@@ -1,3 +1,4 @@
+# spinel: int64 -- the RangeError checks pass 2**33, which a 32-bit Integer cannot hold
 require "socket"
 
 # Socket.tcp_server_sockets answers listening Sockets; TCPServer.for_fd

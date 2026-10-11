@@ -3,7 +3,8 @@
 # interrupt never fires later, after Timeout.timeout has returned.
 require "timeout"
 
-big = Array.new(3_000_000) { |i| (i * 7919) % 1_000_003 }
+# (the product stays under 2**31, so a 32-bit target runs this too)
+big = Array.new(3_000_000) { |i| (i * 7) % 1_000_003 }
 Thread.new do
   3.times do
     outcome =
