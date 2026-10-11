@@ -2359,7 +2359,7 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
                    c->classes[ci].c_name);
         emit_ctor_alloc_init(c, ci, initm, -1, id, b);
         if (c->classes[ci].is_value_type) buf_puts(b, "); break;");
-        else buf_printf(b, ",%d); break;", ci);
+        else { buf_puts(b, ","); arysub_box_id(c, ty_object(ci), b); buf_puts(b, "); break;"); }
         continue;
       }
       Buf ab9; memset(&ab9, 0, sizeof ab9);
@@ -2372,9 +2372,13 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
       if (c->classes[ci].is_value_type)
         buf_printf(b, "case %d: _t%d=sp_box_vobj_%s(sp_%s_new(%s));break;",
                    ci, rt2, c->classes[ci].c_name, c->classes[ci].c_name, args9);
-      else
-        buf_printf(b, "case %d: _t%d=sp_box_obj(sp_%s_new(%s),%d);break;",
-                   ci, rt2, c->classes[ci].c_name, args9, ci);
+      else {
+        /* an Array subclass instance is boxed as its Array (arysub_box_id) */
+        buf_printf(b, "case %d: _t%d=sp_box_obj(sp_%s_new(%s),",
+                   ci, rt2, c->classes[ci].c_name, args9);
+        arysub_box_id(c, ty_object(ci), b);
+        buf_puts(b, ");break;");
+      }
       free(ab9.p);
     }
     ctor_arity_emit(&aerr, b);
@@ -2460,9 +2464,11 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
         if (c->classes[ci].is_value_type)
           buf_printf(b, "sp_box_vobj_%s(sp_%s_new(%s)); break;",
                      c->classes[ci].c_name, c->classes[ci].c_name, ad.p ? ad.p : "");
-        else
-          buf_printf(b, "sp_box_obj(sp_%s_new(%s),%d); break;",
-                     c->classes[ci].c_name, ad.p ? ad.p : "", ci);
+        else {
+          buf_printf(b, "sp_box_obj(sp_%s_new(%s),", c->classes[ci].c_name, ad.p ? ad.p : "");
+          arysub_box_id(c, ty_object(ci), b);
+          buf_puts(b, "); break;");
+        }
         free(ad.p);
         continue;
       }
@@ -4313,7 +4319,7 @@ int emit_call_implicit_self_arms(Compiler *c, int id, Buf *b, const NodeTable *n
           if (st != TY_UNKNOWN) {
             if (g_plan_check) ucall_observe(c, id, omi, oc, 0);
             buf_printf(b, "sp_Object_%s(", mc(c->scopes[omi].name));
-            if (ty_is_object(st)) buf_printf(b, "sp_box_obj(%s, %d)", g_self, dispatch_cid);
+            if (ty_is_object(st)) { buf_printf(b, "sp_box_obj(%s, ", g_self); arysub_box_id(c, st, b); buf_puts(b, ")"); }
             else emit_boxed_text(c, st, g_self, b);
             emit_args_filled(c, omi, nt_ref(nt, id, "arguments"), ", ", b);
             buf_puts(b, ")");

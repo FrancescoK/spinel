@@ -9603,7 +9603,12 @@ void emit_ctor_arm_case(Compiler *c, int ci, int rt2, int self_t, const char *pr
   }
   else buf_printf(&obj, "sp_%s_new(%s)", cn, args);
   if (c->classes[ci].is_value_type) buf_printf(b, "_t%d=sp_box_vobj_%s(%s);", rt2, cn, obj.p);
-  else buf_printf(b, "_t%d=sp_box_obj(%s,%d);", rt2, obj.p, ci);
+  else {
+    /* an Array subclass instance is boxed as its Array (arysub_box_id) */
+    buf_printf(b, "_t%d=sp_box_obj(%s,", rt2, obj.p);
+    arysub_box_id(c, ty_object(ci), b);
+    buf_puts(b, ");");
+  }
   buf_puts(b, pre ? " } break;" : " break;");
   free(obj.p);
 }
@@ -10320,8 +10325,11 @@ int emit_ctor_splice_arm(Compiler *c, int id, int ci, int initm, int rt2, Buf *b
     buf_printf(b, "case %d: { %s_t%d=", ci, apre.p ? apre.p : "", rt2);
     if (c->classes[ci].is_value_type)
       buf_printf(b, "sp_box_vobj_%s(%s); } break; ", c->classes[ci].c_name, yb.p);
-    else
-      buf_printf(b, "sp_box_obj(%s, %d); } break; ", yb.p, ci);
+    else {
+      buf_printf(b, "sp_box_obj(%s, ", yb.p);
+      arysub_box_id(c, ty_object(ci), b);
+      buf_puts(b, "); } break; ");
+    }
   }
   else unsupported(c, id, "splicing this block into a yielding initialize on a Class value");
   free(apre.p); free(yb.p);
@@ -10853,8 +10861,11 @@ void emit_class_value_new_kw(Compiler *c, int id, int recv, int boxed, Buf *b) {
         buf_printf(b, "; _t%d=", rt2); }
       if (c->classes[ci].is_value_type)
         buf_printf(b, "sp_box_vobj_%s(sp_%s_new()); } break; ", c->classes[ci].c_name, c->classes[ci].c_name);
-      else
-        buf_printf(b, "sp_box_obj(sp_%s_new(), %d); } break; ", c->classes[ci].c_name, ci);
+      else {
+        buf_printf(b, "sp_box_obj(sp_%s_new(), ", c->classes[ci].c_name);
+        arysub_box_id(c, ty_object(ci), b);
+        buf_puts(b, "); } break; ");
+      }
       continue;
     }
     /* A `**h` alone funding a positional the call is short of binds only
@@ -10953,9 +10964,11 @@ void emit_class_value_new_kw(Compiler *c, int id, int recv, int boxed, Buf *b) {
     if (c->classes[ci].is_value_type)
       buf_printf(b, "sp_box_vobj_%s(sp_%s_new(%s)); } break; ", c->classes[ci].c_name,
                  c->classes[ci].c_name, aval.p ? aval.p : "");
-    else
-      buf_printf(b, "sp_box_obj(sp_%s_new(%s), %d); } break; ", c->classes[ci].c_name,
-                 aval.p ? aval.p : "", ci);
+    else {
+      buf_printf(b, "sp_box_obj(sp_%s_new(%s), ", c->classes[ci].c_name, aval.p ? aval.p : "");
+      arysub_box_id(c, ty_object(ci), b);
+      buf_puts(b, "); } break; ");
+    }
     free(apre.p); free(aval.p);
   }
   /* `k.new(*args)`: a builtin class takes the spread array's elements */
@@ -11187,7 +11200,7 @@ void emit_super_class_new(Compiler *c, int id, Buf *b) {
     emit_super_new_ctor(c, id, k, &cb);
     buf_printf(b, " case %d: _t%d = ", k, rt);
     if (c->classes[k].is_value_type) buf_printf(b, "sp_box_vobj_%s(%s)", c->classes[k].c_name, cb.p ? cb.p : "");
-    else buf_printf(b, "sp_box_obj(%s, %d)", cb.p ? cb.p : "NULL", k);
+    else { buf_printf(b, "sp_box_obj(%s, ", cb.p ? cb.p : "NULL"); arysub_box_id(c, ty_object(k), b); buf_puts(b, ")"); }
     buf_puts(b, "; break;");
     free(cb.p);
   }
@@ -12256,7 +12269,7 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
         buf_printf(b, is_val ? "sp_box_vobj_%s(" : "sp_box_obj(", c->classes[ci].c_name);
         emit_ctor_alloc_init(c, ci, initm, nt_ref(nt, id, "arguments"), id, b);
         if (is_val) buf_puts(b, ")");
-        else buf_printf(b, ", %d)", ci);
+        else { buf_puts(b, ", "); arysub_box_id(c, ty_object(ci), b); buf_puts(b, ")"); }
         { *out = 1; return 1; }
       }
       if (is_val) buf_printf(b, "sp_box_vobj_%s(sp_%s_new(", c->classes[ci].c_name, c->classes[ci].c_name);
@@ -12264,7 +12277,7 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       if (initm >= 0) emit_args_filled(c, initm, nt_ref(nt, id, "arguments"), "", b);
       if (initm >= 0) emit_ctor_block_slot(c, id, initm, c->scopes[initm].nparams > 0 ? ", " : "", b);
       if (is_val) buf_puts(b, "))");
-      else buf_printf(b, "), %d)", ci);
+      else { buf_puts(b, "), "); arysub_box_id(c, ty_object(ci), b); buf_puts(b, ")"); }
       { *out = 1; return 1; }
     }
   }
