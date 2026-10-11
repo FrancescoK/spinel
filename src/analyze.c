@@ -15020,6 +15020,68 @@ void an_byref_eligible_scopes(Compiler *c, char *elig) {
   free(idx);
 }
 
+/* Is `v` a String nobody else holds: a literal, or a builtin String method
+   that answers a new one (`text.gsub(...)`, `text.strip`, `text.dup`)? On a
+   receiver that may also be another kind of object, only a substitution no
+   method of the program's own is named after: no other builtin has one. */
+static int an_fresh_string_value(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  v = an_unparen(nt, v);
+  if (v < 0) return 0;
+  NodeKind k = nt_kind(nt, v);
+  if (k == NK_StringNode || k == NK_InterpolatedStringNode) return 1;
+  if (k != NK_CallNode) return 0;
+  int r = nt_ref(nt, v, "receiver");
+  const char *nm = nt_str(nt, v, "name");
+  TyKind rt = r >= 0 ? comp_ntype(c, r) : TY_UNKNOWN;
+  if (!nm || (rt != TY_STRING && rt != TY_STRBUF && rt != TY_POLY)) return 0;
+  int sh = bop_share_named(TY_STRING, nm);
+  int fresh = rt == TY_POLY ? sh == BSH_SUBST && an_any_scope_by_name(c, nm) < 0
+                            : sh == BSH_SUBST || sh == BSH_PURE || sp_streq(nm, "dup");
+  return fresh && cplan_user_fresh(c, v)->dispatch == CP_NONE;
+}
+/* Does a write of local `vn` under `node` bind anything but a fresh String? */
+static int an_writes_unfresh(Compiler *c, int node, const char *vn, int depth) {
+  const NodeTable *nt = c->nt;
+  if (node < 0 || node >= nt->count) return 0;
+  if (depth > 300) return 1;
+  NodeKind k = nt_kind(nt, node);
+  const char *wn = comp_is_local_write(k) ? nt_str(nt, node, "name") : NULL;
+  if (wn && sp_streq(wn, vn) &&
+      (k != NK_LocalVariableWriteNode || !an_fresh_string_value(c, nt_ref(nt, node, "value"))))
+    return 1;
+  const SpNode *nd = &nt->nodes[node];
+  for (int i = 0; i < nd->nr; i++)
+    if (an_writes_unfresh(c, nd->r[i].ref, vn, depth + 1)) return 1;
+  for (int i = 0; i < nd->na; i++)
+    for (int j = 0; j < nd->a[i].n; j++)
+      if (an_writes_unfresh(c, nd->a[i].ids[j], vn, depth + 1)) return 1;
+  return 0;
+}
+/* Can parameter `vn` of scope s only hold a String the method made itself
+   at node `use`? It does when the body rebinds it to a fresh String in a
+   statement ahead of the one holding `use`, and every write of it binds
+   one. Mutated or handed on there, it is not the caller's String:
+     def strip(text)
+       text = text.gsub(/#/, '')
+       text.sub!(/\A /, '')   # changes the method's own String
+       text
+     end
+   Lent anyway, the rebind put the group on the shared handle, and a caller
+   passing its own parameter on took the handle too, so its later
+   `text = other(text)` was refused as a mutated parameter. */
+static int an_param_fresh_at(Compiler *c, Scope *s, const char *vn, int use) {
+  const NodeTable *nt = c->nt;
+  if (!vn || s->body < 0 || nt_kind(nt, s->body) != NK_StatementsNode) return 0;
+  int bn = 0, ahead = 0;
+  const int *bs = nt_arr(nt, s->body, "body", &bn);
+  for (int j = 0; j < bn && !a_subtree_contains(nt, bs[j], use, 0); j++) {
+    const char *wn = nt_kind(nt, bs[j]) == NK_LocalVariableWriteNode ? nt_str(nt, bs[j], "name") : NULL;
+    if (wn && sp_streq(wn, vn)) ahead = 1;
+  }
+  return ahead && !an_writes_unfresh(c, s->body, vn, 0);
+}
+
 static void compute_byref_out_params(Compiler *c) {
   const NodeTable *nt = c->nt;
   int n = c->nscopes;
@@ -15133,6 +15195,7 @@ static void compute_byref_out_params(Compiler *c) {
           /* the whole name group takes it or none of it does; the cell deref
              forms the body already emits are what the ABI rides on */
           if (p && p->is_param && p->type == TY_STRING && !p->byref_out &&
+              !an_param_fresh_at(c, s, vn, id) &&
               an_byref_promote_group(c, s->name, pi, elig, blocked, n, cellh))
             changed = 1;
         }
@@ -18065,8 +18128,9 @@ static int smc_next_of(int u) { return u >= 0 && u < smc_count ? smc_next[u] : -
 /* Does scope `mi` mutate its parameter `pi` in place (`p << x`, `p.gsub!`)?
    The byref machinery answers the same question, but it is computed after the
    fixpoint (compute_byref_out_params), so this pass -- which runs inside it --
-   asks the body directly. Only a plain local read of the parameter counts:
-   a rebind makes the name someone else's. Encoding and frozen-state changes
+   asks the body directly. Only a plain local read of the parameter counts,
+   and not one after the body rebinds it to a fresh String, as the byref
+   pass asks (an_param_fresh_at). Encoding and frozen-state changes
    under sharing need the same parameter handle as byte mutations. */
 static int an_param_mutated_in_place(Compiler *c, int mi, int pi) {
   if (mi < 0 || mi >= c->nscopes) return 0;
@@ -18083,7 +18147,7 @@ static int an_param_mutated_in_place(Compiler *c, int mi, int pi) {
     int ur = nt_ref(nt, u, "receiver");
     if (ur < 0 || nt_kind(nt, ur) != NK_LocalVariableReadNode) continue;
     const char *urn = nt_str(nt, ur, "name");
-    if (urn && sp_streq(urn, pn)) return 1;
+    if (urn && sp_streq(urn, pn) && !an_param_fresh_at(c, m, pn, u)) return 1;
     if (urn && an_local_pure_alias_of(c, mi, urn, pn, 0)) return 1;
   }
   return 0;
