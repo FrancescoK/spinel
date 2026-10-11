@@ -16596,7 +16596,9 @@ static sp_RbVal sp_poly_hash_dproc_bridge(sp_PolyPolyHash *h, sp_RbVal key, void
   }
   if (source.cls_id == SP_BUILTIN_POLY_POLY_HASH) {
     sp_PolyPolyHash *ph = (sp_PolyPolyHash *)source.v.p;
-    return ph->dproc(ph, key, ph->dproc_self);
+    /* the proc's hash is the merged one, which a `h[k] = v` in it writes,
+       not the receiver the merge copied (#8507) */
+    return ph->dproc(h, key, ph->dproc_self);
   }
   return sp_box_nil();
 }
