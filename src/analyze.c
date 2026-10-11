@@ -33781,6 +33781,24 @@ static void widen_nullable_keyed_hash_literals(Compiler *c) {
     cv->type = TY_POLY; const_widened = 1;
     c->ntype[id] = TY_POLY;
   }
+  /* ...and a constant that is only another's name (`TEXT = Theme::TEXT`)
+     holds the same box: its own type came from the read before the
+     widening, and a plain slot assigned the box did not build (#8575) */
+  for (int again = const_widened; again; ) {
+    again = 0;
+    NT_FOREACH_KIND(nt, NK_ConstantWriteNode, id) {
+      const char *cn = nt_str(nt, id, "name");
+      int v = an_unparen(nt, nt_ref(nt, id, "value"));
+      LocalVar *cv = cn ? comp_const(c, cn) : NULL;
+      if (!cv || v < 0 || (cv->type != TY_INT && cv->type != TY_FLOAT)) continue;
+      NodeKind vk = nt_kind(nt, v);
+      if (vk != NK_ConstantReadNode && vk != NK_ConstantPathNode) continue;
+      LocalVar *src = nt_str(nt, v, "name") ? comp_const(c, nt_str(nt, v, "name")) : NULL;
+      if (!src || src->type != TY_POLY) continue;
+      cv->type = TY_POLY; c->ntype[id] = TY_POLY; c->ntype[v] = TY_POLY;
+      again = 1;
+    }
+  }
   if (const_widened)
     for (int si = 0; si < c->nscopes; si++) if (c->scopes[si].body >= 0) wnh_note(c->scopes[si].body);
   /* the expressions over a widened hash (its reads' `[]`, a call it is an
