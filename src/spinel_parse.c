@@ -281,6 +281,7 @@ static char *cstr(pm_constant_id_t id) {
 static void sp_find_builtin_ranges(const char *src);
 static int sp_in_builtin(const uint8_t *at);
 #include "sp_macro.c"
+#include "sp_const_loop.c"
 
 /* ---- String escaping ---- */
 static char *escape_str(const uint8_t *src, size_t len) {
@@ -5602,6 +5603,12 @@ static int sp_parse_emit(const char *source_file, const char *argv0, SpStrBuf *o
   source = sp_splice_builtin_enumerator(source, argv0, &fsl, &fsl_n);
   sp_src_lex_drop();
   if (sp_req_written != sp_req_resolved) g_require_unread = 1;
+
+  /* class-body loops over a literal Hash that define constants and classes
+     (`H.each { |k, v| const_set(..., Class.new(P)) }`), run here and written
+     back as the body's statements; line count kept */
+  { char *tl = sp_expand_table_loops(source);
+    if (tl) { free(source); source = tl; } }
 
   /* class-body macro calls (module_eval'd templates, computed
      attach_function / const_set names) expanded in place; line count kept */

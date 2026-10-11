@@ -7064,9 +7064,16 @@ static int node_is_oint_asked(Compiler *c, int node) {
                       class_chain_depth(c, cid, rdef < 0 ? cid : rdef) <= class_chain_depth(c, cid, mdef < 0 ? cid : mdef))))
         return reader_ivar_has_nilbit(c, cid, nm);
     }
-    else if (nt_kind(nt, r) == NK_ConstantReadNode) {
+    else if (nt_kind(nt, r) == NK_ConstantReadNode || nt_kind(nt, r) == NK_ConstantPathNode) {
       int rci = comp_class_index(c, nt_str(nt, r, "name"));
       if (rci >= 0) mi = comp_cmethod_in_chain(c, rci, nm, NULL);
+    }
+    /* `obj.class.m`: the switch over obj's class and the classes below it
+       (emit_call_body's class-method dispatch) */
+    else if (nt_kind(nt, r) == NK_CallNode && sp_streq(nt_str(nt, r, "name"), "class") &&
+             nt_ref(nt, r, "receiver") >= 0 && ty_is_object(comp_ntype(c, nt_ref(nt, r, "receiver")))) {
+      int ocid = ty_object_class(comp_ntype(c, nt_ref(nt, r, "receiver")));
+      if (comp_cmethod_in_chain(c, ocid, nm, NULL) >= 0) return obj_class_cmethod_oint(c, ocid, nm);
     }
     /* a builtin value's method the program reopened its class with
        (`class Symbol; def mark = ...`) */

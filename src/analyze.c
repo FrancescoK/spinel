@@ -32341,7 +32341,7 @@ int nullable_int_value(Compiler *c, int v) {
           if (sm >= 0 && sci->ivar_nullable_int[sm]) return 1;
         }
         if (ty_is_object(rt)) mi = comp_method_in_chain(c, ty_object_class(rt), cn, NULL);
-        else if (nt_kind(nt, rcv) == NK_ConstantReadNode) {
+        else if (nt_kind(nt, rcv) == NK_ConstantReadNode || nt_kind(nt, rcv) == NK_ConstantPathNode) {
           int rci = comp_class_index(c, nt_str(nt, rcv, "name"));
           if (rci >= 0) mi = comp_cmethod_in_chain(c, rci, cn, NULL);
         }
@@ -32364,8 +32364,15 @@ int nullable_int_value(Compiler *c, int v) {
     }
     TyKind rt = infer_type(c, rcv);
     if (ty_is_object(rt)) return dispatch_answers_nil(c, ty_object_class(rt), cn, 0);
-    if (nt_kind(nt, rcv) == NK_ConstantReadNode)
+    if (nt_kind(nt, rcv) == NK_ConstantReadNode || nt_kind(nt, rcv) == NK_ConstantPathNode)
       return dispatch_answers_nil(c, comp_class_index(c, nt_str(nt, rcv, "name")), cn, 1);
+    /* `self.class.m` in an instance method: the class methods of self's
+       class and of every class below it */
+    if (nt_kind(nt, rcv) == NK_CallNode && sp_streq(nt_str(nt, rcv, "name"), "class") &&
+        nt_kind(nt, nt_ref(nt, rcv, "receiver")) == NK_SelfNode) {
+      Scope *ss = comp_scope_of(c, v);
+      if (ss && !ss->is_cmethod && ss->class_id >= 0) return dispatch_answers_nil(c, ss->class_id, cn, 1);
+    }
     return 0;
   }
   if (nt_kind(nt, v) == NK_LocalVariableReadNode) {
@@ -39297,6 +39304,7 @@ static void an_phase_desugar_register(Compiler *c) {
   desugar_ffi_library_functions(c);   /* attach_function :f -> def self.f (the ffi gem) */
   desugar_singleton_class_mixin(c);      /* singleton_class.prepend(M) in a body -> extend M */
   desugar_singleton_attr(c);             /* singleton_class.attr_accessor :x -> def self.x / def self.x= */
+  desugar_sclass_readers_through_class(c); /* class << self; attr_reader :x read as obj.class.x -> def x = @x */
   desugar_handle_attr_accessor(c);       /* Thread.attr_accessor :x -> a Thread reopening on its store */
   desugar_constant_path_self_alias(c);   /* A::B::C = remove_const(:C) (C a class) -> dropped */
   /* builtins/enumerable.rb, spliced by the parser: its definitions become
