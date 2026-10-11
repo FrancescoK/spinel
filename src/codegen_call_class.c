@@ -1110,14 +1110,6 @@ static int subtree_changes_local(const NodeTable *nt, int n, const char *name) {
   return 0;
 }
 
-/* Does the explicit writer call id reaches change its parameter in place? */
-static int writer_changes_param(Compiler *c, int id) {
-  const CallPlan *p = cplan_user(c, id);
-  if (p->dispatch != CP_DIRECT || p->mi <= 0) return 1;
-  const Scope *m = &c->scopes[p->mi];
-  return m->nparams != 1 || !m->pnames[0] || subtree_changes_local(c->nt, m->body, m->pnames[0]);
-}
-
 /* Does an explicit writer that call id can reach (cplan_targets) change
    its parameter in place? */
 int writers_change_param(Compiler *c, int id) {
@@ -1131,49 +1123,6 @@ int writers_change_param(Compiler *c, int id) {
   return 0;
 }
 
-/* Is call id the receiver of a blockless iterator's Enumerator? */
-static int assign_feeds_enumerator(Compiler *c, int id) {
-  const NodeTable *nt = c->nt;
-  int q = comp_recv_parent(c, id);
-  if (q < 0 || nt_kind(nt, q) != NK_CallNode) return 0;
-  if (comp_ntype(c, q) == TY_ENUMERATOR) return 1;
-  /* (the iterators a chain such as `.each_char.with_index` fuses) */
-  const char *nm = nt_str(nt, q, "name");
-  /* (`.each_char.with_index` is rewritten to a blockless `each` over
-     `chars`, which answers an Enumerator) */
-  int w = comp_recv_parent(c, q);
-  const char *wn = w >= 0 && nt_kind(nt, w) == NK_CallNode ? nt_str(nt, w, "name") : NULL;
-  if (wn && (is_enumerator_with(wn) ||
-             (is_each_walk(wn) && nt_ref(nt, w, "block") < 0 && comp_ntype(c, w) == TY_ENUMERATOR))) return 1;
-  return nm && nt_ref(nt, q, "block") < 0 && is_str_each_iter(nm);
-}
-
-/* Does the call id feed an Enumerator whose copy of the bytes nobody can
-   tell from the live String: a lazy chain over it (read when it is
-   consumed), or a local read only to step it (`next`, `peek`, `size`)? */
-static int enum_copy_unseen(Compiler *c, int id) {
-  const NodeTable *nt = c->nt;
-  int q = comp_recv_parent(c, id), w = q >= 0 ? comp_recv_parent(c, q) : -1;
-  const char *wn = w >= 0 && nt_kind(nt, w) == NK_CallNode ? nt_str(nt, w, "name") : NULL;
-  if (wn && is_lazy_name(wn)) return 1;
-  /* the local the Enumerator is written to, and every read of it */
-  int p = q >= 0 ? comp_lwrite_of_value(c, q) : -1;
-  if (p < 0 || comp_lwrite_next(c, p) >= 0) return 0;
-  const char *ln = nt_str(nt, p, "name");
-  Scope *sc = comp_scope_of(c, p);
-  if (!ln || !sc) return 0;
-  int si = (int)(sc - c->scopes);
-  for (int e = comp_vsite_first(c, VS_READ, NK_LocalVariableReadNode, ln, si); e >= 0; e = comp_vsite_next(c, e)) {
-    int n = comp_vsite_var(c, e);
-    if (nt_kind(nt, n) != NK_LocalVariableReadNode || comp_scope_of(c, n) != sc || !sp_streq(nt_str(nt, n, "name"), ln))
-      continue;
-    int u = comp_recv_parent(c, n);
-    const char *un = u >= 0 && nt_kind(nt, u) == NK_CallNode ? nt_str(nt, u, "name") : NULL;
-    if (!un || !is_enum_step_name(un)) return 0;
-  }
-  return 1;
-}
-
 static void assign_value_route(Compiler *c, int id, int value, int as_string, int explicit_writer) {
   static const char msg[] =
     "an attribute assignment in value position (kept, passed on, or a method's last expression, "
@@ -1184,12 +1133,10 @@ static void assign_value_route(Compiler *c, int id, int value, int as_string, in
   /* a dropped value (a statement) is no consumer of a copy */
   const int *par = codegen_node_parents(c, id);
   if (c->share_strings && par && (assign_value_dropped(c, id, par) || assign_mutated_receiver(c, id, explicit_writer))) return;
-  /* an Enumerator over an explicit writer's value keeps the bytes it was
-     made from, as one over a local variable's String does: left as it was
-     where that copy is never told from the String (enum_copy_unseen), and
-     where the writer does not change the String it was handed */
-  if (c->share_strings && explicit_writer && assign_feeds_enumerator(c, id) && !writer_changes_param(c, id) &&
-      enum_copy_unseen(c, id)) return;
+  /* nor is a String iterator's Enumerator walked where it is made, which
+     reads the String as it is there (one kept holds the handle:
+     str_each_enum_keeps) */
+  if (c->share_strings && str_each_enum_walked_here(c, comp_recv_parent(c, id))) return;
   ShareRoute q = share_route(id, value, 0);
   q.to = id;
   Scope *sc = comp_scope_of(c, id);
@@ -1912,11 +1859,6 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
              the value is taken as the handle it is that handle (hv) */
           Repr hr = repr_of(c, id);
           int shr = user_assign_handle(c, id), hv = shr && (hr.handle || hr.demand);
-          if (shr && assign_feeds_enumerator(c, id) && writer_changes_param(c, id))
-            unsupported_feature(c, id, "under --share-strings, an Enumerator over the value of an assignment whose "
-                                "writer changes the String it was handed would keep a copy of it (a String is not "
-                                "yet shared by reference through an Enumerator). Make the assignment a statement "
-                                "of its own.");
           if (shr && !hv) assign_value_route(c, id, argv[0], 0, 1);
           if (simple) {
             buf_puts(b, "({ (void)(");

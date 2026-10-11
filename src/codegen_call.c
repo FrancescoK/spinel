@@ -18523,6 +18523,11 @@ int str_each_enum_keeps(Compiler *c, int id) {
   return str_each_enum_call(c, id) && str_each_recv_shares(c, nt_ref(c->nt, id, "receiver")) &&
          enum_outlives_expr(c, id);
 }
+/* ...and one walked where it is made reads its receiver's String as it is
+   there: a copy of it is no other String than the walk sees */
+int str_each_enum_walked_here(Compiler *c, int id) {
+  return str_each_enum_call(c, id) && !enum_outlives_expr(c, id);
+}
 /* Is call id a blockless String iterator on a boxed receiver answering an
    Enumerator (poly_str_iter_enum), which is over the handle for a box of a
    shared String's (sp_poly_str_each_enum)? */

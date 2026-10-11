@@ -1,3 +1,7 @@
+test/share/attr_assign_writer_enumerator.rb	test/share/attr_assign_writer_enumerator.rb:45	CallNode (a=)	boxed as bytes by sp_box_str (bytes face)
+test/share/attr_assign_writer_enumerator.rb	test/share/attr_assign_writer_enumerator.rb:53	CallNode (a=)	boxed as bytes by sp_box_str (bytes face)
+test/share/attr_assign_writer_enumerator.rb	test/share/attr_assign_writer_enumerator.rb:61	CallNode (a=)	boxed as bytes by sp_box_str (bytes face)
+test/share/attr_assign_writer_enumerator.rb	test/share/attr_assign_writer_enumerator.rb:67	CallNode (a=)	boxed as bytes by sp_box_str (bytes face)
 test/share/bang_boxed_receiver_value.rb	test/share/bang_boxed_receiver_value.rb:59	LocalVariableReadNode (y)	changed in place as bytes by sp_str_substr (bytes face)
 test/share/bang_boxed_receiver_value.rb	test/share/bang_boxed_receiver_value.rb:61	LocalVariableReadNode (y)	changed in place as bytes by sp_str_substr (bytes face)
 test/share/bang_boxed_receiver_value.rb	test/share/bang_boxed_receiver_value.rb:63	LocalVariableReadNode (e__bp)	changed in place as bytes by sp_String_append_bin (bytes face)
