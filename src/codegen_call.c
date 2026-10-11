@@ -1639,6 +1639,88 @@ int poly_cls_value_cands(Compiler *c, int id, const char *name, int argc, const 
   return nc8;
 }
 
+typedef void (*PolyProbeFn)(Compiler *c, int id, void *ctx, Buf *nb);
+static int poly_arm_probe(Compiler *c, int id, PolyProbeFn fn, void *ctx, Buf *nb, char **arm_pre);
+/* the answer type, asked under the face; no emission when it does not fit
+   the slot, or is an Integer / Float that can be nil */
+typedef struct { TyKind ret, got; } ClsValueProbe;
+static void cls_value_probe_fn(Compiler *c, int id, void *ctx, Buf *nb) {
+  ClsValueProbe *pr = ctx;
+  TyKind got = infer_type(c, id);
+  if (got == TY_UNKNOWN || (pr->ret != TY_POLY && got != pr->ret) ||
+      (oint_kind(got) && node_is_oint(c, id))) return;
+  pr->got = got;
+  emit_call(c, id, nb);
+}
+/* The default arm of the class-side switch below: a class value whose class
+   defines no class method of this name, answered as a Class the compiler
+   does not know statically -- the receiver read as the unboxed sp_Class
+   under a TY_CLASS face, with the program's class methods of the name out of
+   reach (the builtin-arm context). Declines (answers 0) where that emission
+   is a raise, whose message the switch's own default already gives, where
+   it would read an argument with a side effect a second time, or where its
+   answer does not fit the slot the dispatch assigns. */
+static int emit_poly_cls_value_builtin(Compiler *c, int id, const char *name, int argc,
+                                       const int *argv, const int *atmp, const TyKind *atmp_ty,
+                                       TyKind ret, int tv, int tr, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int recv = nt_ref(nt, id, "receiver");
+  if (recv < 0 || !name || nt_ref(nt, id, "block") >= 0) return 0;
+  if (g_pd_skip == id || g_n_argov + argc + 1 > MAX_ARG_OVERRIDE) return 0;
+  if (argc > 0 && (!atmp || !atmp_ty)) return 0;
+  for (int a = 0; a < argc; a++) {
+    if (nt_kind(nt, argv[a]) == NK_SplatNode) return 0;
+    if (subtree_has_side_effect(c, argv[a]) && repr_of(c, argv[a]).as_ty != atmp_ty[a]) return 0;
+  }
+  /* the result slot's form, as the dispatch seeded it: an Integer / Float
+     answer that can be nil is held as the oint */
+  int slot_o = oint_kind(ret) && node_is_oint(c, id);
+  int slot = view_bind(recv, "sp_unbox_class(_t%d)", tv);
+  for (int a = 0; a < argc; a++)
+    if (subtree_has_side_effect(c, argv[a])) view_bind(argv[a], "_t%d", atmp[a]);
+  int va = view_push_arm(id, g_prbd_skip, 1);
+  int vw = view_push(c, recv, TY_CLASS);
+  int fv = view_push_face(recv, TY_CLASS);
+  /* under the silent probe: an emitter that refuses the call on a Class
+     drops the arm, not the build (as emit_poly_builtin_default) */
+  ClsValueProbe pr = { ret, TY_UNKNOWN };
+  Buf *nb = calloc(1, sizeof *nb);
+  char *arm_pre = NULL;
+  int ok = poly_arm_probe(c, id, cls_value_probe_fn, &pr, nb, &arm_pre) && pr.got != TY_UNKNOWN;
+  TyKind got = pr.got;
+  view_pop(c, fv);
+  view_pop(c, vw);
+  view_pop(c, va);
+  view_unbind(slot);
+  const char *t = ok && nb->p ? share_check_unmarked(nb->p) : NULL;
+  /* an answer that can itself raise NoMethodError is the Class emitter's
+     own class-method switch (the program's methods of the name, then the
+     raise): no better than the default it would replace */
+  if (!t || strncmp(t, "sp_raise_", 9) == 0 || strstr(t, "sp_raise_nomethod(") ||
+      strstr(t, "sp_raise_poly_nomethod(") || strstr(t, "sp_raise_cls(\"NoMethodError\"") ||
+      (got == TY_VOID && tr >= 0 && ret != TY_POLY)) {
+    free(nb->p); free(nb); free(arm_pre);
+    return 0;
+  }
+  buf_puts(b, " default:");
+  if (arm_pre) buf_printf(b, " { %s", arm_pre);
+  if (tr < 0 || got == TY_VOID) {
+    buf_printf(b, " %s;", nb->p);
+    if (tr >= 0) buf_printf(b, " _t%d = sp_box_nil();", tr);
+  }
+  else if (ret == TY_POLY && got != TY_POLY) {
+    Buf ib; memset(&ib, 0, sizeof ib);
+    emit_boxed_text(c, got, nb->p, &ib);
+    buf_printf(b, " _t%d = %s;", tr, ib.p ? ib.p : "sp_box_nil()");
+    free(ib.p);
+  }
+  else if (slot_o) buf_printf(b, " _t%d = %s(%s);", tr, oint_of(got), nb->p);
+  else buf_printf(b, " _t%d = %s;", tr, nb->p);
+  buf_puts(b, arm_pre ? " } break;" : " break;");
+  free(nb->p); free(nb); free(arm_pre);
+  return 1;
+}
+
 int emit_poly_cls_value_prearm(Compiler *c, int id, const char *name, int argc,
                                const int *atmp, const TyKind *atmp_ty, const int *htmp,
                                const PolyKw *kw, int tv, int tr, TyKind ret, int blk_tmp, Buf *b) {
@@ -1718,6 +1800,14 @@ int emit_poly_cls_value_prearm(Compiler *c, int id, const char *name, int argc,
       (ret == TY_POLY || ret == TY_POLY_ARRAY))
     buf_printf(b, " default: _t%d = %ssp_cls_members(_t%d)%s; break;", tr,
                ret == TY_POLY ? "sp_box_poly_array(" : "", tv, ret == TY_POLY ? ")" : "");
+  /* any other class value answers what Module / Class / Kernel answer for
+     it, as it would with no class method of this name in the program: a
+     `def self.inspect` in one module left every other class raising
+     NoMethodError from `k.inspect` (minitest's mu_pp). The re-entry
+     declines where the builtin has no such method, keeping the raise. */
+  else if (!rdef8 && !(kw && kw->kwh >= 0) && argc == an &&
+           emit_poly_cls_value_builtin(c, id, name, argc, argv, atmp, atmp_ty, ret, tv, tr, b))
+    ;
   else if (!rdef8) buf_printf(b, " default: %s; break;", rraise8);
   buf_puts(b, " } }\nelse ");
   free(ccls8); free(cmi8); free(cexp8);
@@ -6759,6 +6849,51 @@ int emit_poly_builtin_default(Compiler *c, int id, int recv, const char *name,
     return 1;
   return emit_poly_builtin_default_at(c, id, recv, name, argc, argv, atmp, atmp_ty, ret, tv, tr, label, b);
 }
+/* Emits call `id` through fn under the silent probe the dynamic-send arms
+   use, so an emitter that refuses drops the arm and not the build, with the
+   node pinned (an infer_type the emission asks must not record its answer
+   over the node's own type) and the prelude it hoists captured into
+   *arm_pre for the arm (NULL when there is none). Answers whether the
+   emission finished; when it did not, what it wrote is rolled back. */
+static int poly_arm_probe(Compiler *c, int id, PolyProbeFn fn, void *ctx, Buf *nb, char **arm_pre) {
+  /* on the heap: the probe may longjmp back after an emitter wrote to it */
+  Buf *pb = calloc(1, sizeof *pb);
+  Buf *sv_gpre = g_pre;
+  int sv_probe = g_unsup_probe, sv_open_defaults = g_open_defaults;
+  ConvHold *sv_hold = g_conv_hold;
+  jmp_buf sv_jb; memcpy(sv_jb, g_unsup_recover, sizeof(jmp_buf));
+  volatile int ok = 1;
+  EmitUnitState *sv_state = emit_state_snapshot();
+  g_pre = pb; g_unsup_probe = 1;
+  int sv_pin = an_pin_node(id);
+  if (setjmp(g_unsup_recover) == 0) fn(c, id, ctx, nb);
+  else ok = 0;
+  an_pin_node(sv_pin);
+  emit_state_release(sv_state, !ok);
+  memcpy(g_unsup_recover, sv_jb, sizeof(jmp_buf));
+  g_conv_hold = sv_hold; g_open_defaults = sv_open_defaults;
+  g_unsup_probe = sv_probe; g_pre = sv_gpre;
+  *arm_pre = ok && pb->p && pb->len ? pb->p : NULL;
+  if (!*arm_pre) free(pb->p);
+  free(pb);
+  return ok;
+}
+typedef struct { const char *name; int argc; TyKind ret, bt; int slot_o, box_o; } BuiltinDefaultProbe;
+static void builtin_default_probe_fn(Compiler *c, int id, void *ctx, Buf *nb) {
+  BuiltinDefaultProbe *pr = ctx;
+  /* a boxed slot takes an Integer / Float answer that can be nil (a boxed
+     Enumerator's size) boxed with its nil -- asked under the pin: unpinned,
+     the question records the node's poly type over the view, and the
+     emission below answers boxed (boxed again by the arm) */
+  pr->box_o = pr->ret == TY_POLY && oint_kind(pr->bt) && node_is_oint(c, id);
+  /* `to_i(base)` on a kind other than String (whose pre-arm answers it):
+     every builtin to_i takes no radix, as the boxed fold answers */
+  if (pr->argc == 1 && sp_streq(pr->name, "to_i") && pr->bt == TY_INT)
+    buf_puts(nb, "(sp_raise_cls(\"ArgumentError\", \"wrong number of arguments (given 1, expected 0)\"), (sp_int)0)");
+  else if (pr->slot_o) emit_oint_expr(c, id, pr->ret, nb);
+  else if (pr->box_o) emit_oint_expr(c, id, pr->bt, nb);
+  else emit_expr(c, id, nb);
+}
 static int emit_poly_builtin_default_at(Compiler *c, int id, int recv, const char *name,
                                      int argc, const int *argv, const int *atmp,
                                      const TyKind *atmp_ty, TyKind ret, int tv, int tr,
@@ -6823,39 +6958,11 @@ static int emit_poly_builtin_default_at(Compiler *c, int id, int recv, const cha
      separator no String can be) drops the arm, not the build -- the call
      never reaches that emitter in a run where the receiver is not the
      builtin. What the emission hoists is captured, for the arm. */
-  /* on the heap: the probe may longjmp back after an emitter wrote to them */
-  Buf *pb = calloc(1, sizeof *pb), *nb = calloc(1, sizeof *nb);
-  Buf *sv_gpre = g_pre;
-  int sv_probe = g_unsup_probe, sv_open_defaults = g_open_defaults;
-  ConvHold *sv_hold = g_conv_hold;
-  jmp_buf sv_jb; memcpy(sv_jb, g_unsup_recover, sizeof(jmp_buf));
-  volatile int ok = 1;
-  EmitUnitState *sv_state = emit_state_snapshot();
-  g_pre = pb; g_unsup_probe = 1;
-  /* the re-entry reads the node under the pin above: an infer_type it
-     asks must not record its unpinned (poly) answer over the pin, or the
-     emitter answers boxed and the arm boxes it again */
-  int sv_pin = an_pin_node(id);
-  /* a boxed slot takes an Integer / Float answer that can be nil (a boxed
-     Enumerator's size) boxed with its nil -- asked under the pin: unpinned,
-     the question records the node's poly type over the view, and the
-     emission below answers boxed (boxed again by the arm) */
-  box_o = ret == TY_POLY && oint_kind(bt) && node_is_oint(c, id);
-  if (setjmp(g_unsup_recover) == 0) {
-    /* `to_i(base)` on a kind other than String (whose pre-arm answers it):
-       every builtin to_i takes no radix, as the boxed fold answers */
-    if (argc == 1 && sp_streq(name, "to_i") && bt == TY_INT)
-      buf_puts(nb, "(sp_raise_cls(\"ArgumentError\", \"wrong number of arguments (given 1, expected 0)\"), (sp_int)0)");
-    else if (slot_o) emit_oint_expr(c, id, ret, nb);
-    else if (box_o) emit_oint_expr(c, id, bt, nb);
-    else emit_expr(c, id, nb);
-  }
-  else ok = 0;
-  an_pin_node(sv_pin);
-  emit_state_release(sv_state, !ok);
-  memcpy(g_unsup_recover, sv_jb, sizeof(jmp_buf));
-  g_conv_hold = sv_hold; g_open_defaults = sv_open_defaults;
-  g_unsup_probe = sv_probe; g_pre = sv_gpre;
+  BuiltinDefaultProbe pr = { name, argc, ret, bt, slot_o, 0 };
+  Buf *nb = calloc(1, sizeof *nb);
+  char *arm_pre = NULL;
+  int ok = poly_arm_probe(c, id, builtin_default_probe_fn, &pr, nb, &arm_pre);
+  box_o = pr.box_o;
   view_pop(c, vw);
   view_pop(c, va);
   view_unbind(slot);
@@ -6868,9 +6975,6 @@ static int emit_poly_builtin_default_at(Compiler *c, int id, int recv, const cha
     else buf_puts(&ib, nb->p);
   }
   free(nb->p); free(nb);
-  char *arm_pre = ok && pb->p && pb->len ? pb->p : NULL;
-  if (!arm_pre) free(pb->p);
-  free(pb);
   if (!ib.p || strncmp(share_check_unmarked(ib.p), "sp_raise_nomethod(", 18) == 0 ||
       strncmp(share_check_unmarked(ib.p), "sp_raise_poly_nomethod(", 23) == 0 ||
       strstr(ib.p, "sp_raise_cls(\"NoMethodError\"") != NULL) {
