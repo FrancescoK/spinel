@@ -54,3 +54,5 @@ yes
 [6, "undefined method 'delete!' for nil", 11, "ABC"]
 ["ABC", 2]
 [1, "Sbc2"]
+["AzC", 11, "AzC"]
+["undefined method 'sub!' for nil", "ABC"]
