@@ -2203,12 +2203,15 @@ int emit_poly_defaults0(Compiler *c, int id, int recv, const char *name, const P
     else
       snprintf(nv, sizeof nv, "sp_poly_%s(_t%d)", name, tv);
     buf_printf(b, " default: _t%d = ", tr);
+    /* an oint slot (a target of the name can answer nil) takes the answer
+       with its nil */
+    int so = plan_slot_oint(c, id, ret);
     if (int_valued) {
       if (ret == TY_POLY) emit_boxed_text(c, TY_INT, nv, b);
-      else buf_puts(b, nv);
+      else plan_put_plain(so, ret, nv, b);
     }
     else if (ret == TY_POLY) buf_puts(b, nv);
-    else emit_unbox_text(c, ret, nv, b);
+    else plan_put_boxed(c, so, ret, nv, b);
     buf_puts(b, "; break;");
     obj_default_done = 1;
   }
