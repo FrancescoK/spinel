@@ -421,7 +421,13 @@ no_gsub_enum:
       /* a boxed receiver's match? that a class answers too (StringScanner's)
          is the boxed dispatch's, as for a literal pattern above */
       int poly_claimed = rt == TY_POLY && sp_streq(name, "match?") && poly_name_user_claimed(c, name, argc);
-      if ((is_interp_arg || is_regex_val_arg) && !poly_claimed) {
+      /* Only the match family is answered below. The pattern's setup goes
+         ahead of the statement as it is emitted, so building it for any other
+         name (sub, gsub, scan, ...) and then declining left it there: an
+         interpolated pattern's `#{}` ran once here and again in the arm that
+         did take the call. */
+      if ((is_interp_arg || is_regex_val_arg) && !poly_claimed && is_match_family(name)) {
+        size_t pre_mark = g_pre->len;
         Buf rp; memset(&rp, 0, sizeof rp);
         int rp_ok = emit_regex_pat_to_buf(c, argv[0], &rp) && rp.p;
         /* Fallback: TY_REGEX local/constant/inline Regexp.new -- value IS the mrb_regexp_pattern* */
@@ -515,8 +521,12 @@ no_gsub_enum:
             }
             free(rp.p); return 1;
           }
-          free(rp.p);
         }
+        /* no branch took it (a nil receiver's =~, match with three
+           arguments): the arm that does must not find the setup for a
+           pattern it builds again */
+        free(rp.p);
+        g_pre->len = pre_mark; if (g_pre->p) g_pre->p[pre_mark] = 0;
       }
     }
     /* Pattern from receiver (rx.match?(str), rx =~ str, etc.) */
