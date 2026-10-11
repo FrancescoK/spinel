@@ -17913,7 +17913,10 @@ char *codegen_program(const NodeTable *nt) {
     if (g_has_user_global_marks) {
       buf_puts(&b, "static void sp_mark_user_globals(void) {\n");
       buf_puts(&b, "  sp_re_mark_globals();\n");
-      buf_puts(&b, "  sp_marshal_mark_active();\n");
+      /* the tables of a Marshal.load in progress: only a program that names
+         Marshal runs one, and the call keeps sp_marshal.o, with Bignum
+         behind it, in every other program's link (#8401) */
+      if (g_uses_marshal) buf_puts(&b, "  sp_marshal_mark_active();\n");
       buf_puts(&b, mk.p);
       buf_puts(&b, "}\n\n");
     }
