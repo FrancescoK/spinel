@@ -13810,22 +13810,27 @@ void emit_regex_section(Compiler *c, Buf *b) {
   /* SPINEL_ALLOC_REPORT type names: attach human names to the scan-fn keys
      the allocation counters use. Runtime-gated on the same flag, so a normal
      run does no work here (#1336). */
-  buf_puts(b, "  if (sp_alloc_report_on) {\n"
-              "    sp_alloc_report_tag((void *)sp_PolyArray_scan, \"Array\");\n"
-              "    sp_alloc_report_tag((void *)sp_StrArray_scan, \"Array(String)\");\n"
-              "    sp_alloc_report_tag((void *)sp_SymPolyHash_scan, \"Hash(Symbol)\");\n"
-              "    sp_alloc_report_tag((void *)sp_StrPolyHash_scan, \"Hash(String)\");\n"
-              "    sp_alloc_report_tag((void *)sp_PolyPolyHash_scan, \"Hash\");\n"
-              "    sp_alloc_report_tag((void *)sp_Enumerator_scan, \"Enumerator\");\n"
+  buf_puts(b, "  if (sp_alloc_report_on) {\n");
+  /* The Array and Hash kinds only where such a value can exist: a tag names
+     the kind's scan function, and those keep the Hash and Array code in the
+     link of a program that builds neither (#8401) */
+  if (g_tu_poly_values)
+    buf_puts(b, "    sp_alloc_report_tag((void *)sp_PolyArray_scan, \"Array\");\n"
+                "    sp_alloc_report_tag((void *)sp_StrArray_scan, \"Array(String)\");\n"
+                "    sp_alloc_report_tag((void *)sp_SymPolyHash_scan, \"Hash(Symbol)\");\n"
+                "    sp_alloc_report_tag((void *)sp_StrPolyHash_scan, \"Hash(String)\");\n"
+                "    sp_alloc_report_tag((void *)sp_PolyPolyHash_scan, \"Hash\");\n");
+  buf_puts(b, "    sp_alloc_report_tag((void *)sp_Enumerator_scan, \"Enumerator\");\n"
               "    sp_alloc_report_tag((void *)sp_OpenStruct_scan, \"OpenStruct\");\n"
               "    sp_alloc_report_tag((void *)sp_Dir_scan, \"Dir\");\n"
               "    sp_alloc_report_tag((void *)sp_Proc_scan, \"Proc\");\n"
               "    sp_alloc_report_tag((void *)sp_exc_gc_scan, \"Exception\");\n"
-              "    sp_alloc_report_tag((void *)sp_PtrArray_gc_scan, \"Array(Object)\");\n"
-              "    sp_alloc_report_tag((void *)sp_StrIntHash_scan, \"Hash(String,Integer)\");\n"
-              "    sp_alloc_report_tag((void *)sp_StrStrHash_scan, \"Hash(String,String)\");\n"
-              "    sp_alloc_report_tag((void *)sp_IntStrHash_scan, \"Hash(Integer,String)\");\n"
-              "    sp_alloc_report_tag((void *)sp_curry_scan, \"Proc(curried)\");\n"
+              "    sp_alloc_report_tag((void *)sp_PtrArray_gc_scan, \"Array(Object)\");\n");
+  if (g_tu_poly_values)
+    buf_puts(b, "    sp_alloc_report_tag((void *)sp_StrIntHash_scan, \"Hash(String,Integer)\");\n"
+                "    sp_alloc_report_tag((void *)sp_StrStrHash_scan, \"Hash(String,String)\");\n"
+                "    sp_alloc_report_tag((void *)sp_IntStrHash_scan, \"Hash(Integer,String)\");\n");
+  buf_puts(b, "    sp_alloc_report_tag((void *)sp_curry_scan, \"Proc(curried)\");\n"
               "    sp_alloc_report_tag((void *)sp_BoundMethod_scan, \"Method\");\n");
   for (int aci = 0; aci < c->nclasses; aci++) {
     ClassInfo *ci = &c->classes[aci];
