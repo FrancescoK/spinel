@@ -1418,6 +1418,10 @@ spinel: 1 refusal, nothing written
 spinel: test/reject/string_split_local_each_mutation.rb:7: a String returned in a String Array is not yet shared by reference through a local Array into an appending iterator block
 == test/reject/string_split_local_each_mutation.rb [promote] rc=1
 spinel: test/reject/string_split_local_each_mutation.rb:7: a String returned in a String Array is not yet shared by reference through a local Array into an appending iterator block
+== test/reject/string_split_local_shift_after_each.rb [default] rc=1
+spinel: test/reject/string_split_local_shift_after_each.rb:7: a String returned in a String Array is not yet shared by reference through a local Array into an appending iterator block
+== test/reject/string_split_local_shift_after_each.rb [promote] rc=1
+spinel: test/reject/string_split_local_shift_after_each.rb:7: a String returned in a String Array is not yet shared by reference through a local Array into an appending iterator block
 == test/reject/string_split_map_bang_read_before.rb [default] rc=1
 spinel: test/reject/string_split_map_bang_read_before.rb:7: a String returned in a String Array is not yet shared by reference through a local Array into an appending iterator block
 == test/reject/string_split_map_bang_read_before.rb [promote] rc=1

@@ -20512,6 +20512,91 @@ static int sb_map_bang_local_unobserved(Compiler *c, int w, int recv, const char
   /* w runs where the local lives, not in a block that may run it again */
   return comp_scope_of(c, w) == vs;
 }
+/* sb_fresh_string_array_call, or the same String builtin called on a boxed
+   receiver (`str.split(";")` where str is a String or nil) when no program
+   class defines that method: whatever the receiver is at run time, the call
+   answers a new Array of new Strings. */
+static int sb_iter_fresh_source(Compiler *c, int n) {
+  if (sb_fresh_string_array_call(c, n)) return 1;
+  const NodeTable *nt = c->nt;
+  n = an_unparen(nt, n);
+  if (n < 0 || nt_kind(nt, n) != NK_CallNode || nt_ref(nt, n, "block") >= 0) return 0;
+  const char *mn = nt_str(nt, n, "name");
+  int r = nt_ref(nt, n, "receiver");
+  if (!mn || r < 0 || infer_type(c, r) != TY_POLY || an_user_defines_method(c, mn)) return 0;
+  if (!sp_streq(mn, "split") && !sp_streq(mn, "scan") && !sp_streq(mn, "lines") && !sp_streq(mn, "chars"))
+    return 0;
+  return infer_type(c, n) == TY_STR_ARRAY;
+}
+/* An element iterator w over local `vn` (`a = s.split(";"); a.shift;
+   a.each { |x| x.strip!; out << x }`) whose answer is dropped: a mutation of
+   the String it yields is seen only through the block's own value when the
+   local is only ever bound to a fresh String Array (sb_iter_fresh_source)
+   ahead of w and nothing else reads it -- before w only to take elements out
+   (shift, pop), or to count them, which hands out no String w mutates.
+   No loop around w may run it again. The parameter then
+   binds each element as a copy, as for an iterator over the fresh call
+   itself. */
+static int sb_iter_local_unobserved(Compiler *c, int w, int recv, const char *vn, Scope *vs) {
+  const NodeTable *nt = c->nt;
+  if (!vs || vs->body < 0 || !an_subtree_has(nt, vs->body, w)) return 0;
+  int writes = 0;
+  for (int u = comp_kind_first(c, NK_LocalVariableWriteNode); u >= 0; u = comp_kind_next(c, u)) {
+    if (nt_kind(nt, u) != NK_LocalVariableWriteNode || !sp_streq(nt_str(nt, u, "name"), vn)) continue;
+    if (!an_subtree_has(nt, vs->body, u)) continue;
+    if (u > w || an_subtree_has(nt, w, u) || !sb_iter_fresh_source(c, nt_ref(nt, u, "value")))
+      return 0;
+    writes++;
+  }
+  if (writes == 0) return 0;
+  NodeKind other[] = { NK_LocalVariableOrWriteNode, NK_LocalVariableAndWriteNode,
+                       NK_LocalVariableOperatorWriteNode, NK_LocalVariableTargetNode };
+  for (int k = 0; k < (int)(sizeof other / sizeof other[0]); k++)
+    for (int u = comp_kind_first(c, other[k]); u >= 0; u = comp_kind_next(c, u))
+      if (nt_kind(nt, u) == other[k] && sp_streq(nt_str(nt, u, "name"), vn) &&
+          an_subtree_has(nt, vs->body, u)) return 0;
+  for (int u = comp_kind_first(c, NK_LocalVariableReadNode); u >= 0; u = comp_kind_next(c, u)) {
+    if (u == recv || nt_kind(nt, u) != NK_LocalVariableReadNode || !sp_streq(nt_str(nt, u, "name"), vn)) continue;
+    if (!an_subtree_has(nt, vs->body, u)) continue;
+    if (an_subtree_has(nt, w, u)) return 0;
+    /* only the receiver of a call that hands out no String w mutates:
+       a count, or (ahead of w) one taking an element out */
+    int ok = 0;
+    for (int d = comp_kind_first(c, NK_CallNode); d >= 0 && !ok; d = comp_kind_next(c, d)) {
+      if (nt_kind(nt, d) != NK_CallNode || nt_ref(nt, d, "receiver") != u || nt_ref(nt, d, "block") >= 0) continue;
+      const char *dn = nt_str(nt, d, "name");
+      ok = dn && (sp_streq(dn, "size") || sp_streq(dn, "length") || sp_streq(dn, "empty?") ||
+                  (u < w && (sp_streq(dn, "shift") || sp_streq(dn, "pop"))));
+    }
+    if (!ok) return 0;
+  }
+  NodeKind loops[] = { NK_WhileNode, NK_UntilNode, NK_ForNode };
+  for (int k = 0; k < 3; k++)
+    for (int u = comp_kind_first(c, loops[k]); u >= 0; u = comp_kind_next(c, u))
+      if (nt_kind(nt, u) == loops[k] && an_subtree_has(nt, u, w)) return 0;
+  return comp_scope_of(c, w) == vs;
+}
+/* An element iterator w over String Array local `vn` whose block mutates
+   the parameter `bp` in place. Answers 1 when the parameter binds each
+   element as a copy (sb_iter_local_unobserved); otherwise refuses the
+   route when a split's Strings, which the store walk cannot see, fill the
+   local, and answers 0. */
+static int sb_split_local_iter(Compiler *c, int w, int recv, const char *itn, int blk,
+                               const char *bp, TyKind bpt, const char *vn, Scope *vs) {
+  if ((bpt == TY_STRING || bpt == TY_STRBUF) &&
+      (comp_value_dropped(c, w) || bop_share_named(BOP_ANY_ARRAY, itn) == BSH_ITER_MAP) &&
+      sb_iter_local_unobserved(c, w, recv, vn, vs))
+    return 1;
+  if (an_local_string_array_has_untracked_call_store(c, vn, vs)) {
+    static const char sa_msg[] =
+      "a String returned in a String Array is not yet shared by reference through a local Array into an appending iterator block";
+    ShareRoute q = share_route(w, recv, 1);
+    q.to = blk;
+    q.to_name = bp;
+    if (!share_route_defer(c, &q, sa_msg)) unsupported_feature(c, w, sa_msg);
+  }
+  return 0;
+}
 /* Does the subtree at n hold a node that leaves a block iteration early
    (next, redo, retry) or writes local `pn`? */
 static int sb_block_body_blocks_rewrite(const NodeTable *nt, int n, const char *pn) {
@@ -21382,14 +21467,7 @@ static int promote_shared_stored_strings_pass(Compiler *c) {
         sb_map_bang_local_unobserved(c, w, recv4, contn4, conts4))
       continue;
     if (!lit4 && contt4 == TY_STR_ARRAY &&
-        an_local_string_array_has_untracked_call_store(c, contn4, conts4)) {
-      static const char sa_msg[] =
-        "a String returned in a String Array is not yet shared by reference through a local Array into an appending iterator block";
-      ShareRoute q = share_route(w, recv4, 1);
-      q.to = blk4;
-      q.to_name = bp4;
-      if (!share_route_defer(c, &q, sa_msg)) unsupported_feature(c, w, sa_msg);
-    }
+        sb_split_local_iter(c, w, recv4, itn, blk4, bp4, bpv4->type, contn4, conts4)) continue;
     if (contt4 == TY_POLY_ARRAY) {
       /* A poly array may still narrow to a nested numeric table. Binding the
          element param poly here is permanent -- a block parameter only widens
