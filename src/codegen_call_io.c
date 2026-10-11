@@ -1112,6 +1112,14 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
       }
       else if (sp_streq(name, "close")) buf_printf(b, "(void)sp_File_close(_t%d); sp_box_nil(); })", tio2);
       else if (sp_streq(name, "flush")) buf_printf(b, "sp_File_flush(_t%d); })", tio2);
+      /* read_nonblock or write_nonblock with nothing to read into or write:
+         the arity error CRuby raises, answering the type the call is typed
+         as (a String, an Integer), where the fileno below did not compile
+         as the String (a `method(name)` wrapper over a poly receiver) */
+      else if (is_nonblock_io(name) && argc == 0)
+        buf_printf(b, "(void)_t%d; sp_raise_cls(\"ArgumentError\", \"wrong number of arguments (given 0, expected %s)\"); %s; })",
+                   tio2, sp_streq(name, "read_nonblock") ? "1..2" : "1",
+                   sp_streq(name, "read_nonblock") ? "(const char *)NULL" : "(sp_int)0");
       else buf_printf(b, "sp_File_fileno(_t%d); })", tio2);
       if (tdr) buf_puts(b, "; })");
       return 1;
