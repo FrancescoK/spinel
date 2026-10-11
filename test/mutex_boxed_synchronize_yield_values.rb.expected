@@ -1,0 +1,10 @@
+{"name" => "a"}
+true
+false
+nil
+30
+"lock b"
+true
+{"name" => ""}
+0
+[21, "z"]
