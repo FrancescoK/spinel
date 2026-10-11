@@ -11508,34 +11508,48 @@ static int str_force_encoding_computed(Compiler *c, const char *name, const int 
   const char *at = nt_type(c->nt, argv[0]);
   return !enc_const_path(c->nt, argv[0]) && !(at && sp_streq(at, "StringNode"));
 }
-/* The mode argument of sp_String_force_encoding on handle `h`. A frozen
-   handle raises before the argument is looked at, as in CRuby. */
-static void emit_strbuf_force_encoding_mode(Compiler *c, const char *name, const char *h, const int *argv, int argc, Buf *b) {
-  if (!str_force_encoding_computed(c, name, argv, argc)) {
-    buf_printf(b, "%d", str_force_encoding_mode(c, argv, argc));
-    return;
-  }
-  buf_printf(b, "sp_String_is_frozen(%s) ? -1 : sp_force_encoding_mode(", h);
+/* A computed encoding argument, evaluated into _a<N> ahead of the receiver's
+   checks: a method's argument runs before it looks at a frozen or nil
+   receiver. Answers N, or 0 when the mode is known at compile time. */
+static int force_encoding_arg_hold(Compiler *c, const char *name, const int *argv, int argc, Buf *b) {
+  if (!str_force_encoding_computed(c, name, argv, argc)) return 0;
+  int ta = ++g_tmp;
+  buf_printf(b, " sp_RbVal _a%d = ", ta);
   emit_boxed(c, argv[0], b);
-  buf_puts(b, ")");
+  buf_puts(b, ";");
+  return ta;
 }
-void emit_str_force_encoding(Compiler *c, const char *name, const char *r, const int *argv, int argc, Buf *b) {
+/* The mode argument of sp_String_force_encoding on handle `h`, with the
+   argument held in _a<ta>. A frozen handle raises before the argument is
+   converted, as in CRuby. */
+static void emit_strbuf_force_encoding_mode(Compiler *c, const char *h, const int *argv, int argc, int ta, Buf *b) {
+  if (!ta) buf_printf(b, "%d", str_force_encoding_mode(c, argv, argc));
+  else buf_printf(b, "sp_String_is_frozen(%s) ? -1 : sp_force_encoding_mode(_a%d)", h, ta);
+}
+/* ta: the held argument, or -1 to evaluate it here */
+static void emit_str_force_encoding_held(Compiler *c, const char *name, const char *r, const int *argv, int argc, int ta, Buf *b) {
   int mode = str_force_encoding_mode(c, argv, argc);
   int fe_bin = mode == 1, fe_txt = mode == 0;
   int trc = ++g_tmp;
+  buf_printf(b, "({ const char *_t%d = %s;", trc, r);
+  if (ta < 0) {
+    /* the receiver stays alive while the argument runs */
+    if (str_force_encoding_computed(c, name, argv, argc)) buf_printf(b, " SP_GC_ROOT(_t%d);", trc);
+    ta = force_encoding_arg_hold(c, name, argv, argc, b);
+  }
   /* a nil receiver (a nullable String slot, #4567) is NoMethodError, not the
      FrozenError the mutability check reads a NULL as */
-  buf_printf(b, "({ const char *_t%d = %s; if (!_t%d) sp_nil_recv(\"%s\"); sp_str_check_mutable(_t%d); ",
-             trc, r, trc, name, trc);
-  if (str_force_encoding_computed(c, name, argv, argc)) {
-    buf_printf(b, "int _m%d = sp_force_encoding_mode(", trc);
-    emit_boxed(c, argv[0], b);
-    buf_printf(b, "); if (_m%d == 1) sp_str_as_binary(_t%d); else if (_m%d == 0) sp_str_as_text(_t%d); _t%d; })",
-               trc, trc, trc, trc, trc);
-  }
+  buf_printf(b, " if (!_t%d) sp_nil_recv(\"%s\"); sp_str_check_mutable(_t%d); ", trc, name, trc);
+  if (ta)
+    buf_printf(b, "int _m%d = sp_force_encoding_mode(_a%d); if (_m%d == 1) sp_str_as_binary(_t%d);"
+                  " else if (_m%d == 0) sp_str_as_text(_t%d); _t%d; })",
+               trc, ta, trc, trc, trc, trc, trc);
   else if (fe_bin) buf_printf(b, "sp_str_as_binary(_t%d); })", trc);
   else if (fe_txt) buf_printf(b, "sp_str_as_text(_t%d); })", trc);
   else buf_printf(b, "_t%d; })", trc);
+}
+void emit_str_force_encoding(Compiler *c, const char *name, const char *r, const int *argv, int argc, Buf *b) {
+  emit_str_force_encoding_held(c, name, r, argv, argc, -1, b);
 }
 /* The same on a shared String handle (#6179), whose ASCII-8BIT tag lives on
    the handle and is stamped back into its bytes after every growth
@@ -11547,8 +11561,9 @@ static void emit_strbuf_force_encoding(Compiler *c, const char *name, const char
   char hv[24]; snprintf(hv, sizeof hv, "_t%d", th);
   buf_printf(b, "({ sp_String *_t%d = %s;", th, ref);
   emit_route_recv_root(c, hr, th, argc, argv, TY_STRING, b);
+  int ta = force_encoding_arg_hold(c, name, argv, argc, b);
   buf_printf(b, " if (!_t%d) sp_nil_recv(\"%s\"); sp_String_force_encoding(_t%d, ", th, name, th);
-  emit_strbuf_force_encoding_mode(c, name, hv, argv, argc, b);
+  emit_strbuf_force_encoding_mode(c, hv, argv, argc, ta, b);
   buf_printf(b, "); sp_String_cstr(_t%d); })", th);
 }
 static void emit_str_encode_call(Compiler *c, const char *recv_txt, const int *argv, int argc, Buf *b) {
@@ -16035,13 +16050,17 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
          answers the box itself */
       int tv = ++g_tmp;
       buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b);
+      buf_puts(b, ";");
+      /* the argument runs first, while the box is held */
+      if (str_force_encoding_computed(c, name, argv, argc)) buf_printf(b, " SP_GC_ROOT_RBVAL(_t%d);", tv);
+      int ta = force_encoding_arg_hold(c, name, argv, argc, b);
       char hv[48]; snprintf(hv, sizeof hv, "((sp_String *)_t%d.v.p)", tv);
-      buf_printf(b, "; sp_poly_is_strbuf(_t%d) ? (sp_String_force_encoding(%s, ", tv, hv);
-      emit_strbuf_force_encoding_mode(c, name, hv, argv, argc, b);
+      buf_printf(b, " sp_poly_is_strbuf(_t%d) ? (sp_String_force_encoding(%s, ", tv, hv);
+      emit_strbuf_force_encoding_mode(c, hv, argv, argc, ta, b);
       buf_printf(b, "), _t%d) : ", tv);
       char rv[64]; snprintf(rv, sizeof rv, "sp_poly_recv_s(_t%d, \"%s\")", tv, name);
       buf_puts(b, "sp_box_str(");
-      emit_str_force_encoding(c, name, rv, argv, argc, b);
+      emit_str_force_encoding_held(c, name, rv, argv, argc, ta, b);
       buf_puts(b, "); })");
     }
     else {  /* encode: the same transcode the String receiver takes (#4439) */
