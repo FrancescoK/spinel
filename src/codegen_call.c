@@ -24825,9 +24825,8 @@ static void emit_callee_local_decls(Compiler *c, Scope *tm, Buf *b) {
        rejects TY_UNKNOWN. */
     if (blv->type == TY_UNKNOWN) blv->type = TY_POLY;
     if (!blv->is_cell) { declare_local_named(c, b, blv, blv->name, 0); continue; }
-    /* A celled local: `emit_cell_decl` first declares the plain shadow slot
+    /* A celled local: emit_inlined_local_decl declares the plain shadow slot
        the inline iterator binds, then the heap cell the closure reads. */
-    if (blv->cell_shadow) declare_local_named(c, b, blv, blv->name, 0);
     emit_inlined_local_decl(c, blv, blv->name, b, 1);
   }
 }
