@@ -4063,9 +4063,20 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
              route over a handle (`(+s).upcase!`, --share-strings) */
           int rd_call = (nt_kind(nt, recv) == NK_CallNode || hrB == 2) && g_n_argov < MAX_ARG_OVERRIDE;
           int tsb = ++g_tmp, tob = ++g_tmp, tnb = ++g_tmp;
-          buf_printf(b, "({ sp_String *_t%d = %s;", tsb, srefB);
-          emit_route_recv_root(c, hrB, tsb, 0, NULL, TY_UNKNOWN, b);
-          buf_printf(b, " const char *_t%d = sp_String_cstr(_t%d); (void)_t%d; ", tob, tsb, tob);
+          /* --share-strings: gsub!/sub!'s block form runs its loop ahead of
+             the statement (g_pre), where it reads the contents bound below:
+             they are held there too, ahead of it, as the plain receiver's
+             are (held below) */
+          Buf *hb = repr_share_rule(c) && rd_call && sb_block_hoists(c, id) ? g_pre : b;
+          buf_puts(b, "({ ");
+          size_t hat = hb->len;
+          if (hb != b) emit_indent(hb, g_indent);
+          buf_printf(hb, "sp_String *_t%d = %s;", tsb, srefB);
+          emit_route_recv_root(c, hrB, tsb, 0, NULL, TY_UNKNOWN, hb);
+          buf_printf(hb, " const char *_t%d = sp_String_cstr(_t%d); (void)_t%d;%s", tob, tsb, tob, hb != b ? "\n" : " ");
+          /* (the handle read held ahead is the receiver's, written back
+             below, as the enclosing bang declares it in the statement) */
+          if (hb != b && g_share_check) share_check_declare_reads(hb, hat, recv);
           /* gsub!/sub! answer nil when no SUBSTITUTION was made, which the
              text comparison below cannot tell from a match that wrote the same
              bytes (`"cats".sub!(/s$/, "s")`): the runtime's matched flag says.
@@ -4138,7 +4149,7 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
          in the statement, not ahead of it. */
       int held = arg_ran_first(recv, 0);
       int hbind = -1;
-      if (!lvw && !held && sb_sub && g_pre && nt_ref(nt, id, "block") >= 0) {
+      if (!lvw && !held && sb_block_hoists(c, id)) {
         int th = ++g_tmp;
         Buf hb; memset(&hb, 0, sizeof hb); emit_expr(c, recv, &hb);
         emit_indent(g_pre, g_indent);
@@ -13595,6 +13606,30 @@ static int emit_face_switch(Compiler *c, int id, unsigned own, Buf *b) {
   return 1;
 }
 
+/* Is call id gsub!/sub!'s block form, whose plain form runs its loop
+   ahead of the statement (g_pre, emit_gsub_block_expr)? What the loop
+   reads is held there too. */
+int sb_block_hoists(Compiler *c, int id) {
+  const char *name = nt_str(c->nt, id, "name");
+  return g_pre && nt_ref(c->nt, id, "block") >= 0 && name && is_substitution_bang(name);
+}
+
+/* Does call id take the face table's String bang (emit_face_str_bang)?
+   emit_poly_call's test, for a caller that asks for the bang's answer as
+   a box (emit_boxed_bang_self). A safe-navigation call takes its own arm
+   first. */
+int face_str_bang_call(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  if (id < 0 || nt_kind(nt, id) != NK_CallNode || call_is_safe_nav(nt, id)) return 0;
+  const char *name = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver"), argc;
+  if (!name || recv < 0 || !ty_str_bang_flags(name) || comp_recv_type(c, recv) != TY_POLY ||
+      user_defines_or_reads(c, name) || g_n_argov >= MAX_ARG_OVERRIDE) return 0;
+  call_args(nt, id, &argc);
+  return !an_zero_arg_builtin_shadowed(c, name, argc) &&
+         (ty_poly_face_owners(name, argc, nt_ref(nt, id, "block") >= 0, nt_call_args_plain(nt, id), 0) & PF_STR_BANG);
+}
+
 /* A String value-form mutator on a boxed receiver: compute the non-bang
    transform against the unboxed contents, then write the result back
    through the box. The contents come from sp_poly_recv_s, as every other
@@ -13612,6 +13647,12 @@ static void emit_face_str_bang(Compiler *c, int id, unsigned own, Buf *b) {
   char bang[64], plain[64];   /* a table row's bang name: never empty, never near the cap */
   snprintf(bang, sizeof bang, "%s", name);
   snprintf(plain, sizeof plain, "%.*s", (int)strlen(name) - 1, name);
+  /* --share-strings: asked for as a box (emit_boxed_bang_self, which reads
+     the call as one), the answer is the box become() answers below -- the
+     receiver's own box when it holds a handle -- so `x.strip! || x` is x
+     itself, as in CRuby, where the bytes boxed again were a new String.
+     The plain form re-entered below answers its String. */
+  int boxed = repr_share_rule(c) && comp_ntype(c, id) == TY_POLY;
   int tvb = ++g_tmp, tob = ++g_tmp, tnb = ++g_tmp;
   Buf rbb; memset(&rbb, 0, sizeof rbb); emit_expr(c, recv, &rbb);
   emit_indent(g_pre, g_indent);
@@ -13621,14 +13662,17 @@ static void emit_face_str_bang(Compiler *c, int id, unsigned own, Buf *b) {
   free(rbb.p);
   view_bind(recv, "_t%d", tob);
   int v = view_push(c, recv, TY_STRING);
+  int vb = boxed ? view_push(c, id, TY_STRING) : -1;
   nt_node_set_str((NodeTable *)nt, id, "name", plain);
   Buf nbb; memset(&nbb, 0, sizeof nbb); emit_call(c, id, &nbb);
   /* the transform read the receiver's bytes and sp_poly_str_become hands the
      result to its handle below: those reads are no copy. The answer of a bang
      used as a value (`x.strip! || x`) is the transformed bytes, which boxing
-     makes a new String: only a dropped answer is declared. */
-  if (g_share_check && share_node_transient(c, id)) share_check_declare_reads(&nbb, 0, recv);
+     makes a new String: only a dropped answer is declared, and one answered
+     as the receiver's box. */
+  if (g_share_check && (boxed || share_node_transient(c, id))) share_check_declare_reads(&nbb, 0, recv);
   nt_node_set_str((NodeTable *)nt, id, "name", bang);
+  if (vb >= 0) view_pop(c, vb);
   view_pop(c, v);
   view_unbind(g_n_argov - 1);
   buf_printf(b, "({ const char *_t%d = %s; ", tnb, nbb.p ? nbb.p : "\"\"");
@@ -13645,6 +13689,8 @@ static void emit_face_str_bang(Compiler *c, int id, unsigned own, Buf *b) {
   /* A shared handle absorbs the new contents; a plain string box cannot,
      so an lvalue receiver takes the value back the way the typed path
      does for the same case. */
+  int tbox = boxed ? ++g_tmp : 0;
+  if (tbox) buf_printf(b, "sp_RbVal _t%d = ", tbox);
   { const char *rvtb = nt_type(nt, recv);
     if (rvtb && (sp_streq(rvtb, "LocalVariableReadNode") ||
                  sp_streq(rvtb, "InstanceVariableReadNode"))) {
@@ -13653,7 +13699,9 @@ static void emit_face_str_bang(Compiler *c, int id, unsigned own, Buf *b) {
     }
     else buf_printf(b, "sp_poly_str_become(_t%d, _t%d); ", tvb, tnb);
   }
-  if (nil_nc) buf_printf(b, "_t%d ? _t%d : NULL; })", tchg, tnb);
+  if (tbox && nil_nc) buf_printf(b, "_t%d ? _t%d : sp_box_nil(); })", tchg, tbox);
+  else if (tbox) buf_printf(b, "_t%d; })", tbox);
+  else if (nil_nc) buf_printf(b, "_t%d ? _t%d : NULL; })", tchg, tnb);
   else buf_printf(b, "_t%d; })", tnb);
   if (g_plan_check) {   /* the face's one arm, held against the plan */
     int pa_frame = pa_begin(id);

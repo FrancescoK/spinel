@@ -1,0 +1,62 @@
+["a", "b"]
+true
+true
+["A", "B"]
+true
+["a", "b"]
+true
+true
+true
+true
+["A?", "B?"]
+["A", "B"]
+"ab"
+true
+"ab"
+true
+"AB"
+true
+"Cd"
+true
+"Cd"
+true
+["AB", 1, "Cd"]
+"AC"
+true
+true
+"AC"
+["ac#", true]
+["ac##", true]
+["ac##", 1, "Cd"]
+"Ab"
+true
+"Ab"
+true
+["Ab", "Zz"]
+true
+"Cb"
+true
+["C", "Zz"]
+true
+true
+["a!", 1, "bb"]
+true
+nil
+[nil, "b"]
+true
+["A!?", "B"]
+["A!?", 1, "B"]
+"b"
+true
+["s", "2"]
+[:shovel, :nme]
+[:concat, :nme]
+[:length, :nme]
+[:upcase, :nme]
+[:aref, :nme]
+[:insert, :nme]
+true
+""
+"nil"
+[:paren, :nme]
+["ab", 1, "cd"]

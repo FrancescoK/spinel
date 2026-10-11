@@ -2753,6 +2753,59 @@ static int emit_self_mutator_stmt(Compiler *c, int v, Buf *b) {
   free(st.p);
   return 1;
 }
+/* The receiver handle of bang v held in _t<th> and rooted, opened as `({
+   sp_String *_t<th> = <handle>; ...` in b: ahead of the statement instead
+   (g_pre) when v is gsub!/sub!'s block form, whose loop runs there and
+   reads it (sb_block_hoists). A receiver that can be nil raises
+   NoMethodError for v (checked ahead of the root when check_first),
+   unless v is a safe-navigation call (`g(s)&.upcase!`), which answers nil
+   there (emit_bang_on_held). */
+static void emit_bang_held_open(Compiler *c, int v, int th, const char *href, int nonnil, int check_first,
+                                Buf *b) {
+  Buf *hb = sb_block_hoists(c, v) ? g_pre : b;
+  int check = !nonnil && !call_is_safe_nav(c->nt, v);
+  buf_puts(b, "({ ");
+  size_t at = hb->len;
+  if (hb != b) emit_indent(hb, g_indent);
+  const char *raise = " if (SP_UNLIKELY(!_t%d)) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil()));";
+  buf_printf(hb, "sp_String *_t%d = %s;", th, href);
+  if (check && check_first) buf_printf(hb, raise, th, nt_str(c->nt, v, "name"));
+  buf_printf(hb, " SP_GC_ROOT(_t%d);", th);
+  if (check && !check_first) buf_printf(hb, raise, th, nt_str(c->nt, v, "name"));
+  buf_puts(hb, hb != b ? "\n" : " ");
+  /* the receiver's reads held ahead of the statement are its handle, as
+     emit_bang_self_handle declares those it writes in the statement */
+  if (hb != b && g_share_check) {
+    int r = nt_ref(c->nt, v, "receiver");
+    share_check_declare_reads(hb, at, r);
+    if (r >= 0 && unwrap_parens(c, r) != r) share_check_declare_reads(hb, at, unwrap_parens(c, r));
+  }
+}
+/* Bang v on its receiver held in _t<th>: a safe-navigation call answers
+   nil for a nil receiver, its guard this test, as the boxed route's is
+   (emit_strbuf_route): the guard's own hoist would read the held receiver
+   ahead of the statement that declares it. What the bang hoists (a block
+   form's loop) runs under the guard too. The call is emitted as
+   emit_self_call_char emits it. */
+static void emit_bang_on_held(Compiler *c, int v, int th, Buf *b) {
+  if (!call_is_safe_nav(c->nt, v)) { emit_self_call_char(c, v, b); return; }
+  int sv = g_sn_skip;
+  Buf *sv_pre = g_pre;
+  Buf pre, val;
+  memset(&pre, 0, sizeof pre); memset(&val, 0, sizeof val);
+  g_sn_skip = v;
+  g_pre = &pre;
+  emit_self_call_char(c, v, &val);
+  g_pre = sv_pre;
+  g_sn_skip = sv;
+  if (pre.p && pre.p[0]) {
+    int tv = ++g_tmp;
+    buf_printf(b, "({ const char *_t%d = NULL; if (_t%d) {\n%s_t%d = %s;\n} _t%d; })",
+               tv, th, pre.p, tv, val.p ? val.p : "NULL", tv);
+  }
+  else buf_printf(b, "!_t%d ? (const char *)NULL : %s", th, val.p ? val.p : "NULL");
+  free(pre.p); free(val.p);
+}
 /* --share-strings: a bang method (or an iterator given a block) on a
    variable's handle, or on a reader call read as one (strbuf_bang_self_local),
    as an sp_String *: the receiver's handle where the call answered it, NULL
@@ -2772,19 +2825,18 @@ static int emit_bang_self_handle_1(Compiler *c, int v, Buf *b) {
   int blk = nt_ref(c->nt, v, "block") >= 0;
   if (!slot && !(blk && strbuf_assign_route(c, r)) && strbuf_value_carries(c, r)) {
     int th = ++g_tmp, tr = ++g_tmp;
-    buf_printf(b, "({ sp_String *_t%d = ", th);
-    emit_strbuf_handle_of(c, r, b);
     /* Taking the handle directly keeps the receiver route's nil check. */
-    if (!strbuf_route_nonnil(c, r))
-      buf_printf(b, "; if (SP_UNLIKELY(!_t%d)) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil()))", th,
-                 nt_str(c->nt, v, "name"));
-    buf_printf(b, "; SP_GC_ROOT(_t%d); const char *_t%d = ", th, tr);
+    Buf rb; memset(&rb, 0, sizeof rb);
+    emit_strbuf_handle_of(c, r, &rb);
+    emit_bang_held_open(c, v, th, rb.p ? rb.p : "NULL", strbuf_route_nonnil(c, r), 1, b);
+    free(rb.p);
+    buf_printf(b, "const char *_t%d = ", tr);
     r = unwrap_parens(c, r);
     int mark = g_n_argov;
     int sv = view_push_repr(c, r, VR_STRBUF_BOX, 1);
     int st = view_push(c, r, TY_STRBUF);
     ran_first_bind(r, th, th);
-    emit_self_call_char(c, v, b);
+    emit_bang_on_held(c, v, th, b);
     view_unbind(mark);
     view_pop(c, st);
     view_pop(c, sv);
@@ -2798,14 +2850,14 @@ static int emit_bang_self_handle_1(Compiler *c, int v, Buf *b) {
   int args = nt_ref(c->nt, v, "arguments");
   if (args >= 0 && read_rebound_by(c, r, args)) {
     int th = ++g_tmp, mark = g_n_argov;
-    buf_printf(b, "({ sp_String *_t%d = %s; SP_GC_ROOT(_t%d); ", th, sref, th);
+    emit_bang_held_open(c, v, th, sref, 1, 0, b);
     if (emit_self_mutator_stmt(c, v, b)) {
       buf_printf(b, "_t%d; })", th);
       return 1;
     }
     buf_printf(b, "const char *_t%d = ", tr);
     ran_first_bind(r, th, th);
-    emit_self_call_char(c, v, b);
+    emit_bang_on_held(c, v, th, b);
     view_unbind(mark);
     buf_printf(b, "; _t%d ? _t%d : (sp_String *)NULL; })", tr, th);
     return 1;
@@ -2817,14 +2869,11 @@ static int emit_bang_self_handle_1(Compiler *c, int v, Buf *b) {
     return 1;
   }
   int th = ++g_tmp;
-  buf_printf(b, "({ sp_String *_t%d = %s; SP_GC_ROOT(_t%d); ", th, sref, th);
-  if (!strbuf_route_nonnil(c, r))
-    buf_printf(b, "if (SP_UNLIKELY(!_t%d)) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil())); ", th,
-               nt_str(c->nt, v, "name"));
+  emit_bang_held_open(c, v, th, sref, strbuf_route_nonnil(c, r), 0, b);
   buf_printf(b, "const char *_t%d = ", tr);
   int mark = g_n_argov;
   ran_first_bind(r, th, th);
-  emit_self_call_char(c, v, b);
+  emit_bang_on_held(c, v, th, b);
   view_unbind(mark);
   buf_printf(b, "; _t%d ? _t%d : (sp_String *)NULL; })", tr, th);
   return 1;
@@ -2870,6 +2919,15 @@ void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
   else if (shared && vplus >= 0 && !repr_share_rule(c) && strbuf_slot_ref(c, vplus, srefV, sizeof srefV))
     buf_printf(b, "sp_String_uplus(%s)", srefV);
   else if (shared && emit_strbuf_ivar_write_handle(c, v, b)) { }
+  /* --share-strings: a String bang on a boxed receiver answers that
+     receiver's own box, or nil (emit_boxed_bang_self); the box of a String
+     the rule shares holds its handle, which the slot takes */
+  else if (shared && repr_share_rule(c) && face_str_bang_call(c, v)) {
+    int t = ++g_tmp;
+    buf_printf(b, "({ sp_RbVal _t%d = ", t);
+    emit_boxed(c, v, b);
+    buf_printf(b, "; sp_poly_nil_p(_t%d) ? (sp_String *)NULL : sp_poly_as_strbuf(_t%d); })", t, t);
+  }
   /* A chained assignment (`u = t = s`) whose inner target is the handle too:
      run the inner write, then alias ITS handle. Wrapping the write's value
      as a fresh String forked u off the object t and s share. */
@@ -19995,6 +20053,9 @@ static int strbuf_flow_value(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, in
      { }`, `s.to_s`), and a bang method off one (emit_boxed_bang_self) */
   if (ctx == SFC_ELEM && k == NK_CallNode && ((c->strbuf_box[v] && str_self_call(nt, v)) || strbuf_bang_self_local(c, v)))
     return 1;
+  /* a String bang on a boxed receiver, boxed as that receiver's own box
+     (emit_boxed_bang_self) */
+  if (ctx == SFC_ELEM && face_str_bang_call(c, v)) return 1;
   if (strbuf_flow_route(c, fm, ctx, v, depth)) return 1;
   /* a yield spliced with each literal block its method is given answers
      the block's value read as the handle (strbuf_route_yield) */
@@ -20047,6 +20108,9 @@ int strbuf_flow_carries(Compiler *c, StrbufFlowMemo *fm, int kind, int site, int
              strbuf_ivar_store_aliases(c, v)) ctx = SFC_ALIAS;
     else ctx = sk == NK_LocalVariableWriteNode || sk == NK_GlobalVariableWriteNode || sk == NK_ClassVariableWriteNode ||
                sk == NK_ConstantWriteNode || sk == NK_ConstantPathWriteNode ? SFC_ALIAS : SFC_SLOT;
+    /* a String bang on a boxed receiver written into a local's handle hands
+       on the receiver's handle (emit_strbuf_value) */
+    if (ctx == SFC_ALIAS && sk == NK_LocalVariableWriteNode && face_str_bang_call(c, unwrap_parens(c, v))) return 1;
     break;
   }
   case SHFL_MEMBER: case SHFL_PARAM: case SHFL_MUTATE: ctx = SFC_ALIAS; break;
