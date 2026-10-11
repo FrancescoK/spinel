@@ -7579,6 +7579,10 @@ void emit_inlined_local_decl(Compiler *c, LocalVar *lv, const char *rn, Buf *b, 
     }
     return;
   }
+  /* a cell over an inlined block's param: the loop binds the plain slot
+     (LocalVar.cell_shadow), here as in the callee's own frame */
+  if (lv->cell_shadow && !lv->is_param)
+    declare_local_named(c, b, lv, rn, inlined_local_needs_volatile(c, lv));
   emit_indent(b, din);
   emit_cell_alloc(c, lv, rn, b);
 }
