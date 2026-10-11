@@ -23,6 +23,7 @@
 #include <sys/un.h>
 #include <sys/time.h> /* utimes() for File.utime */
 #include <errno.h>
+#include <limits.h>  /* INT_MAX for the socket int arguments */
 #include <fcntl.h>   /* fcntl flags for #close_on_exec?, #fcntl */
 #include <poll.h>    /* POLLIN for the socket read park */
 
@@ -826,6 +827,48 @@ sp_File *sp_sock_new(sp_int domain, sp_int type, sp_int proto) {
      for TCPSocket.new -- the caller asked for the generic class. */
   f->path = NULL; f->mode = "socket"; f->lineno = 0; f->is_sock = 1; f->rev_lookup = !sp_sock_dnrl_default;
   return f;
+}
+/* An Integer argument a C int parameter takes, checked in its full width
+   first: a wider value cut down to an int could name another port or open
+   descriptor. Worded as CRuby's NUM2INT. */
+static int sp_sock_int_arg(sp_int v) {
+  if (v > INT_MAX) sp_raise_cls("RangeError", sp_sprintf("integer %lld too big to convert to 'int'", (long long)v));
+  if (v < INT_MIN) sp_raise_cls("RangeError", sp_sprintf("integer %lld too small to convert to 'int'", (long long)v));
+  return (int)v;
+}
+/* Socket.tcp_server_sockets(host, port) -> [Socket, ...]: a listening Socket
+   per address the host resolves to (an IPv4 and an IPv6 one for a nil host on
+   a dual-stack machine). Raises what the last address failed with when none
+   could be bound, as CRuby does. */
+sp_PolyArray *sp_sock_tcp_server_sockets(const char *host, sp_int port) {SP_GC_ROOT_STR(host);
+  extern int sp_net_listen_all(const char *host, int port, int *fds, int cap, const char **op);
+  int fds[16];
+  const char *op = NULL;
+  int n = sp_net_listen_all(host, sp_sock_int_arg(port), fds, 16, &op);
+  if (n < 0) sp_raise_cls("SocketError", sp_sprintf("getaddrinfo: %s", op));
+  if (n == 0) {
+    int e = errno;
+    sp_raise_cls(sp_errno_class_name(e),
+                 sp_sprintf("%s - %s for %s:%d", strerror(e), op,
+                            (host && *host) ? host : "nil", (int)port));
+  }
+  sp_PolyArray *a = sp_PolyArray_new();
+  SP_GC_ROOT(a);
+  for (int i = 0; i < n; i++)
+    sp_PolyArray_push(a, sp_box_obj(sp_io_fdopen_sock(fds[i], SPL("socket")), SP_BUILTIN_IO));
+  return a;
+}
+/* TCPServer.for_fd(fd) and the other socket classes': wrap a descriptor the
+   program already holds as that class. The handle owns the fd from then on,
+   so the usual move is to set autoclose = false on the one it came from. */
+sp_File *sp_sock_for_fd(sp_int fd, sp_int kind) {
+  int d = sp_sock_int_arg(fd);
+  if (d < 0 || fcntl(d, F_GETFD) < 0)
+    sp_raise_cls("Errno::EBADF", "Bad file descriptor");
+  const char *k = kind == 1 ? SPL("tcpserver") : kind == 2 ? SPL("tcp") :
+                  kind == 3 ? SPL("udp") : kind == 4 ? SPL("unixserver") :
+                  kind == 5 ? SPL("unix") : SPL("socket");
+  return sp_io_fdopen_sock(d, k);
 }
 /* Socket.pair / Socket.socketpair -> the two connected ends. */
 sp_File *sp_sock_pair_end(sp_int domain, sp_int type, sp_int proto, sp_int which) {

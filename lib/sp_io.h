@@ -166,6 +166,8 @@ const char *sp_addrinfo_to_sockaddr(sp_Addrinfo *a);
 sp_PolyArray *sp_sock_unpack_sockaddr_in(const char *sa);
 const char *sp_sock_unpack_sockaddr_un(const char *sa);
 sp_File *sp_sock_new(sp_int domain, sp_int type, sp_int proto);
+sp_PolyArray *sp_sock_tcp_server_sockets(const char *host, sp_int port);
+sp_File *sp_sock_for_fd(sp_int fd, sp_int kind);
 sp_File *sp_sock_pair_end(sp_int domain, sp_int type, sp_int proto, sp_int which);
 sp_File *sp_sock_unix_server(const char *path);
 sp_File *sp_sock_unix_connect(const char *path);

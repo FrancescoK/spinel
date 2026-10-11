@@ -140,6 +140,54 @@ int sp_net_listen_host(const char *host, int port, int backlog) {
     return fd;
 }
 
+/* Socket.tcp_server_sockets(host, port): one listening fd per address the
+   host resolves to, up to `cap`, into fds; returns how many. An IPv6 socket
+   is IPv6-only so it can sit beside the IPv4 one on the same port, and port
+   0 binds the first address to an ephemeral port that the rest then share.
+   An address that cannot be bound is skipped. With none bound it returns 0
+   and leaves errno and *op (the step that failed: "socket", "bind(2)" or
+   "listen(2)") from the last attempt; -1 when the host does not resolve,
+   with *op the resolver's message. The port goes to the resolver as given,
+   as CRuby passes it, so the resolver decides what an out-of-range one is. */
+int sp_net_listen_all(const char *host, int port, int *fds, int cap, const char **op) {
+    signal(SIGPIPE, SIG_IGN);
+    struct addrinfo hints, *res = NULL;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family   = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags    = AI_PASSIVE;
+    char portbuf[16];
+    snprintf(portbuf, sizeof(portbuf), "%d", port);
+    int rc = sp_net_resolve((host && *host) ? host : NULL, portbuf, &hints, &res);
+    if (rc != 0) { *op = gai_strerror(rc); return -1; }
+    int n = 0, e = 0;
+    *op = "bind(2)";
+    for (struct addrinfo *ai = res; ai && n < cap; ai = ai->ai_next) {
+        int fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+        if (fd < 0) { e = errno; *op = "socket(2)"; continue; }
+        int one = 1;
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+#ifdef IPV6_V6ONLY
+        if (ai->ai_family == AF_INET6)
+            setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &one, sizeof(one));
+#endif
+        /* port 0: every later address takes the port the first one got */
+        if (n > 0 && port == 0) {
+            int p0 = sp_net_local_port(fds[0]);
+            if (ai->ai_family == AF_INET)
+                ((struct sockaddr_in *)ai->ai_addr)->sin_port = htons((unsigned short)p0);
+            else if (ai->ai_family == AF_INET6)
+                ((struct sockaddr_in6 *)ai->ai_addr)->sin6_port = htons((unsigned short)p0);
+        }
+        if (bind(fd, ai->ai_addr, ai->ai_addrlen) != 0) { e = errno; *op = "bind(2)"; close(fd); continue; }
+        if (listen(fd, SOMAXCONN) != 0) { e = errno; *op = "listen(2)"; close(fd); continue; }
+        fds[n++] = fd;
+    }
+    freeaddrinfo(res);
+    if (n == 0) errno = e ? e : EADDRNOTAVAIL;
+    return n;
+}
+
 /* The local port a bound/listening fd ended up on (port 0 => ephemeral). */
 int sp_net_local_port(int fd) {
     struct sockaddr_storage ss;
