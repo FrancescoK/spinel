@@ -1048,12 +1048,10 @@ static const char *sp_str_frozen_name(const char *s) {
   if (!s || sp_str_is_frozen_val(s)) return s;
   /* A heap copy (an exception's class, named by sp_exc_class_name) is no
      key: once it is swept another name can take its address, and the cache
-     answered the old name for it. Only a static name is kept. Nothing else
-     holds the copy, so it is rooted across the interning copy's allocation. */
-  if (((const unsigned char *)s)[-1] == 0xfe || ((const unsigned char *)s)[-1] == 0xfc) {
-    SP_GC_ROOT_STR(s);
+     answered the old name for it. Only a static name is kept; the interning
+     copy roots the heap one across its allocation (sp_str_dedup). */
+  if (((const unsigned char *)s)[-1] == 0xfe || ((const unsigned char *)s)[-1] == 0xfc)
     return sp_str_uminus_val(s);
-  }
   for (int i = 0; i < n; i++) if (src[i] == s) return frz[i];
   if (n == cap) {
     int nc = cap ? cap * 2 : 16;
@@ -1132,7 +1130,12 @@ static const char *sp_str_dedup(const char *s) {
   SP_HEAP_UNLOCK();
   if (hit) return hit;
   /* byte_len-aware copy so an embedded NUL is preserved (sp_str_dup_external
-     would truncate at the first NUL), then freeze it to the immortal 0xf1. */
+     would truncate at the first NUL), then freeze it to the immortal 0xf1.
+     The copy's allocation can collect, and the receiver is often a value
+     nothing else holds (`-s.upcase`, `-s.upcase!` through a shared handle,
+     whose answer the handle copied): it is rooted across it, as sp_str_dup
+     roots its own, or the copy read swept bytes. */
+  SP_GC_ROOT_STR(s);
   const char *f = sp_str_freeze_val(sp_str_from_bytes(s, sp_str_byte_len(s)));
   SP_HEAP_LOCK();
   const char *hit2 = sp_fstr_lookup(f);  /* another thread may have won the race */
