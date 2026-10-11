@@ -1703,16 +1703,17 @@ static void emit_if_arm_value(Compiler *c, int last, TyKind res, int res_o, int 
   TyKind lt = repr_of(c, last).as_ty;
   int saved_gi = g_indent; g_indent = g_indent + 2;
   Buf le; memset(&le, 0, sizeof le);
-  if (res_o && oint_kind(res)) emit_oint_expr(c, last, res, &le); else emit_expr(c, last, &le);
+  /* a poly result boxes the arm as the ternary's arm does (emit_boxed): an
+     Integer or Float that may be nil boxes its oint, nil included */
+  int boxed = !(res_o && oint_kind(res)) && res == TY_POLY && lt != TY_POLY;
+  if (res_o && oint_kind(res)) emit_oint_expr(c, last, res, &le);
+  else if (boxed) emit_boxed(c, last, &le);
+  else emit_expr(c, last, &le);
   g_indent = saved_gi;
   emit_indent(g_pre, g_indent + 2);
   buf_printf(g_pre, "_t%d = ", tr);
   if (res_o && oint_kind(res)) buf_puts(g_pre, le.p ? le.p : oint_nil(res));
-  else if (res == TY_POLY && lt != TY_POLY) {
-    Buf bx; memset(&bx, 0, sizeof bx);
-    emit_boxed_text(c, lt, le.p ? le.p : default_value_from_compiler(c, lt), &bx);
-    buf_puts(g_pre, bx.p ? bx.p : "sp_box_nil()"); free(bx.p);
-  }
+  else if (boxed) buf_puts(g_pre, le.p ? le.p : "sp_box_nil()");
   else if (emit_arm_text_as_bigint(res, lt, le.p ? le.p : default_value_from_compiler(c, lt), g_pre)) { }
   else buf_puts(g_pre, le.p ? le.p : default_value_from_compiler(c, res));
   buf_puts(g_pre, ";\n");
