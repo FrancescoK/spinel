@@ -21582,7 +21582,9 @@ int strbuf_flow_carries(Compiler *c, StrbufFlowMemo *fm, int kind, int site, int
     /* a `next`'s value and map!'s block value are stored as they are: a box
        or the handle itself */
     /* A String conditional goes through emit_boxed_cond_arms, including
-       when map! or next stores it. Other values retain their raw route. */
+       when map! or next stores it, and a String bang on a boxed receiver
+       through emit_boxed_bang_self, as an element does. Other values retain
+       their raw route. */
     if (kind == SHFL_BLOCK && ctx == SFC_ELEM &&
         (sk == NK_NextNode || (sk == NK_CallNode && nt_str(nt, site, "name") && is_map_bang_alias(nt_str(nt, site, "name"))))) {
       NodeKind vk = nt_kind(nt, unwrap_parens(c, v));
@@ -21591,7 +21593,8 @@ int strbuf_flow_carries(Compiler *c, StrbufFlowMemo *fm, int kind, int site, int
          handle, emit_boxed_bang_self) */
       if ((vt != TY_STRING && vt != TY_STRBUF) ||
           (vk != NK_IfNode && vk != NK_UnlessNode && vk != NK_OrNode && vk != NK_AndNode && vk != NK_CaseNode &&
-           !(vk == NK_CallNode && strbuf_bang_self_local(c, unwrap_parens(c, v)))))
+           !(vk == NK_CallNode && strbuf_bang_self_local(c, unwrap_parens(c, v))) &&
+           !face_str_bang_call(c, unwrap_parens(c, v))))
         ctx = SFC_BOX;
     }
     break;
