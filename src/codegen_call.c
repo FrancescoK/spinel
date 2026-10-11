@@ -6961,7 +6961,10 @@ static int emit_poly_builtin_default_at(Compiler *c, int id, int recv, const cha
      its argument's temp (tr < 0), answers into no slot of the call's type:
      a setter read as the handle (TY_STRBUF) keeps its synthesized writers'
      default arm) */
-  if (ret != TY_POLY && bt != ret && !(tr < 0 && repr_share_rule(c))) return 0;
+  /* (and a String answer where the dispatch answers a handle is wrapped
+     below, an exception's #message as the handle it keeps) */
+  int wrap_h = ret == TY_STRBUF && bt == TY_STRING && tr >= 0;
+  if (ret != TY_POLY && bt != ret && !(tr < 0 && repr_share_rule(c)) && !wrap_h) return 0;
   /* the result slot's form, as the dispatch seeded it: an Integer / Float
      answer that can be nil is held as the oint */
   int slot_o = oint_kind(ret) && node_is_oint(c, id);
@@ -7001,7 +7004,30 @@ static int emit_poly_builtin_default_at(Compiler *c, int id, int recv, const cha
     /* a raise token is no value to box: the test below reads it bare */
     int is_raise = strncmp(nb->p, "sp_raise_", 9) == 0;
     if (box_o && !is_raise) buf_printf(&ib, "%s(%s)", bt == TY_FLOAT ? "sp_box_ofloat" : "sp_box_oint", nb->p);
+    /* --share-strings: a boxed #message of a String the rule shares boxes
+       an exception's handle (the override's published one, else the kept
+       message's), as a reader's arm beside it boxes its field's */
+    else if (ret == TY_POLY && bt == TY_STRING && !is_raise && argc == 0 && is_message_name(name) &&
+             repr_share_rule(c) && !exc_has_nonstring_msg_override(c) && share_node_shares(c, id)) {
+      char e[48];
+      snprintf(e, sizeof e, "_t%d.v.p", tv);
+      buf_printf(&ib, "((_t%d.tag == SP_TAG_OBJ && _t%d.v.p && (_t%d.cls_id == SP_BUILTIN_EXCEPTION || "
+                      "sp_is_exc_subclass_cls(_t%d.cls_id))) ? sp_box_nullable_obj(", tv, tv, tv, tv);
+      emit_exc_text_handle(c, id, e, &ib);
+      /* (any other builtin value has no #message: the accessor raises) */
+      buf_printf(&ib, ", SP_BUILTIN_STRBUF) : sp_poly_exc_acc(_t%d, \"message\"))", tv);
+    }
     else if (ret == TY_POLY && bt != TY_POLY && !is_raise) emit_boxed_text(c, bt, nb->p, &ib);
+    else if (wrap_h && !is_raise && argc == 0 && is_message_name(name) && repr_share_rule(c) &&
+             !exc_has_nonstring_msg_override(c)) {
+      char e[48];
+      snprintf(e, sizeof e, "_t%d.v.p", tv);
+      buf_printf(&ib, "((_t%d.tag == SP_TAG_OBJ && _t%d.v.p && (_t%d.cls_id == SP_BUILTIN_EXCEPTION || "
+                      "sp_is_exc_subclass_cls(_t%d.cls_id))) ? ", tv, tv, tv, tv);
+      emit_exc_text_handle(c, id, e, &ib);
+      buf_printf(&ib, " : sp_String_new_shared(%s))", nb->p);
+    }
+    else if (wrap_h && !is_raise) buf_printf(&ib, "sp_String_new_shared(%s)", nb->p);
     else buf_puts(&ib, nb->p);
   }
   free(nb->p); free(nb);
@@ -10911,7 +10937,10 @@ void emit_raise_class_value(Compiler *c, int kn, int mn, Buf *b) {
   ctor_arity_emit(&aerr, b);
   buf_printf(b, "default: break; } if (_t%d.tag == SP_TAG_OBJ) sp_raise_exc((sp_Exception *)_t%d.v.p); ",
              rt, rt);
-  if (mn >= 0) buf_printf(b, "sp_raise_poly_msg(_t%d, _t%d); })", kt, mt);
+  /* (--share-strings: a message that is a shared String's handle is kept as
+     that handle, sp_raise_poly_msg_h) */
+  if (mn >= 0) buf_printf(b, "%s(_t%d, _t%d); })",
+                         repr_share_rule(c) && share_node_shares(c, mn) ? "sp_raise_poly_msg_h" : "sp_raise_poly_msg", kt, mt);
   else buf_printf(b, "sp_raise_poly(_t%d); })", kt);
 }
 

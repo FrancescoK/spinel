@@ -1140,6 +1140,7 @@ typedef struct {
      the #to_hash row a boxed operand converts through (sp_kw_splat_conv). */
   int uses_kw_to_hash;
   int uses_exc_text_handle;  /* emitted shared exception text routes, to_s/message bits */
+  char *exc_text_late;  /* the plain exception text dispatchers, defined after the globals (emit_exc_text_dispatch) */
   int exc_text_super;        /* exc_text_override_calls_super's memo: 0 unasked, 1 no, 2 yes */
   /* body-node id -> enclosing BlockNode id (lazy; emit_stmts block-local
      resets). Sized nt->count; -1 = not a block body. */

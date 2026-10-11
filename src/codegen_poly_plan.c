@@ -513,6 +513,17 @@ static void emit_poly_user_arm0(Compiler *c, int id, const char *name, TyKind re
         emit_poly_user_box(c, id, &c->scopes[pf9 ? pfi9 : mi], call, b);
         buf_puts(b, ")");
       }
+      /* a String answer where a reader's arm beside it answers its field's
+         handle: the handle the method publishes, else one around the String
+         (NULL for nil) */
+      else if (ret == TY_STRBUF && cret9 == TY_STRING) {
+        if (repr_share_rule(c) && c->scopes[pf9 ? pfi9 : mi].ret_handle) {
+          int pv = ++g_tmp;
+          buf_printf(b, "({ _sp_ret_strbuf = NULL; const char *_v%d = %s; !_v%d ? NULL : _sp_ret_strbuf ? "
+                        "(sp_String *)_sp_ret_strbuf : sp_String_new_shared(_v%d); })", pv, call, pv, pv);
+        }
+        else buf_printf(b, "sp_String_new_shared(%s)", call);
+      }
       else if (ret == TY_POLY && cret9 != TY_POLY) {
         emit_poly_user_box(c, id, &c->scopes[pf9 ? pfi9 : mi], call, b); pconv = PC_BOX;
       }
@@ -574,7 +585,10 @@ static void emit_poly_user_arm0(Compiler *c, int id, const char *name, TyKind re
   /* shared-mutable ivar read into a plain string slot: the safe
      copy, not the raw handle pointer (#3227) */
   else if (ivt == TY_STRBUF && ret == TY_STRING) {
-    buf_printf(b, "sp_strbuf_read(%s)", fld);
+    /* (--share-strings: published where the call picks up the handle its
+       every target publishes, a method arm beside it among them) */
+    buf_printf(b, "%s(%s)", repr_share_rule(c) && repr_call_returns_handle(c, id) ? "sp_strbuf_read_pub" : "sp_strbuf_read",
+               fld);
     pconv = PC_COPY;
   }
   else plan_put_plain(so, ret, fld, b);

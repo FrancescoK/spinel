@@ -1900,6 +1900,17 @@ static int exc_text_call_on(Compiler *c, int v, int boxed) {
   const int *ks = poly_recv_classes(c, v, &nk);
   for (int i = 0; ks && i < nk; i++)
     if (class_is_exc_subclass(c, ks[i])) return 1;
+  /* (the walk lists no builtin value, and an exception of a class of the
+     program's own is boxed as the builtin's: an exception class's arm of
+     the dispatch plan says one can reach the call) */
+  const PolyPlan *pp = cplan_poly_arms(c, v);
+  for (int i = 0; ks && i < pp->n; i++)
+    if (pp->arm[i].key >= 0 && pp->arm[i].key < c->nclasses && class_is_exc_subclass(c, pp->arm[i].key)) return 1;
+  /* (a box the walk cannot follow, an Array's element an exception was
+     pushed into, can hold an exception of any of the program's classes:
+     the route tests the box at run time) */
+  for (int k = 0; !ks && k < c->nclasses; k++)
+    if (class_is_exc_subclass(c, k)) return 1;
   return 0;
 }
 /* --share-strings: a String Range's begin / first (1) or end / last (2),
@@ -1918,6 +1929,39 @@ int strbuf_route_srange_end(Compiler *c, int v) {
   return 0;
 }
 static int exc_text_call(Compiler *c, int v) { return exc_text_call_on(c, v, 0); }
+/* --share-strings: an exception's #message read off a boxed receiver every
+   class of which (the boxed-receiver walk) is an exception class or answers
+   #message through a reader, where no class of the program's own that is
+   not one defines a #message method: the exception in the box answers as a
+   typed receiver does
+   (emit_exc_message_boxed). #to_s is left out: a boxed String's is the
+   String itself. */
+/* Can every class the boxed receiver of call v holds (the boxed-receiver
+   walk) be an exception class? */
+static int exc_boxed_all_exceptions(Compiler *c, int v) {
+  int nk = 0;
+  const int *ks = poly_recv_classes(c, unwrap_parens(c, v), &nk);
+  if (!ks || nk <= 0) return 0;
+  for (int i = 0; i < nk; i++)
+    if (!class_is_exc_subclass(c, ks[i])) return 0;
+  return 1;
+}
+int exc_message_boxed_call(Compiler *c, int v) {
+  v = unwrap_parens(c, v);
+  if (!exc_text_call_on(c, v, 1) || is_to_s_name(nt_str(c->nt, v, "name"))) return 0;
+  int nk = 0;
+  const int *ks = poly_recv_classes(c, v, &nk);
+  if (ks && nk <= 0) return 0;
+  /* (a class that answers #message through a reader, a Struct member
+     included, takes the call's boxed read, which keeps the field's handle;
+     where the walk cannot tell the classes, any of the program's can be in
+     the box, which the loop below judges) */
+  for (int i = 0; ks && i < nk; i++)
+    if (!class_is_exc_subclass(c, ks[i]) && !comp_reader_in_chain(c, ks[i], "message", NULL)) return 0;
+  for (int k = 0; k < c->nclasses; k++)
+    if (!class_is_exc_subclass(c, k) && comp_method_in_class(c, k, "message") >= 0) return 0;
+  return 1;
+}
 /* --share-strings: an exception's #message or #to_s with no override of
    the program's own: the String the exception was raised with, which it
    holds as a handle when the String is shared (sp_exc_kept_message_handle,
@@ -1928,7 +1972,67 @@ static int exc_text_call(Compiler *c, int v) { return exc_text_call_on(c, v, 0);
    shared or changed in place (share_node_shares); anywhere else it is the
    plain read, which every other read of the same message agrees with. */
 int strbuf_route_exc_message(Compiler *c, int v) {
-  return exc_text_call(c, v) && !exc_text_override_calls_super(c) && share_node_shares(c, unwrap_parens(c, v));
+  /* (a boxed read whose every target publishes its handle takes the return
+     pickup already, where the box holds only exceptions: a class answering
+     through a reader is no target, and its arm is this route's fallback) */
+  return (exc_text_call(c, v) ||
+          (exc_message_boxed_call(c, v) &&
+           (!repr_call_returns_handle(c, unwrap_parens(c, v)) || !exc_boxed_all_exceptions(c, v)))) &&
+         !exc_text_override_calls_super(c) && share_node_shares(c, unwrap_parens(c, v));
+}
+/* An override's answer to exception text call v off exception `e` (C
+   text), into _v<t>, and the handle it published or a new one: the value
+   of the statement expression the caller opened. */
+static void emit_exc_override_pickup(Compiler *c, int v, const char *e, int t, Buf *b) {
+  int message = !is_to_s_name(nt_str(c->nt, v, "name"));
+  c->uses_exc_text_handle |= 1 << message;
+  /* (rooted: a fresh String an override answers is wrapped below, which
+     allocates) */
+  buf_printf(b, "const char *_v%d = sp_user_exc_%s_shared(%s); SP_GC_ROOT_STR(_v%d); ", t, message ? "message" : "to_s", e, t);
+  buf_printf(b, "!_v%d ? NULL : _sp_ret_strbuf ? (sp_String *)_sp_ret_strbuf : sp_String_new_shared(_v%d);", t, t);
+}
+/* The handle exception text call v answers off exception `e` (C text):
+   an override's published answer, else the kept message's handle. */
+void emit_exc_text_handle(Compiler *c, int v, const char *e, Buf *b) {
+  if (exc_has_user_msg_override(c)) {
+    buf_puts(b, "({ ");
+    emit_exc_override_pickup(c, v, e, ++g_tmp, b);
+    buf_puts(b, " })");
+    return;
+  }
+  buf_printf(b, "sp_exc_kept_message_handle((sp_Exception *)(%s))", e);
+}
+/* exc_message_boxed_call's read: the exception in the box answers its
+   handle; any other value the call's own boxed read, which raises
+   NoMethodError for a builtin one. */
+static void emit_exc_message_boxed(Compiler *c, int v, Buf *b) {
+  int t = ++g_tmp, recv = nt_ref(c->nt, v, "receiver");
+  char e[48];
+  snprintf(e, sizeof e, "_b%d.v.p", t);
+  buf_printf(b, "({ sp_RbVal _b%d = ", t);
+  emit_expr(c, recv, b);
+  buf_printf(b, "; SP_GC_ROOT_RBVAL(_b%d); (_b%d.tag == SP_TAG_OBJ && _b%d.v.p && "
+                "(_b%d.cls_id == SP_BUILTIN_EXCEPTION || sp_is_exc_subclass_cls(_b%d.cls_id))) ? ", t, t, t, t, t);
+  emit_exc_text_handle(c, v, e, b);
+  /* a box of no exception: where every class the box can hold is an
+     exception class, only a builtin value reaches here, which has no
+     #message */
+  if (exc_boxed_all_exceptions(c, v)) {
+    buf_printf(b, " : (sp_raise_nomethod(sp_nomethod_msg(\"message\", _b%d)), (sp_String *)NULL); })", t);
+    return;
+  }
+  buf_puts(b, " : sp_poly_as_strbuf(");
+  /* (the call read as a box, its handle marks lifted: read as the String
+     it is typed, or under the demand, it is this route again) */
+  int mark = view_bind(recv, "_b%d", t);
+  int sb = view_push_repr(c, v, VR_STRBUF_BOX, 0), sd = view_push_repr(c, v, VR_HANDLE_DEMAND, 0);
+  int sv = view_push(c, v, TY_POLY);
+  emit_expr(c, v, b);
+  view_pop(c, sv);
+  view_pop(c, sd);
+  view_pop(c, sb);
+  view_unbind(mark);
+  buf_puts(b, "); })");
 }
 /* --share-strings: `x.message` on a box, with no `message` of the program's
    own and no override of an exception's text: an exception in the box
@@ -1985,7 +2089,18 @@ void emit_exc_message_idbox(Compiler *c, int v, Buf *b) {
        of the call, where it would run beside the identity ask */
     ConvHold *hold = g_conv_hold;
     g_conv_hold = NULL;
-    emit_boxed(c, v, b);
+    /* (#message's other classes answer through their readers, whose boxes
+       keep the fields' handles: the call read as a box, as
+       emit_exc_message_boxed's fallback reads it) */
+    if (message && exc_message_boxed_call(c, v)) {
+      int sb = view_push_repr(c, v, VR_STRBUF_BOX, 0), sd = view_push_repr(c, v, VR_HANDLE_DEMAND, 0);
+      int sv = view_push(c, v, TY_POLY);
+      emit_expr(c, v, b);
+      view_pop(c, sv);
+      view_pop(c, sd);
+      view_pop(c, sb);
+    }
+    else emit_boxed(c, v, b);
     g_conv_hold = hold;
     view_unbind(mark);
     buf_puts(b, "; })");
@@ -2190,19 +2305,22 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
   }
   if (strbuf_route_exc_message(c, v)) {
     v = unwrap_parens(c, v);
+    if (!exc_text_call(c, v)) {
+      emit_exc_message_boxed(c, v, b);
+      return 1;
+    }
     if (exc_has_user_msg_override(c)) {
       int t = ++g_tmp, recv = nt_ref(nt, v, "receiver");
-      int message = !is_to_s_name(nt_str(nt, v, "name"));
-      c->uses_exc_text_handle |= 1 << message;
       buf_printf(b, "({ sp_Exception *_e%d = (sp_Exception *)(", t);
       emit_expr(c, recv, b);
       buf_printf(b, "); SP_GC_ROOT(_e%d); ", t);
       int mark = view_bind(recv, "_e%d", t);
       if (cplan_nil(c, v) == CN_RAISE) emit_nil_cold_test(c, v, recv, b);
       view_unbind(mark);
-      buf_printf(b, "const char *_v%d = sp_user_exc_%s_shared(_e%d); ",
-                 t, message ? "message" : "to_s", t);
-      buf_printf(b, "!_v%d ? NULL : _sp_ret_strbuf ? (sp_String *)_sp_ret_strbuf : sp_String_new_shared(_v%d); })", t, t);
+      char e[32];
+      snprintf(e, sizeof e, "_e%d", t);
+      emit_exc_override_pickup(c, v, e, t, b);
+      buf_puts(b, " })");
       return 1;
     }
     buf_puts(b, "sp_exc_kept_message_handle((sp_Exception *)(");

@@ -821,6 +821,8 @@ int is_exc_name(const char *n);
 int class_is_exc_subclass(Compiler *c, int ci);
 int exc_class_defines(Compiler *c, const char *name);
 int class_is_exc_reopen(Compiler *c, int ci);
+int super_reaches_exc_text(Compiler *c, int id, int reopen);
+int exc_message_super_to_s(Compiler *c, int id, int *out, int cap);
 int class_has_exc_name(Compiler *c, int ci);
 int any_exc_reopen(Compiler *c);
 char **dsend_candidates(Compiler *c, int *out_n);
@@ -1864,6 +1866,8 @@ void emit_dispatch(Compiler *c, int cid, const char *name, const char *selfptr, 
 int emit_reader_override_dispatch(Compiler *c, int id, int cid, const char *name, const char *selfptr, const char *reader, TyKind reader_ty, Buf *b);
 int reader_override_arms(Compiler *c, int id, int cid, const char *name, TyKind reader_ty);
 int reader_override_handle_arms(Compiler *c, int id, int cid, const char *name, int boxed);
+int exc_message_boxed_call(Compiler *c, int v);
+void emit_exc_text_handle(Compiler *c, int v, const char *e, Buf *b);
 int emit_reader_override_handle(Compiler *c, int id, int cid, const char *name, const char *selfptr,
                                 const char *reader, int boxed, Buf *b);
 TyKind reader_override_ty(Compiler *c, int id, int cid, const char *name);

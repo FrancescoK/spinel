@@ -12983,7 +12983,12 @@ void emit_super(Compiler *c, int id, Buf *b) {
         int pk = emit_exc_reopen_pick_head(c, xr, xn, from, b);
         /* none above it: #message / #to_s are Exception's own, the stored
            message; any other name has no superclass method */
-        if ((is_exception_message(uname)) && repr_of(c, id).as_ty == TY_STRING)
+        int tos[16];
+        if (is_exception_message(uname) && repr_of(c, id).as_ty == TY_STRING &&
+            is_message_name(uname) && exc_message_super_to_s(c, id, tos, 16) != 0 && exc_has_user_msg_override(c))
+          /* (Exception#message answers #to_s, as below) */
+          buf_printf(b, "_xi%d < 0 ? sp_user_exc_to_s((sp_Exception *)%s) : ", pk, g_self);
+        else if ((is_exception_message(uname)) && repr_of(c, id).as_ty == TY_STRING)
           buf_printf(b, "_xi%d < 0 ? sp_exc_message((struct sp_Exception_s *)%s) : ", pk, g_self);
         else
           buf_printf(b, "if (_xi%d < 0) sp_raise_cls(\"NoMethodError\", \"super: no superclass method '%s' for an instance of %s\"); ",
@@ -13005,7 +13010,22 @@ void emit_super(Compiler *c, int id, Buf *b) {
         (is_exception_message(uname))) {
       int rt_boxed = repr_of(c, id).kind == RK_BOXED;
       Buf mb; memset(&mb, 0, sizeof mb);
-      buf_printf(&mb, "sp_exc_message((struct sp_Exception_s *)%s)", g_self);
+      /* --share-strings: in a method that hands the String on
+         (Scope.ret_handle), the message's handle published, which the
+         override's callers pick up */
+      int pub = repr_share_rule(c) && s->ret_handle && super_reaches_exc_text(c, id, 1);
+      /* Exception#message answers #to_s: where the program defines one for
+         this class or one below it, the #to_s dispatcher, which falls back
+         to the stored message (published under the flag, as above) */
+      int tos[16];
+      int nts = is_message_name(uname) ? exc_message_super_to_s(c, id, tos, 16) : 0;
+      if (nts != 0 && exc_has_user_msg_override(c)) {
+        if (pub) c->uses_exc_text_handle |= 1;
+        buf_printf(&mb, "sp_user_exc_to_s%s((sp_Exception *)%s)", pub ? "_shared" : "", g_self);
+      }
+      else if (pub)
+        buf_printf(&mb, "sp_strbuf_read_pub(sp_exc_stored_message_handle((sp_Exception *)%s))", g_self);
+      else buf_printf(&mb, "sp_exc_message((struct sp_Exception_s *)%s)", g_self);
       if (rt_boxed) { buf_puts(b, "sp_box_str("); buf_puts(b, mb.p); buf_puts(b, ")"); }
       else buf_puts(b, mb.p);
       free(mb.p);
@@ -17480,7 +17500,7 @@ static void emit_exc_text_return(Compiler *c, int mi, const char *call, int mode
    result and its handle; 2: the identity reads' (_id), which answer the
    result as the box an identity compare reads and never attach a handle
    to the stored message */
-static void emit_exc_text_dispatch(Compiler *c, Buf *b, int mode) {
+static void emit_exc_text_dispatch_at(Compiler *c, Buf *b, int mode, int *late) {
   if (exc_has_user_msg_override(c)) {
     for (int pass = 0; pass < 2; pass++) {
       if (mode && !(c->uses_exc_text_handle & ((mode == 2 ? 4 : 1) << pass))) continue;
@@ -17506,15 +17526,28 @@ static void emit_exc_text_dispatch(Compiler *c, Buf *b, int mode) {
         const char *cn0 = class_ruby_name(c, i);
         if (!cn0) cn0 = c->classes[i].name;
         if (!cn0) continue;
-        Buf call = {0};
-        buf_printf(&call, "(const char*)sp_%s_%s((sp_%s*)e)", dcn, fn, dcn);
-        buf_printf(b, "  if(!strcmp(cls,\"%s\"))", cn0);
-        emit_exc_text_return(c, mi, call.p, mode, b); buf_puts(b, "\n");
-        if (c->classes[i].name && !sp_streq(cn0, c->classes[i].name)) {
-          buf_printf(b, "  if(!strcmp(cls,\"%s\"))", c->classes[i].name);
-          emit_exc_text_return(c, mi, call.p, mode, b); buf_puts(b, "\n");
+        /* a call with no arguments: an optional or rest parameter takes
+           its default (emit_arm_args_text), and one that cannot be left
+           empty raises ArgumentError as the call does */
+        Buf call = {0}, pre = {0}, args = {0}, arm = {0};
+        char selfp[160], raise[640];
+        snprintf(selfp, sizeof selfp, "((sp_%s*)e)", dcn);
+        int builds = 0;
+        if (emit_arm_args_text(c, mi, selfp, NULL, 0, &pre, &args, &builds, raise, sizeof raise)) {
+          buf_printf(&call, "(const char*)sp_%s_%s((sp_%s*)e%s)", dcn, fn, dcn, args.p ? args.p : "");
+          /* (a default can read a global or a constant, declared after this
+             point: such a dispatcher is defined late, emit_exc_text_dispatch) */
+          if (args.p || pre.p) *late = 1;
+          /* (the exception is rooted while the arm builds its defaults) */
+          if (builds) buf_printf(&arm, "{ SP_GC_ROOT(e); %s", pre.p ? pre.p : "");
+          emit_exc_text_return(c, mi, call.p, mode, &arm);
+          if (builds) buf_puts(&arm, " }");
         }
-        free(call.p);
+        else buf_printf(&arm, "{ %s %s }", raise, mode == 2 ? "return sp_box_nil();" : "return NULL;");
+        buf_printf(b, "  if(!strcmp(cls,\"%s\"))%s\n", cn0, arm.p);
+        if (c->classes[i].name && !sp_streq(cn0, c->classes[i].name))
+          buf_printf(b, "  if(!strcmp(cls,\"%s\"))%s\n", c->classes[i].name, arm.p);
+        free(call.p); free(pre.p); free(args.p); free(arm.p);
       }
       /* a builtin exception's reopening: #message is the nearest reopening's
          #message, else (Exception#message calls #to_s) the nearest #to_s,
@@ -17547,6 +17580,28 @@ static void emit_exc_text_dispatch(Compiler *c, Buf *b, int mode) {
       else buf_puts(b, "  return sp_exc_message(e);\n}\n");
     }
   }
+}
+
+/* The dispatchers of mode (emit_exc_text_dispatch_at). The plain pair whose
+   arms fill a parameter's default is declared here and defined with the
+   shared ones, after the program's globals and constants (c->exc_text_late),
+   which a default can read. */
+static void emit_exc_text_dispatch(Compiler *c, Buf *b, int mode) {
+  if (mode) { emit_exc_text_dispatch_at(c, b, mode, &(int){0}); return; }
+  Buf d; memset(&d, 0, sizeof d);
+  int late = 0;
+  emit_exc_text_dispatch_at(c, &d, 0, &late);
+  if (!late) { if (d.p) buf_puts(b, d.p); free(d.p); return; }
+  buf_puts(b, "SP_UNUSED static const char *sp_user_exc_to_s(sp_Exception *e);\n"
+              "SP_UNUSED static const char *sp_user_exc_message(sp_Exception *e);\n");
+  free(c->exc_text_late);
+  c->exc_text_late = d.p;
+}
+/* After the program's globals and constants: the text dispatchers held back
+   because an arm fills a default that reads them, then the handle ones. */
+static void emit_exc_text_tail(Compiler *c, Buf *b) {
+  if (c->exc_text_late) { buf_puts(b, c->exc_text_late); free(c->exc_text_late); c->exc_text_late = NULL; }
+  if (c->uses_exc_text_handle) { emit_exc_text_dispatch(c, b, 1); emit_exc_text_dispatch(c, b, 2); }
 }
 
 /* User exception classes: the class-name to index map a poly dispatch keys them by, and the #message / #to_s override dispatchers (const char * and boxed) (codegen_program's steps, in their order) */
@@ -17645,6 +17700,11 @@ static void emit_user_exc_dispatch(Compiler *c, Buf *b) {
      exception whose class is only known at run time reported the stored message
      (the class name) instead of what #to_s answered (#3868). */
   if (exc_has_nonstring_msg_override(c)) {
+    /* (like the plain pair, defined after the globals where an arm fills a
+       default, emit_exc_text_dispatch) */
+    Buf *outer = b, vbuf; memset(&vbuf, 0, sizeof vbuf);
+    int vlate = 0;
+    b = &vbuf;
     for (int pass = 0; pass < 2; pass++) {
       int want_message = pass;
       buf_printf(b, "SP_UNUSED static sp_RbVal %s(sp_Exception *e){\n",
@@ -17662,22 +17722,46 @@ static void emit_user_exc_dispatch(Compiler *c, Buf *b) {
         const char *cn0 = class_ruby_name(c, i);
         if (!cn0) cn0 = c->classes[i].name;
         if (!cn0) continue;
-        char callx[256];
-        snprintf(callx, sizeof callx, "sp_%s_%s((sp_%s*)e)", dcn, fn, dcn);
-        Buf bx; memset(&bx, 0, sizeof bx);
-        if (mret == TY_POLY) buf_puts(&bx, callx);
-        else emit_boxed_text(c, mret, callx, &bx);
-        buf_printf(b, "  if(!strcmp(cls,\"%s\"))return %s;\n", cn0, bx.p ? bx.p : "sp_box_nil()");
+        /* a call with no arguments, defaults filled (as the plain pair) */
+        Buf callx = {0}, pre = {0}, args = {0}, arm = {0};
+        char selfp[160], raise[640];
+        int builds = 0;
+        snprintf(selfp, sizeof selfp, "((sp_%s*)e)", dcn);
+        if (emit_arm_args_text(c, mi, selfp, NULL, 0, &pre, &args, &builds, raise, sizeof raise)) {
+          buf_printf(&callx, "sp_%s_%s((sp_%s*)e%s)", dcn, fn, dcn, args.p ? args.p : "");
+          if (args.p || pre.p) vlate = 1;
+          Buf bx; memset(&bx, 0, sizeof bx);
+          if (mret == TY_POLY) buf_puts(&bx, callx.p);
+          else emit_boxed_text(c, mret, callx.p, &bx);
+          if (builds) buf_printf(&arm, "{ SP_GC_ROOT(e); %sreturn %s; }", pre.p ? pre.p : "", bx.p ? bx.p : "sp_box_nil()");
+          else buf_printf(&arm, "return %s;", bx.p ? bx.p : "sp_box_nil()");
+          free(bx.p);
+        }
+        else buf_printf(&arm, "{ %s return sp_box_nil(); }", raise);
+        buf_printf(b, "  if(!strcmp(cls,\"%s\"))%s\n", cn0, arm.p);
         if (c->classes[i].name && !sp_streq(cn0, c->classes[i].name))
-          buf_printf(b, "  if(!strcmp(cls,\"%s\"))return %s;\n",
-                     c->classes[i].name, bx.p ? bx.p : "sp_box_nil()");
-        free(bx.p);
+          buf_printf(b, "  if(!strcmp(cls,\"%s\"))%s\n", c->classes[i].name, arm.p);
+        free(callx.p); free(pre.p); free(args.p); free(arm.p);
       }
       buf_printf(b, "  return sp_box_str(%s(e));\n}\n",
                  exc_has_user_msg_override(c)
                    ? (want_message ? "sp_user_exc_message" : "sp_user_exc_to_s")
                    : "sp_exc_message");
     }
+    b = outer;
+    if (!vlate) { if (vbuf.p) buf_puts(b, vbuf.p); }
+    else {
+      buf_puts(b, "SP_UNUSED static sp_RbVal sp_user_exc_to_s_v(sp_Exception *e);\n"
+                  "SP_UNUSED static sp_RbVal sp_user_exc_message_v(sp_Exception *e);\n");
+      size_t ol = c->exc_text_late ? strlen(c->exc_text_late) : 0, nl = strlen(vbuf.p);
+      char *cat = malloc(ol + nl + 1);
+      if (!cat) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      if (ol) memcpy(cat, c->exc_text_late, ol);
+      memcpy(cat + ol, vbuf.p, nl + 1);
+      free(c->exc_text_late);
+      c->exc_text_late = cat;
+    }
+    free(vbuf.p);
   }
 }
 
@@ -18611,7 +18695,7 @@ char *codegen_program(const NodeTable *nt) {
       buf_splice(&b, isa_ext_at, isa_ext);
     free(isa_ext);
   }
-  if (c->uses_exc_text_handle) { emit_exc_text_dispatch(c, &b, 1); emit_exc_text_dispatch(c, &b, 2); }
+  emit_exc_text_tail(c, &b);
   if (g_proc_protos.len) { buf_puts(&b, g_proc_protos.p); buf_puts(&b, "\n"); }
   if (g_pd_protos.len) { buf_puts(&b, g_pd_protos.p); buf_puts(&b, "\n"); }
   if (g_procs.len) { buf_puts(&b, g_procs.p); buf_puts(&b, "\n"); }

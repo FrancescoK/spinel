@@ -978,7 +978,8 @@ int emit_call_raise_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const
         int rk = ++g_tmp, rm = ++g_tmp;
         buf_printf(b, "({ sp_RbVal _t%d = ", rk); emit_boxed(c, av[0], b);
         buf_printf(b, "; sp_RbVal _t%d = ", rm); emit_boxed(c, av[1], b);
-        buf_printf(b, "; sp_raise_poly_msg(_t%d, _t%d); })", rk, rm);
+        buf_printf(b, "; %s(_t%d, _t%d); })",
+                   repr_share_rule(c) && share_node_shares(c, av[1]) ? "sp_raise_poly_msg_h" : "sp_raise_poly_msg", rk, rm);
       }
       else if (at == TY_EXCEPTION)
         { buf_puts(b, "sp_raise_exc((sp_Exception *)("); emit_expr(c, av[0], b); buf_puts(b, "))"); }

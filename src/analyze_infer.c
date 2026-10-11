@@ -9890,12 +9890,16 @@ TyKind infer_uncached(Compiler *c, int id) {
                      /* and is_a? / kind_of? / instance_of? (codegen's twin) */
                      sp_streq(uname, "is_a?") || sp_streq(uname, "kind_of?") ||
                      sp_streq(uname, "instance_of?"));
-    if (p < 0) return rto_super ? TY_BOOL : TY_UNKNOWN;
+    /* (`super` in an exception subclass's #message / #to_s that reaches
+       Exception's is the message String, super_reaches_exc_text: untyped,
+       `def message = super` answered nil) */
+    TyKind none = super_reaches_exc_text(c, id, 0) ? TY_STRING : rto_super ? TY_BOOL : TY_UNKNOWN;
+    if (p < 0) return none;
     /* super inside a class method resolves through the parent's CLASS-method
        chain (the instance chain would miss `def self.x` entirely). */
     int mi = s->is_cmethod ? comp_cmethod_in_chain(c, p, uname, NULL)
                            : comp_method_in_chain(c, p, uname, NULL);
-    if (mi < 0) return rto_super ? TY_BOOL : TY_UNKNOWN;
+    if (mi < 0) return none;
     an_user_call_record(c, id, mi, UC_SUPER, p);
     return super_target_ret(c, s, mi, id);
   }
@@ -10358,3 +10362,54 @@ void scope_add_param(Scope *s, const char *name, int defnode) {
 }
 
 /* Collect parameters from a DefNode into scope s. */
+
+/* Does `super` node id, in an instance method #message or #to_s of an
+   exception subclass, reach no method of the program's own above it? It
+   answers Exception's text, the message String the exception keeps (the
+   super emitter reads it off self). A builtin reopening that defines the
+   name is picked at run time from the builtin ancestry; `reopen` asks that
+   none does. */
+int super_reaches_exc_text(Compiler *c, int id, int reopen) {
+  Scope *s = comp_scope_of(c, id);
+  if (!s || s->class_id < 0 || !s->name || s->is_cmethod || comp_super_shadow(c, s) ||
+      !class_is_exc_subclass(c, s->class_id))
+    return 0;
+  int p = comp_super_parent(c, s->class_id, 0);
+  const char *uname = comp_super_name(c, p, s->name, 0);
+  if (!uname || !is_exception_message(uname) || (p >= 0 && comp_method_in_chain(c, p, uname, NULL) >= 0))
+    return 0;
+  int xr[8], xn = reopen ? exc_reopen_definers(c, uname, xr, 8) : 0;
+  for (int q = 0; q < xn; q++)
+    if (xr[q] != s->class_id) return 0;
+  /* (Exception#message answers #to_s: one of the program's own answering
+     no String leaves the answer untyped) */
+  int mis[16];
+  if (is_message_name(uname) && exc_message_super_to_s(c, id, mis, 16) == -2) return 0;
+  return 1;
+}
+
+/* The #to_s methods of the program's own that `super` node id, reaching
+   Exception#message (super_reaches_exc_text), answers through: Exception's
+   #message calls #to_s on the receiver, so a #to_s of its class (inherited
+   or its own) or of a class below it answers in place of the stored
+   message. Their count, into out[0..cap); -1 when a builtin reopening
+   defines #to_s too, or there are more than cap; -2 when one answers no
+   String. */
+int exc_message_super_to_s(Compiler *c, int id, int *out, int cap) {
+  Scope *s = comp_scope_of(c, id);
+  if (!s || s->class_id < 0) return 0;
+  int cid = s->class_id, n = 0, wide = 0, xr[8];
+  if (exc_reopen_definers(c, "to_s", xr, 8) > 0) wide = 1;
+  for (int k = 0; k < c->nclasses; k++) {
+    if (k != cid && !is_descendant(c, k, cid)) continue;
+    int mi = comp_method_in_chain(c, k, "to_s", NULL);
+    if (mi < 0) continue;
+    if ((TyKind)c->scopes[mi].ret != TY_STRING && (TyKind)c->scopes[mi].ret != TY_UNKNOWN) return -2;
+    int seen = 0;
+    for (int j = 0; j < n && !seen; j++) seen = out[j] == mi;
+    if (seen) continue;
+    if (n == cap) wide = 1;
+    else out[n++] = mi;
+  }
+  return wide ? -1 : n;
+}

@@ -230,7 +230,9 @@ int repr_boxed_reader_handle(Compiler *c, int v) {
   if (p->n == 0) return 0;
   for (int i = 0; i < p->n; i++)
     if (p->arm[i].kind != PA_READER || p->arm[i].vty != TY_STRBUF) return 0;
-  return 1;
+  /* (an exception in the box answers #message through the exception's
+     route, whose fallback takes these readers' boxes: exc_message_boxed_call) */
+  return !exc_message_boxed_call(c, v);
 }
 
 /* A boxed to_s can answer the String in the box itself. The route takes a

@@ -5526,9 +5526,11 @@ int exc_has_user_msg_override(Compiler *c) {
 }
 
 /* Does an exception's #message or #to_s override of the program's own call
-   `super`? That reaches Exception's, the stored message, which a body cannot
-   hand on as the stored handle yet (its answer is the stored bytes' copy), so
-   a shared route over such a class stays refused. Asked once. */
+   `super` and can answer what super answers? That reaches Exception's, the
+   stored message, which a body cannot hand on as the stored handle yet (its
+   answer is the stored bytes' copy), so a shared route over such a class
+   stays refused. One that answers a new String (Scope.ret_fresh) does not
+   block it. Asked once, after the return facts settle. */
 int exc_text_override_calls_super(Compiler *c) {
   if (c->exc_text_super) return c->exc_text_super == 2;
   c->exc_text_super = 1;
@@ -5536,7 +5538,15 @@ int exc_text_override_calls_super(Compiler *c) {
     if (!class_is_exc_subclass(c, i) && !class_is_exc_reopen(c, i)) continue;
     for (int k = 0; k < 2; k++) {
       int mi = comp_method_in_class(c, i, k ? "to_s" : "message");
-      if (mi >= 0 && scope_calls_super(c, mi)) { c->exc_text_super = 2; break; }
+      /* (--share-strings: one that answers a new String of its own,
+         `"B:" + super`, never hands on super's answer, and one that
+         publishes the handle it answers, `def message = super`, hands on
+         that String) */
+      if (mi >= 0 && scope_calls_super(c, mi) &&
+          !(c->share_strings && (c->scopes[mi].ret_fresh || c->scopes[mi].ret_handle))) {
+        c->exc_text_super = 2;
+        break;
+      }
     }
   }
   return c->exc_text_super == 2;

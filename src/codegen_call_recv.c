@@ -7570,6 +7570,9 @@ static int str_arms_convert(Compiler *c, int id, Buf *b, const NodeTable *nt, co
           int teq = ++g_tmp;
           buf_printf(b, "({ sp_String *_t%d = %s; (sp_bool)(_t%d == %s); })", teq, r, teq, arefE);
         }
+        /* (a boxed reader's read under the handle demand is the handle) */
+        else if (repr_of(c, recv).demand && repr_boxed_reader_handle(c, recv) && repr_of(c, recv).ty == TY_STRING)
+          buf_printf(b, "((const void *)(%s) == (const void *)%s)", r, arefE);
         else {
           int teq = ++g_tmp;
           buf_printf(b, "({ const char *_t%d = %s; "

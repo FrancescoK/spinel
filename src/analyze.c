@@ -21137,6 +21137,16 @@ static int an_tail_handle(Compiler *c, RetHandles *R, int n, TailCount *tc) {
   if (R->fresh && k == NK_CallNode && share_node_fresh(c, n)) { tc->fresh++; return 1; }
   if (k == NK_CallNode && c->ntype[n] == TY_NIL) { tc->nils++; return 1; }
   if (k == NK_SuperNode || k == NK_ForwardingSuperNode) {
+    /* Exception's text publishes the message's handle (the super emitter's
+       exception arm) */
+    int tos[16];
+    if (!R->fresh && super_reaches_exc_text(c, n, 1) &&
+        (!is_message_name(c->scopes[tc->mi].name) ||
+         exc_message_super_to_s(c, n, tos, 16) >= 0)) {
+      if (g_repr_check) repr_channel_predict(c, n, tc->mi, RCH_PUBLISH);
+      tc->reads++;
+      return 1;
+    }
     const CallPlan *p = cplan_user_fresh(c, n);
     int mi = p->mi;
     if (p->dispatch != CP_DIRECT || mi <= 0 || !an_ret_handle(c, R, mi)) return 0;
@@ -39704,8 +39714,10 @@ static void refuse_string_read_copies(Compiler *c) {
     ShareRoute q = share_route(w, v, 0);
     q.to = w;
     q.carry = SHARE_CARRY_COPY;
-    /* A reader whose settled plan carries shared fields uses that route. */
-    if (repr_boxed_reader_handle(c, v)) q.carry = v;
+    /* A reader whose settled plan carries shared fields uses that route, and
+       so does an exception's #message beside such readers
+       (exc_message_boxed_call). */
+    if (repr_boxed_reader_handle(c, v) || (c->share_strings && exc_message_boxed_call(c, v))) q.carry = v;
     /* A boxed to_s has a builtin face, so the reader plan declines it. The
        seal asks repr_boxed_to_s_operand once the targets' returns settle:
        every arm's own answer (a field's handle, a fresh String, the handle

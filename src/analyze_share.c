@@ -1336,6 +1336,17 @@ static int sh_reader_overrides(ShareFacts *F, Compiler *c, const char *name) {
 
 static int sh_unknown_call(ShareFacts *F, Compiler *c, int n, int blk);
 
+/* Can call n's boxed receiver hold only instances of exception classes, as
+   the boxed-receiver walk bounds it? */
+static int sh_recv_only_exceptions(Compiler *c, int n) {
+  int nk = 0;
+  const int *ks = poly_recv_classes(c, n, &nk);
+  if (!ks || nk <= 0) return 0;
+  for (int i = 0; i < nk; i++)
+    if (!class_is_exc_subclass(c, ks[i])) return 0;
+  return 1;
+}
+
 /* The share-row semantics of builtin call n. Answers its value. */
 /* An iterator's block over a container's elements. Over a Hash (`hash`), a
    block of two or more plain parameters takes the key first: a key is the
@@ -1989,6 +2000,21 @@ static int sh_exc(ShareFacts *F) {
     F->nhold[F->exc] = 1;   /* the exceptions keep their messages: a name */
   }
   return F->exc;
+}
+/* --share-strings: what an exception's #message answers, the kept messages
+   and the answers of the #to_s methods of the program's exception classes
+   (Exception#message calls #to_s), each such method marked read, as no call
+   lists it as a target */
+static int sh_exc_text(ShareFacts *F, Compiler *c) {
+  int r = sh_exc(F);
+  for (int k = 0; k < c->nclasses; k++) {
+    if (!class_is_exc_subclass(c, k)) continue;
+    int mi = comp_method_in_class(c, k, "to_s");
+    if (mi < 0) continue;
+    r = sh_join(F, r, sh_scope_holder(F, SHK_RET, mi));
+    if (F->mread) F->mread[mi] = 1;
+  }
+  return r;
 }
 /* Call n's arguments are handed to an exception: its message may be any
    of them. */
@@ -2676,10 +2702,20 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
     }
     /* a poly receiver may be a builtin as well */
     if (c->share_strings && rt == TY_EXCEPTION && is_exception_message(name))
-      return sh_join(F, r, sh_exc(F));
+      return sh_join(F, r, is_message_name(name) ? sh_exc_text(F, c) : sh_exc(F));
+    /* ...and so may a boxed one beside user returns: an exception in the
+       box answers its stored message (strbuf_route_exc_message) */
+    if (c->share_strings && (rt == TY_POLY || rt == TY_UNKNOWN) && ntg > 0 && is_exception_message(name) &&
+        argc == 0 && blk < 0)
+      r = sh_join(F, r, is_message_name(name) ? sh_exc_text(F, c) : sh_exc(F));
     if ((rt != TY_POLY && rt != TY_UNKNOWN) || sh_builtin_fresh(c, n, F->ostruct)) return r;
     /* Exception#to_s hands on its stored message beside user returns. */
-    if (is_to_s_name(name) && argc == 0 && blk < 0) r = sh_join(F, r, sh_exc(F));
+    if (is_to_s_name(name) && argc == 0 && blk < 0) {
+      r = sh_join(F, r, sh_exc(F));
+      /* --share-strings: a receiver that can hold only exceptions (the
+         boxed-receiver walk) is no String, whose to_s would answer it */
+      if (c->share_strings && sh_recv_only_exceptions(c, n)) return r;
+    }
     if (argc == 2 && nt_kind(nt, argv[1]) == NK_KeywordHashNode &&
         bop_share_named(BOP_ANY_ARRAY, name) == BSH_PACK)
       r = sh_join(F, r, sh_builtin(F, c, n, BSH_PACK, rv, blk, 1));
@@ -2741,7 +2777,11 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
        User targets above retain their own return facts. */
     if (c->share_strings && argc == 0 && blk < 0 && bop_share_named(TY_EXCEPTION, name) == BSH_PURE &&
         (rt == TY_EXCEPTION || (ty_is_object(rt) && class_is_exc_subclass(c, ty_object_class(rt))))) return -1;
-    return sh_exc(F);
+    /* (the renderings are no other value's method: off a boxed receiver
+       too, each is a new String) */
+    if (c->share_strings && argc == 0 && blk < 0 && is_exception_full_message(name) &&
+        (rt == TY_POLY || rt == TY_UNKNOWN)) return -1;
+    return c->share_strings && is_message_name(name) ? sh_exc_text(F, c) : sh_exc(F);
   }
   if (recv < 0 && is_raise_alias(name) && !sh_has_targets(c, n)) {
     sh_exc_args(F, c, n);
@@ -2869,6 +2909,15 @@ static int sh_super(ShareFacts *F, Compiler *c, int n) {
           sh_union(F, cs->pnames[j] ? sh_local_of(F, c, cs, cs->pnames[j], n) : -1, sh_exc(F));
       else sh_exc_args(F, c, n);
       if (c->share_strings && is_initialize_family(cs->name)) return -1;
+      /* ...and #message / #to_s answer it (super_reaches_exc_text) */
+      if (c->share_strings && super_reaches_exc_text(c, n, 1)) {
+        /* (#message's through the #to_s methods it answers, too) */
+        int tos[16], r = sh_exc(F);
+        int nts = is_message_name(cs->name) ? exc_message_super_to_s(c, n, tos, 16) : 0;
+        if (nts < 0) return sh_unknown_call(F, c, n, blk);
+        for (int q = 0; q < nts; q++) r = sh_join(F, r, sh_scope_holder(F, SHK_RET, tos[q]));
+        return r;
+      }
     }
     return sh_unknown_call(F, c, n, blk);
   }

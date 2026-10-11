@@ -663,6 +663,8 @@ void refuse_readonly_global_write(Compiler *c);
    `rescue <UserExc> => e` binding (#1415). */
 int class_is_exc_subclass(Compiler *c, int ci);
 int exc_class_defines(Compiler *c, const char *name);
+int super_reaches_exc_text(Compiler *c, int id, int reopen);
+int exc_message_super_to_s(Compiler *c, int id, int *out, int cap);
 int exc_subclass_defines(Compiler *c, const char *name);
 int exc_user_method_name(Compiler *c, const char *name, int argc);
 /* Defined in codegen_fold.c; 1 if class `k` is `anc` or a descendant of it. */
