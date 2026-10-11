@@ -4935,7 +4935,7 @@ gate-optcarrot:
 gate-rubyboy:
 	+@$(MAKE) --no-print-directory rubyboy
 gate-rubyspec:
-	+@$(MAKE) --no-print-directory rubyspec-gate RUBYSPEC_JOBS=$(NPROC)
+	+@$(MAKE) --no-print-directory rubyspec-gate RUBYSPEC_JOBS=$(or $(RUBYSPEC_JOBS),$(NPROC))
 
 # ---- Install ----
 
