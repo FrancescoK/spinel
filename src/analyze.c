@@ -38339,7 +38339,7 @@ static void an_phase_infer_fixpoint(Compiler *c) {
     ch |= AN_PASS("desugar_handle_reopen_self_recv", desugar_handle_reopen_self_recv(c));  /* bare m(..) in a Thread/Fiber reopen -> self.m(..) */
     ch |= AN_PASS("desugar_symbol_to_proc_call", desugar_symbol_to_proc_call(c));      /* :sym.to_proc.call(x) -> x.sym */
     ch |= AN_PASS("desugar_call_op_write", desugar_call_op_write(c));            /* r.x += 1 with a def writer -> r.x = r.x + 1 */
-    ch |= AN_PASS("desugar_call_or_write_reopen", desugar_call_or_write_reopen(c));     /* r.x ||= v on a reopened builtin with a def writer -> the two calls */
+    ch |= AN_PASS("desugar_call_or_write_reopen", desugar_call_or_write_reopen(c));     /* r.x ||= v on a reopened builtin with a def writer, or on a poly r -> the two calls */
     ch |= AN_PASS("desugar_index_op_write_user", desugar_index_op_write_user(c));      /* obj[k] ||= v on a user [] / []= -> the calls */
     ch |= AN_PASS("desugar_main_self_call", desugar_main_self_call(c));           /* self.m on main with a top-level def m -> m */
     ch |= AN_PASS("desugar_cmethod_cvar_reflection", desugar_cmethod_cvar_reflection(c)); /* class_variable_get(:@@x) in def self.m -> K.class_variable_get */
