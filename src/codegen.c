@@ -1600,18 +1600,25 @@ static void emit_boxed_strbuf(Compiler *c, int node, TyKind t, const Repr *rp, B
      nil (a String-or-nil call, a slice past the end, a pick that misses) is
      tested before it is wrapped and boxed as nil: sp_String_new_shared
      hands a nil back as NULL, and sp_box_obj boxed that NULL as a String.
-     One the never-nil list proves is wrapped as it was. */
+     One the never-nil list proves is wrapped as it was.
+     The handle keeps its bytes in a separate block even when the value is
+     proven fresh (strbuf_new_func would answer sp_String_new_fresh): every
+     mark of the container touches each element's header, a minor included
+     once a push has put the container in the remembered set, and a payload
+     inside the object spreads those headers out (a 44-byte element takes a
+     208- to 224-byte slot where the handle alone takes 80). bm_csv_build
+     keeps 400,000 such elements, and with the payload inside it spent 15-20%
+     more cycles than with it apart, all of them in its collections. */
   int tn = stored_value_may_be_nil(c, node) ? ++g_tmp : 0;
-  const char *ctor = strbuf_new_func(c, node);
   if (tn) buf_printf(b, "({ const char *_t%d = ", tn);
-  else buf_printf(b, "sp_box_obj(%s(", ctor);
+  else buf_puts(b, "sp_box_obj(sp_String_new_shared(");
   { Buf eb0; memset(&eb0, 0, sizeof eb0);
     int sv_mark = view_push_repr(c, node, VR_STRBUF_BOX, 0);   /* emit the plain string value */
     emit_str_expr(c, node, &eb0);
     view_pop(c, sv_mark);
     buf_puts(b, eb0.p ? eb0.p : "(&(\"\\xff\")[1])");
     free(eb0.p); }
-  if (tn) buf_printf(b, "; _t%d ? sp_box_obj(%s(_t%d), SP_BUILTIN_STRBUF) : sp_box_nil(); })", tn, ctor, tn);
+  if (tn) buf_printf(b, "; _t%d ? sp_box_obj(sp_String_new_shared(_t%d), SP_BUILTIN_STRBUF) : sp_box_nil(); })", tn, tn);
   else buf_puts(b, "), SP_BUILTIN_STRBUF)");
   RC(RF_STRBUF_FRESH, RW_NONE);
 }
