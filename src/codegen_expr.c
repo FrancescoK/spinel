@@ -4021,6 +4021,17 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
        void -- a VOID/UNKNOWN unified type (`() && true`, an empty-parens operand
        whose cached type settled void) becomes poly so the temp is not `void`. */
     if (res == TY_VOID || res == TY_UNKNOWN || res == TY_NIL) res = TY_POLY;
+    /* --share-strings: a left typed as the String handle (a value the
+       container store demanded as one, strbuf_demand_value_leaves) beside a
+       boxed result is held boxed, as a conditional's arm boxes it
+       (emit_ternary_arm): held as an sp_String *, the left's text was the
+       String's bytes, and the kept-left arm put a pointer beside the boxed
+       right one. So is a String bang on a boxed receiver (`x.strip! || x`):
+       its box is the receiver's own (emit_boxed_bang_self), where the bytes
+       boxed again were a new String. */
+    int lt_hbox = repr_share_rule(c) && res == TY_POLY &&
+                  (lt == TY_STRBUF || (lt == TY_STRING && face_str_bang_call(c, left)));
+    if (lt_hbox) lt = TY_POLY;
     int t = ++g_tmp;
     int lt_falsy_const = (lt == TY_NIL || lt == TY_VOID);  /* a nil/void left has no C-typed value */
     /* An unresolved left emits a poly fallback. One that diverges -- a bare
@@ -4067,6 +4078,7 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
        normal left emits unchanged. */
     else if (lt == TY_UNKNOWN) emit_unresolved_coerced_text(c, left, res, ltxt, b);
     else if (lo) emit_oint_expr(c, left, lt, b);
+    else if (lt_hbox) emit_boxed(c, left, b);
     else emit_unresolved_coerced(c, left, lt, b);
     free(lunk.p);
     buf_puts(b, "; ");

@@ -1432,7 +1432,17 @@ static int emit_boxed_write_handle(Compiler *c, int node, Buf *b) {
    variable's String, or nil (strbuf_bang_self_local): box that handle. 0
    for any other node, with nothing emitted. */
 static int emit_boxed_bang_self(Compiler *c, int node, Buf *b) {
-  if (!repr_share_rule(c) || !strbuf_bang_self_local(c, node)) return 0;
+  if (!repr_share_rule(c)) return 0;
+  /* a bang on a boxed receiver: the box the write-back answers, the
+     receiver's own, read as one (emit_face_str_bang) */
+  if (face_str_bang_call(c, node)) {
+    int v = view_push(c, node, TY_POLY);
+    emit_expr(c, node, b);
+    view_pop(c, v);
+    RC(RF_PASS, RW_HANDLE_ROUTE);
+    return 1;
+  }
+  if (!strbuf_bang_self_local(c, node)) return 0;
   int r = nt_ref(c->nt, node, "receiver");
   char srefB[1024];
   if (!strbuf_slot_ref(c, r, srefB, sizeof srefB)) return 0;

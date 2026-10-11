@@ -2865,6 +2865,15 @@ void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
   else if (shared && vplus >= 0 && !repr_share_rule(c) && strbuf_slot_ref(c, vplus, srefV, sizeof srefV))
     buf_printf(b, "sp_String_uplus(%s)", srefV);
   else if (shared && emit_strbuf_ivar_write_handle(c, v, b)) { }
+  /* --share-strings: a String bang on a boxed receiver answers that
+     receiver's own box, or nil (emit_boxed_bang_self); the box of a String
+     the rule shares holds its handle, which the slot takes */
+  else if (shared && repr_share_rule(c) && face_str_bang_call(c, v)) {
+    int t = ++g_tmp;
+    buf_printf(b, "({ sp_RbVal _t%d = ", t);
+    emit_boxed(c, v, b);
+    buf_printf(b, "; sp_poly_nil_p(_t%d) ? (sp_String *)NULL : sp_poly_as_strbuf(_t%d); })", t, t);
+  }
   /* A chained assignment (`u = t = s`) whose inner target is the handle too:
      run the inner write, then alias ITS handle. Wrapping the write's value
      as a fresh String forked u off the object t and s share. */
@@ -19943,6 +19952,9 @@ static int strbuf_flow_value(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, in
      { }`, `s.to_s`), and a bang method off one (emit_boxed_bang_self) */
   if (ctx == SFC_ELEM && k == NK_CallNode && ((c->strbuf_box[v] && str_self_call(nt, v)) || strbuf_bang_self_local(c, v)))
     return 1;
+  /* a String bang on a boxed receiver, boxed as that receiver's own box
+     (emit_boxed_bang_self) */
+  if (ctx == SFC_ELEM && face_str_bang_call(c, v)) return 1;
   if (strbuf_flow_route(c, fm, ctx, v, depth)) return 1;
   /* a yield spliced with each literal block its method is given answers
      the block's value read as the handle (strbuf_route_yield) */
@@ -19995,6 +20007,9 @@ int strbuf_flow_carries(Compiler *c, StrbufFlowMemo *fm, int kind, int site, int
              strbuf_ivar_store_aliases(c, v)) ctx = SFC_ALIAS;
     else ctx = sk == NK_LocalVariableWriteNode || sk == NK_GlobalVariableWriteNode || sk == NK_ClassVariableWriteNode ||
                sk == NK_ConstantWriteNode || sk == NK_ConstantPathWriteNode ? SFC_ALIAS : SFC_SLOT;
+    /* a String bang on a boxed receiver written into a local's handle hands
+       on the receiver's handle (emit_strbuf_value) */
+    if (ctx == SFC_ALIAS && sk == NK_LocalVariableWriteNode && face_str_bang_call(c, unwrap_parens(c, v))) return 1;
     break;
   }
   case SHFL_MEMBER: case SHFL_PARAM: case SHFL_MUTATE: ctx = SFC_ALIAS; break;
