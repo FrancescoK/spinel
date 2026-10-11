@@ -15099,6 +15099,7 @@ static void scan_prologue_features(Compiler *c) {
     for (int k = 0; k < c->nclasses; k++)
       for (int j = 0; j < c->classes[k].nivars; j++) SP_TT(c->classes[k].ivar_types[j]);
 #undef SP_TT
+    g_tu_poly_values = polyish;
     if (polyish) { g_emit_sym_rt = 1; g_emit_class_names = 1; }
     if (has_class) g_emit_class_names = 1;
     /* The two banks reference each other through the header's render helpers
@@ -17376,6 +17377,11 @@ char *codegen_program(const NodeTable *nt) {
      this TU deliberately omits). */
   if (!g_emit_sym_rt)
     buf_puts(&b, "#define SP_TU_NO_POLY_RENDER 1\n");
+  /* Classes or Symbols but no poly, Array or Hash value: the render banks
+     are emitted, but no value the poly walkers and renderers take exists,
+     so the header installs none of them (sp_json_install_hooks) */
+  else if (!g_tu_poly_values)
+    buf_puts(&b, "#define SP_TU_NO_POLY_VALUES 1\n");
   emit_runtime_include(c, &b, 0);
   /* the frozen literals' file-scope objects go here, once the unit is done */
   size_t fzl_at = b.len;

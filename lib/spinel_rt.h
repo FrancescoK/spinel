@@ -14192,11 +14192,12 @@ static sp_RbVal sp_json_symbolize(sp_RbVal v) {
   }
   return v;
 }
-/* A program with no poly-renderable value (SP_TU_NO_POLY_RENDER: no poly,
-   Array or Hash type anywhere) holds no boxed Array or Hash for these hooks to
-   walk, and JSON.parse and Marshal.load, which build them, answer a poly
-   value; it installs none of them, so the walkers stay out of the link. */
-#ifndef SP_TU_NO_POLY_RENDER
+/* A program with no poly, Array or Hash type anywhere (SP_TU_NO_POLY_RENDER,
+   or SP_TU_NO_POLY_VALUES where it has classes or Symbols) holds no value
+   for these hooks to walk or render, and JSON.parse and Marshal.load, which
+   build them, answer a poly value; it installs none of them, so the walkers
+   and renderers stay out of the link. */
+#if !defined(SP_TU_NO_POLY_RENDER) && !defined(SP_TU_NO_POLY_VALUES)
 SP_CONSTRUCTOR static void sp_json_install_hooks(void) {
   sp_json_kind_fn = sp_json_kind;
   sp_json_len_fn = sp_poly_length;
