@@ -196,6 +196,9 @@ module URI
       base.fragment = rel.fragment unless rel.fragment.nil?
       base
     end
+    def +(oth)
+      merge(oth)
+    end
 
     private
 
