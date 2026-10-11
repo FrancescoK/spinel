@@ -27,3 +27,7 @@ p check(n, :+, 1)
 p check(vals[3], :>=, 2)
 p check(vals[2], :==, "s")
 p check(vals[0], :over, 0)
+
+def check_post(a, *rest, op) = a.send(op, *rest)
+p check_post(n, 2, :-)
+p check_post(vals[3], 2, :*)
