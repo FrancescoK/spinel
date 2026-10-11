@@ -4598,8 +4598,19 @@ static sp_File *sp_select_io_of(sp_RbVal v) {
                             ? sp_obj_cls_name_fn(v.cls_id) : "nil"));
   return NULL;
 }
+/* A read-set IO stdio has already buffered input for is readable whatever
+   its descriptor says: a #gets took the next line with the one it returned,
+   and the descriptor can be empty. CRuby answers such an IO at once, beside
+   whatever else is ready right now (rb_io_read_pending). */
+static int sp_select_pending(sp_RbVal v) {
+  sp_File *f = sp_select_io_of(v);
+  return f && f->fp && !f->closed && sp_io_stdio_buffered(f->fp) > 0;
+}
 sp_RbVal sp_io_select(sp_PolyArray *rd, sp_PolyArray *wr, sp_PolyArray *er, double timeout) {
   sp_PolyArray *src[3] = { rd, wr, er };
+  sp_int pending = 0;
+  for (sp_int i = 0; rd && i < rd->len; i++) pending += sp_select_pending(rd->data[i]);
+  if (pending) timeout = 0.0;
   /* No PRIORITY set: this is a poll, and then no descriptor is out of range.
      select(2) cannot name one at or past FD_SETSIZE, and a server holding two
      descriptors per connection crosses that at a few hundred connections
@@ -4669,7 +4680,7 @@ sp_RbVal sp_io_select(sp_PolyArray *rd, sp_PolyArray *wr, sp_PolyArray *er, doub
 #endif
     do { pn = poll(pfs, (nfds_t)nfd, ms); } while (pn < 0 && errno == EINTR);
     if (pn < 0) { free(pfs); sp_raise_cls("IOError", "select failed"); }
-    if (pn == 0) { free(pfs); return sp_box_nil(); }
+    if (pn == 0 && !pending) { free(pfs); return sp_box_nil(); }
     /* Read back by DESCRIPTOR, not by entry. One IO can appear twice in a call
        -- a wrapper answering #to_io beside the IO itself -- and then two
        entries carry the same fd. Linux sets revents on both; macOS sets it on
@@ -4689,7 +4700,7 @@ sp_RbVal sp_io_select(sp_PolyArray *rd, sp_PolyArray *wr, sp_PolyArray *er, doub
       sp_PolyArray *part = sp_PolyArray_new();
       sp_int n = (g < 2 && src[g]) ? src[g]->len : 0;
       for (sp_int i = 0; i < n; i++) {
-        int ready = pfs[base + i].revents != 0;
+        int ready = pfs[base + i].revents != 0 || (g == 0 && pending && sp_select_pending(src[g]->data[i]));
         if (!ready && hot)
           for (sp_int h = 0; h < nhot && !ready; h++)
             if (hot[h] == pfs[base + i].fd) ready = 1;
@@ -4741,7 +4752,7 @@ sp_RbVal sp_io_select(sp_PolyArray *rd, sp_PolyArray *wr, sp_PolyArray *er, doub
   int n;
   do { n = select(maxfd + 1, &sets[0], &sets[1], &sets[2], tvp); } while (n < 0 && errno == EINTR);
   if (n < 0) sp_raise_cls("IOError", "select failed");
-  if (n == 0) return sp_box_nil();
+  if (n == 0 && !pending) return sp_box_nil();
   sp_PolyArray *out = sp_PolyArray_new();
   SP_GC_ROOT(out);
   for (int g = 0; g < 3; g++) {
@@ -4749,7 +4760,7 @@ sp_RbVal sp_io_select(sp_PolyArray *rd, sp_PolyArray *wr, sp_PolyArray *er, doub
     sp_int cnt = src[g] ? src[g]->len : 0;
     for (sp_int i = 0; i < cnt; i++) {
       sp_File *f = sp_select_io_of(src[g]->data[i]);
-      if (f && f->fp && FD_ISSET(fileno(f->fp), &sets[g]))
+      if (f && f->fp && (FD_ISSET(fileno(f->fp), &sets[g]) || (g == 0 && pending && sp_select_pending(src[g]->data[i]))))
         sp_PolyArray_push(part, src[g]->data[i]);
     }
     sp_PolyArray_push(out, sp_box_poly_array(part));
