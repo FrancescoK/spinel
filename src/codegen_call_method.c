@@ -1450,6 +1450,14 @@ int emit_call_method_obj_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
         if (comp_class_is_module(c, &c->classes[k])) continue;
         int mk = comp_method_in_chain(c, k, sym4, NULL);
         int dk = mk >= 0 ? c->scopes[mk].def_node : -1;
+        if (comp_resolve_member(c, k, sym4, 0, NULL, NULL) == SP_MEMBER_ATTR) {
+          /* an attr method keeps the unlined pair the plain path answers */
+          buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == %d) { _t%d = sp_PolyArray_new();"
+                        " sp_PolyArray_push(_t%d, sp_box_str(", tv4, tv4, k, tr4, tr4);
+          emit_str_literal(b, nt->source_file ? nt->source_file : "");
+          buf_printf(b, ")); sp_PolyArray_push(_t%d, sp_box_int(0LL)); } else ", tr4);
+          continue;
+        }
         if (dk < 0 || nt_int(nt, dk, "bam_poly", 0)) continue;
         const char *fk = nt_file_path(nt, (int)nt_int(nt, dk, "node_file", 0));
         if (!fk || !*fk) fk = nt->source_file;
@@ -1458,8 +1466,24 @@ int emit_call_method_obj_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
         emit_str_literal(b, fk ? fk : "");
         buf_printf(b, ")); sp_PolyArray_push(_t%d, sp_box_int(%dLL)); } else ", tr4, (int)nt_int(nt, dk, "node_line", 0));
       }
-      buf_puts(b, "sp_raise_cls(\"NoMethodError\", \"undefined method 'source_location' for an instance of Method\"); ");
-      buf_printf(b, "_t%d; })", tr4);
+      /* a receiver no arm took answers by a native method, whose location is
+         nil -- unless the program's own def can answer it: one in a module,
+         a reopened builtin class (Object, Integer, ...) or at the top level,
+         none of which an arm above tests. That keeps the unlined pair. */
+      int own4 = 0;
+      for (int s4 = 0; sym4 && s4 < c->nscopes && !own4; s4++) {
+        Scope *sc = &c->scopes[s4];
+        if (!sc->name || strcmp(sc->name, sym4) != 0 || sc->is_proc_form) continue;
+        if (sc->def_node < 0 || nt_int(nt, sc->def_node, "bam_poly", 0)) continue;
+        ClassInfo *ci = sc->class_id >= 0 && sc->class_id < c->nclasses ? &c->classes[sc->class_id] : NULL;
+        own4 = !ci || comp_class_is_module(c, ci) || ci->is_builtin_const;
+      }
+      if (own4) {
+        buf_printf(b, "{ _t%d = sp_PolyArray_new(); sp_PolyArray_push(_t%d, sp_box_str(", tr4, tr4);
+        emit_str_literal(b, nt->source_file ? nt->source_file : "");
+        buf_printf(b, ")); sp_PolyArray_push(_t%d, sp_box_int(0LL)); } _t%d; })", tr4, tr4);
+      }
+      else buf_printf(b, "_t%d = NULL; _t%d; })", tr4, tr4);
       return 1;
     }
     /* under --no-line-map node_line is unstamped (0): still emit the pair so

@@ -14,6 +14,7 @@ class Case
   def test_one(a, b = 2) = a + b
   def test_two = :two
   def name = ARGV[0] || "test_one"
+  def to_s = "case"
 end
 
 c = [Case.new, 1].first   # a value of either class
@@ -23,3 +24,6 @@ p c.method(:test_one).source_location.last
 p c.method(:test_two).arity
 p method(:each_twice).arity
 p c.test_two
+n = [1, Case.new][ARGV.size]   # an Integer, whose to_s is native
+p n.method(:to_s).source_location
+p c.method(:to_s).source_location.last
