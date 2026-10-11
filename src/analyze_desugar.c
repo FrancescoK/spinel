@@ -5337,6 +5337,28 @@ int desugar_to_h_block(Compiler *c) {
     TyKind rt = infer_type(c, recv);
     if (!ty_is_array(rt) && !ty_is_hash(rt) && rt != TY_RANGE && rt != TY_ENUMERATOR) continue;
     int base = nt->count;
+    /* A Hash's to_h yields the key and the value as two values, where its
+       map yields the pair as one: a block of one parameter, `|key|`, binds
+       the key (#8505). Under map it is given a second parameter of its own,
+       so the pair destructures and the first takes the key. */
+    if (ty_is_hash(rt)) {
+      int bp = nt_ref(nt, blk, "parameters");
+      int pn = bp >= 0 && nt_kind(nt, bp) == NK_BlockParametersNode ? nt_ref(nt, bp, "parameters") : -1;
+      int rn = 0, on = 0, qn = 0, kn = 0;
+      const int *rq = pn >= 0 ? nt_arr(nt, pn, "requireds", &rn) : NULL;
+      if (pn >= 0) { nt_arr(nt, pn, "optionals", &on); nt_arr(nt, pn, "posts", &qn); nt_arr(nt, pn, "keywords", &kn); }
+      if (rn == 1 && on == 0 && qn == 0 && kn == 0 && nt_ref(nt, pn, "rest") < 0 &&
+          nt_ref(nt, pn, "keyword_rest") < 0 && nt_kind(nt, rq[0]) == NK_RequiredParameterNode) {
+        char vn[48];
+        snprintf(vn, sizeof vn, "__toh_v_%s", comp_node_tag(c, id));
+        int first = rq[0];
+        int vreq = nt_new_node(nt, "RequiredParameterNode");
+        if (vreq < 0) continue;
+        nt_node_set_str(nt, vreq, "name", vn);
+        int two[2] = { first, vreq };
+        nt_node_set_arr(nt, pn, "requireds", two, 2);
+      }
+    }
     int mapargs = nt_new_node(nt, "ArgumentsNode");
     int mapcall = nt_new_node(nt, "CallNode");
     if (mapargs < 0 || mapcall < 0) continue;          /* node-table OOM: leave as-is */
