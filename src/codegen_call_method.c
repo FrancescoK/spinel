@@ -1170,7 +1170,6 @@ int emit_call_method_obj_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
         if (g_promote_mode) {
           mi_poly = 1;
           mi_pfixed = bop_argc;
-          bop_ret = 5;   /* SP_BM_RET_POLY: the promote adapter returns sp_RbVal */
         }
         /* memoized per (kind, op): emit the adapter once */
         static char bam_done[2][3];
@@ -1186,6 +1185,11 @@ int emit_call_method_obj_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
                 : art == TY_STR_ARRAY ? 3 /* SP_BM_RET_STR_ARRAY */
                 : art == TY_STRING    ? 1 /* SP_BM_RET_STR */
                 : 0 /* SP_BM_RET_INT */;
+        /* The promote adapter returns sp_RbVal: the call reads it through
+           the sp_RbVal cast, which the POLY kind names. Stamped with the
+           kind above, the call took the sp_int cast and read the box's tag
+           word as the array. */
+        if (g_promote_mode) bop_ret = 5;   /* SP_BM_RET_POLY */
         /* A StrArray adapter launders its String element through the sp_int
            slot: the value is arg 1 of []= and arg 0 of push. The int array
            and the StrArray index are scalars. The stamped signature mirrors
