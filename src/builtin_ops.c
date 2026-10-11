@@ -1208,6 +1208,12 @@ static const BuiltinOp bop_rows[] = {
   { TY_IO, "print",          0, 127, BF_ANY, TY_NIL,      BOPE_NONE },
   { TY_IO, "puts",           0, 127, BF_ANY, TY_NIL,      BOPE_NONE },
   { TY_IO, "binmode",        0, 127, BF_ANY, TY_IO,       BOPE_TEMPLATE, "({ sp_File *_t$t = $r; sp_File_set_binmode(_t$t); _t$t; })", TY_UNKNOWN },
+  /* an Encoding, its name, "ext:int" or nil: sp_File_set_encoding */
+  { TY_IO, "set_encoding",   1,   1, BF_NONE, TY_IO,      BOPE_TEMPLATE, "sp_File_set_encoding($r, $b0, sp_box_nil())",
+    BOP_K(TY_POLY) | BOP_K(TY_STRING) | BOP_K(TY_NIL), 0, BOPF_SELF },
+  { TY_IO, "set_encoding",   2,   2, BF_NONE, TY_IO,      BOPE_TEMPLATE, "sp_File_set_encoding($r, $b0, $b1)",
+    BOP_K(TY_POLY) | BOP_K(TY_STRING) | BOP_K(TY_NIL), BOP_K(TY_POLY) | BOP_K(TY_STRING) | BOP_K(TY_NIL), BOPF_SELF },
+  { TY_IO, "set_encoding",   1,   2, BF_NONE, TY_IO,      BOPE_NONE, NULL, 0, 0, BOPF_SELF },  /* options: not yet */
   { TY_IO, "autoclose?",     0,   0, BF_ANY, TY_BOOL,     BOPE_TEMPLATE, "sp_File_autoclose_p($r)", TY_UNKNOWN },
   { TY_IO, "autoclose?",     0, 127, BF_ANY, TY_BOOL,     BOPE_NONE },
   { TY_IO, "==",             0, 127, BF_ANY, TY_BOOL,     BOPE_NONE },
