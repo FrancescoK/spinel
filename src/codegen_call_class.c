@@ -1857,6 +1857,10 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
               else emit_strbuf_node_read(c, id, hb.p, b);
               free(hb.p);
             }
+            /* the value with its nil where the node answers an oint (a
+               parameter that may hold a nil Integer, as a method returning
+               the assignment takes it, #8569) */
+            else if (oint_kind(at) && node_is_oint(c, id)) emit_oint_expr(c, argv[0], at, b);
             else emit_expr(c, argv[0], b);
             buf_puts(b, "; })");
             return 1;
