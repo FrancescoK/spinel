@@ -611,11 +611,11 @@ int emit_call_reflection_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
         buf_printf(b, ")), 0)");
         return 1;
       }
-      int yes = comp_const(c, qm) != NULL || comp_class_index(c, qm) >= 0 || comp_is_wellknown_const(qm);
+      const char *cd_rnm = nt_str(nt, recv, "name");
+      int yes = const_defined_known(c, cd_rnm, qm);
       /* const_defined?(name, false) restricts the search to the receiver's own
          constants, so an inherited one does not count (#3762) */
       if (yes && argc >= 2 && nt_type(nt, argv[1]) && sp_streq(nt_type(nt, argv[1]), "FalseNode")) {
-        const char *cd_rnm = nt_str(nt, recv, "name");
         if (cd_rnm && !const_owned_by_class(c, cd_rnm, qm)) yes = 0;
       }
       /* a constant not assigned yet is not defined: asked at run time */
@@ -3140,7 +3140,8 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
           buf_printf(b, ")), 0)");
           return 1;
         }
-        int yes = (comp_const(c, cn0) != NULL) || comp_class_index(c, cn0) >= 0 || comp_is_wellknown_const(cn0);
+        const NodeKind rk0 = nt_kind(nt, recv);
+        int yes = const_defined_known(c, rk0 == NK_ConstantReadNode || rk0 == NK_ConstantPathNode ? nt_str(nt, recv, "name") : NULL, cn0);
         buf_printf(b, "((void)("); emit_expr(c, recv, b);
         /* a constant not assigned yet is not defined: asked at run time */
         if (yes && const_has_flag(comp_const(c, cn0))) buf_printf(b, "), cst_%s__set)", cn0);

@@ -1109,14 +1109,33 @@ static const char *const_value_owned_key(Compiler *c, const char *clsname, const
 static int const_value_owned(Compiler *c, const char *clsname, const char *constname) {
   return const_value_owned_key(c, clsname, constname) != NULL;
 }
+/* The class nested directly in class or module O under the leaf LEAF (its
+   key may be qualified, `O__LEAF`, when another constant or class shares the
+   leaf), or -1. */
+static int class_nested_leaf(Compiler *c, int o, const char *leaf) {
+  if (o < 0) return -1;
+  for (int k = 0; k < c->nclasses; k++) {
+    if (c->classes[k].enclosing_class != o) continue;
+    const char *rn = class_ruby_name(c, k), *l = rn ? strrchr(rn, ':') : NULL;
+    if (rn && sp_streq(l ? l + 1 : rn, leaf)) return k;
+  }
+  return -1;
+}
+/* Is any class or module of the program named LEAF, at any nesting? */
+static int class_leaf_any(Compiler *c, const char *leaf) {
+  for (int k = 0; k < c->nclasses; k++) {
+    const char *rn = class_ruby_name(c, k), *l = rn ? strrchr(rn, ':') : NULL;
+    if (rn && sp_streq(l ? l + 1 : rn, leaf)) return 1;
+  }
+  return 0;
+}
 /* Does class or module CLSNAME hold constant CONSTNAME itself -- a value
    written in its body, or a class or module nested in it? */
 int const_owned_by_class(Compiler *c, const char *clsname, const char *constname) {
   if (!clsname || !constname) return 0;
   if (sp_streq(clsname, "Object") && const_name_resolves_top_level(c, constname)) return 1;
   if (const_value_owned(c, clsname, constname)) return 1;
-  int k = comp_class_index(c, constname), o = comp_class_index(c, clsname);
-  return k >= 0 && o >= 0 && c->classes[k].enclosing_class == o;
+  return class_nested_leaf(c, comp_class_index(c, clsname), constname) >= 0;
 }
 /* The module a `recv.const_get` searches, by name: a constant receiver's, or
    for `self` the class or module whose method or body the call is in. */
@@ -1130,44 +1149,60 @@ const char *const_get_recv_name(Compiler *c, int call, int recv) {
   }
   return NULL;
 }
+/* What `R.const_get(:N)` reads. Like Ruby, R first and then each superclass,
+   taking at each the value constant or the class it holds under N; past them
+   the top-level constant or the class keyed N. Answers the value's key (N, or
+   the qualified name R's own carries) or NULL with *cls the class, -1 when
+   there is neither. */
+static const char *const_get_resolve(Compiler *c, const char *rnm, const char *cgn, int *cls) {
+  LocalVar *cv = comp_const(c, cgn);
+  *cls = -1;
+  /* the common case, one constant of that leaf and no class: no body scan */
+  if (cv && cv->type != TY_UNKNOWN && !qc_leaf_qualified(cgn) && !class_leaf_any(c, cgn)) return cgn;
+  int rk = rnm ? comp_class_index(c, rnm) : -1;
+  for (int k = rk, n = 0; k >= 0 && n < 64; k = c->classes[k].parent, n++) {
+    const char *own = c->classes[k].name ? const_value_owned_key(c, c->classes[k].name, cgn) : NULL;
+    if (own) {
+      LocalVar *ov = comp_const(c, own);
+      if (ov && ov->type != TY_UNKNOWN) return own;
+    }
+    int nk = class_nested_leaf(c, k, cgn);
+    if (nk >= 0) { *cls = nk; return NULL; }
+  }
+  /* a receiver the class table lacks (a builtin module): its body still counts */
+  if (rk < 0 && rnm) {
+    const char *own = const_value_owned_key(c, rnm, cgn);
+    LocalVar *ov = own ? comp_const(c, own) : NULL;
+    if (ov && ov->type != TY_UNKNOWN) return own;
+  }
+  *cls = comp_class_index(c, cgn);
+  if (!cv || cv->type == TY_UNKNOWN) return NULL;
+  return *cls < 0 ? cgn : NULL;
+}
+/* Does the program know constant N, for `R.const_defined?(:N)` (R's name
+   or NULL): a constant or class keyed N, a wellknown one, or the class R's
+   const_get finds under a qualified key. */
+int const_defined_known(Compiler *c, const char *rnm, const char *cgn) {
+  if (comp_const(c, cgn) || comp_class_index(c, cgn) >= 0 || comp_is_wellknown_const(cgn)) return 1;
+  return rnm && const_get_class_index(c, rnm, cgn) >= 0;
+}
 /* `R.const_get(:N)` with N both a class and a value constant of the program
    (constants live in one flat namespace, keyed by the leaf): the value when
-   R holds it, else the class. With only one of them, that one. */
+   R or a superclass holds it first, else the class. */
 int const_get_takes_value(Compiler *c, const char *rnm, const char *cgn) {
   return const_get_value_key(c, rnm, cgn) != NULL;
 }
-/* ... and the key of the value constant it reads then (cgn, or the qualified
-   name of the one R holds), or NULL when it answers the class. */
+/* ... and the key of the value constant it reads then, or NULL when it
+   answers the class. */
 const char *const_get_value_key(Compiler *c, const char *rnm, const char *cgn) {
-  LocalVar *cv = comp_const(c, cgn);
-  int cls = const_get_class_index(c, rnm, cgn);
-  /* the common case, one constant of that leaf and no class: no body scan */
-  if (cv && cv->type != TY_UNKNOWN && cls < 0 && !qc_leaf_qualified(cgn)) return cgn;
-  /* R's own, else its superclasses' */
-  const char *own = rnm ? const_value_owned_key(c, rnm, cgn) : NULL;
-  int rk = rnm ? comp_class_index(c, rnm) : -1;
-  for (int k = rk >= 0 ? c->classes[rk].parent : -1, n = 0; !own && k >= 0 && n < 64; k = c->classes[k].parent, n++)
-    if (c->classes[k].name) own = const_value_owned_key(c, c->classes[k].name, cgn);
-  if (own) {
-    LocalVar *ov = comp_const(c, own);
-    if (ov && ov->type != TY_UNKNOWN) return own;
-  }
-  if (!cv || cv->type == TY_UNKNOWN) return NULL;
-  return cls < 0 ? cgn : NULL;
+  int cls;
+  return const_get_resolve(c, rnm, cgn, &cls);
 }
-/* The class `R.const_get(:N)` answers: the class nested in R under the leaf N
-   (its key may be qualified, `R__N`, when another constant or class shares
-   the leaf), else the class keyed N. -1 when there is none. */
+/* The class `R.const_get(:N)` answers, -1 when there is none. */
 int const_get_class_index(Compiler *c, const char *rnm, const char *cgn) {
-  int o = rnm ? comp_class_index(c, rnm) : -1;
-  if (o >= 0) {
-    for (int k = 0; k < c->nclasses; k++) {
-      if (c->classes[k].enclosing_class != o) continue;
-      const char *rn = class_ruby_name(c, k), *leaf = rn ? strrchr(rn, ':') : NULL;
-      if (rn && sp_streq(leaf ? leaf + 1 : rn, cgn)) return k;
-    }
-  }
-  return comp_class_index(c, cgn);
+  int cls;
+  const_get_resolve(c, rnm, cgn, &cls);
+  return cls;
 }
 
 /* Does this receiver denote a Hash built by a blockless `Hash.new` (or an

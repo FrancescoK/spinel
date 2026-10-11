@@ -1,0 +1,20 @@
+Child::Item
+"child class"
+Child::Item
+"parent value"
+Parent::Tool
+"parent tool"
+"child mode"
+"child mode"
+"parent mode"
+5
+NameError: uninitialized constant Child::Tool
+true
+false
+Srv::Handler
+"srv"
+true
+true
+"cfg value"
+true
+7
