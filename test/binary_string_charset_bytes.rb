@@ -20,3 +20,6 @@ p b.squeeze
 p "あいa".count("^a")
 p "あいa".delete("い")
 p "ああい".squeeze
+
+n = "a\0b^c"
+p n.count("^\0"), n.delete("^\0"), n.tr("^\0", "x"), n.b.count("^\0".b), "x^y".count("^")
