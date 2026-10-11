@@ -10276,7 +10276,6 @@ static int class_marshalable(Compiler *c, int i) {
   ClassInfo *ci = &c->classes[i];
   if (is_builtin_reopen(ci->name)) return 0;
   if (ci->is_native_class) return 0;  /* the package owns the struct; not generically marshalable */
-  if (class_is_exc_subclass(c, i)) return 0;
   if (comp_ty_value_obj(c, ty_object(i))) return 0;  /* value types: out of scope for v1 */
   for (int j = 0; j < ci->nivars; j++)
     if (!marshal_ivar_type_ok(ci->ivar_types[j])) return 0;
@@ -11447,6 +11446,10 @@ static void emit_marshal_dispatch(Compiler *c, Buf *b) {
       emit_boxed_text(c, ty_object(i), "o", b);
       buf_puts(b, ");\n      if (_niv) sp_mar_long(b, _niv);\n");
     }
+    /* an exception subclass writes its message and backtrace first, as
+       CRuby does, then its own ivars */
+    else if (class_is_exc_subclass(c, i))
+      buf_printf(b, "      sp_mar_w_exc_head(b, %s, o, _niv);\n", mnq);
     else buf_printf(b, "      sp_mar_b(b, 'o'); sp_mar_sym(b, %s);\n      sp_mar_long(b, _niv);\n", mnq);
     if (ranked)
       buf_puts(b, "      for (int _ixk = 0; _ixk < _niv; _ixk++) switch (_ixv[_ixk]) {\n");
@@ -11475,7 +11478,8 @@ static void emit_marshal_dispatch(Compiler *c, Buf *b) {
   buf_puts(b, "  sp_PolyArray *iv = (sp_PolyArray *)iv_boxed.v.p;\n");
   buf_puts(b, "  *ok = 1; (void)iv;\n");
   for (int i = 0; i < c->nclasses; i++) {
-    if (!class_marshalable(c, i)) continue;
+    /* an exception dumps (above) but does not load back yet */
+    if (!class_marshalable(c, i) || class_is_exc_subclass(c, i)) continue;
     ClassInfo *ci = &c->classes[i];
     if (comp_class_anonymous(c, i)) {
       char nx[96]; anon_name_expr(nx, sizeof nx, i);

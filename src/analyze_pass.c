@@ -7687,6 +7687,76 @@ static int widen_proc_params_poly(Compiler *c, int ref) {
   return changed;
 }
 
+/* The proc literals a block argument's value can be: the literal itself,
+   either arm of a conditional, the last statement of parentheses, or any
+   write to the local it reads. Up to `max` are stored in `out`; the count
+   found is returned (it may pass `max`). */
+static int proc_literals_reaching(Compiler *c, int ref, int *out, int max, int depth) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  if (ref < 0 || depth > 16) return 0;
+  NodeKind k = nt_kind(nt, ref);
+  if (k == NK_LambdaNode || is_proc_create(c, ref)) {
+    if (max > 0) out[0] = ref;
+    return 1;
+  }
+  int n = 0;
+  if (k == NK_IfNode || k == NK_UnlessNode || k == NK_ParenthesesNode) {
+    int arms[2] = { -1, -1 };
+    if (k == NK_ParenthesesNode) arms[0] = nt_ref(nt, ref, "body");
+    else {
+      arms[0] = nt_ref(nt, ref, "statements");
+      arms[1] = nt_ref(nt, ref, k == NK_UnlessNode ? "else_clause" : "subsequent");
+    }
+    for (int ai = 0; ai < 2; ai++) {
+      int arm = arms[ai];
+      if (arm >= 0 && nt_kind(nt, arm) == NK_ElseNode) arm = nt_ref(nt, arm, "statements");
+      if (arm < 0) continue;
+      int bn = 0; const int *bb = nt_arr(nt, arm, "body", &bn);
+      int last = bb && bn > 0 ? bb[bn - 1] : (nt_kind(nt, arm) == NK_StatementsNode ? -1 : arm);
+      n += proc_literals_reaching(c, last, out + (n < max ? n : max), n < max ? max - n : 0, depth + 1);
+    }
+    return n;
+  }
+  if (k == NK_LocalVariableReadNode) {
+    const char *vn = nt_str(nt, ref, "name");
+    Scope *sc = vn ? comp_scope_of(c, ref) : NULL;
+    if (!sc) return 0;
+    NT_FOREACH_KIND(nt, NK_LocalVariableWriteNode, w) {
+      const char *wn = nt_str(nt, w, "name");
+      if (!wn || !sp_streq(wn, vn) || comp_scope_of(c, w) != sc) continue;
+      n += proc_literals_reaching(c, nt_ref(nt, w, "value"), out + (n < max ? n : max), n < max ? max - n : 0, depth + 1);
+    }
+  }
+  return n;
+}
+
+/* `m(&pr)` where `pr` is one of several proc literals, chosen at run time
+   (`pr = cond ? lambda { |s| ... } : lambda { |s| ... }`): no literal can be
+   spliced, so `m` calls the proc it is handed, and the arguments travel the
+   boxed side-channel. Nothing at the call site types any of the literals'
+   parameters, which then read their argument as the default Integer. Widen
+   them to POLY, as for a proc that may be nil (the call site's own arm). */
+static int widen_reaching_literals_poly(Compiler *c, int bexpr) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int lits[16];
+  int nl = proc_literals_reaching(c, bexpr, lits, 16, 0);
+  if (nl < 2) return 0;
+  if (nl > 16) nl = 16;
+  int changed = 0;
+  for (int i = 0; i < nl; i++) {
+    int body = a_proc_body(c, lits[i]), pn = a_proc_params_node(c, lits[i]);
+    Scope *sc = body >= 0 ? comp_scope_of(c, body) : NULL;
+    if (!sc || pn < 0) continue;
+    int rn = 0; const int *reqs = nt_arr(nt, pn, "requireds", &rn);
+    for (int k = 0; k < rn && reqs; k++) {
+      const char *pnm = nt_str(nt, reqs[k], "name");
+      LocalVar *lv = pnm ? scope_local(sc, pnm) : NULL;
+      if (lv && !lv->rbs_seeded && lv->type != TY_POLY) { lv->type = TY_POLY; changed = 1; }
+    }
+  }
+  return changed;
+}
+
 /* `3 + money` reaches the user operator through #coerce: Ruby asks
    money.coerce(3), which by convention answers [Money(3), money], and then
    calls `+` on the first element with the SECOND as its argument. That
@@ -8740,8 +8810,11 @@ static int infer_param_types_ex(Compiler *c, int settle) {
     { int bnode = nt_ref(nt, id, "block");
       if (bnode >= 0 && nt_kind(nt, bnode) == NK_BlockArgumentNode) {
         int bexpr = nt_ref(nt, bnode, "expression");
-        if (bexpr >= 0 && infer_type(c, bexpr) == TY_POLY)
+        TyKind bt = bexpr >= 0 ? infer_type(c, bexpr) : TY_UNKNOWN;
+        if (bt == TY_POLY)
           changed |= widen_proc_params_poly(c, bexpr);
+        if (bt == TY_POLY || bt == TY_PROC)
+          changed |= widen_reaching_literals_poly(c, bexpr);
       } }
 
     if (recv < 0) {

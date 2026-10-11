@@ -343,6 +343,7 @@ void desugar_module_prepends(Compiler *c);
 void register_includes(Compiler *c);
 void register_include_attrs(Compiler *c);
 void rewrite_attr_supers(Compiler *c);
+void rewrite_self_attr_empty_writes(Compiler *c);
 void unmark_referenced_module_sources(Compiler *c);
 void register_extends(Compiler *c);
 int cmethod_needs_specialization(Compiler *c, int mi, int ci, int def_cls, int *has_new);

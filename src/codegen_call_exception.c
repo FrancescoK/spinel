@@ -292,6 +292,28 @@ int emit_call_exception_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
       return 1;
     }
   }
+  /* ...and on a POLY receiver, an exception built from a Class known only at
+     run time (minitest's `ne = klass.new msg; ne.set_backtrace bt`): the
+     same store once the value is seen to be an exception, the NoMethodError
+     otherwise. Not where a program class defines the name. */
+  if (argc == 1 && sp_streq(name, "set_backtrace") && recv >= 0 &&
+      comp_ntype(c, recv) == TY_POLY && nt_ref(nt, id, "block") < 0) {
+    int pu = 0;
+    for (int k = 0; k < c->nclasses && !pu; k++)
+      if (comp_method_in_class(c, k, name) >= 0) pu = 1;
+    if (!pu || g_poly_builtin_arm) {
+      int t = ++g_tmp, ta = ++g_tmp;
+      buf_printf(b, "({ sp_RbVal _t%d = ", t);
+      emit_expr(c, recv, b);
+      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_RbVal _t%d = ", t, ta);
+      emit_boxed(c, argv[0], b);
+      buf_printf(b, "; if (!(_t%d.tag == SP_TAG_OBJ && _t%d.v.p && (_t%d.cls_id == SP_BUILTIN_EXCEPTION"
+                    " || sp_is_exc_subclass_cls(_t%d.cls_id)))) sp_raise_poly_nomethod(\"set_backtrace\", _t%d); "
+                    "sp_Exception_set_backtrace((sp_Exception *)_t%d.v.p, sp_poly_as_str_array(_t%d)); })",
+                 t, t, t, t, t, t, ta);
+      return 1;
+    }
+  }
   /* exception accessors on a POLY receiver (an exception rescued into a
      union-typed local): runtime unbox-and-delegate, but only when no user
      class defines the name (which would need the poly method dispatch)

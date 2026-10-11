@@ -1,0 +1,8 @@
+"\x04\bo:\x12ArgumentError\a:\tmesgI\"\tboom\x06:\x06ET:\abt0"
+"\x04\bo:\x11RuntimeError\a:\tmesgI\"\x06x\x06:\x06ET:\abt[\aI\"\ba:1\x06;\aTI\"\bb:2\x06;\aT"
+"\x04\bo:\nPlain\a:\tmesgI\"\x06p\x06:\x06ET:\abt0"
+"\x04\bo:\nMyErr\b:\tmesgI\"\tdflt\x06:\x06ET:\abt0:\a@ki\x06"
+"\x04\bo:\x11RuntimeError\a:\tmesg0:\abt0"
+"\x04\b[\ao:\x11RuntimeError\a:\tmesgI\"\x06x\x06:\x06ET:\abt[\aI\"\ba:1\x06;\aTI\"\bb:2\x06;\aT@\x06"
+true
+"\x04\bo:\x12ArgumentError\a:\tmesgI\"\ain\x06:\x06ET:\abt0"

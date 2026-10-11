@@ -1,0 +1,10 @@
+["test_a:AddTest"]
+["test_a:AddTest"]
+["Test", ["test_a:Test"], ["test_a:Test"]]
+["Spec", ["test_a:Spec"], ["test_a:Spec"]]
+["AddTest", ["test_a:AddTest"], ["test_a:AddTest"]]
+"base!"
+"mid!"
+"mid!"
+"mid!"
+"subclass responsibility"

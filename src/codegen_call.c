@@ -15780,6 +15780,13 @@ static void refl_object_methods(Compiler *c, int cid, int pub, int prot, int sin
     for (int i = 0; core[t] && core[t][i]; i++) refl_note(r, core[t][i], pub);
 }
 
+/* Klass.instance_methods / public_instance_methods with inherited methods
+   (no argument, or `true`): what an instance of the class answers
+   #methods / #public_methods with, the same static chain. */
+void refl_class_instance_methods(Compiler *c, int ci, int pub, int prot, ReflNames *r) {
+  refl_object_methods(c, ci, pub, prot, 0, r);
+}
+
 /* A class method cloned from another class's `def` (an extended module's
    method, or an inherited one specialized for a subclass) shares the source
    scope's def node; the source comes first. */
