@@ -1802,6 +1802,31 @@ int strbuf_route_inline_call(Compiler *c, int v) {
           repr_static_read_kind(k)) &&
          !strbuf_has_return(nt, c->scopes[mi].body);
 }
+/* --share-strings: a call of a String reopening's yielding method with a
+   literal block, which emit_reopen_primitive_call runs through the
+   method's proc-form clone (a self that is no handle; the self-handle ABI
+   splices the method instead), and whose method answers what it yields:
+   the clone hands back the box the block's proc answers, and that box
+   holds the handle its tail is (emit_boxed), when each value the block
+   answers boxes as one (strbuf_reopen_pf_tails_carry). Read as the call's
+   own String type it came out as a copy of the box's bytes. */
+static int strbuf_reopen_pf_tails_carry(Compiler *c, int v);
+static int strbuf_route_reopen_pf(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  v = unwrap_parens(c, v);
+  if (!repr_share_rule(c) || v < 0 || nt_kind(nt, v) != NK_CallNode) return 0;
+  int blk = nt_ref(nt, v, "block");
+  if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode || call_breaks(c, v)) return 0;
+  TyKind vt = comp_ntype(c, v);
+  if (vt != TY_STRING && vt != TY_STRBUF) return 0;
+  const CallPlan *p = cplan_user(c, v);
+  int mi = p->mi;
+  if (p->via != UC_REOPEN || mi < 0 || c->scopes[mi].class_id != comp_class_index(c, "String") ||
+      !c->scopes[mi].yields || repr_self_handle(c, mi)) return 0;
+  int pf = scope_proc_form_of(c, mi), last = scope_body_last(c, mi);
+  return pf >= 0 && c->scopes[pf].ret == TY_POLY && last >= 0 && nt_kind(nt, last) == NK_YieldNode &&
+         !strbuf_has_return(nt, c->scopes[mi].body) && strbuf_reopen_pf_tails_carry(c, v);
+}
 /* --share-strings: a proc's answer read as a String (`pr.call`, the
    BSH_CALL row's names). The proc hands it back boxed, a String the rule
    shares as its handle's box. A catch likewise keeps the thrown box and
@@ -2015,7 +2040,7 @@ static int strbuf_route_carries(Compiler *c, int v, int depth) {
   if (strbuf_route_clamp(c, v, ops)) return 1;
   if (strbuf_hash_default_arg(c, v) >= 0) return 1;
   if (strbuf_route_proc_call(c, v) || strbuf_route_ivar_get(c, v) || strbuf_route_begin(c, v) || strbuf_route_yield(c, v) ||
-      strbuf_route_inline_call(c, v) || strbuf_route_loop(c, v) || repr_call_returns_handle(c, v) ||
+      strbuf_route_inline_call(c, v) || strbuf_route_reopen_pf(c, v) || strbuf_route_loop(c, v) || repr_call_returns_handle(c, v) ||
       strbuf_route_exc_message(c, v) || strbuf_route_reader(c, v) || strbuf_route_srange_end(c, v)) return 1;
   if (strbuf_assign_leaf(c, v) || strbuf_bang_leaf(c, v)) return 1;
   /* a receiver-answering method on a value route over a handle (`(+s).insert(0, "<")`):
@@ -2159,6 +2184,16 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
        bytes (#8399) */
     if (is_block_call(c, v)) emit_block_invoke(c, nt_ref(c->nt, v, "arguments"), b, 0, 1, TY_POLY);
     else emit_expr(c, v, b);
+    buf_printf(b, "; _t%d.tag == SP_TAG_NIL ? (sp_String *)NULL : sp_poly_as_strbuf(_t%d); })", t, t);
+    view_pop(c, sv);
+    return 1;
+  }
+  if (strbuf_route_reopen_pf(c, v)) {
+    /* the box the proc-form clone hands back, read as the proc call's is */
+    v = unwrap_parens(c, v);
+    int t = ++g_tmp, sv = view_push(c, v, TY_POLY);
+    buf_printf(b, "({ sp_RbVal _t%d = ", t);
+    emit_expr(c, v, b);
     buf_printf(b, "; _t%d.tag == SP_TAG_NIL ? (sp_String *)NULL : sp_poly_as_strbuf(_t%d); })", t, t);
     view_pop(c, sv);
     return 1;
@@ -2456,6 +2491,19 @@ int strbuf_value_carries(Compiler *c, int v) {
    The return analysis and tail emitter ask the same route predicate.
    A fresh result has no existing identity for the tail to publish. */
 static int self_call_answers_nil(Compiler *c, int v);
+/* Does a call of the method tail v ends keep its answer (a call of the
+   method's name whose value is not dropped)? A String reopening's proc
+   form builds the handle it publishes; where every call drops the answer
+   nothing picks it up. */
+static int strbuf_tail_answer_kept(Compiler *c, int v) {
+  Scope *s = comp_scope_of(c, v);
+  if (!s || s->def_node < 0 || !s->name) return 1;
+  for (int u = comp_kind_first(c, NK_CallNode); u >= 0; u = comp_kind_next(c, u)) {
+    const char *nm = nt_str(c->nt, u, "name");
+    if (nm && sp_streq(nm, s->name) && !comp_value_dropped(c, u)) return 1;
+  }
+  return 0;
+}
 int strbuf_builtin_tail(Compiler *c, int v) {
   if (!repr_share_rule(c) || !c->share || v < 0 || nt_kind(c->nt, v) != NK_CallNode ||
       an_arg_is_shared_handle(c, v)) return 0;
@@ -2467,8 +2515,12 @@ int strbuf_builtin_tail(Compiler *c, int v) {
   if (sn_guard_pending(c, v) && strbuf_route_operand(c, v) != v && repr_string_conversion_operand(c, v) < 0 &&
       repr_boxed_to_s_operand(c, v) < 0 && !self_call_answers_nil(c, v) && !strbuf_bang_chain(c, v)) return 0;
   TyKind t = repr_of(c, v).ty;
-  return (t == TY_STRING || t == TY_STRBUF) && cplan_user_fresh(c, v)->dispatch == CP_NONE &&
-         !share_node_fresh(c, v) && strbuf_value_carries(c, v);
+  /* (a String reopening's proc-form answer is such a route too; it
+     publishes only where a call keeps the answer) */
+  int built = strbuf_route_reopen_pf(c, v);
+  return (t == TY_STRING || t == TY_STRBUF) &&
+         (cplan_user_fresh(c, v)->dispatch == CP_NONE || strbuf_route_reopen_pf(c, v)) &&
+         !share_node_fresh(c, v) && strbuf_value_carries(c, v) && (!built || strbuf_tail_answer_kept(c, v));
 }
 /* --share-strings: an operator write (`$g += x`) whose slot holds the
    rule's handle: that slot's text to out. The write stores a new handle
@@ -20745,8 +20797,9 @@ static int strbuf_flow_has_leaf(Compiler *c, StrbufFlowMemo *fm, int v, int dept
 
 /* Each value block or body n answers as a route's tail: its last
    statement's, and each jump of kind k (NK_NextNode, NK_BreakNode) that
-   leaves it (strbuf_jump_views' walk). */
-static int strbuf_flow_jumps(Compiler *c, StrbufFlowMemo *fm, int n, NodeKind k, int depth) {
+   leaves it (strbuf_jump_views' walk), each taken as ctx takes a value:
+   SFC_TAIL for a demanded tail, SFC_ELEM for a proc's, which boxes it. */
+static int strbuf_flow_jumps(Compiler *c, StrbufFlowMemo *fm, int ctx, int n, NodeKind k, int depth) {
   const NodeTable *nt = c->nt;
   if (n < 0) return 1;
   NodeKind nk = nt_kind(nt, n);
@@ -20754,21 +20807,35 @@ static int strbuf_flow_jumps(Compiler *c, StrbufFlowMemo *fm, int n, NodeKind k,
       nk == NK_UntilNode || nk == NK_ForNode) return 1;
   if (nk == k) {
     int argc = 0; const int *argv = call_args(nt, n, &argc);
-    if (argc > 1 || (argc == 1 && !strbuf_flow_value(c, fm, SFC_TAIL, argv[0], depth + 1))) return 0;
+    if (argc > 1 || (argc == 1 && !strbuf_flow_value(c, fm, ctx, argv[0], depth + 1))) return 0;
   }
   for (int i = 0; i < nt_num_refs(nt, n); i++)
-    if (!strbuf_flow_jumps(c, fm, nt_ref_at(nt, n, i), k, depth)) return 0;
+    if (!strbuf_flow_jumps(c, fm, ctx, nt_ref_at(nt, n, i), k, depth)) return 0;
   for (int i = 0; i < nt_num_arrs(nt, n); i++) {
     int m = 0; const int *ids = nt_arr_at(nt, n, i, &m);
-    for (int j = 0; j < m; j++) if (!strbuf_flow_jumps(c, fm, ids[j], k, depth)) return 0;
+    for (int j = 0; j < m; j++) if (!strbuf_flow_jumps(c, fm, ctx, ids[j], k, depth)) return 0;
   }
   return 1;
 }
-static int strbuf_flow_body(Compiler *c, StrbufFlowMemo *fm, int body, NodeKind k, int depth) {
+static int strbuf_flow_body(Compiler *c, StrbufFlowMemo *fm, int ctx, int body, NodeKind k, int depth) {
   int n = 0;
   const int *bb = body >= 0 && nt_kind(c->nt, body) == NK_StatementsNode ? nt_arr(c->nt, body, "body", &n) : NULL;
-  return (n == 0 || strbuf_flow_value(c, fm, SFC_TAIL, bb[n - 1], depth + 1)) &&
-         (k == NK_NONE || strbuf_flow_jumps(c, fm, body, k, depth));
+  return (n == 0 || strbuf_flow_value(c, fm, ctx, bb[n - 1], depth + 1)) &&
+         (k == NK_NONE || strbuf_flow_jumps(c, fm, ctx, body, k, depth));
+}
+
+/* The proc-form clone of strbuf_route_reopen_pf's call v hands back the
+   box its block's proc answers: is each value the block answers (its
+   tail, a next's) one a box takes as the handle it is? */
+static int strbuf_reopen_pf_tails_carry(Compiler *c, int v) {
+  StrbufFlowMemo fm;
+  fm.yield_ok = malloc((size_t)(c->nscopes > 0 ? c->nscopes : 1));
+  if (!fm.yield_ok) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  memset(fm.yield_ok, -1, (size_t)(c->nscopes > 0 ? c->nscopes : 1));
+  int ok = strbuf_flow_body(c, &fm, SFC_ELEM, nt_ref(c->nt, nt_ref(c->nt, unwrap_parens(c, v), "block"), "body"),
+                            NK_NextNode, 0);
+  free(fm.yield_ok);
+  return ok;
 }
 
 /* A begin whose every arm (its body's, each rescue's, its else's) ends in
@@ -20777,10 +20844,10 @@ static int strbuf_flow_begin(Compiler *c, StrbufFlowMemo *fm, int v, int depth) 
   const NodeTable *nt = c->nt;
   int el = nt_ref(nt, v, "else_clause");
   /* the body's value is the begin's only when no else follows it */
-  if (el < 0 && !strbuf_flow_body(c, fm, nt_ref(nt, v, "statements"), NK_NONE, depth)) return 0;
+  if (el < 0 && !strbuf_flow_body(c, fm, SFC_TAIL, nt_ref(nt, v, "statements"), NK_NONE, depth)) return 0;
   for (int rc = nt_ref(nt, v, "rescue_clause"); rc >= 0; rc = nt_ref(nt, rc, "subsequent"))
-    if (!strbuf_flow_body(c, fm, nt_ref(nt, rc, "statements"), NK_NONE, depth)) return 0;
-  return el < 0 || strbuf_flow_body(c, fm, nt_ref(nt, el, "statements"), NK_NONE, depth);
+    if (!strbuf_flow_body(c, fm, SFC_TAIL, nt_ref(nt, rc, "statements"), NK_NONE, depth)) return 0;
+  return el < 0 || strbuf_flow_body(c, fm, SFC_TAIL, nt_ref(nt, el, "statements"), NK_NONE, depth);
 }
 
 /* A route emit_strbuf_route hands the handle on through (strbuf_route_*),
@@ -20806,9 +20873,11 @@ static int strbuf_flow_route(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, in
     /* a method that answers its own variable hands on that slot; one that
        answers its yield, the block's value */
     if (last >= 0 && nt_kind(nt, last) != NK_YieldNode) return 1;
-    return strbuf_flow_body(c, fm, nt_ref(nt, nt_ref(nt, v, "block"), "body"), NK_NextNode, depth);
+    return strbuf_flow_body(c, fm, SFC_TAIL, nt_ref(nt, nt_ref(nt, v, "block"), "body"), NK_NextNode, depth);
   }
-  if (strbuf_route_loop(c, v)) return strbuf_flow_jumps(c, fm, nt_ref(nt, nt_ref(nt, v, "block"), "body"), NK_BreakNode, depth);
+  /* (the proc-form clone's box: its block's values checked as boxed) */
+  if (strbuf_route_reopen_pf(c, v)) return 1;
+  if (strbuf_route_loop(c, v)) return strbuf_flow_jumps(c, fm, SFC_TAIL, nt_ref(nt, nt_ref(nt, v, "block"), "body"), NK_BreakNode, depth);
   int x = strbuf_route_operand(c, v);
   if (x < 0) return 0;
   /* tap: its receiver's handle (strbuf_route_tap); inject: the block's
@@ -20819,9 +20888,9 @@ static int strbuf_flow_route(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, in
     int body = nt_ref(nt, nt_ref(nt, v, "block"), "body"), n = 0;
     const int *bb = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &n) : NULL;
     return (n == 0 || strbuf_flow_value(c, fm, SFC_ALIAS, bb[n - 1], depth + 1)) &&
-           strbuf_flow_jumps(c, fm, body, NK_NextNode, depth);
+           strbuf_flow_jumps(c, fm, SFC_TAIL, body, NK_NextNode, depth);
   }
-  if (x == v) return strbuf_flow_body(c, fm, nt_ref(nt, nt_ref(nt, v, "block"), "body"), NK_NextNode, depth);
+  if (x == v) return strbuf_flow_body(c, fm, SFC_TAIL, nt_ref(nt, nt_ref(nt, v, "block"), "body"), NK_NextNode, depth);
   /* +s, String(s): the operand's handle */
   return ctx == SFC_TAIL ? is_unary_plus(nt_str(nt, v, "name")) && strbuf_flow_value(c, fm, SFC_TAIL, x, depth + 1)
                          : strbuf_flow_value(c, fm, ctx == SFC_ELEM ? SFC_SLOT : ctx, x, depth + 1);
@@ -21050,7 +21119,7 @@ static int strbuf_flow_value(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, in
       int n = share_method_blocks(c, mi, &blocks), ok = n >= 0;
       fm->yield_ok[mi] = 0;   /* a yield in its own blocks' tails: not carried */
       for (int i = 0; i < n && ok; i++)
-        ok = strbuf_flow_body(c, fm, nt_ref(nt, blocks[i], "body"), NK_NextNode, depth);
+        ok = strbuf_flow_body(c, fm, SFC_TAIL, nt_ref(nt, blocks[i], "body"), NK_NextNode, depth);
       fm->yield_ok[mi] = (signed char)ok;
     }
     return fm->yield_ok[mi];

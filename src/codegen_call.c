@@ -21300,6 +21300,20 @@ static void emit_utime_arg_bad(Compiler *c, int node, TyKind t, Buf *b) {
   buf_printf(b, "); sp_raise_cls(\"TypeError\", \"can't convert %s into time\");", cn ? cn : "Object");
 }
 
+/* May call `id` take a reopening's own method of its name ahead of the
+   builtin arms (emit_call_body)? One without a block may. --share-strings:
+   so may one with a literal block whose String method of the program's own
+   yields: emit_reopen_primitive_call runs it (the proc form, or spliced),
+   the program's method winning as in CRuby, where the builtin arm had the
+   name. Without the flag such a call keeps the builtin arms. */
+int reopen_override_block_ok(Compiler *c, int id) {
+  int blk = nt_ref(c->nt, id, "block");
+  if (blk < 0) return 1;
+  if (!repr_share_rule(c) || nt_kind(c->nt, blk) != NK_BlockNode) return 0;
+  const CallPlan *p = cplan_user(c, id);
+  return p->via == UC_REOPEN && p->mi >= 0 && c->scopes[p->mi].yields &&
+         c->scopes[p->mi].class_id == comp_class_index(c, "String");
+}
 /* emit_reopen_primitive_call, with a plain answer lifted into an oint
    where the node is one (a `&.` left to the plain call) */
 static void emit_reopen_primitive_call_o(Compiler *c, int id, int ci, int mi, int recv, const char *nm, Buf *b) {
@@ -28057,7 +28071,7 @@ void emit_call_body(Compiler *c, int id, Buf *b) {
     int recvR = nt_ref(ntR, id, "receiver");
     const char *nmR = nt_str(ntR, id, "name");
     /* an alias that captured the builtin (builtin_only) is the builtin's */
-    if (recvR >= 0 && nmR && nt_ref(ntR, id, "block") < 0 && !nt_int(ntR, id, "builtin_only", 0)) {
+    if (recvR >= 0 && nmR && reopen_override_block_ok(c, id) && !nt_int(ntR, id, "builtin_only", 0)) {
       TyKind rtR = comp_ntype(c, recvR);
       const char *ocR = rtR == TY_STRING || rtR == TY_STRBUF ? "String"
                       : rtR == TY_INT ? "Integer"
