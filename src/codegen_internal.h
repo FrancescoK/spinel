@@ -1758,6 +1758,7 @@ const char *arysub_array_ctype(Compiler *c, int cid);   /* codegen.c: an Array s
 void emit_arysub_alloc(Compiler *c, ClassInfo *ci, Buf *b);
 void arysub_box_id(Compiler *c, TyKind t, Buf *b);   /* the cls_id an object's box carries */
 int program_has_arysub(Compiler *c);
+void emit_obj_switch_key(Compiler *c, int tv, Buf *b);   /* codegen.c: a class switch's key, Array subclasses included */
 void emit_arysub_machinery(Compiler *c, Buf *b);
 /* a call Array answers on an Array subclass instance (#7449), as an
    expression or as a statement (codegen_call_array.c) */

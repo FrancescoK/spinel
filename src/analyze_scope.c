@@ -5186,9 +5186,10 @@ static void check_unrewritten_delegators(Compiler *c) {
    lexical lookup may well find that class instead. Object, BasicObject, the
    exceptions, Struct / Data, Numeric, and package classes written in Ruby
    (Set, Date, ...) are absent: a subclass of those works. OpenStruct is a
-   type of the runtime's own here, so it is listed with the builtins. Array
-   is listed too, but a subclass of it is no longer refused: its instances
-   are real Arrays (#7449, mark_array_subclasses). */
+   type of the runtime's own here, so it is listed with the builtins. Array,
+   Hash and String are listed too, but a subclass of one is no longer
+   refused: its instances are real Arrays, Hashes or Strings (#7449,
+   mark_array_subclasses). */
 static const char *builtin_value_superclass(Compiler *c, int sc) {
   static const char *const refused[] = {
     "Array", "Hash", "String", "Range", "Proc", "Method", "UnboundMethod",
@@ -5229,7 +5230,8 @@ static const char *refused_builtin_superclass(Compiler *c, int sc) {
    package binds to C (StringIO), is refused where it is declared: it would
    build and then answer differently from CRuby (#7075). The fix is a real
    subclass -- an instance that IS a Hash with the subclass's methods
-   dispatched on it -- which Array has (#7449) and the others do not yet;
+   dispatched on it -- which Array, Hash and String have (#7449) and the
+   others do not yet;
    rewriting the class into one that delegates to a wrapped value answers
    differently too (`is_a?`, `==`, `p`), so wrapping is left to the program.
    `Class.new(Hash)` without a block is the same class spelled as a call (the
@@ -5353,7 +5355,7 @@ static void mark_anon_superclass_reflection(Compiler *c) {
   }
 }
 
-/* The classes whose chain reaches the builtin Array or Hash (#7449): each
+/* The classes whose chain reaches the builtin Array, Hash or String (#7449): each
    records the root of its chain, the class right below the builtin, whose
    instances and its descendants' share one embedded kind. Where the
    program reopens the builtin, resolve_parents makes the reopen the root's
@@ -5362,18 +5364,22 @@ static void mark_array_subclasses(Compiler *c) {
   /* the program's reopens of Array and Hash, which a subclass's chain
      reaches above its root */
   int aro = comp_class_index(c, "Array"), hro = comp_class_index(c, "Hash");
+  int sro = comp_class_index(c, "String");
   for (int i = 0; i < c->nclasses; i++) {
     int r = i;
     for (int g = 0; c->classes[r].parent >= 0 && c->classes[r].parent != r &&
-                    c->classes[r].parent != hro && c->classes[r].parent != aro && g < 256; g++)
+                    c->classes[r].parent != hro && c->classes[r].parent != aro &&
+                    c->classes[r].parent != sro && g < 256; g++)
       r = c->classes[r].parent;
-    if (r == hro || r == aro) continue;
+    if (r == hro || r == aro || r == sro) continue;
     int dn = c->classes[r].def_node;
     if (dn < 0 || nt_kind(c->nt, dn) != NK_ClassNode) continue;
     const char *par = builtin_value_superclass(c, nt_ref(c->nt, dn, "superclass"));
     if (is_embedding_builtin(par)) {
       c->classes[i].ary_root = r + 1;
       c->classes[i].ary_hash = sp_streq(par, "Hash");
+      c->classes[i].ary_str = sp_streq(par, "String");
+      if (c->classes[i].ary_str) c->classes[r].ary_kind = TY_STRBUF;
       c->has_arysub = 1;
     }
   }

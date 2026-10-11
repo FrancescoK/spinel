@@ -12110,7 +12110,7 @@ static int masgn_store(Compiler *c, int id, int tgt, const char *val, TyKind vt,
       emit_ctype(c, at, b); buf_printf(b, " _t%d = ", tval);
       if (at == TY_POLY && !(val && vt == TY_POLY)) buf_puts(b, val && vt == TY_UNKNOWN ? val : "sp_box_nil()");
       else buf_puts(b, val);
-      buf_printf(b, "; switch (_t%d.tag == SP_TAG_OBJ ? _t%d.cls_id : 0x7fffffff) {", tv, tv);
+      buf_puts(b, "; switch ("); emit_obj_switch_key(c, tv, b); buf_puts(b, ") {");
       char src[32]; snprintf(src, sizeof src, "_t%d", tval);
       char objp[32]; snprintf(objp, sizeof objp, "_t%d.v.p", tv);
       emit_boxed_writer_arms(c, base, nm, objp, src, at, -1, b);
@@ -14222,7 +14222,7 @@ else {
                switching on the field alone let a nil receiver take class 0's
                arm and write through its NULL pointer (#4048). Ask the tag,
                as every other cls_id dispatch does. */
-            buf_printf(b, " switch (_t%d.tag == SP_TAG_OBJ ? _t%d.cls_id : 0x7fffffff) {", tv, tv);
+            buf_puts(b, " switch ("); emit_obj_switch_key(c, tv, b); buf_puts(b, ") {");
             char src[32]; snprintf(src, sizeof src, "_t%d", tval);
             char objp[32]; snprintf(objp, sizeof objp, "_t%d.v.p", tv);
             emit_boxed_writer_arms(c, base, nm, objp, src, at_eff, argv[0], b);
@@ -15179,7 +15179,7 @@ static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int in
          index 0 (cf. issue #1576 and emit_poly_dispatch_key): key a non-object
          value to a sentinel matching no case so it lands in the default raise
          rather than dereferencing v.p through a wrong cast. */
-      buf_printf(b, "switch (_t%d.tag == SP_TAG_OBJ ? _t%d.cls_id : 0x7fffffff) {\n", trecv, trecv);
+      buf_puts(b, "switch ("); emit_obj_switch_key(c, trecv, b); buf_puts(b, ") {\n");
       int any = 0;
       for (int k = 0; k < c->nclasses; k++) {
         if (!c->classes[k].instantiated) continue;

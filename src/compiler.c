@@ -912,6 +912,25 @@ TyKind comp_ary_kind(Compiler *c, int cid) {
 int comp_ary_is_hash(Compiler *c, int cid) {
   return comp_ary_root(c, cid) >= 0 && c->classes[cid].ary_hash;
 }
+int comp_ary_is_str(Compiler *c, int cid) {
+  return comp_ary_root(c, cid) >= 0 && c->classes[cid].ary_str;
+}
+/* The builtin cid's chain embeds as the flag the comp_arysub_answer family
+   takes: 0 Array, 1 Hash, 2 String */
+int an_str_mutator_name(const char *nm);
+int comp_arysub_str_boxed(const char *n) {
+  return an_str_mutator_name(n) || sp_streq(n, "<<") || sp_streq(n, "concat") ||
+         sp_streq(n, "replace") || sp_streq(n, "clear") || sp_streq(n, "prepend") ||
+         sp_streq(n, "insert") || sp_streq(n, "[]=") || sp_streq(n, "freeze") ||
+         sp_streq(n, "force_encoding") || sp_streq(n, "frozen?");
+}
+int comp_arysub_emb(Compiler *c, int cid) {
+  return comp_ary_is_str(c, cid) ? 2 : comp_ary_is_hash(c, cid) ? 1 : 0;
+}
+/* The builtin class cid's chain embeds: "Array", "Hash" or "String" */
+const char *comp_arysub_builtin(Compiler *c, int cid) {
+  return comp_ary_is_str(c, cid) ? "String" : comp_ary_is_hash(c, cid) ? "Hash" : "Array";
+}
 
 int builtin_instance_method_known(const char *cls, const char *m);
 /* A name an Array answers: its own methods and Enumerable's, and the
@@ -924,6 +943,10 @@ int comp_array_method_name(const char *n) {
    symbolize_keys`): the builtin's dispatch takes it with self boxed. */
 int comp_arysub_builtin_name(Compiler *c, int cid, const char *n) {
   int hash = comp_ary_is_hash(c, cid);
+  if (comp_ary_is_str(c, cid)) {
+    if (comp_builtin_kind_reopen_mi(c, TY_STRING, n) >= 0) return 1;
+    return builtin_instance_method_known("String", n) || is_arysub_kernel_name(n);
+  }
   if (comp_builtin_kind_reopen_mi(c, hash ? TY_POLY_POLY_HASH : TY_POLY_ARRAY, n) >= 0) return 1;
   if (!hash) return comp_array_method_name(n);
   return builtin_instance_method_known("Hash", n) || is_arysub_kernel_name(n);
@@ -933,7 +956,7 @@ int comp_arysub_builtin_name(Compiler *c, int cid, const char *n) {
 int comp_arysub_reopen(Compiler *c, int cid) {
   int r = comp_ary_root(c, cid);
   int p = r >= 0 ? c->classes[r].parent : -1;
-  return p >= 0 && p != r && p == comp_class_index(c, comp_ary_is_hash(c, cid) ? "Hash" : "Array") ? p : -1;
+  return p >= 0 && p != r && p == comp_class_index(c, comp_arysub_builtin(c, cid)) ? p : -1;
 }
 /* Whether a call named n on an instance of Array subclass cid is Array's:
    no method, reader or writer of the class chain takes the name, it asks
@@ -964,6 +987,11 @@ int comp_arysub_call(Compiler *c, int id, TyKind rt, TyKind *kind) {
   if (!n) return 0;
   if (!nt_int(c->nt, id, "builtin_only", 0) && !comp_arysub_name_is_array(c, cid, n)) return 0;
   *kind = comp_ary_kind(c, cid);
+  /* A String subclass instance's String is a handle (TY_STRBUF). A call
+     that changes it, or answers it, takes it boxed (the poly String arms
+     work on the handle in place); any other reads a copy of its bytes. */
+  if (comp_ary_is_str(c, cid))
+    *kind = comp_arysub_str_boxed(n) ? TY_POLY : TY_STRING;
   return 1;
 }
 /* The builtin-op row flags of call `id` on an Array (#7449): what it answers
@@ -971,13 +999,14 @@ int comp_arysub_call(Compiler *c, int id, TyKind rt, TyKind *kind) {
    argument as an Array (bop_args_as_builtin). Every Array kind reads the
    same family rows. */
 static int arysub_call_flags(Compiler *c, int id, int hash, int args_builtin) {
+  /* hash: 0 an Array, 1 a Hash, 2 a String (comp_arysub_emb) */
   const char *n = nt_str(c->nt, id, "name");
   int args = nt_ref(c->nt, id, "arguments"), argc = 0;
   if (!n) return 0;
   if (args >= 0) nt_arr(c->nt, args, "arguments", &argc);
   int blk = nt_ref(c->nt, id, "block") >= 0;
   /* and every Hash kind the Hash family's */
-  TyKind fam = hash ? TY_POLY_POLY_HASH : TY_POLY_ARRAY;
+  TyKind fam = hash == 2 ? TY_STRING : hash ? TY_POLY_POLY_HASH : TY_POLY_ARRAY;
   return args_builtin ? bop_args_as_builtin(fam, n, argc, blk)
                       : bop_answers_self(fam, n, argc, blk);
 }
@@ -1001,7 +1030,8 @@ int comp_arysub_args_viewed(Compiler *c, int id, TyKind rt) {
   if (!n || nt_kind(nt, id) != NK_CallNode) return 0;
   if (nt_ref(nt, id, "receiver") < 0)
     return sp_streq(n, "puts") && comp_method_index(c, n) < 0;
-  return (array_new_copies(rt) || ty_is_hash(rt)) && arysub_call_flags(c, id, ty_is_hash(rt), 1);
+  int emb = ty_is_hash(rt) ? 1 : (rt == TY_STRING || rt == TY_STRBUF) ? 2 : 0;
+  return (array_new_copies(rt) || emb) && arysub_call_flags(c, id, emb, 1);
 }
 
 /* `Array(x)`: of an Array subclass instance x it is x itself (Kernel#Array

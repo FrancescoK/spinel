@@ -125,6 +125,17 @@ static inline sp_String*sp_String_new_len(const char*s,int64_t len){
   return r;
 }
 static inline sp_String*sp_String_new(const char*s){return sp_String_new_len(s,(int64_t)strlen(s));}
+/* The empty String a String subclass instance starts with, inside the
+   instance (a GC object whose finalizer is sp_String_fin): the handle's
+   payload is malloc'd and linked back to the handle, which is the instance. */
+static inline void sp_String_init_embedded(sp_String*r){
+  int64_t cap=16;
+  char*raw=(char*)malloc(SP_FD_OVH+cap);
+  if(!raw)sp_oom_die();
+  r->data=sp_fd_setup(raw);r->data[0]=0;r->len=0;r->cap=cap;r->binary=0;r->chilled=0;sp_fd_own(r);
+  {sp_gc_hdr*h=(sp_gc_hdr*)((char*)r-sizeof(sp_gc_hdr));h->size+=r->cap+SP_FD_OVH;sp_gc_bytes_add(r->cap+SP_FD_OVH);}
+  sp_fd_publish(r);
+}
 /* The same over a payload inside the object, when it fits: for a String the
    handle is made for and nobody else holds, a literal or a temporary handed to
    a parameter that is the handle (#6179), made and dropped once per call. The

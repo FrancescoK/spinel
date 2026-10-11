@@ -2655,6 +2655,8 @@ static int arysub_container_evidence(Compiler *c, int id, int recv, int is_push,
   TyKind rt = infer_type(c, recv), k;
   int root = comp_ty_ary_root(c, rt);
   if (root < 0) return 0;
+  /* a String subclass's String has one kind, whatever goes into it */
+  if (c->classes[root].ary_str) return 1;
   if (nt_kind(c->nt, id) == NK_CallNode ? !comp_arysub_call(c, id, rt, &k)
                                         : comp_method_in_chain(c, ty_object_class(rt), "[]=", NULL) >= 0)
     return 1;

@@ -598,6 +598,13 @@ static int emit_obj_conv(Compiler *c, int node, const char *conv, TyKind want,
   int cid = ty_object_class(t);
   if (cid < 0 || cid >= c->nclasses) return 0;
   int def = -1;
+  /* a String subclass instance in a String slot is a String: its bytes */
+  if (want == TY_STRING && comp_ary_is_str(c, cid) && comp_method_in_chain(c, cid, conv, NULL) < 0) {
+    buf_puts(b, "sp_strbuf_read((sp_String *)(");
+    emit_expr(c, node, b);
+    buf_puts(b, "))");
+    return 1;
+  }
   if (obj_conv_method(c, t, conv, want, &def) >= 0) {
     emit_obj_conv_call(c, node, t, def, conv, b);
     return 1;
@@ -9329,6 +9336,8 @@ static void check_class_layout_prefix(Compiler *c) {
 void arysub_box_id(Compiler *c, TyKind t, Buf *b) {
   int oc = ty_object_class(t);
   if (c->classes[oc].ary_root <= 0) { buf_printf(b, "%d", oc); return; }
+  /* a String subclass instance is boxed as its String handle */
+  if (comp_ary_is_str(c, oc)) { buf_puts(b, "SP_BUILTIN_STRBUF"); return; }
   /* a Hash subclass instance is boxed as its Hash */
   if (comp_ary_is_hash(c, oc)) { buf_puts(b, hash_box_cls(comp_ary_kind(c, oc))); return; }
   switch (comp_ary_kind(c, oc)) {
@@ -9340,8 +9349,21 @@ void arysub_box_id(Compiler *c, TyKind t, Buf *b) {
 }
 
 int program_has_arysub(Compiler *c) { return c->has_arysub; }
+/* The key a switch over the classes of the boxed object _t<tv> takes: its
+   cls_id, a sentinel no class matches for anything but an object, and for
+   an Array, Hash or String subclass instance, boxed as its builtin, the
+   class its scan names (sp_bsub_cls_of, #7449). */
+void emit_obj_switch_key(Compiler *c, int tv, Buf *b) {
+  if (!program_has_arysub(c)) { buf_printf(b, "(_t%d.tag == SP_TAG_OBJ ? _t%d.cls_id : 0x7fffffff)", tv, tv); return; }
+  buf_printf(b, "({ int _sk%d = sp_bsub_cls_of(_t%d); _sk%d >= 0 ? _sk%d : _t%d.tag == SP_TAG_OBJ ? _t%d.cls_id : 0x7fffffff; })",
+             tv, tv, tv, tv, tv, tv);
+}
 static int program_has_hashsub(Compiler *c) {
   for (int k = 0; k < c->nclasses; k++) if (c->classes[k].ary_root > 0 && c->classes[k].ary_hash) return 1;
+  return 0;
+}
+static int program_has_strsub(Compiler *c) {
+  for (int k = 0; k < c->nclasses; k++) if (c->classes[k].ary_root > 0 && c->classes[k].ary_str) return 1;
   return 0;
 }
 
@@ -9356,9 +9378,10 @@ void emit_arysub_machinery(Compiler *c, Buf *b) {
   for (int k = 0; k < c->nclasses; k++)
     if (c->classes[k].ary_root > 0) buf_printf(b, "static void sp_%s__gc_scan(void *p);\n", c->classes[k].c_name);
   buf_puts(b, "static int sp_bsub_cls_of(sp_RbVal v){\n");
-  buf_puts(b, program_has_hashsub(c)
-              ? "  if(v.tag!=SP_TAG_OBJ||!v.v.p||!(sp_poly_is_array_kind(v.cls_id)||sp_poly_is_hash_kind(v.cls_id)))return -1;\n"
-              : "  if(v.tag!=SP_TAG_OBJ||!v.v.p||!sp_poly_is_array_kind(v.cls_id))return -1;\n");
+  buf_puts(b, "  if(v.tag!=SP_TAG_OBJ||!v.v.p||!(sp_poly_is_array_kind(v.cls_id)");
+  if (program_has_hashsub(c)) buf_puts(b, "||sp_poly_is_hash_kind(v.cls_id)");
+  if (program_has_strsub(c)) buf_puts(b, "||v.cls_id==SP_BUILTIN_STRBUF");
+  buf_puts(b, "))return -1;\n");
   buf_puts(b, "  void(*s)(void*)=((sp_gc_hdr*)((char*)v.v.p-sizeof(sp_gc_hdr)))->scan;\n");
   for (int k = 0; k < c->nclasses; k++)
     if (c->classes[k].ary_root > 0)
@@ -9375,6 +9398,7 @@ void emit_arysub_machinery(Compiler *c, Buf *b) {
 /* The C struct of the Array an Array subclass instance embeds (#7449), or
    of the Hash a Hash subclass instance embeds. */
 const char *arysub_array_ctype(Compiler *c, int cid) {
+  if (comp_ary_is_str(c, cid)) return "sp_String";
   if (comp_ary_is_hash(c, cid)) {
     static char hb[32];
     snprintf(hb, sizeof hb, "sp_%sHash", ty_hash_cname(comp_ary_kind(c, cid)));
@@ -9404,6 +9428,7 @@ void emit_arysub_alloc(Compiler *c, ClassInfo *ci, Buf *b) {
   buf_printf(b, "  sp_%s *self = (sp_%s *)sp_gc_alloc(sizeof(sp_%s), ", cn, cn, cn);
   if (sp_streq(at, "sp_PolyArray")) buf_puts(b, "NULL");
   else buf_printf(b, "%s_fin", at);
+  /* a String subclass's handle frees its payload as a String does */
   buf_printf(b, ", sp_%s__gc_scan);\n", cn);
   buf_printf(b, "  %s_init_embedded(&self->ary);\n", at);
   buf_printf(b, "  self->cls_id = %d;\n", ctor_cls_id(c, cid));
@@ -9417,6 +9442,14 @@ void emit_arysub_alloc(Compiler *c, ClassInfo *ci, Buf *b) {
   buf_printf(b, "  sp_%s *o = (sp_%s *)p; SP_GC_ROOT(o);\n", cn, cn);
   buf_printf(b, "  sp_%s *d = sp_%s__alloc(); SP_GC_ROOT(d);\n", cn, cn);
   buf_printf(b, "  { %s a = d->ary; *d = *o; d->ary = a; }\n", at);
+  if (comp_ary_is_str(c, cid)) {
+    /* the bytes and the encoding tag; frozen is the header bit */
+    buf_puts(b, "  d->ary.len = 0; sp_fd_append_len(&d->ary, o->ary.data, o->ary.len);\n"
+                "  if (o->ary.binary) { d->ary.binary = 1; sp_fd_publish(&d->ary); }\n");
+    buf_puts(b, "  if (mode == 1 ? sp_gc_is_frozen(o) : mode == 3) sp_gc_freeze(d);\n");
+    buf_puts(b, "  return d;\n}\n");
+    return;
+  }
   buf_printf(b, "  %s_replace(&d->ary, &o->ary);\n", at);
   if (hash) {
     /* a Hash's copy keeps its default and default proc; its frozen state is
@@ -11196,6 +11229,10 @@ static void emit_obj_inspect_dispatch(Compiler *c, Buf *b) {
       continue;
     }
     /* an Array subclass instance's #to_s is its Array's (#7449) */
+    if (tci->ary_root > 0 && comp_ary_is_str(c, i)) {
+      buf_printf(b, "    case %d: return sp_strbuf_read((sp_String *)p);\n", i);
+      continue;
+    }
     if (tci->ary_root > 0) {
       const char *at = arysub_array_ctype(c, i);
       buf_printf(b, "    case %d: return %s_inspect((%s *)p);\n", i, at, at);
@@ -11278,6 +11315,10 @@ static void emit_obj_inspect_dispatch(Compiler *c, Buf *b) {
       continue;
     }
     /* an Array subclass instance inspects as its Array (#7449) */
+    if (ci->ary_root > 0 && comp_ary_is_str(c, i)) {
+      buf_printf(b, "    case %d: return sp_str_inspect(sp_String_cstr((sp_String *)p));\n", i);
+      continue;
+    }
     if (ci->ary_root > 0) {
       const char *at = arysub_array_ctype(c, i);
       buf_printf(b, "    case %d: return %s_inspect((%s *)p);\n", i, at, at);
