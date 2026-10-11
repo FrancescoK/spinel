@@ -1456,7 +1456,17 @@ int emit_call_or_write_via_methods(Compiler *c, int id, int is_or, Buf *b) {
     buf_puts(b, ")");
   }
   else {
-    buf_printf(b, "((sp_%s *)_t%d)->iv_%s = _t%d", c->classes[cid].c_name, tr, iv_c(attr), tw);
+    /* the writer is the ivar's store: a boxed field takes the value boxed,
+       as a plain attr write does (a reader written out over an
+       `attr_accessor`'s writer, `meth.name ||= "unknown"`) */
+    char wivn[300]; snprintf(wivn, sizeof wivn, "@%s", attr);
+    int wiv = comp_ivar_index(&c->classes[cid], wivn);
+    TyKind wivt = wiv >= 0 ? c->classes[cid].ivar_types[wiv] : TY_UNKNOWN;
+    buf_printf(b, "((sp_%s *)_t%d)->iv_%s = ", c->classes[cid].c_name, tr, iv_c(attr));
+    char sw[32]; snprintf(sw, sizeof sw, "_t%d", tw);
+    if (wivt == TY_POLY && vt != TY_POLY)
+      emit_coerce_text(c, v, vt, wivt, CO_HOLD, sw, "a conditional attribute writer's argument", b);
+    else buf_puts(b, sw);
   }
   buf_puts(b, "); ");
   if (wk != SP_MEMBER_METHOD) {
