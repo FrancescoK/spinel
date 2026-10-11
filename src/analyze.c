@@ -27745,6 +27745,12 @@ static unsigned fwd_rest_bits(Compiler *c, int mi);
 /* Set when an answer below was cut short, so it is not kept as final: 1 a
    method still being asked (a cycle of forwarders), 2 the depth bound. */
 static int g_fwd_taint;
+/* How deep the POLY hand-ons one query follows, in steps (two a hand-on):
+   a chain longer than that is refused rather than followed on down the C
+   stack. Inside a rest forwarder being asked, where nothing is remembered,
+   the walk stops after two hand-ons, as before. */
+#define FWD_POLY_DEPTH 512
+#define FWD_POLY_DEPTH_REST 4
 /* fwd_rest_bits beside the elements' bits 0-15: an element at offset 16 or
    more, past what the bits and the dynamic masks hold, reaches a parameter
    that appends; and an answer below was cut at the bound. Either way the
@@ -27754,15 +27760,20 @@ static int g_fwd_taint;
 static int g_fwd_rest_depth;   /* forwarders being asked, nested */
 /* The POLY hand-ons one query asks, remembered for that query: a parameter
    handed to many methods, each handing it on to many, reaches the same
-   (method, parameter, depth) by many paths, and asking each afresh made the
-   walk the number of paths up to the depth bound. Keyed by the depth as
-   well, since the bound cuts a deeper ask shorter, and holding the taint the
-   ask left, so a remembered answer leaves exactly what asking again would.
-   Only outside a rest forwarder being asked: there an answer leans on that
-   forwarder's partial bits. A query is one ask from outside (depth 0); the
-   passes between queries change the types the answers read, so each query
-   starts empty. */
-typedef struct { unsigned gen; int mi, j, depth; signed char r, taint; } FwdMemo;
+   (method, parameter) by many paths, and asking each afresh made the walk
+   the number of paths. Each is asked once a query: it is entered as no
+   append while it is being asked, so a chain that comes back to it (a cycle
+   of hand-ons) adds nothing, and the parameters that chain passes on are
+   asked by the outer ask all the same. The query's own answer is then the
+   whole reach of its parameter, however deep, where a bound of two hand-ons
+   refused a String RDoc hands four methods down (`cross_reference(name)`
+   into `link`, `resolve`, `resolve_local_symbol`) though none appends. An
+   entry holds the taint its ask left, so a remembered answer leaves exactly
+   what asking again would. Only outside a rest forwarder being asked: there
+   an answer leans on that forwarder's partial bits. A query is one ask from
+   outside (depth 0); the passes between queries change the types the
+   answers read, so each query starts empty. */
+typedef struct { unsigned gen; int mi, j; signed char r, taint; } FwdMemo;
 static FwdMemo *g_fwd_memo;
 static unsigned g_fwd_memo_cap, g_fwd_memo_n, g_fwd_memo_gen;
 static void fwd_memo_query(void) {
@@ -27772,20 +27783,21 @@ static void fwd_memo_query(void) {
   }
   g_fwd_memo_n = 0;
 }
-static unsigned fwd_memo_slot(int mi, int j, int depth) {
-  unsigned h = (unsigned)mi * 2654435761u ^ (unsigned)j * 40503u ^ (unsigned)depth * 97u;
+static unsigned fwd_memo_slot(int mi, int j) {
+  unsigned h = (unsigned)mi * 2654435761u ^ (unsigned)j * 40503u;
   unsigned k = h & (g_fwd_memo_cap - 1);
-  while (g_fwd_memo[k].gen == g_fwd_memo_gen &&
-         (g_fwd_memo[k].mi != mi || g_fwd_memo[k].j != j || g_fwd_memo[k].depth != depth))
+  while (g_fwd_memo[k].gen == g_fwd_memo_gen && (g_fwd_memo[k].mi != mi || g_fwd_memo[k].j != j))
     k = (k + 1) & (g_fwd_memo_cap - 1);
   return k;
 }
-static FwdMemo *fwd_memo_find(int mi, int j, int depth) {
+static FwdMemo *fwd_memo_find(int mi, int j) {
   if (!g_fwd_memo) return NULL;
-  FwdMemo *e = &g_fwd_memo[fwd_memo_slot(mi, j, depth)];
+  FwdMemo *e = &g_fwd_memo[fwd_memo_slot(mi, j)];
   return e->gen == g_fwd_memo_gen ? e : NULL;
 }
-static void fwd_memo_put(int mi, int j, int depth, int r, int taint) {
+static void fwd_memo_put(int mi, int j, int r, int taint) {
+  FwdMemo *e = g_fwd_memo ? fwd_memo_find(mi, j) : NULL;
+  if (e) { e->r = (signed char)r; e->taint = (signed char)taint; return; }
   if ((g_fwd_memo_n + 1) * 2 > g_fwd_memo_cap) {
     FwdMemo *old = g_fwd_memo;
     unsigned ocap = g_fwd_memo_cap;
@@ -27793,11 +27805,11 @@ static void fwd_memo_put(int mi, int j, int depth, int r, int taint) {
     g_fwd_memo = (FwdMemo *)calloc(g_fwd_memo_cap, sizeof(FwdMemo));
     if (!g_fwd_memo) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
     for (unsigned k = 0; k < ocap; k++)
-      if (old[k].gen == g_fwd_memo_gen) g_fwd_memo[fwd_memo_slot(old[k].mi, old[k].j, old[k].depth)] = old[k];
+      if (old[k].gen == g_fwd_memo_gen) g_fwd_memo[fwd_memo_slot(old[k].mi, old[k].j)] = old[k];
     free(old);
   }
-  FwdMemo *e = &g_fwd_memo[fwd_memo_slot(mi, j, depth)];
-  e->gen = g_fwd_memo_gen; e->mi = mi; e->j = j; e->depth = depth;
+  e = &g_fwd_memo[fwd_memo_slot(mi, j)];
+  e->gen = g_fwd_memo_gen; e->mi = mi; e->j = j;
   e->r = (signed char)r; e->taint = (signed char)taint;
   g_fwd_memo_n++;
 }
@@ -27822,14 +27834,16 @@ static int fwd_param_appends(Compiler *c, int mi, int j, int depth) {
   if (q->byref_out || (q->type == TY_STRBUF && q->str_shared)) return 1;
   if (q->type != TY_POLY) return 0;
   int memo = g_fwd_rest_depth == 0;
-  FwdMemo *e = memo ? fwd_memo_find(mi, j, depth) : NULL;
+  FwdMemo *e = memo ? fwd_memo_find(mi, j) : NULL;
   if (e) { g_fwd_taint |= e->taint; return e->r; }
   int outer = g_fwd_taint, r;
   g_fwd_taint = 0;
+  /* being asked: a hand-on that comes back to it answers no append */
+  if (memo) fwd_memo_put(mi, j, 0, 1);
   if (an_param_mutated_in_place(c, mi, j)) r = 1;
-  else if (depth > 4) { g_fwd_taint |= 2; r = 0; }
+  else if (depth > (memo ? FWD_POLY_DEPTH : FWD_POLY_DEPTH_REST)) { g_fwd_taint |= 2; r = 0; }
   else r = fwd_poly_param_handed_on(c, mi, j, depth + 1);
-  if (memo) fwd_memo_put(mi, j, depth, r, g_fwd_taint);
+  if (memo) fwd_memo_put(mi, j, r, g_fwd_taint);
   g_fwd_taint |= outer;
   return r;
 }
@@ -27928,7 +27942,7 @@ static unsigned fwd_rest_bits_once(Compiler *c, int mi, const char *rn) {
    `super` or a call it is handed to? */
 static int fwd_poly_param_handed_on(Compiler *c, int mi, int pj, int depth) {
   const NodeTable *nt = c->nt;
-  if (depth > 4) { g_fwd_taint |= 2; return 0; }
+  if (depth > (g_fwd_rest_depth == 0 ? FWD_POLY_DEPTH : FWD_POLY_DEPTH_REST)) { g_fwd_taint |= 2; return 0; }
   if (depth == 0 && g_fwd_rest_depth == 0) fwd_memo_query();
   if (mi < 0 || mi >= c->nscopes) return 0;
   Scope *m = &c->scopes[mi];
