@@ -347,7 +347,8 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       for (int k = 0; k < argc; k++) {
         Repr jr = repr_of(c, argv[k]);
         TyKind jt = jr.as_ty;
-        if (ty_is_array(jt) || jt == TY_POLY_ARRAY || jr.kind == RK_BOXED) has_dyn = 1;
+        if (ty_is_array(jt) || jt == TY_POLY_ARRAY || jr.kind == RK_BOXED ||
+            nt_kind(c->nt, argv[k]) == NK_SplatNode) has_dyn = 1;
       }
       emit_file_join_args(c, argv, argc, has_dyn, b);
       return 1;
