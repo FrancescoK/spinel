@@ -2282,12 +2282,103 @@ static int sg_single_new_write(Compiler *c, const char *name, int bk,
   return write;
 }
 
+/* Does the subtree rooted at `root` contain node `id`? */
+static int sg_contains(const NodeTable *nt, int root, int id, int depth) {
+  if (root < 0 || root >= nt->count || depth > 300) return 0;
+  if (root == id) return 1;
+  const SpNode *nd = &nt->nodes[root];
+  for (int i = 0; i < nd->nr; i++)
+    if (sg_contains(nt, nd->r[i].ref, id, depth + 1)) return 1;
+  for (int i = 0; i < nd->na; i++)
+    for (int j = 0; j < nd->a[i].n; j++)
+      if (sg_contains(nt, nd->a[i].ids[j], id, depth + 1)) return 1;
+  return 0;
+}
+
+/* Is `n` a hand-off to the method's block: a `yield`, or `blk.call` on its
+   `&blk` parameter? */
+static int sg_block_handoff(const NodeTable *nt, int n, const char *blk) {
+  NodeKind k = nt_kind(nt, n);
+  if (k == NK_YieldNode) return 1;
+  if (k != NK_CallNode || !blk) return 0;
+  const char *cn = nt_str(nt, n, "name");
+  int r = nt_ref(nt, n, "receiver");
+  if (!cn || !sp_streq(cn, "call") || r < 0 || nt_kind(nt, r) != NK_LocalVariableReadNode) return 0;
+  const char *rn = nt_str(nt, r, "name");
+  return rn && sp_streq(rn, blk);
+}
+
+/* Does class `ci`'s initialize hand its block the new object, and nothing
+   else: every hand-off in it passes `self` first? */
+static int sg_initialize_yields_self(Compiler *c, int ci) {
+  const NodeTable *nt = c->nt;
+  int mi = comp_method_in_chain(c, ci, "initialize", NULL);
+  if (mi < 0 || c->scopes[mi].body < 0) return 0;
+  const char *blk = c->scopes[mi].blk_param;
+  if (blk && !blk[0]) blk = NULL;
+  int body = c->scopes[mi].body, found = 0;
+  for (int n = 0; n < nt->count; n++) {
+    if (!sg_block_handoff(nt, n, blk) || !sg_contains(nt, body, n, 0)) continue;
+    int an = nt_ref(nt, n, "arguments");
+    int na = 0; const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &na) : NULL;
+    if (na < 1 || nt_kind(nt, av[0]) != NK_SelfNode) return 0;
+    found = 1;
+  }
+  return found;
+}
+
+/* `K.new { |x| def x.m ... }`: a block parameter of a user class's `new`
+   whose initialize yields the new object. The `.new` call is the binding's
+   one defining write, as `x = K.new` would be. Returns the `.new` call, or -1;
+   *out_ci gets the class. */
+static int sg_block_param_new(Compiler *c, int id, const char *name, int *out_ci) {
+  const NodeTable *nt = c->nt;
+  int blk = -1;
+  for (int b = 0; b < nt->count; b++) {
+    if (nt_kind(nt, b) != NK_BlockNode) continue;
+    int pn = nt_ref(nt, b, "parameters");
+    int inner = pn >= 0 ? nt_ref(nt, pn, "parameters") : -1;
+    int pnode = inner >= 0 ? inner : pn;
+    int np = 0; const int *reqs = pnode >= 0 ? nt_arr(nt, pnode, "requireds", &np) : NULL;
+    if (np < 1 || nt_kind(nt, reqs[0]) != NK_RequiredParameterNode) continue;
+    const char *bv = nt_str(nt, reqs[0], "name");
+    if (!bv || !sp_streq(bv, name)) continue;
+    if (!sg_contains(nt, nt_ref(nt, b, "body"), id, 0)) continue;
+    /* the innermost block that names the parameter is the one it reads */
+    if (blk < 0 || sg_contains(nt, blk, b, 0)) blk = b;
+  }
+  if (blk < 0) return -1;
+  /* a def between the block and the singleton def is a new local scope */
+  int body = nt_ref(nt, blk, "body");
+  for (int n = 0; n < nt->count; n++) {
+    NodeKind k = nt_kind(nt, n);
+    if (k == NK_DefNode && n != id && sg_contains(nt, n, id, 0) &&
+        sg_contains(nt, body, n, 0)) return -1;
+    /* any write to the parameter makes it more than the new object */
+    if ((k == NK_LocalVariableWriteNode || k == NK_LocalVariableTargetNode ||
+         k == NK_LocalVariableOrWriteNode || k == NK_LocalVariableAndWriteNode ||
+         k == NK_LocalVariableOperatorWriteNode) &&
+        nt_str(nt, n, "name") && sp_streq(nt_str(nt, n, "name"), name) &&
+        sg_contains(nt, body, n, 0)) return -1;
+  }
+  int call = -1;
+  for (int n = 0; n < nt->count; n++)
+    if (nt_kind(nt, n) == NK_CallNode && nt_ref(nt, n, "block") == blk) { call = n; break; }
+  if (call < 0) return -1;
+  int ci = sg_new_class_ci(c, call);
+  if (ci < 0 || !sg_initialize_yields_self(c, ci)) return -1;
+  *out_ci = ci;
+  return call;
+}
+
 /* Point the `= <Class>.new(...)` of write `wnode` at class `snm`, so the
    binding's type becomes it and `.new` builds it. A local receiver becomes
-   the constant: it held that class's parent and nothing else. */
+   the constant: it held that class's parent and nothing else. `wnode` may
+   also be the `.new` call itself (a block parameter's binding). */
 static void sg_retarget(Compiler *c, int wnode, const char *snm) {
   NodeTable *nt = (NodeTable *)c->nt;
-  int wrecv = nt_ref(nt, nt_ref(nt, wnode, "value"), "receiver");
+  int newcall = nt_kind(nt, wnode) == NK_CallNode ? wnode : nt_ref(nt, wnode, "value");
+  int wrecv = nt_ref(nt, newcall, "receiver");
   if (nt_kind(nt, wrecv) != NK_ConstantReadNode) {
     long long line = nt_int(nt, wrecv, "node_line", 0), file = nt_int(nt, wrecv, "node_file", 0);
     nt_node_reset(nt, wrecv, "ConstantReadNode");
@@ -2551,6 +2642,8 @@ void register_singleton_defs(Compiler *c) {
     if (sg_binding(c, id, recv, &bk, &rn, &owner) < 0) continue;
     int parent_ci = -1;
     int wnode = sg_single_new_write(c, rn, bk, owner, &parent_ci);
+    if (wnode < 0 && bk == SG_LOCAL && parent_ci != -2 && parent_ci != -3)
+      wnode = sg_block_param_new(c, id, rn, &parent_ci);
     if (parent_ci == -2 || parent_ci == -3) {
       const char *mn = idk == NK_DefNode ? nt_str(nt, id, "name") : NULL;
       if (idk == NK_DefNode && mn && sp_streq(mn, "to_a")) {
