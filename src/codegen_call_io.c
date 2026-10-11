@@ -590,6 +590,10 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
        (sp_streq(name, "to_io") && argc == 0) ||
        (sp_feature_required("socket") &&
         ((sp_streq(name, "accept") && argc == 0) || boxed_accept_nb_ok(nt, name, argc, argv))) ||
+       /* and its shutdown, which WEBrick calls on each listener it kept in
+          an Array when a signal stops the server */
+       (sp_feature_required("socket") && sp_streq(name, "shutdown") && argc <= 1 &&
+        !call_has_splat_arg(nt, argv, argc)) ||
        /* the readiness family: a lambda's parameter is boxed, so a handle
           passed through one reached `wait_readable` with no emitter, and in
           a condition it was refused as non-bool. IO#wait stays off the list,
@@ -890,6 +894,11 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
         buf_printf(b, "sp_sock_addr(_t%d, %d); })", tio2, sp_streq(name, "peeraddr") ? 1 : 0);
       else if (sp_streq(name, "to_io")) buf_printf(b, "_t%d; })", tio2);
       else if (sp_streq(name, "accept")) buf_printf(b, "sp_sock_accept(_t%d); })", tio2);
+      else if (sp_streq(name, "shutdown")) {
+        buf_printf(b, "sp_sock_shutdown(_t%d, ", tio2);
+        if (argc == 1) emit_int_expr(c, argv[0], b); else buf_puts(b, "2");
+        buf_puts(b, "); })");
+      }
       /* the same answers the typed arm gives: `exception: false` swaps
          IO::EAGAINWaitReadable for the :wait_readable marker */
       else if (sp_streq(name, "accept_nonblock")) {

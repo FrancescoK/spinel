@@ -2995,6 +2995,9 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
          :wait_readable marker; to_io answers the handle itself */
       if (sp_feature_required("socket") && sp_streq(name, "accept") && argc == 0)
         { *out = an_poly_concrete(c, name, TY_IO); return 1; }
+      /* and its shutdown, as the TY_IO arm types it */
+      if (sp_feature_required("socket") && sp_streq(name, "shutdown") && argc <= 1)
+        { *out = an_poly_concrete(c, name, TY_INT); return 1; }
       if (sp_feature_required("socket") && sp_streq(name, "accept_nonblock"))
         { *out = an_poly_concrete(c, name, an_nonblock_no_exception(c, id) ? TY_POLY : TY_IO); return 1; }
       if (sp_streq(name, "to_io") && argc == 0)
