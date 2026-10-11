@@ -12629,6 +12629,16 @@ void emit_super(Compiler *c, int id, Buf *b) {
         if (pt == TY_POLY)
           buf_printf(b, "(%s->msg = %s.tag == SP_TAG_NIL ? NULL : sp_poly_to_s(%s), sp_gc_wb((void *)%s), %s->msg)",
                      g_self, rn.p, rn.p, g_self, g_self);
+        /* --share-strings: a parameter whose slot is the rule's shared
+           handle (the message is changed in place through another name)
+           gives its bytes as the message, and the exception holds the handle
+           too, as the explicit super(m) store above does (exc_msg_handle).
+           `share`, not `handle`: the default build keeps its handle for a
+           parameter changed in place, and shares no message. */
+        else if (repr_of_slot(c, p0).share)
+          buf_printf(b, "(%s->msg = sp_strbuf_read_pub(%s), sp_gc_wb((void *)%s), "
+                        "(void)sp_exc_attach_msg((void *)%s, %s), %s->msg)",
+                     g_self, rn.p, g_self, g_self, rn.p, g_self);
         else
           buf_printf(b, "(%s->msg = %s, sp_gc_wb((void *)%s), %s->msg)", g_self, rn.p, g_self, g_self);
         free(rn.p);

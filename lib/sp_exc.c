@@ -515,6 +515,9 @@ const char *sp_exc_class_name(volatile sp_Exception *ve) {
    String a caller keeps, and the handle's buffer moves as it grows. Sized
    by the handle's length, so a NUL inside stays. */
 static const char *sp_exc_msg_handle_copy(sp_String *h) {
+  /* rooted: the exception holding h may be a temporary nothing else holds
+     (`E.new.message`), and the copy's allocation can collect */
+  SP_GC_ROOT(h);
   int64_t n = sp_String_length(h);
   char *r = sp_str_alloc((size_t)n);
   memcpy(r, sp_String_cstr(h), (size_t)n);
