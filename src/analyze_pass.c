@@ -16272,7 +16272,19 @@ void cr_collect_calls(Compiler *c, const NodeTable *nt, int id,
     if (mi >= 0) { snprintf(resolved, sizeof resolved, "\x01%d", mi); names[0] = resolved; }
   }
   char arm_name[300];
+  /* An arm on a class (`self`, written or not, in a `def self.`, or a class
+     constant) reaches that class's `def self.` methods, which the "\x02"
+     mark (instance methods and top-level defs) leaves out: such an arm
+     marks by bare name, as the literal-name send it stands for does. */
+  int class_arm = 0;
   if (k0 == NK_CallNode && nm && names[0] == nm && nt_int(nt, id, "dyn_arm", 0) > 0) {
+    int r = nt_ref(nt, id, "receiver");
+    NodeKind rk = r >= 0 ? nt_kind(nt, r) : NK_NONE;
+    if (rk == NK_SelfNode || r < 0) { Scope *ss = comp_scope_of(c, id); class_arm = ss && ss->is_cmethod; }
+    else if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode)
+      class_arm = nt_str(nt, r, "name") && comp_class_index(c, nt_str(nt, r, "name")) >= 0;
+  }
+  if (k0 == NK_CallNode && nm && names[0] == nm && !class_arm && nt_int(nt, id, "dyn_arm", 0) > 0) {
     snprintf(arm_name, sizeof arm_name, "\x02%s", nm);
     names[0] = arm_name;
   }
