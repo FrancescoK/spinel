@@ -1346,6 +1346,7 @@ const char *nil_store_sfx(Compiler *c, const char *k, int node);
 #define NIL_STORE_BOXED (-2)   /* nil_store_sfx's node for a boxed element */
 int enum_builtin_node(Compiler *c, int node);
 const char *nomethod_head(const char *name);
+int kernel_private_method(const char *name);
 const char *enum_walk_name(Compiler *c, int id, int recv, const char *name);
 void emit_walk_arity_raise(Compiler *c, int id, int recv, const char *name, int t, int indent, Buf *b);
 int typed_array_lit_flag_free(Compiler *c, int node);
