@@ -126,7 +126,10 @@ literals, or not a method on the receiver, raises `NoMethodError` at runtime. A
 **computed** name (an interpolation, `to_sym`, a concatenation) sent to a user-class
 receiver dispatches over everything that class answers -- its methods, readers and
 writers, and the Object methods every instance has -- so the set is complete; on a
-boxed receiver it covers every user class plus the program's literals. A computed
+boxed receiver it covers every user class plus the program's literals. A method's
+parameter is a computed name when a caller hands it one (`handle(name) =
+public_send(name)` called with `"on_#{ev}".to_sym`), also through a method that
+passes the parameter on; handed only literals, it keeps the literal arms. A computed
 name sent to a builtin receiver (a String, an Array, ...) is still refused at compile
 time. A **literal** name is fully resolved -- see below.
 `public_send(*args, &blk)` with the name as the first element of a splatted

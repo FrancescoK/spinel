@@ -907,6 +907,10 @@ typedef struct {
                        set of user classes its value can hold (analyze_cls.c,
                        #8530); 0 is every class. Read through cls_fact_node. */
   ClsSet *cls_pool; int ncls_pool, cls_fact_n;
+  /* an_send_name_is_computed's memo of the parameters a caller hands a
+     computed name (#8592): one byte per (scope, parameter) slot, 0 unknown,
+     1 no, 2 yes; rebuilt when the node table grew */
+  unsigned char *send_param_memo; int send_param_memo_n, send_param_memo_nodes;
   int *nscope;      /* [node_cap] node id -> owning scope index */
   int *node_cbody;  /* [node_cap] node id -> enclosing class/module-body class id, or -1 */
   char *empty_arr_recv; /* [node_cap] empty `[]` used as a direct receiver/interpolation -> TY_POLY_ARRAY */

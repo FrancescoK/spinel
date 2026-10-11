@@ -3099,7 +3099,59 @@ static int node_is_container_read(const NodeTable *nt, int n) {
    its runtime value is one of those literals, which the arm set already covers.
    Only a computed name is rejected, so it fails loudly at build time rather than
    silently raising the wrong NoMethodError for a method the arms never built. */
-int an_send_name_is_computed(Compiler *c, int arg) {
+static int send_name_is_computed(Compiler *c, int arg, int depth);
+
+/* Is the parameter `vn` of the method owning `arg` handed a computed name by
+   a caller (#8592)? `handle(name) = public_send(name)` called with
+   `"on_#{ev}".to_sym` reaches names no literal spells, so its send takes the
+   complete arm set a computed name takes. A caller's argument that is itself
+   a parameter asks the same of its own callers, a few levels deep. The
+   answer is memoized per (scope, parameter) and dropped when the node table
+   grew, since the callers are found by one walk over the program's calls. */
+static int param_handed_computed_name(Compiler *c, int arg, const char *vn, int depth) {
+  const NodeTable *nt = c->nt;
+  Scope *sc = comp_scope_of(c, arg);
+  if (!sc || !sc->name || sc->def_node < 0 || depth > 4) return 0;
+  LocalVar *lv = scope_local(sc, vn);
+  if (!lv || !lv->is_param) return 0;
+  int pi = -1;
+  for (int k = 0; k < sc->nparams; k++)
+    if (sc->pnames[k] && sp_streq(sc->pnames[k], vn)) { pi = k; break; }
+  /* a positional parameter ahead of any rest: its argument sits at its index */
+  if (pi < 0 || (sc->rest_idx >= 0 && pi >= sc->rest_idx) || (sc->kwrest_idx >= 0 && pi >= sc->kwrest_idx)) return 0;
+  int si = (int)(sc - c->scopes);
+  int key = pi < 64 ? si * 64 + pi : -1;
+  if (c->send_param_memo && (c->send_param_memo_nodes != nt->count || c->send_param_memo_n < c->nscopes * 64)) {
+    free(c->send_param_memo); c->send_param_memo = NULL;
+  }
+  if (!c->send_param_memo) {
+    c->send_param_memo_n = c->nscopes * 64;
+    c->send_param_memo = calloc((size_t)c->send_param_memo_n, 1);
+    c->send_param_memo_nodes = nt->count;
+  }
+  if (key >= 0 && c->send_param_memo && c->send_param_memo[key]) return c->send_param_memo[key] == 2;
+  int res = 0;
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
+    if (res) continue;
+    const char *cn = nt_str(nt, id, "name");
+    if (!cn || !sp_streq(cn, sc->name)) continue;
+    int a = nt_ref(nt, id, "arguments");
+    int an = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+    if (pi >= an) continue;
+    int x = av[pi];
+    NodeKind xk = nt_kind(nt, x);
+    if (xk == NK_SplatNode || xk == NK_KeywordHashNode || xk == NK_BlockArgumentNode) continue;
+    if (node_is_container_read(nt, x)) continue;
+    if (node_is_computed_name(nt, x) || (xk == NK_LocalVariableReadNode && send_name_is_computed(c, x, depth + 1))) res = 1;
+  }
+  /* the memo may have been rebuilt by a deeper call: write only into the live one */
+  if (key >= 0 && c->send_param_memo && c->send_param_memo_nodes == nt->count && key < c->send_param_memo_n)
+    c->send_param_memo[key] = res ? 2 : 1;
+  return res;
+}
+
+static int send_name_is_computed(Compiler *c, int arg, int depth) {
   const NodeTable *nt = c->nt;
   if (node_is_container_read(nt, arg)) return 0;
   if (node_is_computed_name(nt, arg)) return 1;
@@ -3108,16 +3160,24 @@ int an_send_name_is_computed(Compiler *c, int arg) {
   const char *vn = nt_str(nt, arg, "name");
   int scope = (arg >= 0 && arg < nt->count) ? c->nscope[arg] : -1;
   if (!vn) return 0;
+  int written = 0;
   NT_FOREACH_KIND(nt, NK_LocalVariableWriteNode, id) {
     if (c->nscope[id] != scope) continue;
     const char *wn = nt_str(nt, id, "name");
     if (!wn || !sp_streq(wn, vn)) continue;
+    written = 1;
     /* a local bound to such an element (`step = PLAN[i]; send(step)`) is
        that element */
     int wv = nt_ref(nt, id, "value");
     if (node_is_computed_name(nt, wv) && !node_is_container_read(nt, wv)) return 1;
   }
+  /* a parameter no statement of the method rebinds: the names its callers hand it */
+  if (!written) return param_handed_computed_name(c, arg, vn, depth);
   return 0;
+}
+
+int an_send_name_is_computed(Compiler *c, int arg) {
+  return send_name_is_computed(c, arg, 0);
 }
 
 int an_indexed_each_source(const NodeTable *nt, int recv) {
