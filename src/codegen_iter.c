@@ -291,7 +291,9 @@ BlockRetHome block_ret_home_enter(int block, int saved_block) {
   if (block < 0 || block == saved_block) return none;   /* a forwarded block keeps its own */
   if (block >= g_blk_ret_cap) {
     int nc = block + 64;
-    g_blk_ret_home = realloc(g_blk_ret_home, sizeof(BlockRetHome) * (size_t)nc);
+    BlockRetHome *nh = realloc(g_blk_ret_home, sizeof(BlockRetHome) * (size_t)nc);
+    if (!nh) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    g_blk_ret_home = nh;
     memset(g_blk_ret_home + g_blk_ret_cap, 0, sizeof(BlockRetHome) * (size_t)(nc - g_blk_ret_cap));
     g_blk_ret_cap = nc;
   }
