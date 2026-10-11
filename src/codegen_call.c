@@ -22831,11 +22831,15 @@ static int yield_arg_fresh_line(Compiler *c, int a) {
   const char *cn = call >= 0 ? nt_str(nt, call, "name") : NULL;
   int recv = call >= 0 ? nt_ref(nt, call, "receiver") : -1;
   if (!cn || recv < 0) return 0;
+  /* only the builtin's: a method of the program's the call reaches (a
+     reopened String's each_line, a File.foreach of its own) may yield a
+     String something else still holds */
+  if (cplan_user(c, call)->dispatch != CP_NONE) return 0;
+  const char *rn2 = nt_kind(nt, recv) == NK_ConstantReadNode ? nt_str(nt, recv, "name") : NULL;
   TyKind rt = comp_ntype(c, recv);
   if (rt == TY_STRING || rt == TY_STRBUF)
     return sp_streq(cn, "each_line") || sp_streq(cn, "each_char") || sp_streq(cn, "each_grapheme_cluster");
   if (rt == TY_IO) return sp_streq(cn, "each_line") || sp_streq(cn, "each") || sp_streq(cn, "each_char");
-  const char *rn2 = nt_kind(nt, recv) == NK_ConstantReadNode ? nt_str(nt, recv, "name") : NULL;
   return rn2 && (sp_streq(rn2, "File") || sp_streq(rn2, "IO")) && sp_streq(cn, "foreach");
 }
 
