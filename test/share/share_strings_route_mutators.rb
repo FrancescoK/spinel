@@ -185,3 +185,17 @@ p [b2, $n]
 $n = 0; b = +"abc"; b2 = b
 id(b).concat("2")&.[]=(0, "S")
 p [$n, b2]
+
+# a block form's loop runs ahead of its statement: a value of it over a bang
+# holds the bang's handle there, nil or not
+$n = 0; b = +"abc"; b2 = b
+wb = id(b).upcase!.gsub!(fz("B")) { "z" }
+p [wb, $n, b2]
+$n = 0; b = +"ABC"; b2 = b
+begin
+  wb = id(b).upcase!.sub!(fz("B")) { "z" }
+  p [wb, $n, b2]
+rescue NoMethodError => e
+  p [e.message, b2]
+end
+
