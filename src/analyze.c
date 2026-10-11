@@ -19237,11 +19237,17 @@ static int share_demand_nested_read(Compiler *c, int call, int recv) {
 }
 static int share_default_apply(Compiler *c, int in_fixpoint) {
   if (!c->share_strings) return 0;
+  unsigned d_in = 0;
   if (in_fixpoint) {
     /* types that moved since the last round: ask for one more round, which
-       applies the rule if they then hold still */
-    unsigned d = share_types_digest(c);
-    if (d != c->share_sig) { c->share_sig = d; return 1; }
+       applies the rule if they then hold still. The re-narrow loop clears
+       the slots the rule promoted at the top of each iteration, and its
+       re-derive gives them back as the rule found them: the types it was
+       last applied over, which it applies to again. Waiting there instead
+       skipped every other iteration, so the promoted slots alternated and
+       the loop ran to its round cap. */
+    d_in = share_types_digest(c);
+    if (d_in != c->share_sig && d_in != c->share_in_sig) { c->share_sig = d_in; return 1; }
   }
   share_facts_build(c);
   int changed = 0;
@@ -19464,7 +19470,14 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
   /* The next round must settle on the types AFTER these promotions.
      Comparing with the pre-promotion types asks for another inference
      round even when no dependent type moved. */
-  if (in_fixpoint && changed) c->share_sig = share_types_digest(c);
+  if (in_fixpoint && changed) {
+    unsigned d_out = share_types_digest(c);
+    /* the same promotions over the same types as last time only re-fill
+       what the re-narrow loop cleared: no change for its exits to wait on */
+    if (d_in == c->share_in_sig && d_out == c->share_sig) changed = 0;
+    c->share_in_sig = d_in;
+    c->share_sig = d_out;
+  }
   return changed;
 }
 
