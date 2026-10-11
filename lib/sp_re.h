@@ -2,7 +2,7 @@
 #define SP_RE_H
 /* sp_re.h -- regexp wrappers + MatchData, compiled once in lib/sp_re.c.
  *
- * The regexp ENGINE (re_compile / re_exec / re_free) is the separate
+ * The regexp ENGINE (re_compile / spinel_re_exec / re_free) is the separate
  * build/regexp/*.o library; this layer is spinel's Ruby-facing surface
  * (Regexp#match, gsub/sub/scan/split, the $~/$1.. match registers, and
  * MatchData). The match-register globals are per-process singletons: the
@@ -28,8 +28,8 @@
 typedef struct mrb_regexp_pattern mrb_regexp_pattern;
 mrb_regexp_pattern* re_compile(const char *pattern, int64_t len, uint32_t flags);
 void re_free(mrb_regexp_pattern *pat);
-int re_exec(const mrb_regexp_pattern *pat, const char *str, int64_t len, int64_t start, int *captures, int captures_size, int binary);
-/* re_exec that also answers where the matching attempt began, which a \K
+int spinel_re_exec(const mrb_regexp_pattern *pat, const char *str, int64_t len, int64_t start, int *captures, int captures_size, int binary);
+/* spinel_re_exec that also answers where the matching attempt began, which a \K
    leaves short of group 0's start (lib/regexp/re_spinel.c) */
 int re_exec_attempt(const mrb_regexp_pattern *pat, const char *str, int64_t len, int64_t start, int *captures, int captures_size, int binary, int *attempt);
 /* named-capture introspection (lib/regexp/re_compile.c) */

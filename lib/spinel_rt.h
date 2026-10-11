@@ -1400,8 +1400,6 @@ static const char*sp_SymArrayPtrArray_inspect(sp_PtrArray*a){SP_GC_ROOT(a);sp_St
 
 #ifdef __FreeBSD__
 
-#define re_exec spinel_re_exec
-
 #define MAP_NORESERVE 0
 
 #endif

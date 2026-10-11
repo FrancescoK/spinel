@@ -4465,7 +4465,7 @@ sp_RbVal sp_box_tms(sp_Tms v) {
 sp_RbVal sp_box_openstruct(sp_OpenStruct *o){ return sp_box_obj(o, SP_BUILTIN_OPENSTRUCT); }
 
 /* ---- More cold String/StrArray ops -- relocated from spinel_rt.h. ---- */
-#include "sp_re.h"   /* mrb_regexp_pattern/re_exec for sp_str_re_match_p_at */
+#include "sp_re.h"   /* mrb_regexp_pattern/spinel_re_exec for sp_str_re_match_p_at */
 
 /* respond_to? on a poly value that turns out to hold a BUILTIN. The compile
    time fold emits a cls_id check against the user classes defining the name,
@@ -4502,7 +4502,7 @@ sp_PolyArray *sp_str_lines_poly(const char *s) {SP_GC_ROOT_STR(s);
 }
 /* String#match?(/re/, pos) -- pos is a codepoint index (CRuby semantics),
    unlike Regexp#match?(str, pos) which uses byte offset. Convert the
-   codepoint index to a byte offset before dispatching to re_exec. */
+   codepoint index to a byte offset before dispatching to spinel_re_exec. */
 sp_bool sp_str_re_match_p_at(mrb_regexp_pattern *pat, const char *str, sp_int cpos) {SP_GC_ROOT_STR(str);
   sp_int cl = sp_str_length(str);
   if (cpos < 0) cpos += cl;
@@ -4512,7 +4512,7 @@ sp_bool sp_str_re_match_p_at(mrb_regexp_pattern *pat, const char *str, sp_int cp
      stopped at an embedded NUL, and a binary subject matched as UTF-8 */
   int64_t slen = (int64_t)sp_str_byte_len(str);
   int caps[2];
-  return re_exec(pat, str, slen, (sp_int)boff, caps, 2, sp_str_is_binary(str)) > 0;
+  return spinel_re_exec(pat, str, slen, (sp_int)boff, caps, 2, sp_str_is_binary(str)) > 0;
 }
 /* Issue #910: sub(string, hash) -- literal-substring pattern
    with a hash replacement. Replaces only the first match. */
@@ -5191,7 +5191,7 @@ const char *sp_re_gsub_str_str_hash(mrb_regexp_pattern *pat, const char *str, sp
     else out = (char *)realloc(out, _nc); \
     cap = _nc; } while (0)
   while (pos <= slen) {
-    int n = re_exec(pat, str, slen, pos, caps, 64, 0);
+    int n = spinel_re_exec(pat, str, slen, pos, caps, 64, 0);
     if (n <= 0 || caps[0] < 0) break;
     if (sp_re_track_last) { lastn = n > 64 ? 64 : n; memcpy(lastcaps, caps, sizeof(int) * (size_t)lastn); }
     size_t before = caps[0] - pos;
@@ -5245,7 +5245,7 @@ else {
 const char *sp_re_sub_str_str_hash(mrb_regexp_pattern *pat, const char *str, sp_StrStrHash *h) {SP_GC_ROOT(h);SP_GC_ROOT_STR(str);
   int64_t slen = (int64_t)sp_str_byte_len(str);
   int caps[64];
-  int n = re_exec(pat, str, slen, 0, caps, 64, 0);
+  int n = spinel_re_exec(pat, str, slen, 0, caps, 64, 0);
   if (n <= 0 || caps[0] < 0) { if (sp_re_track_last) sp_re_clear_last_match(); return str; }
   int mlen = caps[1] - caps[0];
   /* 0xff marker before the transient key: keeps sp_str_hash's s[-1] read

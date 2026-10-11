@@ -11,7 +11,7 @@
 
 mrb_regexp_pattern *re_compile(const char *pattern, mrb_int len, uint32_t flags);
 void re_free(mrb_regexp_pattern *pat);
-int re_exec(const mrb_regexp_pattern *pat, const char *str, mrb_int len, mrb_int start,
+int spinel_re_exec(const mrb_regexp_pattern *pat, const char *str, mrb_int len, mrb_int start,
             int *captures, int captures_size, int binary);
 int re_exec_attempt(const mrb_regexp_pattern *pat, const char *str, mrb_int len, mrb_int start,
                     int *captures, int captures_size, int binary, int *attempt);

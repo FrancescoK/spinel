@@ -4,12 +4,12 @@
  * Implements the StringScanner methods: scan, check, scan_until,
  * matched, matched?, pos, eos?, getch, peek, unscan, rest,
  * terminate, pre_match, post_match, string. Uses spinel's
- * internal regex engine (re_compile / re_exec -- see lib/regexp/)
+ * internal regex engine (re_compile / spinel_re_exec -- see lib/regexp/)
  * rather than oniguruma; the existing lib/strscan.c is an
  * oniguruma-based draft the rest of the build doesn't link.
  *
  * Matching semantics: scan / check are anchored at the current
- * position (re_exec is run with start=pos and the result is
+ * position (spinel_re_exec is run with start=pos and the result is
  * accepted only when the attempt that matched began at pos; the
  * match itself begins there too unless the pattern has a \K).
  * scan_until returns text from pos through the end of the next
@@ -34,7 +34,7 @@
    register or stack slot happened to point (wasm-ld's signature check is
    what said so). A scanner's subject is scanned as text. */
 typedef struct mrb_regexp_pattern mrb_regexp_pattern;
-extern int re_exec(const mrb_regexp_pattern *pat, const char *str, int64_t len, int64_t start, int *captures, int captures_size, int binary);
+extern int spinel_re_exec(const mrb_regexp_pattern *pat, const char *str, int64_t len, int64_t start, int *captures, int captures_size, int binary);
 extern int re_exec_attempt(const mrb_regexp_pattern *pat, const char *str, int64_t len, int64_t start, int *captures, int captures_size, int binary, int *attempt);
 
 /* The scanner struct lives in spinel's GC heap. `source` /
@@ -86,7 +86,7 @@ sp_StringScanner *sp_StringScanner_dup(sp_StringScanner *sc) {SP_GC_ROOT(sc);
   return d;
 }
 
-/* Clamp re_exec's returned ncap to the stored caps[] size. */
+/* Clamp spinel_re_exec's returned ncap to the stored caps[] size. */
 static int sc_clamp_ncaps(int n) {
   if (n < 0) return 0;
   if (n > SP_SS_MAXCAP) return SP_SS_MAXCAP;
@@ -118,7 +118,7 @@ static int64_t sc_match_at_pos(const mrb_regexp_pattern *pat, const char *str, i
 /* Forward-search match: returns the absolute offset of the first match at or
    after pos, and writes matched length to *mlen. -1 on miss. */
 static int64_t sc_match_forward(const mrb_regexp_pattern *pat, const char *str, int64_t slen, int64_t pos, int64_t *mlen, int *caps, int *ncap_out) {
-  int n = re_exec(pat, str + pos, slen - pos, 0, caps, SP_SS_MAXCAP, 0);
+  int n = spinel_re_exec(pat, str + pos, slen - pos, 0, caps, SP_SS_MAXCAP, 0);
   *ncap_out = sc_clamp_ncaps(n);
   if (n <= 0 || caps[0] < 0) { *ncap_out = 0; return -1; }
   sc_shift_caps(caps, *ncap_out, pos);
