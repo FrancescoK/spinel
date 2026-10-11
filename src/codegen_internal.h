@@ -1091,8 +1091,8 @@ void emit_retf_return(int eid, int has_retval, Buf *b);
 void emit_main_exit(Buf *b);
 /* The assignment target for an inlined method's parameter, spelled by the same
    rule that declared it (a cell-promoted one is `(*_cell_x)`). See codegen.c. */
-void emit_inlined_param_target(Compiler *c, Scope *m, const char *pname,
-                               const char *rn, Buf *b);
+int emit_inlined_param_target(Compiler *c, Scope *m, const char *pname,
+                              const char *rn, Buf *b);
 const char *cell_scan_fn(TyKind t);
 const char *cell_value_struct(TyKind t);
 const char *cell_value_struct_empty(TyKind t);

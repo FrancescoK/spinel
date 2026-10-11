@@ -291,7 +291,9 @@ BlockRetHome block_ret_home_enter(int block, int saved_block) {
   if (block < 0 || block == saved_block) return none;   /* a forwarded block keeps its own */
   if (block >= g_blk_ret_cap) {
     int nc = block + 64;
-    g_blk_ret_home = realloc(g_blk_ret_home, sizeof(BlockRetHome) * (size_t)nc);
+    BlockRetHome *nh = realloc(g_blk_ret_home, sizeof(BlockRetHome) * (size_t)nc);
+    if (!nh) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    g_blk_ret_home = nh;
     memset(g_blk_ret_home + g_blk_ret_cap, 0, sizeof(BlockRetHome) * (size_t)(nc - g_blk_ret_cap));
     g_blk_ret_cap = nc;
   }
@@ -858,9 +860,10 @@ void emit_inline_bind_params(Compiler *c, Scope *m, int args, const int *argv, i
   for (int i = 0; i < m->nparams; i++) {
     emit_indent(b, din);
     int aliased = i < 32 && (alias_mask & (1u << i));
+    int pc = 0;
     if (aliased) buf_printf(b, "_cell__y%d_%s = &(", tag, m->pnames[i]);
     else { char rn[128]; snprintf(rn, sizeof rn, "_y%d_%s", tag, m->pnames[i]);
-      emit_inlined_param_target(c, m, m->pnames[i], rn, b); }
+      pc = emit_inlined_param_target(c, m, m->pnames[i], rn, b); }
     /* hide THIS inline's renames only: args are call-site expressions,
        and the call site may itself be an outer inlined body whose locals
        are renamed (nested yield-method inlines) -- zeroing the whole
@@ -926,7 +929,7 @@ void emit_inline_bind_params(Compiler *c, Scope *m, int args, const int *argv, i
         emit_arg_or_default(c, m, i, kv, b);
     }
     ren_unpark(&park);
-    buf_puts(b, ";\n");
+    buf_puts(b, pc ? ");\n" : ";\n");
   }
   view_unbind(argov_saved);
 }

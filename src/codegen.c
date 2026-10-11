@@ -7509,13 +7509,21 @@ static void emit_proc_owned_cell(Compiler *c, Buf *pb, LocalVar *lv, const char 
    inline emitters bound the plain form unconditionally, so a parameter an
    inner block captures was assigned under a name nothing had declared -- the
    read path was fixed for exactly this in #4088 and the binder was not
-   (#4147). `rn` is the renamed (per-inline) name. */
-void emit_inlined_param_target(Compiler *c, Scope *m, const char *pname,
-                               const char *rn, Buf *b) {
+   (#4147). `rn` is the renamed (per-inline) name. A Proc's cell is an int
+   cell holding the pointer re-encoded (emit_proc_cell_lvalue's rule), so its
+   target opens `(sp_int)(uintptr_t)(`: the return is 1 then, and the caller
+   closes it after the value. */
+int emit_inlined_param_target(Compiler *c, Scope *m, const char *pname,
+                              const char *rn, Buf *b) {
   LocalVar *lv = pname ? scope_local(m, pname) : NULL;
+  (void)c;
+  if (lv && lv->is_cell && lv->type == TY_PROC) {
+    buf_printf(b, "(*_cell_%s) = (sp_int)(uintptr_t)(", rn);
+    return 1;
+  }
   if (lv && lv->is_cell) buf_printf(b, "(*_cell_%s) = ", rn);
   else buf_printf(b, "lv_%s = ", rn);
-  (void)c;
+  return 0;
 }
 
 /* One inlined local's declaration. A local an inner block captures is reached
@@ -12138,10 +12146,11 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   }
   for (int i = 0; is_forwarding && i < m->nparams; i++) {
     emit_indent(b, din);
+    int pc = 0;
     { char rn[128]; snprintf(rn, sizeof rn, "_y%d_%s", tag, m->pnames[i]);
-      emit_inlined_param_target(c, m, m->pnames[i], rn, b); }
+      pc = emit_inlined_param_target(c, m, m->pnames[i], rn, b); }
     emit_zsuper_param(c, s, m, &z, i, saved_nren, g_nren, b);
-    buf_puts(b, ";\n");
+    buf_puts(b, pc ? ");\n" : ";\n");
   }
   if (is_forwarding) zsuper_end(&z);
   inl_dflt_leave(sv_dflt);
