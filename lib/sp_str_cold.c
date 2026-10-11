@@ -172,14 +172,19 @@ static size_t sp_uc_fold_into(uint32_t cp,char*o){
 }
 static char*sp_str_fold_buf(const char*s,size_t*out){
   size_t l=sp_str_byte_len(s);char*r=(char*)malloc(l*3+1);if(!r){perror("malloc");exit(1);}size_t oi=0;
-  for(size_t i=0;i<l;){uint32_t cp;int n=sp_utf8_decode(s+i,&cp);i+=(size_t)n;oi+=sp_uc_fold_into(cp,r+oi);}
+  for(size_t i=0;i<l;){uint32_t cp;int n=sp_utf8_decode(s+i,&cp);i+=(size_t)n;
+    /* a byte that starts no valid UTF-8 character (a BINARY Symbol's
+       name, "\xC3".b.to_sym) is no character to fold: kept as it is */
+    if(n==1&&cp>=0x80){r[oi++]=(char)cp;continue;}
+    oi+=sp_uc_fold_into(cp,r+oi);}
   *out=oi;return r;
 }
 sp_bool sp_str_casecmp_p(const char*a,const char*b){if(!a)sp_nil_recv("casecmp?");if(!b)return FALSE;
   size_t la=sp_str_byte_len(a),lb=sp_str_byte_len(b);int ascii=1;
   for(size_t i=0;i<la&&ascii;i++)if((unsigned char)a[i]>=0x80)ascii=0;
   for(size_t i=0;i<lb&&ascii;i++)if((unsigned char)b[i]>=0x80)ascii=0;
-  if(ascii)return sp_str_casecmp(a,b)==0;
+  /* a BINARY String folds A-Z only: its high bytes are no characters */
+  if(ascii||sp_str_is_binary(a)||sp_str_is_binary(b))return sp_str_casecmp(a,b)==0;
   size_t fa,fb;char*x=sp_str_fold_buf(a,&fa);char*y=sp_str_fold_buf(b,&fb);
   sp_bool eq=fa==fb&&memcmp(x,y,fa)==0;free(x);free(y);return eq;
 }
