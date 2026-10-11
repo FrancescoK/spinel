@@ -106,6 +106,9 @@ int method_call_param_shift(Compiler *c, int mn, int mi);
 
 extern int g_inc_did_clone;
 extern int *g_ie_node_class;
+/* The local whose write's value infer_write_types is typing, or NULL: a read
+   of it there is the write reading itself (`t = t.alias(n)`). analyze.c */
+extern LocalVar *g_infer_self_write;
 
 typedef struct { const char **v; int n, cap; } ANameSet;
 #define QC_MAXDEPTH 8

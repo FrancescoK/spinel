@@ -36,6 +36,7 @@ int g_final_bind_pass = 0;
    slot whose evidence really never arrives still takes the pessimistic type. */
 int g_infer_optimistic = 0;
 int g_infer_write_round = 0;
+LocalVar *g_infer_self_write = NULL;
 int g_fixpoint_rounds = 0;
 static int g_fixpoint_capped = 0;   /* the round cap stopped the fixpoint short of settling */
 

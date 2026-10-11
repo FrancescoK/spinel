@@ -9165,10 +9165,15 @@ TyKind infer_uncached(Compiler *c, int id) {
          behaviour let the other arm's concrete type stand, and that is a
          direction this must not move in: two optcarrot float locals went from
          sp_float to sp_RbVal on it. UNKNOWN is what those sites answered
-         before, so declining leaves them exactly as they were. */
+         before, so declining leaves them exactly as they were.
+         A read in the value of a write to its own local (`t = t.alias(n)`)
+         carries a poly too: the local is poly because of what that write
+         answered over the concrete carry, and declining it dropped the
+         write, narrowed the local, carried the concrete type again and
+         widened it again, every other round to the cap. */
       if (lt == TY_UNKNOWN && g_infer_write_round && !lv->is_param &&
           !lv->is_block_param && (TyKind)lv->gc_root != TY_UNKNOWN &&
-          (TyKind)lv->gc_root != TY_POLY)
+          ((TyKind)lv->gc_root != TY_POLY || lv == g_infer_self_write))
         return (TyKind)lv->gc_root;
       return lt;
     }
