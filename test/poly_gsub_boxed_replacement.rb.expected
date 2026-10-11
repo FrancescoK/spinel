@@ -1,0 +1,8 @@
+"a\n\nb"
+:" "
+Comment
+"a-b-"
+"a-bx"
+"a+b+"
+"a+bx"
+"no implicit conversion of Integer into String"
