@@ -21174,6 +21174,56 @@ static int strbuf_flow_begin(Compiler *c, StrbufFlowMemo *fm, int v, int depth) 
   return el < 0 || strbuf_flow_body(c, fm, SFC_TAIL, nt_ref(nt, el, "statements"), NK_NONE, depth);
 }
 
+/* --share-strings: is v a call on a boxed receiver, of a name no builtin
+   answers, whose dispatch has a method arm for each class the receiver can
+   hold, each answering a String that is either a handle it publishes
+   (Scope.ret_handle) or a new String (ret_fresh), and one of them
+   publishing?
+   Boxed, the dispatch boxes each arm's own answer (emit_poly_user_box): the
+   published handle, or a new handle around a fresh String, which reads no
+   earlier publication. */
+int strbuf_poly_user_boxes(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  v = unwrap_parens(c, v);
+  if (!repr_share_rule(c) || v < 0 || nt_kind(nt, v) != NK_CallNode || nt_ref(nt, v, "block") >= 0) return 0;
+  int recv = nt_ref(nt, v, "receiver");
+  const char *nm = nt_str(nt, v, "name");
+  if (recv < 0 || repr_of(c, recv).kind != RK_BOXED || !nm || builtin_object_method_known(nm) || builtin_instance_name_known(nm) ||
+      ty_poly_face_owners(nm, call_plain_argc(c, v), 0, 1, 1)) return 0;
+  /* the dispatch's own arms (an alias's target among them), one for each
+     class the receiver can hold: a class with none answers through
+     method_missing or raises */
+  const PolyPlan *p = cplan_poly_arms(c, v);
+  int nk = 0;
+  const int *ks = poly_recv_classes(c, v, &nk);
+  if (p->n <= 0 || !ks || nk <= 0) return 0;
+  int pub = 0;
+  for (int i = 0; i < p->n; i++) {
+    /* (an arm of a class the receiver never holds is never taken) */
+    int held = 0;
+    for (int j = 0; j < nk && !held; j++) held = p->arm[i].key == ks[j];
+    if (!held) continue;
+    const Scope *m = p->arm[i].mi >= 0 ? &c->scopes[p->arm[i].mi] : NULL;
+    if (p->arm[i].kind != PA_USER || !m || m->ret != TY_STRING || (!m->ret_handle && !m->ret_fresh)) return 0;
+    pub |= m->ret_handle;
+  }
+  /* (with no arm publishing, the call's String is a new one, which the
+     dispatch's plain value boxes alike) */
+  if (!pub) return 0;
+  /* (a class with no arm and no method_missing raises NoMethodError, which
+     answers no String: a local the walk follows into a later Array of other
+     classes) */
+  for (int j = 0; j < nk; j++) {
+    int hit = 0;
+    for (int i = 0; i < p->n && !hit; i++) hit = p->arm[i].key == ks[j];
+    if (!hit && (ks[j] < 0 || ks[j] >= c->nclasses || name_is_plain_setter(nm) ||
+                 comp_method_in_chain(c, ks[j], "method_missing", NULL) >= 0 ||
+                 comp_resolve_member(c, ks[j], nm, 0, NULL, NULL) != SP_MEMBER_NONE))
+      return 0;
+  }
+  return 1;
+}
+
 /* A route emit_strbuf_route hands the handle on through (strbuf_route_*),
    whose own tail carries it in turn: 1, else 0. */
 static int strbuf_flow_route(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, int depth) {
@@ -21435,6 +21485,10 @@ static int strbuf_flow_value(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, in
   /* a String bang on a boxed receiver, boxed as that receiver's own box
      (emit_boxed_bang_self) */
   if (ctx == SFC_ELEM && face_str_bang_call(c, v)) return 1;
+  /* a boxed receiver's call of methods that each answer a String, the
+     handle they publish or a new one: boxed, each arm boxes its own
+     (strbuf_poly_user_boxes) */
+  if (ctx == SFC_ELEM && strbuf_poly_user_boxes(c, v)) return 1;
   if (strbuf_flow_route(c, fm, ctx, v, depth)) return 1;
   /* a yield spliced with each literal block its method is given answers
      the block's value read as the handle (strbuf_route_yield) */

@@ -2221,6 +2221,21 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
     if (g_repr_check) repr_channel_boxed(c, node, frame);
     return;
   }
+  /* --share-strings: a boxed receiver's call whose every target answers a
+     String, a handle it publishes or a new one (strbuf_poly_user_boxes):
+     the dispatch read as a box, each arm boxing its own answer
+     (emit_poly_user_box), also where the call carries a handle demand (an
+     `equal?` operand): with the demand the dispatch typed its temp a handle,
+     which the box took bare */
+  if (strbuf_poly_user_boxes(c, node)) {
+    int sv = view_push(c, unwrap_parens(c, node), TY_POLY);
+    int sd = view_push_repr(c, unwrap_parens(c, node), VR_HANDLE_DEMAND, 0);
+    emit_expr(c, node, b);
+    view_pop(c, sd);
+    view_pop(c, sv);
+    if (g_repr_check) repr_channel_boxed(c, node, frame);
+    return;
+  }
   int lift = repr_share_rule(c) && node >= 0 && c->poly_strbuf_lift[node] && comp_ntype(c, node) == TY_STRING;
   /* a route that hands on a handle (`q ||= s.then { |v| v }`,
      emit_strbuf_route): that handle's box, not a new handle around a copy */

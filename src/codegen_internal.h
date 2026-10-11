@@ -1866,6 +1866,7 @@ void emit_dispatch(Compiler *c, int cid, const char *name, const char *selfptr, 
 int emit_reader_override_dispatch(Compiler *c, int id, int cid, const char *name, const char *selfptr, const char *reader, TyKind reader_ty, Buf *b);
 int reader_override_arms(Compiler *c, int id, int cid, const char *name, TyKind reader_ty);
 int reader_override_handle_arms(Compiler *c, int id, int cid, const char *name, int boxed);
+int strbuf_poly_user_boxes(Compiler *c, int v);
 int exc_message_boxed_call(Compiler *c, int v);
 void emit_exc_text_handle(Compiler *c, int v, const char *e, Buf *b);
 int emit_reader_override_handle(Compiler *c, int id, int cid, const char *name, const char *selfptr,
