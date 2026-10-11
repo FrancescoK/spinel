@@ -2915,6 +2915,24 @@ static int self_call_answers_nil(Compiler *c, int v) {
    as an sp_String *: the receiver's handle where the call answered it, NULL
    for nil. A reader call is read once, ahead of the bang, which takes that
    handle (ran_first_bind). 0 with nothing emitted for any other node. */
+/* Does a block on the call `v` or on its receiver route assign the local the
+   route starts from (`f.tap { f = +"z" }`)? The block runs in the
+   statement's prelude, ahead of the read the slot forms take, so the slot
+   then names another String than the one the route answers. */
+static int route_block_rebinds_base(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  int base = unwrap_parens(c, nt_ref(nt, v, "receiver"));
+  while (base >= 0 && nt_kind(nt, base) == NK_CallNode) base = unwrap_parens(c, nt_ref(nt, base, "receiver"));
+  if (base < 0 || nt_kind(nt, base) != NK_LocalVariableReadNode) return 0;
+  const char *nm = nt_str(nt, base, "name");
+  if (!nm) return 0;
+  for (int n = v; n >= 0 && nt_kind(nt, n) == NK_CallNode; n = unwrap_parens(c, nt_ref(nt, n, "receiver"))) {
+    int blk = nt_ref(nt, n, "block");
+    if (blk >= 0 && subtree_writes_local(c, blk, nm)) return 1;
+  }
+  return 0;
+}
+
 static int emit_bang_self_handle_1(Compiler *c, int v, Buf *b) {
   if (!repr_share_rule(c) || !strbuf_bang_self_local(c, v)) return 0;
   int r = nt_ref(c->nt, v, "receiver");
@@ -2922,6 +2940,9 @@ static int emit_bang_self_handle_1(Compiler *c, int v, Buf *b) {
   if (call_is_safe_nav(c->nt, v) && strbuf_assign_leaf(c, r)) return 0;
   char sref[1024];
   int slot = strbuf_slot_ref(c, r, sref, sizeof sref);
+  /* the slot forms read the slot after the route's block ran: declined when
+     that block rebinds it, and the value form takes the route's own answer */
+  if (slot && route_block_rebinds_base(c, v)) return 0;
   /* freeze answers its receiver, nil for nil: the handle is frozen and
      answered, with no read of its bytes to test (a consumer that wants them
      reads them once) */
