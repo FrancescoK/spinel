@@ -1,62 +1,58 @@
-# A `.new` dispatched over several classes (a Class value, or a poly one)
-# fills an omitted default at the call site. A default reading an earlier
-# parameter emitted the constructor's own parameter there, which the caller
-# does not declare: the C build failed with `lv_tune` undeclared.
+class Inline
+  def self.new(rdoc, reference = rdoc)
+    if self === rdoc and reference.equal? rdoc
+      rdoc
+    else
+      super
+    end
+  end
 
-class Tune
-  attr_reader :model
+  attr_reader :rdoc, :reference
 
-  def initialize(model)
-    @model = model
+  def initialize(rdoc, reference)
+    @rdoc = rdoc
+    @reference = reference
   end
 end
 
-class Player
-  def initialize(tune, song: nil, model: tune.model)
-    @song = song
-    @model = model
-  end
+class Other
+  attr_reader :x
 
-  def show = puts("Player #{@song.inspect} #{@model}")
+  def initialize(x) = @x = x
 end
 
-class Doubler
-  def initialize(tune, a = tune.model * 2, b = a + 1)
-    @a = a
-    @b = b
-  end
-
-  def show = puts("Doubler #{@a} #{@b}")
+[Inline, Other].each do |k|
+  o = k.new("a")
+  p o.class
 end
 
-class Plain
-  def initialize(tune)
-    @model = tune.model
+kinds = [Inline, Other]
+p kinds.map { |k| k.new("b").class }
+i = Inline.new("c")
+p i.reference
+p Inline.new(i).equal?(i)
+
+class Tag
+  def self.new(name, label = name.upcase, size: label.size)
+    super(name, label, size)
   end
 
-  def show = puts("Plain #{@model}")
-end
+  attr_reader :name, :label, :size
 
-class Counter
-  def initialize(n = 3, twice = n * 2)
-    @n = n
-    @twice = twice
+  def initialize(name, label, size)
+    @name = name
+    @label = label
+    @size = size
   end
-
-  def show = puts("Counter #{@n} #{@twice}")
 end
 
-Player.new(Tune.new(6581)).show
-Doubler.new(Tune.new(10), 5).show
-
-def build(klass, tune) = klass.new(tune)
-build(Player, Tune.new(8580)).show
-build(Doubler, Tune.new(10)).show
-build(Plain, Tune.new(1)).show
-
-[Player, Doubler, Plain].each { |k| k.new(Tune.new(7)).show }
-[Player, Doubler, Plain][ARGV.size].new(Tune.new(9)).show
-
-def count(klass) = klass.new(4)
-count(Counter).show
-[Counter, Plain].first.new(5).show
+[Tag, Other].each do |k|
+  t = k.new("ok")
+  p t.class
+  p [t.name, t.label, t.size] if t.is_a?(Tag)
+end
+[Tag, Other].each do |k|
+  next unless k == Tag
+  t = k.new("hey", size: 9)
+  p [t.name, t.label, t.size]
+end

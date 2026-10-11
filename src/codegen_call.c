@@ -10550,6 +10550,13 @@ int emit_user_new_arm(Compiler *c, int id, int ci, int argc, const int *atmp,
   /* the receiving class is the one this arm's case selected (#4217) */
   const char *lead = emit_cmethod_self_cls_arg(c, kmi, ci, &cb);
   if (hoisted) {
+    /* a default reading an earlier parameter (`def self.new(a, b = a)`)
+       reads it bound to a local of the arm, as an initialize arm's does
+       (ctor_arm_arg): spelled inline, it read the method's own `lv_a` at the
+       call site, where nothing declares it */
+    int pd_uid = default_refs_earlier_param(c, ks) ? ++g_tmp : 0, pd_base = g_nren;
+    Buf *sv_pre = g_pre;
+    if (pd_uid) g_pre = &apre;
     ArgLayout L;
     arg_layout(c, ks, NULL, pos_argc, -1, 0, &L);
     for (int a = 0; a < ks->nparams; a++) {
@@ -10558,31 +10565,36 @@ int emit_user_new_arm(Compiler *c, int id, int ci, int argc, const int *atmp,
       TyKind pt = pp ? pp->type : TY_POLY;
       if (pt == TY_UNKNOWN) pt = TY_POLY;
       const char *pn = ks->pnames ? ks->pnames[a] : NULL;
+      Buf ub; memset(&ub, 0, sizeof ub);
       if (pn && callee_param_is_declared_kwarg(c, ks, pn)) {
         int dflt = ks->pdefault && ks->pdefault[a] >= 0;
         if (kw_temp < 0) {
-          if (dflt) emit_arg_or_default(c, ks, a, -1, &cb);
-          else buf_printf(&cb, "(sp_raise_cls(\"ArgumentError\", \"missing keyword: :%s\"), %s)",
+          if (dflt) emit_arg_or_default(c, ks, a, -1, &ub);
+          else buf_printf(&ub, "(sp_raise_cls(\"ArgumentError\", \"missing keyword: :%s\"), %s)",
                           pn, default_value_from_compiler(c, pt));
-          continue;
         }
-        buf_printf(&cb, "({ sp_bool _kwf; sp_RbVal _kwv = sp_poly_hash_probe(_t%d,"
-                        " sp_box_sym(sp_sym_intern(\"%s\")), &_kwf); _kwf ? ", kw_temp, pn);
-        if (pt == TY_POLY) buf_puts(&cb, "_kwv");
-        else emit_unbox_text(c, pt, "_kwv", &cb);
-        buf_puts(&cb, " : ");
-        if (dflt) emit_arg_or_default(c, ks, a, -1, &cb);
-        else buf_printf(&cb, "(sp_raise_cls(\"ArgumentError\", \"missing keyword: :%s\"), %s)",
-                        pn, default_value_from_compiler(c, pt));
-        buf_puts(&cb, "; })");
-        continue;
+        else {
+          buf_printf(&ub, "({ sp_bool _kwf; sp_RbVal _kwv = sp_poly_hash_probe(_t%d,"
+                          " sp_box_sym(sp_sym_intern(\"%s\")), &_kwf); _kwf ? ", kw_temp, pn);
+          if (pt == TY_POLY) buf_puts(&ub, "_kwv");
+          else emit_unbox_text(c, pt, "_kwv", &ub);
+          buf_puts(&ub, " : ");
+          if (dflt) emit_arg_or_default(c, ks, a, -1, &ub);
+          else buf_printf(&ub, "(sp_raise_cls(\"ArgumentError\", \"missing keyword: :%s\"), %s)",
+                          pn, default_value_from_compiler(c, pt));
+          buf_puts(&ub, "; })");
+        }
       }
       /* the positionals by the call's layout: a *rest takes what the
          parameters around it leave, those ahead of it first, the posts from
          the tail */
-      emit_ctor_arm_param(c, ks, a, &L, atmp, &apre, &cb);
+      else emit_ctor_arm_param(c, ks, a, &L, atmp, &apre, &ub);
+      ctor_arm_arg(c, ks, a, ub.p ? ub.p : "", pd_uid, &apre, &cb);
+      free(ub.p);
     }
     arg_layout_free(&L);
+    g_nren = pd_base;
+    g_pre = sv_pre;
   }
   else {
     /* the layout's own statements belong to this arm, as in the
