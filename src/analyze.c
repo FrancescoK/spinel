@@ -35287,6 +35287,9 @@ static int splat_builtin_range(const char *name, int *lo, int *hi, int *variadic
     { "pop", 0, 1, 0 }, { "shift", 0, 1, 0 }, { "round", 0, 1, 0 },
     { "floor", 0, 1, 0 }, { "ceil", 0, 1, 0 }, { "truncate", 0, 1, 0 },
     { "max", 0, 1, 0 }, { "min", 0, 1, 0 },
+    /* none is the no-pattern form, one the pattern: the Array whole was
+       taken as the pattern (`any?(*[])` asked `[] === e`) */
+    { "all?", 0, 1, 0 }, { "any?", 0, 1, 0 }, { "none?", 0, 1, 0 }, { "one?", 0, 1, 0 },
     { NULL, 0, 0, 0 }
   };
   for (int i = 0; tab[i].name; i++)
