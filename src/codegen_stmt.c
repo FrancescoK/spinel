@@ -1905,6 +1905,24 @@ static int exc_text_call(Compiler *c, int v) { return exc_text_call_on(c, v, 0);
 int strbuf_route_exc_message(Compiler *c, int v) {
   return exc_text_call(c, v) && !exc_text_override_calls_super(c) && share_node_shares(c, unwrap_parens(c, v));
 }
+/* --share-strings: `x.message` on a box, with no `message` of the program's
+   own and no override of an exception's text: an exception in the box
+   answers the message it keeps as its handle, as a typed receiver's does
+   (strbuf_route_exc_message), and any other value raises NoMethodError
+   (sp_poly_exc_acc). Taken only where the share facts say the message is
+   shared or changed in place, as the typed receiver's route is. */
+int strbuf_route_boxed_exc_message(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  v = unwrap_parens(c, v);
+  if (!repr_share_rule(c) || v < 0 || nt_kind(nt, v) != NK_CallNode) return 0;
+  const char *nm = nt_str(nt, v, "name");
+  int recv = nt_ref(nt, v, "receiver"), tg[CPT_MAX];
+  TyKind vt = comp_ntype(c, v);
+  return nm && is_exception_message(nm) && !is_to_s_name(nm) && recv >= 0 && nt_ref(nt, v, "arguments") < 0 &&
+         nt_ref(nt, v, "block") < 0 && (vt == TY_STRING || vt == TY_STRBUF) && repr_of(c, recv).kind == RK_BOXED &&
+         comp_method_index(c, nm) < 0 && cplan_targets(c, v, tg, CPT_MAX) == 0 && !exc_has_user_msg_override(c) &&
+         share_node_shares(c, v);
+}
 /* --share-strings: `e.message` / `e.to_s` as an operand compared by identity
    (equal?, object_id). Its identity is the box sp_poly_equal and
    sp_poly_identity_ptr read: asked of the dispatcher's _id form when the
@@ -2041,7 +2059,8 @@ static int strbuf_route_carries(Compiler *c, int v, int depth) {
   if (strbuf_hash_default_arg(c, v) >= 0) return 1;
   if (strbuf_route_proc_call(c, v) || strbuf_route_ivar_get(c, v) || strbuf_route_begin(c, v) || strbuf_route_yield(c, v) ||
       strbuf_route_inline_call(c, v) || strbuf_route_reopen_pf(c, v) || strbuf_route_loop(c, v) || repr_call_returns_handle(c, v) ||
-      strbuf_route_exc_message(c, v) || strbuf_route_reader(c, v) || strbuf_route_srange_end(c, v)) return 1;
+      strbuf_route_exc_message(c, v) || strbuf_route_boxed_exc_message(c, v) || strbuf_route_reader(c, v) ||
+      strbuf_route_srange_end(c, v)) return 1;
   if (strbuf_assign_leaf(c, v) || strbuf_bang_leaf(c, v)) return 1;
   /* a receiver-answering method on a value route over a handle (`(+s).insert(0, "<")`):
      the route's handle (emit_bang_self_handle) */
@@ -2160,6 +2179,25 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
     buf_puts(b, "sp_exc_kept_message_handle((sp_Exception *)(");
     emit_expr(c, nt_ref(nt, v, "receiver"), b);
     buf_puts(b, "))");
+    return 1;
+  }
+  if (strbuf_route_boxed_exc_message(c, v)) {
+    /* an exception in the box: the message it keeps as its handle; any
+       other value: the read the call makes, which raises */
+    v = unwrap_parens(c, v);
+    int t = ++g_tmp, recv = nt_ref(nt, v, "receiver");
+    buf_printf(b, "({ sp_RbVal _b%d = ", t);
+    emit_expr(c, recv, b);
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_b%d); (_b%d.tag == SP_TAG_OBJ && _b%d.v.p && (_b%d.cls_id == SP_BUILTIN_EXCEPTION || "
+                  "sp_is_exc_subclass_cls(_b%d.cls_id))) ? sp_exc_kept_message_handle((sp_Exception *)_b%d.v.p) : "
+                  "sp_String_new_shared(", t, t, t, t, t, t);
+    int mark = view_bind(recv, "_b%d", t);
+    int sv = view_push_repr(c, v, VR_STRBUF_BOX, 0), sd = view_push_repr(c, v, VR_HANDLE_DEMAND, 0);
+    int st = view_push(c, v, TY_STRING);
+    emit_expr(c, v, b);
+    view_pop(c, st); view_pop(c, sd); view_pop(c, sv);
+    view_unbind(mark);
+    buf_puts(b, "); })");
     return 1;
   }
   int se = strbuf_route_srange_end(c, v);
@@ -20862,7 +20900,8 @@ static int strbuf_flow_route(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, in
     return 1;
   }
   if (strbuf_route_proc_call(c, v) || strbuf_route_ivar_get(c, v) || repr_call_returns_handle(c, v) ||
-      strbuf_route_exc_message(c, v) || strbuf_route_reader(c, v) || strbuf_route_srange_end(c, v))
+      strbuf_route_exc_message(c, v) || strbuf_route_boxed_exc_message(c, v) || strbuf_route_reader(c, v) ||
+      strbuf_route_srange_end(c, v))
     return 1;
   if (nt_kind(nt, v) == NK_BeginNode) return strbuf_flow_begin(c, fm, v, depth);
   if (strbuf_route_inline_call(c, v)) {
@@ -21088,7 +21127,7 @@ static int strbuf_flow_value(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, in
   if (ctx == SFC_TAIL && strbuf_tail_self_mutator(c, v)) return 1;
   if (ctx == SFC_TAIL)
     return (k == NK_BeginNode && strbuf_flow_begin(c, fm, v, depth)) || repr_call_returns_handle(c, v) ||
-           strbuf_route_exc_message(c, v) || strbuf_route_srange_end(c, v) ||
+           strbuf_route_exc_message(c, v) || strbuf_route_boxed_exc_message(c, v) || strbuf_route_srange_end(c, v) ||
            (is_unary_plus(nt_str(nt, v, "name")) && strbuf_flow_route(c, fm, ctx, v, depth));
   /* an append chain over a variable's handle, boxed as that handle; a
      mutator on a narrowed box, which answers the box */

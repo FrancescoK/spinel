@@ -2232,7 +2232,7 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
     if (g_repr_check) repr_channel_boxed(c, node, frame);
     return;
   }
-  if (lift || (!arg_ran_first(node, 0) && strbuf_route_reader(c, node))) {
+  if (lift || (!arg_ran_first(node, 0) && (strbuf_route_reader(c, node) || strbuf_route_boxed_exc_message(c, node)))) {
     Buf hb; memset(&hb, 0, sizeof hb);
     if (emit_strbuf_route(c, node, &hb)) {
       buf_printf(b, "sp_box_nullable_obj(%s, SP_BUILTIN_STRBUF)", hb.p);
