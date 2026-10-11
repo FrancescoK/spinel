@@ -39629,15 +39629,36 @@ static int rd_read_dropped_for_copy(Compiler *c, int w, const char *wn) {
    reaches the subject cannot be proved from the block (an alias, a helper, a
    constant, an implicit call, a buffer a builtin writes), so the refusal is
    lifted only for a subject nothing can name: a fresh literal (a string
-   literal, an interpolation, `+"lit"`), or a plain local that the block does
-   not mention and whose String has no other name (the route's `sole`, asked of
-   the final facts). Every other subject keeps the refusal. */
+   literal, an interpolation, `+"lit"`, an element read off an Array literal of
+   them), or a plain local that the block does not mention and whose String has
+   no other name the block can reach it by (the route's `sole`, asked of the
+   final facts: sh_sole_unreached). Every other subject keeps the refusal. */
 static int scan_fresh_string(const NodeTable *nt, int r) {
   r = an_unparen(nt, r);
   if (r < 0) return 0;
   if (nt_kind(nt, r) == NK_StringNode || nt_kind(nt, r) == NK_InterpolatedStringNode) return 1;
-  return nt_kind(nt, r) == NK_CallNode && nt_str(nt, r, "name") && sp_streq(nt_str(nt, r, "name"), "+@") &&
-         nt_ref(nt, r, "receiver") >= 0 && nt_kind(nt, nt_ref(nt, r, "receiver")) == NK_StringNode;
+  if (nt_kind(nt, r) != NK_CallNode || !nt_str(nt, r, "name")) return 0;
+  const char *nm = nt_str(nt, r, "name");
+  int rv = an_unparen(nt, nt_ref(nt, r, "receiver"));
+  if (is_unary_plus(nm)) return rv >= 0 && nt_kind(nt, rv) == NK_StringNode;
+  /* an element of an Array literal of such literals and values that are
+     no String, read off it (`[+"abc", 1].first`, which the desugaring makes
+     `[](0)`): one of its own */
+  int args = nt_ref(nt, r, "arguments"), argc = 0;
+  const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+  if (rv < 0 || nt_kind(nt, rv) != NK_ArrayNode || nt_ref(nt, r, "block") >= 0 ||
+      !((is_endpoint_query(nm) && argc == 0) ||
+        (is_aref_name(nm) && argc == 1 && nt_kind(nt, argv[0]) == NK_IntegerNode)))
+    return 0;
+  int n = 0;
+  const int *el = nt_arr(nt, rv, "elements", &n);
+  for (int i = 0; i < n; i++) {
+    NodeKind ek = nt_kind(nt, el[i]);
+    if (!scan_fresh_string(nt, el[i]) && ek != NK_IntegerNode && ek != NK_FloatNode && ek != NK_SymbolNode &&
+        ek != NK_NilNode && ek != NK_TrueNode && ek != NK_FalseNode)
+      return 0;
+  }
+  return n > 0;
 }
 /* Is every write of local `name` under `node` a fresh literal form? A call's
    answer can be a String another name holds in CRuby (an exception's `to_s`

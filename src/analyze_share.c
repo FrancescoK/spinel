@@ -4973,6 +4973,64 @@ int share_assign_unjoined(const Compiler *c, int n) {
   return sh_find((ShareFacts *)F, F->nval[n]) != sh_find((ShareFacts *)F, F->nval[argv[0]]);
 }
 
+/* Does no holder name class r, and no fact mark it? */
+static int sh_class_unnamed(const ShareFacts *F, int r) {
+  if (F->flags[r]) return 0;
+  for (int h = 0; h < F->nh; h++)
+    if (sh_root(F, F->helem[h]) == r) return 0;
+  return 1;
+}
+/* Does subtree n mention local `name` (read or written, in a nested block
+   too; a def's locals are its own)? */
+static int sh_mentions_local(const NodeTable *nt, int n, const char *name) {
+  if (n < 0) return 0;
+  NodeKind k = nt_kind(nt, n);
+  if (k == NK_DefNode) return 0;
+  if ((k == NK_LocalVariableReadNode || k == NK_LocalVariableWriteNode || k == NK_LocalVariableTargetNode ||
+       k == NK_LocalVariableOperatorWriteNode || k == NK_LocalVariableOrWriteNode ||
+       k == NK_LocalVariableAndWriteNode) && sp_streq(nt_str(nt, n, "name"), name))
+    return 1;
+  for (int i = 0; i < nt_num_refs(nt, n); i++)
+    if (sh_mentions_local(nt, nt_ref_at(nt, n, i), name)) return 1;
+  for (int i = 0; i < nt_num_arrs(nt, n); i++) {
+    int m = 0; const int *ids = nt_arr_at(nt, n, i, &m);
+    for (int j = 0; j < m; j++) if (sh_mentions_local(nt, ids[j], name)) return 1;
+  }
+  return 0;
+}
+/* A scan route's subject (sole) whose class has more names than it: are
+   they all names the block cannot reach the subject through while the scan
+   runs? The block's own parameter (each match, a new String, which `break
+   m` joins to where the scan's value goes), and plain locals the block does
+   not mention (`x = s.scan(/./) { |m| break m }`: x is s once the scan
+   answers its receiver, never while it runs). A local of no other kind, an
+   element of a container a name keeps (`box = [s]`), or any other holder,
+   keeps the refusal. */
+static int sh_sole_unreached(const Compiler *c, const ShareRoute *q) {
+  const ShareFacts *F = c->share;
+  const NodeTable *nt = c->nt;
+  int r = sh_node_root(F, q->sole, 0);
+  if (r < 0 || (F->flags[r] & (SHF_UNKNOWN | SHF_MULTI)) || !q->to_name || q->to < 0) return 0;
+  int body = nt_ref(nt, q->to, "body");
+  Scope *bs = comp_scope_of((Compiler *)c, q->to);
+  int seen = 0;
+  for (int h = 0; h < F->nh; h++) {
+    if (sh_root(F, F->helem[h]) != r) continue;
+    seen++;
+    const ShareHolder *sh = &F->h[h];
+    if (sh->kind != SHK_LOCAL) return 0;
+    Scope *hs = &c->scopes[sh->scope];
+    LocalVar *lv = &hs->locals[sh->local];
+    if (hs == bs && lv->name && sp_streq(lv->name, q->to_name)) continue;
+    if (!lv->name || lv->is_param || lv->is_block_param || lv->is_cell || lv->cell_outlives ||
+        sh_mentions_local(nt, body, lv->name))
+      return 0;
+  }
+  /* (an element slot of a container a name keeps is a name too, and no
+     holder of its own: sh_finalize counts it) */
+  return sh_class_holders(F, r) <= seen;
+}
+
 static int sh_route_why(const Compiler *c, const ShareRoute *q) {
   const ShareFacts *F = c->share;
   if (F && q->value >= 0 && !q->elems && share_assign_unjoined(c, q->value)) return SH_ROUTE_OK;
@@ -4983,7 +5041,7 @@ static int sh_route_why(const Compiler *c, const ShareRoute *q) {
     Scope *ss = comp_scope_of((Compiler *)c, q->sole);
     LocalVar *sl = ss ? scope_local(ss, nt_str(c->nt, q->sole, "name")) : NULL;
     if (!sl || sl->is_param || sl->is_block_param || sl->is_cell || sl->cell_outlives ||
-        !share_node_one_name(c, q->sole)) return SH_ROUTE_UNSEEN;
+        (!share_node_one_name(c, q->sole) && !sh_sole_unreached(c, q))) return SH_ROUTE_UNSEEN;
   }
   int v = sh_node_root(F, q->value, q->elems);
   /* a value the walk reached and found no String identity in (`"a#{i}"`,
@@ -5000,6 +5058,10 @@ static int sh_route_why(const Compiler *c, const ShareRoute *q) {
   if (v < 0 && F && q->elems && q->fresh_elems && q->to >= 0 && q->value >= 0 && q->value < F->nnodes &&
       (F->nval[q->value] == -1 || (F->nval[q->value] >= 0 && F->elem[sh_root(F, F->nval[q->value])] < 0)))
     v = sh_route_to_root(c, q);
+  /* ...and elements whose class no name holds and nothing marks: a scan
+     whose block breaks with its match answers that match, so its value's
+     class is the parameter's, whose elements are no String of a name */
+  if (v >= 0 && q->elems && q->fresh_elems && q->sole >= 0 && sh_class_unnamed(F, v)) v = sh_route_to_root(c, q);
   if (v < 0) return SH_ROUTE_UNSEEN;
   if (q->to >= 0 && sh_route_to_root(c, q) != v) return SH_ROUTE_UNSEEN;
   if (!repr_str_class_shares(F->flags[v], sh_class_holders(F, v))) return SH_ROUTE_OK;
