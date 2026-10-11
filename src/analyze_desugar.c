@@ -12881,11 +12881,30 @@ typedef struct {
   InhName *c, *m;
   int ccap, mcap;
   int any_hook, any_mod_hook;
+  unsigned char *in_begin;   /* by node: inside a `BEGIN { }`, or NULL when none */
 } InhIndex;
 
 static void inh_index_free(InhIndex *ix) {
   anh_free(&ix->cls); anh_free(&ix->mod);
-  free(ix->c); free(ix->m);
+  free(ix->c); free(ix->m); free(ix->in_begin);
+}
+
+/* Where node `id` runs in program order: its own number, or before every
+   other node when it is inside a `BEGIN { }`, which runs first. */
+static int inh_pos(const InhIndex *ix, int id) {
+  return ix->in_begin && id >= 0 && ix->in_begin[id] ? -1 : id;
+}
+
+static void inh_mark_tree(const NodeTable *nt, int node, unsigned char *mark, int n0) {
+  if (node < 0 || node >= n0 || mark[node]) return;
+  mark[node] = 1;
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++) inh_mark_tree(nt, nt_ref_at(nt, node, i), mark, n0);
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) {
+    int cnt = 0; const int *ids = nt_arr_at(nt, node, i, &cnt);
+    for (int j = 0; j < cnt; j++) inh_mark_tree(nt, ids[j], mark, n0);
+  }
 }
 
 /* The entry of `nm` in `h`, added when it is new. */
@@ -12921,7 +12940,10 @@ static int inh_extended_entry_at(const InhIndex *ix, const NodeTable *nt, int bo
       const char *mn = nt_str(nt, av[j], "name");
       int e = mn ? anh_find(&ix->mod, mn) : -1;
       if (e >= 0 && ix->m[e].hook_def >= 0) {
-        if (at) *at = bv[k] > ix->m[e].hook_def ? bv[k] : ix->m[e].hook_def;
+        if (at) {
+          int xp = inh_pos(ix, bv[k]), dp = inh_pos(ix, ix->m[e].hook_def);
+          *at = xp > dp ? xp : dp;
+        }
         return e;
       }
     }
@@ -12935,9 +12957,8 @@ static int inh_extended_entry(const InhIndex *ix, const NodeTable *nt, int body)
 /* Mark the class entry `e` as having a hook when `body` defines one or
    extends a module that does, keeping the earliest node it has one from. */
 static void inh_note_hook(InhIndex *ix, const NodeTable *nt, int e, int body) {
-  int at = inh_hook_in_body(nt, body), xat = INT_MAX;
-  if (inh_extended_entry_at(ix, nt, body, &xat) < 0) xat = INT_MAX;
-  if (at < 0 || xat < at) at = xat;
+  int d = inh_hook_in_body(nt, body), at = d >= 0 ? inh_pos(ix, d) : INT_MAX, xat = INT_MAX;
+  if (inh_extended_entry_at(ix, nt, body, &xat) >= 0 && xat < at) at = xat;
   if (at == INT_MAX) return;
   ix->c[e].has_hook = ix->any_hook = 1;
   if (at < ix->c[e].hook_at) ix->c[e].hook_at = at;
@@ -12988,6 +13009,10 @@ static int inh_chain_hook_at(const InhIndex *ix, const char *cname) {
 static void inh_index_build(Compiler *c, InhIndex *ix, int n0) {
   const NodeTable *nt = c->nt;
   memset(ix, 0, sizeof *ix);
+  int nb = 0;
+  const int *begins = nt_nodes_of_kind(nt, NK_PreExecutionNode, &nb);
+  if (nb > 0 && (ix->in_begin = calloc((size_t)n0, 1)))
+    for (int i = 0; i < nb; i++) inh_mark_tree(nt, begins[i], ix->in_begin, n0);
   for (int id = 0; id < n0; id++) {
     if (nt_kind(nt, id) != NK_ModuleNode) continue;
     const char *nm = nt_str(nt, nt_ref(nt, id, "constant_path"), "name");

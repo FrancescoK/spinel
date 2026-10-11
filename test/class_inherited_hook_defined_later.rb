@@ -2,7 +2,8 @@
 # as the hook did not exist when the class was created; one defined after
 # fires it, and reopening the early class later fires nothing either. The
 # hook can arrive with its own `def`, or with an `extend` of a module that
-# has one, and the class can sit inside the body that defines the hook.
+# has one, and the class can sit inside the body that defines the hook. A
+# hook in a `BEGIN` block exists before anything else runs.
 
 class Base
   def self.all = (@all ||= [])
@@ -54,3 +55,12 @@ module LateHook
   def inherited(k) = puts("LateHook got #{k}")
 end
 class HostLate < Host; end
+
+# BEGIN runs before the rest of the file, so its hook is there first.
+class Pre; end
+class PreChild < Pre; end
+BEGIN {
+  class Pre
+    def self.inherited(k) = puts("Pre got #{k}")
+  end
+}
