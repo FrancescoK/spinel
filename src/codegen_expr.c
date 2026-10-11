@@ -2208,7 +2208,10 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
          write, `def w(v) = (@body = v.to_s)`, #3993 / #4567). The value of
          the expression is the slot's ordinary read face below. */
       char srefW2[1024];
-      if (strbuf_seq_nil_tail(c, v)) emit_strbuf_ivar_store(c, 0, v, b);
+      /* nil is the slot's nil, as the statement form stores it; converted,
+         it raised TypeError (`def initialize = (@a = nil)`) */
+      if (v >= 0 && nt_kind(nt, v) == NK_NilNode) buf_puts(b, "NULL");
+      else if (strbuf_seq_nil_tail(c, v)) emit_strbuf_ivar_store(c, 0, v, b);
       else if (!strbuf_ivar_store_routes(c, v) && strbuf_slot_ref(c, v, srefW2, sizeof srefW2))
         buf_puts(b, srefW2);
       /* The statement form takes a conditional arm by arm too. */

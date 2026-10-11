@@ -9165,6 +9165,7 @@ static void emit_string_tail_into(Compiler *c, int node, const char *dst, Buf *b
 
 /* Emit `_crN = <branch's last value>` (boxed to the case's result type when
    that is poly), after the branch's leading statements. */
+static int emit_paren_tail_pub(Compiler *c, int v, Buf *b);
 /* the case expression being emitted answers an oint (cond_res_oint) */
 static int g_case_res_oint = 0;
 void emit_case_branch_value(Compiler *c, int stmts, TyKind rt, int cr, Buf *b) {
@@ -9248,6 +9249,11 @@ void emit_case_branch_value(Compiler *c, int stmts, TyKind rt, int cr, Buf *b) {
      temp, which is an integer reinterpreted as a pointer */
   if (n > 0 && rt == TY_BIGINT && comp_ntype(c, bb[n - 1]) != TY_BIGINT)
     emit_bigint_operand_ext(c, bb[n - 1], &val);
+  /* --share-strings: an arm ending in a sequence whose tail carries a
+     handle, in a method that answers one, publishes it (emit_paren_tail_pub),
+     as the method's own tail does */
+  else if (n > 0 && rt == TY_STRING && sc && sc->ret_handle && nt_kind(nt, bb[n - 1]) == NK_ParenthesesNode &&
+           emit_paren_tail_pub(c, bb[n - 1], &val)) { }
   else if (n > 0) { if (rt == TY_POLY) emit_boxed(c, bb[n - 1], &val); else if (res_o) emit_oint_expr(c, bb[n - 1], rt, &val); else emit_expr(c, bb[n - 1], &val); }
   else buf_puts(&val, rt == TY_POLY ? "sp_box_nil()" : res_zero(c, rt, res_o));
   g_pre = sv_pre;
@@ -10829,6 +10835,41 @@ int call_names_only_void_methods(Compiler *c, int node) {
   return any;
 }
 static void emit_tail_value_1(Compiler *c, int node, Buf *b);
+/* --share-strings: parenthesized sequence v of two or more statements whose
+   tail carries a handle (strbuf_builtin_tail), as a method's tail: the
+   leading statements, then that handle published. 0 for any other. */
+static int emit_paren_tail_pub(Compiler *c, int v, Buf *b) {
+  int body = nt_ref(c->nt, v, "body"), n = 0;
+  const int *bd = body >= 0 && nt_kind(c->nt, body) == NK_StatementsNode ? nt_arr(c->nt, body, "body", &n) : NULL;
+  /* (a source paren around the sequence: `f ? ((@a = s) << x) : s`) */
+  while (n == 1 && nt_kind(c->nt, bd[0]) == NK_ParenthesesNode) {
+    body = nt_ref(c->nt, bd[0], "body");
+    bd = body >= 0 && nt_kind(c->nt, body) == NK_StatementsNode ? nt_arr(c->nt, body, "body", &n) : NULL;
+    if (!bd) n = 0;
+  }
+  if (n < 2 || !strbuf_builtin_tail(c, bd[n - 1])) return 0;
+  Buf cap; memset(&cap, 0, sizeof cap);
+  Buf vb; memset(&vb, 0, sizeof vb);
+  Buf *sv_pre = g_pre;
+  g_pre = &cap;
+  buf_puts(&vb, "sp_strbuf_read_pub(");
+  emit_strbuf_handle_of(c, bd[n - 1], &vb);
+  buf_puts(&vb, ")");
+  g_pre = sv_pre;
+  if (cap.p && cap.p[0]) {
+    for (int j = 0; j < n - 1; j++) emit_stmt(c, bd[j], g_pre, g_indent);
+    buf_puts(g_pre, cap.p);
+    buf_puts(b, vb.p);
+  }
+  else {
+    buf_puts(b, "({ ");
+    for (int j = 0; j < n - 1; j++) emit_stmt(c, bd[j], b, 0);
+    buf_printf(b, "%s; })", vb.p);
+  }
+  free(cap.p);
+  free(vb.p);
+  return 1;
+}
 static void emit_fresh_tail_value(Compiler *c, int node, Buf *b) {
   int t = ++g_tmp;
   buf_printf(b, "({ const char *_t%d = ", t);
@@ -10861,6 +10902,13 @@ void emit_tail_value(Compiler *c, int node, Buf *b) {
     buf_puts(b, "sp_strbuf_read_pub(");
     emit_strbuf_write_handle(c, node, b);
     buf_puts(b, ")");
+    if (g_repr_check) repr_channel_end(c, frame);
+    return;
+  }
+  /* ...and so does the tail of a parenthesized sequence, after its leading
+     statements (`(@a = s) << x` is desugared into one), in the order
+     emit_expr's sequence keeps when the tail hoists */
+  if (ts && ts->ret_handle && k == NK_ParenthesesNode && emit_paren_tail_pub(c, node, b)) {
     if (g_repr_check) repr_channel_end(c, frame);
     return;
   }
