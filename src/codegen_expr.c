@@ -3095,6 +3095,16 @@ static int emit_constant_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       if (sp_streq(nm, "LOCK_EX")) { buf_puts(b, "((sp_int)LOCK_EX)"); return 1; }
       if (sp_streq(nm, "LOCK_UN")) { buf_puts(b, "((sp_int)LOCK_UN)"); return 1; }
       if (sp_streq(nm, "LOCK_NB")) { buf_puts(b, "((sp_int)LOCK_NB)"); return 1; }
+      /* File.fnmatch's flags: CRuby's own values (SP_FNM_*, which
+         sp_file_fnmatch reads), not the system <fnmatch.h> macros.
+         SYSCASE and SHORTNAME are 0 off Windows, as in CRuby. */
+      if (sp_streq(nm, "FNM_NOESCAPE"))  { buf_puts(b, "((sp_int)SP_FNM_NOESCAPE)"); return 1; }
+      if (sp_streq(nm, "FNM_PATHNAME"))  { buf_puts(b, "((sp_int)SP_FNM_PATHNAME)"); return 1; }
+      if (sp_streq(nm, "FNM_DOTMATCH"))  { buf_puts(b, "((sp_int)SP_FNM_DOTMATCH)"); return 1; }
+      if (sp_streq(nm, "FNM_CASEFOLD"))  { buf_puts(b, "((sp_int)SP_FNM_CASEFOLD)"); return 1; }
+      if (sp_streq(nm, "FNM_EXTGLOB"))   { buf_puts(b, "((sp_int)SP_FNM_EXTGLOB)"); return 1; }
+      if (sp_streq(nm, "FNM_SYSCASE"))   { buf_puts(b, "((sp_int)0)"); return 1; }
+      if (sp_streq(nm, "FNM_SHORTNAME")) { buf_puts(b, "((sp_int)0)"); return 1; }
     }
     if (par_nmc && (is_io_class_name(par_nmc)) && nm) {
       /* IO#seek whence constants (File inherits them from IO); the Ruby

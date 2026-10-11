@@ -16270,8 +16270,8 @@ static sp_File *sp_poly_as_io(sp_RbVal v, const char *m) {
   sp_raise_poly_nomethod(m, v);
   return NULL;
 }
-/* File.fnmatch: shell-glob match with CRuby's pathname/dot-file defaults */
-sp_bool sp_file_fnmatch(const char *pat, const char *path);
+/* File.fnmatch, by CRuby's rules; the flags are SP_FNM_* (sp_io.h) */
+sp_bool sp_file_fnmatch(const char *pat, const char *path, sp_int flags);
 const char *sp_file_dirname(const char *path);
 const char *sp_file_basename(const char *path);
 /* File.split(path) -> [dirname, basename] */

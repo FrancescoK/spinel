@@ -13,6 +13,14 @@
 #include "sp_types.h"   /* sp_int, sp_bool */
 #include "sp_array.h"   /* sp_IntArray (for #winsize) */
 
+/* File.fnmatch's flags: CRuby's File::FNM_* values, which codegen emits by
+   these names and sp_file_fnmatch (lib/sp_cold.c) reads */
+#define SP_FNM_NOESCAPE 1
+#define SP_FNM_PATHNAME 2
+#define SP_FNM_DOTMATCH 4
+#define SP_FNM_CASEFOLD 8
+#define SP_FNM_EXTGLOB  16
+
 typedef struct {
   FILE *fp; const char *path; const char *mode; sp_int lineno;
   unsigned char bin_flag;      /* #binmode was called (#3131) */
