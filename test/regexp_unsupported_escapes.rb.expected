@@ -1,10 +1,11 @@
-bs-K | RegexpError
 bs-R | RegexpError
 bs-X | RegexpError
 bs-G | 0
 bs-G-mid | nil
 bs-g-name | "ab"
 bs-g-quote | "ab"
+bs-K | 0
+bs-K-look | RegexpError
 prop-p | 0
 prop-P | 0
 prop-unknown | RegexpError

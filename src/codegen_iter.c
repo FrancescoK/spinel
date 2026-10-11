@@ -7154,8 +7154,12 @@ static int iter_hash_arms(Compiler *c, Buf *b, int indent, int block, const char
    so a body that changes the member does not move the walk. Opens the `for`
    and sets `elem` to the member's expression; the caller binds its parameter
    (emit_srange_member_param), emits the body and closes the brace. */
+/* the Range temp and receiver of the last walk opened, for the member's
+   binding (emit_srange_member_param) */
+static int g_srange_walk_tr = -1, g_srange_walk_recv = -1;
 void emit_srange_walk_open(Compiler *c, int recv, int stride, char *elem, size_t elemcap, Buf *b, int indent) {
   int tr = ++g_tmp, tk = ++g_tmp, ta = ++g_tmp, tx = ++g_tmp, ti = ++g_tmp, tn = ++g_tmp, tc = ++g_tmp;
+  g_srange_walk_tr = tr; g_srange_walk_recv = recv;
   emit_indent(b, indent);
   buf_printf(b, "sp_StrRange _t%d = ", tr); emit_expr(c, recv, b); buf_puts(b, ";\n");
   emit_indent(b, indent);
@@ -7203,9 +7207,18 @@ void emit_srange_walk_open(Compiler *c, int recv, int stride, char *elem, size_t
 void emit_srange_member_param(Compiler *c, int block, const char *p0_orig, const char *p0, const char *elem, Buf *b, int indent) {
   Scope *sc = comp_scope_of(c, block);
   LocalVar *lv = sc ? scope_local(sc, p0_orig) : NULL;
+  /* reached through a boxed receiver's face, the Range may be one of
+     Symbols, and a boxed parameter takes the member as it answers it
+     (sp_srange_box_end) */
+  int fnode = -1; TyKind fkind = TY_UNKNOWN;
+  int faced = view_face_top(&fnode, &fkind) && fnode == g_srange_walk_recv && fkind == TY_STR_RANGE;
   if (lv && elem_param_is_handle(lv, TY_STRING)) {
     emit_indent(b, indent);
     buf_printf(b, "lv_%s = sp_String_new_shared(%s);\n", p0, elem);
+  }
+  else if (faced && lv && lv->type == TY_POLY && g_srange_walk_tr >= 0) {
+    char belem[160]; snprintf(belem, sizeof belem, "sp_srange_box_end(_t%d, %s)", g_srange_walk_tr, elem);
+    emit_iter_param_assign(c, block, p0_orig, p0, TY_POLY, belem, b, indent);
   }
   else emit_iter_param_assign(c, block, p0_orig, p0, TY_STRING, elem, b, indent);
 }

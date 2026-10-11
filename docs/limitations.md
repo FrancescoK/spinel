@@ -659,6 +659,16 @@ A one-sided Range with a `Time` bound (`since..`, `..till`, common in query
 code) is refused the same way; compare against the bound (`t >= since`)
 instead.
 
+Ends known only at run time (`a[0]..a[1]` over a mixed Array) pick the
+Range's kind from their values: Integers an Integer Range, a Float begin a
+Float Range, Strings a String Range, Symbols a Range of Symbols, and ends that
+cannot be compared CRuby's ArgumentError. Such a Range is a boxed value, so
+its methods dispatch at run time. Under `--int-overflow=promote`, where every
+Integer is boxed, a Range of boxed ends keeps the Integer Range, and String or
+Symbol ends there read as numbers. A literal Range of Symbols (`:a..:e`) is
+built as its Array of Symbols: it enumerates and answers `include?` as CRuby's
+does, but `p` prints the Array and `size` counts it.
+
 #### A String Range keeps copies of its endpoints in the default build
 
 In the default build a Range of Strings holds its two endpoints by value, as
@@ -1191,13 +1201,15 @@ POSIX names from ASCII as its brackets do, and refuses the categories and the
 emoji properties rather than answer them from ASCII.
 
 **A regexp construct the engine does not carry is refused, not read as its
-letters.** `\K` (drop what was matched before it), `\R` (any linebreak) and
-`\X` (a grapheme cluster) each mean something in CRuby that this engine does
-not do. Left as unknown escapes each was simply its own letter, so `/\R/`
-matched an `R` rather than a newline. They raise `RegexpError` at compile time
-instead. Inside a character class CRuby reads `\K`, `\R` and `\X` as the
-letter too, and so does the class parser here, so `[\R]` still matches an `R`.
-`\G` and `\g<name>` ARE carried and behave as CRuby does.
+letters.** `\R` (any linebreak) and `\X` (a grapheme cluster) each mean
+something in CRuby that this engine does not do. Left as unknown escapes each
+was simply its own letter, so `/\R/` matched an `R` rather than a newline.
+They raise `RegexpError` at compile time instead. Inside a character class
+CRuby reads `\K`, `\R` and `\X` as the letter too, and so does the class
+parser here, so `[\R]` still matches an `R`. `\G`, `\g<name>` and `\K` (drop
+what was matched before it) ARE carried and behave as CRuby does, except that
+a `\K` inside a lookaround or an absent operator `(?~...)`, or in a pattern
+that also calls a group with `\g`, raises `RegexpError` too.
 
 The same applies inside a character class, where a `[` never stands for
 itself: `[[.a.]]` (a collating element) and `[[=a=]]` (an equivalence class)

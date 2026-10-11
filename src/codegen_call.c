@@ -8099,13 +8099,23 @@ void emit_builtin_len_cases(Buf *b, int tr, int tv, const char *open, const char
 /* The dispatch default's block arms: sum(init) { } beside a class's own
    sum (an Array, Hash or Range adds the block's answers to init),
    fetch(key) { } and merge!/update(other, ...) { }, the block (a proc
-   argument too) through a runtime arm. Answers 1 when it wrote the arm. */
+   argument too) through a runtime arm. sum(init) without a block takes the
+   seeded fold (it raised NoMethodError for an Array or a Range). Answers 1
+   when it wrote the arm. */
 int emit_poly_default_blk_arm(Compiler *c, int id, const char *name, int argc, const int *argv,
                                      const int *atmp, const TyKind *atmp_ty, int tv, int tr,
                                      int blk_tmp2, Buf *b) {
   const NodeTable *nt = c->nt;
-  if (nt_ref(nt, id, "block") < 0) return 0;
   for (int a = 0; a < argc; a++) if (nt_kind(nt, argv[a]) == NK_SplatNode) return 0;
+  if (nt_ref(nt, id, "block") < 0) {
+    if (!(is_sum_name(name) && argc == 1)) return 0;
+    char tn[32]; snprintf(tn, sizeof tn, "_t%d", atmp[0]);
+    buf_printf(b, " _t%d = sp_poly_sum_seed(_t%d, ", tr, tv);
+    if (atmp_ty[0] == TY_POLY) buf_puts(b, tn);
+    else emit_boxed_text(c, atmp_ty[0], tn, b);
+    buf_puts(b, "); break;");
+    return 1;
+  }
   if (sp_streq(name, "sum") && argc == 1) {
     int sblk = poly_call_blk_proc(c, id, blk_tmp2);
     if (sblk < 0) return 0;
@@ -20634,9 +20644,12 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
      which is a worse order than the one C picked. Only a local read ahead of
      it that it can rebind runs first, with the operands before it
      (emit_operands_before_unbound). */
-  int node[MAX_ARG_OVERRIDE], fresh[MAX_ARG_OVERRIDE], oo[MAX_ARG_OVERRIDE], copy[MAX_ARG_OVERRIDE], nb = 0;
-  TyKind ty[MAX_ARG_OVERRIDE];
-  int operand[MAX_ARG_OVERRIDE], nop = 0;
+  int nmax = 1 + argc;
+  for (int i = 0; i < argc; i++)
+    if (nt_kind(nt, argv[i]) == NK_KeywordHashNode) { int nk = 0; nt_arr(nt, argv[i], "elements", &nk); nmax += nk; }
+  int node[nmax], fresh[nmax], oo[nmax], copy[nmax], nb = 0;
+  TyKind ty[nmax];
+  int operand[nmax], nop = 0;
   if (recv >= 0) operand[nop++] = recv;
   for (int i = 0; i < argc; i++) {
     /* keyword arguments are operands one value at a time, in the order
@@ -20649,14 +20662,12 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
     for (int k = 0; k < nk && plain; k++)
       plain = nt_kind(nt, els[k]) == NK_AssocNode && nt_kind(nt, nt_ref(nt, els[k], "key")) == NK_SymbolNode;
     if (!plain) {
-      if (nop >= MAX_ARG_OVERRIDE) return 0;
       operand[nop++] = argv[i];
       continue;
     }
     for (int k = 0; k < nk; k++) {
       int v = nt_ref(nt, els[k], "value");
       if (v < 0) continue;
-      if (nop >= MAX_ARG_OVERRIDE) return 0;
       operand[nop++] = v;
     }
   }
@@ -20675,7 +20686,7 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
   for (int i = 0; i < nop; i++)
     if (!repr_of(c, operand[i]).head_held && subtree_may_reassign_state(c, operand[i])) effects++;
   int observable = 0, converts = 0, ncand = 0, unb = -1, unb_lit = 0;
-  int cand[MAX_ARG_OVERRIDE], obs[MAX_ARG_OVERRIDE];
+  int cand[nmax], obs[nmax];
   for (int i = 0; i < nop; i++) {
     cand[i] = obs[i] = 0;
     /* an operand that may convert -- a user object, a boxed value -- is
@@ -20775,8 +20786,8 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
   for (int i = 0; i < nop && ncand; i++)
     if (obs[i]) { Repr hr = repr_of(c, operand[i]); if (hr.handle || hr.demand) ncand = 0; }
   if (ncand) {
-    int n2[MAX_ARG_OVERRIDE], f2[MAX_ARG_OVERRIDE], o2[MAX_ARG_OVERRIDE], k = 0, m = 0, obs0 = observable;
-    TyKind t2[MAX_ARG_OVERRIDE];
+    int n2[nmax], f2[nmax], o2[nmax], k = 0, m = 0, obs0 = observable;
+    TyKind t2[nmax];
     for (int i = 0; i < nop; i++) {
       if (obs[i] == 1) { n2[m] = node[k]; t2[m] = ty[k]; f2[m] = fresh[k]; o2[m] = oo[k]; copy[m] = 0; k++; m++; }
       else if (cand[i] && operand_copy_at_risk(c, operand, nop, i, cand, obs, obs0)) {

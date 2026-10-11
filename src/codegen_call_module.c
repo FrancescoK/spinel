@@ -824,6 +824,11 @@ int emit_call_module_fn_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
     buf_puts(b, "sp_encoding_find("); emit_boxed(c, argv[0], b); buf_puts(b, ")");
     return 1;
   }
+  if (recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode && argc == 0 &&
+      sp_streq(name, "list") && nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Encoding")) {
+    buf_puts(b, "sp_encoding_list()");
+    return 1;
+  }
 
   /* GC module methods */
   if (recv >= 0 && nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "ConstantReadNode") &&

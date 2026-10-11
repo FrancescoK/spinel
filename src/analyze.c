@@ -5390,6 +5390,211 @@ static void desugar_enumerator_produce(Compiler *c) {
   }
 }
 
+/* Is `nm` a positional parameter (required, optional or post) of the def
+   whose ParametersNode is `params`? */
+static int ef_positional_param(const NodeTable *nt, int params, const char *nm) {
+  if (params < 0 || !nm) return 0;
+  static const char *const arrs[] = { "requireds", "optionals", "posts", NULL };
+  for (int a = 0; arrs[a]; a++) {
+    int n = 0; const int *ids = nt_arr(nt, params, arrs[a], &n);
+    for (int k = 0; k < n; k++) {
+      const char *pn = nt_str(nt, ids[k], "name");
+      if (pn && sp_streq(pn, nm)) return 1;
+    }
+  }
+  return 0;
+}
+
+/* The def's rest parameter's name, or NULL. */
+static const char *ef_rest_param(const NodeTable *nt, int def) {
+  int params = nt_ref(nt, def, "parameters");
+  int rest = params >= 0 ? nt_ref(nt, params, "rest") : -1;
+  return rest >= 0 ? nt_str(nt, rest, "name") : NULL;
+}
+
+/* An argument of an enum_for whose value the Enumerator can read again when
+   it runs: a literal, a positional parameter of the def that nothing in its
+   body writes, or a splat of its rest parameter likewise (`*rest`, which the
+   rewrite copies first, as CRuby's enum_for keeps its own array). */
+static int ef_stable_arg(Compiler *c, int def, int arg) {
+  const NodeTable *nt = c->nt;
+  const char *ty = nt_type(nt, arg);
+  if (!ty) return 0;
+  if (sp_streq(ty, "SymbolNode") || sp_streq(ty, "IntegerNode") || sp_streq(ty, "FloatNode") ||
+      sp_streq(ty, "NilNode") || sp_streq(ty, "TrueNode") || sp_streq(ty, "FalseNode")) return 1;
+  int body = nt_ref(nt, def, "body");
+  if (sp_streq(ty, "SplatNode")) {
+    int e = nt_ref(nt, arg, "expression");
+    const char *rn = ef_rest_param(nt, def);
+    return e >= 0 && nt_type(nt, e) && sp_streq(nt_type(nt, e), "LocalVariableReadNode") && rn &&
+           nt_str(nt, e, "name") && sp_streq(nt_str(nt, e, "name"), rn) && !blkp_name_written(c, body, rn);
+  }
+  if (!sp_streq(ty, "LocalVariableReadNode")) return 0;
+  const char *nm = nt_str(nt, arg, "name");
+  return ef_positional_param(nt, nt_ref(nt, def, "parameters"), nm) && !blkp_name_written(c, body, nm);
+}
+
+/* Is `node` an enum_for / to_enum call on self naming the method being
+   defined (`dname`, literally or by `__method__`), with no block? */
+static int ef_names_own_method(const NodeTable *nt, int node, const char *dname) {
+  if (nt_kind(nt, node) != NK_CallNode) return 0;
+  const char *nm = nt_str(nt, node, "name");
+  int recv = nt_ref(nt, node, "receiver");
+  int args = nt_ref(nt, node, "arguments");
+  int ac = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
+  if (!nm || (!sp_streq(nm, "enum_for") && !sp_streq(nm, "to_enum")) || ac == 0) return 0;
+  if (recv >= 0 && !(nt_type(nt, recv) && sp_streq(nt_type(nt, recv), "SelfNode"))) return 0;
+  if (nt_ref(nt, node, "block") >= 0) return 0;
+  const char *aty = nt_type(nt, av[0]);
+  if (aty && sp_streq(aty, "SymbolNode")) {
+    const char *t = nt_str(nt, av[0], "value");
+    return t && sp_streq(t, dname);
+  }
+  return aty && sp_streq(aty, "CallNode") && nt_ref(nt, av[0], "receiver") < 0 &&
+         nt_ref(nt, av[0], "arguments") < 0 && nt_str(nt, av[0], "name") &&
+         sp_streq(nt_str(nt, av[0], "name"), "__method__");
+}
+
+/* Collect the statements `return enum_for(...)` (ef_names_own_method) of
+   `node`, outside any block or nested definition, each as its StatementsNode
+   and index there. Nothing in the method runs after such a return. */
+static void ef_collect(const NodeTable *nt, int node, const char *dname,
+                       int *stmts, int *idx, int *nout, int cap) {
+  if (node < 0) return;
+  const char *ty = nt_type(nt, node);
+  if (!ty) return;
+  if (sp_streq(ty, "DefNode") || sp_streq(ty, "ClassNode") || sp_streq(ty, "ModuleNode") ||
+      sp_streq(ty, "SingletonClassNode") || sp_streq(ty, "BlockNode") || sp_streq(ty, "LambdaNode")) return;
+  if (sp_streq(ty, "StatementsNode")) {
+    int n = 0; const int *body = nt_arr(nt, node, "body", &n);
+    for (int k = 0; k < n && *nout < cap; k++) {
+      if (nt_kind(nt, body[k]) != NK_ReturnNode) continue;
+      int ra = nt_ref(nt, body[k], "arguments");
+      int rc = 0; const int *rv = ra >= 0 ? nt_arr(nt, ra, "arguments", &rc) : NULL;
+      if (rc == 1 && ef_names_own_method(nt, rv[0], dname)) {
+        stmts[*nout] = node; idx[*nout] = k; (*nout)++;
+      }
+    }
+  }
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++) ef_collect(nt, nt_ref_at(nt, node, i), dname, stmts, idx, nout, cap);
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) {
+    int m = 0; const int *ids = nt_arr_at(nt, node, i, &m);
+    for (int k = 0; k < m; k++) ef_collect(nt, ids[k], dname, stmts, idx, nout, cap);
+  }
+}
+
+/* `return enum_for(__method__, a, *rest) unless block_given?` in a method m
+   that takes arguments, or in a class method (ruby/rdoc's
+   RDoc::RI::Paths.each). The generator helper desugar_to_enum retargets to
+   takes no arguments and lives on instances, so these were refused. When
+   every argument can be read again (ef_stable_arg), the Enumerator makes the
+   call itself:
+     __ef_rest = rest.dup
+     return Enumerator.new { |__ey|
+       m(a, *__ef_rest) { |*__ev| Fiber.yield(__ev.length <= 1 ? __ev[0] : __ev) }
+     }
+   which re-runs m on self with the arguments enum_for was given, as CRuby's
+   Enumerator does (the collapse is CRuby's ary2sv, as in the helper). The
+   return keeps anything after it from writing what the block reads. */
+static void desugar_enum_for_with_args(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count;
+  for (int def = 0; def < n0; def++) {
+    if (nt_kind(nt, def) != NK_DefNode) continue;
+    const char *dn = nt_str(nt, def, "name");
+    if (!dn) continue;
+    int drecv = nt_ref(nt, def, "receiver");
+    int singleton = drecv >= 0 && nt_type(nt, drecv) && sp_streq(nt_type(nt, drecv), "SelfNode");
+    if (drecv >= 0 && !singleton) continue;
+    int stmts[8], sidx[8], nfound = 0;
+    ef_collect(nt, nt_ref(nt, def, "body"), dn, stmts, sidx, &nfound, 8);
+    if (nfound == 0) continue;
+    char *dname = strdup(dn);   /* survives nt_new_node reallocs */
+    if (!dname) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int k = 0; k < nfound; k++) {
+      int sn = 0; const int *sbody = nt_arr(nt, stmts[k], "body", &sn);
+      int ret = sbody[sidx[k]];
+      int ra = nt_ref(nt, ret, "arguments");
+      int rc = 0; const int *rv = nt_arr(nt, ra, "arguments", &rc);
+      int id = rv[0];
+      int args = nt_ref(nt, id, "arguments");
+      int ac = 0; const int *av = nt_arr(nt, args, "arguments", &ac);
+      /* an instance method's argumentless call is the helper's */
+      if (ac == 1 && !singleton) continue;
+      int fwd[16], nfwd = 0, ok = ac - 1 <= 16, splat = -1;
+      for (int j = 1; j < ac && ok; j++) {
+        if (!ef_stable_arg(c, def, av[j])) ok = 0;
+        else {
+          if (nt_kind(nt, av[j]) == NK_SplatNode) splat = av[j];
+          fwd[nfwd++] = av[j];
+        }
+      }
+      if (!ok) continue;
+      /* *rest -> *__ef_rest, a copy taken before the return */
+      int snap = -1;
+      if (splat >= 0) {
+        int rd = nt_ref(nt, splat, "expression");
+        snap = te_lvwrite(nt, "__ef_rest", te_call(nt, rd, "dup", -1, -1));
+        nt_node_set_ref(nt, splat, "expression", te_lvread(nt, "__ef_rest"));
+      }
+      int fargs = -1;
+      if (nfwd > 0) {
+        fargs = nt_new_node(nt, "ArgumentsNode");
+        nt_node_set_arr(nt, fargs, "arguments", fwd, nfwd);
+      }
+      /* __ev.length <= 1 ? __ev[0] : __ev */
+      int lencall = te_call(nt, te_lvread(nt, "__ev"), "length", -1, -1);
+      int cmp = te_call(nt, lencall, "<=", te_args1(nt, nt_new_int(nt, 1)), -1);
+      int idx = te_call(nt, te_lvread(nt, "__ev"), "[]", te_args1(nt, nt_new_int(nt, 0)), -1);
+      int elsenode = nt_new_node(nt, "ElseNode");
+      nt_node_set_ref(nt, elsenode, "statements", te_stmts1(nt, te_lvread(nt, "__ev")));
+      int ifn = nt_new_node(nt, "IfNode");
+      nt_node_set_ref(nt, ifn, "predicate", cmp);
+      nt_node_set_ref(nt, ifn, "statements", te_stmts1(nt, idx));
+      nt_node_set_ref(nt, ifn, "subsequent", elsenode);
+      int fyield = te_call(nt, te_const(nt, "Fiber"), "yield", te_args1(nt, ifn), -1);
+      /* m(args) { |*__ev| Fiber.yield(...) } */
+      int evrest = nt_new_node(nt, "RestParameterNode"); nt_node_set_str(nt, evrest, "name", "__ev");
+      int inner_params = nt_new_node(nt, "ParametersNode"); nt_node_set_ref(nt, inner_params, "rest", evrest);
+      int inner_bp = nt_new_node(nt, "BlockParametersNode"); nt_node_set_ref(nt, inner_bp, "parameters", inner_params);
+      int inner_blk = nt_new_node(nt, "BlockNode");
+      nt_node_set_ref(nt, inner_blk, "parameters", inner_bp);
+      nt_node_set_ref(nt, inner_blk, "body", te_stmts1(nt, fyield));
+      int mcall = te_call(nt, -1, dname, fargs, inner_blk);
+      /* Enumerator.new { |__ey| <mcall> } */
+      int eyreq = nt_new_node(nt, "RequiredParameterNode"); nt_node_set_str(nt, eyreq, "name", "__ey");
+      int outer_params = nt_new_node(nt, "ParametersNode"); nt_node_set_arr(nt, outer_params, "requireds", &eyreq, 1);
+      int outer_bp = nt_new_node(nt, "BlockParametersNode"); nt_node_set_ref(nt, outer_bp, "parameters", outer_params);
+      int outer_blk = nt_new_node(nt, "BlockNode");
+      nt_node_set_ref(nt, outer_blk, "parameters", outer_bp);
+      nt_node_set_ref(nt, outer_blk, "body", te_stmts1(nt, mcall));
+      /* rewrite the enum_for itself into Enumerator.new { |__ey| ... } */
+      nt_node_set_str(nt, id, "name", "new");
+      nt_node_set_ref(nt, id, "receiver", te_const(nt, "Enumerator"));
+      nt_node_set_ref(nt, id, "arguments", -1);
+      nt_node_set_ref(nt, id, "block", outer_blk);
+      if (snap >= 0) {   /* the copy goes just before the return */
+        sbody = nt_arr(nt, stmts[k], "body", &sn);
+        int *nb = malloc(sizeof(int) * (size_t)(sn + 1));
+        if (!nb) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+        for (int j = 0, o = 0; j < sn; j++) {
+          if (j == sidx[k]) nb[o++] = snap;
+          nb[o++] = sbody[j];
+        }
+        nt_node_set_arr(nt, stmts[k], "body", nb, sn + 1);
+        free(nb);
+        /* a later return in the same statements moved down one */
+        for (int j = k + 1; j < nfound; j++)
+          if (stmts[j] == stmts[k] && sidx[j] > sidx[k]) sidx[j]++;
+      }
+      comp_grow_node_arrays(c);
+    }
+    free(dname);
+  }
+}
+
 /* Synthesize, on every class that defines an instance `#each` that yields, a
    helper method
 
@@ -34925,7 +35130,7 @@ static void desugar_diverging_args(Compiler *c) {
     if (nt_kind(nt, id) != NK_CallNode || call_is_safe_nav(nt, id)) continue;
     int an = nt_ref(nt, id, "arguments"), n = 0, k = -1;
     const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &n) : NULL;
-    for (int i = 0; i < n && i < 64 && k < 0; i++) {
+    for (int i = 0; i < n && k < 0; i++) {
       if (nt_kind(nt, av[i]) == NK_SplatNode) break;
       const char *dn = nt_kind(nt, av[i]) == NK_CallNode && nt_ref(nt, av[i], "receiver") < 0 ? nt_str(nt, av[i], "name") : NULL;
       if (dn && is_diverging_call(dn)) k = i;
@@ -34935,12 +35140,14 @@ static void desugar_diverging_args(Compiler *c) {
       own = c->scopes[i].class_id < 0 && c->scopes[i].def_node >= 0 && c->scopes[i].name &&
             sp_streq(c->scopes[i].name, nt_str(nt, av[k], "name"));
     if (own) continue;
-    int st[66], ns = 0, recv = nt_ref(nt, id, "receiver");
+    int *st = malloc(sizeof(int) * (size_t)(k + 2)), ns = 0, recv = nt_ref(nt, id, "receiver");
+    if (!st) continue;
     if (recv >= 0 && subtree_has_side_effect(c, recv)) st[ns++] = recv;
     for (int i = 0; i < k; i++) if (subtree_has_side_effect(c, av[i])) st[ns++] = av[i];
     st[ns++] = av[k];
     int s = nt_new_node(nt, "StatementsNode");
     nt_node_set_arr(nt, s, "body", st, ns);
+    free(st);
     nt_node_set_type(nt, id, "ParenthesesNode");
     nt_node_set_ref(nt, id, "body", s);
     nt_node_set_ref(nt, id, "receiver", -1);
@@ -38931,6 +39138,7 @@ static void an_phase_desugar_register(Compiler *c) {
   desugar_multi_value_jump(c);           /* return *a, b -> return [*a, b] */
   desugar_block_destructure_params(c);   /* |a,(b,c),d| -> flat param + `b,c = __destr` */
   desugar_for_nonlocal_index(c);         /* for $g in xs -> for __for in xs; $g = __for */
+  desugar_enum_for_with_args(c);         /* return enum_for(__method__, a) unless block_given? -> Enumerator.new { m(a) { } } */
   desugar_enumerator_produce(c);         /* Enumerator.produce -> fiber generator */
   desugar_param_default_assigns_local(c); /* def m(p = (x = e)) reading x -> sentinel + callee guard */
   desugar_recursive_param_defaults(c);   /* def m(x, y = m(..)) -> default helper method */

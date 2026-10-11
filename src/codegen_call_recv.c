@@ -7858,10 +7858,12 @@ static int str_arms_case_search(Compiler *c, Buf *b, const NodeTable *nt, const 
     /* an sp_oint (nil on a miss), matching the inferred type -- the
        poly-boxed form broke a variable-regexp argument */
     int tmi = ++g_tmp, tsi = ++g_tmp;
-    /* report the match position in characters, not bytes (#3056) */
+    /* report the match position in characters, not bytes (#3056); the
+       position is group 0's start, which a \K leaves past where the match
+       attempt began (what sp_re_match answers) */
     buf_printf(b, "({ const char *_t%d = %s; sp_int _t%d = sp_re_match(sp_re_pat_%d, _t%d);"
-                  " _t%d < 0 ? sp_oint_nil() : sp_oint_of(sp_str_byte_to_char(_t%d, _t%d)); })",
-               tsi, r, tmi, re_lit_index(c, argv[0]), tsi, tmi, tsi, tmi);
+                  " _t%d < 0 ? sp_oint_nil() : sp_oint_of(sp_str_byte_to_char(_t%d, sp_re_caps[0])); })",
+               tsi, r, tmi, re_lit_index(c, argv[0]), tsi, tmi, tsi);
   }
   /* a Regexp held in a variable or parameter rather than written inline */
   else if ((is_string_index(name)) && (argc == 1 || argc == 2) &&
@@ -13120,6 +13122,25 @@ static const char *face_upto_lim_cls(Compiler *c, int id) {
   TyKind lt = argc >= 1 ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
   return lt == TY_INT ? "Integer" : lt == TY_FLOAT ? "Float" : NULL;
 }
+/* A Range of Symbols is a String Range of their names (sp_StrRange.sym):
+   what the String Range's emitter answers as Strings through a boxed
+   receiver (minmax, bsearch), it answers as Symbols, from the coerced Range
+   in temp `t`. 0 where the slot cannot take the boxed form. */
+static int face_srange_sym_value(Compiler *c, int id, int t, const char *call, TyKind *nat, Buf *val) {
+  TyKind slot = repr_of(c, id).as_ty;
+  int poly = slot == TY_POLY || slot == TY_UNKNOWN;
+  if (*nat == TY_STR_ARRAY && (poly || slot == TY_POLY_ARRAY)) {
+    buf_printf(val, "sp_srange_face_items(_t%d, %s)", t, call);
+    *nat = TY_POLY_ARRAY;
+    return 1;
+  }
+  if (*nat == TY_STRING && poly) {
+    buf_printf(val, "sp_srange_box_end(_t%d, %s)", t, call);
+    *nat = TY_POLY;
+    return 1;
+  }
+  return 0;
+}
 static TyKind emit_face_arm(Compiler *c, int id, unsigned kind, unsigned flags, int box, Buf *val) {
   const NodeTable *nt = c->nt;
   /* The re-entered emitter may rename the node for its own re-entry (a
@@ -13337,7 +13358,7 @@ static TyKind emit_face_arm(Compiler *c, int id, unsigned kind, unsigned flags, 
     else buf_printf(val, "({ %s _t%d = %s; %s; _t%d; })", c_type_name(nat), tr, call, wb.p, tr);
     free(wb.p);
   }
-  else buf_puts(val, call);
+  else if (!(kind == PF_SRANGE && face_srange_sym_value(c, id, t, call, &nat, val))) buf_puts(val, call);
   free(cb.p);
   return nat;
 }

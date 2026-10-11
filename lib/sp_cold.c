@@ -4025,7 +4025,7 @@ static sp_StrRange sp_srange_held(sp_StrRange r) {
   return r;
 }
 sp_StrRange sp_srange_new(const char *f, const char *l, sp_int e) {
-  sp_StrRange r; r.first = f; r.last = l; r.excl = e; r.unfrozen = 0; r.hf = NULL; r.hl = NULL; return r;
+  sp_StrRange r; r.first = f; r.last = l; r.excl = e; r.unfrozen = 0; r.sym = 0; r.hf = NULL; r.hl = NULL; return r;
 }
 sp_StrArray *sp_srange_to_a(sp_StrRange r) {
   r = sp_srange_held(r);
@@ -4067,7 +4067,7 @@ sp_StrArray *sp_srange_first_n(sp_RbVal box, sp_int n, int take) {
 }
 sp_bool sp_srange_eq(sp_StrRange a, sp_StrRange b) {
   a = sp_srange_live(a); b = sp_srange_live(b);
-  return a.excl == b.excl && sp_str_eq(a.first, b.first) && sp_str_eq(a.last, b.last);
+  return a.excl == b.excl && a.sym == b.sym && sp_str_eq(a.first, b.first) && sp_str_eq(a.last, b.last);
 }
 /* #include? / #member?: whether the walk String#upto takes meets x, as
    CRuby's rb_str_include_range_p, stopping at the first equal member;
@@ -4145,9 +4145,11 @@ const char *sp_srange_inspect(sp_StrRange r) {
   SP_GC_ROOT(r.hf); SP_GC_ROOT(r.hl);
   const char *f = r.first, *l = r.last;
   SP_GC_ROOT_STR(f); SP_GC_ROOT_STR(l);
-  const char *lo = f ? sp_str_inspect(f) : sp_str_empty;
+  /* a Range of Symbols shows its ends as Symbols (:a..:c) */
+  const char *(*show)(const char *) = r.sym ? sp_sym_inspect_name : sp_str_inspect;
+  const char *lo = f ? show(f) : sp_str_empty;
   SP_GC_ROOT_STR(lo);
-  const char *hi = l ? sp_str_inspect(l) : sp_str_empty;
+  const char *hi = l ? show(l) : sp_str_empty;
   SP_GC_ROOT_STR(hi);
   return sp_sprintf("%s%s%s", lo, r.excl ? "..." : "..", hi);
 }
@@ -4334,6 +4336,17 @@ sp_RbVal sp_encoding_find(sp_RbVal v) {
     if (!strcasecmp(n, sp_encoding_names[i][0])) return sp_box_encoding((sp_Encoding){ sp_encoding_names[i][1] });
   sp_raise_cls("ArgumentError", sp_sprintf("unknown encoding name - %s", n));
   return sp_box_nil();
+}
+/* Encoding.list: an Encoding for every name it may answer, in CRuby's order */
+static const char *const sp_encoding_list_names[] = {
+#include "sp_encoding_list.h"
+  NULL };
+sp_PolyArray *sp_encoding_list(void) {
+  sp_PolyArray *a = sp_PolyArray_new();
+  SP_GC_ROOT(a);
+  for (int i = 0; sp_encoding_list_names[i]; i++)
+    sp_PolyArray_push(a, sp_box_encoding((sp_Encoding){ sp_encoding_list_names[i] }));
+  return a;
 }
 /* force_encoding with an Encoding or a name known only at run time: 1 for
    ASCII-8BIT, 0 for UTF-8 or US-ASCII, -1 for an encoding spinel has no tag

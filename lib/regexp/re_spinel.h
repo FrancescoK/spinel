@@ -13,6 +13,8 @@ mrb_regexp_pattern *re_compile(const char *pattern, mrb_int len, uint32_t flags)
 void re_free(mrb_regexp_pattern *pat);
 int re_exec(const mrb_regexp_pattern *pat, const char *str, mrb_int len, mrb_int start,
             int *captures, int captures_size, int binary);
+int re_exec_attempt(const mrb_regexp_pattern *pat, const char *str, mrb_int len, mrb_int start,
+                    int *captures, int captures_size, int binary, int *attempt);
 void sp_re_set_error_handler(void (*fn)(const char *msg));
 int re_utf8_charlen(const char *s, const char *end);
 int re_num_named(const mrb_regexp_pattern *pat);
