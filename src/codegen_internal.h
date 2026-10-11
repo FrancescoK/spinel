@@ -1224,6 +1224,7 @@ extern int g_unsup_quiet;          /* record a refusal without printing it (code
 int defer_refusals(void);
 int time_parse_refusal(Compiler *c, int id, char *msg, size_t cap);
 int emit_stmt_or_defer(Compiler *c, int st, Buf *b, int indent);
+extern int g_stmt_deferrals;       /* refusals emit_stmt_or_defer turned into a raise in place */
 extern int g_unsup_probe;          /* silent emittability probe (drop a dynamic-send arm) */
 extern int g_open_defaults;        /* parameter defaults being emitted, innermost last */
 /* The compiled conversion method a statically-typed user object reaches at a

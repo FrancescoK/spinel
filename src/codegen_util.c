@@ -29,9 +29,10 @@ int g_unsup_quiet = 0;   /* a refusal is recorded but not printed: the driver de
    gaps are dropped and the rest is emitted anyway, which is what the
    collect-errors gate and a reduction want. */
 int collect_mode(void) { return 1; }
-/* --defer-refusals: a refused method compiles to one that raises
-   NotImplementedError (naming the refusal) when it is called, and a refused
-   top-level or class-body statement is skipped; the build goes on. */
+/* --defer-refusals: a refused statement compiles to a raise of
+   NotImplementedError (naming the refusal) where it stands, and a method
+   refused outside its statements to one that raises when it is called; the
+   build goes on. */
 int defer_refusals(void) {
   static int v = -1;
   if (v < 0) { const char *e = getenv("SPINEL_DEFER_REFUSALS"); v = e && *e ? 1 : 0; }

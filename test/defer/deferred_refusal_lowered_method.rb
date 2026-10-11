@@ -2,8 +2,9 @@
 # takes its block as a parameter -- and it is refused. Deferring that
 # refusal must not leave the next unit taking itself for a lowered method
 # too, where block_given? would ask after a block parameter it does not
-# have.
-# spinel: defer-refusals: 1:3 30
+# have. The refused statement raises only where it stands: the call with
+# a block never reaches it, the call without one does.
+# spinel: defer-refusals: 1:3 30 0 1 2
 class Walk
   def step(limit, by = 1)
     return "é".unicode_normalize unless block_given?
@@ -26,3 +27,4 @@ end
 p Bag.new([1, 2]).size
 p Bag.new([1, 2]) { |x| x * 10 }.size
 Walk.new.step(3) { |i| p i }
+Walk.new.step(3)

@@ -17265,6 +17265,7 @@ int block_param_rebind_len(const NodeTable *nt, int body) {
   return k;
 }
 
+static int emit_body_stmt(Compiler *c, int st, Buf *b, int indent, int tail);
 void emit_stmts(Compiler *c, int id, Buf *b, int indent) {
   /* Ruby block-locals are FRESH on every block invocation. Find the
      BlockNode whose body this is (block_of_body) and
@@ -17290,13 +17291,13 @@ void emit_stmts(Compiler *c, int id, Buf *b, int indent) {
     for (int k = 0; k < n; k++) {
       if (redo_lbl && k == head) { emit_indent(b, indent); buf_printf(b, "_redo_%d: ;\n", redo_lbl); }
       g_stmt_cur = body[k]; g_stmt_prev = k ? body[k - 1] : -1;
-      emit_stmt(c, body[k], b, indent);
+      if (!emit_body_stmt(c, body[k], b, indent, 0)) break;
       if (stmt_is_folded_return(c, body[k])) break;
     }
   }
   else {
     if (redo_lbl) { emit_indent(b, indent); buf_printf(b, "_redo_%d: ;\n", redo_lbl); }
-    emit_stmt(c, id, b, indent);
+    emit_body_stmt(c, id, b, indent, 0);
   }
 }
 
@@ -17307,8 +17308,12 @@ void emit_stmts(Compiler *c, int id, Buf *b, int indent) {
    run that reaches the line stops there instead of going on without it.
    Without the switch, or outside a collect unit, it is emit_stmt. Answers
    whether the statement was emitted as written. */
-int emit_stmt_or_defer(Compiler *c, int st, Buf *b, int indent) {
-  if (!defer_refusals() || !g_unsup_armed) { emit_stmt(c, st, b, indent); return 1; }
+int g_stmt_deferrals = 0;
+static int emit_stmt_or_defer_as(Compiler *c, int st, Buf *b, int indent, int tail) {
+  if (!defer_refusals() || !g_unsup_armed) {
+    if (tail) emit_stmt_tail(c, st, b, indent); else emit_stmt(c, st, b, indent);
+    return 1;
+  }
   jmp_buf outer; memcpy(outer, g_unsup_recover, sizeof outer);
   size_t saved_len = b->len;
   Buf *saved_pre = g_pre; size_t saved_pre_len = g_pre ? g_pre->len : 0;
@@ -17316,8 +17321,12 @@ int emit_stmt_or_defer(Compiler *c, int st, Buf *b, int indent) {
   EmitUnitState *saved = emit_state_snapshot();
   volatile int ok = 0;
   int ndiag0 = g_ndiags;
-  if (setjmp(g_unsup_recover) == 0) { emit_stmt(c, st, b, indent); ok = 1; }
+  if (setjmp(g_unsup_recover) == 0) {
+    if (tail) emit_stmt_tail(c, st, b, indent); else emit_stmt(c, st, b, indent);
+    ok = 1;
+  }
   else {
+    g_stmt_deferrals++;
     g_conv_hold = saved_hold;
     emit_state_release(saved, 1); saved = NULL;
     g_pre = saved_pre;
@@ -17339,6 +17348,24 @@ int emit_stmt_or_defer(Compiler *c, int st, Buf *b, int indent) {
   if (saved) emit_state_release(saved, 0);
   memcpy(g_unsup_recover, outer, sizeof outer);
   return ok;
+}
+int emit_stmt_or_defer(Compiler *c, int st, Buf *b, int indent) {
+  return emit_stmt_or_defer_as(c, st, b, indent, 0);
+}
+
+/* A statement of a method or block body (or one nested in a branch or a
+   loop): under --defer-refusals a refusal in it raises where it stands, so
+   a refused line in a branch that never runs leaves the rest of its method
+   working, as it would under CRuby. Not under an emittability probe, whose
+   own recovery point a refusal must reach, nor for an orphan method's body,
+   whose refusals the driver drops for a raising body. Answers whether the
+   statement was emitted as written: the statements after a raise in its
+   place cannot run, and are left out. */
+static int emit_body_stmt(Compiler *c, int st, Buf *b, int indent, int tail) {
+  if (defer_refusals() && g_unsup_armed && !g_unsup_probe && !g_unsup_quiet)
+    return emit_stmt_or_defer_as(c, st, b, indent, tail);
+  if (tail) emit_stmt_tail(c, st, b, indent); else emit_stmt(c, st, b, indent);
+  return 1;
 }
 
 /* emit_stmts over the top level's statement list, noting in cuts[k] where
@@ -17372,15 +17399,15 @@ void emit_stmts_tail(Compiler *c, int id, Buf *b, int indent) {
     const int *body = nt_arr(nt, id, "body", &n);
     for (int k = 0; k < n; k++) {
       g_stmt_cur = body[k]; g_stmt_prev = k ? body[k - 1] : -1;
-      if (k == n - 1) emit_stmt_tail(c, body[k], b, indent);
+      if (k == n - 1) emit_body_stmt(c, body[k], b, indent, 1);
       else {
-        emit_stmt(c, body[k], b, indent);
+        if (!emit_body_stmt(c, body[k], b, indent, 0)) break;
         if (stmt_is_folded_return(c, body[k])) break;
       }
     }
   }
   else {
-    emit_stmt_tail(c, id, b, indent);
+    emit_body_stmt(c, id, b, indent, 1);
   }
 }
 

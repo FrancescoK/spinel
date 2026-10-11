@@ -18073,7 +18073,7 @@ char *codegen_program(const NodeTable *nt) {
   emit_obj_with_dispatch(c, body);
   for (int s = 1; s < c->nscopes; s++) {
     if (c->scopes[s].yields || (!c->scopes[s].reachable && (!c->scopes[s].is_proc_form || !proc_form_live(c, s))) || scope_is_shadowed(c, s) || (c->scopes[s].is_transplanted_source && !scope_toplevel_included(c, s))) continue;
-    int ndiag0 = g_ndiags;
+    int ndiag0 = g_ndiags, ndefer0 = g_stmt_deferrals;
     int orphan = scope_is_orphan_method(c, s);
     if (orphan) g_unsup_quiet = 1;
     EMIT_COLLECT_UNIT(emit_method(c, &c->scopes[s], body));
@@ -18103,8 +18103,10 @@ char *codegen_program(const NodeTable *nt) {
       continue;
     }
     /* --defer-refusals: a refused method is emitted again with a body that
-       raises NotImplementedError naming the refusal, when it is called */
-    if (defer_refusals() && g_ndiags > ndiag0 && c->scopes[s].body >= 0) {
+       raises NotImplementedError naming the refusal, when it is called. A
+       refusal its statements raise in place (emit_stmt_or_defer) leaves the
+       method as emitted. */
+    if (defer_refusals() && g_ndiags - (g_stmt_deferrals - ndefer0) > ndiag0 && c->scopes[s].body >= 0) {
       char dmsg[2600];
       const SpDiag *d = &g_diags[g_ndiags - 1];
       if (d->line > 0) snprintf(dmsg, sizeof dmsg, "%s:%d: %s", d->file ? d->file : "?", d->line, d->msg);
