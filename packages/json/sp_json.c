@@ -144,7 +144,17 @@ static const char *sp_json_key(sp_RbVal k) {
   if (k.tag == SP_TAG_SYM)  return sp_json_str(sp_sym_name_fn ? sp_sym_name_fn((sp_sym)k.v.i) : "");
   if (k.tag == SP_TAG_INT)  return sp_json_str(sp_int_to_s(k.v.i));
   if (k.tag == SP_TAG_BOOL) return sp_json_str(k.v.b ? "true" : "false");
-  return sp_json_str("");
+  /* any other key is its #to_s, as CRuby's json generates it: a Float, nil,
+     an Array, an object of the program's own */
+  return sp_json_str(sp_poly_to_s_fn ? sp_poly_to_s_fn(k) : "");
+}
+/* A key that is an object may run a #to_s of the program's own, which may
+   raise, throw, or return past the walk: the buffer moves to the heap first,
+   as before any user code. */
+static void sp_json_key_b(jbuf *b, sp_RbVal k) {
+  if (k.tag == SP_TAG_OBJ) jb_to_heap(b);
+  const char *jk = sp_json_key(k);
+  jb_gcs(b, jk, (size_t)sp_str_byte_len(jk));
 }
 
 /* CRuby's json refuses to serialize past 100 levels of nesting, which is how
@@ -278,7 +288,7 @@ static void sp_json_val_b(jbuf *b, sp_RbVal v, int depth) {
       if (i) jb_c(b, ',');
       sp_RbVal k, val;
       sp_json_hpair_fn(v, i, &k, &val);
-      { const char *jk = sp_json_key(k); jb_gcs(b, jk, strlen(jk)); }
+      sp_json_key_b(b, k);
       jb_c(b, ':');
       sp_json_val_b(b, val, depth + 1);
     }
@@ -354,7 +364,7 @@ static void sp_json_pretty_val(jbuf *b, sp_RbVal v, int depth) {
         sp_json_indent(b, depth + 1);
         sp_RbVal k, val;
         sp_json_hpair_fn(v, i, &k, &val);
-        { const char *jk = sp_json_key(k); jb_gcs(b, jk, strlen(jk)); }
+        sp_json_key_b(b, k);
         jb_add(b, ": ", 2);
         sp_json_pretty_val(b, val, depth + 1);
       }
