@@ -57,3 +57,21 @@ p bus.low(7)
 p bus.low(0x1000)
 bus.poke("x")
 p bus.peek(0x1000)
+
+# a nested elsif chain whose own arms answer an Integer that may be nil,
+# under an outer arm that makes the result poly
+def pick(a, i)
+  if i == 0
+    "s"
+  elsif i == 1
+    a[5]
+  elsif i == 2
+    a[0]
+  end
+end
+
+a = [1, 2]
+p pick(a, 0)
+p pick(a, 1)
+p pick(a, 2)
+p pick(a, 3)

@@ -3921,21 +3921,21 @@ static int emit_if_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, const 
         buf_puts(g_pre, "else {\n");
         int saved_gi3 = g_indent; g_indent = g_indent + 2;
         Buf sub_e; memset(&sub_e, 0, sizeof sub_e);
-        if (res_o) emit_oint_expr(c, sub, res, &sub_e); else emit_expr(c, sub, &sub_e);
+        /* The nested elsif chain types on its own arms: a concrete chain
+           (string/string) under a poly outer if (the empty then-arm's nil)
+           boxes into the poly temp, as the arms above do; an Integer or
+           Float chain boxes its oint, nil included. */
+        TyKind subt = repr_of(c, sub).as_ty;
+        int boxed3 = !res_o && res == TY_POLY && subt != TY_POLY && subt != TY_NIL &&
+                     subt != TY_UNKNOWN && subt != TY_VOID;
+        if (res_o) emit_oint_expr(c, sub, res, &sub_e);
+        else if (boxed3) emit_boxed(c, sub, &sub_e);
+        else emit_expr(c, sub, &sub_e);
         g_indent = saved_gi3;
         emit_indent(g_pre, g_indent + 2);
         buf_printf(g_pre, "_t%d = ", tr);
-        /* The nested elsif chain types on its own arms: a concrete chain
-           (string/string) under a poly outer if (the empty then-arm's nil)
-           must box into the poly temp, same as the then/else arms above. */
-        TyKind subt = repr_of(c, sub).as_ty;
         if (res_o) buf_puts(g_pre, sub_e.p ? sub_e.p : oint_nil(res));
-        else if (res == TY_POLY && subt != TY_POLY && subt != TY_NIL &&
-            subt != TY_UNKNOWN && subt != TY_VOID) {
-          Buf bx3; memset(&bx3, 0, sizeof bx3);
-          emit_boxed_text(c, subt, sub_e.p ? sub_e.p : default_value_from_compiler(c, subt), &bx3);
-          buf_puts(g_pre, bx3.p ? bx3.p : "sp_box_nil()"); free(bx3.p);
-        }
+        else if (boxed3) buf_puts(g_pre, sub_e.p ? sub_e.p : "sp_box_nil()");
         /* a nested chain whose every written arm raises is the implicit
            nil, held in a boxed temp; into a concrete slot with a nil of
            its own (a nullable String, #4567) it is that nil, not the box */
