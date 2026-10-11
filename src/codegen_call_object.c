@@ -215,8 +215,10 @@ int emit_call_identity_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
     /* Comparable#between? on a poly receiver (a user object read from a
        container / block param): compare through the boxed <=> hook, which
        raises the incomparable ArgumentError like CRuby. clamp already takes
-       this path; between? was missing it (#3170). */
-    if (rt == TY_POLY) {
+       this path; between? was missing it (#3170). A class of the program
+       that defines between? itself takes the call's dispatch instead, whose
+       builtin arm comes back here. */
+    if (rt == TY_POLY && !user_defines_or_reads(c, name)) {
       int ts = hoist_boxed_rooted(c, recv);
       int tlo = hoist_boxed_rooted(c, argv[0]), thi = hoist_boxed_rooted(c, argv[1]);
       /* nil has no #between?, and the checked comparison below would call it

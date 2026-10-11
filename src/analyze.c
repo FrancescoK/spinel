@@ -7359,6 +7359,8 @@ static int desugar_str_range_methods(Compiler *c) {
           ((an == 0 && is_each_walk_or_with_index(nm)) || (an == 1 && is_each_window(nm))))
         nt_node_set_str(nt, toa, "enum_recv", "1"); }
     nt_node_set_ref(nt, id, "receiver", toa);
+    /* an Enumerator the blockless call answers has no size (emit_call) */
+    if (nt_ref(nt, id, "block") < 0) nt_node_set_int(nt, id, "srange_enum", 1);
     comp_grow_node_arrays(c);
     c->nscope[toa] = c->nscope[id];
     changed = 1;
@@ -39716,8 +39718,32 @@ static void an_phase_block_inline(Compiler *c) {
   free(blk_fwd_callee);
 }
 
+/* Is the value of the def `d` used, so that it is the Symbol it names? A
+   statement before its list's last, the program's last statement (its list
+   has no parent) and a class or module body's last when the class's value
+   is not used throw it away; anything else may hand it on. */
+int an_def_value_used(const NodeTable *nt, const int *par, int v) {
+  for (int p; (p = par[v]) >= 0; v = p) {
+    switch (nt_kind(nt, p)) {
+    case NK_StatementsNode: {
+      int n = 0;
+      const int *st = nt_arr(nt, p, "body", &n);
+      if (n == 0 || st[n - 1] != v) return 0;
+      break;
+    }
+    case NK_ClassNode: case NK_ModuleNode: case NK_SingletonClassNode:
+      if (nt_ref(nt, p, "body") != v) return 1;
+      break;
+    default:
+      return 1;
+    }
+  }
+  return 0;
+}
+
 /* Ahead of the fixpoint: intern the symbol literals and Proc#parameters names, apply the --rbs seeds, freeze the method-lookup index, compute the reachable and instantiated classes (analyze_program's steps, in their order) */
 static void an_phase_pre_fixpoint(Compiler *c) {
+  int *par = an_parent_map(c->nt);
   /* intern every symbol literal so codegen can emit the id table */
   for (int id = 0; id < c->nt->count; id++) {
     const char *ty = nt_type(c->nt, id);
@@ -39743,7 +39769,11 @@ static void an_phase_pre_fixpoint(Compiler *c) {
       const char *dn = nt_str(c->nt, id, "name");
       if (dn && strncmp(dn, "__enum_", 7) != 0 && strncmp(dn, "__int_", 6) != 0 &&
           strncmp(dn, "__flt_", 6) != 0 && strncmp(dn, "__cmp_", 6) != 0 &&
-          strncmp(dn, "__enumw_", 8) != 0)
+          strncmp(dn, "__enumw_", 8) != 0 &&
+          /* only where its value is used: a statement def's name alone made
+             every program with a method carry the symbol runtime and with it
+             the inspect and Bignum code it reaches (#8401) */
+          (!par || an_def_value_used(c->nt, par, id)))
         comp_sym_intern(c, dn);
     }
     /* __method__ / __callee__ yield the enclosing method's name as a symbol;
@@ -39756,6 +39786,7 @@ static void an_phase_pre_fixpoint(Compiler *c) {
       }
     }
   }
+  free(par);
   /* Proc#parameters reports param kinds (:req/:opt/:rest/:keyreq/:key/
      :keyrest/:block) and names as symbols; intern them now so they land in
      the table before the codegen prologue. Anonymous rest/kwrest/block use
@@ -40235,7 +40266,7 @@ static void an_phase_infer_fixpoint(Compiler *c) {
     ch |= AN_PASS("desugar_handle_reopen_self_recv", desugar_handle_reopen_self_recv(c));  /* bare m(..) in a Thread/Fiber reopen -> self.m(..) */
     ch |= AN_PASS("desugar_symbol_to_proc_call", desugar_symbol_to_proc_call(c));      /* :sym.to_proc.call(x) -> x.sym */
     ch |= AN_PASS("desugar_call_op_write", desugar_call_op_write(c));            /* r.x += 1 with a def writer -> r.x = r.x + 1 */
-    ch |= AN_PASS("desugar_call_or_write_reopen", desugar_call_or_write_reopen(c));     /* r.x ||= v on a reopened builtin with a def writer -> the two calls */
+    ch |= AN_PASS("desugar_call_or_write_reopen", desugar_call_or_write_reopen(c));     /* r.x ||= v on a reopened builtin with a def writer, or on a poly r -> the two calls */
     ch |= AN_PASS("desugar_index_op_write_user", desugar_index_op_write_user(c));      /* obj[k] ||= v on a user [] / []= -> the calls */
     ch |= AN_PASS("desugar_main_self_call", desugar_main_self_call(c));           /* self.m on main with a top-level def m -> m */
     ch |= AN_PASS("desugar_cmethod_cvar_reflection", desugar_cmethod_cvar_reflection(c)); /* class_variable_get(:@@x) in def self.m -> K.class_variable_get */

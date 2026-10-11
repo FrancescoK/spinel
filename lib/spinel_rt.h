@@ -12147,11 +12147,16 @@ static SP_UNUSED sp_Class sp_isa_class_arg(sp_RbVal v) {
   if (v.tag != SP_TAG_CLASS) sp_raise_cls("TypeError", "class or module required");
   return sp_unbox_class(v);
 }
-static sp_bool sp_poly_is_a_dyn(sp_RbVal v, sp_RbVal cls, int exact) {
-  const char *cn = sp_poly_to_s(cls);
+/* ... against a class by its name: the generated sp_poly_is_a names a
+   name-backed class directly, and so does not reach sp_poly_to_s, which
+   brings in the rendering of every builtin value */
+static sp_bool sp_poly_is_a_named(sp_RbVal v, const char *cn, int exact) {
   if (!cn) return FALSE;
   if (strcmp(sp_poly_class_name(v), cn) == 0) return TRUE;
   return exact ? FALSE : sp_poly_kind_of_builtin(v, cn);
+}
+static sp_bool sp_poly_is_a_dyn(sp_RbVal v, sp_RbVal cls, int exact) {
+  return sp_poly_is_a_named(v, sp_poly_to_s(cls), exact);
 }
 static inline sp_int sp_poly_index_int(sp_RbVal a, sp_int i) {
   /* An Integer read in range out of a boxed array first: it is the hot
@@ -14192,11 +14197,12 @@ static sp_RbVal sp_json_symbolize(sp_RbVal v) {
   }
   return v;
 }
-/* A program with no poly-renderable value (SP_TU_NO_POLY_RENDER: no poly,
-   Array or Hash type anywhere) holds no boxed Array or Hash for these hooks to
-   walk, and JSON.parse and Marshal.load, which build them, answer a poly
-   value; it installs none of them, so the walkers stay out of the link. */
-#ifndef SP_TU_NO_POLY_RENDER
+/* A program with no poly, Array or Hash type anywhere (SP_TU_NO_POLY_RENDER,
+   or SP_TU_NO_POLY_VALUES where it has classes or Symbols) holds no value
+   for these hooks to walk or render, and JSON.parse and Marshal.load, which
+   build them, answer a poly value; it installs none of them, so the walkers
+   and renderers stay out of the link. */
+#if !defined(SP_TU_NO_POLY_RENDER) && !defined(SP_TU_NO_POLY_VALUES)
 SP_CONSTRUCTOR static void sp_json_install_hooks(void) {
   sp_json_kind_fn = sp_json_kind;
   sp_json_len_fn = sp_poly_length;
@@ -17761,7 +17767,7 @@ static sp_Enumerator *sp_Enumerator_regroup(sp_Enumerator *e, sp_int n, sp_bool 
   if (e && (e->gen || e->endless)) return sp_Enumerator_regroup_gen(e, n, cons);
   SP_GC_ROOT(e);
   sp_RbVal a = sp_box_poly_array(sp_Enumerator_to_a(e));
-  return cons ? sp_Enumerator_new_cons(a, n) : sp_Enumerator_new_slices(a, n);
+  return sp_enum_inherit_size(cons ? sp_Enumerator_new_cons(a, n) : sp_Enumerator_new_slices(a, n), e);
 }
 /* The same on a boxed receiver: a boxed generator or endless Enumerator
    regroups as it is pulled, anything else through its elements. */
@@ -17785,7 +17791,7 @@ static sp_Enumerator *sp_Enumerator_ewi(sp_Enumerator *e) {
     return r;
   }
   SP_GC_ROOT(e);
-  return sp_Enumerator_new_ewi(sp_box_poly_array(sp_Enumerator_to_a(e)), 0);
+  return sp_enum_inherit_size(sp_Enumerator_new_ewi(sp_box_poly_array(sp_Enumerator_to_a(e)), 0), e);
 }
 /* A string's characters as a fresh poly array of one-char Strings, built
    directly. Used by a blockless String#each_char enumerator, avoiding the

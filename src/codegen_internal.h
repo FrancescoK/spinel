@@ -712,6 +712,7 @@ int bigl_intern(const char *v);
 extern int g_uses_symbols;
 extern int g_uses_marshal;
 extern int g_emit_sym_rt;      /* emit sp_dyn_syms / sp_sym_to_s / sp_sym_intern */
+extern int g_tu_poly_values;   /* some poly, Array or Hash type: else SP_TU_NO_POLY_VALUES */
 extern int g_emit_class_names; /* emit sp_class_to_s (the class-name table) */
 extern int g_emit_obj_dispatch;/* emit sp_obj_inspect_sw / sp_obj_to_s_sw (user classes exist) */
 extern int g_uses_program_name;/* $0 / $PROGRAM_NAME read somewhere */

@@ -25,8 +25,10 @@
    into or leaves a gap in (one level in, below: NFW_ELEM_NIL); a container call
    other than the element reads and picks that can miss (an Array's or a
    Hash's own methods); and a builtin value a builtin call answers other
-   than those picks and a String's slice (`gets` at the end of its input, a
-   bang method that changed nothing).
+   than those picks and a String's slice (`gets` at the end of its input).
+   A String bang that changed nothing is not one of them: it answers nil, and
+   its fact says so (a String slice, `slice!` included, stays the unarmed
+   element read it is, so a hot loop over slices pays for no test).
 
    Flow: the slots are flow-insensitive (a slot one write leaves nil may be
    nil at every read), except that a read of a local inside a truthiness
@@ -705,6 +707,14 @@ static int nf_call(NF *f, int v) {
   if (r >= 0 && (sp_streq(nm, "itself") || sp_streq(nm, "tap") || sp_streq(nm, "dup") ||
                  sp_streq(nm, "clone") || sp_streq(nm, "freeze")))
     return nf_expr(f, r);
+  /* a String bang answers nil when it changes nothing (strip!, sub!, chomp!,
+     ...), except those that answer the receiver always (PF_STR_SELF): the
+     nil a mutator or any other method called on its result then meets. A
+     boxed receiver (an element of a boxed Array or Hash) answers it as a
+     String too. */
+  if (r >= 0 && (rt == TY_STRING || rt == TY_STRBUF || (rt == TY_POLY && c->ntype[v] == TY_STRING)) &&
+      ty_str_typed_bang_flags(nm) && !(ty_str_typed_bang_flags(nm) & PF_STR_SELF))
+    return NFW_NIL;
   /* an element read that can miss, a pick that finds nothing */
   if (r >= 0 && nf_container(rt)) {
     static const char *const picks[] = { "find", "detect", "first", "last", "min", "max", "min_by",

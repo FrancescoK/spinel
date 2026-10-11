@@ -2942,6 +2942,10 @@ sp_Enumerator *sp_enum_with_src(sp_Enumerator *e, sp_RbVal src, const char *meth
   e->source = src;
   e->has_src = TRUE;
   e->meth = meth;
+  /* a String Range counts no members without walking them (Range#size is nil
+     for it), so the Enumerators it answers (step, %) have no size either,
+     though their members were materialized here */
+  if (src.tag == SP_TAG_OBJ && src.cls_id == SP_BUILTIN_STR_RANGE) e->size_nil = TRUE;
   return e;
 }
 sp_Enumerator *sp_enum_as_gen(sp_Enumerator *e) {
@@ -3083,7 +3087,7 @@ sp_Enumerator *sp_Enumerator_cycle_gen(sp_Enumerator *e) {
   sp_Enumerator *r = sp_Enumerator_new_gen(sp_cycle_gen, cap, sp_box_nil());
   r->yields_pair = e->yields_pair;
   r->source = e->source;
-  return r;
+  return sp_enum_inherit_size(r, e);
 }
 /* Blockless each_slice(n) / each_cons(n) over a generator or an endless
    source: the groups are made as a run pulls the source, one group per
@@ -3126,7 +3130,7 @@ sp_Enumerator *sp_Enumerator_regroup_gen(sp_Enumerator *e, sp_int n, sp_bool con
   SP_GC_ROOT(r);
   r->source = e->source;
   r->meth = sp_sprintf(cons ? "each_cons(%lld)" : "each_slice(%lld)", (long long)n);
-  return r;
+  return sp_enum_inherit_size(r, e);
 }
 sp_Enumerator *sp_Enumerator_with_index(sp_Enumerator *e, sp_int off) {
   /* an endless source pairs lazily too: its pairs never run out */
@@ -3146,7 +3150,7 @@ sp_Enumerator *sp_Enumerator_with_index(sp_Enumerator *e, sp_int off) {
     sp_Enumerator *r = sp_Enumerator_new_gen(sp_with_index_gen, cap, e->size);
     r->source = e->source;
     r->yields_pair = TRUE;
-    return r;
+    return sp_enum_inherit_size(r, e);
   }
   sp_PolyArray *src = e ? e->items : NULL;
   sp_int n = src ? src->len : 0;
@@ -3163,7 +3167,7 @@ sp_Enumerator *sp_Enumerator_with_index(sp_Enumerator *e, sp_int off) {
     sp_PolyArray_push(out, sp_box_poly_array(pair));
   }
   { sp_RbVal src_recv = e ? e->source : sp_box_nil();
-    sp_Enumerator *r = sp_Enumerator_new_from_items(out); r->source = src_recv; r->yields_pair = TRUE; return r; }
+    sp_Enumerator *r = sp_Enumerator_new_from_items(out); r->source = src_recv; r->yields_pair = TRUE; return sp_enum_inherit_size(r, e); }
 }
 sp_Enumerator *sp_Enumerator_new_gen(void (*gen)(sp_Fiber *), void *cap, sp_RbVal size) {SP_GC_ROOT_RBVAL(size);
   sp_Enumerator *e = (sp_Enumerator *)sp_gc_alloc(sizeof(sp_Enumerator), NULL, sp_Enumerator_scan);
@@ -3410,6 +3414,7 @@ sp_RbVal sp_Enumerator_size(sp_Enumerator *e) {SP_GC_ROOT(e);
      slice_after) answers a Generator-backed Enumerator in CRuby, whose size is
      unknown until it is walked: nil, though the items here are a snapshot */
   if (e->gen_label) return sp_box_nil();
+  if (e->size_nil) return sp_box_nil();
   /* an argless cycle is endless unless there is nothing to repeat */
   if (e->endless) return (e->items && e->items->len > 0) ? sp_box_float(1.0 / 0.0) : sp_box_int(0);
   /* These searches can stop at their first hit, so CRuby gives their

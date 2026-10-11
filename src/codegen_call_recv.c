@@ -4092,7 +4092,11 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
              cannot touch (sub_bang_reenters, emit_gsub_block_expr) */
           int sv_sbB = g_sub_bang_id;
           g_sub_bang_id = subm && sub_bang_reenters(c, id, recv, argc, argv) ? id : -1; g_sub_bang_tm = 0;
+          /* the handle is tested above: the plain form reads its bytes, bound
+             in _tob, and must not test them again as a handle (cplan_nil) */
+          nt_node_set_int((NodeTable *)nt, id, "recv_nil_tested", 1);
           emit_expr(c, id, &nbB);
+          nt_node_set_int((NodeTable *)nt, id, "recv_nil_tested", 0);
           /* the plain form read the handle's bytes, and the set_bin below
              writes its answer back into the handle (the bang's own answer,
              when it is used, is the bytes: only a dropped one is declared) */
@@ -4158,7 +4162,10 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
       int nbind = lvw || held || hbind >= 0 ? -1 : view_bind(recv, "_t%d", to);
       int sv_sb = g_sub_bang_id;   /* the wrapper or a block form's local, as above */
       g_sub_bang_id = subm2 && sub_bang_reenters(c, id, recv, argc, argv) ? id : -1; g_sub_bang_tm = 0;
+      /* the nil test above stands for the plain form's own (cplan_nil) */
+      if (!lvw) nt_node_set_int((NodeTable *)nt, id, "recv_nil_tested", 1);
       emit_expr(c, id, &nb);
+      if (!lvw) nt_node_set_int((NodeTable *)nt, id, "recv_nil_tested", 0);
       int tsm = g_sub_bang_tm; g_sub_bang_id = sv_sb; g_sub_bang_tm = 0;
       char sm[40] = "";
       if (tsm) snprintf(sm, sizeof sm, " && !_t%d", tsm);
@@ -16167,15 +16174,19 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
     buf_puts(b, ")"); return 1;
   }
   /* poly receiver: clamp(lo, hi) tag-dispatches int/float at runtime; the range
-     form clamp(a..b) routes through the same helper with boxed bounds. */
-  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "clamp") && argc == 2) {
+     form clamp(a..b) routes through the same helper with boxed bounds. Both
+     stand down for a class of the program that defines clamp, as join does:
+     the dispatch has its arm, and a builtin one that comes back here. */
+  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "clamp") && argc == 2 &&
+      !user_defines_or_reads(c, name)) {
     buf_puts(b, "sp_poly_clamp("); emit_boxed(c, recv, b);
     buf_puts(b, ", "); emit_boxed(c, argv[0], b);
     buf_puts(b, ", "); emit_boxed(c, argv[1], b); buf_puts(b, ")");
     return 1;
   }
   if (recv >= 0 && rt == TY_POLY && sp_streq(name, "clamp") && argc == 1 &&
-      nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "RangeNode")) {
+      nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "RangeNode") &&
+      !user_defines_or_reads(c, name)) {
     /* raises on an exclusive range with a real end; routes a user-object
        receiver through the `<=>` hook (sp_obj_clamp_range) */
     /* a Float Range (promote boxes an Integer receiver) clamps on its boxed

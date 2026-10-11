@@ -1535,6 +1535,7 @@ int bigl_intern(const char *v) {
 int g_uses_symbols = 0;
 int g_uses_marshal = 0;
 int g_emit_sym_rt = 0;
+int g_tu_poly_values = 1;
 int g_emit_class_names = 0;
 int g_emit_obj_dispatch = 0;
 int g_uses_program_name = 0;

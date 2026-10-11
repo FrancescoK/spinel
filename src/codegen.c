@@ -5102,21 +5102,6 @@ static size_t wb_stmt_end(const Buf *b, size_t q) {
   if (send >= b->len || b->p[send] != ';') return 0;
   return wb_ends_value(b, send) ? 0 : send;   /* not when it is a statement expression's value */
 }
-/* A store written as a parenthesised statement: `((o)->f = v);`, which is what
-   an expression-valued emitter (instance_variable_set) writes when its value
-   is dropped. `st` is the start of the lvalue and `bol` the start of its
-   statement; the text between them must be blanks and `(` only. Answers the
-   position of the first `(` and sets *npar to how many there are, or answers
-   (size_t)-1 when the store is part of anything else. */
-static size_t wb_paren_stmt_start(const Buf *b, size_t bol, size_t st, size_t *npar) {
-  size_t first = (size_t)-1;
-  *npar = 0;
-  for (size_t k = bol; k < st; k++) {
-    if (b->p[k] == '(') { if (first == (size_t)-1) first = k; (*npar)++; }
-    else if (b->p[k] != ' ' && b->p[k] != '\t') return (size_t)-1;
-  }
-  return first;
-}
 /* Whether every store to an `->iv_` field between `from` and `to` names the
    object `[st, i)` does: a statement that stores into one object takes one
    barrier on it, after its last store. */
@@ -5132,6 +5117,74 @@ static int wb_stores_one_object(const Buf *b, size_t st, size_t i, size_t from, 
     if (k - lv != i - st || strncmp(b->p + lv, b->p + st, i - st)) return 0;
   }
   return 1;
+}
+/* Where the statement holding the store whose lvalue starts at `st` begins
+   when other expressions of it come first: back over balanced groups to the
+   `;`, `{`, `}` or line end at the store's own depth, stepping over the
+   parentheses that enclose it. wb_paren_stmt_start checks the text from
+   there forward. */
+static size_t wb_paren_stmt_bol(const Buf *b, size_t fn_off, size_t st) {
+  size_t k = st, d = 0;
+  for (; k > fn_off; k--) {
+    char x = b->p[k-1];
+    /* a string or character literal is stepped over whole, back to its
+       opening quote (one with an even number of backslashes before it):
+       a bracket inside it is no group */
+    if (x == '"' || x == '\'') {
+      size_t j = k - 1;
+      while (j > fn_off) {
+        j--;
+        if (b->p[j] != x) continue;
+        size_t bs = 0;
+        while (j - bs > fn_off && b->p[j-1-bs] == '\\') bs++;
+        if (!(bs & 1)) break;
+      }
+      k = j + 1;
+      continue;
+    }
+    if (x == ')' || x == ']' || (x == '}' && d)) d++;
+    else if (x == '(' || x == '[' || (x == '{' && d)) { if (d) d--; }
+    else if ((x == ';' || x == '\n' || x == '{' || x == '}') && !d) break;
+  }
+  return k;
+}
+/* A store written as a parenthesised statement: `((o)->f = v);`, which is what
+   an expression-valued emitter (instance_variable_set) writes when its value
+   is dropped, or a comma sequence of stores into one object,
+   `(o->n = 1, o->s = v, 0);`, as a generated constructor writes its fields.
+   `[st, i)` is the store's lvalue and `bol` the start of its statement. The
+   text between them must be blanks and `(`, then, for a store after the
+   first, the stores before it into the same object, each ended by a `,` at
+   the top level: the first store can be one that needs no barrier (an
+   Integer field, a nil) and that the pass stepped over. Answers the position
+   of the first `(`, sets *npar to how many there are and *first to the
+   first store's `->`, or answers (size_t)-1 when the store is part of
+   anything else. */
+static size_t wb_paren_stmt_start(const Buf *b, size_t bol, size_t st, size_t i, size_t *npar,
+                                  size_t *first) {
+  size_t open = (size_t)-1, k = bol;
+  *npar = 0;
+  for (; k < st && (b->p[k] == '(' || b->p[k] == ' ' || b->p[k] == '\t'); k++)
+    if (b->p[k] == '(') { if (open == (size_t)-1) open = k; (*npar)++; }
+  if (open == (size_t)-1) return (size_t)-1;
+  *first = i;
+  if (k == st) return open;
+  size_t n = i - st, d = 0;
+  if (strncmp(b->p + k, b->p + st, n) || strncmp(b->p + k + n, "->iv_", 5)) return (size_t)-1;
+  int str = 0, ch = 0, comma = 0;
+  for (size_t j = k; j < st; j++) {
+    char x = b->p[j];
+    if (str) { if (x == '\\') j++; else if (x == '"') str = 0; continue; }
+    if (ch) { if (x == '\\') j++; else if (x == '\'') ch = 0; continue; }
+    if (x == '"' || x == '\'') { str = x == '"'; ch = x == '\''; comma = 0; continue; }
+    if (x == '(' || x == '[' || x == '{') d++;
+    else if (x == ')' || x == ']' || x == '}') { if (!d) return (size_t)-1; d--; }
+    else if (x == ';' && !d) return (size_t)-1;
+    if (x != ' ' && x != '\t' && x != '\n') comma = x == ',' && !d;
+  }
+  if (!comma || d || !wb_stores_one_object(b, st, i, k, st)) return (size_t)-1;
+  *first = k + n;
+  return open;
 }
 /* The `;` that ends the parenthesised statement whose store (the lvalue
    `[st, i)`) has its `=` at `q`, when exactly the `npar` opening parentheses
@@ -5153,12 +5206,33 @@ static size_t wb_paren_stmt_end(const Buf *b, size_t st, size_t i, size_t q, siz
   if (k >= b->len || b->p[k] != ';') return 0;
   return wb_ends_value(b, k) ? 0 : k;
 }
+static size_t wb_value_never_young(const Buf *b, size_t q);
+/* Whether the segment `[seg, e)` of a parenthesised statement stores what a
+   barrier has to record, asked as the pass asks of any store: a reference
+   field of the holder class `hc` (any class's, for -1) given a value that can
+   be young. An Integer, Float or bool field, or a nil, needs none. */
+static int wb_seg_needs_barrier(Compiler *c, int hc, const Buf *b, size_t seg, size_t e) {
+  for (size_t j = seg; j + 5 < e; j++) {
+    if (b->p[j] != '-' || b->p[j+1] != '>' || strncmp(b->p + j + 2, "iv_", 3)) continue;
+    size_t f = j + 2, fe = f;
+    while (fe < e && (isalnum((unsigned char)b->p[fe]) || b->p[fe] == '_')) fe++;
+    size_t q = fe;
+    while (q < e && b->p[q] == ' ') q++;
+    if (q >= e || b->p[q] != '=' || b->p[q+1] == '=') continue;   /* a read, or == */
+    int ref = hc >= 0 && wb_class_has_field(c, hc, b->p + f, fe - f)
+                ? wb_field_is_ref_in(c, hc, b->p + f, fe - f) : wb_field_is_ref(c, b->p + f, fe - f);
+    return ref && !wb_value_never_young(b, q);
+  }
+  return 0;
+}
 /* The text of a parenthesised statement's stores, `[from, to)`, with a barrier
-   after each store (`o->a = x, sp_gc_wb(o), o->b = y, sp_gc_wb(o), 0`). Every
-   value can allocate and collect, so each store has to be recorded before the
-   next value is built: one barrier after the last would leave the earlier
-   young values unrecorded while a later value's collection runs. */
-static void wb_put_stores_barriered(Buf *ins, const Buf *b, size_t from, size_t to, int wid) {
+   after each store that needs one (`o->a = x, sp_gc_wb(o), o->b = y,
+   sp_gc_wb(o), 0`). Every value can allocate and collect, so each store has to
+   be recorded before the next value is built: one barrier after the last
+   would leave the earlier young values unrecorded while a later value's
+   collection runs. */
+static void wb_put_stores_barriered(Compiler *c, int hc, Buf *ins, const Buf *b, size_t from,
+                                    size_t to, int wid) {
   size_t seg = from;
   size_t k = from;
   size_t d = 0;
@@ -5176,11 +5250,8 @@ static void wb_put_stores_barriered(Buf *ins, const Buf *b, size_t from, size_t 
       if (!(x == ',' && !d)) continue;
     }
     size_t e = k < to ? k : to;
-    int store = 0;
-    for (size_t j = seg; j + 5 < e && !store; j++)
-      if (b->p[j] == '-' && b->p[j+1] == '>' && !strncmp(b->p + j + 2, "iv_", 3)) store = 1;
     buf_putn(ins, b->p + seg, e - seg);
-    if (store) buf_printf(ins, ", sp_gc_wb((void *)_wb%d)", wid);
+    if (wb_seg_needs_barrier(c, hc, b, seg, e)) buf_printf(ins, ", sp_gc_wb((void *)_wb%d)", wid);
     if (end) break;
     buf_putn(ins, ",", 1);
     seg = k + 1;
@@ -5441,9 +5512,9 @@ static void gc_wb_insert_seg(Compiler *c, Buf *b, size_t fn_off) {
     size_t stmt_end = at_stmt ? wb_stmt_end(b, q) : 0;
     /* A statement the emitter wrapped in parentheses is a statement all the
        same (`((o)->f = v);`): the barrier follows its store too. */
-    size_t pst = (size_t)-1, pval = 0, npar = 0;
+    size_t pst = (size_t)-1, pval = 0, npar = 0, pfirst = i;
     if (!at_stmt) {
-      pst = wb_paren_stmt_start(b, bol, st, &npar);
+      pst = wb_paren_stmt_start(b, wb_paren_stmt_bol(b, fn_off, st), st, i, &npar, &pfirst);
       if (pst != (size_t)-1) stmt_end = wb_paren_stmt_end(b, st, i, q, npar, &pval);
     }
     Buf ins; memset(&ins, 0, sizeof ins);
@@ -5454,7 +5525,7 @@ static void gc_wb_insert_seg(Compiler *c, Buf *b, size_t fn_off) {
       buf_printf(&ins, ") _wb%d = ", wid);
       buf_putn(&ins, b->p + st, i - st);
       buf_printf(&ins, "; _wb%d", wid);
-      wb_put_stores_barriered(&ins, b, i, pval, wid);
+      wb_put_stores_barriered(c, hc, &ins, b, pfirst, pval, wid);
       buf_puts(&ins, "; }");
       size_t grew2 = ins.len - (stmt_end + 1 - pst);
       size_t tail2 = b->len - (stmt_end + 1);
@@ -15084,7 +15155,14 @@ static void scan_prologue_features(Compiler *c) {
   {
     int polyish = 0, has_class = 0;
 #define SP_TT(t) do { TyKind _t = (t);       if (_t == TY_POLY || ty_is_array(_t) || ty_is_hash(_t)) polyish = 1;       else if (_t == TY_SYMBOL) g_emit_sym_rt = 1;       else if (_t == TY_CLASS) has_class = 1; } while (0)
-    for (int i = 0; i < nt->count && i < c->node_cap; i++) SP_TT(c->ntype[i]);
+    /* a def's Symbol where nothing uses it is no value of the program's
+       (an_phase_pre_fixpoint leaves its name out of the table too) */
+    int *par = an_parent_map(nt);
+    for (int i = 0; i < nt->count && i < c->node_cap; i++) {
+      if (par && nt_kind(nt, i) == NK_DefNode && !an_def_value_used(nt, par, i)) continue;
+      SP_TT(c->ntype[i]);
+    }
+    free(par);
     for (int sc = 0; sc < c->nscopes; sc++) {
       SP_TT(c->scopes[sc].ret);
       for (int l = 0; l < c->scopes[sc].nlocals; l++) SP_TT(c->scopes[sc].locals[l].type);
@@ -15092,6 +15170,7 @@ static void scan_prologue_features(Compiler *c) {
     for (int k = 0; k < c->nclasses; k++)
       for (int j = 0; j < c->classes[k].nivars; j++) SP_TT(c->classes[k].ivar_types[j]);
 #undef SP_TT
+    g_tu_poly_values = polyish;
     if (polyish) { g_emit_sym_rt = 1; g_emit_class_names = 1; }
     if (has_class) g_emit_class_names = 1;
     /* The two banks reference each other through the header's render helpers
@@ -16356,7 +16435,7 @@ static void emit_class_machinery(const NodeTable *nt, Compiler *c, Buf *b, char 
       "static int sp_poly_is_a(sp_RbVal obj,sp_Class klass){\n"
       "  if (obj.tag == SP_TAG_OBJ && obj.cls_id == SP_BUILTIN_EXCEPTION)\n"
       "    return sp_poly_kind_of_builtin(obj, sp_class_to_s(klass));\n"
-      "  if (klass.name) return sp_poly_is_a_dyn(obj, sp_box_class(klass), 0);\n");
+      "  if (klass.name) return sp_poly_is_a_named(obj, sp_class_val_display(sp_box_class(klass)), 0);\n");
     /* a class value is also an instance of the modules it (or a superclass)
        extends, its singleton's ancestors: one arm per such class. The arms
        are spliced in here at the end, and only when the program calls
@@ -17369,6 +17448,11 @@ char *codegen_program(const NodeTable *nt) {
      this TU deliberately omits). */
   if (!g_emit_sym_rt)
     buf_puts(&b, "#define SP_TU_NO_POLY_RENDER 1\n");
+  /* Classes or Symbols but no poly, Array or Hash value: the render banks
+     are emitted, but no value the poly walkers and renderers take exists,
+     so the header installs none of them (sp_json_install_hooks) */
+  else if (!g_tu_poly_values)
+    buf_puts(&b, "#define SP_TU_NO_POLY_VALUES 1\n");
   emit_runtime_include(c, &b, 0);
   /* the frozen literals' file-scope objects go here, once the unit is done */
   size_t fzl_at = b.len;
@@ -17835,7 +17919,11 @@ char *codegen_program(const NodeTable *nt) {
   /* sp_tu_init is worth emitting only if it would set at least one hook. */
   g_re_init_needed = g_uses_symbols || g_uses_marshal || g_uses_regex || g_needs_class_machinery ||
                      g_has_user_global_marks || g_has_user_cmp || g_gen_obj_hash || g_gen_obj_to_h || g_gen_obj_with || g_gen_obj_hashkey ||
-                     g_gen_obj_valeq;
+                     g_gen_obj_valeq ||
+                     /* a method or a block can recurse until the stack runs out,
+                        and sp_tu_init installs the guard that reports it: a def
+                        used to bring its Symbol, and with it this, along */
+                     c->nscopes > 1;
 
   /* the sp_cls_* answers are defined among the dispatches below; a proc body
      that asks one is spliced ahead of them and reads these */

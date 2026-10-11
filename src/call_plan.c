@@ -2117,6 +2117,13 @@ int cplan_nil(Compiler *c, int id) {
     if (!rn || !sp_streq(rn, "__self")) return CN_NONE;
   }
   if (cplan_nil_user_method(c, nm)) return CN_NONE;
+  /* the typed String bang emitter tests a receiver it does not write back
+     into a variable itself (sp_nil_recv), and marks the plain form it emits
+     for it: a second test here would only repeat that one */
+  if (nt_int(nt, id, "recv_nil_tested", 0)) return CN_NONE;
+  if (rt == TY_STRING && ty_str_typed_bang_flags(nm) && comp_ntype(c, id) != TY_ENUMERATOR &&
+      !str_mut_var_recv(c, r) && !sb_shadowed_reader(r))
+    return CN_NONE;
   return is_nil_method(nm) ? CN_ANSWER : CN_RAISE;
 }
 
