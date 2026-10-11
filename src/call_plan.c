@@ -1366,6 +1366,7 @@ int cplan_arm_args_fit(Compiler *c, Scope *ks, const ArgLayout *L, int pos_argc,
          (ty_is_object(pt0) && ty_is_object(at0) &&
           obj_class_unrelated(c, ty_object_class(pt0), ty_object_class(at0))) ||
          ty_is_struct_valued(pt0) || ty_is_struct_valued(at0) ||
+         (pt0 == TY_BOOL) != (at0 == TY_BOOL) ||
          (ty_is_hash(pt0) && ty_is_hash(at0)) || (ty_is_array(pt0) && ty_is_array(at0))))
       return 0;
   }

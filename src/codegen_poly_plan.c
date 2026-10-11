@@ -849,6 +849,11 @@ static int poly_user_arm_n_replay(Compiler *c, int id, const char *name, const P
             (#3384). The arm passes its temps raw, so a disagreement here
             is always a hard C error, never a coercion that works. */
          ty_is_struct_valued(pt0) || ty_is_struct_valued(at0) ||
+         /* a boolean against any other scalar: `@border[x] = !shown` on
+            a boxed Array of booleans took an RBS-typed Memory#[]= arm
+            and handed its sp_bool to an sp_oint value slot, a hard C
+            error; into a plain sp_int it read true as 1 */
+         (pt0 == TY_BOOL) != (at0 == TY_BOOL) ||
          /* two concretely different CONTAINER kinds. sp_StrStrHash * and
             sp_SymPolyHash * are different structs, so the raw pass is a
             hard C error, not a coercion that works -- the same argument
