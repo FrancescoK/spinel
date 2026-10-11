@@ -1,0 +1,13 @@
+["s!", ["s!", "S?", 1], true]
+["AB?", :sym]
+[1, "XY!", "xy?"]
+["xy", 0]
+{n: ">XY"}
+"xy"
+["XY!"]
+"XY!"
+true
+["XY!", "t", "t", "t"]
+true
+true
+true

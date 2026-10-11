@@ -2213,6 +2213,12 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
       return;
     }
   }
+  /* --share-strings: a boxed call's answer a container store lifts into a
+     handle (strbuf_demand_store_leaf), so a mutation through the element
+     changes the String the container keeps */
+  if (!lift && repr_share_rule(c) && node >= 0 && c->poly_strbuf_lift[node] == STRBUF_LIFT_FRESH_CALL &&
+      repr_of(c, node).kind == RK_BOXED)
+    lift = 1;
   if (lift) buf_puts(b, "sp_poly_strbuf_lift(");
   rc_depth++;
   emit_boxed_impl(c, node, b);
