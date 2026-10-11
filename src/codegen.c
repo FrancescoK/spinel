@@ -17848,7 +17848,11 @@ char *codegen_program(const NodeTable *nt) {
   /* sp_tu_init is worth emitting only if it would set at least one hook. */
   g_re_init_needed = g_uses_symbols || g_uses_marshal || g_uses_regex || g_needs_class_machinery ||
                      g_has_user_global_marks || g_has_user_cmp || g_gen_obj_hash || g_gen_obj_to_h || g_gen_obj_with || g_gen_obj_hashkey ||
-                     g_gen_obj_valeq;
+                     g_gen_obj_valeq ||
+                     /* a method or a block can recurse until the stack runs out,
+                        and sp_tu_init installs the guard that reports it: a def
+                        used to bring its Symbol, and with it this, along */
+                     c->nscopes > 1;
 
   /* the sp_cls_* answers are defined among the dispatches below; a proc body
      that asks one is spliced ahead of them and reads these */
