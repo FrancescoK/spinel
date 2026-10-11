@@ -2954,7 +2954,7 @@ static int emit_bang_self_handle_1(Compiler *c, int v, Buf *b) {
        temps the call reads (sb_shim_args_first) */
     int late = 0, amark = g_n_argov;
     Buf apre; memset(&apre, 0, sizeof apre);
-    if (!nonnil && !call_is_safe_nav(c->nt, v)) {
+    if (!nonnil && !call_is_safe_nav(c->nt, v) && !sb_block_hoists(c, v)) {
       int ac = 0;
       const int *av = call_args(c->nt, v, &ac);
       for (int i = 0; i < ac && !late; i++) {

@@ -20599,7 +20599,7 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
   if (harg < 0 && repr_share_rule(c)) {
     int sr = nt_ref(nt, id, "receiver");
     const char *snm = nt_str(nt, id, "name");
-    if (sr >= 0 && snm && !call_is_safe_nav(nt, id) && repr_of(c, sr).as_ty == TY_STRING && strbuf_self_route(c, sr) &&
+    if (sr >= 0 && snm && !sn_guard_pending(c, id) && repr_of(c, sr).as_ty == TY_STRING && strbuf_self_route(c, sr) &&
         (strbuf_bang_self_local(c, id) || is_string_position_mutator(snm) || is_encoding_mutator(snm))) {
       harg = sr;
       hroute = 1;
