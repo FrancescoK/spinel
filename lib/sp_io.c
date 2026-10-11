@@ -950,6 +950,9 @@ const char *sp_sock_unpack_sockaddr_un(const char *sa) {SP_GC_ROOT_STR(sa);
   char path[256];
   int len = sa ? (int)sp_str_byte_len(sa) : 0;
   int n = sp_net_unpack_sockaddr_un(sa, len, path, (int)sizeof path);
+  if (n == -2)
+    sp_raise_cls("TypeError", sp_sprintf("too long sockaddr_un - %d longer than %d",
+                                         len, (int)sizeof(struct sockaddr_un)));
   if (n < 0) sp_raise_cls("ArgumentError", "not an AF_UNIX sockaddr");
   return sp_str_from_bytes(path, (size_t)n);
 }

@@ -1026,17 +1026,18 @@ int sp_net_pack_sockaddr_un(const char *path, void *out, int cap) {
 
 /* Read a packed sockaddr back: the port is the return, the numeric address
  * goes into `ipbuf`. -1 when the buffer is not a sockaddr this understands. */
-/* The path a packed AF_UNIX sockaddr names, into pathbuf: its length, or -1
-   when the bytes are not an AF_UNIX sockaddr. */
+/* The path a packed AF_UNIX sockaddr names, into pathbuf: its length, -1
+   when the bytes are not an AF_UNIX sockaddr, -2 when they are longer than a
+   struct sockaddr_un. Only trailing NULs are dropped, so an abstract name
+   ("\0name") keeps its leading NUL. */
 int sp_net_unpack_sockaddr_un(const void *sa, int salen, char *pathbuf, int cap) {
     int off = (int)offsetof(struct sockaddr_un, sun_path);
     if (!sa || salen < off || !pathbuf || cap <= 0) return -1;
     if (((const struct sockaddr *)sa)->sa_family != AF_UNIX) return -1;
+    if (salen > (int)sizeof(struct sockaddr_un)) return -2;
     const char *p = (const char *)sa + off;
-    int max = salen - off;
-    if (max > (int)sizeof(((struct sockaddr_un *)0)->sun_path)) max = (int)sizeof(((struct sockaddr_un *)0)->sun_path);
-    int n = 0;
-    while (n < max && p[n]) n++;
+    int n = salen - off;
+    while (n > 0 && p[n - 1] == 0) n--;
     if (n >= cap) n = cap - 1;
     memcpy(pathbuf, p, (size_t)n);
     pathbuf[n] = 0;
