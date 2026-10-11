@@ -441,8 +441,9 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
       ren_unpark(&park);
       continue;
     }
+    int pc = 0;
     { char rn[128]; snprintf(rn, sizeof rn, "_y%d_%s", tag, m->pnames[i]);
-      emit_inlined_param_target(c, m, m->pnames[i], rn, b); }
+      pc = emit_inlined_param_target(c, m, m->pnames[i], rn, b); }
     /* A param past the rest binds by name, never positionally. */
     int provided = L.from[i] == ARG_NODE ? argv2[L.arg[i]] : L.from[i] == ARG_KWH ? kwh : -1;
     /* Only bind from the keyword hash when the param was not already filled
@@ -485,7 +486,7 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
     else emit_arg_or_default(c, m, i, provided, b);
     g_self = svs; g_self_deref = svd;
     ren_unpark(&park);
-    buf_puts(b, ";\n");
+    buf_puts(b, pc ? ");\n" : ";\n");
   }
   inl_dflt_leave(sv_dflt);
   view_unbind(argov_saved);

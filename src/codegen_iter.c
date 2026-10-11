@@ -858,9 +858,10 @@ void emit_inline_bind_params(Compiler *c, Scope *m, int args, const int *argv, i
   for (int i = 0; i < m->nparams; i++) {
     emit_indent(b, din);
     int aliased = i < 32 && (alias_mask & (1u << i));
+    int pc = 0;
     if (aliased) buf_printf(b, "_cell__y%d_%s = &(", tag, m->pnames[i]);
     else { char rn[128]; snprintf(rn, sizeof rn, "_y%d_%s", tag, m->pnames[i]);
-      emit_inlined_param_target(c, m, m->pnames[i], rn, b); }
+      pc = emit_inlined_param_target(c, m, m->pnames[i], rn, b); }
     /* hide THIS inline's renames only: args are call-site expressions,
        and the call site may itself be an outer inlined body whose locals
        are renamed (nested yield-method inlines) -- zeroing the whole
@@ -926,7 +927,7 @@ void emit_inline_bind_params(Compiler *c, Scope *m, int args, const int *argv, i
         emit_arg_or_default(c, m, i, kv, b);
     }
     ren_unpark(&park);
-    buf_puts(b, ";\n");
+    buf_puts(b, pc ? ");\n" : ";\n");
   }
   view_unbind(argov_saved);
 }
