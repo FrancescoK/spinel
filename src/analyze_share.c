@@ -2769,11 +2769,6 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
      Enumerator's each runs the iterator it was made by, map's included.) */
   if (sh_iter_drops_block(c, n, rt)) sh_mark_unused(F, nt, nt_ref(nt, blk, "body"), SHU_TAIL);
   int s = bop_share_named(fam, name);
-  /* freeze over an attribute assignment answers that very String, which the
-     assignment's value names (as over a variable): frozen, but one object */
-  if (s == BSH_FROZEN && fam == TY_STRING && argc == 0 && (bop_answers_self(TY_STRING, name, 0, 0) & BOPF_SELF) &&
-      sh_assign_chain(c, recv, 0))
-    s = BSH_RECV;
   /* the Strings' answers-self names the face table lists */
   if (!s && fam == TY_STRING && str_self_call(nt, n)) s = BSH_RECV;
   if (!s) s = bop_share_named(BOP_ANY_RECV, name);
@@ -3426,7 +3421,8 @@ static int sh_frozen_value(Compiler *c, int v) {
   if (v < 0) return 1;
   NodeKind k = nt_kind(nt, v);
   if (k == NK_StringNode) return 1;
-  if (k == NK_CallNode && bop_share_named(TY_STRING, nt_str(nt, v, "name")) == BSH_FROZEN) return 1;
+  if (k == NK_CallNode && (bop_share_named(TY_STRING, nt_str(nt, v, "name")) == BSH_FROZEN ||
+                           is_freeze_name(nt_str(nt, v, "name")))) return 1;
   return c->ntype[v] != TY_UNKNOWN && !sh_may_hold(c, c->ntype[v]);
 }
 
@@ -4576,7 +4572,7 @@ int share_frozen_literal(Compiler *c, int n) {
   if (k == NK_StringNode) return nt_int(nt, n, "fzl", 0) != 0;
   if (k == NK_InterpolatedStringNode) return nt_int(nt, n, "fzl", 0) != 0 && interp_is_literal_fold(nt, n);
   if (k != NK_CallNode || nt_ref(nt, n, "arguments") >= 0 || nt_ref(nt, n, "block") >= 0 ||
-      bop_share_named(TY_STRING, nt_str(nt, n, "name")) != BSH_FROZEN) return 0;
+      (bop_share_named(TY_STRING, nt_str(nt, n, "name")) != BSH_FROZEN && !is_freeze_name(nt_str(nt, n, "name")))) return 0;
   return share_frozen_literal(c, nt_ref(nt, n, "receiver"));
 }
 int share_value_fresh(Compiler *c, int n, int depth) {
@@ -4602,14 +4598,14 @@ int share_value_fresh(Compiler *c, int n, int depth) {
   }
   if (k != NK_CallNode) return 0;
   if (sh_user_call_fresh(c, n, depth)) return 1;
-  /* ENV's [] answers a new String each read; to_s, to_str and itself
-     answer a new String receiver itself */
+  /* ENV's [] answers a new String each read; to_s, to_str, itself and
+     freeze answer a new String receiver itself */
   int rcv = nt_ref(nt, n, "receiver");
   const char *cn = nt_str(nt, n, "name");
   if (cn && rcv >= 0 && nt_ref(nt, n, "block") < 0 && !sh_has_targets(c, n)) {
     if (nt_kind(nt, rcv) == NK_ConstantReadNode && is_env_const(nt_str(nt, rcv, "name")) && is_aref_name(cn))
       return 1;
-    if (is_receiver_conversion(cn) && call_plain_argc(c, n) == 0)
+    if ((is_receiver_conversion(cn) || is_freeze_name(cn)) && call_plain_argc(c, n) == 0)
       return share_value_fresh(c, rcv, depth + 1);
     /* a proc, a lambda or a Method the walk bounds to literals */
     if (is_call_alias(cn) && sh_call_fresh(c, n, depth)) return 1;
@@ -4806,6 +4802,15 @@ static int sh_carries_handle(const Compiler *c, int n) {
   /* The return route takes the handle its callee publishes, including
      when a borrowed parameter is returned beside a method-owned String. */
   if (repr_call_returns_handle((Compiler *)c, n)) return 1;
+  /* freeze answers its receiver: it hands on the handle where its receiver
+     does, and a new String's freeze is a String no other name holds */
+  int u = an_unparen(c->nt, n);
+  if (u >= 0 && nt_kind(c->nt, u) == NK_CallNode && is_freeze_name(nt_str(c->nt, u, "name")) &&
+      call_plain_argc((Compiler *)c, u) == 0 && nt_ref(c->nt, u, "block") < 0 &&
+      cplan_user((Compiler *)c, u)->dispatch == CP_NONE) {
+    int r = nt_ref(c->nt, u, "receiver");
+    if (r >= 0 && (share_value_fresh((Compiler *)c, r, 0) || sh_carries_handle(c, r))) return 1;
+  }
   Repr r = repr_of(c, n);
   /* A boxed holder's read keeps what its incoming flows stored there. */
   if (r.kind == RK_BOXED && strbuf_boxed_local((Compiler *)c, n)) return 1;
@@ -5015,6 +5020,11 @@ static int sh_plain_operand(Compiler *c, int n) {
   case NK_CallNode: {
     int recv = nt_ref(nt, n, "receiver");
     TyKind rt = recv >= 0 ? c->ntype[recv] : TY_VOID;
+    /* a freeze moves no payload and changes no byte: a borrowed key read
+       beside one stays the live buffer (`h[k] = k.freeze`) */
+    if ((rt == TY_STRING || rt == TY_STRBUF) && is_freeze_name(nt_str(nt, n, "name")) &&
+        nt_ref(nt, n, "arguments") < 0 && nt_ref(nt, n, "block") < 0 && !sh_has_targets(c, n))
+      return sh_plain_operand(c, recv);
     if ((rt != TY_INT && rt != TY_FLOAT) || nt_ref(nt, n, "block") >= 0) return 0;
     if (sh_has_targets(c, n) || !sh_plain_operand(c, recv)) return 0;
     int args = nt_ref(nt, n, "arguments");
@@ -5058,7 +5068,7 @@ static int sh_hash_key_call(Compiler *c, int n) {
   TyKind rt = c->ntype[recv];
   if (rt != TY_STR_INT_HASH && rt != TY_STR_STR_HASH && rt != TY_STR_POLY_HASH) return 0;
   if (sh_has_targets(c, n)) return 0;
-  if (is_store_alias(name)) return rt != TY_STR_POLY_HASH;
+  if (is_store_alias(name)) return 1;
   return is_hash_key_lookup(name);
 }
 
@@ -5078,6 +5088,21 @@ int share_mark_borrows(Compiler *c) {
       int plain = 1;
       for (int i = 1; i < argc && plain; i++) plain = sh_plain_operand(c, argv[i]);
       if (plain) { c->strbuf_read_raw[argv[0]] = 1; marked++; }
+    }
+  }
+  /* a String-keyed Hash literal stores each entry as such a call does:
+     its key, beside a plain value */
+  NT_FOREACH_KIND(nt, NK_HashNode, n) {
+    TyKind ht = c->ntype[n];
+    if (ht != TY_STR_INT_HASH && ht != TY_STR_STR_HASH && ht != TY_STR_POLY_HASH) continue;
+    int en = 0; const int *el = nt_arr(nt, n, "elements", &en);
+    for (int i = 0; i < en; i++) {
+      if (nt_kind(nt, el[i]) != NK_AssocNode) continue;
+      int k = nt_ref(nt, el[i], "key");
+      if (k >= 0 && sh_handle_read(c, k) && sh_plain_operand(c, nt_ref(nt, el[i], "value"))) {
+        c->strbuf_read_raw[k] = 1;
+        marked++;
+      }
     }
   }
   c->share_borrows = marked;

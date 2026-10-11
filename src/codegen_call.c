@@ -19913,6 +19913,8 @@ static int text_assigns_tmp(const char *txt, int n) {
 
 /* the call node currently being rewritten for operand order (no re-entry) */
 static int g_operand_order_node = -1;
+/* See codegen_internal.h. */
+int operand_order_trial(int id) { return id >= 0 && id == g_operand_order_node; }
 
 /* Ruby evaluates a call's receiver first, then its arguments left to right, and
    every one of them stays alive until the call runs. Spinel handed them all to
@@ -20748,6 +20750,28 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
   if (emit_or_take_back(c, id, b, emit_str_append_chain_handle)) return 1;
   const NodeTable *nt = c->nt;
   if (id == g_operand_order_node) return 0;
+  /* --share-strings: a String mutator's receiver that is a call answering
+     its receiver over a handle (`id(s).upcase!.sub!(x, y())`) is held as
+     that handle, run once: the mutator takes it from the temp
+     (ran_first_handle), where it took the receiver's bytes and ran the
+     receiver again for its handle */
+  /* --share-strings: a `&.` call on such a receiver orders its operands
+     inside its guard (emit_call_safe_nav_arms holds the receiver's handle
+     and re-enters the call): run here, the arguments ran ahead of the nil
+     test that skips them */
+  if (repr_share_rule(c) && sn_guard_pending(c, id) && nt_ref(nt, id, "receiver") >= 0 &&
+      strbuf_self_route(c, nt_ref(nt, id, "receiver")))
+    return 0;
+  int hroute = 0;
+  if (harg < 0 && repr_share_rule(c)) {
+    int sr = nt_ref(nt, id, "receiver");
+    const char *snm = nt_str(nt, id, "name");
+    if (sr >= 0 && snm && !call_is_safe_nav(nt, id) && repr_of(c, sr).as_ty == TY_STRING && strbuf_self_route(c, sr) &&
+        (strbuf_bang_self_local(c, id) || is_string_position_mutator(snm) || is_encoding_mutator(snm))) {
+      harg = sr;
+      hroute = 1;
+    }
+  }
   int recv = nt_ref(nt, id, "receiver");
   int args = nt_ref(nt, id, "arguments");
   int argc = 0;
@@ -21080,6 +21104,13 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
     else if (needs_root(ty[i])) buf_printf(b, "SP_GC_ROOT(_t%d); ", tmp[i]);
     free(opb[i].p);
   }
+  /* (a held route that answered nil, a bang's: its arguments ran, and the
+     call raises NoMethodError for nil, as CRuby does, before the mutator
+     reads the handle; a `&.` call's guard skips it instead) */
+  for (int i = 0; hroute && i < nb; i++)
+    if (node[i] == harg)
+      buf_printf(b, "if (SP_UNLIKELY(!_t%d)) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil())); ", tmp[i],
+                 nt_str(nt, id, "name"));
   buf_puts(b, ob.p ? ob.p : "");
   buf_puts(b, "; })");
   free(ob.p);
@@ -21744,6 +21775,9 @@ static void emit_nil_target_head(Compiler *c, int id, Buf *b, const char *lead, 
        mutator then changes (strbuf_recv_handle reads it) */
     if (node[i] == r && repr_share_rule(c) && (ty[i] == TY_STRING || ty[i] == TY_STRBUF)) {
       int t = emit_nil_target_route(c, r, 0, b, lead);
+      /* (and so is a call answering its receiver over one, `id(s).upcase!`:
+         its handle, run once here, never again by the mutator) */
+      if (t < 0 && strbuf_self_route(c, r)) t = emit_nil_target_route(c, r, 1, b, lead);
       if (t >= 0) { snprintf(rtext, sizeof rtext, "_t%d", t); continue; }
     }
     /* A retained argument's handle is taken at this first evaluation,

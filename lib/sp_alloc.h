@@ -998,6 +998,13 @@ static inline sp_RbVal sp_PolyArray_get(sp_PolyArray *a, sp_int i) { if (!a) ret
    used by lib/sp_cold.c's sp_gc_stat. Pure textual move (still static
    inline / object-like macro), no codegen change. ---- */
 #define SPL(s) (&("\xff" s)[1])
+/* A String handle's payload (0xfd) is frozen when its owning handle is: the
+   header's `next` is that handle (sp_fd_own), whose GC header has the bit.
+   A Hash keeps a frozen handle's payload as its key (sp_hash_key_str). */
+static inline sp_bool sp_str_fd_owner_frozen(const char *s) {
+  void *owner = (void *)(((const sp_str_hdr *)(s - 1)) - 1)->next;
+  return owner && ((sp_gc_hdr *)((char *)owner - sizeof(sp_gc_hdr)))->frozen;
+}
 /* 0xf1 = heap string frozen by an explicit .freeze call.
    Unlike 0xff (rodata literal) this marker lives in a malloc'd buffer
    so sp_str_freeze_val can set it.  The frozen? predicate and mutation
@@ -1009,19 +1016,29 @@ static inline sp_RbVal sp_PolyArray_get(sp_PolyArray *a, sp_int i) { if (!a) ret
 static inline sp_bool sp_str_is_frozen_val(const char *s) {
   if (!s) return TRUE;
   unsigned char m = ((const unsigned char *)s)[-1];
-  return m == 0xf1 || m == 0xfa || m == 0xf8;
+  /* one test of the frozen marks and 0xfd at once (bits 0, 7, 9 and 12 of
+     m - 0xf1): an unfrozen string pays nothing for the handle's payload */
+  unsigned d = (unsigned)m - 0xf1u;
+  if (d > 12u || !((0x1281u >> d) & 1u)) return FALSE;
+  if (SP_UNLIKELY(m == 0xfd)) return sp_str_fd_owner_frozen(s);
+  return TRUE;
 }
 static inline void sp_str_check_mutable(const char *s) {
   if (sp_str_is_frozen_val(s)) sp_raise_frozen_str(s);
 }
 /* A String key as a Hash stores it: a mutable string is copied into a frozen
    0xfa, so a later `<<` or setbyte on the caller's string cannot move the key
-   (CRuby's rb_hash_key_str). A frozen or literal key is stored as is. The
-   copy can collect, which clears the write barrier's record of the hash:
-   the caller issues its barrier again before storing. */
+   (CRuby's rb_hash_key_str). A frozen or literal key is stored as is, and so
+   is the payload of a frozen String handle (0xfd, whose header's `next` is
+   the owning handle, sp_fd_own): nothing can change or move it any more,
+   the mark of the key reaches the handle, and the key is that String itself,
+   as CRuby keys a frozen String. The copy can collect, which clears the
+   write barrier's record of the hash: the caller issues its barrier again
+   before storing. */
 static inline const char *sp_hash_key_str(const char *s) {
   unsigned char m = ((const unsigned char *)s)[-1];
   if (m != 0xfe && m != 0xfc && m != 0xfd) return s;
+  if (m == 0xfd && sp_str_fd_owner_frozen(s)) return s;
   char *r = (char *)sp_str_from_bytes(s, sp_str_byte_len(s));
   if (sp_str_is_binary(s)) sp_str_mark_binary(r);
   ((unsigned char *)r)[-1] = 0xfa;

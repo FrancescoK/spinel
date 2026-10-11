@@ -1302,7 +1302,6 @@ static void emit_poly_array_from(Compiler *c, int v, Buf *b) {
 }
 
 static int str_append_chain_base(Compiler *c, int id);
-static int str_alias_chain_base(Compiler *c, int id);
 int strbuf_cond_has_handle_leaf(Compiler *c, int v, int depth);
 static int strbuf_gvar_write_handle(Compiler *c, int v, char *out, size_t cap);
 static int emit_strbuf_chain_in_place(Compiler *c, int v, int base, const char *bref, Buf *b);
@@ -1577,6 +1576,8 @@ static int strbuf_stmts_tail_plain(Compiler *c, int st) {
   /* A shared reader's demanded value is its slot's handle too. */
   if (strbuf_route_reader(c, b[n - 1])) return 1;
   if (strbuf_hash_default_arg(c, b[n - 1]) >= 0) return 1;
+  /* So is a call answering its receiver over a handle (`s.freeze`). */
+  if (strbuf_bang_self_local(c, b[n - 1])) return 1;
   /* A receiver conversion's demanded value keeps its operand's handle. */
   if (repr_string_conversion_operand(c, b[n - 1]) >= 0 || repr_boxed_to_s_operand(c, b[n - 1]) >= 0) return 1;
   NodeKind k = nt_kind(c->nt, b[n - 1]);
@@ -2245,6 +2246,20 @@ int strbuf_var_handle(Compiler *c, int n, char *out, size_t cap) {
 /* --share-strings: does value v hand over a String the rule shares as the
    handle (emit_strbuf_handle_of then answers it): a variable that holds
    it, a route over one, or a conditional with such an arm? */
+static int call_takes_splat(const NodeTable *nt, int v);
+/* Is v an append without a bang (`<<`, `concat`) answering its String
+   receiver, with no program method of the name: a link
+   strbuf_bang_self_local takes over a handle, its receiver aside? */
+static int strbuf_append_link(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  if (v < 0 || nt_kind(nt, v) != NK_CallNode || nt_ref(nt, v, "block") >= 0 || call_takes_splat(nt, v)) return 0;
+  const char *nm = nt_str(nt, v, "name");
+  int r = nt_ref(nt, v, "receiver"), argc, targets[CPT_MAX];
+  call_args(nt, v, &argc);
+  return nm && is_append_concat(nm) && r >= 0 &&
+         (comp_ntype(c, r) == TY_STRING || comp_ntype(c, r) == TY_STRBUF) &&
+         bop_answers_self(TY_STRING, nm, argc, 0) == BOPF_SELF && cplan_targets(c, v, targets, CPT_MAX) == 0;
+}
 int strbuf_value_carries(Compiler *c, int v) {
   char ref[1024];
   NodeKind k = v >= 0 ? nt_kind(c->nt, v) : NK_NONE;
@@ -2252,23 +2267,55 @@ int strbuf_value_carries(Compiler *c, int v) {
   if ((k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode || repr_static_read_kind(k)) &&
       strbuf_slot_ref(c, v, ref, sizeof ref))
     return 1;
+  /* a call without a bang that answers its receiver over a handle
+     (`id(s).freeze`, `(@a = s).freeze`) is that handle (emit_bang_self_handle);
+     asked first, so a chain of them is walked once, not once per link. An
+     append chain is the chain arm's below: asked link by link, each link
+     would walk the chain to its base again. */
+  const char *nm = k == NK_CallNode ? nt_str(c->nt, v, "name") : NULL;
+  if (nm && !is_append_concat(nm) && strbuf_plain_self_call(c, v)) return 1;
+  /* (one append over a call that answers the handle, `id(s) << x`, is
+     asked the same way: its receiver is no append, so no chain is walked
+     link by link) */
+  if (nm && is_append_concat(nm)) {
+    int ar = unwrap_parens(c, nt_ref(c->nt, v, "receiver"));
+    const char *an = ar >= 0 && nt_kind(c->nt, ar) == NK_CallNode ? nt_str(c->nt, ar, "name") : NULL;
+    if (an && !is_append_concat(an) && strbuf_plain_self_call(c, v)) return 1;
+    /* a chain of appends over such a call (`id(s) << x << y`): each link
+       answers its receiver, so the chain is the base's handle; the links
+       are walked once, down to the first receiver that is no append */
+    if (an && is_append_concat(an)) {
+      int cur = v;
+      while (strbuf_append_link(c, cur)) {
+        int nx = unwrap_parens(c, nt_ref(c->nt, cur, "receiver"));
+        const char *nn = nx >= 0 && nt_kind(c->nt, nx) == NK_CallNode ? nt_str(c->nt, nx, "name") : NULL;
+        if (!nn || !is_append_concat(nn)) return nx >= 0 && nt_kind(c->nt, nx) == NK_CallNode && strbuf_value_carries(c, nx);
+        cur = nx;
+      }
+    }
+  }
   /* an append chain over a variable's handle (`s << x`) answers that
      String, appended in place (emit_strbuf_chain_in_place) */
   int cb = str_alias_chain_base(c, v);
   if (cb != v && cb >= 0 && strbuf_var_handle(c, cb, ref, sizeof ref)) return 1;
-  return strbuf_route_carries(c, v, 0) || strbuf_cond_has_handle_leaf(c, v, 0) || strbuf_opwrite_handle(c, v, ref, sizeof ref);
+  /* a variable's write whose slot holds the handle hands it on, as a
+     parenthesized one does (strbuf_cond_has_handle_leaf) */
+  return strbuf_route_carries(c, v, 0) || strbuf_cond_has_handle_leaf(c, v, 0) || strbuf_opwrite_handle(c, v, ref, sizeof ref) ||
+         (k != NK_CallNode && repr_write_share(c, v));
 }
 /* A builtin value route can publish its handle as a method's return too.
    The return analysis and tail emitter ask the same route predicate.
    A fresh result has no existing identity for the tail to publish. */
+static int self_call_answers_nil(Compiler *c, int v);
 int strbuf_builtin_tail(Compiler *c, int v) {
   if (!repr_share_rule(c) || !c->share || v < 0 || nt_kind(c->nt, v) != NK_CallNode ||
       an_arg_is_shared_handle(c, v)) return 0;
   /* Only the block route carries a demanded handle through &.'s guard.
      A conversion does too: its route answers the operand's handle, nil for
-     a nil operand. */
+     a nil operand; and so does freeze, which nil answers too (`x&.freeze`
+     is `x.freeze`) */
   if (sn_guard_pending(c, v) && strbuf_route_operand(c, v) != v && repr_string_conversion_operand(c, v) < 0 &&
-      repr_boxed_to_s_operand(c, v) < 0) return 0;
+      repr_boxed_to_s_operand(c, v) < 0 && !self_call_answers_nil(c, v)) return 0;
   TyKind t = repr_of(c, v).ty;
   return (t == TY_STRING || t == TY_STRBUF) && cplan_user_fresh(c, v)->dispatch == CP_NONE &&
          !share_node_fresh(c, v) && strbuf_value_carries(c, v);
@@ -2360,30 +2407,76 @@ int strbuf_recv_handle(Compiler *c, int id, int recv, char *out, size_t cap) {
 }
 /* strbuf_recv_handle's route half: 1 with the text in out, else 0 with
    nothing emitted */
-static int strbuf_route_recv(Compiler *c, int id, int recv, char *out, size_t cap) {
+int strbuf_self_route(Compiler *c, int recv) {
+  int u = unwrap_parens(c, recv);
+  return repr_share_rule(c) && u >= 0 && nt_kind(c->nt, u) == NK_CallNode && !strbuf_chain_over_handle(c, u) &&
+         strbuf_bang_self_local(c, u);
+}
+/* --share-strings: the handle a String mutator's receiver hands on, into b
+   as one expression of any length: the handle a head took of it (a nil
+   test's, a `&.` guard's: ran_first_handle), a route's (emit_strbuf_route),
+   or a call answering its own receiver over a handle that no route or chain
+   arm reads (`id(s).concat(x)`, a bang on one; strbuf_self_route), as the
+   seal takes it (strbuf_flow_value). The receiver runs here once: one that
+   ran already without a handle is none, never run a second time. A route
+   that can answer nil raises NoMethodError for call id. 1, or 0 with
+   nothing emitted. */
+int emit_recv_route_handle(Compiler *c, int id, int recv, Buf *b) {
   if (!repr_share_rule(c) || g_n_argov >= MAX_ARG_OVERRIDE) return 0;
   int th = ran_first_handle(recv);
-  if (th >= 0) { snprintf(out, cap, "_t%d", th); return 1; }
+  if (th >= 0) { buf_printf(b, "_t%d", th); return 1; }
+  /* a receiver a head ran into its bytes alone has no handle to give (the
+     operand-order rewrite's trial binding has run nothing: the route runs
+     the receiver here, and the rewrite, its temp unread, steps aside) */
+  if (!operand_order_trial(id) && (arg_ran_first(recv, 0) || arg_ran_first(unwrap_parens(c, recv), 0))) return 0;
   Buf *pre = g_pre;
   size_t pre_mark = pre ? pre->len : 0;
   Buf hb; memset(&hb, 0, sizeof hb);
-  if (!emit_strbuf_route(c, recv, &hb)) return 0;
-  Buf nb; memset(&nb, 0, sizeof nb);
-  if (strbuf_route_nonnil(c, recv)) buf_puts(&nb, hb.p);
+  int nonnil = 0;
+  if (emit_strbuf_route(c, recv, &hb)) nonnil = strbuf_route_nonnil(c, recv);
+  else {
+    free(hb.p); memset(&hb, 0, sizeof hb);
+    if (pre && g_pre == pre && pre->len > pre_mark) { pre->len = pre_mark; pre->p[pre_mark] = '\0'; }
+    if (!strbuf_self_route(c, recv)) return 0;
+    emit_strbuf_handle_of(c, unwrap_parens(c, recv), &hb);
+  }
+  /* a `&.` call skips a nil receiver, which the raise below would not:
+     its guard takes the receiver (emit_call_safe_nav_arms) */
+  if (!nonnil && call_is_safe_nav(c->nt, id)) {
+    free(hb.p);
+    if (pre && g_pre == pre && pre->len > pre_mark) { pre->len = pre_mark; pre->p[pre_mark] = '\0'; }
+    return 0;
+  }
+  if (nonnil) buf_puts(b, hb.p);
   else {
     /* unrooted: nothing allocates between the read and the value but the
        raise, where the temp holds nil, and a root here would end with this
        expression anyway; the caller roots its own temp of the value while
        the mutator can allocate (emit_route_recv_root) */
     int t = ++g_tmp;
-    buf_printf(&nb, "({ sp_String *_t%d = %s; if (SP_UNLIKELY(!_t%d)) "
+    buf_printf(b, "({ sp_String *_t%d = %s; if (SP_UNLIKELY(!_t%d)) "
                "sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil())); _t%d; })",
                t, hb.p, t, nt_str(c->nt, id, "name"), t);
   }
+  free(hb.p);
+  return 1;
+}
+/* See codegen_internal.h. */
+int strbuf_recv_handle_any(Compiler *c, int id, int recv, char *out, size_t cap, Buf *lb) {
+  int hr = strbuf_recv_handle(c, id, recv, out, cap);
+  if (hr || !repr_share_rule(c)) return hr;
+  if (recv >= 0 && call_is_safe_nav(c->nt, id) && strbuf_assign_leaf(c, recv)) return 0;
+  return emit_recv_route_handle(c, id, recv, lb) ? 2 : 0;
+}
+static int strbuf_route_recv(Compiler *c, int id, int recv, char *out, size_t cap) {
+  Buf *pre = g_pre;
+  size_t pre_mark = pre ? pre->len : 0;
+  Buf nb; memset(&nb, 0, sizeof nb);
+  if (!emit_recv_route_handle(c, id, recv, &nb)) { free(nb.p); return 0; }
   int fit = nb.p && strlen(nb.p) < cap;
   if (fit) snprintf(out, cap, "%s", nb.p);
   else if (pre && g_pre == pre && pre->len > pre_mark) { pre->len = pre_mark; pre->p[pre_mark] = '\0'; }
-  free(hb.p); free(nb.p);
+  free(nb.p);
   return fit;
 }
 static void emit_strbuf_cond_value(Compiler *c, LocalVar *lv, int v, const char *dst, Buf *b, int depth);
@@ -2632,6 +2725,11 @@ int strbuf_chain_over_handle(Compiler *c, int v) {
   char ref[1024];
   int args[32];
   if (!repr_share_rule(c)) return 0;
+  /* the chain's first link has to be an append or a conversion
+     (strbuf_chain_links), which is asked before the walk to its base */
+  int u = unwrap_parens(c, v);
+  const char *nm = u >= 0 && nt_kind(c->nt, u) == NK_CallNode ? nt_str(c->nt, u, "name") : NULL;
+  if (!nm || !(is_append_concat(nm) || (str_self_call(c->nt, u) && is_receiver_conversion(nm)))) return 0;
   int base = str_alias_chain_base(c, v);
   return base != v && strbuf_var_handle(c, unwrap_parens(c, base), ref, sizeof ref) &&
          strbuf_chain_links(c, v, base, args) > 0;
@@ -2806,6 +2904,12 @@ static void emit_bang_on_held(Compiler *c, int v, int th, Buf *b) {
   else buf_printf(b, "!_t%d ? (const char *)NULL : %s", th, val.p ? val.p : "NULL");
   free(pre.p); free(val.p);
 }
+/* Does call v answer nil for a nil receiver instead of raising: freeze,
+   which NilClass defines too? */
+static int self_call_answers_nil(Compiler *c, int v) {
+  const char *nm = nt_str(c->nt, v, "name");
+  return nm && is_freeze_name(nm) && call_plain_argc(c, v) == 0;
+}
 /* --share-strings: a bang method (or an iterator given a block) on a
    variable's handle, or on a reader call read as one (strbuf_bang_self_local),
    as an sp_String *: the receiver's handle where the call answered it, NULL
@@ -2818,18 +2922,57 @@ static int emit_bang_self_handle_1(Compiler *c, int v, Buf *b) {
   if (call_is_safe_nav(c->nt, v) && strbuf_assign_leaf(c, r)) return 0;
   char sref[1024];
   int slot = strbuf_slot_ref(c, r, sref, sizeof sref);
+  /* freeze answers its receiver, nil for nil: the handle is frozen and
+     answered, with no read of its bytes to test (a consumer that wants them
+     reads them once) */
+  if (self_call_answers_nil(c, v) && (slot || strbuf_value_carries(c, r) || strbuf_self_route(c, r))) {
+    int th = ++g_tmp;
+    buf_printf(b, "({ sp_String *_t%d = ", th);
+    if (slot) buf_puts(b, sref);
+    else emit_strbuf_handle_of(c, unwrap_parens(c, r), b);
+    buf_printf(b, "; sp_String_freeze(_t%d); _t%d; })", th, th);
+    return 1;
+  }
   /* A receiver-returning call takes its receiver route's handle once,
      before its own arguments can change the base slot. */
   /* (a block or a block argument runs in the statement's prelude, ahead of
      the temp this form holds the receiver's handle in) */
   int blk = nt_ref(c->nt, v, "block") >= 0;
-  if (!slot && !(blk && strbuf_assign_route(c, r)) && strbuf_value_carries(c, r)) {
+  if (!slot && !(blk && strbuf_assign_route(c, r)) &&
+      (strbuf_value_carries(c, r) ||
+       (nt_kind(c->nt, unwrap_parens(c, r)) == NK_CallNode &&
+        bop_share_self_answer(nt_str(c->nt, unwrap_parens(c, r), "name"), nt_ref(c->nt, unwrap_parens(c, r), "block") >= 0) &&
+        strbuf_bang_self_local(c, unwrap_parens(c, r))))) {
     int th = ++g_tmp, tr = ++g_tmp;
-    /* Taking the handle directly keeps the receiver route's nil check. */
+    /* Taking the handle directly keeps the receiver route's nil check
+       (nil.freeze is nil: the frozen face of a NULL handle is NULL). */
     Buf rb; memset(&rb, 0, sizeof rb);
     emit_strbuf_handle_of(c, r, &rb);
-    emit_bang_held_open(c, v, th, rb.p ? rb.p : "NULL", strbuf_route_nonnil(c, r), 1, b);
+    int nonnil = strbuf_route_nonnil(c, r) || self_call_answers_nil(c, v);
+    /* a nil receiver raises NoMethodError after the arguments ran, as
+       CRuby dispatches: arguments that run code go ahead of the test, into
+       temps the call reads (sb_shim_args_first) */
+    int late = 0, amark = g_n_argov;
+    Buf apre; memset(&apre, 0, sizeof apre);
+    if (!nonnil && !call_is_safe_nav(c->nt, v)) {
+      int ac = 0;
+      const int *av = call_args(c->nt, v, &ac);
+      for (int i = 0; i < ac && !late; i++) {
+        NodeKind ak = nt_kind(c->nt, av[i]);
+        if (ak != NK_StringNode && ak != NK_IntegerNode && ak != NK_FloatNode && ak != NK_SymbolNode &&
+            !subtree_is_pure_read(c, av[i]))
+          late = 1;
+      }
+    }
+    emit_bang_held_open(c, v, th, rb.p ? rb.p : "NULL", nonnil || late, 1, b);
     free(rb.p);
+    if (late) {
+      amark = sb_shim_args_first(c, v, &apre, g_indent);
+      buf_puts(b, apre.p ? apre.p : "");
+      buf_printf(b, " if (SP_UNLIKELY(!_t%d)) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil())); ", th,
+                 nt_str(c->nt, v, "name"));
+      free(apre.p);
+    }
     buf_printf(b, "const char *_t%d = ", tr);
     r = unwrap_parens(c, r);
     int mark = g_n_argov;
@@ -2840,6 +2983,7 @@ static int emit_bang_self_handle_1(Compiler *c, int v, Buf *b) {
     view_unbind(mark);
     view_pop(c, st);
     view_pop(c, sv);
+    if (late) view_unbind(amark);
     buf_printf(b, "; _t%d ? _t%d : (sp_String *)NULL; })", tr, th);
     return 1;
   }
@@ -2869,7 +3013,7 @@ static int emit_bang_self_handle_1(Compiler *c, int v, Buf *b) {
     return 1;
   }
   int th = ++g_tmp;
-  emit_bang_held_open(c, v, th, sref, strbuf_route_nonnil(c, r), 0, b);
+  emit_bang_held_open(c, v, th, sref, strbuf_route_nonnil(c, r) || self_call_answers_nil(c, v), 0, b);
   buf_printf(b, "const char *_t%d = ", tr);
   int mark = g_n_argov;
   ran_first_bind(r, th, th);
@@ -2880,6 +3024,10 @@ static int emit_bang_self_handle_1(Compiler *c, int v, Buf *b) {
 }
 
 int emit_bang_self_handle(Compiler *c, int v, Buf *b) {
+  /* a call a guard ran already holds its handle (a `&.` guard's,
+     ran_first_handle): it is that handle, never run again */
+  int held = repr_share_rule(c) && strbuf_bang_self_local(c, v) ? ran_first_handle(v) : -1;
+  if (held >= 0) { buf_printf(b, "_t%d", held); return 1; }
   size_t at = b->len;
   int done = emit_bang_self_handle_1(c, v, b);
   /* the answer is the receiver's handle (the bang's own bytes only say
@@ -16546,7 +16694,7 @@ static int str_alias_chain_walk(Compiler *c, int id) {
     cur = nt_ref(c->nt, cur, "receiver");
   }
 }
-static int str_alias_chain_base(Compiler *c, int id) {
+int str_alias_chain_base(Compiler *c, int id) {
   int base = str_alias_chain_walk(c, id);
   /* (--share-strings: a link that reaches a method of the program's own,
      `class String; def concat`, answers what that method answers, so the
@@ -17133,8 +17281,15 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
                  _srecv >= 0 && nt_kind(nt, _srecv) == NK_LocalVariableReadNode;
     /* (--share-strings: a link that reaches a method of the program's own
        answers what that method answers, through the value path below) */
+    /* (--share-strings: a chain over a call, `id(s) << x << y`, reads no
+       base again: the value path below publishes the handle the chain
+       answers, its base run once) */
+    int _scb = unwrap_parens(c, str_append_chain_base(c, id));
+    NodeKind _scbk = _scb >= 0 ? nt_kind(nt, _scb) : NK_NONE;
+    int _scall = repr_share_rule(c) && _scb >= 0 && _scb != unwrap_parens(c, id) && _scbk != NK_LocalVariableReadNode &&
+                 _scbk != NK_InstanceVariableReadNode && !repr_static_read_kind(_scbk);
     if (_srecv >= 0 && _snm && (sp_streq(_snm, "<<") || _sself) &&
-        comp_ntype(c, _srecv) == TY_STRING &&
+        !_scall && comp_ntype(c, _srecv) == TY_STRING &&
         !(repr_share_rule(c) && (strbuf_chain_user_target(c, id, _srecv, 0) ||
                                  strbuf_chain_user_target(c, _srecv, str_append_chain_base(c, _srecv), 0))) &&
         ((repr_share_rule(c) && emit_nil_target_stmt(c, id, b, indent)) ||
@@ -18215,6 +18370,11 @@ static int str_mutate_append_bang_arms(Compiler *c, int id, Buf *b, int indent, 
       const char *cnm = nt_str(nt, cur, "name");
       int crecv = nt_ref(nt, cur, "receiver");
       if (!cnm || (!sp_streq(cnm, "<<") && !sp_streq(cnm, "concat")) || crecv < 0) break;
+      /* --share-strings: a link a head ran already (a nil test's, a `&.`
+         guard's) is held, and a `&.` link skips a nil: the chain stops
+         there, and the links above take the held handle */
+      if (repr_share_rule(c) && cur != unwrap_parens(c, id) && (arg_ran_first(cur, 0) || call_is_safe_nav(nt, cur)))
+        break;
       int cargs = nt_ref(nt, cur, "arguments");
       int cac = 0; const int *cav = cargs >= 0 ? nt_arr(nt, cargs, "arguments", &cac) : NULL;
       if (cac != 1) break;
@@ -18576,6 +18736,10 @@ static int str_mutate_shared_arms(Compiler *c, int id, Buf *b, int indent, const
       (is_string_position_mutator(name))) {
     char srefR[1024];
     SbReaderSave svR;
+    /* (--share-strings: what the reader's read put ahead of the statement
+       goes with a declined shim, or the reader runs twice) */
+    Buf *pre0 = g_pre;
+    size_t pre0_mark = pre0 ? pre0->len : 0;
     int tH = sb_reader_shim_open(c, recv, srefR, sizeof srefR, &svR);
     if (tH) {
       Buf pre; memset(&pre, 0, sizeof pre);
@@ -18584,7 +18748,13 @@ static int str_mutate_shared_arms(Compiler *c, int id, Buf *b, int indent, const
       int handled = emit_array_mutate_stmt(c, id, &armb, indent + 1);
       view_unbind(mark);
       sb_reader_shim_close(c, recv, &svR);
-      if (!handled) { free(armb.p); free(pre.p); }
+      if (!handled) {
+        free(armb.p); free(pre.p);
+        if (repr_share_rule(c) && pre0 && g_pre == pre0 && pre0->len > pre0_mark) {
+          pre0->len = pre0_mark;
+          pre0->p[pre0_mark] = '\0';
+        }
+      }
       else {
         emit_indent(b, indent);
         buf_printf(b, "{ sp_String *_t%d = %s;\n", tH, srefR);
@@ -18602,7 +18772,11 @@ static int str_mutate_shared_arms(Compiler *c, int id, Buf *b, int indent, const
     Buf *pre = g_pre;
     size_t pre_mark = pre ? pre->len : 0;
     char hb[1024];
-    if (strbuf_route_recv(c, id, recv, hb, sizeof hb)) {
+    /* (a long route over a handle is emitted whole, as the append's is) */
+    Buf lb; memset(&lb, 0, sizeof lb);
+    int got = strbuf_route_recv(c, id, recv, hb, sizeof hb);
+    if (!got) got = emit_recv_route_handle(c, id, recv, &lb);
+    if (got) {
       int tH = ++g_tmp;
       view_bind(recv, "lv__sb%d", tH);
       Buf armb; memset(&armb, 0, sizeof armb);
@@ -18610,14 +18784,15 @@ static int str_mutate_shared_arms(Compiler *c, int id, Buf *b, int indent, const
       view_unbind(g_n_argov - 1);
       if (handled) {
         emit_indent(b, indent);
-        buf_printf(b, "{ sp_String *_t%d = %s;", tH, hb);
+        buf_printf(b, "{ sp_String *_t%d = %s;", tH, lb.p ? lb.p : hb);
+        free(lb.p); lb.p = NULL;
         emit_route_recv_root(c, 2, tH, 0, NULL, TY_UNKNOWN, b);
         buf_puts(b, "\n");
         Buf nopre; memset(&nopre, 0, sizeof nopre);   /* what the route put ahead is in g_pre */
         emit_sb_shim_swap(b, indent, tH, &nopre, armb.p);
         return 1;
       }
-      free(armb.p);
+      free(armb.p); free(lb.p);
       /* what the route put ahead of the statement goes with it */
       if (pre && g_pre == pre && pre->len > pre_mark) { pre->len = pre_mark; pre->p[pre_mark] = '\0'; }
     }
@@ -18696,6 +18871,19 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
   const char *name = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver");
   if (!name || recv < 0) return 0;
+  /* --share-strings: a `&.` mutator over a call answering its receiver over
+     a handle (`id(s).upcase!&.clear`) is its value form, whose guard holds
+     that handle and skips a nil (emit_call_safe_nav_arms); the statement
+     arms below take no guard */
+  if (repr_share_rule(c) && sn_guard_pending(c, id) && strbuf_self_route(c, recv)) {
+    TyKind st = repr_of(c, id).as_ty;
+    emit_indent(b, indent);
+    buf_puts(b, "(void)(");
+    /* (an Integer answer, setbyte's, is read as the `&.`'s nil-able form) */
+    if (oint_kind(st) && repr_of(c, id).kind != RK_BOXED) emit_oint_expr(c, id, st, b); else emit_expr(c, id, b);
+    buf_puts(b, ");\n");
+    return 1;
+  }
   TyKind rt = comp_ntype(c, recv);
   int args = nt_ref(nt, id, "arguments");
   int argc = 0;
@@ -20127,6 +20315,9 @@ static int strbuf_flow_value(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, in
       !bare_call_class_owned(c, v) && comp_method_index(c, nt_str(nt, v, "name")) < 0)
     return 1;
   if (ctx == SFC_TAIL && strbuf_route_reader(c, v)) return 1;
+  /* a call answering its receiver over a handle (`x.freeze`, `x.strip!`):
+     a demanded tail takes it as a write does (emit_strbuf_handle_of) */
+  if (ctx == SFC_TAIL && k == NK_CallNode && strbuf_bang_self_local(c, v)) return 1;
   if (ctx == SFC_TAIL && strbuf_hash_default_arg(c, v) >= 0) return 1;
   if (ctx == SFC_TAIL && (repr_string_conversion_operand(c, v) >= 0 || repr_boxed_to_s_operand(c, v) >= 0))
     return strbuf_flow_route(c, fm, SFC_ALIAS, v, depth);
@@ -20172,6 +20363,9 @@ static int strbuf_flow_value(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, in
   /* a bang method or an iterator with a block on a local's handle answers
      that handle or nil */
   if (ctx != SFC_ARG && strbuf_bang_self_local(c, v)) return 1;
+  /* (a call without a bang that answers its receiver over a handle hands
+     that handle on as an argument too: strbuf_value_carries) */
+  if (ctx == SFC_ARG && strbuf_plain_self_call(c, v)) return 1;
   if (ctx != SFC_ARG && strbuf_narrowed_box_mutator(c, v)) return 1;
   /* an operator write into a handle slot hands on the slot's new handle */
   char oref[1024];
@@ -20241,8 +20435,11 @@ int strbuf_flow_carries(Compiler *c, StrbufFlowMemo *fm, int kind, int site, int
         (sk == NK_NextNode || (sk == NK_CallNode && nt_str(nt, site, "name") && is_map_bang_alias(nt_str(nt, site, "name"))))) {
       NodeKind vk = nt_kind(nt, unwrap_parens(c, v));
       TyKind vt = repr_of(c, v).ty;
+      /* (a call answering its receiver over a handle is boxed as that
+         handle, emit_boxed_bang_self) */
       if ((vt != TY_STRING && vt != TY_STRBUF) ||
-          (vk != NK_IfNode && vk != NK_UnlessNode && vk != NK_OrNode && vk != NK_AndNode && vk != NK_CaseNode))
+          (vk != NK_IfNode && vk != NK_UnlessNode && vk != NK_OrNode && vk != NK_AndNode && vk != NK_CaseNode &&
+           !(vk == NK_CallNode && strbuf_bang_self_local(c, unwrap_parens(c, v)))))
         ctx = SFC_BOX;
     }
     break;

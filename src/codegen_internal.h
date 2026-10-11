@@ -186,6 +186,19 @@ int emit_bang_self_handle(Compiler *c, int v, Buf *b);
 int face_str_bang_call(Compiler *c, int id);
 int sb_block_hoists(Compiler *c, int id);
 int strbuf_chain_over_handle(Compiler *c, int v);
+/* The handle a String mutator's receiver hands on, emitted once into b
+   whatever its length (codegen_stmt.c) */
+int emit_recv_route_handle(Compiler *c, int id, int recv, Buf *b);
+/* Is call id being emitted on trial by the operand-order rewrite, its
+   operands bound to temps the rewrite keeps only if the call reads them
+   (codegen_call.c)? */
+int operand_order_trial(int id);
+/* Is recv a call answering its own receiver over a handle that no route or
+   chain arm reads (`id(s).concat(x)`, a bang on one)? */
+int strbuf_self_route(Compiler *c, int recv);
+/* The base an append chain (`s << x << y`, links answering their receiver)
+   answers, id itself for no chain (codegen_stmt.c) */
+int str_alias_chain_base(Compiler *c, int id);
 int strbuf_ivar_store_aliases(Compiler *c, int v);
 int strbuf_ivar_store_routes(Compiler *c, int v);
 int strbuf_seq_nil_tail(Compiler *c, int v);
@@ -202,6 +215,10 @@ int strbuf_cond_has_handle_leaf(Compiler *c, int v, int depth);
    a route (read once, nil raising NoMethodError for id), 0 neither
    (codegen_stmt.c) */
 int strbuf_recv_handle(Compiler *c, int id, int recv, char *out, size_t cap);
+/* strbuf_recv_handle, and under --share-strings a route whose text outgrows
+   out, emitted whole into lb instead (emit_recv_route_handle; 2): the
+   handle's text is lb's where it has one, else out's */
+int strbuf_recv_handle_any(Compiler *c, int id, int recv, char *out, size_t cap, Buf *lb);
 /* Root receiver handle _t<t> when strbuf_recv_handle answered a route (hr
    2) and something can allocate while it is live: the mutator (argv NULL)
    or one of its argc ty operands argv; a slot's needs none (codegen_stmt.c) */

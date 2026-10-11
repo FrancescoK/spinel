@@ -1000,42 +1000,39 @@ int emit_call_instance_eval_arms(Compiler *c, int id, Buf *b, const NodeTable *n
   return 0;
 }
 
-/* Is v (through parentheses) a conditional one of whose branches is an
-   attribute assignment, or a chain or freeze over one? */
-static int cond_attr_leaf(Compiler *c, int v, int depth) {
-  const NodeTable *nt = c->nt;
-  v = unwrap_parens(c, v);
-  if (v < 0 || depth > 8) return 0;
-  switch (nt_kind(nt, v)) {
-  case NK_IfNode: case NK_UnlessNode:
-    return cond_attr_leaf(c, nt_ref(nt, v, "statements"), depth + 1) ||
-           cond_attr_leaf(c, nt_ref(nt, v, nt_kind(nt, v) == NK_IfNode ? "subsequent" : "else_clause"), depth + 1);
-  case NK_ElseNode:
-    return cond_attr_leaf(c, nt_ref(nt, v, "statements"), depth + 1);
-  case NK_StatementsNode: {
-    int n = 0; const int *bb = nt_arr(nt, v, "body", &n);
-    return n > 0 && cond_attr_leaf(c, bb[n - 1], depth + 1);
+/* --share-strings: freeze over a receiver that hands on the shared handle
+   (a slot that holds it, a route over one, a write's or an attribute
+   assignment's value, a conditional with a handle arm): a freeze is an
+   in-place change, so it freezes that handle, which every name of the
+   String holds, and answers the frozen face, or nil for a nil receiver.
+   0 with nothing emitted for any other receiver. */
+static int emit_freeze_recv_handle(Compiler *c, int recv, Buf *b) {
+  char ref[1024];
+  int th;
+  if (strbuf_slot_ref(c, recv, ref, sizeof ref) && !strbuf_pickup_may_nil(c, recv)) {
+    th = ++g_tmp;
+    buf_printf(b, "({ sp_String *_t%d = %s; ", th, ref);
   }
-  case NK_OrNode: case NK_AndNode:
-    return cond_attr_leaf(c, nt_ref(nt, v, "left"), depth + 1) || cond_attr_leaf(c, nt_ref(nt, v, "right"), depth + 1);
-  case NK_CallNode:
-    return depth > 0 && strbuf_assign_route(c, v);
-  default: return 0;
+  else if (strbuf_assign_route(c, recv)) {
+    th = ++g_tmp;
+    buf_printf(b, "({ sp_String *_t%d = ", th);
+    emit_strbuf_route(c, recv, b);
+    buf_puts(b, "; ");
   }
-}
-
-/* Is call r (through parentheses) a user method's call that is handed an
-   attribute assignment's value? Its answer can be that very String, which a
-   freeze would take a copy of. */
-static int freeze_over_assign_arg(Compiler *c, int r) {
-  const NodeTable *nt = c->nt;
-  r = unwrap_parens(c, r);
-  if (r < 0 || nt_kind(nt, r) != NK_CallNode || cplan_user(c, r)->dispatch == CP_NONE) return 0;
-  int argc = 0;
-  const int *argv = call_args(nt, r, &argc);
-  for (int i = 0; i < argc; i++)
-    if (strbuf_assign_route(c, argv[i])) return 1;
-  return 0;
+  /* (or a bang over one, `id(t).upcase!.freeze`: its handle, or nil) */
+  else if (strbuf_value_carries(c, recv) ||
+           (nt_kind(c->nt, unwrap_parens(c, recv)) == NK_CallNode &&
+            bop_share_self_answer(nt_str(c->nt, unwrap_parens(c, recv), "name"),
+                                  nt_ref(c->nt, unwrap_parens(c, recv), "block") >= 0) &&
+            strbuf_bang_self_local(c, unwrap_parens(c, recv)))) {
+    th = ++g_tmp;
+    buf_printf(b, "({ sp_String *_t%d = ", th);
+    emit_strbuf_handle_of(c, recv, b);
+    buf_puts(b, "; ");
+  }
+  else return 0;
+  buf_printf(b, "SP_GC_ROOT(_t%d); sp_String_freeze(_t%d); sp_str_freeze_val(sp_strbuf_read_pub(_t%d)); })", th, th, th);
+  return 1;
 }
 
 /* freeze / frozen?, dup / clone, the identity methods that answer the receiver, and then / yield_self */
@@ -1118,6 +1115,19 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
     }
   }
 
+  /* --share-strings: freeze over a receiver read as the handle (a route a
+     caller bound as one, emit_bang_self_handle) freezes that handle, which
+     every name of the String holds, and answers its frozen face. The
+     identity shortcut below would drop the freeze. */
+  if (repr_share_rule(c) && recv >= 0 && argc == 0 && is_freeze_name(name) &&
+      repr_of(c, recv).as_ty == TY_STRBUF) {
+    int th = ++g_tmp;
+    buf_printf(b, "({ sp_String *_t%d = ", th);
+    emit_expr(c, recv, b);
+    buf_printf(b, "; SP_GC_ROOT(_t%d); sp_String_freeze(_t%d); sp_str_freeze_val(sp_strbuf_read_pub(_t%d)); })",
+               th, th, th);
+    return 1;
+  }
   /* TY_STRING freeze: update the variable to the frozen copy and return it */
   if (recv >= 0 && argc == 0 && sp_streq(name, "freeze") && comp_ntype(c, recv) == TY_STRING) {
     /* --share-strings: a String Range's begin / end freezes the String the
@@ -1147,28 +1157,50 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       emit_expr(c, recv, b); buf_puts(b, "); })");
       return 1;
     }
+    /* an append chain on a handle (`(s << x).freeze`, `(o.name << x).freeze`)
+       answers that String: the handle is taken once, ahead of the chain,
+       then frozen for every name of the String. A reader call's read is the
+       handle itself, which the chain takes from the temp; a variable's slot
+       is read again. */
+    int fzu = unwrap_parens(c, recv);
+    int fzb = !assignable_f && fzu >= 0 && nt_kind(nt, fzu) == NK_CallNode ? str_alias_chain_base(c, fzu) : fzu;
+    if (fzb != fzu && g_n_argov < MAX_ARG_OVERRIDE && strbuf_slot_ref(c, fzb, fzref, sizeof fzref)) {
+      int th = ++g_tmp;
+      char thr[24];
+      snprintf(thr, sizeof thr, "_t%d", th);
+      /* links that only answer their receiver, changing no bytes
+         (`s.to_s.freeze`, `s.itself`), have nothing to run: no chain is
+         emitted for them */
+      int fzrun = 0;
+      for (int k = fzu; k != fzb && k >= 0 && !fzrun; k = unwrap_parens(c, nt_ref(nt, k, "receiver"))) {
+        if (nt_kind(nt, k) != NK_CallNode || call_plain_argc(c, k) != 0 || !str_self_call(nt, k) ||
+            bop_name_mutates(nt_str(nt, k, "name"), BOP_MUT_LOCAL))
+          fzrun = 1;
+      }
+      buf_printf(b, "({ sp_String *%s = %s; SP_GC_ROOT(%s);", thr, fzref, thr);
+      if (fzrun) {
+        int fzcall = nt_kind(nt, fzb) == NK_CallNode;
+        int mk = fzcall ? view_bind(fzb, "%s", thr) : -1;
+        buf_puts(b, " (void)(");
+        emit_expr(c, recv, b);
+        buf_puts(b, ");");
+        if (fzcall) view_unbind(mk);
+      }
+      buf_printf(b, " sp_String_freeze(%s); sp_str_freeze_val(", thr);
+      /* (the default build answers the String's own bytes, as the chain's
+         read was; a reader call typed as the handle reads as the handle) */
+      if (!repr_share_rule(c)) buf_printf(b, "sp_String_cstr(%s)", thr);
+      else if (repr_of(c, fzb).as_ty == TY_STRBUF) buf_printf(b, "sp_strbuf_read_pub(%s)", thr);
+      else emit_strbuf_node_read(c, fzb, thr, b);
+      buf_puts(b, "); })");
+      return 1;
+    }
     if (assignable_f) {
       buf_puts(b, "({ ");
       emit_expr(c, recv, b); buf_puts(b, " = sp_str_freeze_val("); emit_expr(c, recv, b); buf_puts(b, "); ");
       emit_expr(c, recv, b); buf_puts(b, "; })");
     }
-    else if (repr_share_rule(c) && cond_attr_leaf(c, recv, 0)) {
-      unsupported_feature(c, id, "under --share-strings, freeze over a conditional with an attribute assignment's "
-                          "value for a branch would freeze a copy of the String the field holds (a String is not yet "
-                          "shared by reference through a conditional). Freeze it before the conditional.");
-    }
-    else if (repr_share_rule(c) && freeze_over_assign_arg(c, recv)) {
-      unsupported_feature(c, id, "under --share-strings, freeze over the result of a method that is handed an attribute "
-                          "assignment's value would freeze a copy of the String the field holds (a String is not yet "
-                          "shared by reference through a method returning its parameter). Freeze it before passing it on.");
-    }
-    else if (repr_share_rule(c) && strbuf_assign_route(c, recv)) {
-      /* an attribute assignment on a handle (or a chain over one): freeze the handle it stores */
-      int th = ++g_tmp;
-      buf_printf(b, "({ sp_String *_t%d = ", th);
-      emit_strbuf_route(c, recv, b);
-      buf_printf(b, "; SP_GC_ROOT(_t%d); sp_String_freeze(_t%d); sp_str_freeze_val(sp_strbuf_read_pub(_t%d)); })", th, th, th);
-    }
+    else if (repr_share_rule(c) && emit_freeze_recv_handle(c, recv, b)) {}
     else {
       buf_puts(b, "sp_str_freeze_val("); emit_expr(c, recv, b); buf_puts(b, ")");
     }
@@ -1545,6 +1577,89 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
   return 0;
 }
 
+/* --share-strings: `x&.freeze` over a receiver that hands on the shared
+   handle (a variable's, a write's, an attribute assignment's): the guard
+   holds that handle, not a copy of its bytes, so the freeze reaches every
+   name of the String, and the call answers it (or its frozen face), or nil. */
+static int emit_safe_nav_freeze_handle(Compiler *c, int id, const char *name, int recv, Buf *b) {
+  if (!repr_share_rule(c) || g_sn_skip == id || !is_freeze_name(name) || call_plain_argc(c, id) != 0 ||
+      nt_ref(c->nt, id, "block") >= 0 || cplan_user(c, id)->dispatch != CP_NONE) return 0;
+  /* a receiver a caller already holds as the handle (emit_bang_self_handle
+     binds it) is taken as it is */
+  if (repr_of(c, recv).as_ty != TY_STRBUF &&
+      (repr_of(c, recv).as_ty != TY_STRING || !(strbuf_value_carries(c, recv) || strbuf_assign_route(c, recv))))
+    return 0;
+  /* (held inline: the receiver can name a temp of the expression around it) */
+  int t = ++g_tmp;
+  buf_printf(b, "({ sp_String *_sn%d = ", t);
+  if (repr_of(c, recv).as_ty == TY_STRBUF) emit_expr(c, recv, b);
+  else emit_strbuf_handle_of(c, recv, b);
+  buf_printf(b, "; SP_GC_ROOT(_sn%d); ", t);
+  if (repr_of(c, id).demand || repr_of(c, id).as_ty == TY_STRBUF)
+    buf_printf(b, "_sn%d ? sp_String_freeze(_sn%d) : (sp_String *)NULL; })", t, t);
+  else
+    buf_printf(b, "_sn%d ? sp_str_freeze_val(sp_strbuf_read_pub(sp_String_freeze(_sn%d))) : (const char *)NULL; })", t, t);
+  return 1;
+}
+
+/* --share-strings: `x&.m` where m answers its receiver (a bang, an append,
+   insert, freeze) and x is a call answering its receiver over a handle: the
+   guard is the bang form's own (emit_bang_self_handle holds x's handle once
+   and skips the call on nil), and the call answers that handle, its read,
+   or nil. A guard holding x's bytes made every later link take the handle
+   by running x again. */
+static int emit_safe_nav_self_handle(Compiler *c, int id, int recv, Buf *b) {
+  if (!repr_share_rule(c) || g_sn_skip == id || !strbuf_self_route(c, recv) || !strbuf_bang_self_local(c, id))
+    return 0;
+  TyKind rt = repr_of(c, id).as_ty;
+  int hres = repr_of(c, id).demand || rt == TY_STRBUF;
+  if (!hres && rt != TY_STRING && repr_of(c, id).kind != RK_BOXED) return 0;
+  Buf hb; memset(&hb, 0, sizeof hb);
+  if (!emit_bang_self_handle(c, id, &hb)) { free(hb.p); return 0; }
+  int t = ++g_tmp;
+  if (hres) buf_puts(b, hb.p);
+  else if (repr_of(c, id).kind == RK_BOXED)
+    buf_printf(b, "({ sp_String *_t%d = %s; sp_box_nullable_obj(_t%d, SP_BUILTIN_STRBUF); })", t, hb.p, t);
+  else buf_printf(b, "({ sp_String *_t%d = %s; _t%d ? sp_strbuf_read_pub(_t%d) : (const char *)NULL; })", t, hb.p, t, t);
+  free(hb.p);
+  return 1;
+}
+/* --share-strings: `x&.slice!(0)`, `x&.setbyte(i, b)` (a String position
+   mutator) where x is a call answering its receiver over a handle: the guard
+   holds x's handle, run once, and the call takes it from there
+   (ran_first_handle), where a guard holding x's bytes left the mutator a
+   copy to cut. */
+static int emit_safe_nav_route_hold(Compiler *c, int id, int recv, const char *name, Buf *b) {
+  TyKind ret = repr_of(c, id).as_ty;
+  if (!repr_share_rule(c) || g_sn_skip == id || !name || !is_string_position_mutator(name) ||
+      (ret != TY_STRING && !oint_kind(ret)) || repr_of(c, id).kind == RK_BOXED || repr_of(c, recv).as_ty != TY_STRING ||
+      !strbuf_self_route(c, recv) || g_n_argov >= MAX_ARG_OVERRIDE)
+    return 0;
+  int th = ++g_tmp, tv = ++g_tmp;
+  Buf vb; memset(&vb, 0, sizeof vb);
+  buf_printf(b, "({ sp_String *_t%d = ", th);
+  emit_strbuf_handle_of(c, unwrap_parens(c, recv), b);
+  buf_printf(b, "; SP_GC_ROOT(_t%d); const char *_t%d = _t%d ? sp_String_cstr(_t%d) : NULL; (void)_t%d; ",
+             th, tv, th, th, tv);
+  int mark = g_n_argov;
+  ran_first_bind(recv, tv, th);
+  int sv = g_sn_skip; g_sn_skip = id;
+  /* what the call puts ahead of its statement runs inside the non-nil arm,
+     after the guard (its arguments, a held value), never on a nil */
+  Buf *pre0 = g_pre;
+  Buf pre; memset(&pre, 0, sizeof pre);
+  g_pre = &pre;
+  /* (an Integer answer, setbyte's, is the `&.`'s nil-able form) */
+  if (oint_kind(ret)) emit_oint_expr(c, id, ret, &vb); else emit_expr(c, id, &vb);
+  g_pre = pre0;
+  g_sn_skip = sv;
+  view_unbind(mark);
+  buf_printf(b, "_t%d ? ({ %s%s; }) : %s; })", th, pre.p ? pre.p : "", vb.p ? vb.p : "NULL",
+             oint_kind(ret) ? oint_nil(ret) : "(const char *)NULL");
+  free(pre.p);
+  free(vb.p);
+  return 1;
+}
 /* safe navigation (&.): a nil receiver answers nil, any other the call, guarded by a nil test */
 int emit_call_safe_nav_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv) {
   /* Safe navigation &. : nil receiver -> return nil/0; non-nil -> emit conditional */
@@ -1560,6 +1675,9 @@ int emit_call_safe_nav_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
         buf_puts(b, dv ? dv : "0");
         return 1;
       }
+      if (emit_safe_nav_self_handle(c, id, recv, b)) return 1;
+      if (emit_safe_nav_route_hold(c, id, recv, name, b)) return 1;
+      if (emit_safe_nav_freeze_handle(c, id, name, recv, b)) return 1;
       /* The poly builtins that answer an UNBOXED scalar: the safe-nav result is
          poly (it may be nil), so the value arm has to be boxed to agree with
          the nil arm -- otherwise the two ternary arms have different C types
@@ -1774,8 +1892,24 @@ int emit_call_safe_nav_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
            the re-entered call reads the receiver through the override text --
            the oint temp where the receiver node is an oint (the dispatcher
            unwraps it), its plain value otherwise */
+        /* --share-strings: a receiver that is a call answering its own
+           receiver over a handle (`id(s).concat(x)&.frozen?`) is held as
+           that handle, run once here: the call's arms that read the handle
+           take it from the guard (ran_first_handle), where they ran the
+           receiver again */
+        int sn_hold = repr_share_rule(c) && rrt == TY_STRING && !sn_obj && !sn_scalar && !sn_cont &&
+                      strbuf_self_route(c, recv);
+        int tsh = -1;
         Buf rsn; memset(&rsn, 0, sizeof rsn);
-        if (sn_scalar) emit_oint_expr(c, recv, rrt, &rsn); else rsn = expr_buf(c, recv);
+        if (sn_hold) {
+          tsh = ++g_tmp;
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "sp_String *_t%d = ", tsh);
+          emit_strbuf_handle_of(c, unwrap_parens(c, recv), g_pre);
+          buf_printf(g_pre, "; SP_GC_ROOT(_t%d);\n", tsh);
+          buf_printf(&rsn, "_t%d ? sp_String_cstr(_t%d) : (const char *)NULL", tsh, tsh);
+        }
+        else if (sn_scalar) emit_oint_expr(c, recv, rrt, &rsn); else rsn = expr_buf(c, recv);
         emit_indent(g_pre, g_indent);
         if (sn_obj)
           buf_printf(g_pre, "sp_%s *_sn%d = %s; SP_GC_ROOT(_sn%d);\n",
@@ -1792,6 +1926,13 @@ int emit_call_safe_nav_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
           buf_printf(g_pre, "const char *_sn%d = %s; SP_GC_ROOT_STR(_sn%d);\n",
                      tsn2, rsn.p ? rsn.p : "NULL", tsn2);
         free(rsn.p);
+        /* (the bytes the guard read, by the temp name ran_first_bind takes) */
+        int tsb = -1;
+        if (sn_hold) {
+          tsb = ++g_tmp;
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "const char *_t%d = _sn%d; (void)_t%d;\n", tsb, tsn2, tsb);
+        }
         char nilt[64];
         if (sn_scalar) snprintf(nilt, sizeof nilt, "_sn%d.nil", tsn2);
         else           snprintf(nilt, sizeof nilt, "_sn%d == NULL", tsn2);
@@ -1811,7 +1952,9 @@ int emit_call_safe_nav_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
         if (g_n_argov < MAX_ARG_OVERRIDE) {
           /* the guard proved the scalar non-nil: the re-entry reads its plain
              value (a view-bound node takes no oint wrapper either way) */
-          int slot2 = sn_scalar ? view_bind(recv, "_snv%d", tsn2) : view_bind(recv, "_sn%d", tsn2);
+          int slot2 = g_n_argov;
+          if (sn_hold) ran_first_bind(recv, tsb, tsh);
+          else slot2 = sn_scalar ? view_bind(recv, "_snv%d", tsn2) : view_bind(recv, "_sn%d", tsn2);
           int sv_skip = g_sn_skip; g_sn_skip = id;
           /* infer_type widened a C bool answer to poly so the nil arm has
              somewhere to live; the value arm still renders the bool. Emit it

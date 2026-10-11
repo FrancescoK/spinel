@@ -1361,11 +1361,17 @@ int emit_string_handle_append(Compiler *c, int id, Buf *b, const char *name, int
       /* or a route over a handle (`(+s) << x`, --share-strings), which
          appends to the String it hands on */
       int hr0 = chain_handle ? 0 : strbuf_recv_handle(c, id, sr, sref0, sizeof sref0);
+      /* a long route over a handle (a chain of calls answering their
+         receiver over one, `id(s).concat(x).insert(0, y) << z`) is emitted
+         whole, where its text outgrows the slot buffer */
+      Buf lb; memset(&lb, 0, sizeof lb);
+      if (!chain_handle && !hr0 && emit_recv_route_handle(c, id, sr, &lb)) hr0 = 2;
       if (chain_handle || hr0) {
         int tb2 = ++g_tmp;
         buf_printf(b, "({ sp_String *_t%d = ", tb2);
         if (chain_handle) emit_expr(c, sr, b);
-        else buf_puts(b, sref0);
+        else buf_puts(b, lb.p ? lb.p : sref0);
+        free(lb.p);
         buf_puts(b, ";");
         /* (prepend builds its text with sp_str_concat, which allocates) */
         emit_route_recv_root(c, hr0, tb2, argc, is_append_concat(name) ? argv : NULL, TY_STRING, b);
