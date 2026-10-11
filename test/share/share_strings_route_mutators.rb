@@ -158,3 +158,30 @@ $n = 0; b = +"abc"; b2 = b
 va = (id(b).concat("d")[1] = arg)
 wa = ((id(b) << "e")[0, 2] = "W")
 p [va, wa, b2, $n]
+
+# a mutator with a call argument on a bang that answered nil runs the
+# argument, then raises NoMethodError for nil; after `&.` it runs nothing
+def fz(x) = ($n += 10; x)
+[0, 1, 2, 3, 4, 5, 6].each do |k|
+  $n = 0; b = +"ABC"; b2 = b
+  begin
+    case k
+    when 0 then p id(b).upcase!.sub!("B", fz("x"))
+    when 1 then p id(b).upcase!.gsub!("B", fz("x"))
+    when 2 then p id(b).upcase!.concat(fz("x"))
+    when 3 then p id(b).upcase!.insert(0, fz("x"))
+    when 4 then p id(b).upcase!.tr!("B", fz("x"))
+    when 5 then vk = id(b).upcase!.replace(fz("x")); p vk
+    when 6 then id(b).upcase!.delete!(fz("x"))
+    end
+  rescue NoMethodError => e
+    p [k, e.message, $n, b2]
+  end
+end
+$n = 0; b = +"ABC"; b2 = b
+id(b).upcase!&.sub!("B", fz("x"))
+id(b).upcase!&.[]=(0, fz("x"))
+p [b2, $n]
+$n = 0; b = +"abc"; b2 = b
+id(b).concat("2")&.[]=(0, "S")
+p [$n, b2]

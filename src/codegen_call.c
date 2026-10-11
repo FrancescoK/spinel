@@ -20588,12 +20588,22 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
      that handle, run once: the mutator takes it from the temp
      (ran_first_handle), where it took the receiver's bytes and ran the
      receiver again for its handle */
+  /* --share-strings: a `&.` call on such a receiver orders its operands
+     inside its guard (emit_call_safe_nav_arms holds the receiver's handle
+     and re-enters the call): run here, the arguments ran ahead of the nil
+     test that skips them */
+  if (repr_share_rule(c) && sn_guard_pending(c, id) && nt_ref(nt, id, "receiver") >= 0 &&
+      strbuf_self_route(c, nt_ref(nt, id, "receiver")))
+    return 0;
+  int hroute = 0;
   if (harg < 0 && repr_share_rule(c)) {
     int sr = nt_ref(nt, id, "receiver");
     const char *snm = nt_str(nt, id, "name");
-    if (sr >= 0 && snm && repr_of(c, sr).as_ty == TY_STRING && strbuf_self_route(c, sr) &&
-        (strbuf_bang_self_local(c, id) || is_string_position_mutator(snm) || is_encoding_mutator(snm)))
+    if (sr >= 0 && snm && !call_is_safe_nav(nt, id) && repr_of(c, sr).as_ty == TY_STRING && strbuf_self_route(c, sr) &&
+        (strbuf_bang_self_local(c, id) || is_string_position_mutator(snm) || is_encoding_mutator(snm))) {
       harg = sr;
+      hroute = 1;
+    }
   }
   int recv = nt_ref(nt, id, "receiver");
   int args = nt_ref(nt, id, "arguments");
@@ -20926,6 +20936,13 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
     else if (needs_root(ty[i])) buf_printf(b, "SP_GC_ROOT(_t%d); ", tmp[i]);
     free(opb[i].p);
   }
+  /* (a held route that answered nil, a bang's: its arguments ran, and the
+     call raises NoMethodError for nil, as CRuby does, before the mutator
+     reads the handle; a `&.` call's guard skips it instead) */
+  for (int i = 0; hroute && i < nb; i++)
+    if (node[i] == harg)
+      buf_printf(b, "if (SP_UNLIKELY(!_t%d)) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil())); ", tmp[i],
+                 nt_str(nt, id, "name"));
   buf_puts(b, ob.p ? ob.p : "");
   buf_puts(b, "; })");
   free(ob.p);

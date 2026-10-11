@@ -1632,6 +1632,8 @@ int emit_call_operator_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
      the store takes it from the temp, ran_first_handle) */
   int aset_route = recv >= 0 && repr_share_rule(c) && repr_of(c, recv).as_ty == TY_STRING &&
                    strbuf_self_route(c, recv) && g_n_argov + 2 < MAX_ARG_OVERRIDE;
+  /* (one a `&.` guard holds already is taken from there: ran_first_handle) */
+  int aset_held = aset_route && ran_first_handle(recv) >= 0;
   if (recv >= 0 && sp_streq(name, "[]=") && (argc == 2 || argc == 3) &&
       ((repr_of(c, recv).as_ty == TY_STRING &&
         nt_type(nt, recv) && (sp_streq(nt_type(nt, recv), "LocalVariableReadNode") ||
@@ -1639,7 +1641,7 @@ int emit_call_operator_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
        (repr_of(c, recv).as_ty == TY_STRBUF && nt_kind(nt, recv) == NK_CallNode) || aset_route)) {
     int rslot = g_n_argov;
     size_t rpre0 = g_pre->len;
-    if (aset_route) {
+    if (aset_route && !aset_held) {
       int th = ++g_tmp, tb = ++g_tmp;
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "sp_String *_t%d = ", th);

@@ -2948,8 +2948,31 @@ static int emit_bang_self_handle_1(Compiler *c, int v, Buf *b) {
        (nil.freeze is nil: the frozen face of a NULL handle is NULL). */
     Buf rb; memset(&rb, 0, sizeof rb);
     emit_strbuf_handle_of(c, r, &rb);
-    emit_bang_held_open(c, v, th, rb.p ? rb.p : "NULL", strbuf_route_nonnil(c, r) || self_call_answers_nil(c, v), 1, b);
+    int nonnil = strbuf_route_nonnil(c, r) || self_call_answers_nil(c, v);
+    /* a nil receiver raises NoMethodError after the arguments ran, as
+       CRuby dispatches: arguments that run code go ahead of the test, into
+       temps the call reads (sb_shim_args_first) */
+    int late = 0, amark = g_n_argov;
+    Buf apre; memset(&apre, 0, sizeof apre);
+    if (!nonnil && !call_is_safe_nav(c->nt, v)) {
+      int ac = 0;
+      const int *av = call_args(c->nt, v, &ac);
+      for (int i = 0; i < ac && !late; i++) {
+        NodeKind ak = nt_kind(c->nt, av[i]);
+        if (ak != NK_StringNode && ak != NK_IntegerNode && ak != NK_FloatNode && ak != NK_SymbolNode &&
+            !subtree_is_pure_read(c, av[i]))
+          late = 1;
+      }
+    }
+    emit_bang_held_open(c, v, th, rb.p ? rb.p : "NULL", nonnil || late, 1, b);
     free(rb.p);
+    if (late) {
+      amark = sb_shim_args_first(c, v, &apre, g_indent);
+      buf_puts(b, apre.p ? apre.p : "");
+      buf_printf(b, " if (SP_UNLIKELY(!_t%d)) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil())); ", th,
+                 nt_str(c->nt, v, "name"));
+      free(apre.p);
+    }
     buf_printf(b, "const char *_t%d = ", tr);
     r = unwrap_parens(c, r);
     int mark = g_n_argov;
@@ -2960,6 +2983,7 @@ static int emit_bang_self_handle_1(Compiler *c, int v, Buf *b) {
     view_unbind(mark);
     view_pop(c, st);
     view_pop(c, sv);
+    if (late) view_unbind(amark);
     buf_printf(b, "; _t%d ? _t%d : (sp_String *)NULL; })", tr, th);
     return 1;
   }

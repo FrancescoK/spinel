@@ -1631,11 +1631,19 @@ static int emit_safe_nav_route_hold(Compiler *c, int id, int recv, const char *n
   int mark = g_n_argov;
   ran_first_bind(recv, tv, th);
   int sv = g_sn_skip; g_sn_skip = id;
+  /* what the call puts ahead of its statement runs inside the non-nil arm,
+     after the guard (its arguments, a held value), never on a nil */
+  Buf *pre0 = g_pre;
+  Buf pre; memset(&pre, 0, sizeof pre);
+  g_pre = &pre;
   /* (an Integer answer, setbyte's, is the `&.`'s nil-able form) */
   if (oint_kind(ret)) emit_oint_expr(c, id, ret, &vb); else emit_expr(c, id, &vb);
+  g_pre = pre0;
   g_sn_skip = sv;
   view_unbind(mark);
-  buf_printf(b, "_t%d ? %s : %s; })", th, vb.p ? vb.p : "NULL", oint_kind(ret) ? oint_nil(ret) : "(const char *)NULL");
+  buf_printf(b, "_t%d ? ({ %s%s; }) : %s; })", th, pre.p ? pre.p : "", vb.p ? vb.p : "NULL",
+             oint_kind(ret) ? oint_nil(ret) : "(const char *)NULL");
+  free(pre.p);
   free(vb.p);
   return 1;
 }
