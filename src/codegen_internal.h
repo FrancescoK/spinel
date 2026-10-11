@@ -780,6 +780,8 @@ void emit_coerce_text(Compiler *c, int node, TyKind from, TyKind slot, int how,
 
 int emit_bm_flat_args(Compiler *c, const int *argv, int argc, Buf *b);
 int is_builtin_reopen(const char *name);
+/* the builtin class a top-level reopening continues the superclass chain of, or 0 */
+int reopened_builtin_chain_id(Compiler *c, int ci);
 int is_exc_name(const char *n);
 int class_is_exc_subclass(Compiler *c, int ci);
 int class_is_exc_reopen(Compiler *c, int ci);

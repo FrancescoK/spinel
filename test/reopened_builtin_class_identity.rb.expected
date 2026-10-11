@@ -1,0 +1,29 @@
+true
+true
+false
+true
+Module
+true
+Numeric
+true
+true
+true
+[Integer, Numeric, Comparable]
+["a"]
+1
+true
+true
+true
+[:rescued, MyErr]
+:module
+1
+2
+"Module"
+"Class"
+"Integer"
+[Loud, Quiet, String]
+true
+true
+6
+true
+1

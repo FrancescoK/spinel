@@ -2790,6 +2790,9 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
     if (ci >= 0) {
       int par = c->classes[ci].parent;
       if (par >= 0) { buf_printf(b, "((sp_Class){%d})", par); return 1; }
+      /* a reopened builtin class: the builtin's own superclass */
+      int rbid = reopened_builtin_chain_id(c, ci);
+      if (rbid) { buf_printf(b, "sp_builtin_superclass(((sp_Class){%d}))", rbid); return 1; }
       /* the builtin above it: the row the generated sp_class_superclass
          table carries, by name for an id-less exception (LoadError) */
       const char *bpn = class_builtin_superclass_name(c, ci);
