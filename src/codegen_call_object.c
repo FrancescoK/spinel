@@ -1019,7 +1019,12 @@ static int emit_freeze_recv_handle(Compiler *c, int recv, Buf *b) {
     emit_strbuf_route(c, recv, b);
     buf_puts(b, "; ");
   }
-  else if (strbuf_value_carries(c, recv)) {
+  /* (or a bang over one, `id(t).upcase!.freeze`: its handle, or nil) */
+  else if (strbuf_value_carries(c, recv) ||
+           (nt_kind(c->nt, unwrap_parens(c, recv)) == NK_CallNode &&
+            bop_share_self_answer(nt_str(c->nt, unwrap_parens(c, recv), "name"),
+                                  nt_ref(c->nt, unwrap_parens(c, recv), "block") >= 0) &&
+            strbuf_bang_self_local(c, unwrap_parens(c, recv)))) {
     th = ++g_tmp;
     buf_printf(b, "({ sp_String *_t%d = ", th);
     emit_strbuf_handle_of(c, recv, b);

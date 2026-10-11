@@ -7422,6 +7422,9 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   if (rt == TY_STRBUF && recv >= 0 && name &&
       ((argc == 1 && (sp_streq(name, "<<") || sp_streq(name, "concat") ||
                       sp_streq(name, "prepend") || sp_streq(name, "replace"))) ||
+       /* concat and prepend take any number of Strings and answer the
+          receiver whatever their count */
+       is_string_append_or_prepend(name) ||
        (argc == 2 && sp_streq(name, "insert")) ||
        (argc == 0 && sp_streq(name, "clear"))))
     return TY_STRING;

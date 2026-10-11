@@ -2247,6 +2247,20 @@ int strbuf_var_handle(Compiler *c, int n, char *out, size_t cap) {
 /* --share-strings: does value v hand over a String the rule shares as the
    handle (emit_strbuf_handle_of then answers it): a variable that holds
    it, a route over one, or a conditional with such an arm? */
+/* Is v an append without a bang (`<<`, `concat`) answering its String
+   receiver, with no program method of the name: a link
+   strbuf_bang_self_local takes over a handle, its receiver aside? */
+static int call_takes_splat(const NodeTable *nt, int v);
+static int strbuf_append_link(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  if (v < 0 || nt_kind(nt, v) != NK_CallNode || nt_ref(nt, v, "block") >= 0 || call_takes_splat(nt, v)) return 0;
+  const char *nm = nt_str(nt, v, "name");
+  int r = nt_ref(nt, v, "receiver"), argc, targets[CPT_MAX];
+  call_args(nt, v, &argc);
+  return nm && is_append_concat(nm) && r >= 0 &&
+         (comp_ntype(c, r) == TY_STRING || comp_ntype(c, r) == TY_STRBUF) &&
+         bop_answers_self(TY_STRING, nm, argc, 0) == BOPF_SELF && cplan_targets(c, v, targets, CPT_MAX) == 0;
+}
 int strbuf_value_carries(Compiler *c, int v) {
   char ref[1024];
   NodeKind k = v >= 0 ? nt_kind(c->nt, v) : NK_NONE;
@@ -2268,6 +2282,18 @@ int strbuf_value_carries(Compiler *c, int v) {
     int ar = unwrap_parens(c, nt_ref(c->nt, v, "receiver"));
     const char *an = ar >= 0 && nt_kind(c->nt, ar) == NK_CallNode ? nt_str(c->nt, ar, "name") : NULL;
     if (an && !is_append_concat(an) && strbuf_plain_self_call(c, v)) return 1;
+    /* a chain of appends over such a call (`id(s) << x << y`): each link
+       answers its receiver, so the chain is the base's handle; the links
+       are walked once, down to the first receiver that is no append */
+    if (an && is_append_concat(an)) {
+      int cur = v;
+      while (strbuf_append_link(c, cur)) {
+        int nx = unwrap_parens(c, nt_ref(c->nt, cur, "receiver"));
+        const char *nn = nx >= 0 && nt_kind(c->nt, nx) == NK_CallNode ? nt_str(c->nt, nx, "name") : NULL;
+        if (!nn || !is_append_concat(nn)) return nx >= 0 && nt_kind(c->nt, nx) == NK_CallNode && strbuf_value_carries(c, nx);
+        cur = nx;
+      }
+    }
   }
   /* an append chain over a variable's handle (`s << x`) answers that
      String, appended in place (emit_strbuf_chain_in_place) */
@@ -2387,7 +2413,16 @@ static int strbuf_route_recv(Compiler *c, int id, int recv, char *out, size_t ca
   Buf *pre = g_pre;
   size_t pre_mark = pre ? pre->len : 0;
   Buf hb; memset(&hb, 0, sizeof hb);
-  if (!emit_strbuf_route(c, recv, &hb)) return 0;
+  if (!emit_strbuf_route(c, recv, &hb)) {
+    /* a call answering its receiver over a handle (`id(s).concat(x)`, a
+       bang on one) is that handle, or nil (emit_strbuf_handle_of), as the
+       seal takes it (strbuf_flow_value) */
+    free(hb.p); memset(&hb, 0, sizeof hb);
+    int u = unwrap_parens(c, recv);
+    if (u < 0 || nt_kind(c->nt, u) != NK_CallNode || strbuf_chain_over_handle(c, u) || !strbuf_bang_self_local(c, u))
+      return 0;
+    emit_strbuf_handle_of(c, u, &hb);
+  }
   Buf nb; memset(&nb, 0, sizeof nb);
   if (strbuf_route_nonnil(c, recv)) buf_puts(&nb, hb.p);
   else {
@@ -18541,7 +18576,20 @@ static int str_mutate_shared_arms(Compiler *c, int id, Buf *b, int indent, const
     Buf *pre = g_pre;
     size_t pre_mark = pre ? pre->len : 0;
     char hb[1024];
-    if (strbuf_route_recv(c, id, recv, hb, sizeof hb)) {
+    /* (a long route over a handle is emitted whole, as the append's is) */
+    Buf lb; memset(&lb, 0, sizeof lb);
+    int got = strbuf_route_recv(c, id, recv, hb, sizeof hb);
+    int ru = unwrap_parens(c, recv);
+    if (!got && ru >= 0 && nt_kind(nt, ru) == NK_CallNode && !strbuf_chain_over_handle(c, ru) &&
+        strbuf_bang_self_local(c, ru)) {
+      int tl = ++g_tmp;
+      buf_printf(&lb, "({ sp_String *_t%d = ", tl);
+      emit_strbuf_handle_of(c, ru, &lb);
+      buf_printf(&lb, "; if (SP_UNLIKELY(!_t%d)) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil())); _t%d; })",
+                 tl, name, tl);
+      got = 1;
+    }
+    if (got) {
       int tH = ++g_tmp;
       view_bind(recv, "lv__sb%d", tH);
       Buf armb; memset(&armb, 0, sizeof armb);
@@ -18549,14 +18597,15 @@ static int str_mutate_shared_arms(Compiler *c, int id, Buf *b, int indent, const
       view_unbind(g_n_argov - 1);
       if (handled) {
         emit_indent(b, indent);
-        buf_printf(b, "{ sp_String *_t%d = %s;", tH, hb);
+        buf_printf(b, "{ sp_String *_t%d = %s;", tH, lb.p ? lb.p : hb);
+        free(lb.p); lb.p = NULL;
         emit_route_recv_root(c, 2, tH, 0, NULL, TY_UNKNOWN, b);
         buf_puts(b, "\n");
         Buf nopre; memset(&nopre, 0, sizeof nopre);   /* what the route put ahead is in g_pre */
         emit_sb_shim_swap(b, indent, tH, &nopre, armb.p);
         return 1;
       }
-      free(armb.p);
+      free(armb.p); free(lb.p);
       /* what the route put ahead of the statement goes with it */
       if (pre && g_pre == pre && pre->len > pre_mark) { pre->len = pre_mark; pre->p[pre_mark] = '\0'; }
     }
