@@ -8688,6 +8688,32 @@ static TyKind infer_empty_array_reopen(Compiler *c, int id) {
   return TY_UNKNOWN;
 }
 
+
+/* Is this BeginNode a method's body (a `def` with rescue/ensure at its own
+   level)? Asked per BeginNode while typing; the table is rebuilt when the
+   nodes or the scopes grow. */
+static int begin_is_def_body(Compiler *c, int id) {
+  static const NodeTable *built_for; static int built_n, built_scopes; static unsigned char *mark;
+  const NodeTable *nt = c->nt;
+  if (built_for != nt || built_n != nt->count || built_scopes != c->nscopes) {
+    free(mark);
+    mark = calloc((size_t)nt->count + 1, 1);
+    built_for = nt; built_n = nt->count; built_scopes = c->nscopes;
+    /* every method's body (an include's copy has its own), and the last
+       statement of one, where the begin sits in a statement list */
+    for (int s = 1; s < c->nscopes; s++) {
+      int b = c->scopes[s].body;
+      if (b < 0 || b >= nt->count) continue;
+      mark[b] = 1;
+      if (nt_kind(nt, b) == NK_StatementsNode) {
+        int bn = 0; const int *bs = nt_arr(nt, b, "body", &bn);
+        if (bs && bn > 0 && bs[bn - 1] >= 0 && bs[bn - 1] < nt->count) mark[bs[bn - 1]] = 1;
+      }
+    }
+  }
+  return id >= 0 && id < built_n && mark && mark[id];
+}
+
 TyKind infer_uncached(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, id);
@@ -9498,6 +9524,14 @@ TyKind infer_uncached(Compiler *c, int id) {
     int vsrc = else_st >= 0 ? else_st : body;
     TyKind r = vsrc >= 0 ? infer_type(c, vsrc) : TY_NIL;
     if (else_c >= 0 && else_st < 0) r = TY_NIL;   /* an empty else is the value: nil */
+    /* a value source whose last statement is a `return` leaves the method:
+       the begin has no value of its own (not an unsettled one). Not a
+       method's own body (`def m ... ensure ... end`): what the method
+       answers is followed through that body. */
+    if (vsrc >= 0 && !begin_is_def_body(c, id)) {
+      int rn = 0; const int *rb = nt_arr(nt, vsrc, "body", &rn);
+      if (rb && rn > 0 && nt_kind(nt, rb[rn - 1]) == NK_ReturnNode) r = TY_VOID;
+    }
     TyKind body_t = r;
     /* a body whose last statement is a bare raise diverges: the begin's value
        comes from the rescue arms alone, so their type must not widen (#2739) */
