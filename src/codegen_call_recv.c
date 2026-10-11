@@ -16468,6 +16468,31 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
     if (boxed) buf_puts(b, ")");
     return 1;
   }
+  /* poly receiver: gsub/sub with a pattern known only at run time (an
+     interpolated regexp, a Regexp value, a pattern that is a Regexp or a
+     String by its tag): the String receiver's arms serve it on the
+     receiver's bytes, which sp_poly_recv_s reads, raising NoMethodError for
+     a value that is no String. Without this arm the call had no emitter and
+     raised NoMethodError for a String. A user class owning the name is
+     served by the per-class dispatch, whose String arm comes back here. */
+  if (recv >= 0 && rt == TY_POLY && is_substitution(name) && argc == 2 &&
+      !user_defines_or_reads(c, name)) {
+    TyKind pty = comp_ntype(c, argv[0]);
+    const char *pnt = nt_type(nt, argv[0]);
+    if ((pnt && sp_streq(pnt, "InterpolatedRegularExpressionNode")) || pty == TY_REGEX ||
+        (pty == TY_POLY && !repr_hash_is(repr_of(c, argv[1]), TY_STRING, TY_STRING))) {
+      Buf rb; memset(&rb, 0, sizeof rb);
+      buf_puts(&rb, "sp_poly_recv_s(");
+      emit_expr(c, recv, &rb);
+      buf_printf(&rb, ", \"%s\")", name);
+      int boxed = comp_ntype(c, id) == TY_POLY;
+      if (boxed) buf_puts(b, "sp_box_str(");
+      str_arms_pattern(c, id, b, nt, name, argc, argv, rb.p);
+      if (boxed) buf_puts(b, ")");
+      free(rb.p);
+      return 1;
+    }
+  }
   return 0;
 }
 
