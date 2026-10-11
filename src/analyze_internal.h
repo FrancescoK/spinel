@@ -88,6 +88,7 @@ int *du_parent_map(const NodeTable *nt);
 int du_read_maybe_unset(const NodeTable *nt, const int *par, DUPos *dp, int rd, const char *nm);
 void du_memo_free(void);
 int an_value_dropped(const NodeTable *nt, const int *parent, int node);
+int cow_user_block_value(Compiler *c, const int *parent, int id);
 /* The methods the default build may lend a String parameter's slot by
    address (elig, c->nscopes entries), and whether it passes parameter pi
    of method mi by value: no slot and no shared handle reach it, because a

@@ -43,6 +43,9 @@ enum {
   SHF_IDENTITY = 32   /* a reopening's receiver is compared by identity or
                          handed to a consumer that keeps or mutates it */
 };
+/* The facts are kept in one byte per class (ShareFacts.flags): with SHF_OUT
+   (8), SHF_CHG (64) and SHF_FRZ (128) of analyze_share.c, bits 1 to 128 are
+   all taken. The next flag has to widen the field first. */
 
 typedef struct {
   unsigned char kind;   /* ShareKind */
@@ -218,6 +221,10 @@ int share_return_owned(const Compiler *c, int n, int mi);
 int share_node_peeked(const Compiler *c, int n);
 /* Is node n's result dropped or only read by a builtin that keeps none? */
 int share_node_transient(const Compiler *c, int n);
+/* Is call n an attribute assignment of one plain value, under --share-strings? */
+int share_assign_call(const Compiler *c, int n);
+/* Is node n's value dropped (a statement, or a tail no caller reads)? */
+int share_node_unread(const Compiler *c, int n);
 /* The facts (SHF_*) of the class of node n's value. */
 unsigned share_node_flags(const Compiler *c, int n);
 /* Does the class of node n's value hold one name at most: no more than one
@@ -243,6 +250,12 @@ int share_node_mutated(Compiler *c, int v);
    query, answered from the final facts. */
 enum { SHN_NO, SHN_YES, SHN_FRESH };
 int share_value_needs_handle(Compiler *c, int v);
+/* Is node n an explicit writer's attribute assignment whose value the facts
+   keep apart from its right-hand side's String (nothing observes them as one
+   object)? */
+int share_assign_unjoined(const Compiler *c, int n);
+/* Does the rule share the String attribute assignment n hands on? */
+int share_assign_shares(const Compiler *c, int n);
 
 /* SPINEL_SHARE_STATS=3: name the mutations that reach UNKNOWN's class */
 void share_dump_unknown_mutations(Compiler *c);

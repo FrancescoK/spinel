@@ -1,0 +1,26 @@
+["y!", "y!", "y!", true, true]
+["y!", "y!", "y!", true]
+["fresh?", "fresh?", true]
+["y!", "y!", "y!"]
+["y", "y!", "y!", true, false]
+["y!", "y!", "y!", true, true]
+["fresh?", "fresh?", true]
+["y12", "y12", "y12", ["y12"]]
+["z3", "z3", "z3"]
+["z4", "z4", "z4"]
+recv
+rhs
+["v!", "v!", true]
+true
+true
+true
+[true, true, true]
+true
+["y!", "y!", "y!", "y!"]
+["y1", "y1"]
+["s2", "s2"]
+["s3", "s3"]
+["y4", "y4", "y4"]
+["y5", "y5"]
+[nil, "y"]
+["s6", "s6"]

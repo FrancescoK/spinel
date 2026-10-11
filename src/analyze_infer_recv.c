@@ -1438,6 +1438,8 @@ int infer_object_call(Compiler *c, int id, TyKind rt, TyKind *out) {
         if (comp_writer_in_chain(c, cid, base, &wdefc) && argc >= 1 &&
             comp_resolve_member(c, cid, base, 1, NULL, NULL) == SP_MEMBER_ATTR) {
           TyKind rhsk = infer_type(c, argv[0]);
+          /* (a handle local's value is its String face, as an ivar write's is) */
+          if (rhsk == TY_STRBUF && c->share_strings) rhsk = TY_STRING;
           /* codegen boxes a scalar rhs into a poly ivar slot, so the assignment
              expression's C value is that boxed poly -- report poly to match. */
           char wivn[258]; snprintf(wivn, sizeof wivn, "@%s", base);
@@ -1456,6 +1458,7 @@ int infer_object_call(Compiler *c, int id, TyKind rt, TyKind *out) {
                   ? comp_method_in_chain(c, cid, name, NULL) : -1;
         if (smi >= 0) {
           TyKind rhsk = infer_type(c, argv[0]);
+          if (rhsk == TY_STRBUF && c->share_strings) rhsk = TY_STRING;
           if (rhsk != TY_UNKNOWN) {
             an_user_call_record(c, id, smi, UC_INST, cid);
             *out = rhsk; return 1;

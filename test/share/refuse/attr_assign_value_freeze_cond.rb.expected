@@ -1,0 +1,1 @@
+spinel: test/share/refuse/attr_assign_value_freeze_cond.rb:9: under --share-strings, freeze over a conditional with an attribute assignment's value for a branch would freeze a copy of the String the field holds (a String is not yet shared by reference through a conditional). Freeze it before the conditional.
