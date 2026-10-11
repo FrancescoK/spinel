@@ -1911,6 +1911,14 @@ static int an_to_a_result_mutated(Compiler *c, int id) {
    answering an index came back through an sp_bool (#4072). Three arms in that
    section had thought to ask; the rest had not, which is why the answer
    depended on which name you picked. Ask once, on the way out. */
+static TyKind an_reader_ret(Compiler *c, int k, int rdcls, const char *name) {
+  char ivn[256];
+  snprintf(ivn, sizeof ivn, "@%s", comp_resolve_alias(c, k, name));
+  int iv = comp_ivar_index(&c->classes[rdcls], ivn);
+  TyKind r = iv >= 0 ? ivar_value_ty(&c->classes[rdcls], iv) : TY_UNKNOWN;
+  return r == TY_POLY && (sp_streq(name, "size") || sp_streq(name, "length") || sp_streq(name, "to_i")) ? TY_UNKNOWN : r;
+}
+
 static TyKind an_poly_concrete(Compiler *c, const char *name, TyKind t) {
   if (t == TY_POLY || t == TY_UNKNOWN || !name) return t;
   /* The builtin-only re-derivation asks what this call would be if NO user
@@ -1935,8 +1943,8 @@ static TyKind an_poly_concrete(Compiler *c, const char *name, TyKind t) {
        build. an_user_read_ty and the dispatch union already skip them. */
     if (c->classes[k].is_native_class) continue;
     int mi = pcs[pi].mi;
-    if (mi < 0 || mi >= c->nscopes) continue;
-    TyKind r = (TyKind)c->scopes[mi].ret;
+    if ((mi < 0 || mi >= c->nscopes) && pcs[pi].rdcls < 0) continue;
+    TyKind r = mi >= 0 && mi < c->nscopes ? (TyKind)c->scopes[mi].ret : an_reader_ret(c, k, pcs[pi].rdcls, name);
     if (r == t || r == TY_UNKNOWN || r == TY_VOID) continue;
     /* A nil answer FITS a slot that has a nil of its own -- a NULL array is
        nil, and that is exactly why the array trio may stay concrete (#3461).
