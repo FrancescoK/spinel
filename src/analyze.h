@@ -42,6 +42,7 @@ void strbuf_arg_index_free(Compiler *c);
    exactly what promote mode is asking us to avoid. Off (0) for raise/wrap, so
    the default gates and optcarrot (which pins wrap) see no behavior change. */
 extern int g_promote_mode;
+extern int g_exc_abort;   /* --exceptions=abort (src/main.c) */
 
 /* Set by main.c from --plan-check (#7100): inference records, per call node,
    the builtin-op row it answered the call with (c->bop_inf), and codegen

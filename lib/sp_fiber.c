@@ -142,7 +142,7 @@ SP_NORETURN void sp_raise_cls(const char *cls, const char *msg);
    catch tags are saved/restored around each context switch so a raise/throw
    can't longjmp into a suspended fiber's stack frame, and an unhandled fiber
    raise is re-raised in the resumer's context rather than crossing stacks. */
-#include <setjmp.h>
+#include "sp_setjmp.h"
 void *sp_exc_ctx_new(void);
 void sp_exc_ctx_free(void *p);
 void sp_exc_ctx_save(void *p);

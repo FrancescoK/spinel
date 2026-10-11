@@ -510,10 +510,10 @@ build/%.o: lib/%.c $(RT_HDRS)
 # spinel/runtime.h ABI (-Ilib) plus its own package headers. BUNDLED_NATIVE_OBJS
 # is defined near the top (before `all`, whose prereqs expand at parse time).
 packages/json/sp_json.o: packages/json/sp_json.c packages/json/sp_json.h \
-                         lib/spinel/runtime.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h lib/sp_compat.h
+                         lib/spinel/runtime.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h lib/sp_compat.h lib/sp_setjmp.h
 	$(CC) -c $(COPT) -Wno-all $(SEC_FLAGS) -Ilib -Ipackages/json packages/json/sp_json.c -o $@
 packages/json/sp_json_mt.o: packages/json/sp_json.c packages/json/sp_json.h \
-                            lib/spinel/runtime.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h lib/sp_compat.h
+                            lib/spinel/runtime.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h lib/sp_compat.h lib/sp_setjmp.h
 	$(CC) -c $(COPT) -Wno-all $(SEC_FLAGS) $(PKG_MT_FLAGS) -Ilib -Ipackages/json packages/json/sp_json.c -o $@
 
 # openssl is glue over the SYSTEM libssl, so unlike the other package C it is
@@ -523,63 +523,63 @@ packages/json/sp_json_mt.o: packages/json/sp_json.c packages/json/sp_json.h \
 # link error. -lssl/-lcrypto reach the link line through openssl.rb's ffi_lib,
 # which is parsed only when a program requires it.
 packages/openssl/sp_openssl.o: packages/openssl/sp_openssl.c \
-                               lib/spinel/runtime.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h lib/sp_compat.h
+                               lib/spinel/runtime.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h lib/sp_compat.h lib/sp_setjmp.h
 	$(CC) -c $(COPT) -Wno-all $(SEC_FLAGS) $(OPENSSL_CPPFLAGS) -Ilib -Ipackages/openssl packages/openssl/sp_openssl.c -o $@
 packages/openssl/sp_openssl_mt.o: packages/openssl/sp_openssl.c \
-                                  lib/spinel/runtime.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h lib/sp_compat.h
+                                  lib/spinel/runtime.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h lib/sp_compat.h lib/sp_setjmp.h
 	$(CC) -c $(COPT) -Wno-all $(SEC_FLAGS) $(PKG_MT_FLAGS) $(OPENSSL_CPPFLAGS) -Ilib -Ipackages/openssl packages/openssl/sp_openssl.c -o $@
 
 packages/ffi/sp_ffi.o: packages/ffi/sp_ffi.c \
-                       lib/spinel/runtime.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h lib/sp_compat.h
+                       lib/spinel/runtime.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h lib/sp_compat.h lib/sp_setjmp.h
 	$(CC) -c $(COPT) -Wno-all $(SEC_FLAGS) $(LIBFFI_CPPFLAGS) -Ilib -Ipackages/ffi packages/ffi/sp_ffi.c -o $@
 packages/ffi/sp_ffi_mt.o: packages/ffi/sp_ffi.c \
-                          lib/spinel/runtime.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h lib/sp_compat.h
+                          lib/spinel/runtime.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h lib/sp_compat.h lib/sp_setjmp.h
 	$(CC) -c $(COPT) -Wno-all $(SEC_FLAGS) $(PKG_MT_FLAGS) $(LIBFFI_CPPFLAGS) -Ilib -Ipackages/ffi packages/ffi/sp_ffi.c -o $@
 
 # stringio is a native-bound spin package (Path B typed object): the struct,
 # every method, and the header live in the package; the compiler knows it only
 # through the native_* declarations in stringio.rb.
 packages/stringio/sp_stringio.o: packages/stringio/sp_stringio.c packages/stringio/sp_stringio.h \
-                                 lib/spinel/runtime.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h lib/sp_compat.h
+                                 lib/spinel/runtime.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h lib/sp_compat.h lib/sp_setjmp.h
 	$(CC) -c $(COPT) -Wno-all $(SEC_FLAGS) -Ilib -Ipackages/stringio packages/stringio/sp_stringio.c -o $@
 packages/stringio/sp_stringio_mt.o: packages/stringio/sp_stringio.c packages/stringio/sp_stringio.h \
-                                    lib/spinel/runtime.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h lib/sp_compat.h
+                                    lib/spinel/runtime.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h lib/sp_compat.h lib/sp_setjmp.h
 	$(CC) -c $(COPT) -Wno-all $(SEC_FLAGS) $(PKG_MT_FLAGS) -Ilib -Ipackages/stringio packages/stringio/sp_stringio.c -o $@
 
 # strscan is likewise a native-bound spin package; its regex matching links
 # against the runtime archive's re_exec (a forward extern in the package C).
 packages/strscan/sp_strscan.o: packages/strscan/sp_strscan.c \
-                               lib/spinel/runtime.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h lib/sp_compat.h
+                               lib/spinel/runtime.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h lib/sp_compat.h lib/sp_setjmp.h
 	$(CC) -c $(COPT) -Wno-all $(SEC_FLAGS) -Ilib packages/strscan/sp_strscan.c -o $@
 packages/strscan/sp_strscan_mt.o: packages/strscan/sp_strscan.c \
-                                  lib/spinel/runtime.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h lib/sp_compat.h
+                                  lib/spinel/runtime.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h lib/sp_compat.h lib/sp_setjmp.h
 	$(CC) -c $(COPT) -Wno-all $(SEC_FLAGS) $(PKG_MT_FLAGS) -Ilib packages/strscan/sp_strscan.c -o $@
 
 # base64 carries its whole implementation; digest carries none (it binds the
 # runtime's vendored sp_crypto symbols and has no object of its own).
 packages/base64/sp_base64.o: packages/base64/sp_base64.c \
-                             lib/spinel/runtime.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h lib/sp_compat.h
+                             lib/spinel/runtime.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h lib/sp_compat.h lib/sp_setjmp.h
 	$(CC) -c $(COPT) -Wno-all $(SEC_FLAGS) -Ilib packages/base64/sp_base64.c -o $@
 packages/base64/sp_base64_mt.o: packages/base64/sp_base64.c \
-                                lib/spinel/runtime.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h lib/sp_compat.h
+                                lib/spinel/runtime.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h lib/sp_compat.h lib/sp_setjmp.h
 	$(CC) -c $(COPT) -Wno-all $(SEC_FLAGS) $(PKG_MT_FLAGS) -Ilib packages/base64/sp_base64.c -o $@
 
 # tmpdir: Dir.tmpdir and Dir.mktmpdir, the system temp directory and a
 # unique-directory creator. Pure C, no struct.
 packages/tmpdir/sp_tmpdir.o: packages/tmpdir/sp_tmpdir.c \
-                             lib/spinel/runtime.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h lib/sp_compat.h
+                             lib/spinel/runtime.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h lib/sp_compat.h lib/sp_setjmp.h
 	$(CC) -c $(COPT) -Wno-all $(SEC_FLAGS) -Ilib packages/tmpdir/sp_tmpdir.c -o $@
 packages/tmpdir/sp_tmpdir_mt.o: packages/tmpdir/sp_tmpdir.c \
-                                lib/spinel/runtime.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h lib/sp_compat.h
+                                lib/spinel/runtime.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h lib/sp_compat.h lib/sp_setjmp.h
 	$(CC) -c $(COPT) -Wno-all $(SEC_FLAGS) $(PKG_MT_FLAGS) -Ilib packages/tmpdir/sp_tmpdir.c -o $@
 
 # pty: PTY.spawn, a child on a new pseudo-terminal (posix_openpt + fork).
 # Pure C over libc; no wasm32-wasi object, since WASI has no fork.
 packages/pty/sp_pty.o: packages/pty/sp_pty.c \
-                       lib/spinel/runtime.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h lib/sp_compat.h
+                       lib/spinel/runtime.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h lib/sp_compat.h lib/sp_setjmp.h
 	$(CC) -c $(COPT) -Wno-all $(SEC_FLAGS) -Ilib packages/pty/sp_pty.c -o $@
 packages/pty/sp_pty_mt.o: packages/pty/sp_pty.c \
-                          lib/spinel/runtime.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h lib/sp_compat.h
+                          lib/spinel/runtime.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h lib/sp_compat.h lib/sp_setjmp.h
 	$(CC) -c $(COPT) -Wno-all $(SEC_FLAGS) $(PKG_MT_FLAGS) -Ilib packages/pty/sp_pty.c -o $@
 
 # zlib: DEFLATE, zlib and gzip in the package's own C. No system libz and so
@@ -587,10 +587,10 @@ packages/pty/sp_pty_mt.o: packages/pty/sp_pty.c \
 # box without the -dev package -- would drop the package and give a green
 # `make test` that never ran it. Pure C, no struct.
 packages/zlib/sp_zlib.o: packages/zlib/sp_zlib.c \
-                         lib/spinel/runtime.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h lib/sp_compat.h
+                         lib/spinel/runtime.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h lib/sp_compat.h lib/sp_setjmp.h
 	$(CC) -c $(COPT) -Wno-all $(SEC_FLAGS) -Ilib packages/zlib/sp_zlib.c -o $@
 packages/zlib/sp_zlib_mt.o: packages/zlib/sp_zlib.c \
-                            lib/spinel/runtime.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h lib/sp_compat.h
+                            lib/spinel/runtime.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h lib/sp_compat.h lib/sp_setjmp.h
 	$(CC) -c $(COPT) -Wno-all $(SEC_FLAGS) $(PKG_MT_FLAGS) -Ilib packages/zlib/sp_zlib.c -o $@
 
 build/sp_cold.o: lib/sp_cold.c $(RT_HDRS)
@@ -751,7 +751,35 @@ BUNDLED_NATIVE_WASI_OBJS = $(patsubst %.o,%_wasi.o,$(filter-out packages/openssl
 packages/%_wasi.o: packages/%.c lib/spinel/runtime.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h $(WASI_SHIM_HDRS)
 	$(WASI_CC) -c $(COPT) -Wno-all $(SEC_FLAGS) $(WASI_CFLAGS) -Ilib -I$(@D) $< -o $@
 
-wasm-rt: $(SP_RT_WASI_LIB) $(BUNDLED_NATIVE_WASI_OBJS)
+# --exceptions=abort (#8401): the same archive with no setjmp/longjmp, for a
+# host without the exception-handling proposal -- no sjlj lowering, and the
+# runtime's abort form of the pair (lib/sp_setjmp.h, SP_EXC_ABORT).
+WASI_NOEXC_CFLAGS = $(filter-out -mllvm -wasm-enable-sjlj -wasm-use-legacy-eh=false,$(WASI_CFLAGS)) -DSP_EXC_ABORT
+SP_RT_WASI_NOEXC_LIB = lib/wasm32-wasi/libspinel_rt_noexc.a
+
+build/wasm32-wasi-noexc/regexp/%.o: lib/regexp/%.c $(RE_HDRS)
+	@mkdir -p $(@D)
+	$(WASI_CC) -c $(COPT) $(SEC_FLAGS) $(RE_CASE_FLAGS) $(WASI_NOEXC_CFLAGS) -Ilib/regexp -Ilib/regexp/shim $< -o $@
+
+build/wasm32-wasi-noexc/wasi/%.o: lib/wasi/%.c $(WASI_SHIM_HDRS)
+	@mkdir -p $(@D)
+	$(WASI_CC) -c $(COPT) -Wno-all $(SEC_FLAGS) $(WASI_NOEXC_CFLAGS) -Ilib $< -o $@
+
+build/wasm32-wasi-noexc/%.o: lib/%.c $(RT_HDRS) $(WASI_SHIM_HDRS)
+	@mkdir -p $(@D)
+	$(WASI_CC) -c $(COPT) -Wno-all $(SEC_FLAGS) $(WASI_NOEXC_CFLAGS) -Ilib -Ilib/regexp -Ilib/regexp/shim $< -o $@
+
+$(SP_RT_WASI_NOEXC_LIB): $(patsubst lib/regexp/%.c,build/wasm32-wasi-noexc/regexp/%.o,$(RE_SRC)) \
+                         $(patsubst lib/wasi/%.c,build/wasm32-wasi-noexc/wasi/%.o,$(wildcard lib/wasi/*.c)) \
+                         $(addprefix build/wasm32-wasi-noexc/,$(addsuffix .o,$(RT_MEMBERS)))
+	@mkdir -p $(@D)
+	rm -f $@ && $(WASI_AR) rcs $@ $^
+
+BUNDLED_NATIVE_WASI_NOEXC_OBJS = $(patsubst %_wasi.o,%_wasi_noexc.o,$(BUNDLED_NATIVE_WASI_OBJS))
+packages/%_wasi_noexc.o: packages/%.c lib/spinel/runtime.h lib/sp_alloc.h lib/sp_gc.h lib/sp_types.h lib/sp_setjmp.h $(WASI_SHIM_HDRS)
+	$(WASI_CC) -c $(COPT) -Wno-all $(SEC_FLAGS) $(WASI_NOEXC_CFLAGS) -Ilib -I$(@D) $< -o $@
+
+wasm-rt: $(SP_RT_WASI_LIB) $(BUNDLED_NATIVE_WASI_OBJS) $(SP_RT_WASI_NOEXC_LIB) $(BUNDLED_NATIVE_WASI_NOEXC_OBJS)
 
 # A few of the corpus's programs built with --target=wasm32-wasi and run
 # under wasmtime (WASMTIME, default: the one on PATH) against their expected
@@ -760,6 +788,12 @@ wasm-rt: $(SP_RT_WASI_LIB) $(BUNDLED_NATIVE_WASI_OBJS)
 # an engine. `make wasm-test` where both are.
 WASMTIME ?= wasmtime
 WASM_TESTS = $(shell grep -l '^\# spinel: wasm$$' test/*.rb)
+# --exceptions=abort: programs built without exception handling and run with
+# the engine's exceptions off, which a module still holding one of their
+# instructions fails to load; a raise must trap with its message
+# (`# spinel: wasm-abort-raises: MESSAGE`); the refusals name the flag.
+WASM_ABORT_TESTS = $(shell grep -l '^\# spinel: wasm-abort' test/wasm_abort/*.rb 2>/dev/null | xargs -r grep -L '^\# spinel: wasm-abort-refuse: ')
+WASM_ABORT_REFUSE_TESTS = $(shell grep -l '^\# spinel: wasm-abort-refuse: ' test/wasm_abort/*.rb 2>/dev/null)
 # WASM_ENGINE_REQUIRED=1 makes a missing engine a failure rather than a skip:
 # the one job whose whole purpose is to prove these programs still link and run
 # cannot report that by exiting 0 with "skipped" (#4807). CI sets it.
@@ -775,6 +809,25 @@ wasm-test: $(SPINEL) wasm-rt
 	  $(WASMTIME) run -W max-wasm-stack=16777216 --dir=. $$tmp/$$bn.wasm >$$tmp/$$bn.out 2>$$tmp/$$bn.err </dev/null; \
 	  if cmp -s $$tmp/$$bn.out $$t.expected; then echo "wasm-test: pass $$t"; \
 	  else echo "wasm-test: FAIL $$t"; diff -u $$t.expected $$tmp/$$bn.out | head -6; head -3 $$tmp/$$bn.err; ok=0; fi; \
+	done; \
+	for t in $(WASM_ABORT_TESTS); do \
+	  bn=$$(basename $$t .rb); \
+	  if ! WASI_SDK=$(WASI_SDK) $(SPINEL) --target=wasm32-wasi --exceptions=abort --no-line-map $$t -o $$tmp/$$bn.wasm >/dev/null 2>$$tmp/$$bn.build; then \
+	    echo "wasm-test: FAIL (build, --exceptions=abort) $$t"; head -3 $$tmp/$$bn.build; ok=0; continue; fi; \
+	  $(WASMTIME) run -W exceptions=n -W max-wasm-stack=16777216 --dir=. $$tmp/$$bn.wasm >$$tmp/$$bn.out 2>$$tmp/$$bn.err </dev/null; rc=$$?; \
+	  want=$$(sed -n 's/^# spinel: wasm-abort-raises: //p' $$t); \
+	  if ! cmp -s $$tmp/$$bn.out $$t.expected; then echo "wasm-test: FAIL (--exceptions=abort) $$t"; diff -u $$t.expected $$tmp/$$bn.out | head -6; head -3 $$tmp/$$bn.err; ok=0; \
+	  elif [ -n "$$want" ] && { [ $$rc -eq 0 ] || ! grep -qF "$$want" $$tmp/$$bn.err; }; then \
+	    echo "wasm-test: FAIL (--exceptions=abort: the raise did not trap with its message) $$t"; head -3 $$tmp/$$bn.err; ok=0; \
+	  elif [ -z "$$want" ] && [ $$rc -ne 0 ]; then echo "wasm-test: FAIL (--exceptions=abort: exit $$rc) $$t"; head -3 $$tmp/$$bn.err; ok=0; \
+	  else echo "wasm-test: pass (--exceptions=abort) $$t"; fi; \
+	done; \
+	for t in $(WASM_ABORT_REFUSE_TESTS); do \
+	  why=$$(sed -n 's/^# spinel: wasm-abort-refuse: //p' $$t); \
+	  if WASI_SDK=$(WASI_SDK) $(SPINEL) --target=wasm32-wasi --exceptions=abort --no-line-map $$t -o $$tmp/r.wasm >/dev/null 2>$$tmp/r.err; then \
+	    echo "wasm-test: FAIL (--exceptions=abort built what it must refuse) $$t"; ok=0; \
+	  elif ! grep -qF "$$why" $$tmp/r.err; then echo "wasm-test: FAIL (--exceptions=abort refused without saying why) $$t"; head -3 $$tmp/r.err; ok=0; \
+	  else echo "wasm-test: pass (--exceptions=abort refuses) $$t"; fi; \
 	done; \
 	rm -rf $$tmp; [ $$ok -eq 1 ]
 

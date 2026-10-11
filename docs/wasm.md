@@ -28,6 +28,27 @@ runtime archive built for the target, and the module is written to
   (`-mllvm -wasm-enable-sjlj -mllvm -wasm-use-legacy-eh=false`; the driver
   passes them).
 
+## A host without exception handling (`--exceptions=abort`)
+
+Some hosts load only modules without the exception-handling instructions
+(wasmtime with `-W exceptions=n`, or an embedder that turns the proposal
+off). `spinel --target=wasm32-wasi --exceptions=abort` builds for them: the
+program and the runtime are compiled without the sjlj lowering and without
+`setjmp`/`longjmp` (`lib/sp_setjmp.h`), against
+`lib/wasm32-wasi/libspinel_rt_noexc.a` and the packages'
+`sp_*_wasi_noexc.o`, which `make wasm-rt` builds too.
+
+- A `raise` runs the `at_exit` hooks, prints what an uncaught exception
+  prints and the module traps (`unreachable`). An `ensure` around it does
+  not run.
+- What needs a frame to catch an exception is refused at compile time,
+  naming the flag: `rescue` (and its modifier form), `retry`,
+  `catch`/`throw`, a `break` out of a block that is not inlined into its
+  method, a `return` out of a proc, and `Fiber`.
+- `exit` ends the program with its status, after the `at_exit` hooks; an
+  `ensure` around it does not run either. A program that neither raises
+  nor exits from inside an `ensure` behaves as without the flag.
+
 ## What is different on this target
 
 - **`Integer` is 32-bit.** `sp_int` is the pointer width

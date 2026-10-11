@@ -1261,3 +1261,14 @@ void sp_exc_ctx_mark(void *p) {            /* GC: mark a suspended fiber's carri
   for (int i = 0; i < x->rn; i++) if (x->shand[i]) sp_gc_mark(x->shand[i]);  /* handled excs */
   if (x->icause) sp_gc_mark(x->icause);   /* the one a suspended ensure body runs for */
 }
+
+#ifdef SP_EXC_ABORT
+/* --exceptions=abort: an unwind that needed a frame to catch it (see
+   sp_setjmp.h). sp_raise_cls has reported the exception by then; what is
+   left is the host's failure, a trap. */
+SP_NORETURN void sp_exc_abort_trap(void) {
+  fflush(stdout);
+  fflush(stderr);
+  __builtin_trap();
+}
+#endif

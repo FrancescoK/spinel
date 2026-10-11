@@ -15,6 +15,8 @@ int callee_param_is_declared_kwarg(Compiler *c, Scope *m, const char *name);
 
 /* --int-overflow=promote flag; see analyze.h. Default off. */
 int g_promote_mode = 0;
+/* --exceptions=abort (src/main.c): the constructs that need a frame to catch an exception are refused */
+int g_exc_abort = 0;
 int g_plan_check = 0;
 int g_nil_check = 0;
 
@@ -38734,6 +38736,32 @@ static void reject_retry_in_ensure(Compiler *c, int id, int ctx, int depth) {
       reject_retry_in_ensure(c, nd->a[i].ids[j], ctx, depth + 1);
 }
 
+/* --exceptions=abort: a construct that catches what a frame unwinds has no
+   frame to catch it with -- the runtime is built without setjmp/longjmp
+   (lib/sp_setjmp.h) -- so it is refused at its line, the flag named. A raise
+   with nothing to catch it traps, as the host's failure. */
+static void reject_exc_abort_constructs(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  for (int id = 0; id < nt->count; id++) {
+    NodeKind k = nt_kind(nt, id);
+    const char *what = NULL;
+    if (k == NK_RescueNode) what = "rescue";
+    else if (k == NK_RescueModifierNode) what = "a rescue modifier";
+    else if (k == NK_RetryNode) what = "retry";
+    else if (k == NK_CallNode && nt_ref(nt, id, "receiver") < 0) {
+      const char *nm = nt_str(nt, id, "name");
+      if (nm && (sp_streq(nm, "catch") || sp_streq(nm, "throw"))) what = nm;
+    }
+    if (!what) continue;
+    int ln = (int)nt_int(nt, id, "node_line", 0);
+    const char *file = nt_file_path(nt, (int)nt_int(nt, id, "node_file", 0));
+    if (!file || !*file) file = nt->source_file ? nt->source_file : "source.rb";
+    fprintf(stderr, "spinel: %s:%d: %s needs exception handling, which --exceptions=abort leaves out\n",
+            file, ln, what);
+    exit(1);
+  }
+}
+
 static void an_phase_desugar_register(Compiler *c) {
   comp_poly_candidates_reset();
   comp_descendants_reset();
@@ -38742,6 +38770,7 @@ static void an_phase_desugar_register(Compiler *c) {
   Scope *top = comp_scope_new(c, NULL, -1);
   top->body = nt_ref(c->nt, c->nt->root_id, "statements");
   reject_retry_in_ensure(c, c->nt->root_id, 0, 0);
+  if (g_exc_abort) reject_exc_abort_constructs(c);
   /* class_eval "<text known now>" -> that code, grafted into the body. First,
      so every pass below reads the grafted code as it reads the program's */
   desugar_static_class_eval(c);

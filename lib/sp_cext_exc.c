@@ -2,7 +2,7 @@
 #ifdef SP_CEXT
 #include "sp_cext.h"
 #include "sp_exc.h"
-#include <setjmp.h>
+#include "sp_setjmp.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>

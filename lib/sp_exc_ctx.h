@@ -7,7 +7,7 @@
  * (sp_exc_ctx_new/free/mark, lib/sp_exc.c). sp_exc_ctx_save/load copy the
  * handler stacks in and out, and those stacks are TU-local statics of
  * spinel_rt.h, so the two stay there. */
-#include <setjmp.h>
+#include "sp_setjmp.h"
 #include "sp_types.h"   /* sp_int */
 #include "sp_gc.h"      /* sp_RbVal */
 #include "sp_inspect.h" /* sp_poly_recur_frame */

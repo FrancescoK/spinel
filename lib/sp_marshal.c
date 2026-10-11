@@ -12,7 +12,7 @@
 #include "sp_string.h"    /* sp_String: a shared String handle in a box */
 #include "sp_range.h"     /* the three Range kinds, their boxes and constructors */
 #include <string.h>
-#include <setjmp.h>
+#include "sp_setjmp.h"
 #include <math.h>
 
 /* Bignum codec lives in lib/sp_bigint.c. */

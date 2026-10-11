@@ -453,6 +453,9 @@ static void usage(void) {
     "  --target=wasm32-wasi  Build a WebAssembly module for a WASI host with the\n"
     "              wasi-sdk at $WASI_SDK (default /opt/wasi-sdk); Integer is 32-bit,\n"
     "              and Fiber, Thread, processes and sockets are not available there\n"
+    "  --exceptions=abort  With --target=wasm32-wasi, for a host without wasm\n"
+    "              exception handling: a raise traps, and rescue, retry, catch and a\n"
+    "              break or return that leaves a block through a frame are refused\n"
     "  -e STR      Inline Ruby source (repeatable; joined with newlines)\n"
     "  --rbs DIR   Seed analyzer with RBS signatures from DIR (advisory)\n"
     "  --no-inline-rbs  Ignore inline RBS comments (`#: ...`, `# @rbs ...`)\n"
@@ -503,6 +506,10 @@ int main(int argc, char **argv) {
      host (wasmtime, Node's WASI, a browser shim), built by the wasi-sdk's
      clang against the runtime archive in lib/wasm32-wasi/. */
   int target_wasi = 0;
+  /* --exceptions=abort (wasm32-wasi only): a runtime without setjmp/longjmp,
+     for a host that has no exception-handling proposal. A raise traps; the
+     constructs that need a frame to catch it are refused (see lib/sp_setjmp.h). */
+  int exc_abort = 0;
   const char *int_overflow = "raise";
   const char *rbs_dir = NULL;
   extern int sp_inline_rbs_enabled, sp_inline_rbs_failed;
@@ -529,6 +536,12 @@ int main(int argc, char **argv) {
       if (sp_streq(a + 9, "wasm32-wasi")) target_wasi = 1;
       else if (sp_streq(a + 9, "native")) target_wasi = 0;
       else { fprintf(stderr, "spinel: unknown --target %s (wasm32-wasi or native)\n", a + 9); return 1; }
+      i++;
+    }
+    else if (!strncmp(a, "--exceptions=", 13)) {
+      if (sp_streq(a + 13, "abort")) exc_abort = 1;
+      else if (sp_streq(a + 13, "unwind")) exc_abort = 0;
+      else { fprintf(stderr, "spinel: unknown --exceptions %s (abort or unwind)\n", a + 13); return 1; }
       i++;
     }
     else if (!strncmp(a, "--rbs=", 6))    { rbs_dir = a + 6; i++; }
@@ -758,6 +771,11 @@ int main(int argc, char **argv) {
   /* Let the analyzer widen accumulating int locals to bigint more freely in
      promote mode (block-iteration loops, not just `while`). See analyze.h. */
   g_promote_mode = sp_streq(int_overflow, "promote");
+  if (exc_abort && !target_wasi) {
+    fprintf(stderr, "spinel: --exceptions=abort is for --target=wasm32-wasi\n");
+    return 1;
+  }
+  g_exc_abort = exc_abort;
 
   /* Base name for default output paths. */
   char basename[1024];
@@ -1047,6 +1065,24 @@ int main(int argc, char **argv) {
      byte-identical single-threaded archive. See codegen's SPINEL_USES_THREADS
      marker and the two-variant build in the Makefile. */
   int uses_threads = strstr(csrc, "/* SPINEL_USES_THREADS */") != NULL;
+  /* --exceptions=abort: what leaves through a frame by longjmp is refused,
+     as the analysis refused rescue, retry and catch: a break out of a block
+     that is not spliced in, a return out of a proc, a Fiber's switch. The
+     runtime's text names each (sp_brk_throw, sp_proc_return, sp_Fiber_). */
+  if (exc_abort) {
+    static const struct { const char *tok, *what; } nl[] = {
+      { "sp_brk_throw(", "a break out of a block that is not spliced into its method" },
+      { "sp_proc_return(", "a return out of a proc" },
+      { "sp_Fiber_", "Fiber" },
+    };
+    for (size_t k = 0; k < sizeof nl / sizeof nl[0]; k++)
+      if (strstr(csrc, nl[k].tok)) {
+        fprintf(stderr, "spinel: %s needs exception handling, which --exceptions=abort leaves out\n", nl[k].what);
+        free(csrc);
+        if (c_is_temp) remove(c_path);
+        return 1;
+      }
+  }
   /* A frame past the fiber stack crashes on the guard page rather than
      overflowing detectably, and always_inline bypasses the C compiler's own
      large-frame brake -- ask for the warning back (#3913). */
@@ -1064,7 +1100,7 @@ int main(int argc, char **argv) {
       if (c_is_temp) remove(c_path);
       return 1;
     }
-    rt_lib = "wasm32-wasi/libspinel_rt.a";
+    rt_lib = exc_abort ? "wasm32-wasi/libspinel_rt_noexc.a" : "wasm32-wasi/libspinel_rt.a";
     if (run_mode) {
       fprintf(stderr, "spinel: -E cannot run a wasm32-wasi module; build it and run it with wasmtime\n");
       if (c_is_temp) remove(c_path);
@@ -1183,7 +1219,10 @@ int main(int argc, char **argv) {
     static const char *const wdefs[] = { "-D_WASI_EMULATED_SIGNAL", "-D_WASI_EMULATED_PROCESS_CLOCKS", "-D_WASI_EMULATED_GETPID", "-D_WASI_EMULATED_MMAN" };
     for (size_t wi = 0; wi < sizeof wdefs / sizeof wdefs[0]; wi++) { s_add(&cmd, wdefs[wi]); s_add(&cmd, " "); bi_put(&bi, "define", wdefs[wi]); }
     static const char *const wcfl[] = { "-mllvm", "-wasm-enable-sjlj", "-mllvm", "-wasm-use-legacy-eh=false", "-Wl,-z,stack-size=8388608" };
-    for (size_t wi = 0; wi < sizeof wcfl / sizeof wcfl[0]; wi++) { s_add(&cmd, wcfl[wi]); s_add(&cmd, " "); bi_put(&bi, "cflag", wcfl[wi]); }
+    /* --exceptions=abort: no sjlj lowering (it is what needs the host's
+       exception handling) and the runtime's abort form of setjmp/longjmp; the first four flags are the sjlj lowering */
+    for (size_t wi = exc_abort ? 4 : 0; wi < sizeof wcfl / sizeof wcfl[0]; wi++) { s_add(&cmd, wcfl[wi]); s_add(&cmd, " "); bi_put(&bi, "cflag", wcfl[wi]); }
+    if (exc_abort) { s_add(&cmd, "-DSP_EXC_ABORT "); bi_put(&bi, "define", "-DSP_EXC_ABORT"); }
   }
 #if defined(_WIN32)
   if (!target_wasi) add_platform_flags(&cmd, &bi, SPINEL_PLATFORM_CFLAGS, lib_dir);
@@ -1283,7 +1322,7 @@ int main(int argc, char **argv) {
            (the Makefile's wasm-rt target builds the bundled ones) */
         size_t tl = strlen(t);
         if (tl > 2 && strcmp(t + tl - 2, ".o") == 0)
-          snprintf(tmt, sizeof tmt, "%.*s%s.o", (int)(tl - 2), t, uses_threads ? "_mt" : "_wasi");
+          snprintf(tmt, sizeof tmt, "%.*s%s.o", (int)(tl - 2), t, uses_threads ? "_mt" : exc_abort ? "_wasi_noexc" : "_wasi");
       }
       const char *cands[2] = { tmt[0] ? tmt : t, tmt[0] ? t : NULL };
       int placed = 0;
@@ -1309,7 +1348,8 @@ int main(int argc, char **argv) {
   if (target_wasi) {
     /* the emulations the defines above asked for, and sjlj's runtime */
     static const char *const wlibs[] = { "-lsetjmp", "-lwasi-emulated-signal", "-lwasi-emulated-process-clocks", "-lwasi-emulated-getpid", "-lwasi-emulated-mman" };
-    for (size_t wi = 0; wi < sizeof wlibs / sizeof wlibs[0]; wi++) { s_add(&cmd, wlibs[wi]); s_add(&cmd, " "); bi_put(&bi, "lib", wlibs[wi]); }
+    /* --exceptions=abort leaves out the first, -lsetjmp */
+    for (size_t wi = exc_abort ? 1 : 0; wi < sizeof wlibs / sizeof wlibs[0]; wi++) { s_add(&cmd, wlibs[wi]); s_add(&cmd, " "); bi_put(&bi, "lib", wlibs[wi]); }
   }
 #if !defined(__APPLE__)
   /* String#crypt = libc crypt(3), linked only when the program calls it:

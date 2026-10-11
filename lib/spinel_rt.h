@@ -42,7 +42,7 @@ const char *sp_str_setbyte_cow(const char *s, sp_int i, sp_int v);
 #include <ctype.h>
 #include <stdarg.h>
 #include <time.h>
-#include <setjmp.h>
+#include "sp_setjmp.h"
 #include <errno.h>
 #include <sys/stat.h>
 #include <dirent.h>
@@ -14211,7 +14211,7 @@ SP_CONSTRUCTOR static void sp_json_install_hooks(void) {
   sp_json_hash_set_fn = sp_json_strhash_set;
 }
 
-#include <setjmp.h>
+#include "sp_setjmp.h"
 /* Depth of the begin/rescue/ensure handler stack. Each entry holds a jmp_buf
    (200-300 bytes on common targets) plus the parallel arrays below, all
    static in every generated program. A build can set it with
@@ -14552,6 +14552,13 @@ static SP_INLINE void *sp_exc_implicit_cause(void *c, void *obj) {
   if (c && obj && sp_exc_cause_chain_reaches((sp_Exception *)c, obj)) return ((sp_Exception *)obj)->cause;
   return c;
 }
+/* --exceptions=abort has no frame to jump to: every raise is reported as
+   uncaught and traps (sp_setjmp.h) */
+#ifdef SP_EXC_ABORT
+# define SP_EXC_UNWINDS 0
+#else
+# define SP_EXC_UNWINDS 1
+#endif
 SP_NORETURN SP_COLD void sp_raise_cls(const char *cls, const char *msg) {
   /* Launder the message onto the string heap and root the copy before anything
      below allocates. `msg` is the caller's own pointer and comes in one of two
@@ -14646,7 +14653,7 @@ SP_NORETURN SP_COLD void sp_raise_cls(const char *cls, const char *msg) {
      `raise e`, or through an ensure), it keeps the cause it had instead of
      becoming its own -- the pending cause is that cause, so a rescue that
      stores the pending cause outright (a modifier rescue) keeps it too. */
-  if (sp_exc_top > 0) { sp_exc_msg[sp_exc_top-1] = msg; sp_exc_cls[sp_exc_top-1] = cls; void *raised = sp_pending_exc_obj; sp_exc_obj[sp_exc_top-1] = raised; sp_pending_exc_obj = NULL; sp_pending_cause = cont && raised ? (void *)((sp_Exception *)raised)->cause : sp_explicit_cause_set ? sp_explicit_cause : sp_cur_handled() ? (sp_cur_handled() == raised ? (void *)((sp_Exception *)raised)->cause : sp_exc_implicit_cause(sp_cur_handled(), raised)) : sp_exc_implicit_cause(sp_inflight_cause, raised); sp_inflight_cause = NULL; sp_explicit_cause = NULL; sp_explicit_cause_set = 0; sp_last_exc_cls = cls; sp_handler_stacks_unwind(); sp_poly_recur_unwind(); longjmp(sp_exc_stack[sp_exc_top-1], 1); }
+  if (SP_EXC_UNWINDS && sp_exc_top > 0) { sp_exc_msg[sp_exc_top-1] = msg; sp_exc_cls[sp_exc_top-1] = cls; void *raised = sp_pending_exc_obj; sp_exc_obj[sp_exc_top-1] = raised; sp_pending_exc_obj = NULL; sp_pending_cause = cont && raised ? (void *)((sp_Exception *)raised)->cause : sp_explicit_cause_set ? sp_explicit_cause : sp_cur_handled() ? (sp_cur_handled() == raised ? (void *)((sp_Exception *)raised)->cause : sp_exc_implicit_cause(sp_cur_handled(), raised)) : sp_exc_implicit_cause(sp_inflight_cause, raised); sp_inflight_cause = NULL; sp_explicit_cause = NULL; sp_explicit_cause_set = 0; sp_last_exc_cls = cls; sp_handler_stacks_unwind(); sp_poly_recur_unwind(); longjmp(sp_exc_stack[sp_exc_top-1], 1); }
   /* Uncaught SystemExit terminates silently with its status (Kernel#exit).
      Read the status BEFORE the hooks run: it lives in the pending exception
      object, which nothing roots once the hooks start allocating. */
@@ -14673,7 +14680,13 @@ SP_NORETURN SP_COLD void sp_raise_cls(const char *cls, const char *msg) {
 #endif
     sp_exc_print_uncaught(cls, msg);
     sp_exc_resignal(cls, msg);
-    exit(status); } }
+#ifdef SP_EXC_ABORT
+    (void)status;
+    sp_exc_abort_trap();   /* --exceptions=abort: the host's failure (sp_setjmp.h) */
+#else
+    exit(status);
+#endif
+  } }
 #endif
 static void sp_raise(const char *msg) { sp_raise_cls("RuntimeError", msg); }
 
