@@ -1,0 +1,4 @@
+inherited: C::Bar
+inherited: D::E::F
+inherited: G
+Counted subclasses: 2
