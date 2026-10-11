@@ -122,6 +122,7 @@ int strbuf_ivar_owner(Compiler *c, int node);
 int attr_assign_slot(Compiler *c, int id, int *cid, int *iv);
 const int *codegen_node_parents(Compiler *c, int node);
 int user_assign_handle(Compiler *c, int id);
+int writers_change_param(Compiler *c, int id);
 int strbuf_assign_leaf(Compiler *c, int v);
 int strbuf_freeze_leaf(Compiler *c, int v);
 int strbuf_assign_route(Compiler *c, int v);

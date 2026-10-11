@@ -1118,6 +1118,19 @@ static int writer_changes_param(Compiler *c, int id) {
   return m->nparams != 1 || !m->pnames[0] || subtree_changes_local(c->nt, m->body, m->pnames[0]);
 }
 
+/* Does an explicit writer that call id can reach (cplan_targets) change
+   its parameter in place? */
+int writers_change_param(Compiler *c, int id) {
+  int mis[CPT_MAX];
+  int n = cplan_targets(c, id, mis, CPT_MAX);
+  if (n < 0) return 1;
+  for (int i = 0; i < n; i++) {
+    const Scope *m = &c->scopes[mis[i]];
+    if (m->nparams != 1 || !m->pnames[0] || subtree_changes_local(c->nt, m->body, m->pnames[0])) return 1;
+  }
+  return 0;
+}
+
 /* Is call id the receiver of a blockless iterator's Enumerator? */
 static int assign_feeds_enumerator(Compiler *c, int id) {
   const NodeTable *nt = c->nt;

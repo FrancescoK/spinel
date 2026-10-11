@@ -1584,6 +1584,12 @@ int strbuf_bang_chain(Compiler *c, int v) {
 /* --share-strings: v (through parentheses) is an attribute assignment on a
    handle, whose value is the one String it was handed (repr_write_share):
    a leaf a handle route reads as that handle (emit_strbuf_write_handle). */
+/* ...on a receiver whose class is known only at run time? */
+static int strbuf_assign_boxed_recv(Compiler *c, int v) {
+  int r = nt_ref(c->nt, unwrap_parens(c, v), "receiver");
+  TyKind rt = r >= 0 ? comp_ntype(c, r) : TY_UNKNOWN;
+  return r >= 0 && (rt == TY_POLY || rt == TY_UNKNOWN);
+}
 int strbuf_assign_leaf(Compiler *c, int v) {
   v = unwrap_parens(c, v);
   return v >= 0 && nt_kind(c->nt, v) == NK_CallNode && repr_write_share(c, v);
@@ -10730,6 +10736,16 @@ void emit_tail_value(Compiler *c, int node, Buf *b) {
     buf_puts(b, ")");
     return;
   }
+  /* ...and so does an attribute assignment on a boxed receiver, whose
+     value is the handle its writers are handed (repr_write_share): the
+     dispatch answers that handle's bytes, which publish nothing */
+  if (ts && ts->ret_handle && strbuf_assign_leaf(c, node) && strbuf_assign_boxed_recv(c, node)) {
+    buf_puts(b, "sp_strbuf_read_pub(");
+    emit_strbuf_write_handle(c, node, b);
+    buf_puts(b, ")");
+    if (g_repr_check) repr_channel_end(c, frame);
+    return;
+  }
   if (ts && ts->ret_pub_fresh && share_return_owned(c, an_unparen(c->nt, node), (int)(ts - c->scopes))) {
     emit_fresh_tail_value(c, node, b);
     if (g_repr_check) repr_channel_end(c, frame);
@@ -12462,6 +12478,15 @@ int boxed_writer_holds_handle(Compiler *c, const char *base, int v) {
   return held;
 }
 
+/* Root a writer arm's value `src` (a temp the caller holds unrooted) for an
+   arm that allocates beside it: a String wrapped in a new handle, a handle
+   read into a new String, a String lifted to its handle. Collected there,
+   the value's bytes were freed while the field kept them. */
+static void emit_writer_arm_src_root(TyKind at, const char *src, Buf *b) {
+  if (at == TY_POLY) buf_printf(b, "SP_GC_ROOT_RBVAL(%s); ", src);
+  else if (at == TY_STRING || at == TY_STRBUF) buf_printf(b, "SP_GC_ROOT(%s); ", src);
+}
+
 void emit_boxed_writer_arms(Compiler *c, const char *base, const char *nm,
                             const char *objp, const char *src, TyKind at, int vnode,
                             int box_tv, int src_tv, int native_answer, Buf *b) {
@@ -12499,9 +12524,9 @@ void emit_boxed_writer_arms(Compiler *c, const char *base, const char *nm,
       kind = comp_writer_in_chain(c, k, base, &wmdc) ? SP_MEMBER_ATTR : SP_MEMBER_NONE;
     if (kind == SP_MEMBER_NONE) continue;
     int writer_wins = (kind == SP_MEMBER_ATTR);
-    /* inside a dispatch's builtin arm, an explicit writer's class took the
-       dispatch's own arm: its arm here is never run */
-    if (!writer_wins && g_poly_builtin_arm && repr_share_rule(c) && at == TY_STRBUF) continue;
+    /* --share-strings: inside a dispatch's builtin arm, an explicit writer's
+       class was the dispatch's own arm (no user class owns the name here) */
+    if (!writer_wins && repr_share_rule(c) && g_poly_builtin_arm) continue;
     if (!writer_wins) {
       Scope *arm = &c->scopes[kmi];
       TyKind pt = TY_POLY;
@@ -12520,12 +12545,24 @@ void emit_boxed_writer_arms(Compiler *c, const char *base, const char *nm,
       /* (a String held as its handle, boxed_writer_holds_handle, is read
          for a String parameter) */
       int hread = at == TY_STRBUF && pt == TY_STRING && repr_share_rule(c);
+      /* (a String into a parameter the writer changes in place, a handle:
+         wrapped, as a call's argument is) */
+      int wrap = at == TY_STRING && pt == TY_STRBUF;
       if (at != pt && at != TY_POLY && at != TY_UNKNOWN &&
           pt != TY_POLY && pt != TY_UNKNOWN &&
-          !(ty_is_numeric(at) && ty_is_numeric(pt)) && !hread)
+          !(ty_is_numeric(at) && ty_is_numeric(pt)) && !hread && !wrap)
         continue;
       Buf vb; memset(&vb, 0, sizeof vb);
       if (hread) buf_printf(&vb, "sp_strbuf_read_pub(%s)", src);
+      else if (wrap) buf_printf(&vb, "sp_String_new_shared(%s)", src);
+      /* (--share-strings: a String into a boxed parameter as its handle's
+         box, which a change through the parameter reaches, the field it is
+         stored in included) */
+      else if (pt == TY_POLY && at == TY_STRING && repr_share_rule(c)) {
+        buf_puts(&vb, "sp_poly_strbuf_lift(");
+        emit_boxed_text(c, at, src, &vb);
+        buf_puts(&vb, ")");
+      }
       else if (pt == TY_POLY && at != TY_POLY && at != TY_UNKNOWN) emit_boxed_text(c, at, src, &vb);
       else if (at == TY_POLY && pt != TY_POLY && pt != TY_UNKNOWN) emit_unbox_text(c, pt, src, &vb);
       else buf_puts(&vb, src);
@@ -12535,9 +12572,12 @@ void emit_boxed_writer_arms(Compiler *c, const char *base, const char *nm,
       Buf pre; memset(&pre, 0, sizeof pre);
       Buf args; memset(&args, 0, sizeof args);
       char raise[640];
-      if (emit_arm_args_text(c, kmi, selfp, &val, 1, &pre, &args, NULL, raise, sizeof raise))
-        buf_printf(b, " case %d: { %ssp_%s_%s(%s%s); break; }", k, pre.p ? pre.p : "",
+      if (emit_arm_args_text(c, kmi, selfp, &val, 1, &pre, &args, NULL, raise, sizeof raise)) {
+        buf_printf(b, " case %d: { ", k);
+        if (hread || wrap || (pt == TY_POLY && at == TY_STRING && repr_share_rule(c))) emit_writer_arm_src_root(at, src, b);
+        buf_printf(b, "%ssp_%s_%s(%s%s); break; }", pre.p ? pre.p : "",
                    c->classes[wmdc].c_name, mc(arm->name), selfp, args.p ? args.p : "");
+      }
       else
         buf_printf(b, " case %d: { %s break; }", k, raise);
       free(vb.p); free(pre.p); free(args.p);
@@ -12552,9 +12592,24 @@ void emit_boxed_writer_arms(Compiler *c, const char *base, const char *nm,
        hold it, through the upcast: with `@left` settled as Node, a Column
        stored through `obj.left = col` lost every arm and raised
        NoMethodError for a writer the receiver has. */
-    int hread = at == TY_STRBUF && ivt == TY_STRING && repr_share_rule(c);
-    if (at != ivt && at != TY_POLY && ivt != TY_POLY && !slot_takes_subclass(c, ivt, at) && !hread) continue;
-    buf_printf(b, " case %d: ", k);
+    /* (a String's handle goes into a field of the String's bytes, which
+       the rule does not share, as its read) */
+    int hread = at == TY_STRBUF && ivt == TY_STRING;
+    /* (and a String into a field that holds a handle, wrapped as a new one) */
+    int hwrap = at == TY_STRING && ivt == TY_STRBUF;
+    /* (a shared handle held for another class's field, into one the rule
+       does not share: a copy, as the typed store makes) */
+    int hcopy = at == TY_STRBUF && ivt == TY_STRBUF && iv >= 0 && !c->classes[k].ivar_str_shared[iv] &&
+                boxed_writer_holds_handle(c, base, vnode) == 1;
+    if (at != ivt && at != TY_POLY && ivt != TY_POLY && !hread && !hwrap && !slot_takes_subclass(c, ivt, at)) continue;
+    /* (a value that allocates is stored as a statement of its own, which
+       the write barrier follows: wrapped beside the store, the barrier ran
+       before the allocation, whose collection dropped its record; a boxed
+       String unboxed into a handle field is wrapped in a new handle) */
+    int alloc_store = hread || hwrap || hcopy || (lift && ivt == TY_POLY && at != TY_POLY) ||
+                      (at == TY_POLY && ivt == TY_STRBUF);
+    buf_printf(b, " case %d: %s", k, alloc_store ? "{ " : "");
+    if (alloc_store) emit_writer_arm_src_root(at, src, b);
     size_t on = strlen(c->classes[k].c_name) + strlen(objp) + 16;
     char *opn = (char *)malloc(on), mk[300];
     snprintf(opn, on, "((sp_%s *)%s)", c->classes[k].c_name, objp);
@@ -12576,17 +12631,15 @@ void emit_boxed_writer_arms(Compiler *c, const char *base, const char *nm,
       if (lift) buf_puts(b, ")");
     }
     else if (at == TY_POLY && ivt != TY_POLY) emit_unbox_text(c, ivt, src, b);
-    else if (hread) buf_printf(b, "sp_strbuf_read_pub(%s)", src);
-    /* (a shared handle held for another class's field, into one the rule
-       does not share: a copy, as the typed store makes) */
-    else if (at == TY_STRBUF && ivt == TY_STRBUF && iv >= 0 && !c->classes[k].ivar_str_shared[iv] &&
-             boxed_writer_holds_handle(c, base, vnode) == 1)
-      buf_printf(b, "(%s ? sp_String_new_shared(sp_String_cstr(%s)) : (sp_String *)NULL)", src, src);
+    else if (hread) buf_printf(b, "%s(%s)", repr_share_rule(c) ? "sp_strbuf_read_pub" : "sp_strbuf_read", src);
+    else if (hcopy) buf_printf(b, "(%s ? sp_String_new_shared(sp_String_cstr(%s)) : (sp_String *)NULL)", src, src);
+    else if (hwrap) buf_printf(b, "sp_String_new_shared(%s)", src);
     else { emit_obj_upcast_prefix(c, ivt, at, b); buf_puts(b, src); }
     /* and its assigned mark (ivar_set_mark) */
     const char *m = iv >= 0 ? ivar_set_mark(c, k, ivn, opn, "->", mk, sizeof mk) : NULL;
     if (m) buf_printf(b, "; %s break;", m);
     else buf_puts(b, "; break;");
+    if (alloc_store) buf_puts(b, " }");
     free(opn);
   }
   /* a real IO in the slot keeps its own writer beside the program's: a Log
@@ -15226,6 +15279,11 @@ static int emit_call_stmt(Compiler *c, int id, Buf *b, int indent, const NodeTab
             /* A value of no type -- a call proven to raise NoMethodError --
                is the raise's sp_RbVal; `void _t` did not compile (#6213). */
             int unk_rhs = at == TY_UNKNOWN;
+            /* --share-strings: a String argument that is a handle is held as
+               it, and each arm stores it (the value form's rule,
+               emit_poly_index_call) */
+            int hs = repr_share_rule(c) && at == TY_STRING && repr_of(c, argv[0]).strbuf_src == RS_HANDLE;
+            if (hs) at = TY_STRBUF;
             TyKind at_eff = (nil_rhs || unk_rhs) ? TY_POLY : at;
             int tv = ++g_tmp, tval = ++g_tmp, hold;
             emit_indent(b, indent);
@@ -15243,6 +15301,9 @@ static int emit_call_stmt(Compiler *c, int id, Buf *b, int indent, const NodeTab
               NodeKind vk = nt_kind(nt, argv[0]);
               if (vk != NK_LocalVariableReadNode && vk != NK_InstanceVariableReadNode && !repr_static_read_kind(vk))
                 buf_printf(b, " SP_GC_ROOT(_t%d);", tval);
+              }
+            else if (hs) {
+              buf_printf(b, "sp_String *_t%d = ", tval); emit_strbuf_handle_of(c, argv[0], b); buf_puts(b, ";");
             }
             else {
               emit_ctype(c, at, b); buf_printf(b, " _t%d = ", tval); emit_expr(c, argv[0], b); buf_puts(b, ";");

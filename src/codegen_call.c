@@ -6957,7 +6957,11 @@ static int emit_poly_builtin_default_at(Compiler *c, int id, int recv, const cha
   if (bt == TY_UNKNOWN && argc >= 1 && argc <= 2 && sp_streq(name, "respond_to?")) bt = TY_BOOL;
   if (bt == TY_UNKNOWN) bt = an_builtin_answer(c, id);
   if (bt == TY_UNKNOWN) return 0;
-  if (ret != TY_POLY && bt != ret) return 0;
+  /* (--share-strings: an arm run for its effect, a setter's whose value is
+     its argument's temp (tr < 0), answers into no slot of the call's type:
+     a setter read as the handle (TY_STRBUF) keeps its synthesized writers'
+     default arm) */
+  if (ret != TY_POLY && bt != ret && !(tr < 0 && repr_share_rule(c))) return 0;
   /* the result slot's form, as the dispatch seeded it: an Integer / Float
      answer that can be nil is held as the oint */
   int slot_o = oint_kind(ret) && node_is_oint(c, id);
@@ -6971,6 +6975,9 @@ static int emit_poly_builtin_default_at(Compiler *c, int id, int recv, const cha
       continue;
     }
     if (!subtree_has_side_effect(c, argv[a])) continue;
+    /* --share-strings: one the dispatch bound with its handle keeps that
+       binding (ran_first_handle), the same temp */
+    if (repr_share_rule(c) && ran_first_handle(argv[a]) >= 0) continue;
     int as = view_bind(argv[a], "_t%d", atmp[a]);
   }
   int va = view_push_arm(id, g_prbd_skip, 1);
@@ -8531,6 +8538,11 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       int ran = subtree_has_side_effect(c, recv);
       Repr svr0 = repr_of(c, id);
       int setter_handle = is_setter_val && repr_share_rule(c) && (svr0.demand || (svr0.handle && repr_write_share(c, id)));
+      /* --share-strings: a setter read as a String, where a writer changes
+         the String it is handed (`(o.a = +"ef").size`): the argument's
+         handle too, in its htmp, read once the arm ran */
+      int setter_late = is_setter_val && !setter_handle && repr_share_rule(c) && ret == TY_STRING &&
+                        user_assign_handle(c, id) && writers_change_param(c, id);
       for (int a = 0; a < pos_argc; a++) {
         atmp[a] = ++g_tmp;
         if (nt_kind(nt, argv[a]) == NK_SplatNode) {
@@ -8596,9 +8608,9 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
           /* --share-strings: a value that hands on a shared String's handle
              (a route, `s << x`) runs as that handle, which a handle arm
              takes; the temp is its read, for an arm that takes the value */
-          else if (at == TY_STRING && ak != NK_LocalVariableReadNode &&
+          else if (at == TY_STRING && (setter_late || (ak != NK_LocalVariableReadNode &&
                    ak != NK_InstanceVariableReadNode && strbuf_value_carries(c, argv[a]) &&
-                   (takes_handle >= 0 ? takes_handle : (takes_handle = poly_name_takes_handle(c, name)))) {
+                   (takes_handle >= 0 ? takes_handle : (takes_handle = poly_name_takes_handle(c, name)))))) {
             htmp[a] = ++g_tmp;
             emit_poly_route_arg(c, argv[a], at, htmp[a], atmp[a], ran, b);
           }
@@ -8735,6 +8747,10 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       PolyTemps ptemps = { argc, pos_argc, argv, atmp, atmp_ty, kwall, kwn, kwels, kwtmp, kwty, ret, tv, tr,
                            idxref, id };
       int pa_frame = g_plan_check ? pa_begin(id) : -1;
+      /* the argument read as the setter's value temp, its handle with it
+         (ran_first_handle): an arm that re-emits it, the synthesized
+         writers' default, stores that handle (unbound with kwmark) */
+      if (setter_late && htmp[0]) ran_first_bind(argv[0], atmp[0], htmp[0]);
       emit_poly_prearms_n(c, name, &ps, &ptemps, b);
       int blk_tmp2 = emit_poly_prearms_n_blk(c, id, name, &ps, &ptemps, atmp, atmp_ty, &kw, htmp,
                                              is_setter_val, splat_a, splat_last, stk, b);
@@ -8812,7 +8828,8 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
          static receiver's setter does: the handle itself put an sp_String *
          where a const char * is read (a safe-navigation nil arm's NULL). */
       Repr svr = repr_of(c, id);
-      if (!pd_done && is_setter_val && atmp_ty[0] == TY_STRBUF && ret == TY_STRING &&
+      if (!pd_done && setter_late && htmp[0]) buf_printf(b, " sp_strbuf_read(_t%d); })", htmp[0]);
+      else if (!pd_done && is_setter_val && atmp_ty[0] == TY_STRBUF && ret == TY_STRING &&
           !(repr_share_rule(c) && (svr.demand || (svr.handle && repr_write_share(c, id))))) {
         char sref[32]; snprintf(sref, sizeof sref, "_t%d", atmp[0]);
         buf_puts(b, " ");
