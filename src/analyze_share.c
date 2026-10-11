@@ -3000,7 +3000,10 @@ static int sh_val_compute(ShareFacts *F, Compiler *c, int n) {
   }
   case NK_RangeNode: {
     int l = sh_val(F, c, nt_ref(nt, n, "left")), rr = sh_val(F, c, nt_ref(nt, n, "right"));
-    if (l < 0 && rr < 0) return -1;
+    /* A String Range holds its endpoint Strings, new ones too (#8321):
+       it has its elements' class even when no endpoint names one, so a
+       change through #begin reaches it (share_node_elems_share) */
+    if (l < 0 && rr < 0 && c->ntype[n] != TY_STR_RANGE) return -1;
     int r = sh_new(F, SHK_VALUE);
     sh_union(F, sh_elem(F, r), l);
     sh_union(F, sh_elem(F, r), rr);

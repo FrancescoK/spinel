@@ -7378,12 +7378,28 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
     buf_printf(b, "sp_int _t%d = ", tk);
     if (sargc == 1) emit_int_expr(c, sargv[0], b); else buf_puts(b, "1");
     buf_puts(b, ";\n");
-    emit_indent(b, indent);
-    buf_printf(b, "if (!_t%d.first) sp_raise_cls(\"TypeError\", \"can't iterate from NilClass\");\n", tr);
-    emit_indent(b, indent);
-    buf_printf(b, "sp_StrArray *_t%d = _t%d.last ? sp_srange_to_a(_t%d) : NULL; SP_GC_ROOT(_t%d);\n", ta, tr, tr, ta);
-    emit_indent(b, indent);
-    buf_printf(b, "const char *_t%d = _t%d.first; SP_GC_ROOT(_t%d);\n", tx, tr, tx);
+    /* --share-strings: an end the Range keeps as a handle is read off it
+       (#8321): the walk starts from the begin's read face, a String of its
+       own (sp_srange_first), and the end is there if either form is */
+    if (repr_share_rule(c)) {
+      emit_indent(b, indent);
+      buf_printf(b, "SP_GC_ROOT(_t%d.hf); SP_GC_ROOT(_t%d.hl);\n", tr, tr);
+      emit_indent(b, indent);
+      buf_printf(b, "const char *_t%d = sp_srange_first(_t%d); SP_GC_ROOT(_t%d);\n", tx, tr, tx);
+      emit_indent(b, indent);
+      buf_printf(b, "if (!_t%d) sp_raise_cls(\"TypeError\", \"can't iterate from NilClass\");\n", tx);
+      emit_indent(b, indent);
+      buf_printf(b, "sp_StrArray *_t%d = (_t%d.hl || _t%d.last) ? sp_srange_to_a(_t%d) : NULL; SP_GC_ROOT(_t%d);\n",
+                 ta, tr, tr, tr, ta);
+    }
+    else {
+      emit_indent(b, indent);
+      buf_printf(b, "if (!_t%d.first) sp_raise_cls(\"TypeError\", \"can't iterate from NilClass\");\n", tr);
+      emit_indent(b, indent);
+      buf_printf(b, "sp_StrArray *_t%d = _t%d.last ? sp_srange_to_a(_t%d) : NULL; SP_GC_ROOT(_t%d);\n", ta, tr, tr, ta);
+      emit_indent(b, indent);
+      buf_printf(b, "const char *_t%d = _t%d.first; SP_GC_ROOT(_t%d);\n", tx, tr, tx);
+    }
     emit_indent(b, indent);
     buf_printf(b, "for (sp_int _t%d = 0; (_t%d > 0 || _t%d == 0) && (_t%d ? _t%d < sp_StrArray_length(_t%d) : 1);"
                   " _t%d += _t%d > 0 ? _t%d : 1, _t%d = _t%d ? _t%d : sp_str_succ_n(_t%d, _t%d)) {\n",

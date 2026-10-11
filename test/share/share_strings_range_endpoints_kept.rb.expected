@@ -1,0 +1,90 @@
+"ab".."c"
+["ab"]
+false
+"ab"
+"ab".."c"
+["ab"]
+"abb"
+"ada"
+"abb"
+"ada"
+"abb"
+"acz"
+["abb", "acz"]
+"abb...ada"
+"\"abb\"...\"ada\""
+["abb", "abc", "abd", "abe", "abf", "abg", "abh", "abi", "abj", "abk", "abl", "abm", "abn", "abo", "abp", "abq", "abr", "abs", "abt", "abu", "abv", "abw", "abx", "aby", "abz", "aca", "acb", "acc", "acd", "ace", "acf", "acg", "ach", "aci", "acj", "ack", "acl", "acm", "acn", "aco", "acp", "acq", "acr", "acs", "act", "acu", "acv", "acw", "acx", "acy", "acz"]
+51
+nil
+true
+true
+true
+true
+true
+true
+true
+true
+["abb", "abc"]
+"abb"
+"ada"
+true
+true
+true
+abb abc abd abe abf abg abh abi abj abk abl abm abn abo abp abq abr abs abt abu abv abw abx aby abz aca acb acc acd ace acf acg ach aci acj ack acl acm acn aco acp acq acr acs act acu acv acw acx acy acz 
+"xy"..
+"xy"
+..."xy"
+"xy"
+true
+true
+true
+true
+FrozenError
+"5".."8"
+["5", "6", "7", "8"]
+"5".."7"
+"st"
+#<struct S rng="st".."z">
+"stu"
+true
+"gh".."55"
+"kl".."5x"
+"cd".."z"
+true
+["ab".."5z", "5".."6"]
+["ab", "5"]
+{r: "ab".."zz"}
+"ab"
+["k1+".."z", "k2+".."z", "k3+".."z"]
+"qr".."qz"
+9
+true
+true
+true
+true
+true
+true
+"aq".."c"
+"aq".."c"
+{k: "a".."byz"}
+["av".."bw"]
+"q!".."qy"
+true
+true
+"az"
+"5d"
+"5a"
+"5b"
+4
+true
+82
+true
+true
+true
+true
+true
+FrozenError
+FrozenError
+"a".."c"
+true
+true

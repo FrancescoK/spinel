@@ -7392,6 +7392,22 @@ static int str_arms_convert(Compiler *c, int id, Buf *b, const NodeTable *nt, co
         eq_sblv = 1;
       }
     }
+    /* ...and two such endpoints: each is the handle its Range keeps, else
+       the String it holds (sp_srange_end_id), as `r3 = r.dup;
+       r3.begin.equal?(r.begin)` shares them */
+    if (!eq_sblv) {
+      int ra = strbuf_route_srange_end(c, recv), rb = strbuf_route_srange_end(c, argv[0]);
+      if (ra && rb) {
+        int ta = ++g_tmp, tb = ++g_tmp;
+        buf_printf(b, "({ sp_StrRange _t%d = ", ta);
+        emit_expr(c, nt_ref(c->nt, unwrap_parens(c, recv), "receiver"), b);
+        buf_printf(b, "; SP_GC_ROOT_SRANGE(_t%d); sp_StrRange _t%d = ", ta, tb);
+        emit_expr(c, nt_ref(c->nt, unwrap_parens(c, argv[0]), "receiver"), b);
+        buf_printf(b, "; (sp_bool)(sp_srange_end_id(_t%d, %d) == sp_srange_end_id(_t%d, %d)); })",
+                   ta, ra == 2, tb, rb == 2);
+        eq_sblv = 1;
+      }
+    }
     /* an attribute assignment on a handle, or freeze over one, against a
        handle: its own handle is compared (the read face is a copy) */
     if (!eq_sblv && repr_share_rule(c) && strbuf_assign_route(c, recv)) {
@@ -7642,7 +7658,13 @@ static int str_arms_slice_encode(Compiler *c, int id, Buf *b, const char *name, 
     buf_printf(b, "({ const char *_t%d = %s; ", tc, r);
     if (rvar) {
       buf_printf(b, "SP_GC_ROOT_STR(_t%d); sp_StrRange _t%d = ", tc, trg); emit_expr(c, argv[0], b);
-      buf_printf(b, "; const char *_t%d = _t%d.first; const char *_t%d = _t%d.last;", tlo, trg, thi, trg);
+      /* --share-strings: an end kept as a handle is read off it (#8321) */
+      if (repr_share_rule(c))
+        buf_printf(b, "; SP_GC_ROOT(_t%d.hf); SP_GC_ROOT(_t%d.hl); const char *_t%d = sp_srange_first(_t%d); SP_GC_ROOT_STR(_t%d);"
+                      " const char *_t%d = sp_srange_last(_t%d); SP_GC_ROOT_STR(_t%d);",
+                   trg, trg, tlo, trg, tlo, thi, trg, thi);
+      else
+        buf_printf(b, "; const char *_t%d = _t%d.first; const char *_t%d = _t%d.last;", tlo, trg, thi, trg);
       buf_printf(b, " if (_t%d.excl && _t%d)", trg, thi);
       buf_puts(b, " sp_raise_cls(\"ArgumentError\", \"cannot clamp with an exclusive range\");");
     }
@@ -12132,7 +12154,10 @@ int emit_range_call(Compiler *c, int id, Buf *b) {
     }
     if ((is_to_array_alias(name)) && argc == 0) {
       buf_printf(b, "({ sp_StrRange _t%d = ", tr); emit_expr(c, recv, b);
-      if (nt_int(nt, id, "to_set", 0))
+      /* --share-strings: an end kept as a handle is there (#8321) */
+      if (nt_int(nt, id, "to_set", 0) && repr_share_rule(c))
+        buf_printf(b, "; if (!_t%d.last && !_t%d.hl) sp_raise_cls(\"RangeError\", \"cannot convert endless range to a set\")", tr, tr);
+      else if (nt_int(nt, id, "to_set", 0))
         buf_printf(b, "; if (!_t%d.last) sp_raise_cls(\"RangeError\", \"cannot convert endless range to a set\")", tr);
       buf_printf(b, "; sp_srange_to_a(_t%d); })", tr); return 1;
     }
@@ -13152,8 +13177,10 @@ static TyKind emit_face_arm(Compiler *c, int id, unsigned kind, unsigned flags, 
       buf_printf(g_pre, "sp_FloatRange _t%d = sp_poly_frange_recv(%s, \"%s\");\n", t, rs, name);
       break;
     case PF_SRANGE:
-      buf_printf(g_pre, "sp_StrRange _t%d = sp_poly_srange_recv(%s, \"%s\"); SP_GC_ROOT_STR(_t%d.first); SP_GC_ROOT_STR(_t%d.last);\n",
+      buf_printf(g_pre, "sp_StrRange _t%d = sp_poly_srange_recv(%s, \"%s\"); SP_GC_ROOT_STR(_t%d.first); SP_GC_ROOT_STR(_t%d.last);",
                  t, rs, name, t, t);
+      { char ref[32]; snprintf(ref, sizeof ref, "_t%d", t); emit_srange_handle_roots(c, ref, g_pre); }
+      buf_puts(g_pre, "\n");
       break;
     /* A mutator's coercion checks the original for frozenness first: the
        typed emitter would otherwise work on the copy, running a block over
