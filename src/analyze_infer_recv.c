@@ -1962,7 +1962,7 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
      container: an int-returning builtin the poly-builtin dispatch handles at
      runtime; type it int so the result is not boxed to nil (#3162). */
   if (recv >= 0 && rt == TY_POLY && argc == 0 && nt_ref(nt, id, "block") < 0 &&
-      !an_user_recv_defines_method(c, name) &&
+      !an_user_recv_defines_method(c, name) && !an_user_defines_or_reads(c, name) &&
       (sp_streq(name, "arity") || sp_streq(name, "year") || sp_streq(name, "mon") ||
        sp_streq(name, "month") || sp_streq(name, "mday") ||
        sp_streq(name, "hour") || sp_streq(name, "sec") ||
