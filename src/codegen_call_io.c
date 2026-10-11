@@ -1930,8 +1930,10 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
       for (int k = 0; k < argc; k++) {
         TyKind akt = comp_ntype(c, argv[k]);
         abin[k] = (akt == TY_STRING);
-        if (sp_streq(name, "puts") && (ty_is_array(akt) || akt == TY_POLY_ARRAY || akt == TY_POLY)) {
-          /* an Array argument prints one element per line (#2813) */
+        if (sp_streq(name, "puts") && (ty_is_array(akt) || akt == TY_POLY_ARRAY || akt == TY_POLY ||
+                                       nt_kind(nt, argv[k]) == NK_ArrayNode)) {
+          /* an Array argument prints one element per line (#2813); an empty
+             literal, which has no element type, prints nothing */
           aarr[k] = 1;
           emit_boxed(c, argv[k], &abs[k]);
         }

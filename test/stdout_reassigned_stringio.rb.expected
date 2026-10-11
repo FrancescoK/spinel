@@ -1,0 +1,5 @@
+"a\n1\n\n2\n3\n\nz\nb4\n\"q\"\n#<Pt 5>\n6\n:sym\n7\n8\n003.1|fmt\nran 9\nc\nd\ne\n#<Pt 5>\n[6, :sym]\n"
+"w1\nw2\nw3\nw4\ne1\ne2\n"
+after
+[1, 2]
+"to file\n:file\n"

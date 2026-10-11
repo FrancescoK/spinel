@@ -11055,6 +11055,29 @@ static void sp_poly_warn_line(sp_RbVal v, FILE *f) {
   fwrite(s, 1, n, f);
   if (!n || s[n - 1] != '\n') fputc('\n', f);
 }
+/* The same lines as one String, for a $stderr that holds a StringIO. */
+static const char *sp_poly_warn_text(sp_RbVal v) {
+  if (v.tag == SP_TAG_OBJ && sp_poly_is_array_kind(v.cls_id)) {
+    SP_GC_ROOT_RBVAL(v);
+    const char *acc = sp_str_empty;
+    SP_GC_ROOT_STR(acc);
+    sp_int n = sp_poly_arr_len(v);
+    for (sp_int i = 0; i < n; i++) acc = sp_str_concat(acc, sp_poly_warn_text(sp_poly_each_elem(v, i)));
+    return acc;
+  }
+  SP_GC_ROOT_RBVAL(v);
+  const char *s = sp_poly_to_s(v);
+  if (!s) s = sp_str_empty;
+  SP_GC_ROOT_STR(s);
+  size_t n = v.tag == SP_TAG_STR ? sp_str_byte_len(s) : strlen(s);
+  return (!n || s[n - 1] != '\n') ? sp_str_concat(s, "\n") : s;
+}
+/* The C stream a boxed $stderr writes to: the IO it holds, else (never
+   assigned) the standard one. */
+static FILE *sp_poly_warn_fp(sp_RbVal io) {
+  if (io.tag == SP_TAG_OBJ && io.cls_id == SP_BUILTIN_IO && io.v.p) return ((sp_File *)io.v.p)->fp;
+  return stderr;
+}
 
 static sp_StrPolyHash *sp_StrPolyHash_from_poly(sp_RbVal src) {
   SP_GC_ROOT_RBVAL(src);   /* the source hash is a boxed temporary: the sets below allocate, and nothing else holds it */

@@ -865,6 +865,7 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
     return 1;
   }
 
+  if (recv < 0 && nt_ref(nt, id, "block") < 0) refuse_unredirected_output(c, id);
   /* Kernel#puts / #print as an expression: run the statement emitters inside
      a statement-expression and yield nil (their Ruby value). */
   if (recv < 0 && !bare_call_class_owned(c, id) && (is_text_print(name)) &&

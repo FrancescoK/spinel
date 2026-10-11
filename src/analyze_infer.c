@@ -8861,6 +8861,170 @@ static int gvar_has_write(Compiler *c, const char *name) {
   return 0;
 }
 
+/* Does the program store something other than an IO into $stdout / $stderr
+   (`nm` with its `$`), so the stream's slot is boxed and reads answer what
+   it holds? A program that never assigns the stream, or assigns only IOs,
+   keeps the direct stream reads. */
+int std_stream_boxed(Compiler *c, const char *nm) {
+  if (!nm || !is_standard_output_global(nm)) return 0;
+  LocalVar *sv = comp_gvar(c, nm + 1);
+  return sv && sv->type == TY_POLY && gvar_has_write(c, nm + 1);
+}
+
+/* The program classes a value stored into $stdout / $stderr can be an
+   instance of, marked in set: `K.new`, the standard streams and IOs (no
+   program class), nil, and locals whose every store is one of those
+   (through a multiple assignment's tuple too, the capture_io shape
+   `out, err = StringIO.new, StringIO.new`). 0 when it cannot bound them
+   (a method's answer, a parameter, an ivar). */
+static int ssv_value(Compiler *c, int v, char *set, int depth);
+static int ssv_local(Compiler *c, int v, char *set, int depth) {
+  const NodeTable *nt = c->nt;
+  const char *vn = nt_str(nt, v, "name");
+  Scope *sc = comp_scope_of(c, v);
+  if (!vn || !sc) return 0;
+  LocalVar *lv = scope_local(sc, vn);
+  if (!lv || lv->is_param || lv->is_block_param) return 0;
+  int saw = 0;
+  NT_FOREACH_KIND(nt, NK_LocalVariableWriteNode, w) {
+    const char *wn = nt_str(nt, w, "name");
+    if (!wn || !sp_streq(wn, vn) || comp_scope_of(c, w) != sc) continue;
+    if (!ssv_value(c, nt_ref(nt, w, "value"), set, depth + 1)) return 0;
+    saw = 1;
+  }
+  NT_FOREACH_KIND(nt, NK_LocalVariableTargetNode, t) {
+    const char *tn = nt_str(nt, t, "name");
+    if (tn && sp_streq(tn, vn) && comp_scope_of(c, t) == sc) saw = -1;
+  }
+  if (saw < 0) {
+    /* a target only of tuple assignments: the tuple's element */
+    NT_FOREACH_KIND(nt, NK_MultiWriteNode, m) {
+      int ln = 0, rn = 0;
+      const int *lefts = nt_arr(nt, m, "lefts", &ln);
+      nt_arr(nt, m, "rights", &rn);
+      int value = nt_ref(nt, m, "value"), en = 0;
+      const int *els = masgn_tuple_rhs(nt, value) ? nt_arr(nt, value, "elements", &en) : NULL;
+      for (int i = 0; i < ln; i++) {
+        if (nt_kind(nt, lefts[i]) != NK_LocalVariableTargetNode) continue;
+        const char *tn = nt_str(nt, lefts[i], "name");
+        if (!tn || !sp_streq(tn, vn) || comp_scope_of(c, lefts[i]) != sc) continue;
+        if (!els || rn || nt_ref(nt, m, "rest") >= 0 || i >= en) return 0;
+        if (!ssv_value(c, els[i], set, depth + 1)) return 0;
+      }
+    }
+    /* a target anywhere else (a block parameter list, a for loop) */
+    NT_FOREACH_KIND(nt, NK_LocalVariableTargetNode, t) {
+      const char *tn = nt_str(nt, t, "name");
+      if (!tn || !sp_streq(tn, vn) || comp_scope_of(c, t) != sc) continue;
+      int in_masgn = 0;
+      NT_FOREACH_KIND(nt, NK_MultiWriteNode, m) {
+        int ln = 0; const int *lefts = nt_arr(nt, m, "lefts", &ln);
+        for (int i = 0; i < ln && !in_masgn; i++) in_masgn = lefts[i] == t;
+        if (in_masgn) break;
+      }
+      if (!in_masgn) return 0;
+    }
+    saw = 1;
+  }
+  return saw;
+}
+static int ssv_value(Compiler *c, int v, char *set, int depth) {
+  const NodeTable *nt = c->nt;
+  if (v < 0 || depth > 16) return 0;
+  switch (nt_kind(nt, v)) {
+    case NK_NilNode: return 1;
+    case NK_ConstantReadNode: {
+      const char *cn = nt_str(nt, v, "name");
+      return cn && (sp_streq(cn, "STDOUT") || sp_streq(cn, "STDERR") || sp_streq(cn, "STDIN"));
+    }
+    case NK_GlobalVariableReadNode: {
+      const char *gn = nt_str(nt, v, "name");
+      /* the other stream's own stores are counted with this one's */
+      return gn && (is_standard_output_global(gn) || sp_streq(gn, "$stdin"));
+    }
+    case NK_LocalVariableReadNode: return ssv_local(c, v, set, depth);
+    case NK_ParenthesesNode: return ssv_value(c, nt_ref(nt, v, "body"), set, depth + 1);
+    case NK_StatementsNode: {
+      int n = 0; const int *b = nt_arr(nt, v, "body", &n);
+      return n > 0 && ssv_value(c, b[n - 1], set, depth + 1);
+    }
+    case NK_CallNode: {
+      const char *un = nt_str(nt, v, "name");
+      int r = nt_ref(nt, v, "receiver");
+      if (!un || r < 0 || nt_kind(nt, r) != NK_ConstantReadNode) return 0;
+      const char *rn = nt_str(nt, r, "name");
+      int ci = rn ? comp_class_index(c, rn) : -1;
+      if (sp_streq(un, "new") && ci >= 0) {
+        if (comp_cmethod_in_chain(c, ci, "new", NULL) >= 0) return 0;
+        set[ci] = 1;
+        return 1;
+      }
+      /* File.open / File.new / IO.new: a handle, no program class */
+      return rn && ci < 0 && (sp_streq(rn, "File") || sp_streq(rn, "IO")) &&
+             (sp_streq(un, "open") || sp_streq(un, "new"));
+    }
+    default: return 0;
+  }
+}
+int std_stream_value_classes(Compiler *c, char *set) {
+  const NodeTable *nt = c->nt;
+  NT_FOREACH_KIND(nt, NK_GlobalVariableWriteNode, w) {
+    const char *gn = nt_str(nt, w, "name");
+    if (gn && is_standard_output_global(gn) && !ssv_value(c, nt_ref(nt, w, "value"), set, 0)) return 0;
+  }
+  static const NodeKind other[] = { NK_GlobalVariableOperatorWriteNode, NK_GlobalVariableOrWriteNode,
+                                    NK_GlobalVariableAndWriteNode };
+  for (int k = 0; k < 3; k++)
+    NT_FOREACH_KIND(nt, other[k], w) {
+      const char *gn = nt_str(nt, w, "name");
+      if (gn && is_standard_output_global(gn)) return 0;
+    }
+  NT_FOREACH_KIND(nt, NK_MultiWriteNode, m) {
+    int ln = 0, rn = 0;
+    const int *lefts = nt_arr(nt, m, "lefts", &ln);
+    nt_arr(nt, m, "rights", &rn);
+    int value = nt_ref(nt, m, "value"), en = 0;
+    const int *els = masgn_tuple_rhs(nt, value) ? nt_arr(nt, value, "elements", &en) : NULL;
+    for (int i = 0; i < ln; i++) {
+      if (nt_kind(nt, lefts[i]) != NK_GlobalVariableTargetNode) continue;
+      const char *gn = nt_str(nt, lefts[i], "name");
+      if (!gn || !is_standard_output_global(gn)) continue;
+      if (!els || rn || nt_ref(nt, m, "rest") >= 0 || i >= en || !ssv_value(c, els[i], set, 0)) return 0;
+    }
+  }
+  return 1;
+}
+
+/* Can $stdout / $stderr hold an object the emitted output cannot write to?
+   With `nm` (puts / print): an object whose class has its own write but not
+   that method -- stored into $stdout, Ruby's bare puts reaches Kernel#puts
+   on it, which writes each line through that write, and the receiver form
+   of the call has no such fallback. Without (warn): any program object but
+   a StringIO, whose own write warn would have to call. Only the classes the
+   streams' stores can hold count (std_stream_value_classes); when those
+   cannot be bounded, every class of the program does. */
+int std_stream_foreign_writer(Compiler *c, const char *nm) {
+  char *set = calloc((size_t)c->nclasses + 1, 1);
+  int bounded = set && std_stream_value_classes(c, set);
+  int sio = comp_class_index(c, "StringIO"), hit = 0;
+  for (int k = 0; k < c->nclasses && !hit; k++) {
+    if (k == sio || (bounded && !set[k])) continue;
+    int writes = comp_method_in_chain(c, k, "write", NULL) >= 0;
+    if (nm) hit = writes && comp_method_in_chain(c, k, nm, NULL) < 0;
+    else hit = bounded || writes || (sio >= 0 && c->classes[k].parent == sio);
+  }
+  free(set);
+  return hit;
+}
+
+/* Does the program assign $stdout / $stderr at all, to an IO or anything
+   else? Then a bare puts writes to what was assigned. */
+int std_stream_assigned(Compiler *c, const char *nm) {
+  if (!nm || !is_standard_output_global(nm)) return 0;
+  LocalVar *sv = comp_gvar(c, nm + 1);
+  return sv && (sv->type == TY_POLY || sv->type == TY_IO) && gvar_has_write(c, nm + 1);
+}
+
 /* A reopening needs its empty receiver's kind during parameter binding and
    proc-form selection, before the late empty-operand marking. */
 static TyKind infer_empty_array_reopen(Compiler *c, int id) {
@@ -9195,7 +9359,12 @@ TyKind infer_uncached(Compiler *c, int id) {
        the TY_IO dispatch). $stdout/$stderr keep their dedicated AST-shape
        emission arm and stay untyped here. */
     if (nm && (sp_streq(nm, "$stdin") || sp_streq(nm, "$stdout") ||
-               sp_streq(nm, "$stderr"))) return TY_IO;   /* the C stream handles (#2818) */
+               sp_streq(nm, "$stderr"))) {
+      /* a stream the program stores a non-IO into (a StringIO) reads as
+         what its slot holds: the standard stream until the first store */
+      if (std_stream_boxed(c, nm)) return TY_POLY;
+      return TY_IO;   /* the C stream handles (#2818) */
+    }
     /* predefined punctuation globals: $/ defaults to "\n"; $! / $; / $, read nil */
     if (nm && sp_streq(nm, "$/")) return TY_STRING;
     /* the Process::Status of the last child waited for, NULL (nil) before
