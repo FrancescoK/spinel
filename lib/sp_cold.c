@@ -960,7 +960,9 @@ sp_Time sp_file_mtime(const char *path) {SP_GC_ROOT_STR(path);
 }
 sp_Time sp_file_birthtime(const char *path) {SP_GC_ROOT_STR(path);  /* (#2985) */
   if (!path) { sp_raise_cls("TypeError", "no implicit conversion of nil into String"); return (sp_Time){0, 0, 0}; }
-#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__) || defined(__DragonFly__)
+  /* OpenBSD's struct stat keeps the birth time only as the private
+     __st_birthtim, so CRuby has no File.birthtime there either: the #else */
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__DragonFly__)
   struct stat st;
   if (stat(path, &st) == -1) sp_file_raise_errno("rb_file_s_birthtime", path);
   return (sp_Time){(int64_t)st.st_birthtimespec.tv_sec, (int32_t)st.st_birthtimespec.tv_nsec, 0};

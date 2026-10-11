@@ -277,6 +277,9 @@ SP_TLS sp_Fiber *sp_fiber_current = &sp_fiber_root;    /* extern: read by the ge
 #include <sys/resource.h>
 #ifdef SP_THREADS
 #include <pthread.h>    /* only where the build has it: see sp_thread_stack_bounds */
+#if defined(__OpenBSD__)
+#include <pthread_np.h> /* pthread_stackseg_np */
+#endif
 #endif
 /* Unblock signal a (and b, when nonzero) for the calling thread: a handler
    that leaves by a jump instead of a return has to, or the signal stays
@@ -362,6 +365,13 @@ static void sp_thread_stack_bounds(char *here) {
   size_t sz = pthread_get_stacksize_np(self);
   sp_thread_stack_hi = hi;
   sp_thread_stack_lo = hi - sz;
+#elif defined(__OpenBSD__)
+  /* no pthread_getattr_np; ss_sp is the HIGH end, as on macOS */
+  stack_t ss;
+  if (pthread_stackseg_np(self, &ss) == 0) {
+    sp_thread_stack_hi = (char *)ss.ss_sp;
+    sp_thread_stack_lo = (char *)ss.ss_sp - ss.ss_size;
+  }
 #else
   pthread_attr_t at;
   void *base = 0; size_t sz = 0;

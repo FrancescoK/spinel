@@ -5,9 +5,11 @@
  * and the link line's -lcrypt made libcrypt a dependency of hello world
  * (#6674). src/main.c adds -lcrypt only when the generated C calls
  * sp_str_crypt. */
+#include <errno.h>
 #include <string.h>
 #include <stdlib.h>
 #include "sp_str.h"
+#include "sp_exc.h"
 const char *sp_str_crypt(const char *s, const char *salt) {SP_GC_ROOT_STR(s);SP_GC_ROOT_STR(salt);
   /* the real libc crypt(3) -- DES with a 2-char salt (or the platform's
      extended schemes), byte-identical to CRuby's String#crypt (#2398).
@@ -17,7 +19,15 @@ const char *sp_str_crypt(const char *s, const char *salt) {SP_GC_ROOT_STR(s);SP_
   if (!s) sp_nil_recv("crypt");
   if (!salt || !salt[0] || !salt[1])
     sp_raise_cls("ArgumentError", "salt too short (need >=2 bytes)");
+  errno = 0;
   char *d = crypt(s, salt);
-  if (!d) sp_raise_cls("ArgumentError", "invalid salt");
+  /* a salt the platform's crypt(3) refuses: CRuby raises the errno it
+     leaves ("Invalid argument - crypt"). OpenBSD's crypt returns NULL (it
+     takes only bcrypt); libxcrypt's returns a failure token, "*0" or "*1",
+     which no hash starts with */
+  if (!d || d[0] == '*') {
+    int e = errno ? errno : EINVAL;
+    sp_raise_cls(sp_errno_class_name(e), sp_sprintf("%s - crypt", strerror(e)));
+  }
   return sp_str_dup_external(d);
 }

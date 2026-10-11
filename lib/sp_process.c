@@ -307,9 +307,15 @@ sp_int sp_process_spawn(sp_RbVal cmd, sp_RbVal args_box,
 
   int rlimit_as_set = 0;
   rlim_t rlimit_as_val = 0;
+#ifdef RLIMIT_AS
   if (opts->data[5].tag == SP_TAG_INT) { rlimit_as_set = 1; rlimit_as_val = (rlim_t)opts->data[5].v.i; }
   else if (opts->data[5].tag != SP_TAG_NIL)
     sp_process_spawn_fail(owned, "TypeError", "rlimit_as must be Integer");
+#else
+  /* OpenBSD has no RLIMIT_AS: CRuby does not know the option there */
+  if (opts->data[5].tag != SP_TAG_NIL)
+    sp_process_spawn_fail(owned, "ArgumentError", "wrong exec option symbol: rlimit_as");
+#endif
 
   const char *chdir_to = NULL;
   sp_RbVal chdir_v = sp_spawn_str(opts->data[6]);
@@ -491,10 +497,12 @@ sp_int sp_process_spawn(sp_RbVal cmd, sp_RbVal args_box,
       struct rlimit rl = { rlimit_cpu_val, RLIM_INFINITY };
       setrlimit(RLIMIT_CPU, &rl);
     }
+#ifdef RLIMIT_AS
     if (rlimit_as_set) {
       struct rlimit rl = { rlimit_as_val, RLIM_INFINITY };
       setrlimit(RLIMIT_AS, &rl);
     }
+#endif
     if (pgroup == 1) {
       setpgid(0, 0);
     }
