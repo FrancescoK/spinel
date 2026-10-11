@@ -3020,7 +3020,10 @@ void blkp_rewrite_refs(Compiler *c, int node, const char *oldn, const char *newn
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, node);
   if (!ty) return;
-  if (sp_streq(ty, "DefNode") || sp_streq(ty, "ClassNode") || sp_streq(ty, "ModuleNode")) return;
+  /* a def's receiver (`def x.m`) is read in the enclosing scope; the rest of
+     a def, and a class or module body, is a scope of its own */
+  if (sp_streq(ty, "DefNode")) { blkp_rewrite_refs(c, nt_ref(nt, node, "receiver"), oldn, newn); return; }
+  if (sp_streq(ty, "ClassNode") || sp_streq(ty, "ModuleNode")) return;
   if ((sp_streq(ty, "BlockNode") || sp_streq(ty, "LambdaNode")) && blkp_binds_param(c, node, oldn)) return;
   if (a_is_local_node(ty)) {
     const char *nm = nt_str(nt, node, "name");

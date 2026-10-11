@@ -1,0 +1,9 @@
+["include", "verbose", "name"]
+["i", "v", "n"]
+{include: "foo"}
+{include: "bar", verbose: true}
+{include: "baz", verbose: true}
+"invalid option: -x"
+Usage: t [options]
+    -i, --include PATTERN            Include
+    -v, --verbose                    Verbose

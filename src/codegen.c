@@ -5670,7 +5670,7 @@ void emit_method(Compiler *c, Scope *s, Buf *b) {
       emit_str_literal(b, s->name);
       buf_printf(b, ", sp_box_obj((void *)self, %d)));", sg_par);
       if (method_is_void(s)) buf_puts(b, " return; }\n");
-      else buf_printf(b, " return %s; }\n", default_value_from_compiler(c, s->ret) ? default_value_from_compiler(c, s->ret) : "0");
+      else buf_printf(b, " return %s; }\n", method_ret_zero(c, s) ? method_ret_zero(c, s) : "0");
     }
     if (pm >= 0) {
       Scope *ps = &c->scopes[pm];
@@ -6138,6 +6138,12 @@ void proc_collect_used(Compiler *c, int id, NameSet *out) {
     Scope *ys = comp_scope_of(c, id);
     if (ys && (ys->is_lowered_yield || ys->is_proc_form) && ys->blk_param && ys->blk_param[0])
       nameset_add(out, ys->blk_param);
+  }
+  /* a `def` opens a scope of its own: its parameters and locals are not the
+     proc's, so only the receiver of `def obj.m` is read here */
+  if (sp_streq(ty, "DefNode")) {
+    proc_collect_used(c, nt_ref(c->nt, id, "receiver"), out);
+    return;
   }
   int zs = sp_streq(ty, "ForwardingSuperNode");
   Scope *fs = zs || sp_streq(ty, "SuperNode") ? comp_scope_of(c, id) : NULL;
