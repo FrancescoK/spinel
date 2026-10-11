@@ -14993,6 +14993,45 @@ static int program_needs_class_machinery(Compiler *c) {
    flag over-approximates (a user method named `rand` keeps srand; that is
    harmless), so a feature that is genuinely used is never missed: a symbol /
    regex / random value can only originate from one of the nodes below. */
+/* The types the poly scan below leaves out (#8401): they are values of no
+   code the program runs. A method nothing reaches is not emitted; and a
+   helper the compiler adds for a class with #each (`__enum_to_a`, for its
+   Enumerable methods) builds an Array only for the caller that asks it, and
+   that caller's call carries the Array's type. */
+static int scope_types_unseen(Compiler *c, int si) {
+  Scope *sc = &c->scopes[si];
+  if (sc->def_node < 0 || !sc->name) return 0;
+  if (strncmp(sc->name, "__enum_", 7) == 0) return 1;
+  return !sc->reachable && !sc->is_proc_form;
+}
+static void scan_mark_subtree(const NodeTable *nt, int root, unsigned char *m, int depth) {
+  if (root < 0 || root >= nt->count || depth > 200 || m[root]) return;
+  m[root] = 1;
+  const SpNode *nd = &nt->nodes[root];
+  for (int i = 0; i < nd->nr; i++) scan_mark_subtree(nt, nd->r[i].ref, m, depth + 1);
+  for (int i = 0; i < nd->na; i++)
+    for (int j = 0; j < nd->a[i].n; j++) scan_mark_subtree(nt, nd->a[i].ids[j], m, depth + 1);
+}
+/* ...nor do the arguments of the FFI and native-binding directives, which
+   the analysis reads and no code evaluates (`ffi_func :f, [:int], :int`). */
+static unsigned char *scan_dsl_arg_nodes(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  unsigned char *m = NULL;
+  static const char *const dsl[] = { "ffi_lib", "ffi_lib_flags", "ffi_convention", "attach_function",
+                                     "attach_variable", "callback", "typedef", "bitmask", "layout", NULL };
+  for (int id = comp_kind_first(c, NK_CallNode); id >= 0; id = comp_kind_next(c, id)) {
+    if (nt_ref(nt, id, "receiver") >= 0) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm) continue;
+    int hit = strncmp(nm, "ffi_", 4) == 0 || strncmp(nm, "native_", 7) == 0;
+    for (int k = 0; dsl[k] && !hit; k++) hit = sp_streq(nm, dsl[k]);
+    if (!hit) continue;
+    if (!m) { m = (unsigned char *)calloc((size_t)nt->count + 1, 1); if (!m) return NULL; }
+    scan_mark_subtree(nt, nt_ref(nt, id, "arguments"), m, 0);
+  }
+  return m;
+}
+
 static void scan_prologue_features(Compiler *c) {
   const NodeTable *nt = c->nt;
   g_uses_symbols = (c->nsymbols > 0);
@@ -15202,12 +15241,18 @@ static void scan_prologue_features(Compiler *c) {
     /* a def's Symbol where nothing uses it is no value of the program's
        (an_phase_pre_fixpoint leaves its name out of the table too) */
     int *par = an_parent_map(nt);
+    unsigned char *dsl = scan_dsl_arg_nodes(c);
     for (int i = 0; i < nt->count && i < c->node_cap; i++) {
       if (par && nt_kind(nt, i) == NK_DefNode && !an_def_value_used(nt, par, i)) continue;
+      if (dsl && dsl[i]) continue;
+      int si = c->nscope[i];
+      if (si > 0 && si < c->nscopes && scope_types_unseen(c, si)) continue;
       SP_TT(c->ntype[i]);
     }
+    free(dsl);
     free(par);
     for (int sc = 0; sc < c->nscopes; sc++) {
+      if (sc > 0 && scope_types_unseen(c, sc)) continue;
       SP_TT(c->scopes[sc].ret);
       for (int l = 0; l < c->scopes[sc].nlocals; l++) SP_TT(c->scopes[sc].locals[l].type);
     }
