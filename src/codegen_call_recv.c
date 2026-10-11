@@ -2702,6 +2702,9 @@ else {
       buf_puts(b, "), (void)("); emit_expr(c, argv[0], b); buf_puts(b, "), sp_box_nil())");
       { *out = 1; return 1; }
     }
+    /* find_index(value) over a hop in front of a String Range walks the Range itself */
+    if (is_find_index(name) && srange_member_hop(c, recv) >= 0 &&
+        emit_srange_hop_row(c, id, srange_member_hop(c, recv), name, b)) { *out = 1; return 1; }
     /* nil-on-miss -> poly */
     const char *fn = sp_streq(name, "rindex") ? "rindex_poly" : "index_poly";
     if (value_obj_compares(c, argv[0])) {

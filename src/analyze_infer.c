@@ -3946,7 +3946,7 @@ static int infer_range_lazy_call(Compiler *c, int id, const NodeTable *nt, const
     TyKind lst = lazy_src >= 0 ? infer_type(c, lazy_src) : TY_UNKNOWN;
     /* emit_lazy_pipeline_expr collects into a PolyArray; the counted form is
        that array, the bare form its first (boxed) element (#2994). */
-    if (lazy_src >= 0 && lst == TY_RANGE)
+    if (lazy_src >= 0 && (lst == TY_RANGE || lst == TY_STR_RANGE))
       { *out = (argc == 1) ? TY_POLY_ARRAY : TY_POLY; return 1; }
     /* An array-source lazy first(n) (e.g. the `arr.lazy.take(n).to_a` that the
        take->first desugar produces) materializes n boxed elements; the bare
@@ -4070,7 +4070,7 @@ static int infer_range_lazy_call(Compiler *c, int id, const NodeTable *nt, const
       TyKind st = infer_type(c, lazy_src);
       /* bare `first` unwraps to the single element, not the collected array */
       TyKind res = (sp_streq(name, "first") && argc == 0) ? TY_POLY : TY_POLY_ARRAY;
-      if (st == TY_RANGE || st == TY_INT_ARRAY || st == TY_ENUMERATOR ||
+      if (st == TY_RANGE || st == TY_STR_RANGE || st == TY_INT_ARRAY || st == TY_ENUMERATOR ||
           st == TY_POLY_ARRAY || st == TY_STR_ARRAY || st == TY_FLOAT_ARRAY) { *out = res; return 1; }
       /* a source only known at run time streams as an Enumerator over it
          (sp_poly_lazy_src), unless the program defines a lazy of its own */

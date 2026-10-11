@@ -7145,6 +7145,71 @@ static int iter_hash_arms(Compiler *c, Buf *b, int indent, int block, const char
   return -1;
 }
 
+/* The walk over a String Range's members that each, step and for share: a
+   bounded range's members materialize once, an endless one's (last NULL)
+   follow by succ. `stride` is the node of an Integer stride (-1 for one); a
+   stride of zero or less yields the begin alone. A shared endpoint is read
+   off its handle as it is now (sp_srange_first). Each turn
+   takes its member and computes the next before the body runs, as CRuby does,
+   so a body that changes the member does not move the walk. Opens the `for`
+   and sets `elem` to the member's expression; the caller binds its parameter
+   (emit_srange_member_param), emits the body and closes the brace. */
+void emit_srange_walk_open(Compiler *c, int recv, int stride, char *elem, size_t elemcap, Buf *b, int indent) {
+  int tr = ++g_tmp, tk = ++g_tmp, ta = ++g_tmp, tx = ++g_tmp, ti = ++g_tmp, tn = ++g_tmp, tc = ++g_tmp;
+  emit_indent(b, indent);
+  buf_printf(b, "sp_StrRange _t%d = ", tr); emit_expr(c, recv, b); buf_puts(b, ";\n");
+  emit_indent(b, indent);
+  buf_printf(b, "sp_int _t%d = ", tk);
+  if (stride >= 0) emit_int_expr(c, stride, b); else buf_puts(b, "1");
+  buf_puts(b, ";\n");
+  /* --share-strings: an end the Range keeps as a handle is read off it
+     (#8321): the walk starts from the begin's read face, a String of its
+     own (sp_srange_first), and the end is there if either form is */
+  if (repr_share_rule(c)) {
+    emit_indent(b, indent);
+    buf_printf(b, "SP_GC_ROOT(_t%d.hf); SP_GC_ROOT(_t%d.hl);\n", tr, tr);
+    emit_indent(b, indent);
+    buf_printf(b, "const char *_t%d = sp_srange_first(_t%d); SP_GC_ROOT(_t%d);\n", tx, tr, tx);
+    emit_indent(b, indent);
+    buf_printf(b, "if (!_t%d) sp_raise_cls(\"TypeError\", \"can't iterate from NilClass\");\n", tx);
+    emit_indent(b, indent);
+    buf_printf(b, "sp_StrArray *_t%d = (_t%d.hl || _t%d.last) ? sp_srange_to_a(_t%d) : NULL; SP_GC_ROOT(_t%d);\n",
+               ta, tr, tr, tr, ta);
+  }
+  else {
+    emit_indent(b, indent);
+    buf_printf(b, "if (!_t%d.first) sp_raise_cls(\"TypeError\", \"can't iterate from NilClass\");\n", tr);
+    emit_indent(b, indent);
+    buf_printf(b, "sp_StrArray *_t%d = _t%d.last ? sp_srange_to_a(_t%d) : NULL; SP_GC_ROOT(_t%d);\n", ta, tr, tr, ta);
+    emit_indent(b, indent);
+    buf_printf(b, "const char *_t%d = _t%d.first; SP_GC_ROOT(_t%d);\n", tx, tr, tx);
+  }
+  emit_indent(b, indent);
+  buf_printf(b, "const char *_t%d = NULL; SP_GC_ROOT(_t%d);\n", tn, tn);
+  emit_indent(b, indent);
+  buf_printf(b, "for (sp_int _t%d = 0; (_t%d > 0 || _t%d == 0) && (_t%d ? _t%d < sp_StrArray_length(_t%d) : 1);"
+                " _t%d += _t%d > 0 ? _t%d : 1, _t%d = _t%d ? _t%d : _t%d) {\n",
+             ti, tk, ti, ta, ti, ta, ti, tk, tk, tx, ta, tx, tn);
+  emit_indent(b, indent + 1);
+  buf_printf(b, "const char *_t%d = _t%d ? sp_StrArray_get(_t%d, _t%d) : _t%d;\n", tc, ta, ta, ti, tx);
+  emit_indent(b, indent + 1);
+  buf_printf(b, "if (!_t%d) _t%d = sp_str_succ_n(_t%d, _t%d);\n", ta, tn, tx, tk);
+  snprintf(elem, elemcap, "_t%d", tc);
+}
+
+/* Bind a String Range walk's member `elem` to the block parameter: the String
+   itself, or a fresh shared handle over it where the scope holds the
+   parameter as one (--share-strings), as the member Array's walk bound it. */
+void emit_srange_member_param(Compiler *c, int block, const char *p0_orig, const char *p0, const char *elem, Buf *b, int indent) {
+  Scope *sc = comp_scope_of(c, block);
+  LocalVar *lv = sc ? scope_local(sc, p0_orig) : NULL;
+  if (lv && elem_param_is_handle(lv, TY_STRING)) {
+    emit_indent(b, indent);
+    buf_printf(b, "lv_%s = sp_String_new_shared(%s);\n", p0, elem);
+  }
+  else emit_iter_param_assign(c, block, p0_orig, p0, TY_STRING, elem, b, indent);
+}
+
 static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
   const NodeTable *nt = c->nt;
   int block = nt_ref(nt, id, "block");
@@ -7374,41 +7439,24 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
       LocalVar *bl = bs ? scope_local(bs, p0_orig) : NULL;
       if (bl && bl->type == TY_INT) return 0;
     }
-    int tr = ++g_tmp, tk = ++g_tmp, ta = ++g_tmp, tx = ++g_tmp, ti = ++g_tmp;
-    emit_indent(b, indent);
-    buf_printf(b, "sp_StrRange _t%d = ", tr); emit_expr(c, recv, b); buf_puts(b, ";\n");
-    emit_indent(b, indent);
-    buf_printf(b, "sp_int _t%d = ", tk);
-    if (sargc == 1) emit_int_expr(c, sargv[0], b); else buf_puts(b, "1");
-    buf_puts(b, ";\n");
-    /* --share-strings: an end the Range keeps as a handle is read off it
-       (#8321): the walk starts from the begin's read face, a String of its
-       own (sp_srange_first), and the end is there if either form is */
-    if (repr_share_rule(c)) {
-      emit_indent(b, indent);
-      buf_printf(b, "SP_GC_ROOT(_t%d.hf); SP_GC_ROOT(_t%d.hl);\n", tr, tr);
-      emit_indent(b, indent);
-      buf_printf(b, "const char *_t%d = sp_srange_first(_t%d); SP_GC_ROOT(_t%d);\n", tx, tr, tx);
-      emit_indent(b, indent);
-      buf_printf(b, "if (!_t%d) sp_raise_cls(\"TypeError\", \"can't iterate from NilClass\");\n", tx);
-      emit_indent(b, indent);
-      buf_printf(b, "sp_StrArray *_t%d = (_t%d.hl || _t%d.last) ? sp_srange_to_a(_t%d) : NULL; SP_GC_ROOT(_t%d);\n",
-                 ta, tr, tr, tr, ta);
-    }
-    else {
-      emit_indent(b, indent);
-      buf_printf(b, "if (!_t%d.first) sp_raise_cls(\"TypeError\", \"can't iterate from NilClass\");\n", tr);
-      emit_indent(b, indent);
-      buf_printf(b, "sp_StrArray *_t%d = _t%d.last ? sp_srange_to_a(_t%d) : NULL; SP_GC_ROOT(_t%d);\n", ta, tr, tr, ta);
-      emit_indent(b, indent);
-      buf_printf(b, "const char *_t%d = _t%d.first; SP_GC_ROOT(_t%d);\n", tx, tr, tx);
-    }
-    emit_indent(b, indent);
-    buf_printf(b, "for (sp_int _t%d = 0; (_t%d > 0 || _t%d == 0) && (_t%d ? _t%d < sp_StrArray_length(_t%d) : 1);"
-                  " _t%d += _t%d > 0 ? _t%d : 1, _t%d = _t%d ? _t%d : sp_str_succ_n(_t%d, _t%d)) {\n",
-               ti, tk, ti, ta, ti, ta, ti, tk, tk, tx, ta, tx, tx, tk);
-    char elem[96]; snprintf(elem, sizeof elem, "(_t%d ? sp_StrArray_get(_t%d, _t%d) : _t%d)", ta, ta, ti, tx);
-    if (p0) emit_iter_param_assign(c, block, p0_orig, p0, TY_STRING, elem, b, indent + 1);
+    char elem[96];
+    emit_srange_walk_open(c, recv, sargc == 1 ? sargv[0] : -1, elem, sizeof elem, b, indent);
+    if (p0) emit_srange_member_param(c, block, p0_orig, p0, elem, b, indent + 1);
+    emit_loop_body(c, body, b, indent + 1);
+    emit_indent(b, indent); buf_puts(b, "}\n");
+    return 1;
+  }
+
+  /* ("a".."e").each { |s| ... } walks the same members by the same walk,
+     with a stride of one, so an endless range (last NULL) streams by succ
+     until the block breaks. It answers the range. */
+  if ((is_each_name(name) || is_each_entry(name)) && rt == TY_STR_RANGE) {
+    int args = nt_ref(nt, id, "arguments"); int sargc = 0;
+    if (args >= 0) nt_arr(nt, args, "arguments", &sargc);
+    if (sargc != 0) return 0;
+    char elem[96];
+    emit_srange_walk_open(c, recv, -1, elem, sizeof elem, b, indent);
+    if (p0) emit_srange_member_param(c, block, p0_orig, p0, elem, b, indent + 1);
     emit_loop_body(c, body, b, indent + 1);
     emit_indent(b, indent); buf_puts(b, "}\n");
     return 1;

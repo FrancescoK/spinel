@@ -3012,6 +3012,30 @@ static int lazy_src_may_hold_string(Compiler *c, int src) {
   }
   return 0;
 }
+/* The String Range a `to_a` hop over a Range stands for, or -1. The hop is one
+   a pass inserted while the Range was taken for an Integer one (a begin that is
+   a parameter or a call's value is typed after those passes ran) and marked
+   `range_hop`: a `to_a` the program wrote itself is no such hop. */
+int srange_member_hop(Compiler *c, int n) {
+  const NodeTable *nt = c->nt;
+  if (n < 0 || nt_kind(nt, n) != NK_CallNode || nt_ref(nt, n, "block") >= 0 || !nt_int(nt, n, "range_hop", 0)) return -1;
+  int r = nt_ref(nt, n, "receiver");
+  return r >= 0 && comp_ntype(c, r) == TY_STR_RANGE ? r : -1;
+}
+
+/* The String Range row `name` for call id over the Range node r, which a hop
+   (srange_member_hop) stood in front of: a find_index answer the call's slot
+   holds boxed is boxed from the row's nullable Integer. */
+int emit_srange_hop_row(Compiler *c, int id, int r, const char *name, Buf *b) {
+  Buf rb; memset(&rb, 0, sizeof rb);
+  if (!emit_builtin_op(c, id, r, TY_STR_RANGE, name, &rb)) { free(rb.p); return 0; }
+  if (is_find_index(name) && repr_of(c, id).as_ty != TY_INT)
+    buf_printf(b, "({ sp_int _tfi = %s; _tfi == SP_INT_NIL ? sp_box_nil() : sp_box_int(_tfi); })", rb.p ? rb.p : "SP_INT_NIL");
+  else buf_puts(b, rb.p ? rb.p : "");
+  free(rb.p);
+  return 1;
+}
+
 int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *tname = nt_str(nt, id, "name");
@@ -3134,6 +3158,9 @@ int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
   /* a boxed source streams as an Enumerator over it (sp_poly_lazy_src) */
   int src_is_poly = (st == TY_POLY && !diag_user_defines(c, "lazy"));
   if (src_is_poly) src_is_enum = 1;
+  /* a String Range streams the same way once boxed, an endless one by succ */
+  int src_is_srange = (st == TY_STR_RANGE);
+  if (src_is_srange) src_is_enum = 1;
   /* other array kinds iterate a boxed-element snapshot. An empty `[]` literal
      has no element type and so infers UNKNOWN, but it is still an array and
      the pipeline over it yields [] (#2996). */
@@ -3299,7 +3326,9 @@ int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
     int te = ++g_tmp, tf = ++g_tmp, tidx = ++g_tmp;
     Buf sb = expr_buf(c, lazy_src);
     emit_indent(g_pre, g_indent);
-    if (src_is_poly)
+    if (src_is_srange)
+      buf_printf(g_pre, "sp_Enumerator *_t%d = sp_poly_lazy_src(sp_box_srange(%s)); SP_GC_ROOT(_t%d);\n", te, sb.p ? sb.p : "(sp_StrRange){0}", te);
+    else if (src_is_poly)
       buf_printf(g_pre, "sp_Enumerator *_t%d = sp_poly_lazy_src(%s); SP_GC_ROOT(_t%d);\n", te, sb.p ? sb.p : "sp_box_nil()", te);
     else
       buf_printf(g_pre, "sp_Enumerator *_t%d = %s; SP_GC_ROOT(_t%d);\n", te, sb.p ? sb.p : "0", te);
@@ -18080,6 +18109,10 @@ int emit_blockless_enumerator(Compiler *c, int id, Buf *b) {
     int is_enum = comp_ntype(c, recv) == TY_ENUMERATOR;
     if (sp_streq(name, "each_with_index") && is_enum) {
       buf_puts(b, "sp_Enumerator_ewi("); emit_expr(c, recv, b); buf_puts(b, ")");
+    }
+    else if (is_with_index_alias(name) && srange_member_hop(c, recv) >= 0 &&
+             emit_srange_hop_row(c, id, srange_member_hop(c, recv), name, b)) {
+      /* the pairs of a hop in front of a String Range are the Range's own */
     }
     else if (sp_streq(name, "each_with_index")) {
       buf_puts(b, "sp_Enumerator_new_ewi(");

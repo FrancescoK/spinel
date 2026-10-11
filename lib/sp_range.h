@@ -194,6 +194,7 @@ sp_StrRange sp_srange_live(sp_StrRange r);
 /* a boxed String Range read so */
 #define SP_SRANGE_OF(p) sp_srange_live(*(sp_StrRange *)(p))
 sp_StrArray *sp_srange_to_a(sp_StrRange r);
+sp_StrArray *sp_srange_first_n(sp_RbVal box, sp_int n, int take);
 sp_bool sp_srange_eq(sp_StrRange a, sp_StrRange b);
 sp_bool sp_srange_cover(sp_StrRange r, const char *x);
 sp_bool sp_srange_include(sp_StrRange r, const char *x);

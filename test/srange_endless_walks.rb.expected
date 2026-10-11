@@ -1,0 +1,269 @@
+["b", "c"]
+[]
+"b"
+["b", "c", "d"]
+[]
+bcde
+bcde
+bcde
+bdfh
+["b", "c"]
+"b"
+["b", "c"]
+["bb", "cc"]
+["b", "c"]
+["b", "d", "f"]
+["b", "c", "d"]
+b0c1d2
+[["b", 0], ["c", 1]]
+[["b", "c"], ["d", "e"]]
+[["b", "c"], ["c", "d"]]
+["b", "c"]
+"e"
+"e"
+3
+2
+"b"
+"c"
+"d"
+"cc"
+["b", "c"]
+[]
+"b"
+["b", "c", "d"]
+[]
+bcde
+bcde
+bcde
+bdfh
+["b", "c"]
+"b"
+["b", "c"]
+["bb", "cc"]
+["b", "c"]
+["b", "d", "f"]
+["b", "c", "d"]
+b0c1d2
+[["b", 0], ["c", 1]]
+[["b", "c"], ["d", "e"]]
+[["b", "c"], ["c", "d"]]
+["b", "c"]
+"e"
+"e"
+3
+2
+"b"
+"c"
+"d"
+"cc"
+["b", "c"]
+[]
+"b"
+["b", "c", "d"]
+[]
+bcde
+bcde
+bcde
+bdfh
+["b", "c"]
+"b"
+["b", "c"]
+["bb", "cc"]
+["b", "c"]
+["b", "d", "f"]
+["b", "c", "d"]
+b0c1d2
+[["b", 0], ["c", 1]]
+[["b", "c"], ["d", "e"]]
+[["b", "c"], ["c", "d"]]
+["b", "c"]
+"e"
+"e"
+3
+2
+"b"
+"c"
+"d"
+"cc"
+["b", "c"]
+[]
+"b"
+["b", "c", "d"]
+[]
+bcde
+bcde
+bcde
+bdfh
+["b", "c"]
+"b"
+["b", "c"]
+["bb", "cc"]
+["b", "c"]
+["b", "d", "f"]
+["b", "c", "d"]
+b0c1d2
+[["b", 0], ["c", 1]]
+[["b", "c"], ["d", "e"]]
+[["b", "c"], ["c", "d"]]
+["b", "c"]
+"e"
+"e"
+3
+2
+"b"
+"c"
+"d"
+"cc"
+["b", "c"]
+[]
+"b"
+["b", "c", "d"]
+[]
+bcde
+bcde
+bcde
+bdfh
+["b", "c"]
+"b"
+["b", "c"]
+["bb", "cc"]
+["b", "c"]
+["b", "d", "f"]
+["b", "c", "d"]
+b0c1d2
+[["b", 0], ["c", 1]]
+[["b", "c"], ["d", "e"]]
+[["b", "c"], ["c", "d"]]
+["b", "c"]
+"e"
+"e"
+3
+2
+"b"
+"c"
+"d"
+"cc"
+["b", "c"]
+[]
+"b"
+["b", "c", "d"]
+[]
+bcde
+bcde
+bcde
+bdfh
+["b", "c"]
+"b"
+["b", "c"]
+["bb", "cc"]
+["b", "c"]
+["b", "d", "f"]
+["b", "c", "d"]
+b0c1d2
+[["b", 0], ["c", 1]]
+[["b", "c"], ["d", "e"]]
+[["b", "c"], ["c", "d"]]
+["b", "c"]
+"e"
+"e"
+3
+2
+"b"
+"c"
+"d"
+"cc"
+["b", "c"]
+[]
+"b"
+["b", "c", "d"]
+[]
+bcde
+bcde
+bcde
+bdfh
+["b", "c"]
+"b"
+["b", "c"]
+["bb", "cc"]
+["b", "c"]
+["b", "d", "f"]
+["b", "c", "d"]
+b0c1d2
+[["b", 0], ["c", 1]]
+[["b", "c"], ["d", "e"]]
+[["b", "c"], ["c", "d"]]
+["b", "c"]
+"e"
+"e"
+3
+2
+"b"
+"c"
+"d"
+"cc"
+["b", "c"]
+["b", "c"]
+["b", "c"]
+bcde
+["b", "e"]
+["a", "c", "e"]
+["a", "b"]
+["a", "b", "c", "d", "e"]
+[]
+["a", "b"]
+["aa", "bb"]
+abcde
+abcde
+["a", "c", "e"]
+[["a", "b"], ["c", "d"], ["e"]]
+[["a", 0], ["b", 1], ["c", 2], ["d", 3], ["e", 4]]
+2
+RangeError
+"cannot get the first element of beginless range"
+TypeError
+"can't iterate from NilClass"
+TypeError
+"can't iterate from NilClass"
+ArgumentError
+"negative array size (or size too big)"
+ArgumentError
+"attempt to take negative size"
+["a", "b"]
+[]
+["9", "10", "11"]
+"ad"
+["az", "ba", "bb"]
+129
+[["a", "b"]]
+[["a", "b"]]
+129
+[["a", "b"]]
+[["a", "b"]]
+129
+[["a", "b"]]
+[["a", "b"]]
+b! c! d! 
+RangeError
+RangeError
+RangeError
+nil
+true
+2
+#<Enumerator: "b"..:%(3)>
+#<Enumerator: "b"..:step(2)>
+nil
+nil
+nil
+#<Enumerator: "b"..:%(1.5)>
+nil
+TypeError
+"no implicit conversion of Float into String"
+nil
+nil
+nil
+nil
+nil
+nil
+nil
+nil
+nil
