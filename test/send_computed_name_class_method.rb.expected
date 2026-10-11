@@ -1,0 +1,4 @@
+["pride init 1", "junit init 1", "no plugin_minitest_init"]
+["pride options OPTS 2", "no plugin_junit_options", "no plugin_minitest_options"]
+"junit init 0"
+NoMethodError

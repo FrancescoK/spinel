@@ -3765,6 +3765,67 @@ static int dsend_receiver_names(Compiler *c, int cls, int subclasses, char ***ou
   return n;
 }
 
+/* The expression a send's name is: the name itself, or for a local
+   written once in its scope (`msg = "plugin_#{name}_init"; send msg`), the
+   value it was written. */
+static int dsend_name_source(Compiler *c, int arg) {
+  const NodeTable *nt = c->nt;
+  if (nt_kind(nt, arg) != NK_LocalVariableReadNode) return arg;
+  const char *vn = nt_str(nt, arg, "name");
+  int scope = arg < nt->count ? c->nscope[arg] : -1, src = -1, nw = 0;
+  if (!vn) return arg;
+  for (int id = 0; id < nt->count; id++) {
+    if (!comp_is_local_write(nt_kind(nt, id)) || c->nscope[id] != scope) continue;
+    const char *wn = nt_str(nt, id, "name");
+    if (!wn || !sp_streq(wn, vn)) continue;
+    nw++;
+    if (nt_kind(nt, id) == NK_LocalVariableWriteNode) src = nt_ref(nt, id, "value");
+  }
+  return nw == 1 && src >= 0 ? src : arg;
+}
+
+/* Is node n in a `def self.m` written in its class: a class method whose
+   self is that class (or a subclass), not a module method an `extend`
+   copied in, which a macro may run from a class body. */
+static int dsend_in_def_self(Compiler *c, int n) {
+  Scope *ss = comp_scope_of(c, n);
+  if (!ss || !ss->is_cmethod || ss->class_id < 0 || ss->def_node < 0) return 0;
+  int r = nt_ref(c->nt, ss->def_node, "receiver");
+  return r >= 0 && nt_kind(c->nt, r) == NK_SelfNode;
+}
+
+/* The class a Class-valued send receiver names: `self` in a class method,
+   or a constant naming one of the program's classes. -1 when unknown. */
+static int dsend_class_recv(Compiler *c, int send, int recv) {
+  const NodeTable *nt = c->nt;
+  NodeKind rk = nt_kind(nt, recv);
+  if (rk == NK_SelfNode) return dsend_in_def_self(c, send) ? comp_scope_of(c, send)->class_id : -1;
+  if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) {
+    const char *cn = nt_str(nt, recv, "name");
+    return cn ? comp_class_index(c, cn) : -1;
+  }
+  return -1;
+}
+
+/* The class methods `cls` answers: its own and inherited `def self.m`s.
+   `self` in a class method may be a subclass, so every descendant's count
+   too (a base's `send("#{x}_hook")` reaching a hook only a subclass has). */
+static int dsend_class_names(Compiler *c, int cls, char ***out) {
+  char **names = NULL; int n = 0, cap = 0;
+  ANameHash seen; memset(&seen, 0, sizeof seen);
+  for (int d = 0; d < c->nclasses; d++) {
+    if (d != cls && !is_descendant(c, d, cls)) continue;
+    for (int s = 0; s < c->nscopes; s++) {
+      const Scope *sc = &c->scopes[s];
+      if (!sc->name || !sc->is_cmethod || sc->class_id < 0) continue;
+      if (comp_cmethod_in_chain(c, d, sc->name, NULL) >= 0) dsend_add_name(&names, &n, &cap, &seen, sc->name);
+    }
+  }
+  anh_free(&seen);
+  *out = names;
+  return n;
+}
+
 /* Does every definition of `name` in the program refuse `argc` positional
    arguments? A name the program does not define (a builtin's) is never
    excluded; an attr reader takes none, an attr writer exactly one. */
@@ -4034,6 +4095,7 @@ int desugar_dynamic_send(Compiler *c) {
     char **use = cand; int nuse = ncand;
     char **own = NULL; int nown = 0;
     int computed = an_send_name_is_computed(c, argv[0]);
+    int class_recv = -1;     /* the class a Class-valued receiver names */
     int builtin_recv = 0;   /* the arms are a builtin class's methods */
     /* A name that is not computed -- a variable, a parameter, a table read
        (`send(type, ...)`, `send(*DISPATCH[op])`) -- holds one of the names
@@ -4082,6 +4144,13 @@ int desugar_dynamic_send(Compiler *c) {
         }
         for (int k = 0; k < ncand && k < 256; k++) dsend_add_name(&own, &nown, &cap, &seen, cand[k]);
         anh_free(&seen);
+      }
+      else if (rt == TY_CLASS && dsend_class_recv(c, id, recv) >= 0) {
+        /* a class receiver (`send "plugin_#{name}_init", opts` in a
+           `def self.` of a module) answers its own class methods */
+        class_recv = dsend_class_recv(c, id, recv);
+        nown = dsend_class_names(c, class_recv, &own);
+        if (nown == 0) continue;
       }
       else if (rt != TY_CLASS && builtin_class_of_type(rt)) {
         /* a receiver known to be a builtin answers its class's own methods
@@ -4140,9 +4209,11 @@ int desugar_dynamic_send(Compiler *c) {
          whose class is not known, the candidates are every class's methods,
          which in a program as large as activesupport passed the cap below
          and the send was refused (Deprecators#set_option). */
-      { NodeKind ak = nt_kind(nt, argv[0]);
+      int shaped = 0;   /* the shape kept some of the program's methods */
+      { int an = dsend_name_source(c, argv[0]);
+        NodeKind ak = nt_kind(nt, an);
         int pn = 0; const int *ps = (ak == NK_InterpolatedStringNode || ak == NK_InterpolatedSymbolNode)
-                                    ? nt_arr(nt, argv[0], "parts", &pn) : NULL;
+                                    ? nt_arr(nt, an, "parts", &pn) : NULL;
         const char *pre = pn > 1 && nt_kind(nt, ps[0]) == NK_StringNode ? nt_str(nt, ps[0], "content") : NULL;
         const char *suf = pn > 1 && nt_kind(nt, ps[pn - 1]) == NK_StringNode ? nt_str(nt, ps[pn - 1], "content") : NULL;
         if ((pre && *pre) || (suf && *suf)) {
@@ -4164,8 +4235,34 @@ int desugar_dynamic_send(Compiler *c) {
               else free(own[k]);
             }
             nown = w;
+            shaped = 1;
+          }
+          /* a class's arms are the program's `def self.`s alone, so a
+             shape a builtin Class or Module method fits too
+             (`send("attr_#{kind}", :x)`) is not one of them */
+          if (class_recv >= 0 && shaped) {
+            const char *bn[600];
+            int nb = builtin_method_names("Class", bn, 512);
+            for (int k = 0; object_methods[k]; k++) bn[nb++] = object_methods[k];
+            for (int k = 0; k < nb && shaped; k++) {
+              const char *v = bn[k];
+              size_t ol = strlen(v);
+              if (ol >= pl + sl && (!pl || strncmp(v, pre, pl) == 0) &&
+                  (!sl || strcmp(v + ol - sl, suf) == 0)) shaped = 0;
+            }
           }
         } }
+      /* A class receiver lowers only for a name whose fixed part picks
+         its methods out, and only when they all answer on the class the
+         send is written in: a subclass's own `def self.` is not reached
+         from the base's arms (they resolve there). Anything else stays
+         refused rather than raising NoMethodError for a method that
+         exists. */
+      if (class_recv >= 0) {
+        for (int k = 0; k < nown && shaped; k++)
+          if (comp_cmethod_in_chain(c, class_recv, own[k], NULL) < 0) shaped = 0;
+        if (!shaped) { for (int j = 0; j < nown; j++) free(own[j]); nown = 0; }
+      }
       if (nown == 0 || nown > 1024) { for (int k = 0; k < nown; k++) free(own[k]); free(own); continue; }
       use = own; nuse = nown;
     }
@@ -4373,6 +4470,24 @@ int desugar_dynamic_respond_to(Compiler *c) {
     comp_grow_node_arrays(c);
     c->nscope[sn] = c->nscope[id];
     nt_node_set_ref(nt, id, "receiver", sn);
+    changed = 1;
+  }
+  /* `self.respond_to?(name)` in a class method is the receiverless form,
+     which lowers below; the explicit one on a Class value had no runtime
+     name check and was refused (minitest's `self.respond_to? msg`) */
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, "respond_to?") || nt_int(nt, id, "dyn_arm", 0)) continue;
+    int r = nt_ref(nt, id, "receiver");
+    if (r < 0 || nt_kind(nt, r) != NK_SelfNode) continue;
+    int a = nt_ref(nt, id, "arguments"), ac = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+    if (ac < 1 || !av) continue;
+    NodeKind k0 = nt_kind(nt, av[0]);
+    if (k0 == NK_SymbolNode || k0 == NK_StringNode || k0 == NK_SplatNode) continue;
+    if (!dsend_in_def_self(c, id)) continue;
+    nt_node_set_ref(nt, id, "receiver", -1);
     changed = 1;
   }
   int any = 0;
