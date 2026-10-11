@@ -217,6 +217,24 @@ const char *sp_exc_msg_plain(const char *m) {
   ((unsigned char *)r)[-1] = 0xfa;
   return r;
 }
+/* A zeroed exception of at least `sz` bytes for the class named cls_name.
+   A class of the program's with ivars of its own is its whole struct, of
+   the class the name says (a rescue arm sizes for its own class, and a
+   subclass with more ivars may arrive), with the scan that marks its ivars
+   and those ivars unset (an Integer slot's nil byte, a boxed slot's nil),
+   as its constructor leaves them. Seeded before anything can allocate. */
+static sp_Exception *sp_exc_alloc_named(size_t sz, const char *cls_name) {
+  void (*scan)(void *) = NULL;
+  size_t usz = cls_name && sp_user_exc_layout_fn ? sp_user_exc_layout_fn(cls_name, &scan) : 0;
+  if (usz > sz) sz = usz;
+  sp_Exception *e = (sp_Exception *)sp_gc_alloc(sz, NULL, usz ? scan : sp_exc_gc_scan);
+  memset(e, 0, sz);
+  if (usz) {
+    e->cls_name = cls_name;
+    if (sp_user_exc_ivinit_fn) sp_user_exc_ivinit_fn(e);
+  }
+  return e;
+}
 sp_Exception *sp_exc_new_for_catch(const char *cls, const char *msg) {
   /* every caller hands a message with a marker byte (a raise's, from the
      handler stack, or sp_exc_msg_given's): a frozen one stays frozen */
@@ -256,11 +274,10 @@ void *sp_exc_ensure_obj(void **obj, const char **msg, const char *cls) {
 /* Allocate a zeroed exception-subclass struct of `sz` bytes with the base
    {cls_name, parent_cls_name, msg} prefix set, for the degenerate catch path
    where a user subclass with ivars was raised without a carried object
-   (#1415). Its ivar fields stay zero (nil/0). msg is the only heap field, so
-   the base scan suffices. */
+   (#1415). The class the name says decides the size, the scan and the
+   ivars' unset state (sp_exc_alloc_named). */
 void *sp_exc_new_sub_sized(size_t sz, const char *cls_name, const char *msg) {if (!sp_exc_msg_empty_given(msg)) msg = sp_msg_heapify(msg); SP_GC_ROOT_STR(msg);
-  sp_Exception *e = (sp_Exception *)sp_gc_alloc(sz, NULL, sp_exc_gc_scan);
-  memset(e, 0, sz);
+  sp_Exception *e = sp_exc_alloc_named(sz, cls_name);
   e->cls_name = cls_name ? cls_name : "RuntimeError";
   e->result = sp_box_nil();   /* memset left tag 0 (int 0); StopIteration#result wants nil */
   e->xname = sp_box_nil();
@@ -338,7 +355,7 @@ sp_RbVal sp_Exception_set_backtrace(sp_Exception *e, sp_StrArray *bt) {
    be swept out from under it either. The no-message sentinel keeps its
    identity: it is what tells an empty message apart from none at all. */
 sp_Exception *sp_exc_new(const char *cls_name, const char *msg) {if (!sp_exc_msg_empty_given(msg)) msg = sp_msg_heapify(msg); SP_GC_ROOT_STR(msg);
-  sp_Exception *e = (sp_Exception *)sp_gc_alloc(sizeof(sp_Exception), NULL, sp_exc_gc_scan);
+  sp_Exception *e = sp_exc_alloc_named(sizeof(sp_Exception), cls_name);
   e->cls_name = cls_name ? cls_name : "RuntimeError";
   e->parent_cls_name = NULL;
   e->msg = NULL;    /* set below; scan-safe if the copy triggers a GC */

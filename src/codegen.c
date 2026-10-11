@@ -9110,6 +9110,14 @@ int class_is_exc_subclass(Compiler *c, int ci) {
   return 0;
 }
 
+/* Does the program have an exception class with ivars of its own? */
+static int exc_ivar_classes(Compiler *c) {
+  for (int i = 0; i < c->nclasses; i++)
+    if (class_is_exc_subclass(c, i) && c->classes[i].nivars > 0) return 1;
+  return 0;
+}
+
+
 /* Per-class exception facts, computed once per class table: bit 1 the class
    carries a builtin exception's name, bit 2 it is that builtin's reopening
    (no superclass of its own). The name test is a scan of the builtin table,
@@ -13971,6 +13979,8 @@ void emit_regex_section(Compiler *c, Buf *b) {
     buf_puts(b, "  SP_INSTALL_HOOK(sp_obj_eq_hook, sp_obj_eq_dispatch);\n");
   if (exc_has_user_msg_override(c))
     buf_puts(b, "  sp_user_exc_to_s_fn = sp_user_exc_to_s;\n");
+  if (exc_ivar_classes(c))
+    buf_puts(b, "  sp_user_exc_layout_fn = sp_user_exc_layout;\n  sp_user_exc_ivinit_fn = sp_user_exc_ivinit;\n");
   if (g_needs_class_machinery)
     buf_puts(b, "  sp_user_exc_parent_fn = sp_user_exc_parent;\n"
                 "  sp_user_exc_modules_fn = sp_user_exc_modules;\n"
@@ -17425,6 +17435,31 @@ static void emit_user_exc_dispatch(Compiler *c, Buf *b) {
       }
       buf_puts(b, "  return 0x7fffffff;\n}\n");
     } }
+
+  /* An instance of an exception class of the program's with ivars of its
+     own is also allocated by the runtime (sp_exc_new_sub_sized: `E.new(msg)`
+     with no initialize, `raise E, msg`), which knows neither the class's
+     scan nor its ivars' unset state. These tell it, by the class's name. */
+  if (exc_ivar_classes(c)) {
+    Buf lb; memset(&lb, 0, sizeof lb);
+    buf_puts(b, "static size_t sp_user_exc_layout(const char *n, void (**scan)(void *)){\n");
+    buf_puts(&lb, "static void sp_user_exc_ivinit(void *p){\n  const char *n = ((sp_Exception *)p)->cls_name;\n");
+    for (int i = 0; i < c->nclasses; i++) {
+      if (!class_is_exc_subclass(c, i) || c->classes[i].nivars <= 0) continue;
+      const char *qn = class_ruby_name(c, i);
+      if (!qn) qn = c->classes[i].name;
+      if (!qn) continue;
+      const char *cn = c->classes[i].c_name;
+      buf_printf(b, "  if (strcmp(n, \"%s\") == 0) { *scan = sp_%s__gc_scan; return sizeof(sp_%s); }\n", qn, cn, cn);
+      buf_printf(&lb, "  if (strcmp(n, \"%s\") == 0) {\n    sp_%s *o = (sp_%s *)p; (void)o;\n", qn, cn, cn);
+      emit_ivar_nil_inits(c, &lb, &c->classes[i], "o->", "    ", ";\n");
+      buf_puts(&lb, "    return;\n  }\n");
+    }
+    buf_puts(b, "  return 0;\n}\n");
+    buf_puts(&lb, "}\n");
+    buf_puts(b, lb.p);
+    free(lb.p);
+  }
 
   /* User exception #message / #to_s overrides: a cls_name-keyed dispatcher so
      the default message path yields the user-overridden text. Ruby's #message
