@@ -11,19 +11,22 @@
 #include "codegen_call_arms.h"
 #include "share.h"
 
-/* `obj.class.name` over the class methods obj's class and its descendants
-   reach: does the dispatch answer an sp_oint / sp_ofloat? Every arm answers
-   the same Integer or Float, and one of them can answer nil. */
-int obj_class_cmethod_oint(Compiler *c, int cid, const char *name) {
+/* Does `obj.class.name`'s dispatch switch over cid and the classes below it
+   have an arm that answers an sp_oint / sp_ofloat? Then the switch's value
+   is one, the other arms' plain values wrapped. Whether the call's value can
+   be nil is analysis's (nullable_int_value); this is the C type of the
+   switch, which every receiver's call gets. */
+int class_switch_arm_oint(Compiler *c, int cid, const char *name) {
   if (cid < 0 || cid >= c->nclasses || !name) return 0;
-  int defmi = comp_cmethod_in_chain(c, cid, name, NULL);
-  if (defmi < 0) return 0;
-  TyKind r = (TyKind)c->scopes[defmi].ret;
+  int mi = comp_cmethod_in_chain(c, cid, name, NULL);
+  if (mi < 0) return 0;
+  TyKind r = (TyKind)c->scopes[mi].ret;   /* every arm answers this, or the switch is a poly value */
   if (!oint_kind(r)) return 0;
-  int any = method_ret_is_oint(&c->scopes[defmi]);
-  for (int k = 0; k < c->nclasses; k++) {
-    if (!is_descendant(c, k, cid)) continue;
-    int kmi = comp_cmethod_in_chain(c, k, name, NULL);
+  int any = method_ret_is_oint(&c->scopes[mi]);
+  int nd = 0;
+  const int *ds = comp_descendants(c, cid, &nd);
+  for (int i = 0; i < nd; i++) {
+    int kmi = comp_cmethod_in_chain(c, ds[i], name, NULL);
     if (kmi < 0) continue;
     if ((TyKind)c->scopes[kmi].ret != r) return 0;
     if (method_ret_is_oint(&c->scopes[kmi])) any = 1;
@@ -4024,7 +4027,8 @@ int emit_call_class_method_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
           int rtmp = ++g_tmp;
           /* an arm that can answer nil makes the switch an sp_oint, the
              others' plain values wrapped (node_is_oint asks the same) */
-          int oarms = unified != TY_POLY && obj_class_cmethod_oint(c, cid, name);
+          int oarms = unified != TY_POLY && oint_kind(unified) &&
+                      (nullable_int_value(c, id) || class_switch_arm_oint(c, cid, name));
           buf_puts(b, "({ ");
           if (unified == TY_POLY) buf_puts(b, "sp_RbVal");
           else if (oarms) buf_puts(b, oint_ctype(unified));

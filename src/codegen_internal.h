@@ -2379,8 +2379,8 @@ int cvar_is_oint(Compiler *c, int cid, int idx);
    Float node only): a nullable read no guard narrowed, a call answering an
    oint, a nil literal, a conditional with a nullable arm. */
 int node_is_oint(Compiler *c, int node);
-/* `obj.class.name`'s class-method dispatch answers an sp_oint / sp_ofloat */
-int obj_class_cmethod_oint(Compiler *c, int cid, const char *name);
+/* `obj.class.name`'s dispatch switch has an arm answering an sp_oint / sp_ofloat */
+int class_switch_arm_oint(Compiler *c, int cid, const char *name);
 /* node_is_oint, or a leaf read of a slot that is an oint (a nil guard may
    have narrowed the read): emit_oint_expr yields the bare oint for it, and
    its box reads the nil */
