@@ -942,6 +942,20 @@ int comp_array_method_name(const char *n) {
    method the program's reopen of that builtin adds (`class Hash; def
    symbolize_keys`): the builtin's dispatch takes it with self boxed. */
 int comp_arysub_builtin_name(Compiler *c, int cid, const char *n) {
+  /* ...and an alias that reopen adds of a name it answers (activesupport's
+     `class Hash; alias_method :blank?, :empty?`), which the builtin's
+     dispatch resolves as it does on the builtin itself */
+  static int depth = 0;
+  int ro = comp_class_index(c, comp_arysub_builtin(c, cid));
+  if (ro >= 0 && depth < 8) {
+    const char *rn = comp_resolve_alias_ex(c, ro, n, NULL, NULL);
+    if (rn && n && !sp_streq(rn, n)) {
+      depth++;
+      int r = comp_arysub_builtin_name(c, cid, rn);
+      depth--;
+      if (r) return 1;
+    }
+  }
   int hash = comp_ary_is_hash(c, cid);
   if (comp_ary_is_str(c, cid)) {
     if (comp_builtin_kind_reopen_mi(c, TY_STRING, n) >= 0) return 1;
