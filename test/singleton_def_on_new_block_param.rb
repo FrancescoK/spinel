@@ -61,3 +61,19 @@ def o.copy(from, to) = (dict = top; dict[to] = dict[from])
 p o.copy("name", "alias")
 p o.copy("missing", "other")
 p o.top
+
+# a def nested in initialize yields to its own caller's block, not new's:
+# the K.new block never runs
+class Nested
+  def initialize
+    @n = 1
+    def self.helper = yield(self)
+  end
+
+  def n = @n
+end
+k = Nested.new do |x|
+  def x.m = n + 1
+  p x.m
+end
+p k.respond_to?(:m)
