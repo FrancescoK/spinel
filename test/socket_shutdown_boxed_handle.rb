@@ -1,23 +1,29 @@
 # A socket read back out of an Array is a boxed handle; #shutdown on it
 # answers 0 as on a typed one, and the peer sees the closed direction.
+# (The sockets shut down are connected ones: shutdown on a listening socket
+# answers 0 on Linux but raises ENOTCONN on macOS.)
 require "socket"
 
 class Server
   def initialize
-    @listeners = [TCPServer.new("127.0.0.1", 0)]
+    @listener = TCPServer.new("127.0.0.1", 0)
+    @conns = []
   end
 
-  def port = @listeners[0].addr[1]
+  def port = @listener.addr[1]
 
-  # its own #shutdown, which stops each listener it kept
+  def accept = @conns << @listener.accept
+
+  # its own #shutdown, which stops each connection it kept
   def shutdown
-    @listeners.each { |s| p s.shutdown }
+    @conns.each { |s| p s.shutdown }
     :stopped
   end
 end
 
 srv = Server.new
 c = TCPSocket.new("127.0.0.1", srv.port)
+srv.accept
 p srv.shutdown
 
 serv = TCPServer.new("127.0.0.1", 0)
