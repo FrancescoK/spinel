@@ -34504,6 +34504,15 @@ static void mark_nullable_int_locals(Compiler *c) {
       int recv = nt_ref(nt, id, "receiver");
       int mi = recv < 0 ? comp_self_call_mi(c, id, nt_str(nt, id, "name"))
                         : comp_method_index(c, nt_str(nt, id, "name"));
+      /* a bare `new(...)` in a class method or a class body builds an
+         instance of that class: initialize's parameters take the nil, as
+         `W.new(k)`'s do below (#8572) */
+      if (mi < 0 && recv < 0 && nt_str(nt, id, "name") && sp_streq(nt_str(nt, id, "name"), "new")) {
+        Scope *bs = comp_scope_of(c, id);
+        int bk = bs->def_node >= 0 ? (bs->is_cmethod ? bs->class_id : -1)
+               : (c->node_cbody && id < c->node_cap ? c->node_cbody[id] : -1);
+        if (bk >= 0) mi = comp_method_in_chain(c, bk, "initialize", NULL);
+      }
       if (mi < 0 && recv >= 0) {
         TyKind rt = infer_type(c, recv);
         if (ty_is_object(rt))
