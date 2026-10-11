@@ -4335,6 +4335,17 @@ sp_RbVal sp_encoding_find(sp_RbVal v) {
   sp_raise_cls("ArgumentError", sp_sprintf("unknown encoding name - %s", n));
   return sp_box_nil();
 }
+/* Encoding.list: an Encoding for every name it may answer, in CRuby's order */
+static const char *const sp_encoding_list_names[] = {
+#include "sp_encoding_list.h"
+  NULL };
+sp_PolyArray *sp_encoding_list(void) {
+  sp_PolyArray *a = sp_PolyArray_new();
+  SP_GC_ROOT(a);
+  for (int i = 0; sp_encoding_list_names[i]; i++)
+    sp_PolyArray_push(a, sp_box_encoding((sp_Encoding){ sp_encoding_list_names[i] }));
+  return a;
+}
 /* force_encoding with an Encoding or a name known only at run time: 1 for
    ASCII-8BIT, 0 for UTF-8 or US-ASCII, -1 for an encoding spinel has no tag
    for. A bad argument raises as CRuby's does. */
