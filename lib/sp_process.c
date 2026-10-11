@@ -256,6 +256,23 @@ static char **sp_spawn_envp(sp_RbVal env) {
   return envp;
 }
 
+/* Kernel#system with an environment Hash ahead of the command: the Hash is
+   checked and the child's environment built as Process.spawn's is, then the
+   command runs as sp_system_args runs it. */
+void sp_system_env_check(sp_RbVal env) {
+  int owned[3] = { -1, -1, -1 };
+  sp_spawn_env_check(env, owned);
+}
+int sp_system_env_args(sp_RbVal env, int argc, const char *const *argv) {
+  SP_GC_ROOT_RBVAL(env);
+  sp_system_env_check(env);
+  char **envp = sp_spawn_envp(env);
+  if (!envp) sp_raise_cls("NoMemoryError", "out of memory");
+  int ok = sp_system_envp(argc, argv, envp);
+  free(envp);
+  return ok;
+}
+
 /* Extract a resolved Integer fd from a pre-resolved opts slot. The
    codegen turns IO/false into Integer before passing, and a String
    path arrives as the fd sp_process_open_redirect returned; we just

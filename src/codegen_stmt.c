@@ -737,14 +737,22 @@ static int tail_output_has_value(const char *nm) {
 
 /* system(a, *rest) / system(*args): the command and its arguments are spread
    at run time, as Process.spawn's are (#7192), and each converts to a String as
-   the literal list's do. Writes the expression (a bool) and answers 1 when a
-   splat is among the arguments; 0 otherwise, with nothing written (#7868). */
-int emit_system_splat(Compiler *c, const int *argv, int argc, Buf *b) {
+   the literal list's do. A Hash ahead of the command (`system(env, cmd)`, or
+   one a splat brings) is the child's environment, as Process.spawn takes it:
+   the test is made at run time, where a splat's first element is known.
+   Writes the expression (a bool) and answers 1 when a splat is among the
+   arguments or the first is a Hash or a boxed value that may be one; 0
+   otherwise, with nothing written (#7868). */
+int emit_system_splat(Compiler *c, int id, const int *argv, int argc, Buf *b) {
   const NodeTable *nt = c->nt;
   int has_splat = 0;
   for (int k = 0; k < argc; k++) has_splat |= nt_kind(nt, argv[k]) == NK_SplatNode;
-  if (!has_splat) return 0;
-  int ta = ++g_tmp, tv = ++g_tmp, tr = ++g_tmp;
+  TyKind t0 = argc >= 1 && nt_kind(nt, argv[0]) != NK_SplatNode ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
+  int env_first = argc >= 1 && nt_kind(nt, argv[0]) != NK_SplatNode && (ty_is_hash(t0) || t0 == TY_POLY);
+  if (!has_splat && !env_first) return 0;
+  /* the shapes after the Hash the literal list refuses stay refused */
+  if (!has_splat) system_refuse_unsupported(c, id, argv, argc);
+  int ta = ++g_tmp, tv = ++g_tmp, tr = ++g_tmp, te = ++g_tmp;
   buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", ta, ta);
   for (int k = 0; k < argc; k++) {
     if (nt_kind(nt, argv[k]) == NK_SplatNode) {
@@ -761,19 +769,26 @@ int emit_system_splat(Compiler *c, const int *argv, int argc, Buf *b) {
     }
   }
   buf_printf(b, " if (_t%d->len == 0) sp_raise_cls(\"ArgumentError\", \"wrong number of arguments (given 0, expected 1+)\");", ta);
+  buf_printf(b, " sp_RbVal _t%d = sp_box_nil(); SP_GC_ROOT_RBVAL(_t%d);"
+                " if (sp_json_kind(_t%d->data[0]) == 2) { _t%d = sp_PolyArray_shift(_t%d);"
+                " if (_t%d->len == 0) sp_raise_cls(\"ArgumentError\", \"wrong number of arguments (given 0, expected 1+)\");"
+                " sp_system_env_check(_t%d); }",
+             te, te, ta, te, ta, ta, te);
   /* every element converts once before anything is allocated, so a TypeError
      from one does not leak the argv */
   buf_printf(b, " for (sp_int _i = 0; _i < _t%d->len; _i++) (void)sp_poly_arg_str_chk(_t%d->data[_i]);", ta, ta);
   buf_printf(b, " const char **_t%d = (const char **)malloc(sizeof(char *) * (size_t)(_t%d->len + 1));", tv, ta);
   buf_printf(b, " for (sp_int _i = 0; _i < _t%d->len; _i++) _t%d[_i] = sp_poly_arg_str_chk(_t%d->data[_i]);", ta, tv, ta);
-  buf_printf(b, " _t%d[_t%d->len] = NULL; sp_bool _t%d = (sp_bool)sp_system_args((int)_t%d->len, _t%d); free(_t%d); _t%d; })",
-             tv, ta, tr, ta, tv, tv, tr);
+  buf_printf(b, " _t%d[_t%d->len] = NULL; sp_bool _t%d = (sp_bool)(_t%d.tag == SP_TAG_NIL ? sp_system_args((int)_t%d->len, _t%d)"
+                " : sp_system_env_args(_t%d, (int)_t%d->len, _t%d)); free(_t%d); _t%d; })",
+             tv, ta, tr, te, ta, tv, te, ta, tv, tv, tr);
   return 1;
 }
 
 void system_refuse_unsupported(Compiler *c, int id, const int *argv, int argc) {
-  if (ty_is_hash(comp_ntype(c, argv[0]))) unsupported_feature(c, id, "system with an environment Hash");
-  if (ty_is_array(comp_ntype(c, argv[0]))) unsupported_feature(c, id, "system with a [command, argv0] pair");
+  /* the command follows an environment Hash (emit_system_splat) */
+  int cmd = argc >= 2 && ty_is_hash(comp_ntype(c, argv[0])) ? 1 : 0;
+  if (ty_is_array(comp_ntype(c, argv[cmd]))) unsupported_feature(c, id, "system with a [command, argv0] pair");
   /* A trailing options Hash (`out:`, `err:`, `chdir:`, ...) was converted
      like any other argument, so it reached #to_str and raised "no implicit
      conversion of Hash into String" at run time -- naming a conversion the
@@ -842,7 +857,7 @@ else {
   }
   if (sp_streq(name, "system") && argc >= 1) {
     { Buf sb; memset(&sb, 0, sizeof sb);
-      if (emit_system_splat(c, argv, argc, &sb)) {
+      if (emit_system_splat(c, id, argv, argc, &sb)) {
         emit_indent(b, indent); buf_puts(b, "(void)"); buf_puts(b, sb.p ? sb.p : ""); buf_puts(b, ";\n");
         free(sb.p);
         return 1;
