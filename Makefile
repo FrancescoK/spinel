@@ -1387,8 +1387,7 @@ wrap-test: $(SPINEL) $(SP_RT_LIB) $(SPINEL_TIMEOUT)
 # the joined -O<n> spelling, which every C compiler takes and which used to
 # fall through to the unknown-flag arm and be discarded.
 # --defer-refusals: the program the compiler refuses builds anyway; a refused
-# method raises NotImplementedError when called, a refused top-level or
-# class-body statement is left out.
+# statement raises NotImplementedError when reached.
 defer-refusals-test: $(SPINEL)
 	@ok=1; tmp=$$(mktemp -d /tmp/spinel-defer.XXXXXX); \
 	for t in $(shell grep -l '^\# spinel: defer-refusals: ' test/defer/*.rb); do \
