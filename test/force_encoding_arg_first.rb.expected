@@ -1,0 +1,10 @@
+FrozenError
+FrozenError
+FrozenError
+NoMethodError
+["ASCII-8BIT", "UTF-8", "US-ASCII", "ASCII-8BIT"]
+"\xC3\xA9\xC3\xA9\xC3\xA9"
+#<Encoding:BINARY (ASCII-8BIT)>
+6
+"\xC3\xA9!"
+#<Encoding:BINARY (ASCII-8BIT)>
