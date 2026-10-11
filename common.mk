@@ -47,6 +47,10 @@ OPT     ?= $(COPT)
 ifeq ($(shell uname -s),Linux)
 LDFLAGS += -lcrypt
 endif
+# backtrace(3), which the runtime archive calls, is libexecinfo's on OpenBSD
+ifeq ($(shell uname -s),OpenBSD)
+LDFLAGS += -lexecinfo
+endif
 # A Float `a * b - c` is two IEEE operations in Ruby, each rounded to
 # double; clang (-ffp-contract=on) and gcc (=fast) fuse the pair written in
 # one C expression into a single fused multiply-add that rounds once, and
