@@ -16148,15 +16148,19 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
     buf_puts(b, ")"); return 1;
   }
   /* poly receiver: clamp(lo, hi) tag-dispatches int/float at runtime; the range
-     form clamp(a..b) routes through the same helper with boxed bounds. */
-  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "clamp") && argc == 2) {
+     form clamp(a..b) routes through the same helper with boxed bounds. Both
+     stand down for a class of the program that defines clamp, as join does:
+     the dispatch has its arm, and a builtin one that comes back here. */
+  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "clamp") && argc == 2 &&
+      !user_defines_or_reads(c, name)) {
     buf_puts(b, "sp_poly_clamp("); emit_boxed(c, recv, b);
     buf_puts(b, ", "); emit_boxed(c, argv[0], b);
     buf_puts(b, ", "); emit_boxed(c, argv[1], b); buf_puts(b, ")");
     return 1;
   }
   if (recv >= 0 && rt == TY_POLY && sp_streq(name, "clamp") && argc == 1 &&
-      nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "RangeNode")) {
+      nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "RangeNode") &&
+      !user_defines_or_reads(c, name)) {
     /* raises on an exclusive range with a real end; routes a user-object
        receiver through the `<=>` hook (sp_obj_clamp_range) */
     /* a Float Range (promote boxes an Integer receiver) clamps on its boxed
