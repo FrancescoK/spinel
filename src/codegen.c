@@ -6103,6 +6103,35 @@ static void collect_locals_deep(Compiler *c, int id, NameSet *out) {
   for (int i = 0; i < na; i++) { int n = 0; const int *ids = nt_arr_at(c->nt, id, i, &n); for (int k = 0; k < n; k++) if (ids[k] >= 0) collect_locals_deep(c, ids[k], out); }
 }
 
+/* The names a proc body reads and binds through a lazy chain held in a
+   local it reads (lazy_alias_chain): a force in the body fuses the chain
+   there, so what the chain reads is captured as a body read is, and the
+   parameters of its blocks are the fused walk's own locals in this frame
+   (a_collect_alias_used is the analysis side). */
+static void proc_collect_alias(Compiler *c, int id, NameSet *used, NameSet *locals, int depth) {
+  const NodeTable *nt = c->nt;
+  if (id < 0 || depth > 8) return;
+  if (nt_kind(nt, id) == NK_LocalVariableReadNode) {
+    int chain = lazy_alias_chain(c, id);
+    if (chain >= 0) {
+      proc_collect_used(c, chain, used);
+      collect_locals_deep(c, chain, locals);
+      proc_collect_alias(c, chain, used, locals, depth + 1);
+    }
+  }
+  for (int i = 0; i < nt_num_refs(nt, id); i++) proc_collect_alias(c, nt_ref_at(nt, id, i), used, locals, depth);
+  for (int i = 0; i < nt_num_arrs(nt, id); i++) {
+    int n = 0; const int *ids = nt_arr_at(nt, id, i, &n);
+    for (int k = 0; k < n; k++) proc_collect_alias(c, ids[k], used, locals, depth);
+  }
+}
+
+/* The locals a proc body binds (nested blocks included), and what the lazy
+   chains it forces through a local read and bind. */
+static void proc_collect_body_locals(Compiler *c, int body, NameSet *used, NameSet *locals) {
+  collect_locals_deep(c, body, locals);
+  proc_collect_alias(c, body, used, locals, 0);
+}
 /* Collect all local names used (read or written) anywhere in the proc/fiber
    body, INCLUDING nested blocks (which are inlined into the same flat C
    function). The caller classifies each as the proc's own param/local, a
@@ -8024,7 +8053,7 @@ static void emit_proc_literal_here(Compiler *c, int create, Buf *b) {
   /* deep: include nested blocks' params/locals so a name used only inside a
      nested block in the proc is classified as body-local, not flagged as an
      uncaptured outer variable. */
-  collect_locals_deep(c, body, &locals);
+  proc_collect_body_locals(c, body, &used, &locals);
   collect_locals_deep(c, proc_params_node(c, create), &locals);
   for (int u = 0; u < used.n; u++) {
     const char *nm = used.v[u];

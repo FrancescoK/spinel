@@ -2897,9 +2897,13 @@ LAZY_COUNTER_STAGE[] = {
   { NULL, 0, 0 }
 };
 
+static int lazy_alias_write_suppressible_d(Compiler *c, int write, int depth);
 int lazy_alias_write_suppressible(Compiler *c, int write) {
+  return lazy_alias_write_suppressible_d(c, write, 0);
+}
+static int lazy_alias_write_suppressible_d(Compiler *c, int write, int depth) {
   const NodeTable *nt = c->nt;
-  if (nt_kind(nt, write) != NK_LocalVariableWriteNode) return 0;
+  if (nt_kind(nt, write) != NK_LocalVariableWriteNode || depth > 8) return 0;
   const char *vn = nt_str(nt, write, "name");
   if (!vn) return 0;
   Scope *sc = comp_scope_of(c, write);
@@ -2940,9 +2944,180 @@ int lazy_alias_write_suppressible(Compiler *c, int write) {
       if (!lazy_stage_name(cn)) break;
       node = call;
     }
+    /* ...or the chain is held in another such local, whose uses force it
+       (`b = a.map { }; b.to_a`): the force fuses the chain through both */
+    if (!forced && node != r) {
+      for (int w2 = comp_lwrite_of_value(c, node); w2 >= 0 && !forced; w2 = comp_lwrite_next(c, w2))
+        if (comp_scope_of(c, w2) == sc && lazy_alias_write_suppressible_d(c, w2, depth + 1)) forced = 1;
+    }
     if (!forced) return 0;
   }
   return 1;
+}
+
+/* Is n made of literals alone (numbers, Strings, Symbols, nil, true, false,
+   constants, and Ranges and Arrays of them)? Evaluated again it answers
+   the same. */
+static int lazy_src_constant(const NodeTable *nt, int n) {
+  if (n < 0) return 1;
+  switch (nt_kind(nt, n)) {
+    case NK_IntegerNode: case NK_FloatNode: case NK_StringNode: case NK_SymbolNode:
+    case NK_NilNode: case NK_TrueNode: case NK_FalseNode:
+    case NK_ConstantReadNode: case NK_ConstantPathNode: return 1;
+    case NK_RangeNode: return lazy_src_constant(nt, nt_ref(nt, n, "left")) && lazy_src_constant(nt, nt_ref(nt, n, "right"));
+    case NK_ParenthesesNode: return lazy_src_constant(nt, nt_ref(nt, n, "body"));
+    case NK_ArrayNode: case NK_StatementsNode: {
+      int m = 0; const int *el = nt_arr(nt, n, nt_kind(nt, n) == NK_ArrayNode ? "elements" : "body", &m);
+      for (int i = 0; i < m; i++) if (!lazy_src_constant(nt, el[i])) return 0;
+      return 1;
+    }
+    default: return 0;
+  }
+}
+/* Is call n a builtin's view of its receiver that a walk reads: an
+   Enumerator a builtin makes over it (each_slice, each_with_index), or a
+   to_a the compiler routes a walk through (a Hash's pairs, an Enumerator's
+   items), which the desugar that makes it marks `made_to_a`, a mark a
+   clone of the code keeps? A to_a the program writes is eager in CRuby
+   too. */
+static int lazy_src_view(Compiler *c, int n) {
+  const NodeTable *nt = c->nt;
+  if (nt_kind(nt, n) != NK_CallNode || cplan_user(c, n)->dispatch != CP_NONE) return 0;
+  if (nt_ref(nt, n, "receiver") < 0) return 0;
+  return repr_of(c, n).as_ty == TY_ENUMERATOR || (is_to_array_alias(nt_str(nt, n, "name")) && nt_int(nt, n, "made_to_a", 0));
+}
+/* Is call n a String iterator's Enumerator over a String, or a String
+   iterator on a boxed receiver? */
+static int lazy_src_str_iter(Compiler *c, int n) {
+  const NodeTable *nt = c->nt;
+  int r = nt_kind(nt, n) == NK_CallNode ? nt_ref(nt, n, "receiver") : -1;
+  if (r < 0) return 0;
+  TyKind rt = comp_ntype(c, r);
+  return ((rt == TY_STRING || rt == TY_STRBUF) && repr_of(c, n).as_ty == TY_ENUMERATOR) ||
+         (rt == TY_POLY && is_str_each_iter(nt_str(nt, n, "name")));
+}
+/* Is n a read of a local of write's scope that no write of it can rebind
+   between `write` and the force: every write of it comes before `write` in
+   the code (a later node), and none sits in a loop or block that holds
+   `write` too, whose next round runs it after `write`? Read again at the
+   force, it reads the same value. */
+static int lazy_src_stable_local(Compiler *c, int n, int write) {
+  const NodeTable *nt = c->nt;
+  if (nt_kind(nt, n) != NK_LocalVariableReadNode) return 0;
+  const char *vn = nt_str(nt, n, "name");
+  Scope *sc = comp_scope_of(c, write);
+  if (!vn || comp_scope_of(c, n) != sc) return 0;
+  for (int w = comp_lvw_first(c, vn); w >= 0; w = comp_lvw_next(c, w))
+    if (comp_scope_of(c, w) == sc && w >= write) return 0;
+  const int *par = codegen_node_parents(c, write);
+  for (int p = par ? par[write] : -1; p >= 0; p = par[p]) {
+    NodeKind k = nt_kind(nt, p);
+    if (k == NK_DefNode || k == NK_LambdaNode) break;
+    if ((k == NK_WhileNode || k == NK_UntilNode || k == NK_ForNode || k == NK_BlockNode) &&
+        subtree_writes_local(c, p, vn))
+      return 0;
+  }
+  return 1;
+}
+/* Does every read of write's local in its scope find write's chain
+   (lazy_alias_chain), so each force site fuses it and reads the kept
+   source, and none reads the local's value? */
+static int lazy_alias_reads_fuse(Compiler *c, int write) {
+  const NodeTable *nt = c->nt;
+  const char *vn = nt_str(nt, write, "name");
+  Scope *sc = comp_scope_of(c, write);
+  int si = (int)(sc - c->scopes), val = nt_ref(nt, write, "value");
+  for (int e = comp_vsite_first(c, VS_READ, NK_LocalVariableReadNode, vn, si); e >= 0; e = comp_vsite_next(c, e)) {
+    int r = comp_vsite_var(c, e);
+    if (nt_kind(nt, r) != NK_LocalVariableReadNode || comp_scope_of(c, r) != sc || !sp_streq(nt_str(nt, r, "name"), vn))
+      continue;
+    if (lazy_alias_chain(c, r) != val) return 0;
+  }
+  return 1;
+}
+/* The value a lazy chain held in a local is made from, evaluated once
+   where the local is written, as in CRuby: when `write` is a write
+   lazy_alias_write_suppressible drops and every read of the local fuses
+   its chain, the receiver of the chain's `lazy` (its source), or, for a
+   builtin's view of a receiver (lazy_src_view), that receiver, the view
+   being made again where the chain is forced, so it reads its receiver
+   then, as CRuby's walk does; -1 for a value made of literals, a local read
+   again to the same value, or none. The write keeps it in the local, boxed,
+   and each force site (emit_lazy_pipeline_expr) reads it from there;
+   before, the source ran at each force site and never at the write. A
+   source held in another such local is that local's. An Enumerator over a
+   String copies the String's bytes in the default build, where it stays at
+   each force site, reading the String as it is then. Under --share-strings
+   it is evaluated once where it holds the handle (str_each_enum_keeps), or
+   where the rule does not share the String, whose bytes then change through
+   no other name; a view of it keeps that Enumerator. */
+static int lazy_alias_src_hoist_1(Compiler *c, int write) {
+  const NodeTable *nt = c->nt;
+  if (nt_kind(nt, write) != NK_LocalVariableWriteNode) return -1;
+  int src = -1;
+  for (int cur = nt_ref(nt, write, "value"), hops = 0; cur >= 0 && hops < 32; hops++) {
+    if (nt_kind(nt, cur) != NK_CallNode) return -1;
+    const char *nm = nt_str(nt, cur, "name");
+    int r = unwrap_parens(c, nt_ref(nt, cur, "receiver"));
+    if (is_lazy_name(nm) && nt_ref(nt, cur, "block") < 0 && !chain_is_lazy_valued(c, r)) { src = r; break; }
+    cur = r;
+  }
+  if (src < 0) return -1;
+  for (int d = 0; d < 8; d++) {
+    if (lazy_src_str_iter(c, src)) {
+      int sr = nt_ref(nt, src, "receiver");
+      if (!repr_share_rule(c) || comp_ntype(c, sr) == TY_POLY ||
+          (str_each_recv_shares(c, sr) && !str_each_enum_keeps(c, src)))
+        return -1;
+      break;
+    }
+    if (!lazy_src_view(c, src)) break;
+    src = unwrap_parens(c, nt_ref(nt, src, "receiver"));
+  }
+  if (lazy_src_constant(nt, src) || lazy_src_stable_local(c, src, write)) return -1;
+  TyKind st = repr_of(c, src).as_ty;
+  if (st != TY_POLY && st != TY_RANGE && !needs_root(st)) return -1;
+  /* a variable read as another kind (a Hash walked as its pairs) is a view
+     with no call to make again */
+  if (nt_kind(nt, src) == NK_LocalVariableReadNode) {
+    LocalVar *sv = scope_local(comp_scope_of(c, src), nt_str(nt, src, "name"));
+    if (!sv || sv->type != st) return -1;
+  }
+  LocalVar *lv = scope_local(comp_scope_of(c, write), nt_str(nt, write, "name"));
+  if (!lv || lv->type != TY_POLY || !lazy_alias_write_suppressible(c, write) || !lazy_alias_reads_fuse(c, write))
+    return -1;
+  return src;
+}
+/* (asked once per write: the write and each force site of its chain ask,
+   and lazy_alias_write_suppressible walks the local's every read) */
+int lazy_alias_src_hoist(Compiler *c, int write) {
+  if (write < 0) return -1;
+  if (write >= c->lazy_hoist_n) {
+    int n = c->nt->count > write ? c->nt->count : write + 1;
+    int *g = realloc(c->lazy_hoist, sizeof *g * (size_t)n);
+    if (!g) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    memset(g + c->lazy_hoist_n, 0, sizeof *g * (size_t)(n - c->lazy_hoist_n));
+    c->lazy_hoist = g;
+    c->lazy_hoist_n = n;
+  }
+  if (!c->lazy_hoist[write]) c->lazy_hoist[write] = lazy_alias_src_hoist_1(c, write) + 2;
+  return c->lazy_hoist[write] - 2;
+}
+/* The local write whose value (lazy_alias_src_hoist) the source src of a
+   lazy chain is, or is a view of, or -1: the write of the chain src's
+   `lazy` call heads. */
+static int lazy_src_hoist_write(Compiler *c, int src) {
+  int n = -1;
+  for (int k = comp_recv_parent(c, src); k >= 0; k = comp_recv_parent(c, k)) n = k;
+  if (n < 0) return -1;
+  for (int w = comp_lwrite_of_value(c, n); w >= 0; w = comp_lwrite_next(c, w)) {
+    int h = lazy_alias_src_hoist(c, w);
+    for (int v = src, d = 0; h >= 0 && v >= 0 && d < 9; v = unwrap_parens(c, nt_ref(c->nt, v, "receiver")), d++) {
+      if (v == h) return w;
+      if (nt_kind(c->nt, v) != NK_CallNode) break;
+    }
+  }
+  return -1;
 }
 
 /* `<source>.lazy.<ops>.size`: the source size propagated through the chain, no
@@ -3133,7 +3308,16 @@ int emit_srange_hop_row(Compiler *c, int id, int r, const char *name, Buf *b) {
   return 1;
 }
 
+static int emit_lazy_pipeline_expr_1(Compiler *c, int id, Buf *b);
+/* (a source the chain's local keeps is bound to its read for the
+   emission, and unbound after it) */
 int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
+  int mark = g_n_argov;
+  int r = emit_lazy_pipeline_expr_1(c, id, b);
+  view_unbind(mark);
+  return r;
+}
+static int emit_lazy_pipeline_expr_1(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *tname = nt_str(nt, id, "name");
   if (!tname) return 0;
@@ -3247,6 +3431,28 @@ int emit_lazy_pipeline_expr(Compiler *c, int id, Buf *b) {
       lazy_src = rr;
   }
   if (lazy_src < 0) return 0;
+  /* a source evaluated where the chain's local is written: read off the local */
+  int hw = lazy_src_hoist_write(c, lazy_src);
+  if (hw >= 0) {
+    /* (the source, or the receiver of the view the source is) */
+    int hn = lazy_alias_src_hoist(c, hw);
+    Buf lr = {0}, ub = {0};
+    emit_local_ref(c, hw, nt_str(nt, hw, "name"), &lr);
+    TyKind ht = repr_of(c, hn).as_ty;
+    if (ht == TY_POLY) buf_puts(&ub, lr.p);
+    else emit_unbox_text(c, ht, lr.p, &ub);
+    /* (the pipeline walks a Range literal's ends, which the kept Range's are) */
+    if (hn == lazy_src && nt_kind(nt, lazy_src) == NK_RangeNode) {
+      int rl = nt_ref(nt, lazy_src, "left"), rr = nt_ref(nt, lazy_src, "right");
+      /* (an end the analysis boxed, a promoted Integer, reads boxed) */
+      if (rl >= 0)
+        view_bind(rl, repr_of(c, rl).as_ty == TY_POLY ? "sp_box_int((%s).first)" : "(%s).first", ub.p);
+      if (rr >= 0 && !lazy_endpoint_is_infinite(c, rr))
+        view_bind(rr, repr_of(c, rr).as_ty == TY_POLY ? "sp_box_int((%s).last)" : "(%s).last", ub.p);
+    }
+    else view_bind(hn, "%s", ub.p);
+    free(lr.p); free(ub.p);
+  }
 
   Repr sr = repr_of(c, lazy_src);
   TyKind st = sr.as_ty;

@@ -799,8 +799,9 @@ int lazy_alias_chain(Compiler *c, int var_read) {
     NodeKind k = LOCAL_WRITE_KINDS[ki];
     NT_FOREACH_KIND(nt, k, w) {
       const char *wn = nt_str(nt, w, "name");
-      if (!wn || !sp_streq(wn, vn)) continue;
-      if (k != NK_LocalVariableWriteNode || comp_scope_of(c, w) != sc || val >= 0)
+      /* (a local of another method's of the same name is another local) */
+      if (!wn || !sp_streq(wn, vn) || comp_scope_of(c, w) != sc) continue;
+      if (k != NK_LocalVariableWriteNode || val >= 0)
         return -1;   /* not a single plain write */
       val = nt_ref(nt, w, "value");
     }

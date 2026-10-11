@@ -1102,6 +1102,45 @@ void a_collect_used(Compiler *c, int id, ANameSet *out) {
   int na = nt_num_arrs(c->nt, id);
   for (int i = 0; i < na; i++) { int n = 0; const int *ids = nt_arr_at(c->nt, id, i, &n); for (int k = 0; k < n; k++) if (ids[k] >= 0) a_collect_used(c, ids[k], out); }
 }
+/* The names a closure's body reads through a lazy chain held in a local it
+   reads (lazy_alias_chain): a force there fuses the chain into the body,
+   which then reads what the chain reads, its blocks' own parameters aside
+   (those the fused walk binds in the closure's frame). So the scan that
+   cells captured locals counts them as read in the body. */
+static void a_collect_block_params(Compiler *c, int id, ANameSet *out) {
+  const NodeTable *nt = c->nt;
+  if (id < 0) return;
+  if (nt_kind(nt, id) == NK_BlockNode) {
+    int bp = nt_ref(nt, id, "parameters"), pn = bp >= 0 ? nt_ref(nt, bp, "parameters") : -1;
+    int rn = 0; const int *reqs = pn >= 0 ? nt_arr(nt, pn, "requireds", &rn) : NULL;
+    for (int k = 0; k < rn; k++) aname_add(out, nt_str(nt, reqs[k], "name"));
+  }
+  for (int i = 0; i < nt_num_refs(nt, id); i++) a_collect_block_params(c, nt_ref_at(nt, id, i), out);
+  for (int i = 0; i < nt_num_arrs(nt, id); i++) {
+    int n = 0; const int *ids = nt_arr_at(nt, id, i, &n);
+    for (int k = 0; k < n; k++) a_collect_block_params(c, ids[k], out);
+  }
+}
+void a_collect_alias_used(Compiler *c, int id, ANameSet *out, int depth) {
+  const NodeTable *nt = c->nt;
+  if (id < 0 || depth > 8) return;
+  if (nt_kind(nt, id) == NK_LocalVariableReadNode) {
+    int chain = lazy_alias_chain(c, id);
+    if (chain >= 0) {
+      ANameSet all = {0}, own = {0};
+      a_collect_used(c, chain, &all);
+      a_collect_block_params(c, chain, &own);
+      for (int k = 0; k < all.n; k++) if (!aname_has(&own, all.v[k])) aname_add(out, all.v[k]);
+      free(all.v); free(own.v);
+      a_collect_alias_used(c, chain, out, depth + 1);
+    }
+  }
+  for (int i = 0; i < nt_num_refs(nt, id); i++) a_collect_alias_used(c, nt_ref_at(nt, id, i), out, depth);
+  for (int i = 0; i < nt_num_arrs(nt, id); i++) {
+    int n = 0; const int *ids = nt_arr_at(nt, id, i, &n);
+    for (int k = 0; k < n; k++) a_collect_alias_used(c, ids[k], out, depth);
+  }
+}
 int a_proc_params_node(Compiler *c, int create) {
   const char *ty = nt_type(c->nt, create);
   if (ty && sp_streq(ty, "LambdaNode")) return nt_ref(c->nt, create, "parameters");
@@ -1787,6 +1826,7 @@ void mark_proc_captures(Compiler *c) {
     }
     if (pn >= 0) { int rn = 0; const int *reqs = nt_arr(nt, pn, "requireds", &rn); for (int k = 0; k < rn; k++) aname_add(&params, nt_str(nt, reqs[k], "name")); }
     a_collect_used(c, body, &used);
+    a_collect_alias_used(c, body, &used, 0);
     /* an optional or keyword default is evaluated in the proc's frame */
     a_collect_used(c, pn, &used);
     Scope *es = &c->scopes[encl];

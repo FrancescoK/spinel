@@ -1174,6 +1174,10 @@ typedef struct {
   /* --share-strings: does the program make an Enumerator over a String
      handle (str_enum_h_made): 0 not asked yet, 1 no, 2 yes */
   unsigned char str_enum_h;
+  /* per local write node, once asked: the source lazy_alias_src_hoist
+     answers for it, + 2 (1: none; 0: not asked yet) */
+  int *lazy_hoist;
+  int lazy_hoist_n;
   int share_strings;
   /* the scope + 1 whose block a yield under emit_proc_yield hands its
      arguments to (a proc form, or a method with a `&blk` it calls), or 0 */

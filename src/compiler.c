@@ -275,6 +275,9 @@ void comp_free(Compiler *c) {
   free(c->cg_parent);
   c->cg_parent = NULL;
   c->cg_parent_n = 0;
+  free(c->lazy_hoist);
+  c->lazy_hoist = NULL;
+  c->lazy_hoist_n = 0;
   free(c->hash_default_arg_memo);
   c->hash_default_arg_memo = NULL;
   free(c->blk_body_map);

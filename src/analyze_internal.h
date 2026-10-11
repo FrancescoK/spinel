@@ -618,6 +618,7 @@ void refuse_native_singleton_reopen(Compiler *c, Scope *s);
 void compute_instantiated(Compiler *c, int early);
 int aname_has(ANameSet *s, const char *nm);
 void aname_add(ANameSet *s, const char *nm);
+void a_collect_alias_used(Compiler *c, int id, ANameSet *out, int depth);   /* names a closure reads through a lazy chain local */
 /* A hashed name set (keys borrowed, not copied); zero-initialize to start. */
 typedef struct { const char **key; int *next, *head, n, cap, nb; } ANameHash;
 int anh_has(const ANameHash *st, const char *nm);
