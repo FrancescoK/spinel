@@ -12147,11 +12147,16 @@ static SP_UNUSED sp_Class sp_isa_class_arg(sp_RbVal v) {
   if (v.tag != SP_TAG_CLASS) sp_raise_cls("TypeError", "class or module required");
   return sp_unbox_class(v);
 }
-static sp_bool sp_poly_is_a_dyn(sp_RbVal v, sp_RbVal cls, int exact) {
-  const char *cn = sp_poly_to_s(cls);
+/* ... against a class by its name: the generated sp_poly_is_a names a
+   name-backed class directly, and so does not reach sp_poly_to_s, which
+   brings in the rendering of every builtin value */
+static sp_bool sp_poly_is_a_named(sp_RbVal v, const char *cn, int exact) {
   if (!cn) return FALSE;
   if (strcmp(sp_poly_class_name(v), cn) == 0) return TRUE;
   return exact ? FALSE : sp_poly_kind_of_builtin(v, cn);
+}
+static sp_bool sp_poly_is_a_dyn(sp_RbVal v, sp_RbVal cls, int exact) {
+  return sp_poly_is_a_named(v, sp_poly_to_s(cls), exact);
 }
 static inline sp_int sp_poly_index_int(sp_RbVal a, sp_int i) {
   /* An Integer read in range out of a boxed array first: it is the hot

@@ -16364,7 +16364,7 @@ static void emit_class_machinery(const NodeTable *nt, Compiler *c, Buf *b, char 
       "static int sp_poly_is_a(sp_RbVal obj,sp_Class klass){\n"
       "  if (obj.tag == SP_TAG_OBJ && obj.cls_id == SP_BUILTIN_EXCEPTION)\n"
       "    return sp_poly_kind_of_builtin(obj, sp_class_to_s(klass));\n"
-      "  if (klass.name) return sp_poly_is_a_dyn(obj, sp_box_class(klass), 0);\n");
+      "  if (klass.name) return sp_poly_is_a_named(obj, sp_class_val_display(sp_box_class(klass)), 0);\n");
     /* a class value is also an instance of the modules it (or a superclass)
        extends, its singleton's ancestors: one arm per such class. The arms
        are spliced in here at the end, and only when the program calls
