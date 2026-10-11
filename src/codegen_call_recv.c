@@ -16443,12 +16443,11 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
     }
   }
 
-  /* poly receiver: gsub/sub with a regex literal, or a Regexp held in a
-     value (`Regexp.new(s)`, a local) -- extract the string payload (poly
-     values reaching here are strings) and route to the engine, just like
-     a TY_STRING receiver. */
+  /* poly receiver: gsub/sub with a regex literal -- extract the string
+     payload (poly values reaching here are strings) and route to the
+     engine, just like a TY_STRING receiver. */
   if (recv >= 0 && rt == TY_POLY && (is_substitution(name)) &&
-      argc == 2 && (re_lit_index(c, argv[0]) >= 0 || comp_ntype(c, argv[0]) == TY_REGEX)) {
+      argc == 2 && re_lit_index(c, argv[0]) >= 0) {
     /* the replacement as the TY_STRING receiver's arm takes it: a boxed one
        (`String.new(s, encoding: e)` or a user object) converts as a String
        argument does */
@@ -16460,9 +16459,7 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
        the String answer is boxed for that slot. */
     int boxed = comp_ntype(c, id) == TY_POLY;
     if (boxed) buf_puts(b, "sp_box_str(");
-    int rli = re_lit_index(c, argv[0]);
-    if (rli >= 0) buf_printf(b, "sp_re_%s%s(sp_re_pat_%d, sp_poly_to_s(", name, suf, rli);
-    else { buf_printf(b, "sp_re_%s%s(", name, suf); emit_expr(c, argv[0], b); buf_puts(b, ", sp_poly_to_s("); }
+    buf_printf(b, "sp_re_%s%s(sp_re_pat_%d, sp_poly_to_s(", name, suf, re_lit_index(c, argv[0]));
     emit_expr(c, recv, b); buf_puts(b, "), ");
     if (str_pairs) emit_expr(c, argv[1], b);
     else if (hconv) { buf_printf(b, "%s(", hconv); emit_expr(c, argv[1], b); buf_puts(b, ")"); }
