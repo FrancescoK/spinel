@@ -99,6 +99,7 @@ typedef struct {
   TyKind ret;
   int tv, tr;
   const char *idxref;   /* the index as a raw sp_int, for `[]` */
+  int id;               /* the call */
 } PolyTemps;
 void emit_poly_prearms_n(Compiler *c, const char *name, const PolySpecialsN *ps, const PolyTemps *T, Buf *b);
 void emit_poly_str_aset_prearm(Compiler *c, int recv, const PolySpecialsN *ps, const PolyTemps *T, Buf *b);
