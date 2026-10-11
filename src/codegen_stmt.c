@@ -15076,12 +15076,23 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
            to be dereferenced -- `*(sp_X *)v.p`, the same unboxing the poly
            dispatch arms make. Passing the pointer straight in did not compile
            (#4278, the op-assign twin of #4091). */
-        buf_printf(b, "%ssp_%s_%s(%s(sp_%s *)(%s).v.p, _t%d)", pbox,
+        /* The result is boxed as the operator returns it: a `+` that answers
+           a String, an Integer or a value of another kind (a poly sp_RbVal)
+           was cast to an object pointer, which did not compile, and an
+           object of another class was stamped with this one's id. Only a
+           return inference left unknown keeps the object box. */
+        Buf opc; memset(&opc, 0, sizeof opc);
+        buf_printf(&opc, "sp_%s_%s(%s(sp_%s *)(%s).v.p, _t%d)",
                    c->classes[poly_defcls].c_name, mc(pms->name),
                    pval ? "*" : "",
                    c->classes[poly_defcls].c_name, ref, iatmp);
-        if (pval) buf_puts(b, pboxc);
-        else buf_printf(b, pboxc, poly_defcls);
+        if (pms->ret != TY_UNKNOWN) emit_boxed_ret_call(c, pms, opc.p, b);
+        else {
+          buf_printf(b, "%s%s", pbox, opc.p);
+          if (pval) buf_puts(b, pboxc);
+          else buf_printf(b, pboxc, poly_defcls);
+        }
+        free(opc.p);
         if (pnum) {
           /* the OTHER runtime kind folds the SAME evaluated value: re-emitting
              the RHS ran its side effects twice (#4204) */
