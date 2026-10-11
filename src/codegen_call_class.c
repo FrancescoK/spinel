@@ -500,23 +500,24 @@ int emit_call_reflection_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
     }
     if (cg_qm && !cg_own) {
       /* the value or the class of that leaf, as the typing chose */
-      if (const_get_takes_value(c, cg_rnm, cg_qm)) {
-        LocalVar *cgv = comp_const(c, cg_qm);
+      const char *cg_key = const_get_value_key(c, cg_rnm, cg_qm);
+      if (cg_key) {
+        LocalVar *cgv = comp_const(c, cg_key);
         if (const_has_flag(cgv)) {
           /* a constant not assigned yet is a NameError, qualified by a named receiver as below */
           int cgk = cg_rnm ? comp_class_index(c, cg_rnm) : -1;
           const char *cgq = cgk >= 0 && !is_object_root(cg_rnm) ? class_ruby_name(c, cgk) : NULL;
           buf_printf(b, "((cst_%s__set ? (void)0 : sp_raise_cls(\"NameError\", \"uninitialized constant %s%s%s\")), ",
-                     cg_qm, cgq ? cgq : "", cgq ? "::" : "", cg_qm);
+                     cg_key, cgq ? cgq : "", cgq ? "::" : "", cg_qm);
         }
-        buf_printf(b, "cst_%s", cg_qm);
+        buf_printf(b, "cst_%s", cg_key);
         if (const_has_flag(cgv)) buf_puts(b, ")");
         return 1;
       }
       /* A CLASS or module name: const_get answers the class object. The lookup
          above knows only VALUE constants, so `Object.const_get(:Foo)` on a
          class the program defines fell through to the NameError below (#3969). */
-      { int cgc = comp_class_index(c, cg_qm);
+      { int cgc = const_get_class_index(c, cg_rnm, cg_qm);
         if (cgc >= 0) {
           if (repr_of(c, id).as_ty == TY_CLASS) buf_printf(b, "((sp_Class){%d})", cgc);
           else buf_printf(b, "sp_box_class((sp_Class){%d})", cgc);

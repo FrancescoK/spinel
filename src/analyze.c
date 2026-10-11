@@ -3362,11 +3362,18 @@ static int qc_path_eq(char (*a)[64], int an, char (*b)[64], int bn) {
    from inside a body at `scope` (scope_n names deep): the enclosing bodies'
    paths innermost first, then the top level, as Ruby resolves it. Its path
    goes in `out`; the answer is its depth, or 0 when nothing defines it. */
+static int qc_resolve_chain(char (*chain)[64], int cl, int abs_anchor, char (*scope)[64],
+                            int scope_n, char (*out)[64]);
 static int qc_resolve_ref(const NodeTable *nt, int ref, char (*scope)[64], int scope_n,
                           char (*out)[64]) {
   char chain[QC_MAXDEPTH + 1][64];
   int abs_anchor = 0;
   int cl = ref >= 0 ? qc_read_chain(nt, ref, chain, &abs_anchor) : 0;
+  return qc_resolve_chain(chain, cl, abs_anchor, scope, scope_n, out);
+}
+/* ... the same for a chain already read (cl names) */
+static int qc_resolve_chain(char (*chain)[64], int cl, int abs_anchor, char (*scope)[64],
+                            int scope_n, char (*out)[64]) {
   if (cl <= 0) return 0;
   for (int p = abs_anchor ? 0 : scope_n; p >= 0; p--) {
     if (p + cl > QC_MAXDEPTH) continue;
@@ -3567,6 +3574,19 @@ void qc_rewrite_reads(Compiler *c, int node, char (*mods)[64], int mdepth,
               }
               break;
             }
+            /* no body at the written path holds it: the class or module the
+               path's head names may still reach it through its ancestors
+               (`Sub::NAME` for a NAME its superclass or an included module
+               holds), as Ruby looks a scoped constant up */
+            if (pref == 0) {
+              char owner[QC_MAXDEPTH][64];
+              int on = qc_resolve_chain(chain, cl - 1, abs_anchor, path, depth, owner);
+              int m = on > 0 ? qc_ancestor_lookup(nt, owner, on, cname, ws, wn, 0, 0) : -1;
+              if (m >= 0 && ws[m].depth > 0) {
+                char qn[512]; qc_qualified_name(qn, sizeof qn, &ws[m]);
+                nt_set_str((NodeTable *)nt, node, "name", qn);
+              }
+            }
           }
         }
       }
@@ -3583,8 +3603,35 @@ void qc_rewrite_reads(Compiler *c, int node, char (*mods)[64], int mdepth,
 /* The qualified names qualify_colliding_consts gave a constant written under
    a module path, for qualify_colliding_classes. */
 static char **qc_const_quals; static int qc_nconst_quals;
-static int qc_const_qualified(const char *qn) {
+int qc_const_qualified(const char *qn) {
   for (int i = 0; i < qc_nconst_quals; i++) if (sp_streq(qc_const_quals[i], qn)) return 1;
+  return 0;
+}
+/* Did that pass qualify some constant of this leaf name? */
+int qc_leaf_qualified(const char *leaf) {
+  size_t ll = strlen(leaf);
+  for (int i = 0; i < qc_nconst_quals; i++) {
+    size_t l = strlen(qc_const_quals[i]);
+    if (l > ll + 2 && sp_streq(qc_const_quals[i] + l - ll, leaf) && !strncmp(qc_const_quals[i] + l - ll - 2, "__", 2))
+      return 1;
+  }
+  return 0;
+}
+
+/* Is the name `w` writes also defined at another place by an entry of `os`
+   -- the same leaf under a different module path? An entry that is the same
+   node (a `Point = Struct.new(...)`, both a constant write and a class
+   definition) is the write itself, not another definition. */
+static int qc_is_class_write(const QCWrite *w, const QCWrite *os, int on) {
+  for (int j = 0; j < on; j++) if (os[j].node == w->node) return 1;
+  return 0;
+}
+static int qc_leaf_elsewhere(const QCWrite *w, const QCWrite *os, int on) {
+  for (int j = 0; j < on; j++) {
+    if (os[j].node == w->node || !sp_streq(os[j].name, w->name)) continue;
+    if (os[j].depth != w->depth) return 1;
+    for (int k = 0; k < w->depth; k++) if (!sp_streq(os[j].path[k], w->path[k])) return 1;
+  }
   return 0;
 }
 
@@ -3594,6 +3641,13 @@ void qualify_colliding_consts(Compiler *c) {
   char path[QC_MAXDEPTH][64];
   qc_resolve_headers(c);
   qc_collect_writes(c, nt->root_id, path, 0, &ws, &wn, &wcap);
+  /* the class and module definitions, for a constant that shares a class's
+     leaf name: `module Config; FileHandler = {...}` beside
+     `module Servlet; class FileHandler`. The constant was stored under the
+     bare leaf, so every read of the class by its path (`Servlet::FileHandler`)
+     answered the Hash. */
+  QCWrite *cws = NULL; int cwn = 0, cwcap = 0;
+  qc_collect_class_writes(c, nt->root_id, path, 0, &cws, &cwn, &cwcap);
   /* keep only names written under 2+ distinct module paths */
   int any = 0;
   for (int i = 0; i < wn; i++) {
@@ -3604,9 +3658,15 @@ void qualify_colliding_consts(Compiler *c) {
       for (int k = 0; k < ws[i].depth; k++) if (!sp_streq(ws[i].path[k], ws[j].path[k])) { collide = 1; break; }
     }
     if (!collide && ws[i].depth > 0 && builtin_class_id(ws[i].name) != 0) collide = 1;
+    /* ... and a nested constant named like a class defined elsewhere. A
+       class-defining write (`Point = Struct.new`) is the class pass's to
+       qualify, as a class. */
+    if (!collide && ws[i].depth > 0 && !qc_is_class_write(&ws[i], cws, cwn) &&
+        qc_leaf_elsewhere(&ws[i], cws, cwn)) collide = 1;
     if (!collide) { ws[i] = ws[--wn]; i--; continue; }
     any = 1;
   }
+  free(cws);
   if (any) {
     /* rewrite reads first (they match against the original write names) */
     char mods[QC_MAXDEPTH][64];
@@ -3750,6 +3810,13 @@ void qualify_colliding_classes(Compiler *c) {
   char path[QC_MAXDEPTH][64];
   qc_resolve_headers(c);
   qc_collect_class_writes(c, nt->root_id, path, 0, &ws, &wn, &wcap);
+  /* the plain constant writes left under a bare leaf (the constant pass
+     qualified the nested ones that collide), for a nested class named like a
+     top-level constant: `Config = {...}` beside `module Rack; class Config` */
+  QCWrite *kws = NULL; int kwn = 0, kwcap = 0;
+  qc_collect_writes(c, nt->root_id, path, 0, &kws, &kwn, &kwcap);
+  for (int i = 0; i < kwn; i++)
+    if (qc_is_class_write(&kws[i], ws, wn)) { kws[i] = kws[--kwn]; i--; }
   /* keep only leaf names defined under 2+ distinct module paths */
   int any = 0;
   for (int i = 0; i < wn; i++) {
@@ -3790,6 +3857,9 @@ void qualify_colliding_classes(Compiler *c) {
       char qn[512]; qc_qualified_name(qn, sizeof qn, &ws[i]);
       if (qc_const_qualified(qn)) collide = 1;
     }
+    /* ... and a nested class sharing its leaf with a plain constant written
+       elsewhere, which keeps the bare leaf as its key */
+    if (!collide && ws[i].depth > 0 && qc_leaf_elsewhere(&ws[i], kws, kwn)) collide = 1;
     /* ... unless the qualified name is one the program gives a class or
        module of its own (`class Foo__Mutex` beside `class Foo::Mutex`):
        renamed, the two would be one class. Left alone, the definition
@@ -3813,6 +3883,7 @@ void qualify_colliding_classes(Compiler *c) {
     if (!collide) { ws[i] = ws[--wn]; i--; continue; }
     any = 1;
   }
+  free(kws);
   if (any) {
     /* rewrite references first (they match against the original leaf names),
        then qualify the nested definitions themselves */

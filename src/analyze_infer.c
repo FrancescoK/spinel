@@ -5654,8 +5654,13 @@ static int infer_universal_call(Compiler *c, int id, const NodeTable *nt, const 
     }
     /* a CLASS or module name answers the class object itself (#3969) --
        unless a value constant of that leaf is the receiver's own */
-    if (cgn && comp_class_index(c, cgn) >= 0 && !const_get_takes_value(c, cg_rnm, cgn)) { *out = TY_CLASS; return 1; }
-    if (cgn) { LocalVar *cv = comp_const(c, cgn); if (cv && cv->type != TY_UNKNOWN) { *out = cv->type; return 1; } { *out = TY_POLY; return 1; } }
+    if (cgn && const_get_class_index(c, cg_rnm, cgn) >= 0 && !const_get_takes_value(c, cg_rnm, cgn)) { *out = TY_CLASS; return 1; }
+    if (cgn) {
+      const char *cgk = const_get_value_key(c, cg_rnm, cgn);
+      LocalVar *cv = comp_const(c, cgk ? cgk : cgn);
+      if (cv && cv->type != TY_UNKNOWN) { *out = cv->type; return 1; }
+      { *out = TY_POLY; return 1; }
+    }
   }
   if (sp_streq(name, "nil?") && recv >= 0 && argc == 0) { *out = TY_BOOL; return 1; }
   /* A generated READER of this name owns it on a concrete object, as it does

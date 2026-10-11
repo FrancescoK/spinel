@@ -1056,31 +1056,42 @@ TyKind hash_default_value_ty(Compiler *c, int dn) {
 
 /* Is CONSTNAME written directly in the body of `class CLSNAME`? Constants live
    in one flat namespace, so the AST is what says which class owns one -- what
-   const_defined?/const_get need for an `inherit: false` search (#3762). */
-static int cn_body_writes_const(const NodeTable *nt, int root, const char *constname, int top) {
-  if (root < 0) return 0;
+   const_defined?/const_get need for an `inherit: false` search (#3762).
+   Answers the name the write carries: CONSTNAME itself, or the qualified
+   `Mod__..__CONSTNAME` qualify_colliding_consts gave a constant whose leaf
+   another constant or class shares. */
+static const char *cn_body_const_key(const NodeTable *nt, int root, const char *constname, int top) {
+  if (root < 0) return NULL;
   const char *ty = nt_type(nt, root);
   if (ty) {
-    if (!top && (sp_streq(ty, "ClassNode") || sp_streq(ty, "ModuleNode"))) return 0;
+    if (!top && (sp_streq(ty, "ClassNode") || sp_streq(ty, "ModuleNode"))) return NULL;
     if (sp_streq(ty, "ConstantWriteNode")) {
       const char *n = nt_str(nt, root, "name");
-      if (n && sp_streq(n, constname)) return 1;
+      size_t nl = n ? strlen(n) : 0, cl = strlen(constname);
+      if (n && (sp_streq(n, constname) ||
+                (nl > cl + 2 && !strncmp(n + nl - cl - 2, "__", 2) && sp_streq(n + nl - cl, constname) &&
+                 qc_const_qualified(n))))
+        return n;
     }
   }
   int nr = nt_num_refs(nt, root);
-  for (int i = 0; i < nr; i++)
-    if (cn_body_writes_const(nt, nt_ref_at(nt, root, i), constname, 0)) return 1;
+  for (int i = 0; i < nr; i++) {
+    const char *k = cn_body_const_key(nt, nt_ref_at(nt, root, i), constname, 0);
+    if (k) return k;
+  }
   int na = nt_num_arrs(nt, root);
   for (int i = 0; i < na; i++) {
     int n = 0; const int *el = nt_arr_at(nt, root, i, &n);
-    for (int j = 0; j < n; j++)
-      if (cn_body_writes_const(nt, el[j], constname, 0)) return 1;
+    for (int j = 0; j < n; j++) {
+      const char *k = cn_body_const_key(nt, el[j], constname, 0);
+      if (k) return k;
+    }
   }
-  return 0;
+  return NULL;
 }
-/* Is value constant CONSTNAME written directly in the body of class or
-   module CLSNAME? */
-static int const_value_owned(Compiler *c, const char *clsname, const char *constname) {
+/* The key of value constant CONSTNAME written directly in the body of class
+   or module CLSNAME, or NULL when it holds none. */
+static const char *const_value_owned_key(Compiler *c, const char *clsname, const char *constname) {
   const NodeTable *nt = c->nt;
   for (int id = 0; id < nt->count; id++) {
     NodeKind k = nt_kind(nt, id);
@@ -1090,9 +1101,13 @@ static int const_value_owned(Compiler *c, const char *clsname, const char *const
     const char *n = cp >= 0 ? nt_str(nt, cp, "name") : nt_str(nt, id, "name");
     if (!n || !sp_streq(n, clsname)) continue;
     int body = nt_ref(nt, id, "body");
-    if (body >= 0 && cn_body_writes_const(nt, body, constname, 1)) return 1;
+    const char *key = body >= 0 ? cn_body_const_key(nt, body, constname, 1) : NULL;
+    if (key) return key;
   }
-  return 0;
+  return NULL;
+}
+static int const_value_owned(Compiler *c, const char *clsname, const char *constname) {
+  return const_value_owned_key(c, clsname, constname) != NULL;
 }
 /* Does class or module CLSNAME hold constant CONSTNAME itself -- a value
    written in its body, or a class or module nested in it? */
@@ -1119,10 +1134,40 @@ const char *const_get_recv_name(Compiler *c, int call, int recv) {
    (constants live in one flat namespace, keyed by the leaf): the value when
    R holds it, else the class. With only one of them, that one. */
 int const_get_takes_value(Compiler *c, const char *rnm, const char *cgn) {
+  return const_get_value_key(c, rnm, cgn) != NULL;
+}
+/* ... and the key of the value constant it reads then (cgn, or the qualified
+   name of the one R holds), or NULL when it answers the class. */
+const char *const_get_value_key(Compiler *c, const char *rnm, const char *cgn) {
   LocalVar *cv = comp_const(c, cgn);
-  if (!cv || cv->type == TY_UNKNOWN) return 0;
-  if (comp_class_index(c, cgn) < 0) return 1;
-  return rnm && const_value_owned(c, rnm, cgn);
+  int cls = const_get_class_index(c, rnm, cgn);
+  /* the common case, one constant of that leaf and no class: no body scan */
+  if (cv && cv->type != TY_UNKNOWN && cls < 0 && !qc_leaf_qualified(cgn)) return cgn;
+  /* R's own, else its superclasses' */
+  const char *own = rnm ? const_value_owned_key(c, rnm, cgn) : NULL;
+  int rk = rnm ? comp_class_index(c, rnm) : -1;
+  for (int k = rk >= 0 ? c->classes[rk].parent : -1, n = 0; !own && k >= 0 && n < 64; k = c->classes[k].parent, n++)
+    if (c->classes[k].name) own = const_value_owned_key(c, c->classes[k].name, cgn);
+  if (own) {
+    LocalVar *ov = comp_const(c, own);
+    if (ov && ov->type != TY_UNKNOWN) return own;
+  }
+  if (!cv || cv->type == TY_UNKNOWN) return NULL;
+  return cls < 0 ? cgn : NULL;
+}
+/* The class `R.const_get(:N)` answers: the class nested in R under the leaf N
+   (its key may be qualified, `R__N`, when another constant or class shares
+   the leaf), else the class keyed N. -1 when there is none. */
+int const_get_class_index(Compiler *c, const char *rnm, const char *cgn) {
+  int o = rnm ? comp_class_index(c, rnm) : -1;
+  if (o >= 0) {
+    for (int k = 0; k < c->nclasses; k++) {
+      if (c->classes[k].enclosing_class != o) continue;
+      const char *rn = class_ruby_name(c, k), *leaf = rn ? strrchr(rn, ':') : NULL;
+      if (rn && sp_streq(leaf ? leaf + 1 : rn, cgn)) return k;
+    }
+  }
+  return comp_class_index(c, cgn);
 }
 
 /* Does this receiver denote a Hash built by a blockless `Hash.new` (or an
