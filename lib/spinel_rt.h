@@ -4000,17 +4000,26 @@ static SP_UNUSED sp_RbVal sp_range_count_v(sp_Range r, int is_size) {
   if (r.nobeg || r.noend)
     sp_raise_cls("NotImplementedError", is_size ? "Range#size of an endless Range is Infinity, which spinel answers only for a range literal"
                                                  : "Range#count of a beginless or endless Range is Infinity, which spinel answers only for a range literal");
-  __int128 s = sp_range_step(r);
-  __int128 lastv = r.excl ? ((__int128)r.last - (s > 0 ? 1 : -1)) : (__int128)r.last;
-  __int128 n = (lastv - (__int128)r.first) / s + 1;
-  if (n < 0) n = 0;
-  if (n <= (__int128)INTPTR_MAX) return sp_box_int((sp_int)n);
-  sp_Bigint *acc = sp_bigint_new_int(0); SP_GC_ROOT(acc);
-  while (n > 0) {
-    __int128 part = n > (__int128)INTPTR_MAX ? (__int128)INTPTR_MAX : n;
-    acc = sp_bigint_add(acc, sp_bigint_new_int((int64_t)part));
-    n -= part;
+  /* in unsigned 64 bits, which every target has (an -m32 build has no
+     __int128): the distance between the ends, over the step, plus one */
+  sp_int s = sp_range_step(r);
+  int64_t first = (int64_t)r.first, last = (int64_t)r.last;
+  uint64_t us = s > 0 ? (uint64_t)s : (uint64_t)0 - (uint64_t)s;
+  uint64_t dist;
+  if (s > 0) {
+    if (last < first || (r.excl && last == first)) return sp_box_int(0);
+    dist = (uint64_t)last - (uint64_t)first - (r.excl ? 1 : 0);
   }
+  else {
+    if (last > first || (r.excl && last == first)) return sp_box_int(0);
+    dist = (uint64_t)first - (uint64_t)last - (r.excl ? 1 : 0);
+  }
+  uint64_t q = dist / us;   /* the count is q + 1, which can be 2**64 */
+  if (q < (uint64_t)INTPTR_MAX) return sp_box_int((sp_int)(q + 1));
+  /* q + 1 = 2 * (q >> 1) + (q & 1) + 1, each part an int64 */
+  sp_Bigint *half = sp_bigint_new_int((int64_t)(q >> 1)); SP_GC_ROOT(half);
+  sp_Bigint *acc = sp_bigint_add(half, half); SP_GC_ROOT(acc);
+  acc = sp_bigint_add(acc, sp_bigint_new_int((int64_t)(q & 1) + 1));
   return sp_box_bigint(acc);
 }
 /* A boxed Float Range's readers, as the typed ones answer: an Integer end

@@ -6973,10 +6973,13 @@ static TyKind infer_symbol_call(Compiler *c, int id, const NodeTable *nt, const 
 static int promote_red_const(const NodeTable *nt, int n, long long *v) {
   return n >= 0 && nt_kind(nt, n) == NK_IntegerNode && infer_const_int_node(nt, n, v);
 }
+/* a long long result that is also an sp_int's (the overflow builtins: a
+   32-bit build of the compiler has no __int128) */
+static int prf_word(long long v) { return v <= (long long)INTPTR_MAX && v >= (long long)INTPTR_MIN; }
 static int promote_red_fits(Compiler *c, int recv, int is_mul, int seed, int has_seed) {
   const NodeTable *nt = c->nt;
   int rn = an_unparen(nt, recv);
-  __int128 acc = has_seed ? 0 : (is_mul ? 1 : 0);
+  long long acc = has_seed ? 0 : (is_mul ? 1 : 0);
   if (has_seed) { long long sv; if (!promote_red_const(nt, seed, &sv)) return 0; acc = sv; }
   if (rn >= 0 && nt_kind(nt, rn) == NK_ArrayNode) {
     int en = 0; const int *el = nt_arr(nt, rn, "elements", &en);
@@ -6984,8 +6987,8 @@ static int promote_red_fits(Compiler *c, int recv, int is_mul, int seed, int has
     for (int i = 0; i < en; i++) {
       long long v; if (!promote_red_const(nt, el[i], &v)) return 0;
       if (first) { acc = v; first = 0; }
-      else acc = is_mul ? acc * v : acc + v;
-      if (acc > (__int128)INTPTR_MAX || acc < (__int128)INTPTR_MIN) return 0;
+      else if (is_mul ? __builtin_mul_overflow(acc, v, &acc) : __builtin_add_overflow(acc, v, &acc)) return 0;
+      if (!prf_word(acc)) return 0;
     }
     return 1;
   }
@@ -6994,8 +6997,16 @@ static int promote_red_fits(Compiler *c, int recv, int is_mul, int seed, int has
     if (!promote_red_const(nt, nt_ref(nt, rn, "left"), &lo) ||
         !promote_red_const(nt, nt_ref(nt, rn, "right"), &hi)) return 0;
     if (nt_int(nt, rn, "flags", 0) & 4) hi--;
-    if (hi >= lo) acc += ((__int128)lo + hi) * ((__int128)hi - lo + 1) / 2;
-    return acc <= (__int128)INTPTR_MAX && acc >= (__int128)INTPTR_MIN;
+    if (hi >= lo) {
+      /* (lo + hi) * count / 2: one of the two is even, halved first */
+      long long sum, cnt, tri;
+      if (__builtin_add_overflow(lo, hi, &sum) || __builtin_sub_overflow(hi, lo, &cnt) ||
+          __builtin_add_overflow(cnt, 1LL, &cnt)) return 0;
+      if (cnt % 2 == 0 ? __builtin_mul_overflow(sum, cnt / 2, &tri) : __builtin_mul_overflow(sum / 2, cnt, &tri))
+        return 0;
+      if (__builtin_add_overflow(acc, tri, &acc)) return 0;
+    }
+    return prf_word(acc);
   }
   return 0;
 }
@@ -7015,7 +7026,7 @@ static int infer_promote_reducer(Compiler *c, int id, TyKind rt, TyKind *out) {
     if (rn >= 0 && nt_kind(nt, rn) == NK_RangeNode &&
         promote_red_const(nt, nt_ref(nt, rn, "left"), &lo) &&
         promote_red_const(nt, nt_ref(nt, rn, "right"), &hi) &&
-        (__int128)hi - lo + 1 <= (__int128)INTPTR_MAX) return 0;
+        ({ long long d; !__builtin_sub_overflow(hi, lo, &d) && d < (long long)INTPTR_MAX; })) return 0;
     /* an endless literal's count is Infinity, typed by the Range rules */
     if (rn >= 0 && nt_kind(nt, rn) == NK_RangeNode &&
         (nt_ref(nt, rn, "left") < 0 || nt_ref(nt, rn, "right") < 0)) return 0;
