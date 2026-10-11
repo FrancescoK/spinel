@@ -5102,21 +5102,6 @@ static size_t wb_stmt_end(const Buf *b, size_t q) {
   if (send >= b->len || b->p[send] != ';') return 0;
   return wb_ends_value(b, send) ? 0 : send;   /* not when it is a statement expression's value */
 }
-/* A store written as a parenthesised statement: `((o)->f = v);`, which is what
-   an expression-valued emitter (instance_variable_set) writes when its value
-   is dropped. `st` is the start of the lvalue and `bol` the start of its
-   statement; the text between them must be blanks and `(` only. Answers the
-   position of the first `(` and sets *npar to how many there are, or answers
-   (size_t)-1 when the store is part of anything else. */
-static size_t wb_paren_stmt_start(const Buf *b, size_t bol, size_t st, size_t *npar) {
-  size_t first = (size_t)-1;
-  *npar = 0;
-  for (size_t k = bol; k < st; k++) {
-    if (b->p[k] == '(') { if (first == (size_t)-1) first = k; (*npar)++; }
-    else if (b->p[k] != ' ' && b->p[k] != '\t') return (size_t)-1;
-  }
-  return first;
-}
 /* Whether every store to an `->iv_` field between `from` and `to` names the
    object `[st, i)` does: a statement that stores into one object takes one
    barrier on it, after its last store. */
@@ -5132,6 +5117,74 @@ static int wb_stores_one_object(const Buf *b, size_t st, size_t i, size_t from, 
     if (k - lv != i - st || strncmp(b->p + lv, b->p + st, i - st)) return 0;
   }
   return 1;
+}
+/* Where the statement holding the store whose lvalue starts at `st` begins
+   when other expressions of it come first: back over balanced groups to the
+   `;`, `{`, `}` or line end at the store's own depth, stepping over the
+   parentheses that enclose it. wb_paren_stmt_start checks the text from
+   there forward. */
+static size_t wb_paren_stmt_bol(const Buf *b, size_t fn_off, size_t st) {
+  size_t k = st, d = 0;
+  for (; k > fn_off; k--) {
+    char x = b->p[k-1];
+    /* a string or character literal is stepped over whole, back to its
+       opening quote (one with an even number of backslashes before it):
+       a bracket inside it is no group */
+    if (x == '"' || x == '\'') {
+      size_t j = k - 1;
+      while (j > fn_off) {
+        j--;
+        if (b->p[j] != x) continue;
+        size_t bs = 0;
+        while (j - bs > fn_off && b->p[j-1-bs] == '\\') bs++;
+        if (!(bs & 1)) break;
+      }
+      k = j + 1;
+      continue;
+    }
+    if (x == ')' || x == ']' || (x == '}' && d)) d++;
+    else if (x == '(' || x == '[' || (x == '{' && d)) { if (d) d--; }
+    else if ((x == ';' || x == '\n' || x == '{' || x == '}') && !d) break;
+  }
+  return k;
+}
+/* A store written as a parenthesised statement: `((o)->f = v);`, which is what
+   an expression-valued emitter (instance_variable_set) writes when its value
+   is dropped, or a comma sequence of stores into one object,
+   `(o->n = 1, o->s = v, 0);`, as a generated constructor writes its fields.
+   `[st, i)` is the store's lvalue and `bol` the start of its statement. The
+   text between them must be blanks and `(`, then, for a store after the
+   first, the stores before it into the same object, each ended by a `,` at
+   the top level: the first store can be one that needs no barrier (an
+   Integer field, a nil) and that the pass stepped over. Answers the position
+   of the first `(`, sets *npar to how many there are and *first to the
+   first store's `->`, or answers (size_t)-1 when the store is part of
+   anything else. */
+static size_t wb_paren_stmt_start(const Buf *b, size_t bol, size_t st, size_t i, size_t *npar,
+                                  size_t *first) {
+  size_t open = (size_t)-1, k = bol;
+  *npar = 0;
+  for (; k < st && (b->p[k] == '(' || b->p[k] == ' ' || b->p[k] == '\t'); k++)
+    if (b->p[k] == '(') { if (open == (size_t)-1) open = k; (*npar)++; }
+  if (open == (size_t)-1) return (size_t)-1;
+  *first = i;
+  if (k == st) return open;
+  size_t n = i - st, d = 0;
+  if (strncmp(b->p + k, b->p + st, n) || strncmp(b->p + k + n, "->iv_", 5)) return (size_t)-1;
+  int str = 0, ch = 0, comma = 0;
+  for (size_t j = k; j < st; j++) {
+    char x = b->p[j];
+    if (str) { if (x == '\\') j++; else if (x == '"') str = 0; continue; }
+    if (ch) { if (x == '\\') j++; else if (x == '\'') ch = 0; continue; }
+    if (x == '"' || x == '\'') { str = x == '"'; ch = x == '\''; comma = 0; continue; }
+    if (x == '(' || x == '[' || x == '{') d++;
+    else if (x == ')' || x == ']' || x == '}') { if (!d) return (size_t)-1; d--; }
+    else if (x == ';' && !d) return (size_t)-1;
+    if (x != ' ' && x != '\t' && x != '\n') comma = x == ',' && !d;
+  }
+  if (!comma || d || !wb_stores_one_object(b, st, i, k, st)) return (size_t)-1;
+  *first = k + n;
+  return open;
 }
 /* The `;` that ends the parenthesised statement whose store (the lvalue
    `[st, i)`) has its `=` at `q`, when exactly the `npar` opening parentheses
@@ -5153,12 +5206,33 @@ static size_t wb_paren_stmt_end(const Buf *b, size_t st, size_t i, size_t q, siz
   if (k >= b->len || b->p[k] != ';') return 0;
   return wb_ends_value(b, k) ? 0 : k;
 }
+static size_t wb_value_never_young(const Buf *b, size_t q);
+/* Whether the segment `[seg, e)` of a parenthesised statement stores what a
+   barrier has to record, asked as the pass asks of any store: a reference
+   field of the holder class `hc` (any class's, for -1) given a value that can
+   be young. An Integer, Float or bool field, or a nil, needs none. */
+static int wb_seg_needs_barrier(Compiler *c, int hc, const Buf *b, size_t seg, size_t e) {
+  for (size_t j = seg; j + 5 < e; j++) {
+    if (b->p[j] != '-' || b->p[j+1] != '>' || strncmp(b->p + j + 2, "iv_", 3)) continue;
+    size_t f = j + 2, fe = f;
+    while (fe < e && (isalnum((unsigned char)b->p[fe]) || b->p[fe] == '_')) fe++;
+    size_t q = fe;
+    while (q < e && b->p[q] == ' ') q++;
+    if (q >= e || b->p[q] != '=' || b->p[q+1] == '=') continue;   /* a read, or == */
+    int ref = hc >= 0 && wb_class_has_field(c, hc, b->p + f, fe - f)
+                ? wb_field_is_ref_in(c, hc, b->p + f, fe - f) : wb_field_is_ref(c, b->p + f, fe - f);
+    return ref && !wb_value_never_young(b, q);
+  }
+  return 0;
+}
 /* The text of a parenthesised statement's stores, `[from, to)`, with a barrier
-   after each store (`o->a = x, sp_gc_wb(o), o->b = y, sp_gc_wb(o), 0`). Every
-   value can allocate and collect, so each store has to be recorded before the
-   next value is built: one barrier after the last would leave the earlier
-   young values unrecorded while a later value's collection runs. */
-static void wb_put_stores_barriered(Buf *ins, const Buf *b, size_t from, size_t to, int wid) {
+   after each store that needs one (`o->a = x, sp_gc_wb(o), o->b = y,
+   sp_gc_wb(o), 0`). Every value can allocate and collect, so each store has to
+   be recorded before the next value is built: one barrier after the last
+   would leave the earlier young values unrecorded while a later value's
+   collection runs. */
+static void wb_put_stores_barriered(Compiler *c, int hc, Buf *ins, const Buf *b, size_t from,
+                                    size_t to, int wid) {
   size_t seg = from;
   size_t k = from;
   size_t d = 0;
@@ -5176,11 +5250,8 @@ static void wb_put_stores_barriered(Buf *ins, const Buf *b, size_t from, size_t 
       if (!(x == ',' && !d)) continue;
     }
     size_t e = k < to ? k : to;
-    int store = 0;
-    for (size_t j = seg; j + 5 < e && !store; j++)
-      if (b->p[j] == '-' && b->p[j+1] == '>' && !strncmp(b->p + j + 2, "iv_", 3)) store = 1;
     buf_putn(ins, b->p + seg, e - seg);
-    if (store) buf_printf(ins, ", sp_gc_wb((void *)_wb%d)", wid);
+    if (wb_seg_needs_barrier(c, hc, b, seg, e)) buf_printf(ins, ", sp_gc_wb((void *)_wb%d)", wid);
     if (end) break;
     buf_putn(ins, ",", 1);
     seg = k + 1;
@@ -5441,9 +5512,9 @@ static void gc_wb_insert_seg(Compiler *c, Buf *b, size_t fn_off) {
     size_t stmt_end = at_stmt ? wb_stmt_end(b, q) : 0;
     /* A statement the emitter wrapped in parentheses is a statement all the
        same (`((o)->f = v);`): the barrier follows its store too. */
-    size_t pst = (size_t)-1, pval = 0, npar = 0;
+    size_t pst = (size_t)-1, pval = 0, npar = 0, pfirst = i;
     if (!at_stmt) {
-      pst = wb_paren_stmt_start(b, bol, st, &npar);
+      pst = wb_paren_stmt_start(b, wb_paren_stmt_bol(b, fn_off, st), st, i, &npar, &pfirst);
       if (pst != (size_t)-1) stmt_end = wb_paren_stmt_end(b, st, i, q, npar, &pval);
     }
     Buf ins; memset(&ins, 0, sizeof ins);
@@ -5454,7 +5525,7 @@ static void gc_wb_insert_seg(Compiler *c, Buf *b, size_t fn_off) {
       buf_printf(&ins, ") _wb%d = ", wid);
       buf_putn(&ins, b->p + st, i - st);
       buf_printf(&ins, "; _wb%d", wid);
-      wb_put_stores_barriered(&ins, b, i, pval, wid);
+      wb_put_stores_barriered(c, hc, &ins, b, pfirst, pval, wid);
       buf_puts(&ins, "; }");
       size_t grew2 = ins.len - (stmt_end + 1 - pst);
       size_t tail2 = b->len - (stmt_end + 1);
