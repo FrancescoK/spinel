@@ -3287,9 +3287,8 @@ static bool sp_skip_dead_require(const pm_node_t *node, void *data) {
         }
       }
     }
-    /* The `$LOAD_PATH << dir` that goes with a dead branch's require: the
-       load-path pass below would otherwise warn about a statement that
-       never runs, the way it does for a live one. */
+    /* The `$LOAD_PATH << dir` that goes with a dead branch's require goes
+       with it: the branch is dropped as the require is. */
     if (call->receiver && PM_NODE_TYPE(call->receiver) == PM_GLOBAL_VARIABLE_READ_NODE &&
         call->arguments && call->arguments->arguments.size == 1 && !call->block) {
       const pm_global_variable_read_node_t *gv = (const pm_global_variable_read_node_t *)call->receiver;
@@ -5088,56 +5087,6 @@ static char *rewrite_syntax_sugar(char *source) {
        has no types, so it also erased sends on BasicObject subclasses, which
        lack #send and must raise (#2725). The analyze-side send desugar
        retargets it with the receiver's class in hand. */
-    /* Load-path manipulation in statement position -- the pre-bundler
-       `$:.unshift File.dirname(__FILE__)` preamble and its variants
-       (`$LOAD_PATH.unshift/push/append/<<`). Under whole-program AOT there
-       is no load path, so the idiom is meaningless rather than wrong:
-       warn and blank the statement, symmetric with an unresolvable
-       require. Only fires at a statement start on a self-contained line
-       (balanced brackets, no continuation tail); a `$:` whose value flows
-       into program logic still refuses in analyze. */
-    if (source[i] == '$') {
-      size_t back4 = oi;
-      while (back4 > 0 && (out[back4 - 1] == ' ' || out[back4 - 1] == '\t')) back4--;
-      char pv4 = back4 > 0 ? out[back4 - 1] : '\n';
-      size_t j4 = i;
-      if (strncmp(source + i, "$LOAD_PATH", 10) == 0) j4 = i + 10;
-      else if (source[i + 1] == ':' && source[i + 2] != ':') j4 = i + 2;
-      if ((pv4 == '\n' || pv4 == ';') && j4 > i) {
-        size_t m4 = j4;
-        while (m4 < len && source[m4] == ' ') m4++;
-        int is_mut = 0;
-        if (strncmp(source + m4, ".unshift", 8) == 0 ||
-            strncmp(source + m4, ".prepend", 8) == 0) { m4 += 8; is_mut = 1; }
-        else if (strncmp(source + m4, ".append", 7) == 0) { m4 += 7; is_mut = 1; }
-        else if (strncmp(source + m4, ".push", 5) == 0) { m4 += 5; is_mut = 1; }
-        else if (strncmp(source + m4, "<<", 2) == 0) { m4 += 2; is_mut = 1; }
-        if (is_mut) {
-          /* the rest of the line must be self-contained */
-          size_t e4 = m4; int depth4 = 0; char q4 = 0; int ok4 = 1;
-          char lastc4 = 0;
-          while (e4 < len && source[e4] != '\n') {
-            char ch4 = source[e4];
-            if (q4) { if (ch4 == q4 && source[e4 - 1] != '\\') q4 = 0; }
-            else if (ch4 == '"' || ch4 == '\'') q4 = ch4;
-            else if (ch4 == '(' || ch4 == '[') depth4++;
-            else if (ch4 == ')' || ch4 == ']') { if (--depth4 < 0) { ok4 = 0; break; } }
-            else if (ch4 == '#') break;
-            if (ch4 != ' ' && ch4 != '\t') lastc4 = ch4;
-            e4++;
-          }
-          if (ok4 && depth4 == 0 && !q4 && lastc4 &&
-              !strchr(",.\\+|&=({[", lastc4)) {
-            fprintf(stderr,
-                    "warning: load-path manipulation is meaningless in Spinel "
-                    "(no load path at runtime); the statement is ignored\n");
-            while (e4 < len && source[e4] != '\n') e4++;
-            i = e4;
-            continue;
-          }
-        }
-      }
-    }
     /* Forwardable: `def_delegator :@recv, :meth[, :alias]` and
        `def_delegators :@recv, :m1, :m2, ...` rewrite in place (single line,
        preserving line count) to plain forwarding defs:

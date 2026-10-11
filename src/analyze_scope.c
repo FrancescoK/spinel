@@ -405,6 +405,39 @@ static int super_value_used(const NodeTable *nt, const int *par, int v) {
   return 0;
 }
 
+/* $LOAD_PATH ($:, $-I) and $LOADED_FEATURES ($") each name one Array the
+   runtime holds, which the program changes in place. CRuby raises NameError
+   for an assignment to one ("$: is a read-only variable"); here it would
+   bind an ordinary global that no read of the name sees, so it is refused.
+   So is `alias $LOAD_PATH $mine`, after which CRuby reads the program's own
+   global through the name and the runtime's Array would answer instead. */
+void refuse_readonly_global_write(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  static const NodeKind kinds[] = { NK_GlobalVariableWriteNode, NK_GlobalVariableOperatorWriteNode,
+                                    NK_GlobalVariableOrWriteNode, NK_GlobalVariableAndWriteNode,
+                                    NK_GlobalVariableTargetNode, NK_AliasGlobalVariableNode };
+  for (size_t k = 0; k < sizeof kinds / sizeof kinds[0]; k++) {
+    int cnt = 0;
+    const int *ids = nt_nodes_of_kind(nt, kinds[k], &cnt);
+    for (int i = 0; i < cnt; i++) {
+      const char *nm = nt_str(nt, ids[i], "name");
+      if (kinds[k] == NK_AliasGlobalVariableNode) {
+        int nn = nt_ref(nt, ids[i], "new_name");
+        nm = nn >= 0 ? nt_str(nt, nn, "name") : NULL;
+      }
+      if (!is_load_path_global(nm) && !is_loaded_features_global(nm)) continue;
+      char msg[160];
+      if (kinds[k] == NK_AliasGlobalVariableNode)
+        snprintf(msg, sizeof msg, "unsupported alias of `%s` to another global: it names the runtime's own "
+                 "Array here", nm);
+      else
+        snprintf(msg, sizeof msg, "unsupported assignment to `%s`: it is a read-only variable "
+                 "(CRuby raises NameError); change its Array in place instead", nm);
+      unsupported_feature(c, ids[i], msg);
+    }
+  }
+}
+
 /* initialize is emitted as a void C function (method_is_void), so `super`
    in a subclass's initialize has no value to give when the parent's
    initialize is one the program wrote: `c = super` assigned the void call.

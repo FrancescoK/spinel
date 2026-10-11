@@ -3876,6 +3876,11 @@ sp_StrArray *sp_get_loaded_features(void) {
   if (!sp_loaded_features_cache) sp_loaded_features_cache = sp_StrArray_new();
   return sp_loaded_features_cache;
 }
+sp_StrArray *sp_load_path_cache = NULL;
+sp_StrArray *sp_get_load_path(void) {
+  if (!sp_load_path_cache) sp_load_path_cache = sp_StrArray_new();
+  return sp_load_path_cache;
+}
 /* Ensure a current readable stream, or return 0 at total end of input.
    The files are the program's ARGV as it stands when ARGF needs the next
    one, taken off its front as each is opened, as CRuby's ARGF does; a file

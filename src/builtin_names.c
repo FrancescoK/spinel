@@ -957,6 +957,9 @@ int is_program_name_global(const char *n) {
 int is_loaded_features_global(const char *n) {
   return n && (sp_streq(n, "$\"") || sp_streq(n, "$LOADED_FEATURES"));
 }
+int is_load_path_global(const char *n) {
+  return n && (sp_streq(n, "$:") || sp_streq(n, "$LOAD_PATH") || sp_streq(n, "$-I"));
+}
 
 int is_immediate_class_name(const char *n) {
   return sp_streq(n, "TrueClass") || sp_streq(n, "FalseClass") || sp_streq(n, "NilClass");

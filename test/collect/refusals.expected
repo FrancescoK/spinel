@@ -606,6 +606,14 @@ spinel: 1 refusal, nothing written
 == test/reject/lazy_stage_string_mutation_with_index.rb [promote] rc=1
 spinel: test/reject/lazy_stage_string_mutation_with_index.rb:7: a lazy stage's block that changes its String element in place (`<<`, `concat`, a `!` method) is not supported: the lazy pipeline hands the block a copy of the element, so the String the source holds would not change. Use the eager form (drop `.lazy`), or return a new String (`x + "!"`) (see docs/limitations.md)
 spinel: 1 refusal, nothing written
+== test/reject/load_path_alias.rb [default] rc=1
+spinel: test/reject/load_path_alias.rb:4: unsupported alias of `$LOAD_PATH` to another global: it names the runtime's own Array here
+== test/reject/load_path_alias.rb [promote] rc=1
+spinel: test/reject/load_path_alias.rb:4: unsupported alias of `$LOAD_PATH` to another global: it names the runtime's own Array here
+== test/reject/load_path_assign.rb [default] rc=1
+spinel: test/reject/load_path_assign.rb:3: unsupported assignment to `$LOAD_PATH`: it is a read-only variable (CRuby raises NameError); change its Array in place instead
+== test/reject/load_path_assign.rb [promote] rc=1
+spinel: test/reject/load_path_assign.rb:3: unsupported assignment to `$LOAD_PATH`: it is a read-only variable (CRuby raises NameError); change its Array in place instead
 == test/reject/macro_alias_in_aliased_namespace.rb [default] rc=1
 spinel: test/reject/macro_alias_in_aliased_namespace.rb:9: unsupported send with a runtime method name (AOT needs a compile-time-known name): node N (CallNode `public_send`) recv=SelfNode/ty49 argc=1 arg0ty6
 == test/reject/macro_alias_in_aliased_namespace.rb [promote] rc=1

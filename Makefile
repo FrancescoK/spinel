@@ -1923,6 +1923,16 @@ reject-test: $(SPINEL)
 	  echo "reject-test: FAIL (a const_get with a run-time name on a class value compiled)"; ok=0; \
 	else grep -q "const_get with a name known only at run time" "$$tmp/cg.out" || \
 	  { echo "reject-test: FAIL (a run-time const_get refused without saying why)"; sed -n 1,5p "$$tmp/cg.out"; ok=0; }; fi; \
+	t=test/reject/load_path_assign.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/lp.c" >"$$tmp/lp.out" 2>&1; then \
+	  echo "reject-test: FAIL (an assignment to the read-only \$$LOAD_PATH compiled)"; ok=0; \
+	else grep -q "it is a read-only variable" "$$tmp/lp.out" || \
+	  { echo "reject-test: FAIL (an assignment to \$$LOAD_PATH refused without saying why)"; sed -n 1,5p "$$tmp/lp.out"; ok=0; }; fi; \
+	t=test/reject/load_path_alias.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/la.c" >"$$tmp/la.out" 2>&1; then \
+	  echo "reject-test: FAIL (an alias of \$$LOAD_PATH to the program's own global compiled)"; ok=0; \
+	else grep -q "names the runtime's own Array" "$$tmp/la.out" || \
+	  { echo "reject-test: FAIL (an alias of \$$LOAD_PATH refused without saying why)"; sed -n 1,5p "$$tmp/la.out"; ok=0; }; fi; \
 	for t in test/reject/macro_*.rb; do \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/mc.c" >"$$tmp/mc.out" 2>&1; then \
 	  echo "reject-test: FAIL ($$t: a macro over state or a name it cannot compute was expanded)"; ok=0; \

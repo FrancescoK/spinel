@@ -1517,6 +1517,7 @@ static void sp_re_mark_globals(void) {
   for (sp_int i = 0; i < sp_argv.len; i++) sp_mark_string(sp_argv.data[i]);
   if (sp_argv_array_cache) sp_gc_mark(sp_argv_array_cache);
   if (sp_loaded_features_cache) sp_gc_mark(sp_loaded_features_cache);
+  if (sp_load_path_cache) sp_gc_mark(sp_load_path_cache);
   if (sp_main_obj) sp_gc_mark(sp_main_obj);   /* top-level self */
   sp_mark_string(sp_argf_obj.fname);   /* the file ARGF took off ARGV */
   SP_GLB_PHASE("globals:exceptions");
