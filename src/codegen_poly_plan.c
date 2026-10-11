@@ -3179,6 +3179,16 @@ void emit_poly_prearms_n(Compiler *c, const char *name, const PolySpecialsN *ps,
   }
   /* Integer#[N] bit-extraction: poly recv may hold a tagged int */
   if (is_index) {
+    /* A boxed index need not be an Integer: a Range with a boxed end is
+       boxed too (`a[cut..]`). The Integer, String and Array arms below
+       read the index as an Integer and raised TypeError for it, so any
+       other index on those receivers takes the generic lookup, as it does
+       where no user class defines `[]`. */
+    if (atmp_ty[0] == TY_POLY && ret == TY_POLY)
+      buf_printf(b, "if (_t%d.tag != SP_TAG_INT && (_t%d.tag == SP_TAG_INT || _t%d.tag == SP_TAG_STR || "
+                    "(_t%d.tag == SP_TAG_OBJ && sp_poly_is_array_kind(_t%d.cls_id)))) "
+                    "{ _t%d = sp_poly_index_poly(_t%d, _t%d); }\nelse ",
+                 atmp[0], tv, tv, tv, tv, tr, tv, atmp[0]);
     if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_INT_BITREF, -1, TY_UNKNOWN, PC_SAME);
     if (ret == TY_POLY)
       buf_printf(b, "if (_t%d.tag == SP_TAG_INT) { _t%d = sp_box_int((_t%d.v.i >> %s) & 1); }\nelse ", tv, tr, tv, idxref);
