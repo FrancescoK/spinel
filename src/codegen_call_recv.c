@@ -7474,12 +7474,16 @@ static int str_arms_convert(Compiler *c, int id, Buf *b, const NodeTable *nt, co
        handle: its own handle is compared (the read face is a copy); so is
        a call answering its receiver over a handle (`s.freeze.freeze`),
        which is that receiver's handle (emit_strbuf_handle_of) */
-    if (!eq_sblv && repr_share_rule(c) && (strbuf_assign_route(c, recv) || strbuf_plain_self_call(c, recv))) {
+    /* (and a `&.` call answering its receiver over one, `s.upcase!&.tap { }`,
+       whose guard holds that handle: emit_bang_self_handle) */
+    int eq_sn = repr_share_rule(c) && call_is_safe_nav(c->nt, unwrap_parens(c, recv)) && strbuf_self_route(c, recv);
+    if (!eq_sblv && repr_share_rule(c) && (strbuf_assign_route(c, recv) || strbuf_plain_self_call(c, recv) || eq_sn)) {
       char arefL[192];
       if (strbuf_slot_ref(c, argv[0], arefL, sizeof arefL)) {
         int thl = ++g_tmp;
         buf_printf(b, "({ sp_String *_t%d = ", thl);
         if (strbuf_assign_route(c, recv)) emit_strbuf_route(c, recv, b);
+        else if (eq_sn && emit_bang_self_handle(c, unwrap_parens(c, recv), b)) { }
         else emit_strbuf_handle_of(c, recv, b);
         buf_printf(b, "; SP_GC_ROOT(_t%d); (sp_bool)(_t%d == %s); })", thl, thl, arefL);
         eq_sblv = 1;

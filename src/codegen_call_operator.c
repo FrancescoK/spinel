@@ -1627,11 +1627,30 @@ int emit_call_operator_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
      value is the assigned string (#2370). */
   /* A reader call handing out the shared handle takes the same statement,
      through its shim (#3227). */
+  /* (--share-strings: so does a call answering its receiver over a
+     handle, `id(s).concat(x)[0] = v`, held as that handle first, run once:
+     the store takes it from the temp, ran_first_handle) */
+  int aset_route = recv >= 0 && repr_share_rule(c) && repr_of(c, recv).as_ty == TY_STRING &&
+                   strbuf_self_route(c, recv) && g_n_argov + 2 < MAX_ARG_OVERRIDE;
   if (recv >= 0 && sp_streq(name, "[]=") && (argc == 2 || argc == 3) &&
       ((repr_of(c, recv).as_ty == TY_STRING &&
         nt_type(nt, recv) && (sp_streq(nt_type(nt, recv), "LocalVariableReadNode") ||
                               sp_streq(nt_type(nt, recv), "InstanceVariableReadNode"))) ||
-       (repr_of(c, recv).as_ty == TY_STRBUF && nt_kind(nt, recv) == NK_CallNode))) {
+       (repr_of(c, recv).as_ty == TY_STRBUF && nt_kind(nt, recv) == NK_CallNode) || aset_route)) {
+    int rslot = g_n_argov;
+    size_t rpre0 = g_pre->len;
+    if (aset_route) {
+      int th = ++g_tmp, tb = ++g_tmp;
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "sp_String *_t%d = ", th);
+      emit_strbuf_handle_of(c, unwrap_parens(c, recv), g_pre);
+      buf_printf(g_pre, "; SP_GC_ROOT(_t%d);\n", th);
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "if (SP_UNLIKELY(!_t%d)) sp_raise_nomethod(sp_nomethod_msg(\"[]=\", sp_box_nil()));\n", th);
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "const char *_t%d = sp_String_cstr(_t%d); (void)_t%d;\n", tb, th, tb);
+      ran_first_bind(recv, tb, th);
+    }
     /* the value is evaluated once, into a temp the store reads and the
        expression answers: evaluated again after the store, a call with
        effects ran twice, and a value the store read through a boxed
@@ -1660,6 +1679,7 @@ int emit_call_operator_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
         else emit_boxed_text(c, vt, tn, b);
         buf_puts(b, "; })");
         free(vb.p); free(mb.p);
+        if (aset_route) view_unbind(rslot);
         return 1;
       }
       /* no store to run: the value is the plain path's to evaluate */
@@ -1679,9 +1699,14 @@ int emit_call_operator_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
       else emit_expr(c, argv[argc - 1], b);
       buf_puts(b, "; })");
       free(mb.p);
+      if (aset_route) view_unbind(rslot);
       return 1;
     }
     free(mb.p);
+    if (aset_route) {
+      view_unbind(rslot);
+      g_pre->len = rpre0; if (g_pre->p) g_pre->p[rpre0] = 0;
+    }
   }
   /* poly `<<` in expression position: sp_poly_shl dispatches on the runtime tag
      (Integer#<< shift -> boxed int, Array#push append -> the array) and returns

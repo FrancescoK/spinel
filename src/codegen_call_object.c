@@ -1871,8 +1871,24 @@ int emit_call_safe_nav_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
            the re-entered call reads the receiver through the override text --
            the oint temp where the receiver node is an oint (the dispatcher
            unwraps it), its plain value otherwise */
+        /* --share-strings: a receiver that is a call answering its own
+           receiver over a handle (`id(s).concat(x)&.frozen?`) is held as
+           that handle, run once here: the call's arms that read the handle
+           take it from the guard (ran_first_handle), where they ran the
+           receiver again */
+        int sn_hold = repr_share_rule(c) && rrt == TY_STRING && !sn_obj && !sn_scalar && !sn_cont &&
+                      strbuf_self_route(c, recv);
+        int tsh = -1;
         Buf rsn; memset(&rsn, 0, sizeof rsn);
-        if (sn_scalar) emit_oint_expr(c, recv, rrt, &rsn); else rsn = expr_buf(c, recv);
+        if (sn_hold) {
+          tsh = ++g_tmp;
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "sp_String *_t%d = ", tsh);
+          emit_strbuf_handle_of(c, unwrap_parens(c, recv), g_pre);
+          buf_printf(g_pre, "; SP_GC_ROOT(_t%d);\n", tsh);
+          buf_printf(&rsn, "_t%d ? sp_String_cstr(_t%d) : (const char *)NULL", tsh, tsh);
+        }
+        else if (sn_scalar) emit_oint_expr(c, recv, rrt, &rsn); else rsn = expr_buf(c, recv);
         emit_indent(g_pre, g_indent);
         if (sn_obj)
           buf_printf(g_pre, "sp_%s *_sn%d = %s; SP_GC_ROOT(_sn%d);\n",
@@ -1889,6 +1905,13 @@ int emit_call_safe_nav_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
           buf_printf(g_pre, "const char *_sn%d = %s; SP_GC_ROOT_STR(_sn%d);\n",
                      tsn2, rsn.p ? rsn.p : "NULL", tsn2);
         free(rsn.p);
+        /* (the bytes the guard read, by the temp name ran_first_bind takes) */
+        int tsb = -1;
+        if (sn_hold) {
+          tsb = ++g_tmp;
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "const char *_t%d = _sn%d; (void)_t%d;\n", tsb, tsn2, tsb);
+        }
         char nilt[64];
         if (sn_scalar) snprintf(nilt, sizeof nilt, "_sn%d.nil", tsn2);
         else           snprintf(nilt, sizeof nilt, "_sn%d == NULL", tsn2);
@@ -1908,7 +1931,9 @@ int emit_call_safe_nav_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
         if (g_n_argov < MAX_ARG_OVERRIDE) {
           /* the guard proved the scalar non-nil: the re-entry reads its plain
              value (a view-bound node takes no oint wrapper either way) */
-          int slot2 = sn_scalar ? view_bind(recv, "_snv%d", tsn2) : view_bind(recv, "_sn%d", tsn2);
+          int slot2 = g_n_argov;
+          if (sn_hold) ran_first_bind(recv, tsb, tsh);
+          else slot2 = sn_scalar ? view_bind(recv, "_snv%d", tsn2) : view_bind(recv, "_sn%d", tsn2);
           int sv_skip = g_sn_skip; g_sn_skip = id;
           /* infer_type widened a C bool answer to poly so the nil arm has
              somewhere to live; the value arm still renders the bool. Emit it

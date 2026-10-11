@@ -3000,6 +3000,10 @@ static int emit_bang_self_handle_1(Compiler *c, int v, Buf *b) {
 }
 
 int emit_bang_self_handle(Compiler *c, int v, Buf *b) {
+  /* a call a guard ran already holds its handle (a `&.` guard's,
+     ran_first_handle): it is that handle, never run again */
+  int held = repr_share_rule(c) && strbuf_bang_self_local(c, v) ? ran_first_handle(v) : -1;
+  if (held >= 0) { buf_printf(b, "_t%d", held); return 1; }
   size_t at = b->len;
   int done = emit_bang_self_handle_1(c, v, b);
   /* the answer is the receiver's handle (the bang's own bytes only say

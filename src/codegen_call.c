@@ -20583,6 +20583,18 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
   if (emit_or_take_back(c, id, b, emit_str_append_chain_handle)) return 1;
   const NodeTable *nt = c->nt;
   if (id == g_operand_order_node) return 0;
+  /* --share-strings: a String mutator's receiver that is a call answering
+     its receiver over a handle (`id(s).upcase!.sub!(x, y())`) is held as
+     that handle, run once: the mutator takes it from the temp
+     (ran_first_handle), where it took the receiver's bytes and ran the
+     receiver again for its handle */
+  if (harg < 0 && repr_share_rule(c)) {
+    int sr = nt_ref(nt, id, "receiver");
+    const char *snm = nt_str(nt, id, "name");
+    if (sr >= 0 && snm && repr_of(c, sr).as_ty == TY_STRING && strbuf_self_route(c, sr) &&
+        (strbuf_bang_self_local(c, id) || is_string_position_mutator(snm) || is_encoding_mutator(snm)))
+      harg = sr;
+  }
   int recv = nt_ref(nt, id, "receiver");
   int args = nt_ref(nt, id, "arguments");
   int argc = 0;

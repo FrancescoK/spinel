@@ -106,3 +106,55 @@ p [v.equal?(b2), b2.frozen?, $n]
 $n = 0; b = +"AAB"; b2 = b
 v = tbf(b)
 p [v, b2.frozen?, $n]
+
+# a reader after `&.` on such a call takes the guard's handle: the call runs
+# once, and a bang is not run again on a String the reader sees frozen
+$n = 0; b = +"ab"; b2 = b
+v = id(b).concat("1")&.frozen?
+p [v, b2, $n]
+def arg = ($n += 10; "1")
+$n = 0; b = +"ab"
+v = (id(b) << arg)&.frozen?
+p [v, b, $n]
+$n = 0; b = +"ab"
+v = id(b).concat("1")&.equal?(b)
+w = id(b).upcase!&.equal?(b)
+p [v, w, b, $n]
+b = +"ab"; b2 = b
+v = b.upcase!&.freeze&.frozen?
+p [v, b2, b2.frozen?]
+t = +"cd"; t2 = t
+w = (t << "1").freeze&.frozen?
+p [w, t2, t2.frozen?]
+$n = 0; u = +"ef"
+puts "yes" if (id(u) << "2")&.freeze
+p [u, u.frozen?, $n]
+$n = 0; b = +"ab"; b2 = b
+v = (id(b).concat("1")&.hash == b2.hash)
+p [v, $n]
+$n = 0; b = +"ab"; b2 = b
+v = b.upcase!&.tap { |x| $n += 100 }.equal?(b2)
+w = id(b).concat("1")&.tap { |x| $n += 100 }.equal?(b2)
+p [v, w, $n]
+
+# a mutator with a call among its arguments over such a call runs it once
+$n = 0; b = +"axb"; b2 = b
+id(b).upcase!.sub!("X", arg)
+p [b2, $n]
+$n = 0; b = +"axb"; b2 = b
+(id(b) << "x" << "x").gsub!("x", arg)
+p [b2, $n]
+$n = 0; b = +"ab"; b2 = b
+id(b).concat("1").insert(0, arg)
+p [b2, $n]
+
+# []= on such a call, with one index, two and a range, as a value too
+$n = 0; b = +"ABC"; b2 = b
+id(b).downcase![0] = "Z"
+id(b).concat("d")[1, 2] = "QQ"
+id(b).upcase![0..1] = "R"
+p [b2, $n]
+$n = 0; b = +"abc"; b2 = b
+va = (id(b).concat("d")[1] = arg)
+wa = ((id(b) << "e")[0, 2] = "W")
+p [va, wa, b2, $n]
