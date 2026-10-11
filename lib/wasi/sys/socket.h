@@ -37,4 +37,9 @@ int listen(int, int);
 int connect(int, const struct sockaddr *, socklen_t);
 int setsockopt(int, int, int, const void *, socklen_t);
 int socketpair(int, int, int, int [2]);
+/* listen(2)'s backlog hint, which wasi-libc leaves out (sp_net.c's
+   Socket.tcp_server_sockets, #8541); the call fails there as the others do */
+#ifndef SOMAXCONN
+#define SOMAXCONN 128
+#endif
 #endif
