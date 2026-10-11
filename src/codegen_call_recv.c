@@ -10154,13 +10154,30 @@ static int emit_struct_recv_call(Compiler *c, int id, Buf *b, const NodeTable *n
     }
     int t = ++g_tmp;
     int th = wds >= 0 ? ++g_tmp : -1;
+    int scid = (int)(sc - c->classes);
     Buf rb = expr_buf(c, recv);
     buf_printf(b, "({ sp_%s *_t%d = %s;", sc->c_name, t, rb.p ? rb.p : ""); free(rb.p);
     if (th >= 0) { buf_printf(b, " sp_RbVal _t%d = ", th); emit_boxed(c, wds, b); buf_puts(b, ";"); }
-    buf_printf(b, " sp_%s_new(", sc->c_name);
+    /* A member that can hold nil keeps it in the copy (#8508): a given
+       value's nil, read once into a temp ahead of the constructor, or the
+       receiver's for a member the call leaves as it was; the constructor
+       clears every nil byte, so they are set after it */
+    int *onil = (int *)calloc((size_t)(sc->nmembers > 0 ? sc->nmembers : 1), sizeof(int));
+    for (int i = 0; i < sc->nmembers && th < 0; i++) {
+      if (!ivar_has_nilbit(c, scid, i)) continue;
+      int val = wkwh >= 0 ? kwh_lookup(nt, wkwh, sc->ivars[i] + 1) : -1;
+      TyKind mt = sc->ivar_types[i];
+      if (val < 0 || (mt != TY_INT && mt != TY_FLOAT)) continue;
+      onil[i] = ++g_tmp;
+      buf_printf(b, " sp_o%s _t%d = ", mt == TY_INT ? "int" : "float", onil[i]);
+      emit_oint_expr(c, val, mt, b); buf_puts(b, ";");
+    }
+    int tn = ++g_tmp;
+    buf_printf(b, " sp_%s *_t%d = sp_%s_new(", sc->c_name, tn, sc->c_name);
     for (int i = 0; i < sc->nmembers; i++) {
       if (i) buf_puts(b, ", ");
       int val = wkwh >= 0 ? kwh_lookup(nt, wkwh, sc->ivars[i] + 1) : -1;
+      if (onil[i]) { buf_printf(b, "_t%d.v", onil[i]); continue; }
       if (val >= 0) {
         TyKind mt = sc->ivar_types[i];
         int val_boxed = repr_of(c, val).kind == RK_BOXED;
@@ -10202,7 +10219,25 @@ static int emit_struct_recv_call(Compiler *c, int id, Buf *b, const NodeTable *n
         buf_printf(b, "_t%d->iv_%s", t, iv_c(sc->ivars[i] + 1));
       }
     }
-    buf_puts(b, "); })");
+    buf_puts(b, ");");
+    for (int i = 0; i < sc->nmembers && th < 0; i++) {
+      if (!ivar_has_nilbit(c, scid, i)) continue;
+      char tobj[32], dst[128], src[128];
+      snprintf(tobj, sizeof tobj, "_t%d->", tn);
+      if (onil[i]) {
+        char nf[32]; snprintf(nf, sizeof nf, "_t%d.nil", onil[i]);
+        ivar_nilbit_assign(c, scid, i, tobj, nf, dst, sizeof dst);
+      }
+      else if (wkwh < 0 || kwh_lookup(nt, wkwh, sc->ivars[i] + 1) < 0) {
+        char robj[32]; snprintf(robj, sizeof robj, "_t%d->", t);
+        ivar_nilbit_test(c, scid, i, robj, src, sizeof src);
+        ivar_nilbit_assign(c, scid, i, tobj, src, dst, sizeof dst);
+      }
+      else continue;
+      buf_printf(b, " %s;", dst);
+    }
+    buf_printf(b, " _t%d; })", tn);
+    free(onil);
     { *out = 1; return 1; }
   }
   /* CRuby's Data defines no #dig at all (Struct does), so digging into one

@@ -8000,6 +8000,33 @@ static TyKind struct_member_arg_type(Compiler *c, int v) {
    constant, a qualified path, a local holding an anonymous struct, and a
    bare `new` / `self.new` in one of the struct's own class methods, which
    typed nothing and left every member boxed (#4842). */
+/* `d.with(k: v)` on a Struct or Data: each value a literal key gives a
+   member is one that member can hold, as a construction's is; a member the
+   call does not name keeps what it had. Unread, `Row.new(1).with(a: nil)`
+   left the Integer member unable to hold nil and stored 0 (#8508). */
+static int struct_with_types_members(Compiler *c, int id, int ci) {
+  const NodeTable *nt = c->nt;
+  ClassInfo *cls = &c->classes[ci];
+  int args = nt_ref(nt, id, "arguments");
+  int an = 0;
+  const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  if (an != 1 || nt_kind(nt, argv[0]) != NK_KeywordHashNode) return 0;
+  int kn = 0; const int *ke = nt_arr(nt, argv[0], "elements", &kn);
+  int changed = 0;
+  for (int e = 0; e < kn; e++) {
+    if (nt_kind(nt, ke[e]) != NK_AssocNode) continue;
+    int key = nt_ref(nt, ke[e], "key"), v = nt_ref(nt, ke[e], "value");
+    const char *kname = key >= 0 && nt_kind(nt, key) == NK_SymbolNode ? nt_str(nt, key, "value") : NULL;
+    if (!kname || v < 0) continue;
+    for (int a = 0; a < cls->nmembers; a++) {
+      if (!sp_streq(cls->ivars[a] + 1, kname) || class_ivar_pinned(cls, cls->ivars[a])) continue;
+      TyKind m = ty_unify(cls->ivar_types[a], struct_member_arg_type(c, v));
+      if (m != cls->ivar_types[a]) { cls->ivar_types[a] = m; changed = 1; }
+    }
+  }
+  return changed;
+}
+
 static int struct_new_types_members(Compiler *c, int id, int ci) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -8950,6 +8977,11 @@ static int infer_param_types_ex(Compiler *c, int settle) {
     }
     /* obj.method -> instance method params */
     TyKind rt = infer_type(c, recv);
+    if (name && sp_streq(name, "with") && ty_is_object(rt) && c->classes[ty_object_class(rt)].is_struct &&
+        comp_method_in_chain(c, ty_object_class(rt), "with", NULL) < 0) {
+      changed |= struct_with_types_members(c, id, ty_object_class(rt));
+      continue;
+    }
     /* A receiver that settled on NO type is emitted BOXED, exactly as a poly
        one is, so the call is a runtime dispatch that can reach any user method
        of this name -- but neither branch below runs for it, so the call bound

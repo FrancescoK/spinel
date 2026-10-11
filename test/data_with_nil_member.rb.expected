@@ -1,0 +1,10 @@
+{a: nil}
+#<data P x=1, y=nil>
+nil
+#<data P x=1, y="s">
+3
+#<data Row a=5>
+#<data Q u=nil, w=2>
+#<data Q u=3, w=nil>
+#<data g=nil>
+#<data Row a="s">

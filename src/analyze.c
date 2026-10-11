@@ -34114,6 +34114,32 @@ static void mark_nullable_int_locals(Compiler *c) {
         sci->ivar_nullable_int[m] = 1; changed = 1;
       }
     }
+    /* `d.with(x: v)` on a Struct or Data: the copy's member takes v, nil
+       included (#8508) */
+    NT_FOREACH_KIND(nt, NK_CallNode, id) {
+      const char *wn = nt_str(nt, id, "name");
+      int wrecv = nt_ref(nt, id, "receiver");
+      if (!wn || !sp_streq(wn, "with") || wrecv < 0) continue;
+      int wa = nt_ref(nt, id, "arguments"); int wan = 0;
+      const int *wav = wa >= 0 ? nt_arr(nt, wa, "arguments", &wan) : NULL;
+      if (wan != 1 || nt_kind(nt, wav[0]) != NK_KeywordHashNode) continue;
+      TyKind wrt = infer_type(c, wrecv);
+      if (!ty_is_object(wrt)) continue;
+      ClassInfo *sci = &c->classes[ty_object_class(wrt)];
+      if (!sci->is_struct || sci->nmembers <= 0) continue;
+      int kn = 0; const int *ke = nt_arr(nt, wav[0], "elements", &kn);
+      for (int e = 0; e < kn; e++) {
+        if (nt_kind(nt, ke[e]) != NK_AssocNode) continue;
+        int key = nt_ref(nt, ke[e], "key"), v = nt_ref(nt, ke[e], "value");
+        const char *mn = key >= 0 && nt_kind(nt, key) == NK_SymbolNode ? nt_str(nt, key, "value") : NULL;
+        if (!mn || v < 0 || (nt_kind(nt, v) != NK_NilNode && !nullable_int_value(c, v))) continue;
+        char ivb[300]; snprintf(ivb, sizeof ivb, "@%s", mn);
+        int m = comp_ivar_index(sci, ivb);
+        if (m < 0 || m >= sci->nmembers || sci->ivar_nullable_int[m]) continue;
+        if (sci->ivar_types[m] != TY_INT && sci->ivar_types[m] != TY_FLOAT) continue;
+        sci->ivar_nullable_int[m] = 1; changed = 1;
+      }
+    }
     /* `o.instance_variable_set(:@x, v)` with a nil, or a nullable number,
        stores it in the ivar as a plain write would. */
     NT_FOREACH_KIND(nt, NK_CallNode, id) {
