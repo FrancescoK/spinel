@@ -605,6 +605,8 @@ sp_int sp_process_waitpid(sp_int pid);   /* Process.wait / waitpid: the pid reap
 #  define SP_RUBY_OS "darwin"
 #elif defined(__FreeBSD__)
 #  define SP_RUBY_OS "freebsd"
+#elif defined(__OpenBSD__)
+#  define SP_RUBY_OS "openbsd"
 #elif defined(_WIN32)
 #  define SP_RUBY_OS "mingw-ucrt"
 #else
