@@ -5379,15 +5379,20 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
     return 1;
   }
 
-  /* Proc#arity: read the arity field off the boxed proc. */
+  /* Proc#arity: read the arity field off the boxed proc. A call whose
+     value may be nil (a user `arity` reader beside it, #8458) is an oint
+     node, whose producer answers the oint: the plain arity is wrapped. */
   if (sp_streq(name, "arity") && argc == 0) {
     int tv = ++g_tmp;
+    int ao = node_is_oint(c, id);
+    if (ao) buf_puts(b, "sp_oint_of(");
     buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b);
     buf_printf(b, "; _t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_PROC"
                   " ? ((sp_Proc *)_t%d.v.p)->arity"
                   " : _t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_METHOD ? ((sp_BoundMethod *)_t%d.v.p)->arity"
                   " : (sp_int)(sp_raise_nomethod(sp_nomethod_msg(\"arity\", _t%d)), 0); })",
                tv, tv, tv, tv, tv, tv, tv);
+    if (ao) buf_puts(b, ")");
     return 1;
   }
   /* the same reads for a Proc carried in a poly slot -- one read out of an
