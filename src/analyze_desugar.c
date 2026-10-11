@@ -13038,41 +13038,77 @@ static void inh_add_name(ANameHash *h, const char *q) {
    As in CRuby, that segment is looked up in the scopes around the header,
    innermost first, then at the top level, among the names defined before it
    (nodes are in program order): `module A; class A::Foo` defines A::Foo, not
-   A::A::Foo. A path from the top (`::Foo`, `Object::Foo`) is taken as
-   written; a segment found nowhere goes under the innermost scope. */
+   A::A::Foo. A constant that holds a class or module (`Alias = A`) stands for
+   it there, so `class Alias::Foo` is A::Foo. A path from the top (`::Foo`,
+   `Object::Foo`) is taken as written; a segment found nowhere goes under the
+   innermost scope. */
+typedef struct { ANameHash known, alias; char **target; int ntarget; } InhNames;
+static void inh_resolve_path(InhNames *r, char **qn, const NodeTable *nt, const int *parent,
+                             int id, int path, int ref, char *q, size_t cap) {
+  char w[512], head[1024];
+  int rooted = 0;
+  if (!cbs_path_text(nt, path, w, sizeof w, &rooted)) snprintf(w, sizeof w, "?");
+  const char *p = w;
+  if (!strncmp(p, "Object::", 8)) { p += 8; rooted = 1; }
+  int s = inh_scope_of(nt, parent, id);
+  const char *in = rooted || s < 0 || !qn[s] ? "" : qn[s];
+  const char *sep = strstr(p, "::");
+  if (!sep && ref) sep = p + strlen(p);   /* a read looks its one segment up too */
+  if (!rooted && sep) {
+    char first[512];
+    snprintf(first, sizeof first, "%.*s", (int)(sep - p), p);
+    const char *found = NULL;
+    for (int t = s; t >= 0 && !found; t = inh_scope_of(nt, parent, t)) {
+      if (!qn[t]) continue;
+      snprintf(head, sizeof head, "%s::%s", qn[t], first);
+      if (anh_has(&r->known, head)) found = qn[t];
+    }
+    if (found) in = found;
+    else if (anh_has(&r->known, first)) in = "";
+    snprintf(head, sizeof head, "%s%s%s", in, *in ? "::" : "", first);
+    int a = anh_find(&r->alias, head);
+    if (a >= 0) { snprintf(q, cap, "%s%s", r->target[a], sep); return; }
+  }
+  snprintf(q, cap, "%s%s%s", in, *in ? "::" : "", p);
+}
 static char **inh_qualified_names(const NodeTable *nt, const int *parent, int n0) {
   char **qn = calloc((size_t)(n0 > 0 ? n0 : 1), sizeof(char *));
   if (!qn) return NULL;
-  ANameHash known; memset(&known, 0, sizeof known);
+  InhNames r; memset(&r, 0, sizeof r);
   for (int id = 0; id < n0; id++) {
-    if (nt_kind(nt, id) != NK_ClassNode && nt_kind(nt, id) != NK_ModuleNode) continue;
-    char w[512], q[1024];
-    int rooted = 0;
-    if (!cbs_path_text(nt, nt_ref(nt, id, "constant_path"), w, sizeof w, &rooted)) snprintf(w, sizeof w, "?");
-    const char *p = w;
-    if (!strncmp(p, "Object::", 8)) { p += 8; rooted = 1; }
-    int s = inh_scope_of(nt, parent, id);
-    const char *in = rooted || s < 0 || !qn[s] ? "" : qn[s];
-    const char *sep = strstr(p, "::");
-    if (!rooted && sep) {
-      char first[512];
-      snprintf(first, sizeof first, "%.*s", (int)(sep - p), p);
-      const char *found = NULL;
-      for (int t = s; t >= 0 && !found; t = inh_scope_of(nt, parent, t)) {
-        if (!qn[t]) continue;
-        snprintf(q, sizeof q, "%s::%s", qn[t], first);
-        if (anh_has(&known, q)) found = qn[t];
-      }
-      if (found) in = found;
-      else if (anh_has(&known, first)) in = "";
+    NodeKind k = nt_kind(nt, id);
+    char q[1024];
+    if (k == NK_ConstantWriteNode) {
+      int v = nt_ref(nt, id, "value");
+      NodeKind vk = v >= 0 ? nt_kind(nt, v) : NK_NilNode;
+      const char *nm = nt_str(nt, id, "name");
+      if (!nm || (vk != NK_ConstantReadNode && vk != NK_ConstantPathNode)) continue;
+      char target[1024];
+      inh_resolve_path(&r, qn, nt, parent, id, v, 1, target, sizeof target);
+      if (!anh_has(&r.known, target)) continue;   /* not a class or module */
+      int s = inh_scope_of(nt, parent, id);
+      snprintf(q, sizeof q, "%s%s%s", s >= 0 && qn[s] ? qn[s] : "", s >= 0 && qn[s] ? "::" : "", nm);
+      if (anh_has(&r.alias, q)) continue;
+      char **t = realloc(r.target, sizeof(char *) * (size_t)(r.ntarget + 1));
+      char *qd = strdup(q), *td = strdup(target);
+      if (!t || !qd || !td) { free(qd); free(td); if (t) r.target = t; break; }
+      r.target = t;
+      r.target[r.ntarget++] = td;
+      anh_add(&r.alias, qd);
+      inh_add_name(&r.known, q);
+      continue;
     }
-    snprintf(q, sizeof q, "%s%s%s", in, *in ? "::" : "", p);
+    if (k != NK_ClassNode && k != NK_ModuleNode) continue;
+    inh_resolve_path(&r, qn, nt, parent, id, nt_ref(nt, id, "constant_path"), 0, q, sizeof q);
     qn[id] = strdup(q);
     if (!qn[id]) break;
-    inh_add_name(&known, q);
+    inh_add_name(&r.known, q);
   }
-  for (int k = 0; k < known.n; k++) free((char *)known.key[k]);
-  anh_free(&known);
+  for (int k = 0; k < r.known.n; k++) free((char *)r.known.key[k]);
+  for (int k = 0; k < r.alias.n; k++) free((char *)r.alias.key[k]);
+  for (int k = 0; k < r.ntarget; k++) free(r.target[k]);
+  free(r.target);
+  anh_free(&r.known); anh_free(&r.alias);
   return qn;
 }
 

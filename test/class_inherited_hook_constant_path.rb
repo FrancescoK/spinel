@@ -3,7 +3,8 @@
 # the header writes: `class A::Foo` and `class B::Foo` are two classes, and
 # `module C; class Bar` reopened as `class C::Bar` is one. A path's first
 # segment is looked up from the scopes around the header, as a constant
-# would be: `module K; class K::Baz` is K::Baz, not K::K::Baz.
+# would be: `module K; class K::Baz` is K::Baz, not K::K::Baz, and a
+# constant holding a module stands for it: `class KAlias::Quux` is K::Quux.
 
 class Base
   def self.inherited(sub)
@@ -52,6 +53,15 @@ class Counted
 end
 module A; end
 module B; end
+KAlias = K
+class KAlias::Quux < Counted; end
+class K::Quux < Counted; end
+module M
+  Inner = K
+  class Inner::Corge < Counted; end
+end
+class K::Corge < Counted; end
+
 class A::Foo < Counted; end
 class B::Foo < Counted; end
 puts "Counted subclasses: #{Counted.count}"
