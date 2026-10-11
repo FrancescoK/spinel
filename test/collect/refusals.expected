@@ -1520,6 +1520,20 @@ spinel: 1 refusal, nothing written
 == test/reject/string_yield_line_read_after.rb [promote] rc=1
 spinel: test/reject/string_yield_line_read_after.rb:7: a String is passed to a proc's parameter `s` through a yield into a block argument, which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference through a `yield` into a Method or proc passed with `&`). Return the String from the proc and assign it, or append to it in the caller.
 spinel: 1 refusal, nothing written
+== test/reject/string_yield_line_user_each_line.rb [default] rc=1
+spinel: test/reject/string_yield_line_user_each_line.rb:14: a String is passed through a yield into a block argument, and a proc or Method it can reach appends to the String it is handed: this call hands it a copy, so the append would not reach the caller's String (a String is not yet shared by reference through a `yield` into a Method or proc passed with `&`). Return the String from the proc or Method and assign it, or append to it in the caller.
+spinel: test/reject/string_yield_line_user_each_line.rb:14: a String is passed to a proc's parameter `s` through a yield into a block argument, which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference through a `yield` into a Method or proc passed with `&`). Return the String from the proc and assign it, or append to it in the caller.
+spinel: 2 refusals, nothing written
+== test/reject/string_yield_line_user_each_line.rb [promote] rc=1
+spinel: test/reject/string_yield_line_user_each_line.rb:14: a String is passed through a yield into a block argument, and a proc or Method it can reach appends to the String it is handed: this call hands it a copy, so the append would not reach the caller's String (a String is not yet shared by reference through a `yield` into a Method or proc passed with `&`). Return the String from the proc or Method and assign it, or append to it in the caller.
+spinel: test/reject/string_yield_line_user_each_line.rb:14: a String is passed to a proc's parameter `s` through a yield into a block argument, which the proc appends to: this call hands the proc a copy, so the append would not reach the caller's String (a String is not yet shared by reference through a `yield` into a Method or proc passed with `&`). Return the String from the proc and assign it, or append to it in the caller.
+spinel: 2 refusals, nothing written
+== test/reject/string_yield_line_user_foreach.rb [default] rc=1
+spinel: test/reject/string_yield_line_user_foreach.rb:14: a String is passed through a yield into a block argument, and a proc or Method it can reach appends to the String it is handed: this call hands it a copy, so the append would not reach the caller's String (a String is not yet shared by reference through a `yield` into a Method or proc passed with `&`). Return the String from the proc or Method and assign it, or append to it in the caller.
+spinel: 1 refusal, nothing written
+== test/reject/string_yield_line_user_foreach.rb [promote] rc=1
+spinel: test/reject/string_yield_line_user_foreach.rb:14: a String is passed through a yield into a block argument, and a proc or Method it can reach appends to the String it is handed: this call hands it a copy, so the append would not reach the caller's String (a String is not yet shared by reference through a `yield` into a Method or proc passed with `&`). Return the String from the proc or Method and assign it, or append to it in the caller.
+spinel: 1 refusal, nothing written
 == test/reject/string_yield_poly_param_global.rb [default] rc=1
 spinel: test/reject/string_yield_poly_param_global.rb:8: a String is passed to `w`'s parameter `x` through a yield into a block argument, which the method appends to: this call hands the method a copy, so the append would not reach the caller's String (a String is not yet shared by reference from a global variable). Return the String from the method and assign it, or append to it in the caller.
 spinel: 1 refusal, nothing written
