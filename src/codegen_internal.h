@@ -267,6 +267,7 @@ int exc_message_identity_operand(Compiler *c, int v);
 void emit_exc_message_idbox(Compiler *c, int v, Buf *b);
 int emit_exc_message_equal(Compiler *c, int recv, int arg, Buf *b);
 int strbuf_route_exc_message(Compiler *c, int v);
+int strbuf_route_boxed_exc_message(Compiler *c, int v);
 int strbuf_yield_tail_held(Compiler *c);
 int strbuf_route_srange_end(Compiler *c, int v);
 void emit_slot_expr(Compiler *c, int id, Buf *b);
