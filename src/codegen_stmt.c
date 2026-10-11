@@ -748,7 +748,9 @@ int emit_system_splat(Compiler *c, int id, const int *argv, int argc, Buf *b) {
   int has_splat = 0;
   for (int k = 0; k < argc; k++) has_splat |= nt_kind(nt, argv[k]) == NK_SplatNode;
   TyKind t0 = argc >= 1 && nt_kind(nt, argv[0]) != NK_SplatNode ? comp_ntype(c, argv[0]) : TY_UNKNOWN;
-  int env_first = argc >= 1 && nt_kind(nt, argv[0]) != NK_SplatNode && (ty_is_hash(t0) || t0 == TY_POLY);
+  /* an empty `{}` literal infers no element types and stays TY_UNKNOWN */
+  int env_first = argc >= 1 && nt_kind(nt, argv[0]) != NK_SplatNode
+                  && (ty_is_hash(t0) || t0 == TY_POLY || (t0 == TY_UNKNOWN && nt_kind(nt, argv[0]) == NK_HashNode));
   if (!has_splat && !env_first) return 0;
   /* the shapes after the Hash the literal list refuses stay refused */
   if (!has_splat) system_refuse_unsupported(c, id, argv, argc);
@@ -774,11 +776,12 @@ int emit_system_splat(Compiler *c, int id, const int *argv, int argc, Buf *b) {
                 " if (_t%d->len == 0) sp_raise_cls(\"ArgumentError\", \"wrong number of arguments (given 0, expected 1+)\");"
                 " sp_system_env_check(_t%d); }",
              te, te, ta, te, ta, ta, te);
-  /* every element converts once before anything is allocated, so a TypeError
-     from one does not leak the argv */
-  buf_printf(b, " for (sp_int _i = 0; _i < _t%d->len; _i++) (void)sp_poly_arg_str_chk(_t%d->data[_i]);", ta, ta);
+  /* every element converts once, before anything is allocated, so a TypeError
+     from one does not leak the argv and a to_str runs only once; the rooted
+     array keeps the converted String */
+  buf_printf(b, " for (sp_int _i = 0; _i < _t%d->len; _i++) _t%d->data[_i] = sp_box_str(sp_poly_arg_str_chk(_t%d->data[_i]));", ta, ta, ta);
   buf_printf(b, " const char **_t%d = (const char **)malloc(sizeof(char *) * (size_t)(_t%d->len + 1));", tv, ta);
-  buf_printf(b, " for (sp_int _i = 0; _i < _t%d->len; _i++) _t%d[_i] = sp_poly_arg_str_chk(_t%d->data[_i]);", ta, tv, ta);
+  buf_printf(b, " for (sp_int _i = 0; _i < _t%d->len; _i++) _t%d[_i] = _t%d->data[_i].v.s;", ta, tv, ta);
   buf_printf(b, " _t%d[_t%d->len] = NULL; sp_bool _t%d = (sp_bool)(_t%d.tag == SP_TAG_NIL ? sp_system_args((int)_t%d->len, _t%d)"
                 " : sp_system_env_args(_t%d, (int)_t%d->len, _t%d)); free(_t%d); _t%d; })",
              tv, ta, tr, te, ta, tv, te, ta, tv, tv, tr);

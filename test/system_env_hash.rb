@@ -34,3 +34,13 @@ end
 # a value that may be either is told apart when the call runs
 env = ARGV.empty? ? {"SPX_H" => "h"} : "echo no"
 p system(env, "echo [$SPX_H]")
+
+# an empty Hash literal is an environment with nothing to change
+p system({}, "echo empty-hash")
+
+# each argument converts with to_str once
+class OnceArg
+  def initialize; @n = 0; end
+  def to_str; @n += 1; "arg#{@n}"; end
+end
+p system({}, "echo", OnceArg.new)

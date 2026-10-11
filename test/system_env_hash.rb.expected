@@ -16,3 +16,7 @@ true
 "wrong number of arguments (given 0, expected 1+)"
 [h]
 true
+empty-hash
+true
+arg1
+true
