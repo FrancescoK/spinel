@@ -1,3 +1,4 @@
+# spinel: not-cruby -- the escapes the engine refuses raise RegexpError, where CRuby matches them
 # `\R`, `\X` and `\p{...}` each meant something here that the engine did
 # not do, and as unknown escapes each was its own letter: /\R/ matched an R
 # rather than a newline, and /\p{Alpha}/ answered a pattern that asked for a
