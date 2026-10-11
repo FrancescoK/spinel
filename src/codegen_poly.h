@@ -55,7 +55,7 @@ void emit_poly_user_arms_n(Compiler *c, int id, const char *name, const PolyUser
 unsigned poly_form_check(int id, const char *name, const char *site, int served, unsigned form, unsigned oform);
 void emit_poly_arm_args(Compiler *c, Scope *m, Scope *ms, const ArgLayout *L, const PolyArgs *A, const char *selfd, const char *lead, Buf *pre, Buf *cb);
 int poly_native_arm_call(Compiler *c, int k, const char *name, int n, const int *argv, const int *atmp, const TyKind *atmp_ty, int tv, Buf *cb, TyKind *mret);
-int emit_poly_native_arm_stmt(Compiler *c, const char *call, TyKind mret, TyKind ret, int tr, int is_setter_val, Buf *b);
+int emit_poly_native_arm_stmt(Compiler *c, const char *call, TyKind mret, TyKind ret, int so, int tr, int is_setter_val, Buf *b);
 int  poly_arm_count(Compiler *c, Scope *m, int kwh, int pos_argc, int splat, char *exp, size_t n);
 int  poly_kw_splat_ok(Compiler *c, int el);
 int  poly_kw_any_key(Compiler *c, int kwh);

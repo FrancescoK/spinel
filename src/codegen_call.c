@@ -8056,8 +8056,10 @@ int poly_native_arm_call(Compiler *c, int k, const char *name, int n, const int 
   return 1;
 }
 
-/* the conversion it applied (PolyConv) */
-int emit_poly_native_arm_stmt(Compiler *c, const char *call, TyKind mret, TyKind ret,
+/* the conversion it applied (PolyConv). so: the result slot holds its nil
+   beside the value (an sp_oint / sp_ofloat): a plain answer goes in as
+   never nil, a boxed one unboxed with its nil. */
+int emit_poly_native_arm_stmt(Compiler *c, const char *call, TyKind mret, TyKind ret, int so,
                                      int tr, int is_setter_val, Buf *b) {
   int conv = PC_SAME;
   /* a writer in `x = v` is called for effect, as the user-class arms
@@ -8067,10 +8069,12 @@ int emit_poly_native_arm_stmt(Compiler *c, const char *call, TyKind mret, TyKind
   else {
     buf_printf(b, "_t%d = ", tr);
     if (ret == TY_POLY && mret != TY_POLY) { emit_boxed_text(c, mret, call, b); conv = PC_BOX; }
+    else if (so && mret == TY_POLY) { buf_printf(b, "%s(%s)", oint_unbox(ret), call ? call : ""); conv = PC_UNBOX; }
     else if (ret != TY_POLY && mret == TY_POLY) {
       emit_unbox_text(c, is_scalar_ret(ret) ? ret : TY_INT, call, b);
       conv = PC_UNBOX;
     }
+    else if (so) buf_printf(b, "%s(%s)", oint_of(ret), call ? call : "");
     else buf_puts(b, call ? call : "");
   }
   buf_puts(b, ";");
@@ -17186,7 +17190,7 @@ int emit_native_splat_call(Compiler *c, int id, int cid, const char *name, int r
       buf_puts(&sw, ";");
     }
     buf_puts(&sw, " ");
-    emit_poly_native_arm_stmt(c, cb.p, voidret ? TY_NIL : mret, ret, tr, 0, &sw);
+    emit_poly_native_arm_stmt(c, cb.p, voidret ? TY_NIL : mret, ret, 0, tr, 0, &sw);
     buf_puts(&sw, " break; }");
     free(cb.p);
   }
