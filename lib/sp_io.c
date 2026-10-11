@@ -1788,6 +1788,9 @@ sp_File *sp_File_reopen(sp_File *f, const char *path, const char *mode) {SP_GC_R
   f->fp = nf;
   f->closed = 0;
   f->path = path;
+  /* a mode given replaces the handle's, as CRuby's does: an earlier
+     #binmode or #set_encoding no longer decides what a read answers */
+  if (mode && mode[0]) { f->bin_flag = 0; f->ext_enc = 0; }
   f->mode = mode && mode[0] ? mode : "r";
   f->lineno = 0;
   return f;

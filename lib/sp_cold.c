@@ -4395,7 +4395,8 @@ static int sp_io_enc_side(sp_RbVal v, const char *s, const char **nm) {
    encoding, a conversion or a "BOM|" one is NotImplementedError: spinel has
    no third encoding to tag a read with or to transcode a write into, and
    does not strip a byte order mark. A name no encoding has is CRuby's
-   warning, and that encoding is left as it was. */
+   warning, and stands for none, as in CRuby: an external one is then the
+   default (UTF-8), or the internal one passed beside it, read as it is. */
 sp_File *sp_File_set_encoding(sp_File *f, sp_RbVal ext, sp_RbVal in) {
   SP_GC_ROOT(f); SP_GC_ROOT_RBVAL(ext); SP_GC_ROOT_RBVAL(in);
   SP_IO_OPEN(f);
@@ -4407,7 +4408,12 @@ sp_File *sp_File_set_encoding(sp_File *f, sp_RbVal ext, sp_RbVal in) {
     es = eb; is = colon + 1;
   }
   int e = sp_io_enc_side(ext, es, &en);
-  if (e == 0) { fprintf(stderr, "warning: Unsupported encoding %s ignored\n", en); return f; }
+  if (e == 0 && !es && in.tag != SP_TAG_NIL) {
+    fprintf(stderr, "warning: Unsupported encoding %s ignored\n", en);
+    ext = in; in = sp_box_nil();
+    e = sp_io_enc_side(ext, NULL, &en);
+  }
+  if (e == 0) { fprintf(stderr, "warning: Unsupported encoding %s ignored\n", en); e = 1; en = "UTF-8"; }
   if (e == -2)
     sp_raise_cls("NotImplementedError", sp_sprintf("IO#set_encoding to %s: spinel does not strip a byte order mark", en));
   if (e < 0)

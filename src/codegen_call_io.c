@@ -1563,7 +1563,7 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
     }
     if (sp_streq(name, "reopen") && argc >= 1) {
       buf_printf(b, "sp_File_reopen(%s, ", r); emit_path_expr(c, argv[0], b); buf_puts(b, ", ");
-      if (argc >= 2) emit_str_expr(c, argv[1], b); else buf_puts(b, "\"r\"");
+      if (argc >= 2) emit_str_expr(c, argv[1], b); else buf_puts(b, "NULL");
       buf_puts(b, ")"); free(rb.p); return 1;
     }
     /* read_nonblock / write_nonblock: a real non-blocking try. `exception:
