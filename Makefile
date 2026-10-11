@@ -1871,6 +1871,11 @@ reject-test: $(SPINEL)
 	  else grep -qF "$$why" "$$tmp/nc.out" || \
 	    { echo "reject-test: FAIL ($$t refused without saying why)"; sed -n 1,5p "$$tmp/nc.out"; ok=0; }; fi; \
 	done; \
+	t=test/reject/compact_class_internal_name_clash.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/q.c" >"$$tmp/q.out" 2>&1; then \
+	  echo "reject-test: FAIL ($$t compiled: two classes share an internal name)"; ok=0; \
+	else grep -q "takes the internal name X__Foo" "$$tmp/q.out" || \
+	  { echo "reject-test: FAIL ($$t rejected without saying why)"; sed -n 1,5p "$$tmp/q.out"; ok=0; }; fi; \
 	t=test/reject/superclass_mismatch.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/s.c" >"$$tmp/s.out" 2>&1; then \
 	  echo "reject-test: FAIL (#4309: a class reopened with another superclass compiled)"; ok=0; \

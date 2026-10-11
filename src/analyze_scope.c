@@ -1305,6 +1305,10 @@ static void walk_scope_in(Compiler *c, int id, int scope_idx, int class_id, int 
       comp_class_new(c, cname, id);
       child_class = c->nclasses - 1;
       c->classes[child_class].enclosing_class = class_id;
+      /* a name qualify_colliding_classes gave carries the Ruby path it
+         resolved the header to (`AP = P; class AP::Foo` is P::Foo) */
+      const char *qrn = cp >= 0 ? nt_str(c->nt, cp, "qc_ruby_name") : NULL;
+      if (qrn) c->classes[child_class].ruby_name_cache = strdup(qrn);
       /* `class A::B` names B in A wherever it is written: A encloses it, as
          `module A; class B` does, and its name is A::B (#8369) */
       int par = cp >= 0 && nt_kind(c->nt, cp) == NK_ConstantPathNode ? nt_ref(c->nt, cp, "parent") : -1;
