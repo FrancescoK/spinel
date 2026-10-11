@@ -4158,7 +4158,10 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
       int nbind = lvw || held || hbind >= 0 ? -1 : view_bind(recv, "_t%d", to);
       int sv_sb = g_sub_bang_id;   /* the wrapper or a block form's local, as above */
       g_sub_bang_id = subm2 && sub_bang_reenters(c, id, recv, argc, argv) ? id : -1; g_sub_bang_tm = 0;
+      /* the nil test above stands for the plain form's own (cplan_nil) */
+      if (!lvw) nt_node_set_int((NodeTable *)nt, id, "recv_nil_tested", 1);
       emit_expr(c, id, &nb);
+      if (!lvw) nt_node_set_int((NodeTable *)nt, id, "recv_nil_tested", 0);
       int tsm = g_sub_bang_tm; g_sub_bang_id = sv_sb; g_sub_bang_tm = 0;
       char sm[40] = "";
       if (tsm) snprintf(sm, sizeof sm, " && !_t%d", tsm);

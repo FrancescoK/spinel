@@ -1,0 +1,211 @@
+strip!.append_as_bytes: NoMethodError: undefined method 'append_as_bytes' for nil
+strip!.append_as_bytes stmt: NoMethodError: undefined method 'append_as_bytes' for nil
+"abcd"
+strip!.concat: NoMethodError: undefined method 'concat' for nil
+strip!.concat stmt: NoMethodError: undefined method 'concat' for nil
+"abcd"
+strip!.concat: NoMethodError: undefined method 'concat' for nil
+strip!.concat stmt: NoMethodError: undefined method 'concat' for nil
+"abcd"
+strip!.<<: NoMethodError: undefined method '<<' for nil
+strip!.<< stmt: NoMethodError: undefined method '<<' for nil
+"abcd"
+strip!.prepend: NoMethodError: undefined method 'prepend' for nil
+strip!.prepend stmt: NoMethodError: undefined method 'prepend' for nil
+"abcd"
+strip!.insert: NoMethodError: undefined method 'insert' for nil
+strip!.insert stmt: NoMethodError: undefined method 'insert' for nil
+"abcd"
+strip!.replace: NoMethodError: undefined method 'replace' for nil
+strip!.replace stmt: NoMethodError: undefined method 'replace' for nil
+"abcd"
+strip!.bytesplice: NoMethodError: undefined method 'bytesplice' for nil
+strip!.bytesplice stmt: NoMethodError: undefined method 'bytesplice' for nil
+"abcd"
+strip!.bytesplice: NoMethodError: undefined method 'bytesplice' for nil
+strip!.bytesplice stmt: NoMethodError: undefined method 'bytesplice' for nil
+"abcd"
+strip!.setbyte: NoMethodError: undefined method 'setbyte' for nil
+strip!.setbyte stmt: NoMethodError: undefined method 'setbyte' for nil
+"abcd"
+strip!.clear: NoMethodError: undefined method 'clear' for nil
+strip!.clear stmt: NoMethodError: undefined method 'clear' for nil
+"abcd"
+chomp!.append_as_bytes: NoMethodError: undefined method 'append_as_bytes' for nil
+chomp!.append_as_bytes stmt: NoMethodError: undefined method 'append_as_bytes' for nil
+"abcd"
+chomp!.concat: NoMethodError: undefined method 'concat' for nil
+chomp!.concat stmt: NoMethodError: undefined method 'concat' for nil
+"abcd"
+chomp!.concat: NoMethodError: undefined method 'concat' for nil
+chomp!.concat stmt: NoMethodError: undefined method 'concat' for nil
+"abcd"
+chomp!.<<: NoMethodError: undefined method '<<' for nil
+chomp!.<< stmt: NoMethodError: undefined method '<<' for nil
+"abcd"
+chomp!.prepend: NoMethodError: undefined method 'prepend' for nil
+chomp!.prepend stmt: NoMethodError: undefined method 'prepend' for nil
+"abcd"
+chomp!.insert: NoMethodError: undefined method 'insert' for nil
+chomp!.insert stmt: NoMethodError: undefined method 'insert' for nil
+"abcd"
+chomp!.replace: NoMethodError: undefined method 'replace' for nil
+chomp!.replace stmt: NoMethodError: undefined method 'replace' for nil
+"abcd"
+chomp!.bytesplice: NoMethodError: undefined method 'bytesplice' for nil
+chomp!.bytesplice stmt: NoMethodError: undefined method 'bytesplice' for nil
+"abcd"
+chomp!.bytesplice: NoMethodError: undefined method 'bytesplice' for nil
+chomp!.bytesplice stmt: NoMethodError: undefined method 'bytesplice' for nil
+"abcd"
+chomp!.setbyte: NoMethodError: undefined method 'setbyte' for nil
+chomp!.setbyte stmt: NoMethodError: undefined method 'setbyte' for nil
+"abcd"
+chomp!.clear: NoMethodError: undefined method 'clear' for nil
+chomp!.clear stmt: NoMethodError: undefined method 'clear' for nil
+"abcd"
+squeeze!.append_as_bytes: NoMethodError: undefined method 'append_as_bytes' for nil
+squeeze!.append_as_bytes stmt: NoMethodError: undefined method 'append_as_bytes' for nil
+"abcd"
+squeeze!.concat: NoMethodError: undefined method 'concat' for nil
+squeeze!.concat stmt: NoMethodError: undefined method 'concat' for nil
+"abcd"
+squeeze!.concat: NoMethodError: undefined method 'concat' for nil
+squeeze!.concat stmt: NoMethodError: undefined method 'concat' for nil
+"abcd"
+squeeze!.<<: NoMethodError: undefined method '<<' for nil
+squeeze!.<< stmt: NoMethodError: undefined method '<<' for nil
+"abcd"
+squeeze!.prepend: NoMethodError: undefined method 'prepend' for nil
+squeeze!.prepend stmt: NoMethodError: undefined method 'prepend' for nil
+"abcd"
+squeeze!.insert: NoMethodError: undefined method 'insert' for nil
+squeeze!.insert stmt: NoMethodError: undefined method 'insert' for nil
+"abcd"
+squeeze!.replace: NoMethodError: undefined method 'replace' for nil
+squeeze!.replace stmt: NoMethodError: undefined method 'replace' for nil
+"abcd"
+squeeze!.bytesplice: NoMethodError: undefined method 'bytesplice' for nil
+squeeze!.bytesplice stmt: NoMethodError: undefined method 'bytesplice' for nil
+"abcd"
+squeeze!.bytesplice: NoMethodError: undefined method 'bytesplice' for nil
+squeeze!.bytesplice stmt: NoMethodError: undefined method 'bytesplice' for nil
+"abcd"
+squeeze!.setbyte: NoMethodError: undefined method 'setbyte' for nil
+squeeze!.setbyte stmt: NoMethodError: undefined method 'setbyte' for nil
+"abcd"
+squeeze!.clear: NoMethodError: undefined method 'clear' for nil
+squeeze!.clear stmt: NoMethodError: undefined method 'clear' for nil
+"abcd"
+delete!.append_as_bytes: NoMethodError: undefined method 'append_as_bytes' for nil
+delete!.append_as_bytes stmt: NoMethodError: undefined method 'append_as_bytes' for nil
+"abcd"
+delete!.concat: NoMethodError: undefined method 'concat' for nil
+delete!.concat stmt: NoMethodError: undefined method 'concat' for nil
+"abcd"
+delete!.concat: NoMethodError: undefined method 'concat' for nil
+delete!.concat stmt: NoMethodError: undefined method 'concat' for nil
+"abcd"
+delete!.<<: NoMethodError: undefined method '<<' for nil
+delete!.<< stmt: NoMethodError: undefined method '<<' for nil
+"abcd"
+delete!.prepend: NoMethodError: undefined method 'prepend' for nil
+delete!.prepend stmt: NoMethodError: undefined method 'prepend' for nil
+"abcd"
+delete!.insert: NoMethodError: undefined method 'insert' for nil
+delete!.insert stmt: NoMethodError: undefined method 'insert' for nil
+"abcd"
+delete!.replace: NoMethodError: undefined method 'replace' for nil
+delete!.replace stmt: NoMethodError: undefined method 'replace' for nil
+"abcd"
+delete!.bytesplice: NoMethodError: undefined method 'bytesplice' for nil
+delete!.bytesplice stmt: NoMethodError: undefined method 'bytesplice' for nil
+"abcd"
+delete!.bytesplice: NoMethodError: undefined method 'bytesplice' for nil
+delete!.bytesplice stmt: NoMethodError: undefined method 'bytesplice' for nil
+"abcd"
+delete!.setbyte: NoMethodError: undefined method 'setbyte' for nil
+delete!.setbyte stmt: NoMethodError: undefined method 'setbyte' for nil
+"abcd"
+delete!.clear: NoMethodError: undefined method 'clear' for nil
+delete!.clear stmt: NoMethodError: undefined method 'clear' for nil
+"abcd"
+sub!.append_as_bytes: NoMethodError: undefined method 'append_as_bytes' for nil
+sub!.append_as_bytes stmt: NoMethodError: undefined method 'append_as_bytes' for nil
+"abcd"
+sub!.concat: NoMethodError: undefined method 'concat' for nil
+sub!.concat stmt: NoMethodError: undefined method 'concat' for nil
+"abcd"
+sub!.concat: NoMethodError: undefined method 'concat' for nil
+sub!.concat stmt: NoMethodError: undefined method 'concat' for nil
+"abcd"
+sub!.<<: NoMethodError: undefined method '<<' for nil
+sub!.<< stmt: NoMethodError: undefined method '<<' for nil
+"abcd"
+sub!.prepend: NoMethodError: undefined method 'prepend' for nil
+sub!.prepend stmt: NoMethodError: undefined method 'prepend' for nil
+"abcd"
+sub!.insert: NoMethodError: undefined method 'insert' for nil
+sub!.insert stmt: NoMethodError: undefined method 'insert' for nil
+"abcd"
+sub!.replace: NoMethodError: undefined method 'replace' for nil
+sub!.replace stmt: NoMethodError: undefined method 'replace' for nil
+"abcd"
+sub!.bytesplice: NoMethodError: undefined method 'bytesplice' for nil
+sub!.bytesplice stmt: NoMethodError: undefined method 'bytesplice' for nil
+"abcd"
+sub!.bytesplice: NoMethodError: undefined method 'bytesplice' for nil
+sub!.bytesplice stmt: NoMethodError: undefined method 'bytesplice' for nil
+"abcd"
+sub!.setbyte: NoMethodError: undefined method 'setbyte' for nil
+sub!.setbyte stmt: NoMethodError: undefined method 'setbyte' for nil
+"abcd"
+sub!.clear: NoMethodError: undefined method 'clear' for nil
+sub!.clear stmt: NoMethodError: undefined method 'clear' for nil
+"abcd"
+gsub!.append_as_bytes: NoMethodError: undefined method 'append_as_bytes' for nil
+gsub!.append_as_bytes stmt: NoMethodError: undefined method 'append_as_bytes' for nil
+"abcd"
+gsub!.concat: NoMethodError: undefined method 'concat' for nil
+gsub!.concat stmt: NoMethodError: undefined method 'concat' for nil
+"abcd"
+gsub!.concat: NoMethodError: undefined method 'concat' for nil
+gsub!.concat stmt: NoMethodError: undefined method 'concat' for nil
+"abcd"
+gsub!.<<: NoMethodError: undefined method '<<' for nil
+gsub!.<< stmt: NoMethodError: undefined method '<<' for nil
+"abcd"
+gsub!.prepend: NoMethodError: undefined method 'prepend' for nil
+gsub!.prepend stmt: NoMethodError: undefined method 'prepend' for nil
+"abcd"
+gsub!.insert: NoMethodError: undefined method 'insert' for nil
+gsub!.insert stmt: NoMethodError: undefined method 'insert' for nil
+"abcd"
+gsub!.replace: NoMethodError: undefined method 'replace' for nil
+gsub!.replace stmt: NoMethodError: undefined method 'replace' for nil
+"abcd"
+gsub!.bytesplice: NoMethodError: undefined method 'bytesplice' for nil
+gsub!.bytesplice stmt: NoMethodError: undefined method 'bytesplice' for nil
+"abcd"
+gsub!.bytesplice: NoMethodError: undefined method 'bytesplice' for nil
+gsub!.bytesplice stmt: NoMethodError: undefined method 'bytesplice' for nil
+"abcd"
+gsub!.setbyte: NoMethodError: undefined method 'setbyte' for nil
+gsub!.setbyte stmt: NoMethodError: undefined method 'setbyte' for nil
+"abcd"
+gsub!.clear: NoMethodError: undefined method 'clear' for nil
+gsub!.clear stmt: NoMethodError: undefined method 'clear' for nil
+"abcd"
+"abx"
+"1ab"
+"1ab"
+"<ab"
+"<ab"
+"dcbaz"
+"dcbaz"
+"DCBAZ"
+"DCBAZ"
+true
+""
+"nil"
+nil
