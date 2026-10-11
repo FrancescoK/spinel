@@ -710,7 +710,7 @@ static int poly_user_arm_n_replay(Compiler *c, int id, const char *name, const P
       if (sp_streq(rm->ret, "string?")) buf_puts(&cb, ")");
       TyKind mret = sp_streq(rm->ret, "self") ? ty_object(k) : native_spec_to_ty(rm->ret);
       buf_printf(b, " case %d: ", k);
-      int pconv = emit_poly_native_arm_stmt(c, cb.p, mret, ret, tr, is_setter_val, b);
+      int pconv = emit_poly_native_arm_stmt(c, cb.p, mret, ret, plan_slot_oint(c, id, ret), tr, is_setter_val, b);
       buf_puts(b, " break;");
       free(cb.p);
       if (g_plan_check) pa_observe(PA_NATIVE, k, -1, mret, pconv);
@@ -721,7 +721,7 @@ static int poly_user_arm_n_replay(Compiler *c, int id, const char *name, const P
     if (kwall < 0) {
       if (!poly_native_arm_call(c, k, name, argc, argv, atmp, atmp_ty, tv, &cb, &mret)) return 0;
       buf_printf(b, " case %d: ", k);
-      int pconv = emit_poly_native_arm_stmt(c, cb.p, mret, ret, tr, is_setter_val, b);
+      int pconv = emit_poly_native_arm_stmt(c, cb.p, mret, ret, plan_slot_oint(c, id, ret), tr, is_setter_val, b);
       buf_puts(b, " break;");
       free(cb.p);
       if (g_plan_check) pa_observe(PA_NATIVE, k, -1, mret, pconv);
@@ -734,7 +734,7 @@ static int poly_user_arm_n_replay(Compiler *c, int id, const char *name, const P
       if (n == argc) buf_puts(&arm, " }\nelse { ");
       if (poly_native_arm_call(c, k, name, n, argv, atmp, atmp_ty, tv, &cb, &mret) &&
           (mret == TY_NIL || is_setter_val || ret == TY_POLY || mret == TY_POLY || mret == ret)) {
-        emit_poly_native_arm_stmt(c, cb.p, mret, ret, tr, is_setter_val, &arm);
+        emit_poly_native_arm_stmt(c, cb.p, mret, ret, plan_slot_oint(c, id, ret), tr, is_setter_val, &arm);
         fit = 1;
       }
       else buf_printf(&arm, "sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d));", name, tv);
@@ -1782,6 +1782,10 @@ void emit_poly_prearms0(Compiler *c, int id, const char *name, const PolySpecial
         buf_printf(b, "_t%d = ", tr);
         emit_boxed_text(c, io_op->result, ioex, b);
       }
+      /* an oint slot (lso) takes a never-nil answer lifted; getbyte's
+         answer is an oint already */
+      else if (lso && ret == io_op->result && !sp_streq(name, "getbyte"))
+        buf_printf(b, "_t%d = sp_oint_of(%s)", tr, ioex);
       else if (ret == io_op->result && io_op->result != TY_VOID)
         buf_printf(b, "_t%d = %s", tr, ioex);
       else buf_puts(b, ioex);
@@ -3388,6 +3392,11 @@ void emit_poly_cases_n(Compiler *c, int id, const char *name, const PolySpecials
                        "(sp_File *)_t%d.v.p, _t%d); "
                        "_t%d = sp_box_int(_t%d); break; }",
                    wrv, tv, atmp[0], tr, wrv);
+      /* an oint result slot (plan_slot_oint) takes the count as never nil */
+      else if (plan_slot_oint(c, id, ret))
+        buf_printf(b, " case SP_BUILTIN_IO: _t%d = %s(sp_File_write_bin("
+                       "(sp_File *)_t%d.v.p, _t%d)); break;",
+                   tr, oint_of(ret), tv, atmp[0]);
       else
         buf_printf(b, " case SP_BUILTIN_IO: _t%d = sp_File_write_bin("
                        "(sp_File *)_t%d.v.p, _t%d); break;",
@@ -3422,6 +3431,7 @@ void emit_poly_cases_n(Compiler *c, int id, const char *name, const PolySpecials
                      "sp_box_int(sp_File_write((sp_File *)_t%d.v.p, sp_poly_to_s(_t%d))); ",
                    wrv, wrr, tv, wrr, tv, wrr);
       if (ret == TY_POLY) buf_printf(b, "_t%d = _t%d; ", tr, wrv);
+      else if (plan_slot_oint(c, id, ret)) buf_printf(b, "_t%d = %s(_t%d); ", tr, oint_unbox(ret), wrv);
       else                buf_printf(b, "_t%d = sp_poly_to_i(_t%d); ", tr, wrv);
       buf_puts(b, "break; }");
     }
