@@ -3,6 +3,6 @@ class Foo
   def self.prop(n)
     define_method(n) { n.to_s * 2 }
   end
-  prop :x
 end
+Foo.prop :x
 p Foo.new.x
