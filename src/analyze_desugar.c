@@ -13014,23 +13014,66 @@ static void inh_drop_super(NodeTable *nt, int node) {
 
 static int cbs_path_text(const NodeTable *nt, int p, char *buf, size_t cap, int *rooted);
 
-/* The name `cls` is defined under: the path its header writes (`A::Foo`,
-   not just Foo), prefixed by the classes and modules around it, up to one
-   whose path starts at the top (`::Foo`, `Object::Foo`). */
-static void inh_qualified_name(const NodeTable *nt, const int *parent, int cls, char *buf, size_t n) {
-  buf[0] = 0;
-  for (int a = cls; a >= 0; a = parent[a]) {
-    NodeKind k = nt_kind(nt, a);
-    if (k != NK_ClassNode && k != NK_ModuleNode) continue;
-    char nm[512], tmp[512];
-    int rooted = 0;
-    const char *p = nm;
-    if (!cbs_path_text(nt, nt_ref(nt, a, "constant_path"), nm, sizeof nm, &rooted)) snprintf(nm, sizeof nm, "?");
-    if (!strncmp(nm, "Object::", 8)) { p += 8; rooted = 1; }
-    snprintf(tmp, sizeof tmp, "%s%s%s", p, buf[0] ? "::" : "", buf);
-    snprintf(buf, n, "%s", tmp);
-    if (rooted) break;
+/* The class or module node around `id`, or -1. */
+static int inh_scope_of(const NodeTable *nt, const int *parent, int id) {
+  for (int a = parent[id]; a >= 0; a = parent[a])
+    if (nt_kind(nt, a) == NK_ClassNode || nt_kind(nt, a) == NK_ModuleNode) return a;
+  return -1;
+}
+
+/* Add `q` and each namespace it is under (`A`, `A::B` for `A::B::C`) to `h`. */
+static void inh_add_name(ANameHash *h, const char *q) {
+  for (const char *e = strstr(q, "::"); ; e = strstr(e + 2, "::")) {
+    size_t n = e ? (size_t)(e - q) : strlen(q);
+    char *nm = malloc(n + 1);
+    if (!nm) return;
+    memcpy(nm, q, n); nm[n] = 0;
+    if (anh_has(h, nm)) free(nm); else anh_add(h, nm);
+    if (!e) return;
   }
+}
+
+/* The name each class and module node defines, by node: the path its header
+   writes (`A::Foo`, not just Foo), placed where its first segment resolves.
+   As in CRuby, that segment is looked up in the scopes around the header,
+   innermost first, then at the top level, among the names defined before it
+   (nodes are in program order): `module A; class A::Foo` defines A::Foo, not
+   A::A::Foo. A path from the top (`::Foo`, `Object::Foo`) is taken as
+   written; a segment found nowhere goes under the innermost scope. */
+static char **inh_qualified_names(const NodeTable *nt, const int *parent, int n0) {
+  char **qn = calloc((size_t)(n0 > 0 ? n0 : 1), sizeof(char *));
+  if (!qn) return NULL;
+  ANameHash known; memset(&known, 0, sizeof known);
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_ClassNode && nt_kind(nt, id) != NK_ModuleNode) continue;
+    char w[512], q[1024];
+    int rooted = 0;
+    if (!cbs_path_text(nt, nt_ref(nt, id, "constant_path"), w, sizeof w, &rooted)) snprintf(w, sizeof w, "?");
+    const char *p = w;
+    if (!strncmp(p, "Object::", 8)) { p += 8; rooted = 1; }
+    int s = inh_scope_of(nt, parent, id);
+    const char *in = rooted || s < 0 || !qn[s] ? "" : qn[s];
+    const char *sep = strstr(p, "::");
+    if (!rooted && sep) {
+      char first[512];
+      snprintf(first, sizeof first, "%.*s", (int)(sep - p), p);
+      const char *found = NULL;
+      for (int t = s; t >= 0 && !found; t = inh_scope_of(nt, parent, t)) {
+        if (!qn[t]) continue;
+        snprintf(q, sizeof q, "%s::%s", qn[t], first);
+        if (anh_has(&known, q)) found = qn[t];
+      }
+      if (found) in = found;
+      else if (anh_has(&known, first)) in = "";
+    }
+    snprintf(q, sizeof q, "%s%s%s", in, *in ? "::" : "", p);
+    qn[id] = strdup(q);
+    if (!qn[id]) break;
+    inh_add_name(&known, q);
+  }
+  for (int k = 0; k < known.n; k++) free((char *)known.key[k]);
+  anh_free(&known);
+  return qn;
 }
 
 int desugar_inherited_hooks(Compiler *c) {
@@ -13081,15 +13124,15 @@ int desugar_inherited_hooks(Compiler *c) {
   }
   /* then the call, once per class: a reopening does not create it again */
   ANameHash seen; memset(&seen, 0, sizeof seen);
+  char **qnames = inh_qualified_names(nt, parent, n0);
   for (int id = 0; id < n0; id++) {
     if (nt_kind(nt, id) != NK_ClassNode) continue;
     int sc = nt_ref(nt, id, "superclass");
     if (sc < 0 || (nt_kind(nt, sc) != NK_ConstantReadNode && nt_kind(nt, sc) != NK_ConstantPathNode)) continue;
     const char *sn = nt_str(nt, sc, "name");
     if (!sn || !inh_chain_has_hook(&ix, sn)) continue;
-    char qn[512];
-    inh_qualified_name(nt, parent, id, qn, sizeof qn);
-    if (anh_has(&seen, qn)) continue;
+    const char *qn = qnames ? qnames[id] : NULL;
+    if (!qn || anh_has(&seen, qn)) continue;
     char *qd = strdup(qn);
     if (!qd) break;
     anh_add(&seen, qd);
@@ -13125,6 +13168,8 @@ int desugar_inherited_hooks(Compiler *c) {
     changed = 1;
   }
   for (int k = 0; k < seen.n; k++) free((char *)seen.key[k]);
+  if (qnames) for (int k = 0; k < n0; k++) free(qnames[k]);
+  free(qnames);
   anh_free(&seen);
   inh_index_free(&ix);
   free(parent);

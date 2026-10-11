@@ -1,7 +1,9 @@
 # A class fires its superclass's inherited hook once, the first time it is
 # defined. Which definitions are the same class is decided by the whole path
 # the header writes: `class A::Foo` and `class B::Foo` are two classes, and
-# `module C; class Bar` reopened as `class C::Bar` is one.
+# `module C; class Bar` reopened as `class C::Bar` is one. A path's first
+# segment is looked up from the scopes around the header, as a constant
+# would be: `module K; class K::Baz` is K::Baz, not K::K::Baz.
 
 class Base
   def self.inherited(sub)
@@ -25,6 +27,20 @@ class D::E::F < Base; end
 class ::G < Base; end
 module C
   class ::G < Base; end
+end
+
+module K; end
+class K::Baz < Base; end
+module K
+  class K::Baz < Base; end
+end
+module M
+  module N; end
+  class N::Qux < Base; end
+end
+class M::N::Qux < Base; end
+module M
+  class N::Qux < Base; end
 end
 
 class Counted
