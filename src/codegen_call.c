@@ -3658,8 +3658,12 @@ static int emit_dynamic_send(Compiler *c, int id, Buf *b) {
        pointing into this frame, a later refusal in the same unit jumped
        back into it after it had returned */
     jmp_buf sv_jb; memcpy(sv_jb, g_unsup_recover, sizeof(jmp_buf));
+    /* an arm answering an Integer or Float that may be nil boxes its oint:
+       unwrapped first, its nil raised TypeError where the send answers nil */
+    int arm_oint = !self_ret && oint_kind(at) && node_may_be_nil(c, arm);
     if (setjmp(g_unsup_recover) == 0) {
       if (self_ret) emit_strbuf_handle_of(c, arm, &body);
+      else if (arm_oint) emit_oint_expr(c, arm, at, &body);
       else emit_expr(c, arm, &body);
       ok = 1;
     }
@@ -3677,7 +3681,8 @@ static int emit_dynamic_send(Compiler *c, int id, Buf *b) {
       buf_printf(b, "if (_t%d == (sp_sym)%d) { ", t, comp_sym_intern(c, nm));
       if (pre.p && pre.len) buf_puts(b, pre.p);
       buf_printf(b, "_r%d = ", t);
-      emit_boxed_text(c, self_ret ? TY_STRBUF : at, body.p ? body.p : "0", b);
+      if (arm_oint) buf_printf(b, "%s(%s)", oint_box(at), body.p ? body.p : "sp_oint_nil()");
+      else emit_boxed_text(c, self_ret ? TY_STRBUF : at, body.p ? body.p : "0", b);
       buf_puts(b, "; }\nelse ");
     }
     free(pre.p); free(body.p);
