@@ -16410,6 +16410,36 @@ static int block_param_user_yield_only(Compiler *c, const char *vn, Scope *vs) {
   return any;
 }
 static int lift_poly_read_store(Compiler *c, int a);
+/* The demanded stores of a String's own conversion strbuf_demand_store_leaf
+   took, checked once the types settle (sa_check_conversion_stores) */
+static int *sa_conv, sa_nconv, sa_cconv;
+static const NodeTable *sa_conv_nt;
+static void sa_conv_note(Compiler *c, int v) {
+  if (sa_conv_nt != c->nt) { sa_nconv = 0; sa_conv_nt = c->nt; }
+  if (sa_nconv == sa_cconv) {
+    sa_cconv = sa_cconv ? sa_cconv * 2 : 16;
+    sa_conv = realloc(sa_conv, sizeof(int) * (size_t)sa_cconv);
+    if (!sa_conv) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  sa_conv[sa_nconv++] = v;
+}
+/* The local a String's own conversion reads (`s.to_s`, `s.to_str`,
+   `s.itself`, no program method of the name reaching it), whose value is
+   that local's String; -1 for any other node. */
+int an_str_conversion_local(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  v = an_unparen(nt, v);
+  if (v < 0 || nt_kind(nt, v) != NK_CallNode || nt_ref(nt, v, "block") >= 0 || call_plain_argc(c, v) != 0)
+    return -1;
+  const char *nm = nt_str(nt, v, "name");
+  int r = an_unparen(nt, nt_ref(nt, v, "receiver"));
+  if (!nm || r < 0 || nt_kind(nt, r) != NK_LocalVariableReadNode ||
+      !(sp_streq(nm, "to_s") || sp_streq(nm, "to_str") || sp_streq(nm, "itself")))
+    return -1;
+  TyKind rt = comp_ntype(c, r);
+  int ms[CPT_MAX];
+  return (rt == TY_STRING || rt == TY_STRBUF) && cplan_targets(c, v, ms, CPT_MAX) == 0 ? r : -1;
+}
 static int strbuf_demand_store_leaf(Compiler *c, int sn, int depth) {
   const NodeTable *nt = c->nt;
   if (sn < 0 || c->strbuf_box[sn]) return 0;
@@ -16421,6 +16451,21 @@ static int strbuf_demand_store_leaf(Compiler *c, int sn, int depth) {
   int snu = an_unparen(nt, sn);
   TyKind snt = snu >= 0 && nt_kind(nt, snu) == NK_CallNode ? infer_type(c, snu) : TY_UNKNOWN;
   if (snt == TY_STRING || snt == TY_STRBUF) {
+    /* `h[k] = s.to_s`: a String's own conversion answers the String, so
+       the element is the local's handle once the local holds one
+       (emit_boxed_strbuf boxes the receiver's handle for the marked call).
+       Refusing the store here, as the copying routes below are, refused
+       one whose local widened past a String only in a later round */
+    int cvr = c->share_strings ? -1 : an_str_conversion_local(c, snu);
+    if (cvr >= 0) {
+      strbuf_demand_store_leaf(c, cvr, depth);
+      if (c->strbuf_box[cvr]) c->strbuf_box[snu] = 1;
+      /* the local's type may still widen: decided once it settles
+         (sa_check_conversion_stores) */
+      sa_conv_note(c, snu);
+      c->strbuf_box[sn] = 1;
+      return 1;
+    }
     char rb[256]; int rdefc = -1;
     int as = an_strbuf_alias_source(c, snu);
     int reader = (!(as >= 0 && as != snu) || c->share_strings) &&
@@ -43986,6 +44031,45 @@ static void an_phase_reconcile_check(Compiler *c) {
 
 /* an analysis phase under --timing: `phase=an_<name>` */
 #define AN_PHASE(nm, call) do { double _ph0 = sp_timing_now(); call; sp_timing_end(_ph0, "an_" nm, ""); } while (0)
+/* Is read `o` only looked at: the receiver of a call that answers a new
+   value (`v.to_s.downcase`), through the calls that answer their receiver,
+   none of them a mutator? */
+static int sa_read_only_inspected(Compiler *c, int o) {
+  const NodeTable *nt = c->nt;
+  for (int d = 0, q = o; d < 8; d++) {
+    int u = comp_recv_parent(c, q);
+    const char *nm = u >= 0 ? nt_str(nt, u, "name") : NULL;
+    if (!nm || sp_str_mutator(nm, SP_MUT_LOCAL) || nm[strlen(nm) - 1] == '!') return 0;
+    if (!str_self_call(nt, u) && !is_unary_plus(nm)) return 1;
+    q = u;
+  }
+  return 0;
+}
+/* A demanded store of a String's own conversion (`h[k] = s.to_s`), once
+   the types settle: a local that holds the handle hands it on (the store
+   boxes s's handle, emit_boxed_strbuf). One that widened past a String
+   converts at the store, a fresh String as any boxed value's `to_s` is,
+   which only the caller's variable (`m(s); p s`) or a later look at the
+   local itself could tell from the String: refused then, as a local left
+   a plain String is, whose element would be a copy of it. Deciding this
+   while the types still moved refused a store whose local widened only
+   later, wherever the copy could be seen. */
+static void sa_check_conversion_stores(Compiler *c) {
+  if (sa_conv_nt != c->nt) return;
+  for (int i = 0; i < sa_nconv; i++) {
+    int v = sa_conv[i], r = an_unparen(c->nt, nt_ref(c->nt, v, "receiver"));
+    SaName from;
+    if (!sa_name(c, r, &from)) sa_refuse(c, v, 3);
+    LocalVar *lv = scope_local(from.scope, from.name);
+    if (lv && lv->type == TY_STRBUF && c->strbuf_box[v]) continue;
+    int seen = !lv || lv->type != TY_POLY || sa_mutated(c, &from) || sa_param_caller_sees(c, &from);
+    for (int e = sa_site_first(c, &from, VS_READ); e >= 0 && !seen; e = sa_site_next(c, &from, e)) {
+      int o = comp_vsite_node(c, e);
+      seen = o != r && !sa_read_only_inspected(c, o);
+    }
+    if (seen) sa_refuse(c, v, 3);
+  }
+}
 void analyze_program(Compiler *c) {
   double tm_an = sp_timing_now();
   an_note_written_names(c->nt);
@@ -44006,6 +44090,7 @@ void analyze_program(Compiler *c) {
   AN_PHASE("storage", an_phase_storage(c));
   AN_PHASE("value_types", an_phase_value_types(c));
   AN_PHASE("reconcile_check", an_phase_reconcile_check(c));
+  sa_check_conversion_stores(c);
 
   if (getenv("SP_FIXPOINT_LOG"))
     fprintf(stderr, "[fp] rounds=%d%s\n", g_fixpoint_rounds,
