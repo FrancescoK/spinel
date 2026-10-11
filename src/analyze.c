@@ -21874,6 +21874,30 @@ static int an_alias_name(Compiler *c, const char *nm) {
    class value) can reach any method of the name, so it answers all of them:
    the caller then hands every candidate what the one that wants the most
    wants. */
+/* Does call u's receiver hold a builtin value that reaches no user method
+   of the name: a value of a builtin type (an Array constant, a String)
+   whose builtin class, where the program reopens it, and Object do not
+   define it? Such a call is no edge to a same-named user method: `LAST[0]
+   = s` on an Array constant counted as a call of every `[]=`, and a
+   Widget's String ivar was promoted to a shared handle (#8564). */
+static int an_recv_builtin_without(Compiler *c, int u, const char *un) {
+  const NodeTable *nt = c->nt;
+  int rc = nt_ref(nt, u, "receiver");
+  if (rc < 0) return 0;
+  NodeKind rk = nt_kind(nt, rc);
+  if (rk == NK_SelfNode) return 0;
+  if ((rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) &&
+      comp_class_index(c, nt_str(nt, rc, "name")) >= 0) return 0;
+  TyKind rt = infer_type(c, rc);
+  if (rt == TY_POLY || rt == TY_UNKNOWN || rt == TY_CLASS || rt == TY_VOID || rt == TY_NIL || ty_is_object(rt)) return 0;
+  const char *bc = rt == TY_STRBUF ? "String" : builtin_class_of_type(rt);
+  int bci = bc ? comp_class_index(c, bc) : -1;
+  if (bci >= 0 && comp_method_in_chain(c, bci, un, NULL) >= 0) return 0;
+  int oci = comp_class_index(c, "Object");
+  if (oci >= 0 && comp_method_in_chain(c, oci, un, NULL) >= 0) return 0;
+  return 1;
+}
+
 static void an_call_targets_nonunique(Compiler *c, int u, const char *un, ACallTargets *t) {
   const NodeTable *nt = c->nt;
   int first = an_any_scope_by_name(c, un);
@@ -21882,12 +21906,16 @@ static void an_call_targets_nonunique(Compiler *c, int u, const char *un, ACallT
   int rc = nt_ref(nt, u, "receiver");
   NodeKind rk = rc >= 0 ? nt_kind(nt, rc) : NK_SelfNode;
   int n0 = t->n;
+  int cci = -1;
   if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) {
     const char *cn = nt_str(nt, rc, "name");
-    int ci = cn ? comp_class_index(c, cn) : -1;
-    if (ci >= 0) { act_add(t, comp_cmethod_in_chain(c, ci, un, NULL)); return; }
+    cci = cn ? comp_class_index(c, cn) : -1;
   }
-  else if (rk == NK_SelfNode) {
+  if (cci >= 0) { act_add(t, comp_cmethod_in_chain(c, cci, un, NULL)); return; }
+  /* (a constant that is not a class holds a value: typed below like any
+     receiver, so `LAST[0] = s` on an Array constant reaches no user `[]=`
+     and promotes none of its String ivars, #8564) */
+  if (rk == NK_SelfNode) {
     int mi = comp_self_call_mi(c, u, un);
     if (mi < 0 && rc < 0) mi = comp_cbody_call_mi(c, u, un);
     if (mi < 0) mi = comp_included_method_index(c, un, u);
@@ -21949,7 +21977,8 @@ static void an_call_targets_of(Compiler *c, int u, ACallTargets *t) {
   int byname = an_unique_scope_by_name(c, un);
   if (byname >= 0 && c->scopes[byname].name &&
       sp_streq(c->scopes[byname].name, un) &&
-      (!c->share_strings || cplan_user_fresh(c, u)->mi == byname)) act_add(t, byname);
+      (!c->share_strings || cplan_user_fresh(c, u)->mi == byname) &&
+      !an_recv_builtin_without(c, u, un)) act_add(t, byname);
   /* A name more than one method defines resolves by the call itself, and
      so does an alias, which names no scope of its own. By unique name alone
      such a call had no target, so its site was missing from every chain: a
@@ -22605,7 +22634,8 @@ static int an_call_targets_scope(Compiler *c, int u, int mi2, Scope *m2) {
   int aliased = !is_new && an_alias_name(c, un);
   int byname = named ? an_unique_scope_by_name(c, un) : -1;
   if (named && byname == mi2 &&
-      (!c->share_strings || cplan_user_fresh(c, u)->mi == mi2)) return 1;
+      (!c->share_strings || cplan_user_fresh(c, u)->mi == mi2) &&
+      !an_recv_builtin_without(c, u, un)) return 1;
   /* a name more than one method defines, or an alias: the targets the call
      itself resolves to, as an_call_targets_of lists them */
   if (!is_new && ((named && byname < 0) || aliased)) {
