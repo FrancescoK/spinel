@@ -1766,10 +1766,6 @@ spinel: 1 refusal, nothing written
 == test/reject/table_loop_table_through_to_h.rb [promote] rc=1
 spinel: test/reject/table_loop_table_through_to_h.rb:8: unsupported call: node N (CallNode `const_set`) recv=-/ty-1 argc=2 arg0ty6
 spinel: 1 refusal, nothing written
-== test/reject/time_class_parsers.rb [default] rc=1
-spinel: test/reject/time_class_parsers.rb:8: Time.iso8601 is not supported: spinel implements Time's other `require "time"` additions (the instance methods iso8601, httpdate, rfc2822) but not the string-parsing ones. Store times as epoch seconds and read them with Time.at instead (see docs/limitations.md)
-== test/reject/time_class_parsers.rb [promote] rc=1
-spinel: test/reject/time_class_parsers.rb:8: Time.iso8601 is not supported: spinel implements Time's other `require "time"` additions (the instance methods iso8601, httpdate, rfc2822) but not the string-parsing ones. Store times as epoch seconds and read them with Time.at instead (see docs/limitations.md)
 == test/reject/time_parse_no_require.rb [default] rc=1
 spinel: test/reject/time_parse_no_require.rb:7: Time.parse is not supported: spinel implements Time's other `require "time"` additions (the instance methods iso8601, httpdate, rfc2822) but not the string-parsing ones. Store times as epoch seconds and read them with Time.at instead (see docs/limitations.md)
 == test/reject/time_parse_no_require.rb [promote] rc=1

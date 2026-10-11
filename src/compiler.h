@@ -1469,6 +1469,7 @@ int        const_get_class_index(Compiler *c, const char *rnm, const char *cgn);
 int        const_defined_known(Compiler *c, const char *rnm, const char *cgn);
 int        qc_const_qualified(const char *qn);
 int        qc_leaf_qualified(const char *leaf);
+const char *time_strict_parser_call(Compiler *c, int id);
 /* Class index of a `class_eval`/`module_eval { defs }` reopen, else -1.
    enclosing_class resolves bare/`self.` receivers (the class whose body we are
    directly in); ignored for constant receivers. */

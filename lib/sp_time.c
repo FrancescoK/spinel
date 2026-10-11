@@ -858,3 +858,288 @@ sp_Time sp_time_sub_i(sp_Time t, int64_t secs) {
 double sp_time_sub_t(sp_Time a, sp_Time b) {
   return sp_time_ns_to_f(a.tv_sec - b.tv_sec, (int64_t)a.tv_nsec - b.tv_nsec);
 }
+
+const char *sp_str_inspect(const char *s);
+
+/* ---- require "time": Time.httpdate / rfc2822 / xmlschema (iso8601) ----
+   The strict class-method parsers, each the format its RFC fixes, read the
+   way time.rb's regexps read them: a Time on a match, CRuby's ArgumentError
+   otherwise. (Time.parse and Time.strptime, which guess at free-form text,
+   are not these.) */
+static int tp_ws(char ch) {
+  return ch == ' ' || ch == '\t' || ch == '\n' || ch == '\v' || ch == '\f' || ch == '\r';
+}
+static const char *tp_skip_ws(const char *p) { while (tp_ws(*p)) p++; return p; }
+static int tp_lower(char ch) { return (ch >= 'A' && ch <= 'Z') ? ch - 'A' + 'a' : ch; }
+/* is z (zl bytes) the word w, in any ASCII case? */
+static int tp_ieq(const char *z, size_t zl, const char *w) {
+  size_t l = strlen(w), k = 0;
+  if (l != zl) return 0;
+  while (k < l && tp_lower(z[k]) == tp_lower(w[k])) k++;
+  return k == l;
+}
+/* the word of `words` (ASCII, any case) at p; its index, *end past it, or -1 */
+static int tp_word(const char *p, const char *const *words, int n, const char **end) {
+  for (int i = 0; i < n; i++) {
+    size_t l = strlen(words[i]), k = 0;
+    while (k < l && p[k] && tp_lower(p[k]) == tp_lower(words[i][k])) k++;
+    if (k == l) { *end = p + l; return i; }
+  }
+  return -1;
+}
+/* min..max decimal digits at p: their value, *end past them, or -1. Leading
+   zeros do not count toward the 18 significant digits an int64 holds, so a
+   zero-padded year keeps its value (a longer one, tp_year_fits refuses). */
+static int64_t tp_digits(const char *p, int min, int max, const char **end) {
+  int n = 0, sig = 0; int64_t v = 0;
+  while (n < max && p[n] >= '0' && p[n] <= '9') {
+    if (sig < 18 && (sig > 0 || p[n] != '0')) { v = v * 10 + (p[n] - '0'); sig++; }
+    n++;
+  }
+  if (n < min) return -1;
+  *end = p + n;
+  return v;
+}
+static const char *const tp_wday[7] = { "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun" };
+static const char *const tp_wday_long[7] = { "Monday", "Tuesday", "Wednesday", "Thursday",
+                                             "Friday", "Saturday", "Sunday" };
+static const char *const tp_mon[12] = { "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+/* A year of more digits than an int64 holds: CRuby's Time takes it, sp_Time
+   cannot, so say so rather than answer some other year. */
+static void tp_year_fits(const char *ys, const char *ye) {
+  if (*ys == '-') ys++;
+  while (ys < ye - 1 && *ys == '0') ys++;
+  if (ye - ys > 18) sp_raise_cls("ArgumentError", "year too big to represent");
+}
+/* hh:mm:ss at p, two digits each */
+static int tp_hms(const char *p, int64_t *h, int64_t *mi, int64_t *s, const char **end) {
+  const char *q;
+  if ((*h = tp_digits(p, 2, 2, &q)) < 0 || *q != ':') return 0;
+  if ((*mi = tp_digits(q + 1, 2, 2, &q)) < 0 || *q != ':') return 0;
+  if ((*s = tp_digits(q + 1, 2, 2, &q)) < 0) return 0;
+  *end = q;
+  return 1;
+}
+
+/* time.rb's zone_offset: a zone name or letter, or [+-]HH[[:]MM]. *ok says
+   whether the zone was one. */
+static int64_t tp_zone_offset(const char *z, size_t zl, int *ok) {
+  static const struct { const char *n; int h; } names[] = {
+    {"UTC", 0}, {"Z", 0}, {"UT", 0}, {"GMT", 0},
+    {"EST", -5}, {"EDT", -4}, {"CST", -6}, {"CDT", -5},
+    {"MST", -7}, {"MDT", -6}, {"PST", -8}, {"PDT", -7} };
+  *ok = 1;
+  if (zl >= 3 && (z[0] == '+' || z[0] == '-')) {
+    const char *q;
+    int64_t h = tp_digits(z + 1, 2, 2, &q), m = 0;
+    if (h >= 0) {
+      if (*q == ':') q++;
+      if (q < z + zl) m = tp_digits(q, 2, 2, &q);
+      if (m >= 0 && q == z + zl) return (z[0] == '-' ? -1 : 1) * (h * 3600 + m * 60);
+    }
+  }
+  for (size_t i = 0; i < sizeof names / sizeof names[0]; i++)
+    if (tp_ieq(z, zl, names[i].n)) return (int64_t)names[i].h * 3600;
+  if (zl == 1) {   /* military letters: A..I +1..+9, K..M +10..+12, N..Y -1..-12 */
+    int ch = tp_lower(z[0]) - 'a' + 'A';
+    if (ch >= 'A' && ch <= 'I') return (int64_t)(ch - 'A' + 1) * 3600;
+    if (ch >= 'K' && ch <= 'M') return (int64_t)(ch - 'K' + 10) * 3600;
+    if (ch >= 'N' && ch <= 'Y') return (int64_t)-(ch - 'N' + 1) * 3600;
+  }
+  *ok = 0;
+  return 0;
+}
+/* time.rb's zone_utc?: the spellings that mean "UTC, local offset unknown" */
+static int tp_zone_utc(const char *z, size_t zl) {
+  static const char *const u[] = { "-00:00", "-0000", "-00", "UTC", "Z", "UT" };
+  for (size_t i = 0; i < sizeof u / sizeof u[0]; i++)
+    if (tp_ieq(z, zl, u[i])) return 1;
+  return 0;
+}
+static int64_t tp_month_days(int64_t y, int64_t mo) {
+  static const int md[12] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+  if (mo < 1 || mo > 12) return 0;
+  if (mo == 2 && ((y % 4 == 0 && y % 100 != 0) || y % 400 == 0)) return 29;
+  return md[mo - 1];
+}
+/* time.rb's apply_offset: the civil fields moved by -off, carrying a day
+   past the month's end to the 1st of the next month (and a day before the
+   1st to the last of the previous one), not on by the overflow */
+static void tp_apply_offset(int64_t *y, int64_t *mo, int64_t *d, int64_t *h, int64_t *mi,
+                            int64_t *s, int64_t off) {
+  if (off == 0) return;
+  int neg = off < 0;
+  int64_t a = neg ? -off : off, o;
+  int64_t *f[3] = { s, mi, h };
+  int64_t base[3] = { 60, 60, 24 };
+  for (int i = 0; i < 3; i++) {
+    o = a % base[i]; a /= base[i];
+    if (o == 0) continue;
+    int64_t v = *f[i] + (neg ? o : -o);
+    int64_t q = v >= 0 ? v / base[i] : -((-v + base[i] - 1) / base[i]);
+    *f[i] = v - q * base[i];
+    a += neg ? q : -q;
+  }
+  if (a == 0) return;
+  if (neg) {
+    *d += a;
+    int64_t days = tp_month_days(*y, *mo);
+    if (days && days < *d) {
+      if (++*mo > 12) { *mo = 1; ++*y; }
+      *d = 1;
+    }
+  }
+  else {
+    *d -= a;
+    if (*d < 1) {
+      if (--*mo < 1) { --*y; *mo = 12; }
+      *d = tp_month_days(*y, *mo);
+    }
+  }
+}
+/* the civil time read in zone z, as time.rb's apply_offset + utc +
+   force_zone! leave it: UTC for a UTC spelling, else the host's own zone
+   when it has that offset at that instant (a real zone beats an artificial
+   one), else that fixed offset */
+static sp_Time tp_in_zone(int64_t y, int64_t mo, int64_t d, int64_t h, int64_t mi, int64_t s,
+                          int64_t nsec, const char *z, size_t zl) {
+  int ok;
+  int64_t off = tp_zone_offset(z, zl, &ok);
+  tp_apply_offset(&y, &mo, &d, &h, &mi, &s, off);
+  sp_Time t = sp_time_add_nsec(sp_time_new_utc(y, mo, d, h, mi, s), nsec);
+  if (tp_zone_utc(z, zl)) return t;
+  sp_Time l = sp_time_localtime(t);
+  if (sp_time_utc_offset(l) == off) return l;
+  return sp_time_getlocal_off(t, off);
+}
+
+sp_Time sp_time_s_rfc2822(const char *date) {SP_GC_ROOT_STR(date);
+  const char *sp_sprintf(const char *fmt, ...);  /* generated TU */
+  if (!date) sp_raise_cls("ArgumentError", "not RFC 2822 compliant date: nil");
+  const char *p = tp_skip_ws(date), *q;
+  /* an optional "Day," */
+  if (tp_word(p, tp_wday, 7, &q) >= 0) {
+    q = tp_skip_ws(q);
+    if (*q == ',') p = tp_skip_ws(q + 1);
+  }
+  int64_t day, mon, year, h, mi, s = 0;
+  const char *ys, *z;
+  if ((day = tp_digits(p, 1, 2, &q)) < 0 || !tp_ws(*q)) goto bad;
+  p = tp_skip_ws(q);
+  if ((mon = tp_word(p, tp_mon, 12, &q)) < 0 || !tp_ws(*q)) goto bad;
+  p = tp_skip_ws(q);
+  ys = p;
+  if ((year = tp_digits(p, 2, 1 << 30, &q)) < 0 || !tp_ws(*q)) goto bad;
+  tp_year_fits(ys, q);
+  if (q - ys <= 3) year += year < 50 ? 2000 : 1900;
+  p = tp_skip_ws(q);
+  if ((h = tp_digits(p, 2, 2, &q)) < 0) goto bad;
+  p = tp_skip_ws(q);
+  if (*p != ':') goto bad;
+  if ((mi = tp_digits(tp_skip_ws(p + 1), 2, 2, &q)) < 0) goto bad;
+  p = q;
+  { const char *r = tp_skip_ws(p);
+    if (*r == ':') {
+      const char *r2;
+      int64_t sv = tp_digits(tp_skip_ws(r + 1), 2, 2, &r2);
+      if (sv >= 0) { s = sv; p = r2; }
+    } }
+  if (!tp_ws(*p)) goto bad;
+  z = tp_skip_ws(p);
+  /* [+-]\d{4} | UT | GMT | EST ... PDT | [A-IK-Z], the longest first, and
+     nothing has to follow it */
+  { size_t zl = 0;
+    if ((z[0] == '+' || z[0] == '-') && tp_digits(z + 1, 4, 4, &q) >= 0) zl = 5;
+    else {
+      static const char *const zn[] = { "GMT", "EST", "EDT", "CST", "CDT", "MST", "MDT",
+                                        "PST", "PDT", "UT" };
+      int zi = tp_word(z, zn, 10, &q);
+      if (zi >= 0) zl = (size_t)(q - z);
+      else if (z[0] && z[0] != 'j' && z[0] != 'J' &&
+               ((z[0] >= 'a' && z[0] <= 'z') || (z[0] >= 'A' && z[0] <= 'Z'))) zl = 1;
+    }
+    if (zl == 0) goto bad;
+    return tp_in_zone(year, mon + 1, day, h, mi, s, 0, z, zl);
+  }
+bad:
+  sp_raise_cls("ArgumentError", sp_sprintf("not RFC 2822 compliant date: %s", sp_str_inspect(date)));
+  return (sp_Time){0, 0, 1};
+}
+
+sp_Time sp_time_s_httpdate(const char *date) {SP_GC_ROOT_STR(date);
+  const char *sp_sprintf(const char *fmt, ...);  /* generated TU */
+  if (!date) sp_raise_cls("NoMethodError", "undefined method 'match?' for nil");
+  const char *p = tp_skip_ws(date), *q, *end = date + sp_str_byte_len(date);
+  int64_t day, mon, year, h, mi, s;
+  /* RFC 1123: "Sun, 06 Nov 1994 08:49:37 GMT" */
+  if (tp_word(p, tp_wday, 7, &q) >= 0 && q[0] == ',' && q[1] == ' ' &&
+      (day = tp_digits(q + 2, 2, 2, &q)) >= 0 && *q == ' ' &&
+      (mon = tp_word(q + 1, tp_mon, 12, &q)) >= 0 && *q == ' ' &&
+      (year = tp_digits(q + 1, 4, 4, &q)) >= 0 && *q == ' ' &&
+      tp_hms(q + 1, &h, &mi, &s, &q) && *q == ' ' &&
+      tp_word(q + 1, (const char *const[]){ "GMT" }, 1, &q) >= 0 && tp_skip_ws(q) == end)
+    return sp_time_utc(sp_time_s_rfc2822(date));
+  /* RFC 850: "Sunday, 06-Nov-94 08:49:37 GMT" */
+  if (tp_word(p, tp_wday_long, 7, &q) >= 0 && q[0] == ',' && q[1] == ' ' &&
+      (day = tp_digits(q + 2, 2, 2, &q)) >= 0 && *q == '-' &&
+      (mon = tp_word(q + 1, tp_mon, 12, &q)) >= 0 && *q == '-' &&
+      (year = tp_digits(q + 1, 2, 2, &q)) >= 0 && *q == ' ' &&
+      tp_hms(q + 1, &h, &mi, &s, &q) && *q == ' ' &&
+      tp_word(q + 1, (const char *const[]){ "GMT" }, 1, &q) >= 0 && tp_skip_ws(q) == end)
+    return sp_time_new_utc(year + (year < 50 ? 2000 : 1900), mon + 1, day, h, mi, s);
+  /* asctime: "Sun Nov  6 08:49:37 1994" */
+  if (tp_word(p, tp_wday, 7, &q) >= 0 && *q == ' ' &&
+      (mon = tp_word(q + 1, tp_mon, 12, &q)) >= 0 && *q == ' ') {
+    q++;
+    if (*q == ' ') day = tp_digits(q + 1, 1, 1, &q);
+    else day = tp_digits(q, 2, 2, &q);
+    if (day >= 0 && *q == ' ' && tp_hms(q + 1, &h, &mi, &s, &q) && *q == ' ' &&
+        (year = tp_digits(q + 1, 4, 4, &q)) >= 0 && tp_skip_ws(q) == end)
+      return sp_time_new_utc(year, mon + 1, day, h, mi, s);
+  }
+  sp_raise_cls("ArgumentError", sp_sprintf("not RFC 2616 compliant date: %s", sp_str_inspect(date)));
+  return (sp_Time){0, 0, 1};
+}
+
+/* Time.xmlschema / Time.iso8601: "2026-10-11T08:49:37.25+09:00"; with no
+   zone it is the host's local time */
+sp_Time sp_time_s_xmlschema(const char *str) {SP_GC_ROOT_STR(str);
+  const char *sp_sprintf(const char *fmt, ...);  /* generated TU */
+  if (!str) sp_raise_cls("ArgumentError", "invalid xmlschema format: nil");
+  const char *p = tp_skip_ws(str), *q, *z = NULL, *end = str + sp_str_byte_len(str);
+  int neg = 0;
+  int64_t year, mon, day, h = 0, mi = 0, s = 0, nsec = 0;
+  if (*p == '-') { neg = 1; p++; }
+  if ((year = tp_digits(p, 1, 1 << 30, &q)) < 0 || *q != '-') goto bad;
+  tp_year_fits(p, q);
+  if (neg) year = -year;
+  if ((mon = tp_digits(q + 1, 2, 2, &q)) < 0 || *q != '-') goto bad;
+  if ((day = tp_digits(q + 1, 2, 2, &q)) < 0) goto bad;
+  if (*q != 'T' && *q != 't') goto bad;
+  if (!tp_hms(q + 1, &h, &mi, &s, &q)) goto bad;
+  {
+    if (*q == '.') {
+      int nd = 0;
+      q++;
+      while (q[nd] >= '0' && q[nd] <= '9') { if (nd < 9) nsec = nsec * 10 + (q[nd] - '0'); nd++; }
+      if (nd == 0) goto bad;
+      for (int k = nd; k < 9; k++) nsec *= 10;
+      q += nd;
+    }
+  }
+  size_t zl = 0;
+  if (*q == 'Z' || *q == 'z') { z = q; zl = 1; q++; }
+  else if ((*q == '+' || *q == '-') && tp_digits(q + 1, 2, 2, &p) >= 0) {
+    z = q; q = p;
+    if (*q == ':' && tp_digits(q + 1, 2, 2, &p) >= 0) q = p;
+    else if (tp_digits(q, 2, 2, &p) >= 0) q = p;
+    zl = (size_t)(q - z);
+  }
+  if (tp_skip_ws(q) != end) goto bad;
+  if (z) return tp_in_zone(year, mon, day, h, mi, s, nsec, z, zl);
+  return sp_time_add_nsec(sp_time_new(year, mon, day, h, mi, s), nsec);
+bad:
+  sp_raise_cls("ArgumentError", sp_sprintf("invalid xmlschema format: %s", sp_str_inspect(str)));
+  return (sp_Time){0, 0, 1};
+}
