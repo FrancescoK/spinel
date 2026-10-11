@@ -116,6 +116,8 @@ void emit_poly_dispatch_key(Compiler *c, int tv, int cls0_cand, int prim_cand, i
 void emit_responds_name(Compiler *c, int k, const char *nm, int tv, Buf *b);
 extern const char *const enumerable_names[];
 extern int g_rto_nil_obj;
+extern int g_rto_by_cls;
+int emit_respond_to_by_cls(Compiler *c, int recv, const char *qm, int argc, const int *argv, Buf *b);
 int method_hidden_from_reflection(Compiler *c, int cid, const char *m);
 int name_is_synth_method(Compiler *c, const char *m);
 int refl_member_of_struct_superclass(Compiler *c, int ci, const char *m);

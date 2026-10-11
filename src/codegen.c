@@ -7306,6 +7306,9 @@ static int proc_body_uses_self(Compiler *c, int id, int class_id) {
     /* an attr_reader is not a method in the chain -- it reads the ivar
        directly off self, which the body needs captured all the same (#3750) */
     if (nm && comp_reader_in_chain(c, class_id, nm, NULL)) return 1;
+    /* respond_to? in a class with subclasses asks self's own class at run
+       time when the subclasses answer differently */
+    if (nm && sp_streq(nm, "respond_to?") && class_id >= 0 && class_has_subclass(c, class_id)) return 1;
     /* A bare Method capture binds the resolved instance method to self.
        Enable this route only where returned Strings keep their handles. */
     if (repr_share_rule(c) && is_method_ref_name(nm)) {

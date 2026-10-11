@@ -126,6 +126,14 @@ int emit_call_reflection_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
         buf_printf(b, repr_of(c, id).kind == RK_BOXED ? "sp_box_bool(%d)" : "%d", ans);
         return 1;
       }
+      /* a subclass instance the receiver may hold answers by its own class */
+      if (g_rto_by_cls >= 0) {
+        int boxed = repr_of(c, id).kind == RK_BOXED;
+        if (boxed) buf_puts(b, "sp_box_bool(");
+        emit_respond_to_by_cls(c, recv, qm, argc, argv, b);
+        if (boxed) buf_puts(b, ")");
+        return 1;
+      }
       /* the runtime answers: a Range value's builtin surface (the probe has
          no reading for it, #3619), an IO (the handle knows its kind), and a
          poly receiver */

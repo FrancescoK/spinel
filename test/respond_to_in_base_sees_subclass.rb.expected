@@ -1,0 +1,23 @@
+[Base, false, false, false, false, false]
+[SubA, true, true, false, false, true]
+[SubB, false, false, true, false, false]
+[SubC, false, false, false, false, true]
+false
+true
+false
+true
+handled GET
+handled POST
+unsupported PUT
+[true, false]
+[false, true]
+true
+false
+true
+false
+false
+true
+true
+true
+true
+true
