@@ -1,0 +1,34 @@
+"X::Foo#hi"
+"Y::Foo#hi"
+false
+false
+"X::Foo"
+Y::Foo
+"X Bar"
+"Y Bar"
+"X Bar"
+"Y Bar"
+1
+2
+1
+2
+:top
+false
+"Baz"
+"X::Baz"
+1
+2
+"B::C::Foo"
+"C::Foo"
+"M"
+"N"
+"P::Foo#hi"
+"Q::Foo#hi"
+true
+false
+"P::Foo"
+true
+"D::E::Foo"
+"F::E::Foo"
+"Outer::In::Foo"
+"In::Foo"
