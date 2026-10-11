@@ -18569,25 +18569,66 @@ static void hands_memo_put(int mi, int j, int depth, int r) {
    (`@label << "!"`)? The String then has to be the caller's, which the
    ivar's later promotion to a handle makes it in the method but not at a
    caller that holds a copy (#8525). */
-static int param_stored_in_appended_ivar(Compiler *c, Scope *m, const char *pn) {
+/* The answer reads the node table alone, and the hands walk asks it at
+   every call it passes: each ask scanned the program's ivar writes and,
+   for a match, its calls. The appended ivars are gathered once and each
+   method's answer kept, both until the node table changes. */
+typedef struct { int class_id; const char *name; } AppendedIvar;
+static AppendedIvar *g_appiv; static int g_appiv_n, g_appiv_cap;
+static unsigned char *g_psai;   /* [scope * 32 + param] 0 unasked, 1 no, 2 yes */
+static int g_psai_scopes; static unsigned g_psai_ver; static const NodeTable *g_psai_nt;
+static void appended_ivars_build(Compiler *c) {
   const NodeTable *nt = c->nt;
-  if (!pn || m->class_id < 0) return 0;
+  g_appiv_n = 0;
+  for (int u = comp_kind_first(c, NK_CallNode); u >= 0; u = comp_kind_next(c, u)) {
+    const char *un = nt_str(nt, u, "name");
+    int r = nt_ref(nt, u, "receiver");
+    if (!un || r < 0 || nt_kind(nt, r) != NK_InstanceVariableReadNode || !sp_str_mutator(un, SP_MUT_IVAR)) continue;
+    const char *rn = nt_str(nt, r, "name");
+    Scope *us = comp_scope_of(c, u);
+    if (!rn || !us) continue;
+    if (g_appiv_n >= g_appiv_cap) {
+      g_appiv_cap = g_appiv_cap ? g_appiv_cap * 2 : 64;
+      g_appiv = (AppendedIvar *)realloc(g_appiv, sizeof(AppendedIvar) * (size_t)g_appiv_cap);
+      if (!g_appiv) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    }
+    g_appiv[g_appiv_n].class_id = us->class_id;
+    g_appiv[g_appiv_n].name = rn;
+    g_appiv_n++;
+  }
+}
+static int ivar_appended_in_class(int class_id, const char *iv) {
+  for (int k = 0; k < g_appiv_n; k++)
+    if (g_appiv[k].class_id == class_id && sp_streq(g_appiv[k].name, iv)) return 1;
+  return 0;
+}
+static int param_stored_in_appended_ivar_scan(Compiler *c, Scope *m, const char *pn) {
+  const NodeTable *nt = c->nt;
   for (int w = comp_kind_first(c, NK_InstanceVariableWriteNode); w >= 0; w = comp_kind_next(c, w)) {
     if (comp_scope_of(c, w) != m) continue;
     int v = nt_ref(nt, w, "value");
     const char *iv = nt_str(nt, w, "name");
     if (!iv || v < 0 || nt_kind(nt, v) != NK_LocalVariableReadNode || !nt_str(nt, v, "name") ||
         !sp_streq(nt_str(nt, v, "name"), pn)) continue;
-    for (int u = comp_kind_first(c, NK_CallNode); u >= 0; u = comp_kind_next(c, u)) {
-      const char *un = nt_str(nt, u, "name");
-      int r = nt_ref(nt, u, "receiver");
-      if (!un || r < 0 || nt_kind(nt, r) != NK_InstanceVariableReadNode || !sp_str_mutator(un, SP_MUT_IVAR)) continue;
-      const char *rn = nt_str(nt, r, "name");
-      Scope *us = comp_scope_of(c, u);
-      if (rn && sp_streq(rn, iv) && us && us->class_id == m->class_id) return 1;
-    }
+    if (ivar_appended_in_class(m->class_id, iv)) return 1;
   }
   return 0;
+}
+static int param_stored_in_appended_ivar(Compiler *c, Scope *m, int j) {
+  const char *pn = m->pnames[j];
+  if (!pn || m->class_id < 0) return 0;
+  if (g_psai_nt != c->nt || g_psai_ver != c->nt->version || g_psai_scopes != c->nscopes) {
+    free(g_psai);
+    g_psai = (unsigned char *)calloc((size_t)c->nscopes * 32 + 1, 1);
+    if (!g_psai) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    g_psai_nt = c->nt; g_psai_ver = c->nt->version; g_psai_scopes = c->nscopes;
+    appended_ivars_build(c);
+  }
+  int mi = (int)(m - c->scopes);
+  if (mi < 0 || mi >= c->nscopes || j >= 32) return param_stored_in_appended_ivar_scan(c, m, pn);
+  unsigned char *e = &g_psai[mi * 32 + j];
+  if (!*e) *e = param_stored_in_appended_ivar_scan(c, m, pn) ? 2 : 1;
+  return *e == 2;
 }
 static int an_subtree_hands_walk(Compiler *c, int node, const char *vn, int depth) {
   const NodeTable *nt = c->nt;
@@ -18627,7 +18668,7 @@ static int an_subtree_hands_walk(Compiler *c, int node, const char *vn, int dept
       LocalVar *q = m->pnames[j] ? scope_local(m, m->pnames[j]) : NULL;
       if (q && (q->byref_out || (q->type == TY_STRBUF && q->str_shared) ||
                 (q->type == TY_POLY && (q->poly_lift & POLY_LIFT_APPENDED)) || an_param_mutated_in_place(c, mi, j) ||
-                param_stored_in_appended_ivar(c, m, m->pnames[j])))
+                param_stored_in_appended_ivar(c, m, j)))
         return 1;
       /* or hands its parameter on to one that does, a few levels deep */
       if (q && q->is_param && m->body >= 0) {
