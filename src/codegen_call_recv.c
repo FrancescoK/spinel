@@ -15835,8 +15835,13 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
   /* match?(pattern, pos) takes the same route, from the position */
   int match_at = argc == 2 && is_match_p_name(name) && nt_kind(nt, argv[0]) != NK_SplatNode &&
                  nt_kind(nt, argv[1]) != NK_SplatNode && nt_kind(nt, argv[1]) != NK_KeywordHashNode;
+  /* A native binding of the name (StringScanner#match?, which answers a
+     length or nil) is an arm of the poly dispatch, and the analyzer types
+     the call by every arm: the bare bool went into that poly slot and the C
+     did not compile. The dispatch below serves the builtin kinds too. */
   if (recv >= 0 && (argc == 1 || match_at) && nt_ref(nt, id, "block") < 0 &&
       !user_defines_or_reads(c, name) &&
+      !(rt == TY_POLY && sp_streq(name, "match?") && poly_name_user_claimed(c, name, argc)) &&
       (sp_streq(name, "match?") || sp_streq(name, "match") || sp_streq(name, "=~")) &&
       (rt == TY_POLY || ((rt == TY_STRING || rt == TY_STRBUF) &&
                          comp_ntype(c, argv[0]) == TY_POLY))) {
@@ -15869,9 +15874,13 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
        name. The analyzer's twin counts every class that defines it, so a
        user `match` on a class the program never builds leaves the call typed
        poly there, and the bare MatchData pointer went into that poly slot:
-       the C did not compile. Box it to the type the analyzer settled on. */
+       the C did not compile. Box it to the type the analyzer settled on.
+       `match?(re, pos)` the same way: a one-argument native `match?` is no
+       arm of it, and the analyzer counts it all the same. */
     if (sp_streq(name, "match") && repr_of(c, id).kind == RK_BOXED)
       emit_boxed_text(c, TY_MATCHDATA, mb.p, b);
+    else if (sp_streq(name, "match?") && repr_of(c, id).kind == RK_BOXED)
+      emit_boxed_text(c, TY_BOOL, mb.p, b);
     else buf_puts(b, mb.p);
     free(mb.p);
     return 1;

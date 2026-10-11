@@ -256,6 +256,10 @@ no_gsub_enum:
     if (are >= 0 && sp_streq(name, "match?") && rpoly && argc > 2) return 0;
     if (are >= 0 && sp_streq(name, "match?") && rpoly) {
       int tv = ++g_tmp, tr = ++g_tmp;
+      /* boxed where the analyzer counted a class's match? this call cannot
+         reach (a one-argument native one, for `match?(re, pos)`) */
+      int bx = repr_of(c, id).kind == RK_BOXED;
+      if (bx) buf_puts(b, "sp_box_bool(");
       /* The receiver is held, rooted, while the position runs, which may
          allocate; the String it reads is taken after. A shared-string handle
          is a String (#4279), its bytes kept by the held handle. */
@@ -282,6 +286,7 @@ no_gsub_enum:
       emit_boxed(c, argv[0], b);
       if (argc == 2) buf_printf(b, ", _t%d", tq);
       buf_puts(b, "}), 0)); })");
+      if (bx) buf_puts(b, ")");
       return 1;
     }
     if (are >= 0 && sp_streq(name, "match?")) {
@@ -413,7 +418,10 @@ no_gsub_enum:
       int is_regex_val_arg = !is_interp_arg && argc >= 1 && comp_ntype(c, argv[0]) == TY_REGEX
                              && a0nt && !sp_streq(a0nt, "RegularExpressionNode")
                              && !ty_is_object(rt);
-      if (is_interp_arg || is_regex_val_arg) {
+      /* a boxed receiver's match? that a class answers too (StringScanner's)
+         is the boxed dispatch's, as for a literal pattern above */
+      int poly_claimed = rt == TY_POLY && sp_streq(name, "match?") && poly_name_user_claimed(c, name, argc);
+      if ((is_interp_arg || is_regex_val_arg) && !poly_claimed) {
         Buf rp; memset(&rp, 0, sizeof rp);
         int rp_ok = emit_regex_pat_to_buf(c, argv[0], &rp) && rp.p;
         /* Fallback: TY_REGEX local/constant/inline Regexp.new -- value IS the mrb_regexp_pattern* */
@@ -443,6 +451,10 @@ no_gsub_enum:
             free(rp.p); return 1;
           }
           if (sp_streq(name, "match?") && (argc == 1 || argc == 2)) {
+            /* boxed where the analyzer counted a match? this call cannot
+               reach, as for a literal pattern */
+            int bx = repr_of(c, id).kind == RK_BOXED;
+            if (bx) buf_puts(b, "sp_box_bool(");
             /* A symbol receiver matches over its name, so feed the runtime
                pattern the symbol's string rather than the raw sp_sym. */
             if (rt == TY_SYMBOL) { buf_printf(b, "sp_re_match_p(%s, sp_sym_to_s(", rp.p); emit_expr(c, recv, b); buf_puts(b, "))"); }
@@ -455,6 +467,7 @@ no_gsub_enum:
               buf_printf(b, "sp_str_re_match_p_at(%s, ", rp.p); emit_str_expr(c, recv, b);
               buf_puts(b, ", "); emit_int_expr(c, argv[1], b); buf_puts(b, ")");
             }
+            if (bx) buf_puts(b, ")");
             free(rp.p); return 1;
           }
           if (sp_streq(name, "=~") && rt == TY_STRING) {
