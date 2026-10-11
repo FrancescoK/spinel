@@ -123,7 +123,12 @@ int emit_call_reflection_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       /* boxed when the call is typed so ($stderr, a global, is folded here
          as the IO it holds, where the analysis typed the call poly) */
       if (ans >= 0) {
+        /* a receiver that runs code (a call, a write) is evaluated, as
+           CRuby does, though the answer is known */
+        int run = recv >= 0 && subtree_has_side_effect(c, recv);
+        if (run) { buf_puts(b, "({ (void)("); emit_expr(c, recv, b); buf_puts(b, "); "); }
         buf_printf(b, repr_of(c, id).kind == RK_BOXED ? "sp_box_bool(%d)" : "%d", ans);
+        if (run) buf_puts(b, "; })");
         return 1;
       }
       /* the runtime answers: a Range value's builtin surface (the probe has
