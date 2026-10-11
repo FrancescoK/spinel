@@ -22591,6 +22591,62 @@ static int refuse_dm_target(Compiler *c, int id, const char *name) {
   return dname && sp_streq(dname, "define_method") ? mi : -1;
 }
 
+/* Is `a` a block's parameter that nothing but this yield can see grow? A
+   builtin iterator that binds it to a String of its own each turn
+   (`File.foreach(path) { |line| yield line }`, String#each_line), a block
+   whose body hands it straight to the yield, and no other read or write of
+   the name in the method: the copy the proc takes is then the only String
+   that grows, as in CRuby the original is dropped once the block returns.
+   A redo would run the yield again on the grown String, so none may be
+   there. */
+static int yield_arg_fresh_line(Compiler *c, int a) {
+  const NodeTable *nt = c->nt;
+  if (a < 0 || nt_kind(nt, a) != NK_LocalVariableReadNode) return 0;
+  const char *vn = nt_str(nt, a, "name");
+  int si = c->nscope[a];
+  if (!vn || si < 0) return 0;
+  int blk = -1;
+  for (int j = 0; j < nt->count; j++) {
+    if (c->nscope[j] != si) continue;
+    NodeKind k = nt_kind(nt, j);
+    if (k == NK_RedoNode) return 0;
+    const char *jn = (k == NK_LocalVariableReadNode || comp_is_local_write(k)) ? nt_str(nt, j, "name") : NULL;
+    if (jn && sp_streq(jn, vn) && j != a) return 0;
+    if (k != NK_BlockNode) continue;
+    int bp = nt_ref(nt, j, "parameters");
+    int pn = bp >= 0 ? nt_ref(nt, bp, "parameters") : -1;
+    int rn = 0; const int *rq = pn >= 0 ? nt_arr(nt, pn, "requireds", &rn) : NULL;
+    for (int r = 0; r < rn; r++) {
+      const char *pnm = nt_kind(nt, rq[r]) == NK_RequiredParameterNode ? nt_str(nt, rq[r], "name") : NULL;
+      if (pnm && sp_streq(pnm, vn)) { if (blk >= 0) return 0; blk = j; }
+    }
+  }
+  if (blk < 0) return 0;
+  /* the yield is a statement of the block's own body */
+  int body = nt_ref(nt, blk, "body"), sn = 0, direct = 0;
+  const int *st = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &sn) : NULL;
+  for (int i = 0; i < sn && !direct; i++) {
+    if (nt_kind(nt, st[i]) != NK_YieldNode) continue;
+    int args = nt_ref(nt, st[i], "arguments"), an = 0;
+    const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    for (int x = 0; x < an; x++) if (av[x] == a) direct = 1;
+  }
+  if (!direct) return 0;
+  /* the iterator, which binds a new String each turn and keeps none */
+  int call = -1;
+  for (int j = 0; j < nt->count && call < 0; j++)
+    if (c->nscope[j] == si && nt_kind(nt, j) == NK_CallNode && nt_ref(nt, j, "block") == blk) call = j;
+  const char *cn = call >= 0 ? nt_str(nt, call, "name") : NULL;
+  int recv = call >= 0 ? nt_ref(nt, call, "receiver") : -1;
+  if (!cn || recv < 0) return 0;
+  TyKind rt = comp_ntype(c, recv);
+  if (rt == TY_STRING || rt == TY_STRBUF)
+    return sp_streq(cn, "each_line") || sp_streq(cn, "each_char") || sp_streq(cn, "each_grapheme_cluster");
+  if (rt == TY_IO) return sp_streq(cn, "each_line") || sp_streq(cn, "each") || sp_streq(cn, "each_char");
+  const char *rn2 = nt_kind(nt, recv) == NK_ConstantReadNode ? nt_str(nt, recv, "name") : NULL;
+  return rn2 && (sp_streq(rn2, "File") || sp_streq(rn2, "IO")) && sp_streq(cn, "foreach");
+}
+
 /* `yield(s)` into a real proc (`run(s, &method(:m))`, `run(s, &pr)`, a
    lowered or proc-form method's block): the yield boxes what it is handed,
    and a String variable that is the shared handle goes over as the handle
@@ -22661,7 +22717,7 @@ void refuse_yield_string_copies(Compiler *c, int yargc, const int *yargv) {
     if (spread) continue;
     /* a handle goes over as itself (emit_proc_yield) */
     if (!strvar_arg(c, yargv[k], &shared) || shared || local_is_handle(c, yargv[k]) ||
-        ivar_read_is_handle(c, yargv[k]))
+        ivar_read_is_handle(c, yargv[k]) || yield_arg_fresh_line(c, yargv[k]))
       continue;
     DynReach r;
     if (g_yield_proc_expr < 0 && g_yield_proc_method >= 0) dyn_blk_reach(c, g_yield_proc_method, k, &r);
