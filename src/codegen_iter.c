@@ -3831,8 +3831,9 @@ int emit_poly_recv_block_dispatch(Compiler *c, int id, Buf *b, int indent) {
   int emitted_default = 0;
   /* map!/collect!: the poly value can also be a BUILTIN array at run time
      (a nested-array element) -- without this default arm the switch missed
-     it silently and the mutation vanished (#3234). Rewrite in place over the
-     normalized working array, then write back into the typed original. */
+     it silently and the mutation vanished (#3234). Rewrite in place on the
+     Array itself (sp_poly_arr_live_recv), so what the block does to the
+     receiver is what the next step reads, and stays. */
   if (is_map_bang_alias(name)) {
     const char *dp0 = block_param_name(c, block, 0);
     const char *dp0r = dp0 ? rename_local(dp0) : NULL;
@@ -3842,14 +3843,14 @@ int emit_poly_recv_block_dispatch(Compiler *c, int id, Buf *b, int indent) {
       int tw = ++g_tmp, ti2 = ++g_tmp;
       emit_indent(&sw, indent); buf_puts(&sw, "default: {\n");
       emit_indent(&sw, indent + 1);
-      buf_printf(&sw, "sp_PolyArray *_t%d = sp_poly_arr_recv(_t%d, \"map!\"); SP_GC_ROOT(_t%d);\n",
+      buf_printf(&sw, "sp_RbVal _t%d = sp_poly_arr_live_recv(_t%d, \"map!\"); SP_GC_ROOT_RBVAL(_t%d);\n",
                  tw, trecv, tw);
       /* The block can collect between stores, so each store needs the
          runtime setter's barrier, not a single barrier before the loop. */
       emit_indent(&sw, indent + 1);
-      buf_printf(&sw, "for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti2, ti2, tw, ti2);
+      buf_printf(&sw, "for (sp_int _t%d = 0; _t%d < sp_poly_arr_len(_t%d); _t%d++) {\n", ti2, ti2, tw, ti2);
       emit_indent(&sw, indent + 2);
-      buf_printf(&sw, "lv_%s = sp_PolyArray_get(_t%d, _t%d);\n", dp0r, tw, ti2);
+      buf_printf(&sw, "lv_%s = sp_poly_arr_get(_t%d, _t%d);\n", dp0r, tw, ti2);
       /* The block's statements and its value's preludes belong to this
          arm's loop. The statements went to the caller's buffer and the
          preludes to g_pre, so both ran once, ahead of the switch, with the
@@ -3859,11 +3860,9 @@ int emit_poly_recv_block_dispatch(Compiler *c, int id, Buf *b, int indent) {
         Buf vb2; memset(&vb2, 0, sizeof vb2); emit_boxed(c, dbb[dbn - 1], &vb2);
         g_indent = svi; g_pre = svp;
         emit_indent(&sw, indent + 2);
-        buf_printf(&sw, "sp_PolyArray_set(_t%d, _t%d, %s);\n", tw, ti2, vb2.p ? vb2.p : "sp_box_nil()");
+        buf_printf(&sw, "sp_poly_arr_live_set(_t%d, _t%d, %s);\n", tw, ti2, vb2.p ? vb2.p : "sp_box_nil()");
         free(vb2.p); }
       emit_indent(&sw, indent + 1); buf_puts(&sw, "}\n");
-      emit_indent(&sw, indent + 1);
-      buf_printf(&sw, "sp_poly_arr_writeback(_t%d, _t%d);\n", trecv, tw);
       emit_indent(&sw, indent + 1); buf_puts(&sw, "break;\n");
       emit_indent(&sw, indent); buf_puts(&sw, "}\n");
       emitted_default = 1;
@@ -5151,6 +5150,26 @@ int emit_array_filter_loop(Compiler *c, int recv, int block, TyKind rt, const ch
   int t = ++g_tmp, ti = ++g_tmp, to = ++g_tmp, tw = ++g_tmp, tk = ++g_tmp, tnv = ++g_tmp, te = ++g_tmp;
   int eid = ++g_tmp, tj = ++g_tmp;
   int has_retval = (g_ret_type != TY_VOID && g_ret_type != TY_UNKNOWN);
+  /* Over a boxed Array (emit_face_arm), the loop reads, writes and cuts the
+     box itself through the boxed accessors, where the receiver here is the
+     poly copy the face made: a block that pushes onto the receiver or writes
+     an element of it has the next step see that, as CRuby's live loop does,
+     and nothing is written back over it from the copy. The copy stays the
+     receiver's temp for the result text alone. */
+  int live = g_face_live_box && g_face_live_recv == recv && rt == TY_POLY_ARRAY;
+  char lv[32], lenf[48], getf[48], setf[48];
+  snprintf(lv, sizeof lv, "_t%d", live ? g_face_live_box : t);
+  if (live) {
+    snprintf(lenf, sizeof lenf, "sp_poly_arr_len");
+    snprintf(getf, sizeof getf, "sp_poly_arr_get");
+    snprintf(setf, sizeof setf, "sp_poly_arr_live_set");
+    g_face_live_used = 1;
+  }
+  else {
+    snprintf(lenf, sizeof lenf, "sp_%sArray_length", kk);
+    snprintf(getf, sizeof getf, "sp_%sArray_get", kk);
+    snprintf(setf, sizeof setf, "sp_%sArray_set", kk);
+  }
   Buf rb = expr_buf(c, recv);
   /* rooted: a receiver that is a temporary has no other holder once its own
      expression is done, and the block body may collect before the loop is
@@ -5167,7 +5186,7 @@ int emit_array_filter_loop(Compiler *c, int recv, int block, TyKind rt, const ch
              sp_streq(kk, "Poly") ? "SP_BUILTIN_POLY_ARRAY" : sp_streq(kk, "Str") ? "SP_BUILTIN_STR_ARRAY"
              : sp_streq(kk, "Float") ? "SP_BUILTIN_FLT_ARRAY" : "SP_BUILTIN_INT_ARRAY");
   emit_indent(b, indent);
-  buf_printf(b, "sp_int _t%d = sp_%sArray_length(_t%d); volatile sp_int _t%d = 0, _t%d = 0; sp_int _t%d = 0;", to, kk, t, ti, tw, tk);
+  buf_printf(b, "sp_int _t%d = %s(%s); volatile sp_int _t%d = 0, _t%d = 0; sp_int _t%d = 0;", to, lenf, lv, ti, tw, tk);
   buf_printf(b, " sp_RbVal _t%d = sp_box_nil(); SP_GC_ROOT_RBVAL(_t%d);\n", tnv, tnv);
   emit_indent(b, indent); emit_ctype(c, et, b);
   if (et == TY_POLY) buf_printf(b, " _t%d = sp_box_nil(); SP_GC_ROOT_RBVAL(_t%d);\n", te, te);
@@ -5199,14 +5218,14 @@ int emit_array_filter_loop(Compiler *c, int recv, int block, TyKind rt, const ch
   }
   int li = indent + region;   /* the loop's own indent */
   emit_indent(b, li);
-  buf_printf(b, "for (; _t%d < sp_%sArray_length(_t%d); ({", ti, kk, t);
+  buf_printf(b, "for (; _t%d < %s(%s); ({", ti, lenf, lv);
   buf_printf(b, " if (_t%d < 0) _t%d = %ssp_poly_truthy(_t%d);", tk, tk, is_rej ? "!" : "", tnv);
   /* a kept element is written down only when it moves, as CRuby's is: a
      block that wrote to its receiver at this index keeps what it wrote */
-  buf_printf(b, " if (_t%d) { if (_t%d != _t%d) sp_%sArray_set(_t%d, _t%d, _t%d); _t%d++; } _t%d++; })) {\n",
-             tk, tw, ti, kk, t, tw, te, tw, ti);
+  buf_printf(b, " if (_t%d) { if (_t%d != _t%d) %s(%s, _t%d, _t%d); _t%d++; } _t%d++; })) {\n",
+             tk, tw, ti, setf, lv, tw, te, tw, ti);
   emit_indent(b, li + 1);
-  buf_printf(b, "_t%d = -1; _t%d = sp_box_nil(); _t%d = sp_%sArray_get(_t%d, _t%d);\n", tk, tnv, te, kk, t, ti);
+  buf_printf(b, "_t%d = -1; _t%d = sp_box_nil(); _t%d = %s(%s, _t%d);\n", tk, tnv, te, getf, lv, ti);
   /* A rest, an optional or a post, or plain requireds an Array element
      spreads across, reach here only over a boxed receiver, whose Array arm
      this is: desugar_builtin_iter_block_shapes lowers them for a typed
@@ -5258,7 +5277,10 @@ int emit_array_filter_loop(Compiler *c, int recv, int block, TyKind rt, const ch
   emit_filter_body(c, body, tnv, tk, is_rej, b, li);
   emit_indent(b, li); buf_puts(b, "}\n");
   if (!region) {
-    emit_indent(b, indent); buf_printf(b, "if (_t%d) _t%d->len = _t%d;\n", t, t, tw);
+    emit_indent(b, indent);
+    /* live: CRuby answers nil when every element the loop reached was kept */
+    if (live) buf_printf(b, "sp_poly_arr_live_truncate(%s, _t%d); _t%d = _t%d;\n", lv, tw, to, ti);
+    else buf_printf(b, "if (_t%d) _t%d->len = _t%d;\n", t, t, tw);
     if (flv) flv->type = fsaved;
     *tr = t; *torig = to; *twp = tw;
     return 1;
@@ -5280,9 +5302,16 @@ int emit_array_filter_loop(Compiler *c, int recv, int block, TyKind rt, const ch
   /* the ensure body: the elements from the one the block was given on are
      moved down behind the kept ones, and the length is cut */
   emit_indent(b, indent);
-  buf_printf(b, "if (_t%d) { for (sp_int _t%d = _t%d; _t%d < sp_%sArray_length(_t%d); _t%d++, _t%d++)", t, tj, ti, tj, kk, t, tj, tw);
-  buf_printf(b, " if (_t%d != _t%d) sp_%sArray_set(_t%d, _t%d, sp_%sArray_get(_t%d, _t%d)); _t%d->len = _t%d; }\n",
-             tw, tj, kk, t, tw, kk, t, tj, t, tw);
+  if (live) {
+    buf_printf(b, "{ for (sp_int _t%d = _t%d; _t%d < %s(%s); _t%d++, _t%d++)", tj, ti, tj, lenf, lv, tj, tw);
+    buf_printf(b, " if (_t%d != _t%d) %s(%s, _t%d, %s(%s, _t%d)); sp_poly_arr_live_truncate(%s, _t%d); _t%d = _t%d; }\n",
+               tw, tj, setf, lv, tw, getf, lv, tj, lv, tw, to, ti);
+  }
+  else {
+    buf_printf(b, "if (_t%d) { for (sp_int _t%d = _t%d; _t%d < sp_%sArray_length(_t%d); _t%d++, _t%d++)", t, tj, ti, tj, kk, t, tj, tw);
+    buf_printf(b, " if (_t%d != _t%d) sp_%sArray_set(_t%d, _t%d, sp_%sArray_get(_t%d, _t%d)); _t%d->len = _t%d; }\n",
+               tw, tj, kk, t, tw, kk, t, tj, t, tw);
+  }
   emit_indent(b, indent); buf_puts(b, "if (sp_unwind_kind != SP_UNWIND_NONE) sp_unwind_resume();\n");
   emit_indent(b, indent);
   if (g_ensure_depth > 0) {

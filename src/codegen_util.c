@@ -1070,6 +1070,7 @@ const char *g_proc_brk_home = NULL;
 /* The CallNode id currently being emitted as the inner (unwrapped) call of its
    own break wrapper, so the wrapper is not re-entered recursively. */
 int g_brk_skip_id = -1;
+int g_face_live_recv = -1, g_face_live_box = 0, g_face_live_used = 0;
 const char *g_result_var = NULL;
 int g_result_poly = 0;
 /* The TyKind of the slot g_result_var names, so a tail value can be checked
