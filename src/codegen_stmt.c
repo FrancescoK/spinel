@@ -4040,6 +4040,20 @@ static void emit_op_assign_str_rhs(Compiler *c, int v, int strict, Buf *b) {
   }
   else emit_expr(c, v, b);
 }
+/* `slot + rhs` for a String `+=` on an ivar or constant. Ruby reads the
+   slot before the RHS runs, so an RHS that can run code (and reassign
+   the slot) gets the slot's String taken first; C leaves the order of
+   sp_str_concat's arguments open. */
+static void emit_str_op_assign_concat(Compiler *c, const char *slot, int v, Buf *b) {
+  if (!subtree_has_side_effect(c, v)) {
+    buf_printf(b, "sp_str_concat(%s, ", slot);
+    emit_op_assign_str_rhs(c, v, 0, b); buf_puts(b, ")");
+    return;
+  }
+  int tr = ++g_tmp;
+  buf_printf(b, "({ const char *_t%d = %s; SP_GC_ROOT_STR(_t%d); sp_str_concat(_t%d, ", tr, slot, tr, tr);
+  emit_op_assign_str_rhs(c, v, 0, b); buf_puts(b, "); })");
+}
 static void emit_op_assign_lv(Compiler *c, int id, Buf *b, int indent,
                               const char *lval) {
   const NodeTable *nt = c->nt;
@@ -14750,8 +14764,7 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
     else if (vt == TY_STRING && op && sp_streq(op, "+")) {
       buf_printf(b, "%s = ", ref);
       int sk = splice_store_open(c, id, b);   /* an open splice alias of the ivar */
-      buf_printf(b, "sp_str_concat(%s, ", ref);
-      emit_expr(c, nt_ref(nt, id, "value"), b); buf_puts(b, ")");
+      emit_str_op_assign_concat(c, ref, nt_ref(nt, id, "value"), b);
       splice_store_close(c, id, sk, b);
       buf_puts(b, ";\n");
     }
@@ -15532,7 +15545,9 @@ static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int in
     }
     emit_indent(b, indent);
     if (cv->type == TY_STRING && op && sp_streq(op, "+")) {
-      buf_printf(b, "cst_%s = sp_str_concat(cst_%s, ", nm, nm); emit_expr(c, v, b); buf_puts(b, ");\n");
+      char cref[256]; snprintf(cref, sizeof cref, "cst_%s", nm);
+      buf_printf(b, "%s = ", cref);
+      emit_str_op_assign_concat(c, cref, v, b); buf_puts(b, ";\n");
     }
     else {
       buf_printf(b, "cst_%s %s= ", nm, op ? op : "+");
