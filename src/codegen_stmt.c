@@ -3647,6 +3647,28 @@ int emit_array_op_assign(Compiler *c, const char *lval, TyKind t,
       rhs_empty = (nel == 0);
     }
     const char *conv = (t == TY_POLY_ARRAY && vt != t && !rhs_empty) ? poly_array_rhs_conv(vt) : NULL;
+    if (vt != t && !rhs_empty && !conv &&
+        (vt == TY_UNKNOWN || vt == TY_POLY)) {
+      /* a typed slot and an rhs inference left untyped (a call no class
+         defines, which raises NoMethodError when it runs) or poly: concat
+         boxed, as Array#+ on two poly values does, and convert the result
+         back to the slot's kind, which checks each element */
+      size_t pre_mark = g_pre ? g_pre->len : 0;
+      Buf rb; memset(&rb, 0, sizeof rb);
+      emit_boxed(c, v, &rb);
+      char tn[32];
+      const char *src = array_op_assign_src(c, lval, k, v, pre_mark, tn, sizeof tn, b);
+      Buf ab; memset(&ab, 0, sizeof ab);
+      buf_puts(&ab, "sp_poly_add(");
+      emit_boxed_text(c, t, src, &ab);
+      buf_printf(&ab, ", %s)", rb.p ? rb.p : "sp_box_nil()");
+      buf_printf(b, "%s = ", lval);
+      emit_unbox_text(c, t, ab.p, b);
+      buf_puts(b, ";");
+      op_assign_slot_end(src, lval, b);
+      free(rb.p); free(ab.p);
+      return 1;
+    }
     if (vt != t && !rhs_empty && !conv) return 0;
     size_t pre_mark = g_pre ? g_pre->len : 0;
     Buf rb; memset(&rb, 0, sizeof rb);
@@ -14730,7 +14752,8 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
           int nel2 = 0; nt_arr(nt, ival2, "elements", &nel2);
           rhs_empty2 = (nel2 == 0);
         } }
-      if (k2 && (rvt2 == vt || rhs_empty2) && emit_array_op_assign(c, ref, vt, op, ival2, b)) { }
+      if (k2 && (rvt2 == vt || rhs_empty2 || rvt2 == TY_UNKNOWN || rvt2 == TY_POLY) &&
+          emit_array_op_assign(c, ref, vt, op, ival2, b)) { }
       else if (vt == TY_POLY_ARRAY) {
         buf_printf(b, "%s = sp_poly_to_poly_array(sp_poly_add(sp_box_poly_array(%s), ",
                    ref, ref);
