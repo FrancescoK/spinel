@@ -10217,6 +10217,38 @@ static int bx_recv_concrete(int bx, TyKind rt) {
   return 0;
 }
 
+/* Call `id`, rewritten in an earlier round while its receiver was
+   concrete. A parameter is typed by the calls the rounds have reached so
+   far, so it can widen after (`def f(m) = m.bit_length` called with 255,
+   then with an object whose class reads `bit_length`), and an ivar can
+   widen in the backstops after the fixpoint (a module's write of it that
+   no round typed): the call goes back onto the receiver's own dispatch,
+   for good. */
+static int bx_revert_widened(Compiler *c, int id) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  if (!nt_int(nt, id, "bx_done", 0)) return 0;
+  int bx = (int)nt_int(nt, id, "bx_container", -1);
+  int ra = nt_ref(nt, id, "arguments");
+  int rn = 0; const int *rv = ra >= 0 ? nt_arr(nt, ra, "arguments", &rn) : NULL;
+  if (!rv || rn < 1 || bx_recv_concrete(bx, infer_type(c, rv[0]))) return 0;
+  nt_node_set_ref(nt, id, "receiver", rv[0]);
+  nt_node_set_ref(nt, id, "arguments", (int)nt_int(nt, id, "bx_args", -1));
+  nt_node_set_str(nt, id, "name", nt_str(nt, id, "bx_name"));
+  nt_node_set_int(nt, id, "bx_done", 0);
+  nt_node_set_int(nt, id, "bx_copy", -1);
+  return 1;
+}
+
+/* After the fixpoint: the rewritten calls whose receiver has widened since */
+int revert_widened_builtin_scalar_calls(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  for (int id = 0; id < nt->count; id++)
+    if (nt_kind(nt, id) == NK_CallNode && nt_ref(nt, id, "receiver") < 0)
+      changed |= bx_revert_widened(c, id);
+  return changed;
+}
+
 int desugar_builtin_scalar_calls(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count;
@@ -10228,21 +10260,7 @@ int desugar_builtin_scalar_calls(Compiler *c) {
     int recv = nt_ref(nt, id, "receiver");
     int bx = (int)nt_int(nt, id, "bx_container", -1);
     if (recv < 0) {
-      /* Rewritten in an earlier round, while the receiver was concrete. A
-         parameter is typed by the calls the rounds have reached so far,
-         so it can widen after (`def f(m) = m.bit_length` called with 255,
-         then with an object whose class reads `bit_length`): the call
-         goes back onto the receiver's own dispatch, for good. */
-      if (!nt_int(nt, id, "bx_done", 0)) continue;
-      int ra = nt_ref(nt, id, "arguments");
-      int rn = 0; const int *rv = ra >= 0 ? nt_arr(nt, ra, "arguments", &rn) : NULL;
-      if (!rv || rn < 1 || bx_recv_concrete(bx, infer_type(c, rv[0]))) continue;
-      nt_node_set_ref(nt, id, "receiver", rv[0]);
-      nt_node_set_ref(nt, id, "arguments", (int)nt_int(nt, id, "bx_args", -1));
-      nt_node_set_str(nt, id, "name", nt_str(nt, id, "bx_name"));
-      nt_node_set_int(nt, id, "bx_done", 0);
-      nt_node_set_int(nt, id, "bx_copy", -1);
-      changed = 1;
+      changed |= bx_revert_widened(c, id);
       continue;
     }
     const char *name = nt_str(nt, id, "name");
