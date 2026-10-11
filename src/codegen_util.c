@@ -3027,6 +3027,20 @@ int strbuf_object_ref(Compiler *c, int recv, Buf *b) {
     buf_puts(b, "))");
     return 1;
   }
+  /* --share-strings: a spliced yield whose block answers a holder's
+     handle (strbuf_route_yield): that handle's */
+  if (repr_share_rule(c) && recv >= 0 && nt_kind(c->nt, unwrap_parens(c, recv)) == NK_YieldNode &&
+      strbuf_yield_tail_held(c)) {
+    Buf hb; memset(&hb, 0, sizeof hb);
+    if (emit_strbuf_route(c, recv, &hb)) {
+      int t = ++g_tmp;
+      buf_printf(b, "({ sp_String *_t%d = %s; _t%d ? (sp_int)(uintptr_t)sp_String_identity(_t%d) : SP_NIL_OBJECT_ID; })",
+                 t, hb.p, t, t);
+      free(hb.p);
+      return 1;
+    }
+    free(hb.p);
+  }
   /* A receiver-returning route has the same identity as its slot. */
   char ref[1024];
   int up = 0;
