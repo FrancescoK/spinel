@@ -590,6 +590,10 @@ spinel: 1 refusal, nothing written
 spinel: test/reject/load_path_alias.rb:4: unsupported alias of `$LOAD_PATH` to another global: it names the runtime's own Array here
 == test/reject/load_path_alias.rb [promote] rc=1
 spinel: test/reject/load_path_alias.rb:4: unsupported alias of `$LOAD_PATH` to another global: it names the runtime's own Array here
+== test/reject/load_path_alias_from.rb [default] rc=1
+spinel: test/reject/load_path_alias_from.rb:3: unsupported alias of `$LOAD_PATH` to another global: it names the runtime's own Array here
+== test/reject/load_path_alias_from.rb [promote] rc=1
+spinel: test/reject/load_path_alias_from.rb:3: unsupported alias of `$LOAD_PATH` to another global: it names the runtime's own Array here
 == test/reject/load_path_assign.rb [default] rc=1
 spinel: test/reject/load_path_assign.rb:3: unsupported assignment to `$LOAD_PATH`: it is a read-only variable (CRuby raises NameError); change its Array in place instead
 == test/reject/load_path_assign.rb [promote] rc=1
