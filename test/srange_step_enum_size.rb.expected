@@ -1,0 +1,47 @@
+nil
+nil
+nil
+nil
+2
+nil
+nil
+nil
+["aa", "ac"]
+["aa", "ac"]
+4
+4
+3
+3
+Infinity
+4
+nil
+nil
+nil
+nil
+nil
+nil
+nil
+nil
+[["aa", "ac"]]
+[["aa", 0], ["ac", 1]]
+[["aa", 0], ["ac", 1]]
+[["aa", "ac"]]
+2
+1
+3
+4
+2
+nil
+nil
+nil
+nil
+nil
+nil
+nil
+nil
+nil
+nil
+[["aa", "ab"], ["ac", "ad"]]
+["aa", "ab"]
+[["aa", "ab", "ac"], ["ab", "ac", "ad"]]
+[["aa", 0], ["ab", 1], ["ac", 2], ["ad", 3]]
