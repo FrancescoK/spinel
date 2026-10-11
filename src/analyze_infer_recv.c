@@ -1214,6 +1214,7 @@ static int infer_arysub_arg_call(Compiler *c, int id, TyKind rt, TyKind *out) {
     if (comp_ty_ary_root(c, at) < 0) continue;
     if (!comp_arysub_args_viewed(c, id, rt)) return 0;
     TyKind k = comp_ary_kind(c, ty_object_class(at));
+    if (k == TY_STRBUF) k = TY_STRING;   /* a String subclass's, read as a copy */
     if (k == TY_UNKNOWN) { *out = TY_UNKNOWN; return 1; }
     an_face_push(av[i], k);
     *out = infer_call(c, id);
@@ -1239,10 +1240,10 @@ int infer_arysub_call(Compiler *c, int id, TyKind *out) {
   if (recv < 0 || face_of(recv) != TY_UNKNOWN || an_face_pinned(recv)) return 0;
   TyKind rt = infer_type(c, recv), k = TY_UNKNOWN;
   if (!comp_arysub_call(c, id, rt, &k)) return infer_arysub_arg_call(c, id, rt, out);
-  int hash = comp_ary_is_hash(c, ty_object_class(rt));
+  int hash = comp_arysub_emb(c, ty_object_class(rt));
   /* a Hash method answering a copy of its receiver answers one of its class */
   int self = comp_arysub_self_result(c, id, hash) ||
-             (hash && (comp_arysub_answer(c, id, hash) & BOPF_COPY_CLASS));
+             (hash == 1 && (comp_arysub_answer(c, id, hash) & BOPF_COPY_CLASS));
   TyKind r = TY_UNKNOWN;
   if (k != TY_UNKNOWN) {
     an_face_push(recv, k);

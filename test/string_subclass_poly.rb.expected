@@ -1,0 +1,19 @@
+"ok"
+"[ok]"
+"OK!"
+Label
+"Ada Lovelace"
+"Ada"
+"ADA LOVELACE!"
+12
+true
+["a b", Name, 3]
+["plain", String, 5]
+["l", Label, 1]
+["A B", "PLAIN", "L"]
+["a b", "l", "plain"]
+"a b|plain|l"
+["a", "b"]
+["1", "2"]
+"a"
+Name2

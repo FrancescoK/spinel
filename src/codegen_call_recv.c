@@ -14526,7 +14526,7 @@ static int emit_poly_index_call(Compiler *c, int id, Buf *b, const NodeTable *nt
       if (nil_rhs) buf_printf(b, "sp_RbVal _t%d = sp_box_nil();", tval);
       else if (unk_rhs) { buf_printf(b, "sp_RbVal _t%d = ", tval); emit_boxed(c, argv[0], b); buf_puts(b, ";"); }
       else { emit_ctype(c, at, b); buf_printf(b, " _t%d = ", tval); emit_one_arg(c, argv[0], 0, b); buf_puts(b, ";"); }
-      buf_printf(b, " switch (_t%d.tag == SP_TAG_OBJ ? _t%d.cls_id : 0x7fffffff) {", tv, tv);
+      buf_puts(b, " switch ("); emit_obj_switch_key(c, tv, b); buf_puts(b, ") {");
       char src[32]; snprintf(src, sizeof src, "_t%d", tval);
       char objp[32]; snprintf(objp, sizeof objp, "_t%d.v.p", tv);
       emit_boxed_writer_arms(c, base, name, objp, src, at_eff, argv[0], b);

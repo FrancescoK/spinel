@@ -3798,7 +3798,7 @@ int emit_poly_recv_block_dispatch(Compiler *c, int id, Buf *b, int indent) {
   emit_indent(&sw, indent);
   buf_printf(&sw, "SP_GC_ROOT_RBVAL(_t%d);\n", trecv);
   emit_indent(&sw, indent);
-  buf_printf(&sw, "switch (_t%d.tag == SP_TAG_OBJ ? _t%d.cls_id : 0x7fffffff) {\n", trecv, trecv);
+  buf_puts(&sw, "switch ("); emit_obj_switch_key(c, trecv, &sw); buf_puts(&sw, ") {\n");
   const char *sv_expr = g_inline_recv_expr;
   int sv_class = g_inline_recv_class;
   int pa_frame = g_plan_check ? pa_begin(id) : -1;

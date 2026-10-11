@@ -2348,13 +2348,30 @@ typedef struct { int bound, vr, vf, vi, nv, views[16]; TyKind nat; int copy, cop
 
 /* Bind node n, an Array subclass instance, to its Array -- the same pointer
    cast -- evaluating anything but a variable once, ahead of the call. */
-static int arysub_bind(Compiler *c, int n) {
-  const char *at = arysub_array_ctype(c, ty_object_class(comp_ntype(c, n)));
+static int arysub_bind(Compiler *c, int n, TyKind k) {
+  int cid = ty_object_class(comp_ntype(c, n));
+  const char *at = arysub_array_ctype(c, cid);
   NodeKind nk = nt_kind(c->nt, n);
   Buf rb; memset(&rb, 0, sizeof rb);
   emit_expr(c, n, &rb);
   char cast[96];
   snprintf(cast, sizeof cast, "((%s *)(%s))", at, rb.p ? rb.p : "NULL");
+  /* a String subclass instance's String: boxed as its handle, or a copy of
+     its bytes (comp_arysub_call) */
+  if (comp_ary_is_str(c, cid)) {
+    int t = ++g_tmp;
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "sp_String *_t%d = (sp_String *)(%s); SP_GC_ROOT(_t%d);\n", t, rb.p ? rb.p : "NULL", t);
+    free(rb.p);
+    if (k == TY_POLY) {
+      /* an lvalue: the poly String arms write a changed String back */
+      int bx = ++g_tmp;
+      emit_indent(g_pre, g_indent);
+      buf_printf(g_pre, "sp_RbVal _t%d = sp_box_nullable_obj((void *)_t%d, SP_BUILTIN_STRBUF); SP_GC_ROOT_RBVAL(_t%d);\n", bx, t, bx);
+      return view_bind(n, "_t%d", bx);
+    }
+    return view_bind(n, "sp_strbuf_read(_t%d)", t);
+  }
   int slot;
   if ((nk == NK_LocalVariableReadNode || nk == NK_SelfNode) && strlen(cast) < sizeof g_argov_text[0])
     slot = view_bind(n, "%s", cast);
@@ -2376,9 +2393,10 @@ static int arysub_view_open(Compiler *c, int id, ArysubView *v) {
   int recv = nt_ref(nt, id, "receiver");
   TyKind rt = recv >= 0 ? comp_ntype(c, recv) : TY_UNKNOWN, k = TY_UNKNOWN;
   v->bound = -1; v->vr = v->vf = v->vi = -1; v->nv = 0; v->nat = TY_UNKNOWN; v->copy = 0; v->copy_class = 0;
-  if (comp_arysub_call(c, id, rt, &k) && (array_new_copies(k) || ty_is_hash(k))) {
-    int hash = ty_is_hash(k);
-    v->bound = arysub_bind(c, recv);
+  int str = recv >= 0 && ty_is_object(rt) && comp_ary_is_str(c, ty_object_class(rt));
+  if (comp_arysub_call(c, id, rt, &k) && (array_new_copies(k) || ty_is_hash(k) || str)) {
+    int hash = str ? 2 : ty_is_hash(k) ? 1 : 0;
+    v->bound = arysub_bind(c, recv, k);
     v->vr = view_push(c, recv, k);
     v->vf = view_push_face(recv, k);
     /* a call that answers its receiver: the Array emitter's answer -- the
@@ -2386,7 +2404,7 @@ static int arysub_view_open(Compiler *c, int id, ArysubView *v) {
        changed nothing (BOPF_SELF_OR_NIL) -- is turned back into the
        instance below */
     if (comp_arysub_self_result(c, id, hash)) {
-      v->nat = comp_arysub_answer(c, id, hash) & BOPF_SELF_OR_NIL ? TY_POLY : k;
+      v->nat = (comp_arysub_answer(c, id, hash) & BOPF_SELF_OR_NIL) || k == TY_POLY ? TY_POLY : k;
       v->vi = view_push(c, id, v->nat);
     }
     /* a conversion answering its receiver only when the receiver's class
@@ -2397,7 +2415,7 @@ static int arysub_view_open(Compiler *c, int id, ArysubView *v) {
     /* a Hash method answering a copy of the receiver (merge, compact:
        BOPF_COPY_CLASS) answers an instance of the receiver's class, with its
        instance variables: the Hash emitter's answer is put into a dup */
-    else if (hash && (comp_arysub_answer(c, id, hash) & BOPF_COPY_CLASS)) v->copy_class = 1;
+    else if (hash == 1 && (comp_arysub_answer(c, id, hash) & BOPF_COPY_CLASS)) v->copy_class = 1;
     rt = k;
   }
   int args = nt_ref(nt, id, "arguments"), an = 0;
@@ -2408,9 +2426,11 @@ static int arysub_view_open(Compiler *c, int id, ArysubView *v) {
     for (int i = 0; i < an && v->nv < 16; i++) {
       TyKind at = comp_ntype(c, av[i]);
       if (comp_ty_ary_root(c, at) < 0) continue;
-      int slot = arysub_bind(c, av[i]);
+      TyKind ak = comp_ary_kind(c, ty_object_class(at));
+      if (ak == TY_STRBUF) ak = TY_STRING;
+      int slot = arysub_bind(c, av[i], ak);
       if (v->bound < 0) v->bound = slot;
-      v->views[v->nv++] = view_push(c, av[i], comp_ary_kind(c, ty_object_class(at)));
+      v->views[v->nv++] = view_push(c, av[i], ak);
     }
   }
   return v->bound >= 0;
@@ -2443,6 +2463,11 @@ int emit_arysub_call(Compiler *c, int id, Buf *b) {
     buf_printf(b, "({ sp_RbVal _t%d = ", t);
     emit_call(c, id, b);
     buf_printf(b, "; _t%d.tag == SP_TAG_NIL ? NULL : (sp_%s *)_t%d.v.p; })", t, cn, t);
+  }
+  else if (v.copy && cn && comp_ary_is_str(c, ty_object_class(rt))) {
+    /* to_s / to_str of a String subclass instance: a String of its bytes,
+       which the view already copied */
+    emit_call(c, id, b);
   }
   else if (v.copy) {
     buf_printf(b, "%s_dup(", arysub_array_ctype(c, ty_object_class(rt)));

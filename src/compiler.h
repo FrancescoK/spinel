@@ -646,10 +646,13 @@ typedef struct {
      A Hash subclass is the same with its Hash: ary_root names the class
      right below Hash, ary_kind is a Hash kind, and ary_hash is set on every
      class of the chain. The comp_ary_* / comp_arysub_* functions answer for
-     both; the Array-only ones say so. */
+     both; the Array-only ones say so. A String subclass is the same with its
+     String, a mutable handle (sp_String) by value: ary_str is set on every
+     class of the chain and ary_kind is TY_STRBUF. */
   int ary_root;
   TyKind ary_kind;
   int ary_hash;
+  int ary_str;
   char *c_struct;      /* e.g. "sp_StringIO", or NULL */
   char *native_free;   /* finalizer C symbol, or NULL */
   int freeze_observed; /* freeze/frozen? reaches instances of this class: codegen
@@ -1522,6 +1525,10 @@ int        comp_arysub_kernel_array(Compiler *c, int id);
 int        comp_array_method_name(const char *n);
 /* the class chain of cid embeds a Hash, not an Array */
 int        comp_ary_is_hash(Compiler *c, int cid);
+int        comp_ary_is_str(Compiler *c, int cid);
+int        comp_arysub_emb(Compiler *c, int cid);
+int        comp_arysub_str_boxed(const char *n);
+const char *comp_arysub_builtin(Compiler *c, int cid);
 /* a name the builtin cid's chain embeds answers (comp_array_method_name, or Hash's) */
 int        comp_arysub_builtin_name(Compiler *c, int cid, const char *n);
 int        comp_arysub_reopen(Compiler *c, int cid);

@@ -1540,10 +1540,6 @@ spinel: test/reject/subclass_hash_class_new.rb:5: Class.new(Hash) without a bloc
 spinel: test/reject/subclass_range.rb:3: class Span < Range: subclassing Range is not supported yet (a subclass would answer differently from CRuby); wrap a Range in an instance variable instead
 == test/reject/subclass_range.rb [promote] rc=1
 spinel: test/reject/subclass_range.rb:3: class Span < Range: subclassing Range is not supported yet (a subclass would answer differently from CRuby); wrap a Range in an instance variable instead
-== test/reject/subclass_string.rb [default] rc=1
-spinel: test/reject/subclass_string.rb:4: class Name < String: subclassing String is not supported yet (a subclass would answer differently from CRuby); wrap a String in an instance variable instead
-== test/reject/subclass_string.rb [promote] rc=1
-spinel: test/reject/subclass_string.rb:4: class Name < String: subclassing String is not supported yet (a subclass would answer differently from CRuby); wrap a String in an instance variable instead
 == test/reject/subclass_stringio.rb [default] rc=1
 spinel: test/reject/subclass_stringio.rb:6: class Buffer < StringIO: subclassing StringIO is not supported yet (a subclass would answer differently from CRuby); wrap a StringIO in an instance variable instead
 == test/reject/subclass_stringio.rb [promote] rc=1

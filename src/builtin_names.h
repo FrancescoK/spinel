@@ -23,7 +23,7 @@ int is_basic_arith(const char *n);    /* + - * / (is_arith_op adds % and **) */
 int is_int_arith_op(const char *n);   /* + - * / %: an Integer's arithmetic that answers an Integer */
 int is_add_sub_mul(const char *n);    /* + - * */
 int is_int_bit_op(const char *n);     /* & | ^ << >>: Integer's bitwise operators */
-int is_embedding_builtin(const char *nm); /* Array Hash: subclass instances embed the builtin */
+int is_embedding_builtin(const char *nm); /* Array Hash String: subclass instances embed the builtin */
 int is_class_name_name(const char *n);   /* name */
 int is_inspect_name(const char *n);       /* inspect */
 int is_object_root(const char *n);    /* Object Kernel BasicObject: the classes every object has */

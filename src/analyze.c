@@ -37195,11 +37195,12 @@ static int arysub_args(Compiler *c, int at, const int *ids, int n) {
   return a;
 }
 /* `Array.new(args) { blk }` for node `at`, or -1; `Hash.new(...)` and
-   `Hash[...]` (name "[]") for a Hash subclass's */
-static int arysub_builtin_call(Compiler *c, int at, int hash, const char *name, int args, int blk) {
+   `Hash[...]` (name "[]") for a Hash subclass's, `String.new(...)` for a
+   String subclass's. bn names the builtin. */
+static int arysub_builtin_call(Compiler *c, int at, const char *bn, const char *name, int args, int blk) {
   int k = arysub_node(c, "ConstantReadNode", at);
   if (k < 0) return -1;
-  nt_node_set_str((NodeTable *)c->nt, k, "name", hash ? "Hash" : "Array");
+  nt_node_set_str((NodeTable *)c->nt, k, "name", bn);
   return arysub_new_call(c, at, k, name, args, blk);
 }
 
@@ -37240,7 +37241,7 @@ static int arysub_zsuper_args(Compiler *c, int at, Scope *s) {
    and no block, else `self.replace(Array.new(args) { blk })`. */
 static void arysub_super_into(Compiler *c, int at, int n, const char *mname, int init, int args, int blk) {
   Scope *s = comp_scope_of(c, at);
-  int hash = s && comp_ary_is_hash(c, s->class_id);
+  const char *bn = s ? comp_arysub_builtin(c, s->class_id) : "Array";
   int an = 0;
   if (args >= 0) nt_arr(c->nt, args, "arguments", &an);
   int self = arysub_node(c, "SelfNode", at);
@@ -37252,7 +37253,7 @@ static void arysub_super_into(Compiler *c, int at, int n, const char *mname, int
   }
   else if (an == 0 && blk < 0) arysub_set_call(c, n, self, "clear", -1, -1);
   else {
-    int an_call = arysub_builtin_call(c, at, hash, "new", an ? args : -1, blk);
+    int an_call = arysub_builtin_call(c, at, bn, "new", an ? args : -1, blk);
     if (an_call >= 0) arysub_set_call(c, n, self, "replace", arysub_args(c, at, &an_call, 1), -1);
   }
   free(mn);
@@ -37290,7 +37291,7 @@ static void rewrite_array_subclass_super(Compiler *c, int id) {
       char msg[256];
       snprintf(msg, sizeof msg, "a bare `super` into %s from a method with keyword, "
                "post-rest or destructured parameters is not supported yet; "
-               "pass the arguments explicitly", comp_ary_is_hash(c, s->class_id) ? "Hash" : "Array");
+               "pass the arguments explicitly", comp_arysub_builtin(c, s->class_id));
       unsupported_feature(c, id, msg);
       return;
     }
@@ -37382,6 +37383,8 @@ static void rewrite_array_subclass_new(Compiler *c, int id) {
   }
   if (k < 0 || comp_ary_root(c, k) < 0 || comp_cmethod_in_chain(c, k, nm, NULL) >= 0) return;
   int brackets = sp_streq(nm, "[]");
+  /* String has no `[]` of its own class: X[...] is a NoMethodError */
+  if (brackets && comp_ary_is_str(c, k)) return;
   if (!brackets && comp_method_in_chain(c, k, "initialize", NULL) >= 0) return;
   int args = nt_ref(nt, id, "arguments"), blk = nt_ref(nt, id, "block");
   int an = 0;
@@ -37392,13 +37395,13 @@ static void rewrite_array_subclass_new(Compiler *c, int id) {
   int alloc = arysub_new_call(c, id, recv, "allocate", -1, -1);
   int src = -1;
   int hash = comp_ary_is_hash(c, k);
-  if (brackets && hash) src = arysub_builtin_call(c, id, 1, "[]", args, -1);
+  if (brackets && hash) src = arysub_builtin_call(c, id, "Hash", "[]", args, -1);
   else if (brackets) {
     const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
     src = arysub_node(c, "ArrayNode", id);
     if (src >= 0) nt_node_set_arr((NodeTable *)nt, src, "elements", av, an);
   }
-  else src = arysub_builtin_call(c, id, hash, "new", args, blk);
+  else src = arysub_builtin_call(c, id, comp_arysub_builtin(c, k), "new", args, blk);
   if (alloc < 0 || src < 0) return;
   arysub_set_call(c, id, alloc, "replace", arysub_args(c, id, &src, 1), -1);
 }
@@ -37455,7 +37458,7 @@ static void arysub_builtin_alias_recv_call(Compiler *c, int id) {
     char msg[400];
     snprintf(msg, sizeof msg, "calling `%s`, an alias of %s#%s in %s, on a receiver is not supported "
              "yet (it would run the class's own `%s`); call it without a receiver inside the class",
-             nm, comp_ary_is_hash(c, k) ? "Hash" : "Array", rn, c->classes[k].name, rn);
+             nm, comp_arysub_builtin(c, k), rn, c->classes[k].name, rn);
     unsupported_feature(c, id, msg);
     return;
   }
