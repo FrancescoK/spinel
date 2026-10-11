@@ -15622,7 +15622,7 @@ static int emit_ffi_cb_trampoline(Compiler *c, int cbidx, int mi) {
     switch (p) {
     case TY_POLY: case TY_UNKNOWN:           /* param is sp_RbVal: box it */
       if (sp_streq(spec, "ptr"))                          buf_printf(&call, "sp_box_foreign_ptr((void *)%s)", a);
-      else if (sp_streq(spec, "str"))                     buf_printf(&call, "sp_box_str(%s)", a);
+      else if (ffi_spec_is_str(spec))                     buf_printf(&call, "sp_box_str(%s)", a);
       else if (sp_streq(spec, "float") || sp_streq(spec, "double")) buf_printf(&call, "sp_box_float(%s)", a);
       else                                                buf_printf(&call, "sp_box_int((sp_int)%s)", a);
       break;

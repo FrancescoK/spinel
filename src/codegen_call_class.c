@@ -876,7 +876,7 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
            with two or more they go out to ordered temps like the buffers do. */
         int nstr_args = 0;
         for (int ai = 0; ai < fixed_argc && ai < argc; ai++) {
-          if (!sp_streq(c->ffi_funcs[fi].args[ai], "str")) continue;
+          if (!ffi_spec_is_str(c->ffi_funcs[fi].args[ai])) continue;
           char sref[1024];   /* the same test the read of a shared-mutable slot makes */
           int vsm = view_push_repr(c, argv[ai], VR_STRBUF_BOX, 1);
           if (strbuf_slot_ref(c, argv[ai], sref, sizeof sref)) nstr_args++;
@@ -964,7 +964,7 @@ int emit_call_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
             buf_printf(&call_buf, "_b%d_%d", tb, ai);
             continue;
           }
-          if (sp_streq(spec, "str")) {
+          if (ffi_spec_is_str(spec)) {
             if (at == TY_POLY) {
               /* a boxed String may be a shared handle (a mutable String boxed
                  as SP_BUILTIN_STRBUF), whose .v.s is the handle, not the
