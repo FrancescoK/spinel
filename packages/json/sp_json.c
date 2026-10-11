@@ -14,6 +14,7 @@
 #include <math.h>             /* isinf, isnan */
 #include <stdio.h>            /* snprintf (sp_json_float) */
 sp_Bigint *sp_bigint_new_str(const char *s, int base);   /* the runtime archive (sp_bigint.c) */
+const char *sp_poly_to_s(sp_RbVal v);                   /* the runtime archive (sp_poly_cold.c) */
 
 /* A 0xff-marked rodata literal, so sp_str_byte_len reads its length correctly
    (matches spinel_rt.h's SPL). Used for the fixed tokens true/false/null. */
@@ -145,6 +146,32 @@ static const char *sp_json_key(sp_RbVal k) {
   if (k.tag == SP_TAG_INT)  return sp_json_str(sp_int_to_s(k.v.i));
   if (k.tag == SP_TAG_BOOL) return sp_json_str(k.v.b ? "true" : "false");
   return sp_json_str("");
+}
+
+/* A String held as its handle (SP_BUILTIN_STRBUF): a String the program
+   changes in place, or an instance of a String subclass, which is boxed as
+   its String (#7449). */
+static int sp_json_is_strbuf(sp_RbVal v) {
+  return v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_STRBUF && v.v.p;
+}
+/* The value the user #to_json arm dispatches on: a String subclass instance
+   under its own class, read back through the generated program's hook, so
+   the subclass's #to_json is called as CRuby's json calls it. */
+static sp_RbVal sp_json_user_view(sp_RbVal v) {
+  if (sp_json_is_strbuf(v) && sp_bsub_cls_fn) {
+    int k = sp_bsub_cls_fn(v);
+    if (k >= 0) v.cls_id = k;
+  }
+  return v;
+}
+
+/* What an object with no #to_json of its own generates: a String held as
+   its handle is a JSON string of its bytes, as a String literal is (CRuby's
+   json reads a String subclass instance's bytes, not its #to_s); any other
+   object is its #to_s, as Object#to_json is. */
+static const char *sp_json_obj_text(sp_RbVal v) {
+  if (sp_json_is_strbuf(v)) return sp_json_str(sp_poly_to_s(v));
+  return sp_json_str(sp_json_obj_to_s(v));
 }
 
 /* CRuby's json refuses to serialize past 100 levels of nesting, which is how
@@ -307,11 +334,11 @@ static void sp_json_val_b(jbuf *b, sp_RbVal v, int depth) {
      is the user's to keep */
   if (sp_obj_to_json_fn) {
     jb_to_heap(b);   /* the user's method may raise, throw, or return past us */
-    const char *uj = sp_obj_to_json_fn(v);
+    const char *uj = sp_obj_to_json_fn(sp_json_user_view(v));
     if (uj) { jb_gcs(b, uj, (size_t)sp_str_byte_len(uj)); return; }
   }
   { jb_to_heap(b);   /* the class's own #to_s can raise or allocate */
-    const char *js = sp_json_str(sp_json_obj_to_s(v));
+    const char *js = sp_json_obj_text(v);
     jb_gcs(b, js, (size_t)sp_str_byte_len(js)); }
 }
 
@@ -367,7 +394,7 @@ static void sp_json_pretty_val(jbuf *b, sp_RbVal v, int depth) {
        out with the surrounding indentation instead of on one line */
     if (sp_obj_to_json_fn) {
       jb_to_heap(b);   /* the user's method may raise, throw, or return past us */
-      const char *uj = sp_obj_to_json_fn(v);
+      const char *uj = sp_obj_to_json_fn(sp_json_user_view(v));
       if (uj) {
         /* the re-parsed document is this walk's only reference to it */
         sp_RbVal d = sp_json_parse(uj);
@@ -380,7 +407,7 @@ static void sp_json_pretty_val(jbuf *b, sp_RbVal v, int depth) {
        JSON string has no interior structure for the pretty printer to lay out,
        so it renders identically either way. */
     { jb_to_heap(b);
-      const char *js = sp_json_str(sp_json_obj_to_s(v));
+      const char *js = sp_json_obj_text(v);
       jb_gcs(b, js, (size_t)sp_str_byte_len(js)); }
     return;
   }
