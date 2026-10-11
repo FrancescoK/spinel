@@ -845,7 +845,10 @@ sp_oint sp_re_rindex_from_opt(mrb_regexp_pattern *pat, const char *str, sp_int s
     if (n <= 0 || caps[0] < 0) break;
     if ((size_t)at > limit) break;
     last = caps[0];
-    int64_t next = caps[1]; if (next <= pos) next = pos + 1; pos = next;
+    /* step one past this attempt's start, as sp_re_rindex does: an
+       overlapping attempt can start before `limit` ("aaa" rindex /aa/, 2
+       is 1), and jumping to the match end skipped it */
+    pos = (int64_t)at + 1;
   }
   return last < 0 ? sp_oint_nil() : sp_oint_of(sp_str_count_chars(str, (size_t)last));
 }
