@@ -4057,6 +4057,22 @@ void emit_coerce(Compiler *c, int node, TyKind slot, int how, const char *what, 
   int plan = repr_coerce_plan(c, node, slot, how, &from);
   switch (plan) {
   case CF_FIT:
+    /* a constant defined nowhere is untyped, so it fits any slot, and lowers
+       to its NameError raise with a Class value behind it: into a slot of
+       another kind (`Version = Version_C` beside `Version = "1.0"`) it
+       answers that slot's zero instead */
+    if ((nt_kind(c->nt, node) == NK_ConstantReadNode || nt_kind(c->nt, node) == NK_ConstantPathNode) &&
+        comp_ntype(c, node) == TY_UNKNOWN && slot != TY_POLY && slot != TY_CLASS && slot != TY_UNKNOWN) {
+      Buf t; memset(&t, 0, sizeof t);
+      emit_expr(c, node, &t);
+      const char *tx = t.p ? t.p : "";
+      if (strncmp(past_open_parens(tx), "sp_raise_cls(", 13) == 0)
+        buf_printf(b, "({ (void)%s; %s; })", tx, default_value_from_compiler(c, slot));
+      else buf_puts(b, tx);
+      free(t.p);
+      RCC(CF_FIT);
+      return;
+    }
     emit_expr(c, node, b);
     RCC(CF_FIT);
     return;
