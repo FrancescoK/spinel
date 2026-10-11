@@ -98,7 +98,10 @@ if [ ! -f "$REFDIR/.done" ]; then
   [ "$L" -ge 20 ] && [ ${#WT} -eq "$L" ] || { echo "cident: cannot place a reference tree beside $ROOT" >&2; exit 2; }
   git worktree remove --force "$WT" >/dev/null 2>&1; rm -rf "$WT"
   git worktree add --detach "$WT" "$SHA" >/dev/null 2>&1 || { echo "cident: cannot check out $REV" >&2; exit 2; }
-  [ -d "$ROOT/vendor" ] && [ ! -d "$WT/vendor" ] && cp -r "$ROOT/vendor" "$WT/vendor"
+  # -L: a vendor that is a symlink into another checkout is copied as its
+  # files; copied as the link, it dangled from /tmp and the reference built
+  # without the RBS extractor, so every inline-RBS program differed
+  [ -d "$ROOT/vendor" ] && [ ! -d "$WT/vendor" ] && cp -rL "$ROOT/vendor" "$WT/vendor"
   ( cd "$WT" && make -j"$JOBS" -s >/dev/null 2>&1 ) || {
     echo "cident: reference build failed" >&2; git worktree remove --force "$WT" >/dev/null 2>&1; exit 2; }
   # The reference compiles this tree's corpus, so a test added by the change
