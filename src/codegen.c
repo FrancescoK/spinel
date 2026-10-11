@@ -16118,6 +16118,71 @@ static void refuse_syserr_errno_const(Compiler *c) {
   }
 }
 
+/* The builtin a top-level reopening of a builtin class or module (`class
+   Module`, `class Integer`, `module Comparable`) stands for, as its builtin
+   id, or 0. The reopening has a user class id of its own, but the builtin's
+   values keep the builtin id, so the generated sp_reopened_builtin_id maps
+   one to the other for class identity (sp_class_eq). */
+static int reopened_builtin_class_id(Compiler *c, int ci) {
+  ClassInfo *k = &c->classes[ci];
+  if (!k->name || k->enclosing_class >= 0) return 0;
+  int bid = builtin_class_id(k->name);
+  return bid < 0 ? bid : 0;
+}
+
+/* ... and, for a class (not a module), the builtin whose superclass chain
+   the reopening continues up: Integer -> Numeric, Class -> Module. */
+int reopened_builtin_chain_id(Compiler *c, int ci) {
+  if (comp_class_is_module(c, &c->classes[ci]) || is_builtin_module_name(c->classes[ci].name)) return 0;
+  return reopened_builtin_class_id(c, ci);
+}
+
+static int program_reopens_builtin_class(Compiler *c) {
+  for (int i = 0; i < c->nclasses; i++) if (reopened_builtin_class_id(c, i)) return 1;
+  return 0;
+}
+
+/* Whether builtin module `mod` is already on builtin class `bid`'s own
+   chain, as the ancestors walk's builtin arm emits it (Numeric, String and
+   Symbol include Comparable; Array, Hash, Range, Enumerator and Struct
+   include Enumerable; Object includes Kernel): a reopening's `include` of it
+   adds nothing, as in CRuby. */
+static int builtin_chain_has_module(int bid, int mod) {
+  switch (mod) {
+  case -119: return bid != -117;                                  /* Kernel */
+  case -114: return bid == -100 || bid == -101 || bid == -113 || bid == -131 ||
+                    bid == -142 || bid == -102 || bid == -103;    /* Comparable */
+  case -115: return bid == -104 || bid == -105 || bid == -106 || bid == -144 ||
+                    bid == -145;                                  /* Enumerable */
+  default: return 0;
+  }
+}
+
+/* The ancestors walk's steps, on a builtin's arm, through the modules a
+   program's reopening of that builtin includes or prepends (mods/nmods per
+   class), last one first. A prepended module brings its own includes right
+   after it (incs/nincs, the closed include lists); an included module the
+   builtin's chain already has is not stepped twice. */
+static void emit_builtin_reopen_mod_arms(Compiler *c, int **mods, const int *nmods,
+                                         int **incs, const int *nincs, Buf *b) {
+  for (int ci = 0; ci < c->nclasses; ci++) {
+    if (nmods[ci] == 0 || !c->classes[ci].name) continue;
+    int bid = builtin_class_id(c->classes[ci].name);
+    if (bid >= 0) continue;
+    buf_printf(b, "        if(cur.cls_id==%d){", bid);
+    for (int q = nmods[ci] - 1; q >= 0; q--) {
+      int m = mods[ci][q];
+      int mb = m < 0 ? m : reopened_builtin_class_id(c, m);
+      if (!incs && mb && builtin_chain_has_module(bid, mb)) continue;
+      buf_printf(b, "if(sp_class_anc_step(a,want,sp_box_class(((sp_Class){%d}))))return 1;", m);
+      if (incs && m >= 0)
+        for (int r = nincs[m] - 1; r >= 0; r--)
+          buf_printf(b, "if(sp_class_anc_step(a,want,sp_box_class(((sp_Class){%d}))))return 1;", incs[m][r]);
+    }
+    buf_puts(b, "}\n");
+  }
+}
+
 /* The class machinery a program with classes or class values needs: class tables, names, is_a and the class-value runtime (codegen_program's steps, in their order) */
 static void emit_class_machinery(const NodeTable *nt, Compiler *c, Buf *b, char **isa_ext, size_t *isa_ext_at) {
   if (g_needs_class_machinery) {
@@ -16151,6 +16216,17 @@ static void emit_class_machinery(const NodeTable *nt, Compiler *c, Buf *b, char 
 
   /* sp_class_superclass: parent class for user classes (negative ids map to
      Object builtin). Returns ((sp_Class){-116}) for unknown/root. */
+  if (program_reopens_builtin_class(c)) {
+    buf_puts(b, "static int sp_reopened_builtin_id(int cls_id){\n  switch(cls_id){\n");
+    for (int i = 0; i < c->nclasses; i++) {
+      int bid = reopened_builtin_class_id(c, i);
+      if (bid) buf_printf(b, "  case %d: return %d;\n", i, bid);
+    }
+    buf_puts(b, "  default: return cls_id;\n  }\n}\n");
+  }
+  /* Forward decl: sp_builtin_superclass is defined below but used by
+     sp_class_superclass (a reopened builtin) and sp_class_is_ancestor. */
+  buf_puts(b, "static sp_Class sp_builtin_superclass(sp_Class c);\n");
   {
     buf_puts(b, "static sp_Class sp_class_superclass(sp_Class c){\n");
     /* A rescued exception's #class carries its name with cls_id 0, which would
@@ -16160,6 +16236,15 @@ static void emit_class_machinery(const NodeTable *nt, Compiler *c, Buf *b, char 
                  "return _id!=SP_CLASS_NIL_ID?((sp_Class){_id,NULL}):((sp_Class){-1,_p});}}\n");
     buf_puts(b, "  switch(c.cls_id){\n");
     for (int i = 0; i < c->nclasses; i++) {
+      /* a reopened builtin class continues up the builtin's own chain
+         (Integer -> Numeric, Class -> Module). A name-backed class with no
+         exception parent (a rescued user exception's #class, cls_id 0) is
+         not this class: it keeps the Object answer it had. */
+      int rbid = reopened_builtin_chain_id(c, i);
+      if (rbid) {
+        buf_printf(b, "  case %d: return c.name ? ((sp_Class){-116}) : sp_builtin_superclass(((sp_Class){%d}));\n", i, rbid);
+        continue;
+      }
       if (is_builtin_reopen(c->classes[i].name)) continue;
       int par = c->classes[i].parent;
       if (par >= 0) {
@@ -16175,8 +16260,6 @@ static void emit_class_machinery(const NodeTable *nt, Compiler *c, Buf *b, char 
     }
     buf_puts(b, "  default: return ((sp_Class){-116});\n  }\n}\n");
   }
-  /* Forward decl: sp_builtin_superclass is defined below but used by sp_class_is_ancestor. */
-  buf_puts(b, "static sp_Class sp_builtin_superclass(sp_Class c);\n");
   /* sp_class_is_ancestor(anc, desc): 1 if anc is an ancestor of desc (or same). */
   {
     /* sp_class_is_ancestor is declared before sp_builtin_superclass; used only by
@@ -16462,6 +16545,17 @@ static void emit_class_machinery(const NodeTable *nt, Compiler *c, Buf *b, char 
     buf_puts(b, "  sp_Class cur=c;\n");
     int depth2 = c->nclasses + 20;
     buf_printf(b, "  for(int _i=0;_i<%d;_i++){\n", depth2);
+    /* a reopened builtin class walks as the builtin: its modules (String's
+       Comparable) and the reopening's includes are on the builtin's arm */
+    { int any_rb = 0;
+      for (int i = 0; i < c->nclasses; i++) {
+        int rbid = reopened_builtin_chain_id(c, i);
+        if (!rbid) continue;
+        if (!any_rb) buf_puts(b, "    if(!cur.name)switch(cur.cls_id){");
+        buf_printf(b, "case %d:cur.cls_id=%d;break;", i, rbid);
+        any_rb = 1;
+      }
+      if (any_rb) buf_puts(b, "default:break;}\n"); }
     /* When the walk reaches a builtin class (a user class's eventual Object
        parent, or a builtin start), follow the full builtin chain with module
        includes so e.g. Dog.ancestors == [Dog, Animal, Object, Kernel,
@@ -16472,20 +16566,15 @@ static void emit_class_machinery(const NodeTable *nt, Compiler *c, Buf *b, char 
     buf_puts(b, "      if(cur.cls_id==-114||cur.cls_id==-115||cur.cls_id==-119||cur.cls_id==-130){\n");
     buf_puts(b, "        if(sp_class_anc_step(a,want,sp_box_class(cur)))return 1; break;\n      }\n");
     buf_puts(b, "      while(1){\n");
+    /* ... and the modules a reopening prepends (`class String; prepend M;
+       end`) come right before it, for the same reason */
+    emit_builtin_reopen_mod_arms(c, cls_preps, cls_npreps, cls_incs, cls_nincs, b);
     buf_puts(b, "        if(sp_class_anc_step(a,want,sp_box_class(cur)))return 1;\n");
     /* the modules a program's reopening of this builtin includes (`class
        Hash; include DeepMergeable; end`) come right after it: a Hash value
        carries the builtin's id, never the reopening's, so the includes
        recorded on the reopening were not reached by is_a? / === */
-    for (int ci = 0; ci < c->nclasses; ci++) {
-      if (cls_nincs[ci] == 0 || !c->classes[ci].name) continue;
-      int bid = builtin_class_id(c->classes[ci].name);
-      if (bid >= 0) continue;
-      buf_printf(b, "        if(cur.cls_id==%d){", bid);
-      for (int q = cls_nincs[ci] - 1; q >= 0; q--)
-        buf_printf(b, "if(sp_class_anc_step(a,want,sp_box_class(((sp_Class){%d}))))return 1;", cls_incs[ci][q]);
-      buf_puts(b, "}\n");
-    }
+    emit_builtin_reopen_mod_arms(c, cls_incs, cls_nincs, NULL, NULL, b);
     /* Numeric includes Comparable; Array/Hash include Enumerable; String includes Comparable */
     buf_puts(b, "        if(cur.cls_id==-113) if(sp_class_anc_step(a,want,sp_box_class(((sp_Class){-114}))))return 1;\n");  /* Numeric->Comparable */
     buf_puts(b, "        if(cur.cls_id==-104||cur.cls_id==-105||cur.cls_id==-106||cur.cls_id==-144||cur.cls_id==-145) if(sp_class_anc_step(a,want,sp_box_class(((sp_Class){-115}))))return 1;\n");  /* Array/Hash/Range/Enumerator/Struct->Enumerable */
@@ -17628,6 +17717,9 @@ char *codegen_program(const NodeTable *nt) {
      so the header installs none of them (sp_json_install_hooks) */
   else if (!g_tu_poly_values)
     buf_puts(&b, "#define SP_TU_NO_POLY_VALUES 1\n");
+  /* a reopened builtin class: sp_class_eq maps its id to the builtin's */
+  if (g_needs_class_machinery && program_reopens_builtin_class(c))
+    buf_puts(&b, "#define SP_TU_REOPENS_BUILTIN_CLASS 1\n");
   emit_runtime_include(c, &b, 0);
   /* the frozen literals' file-scope objects go here, once the unit is done */
   size_t fzl_at = b.len;

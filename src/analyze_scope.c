@@ -1313,6 +1313,10 @@ static void walk_scope_in(Compiler *c, int id, int scope_idx, int class_id, int 
         if (pc >= 0 && pc != child_class && !c->classes[pc].is_builtin_const)
           c->classes[child_class].enclosing_class = pc;
       }
+      /* `class ::B` names B at the top level wherever it is written: no
+         module encloses it, and its name is B */
+      else if (par < 0 && cp >= 0 && nt_kind(c->nt, cp) == NK_ConstantPathNode)
+        c->classes[child_class].enclosing_class = -1;
     }
     else if (cname) {
       child_class = comp_class_index(c, cname);  /* reopened class/module */

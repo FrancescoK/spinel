@@ -1832,10 +1832,23 @@ static inline const char *sp_class_val_display(sp_RbVal v) {
   sp_Class _c = {v.v.i, NULL};
   return sp_class_display_fn ? sp_class_display_fn(_c) : sp_class_to_s(_c);
 }
+/* A program that reopens a builtin class (`class Module ... end`) gives the
+   reopening a user class id of its own, while the builtin's values (a class
+   value's #class, an Integer) keep the builtin id. The generated unit maps
+   the reopening's id to the builtin's so both name one class. */
+#ifdef SP_TU_REOPENS_BUILTIN_CLASS
+static int sp_reopened_builtin_id(int cls_id);
+#endif
 /* Class identity: a name-backed class compares by its (complete) name, so it
    equals the id-backed class of the same name. */
 static inline sp_bool sp_class_eq(sp_Class a, sp_Class b) {
+#ifdef SP_TU_REOPENS_BUILTIN_CLASS
+  if (!a.name && !b.name)
+    return a.cls_id == b.cls_id ||
+           sp_reopened_builtin_id(a.cls_id) == sp_reopened_builtin_id(b.cls_id);
+#else
   if (!a.name && !b.name) return a.cls_id == b.cls_id;
+#endif
   const char *an = sp_class_to_s(a), *bn = sp_class_to_s(b);
   return (an && bn) ? strcmp(an, bn) == 0 : an == bn;
 }
