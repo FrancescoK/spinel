@@ -1455,6 +1455,10 @@ int        hash_new_blockless(Compiler *c, int recv);  /* blockless Hash.new / {
 int        const_owned_by_class(Compiler *c, const char *clsname, const char *constname);
 const char *const_get_recv_name(Compiler *c, int call, int recv);
 int        const_get_takes_value(Compiler *c, const char *rnm, const char *cgn);
+const char *const_get_value_key(Compiler *c, const char *rnm, const char *cgn);
+int        const_get_class_index(Compiler *c, const char *rnm, const char *cgn);
+int        qc_const_qualified(const char *qn);
+int        qc_leaf_qualified(const char *leaf);
 /* Class index of a `class_eval`/`module_eval { defs }` reopen, else -1.
    enclosing_class resolves bare/`self.` receivers (the class whose body we are
    directly in); ignored for constant receivers. */
