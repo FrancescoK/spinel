@@ -11832,10 +11832,13 @@ int emit_struct_new_call(Compiler *c, int id, int ci, int argc, const int *argv,
     if (subtree_has_side_effect(c, v) && i > last_eff) continue;
     int boxed = repr_of(c, v).kind == RK_BOXED;
     int t = ++g_tmp;
+    /* the value first, into its own buffer: a prelude it needs (an Array
+       literal it reads an element of) goes ahead of the declaration */
+    Buf ob; memset(&ob, 0, sizeof ob);
+    emit_oint_expr(c, v, cls->ivar_types[m], &ob);
     emit_indent(g_pre, g_indent);
-    buf_printf(g_pre, "%s _t%d = ", oint_ctype(cls->ivar_types[m]), t);
-    emit_oint_expr(c, v, cls->ivar_types[m], g_pre);
-    buf_puts(g_pre, ";\n");
+    buf_printf(g_pre, "%s _t%d = %s;\n", oint_ctype(cls->ivar_types[m]), t, ob.p ? ob.p : oint_nil(cls->ivar_types[m]));
+    free(ob.p);
     /* a boxed argument is read back boxed by the member's unbox: its value */
     int sl = boxed ? view_bind(v, "%s(_t%d.v)", cls->ivar_types[m] == TY_FLOAT ? "sp_box_float" : "sp_box_int", t)
                    : view_bind(v, "_t%d.v", t);
