@@ -1,0 +1,2 @@
+[ArgumentError, "boom", ["a:1", "b:2"]]
+[RuntimeError, "x", ["c:3"]]

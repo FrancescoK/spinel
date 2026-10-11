@@ -25057,6 +25057,10 @@ static int dyn_rest_takes(Compiler *c, int v, int k) {
   return dyn_blk_rest_takes(c, (int)(vs - c->scopes), k);
 }
 
+static int dyn_name_in(const char *s, const char *const *list) {
+  for (int i = 0; list[i]; i++) if (sp_streq(s, list[i])) return 1;
+  return 0;
+}
 static void dyn_reach_value(Compiler *c, int v, int k, int depth, DynReach *r) {
   const NodeTable *nt = c->nt;
   if (v < 0 || depth > 4) { r->unknown = 1; return; }
@@ -25079,6 +25083,40 @@ static void dyn_reach_value(Compiler *c, int v, int k, int depth, DynReach *r) {
     dyn_fold(r, dyn_lit_bits(c, vk == NK_CallNode ? nt_ref(nt, v, "block") : v), k, pn != NULL, open,
              q ? q->type : TY_UNKNOWN);
     if (pn && !r->pname) r->pname = pn;
+    return;
+  }
+  /* a value chosen at run time: each arm's */
+  if (vk == NK_IfNode || vk == NK_UnlessNode || vk == NK_ParenthesesNode) {
+    int arms[2] = { -1, -1 };
+    if (vk == NK_ParenthesesNode) arms[0] = nt_ref(nt, v, "body");
+    else {
+      arms[0] = nt_ref(nt, v, "statements");
+      arms[1] = nt_ref(nt, v, vk == NK_UnlessNode ? "else_clause" : "subsequent");
+    }
+    for (int ai = 0; ai < 2; ai++) {
+      int arm = arms[ai];
+      if (arm >= 0 && nt_kind(nt, arm) == NK_ElseNode) arm = nt_ref(nt, arm, "statements");
+      /* a missing arm is nil, which nothing calls */
+      if (arm < 0) continue;
+      int bn = 0; const int *bb = nt_arr(nt, arm, "body", &bn);
+      if (nt_kind(nt, arm) == NK_StatementsNode && bn == 0) continue;
+      /* an arm is a smaller subtree, not a step through a name: no depth */
+      dyn_reach_value(c, bb && bn > 0 ? bb[bn - 1] : arm, k, depth, r);
+    }
+    return;
+  }
+  /* nil is never called; a Symbol is called as its to_proc, which sends
+     the name to the argument: an append when the name is one of String's
+     in-place methods, or a method of the program's own */
+  if (vk == NK_NilNode) return;
+  if (vk == NK_SymbolNode) {
+    const char *sv = nt_str(nt, v, "value");
+    static const char *const inplace[] = { "<<", "concat", "insert", "prepend", "replace",
+      "clear", "[]=", "setbyte", "force_encoding", "encode!", NULL };
+    size_t sl = sv ? strlen(sv) : 0;
+    if (!sv || (sl > 0 && sv[sl - 1] == '!') || dyn_name_in(sv, inplace) ||
+        comp_method_index(c, sv) >= 0)
+      r->app = 1;
     return;
   }
   TyKind vt = comp_ntype(c, v);
@@ -25608,7 +25646,12 @@ void dyn_open_reach(Compiler *c, int n, int k, DynReach *r) {
   int shift;
   memset(r, 0, sizeof *r);
   if (!g_dyn.fresh) dyn_memo_reset(c);
-  if (dyn_open_site(c, n, &shift) && shift) dyn_reach_value(c, nt_ref(c->nt, n, "receiver"), k - shift, 0, r);
+  if (dyn_open_site(c, n, &shift)) {
+    /* the values the boxed receiver can hold, followed as at a call on a
+       proc value: what is not followed is unknown */
+    if (!shift) r->argc1 = call_plain_argc(c, n) + 1;
+    dyn_reach_value(c, nt_ref(c->nt, n, "receiver"), k - shift, 0, r);
+  }
   else r->unknown = 1;
   if (r->unknown && !r->app && dyn_any_appender(c)) r->app = 1;
 }
@@ -39296,6 +39339,7 @@ static void an_phase_class_structure(Compiler *c) {
      the copies its modules put in (#7449) */
   rewrite_array_subclass_calls(c);
   rewrite_attr_supers(c);
+  rewrite_self_attr_empty_writes(c);
   specialize_inherited_cls_new(c);
 
   /* collect top-level `include <Mod>` / `extend <Mod>` calls so bare method

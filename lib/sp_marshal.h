@@ -32,6 +32,9 @@ void sp_mar_w(sp_mar_buf *b, sp_RbVal v);
 /* An Array's or Hash's own record (`[` or `{`), its link already taken: the
    body of a builtin subclass instance's `C` record (#7449). */
 void sp_mar_w_body(sp_mar_buf *b, sp_RbVal v);
+/* An exception's `o` record up to its own ivars: the class, `nivar` + 2, its
+   message and its backtrace (an sp_Exception or a subclass laid out like one). */
+void sp_mar_w_exc_head(sp_mar_buf *b, const char *cls, void *p, long nivar);
 
 /* Runtime vtable filled by the generated TU (sp_tu_init). The read side uses
    the sp_json_* hooks in sp_gc.h instead. */

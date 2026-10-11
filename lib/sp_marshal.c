@@ -11,6 +11,7 @@
 #include "sp_dtoa.h"      /* sp_format_float / sp_read_float (locale-independent) */
 #include "sp_string.h"    /* sp_String: a shared String handle in a box */
 #include "sp_range.h"     /* the three Range kinds, their boxes and constructors */
+#include "sp_exc.h"       /* sp_Exception: an exception's message and backtrace */
 #include <string.h>
 #include "sp_setjmp.h"
 #include <math.h>
@@ -173,6 +174,17 @@ static void sp_mar_w_int(sp_mar_buf *b, sp_int n) {
   sp_mar_b(b, 'l'); sp_mar_b(b, w < 0 ? '-' : '+'); sp_mar_long(b, (long)nwords);
   for (size_t i = 0; i < nwords * 2; i++) sp_mar_b(b, (unsigned char)(i < 8 ? m >> (8 * i) : 0));
 }
+/* An exception, as CRuby writes one: `o`, its class, then `mesg` (the
+   message, nil when none was given) and `bt` (the backtrace set on it, else
+   nil). `nivar` more ivars follow: a user subclass's own, written by its
+   sp_marshal_obj_dump arm. */
+void sp_mar_w_exc_head(sp_mar_buf *b, const char *cls, void *p, long nivar) {
+  sp_Exception *e = (sp_Exception *)p;
+  const char *m = sp_exc_msg_text(e);
+  sp_mar_b(b, 'o'); sp_mar_sym(b, cls); sp_mar_long(b, 2 + nivar);
+  sp_mar_sym(b, "mesg"); sp_mar_w(b, m ? mk_str(m) : mk_nil());
+  sp_mar_sym(b, "bt"); sp_mar_w(b, e->backtrace ? sp_box_str_array(e->backtrace) : mk_nil());
+}
 void sp_mar_w_body(sp_mar_buf *b, sp_RbVal v) {
   if (sp_json_kind_fn(v) == 2) { sp_mar_w_hash(b, v); return; }
   sp_mar_b(b, '['); sp_int n = sp_json_len_fn(v); sp_mar_long(b, n);
@@ -258,6 +270,10 @@ void sp_mar_w(sp_mar_buf *b, sp_RbVal v) {
           sp_mar_b(b, '"');
           sp_mar_bytes(b, h && h->data ? h->data : "", h && h->data ? (size_t)h->len : 0);
           if (!binary) { sp_mar_long(b, 1); sp_mar_sym(b, "E"); sp_mar_b(b, 'T'); }
+        }
+        else if (v.cls_id == SP_BUILTIN_EXCEPTION) {
+          if (sp_mar_seen(b, v.v.p)) break;
+          sp_mar_w_exc_head(b, sp_exc_class_name((sp_Exception *)v.v.p), v.v.p, 0);
         }
         else if (v.cls_id >= 0) {  /* user object */
           if (sp_mar_seen(b, v.v.p)) break;

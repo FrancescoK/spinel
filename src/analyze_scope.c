@@ -6045,6 +6045,67 @@ void rewrite_attr_supers(Compiler *c) {
   }
 }
 
+/* `self.items = []` through an attribute writer is `@items = []`: the writer
+   only stores its argument. An empty literal has no type of its own until
+   its uses decide one, and through the writer's parameter they never did --
+   the ivar stayed boxed, where `@items = []` became an Array of what was
+   pushed, and the Enumerable methods written in Ruby (group_by, ...) were not
+   routed to a receiver of no known type:
+
+     attr_accessor :results
+     def initialize = self.results = []
+     def report = results.group_by { |r| r.class }   # NoMethodError
+
+   Only where the name is the attribute's in every class self can be: no def
+   of the writer in the chain or in a subclass, and no prepend. */
+void rewrite_self_attr_empty_writes(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    int recv = nt_ref(nt, id, "receiver");
+    if (recv < 0 || nt_kind(nt, recv) != NK_SelfNode) continue;
+    if (nt_ref(nt, id, "block") >= 0) continue;
+    const char *cop = nt_str(nt, id, "call_operator");
+    if (cop && sp_streq(cop, "&.")) continue;
+    const char *name = nt_str(nt, id, "name");
+    char base[256];
+    if (!name || !name_is_plain_setter(name) || !setter_base_name(name, base, sizeof base)) continue;
+    int args = nt_ref(nt, id, "arguments");
+    int an = 0;
+    const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    if (an != 1) continue;
+    NodeKind vk = nt_kind(nt, av[0]);
+    int en = 0;
+    if (vk == NK_ArrayNode) nt_arr(nt, av[0], "elements", &en);
+    else if (vk == NK_HashNode) nt_arr(nt, av[0], "elements", &en);
+    else continue;
+    if (en != 0) continue;
+    Scope *s = comp_scope_of(c, id);
+    if (!s || s->class_id < 0 || s->is_cmethod) continue;
+    int ci = s->class_id;
+    ClassInfo *cls = &c->classes[ci];
+    if (comp_class_is_module(c, cls) || cls->is_struct || cls->is_native_class) continue;
+    if (!comp_writer_in_chain(c, ci, base, NULL) || comp_method_in_chain(c, ci, name, NULL) >= 0) continue;
+    if (comp_prep_chain_target(c, ci, name)) continue;
+    int over = 0;
+    for (int k = 0; k < c->nclasses && !over; k++)
+      if (k != ci && is_descendant(c, k, ci) && comp_method_in_class(c, k, name) >= 0) over = 1;
+    if (over) continue;
+    char ivn[260];
+    snprintf(ivn, sizeof ivn, "@%s", base);
+    int val = av[0];
+    int line = (int)nt_int(nt, id, "node_line", 0);
+    int file = (int)nt_int(nt, id, "node_file", 0);
+    nt_node_reset(nt, id, "InstanceVariableWriteNode");
+    nt_node_set_str(nt, id, "name", ivn);
+    nt_node_set_ref(nt, id, "value", val);
+    if (line) nt_node_set_int(nt, id, "node_line", line);
+    if (file) nt_node_set_int(nt, id, "node_file", file);
+    comp_ivar_intern(cls, ivn);
+  }
+}
+
 /* A module method named by `Mod.instance_method(:m)` / `Mod.method(:m)` is
    referenced directly, so its own function must be emitted even though an
    include copied it into a class (which marks the source transplanted and
@@ -6426,6 +6487,13 @@ void register_extends(Compiler *c) {
   if (did_clone) register_locals(c);
 }
 
+/* A call on the class method's own self: bare, or `self.m` (these passes run
+   before the desugar that drops an explicit self receiver). */
+static int cm_call_on_self(const NodeTable *nt, int id) {
+  int r = nt_ref(nt, id, "receiver");
+  return r < 0 || nt_kind(nt, r) == NK_SelfNode;
+}
+
 /* Does the inherited cls method `mi` (defined on def_cls), run as a class method
    of `ci`, reach a bare cmethod call that resolves to a DIFFERENT method for ci
    -- directly, or TRANSITIVELY through a non-overriding intermediate cmethod?
@@ -6445,7 +6513,7 @@ static int cmethod_reaches_override_walk(Compiler *c, int mi, int ci, int def_cl
   const NodeTable *nt = c->nt;
   NT_FOREACH_KIND(nt, NK_CallNode, id) {
     if (c->nscope[id] != mi) continue;
-    if (nt_ref(nt, id, "receiver") >= 0) continue;   /* receiverless only */
+    if (!cm_call_on_self(nt, id)) continue;
     const char *nm = nt_str(nt, id, "name");
     if (!nm || sp_streq(nm, "new")) continue;          /* direct `new` is the caller's has_new path */
     int sub_def = -1;
@@ -6489,7 +6557,7 @@ static int cmethod_reaches_class_ivar_walk(Compiler *c, int mi, int def_cls, uns
   }
   NT_FOREACH_KIND(nt, NK_CallNode, id) {
     if (c->nscope[id] != mi) continue;
-    if (nt_ref(nt, id, "receiver") >= 0) continue;   /* receiverless only */
+    if (!cm_call_on_self(nt, id)) continue;
     const char *nm = nt_str(nt, id, "name");
     if (!nm || sp_streq(nm, "new")) continue;
     int sub_def = -1;
@@ -6532,7 +6600,7 @@ static int cmethod_calls_specialized_sibling(Compiler *c, int mi, int ci, int de
   const NodeTable *nt = c->nt;
   NT_FOREACH_KIND(nt, NK_CallNode, id) {
     if (c->nscope[id] != mi) continue;
-    if (nt_ref(nt, id, "receiver") >= 0) continue;
+    if (!cm_call_on_self(nt, id)) continue;
     const char *nm = nt_str(nt, id, "name");
     if (!nm || sp_streq(nm, "new")) continue;
     int sdef = -1;
@@ -6635,12 +6703,20 @@ static void specialize_cmethod_for(Compiler *c, int mi, int def_cls, int ci) {
     if (c->nscope[id] != mi) continue;
     const char *ty = nt_type(nt, id);
     if (!ty || !sp_streq(ty, "CallNode")) continue;
-    if (nt_ref(nt, id, "receiver") >= 0) continue;
+    if (!cm_call_on_self(nt, id)) continue;
     const char *nm = nt_str(nt, id, "name");
     if (!nm || sp_streq(nm, "new")) continue;
     int sub_def = -1;
     int sub_mi = comp_cmethod_in_chain(c, ci, nm, &sub_def);
     if (sub_mi < 0 || sub_def == ci) continue;   /* unresolved, or ci-native */
+    /* The nearest one may be a copy just made for an intermediate class (Test
+       between Runnable and AddTest): copied from it, ci's version would call
+       that class's own copies, with that class as self. Copy the original. */
+    for (int o = 1; o < sub_mi; o++)
+      if (c->scopes[o].def_node == c->scopes[sub_mi].def_node && c->scopes[o].is_cmethod) {
+        sub_mi = o; sub_def = c->scopes[o].class_id; break;
+      }
+    if (sub_def == ci) continue;
     int sub_new = 0;
     if (cmethod_needs_specialization(c, sub_mi, ci, sub_def, &sub_new))
       specialize_cmethod_for(c, sub_mi, sub_def, ci);

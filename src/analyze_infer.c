@@ -7819,6 +7819,17 @@ static TyKind infer_call_inner(Compiler *c, int id) {
     if (self && self->is_cmethod && self->class_id >= 0) return TY_STRING;
   }
 
+  /* `public_instance_methods(true)` on self in a class method: the class's
+     method list, boxed as on the constant */
+  if ((recv < 0 || nt_kind(nt, recv) == NK_SelfNode) && argc <= 1 &&
+      (sp_streq(name, "instance_methods") || sp_streq(name, "public_instance_methods"))) {
+    Scope *self = comp_scope_of(c, id);
+    if (self && self->is_cmethod && self->class_id >= 0 &&
+        comp_cmethod_in_chain(c, self->class_id, name, NULL) < 0 &&
+        !comp_class_is_module(c, &c->classes[self->class_id]))
+      return TY_POLY;
+  }
+
   { TyKind r; if (infer_block_kernel_call(c, id, nt, name, recv, rt, &r)) return r; }
 
   { TyKind r; if (infer_constant_query_call(c, id, nt, name, recv, argc, argv, &r)) return r; }

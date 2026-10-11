@@ -2688,6 +2688,56 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
 }
 
 /* superclass, class, the comparison of two classes, and the methods of a Class value (TY_CLASS) */
+/* Klass.instance_methods / public_instance_methods with the inherited ones
+   (no argument, or `true`): the list an instance answers #methods or
+   #public_methods with, which the class chain fixes at compile time. On a
+   constant, or on self in a class method (minitest's
+   `public_instance_methods(true).grep(/^test_/)`), where an inherited method
+   runs on whichever class received the call. */
+static int emit_class_instance_methods_all(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv) {
+  int prot = sp_streq(name, "instance_methods");
+  if (!prot && !sp_streq(name, "public_instance_methods")) return 0;
+  if (argc > 1 || (argc == 1 && nt_kind(nt, argv[0]) != NK_TrueNode)) return 0;
+  int ci = -1, si = -1, dyn = 0;
+  if (recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode)
+    ci = comp_class_index(c, nt_str(nt, recv, "name"));
+  else if (recv < 0 || nt_kind(nt, recv) == NK_SelfNode) {
+    Scope *s = comp_scope_of(c, id);
+    if (s && s->is_cmethod && s->class_id >= 0 && comp_cmethod_in_chain(c, s->class_id, name, NULL) < 0) {
+      ci = s->class_id;
+      si = (int)(s - c->scopes);
+    }
+  }
+  if (ci < 0) return 0;
+  if (si >= 0) {
+    /* a spliced class method has its receiving class at the site; any
+       other that takes it reads it from _sp_cls */
+    if (c->scopes[si].yields && g_self && g_emitting_class_id >= 0) ci = g_emitting_class_id;
+    else dyn = cmethod_takes_self_cls(c, si);
+  }
+  /* every class the call can run on lists ahead of time, or none does */
+  if (comp_class_is_module(c, &c->classes[ci])) return 0;
+  for (int k = 0; k < c->nclasses; k++)
+    if ((k == ci || (dyn && is_descendant(c, k, ci))) && !an_object_methods_listable(c, k, name)) return 0;
+  int rt = ++g_tmp;
+  buf_printf(b, "({ sp_PolyArray *_t%d = NULL; ", rt);
+  if (dyn) buf_puts(b, "switch (_sp_cls.cls_id) {");
+  for (int k = 0; k < c->nclasses; k++) {
+    if (k != ci && (!dyn || !is_descendant(c, k, ci))) continue;
+    ReflNames r = {0};
+    refl_class_instance_methods(c, k, 1, prot, &r);
+    if (dyn) buf_printf(b, " case %d:", k);
+    buf_printf(b, " _t%d = ", rt);
+    refl_emit_sym_array(c, k, &r, b);
+    buf_puts(b, ";");
+    if (dyn) buf_puts(b, " break;");
+    refl_free(&r);
+  }
+  if (dyn) buf_puts(b, " default: break; }");
+  buf_printf(b, " sp_box_poly_array(_t%d ? _t%d : sp_PolyArray_new()); })", rt, rt);
+  return 1;
+}
+
 int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv) {
   /* SomeClass.superclass -> the parent class as sp_Class value */
   if (recv >= 0 && argc == 0 && sp_streq(name, "superclass") &&
@@ -2940,6 +2990,7 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
     }
   }
 
+  if (emit_class_instance_methods_all(c, id, b, nt, name, recv, argc, argv)) return 1;
   /* TY_CLASS method dispatch */
   if (recv >= 0 && comp_ntype(c, recv) == TY_CLASS) {
     int _clt = ++g_tmp;
