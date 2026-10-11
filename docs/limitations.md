@@ -790,6 +790,15 @@ assignment binds. Build the array as a general Array where it is created, or
 give the parameter the argument's kind (an rbs seed, or call sites that all
 pass the same kind).
 
+#### ENV passed around as a value is a snapshot
+
+`ENV` used as a value rather than a receiver (`params["e"] = ENV`,
+`lookup(ENV)`, `def m(env = ENV)`, `@env = ENV`) is a Hash of the
+environment taken where `ENV` is read. Reads through it answer as CRuby's
+do for the variables set at that point. It does not see variables set
+later, and writing through it (`env["K"] = "v"`) changes the Hash, not the
+process environment. Its class is Hash, not Object.
+
 #### Some ENV result routes cannot carry a shared String yet
 
 With `--share-strings`, `ENV.store` and `ENV.[]=` return their value
