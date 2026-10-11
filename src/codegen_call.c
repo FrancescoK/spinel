@@ -26356,6 +26356,24 @@ void emit_bind_call_boxed(Compiler *c, int id, int target, int kn, const char *s
 }
 
 void emit_exc_exception(Compiler *c, int recv, int arg, Buf *b) {
+  /* `e.exception(e)`: an argument that is the receiver itself answers the
+     receiver (CRuby's exc_exception), not a copy with its text as message */
+  TyKind at = comp_ntype(c, arg);
+  if (at == TY_EXCEPTION || ty_is_object(at)) {
+    TyKind xrt0 = comp_ntype(c, recv);
+    int ta = ++g_tmp, tb = ++g_tmp;
+    buf_puts(b, "({ ");
+    emit_ctype(c, xrt0, b); buf_printf(b, " _t%d = ", ta); emit_expr(c, recv, b);
+    buf_printf(b, "; SP_GC_ROOT(_t%d); void *_t%d = (void *)(", ta, tb); emit_expr(c, arg, b);
+    buf_printf(b, "); (void *)_t%d == _t%d ? _t%d : ", ta, tb, ta);
+    if (ty_is_object(xrt0)) buf_printf(b, "(sp_%s *)", c->classes[ty_object_class(xrt0)].c_name);
+    buf_printf(b, "sp_exc_exception((sp_Exception *)_t%d, sp_exc_msg_given(sp_poly_to_s(", ta);
+    { Buf cb; memset(&cb, 0, sizeof cb); emit_ctype(c, at, &cb);
+      char ax[160]; snprintf(ax, sizeof ax, "((%s)_t%d)", cb.p ? cb.p : "void *", tb); free(cb.p);
+      emit_boxed_text(c, at, ax, b); }
+    buf_puts(b, "))); })");
+    return;
+  }
   /* #exception answers an instance of the RECEIVER's class -- a payload
      copy, so a user subclass keeps its own fields -- and inference types
      it that way. The helper is declared on the base, so name the class
