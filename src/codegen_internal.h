@@ -215,6 +215,10 @@ int strbuf_cond_has_handle_leaf(Compiler *c, int v, int depth);
    a route (read once, nil raising NoMethodError for id), 0 neither
    (codegen_stmt.c) */
 int strbuf_recv_handle(Compiler *c, int id, int recv, char *out, size_t cap);
+/* strbuf_recv_handle, and under --share-strings a route whose text outgrows
+   out, emitted whole into lb instead (emit_recv_route_handle; 2): the
+   handle's text is lb's where it has one, else out's */
+int strbuf_recv_handle_any(Compiler *c, int id, int recv, char *out, size_t cap, Buf *lb);
 /* Root receiver handle _t<t> when strbuf_recv_handle answered a route (hr
    2) and something can allocate while it is live: the mutator (argv NULL)
    or one of its argc ty operands argv; a slot's needs none (codegen_stmt.c) */

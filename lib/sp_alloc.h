@@ -1016,8 +1016,12 @@ static inline sp_bool sp_str_fd_owner_frozen(const char *s) {
 static inline sp_bool sp_str_is_frozen_val(const char *s) {
   if (!s) return TRUE;
   unsigned char m = ((const unsigned char *)s)[-1];
+  /* one test of the frozen marks and 0xfd at once (bits 0, 7, 9 and 12 of
+     m - 0xf1): an unfrozen string pays nothing for the handle's payload */
+  unsigned d = (unsigned)m - 0xf1u;
+  if (d > 12u || !((0x1281u >> d) & 1u)) return FALSE;
   if (SP_UNLIKELY(m == 0xfd)) return sp_str_fd_owner_frozen(s);
-  return m == 0xf1 || m == 0xfa || m == 0xf8;
+  return TRUE;
 }
 static inline void sp_str_check_mutable(const char *s) {
   if (sp_str_is_frozen_val(s)) sp_raise_frozen_str(s);

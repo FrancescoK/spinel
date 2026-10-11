@@ -1,0 +1,33 @@
+["aab1Z", 1]
+["3", "2aab1", 1]
+["a", "ab1", 1]
+["A", "AB", 1]
+["a", "ab1", 1]
+"a"
+["ab12", 1]
+["AAB1234", 1]
+["32Qab1", 1]
+["RR", 1]
+["Zab123", 1]
+""
+["", 1]
+<>
+["", 1]
+[90, "Zab", 1]
+"aab1"
+["aab1", #<Encoding:BINARY (ASCII-8BIT)>, 1]
+["aab12", #<Encoding:BINARY (ASCII-8BIT)>, 1]
+<aab1>
+[#<Encoding:BINARY (ASCII-8BIT)>, 1]
+["aab1", #<Encoding:BINARY (ASCII-8BIT)>, 1]
+["AAB", 1]
+["AAB", 1]
+["AAB", 1]
+["AAB", 1]
+[nil, "AAB", 1]
+[90, "ZAB", 1]
+nil
+["ab", 1]
+[true, true, 1]
+[true, true, 1]
+[nil, false, 1]

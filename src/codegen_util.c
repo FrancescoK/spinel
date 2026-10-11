@@ -6968,6 +6968,10 @@ static int node_is_oint_asked(Compiler *c, int node) {
       /* nil when the receiver is -- only where a guard stands (a receiver
          that cannot be nil, `3&.fdiv(2)`, has neither guard nor nil) */
       if (sn_guard_pending(c, node)) return 1;
+      /* (--share-strings: so is one on a handle, which the guard holds,
+         `id(s)&.setbyte(0, 90)`, as emit_call_safe_nav_arms guards it) */
+      int sr = nt_ref(nt, node, "receiver");
+      if (repr_share_rule(c) && sr >= 0 && repr_of(c, sr).as_ty == TY_STRBUF && repr_of(c, sr).kind != RK_BOXED) return 1;
     }
     const char *nm = nt_str(nt, node, "name");
     if (!nm) return 0;

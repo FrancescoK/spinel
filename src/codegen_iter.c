@@ -5419,6 +5419,11 @@ static int emit_iteration_stmt_sn(Compiler *c, int id, Buf *b, int indent) {
   int t = ++g_tmp;
   Buf gb; memset(&gb, 0, sizeof gb);
   Buf rb; memset(&rb, 0, sizeof rb);
+  /* (--share-strings: what the receiver put ahead of the statement goes
+     with a declined guard, or the receiver runs there and again in the form
+     that takes the statement) */
+  Buf *pre0 = g_pre;
+  size_t pre0_mark = pre0 ? pre0->len : 0;
   /* an Integer / Float receiver is held as its oint, the nil the guard tests */
   if (boxed) emit_boxed(c, recv, &rb); else if (oint_kind(rt)) emit_oint_expr(c, recv, rt, &rb); else emit_expr(c, recv, &rb);
   emit_indent(&gb, indent);
@@ -5439,6 +5444,10 @@ static int emit_iteration_stmt_sn(Compiler *c, int id, Buf *b, int indent) {
   emit_indent(&gb, indent);
   buf_puts(&gb, "} }\n");
   if (ok) buf_puts(b, gb.p ? gb.p : "");
+  else if (repr_share_rule(c) && pre0 && g_pre == pre0 && pre0->len > pre0_mark) {
+    pre0->len = pre0_mark;
+    pre0->p[pre0_mark] = '\0';
+  }
   free(gb.p);
   return ok;
 }

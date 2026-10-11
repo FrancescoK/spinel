@@ -1155,12 +1155,25 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       int th = ++g_tmp;
       char thr[24];
       snprintf(thr, sizeof thr, "_t%d", th);
-      buf_printf(b, "({ sp_String *%s = %s; SP_GC_ROOT(%s); (void)(", thr, fzref, thr);
-      int fzcall = nt_kind(nt, fzb) == NK_CallNode;
-      int mk = fzcall ? view_bind(fzb, "%s", thr) : -1;
-      emit_expr(c, recv, b);
-      if (fzcall) view_unbind(mk);
-      buf_printf(b, "); sp_String_freeze(%s); sp_str_freeze_val(", thr);
+      /* links that only answer their receiver, changing no bytes
+         (`s.to_s.freeze`, `s.itself`), have nothing to run: no chain is
+         emitted for them */
+      int fzrun = 0;
+      for (int k = fzu; k != fzb && k >= 0 && !fzrun; k = unwrap_parens(c, nt_ref(nt, k, "receiver"))) {
+        if (nt_kind(nt, k) != NK_CallNode || call_plain_argc(c, k) != 0 || !str_self_call(nt, k) ||
+            bop_name_mutates(nt_str(nt, k, "name"), BOP_MUT_LOCAL))
+          fzrun = 1;
+      }
+      buf_printf(b, "({ sp_String *%s = %s; SP_GC_ROOT(%s);", thr, fzref, thr);
+      if (fzrun) {
+        int fzcall = nt_kind(nt, fzb) == NK_CallNode;
+        int mk = fzcall ? view_bind(fzb, "%s", thr) : -1;
+        buf_puts(b, " (void)(");
+        emit_expr(c, recv, b);
+        buf_puts(b, ");");
+        if (fzcall) view_unbind(mk);
+      }
+      buf_printf(b, " sp_String_freeze(%s); sp_str_freeze_val(", thr);
       /* (the default build answers the String's own bytes, as the chain's
          read was; a reader call typed as the handle reads as the handle) */
       if (!repr_share_rule(c)) buf_printf(b, "sp_String_cstr(%s)", thr);
@@ -1598,6 +1611,34 @@ static int emit_safe_nav_self_handle(Compiler *c, int id, int recv, Buf *b) {
   free(hb.p);
   return 1;
 }
+/* --share-strings: `x&.slice!(0)`, `x&.setbyte(i, b)` (a String position
+   mutator) where x is a call answering its receiver over a handle: the guard
+   holds x's handle, run once, and the call takes it from there
+   (ran_first_handle), where a guard holding x's bytes left the mutator a
+   copy to cut. */
+static int emit_safe_nav_route_hold(Compiler *c, int id, int recv, const char *name, Buf *b) {
+  TyKind ret = repr_of(c, id).as_ty;
+  if (!repr_share_rule(c) || g_sn_skip == id || !name || !is_string_position_mutator(name) ||
+      (ret != TY_STRING && !oint_kind(ret)) || repr_of(c, id).kind == RK_BOXED || repr_of(c, recv).as_ty != TY_STRING ||
+      !strbuf_self_route(c, recv) || g_n_argov >= MAX_ARG_OVERRIDE)
+    return 0;
+  int th = ++g_tmp, tv = ++g_tmp;
+  Buf vb; memset(&vb, 0, sizeof vb);
+  buf_printf(b, "({ sp_String *_t%d = ", th);
+  emit_strbuf_handle_of(c, unwrap_parens(c, recv), b);
+  buf_printf(b, "; SP_GC_ROOT(_t%d); const char *_t%d = _t%d ? sp_String_cstr(_t%d) : NULL; (void)_t%d; ",
+             th, tv, th, th, tv);
+  int mark = g_n_argov;
+  ran_first_bind(recv, tv, th);
+  int sv = g_sn_skip; g_sn_skip = id;
+  /* (an Integer answer, setbyte's, is the `&.`'s nil-able form) */
+  if (oint_kind(ret)) emit_oint_expr(c, id, ret, &vb); else emit_expr(c, id, &vb);
+  g_sn_skip = sv;
+  view_unbind(mark);
+  buf_printf(b, "_t%d ? %s : %s; })", th, vb.p ? vb.p : "NULL", oint_kind(ret) ? oint_nil(ret) : "(const char *)NULL");
+  free(vb.p);
+  return 1;
+}
 /* safe navigation (&.): a nil receiver answers nil, any other the call, guarded by a nil test */
 int emit_call_safe_nav_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv) {
   /* Safe navigation &. : nil receiver -> return nil/0; non-nil -> emit conditional */
@@ -1614,6 +1655,7 @@ int emit_call_safe_nav_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
         return 1;
       }
       if (emit_safe_nav_self_handle(c, id, recv, b)) return 1;
+      if (emit_safe_nav_route_hold(c, id, recv, name, b)) return 1;
       if (emit_safe_nav_freeze_handle(c, id, name, recv, b)) return 1;
       /* The poly builtins that answer an UNBOXED scalar: the safe-nav result is
          poly (it may be nil), so the value arm has to be boxed to agree with

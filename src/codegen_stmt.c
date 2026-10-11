@@ -2306,14 +2306,16 @@ int strbuf_value_carries(Compiler *c, int v) {
 /* A builtin value route can publish its handle as a method's return too.
    The return analysis and tail emitter ask the same route predicate.
    A fresh result has no existing identity for the tail to publish. */
+static int self_call_answers_nil(Compiler *c, int v);
 int strbuf_builtin_tail(Compiler *c, int v) {
   if (!repr_share_rule(c) || !c->share || v < 0 || nt_kind(c->nt, v) != NK_CallNode ||
       an_arg_is_shared_handle(c, v)) return 0;
   /* Only the block route carries a demanded handle through &.'s guard.
      A conversion does too: its route answers the operand's handle, nil for
-     a nil operand. */
+     a nil operand; and so does freeze, which nil answers too (`x&.freeze`
+     is `x.freeze`) */
   if (sn_guard_pending(c, v) && strbuf_route_operand(c, v) != v && repr_string_conversion_operand(c, v) < 0 &&
-      repr_boxed_to_s_operand(c, v) < 0) return 0;
+      repr_boxed_to_s_operand(c, v) < 0 && !self_call_answers_nil(c, v)) return 0;
   TyKind t = repr_of(c, v).ty;
   return (t == TY_STRING || t == TY_STRBUF) && cplan_user_fresh(c, v)->dispatch == CP_NONE &&
          !share_node_fresh(c, v) && strbuf_value_carries(c, v);
@@ -2438,6 +2440,13 @@ int emit_recv_route_handle(Compiler *c, int id, int recv, Buf *b) {
     if (!strbuf_self_route(c, recv)) return 0;
     emit_strbuf_handle_of(c, unwrap_parens(c, recv), &hb);
   }
+  /* a `&.` call skips a nil receiver, which the raise below would not:
+     its guard takes the receiver (emit_call_safe_nav_arms) */
+  if (!nonnil && call_is_safe_nav(c->nt, id)) {
+    free(hb.p);
+    if (pre && g_pre == pre && pre->len > pre_mark) { pre->len = pre_mark; pre->p[pre_mark] = '\0'; }
+    return 0;
+  }
   if (nonnil) buf_puts(b, hb.p);
   else {
     /* unrooted: nothing allocates between the read and the value but the
@@ -2451,6 +2460,13 @@ int emit_recv_route_handle(Compiler *c, int id, int recv, Buf *b) {
   }
   free(hb.p);
   return 1;
+}
+/* See codegen_internal.h. */
+int strbuf_recv_handle_any(Compiler *c, int id, int recv, char *out, size_t cap, Buf *lb) {
+  int hr = strbuf_recv_handle(c, id, recv, out, cap);
+  if (hr || !repr_share_rule(c)) return hr;
+  if (recv >= 0 && call_is_safe_nav(c->nt, id) && strbuf_assign_leaf(c, recv)) return 0;
+  return emit_recv_route_handle(c, id, recv, lb) ? 2 : 0;
 }
 static int strbuf_route_recv(Compiler *c, int id, int recv, char *out, size_t cap) {
   Buf *pre = g_pre;
@@ -18733,6 +18749,19 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
   const char *name = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver");
   if (!name || recv < 0) return 0;
+  /* --share-strings: a `&.` mutator over a call answering its receiver over
+     a handle (`id(s).upcase!&.clear`) is its value form, whose guard holds
+     that handle and skips a nil (emit_call_safe_nav_arms); the statement
+     arms below take no guard */
+  if (repr_share_rule(c) && sn_guard_pending(c, id) && strbuf_self_route(c, recv)) {
+    TyKind st = repr_of(c, id).as_ty;
+    emit_indent(b, indent);
+    buf_puts(b, "(void)(");
+    /* (an Integer answer, setbyte's, is read as the `&.`'s nil-able form) */
+    if (oint_kind(st) && repr_of(c, id).kind != RK_BOXED) emit_oint_expr(c, id, st, b); else emit_expr(c, id, b);
+    buf_puts(b, ");\n");
+    return 1;
+  }
   TyKind rt = comp_ntype(c, recv);
   int args = nt_ref(nt, id, "arguments");
   int argc = 0;
