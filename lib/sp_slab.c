@@ -358,6 +358,17 @@ static void sp_slab_init(void) {
   mallopt(M_TOP_PAD, 1 << 20);
   mallopt(M_MMAP_THRESHOLD, 4 << 20);
 #endif
+  /* whether the slab is on, and its reservation, come first: with it off
+     (SPINEL_GC_SLAB=0, or SPINEL_GC_SLAB_MB below an arena on wasm) no
+     allocation reads the tables below, every use being behind sp_slab_on,
+     and building them was most of a small program's run there: the
+     reciprocal check walks every offset of a chunk for every class, some
+     640,000 instructions (#8401) */
+  if (e && *e) sp_slab_on = (*e != '0');
+  else sp_slab_on = 1;
+  (void)sp_slab_jemalloc_present;
+  if (sp_slab_on) sp_slab_reserve();
+  if (!sp_slab_on) return;
   int c = 0;
   for (unsigned i = 0; i <= SP_SLAB_MAX / 16; i++) {
     while (c < SP_SLAB_NCLS - 1 && sp_slab_csize[c] < i * 16) c++;
@@ -379,10 +390,6 @@ static void sp_slab_init(void) {
       if ((unsigned)(((uint64_t)off * r) >> 32) != off / cs) { r = 0; break; }
     sp_slab_recip[k] = r;   /* 0: divide (never, checked here) */
   }
-  if (e && *e) sp_slab_on = (*e != '0');
-  else sp_slab_on = 1;
-  (void)sp_slab_jemalloc_present;
-  if (sp_slab_on) sp_slab_reserve();
 }
 
 static inline sp_slab_chunk *sp_slab_chunk_of(const void *p) {
