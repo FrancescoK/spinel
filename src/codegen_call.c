@@ -2199,7 +2199,7 @@ int user_defines_or_reads(Compiler *c, const char *name) {
      it and it never owns a name here -- the twin in analyze_infer.c carries the
      reasoning. */
   for (int uk = 0; uk < c->nclasses; uk++)
-    if (comp_is_reader(&c->classes[uk], name) && uk_class_can_be_reached(c, uk)) return 1;
+    if (comp_reader_in_chain(c, uk, name, NULL) && uk_class_can_be_reached(c, uk)) return 1;
   return 0;
 }
 
