@@ -1666,6 +1666,29 @@ int emit_call_safe_nav_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
   {
     const char *safe_op = nt_str(nt, id, "call_operator");
     if (recv >= 0 && safe_op && sp_streq(safe_op, "&.")) {
+      /* --share-strings: a safe-navigation route over an attribute
+         assignment's handle (emit_strbuf_assign_safe_nav) runs once, as
+         that handle or NULL; its value is the handle, or that handle's
+         String (none for a statement before the last of its sequence) */
+      TyKind art = repr_share_rule(c) ? repr_of(c, id).as_ty : TY_UNKNOWN;
+      if (art == TY_STRING || art == TY_STRBUF) {
+        Buf hb; memset(&hb, 0, sizeof hb);
+        if (emit_strbuf_assign_safe_nav(c, id, &hb)) {
+          const int *par = art == TY_STRING ? codegen_node_parents(c, id) : NULL;
+          int pst = par ? par[id] : -1, pn = 0;
+          const int *pb = pst >= 0 && nt_kind(nt, pst) == NK_StatementsNode ? nt_arr(nt, pst, "body", &pn) : NULL;
+          if (art == TY_STRBUF || (pb && pn > 0 && pb[pn - 1] != id)) buf_puts(b, hb.p);
+          else {
+            char tn[32]; snprintf(tn, sizeof tn, "_t%d", ++g_tmp);
+            buf_printf(b, "({ sp_String *%s = %s; SP_GC_ROOT(%s); ", tn, hb.p, tn);
+            emit_strbuf_node_read(c, id, tn, b);
+            buf_puts(b, "; })");
+          }
+          free(hb.p);
+          return 1;
+        }
+        free(hb.p);
+      }
       Repr rrr = repr_of(c, recv);
       TyKind rrt = rrr.as_ty;
       if (rrt == TY_NIL) {

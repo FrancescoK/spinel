@@ -6790,8 +6790,12 @@ static int emit_poly_builtin_default_at(Compiler *c, int id, int recv, const cha
         if (!arg_ran_first(nt_ref(nt, el[e], "value"), 0)) held = 0;
       if (held) continue;
     }
+    /* (--share-strings: an assignment's right-hand side held as the handle
+       its arms store, which the re-entry reads as that handle) */
+    int held_h = repr_share_rule(c) && argc == 1 && call_is_setter_assign(nt, id) && atmp_ty[a] == TY_STRBUF &&
+                 repr_of(c, argv[a]).as_ty == TY_STRING;
     if (subtree_has_side_effect(c, argv[a]) &&
-        (is_splat || repr_of(c, argv[a]).as_ty != atmp_ty[a]))
+        (is_splat || (repr_of(c, argv[a]).as_ty != atmp_ty[a] && !held_h)))
       return 0;
   }
   TyKind bt = (c->poly_builtin_ty && id < c->node_cap)
@@ -6812,6 +6816,13 @@ static int emit_poly_builtin_default_at(Compiler *c, int id, int recv, const cha
   int slot_o = oint_kind(ret) && node_is_oint(c, id);
   int slot = view_bind(recv, "_t%d", tv);
   for (int a = 0; a < argc; a++) {
+    /* (a held handle is the argument's value, which a writer arm takes:
+       ran_first_handle) */
+    if (repr_share_rule(c) && argc == 1 && call_is_setter_assign(nt, id) && atmp_ty[a] == TY_STRBUF &&
+        repr_of(c, argv[a]).as_ty == TY_STRING) {
+      ran_first_bind(argv[a], atmp[a], atmp[a]);
+      continue;
+    }
     if (!subtree_has_side_effect(c, argv[a])) continue;
     int as = view_bind(argv[a], "_t%d", atmp[a]);
   }
@@ -8402,6 +8413,8 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       /* something with an effect has run: a later argument's prelude is held
          in its place (emit_poly_arg_temp) */
       int ran = subtree_has_side_effect(c, recv);
+      Repr svr0 = repr_of(c, id);
+      int setter_handle = is_setter_val && repr_share_rule(c) && (svr0.demand || (svr0.handle && repr_write_share(c, id)));
       for (int a = 0; a < pos_argc; a++) {
         atmp[a] = ++g_tmp;
         if (nt_kind(nt, argv[a]) == NK_SplatNode) {
@@ -8422,6 +8435,17 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         /* A narrowed read can now take the handle out; its boxed argument
            still hands on the original box, as repr's source records. */
         if (ar.strbuf_src == RS_SLOT_POLY) at = TY_POLY;
+        /* --share-strings: the right-hand side of an assignment whose value
+           is taken as the handle each arm stores (user_assign_handle) is
+           held as that handle, a new String's included */
+        if (setter_handle && at == TY_STRING && ar.kind != RK_BOXED) {
+          atmp_ty[a] = TY_STRBUF;
+          buf_printf(b, "sp_String *_t%d = ", atmp[a]);
+          emit_strbuf_handle_of(c, argv[a], b);
+          buf_printf(b, "; SP_GC_ROOT(_t%d); ", atmp[a]);
+          ran |= subtree_has_side_effect(c, argv[a]);
+          continue;
+        }
         int held = poly_arg_held(c, argv[a], at);
         /* A nil/void/unresolved arg has no concrete C storage (emit_ctype would
            print `void`); hold it as a boxed poly so it can flow into a poly

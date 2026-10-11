@@ -1406,6 +1406,9 @@ int cplan_arm_args_fit(Compiler *c, Scope *ks, const ArgLayout *L, int pos_argc,
     TyKind pt0 = pv0 ? pv0->type : TY_UNKNOWN;
     TyKind at0 = atmp_ty[L->arg[a]];
     if (pt0 == TY_STRBUF && pv0->str_shared && (at0 == TY_STRING || at0 == TY_STRBUF)) continue;
+    /* --share-strings: a handle into a String parameter passes its bytes
+       (emit_poly_temp_as reads the held handle) */
+    if (pt0 == TY_STRING && at0 == TY_STRBUF && repr_share_rule(c)) continue;
     int pc = pt0 != TY_POLY && pt0 != TY_UNKNOWN && pt0 != TY_NIL && pt0 != TY_VOID;
     int ac = at0 != TY_POLY && at0 != TY_UNKNOWN && at0 != TY_NIL && at0 != TY_VOID;
     if (pc && ac && pt0 != at0 &&

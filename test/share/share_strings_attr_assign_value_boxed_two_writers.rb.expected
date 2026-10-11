@@ -1,0 +1,17 @@
+"s!"
+true
+"s!?"
+"s!?"
+true
+"s!?#"
+true
+4
+"s!?#"
+["u1", "u1", true]
+["u123", "u123", true]
+["u123", "u1234", true, 1]
+["u1234", "u123456", 2]
+nil
+["fresh!", "fresh!", true]
+10
+["new!", "new!", true, 11]

@@ -861,6 +861,15 @@ void emit_poly_vis_precheck(Compiler *c, int id, int tv, Buf *b);
    `base` writer slot through the object pointer text `objp` (codegen_stmt.c). */
 void emit_boxed_writer_arms(Compiler *c, const char *base, const char *nm,
                             const char *objp, const char *src, TyKind at, int vnode, Buf *b);
+/* --share-strings: is String value v held as its handle for those arms
+   (a field of theirs holds it), -1 when not, else the field's sharing. */
+int  boxed_writer_holds_handle(Compiler *c, const char *base, int v);
+/* --share-strings: a safe-navigation route over an attribute assignment's
+   handle, emitted as that handle or NULL; 0 for any other call. */
+int  emit_strbuf_assign_safe_nav(Compiler *c, int id, Buf *b);
+/* --share-strings: an append chain over a bang that answers its receiver's
+   handle or nil, which hands on that handle (codegen_stmt.c). */
+int  strbuf_bang_chain(Compiler *c, int v);
 int  method_is_void(Scope *s);
 void emit_index_op_write(Compiler *c, int id, Buf *b, int indent);
 void emit_index_and_or_write(Compiler *c, int id, Buf *b, int indent, int is_or);
