@@ -2068,9 +2068,10 @@ static void emit_boxed_impl(Compiler *c, int node, Buf *b) {
       return;
     }
     /* --share-strings: a String value that hands on a variable's handle (an
-       append chain over it, `a << x`): that handle, boxed as it */
+       append chain over it, `a << x`, or over a bang on it): that handle,
+       boxed as it */
     if (t == TY_STRING && repr_share_rule(c) && nt_kind(c->nt, node) == NK_CallNode &&
-        strbuf_chain_over_handle(c, node)) {
+        (strbuf_chain_over_handle(c, node) || strbuf_bang_chain(c, node))) {
       buf_puts(b, "sp_box_nullable_obj(");
       emit_strbuf_handle_of(c, node, b);
       buf_puts(b, ", SP_BUILTIN_STRBUF)");

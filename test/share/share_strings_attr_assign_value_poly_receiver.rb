@@ -1,6 +1,6 @@
 # The value of an attribute assignment kept as a String, through a receiver of
 # either of two classes: the assignment is dispatched on the receiver's class,
-# and that route does not hand on the handle yet.
+# and its value is the right-hand side's String whichever writer ran.
 class K
   attr_accessor :a
   def initialize = (@a = +"x")

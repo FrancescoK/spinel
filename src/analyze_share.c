@@ -2643,6 +2643,19 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
         int simple = m->nparams == 1 && m->rest_idx < 0 && m->kwrest_idx < 0;
         r = sh_join(F, r, simple ? sh_local_of(F, c, m, m->pnames[0], m->def_node) : F->unknown);
       }
+      /* a boxed receiver may be of a class whose attr writer or Struct
+         member takes the String (the dispatch's builtin arm stores it,
+         emit_boxed_writer_arms): its field holds that String too */
+      int writer = 0, iv = (rt == TY_POLY || rt == TY_UNKNOWN) ? sh_attr_ivars(F, c, name, n, &writer) : -1;
+      int avals[1];
+      if (iv >= 0 && writer) {
+        if (sh_args_vals(F, c, n, avals, 1) == 1) {
+          sh_ivar_store(F, c, iv, argv[0], avals[0]);
+          sh_flow(F, SHFL_MEMBER, n, argv[0], iv);
+        }
+        /* (the value is the String such a field holds, a new one included) */
+        r = sh_join(F, r, iv);
+      }
     }
     /* a poly receiver may be a builtin as well */
     if (c->share_strings && rt == TY_EXCEPTION && is_exception_message(name))

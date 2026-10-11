@@ -5451,13 +5451,18 @@ static int emit_iteration_stmt_sn(Compiler *c, int id, Buf *b, int indent) {
   int t = ++g_tmp;
   Buf gb; memset(&gb, 0, sizeof gb);
   Buf rb; memset(&rb, 0, sizeof rb);
-  /* (--share-strings: what the receiver put ahead of the statement goes
-     with a declined guard, or the receiver runs there and again in the form
-     that takes the statement) */
-  Buf *pre0 = g_pre;
-  size_t pre0_mark = pre0 ? pre0->len : 0;
-  /* an Integer / Float receiver is held as its oint, the nil the guard tests */
+  /* an Integer / Float receiver is held as its oint, the nil the guard tests;
+     what its emission hoists is kept apart, and dropped with the rest when
+     the call is no loop (it ran the receiver a second time ahead of the
+     statement that runs it) */
+  Buf rpre; memset(&rpre, 0, sizeof rpre);
+  Buf *sv_pre = g_pre;
+  /* (--share-strings: what the guarded form put ahead of the statement goes
+     with a declined guard too) */
+  size_t pre0_mark = sv_pre ? sv_pre->len : 0;
+  g_pre = &rpre;
   if (boxed) emit_boxed(c, recv, &rb); else if (oint_kind(rt)) emit_oint_expr(c, recv, rt, &rb); else emit_expr(c, recv, &rb);
+  g_pre = sv_pre;
   emit_indent(&gb, indent);
   buf_puts(&gb, "{ ");
   if (boxed) buf_puts(&gb, "sp_RbVal"); else emit_res_ctype(c, rt, oint_kind(rt), &gb);
@@ -5475,12 +5480,13 @@ static int emit_iteration_stmt_sn(Compiler *c, int id, Buf *b, int indent) {
   view_unbind(slot);
   emit_indent(&gb, indent);
   buf_puts(&gb, "} }\n");
+  if (ok && rpre.p) buf_puts(g_pre ? g_pre : b, rpre.p);
   if (ok) buf_puts(b, gb.p ? gb.p : "");
-  else if (repr_share_rule(c) && pre0 && g_pre == pre0 && pre0->len > pre0_mark) {
-    pre0->len = pre0_mark;
-    pre0->p[pre0_mark] = '\0';
+  else if (repr_share_rule(c) && sv_pre && g_pre == sv_pre && sv_pre->len > pre0_mark) {
+    sv_pre->len = pre0_mark;
+    sv_pre->p[pre0_mark] = '\0';
   }
-  free(gb.p);
+  free(gb.p); free(rpre.p);
   return ok;
 }
 

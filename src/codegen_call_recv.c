@@ -14674,9 +14674,26 @@ static int emit_poly_index_call(Compiler *c, int id, Buf *b, const NodeTable *nt
       int unk_rhs = at == TY_UNKNOWN;
       TyKind at_eff = (nil_rhs || unk_rhs) ? TY_POLY : at;
       int tv = ++g_tmp, tval = ++g_tmp;
+      int hold = nil_rhs ? -1 : boxed_writer_holds_handle(c, base, argv[0]);
+      /* (a handle the dispatch around this builtin arm holds: its temp) */
+      int rh = repr_share_rule(c) && !nil_rhs ? ran_first_handle(argv[0]) : -1;
       buf_puts(b, "({ "); tv = hold_operand(c, recv, TY_POLY, 0, tv, 1, " ", b);
       if (nil_rhs) buf_printf(b, "sp_RbVal _t%d = sp_box_nil();", tval);
       else if (unk_rhs) { buf_printf(b, "sp_RbVal _t%d = ", tval); emit_boxed(c, argv[0], b); buf_puts(b, ";"); }
+      else if (rh >= 0) {
+        at = at_eff = TY_STRBUF;
+        buf_printf(b, "sp_String *_t%d = _t%d;", tval, rh);
+      }
+      /* --share-strings: held as the handle the field takes */
+      else if (hold >= 0) {
+        at = at_eff = TY_STRBUF;
+        buf_printf(b, "sp_String *_t%d = ", tval); emit_strbuf_ivar_store(c, hold, argv[0], b);
+        buf_puts(b, ";");
+        /* (a variable's handle is rooted by its variable) */
+        NodeKind vk = nt_kind(nt, argv[0]);
+        if (vk != NK_LocalVariableReadNode && vk != NK_InstanceVariableReadNode && !repr_static_read_kind(vk))
+          buf_printf(b, " SP_GC_ROOT(_t%d);", tval);
+      }
       else { emit_ctype(c, at, b); buf_printf(b, " _t%d = ", tval); emit_one_arg(c, argv[0], 0, b); buf_puts(b, ";"); }
       buf_puts(b, " switch ("); emit_obj_switch_key(c, tv, b); buf_puts(b, ") {");
       char src[32]; snprintf(src, sizeof src, "_t%d", tval);
@@ -14686,7 +14703,9 @@ static int emit_poly_index_call(Compiler *c, int id, Buf *b, const NodeTable *nt
       buf_printf(b, " default: sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d)); break;", name, tv);
       /* the call answers the value it stored; a shared handle stored where
          the call is read as a String answers the String it holds */
-      if (at == TY_STRBUF && comp_ntype(c, id) != TY_STRBUF)
+      Repr svr = repr_of(c, id);
+      if (at == TY_STRBUF && comp_ntype(c, id) != TY_STRBUF &&
+          !(repr_share_rule(c) && (svr.demand || (svr.handle && repr_write_share(c, id)))))
         buf_printf(b, " } (_t%d ? sp_String_cstr(_t%d) : NULL); })", tval, tval);
       else buf_printf(b, " } _t%d; })", tval);
       { *out = 1; return 1; }

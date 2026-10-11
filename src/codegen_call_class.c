@@ -816,6 +816,21 @@ static int attr_writer_field(Compiler *c, int arc, const char *base, const char 
   return awins;
 }
 
+/* The classes that define writer wn (`x=`, base name base) themselves, as
+   a boxed receiver's dispatch reaches them: their count, and for the last
+   one its explicit `def x=` in *mi, or -1 and its class in *cls for an attr
+   writer or a Struct member. */
+static int boxed_writer_defs(Compiler *c, const char *wn, const char *base, int *mi, int *cls) {
+  int found = 0;
+  *mi = -1; *cls = -1;
+  for (int k = 0; k < c->nclasses; k++) {
+    int m = comp_method_in_class(c, k, wn), dc;
+    if (m >= 0) { found++; *mi = m; *cls = k; }
+    else if (attr_writer_field(c, k, base, wn, &dc) && (dc < 0 || dc == k)) { found++; *mi = -1; *cls = k; }
+  }
+  return found;
+}
+
 /* The ivar slot of an attribute assignment `obj.x = v` of one plain value
    that an attr writer makes: its class in *cid and ivar index in *iv, or 0
    for any other call. The assignment's value is v itself (the slot's String
@@ -832,9 +847,21 @@ int attr_assign_slot(Compiler *c, int id, int *cid, int *iv) {
   TyKind rt = comp_ntype(c, recv);
   size_t ln = strlen(name);
   char base[256], ivn[258];
-  if (!ty_is_object(rt) || ln - 1 >= sizeof base) return 0;
+  if (ln - 1 >= sizeof base) return 0;
   memcpy(base, name, ln - 1);
   base[ln - 1] = '\0';
+  /* --share-strings: a boxed receiver is dispatched on its class
+     (emit_boxed_writer_arms); where one class has the writer, an attr
+     writer or a Struct member, the slot is that class's */
+  if ((rt == TY_POLY || rt == TY_UNKNOWN) && c->share_strings) {
+    int wmi, wcls;
+    if (boxed_writer_defs(c, name, base, &wmi, &wcls) != 1 || wmi >= 0) return 0;
+    snprintf(ivn, sizeof ivn, "@%s", base);
+    *cid = wcls;
+    *iv = comp_ivar_index(&c->classes[wcls], ivn);
+    return *iv >= 0;
+  }
+  if (!ty_is_object(rt)) return 0;
   int defc;
   if (!attr_writer_field(c, ty_object_class(rt), base, name, &defc)) return 0;
   snprintf(ivn, sizeof ivn, "@%s", base);
@@ -869,17 +896,25 @@ int user_assign_handle(Compiler *c, int id) {
     const char *wn = nt_str(nt, id, "name");
     size_t wl = wn ? strlen(wn) : 0;
     char base[256];
-    int found = 0, mi = -1;
+    int mi, wcls;
     if (wl < 2 || wl - 1 >= sizeof base) return 0;
     memcpy(base, wn, wl - 1);
     base[wl - 1] = '\0';
-    for (int k = 0; k < c->nclasses; k++) {
-      int m = comp_method_in_class(c, k, wn), dc;
-      if (m >= 0) { found++; mi = m; }
-      else if (attr_writer_field(c, k, base, wn, &dc) && (dc < 0 || dc == k)) { found++; mi = -1; }
+    int found = boxed_writer_defs(c, wn, base, &mi, &wcls);
+    /* ...or when several classes have it, each arm storing the handle the
+       call holds (an explicit writer's parameter takes it, or its bytes;
+       an attr writer's field, emit_boxed_writer_arms), every explicit one
+       of one plain parameter */
+    if (found >= 2) {
+      for (int k = 0; k < c->nclasses; k++) {
+        int m = comp_method_in_class(c, k, wn);
+        const Scope *w = m >= 0 ? &c->scopes[m] : NULL;
+        if (w && !(w->nparams == 1 && w->rest_idx < 0 && w->kwrest_idx < 0 && !w->blk_param)) return 0;
+      }
+      return 1;
     }
     if (!call_is_safe_nav(nt, id) || found != 1) return 0;
-    if (mi < 0) return 0;   /* (an attr writer or a Struct member is not dispatched on a boxed receiver) */
+    if (mi < 0) return 0;   /* (an attr writer or a Struct member: attr_assign_slot) */
     const Scope *w = &c->scopes[mi];
     return w->nparams == 1 && w->rest_idx < 0 && w->kwrest_idx < 0 && !w->blk_param;
   }
