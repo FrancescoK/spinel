@@ -12973,7 +12973,7 @@ int desugar_included_hooks(Compiler *c) {
  * A class defined before any hook in its chain exists (the hook's `def`, or
  * the `extend` that brings it, comes later in the program) fires nothing, as
  * in CRuby: nodes are numbered in program order, required files spliced in
- * where they are required. */
+ * where they are required, and `BEGIN` code runs ahead of the rest. */
 
 /* The `def inherited` a class body defines on the class itself
    (`def self.inherited(sub)`, or `def inherited` in its `class << self`), or -1. */
@@ -13031,6 +13031,7 @@ typedef struct {
   int ccap, mcap;
   int any_hook, any_mod_hook;
   unsigned char *in_begin;   /* by node: inside a `BEGIN { }`, or NULL when none */
+  int n0;                    /* the node count in_begin covers */
 } InhIndex;
 
 static void inh_index_free(InhIndex *ix) {
@@ -13038,10 +13039,11 @@ static void inh_index_free(InhIndex *ix) {
   free(ix->c); free(ix->m); free(ix->in_begin);
 }
 
-/* Where node `id` runs in program order: its own number, or before every
-   other node when it is inside a `BEGIN { }`, which runs first. */
+/* Where node `id` runs in program order: its own number, or, inside a
+   `BEGIN { }`, which runs first, its number less the node count, so the
+   BEGIN code comes before every other node and stays in order itself. */
 static int inh_pos(const InhIndex *ix, int id) {
-  return ix->in_begin && id >= 0 && ix->in_begin[id] ? -1 : id;
+  return ix->in_begin && id >= 0 && ix->in_begin[id] ? id - ix->n0 : id;
 }
 
 static void inh_mark_tree(const NodeTable *nt, int node, unsigned char *mark, int n0) {
@@ -13158,6 +13160,7 @@ static int inh_chain_hook_at(const InhIndex *ix, const char *cname) {
 static void inh_index_build(Compiler *c, InhIndex *ix, int n0) {
   const NodeTable *nt = c->nt;
   memset(ix, 0, sizeof *ix);
+  ix->n0 = n0;
   int nb = 0;
   const int *begins = nt_nodes_of_kind(nt, NK_PreExecutionNode, &nb);
   if (nb > 0 && (ix->in_begin = calloc((size_t)n0, 1)))
@@ -13383,7 +13386,7 @@ int desugar_inherited_hooks(Compiler *c) {
     anh_add(&seen, qd);
     /* defined before its superclass had the hook: nothing fires, nor on a
        reopening */
-    if (inh_chain_hook_at(&ix, sn) > id) continue;
+    if (inh_chain_hook_at(&ix, sn) > inh_pos(&ix, id)) continue;
     int recv = nt_clone_subtree(nt, sc);
     int call = fwd_new_node_like(nt, id, "CallNode");
     int args = fwd_new_node_like(nt, id, "ArgumentsNode");
