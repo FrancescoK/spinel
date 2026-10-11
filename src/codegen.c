@@ -1470,6 +1470,18 @@ static int emit_boxed_bang_self(Compiler *c, int node, Buf *b) {
 /* A shared-mutable String's box, by where its handle comes from
    (repr_of's strbuf_src). */
 static void emit_boxed_strbuf(Compiler *c, int node, TyKind t, const Repr *rp, Buf *b) {
+  /* a demanded `s.to_s` over a local holding the handle: the conversion
+     answers s's String, so the box is s's handle (an_str_conversion_local) */
+  if (c->strbuf_box[node]) {
+    int cr = an_str_conversion_local(c, node);
+    if (cr >= 0 && comp_ntype(c, cr) == TY_STRBUF) {
+      buf_puts(b, "sp_box_nullable_obj(");
+      emit_local_ref(c, cr, nt_str(c->nt, cr, "name"), b);
+      buf_puts(b, ", SP_BUILTIN_STRBUF)");
+      RC(RF_STRBUF_HANDLE, RW_NONE);
+      return;
+    }
+  }
   /* A narrowed read takes the handle out of its box; boxing that read
      hands on the original box, including through a captured local. */
   if (rp->strbuf_src == RS_SLOT_POLY) {

@@ -343,6 +343,8 @@ const char *block_rest_name(Compiler *c, int block);
 const char *block_opt_name(Compiler *c, int block, int idx);
 const char *block_param_at(Compiler *c, int block, int idx, int n);
 int call_plain_argc(Compiler *c, int call);
+/* The local a String's own conversion (`s.to_s`) reads, or -1 (analyze.c). */
+int an_str_conversion_local(Compiler *c, int v);
 const char *block_post_name(Compiler *c, int block, int idx);
 int block_lone_rest(Compiler *c, int block);
 int block_rest_marker(Compiler *c, int block);
