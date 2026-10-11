@@ -1,6 +1,6 @@
 "Yb123z"
 "Yb123z"
-[:typed_mutators, 13]
+[:typed_mutators, 14]
 "yb123z"
 true
 true
@@ -18,4 +18,26 @@ true
 true
 "AB"
 "AB"
-[:typed_values, 28]
+[:typed_values, 29]
+["<yb123z!>", 1]
+"<yb123z!>"
+[:boxed_mutators, 34]
+true
+true
+true
+true
+true
+true
+true
+[:boxed_values, 41]
+true
+true
+[:boxed_receiver, 43]
+[["cd!", 1], 2]
+{a: ["EF+", 1]}
+"EF+"
+[:nested, 46]
+"gh"
+["gh", "ij"]
+"gh"
+[:safe_nav, 47]

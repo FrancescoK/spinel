@@ -1,5 +1,3 @@
 # SPINEL_SHARE_STRINGS=1, OPT=-O1, macOS, Apple clang 21.
 # Names are those printed by make test; remove an entry when it passes.
 # Every corpus program passes with sharing on master; add an entry only for a known failure.
-# --share-strings refuses a boxed element's bang handed on in place, as master does
-string_bang_boxed_nil_receiver

@@ -16934,9 +16934,31 @@ int an_str_conversion_local(Compiler *c, int v) {
   int ms[CPT_MAX];
   return (rt == TY_STRING || rt == TY_STRBUF) && cplan_targets(c, v, ms, CPT_MAX) == 0 ? r : -1;
 }
+static int strbuf_demand_store_leaf(Compiler *c, int sn, int depth);
+/* --share-strings: the Strings of nested literal lit (an Array's elements,
+   a Hash's values) are demanded as the outer literal's are, but for a
+   String literal: it is frozen, so no mutation needs its handle (its plain
+   box raises the FrozenError). */
+static int strbuf_demand_nested_literal(Compiler *c, int lit, int depth) {
+  const NodeTable *nt = c->nt;
+  if (depth > 8) return 0;
+  int en = 0, changed = 0, hash = nt_kind(nt, lit) == NK_HashNode;
+  const int *el = nt_arr(nt, lit, "elements", &en);
+  for (int e = 0; e < en; e++) {
+    int v = hash ? (nt_kind(nt, el[e]) == NK_AssocNode ? nt_ref(nt, el[e], "value") : -1) : el[e];
+    if (v < 0 || nt_kind(nt, an_unparen(nt, v)) == NK_StringNode) continue;
+    changed |= strbuf_demand_store_leaf(c, v, depth);
+  }
+  return changed;
+}
 static int strbuf_demand_store_leaf(Compiler *c, int sn, int depth) {
   const NodeTable *nt = c->nt;
   if (sn < 0 || c->strbuf_box[sn]) return 0;
+  /* --share-strings: a nested Array or Hash literal whose own elements the
+     rule shares (`[[+"ab", 1], 2]` with `id(x[0][0]).upcase!`) */
+  NodeKind snk = nt_kind(nt, an_unparen(nt, sn));
+  if (c->share_strings && (snk == NK_ArrayNode || snk == NK_HashNode) && share_node_elems_share(c, an_unparen(nt, sn)))
+    return strbuf_demand_nested_literal(c, an_unparen(nt, sn), depth + 1);
   /* `a << (s << "y")`, `a << +s`, `a << sb` with `def sb = @s`: the
      element would be a fresh handle over a copy of s's or @s's String
      (sa_refuse); `+s` is s itself unless s is frozen. So would `a << id(s)`

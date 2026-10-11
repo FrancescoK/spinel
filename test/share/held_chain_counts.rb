@@ -1,8 +1,11 @@
 # Each receiver of a held chain runs once: a method that answers its
 # argument counts its calls, and every shape below prints the count
-# after it.
+# after it. A typed argument (`id`) and a boxed one (`bid`, which also
+# takes an Integer) go through the two kinds of first link.
 $n = 0
 def id(v) = ($n += 1; v)
+def bid(v) = ($n += 1; v)
+bid(1)
 def show(label) = p([label, $n])
 
 s = +"ab"
@@ -36,3 +39,40 @@ p w.equal?(o2)
 def take(v, w = 0) = v
 p take(id(o2).upcase!.downcase! || 1).equal?(o2), take(id(o2).upcase! || 1, 2), o2
 show(:typed_values)
+
+x = [s, 1]
+bid(x[0]).upcase!.downcase!
+bid(x[0]).upcase!.insert(0, "<")
+bid(x[0]).downcase! << "!"
+bid(x[0]).upcase!.concat(">")
+bid(x[0]).downcase!.force_encoding("UTF-8")
+p x, s
+show(:boxed_mutators)
+
+p bid(x[0]).upcase!.equal?(t), t.equal?(bid(x[0]).downcase!)
+p bid(x[0]).upcase!.concat("!").equal?(x[0]), x[0].equal?(bid(x[0]).downcase!.concat("?"))
+p bid(x[0]).upcase!.itself.equal?(t)
+v = bid(x[0]).downcase!
+p v.equal?(t)
+s3 = +"ab"; x3 = [s3, 1]
+p (bid(x3[0]).upcase!.downcase! || 1).equal?(s3)
+show(:boxed_values)
+
+y = [s, 1][0]
+p y.equal?(bid(x[0]).upcase!.downcase!), y.equal?(bid(x[0]).upcase!)
+show(:boxed_receiver)
+
+nx = [[+"cd", 1], 2]
+bid(nx[0][0]).upcase!
+bid(nx[0][0]).downcase! << "!"
+h = { a: [+"ef", 1] }
+ha = h[:a][0]
+bid(h[:a][0]).upcase!.concat("+")
+p nx, h, ha
+show(:nested)
+
+z = [+"gh", +"ij"]
+zy = z[0]
+q = bid(z[0])&.upcase!&.downcase!
+p q, z, zy
+show(:safe_nav)

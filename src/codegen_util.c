@@ -3224,7 +3224,8 @@ int strbuf_marked_yields_handle(Compiler *c, int v) {
 /* --share-strings: is r a call held as its handle? That is a bang on a
    handle (strbuf_bang_self_local) that renders as its bytes, not as the
    handle (neither a route that hands it on, strbuf_value_carries, nor a
-   read typed as it, strbuf_call_reads_handle), or, over such a call, a call
+   read typed as it, strbuf_call_reads_handle), a bang on a boxed receiver
+   that is no variable (face_str_bang_call), or, over such a call, a call
    that always answers its receiver (`concat`, no splat, a conversion a
    String answers with itself) or `+@`. Its value is the handle's String,
    or nil; a mutator on it holds the handle (emit_held_self_answer_shim); a
@@ -3254,6 +3255,13 @@ int strbuf_held_chain(const Compiler *c, int r) {
   NodeKind rk = rr >= 0 ? nt_kind(nt, rr) : NK_NONE;
   if (rr < 0 || rk == NK_LocalVariableReadNode || rk == NK_InstanceVariableReadNode || rk == NK_SelfNode ||
       repr_static_read_kind(rk)) return 0;
+  /* a bang on a boxed receiver that is no variable (a call's answer)
+     answers the receiver's box, or nil (emit_face_str_bang): the handle a
+     shared String's box holds */
+  if (face_str_bang_call((Compiler *)c, r)) return 1;
+  /* and so does one under safe navigation, nil for a nil receiver
+     (emit_held_handle holds its guard) */
+  if (face_str_bang_sn_call((Compiler *)c, r)) return 1;
   return strbuf_bang_self_local(c, r) && !strbuf_call_reads_handle((Compiler *)c, r) &&
          !strbuf_value_carries((Compiler *)c, r);
 }

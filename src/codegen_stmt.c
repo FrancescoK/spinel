@@ -2918,8 +2918,8 @@ int strbuf_held_self_answer(Compiler *c, int r) {
 }
 /* The handle held chain r answers (strbuf_held_chain), or NULL for nil:
    a conversion's or a `+@` link's is its receiver's (`+@` makes a new one
-   for a frozen receiver, sp_String_uplus); any other link's is
-   emit_bang_self_handle's. */
+   for a frozen receiver, sp_String_uplus); a bang on a boxed receiver's is
+   the one its box holds; any other link's is emit_bang_self_handle's. */
 static void emit_held_handle(Compiler *c, int r, Buf *b) {
   r = unwrap_parens(c, r);
   const char *rn = nt_str(c->nt, r, "name");
@@ -2934,6 +2934,37 @@ static void emit_held_handle(Compiler *c, int r, Buf *b) {
       buf_printf(b, "; _t%d ? _t%d : sp_String_new_shared(sp_str_frozen_empty); })", t, t);
     else buf_printf(b, "; if (SP_UNLIKELY(!_t%d)) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil())); _t%d; })",
                     t, rn, t);
+    return;
+  }
+  if (face_str_bang_sn_call(c, r)) {
+    /* a safe-navigation bang on a boxed receiver: its receiver's box, nil
+       for nil, and the bang on it as the plain one (the guard is this) */
+    int rr = nt_ref(c->nt, r, "receiver"), tb = ++g_tmp, th = ++g_tmp, mark = g_n_argov, sv = g_sn_skip;
+    Buf rb, hb, pb;
+    memset(&rb, 0, sizeof rb); memset(&hb, 0, sizeof hb); memset(&pb, 0, sizeof pb);
+    emit_boxed(c, rr, &rb);
+    view_bind(rr, "_t%d", tb);
+    /* what the bang puts ahead of its statement runs under the guard */
+    Buf *sv_pre = g_pre;
+    g_pre = &pb;
+    g_sn_skip = r;
+    emit_held_handle(c, r, &hb);
+    g_sn_skip = sv;
+    g_pre = sv_pre;
+    view_unbind(mark);
+    buf_printf(b, "({ sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d); sp_String *_t%d = NULL; "
+                  "if (!sp_poly_nil_p(_t%d)) {\n%s_t%d = %s;\n} _t%d; })",
+               tb, rb.p ? rb.p : "sp_box_nil()", tb, th, tb, pb.p ? pb.p : "", th, hb.p ? hb.p : "NULL", th);
+    free(rb.p); free(hb.p); free(pb.p);
+    return;
+  }
+  if (face_str_bang_call(c, r)) {
+    /* a bang on a boxed receiver: the box it answers (emit_boxed_bang_self),
+       its handle, or NULL for nil */
+    int t = ++g_tmp;
+    buf_printf(b, "({ sp_RbVal _t%d = ", t);
+    emit_boxed(c, r, b);
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_poly_nil_p(_t%d) ? (sp_String *)NULL : sp_poly_as_strbuf(_t%d); })", t, t, t);
     return;
   }
   if (!is_unary_plus(nt_str(c->nt, r, "name"))) { emit_bang_self_handle(c, r, b); return; }
@@ -3067,7 +3098,7 @@ static int equal_self_answer_side(Compiler *c, int n) {
   /* (not a `&.` link, which the identity arms box: emit_boxed renders it
      as bytes) */
   return (bop_share_self_answer(nt_str(c->nt, n, "name"), nt_ref(c->nt, n, "block") >= 0) && !call_is_safe_nav(c->nt, n) &&
-          strbuf_bang_self_local(c, n)) || strbuf_held_chain(c, n) ||
+          (strbuf_bang_self_local(c, n) || face_str_bang_call(c, n))) || strbuf_held_chain(c, n) ||
          freeze_self_answer(c, n) || uplus_over_self_answer(c, n);
 }
 /* --share-strings: equal? with such a value (a bang on a handle, a held
@@ -20704,9 +20735,9 @@ static int strbuf_flow_value(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, in
   /* a bang method or an iterator with a block on a local's handle answers
      that handle or nil */
   if (ctx != SFC_ARG && strbuf_bang_self_local(c, v)) return 1;
-  /* and so does a call held as its handle where a mutator takes it
-     (strbuf_held_chain) */
-  if (ctx != SFC_ARG && strbuf_held_chain(c, v)) return 1;
+  /* and so does a bang on a boxed receiver, or a call held as its handle
+     where a mutator takes it (strbuf_held_chain) */
+  if (ctx != SFC_ARG && (face_str_bang_call(c, v) || strbuf_held_chain(c, v))) return 1;
   /* (a call without a bang that answers its receiver over a handle hands
      that handle on as an argument too: strbuf_value_carries) */
   if (ctx == SFC_ARG && strbuf_plain_self_call(c, v)) return 1;
