@@ -1,0 +1,52 @@
+box p: :a..:e
+box to_s: "a..e"
+box excl: :a...:e
+box to_a: [:a, :b, :c, :d, :e]
+box each: [:a, :b, :c, :d, :e]
+box map: ["a", "b", "c", "d", "e"]
+box ends: [:a, :e, :a, :e, :a, :e]
+box first last n: [[:a, :b], [:d, :e]]
+box include?: [true, false, false, true]
+box cover?: [true, false]
+box ===: [true, false]
+box ==: [true, false, true, true]
+box count size: [5, nil]
+box minmax: [:a, :e]
+box sum: TypeError: no implicit conversion of Symbol into String
+box select: [:a, :c, :d, :e]
+box step: [:a, :c, :e]
+box bsearch: TypeError: can't do binary search for Symbol
+box reverse_each: [:e, :d, :c, :b, :a]
+box each_slice: [[:a, :b], [:c, :d], [:e]]
+box each_with_index: [[:a, 0], [:b, 1], [:c, 2], [:d, 3], [:e, 4]]
+box splat: [:a, :b, :c, :d, :e]
+box frozen class: [true, Range, :a..:e, true]
+box endless: [:a.., :a, nil]
+box endless include?: TypeError: cannot determine inclusion in beginless/endless ranges
+box endless cover: true
+box beginless: [..:e, true]
+box beginless include?: TypeError: cannot determine inclusion in beginless/endless ranges
+box for: [:a, :b, :c, :d, :e]
+box when: "in"
+lit endless: [:a.., :a, true]
+quoted box: [:"a b"..:"a d", [:"a b", :"a c", :"a d"]]
+nil end: :a..
+sym int: ArgumentError: bad value for range
+int sym: ArgumentError: bad value for range
+sym str: ArgumentError: bad value for range
+lit sym int: ArgumentError: bad value for range
+in array: [:a..:e, 1]
+hash: [:x, :y, :z]
+methods: [:m, :n, :o]
+local: [[:a, :b, :c], :a..:a]
+bag: [[6, 2], [3], 4, 3]
+user map: [["B", "C", "D", "E"], ["a", "b", "c", "d", "e"]]
+user select: [["d", "e"], [:d, :e]]
+user each: ["b", "c", "d", "e", :a, :b, :c, :d, :e]
+user sum first: ["bcde", "b", :a]
+to_set: [4, true]
+[]: NoMethodError: undefined method '[]' for an instance of Range
+[] sym: NoMethodError: undefined method '[]' for an instance of Range
+cover range: [true, true, false, true]
+key?: NoMethodError: undefined method 'key?' for an instance of Range
+int beside bag: [15, [1, 2], 10, [2, 4, 6, 8]]
