@@ -5210,27 +5210,21 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
     /* the epoch second read off the boxed Time, the same value #to_i answers;
        there was no arm at all, so a Time read out of a container raised
        NoMethodError (#3866) */
-    int tv = ++g_tmp, lift = node_is_oint(c, id);   /* an oint dispatch slot's arm */
-    if (lift) buf_puts(b, "sp_oint_of(");
+    int tv = ++g_tmp;
     buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b);
     buf_printf(b, "; _t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_TIME"
                   " ? (sp_int)((sp_Time *)_t%d.v.p)->tv_sec"
                   " : (sp_int)(sp_raise_nomethod(sp_nomethod_msg(\"tv_sec\", _t%d)), 0); })",
                tv, tv, tv, tv);
-    if (lift) buf_puts(b, ")");
     return 1;
   }
   if (tf) {
-    /* lifted where the call answers an oint: a dispatch slot whose other
-       target (an attr reader of the same name) can be nil */
-    int tv = ++g_tmp, lift = node_is_oint(c, id);
-    if (lift) buf_puts(b, "sp_oint_of(");
+    int tv = ++g_tmp;
     buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b);
     buf_printf(b, "; _t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_TIME"
                   " ? sp_time_%s(*(sp_Time *)_t%d.v.p)"
                   " : (sp_int)(sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d)), 0); })",
                tv, tv, tf, tv, name, tv);
-    if (lift) buf_puts(b, ")");
     return 1;
   }
   /* The Time methods that answer a Time. The surface had the scalar reads and
@@ -5354,15 +5348,10 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
         buf_printf(&body, "%.*s_t%d", (int)(hit - q), q, tv);
         q = hit + 3;
       }
-      /* an Integer reader the call answers as an oint (a dispatch slot whose
-         other target can be nil) is lifted */
-      int lift = ti && node_is_oint(c, id);
-      if (lift) buf_puts(b, "sp_oint_of(");
       buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b);
       buf_printf(b, "; _t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_TIME ? %s"
                     " : (%s)(sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d)), %s); })",
                  tv, tv, body.p ? body.p : "0", cty, name, tv, miss);
-      if (lift) buf_puts(b, ")");
       free(body.p);
       return 1;
     }
@@ -5379,20 +5368,15 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
     return 1;
   }
 
-  /* Proc#arity: read the arity field off the boxed proc. A call whose
-     value may be nil (a user `arity` reader beside it, #8458) is an oint
-     node, whose producer answers the oint: the plain arity is wrapped. */
+  /* Proc#arity: read the arity field off the boxed proc. */
   if (sp_streq(name, "arity") && argc == 0) {
     int tv = ++g_tmp;
-    int ao = node_is_oint(c, id);
-    if (ao) buf_puts(b, "sp_oint_of(");
     buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b);
     buf_printf(b, "; _t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_PROC"
                   " ? ((sp_Proc *)_t%d.v.p)->arity"
                   " : _t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_METHOD ? ((sp_BoundMethod *)_t%d.v.p)->arity"
                   " : (sp_int)(sp_raise_nomethod(sp_nomethod_msg(\"arity\", _t%d)), 0); })",
                tv, tv, tv, tv, tv, tv, tv);
-    if (ao) buf_puts(b, ")");
     return 1;
   }
   /* the same reads for a Proc carried in a poly slot -- one read out of an
@@ -6552,6 +6536,9 @@ static int emit_poly_str_prearm(Compiler *c, int id, int recv, const char *name,
     if (!subtree_has_side_effect(c, argv[a])) continue;
     int as = view_bind(argv[a], "_t%d", atmp[a]); nov++;
   }
+  /* the result slot's form, as the dispatch seeded it: an Integer / Float
+     answer that can be nil is held as the oint */
+  int slot_o = oint_kind(ret) && node_is_oint(c, id);
   int va = view_push_arm(id, g_prbd_skip, 1);
   /* Some of these arms hoist a statement into the prelude -- the `const char
      *_tN = sp_poly_recv_s(recv, "<name>")` that roots the receiver's bytes
@@ -6568,7 +6555,9 @@ static int emit_poly_str_prearm(Compiler *c, int id, int recv, const char *name,
     Buf nb; memset(&nb, 0, sizeof nb);
     buf_printf(&nb, "sp_str_to_i_base(sp_poly_recv_s(_t%d, \"to_i\"), ", tv);
     emit_int_expr(c, argv[0], &nb); buf_puts(&nb, ")");
-    if (ret == TY_POLY) emit_boxed_text(c, bt, nb.p, &ib); else buf_puts(&ib, nb.p);
+    if (ret == TY_POLY) emit_boxed_text(c, bt, nb.p, &ib);
+    else if (slot_o) buf_printf(&ib, "sp_oint_of(%s)", nb.p);
+    else buf_puts(&ib, nb.p);
     free(nb.p);
   }
   else if (ret == TY_POLY && bt != TY_POLY) {
@@ -6580,6 +6569,9 @@ static int emit_poly_str_prearm(Compiler *c, int id, int recv, const char *name,
     else emit_boxed_text(c, bt, nb.p ? nb.p : "0", &ib);
     free(nb.p);
   }
+  /* into an oint slot the String's answer goes in its own form, lifted
+     when it is plain (node_is_oint asks the builtin alone in the arm) */
+  else if (slot_o) emit_oint_expr(c, id, ret, &ib);
   else emit_expr(c, id, &ib);
   view_pop(c, vw);
   view_pop(c, va);
