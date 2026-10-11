@@ -1201,7 +1201,7 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       emit_expr(c, recv, b); buf_puts(b, "; })");
     }
     else if (repr_share_rule(c) && emit_freeze_recv_handle(c, recv, b)) {}
-    else {
+    else if (!emit_freeze_self_answer(c, id, recv, b)) {
       buf_puts(b, "sp_str_freeze_val("); emit_expr(c, recv, b); buf_puts(b, ")");
     }
     return 1;

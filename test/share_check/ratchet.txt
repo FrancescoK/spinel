@@ -81,8 +81,6 @@ test/share/share_strings_route_args.rb	test/share/share_strings_route_args.rb:44
 test/share/share_strings_route_args.rb	test/share/share_strings_route_args.rb:44	CallNode (grow)	boxed as bytes by sp_box_str (bytes face)
 test/share/share_strings_route_args.rb	test/share/share_strings_route_args.rb:66	CallNode (al)	boxed as bytes by sp_box_str (bytes face)
 test/share/share_strings_route_args.rb	test/share/share_strings_route_args.rb:66	CallNode (al)	boxed as bytes by sp_box_str (bytes face)
-test/share/share_strings_route_mutators.rb	test/share/share_strings_route_mutators.rb:192	CallNode (upcase!)	changed in place as bytes by sp_str_substr (bytes face)
-test/share/share_strings_route_mutators.rb	test/share/share_strings_route_mutators.rb:196	CallNode (upcase!)	changed in place as bytes by sp_String_append_bin (bytes face)
 test/share/share_strings_route_seal.rb	test/share/share_strings_route_seal.rb:42	LocalVariableReadNode (s)	changed in place as bytes by sp_str_sub_own (sp_strbuf_read_pub)
 test/share/share_strings_self.rb	?:0	CallNode (+@)	boxed as bytes by sp_box_str (bytes face)
 test/share/share_strings_self.rb	?:0	CallNode (append_as_bytes)	boxed as bytes by sp_box_str (bytes face)

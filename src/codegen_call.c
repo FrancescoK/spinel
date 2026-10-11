@@ -21998,6 +21998,7 @@ static void nil_target_release(Compiler *c, int mark, int held) {
 
 /* Call id in value position, behind its nil arm. 1 when it emitted. */
 static int emit_nil_target_call(Compiler *c, int id, Buf *b) {
+  if (strbuf_mutator_on_held_self_answer(c, id)) return 0;   /* (as below) */
   int test = cplan_nil(c, id) == CN_RAISE;
   if (!test && (!poly_target_call(c, id) || nil_target_runs_in_call(c, id))) return 0;
   if (test && g_plan_check) cplan_served("nil-target");
@@ -22045,6 +22046,10 @@ static int emit_nil_target_call(Compiler *c, int id, Buf *b) {
    statement's own prelude goes, ahead of what it hoists. 1 when it
    emitted. */
 int emit_nil_target_stmt(Compiler *c, int id, Buf *b, int indent) {
+  /* a String mutator on a held chain: its shim tests the chain's handle
+     for nil itself (emit_held_self_answer_shim); a head here would run
+     the chain once more for a test of its bytes */
+  if (strbuf_mutator_on_held_self_answer(c, id)) return 0;
   int test = cplan_nil(c, id) == CN_RAISE;
   if (!test && (!poly_target_call(c, id) || nil_target_runs_in_call(c, id))) return 0;
   if (test && g_plan_check) cplan_served("nil-target");
@@ -24078,6 +24083,7 @@ int emit_env_args_before(Compiler *c, int id) {
 }
 
 void emit_call(Compiler *c, int id, Buf *b) {
+  if (emit_call_on_held_self_answer(c, id, b)) return;
   refuse_prepass_at_emit(c, id);
   if (g_plan_check) ucall_emitted(id);
   if (g_repr_check) repr_check_ask(c, id);

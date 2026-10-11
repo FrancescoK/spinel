@@ -2409,7 +2409,9 @@ int strbuf_recv_handle(Compiler *c, int id, int recv, char *out, size_t cap) {
    nothing emitted */
 int strbuf_self_route(Compiler *c, int recv) {
   int u = unwrap_parens(c, recv);
-  return repr_share_rule(c) && u >= 0 && nt_kind(c->nt, u) == NK_CallNode && !strbuf_chain_over_handle(c, u) &&
+  /* (not a held chain's shadow, whose shim holds the handle) */
+  return repr_share_rule(c) && u >= 0 && nt_kind(c->nt, u) == NK_CallNode && !sb_shadowed_reader(u) &&
+         !strbuf_chain_over_handle(c, u) &&
          strbuf_bang_self_local(c, u);
 }
 /* --share-strings: the handle a String mutator's receiver hands on, into b
@@ -2423,6 +2425,9 @@ int strbuf_self_route(Compiler *c, int recv) {
    nothing emitted. */
 int emit_recv_route_handle(Compiler *c, int id, int recv, Buf *b) {
   if (!repr_share_rule(c) || g_n_argov >= MAX_ARG_OVERRIDE) return 0;
+  /* (a held chain's shadow has none: its shim holds the handle and writes
+     the shadow back, emit_held_self_answer_shim) */
+  if (sb_shadowed_reader(unwrap_parens(c, recv))) return 0;
   int th = ran_first_handle(recv);
   if (th >= 0) { buf_printf(b, "_t%d", th); return 1; }
   /* a receiver a head ran into its bytes alone has no handle to give (the
@@ -2837,6 +2842,7 @@ static void emit_self_call_char(Compiler *c, int v, Buf *b) {
   view_pop(c, sd);
   view_pop(c, sv);
 }
+static int emit_self_call_arm(Compiler *c, int v, Buf *b) { emit_self_call_char(c, v, b); return 1; }
 /* A String position mutator without a bang that answers its receiver
    (`@s.insert(0, x.upcase)`) in its statement form, the handle having been
    taken ahead of it: the form mutates the handle in place. The value form
@@ -2904,6 +2910,268 @@ static void emit_bang_on_held(Compiler *c, int v, int th, Buf *b) {
   else buf_printf(b, "!_t%d ? (const char *)NULL : %s", th, val.p ? val.p : "NULL");
   free(pre.p); free(val.p);
 }
+/* --share-strings: is r a call held as its handle (strbuf_held_chain), with
+   room to bind it? */
+int strbuf_held_self_answer(Compiler *c, int r) {
+  r = unwrap_parens(c, r);
+  return r >= 0 && !arg_ran_first(r, 0) && g_n_argov < MAX_ARG_OVERRIDE && strbuf_held_chain(c, r);
+}
+/* The handle held chain r answers (strbuf_held_chain), or NULL for nil:
+   a conversion's or a `+@` link's is its receiver's (`+@` makes a new one
+   for a frozen receiver, sp_String_uplus); any other link's is
+   emit_bang_self_handle's. */
+static void emit_held_handle(Compiler *c, int r, Buf *b) {
+  r = unwrap_parens(c, r);
+  const char *rn = nt_str(c->nt, r, "name");
+  if (is_receiver_conversion(rn)) {
+    /* a conversion answers its receiver's String; for nil, itself answers
+       nil, to_s a frozen "" and to_str raises */
+    int t = ++g_tmp;
+    buf_printf(b, "({ sp_String *_t%d = ", t);
+    emit_held_handle(c, nt_ref(c->nt, r, "receiver"), b);
+    if (is_self_copy(rn)) buf_printf(b, "; _t%d; })", t);
+    else if (is_to_s_name(rn))
+      buf_printf(b, "; _t%d ? _t%d : sp_String_new_shared(sp_str_frozen_empty); })", t, t);
+    else buf_printf(b, "; if (SP_UNLIKELY(!_t%d)) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil())); _t%d; })",
+                    t, rn, t);
+    return;
+  }
+  if (!is_unary_plus(nt_str(c->nt, r, "name"))) { emit_bang_self_handle(c, r, b); return; }
+  int t = ++g_tmp;
+  buf_printf(b, "({ sp_String *_t%d = ", t);
+  emit_held_handle(c, nt_ref(c->nt, r, "receiver"), b);
+  buf_printf(b, "; if (SP_UNLIKELY(!_t%d)) sp_raise_nomethod(sp_nomethod_msg(\"+@\", sp_box_nil())); "
+                "SP_GC_ROOT(_t%d); sp_String_uplus(_t%d); })", t, t, t);
+}
+/* The shim over such a call r as the receiver of String mutator `id`: the
+   handle r answers (emit_bang_self_handle) is held, a nil raising
+   NoMethodError for id, as the copy's own check did; id's arguments run
+   (sb_shim_args_first); r then reads as a shadow copy of the handle's bytes
+   (`lv__shT`, which the mutator arms write back to as to a variable), and
+   the shadow goes back into the handle once `emit` has emitted the arm into
+   its result `_resT`, typed `ty` (the answer the caller reads), so the
+   mutation reaches the String every other name holds. Read as its bytes
+   alone, r was the bang's answer, a copy the mutation changed instead.
+   Answers T, the handle temp, or 0 with nothing emitted when emit handles
+   nothing. */
+static int emit_held_self_answer_shim(Compiler *c, int id, int r, TyKind ty, Buf *b,
+                                      int (*emit)(Compiler *, int, Buf *)) {
+  int tH = ++g_tmp, sn = call_is_safe_nav(c->nt, id);
+  Buf hb, pre, apre, armb;
+  memset(&hb, 0, sizeof hb); memset(&pre, 0, sizeof pre); memset(&apre, 0, sizeof apre);
+  memset(&armb, 0, sizeof armb);
+  emit_held_handle(c, r, &hb);
+  /* no handle to hold (a link that renders none): the call's own emission */
+  if (!hb.p || !hb.p[0]) { free(hb.p); return 0; }
+  int mark = sb_shim_args_first(c, id, &pre, g_indent);
+  view_bind(r, "lv__sh%d", tH);
+  /* what the arm puts ahead of its statement reads the shadow: it goes
+     after the shadow's declaration; the shim tests the receiver for nil,
+     which the arm does not test again (cplan_nil) */
+  Buf *sv_pre = g_pre;
+  g_pre = &apre;
+  int sv_skip = g_sn_skip;
+  if (sn) g_sn_skip = id;   /* (and a `&.` call's nil guard is the shim's) */
+  nt_node_set_int((NodeTable *)c->nt, id, "recv_nil_tested", 1);
+  int handled = emit(c, id, &armb);
+  nt_node_set_int((NodeTable *)c->nt, id, "recv_nil_tested", 0);
+  g_sn_skip = sv_skip;
+  g_pre = sv_pre;
+  view_unbind(mark);
+  if (handled) {
+    /* `&.` answers nil for a nil receiver, where any other call raises */
+    buf_printf(b, "({ sp_String *_t%d = %s; ", tH, hb.p);
+    emit_ctype(c, ty, b);
+    if (sn) buf_printf(b, " _res%d = 0; if (_t%d) {", tH, tH);
+    else buf_printf(b, " _res%d; if (SP_UNLIKELY(!_t%d)) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil()));",
+                    tH, tH, nt_str(c->nt, id, "name"));
+    buf_printf(b, " SP_GC_ROOT(_t%d);%s const char *lv__sh%d = sp_strbuf_read(_t%d); SP_GC_ROOT(lv__sh%d);",
+               tH, pre.p ? pre.p : "", tH, tH, tH);
+    /* a block that changes the String through another name while gsub! or
+       sub! runs over it is CRuby's RuntimeError, where the shadow's write
+       back would drop the change */
+    int blk = nt_ref(c->nt, id, "block") >= 0;
+    if (blk) buf_printf(b, " const char *_o%d = lv__sh%d; SP_GC_ROOT_STR(_o%d);", tH, tH, tH);
+    buf_printf(b, "\n%s _res%d = %s;", apre.p ? apre.p : "", tH, armb.p ? armb.p : "0");
+    if (blk) buf_printf(b, " if (!sp_str_eq(sp_String_cstr(_t%d), _o%d)) sp_raise_cls(\"RuntimeError\", \"string modified\");",
+                        tH, tH);
+    buf_printf(b, " sp_String_set_bin(_t%d, lv__sh%d);%s ", tH, tH, sn ? " }" : "");
+  }
+  free(hb.p); free(pre.p); free(apre.p); free(armb.p);
+  return handled ? tH : 0;
+}
+/* --share-strings: is call id `freeze` on a String method answering its
+   receiver or nil on a handle (strbuf_bang_self_local) or on a held chain? */
+static int freeze_self_answer(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  id = unwrap_parens(c, id);
+  int r = id >= 0 && nt_kind(nt, id) == NK_CallNode && nt_ref(nt, id, "arguments") < 0 &&
+          nt_ref(nt, id, "block") < 0 && is_freeze_name(nt_str(nt, id, "name"))
+          ? unwrap_parens(c, nt_ref(nt, id, "receiver")) : -1;
+  /* (not a freeze of a freeze, nor of what the statement already holds) */
+  return repr_share_rule(c) && r >= 0 && nt_kind(nt, r) == NK_CallNode && !is_freeze_name(nt_str(nt, r, "name")) &&
+         !arg_ran_first(r, 0) && (strbuf_bang_self_local(c, r) || strbuf_held_chain(c, r));
+}
+/* --share-strings: such a freeze (freeze_self_answer, call id): freezes the
+   handle, the String every name holds, and answers its contents frozen (nil
+   for nil). 0 with nothing emitted when recv renders no handle. */
+int emit_freeze_self_answer(Compiler *c, int id, int recv, Buf *b) {
+  recv = unwrap_parens(c, recv);
+  if (!freeze_self_answer(c, id)) return 0;
+  Buf hb; memset(&hb, 0, sizeof hb);
+  emit_held_handle(c, recv, &hb);
+  int ok = hb.p && hb.p[0];
+  if (ok) {
+    int t = ++g_tmp;
+    buf_printf(b, "({ sp_String *_t%d = %s; SP_GC_ROOT(_t%d); _t%d ? (sp_String_freeze(_t%d), "
+                  "sp_str_freeze_val(sp_strbuf_read_pub(_t%d))) : (const char *)NULL; })", t, hb.p, t, t, t, t);
+  }
+  free(hb.p);
+  return ok;
+}
+/* Is n `+@` or a conversion over a bang on a handle (`+id(s).upcase!`),
+   which answers the String the bang changed (emit_held_handle)? */
+static int uplus_over_self_answer(Compiler *c, int n) {
+  const NodeTable *nt = c->nt;
+  const char *nm = nt_str(nt, n, "name");
+  int r = unwrap_parens(c, nt_ref(nt, n, "receiver")), ct[CPT_MAX];
+  return nm && (is_unary_plus(nm) || is_receiver_conversion(nm)) && call_plain_argc(c, n) == 0 && r >= 0 &&
+         nt_kind(nt, r) == NK_CallNode && !arg_ran_first(r, 0) && cplan_targets(c, n, ct, CPT_MAX) == 0 &&
+         bop_share_self_answer(nt_str(nt, r, "name"), nt_ref(nt, r, "block") >= 0) && strbuf_bang_self_local(c, r);
+}
+/* A side of such an equal?: a freeze over a held answer (freeze_self_answer)
+   boxed as its frozen handle, a `+@` or conversion over one
+   (uplus_over_self_answer) as its handle, any other as emit_boxed boxes it. */
+static void emit_equal_side(Compiler *c, int n, Buf *b) {
+  Buf hb; memset(&hb, 0, sizeof hb);
+  int u = unwrap_parens(c, n), fz = freeze_self_answer(c, n);
+  if (fz) emit_held_handle(c, nt_ref(c->nt, u, "receiver"), &hb);
+  else if (u >= 0 && nt_kind(c->nt, u) == NK_CallNode && uplus_over_self_answer(c, u)) emit_held_handle(c, u, &hb);
+  if (hb.p && hb.p[0]) {
+    int t = ++g_tmp;
+    buf_printf(b, "({ sp_String *_t%d = %s; _t%d ? sp_box_obj(%s_t%d%s, SP_BUILTIN_STRBUF) : sp_box_nil(); })",
+               t, hb.p, t, fz ? "sp_String_freeze(" : "", t, fz ? ")" : "");
+  }
+  else emit_boxed(c, n, b);
+  free(hb.p);
+}
+/* Is n such a side (emit_equal_self_answer)? */
+static int equal_self_answer_side(Compiler *c, int n) {
+  n = unwrap_parens(c, n);
+  if (n < 0) return 0;
+  /* a `||` or `&&` with such a side is boxed arm by arm
+     (emit_boxed_cond_arms) */
+  if (nt_kind(c->nt, n) == NK_OrNode || nt_kind(c->nt, n) == NK_AndNode)
+    return equal_self_answer_side(c, nt_ref(c->nt, n, "left")) || equal_self_answer_side(c, nt_ref(c->nt, n, "right"));
+  if (nt_kind(c->nt, n) != NK_CallNode) return 0;
+  /* (not a `&.` link, which the identity arms box: emit_boxed renders it
+     as bytes) */
+  return (bop_share_self_answer(nt_str(c->nt, n, "name"), nt_ref(c->nt, n, "block") >= 0) && !call_is_safe_nav(c->nt, n) &&
+          strbuf_bang_self_local(c, n)) || strbuf_held_chain(c, n) ||
+         freeze_self_answer(c, n) || uplus_over_self_answer(c, n);
+}
+/* --share-strings: equal? with such a value (a bang on a handle, a held
+   chain, or a freeze of one) on a side compares the boxes, whose identity
+   is the handle (emit_boxed_bang_self); the receiver is held first. 0 with
+   nothing emitted for any other pair. */
+int emit_equal_self_answer(Compiler *c, int recv, int arg, Buf *b) {
+  /* (a receiver the operand order already holds as its bytes is not
+     boxed again) */
+  if (!repr_share_rule(c) || arg_ran_first(recv, 0) || arg_ran_first(unwrap_parens(c, recv), 0) ||
+      !(equal_self_answer_side(c, recv) || equal_self_answer_side(c, arg))) return 0;
+  int t = ++g_tmp;
+  buf_printf(b, "({ sp_RbVal _t%d = ", t);
+  emit_equal_side(c, recv, b);
+  buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_poly_equal(_t%d, ", t, t);
+  emit_equal_side(c, arg, b);
+  buf_puts(b, "); })");
+  return 1;
+}
+/* Is arm n of a `||` or `&&` a held chain typed String (strbuf_held_chain),
+   which the conditional's own boxing would copy into a new String? (An arm
+   typed poly is boxed already, and so is a bang on a variable.) */
+static int self_answer_cond_arm(Compiler *c, int n) {
+  TyKind t = comp_ntype(c, n);
+  return (t == TY_STRING || t == TY_STRBUF) && strbuf_held_chain(c, unwrap_parens(c, n));
+}
+/* --share-strings: a `||` or `&&` of another type than String with such a
+   value (equal_self_answer_side) on an arm typed String, boxed arm by arm, each as
+   emit_equal_side boxes it, so a String arm is its handle's box rather than
+   a new String over its bytes. The right arm and what it puts ahead of its
+   statement run only when the left does not decide. 0 with nothing emitted
+   for any other node. */
+int emit_boxed_self_answer_cond(Compiler *c, int node, Buf *b) {
+  const NodeTable *nt = c->nt;
+  NodeKind k = node >= 0 ? nt_kind(nt, node) : NK_NONE;
+  /* (a conditional the operand order already ran, as an argument, is not
+     run again) */
+  if (!repr_share_rule(c) || (k != NK_OrNode && k != NK_AndNode) || arg_ran_first(node, 0)) return 0;
+  int l = nt_ref(nt, node, "left"), r = nt_ref(nt, node, "right");
+  if (!self_answer_cond_arm(c, l) && !self_answer_cond_arm(c, r)) return 0;
+  int t = ++g_tmp;
+  Buf rb, rpre;
+  memset(&rb, 0, sizeof rb); memset(&rpre, 0, sizeof rpre);
+  buf_printf(b, "({ sp_RbVal _t%d = ", t);
+  emit_equal_side(c, l, b);
+  Buf *sv_pre = g_pre;
+  g_pre = &rpre;
+  emit_equal_side(c, r, &rb);
+  g_pre = sv_pre;
+  buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); if (%ssp_poly_truthy(_t%d)) {\n%s_t%d = %s;\n} _t%d; })",
+             t, k == NK_OrNode ? "!" : "", t, rpre.p ? rpre.p : "", t, rb.p ? rb.p : "sp_box_nil()", t);
+  free(rb.p); free(rpre.p);
+  return 1;
+}
+static int emit_call_arm(Compiler *c, int id, Buf *b) { emit_call(c, id, b); return 1; }
+/* --share-strings: is id a String mutator call on such a call
+   (strbuf_held_self_answer), which takes the shim over it
+   (emit_held_self_answer_shim)? A block goes only with a typed bang
+   (gsub!, sub!), and `&.` only where the answer is a String pointer. Its
+   statement form takes the value form (emit_array_mutate_stmt), which has
+   the shim. */
+int strbuf_mutator_on_held_self_answer(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  int r = nt_ref(nt, id, "receiver");
+  int targets[CPT_MAX];
+  /* gsub!/sub!'s block form puts its loop ahead of the statement, which
+     the shim keeps after its hold; any other block is no mutator's */
+  if (!repr_share_rule(c) || !name || r < 0 || (nt_ref(nt, id, "block") >= 0 && !ty_str_typed_bang_flags(name)) ||
+      !(an_str_mutator_name(name) || is_encoding_mutator(name)) || is_freeze_name(name) ||
+      sb_shadowed_reader(unwrap_parens(c, r)) ||
+      !strbuf_held_self_answer(c, r) ||
+      cplan_targets(c, id, targets, CPT_MAX) != 0)
+    return 0;
+  /* a mutator over a receiver that hands on its handle takes that handle
+     from emit_recv_route_handle itself, with no shadow; but for a sub! or
+     gsub! block, which the shim checks for a change through another name
+     ("string modified") */
+  int sub_block = is_substitution_bang(name) && nt_ref(nt, id, "block") >= 0;
+  if (!sub_block && strbuf_self_route(c, r)) return 0;
+  TyKind rt = comp_ntype(c, r), t = repr_of(c, id).as_ty;
+  /* `&.` answers nil in a slot that holds a pointer */
+  return (rt == TY_STRING || rt == TY_STRBUF) && (!call_is_safe_nav(nt, id) || t == TY_STRING);
+}
+/* Such a call in value position, through the shim. 0 with nothing emitted
+   for any other call. */
+int emit_call_on_held_self_answer(Compiler *c, int id, Buf *b) {
+  /* equal? with such a value on a side, ahead of any arm that renders its
+     receiver (emit_equal_self_answer) */
+  const NodeTable *nt = c->nt;
+  int er = nt_ref(nt, id, "receiver"), ea = 0, et[CPT_MAX];
+  const int *eav = call_args(nt, id, &ea);
+  if (repr_share_rule(c) && er >= 0 && ea == 1 && nt_ref(nt, id, "block") < 0 && !call_is_safe_nav(nt, id) &&
+      nt_str(nt, id, "name") && is_equal_name(nt_str(nt, id, "name")) && cplan_targets(c, id, et, CPT_MAX) == 0 &&
+      emit_equal_self_answer(c, er, eav[0], b)) return 1;
+  if (!strbuf_mutator_on_held_self_answer(c, id)) return 0;
+  int r = nt_ref(c->nt, id, "receiver");
+  TyKind ty = repr_of(c, id).as_ty;
+  if (ty == TY_UNKNOWN || ty == TY_VOID) ty = TY_STRING;
+  int tH = emit_held_self_answer_shim(c, id, unwrap_parens(c, r), ty, b, emit_call_arm);
+  if (!tH) return 0;
+  buf_printf(b, "_res%d; })", tH);
+  return 1;
+}
 /* Does call v answer nil for a nil receiver instead of raising: freeze,
    which NilClass defines too? */
 static int self_call_answers_nil(Compiler *c, int v) {
@@ -2953,6 +3221,41 @@ static int emit_bang_self_handle_1(Compiler *c, int v, Buf *b) {
     else emit_strbuf_handle_of(c, unwrap_parens(c, r), b);
     buf_printf(b, "; sp_String_freeze(_t%d); _t%d; })", th, th);
     return 1;
+  }
+  /* A receiver that is such a call itself (`pick(s).upcase!.downcase!`)
+     is held with its handle (emit_held_self_answer_shim). */
+  /* (a v the statement already holds, as its bytes, is not run again) */
+  /* (a mutator over a receiver that hands on its handle takes the
+     receiver-returning form below, as strbuf_mutator_on_held_self_answer
+     leaves it to emit_recv_route_handle) */
+  int ru = unwrap_parens(c, r);
+  const char *vn = nt_str(c->nt, v, "name");
+  int route_form = vn && !is_receiver_conversion(vn) && !is_freeze_name(vn) &&
+                   !(is_substitution_bang(vn) && nt_ref(c->nt, v, "block") >= 0) && strbuf_self_route(c, r);
+  if (!slot && !route_form && !arg_ran_first(v, 0) && !sb_shadowed_reader(ru) && strbuf_held_self_answer(c, r)) {
+    /* a freeze freezes the held handle and answers it (nil for nil); a
+       conversion answers it (emit_held_handle) */
+    if (is_receiver_conversion(nt_str(c->nt, v, "name"))) {
+      Buf hb; memset(&hb, 0, sizeof hb);
+      emit_held_handle(c, v, &hb);
+      int ok = hb.p && hb.p[0];
+      if (ok) buf_puts(b, hb.p);
+      free(hb.p);
+      if (ok) return 1;
+    }
+    if (is_freeze_name(nt_str(c->nt, v, "name"))) {
+      Buf hb; memset(&hb, 0, sizeof hb);
+      emit_held_handle(c, r, &hb);
+      int ok = hb.p && hb.p[0];
+      if (ok) buf_printf(b, "sp_String_freeze(%s)", hb.p);
+      free(hb.p);
+      if (ok) return 1;
+    }
+    int tH = emit_held_self_answer_shim(c, v, unwrap_parens(c, r), TY_STRING, b, emit_self_call_arm);
+    if (tH) {
+      buf_printf(b, "_res%d ? _t%d : (sp_String *)NULL; })", tH, tH);
+      return 1;
+    }
   }
   /* A receiver-returning call takes its receiver route's handle once,
      before its own arguments can change the base slot. */
@@ -3088,6 +3391,10 @@ void emit_strbuf_value(Compiler *c, LocalVar *lv, int v, Buf *b) {
   else if (shared && vplus >= 0 && !repr_share_rule(c) && strbuf_slot_ref(c, vplus, srefV, sizeof srefV))
     buf_printf(b, "sp_String_uplus(%s)", srefV);
   else if (shared && emit_strbuf_ivar_write_handle(c, v, b)) { }
+  /* --share-strings: a held chain's value (strbuf_held_chain) is the handle
+     it holds */
+  else if (shared && repr_share_rule(c) && strbuf_held_chain(c, v) && strbuf_bang_self_local(c, unwrap_parens(c, v)) &&
+           emit_bang_self_handle(c, unwrap_parens(c, v), b)) { }
   /* --share-strings: a String bang on a boxed receiver answers that
      receiver's own box, or nil (emit_boxed_bang_self); the box of a String
      the rule shares holds its handle, which the slot takes */
@@ -17968,7 +18275,9 @@ static int emit_array_mutate_stmt_dispatch(Compiler *c, int id, Buf *b, int inde
   return emit_array_mutate_stmt_body(c, id, b, indent);
 }
 int emit_array_mutate_stmt(Compiler *c, int id, Buf *b, int indent) {
-  if (push_stmt_takes_value_form(c, id)) return 0;
+  /* a String mutator on a String method answering its receiver or nil on a
+     handle takes the value form, which holds that handle */
+  if (push_stmt_takes_value_form(c, id) || strbuf_mutator_on_held_self_answer(c, id)) return 0;
   return emit_ivar_nil_guarded(c, id, b, indent, emit_array_mutate_stmt_dispatch);
 }
 /* The FrozenError an in-place String mutator raises before it reads its
@@ -20395,6 +20704,9 @@ static int strbuf_flow_value(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, in
   /* a bang method or an iterator with a block on a local's handle answers
      that handle or nil */
   if (ctx != SFC_ARG && strbuf_bang_self_local(c, v)) return 1;
+  /* and so does a call held as its handle where a mutator takes it
+     (strbuf_held_chain) */
+  if (ctx != SFC_ARG && strbuf_held_chain(c, v)) return 1;
   /* (a call without a bang that answers its receiver over a handle hands
      that handle on as an argument too: strbuf_value_carries) */
   if (ctx == SFC_ARG && strbuf_plain_self_call(c, v)) return 1;

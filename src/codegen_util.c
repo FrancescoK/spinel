@@ -3119,7 +3119,16 @@ int str_mut_var_recv(Compiler *c, int recv) {
    would a local. */
 int sb_shadowed_reader(int node) {
   for (int i = 0; i < g_n_argov; i++)
-    if (g_argov_node[i] == node && strncmp(g_argov_text[i], "lv__sb", 6) == 0) return 1;
+    if (g_argov_node[i] == node &&
+        (strncmp(g_argov_text[i], "lv__sb", 6) == 0 || strncmp(g_argov_text[i], "lv__sh", 6) == 0)) return 1;
+  return 0;
+}
+/* --share-strings: the shadow a held chain's shim reads its receiver as
+   (`lv__shT`, emit_held_self_answer_shim), which every value arm writes its
+   answer back to */
+int sb_held_shadow(int node) {
+  for (int i = 0; i < g_n_argov; i++)
+    if (g_argov_node[i] == node && strncmp(g_argov_text[i], "lv__sh", 6) == 0) return 1;
   return 0;
 }
 /* The arguments of the String mutator `id` that a shim re-runs on its
@@ -3212,6 +3221,42 @@ int strbuf_marked_yields_handle(Compiler *c, int v) {
                  (bop_answers_self(TY_STRING, nm, call_plain_argc(c, v), 0) == BOPF_SELF ||
                   bop_share_self_answer(nm, 0))));
 }
+/* --share-strings: is r a call held as its handle? That is a bang on a
+   handle (strbuf_bang_self_local) that renders as its bytes, not as the
+   handle (neither a route that hands it on, strbuf_value_carries, nor a
+   read typed as it, strbuf_call_reads_handle), or, over such a call, a call
+   that always answers its receiver (`concat`, no splat, a conversion a
+   String answers with itself) or `+@`. Its value is the handle's String,
+   or nil; a mutator on it holds the handle (emit_held_self_answer_shim); a
+   link under safe navigation answers nil for a nil receiver, which the
+   next link raises on. A bang on a variable or self is left out: a
+   mutator on it writes its answer back to the variable
+   (emit_str_mut_writeback). */
+int strbuf_held_chain(const Compiler *c, int r) {
+  const NodeTable *nt = c->nt;
+  r = unwrap_parens((Compiler *)c, r);
+  if (!repr_share_rule(c) || r < 0 || nt_kind(nt, r) != NK_CallNode) return 0;
+  const char *nm = nt_str(nt, r, "name");
+  int argc = 0, targets[CPT_MAX];
+  const int *argv = call_args(nt, r, &argc);
+  /* a link the program defines answers what its method answers */
+  if (!nm || cplan_targets((Compiler *)c, r, targets, CPT_MAX) != 0) return 0;
+  /* `+@` answers its receiver unless it is frozen (sp_String_uplus) */
+  if (is_unary_plus(nm) && argc == 0 && nt_ref(nt, r, "block") < 0)
+    return strbuf_held_chain(c, nt_ref(nt, r, "receiver"));
+  /* (not freeze: its String no mutator changes any more) */
+  if (!bop_share_self_answer(nm, nt_ref(nt, r, "block") >= 0))
+    return nt_ref(nt, r, "block") < 0 && !call_has_splat_arg(nt, argv, argc) &&
+           bop_share_named(TY_STRING, nm) != BSH_FROZEN &&
+           (bop_answers_self(TY_STRING, nm, argc, 0) == BOPF_SELF || (is_receiver_conversion(nm) && argc == 0)) &&
+           strbuf_held_chain(c, nt_ref(nt, r, "receiver"));
+  int rr = unwrap_parens((Compiler *)c, nt_ref(nt, r, "receiver"));
+  NodeKind rk = rr >= 0 ? nt_kind(nt, rr) : NK_NONE;
+  if (rr < 0 || rk == NK_LocalVariableReadNode || rk == NK_InstanceVariableReadNode || rk == NK_SelfNode ||
+      repr_static_read_kind(rk)) return 0;
+  return strbuf_bang_self_local(c, r) && !strbuf_call_reads_handle((Compiler *)c, r) &&
+         !strbuf_value_carries((Compiler *)c, r);
+}
 /* A String method answering its receiver or nil (bop_share_self_answer:
    a bang method, an iterator given a block) called on a local that holds
    the shared handle (--share-strings: or an ivar, a global, a class
@@ -3225,6 +3270,13 @@ int strbuf_bang_self_local(const Compiler *c, int v) {
   if (!self_ans && !repr_share_rule(c)) return 0;
   int r = nt_ref(nt, v, "receiver");
   if (r < 0) return 0;
+  /* --share-strings: itself, to_s or to_str of a held chain answers its
+     String (strbuf_held_chain; nil.to_s's "" aside, emit_held_handle) */
+  if (repr_share_rule(c) && is_receiver_conversion(nt_str(nt, v, "name")) && call_plain_argc((Compiler *)c, v) == 0 &&
+      nt_ref(nt, v, "block") < 0 && !call_is_safe_nav(nt, v) && nt_kind(nt, unwrap_parens((Compiler *)c, r)) == NK_CallNode) {
+    int ct[CPT_MAX];
+    return cplan_targets((Compiler *)c, v, ct, CPT_MAX) == 0 && strbuf_held_chain(c, r);
+  }
   /* a `concat` given nothing, over an attribute assignment's handle, reads its receiver as bytes */
   if (is_append_concat(nt_str(nt, v, "name")) && call_plain_argc((Compiler *)c, v) == 0 && strbuf_assign_leaf((Compiler *)c, r))
     return 0;
@@ -3255,6 +3307,10 @@ int strbuf_bang_self_local(const Compiler *c, int v) {
      the call raises on (a `&.` skips, nil.freeze is nil) */
   if (nt_kind(nt, r) == NK_CallNode && bop_share_self_answer(nt_str(nt, r, "name"), nt_ref(nt, r, "block") >= 0) &&
       strbuf_bang_self_local(c, r)) return 1;
+  /* or such a call itself, held as its handle (`pick(s).upcase!.downcase!`,
+     strbuf_held_chain): it answers that String or nil, on which this call
+     raises, or under safe navigation answers nil */
+  if (rk == NK_CallNode && strbuf_held_chain(c, r)) return 1;
   if (rk == NK_InstanceVariableReadNode || repr_static_read_kind(rk))
     return strbuf_var_handle((Compiler *)c, r, ref, sizeof ref);
   /* a reader call read as the handle on a variable or self (`o.s.strip!`),

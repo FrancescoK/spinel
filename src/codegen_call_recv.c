@@ -4446,7 +4446,7 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
         buf_printf(b, " sp_String_cstr(_t%d); })", tm2);
         { *out = 1; return 1; }
       } }
-    int lvw9 = str_mut_var_recv(c, recv);
+    int lvw9 = str_mut_var_recv(c, recv) || sb_held_shadow(recv);
     int tn9 = ++g_tmp;
     /* append_as_bytes accepts String AND Integer arguments; an Integer is the
        raw byte value (100 -> "d"), materialized via sp_int_chr (#2463). A
@@ -4765,7 +4765,7 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
         (sp_streq(nt_type(ntC, rcore), "CallNode") ||
          sp_streq(nt_type(ntC, rcore), "StringNode") ||
          sp_streq(nt_type(ntC, rcore), "InterpolatedStringNode")) &&
-        !strbuf_local_name(c, rcore)) {
+        !strbuf_local_name(c, rcore) && !sb_held_shadow(rcore)) {
       int aC = nt_ref(ntC, id, "arguments"); int anC = 0;
       if (aC >= 0) nt_arr(ntC, aC, "arguments", &anC);
       if (anC == 0 && nt_ref(ntC, id, "block") < 0) {
