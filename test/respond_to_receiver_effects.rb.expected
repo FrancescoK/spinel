@@ -1,0 +1,21 @@
+true
+[:init]
+true
+false
+[:copy, :copy]
+true
+true
+[:make, :text]
+true
+[:struct]
+[true, false]
+[:init, :init]
+true
+true
+true
+true
+true
+true
+true
+true
+[]
