@@ -1473,6 +1473,11 @@ static int strbuf_route_operand(Compiler *c, int v) {
   if (xt == TY_POLY && is_string_class_name(nm)) return x;
   return xt == TY_STRING || xt == TY_STRBUF ? x : -1;
 }
+/* --share-strings: is v such a value route (`+s`, `String(s)`, `then`,
+   `tap`)? */
+int strbuf_value_route(Compiler *c, int v) {
+  return strbuf_route_operand(c, v) >= 0;
+}
 /* `String(x)` (Kernel's) or `+x` over a variable x whose slot holds the
    handle (strbuf_slot_ref, either build): x's slot text to out, and
    *uplus for `+x`; else 0. Each answers x's String itself (`+x` unless
@@ -1943,6 +1948,18 @@ static int emit_clamp_lifted_bound(Compiler *c, int op, int t, Buf *b) {
   buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", t);
   return 1;
 }
+static int strbuf_route_carries(Compiler *c, int v, int depth);
+/* --share-strings: is v an append chain over cb, a value route over a
+   handle (`(+s) << x`, strbuf_route_operand), with no method of the
+   program's own on a link? emit_strbuf_route_chain
+   appends in place to the handle the route answers, which is the chain's
+   value. */
+static int strbuf_chain_over_route(Compiler *c, int v, int cb, int depth) {
+  int args[32];
+  return cb != unwrap_parens(c, v) && strbuf_route_operand(c, cb) >= 0 &&
+         strbuf_chain_links(c, v, cb, args) > 0 && !strbuf_chain_user_target(c, v, cb, 1) && depth < 8 &&
+         strbuf_route_carries(c, cb, depth + 1);
+}
 /* Does value v hand over a String the rule shares as the handle itself: a
    slot holding it, or a route over one? */
 static int strbuf_route_carries(Compiler *c, int v, int depth) {
@@ -1954,9 +1971,15 @@ static int strbuf_route_carries(Compiler *c, int v, int depth) {
       strbuf_route_inline_call(c, v) || strbuf_route_loop(c, v) || repr_call_returns_handle(c, v) ||
       strbuf_route_exc_message(c, v) || strbuf_route_reader(c, v) || strbuf_route_srange_end(c, v)) return 1;
   if (strbuf_assign_leaf(c, v) || strbuf_bang_leaf(c, v)) return 1;
+  /* a receiver-answering method on a value route over a handle (`(+s).insert(0, "<")`):
+     the route's handle (emit_bang_self_handle) */
+  if (depth < 8 && nt_kind(c->nt, unwrap_parens(c, v)) == NK_CallNode &&
+      strbuf_route_operand(c, nt_ref(c->nt, unwrap_parens(c, v), "receiver")) >= 0 &&
+      strbuf_bang_self_local(c, unwrap_parens(c, v))) return 1;
   { int cb = unwrap_parens(c, str_alias_chain_base(c, v)), args[32];
     if (cb != unwrap_parens(c, v) && (strbuf_assign_leaf(c, cb) || strbuf_bang_chain(c, v)) &&
         strbuf_chain_links(c, v, cb, args) > 0) return 1;
+    if (strbuf_chain_over_route(c, v, cb, depth)) return 1;
     int ab = strbuf_append_base(c, v);
     if (ab != unwrap_parens(c, v) && strbuf_freeze_leaf(c, ab)) return 1; }
   int x = strbuf_route_operand(c, v);
@@ -1996,6 +2019,7 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
   { int cb = unwrap_parens(c, str_alias_chain_base(c, v));
     if (cb != unwrap_parens(c, v) && (strbuf_assign_leaf(c, cb) || strbuf_bang_chain(c, v)) &&
         emit_strbuf_route_chain(c, v, cb, b)) return 1;
+    if (strbuf_chain_over_route(c, v, cb, 0) && emit_strbuf_route_chain(c, v, cb, b)) return 1;
     /* ...or over freeze on one, whose appends raise FrozenError */
     int ab = strbuf_append_base(c, v);
     if (ab != unwrap_parens(c, v) && strbuf_freeze_leaf(c, ab) && emit_strbuf_route_chain(c, v, ab, b)) return 1; }
@@ -3479,13 +3503,18 @@ static int emit_bang_self_handle_1(Compiler *c, int v, Buf *b) {
     buf_printf(b, "const char *_t%d = ", tr);
     r = unwrap_parens(c, r);
     int mark = g_n_argov;
-    int sv = view_push_repr(c, r, VR_STRBUF_BOX, 1);
-    int st = view_push(c, r, TY_STRBUF);
-    ran_first_bind(r, th, th);
+    /* a String receiver reads as that handle's slot (strbuf_slot_ref) and
+       String, or the handle where it is viewed as one, as a variable
+       holding the handle does, so each method takes it as it takes such a
+       variable; any other (a box's `+n`) is typed as the handle itself */
+    int as_h = comp_ntype(c, r) != TY_STRING;
+    int sv = as_h ? view_push_repr(c, r, VR_STRBUF_BOX, 1) : -1;
+    int st = as_h ? view_push(c, r, TY_STRBUF) : -1;
+    if (as_h) ran_first_bind(r, th, th);
+    else ran_first_bind_read(r, th);
     emit_bang_on_held(c, v, th, b);
     view_unbind(mark);
-    view_pop(c, st);
-    view_pop(c, sv);
+    if (as_h) { view_pop(c, st); view_pop(c, sv); }
     if (late) view_unbind(amark);
     buf_printf(b, "; _t%d ? _t%d : (sp_String *)NULL; })", tr, th);
     return 1;

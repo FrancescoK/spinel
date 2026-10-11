@@ -6956,7 +6956,7 @@ int emit_lent_local(LocalVar *lv, const char *vn, Buf *out) {
    An override the call has dropped since (a later call reuses its index)
    is pruned when the next one is taken, so the list is no longer than the
    overrides live at once. */
-typedef struct { int idx, node, t, th; } RanHandle;
+typedef struct { int idx, node, t, th, read; } RanHandle;
 static RanHandle *g_ran_hnd;
 static int g_n_ran_hnd, g_cap_ran_hnd;
 
@@ -6969,6 +6969,9 @@ static int g_n_ran_hnd, g_cap_ran_hnd;
 int ran_first_handle(int node) {
   for (int i = g_n_argov - 1; i >= 0; i--) {
     if (g_argov_node[i] != node) continue;
+    /* (a String read of the handle, ran_first_bind_read's) */
+    int rh = ran_first_read_handle(node);
+    if (rh >= 0) return rh;
     int t;
     if (sscanf(g_argov_text[i], "_t%d", &t) != 1) return -1;
     for (int j = 0; j < g_n_ran_hnd; j++)
@@ -8657,9 +8660,27 @@ static void ran_first_bind_o(int v, int t, int th, int to) {
       if (!nr) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
       g_ran_hnd = nr;
     }
-    g_ran_hnd[g_n_ran_hnd++] = (RanHandle){ g_n_argov, v, t, th };
+    g_ran_hnd[g_n_ran_hnd++] = (RanHandle){ g_n_argov, v, t, th, 0 };
   }
   if (to) view_bind_o(v, "_t%d", t); else view_bind(v, "_t%d", t);
+}
+/* --share-strings: String node v whose handle ran into _t<th>: its reads
+   are that handle's String (sp_strbuf_read_pub), as a variable's that holds
+   the handle are, and ran_first_handle (strbuf_slot_ref) answers _t<th>. */
+void ran_first_bind_read(int v, int th) {
+  ran_first_bind_o(v, th, th, 0);
+  snprintf(g_argov_text[g_n_argov - 1], ARGOV_TEXT_LEN, "sp_strbuf_read_pub(_t%d)", th);
+  g_ran_hnd[g_n_ran_hnd - 1].read = 1;
+}
+/* The handle temp of node v's live ran_first_bind_read binding, or -1. */
+int ran_first_read_handle(int node) {
+  for (int i = g_n_argov - 1; i >= 0; i--) {
+    if (g_argov_node[i] != node) continue;
+    for (int j = 0; j < g_n_ran_hnd; j++)
+      if (g_ran_hnd[j].idx == i && g_ran_hnd[j].node == node) return g_ran_hnd[j].read ? g_ran_hnd[j].th : -1;
+    return -1;
+  }
+  return -1;
 }
 
 /* The value `v` evaluated into a rooted temp in g_pre, pushed onto the

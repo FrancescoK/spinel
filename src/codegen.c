@@ -1457,8 +1457,10 @@ static int emit_boxed_bang_self(Compiler *c, int node, Buf *b) {
   /* (a bang over a route keeps its own arms below: a narrowed box's
      mutator changes the box's String in place; a receiver that is such a
      call itself, `id(s).upcase!.downcase!`, is held as its handle,
-     strbuf_held_self_answer) */
-  if (!slot && !strbuf_plain_self_call(c, node) && !strbuf_held_self_answer(c, r)) return 0;
+     strbuf_held_self_answer; one over a value route, `(+s).upcase!`,
+     answers the route's handle, taken once) */
+  if (!slot && !strbuf_plain_self_call(c, node) && !strbuf_held_self_answer(c, r) && !strbuf_value_route(c, r))
+    return 0;
   if (!slot || nt_kind(c->nt, r) == NK_CallNode) {
     /* a reader call: read once (emit_bang_self_handle); so is a route
        over a handle (`(s << x).freeze`), whose handle it takes once */

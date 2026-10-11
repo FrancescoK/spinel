@@ -911,6 +911,9 @@ int ran_first_handle(int node);
 /* Bind node v to its value temp _t<t>, with th its handle's temp or -1
    (codegen_fold.c) */
 void ran_first_bind(int v, int t, int th);
+void ran_first_bind_read(int v, int th);
+int ran_first_read_handle(int node);
+int strbuf_value_route(Compiler *c, int v);
 /* The temp the nil arm's head (emit_nil_target_head) ran operand `node`
    into, while the call it heads is emitted (Repr.head_held); -1 for any
    other node, or one the head ran for its effect alone (a nil). */
