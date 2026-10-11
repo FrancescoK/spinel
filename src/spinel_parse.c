@@ -4295,6 +4295,12 @@ static char *resolve_plain_requires(char *source, const char *exe_path,
     char lib_name[256];
     if (hit.arg_len >= sizeof lib_name) break;
     snprintf(lib_name, sizeof(lib_name), "%.*s", (int)hit.arg_len, hit.arg);
+    /* `require "webrick/compat.rb"` names the same feature as
+       `require "webrick/compat"`: each lookup below adds the extension */
+    {
+      size_t ln = strlen(lib_name);
+      if (ln > 3 && strcmp(lib_name + ln - 3, ".rb") == 0) lib_name[ln - 3] = '\0';
+    }
     /* What the call answers, in CRuby's terms: true when this require is what
        loads the library, false when it was already there (a repeat, or a
        capability Spinel provides without loading anything), and nil for a

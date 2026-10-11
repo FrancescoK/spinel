@@ -1554,7 +1554,7 @@ cli-opts-test: $(SPINEL)
 	  { echo "cli-opts-test: FAIL (a -g build did not raise NoMethodError for an unset ivar, #5960)"; ok=0; }; \
 	$(SPINEL) -I test/require_load_path test/require_load_path/main.rb -o "$$tmp/lp" >"$$tmp/lp.out" 2>&1 && \
 	  "$$tmp/lp" 2>&1 | cmp -s - test/require_load_path/main.rb.expected || \
-	  { echo "cli-opts-test: FAIL (a file reached by -I require and by require_relative loaded twice)"; ok=0; }; \
+	  { echo "cli-opts-test: FAIL (a file reached by -I require and by require_relative loaded twice, or a require naming the .rb found nothing)"; ok=0; }; \
 	mkdir -p "$$tmp/shadow/openssl"; printf 'module OpenSSL\n  def self.whoami = "project"\nend\n' > "$$tmp/shadow/openssl/openssl.rb"; \
 	printf 'require "openssl"\nputs OpenSSL.whoami\n' > "$$tmp/shadow.rb"; \
 	$(SPINEL) -I "$$tmp/shadow" "$$tmp/shadow.rb" -o "$$tmp/shadowbin" >"$$tmp/shadow.out" 2>&1 && [ "$$("$$tmp/shadowbin")" = "project" ] || \
