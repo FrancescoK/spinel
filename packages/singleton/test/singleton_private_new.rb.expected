@@ -1,0 +1,4 @@
+new is private
+allocate is private
+can't dup instance of singleton Registry
+can't clone instance of singleton Registry

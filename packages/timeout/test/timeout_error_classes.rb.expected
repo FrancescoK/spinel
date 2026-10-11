@@ -1,0 +1,4 @@
+RuntimeError
+Exception
+rescued Timeout::Error: execution timeout
+as RuntimeError: Timeout::Error

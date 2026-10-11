@@ -1,0 +1,5 @@
+before
+Counter#initialize
+40
+true
+"spinel"

@@ -127,7 +127,9 @@ like `ffi`),
 `benchmark` (CRuby's own gem, unmodified), `shellwords` (likewise), `find` (likewise, but for one line; see its note),
 `fileutils`, `tmpdir`, `zlib`, `logger` (a compact implementation of its API),
 `benchmark` (CRuby's own gem, unmodified),
-`bigdecimal` (a minimal subset, see `packages/bigdecimal/bigdecimal.rb`)
+`bigdecimal` (a minimal subset, see `packages/bigdecimal/bigdecimal.rb`),
+`singleton` and `timeout` (compact implementations of their API; `Timeout.timeout`
+interrupts through `Thread#raise`, so not on the main thread yet)
 (plus the `stringio`/`strscan`/`json` marker shims for their C-backed
 features). `net/http` and `uri` are there, and so
 is `openssl` -- the one that is conditional: it is glue over the system libssl, so it exists only where those
