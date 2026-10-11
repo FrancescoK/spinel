@@ -18679,6 +18679,43 @@ void unhoist_dispatch_args(Compiler *c, int n, int *sv, int *vw) {
 }
 
 
+/* Is `id` inside `root`, reached without entering a definition or a lambda
+   (whose bodies run when they are called, not where they are written)? */
+static int in_subtree_as_run(const NodeTable *nt, int root, int id) {
+  if (root < 0) return 0;
+  if (root == id) return 1;
+  NodeKind k = nt_kind(nt, root);
+  if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode ||
+      k == NK_LambdaNode) return 0;
+  int nr = nt_num_refs(nt, root);
+  for (int i = 0; i < nr; i++) if (in_subtree_as_run(nt, nt_ref_at(nt, root, i), id)) return 1;
+  int na = nt_num_arrs(nt, root);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *ids = nt_arr_at(nt, root, i, &n);
+    for (int j = 0; j < n; j++) if (in_subtree_as_run(nt, ids[j], id)) return 1;
+  }
+  return 0;
+}
+
+/* Is the call `id` written in a begin whose rescue names NameError or
+   NoMethodError? A bare rescue does not count: that a method may be missing
+   has to be what the program says it handles. */
+static int call_rescued_as_missing(const NodeTable *nt, int id) {
+  for (int b = 0; b < nt->count; b++) {
+    if (nt_kind(nt, b) != NK_BeginNode) continue;
+    int names = 0;
+    for (int r = nt_ref(nt, b, "rescue_clause"); r >= 0 && !names; r = nt_ref(nt, r, "subsequent")) {
+      int nexc = 0; const int *exc = nt_arr(nt, r, "exceptions", &nexc);
+      for (int i = 0; i < nexc; i++) {
+        const char *en = nt_kind(nt, exc[i]) == NK_ConstantReadNode ? nt_str(nt, exc[i], "name") : NULL;
+        if (en && (sp_streq(en, "NameError") || sp_streq(en, "NoMethodError"))) names = 1;
+      }
+    }
+    if (names && in_subtree_as_run(nt, nt_ref(nt, b, "statements"), id)) return 1;
+  }
+  return 0;
+}
+
 /* Whether `node` is a bare identifier of no type (a vcall, the shape
    emit_unresolved_call raises NameError for), or an untyped call chained
    on one: evaluating it raises before anything it answers is used. */
@@ -18798,6 +18835,40 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
       buf_printf(b, ", %s)", (is_scalar_ret(uret) && uret != TY_UNKNOWN) ? default_value_from_compiler(c, uret) : "sp_box_nil()");
     }
     return 1;
+  }
+  /* An implicit self-call with arguments to a method nothing in the program
+     defines, written in a begin that rescues NameError or NoMethodError: the
+     program is probing for a method that may be missing, and CRuby raises
+     the NoMethodError its rescue expects. RDoc's executable starts with
+       begin
+         gem 'rdoc'
+       rescue NameError => e # --disable-gems
+         raise unless e.name == :gem
+       end
+     and a Spinel program has no RubyGems, as under --disable-gems. Without
+     that rescue the call stays refused: there it is more likely a builtin the
+     compiler has no arm for than a method the program expects to miss. */
+  if ((recv < 0 || nt_kind(nt, recv) == NK_SelfNode) && g_gate_raise && !nt_int(nt, id, "vcall", 0) &&
+      nt_ref(nt, id, "block") < 0 && !an_user_defines_method(c, name) &&
+      !builtin_object_method_known(name) && call_rescued_as_missing(nt, id)) {
+    int plain = 1;
+    for (int k = 0; k < argc; k++) {
+      NodeKind ak = nt_kind(nt, argv[k]);
+      if (ak == NK_SplatNode || ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode) plain = 0;
+    }
+    if (plain) {
+      const char *ucn = g_emitting_class_id >= 0 ? class_ruby_name(c, g_emitting_class_id) : NULL;
+      TyKind uret = repr_of(c, id).as_ty;
+      buf_puts(b, "(");
+      for (int k = 0; k < argc; k++) { buf_puts(b, "(void)("); emit_expr(c, argv[k], b); buf_puts(b, "), "); }
+      char head[200]; snprintf(head, sizeof head, "undefined method '%s' for an instance of ", name);
+      buf_puts(b, "sp_raise_cls(\"NoMethodError\", ");
+      if (g_emitting_class_id >= 0 && anon_class_text(c, g_emitting_class_id, head, b)) buf_puts(b, ")");
+      else buf_printf(b, "(&(\"\\xff\" \"undefined method '%s' for %s%s\")[1]))",
+                      name, ucn ? "an instance of " : "main", ucn ? ucn : "");
+      buf_printf(b, ", %s)", (is_scalar_ret(uret) && uret != TY_UNKNOWN) ? default_value_from_compiler(c, uret) : "sp_box_nil()");
+      return 1;
+    }
   }
   if (recv >= 0) {
     TyKind grt = comp_ntype(c, recv);
