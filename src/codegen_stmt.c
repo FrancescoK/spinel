@@ -4670,8 +4670,10 @@ int static_block_given_cond(Compiler *c, int pred) {
   /* In a Thread or Fiber body the active block (g_block_id) is that body's
      own, not a block spliced in for the method's: the method's block, or
      its &block parameter, is whatever the call that started the body was
-     given, read at run time. */
-  if (g_fiber_body >= 0) return -1;
+     given, read at run time. A yielding method spliced inside the body has
+     a literal block of its own, and answers as it does anywhere else. */
+  if (g_fiber_body >= 0 && (g_block_id < 0 || nt_ref(nt, g_block_id, "body") == g_fiber_body))
+    return -1;
   /* `unless block` / `if block`, where `block` is the method's own `&block`
      parameter, asks what `block_given?` asks -- packages/tempfile/tempfile.rb
      writes it that way, and so did the program that reported this. Read only
@@ -10220,9 +10222,15 @@ void emit_return(Compiler *c, int id, Buf *b, int indent) {
   int n = 0;
   const int *a = args >= 0 ? nt_arr(c->nt, args, "arguments", &n) : NULL;
 
+  /* A funnel set inside the body being emitted is a splice's (`_yretN`,
+     `_sretN`): proc and fiber bodies clear the method's on entry. The
+     spliced method's `return` leaves only that method, whatever body the
+     call sits in. */
+  int in_inline = g_method_pr_label != NULL;
+
   /* A non-lambda proc written at top level: `return` is a TOP-LEVEL return,
      which ends the script (#3663). */
-  if (g_proc_toplevel_return) {
+  if (g_proc_toplevel_return && !in_inline) {
     emit_indent(b, indent);
     buf_puts(b, "{ ");
     for (int k = 0; k < n; k++) { buf_puts(b, "(void)("); emit_boxed(c, a[k], b); buf_puts(b, "); "); }
@@ -10232,7 +10240,7 @@ void emit_return(Compiler *c, int id, Buf *b, int indent) {
 
   /* Inside a non-lambda proc body: `return` is non-local -- longjmp to the
      creating method's frame with the boxed value (CRuby proc-return semantics). */
-  if (g_proc_return_home) {
+  if (g_proc_return_home && !in_inline) {
     emit_indent(b, indent);
     if (n > 1) {
       int ta = emit_return_values(c, a, n, "{ ", b);
