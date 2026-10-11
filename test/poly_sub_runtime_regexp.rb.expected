@@ -1,0 +1,11 @@
+"a.rb:3\nb.rb:9"
+"a.rb:3\n/src/b.rb:9"
+"/src/a.py:3\n/src/b.py:9"
+"/src/a.rb\n/src/b.rb"
+"/src/a.rb:0\n/src/b.rb:9"
+"~/a.rb:3\n~/b.rb:9"
+"@a.rb:3\n@b.rb:9"
+"@/a.rb:3\n@/b.rb:9"
+NoMethodError
+"c.rb"
+"Path#gsub"
