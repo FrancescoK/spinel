@@ -4092,7 +4092,11 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
              cannot touch (sub_bang_reenters, emit_gsub_block_expr) */
           int sv_sbB = g_sub_bang_id;
           g_sub_bang_id = subm && sub_bang_reenters(c, id, recv, argc, argv) ? id : -1; g_sub_bang_tm = 0;
+          /* the handle is tested above: the plain form reads its bytes, bound
+             in _tob, and must not test them again as a handle (cplan_nil) */
+          nt_node_set_int((NodeTable *)nt, id, "recv_nil_tested", 1);
           emit_expr(c, id, &nbB);
+          nt_node_set_int((NodeTable *)nt, id, "recv_nil_tested", 0);
           /* the plain form read the handle's bytes, and the set_bin below
              writes its answer back into the handle (the bang's own answer,
              when it is used, is the bytes: only a dropped one is declared) */
