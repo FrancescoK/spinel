@@ -7,6 +7,7 @@
 #include "analyze_internal.h"
 #include "call_plan.h"
 #include "repr.h"
+#include "codegen_call_arms.h"
 
 static CallPlan *g_cp_memo = NULL;
 static unsigned char *g_cp_have = NULL;
@@ -777,6 +778,53 @@ static int limit_exempt(Compiler *c, int id, int lx) {
     return ci >= 0 && comp_cmethod_in_chain(c, ci, name, NULL) >= 0;
   }
   case LX_BINDING: return cplan_user_fresh(c, id)->dispatch != CP_NONE;
+  }
+  return 0;
+}
+
+/* A define_method in a method's body defines its method when that method
+   runs, but analysis registers it from the start (walk_scope marks the call
+   dm_host, and dm_scope for the method it registers). A method nothing names
+   is not registered at all (method_never_named). Otherwise the early
+   registration is right only for a method that is new: one the class does
+   not answer before then. Anything else is refused: its own def or one up
+   its chain, a module's, a subclass's, an alias, attr or Struct member
+   (spelled as a Symbol), or a method every object has. */
+int cplan_define_method_early(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  int host = (int)nt_int(nt, id, "dm_host", 0) - 1, dm = (int)nt_int(nt, id, "dm_scope", 0) - 1;
+  if (host < 0 || host >= c->nscopes || nt_int(nt, id, "refusal_dead", 0)) return 0;
+  /* the program's own define_method is an ordinary method */
+  if (an_user_defines_method(c, "define_method")) return 0;
+  int an = nt_ref(nt, id, "arguments"), ac = 0;
+  const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
+  int own = ac > 0 ? av[0] : -1;
+  if (own < 0 || (nt_kind(nt, own) != NK_SymbolNode && nt_kind(nt, own) != NK_StringNode)) return 0;
+  /* a method object (`define_method(:m, instance_method(:x))`) registers nothing */
+  if (dm < 0 || dm >= c->nscopes) return 1;
+  const Scope *ds = &c->scopes[dm];
+  if (!ds->name || ds->class_id < 0 || an_object_method_name(ds->name) || basicobject_own_method(ds->name)) return 1;
+  int dc = -1, mi = comp_method_in_chain(c, ds->class_id, ds->name, &dc);
+  if (mi >= 0 && mi != dm) return 1;
+  for (int t = 0; t < c->nscopes; t++) {
+    const Scope *ts = &c->scopes[t];
+    if (t == dm || ts->is_cmethod || ts->class_id < 0 || !ts->name || !sp_streq(ts->name, ds->name)) continue;
+    for (int k = ds->class_id, h = 0; k >= 0 && k < c->nclasses && h < 64; k = c->classes[k].parent, h++) {
+      if (ts->class_id == k) return 1;
+      for (int m = 0; m < c->classes[k].nincluded_mods; m++)
+        if (c->classes[k].included_mods[m] == ts->class_id) return 1;
+    }
+    /* a subclass's: a class method run on the subclass defines it there */
+    for (int k = ts->class_id, h = 0; k >= 0 && k < c->nclasses && h < 64; k = c->classes[k].parent, h++)
+      if (k == ds->class_id) return 1;
+  }
+  for (int k = comp_kind_first(c, NK_SymbolNode); k >= 0; k = comp_kind_next(c, k)) {
+    const char *v = nt_kind(nt, k) == NK_SymbolNode && k != own ? nt_str(nt, k, "value") : NULL;
+    if (v && sp_streq(v, ds->name)) return 1;
+  }
+  for (int k = comp_kind_first(c, NK_StringNode); k >= 0; k = comp_kind_next(c, k)) {
+    const char *v = nt_kind(nt, k) == NK_StringNode && k != own ? nt_str(nt, k, "content") : NULL;
+    if (v && sp_streq(v, ds->name)) return 1;
   }
   return 0;
 }
