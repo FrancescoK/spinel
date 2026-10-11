@@ -2,7 +2,7 @@
 
    A large program's generated C is one file, and cc compiles one file on one
    core: campfire's 10 MB took ~50 s while eleven cores sat idle. c_split
-   takes the PREPROCESSED unit (cc -E -P) and writes a shared header plus N
+   takes the PREPROCESSED unit (cc -E) and writes a shared header plus N
    part files that compile in parallel and link to the same program:
 
    - types, typedefs, extern declarations and `static inline` functions go to
@@ -17,20 +17,108 @@
    was in the single file. An inline function with a `static` local keeps one
    copy of that local only if it has one definition, so it is demoted to a
    plain function. Anything this reader does not recognise makes it decline
-   (returns -1), and the caller compiles the single unit as before. */
+   (returns -1), and the caller compiles the single unit as before.
+
+   The unit keeps the preprocessor's line markers (`# N "file" flags`), and
+   each item goes out under the marker in effect where it stood, so a part
+   still says which lines came from a system header and which from the .rb.
+   Without them every warning cc silences in system headers fires on the
+   SDK's declarations in every part (#8579: Apple clang's
+   -Wnullability-completeness, 10,000 lines of log for a five-line program),
+   and an error in a part names the part instead of the program. The
+   markers' include-stack flags (1 and 2) are not replayed, only the
+   system-header ones (3 and 4): the items leave the unit's order, and a
+   stack that does not match is worth a warning of its own. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "csplit.h"
 
-typedef enum { IT_HDR, IT_FN, IT_VAR, IT_PROTO } ItemKind;
+typedef enum { IT_HDR, IT_FN, IT_VAR, IT_PROTO, IT_MARK } ItemKind;
 typedef struct {
   size_t st, en;        /* [st, en) in the text */
   ItemKind kind;
   size_t body;          /* IT_FN: offset of the body's `{` */
   char name[128];
   int keep_inline;      /* IT_FN: stays `static inline` in the header */
+  size_t mfile;         /* the line marker in effect at st: its "file" (with
+                           the quotes), or 0 when the unit has none */
+  size_t mflen;
+  int msys;             /* its system-header flags: bit 0 = 3, bit 1 = 4 */
+  long mline;           /* the line st is on, as the marker counts */
 } Item;
+
+/* Is t[i..] a line marker `# N "file" ...`? (a `#` at the start of a line) */
+static int is_marker(const char *t, size_t i, size_t n) {
+  if (i >= n || t[i] != '#') return 0;
+  i++;
+  while (i < n && (t[i] == ' ' || t[i] == '\t')) i++;
+  return i < n && t[i] >= '0' && t[i] <= '9';
+}
+
+static size_t skip_lit(const char *t, size_t n, size_t i);
+
+/* Read the marker at t[i..] (is_marker said yes) into the current position:
+   the file and flags it names, and the line the NEXT line has. Returns the
+   offset of the newline ending the marker line (or n). */
+static size_t read_marker(const char *t, size_t i, size_t n, size_t *mfile, size_t *mflen, int *msys, long *ln) {
+  size_t e = i;
+  while (e < n && t[e] != '\n') e++;
+  size_t p = i + 1;
+  while (p < e && (t[p] == ' ' || t[p] == '\t')) p++;
+  long v = 0;
+  while (p < e && t[p] >= '0' && t[p] <= '9') v = v * 10 + (t[p++] - '0');
+  while (p < e && t[p] == ' ') p++;
+  if (p < e && t[p] == '"') {
+    size_t q = skip_lit(t, e, p);
+    *mfile = p; *mflen = q - p;
+    int sys = 0;
+    for (size_t r = q; r < e; r++) {
+      if (t[r] == '3' && (r + 1 >= e || t[r + 1] == ' ')) sys |= 1;
+      else if (t[r] == '4' && (r + 1 >= e || t[r + 1] == ' ')) sys |= 2;
+    }
+    *msys = sys;
+  }
+  *ln = v;
+  return e;
+}
+
+/* Where each item's text goes, with the marker its last line left in
+   effect, so a marker is written only where the next item would otherwise
+   be claimed by the wrong file or line. */
+typedef struct {
+  FILE *f;
+  size_t mfile, mflen;
+  int msys;
+  long line;            /* the line the next output line claims, or -1 */
+} Out;
+
+static void out_sync(Out *o, const char *t, const Item *x) {
+  if (!x->mfile) return;   /* a unit without markers: nothing to keep */
+  if (o->mfile && o->mflen == x->mflen && memcmp(t + o->mfile, t + x->mfile, x->mflen) == 0 &&
+      o->msys == x->msys && o->line == x->mline)
+    return;
+  fprintf(o->f, "# %ld %.*s%s%s\n", x->mline, (int)x->mflen, t + x->mfile,
+          (x->msys & 1) ? " 3" : "", (x->msys & 2) ? " 4" : "");
+  o->mfile = x->mfile; o->mflen = x->mflen; o->msys = x->msys;
+  o->line = x->mline;
+}
+
+/* After writing [st, en) of the text plus `extra` newlines: the output's
+   line count moved by the range's newlines, unless the range holds a marker
+   of its own (a marker inside a declaration, as the preprocessor writes
+   where it dropped more than eight blank lines), which puts the count out of
+   reach; -1 then makes the next item write its marker. */
+static void out_advance(Out *o, const char *t, size_t st, size_t en, int extra) {
+  if (o->line < 0) return;
+  long nl = 0;
+  for (size_t i = st; i < en; i++) {
+    if (t[i] != '\n') continue;
+    nl++;
+    if (is_marker(t, i + 1, en)) { o->line = -1; return; }
+  }
+  o->line += nl + extra;
+}
 
 static int is_idch(char ch) {
   return ch == '_' || (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '$';
@@ -299,6 +387,22 @@ static void put_vars(FILE *h, FILE *part, const char *t, size_t st, size_t en) {
   }
 }
 
+/* A function's share of the parts' work: its bytes without the line markers
+   and blank lines, which the preprocessor writes in proportion to the
+   statements (one marker per statement from the .rb) rather than to the
+   code. Counted with them, a statement-dense main body outweighed the rest
+   and the parts came out uneven, one of them near empty. */
+static size_t fn_weight(const char *t, size_t st, size_t en) {
+  size_t w = 0;
+  for (size_t i = st; i < en; ) {
+    size_t e = i;
+    while (e < en && t[e] != '\n') e++;
+    if (e > i && !is_marker(t, i, en)) w += e - i + 1;
+    i = e + 1;
+  }
+  return w;
+}
+
 static int cmpstr(const void *a, const void *b) {
   return strcmp(*(const char *const *)a, *(const char *const *)b);
 }
@@ -326,9 +430,10 @@ int c_split(const char *pre_path, const char *out_dir, int nparts,
     Item *x = &it[nit];
     memset(x, 0, sizeof *x);
     x->st = i;
-    if (t[i] == '#') {   /* a directive line cc -E -P kept (#pragma) */
+    if (t[i] == '#') {   /* a line marker, or a directive line cc -E kept (#pragma) */
+      int mark = is_marker(t, i, n);
       while (i < n && t[i] != '\n') i++;
-      x->en = i; x->kind = IT_HDR; nit++;
+      x->en = i; x->kind = mark ? IT_MARK : IT_HDR; nit++;
       continue;
     }
     int d = 0;
@@ -447,6 +552,27 @@ int c_split(const char *pre_path, const char *out_dir, int nparts,
     free(t); free(it); return -1;
   }
 
+  /* The line marker in effect at each item's start: one walk over the text,
+     counting lines and reading each marker where it stands (a marker names
+     the line that follows it). */
+  {
+    size_t mfile = 0, mflen = 0, pos = 0;
+    int msys = 0;
+    long ln = 1;
+    if (is_marker(t, 0, n)) { pos = read_marker(t, 0, n, &mfile, &mflen, &msys, &ln); if (pos < n) pos++; }
+    for (int k = 0; k < nit; k++) {
+      while (pos < it[k].st) {
+        if (t[pos] == '\n') {
+          ln++; pos++;
+          if (is_marker(t, pos, n)) { pos = read_marker(t, pos, n, &mfile, &mflen, &msys, &ln); if (pos < n) pos++; }
+          continue;
+        }
+        pos++;
+      }
+      it[k].mfile = mfile; it[k].mflen = mflen; it[k].msys = msys; it[k].mline = ln;
+    }
+  }
+
   /* A function is inline when its definition or any prototype says so,
      unless a static local needs its one definition. */
   {
@@ -466,7 +592,7 @@ int c_split(const char *pre_path, const char *out_dir, int nparts,
      function's prototypes lose `static` and any inline word. */
   int nfn = 0; size_t fn_bytes = 0;
   for (int k = 0; k < nit; k++)
-    if (it[k].kind == IT_FN && !it[k].keep_inline) { nfn++; fn_bytes += it[k].en - it[k].st; }
+    if (it[k].kind == IT_FN && !it[k].keep_inline) { nfn++; fn_bytes += fn_weight(t, it[k].st, it[k].en); }
   /* sorted names of the inline-kept functions, for the prototype rule */
   int ninl = 0;
   const char **inl = malloc(sizeof(char *) * (size_t)(nit + 1));
@@ -491,36 +617,54 @@ int c_split(const char *pre_path, const char *out_dir, int nparts,
   }
   size_t per = fn_bytes / (size_t)nparts + 1, acc = 0;
   int cur = 0;
+  Out oh = { h, 0, 0, 0, -1 };
+  Out *op = calloc((size_t)nparts, sizeof(Out));
+  for (int p = 0; p < nparts; p++) { op[p].f = pf[p]; op[p].line = -1; }
   for (int k = 0; k < nit; k++) {
     Item *x = &it[k];
     switch (x->kind) {
+      case IT_MARK:
+        break;   /* replayed where the items it covered go out */
       case IT_HDR:
+        out_sync(&oh, t, x);
         fwrite(t + x->st, 1, x->en - x->st, h); fputc('\n', h);
+        out_advance(&oh, t, x->st, x->en, 1);
         break;
       case IT_PROTO: {
         const char *key = x->name;
         int keep = bsearch(&key, inl, (size_t)ninl, sizeof *inl, cmpstr) != NULL;
+        out_sync(&oh, t, x);
         if (keep) fwrite(t + x->st, 1, x->en - x->st, h);
         else put_stripped(h, t, x->st, x->en, 1);
         fputc('\n', h);
+        out_advance(&oh, t, x->st, x->en, 1);
         break;
       }
       case IT_VAR:
+        out_sync(&oh, t, x);
+        out_sync(&op[0], t, x);
         put_vars(h, pf[0], t, x->st, x->en);
+        oh.line = -1; op[0].line = -1;   /* rewritten: the line count is not the text's */
         break;
       case IT_FN:
         if (x->keep_inline) {
+          out_sync(&oh, t, x);
           fwrite(t + x->st, 1, x->en - x->st, h); fputc('\n', h);
+          out_advance(&oh, t, x->st, x->en, 1);
         }
         else {
+          out_sync(&oh, t, x);
           put_stripped(h, t, x->st, x->body, 1);
           fputs(";\n", h);
+          out_advance(&oh, t, x->st, x->body, 1);
           /* the storage words go from the declaration only: the body's own
              `static` locals stay static */
+          out_sync(&op[cur], t, x);
           put_stripped(pf[cur], t, x->st, x->body, 1);
           fwrite(t + x->body, 1, x->en - x->body, pf[cur]);
           fputc('\n', pf[cur]);
-          acc += x->en - x->st;
+          out_advance(&op[cur], t, x->st, x->en, 1);
+          acc += fn_weight(t, x->st, x->en);
           if (acc >= per * (size_t)(cur + 1) && cur < nparts - 1) cur++;
         }
         break;
@@ -528,6 +672,6 @@ int c_split(const char *pre_path, const char *out_dir, int nparts,
   }
   fclose(h);
   for (int p = 0; p < nparts; p++) fclose(pf[p]);
-  free(pf); free(t); free(it); free(inl);
+  free(op); free(pf); free(t); free(it); free(inl);
   return nparts;
 }

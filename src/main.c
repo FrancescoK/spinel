@@ -334,7 +334,9 @@ static int cc_split_build(const char *cmd, size_t src_at, size_t src_end,
   char pre[4200]; snprintf(pre, sizeof pre, "%s/pre.i", dir);
   size_t cl = strlen(flags) + strlen(c_path) + strlen(pre) + 64;
   char *c1 = malloc(cl);
-  snprintf(c1, cl, "%s -E -P '%s' -o '%s'", flags, c_path, pre);
+  /* -E keeps the line markers: csplit.c replays them, so the parts know which
+     lines are system headers and which are the .rb (#8579) */
+  snprintf(c1, cl, "%s -E '%s' -o '%s'", flags, c_path, pre);
   double tm_pre = sp_timing_now();
   int rc = system(c1);
   free(c1);
