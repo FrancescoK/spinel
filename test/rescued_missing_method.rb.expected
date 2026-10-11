@@ -1,0 +1,7 @@
+NoMethodError
+:load_gem
+undefined method 'load_gem' for main
+evaluating json
+:activate
+undefined method 'load_gem' for an instance of Loader
+:no_gems
