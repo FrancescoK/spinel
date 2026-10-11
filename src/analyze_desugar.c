@@ -16453,6 +16453,77 @@ int desugar_singleton_attr(Compiler *c) {
 
 
 
+/* ---- `class << self; attr_reader :x; end` read through `obj.class.x` ----
+   The singleton reader is the class's own: a subclass reads its own
+   class-level ivar through it. A call through `obj.class` dispatches on the
+   receiver's runtime class over the class methods, so there the reader is
+   spelled as the def it means, `def x; @x; end` in the same singleton class
+   body, and each class's own ivar answers:
+
+     class Status; class << self; attr_reader :code; end
+       def code = self.class.code; end
+     class OK < Status; @code = 200; end        # OK.new.code => 200
+
+   Only a receiverless attr_reader with literal names, any one of which some
+   `.class.name` call in the program reads. */
+static int sca_read_through_class(const NodeTable *nt, const char *name) {
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !sp_streq(nm, name) || nt_ref(nt, id, "arguments") >= 0) continue;
+    int r = nt_ref(nt, id, "receiver");
+    if (r >= 0 && nt_kind(nt, r) == NK_CallNode && nt_str(nt, r, "name") &&
+        sp_streq(nt_str(nt, r, "name"), "class") && nt_ref(nt, r, "arguments") < 0) return 1;
+  }
+  return 0;
+}
+int desugar_sclass_readers_through_class(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, changed = 0;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_SingletonClassNode) continue;
+    int ex = nt_ref(nt, id, "expression");
+    if (ex < 0 || nt_kind(nt, ex) != NK_SelfNode) continue;
+    int body = nt_ref(nt, id, "body");
+    if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) continue;
+    int bn = 0; const int *bb0 = nt_arr(nt, body, "body", &bn);
+    int *bb = (int *)malloc(sizeof(int) * (size_t)(bn > 0 ? bn : 1));
+    if (!bb) continue;
+    if (bn > 0) memcpy(bb, bb0, sizeof(int) * (size_t)bn);
+    int *nb = NULL, nbn = 0, any = 0;
+    for (int i = 0; i < bn; i++) {
+      int st = bb[i];
+      const char *nm = nt_kind(nt, st) == NK_CallNode ? nt_str(nt, st, "name") : NULL;
+      if (!nm || !sp_streq(nm, "attr_reader") || nt_ref(nt, st, "receiver") >= 0 ||
+          nt_ref(nt, st, "block") >= 0) { xc_push(&nb, &nbn, st); continue; }
+      int an = 0; int args = nt_ref(nt, st, "arguments");
+      const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+      const char *syms[32]; int nsyms = 0, ok = an > 0, used = 0;
+      for (int a = 0; a < an && ok; a++) {
+        NodeKind ak = nt_kind(nt, av[a]);
+        const char *t = ak == NK_SymbolNode ? nt_str(nt, av[a], "value") : ak == NK_StringNode ? nt_str(nt, av[a], "content") : NULL;
+        /* `@` + the name has to fit the ivar name below */
+        if (!t || !t[0] || strlen(t) > 290 || nsyms >= 32) ok = 0; else syms[nsyms++] = t;
+      }
+      for (int j = 0; j < nsyms && ok && !used; j++) used = sca_read_through_class(nt, syms[j]);
+      if (!ok || !used) { xc_push(&nb, &nbn, st); continue; }
+      long long line = nt_int(nt, st, "node_line", 0);
+      for (int j = 0; j < nsyms && ok; j++) {
+        char iv[300]; snprintf(iv, sizeof iv, "@%s", syms[j]);
+        int rd = nt_new_node(nt, "InstanceVariableReadNode"); if (rd < 0) { ok = 0; break; }
+        nt_node_set_str(nt, rd, "name", iv);
+        int d = ma_def(nt, syms[j], 0, 0, rd, line); if (d < 0) { ok = 0; break; }
+        xc_push(&nb, &nbn, d);
+      }
+      if (!ok) { free(nb); nb = NULL; nbn = 0; any = 0; break; }
+      any = 1;
+    }
+    if (any && nb) { nt_node_set_arr(nt, body, "body", nb, nbn); changed = 1; }
+    free(nb); free(bb);
+  }
+  if (changed) comp_grow_node_arrays(c);
+  return changed;
+}
+
 /* ---- `def m ... end unless method_defined?(:m)` in a class body ----
    The guard runs where it stands: the def happens only when nothing has
    defined the method by then -- an earlier def in this or another body of

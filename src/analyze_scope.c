@@ -2983,6 +2983,44 @@ else {
   }
 }
 
+/* A body statement that is, or holds under an if / unless, a write of `ivname` */
+static int body_stmt_assigns_civ(const NodeTable *nt, int n, const char *ivname) {
+  if (n < 0) return 0;
+  NodeKind k = nt_kind(nt, n);
+  if (k == NK_InstanceVariableWriteNode) return sp_streq(nt_str(nt, n, "name"), ivname);
+  if (k == NK_StatementsNode) {
+    int m = 0; const int *st = nt_arr(nt, n, "body", &m);
+    for (int i = 0; i < m; i++) if (body_stmt_assigns_civ(nt, st[i], ivname)) return 1;
+    return 0;
+  }
+  if (k == NK_IfNode)
+    return body_stmt_assigns_civ(nt, nt_ref(nt, n, "statements"), ivname) ||
+           body_stmt_assigns_civ(nt, nt_ref(nt, n, "subsequent"), ivname);
+  if (k == NK_UnlessNode)
+    return body_stmt_assigns_civ(nt, nt_ref(nt, n, "statements"), ivname) ||
+           body_stmt_assigns_civ(nt, nt_ref(nt, n, "else_clause"), ivname);
+  if (k == NK_ElseNode) return body_stmt_assigns_civ(nt, nt_ref(nt, n, "statements"), ivname);
+  return 0;
+}
+
+/* Does a body of class ci assign the class-level ivar `ivname` as one of its
+   own statements (`class OK < Status; @code = 200; end`), under an if or
+   unless included? */
+static int body_assigns_civ(Compiler *c, int ci, const char *ivname) {
+  const NodeTable *nt = c->nt;
+  int *bci, *bnode, found = 0;
+  int nb = class_body_list(c, &bci, &bnode);
+  for (int b = 0; b < nb && !found; b++) {
+    if (bci[b] != ci || bnode[b] < 0) continue;
+    int n = 0; const int *st = nt_arr(nt, bnode[b], "body", &n);
+    for (int k = 0; k < n && !found; k++)
+      if (body_stmt_assigns_civ(nt, st[k], ivname)) found = 1;
+  }
+  free(bci);
+  free(bnode);
+  return found;
+}
+
 static int cmethod_names_ivar(Compiler *c, int ci, const char *ivname) {
   const NodeTable *nt = c->nt;
   static const NodeKind kinds[] = { NK_InstanceVariableReadNode, NK_InstanceVariableWriteNode,
@@ -5435,6 +5473,9 @@ void resolve_parents(Compiler *c) {
         if (comp_is_sg_civ(&c->classes[i], base)) continue;
         char ivname[256];
         snprintf(ivname, sizeof ivname, "@%s", base);
+        /* the subclass's own body assigning `@x` sets what the inherited
+           reader answers through it */
+        if (body_assigns_civ(c, i, ivname)) { comp_add_sg_civ(&c->classes[i], base); continue; }
         for (int a = i, g2 = 0; a >= 0 && g2 < 256; a = c->classes[a].parent, g2++) {
           if (cmethod_names_ivar(c, a, ivname)) { comp_add_sg_civ(&c->classes[i], base); break; }
           if (a == c->classes[a].parent) break;

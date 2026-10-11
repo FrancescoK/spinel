@@ -560,6 +560,88 @@ static int mx_ascii(const char *s) {
   return 1;
 }
 
+/* ---- the patterns gsub / sub follow: plain text, one character class or
+   escaped character with an optional `+`, or a run of literal characters --
+   matched over ASCII bytes, as CRuby's engine matches them there */
+typedef struct { int lit; char set[256]; int plus; const char *text; size_t tn; } MxPat;
+
+static int mx_pat_class(const char *p, const char *e, MxPat *pt) {
+  /* p after the `[`; e the end of the pattern */
+  int neg = 0;
+  memset(pt->set, 0, sizeof pt->set);
+  if (p < e && *p == '^') { neg = 1; p++; }
+  int first = 1;
+  while (p < e && (*p != ']' || first)) {
+    unsigned char ch;
+    if (*p == '\\') {
+      if (p + 1 >= e || isalnum((unsigned char)p[1])) return -1;
+      ch = (unsigned char)p[1]; p += 2;
+    }
+    else if (*p == '[') return -1;
+    else ch = (unsigned char)*p++;
+    if (ch >= 0x80) return -1;
+    if (p + 1 < e && *p == '-' && p[1] != ']') {
+      unsigned char hi;
+      if (p[1] == '\\') {
+        if (p + 2 >= e || isalnum((unsigned char)p[2])) return -1;
+        hi = (unsigned char)p[2]; p += 3;
+      }
+      else { hi = (unsigned char)p[1]; p += 2; }
+      if (hi < ch || hi >= 0x80) return -1;
+      for (unsigned x = ch; x <= hi; x++) pt->set[x] = 1;
+    }
+    else pt->set[ch] = 1;
+    first = 0;
+  }
+  if (p >= e) return -1;
+  if (neg) for (int x = 0; x < 256; x++) pt->set[x] = !pt->set[x];
+  return 0;
+}
+
+static int mx_pattern(pm_node_t *n, MxCtx *c, MxPat *pt) {
+  memset(pt, 0, sizeof *pt);
+  if (PM_NODE_TYPE(n) == PM_REGULAR_EXPRESSION_NODE) {
+    pm_regular_expression_node_t *re = (pm_regular_expression_node_t *)n;
+    if (n->flags & (PM_REGULAR_EXPRESSION_FLAGS_IGNORE_CASE | PM_REGULAR_EXPRESSION_FLAGS_EXTENDED |
+                    PM_REGULAR_EXPRESSION_FLAGS_MULTI_LINE | PM_REGULAR_EXPRESSION_FLAGS_ONCE)) return 0;
+    const char *p = (const char *)re->content_loc.start, *e = (const char *)re->content_loc.end;
+    if (p >= e) return 0;
+    const char *q = NULL;
+    if (*p == '[') {
+      const char *r = p + 1;
+      int first = 1;
+      while (r < e && (*r != ']' || first)) { if (*r == '\\') r++; r++; first = 0; }
+      if (r >= e) return 0;
+      if (mx_pat_class(p + 1, e, pt) < 0) return 0;
+      q = r + 1;
+    }
+    else if (*p == '\\' && p + 1 < e && !isalnum((unsigned char)p[1]) && (unsigned char)p[1] < 0x80) {
+      pt->set[(unsigned char)p[1]] = 1; q = p + 2;
+    }
+    if (q) {
+      if (q < e && *q == '+') { pt->plus = 1; q++; }
+      return q == e;
+    }
+    /* a run of literal characters */
+    for (const char *r = p; r < e; r++)
+      if (strchr(".^$|()?*+{}[]\\/#", *r) || (unsigned char)*r >= 0x80) return 0;
+    pt->lit = 1; pt->text = p; pt->tn = (size_t)(e - p);
+    return 1;
+  }
+  Mv v;
+  if (!mx_eval(c, n, &v) || v.k != MV_STR || !mx_ascii(v.s) || !v.s[0]) return 0;
+  pt->lit = 1; pt->text = v.s; pt->tn = strlen(v.s);
+  return 1;
+}
+
+/* the length of a match of pt at s (0: none) */
+static size_t mx_pat_at(const MxPat *pt, const char *s) {
+  if (pt->lit) return strncmp(s, pt->text, pt->tn) == 0 ? pt->tn : 0;
+  size_t n = 0;
+  while (s[n] && pt->set[(unsigned char)s[n]]) { n++; if (!pt->plus) break; }
+  return n;
+}
+
 static int mx_eval_call(MxCtx *c, pm_call_node_t *n, Mv *out) {
   char *name = mx_name(n->name);
   int ok = 0;
@@ -586,6 +668,21 @@ static int mx_eval_call(MxCtx *c, pm_call_node_t *n, Mv *out) {
   }
   Mv r;
   if (!mx_eval(c, n->receiver, &r)) goto done;
+  if (argc == 2 && (strcmp(name, "gsub") == 0 || strcmp(name, "sub") == 0) && r.k == MV_STR && mx_ascii(r.s)) {
+    MxPat pt; Mv rep;
+    /* a replacement with a backslash names a group: not followed */
+    if (!mx_pattern(args->nodes[0], c, &pt) || !mx_eval(c, args->nodes[1], &rep) || rep.k != MV_STR ||
+        strchr(rep.s, '\\')) goto done;
+    MxBuf b = {0};
+    int all = name[0] == 'g', did = 0;
+    for (const char *p = r.s; *p; ) {
+      size_t m = (all || !did) ? mx_pat_at(&pt, p) : 0;
+      if (m) { mxb_puts(&b, rep.s); p += m; did = 1; }
+      else mxb_putn(&b, p++, 1);
+    }
+    *out = mv_str(b.p ? b.p : "", b.len, MV_STR); free(b.p); ok = 1;
+    goto done;
+  }
   Mv a0; memset(&a0, 0, sizeof a0);
   if (argc == 1 && !mx_eval(c, args->nodes[0], &a0)) goto done;
   if (argc > 1) goto done;
@@ -652,6 +749,11 @@ static int mx_eval_call(MxCtx *c, pm_call_node_t *n, Mv *out) {
       mv_to_s(r.a[i], &b);
     }
     *out = mv_str(b.p ? b.p : "", b.len, MV_STR); free(b.p); ok = 1;
+  }
+  else if ((strcmp(name, "<") == 0 || strcmp(name, ">") == 0 || strcmp(name, "<=") == 0 ||
+            strcmp(name, ">=") == 0) && r.k == MV_INT && a0.k == MV_INT) {
+    int t = name[0] == '<' ? (name[1] ? r.i <= a0.i : r.i < a0.i) : (name[1] ? r.i >= a0.i : r.i > a0.i);
+    *out = mv_nil(); out->k = t ? MV_TRUE : MV_FALSE; ok = 1;
   }
   else if (strcmp(name, "==") == 0 || strcmp(name, "!=") == 0) {
     int eq = mv_eq(r, a0);
@@ -779,6 +881,22 @@ static int mx_eval(MxCtx *c, pm_node_t *n, Mv *out) {
   /* __LINE__ / __FILE__ are the macro source's: kept as written */
   case PM_SOURCE_LINE_NODE: case PM_SOURCE_FILE_NODE: return 0;
   case PM_CALL_NODE: return mx_eval_call(c, (pm_call_node_t *)n, out);
+  case PM_IF_NODE: {
+    /* `c ? a : b`, and an if whose arms are one expression each */
+    pm_if_node_t *in = (pm_if_node_t *)n;
+    Mv pv;
+    if (!mx_eval(c, in->predicate, &pv)) return 0;
+    pm_statements_node_t *arm = in->statements;
+    if (!mv_truthy(pv)) {
+      pm_node_t *e = in->subsequent;
+      if (!e) { *out = mv_nil(); return 1; }
+      if (PM_NODE_TYPE(e) != PM_ELSE_NODE) return mx_eval(c, e, out);
+      arm = ((pm_else_node_t *)e)->statements;
+    }
+    if (!arm) { *out = mv_nil(); return 1; }
+    if (arm->body.size != 1) return 0;
+    return mx_eval(c, arm->body.nodes[0], out);
+  }
   default: return 0;
   }
 }

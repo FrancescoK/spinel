@@ -11,6 +11,26 @@
 #include "codegen_call_arms.h"
 #include "share.h"
 
+/* `obj.class.name` over the class methods obj's class and its descendants
+   reach: does the dispatch answer an sp_oint / sp_ofloat? Every arm answers
+   the same Integer or Float, and one of them can answer nil. */
+int obj_class_cmethod_oint(Compiler *c, int cid, const char *name) {
+  if (cid < 0 || cid >= c->nclasses || !name) return 0;
+  int defmi = comp_cmethod_in_chain(c, cid, name, NULL);
+  if (defmi < 0) return 0;
+  TyKind r = (TyKind)c->scopes[defmi].ret;
+  if (!oint_kind(r)) return 0;
+  int any = method_ret_is_oint(&c->scopes[defmi]);
+  for (int k = 0; k < c->nclasses; k++) {
+    if (!is_descendant(c, k, cid)) continue;
+    int kmi = comp_cmethod_in_chain(c, k, name, NULL);
+    if (kmi < 0) continue;
+    if ((TyKind)c->scopes[kmi].ret != r) return 0;
+    if (method_ret_is_oint(&c->scopes[kmi])) any = 1;
+  }
+  return any;
+}
+
 /* `mark` (or NULL) is the slot's assigned mark (ivar_set_mark), set after
    the store. */
 static void emit_attr_writer_converted(Compiler *c, int arg, TyKind ivt, int tmp,
@@ -3999,8 +4019,12 @@ int emit_call_class_method_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
             if (kr != unified) { unified = TY_POLY; break; }
           }
           int rtmp = ++g_tmp;
+          /* an arm that can answer nil makes the switch an sp_oint, the
+             others' plain values wrapped (node_is_oint asks the same) */
+          int oarms = unified != TY_POLY && obj_class_cmethod_oint(c, cid, name);
           buf_puts(b, "({ ");
           if (unified == TY_POLY) buf_puts(b, "sp_RbVal");
+          else if (oarms) buf_puts(b, oint_ctype(unified));
           else emit_ctype(c, unified, b);
           buf_printf(b, " _t%d; switch (", rtmp);
           emit_obj_dispatch_key(c, cid, objptr.p ? objptr.p : "", b);
@@ -4033,6 +4057,8 @@ int emit_call_class_method_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
               buf_printf(b, "_t%d = ", rtmp);
               if (unified == TY_POLY && kr != TY_POLY)
                 emit_poly_user_box(c, id, &c->scopes[kmi], ab.p ? ab.p : "0", b);
+              else if (oarms && !method_ret_is_oint(&c->scopes[kmi]))
+                buf_printf(b, "%s(%s)", oint_of(unified), ab.p ? ab.p : "0");
               else buf_puts(b, ab.p ? ab.p : "0");
               free(ab.p);
               buf_puts(b, "; break;");
@@ -4058,6 +4084,8 @@ int emit_call_class_method_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
               buf_printf(b, "_t%d = ", rtmp);
               if (unified == TY_POLY && dr != TY_POLY)
                 emit_poly_user_box(c, id, &c->scopes[defmi], db.p ? db.p : "0", b);
+              else if (oarms && !method_ret_is_oint(&c->scopes[defmi]))
+                buf_printf(b, "%s(%s)", oint_of(unified), db.p ? db.p : "0");
               else buf_puts(b, db.p ? db.p : "0");
               free(db.p);
               buf_printf(b, "; break;");
