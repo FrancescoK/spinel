@@ -1,0 +1,25 @@
+["/x", :extra]
+["/ri/system", :system]
+[["/ri/system", :system], ["/ri/site", :site], ["/ri/gems/latest", :gem]]
+["/a", "/b", "/ri/site", "/ri/gems/all"]
+[]
+Enumerator
+["/ri/system", :system]
+["/ri/site", :site]
+stop
+[["/ri/gems/latest", :gem]]
+["a", "b"]
+["A", "B"]
+["k_x", "k_y"]
+[["t", 7], ["t", 4], ["t", 1]]
+["s7", "s5", "s3", "s1"]
+[[["t", 7], 0], [["t", 2], 1]]
+t7
+t3
+[["u", 7], ["u", 6]]
+[0, 10, 20]
+60
+[0, 2, 4, 6]
+[4, 6, 8]
+[1, 2]
+[1, 2]
