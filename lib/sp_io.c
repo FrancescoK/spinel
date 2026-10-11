@@ -6,6 +6,9 @@
  *
  * Self-contained: includes sp_io.h (the sp_File layout) + sp_gc.h
  * (sp_mark_string), not spinel_rt.h. */
+#if defined(__linux__) && !defined(_GNU_SOURCE)
+#define _GNU_SOURCE   /* pipe2 */
+#endif
 #include "sp_io.h"
 #include "sp_gc.h"   /* sp_mark_string */
 #include <stdlib.h>
@@ -83,9 +86,33 @@ sp_File *sp_File_open(const char *path, const char *mode) {
   return sp_File_open_perm(path, mode ? mode : "r", SP_INT_NIL);
 }
 
-/* Returns 0 on success, -1 on error. */
+#if !defined(__linux__) && !defined(_WIN32)
+static int sp_io_set_cloexec(int fd) {
+  int fl = fcntl(fd, F_GETFD);
+  if (fl < 0) return -1;
+  return (fl & FD_CLOEXEC) ? 0 : fcntl(fd, F_SETFD, fl | FD_CLOEXEC);
+}
+#endif
+
+/* Returns 0 on success, -1 on error with errno set. Both ends are
+   close-on-exec, as CRuby's are. Without pipe2 the flag is set after pipe(),
+   so a spawn on another worker in between can still inherit them. */
 int sp_io_make_pipe(int fds[2]) {
+#if defined(__linux__)
+  return pipe2(fds, O_CLOEXEC);
+#elif defined(_WIN32)
   return pipe(fds);
+#else
+  if (pipe(fds) != 0) return -1;
+  if (sp_io_set_cloexec(fds[0]) != 0 || sp_io_set_cloexec(fds[1]) != 0) {
+    int e = errno;
+    close(fds[0]);
+    close(fds[1]);
+    errno = e;
+    return -1;
+  }
+  return 0;
+#endif
 }
 
 /* IO.pipe end: wrap a raw pipe fd in a GC-managed sp_File so the
