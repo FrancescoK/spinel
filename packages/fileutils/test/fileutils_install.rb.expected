@@ -1,0 +1,15 @@
+nil
+"body {}"
+"644"
+true
+"body { margin: 0 }"
+true
+["app.js", "er", "style.css"]
+"640"
+"run()"
+install -c -p -m 644 app.js out
+install -c app.js style.css elsewhere
+false
+same file: app.js and app.js
+Errno::ENOENT
+false
