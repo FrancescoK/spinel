@@ -12990,17 +12990,24 @@ static void inh_drop_super(NodeTable *nt, int node) {
   }
 }
 
-/* The name `cls` is defined under: its own path, prefixed by the classes and
-   modules around it. */
+static int cbs_path_text(const NodeTable *nt, int p, char *buf, size_t cap, int *rooted);
+
+/* The name `cls` is defined under: the path its header writes (`A::Foo`,
+   not just Foo), prefixed by the classes and modules around it, up to one
+   whose path starts at the top (`::Foo`, `Object::Foo`). */
 static void inh_qualified_name(const NodeTable *nt, const int *parent, int cls, char *buf, size_t n) {
   buf[0] = 0;
   for (int a = cls; a >= 0; a = parent[a]) {
     NodeKind k = nt_kind(nt, a);
     if (k != NK_ClassNode && k != NK_ModuleNode) continue;
-    const char *nm = nt_str(nt, nt_ref(nt, a, "constant_path"), "name");
-    char tmp[512];
-    snprintf(tmp, sizeof tmp, "%s%s%s", nm ? nm : "?", buf[0] ? "::" : "", buf);
+    char nm[512], tmp[512];
+    int rooted = 0;
+    const char *p = nm;
+    if (!cbs_path_text(nt, nt_ref(nt, a, "constant_path"), nm, sizeof nm, &rooted)) snprintf(nm, sizeof nm, "?");
+    if (!strncmp(nm, "Object::", 8)) { p += 8; rooted = 1; }
+    snprintf(tmp, sizeof tmp, "%s%s%s", p, buf[0] ? "::" : "", buf);
     snprintf(buf, n, "%s", tmp);
+    if (rooted) break;
   }
 }
 
