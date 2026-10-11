@@ -5382,7 +5382,7 @@ static int infer_user_method_call(Compiler *c, int id, const NodeTable *nt, cons
       if (oc_ci >= 0) {
         int oc_mi = comp_method_in_chain(c, oc_ci, name, NULL);
         if (oc_mi >= 0 && rt == TY_IO && io_reopen_ret_mixed(c, name)) { *out = TY_POLY; return 1; }
-        if (oc_mi >= 0) { *out = an_user_call(c, id, oc_mi, UC_REOPEN, oc_ci); return 1; }
+        if (oc_mi >= 0 && !cplan_reopen_runs_builtin(c, id, oc_mi)) { *out = an_user_call(c, id, oc_mi, UC_REOPEN, oc_ci); return 1; }
       }
     }
     /* ...and a nil receiver's NilClass reopen, an Integer or Float

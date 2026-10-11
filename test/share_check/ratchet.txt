@@ -40,6 +40,7 @@ test/share/plain_mutator_result_ivar.rb	?:0	CallNode (insert_upcase)	boxed as by
 test/share/plain_mutator_result_ivar.rb	?:0	CallNode (prepend2)	boxed as bytes by sp_box_str (bytes face)
 test/share/plain_mutator_result_ivar.rb	?:0	CallNode (prepend_upcase)	boxed as bytes by sp_box_str (bytes face)
 test/share/plain_mutator_result_ivar.rb	test/share/plain_mutator_result_ivar.rb:301	CallNode (kept)	boxed as bytes by sp_box_str (bytes face)
+test/share/reopen_yield_answer.rb	test/share/reopen_yield_answer.rb:24	CallNode (capitalize)	boxed as bytes by sp_box_str (bytes face)
 test/share/route_exception_conversion_reopen.rb	test/share/route_exception_conversion_reopen.rb:11	LocalVariableReadNode (x)	bytes wrapped into a new handle by sp_String_new_shared (sp_poly_to_s)
 test/share/share_strings_attr_assign_value_mutators.rb	test/share/share_strings_attr_assign_value_mutators.rb:110	CallNode (a=)	changed in place as bytes by sp_str_freeze_val (sp_strbuf_read_pub)
 test/share/share_strings_attr_assign_value_mutators.rb	test/share/share_strings_attr_assign_value_mutators.rb:118	CallNode (a=)	changed in place as bytes by sp_str_scrub_bang (sp_strbuf_read_pub)
