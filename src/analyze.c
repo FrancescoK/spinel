@@ -11490,6 +11490,18 @@ static int narrow_object_arrays(Compiler *c) {
         else {
           sl[T].alive = 0;   /* unmodeled incoming value for this position */
         }
+        /* An element the method stores through this parameter from another
+           of its own parameters (store_val_src) is this call's argument for
+           that one, and its class is evidence as a push of it here would be.
+           Read through the parameter it is boxed, which is neutral, so a
+           helper pushing objects of two classes narrowed every array it was
+           handed to the first class, and an element of the other was read
+           as that class. */
+        for (int j = 0; plv->store_val_src && j < M->nparams && j < 64; j++) {
+          if (!((plv->store_val_src >> j) & 1ULL)) continue;
+          int aj = layout_plain_arg(c, M, argv, &L, j);
+          if (aj >= 0) sl[T].cls = oa_cls_join(sl[T].cls, oa_elem_evidence(c, sl, T, aj));
+        }
       }
     }
     for (int k = 0; argv && k < argc; k++) {

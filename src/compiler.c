@@ -2892,6 +2892,7 @@ LocalVar *scope_local_intern(Scope *s, const char *name) {
   lv->poly_ctr = 0;
   lv->oa_pin = TY_UNKNOWN;
   lv->boxed_push_elem = TY_UNKNOWN;
+  lv->push_fill_elem = TY_UNKNOWN;
   lv->boxed_known_elem = TY_UNKNOWN;
   lv->boxed_store_key = TY_UNKNOWN;
   lv->boxed_store_val = TY_UNKNOWN;

@@ -173,6 +173,11 @@ typedef struct {
                        checked there; this carries the evidence out to the
                        ivar-widening pass, which knows both sides. An
                        Integer-keyed element write counts as a push. */
+  TyKind push_fill_elem; /* (params, untyped or array) the element type a
+                       push through this parameter stores, unified as
+                       boxed_push_elem is. The binding gives a caller's empty
+                       `[]`, which the push fills, that element
+                       (fill_empty_array_arg). */
   TyKind boxed_known_elem; /* (params, boxed) the same, of the stores whose
                        kind is known: a value decided at run time is checked
                        as it lands (#4481), and a concat of no Array raises

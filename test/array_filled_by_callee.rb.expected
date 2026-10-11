@@ -1,0 +1,11 @@
+["new"]
+["each", "size"]
+[["size"], ["new", "each"]]
+[:private, :public, :public]
+[3]
+[4]
+7
+["Z", "Y"]
+1
+["Y"]
+["a", "b"]
