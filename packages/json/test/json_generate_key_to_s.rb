@@ -34,3 +34,25 @@ end
   end
 end
 puts JSON.generate({Boom.new(true) => 1})
+
+# a key's #to_s that empties the Hash being generated ends the walk there
+class Clearing
+  def initialize(h, name)
+    @h = h
+    @name = name
+  end
+  def to_s
+    @h.clear
+    GC.start
+    @name
+  end
+end
+h = {}
+h[Clearing.new(h, "k1")] = "v" * 40
+h[Clearing.new(h, "k2")] = [1, 2]
+h[Clearing.new(h, "k3")] = {"x" => "y"}
+puts JSON.generate(h)
+h2 = {}
+h2[Clearing.new(h2, "p1")] = [1]
+h2[Clearing.new(h2, "p2")] = 2
+puts JSON.pretty_generate(h2)

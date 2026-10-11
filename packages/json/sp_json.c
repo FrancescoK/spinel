@@ -285,9 +285,15 @@ static void sp_json_val_b(jbuf *b, sp_RbVal v, int depth) {
     sp_int n = sp_json_len_fn(v);
     jb_c(b, '{');
     for (sp_int i = 0; i < n; i++) {
+      /* a key's own #to_s may have emptied the Hash */
+      if (i >= sp_json_len_fn(v)) break;
       if (i) jb_c(b, ',');
       sp_RbVal k, val;
       sp_json_hpair_fn(v, i, &k, &val);
+      /* the pair outlives the Hash slot it came from while the key's #to_s
+         runs, should that #to_s take it out of the Hash */
+      SP_GC_ROOT_RBVAL(k);
+      SP_GC_ROOT_RBVAL(val);
       sp_json_key_b(b, k);
       jb_c(b, ':');
       sp_json_val_b(b, val, depth + 1);
@@ -359,11 +365,14 @@ static void sp_json_pretty_val(jbuf *b, sp_RbVal v, int depth) {
       if (n == 0) { jb_add(b, "{}", 2); return; }
       jb_c(b, '{');
       for (sp_int i = 0; i < n; i++) {
+        if (i >= sp_json_len_fn(v)) break;   /* as in the compact walk */
         if (i) jb_c(b, ',');
         jb_c(b, '\n');
         sp_json_indent(b, depth + 1);
         sp_RbVal k, val;
         sp_json_hpair_fn(v, i, &k, &val);
+        SP_GC_ROOT_RBVAL(k);
+        SP_GC_ROOT_RBVAL(val);
         sp_json_key_b(b, k);
         jb_add(b, ": ", 2);
         sp_json_pretty_val(b, val, depth + 1);
