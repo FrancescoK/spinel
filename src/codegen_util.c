@@ -2735,7 +2735,17 @@ int civ_defined_probed(Compiler *c, const char *nm) {
 const char *civ_set_mark(Compiler *c, int cid, const char *nm, char *buf, size_t cap) {
   if (cid < 0 || cid >= c->nclasses || !nm || nm[0] != '@' || nm[1] == '@') return NULL;
   if (comp_ivar_index(&c->classes[cid], nm) < 0 || !civ_defined_probed(c, nm)) return NULL;
-  snprintf(buf, cap, "civ_%s_%s__set = 1;", c->classes[cid].name, iv_c(nm + 1));
+  /* a long class name outgrows the caller's buffer: as ivar_set_mark, a
+     mark that does not fit is made on the heap, whole */
+  const char *cn = c->classes[cid].name, *iv = iv_c(nm + 1);
+  int need = snprintf(NULL, 0, "civ_%s_%s__set = 1;", cn, iv);
+  if (need < 0) return NULL;
+  if ((size_t)need >= cap) {
+    cap = (size_t)need + 1;
+    buf = malloc(cap);
+    if (!buf) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  snprintf(buf, cap, "civ_%s_%s__set = 1;", cn, iv);
   return buf;
 }
 /* The declaration of class `cid`'s civ_ slot for `nm` (C type `ctype`, or
