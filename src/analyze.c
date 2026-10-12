@@ -21082,6 +21082,22 @@ static int strbuf_demand_elem_arg(Compiler *c, int an) {
    `@values[i]` itself would, so the element read it answers is demanded as
    an element read handed to an appender is. Answers whether anything
    changed. A result that is another such call is followed (bounded). */
+/* Is the value a `[]=` call assigns one String#[]= cannot take: an Integer,
+   a Float, a Symbol, nil, true or false? */
+static int elem_assign_value_never_string(Compiler *c, int call) {
+  const NodeTable *nt = c->nt;
+  int a = nt_ref(nt, call, "arguments"), an = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+  if (an < 2) return 0;
+  int v = av[an - 1];
+  switch (nt_kind(nt, v)) {
+  case NK_IntegerNode: case NK_FloatNode: case NK_SymbolNode: case NK_NilNode: case NK_TrueNode: case NK_FalseNode: return 1;
+  case NK_SplatNode: case NK_BlockArgumentNode: case NK_KeywordHashNode: return 0;
+  default: break;
+  }
+  TyKind t = infer_type(c, v);
+  return t == TY_INT || t == TY_BIGINT || t == TY_FLOAT || t == TY_SYMBOL || t == TY_BOOL || t == TY_NIL;
+}
 static int *uec_seen, *uec_depth, *uec_cut, uec_cap, uec_gen, uec_cut_now;
 static int strbuf_demand_user_elem_call(Compiler *c, int call, int depth) {
   const NodeTable *nt = c->nt;
@@ -22060,6 +22076,9 @@ static int promote_shared_stored_strings_pass(Compiler *c) {
     }
     int mrecv = nt_ref(nt, mu, "receiver");
     if (mrecv < 0 || nt_kind(nt, mrecv) != NK_CallNode) continue;
+    /* `h[0][k] = 2`: String#[]= raises for a value that is no String, so a
+       String element is not changed through it */
+    if (sp_streq(mun, "[]=") && elem_assign_value_never_string(c, mu)) continue;
     /* an element a program method hands out (`h[0] << x` with `def [](i) =
        @values[i]`): its container is the method's */
     if (strbuf_demand_user_elem_call(c, mrecv, 0)) { changed = 1; continue; }
