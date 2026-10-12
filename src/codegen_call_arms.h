@@ -130,6 +130,8 @@ const char *const *object_private_method_names(void); /* NULL-terminated */
 int respond_to_runtime_reaches(Compiler *c, TyKind rt);
 int root_reopen_defines(Compiler *c, const char *qm);
 int private_answer_overridden(Compiler *c, const char *qm, TyKind rt);
+int refl_md_dynamic_used(Compiler *c);
+void emit_refl_method_defined(Compiler *c, Buf *b);
 int rt_probe_answer(Compiler *c, int id, int *yes);
 extern const char *const struct_names[];
 void emit_call_body(Compiler *c, int id, Buf *b);
