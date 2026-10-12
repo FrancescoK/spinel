@@ -25,6 +25,7 @@ def ints_of(pattern)
   a[3] = 1
   a.each_with_index { |value, i| p [value, i] }
   a.each { |v| p v }
+  a.each { |*values| p values }
   a.reverse_each { |v| p v }
   a.take_while { |v| p v; true }
   a.each_slice(2) { |x, y| p [x, y] }
@@ -35,6 +36,7 @@ def floats_of(text)
   a = text.floats
   a.each_with_index { |value, i| p [value, i] }
   a.each { |v| p v }
+  a.each { |*values| p values }
 end
 
 def walk(patterns)
