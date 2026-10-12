@@ -1,0 +1,10 @@
+expected true or false as nochdir: 1
+expected true or false as noclose: 1
+expected true or false as noclose: "x"
+expected true or false as nochdir: :yes
+wrong number of arguments (given 3, expected 0..2)
+1
+2
+3
+wrong number of arguments (given 3, expected 0..2)
+before
