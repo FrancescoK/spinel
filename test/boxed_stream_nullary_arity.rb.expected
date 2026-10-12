@@ -1,0 +1,24 @@
+close: wrong number of arguments (given 1, expected 0)
+flush: wrong number of arguments (given 1, expected 0)
+fileno: wrong number of arguments (given 1, expected 0)
+eof?: wrong number of arguments (given 1, expected 0)
+closed?: wrong number of arguments (given 1, expected 0)
+path: wrong number of arguments (given 1, expected 0)
+to_path: wrong number of arguments (given 1, expected 0)
+tty?: wrong number of arguments (given 1, expected 0)
+isatty: wrong number of arguments (given 1, expected 0)
+rewind: wrong number of arguments (given 1, expected 0)
+side
+wrong number of arguments (given 1, expected 0)
+false
+side
+NoMethodError
+dir: wrong number of arguments (given 1, expected 0)
+dir: wrong number of arguments (given 2, expected 0)
+queue: wrong number of arguments (given 1, expected 0)
+str: NoMethodError
+dir: wrong number of arguments (given 1, expected 0)
+enumerator: wrong number of arguments (given 1, expected 0)
+true
+nil
+true
