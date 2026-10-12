@@ -16468,6 +16468,7 @@ sp_IntArray *sp_process_groups(void);
 sp_int sp_process_daemon(int nochdir, int noclose);
 void sp_process_daemon_available(void);   /* NotImplementedError where there is no fork */
 static inline int sp_process_daemon_flag(sp_RbVal v, const char *name) {
+  SP_GC_ROOT_RBVAL(v);   /* the message's inspect allocates */
   if (v.tag == SP_TAG_NIL) return 0;
   if (v.tag == SP_TAG_BOOL) return v.v.i != 0;
   sp_raise_cls("ArgumentError", sp_sprintf("expected true or false as %s: %s", name, sp_poly_inspect(v)));
