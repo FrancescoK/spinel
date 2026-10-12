@@ -725,8 +725,7 @@ const char *builtin_class_of_type(TyKind t) {
 static const NodeTable *rca_nt = NULL;
 static int *rca_ids = NULL;
 static int rca_n = 0, rca_ntcount = -1;
-const char *resolve_class_alias(Compiler *c, const char *cname) {
-  const NodeTable *nt = c->nt;
+static void rca_index(const NodeTable *nt) {
   if (rca_nt != nt || rca_ntcount != nt->count) {
     free(rca_ids);
     rca_ids = malloc((size_t)nt->count * sizeof(int));
@@ -740,6 +739,10 @@ const char *resolve_class_alias(Compiler *c, const char *cname) {
     rca_nt = nt;
     rca_ntcount = nt->count;
   }
+}
+const char *resolve_class_alias(Compiler *c, const char *cname) {
+  const NodeTable *nt = c->nt;
+  rca_index(nt);
   for (int ii = 0; ii < rca_n; ii++) {
     int id = rca_ids[ii];
     const char *n = nt_str(nt, id, "name");
@@ -757,6 +760,24 @@ const char *resolve_class_alias(Compiler *c, const char *cname) {
       if (r >= 0) return builtin_class_of_type(infer_type(c, r));
     }
     return NULL;
+  }
+  return NULL;
+}
+
+/* The constant `cname` is assigned from, when its write's value is a
+   constant (`Outer = Inner`), whatever that one holds: one link of an
+   alias chain, which resolve_class_alias, answering only a class it
+   knows, does not follow. NULL otherwise. */
+const char *const_alias_source(Compiler *c, const char *cname) {
+  const NodeTable *nt = c->nt;
+  rca_index(nt);
+  for (int ii = 0; ii < rca_n; ii++) {
+    int id = rca_ids[ii];
+    const char *n = nt_str(nt, id, "name");
+    if (!n || !sp_streq(n, cname)) continue;
+    int v = nt_ref(nt, id, "value");
+    NodeKind vk = v >= 0 ? nt_kind(nt, v) : NK_NONE;
+    return vk == NK_ConstantReadNode || vk == NK_ConstantPathNode ? nt_str(nt, v, "name") : NULL;
   }
   return NULL;
 }

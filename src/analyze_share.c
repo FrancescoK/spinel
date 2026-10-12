@@ -4581,7 +4581,11 @@ static int sh_has_jump(const NodeTable *nt, int n) { return sh_has_jump_k(nt, n,
 /* Can a `prepend` or an `extend` the program calls put module mname ahead
    of a builtin's own methods: a call of either naming it, or one whose
    argument is no constant? A module only included, which a class's own
-   methods come before, cannot. */
+   methods come before, cannot. A constant that aliases the module
+   (`Alias = Overrides`) names it just as well, also through a chain of
+   them (`Outer = Inner`, `Inner = Overrides`): each link is followed
+   (const_alias_source) until a class or module of the program's own, at
+   most once per constant, so a cycle ends. */
 static int sh_module_put_ahead(Compiler *c, const char *mname) {
   const char *tail = mname ? strrchr(mname, ':') : NULL;
   tail = tail ? tail + 1 : mname;
@@ -4593,6 +4597,11 @@ static int sh_module_put_ahead(Compiler *c, const char *mname) {
       for (int i = 0; i < argc; i++) {
         NodeKind k = nt_kind(c->nt, argv[i]);
         const char *an = k == NK_ConstantReadNode || k == NK_ConstantPathNode ? nt_str(c->nt, argv[i], "name") : NULL;
+        for (int d = 0; an && comp_class_index(c, an) < 0 && d < c->nconsts; d++) {
+          const char *src = const_alias_source(c, an);
+          if (!src) break;
+          an = src;
+        }
         if (!an || (tail && sp_streq(an, tail))) return 1;
       }
     }
