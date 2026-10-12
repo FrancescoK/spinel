@@ -1303,9 +1303,11 @@ int infer_object_call(Compiler *c, int id, TyKind rt, TyKind *out) {
       }
       if (sub_answers) { *out = TY_POLY; return 1; }
     }
-    /* a class's own respond_to? is the call's answer, which the emitter
-       dispatches to (respond_to_user_defined): typed by what it returns */
-    int own_rt = sp_streq(name, "respond_to?") && comp_method_in_chain(c, cid, name, NULL) >= 0;
+    /* a class's own respond_to? -- or is_a?, instance_of?, == and the rest
+       below -- is the call's answer, which the emitter dispatches to: typed
+       by what it returns, which need not be true or false (an
+       `instance_of?` answering :tag, one an --rbs seed declares untyped) */
+    int own_rt = comp_method_in_chain(c, cid, name, NULL) >= 0;
     if (!own_rt &&
         (sp_streq(name, "is_a?") || sp_streq(name, "kind_of?") || sp_streq(name, "instance_of?") ||
          sp_streq(name, "respond_to?") || sp_streq(name, "==") || sp_streq(name, "!=") ||
