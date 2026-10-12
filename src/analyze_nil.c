@@ -588,6 +588,64 @@ static int nf_region_writes_before(NF *f, int region, const char *nm, int rd) {
   if (rl <= 0) return 1;
   return nf_write_runs_first(f, region, nm, rd, rl, region, 0);
 }
+/* Does the program give nil a method `name` of its own (on NilClass, Object,
+   Kernel, BasicObject, or at the top level)? Then a call of it on nil
+   raises nothing. */
+static int nf_nil_user_method(Compiler *c, const char *name) {
+  static const char *const owners[] = { "NilClass", "Object", "Kernel", "BasicObject", NULL };
+  if (comp_method_index(c, name) >= 0) return 1;
+  for (int i = 0; owners[i]; i++) {
+    int k = comp_class_index(c, owners[i]);
+    if (k >= 0 && comp_method_in_chain(c, k, name, NULL) >= 0) return 1;
+  }
+  return 0;
+}
+/* Does evaluating n call, on every path through it, a method on local nm
+   that nil does not answer? Such a call raises NoMethodError for a nil nm
+   (the plan's nil target tests it), so a read of nm after it is not nil:
+   `if key < t.key` then `t.left` reads a t the comparison dereferenced.
+   The parts every evaluation runs: a call's receiver and arguments, a
+   write's value, a conditional's or a loop's predicate, a jump's value, the
+   left of `&&` and `||`, a list's statements, an Array's elements. */
+static int nf_derefs(Compiler *c, int n, const char *nm, int depth) {
+  const NodeTable *nt = c->nt;
+  n = nf_unparen(nt, n);
+  if (n < 0 || depth > 64) return 0;
+  switch (nt_kind(nt, n)) {
+  case NK_CallNode: {
+    int r = nt_ref(nt, n, "receiver");
+    const char *cn = nt_str(nt, n, "name");
+    const char *op = nt_str(nt, n, "call_operator");
+    if (r >= 0 && cn && !(op && sp_streq(op, "&.")) && nf_is_read_of(nt, r, nm) &&
+        nt_kind(nt, nf_unparen(nt, r)) == NK_LocalVariableReadNode && !is_nil_method(cn) &&
+        !nf_nil_user_method(c, cn)) return 1;
+    if (r >= 0 && nf_derefs(c, r, nm, depth + 1)) return 1;
+    int a = nt_ref(nt, n, "arguments"), an = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+    for (int i = 0; i < an; i++) if (nf_derefs(c, av[i], nm, depth + 1)) return 1;
+    return 0;
+  }
+  case NK_LocalVariableWriteNode: case NK_InstanceVariableWriteNode: case NK_GlobalVariableWriteNode:
+  case NK_LocalVariableOperatorWriteNode: case NK_InstanceVariableOperatorWriteNode:
+    return nf_derefs(c, nt_ref(nt, n, "value"), nm, depth + 1);
+  case NK_IfNode: case NK_UnlessNode: case NK_WhileNode: case NK_UntilNode:
+    return nf_derefs(c, nt_ref(nt, n, "predicate"), nm, depth + 1);
+  case NK_AndNode: case NK_OrNode:
+    return nf_derefs(c, nt_ref(nt, n, "left"), nm, depth + 1);
+  case NK_ReturnNode: case NK_BreakNode: case NK_NextNode: {
+    int a = nt_ref(nt, n, "arguments"), an = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+    for (int i = 0; i < an; i++) if (nf_derefs(c, av[i], nm, depth + 1)) return 1;
+    return 0;
+  }
+  case NK_StatementsNode: case NK_ArrayNode: {
+    int bn = 0; const int *b = nt_arr(nt, n, nt_kind(nt, n) == NK_ArrayNode ? "elements" : "body", &bn);
+    for (int i = 0; i < bn; i++) if (nf_derefs(c, b[i], nm, depth + 1)) return 1;
+    return 0;
+  }
+  default: return 0;
+  }
+}
 /* A statement that leaves the list: `return`, `next`, `break`, `raise` */
 static int nf_is_jump(const NodeTable *nt, int s) {
   s = nf_unparen(nt, s);
@@ -623,7 +681,9 @@ static int nf_exit_guard(Compiler *c, int s, const char *nm) {
 /* Is the read rd of local nm (slot lv) under a guard that proves it is not
    nil, with no write of nm between the guard and the read
    (nf_region_writes_before: a write after the read in the guarded region is
-   no write between, unless a loop in the region runs the read again)?
+   no write between, unless a loop in the region runs the read again)? An
+   earlier statement of the same list that calls a method on nm which nil
+   does not answer (nf_derefs) is such a guard: it raised for a nil.
    Walks out to the method, a block or a lambda, which may run after the
    slot changed. */
 static int nf_local_guarded(NF *f, int rd, const char *nm, const LocalVar *lv) {
@@ -644,6 +704,8 @@ static int nf_local_guarded(NF *f, int rd, const char *nm, const LocalVar *lv) {
       int then_ok = pk == NK_IfNode ? nf_truthy_implies(c, pr, nm) : nf_falsy_implies(c, pr, nm);
       int else_ok = pk == NK_IfNode ? nf_falsy_implies(c, pr, nm) : nf_truthy_implies(c, pr, nm);
       if (in_then ? then_ok : else_ok) region = cur;
+      /* a predicate that dereferenced nm ran before either branch */
+      else if (nf_derefs(c, pr, nm, 0)) region = cur;
     }
     else if (pk == NK_AndNode && cur == nt_ref(nt, p, "right") &&
              nf_truthy_implies(c, nt_ref(nt, p, "left"), nm)) region = cur;
@@ -652,9 +714,11 @@ static int nf_local_guarded(NF *f, int rd, const char *nm, const LocalVar *lv) {
     /* not a loop that tests after its body (`begin ... end while nm`,
        Prism's begin-modifier flag): that body runs once before the test */
     else if (pk == NK_WhileNode && !(nt_int(nt, p, "flags", 0) & 4) && cur == nt_ref(nt, p, "statements") &&
-             nf_truthy_implies(c, nt_ref(nt, p, "predicate"), nm)) region = cur;
+             (nf_truthy_implies(c, nt_ref(nt, p, "predicate"), nm) || nf_derefs(c, nt_ref(nt, p, "predicate"), nm, 0)))
+      region = cur;
     else if (pk == NK_UntilNode && !(nt_int(nt, p, "flags", 0) & 4) && cur == nt_ref(nt, p, "statements") &&
-             nf_falsy_implies(c, nt_ref(nt, p, "predicate"), nm)) region = cur;
+             (nf_falsy_implies(c, nt_ref(nt, p, "predicate"), nm) || nf_derefs(c, nt_ref(nt, p, "predicate"), nm, 0)))
+      region = cur;
     if (region >= 0) {
       if (!nf_region_writes_before(f, region, nm, rd)) return 1;
     }
@@ -663,14 +727,15 @@ static int nf_local_guarded(NF *f, int rd, const char *nm, const LocalVar *lv) {
       int at = -1;
       for (int i = 0; i < bn; i++) if (b[i] == cur) { at = i; break; }
       for (int i = at - 1; i >= 0; i--) {
-        if (nf_exit_guard(c, b[i], nm)) {
+        int exit_guard = nf_exit_guard(c, b[i], nm);
+        if (!exit_guard && nf_region_writes(f, b[i], nm)) break;
+        if (exit_guard || nf_derefs(c, b[i], nm, 0)) {
           int clean = 1;
           for (int j = i + 1; j <= at && clean; j++)
             clean = j == at ? !nf_region_writes_before(f, b[j], nm, rd) : !nf_region_writes(f, b[j], nm);
           if (clean) return 1;
           break;
         }
-        if (nf_region_writes(f, b[i], nm)) break;
       }
     }
     cur = p;

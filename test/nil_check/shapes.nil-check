@@ -11,13 +11,14 @@ nil-check: recv GUARDED local why=guarded line 117: nxt
 nil-check: recv GUARDED local why=guarded line 120: nxt
 nil-check: recv GUARDED local why=guarded line 124: nxt
 nil-check: recv GUARDED local why=guarded line 129: v
+nil-check: recv GUARDED local why=guarded line 134: nxt
 nil-check: ret FACT-ONLY why=no-else line 38: pick
 nil-check: local FACT-ONLY why=unset run#b
 nil-check: local FACT-ONLY why=no-else run#w
 nil-check: local FACT-ONLY why=no-else run#f
 nil-check: local FACT-ONLY why=elem run#e
 nil-check: local FACT-ONLY why=no-else run#g
-nil-check: count recv agree 7 fact-only 7 helper-only 0 guarded 6 init-set 0
+nil-check: count recv agree 6 fact-only 7 helper-only 0 guarded 7 init-set 0
 nil-check: count ret agree 2 fact-only 1 helper-only 0 guarded 0 init-set 0
 nil-check: count local agree 3 fact-only 5 helper-only 0 guarded 0 init-set 0
 nil-check: count param agree 2 fact-only 0 helper-only 0 guarded 0 init-set 0
