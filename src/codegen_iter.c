@@ -7315,6 +7315,14 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
       emit_indent(b, indent);
       buf_printf(b, "{ sp_Enumerator *_t%d = %s; SP_GC_ROOT(_t%d);\n", te, rb.p ? rb.p : "NULL", te);
       free(rb.p);
+      /* --share-strings: the walk starts here and reads a copy of its own
+         (sp_enum_walk) */
+      int live_walk = str_enum_h_made(c);
+      int tbw = live_walk ? ++g_tmp : 0;
+      if (live_walk) {
+        emit_indent(b, indent + 1);
+        buf_printf(b, "_t%d = sp_enum_walk(_t%d); sp_bool _t%d = _t%d ? _t%d->str_bytewise : 0;\n", te, te, tbw, te, te);
+      }
       emit_indent(b, indent + 1);
       buf_printf(b, "sp_Fiber *_t%d = (_t%d && _t%d->gen) ? sp_Fiber_new(_t%d->gen) : NULL; SP_GC_ROOT(_t%d);\n",
                  tf, te, te, te, tf);
@@ -7333,6 +7341,11 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
         buf_printf(b, "if (_t%d) { if (!sp_Fiber_alive(_t%d)) break; _t%d = sp_Fiber_resume(_t%d, sp_box_nil()); if (!sp_Fiber_alive(_t%d)) break; }\n",
                    tf, tf, tv, tf, tf);
       emit_indent(b, indent + 2);
+      /* (a bytewise walk reads the String's byte at its cursor) */
+      if (live_walk) {
+        buf_printf(b, "else if (SP_UNLIKELY(_t%d)) { if (!sp_enum_str_byte_at(_t%d, _t%d, &_t%d)) break; _t%d++; }\n", tbw, te, ti, tv, ti);
+        emit_indent(b, indent + 2);
+      }
       buf_printf(b, "else { if (_t%d && _t%d->endless && _t%d->items && _t%d->items->len > 0 && _t%d >= _t%d->items->len) _t%d = 0;"
                     " if (!_t%d || !_t%d->items || _t%d >= _t%d->items->len) break; _t%d = _t%d->items->data[_t%d++]; }\n",
                  te, te, te, te, ti, te, ti, te, te, ti, te, tv, te, ti);

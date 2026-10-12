@@ -1102,6 +1102,45 @@ void a_collect_used(Compiler *c, int id, ANameSet *out) {
   int na = nt_num_arrs(c->nt, id);
   for (int i = 0; i < na; i++) { int n = 0; const int *ids = nt_arr_at(c->nt, id, i, &n); for (int k = 0; k < n; k++) if (ids[k] >= 0) a_collect_used(c, ids[k], out); }
 }
+/* The names a closure's body reads through a lazy chain held in a local it
+   reads (lazy_alias_chain): a force there fuses the chain into the body,
+   which then reads what the chain reads, its blocks' own parameters aside
+   (those the fused walk binds in the closure's frame). So the scan that
+   cells captured locals counts them as read in the body. */
+static void a_collect_block_params(Compiler *c, int id, ANameSet *out) {
+  const NodeTable *nt = c->nt;
+  if (id < 0) return;
+  if (nt_kind(nt, id) == NK_BlockNode) {
+    int bp = nt_ref(nt, id, "parameters"), pn = bp >= 0 ? nt_ref(nt, bp, "parameters") : -1;
+    int rn = 0; const int *reqs = pn >= 0 ? nt_arr(nt, pn, "requireds", &rn) : NULL;
+    for (int k = 0; k < rn; k++) aname_add(out, nt_str(nt, reqs[k], "name"));
+  }
+  for (int i = 0; i < nt_num_refs(nt, id); i++) a_collect_block_params(c, nt_ref_at(nt, id, i), out);
+  for (int i = 0; i < nt_num_arrs(nt, id); i++) {
+    int n = 0; const int *ids = nt_arr_at(nt, id, i, &n);
+    for (int k = 0; k < n; k++) a_collect_block_params(c, ids[k], out);
+  }
+}
+void a_collect_alias_used(Compiler *c, int id, ANameSet *out, int depth) {
+  const NodeTable *nt = c->nt;
+  if (id < 0 || depth > 8) return;
+  if (nt_kind(nt, id) == NK_LocalVariableReadNode) {
+    int chain = lazy_alias_chain(c, id);
+    if (chain >= 0) {
+      ANameSet all = {0}, own = {0};
+      a_collect_used(c, chain, &all);
+      a_collect_block_params(c, chain, &own);
+      for (int k = 0; k < all.n; k++) if (!aname_has(&own, all.v[k])) aname_add(out, all.v[k]);
+      free(all.v); free(own.v);
+      a_collect_alias_used(c, chain, out, depth + 1);
+    }
+  }
+  for (int i = 0; i < nt_num_refs(nt, id); i++) a_collect_alias_used(c, nt_ref_at(nt, id, i), out, depth);
+  for (int i = 0; i < nt_num_arrs(nt, id); i++) {
+    int n = 0; const int *ids = nt_arr_at(nt, id, i, &n);
+    for (int k = 0; k < n; k++) a_collect_alias_used(c, ids[k], out, depth);
+  }
+}
 int a_proc_params_node(Compiler *c, int create) {
   const char *ty = nt_type(c->nt, create);
   if (ty && sp_streq(ty, "LambdaNode")) return nt_ref(c->nt, create, "parameters");
@@ -1787,6 +1826,7 @@ void mark_proc_captures(Compiler *c) {
     }
     if (pn >= 0) { int rn = 0; const int *reqs = nt_arr(nt, pn, "requireds", &rn); for (int k = 0; k < rn; k++) aname_add(&params, nt_str(nt, reqs[k], "name")); }
     a_collect_used(c, body, &used);
+    a_collect_alias_used(c, body, &used, 0);
     /* an optional or keyword default is evaluated in the proc's frame */
     a_collect_used(c, pn, &used);
     Scope *es = &c->scopes[encl];
@@ -6743,9 +6783,31 @@ static int is_array_enum_method(const char *nm) {
      (the each.with_index chain machinery keys on the `each` shape)
    - enum_recv.each.with_object(x) { }  ->  enum_recv.each_with_object(x) { }
    Both rewrites produce constructs the existing emitters already serve. */
+/* --share-strings: is the blockless call id an Enumerator kept past the
+   expression it is made in (no call's receiver: held, handed on or
+   answered)? `s.each_char.with_index` kept so stays an Enumerator over
+   each_char's, which holds a String the rule shares and reads it when it is
+   walked (sp_enum_str_each_h); `chars` would read it here. */
+static int enum_chain_kept(const NodeTable *nt, int **par, int id) {
+  if (nt_ref(nt, id, "block") >= 0) return 0;
+  /* (the parent map, made at the first such call of the pass) */
+  if (!*par && !(*par = an_parent_map(nt))) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  int p = (*par)[id];
+  while (p >= 0 && nt_kind(nt, p) == NK_ParenthesesNode) p = (*par)[p];
+  if (p >= 0 && nt_kind(nt, p) == NK_StatementsNode) {
+    /* a parenthesized sequence ending in id */
+    int q = (*par)[p];
+    int bn = 0; const int *bb = nt_arr(nt, p, "body", &bn);
+    if (q >= 0 && nt_kind(nt, q) == NK_ParenthesesNode && bn > 0 && bb[bn - 1] == id) {
+      for (p = (*par)[q]; p >= 0 && nt_kind(nt, p) == NK_ParenthesesNode; p = (*par)[p]) {}
+    }
+  }
+  return !(p >= 0 && nt_kind(nt, p) == NK_CallNode && an_unparen(nt, nt_ref(nt, p, "receiver")) == id);
+}
 static void desugar_enum_chain_shapes(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count;
+  int *kept_par = NULL;   /* enum_chain_kept's parent map */
   /* A string-bounded range literal bound to a variable (`cr = ('a'..'e')`)
      has no sp_Range representation (int bounds only): materialize it into a
      string array at the assignment, like the literal-receiver interpose
@@ -7157,7 +7219,8 @@ static void desugar_enum_chain_shapes(Compiler *c) {
        boxed value met an sp_int parameter and the build failed (#3939). */
     if (sp_streq(nm, "with_index") && nt_ref(nt, recv, "arguments") < 0 &&
         (sp_streq(rn, "each_char") || sp_streq(rn, "each_line") || sp_streq(rn, "each_byte") ||
-         sp_streq(rn, "each_codepoint"))) {
+         sp_streq(rn, "each_codepoint")) &&
+        !(c->share_strings && enum_chain_kept(nt, &kept_par, id))) {
       nt_node_set_str(nt, recv, "name",
                       sp_streq(rn, "each_char") ? "chars" :
                       sp_streq(rn, "each_line") ? "lines" :
@@ -7233,6 +7296,7 @@ static void desugar_enum_chain_shapes(Compiler *c) {
       nt_node_set_ref(nt, id, "receiver", inner);
     }
   }
+  free(kept_par);
 }
 
 /* How many positional arguments the program passes a `method(:sym)` value
@@ -7835,6 +7899,7 @@ static int desugar_str_range_methods(Compiler *c) {
     int toa = nt_new_node(nt, "CallNode");
     if (toa < 0) continue;
     nt_node_set_str(nt, toa, "name", "to_a");
+    nt_node_set_int(nt, toa, "made_to_a", 1);
     nt_node_set_ref(nt, toa, "receiver", recv);
     /* each, each_entry, reverse_each, each_with_index, each_slice and
        each_cons with a block walk the members but answer the RANGE: mark the
@@ -8893,6 +8958,7 @@ static int desugar_enum_named_call(Compiler *c, int id, NodeTable *nt, const cha
           int toa = nt_new_node(nt, "CallNode");
           if (toa >= 0) {
             nt_node_set_str(nt, toa, "name", "to_a");
+            nt_node_set_int(nt, toa, "made_to_a", 1);
             nt_node_set_ref(nt, toa, "receiver", hrecv);
             nt_node_set_ref(nt, wrecv, "receiver", toa);
             /* `h.each.with_index { }` answers h, not the pairs the walk
@@ -9155,6 +9221,7 @@ static int desugar_enum_named_call(Compiler *c, int id, NodeTable *nt, const cha
         int toa = nt_new_node(nt, "CallNode");
         if (cst >= 0 && one >= 0 && toa >= 0) {
           nt_node_set_str(nt, toa, "name", "to_a");
+          nt_node_set_int(nt, toa, "made_to_a", 1);
           nt_node_set_ref(nt, toa, "receiver", recv);
           nt_node_set_int(nt, toa, "to_set", 1);
           nt_node_set_str(nt, cst, "name", "Set");
@@ -9253,6 +9320,7 @@ static int desugar_enum_named_call(Compiler *c, int id, NodeTable *nt, const cha
            sp_streq(rrn, "each") || sp_streq(rrn, "each_entry"))) {
         int toa2 = nt_new_node(nt, "CallNode");
         nt_node_set_str(nt, toa2, "name", "to_a");
+        nt_node_set_int(nt, toa2, "made_to_a", 1);
         nt_node_set_ref(nt, toa2, "receiver", rr);
         /* The block form of reverse_each answers the RECEIVER, and after this
            hop that is the interposed array rather than the Enumerator the
@@ -9322,6 +9390,7 @@ static int desugar_enum_named_call(Compiler *c, int id, NodeTable *nt, const cha
           (is_indexed_each(frn))) {
         int toa3 = nt_new_node(nt, "CallNode");
         nt_node_set_str(nt, toa3, "name", "to_a");
+        nt_node_set_int(nt, toa3, "made_to_a", 1);
         nt_node_set_ref(nt, toa3, "receiver", fr);
         nt_node_set_ref(nt, id, "receiver", toa3);
         comp_grow_node_arrays(c);
@@ -9354,6 +9423,7 @@ static int desugar_enum_named_call(Compiler *c, int id, NodeTable *nt, const cha
         if (!open_ended) {
           int toa = nt_new_node(nt, "CallNode");
           nt_node_set_str(nt, toa, "name", "to_a");
+          nt_node_set_int(nt, toa, "made_to_a", 1);
           nt_node_set_ref(nt, toa, "receiver", rrecv);
           nt_node_set_int(nt, toa, "range_hop", 1);   /* srange_member_hop */
           nt_node_set_ref(nt, id, "receiver", toa);
@@ -9377,6 +9447,7 @@ static int desugar_enum_named_call(Compiler *c, int id, NodeTable *nt, const cha
     if (erecv >= 0 && eblk >= 0 && eac == 1 && infer_type(c, erecv) == TY_ENUMERATOR) {
       int toa = nt_new_node(nt, "CallNode");
       nt_node_set_str(nt, toa, "name", "to_a");
+      nt_node_set_int(nt, toa, "made_to_a", 1);
       nt_node_set_ref(nt, toa, "receiver", erecv);
       nt_node_set_str(nt, id, "name", "each_with_object");
       nt_node_set_ref(nt, id, "receiver", toa);
@@ -9574,6 +9645,7 @@ static int desugar_enum_named_call(Compiler *c, int id, NodeTable *nt, const cha
       int toa = nt_new_node(nt, "CallNode");
       if (toa >= 0) {
         nt_node_set_str(nt, toa, "name", "to_a");
+        nt_node_set_int(nt, toa, "made_to_a", 1);
         nt_node_set_ref(nt, toa, "receiver", hrc);
         nt_node_set_str(nt, toa, "enum_recv", "1");
         nt_node_set_ref(nt, id, "receiver", toa);
@@ -9913,6 +9985,7 @@ int desugar_enum_method_recv(Compiler *c) {
       int wrap3 = nt_new_node(nt, "CallNode");
       if (wrap3 >= 0) {
         nt_node_set_str(nt, wrap3, "name", "to_a");
+        nt_node_set_int(nt, wrap3, "made_to_a", 1);
         nt_node_set_ref(nt, wrap3, "receiver", recv);
         nt_node_set_ref(nt, id, "receiver", wrap3);
         comp_grow_node_arrays(c);
@@ -9926,6 +9999,7 @@ int desugar_enum_method_recv(Compiler *c) {
       int wrap2 = nt_new_node(nt, "CallNode");
       if (wrap2 >= 0) {
         nt_node_set_str(nt, wrap2, "name", "to_a");
+        nt_node_set_int(nt, wrap2, "made_to_a", 1);
         nt_node_set_ref(nt, wrap2, "receiver", recv);
         nt_node_set_ref(nt, id, "receiver", wrap2);
         comp_grow_node_arrays(c);
@@ -9965,6 +10039,7 @@ int desugar_enum_method_recv(Compiler *c) {
       /* the call still yields what the Enumerator yields (enum_pair_source_call) */
       nt_node_set_str(nt, wrap, "enum_hop", "1");
       nt_node_set_str(nt, wrap, "name", "to_a");
+      nt_node_set_int(nt, wrap, "made_to_a", 1);
       nt_node_set_ref(nt, wrap, "receiver", recv);
       nt_node_set_ref(nt, id, "receiver", wrap);
       comp_grow_node_arrays(c);
@@ -10518,6 +10593,7 @@ static int desugar_lazy_terminal(Compiler *c) {
     int wrap = nt_new_node(nt, "CallNode");
     if (wrap < 0) continue;
     nt_node_set_str(nt, wrap, "name", "to_a");
+    nt_node_set_int(nt, wrap, "made_to_a", 1);
     nt_node_set_ref(nt, wrap, "receiver", recv);
     nt_node_set_ref(nt, wrap, "arguments", -1);
     nt_node_set_ref(nt, wrap, "block", -1);

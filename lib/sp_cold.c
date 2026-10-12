@@ -3120,6 +3120,7 @@ sp_RbVal sp_Enumerator_size(sp_Enumerator *e);
 
 sp_Enumerator *sp_Enumerator_dup(sp_Enumerator *e) {SP_GC_ROOT(e);
   if (!e) return e;
+  if (SP_UNLIKELY(e->str_tail)) return sp_enum_str_dup(e);
   sp_Enumerator *d = (sp_Enumerator *)sp_gc_alloc(sizeof(sp_Enumerator), NULL, sp_Enumerator_scan);
   *d = *e;
   return d;
@@ -3157,6 +3158,9 @@ sp_Enumerator *sp_enum_with_src(sp_Enumerator *e, sp_RbVal src, const char *meth
      for it), so the Enumerators it answers (step, %) have no size either,
      though their members were materialized here */
   if (src.tag == SP_TAG_OBJ && src.cls_id == SP_BUILTIN_STR_RANGE) e->size_nil = TRUE;
+  /* nor does a String's each_line (CRuby counts no lines without walking
+     them), with a separator or chomp: or not */
+  if (meth && strncmp(meth, "each_line", 9) == 0) e->size_nil = TRUE;
   return e;
 }
 sp_Enumerator *sp_enum_as_gen(sp_Enumerator *e) {
@@ -3271,6 +3275,9 @@ static void sp_cycle_gen(sp_Fiber *f) {
   SP_GC_ROOT(sf);
   sp_PolyArray *seen = sp_PolyArray_new();
   SP_GC_ROOT(seen);
+  /* (a live source's run reads a copy of its own) */
+  s = sp_enum_walk(s);
+  SP_GC_ROOT(s);
   for (;;) {
     sp_RbVal v;
     if (s->gen) {
@@ -3344,6 +3351,8 @@ sp_Enumerator *sp_Enumerator_regroup_gen(sp_Enumerator *e, sp_int n, sp_bool con
   return sp_enum_inherit_size(r, e);
 }
 sp_Enumerator *sp_Enumerator_with_index(sp_Enumerator *e, sp_int off) {
+  /* one over a String handle pairs its items again at each walk */
+  if (sp_enum_live(e)) return sp_enum_derive(e, SP_ENUM_DER_PAIRS, off);
   /* an endless source pairs lazily too: its pairs never run out */
   if (e && (e->gen || e->endless)) {
     /* Two allocations, and two things held in nothing but a C local across
@@ -3474,7 +3483,11 @@ sp_RbVal sp_Enumerator_next(sp_Enumerator *e) {SP_GC_ROOT(e);
     return sp_enum_gen_pull(e);
   }
   if (e->endless && e->items && e->items->len > 0 && e->cursor >= e->items->len) e->cursor = 0;
-  if (!e->items || e->cursor >= e->items->len) sp_raise_stop_iteration(e->source);
+  if (!e->items || e->cursor >= e->items->len) {
+    /* (a live Enumerator keeps no items of its own: its run is its own) */
+    if (SP_UNLIKELY(e->live)) return sp_enum_live_next(e);
+    sp_raise_stop_iteration(e->source);
+  }
   return e->items->data[e->cursor++];
 }
 sp_RbVal sp_Enumerator_peek(sp_Enumerator *e) {SP_GC_ROOT(e); sp_gc_wb((void*)e);
@@ -3492,7 +3505,10 @@ sp_RbVal sp_Enumerator_peek(sp_Enumerator *e) {SP_GC_ROOT(e); sp_gc_wb((void*)e)
     return e->peek_val;
   }
   if (e->endless && e->items && e->items->len > 0 && e->cursor >= e->items->len) { sp_gc_wb((void*)e); e->cursor = 0; }
-  if (!e->items || e->cursor >= e->items->len) sp_raise_stop_iteration(e->source);
+  if (!e->items || e->cursor >= e->items->len) {
+    if (SP_UNLIKELY(e->live)) return sp_enum_live_step(e, TRUE);
+    sp_raise_stop_iteration(e->source);
+  }
   return e->items->data[e->cursor];
 }
 sp_PolyArray *sp_enum_values_wrap(sp_RbVal v) {SP_GC_ROOT_RBVAL(v);
@@ -3506,7 +3522,7 @@ sp_PolyArray *sp_Enumerator_peek_values(sp_Enumerator *e) {SP_GC_ROOT(e); return
 sp_Enumerator *sp_Enumerator_rewind(sp_Enumerator *e) { sp_gc_wb((void*)e);
   if (!e) return NULL;
   if (e->gen) { e->fib = NULL; e->peeked = FALSE; e->gen_result = sp_box_nil(); }
-  else e->cursor = 0;
+  else { e->cursor = 0; if (SP_UNLIKELY(e->live)) sp_enum_live_rewind(e); }
   if (e->is_bsearch) { e->bsearch_lo = 0; e->bsearch_hi = e->items ? e->items->len - 1 : -1; e->bsearch_mid = -1; e->bsearch_waiting = FALSE; e->bsearch_result = sp_box_nil(); e->peeked = FALSE; }
   e->feed = sp_box_nil(); e->has_feed = FALSE;
   return e;
@@ -3533,6 +3549,7 @@ sp_PolyArray *sp_Enumerator_take(sp_Enumerator *e, sp_int n) {SP_GC_ROOT(e);
     }
     return r;
   }
+  e = sp_enum_walk(e);   /* (a live one's walk reads a copy of its own) */
   sp_int lim = e->items ? e->items->len : 0;
   /* an argless cycle repeats its round as far as n reaches */
   if (e->endless && lim > 0) {
@@ -3559,6 +3576,7 @@ sp_PolyArray *sp_Enumerator_to_a(sp_Enumerator *e) {
     }
     return r;
   }
+  e = sp_enum_walk(e);
   if (e->items) for (sp_int i = 0; i < e->items->len; i++) sp_PolyArray_push(r, e->items->data[i]);
   return r;
 }
@@ -3635,6 +3653,8 @@ sp_RbVal sp_Enumerator_size(sp_Enumerator *e) {SP_GC_ROOT(e);
                   strcmp(e->meth, "find_index") == 0 ||
                   strncmp(e->meth, "gsub(", 5) == 0 || strncmp(e->meth, "gsub!(", 6) == 0))
     return sp_box_nil();
+  /* over a String handle, the String's count now */
+  if (SP_UNLIKELY(e->live)) return sp_enum_live_size(e);
   if (e->items) return sp_box_int(e->items->len);
   if (e->size.tag == SP_TAG_OBJ && e->size.cls_id == SP_BUILTIN_PROC) {
     (void)sp_proc_call((sp_Proc *)e->size.v.p, 0, NULL);

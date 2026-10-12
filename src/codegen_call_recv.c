@@ -14630,10 +14630,16 @@ static int emit_poly_call0_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
     }
   }
   /* A blockless each_char / each_line / each_byte / each_codepoint is
-     CRuby's Enumerator; materialize it into the array chars / lines / bytes
-     answer, which is what the typed String path does too. */
+     CRuby's Enumerator, as on a typed String (sp_poly_str_each_enum), where
+     it outlives its expression or is asked what an Array does not answer
+     (poly_str_iter_enum); walked where it is made, the Array chars / lines
+     / bytes answers walks the same items. */
   if (argc == 0 && nt_ref(nt, id, "block") < 0 && !user_defines_or_reads(c, name) &&
       is_str_each_iter(name)) {
+    if (poly_str_iter_enum(c, id)) {
+      buf_puts(b, "sp_poly_str_each_enum("); emit_boxed(c, recv, b); buf_printf(b, ", SPL(\"%s\"))", name);
+      { *out = 1; return 1; }
+    }
     const char *fn = sp_streq(name, "each_char") ? "sp_str_chars"
                    : sp_streq(name, "each_line") ? "sp_str_lines"
                    : sp_streq(name, "each_byte") ? "sp_str_bytes" : "sp_str_codepoints";

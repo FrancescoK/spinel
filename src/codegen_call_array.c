@@ -1629,6 +1629,19 @@ int emit_op_array_index_v(Compiler *c, const BopCtx *x, Buf *b) {
 /* arr.cycle with no count and no block: an Enumerator over the elements
    (stage 3) */
 int emit_op_array_cycle_endless(Compiler *c, const BopCtx *x, Buf *b) {
+  /* --share-strings: the to_a the compiler routes an Enumerator's cycle
+     through reads the Enumerator where it is made; one over a String's
+     handle cycles as it is pulled instead, each round from the String as
+     it is then (sp_poly_cycle, sp_Enumerator_cycle_gen) */
+  const NodeTable *nt = c->nt;
+  int r = x->recv, rr = r >= 0 && nt_kind(nt, r) == NK_CallNode ? nt_ref(nt, r, "receiver") : -1;
+  if (rr >= 0 && nt_int(nt, r, "made_to_a", 0) && is_to_array_alias(nt_str(nt, r, "name")) &&
+      comp_ntype(c, rr) == TY_ENUMERATOR && str_enum_h_made(c)) {
+    buf_puts(b, "sp_poly_cycle(sp_box_obj(");
+    emit_expr(c, rr, b);
+    buf_puts(b, ", SP_BUILTIN_ENUMERATOR))");
+    return 1;
+  }
   int tcy = ++g_tmp;
   buf_printf(b, "({ sp_Enumerator *_t%d = sp_Enumerator_new_cycle_endless(", tcy);
   emit_boxed(c, x->recv, b);

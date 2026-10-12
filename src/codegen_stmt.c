@@ -4196,8 +4196,19 @@ void emit_assign(Compiler *c, int id, Buf *b, int indent) {
   /* A local holding a lazy chain (`p = src.lazy.select{}`) has no runtime
      value; when every use forces it (first(n)/to_a/force) each force site
      fuses the chain via lazy_alias_chain, so skip the broken assignment here
-     (the variable keeps its nil default, unread). (#2932) */
-  if (lazy_alias_write_suppressible(c, id)) return;
+     (the variable keeps its nil default, unread). (#2932) The source the
+     chain is made from runs here, though, once, as in CRuby, and the
+     variable keeps it for the force sites to read (lazy_alias_src_hoist). */
+  if (lazy_alias_write_suppressible(c, id)) {
+    int src = lazy_alias_src_hoist(c, id);
+    if (src < 0) return;
+    emit_indent(b, indent);
+    emit_local_ref(c, id, nm, b);
+    buf_puts(b, " = ");
+    emit_boxed(c, src, b);
+    buf_puts(b, ";\n");
+    return;
+  }
   /* `x = y = nil`: emit the inner writes as their own statements (each target
      renders nil for its own slot type), then write nil here too. */
   {

@@ -9,6 +9,7 @@
 
 #include "sp_alloc.h"
 #include "sp_fiber.h"
+#include "sp_string.h"
 
 #define SP_PAIR_EACH   1
 #define SP_PAIR_PACKED 2
@@ -85,7 +86,95 @@ typedef struct {
                                              endless source, one at a time; NULL otherwise */
   sp_int walk_next;                      /* the walk's next index: how far it has read */
   sp_bool walk_done;                     /* the source has no more items */
+  /* (the three below sit in the padding after walk_done: an Enumerator no
+     String backs is no larger than before them) */
+  sp_bool live;                          /* --share-strings: an sp_EnumStr whose items are laid
+                                            out at each walk's start (over a String handle, or
+                                            built on such an Enumerator), and each walk reads a
+                                            copy of its own holding them as `items`
+                                            (sp_enum_walk). Its own `items` is its #next run's
+                                            (the run's copy's), NULL before the run or for a
+                                            bytewise one, so the materialized #next and #peek
+                                            read the run's items and fall to the live path
+                                            (sp_enum_live_step) at their end or without them.
+                                            The items its last walk laid out are its walk_buf,
+                                            as a walker's that pulled them all (walk_done), so
+                                            an index walk (sp_enum_walk_len) reads them */
+  sp_bool str_bytewise;                  /* ...a walk reads the byte at its cursor: each_byte, and
+                                            each_codepoint over bytes that were ASCII when laid
+                                            out, which CRuby walks as bytes */
+  sp_bool str_tail;                      /* allocated as an sp_EnumStr: a live one, or a walk
+                                            copy of one */
 } sp_Enumerator;
+
+/* An Enumerator a String handle backs, or one built on it, or a walk copy of
+   either: the Enumerator, then the fields only they use, which no other
+   Enumerator allocates, zeroes or marks (sp_EnumStr_scan) */
+typedef struct {
+  sp_Enumerator e;
+  void *str_h;                           /* the String handle (sp_String *) the items are laid
+                                            out from at each walk's start; NULL for one built on
+                                            another */
+  unsigned char str_kind;                /* ...which iterator: SP_ENUM_STR_* */
+  const char *str_snap;                  /* ...the bytes the items were laid out from */
+  void *der_src;                         /* one built on another (with_index, each_slice,
+                                            each_cons) by sp_enum_derive: that source
+                                            (sp_Enumerator *), whose items its own are laid out
+                                            from again at each walk's start; NULL otherwise */
+  sp_PolyArray *der_from;                /* ...the source items they were laid out from */
+  sp_int der_arg;                        /* ...the offset or the group size */
+  unsigned char der_kind;                /* ...SP_ENUM_DER_* */
+  void *ext;                             /* the walk copy of its #next run (sp_Enumerator *),
+                                            from the first step to #rewind; NULL before it */
+  sp_bool ext_done;                      /* ...that walk raised StopIteration */
+  void *run_h;                           /* the String handle (sp_String *) a bytewise run's next
+                                            #next reads its byte from: set while the run steps,
+                                            NULL before it, after a #peek it has not taken and at
+                                            its end */
+} sp_EnumStr;
+/* e's fields past the Enumerator's: e->str_tail is set */
+static inline sp_EnumStr *sp_enum_str(sp_Enumerator *e) {
+  return (sp_EnumStr *)e;
+}
+
+enum { SP_ENUM_STR_CHAR, SP_ENUM_STR_LINE, SP_ENUM_STR_BYTE, SP_ENUM_STR_CODEPOINT };
+enum { SP_ENUM_DER_PAIRS, SP_ENUM_DER_SLICES, SP_ENUM_DER_CONS };
+/* The items of an Enumerator over a String handle, or of one built on such
+   an Enumerator, laid out again from the String as it is now
+   (lib/sp_cold.c) */
+void sp_enum_str_refill(sp_Enumerator *e);
+/* Is e an Enumerator whose items are laid out at each walk's start? */
+static inline sp_bool sp_enum_live(const sp_Enumerator *e) {
+  return e && e->live;
+}
+/* The Enumerator a walk of e reads, from where it starts: e itself, or for
+   a live one a copy holding the items laid out from the String as it is
+   now, which a walk nested in this one (a #size, a #to_a, another walk)
+   laying them out again leaves as they are (lib/sp_cold.c). */
+sp_Enumerator *sp_enum_walk_copy(sp_Enumerator *e);
+static inline sp_Enumerator *sp_enum_walk(sp_Enumerator *e) {
+  return SP_UNLIKELY(sp_enum_live(e)) ? sp_enum_walk_copy(e) : e;
+}
+/* ...the byte at index i of a bytewise walk's String as it is now */
+static inline sp_bool sp_enum_str_byte_at(sp_Enumerator *w, sp_int i, sp_RbVal *out) {
+  sp_String *h = (sp_String *)sp_enum_str(w)->str_h;
+  if (!h || i >= sp_String_length(h)) return FALSE;
+  *out = sp_box_int((unsigned char)sp_String_cstr(h)[i]);
+  return TRUE;
+}
+/* A copy of e (e->str_tail), its fields past the Enumerator's included
+   (lib/sp_enum_str.c) */
+sp_Enumerator *sp_enum_str_dup(sp_Enumerator *e);
+/* #next (peek: #peek) of a live Enumerator from the materialized paths, at
+   the end of its run's items or without them; #next with a bytewise run's
+   step first; its #rewind; its #size (lib/sp_enum_str.c) */
+sp_RbVal sp_enum_live_step(sp_Enumerator *e, sp_bool peek);
+sp_RbVal sp_enum_live_next(sp_Enumerator *e);
+void sp_enum_live_rewind(sp_Enumerator *e);
+sp_RbVal sp_enum_live_size(sp_Enumerator *e);
+/* An Enumerator built on e (live: sp_enum_live) by with_index(arg)
+   (SP_ENUM_DER_PAIRS), each_slice(arg) or each_cons(arg) (lib/sp_cold.c) */
+sp_Enumerator *sp_enum_derive(sp_Enumerator *e, unsigned char kind, sp_int arg);
 
 /* A blockless call on a String Range's member Array stands for the Range's own
    (desugar_str_range_methods); the Enumerator it answers has no size. */

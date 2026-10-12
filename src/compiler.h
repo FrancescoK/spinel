@@ -1171,6 +1171,13 @@ typedef struct {
   int *cg_parent;
   int cg_parent_n;
   unsigned cg_parent_ver;
+  /* --share-strings: does the program make an Enumerator over a String
+     handle (str_enum_h_made): 0 not asked yet, 1 no, 2 yes */
+  unsigned char str_enum_h;
+  /* per local write node, once asked: the source lazy_alias_src_hoist
+     answers for it, + 2 (1: none; 0: not asked yet) */
+  int *lazy_hoist;
+  int lazy_hoist_n;
   int share_strings;
   /* the scope + 1 whose block a yield under emit_proc_yield hands its
      arguments to (a proc form, or a method with a `&blk` it calls), or 0 */
@@ -1467,6 +1474,7 @@ int lazy_stage_name(const char *nm);
    the `require "ostruct"` member-read catch-all must not swallow them. */
 int poly_builtin_zero_arg_name(const char *m);
 int chain_is_lazy_valued(Compiler *c, int node);      /* CallNode chain evaluating to a Lazy */
+int poly_str_iter_enum(Compiler *c, int id);        /* boxed String iterator answers an Enumerator (analyze_infer_recv.c) */
 int lazy_alias_chain(Compiler *c, int var_read);
 int lazy_method_chain(Compiler *c, int call);      /* parameterless method whose body is a lazy chain -> chain node, else -1 */
 int lazy_resolve_chain(Compiler *c, int n);

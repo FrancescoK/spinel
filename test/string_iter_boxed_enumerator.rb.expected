@@ -1,0 +1,17 @@
+Enumerator
+"a"
+"b"
+2
+[["a", 0], ["b", 1]]
+["A", "B"]
+["a", "b"]
+[98, 99]
+["ab"]
+97
+195
+"q\n"
+nil
+["q\n", "r"]
+["b"]
+["a", "bb"]
+NoMethodError
