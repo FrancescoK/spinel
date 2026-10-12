@@ -9214,7 +9214,10 @@ static int emit_scalar_recv_arms(Compiler *c, int id, Buf *b, const NodeTable *n
   /* A String receiver that is a fresh copy (a shared slot's reader) and is
      never nil still needs the bound, rooted temp when an argument may
      allocate: the guard below is the only path that holds it (g_noguard:
-     the hold without the nil test) */
+     the hold without the nil test). An argument that is a pure read --
+     `s.getbyte(j * p + k)` -- builds nothing (operand_allocates_beside):
+     held for it, the receiver's bytes were fetched and rooted on every
+     iteration of a loop that reads them from its header cache. */
   int g_noguard = 0;
   /* (--share-strings: `yield.equal?(x)` at a site whose block answers a
      String a holder keeps reads the yield's handle once, in equal?'s own
@@ -9224,7 +9227,7 @@ static int emit_scalar_recv_arms(Compiler *c, int id, Buf *b, const NodeTable *n
   if (rt == TY_STRING && name && recv >= 0 && operand_may_allocate(c, recv) && !y_ident &&
       repr_of(c, recv).as_ty != TY_STRBUF &&   /* a handle is no fresh copy, and no const char * */
       !((!nil_answers_name(name)) && recv_may_be_sentinel(c, recv))) {
-    for (int ai = 0; ai < argc && !g_noguard; ai++) g_noguard = operand_may_allocate(c, argv[ai]);
+    for (int ai = 0; ai < argc && !g_noguard; ai++) g_noguard = operand_allocates_beside(c, argv[ai]);
     const char *sop_n = nt_str(nt, id, "call_operator");
     if (sop_n && sp_streq(sop_n, "&.")) g_noguard = 0;
     if (g_noguard) {
@@ -9712,7 +9715,7 @@ static int emit_scalar_recv_arms(Compiler *c, int id, Buf *b, const NodeTable *n
          evaluated inside the call below, may allocate. */
       int g_root = 0;
       if (rt == TY_STRING)
-        for (int ai = 0; ai < argc && !g_root; ai++) g_root = operand_may_allocate(c, argv[ai]);
+        for (int ai = 0; ai < argc && !g_root; ai++) g_root = operand_allocates_beside(c, argv[ai]);
       if (rt == TY_STRING && g_pre && pre_names_tmp(g_pre, g_pre_mark, g_tmpid)) {
         /* the body's prelude reads the held temp: declare it there */
         Buf hd; memset(&hd, 0, sizeof hd);
