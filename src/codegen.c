@@ -14803,6 +14803,41 @@ static void json_widened_slot(Compiler *c, const WidenedSlot *w, void *ud) {
   j->n++;
 }
 
+/* Whether a value of kind t can be nil, for the JSON's "nullable": the
+   analysis already knows, and a consumer that unboxes on the strength of
+   the type (a C emitter of its own, a reader of `Integer` as "never nil")
+   needs the answer beside the type, because the type alone does not carry
+   it: an `Integer?` and an `Integer` are both TY_INT. Two facts answer it.
+   A scalar's is the nullable marking (LocalVar.nullable_int, #3505; for a
+   node, nullable_int_value); a pointer's is the nil fact (#7444). Both are
+   may-be-nil over-approximations: a `false` is a proof, a `true` is not.
+   `slot` is the parameter's slot for a parameter record, else NULL and the
+   node answers. 0: the kind has no nil form of its own (a Bool, a Symbol,
+   nil, a class, untyped), and the record says nothing. */
+static int types_json_nullable(Compiler *c, int id, TyKind t, const LocalVar *slot, int *nullable) {
+  if (t == TY_INT || t == TY_FLOAT) {
+    *nullable = slot ? slot->nullable_int != 0 : nullable_int_value(c, id);
+    return 1;
+  }
+  if (nil_fact_tracked(t)) {
+    /* nil_fact_node answers 1 for may-be-nil, 0 for not nil or for a read a
+       guard narrowed: the same answer codegen's own nil guards take */
+    *nullable = slot ? repr_of_slot(c, slot).may_nil : nil_fact_node(c, id);
+    return 1;
+  }
+  return 0;
+}
+
+/* The same for a method's value: its scope's inferred or seeded nullable
+   marking for a scalar, its nil fact for a pointer. */
+static int types_json_return_nullable(Compiler *c, const Scope *s, int *nullable) {
+  TyKind t = s->ret;
+  (void)c;
+  if (t == TY_INT || t == TY_FLOAT) { *nullable = s->ret_nullable_int != 0 || s->ret_rbs_nilable != 0; return 1; }
+  if (nil_fact_tracked(t)) { *nullable = s->ret_obj_may_nil != 0; return 1; }
+  return 0;
+}
+
 /* Build the position-keyed type + diagnostics JSON for the ruby-lsp addon:
    every node with a concrete inferred type keyed by {file,line,col}, plus one
    warning per method whose signature degraded to untyped. Positions come from
@@ -14820,11 +14855,13 @@ static char *build_types_json(Compiler *c) {
        the def's signature. Its type is the slot's, the one the signature
        prints for it: untyped for a widened slot, so the parameter's own
        record says what the warning on it says (#4557). */
+    const LocalVar *param_slot = NULL;
     { const char *pk = nt_type(nt, id);
       const char *pn = pk && strstr(pk, "ParameterNode") ? nt_str(nt, id, "name") : NULL;
       if (pn && *pn && c->nscope && c->nscope[id] >= 0 && c->nscope[id] < c->nscopes) {
         LocalVar *pl = scope_local(&c->scopes[c->nscope[id]], pn);
         t = (pl && pl->type != TY_UNKNOWN) ? pl->type : TY_POLY;
+        param_slot = pl;
       }
       else if (t == TY_UNKNOWN || t == TY_VOID) continue; }
     int ln = (int)nt_int(nt, id, "node_line", 0);
@@ -14857,6 +14894,11 @@ static char *build_types_json(Compiler *c) {
     json_escape_into(&b, rbs.p ? rbs.p : "");
     free(rbs.p);
     buf_puts(&b, "\"");
+    /* whether the value can be nil, where the kind has a nil form of its
+       own (types_json_nullable) */
+    { int nullable = 0;
+      if (types_json_nullable(c, id, t, param_slot, &nullable))
+        buf_puts(&b, nullable ? ",\"nullable\":true" : ",\"nullable\":false"); }
     /* a def's `type` is the def expression's value (a Symbol); the method
        type it declares is the `signature`, the same text --emit-rbs writes
        for it, so a consumer needs no second pass for the inferred
@@ -14876,6 +14918,9 @@ static char *build_types_json(Compiler *c) {
           json_escape_into(&b, sig.p ? sig.p : "");
           buf_puts(&b, "\"");
           if (degraded) buf_puts(&b, ",\"widened\":true");
+          { int nullable = 0;
+            if (types_json_return_nullable(c, s, &nullable))
+              buf_puts(&b, nullable ? ",\"return_nullable\":true" : ",\"return_nullable\":false"); }
           free(sig.p);
           break;
         }
