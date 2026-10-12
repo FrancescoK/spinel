@@ -4481,6 +4481,12 @@ int emit_sortby_expr(Compiler *c, int id, Buf *b) {
   Repr rr = repr_of(c, recv);
   TyKind rt = rr.as_ty;
   if (!ty_is_array(rt)) return 0;
+  /* --share-strings: over a fresh String Array whose elements the rule
+     shares, the PolyArray of handles a local's would be: the block's
+     parameter names each handle, and the answer keeps them
+     (iter_filter_src_as_handles types it so) */
+  int as_handles = !is_bang && iter_filter_src_as_handles(c, id, recv);
+  if (as_handles) { rt = TY_POLY_ARRAY; rr.elem = TY_POLY; }
   const char *k = (rr.elem == TY_POLY) ? "Poly" : array_kind(rt);
   if (!k) return 0;
   const char *p0_orig = block_param_name(c, block, 0);
@@ -4510,7 +4516,8 @@ int emit_sortby_expr(Compiler *c, int id, Buf *b) {
      the indices by key, then gather the elements in sorted order. Non-mutating:
      the receiver is read by sorted index into a fresh result, never reordered. */
   int trv = ++g_tmp, tn = ++g_tmp, tkeys = ++g_tmp, tidx = ++g_tmp, ti = ++g_tmp, tres = ++g_tmp, tg = ++g_tmp;
-  Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+  Buf rb; memset(&rb, 0, sizeof rb);
+  if (as_handles) emit_str_array_handles(c, recv, &rb); else emit_expr(c, recv, &rb);
   emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre);
   buf_printf(g_pre, " _t%d = %s;\n", trv, rb.p ? rb.p : ""); free(rb.p);
   /* root the receiver: the key loop allocates (boxing keys, growing the key/index
@@ -4633,6 +4640,10 @@ int emit_sort_cmp_expr(Compiler *c, int id, Buf *b) {
      sort! is not valid on a Hash, so only the non-bang form applies. */
   int hash_sort = ty_is_hash(rt) && !is_bang;
   if (!ty_is_array(rt) && !hash_sort) return 0;
+  /* --share-strings: over a fresh String Array whose elements the rule
+     shares, the PolyArray of handles (as emit_sortby_expr) */
+  int as_handles = !is_bang && !hash_sort && iter_filter_src_as_handles(c, id, recv);
+  if (as_handles) { rt = TY_POLY_ARRAY; rr.elem = TY_POLY; }
   const char *k = hash_sort ? "Poly" : (rr.elem == TY_POLY) ? "Poly" : array_kind(rt);
   if (!k) return 0;
   TyKind et = hash_sort ? TY_POLY : rr.elem;
@@ -4669,7 +4680,9 @@ int emit_sort_cmp_expr(Compiler *c, int id, Buf *b) {
   const char *gf = ono ? "oget" : "get", *sf = ono ? "oset" : "set";
   int trv = ++g_tmp, tr = ++g_tmp, tn = ++g_tmp, ti = ++g_tmp, tj = ++g_tmp, ta = ++g_tmp, tb = ++g_tmp;
   Buf rb; memset(&rb, 0, sizeof rb);
-  if (hash_sort) emit_hash_pairs_expr(c, recv, rt, hn, &rb); else emit_expr(c, recv, &rb);
+  if (hash_sort) emit_hash_pairs_expr(c, recv, rt, hn, &rb);
+  else if (as_handles) emit_str_array_handles(c, recv, &rb);
+  else emit_expr(c, recv, &rb);
   rt = eff_rt;
   emit_indent(g_pre, g_indent); emit_ctype(c, rt, g_pre); buf_printf(g_pre, " _t%d = ", trv); buf_puts(g_pre, rb.p ? rb.p : ""); buf_puts(g_pre, ";\n"); free(rb.p);
   if (!is_bang) {

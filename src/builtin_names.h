@@ -39,6 +39,7 @@ int is_combination_family(const char *n);  /* combination permutation repeated_c
 int is_visibility_name(const char *n);     /* private protected public */
 int is_select_bang(const char *n);    /* select! filter! keep_if reject! delete_if: the in-place filters */
 int is_retaining_filter(const char *n); /* select filter find_all reject, and the in-place filters: the iterators answering some of their elements */
+int is_reorder_iter(const char *n); /* sort sort_by: the iterators answering all of their elements, reordered by a block */
 int is_enum_partition_def(const char *n); /* __enum_partition__N: partition's builtin definition, per call site */
 int is_each_name(const char *n); /* each */
 int is_each_entry(const char *n); /* each_entry */

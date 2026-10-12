@@ -4333,8 +4333,8 @@ int share_node_fresh_elems(const Compiler *c, int n) {
 
 /* The receiver of a retaining iterator call (select, reject, find_all and
    the in-place filters, or partition, whose call is rewritten onto the
-   builtin definition __enum_partition__N(array)) with a literal block, or
-   -1. */
+   builtin definition __enum_partition__N(array); sort and sort_by, whose
+   answer is all of them reordered) with a literal block, or -1. */
 static int sh_retaining_iter_recv(const Compiler *c, int call) {
   const NodeTable *nt = c->nt;
   if (call < 0 || nt_kind(nt, call) != NK_CallNode) return -1;
@@ -4346,6 +4346,9 @@ static int sh_retaining_iter_recv(const Compiler *c, int call) {
     const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
     return an >= 1 ? av[0] : -1;
   }
+  /* (sort and sort_by stand aside where a reopening of Array or a module
+     may answer them in the builtin's place, share_builtin_overridden) */
+  if (is_reorder_iter(nm)) return share_builtin_overridden((Compiler *)c, "Array", nm) ? -1 : recv;
   return is_retaining_filter(nm) ? recv : -1;
 }
 /* Is `call` a retaining iterator over a fresh Array of new Strings (a
