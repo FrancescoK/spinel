@@ -436,7 +436,7 @@ void cplan_served_report(void) {
 }
 
 /* the node is read as itself: nothing re-types or re-scopes it */
-static int cplan_plain_ctx(void) {
+int cplan_plain_ctx(void) {
   return view_depth() == 0 && comp_scope_move_depth() == 0 && g_ie_class_id < 0 &&
          inline_splice_depth() == 0;
 }

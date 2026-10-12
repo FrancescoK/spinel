@@ -250,6 +250,39 @@ int share_node_mutated(Compiler *c, int v);
    query, answered from the final facts. */
 enum { SHN_NO, SHN_YES, SHN_FRESH };
 int share_value_needs_handle(Compiler *c, int v);
+/* Does node n hand over the shared handle (or a box holding it), not a
+   copy of its bytes? The carry a deferred route is checked against
+   (share_route_defer), and the String plan's supply for a value held as
+   bytes. */
+int share_node_carries_handle(const Compiler *c, int n);
+
+/* ---- the String plan (share_plan.c, #8328) ----
+   For each String value under --share-strings, once the analysis is final:
+   what its consumer needs, what its producer supplies, and the form those
+   give. No emitter reads it yet; --share-check compares it with the
+   conversion each emitted site has. */
+enum { SPN_BYTES, SPN_NEW, SPN_OBJECT };              /* need */
+enum { SPS_BYTES, SPS_HANDLE };                       /* supply */
+enum { SPF_BYTES, SPF_HANDLE, SPF_WRAP, SPF_REFUSE }; /* form */
+typedef struct {
+  unsigned char need, supply, form;
+} SharePlan;
+/* the form a need and a supply give */
+int share_plan_form(int need, int supply);
+/* Fill the memo of each node's need (the end of repr_seal); free it with
+   the Compiler. */
+void share_plan_build(Compiler *c);
+void share_plan_free(Compiler *c);
+/* The plan of node v where codegen is: the need from the memo where the
+   node is read as itself, else asked live (*memo, which may be NULL, says
+   which); the supply always asked live, as it reads repr_of. */
+SharePlan share_plan_of(Compiler *c, int v, int *memo);
+/* The memo's need of node v where codegen is, or -1 where it cannot answer. */
+int share_plan_memo_need(Compiler *c, int v);
+/* The plan with the need asked live too (--share-check compares the memo
+   with it). */
+SharePlan share_plan_live(Compiler *c, int v);
+const char *share_plan_form_name(int form);
 /* Is node n an explicit writer's attribute assignment whose value the facts
    keep apart from its right-hand side's String (nothing observes them as one
    object)? */

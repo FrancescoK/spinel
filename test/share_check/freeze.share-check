@@ -1,2 +1,2 @@
-share-check: copy: test/share_check/freeze.rb:6 node 13 LocalVariableReadNode (s): changed in place as bytes by sp_str_freeze_val (sp_strbuf_read_pub)
-share-check: 4 marks, 0 declared, 1 copies
+share-check: 4 marks, 0 declared, 0 copies
+share-check: plan: 3 sites, 3 agree, 0 read, 0 disagree; handle 2/0/0/0, wrap 0/0/1/0, refuse 0/0/0/0 (C handle/read/wrap/bytes); 0 live, 0 stale

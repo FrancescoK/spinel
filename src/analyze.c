@@ -17601,8 +17601,8 @@ static int strbuf_demand_store_leaf(Compiler *c, int sn, int depth) {
          writes that back into the local, and lift_poly_alias_reads carries
          it to the names the local was copied from or to): the element is
          the local's own String, which the route then carries where the
-         rule shares it (sh_carries_handle), and a copy no other name sees
-         where it does not */
+         rule shares it (share_node_carries_handle), and a copy no other
+         name sees where it does not */
       int ch = 0;
       if (c->share_strings) {
         ch = lift_poly_read_store(c, sn);

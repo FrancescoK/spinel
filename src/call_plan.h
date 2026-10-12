@@ -127,6 +127,10 @@ int cplan_define_method_early(Compiler *c, int id);
    self_ci < 0 is the node's own context, cplan_user. */
 enum { CPX_IE = 1, CPX_EMIT = 2, CPX_ARM = 4 };
 const CallPlan *cplan_user_in(Compiler *c, int id, int self_ci, int flags);
+/* Is the node codegen is at read as itself: no view, no instance_exec scope
+   move or class, no inline splice? Only there may a memo per node answer
+   (cplan_user's, the String plan's in share_plan.c). */
+int cplan_plain_ctx(void);
 /* --plan-check: a codegen site that took its target from a plan counts it
    (site: a short constant name); cplan_served_report prints the counts */
 void cplan_served(const char *site);
