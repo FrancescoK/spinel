@@ -3791,6 +3791,82 @@ static int dsend_name_source(Compiler *c, int arg) {
   return nw == 1 && src >= 0 ? src : arg;
 }
 
+/* The names a value can be when it is a Symbol or String literal, nil, or a
+   conditional choosing among them (`re ? :assert_match : :assert_equal`),
+   added to `names`. 0 for anything else. */
+static int dsend_literal_names(Compiler *c, int v, char ***names, int *n, int *cap, ANameHash *seen) {
+  const NodeTable *nt = c->nt;
+  if (v < 0) return 1;   /* an if with no else: nil */
+  const char *ty = nt_type(nt, v);
+  switch (nt_kind(nt, v)) {
+  case NK_NilNode: return 1;
+  case NK_SymbolNode: case NK_StringNode: {
+    const char *s = nt_kind(nt, v) == NK_SymbolNode ? nt_str(nt, v, "value") : nt_str(nt, v, "content");
+    if (!s || !*s) return 0;
+    /* only a name the program's literals would offer: method-shaped, and
+       not a send itself or a Method's wrapper (dsend_candidates) */
+    if (!dsend_method_name_shaped(s) || strncmp(s, "__bam_", 6) == 0 || is_send_family(s)) return 0;
+    dsend_add_name(names, n, cap, seen, s);
+    return 1; }
+  case NK_IfNode:
+    return dsend_literal_names(c, nt_ref(nt, v, "statements"), names, n, cap, seen) &&
+           dsend_literal_names(c, nt_ref(nt, v, "subsequent"), names, n, cap, seen);
+  case NK_UnlessNode:
+    return dsend_literal_names(c, nt_ref(nt, v, "statements"), names, n, cap, seen) &&
+           dsend_literal_names(c, nt_ref(nt, v, "else_clause"), names, n, cap, seen);
+  case NK_StatementsNode: {
+    int bn = 0; const int *bb = nt_arr(nt, v, "body", &bn);
+    return bn == 1 && bb ? dsend_literal_names(c, bb[0], names, n, cap, seen) : 0; }
+  default:
+    if (ty && sp_streq(ty, "ElseNode")) return dsend_literal_names(c, nt_ref(nt, v, "statements"), names, n, cap, seen);
+    if (ty && sp_streq(ty, "ParenthesesNode")) return dsend_literal_names(c, nt_ref(nt, v, "body"), names, n, cap, seen);
+    return 0;
+  }
+}
+
+/* The names a send's name can be when it is a local each of whose writes in
+   its scope is a plain assignment of literal names (dsend_literal_names):
+   `err = re ? :assert_match : :assert_equal; send err, ...` reaches those
+   two methods, not every name the program spells. A local that is also a
+   parameter there (of the method or of a block), or that any other kind of
+   write binds (a multiple assignment, an op-assign, a rescue's `=> e`),
+   answers 0, and the send keeps the program's literals as its arms. A
+   String literal is frozen here (the parser's frozen-string-literal
+   default), so the name a write gives cannot change in place. */
+static int dsend_local_names(Compiler *c, int arg, char ***names, int *n) {
+  const NodeTable *nt = c->nt;
+  *names = NULL; *n = 0;
+  if (nt_kind(nt, arg) != NK_LocalVariableReadNode) return 0;
+  const char *vn = nt_str(nt, arg, "name");
+  int scope = arg < nt->count ? c->nscope[arg] : -1, nw = 0, ok = 1, cap = 0;
+  if (!vn || scope < 0) return 0;
+  ANameHash seen; memset(&seen, 0, sizeof seen);
+  for (int id = 0; id < nt->count && ok; id++) {
+    if (c->nscope[id] != scope || id == arg) continue;
+    NodeKind k = nt_kind(nt, id);
+    if (k == NK_LocalVariableReadNode) continue;
+    const char *wn = nt_str(nt, id, "name");
+    if (!wn || !sp_streq(wn, vn)) continue;
+    const char *ty = nt_type(nt, id);
+    size_t tl = ty ? strlen(ty) : 0;
+    if (tl > 13 && sp_streq(ty + tl - 13, "ParameterNode")) ok = 0;
+    else if (ty && sp_streq(ty, "BlockLocalVariableNode")) ok = 0;
+    else if (!comp_is_local_write(k)) continue;
+    else if (k != NK_LocalVariableWriteNode) ok = 0;
+    else { nw++; ok = dsend_literal_names(c, nt_ref(nt, id, "value"), names, n, &cap, &seen); }
+  }
+  Scope *sc = comp_scope_of(c, arg);
+  for (int k = 0; ok && sc && k < sc->nparams; k++)
+    if (sc->pnames[k] && sp_streq(sc->pnames[k], vn)) ok = 0;
+  anh_free(&seen);
+  if (!ok || nw == 0 || *n == 0) {
+    for (int k = 0; k < *n; k++) free((*names)[k]);
+    free(*names); *names = NULL; *n = 0;
+    return 0;
+  }
+  return 1;
+}
+
 /* Is node n in a `def self.m` written in its class: a class method whose
    self is that class (or a subclass), not a module method an `extend`
    copied in, which a macro may run from a class body. */
@@ -4116,8 +4192,17 @@ int desugar_dynamic_send(Compiler *c) {
       for (int k = 0; k < ncand; k++)
         if (anh_has(&g_dsend_lits, cand[k])) lits[nlit++] = cand[k];
       use = lits; nuse = nlit;
+      /* a local that only ever holds literal names holds one of those */
+      if (dsend_local_names(c, argv[0], &own, &nown)) {
+        /* none of them takes this many arguments: no arm would be left, so
+           keep the literals' arms (and their NoMethodError) as before */
+        int fits = splat_src >= 0;
+        for (int k = 0; k < nown && !fits; k++) fits = !dsend_defined_arity_excludes(c, own[k], nrest);
+        if (fits) { use = own; nuse = nown; }
+        else { for (int k = 0; k < nown; k++) free(own[k]); free(own); own = NULL; nown = 0; }
+      }
     }
-    if (!computed && nlit > 256) {
+    if (!computed && use == lits && nlit > 256) {
       /* Past the cap, the literals the receiver answers go first and are all
          kept, so a program's other literals can't crowd its own names out. */
       int npick = 0;
