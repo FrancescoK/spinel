@@ -17559,6 +17559,14 @@ static int bsc_walk(NodeTable *nt, int n, const char *cn) {
   }
   return changed;
 }
+/* The same rewrite on a module method an include copied into the reopened
+   builtin cn (register_includes clones the body per includer, so the
+   module's own body keeps its run-time `self.class`). */
+int desugar_included_self_class(Compiler *c, int body, const char *cn) {
+  if (!cn || !bsc_builtin_one_class(cn)) return 0;
+  return bsc_walk((NodeTable *)c->nt, body, cn);
+}
+
 /* Mark the class bodies not nested in another class or module: a
    program's own `Foo::String` shares the builtin's name but is a class of
    its own, with subclasses allowed. */
