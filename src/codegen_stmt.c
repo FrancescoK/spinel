@@ -9706,6 +9706,48 @@ static int emit_when_lambda_inline(Compiler *c, int cond, int t, TyKind pt, int 
   return 1;
 }
 
+/* --share-strings: does tail v, of a method that answers a handle, end in
+   some arm the return analysis takes apart (an_tail_is_shared_handle: a
+   parenthesized sequence's last statement, a conditional's, a case's, a
+   begin's or a rescue modifier's arms, both operands of a String `||`, the
+   right one of `&&`) in a leaf only emit_tail_value publishes: a route that
+   answers its receiver's handle (`a << x`, strbuf_builtin_tail), or an
+   attribute write on a boxed receiver? Their value forms answer the bytes
+   and publish nothing, so such a tail is emitted arm by arm, each leaf by
+   emit_tail_value. */
+int tail_pub_leaf(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  NodeKind k = v >= 0 ? nt_kind(nt, v) : NK_NONE;
+  int n = 0;
+  const int *bb;
+  switch (k) {
+    case NK_ParenthesesNode: return tail_pub_leaf(c, nt_ref(nt, v, "body"));
+    case NK_StatementsNode:
+      bb = nt_arr(nt, v, "body", &n);
+      return n > 0 && tail_pub_leaf(c, bb[n - 1]);
+    case NK_ElseNode: return tail_pub_leaf(c, nt_ref(nt, v, "statements"));
+    case NK_IfNode: case NK_UnlessNode:
+      return tail_pub_leaf(c, nt_ref(nt, v, "statements")) ||
+             tail_pub_leaf(c, nt_ref(nt, v, k == NK_IfNode ? "subsequent" : "else_clause"));
+    case NK_CaseNode: case NK_CaseMatchNode:
+      bb = nt_arr(nt, v, "conditions", &n);
+      for (int w = 0; w < n; w++)
+        if (tail_pub_leaf(c, nt_ref(nt, bb[w], "statements"))) return 1;
+      return tail_pub_leaf(c, nt_ref(nt, v, "else_clause"));
+    case NK_BeginNode:
+      for (int rc = nt_ref(nt, v, "rescue_clause"); rc >= 0; rc = nt_ref(nt, rc, "subsequent"))
+        if (tail_pub_leaf(c, nt_ref(nt, rc, "statements"))) return 1;
+      return tail_pub_leaf(c, nt_ref(nt, v, nt_ref(nt, v, "else_clause") >= 0 ? "else_clause" : "statements"));
+    case NK_RescueModifierNode:
+      return tail_pub_leaf(c, nt_ref(nt, v, "expression")) || tail_pub_leaf(c, nt_ref(nt, v, "rescue_expression"));
+    case NK_OrNode: case NK_AndNode:
+      return an_tail_logic_op(c, v) &&
+             ((k == NK_OrNode && tail_pub_leaf(c, nt_ref(nt, v, "left"))) || tail_pub_leaf(c, nt_ref(nt, v, "right")));
+    default:
+      return strbuf_builtin_tail(c, v) || (strbuf_assign_leaf(c, v) && strbuf_assign_boxed_recv(c, v));
+  }
+}
+
 /* A String result slot uses the return-tail emitter even when control
    flow needs a temporary instead of a C return. */
 static void emit_string_tail_into(Compiler *c, int node, const char *dst, Buf *b) {
@@ -9807,6 +9849,10 @@ void emit_case_branch_value(Compiler *c, int stmts, TyKind rt, int cr, Buf *b) {
      as the method's own tail does */
   else if (n > 0 && rt == TY_STRING && sc && sc->ret_handle && nt_kind(nt, bb[n - 1]) == NK_ParenthesesNode &&
            emit_paren_tail_pub(c, bb[n - 1], &val)) { }
+  /* ...and so does an arm ending in any other leaf only the tail emitter
+     publishes (tail_pub_leaf): `when 2 then a << "z"` */
+  else if (n > 0 && rt == TY_STRING && sc && sc->ret_handle && tail_pub_leaf(c, bb[n - 1]))
+    emit_tail_value(c, bb[n - 1], &val);
   else if (n > 0) { if (rt == TY_POLY) emit_boxed(c, bb[n - 1], &val); else if (res_o) emit_oint_expr(c, bb[n - 1], rt, &val); else emit_expr(c, bb[n - 1], &val); }
   else buf_puts(&val, rt == TY_POLY ? "sp_box_nil()" : res_zero(c, rt, res_o));
   g_pre = sv_pre;
@@ -11557,6 +11603,21 @@ void emit_tail_value(Compiler *c, int node, Buf *b) {
     char dst[32]; snprintf(dst, sizeof dst, "_t%d", t);
     buf_printf(b, "({ const char *%s = NULL;\n", dst);
     emit_string_tail_into(c, node, dst, b);
+    buf_printf(b, "%s; })", dst);
+    if (g_repr_check) repr_channel_end(c, frame);
+    return;
+  }
+  /* A method that answers a handle emits a parenthesized sequence or a
+     conditional some arm of which ends in a leaf only this emitter
+     publishes (tail_pub_leaf) the same way, a paren by its statements:
+     its value forms answer the bytes of `(a << "z")` and `f ? a << "z" : a`
+     and publish nothing (a case publishes its arms, emit_case_branch_value) */
+  if (ts && ts->ret_handle && (k == NK_ParenthesesNode || k == NK_IfNode || k == NK_UnlessNode ||
+                               k == NK_CaseMatchNode) && tail_pub_leaf(c, node)) {
+    int t = ++g_tmp;
+    char dst[32]; snprintf(dst, sizeof dst, "_t%d", t);
+    buf_printf(b, "({ const char *%s = NULL;\n", dst);
+    emit_string_tail_into(c, k == NK_ParenthesesNode ? nt_ref(c->nt, node, "body") : node, dst, b);
     buf_printf(b, "%s; })", dst);
     if (g_repr_check) repr_channel_end(c, frame);
     return;
