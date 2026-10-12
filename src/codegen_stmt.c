@@ -2724,6 +2724,38 @@ int strbuf_arg_bang(Compiler *c, int v) {
 int strbuf_arg_carries(Compiler *c, int v) {
   return strbuf_value_carries(c, v) || strbuf_arg_bang(c, v);
 }
+/* ...is v such a bang, or a conditional that takes its arms one by one as
+   handles (strbuf_cond_has_handle_leaf) with such a bang among the values
+   it hands on? An argument that runs ahead of the binding takes its handle
+   there (emit_arg_temp), which the binding then takes (ran_first_handle). */
+static int strbuf_arg_bang_arm(Compiler *c, int v, int depth) {
+  const NodeTable *nt = c->nt;
+  v = unwrap_parens(c, v);
+  if (v < 0 || depth > 16) return 0;
+  switch (nt_kind(nt, v)) {
+  case NK_StatementsNode: {
+    int n = 0; const int *bb = nt_arr(nt, v, "body", &n);
+    return n > 0 && strbuf_arg_bang_arm(c, bb[n - 1], depth + 1);
+  }
+  case NK_ElseNode: return strbuf_arg_bang_arm(c, nt_ref(nt, v, "statements"), depth + 1);
+  case NK_IfNode: case NK_UnlessNode:
+    return strbuf_arg_bang_arm(c, nt_ref(nt, v, "statements"), depth + 1) ||
+           strbuf_arg_bang_arm(c, nt_ref(nt, v, nt_kind(nt, v) == NK_IfNode ? "subsequent" : "else_clause"), depth + 1);
+  case NK_OrNode:
+    return strbuf_arg_bang_arm(c, nt_ref(nt, v, "left"), depth + 1) || strbuf_arg_bang_arm(c, nt_ref(nt, v, "right"), depth + 1);
+  case NK_AndNode: return strbuf_arg_bang_arm(c, nt_ref(nt, v, "right"), depth + 1);
+  case NK_CaseNode: {
+    int nw = 0; const int *whens = nt_arr(nt, v, "conditions", &nw);
+    for (int w = 0; w < nw; w++)
+      if (strbuf_arg_bang_arm(c, nt_ref(nt, whens[w], "statements"), depth + 1)) return 1;
+    return strbuf_arg_bang_arm(c, nt_ref(nt, v, "else_clause"), depth + 1);
+  }
+  default: return strbuf_arg_bang(c, v);
+  }
+}
+int strbuf_arg_bang_value(Compiler *c, int v) {
+  return strbuf_arg_bang(c, v) || (strbuf_cond_has_handle_leaf(c, v, 0) && strbuf_arg_bang_arm(c, v, 0));
+}
 /* A builtin value route can publish its handle as a method's return too.
    The return analysis and tail emitter ask the same route predicate.
    A fresh result has no existing identity for the tail to publish. */

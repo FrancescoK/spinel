@@ -8712,6 +8712,10 @@ static void emit_arg_temp(Compiler *c, int v) {
      handle its method publishes is taken where the call runs. */
   if (!conversion && at == TY_STRING && repr_share_rule(c) && c->poly_strbuf_lift[v] && strbuf_value_carries(c, v))
     conversion = 1;
+  /* --share-strings: and so does a bang on a handle or a box, or a
+     conditional with one on an arm, which a parameter that is the handle
+     takes as its receiver's String or nil (strbuf_arg_carries) */
+  if (!conversion && at == TY_STRING && strbuf_arg_bang_value(c, v)) conversion = 1;
   Buf hw; memset(&hw, 0, sizeof hw);
   if (conversion) emit_strbuf_handle_of(c, v, &hw);
   else if (wshare) emit_strbuf_write_handle(c, v, &hw);

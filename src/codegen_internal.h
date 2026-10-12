@@ -259,6 +259,7 @@ int strbuf_route_inline_call(Compiler *c, int v);
 int strbuf_value_carries(Compiler *c, int v);
 int strbuf_arg_carries(Compiler *c, int v);
 int strbuf_arg_bang(Compiler *c, int v);
+int strbuf_arg_bang_value(Compiler *c, int v);
 int strbuf_builtin_tail(Compiler *c, int v);
 int strbuf_bang_tail(Compiler *c, int v);
 int strbuf_hash_default_arg(Compiler *c, int v);
