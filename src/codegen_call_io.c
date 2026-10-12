@@ -222,6 +222,17 @@ static void emit_io_line_args_spread(Compiler *c, const int *argv, int argc, int
   }
 }
 
+/* gets / readline on the handle in _t<rf>, rooted across its arguments,
+   which a splat or a `**` carries (emit_io_line_args_spread). A limit of 0
+   answers "" without reading, as CRuby's does. */
+static void emit_io_line_read_spread(Compiler *c, const char *name, int rf, const int *argv, int argc, Buf *b) {
+  int ls = ++g_tmp, ll = ++g_tmp, lc = ++g_tmp;
+  buf_printf(b, "SP_GC_ROOT(_t%d); ", rf);
+  emit_io_line_args_spread(c, argv, argc, ls, ll, lc, NULL, b);
+  buf_printf(b, "_t%dz ? sp_str_empty : sp_File_%s(_t%d, _t%d, _t%d, _t%d)",
+             ll, sp_streq(name, "readline") ? "readline_sep" : "gets_sep", rf, ls, ll, lc);
+}
+
 static int emit_io_read_outbuf(Compiler *c, int id, const char *name, const char *fn, const char *r, const int *argv,
                                int nint, int ob, int rest, Buf *b) {
   TyKind bt = comp_ntype(c, ob);
@@ -1174,6 +1185,13 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
       else if (sp_streq(name, "fsync") || sp_streq(name, "fdatasync"))
         buf_printf(b, "sp_File_fsync(_t%d); })", tio2);
       else if (sp_streq(name, "gets") && argc == 0) buf_printf(b, "sp_File_gets(_t%d); })", tio2);
+      /* and through a splat or a `**`, read at run time as the typed arm
+         reads them: the fixed reader below passed the list itself as the
+         separator, and the C did not build */
+      else if (is_line_read(name) && io_line_args_spread(nt, argv, argc)) {
+        emit_io_line_read_spread(c, name, tio2, argv, argc, b);
+        buf_puts(b, "; })");
+      }
       /* the separator, limit and `chomp:` a typed handle takes: dropping
          them read `f.gets("o")` and `f.gets(3)` as a whole line. The handle
          is rooted across the arguments, which are evaluated after it. */
@@ -1593,13 +1611,10 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
     if (is_line_read(name) && io_line_args_spread(nt, argv, argc)) {
       /* gets(*args, **opts), a wrapper handing its own arguments on: read
          at run time, where gets_sep_arg_texts saw one Array argument */
-      int is_rdl = sp_streq(name, "readline");
-      int rf = ++g_tmp, ls = ++g_tmp, ll = ++g_tmp, lc = ++g_tmp;
-      buf_printf(b, "({ sp_File *_t%d = %s; SP_GC_ROOT(_t%d); ", rf, r, rf);
-      emit_io_line_args_spread(c, argv, argc, ls, ll, lc, NULL, b);
-      /* a limit of 0 answers "" without reading, as CRuby's does */
-      buf_printf(b, "_t%dz ? sp_str_empty : sp_File_%s(_t%d, _t%d, _t%d, _t%d); })",
-                 ll, is_rdl ? "readline_sep" : "gets_sep", rf, ls, ll, lc);
+      int rf = ++g_tmp;
+      buf_printf(b, "({ sp_File *_t%d = %s; ", rf, r);
+      emit_io_line_read_spread(c, name, rf, argv, argc, b);
+      buf_puts(b, "; })");
       free(rb.p); return 1;
     }
     if (is_line_read(name)) {

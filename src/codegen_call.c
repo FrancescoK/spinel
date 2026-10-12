@@ -7139,7 +7139,9 @@ static int emit_poly_builtin_default_at(Compiler *c, int id, int recv, const cha
   if (g_pd_skip == id || g_n_argov + argc + 1 > MAX_ARG_OVERRIDE) return 0;
   if (argc > 0 && (!atmp || !atmp_ty)) return 0;
   /* a splat's temp is the flattened list, which no builtin emitter reads
-     as its arguments. The key-list readers below spread a splatted operand
+     as its arguments. The key-list readers below, and the line readers
+     (gets, readline: the boxed IO arm gathers their separator, limit and
+     `chomp:` from the list at run time), spread a splatted operand
      themselves, so their arm spreads it again, as the ordinary call would
      (#7051); that is sound only where reading the operand twice reads the
      same value -- a constant, a local -- so one with a side effect still
@@ -7147,7 +7149,7 @@ static int emit_poly_builtin_default_at(Compiler *c, int id, int recv, const cha
      (`pop(*a)` handed the whole PolyArray), and declines too. */
   static const char *const splat_keyed[] = {
     "slice", "values_at", "fetch_values", "dig", "except", "delete", NULL };
-  int splat_ok = 0;
+  int splat_ok = is_line_read(name);
   for (int k = 0; splat_keyed[k]; k++) if (sp_streq(name, splat_keyed[k])) splat_ok = 1;
   for (int a = 0; a < argc; a++) {
     int is_splat = nt_kind(nt, argv[a]) == NK_SplatNode;
