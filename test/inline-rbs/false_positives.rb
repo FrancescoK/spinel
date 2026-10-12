@@ -20,6 +20,13 @@ class Doc #:nodoc:
     y
   end
   #:startdoc:
+
+  def gen=(g) #:nodoc
+    @gen = g
+  end
+
+  #:nodoc
+  def gen = @gen
 end
 
 =begin
@@ -38,6 +45,8 @@ RE = /#: x/
 d = Doc.new
 p d.frob(1)
 p d.hidden(2)
+d.gen = 3
+p d.gen
 p TEXT
 p HERE
 p WORDS

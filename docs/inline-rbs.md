@@ -160,7 +160,8 @@ spinel: FILE:LINE:COL: warning: inline RBS: ... is not applied: ...
 The column identifies the comment's `#`. Type names retain their source
 spelling.
 
-Prose, RDoc directives such as `#:nodoc:`, ordinary documentation tags,
+Prose, RDoc directives such as `#:nodoc:` (or `#:nodoc`
+without its closing colon), ordinary documentation tags,
 magic comments, and `# spinel:` directives are not annotations. Strings,
 heredocs, regexps, and `=begin`/`=end` blocks do not supply annotations.
 
