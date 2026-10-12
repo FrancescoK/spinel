@@ -4559,17 +4559,38 @@ static int sh_has_jump(const NodeTable *nt, int n) { return sh_has_jump_k(nt, n,
 
 /* share.h: can a method of the program's own stand in for builtin class
    cls's method `name` where the call plan does not see it: one a reopening
-   of cls defines, or a module's, which a prepend can put ahead of cls's
-   own? A reopened builtin's methods are not called for its values (an old
+   of cls defines, or a module's that a prepend or an extend the program
+   calls can put ahead of cls's own (sh_module_put_ahead)? A reopened builtin's methods are not called for its values (an old
    dispatch gap), so such a call answers the builtin's, not the program's;
    the facts that take the builtin's answer for granted stand aside. */
+/* Can a `prepend` or an `extend` the program calls put module mname ahead
+   of a builtin's own methods: a call of either naming it, or one whose
+   argument is no constant? A module only included, which a class's own
+   methods come before, cannot. */
+static int sh_module_put_ahead(Compiler *c, const char *mname) {
+  const char *tail = mname ? strrchr(mname, ':') : NULL;
+  tail = tail ? tail + 1 : mname;
+  const char *names[2] = { "prepend", "extend" };
+  for (int j = 0; j < 2; j++)
+    for (int id = an_calls_named_first(c, names[j]); id >= 0; id = an_calls_named_next(id)) {
+      int argc = 0;
+      const int *argv = call_args(c->nt, id, &argc);
+      for (int i = 0; i < argc; i++) {
+        NodeKind k = nt_kind(c->nt, argv[i]);
+        const char *an = k == NK_ConstantReadNode || k == NK_ConstantPathNode ? nt_str(c->nt, argv[i], "name") : NULL;
+        if (!an || (tail && sp_streq(an, tail))) return 1;
+      }
+    }
+  return 0;
+}
 int share_builtin_overridden(Compiler *c, const char *cls, const char *name) {
   int n = 0;
   const PolyCand *p = name ? comp_poly_candidates(c, name, &n) : NULL;
   for (int i = 0; i < n; i++) {
     if (p[i].mi < 0 && p[i].rdcls < 0) continue;
     ClassInfo *ci = &c->classes[p[i].cls];
-    if ((ci->name && sp_streq(ci->name, cls)) || comp_class_is_module(c, ci)) return 1;
+    if (ci->name && sp_streq(ci->name, cls)) return 1;
+    if (comp_class_is_module(c, ci) && sh_module_put_ahead(c, ci->name)) return 1;
   }
   return 0;
 }

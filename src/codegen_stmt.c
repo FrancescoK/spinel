@@ -2247,7 +2247,7 @@ static int strbuf_route_carries(Compiler *c, int v, int depth) {
   if (strbuf_route_proc_call(c, v) || strbuf_route_ivar_get(c, v) || strbuf_route_begin(c, v) || strbuf_route_yield(c, v) ||
       strbuf_route_inline_call(c, v) || strbuf_route_reopen_pf(c, v) || strbuf_route_ie(c, v) || strbuf_route_loop(c, v) || repr_call_returns_handle(c, v) ||
       strbuf_route_exc_message(c, v) || strbuf_route_boxed_exc_message(c, v) || strbuf_route_reader(c, v) ||
-      strbuf_route_srange_end(c, v) || strbuf_route_srange_extreme(c, v)) return 1;
+      strbuf_route_srange_kept(c, v)) return 1;
   if (strbuf_assign_leaf(c, v) || strbuf_bang_leaf(c, v)) return 1;
   /* a receiver-answering method on a value route over a handle (`(+s).insert(0, "<")`):
      the route's handle (emit_bang_self_handle) */
@@ -21872,7 +21872,7 @@ static int strbuf_flow_route(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, in
   }
   if (strbuf_route_proc_call(c, v) || strbuf_route_ivar_get(c, v) || repr_call_returns_handle(c, v) ||
       strbuf_route_exc_message(c, v) || strbuf_route_boxed_exc_message(c, v) || strbuf_route_reader(c, v) ||
-      strbuf_route_srange_end(c, v) || strbuf_route_srange_extreme(c, v))
+      strbuf_route_srange_kept(c, v))
     return 1;
   if (nt_kind(nt, v) == NK_BeginNode) return strbuf_flow_begin(c, fm, v, depth);
   /* a rescue modifier the route takes (emit_strbuf_route, not a box):
@@ -22112,8 +22112,7 @@ static int strbuf_flow_value(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, in
   if (ctx == SFC_TAIL && strbuf_tail_self_mutator(c, v)) return 1;
   if (ctx == SFC_TAIL)
     return (k == NK_BeginNode && strbuf_flow_begin(c, fm, v, depth)) || repr_call_returns_handle(c, v) ||
-           strbuf_route_exc_message(c, v) || strbuf_route_boxed_exc_message(c, v) || strbuf_route_srange_end(c, v) ||
-           strbuf_route_srange_extreme(c, v) ||
+           strbuf_route_exc_message(c, v) || strbuf_route_boxed_exc_message(c, v) || strbuf_route_srange_kept(c, v) ||
            (strbuf_route_ie(c, v) && strbuf_flow_route(c, fm, SFC_ALIAS, v, depth)) ||
            (is_unary_plus(nt_str(nt, v, "name")) && strbuf_flow_route(c, fm, ctx, v, depth));
   /* an append chain over a variable's handle, boxed as that handle; a
