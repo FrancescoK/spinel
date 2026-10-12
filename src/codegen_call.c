@@ -19451,12 +19451,26 @@ static int unresolved_name_chain(Compiler *c, int node) {
   }
   return 0;
 }
+/* A setter Symbol as the block of a builtin method (`[s].each(&:v=)`): its
+   proc calls `v=` with the arguments the block is given, which is not
+   lowered here, and the fallback below would raise a NoMethodError for the
+   method itself where CRuby raises what the setter call raises (an
+   ArgumentError for each's one argument). Refused instead. */
+static void refuse_setter_sym_block(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  int blk = nt_ref(nt, id, "block");
+  int sym = blk >= 0 && nt_kind(nt, blk) == NK_BlockArgumentNode ? nt_ref(nt, blk, "expression") : -1;
+  const char *sv = sym >= 0 && nt_kind(nt, sym) == NK_SymbolNode ? nt_str(nt, sym, "value") : NULL;
+  if (sv && name_is_plain_setter(sv))
+    unsupported_feature(c, id, "a setter Symbol (`&:name=`) as the block of a builtin method is not supported");
+}
 int emit_unresolved_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver");
   int argc;
   const int *argv = call_args(nt, id, &argc);
+  refuse_setter_sym_block(c, id);
   TyKind rt = recv >= 0 ? comp_recv_type(c, recv) : TY_UNKNOWN;
   /* chr(Encoding::UTF_8) on a boxed Integer: the codepoint, encoded */
   if (recv >= 0 && rt == TY_POLY && name && sp_streq(name, "chr") && argc == 1 && !user_defines_or_reads(c, "chr") &&

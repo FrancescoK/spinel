@@ -1070,6 +1070,12 @@ spinel: 1 refusal, nothing written
 spinel: test/reject/scrub_bang_retained_append.rb:3: a String is not yet shared by reference through a retained scrub! result that is appended to
 == test/reject/scrub_bang_retained_append.rb [promote] rc=1
 spinel: test/reject/scrub_bang_retained_append.rb:3: a String is not yet shared by reference through a retained scrub! result that is appended to
+== test/reject/setter_symbol_block_builtin.rb [default] rc=1
+spinel: test/reject/setter_symbol_block_builtin.rb:6: a setter Symbol (`&:name=`) as the block of a builtin method is not supported
+spinel: 1 refusal, nothing written
+== test/reject/setter_symbol_block_builtin.rb [promote] rc=1
+spinel: test/reject/setter_symbol_block_builtin.rb:6: a setter Symbol (`&:name=`) as the block of a builtin method is not supported
+spinel: 1 refusal, nothing written
 == test/reject/singleton_on_untraceable_recv.rb [default] rc=1
 spinel: test/reject/singleton_on_untraceable_recv.rb:10: singleton method that needs a self, on a receiver that is not one user-class instance
 spinel: 1 refusal, nothing written

@@ -2105,6 +2105,11 @@ reject-test: $(SPINEL)
 	  else grep -qF "$$why" "$$tmp/sb.out" || \
 	    { echo "reject-test: FAIL ($$t refused without saying why)"; sed -n 1,5p "$$tmp/sb.out"; ok=0; }; fi; \
 	done; \
+	t=test/reject/setter_symbol_block_builtin.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/ssb.c" >"$$tmp/ssb.out" 2>&1; then \
+	  echo "reject-test: FAIL (a setter Symbol as a builtin's block compiled)"; ok=0; \
+	else grep -q "setter Symbol" "$$tmp/ssb.out" || \
+	  { echo "reject-test: FAIL (a setter Symbol as a builtin's block refused without saying why)"; sed -n 1,5p "$$tmp/ssb.out"; ok=0; }; fi; \
 	t=test/reject/io_popen.rb; \
 	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/pop.c" >"$$tmp/pop.out" 2>&1; then \
 	  echo "reject-test: FAIL (IO.popen compiled into a run-time NoMethodError)"; ok=0; \
