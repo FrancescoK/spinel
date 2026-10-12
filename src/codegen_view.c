@@ -307,3 +307,33 @@ void view_unwind(int mark) {
   }
   if (g_n_argov > (mark & 0xffff)) g_n_argov = mark & 0xffff;
 }
+
+/* ---- per-arm facts (#7483) ---- */
+
+void arm_body_infer(Compiler *c, int site, int block, TyKind kind, const int *body, int n) {
+  static int trace = -1;
+  if (trace < 0) { const char *e = getenv("SP_ARM_TRACE"); trace = e && *e ? 1 : 0; }
+  for (int j = 0; j < n; j++) infer_type(c, body[j]);
+  if (g_arm_check) {
+    const ArmFact *f = arm_fact_find(c, block, kind);
+    if (!f) fprintf(stderr, "arm-check: MISSING site %d block %d line %lld kind %s\n", site, block,
+                    (long long)nt_int(c->nt, block, "node_line", 0), ty_name(kind));
+    else
+      for (int i = 0; i < f->n; i++)
+        if (f->nodes[i] < c->node_cap && c->ntype[f->nodes[i]] != f->types[i]) {
+          fprintf(stderr, "arm-check: MISMATCH site %d block %d kind %s node %d (%s) line %lld: fact %s, codegen %s\n",
+                  site, block, ty_name(kind), f->nodes[i], nt_type(c->nt, f->nodes[i]) ? nt_type(c->nt, f->nodes[i]) : "?",
+                  (long long)nt_int(c->nt, f->nodes[i], "node_line", 0), ty_name(f->types[i]),
+                  ty_name(c->ntype[f->nodes[i]]));
+          break;
+        }
+  }
+  if (trace) {
+    const char *cn = "?"; const char *rk = "?";
+    NT_FOREACH_KIND(c->nt, NK_CallNode, cid) if (nt_ref(c->nt, cid, "block") == block) {
+      cn = nt_str(c->nt, cid, "name"); int r = nt_ref(c->nt, cid, "receiver");
+      rk = r >= 0 ? ty_name(c->ntype[r]) : "-"; break; }
+    fprintf(stderr, "arm-trace: site %d block %d line %lld kind %s call %s recv %s\n", site, block,
+            (long long)nt_int(c->nt, block, "node_line", 0), ty_name(kind), cn ? cn : "?", rk);
+  }
+}

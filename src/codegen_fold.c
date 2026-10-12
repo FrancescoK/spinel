@@ -1871,7 +1871,7 @@ int emit_sum_block_poly_expr(Compiler *c, int id, Buf *b) {
   LocalVar *blv = (bsc && p0) ? scope_local(bsc, p0) : NULL;
   TyKind saved = blv ? blv->type : TY_UNKNOWN;
   if (blv) blv->type = TY_POLY;
-  for (int j = 0; j < bn; j++) infer_type(c, bb[j]);
+  arm_body_infer(c, ARM_SITE_FOLD_POLY, block, TY_POLY, bb, bn);
 
   int ta = ++g_tmp, tacc = ++g_tmp, ti = ++g_tmp, tn = ++g_tmp, tr = ++g_tmp;
   /* the receiver, then the initial value, then the receiver's check: nil, a
@@ -5485,7 +5485,7 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
     LocalVar *clv2 = (csc2 && p0p) ? scope_local(csc2, p0p) : NULL;
     TyKind csaved2 = clv2 ? clv2->type : TY_UNKNOWN;
     if (clv2) clv2->type = TY_POLY;
-    for (int j2 = 0; j2 < bn2; j2++) infer_type(c, bb2[j2]);
+    arm_body_infer(c, ARM_SITE_FOLD_POLY2, block, TY_POLY, bb2, bn2);
     int spair = tpair2 && np2 == 1 && nt_str(nt, block, "sym_proc_arg") ? nt_ref(nt, block, "sym_proc_pair") : -1;
     int tpacked2 = 0;
     if (spair >= 0) infer_type(c, spair);

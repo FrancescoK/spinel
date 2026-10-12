@@ -18,6 +18,7 @@ int g_promote_mode = 0;
 /* --exceptions=abort (src/main.c): the constructs that need a frame to catch an exception are refused */
 int g_exc_abort = 0;
 int g_plan_check = 0;
+int g_arm_check = 0;
 
 /* Post-convergence bind pass: lets an empty array-literal argument fill a
    parameter that stayed UNKNOWN through the fixpoint (see bind_call_params);
@@ -45435,5 +45436,7 @@ void analyze_program(Compiler *c) {
   if (c->share_strings) { handle_arg_tab_init(c, &hat); c->share_args = &hat; }
   repr_seal(c);
   if (c->share_strings) { c->share_args = NULL; handle_arg_tab_free(&hat); }
+  /* the block bodies codegen types per arm, typed here once (#7483) */
+  AN_PHASE("arm_facts", an_arm_facts(c));
   sp_timing_end(tm_an, "analysis", "");
 }

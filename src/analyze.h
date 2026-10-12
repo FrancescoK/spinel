@@ -52,6 +52,15 @@ int *an_parent_map(const NodeTable *nt);
    reports on stderr every call it emitted through a row inference did not
    choose. Off in every normal build. */
 extern int g_plan_check;
+/* --arm-check (#7483): each per-arm re-typing codegen runs (arm_body_infer)
+   is held against the fact the analysis recorded for it (an_arm_facts);
+   a missing fact or a type that differs is reported on stderr. Off in
+   every normal build; the C is the same either way. */
+extern int g_arm_check;
+/* the per-arm facts (analyze_arm.c, #7483) */
+typedef struct ArmFact { int block; TyKind kind; int n; int *nodes; TyKind *types; } ArmFact;
+void an_arm_facts(Compiler *c);
+const ArmFact *arm_fact_find(const Compiler *c, int block, TyKind kind);
 
 /* The nil fact (analyze_nil.c, #7444): whether an object-typed value, or a
    builtin one held as a pointer (nil_fact_tracked), may be nil, decided once

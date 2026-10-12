@@ -1618,7 +1618,7 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
         /* Pin block param type early so body_ty is computed with correct cache */
         if (use_shadow_th && tlv0) {
           tlv0->type = rtype;
-          for (int j = 0; j < then_bn; j++) infer_type(c, then_bb[j]);
+          arm_body_infer(c, ARM_SITE_THEN, blk, rtype, then_bb, then_bn);
         }
         TyKind body_ty = infer_type(c, then_bb[then_bn - 1]);
         int tr = ++g_tmp, tres = ++g_tmp;

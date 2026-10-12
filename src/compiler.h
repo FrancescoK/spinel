@@ -1197,6 +1197,9 @@ typedef struct {
      reflective read, list or copy of an Array, a Hash or a Random asks the
      runtime's map (sp_bivar_*), and the boxed set gains its builtin arm */
   int bivar_table;
+  /* per-arm facts (#7483, analyze_arm.c): a block's body typed under one
+     arm's type for its first parameter, recorded once by the analysis */
+  struct ArmFact *arm_facts; int narm_facts, carm_facts;
   /* the ivar names whose writes or removals an assigned flag cannot follow
      (an_presence_observe, read by ivar_set_kind): PRES_UNMARKED, a write no
      emitter marks reaches one (`for @x in`, `rescue => @x`, a writer reached

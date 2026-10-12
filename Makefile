@@ -53,7 +53,7 @@ RBS_SRC      = $(wildcard $(RBS_DIR)/src/*.c) $(wildcard $(RBS_DIR)/src/util/*.c
 RBS_OBJ      = $(patsubst $(RBS_DIR)/src/%.c,build/rbs/%.o,$(RBS_SRC))
 RBS_LIB      = build/librbs.a
 
-.PHONY: int-min-test all hooks share-strings-test gate-tool-test regexp wasm-rt wasm-test rbs_extract rbs-test rbs-seed-test inline-rbs-test rbs-seed-extractor cident plan-check-test timing-test shadow-check signal-default-test source-marker-test repr-check-test traits-check-test poly-cold-test bop-arity-check-test bop-share-check-test share-spec-check arity-spec-check re-lit-test reject-test cli-opts-test link-names-test defer-refusals-test check-stores-test backtrace-test gc-minor-test thread-puts-test ext-test ext-cruby-test alloc-report-test rubyspec rubyspec-gate spin-check \ repr-diff c-costs alloc-diff \
+.PHONY: int-min-test all hooks share-strings-test gate-tool-test regexp wasm-rt wasm-test rbs_extract rbs-test rbs-seed-test inline-rbs-test rbs-seed-extractor cident plan-check-test timing-test shadow-check signal-default-test source-marker-test repr-check-test arm-check-test traits-check-test poly-cold-test bop-arity-check-test bop-share-check-test share-spec-check arity-spec-check re-lit-test reject-test cli-opts-test link-names-test defer-refusals-test check-stores-test backtrace-test gc-minor-test thread-puts-test ext-test ext-cruby-test alloc-report-test rubyspec rubyspec-gate spin-check \ repr-diff c-costs alloc-diff \
         test test-run clean-test-results regen-rbs-expected \
         regen-expected regen-expected-err bench optcarrot gate gate-full check gate-legs gate-test gate-test-shared gate-bench gc-phases-test gc-stress-test gc-str-major-test gc-str-budget-test threaded-render-test gc-locality-test test-corpus test-corpus-summary \
         gate-optcarrot rubyboy gate-rubyboy scale-test clean install uninstall deps tools
@@ -287,7 +287,7 @@ build/csrc/analyze_desugar.o build/csrc-work/analyze_desugar.o build/csrc/codege
 SPINEL_OBJ  = build/csrc/node_table.o build/csrc/types.o build/csrc/compiler.o \
                build/csrc/ffi_spec.o \
                build/csrc/analyze.o build/csrc/analyze_util.o build/csrc/analyze_infer.o build/csrc/analyze_infer_recv.o \
-               build/csrc/analyze_scope.o build/csrc/analyze_pass.o build/csrc/analyze_desugar.o build/csrc/analyze_nil.o build/csrc/analyze_cls.o build/csrc/analyze_const.o build/csrc/analyze_share.o build/csrc/repr.o build/csrc/holder.o build/csrc/codegen.o build/csrc/codegen_util.o build/csrc/ty_traits_check.o \
+               build/csrc/analyze_scope.o build/csrc/analyze_pass.o build/csrc/analyze_desugar.o build/csrc/analyze_nil.o build/csrc/analyze_cls.o build/csrc/analyze_arm.o build/csrc/analyze_const.o build/csrc/analyze_share.o build/csrc/repr.o build/csrc/holder.o build/csrc/codegen.o build/csrc/codegen_util.o build/csrc/ty_traits_check.o \
                build/csrc/codegen_fold.o build/csrc/codegen_call.o build/csrc/codegen_call_poly.o build/csrc/codegen_call_method.o build/csrc/codegen_call_io.o build/csrc/codegen_call_kernel.o build/csrc/codegen_call_exception.o build/csrc/codegen_call_module.o build/csrc/codegen_call_string.o build/csrc/codegen_call_class.o build/csrc/codegen_call_operator.o build/csrc/codegen_call_object.o build/csrc/codegen_ops.o build/csrc/codegen_call_concurrency.o build/csrc/codegen_call_numeric.o build/csrc/codegen_call_hash.o build/csrc/codegen_call_array.o build/csrc/codegen_view.o build/csrc/builtin_ops.o build/csrc/builtin_names.o build/csrc/codegen_call_recv.o build/csrc/codegen_iter.o build/csrc/call_plan.o build/csrc/codegen_poly_plan.o build/csrc/share_check.o \
                build/csrc/codegen_expr.o build/csrc/codegen_stmt.o build/csrc/csplit.o build/csrc/main.o
 # The decision registry (--decisions, --decisions-log; `make decisions-test`).
@@ -4651,6 +4651,11 @@ plan-check-test: $(SPINEL)
 
 repr-check-test: $(SPINEL)
 	@tools/repr_check.sh
+
+# arm-check (#7483): the per-arm facts the analysis records against the
+# typing codegen runs for a block body under one arm's parameter type
+arm-check-test: $(SPINEL)
+	@tools/arm_check.sh
 
 # The sharing verifier has its own focused corpus and conflict ratchet.
 .PHONY: share-verify-test

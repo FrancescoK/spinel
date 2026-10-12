@@ -5608,7 +5608,7 @@ static int iter_tap_slice_string_arms(Compiler *c, int id, Buf *b, int indent, c
     if (use_shadow_t && !tap_escapes) {
       int tbody_bn = 0; const int *tbody_bb = body >= 0 ? nt_arr(nt, body, "body", &tbody_bn) : NULL;
       tlv0->type = et;
-      for (int j = 0; j < tbody_bn; j++) infer_type(c, tbody_bb[j]);
+      arm_body_infer(c, ARM_SITE_TAP, block, et, tbody_bb, tbody_bn);
       emit_indent(b, indent); buf_puts(b, tap_next ? "do {\n" : "{\n");
       emit_indent(b, indent + 1); emit_ctype(c, et, b);
       if (ro) buf_printf(b, " lv_%s = %s(_t%d);\n", p0, oint_arg(et), tr);
@@ -5684,7 +5684,7 @@ static int iter_tap_slice_string_arms(Compiler *c, int id, Buf *b, int indent, c
     else if (use_shadow_es) {
       int esb_bn = 0; const int *esb_bb = body >= 0 ? nt_arr(nt, body, "body", &esb_bn) : NULL;
       clv0->type = rt;
-      for (int j = 0; j < esb_bn; j++) infer_type(c, esb_bb[j]);
+      arm_body_infer(c, ARM_SITE_EACH_SLICE, block, rt, esb_bb, esb_bn);
       emit_indent(b, bodyIndent); buf_puts(b, "{\n"); bodyIndent++;
       emit_indent(b, bodyIndent); emit_ctype(c, rt, b);
       buf_printf(b, " lv_%s = sp_%sArray_slice(_t%d, _t%d, _t%d);\n", p0, k, ta, ti, ts);
@@ -5758,7 +5758,7 @@ static int iter_tap_slice_string_arms(Compiler *c, int id, Buf *b, int indent, c
     if (use_shadow_sp) {
       int sb_bn = 0; const int *sb_bb = body >= 0 ? nt_arr(nt, body, "body", &sb_bn) : NULL;
       clv0->type = et;
-      for (int j = 0; j < sb_bn; j++) infer_type(c, sb_bb[j]);
+      arm_body_infer(c, ARM_SITE_SPLIT, block, et, sb_bb, sb_bn);
       emit_indent(b, spIndent); buf_puts(b, "{\n"); spIndent++;
       emit_indent(b, spIndent); buf_printf(b, "const char *lv_%s = sp_StrArray_get(_t%d, _t%d);\n", p0, tm, ti);
       emit_loop_body(c, body, b, spIndent);
@@ -5817,7 +5817,7 @@ static int iter_tap_slice_string_arms(Compiler *c, int id, Buf *b, int indent, c
     if (use_shadow_sc) {
       int scb_bn = 0; const int *scb_bb = body >= 0 ? nt_arr(nt, body, "body", &scb_bn) : NULL;
       clv0->type = et;
-      for (int j = 0; j < scb_bn; j++) infer_type(c, scb_bb[j]);
+      arm_body_infer(c, ARM_SITE_SCAN, block, et, scb_bb, scb_bn);
       emit_indent(b, bodyIndent); buf_puts(b, "{\n"); bodyIndent++;
       emit_indent(b, bodyIndent); buf_printf(b, "const char *lv_%s = sp_StrArray_get(_t%d, _t%d);\n", p0, tm, ti);
       emit_loop_body(c, body, b, bodyIndent);
@@ -5908,7 +5908,7 @@ static int iter_range_upto_arms(Compiler *c, int id, Buf *b, int indent, const N
         if (use_shadow) {
           int sbn = 0; const int *sbb = body >= 0 ? nt_arr(nt, body, "body", &sbn) : NULL;
           slv->type = TY_STRING;
-          for (int j = 0; j < sbn; j++) infer_type(c, sbb[j]);
+          arm_body_infer(c, ARM_SITE_STR_UPTO, block, TY_STRING, sbb, sbn);
           emit_indent(b, indent + 1);
           buf_printf(b, "const char *lv_%s = sp_StrArray_get(_t%d, _t%d);\n", p0, ta, ti);
           emit_loop_body(c, body, b, indent + 1);
@@ -6213,7 +6213,7 @@ static int iter_combination_cons_arms(Compiler *c, int id, Buf *b, int indent, c
       if (use_shadow_ec) {
         int bodyBn = 0; const int *bodyBb = body >= 0 ? nt_arr(nt, body, "body", &bodyBn) : NULL;
         clv_ec->type = rt;
-        for (int j = 0; j < bodyBn; j++) infer_type(c, bodyBb[j]);
+        arm_body_infer(c, ARM_SITE_COMB_CONS, block, rt, bodyBb, bodyBn);
         emit_indent(b, indent + 1); buf_puts(b, "{\n");
         emit_indent(b, indent + 2); emit_ctype(c, rt, b);
         buf_printf(b, " lv_%s = sp_%sArray_slice(_t%d, _t%d, _t%d);\n", rpn, k, ta, ti, tnn);
