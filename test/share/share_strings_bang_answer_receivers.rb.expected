@@ -1,0 +1,17 @@
+"AAB!"
+nil
+"aab!!"
+nil
+"Qab!!!"
+nil
+nil
+"qAB!!!!"
+"qAB!!!!"
+3
+["ab?", "ab?", true]
+[nil, "ab?", false]
+[nil, "ab?", false]
+[nil, "ab?", false]
+["ab??", "ab??", true]
+["ab???", "ab???", true]
+6

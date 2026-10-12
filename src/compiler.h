@@ -441,6 +441,12 @@ typedef struct {
                                String's handle, which the callee's tail read
                                publishes (_sp_ret_strbuf); set once the
                                analysis settles (an_mark_handle_returns) */
+  unsigned char ret_pub_bang; /* --share-strings: ret_handle, and a tail is a bang
+                                 on a handle (`a.upcase!`), whose value form
+                                 answers its bytes and publishes nothing: each
+                                 tail is emitted by itself (emit_tail_value),
+                                 the bang's as its handle's read, as for
+                                 ret_pub_fresh */
   unsigned char ret_channel_check; /* --repr-check: the earlier pickup proof succeeded */
   unsigned char ret_fresh; /* the same return-tail walk proves a new String
                               (or nil) on every path; no incoming handle */

@@ -1635,46 +1635,56 @@ static int strbuf_freeze_leaf_d(Compiler *c, int v, int depth) {
 }
 int strbuf_freeze_leaf(Compiler *c, int v) { return strbuf_freeze_leaf_d(c, v, 0); }
 int strbuf_assign_route(Compiler *c, int v) { return strbuf_assign_route_d(c, v, 0); }
-/* Is the last statement of statement list st a holder's read, nil, a
-   conditional with a handle arm, or a `raise` (which leaves no value)? */
-static int strbuf_stmts_tail_plain(Compiler *c, int st) {
-  int n = 0;
-  const int *b = st >= 0 && nt_kind(c->nt, st) == NK_StatementsNode ? nt_arr(c->nt, st, "body", &n) : NULL;
-  if (n == 0) return 0;
+/* Is value v a holder's read, nil, a conditional with a handle arm, or a
+   `raise` (which leaves no value)? */
+static int strbuf_tail_plain(Compiler *c, int v) {
+  if (v < 0) return 0;
   /* A fresh arm needs no incoming handle; the demanded tail wraps its
      own String, beside borrowed arms that keep their existing handle. */
-  TyKind t = comp_ntype(c, b[n - 1]);
-  if ((t == TY_STRING || t == TY_STRBUF) && share_value_fresh(c, b[n - 1], 0)) return 1;
-  if (strbuf_native_answer(c, b[n - 1])) return 1;
+  TyKind t = comp_ntype(c, v);
+  if ((t == TY_STRING || t == TY_STRBUF) && share_value_fresh(c, v, 0)) return 1;
+  if (strbuf_native_answer(c, v)) return 1;
   /* A shared reader's demanded value is its slot's handle too. */
-  if (strbuf_route_reader(c, b[n - 1])) return 1;
-  if (strbuf_hash_default_arg(c, b[n - 1]) >= 0) return 1;
+  if (strbuf_route_reader(c, v)) return 1;
+  if (strbuf_hash_default_arg(c, v) >= 0) return 1;
   /* So is a call answering its receiver over a handle (`s.freeze`). */
-  if (strbuf_bang_self_local(c, b[n - 1])) return 1;
+  if (strbuf_bang_self_local(c, v)) return 1;
   /* A receiver conversion's demanded value keeps its operand's handle. */
-  if (repr_string_conversion_operand(c, b[n - 1]) >= 0 || repr_boxed_to_s_operand(c, b[n - 1]) >= 0) return 1;
-  NodeKind k = nt_kind(c->nt, b[n - 1]);
-  const char *nm = k == NK_CallNode ? nt_str(c->nt, b[n - 1], "name") : NULL;
-  if (nm && is_raise_alias(nm) && nt_ref(c->nt, b[n - 1], "receiver") < 0 &&
-      !bare_call_class_owned(c, b[n - 1]) && comp_method_index(c, nm) < 0)
+  if (repr_string_conversion_operand(c, v) >= 0 || repr_boxed_to_s_operand(c, v) >= 0) return 1;
+  NodeKind k = nt_kind(c->nt, v);
+  const char *nm = k == NK_CallNode ? nt_str(c->nt, v, "name") : NULL;
+  if (nm && is_raise_alias(nm) && nt_ref(c->nt, v, "receiver") < 0 &&
+      !bare_call_class_owned(c, v) && comp_method_index(c, nm) < 0)
     return 1;
   /* a String mutator that answers its receiver hands on that receiver's
      handle (strbuf_tail_self_mutator) */
-  if (strbuf_tail_self_mutator(c, b[n - 1])) return 1;
+  if (strbuf_tail_self_mutator(c, v)) return 1;
   /* an exception's #message hands on the handle it holds too
      (strbuf_route_exc_message): `begin; raise s; rescue => e; e.message; end` */
   return k == NK_NilNode || k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode ||
-         repr_static_read_kind(k) || strbuf_cond_has_handle_leaf(c, b[n - 1], 0) ||
-         repr_call_returns_handle(c, b[n - 1]) || strbuf_route_exc_message(c, b[n - 1]) ||
-         strbuf_assign_leaf(c, b[n - 1]);
+         repr_static_read_kind(k) || strbuf_cond_has_handle_leaf(c, v, 0) ||
+         repr_call_returns_handle(c, v) || strbuf_route_exc_message(c, v) ||
+         strbuf_assign_leaf(c, v);
+}
+/* ...and is the last statement of statement list st? */
+static int strbuf_stmts_tail_plain(Compiler *c, int st) {
+  int n = 0;
+  const int *b = st >= 0 && nt_kind(c->nt, st) == NK_StatementsNode ? nt_arr(c->nt, st, "body", &n) : NULL;
+  return n > 0 && strbuf_tail_plain(c, b[n - 1]);
 }
 /* --share-strings: a begin whose value is a variable's String or nil in
    each of its arms (its body's, each rescue's, its else's; an ensure's is
    dropped): the arms keep the handle in its result slot
-   (emit_stmt_tail_inner). */
+   (emit_stmt_tail_inner). So does a rescue modifier (`s.upcase! rescue
+   nil`) whose expression and fallback are such values, not both new
+   Strings (a new String's copy is unseen): the rvalue form takes each as
+   the handle into its result slot. */
 static int strbuf_route_begin(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
   v = unwrap_parens(c, v);
+  if (repr_share_rule(c) && v >= 0 && nt_kind(nt, v) == NK_RescueModifierNode)
+    return !share_value_fresh(c, v, 0) && strbuf_tail_plain(c, nt_ref(nt, v, "expression")) &&
+           strbuf_tail_plain(c, nt_ref(nt, v, "rescue_expression"));
   if (!repr_share_rule(c) || v < 0 || nt_kind(nt, v) != NK_BeginNode) return 0;
   /* the body's value is the begin's only when no else follows it */
   int el = nt_ref(nt, v, "else_clause");
@@ -2702,6 +2712,18 @@ int strbuf_value_carries(Compiler *c, int v) {
   return strbuf_route_carries(c, v, 0) || strbuf_cond_has_handle_leaf(c, v, 0) || strbuf_opwrite_handle(c, v, ref, sizeof ref) ||
          (k != NK_CallNode && repr_write_share(c, v));
 }
+/* --share-strings: does argument v hand a parameter that is the handle its
+   String as that handle (emit_strbuf_handle_of answers it): a value route
+   (strbuf_value_carries), or a bang method or an iterator given a block on
+   a handle, which answers that handle or nil (strbuf_bang_self_local), or a
+   String bang on a boxed receiver (`arr[0].upcase!`), which answers the
+   box's handle or nil (face_str_bang_call)? */
+int strbuf_arg_bang(Compiler *c, int v) {
+  return repr_share_rule(c) && (strbuf_bang_self_local(c, v) || face_str_bang_call(c, v));
+}
+int strbuf_arg_carries(Compiler *c, int v) {
+  return strbuf_value_carries(c, v) || strbuf_arg_bang(c, v);
+}
 /* A builtin value route can publish its handle as a method's return too.
    The return analysis and tail emitter ask the same route predicate.
    A fresh result has no existing identity for the tail to publish. */
@@ -2740,6 +2762,17 @@ static int strbuf_tail_answer_kept(Compiler *c, int v) {
          bsearch(&key, c->kept_call_names, (size_t)c->nkept_call_names, sizeof *c->kept_call_names,
                  strbuf_kept_name_cmp) != NULL;
 }
+/* --share-strings: is tail v a bang method on a handle (strbuf_bang_self_local,
+   or on a boxed receiver that can hold a String the rule shares:
+   face_str_bang_call), which answers that handle or nil, and whose value
+   form answers its bytes, publishing nothing? A method with such a tail
+   publishes it by itself (Scope.ret_pub_bang). */
+int strbuf_bang_tail(Compiler *c, int v) {
+  const char *nm = v >= 0 && nt_kind(c->nt, v) == NK_CallNode ? nt_str(c->nt, v, "name") : NULL;
+  return repr_share_rule(c) && nm &&
+         (bop_answers_self(TY_STRING, nm, call_plain_argc(c, v), nt_ref(c->nt, v, "block") >= 0) & BOPF_SELF_OR_NIL) &&
+         (strbuf_bang_self_local(c, v) || (face_str_bang_call(c, v) && share_node_shares(c, v)));
+}
 int strbuf_builtin_tail(Compiler *c, int v) {
   if (!repr_share_rule(c) || !c->share || v < 0 || nt_kind(c->nt, v) != NK_CallNode ||
       an_arg_is_shared_handle(c, v)) return 0;
@@ -2760,7 +2793,8 @@ int strbuf_builtin_tail(Compiler *c, int v) {
               (x >= 0 && x != unwrap_parens(c, v) && nt_kind(c->nt, unwrap_parens(c, x)) == NK_ParenthesesNode);
   return (t == TY_STRING || t == TY_STRBUF) &&
          (cplan_user_fresh(c, v)->dispatch == CP_NONE || strbuf_route_reopen_pf(c, v)) &&
-         !share_node_fresh(c, v) && strbuf_value_carries(c, v) && (!built || strbuf_tail_answer_kept(c, v));
+         !share_node_fresh(c, v) && (strbuf_value_carries(c, v) || strbuf_bang_tail(c, v)) &&
+         (!built || strbuf_tail_answer_kept(c, v));
 }
 /* --share-strings: an operator write (`$g += x`) whose slot holds the
    rule's handle: that slot's text to out. The write stores a new handle
@@ -3624,12 +3658,25 @@ static int self_answer_cond_arm(Compiler *c, int n) {
   TyKind t = comp_ntype(c, n);
   return (t == TY_STRING || t == TY_STRBUF) && strbuf_held_chain(c, unwrap_parens(c, n));
 }
+/* --share-strings: is v a `||` or `&&` typed String with an arm that is a
+   String bang on a boxed receiver (face_str_bang_call), which emit_boxed
+   boxes as that receiver's own box (emit_boxed_bang_self), where boxing the
+   conditional whole would box a new String over the bang's answer? */
+int strbuf_face_bang_cond(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  NodeKind k = v >= 0 ? nt_kind(nt, v) : NK_NONE;
+  TyKind t = k == NK_OrNode || k == NK_AndNode ? comp_ntype(c, v) : TY_UNKNOWN;
+  return repr_share_rule(c) && (t == TY_STRING || t == TY_STRBUF) &&
+         (face_str_bang_call(c, unwrap_parens(c, nt_ref(nt, v, "left"))) ||
+          face_str_bang_call(c, unwrap_parens(c, nt_ref(nt, v, "right"))));
+}
 /* --share-strings: a `||` or `&&` of another type than String with such a
-   value (equal_self_answer_side) on an arm typed String, boxed arm by arm, each as
-   emit_equal_side boxes it, so a String arm is its handle's box rather than
-   a new String over its bytes. The right arm and what it puts ahead of its
-   statement run only when the left does not decide. 0 with nothing emitted
-   for any other node. */
+   value (equal_self_answer_side) on an arm typed String, or a String one
+   with a bang on a boxed receiver on an arm (strbuf_face_bang_cond), boxed
+   arm by arm, each as emit_equal_side boxes it, so a String arm is its
+   handle's box rather than a new String over its bytes. The right arm and
+   what it puts ahead of its statement run only when the left does not
+   decide. 0 with nothing emitted for any other node. */
 int emit_boxed_self_answer_cond(Compiler *c, int node, Buf *b) {
   const NodeTable *nt = c->nt;
   NodeKind k = node >= 0 ? nt_kind(nt, node) : NK_NONE;
@@ -3637,7 +3684,7 @@ int emit_boxed_self_answer_cond(Compiler *c, int node, Buf *b) {
      run again) */
   if (!repr_share_rule(c) || (k != NK_OrNode && k != NK_AndNode) || arg_ran_first(node, 0)) return 0;
   int l = nt_ref(nt, node, "left"), r = nt_ref(nt, node, "right");
-  if (!self_answer_cond_arm(c, l) && !self_answer_cond_arm(c, r)) return 0;
+  if (!self_answer_cond_arm(c, l) && !self_answer_cond_arm(c, r) && !strbuf_face_bang_cond(c, node)) return 0;
   int t = ++g_tmp;
   Buf rb, rpre;
   memset(&rb, 0, sizeof rb); memset(&rpre, 0, sizeof rpre);
@@ -9571,7 +9618,7 @@ void emit_case_branch_value(Compiler *c, int stmts, TyKind rt, int cr, Buf *b) {
   /* A String return channel follows each arm's tail, including nested
      conditionals: use the same tail emission as begin/rescue arms. */
   Scope *sc = stmts >= 0 ? comp_scope_of(c, stmts) : NULL;
-  if (rt == TY_STRING && sc && sc->ret_pub_fresh) {
+  if (rt == TY_STRING && sc && (sc->ret_pub_fresh || sc->ret_pub_bang)) {
     char dst[32]; snprintf(dst, sizeof dst, "_cr%d", cr);
     emit_string_tail_into(c, stmts, dst, b);
     return;
@@ -11297,6 +11344,7 @@ void emit_tail_value(Compiler *c, int node, Buf *b) {
     buf_puts(b, "sp_strbuf_read_pub(");
     emit_strbuf_handle_of(c, node, b);
     buf_puts(b, ")");
+    if (g_repr_check) { repr_channel_note(c, node, RCH_PUBLISH); repr_channel_end(c, frame); }
     return;
   }
   /* ...and so does an attribute assignment on a boxed receiver, whose
@@ -11321,8 +11369,8 @@ void emit_tail_value(Compiler *c, int node, Buf *b) {
     if (g_repr_check) repr_channel_end(c, frame);
     return;
   }
-  if (ts && ts->ret_pub_fresh && (k == NK_ParenthesesNode || k == NK_IfNode ||
-                                 k == NK_UnlessNode || k == NK_CaseMatchNode)) {
+  if (ts && (ts->ret_pub_fresh || ts->ret_pub_bang) && (k == NK_ParenthesesNode || k == NK_IfNode ||
+                                                        k == NK_UnlessNode || k == NK_CaseMatchNode)) {
     int t = ++g_tmp;
     char dst[32]; snprintf(dst, sizeof dst, "_t%d", t);
     buf_printf(b, "({ const char *%s = NULL;\n", dst);
@@ -11641,7 +11689,7 @@ static void emit_return_deferred(Compiler *c, const int *a, int n, Buf *b, int i
       else if (oint_kind(ctx->retv_ty) && ctx->retv_o) emit_oint_expr(c, a[0], ctx->retv_ty, b);
       /* A deferred String return has the same publication rule as a
          direct tail, before ensure saves its selected handle. */
-      else if (ctx->retv_ty == TY_STRING && comp_scope_of(c, a[0])->ret_pub_fresh) {
+      else if (ctx->retv_ty == TY_STRING && (comp_scope_of(c, a[0])->ret_pub_fresh || comp_scope_of(c, a[0])->ret_pub_bang)) {
         const char *sv = g_result_var; g_result_var = NULL;
         TyKind st = g_ret_type; g_ret_type = ctx->retv_ty;
         emit_tail_value(c, a[0], b);
@@ -18320,7 +18368,7 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
 
   /* Parentheses keep their last statement in tail position. In a mixed
      String return its conditional leaves must publish or clear too. */
-  if (nt_kind(nt, id) == NK_ParenthesesNode && comp_scope_of(c, id)->ret_pub_fresh) {
+  if (nt_kind(nt, id) == NK_ParenthesesNode && (comp_scope_of(c, id)->ret_pub_fresh || comp_scope_of(c, id)->ret_pub_bang)) {
     emit_stmts_tail(c, nt_ref(nt, id, "body"), b, indent);
     return;
   }
@@ -21528,7 +21576,8 @@ void emit_index_and_or_write(Compiler *c, int id, Buf *b, int indent, int is_or)
               conditional;
    SFC_ARG    an argument the binder takes as the handle when the value
               hands one on (strbuf_value_carries, emit_strbuf_handle_of):
-              as SFC_ALIAS, but no bang method's answer;
+              as SFC_ALIAS, but a bang method's answer only as the argument
+              itself or a conditional's arm (strbuf_arg_carries);
    SFC_BOX    a yield's value: a box or the handle itself only;
    SFC_SPLICE an Enumerator's map's block value, which the library's loop
               takes as a write takes its value (as SFC_ALIAS, and its `l ||
@@ -21662,6 +21711,11 @@ static int strbuf_flow_route(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, in
       strbuf_route_srange_kept(c, v))
     return 1;
   if (nt_kind(nt, v) == NK_BeginNode) return strbuf_flow_begin(c, fm, v, depth);
+  /* a rescue modifier the route takes (emit_strbuf_route, not a box):
+     its expression's and its fallback's values */
+  if (nt_kind(nt, v) == NK_RescueModifierNode)
+    return ctx != SFC_ELEM && strbuf_route_begin(c, v) && strbuf_flow_value(c, fm, SFC_TAIL, nt_ref(nt, v, "expression"), depth + 1) &&
+           strbuf_flow_value(c, fm, SFC_TAIL, nt_ref(nt, v, "rescue_expression"), depth + 1);
   if (strbuf_route_inline_call(c, v)) {
     int mi = strbuf_inline_mi(c, v);
     int last = mi > 0 ? scope_body_last(c, mi) : -1;
@@ -21733,6 +21787,9 @@ static int strbuf_flow_cond(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, int
   default:
     if (ctx == SFC_ELEM_ARMS)
       return strbuf_flow_value(c, fm, strbuf_value_carries(c, v) ? SFC_ALIAS : SFC_ELEM, v, depth + 1);
+    /* an argument's conditional is taken arm by arm (emit_strbuf_cond_value),
+       a bang on a handle or a box as that handle or nil */
+    if (ctx == SFC_ARG && strbuf_arg_bang(c, v)) return 1;
     return ctx == SFC_ALIAS || ctx == SFC_SPLICE || ctx == SFC_TAIL || ctx == SFC_ARG
            ? strbuf_flow_value(c, fm, ctx, v, depth + 1) : nt_kind(nt, v) == NK_NilNode || strbuf_flow_unseen(c, v);
   }
@@ -21867,6 +21924,9 @@ static int strbuf_flow_value(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, in
     if (ctx == SFC_ELEM && (k == NK_OrNode || k == NK_AndNode || k == NK_CaseNode) &&
         (r.ty == TY_STRING || r.ty == TY_STRBUF) && strbuf_value_carries(c, v))
       ctx = SFC_ALIAS;
+    /* A String `||` or `&&` with a bang on a boxed receiver on an arm is
+       boxed arm by arm (emit_boxed_self_answer_cond). */
+    else if (ctx == SFC_ELEM && strbuf_face_bang_cond(c, v)) ctx = SFC_ELEM_ARMS;
     return strbuf_flow_cond(c, fm, ctx, v, depth);
   }
   if (ctx == SFC_BOX) return 0;
@@ -22020,7 +22080,12 @@ int strbuf_flow_carries(Compiler *c, StrbufFlowMemo *fm, int kind, int site, int
         ctx = SFC_BOX;
     }
     break;
-  case SHFL_ARG: ctx = SFC_ARG; break;
+  case SHFL_ARG:
+    /* a bang on a handle or a box is that handle or nil, which the binder
+       takes (strbuf_arg_carries) */
+    if (strbuf_arg_bang(c, unwrap_parens(c, v))) return 1;
+    ctx = SFC_ARG;
+    break;
   case SHFL_YIELD: {
     /* A receiver conversion keeps its handle in both the boxed yield
        and the typed block-parameter binder, and so does a String Range's

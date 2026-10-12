@@ -7119,7 +7119,7 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
       }
       if (!late && !arg_ran_first(provided, 0) && pk != NK_LocalVariableReadNode &&
           pk != NK_InstanceVariableReadNode && !repr_static_read_kind(pk) &&
-          repr_of(c, provided).as_ty == TY_STRING && strbuf_value_carries(c, provided)) {
+          repr_of(c, provided).as_ty == TY_STRING && strbuf_arg_carries(c, provided)) {
         emit_strbuf_handle_of(c, provided, out);
         return;
       }
@@ -11574,7 +11574,7 @@ void emit_args_filled_argv(Compiler *c, int callee_idx, const int *argv, int arg
          route, `s << x`) into a parameter that is the handle runs as that
          handle, which the binding takes (ran_first_handle) */
       if ((repr_of_slot(c, hp).kind == RK_STRBUF || (repr_of_slot(c, hp).kind == RK_BOXED && c->poly_strbuf_lift[argv[k]])) &&
-          at == TY_STRING && strbuf_value_carries(c, argv[k])) {
+          at == TY_STRING && strbuf_arg_carries(c, argv[k])) {
         emit_strbuf_handle_of(c, argv[k], &hb);
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n", ht, hb.p, ht);

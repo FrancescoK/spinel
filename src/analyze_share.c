@@ -4726,7 +4726,8 @@ int share_value_fresh(Compiler *c, int n, int depth) {
   if (k != NK_CallNode) return 0;
   if (sh_user_call_fresh(c, n, depth)) return 1;
   /* ENV's [] answers a new String each read; to_s, to_str, itself and
-     freeze answer a new String receiver itself */
+     freeze answer a new String receiver itself, and a bang answers it or
+     nil (`pick(s).upcase!`, pick answering `value + ""`) */
   int rcv = nt_ref(nt, n, "receiver");
   const char *cn = nt_str(nt, n, "name");
   if (cn && rcv >= 0 && nt_ref(nt, n, "block") < 0 && !sh_has_targets(c, n)) {
@@ -4734,6 +4735,7 @@ int share_value_fresh(Compiler *c, int n, int depth) {
       return 1;
     if ((is_receiver_conversion(cn) || is_freeze_name(cn)) && call_plain_argc(c, n) == 0)
       return share_value_fresh(c, rcv, depth + 1);
+    if (bop_share_self_answer(cn, 0)) return share_value_fresh(c, rcv, depth + 1);
     /* a proc, a lambda or a Method the walk bounds to literals */
     if (is_call_alias(cn) && sh_call_fresh(c, n, depth)) return 1;
   }

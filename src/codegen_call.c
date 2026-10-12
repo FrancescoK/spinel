@@ -8862,7 +8862,7 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
              (a route, `s << x`) runs as that handle, which a handle arm
              takes; the temp is its read, for an arm that takes the value */
           else if (at == TY_STRING && (setter_late || (ak != NK_LocalVariableReadNode &&
-                   ak != NK_InstanceVariableReadNode && strbuf_value_carries(c, argv[a]) &&
+                   ak != NK_InstanceVariableReadNode && strbuf_arg_carries(c, argv[a]) &&
                    (takes_handle >= 0 ? takes_handle : (takes_handle = poly_name_takes_handle(c, name)))))) {
             htmp[a] = ++g_tmp;
             emit_poly_route_arg(c, argv[a], at, htmp[a], atmp[a], ran, b);

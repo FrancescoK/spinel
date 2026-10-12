@@ -1,0 +1,8 @@
+[" ab", "cd", "www"]
+true
+false
+[" ab", 1, "cd+", "EF"]
+[nil, nil, "d"]
+[" ab", 1, "cd+", "ef"]
+[" AB%", "CD+", "EF"]
+[" AB%", 1, "CD+", "EF"]
