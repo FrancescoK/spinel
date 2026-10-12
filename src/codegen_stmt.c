@@ -17014,6 +17014,18 @@ static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int in
     }
     unsupported(c, id, "call operator write (unsupported receiver/attr)");
   }
+  /* `$0 = name` / `$PROGRAM_NAME = name`: the slot the reads of both return
+     (sp_program_name, marked by the collector), as CRuby has them one value */
+  if (sp_streq(ty, "GlobalVariableWriteNode") && nt_str(nt, id, "name") &&
+      is_program_name_global(nt_str(nt, id, "name"))) {
+    int v = nt_ref(nt, id, "value");
+    emit_indent(b, indent);
+    buf_puts(b, "sp_program_name = ");
+    if (v >= 0 && comp_ntype(c, v) == TY_STRING) emit_expr(c, v, b);
+    else { buf_puts(b, "sp_poly_to_s("); if (v >= 0) emit_boxed(c, v, b); else buf_puts(b, "sp_box_nil()"); buf_puts(b, ")"); }
+    buf_puts(b, ";\n");
+    return 1;
+  }
   if (sp_streq(ty, "GlobalVariableWriteNode") || sp_streq(ty, "ConstantWriteNode")) {
     const char *nm = nt_str(nt, id, "name");
     int isg = ty[0] == 'G';
