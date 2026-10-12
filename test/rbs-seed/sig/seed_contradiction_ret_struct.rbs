@@ -1,0 +1,3 @@
+class SeedRetStruct
+  def now: () -> SeedRetStruct
+end

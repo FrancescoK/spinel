@@ -29892,7 +29892,20 @@ static int seed_contradicts(Compiler *c, TyKind slot, TyKind val, int ret) {
 static int seed_ret_family(Compiler *c, TyKind t) {
   int f = seed_repr_family(c, t);
   if (f) return f;
-  return ty_is_object(t) ? 3 : 0;
+  if (ty_is_object(t)) return 3;
+  /* A Time or a Range is a struct the function returns by value, and no
+     conversion makes it a pointer, a number or another of these: each is a
+     family of its own. activesupport's Time.current, declared
+     `-> TimeWithZone`, answers Time.now when no zone is set, and the sp_Time
+     reached the C compiler in an sp_TimeWithZone * function. (A Rational or
+     a Complex is left out: a number converts into them.) */
+  switch (t) {
+    case TY_TIME: return 4;
+    case TY_RANGE: return 5;
+    case TY_FLOAT_RANGE: return 6;
+    case TY_STR_RANGE: return 7;
+    default: return 0;
+  }
 }
 /* ty_name has no spelling for a user class (it answers "?"), which is exactly
    the half of the message that has to be readable here. */
@@ -29927,7 +29940,8 @@ static const char *seed_ty_name_into(Compiler *c, TyKind t, char *buf, size_t n)
     case TY_BOOL:   return "bool";
     case TY_NIL:    return "nil";
     case TY_PROC:   return "Proc";
-    case TY_RANGE:  return "Range";
+    case TY_RANGE: case TY_FLOAT_RANGE: case TY_STR_RANGE: return "Range";
+    case TY_TIME:   return "Time";
     case TY_POLY: case TY_UNKNOWN: return "untyped";
     default: break;
   }
