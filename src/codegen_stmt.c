@@ -1929,7 +1929,7 @@ int strbuf_route_srange_end(Compiler *c, int v) {
   return 0;
 }
 /* ...and its #min (1) or #max (2), likewise: the begin String, or an
-   inclusive Range's end String, the handle it keeps included
+   inclusive Range's end String, the handle it keeps included, or nil
    (sp_srange_extreme_h) */
 int strbuf_route_srange_extreme(Compiler *c, int v) {
   const NodeTable *nt = c->nt;
@@ -1940,7 +1940,7 @@ int strbuf_route_srange_extreme(Compiler *c, int v) {
   if (!nm || recv < 0 || nt_ref(nt, v, "arguments") >= 0 || nt_ref(nt, v, "block") >= 0 ||
       comp_ntype(c, recv) != TY_STR_RANGE || cplan_user(c, v)->dispatch != CP_NONE) return 0;
   if (!is_minmax_query(nm)) return 0;
-  return nm[1] == 'a' ? 2 : 1;   /* max, min */
+  return sp_streq(nm, "max") ? 2 : 1;
 }
 /* Does v answer one of a String Range's endpoint Strings, as a route that
    hands on the handle the Range keeps (either of the above)? */
@@ -2380,7 +2380,7 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
   int sx = strbuf_route_srange_extreme(c, v);
   if (sx) {
     /* min / max: the endpoint as above (an excluded end's max a new
-       String), or nil (sp_srange_extreme_h) */
+       String), or nil for an empty Range (sp_srange_extreme_h) */
     v = unwrap_parens(c, v);
     buf_puts(b, "sp_srange_extreme_h(");
     emit_expr(c, nt_ref(nt, v, "receiver"), b);
