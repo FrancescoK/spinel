@@ -21000,11 +21000,13 @@ static int an_stmts_tail_shared(Compiler *c, int st, int nil_ok, TailCount *tc, 
    analysis, each arm asks an_tail_handle too: a call can publish the handle,
    and its method's active-visit guard bounds recursive arms. Case/when and
    case/in share the same arm list for the pickup and settled return walk.
-   A builtin raise leaves no value, so contributes neither a read nor nil. */
+   A builtin raise leaves no value, so contributes neither a read nor nil;
+   nor does a loop that never completes (`while true` with no break of its
+   own, loop_never_completes), whose `return`s the walk takes apart. */
 static int an_tail_is_shared_handle(Compiler *c, int node, int nil_ok, TailCount *tc, RetHandles *R) {
   const NodeTable *nt = c->nt;
   NodeKind k = node >= 0 ? nt_kind(nt, node) : NK_NONE;
-  if (c->share_strings && an_call_raises(c, node)) return 1;
+  if (c->share_strings && (an_call_raises(c, node) || loop_never_completes(c, node))) return 1;
   if (c->share_strings && k == NK_NilNode) {
     if (g_repr_check && tc->mi > 0 && (!R || !R->fresh)) repr_channel_predict(c, node, tc->mi, RCH_NIL);
     tc->nils += nil_ok; return nil_ok;
