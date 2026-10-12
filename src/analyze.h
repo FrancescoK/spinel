@@ -538,6 +538,7 @@ int zsuper_kw_positional(Compiler *c, Scope *s, Scope *pm);
 int an_thread_arg_block(Compiler *c, int n);
 int cap_wrap_mutates_param(Compiler *c, int blk, const char *bp);
 int std_stream_boxed(Compiler *c, const char *nm);   /* $stdout/$stderr may hold a non-IO */
+int gvar_has_write(Compiler *c, const char *name);   /* is global name (no `$`) assigned anywhere */
 int std_stream_assigned(Compiler *c, const char *nm);   /* ... or is assigned at all */
 int std_stream_value_classes(Compiler *c, char *set);   /* classes the streams' stores hold; 0: unbounded */
 int std_stream_foreign_writer(Compiler *c, const char *nm);   /* an object output cannot write to */

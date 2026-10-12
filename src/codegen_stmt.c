@@ -1109,13 +1109,16 @@ else {
        boxed and holds the standard stream until then: the message goes to
        whichever it holds at the call (nil: never assigned). The only non-IO
        it can hold is a StringIO unless the program has another class with a
-       write, whose own write warn would have to call. */
+       write, whose own write warn would have to call: the plain calls reach
+       it through desugar_std_stream_bare_warn, and what reaches here with a
+       message (keywords, a splat) is refused. No message writes nothing. */
     LocalVar *serr = comp_gvar(c, "stderr");
     int redirect_boxed = -1;
     if (std_stream_boxed(c, "$stderr")) {
       int sio = comp_class_index(c, "StringIO");
-      if (std_stream_foreign_writer(c, NULL))
-        unsupported(c, id, "warn while $stderr can hold an object whose class has its own write");
+      if (std_stream_foreign_writer(c, NULL)) {
+        if (argc > 0) unsupported(c, id, "warn while $stderr can hold an object whose class has its own write");
+      }
       else if (sio >= 0) redirect_boxed = sio;
     }
     /* ...and to the handle it holds when that is an IO (`$stderr = $stdout`,
