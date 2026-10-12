@@ -4555,6 +4555,14 @@ static int sh_has_jump_k(const NodeTable *nt, int n, int any) {
 static int sh_has_next(const NodeTable *nt, int n) { return sh_has_jump_k(nt, n, 0); }
 static int sh_has_jump(const NodeTable *nt, int n) { return sh_has_jump_k(nt, n, 1); }
 
+/* Does share row `share`, with argc arguments, answer a container of some
+   of the receiver's own elements and of nothing else: a run of them
+   (BSH_SUB, a selection BSH_ITER_SEL, BSH_FLATTEN), or a counted element
+   answer (`first(2)`, `min(2)`)? */
+static int sh_answers_elems_run(int share, int argc) {
+  return share == BSH_SUB || share == BSH_ITER_SEL || share == BSH_FLATTEN ||
+         ((share == BSH_ELEM_N || share == BSH_ITER_FIND) && argc >= 1);
+}
 /* Is node r a temporary container (its own expression, held by no name)
    whose elements are new Strings: an Array literal of them, or `map(&:sym)`
    over elements that hold no String (Symbols, numbers), whose answers are
@@ -4574,6 +4582,14 @@ static int sh_fresh_elems(Compiler *c, int r, int depth) {
   if (nt_kind(nt, r) != NK_CallNode || sh_has_targets(c, r)) return 0;
   int blk = nt_ref(nt, r, "block"), recv = nt_ref(nt, r, "receiver");
   const char *nm = nt_str(nt, r, "name");
+  /* a builtin answering a container of its receiver's own elements (the
+     share rows' run of them: sort, uniq, drop, reverse, compact, flatten,
+     take, a counted first or min) over such a temporary container holds the
+     same new Strings, which no name holds either. (A block's parameter
+     names them: `sort_by { |x| ... }` is left to the block's own facts.) */
+  if (nm && recv >= 0 && blk < 0 && ty_is_array(c->ntype[recv]) &&
+      sh_answers_elems_run(bop_share_named(BOP_ANY_ARRAY, nm), call_plain_argc(c, r)))
+    return sh_fresh_elems(c, recv, depth + 1);
   if (!nm || recv < 0 || blk < 0 || bop_share_named(BOP_ANY_ARRAY, nm) != BSH_ITER_MAP) return 0;
   /* map with a literal block whose value is a new String, and no next */
   if (nt_kind(nt, blk) == NK_BlockNode) {
@@ -4734,6 +4750,8 @@ int share_value_fresh(Compiler *c, int n, int depth) {
   int recv = nt_ref(nt, n, "receiver");
   const char *nm = nt_str(nt, n, "name");
   int sh = nm && recv >= 0 && !sh_has_targets(c, n) ? bop_share_named(BOP_ANY_ARRAY, nm) : 0;
+  /* (max and min with no block or count answer one of them too) */
+  if (sh == BSH_ITER_FIND && is_minmax_query(nm) && call_plain_argc(c, n) == 0) sh = BSH_ELEM;
   return (sh == BSH_ELEM || sh == BSH_ELEM_N) && nt_ref(nt, n, "block") < 0 && sh_fresh_elems(c, recv, depth + 1);
 }
 
