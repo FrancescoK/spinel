@@ -2680,12 +2680,37 @@ int ie_block_body(Compiler *c, int blk) {
   return body;
 }
 
+/* The names a method that takes a block can be reached by: its own, and
+   any alias (method lookup resolves one to another name). Listed once per
+   build_ie_map, whose walk alone asks; a name in neither forwards nothing
+   on any class, so a boxed receiver's call need not ask each class. `new`
+   reaches an initialize and is always asked. */
+static ANameHash g_ief_names;
+static int g_ief_ready;
+static int ie_name_may_forward(Compiler *c, const char *nm) {
+  if (!nm) return 0;
+  if (sp_streq(nm, "new")) return 1;
+  if (!g_ief_ready) {
+    anh_free(&g_ief_names); memset(&g_ief_names, 0, sizeof g_ief_names);
+    for (int s = 0; s < c->nscopes; s++)
+      if (c->scopes[s].name && c->scopes[s].blk_param && c->scopes[s].body >= 0 &&
+          !anh_has(&g_ief_names, c->scopes[s].name))
+        anh_add(&g_ief_names, c->scopes[s].name);
+    for (int k = 0; k < c->nclasses; k++)
+      for (int a = 0; a < c->classes[k].naliases; a++)
+        if (!anh_has(&g_ief_names, c->classes[k].alias_new[a]))
+          anh_add(&g_ief_names, c->classes[k].alias_new[a]);
+    g_ief_ready = 1;
+  }
+  return anh_has(&g_ief_names, nm);
+}
 static int ie_class_value_target(Compiler *c, int id, int recv, TyKind rt, int blk) {
   const char *nm = nt_str(c->nt, id, "name");
   int arg = nt_kind(c->nt, blk) == NK_BlockArgumentNode, cls = -1;
   if (rt == TY_CLASS && is_instance_eval_family(nm)) return -2 - id;
   if (rt == TY_CLASS) return ie_forward_target(c, class_recv_static_ci(c, recv), 1, nm, 0);
-  for (int k = 0; rt == TY_POLY && cls >= -1 && k < 2 * c->nclasses; k++) {
+  int may = rt == TY_POLY && ie_name_may_forward(c, nm);
+  for (int k = 0; may && cls >= -1 && k < 2 * c->nclasses; k++) {
     int t = ie_forward_target(c, k / 2, k % 2, nm, 0);
     if (t >= 0) cls = cls == -1 || cls == t ? t : -2 - id;
   }
@@ -2778,6 +2803,7 @@ void build_ie_map(Compiler *c) {
   int *pend = malloc(sizeof(int) * (size_t)nt->count);
   if (!pend) return;
   ie_forward_memo_reset();
+  g_ief_ready = 0;
   for (int i = 0; i < nt->count; i++) g_ie_node_class[i] = pend[i] = -1;
   ie_param_n = 0;
   for (int pass = 0; pass < 2; pass++)
