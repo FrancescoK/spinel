@@ -400,6 +400,14 @@ void comp_add_gvar_alias(Compiler *c, const char *from, const char *to) {
   c->gvar_alias_to[c->ngvar_aliases]   = strdup(to);
   c->ngvar_aliases++;
 }
+/* Can `A = v` stand as a value (`m(A = v)`): a typed constant whose slot
+   the write leaves holding the value. Not a String constant, whose read
+   would hand back a copy instead of the String the constant holds, nor
+   one set by a guarded Class.new. */
+int comp_const_write_valued(const Compiler *c, const LocalVar *cv) {
+  return cv && cv->type != TY_UNKNOWN && cv->type != TY_STRING && !cv->init_guarded &&
+         repr_slot_kind(c, cv) != RK_STRBUF;
+}
 /* Constants are looked up by name on every read the analysis types, and a
    large program has thousands: a hash over the names, rebuilt when the table
    grows or moves (its names are unique, interned by comp_const_intern). */

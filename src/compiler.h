@@ -1436,6 +1436,7 @@ void comp_add_gvar_alias(Compiler *c, const char *from, const char *to);
 /* 1 for $VERBOSE and $DEBUG, the interpreter's flags: false before any write */
 int comp_gvar_is_interp_flag(const char *name);
 LocalVar *comp_const(Compiler *c, const char *name);
+int comp_const_write_valued(const Compiler *c, const LocalVar *cv);
 LocalVar *comp_const_intern(Compiler *c, const char *name);
 /* 1 when `pred` is a statically-false `defined?(Const)` if-guard (optionally
    the left arm of an `&&` chain) over a constant that resolves to nothing;

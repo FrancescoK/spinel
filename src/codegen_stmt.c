@@ -6,6 +6,16 @@
 #include "call_plan.h"
 #include "codegen_call_arms.h"
 
+/* A constant write ends on the constant itself where the write stands as a
+   value (comp_const_write_valued) but the statement form ends on something
+   else (its set flag, its class name): a body inlined as a statement
+   expression (`run { A = 3.5 }`) answers its last statement. */
+static void emit_const_write_last_value(Compiler *c, const LocalVar *lv, const char *key, Buf *b, int indent) {
+  if (!comp_const_write_valued(c, lv) || !(const_has_flag(lv) || lv->type == TY_CLASS)) return;
+  emit_indent(b, indent);
+  buf_printf(b, "cst_%s;\n", key);
+}
+
 /* an object arg's #to_s as a C string expression (the puts/print arms) */
 static void emit_obj_to_s(Compiler *c, int arg, TyKind t, Buf *b) {
   const char *cn = obj_str_cname(c, ty_object_class(t), 0);
@@ -17224,6 +17234,7 @@ static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int in
         emit_indent(b, indent); buf_printf(b, "sp_init_in_progress_%s = 0;\n", key);
       }
       if (!isg) emit_const_flag_set(lv, key, b, indent);
+      if (!isg) emit_const_write_last_value(c, lv, key, b, indent);
       return 1;
     }
     /* a global that holds its nil takes the value's oint form */
@@ -17339,6 +17350,7 @@ static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int in
     if (!isg) emit_const_flag_set(lv, key, b, indent);
     if (!isg && lv->type == TY_CLASS)
       emit_class_const_name(c, key, nm, g_class_body_id, b, indent);
+    if (!isg) emit_const_write_last_value(c, lv, key, b, indent);
     return 1;
   }
   if (sp_streq(ty, "ConstantPathWriteNode")) {
@@ -18837,6 +18849,19 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
       buf_printf(b, "%s(%s);\n", oint_of(gt9), gref9);
     else emit_tail_slot(c, gt9, gref9, b);
     return;
+  }
+  /* A tail CONSTANT write (a block's `{ A = v }`) answers the constant
+     after the write, where the value form does (comp_const_write_valued) */
+  if (sp_streq(ty, "ConstantWriteNode")) {
+    const char *cn9 = nt_str(nt, id, "name");
+    LocalVar *cv9 = cn9 ? comp_const(c, cn9) : NULL;
+    if (comp_const_write_valued(c, cv9) && tail_slot_reaches_ret(c, cv9->type)) {
+      emit_stmt(c, id, b, indent);
+      char cref9[300]; snprintf(cref9, sizeof cref9, "cst_%s", cn9);
+      emit_indent(b, indent); emit_tail_lead(b);
+      emit_tail_slot(c, cv9->type, cref9, b);
+      return;
+    }
   }
   if ((sp_streq(ty, "InstanceVariableWriteNode") && !_iv_tail_val) ||
       sp_streq(ty, "ConstantWriteNode") ||

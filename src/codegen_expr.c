@@ -2692,6 +2692,25 @@ static int emit_ivar_cvar_gvar_expr(Compiler *c, int id, Buf *b, const NodeTable
     else buf_printf(b, gvar_is_oint(c, lv) && !node_is_oint(c, id) ? "gv_%s.v; })" : "gv_%s; })", rn);
     return 1;
   }
+  if (sp_streq(ty, "ConstantWriteNode")) {
+    /* `m(A = v)` / `(A = v) + 1`: ({ <the write>; cst_A; }) -- the statement
+       form sets the constant, and the constant is the expression's value */
+    const char *nm = nt_str(nt, id, "name");
+    LocalVar *cv = nm ? comp_const(c, nm) : NULL;
+    if (!comp_const_write_valued(c, cv)) {
+      char msg[400];
+      snprintf(msg, sizeof msg, "`%s = ...` used as a value is not supported for a constant holding %s; "
+               "assign %s on a line of its own and use %s", nm ? nm : "?",
+               cv && cv->type == TY_STRING ? "a String (the value would be a copy)" : "this kind of value",
+               nm ? nm : "it", nm ? nm : "it");
+      unsupported_feature(c, id, msg);
+      return 1;
+    }
+    buf_puts(b, "({ ");
+    emit_stmt_inner(c, id, b, 0);
+    buf_printf(b, "cst_%s; })", nm);
+    return 1;
+  }
   if (sp_streq(ty, "GlobalVariableOrWriteNode") || sp_streq(ty, "GlobalVariableAndWriteNode")) {
     const char *nm = nt_str(nt, id, "name");
     const char *rn = nm ? comp_resolve_gvar(c, nm + 1) : NULL;
