@@ -177,11 +177,23 @@ int emit_call_file_dir_time_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       buf_puts(b, "sp_file_truncate("); emit_path_expr(c, argv[0], b); buf_puts(b, ", ");
       emit_int_expr(c, argv[1], b); buf_puts(b, ")"); return 1;
     }
-    /* File.write(path, str, offset) / File.write(path, str, mode: "a") (#2782) */
+    /* File.write(path, str, offset) / File.write(path, str, mode: "a", perm: 0o600) (#2782) */
     if ((sp_streq(name, "write") || sp_streq(name, "binwrite")) && argc == 3) {
       const char *k3 = nt_type(nt, argv[2]);
       if (k3 && sp_streq(k3, "KeywordHashNode")) {
         int mv = struct_kwarg_value(c, argv[2], "mode");
+        int pv = struct_kwarg_value(c, argv[2], "perm");
+        if (pv >= 0) {
+          buf_puts(b, "sp_file_write_perm("); emit_path_expr(c, argv[0], b); buf_puts(b, ", ");
+          emit_to_s_expr(c, argv[1], b); buf_puts(b, ", ");
+          if (mv >= 0) emit_str_expr(c, mv, b); else buf_puts(b, "\"w\"");
+          buf_puts(b, ", ");
+          if (comp_ntype(c, pv) == TY_NIL) buf_puts(b, "sp_oint_nil()");
+          else if (yield_site_type(c, pv) == TY_POLY) { buf_puts(b, "sp_poly_arg_perm("); emit_expr(c, pv, b); buf_puts(b, ")"); }
+          else emit_oint_expr(c, pv, TY_INT, b);
+          buf_puts(b, ")");
+          return 1;
+        }
         if (mv >= 0) {
           buf_puts(b, "sp_file_write_mode("); emit_path_expr(c, argv[0], b); buf_puts(b, ", ");
           emit_to_s_expr(c, argv[1], b); buf_puts(b, ", ");
