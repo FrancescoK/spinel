@@ -4801,6 +4801,15 @@ static TyKind parse_seed_type(Compiler *c, const char *tok) {
        its includers, and a value of the module type is one of them. It is
        the boxed value, as a union of the includers would be (#7169). */
     if (ci >= 0 && comp_class_is_module(c, &c->classes[ci])) return TY_POLY;
+    /* A builtin the program reopens is a class of the program, but its
+       values are still the builtin's: a Time is Spinel's by-value Time, not
+       an object of the reopen. The kind is the one `self` has in the reopen,
+       and a nilable one with no nil of its own (a struct) is the boxed value. */
+    if (ci >= 0 && is_builtin_reopen(c->classes[ci].name)) {
+      TyKind t = infer_builtin_self(c, ci);
+      const TyTraits *tr = ty_traits_of(t);
+      return nilable && tr && !tr->null_is_nil ? TY_POLY : t;
+    }
     return ci >= 0 ? ty_object(ci) : TY_UNKNOWN;
   }
   return TY_UNKNOWN;
