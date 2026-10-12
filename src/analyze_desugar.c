@@ -1491,11 +1491,19 @@ int desugar_reopen_implicit_self(Compiler *c) {
                  sp_streq(cn, "Array") || sp_streq(cn, "Hash"))) continue;
     if (!boxed_any && comp_method_in_chain(c, sc->class_id, nm, NULL) >= 0) continue;   /* the reopen's own */
     if (comp_method_index(c, nm) >= 0) continue;                            /* a top-level def */
-    int sn = nt_new_node(nt, "SelfNode");
-    if (sn < 0) continue;
-    comp_grow_node_arrays(c);
-    c->nscope[sn] = c->nscope[id];
-    if (c->node_cbody) c->node_cbody[sn] = c->node_cbody[id];
+    /* the `self` a call was tried on is kept on the call and tried again the
+       next round: a new one each round grew the program every round, and
+       --share-strings, waiting for the types to hold still, saw them move
+       and asked for another round until the cap */
+    int sn = (int)nt_int(nt, id, "reopen_self", 0) - 1;
+    if (sn < 0) {
+      sn = nt_new_node(nt, "SelfNode");
+      if (sn < 0) continue;
+      comp_grow_node_arrays(c);
+      c->nscope[sn] = c->nscope[id];
+      if (c->node_cbody) c->node_cbody[sn] = c->node_cbody[id];
+      nt_node_set_int(nt, id, "reopen_self", sn + 1);
+    }
     nt_node_set_ref(nt, id, "receiver", sn);
     TyKind t = infer_type(c, id);
     /* A boxed self (Object / Numeric / Array / Hash) keeps the receiver even
