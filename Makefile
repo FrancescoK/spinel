@@ -2692,6 +2692,16 @@ backtrace-test: $(SPINEL) $(SP_RT_LIB)
 	  grep -q "$$f" "$$tmp/rq.out" || { echo "backtrace-test: FAIL (#7658: no frame $$f)"; cat "$$tmp/rq.out"; ok=0; }; \
 	done; \
 	grep -q "required_main.rb:\([0-9]*:\)\{0,1\}in .\(Lib\|lib_\)" "$$tmp/rq.out" && { echo "backtrace-test: FAIL (#7658: a Lib frame names the entry script)"; cat "$$tmp/rq.out"; ok=0; }; \
+	case "$$(uname -s)" in Linux|Darwin) \
+	  $(SPINEL) --debug --no-inline-hot test/backtrace/block_frames.rb -o "$$tmp/bf" >/dev/null 2>&1 || \
+	    { echo "backtrace-test: FAIL (compile block_frames)"; ok=0; }; \
+	  "$$tmp/bf" > "$$tmp/bf.out" 2>&1; \
+	  for f in "block_frames.rb:14:in .block in Runner#run'" "block_frames.rb:16:in .block (2 levels) in Runner#run'" \
+	           "block_frames.rb:20:in .block (3 levels) in Runner#run'" "block_frames.rb:29:in .block in <main>'" \
+	           "block_frames.rb:31:in .block in <main>'" "block_frames_lib.rb:2:in .block in lib_blocks'"; do \
+	    grep -q "$$f" "$$tmp/bf.out" || { echo "backtrace-test: FAIL (a frame inside a block: no $$f)"; cat "$$tmp/bf.out"; ok=0; }; \
+	  done;; \
+	esac; \
 	rm -rf "$$tmp"; \
 	if [ $$ok -eq 1 ]; then echo "backtrace-test: pass"; else exit 1; fi
 
