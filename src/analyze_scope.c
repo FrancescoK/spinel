@@ -5729,6 +5729,146 @@ static void intern_scope_ivars(Compiler *c, int ms, int ci) {
    included module method. We copy (not mutate) so multiple classes can include
    the same module independently. */
 int g_inc_did_clone = 0;
+/* Copy module mod_id's instance methods into class ci, one clone per
+   includer, as `include` does (process_include_body). */
+static void include_module_methods(Compiler *c, int ci, int mod_id) {
+  const NodeTable *nt = c->nt;
+  /* snapshot count before adding new scopes to avoid re-scanning them */
+  int snap = c->nscopes;
+  for (int ms = 0; ms < snap; ms++) {
+    Scope *src = &c->scopes[ms];
+    if (src->class_id != mod_id || !src->name) continue;
+    /* a module_function method whose body depends on its receiver needs a
+       per-includer copy; everything else class-level stays module-side */
+    if (src->is_cmethod &&
+        !(src->is_module_function && module_function_self_dependent(c, ms)))
+      continue;
+    const char *dst_name = src->name;
+    char inc_shadow[256];
+    int own = comp_method_in_class(c, ci, src->name);
+    if (own >= 0 && c->scopes[own].is_include_copy) {
+      /* An earlier include of another module put this name here. Ruby's MRO
+         puts the LAST include first, so this module supersedes it: rename
+         the earlier copy to a shadow (carrying its own super target with
+         it) and let this one take the real name, with its super, if any,
+         reaching the earlier copy (#3731). */
+      ClassInfo *cif = &c->classes[ci];
+      snprintf(inc_shadow, sizeof inc_shadow, "__inc %d %s",
+               cif->prep_shadow_count++, src->name);
+      for (int kk = 0; kk < cif->nprep_chain; kk++)
+        if (sp_streq(cif->prep_from[kk], src->name)) {
+          free(cif->prep_from[kk]); cif->prep_from[kk] = strdup(inc_shadow);
+          break;
+        }
+      free(c->scopes[own].name);
+      c->scopes[own].name = strdup(inc_shadow);
+      if (scope_body_has_super(c, ms)) comp_prep_chain_add(cif, src->name, inc_shadow);
+      else c->scopes[own].reachable = 0;   /* nothing can reach it now */
+      own = -1;
+    }
+    if (own >= 0) {
+      /* The class overrides the module method. If the override calls super,
+         the module method is the super target: copy it under a shadow name
+         and chain to it so emit_super reaches it via the prepend-super path.
+         Otherwise the module method is simply shadowed -- nothing to emit. */
+      if (!scope_body_has_super(c, own)) { if (!src->is_module_function) src->is_transplanted_source = 1; continue; }
+      const char *existing = comp_prep_chain_target(c, ci, src->name);
+      /* spaces keep the shadow unwritable in Ruby source, so an explicit
+         `obj.__inc_0_tag` finds nothing and raises; mc() folds them back
+         to underscores, so the C symbol is unchanged (#3738) */
+      snprintf(inc_shadow, sizeof inc_shadow, "__inc %d %s",
+               c->classes[ci].prep_shadow_count++, src->name);
+      if (existing) {
+        /* Another included module already supplies the super target for this
+           method. A later include takes precedence (Ruby MRO: C -> Mlast ->
+           ... -> Mfirst), so retarget the class's super to this module's copy
+           and chain this copy to the previously included one:
+           name -> new_shadow -> earlier_shadow. */
+        char *prev = strdup(existing);  /* stable copy: the slot is freed below */
+        ClassInfo *cif = &c->classes[ci];
+        for (int kk = 0; kk < cif->nprep_chain; kk++)
+          if (sp_streq(cif->prep_from[kk], src->name)) {
+            free(cif->prep_to[kk]);
+            cif->prep_to[kk] = strdup(inc_shadow);
+            break;
+          }
+        comp_prep_chain_add(cif, inc_shadow, prev);
+        free(prev);
+      }
+      else {
+        comp_prep_chain_add(&c->classes[ci], src->name, inc_shadow);
+      }
+      dst_name = inc_shadow;
+    }
+    /* Create a new scope sharing the same AST nodes but owned by ci. */
+    Scope *dst = comp_scope_new(c, dst_name, src->def_node);
+    int dst_idx = c->nscopes - 1;
+    /* comp_scope_new may realloc c->scopes; re-derive src pointer. */
+    src = &c->scopes[ms];
+    /* Clone the body and re-attribute it to the target when either:
+       (a) the target is a built-in class, where `self` has a different
+       (scalar) type than the module's object self -- otherwise the shared
+       SelfNode resolves to the module and e.g. `self.to_s` mis-dispatches; or
+       (b) the copied method itself calls `super` (a multi-module chain), so
+       its super node resolves to this shadow scope (and thus the class's prep
+       chain) rather than to the source module, where the chain isn't set; or
+       (c) the body has a receiverless instance_exec/eval, whose block rebinds
+       self to the includer -- a shared body would resolve that self to the
+       module and mis-splice; or
+       (d) the body touches an ivar, which must type against the includer's
+       slot rather than a divergent module-owned slot (scope_body_uses_ivar); or
+       (e) the method takes a &block param. A block-taking module method must be
+       inlinable per includer so a forwarded block literal threads through the
+       call chain and can be spliced (a collector builder `col(&b) = build(tag,
+       &b)` forwarding into a self-rebinding instance_exec); shared, it emits as
+       a real function that lifts the block to a proc and breaks the chain. */
+    /* Clone UNCONDITIONALLY: a shared body carries ONE node-type cache
+       and ONE scope attribution across every includer, so when two
+       includers' call sites settle the params differently (an --rbs
+       StrStr pin in one test class, symbol-keyed fixtures in another)
+       the signature is emitted from the emitting includer's scope while
+       the body reads the LAST-walked includer's types -- a hard C
+       mismatch (#2008). Per-includer cloning is how CRuby's iclass
+       semantics resolve self/ivars/blocks anyway (the previous
+       conditions); divergent inference makes it necessary for every
+       method. */
+    if (src->body >= 0) {
+      int nb = nt_clone_subtree((NodeTable *)nt, src->body);
+      if (nb >= 0) {
+        comp_grow_node_arrays(c);
+        src = &c->scopes[ms]; dst = &c->scopes[dst_idx];
+        dst->body = nb;
+        walk_scope(c, nb, dst_idx, ci);
+        g_inc_did_clone = 1;
+      }
+      else dst->body = src->body;
+    }
+else {
+      dst->body = src->body;
+    }
+    dst->origin_module_ci = src->class_id + 1;  /* #owner names it (#3662) */
+    dst->class_id = ci;
+    dst->is_cmethod = 0;
+    dst->is_include_copy = 1;
+    dst->reachable = src->reachable;
+    dst->yields = src->yields;
+    dst->nrequired = src->nrequired;
+    dst->rest_idx = src->rest_idx;
+    dst->kwrest_idx = src->kwrest_idx;
+    scope_copy_block_param(dst, src);
+    /* ...but a module_function original keeps its module-side spelling:
+       `Rt.peek` is a real call whoever also includes Rt, so the source is
+       not copied AWAY, only copied FROM. */
+    if (!src->is_module_function) src->is_transplanted_source = 1;
+    scope_copy_params(dst, src);
+    if (scope_own_defaults(c, dst_idx)) g_inc_did_clone = 1;
+    src = &c->scopes[ms]; dst = &c->scopes[dst_idx];
+    /* Scan source body for ivar accesses and register them in the
+       destination class so codegen's struct layout includes them. */
+    intern_scope_ivars(c, ms, ci);
+  }
+}
+
 void process_include_body(Compiler *c, int ci, int body_node) {
   const NodeTable *nt = c->nt;
   int n = 0;
@@ -5809,140 +5949,7 @@ void process_include_body(Compiler *c, int ci, int body_node) {
       }
       /* record membership for `rescue M` matching (dedup across reopenings) */
       class_note_included_mod(c, ci, mod_id);
-      /* snapshot count before adding new scopes to avoid re-scanning them */
-      int snap = c->nscopes;
-      for (int ms = 0; ms < snap; ms++) {
-        Scope *src = &c->scopes[ms];
-        if (src->class_id != mod_id || !src->name) continue;
-        /* a module_function method whose body depends on its receiver needs a
-           per-includer copy; everything else class-level stays module-side */
-        if (src->is_cmethod &&
-            !(src->is_module_function && module_function_self_dependent(c, ms)))
-          continue;
-        const char *dst_name = src->name;
-        char inc_shadow[256];
-        int own = comp_method_in_class(c, ci, src->name);
-        if (own >= 0 && c->scopes[own].is_include_copy) {
-          /* An earlier include of another module put this name here. Ruby's MRO
-             puts the LAST include first, so this module supersedes it: rename
-             the earlier copy to a shadow (carrying its own super target with
-             it) and let this one take the real name, with its super, if any,
-             reaching the earlier copy (#3731). */
-          ClassInfo *cif = &c->classes[ci];
-          snprintf(inc_shadow, sizeof inc_shadow, "__inc %d %s",
-                   cif->prep_shadow_count++, src->name);
-          for (int kk = 0; kk < cif->nprep_chain; kk++)
-            if (sp_streq(cif->prep_from[kk], src->name)) {
-              free(cif->prep_from[kk]); cif->prep_from[kk] = strdup(inc_shadow);
-              break;
-            }
-          free(c->scopes[own].name);
-          c->scopes[own].name = strdup(inc_shadow);
-          if (scope_body_has_super(c, ms)) comp_prep_chain_add(cif, src->name, inc_shadow);
-          else c->scopes[own].reachable = 0;   /* nothing can reach it now */
-          own = -1;
-        }
-        if (own >= 0) {
-          /* The class overrides the module method. If the override calls super,
-             the module method is the super target: copy it under a shadow name
-             and chain to it so emit_super reaches it via the prepend-super path.
-             Otherwise the module method is simply shadowed -- nothing to emit. */
-          if (!scope_body_has_super(c, own)) { if (!src->is_module_function) src->is_transplanted_source = 1; continue; }
-          const char *existing = comp_prep_chain_target(c, ci, src->name);
-          /* spaces keep the shadow unwritable in Ruby source, so an explicit
-             `obj.__inc_0_tag` finds nothing and raises; mc() folds them back
-             to underscores, so the C symbol is unchanged (#3738) */
-          snprintf(inc_shadow, sizeof inc_shadow, "__inc %d %s",
-                   c->classes[ci].prep_shadow_count++, src->name);
-          if (existing) {
-            /* Another included module already supplies the super target for this
-               method. A later include takes precedence (Ruby MRO: C -> Mlast ->
-               ... -> Mfirst), so retarget the class's super to this module's copy
-               and chain this copy to the previously included one:
-               name -> new_shadow -> earlier_shadow. */
-            char *prev = strdup(existing);  /* stable copy: the slot is freed below */
-            ClassInfo *cif = &c->classes[ci];
-            for (int kk = 0; kk < cif->nprep_chain; kk++)
-              if (sp_streq(cif->prep_from[kk], src->name)) {
-                free(cif->prep_to[kk]);
-                cif->prep_to[kk] = strdup(inc_shadow);
-                break;
-              }
-            comp_prep_chain_add(cif, inc_shadow, prev);
-            free(prev);
-          }
-          else {
-            comp_prep_chain_add(&c->classes[ci], src->name, inc_shadow);
-          }
-          dst_name = inc_shadow;
-        }
-        /* Create a new scope sharing the same AST nodes but owned by ci. */
-        Scope *dst = comp_scope_new(c, dst_name, src->def_node);
-        int dst_idx = c->nscopes - 1;
-        /* comp_scope_new may realloc c->scopes; re-derive src pointer. */
-        src = &c->scopes[ms];
-        /* Clone the body and re-attribute it to the target when either:
-           (a) the target is a built-in class, where `self` has a different
-           (scalar) type than the module's object self -- otherwise the shared
-           SelfNode resolves to the module and e.g. `self.to_s` mis-dispatches; or
-           (b) the copied method itself calls `super` (a multi-module chain), so
-           its super node resolves to this shadow scope (and thus the class's prep
-           chain) rather than to the source module, where the chain isn't set; or
-           (c) the body has a receiverless instance_exec/eval, whose block rebinds
-           self to the includer -- a shared body would resolve that self to the
-           module and mis-splice; or
-           (d) the body touches an ivar, which must type against the includer's
-           slot rather than a divergent module-owned slot (scope_body_uses_ivar); or
-           (e) the method takes a &block param. A block-taking module method must be
-           inlinable per includer so a forwarded block literal threads through the
-           call chain and can be spliced (a collector builder `col(&b) = build(tag,
-           &b)` forwarding into a self-rebinding instance_exec); shared, it emits as
-           a real function that lifts the block to a proc and breaks the chain. */
-        /* Clone UNCONDITIONALLY: a shared body carries ONE node-type cache
-           and ONE scope attribution across every includer, so when two
-           includers' call sites settle the params differently (an --rbs
-           StrStr pin in one test class, symbol-keyed fixtures in another)
-           the signature is emitted from the emitting includer's scope while
-           the body reads the LAST-walked includer's types -- a hard C
-           mismatch (#2008). Per-includer cloning is how CRuby's iclass
-           semantics resolve self/ivars/blocks anyway (the previous
-           conditions); divergent inference makes it necessary for every
-           method. */
-        if (src->body >= 0) {
-          int nb = nt_clone_subtree((NodeTable *)nt, src->body);
-          if (nb >= 0) {
-            comp_grow_node_arrays(c);
-            src = &c->scopes[ms]; dst = &c->scopes[dst_idx];
-            dst->body = nb;
-            walk_scope(c, nb, dst_idx, ci);
-            g_inc_did_clone = 1;
-          }
-          else dst->body = src->body;
-        }
-else {
-          dst->body = src->body;
-        }
-        dst->origin_module_ci = src->class_id + 1;  /* #owner names it (#3662) */
-        dst->class_id = ci;
-        dst->is_cmethod = 0;
-        dst->is_include_copy = 1;
-        dst->reachable = src->reachable;
-        dst->yields = src->yields;
-        dst->nrequired = src->nrequired;
-        dst->rest_idx = src->rest_idx;
-        dst->kwrest_idx = src->kwrest_idx;
-        scope_copy_block_param(dst, src);
-        /* ...but a module_function original keeps its module-side spelling:
-           `Rt.peek` is a real call whoever also includes Rt, so the source is
-           not copied AWAY, only copied FROM. */
-        if (!src->is_module_function) src->is_transplanted_source = 1;
-        scope_copy_params(dst, src);
-        if (scope_own_defaults(c, dst_idx)) g_inc_did_clone = 1;
-        src = &c->scopes[ms]; dst = &c->scopes[dst_idx];
-        /* Scan source body for ivar accesses and register them in the
-           destination class so codegen's struct layout includes them. */
-        intern_scope_ivars(c, ms, ci);
-      }
+      include_module_methods(c, ci, mod_id);
     }
   }
 }
@@ -6019,6 +6026,16 @@ void register_includes(Compiler *c) {
     }
   }
   free(bci); free(bnode); free(remaining); free(done);
+  /* What the program adds to Struct or Data by reopening it, every
+     Struct.new / Data.define class answers, each with its own self: copied
+     like an include into the root of each record class (a subclass reaches
+     it through its parent). The class's own methods still win. */
+  for (int ci = 0; ci < c->nclasses; ci++) {
+    if (!c->classes[ci].is_struct || c->classes[ci].parent >= 0) continue;
+    int base = comp_class_index(c, c->classes[ci].is_data ? "Data" : "Struct");
+    if (base >= 0 && base != ci && !c->classes[base].is_struct)
+      include_module_methods(c, ci, base);
+  }
   if (g_inc_did_clone) register_locals(c);
 }
 
