@@ -4055,7 +4055,14 @@ int emit_call_class_method_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
           buf_puts(&dcb, ")");
           TyKind want = repr_of(c, id).as_ty;
           const char *dc = dcb.p ? dcb.p : "";
-          if (want == TY_POLY && cret != TY_POLY && cret != TY_UNKNOWN &&
+          if (method_is_void(&c->scopes[defmi]) && want != TY_VOID && want != TY_UNKNOWN && !comp_value_dropped(c, id)) {
+            /* the one implementation answers nothing (a raise-only body): the
+               call runs for its effect and reads as nil in the slot the
+               inference gave it (#8645) */
+            buf_printf(b, "((void)(%s), %s)", dc,
+                       want == TY_POLY ? "sp_box_nil()" : nil_value(want) ? nil_value(want) : default_value_from_compiler(c, want));
+          }
+          else if (want == TY_POLY && cret != TY_POLY && cret != TY_UNKNOWN &&
               cret != TY_VOID && cret != TY_NIL)
             emit_poly_user_box(c, id, &c->scopes[defmi], dc, b);
           else if (cret == TY_POLY && want != TY_POLY && want != TY_UNKNOWN &&
@@ -4074,6 +4081,8 @@ int emit_call_class_method_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
             TyKind kr = (TyKind)c->scopes[kmi2].ret;
             if (kr != unified) { unified = TY_POLY; break; }
           }
+          /* arms that all answer nothing: nil, boxed */
+          if (unified == TY_VOID || unified == TY_UNKNOWN || unified == TY_NIL) unified = TY_POLY;
           int rtmp = ++g_tmp;
           /* an arm that can answer nil makes the switch an sp_oint, the
              others' plain values wrapped (node_is_oint asks the same) */
@@ -4148,7 +4157,16 @@ int emit_call_class_method_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
               buf_printf(b, "; break;");
             }
           }
-          buf_printf(b, " } _t%d; })", rtmp);
+          /* the value in the slot the inference gave the call: boxed where
+             that slot is a box and the arms agreed on a plain type (#8645) */
+          TyKind want2 = repr_of(c, id).as_ty;
+          if (want2 == TY_POLY && unified != TY_POLY && !oarms) {
+            char rv[24]; snprintf(rv, sizeof rv, "_t%d", rtmp);
+            buf_puts(b, " } ");
+            emit_boxed_text(c, unified, rv, b);
+            buf_puts(b, "; })");
+          }
+          else buf_printf(b, " } _t%d; })", rtmp);
         }
         free(objptr.p);
         return 1;

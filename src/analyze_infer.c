@@ -4740,8 +4740,11 @@ static int infer_class_module_call(Compiler *c, int id, const NodeTable *nt, con
         else if (kr != uret) uret = TY_POLY;
       }
       if (nblk > 0) { *out = TY_POLY; return 1; }
+      /* a candidate that answers nothing (a raise-only body) keeps its
+         void: the consumer then runs the call for its effect and reads nil,
+         as it does for the same call on a constant receiver (#8645) */
       if (nc > 0 && !has_blk)
-        { *out = (uret == TY_UNKNOWN || uret == TY_VOID) ? TY_POLY : uret; return 1; }
+        { *out = uret == TY_UNKNOWN ? TY_POLY : uret; return 1; }
     }
     if (argc == 1 && is_ivar_access(name) && !is_ivar_set(name)) {
       int ci = class_recv_static_ci(c, recv);
