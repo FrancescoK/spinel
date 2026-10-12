@@ -7166,8 +7166,11 @@ static int emit_poly_builtin_default_at(Compiler *c, int id, int recv, const cha
        its arms store, which the re-entry reads as that handle) */
     int held_h = repr_share_rule(c) && argc == 1 && call_is_setter_assign(nt, id) && atmp_ty[a] == TY_STRBUF &&
                  repr_of(c, argv[a]).as_ty == TY_STRING;
+    /* a line reader handed a splat walks the keywords beside it again
+       (`**kw` would run twice), so they count as the splat does */
+    int rereads = is_splat || (splat_ok && is_line_read(name) && nt_kind(nt, argv[a]) == NK_KeywordHashNode);
     if (subtree_has_side_effect(c, argv[a]) &&
-        (is_splat || (repr_of(c, argv[a]).as_ty != atmp_ty[a] && !held_h)))
+        (rereads || (repr_of(c, argv[a]).as_ty != atmp_ty[a] && !held_h)))
       return 0;
   }
   TyKind bt = (c->poly_builtin_ty && id < c->node_cap)
