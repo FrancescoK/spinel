@@ -1702,6 +1702,161 @@ int an_object_methods_listable(Compiler *c, int cid, const char *name) {
   return 1;
 }
 
+/* Does module m itself define nm as an instance method: a def of its own (a
+   module_function's private instance side too), or an accessor or alias no
+   module it includes carries as well (an include copies those into the
+   includer's lists, as it copies defs into its table)? *vis is the
+   visibility it gives, -1 for a def (the caller reads the def's). */
+static int an_module_carries(Compiler *c, int m, const char *nm) {
+  ClassInfo *kc = &c->classes[m];
+  size_t l = strlen(nm);
+  if (l > 0 && nm[l - 1] == '=') {
+    char base[256];
+    if (l - 1 >= sizeof base) return 0;
+    memcpy(base, nm, l - 1); base[l - 1] = '\0';
+    if (comp_is_writer(kc, base)) return 1;
+  }
+  else if (comp_is_reader(kc, nm)) return 1;
+  for (int i = 0; i < kc->naliases; i++) if (kc->alias_new[i] && sp_streq(kc->alias_new[i], nm)) return 1;
+  return 0;
+}
+int an_module_defines(Compiler *c, int m, const char *nm, int *vis) {
+  int si = comp_method_in_class(c, m, nm);
+  if (si >= 0 && c->scopes[si].origin_module_ci == 0) {
+    *vis = c->scopes[si].is_module_function || c->scopes[si].is_cmethod ? SP_VIS_PRIVATE : -1;
+    return 1;
+  }
+  for (int k = 0; k < c->nscopes; k++) {
+    Scope *s = &c->scopes[k];
+    if (s->class_id == m && s->is_module_function && s->name && sp_streq(s->name, nm) &&
+        s->origin_module_ci == 0) { *vis = SP_VIS_PRIVATE; return 1; }
+  }
+  if (!an_module_carries(c, m, nm)) return 0;
+  for (int k = 0; k < c->nclasses; k++)
+    if (k != m && comp_module_includes(c, m, k, 0) && an_module_carries(c, k, nm)) return 0;
+  *vis = comp_method_vis(&c->classes[m], nm);
+  return 1;
+}
+
+/* Mod.instance_methods / public_instance_methods with the inherited ones:
+   listable ahead of time when the lookup order is plain. The module and the
+   modules it includes (each reached through one include only) are defined
+   by `module` bodies (not Module.new) and mix in nothing but each other,
+   through an include that is a statement of the body itself -- not one in a
+   conditional, a begin or a method, not a builtin (Comparable), not a
+   prepend -- and no two of them that are not one another's ancestor
+   define, undefine or give a visibility to the same name, nor does one
+   both define and undefine it. Then each name's answer is the nearest
+   module's whatever order sibling includes take. The module has no
+   class-level method of `name` of its own or from a module it extends. */
+static int an_module_tree(Compiler *c, int m, int *mods, int *n, int cap,
+                          int nb, const int *bci, const int *bnode) {
+  const NodeTable *nt = c->nt;
+  if (m < 0 || m >= c->nclasses || *n >= cap) return 0;
+  for (int j = 0; j < *n; j++) if (mods[j] == m) return 0;   /* reached twice */
+  ClassInfo *mc = &c->classes[m];
+  if (!comp_class_is_module(c, mc) || mc->is_native_class || mc->nincluded_mod_names > 0) return 0;
+  if (mc->def_node < 0 || nt_kind(nt, mc->def_node) != NK_ModuleNode) return 0;
+  mods[(*n)++] = m;
+  for (int b = 0; b < nb; b++) {
+    if (bci[b] != m) continue;
+    int sn = 0;
+    const int *stmts = bnode[b] >= 0 ? nt_arr(nt, bnode[b], "body", &sn) : NULL;
+    for (int k = 0; k < sn; k++) {
+      if (nt_kind(nt, stmts[k]) != NK_CallNode || nt_ref(nt, stmts[k], "receiver") >= 0) continue;
+      const char *nm = nt_str(nt, stmts[k], "name");
+      if (!nm) continue;
+      if (sp_streq(nm, "prepend")) return 0;
+      if (!sp_streq(nm, "include")) continue;
+      int an = 0, anode = nt_ref(nt, stmts[k], "arguments");
+      const int *aa = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
+      if (an == 0) return 0;
+      for (int j = 0; j < an; j++) {
+        NodeKind ak = nt_kind(nt, aa[j]);
+        int im = ak == NK_ConstantReadNode || ak == NK_ConstantPathNode ? class_recv_static_ci(c, aa[j]) : -1;
+        if (im < 0 || !an_module_tree(c, im, mods, n, cap, nb, bci, bnode)) return 0;
+      }
+    }
+  }
+  return 1;
+}
+static int an_module_answers(Compiler *c, int m, const char *nm, int *undef) {
+  ClassInfo *kc = &c->classes[m];
+  int v;
+  int def = an_module_defines(c, m, nm, &v);
+  *undef = 0;
+  for (int u = 0; u < kc->nundefs; u++) if (sp_streq(kc->undefs[u], nm)) *undef = 1;
+  if (def || *undef) return 1;
+  for (int i = 0; i < kc->nvis; i++) if (sp_streq(kc->vis_names[i], nm)) return 1;
+  return 0;
+}
+int an_module_methods_listable(Compiler *c, int m, const char *name) {
+  const NodeTable *nt = c->nt;
+  if (m < 0 || m >= c->nclasses) return 0;
+  ClassInfo *mc = &c->classes[m];
+  if (comp_cmethod_in_chain(c, m, name, NULL) >= 0) return 0;
+  for (int e = 0; e < mc->nextended_mods; e++)
+    if (comp_method_in_class(c, mc->extended_mods[e], name) >= 0) return 0;
+  int *bci, *bnode;
+  int nb = class_body_list(c, &bci, &bnode);
+  int mods[64], n = 0;
+  int ok = an_module_tree(c, m, mods, &n, 64, nb, bci, bnode);
+  /* an include or prepend anywhere but a body's own statement list */
+  for (int id = 0; ok && id < nt->count; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm || !(sp_streq(nm, "include") || sp_streq(nm, "prepend"))) continue;
+    int rcv = nt_ref(nt, id, "receiver");
+    if (rcv >= 0 && nt_kind(nt, rcv) != NK_SelfNode) continue;   /* refused on its own */
+    int direct = 0;
+    for (int b = 0; b < nb && !direct; b++) {
+      int sn = 0;
+      const int *stmts = bnode[b] >= 0 ? nt_arr(nt, bnode[b], "body", &sn) : NULL;
+      for (int k = 0; k < sn && !direct; k++) direct = stmts[k] == id && rcv < 0;
+    }
+    if (direct) continue;
+    int owner = c->node_cbody && id < c->node_cap ? c->node_cbody[id] : -1;
+    if (owner < 0) { Scope *sc = comp_scope_of(c, id); owner = sc ? sc->class_id : -1; }
+    for (int j = 0; j < n; j++) if (mods[j] == owner) ok = 0;
+  }
+  free(bci); free(bnode);
+  if (!ok) return 0;
+  /* no two unrelated modules answer for one name */
+  for (int j = 0; j < n; j++) {
+    ClassInfo *kc = &c->classes[mods[j]];
+    int nnames = 0;
+    const char *names[1024];
+    for (int si = 0; si < c->nscopes && nnames < 1024; si++)
+      if (c->scopes[si].class_id == mods[j] && c->scopes[si].name) names[nnames++] = c->scopes[si].name;
+    for (int i = 0; i < kc->nreaders && nnames < 1024; i++) names[nnames++] = kc->readers[i];
+    for (int i = 0; i < kc->naliases && nnames < 1024; i++) if (kc->alias_new[i]) names[nnames++] = kc->alias_new[i];
+    for (int i = 0; i < kc->nvis && nnames < 1024; i++) names[nnames++] = kc->vis_names[i];
+    for (int i = 0; i < kc->nundefs && nnames < 1024; i++) names[nnames++] = kc->undefs[i];
+    if (nnames >= 1024) return 0;
+    for (int q = 0; q < nnames; q++) {
+      int ua, ub;
+      if (!an_module_answers(c, mods[j], names[q], &ua)) continue;
+      int va;
+      if (ua && an_module_defines(c, mods[j], names[q], &va)) return 0;
+      for (int j2 = j + 1; j2 < n; j2++)
+        if (an_module_answers(c, mods[j2], names[q], &ub) &&
+            !comp_module_includes(c, mods[j], mods[j2], 0) && !comp_module_includes(c, mods[j2], mods[j], 0))
+          return 0;
+    }
+    /* a writer's name is its reader's plus `=` */
+    for (int i = 0; i < kc->nwriters; i++) {
+      char wn[256]; snprintf(wn, sizeof wn, "%s=", kc->writers[i]);
+      int ua, ub;
+      if (!an_module_answers(c, mods[j], wn, &ua)) continue;
+      for (int j2 = j + 1; j2 < n; j2++)
+        if (an_module_answers(c, mods[j2], wn, &ub) &&
+            !comp_module_includes(c, mods[j], mods[j2], 0) && !comp_module_includes(c, mods[j2], mods[j], 0))
+          return 0;
+    }
+  }
+  return 1;
+}
+
 /* The argument of obj.methods / public_methods / singleton_methods: 1 for
    none or a literal `true` (the whole list), 0 for a literal `false` or
    `nil` (the object's own: its singleton methods, and for public_methods

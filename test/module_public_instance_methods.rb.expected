@@ -1,0 +1,11 @@
+[:i1, :i2, :ia=, :late, :o1, :o2]
+[:i1, :i2, :ia=, :late, :o1, :o2, :o3]
+[:i1, :i2, :ia=, :late, :o1, :o2]
+[:i1, :ia=, :late]
+[:ia=, :late, :u1]
+[]
+[]
+[[:am], [:bm]]
+true
+["oa="]
+[[:a2, :b], [:a], [:b]]

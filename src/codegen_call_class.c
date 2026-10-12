@@ -2736,7 +2736,9 @@ static int emit_class_instance_methods_all(Compiler *c, int id, Buf *b, const No
   if (!prot && !sp_streq(name, "public_instance_methods")) return 0;
   if (argc > 1 || (argc == 1 && nt_kind(nt, argv[0]) != NK_TrueNode)) return 0;
   int ci = -1, si = -1, dyn = 0;
-  if (recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode)
+  /* a constant path (`Outer::Mod`) names its class by the leaf, as constant
+     paths resolve here */
+  if (recv >= 0 && (nt_kind(nt, recv) == NK_ConstantReadNode || nt_kind(nt, recv) == NK_ConstantPathNode))
     ci = comp_class_index(c, nt_str(nt, recv, "name"));
   else if (recv < 0 || nt_kind(nt, recv) == NK_SelfNode) {
     Scope *s = comp_scope_of(c, id);
@@ -2752,8 +2754,18 @@ static int emit_class_instance_methods_all(Compiler *c, int id, Buf *b, const No
     if (c->scopes[si].yields && g_self && g_emitting_class_id >= 0) ci = g_emitting_class_id;
     else dyn = cmethod_takes_self_cls(c, si);
   }
+  /* a module's: its own and its includes' */
+  if (comp_class_is_module(c, &c->classes[ci])) {
+    if (si >= 0 || !an_module_methods_listable(c, ci, name)) return 0;
+    ReflNames r = {0};
+    refl_module_instance_methods(c, ci, prot, &r);
+    buf_puts(b, "sp_box_poly_array(");
+    refl_emit_sym_array(c, ci, &r, b);
+    buf_puts(b, ")");
+    refl_free(&r);
+    return 1;
+  }
   /* every class the call can run on lists ahead of time, or none does */
-  if (comp_class_is_module(c, &c->classes[ci])) return 0;
   for (int k = 0; k < c->nclasses; k++)
     if ((k == ci || (dyn && is_descendant(c, k, ci))) && !an_object_methods_listable(c, k, name)) return 0;
   int rt = ++g_tmp;
@@ -3230,7 +3242,12 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         int ci2 = cn2 ? comp_class_index(c, cn2) : -1;
         if (ci2 >= 0) {
           ReflNames r = {0};
-          refl_own_instance_methods(c, ci2, im_pub, im_prot, im_priv, 0, &r);
+          /* a module's own: what it answers for itself, not what an
+             include copied in */
+          if (comp_class_is_module(c, &c->classes[ci2]) && an_module_methods_listable(c, ci2, name))
+            refl_module_own_methods(c, ci2, im_pub, im_prot, im_priv, &r);
+          else
+            refl_own_instance_methods(c, ci2, im_pub, im_prot, im_priv, 0, &r);
           /* a real sp_PolyArray of boxed symbols, so chained ops like
              `.map(&:to_s).sort` iterate it (a boxed SYM_ARRAY obj is opaque
              to the poly-array path and iterated as empty) */
