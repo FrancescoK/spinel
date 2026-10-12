@@ -10239,10 +10239,15 @@ static int bx_revert_widened(Compiler *c, int id) {
   return 1;
 }
 
-/* After the fixpoint: the rewritten calls whose receiver has widened since */
+/* After the fixpoint: the rewritten calls whose receiver has widened since.
+   Not under --int-overflow=promote: there an Integer the backstops boxed is
+   still the Integer-or-Bignum the copy serves (its Bignum arithmetic, its
+   messages, the reopened methods taken into the copies), and the dispatch
+   it would go back to has the machine-Integer arms, or none. */
 int revert_widened_builtin_scalar_calls(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
+  if (g_promote_mode) return 0;
   for (int id = 0; id < nt->count; id++)
     if (nt_kind(nt, id) == NK_CallNode && nt_ref(nt, id, "receiver") < 0)
       changed |= bx_revert_widened(c, id);
