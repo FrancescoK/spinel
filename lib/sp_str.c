@@ -665,7 +665,7 @@ static uint32_t*sp_charset_decode(const char*s,size_t bl,int bin,size_t*out_n){S
   return cps;
 }
 uint32_t*sp_utf8_decode_charset_n(const char*s,size_t bl,size_t*out_n){return sp_charset_decode(s,bl,0,out_n);}
-static uint32_t*sp_str_charset(const char*s,const char*cs,int*neg,size_t*n){const char*p=cs;*neg=*p=='^'&&p[1];p+=*neg;return sp_charset_decode(p,sp_str_byte_len(cs)-(size_t)(p-cs),sp_str_is_binary(s),n);}
+static uint32_t*sp_str_charset(const char*s,const char*cs,int*neg,size_t*n){const char*p=cs;*neg=*p=='^'&&sp_str_byte_len(cs)>1;p+=*neg;return sp_charset_decode(p,sp_str_byte_len(cs)-(size_t)(p-cs),sp_str_is_binary(s),n);}
 uint32_t*sp_utf8_decode_charset(const char*s,size_t*out_n){SP_GC_ROOT_STR(s);return sp_utf8_decode_charset_n(s,s?strlen(s):0,out_n);}
 /* Reuse an existing StrArray for split, avoiding GC alloc.
    Clears a->len and refills.  Substring strings are still malloc'd. */
