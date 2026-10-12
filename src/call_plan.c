@@ -2173,10 +2173,11 @@ void cplan_poly_free(PolyPlan *p) {
 
 /* ---- CN_*: a call's nil target (#7444) ---- */
 
-/* the builtin receivers whose nil target the plan decides: a typed pointer
-   whose NULL is nil */
+/* the receivers whose nil target the plan decides: a typed pointer whose
+   NULL is nil, a builtin's or a user object's (repr_of says which object
+   is held as a pointer; a by-value one has no nil) */
 static int cplan_nil_family(TyKind t) {
-  return t == TY_STRING || ty_is_array(t) || ty_is_obj_array(t) || ty_is_hash(t) || t == TY_IO;
+  return t == TY_STRING || ty_is_array(t) || ty_is_obj_array(t) || ty_is_hash(t) || t == TY_IO || ty_is_object(t);
 }
 
 /* Does the program give nil a method `name` of its own: on NilClass,
@@ -2215,8 +2216,10 @@ int cplan_nil(Compiler *c, int id) {
   if (!(cplan_nil_family(rt) || exc_text || (rt == TY_STRBUF && c->share_strings)) || comp_ntype(c, r) != rt) return CN_NONE;
   Repr rr = repr_of(c, r);
   if ((rr.kind != RK_PTR && rr.kind != RK_STRBUF) || !rr.may_nil || rr.nil_tested) return CN_NONE;
-  /* an ivar keeps the release build's policy (ivar_nil_recv_guard, #5960);
-     a class variable's arms write back into it */
+  /* an ivar keeps the release build's policy (ivar_nil_recv_guard, #5960):
+     a hot path reads one that a reset or a setup fills, and a test in front
+     of every call through it is not paid for; a class variable's arms write
+     back into it */
   NodeKind rk = nt_kind(nt, r);
   if (rk == NK_InstanceVariableReadNode || rk == NK_ClassVariableReadNode) return CN_NONE;
   /* a local or a global is tested in its slot, where a mutator writes
@@ -2251,6 +2254,13 @@ int cplan_nil(Compiler *c, int id) {
     if (!rn || !sp_streq(rn, "__self")) return CN_NONE;
   }
   if (cplan_nil_user_method(c, nm)) return CN_NONE;
+  /* an arm of a lowered `send` on a user object, for a name its class does
+     not define: the arm reaches a Kernel method, which nil answers through
+     send as any object does (`nil.send(:Integer, "12")`) */
+  if (nt_int(nt, id, "dyn_arm", 0) && ty_is_object(rt)) {
+    int k = ty_object_class(rt);
+    if (comp_method_in_chain(c, k, nm, NULL) < 0 && !comp_reader_in_chain(c, k, nm, NULL)) return CN_NONE;
+  }
   /* the typed String bang emitter tests a receiver it does not write back
      into a variable itself (sp_nil_recv), and marks the plain form it emits
      for it: a second test here would only repeat that one */

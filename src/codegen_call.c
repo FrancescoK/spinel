@@ -21834,12 +21834,22 @@ static int nil_target_operands(Compiler *c, int id, int boxed, int *node, TyKind
   int n = 0;
   int r = nt_ref(nt, id, "receiver");
   NodeKind rk = nt_kind(nt, r);
-  if (rk != NK_LocalVariableReadNode && rk != NK_GlobalVariableReadNode && !hc_recv_cached(c, r) &&
+  int a = nt_ref(nt, id, "arguments"), an = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+  /* a user object in a local an argument or the block reassigns
+     (`l.m((l = nil; x))`): the receiver Ruby read first is held, where the
+     slot would be tested after the write */
+  int rebound = 0;
+  if (rk == NK_LocalVariableReadNode && ty_is_object(repr_of(c, r).as_ty)) {
+    const char *ln = nt_str(nt, r, "name");
+    int blk = nt_ref(nt, id, "block");
+    for (int i = 0; ln && i < an && !rebound; i++) rebound = subtree_writes_local(c, av[i], ln);
+    if (ln && blk >= 0 && !rebound) rebound = subtree_writes_local(c, blk, ln);
+  }
+  if ((rk != NK_LocalVariableReadNode || rebound) && rk != NK_GlobalVariableReadNode && !hc_recv_cached(c, r) &&
       !(boxed && (rk == NK_InstanceVariableReadNode || rk == NK_ClassVariableReadNode))) {
     node[n] = r; ty[n] = repr_of(c, r).as_ty; n++;
   }
-  int a = nt_ref(nt, id, "arguments"), an = 0;
-  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
   for (int i = 0; i < an; i++)
     if (!nil_target_operand(c, av[i], a, boxed, node, ty, &n, max)) break;
   return n;
@@ -22039,8 +22049,15 @@ static void emit_nil_target_head(Compiler *c, int id, Buf *b, const char *lead, 
   if (rb.p) buf_printf(b, "{ %s", rb.p);
   /* inside a Ruby-defined builtin (`r.count { }` is `__enum_count(r)`), the
      walk of its own receiver is reported under that method's name */
-  buf_printf(b, "sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil()));%s",
-             enum_walk_name(c, id, r, nt_str(nt, id, "name")), rb.p ? " }" : "");
+  /* the to_ary that converts an Array operator's operand raises CRuby's
+     TypeError for the operand (nil_recv_raise_text) */
+  if (nt_str(nt, id, "ary_conv")) {
+    char nr[160]; nil_recv_raise_text(c, id, nr, sizeof nr);
+    buf_printf(b, "%s;%s", nr, rb.p ? " }" : "");
+  }
+  else
+    buf_printf(b, "sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil()));%s",
+               enum_walk_name(c, id, r, nt_str(nt, id, "name")), rb.p ? " }" : "");
   free(rb.p);
   buf_puts(b, *lead ? "\n" : " ");
 }
@@ -22067,8 +22084,13 @@ static int whole_call_text(const char *p) {
 void emit_nil_cold_test(Compiler *c, int id, int r, Buf *b) {
   buf_puts(b, "if (SP_UNLIKELY((");
   emit_expr(c, r, b);
-  buf_printf(b, ") == NULL)) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil()));",
-             enum_walk_name(c, id, r, nt_str(c->nt, id, "name")));
+  if (nt_str(c->nt, id, "ary_conv")) {
+    char nr[160]; nil_recv_raise_text(c, id, nr, sizeof nr);
+    buf_printf(b, ") == NULL)) %s;", nr);
+  }
+  else
+    buf_printf(b, ") == NULL)) sp_raise_nomethod(sp_nomethod_msg(\"%s\", sp_box_nil()));",
+               enum_walk_name(c, id, r, nt_str(c->nt, id, "name")));
 }
 
 /* A read of an array the loop being emitted caches (hc_array) takes its
@@ -22420,6 +22442,22 @@ int nil_recv_guard(Compiler *c, int id, int *recv_out) {
     if (id == g_ivar_nil_guarded_id) return 0;
     return ivar_nil_recv_guard(c, id, recv_out);
   }
+  /* a local, a parameter, a global or a call's value: the plan's nil target
+     (cplan_nil, #7444) tests it, from the nil fact, ahead of the call */
+  return 0;
+}
+
+/* The shapes the guard decided before the plan's nil target took them
+   (--nil-check's helper side, nil_check_report): a global some write sets to
+   nil, a user method's own nil result, a local written nil or a parameter
+   handed one */
+static int nil_recv_guard_legacy(Compiler *c, int id, int *recv_out) {
+  const NodeTable *nt = c->nt;
+  int recv = nt_ref(nt, id, "receiver");
+  const char *nm = nt_str(nt, id, "name");
+  if (!nm || nil_answers_call(nm)) return 0;
+  Repr rr = repr_of(c, recv);
+  TyKind rt = rr.as_ty;
   if (nt_kind(nt, recv) == NK_GlobalVariableReadNode) {
     /* a global some write sets to nil (`$g = nil`), as a local below */
     const char *gn = nt_str(nt, recv, "name");
@@ -22554,7 +22592,7 @@ void nil_check_report(Compiler *c) {
         !nil_guard_writer(c, cid, nm))
       continue;
     int gr = -1;
-    int helper = nil_recv_guard(c, id, &gr) ? 1 : 0;
+    int helper = nil_recv_guard(c, id, &gr) || nil_recv_guard_legacy(c, id, &gr) ? 1 : 0;
     int why = nil_fact_why(c, recv);
     int v = nil_check_verdict(helper, why);
     if (v == NC_HELPER_ONLY && nt_kind(nt, recv) == NK_InstanceVariableReadNode && gr == recv) v = NC_INIT_SET;
