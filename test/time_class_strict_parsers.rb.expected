@@ -1,0 +1,53 @@
+784111777 0 utc=true off=0
+784111777 0 utc=true off=0
+784111777 0 utc=true off=0
+1951721377 0 utc=true off=0
+784111777 0 utc=true off=0
+784975777 0 utc=true off=0
+ArgumentError: not RFC 2616 compliant date: "Sun, 06 Nov 1994 08:49:37 +0000"
+ArgumentError: not RFC 2616 compliant date: "2026-10-11"
+NoMethodError: undefined method 'match?' for nil
+784079377 0 utc=false off=32400
+784129740 0 utc=false off=-18000
+784111777 0 utc=false off=0
+784129777 0 utc=false off=-18000
+784111777 0 utc=true off=0
+784111777 0 utc=true off=0
+784111777 0 utc=true off=0
+784108177 0 utc=false off=3600
+784190977 0 utc=false off=-25200
+ArgumentError: not RFC 2822 compliant date: "Sun, 06 Nov 1994 08:49:37 J"
+ArgumentError: not RFC 2822 compliant date: "Sun 06 Nov 1994 08:49:37 GMT"
+ArgumentError: not RFC 2822 compliant date: nil
+1791708577 0 utc=true off=0
+1791676177 250000000 utc=false off=32400
+1791728377 123456789 utc=false off=-19800
+1791676177 0 utc=false off=32400
+1791708577 0 utc=true off=0
+ArgumentError: invalid xmlschema format: "2026-10-11Z"
+ArgumentError: invalid xmlschema format: "2026-10-11T08:49"
+ArgumentError: mon out of range
+ArgumentError: invalid xmlschema format: nil
+1772337600 0 utc=false off=-18000
+762494400 0 utc=false off=-18000
+762465600 0 utc=false off=18000
+1798763400 0 utc=false off=-3600
+784145977 0 utc=false off=-34200
+ArgumentError: not RFC 2616 compliant date: "Sun, 06 Nov 1994 08:49:37 GMT\u0000"
+ArgumentError: invalid xmlschema format: "2026-10-11T08:49:37Z\u0000"
+TypeError: no implicit conversion of Integer into String
+TypeError: no implicit conversion of Float into String
+NoMethodError: undefined method 'match?' for an instance of Integer
+NoMethodError: undefined method 'match?' for nil
+[2026, 10, 11, 8, 49, 37, false]
+true
+true
+true
+true
+true
+-62135560800 0 utc=false off=0
+-62135596800 0 utc=true off=0
+-1
+784111777
+NoMethodError match?
+NoMethodError match?

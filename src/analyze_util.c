@@ -3324,3 +3324,31 @@ int is_builtin_module_const_name(const char *n) {
   for (int i = 0; names[i]; i++) if (sp_streq(names[i], n)) return 1;
   return is_builtin_module_name(n);
 }
+
+/* Call `id` is a `require "time"` class parser that reads one fixed format
+   -- Time.httpdate, rfc2822 / rfc822, xmlschema / iso8601 -- on the builtin
+   Time, with its one argument: the runtime function that parses it, else
+   NULL (not one of them, no `require "time"`, a wrong argument count, or a
+   program whose Time has its own class method of that name). */
+const char *time_strict_parser_call(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  if (!name) return NULL;
+  const char *fn = sp_streq(name, "httpdate") ? "sp_time_s_httpdate"
+                 : (sp_streq(name, "rfc2822") || sp_streq(name, "rfc822")) ? "sp_time_s_rfc2822"
+                 : (sp_streq(name, "xmlschema") || sp_streq(name, "iso8601")) ? "sp_time_s_xmlschema"
+                 : NULL;
+  if (!fn || !sp_feature_required("time")) return NULL;
+  int recv = nt_ref(nt, id, "receiver");
+  const char *rn = recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode ? nt_str(nt, recv, "name") : NULL;
+  if (!rn || !sp_streq(rn, "Time") || nt_ref(nt, id, "block") >= 0) return NULL;
+  int args = nt_ref(nt, id, "arguments");
+  int an = 0;
+  const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  if (an != 1) return NULL;
+  NodeKind ak = nt_kind(nt, av[0]);
+  if (ak == NK_SplatNode || ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode) return NULL;
+  int tci = comp_class_index(c, "Time");
+  if (tci >= 0 && comp_cmethod_in_chain(c, tci, name, NULL) >= 0) return NULL;
+  return fn;
+}

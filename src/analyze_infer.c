@@ -3386,6 +3386,9 @@ static int infer_builtin_cmethod_call(Compiler *c, int id, const NodeTable *nt, 
          sp_streq(name, "mktime") || sp_streq(name, "utc") || sp_streq(name, "gm") ||
          sp_streq(name, "new")))
       { *out = TY_TIME; return 1; }
+    /* Time.httpdate / rfc2822 / xmlschema (require "time"), unless the
+       program's Time has its own class method of that name */
+    if (time_strict_parser_call(c, id)) { *out = TY_TIME; return 1; }
     if (rty && sp_streq(rty, "ConstantReadNode") &&
         nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "GC") &&
         (sp_streq(name, "start") || sp_streq(name, "compact")))
