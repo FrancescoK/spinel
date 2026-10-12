@@ -13,3 +13,5 @@ nil
 ""
 "ef\n"
 nil
+[IOError, "closed stream"]
+[IOError, "closed stream"]
