@@ -1710,7 +1710,11 @@ void an_cls_facts(Compiler *c) {
     Scope *s = &c->scopes[mi];
     f.has_super[mi] = (unsigned char)cf_scope_has_super(&f, mi);
     if (!s->name) continue;
-    if (cf_protocol_name(s->name) || cf_is_dyn(&f, s->name) || s->is_proc_form || s->is_lowered_yield ||
+    /* a method named like a call the analysis does not follow (`bind`,
+       `send`, ...): such a call binds nothing, so its parameters are left
+       to hold anything rather than nothing (#8720) */
+    if (cf_protocol_name(s->name) || cf_opaque_name(s->name) || cf_is_dyn(&f, s->name) ||
+        s->is_proc_form || s->is_lowered_yield ||
         s->cs_synth || s->is_module_function || cf_prelude_scope(&f, mi)) {
       f.protocol[mi] = 1;
       cf_all_params(&f, mi);
@@ -1800,16 +1804,7 @@ int cls_fact_bounded(Compiler *c, int k) {
 /* See compiler.h. */
 int cls_fact_excludes(Compiler *c, int recv, int k) {
   const ClsSet *s = cls_fact_node(c, recv);
-  /* A fact with zero real classes carries no positive information -- every
-     value the program runs belongs to at least one class, so this reading
-     is as uninformative as having no fact at all (cls_fact_node already
-     answers NULL for CF_ALL). Excluding on it anyway, class by class, can
-     zero out every candidate for a call that genuinely has one: a fixpoint
-     miscomputation that drops a receiver's real classes (rather than simply
-     failing to narrow them) then reads identically to "this value holds
-     none of your classes", which silently turns a dispatch into a raise
-     instead of a missed optimization. */
-  if (!s || s->n == 0 || !cls_fact_bounded(c, k)) return 0;
+  if (!s || !cls_fact_bounded(c, k)) return 0;
   for (int i = 0; i < s->n; i++) if (s->cls[i] == k) return 0;
   return 1;
 }
