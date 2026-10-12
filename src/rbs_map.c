@@ -339,13 +339,12 @@ else {
      *
      * 1. Source wrote `::Const` (absolute): use the bare name as-is,
      *    never prepend the enclosing scope (issue #656).
-     * 2. Source wrote unqualified `Const` and we're inside a class/
+     * 2. Source wrote `Const` or a relative path `A::B` inside a class/
      *    module scope: walk the lexical chain from innermost outward
      *    and pick the first qualified name present in known_names.
-     *    Fall back to bare when no candidate matches (matches Ruby's
-     *    `::Const` resolution at top-level).
-     * 3. Source wrote qualified `A::B::C`: use as-is (name already
-     *    contains the full path via name_of_type_name).
+     *    Fall back to the name as written when no candidate matches
+     *    (matches Ruby's top-level resolution).
+     * 3. Outside any scope: use the name as written.
      */
     sbuf_set(out, "obj_", 4);
     bool absolute = (ci->name != NULL && ci->name->rbs_namespace != NULL
@@ -370,18 +369,21 @@ else {
     if (self_resolved) {
         /* resolved against the declaration's own namespace */
     }
-else if (!absolute && enclosing_scope != NULL && enclosing_scope[0] != '\0'
-        && type_name_is_unqualified(ci->name)) {
-        /* Walk the lexical chain: try `<chain>_<name>` for each suffix
-         * of enclosing_scope (innermost outward), then top-level. */
+else if (!absolute && enclosing_scope != NULL && enclosing_scope[0] != '\0') {
+        /* Walk the lexical chain, innermost outward: the enclosing scope,
+         * then each scope that contains it, then the top level. A
+         * qualified name walks it too -- `Mid::Leaf` inside `module
+         * Outer` is `Outer::Mid::Leaf` -- as Ruby resolves the first
+         * segment of a constant path. `Views_Articles_Helpers` tries
+         * `Views_Articles_Helpers_<name>`, `Views_Articles_<name>`,
+         * `Views_<name>`, then `<name>`. */
         sbuf_t candidate;
         sbuf_init(&candidate);
-        const char *scope_end = enclosing_scope + strlen(enclosing_scope);
-        const char *cur = enclosing_scope;
+        size_t plen = strlen(enclosing_scope);
         bool resolved = false;
-        while (cur != NULL && cur < scope_end) {
+        while (plen > 0) {
             candidate.len = 0;
-            sbuf_append(&candidate, cur, scope_end - cur);
+            sbuf_append(&candidate, enclosing_scope, plen);
             sbuf_append_cstr(&candidate, "_");
             sbuf_append(&candidate, name.buf, name.len);
             if (known_names_has(candidate.buf)) {
@@ -389,15 +391,12 @@ else if (!absolute && enclosing_scope != NULL && enclosing_scope[0] != '\0'
                 resolved = true;
                 break;
             }
-            /* Step to the next inner namespace by skipping past the
-             * next "_". `Views_Articles_Helpers` -> `Articles_Helpers`
-             * -> `Helpers` -> done. */
-            const char *next = (const char *) memchr(cur, '_', scope_end - cur);
-            if (next == NULL) break;
-            cur = next + 1;
+            /* drop the innermost segment */
+            while (plen > 0 && enclosing_scope[plen - 1] != '_') plen--;
+            if (plen > 0) plen--;
         }
         if (!resolved) {
-            /* Top-level fallback: emit bare name. */
+            /* Top-level fallback: emit the name as written. */
             sbuf_append(out, name.buf, name.len);
         }
         sbuf_free(&candidate);

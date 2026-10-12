@@ -1,0 +1,19 @@
+# A type name not written with a leading `::` is looked up the way RBS
+# (and Ruby) looks up a constant: in the innermost enclosing namespace,
+# then each outer one, then the top level. That holds for a qualified
+# name too: `Mid::Leaf` inside `module Outer` is `Outer::Mid::Leaf`.
+# A name declared nowhere, or written with `::`, stays as written.
+module Outer
+  class Sibling
+  end
+  module Mid
+    class Inner
+      def a: () -> Sibling
+      def b: () -> Mid::Leaf
+      def c: () -> Nowhere::Thing
+      def d: () -> ::Mid::Leaf
+    end
+    class Leaf
+    end
+  end
+end

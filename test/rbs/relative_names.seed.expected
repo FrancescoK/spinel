@@ -1,0 +1,7 @@
+class Outer
+class Outer_Mid
+class Outer_Mid_Inner
+meth a obj_Outer_Sibling -
+meth b obj_Outer_Mid_Leaf -
+meth c obj_Nowhere_Thing -
+meth d obj_Mid_Leaf -
