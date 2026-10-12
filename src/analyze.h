@@ -139,6 +139,9 @@ int an_re_has_captures(const char *src);
    pickup of a call to it then answers the call's nil as nil
    (an_tail_is_shared_handle). */
 int an_tail_answers_nil(Compiler *c, int mi);
+/* A String `||` or `&&` over a String left operand: a tail whose operands
+   are its arms (an_tail_is_shared_handle, emit_tail_value). */
+int an_tail_logic_op(Compiler *c, int node);
 int an_send_name_is_computed(Compiler *c, int arg);
 /* Is scope si an iterator synth_struct_each generated, not a def? */
 int scope_is_struct_synth(Compiler *c, int si);
