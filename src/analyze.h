@@ -529,4 +529,10 @@ int gather_reaches(Compiler *c, Scope *m, const int *argv, int pos_argc, int gat
 int zsuper_kw_positional(Compiler *c, Scope *s, Scope *pm);
 int an_thread_arg_block(Compiler *c, int n);
 int cap_wrap_mutates_param(Compiler *c, int blk, const char *bp);
+int std_stream_boxed(Compiler *c, const char *nm);   /* $stdout/$stderr may hold a non-IO */
+int std_stream_assigned(Compiler *c, const char *nm);   /* ... or is assigned at all */
+int std_stream_value_classes(Compiler *c, char *set);   /* classes the streams' stores hold; 0: unbounded */
+int std_stream_foreign_writer(Compiler *c, const char *nm);   /* an object output cannot write to */
+int std_stream_bare_call_own(Compiler *c, int id, const char *nm);   /* bare nm reaches the program's own */
+
 #endif

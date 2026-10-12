@@ -8299,6 +8299,219 @@ int desugar_kernel_recv(Compiler *c) {
   return changed;
 }
 
+/* The bare output calls once the program assigns $stdout. Kernel#puts is
+   `$stdout.puts`, Kernel#print writes through `$stdout`, Kernel#p writes
+   the inspected value with `$stdout.write` and Kernel#printf the formatted
+   text, so a program that swaps a StringIO in (minitest's capture_io) or a
+   File captures what the bare calls print. They wrote to the C stream
+   directly and the swap was silently ignored. Each becomes its spelling
+   through `$stdout`, which reads what the program stored there (the stream
+   itself until then) and dispatches on it:
+     puts a, b        ->  $stdout.puts(a, b)
+     print a          ->  $stdout.print(a)
+     p f(x)           ->  (t = f(x); $stdout.write(t.inspect + "\n");
+                           $stdout.flush if $stdout.is_a?(IO); t)
+     p x, y           ->  (t = x; u = y; ...write t, then u...; [t, u])
+     printf(f, a)     ->  ($stdout.write(format(f, a)); nil)
+   (a plain read or literal is used twice, without the temporary). A name
+   the program defines for itself (its own puts, on Kernel or Object, or on
+   an instance_eval block's receiver) is left alone, as is
+   a print with no argument (it prints $_), a puts / print with a splat, and
+   a puts / print while $stdout can hold an object with a write but not that
+   method (std_stream_foreign_writer). The shapes left over (pp, putc,
+   a splatted p) are refused by the emitter (refuse_unredirected_output). */
+static int sbo_stdout_read(Compiler *c, int at) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int gv = nt_new_node(nt, "GlobalVariableReadNode");
+  if (gv < 0) return -1;
+  nt_node_set_str(nt, gv, "name", "$stdout");
+  nt_node_set_int(nt, gv, "node_line", nt_int(nt, at, "node_line", 0));
+  nt_node_set_int(nt, gv, "node_file", nt_int(nt, at, "node_file", 0));
+  return gv;
+}
+static int sbo_call(NodeTable *nt, int recv, const char *name, const int *argv, int argc, int at) {
+  int cl = nt_new_node(nt, "CallNode");
+  if (cl < 0) return -1;
+  nt_node_set_str(nt, cl, "name", name);
+  nt_node_set_ref(nt, cl, "receiver", recv);
+  int an = -1;
+  if (argc > 0) {
+    an = nt_new_node(nt, "ArgumentsNode");
+    if (an < 0) return -1;
+    nt_node_set_arr(nt, an, "arguments", argv, argc);
+  }
+  nt_node_set_ref(nt, cl, "arguments", an);
+  nt_node_set_ref(nt, cl, "block", -1);
+  nt_node_set_int(nt, cl, "node_line", nt_int(nt, at, "node_line", 0));
+  nt_node_set_int(nt, cl, "node_file", nt_int(nt, at, "node_file", 0));
+  return cl;
+}
+/* Does the bare call `nm` at id reach a method of the program's own rather
+   than Kernel's: the enclosing class's, a top-level def, one on Kernel or
+   Object, or one on an instance_eval block's receiver? */
+int std_stream_bare_call_own(Compiler *c, int id, const char *nm) {
+  if (an_bare_call_class_owned(c, id) || comp_method_index(c, nm) >= 0) return 1;
+  static const char *const roots[] = { "Kernel", "Object", "BasicObject" };
+  for (int r = 0; r < 3; r++) {
+    int rc = comp_class_index(c, roots[r]);
+    if (rc >= 0 && comp_method_in_chain(c, rc, nm, NULL) >= 0) return 1;
+  }
+  int iec = ie_class_of(c, id);
+  return iec >= 0 && comp_method_in_chain(c, iec, nm, NULL) >= 0;
+}
+static int desugar_std_stream_bare_output(Compiler *c) {
+  if (!std_stream_assigned(c, "$stdout")) return 0;
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  int n0 = nt->count;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode || nt_ref(nt, id, "receiver") >= 0) continue;
+    if (nt_ref(nt, id, "block") >= 0) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm) continue;
+    int is_puts = sp_streq(nm, "puts"), is_print = sp_streq(nm, "print");
+    int is_p = sp_streq(nm, "p"), is_printf = sp_streq(nm, "printf");
+    if (!is_puts && !is_print && !is_p && !is_printf) continue;
+    int args = nt_ref(nt, id, "arguments");
+    int argc = 0;
+    const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+    if ((is_print || is_printf) && argc == 0) continue;
+    if ((is_puts || is_print) && std_stream_foreign_writer(c, nm)) continue;
+    /* a splat or block argument to puts / print is left to the emitter */
+    int plain = 1;
+    for (int k = 0; k < argc && plain && (is_puts || is_print); k++)
+      plain = nt_kind(nt, argv[k]) != NK_SplatNode && nt_kind(nt, argv[k]) != NK_BlockArgumentNode;
+    if (!plain) continue;
+    /* p hands back its argument (several: an Array of them); a splat is
+       left to the emitter, which refuses it */
+    if (is_p) {
+      int plain = argc >= 1 && argc <= 16;
+      for (int k = 0; k < argc && plain; k++)
+        plain = nt_kind(nt, argv[k]) != NK_SplatNode && nt_kind(nt, argv[k]) != NK_BlockArgumentNode;
+      if (!plain) continue;
+    }
+    if (id >= c->node_cap) continue;
+    if (std_stream_bare_call_own(c, id, nm)) continue;
+    /* printf's text comes from Kernel#format: not when the program has a
+       format of its own anywhere (a class's would shadow it there) */
+    if (is_printf) {
+      int own_format = 0;
+      for (int k = 0; k < c->nscopes && !own_format; k++)
+        own_format = c->scopes[k].name && sp_streq(c->scopes[k].name, "format");
+      if (own_format) continue;
+    }
+    Scope *sc = comp_scope_of(c, id);
+    if (!sc) continue;
+    int first = nt->count;
+    long long line = nt_int(nt, id, "node_line", 0), file = nt_int(nt, id, "node_file", 0),
+              col = nt_int(nt, id, "node_col", 0);
+    if (is_puts || is_print) {
+      /* `puts k: 1` prints the Hash */
+      for (int k = 0; k < argc; k++)
+        if (nt_kind(nt, argv[k]) == NK_KeywordHashNode) nt_node_set_type(nt, argv[k], "HashNode");
+      int gv = sbo_stdout_read(c, id);
+      if (gv < 0) continue;
+      nt_node_set_ref(nt, id, "receiver", gv);
+      nt_node_set_int(nt, id, "vcall", 0);
+    }
+    else {
+      /* the text to write, and what the call answers */
+      int stm[64], ns = 0, ok = 1;
+      if (is_p) {
+        /* every argument is evaluated before anything prints */
+        int reads[16], writes[16];
+        for (int k = 0; k < argc && ok; k++) {
+          /* `p k: 1` prints the Hash */
+          if (nt_kind(nt, argv[k]) == NK_KeywordHashNode) nt_node_set_type(nt, argv[k], "HashNode");
+          /* a read, a literal or self is used as it is, twice; anything
+             else is held in a temporary */
+          NodeKind ak = nt_kind(nt, argv[k]);
+          int simple = ak == NK_LocalVariableReadNode || ak == NK_InstanceVariableReadNode ||
+                       ak == NK_SelfNode || ak == NK_NilNode || ak == NK_TrueNode || ak == NK_FalseNode ||
+                       ak == NK_IntegerNode || ak == NK_FloatNode || ak == NK_SymbolNode ||
+                       ak == NK_ConstantReadNode;
+          int w = -1, r1, r2;
+          if (simple) {
+            r1 = argv[k];
+            r2 = nt_clone_subtree(nt, argv[k]);
+            if (r2 < 0) { ok = 0; break; }
+          }
+          else {
+            char tn[64];
+            snprintf(tn, sizeof tn, "__sbo_%s_%d", comp_node_tag(c, id), k);
+            w = nt_new_node(nt, "LocalVariableWriteNode");
+            r1 = nt_new_node(nt, "LocalVariableReadNode"); r2 = nt_new_node(nt, "LocalVariableReadNode");
+            if (w < 0 || r1 < 0 || r2 < 0) { ok = 0; break; }
+            nt_node_set_str(nt, w, "name", tn);
+            nt_node_set_ref(nt, w, "value", argv[k]);
+            nt_node_set_int(nt, w, "depth", 0);
+            nt_node_set_str(nt, r1, "name", tn); nt_node_set_int(nt, r1, "depth", 0);
+            nt_node_set_str(nt, r2, "name", tn); nt_node_set_int(nt, r2, "depth", 0);
+            scope_local_intern(sc, tn);
+          }
+          int nl = nt_new_node(nt, "StringNode");
+          if (nl < 0) { ok = 0; break; }
+          nt_node_set_str(nt, nl, "content", "\n");
+          nt_node_set_str(nt, nl, "unescaped", "\n");
+          int insp = sbo_call(nt, r1, "inspect", NULL, 0, id);
+          int text = insp >= 0 ? sbo_call(nt, insp, "+", &nl, 1, id) : -1;
+          int wr = text >= 0 ? sbo_call(nt, sbo_stdout_read(c, id), "write", &text, 1, id) : -1;
+          if (wr < 0) { ok = 0; break; }
+          if (w >= 0) stm[ns++] = w;
+          writes[k] = wr;
+          reads[k] = r2;
+        }
+        if (!ok) continue;
+        for (int k = 0; k < argc; k++) stm[ns++] = writes[k];
+        /* and flushes an IO it wrote to, as Kernel#p does */
+        int isio = nt_new_node(nt, "ConstantReadNode");
+        if (isio < 0) continue;
+        nt_node_set_str(nt, isio, "name", "IO");
+        int pred = sbo_call(nt, sbo_stdout_read(c, id), "is_a?", &isio, 1, id);
+        int fl = sbo_call(nt, sbo_stdout_read(c, id), "flush", NULL, 0, id);
+        int ts = nt_new_node(nt, "StatementsNode"), ifn = nt_new_node(nt, "IfNode");
+        if (pred < 0 || fl < 0 || ts < 0 || ifn < 0) continue;
+        nt_node_set_arr(nt, ts, "body", &fl, 1);
+        nt_node_set_ref(nt, ifn, "predicate", pred);
+        nt_node_set_ref(nt, ifn, "statements", ts);
+        stm[ns++] = ifn;
+        if (argc == 1) stm[ns++] = reads[0];
+        else {
+          int arr = nt_new_node(nt, "ArrayNode");
+          if (arr < 0) continue;
+          nt_node_set_arr(nt, arr, "elements", reads, argc);
+          stm[ns++] = arr;
+        }
+      }
+      else {
+        int fmt = sbo_call(nt, -1, "format", argv, argc, id);
+        int wr = fmt >= 0 ? sbo_call(nt, sbo_stdout_read(c, id), "write", &fmt, 1, id) : -1;
+        int nil = nt_new_node(nt, "NilNode");
+        if (wr < 0 || nil < 0) continue;
+        stm[ns++] = wr;
+        stm[ns++] = nil;
+      }
+      int stmts = nt_new_node(nt, "StatementsNode");
+      if (stmts < 0) continue;
+      nt_node_set_arr(nt, stmts, "body", stm, ns);
+      /* the node keeps its id, line and file: the parentheses */
+      nt_node_reset(nt, id, "ParenthesesNode");
+      nt_node_set_int(nt, id, "node_line", line);
+      nt_node_set_int(nt, id, "node_file", file);
+      nt_node_set_int(nt, id, "node_col", col);
+      nt_node_set_ref(nt, id, "body", stmts);
+    }
+    comp_grow_node_arrays(c);
+    int encl = c->nscope[id];
+    for (int j = first; j < nt->count; j++) {
+      c->nscope[j] = encl;
+      if (c->node_cbody) c->node_cbody[j] = c->node_cbody[id];
+    }
+    changed = 1;
+  }
+  return changed;
+}
+
 /* `Array[a, b, c]` and `Range.new(lo, hi)` are the constructor spellings of the
    `[a, b, c]` and `(lo..hi)` literals, and both raised NoMethodError -- the
    literal worked and the documented constructor for the same value did not
@@ -40939,6 +41152,7 @@ static void an_phase_infer_fixpoint(Compiler *c) {
     ch |= AN_PASS("desugar_include_math", desugar_include_math(c));             /* include Math: sqrt(x) -> Math.sqrt(x) */
     ch |= AN_PASS("desugar_bare_spawn", desugar_bare_spawn(c));               /* spawn(...) -> Process.spawn(...) */
     ch |= AN_PASS("desugar_kernel_recv", desugar_kernel_recv(c));              /* Kernel.puts x -> puts x */
+    ch |= AN_PASS("desugar_std_stream_bare_output", desugar_std_stream_bare_output(c));  /* puts x -> $stdout.puts x, once $stdout can hold a StringIO */
     ch |= AN_PASS("desugar_class_literal_ctors", desugar_class_literal_ctors(c));      /* Array[a,b] -> [a,b]; Range.new -> (a..b) */
     ch |= AN_PASS("desugar_enum_iter_splat_args", desugar_enum_iter_splat_args(c));     /* enum.map(*a, &b) -> enum.map(&b) */
     ch |= AN_PASS("desugar_enum_pair_lone_param", desugar_enum_pair_lone_param(c));     /* a.each_with_index.map { |x| } -> { |x, i| } */

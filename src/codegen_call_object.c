@@ -2408,7 +2408,9 @@ int emit_call_print_arms(Compiler *c, Buf *b, const NodeTable *nt, const char *n
   if (recv >= 0 && argc >= 0 && nt_type(nt, recv) &&
       sp_streq(nt_type(nt, recv), "GlobalVariableReadNode")) {
     const char *gvnm = nt_str(nt, recv, "name");
-    if (gvnm && (is_standard_output_global(gvnm))) {
+    /* a stream slot that can hold a non-IO reads boxed: its call goes
+       through the receiver's own class (StringIO#puts), not to the fd */
+    if (gvnm && (is_standard_output_global(gvnm)) && !std_stream_boxed(c, gvnm)) {
       int is_err = gvnm[1] == 's' && gvnm[2] == 't' && gvnm[3] == 'd' && gvnm[4] == 'e';
       const char *fd = is_err ? "stderr" : "stdout";
       if (is_text_print(name)) {

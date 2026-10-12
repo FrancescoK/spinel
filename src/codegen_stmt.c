@@ -806,6 +806,33 @@ void system_refuse_unsupported(Compiler *c, int id, const int *argv, int argc) {
   }
 }
 
+/* A bare output call still writing to the C stream in a program that
+   assigns $stdout. The analysis sends puts, print, printf and p through
+   `$stdout` (desugar_std_stream_bare_output); what reaches the
+   emitter bare would print past whatever the program stored there, so it is
+   refused rather than printed to the wrong place. */
+void refuse_unredirected_output(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  if (!name || nt_ref(nt, id, "receiver") >= 0) return;
+  int args = nt_ref(nt, id, "arguments");
+  int argc = 0;
+  if (args >= 0) nt_arr(nt, args, "arguments", &argc);
+  int prints = sp_streq(name, "puts") || sp_streq(name, "print") ||
+               ((sp_streq(name, "p") || sp_streq(name, "pp") || sp_streq(name, "printf") ||
+                 sp_streq(name, "putc")) && argc > 0);
+  if (!prints || !std_stream_assigned(c, "$stdout")) return;
+  if (bare_call_class_owned(c, id) || std_stream_bare_call_own(c, id, name)) return;
+  char msg[200];
+  if ((sp_streq(name, "puts") || sp_streq(name, "print")) && std_stream_foreign_writer(c, name))
+    snprintf(msg, sizeof msg, "%s while $stdout can hold an object whose class has a write but no %s", name, name);
+  else
+    snprintf(msg, sizeof msg, "%s%s while the program reassigns $stdout (puts, print, printf and p"
+             " without a splat or block argument write through it)", name,
+             sp_streq(name, "print") && argc == 0 ? " with no argument" : "");
+  unsupported(c, id, msg);
+}
+
 int emit_output_call(Compiler *c, int id, Buf *b, int indent) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -815,6 +842,7 @@ int emit_output_call(Compiler *c, int id, Buf *b, int indent) {
      (it sits above Kernel), then the top-level table (Object) */
   if (bare_call_class_owned(c, id)) return 0;
   if (comp_method_index(c, name) >= 0) return 0;
+  refuse_unredirected_output(c, id);
   int args = nt_ref(nt, id, "arguments");
   int argc = 0;
   const int *argv = NULL;
@@ -1077,13 +1105,19 @@ else {
         }
       }
     }
-    /* When the program reassigns `$stderr` to a StringIO, redirect warn to it
-       at runtime (gv_stderr is NULL until reassigned, so the default path still
-       writes to the real stderr) (#3113). */
+    /* When the program stores a StringIO into `$stderr` (#3113), its slot is
+       boxed and holds the standard stream until then: the message goes to
+       whichever it holds at the call (nil: never assigned). The only non-IO
+       it can hold is a StringIO unless the program has another class with a
+       write, whose own write warn would have to call. */
     LocalVar *serr = comp_gvar(c, "stderr");
-    int redirect = serr && ty_is_object(serr->type) && ty_object_class(serr->type) >= 0 &&
-                   c->classes[ty_object_class(serr->type)].c_name &&
-                   sp_streq(c->classes[ty_object_class(serr->type)].c_name, "StringIO");
+    int redirect_boxed = -1;
+    if (std_stream_boxed(c, "$stderr")) {
+      int sio = comp_class_index(c, "StringIO");
+      if (std_stream_foreign_writer(c, NULL))
+        unsupported(c, id, "warn while $stderr can hold an object whose class has its own write");
+      else if (sio >= 0) redirect_boxed = sio;
+    }
     /* ...and to the handle it holds when that is an IO (`$stderr = $stdout`,
        a File): the stream its own puts writes to */
     const char *wfp = serr && serr->type == TY_IO ? "(gv_stderr ? gv_stderr->fp : stderr)" : "stderr";
@@ -1146,34 +1180,29 @@ else {
       if (up_pre[0]) {
         emit_indent(b, indent);
         if (guard[0]) buf_printf(b, "if (%s) ", guard);
-        if (redirect) {
-          buf_puts(b, "{ if (gv_stderr) sp_StringIO_write(gv_stderr, ");
+        if (redirect_boxed >= 0) {
+          buf_printf(b, "{ sp_RbVal _ge = gv_stderr; if (_ge.tag == SP_TAG_OBJ && _ge.cls_id == %d)"
+                        " sp_StringIO_write((sp_StringIO *)_ge.v.p, ", redirect_boxed);
           emit_str_literal(b, up_pre);
-          buf_puts(b, ");\nelse fputs(");
+          buf_puts(b, "); else fputs(");
           emit_str_literal(b, up_pre);
-          buf_puts(b, ", stderr); }\n");
+          buf_puts(b, ", sp_poly_warn_fp(_ge)); }\n");
         }
         else { buf_puts(b, "fputs("); emit_str_literal(b, up_pre); buf_printf(b, ", %s);\n", wfp); }
         up_pre[0] = 0;
       }
       TyKind at = comp_ntype(c, argv[k]);
-      if (redirect) {
-        /* stringify into a temp, then branch on the live $stderr redirect */
-        int wt = ++g_tmp;
-        emit_indent(b, indent); buf_printf(b, "const char *_t%d = ", wt);
-        switch (at) {
-        case TY_STRING: emit_expr(c, argv[k], b); break;
-        case TY_INT: buf_puts(b, "sp_int_to_s("); emit_expr(c, argv[k], b); buf_puts(b, ")"); break;
-        case TY_FLOAT: buf_puts(b, "sp_float_to_s("); emit_expr(c, argv[k], b); buf_puts(b, ")"); break;
-        case TY_SYMBOL: buf_puts(b, "sp_sym_to_s("); emit_expr(c, argv[k], b); buf_puts(b, ")"); break;
-        default: buf_puts(b, "sp_poly_to_s("); emit_boxed(c, argv[k], b); buf_puts(b, ")"); break;
-        }
-        buf_puts(b, ";\n");
-        emit_indent(b, indent);
-        if (guard[0]) buf_printf(b, "if (%s) {\n", guard);
-        buf_printf(b, "if (gv_stderr) { sp_StringIO_write(gv_stderr, _t%d); sp_StringIO_write(gv_stderr, \"\\n\"); }"
-                      "\nelse { fputs(_t%d, stderr); fputc('\\n', stderr); }\n", wt, wt);
-        if (guard[0]) { emit_indent(b, indent); buf_puts(b, "}\n"); }
+      if (redirect_boxed >= 0) {
+        /* rendered as warn renders it, into the StringIO the slot holds, else
+           onto the stream it holds (the standard one while never assigned) */
+        int wt3 = ++g_tmp;
+        emit_indent(b, indent); buf_printf(b, "{ sp_RbVal _t%d = ", wt3);
+        emit_boxed(c, argv[k], b);
+        buf_printf(b, "; sp_RbVal _ge = gv_stderr; ");
+        if (guard[0]) buf_printf(b, "if (%s) ", guard);
+        buf_printf(b, "{ if (_ge.tag == SP_TAG_OBJ && _ge.cls_id == %d) "
+                      "sp_StringIO_write((sp_StringIO *)_ge.v.p, sp_poly_warn_text(_t%d)); "
+                      "else sp_poly_warn_line(_t%d, sp_poly_warn_fp(_ge)); } }\n", redirect_boxed, wt3, wt3);
         continue;
       }
       /* every message renders like puts: an Array writes one line per element,

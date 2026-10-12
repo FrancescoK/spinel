@@ -4981,6 +4981,19 @@ int infer_global_const_types(Compiler *c) {
     if (merged != lv->type) { lv->type = merged; changed = 1; }
   }
   changed |= gvar_implicit_nil_writes(c);
+  /* $stdout / $stderr start out holding the standard stream, so a program
+     that stores anything else into one (a StringIO, an object with its own
+     write) gets a slot that holds either: the IO the read answers before the
+     first assignment, or what was stored. Typed as only the stored class,
+     the read before the assignment had no value to give, and the stream
+     reads fell back to the real one. */
+  static const char *const std_streams[] = { "stdout", "stderr" };
+  for (int k = 0; k < 2; k++) {
+    LocalVar *sv = comp_gvar(c, std_streams[k]);
+    if (!sv || sv->type == TY_UNKNOWN || sv->type == TY_IO || sv->type == TY_POLY) continue;
+    sv->type = TY_POLY;
+    changed = 1;
+  }
   return changed;
 }
 

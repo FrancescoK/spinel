@@ -2691,6 +2691,11 @@ static int emit_ivar_cvar_gvar_expr(Compiler *c, int id, Buf *b, const NodeTable
       const char *gv = sp_streq(nm, "$stdout") ? "gv_stdout" : "gv_stderr";
       LocalVar *sv = comp_gvar(c, nm + 1);
       if (sv && sv->type == TY_IO) buf_printf(b, "(%s ? %s : %s)", gv, gv, base);
+      /* a slot that can hold a non-IO (`$stdout = StringIO.new`) is boxed;
+         nil there means never assigned, which reads as the stream itself
+         (assigning nil raises TypeError in Ruby) */
+      else if (std_stream_boxed(c, nm))
+        buf_printf(b, "(sp_poly_nil_p(%s) ? sp_box_nullable_obj((void *)(%s), SP_BUILTIN_IO) : %s)", gv, base, gv);
       else buf_puts(b, base);
       return 1;
     }
