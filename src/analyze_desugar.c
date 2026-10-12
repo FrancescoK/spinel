@@ -14555,60 +14555,68 @@ int desugar_builtin_reopen_methods(Compiler *c) {
  * whose self is something else (class_eval, instance_eval, define_method,
  * Class.new, ...) and nested class/def bodies are not entered. */
 /* Does subtree n hand the block parameter `bp` (NULL: the anonymous `&`)
-   to an instance_eval / instance_exec on a receiver other than self? */
-static int cbi_hands_block_to_ie(const NodeTable *nt, int n, const char *bp, int depth) {
+   to an instance_eval / instance_exec on a receiver other than self? With
+   `any_self`, to any of the eval / exec family on any receiver, self too:
+   an instance method's self is the instance, not the class. */
+static int cbi_hands_block_to_ie(const NodeTable *nt, int n, const char *bp, int any_self, int depth) {
   if (n < 0 || depth > 256) return 0;
   NodeKind k = nt_kind(nt, n);
   if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode) return 0;
   if (k == NK_CallNode) {
     const char *cn = nt_str(nt, n, "name");
     int r = nt_ref(nt, n, "receiver"), ba = nt_ref(nt, n, "block");
-    if (cn && (sp_streq(cn, "instance_eval") || sp_streq(cn, "instance_exec")) && r >= 0 &&
-        nt_kind(nt, r) != NK_SelfNode && ba >= 0 && nt_kind(nt, ba) == NK_BlockArgumentNode) {
+    int hands = any_self ? cn && is_eval_exec_family(cn)
+                         : cn && (sp_streq(cn, "instance_eval") || sp_streq(cn, "instance_exec")) &&
+                           r >= 0 && nt_kind(nt, r) != NK_SelfNode;
+    if (hands && ba >= 0 && nt_kind(nt, ba) == NK_BlockArgumentNode) {
       int e = nt_ref(nt, ba, "expression");
       const char *en = e >= 0 ? nt_str(nt, e, "name") : NULL;
       if (e < 0 ? !bp : (en && bp && sp_streq(en, bp))) return 1;
     }
   }
   for (int i = 0; i < nt_num_refs(nt, n); i++)
-    if (cbi_hands_block_to_ie(nt, nt_ref_at(nt, n, i), bp, depth + 1)) return 1;
+    if (cbi_hands_block_to_ie(nt, nt_ref_at(nt, n, i), bp, any_self, depth + 1)) return 1;
   for (int i = 0; i < nt_num_arrs(nt, n); i++) {
     int an = 0; const int *av = nt_arr_at(nt, n, i, &an);
-    for (int j = 0; j < an; j++) if (cbi_hands_block_to_ie(nt, av[j], bp, depth + 1)) return 1;
+    for (int j = 0; j < an; j++) if (cbi_hands_block_to_ie(nt, av[j], bp, any_self, depth + 1)) return 1;
   }
   return 0;
 }
 
-/* Is `nm` a class method (`def self.nm`) of the program that runs the block
-   it is given with another self: hands it to `x.instance_exec(&block)` on
-   an instance it made (#8659)? The block is that object's, and an @x in it
-   its ivar, not the class's. Computed once per node table. */
-static int cbi_forwards_block_to_instance(const NodeTable *nt, const char *nm) {
+/* Is `nm` a method of the program that runs the block it is given with
+   another self? `inst` 0: a class method (`def self.nm`) that hands it to
+   `x.instance_exec(&block)` on an instance it made (#8659). `inst` 1: an
+   instance method that hands it to an instance_exec / class_eval / ... of
+   any receiver, its own self included (`def run(&b) = instance_exec(&b)`).
+   The block is that object's, and an @x in it its ivar, not the class's.
+   Computed once per node table. */
+static int cbi_forwards_block_to_instance(const NodeTable *nt, const char *nm, int inst) {
   static const NodeTable *memo_nt; static int memo_count;
-  static const char **names; static int nnames;
+  static const char **names[2]; static int nnames[2];
   if (memo_nt != nt || memo_count != nt->count) {
-    free(names); names = NULL; nnames = 0;
-    int cap = 0;
+    int cap[2] = {0, 0};
+    for (int w = 0; w < 2; w++) { free(names[w]); names[w] = NULL; nnames[w] = 0; }
     for (int id = 0; id < nt->count; id++) {
       if (nt_kind(nt, id) != NK_DefNode) continue;
       int dr = nt_ref(nt, id, "receiver");
-      if (dr < 0 || nt_kind(nt, dr) != NK_SelfNode) continue;
+      int w = dr < 0 ? 1 : nt_kind(nt, dr) == NK_SelfNode ? 0 : -1;
+      if (w < 0) continue;
       int pn = nt_ref(nt, id, "parameters");
       int bpn = pn >= 0 ? nt_ref(nt, pn, "block") : -1;
       if (bpn < 0 || nt_kind(nt, bpn) != NK_BlockParameterNode) continue;
       const char *bp = nt_str(nt, bpn, "name");
       if (bp && !bp[0]) bp = NULL;
-      if (!cbi_hands_block_to_ie(nt, nt_ref(nt, id, "body"), bp, 0)) continue;
-      if (nnames >= cap) {
-        cap = cap ? cap * 2 : 8;
-        names = realloc(names, sizeof *names * (size_t)cap);
-        if (!names) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      if (!cbi_hands_block_to_ie(nt, nt_ref(nt, id, "body"), bp, w, 0)) continue;
+      if (nnames[w] >= cap[w]) {
+        cap[w] = cap[w] ? cap[w] * 2 : 8;
+        names[w] = realloc(names[w], sizeof *names[w] * (size_t)cap[w]);
+        if (!names[w]) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
       }
-      names[nnames++] = nt_str(nt, id, "name");
+      names[w][nnames[w]++] = nt_str(nt, id, "name");
     }
     memo_nt = nt; memo_count = nt->count;
   }
-  for (int i = 0; i < nnames; i++) if (names[i] && sp_streq(names[i], nm)) return 1;
+  for (int i = 0; i < nnames[inst]; i++) if (names[inst][i] && sp_streq(names[inst][i], nm)) return 1;
   return 0;
 }
 
@@ -14625,7 +14633,35 @@ static int cbi_self_changing_block(const NodeTable *nt, int call) {
   int r = nt_ref(nt, call, "receiver");
   NodeKind rk = r >= 0 ? nt_kind(nt, r) : NK_SelfNode;
   return (rk == NK_SelfNode || rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) &&
-         nt_ref(nt, call, "block") >= 0 && cbi_forwards_block_to_instance(nt, nm);
+         nt_ref(nt, call, "block") >= 0 && cbi_forwards_block_to_instance(nt, nm, 0);
+}
+
+/* a literal of a builtin value: no method of the program's is reached on it */
+static int cev_literal(const NodeTable *nt, int r) {
+  NodeKind k = r >= 0 ? nt_kind(nt, r) : NK_SelfNode;
+  return k == NK_ArrayNode || k == NK_HashNode || k == NK_RangeNode || k == NK_StringNode ||
+         k == NK_InterpolatedStringNode || k == NK_SymbolNode || k == NK_IntegerNode ||
+         k == NK_FloatNode || k == NK_RegularExpressionNode || k == NK_XStringNode;
+}
+/* The same question inside a class_eval block (desugar_class_eval_ivars),
+   whose ivars are rewritten where the block keeps the class as self. 0:
+   it does; 1: it rebinds self; 2: it may, the name matching a method of
+   the program's that runs its block with another self, on a receiver that
+   could reach it -- what the method is is not known this early.
+   `X.new { }` on a builtin class other than Class, Module or Struct
+   (Array, Hash, Thread, ...) keeps the caller's self. */
+static int cev_self_changing_block(const NodeTable *nt, int call) {
+  const char *nm = nt_str(nt, call, "name");
+  if (!nm) return 0;
+  int r = nt_ref(nt, call, "receiver");
+  if (sp_streq(nm, "new")) {
+    const char *rn = r >= 0 && nt_kind(nt, r) == NK_ConstantReadNode ? nt_str(nt, r, "name") : NULL;
+    return !(rn && is_builtin_class_name(rn) && !sp_streq(rn, "Class") && !sp_streq(rn, "Module") &&
+             !sp_streq(rn, "Struct"));
+  }
+  if (cbi_self_changing_block(nt, call)) return 1;
+  if (nt_ref(nt, call, "block") < 0 || cev_literal(nt, r)) return 0;
+  return cbi_forwards_block_to_instance(nt, nm, 0) || cbi_forwards_block_to_instance(nt, nm, 1) ? 2 : 0;
 }
 
 /* `@x op= v` / `@x ||= v` / `@x &&= v` spelled as the plain read and write
@@ -14682,14 +14718,22 @@ static void cbi_lower_op_writes(NodeTable *nt, int node) {
 /* A proc handed to one of those calls as an argument -- `define_method(:k,
    -> { @v })`, or a local holding it, `define_method(:h, pr)` -- runs with
    the other self too: the locals so passed, to leave their procs alone. */
-typedef struct { const char *names[64]; int n; } CbiProcLocals;
+typedef struct {
+  const char *names[64]; int n;
+  /* desugar_class_eval_ivars' walk: its own question of which blocks
+     rebind self, and the calls it is unsure of (cev_self_changing_block) */
+  int cev; int doubt[64]; int ndoubt;
+} CbiProcLocals;
+static int cbi_rebinds_self(const NodeTable *nt, int call, const CbiProcLocals *pl) {
+  return pl->cev ? cev_self_changing_block(nt, call) != 0 : cbi_self_changing_block(nt, call);
+}
 
 static void cbi_proc_locals(const NodeTable *nt, int node, CbiProcLocals *pl) {
   if (node < 0) return;
   NodeKind k = nt_kind(nt, node);
   if (k == NK_ClassNode || k == NK_ModuleNode || k == NK_DefNode || k == NK_SingletonClassNode)
     return;
-  if (k == NK_CallNode && cbi_self_changing_block(nt, node)) {
+  if (k == NK_CallNode && cbi_rebinds_self(nt, node, pl)) {
     int an = nt_ref(nt, node, "arguments");
     int ac = 0; const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
     int ba = nt_ref(nt, node, "block");
@@ -14710,8 +14754,8 @@ static void cbi_proc_locals(const NodeTable *nt, int node, CbiProcLocals *pl) {
   }
 }
 
-/* the ivar name a `defined?(@x)` asks of, else NULL */
-static const char *cbi_defined_ivar(const NodeTable *nt, int node) {
+/* the ivar read a `defined?(@x)` asks of, else -1 */
+static int cbi_defined_ivar_node(const NodeTable *nt, int node) {
   int v = nt_ref(nt, node, "value");
   /* through single-statement parentheses: `defined?((@x))` */
   while (v >= 0 && nt_kind(nt, v) == NK_ParenthesesNode) {
@@ -14719,19 +14763,26 @@ static const char *cbi_defined_ivar(const NodeTable *nt, int node) {
     const int *bb = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &bn) : NULL;
     v = bn == 1 ? bb[0] : -1;
   }
-  return v >= 0 && nt_kind(nt, v) == NK_InstanceVariableReadNode ? nt_str(nt, v, "name") : NULL;
+  return v >= 0 && nt_kind(nt, v) == NK_InstanceVariableReadNode ? v : -1;
+}
+/* its name, else NULL */
+static const char *cbi_defined_ivar(const NodeTable *nt, int node) {
+  int v = cbi_defined_ivar_node(nt, node);
+  return v >= 0 ? nt_str(nt, v, "name") : NULL;
 }
 
 /* `no_procs`: in the arguments of a self-changing call, whose procs are
    entered by the other self */
 static void cbi_collect(const NodeTable *nt, int node, int in_block, int no_procs,
-                        const CbiProcLocals *pl, int *hits, int *nhits, int cap, int *trigger) {
+                        CbiProcLocals *pl, int *hits, int *nhits, int cap, int *trigger) {
   if (node < 0) return;
   NodeKind k = nt_kind(nt, node);
   if (k == NK_ClassNode || k == NK_ModuleNode || k == NK_DefNode || k == NK_SingletonClassNode)
     return;
   if ((k == NK_BlockNode || k == NK_LambdaNode) && no_procs) return;
-  if (k == NK_CallNode && cbi_self_changing_block(nt, node)) {
+  if (k == NK_CallNode && pl->cev && pl->ndoubt < 64 && cev_self_changing_block(nt, node) == 2)
+    pl->doubt[pl->ndoubt++] = node;
+  if (k == NK_CallNode && cbi_rebinds_self(nt, node, pl)) {
     /* the receiver and arguments are still body code, their procs are not */
     cbi_collect(nt, nt_ref(nt, node, "receiver"), in_block, no_procs, pl, hits, nhits, cap, trigger);
     cbi_collect(nt, nt_ref(nt, node, "arguments"), in_block, 1, pl, hits, nhits, cap, trigger);
@@ -14748,6 +14799,11 @@ static void cbi_collect(const NodeTable *nt, int node, int in_block, int no_proc
     if (*nhits < cap) hits[(*nhits)++] = node;
     if (k == NK_InstanceVariableReadNode || in_block) *trigger = 1;
   }
+  /* an `@x op= v` is recorded for a caller to lower (cbi_lower_op_writes)
+     before it collects again; it triggers nothing of itself */
+  if ((k == NK_InstanceVariableOperatorWriteNode || k == NK_InstanceVariableOrWriteNode ||
+       k == NK_InstanceVariableAndWriteNode) && *nhits < cap)
+    hits[(*nhits)++] = node;
   /* `defined?(@x)` asks the module's ivar as a whole: it goes to an
      accessor of its own (`Mod.__spinel_civdef_x`) */
   if (k == NK_DefinedNode && cbi_defined_ivar(nt, node)) {
@@ -14799,11 +14855,13 @@ static int civ_name_ok(const char *iv) {
     if (!(isalnum((unsigned char)*q) || *q == '_')) return 0;
   return !isdigit((unsigned char)iv[1]);
 }
-/* the accessor `name` (getter when !setter) in class node m's body, added
-   once */
-static void civ_ensure_accessor(NodeTable *nt, int m, const char *iv, int setter) {
+/* the accessors: `kind` 0 the getter, 1 the setter, 2 `defined?(@x)` */
+static const char *const CIV_ACCESSOR_FMT[] = {
+  "__spinel_civget_%s", "__spinel_civset_%s", "__spinel_civdef_%s" };
+/* the accessor of `kind` in class node m's body, added once */
+static void civ_ensure_accessor(NodeTable *nt, int m, const char *iv, int kind) {
   char mname[256];
-  snprintf(mname, sizeof mname, setter ? "__spinel_civset_%s" : "__spinel_civget_%s", iv + 1);
+  snprintf(mname, sizeof mname, CIV_ACCESSOR_FMT[kind], iv + 1);
   int body = nt_ref(nt, m, "body");
   if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) {
     body = fwd_new_node_like(nt, m, "StatementsNode");
@@ -14816,7 +14874,7 @@ static void civ_ensure_accessor(NodeTable *nt, int m, const char *iv, int setter
   int d = fwd_new_node_like(nt, m, "DefNode");
   int db = fwd_new_node_like(nt, m, "StatementsNode");
   int e;
-  if (setter) {
+  if (kind == 1) {
     e = fwd_new_node_like(nt, m, "InstanceVariableWriteNode");
     int ps = fwd_new_node_like(nt, m, "ParametersNode");
     int rq = fwd_new_node_like(nt, m, "RequiredParameterNode");
@@ -14829,6 +14887,11 @@ static void civ_ensure_accessor(NodeTable *nt, int m, const char *iv, int setter
   else {
     e = fwd_new_node_like(nt, m, "InstanceVariableReadNode");
     nt_node_set_str(nt, e, "name", iv);
+    if (kind == 2) {
+      int q = fwd_new_node_like(nt, m, "DefinedNode");
+      nt_node_set_ref(nt, q, "value", e);
+      e = q;
+    }
   }
   nt_node_set_arr(nt, db, "body", &e, 1);
   nt_node_set_str(nt, d, "name", mname);
@@ -14841,6 +14904,45 @@ static void civ_ensure_accessor(NodeTable *nt, int m, const char *iv, int setter
   if (bn > 0) memcpy(nb + 1, bs, sizeof(int) * (size_t)bn);
   nt_node_set_arr(nt, body, "body", nb, bn + 1);
   free(nb);
+}
+/* the accessor kind (civ_ensure_accessor's) a collected access needs, -1
+   for none, and the ivar it names */
+static int cbi_access_kind(const NodeTable *nt, int id, const char **iv) {
+  NodeKind k = nt_kind(nt, id);
+  int kind = k == NK_InstanceVariableReadNode ? 0 : k == NK_InstanceVariableWriteNode ? 1 :
+             k == NK_DefinedNode ? 2 : -1;
+  *iv = kind == 2 ? cbi_defined_ivar(nt, id) : kind >= 0 ? nt_str(nt, id, "name") : NULL;
+  return kind;
+}
+/* a collected class-level access (cbi_collect) rewritten in place into the
+   call of class `cn`'s accessor: `@x` -> `cn.__spinel_civget_x`, `@x = v` ->
+   `cn.__spinel_civset_x(v)`, `defined?(@x)` -> `cn.__spinel_civdef_x` */
+static void cbi_rewrite_access(NodeTable *nt, int id, const char *cn) {
+  const char *iv0;
+  int kind = cbi_access_kind(nt, id, &iv0);
+  if (kind < 0 || !iv0 || iv0[1] == '@') return;
+  char iv[256]; snprintf(iv, sizeof iv, "%s", iv0);
+  /* the read `defined?` held leaves the tree; passes that scan every ivar
+     read must not take it for an access where the call stands */
+  if (kind == 2) nt_node_reset(nt, cbi_defined_ivar_node(nt, id), "NilNode");
+  int line = (int)nt_int(nt, id, "node_line", 0);
+  int file = (int)nt_int(nt, id, "node_file", 0);
+  int recv = fwd_new_node_like(nt, id, "ConstantReadNode");
+  nt_node_set_str(nt, recv, "name", cn);
+  char mname[256];
+  snprintf(mname, sizeof mname, CIV_ACCESSOR_FMT[kind], iv + 1);
+  int args = -1;
+  if (kind == 1) {
+    int v = nt_ref(nt, id, "value");
+    args = fwd_new_node_like(nt, id, "ArgumentsNode");
+    nt_node_set_arr(nt, args, "arguments", &v, 1);
+  }
+  nt_node_reset(nt, id, "CallNode");
+  nt_node_set_str(nt, id, "name", mname);
+  nt_node_set_ref(nt, id, "receiver", recv);
+  if (args >= 0) nt_node_set_ref(nt, id, "arguments", args);
+  if (line) nt_node_set_int(nt, id, "node_line", line);
+  if (file) nt_node_set_int(nt, id, "node_file", file);
 }
 int desugar_const_ivar_access(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
@@ -14864,7 +14966,7 @@ int desugar_const_ivar_access(Compiler *c) {
     char iv[256]; snprintf(iv, sizeof iv, "%s", iv0);
     civ_ensure_accessor(nt, m, iv, setter);
     char mname[256];
-    snprintf(mname, sizeof mname, setter ? "__spinel_civset_%s" : "__spinel_civget_%s", iv + 1);
+    snprintf(mname, sizeof mname, CIV_ACCESSOR_FMT[setter], iv + 1);
     nt_node_set_str(nt, id, "name", mname);
     if (setter) {
       int v = av[1];
@@ -14874,6 +14976,119 @@ int desugar_const_ivar_access(Compiler *c) {
     }
     else nt_node_set_ref(nt, id, "arguments", -1);
     changed = 1;
+  }
+  if (changed) comp_grow_node_arrays(c);
+  return changed;
+}
+
+/* Does subtree n name an ivar one of the collected accesses names? */
+static int cev_block_shares_ivar(const NodeTable *nt, int n, const int *hits, int nhits) {
+  if (n < 0) return 0;
+  NodeKind k = nt_kind(nt, n);
+  if (k == NK_InstanceVariableReadNode || k == NK_InstanceVariableWriteNode ||
+      k == NK_InstanceVariableOperatorWriteNode || k == NK_InstanceVariableOrWriteNode ||
+      k == NK_InstanceVariableAndWriteNode || k == NK_InstanceVariableTargetNode) {
+    const char *iv = nt_str(nt, n, "name");
+    for (int h = 0; iv && h < nhits; h++) {
+      const char *hv;
+      if (cbi_access_kind(nt, hits[h], &hv) >= 0 && hv && sp_streq(hv, iv)) return 1;
+    }
+  }
+  for (int i = 0; i < nt_num_refs(nt, n); i++)
+    if (cev_block_shares_ivar(nt, nt_ref_at(nt, n, i), hits, nhits)) return 1;
+  for (int i = 0; i < nt_num_arrs(nt, n); i++) {
+    int an = 0; const int *av = nt_arr_at(nt, n, i, &an);
+    for (int j = 0; j < an; j++) if (cev_block_shares_ivar(nt, av[j], hits, nhits)) return 1;
+  }
+  return 0;
+}
+
+/* ---- ivars in a `C.class_eval { ... }` block -----------------------------
+ *
+ * The block runs with self = C, so an `@x` in it is C's own ivar, the one
+ * C's class methods see. Its body is spliced where the call stands, where
+ * the access would reach that place's self instead (the top level's slot, or
+ * an instance's field). Each access goes through C's accessors, as a
+ * `C.instance_variable_set(:@x, v)` does:
+ *
+ *   C.class_eval { @z = 1 }   ->  C.class_eval { C.__spinel_civset_z(1) }
+ *
+ * A def in the block, and a block in it whose self is something else
+ * (define_method, a nested class_eval, ...), keep their own ivars. A block
+ * instance_eval / instance_exec runs on the class has its reads and
+ * `defined?` rewritten the same way when it writes no ivar. */
+static int sce_program_owns_class_eval(const NodeTable *nt);
+int desugar_class_eval_ivars(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, changed = 0;
+  /* a program that gives class_eval (or its kin) a method of its own runs
+     the block as that says: its calls stay as they are. Asked once a
+     candidate is seen. */
+  int own = -1, own_ie = -1;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    int ie = nm && (sp_streq(nm, "instance_eval") || sp_streq(nm, "instance_exec"));
+    if (!nm || (!ie && !is_class_eval_family(nm))) continue;
+    if (ie && own_ie < 0)
+      own_ie = program_defines_name(nt, n0, "instance_eval") || program_defines_name(nt, n0, "instance_exec");
+    if (!ie && own < 0) own = sce_program_owns_class_eval(nt);
+    if (ie ? own_ie : own) continue;
+    int r = nt_ref(nt, id, "receiver"), blk = nt_ref(nt, id, "block");
+    if (r < 0 || nt_kind(nt, r) != NK_ConstantReadNode || blk < 0 || nt_kind(nt, blk) != NK_BlockNode)
+      continue;
+    const char *cn = nt_str(nt, r, "name");
+    int body = nt_ref(nt, blk, "body");
+    int m = cn ? civ_target_body(nt, cn) : -1;
+    if (m < 0 || body < 0) continue;
+    int cap = 4096, nhits = 0, trigger = 0;
+    int *hits = malloc(sizeof(int) * (size_t)cap);
+    if (!hits) continue;
+    CbiProcLocals pl = {0};
+    pl.cev = 1;
+    cbi_proc_locals(nt, body, &pl);
+    cbi_collect(nt, body, 1, 0, &pl, hits, &nhits, cap, &trigger);
+    /* an instance_eval block on a class that writes an ivar stays as it
+       is (refused): only its reads, which agree with class_eval's writes */
+    int writes = 0;
+    for (int h = 0; ie && h < nhits; h++) writes |= nt_kind(nt, hits[h]) != NK_InstanceVariableReadNode &&
+                                                    nt_kind(nt, hits[h]) != NK_DefinedNode;
+    if (writes) { free(hits); continue; }
+    /* `@x op= v` as the plain read and write, then collect again */
+    int lowered = 0;
+    for (int h = 0; h < nhits; h++) {
+      NodeKind k = nt_kind(nt, hits[h]);
+      if (k == NK_InstanceVariableOperatorWriteNode || k == NK_InstanceVariableOrWriteNode ||
+          k == NK_InstanceVariableAndWriteNode) {
+        cbi_lower_op_writes(nt, hits[h]);
+        lowered = 1;
+      }
+    }
+    if (lowered) {
+      nhits = 0; pl.ndoubt = 0;
+      cbi_collect(nt, body, 1, 0, &pl, hits, &nhits, cap, &trigger);
+    }
+    /* a block given to a call that may run it with another self keeps its
+       ivars as they are; one naming an ivar the class's own code here
+       names too can't be told apart from it */
+    for (int q = 0; q < pl.ndoubt; q++)
+      if (cev_block_shares_ivar(nt, nt_ref(nt, pl.doubt[q], "block"), hits, nhits))
+        unsupported_feature(c, pl.doubt[q], "an instance variable the class's own code in a class_eval "
+                                            "block also uses, in a block given there to a method that may "
+                                            "run it with instance_exec: which object's variable it is is "
+                                            "not known when the program is compiled");
+    char cnb[256]; snprintf(cnb, sizeof cnb, "%s", cn);
+    for (int h = 0; h < nhits; h++) {
+      int x = hits[h];
+      const char *iv0;
+      int kind = cbi_access_kind(nt, x, &iv0);
+      if (kind < 0 || !civ_name_ok(iv0)) continue;
+      char iv[256]; snprintf(iv, sizeof iv, "%s", iv0);
+      civ_ensure_accessor(nt, m, iv, kind);
+      cbi_rewrite_access(nt, x, cnb);
+      changed = 1;
+    }
+    free(hits);
   }
   if (changed) comp_grow_node_arrays(c);
   return changed;
@@ -14941,7 +15156,7 @@ int desugar_body_ivars(Compiler *c) {
     int cap = 4096, nhits = 0, trigger = 0;
     int *hits = malloc(sizeof(int) * (size_t)cap);
     int bn = 0; const int *bs = nt_arr(nt, body, "body", &bn);
-    CbiProcLocals pl; pl.n = 0;
+    CbiProcLocals pl = {0};
     for (int k = 0; k < bn; k++) cbi_proc_locals(nt, bs[k], &pl);
     for (int k = 0; k < bn; k++) cbi_collect(nt, bs[k], 0, 0, &pl, hits, &nhits, cap, &trigger);
     if (trigger) {
@@ -14952,106 +15167,18 @@ int desugar_body_ivars(Compiler *c) {
       for (int k = 0; k < bn; k++) cbi_collect(nt, bs[k], 0, 0, &pl, hits, &nhits, cap, &trigger);
     }
     if (!trigger || nhits == 0) { free(hits); continue; }
-    /* names needing accessors */
-    char *names[256]; int nn = 0;
-    char asked[256] = {0};   /* names[q] has a defined? hit */
+    /* each name's getter and setter, and its defined? accessor when one is
+       asked, then the accesses rewritten in place */
     for (int h = 0; h < nhits; h++) {
-      int isdef = nt_kind(nt, hits[h]) == NK_DefinedNode;
-      const char *iv = isdef ? cbi_defined_ivar(nt, hits[h]) : nt_str(nt, hits[h], "name");
-      if (!iv || iv[0] != '@' || iv[1] == '@') continue;
-      int seen = -1;
-      for (int q = 0; q < nn; q++) if (sp_streq(names[q], iv)) seen = q;
-      if (seen < 0 && nn < 256) { seen = nn; names[nn++] = strdup(iv); }
-      if (seen >= 0 && isdef) asked[seen] = 1;
-    }
-    int *defs = malloc(sizeof(int) * (size_t)(3 * nn + bn));
-    int nd = 0;
-    for (int q = 0; q < nn; q++) {
-      const char *iv = names[q];
-      char gname[256], sname[256];
-      snprintf(gname, sizeof gname, "__spinel_civget_%s", iv + 1);
-      snprintf(sname, sizeof sname, "__spinel_civset_%s", iv + 1);
-      int gd = fwd_new_node_like(nt, m, "DefNode");
-      int gb = fwd_new_node_like(nt, m, "StatementsNode");
-      int gr = fwd_new_node_like(nt, m, "InstanceVariableReadNode");
-      nt_node_set_str(nt, gr, "name", iv);
-      nt_node_set_arr(nt, gb, "body", &gr, 1);
-      nt_node_set_str(nt, gd, "name", gname);
-      nt_node_set_ref(nt, gd, "receiver", fwd_new_node_like(nt, m, "SelfNode"));
-      nt_node_set_ref(nt, gd, "body", gb);
-      int sd = fwd_new_node_like(nt, m, "DefNode");
-      int sb = fwd_new_node_like(nt, m, "StatementsNode");
-      int sw = fwd_new_node_like(nt, m, "InstanceVariableWriteNode");
-      int ps = fwd_new_node_like(nt, m, "ParametersNode");
-      int rq = fwd_new_node_like(nt, m, "RequiredParameterNode");
-      nt_node_set_str(nt, rq, "name", "spinel_civ_v__");
-      nt_node_set_arr(nt, ps, "requireds", &rq, 1);
-      nt_node_set_str(nt, sw, "name", iv);
-      nt_node_set_ref(nt, sw, "value", local_read_like(nt, m, "spinel_civ_v__"));
-      nt_node_set_arr(nt, sb, "body", &sw, 1);
-      nt_node_set_str(nt, sd, "name", sname);
-      nt_node_set_ref(nt, sd, "receiver", fwd_new_node_like(nt, m, "SelfNode"));
-      nt_node_set_ref(nt, sd, "parameters", ps);
-      nt_node_set_ref(nt, sd, "body", sb);
-      defs[nd++] = gd; defs[nd++] = sd;
-      if (asked[q]) {
-        /* def self.__spinel_civdef_x = defined?(@x) */
-        char dname[256];
-        snprintf(dname, sizeof dname, "__spinel_civdef_%s", iv + 1);
-        int dd = fwd_new_node_like(nt, m, "DefNode");
-        int db = fwd_new_node_like(nt, m, "StatementsNode");
-        int dq = fwd_new_node_like(nt, m, "DefinedNode");
-        int dr = fwd_new_node_like(nt, m, "InstanceVariableReadNode");
-        nt_node_set_str(nt, dr, "name", iv);
-        nt_node_set_ref(nt, dq, "value", dr);
-        nt_node_set_arr(nt, db, "body", &dq, 1);
-        nt_node_set_str(nt, dd, "name", dname);
-        nt_node_set_ref(nt, dd, "receiver", fwd_new_node_like(nt, m, "SelfNode"));
-        nt_node_set_ref(nt, dd, "body", db);
-        defs[nd++] = dd;
-      }
-    }
-    /* rewrite the accesses in place */
-    for (int h = 0; h < nhits; h++) {
-      int id = hits[h];
-      NodeKind k = nt_kind(nt, id);
-      const char *iv0 = k == NK_DefinedNode ? cbi_defined_ivar(nt, id) : nt_str(nt, id, "name");
-      if (!iv0 || iv0[1] == '@') continue;
+      const char *iv0;
+      int kind = cbi_access_kind(nt, hits[h], &iv0);
+      if (kind < 0 || !iv0 || iv0[0] != '@' || iv0[1] == '@') continue;
       char iv[256]; snprintf(iv, sizeof iv, "%s", iv0);
-      int line = (int)nt_int(nt, id, "node_line", 0);
-      int file = (int)nt_int(nt, id, "node_file", 0);
-      int recv = fwd_new_node_like(nt, id, "ConstantReadNode");
-      nt_node_set_str(nt, recv, "name", cn);
-      char mname[256];
-      if (k == NK_DefinedNode) {
-        snprintf(mname, sizeof mname, "__spinel_civdef_%s", iv + 1);
-        nt_node_reset(nt, id, "CallNode");
-        nt_node_set_str(nt, id, "name", mname);
-        nt_node_set_ref(nt, id, "receiver", recv);
-      }
-      else if (k == NK_InstanceVariableReadNode) {
-        snprintf(mname, sizeof mname, "__spinel_civget_%s", iv + 1);
-        nt_node_reset(nt, id, "CallNode");
-        nt_node_set_str(nt, id, "name", mname);
-        nt_node_set_ref(nt, id, "receiver", recv);
-      }
-      else {
-        int v = nt_ref(nt, id, "value");
-        snprintf(mname, sizeof mname, "__spinel_civset_%s", iv + 1);
-        int args = fwd_new_node_like(nt, id, "ArgumentsNode");
-        nt_node_set_arr(nt, args, "arguments", &v, 1);
-        nt_node_reset(nt, id, "CallNode");
-        nt_node_set_str(nt, id, "name", mname);
-        nt_node_set_ref(nt, id, "receiver", recv);
-        nt_node_set_ref(nt, id, "arguments", args);
-      }
-      if (line) nt_node_set_int(nt, id, "node_line", line);
-      if (file) nt_node_set_int(nt, id, "node_file", file);
+      civ_ensure_accessor(nt, m, iv, 0);
+      civ_ensure_accessor(nt, m, iv, 1);
+      if (kind == 2) civ_ensure_accessor(nt, m, iv, 2);
     }
-    memcpy(defs + nd, bs, sizeof(int) * (size_t)bn);
-    nt_node_set_arr(nt, body, "body", defs, nd + bn);
-    free(defs);
-    for (int q = 0; q < nn; q++) free(names[q]);
+    for (int h = 0; h < nhits; h++) cbi_rewrite_access(nt, hits[h], cn);
     free(hits);
     changed = 1;
   }
@@ -17209,22 +17336,24 @@ static int sce_computed_reaches_module(const NodeTable *nt, int n, int ctx, int 
   }
   return 0;
 }
-static int sce_program_reflects(const NodeTable *nt) {
+/* Does the program define, alias, undefine or compute a method whose name
+   `named` accepts, where a class or module would reach it? */
+static int sce_program_defines(const NodeTable *nt, int (*named)(const char *)) {
   int hit = 0;
   NtKindIter it = nt_kind_iter_begin(nt, NK_DefNode);
   while (!hit && nt_kind_iter_next(&it))
-    hit = sce_name_reflective(nt_str(nt, it.id, "name")) && !sce_def_below_module(nt, it.id);
+    hit = named(nt_str(nt, it.id, "name")) && !sce_def_below_module(nt, it.id);
   nt_kind_iter_close(&it);
   it = nt_kind_iter_begin(nt, NK_AliasMethodNode);
   while (!hit && nt_kind_iter_next(&it)) {
     int nn = nt_ref(nt, it.id, "new_name");
-    hit = nn >= 0 && sce_name_reflective(nt_str(nt, nn, "value"));
+    hit = nn >= 0 && named(nt_str(nt, nn, "value"));
   }
   nt_kind_iter_close(&it);
   it = nt_kind_iter_begin(nt, NK_UndefNode);
   while (!hit && nt_kind_iter_next(&it)) {
     int un = 0; const int *uv = nt_arr(nt, it.id, "names", &un);
-    for (int q = 0; q < un && !hit; q++) hit = sce_name_reflective(nt_str(nt, uv[q], "value"));
+    for (int q = 0; q < un && !hit; q++) hit = named(nt_str(nt, uv[q], "value"));
   }
   nt_kind_iter_close(&it);
   it = nt_kind_iter_begin(nt, NK_CallNode);
@@ -17238,13 +17367,24 @@ static int sce_program_reflects(const NodeTable *nt) {
     const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
     if (an < 1 || !av) continue;
     NodeKind k = nt_kind(nt, av[0]);
-    if (k == NK_SymbolNode) hit = sce_name_reflective(nt_str(nt, av[0], "value"));
-    else if (k == NK_StringNode) hit = sce_name_reflective(nt_str(nt, av[0], "content"));
+    if (k == NK_SymbolNode) hit = named(nt_str(nt, av[0], "value"));
+    else if (k == NK_StringNode) hit = named(nt_str(nt, av[0], "content"));
   }
   nt_kind_iter_close(&it);
   /* a computed name could be any of them, where it can reach Module's */
   if (!hit) hit = sce_computed_reaches_module(nt, nt->root_id, 0, 0);
   return hit;
+}
+static int sce_program_reflects(const NodeTable *nt) {
+  return sce_program_defines(nt, sce_name_reflective);
+}
+/* the same of class_eval / module_eval / class_exec / module_exec */
+static int sce_name_eval_family(const char *nm) {
+  if (nm && *nm == ':') nm++;
+  return nm && is_class_eval_family(nm);
+}
+static int sce_program_owns_class_eval(const NodeTable *nt) {
+  return sce_program_defines(nt, sce_name_eval_family);
 }
 /* a bare `private` / `protected` / `public` / `module_function`: a def
    spliced after it takes that visibility, a class_eval'd one does not */
