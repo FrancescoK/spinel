@@ -3629,12 +3629,25 @@ static int self_answer_cond_arm(Compiler *c, int n) {
   TyKind t = comp_ntype(c, n);
   return (t == TY_STRING || t == TY_STRBUF) && strbuf_held_chain(c, unwrap_parens(c, n));
 }
+/* --share-strings: is v a `||` or `&&` typed String with an arm that is a
+   String bang on a boxed receiver (face_str_bang_call), which emit_boxed
+   boxes as that receiver's own box (emit_boxed_bang_self), where boxing the
+   conditional whole would box a new String over the bang's answer? */
+int strbuf_face_bang_cond(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  NodeKind k = v >= 0 ? nt_kind(nt, v) : NK_NONE;
+  TyKind t = k == NK_OrNode || k == NK_AndNode ? comp_ntype(c, v) : TY_UNKNOWN;
+  return repr_share_rule(c) && (t == TY_STRING || t == TY_STRBUF) &&
+         (face_str_bang_call(c, unwrap_parens(c, nt_ref(nt, v, "left"))) ||
+          face_str_bang_call(c, unwrap_parens(c, nt_ref(nt, v, "right"))));
+}
 /* --share-strings: a `||` or `&&` of another type than String with such a
-   value (equal_self_answer_side) on an arm typed String, boxed arm by arm, each as
-   emit_equal_side boxes it, so a String arm is its handle's box rather than
-   a new String over its bytes. The right arm and what it puts ahead of its
-   statement run only when the left does not decide. 0 with nothing emitted
-   for any other node. */
+   value (equal_self_answer_side) on an arm typed String, or a String one
+   with a bang on a boxed receiver on an arm (strbuf_face_bang_cond), boxed
+   arm by arm, each as emit_equal_side boxes it, so a String arm is its
+   handle's box rather than a new String over its bytes. The right arm and
+   what it puts ahead of its statement run only when the left does not
+   decide. 0 with nothing emitted for any other node. */
 int emit_boxed_self_answer_cond(Compiler *c, int node, Buf *b) {
   const NodeTable *nt = c->nt;
   NodeKind k = node >= 0 ? nt_kind(nt, node) : NK_NONE;
@@ -3642,7 +3655,7 @@ int emit_boxed_self_answer_cond(Compiler *c, int node, Buf *b) {
      run again) */
   if (!repr_share_rule(c) || (k != NK_OrNode && k != NK_AndNode) || arg_ran_first(node, 0)) return 0;
   int l = nt_ref(nt, node, "left"), r = nt_ref(nt, node, "right");
-  if (!self_answer_cond_arm(c, l) && !self_answer_cond_arm(c, r)) return 0;
+  if (!self_answer_cond_arm(c, l) && !self_answer_cond_arm(c, r) && !strbuf_face_bang_cond(c, node)) return 0;
   int t = ++g_tmp;
   Buf rb, rpre;
   memset(&rb, 0, sizeof rb); memset(&rpre, 0, sizeof rpre);
@@ -21527,6 +21540,9 @@ static int strbuf_flow_value(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, in
     if (ctx == SFC_ELEM && (k == NK_OrNode || k == NK_AndNode || k == NK_CaseNode) &&
         (r.ty == TY_STRING || r.ty == TY_STRBUF) && strbuf_value_carries(c, v))
       ctx = SFC_ALIAS;
+    /* A String `||` or `&&` with a bang on a boxed receiver on an arm is
+       boxed arm by arm (emit_boxed_self_answer_cond). */
+    else if (ctx == SFC_ELEM && strbuf_face_bang_cond(c, v)) ctx = SFC_ELEM_ARMS;
     return strbuf_flow_cond(c, fm, ctx, v, depth);
   }
   if (ctx == SFC_BOX) return 0;

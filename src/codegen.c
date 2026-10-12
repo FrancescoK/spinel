@@ -1711,8 +1711,10 @@ static int emit_boxed_cond_arms(Compiler *c, int node, Buf *b) {
     return 1;
   }
   /* a `||` or `&&` of another type with a bang's held answer on an arm
-     boxes each arm as its own box (emit_boxed_self_answer_cond) */
-  if ((k == NK_OrNode || k == NK_AndNode) && t != TY_STRING && t != TY_STRBUF && emit_boxed_self_answer_cond(c, node, b))
+     boxes each arm as its own box (emit_boxed_self_answer_cond), and so
+     does a String one with a bang on a boxed receiver on an arm */
+  if ((k == NK_OrNode || k == NK_AndNode) && ((t != TY_STRING && t != TY_STRBUF) || strbuf_face_bang_cond(c, node)) &&
+      emit_boxed_self_answer_cond(c, node, b))
     return 1;
   if ((k != NK_IfNode && k != NK_UnlessNode) || (t != TY_STRING && t != TY_STRBUF) ||
       !strbuf_cond_has_handle_leaf(c, node, 0))

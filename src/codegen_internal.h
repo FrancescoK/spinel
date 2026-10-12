@@ -194,6 +194,7 @@ int emit_call_on_held_self_answer(Compiler *c, int id, Buf *b);
 int emit_freeze_self_answer(Compiler *c, int id, int recv, Buf *b);
 int emit_equal_self_answer(Compiler *c, int recv, int arg, Buf *b);
 int emit_boxed_self_answer_cond(Compiler *c, int node, Buf *b);
+int strbuf_face_bang_cond(Compiler *c, int v);
 int strbuf_mutator_on_held_self_answer(Compiler *c, int id);
 int strbuf_chain_over_handle(Compiler *c, int v);
 /* The handle a String mutator's receiver hands on, emitted once into b
