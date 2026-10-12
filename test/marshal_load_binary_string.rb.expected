@@ -1,0 +1,29 @@
+["\x12a", "u"]
+#<Encoding:BINARY (ASCII-8BIT)>
+#<Encoding:UTF-8>
+true
+2
+"\xFF\x00ab"
+#<Encoding:BINARY (ASCII-8BIT)>
+4
+[255, 0, 97, 98]
+"\xFF"
+["k", "\xC3\xA9", #<Encoding:BINARY (ASCII-8BIT)>, #<Encoding:BINARY (ASCII-8BIT)>, 2]
+["t", "é", #<Encoding:UTF-8>, #<Encoding:UTF-8>, 1]
+true
+["\x01\x02", "\x01\x02"]
+#<Encoding:BINARY (ASCII-8BIT)>
+#<Encoding:BINARY (ASCII-8BIT)>
+true
+"x"
+#<Encoding:BINARY (ASCII-8BIT)>
+["a", "é"]
+#<Encoding:UTF-8>
+1
+true
+"\x80\x81"
+#<Encoding:BINARY (ASCII-8BIT)>
+2
+"né"
+#<Encoding:UTF-8>
+2
