@@ -1,0 +1,34 @@
+NoMatchingPatternError
+"\"abc\": Integer === \"abc\" does not return true"
+NoMatchingPatternError
+"\"abc\": Symbol === \"abc\" does not return true"
+NoMatchingPatternError
+"\"abc\": Integer === \"abc\" does not return true"
+NoMatchingPatternError
+"\"abc\": \"abc\" does not respond to #deconstruct"
+NoMatchingPatternError
+"\"abc\": \"abc\" does not respond to #deconstruct_keys"
+"abc"
+NoMatchingPatternError
+"\"ab!\": guard clause does not return true"
+"ab!"
+NoMatchingPatternError
+"\"abw\": guard clause does not return true"
+"zz"
+"abw"
+true
+"ab1"
+NoMatchingPatternError
+"\"cap!\": Integer === \"cap!\" does not return true"
+NoMatchingPatternError
+"\"re\": Integer === \"re\" does not return true"
+"re"
+NoMatchingPatternError
+"\"iv!\": Integer === \"iv!\" does not return true"
+"iv!?"
+NoMatchingPatternError
+"\"glob1\": Integer === \"glob1\" does not return true"
+"glob12"
+NoMatchingPatternError
+"\"pv\": Integer === \"pv\" does not return true"
+"pvp"
