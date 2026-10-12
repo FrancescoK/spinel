@@ -4423,10 +4423,26 @@ static int give_self_predicates_a_receiver(Compiler *c) {
     if (want < 0) continue;
     Scope *osc = comp_scope_of(c, id);
     int ocid = osc ? osc->class_id : -1;
-    if (ocid < 0 || osc->is_cmethod) continue;
-    if (ocid >= c->nclasses) continue;
-    if (comp_method_in_chain(c, ocid, nm, NULL) >= 0) continue;
-    if (comp_method_index(c, nm) >= 0) continue;
+    /* At the top level and in a top-level def, self is main, an Object: a
+       name Object answers is given self too, unless the program's own
+       method has it (a top-level def, or one on Object or Kernel), which
+       the bare call already reaches. Not in a class body or an
+       instance_eval block, whose self is another object. */
+    if (object_public_method_name(nm) && self_is_main(c, id)) {
+      if (std_stream_bare_call_own(c, id, nm)) continue;
+      /* or a module the top level includes */
+      int inc = 0;
+      for (int k = 0; k < c->ntoplevel_includes && !inc; k++)
+        inc = comp_method_in_chain(c, c->toplevel_includes[k], nm, NULL) >= 0;
+      if (inc) continue;
+      /* main's ivars are not the slots an explicit receiver reaches */
+      if (strncmp(nm, "instance_variable", 17) == 0) continue;
+    } else {
+      if (ocid < 0 || osc->is_cmethod) continue;
+      if (ocid >= c->nclasses) continue;
+      if (comp_method_in_chain(c, ocid, nm, NULL) >= 0) continue;
+      if (comp_method_index(c, nm) >= 0) continue;
+    }
     int argc = 0;
     { int an = nt_ref(nt, id, "arguments");
       if (an >= 0) nt_arr(nt, an, "arguments", &argc); }
