@@ -4936,8 +4936,10 @@ int share_node_mutated(Compiler *c, int v) {
    marks say), and a container literal's element only if the literal's
    elements are shared and the literal can be reached again. A String no
    other name can see may be copied, but where a box keeps it, the box has
-   to be the handle's: SHN_FRESH. */
-int share_value_needs_handle(Compiler *c, int v) {
+   to be the handle's: SHN_FRESH. With litout 0, an element of a container
+   literal is asked as what a consumer other than the literal takes (a
+   multiple write's target takes the elements of the literal it splits). */
+static int sh_needs_handle(Compiler *c, int v, int litout) {
   const NodeTable *nt = c->nt;
   ShareFacts *F = c->share;
   if (!c->share_strings || !F || v < 0 || v >= F->nnodes) return SHN_NO;
@@ -4952,10 +4954,12 @@ int share_value_needs_handle(Compiler *c, int v) {
   if (!F->into) sh_into_build(c);
   unsigned char bits = F->into[v];
   if (!share_node_shares(c, v) && !(bits & SHI_INTO)) return SHN_NO;
-  if (bits & SHI_LITOUT) return SHN_NO;
+  if (litout && (bits & SHI_LITOUT)) return SHN_NO;
   if (share_node_transient(c, v) && !(bits & SHI_MUTATED)) return SHN_NO;
   return strbuf_flow_unseen(c, v) || share_node_fresh(c, v) ? SHN_FRESH : SHN_YES;
 }
+int share_value_needs_handle(Compiler *c, int v) { return sh_needs_handle(c, v, 1); }
+int share_store_needs_handle(Compiler *c, int v) { return sh_needs_handle(c, v, 0); }
 
 /* ---- master's route refusals under the flag (share.h) ---- */
 

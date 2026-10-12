@@ -1186,9 +1186,9 @@ typedef struct {
   int proc_arg_src;
   struct ShareFacts *share;
   struct ShareAgree *share_agree;   /* --share-check's state (share_check.c) */
-  /* the String plan's memo (share_plan.c): per node, its need and its type
-     when the need was asked, filled at seal under --share-strings, and the
-     node table's version then */
+  /* the String plan's memo (share_plan.c): per node, its need, the role of
+     its consumer, and its type when the need was asked, filled at seal under
+     --share-strings, and the node table's version then */
   unsigned char *share_plan;
   TyKind *share_plan_ty;
   int share_plan_n;

@@ -4712,7 +4712,7 @@ share-verify-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB) $(BUNDLED_NATIVE_OBJS)
 # alone, without --share-strings, reports nothing. A program with no
 # .expected is one whose answer differs from CRuby's under --share-strings
 # today: only its report is recorded, and it is named here.
-SHARE_CHECK_REPORT_ONLY = map_param_copy
+SHARE_CHECK_REPORT_ONLY = map_param_copy store
 .PHONY: share-check-test
 share-check-test: $(SPINEL)
 	@tmp=$$(mktemp -d "$${TMPDIR:-/tmp}/spinel-share-check.XXXXXX"); ok=1; \
