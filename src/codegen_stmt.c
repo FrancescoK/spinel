@@ -11269,7 +11269,20 @@ static void emit_return_deferred(Compiler *c, const int *a, int n, Buf *b, int i
              ctx->lid, pops, ctx->lid);
 }
 
+static void emit_return_1(Compiler *c, int id, Buf *b, int indent);
+/* A `return` leaves the method, so its value is typed by the method's slot
+   (g_ret_type/g_ret_oint, which an inlined body and a proc-return frame set
+   to their funnel's). A begin/rescue or other value-position construct around
+   it leaves g_result_var naming that construct's own result temp, and the
+   tail-value emitters read the slot from it: an Integer begin around
+   `return err if err` in a poly method stored the oint into an sp_RbVal. */
 void emit_return(Compiler *c, int id, Buf *b, int indent) {
+  const char *sv = g_result_var; g_result_var = NULL;
+  emit_return_1(c, id, b, indent);
+  g_result_var = sv;
+}
+
+static void emit_return_1(Compiler *c, int id, Buf *b, int indent) {
   int args = nt_ref(c->nt, id, "arguments");
   int n = 0;
   const int *a = args >= 0 ? nt_arr(c->nt, args, "arguments", &n) : NULL;
