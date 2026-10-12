@@ -5846,6 +5846,10 @@ static void include_module_methods(Compiler *c, int ci, int mod_id) {
         comp_grow_node_arrays(c);
         src = &c->scopes[ms]; dst = &c->scopes[dst_idx];
         dst->body = nb;
+        /* in a reopened Time or Integer, `self.class` is that builtin,
+           as in a method the reopening writes itself */
+        if (is_builtin_reopen(c->classes[ci].name))
+          desugar_included_self_class(c, nb, c->classes[ci].name);
         walk_scope(c, nb, dst_idx, ci);
         g_inc_did_clone = 1;
       }
