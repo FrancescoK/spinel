@@ -2150,6 +2150,7 @@ static sp_bool sp_io_responds(sp_File *f, const char *m, int typed) {
   if (strcmp(k, "UDPSocket") == 0) return sp_io_in_lists(m, udpm, udpm_t, udpm_b, typed);
   return strcmp(k, "TCPServer") == 0 && sp_io_in_lists(m, serverm, serverm_t, serverm_b, typed);
 }
+#include "spinel_rt_responds_generated.h"
 static sp_bool sp_poly_responds_builtin(sp_RbVal v, const char *m) {
   static const char *const uni[] = {
     "to_s", "inspect", "class", "nil?", "dup", "clone", "freeze", "frozen?",
@@ -2161,78 +2162,16 @@ static sp_bool sp_poly_responds_builtin(sp_RbVal v, const char *m) {
     "__id__", "define_singleton_method", "instance_eval", "instance_exec",
     "private_methods", "protected_methods", "public_method", "public_methods",
     "remove_instance_variable", "singleton_method", "singleton_methods", NULL };
+  /* empty? is Array's and Hash's, not Enumerable's: a Range does not answer
+     it in CRuby, and activesupport's Object#blank? asks exactly that --
+     deliberately absent from this array, even though both Array and Hash
+     get it from their own generated sp_gen_responds_*[] instead. */
   static const char *const enumm[] = {
     "each", "each_with_index", "each_with_object", "map", "collect", "select",
     "filter", "reject", "find", "detect", "reduce", "inject", "to_a", "size",
     "length", "count", "include?", "first", "min", "max", "sort", "sort_by",
     "sum", "any?", "all?", "none?", "one?", "group_by", "partition", "zip",
     "flat_map", "each_slice", "each_cons", "take", "drop", NULL };
-  /* empty? is Array's and Hash's, not Enumerable's: a Range does not answer
-     it in CRuby, and activesupport's Object#blank? asks exactly that */
-  static const char *const arrm[] = {
-    "empty?", "[]", "[]=", "push", "<<", "pop", "shift", "unshift", "concat", "join",
-    "flatten", "compact", "uniq", "reverse", "last", "index", "delete",
-    "delete_at", "delete_if", "insert", "fetch", "sample", "shuffle",
-    "rotate", "slice", "fill", "dig", "values_at", "+", "-", "*", "&", "|",
-    "to_ary",
-    /* the rest of bop_rows's BOP_ANY_ARRAY surface (#8140-class gap: a
-       widened Array parameter's respond_to?(:uniq!) answered false and
-       jaccard's Jaccard.coefficient silently stopped deduping its union) */
-    "append", "assoc", "at", "bsearch", "bsearch_index", "chain",
-    "chunk", "chunk_while", "clear", "collect!", "collect_concat",
-    "combination", "compact!", "cycle", "deconstruct", "difference",
-    "drop_while", "each_entry", "each_index", "entries", "fetch_values",
-    "filter!", "filter_map", "find_all", "find_index", "flatten!",
-    "grep", "grep_v", "intersect?", "intersection", "keep_if", "lazy",
-    "map!", "max_by", "member?", "min_by", "minmax", "minmax_by", "pack",
-    "permutation", "prepend", "product", "rassoc", "reject!",
-    "repeated_combination", "repeated_permutation", "replace",
-    "reverse!", "reverse_each", "rfind", "rindex", "rotate!", "select!",
-    "shuffle!", "slice!", "slice_after", "slice_before", "slice_when",
-    "sort!", "sort_by!", "take_while", "tally", "to_h", "to_set",
-    "transpose", "union", "uniq!", NULL };
-  static const char *const hashm[] = {
-    "empty?", "[]", "[]=", "keys", "values", "fetch", "store", "delete", "key?",
-    "has_key?", "member?", "value?", "has_value?", "each_pair", "each_key",
-    "each_value", "merge", "merge!", "update", "to_h", "invert", "dig",
-    "default", "key", "transform_keys", "transform_values", "to_hash",
-    /* the rest of bop_rows's BOP_ANY_HASH surface (same gap as arrm) */
-    "<", "<=", ">", ">=", "assoc", "chain", "chunk", "chunk_while",
-    "clear", "collect_concat", "compact", "compact!",
-    "compare_by_identity", "compare_by_identity?", "cycle",
-    "deconstruct_keys", "default=", "default_proc", "default_proc=",
-    "delete_if", "drop_while", "each_entry", "entries", "except",
-    "fetch_values", "filter!", "filter_map", "find_all", "find_index",
-    "flatten", "grep", "grep_v", "keep_if", "lazy", "max_by", "min_by",
-    "minmax", "minmax_by", "rassoc", "rehash", "reject!", "replace",
-    "reverse_each", "select!", "shift", "slice", "slice_after",
-    "slice_before", "slice_when", "take_while", "tally", "to_proc",
-    "to_set", "transform_keys!", "transform_values!", "uniq",
-    "values_at", NULL };
-  static const char *const strm[] = {
-    "[]", "[]=", "+", "*", "%", "<=>", "<", ">", "<=", ">=", "=~", "length",
-    "size", "empty?", "upcase", "downcase", "capitalize", "swapcase", "strip",
-    "lstrip", "rstrip", "chomp", "chop", "chars", "bytes", "lines", "split",
-    "sub", "gsub", "sub!", "gsub!", "index", "rindex", "include?",
-    "start_with?", "end_with?", "replace", "concat", "<<", "reverse", "succ",
-    "next", "to_i", "to_f", "to_sym", "to_str", "center", "ljust", "rjust",
-    "tr", "delete", "squeeze", "count", "each_char", "each_line", "slice",
-    "unpack", "encoding", "force_encoding", "bytesize", "ord", "hex", "oct",
-    "match", "match?", "scan", "freeze",
-    /* the rest of bop_rows's TY_STRING surface (same gap as arrm) */
-    "+@", "-@", "append_as_bytes", "ascii_only?", "b", "between?",
-    "byteindex", "byterindex", "byteslice", "bytesplice", "capitalize!",
-    "casecmp", "casecmp?", "chomp!", "chop!", "chr", "clamp", "clear",
-    "codepoints", "crypt", "dedup", "delete!", "delete_prefix",
-    "delete_prefix!", "delete_suffix", "delete_suffix!", "downcase!",
-    "dump", "each_byte", "each_codepoint", "each_grapheme_cluster",
-    "encode", "encode!", "getbyte", "grapheme_clusters", "insert",
-    "intern", "lstrip!", "next!", "partition", "prepend", "reverse!",
-    "rpartition", "rstrip!", "scrub", "scrub!", "setbyte", "slice!",
-    "squeeze!", "strip!", "succ!", "sum", "swapcase!", "to_c", "to_r",
-    "tr!", "tr_s", "tr_s!", "undump", "unicode_normalize",
-    "unicode_normalize!", "unicode_normalized?", "unpack1", "upcase!",
-    "upto", "valid_encoding?", NULL };
   static const char *const numm[] = {
     "+", "-", "*", "/", "%", "**", "<=>", "<", ">", "<=", ">=", "abs",
     "to_i", "to_int", "to_f", "to_r", "to_c", "zero?", "positive?",
@@ -2244,15 +2183,14 @@ static sp_bool sp_poly_responds_builtin(sp_RbVal v, const char *m) {
     "i", "imag", "imaginary", "magnitude", "modulo", "nonzero?",
     "numerator", "phase", "polar", "rationalize", "real", "real?",
     "rect", "rectangular", "remainder", NULL };
+  /* bop_rows has no TY_INT row at all for these seven -- confirmed by
+     direct grep across src/builtin_ops.c and src/builtin_zero_ops.inc,
+     and by CRuby agreeing all seven are real Integer methods (2026-10-12,
+     see docs/superpowers/specs/2026-10-12-generate-respond-to-tables-
+     design.md's Scope amendment). Same shape as numm[]'s arithmetic-
+     operator gap, a different operator subset. */
   static const char *const intm[] = {
-    "times", "upto", "downto", "succ", "next", "pred", "even?", "odd?",
-    "gcd", "lcm", "digits", "bit_length", "chr", "ord", "pow", "&", "|",
-    "^", "<<", ">>", "~", "integer?", "allbits?", "anybits?", "nobits?",
-    "size",
-    "[]", "ceildiv", "finite?", "gcdlcm", "infinite?", NULL };
-  static const char *const fltm[] = {
-    "nan?", "infinite?", "finite?", "integer?",
-    "next_float", "prev_float", NULL };
+    "&", "<<", ">>", "^", "pow", "|", "~", NULL };
   static const char *const rngm[] = {
     "begin", "end", "first", "last", "min", "max", "step", "cover?",
     "exclude_end?", "to_a", "each", "size", "sum", "include?", "===",
@@ -2266,6 +2204,14 @@ static sp_bool sp_poly_responds_builtin(sp_RbVal v, const char *m) {
     "upcase", "downcase", "capitalize", "swapcase", "empty?", "start_with?",
     "end_with?", "<=>", "[]",
     "casecmp", "casecmp?", "clamp", "intern", "match?", "slice", NULL };
+  /* Verified against src/builtin_ops.c's bop_rows on 2026-10-12 (see
+     docs/superpowers/specs/2026-10-12-generate-respond-to-tables-design.md):
+     every TY_PROC row bop_rows registers, beyond what uni[] above already
+     covers, is already a literal in this array -- there is nothing bop_rows
+     knows about Proc that this array doesn't. tools/gen_respond_to_tables.rb
+     re-checks this fact on every build and fails loudly if it ever stops
+     holding, instead of regenerating this array (there is nothing to
+     generate). */
   static const char *const procm[] = {
     "call", "()", "[]", "yield", "arity", "lambda?", "curry", "to_proc",
     "parameters", "<<", ">>", "source_location", NULL };
@@ -2306,14 +2252,14 @@ static sp_bool sp_poly_responds_builtin(sp_RbVal v, const char *m) {
   if (sp_bsub_cls_fn && v.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(v.cls_id) && sp_bsub_cls_fn(v) >= 0)
     cn = "Hash";
   if (strcmp(cn, "Array") == 0)
-    return sp_str_in_list(m, enumm) || sp_str_in_list(m, arrm);
+    return sp_str_in_list(m, enumm) || sp_str_in_list(m, sp_gen_responds_array);
   if (strcmp(cn, "Hash") == 0)
-    return sp_str_in_list(m, enumm) || sp_str_in_list(m, hashm);
-  if (strcmp(cn, "String") == 0) return sp_str_in_list(m, strm);
+    return sp_str_in_list(m, enumm) || sp_str_in_list(m, sp_gen_responds_hash);
+  if (strcmp(cn, "String") == 0) return sp_str_in_list(m, sp_gen_responds_string);
   if (strcmp(cn, "Integer") == 0)
-    return sp_str_in_list(m, numm) || sp_str_in_list(m, intm);
+    return sp_str_in_list(m, numm) || sp_str_in_list(m, intm) || sp_str_in_list(m, sp_gen_responds_integer);
   if (strcmp(cn, "Float") == 0)
-    return sp_str_in_list(m, numm) || sp_str_in_list(m, fltm);
+    return sp_str_in_list(m, numm) || sp_str_in_list(m, sp_gen_responds_float);
   if (strcmp(cn, "Range") == 0)
     return sp_str_in_list(m, enumm) || sp_str_in_list(m, rngm);
   if (strcmp(cn, "Symbol") == 0) return sp_str_in_list(m, symm);
