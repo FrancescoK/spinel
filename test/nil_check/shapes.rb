@@ -17,7 +17,7 @@ end
 
 class Talker
   def initialize(v) = @v = v
-  def to_s = 42
+  def to_s = "talk"
 end
 
 class Item

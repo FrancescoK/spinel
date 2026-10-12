@@ -311,9 +311,12 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
            in the interpolation (#3266). */
         int ret_poly = obj_str_ret_poly(c, ty_object_class(t), 0);
         if (ret_poly) buf_puts(&conv, "sp_poly_to_s(");
+        /* a part that may be nil (the nil fact, #7444) reads as nil's to_s,
+           the empty String, where its class's to_s would run on no object */
+        int part_nil = !ret_poly && !comp_ty_value_obj(c, t) && nil_fact_tracked(t) && nil_fact_node(c, expr);
         /* a value-type object (single-ivar) has a by-VALUE to_s signature;
            casting its receiver to a pointer is a C type error (#2357) */
-        if (comp_ty_value_obj(c, t) || (!vexpr[0] && !iv_pre && expr_is_held_ref(c, expr))) {
+        if (!part_nil && (comp_ty_value_obj(c, t) || (!vexpr[0] && !iv_pre && expr_is_held_ref(c, expr)))) {
           const char *tsm = obj_str_mname(c, ty_object_class(t), 0);
           if (comp_ty_value_obj(c, t)) buf_printf(&conv, "sp_%s_%s(", cn, tsm);
           else buf_printf(&conv, "sp_%s_%s((sp_%s *)", cn, tsm, cn);
@@ -325,7 +328,10 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
           int to = ++g_tmp;
           buf_printf(&conv, "({ sp_%s *_t%d = (sp_%s *)(", cn, to, cn);
           EMIT_IV();
-          buf_printf(&conv, "); SP_GC_ROOT(_t%d); sp_%s_%s(_t%d); })", to, cn, obj_str_mname(c, ty_object_class(t), 0), to);
+          buf_printf(&conv, "); SP_GC_ROOT(_t%d); ", to);
+          if (part_nil) buf_printf(&conv, "_t%d ? ", to);
+          buf_printf(&conv, "sp_%s_%s(_t%d)%s; })", cn, obj_str_mname(c, ty_object_class(t), 0), to,
+                     part_nil ? " : sp_str_empty" : "");
         }
         if (ret_poly) buf_puts(&conv, ")");
       }

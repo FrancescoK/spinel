@@ -350,10 +350,12 @@ void pa_report(void);
 typedef enum {
   CN_NONE,     /* not nil here, a `&.` call, or a method the program gives nil */
   CN_RAISE,    /* nil has no such method: NoMethodError, after the operands */
-  CN_ANSWER    /* nil has it (is_nil_method): NilClass answers. Not emitted
-                  yet: the call's type has to join NilClass's answer */
+  CN_ANSWER    /* nil has it (is_nil_method): NilClass answers, where its
+                  answer has the call's type (nil_answer_text); a call whose
+                  answer has not is emitted as before, untested */
 } CplanNil;
 int cplan_nil(Compiler *c, int id);
+int cplan_nil_answer_served(Compiler *c, int id);   /* codegen_call.c: nil's answer has the call's type */
 /* Is a nil fact's source `why` (nil_fact_why) a nil the program writes --
    a literal, a missing else, a safe navigation, a slot read before its
    write, an element of an Array the program stores nil into -- which a

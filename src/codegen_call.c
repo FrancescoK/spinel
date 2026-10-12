@@ -21949,11 +21949,20 @@ static int poly_target_call(Compiler *c, int id) {
    operands are bound to the temps, each seen as held (VR_HEAD_HELD, a
    view from *held on, for an arm's hold_operand); the caller drops both
    through nil_target_release. */
+static void emit_nil_target_head_r(Compiler *c, int id, Buf *b, const char *lead, int test, int boxed,
+                                   int *mark, int *held, char *rout, size_t rcap);
 static void emit_nil_target_head(Compiler *c, int id, Buf *b, const char *lead, int test, int *mark,
                                  int *held) {
+  emit_nil_target_head_r(c, id, b, lead, test, !test, mark, held, NULL, 0);
+}
+/* (with `boxed` for nil_target_operands, and the held receiver's text, or
+   "" for one read in its slot, in rout: a caller that emits its own test or
+   answer reads it) */
+static void emit_nil_target_head_r(Compiler *c, int id, Buf *b, const char *lead, int test, int boxed,
+                                   int *mark, int *held, char *rout, size_t rcap) {
   const NodeTable *nt = c->nt;
   int node[8]; TyKind ty[8];
-  int n = nil_target_operands(c, id, !test, node, ty, 8);
+  int n = nil_target_operands(c, id, boxed, node, ty, 8);
   int r = nt_ref(nt, id, "receiver");
   char rtext[32] = "";
   *mark = g_n_argov;
@@ -22024,6 +22033,7 @@ static void emit_nil_target_head(Compiler *c, int id, Buf *b, const char *lead, 
     if (*held < 0) *held = tok;
     if (node[i] == r) snprintf(rtext, sizeof rtext, "_t%d", t);
   }
+  if (rout) snprintf(rout, rcap, "%s", rtext);
   if (!test) return;
   buf_puts(b, lead);
   /* an array the loop being emitted caches (hc_array) has a cached length
@@ -22198,10 +22208,141 @@ static void nil_target_release(Compiler *c, int mark, int held) {
   view_unbind(mark);
 }
 
+/* ---- nil's answer (CN_ANSWER, #7444) ----
+   A method nil has of its own, called on a receiver that may be nil: the
+   call runs on a non-nil receiver, and nil's answer stands for a nil one,
+   where NilClass answers with a value of the type the call has. The names
+   and their answers, as the call's type: to_s and inspect (a String),
+   to_i and hash (an Integer), to_f (a Float), nil?, !, ==, !=, ===, eql?,
+   equal?, frozen?, is_a?, kind_of? and instance_of? (a bool). The ones
+   whose answer depends on the argument read it from the operand the head
+   held. Answers a static text, or NULL for a name or a type not served. */
+static const char *nil_answer_text(Compiler *c, int id, char *buf, size_t cap) {
+  const NodeTable *nt = c->nt;
+  const char *nm = nt_str(nt, id, "name");
+  TyKind t = comp_ntype(c, id);
+  int a = nt_ref(nt, id, "arguments"), an = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+  if (!nm) return NULL;
+  /* nil.to_s is its one frozen empty String (equal? across calls) */
+  if ((sp_streq(nm, "to_s") || sp_streq(nm, "inspect")) && t == TY_STRING && an == 0)
+    return sp_streq(nm, "to_s") ? "sp_str_frozen_empty" : "(&(\"\\xff\" \"nil\")[1])";
+  if (sp_streq(nm, "to_i") && t == TY_INT && an == 0) return "0LL";
+  if (sp_streq(nm, "hash") && t == TY_INT && an == 0) return "sp_rbval_hash_key(sp_box_nil())";
+  if (sp_streq(nm, "to_f") && t == TY_FLOAT && an == 0) return "0.0";
+  /* a number the call holds boxed (promote's Integer-or-Bignum): boxed here */
+  if (sp_streq(nm, "to_i") && t == TY_POLY && an == 0) return "sp_box_int(0LL)";
+  if (sp_streq(nm, "hash") && t == TY_POLY && an == 0) return "sp_box_int(sp_rbval_hash_key(sp_box_nil()))";
+  if (sp_streq(nm, "to_f") && t == TY_POLY && an == 0) return "sp_box_float(0.0)";
+  if (t != TY_BOOL) return NULL;
+  if ((sp_streq(nm, "nil?") || sp_streq(nm, "!") || sp_streq(nm, "frozen?")) && an == 0) return "1";
+  if ((sp_streq(nm, "is_a?") || sp_streq(nm, "kind_of?") || sp_streq(nm, "instance_of?")) && an == 1) {
+    /* nil is an instance of NilClass, Object and BasicObject, and of the
+       Kernel module; of nothing else */
+    NodeKind ak = nt_kind(nt, av[0]);
+    const char *k = ak == NK_ConstantReadNode ? nt_str(nt, av[0], "name") : NULL;
+    if (!k) return NULL;
+    if (sp_streq(k, "NilClass")) return "1";
+    if (sp_streq(nm, "instance_of?")) return "0";
+    return sp_streq(k, "Object") || sp_streq(k, "BasicObject") || sp_streq(k, "Kernel") ? "1" : "0";
+  }
+  if ((sp_streq(nm, "==") || sp_streq(nm, "===") || sp_streq(nm, "eql?") || sp_streq(nm, "equal?") ||
+       sp_streq(nm, "!=")) && an == 1) {
+    Buf ab; memset(&ab, 0, sizeof ab);
+    emit_boxed(c, av[0], &ab);
+    snprintf(buf, cap, "(%ssp_poly_nil_p(%s))", sp_streq(nm, "!=") ? "!" : "", ab.p ? ab.p : "sp_box_nil()");
+    free(ab.p);
+    return buf;
+  }
+  return NULL;
+}
+/* can nil's answer for call id be emitted (nil_answer_text, with no
+   operand text)? The plan's refusal asks before the emission does. */
+int cplan_nil_answer_served(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  const char *nm = nt_str(nt, id, "name");
+  TyKind t = comp_ntype(c, id);
+  int a = nt_ref(nt, id, "arguments"), an = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+  if (!nm) return 0;
+  if ((sp_streq(nm, "to_s") || sp_streq(nm, "inspect")) && an == 0) return t == TY_STRING;
+  if ((sp_streq(nm, "to_i") || sp_streq(nm, "hash")) && an == 0) return t == TY_INT || t == TY_POLY;
+  if (sp_streq(nm, "to_f") && an == 0) return t == TY_FLOAT || t == TY_POLY;
+  if (t != TY_BOOL) return 0;
+  if ((sp_streq(nm, "nil?") || sp_streq(nm, "!") || sp_streq(nm, "frozen?")) && an == 0) return 1;
+  if ((sp_streq(nm, "is_a?") || sp_streq(nm, "kind_of?") || sp_streq(nm, "instance_of?")) && an == 1)
+    return nt_kind(nt, av[0]) == NK_ConstantReadNode && nt_str(nt, av[0], "name") != NULL;
+  return (sp_streq(nm, "==") || sp_streq(nm, "===") || sp_streq(nm, "eql?") || sp_streq(nm, "equal?") ||
+          sp_streq(nm, "!=")) && an == 1;
+}
+/* the receiver's text for the test or the answer: the temp the head held,
+   or its slot */
+static void nil_target_recv_text(Compiler *c, int r, const char *rtext, Buf *b) {
+  char sref[192];
+  if (rtext[0]) buf_puts(b, rtext);
+  else if (strbuf_slot_ref(c, r, sref, sizeof sref)) buf_puts(b, sref);
+  else emit_expr(c, r, b);
+}
+/* Call id in value position with nil's answer beside it: the receiver and
+   the arguments held in Ruby's order, then the answer for a NULL receiver
+   and the call for any other. 1 when it emitted. */
+static int emit_nil_answer_call(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int r = nt_ref(nt, id, "receiver");
+  /* a user object's call: a builtin's (a String's ==, an Array's to_s) has
+     its emitter's own way with a NULL receiver, kept as it is, and so has an
+     exception's (emit_exc_own_render) */
+  TyKind rt = comp_ntype(c, r);
+  if (!ty_is_object(rt) || class_is_exc_subclass(c, ty_object_class(rt)) || !cplan_nil_answer_served(c, id)) return 0;
+  /* only where the class answers the name itself: Object's own == (an
+     identity), nil? and to_s take a NULL receiver as nil in their emitters
+     already (`cur != nil` is the pointer test) */
+  if (comp_method_in_chain(c, ty_object_class(rt), nt_str(nt, id, "name"), NULL) < 0) return 0;
+  Buf hb; memset(&hb, 0, sizeof hb);
+  int mark, held;
+  char rtext[32] = "";
+  emit_nil_target_head_r(c, id, &hb, "", 0, 0, &mark, &held, rtext, sizeof rtext);
+  char ab[256];
+  const char *ans = nil_answer_text(c, id, ab, sizeof ab);
+  size_t pre0 = g_pre ? g_pre->len : 0;
+  Buf cb; memset(&cb, 0, sizeof cb);
+  int vt = view_push_repr(c, r, VR_NIL_TESTED, 1);
+  emit_call_held(c, id, &cb);
+  view_pop(c, vt);
+  nil_target_release(c, mark, held);
+  if (g_plan_check) cplan_served("nil-answer");
+  Repr rp = repr_of(c, id);
+  Buf rb; memset(&rb, 0, sizeof rb);
+  nil_target_recv_text(c, r, rtext, &rb);
+  Buf vb; memset(&vb, 0, sizeof vb);
+  buf_printf(&vb, "(%s) == NULL ? ", rb.p ? rb.p : "0");
+  if (rp.kind == RK_BOXED && comp_ntype(c, id) != TY_POLY) emit_boxed_text(c, comp_ntype(c, id), ans ? ans : "0", &vb);
+  else buf_puts(&vb, ans ? ans : "0");
+  buf_printf(&vb, " : %s", cb.p ? cb.p : "");
+  if (g_pre && g_pre->len > pre0) {
+    /* the call hoisted work (an argument's prelude): the head goes ahead of
+       it, and the value is the choice alone */
+    Buf rest; memset(&rest, 0, sizeof rest);
+    buf_puts(&rest, g_pre->p + pre0);
+    g_pre->len = pre0; g_pre->p[pre0] = 0;
+    size_t hn = hb.p ? strlen(hb.p) : 0;
+    while (hn > 0 && hb.p[hn - 1] == ' ') hb.p[--hn] = 0;
+    if (hn) { emit_indent(g_pre, g_indent); buf_puts(g_pre, hb.p); buf_puts(g_pre, "\n"); }
+    buf_puts(g_pre, rest.p);
+    free(rest.p);
+    buf_printf(b, "(%s)", vb.p);
+  }
+  else buf_printf(b, "({ %s%s; })", hb.p ? hb.p : "", vb.p);
+  free(hb.p); free(cb.p); free(rb.p); free(vb.p);
+  return 1;
+}
+
 /* Call id in value position, behind its nil arm. 1 when it emitted. */
 static int emit_nil_target_call(Compiler *c, int id, Buf *b) {
   if (strbuf_mutator_on_held_self_answer(c, id)) return 0;   /* (as below) */
-  int test = cplan_nil(c, id) == CN_RAISE;
+  int cn = cplan_nil(c, id);
+  if (cn == CN_ANSWER && emit_nil_answer_call(c, id, b)) return 1;
+  int test = cn == CN_RAISE;
   if (!test && (!poly_target_call(c, id) || nil_target_runs_in_call(c, id))) return 0;
   if (test && g_plan_check) cplan_served("nil-target");
   if (test && emit_nil_target_cold(c, id, b)) return 1;
@@ -22252,7 +22393,22 @@ int emit_nil_target_stmt(Compiler *c, int id, Buf *b, int indent) {
      for nil itself (emit_held_self_answer_shim); a head here would run
      the chain once more for a test of its bytes */
   if (strbuf_mutator_on_held_self_answer(c, id)) return 0;
-  int test = cplan_nil(c, id) == CN_RAISE;
+  int cn = cplan_nil(c, id);
+  TyKind srt = comp_ntype(c, nt_ref(c->nt, id, "receiver"));
+  if (cn == CN_ANSWER && ty_is_object(srt) && !class_is_exc_subclass(c, ty_object_class(srt)) &&
+      comp_method_in_chain(c, ty_object_class(srt), nt_str(c->nt, id, "name"), NULL) >= 0 &&
+      cplan_nil_answer_served(c, id)) {
+    /* nil's answer is dropped here: the call runs for a non-nil receiver */
+    Buf vb; memset(&vb, 0, sizeof vb);
+    if (emit_nil_answer_call(c, id, &vb)) {
+      emit_indent(b, indent);
+      buf_printf(b, "(void)%s;\n", vb.p);
+      free(vb.p);
+      return 1;
+    }
+    free(vb.p);
+  }
+  int test = cn == CN_RAISE;
   if (!test && (!poly_target_call(c, id) || nil_target_runs_in_call(c, id))) return 0;
   if (test && g_plan_check) cplan_served("nil-target");
   if (test && emit_nil_target_own(c, id, b, 1, indent)) return 1;
