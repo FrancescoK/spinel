@@ -20306,8 +20306,9 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
      (`[+"a"].each { |x| x << y }`), whose elements the rule shares: its
      stores are the handles the block's parameters bind. An indexed
      literal hands on those same elements without a block: only the share
-     row's element-reading answers extend this to calls without blocks.
-     That arm follows named elements of an unanchored literal: a fresh
+     row's element-reading answers extend this to calls without blocks,
+     the iterators that answer one of the elements (`[a, b].max`) among
+     them. That arm follows named elements of an unanchored literal: a fresh
      element has no earlier owner, and a retained container has its own
      store demand above.
      A pattern's subject carries the same handles into its bound locals. */
@@ -20327,7 +20328,7 @@ static int share_default_apply(Compiler *c, int in_fixpoint) {
     if (kinds[k] == NK_CallNode && (blk < 0 || nt_kind(c->nt, blk) != NK_BlockNode)) {
       int s = bop_share_named(nt_kind(c->nt, r) == NK_ArrayNode ? BOP_ANY_ARRAY : BOP_ANY_HASH,
                              nt_str(c->nt, n, "name"));
-      if (s != BSH_ELEM && s != BSH_FETCH && s != BSH_ELEM_N) continue;
+      if (s != BSH_ELEM && s != BSH_FETCH && s != BSH_ELEM_N && s != BSH_ITER_FIND) continue;
       if (share_node_anchored(c, r)) continue;
       mode = SB_DEMAND_NAMED;
     }

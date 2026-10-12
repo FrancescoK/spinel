@@ -277,6 +277,8 @@ int strbuf_route_boxed_exc_message(Compiler *c, int v);
 int strbuf_route_ie(Compiler *c, int v);
 int strbuf_yield_tail_held(Compiler *c);
 int strbuf_route_srange_end(Compiler *c, int v);
+int strbuf_route_srange_extreme(Compiler *c, int v);
+int strbuf_route_srange_kept(Compiler *c, int v);
 void emit_slot_expr(Compiler *c, int id, Buf *b);
 /* A `next` value a block's boxed answer slot takes: a shared String as its
    handle's box under --share-strings (codegen_stmt.c) */

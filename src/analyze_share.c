@@ -1809,7 +1809,7 @@ static TyKind sh_bop_arg_type(const void *ud, int i) {
   return i >= 0 && i < a->argc ? a->c->ntype[a->argv[i]] : TY_UNKNOWN;
 }
 
-static int sh_has_method_missing_candidate(Compiler *c);
+static int sh_method_missing_reaches(Compiler *c, int call, const char *name);
 
 /* A boxed String row can replace the container default only when the
    selected typed row describes this call shape and the dispatch plan and
@@ -1854,7 +1854,7 @@ static int sh_boxed_string_row_composable(ShareFacts *F, Compiler *c, int n,
   /* Match the existing boxed-freshness exclusions for Object and dynamic
      lookup. These routes can answer without being an ordinary user target. */
   if (object_public_method_name(name) || comp_method_index(c, "method_missing") >= 0) return 0;
-  if (sh_has_method_missing_candidate(c)) return 0;
+  if (sh_method_missing_reaches(c, n, name)) return 0;
   int missing = 0;
   comp_cmethod_candidates(c, "method_missing", &missing);
   if (missing) return 0;
@@ -2834,6 +2834,14 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
     int fs = bop_share_named(BOP_FILE_CLASS, name);
     if (fs) return sh_builtin(F, c, n, fs, rv, blk, 0);
   }
+  /* A String Range's members are new Strings its walk makes (CRuby's
+     String#upto hands on a copy of each), so a builtin answering a String
+     Array of them without a block (first(n), last(n), take, to_a, entries,
+     min(n), max(n)) holds no endpoint: a new container of new Strings, as
+     `s.split`'s (sh_builtin). minmax answers the endpoints themselves, and
+     keeps the Array rows' answer. */
+  if (rt == TY_STR_RANGE && blk < 0 && c->ntype[n] == TY_STR_ARRAY && !is_minmax_pair(name))
+    return sh_builtin(F, c, n, BSH_PURE, rv, blk, 0);
   TyKind fam = sh_family(rt);
   /* an iterator that keeps none of its block's values drops the block's
      own: a call there hands its method's value to no caller. (An
@@ -4388,11 +4396,32 @@ static int sh_native_placeholder(Compiler *c, const PolyCand *p, const char *nam
   if (comp_reader_in_chain(c, p->cls, name, NULL)) return 0;
   return !comp_poly_arm_defines(c, p->cls, name);
 }
-static int sh_has_method_missing_candidate(Compiler *c) {
-  int n = 0;
+/* Can a method_missing hook answer call `call` of `name`, as CRuby routes
+   a call no method of the receiver's class answers: a class whose chain
+   holds a hook (a Ruby method, a reader, a native binding) and not the
+   name, that the receiver can be? The boxed-receiver walk lists the
+   program's classes and the native classes the receiver can be
+   (poly_recv_classes, asked only once such a class turns up); a hook in a
+   class it cannot list (a reopened builtin's, a module's, an exception's,
+   an object's singleton class) or for a receiver it cannot bound counts.
+   A hook that only classes answering the name themselves reach, or only
+   classes the receiver never is, answers nothing here. (Spinel never
+   routes a call to the hook; this keeps CRuby's answer in view.) */
+static int sh_method_missing_reaches(Compiler *c, int call, const char *name) {
+  int n = 0, nk = -1;
+  const int *ks = NULL;
   const PolyCand *p = comp_poly_candidates(c, "method_missing", &n);
-  for (int i = 0; i < n; i++)
-    if (!sh_native_placeholder(c, &p[i], "method_missing")) return 1;
+  for (int i = 0; i < n; i++) {
+    int k = p[i].cls;
+    if (sh_native_placeholder(c, &p[i], "method_missing")) continue;
+    if (comp_method_in_chain(c, k, name, NULL) >= 0 || comp_reader_in_chain(c, k, name, NULL) ||
+        (p[i].native && comp_poly_arm_defines(c, k, name))) continue;
+    if (c->classes[k].is_singleton_of || (!p[i].native && !cls_fact_bounded(c, k))) return 1;
+    if (nk < 0) ks = poly_recv_classes(c, call, &nk);
+    if (!ks) return 1;
+    for (int j = 0; j < nk; j++)
+      if (ks[j] == k) return 1;
+  }
   return 0;
 }
 
@@ -4409,10 +4438,12 @@ static int sh_builtin_fresh(Compiler *c, int call, int ostruct) {
      The dispatch plan must also exclude readers, native bindings and
      catch-all arms such as OpenStruct's member read. Object's public
      method table covers the names the arity tables omit. A user-defined
-     method_missing can answer a name with no ordinary target too. */
+     method_missing can answer a name with no ordinary target too: a
+     top-level one for any receiver, a class's where the receiver can be of
+     a class that has the hook and not the name. */
   if (object_public_method_name(name)) return 0;
   if (comp_method_index(c, "method_missing") >= 0) return 0;
-  if (sh_has_method_missing_candidate(c)) return 0;
+  if (sh_method_missing_reaches(c, call, name)) return 0;
   int missing = 0;
   comp_cmethod_candidates(c, "method_missing", &missing);
   if (missing) return 0;
@@ -4524,6 +4555,14 @@ static int sh_has_jump_k(const NodeTable *nt, int n, int any) {
 static int sh_has_next(const NodeTable *nt, int n) { return sh_has_jump_k(nt, n, 0); }
 static int sh_has_jump(const NodeTable *nt, int n) { return sh_has_jump_k(nt, n, 1); }
 
+/* Does share row `share`, with argc arguments, answer a container of some
+   of the receiver's own elements and of nothing else: a run of them
+   (BSH_SUB, a selection BSH_ITER_SEL, BSH_FLATTEN), or a counted element
+   answer (`first(2)`, `min(2)`)? */
+static int sh_answers_elems_run(int share, int argc) {
+  return share == BSH_SUB || share == BSH_ITER_SEL || share == BSH_FLATTEN ||
+         ((share == BSH_ELEM_N || share == BSH_ITER_FIND) && argc >= 1);
+}
 /* Is node r a temporary container (its own expression, held by no name)
    whose elements are new Strings: an Array literal of them, or `map(&:sym)`
    over elements that hold no String (Symbols, numbers), whose answers are
@@ -4543,6 +4582,14 @@ static int sh_fresh_elems(Compiler *c, int r, int depth) {
   if (nt_kind(nt, r) != NK_CallNode || sh_has_targets(c, r)) return 0;
   int blk = nt_ref(nt, r, "block"), recv = nt_ref(nt, r, "receiver");
   const char *nm = nt_str(nt, r, "name");
+  /* a builtin answering a container of its receiver's own elements (the
+     share rows' run of them: sort, uniq, drop, reverse, compact, flatten,
+     take, a counted first or min) over such a temporary container holds the
+     same new Strings, which no name holds either. (A block's parameter
+     names them: `sort_by { |x| ... }` is left to the block's own facts.) */
+  if (nm && recv >= 0 && blk < 0 && ty_is_array(c->ntype[recv]) &&
+      sh_answers_elems_run(bop_share_named(BOP_ANY_ARRAY, nm), call_plain_argc(c, r)))
+    return sh_fresh_elems(c, recv, depth + 1);
   if (!nm || recv < 0 || blk < 0 || bop_share_named(BOP_ANY_ARRAY, nm) != BSH_ITER_MAP) return 0;
   /* map with a literal block whose value is a new String, and no next */
   if (nt_kind(nt, blk) == NK_BlockNode) {
@@ -4703,6 +4750,8 @@ int share_value_fresh(Compiler *c, int n, int depth) {
   int recv = nt_ref(nt, n, "receiver");
   const char *nm = nt_str(nt, n, "name");
   int sh = nm && recv >= 0 && !sh_has_targets(c, n) ? bop_share_named(BOP_ANY_ARRAY, nm) : 0;
+  /* (max and min with no block or count answer one of them too) */
+  if (sh == BSH_ITER_FIND && is_minmax_query(nm) && call_plain_argc(c, n) == 0) sh = BSH_ELEM;
   return (sh == BSH_ELEM || sh == BSH_ELEM_N) && nt_ref(nt, n, "block") < 0 && sh_fresh_elems(c, recv, depth + 1);
 }
 

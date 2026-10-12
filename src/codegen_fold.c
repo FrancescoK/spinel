@@ -8701,8 +8701,10 @@ static void emit_arg_temp(Compiler *c, int v) {
      value is the slot's read of that handle. */
   int wshare = repr_write_share(c, unwrap_parens(c, v));
   /* A builtin to_s keeps the receiver's String too. Capture its handle
-     before later arguments can replace the receiver. */
-  int conversion = at == TY_STRING && strbuf_poly_to_s(c, v);
+     before later arguments can replace the receiver. So does a String
+     Range's endpoint (strbuf_route_srange_kept): the handle the Range keeps
+     is taken where the argument runs. */
+  int conversion = at == TY_STRING && (strbuf_poly_to_s(c, v) || strbuf_route_srange_kept(c, v));
   /* So does a call result lifted into the handle for a boxed parameter: the
      handle its method publishes is taken where the call runs. */
   if (!conversion && at == TY_STRING && repr_share_rule(c) && c->poly_strbuf_lift[v] && strbuf_value_carries(c, v))
