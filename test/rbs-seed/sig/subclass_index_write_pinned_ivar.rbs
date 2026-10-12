@@ -1,0 +1,3 @@
+class PortChip
+  @inputs: Array[Integer]
+end

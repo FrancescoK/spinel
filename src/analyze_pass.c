@@ -1809,16 +1809,28 @@ static int fold_container_evidence(TyKind *slot, int is_push, int is_splice,
   return 1;
 }
 
+/* Is class a the class k or one of its ancestors? */
+static int class_or_ancestor(Compiler *c, int a, int k) {
+  for (; k >= 0; k = c->classes[k].parent)
+    if (k == a) return 1;
+  return 0;
+}
+
 /* The ivar slot `inm` of class `ivar_cls_id` that container evidence folds
    into, or NULL where the ivar takes none: the guards of the usage fold in
-   infer_write_types for a receiver that is the ivar. May widen *vt. */
+   infer_write_types for a receiver that is the ivar. May widen *vt.
+   A subclass's slot is its ancestors' slot as well (their methods write it
+   on the same object, and the layouts must agree), so the guards weigh the
+   ancestors' writes and pins: `super; @a[0] = 1` under a superclass's
+   `@a = [0]` is an element write, not a Hash the slot starts as. */
 static TyKind *ivar_evidence_slot(Compiler *c, const LWIndex *ivw, int ivar_cls_id,
                                   const char *inm, int is_push, TyKind *vt) {
   const NodeTable *nt = c->nt;
   ClassInfo *ci = &c->classes[ivar_cls_id];
   int iv = inm ? comp_ivar_index(ci, inm) : -1;
   if (iv < 0) return NULL;
-  if (class_ivar_pinned(ci, inm)) return NULL;  /* --rbs seed pins are authoritative */
+  for (int a = ivar_cls_id; a >= 0; a = c->classes[a].parent)   /* --rbs seed pins are authoritative */
+    if (class_ivar_pinned(&c->classes[a], inm)) return NULL;
   /* A narrowed int table is pinned: its own write still reads
      TY_POLY_ARRAY, and re-deriving from that would unify two array kinds
      into the plain poly scalar -- strictly worse than what it replaced. */
@@ -1844,7 +1856,7 @@ static TyKind *ivar_evidence_slot(Compiler *c, const LWIndex *ivw, int ivar_cls_
       Scope *_ws = comp_scope_of(c, _wi);
       int _wcls = _ws ? _ws->class_id : -1;
       if (_wcls < 0) _wcls = comp_class_index(c, "Toplevel");
-      if (_wcls != ivar_cls_id) continue;
+      if (!class_or_ancestor(c, _wcls, ivar_cls_id)) continue;
       int _wv = nt_ref(nt, _wi, "value");
       if (_wv < 0) continue;
       TyKind _wt = infer_type(c, _wv);
@@ -1877,7 +1889,7 @@ static TyKind *ivar_evidence_slot(Compiler *c, const LWIndex *ivw, int ivar_cls_
       Scope *_ws = comp_scope_of(c, _wi);
       int _ws_cls = _ws ? _ws->class_id : -1;
       if (_ws_cls < 0) _ws_cls = comp_class_index(c, "Toplevel");
-      if (_ws_cls != ivar_cls_id) continue;
+      if (!class_or_ancestor(c, _ws_cls, ivar_cls_id)) continue;
       int _wval = nt_ref(nt, _wi, "value");
       if (_wval < 0) continue;
       TyKind _wt = infer_type(c, _wval);
@@ -1906,7 +1918,7 @@ static TyKind *ivar_evidence_slot(Compiler *c, const LWIndex *ivw, int ivar_cls_
       Scope *_ws = comp_scope_of(c, _wi);
       int _ws_cls = _ws ? _ws->class_id : -1;
       if (_ws_cls < 0) _ws_cls = comp_class_index(c, "Toplevel");
-      if (_ws_cls != ivar_cls_id) continue;
+      if (!class_or_ancestor(c, _ws_cls, ivar_cls_id)) continue;
       int _wval = nt_ref(nt, _wi, "value");
       if (_wval < 0) continue;
       TyKind _wt = infer_type(c, _wval);
