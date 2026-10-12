@@ -472,6 +472,9 @@ int emit_call_identity_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
      constant, either a bare `Integer` or a top-level `::Integer` (a
      ConstantPathNode with no parent), both naming the class in "name". (#2889) */
   if (recv >= 0 && argc == 1 && sp_streq(name, "===") && nt_type(nt, recv) &&
+      /* a constant holding a value (`M = Object.new; def M.===`, `R = 1..3`)
+         is that value's #===, not a class test */
+      (comp_ntype(c, recv) == TY_CLASS || comp_ntype(c, recv) == TY_UNKNOWN) &&
       (sp_streq(nt_type(nt, recv), "ConstantReadNode") ||
        (sp_streq(nt_type(nt, recv), "ConstantPathNode") && nt_ref(nt, recv, "parent") < 0) ||
        /* a parented path is this same static dispatch only when its FULL
@@ -1372,14 +1375,18 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
          dispatches to a declared native_method instead */
       if (!class_is_exc_subclass(c, cid) && !c->classes[cid].is_native_class) {
         /* #dup drops the singleton methods, so the copy is an instance of the
-           class Ruby sees; the singleton struct is a layout superset of it,
-           so the parent's prefix is what carries over (#3739) */
+           class Ruby sees (#3739). It keeps the singleton struct, whose
+           layout is a superset of that class's: an instance variable only
+           the singleton's methods (or instance_variable_set) wrote is the
+           object's too. The copy carries the visible class's id, as the
+           object did before its `def obj.m` ran, and the singleton's methods
+           check for it on entry. */
         int dup_desingleton = sp_streq(name, "dup") && c->classes[cid].is_singleton_of;
-        if (dup_desingleton) cid = singleton_visible_ci(c, cid);
+        int dup_cls = dup_desingleton ? singleton_visible_ci(c, cid) : cid;
         ClassInfo *dci = &c->classes[cid];
         const char *cn = dci->c_name;
         int defcls = -1;
-        int ic = comp_method_in_chain(c, cid, "initialize_copy", &defcls);
+        int ic = comp_method_in_chain(c, dup_cls, "initialize_copy", &defcls);
         LocalVar *icp = (ic >= 0 && c->scopes[ic].nparams >= 1)
           ? scope_local(&c->scopes[ic], c->scopes[ic].pnames[0]) : NULL;
         TyKind ictp = icp ? icp->type : TY_UNKNOWN;
@@ -1391,7 +1398,6 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
            object. */
         int nil_arm = drr.may_nil && !drr.nil_tested;
         buf_printf(b, "({ sp_%s *_t%d = ", cn, to);
-        if (dup_desingleton) buf_printf(b, "(sp_%s *)", cn);
         emit_expr(c, recv, b);
         buf_printf(b, "; SP_GC_ROOT(_t%d); ", to);
         if (nil_arm) {
@@ -1409,10 +1415,9 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
                      class_needs_scan(dci) ? "__gc_scan" : "", td, to, td);
         /* The struct copy carries the ORIGINAL's cls_id, which for a singleton
            receiver is the synthesized subclass: the copy then answered that
-           class's methods at run time, while `respond_to?` -- reading the
-           static type -- said it did not (#4043). #dup drops them, so the copy
+           class's methods at run time (#4043). #dup drops them, so the copy
            is an instance of the class Ruby sees. */
-        if (dup_desingleton) buf_printf(b, "_t%d->cls_id = %d; ", td, cid);
+        if (dup_desingleton) buf_printf(b, "_t%d->cls_id = %d; ", td, dup_cls);
         /* the names a computed instance_variable_set put in the original's
            table come along, as its declared ivars do (#8219) */
         if (dci->computed_ivar_set || c->classes[ty_object_class(drt)].computed_ivar_set)
@@ -2391,8 +2396,14 @@ int emit_call_object_override_arms(Compiler *c, int id, Buf *b, const NodeTable 
                 (sp_streq(cnm, "define_singleton_method") && nt_ref(nt, id, "block") >= 0)) &&
         crecv >= 0) {
       TyKind crt = comp_ntype(c, crecv);
-      if ((ty_is_object(crt) && c->classes[ty_object_class(crt)].is_singleton_of) ||
-          nt_str(nt, id, "sg_resolved") != NULL) {
+      /* only a call the analysis resolved (sg_activates / sg_resolved): an
+         `extend` of a module it could not transplant (a builtin one, one
+         with an `extended` hook) or a program's own define_singleton_method
+         takes the ordinary dispatch, not a flip to whichever subclass the
+         receiver's other singleton methods made */
+      if (((ty_is_object(crt) && c->classes[ty_object_class(crt)].is_singleton_of) ||
+           nt_str(nt, id, "sg_resolved") != NULL) &&
+          (nt_str(nt, id, "sg_activates") != NULL || nt_str(nt, id, "sg_resolved") != NULL)) {
         /* The transplant happened at compile time, but WHEN it takes effect is
            a runtime fact: the object carries its parent's cls_id from
            construction and this statement is where Ruby says the override
@@ -2407,8 +2418,20 @@ int emit_call_object_override_arms(Compiler *c, int id, Buf *b, const NodeTable 
             !c->classes[ty_object_class(crt)].is_value_type)
           sgci = ty_object_class(crt);
         if (sgci >= 0) {
-          buf_puts(b, "((void)(("); emit_expr(c, crecv, b);
+          int dsm_sym = comp_ntype(c, id) == TY_SYMBOL;   /* its name, as the analysis typed it */
+          if (dsm_sym) buf_puts(b, "(");
+          buf_puts(b, "((void)"); emit_sg_frozen_check(c, sgci, id, crecv, b);
+          buf_puts(b, ", (void)(("); emit_sg_recv(c, id, crecv, b);
           buf_printf(b, ")->cls_id = %d))", sgci);
+          if (dsm_sym) {
+            /* a String name answers as its Symbol */
+            int na = 0; const int *av = call_args(nt, id, &na);
+            const char *sn = nt_kind(nt, av[0]) == NK_StringNode ? nt_str(nt, av[0], "content") : NULL;
+            buf_puts(b, ", ");
+            if (sn) buf_printf(b, "(sp_sym)%d", comp_sym_intern(c, sn));
+            else emit_expr(c, av[0], b);
+            buf_puts(b, ")");
+          }
           return 1;
         }
         buf_puts(b, "((void)("); emit_expr(c, crecv, b); buf_puts(b, "))");

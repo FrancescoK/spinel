@@ -11078,7 +11078,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
             buf_printf(b, ")->cls_id; ");
             int first = 1;
             for (int k = 0; k < c->nclasses; k++) {
-              if (singleton_visible_ci(c, k) != target) continue;
+              if (!visible_as_target(c, k, target)) continue;
               buf_printf(b, "%s_t%d == %d", first ? "" : " || ", t9, k);
               first = 0;
             }
@@ -11087,7 +11087,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
           }
           else {
             buf_puts(b, "((void)("); emit_expr(c, recv, b);
-            buf_printf(b, "), %d)", singleton_visible_ci(c, cid) == target);
+            buf_printf(b, "), %d)", visible_as_target(c, cid, target));
           }
         }
         else {
@@ -11101,9 +11101,11 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
       else {
         /* no user class index: universal ancestors still answer true for the
            hierarchy predicates (every object is_a? Object/BasicObject/Kernel);
-           instance_of? stays exact and answers false */
-        int uni = !sp_streq(name, "instance_of?") &&
-                  is_object_root(cn);
+           instance_of? stays exact and answers false, but for an Object.new
+           whose singleton class stands on the Object stand-in */
+        int uni = !sp_streq(name, "instance_of?") ? is_object_root(cn)
+                : cid >= 0 && cid < c->nclasses && cn && builtin_class_id(cn) < 0 &&
+                  visible_cls_id(c, cid) == builtin_class_id(cn);
         /* a builtin CLASS ancestor in the superclass chain (Data -146, Struct
            -145, Numeric ...): check the object's class against its cls_id so a
            Data/Struct instance is_a? Data/Struct (#2662). */
@@ -11135,12 +11137,12 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
              share with the method's: read off the object, a synthesized
              singleton class answering as its parent (#4142) */
           int o9 = ++g_tmp;
-          buf_printf(b, "sp_int _t%d = (", o9); emit_expr(c, recv, b); buf_puts(b, ")->cls_id; (");
-          for (int kk = 0; kk < c->nclasses; kk++)
-            if (singleton_visible_ci(c, kk) != kk) buf_printf(b, "_t%d == %d ? %d : ", o9, kk, singleton_visible_ci(c, kk));
-          buf_printf(b, "_t%d) == _t%d.cls_id; })", o9, k);
+          char ov[24]; snprintf(ov, sizeof ov, "_t%d", o9);
+          buf_printf(b, "sp_int _t%d = (", o9); emit_expr(c, recv, b); buf_puts(b, ")->cls_id; ");
+          emit_visible_cls_id(c, ov, b);
+          buf_printf(b, " == _t%d.cls_id; })", k);
         }
-        else buf_printf(b, "((sp_Class){%d}).cls_id == _t%d.cls_id; })", singleton_visible_ci(c, cid), k);
+        else buf_printf(b, "((sp_Class){%d}).cls_id == _t%d.cls_id; })", visible_cls_id(c, cid), k);
       }
       else {
         buf_puts(b, "sp_class_le(");
@@ -11637,7 +11639,51 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
        alone (an `equal?` operand, mark_reader_identity_operands) left the
        call to the reader, which answered a copy, and `b.v.equal?(w)` was
        false for one String. */
-    if (mi >= 0 && (repr_of(c, id).handle || repr_of(c, id).demand)) {
+    /* a singleton class's method answers something else until its def has
+       run (the guard emit_method_body puts first): it is called, and its
+       slot is the handle only once the def has run */
+    int sg_guarded = mi >= 0 && c->scopes[mi].class_id >= 0 &&
+                     c->classes[c->scopes[mi].class_id].is_singleton_of &&
+                     !c->classes[c->scopes[mi].class_id].is_value_type;
+    if (sg_guarded && (repr_of(c, id).handle || repr_of(c, id).demand)) {
+      int lastG = scope_body_last(c, mi);
+      const char *ivnG = lastG >= 0 && nt_kind(nt, lastG) == NK_InstanceVariableReadNode
+                         ? nt_str(nt, lastG, "name") : an_memo_reader_ivar(c, mi);
+      int defcG = c->scopes[mi].class_id;
+      int ivG = ivnG ? comp_ivar_index(&c->classes[defcG], ivnG) : -1;
+      TyKind retG = (TyKind)c->scopes[mi].ret;
+      if (ivG >= 0 && c->classes[defcG].ivar_types[ivG] == TY_STRBUF &&
+          (retG == TY_STRING || retG == TY_STRBUF)) {
+        int tG = ++g_tmp;
+        Buf rbG = expr_buf(c, recv);
+        buf_puts(b, "({ "); emit_ctype(c, rt, b);
+        buf_printf(b, " _t%d = %s; SP_GC_ROOT(_t%d); ", tG, rbG.p ? rbG.p : "", tG);
+        free(rbG.p);
+        emit_ctype(c, retG, b);
+        buf_printf(b, " _v%d = ", tG);
+        char selfG[32]; snprintf(selfG, sizeof selfG, "_t%d", tG);
+        emit_dispatch(c, cid, name, selfG, nt_ref(nt, id, "arguments"), nt_ref(nt, id, "block"), b);
+        buf_printf(b, "; sp_class_le((sp_Class){_t%d->cls_id}, (sp_Class){%d}) ? _t%d->iv_%s : ",
+                   tG, defcG, tG, iv_c(ivnG + 1));
+        /* before the def, the parent's own method answered: a reader of a
+           String slot hands out that slot, as it would without the def */
+        int pmG = comp_method_in_chain(c, c->classes[defcG].parent, name, NULL);
+        const char *pivn = NULL;
+        if (pmG >= 0 && c->scopes[pmG].nparams == 0 && c->scopes[pmG].class_id >= 0) {
+          int lastP = scope_body_last(c, pmG);
+          pivn = lastP >= 0 && nt_kind(nt, lastP) == NK_InstanceVariableReadNode
+                 ? nt_str(nt, lastP, "name") : an_memo_reader_ivar(c, pmG);
+          int pc = c->scopes[pmG].class_id;
+          int piv = pivn ? comp_ivar_index(&c->classes[pc], pivn) : -1;
+          if (piv < 0 || c->classes[pc].ivar_types[piv] != TY_STRBUF) pivn = NULL;
+        }
+        if (pivn) buf_printf(b, "_t%d->iv_%s; })", tG, iv_c(pivn + 1));
+        else if (retG == TY_STRING) buf_printf(b, "(_v%d ? sp_String_new_shared(_v%d) : NULL); })", tG, tG);
+        else buf_printf(b, "_v%d; })", tG);
+        return 1;
+      }
+    }
+    if (mi >= 0 && !sg_guarded && (repr_of(c, id).handle || repr_of(c, id).demand)) {
       int lastH = scope_body_last(c, mi);
       if (lastH >= 0 && nt_kind(nt, lastH) == NK_InstanceVariableReadNode) {
         const char *ivnH = nt_str(nt, lastH, "name");
@@ -11668,7 +11714,7 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
     }
     /* a memoizing reader (`def s = (@s ||= +"")`) has to run to fill the
        slot first; then the slot is the handle */
-    if (mi >= 0 && (repr_of(c, id).handle || repr_of(c, id).demand)) {
+    if (mi >= 0 && !sg_guarded && (repr_of(c, id).handle || repr_of(c, id).demand)) {
       const char *ivnM = an_memo_reader_ivar(c, mi);
       int defcM = c->scopes[mi].class_id;
       int ivM = (ivnM && defcM >= 0) ? comp_ivar_index(&c->classes[defcM], ivnM) : -1;

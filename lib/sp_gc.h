@@ -659,6 +659,9 @@ extern const char *(*sp_obj_cls_name_fn)(int cls_id);
    scan-function table names it, -1 for a plain one. NULL in a program with
    no such class. */
 extern int (*sp_bsub_cls_fn)(sp_RbVal v);
+/* the class id Ruby sees for a user class id: a synthesized singleton class
+   answers as the class it hides behind (generated sp_cls_visible) */
+extern int (*sp_cls_visible_fn)(int cls_id);
 /* Is user class `sub` the class `super` or a descendant of it? The generated
    class bank installs it; NULL means only an exact id can be trusted. A
    pointer array of one class checks a stored object against it (#4486). */

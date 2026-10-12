@@ -2333,6 +2333,98 @@ static int sg_var_write_kind(int bk, NodeKind k) {
          k == NK_GlobalVariableTargetNode;
 }
 
+static int sg_contains_in(const NodeTable *nt, int root, int id, int depth, int skip_defs);
+
+/* The topmost user class above class k. This runs before resolve_parents,
+   so a class's superclass is read off its own definition. */
+static int sg_class_root(Compiler *c, int k) {
+  for (int d = 0; k >= 0 && d < 64; d++) {
+    int p = c->classes[k].parent;
+    if (p < 0) {
+      int dn = c->classes[k].def_node;
+      int sc = dn >= 0 ? nt_ref(c->nt, dn, "superclass") : -1;
+      NodeKind sk = sc >= 0 ? nt_kind(c->nt, sc) : NK_NilNode;
+      const char *sn = sk == NK_ConstantReadNode || sk == NK_ConstantPathNode ? nt_str(c->nt, sc, "name") : NULL;
+      p = sn ? comp_class_index(c, sn) : -1;
+    }
+    if (p < 0 || p == k) return k;
+    k = p;
+  }
+  return k;
+}
+
+/* Can an instance variable written in class wc (-1: the top level) share a
+   slot with the one a def in class oc reads: a class of the same hierarchy
+   (a sibling subclass writes the base's slot too), or a module, which any
+   class can include? */
+static int sg_ivar_related(Compiler *c, int wc, int oc) {
+  if (wc == oc) return 1;
+  if (wc >= 0 && comp_class_is_module(c, &c->classes[wc])) return 1;
+  return wc >= 0 && oc >= 0 && sg_class_root(c, wc) == sg_class_root(c, oc);
+}
+
+/* Whose instance variable an `@x` at node n is: 1 in a class's instance
+   method (the object's), 2 at the top level (main's), 3 in a top-level def,
+   0 anywhere else -- a module's method (whose object is any includer's), a
+   class or module body or a class method (whose `@x` is the class's own). */
+static int sg_ivar_home(Compiler *c, int n) {
+  Scope *s = comp_scope_of(c, n);
+  if (s != &c->scopes[0]) {
+    if (s->def_node < 0 || s->is_cmethod || s->is_proc_form) return 0;
+    if (s->class_id < 0) return 3;
+    return comp_class_is_module(c, &c->classes[s->class_id]) ? 0 : 1;
+  }
+  const NodeTable *nt = c->nt;
+  for (int k = 0; k < nt->count; k++) {
+    NodeKind kk = nt_kind(nt, k);
+    if ((kk == NK_ClassNode || kk == NK_ModuleNode || kk == NK_SingletonClassNode) &&
+        sg_contains_in(nt, nt_ref(nt, k, "body"), n, 0, 1)) return 0;
+  }
+  return 2;
+}
+
+/* The class or module whose body holds node n itself (not inside a def), or -1. */
+static int sg_body_class(Compiler *c, int n) {
+  const NodeTable *nt = c->nt;
+  int best = -1;
+  for (int k = 0; k < nt->count; k++) {
+    NodeKind kk = nt_kind(nt, k);
+    if ((kk != NK_ClassNode && kk != NK_ModuleNode) || !sg_contains_in(nt, nt_ref(nt, k, "body"), n, 0, 1))
+      continue;
+    if (best < 0 || sg_contains_in(nt, nt_ref(nt, best, "body"), k, 0, 1)) best = k;
+  }
+  int cp = best >= 0 ? nt_ref(nt, best, "constant_path") : -1;
+  const char *cn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+  return cn ? comp_class_index(c, cn) : -1;
+}
+
+/* Does call w write instance variable `name` (with its '@'), of an object a
+   def in class oc may read it on? An attr_writer / attr_accessor of it in a
+   related class (sg_ivar_related), an instance_variable_set of it, or one
+   whose name is not a literal on self in a related class. */
+static int sg_call_writes_ivar(Compiler *c, int w, const char *name, int oc) {
+  const NodeTable *nt = c->nt;
+  const char *cn = nt_str(nt, w, "name");
+  if (!cn) return 0;
+  int acc = sp_streq(cn, "attr_writer") || sp_streq(cn, "attr_accessor");
+  if (!acc && !sp_streq(cn, "instance_variable_set")) return 0;
+  int anode = nt_ref(nt, w, "arguments"), an = 0;
+  const int *av = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
+  int r = nt_ref(nt, w, "receiver");
+  int self_recv = r < 0 || nt_kind(nt, r) == NK_SelfNode;
+  for (int j = 0; j < an && (acc || j == 0); j++) {
+    NodeKind ak = nt_kind(nt, av[j]);
+    const char *v = ak == NK_SymbolNode ? nt_str(nt, av[j], "value")
+                  : ak == NK_StringNode ? nt_str(nt, av[j], "content") : NULL;
+    if (acc) {
+      if ((!v || sp_streq(v, name + 1)) && self_recv && sg_ivar_related(c, sg_body_class(c, w), oc)) return 1;
+    }
+    else if (v ? sp_streq(v, name) : self_recv && sg_ivar_related(c, comp_scope_of(c, w)->class_id, oc))
+      return 1;
+  }
+  return 0;
+}
+
 /* The single defining write of a binding `name` of kind `bk`: a local of scope
    `owner_scope`, a constant, an instance variable of `owner_scope`'s class, or
    a class variable or a global of that name anywhere (for the variables every
@@ -2340,23 +2432,38 @@ static int sg_var_write_kind(int bk, NodeKind k) {
    than one). Returns the write node if there is exactly one and
    its value is `<UserClass>.new(...)`, else -1; *out_ci gets the class. */
 static int sg_single_new_write(Compiler *c, const char *name, int bk,
-                               Scope *owner_scope, int *out_ci) {
+                               Scope *owner_scope, int use, int *out_ci) {
   const NodeTable *nt = c->nt;
   int write = -1, ci = -1, count = 0;
   for (int w = 0; w < nt->count; w++) {
     NodeKind k = nt_kind(nt, w);
     if (bk == SG_CONST) { if (k != NK_ConstantWriteNode) continue; }
+    else if (bk == SG_IVAR && k == NK_CallNode) {
+      if (sg_call_writes_ivar(c, w, name, owner_scope->class_id)) { count++; write = w; }
+      continue;
+    }
     else if (bk != SG_LOCAL) { if (!sg_var_write_kind(bk, k)) continue; }
-    else if (k != NK_LocalVariableWriteNode) continue;
+    /* a local's `||=`, `+=`, multiple assignment or `rescue => o` writes it
+       too, and then it is not the one `new` */
+    else if (k != NK_LocalVariableWriteNode && k != NK_LocalVariableOrWriteNode &&
+             k != NK_LocalVariableAndWriteNode && k != NK_LocalVariableOperatorWriteNode &&
+             k != NK_LocalVariableTargetNode) continue;
     const char *wn = nt_str(nt, w, "name");
     if (!wn || !sp_streq(wn, name)) continue;
     if (bk == SG_LOCAL && comp_scope_of(c, w) != owner_scope) continue;
-    if (bk == SG_IVAR && comp_scope_of(c, w)->class_id != owner_scope->class_id) continue;
+    /* an instance variable is the object's: a subclass's, a superclass's or
+       a module's method writes the same one */
+    if (bk == SG_IVAR && !sg_ivar_related(c, comp_scope_of(c, w)->class_id, owner_scope->class_id))
+      continue;
     count++;
     write = w;
   }
   if (count != 1) return -1;
+  if (bk == SG_LOCAL && nt_kind(nt, write) != NK_LocalVariableWriteNode) return -1;
   if (bk == SG_IVAR && nt_kind(nt, write) != NK_InstanceVariableWriteNode) return -1;
+  /* the write and the def read the same object's variable: both in instance
+     methods, or both at the top level */
+  if (bk == SG_IVAR && (!sg_ivar_home(c, write) || sg_ivar_home(c, write) != sg_ivar_home(c, use))) return -1;
   if (bk == SG_CVAR && nt_kind(nt, write) != NK_ClassVariableWriteNode) return -1;
   if (bk == SG_GVAR && nt_kind(nt, write) != NK_GlobalVariableWriteNode) return -1;
   ci = sg_new_class_ci(c, nt_ref(nt, write, "value"));
@@ -2696,6 +2803,54 @@ static int sg_def_needs_self(Compiler *c, int def_id) {
   return 0;
 }
 
+/* The class an `Object.new` binding's singleton subclass stands on. Object
+   has no user class to subclass, so one empty root class takes its place,
+   shared by every such binding, and answers as the builtin Object wherever
+   Ruby can see it (Compiler.object_standin). */
+static int sg_object_standin(Compiler *c, int wnode) {
+  if (c->object_standin) return c->object_standin - 1;
+  ClassInfo *b = comp_class_new(c, "Object__sg_base", wnode);
+  b->ruby_name_cache = strdup("Object");
+  c->object_standin = (int)(b - c->classes) + 1;
+  return c->object_standin - 1;
+}
+
+/* Does the subtree at `node`, `level` blocks inside a define_singleton_method
+   block, read or write a local of the code around that block, or yield to
+   its block? A local's depth counts the blocks between it and its scope. */
+static int sg_block_captures(const NodeTable *nt, int node, int level) {
+  if (node < 0) return 0;
+  NodeKind k = nt_kind(nt, node);
+  if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode) return 0;
+  if (k == NK_YieldNode) return 1;
+  if ((k == NK_LocalVariableReadNode || k == NK_LocalVariableWriteNode ||
+       k == NK_LocalVariableOperatorWriteNode || k == NK_LocalVariableOrWriteNode ||
+       k == NK_LocalVariableAndWriteNode || k == NK_LocalVariableTargetNode) &&
+      nt_int(nt, node, "depth", 0) >= level)
+    return 1;
+  int inner = (k == NK_BlockNode || k == NK_LambdaNode) ? level + 1 : level;
+  int nr = nt_num_refs(nt, node);
+  for (int i = 0; i < nr; i++) if (sg_block_captures(nt, nt_ref_at(nt, node, i), inner)) return 1;
+  int na = nt_num_arrs(nt, node);
+  for (int i = 0; i < na; i++) {
+    int cnt = 0; const int *ids = nt_arr_at(nt, node, i, &cnt);
+    for (int j = 0; j < cnt; j++) if (sg_block_captures(nt, ids[j], inner)) return 1;
+  }
+  return 0;
+}
+
+/* Can `obj.define_singleton_method(name) { ... }` become a method of the
+   object's synthesized class? Its name has to be written out (a Symbol or a
+   String literal), and its block becomes a method body, which has none of
+   the locals or the block of the code around the call. */
+static int sg_dsm_transplantable(const NodeTable *nt, int id) {
+  int anode = nt_ref(nt, id, "arguments"), an = 0;
+  const int *av = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
+  if (an != 1 || (nt_kind(nt, av[0]) != NK_SymbolNode && nt_kind(nt, av[0]) != NK_StringNode))
+    return 0;
+  return !sg_block_captures(nt, nt_ref(nt, id, "block"), 0);
+}
+
 void register_singleton_defs(Compiler *c) {
   /* not const: the pass marks a resolved dsm call on the node itself */
   NodeTable *nt = (NodeTable *)c->nt;
@@ -2714,8 +2869,9 @@ void register_singleton_defs(Compiler *c) {
       const char *cn = nt_str(nt, id, "name");
       if (cn && sp_streq(cn, "define_singleton_method")) {
         recv = nt_ref(nt, id, "receiver"); is_dsm = 1;
-        /* only a real dsm with a block is a singleton def */
-        if (nt_ref(nt, id, "block") < 0) continue;
+        /* only a real dsm with a block is a singleton def, and only one
+           whose block can stand as a method of the object's class */
+        if (nt_ref(nt, id, "block") < 0 || !sg_dsm_transplantable(nt, id)) continue;
       }
       else if (cn && sp_streq(cn, "extend")) { recv = nt_ref(nt, id, "receiver"); is_extend = 1; }
       else continue;
@@ -2731,7 +2887,7 @@ void register_singleton_defs(Compiler *c) {
     int bk = SG_LOCAL; const char *rn = NULL; Scope *owner = NULL;
     if (sg_binding(c, id, recv, &bk, &rn, &owner) < 0) continue;
     int parent_ci = -1;
-    int wnode = sg_single_new_write(c, rn, bk, owner, &parent_ci);
+    int wnode = sg_single_new_write(c, rn, bk, owner, id, &parent_ci);
     if (wnode < 0 && bk == SG_LOCAL && parent_ci != -2 && parent_ci != -3)
       wnode = sg_block_param_new(c, id, rn, &parent_ci);
     if (parent_ci == -2 || parent_ci == -3) {
@@ -2751,11 +2907,32 @@ void register_singleton_defs(Compiler *c) {
         c->scopes[si].c_name = strdup(symbol);
         continue;
       }
-      /* Object.new and BasicObject.new have no synthesized subclass to
-         receive arbitrary singleton methods. Let the usual untraceable
-         receiver path reject methods that need a real self. */
-      parent_ci = -1;
-      wnode = -1;
+      /* An Object.new gets the same synthesized subclass as a user object,
+         standing on a class that answers as Object. BasicObject.new has no
+         such class: it lacks Object's methods, which a user class inherits.
+         Nor does a program whose reopened Object or BasicObject defines
+         initialize, which Object.new runs and the stand-in's constructor
+         would not. Its
+         `extend` stays refused: a module's own hooks and includes are not
+         carried onto the object (sg_transplant_module). Let the usual
+         untraceable receiver path reject methods that need a real self. */
+      int oci = comp_class_index(c, "Object"), bci = comp_class_index(c, "BasicObject");
+      if (parent_ci == -2 && wnode >= 0 && !is_extend &&
+          (oci < 0 || comp_method_in_class(c, oci, "initialize") < 0) &&
+          (bci < 0 || comp_method_in_class(c, bci, "initialize") < 0))
+        parent_ci = sg_object_standin(c, wnode);
+      else {
+        parent_ci = -1;
+        wnode = -1;
+      }
+    }
+    /* an earlier `def obj.m` has already pointed an Object.new at its
+       singleton class: its extend stays refused all the same */
+    if (wnode >= 0 && is_extend && c->object_standin) {
+      int root = parent_ci;
+      for (int d = 0; d < 64 && root >= 0 && c->classes[root].is_singleton_of; d++)
+        root = c->classes[root].is_singleton_of - 1;
+      if (root == c->object_standin - 1) wnode = -1;
     }
     if (wnode < 0) {
       /* Not traceable to one `new` of a user class, so there is no subclass to
@@ -2775,9 +2952,10 @@ void register_singleton_defs(Compiler *c) {
         nt_node_set_int(nt, id, "sg_needs_self_refused", 1);
       continue;   /* not statically traceable: leave as today */
     }
-    /* `def @a.m` / `def @@a.m`: the receiver is read where the def stands,
-       as the activation reads it, not in the method the walk put it under,
-       whose class is now the singleton */
+    /* `def @a.m` / `def @@a.m` / `def a.m`: the receiver is read where the
+       def stands, as the activation reads it, not in the method the walk put
+       it under, whose class is now the singleton (a local a block captures
+       is a cell there) */
     if ((bk == SG_IVAR || bk == SG_CVAR) && recv < c->node_cap) c->nscope[recv] = c->nscope[id];
     /* a user-defined method of the singleton name is that method, not the
        machinery (#2652). */
@@ -2797,6 +2975,11 @@ void register_singleton_defs(Compiler *c) {
         NodeKind ak = nt_kind(nt, args[j]);
         if ((ak != NK_ConstantReadNode && ak != NK_ConstantPathNode) ||
             comp_class_index(c, nt_str(nt, args[j], "name")) < 0) { all_mods = 0; break; }
+        /* the module's `self.extended` hook runs at the call, which a
+           compile-time transplant has no place for */
+        if (comp_cmethod_in_chain(c, comp_class_index(c, nt_str(nt, args[j], "name")), "extended", NULL) >= 0) {
+          all_mods = 0; break;
+        }
       }
       if (!all_mods) continue;
       /* One link per module, in argument order, so `extend(A, B)` leaves B
@@ -2846,7 +3029,14 @@ void register_singleton_defs(Compiler *c) {
        widens to poly, and reading it back as "not a singleton subclass" sent
        the call to the unsupported-feature diagnostic, which stopped the build
        on a form the constant spelling compiles. */
-    if (is_dsm) nt_node_set_str(nt, id, "sg_resolved", "1");
+    if (is_dsm) {
+      nt_node_set_str(nt, id, "sg_resolved", "1");
+      /* the call answers its name as a Symbol, a String one too */
+      int anode = nt_ref(nt, id, "arguments"), an = 0;
+      const int *av = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
+      if (an == 1 && nt_kind(nt, av[0]) == NK_StringNode && nt_str(nt, av[0], "content"))
+        comp_sym_intern(c, nt_str(nt, av[0], "content"));
+    }
   }
   free(m.wkey); free(m.wci);
 }

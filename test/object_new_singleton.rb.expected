@@ -1,0 +1,89 @@
+before the def: NoMethodError
+"hi"
+true
+false
+Object
+true
+"Object"
+BasicObject
+true
+true
+true
+[:=~, :hi, :to_str]
+true
+false
+true
+true
+true
+true
+true
+false
+"xstr"
+case Object
+"hi"
+7
+Object
+false
+true
+42
+:a
+"aa"
+Object
+"hello from Box"
+true
+[false, true]
+[30, 70]
+case PATTERN
+12
+1
+true
+"Plain"
+false
+Object
+true
+1
+[Object, Integer]
+false
+12
+true
+TypeError: singleton can't be dumped
+5
+false
+:zz
+Object
+false
+:named
+:n
+Undefined
+true
+"late"
+:ping
+:pong
+true
+false
+true
+[]
+[:==]
+can't modify frozen Object: #<Object:X>
+false
+false
+true
+2
+false
+true
+"h"
+true
+0
+:miss
+false
+:hit
+true
+true
+"abe"
+false
+true
+can't modify frozen Pt: #<Pt:X @x=1>
+can't modify frozen Object: sf
+can't modify frozen Rg: {1 => 2}
+Rg
+true

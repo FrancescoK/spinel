@@ -16051,7 +16051,7 @@ int any_class_defines(Compiler *c, const char *qm) {
    bodies along the parent chain; the user modules a class includes are
    followed through the table, since a bare `include Enumerable` inside a
    module is recorded nowhere else. */
-static int class_mixes_in(Compiler *c, int cid, const char *mod, int depth) {
+int class_mixes_in(Compiler *c, int cid, const char *mod, int depth) {
   /* every level of the include chain is a distinct class, so the class count
      bounds a chain without a cycle, and cuts one that has one; a fixed depth
      of eight missed a module reached through a ninth (from the #5090 review) */
@@ -16434,6 +16434,26 @@ static void refl_object_own_methods(Compiler *c, int cid, const char *name, Refl
   if (pub_only && k >= 0) refl_own_instance_methods(c, k, 1, 0, 0, 0, r);
 }
 
+/* The list emit_object_methods_reflection answers for an instance of cid. */
+static void emit_object_methods_list(Compiler *c, int cid, const char *name, int pub, int prot,
+                                     int sg, int all, int arg, Buf *b) {
+  ReflNames ra = {0}, ro = {0};
+  if (all != 0) refl_object_methods(c, cid, pub, prot, sg, &ra);
+  if (all != 1) refl_object_own_methods(c, cid, name, &ro);
+  if (all == 2) {
+    buf_puts(b, "((");
+    emit_cond(c, arg, b);
+    buf_puts(b, ") ? ");
+    refl_emit_sym_array(c, cid, &ra, b);
+    buf_puts(b, " : ");
+    refl_emit_sym_array(c, cid, &ro, b);
+    buf_puts(b, ")");
+  }
+  else refl_emit_sym_array(c, cid, all ? &ra : &ro, b);
+  refl_free(&ra);
+  refl_free(&ro);
+}
+
 /* obj.methods / obj.public_methods / obj.singleton_methods on a typed user
    object: the class chain is static, so the list is too. The receiver is
    evaluated for its effects. `all` is an_object_methods_all_arg's answer:
@@ -16446,24 +16466,29 @@ int emit_object_methods_reflection(Compiler *c, int recv, int cid, const char *n
   else if (sp_streq(name, "singleton_methods")) { prot = 1; sg = 1; }
   else if (!sp_streq(name, "public_methods")) return 0;
   if (!an_object_methods_listable(c, cid, name)) return 0;
-  ReflNames ra = {0}, ro = {0};
-  if (all != 0) refl_object_methods(c, cid, pub, prot, sg, &ra);
-  if (all != 1) refl_object_own_methods(c, cid, name, &ro);
-  buf_puts(b, "({ (void)(");
-  emit_expr(c, recv, b);
-  buf_puts(b, "); ");
-  if (all == 2) {
-    buf_puts(b, "(");
-    emit_cond(c, arg, b);
-    buf_puts(b, ") ? ");
-    refl_emit_sym_array(c, cid, &ra, b);
-    buf_puts(b, " : ");
-    refl_emit_sym_array(c, cid, &ro, b);
+  /* an object typed as its singleton class has those methods only once its
+     `def obj.m` has run, and not in a #dup: until then it lists as the class
+     before it */
+  int pid = c->classes[cid].is_singleton_of && !c->classes[cid].is_value_type
+            ? c->classes[cid].parent : -1;
+  if (pid >= 0 && !an_object_methods_listable(c, pid, name)) pid = -1;
+  int t = ++g_tmp;
+  if (pid >= 0) {
+    buf_printf(b, "({ void *_r%d = (void *)(", t);
+    emit_expr(c, recv, b);
+    buf_printf(b, "); sp_class_le((sp_Class){sp_obj_cls_id_of(_r%d)}, (sp_Class){%d}) ? ", t, cid);
   }
-  else refl_emit_sym_array(c, cid, all ? &ra : &ro, b);
+  else {
+    buf_puts(b, "({ (void)(");
+    emit_expr(c, recv, b);
+    buf_puts(b, "); ");
+  }
+  emit_object_methods_list(c, cid, name, pub, prot, sg, all, arg, b);
+  if (pid >= 0) {
+    buf_puts(b, " : ");
+    emit_object_methods_list(c, pid, name, pub, prot, sg, all, arg, b);
+  }
   buf_puts(b, "; })");
-  refl_free(&ra);
-  refl_free(&ro);
   return 1;
 }
 /* Does any user class answer respond_to?(qm) at run time, through a method of
@@ -27551,6 +27576,16 @@ static int rto_exact_class_answer(Compiler *c, int cid, const char *qm,
   if (a != 1) return a == 2;
   return foldable ? include_all : -1;
 }
+/* Whether a slot typed as class cid may hold an instance of class k: cid's
+   own subclasses, and for a singleton class the classes above it its object
+   carries until its `def obj.m` runs, or after #dup drops it (the links up
+   to the class Ruby sees). */
+static int rto_slot_may_hold(Compiler *c, int k, int cid) {
+  if (is_descendant(c, k, cid)) return 1;
+  for (int p = cid; p >= 0 && c->classes[p].is_singleton_of; )
+    if ((p = c->classes[p].parent) == k) return 1;
+  return 0;
+}
 /* The answer for a receiver typed as class cid, which holds an instance of
    cid or of any subclass: a method the base class runs on self
    (`respond_to?("do_" + m)` in a servlet base, where only the subclass
@@ -27563,7 +27598,8 @@ static int rto_subtree_answer(Compiler *c, int cid, const char *qm,
   if (a < 0 || c->classes[cid].is_value_type) return a;
   int mixed = 0;
   for (int k = 0; k < c->nclasses; k++) {
-    if (k == cid || !c->classes[k].instantiated || !is_descendant(c, k, cid)) continue;
+    if (k == cid || !rto_slot_may_hold(c, k, cid) ||
+        (!c->classes[k].instantiated && is_descendant(c, k, cid))) continue;
     int ak = rto_exact_class_answer(c, k, qm, include_all, foldable);
     if (ak < 0) return -1;
     if (ak != a) mixed = 1;
@@ -27591,7 +27627,7 @@ int emit_respond_to_by_cls(Compiler *c, int recv, const char *qm, int argc,
   buf_puts(b, "(");
   int any = 0;
   for (int k = 0; k < c->nclasses; k++) {
-    if (!is_descendant(c, k, cid)) continue;
+    if (!rto_slot_may_hold(c, k, cid)) continue;
     if (rto_exact_class_answer(c, k, qm, include_all, 1) != 1) continue;
     buf_printf(b, "%s_t%d == %d", any ? " || " : "", t, k);
     any = 1;
@@ -27759,7 +27795,11 @@ int respond_to_static_answer(Compiler *c, int id, int recv, TyKind rt, const cha
   }
   if (!resolved) {
     const char *rty = nt_type(nt, recv);
-    if (rty && sp_streq(rty, "ConstantReadNode")) {
+    /* a constant that holds a user object answers as the object does */
+    int cobj = rty && sp_streq(rty, "ConstantReadNode") && ty_is_object(rt) &&
+               nt_str(nt, recv, "name") && comp_class_index(c, nt_str(nt, recv, "name")) < 0 &&
+               builtin_class_id(nt_str(nt, recv, "name")) == 0;
+    if (rty && sp_streq(rty, "ConstantReadNode") && !cobj) {
       const char *rcn = nt_str(nt, recv, "name");
       int ci = comp_class_index(c, rcn);
       /* `Struct` and `Data` are core class objects with no user entry, and

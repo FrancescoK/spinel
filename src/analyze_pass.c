@@ -15251,9 +15251,23 @@ int infer_block_params(Compiler *c) {
     int nw = 0; const int *whens = nt_arr(nt, id, "conditions", &nw);
     for (int k = 0; k < nw; k++) {
       int wc = 0; const int *wconds = nt_arr(nt, whens[k], "conditions", &wc);
-      for (int j = 0; j < wc; j++)
-        if (infer_type(c, wconds[j]) == TY_PROC && cs_type_proc_name(c, wconds[j], &pred, 1, 0))
+      for (int j = 0; j < wc; j++) {
+        TyKind wt = infer_type(c, wconds[j]);
+        if (wt == TY_PROC && cs_type_proc_name(c, wconds[j], &pred, 1, 0))
           changed = 1;
+        /* an object whose class defines === takes the subject as that
+           method's argument, as a call would */
+        if (ty_is_object(wt)) {
+          TyKind st = infer_type(c, pred);
+          int mi = comp_method_in_chain(c, ty_object_class(wt), "===", NULL);
+          Scope *ms = mi >= 0 ? &c->scopes[mi] : NULL;
+          /* the one shape the case emitter calls (emit_when_user_eq) */
+          LocalVar *plv = ms && ms->nparams == 1 && ms->rest_idx < 0 && ms->kwrest_idx < 0 && !ms->blk_param
+                        ? scope_local(ms, ms->pnames[0]) : NULL;
+          if (plv && !plv->rbs_seeded && st != TY_UNKNOWN && st != TY_VOID && lv_widen(plv, st))
+            changed = 1;
+        }
+      }
     }
   }
 

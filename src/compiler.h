@@ -1054,6 +1054,11 @@ typedef struct {
 
   ClassInfo *classes;
   int nclasses, cclasses;
+  int object_standin;   /* +1-based index (0 = none) of the empty root class an
+                          `o = Object.new` binding's singleton subclass stands
+                          on: Object has no user class to subclass. It answers
+                          as the builtin Object wherever Ruby can see it (its
+                          name, #class, instance_of?: visible_cls_id). */
   int has_arysub;      /* some class is an Array or Hash subclass (ClassInfo.ary_root, #7449) */
   /* the nodes infer_type answered as an Array subclass instance's Array
      (ary_operand, an_ary_viewed_mark), indexed by node; NULL until one is */

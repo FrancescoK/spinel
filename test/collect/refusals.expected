@@ -1086,11 +1086,23 @@ spinel: 1 refusal, nothing written
 == test/reject/setter_symbol_block_builtin.rb [promote] rc=1
 spinel: test/reject/setter_symbol_block_builtin.rb:6: a setter Symbol (`&:name=`) as the block of a builtin method is not supported
 spinel: 1 refusal, nothing written
+== test/reject/singleton_class_body_non_def.rb [default] rc=1
+spinel: test/reject/singleton_class_body_non_def.rb:6: `class << obj` with a statement other than `def`, `private def` or `protected def` is not supported by AOT compilation: the methods are placed on the object's class at compile time, and only a `def` has a place there. Write each one as `def obj.m` (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/singleton_class_body_non_def.rb [promote] rc=1
+spinel: test/reject/singleton_class_body_non_def.rb:6: `class << obj` with a statement other than `def`, `private def` or `protected def` is not supported by AOT compilation: the methods are placed on the object's class at compile time, and only a `def` has a place there. Write each one as `def obj.m` (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/singleton_extend_extended_hook.rb [default] rc=1
+spinel: test/reject/singleton_extend_extended_hook.rb:8: Object#extend is not supported by AOT compilation: mixing a module into a live object needs a per-object method table. Use `include`/`prepend` in the class body instead (see docs/limitations.md)
+spinel: 1 refusal, nothing written
+== test/reject/singleton_extend_extended_hook.rb [promote] rc=1
+spinel: test/reject/singleton_extend_extended_hook.rb:8: Object#extend is not supported by AOT compilation: mixing a module into a live object needs a per-object method table. Use `include`/`prepend` in the class body instead (see docs/limitations.md)
+spinel: 1 refusal, nothing written
 == test/reject/singleton_on_untraceable_recv.rb [default] rc=1
-spinel: test/reject/singleton_on_untraceable_recv.rb:10: singleton method that needs a self, on a receiver that is not one user-class instance
+spinel: test/reject/singleton_on_untraceable_recv.rb:11: singleton method that needs a self, on a receiver that is not one user-class instance
 spinel: 1 refusal, nothing written
 == test/reject/singleton_on_untraceable_recv.rb [promote] rc=1
-spinel: test/reject/singleton_on_untraceable_recv.rb:10: singleton method that needs a self, on a receiver that is not one user-class instance
+spinel: test/reject/singleton_on_untraceable_recv.rb:11: singleton method that needs a self, on a receiver that is not one user-class instance
 spinel: 1 refusal, nothing written
 == test/reject/stdout_reassigned_pp.rb [default] rc=1
 spinel: test/reject/stdout_reassigned_pp.rb:6: unsupported pp while the program reassigns $stdout (puts, print, printf and p without a splat or block argument write through it): node N (CallNode `pp`) recv=-/ty-1 argc=1 arg0ty19

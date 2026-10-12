@@ -5740,8 +5740,17 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
   }
   if (sp_streq(ty, "DefNode")) {
     /* a def in value position: the definition emits separately; the
-       expression's value is the method-name symbol. */
+       expression's value is the method-name symbol. A `def obj.m` is also
+       where obj's singleton method starts (emit_sg_activate). */
     const char *dn = nt_str(nt, id, "name");
+    int sgci = sg_activates_ci(c, id), dr = nt_ref(nt, id, "receiver");
+    sg_refused_def(c, id);
+    if (sgci >= 0 && dr >= 0) {
+      buf_puts(b, "((void)"); emit_sg_frozen_check(c, sgci, id, dr, b);
+      buf_puts(b, ", ((void)(("); emit_sg_recv(c, id, dr, b);
+      buf_printf(b, ")->cls_id = %d)), (sp_sym)%d)", sgci, comp_sym_intern(c, dn ? dn : ""));
+      return;
+    }
     buf_printf(b, "(sp_sym)%d", comp_sym_intern(c, dn ? dn : ""));
     return;
   }

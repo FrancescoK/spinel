@@ -368,7 +368,17 @@ int emit_call_reflection_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
                            q ? " || " : "", tv, c->classes[xr[q]].name);
               buf_puts(b, "))");
             }
-            else buf_printf(b, "%s_k%d == %d", first ? "" : " || ", tv, k);
+            else {
+              /* a singleton class's own method answers once its def has run:
+                 the box keeps the static id, the object carries the parent's
+                 until then (and in a #dup) */
+              int dk = -1;
+              if (comp_method_in_chain(c, k, qm, &dk) >= 0 && dk >= 0 &&
+                  c->classes[dk].is_singleton_of && !c->classes[dk].is_value_type)
+                buf_printf(b, "%s(_k%d == %d && sp_class_le((sp_Class){sp_obj_cls_id_of(_t%d.v.p)}, (sp_Class){%d}))",
+                           first ? "" : " || ", tv, k, tv, dk);
+              else buf_printf(b, "%s_k%d == %d", first ? "" : " || ", tv, k);
+            }
             first = 0;
           }
           if (first) buf_puts(b, "0");
@@ -3054,9 +3064,17 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
       buf_puts(g_pre, _rb.p ? _rb.p : ""); buf_puts(g_pre, ";\n"); free(_rb.p);
       /* a heap object slot's NULL is nil, whose class is NilClass (self is
          never nil) */
-      buf_printf(b, "((sp_Class){_t%d ? _t%d->cls_id : %d})", _tobj, _tobj,
-                 comp_ty_value_obj(c, rt) || nt_kind(c->nt, recv) == NK_SelfNode
-                   ? _cidx : builtin_class_id("NilClass"));
+      int _nilcls = comp_ty_value_obj(c, rt) || nt_kind(c->nt, recv) == NK_SelfNode
+                      ? _cidx : builtin_class_id("NilClass");
+      /* a singleton class answers as the class it hides behind, the Object
+         stand-in as Object: `o.class == Foo` holds after `def o.m` */
+      if (cls_id_masquerades(c, _cidx)) {
+        char tv[24]; snprintf(tv, sizeof tv, "_t%d->cls_id", _tobj);
+        buf_printf(b, "((sp_Class){_t%d ? ", _tobj); emit_visible_cls_id(c, tv, b);
+        buf_printf(b, " : %d})", _nilcls);
+        return 1;
+      }
+      buf_printf(b, "((sp_Class){_t%d ? _t%d->cls_id : %d})", _tobj, _tobj, _nilcls);
       return 1;
     }
     if (cn && (rt == TY_INT || rt == TY_FLOAT)) {

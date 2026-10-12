@@ -9096,8 +9096,14 @@ static int emit_when_user_eq(Compiler *c, int cond, int t, TyKind pt, Buf *b) {
   if (weq < 0) return 0;
   Scope *ws = &c->scopes[weq];
   LocalVar *wp = ws->nparams == 1 ? scope_local(ws, ws->pnames[0]) : NULL;
-  if (!wp || wp->type != TY_POLY || ws->rest_idx >= 0 || ws->kwrest_idx >= 0 || ws->blk_param ||
-      (ws->ret != TY_BOOL && ws->ret != TY_POLY)) return 0;
+  /* a parameter the case subject alone typed (infer_block_params) takes it
+     as it is */
+  int raw = wp && wp->type == pt && pt != TY_POLY;
+  /* an answer that is an object or nil (`x.size > 2 ? x : nil`) is true
+     when it is not nil */
+  int ret_ptr = needs_root(ws->ret) && !comp_ty_value_obj(c, ws->ret);
+  if (!wp || (wp->type != TY_POLY && !raw) || ws->rest_idx >= 0 || ws->kwrest_idx >= 0 || ws->blk_param ||
+      (ws->ret != TY_BOOL && ws->ret != TY_POLY && !ret_ptr)) return 0;
   const char *dcn = c->classes[wdef].c_name;
   int ta = ++g_tmp;
   buf_printf(b, "({ sp_%s *_t%d = (sp_%s *)(", dcn, ta, dcn);
@@ -9108,9 +9114,10 @@ static int emit_when_user_eq(Compiler *c, int cond, int t, TyKind pt, Buf *b) {
     emit_boxed_text(c, pt, sref, b); }
   buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); _t%d ? ", ts, ta);
   if (via_eq) buf_printf(b, "(_t%d.tag == SP_TAG_OBJ && _t%d.v.p == (void *)_t%d) || ", ts, ts, ta);
-  buf_puts(b, ws->ret == TY_POLY ? "sp_poly_truthy(" : "(");
+  buf_puts(b, ws->ret == TY_POLY ? "sp_poly_truthy(" : ret_ptr ? "(NULL != " : "(");
   emit_method_cname(c, ws, b);
-  buf_printf(b, "(_t%d, _t%d)) : _t%d.tag == SP_TAG_NIL; })", ta, ts, ts);
+  if (raw) buf_printf(b, "(_t%d, _t%d)) : _t%d.tag == SP_TAG_NIL; })", ta, t, ts);
+  else buf_printf(b, "(_t%d, _t%d)) : _t%d.tag == SP_TAG_NIL; })", ta, ts, ts);
   return 1;
 }
 
@@ -9643,7 +9650,10 @@ void emit_case(Compiler *c, int id, Buf *b, int indent) {
                typecheck; evaluate the arm for its effects and answer false. */
             TyKind wat = comp_ntype(c, conds[j]);
             if (wat != TY_STRING && wat != TY_STRBUF && wat != TY_POLY && wat != TY_UNKNOWN) {
-              buf_printf(b, "((void)_t%d, (void)(", t); emit_expr(c, conds[j], b); buf_puts(b, "), 0)");
+              /* ...save an object whose class has its own ===, which may */
+              if (!emit_when_user_eq(c, conds[j], t, pt, b)) {
+                buf_printf(b, "((void)_t%d, (void)(", t); emit_expr(c, conds[j], b); buf_puts(b, "), 0)");
+              }
             }
             else {
               buf_printf(b, "sp_str_eq(_t%d, ", t);
@@ -10084,7 +10094,9 @@ static void emit_case_expr_in(Compiler *c, int id, Buf *b) {
              arm above): evaluate it and answer false */
           TyKind wat2 = comp_ntype(c, conds[j]);
           if (wat2 != TY_STRING && wat2 != TY_STRBUF && wat2 != TY_POLY && wat2 != TY_UNKNOWN) {
-            buf_printf(b, "((void)_t%d, (void)(", t); emit_expr(c, conds[j], b); buf_puts(b, "), 0)");
+            if (!emit_when_user_eq(c, conds[j], t, pt, b)) {
+              buf_printf(b, "((void)_t%d, (void)(", t); emit_expr(c, conds[j], b); buf_puts(b, "), 0)");
+            }
           }
           else {
             buf_printf(b, "sp_str_eq(_t%d, ", t);
@@ -13630,6 +13642,29 @@ int sg_activates_ci(Compiler *c, int node) {
   return ci;
 }
 
+/* The receiver of singleton node `at`, read where the statement stands: the
+   walk put a def's receiver under the method it defines, which has none of
+   the enclosing scope's locals (one a block captures is a cell there). */
+void emit_sg_recv(Compiler *c, int at, int recv, Buf *b) {
+  const char *ln = nt_kind(c->nt, recv) == NK_LocalVariableReadNode ? nt_str(c->nt, recv, "name") : NULL;
+  if (ln) emit_local_ref(c, at, ln, b);
+  else emit_expr(c, recv, b);
+}
+
+/* An expression raising FrozenError when the object `recv` reads is frozen:
+   a singleton method cannot be added to it. The message names the object's
+   class and its inspect, boxed as the singleton class, whose own inspect
+   answers once its def has run and as the class's before. */
+void emit_sg_frozen_check(Compiler *c, int ci, int at, int recv, Buf *b) {
+  int v = singleton_visible_ci(c, ci);
+  const char *cn = v >= 0 && class_ruby_name(c, v) ? class_ruby_name(c, v)
+                 : v >= 0 ? c->classes[v].name : "Object";
+  int t = ++g_tmp;
+  buf_printf(b, "({ void *_sgf%d = (void *)(", t); emit_sg_recv(c, at, recv, b);
+  buf_printf(b, "); if (sp_gc_is_frozen(_sgf%d)) sp_raise_frozen_obj(sp_box_obj(_sgf%d, %d), "
+                "(&(\"\\xff\" \"can't modify frozen %s\")[1])); 0; })", t, t, ci, cn);
+}
+
 void emit_sg_activate(Compiler *c, int node, int recv, Buf *b, int indent) {
   if (recv < 0) return;
   const char *basic_to_a = nt_str(c->nt, node, "sg_basic_to_a");
@@ -13649,7 +13684,21 @@ void emit_sg_activate(Compiler *c, int node, int recv, Buf *b, int indent) {
   if (ci < 0) return;
   if (!c->classes[ci].is_singleton_of || c->classes[ci].is_value_type) return;
   emit_indent(b, indent);
-  buf_puts(b, "("); emit_expr(c, recv, b);
+  /* a frozen object refuses a method, not an empty `class << obj` */
+  int defines = nt_kind(c->nt, node) != NK_SingletonClassNode;
+  int sbody = defines ? -1 : nt_ref(c->nt, node, "body");
+  int sn = 0; const int *ss = sbody >= 0 ? nt_arr(c->nt, sbody, "body", &sn) : NULL;
+  for (int k = 0; k < sn && !defines; k++) {
+    int st = ss[k];
+    if (nt_kind(c->nt, st) == NK_CallNode) {
+      int an = nt_ref(c->nt, st, "arguments"), na = 0;
+      const int *av = an >= 0 ? nt_arr(c->nt, an, "arguments", &na) : NULL;
+      st = na == 1 ? av[0] : -1;
+    }
+    defines = st >= 0 && nt_kind(c->nt, st) == NK_DefNode;
+  }
+  if (defines) { buf_puts(b, "(void)"); emit_sg_frozen_check(c, ci, node, recv, b); buf_puts(b, "; "); }
+  buf_puts(b, "("); emit_sg_recv(c, node, recv, b);
   buf_printf(b, ")->cls_id = %d;\n", ci);
 }
 
@@ -14402,12 +14451,19 @@ static void emit_class_body_stmts(Compiler *c, int ci, int body, Buf *b, int ind
   for (int k = 0; k < n; k++) {
     const char *sty = nt_type(nt, stmts[k]);
     if (!sty) continue;
-    if (sp_streq(sty, "DefNode") || sp_streq(sty, "AliasMethodNode")) continue;
+    /* a `def VALUE.m` / `class << VALUE` on an object the body holds is
+       where that object's singleton methods start, as at top level */
+    if (sp_streq(sty, "DefNode")) {
+      if (sg_activates_ci(c, stmts[k]) >= 0) emit_stmt_or_defer(c, stmts[k], b, indent);
+      continue;
+    }
+    if (sp_streq(sty, "AliasMethodNode")) continue;
     /* `class << self`: its defs are the class's own, but the constants it
        assigns are assigned where it stands (#5996) */
     if (sp_streq(sty, "SingletonClassNode")) {
       int sx = nt_ref(nt, stmts[k], "expression");
-      if (sx >= 0 && nt_kind(nt, sx) == NK_SelfNode) emit_stmt_or_defer(c, stmts[k], b, indent);
+      if ((sx >= 0 && nt_kind(nt, sx) == NK_SelfNode) || sg_activates_ci(c, stmts[k]) >= 0)
+        emit_stmt_or_defer(c, stmts[k], b, indent);
       continue;
     }
     /* A receiver-less call in a class body is, by default, a declaration
@@ -18171,7 +18227,42 @@ static void emit_stmt_node(Compiler *c, int id, Buf *b, int indent) {
                  sp_streq(exty, "InstanceVariableReadNode") || sp_streq(exty, "ClassVariableReadNode") ||
                  sp_streq(exty, "GlobalVariableReadNode"))) {
       TyKind et = comp_ntype(c, sexpr);
-      if (ty_is_object(et) && c->classes[ty_object_class(et)].is_singleton_of) {
+      /* one on an Object.new the pass did not trace (a parameter it flowed
+         into) has no class to put its defs on: refused as on any Object */
+      int et_obj = 0;
+      if (ty_is_object(et) && sg_activates_ci(c, id) < 0 && c->object_standin) {
+        int r = ty_object_class(et);
+        for (int d = 0; d < 64 && r >= 0 && c->classes[r].is_singleton_of; d++)
+          r = c->classes[r].is_singleton_of - 1;
+        et_obj = r == c->object_standin - 1;
+      }
+      if (ty_is_object(et) && c->classes[ty_object_class(et)].is_singleton_of && !et_obj) {
+        /* only the body's plain defs were reattached, `private def m` and
+           `protected def m` with theirs: a constant, a bare `private`,
+           `attr_accessor`, `alias`, `include` or `def self.m` there would be
+           dropped, so the body is refused rather than run without them. A
+           bare `public` changes nothing there (nothing before it can have
+           made the default private) */
+        int body = nt_ref(nt, id, "body");
+        int n = 0;
+        const int *stmts = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
+        for (int k = 0; k < n && sg_activates_ci(c, id) >= 0; k++) {
+          int st = stmts[k];
+          const char *sn = nt_kind(nt, st) == NK_CallNode && nt_ref(nt, st, "receiver") < 0 &&
+                           nt_ref(nt, st, "block") < 0 ? nt_str(nt, st, "name") : NULL;
+          int an = 0;
+          const int *av = sn ? call_args(nt, st, &an) : NULL;
+          if (sn && an == 0 && sp_streq(sn, "public")) continue;
+          if (nt_kind(nt, st) == NK_NilNode) continue;
+          if (sn && an == 1 && (sp_streq(sn, "private") || sp_streq(sn, "protected"))) st = av[0];
+          if (nt_kind(nt, st) != NK_DefNode || nt_ref(nt, st, "receiver") >= 0) {
+            unsupported_feature(c, stmts[k], "`class << obj` with a statement other than `def`, `private def` "
+                                "or `protected def` is not supported by AOT compilation: the methods "
+                                "are placed on the object's class at compile time, and only a `def` "
+                                "has a place there. Write each one as `def obj.m` (see docs/limitations.md)");
+            return;
+          }
+        }
         emit_sg_activate(c, id, sexpr, b, indent);
         return;
       }

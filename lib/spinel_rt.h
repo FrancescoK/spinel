@@ -2433,6 +2433,8 @@ static sp_Class sp_poly_class_val(sp_RbVal v) {
   r.cls_id = (v.tag == SP_TAG_OBJ && v.cls_id >= 0) ? (int)v.cls_id : -1;
   /* an Array subclass instance boxed as its Array (#7449) */
   if (sp_bsub_cls_fn && r.cls_id < 0) { int k = sp_bsub_cls_fn(v); if (k >= 0) r.cls_id = k; }
+  /* an object with singleton methods answers the class they hide behind */
+  if (sp_cls_visible_fn && r.cls_id >= 0) r.cls_id = sp_cls_visible_fn(r.cls_id);
   r.name = sp_poly_class_name(v);
   return r;
 }
