@@ -33337,7 +33337,21 @@ int nullable_int_value(Compiler *c, int v) {
         int iv = comp_ivar_index(&c->classes[k], ivb);
         TyKind ivt = iv >= 0 ? c->classes[k].ivar_types[iv] : TY_UNKNOWN;
         if ((ivt == TY_FLOAT || ivt == TY_INT) && c->classes[k].ivar_nullable_int[iv]) return 1;
-        if (ivt == TY_FLOAT && !ivar_assigned_in_initialize(c, k, ivb)) return 1;
+        /* `ivar_assigned_in_initialize` means "a literal `def initialize`
+           assigns it": a Struct.new/Data.define member is always populated
+           through its auto-generated constructor instead, so this answers
+           false for EVERY member regardless of whether it can really hold
+           nil -- wrongly flagging `Struct.new(:amt) { def cost = amt }`'s
+           bare `cost` call nullable (sp_ofloat) when codegen's own struct-
+           member reader returns a plain sp_float, a C type mismatch (found
+           2026-10-12 testing this fix: kilau/test's issue_2872,
+           struct_block_overrides_bracket). The explicit-receiver arm above
+           never asks this question for a struct member at all -- its own
+           `else if` branch answers the struct case purely from
+           ivar_nullable_int, already checked above. Mirror that boundary
+           here instead of trusting the initialize-based heuristic for a
+           class ivar_nullable_int already said no about. */
+        if (ivt == TY_FLOAT && !c->classes[k].is_struct && !ivar_assigned_in_initialize(c, k, ivb)) return 1;
       }
     }
     /* the methods the call dispatches over, by the receiver's class: self's
