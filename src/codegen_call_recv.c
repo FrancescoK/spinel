@@ -14001,9 +14001,9 @@ static void emit_face_str_bang(Compiler *c, int id, unsigned own, int pub, Buf *
   /* the transform read the receiver's bytes and sp_poly_str_become hands the
      result to its handle below: those reads are no copy. The answer of a bang
      used as a value (`x.strip! || x`) is the transformed bytes, which boxing
-     makes a new String: only a dropped answer is declared, and one answered
-     as the receiver's box. */
-  if (g_share_check && (boxed || share_node_transient(c, id))) share_check_declare_reads(&nbb, 0, recv);
+     makes a new String: only a dropped answer is declared, one answered
+     as the receiver's box, and a method's tail that publishes it (pub). */
+  if (g_share_check && (boxed || pub || share_node_transient(c, id))) share_check_declare_reads(&nbb, 0, recv);
   nt_node_set_str((NodeTable *)nt, id, "name", bang);
   if (vb >= 0) view_pop(c, vb);
   view_pop(c, v);
