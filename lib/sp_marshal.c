@@ -13,6 +13,7 @@
 #include "sp_range.h"     /* the three Range kinds, their boxes and constructors */
 #include "sp_exc.h"       /* sp_Exception: an exception's message and backtrace */
 #include <string.h>
+#include <strings.h>   /* strcasecmp: an encoding name is matched ignoring case */
 #include "sp_setjmp.h"
 #include <math.h>
 
@@ -472,15 +473,32 @@ static sp_RbVal sp_mar_r(sp_mar_rd *r) {
       return mk_sym(mar_intern(name));
     }
     case '"': {
+      /* a bare String record is ASCII-8BIT: CRuby writes every other
+         encoding as an ivar of an `I` around it, which the `I` arm reads */
       int id = sp_mar_reg(r);
-      sp_RbVal v = mk_str(sp_mar_rstr(r, sp_mar_rlong(r)));
+      char *s = sp_mar_rstr(r, sp_mar_rlong(r));
+      sp_str_mark_binary(s);
+      sp_RbVal v = mk_str(s);
       r->objs[id] = v; return v;
     }
     case 'I': {
       if (r->pos < r->len && r->s[r->pos] == 'C') { r->pos++; return sp_mar_r_bsub(r, 1); }
-      sp_RbVal inner = sp_mar_r(r);
+      sp_RbVal inner = sp_mar_r(r); SP_GC_ROOT_RBVAL(inner);
       long nivar = sp_mar_rlong(r);
-      for (long i = 0; i < nivar; i++) { sp_mar_r(r); sp_mar_r(r); }  /* encoding ivar: ignored */
+      for (long i = 0; i < nivar; i++) {
+        sp_RbVal k = sp_mar_r(r);
+        sp_RbVal val = sp_mar_r(r);
+        if (inner.tag != SP_TAG_STR || k.tag != SP_TAG_SYM || !sp_sym_name_fn) continue;
+        /* the String's encoding: `:E` true (UTF-8) or false (US-ASCII), or
+           `:encoding` and a name. Spinel's two encodings are UTF-8 and
+           ASCII-8BIT, so any encoding but ASCII-8BIT reads as UTF-8. */
+        const char *kn = sp_sym_name_fn((sp_sym)k.v.i);
+        if (!strcmp(kn, "E")) sp_str_as_text(inner.v.s);
+        else if (!strcmp(kn, "encoding")) {
+          const char *en = val.tag == SP_TAG_STR ? val.v.s : "";
+          if (strcasecmp(en, "ASCII-8BIT") && strcasecmp(en, "BINARY")) sp_str_as_text(inner.v.s);
+        }
+      }
       return inner;
     }
     case 'C': return sp_mar_r_bsub(r, 0);
