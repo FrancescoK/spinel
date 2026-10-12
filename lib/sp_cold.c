@@ -386,6 +386,12 @@ sp_Complex sp_str_to_c_strict(const char *s) { return sp_str_to_c_impl(s, 1); }
 /* FNM_DOTMATCH mode for the walk below: hidden entries (and ".") match a
    non-dot pattern; ".." never does, as CRuby's glob. Set by the _dot wrapper. */
 static int sp_glob_dotmatch = 0;
+/* A glob walk holds open directories and brace buffers (as File.fnmatch's
+   FNM_EXTGLOB holds the latter), so the matcher's ArgumentError waits until
+   they are let go: under sp_glob_defer
+   it sets sp_glob_bad and fails the match, the walk stops, and
+   sp_glob_finish raises. */
+static int sp_glob_defer = 0, sp_glob_bad = 0;
 
 int sp_fnmatch1(const char *pat, const char *str) {
   while (*pat) {
@@ -468,7 +474,10 @@ static const char *sp_fnm_bracket(const char *p, const char *s, int flags) {
       if (strncmp(t1, s, (size_t)l1) == 0 || strncmp(t2, s, (size_t)l2) == 0) { ok = 1; continue; }
       /* a range reads the character as a code point, which an invalid
          byte has none of: CRuby's ArgumentError */
-      if (!sv) sp_raise_cls("ArgumentError", (&("\xff" "invalid byte sequence in UTF-8")[1]));
+      if (!sv) {
+        if (sp_glob_defer) { sp_glob_bad = 1; return NULL; }
+        sp_raise_cls("ArgumentError", (&("\xff" "invalid byte sequence in UTF-8")[1]));
+      }
       if (c >= sp_fnm_code(t1, nocase) && c <= sp_fnm_code(t2, nocase)) ok = 1;
     }
     else if (!ok) {
@@ -631,7 +640,7 @@ static void sp_glob_walk(const char *fsdir, const char *outprefix,
     DIR *d = opendir(fsdir[0] ? fsdir : ".");
     if (!d) return;
     struct dirent *e;
-    while ((e = readdir(d)) != NULL) {
+    while (!sp_glob_bad && (e = readdir(d)) != NULL) {
       const char *name = e->d_name;
       if (name[0] == '.' && (name[1] == 0 || (name[1] == '.' && name[2] == 0))) continue;
       if (name[0] == '.' && !sp_glob_dotmatch) continue;
@@ -671,13 +680,14 @@ static void sp_glob_walk(const char *fsdir, const char *outprefix,
   DIR *d = opendir(fsdir[0] ? fsdir : ".");
   if (!d) return;
   struct dirent *e;
-  while ((e = readdir(d)) != NULL) {
+  while (!sp_glob_bad && (e = readdir(d)) != NULL) {
     const char *name = e->d_name;
     /* "." is an answer under FNM_DOTMATCH -- CRuby lists it for `*` there --
        while ".." never is. Both stay hidden without the flag. */
     if (name[0] == '.' && name[1] == '.' && name[2] == 0) continue;
     if (name[0] == '.' && name[1] == 0 && !sp_glob_dotmatch) continue;
     if (!sp_glob_comp_match(comp, name)) continue;
+    if (sp_glob_bad) break;
     snprintf(fspath, sizeof fspath, "%s%s%s", fsdir, SP_GLOB_SEP(fsdir), name);
     snprintf(outpath, sizeof outpath, "%s%s", outprefix, name);
     if (last) { sp_glob_push(a, outpath); continue; }
@@ -690,6 +700,17 @@ static void sp_glob_walk(const char *fsdir, const char *outprefix,
   closedir(d);
 }
 
+static void sp_glob_start(void) { sp_glob_defer = 1; sp_glob_bad = 0; }
+/* The walk is over and has closed what it opened: raise the matcher's
+   deferred error, with FNM_DOTMATCH off again as a finished glob leaves it */
+static void sp_glob_finish(void) {
+  sp_glob_defer = 0;
+  if (!sp_glob_bad) return;
+  sp_glob_bad = 0;
+  sp_glob_dotmatch = 0;
+  sp_raise_cls("ArgumentError", (&("\xff" "invalid byte sequence in UTF-8")[1]));
+}
+
 /* The old entry point, kept for its callers: everything under `fsdir` whose
    basename matches `tail`. */
 void sp_dir_glob_rec(const char *fsdir, const char *outprefix,
@@ -699,7 +720,9 @@ void sp_dir_glob_rec(const char *fsdir, const char *outprefix,
   char tbuf[1024];
   snprintf(tbuf, sizeof tbuf, "%s", tail && tail[0] ? tail : "*");
   comps[0] = sstar; comps[1] = tbuf;
+  sp_glob_start();
   sp_glob_walk(fsdir && fsdir[0] && strcmp(fsdir, ".") ? fsdir : "", outprefix, comps, 2, 0, a);
+  sp_glob_finish();
 }
 
 sp_StrArray *sp_dir_glob(const char *pattern);
@@ -816,7 +839,7 @@ static int sp_brace_expand(const char *pattern, int escape, int unclosed_fails, 
     if ((*q == ',' && nest == 0) || q == close) {
       size_t altlen = (size_t)(q - alt);
       char *expanded = (char *)malloc(prelen + altlen + postlen + 1);
-      if (!expanded) return 0;
+      if (!expanded) sp_oom_die();
       memcpy(expanded, pattern, prelen);
       memcpy(expanded + prelen, alt, altlen);
       memcpy(expanded + prelen + altlen, close + 1, postlen + 1);
@@ -833,7 +856,7 @@ typedef struct { const char *base; sp_StrArray *a; } sp_glob_ctx;
 static int sp_dir_glob_each(const char *pattern, void *ctx) {
   sp_glob_ctx *g = (sp_glob_ctx *)ctx;
   sp_dir_glob_one(pattern, g->base, g->a);
-  return 0;
+  return sp_glob_bad;
 }
 static void sp_dir_glob_braces(const char *pattern, const char *base, sp_StrArray *a) {
   sp_glob_ctx g = { base, a };
@@ -852,7 +875,9 @@ sp_StrArray *sp_dir_glob_base(const char *pattern, const char *base) {
      sp_dir_entries_impl or it (and its pushed names) get swept under us */
   SP_GC_ROOT(a);
   if (!pattern) return a;
+  sp_glob_start();
   sp_dir_glob_braces(pattern, base, a);
+  sp_glob_finish();
   sp_StrArray_sort_bang(a);
   /* Two or more recursive components can reach the same path by different
      splits -- "a" + SEP + "**" + SEP + "**" + SEP + "*.rs" found each file
@@ -2847,7 +2872,7 @@ sp_int sp_file_stat_mode(const char *path) {
 typedef struct { const char *path; int flags; } sp_fnm_ctx;
 static int sp_fnm_each(const char *pattern, void *ctx) {
   sp_fnm_ctx *f = (sp_fnm_ctx *)ctx;
-  return sp_fnm_match(pattern, f->path, f->flags);
+  return sp_fnm_match(pattern, f->path, f->flags) || sp_glob_bad;
 }
 sp_bool sp_file_fnmatch(const char *pat, const char *path, sp_int flags) {
   int fl = (int)flags;
@@ -2855,7 +2880,11 @@ sp_bool sp_file_fnmatch(const char *pat, const char *path, sp_int flags) {
   if (!path) path = "";
   if (fl & SP_FNM_EXTGLOB) {
     sp_fnm_ctx f = { path, fl };
-    return sp_brace_expand(pat, !(fl & SP_FNM_NOESCAPE), 1, sp_fnm_each, &f) != 0;
+    /* the expansion's buffers are freed before the matcher's error is raised */
+    sp_glob_start();
+    int r = sp_brace_expand(pat, !(fl & SP_FNM_NOESCAPE), 1, sp_fnm_each, &f);
+    sp_glob_finish();
+    return r != 0;
   }
   return sp_fnm_match(pat, path, fl) != 0;
 }

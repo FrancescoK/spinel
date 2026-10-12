@@ -56,6 +56,16 @@ Dir.mkdir(root)
 Dir.chdir(root) do
   p Dir.glob("?").sort.map(&:bytesize), Dir.glob("[à-ü]").map(&:bytesize)
   p Dir.glob("*", File::FNM_DOTMATCH).sort.size
+  # a range raises on a name's invalid byte, and the glob after it runs
+  # without the failed one's FNM_DOTMATCH
+  File.write("\xffb", "")
+  begin
+    Dir.glob("[a-z]*", File::FNM_DOTMATCH)
+  rescue ArgumentError => e
+    p e.class
+  end
+  p Dir.glob("*").size
+  File.delete("\xffb")
 end
 %w[é z B .h].each { |n| File.delete("#{root}/#{n}") }
 Dir.rmdir(root)
