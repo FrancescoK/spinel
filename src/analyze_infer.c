@@ -812,6 +812,23 @@ int block_has_top_break(Compiler *c, int node) {
   return 0;
 }
 
+/* Does loop statement `node` never complete normally: `while true` or
+   `until false` (a `begin ... end while true` too) with no `break` of its
+   own? It is left only by a `return`, a raise or a throw, so it answers no
+   value where it stands: a method ending in one answers through its
+   `return`s alone. A breaking or finite loop answers nil, or what a break
+   carries, as CRuby does. */
+int loop_never_completes(Compiler *c, int node) {
+  const NodeTable *nt = c->nt;
+  NodeKind k = node >= 0 ? nt_kind(nt, node) : NK_NONE;
+  if (k != NK_WhileNode && k != NK_UntilNode) return 0;
+  int pred = nt_ref(nt, node, "predicate");
+  NodeKind pk = pred >= 0 ? nt_kind(nt, pred) : NK_NONE;
+  if (pk != (k == NK_WhileNode ? NK_TrueNode : NK_FalseNode)) return 0;
+  int body = nt_ref(nt, node, "statements");
+  return body < 0 || !block_has_top_break(c, body);
+}
+
 /* A call is a break-wrapped iterator when it takes a literal block whose body
    has a top-level break and is either a receiver-bearing builtin iterator or
    a receiverless call resolving to a method of the program (an inline-able

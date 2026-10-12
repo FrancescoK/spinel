@@ -298,6 +298,9 @@ int reduce_tail_from_acc(Compiler *c, int tail, const char *accp);
    `break` that binds to the enclosing block -- i.e. not captured by a nested
    loop or block-bearing call. */
 int block_has_top_break(Compiler *c, int node);
+/* A `while true` / `until false` with no break of its own: it never
+   completes normally, so it answers no value. */
+int loop_never_completes(Compiler *c, int node);
 /* True if CallNode `id` takes a literal block whose body has a top-level
    break and is an inlined iterator the break wrapper should catch (a real
    receiver, not instance_exec/eval). When true, the call returns the break
