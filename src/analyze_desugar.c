@@ -14520,13 +14520,78 @@ int desugar_builtin_reopen_methods(Compiler *c) {
  * called on the module constant, so they resolve to the module's civ. Blocks
  * whose self is something else (class_eval, instance_eval, define_method,
  * Class.new, ...) and nested class/def bodies are not entered. */
+/* Does subtree n hand the block parameter `bp` (NULL: the anonymous `&`)
+   to an instance_eval / instance_exec on a receiver other than self? */
+static int cbi_hands_block_to_ie(const NodeTable *nt, int n, const char *bp, int depth) {
+  if (n < 0 || depth > 256) return 0;
+  NodeKind k = nt_kind(nt, n);
+  if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode) return 0;
+  if (k == NK_CallNode) {
+    const char *cn = nt_str(nt, n, "name");
+    int r = nt_ref(nt, n, "receiver"), ba = nt_ref(nt, n, "block");
+    if (cn && (sp_streq(cn, "instance_eval") || sp_streq(cn, "instance_exec")) && r >= 0 &&
+        nt_kind(nt, r) != NK_SelfNode && ba >= 0 && nt_kind(nt, ba) == NK_BlockArgumentNode) {
+      int e = nt_ref(nt, ba, "expression");
+      const char *en = e >= 0 ? nt_str(nt, e, "name") : NULL;
+      if (e < 0 ? !bp : (en && bp && sp_streq(en, bp))) return 1;
+    }
+  }
+  for (int i = 0; i < nt_num_refs(nt, n); i++)
+    if (cbi_hands_block_to_ie(nt, nt_ref_at(nt, n, i), bp, depth + 1)) return 1;
+  for (int i = 0; i < nt_num_arrs(nt, n); i++) {
+    int an = 0; const int *av = nt_arr_at(nt, n, i, &an);
+    for (int j = 0; j < an; j++) if (cbi_hands_block_to_ie(nt, av[j], bp, depth + 1)) return 1;
+  }
+  return 0;
+}
+
+/* Is `nm` a class method (`def self.nm`) of the program that runs the block
+   it is given with another self: hands it to `x.instance_exec(&block)` on
+   an instance it made (#8659)? The block is that object's, and an @x in it
+   its ivar, not the class's. Computed once per node table. */
+static int cbi_forwards_block_to_instance(const NodeTable *nt, const char *nm) {
+  static const NodeTable *memo_nt; static int memo_count;
+  static const char **names; static int nnames;
+  if (memo_nt != nt || memo_count != nt->count) {
+    free(names); names = NULL; nnames = 0;
+    int cap = 0;
+    for (int id = 0; id < nt->count; id++) {
+      if (nt_kind(nt, id) != NK_DefNode) continue;
+      int dr = nt_ref(nt, id, "receiver");
+      if (dr < 0 || nt_kind(nt, dr) != NK_SelfNode) continue;
+      int pn = nt_ref(nt, id, "parameters");
+      int bpn = pn >= 0 ? nt_ref(nt, pn, "block") : -1;
+      if (bpn < 0 || nt_kind(nt, bpn) != NK_BlockParameterNode) continue;
+      const char *bp = nt_str(nt, bpn, "name");
+      if (bp && !bp[0]) bp = NULL;
+      if (!cbi_hands_block_to_ie(nt, nt_ref(nt, id, "body"), bp, 0)) continue;
+      if (nnames >= cap) {
+        cap = cap ? cap * 2 : 8;
+        names = realloc(names, sizeof *names * (size_t)cap);
+        if (!names) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      }
+      names[nnames++] = nt_str(nt, id, "name");
+    }
+    memo_nt = nt; memo_count = nt->count;
+  }
+  for (int i = 0; i < nnames; i++) if (names[i] && sp_streq(names[i], nm)) return 1;
+  return 0;
+}
+
 static int cbi_self_changing_block(const NodeTable *nt, int call) {
   const char *nm = nt_str(nt, call, "name");
   if (!nm) return 0;
   static const char *const SC[] = { "class_eval", "module_eval", "class_exec", "module_exec",
     "instance_eval", "instance_exec", "define_method", "define_singleton_method",
     "new", "define", "configure", NULL };
-  return str_in(nm, SC);
+  if (str_in(nm, SC)) return 1;
+  /* a call of a class method of the program's that runs its block on an
+     instance (instance_exec(&block)): receiverless in the body, or on self
+     or a constant (an earlier pass names the class a body call reaches) */
+  int r = nt_ref(nt, call, "receiver");
+  NodeKind rk = r >= 0 ? nt_kind(nt, r) : NK_SelfNode;
+  return (rk == NK_SelfNode || rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) &&
+         nt_ref(nt, call, "block") >= 0 && cbi_forwards_block_to_instance(nt, nm);
 }
 
 /* `@x op= v` / `@x ||= v` / `@x &&= v` spelled as the plain read and write
