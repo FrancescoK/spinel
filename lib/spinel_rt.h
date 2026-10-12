@@ -1978,6 +1978,11 @@ static sp_oint sp_poly_Integer_ex(sp_RbVal v, sp_int base, int raise);  /* fwd: 
 static sp_ofloat sp_poly_Float_ex(sp_RbVal v, int raise);
 static inline int sp_poly_is_hash_kind(int cls_id);
 const char *sp_poly_inspect(sp_RbVal v);
+/* the no-match raise of a case/in and a rightward `=>` (lib/sp_poly_cold.c) */
+SP_NORETURN SP_COLD void sp_pm_raise_nomatch(sp_RbVal subj, const char *detail, int key_err);
+const char *sp_pm_eqq_msg(const char *pat, sp_RbVal v);
+const char *sp_pm_inspect_msg(const char *fmt, sp_RbVal v);
+const char *sp_pm_len_msg(sp_RbVal arr, sp_int want, int at_least);
 const char *sp_PolyArray_inspect(sp_PolyArray *a);  /* Array#to_s == inspect (lib/sp_inspect.c) */
 const char *sp_PtrArray_inspect_k(sp_PtrArray *a);   /* a pointer array by what it holds (#4486; lib/sp_inspect.c) */
 /* Runtime class table: set of cls_ids that are user exception subclasses.

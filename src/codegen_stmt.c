@@ -7485,6 +7485,339 @@ static void emit_pattern_bind(Compiler *c, int id, int subj, const char *lnm, Ty
   buf_puts(b, ";\n");
 }
 
+/* --- why a single pattern failed --------------------------------------------
+   CRuby names the check a single pattern (`expr => pat`, or a case/in with
+   one `in` and no else) failed on: "[1, 2, 3]: [1, 2, 3] length mismatch
+   (given 3, expected 2)". This runs only after the arm has missed, so it is
+   cold code: the subject is boxed and the pattern walked again through the
+   boxed matcher, stopping at the first check that fails with that check's
+   message. The walk repeats only checks that run no program code. A pattern
+   with a pinned expression, a range with a bound that is not a literal, or a
+   form the boxed matcher does not check -- and any pattern in a program that
+   defines its own #deconstruct or #deconstruct_keys, which the walk would
+   call a second time -- gets the subject's inspect alone, the message CRuby
+   gives for a case/in of several arms. */
+typedef struct { int msg, key, lbl, bail; } PmDiag;
+
+static int pm_diag_lit_bound(const NodeTable *nt, int n) {
+  return n < 0 || (nt_type(nt, n) && sp_streq(nt_type(nt, n), "IntegerNode"));
+}
+static int pm_diag_ok(Compiler *c, int pat) {
+  const NodeTable *nt = c->nt;
+  if (pat < 0) return 1;
+  const char *ty = nt_type(nt, pat);
+  if (!ty) return 0;
+  static const char *const leaves[] = {
+    "LocalVariableTargetNode", "ImplicitNode", "SplatNode", "ImplicitRestNode",
+    "IntegerNode", "FloatNode", "StringNode", "SymbolNode", "NilNode", "TrueNode",
+    "FalseNode", "ConstantReadNode", "PinnedVariableNode", NULL };
+  for (int i = 0; leaves[i]; i++) if (sp_streq(ty, leaves[i])) return 1;
+  if (re_lit_index(c, pat) >= 0) return 1;
+  /* `^(expr)` is evaluated again: only a variable read can be */
+  if (sp_streq(ty, "PinnedExpressionNode")) {
+    int ex = nt_ref(nt, pat, "expression");
+    const char *et = ex >= 0 ? nt_type(nt, ex) : NULL;
+    return et && (sp_streq(et, "LocalVariableReadNode") || sp_streq(et, "InstanceVariableReadNode") ||
+                  sp_streq(et, "IntegerNode") || sp_streq(et, "StringNode") || sp_streq(et, "SymbolNode"));
+  }
+  if (sp_streq(ty, "RangeNode"))
+    return pm_diag_lit_bound(nt, nt_ref(nt, pat, "left")) && pm_diag_lit_bound(nt, nt_ref(nt, pat, "right"));
+  if (sp_streq(ty, "AlternationPatternNode"))
+    return pm_diag_ok(c, nt_ref(nt, pat, "left")) && pm_diag_ok(c, nt_ref(nt, pat, "right"));
+  if (sp_streq(ty, "CapturePatternNode")) return pm_diag_ok(c, nt_ref(nt, pat, "value"));
+  int is_arr = sp_streq(ty, "ArrayPatternNode"), is_find = sp_streq(ty, "FindPatternNode");
+  int is_hash = sp_streq(ty, "HashPatternNode");
+  if (!is_arr && !is_find && !is_hash) return 0;
+  int k = nt_ref(nt, pat, "constant");
+  if (k >= 0 && !(nt_type(nt, k) && sp_streq(nt_type(nt, k), "ConstantReadNode"))) return 0;
+  if (is_hash) {
+    int en = 0;
+    const int *elms = nt_arr(nt, pat, "elements", &en);
+    for (int i = 0; i < en; i++) {
+      if (!nt_type(nt, elms[i]) || !sp_streq(nt_type(nt, elms[i]), "AssocNode")) return 0;
+      int key = nt_ref(nt, elms[i], "key");
+      if (key < 0 || !nt_type(nt, key) || !sp_streq(nt_type(nt, key), "SymbolNode")) return 0;
+      if (!pm_diag_ok(c, nt_ref(nt, elms[i], "value"))) return 0;
+    }
+    int rest = nt_ref(nt, pat, "rest");
+    return rest < 0 || (nt_type(nt, rest) && (sp_streq(nt_type(nt, rest), "NoKeywordsParameterNode") ||
+                                              sp_streq(nt_type(nt, rest), "AssocSplatNode")));
+  }
+  int n = 0;
+  const int *reqs = nt_arr(nt, pat, "requireds", &n);
+  for (int i = 0; i < n; i++) if (!pm_diag_ok(c, reqs[i])) return 0;
+  const int *posts = nt_arr(nt, pat, "posts", &n);
+  for (int i = 0; i < n; i++) if (!pm_diag_ok(c, posts[i])) return 0;
+  return 1;
+}
+
+/* pattern `pat` asks the subject to deconstruct: an array, find or hash
+   pattern anywhere in it */
+static int pm_diag_deconstructs(Compiler *c, int pat) {
+  const NodeTable *nt = c->nt;
+  const char *ty = pat >= 0 ? nt_type(nt, pat) : NULL;
+  if (!ty) return 0;
+  if (sp_streq(ty, "AlternationPatternNode"))
+    return pm_diag_deconstructs(c, nt_ref(nt, pat, "left")) || pm_diag_deconstructs(c, nt_ref(nt, pat, "right"));
+  if (sp_streq(ty, "CapturePatternNode")) return pm_diag_deconstructs(c, nt_ref(nt, pat, "value"));
+  return sp_streq(ty, "ArrayPatternNode") || sp_streq(ty, "FindPatternNode") || sp_streq(ty, "HashPatternNode");
+}
+
+/* The inspect of a value pattern, as a C string expression. */
+static void emit_pm_diag_pat_s(Compiler *c, int pat, Buf *b) {
+  const NodeTable *nt = c->nt;
+  const char *ty = nt_type(nt, pat);
+  if (sp_streq(ty, "NilNode")) { buf_puts(b, "\"nil\""); return; }
+  if (sp_streq(ty, "TrueNode")) { buf_puts(b, "\"true\""); return; }
+  if (sp_streq(ty, "FalseNode")) { buf_puts(b, "\"false\""); return; }
+  if (sp_streq(ty, "RangeNode")) {
+    int lo = nt_ref(nt, pat, "left"), hi = nt_ref(nt, pat, "right");
+    buf_puts(b, "\"");
+    if (lo >= 0) buf_printf(b, "%lld", (long long)nt_int(nt, lo, "value", 0));
+    buf_puts(b, (nt_int(nt, pat, "flags", 0) & 4) ? "..." : "..");
+    if (hi >= 0) buf_printf(b, "%lld", (long long)nt_int(nt, hi, "value", 0));
+    buf_puts(b, "\"");
+    return;
+  }
+  int v = pat;
+  if (sp_streq(ty, "PinnedVariableNode") || sp_streq(ty, "PinnedExpressionNode")) v = nt_ref(nt, pat, "expression");
+  buf_puts(b, "sp_poly_inspect(");
+  if (repr_of(c, v).kind != RK_BOXED) emit_boxed(c, v, b);
+  else emit_expr(c, v, b);
+  buf_puts(b, ")");
+}
+
+/* A value the check about to run would hand to the program's own code -- a
+   program object, whose #==, #deconstruct, #deconstruct_keys or #to_a the
+   boxed matcher calls -- ends the walk with the subject's inspect alone: the
+   arm already ran that code once. */
+static void emit_pm_diag_bail_obj(PmDiag *d, const char *v, int ind, Buf *b) {
+  emit_indent(b, ind);
+  buf_printf(b, "if ((%s).tag == SP_TAG_OBJ && (%s).cls_id >= 0) goto _pmb_%d;\n", v, v, d->bail);
+}
+
+/* `if (!(cond)) { _tM = msg; goto _pmd_L; }`, a missing key also setting the
+   NoMatchingPatternKeyError flag */
+static void emit_pm_diag_fail(PmDiag *d, const char *cond, const char *msg, int key, int ind, Buf *b) {
+  emit_indent(b, ind);
+  buf_printf(b, "if (!(%s)) { _t%d = %s; ", cond, d->msg, msg);
+  if (key) buf_printf(b, "_t%d = 1; ", d->key);
+  buf_printf(b, "goto _pmd_%d; }\n", d->lbl);
+}
+
+/* The checks of pattern `pat` against the boxed value in temp `v`, in the
+   order CRuby makes them, each jumping out with its message on a miss. */
+static void emit_pm_diag(Compiler *c, int pat, const char *v, PmDiag *d, int ind, Buf *b) {
+  const NodeTable *nt = c->nt;
+  if (pat < 0) return;
+  const char *ty = nt_type(nt, pat);
+  if (sp_streq(ty, "CapturePatternNode")) { emit_pm_diag(c, nt_ref(nt, pat, "value"), v, d, ind, b); return; }
+  if (sp_streq(ty, "AlternationPatternNode")) {
+    /* every alternative missed: CRuby reports the last one */
+    Buf cb; memset(&cb, 0, sizeof cb);
+    if (emit_pm_subcond_expr(c, pat, v, &cb) && cb.p) {
+      emit_indent(b, ind); buf_printf(b, "if (!(%s)) {\n", cb.p);
+      emit_pm_diag(c, nt_ref(nt, pat, "right"), v, d, ind + 1, b);
+      emit_indent(b, ind); buf_puts(b, "}\n");
+    }
+    free(cb.p);
+    return;
+  }
+  int is_arr = sp_streq(ty, "ArrayPatternNode"), is_find = sp_streq(ty, "FindPatternNode");
+  int is_hash = sp_streq(ty, "HashPatternNode");
+  if (!is_arr && !is_find && !is_hash) {
+    Buf cb; memset(&cb, 0, sizeof cb);
+    if (emit_pm_subcond_expr(c, pat, v, &cb) && cb.p) {
+      if (!sp_streq(ty, "ConstantReadNode")) emit_pm_diag_bail_obj(d, v, ind, b);
+      Buf mb; memset(&mb, 0, sizeof mb);
+      buf_puts(&mb, "sp_pm_eqq_msg(");
+      emit_pm_diag_pat_s(c, pat, &mb);
+      buf_printf(&mb, ", %s)", v);
+      emit_pm_diag_fail(d, cb.p, mb.p, 0, ind, b);
+      free(mb.p);
+    }
+    free(cb.p);
+    return;
+  }
+  emit_indent(b, ind); buf_puts(b, "{\n");
+  ind++;
+  /* a qualified pattern (`Point[x, y]`, `Point(x:)`) asks the class first */
+  int k = nt_ref(nt, pat, "constant");
+  if (k >= 0) emit_pm_diag(c, k, v, d, ind, b);
+  char cond[256], msg[256];
+  emit_pm_diag_bail_obj(d, v, ind, b);
+  if (is_hash) {
+    int th = ++g_tmp;
+    emit_indent(b, ind);
+    buf_printf(b, "sp_RbVal _t%d = sp_poly_pat_keyed(%s); SP_GC_ROOT_RBVAL(_t%d);\n", th, v, th);
+    snprintf(cond, sizeof cond, "_t%d.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(_t%d.cls_id)", th, th);
+    snprintf(msg, sizeof msg, "sp_pm_inspect_msg(\"%%s does not respond to #deconstruct_keys\", %s)", v);
+    emit_pm_diag_fail(d, cond, msg, 0, ind, b);
+    int en = 0, listed = 0;
+    const int *elms = nt_arr(nt, pat, "elements", &en);
+    for (int i = 0; i < en; i++) {
+      int key = nt_ref(nt, elms[i], "key");
+      int tf = ++g_tmp, tv = ++g_tmp;
+      listed++;
+      Buf kb; memset(&kb, 0, sizeof kb);
+      emit_boxed(c, key, &kb);
+      emit_indent(b, ind);
+      buf_printf(b, "sp_bool _t%d = 0; sp_RbVal _t%d = sp_poly_hash_get_pair_val(_t%d, %s, &_t%d); SP_GC_ROOT_RBVAL(_t%d);\n",
+                 tf, tv, th, kb.p, tf, tv);
+      snprintf(cond, sizeof cond, "_t%d", tf);
+      Buf mb; memset(&mb, 0, sizeof mb);
+      buf_printf(&mb, "sp_pm_inspect_msg(\"key not found: %%s\", %s)", kb.p);
+      emit_pm_diag_fail(d, cond, mb.p, 1, ind, b);
+      free(mb.p); free(kb.p);
+      char ve[24]; snprintf(ve, sizeof ve, "_t%d", tv);
+      emit_pm_diag(c, nt_ref(nt, elms[i], "value"), ve, d, ind, b);
+    }
+    if (hash_pat_closed(nt, pat)) {
+      snprintf(cond, sizeof cond, "sp_poly_length(_t%d) == %dLL", th, listed);
+      if (en == 0 && nt_ref(nt, pat, "rest") < 0) {
+        snprintf(msg, sizeof msg, "sp_pm_inspect_msg(\"%%s is not empty\", _t%d)", th);
+        emit_pm_diag_fail(d, cond, msg, 0, ind, b);
+      }
+      else {
+        /* `**nil`: what is left once the listed keys are taken out */
+        int tr = ++g_tmp;
+        emit_indent(b, ind); buf_printf(b, "if (!(%s)) {\n", cond);
+        emit_indent(b, ind + 1);
+        buf_printf(b, "sp_RbVal _t%d = sp_poly_dup(_t%d, 0); SP_GC_ROOT_RBVAL(_t%d);\n", tr, th, tr);
+        for (int i = 0; i < en; i++) {
+          emit_indent(b, ind + 1); buf_printf(b, "sp_poly_delete_key(_t%d, ", tr);
+          emit_boxed(c, nt_ref(nt, elms[i], "key"), b);
+          buf_puts(b, ");\n");
+        }
+        emit_indent(b, ind + 1);
+        buf_printf(b, "_t%d = sp_pm_inspect_msg(\"rest of %%s is not empty\", _t%d); goto _pmd_%d;\n",
+                   d->msg, tr, d->lbl);
+        emit_indent(b, ind); buf_puts(b, "}\n");
+      }
+    }
+  }
+  else {
+    Buf db; memset(&db, 0, sizeof db);
+    pm_deconstructed(v, &db);
+    int ta = ++g_tmp;
+    emit_indent(b, ind);
+    buf_printf(b, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n", ta, db.p, ta);
+    free(db.p);
+    snprintf(cond, sizeof cond, "_t%d.tag == SP_TAG_OBJ && sp_poly_is_array_kind(_t%d.cls_id)", ta, ta);
+    snprintf(msg, sizeof msg, "sp_pm_inspect_msg(\"%%s does not respond to #deconstruct\", %s)", v);
+    emit_pm_diag_fail(d, cond, msg, 0, ind, b);
+    int rn = 0, pn = 0;
+    const int *reqs = nt_arr(nt, pat, "requireds", &rn);
+    const int *posts = is_arr ? nt_arr(nt, pat, "posts", &pn) : NULL;
+    int rest = is_find ? 1 : nt_ref(nt, pat, "rest") >= 0;
+    snprintf(cond, sizeof cond, "sp_poly_length(_t%d) %s %dLL", ta, rest ? ">=" : "==", rn + pn);
+    snprintf(msg, sizeof msg, "sp_pm_len_msg(_t%d, %dLL, %d)", ta, rn + pn, rest);
+    emit_pm_diag_fail(d, cond, msg, 0, ind, b);
+    if (is_find) {
+      char an[24]; snprintf(an, sizeof an, "_t%d", ta);
+      Buf fb; memset(&fb, 0, sizeof fb);
+      emit_pm_find_cond_poly(c, pat, an, &fb);
+      snprintf(msg, sizeof msg, "sp_pm_inspect_msg(\"%%s does not match to find pattern\", _t%d)", ta);
+      emit_pm_diag_fail(d, fb.p ? fb.p : "1", msg, 0, ind, b);
+      free(fb.p);
+    }
+    else {
+      for (int i = 0; i < rn + pn; i++) {
+        int te = ++g_tmp;
+        emit_indent(b, ind);
+        if (i < rn) buf_printf(b, "sp_RbVal _t%d = sp_poly_index_poly(_t%d, sp_box_int(%dLL));", te, ta, i);
+        else buf_printf(b, "sp_RbVal _t%d = sp_poly_index_poly(_t%d, sp_box_int(sp_poly_length(_t%d) - %dLL));",
+                        te, ta, ta, rn + pn - i);
+        buf_printf(b, " SP_GC_ROOT_RBVAL(_t%d);\n", te);
+        char ve[24]; snprintf(ve, sizeof ve, "_t%d", te);
+        emit_pm_diag(c, i < rn ? reqs[i] : posts[i - rn], ve, d, ind, b);
+      }
+    }
+  }
+  ind--;
+  emit_indent(b, ind); buf_puts(b, "}\n");
+}
+
+/* A subject kind the arm deconstructs its own way (#deconstruct on an object,
+   a MatchData's captures, a Time's fields), which the boxed walk would not
+   repeat. */
+static int pm_subject_deconstructs_apart(Compiler *c, TyKind pt) {
+  (void)c;
+  return !(pt == TY_POLY || pt == TY_INT || pt == TY_FLOAT || pt == TY_STRING || pt == TY_SYMBOL ||
+           pt == TY_BOOL || pt == TY_NIL || ty_is_array(pt) || ty_is_hash(pt));
+}
+
+/* A subject type the no-match raise can box for its inspect. */
+static int pm_subject_boxable(Compiler *c, TyKind pt) {
+  const TyTraits *tr = ty_traits_of(pt);
+  if (tr) return tr->box_text != NULL;
+  return ty_is_object(pt) || ty_is_obj_array(pt);
+}
+
+/* The raise of a case/in no arm took. `pat`/`guarded` are its one arm's
+   pattern and guard when it has exactly one, else pat is -1. */
+static void emit_pm_nomatch_raise(Compiler *c, int pred, int pat, int guarded, int t, TyKind pt,
+                                  int indent, Buf *b) {
+  if (!pm_subject_boxable(c, pt)) {
+    emit_indent(b, indent);
+    buf_puts(b, "sp_raise_cls(\"NoMatchingPatternError\", \"no pattern matched\");\n");
+    return;
+  }
+  char sn[24];
+  snprintf(sn, sizeof sn, case_subject_boxes_sentinel(c, pred, pt) ? "_o%d" : "_t%d", t);
+  Buf sb; memset(&sb, 0, sizeof sb);
+  if (sn[1] == 'o') buf_printf(&sb, "%s(%s)", oint_box(pt), sn);
+  else emit_boxed_text(c, pt, sn, &sb);
+  /* The walk repeats on the boxed subject what the arm decided on its typed
+     one. A pattern of values and classes reads any subject the same way. One
+     that deconstructs is walked only over the kinds the boxed matcher
+     deconstructs as the arm did -- the boxed kinds, the scalars, arrays and
+     hashes; an object, a MatchData or a Time is not. */
+  int walk = pat >= 0 && pm_diag_ok(c, pat) &&
+             (!pm_diag_deconstructs(c, pat) || !pm_subject_deconstructs_apart(c, pt));
+  if (!walk) {
+    emit_indent(b, indent);
+    buf_printf(b, "sp_pm_raise_nomatch(%s, NULL, 0);\n", sb.p);
+    free(sb.p);
+    return;
+  }
+  PmDiag d = { ++g_tmp, ++g_tmp, ++g_tmp, ++g_tmp };
+  int ts = ++g_tmp;
+  char sv[24]; snprintf(sv, sizeof sv, "_t%d", ts);
+  emit_indent(b, indent); buf_puts(b, "{\n");
+  emit_indent(b, indent + 1);
+  buf_printf(b, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n", ts, sb.p, ts);
+  emit_indent(b, indent + 1);
+  buf_printf(b, "const char *_t%d = NULL; SP_GC_ROOT_STR(_t%d); int _t%d = 0;\n", d.msg, d.msg, d.key);
+  emit_pm_diag(c, pat, sv, &d, indent + 1, b);
+  /* every check held: the guard is what failed */
+  emit_indent(b, indent + 1);
+  buf_printf(b, "sp_pm_raise_nomatch(_t%d, %s, 0);\n", ts, guarded ? "\"guard clause does not return true\"" : "NULL");
+  emit_indent(b, indent);
+  buf_printf(b, "  _pmd_%d: sp_pm_raise_nomatch(_t%d, _t%d, _t%d);\n", d.lbl, ts, d.msg, d.key);
+  emit_indent(b, indent);
+  buf_printf(b, "  _pmb_%d: sp_pm_raise_nomatch(_t%d, NULL, 0);\n", d.bail, ts);
+  emit_indent(b, indent); buf_puts(b, "}\n");
+  free(sb.p);
+}
+
+/* `in PATTERN if GUARD` (or `unless GUARD`) is parsed as an If/UnlessNode
+   wrapping the real pattern: the pattern, with the guard and its sense out */
+static int pm_unwrap_guard(const NodeTable *nt, int pat, int *guard, int *negate) {
+  const char *pty = pat >= 0 ? nt_type(nt, pat) : NULL;
+  if (pty && (sp_streq(pty, "IfNode") || sp_streq(pty, "UnlessNode"))) {
+    int istmts = nt_ref(nt, pat, "statements");
+    int in = 0; const int *ib = istmts >= 0 ? nt_arr(nt, istmts, "body", &in) : NULL;
+    int gp = nt_ref(nt, pat, "predicate");
+    if (in >= 1 && gp >= 0) {
+      *guard = gp;
+      *negate = sp_streq(pty, "UnlessNode");
+      return ib[0];
+    }
+  }
+  return pat;
+}
+
 static void emit_case_match_in(Compiler *c, int id, Buf *b, int indent, int tail, int value_cr);
 void emit_case_match(Compiler *c, int id, Buf *b, int indent, int tail, int value_cr) {
   int sro = g_pm_res_oint;
@@ -7552,18 +7885,9 @@ static void emit_case_match_in(Compiler *c, int id, Buf *b, int indent, int tail
        normal match/bind logic, and apply the guard after the bindings are in
        scope (a guard can reference them). */
     int arm_guard = -1, arm_guard_negate = 0;
-    if (sp_streq(pty, "IfNode") || sp_streq(pty, "UnlessNode")) {
-      int istmts = nt_ref(nt, pat, "statements");
-      int in = 0; const int *ib = istmts >= 0 ? nt_arr(nt, istmts, "body", &in) : NULL;
-      int gp = nt_ref(nt, pat, "predicate");
-      if (in >= 1 && gp >= 0) {
-        arm_guard = gp;
-        arm_guard_negate = sp_streq(pty, "UnlessNode");
-        pat = ib[0];
-        pty = nt_type(nt, pat);
-        if (!pty) continue;
-      }
-    }
+    pat = pm_unwrap_guard(nt, pat, &arm_guard, &arm_guard_negate);
+    pty = nt_type(nt, pat);
+    if (!pty) continue;
 
     emit_indent(b, indent); buf_puts(b, "{\n");
 
@@ -8338,9 +8662,19 @@ static void emit_case_match_in(Compiler *c, int id, Buf *b, int indent, int tail
     emit_indent(b, indent); buf_puts(b, "}\n");
   }
   else {
-    /* No matching arm and no else: raise NoMatchingPatternError */
-    emit_indent(b, indent);
-    buf_printf(b, "sp_raise_cls(\"NoMatchingPatternError\", \"no pattern matched\");\n");
+    /* No matching arm and no else: raise NoMatchingPatternError, saying
+       why when the case has one arm */
+    int one_pat = -1, one_guard = 0, arms = 0;
+    for (int w = 0; w < cn; w++) {
+      const char *cty = nt_type(nt, conds[w]);
+      if (!cty || !sp_streq(cty, "InNode")) continue;
+      arms++;
+      int g = -1, neg = 0;
+      one_pat = pm_unwrap_guard(nt, nt_ref(nt, conds[w], "pattern"), &g, &neg);
+      one_guard = g >= 0;
+    }
+    if (arms != 1) one_pat = -1;
+    emit_pm_nomatch_raise(c, pred, one_pat, one_guard, t, pt, indent, b);
   }
 
   /* The matched arm jumps here, past the no-match raise. In TAIL mode the arm
