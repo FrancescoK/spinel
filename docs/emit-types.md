@@ -78,6 +78,21 @@ unknown or void are left out), in node order.
   (`Object` at the top level) and `"singleton":true` for a `def self.x`.
   The signatures are all here, placed: a consumer does not need the
   `--emit-rbs` pass or a text scan for the defs.
+- `nullable`: whether the value can be nil, on a record whose kind has a
+  nil form of its own: an `Integer` or `Float` (the unboxed scalar carries
+  its nil beside the value, so `Integer` and `Integer?` are one type to
+  the tag), an object, a String, an Array, a Hash, an IO. A parameter
+  record answers for its slot. A Bool, a Symbol, nil, a class and an
+  untyped value have no such form and carry no field. The answer is the
+  compiler's own: the nullable marking of a scalar (what a Hash key or a
+  search miss can leave in an Integer slot) and the nil fact of a pointer
+  (what codegen's nil guards read). Both are may-be-nil
+  over-approximations: `false` is a proof that no nil reaches the value,
+  `true` is not a proof that one does. A consumer that unboxes on the
+  strength of `type` has to read this field first.
+- `return_nullable`: the same question for a `DefNode`'s method value,
+  from its inferred return (or an `Integer?` seed from `--rbs`); absent
+  where the return kind has no nil form.
 
 ## `diagnostics`
 
