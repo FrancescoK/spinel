@@ -2358,6 +2358,8 @@ sp_thread *sp_Thread_spawn_fiber(sp_Fiber *f, sp_RbVal arg) {
   t->arg = arg;
   t->retval = sp_box_nil();
   t->name = sp_box_nil();
+  /* CRuby: a new thread starts at its creator's priority */
+  t->priority = g_current ? g_current->priority : 0;
   t->report_on_exception = g_report_default;
   SCHED_LOCK();
   t->id = g_next_id++;
@@ -2509,6 +2511,16 @@ sp_thread *sp_Thread_main(void) { return &g_main_thread; }
 
 sp_RbVal sp_Thread_get_name(sp_thread *t) { return t->name; }
 sp_RbVal sp_Thread_set_name(sp_thread *t, sp_RbVal v) { sp_gc_wb((void*)t); t->name = v; return v; }
+/* #priority= as CRuby's rb_thread_priority_set: the Integer value (a Float
+   truncates, nil is a TypeError: the generated call converts), clamped to
+   -3..3. CRuby treats it as a
+   hint to its scheduler and so does this one: it is kept and answered, and
+   the green-thread scheduler does not reorder by it. The call answers its
+   argument, as an assignment does. */
+sp_int sp_Thread_get_priority(sp_thread *t) { return t->priority; }
+void sp_Thread_set_priority(sp_thread *t, sp_int p) {
+  t->priority = p > 3 ? 3 : (p < -3 ? -3 : (int)p);
+}
 
 /* Thread.list enumeration: the main thread followed by every live spawned
    thread (dead ones are off the registry). The generated TU builds the array

@@ -1067,6 +1067,10 @@ static const BuiltinOp bop_rows[] = {
   { TY_THREAD, "name",      0, BOP_ARGC_ANY, BF_ANY, TY_POLY,   BOPE_NONE },
   { TY_THREAD, "name=",     1, 1,            BF_ANY, TY_POLY,   BOPE_TEMPLATE, "sp_Thread_set_name($r, $b0)" },
   { TY_THREAD, "name=",     0, BOP_ARGC_ANY, BF_ANY, TY_POLY,   BOPE_NONE },
+  { TY_THREAD, "priority",  0, 0,            BF_ANY, TY_INT,    BOPE_TEMPLATE, "sp_Thread_get_priority($r)" },
+  { TY_THREAD, "priority",  0, BOP_ARGC_ANY, BF_ANY, TY_INT,    BOPE_NONE },
+  { TY_THREAD, "priority=", 1, 1,            BF_ANY, TY_POLY,   BOPE_TEMPLATE, "({ sp_RbVal _pv = $b0; sp_Thread_set_priority($r, sp_poly_arg_i_msg(_pv, \"no implicit conversion from nil to integer\")); _pv; })" },
+  { TY_THREAD, "priority=", 0, BOP_ARGC_ANY, BF_ANY, TY_POLY,   BOPE_NONE },
   { TY_THREAD, "equal?",    1, 1, BF_ANY, TY_BOOL, BOPE_TEMPLATE, "((void *)($r) == (void *)($e0))", BOP_K(TY_THREAD) },
   { TY_THREAD, "equal?",    0, BOP_ARGC_ANY, BF_ANY, TY_BOOL,   BOPE_NONE },
   /* thread-local storage: t[:key] / t[:key] = v / t.key?(:key) by a symbol
