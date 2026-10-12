@@ -1800,6 +1800,14 @@ spinel: 1 refusal, nothing written
 == test/reject/typed_array_kept_by_struct_into_mutated_param.rb [promote] rc=1
 spinel: test/reject/typed_array_kept_by_struct_into_mutated_param.rb:10: an Array[Integer] is passed to `add`'s parameter `out`, which the method mutates: the parameter is a general Array and the argument would be copied into it, so the mutation would not reach the caller's array. Give the parameter the argument's kind (an rbs seed, or callers that all pass Array[Integer]), or build the argument as a general Array.
 spinel: 1 refusal, nothing written
+== test/reject/unsupported_node_kind.rb [default] rc=1
+spinel: test/reject/unsupported_node_kind.rb:5: unsupported condition (non-bool): FlipFlopNode at test/reject/unsupported_node_kind.rb:5:8
+spinel: test/reject/unsupported_node_kind.rb:10: unsupported condition (non-bool): MatchLastLineNode at test/reject/unsupported_node_kind.rb:10:8
+spinel: 2 refusals, nothing written
+== test/reject/unsupported_node_kind.rb [promote] rc=1
+spinel: test/reject/unsupported_node_kind.rb:5: unsupported condition (non-bool): FlipFlopNode at test/reject/unsupported_node_kind.rb:5:8
+spinel: test/reject/unsupported_node_kind.rb:10: unsupported condition (non-bool): MatchLastLineNode at test/reject/unsupported_node_kind.rb:10:8
+spinel: 2 refusals, nothing written
 == test/reject/yield_method_only_in_subclass.rb [default] rc=1
 spinel: test/reject/yield_method_only_in_subclass.rb:11: `with_wrapping` takes a block and is defined only in subclasses of `Order`; define it in `Order` too (for example as `raise NotImplementedError`)
 spinel: 1 refusal, nothing written

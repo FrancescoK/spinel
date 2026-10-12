@@ -283,6 +283,14 @@ static void ucall_resolver_report(Compiler *c) {
                 arm a probe dropped)
    A refusal raised while analysis runs is not codegen's and is not held.
    The report is printed by ucall_report, or at exit for a refused run. */
+/* The parser's stand-in for a Prism node kind it has no case for. It has no
+   node kind of its own (NK_NONE, which several passes read as "no node"), so
+   it is told by its type name. */
+static int unsup_stand_in(const NodeTable *nt, int id) {
+  const char *ty = nt_type(nt, id);
+  return ty && sp_streq(ty, "UnsupportedNode");
+}
+
 typedef struct { int id; char *msg; } RefuseObs;
 static RefuseObs *g_rfobs = NULL;
 static int g_nrfobs = 0, g_rfobs_cap = 0;
@@ -309,7 +317,8 @@ static void refuse_report(Compiler *c) {
       }
     }
     else if (!strncmp(m, "unsupported call: node ", 23)) call++;
-    else if (!strncmp(m, "unsupported ", 12) && strstr(m, ": node ")) shape++;
+    else if (!strncmp(m, "unsupported ", 12) &&
+             (strstr(m, ": node ") || (id >= 0 && id < n && unsup_stand_in(c->nt, id)))) shape++;
     else if (strstr(m, "(NoMethodError)") || strstr(m, "(NameError)")) nom++;
     else if (strstr(m, "not yet shared by reference")) strc++;
     else feat++;
@@ -3718,6 +3727,21 @@ int unsup_message(Compiler *c, int id, const char *what, int self_ci, char *msg,
                      recv >= 0 ? (int)comp_ntype(c, recv) : -1, ac);
     if (ac > 0 && av && n > 0 && (size_t)n < cap)
       snprintf(msg + n, cap - (size_t)n, " arg0ty%d", (int)comp_ntype(c, av[0]));
+  }
+  /* The parser's stand-in for a Prism node kind it has no case for: the kind
+     it carries and where it was written are what the user can act on, and
+     the node id means nothing outside the compiler. The position is the
+     mapped one (a required file and its own line) when the parser stamped
+     it, else the line the stand-in kept. */
+  else if (unsup_stand_in(c->nt, id)) {
+    const char *kind = nt_str(c->nt, id, "kind");
+    int ln; const char *file = unsup_pos(c, id, &ln);
+    if (ln > 0)
+      snprintf(msg, cap, "unsupported %s: %s at %s:%d:%d", what, kind ? kind : "?", file, ln,
+               (int)nt_int(c->nt, id, "node_col", 0) + 1);
+    else
+      snprintf(msg, cap, "unsupported %s: %s at %s:%d", what, kind ? kind : "?", file,
+               (int)nt_int(c->nt, id, "source_line", 0));
   }
   else
     snprintf(msg, cap, "unsupported %s: node %d (%s)", what, id, ty ? ty : "?");
