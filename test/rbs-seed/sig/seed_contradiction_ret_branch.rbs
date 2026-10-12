@@ -1,0 +1,3 @@
+class SeedRetBranch
+  def pick: (bool f) -> String
+end

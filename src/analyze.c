@@ -29806,6 +29806,30 @@ static int seed_kwarg_value(const NodeTable *nt, int kwh, const char *name) {
 /* 1 iff a value of type `val` placed in a slot the seed pinned to `slot` would
    be REINTERPRETED rather than converted -- the whole point of the rule. `ret`
    selects the wider judgement a return slot allows (see seed_ret_family). */
+/* The values a returned expression `v` answers with: a conditional's
+   branches (`f ? "s" : 1`, an if / unless with an else) each in turn, since
+   each returns on its own, converted to the method's type. The whole
+   conditional is the boxed union of its branches, which makes no claim. A
+   branch that is missing answers nil, which every slot holds. */
+static void seed_ret_branch_sites(const NodeTable *nt, int v, int *sites, int *n, int cap, int depth) {
+  if (v < 0 || *n >= cap) return;
+  NodeKind k = nt_kind(nt, v);
+  if (depth < 16 && (k == NK_StatementsNode || k == NK_ParenthesesNode)) {
+    int b = k == NK_ParenthesesNode ? nt_ref(nt, v, "body") : v;
+    int bn = 0; const int *bb = b >= 0 ? nt_arr(nt, b, "body", &bn) : NULL;
+    if (bb && bn > 0) { seed_ret_branch_sites(nt, bb[bn - 1], sites, n, cap, depth + 1); return; }
+  }
+  if (depth < 16 && (k == NK_IfNode || k == NK_UnlessNode)) {
+    int els = nt_ref(nt, v, k == NK_IfNode ? "subsequent" : "else_clause");
+    if (els >= 0) {
+      seed_ret_branch_sites(nt, nt_ref(nt, v, "statements"), sites, n, cap, depth + 1);
+      if (nt_kind(nt, els) == NK_ElseNode) els = nt_ref(nt, els, "statements");
+      seed_ret_branch_sites(nt, els, sites, n, cap, depth + 1);
+      return;
+    }
+  }
+  sites[(*n)++] = v;
+}
 static int seed_ret_family(Compiler *c, TyKind t);
 static int seed_ret_kind(TyKind t);
 static int seed_contradicts(Compiler *c, TyKind slot, TyKind val, int ret) {
@@ -30027,16 +30051,16 @@ static void check_seed_contradictions(Compiler *c) {
     }
     TyKind slot = sc->ret;
     /* every value the method can answer with: the body's tail, and each
-       explicit return inside this scope */
+       explicit return inside this scope -- a conditional one branch at a time */
     int sites[64]; int nsites = 0;
-    sites[nsites++] = sc->body;
+    seed_ret_branch_sites(nt, sc->body, sites, &nsites, 64, 0);
     NT_FOREACH_KIND(nt, NK_ReturnNode, id) {
       if (nsites >= 64) break;
       if (c->nscope[id] != s) continue;
       int rv = nt_ref(nt, id, "arguments");
       if (rv < 0) continue;
       int an = 0; const int *av = nt_arr(nt, rv, "arguments", &an);
-      if (av && an == 1) sites[nsites++] = av[0];
+      if (av && an == 1) seed_ret_branch_sites(nt, av[0], sites, &nsites, 64, 0);
     }
     for (int k = 0; k < nsites; k++) {
       /* An EMPTY container literal carries a default kind, not evidence: a
