@@ -33,3 +33,21 @@ begin
 rescue TypeError => e
   p e.message
 end
+
+def show = yield
+def bx(v) = v
+def upcased(s) = show { s.upcase! }
+def marked(k)
+  m = bx(k == 0 ? 5 : +"x\ny")
+  bx(nil)
+  out = []
+  show { m.each_line(bx(nil)) { |l| l << "!"; out << l } }
+  out
+end
+p upcased(+"ab")
+p marked(1)
+begin
+  marked(0)
+rescue NoMethodError => e
+  p e.class
+end
