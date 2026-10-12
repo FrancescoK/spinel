@@ -10497,8 +10497,28 @@ int hoisted_value_is_stmt(Compiler *c, int id) {
    a poll: another thread at the safepoint, a finalizer at the finalizer poll,
    either of which can shrink the array. So such a loop polls at the top of
    its condition, ahead of `i < a.length`, not at the top of its body between
-   that test and the read (emit_while). Records i and a in the region, or
-   leaves it as it was. */
+   that test and the read (emit_while). A loop nested in the body polls too,
+   in its own condition or body, between the outer test and any outer read
+   after it, so in a program that polls a body with one proves nothing
+   (hc_subtree_loops); the nested loop is proved on its own. Records i and a
+   in the region, or leaves it as it was. */
+/* Does the subtree hold a loop -- a while, until or for, or a call with a
+   block (an Integer block loop, the one kind a cached region admits) --
+   that polls on every pass? */
+static int hc_subtree_loops(const NodeTable *nt, int id) {
+  if (id < 0) return 0;
+  NodeKind k = nt_kind(nt, id);
+  if (k == NK_WhileNode || k == NK_UntilNode || k == NK_ForNode) return 1;
+  if (k == NK_CallNode && nt_ref(nt, id, "block") >= 0) return 1;
+  int nr = nt_num_refs(nt, id);
+  for (int i = 0; i < nr; i++) if (hc_subtree_loops(nt, nt_ref_at(nt, id, i))) return 1;
+  int na = nt_num_arrs(nt, id);
+  for (int i = 0; i < na; i++) {
+    int n = 0; const int *el = nt_arr_at(nt, id, i, &n);
+    for (int j = 0; j < n; j++) if (hc_subtree_loops(nt, el[j])) return 1;
+  }
+  return 0;
+}
 static void hc_bounded_index(Compiler *c, int prev, int pred, int body, HcRegion *r) {
   const NodeTable *nt = c->nt;
   if (prev < 0 || pred < 0 || body < 0 || nt_kind(nt, pred) != NK_CallNode) return;
@@ -10537,6 +10557,7 @@ static void hc_bounded_index(Compiler *c, int prev, int pred, int body, HcRegion
   if (one < 0 || nt_kind(nt, one) != NK_IntegerNode || nt_int(nt, one, "value", 0) != 1) return;
   for (int k = 0; k < bn - 1; k++) if (subtree_changes_local(c, bs[k], in)) return;
   if (subtree_changes_local(c, pred, in)) return;
+  if ((g_uses_threads || g_uses_finalizers) && hc_subtree_loops(nt, body)) return;
   snprintf(r->bi, sizeof r->bi, "%s", in);
   snprintf(r->ba, sizeof r->ba, "%s", an);
 }
@@ -10686,11 +10707,23 @@ void emit_while(Compiler *c, int id, Buf *b, int indent, int is_until) {
   Buf *hob = b;
   int use_hc = !sv_hc && hc_node_ok(c, pred, 0, &hcr) && hc_node_ok(c, body, 1, &hcr);
   if (use_hc) {
-    if (!is_until) hc_bounded_index(c, prev_stmt, pred, body, &hcr);
     hcr.id = ++g_hc_seq;
     snprintf(hcr.mark, sizeof hcr.mark, "/*@HCR%d@*/", hcr.id);
     g_hc = &hcr; b = &hlb;
   }
+  /* The region this loop reads through: its own, or the enclosing loop's
+     when it is nested in one (hc_node_ok took it with that loop's body, and
+     it opens none of its own). Either way it is proved on its own
+     (hc_bounded_index), in the region's slot, which an enclosing loop holding
+     it cannot have proved; the slot is put back after it. */
+  HcRegion *pr = use_hc ? &hcr : sv_hc;
+  char sv_bi[sizeof hcr.bi], sv_ba[sizeof hcr.ba];
+  if (pr) {
+    memcpy(sv_bi, pr->bi, sizeof sv_bi); memcpy(sv_ba, pr->ba, sizeof sv_ba);
+    pr->bi[0] = pr->ba[0] = 0;
+    if (!is_until) hc_bounded_index(c, prev_stmt, pred, body, pr);
+  }
+  int proved = pr && pr->bi[0];
   /* Capture the predicate and any expression preludes it needs (method-call
      temps etc.) into local buffers. A loop condition like
      `advance while ident_continue_byte?(byte)` evaluates a method call
@@ -10709,9 +10742,9 @@ void emit_while(Compiler *c, int id, Buf *b, int indent, int is_until) {
   g_pre = sv_pre; g_indent = sv_ind;
   /* a proved loop polls ahead of its test (hc_bounded_index); a condition with
      a prelude has no single test to put them ahead of, so it keeps its checks */
-  int polls_in_cond = use_hc && hcr.bi[0] && !(cpre.p && cpre.p[0]) && (g_uses_threads || g_uses_finalizers);
-  if (use_hc && hcr.bi[0] && cpre.p && cpre.p[0]) hcr.bi[0] = 0;
-  if (use_hc && hcr.bi[0]) {
+  int polls_in_cond = proved && !(cpre.p && cpre.p[0]) && (g_uses_threads || g_uses_finalizers);
+  if (proved && cpre.p && cpre.p[0]) { pr->bi[0] = 0; proved = 0; }
+  if (proved) {
     Buf hcc; memset(&hcc, 0, sizeof hcc);
     if (hc_bounded_cond(c, pred, &hcc)) { free(ccond.p); ccond = hcc; }
     else free(hcc.p);
@@ -10748,6 +10781,7 @@ void emit_while(Compiler *c, int id, Buf *b, int indent, int is_until) {
     buf_puts(b, "}\n");
   }
   free(cpre.p); free(ccond.p);
+  if (pr) { memcpy(pr->bi, sv_bi, sizeof sv_bi); memcpy(pr->ba, sv_ba, sizeof sv_ba); }
   if (use_hc) {
     g_hc = sv_hc; b = hob;
     hc_close(&hcr, hlb.p ? hlb.p : "", b, indent);
