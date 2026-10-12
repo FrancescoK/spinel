@@ -19540,17 +19540,29 @@ static sp_RbVal sp_poly_enum_proc(sp_RbVal recv, int op, sp_Proc *blk) {
     }
   }
   SP_GC_ROOT_RBVAL(walk);
-  sp_int n = sp_poly_arr_len_ex(walk);
+  /* An Array is walked live, as CRuby's Array methods walk it: the length
+     and the element are read at every step, so the block sees what it
+     appends to the receiver (`args.each { args.concat more }`) or removes
+     from it. A Hash's entries, a Range's members and an Enumerator's items
+     are walked from a copy taken before the block runs. */
+  int live = recv.tag == SP_TAG_OBJ && sp_poly_is_array_kind(recv.cls_id);
+  sp_int n = live ? 0 : sp_poly_arr_len_ex(walk);
   sp_PolyArray *src = sp_PolyArray_new(); SP_GC_ROOT(src);
   for (sp_int i = 0; i < n; i++) sp_PolyArray_push(src, sp_poly_each_elem(walk, i));
   if (first_of_pair)
     for (sp_int i = 0; i < n; i++) { sp_gc_wb((void *)src); src->data[i] = sp_yielded_first(pair, src->data[i]); }
+  /* the element being handed to the block, rooted: walked live, the array
+     is its only other holder, and the block may remove it and allocate
+     while its parameter still reads it */
+  sp_RbVal cur = sp_box_nil(); SP_GC_ROOT_RBVAL(cur);
+#define SP_PENUM_LEN (live ? sp_poly_arr_len(walk) : n)
+#define SP_PENUM_AT(i) (cur = live ? sp_poly_arr_get(walk, (i)) : src->data[(i)])
   switch (op) {
     case SP_PENUM_EACH:
-      for (sp_int i = 0; i < n; i++) sp_penum_call1(blk, src->data[i]);
+      for (sp_int i = 0; i < SP_PENUM_LEN; i++) sp_penum_call1(blk, SP_PENUM_AT(i));
       return recv;   /* Array#each answers the receiver */
     case SP_PENUM_EACH_WITH_INDEX:
-      for (sp_int i = 0; i < n; i++) sp_penum_call2(blk, src->data[i], sp_box_int(i));
+      for (sp_int i = 0; i < SP_PENUM_LEN; i++) sp_penum_call2(blk, SP_PENUM_AT(i), sp_box_int(i));
       return recv;
     case SP_PENUM_EACH_PAIR:
       for (sp_int i = 0; i < n; i++) sp_penum_call1(blk, src->data[i]);
@@ -19561,25 +19573,31 @@ static sp_RbVal sp_poly_enum_proc(sp_RbVal recv, int op, sp_Proc *blk) {
         sp_penum_call1(blk, sp_poly_arr_get(src->data[i], op == SP_PENUM_EACH_KEY ? 0 : 1));
       return recv;
     case SP_PENUM_REVERSE_EACH:
-      for (sp_int i = n - 1; i >= 0; i--) sp_penum_call1(blk, src->data[i]);
+      /* from the last element down; a block that shortens the receiver
+         moves the walk to its new end, and what it appends is not reached */
+      for (sp_int i = SP_PENUM_LEN - 1; i >= 0; i--) {
+        sp_penum_call1(blk, SP_PENUM_AT(i));
+        if (live && sp_poly_arr_len(walk) < i) i = sp_poly_arr_len(walk);
+      }
       return recv;
     case SP_PENUM_UNIQ: {
       /* the first element of each block value, in order, compared as the
          spliced poly uniq loop compares them */
       sp_PolyArray *seen = sp_PolyArray_new(); SP_GC_ROOT(seen);
       sp_PolyArray *out = sp_PolyArray_new(); SP_GC_ROOT(out);
-      for (sp_int i = 0; i < n; i++) {
-        sp_RbVal k = sp_penum_call1(blk, src->data[i]);
+      for (sp_int i = 0; i < SP_PENUM_LEN; i++) {
+        sp_RbVal e = SP_PENUM_AT(i); SP_GC_ROOT_RBVAL(e);
+        sp_RbVal k = sp_penum_call1(blk, e);
         sp_bool dup = FALSE;
         for (sp_int j = 0; j < seen->len; j++) if (sp_poly_eq(seen->data[j], k)) { dup = TRUE; break; }
-        if (!dup) { sp_PolyArray_push(seen, k); sp_PolyArray_push(out, src->data[i]); }
+        if (!dup) { sp_PolyArray_push(seen, k); sp_PolyArray_push(out, e); }
       }
       return sp_box_poly_array(out);
     }
     case SP_PENUM_MAP: {
       sp_PolyArray *out = sp_PolyArray_new(); SP_GC_ROOT(out);
-      for (sp_int i = 0; i < n; i++) {
-        sp_RbVal e = src->data[i];
+      for (sp_int i = 0; i < SP_PENUM_LEN; i++) {
+        sp_RbVal e = SP_PENUM_AT(i);
         if (spread_pair && sp_yielded_packed(pair, e)) {
           _sp_proc_poly_ret = sp_box_nil();
           sp_proc_call_spread(blk, sp_poly_is_empty_step(e) ? sp_box_poly_array(sp_PolyArray_new()) : e, 0);
@@ -19601,25 +19619,30 @@ static sp_RbVal sp_poly_enum_proc(sp_RbVal recv, int op, sp_Proc *blk) {
         }
         return sp_box_obj(h, SP_BUILTIN_POLY_POLY_HASH);
       }
-      /* the array form */
+      /* the array form; Array#select keeps the element as it reads after
+         the block, which may have replaced or removed it */
       sp_PolyArray *out = sp_PolyArray_new(); SP_GC_ROOT(out);
-      for (sp_int i = 0; i < n; i++) {
-        int t = sp_poly_truthy(sp_penum_call1(blk, src->data[i]));
-        if (t == (op == SP_PENUM_SELECT)) sp_PolyArray_push(out, src->data[i]);
+      for (sp_int i = 0; i < SP_PENUM_LEN; i++) {
+        sp_RbVal e = SP_PENUM_AT(i); SP_GC_ROOT_RBVAL(e);
+        int t = sp_poly_truthy(sp_penum_call1(blk, e));
+        if (t == (op == SP_PENUM_SELECT))
+          sp_PolyArray_push(out, live && op == SP_PENUM_SELECT ? SP_PENUM_AT(i) : e);
       }
       return sp_box_poly_array(out);
     }
     case SP_PENUM_FIND:
-      for (sp_int i = 0; i < n; i++)
-        if (sp_poly_truthy(sp_penum_call1(blk, src->data[i]))) return src->data[i];
+      for (sp_int i = 0; i < SP_PENUM_LEN; i++) {
+        sp_RbVal e = SP_PENUM_AT(i); SP_GC_ROOT_RBVAL(e);
+        if (sp_poly_truthy(sp_penum_call1(blk, e))) return e;
+      }
       return sp_box_nil();
     case SP_PENUM_FIND_INDEX:
-      for (sp_int i = 0; i < n; i++)
-        if (sp_poly_truthy(sp_penum_call1(blk, src->data[i]))) return sp_box_int(i);
+      for (sp_int i = 0; i < SP_PENUM_LEN; i++)
+        if (sp_poly_truthy(sp_penum_call1(blk, SP_PENUM_AT(i)))) return sp_box_int(i);
       return sp_box_nil();
     case SP_PENUM_ANY: case SP_PENUM_ALL: case SP_PENUM_NONE: {
-      for (sp_int i = 0; i < n; i++) {
-        int t = sp_poly_truthy(sp_penum_call1(blk, src->data[i]));
+      for (sp_int i = 0; i < SP_PENUM_LEN; i++) {
+        int t = sp_poly_truthy(sp_penum_call1(blk, SP_PENUM_AT(i)));
         if (op == SP_PENUM_ANY && t) return sp_box_bool(TRUE);
         if (op == SP_PENUM_ALL && !t) return sp_box_bool(FALSE);
         if (op == SP_PENUM_NONE && t) return sp_box_bool(FALSE);
@@ -19628,12 +19651,12 @@ static sp_RbVal sp_poly_enum_proc(sp_RbVal recv, int op, sp_Proc *blk) {
     }
     case SP_PENUM_COUNT: {
       sp_int k = 0;
-      for (sp_int i = 0; i < n; i++) if (sp_poly_truthy(sp_penum_call1(blk, src->data[i]))) k++;
+      for (sp_int i = 0; i < SP_PENUM_LEN; i++) if (sp_poly_truthy(sp_penum_call1(blk, SP_PENUM_AT(i)))) k++;
       return sp_box_int(k);
     }
     case SP_PENUM_SUM: {
-      sp_RbVal acc = sp_box_int(0);
-      for (sp_int i = 0; i < n; i++) acc = sp_poly_add(acc, sp_penum_call1(blk, src->data[i]));
+      sp_RbVal acc = sp_box_int(0); SP_GC_ROOT_RBVAL(acc);
+      for (sp_int i = 0; i < SP_PENUM_LEN; i++) acc = sp_poly_add(acc, sp_penum_call1(blk, SP_PENUM_AT(i)));
       return acc;
     }
     case SP_PENUM_SORT_BY: {
@@ -19642,8 +19665,9 @@ static sp_RbVal sp_poly_enum_proc(sp_RbVal recv, int op, sp_Proc *blk) {
          reached through a dispatch, not a hot path. */
       sp_PolyArray *keys = sp_PolyArray_new(); SP_GC_ROOT(keys);
       sp_PolyArray *out = sp_PolyArray_new(); SP_GC_ROOT(out);
-      for (sp_int i = 0; i < n; i++) {
-        sp_RbVal k = sp_penum_call1(blk, src->data[i]);
+      for (sp_int i = 0; i < SP_PENUM_LEN; i++) {
+        sp_RbVal e = SP_PENUM_AT(i); SP_GC_ROOT_RBVAL(e);
+        sp_RbVal k = sp_penum_call1(blk, e);
         sp_int pos = out->len;
         while (pos > 0) {
           sp_bool ok = FALSE;
@@ -19653,11 +19677,13 @@ static sp_RbVal sp_poly_enum_proc(sp_RbVal recv, int op, sp_Proc *blk) {
           pos--;
         }
         sp_PolyArray_insert(keys, pos, k);
-        sp_PolyArray_insert(out, pos, src->data[i]);
+        sp_PolyArray_insert(out, pos, e);
       }
       return sp_box_poly_array(out);
     }
   }
+#undef SP_PENUM_LEN
+#undef SP_PENUM_AT
   return sp_box_nil();
 }
 /* <proc>.call(*arr): spread a runtime array into the sp_int[16] / boxed
