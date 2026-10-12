@@ -124,6 +124,12 @@ int refl_member_of_struct_superclass(Compiler *c, int ci, const char *m);
 int respond_to_static_answer(Compiler *c, int id, int recv, TyKind rt, const char *qm, int argc, const int *argv);
 int respond_to_user_defined(Compiler *c, int id, int recv);
 extern const char *const respond_universal[];
+extern const char *const respond_universal_all[]; /* public and private */
+int object_private_method_name(const char *qm);
+const char *const *object_private_method_names(void); /* NULL-terminated */
+int respond_to_runtime_reaches(Compiler *c, TyKind rt);
+int root_reopen_defines(Compiler *c, const char *qm);
+int private_answer_overridden(Compiler *c, const char *qm, TyKind rt);
 int rt_probe_answer(Compiler *c, int id, int *yes);
 extern const char *const struct_names[];
 void emit_call_body(Compiler *c, int id, Buf *b);
