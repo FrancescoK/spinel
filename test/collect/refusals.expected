@@ -150,6 +150,10 @@ spinel: test/reject/class_body_block_next.rb:7: next in a block that is a class 
 spinel: test/reject/class_eval_block_forwarded_shared_ivar.rb:13: an instance variable the class's own code in a class_eval block also uses, in a block given there to a method that may run it with instance_exec: which object's variable it is is not known when the program is compiled
 == test/reject/class_eval_block_forwarded_shared_ivar.rb [promote] rc=1
 spinel: test/reject/class_eval_block_forwarded_shared_ivar.rb:13: an instance variable the class's own code in a class_eval block also uses, in a block given there to a method that may run it with instance_exec: which object's variable it is is not known when the program is compiled
+== test/reject/class_eval_block_many_forwarded_calls.rb [default] rc=1
+spinel: test/reject/class_eval_block_many_forwarded_calls.rb:28: an instance variable the class's own code in a class_eval block also uses, in a block given there to a method that may run it with instance_exec: which object's variable it is is not known when the program is compiled
+== test/reject/class_eval_block_many_forwarded_calls.rb [promote] rc=1
+spinel: test/reject/class_eval_block_many_forwarded_calls.rb:28: an instance variable the class's own code in a class_eval block also uses, in a block given there to a method that may run it with instance_exec: which object's variable it is is not known when the program is compiled
 == test/reject/class_eval_on_class_in_method.rb [default] rc=1
 spinel: test/reject/class_eval_on_class_in_method.rb:9: Class.class_eval is not supported here: methods are added to Class only by a top-level `class Class` or `Class.class_eval { ... }`
 == test/reject/class_eval_on_class_in_method.rb [promote] rc=1
