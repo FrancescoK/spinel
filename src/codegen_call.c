@@ -18782,15 +18782,18 @@ int emit_blockless_enumerator(Compiler *c, int id, Buf *b) {
   }
   /* str.each_line(sep) with no block -> an Enumerator over the sep-kept
      segments. */
-  if (recv >= 0 && comp_ntype(c, recv) == TY_STRING && argc == 1 &&
+  int sep_kw = argc == 2 && nt_type(nt, argv[1]) && sp_streq(nt_type(nt, argv[1]), "KeywordHashNode")
+             ? struct_kwarg_value(c, argv[1], "chomp") : -1;
+  if (recv >= 0 && comp_ntype(c, recv) == TY_STRING && (argc == 1 || (argc == 2 && sep_kw >= 0)) &&
       nt_ref(nt, id, "block") < 0 && sp_streq(name, "each_line") &&
       comp_ntype(c, argv[0]) == TY_STRING) {
     int tsrc3 = ++g_tmp;
     buf_printf(b, "({ const char *_t%d = ", tsrc3);
     emit_expr(c, recv, b);
-    buf_printf(b, "; SP_GC_ROOT(_t%d); "
-                  "sp_enum_with_src(sp_Enumerator_new_from(sp_box_str_array(sp_str_lines_sep(_t%d, ",
-               tsrc3, tsrc3);
+    buf_printf(b, "; SP_GC_ROOT(_t%d); sp_enum_with_src(sp_Enumerator_new_from(sp_box_str_array(", tsrc3);
+    if (sep_kw >= 0) { buf_puts(b, "("); emit_cond(c, sep_kw, b); buf_puts(b, " ? sp_str_lines_sep_chomp : sp_str_lines_sep)"); }
+    else buf_puts(b, "sp_str_lines_sep");
+    buf_printf(b, "(_t%d, ", tsrc3);
     emit_expr(c, argv[0], b);
     buf_printf(b, "))), sp_box_str(_t%d), SPL(\"each_line\")); })", tsrc3);
     return 1;
