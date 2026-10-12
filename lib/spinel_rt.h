@@ -9919,6 +9919,11 @@ static inline sp_int sp_int_shl_ck(sp_int a, sp_int b) {
     return r;
   }
   if (b < 0) return (b <= -(w - 1)) ? (a < 0 ? -1 : 0) : (a >> (-b));
+#ifdef SP_INT_OVERFLOW_MODE_WRAP
+  /* every bit leaves the word: the wrapped value is 0, as sp_int_shl answers
+     for a literal count */
+  return 0;
+#endif
   sp_raise_cls("RangeError", sizeof(sp_int) == 8 ? "shift width too big for a 64-bit Integer (use --int-overflow=promote)"
                                                  : "shift width too big for a 32-bit Integer (use --int-overflow=promote)");
   return 0;
