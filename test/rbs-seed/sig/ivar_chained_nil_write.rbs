@@ -1,0 +1,5 @@
+class ChainNilCookie
+  attr_accessor comment: String?
+  attr_accessor max_age: Integer?
+  attr_accessor secure: bool?
+end
