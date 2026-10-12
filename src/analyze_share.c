@@ -4459,7 +4459,6 @@ static int sh_builtin_fresh(Compiler *c, int call, int ostruct) {
      a class that has the hook and not the name. */
   if (object_public_method_name(name)) return 0;
   if (comp_method_index(c, "method_missing") >= 0) return 0;
-  if (sh_method_missing_reaches(c, call, name)) return 0;
   int missing = 0;
   comp_cmethod_candidates(c, "method_missing", &missing);
   if (missing) return 0;
@@ -4484,7 +4483,9 @@ static int sh_builtin_fresh(Compiler *c, int call, int ostruct) {
       for (int j = 0; j < ntg; j++) if (tg[j] == p[i].mi) { found = 1; break; }
       if (!found) return 0;
     }
-    if (user_methods > 0) return 1;
+    /* a class's hook is asked last: whether the receiver can be of its
+       class walks the receiver's values, and only an answer of 1 needs it */
+    if (user_methods > 0) return !sh_method_missing_reaches(c, call, name);
   }
   return 0;
 }
