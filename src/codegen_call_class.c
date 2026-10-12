@@ -4646,3 +4646,79 @@ void emit_refl_method_defined(Compiler *c, Buf *b) {
   free(wnames);
   free(names);
 }
+
+int refl_im_params_used(Compiler *c) {
+  for (int id = 0; id < c->nt->count; id++) if (refl_im_params_call(c, id)) return 1;
+  return 0;
+}
+
+/* The call site: sp_refl_instance_method_parameters(klass, name). */
+int emit_refl_im_params_call(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  if (!refl_im_params_call(c, id)) return 0;
+  int im = nt_ref(nt, id, "receiver");
+  int recv = nt_ref(nt, im, "receiver");
+  int args = nt_ref(nt, im, "arguments");
+  int an = 0; const int *av = nt_arr(nt, args, "arguments", &an);
+  TyKind nty = infer_type(c, av[0]);
+  if (nty != TY_SYMBOL && nty != TY_STRING) return 0;
+  Scope *encl = comp_scope_of(c, id);
+  char selfbuf[48];
+  const char *self_cls = NULL;
+  if (recv < 0 && encl) {
+    if (cmethod_takes_self_cls(c, (int)(encl - c->scopes))) self_cls = encl->yields && g_self ? g_self : "_sp_cls";
+    else if (encl->class_id >= 0) { snprintf(selfbuf, sizeof selfbuf, "((sp_Class){%d})", encl->class_id); self_cls = selfbuf; }
+  }
+  if (recv < 0 && !self_cls) return 0;
+  buf_puts(b, "sp_refl_instance_method_parameters(");
+  if (recv >= 0 && infer_type(c, recv) == TY_POLY) { buf_puts(b, "sp_unbox_class("); emit_boxed(c, recv, b); buf_puts(b, ")"); }
+  else if (recv >= 0) emit_expr(c, recv, b);
+  else buf_puts(b, self_cls);
+  buf_puts(b, nty == TY_SYMBOL ? ", sp_sym_to_s_chilled(" : ", (");
+  emit_expr(c, av[0], b);
+  buf_puts(b, "))");
+  return 1;
+}
+
+/* sp_refl_instance_method_parameters(klass, name): the [[kind, name], ...]
+   of the method `name` resolves to in klass's chain, as Method#parameters
+   builds it; CRuby's NameError when there is none. */
+void emit_refl_im_params(Compiler *c, Buf *b) {
+  buf_puts(b, "static sp_PolyArray *sp_refl_instance_method_parameters(sp_Class k, const char *name) {\n");
+  buf_puts(b, "  switch (k.cls_id) {\n");
+  for (int k = 0; k < c->nclasses; k++) {
+    Buf rows; memset(&rows, 0, sizeof rows);
+    int nrows = 0;
+    const char **seen = NULL; int nseen = 0;
+    for (int s = 0; s < c->nscopes; s++) {
+      const char *qm = c->scopes[s].name;
+      if (!qm || c->scopes[s].class_id < 0 || c->scopes[s].is_cmethod) continue;
+      int dup = 0;
+      for (int i = 0; i < nseen && !dup; i++) dup = sp_streq(seen[i], qm);
+      if (dup) continue;
+      seen = realloc(seen, sizeof(char *) * (size_t)(nseen + 1));
+      seen[nseen++] = qm;
+      int mi = comp_method_in_chain(c, k, qm, NULL);
+      if (mi < 0 || comp_is_undeffed_in_chain(c, k, qm)) continue;
+      int dn = c->scopes[mi].def_node;
+      int pn = dn >= 0 ? nt_ref(c->nt, dn, "parameters") : -1;
+      int tr = ++g_tmp;
+      buf_puts(&rows, "    if (!strcmp(name, \"");
+      emit_c_escaped(&rows, qm);
+      buf_printf(&rows, "\")) { sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", tr, tr);
+      if (pn >= 0) emit_method_parameters_pushes(c, pn, tr, &rows);
+      buf_printf(&rows, " return _t%d; }\n", tr);
+      nrows++;
+    }
+    free(seen);
+    if (nrows) {
+      buf_printf(b, "  case %d: {\n", k);
+      buf_puts(b, rows.p);
+      buf_puts(b, "    break; }\n");
+    }
+    free(rows.p);
+  }
+  buf_puts(b, "  }\n");
+  buf_puts(b, "  sp_raise_cls(\"NameError\", sp_str_concat3(sp_str_concat3(\"undefined method '\", name, \"' for class '\"), sp_class_to_s(k), \"'\"));\n");
+  buf_puts(b, "  return NULL;\n}\n");
+}

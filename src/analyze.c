@@ -45487,3 +45487,26 @@ void analyze_program(Compiler *c) {
   AN_PHASE("arm_facts", an_arm_facts(c));
   sp_timing_end(tm_an, "analysis", "");
 }
+
+/* Is `id` (a CallNode) `x.instance_method(arg).parameters` with a receiver
+   or a name only the run time knows? Then the parameters come from
+   sp_refl_instance_method_parameters (Thor checks a command's arity this
+   way: `klass.instance_method(name.to_sym).parameters`). */
+int refl_im_params_call(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  if (nt_kind(nt, id) != NK_CallNode || !nt_str(nt, id, "name") || !sp_streq(nt_str(nt, id, "name"), "parameters")) return 0;
+  if (nt_ref(nt, id, "arguments") >= 0) return 0;
+  int im = nt_ref(nt, id, "receiver");
+  if (im < 0 || nt_kind(nt, im) != NK_CallNode || !nt_str(nt, im, "name") ||
+      !sp_streq(nt_str(nt, im, "name"), "instance_method")) return 0;
+  int args = nt_ref(nt, im, "arguments");
+  int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  if (an != 1 || !av) return 0;
+  const char *aty = nt_type(nt, av[0]);
+  int recv = nt_ref(nt, im, "receiver");
+  const char *rty = recv >= 0 ? nt_type(nt, recv) : NULL;
+  int lit_name = aty && (sp_streq(aty, "SymbolNode") || sp_streq(aty, "StringNode"));
+  int lit_recv = rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode"));
+  return !(lit_name && lit_recv);
+}
+

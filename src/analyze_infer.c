@@ -2247,6 +2247,8 @@ static int yield_recv_builtin_every_site(Compiler *c, int call) {
 }
 
 TyKind infer_call(Compiler *c, int id) {
+  /* `klass.instance_method(name).parameters` answered by the reflection table */
+  if (refl_im_params_call(c, id)) return TY_POLY_ARRAY;
   /* the class arm of a builtin's receiver test (`__r.is_a?(K) ? __r.m { }
      : ...`, enum_own) answers what the classes' own methods answer, as the
      emitter dispatches it: typed as the builtin (any? is a Boolean), a
