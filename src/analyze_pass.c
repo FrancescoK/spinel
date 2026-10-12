@@ -16367,6 +16367,44 @@ int infer_return_types(Compiler *c) {
   return changed;
 }
 
+static void cr_add_name(char ***out, int *n, int *cap, const char *nm) {
+  if (!nm) return;
+  for (int i = 0; i < *n; i++) if (sp_streq((*out)[i], nm)) return;
+  if (*n >= *cap) { *cap = *cap ? *cap * 2 : 8; *out = realloc(*out, sizeof(char *) * (size_t)*cap); }
+  (*out)[(*n)++] = strdup(nm);
+}
+
+/* `recv.method(name).arity`: a Method asked only what it is -- its name,
+   arity or source location -- runs nothing, so the method it names is not
+   called. (owner, original_name and parameters still read the wrapper a
+   boxed receiver's Method binds, not the method, so they mark as before.) Only a Method that is the query's own receiver:
+   one stored, passed on or called through (call, to_proc, unbind, curry, a
+   block argument) still marks its target, as before. */
+static int cr_method_value_queried(const NodeTable *nt, int id) {
+  static const char *const queries[] = { "name", "arity", "source_location", NULL };
+  const char *qn = nt_str(nt, id, "name");
+  int q = 0;
+  for (int i = 0; qn && queries[i]; i++) if (sp_streq(qn, queries[i])) { q = 1; break; }
+  if (!q || nt_ref(nt, id, "block") >= 0) return 0;
+  int qa = nt_ref(nt, id, "arguments");
+  if (qa >= 0) return 0;
+  int m = nt_ref(nt, id, "receiver");
+  if (m < 0 || nt_kind(nt, m) != NK_CallNode || nt_ref(nt, m, "block") >= 0) return 0;
+  const char *mn = nt_str(nt, m, "name");
+  return mn && (sp_streq(mn, "method") || sp_streq(mn, "public_method"));
+}
+
+/* The operands of a `method` call whose Method is only queried: the
+   `method` call itself (a program may define its own), its receiver and its
+   name argument, but not the method the name names. */
+static void cr_collect_method_operands(Compiler *c, const NodeTable *nt, int m,
+                                       char ***out, int *n, int *cap) {
+  cr_add_name(out, n, cap, nt_str(nt, m, "name"));   /* a program's own `method` */
+  cr_collect_calls(c, nt, nt_ref(nt, m, "receiver"), out, n, cap);
+  int ma = nt_ref(nt, m, "arguments");
+  if (ma >= 0) cr_collect_calls(c, nt, ma, out, n, cap);
+}
+
 /* Collect CallNode names in the subtree rooted at `id`, stopping at nested
    DefNodes (which are separate method scopes). `out` / `n` / `cap` are
    the dynamic string array to append to. */
@@ -16397,6 +16435,11 @@ void cr_collect_calls(Compiler *c, const NodeTable *nt, int id,
   /* Collect method name from CallNode, or operator name from op-assign nodes
      (e.g. `a += 1` → InstanceVariableOperatorWriteNode with binary_operator "+"). */
   const char *nm = NULL;
+  if (sp_streq(ty, "CallNode") && cr_method_value_queried(nt, id)) {
+    cr_add_name(out, n, cap, nt_str(nt, id, "name"));
+    cr_collect_method_operands(c, nt, nt_ref(nt, id, "receiver"), out, n, cap);
+    return;
+  }
   if (sp_streq(ty, "CallNode")) {
     nm = nt_str(nt, id, "name");
     /* `method(:foo)` takes a reference to foo without calling it; the target

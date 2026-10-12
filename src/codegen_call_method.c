@@ -1100,7 +1100,12 @@ int emit_call_method_obj_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
     int mi_legacy = 0;
     char mi_sig[8 * 64 + 1]; mi_sig[0] = 0;
     int mi_fixed = 0, mi_rest = 0, mi_ret = 0, mi_poly = 0, mi_pfixed = 0, mi_pret = 0;
-    if (mi >= 0) {
+    /* A Method only asked what it is (`o.method(name).arity`) leaves its
+       target unreached (cr_method_value_queried), so the target is not
+       emitted: bind no address and stamp no call ABI. Nothing calls it. */
+    int mi_unemitted = mi >= 0 && !c->scopes[mi].reachable &&
+                       (!c->scopes[mi].is_proc_form || !proc_form_live(c, mi));
+    if (mi >= 0 && !mi_unemitted) {
       mi_legacy = method_legacy_int_abi(c, mi, recv_bound,
                                         mi_sig, sizeof mi_sig, &mi_fixed, &mi_rest, &mi_ret);
       mi_poly = method_poly_abi(c, mi, recv_bound, &mi_pfixed, &mi_pret);
@@ -1168,7 +1173,8 @@ int emit_call_method_obj_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
     else if (self_bound) { buf_printf(b, "(void *)%s", g_self); self_kind = "SP_BM_SELF_OBJ"; }
     else buf_puts(b, "NULL");
     buf_printf(b, ", %s, ", self_kind);
-    if (mi >= 0) { buf_puts(b, "(sp_int)(uintptr_t)&"); emit_method_cname(c, &c->scopes[mi], b); }
+    if (mi_unemitted) buf_puts(b, "(sp_int)0");
+    else if (mi >= 0) { buf_puts(b, "(sp_int)(uintptr_t)&"); emit_method_cname(c, &c->scopes[mi], b); }
     else {
       /* `<typed_array>.method(:op)`: lower through a per-(type, op) adapter
          matching the Method dispatch ABI (optcarrot's
@@ -1346,7 +1352,7 @@ int emit_call_method_obj_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
     buf_puts(b, ")");
     { char _rbb[16]; snprintf(_rbb, sizeof _rbb, "%d", recv_bound);
       int _tmin = 0, _tmax = 0;
-      const char *_th = mi >= 0 ? emit_method_thunk(c, mi, recv_bound, &_tmin, &_tmax) : NULL;
+      const char *_th = mi >= 0 && !mi_unemitted ? emit_method_thunk(c, mi, recv_bound, &_tmin, &_tmax) : NULL;
       emit_bm_abi_args(b, _rbb, mi_legacy, mi >= 0 ? mi_sig : bop_sig,
                        mi >= 0 ? mi_fixed : bop_argc, mi >= 0 ? mi_rest : bop_rest,
                        mi >= 0 ? (mi_legacy ? mi_ret : mi_pret) : bop_ret, mi_poly, mi_pfixed, _th, _tmin, _tmax); }
@@ -1431,6 +1437,55 @@ int emit_call_method_obj_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
     int tg4 = mn4 >= 0 ? method_obj_target_mi(c, mn4) : -1;
     int dn4 = tg4 >= 0 ? c->scopes[tg4].def_node : -1;
     int ln4 = dn4 >= 0 ? (int)nt_int(nt, dn4, "node_line", 0) : 0;
+    /* a boxed receiver's wrapper (bam_poly) has no position of its own: the
+       method is the one the receiver's run-time class answers by the name,
+       whose def gives the pair */
+    if (dn4 >= 0 && nt_int(nt, dn4, "bam_poly", 0)) {
+      const char *sym4 = bam_builtin_sym(c, tg4, NULL);
+      int tm4 = ++g_tmp, tv4 = ++g_tmp, tr4 = ++g_tmp;
+      buf_printf(b, "({ sp_BoundMethod *_t%d = ", tm4); emit_expr(c, recv, b);
+      buf_printf(b, "; SP_GC_ROOT(_t%d); sp_RbVal _t%d = sp_PolyArray_get((sp_PolyArray *)_t%d->self, 0);"
+                    " sp_PolyArray *_t%d = NULL; SP_GC_ROOT(_t%d); ", tm4, tv4, tm4, tr4, tr4);
+      for (int k = 0; sym4 && k < c->nclasses; k++) {
+        if (comp_class_is_module(c, &c->classes[k])) continue;
+        int mk = comp_method_in_chain(c, k, sym4, NULL);
+        int dk = mk >= 0 ? c->scopes[mk].def_node : -1;
+        if (comp_resolve_member(c, k, sym4, 0, NULL, NULL) == SP_MEMBER_ATTR) {
+          /* an attr method keeps the unlined pair the plain path answers */
+          buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == %d) { _t%d = sp_PolyArray_new();"
+                        " sp_PolyArray_push(_t%d, sp_box_str(", tv4, tv4, k, tr4, tr4);
+          emit_str_literal(b, nt->source_file ? nt->source_file : "");
+          buf_printf(b, ")); sp_PolyArray_push(_t%d, sp_box_int(0LL)); } else ", tr4);
+          continue;
+        }
+        if (dk < 0 || nt_int(nt, dk, "bam_poly", 0)) continue;
+        const char *fk = nt_file_path(nt, (int)nt_int(nt, dk, "node_file", 0));
+        if (!fk || !*fk) fk = nt->source_file;
+        buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == %d) { _t%d = sp_PolyArray_new();"
+                      " sp_PolyArray_push(_t%d, sp_box_str(", tv4, tv4, k, tr4, tr4);
+        emit_str_literal(b, fk ? fk : "");
+        buf_printf(b, ")); sp_PolyArray_push(_t%d, sp_box_int(%dLL)); } else ", tr4, (int)nt_int(nt, dk, "node_line", 0));
+      }
+      /* a receiver no arm took answers by a native method, whose location is
+         nil -- unless the program's own def can answer it: one in a module,
+         a reopened builtin class (Object, Integer, ...) or at the top level,
+         none of which an arm above tests. That keeps the unlined pair. */
+      int own4 = 0;
+      for (int s4 = 0; sym4 && s4 < c->nscopes && !own4; s4++) {
+        Scope *sc = &c->scopes[s4];
+        if (!sc->name || strcmp(sc->name, sym4) != 0 || sc->is_proc_form) continue;
+        if (sc->def_node < 0 || nt_int(nt, sc->def_node, "bam_poly", 0)) continue;
+        ClassInfo *ci = sc->class_id >= 0 && sc->class_id < c->nclasses ? &c->classes[sc->class_id] : NULL;
+        own4 = !ci || comp_class_is_module(c, ci) || ci->is_builtin_const;
+      }
+      if (own4) {
+        buf_printf(b, "{ _t%d = sp_PolyArray_new(); sp_PolyArray_push(_t%d, sp_box_str(", tr4, tr4);
+        emit_str_literal(b, nt->source_file ? nt->source_file : "");
+        buf_printf(b, ")); sp_PolyArray_push(_t%d, sp_box_int(0LL)); } _t%d; })", tr4, tr4);
+      }
+      else buf_printf(b, "_t%d = NULL; _t%d; })", tr4, tr4);
+      return 1;
+    }
     /* under --no-line-map node_line is unstamped (0): still emit the pair so
        the program compiles; the line is 0 there */
     if (dn4 >= 0) {

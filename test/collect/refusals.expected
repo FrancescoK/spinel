@@ -898,6 +898,14 @@ spinel: 1 refusal, nothing written
 == test/reject/map_bang_with_index_untyped_proc.rb [promote] rc=1
 spinel: test/reject/map_bang_with_index_untyped_proc.rb:5: map!.with_index with a block whose value is untyped, on a typed Array
 spinel: 1 refusal, nothing written
+== test/reject/method_called_reaches_its_target.rb [default] rc=1
+spinel: test/reject/method_called_reaches_its_target.rb:5: Class.new with a non-constant superclass is not supported; use a constant superclass (see docs/limitations.md)
+spinel: test/reject/method_called_reaches_its_target.rb:5: Class.new with a non-constant superclass is not supported; use a constant superclass (see docs/limitations.md)
+spinel: 2 refusals, nothing written
+== test/reject/method_called_reaches_its_target.rb [promote] rc=1
+spinel: test/reject/method_called_reaches_its_target.rb:5: Class.new with a non-constant superclass is not supported; use a constant superclass (see docs/limitations.md)
+spinel: test/reject/method_called_reaches_its_target.rb:5: Class.new with a non-constant superclass is not supported; use a constant superclass (see docs/limitations.md)
+spinel: 2 refusals, nothing written
 == test/reject/method_of_builtin_module.rb [default] rc=1
 spinel: test/reject/method_of_builtin_module.rb:6: ENV.method(:each) is not supported: a Method object of a builtin module or class function has no compiled function to bind. Call ENV.each directly, or wrap it in a lambda
 spinel: 1 refusal, nothing written
