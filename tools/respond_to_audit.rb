@@ -46,11 +46,16 @@
 # This is NOT a generator: a mismatch here means a human edits
 # lib/spinel_rt.h's tables by hand, the same way the fix that prompted
 # this script did. Generating the tables from bop_rows outright hits real
-# obstacles (bop_rows is not complete for Range/Symbol -- their surface is
-# desugared through Enumerable rather than a row per name -- and Exception
-# registers subclass-specific accessors like `errno` with no "owning
-# subclass" field to gate them); see RENCANA_GENERATE_RESPOND_TO_TABLE.md
-# for that larger, separately-scoped plan.
+# obstacles for Range/Symbol/Exception (bop_rows is not complete for
+# Range/Symbol -- their surface is desugared through Enumerable rather
+# than a row per name -- and Exception registers subclass-specific
+# accessors like `errno` with no "owning subclass" field to gate them);
+# tools/gen_respond_to_tables.rb's check_range_coverage/check_symbol_
+# coverage/check_exception_coverage self-checks instead re-verify, on
+# every build, that whatever slice of each surface bop_rows *does*
+# register stays covered by rngm[]/symm[]/excm[] -- this script remains
+# the only thing that also covers the Enumerable-desugared and
+# subclass-gated slices those self-checks structurally cannot reach.
 #
 # Exit status: 0 everyone agrees, 1 a mismatch, 4 the tool's own error.
 

@@ -1,6 +1,5 @@
-# A sample from each of the five classes this generates a respond_to?
-# table for (see docs/superpowers/specs/2026-10-12-generate-respond-to-
-# tables-design.md), forced boxed the same way
+# A sample from each of the five classes tools/gen_respond_to_tables.rb
+# generates a respond_to? table for, forced boxed the same way
 # test/respond_to_builtin_mutator_surface.rb does (respond_to? on a typed,
 # never-boxed receiver goes through a different mechanism entirely --
 # respond_to_static_answer in src/codegen_call.c -- not this one).

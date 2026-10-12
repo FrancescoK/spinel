@@ -350,8 +350,7 @@ SP_RT_NAME_SRC = $(wildcard lib/*.h lib/*.c packages/*/*.h packages/*/*.c)
 
 # sp_poly_responds_builtin's Array/Hash/String/Integer/Float reflection
 # tables, from src/builtin_ops.c's bop_rows (tools/gen_respond_to_tables.rb
-# has the full story; see docs/superpowers/specs/2026-10-12-generate-
-# respond-to-tables-design.md). cmp-guarded like sp_rt_names.h, so a
+# has the full story). cmp-guarded like sp_rt_names.h, so a
 # content-identical regeneration does not touch the .h's mtime and does
 # not force a PCH rebuild it doesn't need.
 lib/spinel_rt_responds_generated.h: src/builtin_ops.c tools/gen_respond_to_tables.rb tools/builtin_row_gen.rb lib/spinel_rt.h
