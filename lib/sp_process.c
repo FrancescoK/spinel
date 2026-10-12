@@ -694,18 +694,24 @@ sp_int sp_process_daemon(int nochdir, int noclose) {
   fflush(NULL);
   pid_t pid = fork();
   if (pid > 0) _exit(0);
-  int fd = -1;
-  if (pid == 0 && setsid() >= 0) {
-    if (!nochdir) (void)!chdir("/");
-    if (noclose) return 0;
-    fd = open("/dev/null", O_RDWR);
-    if (fd >= 0) {
-      (void)dup2(fd, 0);
-      (void)dup2(fd, 1);
-      (void)dup2(fd, 2);
-      if (fd > 2) close(fd);
-      return 0;
+  if (pid == 0) {
+    /* as CRuby's own daemon path goes: a setsid failure only means the
+       process already leads its group, the redirect is skipped when
+       /dev/null will not open, and a failed chdir raises after it */
+    (void)setsid();
+    int err = nochdir ? 0 : chdir("/");
+    int e = errno;
+    if (!noclose) {
+      int fd = open("/dev/null", O_RDWR);
+      if (fd >= 0) {
+        (void)dup2(fd, 0);
+        (void)dup2(fd, 1);
+        (void)dup2(fd, 2);
+        if (fd > 2) close(fd);
+      }
     }
+    if (err == 0) return 0;
+    errno = e;
   }
   /* CRuby's rb_sys_fail("daemon"): `Resource temporarily unavailable - daemon` */
   int e = errno;
