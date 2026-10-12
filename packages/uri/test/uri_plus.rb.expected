@@ -1,0 +1,5 @@
+"http://example.com/a/c"
+"http://example.com/d#f"
+"https://other.example/x"
+"http://example.com/a/b?z"
+URI::HTTPS
