@@ -5296,18 +5296,20 @@ static int emit_array_call_arms(Compiler *c, int id, Buf *b) {
     int mbody = nt_ref(nt, mblock, "body");
     int mbn = 0; const int *mbb = mbody >= 0 ? nt_arr(nt, mbody, "body", &mbn) : NULL;
     if (mbn >= 1) {
-      int trecv = ++g_tmp, ti = ++g_tmp, torig = ++g_tmp;
+      /* the loop runs on the Array itself (sp_poly_arr_live_recv): what the
+         block does to the receiver is what the next step reads, and stays */
+      int trecv = ++g_tmp, ti = ++g_tmp, torig = ++g_tmp, tl = ++g_tmp;
       Buf rb = expr_buf(c, recv);
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n",
                  torig, rb.p ? rb.p : "sp_box_nil()", torig);
       emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "sp_PolyArray *_t%d = sp_poly_arr_recv(_t%d, \"map!\"); SP_GC_ROOT(_t%d);\n",
-                 trecv, torig, trecv);
+      buf_printf(g_pre, "sp_RbVal _t%d = sp_poly_arr_live_recv(_t%d, \"map!\"); SP_GC_ROOT_RBVAL(_t%d);\n",
+                 tl, torig, tl);
       free(rb.p);
       emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "for (sp_int _t%d = 0; _t%d < _t%d->len; _t%d++) {\n", ti, ti, trecv, ti);
-      char es[64]; snprintf(es, sizeof es, "sp_PolyArray_get(_t%d, _t%d)", trecv, ti);
+      buf_printf(g_pre, "for (sp_int _t%d = 0; _t%d < sp_poly_arr_len(_t%d); _t%d++) {\n", ti, ti, tl, ti);
+      char es[64]; snprintf(es, sizeof es, "sp_poly_arr_get(_t%d, _t%d)", tl, ti);
       int splat = emit_iter_autosplat(c, mblock, TY_POLY_ARRAY, es, g_indent + 1);
       /* the element is boxed; a parameter the analysis typed (the receiver
          read back from a box it filled with typed values) takes it unboxed,
@@ -5324,11 +5326,13 @@ static int emit_array_call_arms(Compiler *c, int id, Buf *b) {
       int sv = g_indent; g_indent++;
       Buf vb; memset(&vb, 0, sizeof vb); emit_iter_step_tail(c, &st, &vb); g_indent = sv;
       emit_indent(g_pre, g_indent + 1);
-      buf_printf(g_pre, "sp_PolyArray_set(_t%d, _t%d, %s);\n", trecv, ti, vb.p ? vb.p : "sp_box_nil()");
+      buf_printf(g_pre, "sp_poly_arr_live_set(_t%d, _t%d, %s);\n", tl, ti, vb.p ? vb.p : "sp_box_nil()");
       free(vb.p);
       emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+      /* the value is the Array as the loop left it, as the poly array this
+         emitter answers: the receiver's own for a poly one, else its copy */
       emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "sp_poly_arr_writeback(_t%d, _t%d);\n", torig, trecv);
+      buf_printf(g_pre, "sp_PolyArray *_t%d = sp_poly_to_poly_array(_t%d); SP_GC_ROOT(_t%d);\n", trecv, tl, trecv);
       buf_printf(b, "_t%d", trecv);
       return 1;
     }
@@ -13386,7 +13390,14 @@ static TyKind emit_face_arm(Compiler *c, int id, unsigned kind, unsigned flags, 
   int sfo = g_face_oint_id, sfg = g_face_oint_got;
   int keep_o = (nat == TY_INT || nat == TY_FLOAT) && !node_is_oint(c, id);
   if (keep_o) { g_face_oint_id = id; g_face_oint_got = 0; }
+  /* a block mutator over a boxed Array may run on the box itself
+     (emit_array_filter_loop), and then has nothing to write back */
+  int slr = g_face_live_recv, slb = g_face_live_box, slu = g_face_live_used;
+  int live_ok = kind == PF_ARRAY && (flags & PF_MUT) && box && has_blk;
+  g_face_live_recv = live_ok ? recv : -1; g_face_live_box = live_ok ? box : 0; g_face_live_used = 0;
   emit_call(c, id, &cb);
+  int went_live = live_ok && g_face_live_used;
+  g_face_live_recv = slr; g_face_live_box = slb; g_face_live_used = slu;
   /* the typed emitter worked on the bytes of a String box, which the
      write-back below hands to the box's handle: the receiver's reads are
      no copy */
@@ -13431,7 +13442,8 @@ static TyKind emit_face_arm(Compiler *c, int id, unsigned kind, unsigned flags, 
     Buf wb; memset(&wb, 0, sizeof wb);
     int tr = ++g_tmp;
     int has_val = nat != TY_VOID && nat != TY_UNKNOWN;
-    if (kind == PF_ARRAY) buf_printf(&wb, "sp_poly_arr_writeback(_t%d, _t%d)", box, t);
+    if (kind == PF_ARRAY && went_live) buf_puts(&wb, "(void)0");
+    else if (kind == PF_ARRAY) buf_printf(&wb, "sp_poly_arr_writeback(_t%d, _t%d)", box, t);
     else if (kind == PF_HASH) buf_printf(&wb, "sp_poly_hash_writeback(_t%d, _t%d)", box, t);
     else {
       /* The new contents -- the value itself when the mutator answers self,

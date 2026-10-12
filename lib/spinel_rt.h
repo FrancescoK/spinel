@@ -6945,7 +6945,8 @@ static sp_int sp_PolyArray_length(sp_PolyArray *a) { if (!a) return 0; return a-
 static sp_int sp_poly_arr_len(sp_RbVal a) {
   if (a.tag != SP_TAG_OBJ) return 0;
   switch (a.cls_id) {
-    case SP_BUILTIN_INT_ARRAY: return ((sp_IntArray *)a.v.p)->len;
+    case SP_BUILTIN_INT_ARRAY:
+    case SP_BUILTIN_SYM_ARRAY: return ((sp_IntArray *)a.v.p)->len;
     case SP_BUILTIN_FLT_ARRAY: return ((sp_FloatArray *)a.v.p)->len;
     case SP_BUILTIN_STR_ARRAY: return ((sp_StrArray *)a.v.p)->len;
     case SP_BUILTIN_POLY_ARRAY: return ((sp_PolyArray *)a.v.p)->len;
@@ -7197,6 +7198,27 @@ SP_NORETURN SP_COLD static void sp_raise_writeback_kind(sp_RbVal v, const char *
   sp_raise_cls("TypeError", sp_sprintf("can't store %s in an Array of %s through a boxed receiver",
                                        sp_poly_class_name(v), into));
 }
+/* Can the typed Array behind a box of class cls hold v as an element? Raises
+   sp_raise_writeback_kind if not; nil is an element of an Integer or a Float
+   Array (a fill(v, 3) past the end pads with it, as the typed fill does), and
+   an Integer one of a Float Array. A pointer array checks its own kind as it
+   unboxes (sp_PtrArray_elem_unbox). */
+static void sp_poly_arr_fit_check(int cls, sp_RbVal v) {
+  switch (cls) {
+    case SP_BUILTIN_INT_ARRAY:
+      if (v.tag != SP_TAG_INT && v.tag != SP_TAG_NIL) sp_raise_writeback_kind(v, "Integer");
+      return;
+    case SP_BUILTIN_SYM_ARRAY:
+      if (v.tag != SP_TAG_SYM) sp_raise_writeback_kind(v, "Symbol");
+      return;
+    case SP_BUILTIN_FLT_ARRAY:
+      if (v.tag != SP_TAG_FLT && v.tag != SP_TAG_INT && v.tag != SP_TAG_NIL) sp_raise_writeback_kind(v, "Float");
+      return;
+    case SP_BUILTIN_STR_ARRAY:
+      if (v.tag != SP_TAG_STR && !sp_poly_is_strbuf(v)) sp_raise_writeback_kind(v, "String");
+      return;
+  }
+}
 /* A mutator's write-back through a boxed receiver: sp_poly_arr_recv
    normalizes a TYPED array to a poly COPY, so in-place rewrites never reached
    the original (#3234). Replace the original's contents with the mutated
@@ -7209,11 +7231,7 @@ static void sp_poly_arr_writeback(sp_RbVal orig, sp_PolyArray *work) {
   switch (orig.cls_id) {
     case SP_BUILTIN_INT_ARRAY: {
       sp_IntArray *a = (sp_IntArray *)orig.v.p;
-      /* nil goes back as a nil element: a fill(v, 3) past the end pads with
-         it, as the typed fill does */
-      for (sp_int i = 0; i < work->len; i++)
-        if (work->data[i].tag != SP_TAG_INT && work->data[i].tag != SP_TAG_NIL)
-          sp_raise_writeback_kind(work->data[i], "Integer");
+      for (sp_int i = 0; i < work->len; i++) sp_poly_arr_fit_check(orig.cls_id, work->data[i]);
       a->start = 0; a->len = 0;
       sp_IntArray_drop_nilbits(a);
       for (sp_int i = 0; i < work->len; i++) sp_IntArray_push_o(a, sp_poly_as_int_or_nil(work->data[i]));
@@ -7221,18 +7239,14 @@ static void sp_poly_arr_writeback(sp_RbVal orig, sp_PolyArray *work) {
     }
     case SP_BUILTIN_SYM_ARRAY: {
       sp_IntArray *a = (sp_IntArray *)orig.v.p;
-      for (sp_int i = 0; i < work->len; i++)
-        if (work->data[i].tag != SP_TAG_SYM) sp_raise_writeback_kind(work->data[i], "Symbol");
+      for (sp_int i = 0; i < work->len; i++) sp_poly_arr_fit_check(orig.cls_id, work->data[i]);
       a->start = 0; a->len = 0;
       for (sp_int i = 0; i < work->len; i++) sp_IntArray_push(a, work->data[i].v.i);
       return;
     }
     case SP_BUILTIN_FLT_ARRAY: {
       sp_FloatArray *a = (sp_FloatArray *)orig.v.p;
-      for (sp_int i = 0; i < work->len; i++)
-        if (work->data[i].tag != SP_TAG_FLT && work->data[i].tag != SP_TAG_INT &&
-            work->data[i].tag != SP_TAG_NIL)
-          sp_raise_writeback_kind(work->data[i], "Float");
+      for (sp_int i = 0; i < work->len; i++) sp_poly_arr_fit_check(orig.cls_id, work->data[i]);
       a->len = 0;
       sp_FloatArray_drop_nilbits(a);
       for (sp_int i = 0; i < work->len; i++) sp_FloatArray_push_o(a, sp_unbox_ofloat(work->data[i]));
@@ -7240,9 +7254,7 @@ static void sp_poly_arr_writeback(sp_RbVal orig, sp_PolyArray *work) {
     }
     case SP_BUILTIN_STR_ARRAY: {
       sp_StrArray *a = (sp_StrArray *)orig.v.p;
-      for (sp_int i = 0; i < work->len; i++)
-        if (work->data[i].tag != SP_TAG_STR && !sp_poly_is_strbuf(work->data[i]))
-          sp_raise_writeback_kind(work->data[i], "String");
+      for (sp_int i = 0; i < work->len; i++) sp_poly_arr_fit_check(orig.cls_id, work->data[i]);
       sp_gc_wb((void *)a);
       a->len = 0;
       for (sp_int i = 0; i < work->len; i++) sp_StrArray_push(a, sp_poly_to_s(work->data[i]));
@@ -7316,6 +7328,66 @@ static sp_PolyArray *sp_poly_array_recv(sp_RbVal v, const char *m, int mut) {
   }
   sp_raise_nomethod(sp_nomethod_msg(m, v));
   return NULL;  /* unreachable: sp_raise_nomethod does not return */
+}
+/* A block mutator (select! reject! keep_if delete_if map!) over a boxed
+   receiver runs on the Array itself, through the boxed accessors, as CRuby's
+   runs on the live array: what the block does to the receiver -- a push, an
+   element write, a pop -- is what the next step reads. Run on the poly copy
+   and written back, the block's changes were neither seen by the loop nor
+   kept after it (`args.reject! { args << f }` lost f). An Array of any kind
+   is its own receiver here, checked for frozenness first; anything else
+   coerces as sp_poly_arr_recv does, into a copy nothing writes back to,
+   which is what the write-back did for it too. */
+static sp_RbVal sp_poly_arr_live_recv(sp_RbVal v, const char *m) {
+  if (v.tag == SP_TAG_OBJ && sp_poly_is_array_kind(v.cls_id)) {
+    if (sp_poly_array_frozen(v)) sp_raise_frozen_array_at(v.v.p, v.cls_id);
+    return v;
+  }
+  return sp_box_poly_array(sp_poly_arr_recv(v, m));
+}
+static inline void sp_PolyArray_set(sp_PolyArray *a, sp_int i, sp_RbVal v);   /* fwd: defined below */
+/* One element such a loop stores, in the original's own representation and
+   under the write-back's checks: a typed Array cannot take an element of
+   another kind, and cannot be re-laid from here. The check is per store, so
+   a map! that raises it leaves the elements before it rewritten, where the
+   write-back left the whole Array as it was; either way CRuby, whose Array
+   holds anything, would have stored the value. */
+static void sp_poly_arr_live_set(sp_RbVal a, sp_int i, sp_RbVal v) {
+  if (a.tag != SP_TAG_OBJ) return;
+  sp_poly_arr_fit_check(a.cls_id, v);
+  switch (a.cls_id) {
+    case SP_BUILTIN_INT_ARRAY:
+      sp_IntArray_oset((sp_IntArray *)a.v.p, i, sp_poly_as_int_or_nil(v));
+      return;
+    case SP_BUILTIN_SYM_ARRAY:
+      sp_IntArray_set((sp_IntArray *)a.v.p, i, v.v.i);
+      return;
+    case SP_BUILTIN_FLT_ARRAY:
+      sp_FloatArray_oset((sp_FloatArray *)a.v.p, i, sp_unbox_ofloat(v));
+      return;
+    case SP_BUILTIN_STR_ARRAY:
+      sp_StrArray_set((sp_StrArray *)a.v.p, i, sp_poly_to_s(v));
+      return;
+    case SP_BUILTIN_PTR_ARRAY: {
+      sp_PtrArray *p = (sp_PtrArray *)a.v.p;
+      sp_PtrArray_set_grow(p, i, sp_PtrArray_elem_unbox(p, v));
+      return;
+    }
+    case SP_BUILTIN_POLY_ARRAY: sp_PolyArray_set((sp_PolyArray *)a.v.p, i, v); return;
+  }
+}
+/* ...and the length the filter cuts the original to at the end */
+static void sp_poly_arr_live_truncate(sp_RbVal a, sp_int n) {
+  if (a.tag != SP_TAG_OBJ || !a.v.p || n < 0 || n >= sp_poly_arr_len(a)) return;
+  if (sp_poly_array_frozen(a)) sp_raise_frozen_array_at(a.v.p, a.cls_id);
+  switch (a.cls_id) {
+    case SP_BUILTIN_INT_ARRAY:
+    case SP_BUILTIN_SYM_ARRAY:  ((sp_IntArray *)a.v.p)->len = n; return;
+    case SP_BUILTIN_FLT_ARRAY:  ((sp_FloatArray *)a.v.p)->len = n; return;
+    case SP_BUILTIN_STR_ARRAY:  ((sp_StrArray *)a.v.p)->len = n; return;
+    case SP_BUILTIN_POLY_ARRAY: ((sp_PolyArray *)a.v.p)->len = n; return;
+    case SP_BUILTIN_PTR_ARRAY:  ((sp_PtrArray *)a.v.p)->len = n; return;
+  }
 }
 /* The receiver of an Enumerable method reached through a boxed value: its
    elements (a hash's pairs, a range's members) as a poly array, and for a

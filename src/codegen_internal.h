@@ -522,6 +522,11 @@ extern int g_yield_blk_brk_efallback;
 extern int g_proc_body_kind;
 extern const char *g_proc_brk_home;
 extern int g_brk_skip_id;
+/* A block mutator reached through a boxed Array (emit_face_arm): the
+   receiver node, the temp holding the box, and whether the emitter ran the
+   loop on the box itself (emit_array_filter_loop), so nothing is written
+   back from the poly copy. */
+extern int g_face_live_recv, g_face_live_box, g_face_live_used;
 extern const char *g_hoist_len_var;
 extern const char *g_hoist_len_recv;
 /* When set, tail positions assign to this var instead of `return`ing
