@@ -1,0 +1,25 @@
+[:@x, :@z]
+true
+false
+true
+true
+false
+"#<Pt:X @x=1, @z=\"zz\">"
+"zz"
+[:@x, :@z]
+"zz"
+[:@x, :@z]
+true
+true
+false
+false
+true
+false
+false
+false
+false
+"zz"
+[:@x]
+false
+instance variable @z not defined
+'x' is not allowed as an instance variable name

@@ -5465,8 +5465,8 @@ static int infer_user_method_call(Compiler *c, int id, const NodeTable *nt, cons
      answered per class, a bare Object from its own table */
   if (recv >= 0 && (rt == TY_POLY || (rt == TY_EXCEPTION && !exc_class_defines(c, name))) &&
       sp_streq(name, "instance_variable_defined?") && argc == 1) {
-    const char *a0ty = nt_type(nt, argv[0]);
-    if (a0ty && (sp_streq(a0ty, "SymbolNode") || sp_streq(a0ty, "StringNode"))) { *out = TY_BOOL; return 1; }
+    /* a literal name, or a computed one (#8219) */
+    { *out = TY_BOOL; return 1; }
   }
   if (recv >= 0 && (rt == TY_POLY || (rt == TY_EXCEPTION && !exc_class_defines(c, name))) &&
       sp_streq(name, "instance_variables") && argc == 0 &&

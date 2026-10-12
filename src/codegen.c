@@ -11526,6 +11526,13 @@ static void emit_obj_inspect_dispatch(Compiler *c, Buf *b) {
        ivars has no such walk: it appends one byte, which reallocs off the GC
        heap and cannot collect, so its arm is left as it was. */
     if (ci->nivars > 0) buf_puts(b, "      SP_GC_ROOT(_s);\n");
+    /* the names a computed instance_variable_set put in the object's table
+       follow the declared ones (#8219): the builder's length now tells
+       whether one was shown before them */
+    if (ci->computed_ivar_set) {
+      if (ci->nivars == 0) buf_puts(b, "      SP_GC_ROOT(o); SP_GC_ROOT(_s);\n");
+      buf_puts(b, "      int64_t _hl = _s->len;\n");
+    }
     /* an ivar nothing has set yet is not shown (ivar_set_kind): with one
        such, the separator ahead of each shown ivar is decided at run time */
     int any1 = 0;
@@ -11594,6 +11601,7 @@ static void emit_obj_inspect_dispatch(Compiler *c, Buf *b) {
     }
     free(ord);
     if (ranked) { buf_puts(b, "      "); emit_ivar_order_close(b); buf_puts(b, "\n"); }
+    if (ci->computed_ivar_set) buf_puts(b, "      sp_bivar_inspect_into(_s, (const void *)o, _s->len > _hl);\n");
     buf_puts(b, "      sp_String_append(_s, \">\");\n");
     if (ci->nivars > 0) buf_puts(b, "      sp_poly_recur_pop(_rcm);\n");
     buf_puts(b, "      return _s->data;\n    }\n");

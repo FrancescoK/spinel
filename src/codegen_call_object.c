@@ -1413,6 +1413,10 @@ int emit_call_freeze_dup_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
            static type -- said it did not (#4043). #dup drops them, so the copy
            is an instance of the class Ruby sees. */
         if (dup_desingleton) buf_printf(b, "_t%d->cls_id = %d; ", td, cid);
+        /* the names a computed instance_variable_set put in the original's
+           table come along, as its declared ivars do (#8219) */
+        if (dci->computed_ivar_set || c->classes[ty_object_class(drt)].computed_ivar_set)
+          buf_printf(b, "sp_bivar_copy_obj((const void *)_t%d, (const void *)_t%d); ", to, td);
         /* Invoke the hook when its param was typed by the seeding pass to any
            object class -- it unifies to a common ancestor when both a parent and
            a subclass are dup'd, so accept ty_is_object, casting the original to
@@ -2757,6 +2761,13 @@ int emit_call_display_ivar_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
       buf_printf(b, "; (sp_bool)%s; })", ivar_set_test(c, dcid, ivn, ex, tb, sizeof tb));
       return 1;
     }
+    /* a name the class does not declare: in the object's table, where a
+       computed instance_variable_set may have put it (#8219) */
+    if (!have && ivn && ivn[0] == '@' && c->classes[dcid].computed_ivar_set && !comp_ty_value_obj(c, rt)) {
+      buf_printf(b, "sp_bivar_defined_p((const void *)("); emit_expr(c, recv, b);
+      buf_printf(b, "), sp_sym_intern(\"%s\"))", ivn);
+      return 1;
+    }
     buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_printf(b, "), %d)", have);
     return 1;
   }
@@ -2789,6 +2800,9 @@ void emit_ivar_list_fill(Compiler *c, int k, const char *obj, const char *arr, i
   }
   free(ord);
   if (ranked) emit_ivar_order_close(b);
+  /* and the names a computed instance_variable_set put in its table (#8219) */
+  if (ivc->computed_ivar_set && !ivc->is_value_type)
+    buf_printf(b, " sp_bivar_names_into(%s, (const void *)%s);", arr, obj);
 }
 
 /* A receiver typed as class cid may be an instance of a class below it, which
@@ -2830,7 +2844,10 @@ int emit_object_ivar_list(Compiler *c, int recv, int ivcid, Buf *b) {
     any1 |= kind & 1;
     tracked |= kind == 3;
   }
-  int tro = any1 ? ++g_tmp : -1;
+  /* a computed instance_variable_set can reach the class: the names in the
+     object's table follow its declared ones (#8219) */
+  int tbl = ivc->computed_ivar_set && !ivc->is_value_type;
+  int tro = any1 || tbl ? ++g_tmp : -1;
   /* A class below lists in an order of its own: the object's class decides */
   if (ivar_list_mixed(c, recv, ivcid)) {
     tro = ++g_tmp;
@@ -2839,7 +2856,7 @@ int emit_object_ivar_list(Compiler *c, int recv, int ivcid, Buf *b) {
     int reads = 0;
     for (int d = 0; d < c->nclasses; d++) {
       if (d != ivcid && (!is_descendant(c, d, ivcid) || !c->classes[d].instantiated)) continue;
-      reads |= ivar_ranked(c, d);
+      reads |= ivar_ranked(c, d) | c->classes[d].computed_ivar_set;
       for (int j = 0; j < c->classes[d].nivars; j++) reads |= ivar_set_kind(c, d, c->classes[d].ivars[j]) & 1;
     }
     buf_printf(b, "({ sp_%s *_t%d = ", ivc->c_name, tro); emit_expr(c, recv, b);
@@ -2865,9 +2882,9 @@ int emit_object_ivar_list(Compiler *c, int recv, int ivcid, Buf *b) {
     buf_printf(b, "; sp_%s *_t%d = &_t%dv;", ivc->c_name, tro, tro);
     tracked = 0;
   }
-  else if (any1) { buf_printf(b, "({ sp_%s *_t%d = ", ivc->c_name, tro); emit_expr(c, recv, b); buf_puts(b, ";"); }
+  else if (any1 || tbl) { buf_printf(b, "({ sp_%s *_t%d = ", ivc->c_name, tro); emit_expr(c, recv, b); buf_puts(b, ";"); }
   else { buf_printf(b, "({ (void)("); emit_expr(c, recv, b); buf_puts(b, ");"); }
-  if (tracked) buf_printf(b, " SP_GC_ROOT(_t%d);", tro);
+  if (tracked || tbl) buf_printf(b, " SP_GC_ROOT(_t%d);", tro);
   buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ", tia, tia);
   /* a ranked class lists them in the order they were first assigned */
   int ranked = ivar_ranked(c, ivcid);
@@ -2889,6 +2906,7 @@ int emit_object_ivar_list(Compiler *c, int recv, int ivcid, Buf *b) {
   }
   free(ord);
   if (ranked) { emit_ivar_order_close(b); buf_puts(b, " "); }
+  if (tbl) buf_printf(b, "sp_bivar_names_into(_t%d, (const void *)_t%d); ", tia, tro);
   buf_printf(b, "_t%d; })", tia);
   return 1;
 }
@@ -3272,6 +3290,12 @@ int emit_object_ivar_call(Compiler *c, int id, const char *name, int recv, TyKin
       nt_kind(nt, argv[0]) != NK_SymbolNode && nt_kind(nt, argv[0]) != NK_StringNode &&
       comp_method_in_chain(c, cid, name, NULL) < 0)
     return emit_object_ivar_get_computed(c, id, NULL, recv, cid, argv[0], b);
+  /* a computed name's instance_variable_defined?: by name over the class's
+     ivars and the object's table (#8219) */
+  if (sp_streq(name, "instance_variable_defined?") && argc == 1 && recv >= 0 && nt_ref(nt, id, "block") < 0 &&
+      nt_kind(nt, argv[0]) != NK_SymbolNode && nt_kind(nt, argv[0]) != NK_StringNode &&
+      comp_method_in_chain(c, cid, name, NULL) < 0 && repr_of(c, recv).kind != RK_VOBJ)
+    return emit_object_ivar_defined_computed(c, recv, cid, argv[0], b);
   /* a computed name: the store by name over the class's ivars, a name the
      class does not declare into the object-keyed table (#8219) */
   if (sp_streq(name, "instance_variable_set") && argc == 2 && recv >= 0 && nt_ref(nt, id, "block") < 0 &&

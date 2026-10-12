@@ -11443,6 +11443,17 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
       /* the rest through the layout slot (an Integer or Float field with a
          nil byte answers its nil) */
       else if (mi >= 0) emit_object_ivar_remove(c, id, recv, rt, cid, sym, b);
+      /* a name in the object's table, where a computed instance_variable_set
+         may have put it (#8219) */
+      else if (recv >= 0 && sym && sym[0] == '@' && c->classes[cid].computed_ivar_set && !comp_ty_value_obj(c, rt)) {
+        Repr rp = repr_of(c, id);
+        Buf rv; memset(&rv, 0, sizeof rv);
+        buf_puts(&rv, "sp_bivar_remove_obj((const void *)("); emit_expr(c, recv, &rv);
+        buf_printf(&rv, "), sp_sym_intern(\"%s\"))", sym);
+        if (rp.kind != RK_BOXED && rp.kind != RK_NONE) emit_unbox_text(c, rp.as_ty, rv.p, b);
+        else buf_puts(b, rv.p);
+        free(rv.p);
+      }
       else {
         if (recv >= 0) { buf_puts(b, "(("); emit_expr(c, recv, b); buf_puts(b, "), "); }
         else buf_puts(b, "(");
@@ -15226,6 +15237,51 @@ void emit_ivar_get_by_name(Compiler *c, int k, const char *objp, const char *syv
   buf_puts(b, "}");
 }
 
+/* instance_variable_defined? with the name in sp_sym `syv` on an instance
+   of class k at `objp` (a pointer's text with its `->`), into the sp_bool
+   `out`: a declared ivar by the presence the literal form reads (an ivar
+   nothing tracks is defined), a name the class does not declare by the
+   object's table where a computed instance_variable_set may have put it
+   (`obj` the pointer, #8219), else not defined. A Struct member is no ivar
+   (#2849). */
+void emit_ivar_defined_by_name(Compiler *c, int k, const char *objp, const char *obj, const char *syv,
+                               const char *out, Buf *b) {
+  ClassInfo *ci = &c->classes[k];
+  int any = 0;
+  buf_printf(b, "{ const char *_n = sp_sym_to_s(%s); (void)_n; ", syv);
+  for (int iv = ci->is_struct ? ci->nmembers : 0; iv < ci->nivars; iv++) {
+    const char *sym = ci->ivars[iv];
+    if (!sym || sym[0] != '@') continue;
+    buf_printf(b, "%sif (strcmp(_n, \"%s\") == 0) %s = ", any ? "else " : "", sym, out);
+    if ((ivar_set_kind(c, k, sym) & 1) || poly_ivar_unset_marked(c, k, iv)) {
+      char ex[400], tb[600];
+      snprintf(ex, sizeof ex, "%siv_%s", objp, iv_c(sym + 1));
+      const char *set = ivar_set_test(c, k, sym, ex, tb, sizeof tb);
+      buf_printf(b, "(sp_bool)(%s); ", set ? set : "1");
+    }
+    else buf_puts(b, "1; ");
+    any = 1;
+  }
+  if (ci->computed_ivar_set) buf_printf(b, "%s%s = sp_bivar_defined_p((const void *)%s, %s); ", any ? "else " : "", out, obj, syv);
+  buf_puts(b, "}");
+}
+
+/* `o.instance_variable_defined?(name)` with a computed name on a receiver
+   of the known class cid (a pointer object) */
+int emit_object_ivar_defined_computed(Compiler *c, int recv, int cid, int arg, Buf *b) {
+  int tv = ++g_tmp;
+  char obj[24], objp[32], syv[24], out[24];
+  snprintf(obj, sizeof obj, "_t%d", tv); snprintf(objp, sizeof objp, "_t%d->", tv);
+  snprintf(syv, sizeof syv, "_sy%d", tv); snprintf(out, sizeof out, "_ivd%d", tv);
+  buf_printf(b, "({ sp_%s *%s = ", c->classes[cid].c_name, obj); emit_expr(c, recv, b);
+  buf_printf(b, "; SP_GC_ROOT(%s); sp_sym %s = ", obj, syv); emit_ivar_name_sym(c, arg, b); buf_puts(b, "; ");
+  emit_ivar_name_check(syv, b);
+  buf_printf(b, "sp_bool %s = FALSE; ", out);
+  emit_ivar_defined_by_name(c, cid, objp, obj, syv, out, b);
+  buf_printf(b, " %s; })", out);
+  return 1;
+}
+
 /* the same for main's ivars, which live in the top-level statics; a name
    a computed write may have put in main's table (`objv` its sp_RbVal) */
 static void emit_toplevel_ivar_get_by_name(Compiler *c, const char *syv, const char *out, const char *objv, Buf *b) {
@@ -15748,7 +15804,12 @@ static int emit_poly_ivar_call(Compiler *c, int id, Buf *b, const NodeTable *nt,
       for (int k = 0; k < c->nclasses; k++) {
         if (!c->classes[k].instantiated) continue;
         int iv = comp_ivar_index(&c->classes[k], sym);
-        if (iv < 0 || (c->classes[k].is_struct && iv < c->classes[k].nmembers)) continue;
+        if (iv < 0 || (c->classes[k].is_struct && iv < c->classes[k].nmembers)) {
+          /* a computed instance_variable_set's table (#8219) */
+          if (c->classes[k].computed_ivar_set)
+            buf_printf(b, " case %d: _ivd%d = sp_bivar_defined_p(_t%d.v.p, sp_sym_intern(\"%s\")); break;", k, tv, tv, sym);
+          continue;
+        }
         if (nt_int(nt, id, "builtin_only", 0) && ivar_set_kind(c, k, sym) == 2)
           unsupported(c, id, "defined? of an instance variable with untracked presence on a boxed receiver");
         char ex[200], tb[300];
@@ -15768,6 +15829,37 @@ static int emit_poly_ivar_call(Compiler *c, int id, Buf *b, const NodeTable *nt,
       buf_printf(b, "_ivd%d; })", tv);
       { *out = 1; return 1; }
     }
+  }
+  /* instance_variable_defined? with a computed name on a POLY receiver
+     (#8219): each class by name, a bare Object and a builtin value by their
+     tables */
+  if (recv >= 0 && (rt == TY_POLY || rt == TY_EXCEPTION) && sp_streq(name, "instance_variable_defined?") && argc == 1 &&
+      nt_ref(nt, id, "block") < 0 && nt_kind(nt, argv[0]) != NK_SymbolNode && nt_kind(nt, argv[0]) != NK_StringNode &&
+      !poly_class_defines(c, name)) {
+    int tv = ++g_tmp;
+    char syv[24], dv[24];
+    buf_puts(b, "({ "); tv = hold_operand(c, recv, TY_POLY, rt == TY_EXCEPTION, tv, 1, " ", b);
+    snprintf(syv, sizeof syv, "_sy%d", tv); snprintf(dv, sizeof dv, "_ivd%d", tv);
+    buf_printf(b, "sp_sym %s = ", syv); emit_ivar_name_sym(c, argv[0], b); buf_puts(b, "; ");
+    emit_ivar_name_check(syv, b);
+    buf_printf(b, "sp_bool %s = FALSE; if (_t%d.tag == SP_TAG_OBJ) switch (", dv, tv);
+    emit_ivar_switch_key(c, tv, b);
+    buf_puts(b, ") {");
+    for (int k = 0; k < c->nclasses; k++) {
+      if (!c->classes[k].instantiated || comp_ty_value_obj(c, ty_object(k))) continue;
+      char obj[96], objp[100];
+      snprintf(obj, sizeof obj, "((sp_%s *)_t%d.v.p)", c->classes[k].c_name, tv);
+      snprintf(objp, sizeof objp, "%s->", obj);
+      buf_printf(b, " case %d: ", k);
+      emit_ivar_defined_by_name(c, k, objp, obj, syv, dv, b);
+      buf_puts(b, " break;");
+    }
+    buf_printf(b, " case SP_BUILTIN_OBJECT: %s = sp_Object_ivar_defined((sp_Object *)_t%d.v.p, %s); break;", dv, tv, syv);
+    char bst[160];
+    snprintf(bst, sizeof bst, "%s = sp_bivar_defined(_t%d, %s)", dv, tv, syv);
+    emit_bivar_arm(c, tv, bst, b);
+    buf_printf(b, " } else if (_t%d.tag == SP_TAG_CLASS) %s; %s; })", tv, bst, dv);
+    *out = 1; return 1;
   }
   if (recv >= 0 && (rt == TY_POLY || rt == TY_EXCEPTION) && sp_streq(name, "instance_variables") && argc == 0 &&
       nt_ref(nt, id, "block") < 0) {

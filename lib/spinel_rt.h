@@ -12107,6 +12107,30 @@ static const char *sp_bivar_tbl_inspect(void *tp) {
   }
   return sp_str_concat(sp_String_cstr(s), (&("\xff")[1]));
 }
+/* A program object's names a computed instance_variable_set put in its
+   table (#8219), after its declared ivars: into instance_variables' Array,
+   and into its default inspect (sep: an ivar was shown before them) */
+static sp_bool sp_bivar_defined_p(const void *obj, sp_sym k) {
+  sp_SymPolyHash *t = obj ? (sp_SymPolyHash *)sp_ivtbl_get(obj) : NULL;
+  return t && sp_SymPolyHash_has_key(t, k);
+}
+static void sp_bivar_names_into(sp_PolyArray *a, const void *obj) {
+  sp_SymPolyHash *t = obj ? (sp_SymPolyHash *)sp_ivtbl_get(obj) : NULL;
+  if (!t) return;
+  SP_GC_ROOT(a); SP_GC_ROOT(t);
+  for (sp_int i = 0; i < t->len; i++) sp_PolyArray_push(a, sp_box_sym(t->order[i]));
+}
+static void sp_bivar_inspect_into(sp_String *s, const void *obj, int sep) {
+  sp_SymPolyHash *t = obj ? (sp_SymPolyHash *)sp_ivtbl_get(obj) : NULL;
+  if (!t) return;
+  SP_GC_ROOT(s); SP_GC_ROOT(t);
+  for (sp_int i = 0; i < t->len; i++) {
+    sp_String_append(s, sep || i ? ", " : " ");
+    sp_String_append(s, sp_sym_to_s(t->order[i]));
+    sp_String_append(s, "=");
+    sp_String_append(s, sp_poly_inspect(sp_SymPolyHash_get(t, t->order[i])));
+  }
+}
 static sp_RbVal sp_bivar_set(sp_RbVal o, sp_sym k, sp_RbVal v) {
   if (sp_poly_frozen(o) && o.tag != SP_TAG_CLASS) {
     /* rooted: the receiver's inspect allocates before the message is built */
@@ -12140,6 +12164,26 @@ static void sp_bivar_copy(sp_RbVal from, sp_RbVal to) {
   sp_SymPolyHash *d = sp_SymPolyHash_new(); SP_GC_ROOT(d);
   for (sp_int i = 0; i < t->len; i++) sp_SymPolyHash_set(d, t->order[i], sp_SymPolyHash_get(t, t->order[i]));
   sp_ivtbl_put(to.v.p, d);
+}
+/* the same for a program object's dup / clone, by its pointer (#8219) */
+SP_UNUSED static void sp_bivar_copy_obj(const void *from, const void *to) {
+  sp_SymPolyHash *t = from ? (sp_SymPolyHash *)sp_ivtbl_get(from) : NULL;
+  if (!t || !to || from == to) return;
+  SP_GC_ROOT(t);
+  sp_SymPolyHash *d = sp_SymPolyHash_new(); SP_GC_ROOT(d);
+  for (sp_int i = 0; i < t->len; i++) sp_SymPolyHash_set(d, t->order[i], sp_SymPolyHash_get(t, t->order[i]));
+  sp_ivtbl_put(to, d);
+}
+/* remove_instance_variable of a name in a program object's table (#8219):
+   its value, or CRuby's NameError when the table holds no such name */
+SP_UNUSED static sp_RbVal sp_bivar_remove_obj(const void *obj, sp_sym k) {
+  sp_SymPolyHash *t = obj ? (sp_SymPolyHash *)sp_ivtbl_get(obj) : NULL;
+  if (!t || !sp_SymPolyHash_has_key(t, k))
+    sp_raise_cls("NameError", sp_sprintf("instance variable %s not defined", sp_sym_to_s(k)));
+  sp_RbVal v = sp_SymPolyHash_get(t, k);
+  SP_GC_ROOT_RBVAL(v);
+  sp_SymPolyHash_delete(t, k);
+  return v;
 }
 /* Exception#exception(msg)'s copy (sp_exc_exception), through
    sp_exc_bivar_copy_fn once the program can write a builtin value's ivar */
