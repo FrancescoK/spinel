@@ -2093,6 +2093,18 @@ int emit_call_safe_nav_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
         g_pre = sv_pre2;
         if (!preb2.p || !preb2.p[0])
           buf_printf(b, "(%s ? %s : (%s))", nilt, nilv, vbs.p ? vbs.p : "");
+        else if (!ty_is_object(ret2) && !oint_kind(ret2) && !c_type_name(ret2)) {
+          /* a method answering nothing has no C value to hold: the guarded
+             call runs as a statement and the `&.` answers its nil arm */
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "if (!(%s)) {\n", nilt);
+          buf_puts(g_pre, preb2.p);
+          emit_indent(g_pre, g_indent);
+          buf_printf(g_pre, "  (void)(%s);\n", vbs.p ? vbs.p : "");
+          emit_indent(g_pre, g_indent);
+          buf_puts(g_pre, "}\n");
+          buf_puts(b, nilv);
+        }
         else {
           int rsv = ++g_tmp;
           emit_indent(g_pre, g_indent);
