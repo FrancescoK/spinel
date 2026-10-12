@@ -147,6 +147,24 @@ static void emit_io_read_buffer(Compiler *c, const char *name, const char *fn, c
   else buf_printf(b, "_t%d; })", tr);
 }
 
+/* Can IO#reopen's argument be an IO without being one statically? A boxed
+   value, or a program object whose #to_io the runtime dispatches
+   (class_to_io_dispatched). */
+static int reopen_arg_may_be_io(Compiler *c, int arg) {
+  if (yield_site_type(c, arg) == TY_POLY) return 1;
+  TyKind t = comp_ntype(c, arg);
+  int cid = ty_is_object(t) ? ty_object_class(t) : -1;
+  return cid >= 0 && !c->classes[cid].is_native_class && class_to_io_dispatched(c, cid);
+}
+
+/* reopen(other) on the handle text r: the IO other is or answers, else
+   other as a path. With a mode CRuby reads the argument as a path only, so
+   that form stays with the path arm. */
+static void emit_io_reopen_poly(Compiler *c, const char *r, int arg, Buf *b) {
+  buf_printf(b, "sp_File_reopen_poly(%s, ", r); emit_boxed(c, arg, b); buf_puts(b, ")");
+}
+
+
 /* `io.read(len)` on the receiver text r. read(nil) is read with no length:
    the rest of the stream. A length that may be nil -- boxed, or an
    Integer-or-nil (`def read(len = nil)` handing its parameter on) -- picks
@@ -645,6 +663,9 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
           an Array built around it, and the to_io an event loop calls on
           whatever it waited on (WEBrick's accept loop) */
        (sp_streq(name, "to_io") && argc == 0) ||
+       /* and reopen, on $stdout once a StringIO was put there too: the
+          IO's own arm, after its argument is boxed (sp_File_reopen_poly) */
+       (argc == 1 && sp_streq(name, "reopen") && !call_has_splat_arg(nt, argv, argc)) ||
        (sp_feature_required("socket") &&
         ((sp_streq(name, "accept") && argc == 0) || boxed_accept_nb_ok(nt, name, argc, argv))) ||
        /* and its shutdown, which WEBrick calls on each listener it kept in
@@ -950,6 +971,7 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
       else if (is_socket_address(name))
         buf_printf(b, "sp_sock_addr(_t%d, %d); })", tio2, sp_streq(name, "peeraddr") ? 1 : 0);
       else if (sp_streq(name, "to_io")) buf_printf(b, "_t%d; })", tio2);
+      else if (sp_streq(name, "reopen")) { emit_io_reopen_poly(c, tio, argv[0], b); buf_puts(b, "; })"); }
       else if (sp_streq(name, "accept")) buf_printf(b, "sp_sock_accept(_t%d); })", tio2);
       else if (sp_streq(name, "shutdown")) {
         buf_printf(b, "sp_sock_shutdown(_t%d, ", tio2);
@@ -1625,6 +1647,10 @@ int emit_call_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const ch
       emit_to_s_expr(c, argv[0], b); buf_puts(b, ", ");
       if (argc >= 2) emit_int_expr_offt(c, argv[1], b); else buf_puts(b, "0");
       buf_puts(b, ")"); free(rb.p); return 1;
+    }
+    if (sp_streq(name, "reopen") && argc == 1 && reopen_arg_may_be_io(c, argv[0])) {
+      /* an object answering #to_io, or a box that may hold an IO */
+      emit_io_reopen_poly(c, r, argv[0], b); free(rb.p); return 1;
     }
     if (sp_streq(name, "reopen") && argc >= 1) {
       buf_printf(b, "sp_File_reopen(%s, ", r); emit_path_expr(c, argv[0], b); buf_puts(b, ", ");

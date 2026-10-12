@@ -3397,6 +3397,19 @@ static SP_INLINE const char *sp_poly_arg_path(sp_RbVal v) {
   if (v.tag == SP_TAG_STR) return v.v.s;
   return sp_poly_arg_path_slow(v);
 }
+/* IO#reopen(other) with a boxed or user-object argument. CRuby asks anything
+   but a String for #to_io first (rb_io_check_io) and reopens onto that IO's
+   descriptor; only an argument with no IO in it is a path, through #to_path
+   or #to_str. (With a mode the argument is a path only: not this form.) */
+static SP_NOINLINE sp_File *sp_File_reopen_poly(sp_File *f, sp_RbVal v) {
+  SP_GC_ROOT(f); SP_GC_ROOT_RBVAL(v);
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_IO && v.v.p) return sp_File_reopen_io(f, (sp_File *)v.v.p);
+  if (v.tag == SP_TAG_OBJ && v.cls_id >= 0 && v.v.p && sp_user_to_io_hook) {
+    sp_File *o = sp_user_to_io_hook(v);
+    if (o) return sp_File_reopen_io(f, o);
+  }
+  return sp_File_reopen(f, sp_poly_arg_path(v), NULL);
+}
 /* Complex#to_int: the real part, when the imaginary part is an exact zero
    (an Integer 0; a Float 0.0 is not exact), truncated as Float#to_i does;
    RangeError otherwise, naming the value as CRuby does. */

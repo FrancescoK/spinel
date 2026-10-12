@@ -3164,6 +3164,10 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
         { *out = an_poly_concrete(c, name, an_nonblock_no_exception(c, id) ? TY_POLY : TY_IO); return 1; }
       if (sp_streq(name, "to_io") && argc == 0)
         { *out = an_poly_concrete(c, name, TY_IO); return 1; }
+      /* reopen on a stream that may be another object ($stdout once a
+         StringIO was put there), answering the stream, as the TY_IO arm does */
+      if (sp_streq(name, "reopen") && argc == 1 && nt_kind(nt, argv[0]) != NK_SplatNode)
+        { *out = an_poly_concrete(c, name, TY_IO); return 1; }
       /* and its reverse-lookup flag, as the TY_IO arm types it */
       if (sp_streq(name, "do_not_reverse_lookup") && argc == 0 && sp_feature_required("socket"))
         { *out = an_poly_concrete(c, name, TY_BOOL); return 1; }

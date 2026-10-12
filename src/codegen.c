@@ -13804,18 +13804,28 @@ static void emit_user_op_dispatch(Compiler *c, Buf *b, const char *fname, const 
    IO path's existing box machinery is what handles "answer is an IO"
    already (sp_poly_to_file / tag SP_TAG_FILE). The TY_IO arm stays
    the direct cast: that function still returns sp_File * directly. */
+/* Does class k's #to_io take an arm of sp_user_to_io_dispatch? Then the
+   runtime finds the IO an instance answers (sp_user_to_io_hook). */
+int class_to_io_dispatched(Compiler *c, int k) {
+  if (k < 0 || k >= c->nclasses || !c->classes[k].instantiated) return 0;
+  int defcls = -1;
+  int mi = comp_method_in_chain(c, k, "to_io", &defcls);
+  if (mi < 0 || defcls < 0) return 0;
+  Scope *m = &c->scopes[mi];
+  if (!m->reachable || m->yields || m->nparams != 0) return 0;
+  if (m->ret != TY_IO && m->ret != TY_UNKNOWN && m->ret != TY_POLY) return 0;
+  if (scope_is_shadowed(c, mi) || m->is_transplanted_source) return 0;
+  return 1;
+}
+
 static void emit_user_to_io_dispatch(Compiler *c, Buf *b) {
   buf_puts(b, "static sp_File *sp_user_to_io_dispatch(sp_RbVal v) {\n");
   buf_puts(b, "  switch (v.cls_id) {\n");
   for (int k = 0; k < c->nclasses; k++) {
-    if (!c->classes[k].instantiated) continue;
+    if (!class_to_io_dispatched(c, k)) continue;
     int defcls = -1;
     int mi = comp_method_in_chain(c, k, "to_io", &defcls);
-    if (mi < 0 || defcls < 0) continue;
     Scope *m = &c->scopes[mi];
-    if (!m->reachable || m->yields || m->nparams != 0) continue;
-    if (m->ret != TY_IO && m->ret != TY_UNKNOWN && m->ret != TY_POLY) continue;
-    if (scope_is_shadowed(c, mi) || m->is_transplanted_source) continue;
     const char *dcn = c->classes[defcls].c_name;
     /* Non-yielding &block: the prototype includes a sp_Proc * parameter
        (see emit_method_signature), so the dispatch must pass NULL for it. */

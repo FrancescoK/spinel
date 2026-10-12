@@ -1,0 +1,8 @@
+false
+false
+back on stdout
+"into the file\n"
+"into the file\nvia the box\nvia a boxed File\n"
+"reopened\n"
+"into the StringIO\n"
+TypeError
