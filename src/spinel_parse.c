@@ -5405,7 +5405,9 @@ else {
 
 /* RDoc's directives are spelled `:name:` and none of them is a valid RBS
  * annotation, so `#:nodoc:` and its kind are documentation, not types
- * (RDoc 7.0: rdoc/markup/pre_process.rb, rdoc/parser/ruby.rb). */
+ * (RDoc 7.0: rdoc/markup/pre_process.rb, rdoc/parser/ruby.rb). One written
+ * without its closing colon (`def x=(v) #:nodoc`) is documentation too: as a
+ * type it could only name a type alias, which inline annotations never pin. */
 static int ir_rdoc_directive(const char *s, size_t n) {
     static const char *names[] = {
         "arg", "args", "attr", "attr_accessor", "attr_reader", "attr_writer",
@@ -5416,7 +5418,7 @@ static int ir_rdoc_directive(const char *s, size_t n) {
     /* s points just past "#:" */
     size_t i = 0;
     while (i < n && (s[i] == '-' || s[i] == '_' || (s[i] >= 'a' && s[i] <= 'z'))) i++;
-    if (i == 0 || i >= n || s[i] != ':') return 0;
+    if (i == 0 || (i < n && s[i] != ':' && s[i] != ' ' && s[i] != '\t')) return 0;
     for (int k = 0; names[k]; k++)
         if (strlen(names[k]) == i && memcmp(names[k], s, i) == 0) return 1;
     return 0;
