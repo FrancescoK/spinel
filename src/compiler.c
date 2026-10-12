@@ -1813,6 +1813,14 @@ int comp_native_find(Compiler *c, const char *mod, const char *name) {
   return -1;
 }
 
+/* Is scope mi the def a native_func gets so a module value can reach it
+   (desugar_native_func_defs)? A call on the module's constant that reaches
+   it calls the C symbol instead. */
+int comp_scope_native_twin(Compiler *c, int mi) {
+  return mi >= 0 && mi < c->nscopes && c->scopes[mi].def_node >= 0 &&
+         nt_int(c->nt, c->scopes[mi].def_node, "native_twin", 0);
+}
+
 TyKind native_spec_to_ty(const char *spec) {
   if (!spec) return TY_UNKNOWN;
   if (sp_streq(spec, "any"))    return TY_POLY;
