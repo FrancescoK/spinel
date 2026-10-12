@@ -15643,8 +15643,15 @@ static int emit_poly_numeric_call(Compiler *c, int id, Buf *b, const NodeTable *
       }
     }
     if (!has_user_cnt) {
+      /* boxed where the analyzer counted a count this arm cannot reach (a
+         class method `def self.count(args)` answering a poly value, through
+         a receiver that is never assigned, #8634): the bare sp_int went into
+         that poly slot and the C did not compile */
+      int bx = repr_of(c, id).kind == RK_BOXED;
+      if (bx) buf_puts(b, "sp_box_int(");
       buf_puts(b, "sp_poly_count_val("); emit_expr(c, recv, b);
       buf_puts(b, ", "); emit_boxed(c, argv[0], b); buf_puts(b, ")");
+      if (bx) buf_puts(b, ")");
       { *out = 1; return 1; }
     }
   }
