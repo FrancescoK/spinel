@@ -7619,6 +7619,18 @@ static int emit_poly_arg_temp(Compiler *c, int node, TyKind ty, int boxed, int t
   return held >= 0 ? held : tn;
 }
 
+/* --share-strings: is String argument v of a poly dispatch, read as its
+   bytes (`at`), the operand of `equal?` while it hands on a handle
+   (strbuf_arg_carries: the one a String Range keeps for its endpoint, a
+   reader's)? It is held as its box (emit_boxed), which keeps that handle,
+   as the container the receiver came out of boxed it: the bytes boxed
+   anew are another String, which the receiver's box of the handle never
+   equals. An operand that is bytes only keeps its read. */
+static int poly_identity_operand(Compiler *c, const char *name, int pos_argc, int v, TyKind at) {
+  return repr_share_rule(c) && pos_argc == 1 && at == TY_STRING && is_equal_name(name) &&
+         strbuf_arg_carries(c, v);
+}
+
 /* A String-typed slot may already hold the shared handle. The argument
    temp keeps that representation so boxed arms keep its identity too. */
 static TyKind poly_arg_storage(Compiler *c, Repr r) {
@@ -8841,8 +8853,9 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         int held = poly_arg_held(c, argv[a], at);
         /* A nil/void/unresolved arg has no concrete C storage (emit_ctype would
            print `void`); hold it as a boxed poly so it can flow into a poly
-           param slot. */
-        if (at == TY_NIL || at == TY_VOID || at == TY_UNKNOWN) {
+           param slot. So is an `equal?` operand that keeps a handle's
+           identity only boxed (poly_identity_operand). */
+        if (at == TY_NIL || at == TY_VOID || at == TY_UNKNOWN || poly_identity_operand(c, name, pos_argc, argv[a], at)) {
           atmp_ty[a] = TY_POLY;
           atmp[a] = emit_poly_arg_temp(c, argv[a], TY_POLY, 1, atmp[a], ran, b);
         }
@@ -21305,6 +21318,26 @@ static void render_operand(Compiler *c, int node, int fresh, int handle, int oin
   else emit_expr(c, node, out);
   g_pre = sv;
 }
+/* render_operand for an operand emit_operands_in_order binds as a box
+   (`box`): 1 for a String bang on a boxed receiver, rendered as its box
+   while the call is emitted (operand_binds_face_box), 2 for an `equal?`
+   operand, rendered as the box that keeps its handle (emit_boxed,
+   operand_binds_identity_box). */
+static void render_bound_operand(Compiler *c, int node, int fresh, int handle, int oint, int box,
+                                 Buf *out, Buf *pre) {
+  if (box == 2) {
+    memset(out, 0, sizeof *out);
+    memset(pre, 0, sizeof *pre);
+    Buf *sv = g_pre;
+    g_pre = pre;
+    emit_boxed(c, node, out);
+    g_pre = sv;
+    return;
+  }
+  int fv = box ? view_push(c, node, TY_POLY) : -1;
+  render_operand(c, node, fresh, handle, oint, out, pre);
+  if (fv >= 0) view_pop(c, fv);
+}
 /* Does what operand `node` hoists run code of its own -- a call in its
    receiver or arguments, below the operand's own call? Only then can its
    place against the operands to its left be seen; a hoisted read of
@@ -21434,6 +21467,25 @@ static int operand_binds_self_handle(Compiler *c, int v) {
 static int operand_binds_face_box(Compiler *c, int v) {
   return repr_share_rule(c) && nt_kind(c->nt, v) == NK_CallNode && comp_ntype(c, v) == TY_STRING &&
          !arg_ran_first(v, 0) && face_str_bang_call(c, v);
+}
+
+/* --share-strings: is String operand v of call id a side of `equal?`
+   whose other side is boxed: the operand of a boxed receiver
+   (poly_identity_operand), or a String Range's endpoint receiver
+   (strbuf_route_srange_kept) beside a boxed operand? It is bound as its
+   box, the one that keeps the handle the value has, and read as that box
+   while the call is emitted: bound as its bytes, the call boxed them anew,
+   another String. */
+static int operand_binds_identity_box(Compiler *c, int id, int v) {
+  int recv = nt_ref(c->nt, id, "receiver");
+  int argc = 0;
+  const int *argv = call_args(c->nt, id, &argc);
+  const char *name = nt_str(c->nt, id, "name");
+  if (recv < 0 || argc != 1 || !name || !is_equal_name(name) || !repr_share_rule(c)) return 0;
+  if (v == argv[0])
+    return repr_of(c, recv).kind == RK_BOXED && poly_identity_operand(c, name, argc, v, repr_of(c, v).as_ty);
+  /* (the operand's test is str_arms_convert's, which emits that arm) */
+  return v == recv && comp_ntype(c, argv[0]) == TY_POLY && strbuf_route_srange_kept(c, recv);
 }
 
 static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
@@ -21594,7 +21646,9 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
     if (!bindable && unb < 0) unb = i;
     int fr = operand[i] != harg && operand[i] != recv && operand_fresh_str(c, operand[i]);
     int bsh = operand[i] != harg && operand_binds_self_handle(c, operand[i]);
-    int bfb = !bsh && operand[i] != harg && operand_binds_face_box(c, operand[i]);
+    int bfb = bsh || operand[i] == harg ? 0
+            : operand_binds_face_box(c, operand[i]) ? 1
+            : operand_binds_identity_box(c, id, operand[i]) ? 2 : 0;
     TyKind t = operand[i] == harg || bsh ? TY_STRBUF : bfb ? TY_POLY : fr ? TY_STRING : repr_of(c, operand[i]).as_ty;
     if (t == TY_UNKNOWN || t == TY_VOID || t == TY_NIL) {
       if (unb < 0) return 0;
@@ -21692,11 +21746,9 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
     if (copy[i]) { memset(&opb[i], 0, sizeof opb[i]); memset(&opp[i], 0, sizeof opp[i]); }
   for (; !operands_last && rendered < nb && ok; rendered++) {
     if (copy[rendered]) continue;
-    int fv = fb[rendered] ? view_push(c, node[rendered], TY_POLY) : -1;
-    render_operand(c, node[rendered], fresh[rendered],
-                   operand_binds_handle(c, node[rendered], harg) || late[rendered] || sh[rendered],
-                   oo[rendered], &opb[rendered], &opp[rendered]);
-    if (fv >= 0) view_pop(c, fv);
+    render_bound_operand(c, node[rendered], fresh[rendered],
+                         operand_binds_handle(c, node[rendered], harg) || late[rendered] || sh[rendered],
+                         oo[rendered], fb[rendered], &opb[rendered], &opp[rendered]);
     if (text_is_raise_token(opb[rendered].p)) ok = 0;
   }
   Buf ob; memset(&ob, 0, sizeof ob);
@@ -21763,11 +21815,9 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
     if (observable < 2 && g_conv_emitted == conv_mark) ok = 0;
     for (; operands_last && rendered < nb && ok; rendered++) {
       if (copy[rendered]) continue;
-      int fv = fb[rendered] ? view_push(c, node[rendered], TY_POLY) : -1;
-      render_operand(c, node[rendered], fresh[rendered],
-                     operand_binds_handle(c, node[rendered], harg) || late[rendered] || sh[rendered],
-                     oo[rendered], &opb[rendered], &opp[rendered]);
-      if (fv >= 0) view_pop(c, fv);
+      render_bound_operand(c, node[rendered], fresh[rendered],
+                           operand_binds_handle(c, node[rendered], harg) || late[rendered] || sh[rendered],
+                           oo[rendered], fb[rendered], &opb[rendered], &opp[rendered]);
       if (text_is_raise_token(opb[rendered].p)) ok = 0;
     }
   }
