@@ -264,8 +264,11 @@ int strbuf_route_inline_call(Compiler *c, int v);
 int strbuf_value_carries(Compiler *c, int v);
 int strbuf_arg_carries(Compiler *c, int v);
 int strbuf_arg_bang(Compiler *c, int v);
+int strbuf_arg_bang_value(Compiler *c, int v);
 int strbuf_builtin_tail(Compiler *c, int v);
 int strbuf_bang_tail(Compiler *c, int v);
+int emit_bang_self_pub(Compiler *c, int v, Buf *b);
+int emit_face_str_bang_pub(Compiler *c, int id, Buf *b);
 int strbuf_hash_default_arg(Compiler *c, int v);
 /* A builtin String clamp's receiver and two bounds, or absent endpoints. */
 int strbuf_route_clamp(Compiler *c, int v, int *ops);

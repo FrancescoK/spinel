@@ -2739,6 +2739,38 @@ int strbuf_arg_bang(Compiler *c, int v) {
 int strbuf_arg_carries(Compiler *c, int v) {
   return strbuf_value_carries(c, v) || strbuf_arg_bang(c, v);
 }
+/* ...is v such a bang, or a conditional that takes its arms one by one as
+   handles (strbuf_cond_has_handle_leaf) with such a bang among the values
+   it hands on? An argument that runs ahead of the binding takes its handle
+   there (emit_arg_temp), which the binding then takes (ran_first_handle). */
+static int strbuf_arg_bang_arm(Compiler *c, int v, int depth) {
+  const NodeTable *nt = c->nt;
+  v = unwrap_parens(c, v);
+  if (v < 0 || depth > 16) return 0;
+  switch (nt_kind(nt, v)) {
+  case NK_StatementsNode: {
+    int n = 0; const int *bb = nt_arr(nt, v, "body", &n);
+    return n > 0 && strbuf_arg_bang_arm(c, bb[n - 1], depth + 1);
+  }
+  case NK_ElseNode: return strbuf_arg_bang_arm(c, nt_ref(nt, v, "statements"), depth + 1);
+  case NK_IfNode: case NK_UnlessNode:
+    return strbuf_arg_bang_arm(c, nt_ref(nt, v, "statements"), depth + 1) ||
+           strbuf_arg_bang_arm(c, nt_ref(nt, v, nt_kind(nt, v) == NK_IfNode ? "subsequent" : "else_clause"), depth + 1);
+  case NK_OrNode:
+    return strbuf_arg_bang_arm(c, nt_ref(nt, v, "left"), depth + 1) || strbuf_arg_bang_arm(c, nt_ref(nt, v, "right"), depth + 1);
+  case NK_AndNode: return strbuf_arg_bang_arm(c, nt_ref(nt, v, "right"), depth + 1);
+  case NK_CaseNode: {
+    int nw = 0; const int *whens = nt_arr(nt, v, "conditions", &nw);
+    for (int w = 0; w < nw; w++)
+      if (strbuf_arg_bang_arm(c, nt_ref(nt, whens[w], "statements"), depth + 1)) return 1;
+    return strbuf_arg_bang_arm(c, nt_ref(nt, v, "else_clause"), depth + 1);
+  }
+  default: return strbuf_arg_bang(c, v);
+  }
+}
+int strbuf_arg_bang_value(Compiler *c, int v) {
+  return strbuf_arg_bang(c, v) || (strbuf_cond_has_handle_leaf(c, v, 0) && strbuf_arg_bang_arm(c, v, 0));
+}
 /* A builtin value route can publish its handle as a method's return too.
    The return analysis and tail emitter ask the same route predicate.
    A fresh result has no existing identity for the tail to publish. */
@@ -3801,7 +3833,16 @@ static int route_block_rebinds_base(Compiler *c, int v) {
   return 0;
 }
 
-static int emit_bang_self_handle_1(Compiler *c, int v, Buf *b) {
+/* The end of a bang's handle form: _t<tr> holds the bang's answer, its
+   bytes or NULL, and h the receiver's handle. The form answers h or NULL;
+   with pub (a method's tail, emit_bang_self_pub) it publishes that and
+   answers the bytes, which the bang wrote into h (sp_String_set_bin), so a
+   value the caller keeps is no alias of the String. */
+static void emit_bang_answer_end(Buf *b, int tr, const char *h, int pub) {
+  if (pub) buf_printf(b, "; _sp_ret_strbuf = _t%d ? (void *)%s : NULL; _t%d; })", tr, h, tr);
+  else buf_printf(b, "; _t%d ? %s : (sp_String *)NULL; })", tr, h);
+}
+static int emit_bang_self_handle_1(Compiler *c, int v, int pub, Buf *b) {
   if (!repr_share_rule(c) || !strbuf_bang_self_local(c, v)) return 0;
   int r = nt_ref(c->nt, v, "receiver");
   /* a safe-navigation call over an attribute assignment's handle skips a nil the route raises on (emit_strbuf_route_chain) */
@@ -3817,6 +3858,7 @@ static int emit_bang_self_handle_1(Compiler *c, int v, Buf *b) {
      answered, with no read of its bytes to test (a consumer that wants them
      reads them once) */
   if (self_call_answers_nil(c, v) && (slot || strbuf_value_carries(c, r) || strbuf_self_route(c, r))) {
+    if (pub) return 0;
     int th = ++g_tmp;
     buf_printf(b, "({ sp_String *_t%d = ", th);
     if (slot) buf_puts(b, sref);
@@ -3835,6 +3877,7 @@ static int emit_bang_self_handle_1(Compiler *c, int v, Buf *b) {
   int route_form = vn && !is_receiver_conversion(vn) && !is_freeze_name(vn) &&
                    !(is_substitution_bang(vn) && nt_ref(c->nt, v, "block") >= 0) && strbuf_self_route(c, r);
   if (!slot && !route_form && !arg_ran_first(v, 0) && !sb_shadowed_reader(ru) && strbuf_held_self_answer(c, r)) {
+    if (pub) return 0;
     /* a freeze freezes the held handle and answers it (nil for nil); a
        conversion answers it (emit_held_handle) */
     if (is_receiver_conversion(nt_str(c->nt, v, "name"))) {
@@ -3915,7 +3958,7 @@ static int emit_bang_self_handle_1(Compiler *c, int v, Buf *b) {
     view_unbind(mark);
     if (as_h) { view_pop(c, st); view_pop(c, sv); }
     if (late) view_unbind(amark);
-    buf_printf(b, "; _t%d ? _t%d : (sp_String *)NULL; })", tr, th);
+    { char hn[24]; snprintf(hn, sizeof hn, "_t%d", th); emit_bang_answer_end(b, tr, hn, pub); }
     return 1;
   }
   if (!slot) return 0;
@@ -3927,20 +3970,20 @@ static int emit_bang_self_handle_1(Compiler *c, int v, Buf *b) {
     int th = ++g_tmp, mark = g_n_argov;
     emit_bang_held_open(c, v, th, sref, 1, 0, b);
     if (emit_self_mutator_stmt(c, v, b)) {
-      buf_printf(b, "_t%d; })", th);
+      buf_printf(b, pub ? "sp_strbuf_read_pub(_t%d); })" : "_t%d; })", th);
       return 1;
     }
     buf_printf(b, "const char *_t%d = ", tr);
     ran_first_bind(r, th, th);
     emit_bang_on_held(c, v, th, b);
     view_unbind(mark);
-    buf_printf(b, "; _t%d ? _t%d : (sp_String *)NULL; })", tr, th);
+    { char hn[24]; snprintf(hn, sizeof hn, "_t%d", th); emit_bang_answer_end(b, tr, hn, pub); }
     return 1;
   }
   if (nt_kind(c->nt, r) != NK_CallNode) {
     buf_printf(b, "({ const char *_t%d = ", tr);
     emit_self_call_char(c, v, b);
-    buf_printf(b, "; _t%d ? %s : (sp_String *)NULL; })", tr, sref);
+    emit_bang_answer_end(b, tr, sref, pub);
     return 1;
   }
   int th = ++g_tmp;
@@ -3950,17 +3993,24 @@ static int emit_bang_self_handle_1(Compiler *c, int v, Buf *b) {
   ran_first_bind(r, th, th);
   emit_bang_on_held(c, v, th, b);
   view_unbind(mark);
-  buf_printf(b, "; _t%d ? _t%d : (sp_String *)NULL; })", tr, th);
+  { char hn[24]; snprintf(hn, sizeof hn, "_t%d", th); emit_bang_answer_end(b, tr, hn, pub); }
   return 1;
 }
 
+/* --share-strings: a bang tail on a handle (strbuf_bang_tail) as a method's
+   value: its bytes or NULL, the receiver's handle published (Scope.ret_handle);
+   0 with nothing emitted where the form is no plain bang's. */
+int emit_bang_self_pub(Compiler *c, int v, Buf *b) {
+  if (ran_first_handle(v) >= 0) return 0;
+  return emit_bang_self_handle_1(c, v, 1, b);
+}
 int emit_bang_self_handle(Compiler *c, int v, Buf *b) {
   /* a call a guard ran already holds its handle (a `&.` guard's,
      ran_first_handle): it is that handle, never run again */
   int held = repr_share_rule(c) && strbuf_bang_self_local(c, v) ? ran_first_handle(v) : -1;
   if (held >= 0) { buf_printf(b, "_t%d", held); return 1; }
   size_t at = b->len;
-  int done = emit_bang_self_handle_1(c, v, b);
+  int done = emit_bang_self_handle_1(c, v, 0, b);
   /* the answer is the receiver's handle (the bang's own bytes only say
      whether it answered nil): what the receiver's reads fed is written back
      into it, and they are no copy */
@@ -11354,6 +11404,13 @@ void emit_tail_value(Compiler *c, int node, Buf *b) {
   TyKind slot = g_result_var && g_result_ty != TY_UNKNOWN ? g_result_ty : g_ret_type;
   Scope *ts = slot == TY_STRING ? comp_scope_of(c, node) : NULL;
   NodeKind k = nt_kind(c->nt, node);
+  /* a bang tail publishes its receiver's handle and answers its own bytes,
+     with no copy of the handle's (emit_bang_self_pub) */
+  if (ts && ts->ret_handle && strbuf_bang_tail(c, node) && !sn_guard_pending(c, node) &&
+      ((strbuf_bang_self_local(c, node) && emit_bang_self_pub(c, node, b)) || emit_face_str_bang_pub(c, node, b))) {
+    if (g_repr_check) { repr_channel_note(c, node, RCH_PUBLISH); repr_channel_end(c, frame); }
+    return;
+  }
   if (ts && ts->ret_handle && strbuf_builtin_tail(c, node)) {
     buf_puts(b, "sp_strbuf_read_pub(");
     emit_strbuf_handle_of(c, node, b);
