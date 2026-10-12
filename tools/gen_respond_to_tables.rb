@@ -31,8 +31,8 @@ module GenRespondToTables
   # class," where the misattribution matters.
   FALSE_POSITIVE = { "String" => %w[pack] }.freeze
 
-  # The shared manual arrays sp_poly_responds_builtin already ORs in
-  # alongside each class's generated array: uni[] unconditionally for
+  # Which of the shared manual arrays sp_poly_responds_builtin already ORs
+  # in alongside each class's generated array -- uni[] unconditionally for
   # every class (checked once, before any class dispatch), enumm[]
   # additionally for Array and Hash, numm[] additionally for Integer and
   # Float. A name already covered by one of these must not be duplicated
@@ -49,19 +49,19 @@ module GenRespondToTables
   module_function
 
   # rt_header_text: lib/spinel_rt.h's current text, read once by the
-  # caller, so the Proc self-check and the shared-array dedup (below) can
-  # look inside it without a second file read.
+  # caller. uni[]/enumm[]/numm[]/procm[] are each read out of it once here
+  # too, not once per family that references them.
   def generate(rt_header_text)
-    check_proc_coverage(rt_header_text)
-    shared = SHARED_ARRAYS.to_h { |family, arrays|
-      [family, arrays.flat_map { |a| array_literal_names(rt_header_text, a) }]
-    }
+    shared_arrays = SHARED_ARRAYS.values.flatten.uniq.to_h { |a| [a, array_literal_names(rt_header_text, a)] }
+    procm = array_literal_names(rt_header_text, "procm")
+    check_proc_coverage(shared_arrays.fetch("uni"), procm)
+
     names_by_family = FAMILIES.to_h { |f| [f, []] }
     BuiltinRowGen.method_list.each do |family, name|
       next unless names_by_family.key?(family)
       next if BuiltinRowGen::INTERNAL_NAME.match?(name)
       next if FALSE_POSITIVE.fetch(family, []).include?(name)
-      next if shared.fetch(family).include?(name)
+      next if SHARED_ARRAYS.fetch(family).any? { |a| shared_arrays.fetch(a).include?(name) }
       names_by_family[family] << name
     end
     names_by_family.each_value { |names| names.sort!.uniq! }
@@ -73,9 +73,7 @@ module GenRespondToTables
   # text -- otherwise bop_rows grew a Proc method procm[] doesn't know
   # about, and a human needs to add it by hand (see the spec's Scope
   # section: Proc is verified-complete, not generated).
-  def check_proc_coverage(rt_header_text)
-    uni = array_literal_names(rt_header_text, "uni")
-    procm = array_literal_names(rt_header_text, "procm")
+  def check_proc_coverage(uni, procm)
     proc_rows = BuiltinRowGen.method_list
                              .select { |family, _| family == "Proc" }
                              .map(&:last)
