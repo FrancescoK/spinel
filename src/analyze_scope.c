@@ -1171,7 +1171,7 @@ static int alias_pred_const(const NodeTable *nt, int pred);
    a singleton def, `alias` or `alias_method`), whose call with a computed name
    is then an ordinary call. Asked once per compile: the first computed-name
    call scans the node table and the answer is kept on the Compiler. */
-static int user_define_method(Compiler *c) {
+int an_user_define_method(Compiler *c) {
   if (c->user_define_method) return c->user_define_method == 2;
   const NodeTable *nt = c->nt;
   int found = 0;
@@ -1427,7 +1427,7 @@ static void walk_scope_in(Compiler *c, int id, int scope_idx, int class_id, int 
       int an = nt_ref(c->nt, id, "arguments"), ac = 0;
       const int *av = an >= 0 ? nt_arr(c->nt, an, "arguments", &ac) : NULL;
       if (ac > 0 && nt_kind(c->nt, av[0]) != NK_SymbolNode && nt_kind(c->nt, av[0]) != NK_StringNode &&
-          !user_define_method(c)) {
+          !an_user_define_method(c)) {
         NodeTable *nt = (NodeTable *)c->nt;
         nt_node_set_int(nt, id, "define_method_name", 1);
         nt_node_set_str(nt, id, "name", "raise");
@@ -1473,6 +1473,9 @@ static void walk_scope_in(Compiler *c, int id, int scope_idx, int class_id, int 
        `make_my_diffs_pretty!` replaces `mu_pp` this way), the method it
        would define does not exist: registering it would answer every call
        of that name from the start, in place of the method that does. */
+    /* A define_method in a branch that never runs (`if false`) defines
+       nothing, so nothing is registered for it. */
+    if (dead && dm_is_dm) dm_ok = 0;
     int dm_in_def = dm_ok && dm_is_dm && scope_idx > 0 && c->scopes[scope_idx].def_node >= 0 &&
                     nt_kind(c->nt, c->scopes[scope_idx].def_node) == NK_DefNode;
     if (dm_in_def && method_never_named(c, c->scopes[scope_idx].name))

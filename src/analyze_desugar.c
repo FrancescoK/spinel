@@ -3738,12 +3738,6 @@ static void dsend_add_name(char ***names, int *n, int *cap, ANameHash *seen, con
 static const char *const object_methods[] = { "to_s", "inspect", "class", "hash", "frozen?", "nil?",
   "==", "!=", "equal?", "eql?", "respond_to?", "is_a?", "kind_of?", "instance_of?", "freeze", "dup",
   "itself", "object_id", NULL };
-/* Is nm one of the methods every object answers (object_methods)? */
-int an_object_method_name(const char *nm) {
-  for (int k = 0; nm && object_methods[k]; k++) if (sp_streq(nm, object_methods[k])) return 1;
-  return 0;
-}
-
 static int dsend_receiver_names(Compiler *c, int cls, int subclasses, char ***out) {
   char **names = NULL; int n = 0, cap = 0;
   ANameHash seen; memset(&seen, 0, sizeof seen);

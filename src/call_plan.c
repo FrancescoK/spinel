@@ -788,6 +788,26 @@ static int limit_exempt(Compiler *c, int id, int lx) {
   return 0;
 }
 
+/* Object's public and private instance methods, Kernel's private ones
+   aside (kernel_private_method): with those, every method an object answers
+   before a define_method replaces it */
+static int object_method_name(const char *nm) {
+  static const char *const names[] = {
+    "!", "!=", "!~", "<=>", "==", "===", "__callee__", "__dir__", "__id__", "__method__",
+    "__send__", "`", "class", "clone", "define_singleton_method", "display", "dup", "enum_for",
+    "eql?", "equal?", "extend", "freeze", "frozen?", "hash", "initialize", "initialize_clone",
+    "initialize_copy", "initialize_dup", "inspect", "instance_eval", "instance_exec",
+    "instance_of?", "instance_variable_defined?", "instance_variable_get",
+    "instance_variable_set", "instance_variables", "is_a?", "itself", "kind_of?", "method",
+    "method_missing", "methods", "nil?", "object_id", "private_methods", "protected_methods",
+    "public_method", "public_methods", "public_send", "remove_instance_variable", "respond_to?",
+    "respond_to_missing?", "send", "singleton_class", "singleton_method",
+    "singleton_method_added", "singleton_method_removed", "singleton_method_undefined",
+    "singleton_methods", "tap", "then", "to_enum", "to_s", "yield_self", NULL };
+  for (int i = 0; nm && names[i]; i++) if (sp_streq(nm, names[i])) return 1;
+  return kernel_private_method(nm);
+}
+
 /* A define_method in a method's body defines its method when that method
    runs, but analysis registers it from the start (walk_scope marks the call
    dm_host, and dm_scope for the method it registers). A method nothing names
@@ -795,13 +815,12 @@ static int limit_exempt(Compiler *c, int id, int lx) {
    registration is right only for a method that is new: one the class does
    not answer before then. Anything else is refused: its own def or one up
    its chain, a module's, a subclass's, an alias, attr or Struct member
-   (spelled as a Symbol), or a method every object has. */
+   (spelled as a Symbol), or a method every object has. A call in a branch
+   that never runs registers nothing (walk_scope). */
 int cplan_define_method_early(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   int host = (int)nt_int(nt, id, "dm_host", 0) - 1, dm = (int)nt_int(nt, id, "dm_scope", 0) - 1;
-  if (host < 0 || host >= c->nscopes || nt_int(nt, id, "refusal_dead", 0)) return 0;
-  /* the program's own define_method is an ordinary method */
-  if (an_user_defines_method(c, "define_method")) return 0;
+  if (host < 0 || host >= c->nscopes) return 0;
   int an = nt_ref(nt, id, "arguments"), ac = 0;
   const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
   int own = ac > 0 ? av[0] : -1;
@@ -809,7 +828,7 @@ int cplan_define_method_early(Compiler *c, int id) {
   /* a method object (`define_method(:m, instance_method(:x))`) registers nothing */
   if (dm < 0 || dm >= c->nscopes) return 1;
   const Scope *ds = &c->scopes[dm];
-  if (!ds->name || ds->class_id < 0 || an_object_method_name(ds->name) || basicobject_own_method(ds->name)) return 1;
+  if (!ds->name || ds->class_id < 0 || object_method_name(ds->name)) return 1;
   int dc = -1, mi = comp_method_in_chain(c, ds->class_id, ds->name, &dc);
   if (mi >= 0 && mi != dm) return 1;
   for (int t = 0; t < c->nscopes; t++) {
@@ -832,6 +851,14 @@ int cplan_define_method_early(Compiler *c, int id) {
     const char *v = nt_kind(nt, k) == NK_StringNode && k != own ? nt_str(nt, k, "content") : NULL;
     if (v && sp_streq(v, ds->name)) return 1;
   }
+  /* the block is registered whichever define_method the call reaches, and a
+     program's own may answer it without defining anything: then a call of
+     the name would find a method CRuby never defines */
+  if (an_user_define_method(c))
+    for (int k = comp_kind_first(c, NK_CallNode); k >= 0; k = comp_kind_next(c, k)) {
+      const char *v = nt_kind(nt, k) == NK_CallNode ? nt_str(nt, k, "name") : NULL;
+      if (v && sp_streq(v, ds->name)) return 1;
+    }
   return 0;
 }
 
