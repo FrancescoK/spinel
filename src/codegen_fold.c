@@ -8725,6 +8725,24 @@ int ran_first_read_handle(int node) {
   return -1;
 }
 
+/* Does value v (of type at) that runs ahead of its binding (emit_arg_temp)
+   take the handle of the String it hands on there? A builtin to_s keeps the
+   receiver's String: its handle is captured before later arguments can
+   replace the receiver. So does a String Range's endpoint
+   (strbuf_route_srange_kept): the handle the Range keeps is taken where
+   the argument runs. */
+static int arg_temp_conversion(Compiler *c, int v, TyKind at) {
+  if (at != TY_STRING) return 0;
+  if (strbuf_poly_to_s(c, v) || strbuf_route_srange_kept(c, v)) return 1;
+  /* So does a call result lifted into the handle for a boxed parameter: the
+     handle its method publishes is taken where the call runs. */
+  if (repr_share_rule(c) && c->poly_strbuf_lift[v] && strbuf_value_carries(c, v)) return 1;
+  /* --share-strings: and so does a bang on a handle or a box, or a
+     conditional with one on an arm, which a parameter that is the handle
+     takes as its receiver's String or nil (strbuf_arg_carries) */
+  return strbuf_arg_bang_value(c, v);
+}
+
 /* The value `v` evaluated into a rooted temp in g_pre, pushed onto the
    g_argov overrides so its uses read the temp. */
 static void emit_arg_temp(Compiler *c, int v) {
@@ -8742,19 +8760,28 @@ static void emit_arg_temp(Compiler *c, int v) {
      (emit_strbuf_write_handle): it runs here, its handle taken, and the
      value is the slot's read of that handle. */
   int wshare = repr_write_share(c, unwrap_parens(c, v));
-  /* A builtin to_s keeps the receiver's String too. Capture its handle
-     before later arguments can replace the receiver. So does a String
-     Range's endpoint (strbuf_route_srange_kept): the handle the Range keeps
-     is taken where the argument runs. */
-  int conversion = at == TY_STRING && (strbuf_poly_to_s(c, v) || strbuf_route_srange_kept(c, v));
-  /* So does a call result lifted into the handle for a boxed parameter: the
-     handle its method publishes is taken where the call runs. */
-  if (!conversion && at == TY_STRING && repr_share_rule(c) && c->poly_strbuf_lift[v] && strbuf_value_carries(c, v))
-    conversion = 1;
-  /* --share-strings: and so does a bang on a handle or a box, or a
-     conditional with one on an arm, which a parameter that is the handle
-     takes as its receiver's String or nil (strbuf_arg_carries) */
-  if (!conversion && at == TY_STRING && strbuf_arg_bang_value(c, v)) conversion = 1;
+  /* So does a value whose String's handle it hands on (arg_temp_conversion) */
+  int conversion = arg_temp_conversion(c, v, at);
+  /* A String Range's endpoint the Range keeps no handle for reads as the
+     plain read answers it, the String the Range holds, not as a read of
+     the handle taken here: that is a new handle over a copy, and
+     `S.new(f.begin, f.begin)` bound two Strings. The Range is held,
+     rooted, where the argument runs, and its receiver reads that hold from
+     here on: the handle, the read and a box (emit_srange_route_boxed) take
+     the one Range. */
+  int srange = conversion && strbuf_route_srange_kept(c, v), tr = -1;
+  if (srange) {
+    int recv = nt_ref(c->nt, unwrap_parens(c, v), "receiver");
+    tr = ++g_tmp;
+    Buf rb; memset(&rb, 0, sizeof rb);
+    emit_expr(c, recv, &rb);
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "sp_StrRange _t%d = %s; ", tr, rb.p ? rb.p : default_value_from_compiler(c, TY_STR_RANGE));
+    emit_gc_root_tmp_refs(c, TY_STR_RANGE, tr, g_pre);
+    buf_puts(g_pre, "\n");
+    free(rb.p);
+    view_bind(recv, "_t%d", tr);
+  }
   Buf hw; memset(&hw, 0, sizeof hw);
   if (conversion) emit_strbuf_handle_of(c, v, &hw);
   else if (wshare) emit_strbuf_write_handle(c, v, &hw);
@@ -8773,6 +8800,16 @@ static void emit_arg_temp(Compiler *c, int v) {
      in the temp (view_bind_o below): `a[i] = xs.max` stores the nil */
   int to = !wshare && oint_kind(at) && node_is_oint(c, v);
   if (wshare && at == TY_STRBUF) buf_printf(&hb, "_t%d", th);
+  else if (srange) {
+    /* the handle's read where the Range keeps it, the plain read of what
+       it holds where it keeps none: no String the rule shares */
+    char rt[24]; snprintf(rt, sizeof rt, "_t%d", tr);
+    emit_srange_kept_test(c, v, rt, &hb);
+    buf_printf(&hb, " ? sp_strbuf_read_pub(_t%d) : ", th);
+    size_t arm_at = hb.len;
+    emit_expr(c, v, &hb);
+    share_check_declare_reads(&hb, arm_at, v);
+  }
   else if (wshare) {
     char thr[24]; snprintf(thr, sizeof thr, "_t%d", th);
     emit_strbuf_node_read(c, v, thr, &hb);
@@ -9099,7 +9136,54 @@ static int arg_reads_copy(Compiler *c, Scope *m, const int *argv, int argc, int 
 }
 
 static void emit_args_before_forced(Compiler *c, const int *argv, int argc, const int *after, int nafter,
-                                    const char *force, Buf *b);
+                                    const char *force, const char *hand, Buf *b);
+
+void arg_layout_param_map(Compiler *c, Scope *m, const int *argv, int argc, int *out);
+/* --share-strings: which of a call's values `vals` (source_values) bind a
+   parameter of m that is the shared handle (arg_layout_param_map); NULL
+   when none does. The caller frees it. */
+static char *arg_handle_params(Compiler *c, Scope *m, const int *argv, int argc, const int *vals, int nv) {
+  if (!repr_share_rule(c) || !m || m->nparams <= 0 || nv <= 0) return NULL;
+  int *out = malloc(sizeof *out * (size_t)m->nparams);
+  char *hand = calloc((size_t)nv, 1);
+  if (!out || !hand) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  arg_layout_param_map(c, m, argv, argc, out);
+  int any = 0;
+  for (int j = 0; j < m->nparams; j++) {
+    if (out[j] < 0 || !m->pnames[j] || !repr_of_slot(c, scope_local(m, m->pnames[j])).handle) continue;
+    for (int i = 0; i < nv; i++)
+      if (vals[i] == out[j]) hand[i] = 1, any = 1;
+  }
+  free(out);
+  if (!any) { free(hand); return NULL; }
+  return hand;
+}
+
+/* --share-strings: value v, which runs ahead of the binding
+   (emit_arg_first) into a parameter that is the handle
+   (arg_handle_params), and which the binding takes as that handle where it
+   runs at its slot (strbuf_arg_carries, emit_arg_or_default_fill): it runs
+   as the handle, which the binding takes (ran_first_handle), as
+   emit_args_filled runs such a value into such a parameter. A value
+   emit_arg_temp takes the handle of already, or a variable's or a write's,
+   is left to it. 0 when v is not such a value. */
+static int emit_arg_handle_first(Compiler *c, int v, int rebound) {
+  NodeKind k = nt_kind(c->nt, v);
+  Repr r = repr_of(c, v);
+  TyKind at = r.as_ty == TY_STRBUF && r.strbuf_src == RS_FRESH ? TY_STRING : r.as_ty;
+  if (at != TY_STRING || k == NK_SplatNode || k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode ||
+      repr_static_read_kind(k) || arg_ran_first(v, 0) || (!rebound && !subtree_has_side_effect(c, v)) ||
+      repr_write_share(c, unwrap_parens(c, v)) || arg_temp_conversion(c, v, at) || !strbuf_arg_carries(c, v))
+    return 0;
+  Buf hb; memset(&hb, 0, sizeof hb);
+  emit_strbuf_handle_of(c, v, &hb);
+  int ht = ++g_tmp;
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_String *_t%d = %s; SP_GC_ROOT(_t%d);\n", ht, hb.p ? hb.p : "NULL", ht);
+  free(hb.p);
+  ran_first_bind(v, ht, ht);
+  return 1;
+}
 
 /* See codegen_internal.h. A copy an argument reads (arg_reads_copy) beside
    another argument that allocates in the call -- another such copy, or an
@@ -9133,8 +9217,9 @@ int emit_args_before_binding(Compiler *c, Scope *m, const int *argv, int argc, B
                  (cp[j] || (!run && subtree_has_side_effect(c, argv[j]) && operand_allocates_beside(c, argv[j])));
     run |= force[k];
   }
-  if (run) emit_args_before_forced(c, argv, argc, dfl, nd, ncopy ? force : NULL, b);
-  free(vals); free(ds); free(dfl); free(cp);
+  char *hand = run ? arg_handle_params(c, m, argv, argc, vals, nv) : NULL;
+  if (run) emit_args_before_forced(c, argv, argc, dfl, nd, ncopy ? force : NULL, hand, b);
+  free(vals); free(ds); free(dfl); free(cp); free(hand);
   return run;
 }
 
@@ -9144,8 +9229,10 @@ int emit_args_before_binding(Compiler *c, Scope *m, const int *argv, int argc, B
    later argument has appended to it; a copy runs no code, so taking it
    last moves nothing else. A value a later argument can rebind is read
    in its place, as before. */
+/* ...and each value `hand` marks (arg_handle_params) as the handle its
+   parameter takes, where it is one (emit_arg_handle_first). */
 static void emit_args_before_forced(Compiler *c, const int *argv, int argc, const int *after, int nafter,
-                                    const char *force, Buf *b) {
+                                    const char *force, const char *hand, Buf *b) {
   int nv = 0; char *ds = NULL;
   int *vals = source_values(c->nt, argv, argc, &nv, &ds);
   Buf *sv_pre = g_pre; g_pre = b;
@@ -9153,7 +9240,8 @@ static void emit_args_before_forced(Compiler *c, const int *argv, int argc, cons
     for (int i = 0; i < nv; i++) {
       int rb = value_rebound(c, vals, nv, i, after, nafter);
       int late = force && force[i] && !rb;
-      if (late == pass) emit_arg_first(c, vals[i], rb || late, b);
+      if (late != pass || (hand && hand[i] && emit_arg_handle_first(c, vals[i], rb))) continue;
+      emit_arg_first(c, vals[i], rb || late, b);
     }
   g_pre = sv_pre;
   free(vals); free(ds);
@@ -9161,7 +9249,7 @@ static void emit_args_before_forced(Compiler *c, const int *argv, int argc, cons
 
 /* See codegen_internal.h. */
 void emit_args_before(Compiler *c, const int *argv, int argc, const int *after, int nafter, Buf *b) {
-  emit_args_before_forced(c, argv, argc, after, nafter, NULL, b);
+  emit_args_before_forced(c, argv, argc, after, nafter, NULL, NULL, b);
 }
 
 /* See codegen_internal.h. */

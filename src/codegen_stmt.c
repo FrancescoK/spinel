@@ -1985,6 +1985,64 @@ void emit_srange_end_recv(Compiler *c, int v, Buf *b) {
   emit_expr(c, nt_ref(c->nt, v, "receiver"), b);
   if (chk) buf_printf(b, ", %d)", is_range_end_reader(nm));
 }
+/* The test, over the String Range `r` that String Range route v
+   (strbuf_route_srange_kept) reads, that the Range keeps a handle for the
+   endpoint v answers: #max's is the end only of an inclusive Range */
+void emit_srange_kept_test(Compiler *c, int v, const char *r, Buf *b) {
+  int se = strbuf_route_srange_end(c, v), sx = se ? 0 : strbuf_route_srange_extreme(c, v);
+  buf_printf(b, "%s.%s", r, se == 2 || sx == 2 ? "hl" : "hf");
+  if (sx == 2) buf_printf(b, " && !%s.excl", r);
+}
+/* String Range route v (strbuf_route_srange_kept) as a box: the handle
+   the Range keeps for the endpoint v answers, and any other answer as the
+   String it is. An endpoint the Range keeps no handle for is the String
+   the Range holds, where a new handle over a copy of it was another
+   (`S.new(f.min, 1)`). An argument that ran ahead (emit_arg_temp) took
+   the Range, which its receiver reads, the handle and the String; one
+   that ran ahead as the handle alone is that handle's box, and one that
+   ran ahead otherwise is left to the caller (0). */
+int emit_srange_route_boxed(Compiler *c, int v, Buf *b) {
+  int u = unwrap_parens(c, v), recv = nt_ref(c->nt, u, "receiver");
+  int se = strbuf_route_srange_end(c, u), sx = se ? 0 : strbuf_route_srange_extreme(c, u);
+  int ran = arg_ran_first(v, 0), th = ran ? ran_first_handle(v) : -1;
+  if (ran && th < 0) return 0;
+  if (ran && !arg_ran_first(recv, 0)) {
+    buf_printf(b, "sp_box_nullable_obj(_t%d, SP_BUILTIN_STRBUF)", th);
+    return 1;
+  }
+  Buf rb; memset(&rb, 0, sizeof rb);
+  if (ran) emit_expr(c, recv, &rb);
+  else {
+    int q = ++g_tmp;
+    buf_printf(b, "({ sp_StrRange _t%d = ", q);
+    if (se) emit_srange_end_recv(c, u, b);
+    else emit_expr(c, recv, b);
+    buf_puts(b, "; ");
+    buf_printf(&rb, "_t%d", q);
+  }
+  const char *r = rb.p ? rb.p : "";
+  emit_srange_kept_test(c, u, r, b);
+  /* (min / max of an empty Range is nil) */
+  buf_puts(b, sx ? " ? sp_box_nullable_obj(" : " ? sp_box_obj(");
+  if (ran) buf_printf(b, "_t%d", th);
+  else if (se) buf_printf(b, "(sp_String *)%s.%s", r, se == 1 ? "hf" : "hl");
+  else buf_printf(b, "sp_srange_extreme_h(%s, %d)", r, sx == 2);
+  buf_puts(b, ", SP_BUILTIN_STRBUF) : sp_box_str(");
+  /* this arm runs for an endpoint the Range keeps no handle for: what it
+     boxes is no String the rule shares */
+  size_t arm_at = b->len;
+  if (ran) emit_expr(c, v, b);
+  else if (se) buf_printf(b, "%s.%s", r, se == 1 ? "first" : "last");
+  else {
+    int mark = view_bind(recv, "%s", r);
+    emit_expr(c, u, b);
+    view_unbind(mark);
+  }
+  if (g_share_check && (ran || sx)) share_check_declare_reads(b, arm_at, ran ? v : u);
+  buf_puts(b, ran ? ")" : "); })");
+  free(rb.p);
+  return 1;
+}
 static int exc_text_call(Compiler *c, int v) { return exc_text_call_on(c, v, 0); }
 /* --share-strings: an exception's #message read off a boxed receiver every
    class of which (the boxed-receiver walk) is an exception class or answers
