@@ -15427,6 +15427,7 @@ typedef struct EmitUnitState {
   TyKind ret_type, fn_ret_type, result_ty;
   int c_ret_void, in_proc_body, result_poly, proc_body_kind, proc_toplevel_return;
   int indent, nren, block_nren, block_id, c_loop_depth, ensure_depth;
+  int fiber_body;      /* g_fiber_body: a refusal inside a Thread body skips its restore */
   int emitting_class_id, inline_recv_class, ie_class_id, dm_subst_node, exc_frame_depth;
   int open_defaults;
   int loop_exc_base, loop_rescue_base, loop_ensure_base, redo_depth;
@@ -15445,6 +15446,7 @@ void emit_unit_state_save(EmitUnitState *s) {
   s->proc_body_kind = g_proc_body_kind; s->proc_toplevel_return = g_proc_toplevel_return;
   s->indent = g_indent; s->nren = g_nren; s->block_nren = g_block_nren; s->block_id = g_block_id;
   s->c_loop_depth = g_c_loop_depth; s->ensure_depth = g_ensure_depth;
+  s->fiber_body = g_fiber_body;
   s->emitting_class_id = g_emitting_class_id; s->inline_recv_class = g_inline_recv_class;
   s->ie_class_id = g_ie_class_id; s->dm_subst_node = g_dm_subst_node; s->exc_frame_depth = g_exc_frame_depth;
   s->loop_exc_base = g_loop_exc_base; s->loop_rescue_base = g_loop_rescue_base; s->loop_ensure_base = g_loop_ensure_base; s->redo_depth = g_redo_depth;
@@ -15498,6 +15500,7 @@ void emit_unit_state_restore(const EmitUnitState *s) {
   g_proc_body_kind = s->proc_body_kind; g_proc_toplevel_return = s->proc_toplevel_return;
   g_indent = s->indent; g_nren = s->nren; g_block_nren = s->block_nren; g_block_id = s->block_id;
   g_c_loop_depth = s->c_loop_depth; g_ensure_depth = s->ensure_depth;
+  g_fiber_body = s->fiber_body;
   g_emitting_class_id = s->emitting_class_id; g_inline_recv_class = s->inline_recv_class;
   g_ie_class_id = s->ie_class_id; g_dm_subst_node = s->dm_subst_node; g_exc_frame_depth = s->exc_frame_depth;
   g_loop_exc_base = s->loop_exc_base; g_loop_rescue_base = s->loop_rescue_base; g_loop_ensure_base = s->loop_ensure_base; g_redo_depth = s->redo_depth;
