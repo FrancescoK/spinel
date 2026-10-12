@@ -1482,16 +1482,23 @@ int emit_call_or_write_via_methods(Compiler *c, int id, int is_or, Buf *b) {
     else emit_unbox_nilable_text(c, want, sv, b);
   }
   buf_puts(b, " : ({ ");
-  emit_ctype(c, vt, b); buf_printf(b, " _t%d = ", tw);
   /* An empty container literal has no type of its own: comp_ntype answers
      poly and the emitter picks the concrete container from how the attribute
      is used later, so `_t%d` was declared sp_RbVal and initialized with an
      sp_IntArray * (#4277). Render it into the slot the declaration promises.
      Every other value type answers the same both ways, so this changes only
-     the shapes that did not compile. */
-  if (vt == TY_POLY && repr_of(c, v).kind != RK_BOXED) emit_boxed(c, v, b);
-  else emit_expr(c, v, b);
-  buf_puts(b, "; ");
+     the shapes that did not compile. The setup a composite RHS spills to
+     g_pre is captured and spliced here, in the branch that assigns, so a
+     short-circuited `||=`/`&&=` runs none of it, as emit_slot_orw_value_o
+     does. */
+  { Buf vpre, vval; memset(&vpre, 0, sizeof vpre); memset(&vval, 0, sizeof vval);
+    Buf *saved_pre = g_pre; g_pre = &vpre;
+    if (vt == TY_POLY && repr_of(c, v).kind != RK_BOXED) emit_boxed(c, v, &vval);
+    else emit_expr(c, v, &vval);
+    g_pre = saved_pre;
+    if (vpre.p) buf_puts(b, vpre.p);
+    emit_ctype(c, vt, b); buf_printf(b, " _t%d = %s; ", tw, vval.p ? vval.p : "");
+    free(vpre.p); free(vval.p); }
   if (vt == TY_POLY) buf_printf(b, "SP_GC_ROOT_RBVAL(_t%d); ", tw);
   else if (!is_scalar_ret(vt) && !comp_ty_value_obj(c, vt)) buf_printf(b, "SP_GC_ROOT(_t%d); ", tw);
   buf_puts(b, "(void)(");

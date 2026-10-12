@@ -72,3 +72,35 @@ end
   o.fill
   p o.v
 end
+
+# the right-hand side runs only when the assignment is taken
+$ticks = 0
+def tick; $ticks += 1; end
+
+class Ticked
+  attr_reader :v
+  def initialize; @v = [0]; end
+  def clear; @v = nil; end
+  private
+  attr_writer :v
+end
+
+class TickedKid < Ticked
+  public
+  def v=(x); @v = x; end
+end
+
+begin
+  Ticked.new.v ||= [tick]
+  t = Ticked.new; t.clear; t.v &&= [tick]
+  p $ticks
+  t.v ||= [tick]
+rescue NoMethodError
+  p [:raised, $ticks]
+end
+k = TickedKid.new
+k.v ||= [tick]
+p [$ticks, k.v]
+k.clear
+k.v ||= [tick, tick]
+p [$ticks, k.v]
