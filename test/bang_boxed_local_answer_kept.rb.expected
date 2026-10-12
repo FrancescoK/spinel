@@ -1,0 +1,23 @@
+"AB!"
+"ab!?"
+"AB!"
+true
+"CD!"
+"EF!"
+"GH"
+"gh?"
+"A B|?"
+"bb!"
+true
+"IJ!"
+"ij!?"
+"KL012"
+"mn!?"
+"O\u0000P!"
+4
+"QR!"
+NoMethodError
+NoMethodError
+NoMethodError
+FrozenError
+"st"
