@@ -1568,7 +1568,6 @@ int strbuf_self_route_slot(Compiler *c, int v, int *uplus, char *out, size_t cap
    that answers its receiver's handle or nil (emit_bang_self_handle,
    `s.sub!(x, y)&.<<(z)`)? emit_strbuf_route_chain appends to that handle,
    and a safe link skips its nil where a plain one raises on it. */
-static int strbuf_bang_emits(Compiler *c, int v);
 static int strbuf_chain_bang_base(Compiler *c, int v, int base) {
   base = unwrap_parens(c, base);
   /* (a bang whose answer renders as its bytes, the handle held around the
@@ -1614,7 +1613,6 @@ static int strbuf_assign_route_d(Compiler *c, int v, int depth) {
   int ab = strbuf_append_base(c, v);
   return ab != v && strbuf_freeze_leaf_d(c, ab, depth + 1);
 }
-static int strbuf_bang_emits(Compiler *c, int v);
 static int strbuf_bang_leaf_d(Compiler *c, int v, int depth) {
   v = unwrap_parens(c, v);
   /* (an append link is the chain arm's, which appends in place) */
@@ -3673,10 +3671,8 @@ int emit_call_on_held_self_answer(Compiler *c, int id, Buf *b) {
   buf_printf(b, "_res%d; })", tH);
   return 1;
 }
-/* Does emit_bang_self_handle answer v's handle (it emits nothing for the
-   rest)? Every receiver strbuf_bang_self_local takes is a slot or a route
-   it reads, but for the two arms at the top of emit_bang_self_handle_1. */
-static int strbuf_bang_emits(Compiler *c, int v) {
+/* See codegen_internal.h. */
+int strbuf_bang_emits(Compiler *c, int v) {
   if (!repr_share_rule(c) || !strbuf_bang_self_local(c, v)) return 0;
   int r = nt_ref(c->nt, v, "receiver");
   return !(call_is_safe_nav(c->nt, v) && strbuf_assign_leaf(c, r) &&

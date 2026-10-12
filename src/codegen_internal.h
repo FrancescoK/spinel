@@ -151,6 +151,11 @@ extern int         g_sb_iv_cid;
 extern char        g_sb_iv_repl[64];
 int strbuf_slot_ref(Compiler *c, int recv, char *out, size_t cap);
 int strbuf_bang_self_local(const Compiler *c, int v);
+/* Does emit_bang_self_handle answer v's handle (it emits nothing for the
+   rest)? Every receiver strbuf_bang_self_local takes is a slot or a route
+   it reads, but for the two arms at the top of emit_bang_self_handle_1
+   (codegen_stmt.c). */
+int strbuf_bang_emits(Compiler *c, int v);
 void emit_strbuf_param_bind(Compiler *c, const LocalVar *pv, TyKind want, const char *src, Buf *b);
 /* `REF ||= v` / `REF &&= v` on a shared-handle String slot (codegen_expr.c) */
 void emit_strbuf_orw_guard(Compiler *c, const char *ref, int v, int is_or, Buf *b);
