@@ -5488,7 +5488,7 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
     arm_body_infer(c, ARM_SITE_FOLD_POLY2, block, TY_POLY, bb2, bn2);
     int spair = tpair2 && np2 == 1 && nt_str(nt, block, "sym_proc_arg") ? nt_ref(nt, block, "sym_proc_pair") : -1;
     int tpacked2 = 0;
-    if (spair >= 0) infer_type(c, spair);
+    if (spair >= 0) arm_node_infer(c, ARM_SITE_FOLD_PAIR, block, TY_POLY, spair);
     emit_indent(g_pre, g_indent + 1);
     buf_puts(g_pre, "{\n");
     if (gather2) {

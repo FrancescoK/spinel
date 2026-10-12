@@ -58,13 +58,26 @@ const ArmFact *arm_fact_find(const Compiler *c, int block, TyKind kind) {
   return NULL;
 }
 
-static void arm_record(Compiler *c, int block, LocalVar *lv, TyKind kind) {
+/* the fact for (block, kind), or with `extra` >= 0 the one for that node
+   typed after the body (a `map(&:sym)` pair's call), keyed by -2 - extra */
+static void arm_record_x(Compiler *c, int block, LocalVar *lv, TyKind kind, int extra) {
   const NodeTable *nt = c->nt;
-  if (arm_fact_find(c, block, kind)) return;
+  int key = extra >= 0 ? -2 - extra : block;
+  if (arm_fact_find(c, key, kind)) return;
   int body = nt_ref(nt, block, "body");
   int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
   int *nodes = NULL, len = 0, cap = 0;
-  for (int j = 0; j < bn; j++) arm_collect(nt, bb[j], &nodes, &len, &cap, 0);
+  /* the extra node's fact holds its own subtree; the body is typed first,
+     as the site types it, and put back with the rest */
+  int *bnodes = NULL, blen = 0, bcap = 0;
+  if (extra >= 0) {
+    arm_collect(nt, extra, &nodes, &len, &cap, 0);
+    for (int j = 0; j < bn; j++) arm_collect(nt, bb[j], &bnodes, &blen, &bcap, 0);
+  }
+  else for (int j = 0; j < bn; j++) arm_collect(nt, bb[j], &nodes, &len, &cap, 0);
+  TyKind *bsaved = malloc(sizeof *bsaved * (size_t)(blen ? blen : 1));
+  if (!bsaved) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int i = 0; i < blen; i++) bsaved[i] = bnodes[i] < c->node_cap ? c->ntype[bnodes[i]] : TY_UNKNOWN;
   TyKind *saved = malloc(sizeof *saved * (size_t)(len ? len : 1));
   TyKind *types = malloc(sizeof *types * (size_t)(len ? len : 1));
   if (!saved || !types) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
@@ -74,16 +87,21 @@ static void arm_record(Compiler *c, int block, LocalVar *lv, TyKind kind) {
   TyKind lsaved = lv ? lv->type : TY_UNKNOWN;
   if (lv) lv->type = kind;
   for (int j = 0; j < bn; j++) infer_type(c, bb[j]);
+  if (extra >= 0) infer_type(c, extra);
   for (int i = 0; i < len; i++) types[i] = nodes[i] < c->node_cap ? c->ntype[nodes[i]] : TY_UNKNOWN;
   if (lv) lv->type = lsaved;
   for (int i = 0; i < len; i++) if (nodes[i] < c->node_cap) c->ntype[nodes[i]] = saved[i];
-  free(saved);
+  for (int i = 0; i < blen; i++) if (bnodes[i] < c->node_cap) c->ntype[bnodes[i]] = bsaved[i];
+  free(saved); free(bsaved); free(bnodes);
   if (c->narm_facts >= c->carm_facts) {
     c->carm_facts = c->carm_facts ? c->carm_facts * 2 : 16;
     c->arm_facts = realloc(c->arm_facts, sizeof *c->arm_facts * (size_t)c->carm_facts);
     if (!c->arm_facts) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   }
-  c->arm_facts[c->narm_facts++] = (ArmFact){ block, kind, len, nodes, types };
+  c->arm_facts[c->narm_facts++] = (ArmFact){ key, kind, len, nodes, types };
+}
+static void arm_record(Compiler *c, int block, LocalVar *lv, TyKind kind) {
+  arm_record_x(c, block, lv, kind, -1);
 }
 
 void an_arm_facts(Compiler *c) {
@@ -102,7 +120,11 @@ void an_arm_facts(Compiler *c) {
     const char *p0 = block_param_name(c, block, 0);
     Scope *bs = p0 ? comp_scope_of(c, block) : NULL;
     LocalVar *lv = bs ? scope_local(bs, p0) : NULL;
-    if (kinds & AK_POLY) arm_record(c, block, lv, TY_POLY);
+    if (kinds & AK_POLY) {
+      arm_record(c, block, lv, TY_POLY);
+      int pair = nt_ref(nt, block, "sym_proc_pair");
+      if (pair >= 0) arm_record_x(c, block, lv, TY_POLY, pair);
+    }
     /* the receiver's own kind; a boxed one's arm is the boxed Array's */
     if ((kinds & AK_RECV) && rt != TY_UNKNOWN) arm_record(c, block, lv, rt == TY_POLY ? TY_POLY_ARRAY : rt);
     if (kinds & AK_STRING) arm_record(c, block, lv, TY_STRING);

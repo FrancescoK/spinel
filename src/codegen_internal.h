@@ -1907,8 +1907,9 @@ int emit_builtin_op_stage(Compiler *c, int id, int recv, TyKind rt, const char *
    inference rerun, as the sites below did inline. SP_ARM_TRACE=1 names
    each (site, block, kind) on stderr. */
 enum { ARM_SITE_TAP = 1, ARM_SITE_EACH_SLICE, ARM_SITE_SPLIT, ARM_SITE_SCAN, ARM_SITE_STR_UPTO,
-       ARM_SITE_COMB_CONS, ARM_SITE_FOLD_POLY, ARM_SITE_FOLD_POLY2, ARM_SITE_THEN };
+       ARM_SITE_COMB_CONS, ARM_SITE_FOLD_POLY, ARM_SITE_FOLD_POLY2, ARM_SITE_THEN, ARM_SITE_FOLD_PAIR };
 void arm_body_infer(Compiler *c, int site, int block, TyKind kind, const int *body, int n);
+void arm_node_infer(Compiler *c, int site, int block, TyKind kind, int node);
 /* codegen_view.c: a node's cached type overridden for one nested emission.
    view_push answers a token for the matching view_pop; a recovery point
    saves view_mark() and view_unwind()s back to it after a refusal.

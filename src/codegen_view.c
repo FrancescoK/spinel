@@ -314,7 +314,14 @@ void view_unwind(int mark) {
 static int arm_site_reads(int site) {
   return site == ARM_SITE_TAP || site == ARM_SITE_EACH_SLICE || site == ARM_SITE_SPLIT ||
          site == ARM_SITE_SCAN || site == ARM_SITE_STR_UPTO || site == ARM_SITE_COMB_CONS ||
-         site == ARM_SITE_FOLD_POLY || site == ARM_SITE_FOLD_POLY2;
+         site == ARM_SITE_FOLD_POLY || site == ARM_SITE_FOLD_POLY2 || site == ARM_SITE_FOLD_PAIR;
+}
+
+/* a node typed after the body under the same arm (the pair call of a
+   `map(&:sym)`), from its own fact (keyed by -2 - node) */
+void arm_node_infer(Compiler *c, int site, int block, TyKind kind, int node) {
+  arm_body_infer(c, site, -2 - node, kind, &node, 1);
+  (void)block;
 }
 
 void arm_body_infer(Compiler *c, int site, int block, TyKind kind, const int *body, int n) {
@@ -329,7 +336,7 @@ void arm_body_infer(Compiler *c, int site, int block, TyKind kind, const int *bo
   if (g_arm_check) {
     const ArmFact *f = arm_fact_find(c, block, kind);
     if (!f) fprintf(stderr, "arm-check: MISSING site %d block %d line %lld kind %s\n", site, block,
-                    (long long)nt_int(c->nt, block, "node_line", 0), ty_name(kind));
+                    (long long)(block >= 0 ? nt_int(c->nt, block, "node_line", 0) : 0), ty_name(kind));
     else
       for (int i = 0; i < f->n; i++)
         if (f->nodes[i] < c->node_cap && c->ntype[f->nodes[i]] != f->types[i]) {
@@ -346,6 +353,6 @@ void arm_body_infer(Compiler *c, int site, int block, TyKind kind, const int *bo
       cn = nt_str(c->nt, cid, "name"); int r = nt_ref(c->nt, cid, "receiver");
       rk = r >= 0 ? ty_name(c->ntype[r]) : "-"; break; }
     fprintf(stderr, "arm-trace: site %d block %d line %lld kind %s call %s recv %s\n", site, block,
-            (long long)nt_int(c->nt, block, "node_line", 0), ty_name(kind), cn ? cn : "?", rk);
+            (long long)(block >= 0 ? nt_int(c->nt, block, "node_line", 0) : 0), ty_name(kind), cn ? cn : "?", rk);
   }
 }
