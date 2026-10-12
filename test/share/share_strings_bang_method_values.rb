@@ -2,7 +2,8 @@
 # String (`def m(a) = a.upcase!`) answers that String, or nil when the bang
 # changed nothing: its call hands on the receiver itself, also through a
 # conditional, a case or a rescue modifier around the bang, and on a
-# receiver that is a box or an instance variable.
+# receiver that is a box (one an is_a? guard narrows too) or an instance
+# variable.
 def up(a) = a.upcase!
 def guarded(a) = (a.gsub!("b", "B") if a.is_a?(String))
 def picked(a, k)
@@ -54,3 +55,8 @@ h = H.new("ab")
 b = h.bang
 b << "i"
 p h.s, b.equal?(h.s), h.bang
+def narrowed(a) = (a.downcase! if a.is_a?(String))
+nx = +"NB"
+nr = narrowed(nx)
+nr << "?"
+p nx, nr.equal?(nx), narrowed(:s), narrowed(nx)

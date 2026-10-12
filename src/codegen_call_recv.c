@@ -13986,7 +13986,9 @@ static void emit_face_str_bang(Compiler *c, int id, unsigned own, int pub, Buf *
    method's value: its bytes or NULL, the receiver's handle published; 0 with
    nothing emitted for a call the face table does not take. A local an is_a?
    guard narrows out of its box (strbuf_narrowed_box_mutator) is lifted to
-   its handle first, as emit_narrowed_box_mutator lifts it. */
+   its handle first, as emit_narrowed_box_mutator lifts it: in the prelude,
+   ahead of the receiver capture emit_face_str_bang puts there, so the bang
+   writes into the lifted box and publishes its handle. */
 int emit_face_str_bang_pub(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   int narrowed = strbuf_narrowed_box_mutator(c, id) && nt_kind(nt, nt_ref(nt, id, "receiver")) == NK_LocalVariableReadNode;
@@ -14000,12 +14002,12 @@ int emit_face_str_bang_pub(Compiler *c, int id, Buf *b) {
   int r = nt_ref(nt, id, "receiver"), vr = -1;
   if (narrowed) {
     emit_local_ref(c, r, nt_str(nt, r, "name"), &lv);
-    buf_printf(b, "(%s = sp_poly_strbuf_lift(%s), ", lv.p, lv.p);
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "%s = sp_poly_strbuf_lift(%s);\n", lv.p, lv.p);
     vr = view_push(c, r, TY_POLY);   /* the receiver read as its box */
   }
   emit_face_str_bang(c, id, own, 1, b);
   if (vr >= 0) view_pop(c, vr);
-  if (narrowed) buf_puts(b, ")");
   free(lv.p);
   return 1;
 }
@@ -14050,9 +14052,9 @@ static void emit_face_str_bang(Compiler *c, int id, unsigned own, int pub, Buf *
   /* the transform read the receiver's bytes and sp_poly_str_become hands the
      result to its handle below: those reads are no copy. The answer of a bang
      used as a value (`x.strip! || x`) is the transformed bytes, which boxing
-     makes a new String: only a dropped answer is declared, and one answered
-     as the receiver's box. */
-  if (g_share_check && (boxed || share_node_transient(c, id))) share_check_declare_reads(&nbb, 0, recv);
+     makes a new String: only a dropped answer is declared, one answered
+     as the receiver's box, and a method's tail that publishes it (pub). */
+  if (g_share_check && (boxed || pub || share_node_transient(c, id))) share_check_declare_reads(&nbb, 0, recv);
   nt_node_set_str((NodeTable *)nt, id, "name", bang);
   if (vb >= 0) view_pop(c, vb);
   view_pop(c, v);
