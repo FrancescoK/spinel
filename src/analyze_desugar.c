@@ -16583,10 +16583,11 @@ int desugar_ffi_library_functions(Compiler *c) {
    module reached as a value (`h = Digest::MD5; h.hexdigest(s)`, an ivar
    holding one of several such modules) has to find that method the way it
    finds a `def self.name`, so each one gets a def of its declared arity,
-   last in the module's body, whose body is that constant-receiver call:
+   first in the module's body, whose body is that constant-receiver call:
      def self.<name>(nf_a0__, ...) = <Module>.<name>(nf_a0__, ...)
-   A def of the name the same body writes is what the module answers
-   instead, as is one a later reopening writes (the later def wins). A call
+   Any def of the name the program writes comes after it, in the same body
+   (`def self.name`, inside `class << self`) or a later reopening, and the
+   later def is what the module answers. A call
    on the constant that reaches this def calls C directly instead
    (cplan_resolve_call), keeping the binding's own argument handling
    (JSON.parse's symbolize_names). */
@@ -16651,8 +16652,8 @@ int desugar_native_func_defs(Compiler *c) {
     if (no == 0) continue;
     int *all = malloc(sizeof(int) * (size_t)(n + no));
     if (!all) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-    memcpy(all, st, sizeof(int) * (size_t)n);
-    memcpy(all + n, out, sizeof(int) * (size_t)no);
+    memcpy(all, out, sizeof(int) * (size_t)no);
+    memcpy(all + no, st, sizeof(int) * (size_t)n);
     nt_node_set_arr(nt, body, "body", all, n + no);
     free(all); free(out);
     changed = 1;
