@@ -6418,6 +6418,11 @@ static int fwd_method_called_blockless(Compiler *c, Scope *ms) {
     if (!un || !sp_streq(un, ms->name)) continue;
     int ub = nt_ref(nt, u, "block");
     if (ub >= 0 && nt_kind(nt, ub) == NK_BlockNode) continue;
+    /* a respond_to? probe is analysis-only and never runs: counted as a
+       blockless call, it put the blockless form beside the forward, which a
+       File or IO loop does not have, and the clone a poly dispatch arm runs
+       was refused (#8721) */
+    if (nt_int(nt, u, "rt_probe", 0)) continue;
     int ur = nt_ref(nt, u, "receiver");
     if (ur < 0 || ms->is_cmethod) return 1;
     TyKind ut = infer_type(c, ur);
