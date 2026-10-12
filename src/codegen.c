@@ -2314,12 +2314,12 @@ void emit_boxed(Compiler *c, int node, Buf *b) {
      Range keeps for it, boxed, as a yield to a boxed block parameter hands
      it on; one it does not keep is boxed as the bytes it holds, as its read
      answers them */
-  int se = !lift && !arg_ran_first(node, 0) ? strbuf_route_srange_end(c, node) : 0;
+  int se = !lift && !arg_ran_first(node, 0) && strbuf_route_srange_kept(c, node) ? strbuf_route_srange_end(c, node) : 0;
   if (se) {
     int t = ++g_tmp;
     const char *h = se == 1 ? "hf" : "hl", *e = se == 1 ? "first" : "last";
     buf_printf(b, "({ sp_StrRange _t%d = ", t);
-    emit_expr(c, nt_ref(c->nt, unwrap_parens(c, node), "receiver"), b);
+    emit_srange_end_recv(c, node, b);
     buf_printf(b, "; _t%d.%s ? sp_box_obj((sp_String *)_t%d.%s, SP_BUILTIN_STRBUF) : sp_box_str(_t%d.%s); })",
                t, h, t, h, t, e);
     if (g_repr_check) repr_channel_boxed(c, node, frame);

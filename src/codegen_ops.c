@@ -204,10 +204,15 @@ static int emit_op_template(Compiler *c, const BopCtx *x, Buf *b) {
     }
     /* a String Range's begin / end held in _t$T: the field, or under
        --share-strings the endpoint read off the handle it may keep
-       (sp_srange_first / sp_srange_last, #8321) */
+       (sp_srange_first / sp_srange_last, #8321), where #first / #last
+       raise for a beginless / endless Range, as CRuby's do
+       (sp_srange_need_end) */
     else if (p[0] == '$' && (p[1] == 'B' || p[1] == 'E')) {
       int beg = p[1] == 'B';
-      if (repr_share_rule(c)) buf_printf(b, "sp_srange_%s(_t%d)", beg ? "first" : "last", x->t0);
+      int chk = x->name && is_endpoint_query(x->name);
+      if (repr_share_rule(c) && chk)
+        buf_printf(b, "sp_srange_%s(sp_srange_need_end(_t%d, %d))", beg ? "first" : "last", x->t0, !beg);
+      else if (repr_share_rule(c)) buf_printf(b, "sp_srange_%s(_t%d)", beg ? "first" : "last", x->t0);
       else buf_printf(b, "_t%d.%s", x->t0, beg ? "first" : "last");
       p++;
     }

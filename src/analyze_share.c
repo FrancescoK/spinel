@@ -2839,8 +2839,10 @@ static int sh_call(ShareFacts *F, Compiler *c, int n) {
      Array of them without a block (first(n), last(n), take, to_a, entries,
      min(n), max(n)) holds no endpoint: a new container of new Strings, as
      `s.split`'s (sh_builtin). minmax answers the endpoints themselves, and
-     keeps the Array rows' answer. */
-  if (rt == TY_STR_RANGE && blk < 0 && c->ntype[n] == TY_STR_ARRAY && !is_minmax_pair(name))
+     keeps the Array rows' answer, as does a name the program may answer
+     itself (share_builtin_overridden). */
+  if (rt == TY_STR_RANGE && blk < 0 && c->ntype[n] == TY_STR_ARRAY && !is_minmax_pair(name) &&
+      !share_builtin_overridden(c, "Range", name))
     return sh_builtin(F, c, n, BSH_PURE, rv, blk, 0);
   TyKind fam = sh_family(rt);
   /* an iterator that keeps none of its block's values drops the block's
@@ -4555,6 +4557,22 @@ static int sh_has_jump_k(const NodeTable *nt, int n, int any) {
 static int sh_has_next(const NodeTable *nt, int n) { return sh_has_jump_k(nt, n, 0); }
 static int sh_has_jump(const NodeTable *nt, int n) { return sh_has_jump_k(nt, n, 1); }
 
+/* share.h: can a method of the program's own stand in for builtin class
+   cls's method `name` where the call plan does not see it: one a reopening
+   of cls defines, or a module's, which a prepend can put ahead of cls's
+   own? A reopened builtin's methods are not called for its values (an old
+   dispatch gap), so such a call answers the builtin's, not the program's;
+   the facts that take the builtin's answer for granted stand aside. */
+int share_builtin_overridden(Compiler *c, const char *cls, const char *name) {
+  int n = 0;
+  const PolyCand *p = name ? comp_poly_candidates(c, name, &n) : NULL;
+  for (int i = 0; i < n; i++) {
+    if (p[i].mi < 0 && p[i].rdcls < 0) continue;
+    ClassInfo *ci = &c->classes[p[i].cls];
+    if ((ci->name && sp_streq(ci->name, cls)) || comp_class_is_module(c, ci)) return 1;
+  }
+  return 0;
+}
 /* Does share row `share`, with argc arguments, answer a container of some
    of the receiver's own elements and of nothing else: a run of them
    (BSH_SUB, a selection BSH_ITER_SEL, BSH_FLATTEN), or a counted element
@@ -4586,9 +4604,12 @@ static int sh_fresh_elems(Compiler *c, int r, int depth) {
      share rows' run of them: sort, uniq, drop, reverse, compact, flatten,
      take, a counted first or min) over such a temporary container holds the
      same new Strings, which no name holds either. (A block's parameter
-     names them: `sort_by { |x| ... }` is left to the block's own facts.) */
+     names them: `sort_by { |x| ... }` is left to the block's own facts, and
+     a name the program may answer itself to the Array rows,
+     share_builtin_overridden.) */
   if (nm && recv >= 0 && blk < 0 && ty_is_array(c->ntype[recv]) &&
-      sh_answers_elems_run(bop_share_named(BOP_ANY_ARRAY, nm), call_plain_argc(c, r)))
+      sh_answers_elems_run(bop_share_named(BOP_ANY_ARRAY, nm), call_plain_argc(c, r)) &&
+      !share_builtin_overridden(c, "Array", nm))
     return sh_fresh_elems(c, recv, depth + 1);
   if (!nm || recv < 0 || blk < 0 || bop_share_named(BOP_ANY_ARRAY, nm) != BSH_ITER_MAP) return 0;
   /* map with a literal block whose value is a new String, and no next */
@@ -4753,7 +4774,8 @@ int share_value_fresh(Compiler *c, int n, int depth) {
   const char *nm = nt_str(nt, n, "name");
   int sh = nm && recv >= 0 && !sh_has_targets(c, n) ? bop_share_named(BOP_ANY_ARRAY, nm) : 0;
   /* (max and min with no block or count answer one of them too) */
-  if (sh == BSH_ITER_FIND && is_minmax_query(nm) && call_plain_argc(c, n) == 0) sh = BSH_ELEM;
+  if (sh == BSH_ITER_FIND && is_minmax_query(nm) && call_plain_argc(c, n) == 0 &&
+      !share_builtin_overridden(c, "Array", nm)) sh = BSH_ELEM;
   return (sh == BSH_ELEM || sh == BSH_ELEM_N) && nt_ref(nt, n, "block") < 0 && sh_fresh_elems(c, recv, depth + 1);
 }
 

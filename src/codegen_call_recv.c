@@ -7509,8 +7509,10 @@ static int str_arms_convert(Compiler *c, int id, Buf *b, const NodeTable *nt, co
        against a handle: the handle the Range keeps is compared (#8321) */
     if (!eq_sblv) {
       char sx[192];
-      int rse = strbuf_route_srange_end(c, recv) && strbuf_slot_ref(c, argv[0], sx, sizeof sx);
-      int ase = !rse && strbuf_route_srange_end(c, argv[0]) && strbuf_slot_ref(c, recv, sx, sizeof sx);
+      int rse = (strbuf_route_srange_end(c, recv) || strbuf_route_srange_extreme(c, recv)) &&
+                strbuf_slot_ref(c, argv[0], sx, sizeof sx);
+      int ase = !rse && (strbuf_route_srange_end(c, argv[0]) || strbuf_route_srange_extreme(c, argv[0])) &&
+                strbuf_slot_ref(c, recv, sx, sizeof sx);
       if (rse || ase) {
         int th = ++g_tmp;
         buf_printf(b, "({ sp_String *_t%d = ", th);
@@ -7521,17 +7523,37 @@ static int str_arms_convert(Compiler *c, int id, Buf *b, const NodeTable *nt, co
     }
     /* ...and two such endpoints: each is the handle its Range keeps, else
        the String it holds (sp_srange_end_id), as `r3 = r.dup;
-       r3.begin.equal?(r.begin)` shares them */
+       r3.begin.equal?(r.begin)` shares them; a min or max is the endpoint
+       it answers, or a String of its own (sp_srange_extreme_id) */
     if (!eq_sblv) {
       int ra = strbuf_route_srange_end(c, recv), rb = strbuf_route_srange_end(c, argv[0]);
-      if (ra && rb) {
+      int xa = ra ? 0 : strbuf_route_srange_extreme(c, recv), xb = rb ? 0 : strbuf_route_srange_extreme(c, argv[0]);
+      if ((ra || xa) && (rb || xb)) {
         int ta = ++g_tmp, tb = ++g_tmp;
         buf_printf(b, "({ sp_StrRange _t%d = ", ta);
-        emit_expr(c, nt_ref(c->nt, unwrap_parens(c, recv), "receiver"), b);
+        if (ra) emit_srange_end_recv(c, recv, b);
+        else emit_expr(c, nt_ref(c->nt, unwrap_parens(c, recv), "receiver"), b);
         buf_printf(b, "; SP_GC_ROOT_SRANGE(_t%d); sp_StrRange _t%d = ", ta, tb);
-        emit_expr(c, nt_ref(c->nt, unwrap_parens(c, argv[0]), "receiver"), b);
-        buf_printf(b, "; (sp_bool)(sp_srange_end_id(_t%d, %d) == sp_srange_end_id(_t%d, %d)); })",
-                   ta, ra == 2, tb, rb == 2);
+        if (rb) emit_srange_end_recv(c, argv[0], b);
+        else emit_expr(c, nt_ref(c->nt, unwrap_parens(c, argv[0]), "receiver"), b);
+        if (ra && rb)
+          buf_printf(b, "; (sp_bool)(sp_srange_end_id(_t%d, %d) == sp_srange_end_id(_t%d, %d)); })",
+                     ta, ra == 2, tb, rb == 2);
+        else {
+          /* a min / max answer is held while the other side is taken: a new
+             String's identity is its own only while it lives */
+          buf_printf(b, "; SP_GC_ROOT_SRANGE(_t%d); sp_String *_h%d = NULL; SP_GC_ROOT(_h%d); sp_String *_h%d = NULL; SP_GC_ROOT(_h%d);",
+                     tb, ta, ta, tb, tb);
+          if (xa) buf_printf(b, " _h%d = sp_srange_extreme_h(_t%d, %d);", ta, ta, xa == 2);
+          if (xb) buf_printf(b, " _h%d = sp_srange_extreme_h(_t%d, %d);", tb, tb, xb == 2);
+          buf_puts(b, " (sp_bool)(");
+          if (ra) buf_printf(b, "sp_srange_end_id(_t%d, %d)", ta, ra == 2);
+          else buf_printf(b, "sp_srange_extreme_id(_t%d, %d, _h%d)", ta, xa == 2, ta);
+          buf_puts(b, " == ");
+          if (rb) buf_printf(b, "sp_srange_end_id(_t%d, %d)", tb, rb == 2);
+          else buf_printf(b, "sp_srange_extreme_id(_t%d, %d, _h%d)", tb, xb == 2, tb);
+          buf_puts(b, "); })");
+        }
         eq_sblv = 1;
       }
     }

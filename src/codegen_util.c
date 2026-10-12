@@ -3096,14 +3096,17 @@ int strbuf_object_ref(Compiler *c, int recv, Buf *b) {
     return 1;
   }
   /* --share-strings: a String Range's begin / end is the String it holds,
-     a kept endpoint's handle included (sp_srange_end_id, #8321) */
-  int se = strbuf_route_srange_end(c, recv);
-  if (se) {
+     a kept endpoint's handle included (sp_srange_end_id, #8321); its min /
+     max the endpoint, or a new String (sp_srange_extreme_id) */
+  int se = strbuf_route_srange_end(c, recv), sx = se ? 0 : strbuf_route_srange_extreme(c, recv);
+  if (se || sx) {
     int t = ++g_tmp;
     buf_printf(b, "({ sp_StrRange _t%d = ", t);
-    emit_expr(c, nt_ref(c->nt, unwrap_parens(c, recv), "receiver"), b);
-    buf_printf(b, "; const void *_i%d = sp_srange_end_id(_t%d, %d); _i%d ? (sp_int)(uintptr_t)_i%d : SP_NIL_OBJECT_ID; })",
-               t, t, se == 2, t, t);
+    if (se) emit_srange_end_recv(c, recv, b);
+    else emit_expr(c, nt_ref(c->nt, unwrap_parens(c, recv), "receiver"), b);
+    if (se) buf_printf(b, "; const void *_i%d = sp_srange_end_id(_t%d, %d);", t, t, se == 2);
+    else buf_printf(b, "; const void *_i%d = sp_srange_extreme_id(_t%d, %d, sp_srange_extreme_h(_t%d, %d));", t, t, sx == 2, t, sx == 2);
+    buf_printf(b, " _i%d ? (sp_int)(uintptr_t)_i%d : SP_NIL_OBJECT_ID; })", t, t);
     return 1;
   }
   /* an attribute assignment on a handle, freeze or a chain over one: that handle's */
@@ -5405,6 +5408,22 @@ void emit_opw_okey_read(const char *t, Buf *b) {
    element boxed as a handle of its own (a slot whose elements the rule
    shares, or a fresh Array an iterator consumes: share_node_fresh_elems) */
 void emit_str_array_handles(Compiler *c, int v, Buf *b) {
+  /* a String Range's minmax: its min and max as they answer them, the
+     endpoints themselves (sp_srange_extreme_h), not copies */
+  int u = unwrap_parens(c, v);
+  if (repr_share_rule(c) && u >= 0 && nt_kind(c->nt, u) == NK_CallNode && is_minmax_pair(nt_str(c->nt, u, "name")) &&
+      nt_ref(c->nt, u, "arguments") < 0 && nt_ref(c->nt, u, "block") < 0 && nt_ref(c->nt, u, "receiver") >= 0 &&
+      comp_ntype(c, nt_ref(c->nt, u, "receiver")) == TY_STR_RANGE && cplan_user(c, u)->dispatch == CP_NONE &&
+      !share_builtin_overridden(c, "Range", "minmax")) {
+    int tr = ++g_tmp, tp = ++g_tmp;
+    buf_printf(b, "({ sp_StrRange _t%d = ", tr);
+    emit_expr(c, nt_ref(c->nt, u, "receiver"), b);
+    buf_printf(b, "; SP_GC_ROOT_SRANGE(_t%d); sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
+                  " sp_PolyArray_push(_t%d, sp_box_nullable_obj(sp_srange_extreme_h(_t%d, 0), SP_BUILTIN_STRBUF));"
+                  " sp_PolyArray_push(_t%d, sp_box_nullable_obj(sp_srange_extreme_h(_t%d, 1), SP_BUILTIN_STRBUF)); _t%d; })",
+               tr, tp, tp, tp, tr, tp, tr, tp);
+    return;
+  }
   int ta = ++g_tmp, tp = ++g_tmp, ti = ++g_tmp;
   buf_printf(b, "({ sp_StrArray *_t%d = ", ta);
   emit_expr(c, v, b);

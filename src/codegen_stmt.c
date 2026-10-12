@@ -1949,13 +1949,30 @@ int strbuf_route_srange_extreme(Compiler *c, int v) {
   int recv = nt_ref(nt, v, "receiver");
   if (!nm || recv < 0 || nt_ref(nt, v, "arguments") >= 0 || nt_ref(nt, v, "block") >= 0 ||
       comp_ntype(c, recv) != TY_STR_RANGE || cplan_user(c, v)->dispatch != CP_NONE) return 0;
-  if (!is_minmax_query(nm)) return 0;
+  /* (a reopening or a module may define the name, which the plan does not
+     see: the builtin's answer is not the call's) */
+  if (!is_minmax_query(nm) || share_builtin_overridden(c, "Range", nm)) return 0;
   return sp_streq(nm, "max") ? 2 : 1;
 }
 /* Does v answer one of a String Range's endpoint Strings, as a route that
-   hands on the handle the Range keeps (either of the above)? */
+   hands on the handle the Range keeps (either of the above), where no
+   method of the program's own may stand in for it? */
 int strbuf_route_srange_kept(Compiler *c, int v) {
-  return strbuf_route_srange_end(c, v) || strbuf_route_srange_extreme(c, v);
+  return (strbuf_route_srange_end(c, v) &&
+          !share_builtin_overridden(c, "Range", nt_str(c->nt, unwrap_parens(c, v), "name"))) ||
+         strbuf_route_srange_extreme(c, v);
+}
+/* The receiver of String Range route v (strbuf_route_srange_end), held as
+   the Range: for #first / #last, which raise for a beginless / endless
+   Range where #begin / #end answer nil, checked so
+   (sp_srange_need_end) */
+void emit_srange_end_recv(Compiler *c, int v, Buf *b) {
+  v = unwrap_parens(c, v);
+  const char *nm = nt_str(c->nt, v, "name");
+  int chk = nm && is_endpoint_query(nm);
+  if (chk) buf_puts(b, "sp_srange_need_end(");
+  emit_expr(c, nt_ref(c->nt, v, "receiver"), b);
+  if (chk) buf_printf(b, ", %d)", is_range_end_reader(nm));
 }
 static int exc_text_call(Compiler *c, int v) { return exc_text_call_on(c, v, 0); }
 /* --share-strings: an exception's #message read off a boxed receiver every
@@ -2229,7 +2246,7 @@ static int strbuf_route_carries(Compiler *c, int v, int depth) {
   if (strbuf_route_proc_call(c, v) || strbuf_route_ivar_get(c, v) || strbuf_route_begin(c, v) || strbuf_route_yield(c, v) ||
       strbuf_route_inline_call(c, v) || strbuf_route_reopen_pf(c, v) || strbuf_route_ie(c, v) || strbuf_route_loop(c, v) || repr_call_returns_handle(c, v) ||
       strbuf_route_exc_message(c, v) || strbuf_route_boxed_exc_message(c, v) || strbuf_route_reader(c, v) ||
-      strbuf_route_srange_kept(c, v)) return 1;
+      strbuf_route_srange_end(c, v) || strbuf_route_srange_extreme(c, v)) return 1;
   if (strbuf_assign_leaf(c, v) || strbuf_bang_leaf(c, v)) return 1;
   /* a receiver-answering method on a value route over a handle (`(+s).insert(0, "<")`):
      the route's handle (emit_bang_self_handle) */
@@ -2383,7 +2400,7 @@ int emit_strbuf_route(Compiler *c, int v, Buf *b) {
     int t = ++g_tmp;
     const char *h = se == 1 ? "hf" : "hl", *e = se == 1 ? "first" : "last";
     buf_printf(b, "({ sp_StrRange _t%d = ", t);
-    emit_expr(c, nt_ref(nt, v, "receiver"), b);
+    emit_srange_end_recv(c, v, b);
     buf_printf(b, "; _t%d.%s ? (sp_String *)_t%d.%s : sp_String_new_shared(_t%d.%s); })", t, h, t, h, t, e);
     return 1;
   }
@@ -21731,7 +21748,7 @@ static int strbuf_flow_route(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, in
   }
   if (strbuf_route_proc_call(c, v) || strbuf_route_ivar_get(c, v) || repr_call_returns_handle(c, v) ||
       strbuf_route_exc_message(c, v) || strbuf_route_boxed_exc_message(c, v) || strbuf_route_reader(c, v) ||
-      strbuf_route_srange_kept(c, v))
+      strbuf_route_srange_end(c, v) || strbuf_route_srange_extreme(c, v))
     return 1;
   if (nt_kind(nt, v) == NK_BeginNode) return strbuf_flow_begin(c, fm, v, depth);
   /* a rescue modifier the route takes (emit_strbuf_route, not a box):
@@ -21971,7 +21988,8 @@ static int strbuf_flow_value(Compiler *c, StrbufFlowMemo *fm, int ctx, int v, in
   if (ctx == SFC_TAIL && strbuf_tail_self_mutator(c, v)) return 1;
   if (ctx == SFC_TAIL)
     return (k == NK_BeginNode && strbuf_flow_begin(c, fm, v, depth)) || repr_call_returns_handle(c, v) ||
-           strbuf_route_exc_message(c, v) || strbuf_route_boxed_exc_message(c, v) || strbuf_route_srange_kept(c, v) ||
+           strbuf_route_exc_message(c, v) || strbuf_route_boxed_exc_message(c, v) || strbuf_route_srange_end(c, v) ||
+           strbuf_route_srange_extreme(c, v) ||
            (strbuf_route_ie(c, v) && strbuf_flow_route(c, fm, SFC_ALIAS, v, depth)) ||
            (is_unary_plus(nt_str(nt, v, "name")) && strbuf_flow_route(c, fm, ctx, v, depth));
   /* an append chain over a variable's handle, boxed as that handle; a
