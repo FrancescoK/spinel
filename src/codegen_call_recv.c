@@ -14060,6 +14060,22 @@ int emit_face_str_bang_pub(Compiler *c, int id, Buf *b) {
   free(lv.p);
   return 1;
 }
+/* A POLY local's or instance variable's read `recv` lifted to its handle in
+   the prelude (sp_poly_strbuf_lift), taken into a temp first as
+   emit_poly_lift_ref does, so what the call reads from the variable, writes
+   back to it and answers is the box of the String's handle. A read already
+   lifted (poly_strbuf_lift) lifts itself. */
+static void emit_poly_recv_lift_pre(Compiler *c, int recv) {
+  NodeKind k = nt_kind(c->nt, recv);
+  if ((k != NK_LocalVariableReadNode && k != NK_InstanceVariableReadNode) ||
+      !c->poly_strbuf_lift || c->poly_strbuf_lift[recv]) return;
+  Buf lv; memset(&lv, 0, sizeof lv);
+  emit_expr(c, recv, &lv);
+  int t = ++g_tmp;
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_RbVal _t%d = sp_poly_strbuf_lift(%s); %s = _t%d;\n", t, lv.p, lv.p, t);
+  free(lv.p);
+}
 /* A String value-form mutator on a boxed receiver: compute the non-bang
    transform against the unboxed contents, then write the result back
    through the box. The contents come from sp_poly_recv_s, as every other
@@ -14086,6 +14102,14 @@ static void emit_face_str_bang(Compiler *c, int id, unsigned own, int pub, Buf *
      itself, as in CRuby, where the bytes boxed again were a new String.
      The plain form re-entered below answers its String. */
   int boxed = !pub && repr_share_rule(c) && comp_ntype(c, id) == TY_POLY;
+  /* The receiver's own box is its String only where the box holds the
+     handle: a plain String box has none, become() answers a new box of the
+     new bytes, and a name the answer reaches (`t = s.upcase!`, an argument,
+     a yield, a caller of the method it ends) took a handle of its own, so
+     an append through it never reached s. A variable receiver whose answer
+     is kept is lifted to its handle first, as a second name for it is
+     (lift_poly_read). */
+  if ((boxed || (pub && repr_share_rule(c))) && !share_node_transient(c, id)) emit_poly_recv_lift_pre(c, recv);
   int tvb = ++g_tmp, tob = ++g_tmp, tnb = ++g_tmp;
   Buf rbb; memset(&rbb, 0, sizeof rbb); emit_expr(c, recv, &rbb);
   emit_indent(g_pre, g_indent);
