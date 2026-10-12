@@ -17273,13 +17273,70 @@ static int strbuf_store_leaf(Compiler *c, int sn, int depth, int mode);
 /* Some value stored into this container is a string (mode SB_HAS_STRING), or
    provably NOT one (SB_HAS_NONSTRING): a local bound from a method result or
    another variable answers for what that expression built. */
+/* The nodes that can store into a local named `name`, ascending: its
+   writes, and the calls on a read of it (strbuf_container_store_values
+   answers 0 for every other node). Rebuilt when the node table changes;
+   each query walked every node of the program, once per container element
+   a call argument reads. */
+static ANameHash g_cst_names;
+static int *g_cst_first, *g_cst_next, g_cst_cap = 0, g_cst_cnt = -1;
+static const NodeTable *g_cst_nt;
+static unsigned g_cst_ver;
+static int cst_first(Compiler *c, const char *name) {
+  const NodeTable *nt = c->nt;
+  if (g_cst_nt != nt || g_cst_ver != nt->version || g_cst_cnt != nt->count) {
+    anh_free(&g_cst_names); memset(&g_cst_names, 0, sizeof g_cst_names);
+    free(g_cst_first); free(g_cst_next);
+    g_cst_cap = 64;
+    g_cst_first = malloc(sizeof(int) * (size_t)g_cst_cap);
+    int *last = malloc(sizeof(int) * (size_t)g_cst_cap);
+    g_cst_next = malloc(sizeof(int) * (size_t)(nt->count > 0 ? nt->count : 1));
+    if (!g_cst_first || !last || !g_cst_next) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int w = 0; w < nt->count; w++) {
+      NodeKind wk = nt_kind(nt, w);
+      const char *nm = NULL;
+      if (wk == NK_LocalVariableWriteNode) nm = nt_str(nt, w, "name");
+      else if (wk == NK_CallNode) {
+        int r = nt_ref(nt, w, "receiver");
+        if (r >= 0 && nt_kind(nt, r) == NK_LocalVariableReadNode) nm = nt_str(nt, r, "name");
+      }
+      if (!nm) continue;
+      g_cst_next[w] = -1;
+      int k = anh_find(&g_cst_names, nm);
+      if (k < 0) {
+        anh_add(&g_cst_names, nm); k = g_cst_names.n - 1;
+        if (k >= g_cst_cap) {
+          g_cst_cap *= 2;
+          g_cst_first = realloc(g_cst_first, sizeof(int) * (size_t)g_cst_cap);
+          last = realloc(last, sizeof(int) * (size_t)g_cst_cap);
+          if (!g_cst_first || !last) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+        }
+        g_cst_first[k] = w;
+      }
+      else g_cst_next[last[k]] = w;
+      last[k] = w;
+    }
+    free(last);
+    g_cst_nt = nt; g_cst_ver = nt->version; g_cst_cnt = nt->count;
+  }
+  int k = name ? anh_find(&g_cst_names, name) : -1;
+  return k >= 0 ? g_cst_first[k] : -1;
+}
 static int strbuf_container_stores_kind(Compiler *c, const char *contn, Scope *conts,
                                         int depth, int mode) {
   const NodeTable *nt = c->nt;
   if (depth > 8) return 0;
   StoreVals stores = {0};
   int found = 0;
-  for (int w = 0; w < nt->count && !found; w++) {
+  /* the indexed nodes in ascending order, then any the walk itself added */
+  int n0 = nt->count;
+  int *cand = NULL, ncand = 0;
+  for (int w = cst_first(c, contn); w >= 0; w = g_cst_next[w]) {
+    if (!(ncand & (ncand - 1))) cand = realloc(cand, sizeof(int) * (size_t)(ncand ? ncand * 2 : 1));
+    cand[ncand++] = w;
+  }
+  for (int i = 0; !found && i < ncand + (nt->count - n0); i++) {
+    int w = i < ncand ? cand[i] : n0 + (i - ncand);
     int nst = strbuf_container_store_values(c, w, contn, conts, SB_KIND(mode) == SB_HAS_STRING, &stores);
     for (int e = 0; e < nst && !found; e++)
       found = strbuf_store_leaf(c, stores.v[e], depth, mode);
@@ -17290,6 +17347,7 @@ static int strbuf_container_stores_kind(Compiler *c, const char *contn, Scope *c
         found = 1;
     }
   }
+  free(cand);
   free(stores.v);
   return found;
 }
