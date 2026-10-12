@@ -1369,7 +1369,15 @@ sp_oint sp_sock_connect_nb(sp_File *f, const char *host, sp_int port, sp_bool ex
 /* connect_nonblock(sockaddr). The peer is already resolved into a packed
    struct sockaddr (the binary String returned by Socket.sockaddr_in or
    #to_sockaddr on an Addrinfo). connect(2) takes the raw bytes; we just
-   pass them through. Same nonblocking lifecycle as sp_sock_connect_nb. */
+   pass them through -- from an aligned copy. The GC String's data pointer
+   carries no alignment promise, and netstacks may require one: lwIP's
+   connect guard (IS_SOCK_ADDR_ALIGNED, MEM_ALIGNMENT=4) silently rejects
+   an unaligned address with ERR_ARG -> EIO before any packet is sent
+   (observed on ESP32: every 1-arg connect from a freshly allocated
+   String failed in microseconds while bind() -- which passes the
+   resolver's own aligned addrinfo buffer -- worked). Copy through a
+   maximally-aligned local, sized for sockaddr_storage. Same nonblocking
+   lifecycle as sp_sock_connect_nb. */
 sp_oint sp_sock_connect_nb_sa(sp_File *f, const char *sa, sp_int salen, sp_bool exc) {SP_GC_ROOT(f);SP_GC_ROOT_STR(sa);
   /* sp_sock_nb_prepare runs first: it checks the closed-socket and
      wrong-class guards and raises the matching exception (e.g. IOError
@@ -1381,8 +1389,14 @@ sp_oint sp_sock_connect_nb_sa(sp_File *f, const char *sa, sp_int salen, sp_bool 
     errno = EINVAL;
     sp_file_raise_errno("connect", "");
   }
+  if (salen > (sp_int)sizeof(struct sockaddr_storage)) {
+    errno = EINVAL;
+    sp_file_raise_errno("connect", "");
+  }
+  struct sockaddr_storage aligned_sa;
+  memcpy(&aligned_sa, sa, (size_t)salen);
   int saved = sp_io_nb_begin(f);
-  int rc = connect(fileno(f->fp), (const struct sockaddr *)sa, (socklen_t)salen);
+  int rc = connect(fileno(f->fp), (const struct sockaddr *)&aligned_sa, (socklen_t)salen);
   int ce = errno;
   sp_io_nb_end(f, saved);
   errno = ce;
