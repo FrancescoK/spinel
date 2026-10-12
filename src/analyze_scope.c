@@ -5254,10 +5254,11 @@ static void check_class_redeclarations(Compiler *c) {
 }
 
 /* Resolve each class's superclass index from its ClassNode. */
-/* Forwardable's def_delegator / def_delegators are rewritten by the parser
+/* Forwardable's def_delegator / def_delegators are lowered by the parser
    into forwarding defs when their arguments are a literal symbol list
-   (spinel_parse.c). A call that is still here is one that rewrite could not
-   read -- a splatted or computed name list, a string receiver -- and the
+   (sp_lower_delegators, spinel_parse.c). A call that is still here is one
+   that lowering does not take -- a splatted or computed name list, a string
+   receiver -- and the
    bundled Forwardable module is empty, so it defined nothing and every
    delegated call raised NoMethodError at run time (#4822). Refuse it where
    it is written instead. */

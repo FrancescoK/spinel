@@ -2259,20 +2259,38 @@ int emit_call_object_override_arms(Compiler *c, int id, Buf *b, const NodeTable 
     int na2 = nt_ref(nt, id, "arguments");
     int nc2 = 0; const int *nv2 = na2 >= 0 ? nt_arr(nt, na2, "arguments", &nc2) : NULL;
     if (nr2 >= 0 && nn2 && (sp_streq(nn2, "!") || sp_streq(nn2, "!=")) &&
-        nc2 == (sp_streq(nn2, "!") ? 0 : 1) && ty_is_object(comp_ntype(c, nr2))) {
+        ty_is_object(comp_ntype(c, nr2))) {
       int nd = ty_object_class(comp_ntype(c, nr2)), ndef = nd;
       int nmi2 = comp_method_in_chain(c, nd, nn2, &ndef);
+      /* The arguments go straight into the parameters only when there is
+         one plain parameter per argument; any other layout (a rest, an
+         optional, a keyword) or count binds them as every call does
+         (emit_args_filled): `def !=(*a)` took `w != [1, 2]`'s Array as its
+         rest array, and `def !(*a)` was called without one. */
+      Scope *nm2 = nmi2 >= 0 ? &c->scopes[nmi2] : NULL;
+      int plain = nm2 && nm2->nparams == nc2 && nc2 <= 1 && nm2->rest_idx < 0 && nm2->kwrest_idx < 0 &&
+                  (nc2 == 0 || (nm2->pdefault[0] < 0 && !callee_has_kwarg(c, nm2, nm2->pnames[0])));
       if (nmi2 >= 0) {
         /* A value-type object is passed BY VALUE (sp_X, not sp_X *): casting
            it to a pointer is not a conversion the C compiler accepts, so a
            class with ivars that defines #! did not build (#3819). */
         int nval = repr_of(c, nr2).kind == RK_VOBJ;
+        /* bound the general way, the arguments can allocate (a rest array)
+           while a fresh receiver (`Box.new(a) != b`) is held by nothing:
+           root it first */
+        int nht = !plain && !nval && !expr_is_held_ref(c, nr2) ? ++g_tmp : 0;
+        if (nht) {
+          buf_printf(b, "({ sp_%s *_t%d = (sp_%s *)(", c->classes[ndef].c_name, nht, c->classes[ndef].c_name);
+          emit_expr(c, nr2, b);
+          buf_printf(b, "); SP_GC_ROOT(_t%d); ", nht);
+        }
         buf_printf(b, "sp_%s_%s(", c->classes[ndef].c_name, mc(nn2));
         if (!nval) buf_printf(b, "(sp_%s *)", c->classes[ndef].c_name);
         buf_puts(b, "(");
-        emit_expr(c, nr2, b);
+        if (nht) buf_printf(b, "_t%d", nht); else emit_expr(c, nr2, b);
         buf_puts(b, ")");
-        if (nc2 == 1) {
+        if (!plain) emit_args_filled(c, nmi2, na2, ", ", b);
+        else if (nc2 == 1) {
           buf_puts(b, ", ");
           /* The callee's parameter decides the argument's form, as the
              general call path decides it: a parameter widened to poly (a
@@ -2282,7 +2300,7 @@ int emit_call_object_override_arms(Compiler *c, int id, Buf *b, const NodeTable 
           if (c->scopes[nmi2].nparams >= 1) emit_arg_or_default(c, &c->scopes[nmi2], 0, nv2[0], b);
           else emit_expr(c, nv2[0], b);
         }
-        buf_puts(b, ")");
+        buf_puts(b, nht ? "); })" : ")");
         return 1;
       }
     }

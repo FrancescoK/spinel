@@ -7581,9 +7581,9 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   /* `!`, `!=` and `==` are ordinary methods a class may override, so the
      result is whatever its definition answers, not a bool (#3740). `==` joins
      them: a class whose `==` answers something else had every call site typed
-     bool, and the value was rendered as true/false. */
-  if (recv >= 0 && (sp_streq(name, "!") || sp_streq(name, "!=") || sp_streq(name, "==")) &&
-      argc == (sp_streq(name, "!") ? 0 : 1)) {
+     bool, and the value was rendered as true/false. A user `!` or `!=` takes the
+     arguments written (`w.!=(1, 2)`), as emit_call_object_override_arms calls it. */
+  if (recv >= 0 && (sp_streq(name, "!") || sp_streq(name, "!=") || (sp_streq(name, "==") && argc == 1))) {
     TyKind nrt = infer_type(c, recv);
     if (ty_is_object(nrt)) {
       int nmi = comp_method_in_chain(c, ty_object_class(nrt), name, NULL);

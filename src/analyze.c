@@ -37487,7 +37487,7 @@ static int desugar_mutator_recv_rebind(Compiler *c) {
 }
 
 /* `m(&v)` where v is a boxed value that can be a Symbol: `&:name` is lowered
-   to the block `{ |_spx| _spx.name }` before parsing, but a Symbol that a poly
+   to the block `{ |_spx| _spx.name }` by the parser, but a Symbol that a poly
    value holds is known only at run time, and sp_poly_to_block refused it with
    TypeError. The Symbols the value can hold are the literals that flow into
    it, as far as psb_collect reads them off the source; each gets the proc

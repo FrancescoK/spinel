@@ -649,7 +649,8 @@ static int sp_word_char(char ch) {
 }
 
 /* `&:name` as a block argument: the block `{ |_spx| _spx.name }` (marked
-   sym_proc_block, which a user's own `{ |_spx| _spx.m }` is not). Spinel
+   sym_proc_block, which a user's own `{ |_spx| _spx.m }` is not), for a
+   name of word characters (a byte past ASCII is one, `&:café`). Spinel
    lowers the native shape only for a few methods (inject / reduce /
    sort_by); every other block taker reads the block. A unary operator
    (`&:-@`, `&:+@`, `&:~`) is the same call, `-_spx` (#4300). NULL for any
@@ -661,7 +662,7 @@ static pm_node_t *sp_sym_proc_block(pm_node_t *node) {
   size_t n = sp_plain_sym(((pm_block_argument_node_t *)node)->expression, &s);
   int word = n > 0;
   for (size_t i = 0; i < n; i++)
-    if (!sp_word_char(s[i]) && s[i] != '?' && s[i] != '!') word = 0;
+    if (!sp_word_char(s[i]) && s[i] != '?' && s[i] != '!' && (unsigned char)s[i] < 0x80) word = 0;
   if (!word && !(n == 2 && (s[0] == '-' || s[0] == '+') && s[1] == '@') && !(n == 1 && s[0] == '~'))
     return NULL;
   pm_block_node_t *b = sp_made(PM_BLOCK_NODE, sizeof *b, node);
