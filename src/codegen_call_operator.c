@@ -1258,6 +1258,10 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
       (comp_ntype(c, argv[0]) == TY_CLASS || repr_of(c, argv[0]).kind == RK_BOXED) &&
       !(nt_type(nt, argv[0]) && sp_streq(nt_type(nt, argv[0]), "ConstantReadNode"))) {
     int t = ++g_tmp, k = ++g_tmp;
+    /* the call typed as a box (a program class's own kind query may answer
+       other than true or false, #8653): the bool answer boxed for it */
+    int boxed_ans = repr_of(c, id).kind == RK_BOXED;
+    if (boxed_ans) buf_puts(b, "sp_box_bool(");
     buf_printf(b, "({ sp_RbVal _t%d = ", t);
     if (rt == TY_POLY) emit_expr(c, recv, b); else emit_boxed(c, recv, b);
     buf_printf(b, "; ");
@@ -1274,6 +1278,7 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
       buf_printf(b, "sp_poly_get_class(_t%d).cls_id == _t%d.cls_id; })", t, k);
     else
       buf_printf(b, "sp_poly_is_a(_t%d, _t%d); })", t, k);
+    if (boxed_ans) buf_puts(b, ")");
     return 1;
   }
 
