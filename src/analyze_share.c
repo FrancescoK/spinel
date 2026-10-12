@@ -4571,6 +4571,13 @@ static int sh_has_jump_k(const NodeTable *nt, int n, int any) {
 }
 static int sh_has_next(const NodeTable *nt, int n) { return sh_has_jump_k(nt, n, 0); }
 static int sh_has_jump(const NodeTable *nt, int n) { return sh_has_jump_k(nt, n, 1); }
+/* share.h */
+int share_block_returns(const Compiler *c, int blk) {
+  const NodeTable *nt = c->nt;
+  int body = blk >= 0 ? nt_ref(nt, blk, "body") : -1, n = 0;
+  const int *st = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &n) : NULL;
+  return n == 0 || nt_kind(nt, st[n - 1]) != NK_BreakNode || sh_has_next(nt, body);
+}
 
 /* share.h: can a method of the program's own stand in for builtin class
    cls's method `name` where the call plan does not see it: one a reopening
@@ -5166,8 +5173,10 @@ static int sh_route_why(const Compiler *c, const ShareRoute *q) {
   if (F && q->value >= 0 && !q->elems && share_assign_unjoined(c, q->value)) return SH_ROUTE_OK;
   /* a route that vouches for a local by its being the only name its String
      has: the final facts have to show a plain local that no other holder,
-     no capture and nothing the walk does not follow reaches */
-  if (q->sole >= 0) {
+     no capture and nothing the walk does not follow reaches. A scan block
+     that never returns to the scan cannot change the subject under it
+     (share_block_returns), whatever names the subject has. */
+  if (q->sole >= 0 && (q->to < 0 || share_block_returns(c, q->to))) {
     Scope *ss = comp_scope_of((Compiler *)c, q->sole);
     LocalVar *sl = ss ? scope_local(ss, nt_str(c->nt, q->sole, "name")) : NULL;
     if (!sl || sl->is_param || sl->is_block_param || sl->is_cell || sl->cell_outlives ||

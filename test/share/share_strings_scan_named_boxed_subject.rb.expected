@@ -1,0 +1,21 @@
+["a!", "b!", "c!"]
+"abc"
+"abc"
+"a!"
+"b!"
+["a!", "b!", "c!"]
+"abc"
+["b?", "c?"]
+"abc"
+"abc"
+["a?!", "b?"]
+"abc"
+"abc"
+["x!", "y!"]
+"xy"
+"a!b!\nc!d!\n"
+"ab\nc?d\n"
+6
+["ab\n|", "cd\n|"]
+"ab\ncd\n"
+"ab\ncd\n"

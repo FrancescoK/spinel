@@ -89,6 +89,7 @@ test/share/share_strings_grouped_elements.rb	test/share/share_strings_grouped_el
 test/share/share_strings_io_outbuf.rb	test/share/share_strings_io_outbuf.rb:20	CallNode (readpartial)	boxed as bytes by sp_box_str (sp_strbuf_read_pub)
 test/share/share_strings_io_outbuf.rb	test/share/share_strings_io_outbuf.rb:26	CallNode (pread)	boxed as bytes by sp_box_str (sp_strbuf_read_pub)
 test/share/share_strings_io_outbuf.rb	test/share/share_strings_io_outbuf.rb:30	CallNode (read)	boxed as bytes by sp_box_str (sp_strbuf_read_pub)
+test/share/share_strings_iter_untaken_break_receiver.rb	test/share/share_strings_iter_untaken_break_receiver.rb:62	LocalVariableReadNode (s8)	changed in place as bytes by sp_str_substr (bytes face)
 test/share/share_strings_net_http_zlib.rb	packages/uri/uri.rb:191	CallNode (path)	boxed as bytes by sp_box_str (bytes face)
 test/share/share_strings_poly_iterator_memos.rb	test/share/share_strings_poly_iterator_memos.rb:15	CallNode (to_s)	boxed as bytes by sp_box_str (bytes face)
 test/share/share_strings_poly_iterator_memos.rb	test/share/share_strings_poly_iterator_memos.rb:19	CallNode (to_s)	boxed as bytes by sp_box_str (bytes face)
