@@ -44,7 +44,7 @@ fi
 DECLS_AWK='
 function norm(t) { gsub(/[ \t]+/, " ", t); sub(/^ /, "", t); sub(/ $/, "", t); gsub(/ \*/, " *", t); return t }
 /^struct sp_[A-Za-z0-9_]+_s \{$/ { cls = $2; sub(/^sp_/, "", cls); sub(/_s$/, "", cls); next }
-cls != "" && /^\};/ { cls = ""; next }
+cls != "" && /^\}( SP_MAY_ALIAS)?;/ { cls = ""; next }
 cls != "" && match($0, /iv_[A-Za-z0-9_]+;$/) {
   t = substr($0, 1, RSTART - 1); nm = substr($0, RSTART + 3, RLENGTH - 4)
   print "ivar " cls " @" nm ": c=" norm(t); next

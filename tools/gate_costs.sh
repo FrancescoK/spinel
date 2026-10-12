@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# gate_costs.sh -- the run-time cost reports of #7501 as a gate leg.
+#
+#   tools/gate_costs.sh [REF-REV]
+#
+# Compares this tree's compiler with the one of REF-REV (default: the
+# merge-base of HEAD and origin/master) over the corpus (test/, benchmark/,
+# packages/*/test and optcarrot), with
+#
+#   tools/repr_diff.sh   the representation each slot takes (#7501 item 1)
+#   tools/c_costs.sh     the costly constructs in the generated C (item 2)
+#
+# over the programs whose generated C differs (each compiled once with each
+# compiler; an unchanged program is not looked at further),
+# and prints their summaries: nothing for a program that did not change, a
+# few lines for one that did, small enough to paste into a pull request.
+# They are reports, not verdicts: a cost a change brings is explained in
+# its pull request, or kept out of the programs that do not need the fix
+# (#7501's policy), so this leg does not fail on one. It fails only when it
+# cannot run. The reference compiler is built once per revision, in a
+# worktree under build/costref/<sha>, and kept for the next run.
+#
+# On the base itself (HEAD is the reference), or where no reference can be
+# found (no origin/master), it says so and passes. The reference is built
+# with `make all`: a package's native objects decide how its programs compile.
+set -u
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+cd "$ROOT" || exit 2
+NEW=$ROOT/bin/spinel
+[ -x "$NEW" ] || { echo "gate-costs: build bin/spinel first" >&2; exit 2; }
+REV=${1:-${GATE_COST_REF:-}}
+if [ -z "$REV" ]; then
+  REV=$(git merge-base HEAD origin/master 2>/dev/null) || { echo "gate-costs: skipped (no origin/master to compare with)"; exit 0; }
+fi
+SHA=$(git rev-parse --verify -q "$REV^{commit}") || { echo "gate-costs: skipped (unknown revision $REV)"; exit 0; }
+if [ "$SHA" = "$(git rev-parse HEAD)" ] && git diff --quiet HEAD -- src lib 2>/dev/null; then
+  echo "gate-costs: skipped (this tree is the reference ${SHA:0:9})"; exit 0
+fi
+JOBS=${GATE_COST_JOBS:-$(nproc 2>/dev/null || sysctl -n hw.ncpu)}
+REFT=$ROOT/build/costref/$SHA
+# one builder at a time per revision (flock on fd 8, dropped when we exit)
+mkdir -p "$ROOT/build/costref"
+exec 8>"$REFT.lock"
+perl -MFcntl=:flock -e 'open(my $fh, ">&=", 8) or die; flock($fh, LOCK_EX) or die' || exit 2
+if [ ! -x "$REFT/bin/spinel" ] || [ ! -f "$REFT/.done" ]; then
+  git worktree remove --force "$REFT" > /dev/null 2>&1; rm -rf "$REFT"
+  git worktree add --detach "$REFT" "$SHA" > /dev/null 2>&1 || { echo "gate-costs: cannot check out ${SHA:0:9}" >&2; exit 2; }
+  [ -d "$ROOT/vendor" ] && [ ! -d "$REFT/vendor" ] && cp -rL "$ROOT/vendor" "$REFT/vendor"
+  ( cd "$REFT" && make -j"$JOBS" -s all > "$REFT.build.log" 2>&1 ) || { echo "gate-costs: reference build failed (see $REFT.build.log)" >&2; exit 2; }
+  : > "$REFT/.done"
+  # keep the three newest references
+  ls -dt "$ROOT"/build/costref/*/ 2>/dev/null | tail -n +4 | while read -r d; do
+    git worktree remove --force "${d%/}" > /dev/null 2>&1; rm -rf "${d%/}" "${d%/}.lock" "${d%/}.build.log"
+  done
+fi
+PROGS=$(ls test/*.rb benchmark/*.rb packages/*/test/*.rb 2>/dev/null; [ -f build/optcarrot-single.rb ] && echo build/optcarrot-single.rb)
+# Each program to C once with each compiler; the reports look only at the
+# programs whose C differs, so a change that moves nothing costs two
+# compiles per program and no more.
+T=$(mktemp -d "${TMPDIR:-/tmp}/spinel-gate-costs.XXXXXX") || exit 2
+trap 'rm -rf "$T"' EXIT
+printf '%s\n' $PROGS | xargs -P "$JOBS" -I{} sh -c '
+  k=$(printf %s "$1" | tr / _)
+  "$2" -S --no-line-map "$1" > "$4/$k.ref.c" 2>/dev/null || rm -f "$4/$k.ref.c"
+  "$3" -S --no-line-map "$1" > "$4/$k.new.c" 2>/dev/null || rm -f "$4/$k.new.c"
+  if [ -f "$4/$k.ref.c" ] && [ -f "$4/$k.new.c" ]; then
+    if cmp -s "$4/$k.ref.c" "$4/$k.new.c"; then rm -f "$4/$k.ref.c" "$4/$k.new.c"
+    else printf "%s %s %s\n" "$1" "$4/$k.ref.c" "$4/$k.new.c" > "$4/$k.pair"; fi
+  else rm -f "$4/$k.ref.c" "$4/$k.new.c"; fi
+' _ {} "$REFT/bin/spinel" "$NEW" "$T"
+cat "$T"/*.pair 2>/dev/null | LC_ALL=C sort > "$T/pairs"
+nchg=$(wc -l < "$T/pairs" | tr -d ' ')
+echo "gate-costs: against ${SHA:0:9}, $(printf '%s\n' $PROGS | wc -l | tr -d ' ') programs, $nchg whose C differs"
+if [ "$nchg" -gt 0 ]; then
+  REPR_DIFF_JOBS=$JOBS tools/repr_diff.sh "$REFT/bin/spinel" "$NEW" $(cut -d' ' -f1 "$T/pairs") 2>&1 | sed 's/^/  /' | head -${GATE_COST_LINES:-40}
+  C_COSTS_JOBS=$JOBS tools/c_costs.sh --list "$T/pairs" 2>&1 | sed 's/^/  /' | head -${GATE_COST_LINES:-40}
+fi
+echo "gate-costs: report only (#7501): a cost above is explained in the pull request"
+exit 0

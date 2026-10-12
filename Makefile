@@ -53,7 +53,7 @@ RBS_SRC      = $(wildcard $(RBS_DIR)/src/*.c) $(wildcard $(RBS_DIR)/src/util/*.c
 RBS_OBJ      = $(patsubst $(RBS_DIR)/src/%.c,build/rbs/%.o,$(RBS_SRC))
 RBS_LIB      = build/librbs.a
 
-.PHONY: int-min-test all hooks share-strings-test gate-tool-test regexp wasm-rt wasm-test rbs_extract rbs-test rbs-seed-test inline-rbs-test rbs-seed-extractor cident plan-check-test timing-test shadow-check signal-default-test source-marker-test repr-check-test run-scale-test arm-check-test traits-check-test poly-cold-test bop-arity-check-test bop-share-check-test share-spec-check arity-spec-check re-lit-test reject-test cli-opts-test link-names-test defer-refusals-test check-stores-test backtrace-test gc-minor-test thread-puts-test ext-test ext-cruby-test alloc-report-test rubyspec rubyspec-gate spin-check \ repr-diff c-costs alloc-diff \
+.PHONY: int-min-test all hooks share-strings-test gate-tool-test regexp wasm-rt wasm-test rbs_extract rbs-test rbs-seed-test inline-rbs-test rbs-seed-extractor cident plan-check-test timing-test shadow-check signal-default-test source-marker-test repr-check-test run-scale-test gate-costs arm-check-test traits-check-test poly-cold-test bop-arity-check-test bop-share-check-test share-spec-check arity-spec-check re-lit-test reject-test cli-opts-test link-names-test defer-refusals-test check-stores-test backtrace-test gc-minor-test thread-puts-test ext-test ext-cruby-test alloc-report-test rubyspec rubyspec-gate spin-check \ repr-diff c-costs alloc-diff \
         test test-run clean-test-results regen-rbs-expected \
         regen-expected regen-expected-err bench optcarrot gate gate-full check gate-legs gate-test gate-test-shared gate-bench gc-phases-test gc-stress-test gc-str-major-test gc-str-budget-test threaded-render-test gc-locality-test test-corpus test-corpus-summary \
         gate-optcarrot rubyboy gate-rubyboy scale-test clean install uninstall deps tools
@@ -4999,6 +4999,14 @@ scale-test: $(SPINEL_WORK)
 # (test/fixtures/bisect/oracle.sh), and a stand-in compiler whose binaries
 # print which way one decision went (fake_spinel.sh). One of the gate's
 # property tests: gate-props waits for it.
+# The run-time cost checks of #7501 (matz, 2026-10-13: items 1, 2 and 4 in
+# the gate). run-scale-test fails past a shape's limit; gate-costs reports
+# the representation and C cost changes against the base and does not fail
+# on them (a cost is explained in the pull request).
+gate-props: run-scale-test gate-costs
+gate-costs: $(SPINEL)
+	@tools/gate_costs.sh
+
 gate-props: bisect-test
 bisect-test: $(SPINEL) bin/spinel-bisect
 	@ok=1; B=test/fixtures/bisect; f=test/gc_root_elided_array_slot.rb; \
