@@ -11,7 +11,8 @@
    With the flag on, each value choke point (emit_expr, emit_boxed,
    emit_strbuf_value) writes an in-band mark before the text of a String
    value whose plan (share_plan.c) needs the handle. A mark is the control
-   byte SK_OPEN, "sk", the node, the face, an optional "f", the plan's form
+   byte SK_OPEN, "sk", the node, the face, an optional "f", an optional
+   "t" (the plan lists a consumer that tests the value), the plan's form
    as a digit (SPF_*, plus SK_LIVE when the memo could not answer the need),
    and the control byte SK_CLOSE. Every emitter that
    writes program text into the C escapes a control byte, so the text of a
@@ -44,18 +45,28 @@
    only global is the flag (g_share_check).
 
    The marks follow the String plan (share_plan.c), asked live where the
-   emitter is: a value is marked where its plan needs a handle, and the
-   mark carries the plan's form there (handle, wrap or refuse). The harvest notes, per node, the most
-   copying conversion its marks show -- the handle (or a box holding it);
-   the bytes, read by a call or written back into the handle, with no copy
-   the check sees keeping them; the bytes wrapped into a new handle; the
-   bytes kept (boxed), changed or answered -- and the report compares it
-   with the plan:
+   emitter is: a value is marked where its own need (a taker's) is a
+   handle, or where a multiple write stores it into a target that needs
+   one (a store's need), and the mark carries the plan's form there for the role of the
+   value's consumer (share_plan_role). The harvest gives each mark a
+   consumer: a value whose bytes the C only tests for nil (a call that
+   answers its receiver, whose handle is then the answer) is its test's,
+   and any other is its consumer's in the program. Per node and consumer it
+   notes the most copying conversion the marks show -- the bytes, read by
+   a call or written back into the handle, with no copy the check sees
+   keeping them; the handle (or a box holding it, or bytes returned with
+   the handle published); the bytes wrapped into a new handle; the bytes
+   kept (boxed), changed or answered. A read is the least: where another
+   mark of the same consumer shows the handle, the bytes were read on the
+   way (a nil test, a dropped value) and the consumer took the handle. The
+   report compares the conversion with the plan:
      agree     the plan's handle and the handle, the plan's wrap and a wrap,
-               or the plan's refuse and a copy (no handle reaches either);
-     read      the bytes, kept by nothing the check sees: the need is the
-               value's, not its consumer's, so a consumer that only reads
-               asks for more than it uses;
+               the plan's refuse and a copy, or the plan's bytes (a
+               reader's, a test's) and no new handle;
+     read      a taker given the bytes, kept by nothing the check sees: a
+               consumer that only reads (one the share facts have no row
+               for, so the plan asks the object), or a handle passed on
+               where the check cannot follow it;
      disagree  anything else, named per node with its consumer.
    Where the plan's memo can answer the need (the node read as itself), its
    answer is compared with the live one, and a contradiction is counted
@@ -85,16 +96,21 @@ struct ShareAgree {
   int nopen, copen;
   int by_call;                  /* it ended at a call that took the bytes, with
                                    no write-back of what it answers */
-  /* the plan's side: per node, 1 + the most copying conversion (SKE_*) a
-     mark of it showed, and the plan's form at that mark; the memo answers
-     the live plan contradicted */
+  /* the plan's side: per node and consumer role (node * SK_ROLES + role),
+     1 + the most copying conversion (SKE_*) a mark of it showed, and the
+     plan's form at that mark; the memo answers the live plan contradicted */
   unsigned char *site_e, *site_form;
+  int published;                /* the bytes reached a return that publishes
+                                   their handle (sp_strbuf_read_pub) */
+  int at_return;                /* the value is a `return` statement's */
   unsigned long stale;
 };
 
 enum { SKC_NONE, SKC_WRAP, SKC_BOX, SKC_MUT, SKC_RET };
 /* the conversion a mark shows, the most copying last */
-enum { SKE_HANDLE, SKE_READ, SKE_WRAP, SKE_BYTES, SKE__COUNT };
+enum { SKE_READ, SKE_HANDLE, SKE_WRAP, SKE_BYTES, SKE__COUNT };
+/* the consumer roles a site is kept per (SPR_*) */
+enum { SK_ROLES = SPR_STORE + 1 };
 /* the control bytes that open and close a mark */
 enum { SK_OPEN = 1, SK_CLOSE = 2 };
 /* beside a mark's form: the memo could not answer the need, asked live */
@@ -114,12 +130,12 @@ static struct ShareAgree *sk_state(Compiler *c) {
   if (A->nseen < c->nt->count) {
     size_t n = (size_t)c->nt->count + 1, grow = n - (size_t)A->nseen;
     A->seen = realloc(A->seen, n);
-    A->site_e = realloc(A->site_e, n);
-    A->site_form = realloc(A->site_form, n);
+    A->site_e = realloc(A->site_e, n * SK_ROLES);
+    A->site_form = realloc(A->site_form, n * SK_ROLES);
     if (!A->seen || !A->site_e || !A->site_form) sk_oom();
     memset(A->seen + A->nseen, 0, grow);
-    memset(A->site_e + A->nseen, 0, grow);
-    memset(A->site_form + A->nseen, 0, grow);
+    memset(A->site_e + (size_t)A->nseen * SK_ROLES, 0, grow * SK_ROLES);
+    memset(A->site_form + (size_t)A->nseen * SK_ROLES, 0, grow * SK_ROLES);
     A->nseen = c->nt->count;
   }
   return A;
@@ -139,25 +155,31 @@ void share_check_free(Compiler *c) {
 }
 
 /* Mark the value of node v, which the emitter is about to write into b,
-   when its plan, asked live, needs a handle; the mark carries the plan's
-   form. face: 'x' the emitter's own face (what the node is as emitted), 'B'
-   a box, 'H' a handle for a shared slot. Where the memo can answer the
-   need, a contradiction of the live need is counted. */
+   when its own need, asked live, is a handle, or a multiple write stores
+   it into a target that needs one; the mark carries the plan's form for
+   its consumer's role. face: 'x' the emitter's own face (what the node is
+   as emitted), 'B' a box, 'H' a handle for a shared slot. Where the memo
+   can answer the need, a contradiction of the live need is counted. */
 int share_check_mark(Compiler *c, int v, char face, Buf *b) {
   if (!b) return 0;
-  /* the mark follows the plan asked live, so a stale memo cannot hide one;
+  /* the mark follows the need asked live, so a stale memo cannot hide one;
      the memo's need is measured against it */
   int mn = share_plan_memo_need(c, v), memo = mn >= 0;
-  SharePlan plan = share_plan_live(c, v);
-  if (memo && mn != plan.need) sk_state(c)->stale++;
-  if (plan.need == SPN_BYTES) return 0;
+  int need = share_plan_need(c, v);
+  if (memo && mn != need) sk_state(c)->stale++;
+  int role = share_plan_role(c, v);
+  SharePlan plan = share_plan_with_need(c, v, role, need);
+  /* (a store's need is never below the value's own) */
+  if (role == SPR_STORE) need = plan.need;
+  if (need == SPN_BYTES) return 0;
+  int tests = role == SPR_TEST || share_plan_second_role(c, v) == SPR_TEST;
   int pushed = face == 'x';   /* (only emit_expr's marks stay open) */
   if (face == 'x') {
     TyKind t = repr_of(c, v).as_ty;
     face = t == TY_STRBUF ? 'h' : t == TY_POLY ? 'p' : 'b';
   }
   size_t off = b->len;
-  buf_printf(b, "%csk%d%c%s%c%c", SK_OPEN, v, face, plan.need == SPN_NEW ? "f" : "",
+  buf_printf(b, "%csk%d%c%s%s%c%c", SK_OPEN, v, face, need == SPN_NEW ? "f" : "", tests ? "t" : "",
              '0' + (plan.form | (memo ? 0 : SK_LIVE)), SK_CLOSE);
   if (!pushed) return 0;
   struct ShareAgree *A = sk_state(c);
@@ -185,7 +207,7 @@ void share_check_mark_end(Compiler *c) {
 /* The mark that starts at p: its end, with the node, the face, whether the
    value is new and the plan's form; NULL when p starts no mark (whole: a
    lone SK_OPEN, or one with no end, is program text). */
-static const char *sk_mark_at(const char *p, long *node, char *face, int *fresh, int *form) {
+static const char *sk_mark_at(const char *p, long *node, char *face, int *fresh, int *tested, int *form) {
   if (p[0] != SK_OPEN || p[1] != 's' || p[2] != 'k') return NULL;
   const char *q = p + 3;
   long v = 0;
@@ -198,13 +220,16 @@ static const char *sk_mark_at(const char *p, long *node, char *face, int *fresh,
   if (f != 'b' && f != 'h' && f != 'p' && f != 'B' && f != 'H' && f != 'e') return NULL;
   int fr = *++q == 'f';
   if (fr) q++;
+  int ts = *q == 't';
+  if (ts) q++;
   int fm = *q - '0';
-  if (fm < 0 || (fm & ~SK_LIVE) < SPF_HANDLE || (fm & ~SK_LIVE) > SPF_REFUSE) return NULL;
+  if (fm < 0 || (fm & ~SK_LIVE) > SPF_REFUSE) return NULL;
   q++;
   if (*q != SK_CLOSE) return NULL;
   if (node) *node = v;
   if (face) *face = f;
   if (fresh) *fresh = fr;
+  if (tested) *tested = ts;
   if (form) *form = fm;
   return q + 1;
 }
@@ -212,7 +237,7 @@ static const char *sk_mark_at(const char *p, long *node, char *face, int *fresh,
 /* The first mark at or after p, or NULL. */
 static const char *sk_next(const char *p) {
   for (p = strchr(p, SK_OPEN); p; p = strchr(p + 1, SK_OPEN))
-    if (sk_mark_at(p, NULL, NULL, NULL, NULL)) return p;
+    if (sk_mark_at(p, NULL, NULL, NULL, NULL, NULL)) return p;
   return NULL;
 }
 
@@ -228,8 +253,9 @@ static const char *sk_next(const char *p) {
 
 /* Make the mark that ends at e exempt, if it is not already. */
 static void sk_exempt_mark(const char *e) {
-  char *face = (char *)e - 3;   /* before the form and SK_CLOSE; an `f` may sit
-                                   between */
+  char *face = (char *)e - 3;   /* before the form and SK_CLOSE; an `f` and a
+                                   `t` may sit between */
+  if (*face == 't') face--;
   if (*face == 'f') face--;
   if (*face != 'e') *face = 'e';
 }
@@ -243,7 +269,7 @@ void share_check_declare_value(Compiler *c, int node) {
     Buf *mb = A->open[i].b;
     size_t off = A->open[i].off;
     long n;
-    const char *e = mb->p && off < mb->len ? sk_mark_at(mb->p + off, &n, NULL, NULL, NULL) : NULL;
+    const char *e = mb->p && off < mb->len ? sk_mark_at(mb->p + off, &n, NULL, NULL, NULL, NULL) : NULL;
     if (e && n == node) sk_exempt_mark(e);   /* (else the text moved: the report stays) */
     return;
   }
@@ -254,7 +280,7 @@ void share_check_declare_reads(Buf *b, size_t from, int node) {
   if (!b || !b->p || from >= b->len) return;
   for (const char *p = sk_next(b->p + from); p; p = sk_next(p + 1)) {
     long n;
-    const char *e = sk_mark_at(p, &n, NULL, NULL, NULL);
+    const char *e = sk_mark_at(p, &n, NULL, NULL, NULL, NULL);
     if (n == node) sk_exempt_mark(e);
   }
 }
@@ -265,7 +291,7 @@ void share_check_declare_local_reads(Compiler *c, Buf *b, size_t from, const cha
   if (!b || !b->p || from >= b->len || !name) return;
   for (const char *p = sk_next(b->p + from); p; p = sk_next(p + 1)) {
     long node;
-    const char *e = sk_mark_at(p, &node, NULL, NULL, NULL);
+    const char *e = sk_mark_at(p, &node, NULL, NULL, NULL, NULL);
     if (node >= c->nt->count || nt_kind(c->nt, (int)node) != NK_LocalVariableReadNode) continue;
     const char *nm = nt_str(c->nt, (int)node, "name");
     if (nm && sp_streq(nm, name)) sk_exempt_mark(e);
@@ -329,7 +355,7 @@ static int sk_chain(const char *t, const char *lo, size_t m, char names[][64], i
 static const char *sk_skip_marks(const char *q) {
   for (;;) {
     while (*q == ' ') q++;
-    const char *e = sk_mark_at(q, NULL, NULL, NULL, NULL);
+    const char *e = sk_mark_at(q, NULL, NULL, NULL, NULL, NULL);
     if (!e) return q;
     q = e;
   }
@@ -379,6 +405,9 @@ static int sk_classify_at(struct ShareAgree *A, const char *t, const char *lo, s
   static const char *const transparent[] = { "", "sp_str_uplus", "SP_GC_ROOT_VAL", NULL };
   char names[24][64];
   size_t bound, outer;
+  /* (no temp unless the value is found assigned to one below: an early
+     answer must not leave the caller the last mark's) */
+  if (tmp) tmp[0] = 0;
   int n = sk_chain(t, lo, m, names, 24, &bound, &outer);
   A->by_call = 0;
   A->via[0] = A->helper[0] = A->consumer[0] = 0;
@@ -432,10 +461,15 @@ static int sk_classify_at(struct ShareAgree *A, const char *t, const char *lo, s
       snprintf(A->helper, sizeof A->helper, "return");
       return SKC_RET;
     }
+    /* bytes returned with their handle published: the caller's pickup
+       takes the handle */
+    if (outer - h >= 6 && !strncmp(t + h, "return", 6)) {
+      A->at_return = 1;
+      if (how == 2) A->published = 1;
+    }
   }
   /* a temp the value is assigned to whole: its uses decide */
   if (tmp) {
-    tmp[0] = 0;
     size_t j = outer;
     while (j > bound && t[j - 1] == ' ') j--;
     if (j > bound && t[j - 1] == '=' && (j < 2 || t[j - 2] != '=')) {
@@ -472,12 +506,59 @@ static void sk_report(Compiler *c, struct ShareAgree *A, int v, const char *what
   A->copies++;
 }
 
-/* Note the conversion e (SKE_*) a mark of node v shows, under the plan's
-   form at that mark: the node keeps its most copying one. */
-static void sk_plan_note(struct ShareAgree *A, long v, int e, int form) {
-  if (A->site_e[v] > e) return;
-  A->site_e[v] = (unsigned char)(e + 1);
-  A->site_form[v] = (unsigned char)form;
+/* Note the conversion e (SKE_*) a mark of node v shows for a consumer in
+   `role`, under the plan's form at that mark: the site keeps its most
+   copying one. */
+static void sk_plan_note(struct ShareAgree *A, long v, int role, int e, int form) {
+  size_t i = (size_t)v * SK_ROLES + (size_t)role;
+  if (A->site_e[i] > e) return;
+  A->site_e[i] = (unsigned char)(e + 1);
+  A->site_form[i] = (unsigned char)form;
+}
+
+/* Does the statement expression at q end in bytes read with their handle
+   published (its last statement, also after a block of its own)? */
+static int sk_stmts_publish(const char *q) {
+  q = sk_skip_marks(q);
+  if (q[0] != '(' || q[1] != '{') return 0;
+  int depth = 0;
+  const char *last = NULL;
+  for (const char *r = q; *r; r++) {
+    if (*r == '(' || *r == '{' || *r == '[') {
+      depth++;
+      continue;
+    }
+    if (*r == ')' || *r == '}' || *r == ']') {
+      if (--depth == 0) break;
+      if (*r != '}' || depth != 2) continue;
+    }
+    else if (*r != ';' || depth != 2) continue;
+    const char *x = r + 1;
+    while (*x == ' ' || *x == '\n') x++;
+    if (!(x[0] == '}' && x[1] == ')')) last = x;
+  }
+  const char *nm = NULL;
+  return last && sk_starts_unwrap(last, &nm) == 2;
+}
+
+/* Is temp `tmp`, which the bytes at p were assigned to, only tested for nil
+   in the rest of the function: each of its uses starts an expression and is
+   the condition of a `?:`? */
+static int sk_temp_tested(const char *p, const char *tmp) {
+  size_t tl = strlen(tmp);
+  const char *fn_end = strstr(p, "\n}\n");
+  int uses = 0;
+  for (const char *u = strstr(p + 1, tmp); u && (!fn_end || u < fn_end); u = strstr(u + tl, tmp)) {
+    if (isalnum((unsigned char)u[tl]) || u[tl] == '_' || isalnum((unsigned char)u[-1]) || u[-1] == '_') continue;
+    /* (rooting the temp is no use of its value) */
+    if (u - p >= 11 && !strncmp(u - 11, "SP_GC_ROOT(", 11)) continue;
+    const char *a = u + tl, *z = u;
+    while (*a == ' ') a++;
+    while (z > p && z[-1] == ' ') z--;
+    if (*a != '?' || (z[-1] != ';' && z[-1] != '{' && z[-1] != '(')) return 0;
+    uses++;
+  }
+  return uses > 0;
 }
 
 /* Read the mark at p (b->p + off) against its surroundings. */
@@ -485,8 +566,8 @@ static void sk_read_mark(Compiler *c, struct ShareAgree *A, Buf *b, const char *
   const char *t = b->p, *p = t + off;
   long v;
   char face;
-  int fresh, form;
-  const char *end = sk_mark_at(p, &v, &face, &fresh, &form);
+  int fresh, tested, form;
+  const char *end = sk_mark_at(p, &v, &face, &fresh, &tested, &form);
   if (!end || v >= c->nt->count) return;
   A->marks++;
   if (face == 'e') { A->declared++; return; }
@@ -503,7 +584,7 @@ static void sk_read_mark(Compiler *c, struct ShareAgree *A, Buf *b, const char *
     if (bare) { const char *y = x + 2; while (isdigit((unsigned char)*y)) y++; bare = *y == ';'; }
     const char *reset = strstr(lb, "_sp_ret_strbuf = NULL;");
     if (bare && face == 'b' && (size_t)(p - lb) < 200 && reset && reset < p && !fresh) {
-      sk_plan_note(A, v, SKE_WRAP, form);
+      sk_plan_note(A, v, share_plan_role(c, (int)v), SKE_WRAP, form);
       if (!A->seen[v]) {
         A->seen[v] = 1;
         sk_report(c, A, (int)v, "picked up after the call ran (always a new handle)");
@@ -512,6 +593,7 @@ static void sk_read_mark(Compiler *c, struct ShareAgree *A, Buf *b, const char *
     }
   }
   const char *unwrap = NULL;
+  A->published = A->at_return = 0;
   int tf = sk_text_bytes(t, (size_t)(end - t), &unwrap);
   if (tf) face = 'b';
   int bytes = face == 'b' ? (tf ? tf : 1) : 0;
@@ -532,7 +614,18 @@ static void sk_read_mark(Compiler *c, struct ShareAgree *A, Buf *b, const char *
     kind = SKC_MUT;
     snprintf(A->helper, sizeof A->helper, "%s", A->consumer);
   }
-  sk_plan_note(A, v, kind == SKC_WRAP ? SKE_WRAP : kind != SKC_NONE ? SKE_BYTES : bytes ? SKE_READ : SKE_HANDLE,
+  /* bytes returned as a statement expression that publishes them */
+  if (kind == SKC_NONE && bytes && A->at_return && !A->published && sk_stmts_publish(end)) A->published = 1;
+  /* the consumer: a nil test of bytes a temp holds, where the plan lists a
+     consumer that tests the value, or the value's own */
+  int role = share_plan_role(c, (int)v);
+  if (tested && kind == SKC_NONE && bytes && tmp[0] && sk_temp_tested(p, tmp)) {
+    role = SPR_TEST;
+    form = (form & SK_LIVE) | SPF_BYTES;
+  }
+  sk_plan_note(A, v, role,
+               kind == SKC_WRAP ? SKE_WRAP : kind != SKC_NONE ? SKE_BYTES
+               : bytes && !A->published ? SKE_READ : SKE_HANDLE,
                form);
   if (fresh && kind != SKC_BOX) kind = SKC_NONE;
   if (kind == SKC_NONE || A->seen[v]) return;
@@ -548,7 +641,7 @@ static void sk_read_mark(Compiler *c, struct ShareAgree *A, Buf *b, const char *
    operand's text for a temp (`_t12`) or compare it with one must not be
    told apart by a mark in front of it. */
 const char *share_check_unmarked(const char *t) {
-  for (const char *e; t && (e = sk_mark_at(t, NULL, NULL, NULL, NULL)); ) t = e;
+  for (const char *e; t && (e = sk_mark_at(t, NULL, NULL, NULL, NULL, NULL)); ) t = e;
   return t;
 }
 
@@ -557,7 +650,7 @@ const char *share_check_unmarked(const char *t) {
 size_t share_check_strip(char *s, size_t len) {
   size_t w = 0;
   for (size_t r = 0; r < len; ) {
-    const char *e = s[r] == SK_OPEN ? sk_mark_at(s + r, NULL, NULL, NULL, NULL) : NULL;
+    const char *e = s[r] == SK_OPEN ? sk_mark_at(s + r, NULL, NULL, NULL, NULL, NULL) : NULL;
     if (e) r = (size_t)(e - s);
     else s[w++] = s[r++];
   }
@@ -622,36 +715,58 @@ static const char *sk_consumer(Compiler *c, int v) {
   }
 }
 
-/* The plan against the conversions the marks showed: a disagreement is
-   named per node, and the summary counts each form's sites by the
-   conversion the C has. */
-static void sk_plan_report(Compiler *c, struct ShareAgree *A) {
-  static const char *const en[] = { "handle", "read", "wrap", "bytes" };
-  unsigned long tally[SPF_REFUSE + 1][SKE__COUNT], sites = 0, agree = 0, read = 0, nlive = 0;
-  memset(tally, 0, sizeof tally);
-  for (int v = 0; v < A->nseen; v++) {
-    if (!A->site_e[v]) continue;
-    int e = A->site_e[v] - 1, form = A->site_form[v] & ~SK_LIVE, live = (A->site_form[v] & SK_LIVE) != 0;
-    sites++;
-    nlive += live;
-    tally[form][e]++;
-    if (e == SKE_READ) { read++; continue; }
-    if ((form == SPF_HANDLE && e == SKE_HANDLE) || (form == SPF_WRAP && e == SKE_WRAP) ||
-        (form == SPF_REFUSE && e != SKE_HANDLE)) { agree++; continue; }
-    char what[128];
-    snprintf(what, sizeof what, "plan %s%s, C %s (%s)", share_plan_form_name(form), live ? " (live)" : "", en[e],
-             sk_consumer(c, v));
-    sk_line(c, A, "plan: disagree", v, what);
+/* Does the conversion e (SKE_*) a consumer was given agree with the plan's
+   form for it? */
+static int sk_plan_agrees(int form, int e) {
+  switch (form) {
+  case SPF_HANDLE: return e == SKE_HANDLE;
+  case SPF_WRAP: return e == SKE_WRAP;
+  case SPF_REFUSE: return e != SKE_HANDLE;   /* no handle reaches it either way */
+  default: return e != SKE_WRAP;             /* bytes: no new handle needed */
   }
+}
+
+/* The plan against the conversions the marks showed: a disagreement is
+   named per node and consumer, and the summary counts each form's sites by
+   the conversion the C has, and the sites by their consumer's role. */
+static void sk_plan_report(Compiler *c, struct ShareAgree *A) {
+  static const char *const en[] = { "read", "handle", "wrap", "bytes" };
+  unsigned long tally[SPF_REFUSE + 1][SKE__COUNT], roles[SK_ROLES], sites = 0, agree = 0, read = 0, nlive = 0;
+  memset(tally, 0, sizeof tally);
+  memset(roles, 0, sizeof roles);
+  for (int v = 0; v < A->nseen; v++)
+    for (int role = 0; role < SK_ROLES; role++) {
+      size_t i = (size_t)v * SK_ROLES + (size_t)role;
+      if (!A->site_e[i]) continue;
+      int e = A->site_e[i] - 1, form = A->site_form[i] & ~SK_LIVE, live = (A->site_form[i] & SK_LIVE) != 0;
+      sites++;
+      nlive += live;
+      roles[role]++;
+      tally[form][e]++;
+      /* a taker given the bytes, kept by nothing the check sees: the C
+         may hand them to a consumer that only reads (one the facts have no
+         row for), or pass a handle on where the check cannot follow it */
+      if (e == SKE_READ && role != SPR_READ && role != SPR_TEST) { read++; continue; }
+      if (sk_plan_agrees(form, e)) { agree++; continue; }
+      char what[160];
+      snprintf(what, sizeof what, "plan %s%s, C %s (%s, %s)", share_plan_form_name(form), live ? " (live)" : "",
+               en[e], share_plan_role_name(role), sk_consumer(c, v));
+      sk_line(c, A, "plan: disagree", v, what);
+    }
   qsort(A->line, (size_t)A->nline, sizeof(char *), sk_cmp_line);
   for (int i = 0; i < A->nline; i++) fprintf(stderr, "%s\n", A->line[i]);
   fprintf(stderr, "share-check: %lu marks, %lu declared, %lu copies\n", A->marks, A->declared, A->copies);
   fprintf(stderr, "share-check: plan: %lu sites, %lu agree, %lu read, %lu disagree", sites, agree, read,
           sites - agree - read);
-  for (int f = SPF_HANDLE; f <= SPF_REFUSE; f++)
-    fprintf(stderr, "%s %s %lu/%lu/%lu/%lu", f == SPF_HANDLE ? ";" : ",", share_plan_form_name(f),
-            tally[f][SKE_HANDLE], tally[f][SKE_READ], tally[f][SKE_WRAP], tally[f][SKE_BYTES]);
-  fprintf(stderr, " (C handle/read/wrap/bytes); %lu live, %lu stale\n", nlive, A->stale);
+  static const int order[] = { SPF_HANDLE, SPF_WRAP, SPF_REFUSE, SPF_BYTES };
+  for (int k = 0; k < 4; k++) {
+    int f = order[k];
+    fprintf(stderr, "%s %s %lu/%lu/%lu/%lu", k == 0 ? ";" : ",", share_plan_form_name(f), tally[f][SKE_HANDLE],
+            tally[f][SKE_READ], tally[f][SKE_WRAP], tally[f][SKE_BYTES]);
+  }
+  fprintf(stderr, " (C handle/read/wrap/bytes); by consumer");
+  for (int r = 0; r < SK_ROLES; r++) fprintf(stderr, "%s %s %lu", r ? "," : "", share_plan_role_name(r), roles[r]);
+  fprintf(stderr, "; %lu live, %lu stale\n", nlive, A->stale);
 }
 
 /* The unit is written (a refused one never gets here): the reports sorted,
