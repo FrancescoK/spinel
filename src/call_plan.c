@@ -225,6 +225,9 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
   if (sci >= 0 || (rty && (sp_streq(rty, "ConstantReadNode") || sp_streq(rty, "ConstantPathNode")))) {
     int ci = sci >= 0 ? sci : comp_class_index(c, nt_str(nt, recv, "name"));
     int mi = ci >= 0 ? comp_cmethod_in_chain(c, ci, name, NULL) : -1;
+    /* a package's native_func, which the constant calls in C directly; its
+       def is for the module reached as a value */
+    if (sci < 0 && comp_scope_native_twin(c, mi)) return;
     if (mi >= 0) { cplan_set(p, mi, ci, UC_CMETH, CP_DIRECT); return; }
     /* a method the program adds to Class, on a builtin class constant */
     int rmi = class_reopen_cmethod(c, recv, name);

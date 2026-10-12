@@ -16349,6 +16349,51 @@ static int ffi_symbol(NodeTable *nt, int like, const char *name) {
   return sy;
 }
 
+/* Parameters `<fmt % 0>` .. `<fmt % (n-1)>` on ps, the first nreq required
+   and the rest optional with a nil default, and a read of each into el:
+   the argument list a forwarding def hands its callee. */
+static void fixed_params_like(NodeTable *nt, int like, const char *fmt, int n, int nreq, int ps, int *el) {
+  int *rq = malloc(sizeof(int) * (size_t)(n > 0 ? n : 1));
+  int *op = malloc(sizeof(int) * (size_t)(n > 0 ? n : 1));
+  if (!rq || !op) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int i = 0; i < n; i++) {
+    char pn[32]; snprintf(pn, sizeof pn, fmt, i);
+    if (i < nreq) {
+      rq[i] = fwd_new_node_like(nt, like, "RequiredParameterNode");
+      nt_node_set_str(nt, rq[i], "name", pn);
+    }
+    else {
+      op[i - nreq] = fwd_new_node_like(nt, like, "OptionalParameterNode");
+      nt_node_set_str(nt, op[i - nreq], "name", pn);
+      nt_node_set_ref(nt, op[i - nreq], "value", fwd_new_node_like(nt, like, "NilNode"));
+    }
+    el[i] = local_read_like(nt, like, pn);
+  }
+  nt_node_set_arr(nt, ps, "requireds", rq, nreq);
+  if (n > nreq) nt_node_set_arr(nt, ps, "optionals", op, n - nreq);
+  free(rq); free(op);
+}
+
+/* The DefNode of `def self.<name>(...) = <call>`, made ahead of its
+   parts (whose nodes follow it, as a parsed def's do), its StatementsNode
+   in *body; self_def_finish fills it in. -1 when a node cannot be made. */
+static int self_def_start(NodeTable *nt, int like, int *body) {
+  int def = fwd_new_node_like(nt, like, "DefNode");
+  int self = fwd_new_node_like(nt, like, "SelfNode");
+  *body = fwd_new_node_like(nt, like, "StatementsNode");
+  if (def < 0 || self < 0 || *body < 0) return -1;
+  nt_node_set_ref(nt, def, "receiver", self);
+  return def;
+}
+/* name the def, give it parameter list ps (-1 for none) and the one call */
+static int self_def_finish(NodeTable *nt, int def, int body, const char *mname, int ps, int call) {
+  nt_node_set_arr(nt, body, "body", &call, 1);
+  nt_node_set_str(nt, def, "name", mname);
+  if (ps >= 0) nt_node_set_ref(nt, def, "parameters", ps);
+  nt_node_set_ref(nt, def, "body", body);
+  return def;
+}
+
 /* def self.<mname>(<params>) = <helper>(:<key>, <args...>) */
 static int ffi_forwarding_def(NodeTable *nt, int like, const char *mname, const char *helper,
                               const char *key, int with_rest, int with_block, int with_value) {
@@ -16412,37 +16457,21 @@ static int ffi_builtin_type_name(const char *n) {
    an arity the compiler knows is one `method(:name)` and every other
    dispatch path can bind (a *rest method is not). */
 static int ffi_fixed_def(NodeTable *nt, int like, const char *mname, const char *key, int nparams, int with_block) {
-  int def = fwd_new_node_like(nt, like, "DefNode");
-  int self = fwd_new_node_like(nt, like, "SelfNode");
-  int body = fwd_new_node_like(nt, like, "StatementsNode");
+  int body = -1;
+  int def = self_def_start(nt, like, &body);
   int call = fwd_new_node_like(nt, like, "CallNode");
   int args = fwd_new_node_like(nt, like, "ArgumentsNode");
   int arr = fwd_new_node_like(nt, like, "ArrayNode");
   int ps = fwd_new_node_like(nt, like, "ParametersNode");
-  if (def < 0 || self < 0 || body < 0 || call < 0 || args < 0 || arr < 0 || ps < 0) return -1;
-  int *rq = malloc(sizeof(int) * (size_t)(nparams > 0 ? nparams : 1));
+  if (def < 0 || call < 0 || args < 0 || arr < 0 || ps < 0) return -1;
   int *el = malloc(sizeof(int) * (size_t)(nparams > 0 ? nparams : 1));
+  if (!el) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   /* a trailing callback may come as the call's block instead: it is then
      optional, and __ffi_call puts the block in its place */
   int nreq = with_block && nparams > 0 ? nparams - 1 : nparams;
-  for (int i = 0; i < nparams; i++) {
-    char pn[32]; snprintf(pn, sizeof pn, "ffi_a%d__", i);
-    if (i < nreq) {
-      rq[i] = fwd_new_node_like(nt, like, "RequiredParameterNode");
-      nt_node_set_str(nt, rq[i], "name", pn);
-    }
-    else {
-      int op = fwd_new_node_like(nt, like, "OptionalParameterNode");
-      int nilv = fwd_new_node_like(nt, like, "NilNode");
-      nt_node_set_str(nt, op, "name", pn);
-      nt_node_set_ref(nt, op, "value", nilv);
-      nt_node_set_arr(nt, ps, "optionals", &op, 1);
-    }
-    el[i] = local_read_like(nt, like, pn);
-  }
-  nt_node_set_arr(nt, ps, "requireds", rq, nreq);
+  fixed_params_like(nt, like, "ffi_a%d__", nparams, nreq, ps, el);
   nt_node_set_arr(nt, arr, "elements", el, nparams);
-  free(rq); free(el);
+  free(el);
   int av[3]; int ac = 0;
   av[ac++] = ffi_symbol(nt, like, key);
   av[ac++] = arr;
@@ -16452,15 +16481,10 @@ static int ffi_fixed_def(NodeTable *nt, int like, const char *mname, const char 
     nt_node_set_ref(nt, ps, "block", bp);
     av[ac++] = local_read_like(nt, like, "ffi_b__");
   }
-  nt_node_set_ref(nt, def, "parameters", ps);
   nt_node_set_arr(nt, args, "arguments", av, ac);
   nt_node_set_str(nt, call, "name", "__ffi_call");
   nt_node_set_ref(nt, call, "arguments", args);
-  nt_node_set_arr(nt, body, "body", &call, 1);
-  nt_node_set_str(nt, def, "name", mname);
-  nt_node_set_ref(nt, def, "receiver", self);
-  nt_node_set_ref(nt, def, "body", body);
-  return def;
+  return self_def_finish(nt, def, body, mname, ps, call);
 }
 
 /* The literal parameter list of an attach_function call, or -1: its element
@@ -16547,6 +16571,90 @@ int desugar_ffi_library_functions(Compiler *c) {
     free(out);
     for (int i = 0; i < na; i++) free(at[i].name);
     free(at);
+    changed = 1;
+  }
+  if (changed) comp_grow_node_arrays(c);
+  return changed;
+}
+
+/* A package's `native_func :name, [specs], ret, "csym"` declares a singleton
+   method of its module, which the compiler calls straight into C wherever
+   the receiver is the module's constant (`Digest::MD5.hexdigest(s)`). The
+   module reached as a value (`h = Digest::MD5; h.hexdigest(s)`, an ivar
+   holding one of several such modules) has to find that method the way it
+   finds a `def self.name`, so each one gets a def of its declared arity,
+   last in the module's body, whose body is that constant-receiver call:
+     def self.<name>(nf_a0__, ...) = <Module>.<name>(nf_a0__, ...)
+   A def of the name the same body writes is what the module answers
+   instead, as is one a later reopening writes (the later def wins). A call
+   on the constant that reaches this def calls C directly instead
+   (cplan_resolve_call), keeping the binding's own argument handling
+   (JSON.parse's symbolize_names). */
+static int native_twin_def(NodeTable *nt, int like, const char *mn, const char *fname, int np) {
+  int body = -1;
+  int def = self_def_start(nt, like, &body);
+  int call = fwd_new_node_like(nt, like, "CallNode");
+  int recv = fwd_new_node_like(nt, like, "ConstantReadNode");
+  int args = fwd_new_node_like(nt, like, "ArgumentsNode");
+  int ps = fwd_new_node_like(nt, like, "ParametersNode");
+  if (def < 0 || call < 0 || recv < 0 || args < 0 || ps < 0) return -1;
+  int *el = malloc(sizeof(int) * (size_t)(np > 0 ? np : 1));
+  if (!el) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  fixed_params_like(nt, like, "nf_a%d__", np, np, ps, el);
+  nt_node_set_arr(nt, args, "arguments", el, np);
+  free(el);
+  nt_node_set_str(nt, recv, "name", mn);
+  nt_node_set_ref(nt, call, "receiver", recv);
+  nt_node_set_str(nt, call, "name", fname);
+  /* the call into C, never back into this def */
+  nt_node_set_int(nt, call, "builtin_only", 1);
+  if (np > 0) nt_node_set_ref(nt, call, "arguments", args);
+  self_def_finish(nt, def, body, fname, np > 0 ? ps : -1, call);
+  nt_node_set_int(nt, def, "native_twin", 1);
+  return def;
+}
+int desugar_native_func_defs(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count;
+  int changed = 0;
+  for (int m = 0; m < n0; m++) {
+    if (nt_kind(nt, m) != NK_ModuleNode) continue;
+    int cp = nt_ref(nt, m, "constant_path");
+    const char *mn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+    int body = nt_ref(nt, m, "body");
+    if (!mn || body < 0 || nt_kind(nt, body) != NK_StatementsNode) continue;
+    if (comp_ffi_library_module(nt, mn)) continue;
+    int n = 0;
+    const int *st = nt_arr(nt, body, "body", &n);
+    int *out = NULL, no = 0;
+    for (int k = 0; k < n; k++) {
+      int s = st[k];
+      if (nt_kind(nt, s) != NK_CallNode || nt_ref(nt, s, "receiver") >= 0) continue;
+      const char *dn = nt_str(nt, s, "name");
+      if (!dn || !sp_streq(dn, "native_func")) continue;
+      int an = nt_ref(nt, s, "arguments");
+      int ac = 0; const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
+      if (ac < 4 || nt_kind(nt, av[0]) != NK_SymbolNode || nt_kind(nt, av[1]) != NK_ArrayNode) continue;
+      const char *fname = nt_str(nt, av[0], "value");
+      if (!fname || body_defines_smethod(nt, st, n, fname)) continue;
+      int dup = 0;
+      for (int j = 0; j < no && !dup; j++) dup = sp_streq(nt_str(nt, out[j], "name"), fname);
+      if (dup) continue;
+      int np = 0;
+      (void)nt_arr(nt, av[1], "elements", &np);
+      int def = native_twin_def(nt, s, mn, fname, np);
+      if (def < 0) continue;
+      if (!out) out = malloc(sizeof(int) * (size_t)(n + 1));
+      if (!out) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      out[no++] = def;
+    }
+    if (no == 0) continue;
+    int *all = malloc(sizeof(int) * (size_t)(n + no));
+    if (!all) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    memcpy(all, st, sizeof(int) * (size_t)n);
+    memcpy(all + n, out, sizeof(int) * (size_t)no);
+    nt_node_set_arr(nt, body, "body", all, n + no);
+    free(all); free(out);
     changed = 1;
   }
   if (changed) comp_grow_node_arrays(c);

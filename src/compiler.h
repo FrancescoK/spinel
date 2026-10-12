@@ -1417,6 +1417,7 @@ int ffi_struct_method(Compiler *c, const char *mod, const char *method, int *si,
 /* native-binding registry (Path B): find a native_func by (module, name),
    return its index in c->native_funcs or -1; map a spec to a TyKind. */
 int comp_native_find(Compiler *c, const char *mod, const char *name);
+int comp_scope_native_twin(Compiler *c, int mi);
 int comp_native_method_find(Compiler *c, int class_id, const char *name, int argc, int kind);
 int comp_native_method_find_typed(Compiler *c, int class_id, const char *name, int argc, int kind,
                                   const TyKind *argtys);

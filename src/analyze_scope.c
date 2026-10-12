@@ -3978,7 +3978,9 @@ static void *ffi_grow(void *p, int n, int *cap, int init, size_t sz) {
 /* A native_func is a module function of its module: a bare call to it in one
    of the module's own singleton methods (`hexdigest(x)` in `def self.twice`)
    is the call on the module, as `Hasher.hexdigest(x)` is (#7205). The
-   module's own def of that name, if it has one, is what the call reaches. */
+   module's own def of that name, if it has one, is what the call reaches;
+   the def standing in for the native_func (desugar_native_func_defs) is not
+   one. */
 static void bare_native_func_calls(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   if (c->n_native_funcs == 0) return;
@@ -3988,10 +3990,9 @@ static void bare_native_func_calls(Compiler *c) {
     Scope *sc = comp_scope_of(c, id);
     if (!sc || !sc->is_cmethod || sc->class_id < 0) continue;
     const char *mod = c->classes[sc->class_id].name;
-    int hit = 0;
-    for (int i = 0; i < c->n_native_funcs && !hit; i++)
-      hit = sp_streq(c->native_funcs[i].mod, mod) && sp_streq(c->native_funcs[i].name, nm);
-    if (!hit || comp_cmethod_in_chain(c, sc->class_id, nm, NULL) >= 0) continue;
+    if (comp_native_find(c, mod, nm) < 0) continue;
+    int mi = comp_cmethod_in_chain(c, sc->class_id, nm, NULL);
+    if (mi >= 0 && !comp_scope_native_twin(c, mi)) continue;
     int cr = nt_new_node(nt, "ConstantReadNode");
     if (cr < 0) continue;
     nt_node_set_str(nt, cr, "name", mod);
