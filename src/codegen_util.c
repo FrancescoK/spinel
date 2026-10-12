@@ -7276,7 +7276,12 @@ static int node_is_oint_asked(Compiler *c, int node) {
     /* the builtin a reopened IO class overrides, emitted as that builtin
        (emit_io_builtin_call): the builtin's own rules below */
     int io_bi = g_io_skip_reopen && g_io_skip_node == node;
+    int src = r < 0 && !io_bi && an2 == 0 && blk < 0 ? implicit_self_reader_cid(c, node) : -1;
     if (io_bi) ;
+    /* a bare call of the class's own attr reader: the oint where the ivar
+       carries a nil bit, the plain field otherwise, as with an explicit
+       receiver below */
+    else if (src >= 0) return reader_ivar_has_nilbit(c, src, nm);
     else if (r < 0) mi = comp_self_call_mi(c, node, nm);
     else if (ty_is_object(rt)) {
       int cid = ty_object_class(rt);

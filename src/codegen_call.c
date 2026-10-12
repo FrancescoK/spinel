@@ -25017,7 +25017,7 @@ int emit_reopen_own_call(Compiler *c, int id, int dispatch_cid, Buf *b) {
    builtin-reopening fallbacks that must NOT preempt a builtin. */
 /* The class a receiverless call dispatches on when it names an attr reader
    there (and no def overrides it), else -1. */
-static int implicit_self_reader_cid(Compiler *c, int id) {
+int implicit_self_reader_cid(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
   if (!name || nt_ref(nt, id, "receiver") >= 0) return -1;
