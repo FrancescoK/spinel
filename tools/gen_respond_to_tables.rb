@@ -19,6 +19,18 @@ module GenRespondToTables
   # the spec), so there is nothing to generate -- only to keep checking.
   FAMILIES = %w[Array Hash String Integer Float].freeze
 
+  # [family, name] pairs BuiltinRowGen.method_list reports that are not
+  # actually true: BuiltinRowGen::FAMILIES attributes every TY_POLY row to
+  # String (and Symbol), because most TY_POLY rows genuinely are String's
+  # boxed face (capitalize, downcase, dump, swapcase, undump, upcase). The
+  # 2-argument "pack" row under TY_POLY is Array#pack's buffer-argument
+  # dispatch variant, not a String method -- CRuby: "".respond_to?(:pack)
+  # is false. BuiltinRowGen's own use (probing call shapes on real
+  # receivers) never hits this, since it never builds a String sample to
+  # call "pack" on; this generator asks "is this really true of the
+  # class," where the misattribution matters.
+  FALSE_POSITIVE = { "String" => %w[pack] }.freeze
+
   class GenError < StandardError; end
 
   module_function
@@ -32,6 +44,7 @@ module GenRespondToTables
     BuiltinRowGen.method_list.each do |family, name|
       next unless names_by_family.key?(family)
       next if BuiltinRowGen::INTERNAL_NAME.match?(name)
+      next if FALSE_POSITIVE.fetch(family, []).include?(name)
       names_by_family[family] << name
     end
     names_by_family.each_value { |names| names.sort!.uniq! }

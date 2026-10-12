@@ -31,6 +31,18 @@ integer_body = out[/sp_gen_responds_integer\[\] = \{(.*?)\};/m, 1]
 abort "internal name leaked into Integer's array" if integer_body.include?('"__bivar_get"')
 checks += 1
 
+# "pack"'s TY_POLY row in bop_rows is Array#pack's 2-arg buffer-argument
+# dispatch variant, not a String method -- BuiltinRowGen::FAMILIES
+# attributes every TY_POLY row to String (and Symbol) because most TY_POLY
+# rows genuinely are String's boxed face (capitalize, downcase, dump,
+# swapcase, undump, upcase), but this one isn't. CRuby: "".respond_to?(:pack)
+# is false.
+out = GenRespondToTables.generate(RT_HEADER)
+string_body = out[/sp_gen_responds_string\[\] = \{(.*?)\};/m, 1]
+abort "false positive: \"pack\" leaked into String's array (Array#pack's " \
+      "buffer-argument TY_POLY row, not a real String method)" if string_body.include?('"pack"')
+checks += 1
+
 # The Proc self-check actually fires: stub method_list with a Proc name
 # that is in neither procm nor uni, and confirm GenRespondToTables raises.
 module BuiltinRowGen
