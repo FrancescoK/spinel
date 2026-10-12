@@ -16472,19 +16472,36 @@ int desugar_singleton_attr(Compiler *c) {
 
    Only a receiverless attr_reader with literal names, any one of which some
    `.class.name` call in the program reads. */
-static int sca_read_through_class(const NodeTable *nt, const char *name) {
+/* The names of the calls `X.class.NAME` reads, once for the program. */
+static const char **sca_names_read_through_class(const NodeTable *nt, int *n) {
+  const char **v = NULL; int nv = 0, cap = 0;
   NT_FOREACH_KIND(nt, NK_CallNode, id) {
     const char *nm = nt_str(nt, id, "name");
-    if (!nm || !sp_streq(nm, name) || nt_ref(nt, id, "arguments") >= 0) continue;
+    if (!nm || nt_ref(nt, id, "arguments") >= 0) continue;
     int r = nt_ref(nt, id, "receiver");
-    if (r >= 0 && nt_kind(nt, r) == NK_CallNode && nt_str(nt, r, "name") &&
-        sp_streq(nt_str(nt, r, "name"), "class") && nt_ref(nt, r, "arguments") < 0) return 1;
+    if (r < 0 || nt_kind(nt, r) != NK_CallNode || !nt_str(nt, r, "name") ||
+        !sp_streq(nt_str(nt, r, "name"), "class") || nt_ref(nt, r, "arguments") >= 0) continue;
+    if (nv == cap) { cap = cap ? cap * 2 : 16; v = (const char **)realloc(v, sizeof(char *) * (size_t)cap); }
+    v[nv++] = nm;
   }
-  return 0;
+  *n = nv;
+  return v;
 }
+
+/* A name attr_reader accepts: an identifier, without ? ! or = */
+static int sca_attr_name(const char *t) {
+  if (!t[0] || isdigit((unsigned char)t[0])) return 0;
+  for (const char *p = t; *p; p++)
+    if (!isalnum((unsigned char)*p) && *p != '_' && (unsigned char)*p < 0x80) return 0;
+  return 1;
+}
+
 int desugar_sclass_readers_through_class(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count, changed = 0;
+  /* a program with its own attr_reader or class keeps the call as written */
+  if (an_user_defines_method(c, "attr_reader") || an_user_defines_method(c, "class")) return 0;
+  const char **reads = NULL; int nreads = -1;
   for (int id = 0; id < n0; id++) {
     if (nt_kind(nt, id) != NK_SingletonClassNode) continue;
     int ex = nt_ref(nt, id, "expression");
@@ -16508,9 +16525,11 @@ int desugar_sclass_readers_through_class(Compiler *c) {
         NodeKind ak = nt_kind(nt, av[a]);
         const char *t = ak == NK_SymbolNode ? nt_str(nt, av[a], "value") : ak == NK_StringNode ? nt_str(nt, av[a], "content") : NULL;
         /* `@` + the name has to fit the ivar name below */
-        if (!t || !t[0] || strlen(t) > 290 || nsyms >= 32) ok = 0; else syms[nsyms++] = t;
+        if (!t || !sca_attr_name(t) || strlen(t) > 290 || nsyms >= 32) ok = 0; else syms[nsyms++] = t;
       }
-      for (int j = 0; j < nsyms && ok && !used; j++) used = sca_read_through_class(nt, syms[j]);
+      if (ok && nreads < 0) reads = sca_names_read_through_class(nt, &nreads);
+      for (int j = 0; j < nsyms && ok && !used; j++)
+        for (int k = 0; k < nreads && !used; k++) used = sp_streq(reads[k], syms[j]);
       if (!ok || !used) { xc_push(&nb, &nbn, st); continue; }
       long long line = nt_int(nt, st, "node_line", 0);
       for (int j = 0; j < nsyms && ok; j++) {
@@ -16526,6 +16545,7 @@ int desugar_sclass_readers_through_class(Compiler *c) {
     if (any && nb) { nt_node_set_arr(nt, body, "body", nb, nbn); changed = 1; }
     free(nb); free(bb);
   }
+  free(reads);
   if (changed) comp_grow_node_arrays(c);
   return changed;
 }

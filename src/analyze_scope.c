@@ -3058,19 +3058,17 @@ static int body_stmt_assigns_civ(const NodeTable *nt, int n, const char *ivname)
 /* Does a body of class ci assign the class-level ivar `ivname` as one of its
    own statements (`class OK < Status; @code = 200; end`), under an if or
    unless included? */
-static int body_assigns_civ(Compiler *c, int ci, const char *ivname) {
-  const NodeTable *nt = c->nt;
-  int *bci, *bnode, found = 0;
-  int nb = class_body_list(c, &bci, &bnode);
-  for (int b = 0; b < nb && !found; b++) {
+/* Does a body of class ci (in the class_body_list bci / bnode, nb long)
+   assign ivname as a statement of its own? */
+static int body_assigns_civ(const NodeTable *nt, const int *bci, const int *bnode, int nb, int ci,
+                            const char *ivname) {
+  for (int b = 0; b < nb; b++) {
     if (bci[b] != ci || bnode[b] < 0) continue;
     int n = 0; const int *st = nt_arr(nt, bnode[b], "body", &n);
-    for (int k = 0; k < n && !found; k++)
-      if (body_stmt_assigns_civ(nt, st[k], ivname)) found = 1;
+    for (int k = 0; k < n; k++)
+      if (body_stmt_assigns_civ(nt, st[k], ivname)) return 1;
   }
-  free(bci);
-  free(bnode);
-  return found;
+  return 0;
 }
 
 static int cmethod_names_ivar(Compiler *c, int ci, const char *ivname) {
@@ -5512,6 +5510,7 @@ void resolve_parents(Compiler *c) {
      the subclass runs -- its own, or one inherited from any ancestor --
      naming `@x` reads the subclass's class-level ivar, so the inherited
      accessor shares that slot (sg_civ), as the declaring class's own does. */
+  int *bl_ci = NULL, *bl_node = NULL, nbl = -1;   /* the class bodies, listed when first asked */
   for (int i = 0; i < c->nclasses; i++) {
     for (int k = c->classes[i].parent, guard = 0; k >= 0 && guard < 256; k = c->classes[k].parent, guard++) {
       ClassInfo *pc = &c->classes[k];
@@ -5527,7 +5526,8 @@ void resolve_parents(Compiler *c) {
         snprintf(ivname, sizeof ivname, "@%s", base);
         /* the subclass's own body assigning `@x` sets what the inherited
            reader answers through it */
-        if (body_assigns_civ(c, i, ivname)) { comp_add_sg_civ(&c->classes[i], base); continue; }
+        if (nbl < 0) nbl = class_body_list(c, &bl_ci, &bl_node);
+        if (body_assigns_civ(c->nt, bl_ci, bl_node, nbl, i, ivname)) { comp_add_sg_civ(&c->classes[i], base); continue; }
         for (int a = i, g2 = 0; a >= 0 && g2 < 256; a = c->classes[a].parent, g2++) {
           if (cmethod_names_ivar(c, a, ivname)) { comp_add_sg_civ(&c->classes[i], base); break; }
           if (a == c->classes[a].parent) break;
@@ -5536,6 +5536,8 @@ void resolve_parents(Compiler *c) {
       if (k == c->classes[k].parent) break;
     }
   }
+  free(bl_ci);
+  free(bl_node);
   resolve_inherited_aliases(c);
   mark_anon_superclass_reflection(c);
 }

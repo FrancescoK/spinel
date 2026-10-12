@@ -1648,6 +1648,24 @@ spinel: 1 refusal, nothing written
 == test/reject/systemcallerror_zsuper_keyword.rb [promote] rc=1
 spinel: test/reject/systemcallerror_zsuper_keyword.rb:6: unsupported a bare super forwarding a rest, keyword or block parameter to SystemCallError#initialize: node N (ForwardingSuperNode)
 spinel: 1 refusal, nothing written
+== test/reject/table_loop_class_intersection.rb [default] rc=1
+spinel: test/reject/table_loop_class_intersection.rb:7: unsupported call: node N (CallNode `const_set`) recv=-/ty-1 argc=2 arg0ty6
+spinel: 1 refusal, nothing written
+== test/reject/table_loop_class_intersection.rb [promote] rc=1
+spinel: test/reject/table_loop_class_intersection.rb:7: unsupported call: node N (CallNode `const_set`) recv=-/ty-1 argc=2 arg0ty6
+spinel: 1 refusal, nothing written
+== test/reject/table_loop_class_path_defined.rb [default] rc=1
+spinel: test/reject/table_loop_class_path_defined.rb:9: unsupported call: node N (CallNode `const_set`) recv=-/ty-1 argc=2 arg0ty6
+spinel: 1 refusal, nothing written
+== test/reject/table_loop_class_path_defined.rb [promote] rc=1
+spinel: test/reject/table_loop_class_path_defined.rb:9: unsupported call: node N (CallNode `const_set`) recv=-/ty-1 argc=2 arg0ty6
+spinel: 1 refusal, nothing written
+== test/reject/table_loop_computed_string_value.rb [default] rc=1
+spinel: test/reject/table_loop_computed_string_value.rb:7: unsupported call: node N (CallNode `const_set`) recv=-/ty-1 argc=2 arg0ty6
+spinel: 1 refusal, nothing written
+== test/reject/table_loop_computed_string_value.rb [promote] rc=1
+spinel: test/reject/table_loop_computed_string_value.rb:7: unsupported call: node N (CallNode `const_set`) recv=-/ty-1 argc=2 arg0ty6
+spinel: 1 refusal, nothing written
 == test/reject/table_loop_hash_each_redefined.rb [default] rc=1
 spinel: test/reject/table_loop_hash_each_redefined.rb:11: unsupported call: node N (CallNode `const_set`) recv=-/ty-1 argc=2 arg0ty6
 spinel: 1 refusal, nothing written
@@ -1671,6 +1689,12 @@ spinel: test/reject/table_loop_string_method_redefined.rb:11: unsupported call: 
 spinel: 1 refusal, nothing written
 == test/reject/table_loop_string_method_redefined.rb [promote] rc=1
 spinel: test/reject/table_loop_string_method_redefined.rb:11: unsupported call: node N (CallNode `const_set`) recv=-/ty-1 argc=2 arg0ty6
+spinel: 1 refusal, nothing written
+== test/reject/table_loop_table_through_to_h.rb [default] rc=1
+spinel: test/reject/table_loop_table_through_to_h.rb:8: unsupported call: node N (CallNode `const_set`) recv=-/ty-1 argc=2 arg0ty6
+spinel: 1 refusal, nothing written
+== test/reject/table_loop_table_through_to_h.rb [promote] rc=1
+spinel: test/reject/table_loop_table_through_to_h.rb:8: unsupported call: node N (CallNode `const_set`) recv=-/ty-1 argc=2 arg0ty6
 spinel: 1 refusal, nothing written
 == test/reject/time_class_parsers.rb [default] rc=1
 spinel: test/reject/time_class_parsers.rb:8: Time.iso8601 is not supported: spinel implements Time's other `require "time"` additions (the instance methods iso8601, httpdate, rfc2822) but not the string-parsing ones. Store times as epoch seconds and read them with Time.at instead (see docs/limitations.md)

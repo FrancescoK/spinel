@@ -7092,11 +7092,14 @@ static int node_is_oint_asked(Compiler *c, int node) {
       if (rci >= 0) mi = comp_cmethod_in_chain(c, rci, nm, NULL);
     }
     /* `obj.class.m`: the switch over obj's class and the classes below it
-       (emit_call_body's class-method dispatch) */
+       (emit_call_class_method_arms) */
     else if (nt_kind(nt, r) == NK_CallNode && sp_streq(nt_str(nt, r, "name"), "class") &&
-             nt_ref(nt, r, "receiver") >= 0 && ty_is_object(comp_ntype(c, nt_ref(nt, r, "receiver")))) {
-      int ocid = ty_object_class(comp_ntype(c, nt_ref(nt, r, "receiver")));
-      if (comp_cmethod_in_chain(c, ocid, nm, NULL) >= 0) return obj_class_cmethod_oint(c, ocid, nm);
+             nt_ref(nt, r, "arguments") < 0) {
+      int x = nt_ref(nt, r, "receiver");
+      TyKind xt = x >= 0 ? comp_ntype(c, x) : TY_UNKNOWN;
+      if (nullable_int_value(c, node)) return 1;
+      if (ty_is_object(xt) && comp_cmethod_in_chain(c, ty_object_class(xt), nm, NULL) >= 0)
+        return class_switch_arm_oint(c, ty_object_class(xt), nm);
     }
     /* a builtin value's method the program reopened its class with
        (`class Symbol; def mark = ...`) */

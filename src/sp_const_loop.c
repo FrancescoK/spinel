@@ -44,7 +44,11 @@
  * the class has a name). Anything else leaves the loop as written. */
 
 typedef enum { CL_MV = 0, CL_CONST, CL_KLASS } ClKind;
-typedef struct { ClKind k; Mv mv; char *cref; int klass; } ClVal;
+/* lit: a String the table spells as a literal, key or value; frozen: the
+   loop froze it (a Hash's String key is frozen). Only such a String is
+   written out, as that literal (always frozen in Spinel): one the loop did
+   not freeze is unfrozen in CRuby, and one it computes is a new object. */
+typedef struct { ClKind k; Mv mv; char *cref; int klass; int lit, frozen; } ClVal;
 typedef struct { char *parent; char *name; char *ivars; } ClKlass;   /* ivars: "@a = 1; @b = 2; " */
 typedef struct { char *name; ClVal v; } ClVar;
 
@@ -53,43 +57,87 @@ typedef struct {
   ClKlass *kl; int nkl, ckl;
   MxBuf *out;
   MxCtx mx;          /* the plain values, for mx_eval */
-  const char *src;   /* the whole program, to look for other definitions of a name */
+  const char *src;   /* the whole program */
+  const pm_node_t *root;          /* its tree, to look for other definitions of a name */
+  const uint8_t *lo, *hi;         /* the loop's own text */
   char **names; int nnames;   /* the constants the loop has named so far */
 } ClCtx;
 
-static int cl_ident_char(char ch) { return isalnum((unsigned char)ch) || ch == '_' || (unsigned char)ch >= 0x80; }
+/* Is the constant `name` given a value anywhere else in the program (a
+   class or module of that name, a write, a target of a multiple assignment,
+   a const_set outside the loop with that name or one not known), or twice by
+   this loop? A const_set then replaces an existing value (with CRuby's
+   warning), which a class definition would reopen instead. Any constant of
+   that last name counts, whatever its scope. */
+typedef struct { const char *name; const uint8_t *lo, *hi; int hit; } ClTaken;
 
-/* Does `src` spell `word` as a whole word right after one of `pre`
-   (e.g. "class " + "OK"), ignoring extra blanks after the prefix? */
-static int cl_word_after(const char *src, const char *pre, const char *word) {
-  size_t pl = strlen(pre), wl = strlen(word);
-  for (const char *p = strstr(src, pre); p; p = strstr(p + 1, pre)) {
-    if (p > src && cl_ident_char(p[-1])) continue;
-    const char *q = p + pl;
-    while (*q == ' ' || *q == '\t') q++;
-    if (strncmp(q, "::", 2) == 0) q += 2;
-    if (strncmp(q, word, wl) == 0 && (!cl_ident_char(word[wl - 1]) || !cl_ident_char(q[wl]))) return 1;
-  }
-  return 0;
+/* A call's first argument when it is a Symbol or String literal, else NULL */
+static const pm_string_t *cl_lit_arg0(const pm_call_node_t *cn) {
+  const pm_node_t *a0 = cn->arguments && cn->arguments->arguments.size ? cn->arguments->arguments.nodes[0] : NULL;
+  return !a0 ? NULL
+       : PM_NODE_TYPE(a0) == PM_SYMBOL_NODE ? &((const pm_symbol_node_t *)a0)->unescaped
+       : PM_NODE_TYPE(a0) == PM_STRING_NODE ? &((const pm_string_node_t *)a0)->unescaped : NULL;
 }
 
-/* Is the constant `name` given a value anywhere else in the program, or
-   twice by this loop? A const_set then replaces an existing value (with
-   CRuby's warning), which a class definition would reopen instead. */
+static int cl_id_is(pm_constant_id_t id, const char *name) {
+  char *s = mx_name(id);
+  int r = strcmp(s, name) == 0;
+  free(s);
+  return r;
+}
+
+static bool cl_taken_visit(const pm_node_t *n, void *data) {
+  ClTaken *t = (ClTaken *)data;
+  if (t->hit) return false;
+  switch (PM_NODE_TYPE(n)) {
+  case PM_CLASS_NODE: case PM_MODULE_NODE: {
+    const pm_node_t *cp = PM_NODE_TYPE(n) == PM_CLASS_NODE ? ((pm_class_node_t *)n)->constant_path
+                                                           : ((pm_module_node_t *)n)->constant_path;
+    pm_constant_id_t id = PM_NODE_TYPE(cp) == PM_CONSTANT_READ_NODE ? ((pm_constant_read_node_t *)cp)->name
+                        : PM_NODE_TYPE(cp) == PM_CONSTANT_PATH_NODE ? ((pm_constant_path_node_t *)cp)->name : 0;
+    if (!id || cl_id_is(id, t->name)) t->hit = 1;
+    break;
+  }
+  case PM_CONSTANT_WRITE_NODE: t->hit = cl_id_is(((pm_constant_write_node_t *)n)->name, t->name); break;
+  case PM_CONSTANT_OR_WRITE_NODE: t->hit = cl_id_is(((pm_constant_or_write_node_t *)n)->name, t->name); break;
+  case PM_CONSTANT_AND_WRITE_NODE: t->hit = cl_id_is(((pm_constant_and_write_node_t *)n)->name, t->name); break;
+  case PM_CONSTANT_OPERATOR_WRITE_NODE: t->hit = cl_id_is(((pm_constant_operator_write_node_t *)n)->name, t->name); break;
+  case PM_CONSTANT_TARGET_NODE: t->hit = cl_id_is(((pm_constant_target_node_t *)n)->name, t->name); break;
+  case PM_CONSTANT_PATH_WRITE_NODE: case PM_CONSTANT_PATH_OR_WRITE_NODE: case PM_CONSTANT_PATH_AND_WRITE_NODE:
+  case PM_CONSTANT_PATH_OPERATOR_WRITE_NODE: {
+    const pm_constant_path_node_t *tg =
+      PM_NODE_TYPE(n) == PM_CONSTANT_PATH_WRITE_NODE ? ((pm_constant_path_write_node_t *)n)->target
+      : PM_NODE_TYPE(n) == PM_CONSTANT_PATH_OR_WRITE_NODE ? ((pm_constant_path_or_write_node_t *)n)->target
+      : PM_NODE_TYPE(n) == PM_CONSTANT_PATH_AND_WRITE_NODE ? ((pm_constant_path_and_write_node_t *)n)->target
+      : ((pm_constant_path_operator_write_node_t *)n)->target;
+    if (cl_id_is(tg->name, t->name)) t->hit = 1;
+    break;
+  }
+  case PM_CONSTANT_PATH_TARGET_NODE: t->hit = cl_id_is(((pm_constant_path_target_node_t *)n)->name, t->name); break;
+  case PM_CALL_NODE: {
+    const pm_call_node_t *cn = (const pm_call_node_t *)n;
+    if (n->location.start >= t->lo && n->location.end <= t->hi) return false;   /* the loop itself */
+    char *m = mx_name(cn->name);
+    int cs = strcmp(m, "const_set") == 0;
+    free(m);
+    if (cs) {
+      const pm_string_t *lit = cl_lit_arg0(cn);
+      if (!lit || (pm_string_length(lit) == strlen(t->name) &&
+                   memcmp(pm_string_source(lit), t->name, strlen(t->name)) == 0))
+        t->hit = 1;
+    }
+    break;
+  }
+  default: break;
+  }
+  return !t->hit;
+}
+
 static int cl_name_taken(ClCtx *c, const char *name) {
   for (int i = 0; i < c->nnames; i++) if (strcmp(c->names[i], name) == 0) return 1;
-  if (cl_word_after(c->src, "class ", name) || cl_word_after(c->src, "module ", name)) return 1;
-  size_t wl = strlen(name);
-  for (const char *p = strstr(c->src, name); p; p = strstr(p + 1, name)) {
-    if ((p > c->src && (cl_ident_char(p[-1]) || p[-1] == ':' || p[-1] == '"' || p[-1] == '\'')) ||
-        cl_ident_char(p[wl])) continue;
-    const char *q = p + wl;
-    while (*q == ' ' || *q == '\t') q++;
-    if (q[0] == '=' && q[1] != '=' && q[1] != '~' && q[1] != '>') return 1;
-    if ((q[0] == '|' || q[0] == '&' || q[0] == '+' || q[0] == '-') && q[1] == q[0] && q[2] == '=') return 1;
-    if ((q[0] == '|' || q[0] == '&' || q[0] == '+' || q[0] == '-' || q[0] == '*') && q[1] == '=') return 1;
-  }
-  return 0;
+  ClTaken t = { name, c->lo, c->hi, 0 };
+  pm_visit_node(c->root, cl_taken_visit, &t);
+  return t.hit;
 }
 
 static void cl_take_name(ClCtx *c, const char *name) {
@@ -97,22 +145,78 @@ static void cl_take_name(ClCtx *c, const char *name) {
   c->names[c->nnames++] = strdup(name);
 }
 
-/* Does the program change a core class whose methods the expansion runs
-   ahead of time (reopening it, or adding to it by reflection)? */
-static int cl_core_changed(const char *src, const char *cls) {
-  static const char *const via[] = { ".class_eval", ".class_exec", ".module_eval", ".module_exec", ".prepend",
-                                     ".include", ".define_method", ".send", ".__send__", ".public_send",
-                                     ".alias_method", ".remove_method", ".undef_method", NULL };
-  if (cl_word_after(src, "class ", cls) || cl_word_after(src, "refine ", cls)) return 1;
-  size_t cl = strlen(cls);
-  for (const char *p = strstr(src, cls); p; p = strstr(p + 1, cls)) {
-    if (p > src && (cl_ident_char(p[-1]) || p[-1] == ':')) continue;
-    for (int i = 0; via[i]; i++) {
-      size_t vl = strlen(via[i]);
-      if (strncmp(p + cl, via[i], vl) == 0 && !cl_ident_char(p[cl + vl])) return 1;
-    }
-  }
+/* Does the program change one of the classes or objects `names` names
+   (reopening it, opening its singleton class, a def on it, a refinement, or
+   one of `meths` called on it)? Any constant of that last name counts. */
+typedef struct { const char *const *names; const char *const *meths; int any_recv, hit; const pm_node_t *at; } ClChange;
+
+static int cl_names_const(const pm_node_t *n, const char *const *names) {
+  if (!n) return 0;
+  pm_constant_id_t id = PM_NODE_TYPE(n) == PM_CONSTANT_READ_NODE ? ((pm_constant_read_node_t *)n)->name
+                      : PM_NODE_TYPE(n) == PM_CONSTANT_PATH_NODE ? ((pm_constant_path_node_t *)n)->name : 0;
+  if (!id) return 0;
+  for (int i = 0; names[i]; i++) if (cl_id_is(id, names[i])) return 1;
   return 0;
+}
+
+/* `X.new(...)`: a new object, never an existing class */
+static int cl_is_new_call(const pm_node_t *n) {
+  if (PM_NODE_TYPE(n) != PM_CALL_NODE) return 0;
+  char *m = mx_name(((const pm_call_node_t *)n)->name);
+  int r = strcmp(m, "new") == 0;
+  free(m);
+  return r;
+}
+
+static bool cl_change_visit(const pm_node_t *n, void *data) {
+  ClChange *ch = (ClChange *)data;
+  switch (PM_NODE_TYPE(n)) {
+  case PM_CLASS_NODE: ch->hit |= cl_names_const(((pm_class_node_t *)n)->constant_path, ch->names); break;
+  case PM_MODULE_NODE: ch->hit |= cl_names_const(((pm_module_node_t *)n)->constant_path, ch->names); break;
+  case PM_SINGLETON_CLASS_NODE: ch->hit |= cl_names_const(((pm_singleton_class_node_t *)n)->expression, ch->names); break;
+  case PM_DEF_NODE: ch->hit |= cl_names_const(((pm_def_node_t *)n)->receiver, ch->names); break;
+  case PM_CALL_NODE: {
+    const pm_call_node_t *cn = (const pm_call_node_t *)n;
+    char *m = mx_name(cn->name);
+    if (strcmp(m, "refine") == 0 && cn->arguments && cn->arguments->arguments.size &&
+        cl_names_const(cn->arguments->arguments.nodes[0], ch->names)) ch->hit = 1;
+    else if (cl_names_const(cn->receiver, ch->names)) {
+      for (int i = 0; ch->meths[i]; i++) if (strcmp(m, ch->meths[i]) == 0) ch->hit = 1;
+    }
+    /* any_recv: a class held in a variable may be one of them too. A send
+       counts when it names one of the methods; one whose name is computed
+       reaches only the methods the program defines. */
+    else if (ch->any_recv && cn->receiver && PM_NODE_TYPE(cn->receiver) != PM_SELF_NODE &&
+             PM_NODE_TYPE(cn->receiver) != PM_CONSTANT_READ_NODE && PM_NODE_TYPE(cn->receiver) != PM_CONSTANT_PATH_NODE &&
+             !cl_is_new_call(cn->receiver)) {
+      const char *mm = m;
+      char *sent = NULL;
+      if (strcmp(m, "send") == 0 || strcmp(m, "__send__") == 0 || strcmp(m, "public_send") == 0) {
+        const pm_string_t *lit = cl_lit_arg0(cn);
+        mm = "";
+        if (lit) { sent = strndup((const char *)pm_string_source(lit), pm_string_length(lit)); mm = sent; }
+      }
+      for (int i = 0; ch->meths[i]; i++)
+        if (strcmp(mm, ch->meths[i]) == 0 && strcmp(mm, "send") != 0 && strcmp(mm, "__send__") != 0 &&
+            strcmp(mm, "public_send") != 0) ch->hit = 1;
+      free(sent);
+    }
+    free(m);
+    break;
+  }
+  default: break;
+  }
+  if (ch->hit && !ch->at) ch->at = n;
+  return !ch->hit;
+}
+
+static int cl_changed(const pm_node_t *root, const char *const *names, const char *const *meths, int any_recv) {
+  ClChange ch = { names, meths, any_recv, 0, NULL };
+  pm_visit_node(root, cl_change_visit, &ch);
+  if (ch.hit && getenv("SPINEL_MACRO_DEBUG"))
+    fprintf(stderr, "table loops: changed by %.*s\n", (int)(ch.at->location.end - ch.at->location.start > 60 ? 60 :
+            ch.at->location.end - ch.at->location.start), (const char *)ch.at->location.start);
+  return ch.hit;
 }
 
 static void cl_sync(ClCtx *c) {
@@ -154,6 +258,7 @@ static int cl_spell(ClCtx *c, ClVal v, MxBuf *b) {
     return 1;
   }
   if (v.mv.k == MV_UNDEF) return 0;
+  if (v.mv.k == MV_STR && !(v.lit && v.frozen)) return 0;
   mv_inspect(v.mv, b);
   return 1;
 }
@@ -346,9 +451,15 @@ static int cl_exec(ClCtx *c, pm_node_t *n) {
       free(kb.p); free(vb.p);
     }
     else if (!self_recv && argc == 0 && strcmp(name, "freeze") == 0) {
-      /* a String the loop holds is a value it spells out: nothing to keep */
+      /* a value the loop holds: a String it spells out after this is frozen (cl_spell) */
       ClVal r;
       ok = cl_eval(c, cn->receiver, &r) && r.k == CL_MV && (r.mv.k == MV_STR || r.mv.k == MV_INT || r.mv.k == MV_SYM);
+      if (ok && PM_NODE_TYPE(cn->receiver) == PM_LOCAL_VARIABLE_READ_NODE) {
+        char *nm = mx_name(((pm_local_variable_read_node_t *)cn->receiver)->name);
+        ClVal *lv = cl_lookup(c, nm);
+        if (lv) lv->frozen = 1;
+        free(nm);
+      }
     }
     free(name);
     return ok;
@@ -366,8 +477,7 @@ static int cl_exec_stmts(ClCtx *c, pm_statements_node_t *s) {
 /* ---- where the table's constant is named ---- */
 typedef struct {
   pm_constant_id_t name;
-  const pm_node_t *def;      /* its one write */
-  const pm_node_t *loop;     /* the loop's receiver */
+  const pm_node_t *loop;     /* the loop's own call */
   int writes, bad;
 } ClUse;
 
@@ -406,6 +516,10 @@ static bool cl_use_visit(const pm_node_t *n, void *data) {
     if (mine) {
       char *m = mx_name(cn->name);
       int ro = cl_read_only(m);
+      /* these answer the table itself, which the caller could then change */
+      if (n != u->loop && (strcmp(m, "each") == 0 || strcmp(m, "each_pair") == 0 || strcmp(m, "each_key") == 0 ||
+                           strcmp(m, "each_value") == 0 || strcmp(m, "freeze") == 0 || strcmp(m, "to_h") == 0))
+        ro = 0;
       free(m);
       /* the receiver read is fine; its arguments and block are visited */
       if (!ro) u->bad = 1;
@@ -472,21 +586,19 @@ static void cl_try_body(ClWalk *w, pm_statements_node_t *st) {
       if (PM_NODE_TYPE(d) == PM_CONSTANT_WRITE_NODE && ((pm_constant_write_node_t *)d)->name == tn) def = d;
     }
     if (!def) continue;
-    ClUse u; memset(&u, 0, sizeof u); u.name = tn;
+    ClUse u; memset(&u, 0, sizeof u); u.name = tn; u.loop = s;
     pm_visit_node(w->root, cl_use_visit, &u);
     if (u.writes != 1 || u.bad) continue;
     /* a method of the table's own replaces the Hash's each */
     { static const char *const sing[] = { "define_singleton_method", "extend", "singleton_class",
                                           "instance_eval", "instance_exec", NULL };
-      char *tt = cl_text(cn->receiver);
-      size_t tl = strlen(tt) + 2; char *dp = malloc(tl);
-      snprintf(dp, tl, "%s.", tt);
-      int own = cl_word_after(w->src, "def ", dp) || cl_word_after(w->src, "class << ", tt);
-      for (int q = 0; sing[q] && !own; q++) own = cl_word_after(w->src, dp, sing[q]);
-      free(dp); free(tt);
+      char *tt = mx_name(tn);
+      const char *const names[] = { tt, NULL };
+      int own = cl_changed(w->root, names, sing, 0);
+      free(tt);
       if (own) continue; }
     ClCtx c; memset(&c, 0, sizeof c);
-    c.src = w->src;
+    c.src = w->src; c.root = w->root; c.lo = s->location.start; c.hi = s->location.end;
     Mv *keys = NULL, *vals = NULL; int n = 0;
     if (!cl_table(&c, ((pm_constant_write_node_t *)def)->value, &keys, &vals, &n)) { free(keys); free(vals); continue; }
     char *kname = mx_name(((pm_required_parameter_node_t *)ps->requireds.nodes[0])->name);
@@ -496,8 +608,11 @@ static void cl_try_body(ClWalk *w, pm_statements_node_t *st) {
     int ok = 1;
     for (int e = 0; e < n && ok; e++) {
       c.nloc = 0;
-      ClVal kv; memset(&kv, 0, sizeof kv); kv.mv = keys[e];
+      pm_assoc_node_t *as = (pm_assoc_node_t *)((pm_hash_node_t *)((pm_constant_write_node_t *)def)->value)->elements.nodes[e];
+      ClVal kv; memset(&kv, 0, sizeof kv); kv.mv = keys[e]; kv.frozen = 1;
+      kv.lit = PM_NODE_TYPE(as->key) == PM_STRING_NODE;
       ClVal vv; memset(&vv, 0, sizeof vv); vv.mv = vals[e];
+      vv.lit = PM_NODE_TYPE(as->value) == PM_STRING_NODE;
       ok = cl_set(&c, kname, kv) && cl_set(&c, vname, vv) &&
            cl_exec_stmts(&c, (pm_statements_node_t *)blk->body);
     }
@@ -546,14 +661,16 @@ static char *sp_expand_table_loops(const char *source) {
      its loops: the expansion would bypass them */
   if (strstr(source, "def const_set") || strstr(source, "def self.const_set") || strstr(source, "const_added") ||
       strstr(source, "def instance_variable_set")) return NULL;
-  /* the loop runs Hash, String, Integer, Range and Symbol methods, Class.new
-     and const_set ahead of time: a program that changes those classes keeps
-     its loops. So does one with an inherited hook, which CRuby calls while
-     the new class has no name yet. */
-  static const char *const core[] = { "Hash", "String", "Integer", "Range", "Symbol", "Class", "Module",
-                                      "Comparable", "Kernel", "Object", "BasicObject", NULL };
-  for (int i = 0; core[i]; i++) if (cl_core_changed(source, core[i])) return NULL;
-  if (strstr(source, "inherited")) return NULL;
+  /* an inherited hook is called by CRuby while the new class has no name */
+  if (strstr(source, "inherited")) {
+    if (getenv("SPINEL_MACRO_DEBUG")) fprintf(stderr, "table loops not expanded: the program has an inherited hook\n");
+    return NULL;
+  }
+  /* a constant reached by name at run time is a write this pass can't see */
+  if (strstr(source, "const_get")) {
+    if (getenv("SPINEL_MACRO_DEBUG")) fprintf(stderr, "table loops not expanded: the program calls const_get\n");
+    return NULL;
+  }
   size_t len = strlen(source);
   pm_parser_t parser;
   pm_parser_init(&parser, (const uint8_t *)source, len, NULL);
@@ -561,7 +678,18 @@ static char *sp_expand_table_loops(const char *source) {
   char *result = NULL;
   const pm_parser_t *sv = g_parser;
   g_parser = &parser;
-  if (parser.error_list.size == 0) {
+  /* the loop runs Hash, String, Integer, Range and Symbol methods, Class.new
+     and const_set ahead of time: a program that changes those classes keeps
+     its loops */
+  static const char *const core[] = { "Hash", "String", "Integer", "Range", "Symbol", "Class", "Module",
+                                      "Comparable", "Kernel", "Object", "BasicObject", NULL };
+  static const char *const via[] = { "class_eval", "class_exec", "module_eval", "module_exec", "prepend",
+                                     "include", "define_method", "send", "__send__", "public_send",
+                                     "alias_method", "remove_method", "undef_method", NULL };
+  int core_changed = parser.error_list.size == 0 && cl_changed(root, core, via, 1);
+  if (core_changed && getenv("SPINEL_MACRO_DEBUG"))
+    fprintf(stderr, "table loops not expanded: the program changes a core class\n");
+  if (parser.error_list.size == 0 && !core_changed) {
     MxEdits ed = {0};
     ClWalk w = { &ed, root, source };
     pm_visit_node(root, cl_visit, &w);

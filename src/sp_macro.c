@@ -577,7 +577,7 @@ static int mx_pat_class(const char *p, const char *e, MxPat *pt) {
       if (p + 1 >= e || isalnum((unsigned char)p[1])) return -1;
       ch = (unsigned char)p[1]; p += 2;
     }
-    else if (*p == '[') return -1;
+    else if (*p == '[' || (*p == '&' && p + 1 < e && p[1] == '&')) return -1;   /* nested, or an intersection */
     else ch = (unsigned char)*p++;
     if (ch >= 0x80) return -1;
     if (p + 1 < e && *p == '-' && p[1] != ']') {

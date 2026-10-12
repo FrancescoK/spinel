@@ -32712,10 +32712,11 @@ int nullable_int_value(Compiler *c, int v) {
     if (nt_kind(nt, rcv) == NK_ConstantReadNode || nt_kind(nt, rcv) == NK_ConstantPathNode)
       return dispatch_answers_nil(c, comp_class_index(c, nt_str(nt, rcv, "name")), cn, 1);
     /* `self.class.m` in an instance method: the class methods of self's
-       class and of every class below it */
+       class and of every class below it (codegen's dispatch switch) */
     if (nt_kind(nt, rcv) == NK_CallNode && sp_streq(nt_str(nt, rcv, "name"), "class") &&
-        nt_kind(nt, nt_ref(nt, rcv, "receiver")) == NK_SelfNode) {
-      Scope *ss = comp_scope_of(c, v);
+        nt_ref(nt, rcv, "arguments") < 0) {
+      int x = nt_ref(nt, rcv, "receiver");
+      Scope *ss = x < 0 || nt_kind(nt, x) == NK_SelfNode ? comp_scope_of(c, v) : NULL;
       if (ss && !ss->is_cmethod && ss->class_id >= 0) return dispatch_answers_nil(c, ss->class_id, cn, 1);
     }
     return 0;
